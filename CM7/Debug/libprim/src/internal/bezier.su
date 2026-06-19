@@ -1,0 +1,2 @@
+../libprim/src/internal/bezier.c:9:9:prim_internal_quad_seg_count	32	static
+../libprim/src/internal/bezier.c:21:14:prim_internal_quad_eval	56	static

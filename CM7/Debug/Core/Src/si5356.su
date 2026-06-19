@@ -1,0 +1,5 @@
+../Core/Src/si5356.c:74:13:wr	32	static
+../Core/Src/si5356.c:78:13:rd	40	static
+../Core/Src/si5356.c:82:13:wr_masked	24	static
+../Core/Src/si5356.c:92:6:si5356_read_status	16	static
+../Core/Src/si5356.c:97:6:si5356_init	48	static

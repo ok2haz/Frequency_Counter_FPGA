@@ -1,0 +1,11 @@
+../app/app_gpsdo.c:29:13:in_rect	5
+../app/app_gpsdo.c:34:6:app_gpsdo_init	2
+../app/app_gpsdo.c:42:6:app_gpsdo_render_main	1
+../app/app_gpsdo.c:54:13:fmt_temp	3
+../app/app_gpsdo.c:67:13:diag_label	1
+../app/app_gpsdo.c:74:13:put_val	1
+../app/app_gpsdo.c:83:13:draw_diag_values	2
+../app/app_gpsdo.c:103:6:app_gpsdo_render_diag	4
+../app/app_gpsdo.c:142:6:app_gpsdo_clear	1
+../app/app_gpsdo.c:152:6:app_gpsdo_tick	2
+../app/app_gpsdo.c:157:6:app_gpsdo_handle_touch	6

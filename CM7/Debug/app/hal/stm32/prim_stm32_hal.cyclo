@@ -1,0 +1,5 @@
+../app/hal/stm32/prim_stm32_hal.c:18:13:d2d_wait	2
+../app/hal/stm32/prim_stm32_hal.c:24:13:d2d_fill	1
+../app/hal/stm32/prim_stm32_hal.c:37:13:d2d_blit	1
+../app/hal/stm32/prim_stm32_hal.c:58:6:prim_stm32_use_dma2d	2
+../app/hal/stm32/prim_stm32_hal.c:63:6:prim_stm32_init	1

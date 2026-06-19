@@ -1,0 +1,6 @@
+../Core/Src/ws_panel.c:12:13:ws_write_reg	32	static
+../Core/Src/ws_panel.c:26:12:ws_read_reg	32	static
+../Core/Src/ws_panel.c:41:6:ws_panel_probe	24	static
+../Core/Src/ws_panel.c:65:6:ws_panel_power_on	16	static
+../Core/Src/ws_panel.c:97:6:ws_panel_set_backlight	16	static
+../Core/Src/ws_panel.c:105:6:ws_panel_power_off	16	static

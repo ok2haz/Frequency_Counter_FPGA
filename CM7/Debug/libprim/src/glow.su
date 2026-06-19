@@ -1,0 +1,5 @@
+../libprim/src/glow.c:33:13:box_blur_h	64	static
+../libprim/src/glow.c:50:13:box_blur_v	56	static
+../libprim/src/glow.c:67:13:emit_glow	56	static
+../libprim/src/glow.c:88:6:prim_glow_rect	72	static
+../libprim/src/glow.c:108:6:prim_glow_line	88	static

@@ -1,0 +1,2 @@
+../Core/Src/ads1115.c:11:6:ads1115_start	2
+../Core/Src/ads1115.c:29:6:ads1115_read_raw	2

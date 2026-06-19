@@ -1,0 +1,4 @@
+../Core/Src/main.c:68:5:main	2
+../Core/Src/main.c:136:6:PeriphCommonClock_Config	2
+../Core/Src/main.c:160:6:Beep	1
+../Core/Src/main.c:180:6:Error_Handler	1

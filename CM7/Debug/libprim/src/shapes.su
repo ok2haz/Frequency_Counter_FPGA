@@ -1,0 +1,7 @@
+../libprim/src/shapes.c:17:23:edge_cov	24	static
+../libprim/src/shapes.c:25:6:prim_draw_line	120	static
+../libprim/src/shapes.c:70:6:prim_draw_line_dashed	64	static
+../libprim/src/shapes.c:91:13:ring_sector	88	static
+../libprim/src/shapes.c:125:6:prim_draw_circle	24	static
+../libprim/src/shapes.c:134:6:prim_fill_circle	24	static
+../libprim/src/shapes.c:140:6:prim_draw_arc	24	static

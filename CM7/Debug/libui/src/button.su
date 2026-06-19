@@ -1,0 +1,2 @@
+../libui/src/button.c:14:20:style_of	64	static
+../libui/src/button.c:30:6:ui_button_render	56	static

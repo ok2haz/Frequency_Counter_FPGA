@@ -1,0 +1,2 @@
+../libprim/src/internal/dma2d_backend.c:12:6:prim_set_dma2d_backend	1
+../libprim/src/internal/dma2d_backend.c:17:29:prim_dma2d	1

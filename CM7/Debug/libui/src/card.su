@@ -1,0 +1,2 @@
+../libui/src/card.c:14:6:ui_card_render_chrome	40	static
+../libui/src/card.c:35:13:ui_card_inner_rect	32	static

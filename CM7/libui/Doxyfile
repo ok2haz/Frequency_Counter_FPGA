@@ -1,0 +1,13 @@
+# Minimal Doxygen config for libui. Run: doxygen Doxyfile
+PROJECT_NAME           = "libui"
+PROJECT_BRIEF          = "UI component library"
+OUTPUT_DIRECTORY       = docs/api
+INPUT                  = include/ui
+FILE_PATTERNS          = *.h
+RECURSIVE              = YES
+EXTRACT_ALL            = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO

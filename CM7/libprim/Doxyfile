@@ -1,0 +1,13 @@
+# Minimal Doxygen config for libprim. Run: doxygen Doxyfile
+PROJECT_NAME           = "libprim"
+PROJECT_BRIEF          = "Primitive 2D renderer (RGB565)"
+OUTPUT_DIRECTORY       = docs/api
+INPUT                  = include/prim
+FILE_PATTERNS          = *.h
+RECURSIVE              = YES
+EXTRACT_ALL            = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO

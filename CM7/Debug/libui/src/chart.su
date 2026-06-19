@@ -1,0 +1,4 @@
+../libui/src/chart.c:11:6:ui_chart_loglog_render_grid	64	static
+../libui/src/chart.c:48:6:ui_chart_loglog_render_floor	48	static
+../libui/src/chart.c:62:6:ui_chart_loglog_render_curve	64	static
+../libui/src/chart.c:94:6:ui_chart_loglog_render_cursor	48	static

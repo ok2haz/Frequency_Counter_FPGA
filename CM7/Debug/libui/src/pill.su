@@ -1,0 +1,3 @@
+../libui/src/internal/layout.h:30:31:ui_pill_style	64	static
+../libui/src/pill.c:13:9:ui_pill_measure	24	static
+../libui/src/pill.c:33:6:ui_pill_render	88	static
