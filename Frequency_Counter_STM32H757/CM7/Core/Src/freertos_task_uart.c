@@ -31,6 +31,7 @@
 
 #define LCD_WIDTH         800
 #define LCD_HEIGHT        480
+#define FB_ADDR           0xC0000000u   /* framebuffer @ SDRAM (RGB565), shodne s PRIM_FB_ADDR */
 
 /*
  * MAKE_RGB - RGB565 (16bpp): R[5] G[6] B[5]. Bere 8-bit slozky a oreze na 5/6/5.
@@ -150,19 +151,19 @@ void UartTask_run(void *argument)
 			  }
 
 			  else if (strcmp(RxBuffer, "testRED") == 0) {
-				  uint16_t *fb = (uint16_t *)0xC0000000;
+				  uint16_t *fb = (uint16_t *)FB_ADDR;
 				  uint16_t red = MAKE_RGB(0xFF, 0x00, 0x00);
 				  for(int i = 0; i < (LCD_WIDTH * LCD_HEIGHT); i++) {
 					  fb[i] = red;
 				  }
 				  /* Vyhodit cache, aby LTDC videl ciste data v SDRAM (RGB565 = 2 byty/px) */
-				  SCB_CleanDCache_by_Addr((uint32_t*)0xC0000000, LCD_WIDTH * LCD_HEIGHT * 2);
+				  SCB_CleanDCache_by_Addr((uint32_t*)FB_ADDR, LCD_WIDTH * LCD_HEIGHT * 2);
 				  printf("TEST RED - OK (RGB565)\n");
 			  }
 
 			  else if (strcmp(RxBuffer, "test") == 0) {
 				  /* 3 svisle pruhy R/G/B podle X (kazdy radek obsahuje 3 ruzne barvy) */
-				  uint16_t *pixelPtr = (uint16_t *)0xC0000000;
+				  uint16_t *pixelPtr = (uint16_t *)FB_ADDR;
 				  uint16_t red   = MAKE_RGB(0xFF, 0x00, 0x00);
 				  uint16_t green = MAKE_RGB(0x00, 0xFF, 0x00);
 				  uint16_t blue  = MAKE_RGB(0x00, 0x00, 0xFF);
@@ -177,7 +178,7 @@ void UartTask_run(void *argument)
 				      }
 				  }
 				  /* Vyhodit cache, aby LTDC videl ciste data v SDRAM (RGB565 = 2 byty/px) */
-				  SCB_CleanDCache_by_Addr((uint32_t*)0xC0000000, LCD_WIDTH * LCD_HEIGHT * 2);
+				  SCB_CleanDCache_by_Addr((uint32_t*)FB_ADDR, LCD_WIDTH * LCD_HEIGHT * 2);
 				  printf("TEST - OK (3 svisle pruhy podle X, RGB565)\n");
 			  }
 

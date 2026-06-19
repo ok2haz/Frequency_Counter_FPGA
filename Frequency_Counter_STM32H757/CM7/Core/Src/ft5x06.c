@@ -16,7 +16,7 @@
 /* === Adresy registru === */
 #define FT5X06_REG_DEVICE_MODE   0x00   /* 0x00=working, 0x40=factory test */
 #define FT5X06_REG_GEST_ID       0x01   /* gesture detection (swipe, atd.) */
-#define FT5X06_REG_TD_STATUS     0x02   /* low 4 bits = pocet doteku 0..5 */
+/* FT5X06_REG_TD_STATUS (0x02) je definovano ve ft5x06.h (verejne API) */
 #define FT5X06_REG_TOUCH1_XH     0x03   /* prvni dotek - X high + event flag */
 /* TOUCH1: 0x03=XH+event, 0x04=XL, 0x05=YH+id, 0x06=YL, 0x07=weight, 0x08=area */
 /* TOUCH2: 0x09-0x0E, TOUCH3: 0x0F-0x14, ...                                 */
