@@ -1,4 +1,0 @@
-../Core/Src/beeper.c:18:6:beeper_init	1
-../Core/Src/beeper.c:43:6:beeper_set	3
-../Core/Src/beeper.c:55:6:beeper_is_on	1
-../Core/Src/beeper.c:60:6:beeper_isr_toggle	1

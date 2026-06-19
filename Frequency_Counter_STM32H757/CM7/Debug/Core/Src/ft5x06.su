@@ -1,4 +1,0 @@
-../Core/Src/ft5x06.c:28:26:ft5x06_read_reg	40	static
-../Core/Src/ft5x06.c:36:6:ft5x06_probe	24	static
-../Core/Src/ft5x06.c:69:6:ft5x06_parse	24	static
-../Core/Src/ft5x06.c:95:6:ft5x06_read_touch	48	static

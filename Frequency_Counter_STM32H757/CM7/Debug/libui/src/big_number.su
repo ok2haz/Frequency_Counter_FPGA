@@ -1,5 +1,0 @@
-../libui/src/internal/layout.h:13:28:ui_level_color	16	static
-../libui/src/big_number.c:16:27:seg_font	16	static
-../libui/src/big_number.c:22:13:sep_at	24	static
-../libui/src/big_number.c:30:16:total_width	40	static
-../libui/src/big_number.c:47:6:ui_big_number_render	104	static

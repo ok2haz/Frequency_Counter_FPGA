@@ -1,4 +1,0 @@
-../libui/src/chart.c:11:6:ui_chart_loglog_render_grid	11
-../libui/src/chart.c:48:6:ui_chart_loglog_render_floor	3
-../libui/src/chart.c:62:6:ui_chart_loglog_render_curve	9
-../libui/src/chart.c:94:6:ui_chart_loglog_render_cursor	3

@@ -1,6 +1,0 @@
-../libprim/src/text.c:11:10:prim_internal_utf8_next	5
-../libprim/src/text.c:32:21:prim_internal_glyph	7
-../libprim/src/text.c:46:16:glyph_cov	7
-../libprim/src/text.c:61:9:prim_text_width	5
-../libprim/src/text.c:74:9:prim_text_height	2
-../libprim/src/text.c:79:6:prim_draw_text	11

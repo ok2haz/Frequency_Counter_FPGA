@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────
+#  Frequency_Counter_FPGA — co se nemá verzovat
+# ─────────────────────────────────────────────────────────────────────────
+
+# STM32CubeIDE build výstupy (generované per-core, plně reprodukovatelné buildem)
+Debug/
+Release/
+
+# Vendored Node.js runtime — používá jen tools/gen_fonts.ps1, není to zdroják
+# (bez lomítka uprostřed → platí v libovolné hloubce, i pod Frequency_Counter_STM32H757/tools/)
+node-v20.18.1-win-x64/
+
+# Běžné build/toolchain artefakty (jistota i mimo Debug/Release)
+*.o
+*.d
+*.su
+*.lst
+*.list
+*.map
+*.elf
+*.bin
+*.hex
+*.cyclo
+
+# OS / editor smetí
+Thumbs.db
+.DS_Store
+*.swp
+*~

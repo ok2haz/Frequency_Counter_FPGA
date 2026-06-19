@@ -1,4 +1,0 @@
-C:/Users/Latitude/STM32CubeIDE/workspace_2.1.0/H757_LED/H757_LED/CM7/libprim/include/prim/types.h:48:28:prim_argb_to_565	16	static
-../libprim/src/gradient.c:10:28:lerp_argb	64	static
-../libprim/src/gradient.c:22:6:prim_fill_gradient_linear	72	static
-../libprim/src/gradient.c:48:6:prim_fill_gradient_radial	88	static

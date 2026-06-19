@@ -1,8 +1,0 @@
-C:/Users/Latitude/STM32CubeIDE/workspace_2.1.0/H757_LED/H757_LED/CM7/libprim/include/prim/types.h:48:28:prim_argb_to_565	16	static
-../libprim/src/internal/alpha_blend.h:20:28:prim_blend565	64	static
-../libprim/src/fill.c:16:13:sw_fill	56	static
-../libprim/src/fill.c:30:6:prim_fill_rect	72	static
-../libprim/src/fill.c:51:13:aa_corner	56	static
-../libprim/src/fill.c:72:6:prim_fill_rect_rounded	72	static
-../libprim/src/fill.c:103:6:prim_stroke_rect_rounded	88	static
-../libprim/src/fill.c:143:6:prim_blit	80	static

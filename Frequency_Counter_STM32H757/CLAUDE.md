@@ -52,62 +52,64 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 - 0xC0000000 (SDRAM/FMC), RGB565, 800×480×2 = 750 KB
 - MPU region 0: 2 MB, Write-Through
 - **SDRAM = 32 MB** (FMC: 9 col + 13 row bits × 4 banky × 16 bit). FB1/FB2 se vejdou snadno.
-- **SDRAM mapa:** **Region 0 (2MB WT, `0xC0000000`):** FB1 `0xC0000000`, FB2 `0xC0100000` (double buffering bench/bounce), `sdram` test buffer `0xC01C0000` (4 KB, ZA framebuffery — dřív byl na `0xC0001000` = uvnitř FB1 a přepisoval displej, opraveno). **Region 1 (4MB WBWA cached, `0xC0400000`):** bignum workspace pro `pi` (10×256 KB). SDRAM celkem 32 MB.
+- **SDRAM mapa:** **Region 0 (2MB WT, `0xC0000000`):** FB1 `0xC0000000`, FB2 `0xC0100000` (druhý framebuffer / volitelný double-buffering), `sdram` test buffer `0xC01C0000` (4 KB, ZA framebuffery — dřív byl na `0xC0001000` = uvnitř FB1 a přepisoval displej, opraveno). **Region 1 (4MB WBWA cached, `0xC0400000`):** rezervováno (dříve bignum workspace pro `pi`, odstraněno). SDRAM celkem 32 MB.
 
 ### Akcelerace / linker (POZOR při CubeMX regen)
-- **Linker `STM32H757BITX_FLASH.ld` ručně upraven:** přidány sekce `.itcm_text` (load z FLASH do ITCM, hot gfx funkce — kopie v `main.c` USER CODE 1 přes `_siitcm/_sitcm/_eitcm`) a `.dtcm_data` (NOLOAD, plasma LUTs). CubeMX linker NEpřepisuje, ale po ruční regeneraci ověřit.
-- `ITCM_FUNC` (gfx.h) = `__attribute__((section(".itcm_text")))` na gfx_pixel/fill/line/fillcircle.
-- **DMA2D R2M** (`gfx_fill` ≥1024 px) akceleruje výplně — OK i s LTDC.
-- **⚠️ DMA2D L8/CLUT M2M plasma ZAHOZENO:** celoobrazovkový M2M (čte L8 + píše RGB565) konkuroval LTDC o SDRAM sběrnici → podtékání LTDC → problikávání. Plasma kreslí **přímým CPU zápisem RGB565** (pal565 v DTCM). Helpery `gfx_dma2d_*` i `gfx_text_small_w` odstraněny (nevyužité).
-- Pozn.: ITCM/DTCM efekt je malý (I/D-cache už pokrývají malý working set); největší CPU výhra zůstává **-O2/Release**.
+- **Linker `STM32H757BITX_FLASH.ld` ručně upraven:** obsahuje sekce `.itcm_text` (load z FLASH do ITCM přes `_siitcm/_sitcm/_eitcm`, kopie v `main.c` USER CODE 1) a `.dtcm_data` (NOLOAD). CubeMX linker NEpřepisuje, ale po ruční regeneraci ověřit.
+- ⚠️ **Pozn.: dřívější hot-path gfx funkce a plasma LUTs, které tyto sekce využívaly, byly s odstraněním starého gfx UI smazány → sekce jsou teď prázdné a ITCM kopie v `main.c` je no-op** (ponecháno pro budoucí použití).
+- Grafiku teď dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.
+- Pozn.: největší CPU výhra zůstává **-O2/Release**.
 
 ### FreeRTOS tasky (freertos.c)
 | Task | Priorita | Stack |
 |---|---|---|
-| defaultTask | Normal | 512 B |
+| defaultTask | Normal | 1024 B |
 | UartTask | Normal | 2048 B |
 | I2C4Task | Low | 1024 B |
-| UiTask | BelowNormal | 4096 B |
+| UiTask | BelowNormal | 8192 B |
 | FpgaTask | Normal | 2048 B |
 | UartRxQueue | — | 64 × 1 B |
 
 PRIO_BITS=4, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5.
 
+**Rozdělení souborů (CubeMX-regen-safe).** Tasky jsou vyčleněné z `freertos.c` do
+`freertos_task_*.c`, sdílený stav v `freertos_shared.h`:
+- `freertos.c` — jen `MX_FREERTOS_Init`, `StartDefaultTask`, definice globálů.
+- `freertos_task_uart.c` (`UartTask_run`), `freertos_task_sensors.c` (`SensorsTask_run`),
+  `freertos_task_ui.c` (`StartUiTask`), `freertos_task_fpga.c` (`StartFpgaTask`),
+  `freertos_hooks.c` (RunTimeStats + stack/malloc hooky).
+- ⚠️ **Regen-safe pattern:** `StartUartTask`/`StartI2C4` (= tasky v `.ioc`) zůstávají
+  ve `freertos.c` jako **tenké stuby**, jejichž USER CODE tělo jen volá
+  `UartTask_run`/`SensorsTask_run` ve split souborech → CubeMX regen NEzpůsobí
+  duplicitní symbol. `UiTask`/`FpgaTask` (NEjsou v `.ioc`) mají handle + attributes
+  v **USER CODE Variables** a `osThreadNew` v **USER CODE RTOS_THREADS** → regen je nesmaže.
+  **Při přidání tasku v CubeMX:** drž se tohoto patternu (stub → `*_run`).
+
 ### Periferie
 - USART1: 115200 8N1, TX=PB14, RX=PA10, NVIC prio 5. printf přes `_write` (blokující TX, timeout 10 ms ⇒ limit ~115 B/řádek).
 - I2C4: TMP117 @ 0x48 (0.0078125 °C/LSB, 1×/s), panel ATTINY @ 0x45 (backlight 200), FT5x06 touch.
 
-## Dotykové UI (gfx.c/h + touch_ui.c/h, UiTask)
-Funkční dotykové rozhraní: živá teplota TMP117 + **strip-chart graf** (15–35 °C),
-tlačítka (LED, BL± s **výpisem jasu**, CLR, CAL), **paleta 6 barev** pro pero, kreslicí
-plocha, indikace doteku, interaktivní rohová kalibrace. `gfx` = RGB565 primitivy + **dva fonty**:
-hlavní 5×7 v 8×8 buňce (škálovatelný `gfx_text(...,scale)`) a malý **4×6 `gfx_text_small()`**
-(renderuje 2×, advance 10 px). Oba: 0–9, A–Z, symboly, velká písmena + h/z. `gfx_line` = obecná čára (Bresenham).
-**Rotující úsečka** (`touch_ui_spin`, 50 px, 24 kroků po 7,5°, ~65 překreslení/s) vpravo nahoře — volaná z UiTask každou iteraci. `UiTask` (BelowNormal, 4 KB).
-- **UART:** UI **startuje automaticky po bootu** (`g_ui_enabled=1`). `uioff` vrátí displej test příkazům, `ui` zpět, `cal` kalibrace. UI a test příkazy se o displej dělit nemají.
-- **Touch je zrcadlený v X i Y** (panel má H+V flip) — default kalibrace invertuje obě osy: `screen = (799-rawX, 479-rawY)`. `cal` přepíše změřenými hodnotami.
-- **I2C4 mutex** (`i2c4MutexHandle`): TMP117 task + touch + backlight sdílí sběrnici, nutná synchronizace.
-- **Touch čtení je asynchronní (IT)**: `rd_touch` v touch_ui.c → `HAL_I2C_Mem_Read_IT` + čeká na `i2cDoneSemHandle` (semafor), UiTask přitom spí (ne busy-wait → ~25 % CPU ušetřeno). Callbacky `HAL_I2C_MemRxCpltCallback`/`ErrorCallback` v touch_ui.c, IRQ handlery `I2C4_EV/ER_IRQHandler` v stm32h7xx_it.c (USER CODE), NVIC prio 6 v i2c.c MspInit. TMP117 a backlight zůstávají polling (pod mutexem). **Nepovolovat I2C4 interrupt v IOC** (duplicitní handlery).
-- **FT5x06 MUSÍ číst celý touch frame** (31 B z TD_STATUS 0x02, `ft5x06_read_touch`). Částečné čtení (jen 1. bod) → controller drží I2C při multitouchi → další transakce zatuhne → program zamrzne při 2. prstu. Parsuje se jen 1. bod, ale čte se celý rámec.
-- Kalibrace je v RAM (po resetu se ztratí, default inverze funguje i bez ní).
+## UI vrstva (libprim / libui / app, UiTask)
+Grafika je **třívrstvý in-place renderer** (detaily v `CM7/GPSDO_UI_README.md`, zadání v `.claude/zadani_*.md`):
+- **`libprim`** — generická 2D primitiva: fill, shapes, path, gradient, glow, text (RGB565). Nezná `ui/*`.
+- **`libui`** — vizuální slovník: theme, dimensions, komponenty (card, button, chart, bargraph, big_number, pill, sparkline, digit_group), ikony, fonty. Nezná `app/*`.
+- **`app/`** — GPSDO hlavní obrazovka (`screens/screen_main.c`) + HAL most (`hal/stm32/prim_stm32_hal.c`).
+
+Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsdo_clear()` / `app_gpsdo_handle_touch()` / `app_gpsdo_tick()`.
+- **Kreslí VÝHRADNĚ `UiTask`** (libprim/libui nejsou thread-safe). UART nastaví `g_screen_req` (3 = hlavní obrazovka, 4 = clear), UiTask ho obslouží. Obrazovka startuje automaticky po bootu.
+- **Barevný model = RGB565** všude (FB i pipeline). `prim_color_t` je ARGB8888 jen jako pracovní barva v paměti (alfa matematika), na hranici FB se balí do RGB565.
+- **Dotek tlačítek:** UiTask polluje FT5x06 (@ I2C4, pod `i2c4MutexHandle`), hranové spouštění, volá `app_gpsdo_handle_touch(799-x, 479-y)`. **Panel je zrcadlený v X i Y** (H+V flip).
+- **FT5x06 MUSÍ číst celý touch frame** (`ft5x06_read_touch`, 31 B z TD_STATUS 0x02). Částečné čtení (jen 1. bod) → controller drží I2C při multitouchi → další transakce zatuhne → zamrznutí při 2. prstu. Parsuje se jen 1. bod, ale čte se celý rámec.
+- **I2C4 mutex** (`i2c4MutexHandle`): TMP117 task + touch + backlight sdílí sběrnici. **Nepovolovat I2C4 interrupt v IOC.**
+
+> **Historie:** dřívější ručně psané `gfx.c`/`touch_ui.c` UI i pokus o **LVGL v9** obrazovku (`lv_port_disp.c`, `ui_main_screen.c`, vendored `Middlewares/Third_Party/lvgl`) byly **odstraněny** a nahrazeny libprim/libui/app. K dohledání v git historii.
 
 ## UART příkazy (StartUartTask)
 `led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `scanner`, `testDSI`,
-`testRED`, `test` (základní RGB565 sanity), `touch`, `touchloop`, `ui`/`uioff`/`cal`, `freq`, `fpgaraw`, `fpgaloop`, `si5356`, `scan1`, `stats`, `bench`, `bounce`, `pi`/`stoppi`, `status`, **`ping`/`screen main`/`clear`/`version`/`help`** (GPSDO LVGL). Neznámý příkaz → `ERR unknown command`.
-**`pi`** = počítá číslice π **Gibbonsovým unbounded spigotem** (vlastní bignum, base 2^32) a vypisuje je fontem (scale 2 ≈ 16px, **zeleně**; při přetečení obrazovky nová stránka = clear + odshora); běží v `defaultTask` **naplno bez throttle** (rané číslice levné → letí, hlouběji se zpomaluje — povaha π). `stoppi` zastaví a obnoví UI; po zastavení `run_pi` vypíše **na UART** počet spočítaných desetinných míst + čas (ms) + číslic/s. Bignum workspace v **cached SDRAM** (MPU region 1 @ `0xC0400000`, 4 MB WBWA), 10 slotů × 256 KB (`PI_MAXLIMB`), strop ~90 000 číslic než přetečení. Dělení malého podílu binárním hledáním. Yield (`osDelay 1`) každých 64 číslic kvůli `stoppi`/ostatním taskům.
-`bench` = plasma benchmark (per-pixel). `bounce` = 16 odrážejících se tvarů (čtverce/kruhy/troj/pětiúhelníky/úsečky). Oba: HUD vlevo nahoře **`FPS:NN M7:NN%`** (M7 load = 100−idle% přes `ulTaskGetIdleRunTimeCounter`). VSYNC čekání používá `osDelay(1)` (yield → idle běží → load má smysl, ne pořád 100 %).
-**DMA2D (Chrom-ART)** akceleruje `gfx_fill` ≥1024 px (UI mazání, tlačítka, fills) — registrově v gfx.c, `gfx_accel_init()` v bootu. Per-pixel matematiku (plasma) DMA2D nezrychlí → na to `-O2`/Release build.
-(Diagnostické příkazy testY/testM/test*Long a pure_r/g/b byly po vyřešení displeje odebrány.)
-
-## GPSDO LVGL obrazovka (theme.h, lv_port_disp.c, ui_main_screen.c — screen-mode)
-Statická hlavní obrazovka GPSDO čítače (mockup v9) přes **LVGL v9**, spouštěná UART příkazem. **Iterace 1: bez živých dat — všechny hodnoty pevné konstanty.**
-- **Příkazy:** `ping`→`pong`, `screen main`→vykreslí (OK), `clear`→prázdná obrazovka bg (OK), `version`→`gpsdo-ui v0.1`, `help`. Odpovědi CRLF.
-- **Screen-mode (`g_screen_mode`):** po bootu běží **stávající gfx UI**; `screen main`/`clear` nastaví `g_screen_req` (UART task), **UiTask** ho obslouží — **LVGL kreslí VÝHRADNĚ z UiTask** (není thread-safe). `ui` vrátí kontrolu gfx UI (`g_screen_mode=0`). Koexistence přepínačem.
-- **Display port (`lv_port_disp.c`):** LVGL renderuje **přímo do framebufferu @0xC0000000** (RGB565, `LV_DISPLAY_RENDER_MODE_DIRECT`, buffer == FB → žádná kopie, flush jen `__DSB`). `lv_tick_set_cb(HAL_GetTick)`. Při vstupu nastaví LTDC adresu zpět na 0xC0000000 (bench/bounce ji dočasně mění).
-- **⚠️ Externí závislosti (NEJSOU v repu, nutno dodat):** (1) **samotná LVGL v9** do `Middlewares/Third_Party/lvgl` + `lv_conf.h` na include path (`LV_CONF_INCLUDE_SIMPLE`); (2) **vygenerované fonty** JetBrains Mono + Inter (12–75 px, `tnum`) přes LVGL font converter → `theme.h` mapuje role; dokud nejsou, `FONTS_READY=0` mapuje vše na `montserrat_14` (layout sedí, typografie ne).
-- **Fidelita:** LVGL zvládá gradienty/zaoblení/stíny/dash z mockupu. **Radiální gradient pozadí** ale LVGL neumí → fallback plná výplň `THEME_BG_0` (dle briefu 3.3). Grafy (Allan, sparkline) jako `lv_line` polylinie, anténa zjednodušená na úsečky. Pixel-perfect až s reálnými fonty.
-- **Paleta** v `theme.h` (RGB888 → `lv_color_hex`). Layout absolutními souřadnicemi dle sekce 3 briefu.
-- **POZOR:** kód psán mimo IDE (bez toolchainu/LVGL/fontů) → **neověřený compile**; první build v CubeIDE doladí (chybějící LVGL/fonty/případné v9 API odchylky).
+`testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `fpgaraw`,
+`fpgaloop`, `stats`, `status`, `ui`, **`ping`/`screen main`/`clear`/`version`/`help`**.
+Neznámý příkaz → `ERR unknown command`. `ui` i `screen main` znovu vykreslí hlavní obrazovku
+(`g_screen_req=3`), `clear` ji smaže (`g_screen_req=4`). Odpovědi protokolu CRLF (`ping`→`pong`, `version`→`gpsdo-ui v0.1`).
 
 ## FPGA čítač kmitočtu (fpga_freq.c/h, FpgaTask, SPI2)
 STM32 = SPI master, FPGA = slave. **SPI2**: master, mode 0, MSB, 8-bit, MOSI=PB15, SCK=PI1,
@@ -115,12 +117,12 @@ MISO=PI2, **CS=PB12 (manuál GPIO, active-low)**. Bring-up **1 MHz** (`fpga_freq
 prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu FPGA (GW1NR-9 oversampling): cíl ≤6 MHz, absolutní max ~10 MHz** — `FPGA_SCK_TARGET_HZ` (hlídá `#error` na `FPGA_SCK_MAX_HZ`).
 - **Timing (kontrakt):** CS setup/hold ≥1 µs (dáváme 2), **mezi rámci ≥20 µs** (FPGA potřebuje ~124 cyklů @10 MHz na složení rámce; dáváme 25). Prodlevy přes **DWT cyklový čítač** (`delay_us`, ne NOP-loop — DWT už zapnut pro runtime staty). Po bootu **`osDelay(250)` v StartFpgaTask** než se začne clockovat (FPGA piny 54–57 jsou config piny, musí dokončit load z flash).
 - **CRC self-test (akceptační krok 1):** `fpga_freq_crc_selftest()` ověří `crc16("123456789")==0x29B1`; při selhání se `g_init_ok=0` a SPI komunikace se **nezahájí** (poll/restart hned vrací false).
-- **Stav SPI/komunikace na displeji:** `fpga_freq_format_status()` skládá řádek `SPI <x.xx>MHZ LINK:OK/-- SEQ:<n> CRC:<n>` (rychlost SCK, živost linky, posl. SEQ, počet CRC chyb). FpgaTask ho po každém pollu uloží do `g_spi_text`/`g_spi_ok` (překreslí jen při změně), UiTask vykreslí přes `touch_ui_set_spi()` fontem scale 3 (~24px) nad touch statusem — **zeleně** když link žije, **červeně** když ne.
+- **Stav SPI/komunikace na displeji:** `fpga_freq_format_status()` skládá řádek `SPI <x.xx>MHZ LINK:OK/-- SEQ:<n> CRC:<n>` (rychlost SCK, živost linky, posl. SEQ, počet CRC chyb). FpgaTask ho po každém pollu uloží do `g_spi_text`/`g_spi_ok` (překreslí jen při změně), UiTask vykreslí stav SPI při překreslení hlavní obrazovky — **zeleně** když link žije, **červeně** když ne.
 - **Pevný 64B full-duplex rámec**: MAGIC 0xA5, VERSION, TYPE, FLAGS/STATUS, SEQUENCE(LE32),
   PAYLOAD_LEN, RESERVED, 50B payload, CRC16(LE) na konci. CRC = **CRC-16/CCITT-FALSE** (0x1021/0xFFFF), pokrývá byte 0..61.
 - Model: `FpgaTask` polluje **~20 Hz** (`osDelay(50)`), posílá **ACK** (TYPE 0x06, SEQUENCE=poslední) → FPGA full-duplex vrací aktuální **DATA** (TYPE 0x80). Platné = CRC ok + DATA_VALID + DATA_FRESH + nová SEQUENCE. Polling je úmyslně rychlejší než tempo měření (FPGA gate **0,25 s reciproké → ~4 nová měření/s**) kvůli nízké latenci; protokol je pull/ACK, takže rychlejší polling nezpůsobí ztrátu měření (FPGA shodí DATA_FRESH až po ACK té SEQ). Každé čerstvé měření se zobrazí (žádný throttle).
 - **Dva předděliče (4-fázové reciproké měření):** **pin28 = /4** (primár, nejlepší rozlišení), **pin27 = /16** (vyšší rozsah / cross-check), měří se současně. `fpga_freq_select()` volí zobrazovaný zdroj: **/4 dokud je bez chyby a < ~380 MHz, jinak /16**. Rozsah: na pinu do ~100 MHz → reálně ~400 MHz (/4) / ~1,6 GHz (/16). Headline ukazuje zvolený zdroj, info řádek `<src> PH:<present>/<fine> GATE:<ns>NS SEQ:<n>[ chyba]`.
-- **Detekce ztráty signálu (SIGNAL_LOST):** FPGA má **autoritativní watchdog** — ~2,5 s bez dokončeného měření → `error_flags` bit1 SIGNAL_LOST + DATA_VALID=0. FpgaTask čte `fpga_freq_signal_lost()` (latch posledního DATA rámce, funguje i při VALID=0) a při ztrátě **nebo mrtvém linku** nastaví `g_freq_stale=1` → UiTask ztlumí kmitočet na **šedou** (`touch_ui_set_freq(s, stale)`). **Dřívější SEQ-staleness heuristika ODSTRANĚNA** (falešně hlásila stale u nízkých kmitočtů, kde se reciproké okno legitimně protáhne) — teď se věří FPGA flagu.
+- **Detekce ztráty signálu (SIGNAL_LOST):** FPGA má **autoritativní watchdog** — ~2,5 s bez dokončeného měření → `error_flags` bit1 SIGNAL_LOST + DATA_VALID=0. FpgaTask čte `fpga_freq_signal_lost()` (latch posledního DATA rámce, funguje i při VALID=0) a při ztrátě **nebo mrtvém linku** nastaví `g_freq_stale=1` → UiTask ztlumí kmitočet na **šedou** (čte `g_freq_text`/`g_freq_stale` při překreslení). **Dřívější SEQ-staleness heuristika ODSTRANĚNA** (falešně hlásila stale u nízkých kmitočtů, kde se reciproké okno legitimně protáhne) — teď se věří FPGA flagu.
 - **Auto-re-START:** když ~3 s nepřijde žádný platný rámec (`fpga_freq_link_ok()`==0, tj. mrtvý link, ne jen „bez nového měření"), FpgaTask znovu pošle START (20 Hz polling → práh `fails>=60`) — pokrývá FPGA který nabootuje/resetuje až po STM32.
 - DATA payload (`fpga_meas_t`, parse v `parse_data()`): `frequency_x100000`(abs12, /4), `edge_count`(20), `gate_time_ns`(28), `timestamp`(36), `channel`(44), `measurement_status`(45), `error_flags`(46), **`phase_status`(50)**, **`status2`(51)**, **`freq16_x100000`(52, /16)**. **`freq*_x100000` = reálný kmitočet × 1e5 (děličku /4 i /16 už zahrnuje FPGA → STM NEnásobí 4 ani 16); `gate_ns` ≈ 250e6 a kolísá.**
   - **`error_flags`:** bit0=`FPGA_ERR_MEAS` (/4 Δt==0), bit1=`FPGA_ERR_SIGNAL_LOST`, bit2=`FPGA_ERR_OVERFLOW` (okno >~21,5 s). **`status2`** bit0=`FPGA_ST2_DIV16_ERR` (/16 Δt==0).

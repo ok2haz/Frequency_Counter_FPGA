@@ -1,0 +1,56 @@
+/*
+ * freertos_shared.h
+ *
+ * Sdílený stav a prototypy pro FreeRTOS tasky rozdělené z freertos.c.
+ * Globály jsou DEFINOVANÉ v freertos.c (USER CODE Variables); zde jen extern.
+ * Task entry pointy jsou implementované v freertos_task_*.c.
+ */
+
+#ifndef INC_FREERTOS_SHARED_H_
+#define INC_FREERTOS_SHARED_H_
+
+#include <stdint.h>
+#include "cmsis_os2.h"
+
+/* ── Synchronizace (definováno v freertos.c) ───────────────────────────── */
+extern osMutexId_t i2c4MutexHandle;        /* I2C4: TMP117 0x48 + touch + backlight */
+extern osMutexId_t i2c1MutexHandle;        /* I2C1: FPGA deska (TMP117 x2, ADS1115, Si5356) */
+extern osMutexId_t uartTxMutexHandle;      /* serializace printf/_write */
+extern osMessageQueueId_t UartRxQueueHandle;
+
+/* ── Teploty / ADS1115 (zapisuje StartI2C4, čte UI + UART) ─────────────── */
+extern float   g_CurrentTemperature;       /* TMP117 @ 0x48 (I2C4) */
+extern float   g_temp49, g_temp4A;         /* TMP117 @ 0x49/0x4A (I2C1) */
+extern int32_t g_ads_mv[4];                /* ADS1115 v mV */
+
+/* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
+extern volatile uint8_t g_screen_req;
+
+/* ── Kmitočet z FPGA (FpgaTask -> UiTask) ──────────────────────────────── */
+extern volatile char    g_freq_text[48];
+extern volatile char    g_freq_info[64];
+extern volatile uint8_t g_freq_dirty;
+extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí */
+
+/* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
+extern volatile char    g_spi_text[64];
+extern volatile uint8_t g_spi_ok;          /* 1 = link živá -> zeleně */
+extern volatile uint8_t g_spi_dirty;
+
+/* ── Task implementace ─────────────────────────────────────────────────── */
+/* CubeMX generuje StartUartTask/StartI2C4 stuby ve freertos.c; jejich USER CODE
+ * tělo jen zavolá tyto implementace -> CubeMX regen build NErozbije (žádná
+ * duplicita symbolu, jména se nekryjí s generovanými StartXxx). */
+void UartTask_run(void *argument);         /* freertos_task_uart.c */
+void SensorsTask_run(void *argument);      /* freertos_task_sensors.c */
+
+/* Ručně vytvořené tasky (osThreadNew v USER CODE RTOS_THREADS) -> CubeMX je
+ * negeneruje, definované přímo v split souborech. */
+void StartUiTask(void *argument);          /* freertos_task_ui.c */
+void StartFpgaTask(void *argument);        /* freertos_task_fpga.c */
+
+/* ── Run-time stats časová báze (freertos_hooks.c) ─────────────────────── */
+void RunTimeStats_Init(void);
+uint32_t RunTimeStats_GetCount(void);
+
+#endif /* INC_FREERTOS_SHARED_H_ */

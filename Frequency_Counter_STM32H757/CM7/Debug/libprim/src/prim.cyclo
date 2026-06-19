@@ -1,3 +1,0 @@
-../libprim/src/prim.c:14:13:prim_version	1
-../libprim/src/prim.c:16:13:prim_last_error	1
-../libprim/src/prim.c:20:20:prim_internal_set_error	2

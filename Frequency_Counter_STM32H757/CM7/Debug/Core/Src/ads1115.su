@@ -1,2 +1,0 @@
-../Core/Src/ads1115.c:11:6:ads1115_start	40	static
-../Core/Src/ads1115.c:29:6:ads1115_read_raw	40	static
