@@ -90,8 +90,8 @@ bool ft5x06_parse(const uint8_t *frame, ft5x06_touch_t *touch)
     return true;
 }
 
-/* Blokujici (polling) cteni - pouzivaji ho UART prikazy touch/touchloop.
- * Dotykove UI cte asynchronne pres IT (viz touch_ui.c). */
+/* Blokujici (polling) cteni - pouziva ho UART (touch/touchloop) i UiTask
+ * (freertos_task_ui.c), oboje pod i2c4MutexHandle. */
 bool ft5x06_read_touch(I2C_HandleTypeDef *hi2c, ft5x06_touch_t *touch)
 {
     if (!touch) return false;

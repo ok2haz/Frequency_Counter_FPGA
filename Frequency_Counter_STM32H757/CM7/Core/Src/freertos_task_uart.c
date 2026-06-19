@@ -1,7 +1,7 @@
 /*
  * freertos_task_uart.c
  *
- * UART command processor (StartUartTask) — vyčleněno z freertos.c.
+ * UART command processor (UartTask_run, volaná ze StartUartTask stubu) — vyčleněno z freertos.c.
  * Čte znaky z UartRxQueue, skládá řádky a vyhodnocuje příkazy. Seznam příkazů
  * viz CLAUDE.md "UART příkazy".
  */
@@ -53,7 +53,6 @@ uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
 void UartTask_run(void *argument)
 {
 	uint8_t rxChar;
-	extern I2C_HandleTypeDef hi2c4;
 
 
 	printf("UART task ready\n");
@@ -184,7 +183,6 @@ void UartTask_run(void *argument)
 
 			  else if (strcmp(RxBuffer, "touch") == 0) {
 				  /* Jednorazove cteni stavu doteku */
-				  extern I2C_HandleTypeDef hi2c4;
 				  ft5x06_touch_t t;
 				  int ok = 0;
 				  if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
@@ -207,7 +205,6 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "touchloop") == 0) {
 				  /* Polling po dobu 15 sekund. Tisne se KAZDA zmena stavu.
 				   * Polling kazdych 50 ms (= ~300 vzorku za 15s). */
-				  extern I2C_HandleTypeDef hi2c4;
 				  printf("TOUCHLOOP: 15s polling, dotykej se displeje...\n");
 				  ft5x06_touch_t last = {0};
 				  for (int i = 0; i < 300; i++) {

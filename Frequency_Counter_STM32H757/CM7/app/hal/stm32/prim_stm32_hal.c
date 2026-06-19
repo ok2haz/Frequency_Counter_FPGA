@@ -2,8 +2,8 @@
  * @file prim_stm32_hal.c
  * @brief Register-level DMA2D backend + framebuffer binding for libprim.
  *
- * DMA2D modes: R2M solid fill and M2M copy, both RGB565. Mirrors the approach
- * already used by the project's gfx.c (register-level, coexists with LTDC).
+ * DMA2D modes: R2M solid fill and M2M copy, both RGB565. Register-level,
+ * coexists with LTDC.
  * Installs the backend through libprim's public prim/accel.h injection API, so
  * libprim itself stays hardware-independent. Buffers live in WT-cacheable
  * SDRAM, so DMA2D reads are coherent.

@@ -142,15 +142,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  /* Kopie hot kodu (.itcm_text) z FLASH do ITCM (zero-wait RAM) pred prvnim volanim.
-   * Symboly definuje linker (STM32H757BITX_FLASH.ld). */
-  {
-    extern uint32_t _siitcm, _sitcm, _eitcm;
-    uint32_t *src = &_siitcm, *dst = &_sitcm;
-    while (dst < &_eitcm) *dst++ = *src++;
-    __DSB();
-    __ISB();
-  }
   /* USER CODE END 1 */
 /* USER CODE BEGIN Boot_Mode_Sequence_0 */
   int32_t timeout;

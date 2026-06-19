@@ -54,10 +54,9 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 - **SDRAM = 32 MB** (FMC: 9 col + 13 row bits × 4 banky × 16 bit). FB1/FB2 se vejdou snadno.
 - **SDRAM mapa:** **Region 0 (2MB WT, `0xC0000000`):** FB1 `0xC0000000`, FB2 `0xC0100000` (druhý framebuffer / volitelný double-buffering), `sdram` test buffer `0xC01C0000` (4 KB, ZA framebuffery — dřív byl na `0xC0001000` = uvnitř FB1 a přepisoval displej, opraveno). **Region 1 (4MB WBWA cached, `0xC0400000`):** rezervováno (dříve bignum workspace pro `pi`, odstraněno). SDRAM celkem 32 MB.
 
-### Akcelerace / linker (POZOR při CubeMX regen)
-- **Linker `STM32H757BITX_FLASH.ld` ručně upraven:** obsahuje sekce `.itcm_text` (load z FLASH do ITCM přes `_siitcm/_sitcm/_eitcm`, kopie v `main.c` USER CODE 1) a `.dtcm_data` (NOLOAD). CubeMX linker NEpřepisuje, ale po ruční regeneraci ověřit.
-- ⚠️ **Pozn.: dřívější hot-path gfx funkce a plasma LUTs, které tyto sekce využívaly, byly s odstraněním starého gfx UI smazány → sekce jsou teď prázdné a ITCM kopie v `main.c` je no-op** (ponecháno pro budoucí použití).
-- Grafiku teď dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.
+### Akcelerace / linker
+- Grafiku dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.
+- **Pozn.: dřívější ITCM/DTCM sekce (`.itcm_text`/`.dtcm_data`) v linkeru + kopírovací smyčka v `main.c` USER CODE 1 byly odstraněny** — využíval je jen smazaný gfx hot-path, po jeho odebrání zůstaly prázdné (kopie byla no-op). K dohledání v git historii, kdyby bylo potřeba ITCM zrychlení vrátit.
 - Pozn.: největší CPU výhra zůstává **-O2/Release**.
 
 ### FreeRTOS tasky (freertos.c)

@@ -171,27 +171,6 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM_D1
 
-  /* ITCM hot kod (load z FLASH do ITCMRAM pri bootu; kopie v main.c USER CODE 1) */
-  _siitcm = LOADADDR(.itcm_text);
-  .itcm_text :
-  {
-    . = ALIGN(4);
-    _sitcm = .;
-    *(.itcm_text)
-    *(.itcm_text*)
-    . = ALIGN(4);
-    _eitcm = .;
-  } >ITCMRAM AT> FLASH
-
-  /* DTCM hot data (NOLOAD - inicializuje se za behu) */
-  .dtcm_data (NOLOAD) :
-  {
-    . = ALIGN(4);
-    *(.dtcm_data)
-    *(.dtcm_data*)
-    . = ALIGN(4);
-  } >DTCMRAM
-
   /* Externi SDRAM scratch (NOLOAD): libprim glow scratch + GPSDO screen caches.
    * Naplnuje se za behu, takze zadny load z FLASH. @0xC0800000 (viz MEMORY). */
   .sdram (NOLOAD) :

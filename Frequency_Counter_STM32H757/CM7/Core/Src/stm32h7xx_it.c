@@ -189,20 +189,6 @@ void TIM6_DAC_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-extern I2C_HandleTypeDef hi2c4;
-
-/* I2C4 EV/ER preruseni pro asynchronni (IT) cteni doteku (FT5x06).
- * NVIC se povoluje v i2c.c HAL_I2C_MspInit (USER CODE). */
-void I2C4_EV_IRQHandler(void)
-{
-  HAL_I2C_EV_IRQHandler(&hi2c4);
-}
-
-void I2C4_ER_IRQHandler(void)
-{
-  HAL_I2C_ER_IRQHandler(&hi2c4);
-}
-
 /* TIM7 - generuje 1600 Hz pro beeper (PH9, 800 Hz ton) */
 extern TIM_HandleTypeDef htim7;
 void TIM7_IRQHandler(void)

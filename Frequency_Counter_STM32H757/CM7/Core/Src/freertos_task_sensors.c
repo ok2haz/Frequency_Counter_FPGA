@@ -1,7 +1,7 @@
 /*
  * freertos_task_sensors.c
  *
- * I2C senzorový task (StartI2C4) — vyčleněno z freertos.c.
+ * I2C senzorový task (SensorsTask_run, volaná ze StartI2C4 stubu) — vyčleněno z freertos.c.
  * TMP117 @ 0x48 na I2C4 (displej) + FPGA deska na I2C1 (TMP117 0x49/0x4A,
  * ADS1115 4 kanály). Vzorkuje 1×/s, zapisuje do g_* globálů pro UI/UART.
  */
@@ -23,7 +23,6 @@
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
-  extern I2C_HandleTypeDef hi2c4;
   uint8_t rawData[2];
   int16_t tempRaw;
 

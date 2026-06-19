@@ -105,12 +105,8 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     /* I2C4 clock enable */
     __HAL_RCC_I2C4_CLK_ENABLE();
   /* USER CODE BEGIN I2C4_MspInit 1 */
-    /* I2C4 EV/ER preruseni pro asynchronni (IT) cteni doteku (touch_ui.c).
-     * Priorita 6 >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY(5) -> FromISR safe. */
-    HAL_NVIC_SetPriority(I2C4_EV_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(I2C4_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C4_ER_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(I2C4_ER_IRQn);
+    /* Pozn.: I2C4 dotek se cte pollingem (blokujici HAL pod mutexem), takze
+     * EV/ER preruseni NEjsou potreba a zamerne se nepovoluji. */
   /* USER CODE END I2C4_MspInit 1 */
   }
 }
