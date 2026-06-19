@@ -10,7 +10,7 @@
 /* ── Header ─────────────────────────────────────────────────── */
 const char *SCR_S_GNSS_LOCK = "GNSS LOCK";
 const char *SCR_S_SYS_READY = "System";
-const char *SCR_S_SAT_VAL   = "9";
+const char *SCR_S_SAT_VAL   = "13";   /* simulovany pocet viditelnych GNSS druzic (staticky) */
 const char *SCR_S_HDOP_L    = "HDOP";
 const char *SCR_S_HDOP_V    = "0,8";
 const char *SCR_S_CAL_L     = "CAL";
