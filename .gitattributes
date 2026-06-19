@@ -1,0 +1,35 @@
+# Default: keep text files with LF line endings
+* text=auto eol=lf
+
+# Source files
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.s text eol=lf
+*.S text eol=lf
+*.ld text eol=lf
+*.ioc text eol=lf
+
+# STM32CubeIDE / Eclipse project files
+.project text eol=lf
+.cproject text eol=lf
+.mxproject text eol=lf
+*.launch text eol=lf
+
+# Scripts
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.elf binary
+*.bin binary
