@@ -49,10 +49,19 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 - LCD V: VSW=2, VBP=21, VDISP=480, VFP=7
 
 ### Framebuffer + MPU (main.c)
-- 0xC0000000 (SDRAM/FMC), RGB565, 800×480×2 = 750 KB
-- MPU region 0: 2 MB, Write-Through
-- **SDRAM = 32 MB** (FMC: 9 col + 13 row bits × 4 banky × 16 bit). FB1/FB2 se vejdou snadno.
-- **SDRAM mapa:** **Region 0 (2MB WT, `0xC0000000`):** FB1 `0xC0000000`, FB2 `0xC0100000` (druhý framebuffer / volitelný double-buffering), `sdram` test buffer `0xC01C0000` (4 KB, ZA framebuffery — dřív byl na `0xC0001000` = uvnitř FB1 a přepisoval displej, opraveno). **Region 1 (4MB WBWA cached, `0xC0400000`):** rezervováno (dříve bignum workspace pro `pi`, odstraněno). SDRAM celkem 32 MB.
+- 0xC0000000 (SDRAM/FMC), RGB565, 800×480×2 = 750 KB / buffer
+- **MPU region 0: 4 MB, Write-Through** (dříve 2 MB — rozšířeno kvůli triple bufferingu)
+- **SDRAM = 32 MB** (FMC: 9 col + 13 row bits × 4 banky × 16 bit).
+- **SDRAM mapa:** **Region 0 (4MB WT, `0xC0000000`):** triple buffer **FB0 `0xC0000000`, FB1 `0xC0100000`, FB2 `0xC0200000`** + **off-screen canvas pool `0xC0300000`** (1 MB), vše RGB565, 1 MB stride. **Region 1 (4MB WBWA cached, `0xC0400000`):** `sdram` test buffer (`sdram write/read`) + scratch; dřív bignum workspace. **`.sdram` linker sekce `0xC0800000`** (16 MB, default/Device map): libprim glow scratch + `bg_cache` (předrenderované pozadí). SDRAM celkem 32 MB.
+
+### Triple buffering / tearing-free / off-screen canvas (prim_stm32_hal.c)
+> **⚠️ AKTUÁLNĚ VYPNUTO.** Page-flip (LTDC VBR) + copy-forward + cache invalidate způsoboval **systémový freeze hned po naběhnutí obrazovky** (zamrzl i FpgaTask/SPI → HardFault/halt). `prim_stm32_present()` je teď **no-op** a `prim_stm32_init` binduje **single-buffer FB0** (in-place render, LTDC scanuje FB0, WT region → vidí data). UiTask zase nastavuje LTDC adresu na `0xC0000000`. **K dořešení s testem na HW** (najít, proč page-flip/DMA2D faultoval). Niže je původní záměr.
+- **3 framebuffery** (FB0/1/2) + page-flip. Render cílí VŽDY skrytý **back** buffer; `prim_stm32_present()` ho flipne na LTDC scan-out **při vertikálním zatemnění** (`LTDC->SRCR = LTDC_SRCR_VBR`, NE `HAL_LTDC_SetAddress` = immediate → tearing) → **bez tearingu**. Po flipu **copy-forward** (DMA2D) zobrazeného snímku do nového back bufferu, aby inkrementální (partial) renderer (`bg_cache`, `put_val`, `redraw_button`) stavěl na správném základu.
+- **Volá `app_gpsdo`** po každém vykreslení (`render_main`/`render_diag`/`clear`/touch). UiTask už LTDC adresu nenastavuje (řídí ji present).
+- **⚠️ Cache koherence:** DMA2D obchází CPU D-cache → po copy-forward i canvas blitu se zneplatní cache cílového rozsahu (`SCB_InvalidateDCache_by_Addr`); WT region → žádné dirty řádky k zahození. Bez toho by AA hrany textu četly zastaralé pixely.
+- **Off-screen canvas:** `prim_stm32_canvas(&cv, w, h)` (pool `0xC0300000`, 1 MB, jeden naráz) → `prim_set_target(&cv)` → kresli → `prim_stm32_canvas_blit(&cv, x, y)` (DMA2D na back buffer).
+- **⚠️ `testRED`/`test` UART příkazy** píšou natvrdo do FB0 (`0xC0000000`) — při běžícím UI (page-flip) LTDC obvykle scanuje jiný buffer → nemusí být vidět. Bring-up reziduum.
+- **⚠️ Build:** nové API je v `prim_stm32_hal.c` (už se kompiluje) — žádný nový build soubor. Změna je **netestovaná na HW** (toolchain mimo PATH) → ověřit na desce; revert = `present()` nechat jen flipnout bez copy-forward, nebo binding zpět na jediný FB0.
 
 ### Akcelerace / linker
 - Grafiku dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.
@@ -104,9 +113,11 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 > **Historie:** dřívější ručně psané `gfx.c`/`touch_ui.c` UI i pokus o **LVGL v9** obrazovku (`lv_port_disp.c`, `ui_main_screen.c`, vendored `Middlewares/Third_Party/lvgl`) byly **odstraněny** a nahrazeny libprim/libui/app. K dohledání v git historii.
 
 ## UART příkazy (StartUartTask)
-`led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `scanner`, `testDSI`,
+`led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `scanner`, `testDSI`,
 `testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `fpgaraw`,
 `fpgaloop`, `stats`, `status`, `ui`, **`ping`/`screen main`/`clear`/`version`/`help`**.
+`temperature` = TMP117 0x48 + příznak `(STALE)` při chybě čtení. `sensors` = dump všech 7 senzorů
+(`last/min/max/avg`, stav OK/ERR, `err_total/streak/samples`) — viz `g_sensors[]`/`sensor_stat.h`.
 Neznámý příkaz → `ERR unknown command`. `ui` i `screen main` znovu vykreslí hlavní obrazovku
 (`g_screen_req=3`), `clear` ji smaže (`g_screen_req=4`). Odpovědi protokolu CRLF (`ping`→`pong`, `version`→`gpsdo-ui v0.1`).
 
@@ -192,13 +203,16 @@ TIM7_IRQHandler v stm32h7xx_it.c USER CODE. **Nepoužívej TIM7 jinde / nepovolu
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
 Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0x70303AEE jako I2C4).
 `MX_I2C1_Init` je **self-contained v i2c.c USER CODE 1** (GPIO+clock tam, regen-safe) — voláno v main.c USER CODE 2 před schedulerem. Mutex `i2c1MutexHandle`.
-- **TMP117** @ 0x49, 0x4A → `g_temp49`, `g_temp4A` (čteno v StartI2C4 každou 1 s).
-- **ADS1115** @ 0x48 → `g_ads_mv[4]` (4 single-ended kanály AIN0–3, PGA ±4.096 V, 128 SPS, single-shot). Driver `ads1115_start`/`ads1115_read_raw`/`ads1115_raw_to_mv`. **AIN0/1 přímo; AIN2 = 12V větev přes odporový dělič (×13417/2814, kalibrace 13.417 V @ 2.814 V), AIN3 = 5V větev (×4978/2526, 4.978 V @ 2.526 V)** — přepočet ve StartI2C4 ukládá do `g_ads_mv[2]/[3]` skutečné napětí větve.
+- **TMP117** @ 0x49, 0x4A (čteno v StartI2C4 každou 1 s).
+- **ADS1115** @ 0x48 (4 single-ended kanály AIN0–3, PGA ±4.096 V, 128 SPS, single-shot). Driver `ads1115_start`/`ads1115_read_raw`/`ads1115_raw_to_mv`. **AIN0/1 přímo; AIN2 = 12V větev přes odporový dělič (×13417/2814, kalibrace 13.417 V @ 2.814 V), AIN3 = 5V větev (×4978/2526, 4.978 V @ 2.526 V)** — přepočet ve StartI2C4 ukládá skutečné napětí větve.
+- **⚠️ Stav senzorů = `g_sensors[SENS_COUNT]` (`sensor_stat.h`), NE staré skalární `g_temp*`/`g_ads_mv`.** Jednotná struktura pro 3× TMP117 + 4× ADS: `last` (poslední hodnota, °C nebo mV), `min`/`max`/`mean` (statistika z platných vzorků, running mean), `samples`, `valid` (1=poslední čtení OK), `err_total`/`err_streak` (čítače chyb). Index = `sensor_id_t` (`SENS_T48/T49/T4A/ADS0..3`). **Zápis VÝHRADNĚ SensorsTask** přes `sensor_update(id,val)` (platný vzorek) / `sensor_fail(id)` (chyba I2C → `valid=0`, `last` drží poslední dobrou → matematika/log ignorují podle `valid`). **Bez zámku** (mění se ~1×/s, roztržené čtení tolerováno; přesná matematika patří dovnitř SensorsTask). `sensor_stat.h` je čistý C header (smí ho includovat i app/ vrstva).
+- **Ošetření chyb senzorů:** při selhání I2C čtení (HAL chyba / mutex nezískán) → `sensor_fail`: `valid=0`, hodnota se NEpřepisuje (žádný sentinel, neotráví průměry). **Log** přes UART jen na PŘECHODU stavu (první chyba po OK / obnovení) — žádný 1 Hz spam. **Displej** (diagnostika): neplatná hodnota se kreslí ztlumeně (`UI_COLOR_INK_3`) + malý červený `!` vlevo. **NEdělá se auto-reinit I2C** (CLAUDE.md varuje: reset I2C4 umí zaseknout ATTINY → tmavý panel) — jen se opakuje čtení v další smyčce.
 - **Si5356A** @ 0x70 (clock generator) → `si5356.c/h`, `si5356_init(&hi2c1)` v main.c USER CODE 2 (po `MX_I2C1_Init`, před schedulerem → bez mutexu). Aplikuje **ClockBuilder Pro register map** (`REGMAP[]`, oficiální CBPro „C Code Header" export) přes paging (reg 255 page0/page1) + SiLabs apply proceduru (OEB_ALL off → E2 pulse → SOFT_RESET 0xF6 → OEB_ALL on). Status reg 218 (0xDA): bit0 SYS_CAL, **bit2 LOS_CLKIN** (chybí vstupní ref. hodiny!), bit4 PLL_LOL. UART `si5356` = re-init + status.
 - **⚠️ KONFIGURACE: 4× 100 MHz, fáze 0/90/180/270° (= 0/2,5/5/7,5 ns), Vstup 10 MHz → VCO 2,2 GHz (N=220) → /22.** Ty 4 fázově posunuté hodiny jsou **reference pro 4-fázový vernier TDC ve FPGA** (reciproký čítač, jemný krok 2,5 ns). **MUSÍ být 90°, NE 45°** — při 45° jemné kódy nesednou na 2,5 ns mřížku TDC → systematická chyba kmitočtu. Fáze v reg (LSB=Tvco/128=3,551 ps): CLK1 r111/112=704=2,5 ns, CLK2 r115/116=1408=5,0 ns, CLK3 r119/120=2112=7,5 ns. **Přesnost čítače = přesnost těch 100 MHz (= ppm 10 MHz vstupu Si5356).**
 - **Při změně konfigurace: v CBPro nastav fáze (90° krok!), exportuj „C Code Header" a nahraď `REGMAP[]`** (formát {addr,val,mask} — adresy DECIMÁLNĚ pro 1:1 diff s exportem). **Vynech řádky s `mask==0x00`** (CBPro „do not write"); `mask<0xFF` → read-modify-write, `mask 0xFF` → přímý zápis (`wr_masked` to respektuje, `mask 0` přeskočí).
 - **UART `scan1`** = I2C scan na I2C1 (s popisky zařízení). `scanner` zůstává pro I2C4.
-- **Displej**: všechny 3 teploty (0x48/0x49/0x4A) malým fontem nahoře, 4 napětí ADS malým fontem nad kreslicí plochou; canvas zmenšen na **CANVAS_Y 242** (postupně 198→214→242, místo pro SPI status řádek scale 3 @ SPI_Y 178, touch status @ STATUS_Y 206, ADS @ SENS_ADS_Y 224).
+- **Diagnostická obrazovka** (`app_gpsdo_render_diag`, tlačítko MENU → ZPĚT): **dvousloupcový layout** (`DG_*` makra v `app_gpsdo.c`). **Levý sloupec:** Teploty TMP117 (0x48/0x49/0x4A) — `last` + `min/max` (z `g_sensors[]`); ADC ADS1115 (AIN0–3). **Pravý sloupec:** *Komunikace + měření FPGA* (`g_spi_text` zeleně/červeně + `g_freq_info` = gate/PH/SEQ), *Reference Si5356* (lock z `g_si5356_status`: LOCK OK / LOS CLKIN! / PLL UNLOCK! / CALIB…), *System/RTOS* (heap free/min, CPU %, uptime). Neplatný senzor = ztlumeně + červený `!`. Refresh ~2×/s z `app_gpsdo_tick` (UiTask), tearing-free přes `prim_stm32_present`.
+  - **Datové zdroje:** Si5356 status čte SensorsTask (`si5356_read_status`, reg 218) do `g_si5356_status`/`g_si5356_ok`; RTOS zdraví počítá UiTask (`xPortGetFreeHeapSize`, idle-delta CPU %) do `g_rtos_*`/`g_uptime_s`.
 - **NEPOVOLOVAT I2C1 v IOC** (init je ručně v USER CODE).
 
 ## UART TX

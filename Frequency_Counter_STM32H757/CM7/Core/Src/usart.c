@@ -120,7 +120,17 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
   /* USER CODE BEGIN USART1_MspInit 1 */
-
+    /* ⚠️ RX (PA10) PULL-UP. Bez pripojeneho UART kabelu RX plave -> falesne
+     * start bity -> bourje USART1 IRQ (prio 5 = configMAX_SYSCALL) -> ISR
+     * preemptuje vsechny tasky -> scheduler nestiha -> "program nenabehne".
+     * Pull-up drzi linku v klidovem HIGH (UART idle = H). CubeMX generuje vyse
+     * NOPULL -> prepiseme zde v USER CODE (regen-safe). */
+    GPIO_InitStruct.Pin = GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
   /* USER CODE END USART1_MspInit 1 */
   }
 }
@@ -158,6 +168,21 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART1)
   {
 	osMessageQueuePut(UartRxQueueHandle, &RxByte, 0, 0);
+    HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+  }
+}
+
+/* Zotaveni po chybe prijmu (ORE/FE/NE/PE). Bez tohoto by chyba (napr. sum pri
+ * pripojeni/odpojeni kabelu) zrusila RX IT a prijem by se uz neobnovil. Vycisti
+ * priznaky a znovu nahodi RX -> robustni vuci hot-plugu UART. */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1)
+  {
+    __HAL_UART_CLEAR_OREFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_PEFLAG(huart);
     HAL_UART_Receive_IT(&huart1, &RxByte, 1);
   }
 }

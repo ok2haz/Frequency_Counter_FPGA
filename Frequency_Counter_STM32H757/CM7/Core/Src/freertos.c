@@ -49,12 +49,12 @@
 /* USER CODE BEGIN Variables */
 /* Pozn.: RxBuffer/RxIndex a ram_buf/sdram_buf jsou privatni ve freertos_task_uart.c.
  * Globaly nize jsou sdilene (extern ve freertos_shared.h) -> definice zustavaji zde. */
-float g_CurrentTemperature = 0.0f;   /* TMP117 @ 0x48 na I2C4 (displej) */
-
-/* FPGA deska na I2C1 */
-float   g_temp49 = 0.0f;             /* TMP117 @ 0x49 */
-float   g_temp4A = 0.0f;             /* TMP117 @ 0x4A */
-int32_t g_ads_mv[4] = {0, 0, 0, 0};  /* ADS1115 v mV: AIN0/1 primo, AIN2=12V vetev, AIN3=5V vetev (po prepoctu delice) */
+/* Senzory: 3× TMP117 (0x48 I2C4 displej, 0x49/0x4A I2C1 FPGA deska) + 4× ADS1115
+ * (AIN0/1 primo, AIN2=12V vetev, AIN3=5V vetev po prepoctu delice). Hodnota +
+ * platnost + statistika (min/max/avg) + citace chyb -> viz sensor_stat.h.
+ * Zapisuje SensorsTask pres sensor_update()/sensor_fail(). Nulova init je OK
+ * (samples=0 -> min/max/mean se lazy-inicializuji prvnim platnym vzorkem). */
+sensor_stat_t g_sensors[SENS_COUNT] = {0};
 
 /* Mutex pro sdileni I2C4 sbernice (TMP117 task + dotykove UI + backlight) */
 osMutexId_t i2c4MutexHandle;
@@ -79,6 +79,16 @@ volatile uint8_t g_freq_stale = 0;                     /* 1 = SEQ se dlouho nehn
 volatile char    g_spi_text[64] = "SPI WAIT";
 volatile uint8_t g_spi_ok    = 0;                      /* 1 = link ziva -> zelene */
 volatile uint8_t g_spi_dirty = 1;
+
+/* Si5356 reference (SensorsTask zapise z I2C1, diagnostika cte) */
+volatile uint8_t g_si5356_status = 0;
+volatile uint8_t g_si5356_ok     = 0;
+
+/* RTOS zdravi (UiTask zapise, diagnostika cte) */
+volatile uint32_t g_rtos_heap_free = 0;
+volatile uint32_t g_rtos_heap_min  = 0;
+volatile uint32_t g_rtos_cpu_pct   = 0;
+volatile uint32_t g_uptime_s       = 0;
 
 /* Manualne vytvorene tasky (NEJSOU v .ioc): handle + attributes drzime v USER CODE,
  * jinak by je CubeMX regen smazal (osThreadNew jsou v USER CODE RTOS_THREADS). */

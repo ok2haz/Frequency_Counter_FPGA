@@ -18,6 +18,22 @@
 
 extern LTDC_HandleTypeDef hltdc;
 
+/* Runtime IDLE tasku + celkovy runtime (pro vypocet zatize CPU). configUSE_TRACE_
+ * FACILITY + configGENERATE_RUN_TIME_STATS jsou zapnute (viz FreeRTOSConfig). */
+static uint32_t ui_idle_runtime(uint32_t *total_out)
+{
+  static TaskStatus_t ts[12];
+  uint32_t total = 0;
+  UBaseType_t n = uxTaskGetSystemState(ts, 12, &total);
+  uint32_t idle = 0;
+  for (UBaseType_t i = 0; i < n; i++)
+    if (ts[i].pcTaskName[0] == 'I' && ts[i].pcTaskName[1] == 'D') {
+      idle = ts[i].ulRunTimeCounter; break;   /* "IDLE" */
+    }
+  if (total_out) *total_out = total;
+  return idle;
+}
+
 void StartUiTask(void *argument)
 {
   (void)argument;
@@ -33,7 +49,7 @@ void StartUiTask(void *argument)
     uint8_t req = g_screen_req;
     if (req) {
       g_screen_req = 0;
-      HAL_LTDC_SetAddress(&hltdc, 0xC0000000u, 0);   /* LTDC scanuje nas FB */
+      HAL_LTDC_SetAddress(&hltdc, 0xC0000000u, 0);   /* single-buffer: LTDC scanuje FB0 */
       if (req == 4) app_gpsdo_clear();
       else          app_gpsdo_render_main();
     }
@@ -56,6 +72,10 @@ void StartUiTask(void *argument)
     static uint32_t last_tick = 0;
     if (HAL_GetTick() - last_tick >= 500) {
       last_tick = HAL_GetTick();
+      /* ⚠️ DOČASNĚ VYPNUTO (izolace freezu): RTOS statistiky (uxTaskGetSystemState/
+       * heap). Běží hned po startu obrazovky -> podezřelý z freezu. Jen uptime nech. */
+      g_uptime_s = HAL_GetTick() / 1000u;
+      (void)ui_idle_runtime;   /* potlač unused-function warning */
       app_gpsdo_tick();
     }
 

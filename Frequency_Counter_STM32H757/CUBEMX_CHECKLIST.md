@@ -50,12 +50,17 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 ## I2C4 (panel ATTINY 0x45, TMP117 0x48, FT5x06 0x38)
 - Speed: **100 kHz** (Timing 0x70303AEE) — funkční. 400 kHz jen přes CubeMX FM + ověřit scope!
 - 7-bit; piny SCL=**PH11**, SDA=**PH12**
-- **I2C4 EV/ER přerušení**: povolené ručně v `i2c.c` HAL_I2C_MspInit (USER CODE, prio 6), handlery v `stm32h7xx_it.c` (USER CODE BEGIN 1). Slouží pro asynchronní (IT) čtení doteku. **NEPOVOLOVAT I2C4 interrupt v IOC** — vznikly by duplicitní handlery (konflikt). Nech IOC bez I2C4 NVIC.
+- **NEPOVOLOVAT I2C4 NVIC interrupt v IOC.** Dotek (FT5x06) i senzory se čtou **pollingem** pod `i2c4MutexHandle`. (Pozn.: dřívější IT infrastruktura pro touch byla odstraněna — IOC nech bez I2C4 NVIC, jinak vznikne mrtvý/duplicitní handler.)
+
+## I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356 0x70) — MIMO IOC
+- **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (~100 kHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
+- ⚠️ **Rezervuj PB8/PB9 v IOC** (jako GPIO, Locked), ať je CubeMX nepřiřadí jinam při regeneraci → jinak tichý pin-konflikt. Mutex `i2c1MutexHandle`.
 
 ## USART1 (konzole/printf)
 - **115200 8N1**, no flow control
 - TX=**PB14**, RX=**PA10**
 - NVIC: USART1 global IRQ **enabled, preempt priorita 5**
+- ⚠️ **PA10 (RX) = Pull-up.** Nastav v IOC (PA10 → GPIO settings → Pull-up). Bez kabelu RX plave → bouře IRQ (prio 5) → scheduler hladoví → „program nenaběhne". Pojistka je i v `usart.c` USER CODE MspInit (přepíše NOPULL na PULLUP) + `HAL_UART_ErrorCallback` (zotavení po ORE/FE/NE) — obojí regen-safe, ale do IOC dej pull-up taky kvůli konzistenci.
 
 ## GPIO
 - **PB12 = Output Push-Pull** (CS k FPGA; štítek může být SPI2_RCK → klidně přejmenuj FPGA_CS) — MUSÍ zůstat output, **default Output Level = High** (CS deasserted od bootu; jinak ruší konfiguraci FPGA z flash → MISO mlčí RX0:FF)
@@ -77,10 +82,20 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - Mutexy (přidat): **i2c4Mutex**, **uartTxMutex**
 
 ## Cortex-M7 / MPU
-- MPU: **nech vypnuté v IOC** (MPU_Control = NULL). SDRAM region (0xC0000000, 2MB, Write-Through) dělá `MPU_Config()` v USER CODE — záměrně, aby přežil regeneraci.
+- MPU: **nech vypnuté v IOC** (MPU_Control = NULL). Regiony dělá `MPU_Config()` v `main.c` USER CODE (Boot_Mode_Sequence_0) — záměrně, aby přežil regeneraci.
+- **Region 0: `0xC0000000`, 4 MB, Write-Through** (dříve 2 MB) — triple buffer FB0/FB1/FB2 + canvas pool (viz `prim_stm32_hal.c`).
+- **Region 1: `0xC0400000`, 4 MB, WBWA** — `sdram` test buffer + scratch.
+- (`.sdram` linker sekce `0xC0800000` = default/Device map; libprim glow + `bg_cache`.)
+
+## ADC3 (interní teplota jádra / VREFINT / VBAT) — PŘIDAT do IOC
+- **Zatím NENÍ v IOC** a `HAL_ADC_MODULE_ENABLED` je vypnuté → ADC HAL soubory v `Drivers/` chybí.
+- Postup: v IOC zapni **ADC3**, kanály **Temperature Sensor / VREFINT / VBAT**, Resolution 16-bit, software trigger; ověř **ADC clock source** (RCC už má ADCFreq 200 MHz přes PLL2). `Generate Code` → dotáhne `stm32h7xx_hal_adc.c/_ex.c` + `adc.c` + `HAL_ADC_MODULE_ENABLED`.
+- Přepočet (TS_CAL1/2 @0x1FF1E820/40, VREFINT_CAL @0x1FF1E860) + čtení v SensorsTask + zobrazení v diagnostice dodá kód v USER CODE (až bude ADC v IOC).
 
 ## NEJDE nastavit v IOC — zůstává v USER CODE / vlastních souborech (regenerace neohrozí)
-- Vlastní moduly: `tc358762.c`, `ws_panel.c`, `ft5x06.c`, `gfx.c`, `touch_ui.c`, `fpga_freq.c`
-- `MPU_Config`, `_write`, init sekvence displeje (main.c USER CODE 2)
-- Těla tasků, UART příkazy, mutex wrapy, SPI2 runtime prescaler, použití fronty (1B)
-- Po regeneraci ověř: DSI hodnoty, queue item size, přidané tasky/mutexy, PB12 jako output
+- Vlastní moduly: `tc358762.c`, `ws_panel.c`, `ft5x06.c`, `fpga_freq.c`, `si5356.c`, `ads1115.c`, `beeper.c`
+- Grafika `app/` + `libprim/` + `libui/` (triple buffering, present, off-screen canvas v `prim_stm32_hal.c`); `sensor_stat.h` (`g_sensors[]`)
+- `MX_I2C1_Init` (i2c.c USER CODE), `MPU_Config`, `_write`, init sekvence displeje (main.c USER CODE 2)
+- Split tasky `freertos_task_*.c` + globály v `freertos.c` USER CODE Variables (vč. `g_sensors`, `g_si5356_*`, `g_rtos_*`)
+- Těla tasků, UART příkazy, mutex wrapy, SPI2 runtime prescaler, použití fronty (1B), CS pin (PB12) konfiguruje `fpga_freq_init`
+- Po regeneraci ověř: **DSI hodnoty**, queue item size (1B), přidané tasky/mutexy, **PB12 output + default High**, **PA10 pull-up**, MPU region 0 = 4 MB

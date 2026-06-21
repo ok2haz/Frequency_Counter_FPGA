@@ -13,12 +13,56 @@
 
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ads1115.h"
+#include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
 #include "freertos_shared.h"
 
 /* Definice pro TMP117 */
 #define TMP117_ADDR         (0x48 << 1)
 #define TMP117_REG_TEMP     0x00
 #define TMP117_RESOLUTION   0.0078125f
+
+/* ── Statistika senzoru (zapis g_sensors[], viz sensor_stat.h) ──────────── */
+/* ⚠️ ŽÁDNÝ printf zde! Běží v SensorsTasku s malým stackem (~512–1024 B);
+ * printf/HAL_UART_Transmit by stack PŘETEKL -> HardFault/boot-loop (zjištěno
+ * 2026-06-21: log se uřízl uprostřed "SENZOR TMP117@0x4"). Stav chyby je vidět
+ * na displeji (červený "!") i přes UART příkaz `sensors` (běží v UartTasku). */
+
+void sensor_update(sensor_id_t id, float value)
+{
+    if (id >= SENS_COUNT) return;
+    sensor_stat_t *s = &g_sensors[id];
+
+    s->last = value;
+    if (s->samples == 0) {
+        s->min = s->max = s->mean = value;   /* lazy init prvnim vzorkem */
+        s->samples = 1;
+    } else {
+        if (value < s->min) s->min = value;
+        if (value > s->max) s->max = value;
+        s->samples++;
+        s->mean += (value - s->mean) / (float)s->samples;  /* running mean, bez overflow */
+    }
+    s->err_streak = 0;
+    s->valid = 1;
+}
+
+void sensor_fail(sensor_id_t id)
+{
+    if (id >= SENS_COUNT) return;
+    sensor_stat_t *s = &g_sensors[id];
+
+    s->err_total++;
+    if (s->err_streak < 0xFFFF) s->err_streak++;
+    s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
+}
+
+void sensor_stat_reset(sensor_id_t id)
+{
+    if (id >= SENS_COUNT) return;
+    sensor_stat_t *s = &g_sensors[id];
+    s->samples = 0;
+    s->min = s->max = s->mean = 0.0f;
+}
 
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
@@ -32,61 +76,73 @@ void SensorsTask_run(void *argument)
   xLastWakeTime = xTaskGetTickCount();
 
   for(;;) {
-	// Čtení 2 bytů z registru 0x00 (Temperature Register)
-	// TMP117 automaticky inkrementuje nebo drží pointer, ale HAL_I2_Mem_Read je nejjistější
-	// Mutex: I2C4 sdili dotykove UI (FT5x06) + backlight
+	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
+	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
 	if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
 	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 100);
 	  osMutexRelease(i2c4MutexHandle);
 	}
 	if (i2cStatus == HAL_OK) {
-	  // Konverze: MSB je v rawData[0], LSB v rawData[1]
+	  // MSB v rawData[0], LSB v rawData[1]; 0.0078125 °C/LSB
 	  tempRaw = (int16_t)((rawData[0] << 8) | rawData[1]);
-
-	  // Výpočet na stupně Celsia
-	  // Používáme float pro zachování přesnosti 0.0078°C
-	g_CurrentTemperature = (float)tempRaw * TMP117_RESOLUTION;
-
-	  /* Deterministický výpočet:
-	  Teplota = (Hodnota_v_registru) * 0.0078125 */
+	  sensor_update(SENS_T48, (float)tempRaw * TMP117_RESOLUTION);
 	} else {
-	  // Heuristika: Zde by měl následovat error handling (např. logování nebo re-inicializace I2C)
-	  // Prozatím signalizujeme chybu např. hodnotou mimo rozsah
-	  // g_currentTemperature = -999.0f;
+	  sensor_fail(SENS_T48);   /* drzi posledni dobrou hodnotu, valid=0, loguje */
 	}
-    // Čekání na další cyklus (přesně 1s od posledního probuzení)
+
 	// === FPGA deska na I2C1: TMP117 0x49/0x4A + ADS1115 4 kanaly ===
 	if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
 	  uint8_t tb[2];
 	  if (HAL_I2C_Mem_Read(&hi2c1, (0x49 << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK)
-		g_temp49 = (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION;
+		sensor_update(SENS_T49, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION);
+	  else
+		sensor_fail(SENS_T49);
 	  if (HAL_I2C_Mem_Read(&hi2c1, (0x4A << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK)
-		g_temp4A = (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION;
+		sensor_update(SENS_T4A, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION);
+	  else
+		sensor_fail(SENS_T4A);
+	  /* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
+	  uint8_t si_st;
+	  if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; }
+	  else                                    { g_si5356_ok = 0; }
 	  osMutexRelease(i2c1MutexHandle);
+	} else {
+	  /* I2C1 sbernice nedostupna -> oba TMP117 na ni jako chyba */
+	  sensor_fail(SENS_T49);
+	  sensor_fail(SENS_T4A);
+	  g_si5356_ok = 0;
 	}
+
 	for (uint8_t ch = 0; ch < 4; ch++) {
+	  sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
 	  int started = 0;
 	  if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
 		started = ads1115_start(&hi2c1, ch);
 		osMutexRelease(i2c1MutexHandle);
 	  }
-	  if (started) {
-		osDelay(9);   /* 128 SPS -> ~7.8 ms konverze (task spi) */
-		int16_t raw;
-		if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-		  if (ads1115_read_raw(&hi2c1, &raw)) {
-			    int32_t mv = ads1115_raw_to_mv(raw);
-			    /* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
-			       AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
-			    if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
-			    else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
-			    g_ads_mv[ch] = mv;
-			  }
-		  osMutexRelease(i2c1MutexHandle);
-		}
+	  if (!started) { sensor_fail(sid); continue; }
+
+	  osDelay(9);   /* 128 SPS -> ~7.8 ms konverze */
+	  int16_t raw;
+	  int got = 0;
+	  if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
+		got = ads1115_read_raw(&hi2c1, &raw);
+		osMutexRelease(i2c1MutexHandle);
+	  }
+	  if (got) {
+		int32_t mv = ads1115_raw_to_mv(raw);
+		/* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
+		   AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
+		if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
+		else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
+		sensor_update(sid, (float)mv);
+	  } else {
+		sensor_fail(sid);
 	  }
 	}
+
+	// Cekani na dalsi cyklus (presne 1s od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }

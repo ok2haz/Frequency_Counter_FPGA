@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include "cmsis_os2.h"
+#include "sensor_stat.h"   /* g_sensors[], sensor_update/fail (teploty + ADS1115) */
 
 /* ── Synchronizace (definováno v freertos.c) ───────────────────────────── */
 extern osMutexId_t i2c4MutexHandle;        /* I2C4: TMP117 0x48 + touch + backlight */
@@ -18,10 +19,9 @@ extern osMutexId_t i2c1MutexHandle;        /* I2C1: FPGA deska (TMP117 x2, ADS11
 extern osMutexId_t uartTxMutexHandle;      /* serializace printf/_write */
 extern osMessageQueueId_t UartRxQueueHandle;
 
-/* ── Teploty / ADS1115 (zapisuje StartI2C4, čte UI + UART) ─────────────── */
-extern float   g_CurrentTemperature;       /* TMP117 @ 0x48 (I2C4) */
-extern float   g_temp49, g_temp4A;         /* TMP117 @ 0x49/0x4A (I2C1) */
-extern int32_t g_ads_mv[4];                /* ADS1115 v mV */
+/* ── Teploty / ADS1115 ──────────────────────────────────────────────────
+ * Hodnota + platnost + statistika jsou v g_sensors[] (viz sensor_stat.h).
+ * Zapisuje SensorsTask přes sensor_update()/sensor_fail(); čte UI + UART. */
 
 /* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
 extern volatile uint8_t g_screen_req;
@@ -36,6 +36,16 @@ extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí
 extern volatile char    g_spi_text[64];
 extern volatile uint8_t g_spi_ok;          /* 1 = link živá -> zeleně */
 extern volatile uint8_t g_spi_dirty;
+
+/* ── Si5356 reference (zapisuje SensorsTask z I2C1, čte diagnostika) ────── */
+extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
+extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
+
+/* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
+extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
+extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */
+extern volatile uint32_t g_rtos_cpu_pct;   /* zátěž CPU [%] (100 - idle) */
+extern volatile uint32_t g_uptime_s;       /* doba běhu [s] */
 
 /* ── Task implementace ─────────────────────────────────────────────────── */
 /* CubeMX generuje StartUartTask/StartI2C4 stuby ve freertos.c; jejich USER CODE

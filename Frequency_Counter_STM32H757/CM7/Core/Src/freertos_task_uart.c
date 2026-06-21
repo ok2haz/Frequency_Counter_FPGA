@@ -27,7 +27,10 @@
 #define RAM_BASE          0x30000000UL
 #define SDRAM_BASE        0xC0000000UL
 #define TEST_OFFSET       0x00001000UL   /* RAM_D2 test (bezpecne mimo struktury) */
-#define SDRAM_TEST_OFFSET 0x001C0000UL   /* SDRAM test: ZA FB1+FB2, uvnitr 2MB WT regionu */
+#define SDRAM_TEST_OFFSET 0x00400000UL   /* SDRAM test @0xC0400000 = MPU region 1 (WB
+                                          * scratch), MIMO triple-buffer region 0 (4MB)
+                                          * FB0/FB1/FB2/canvas. Drive bylo 0x1C0000 = uvnitr
+                                          * region 0 -> kolidovalo by s FB1/FB2. */
 
 #define LCD_WIDTH         800
 #define LCD_HEIGHT        480
@@ -42,6 +45,15 @@
                            (((uint16_t)(b) & 0xF8) >> 3)))
 
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
+
+/* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
+static void fmt_f2(char *b, size_t n, float v)
+{
+	long w = (long)v;
+	long f = (long)((v - (float)w) * 100.0f);
+	if (f < 0) f = -f;
+	snprintf(b, n, "%ld.%02ld", w, f);
+}
 
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
 char RxBuffer[RX_BUF_SIZE];
@@ -108,9 +120,31 @@ void UartTask_run(void *argument)
 				  printf("SDRAM READ - OK \n");
 			  }
 			  else if (strcmp(RxBuffer, "temperature") == 0) {
-				  int32_t celcast = (int32_t)g_CurrentTemperature;
-				  int32_t descast = (int32_t)((g_CurrentTemperature - celcast) * 100);
-				  printf("TEPLOTA: %ld.%02ld C \n", celcast, descast);
+				  const sensor_stat_t *s = &g_sensors[SENS_T48];
+				  char v[16];
+				  fmt_f2(v, sizeof(v), s->last);
+				  printf("TEPLOTA: %s C%s\n", v, s->valid ? "" : " (STALE - chyba cteni)");
+			  }
+			  else if (strcmp(RxBuffer, "sensors") == 0) {
+				  static const char *const nm[SENS_COUNT] = {
+					  "TMP117 0x48", "TMP117 0x49", "TMP117 0x4A",
+					  "ADS AIN0", "ADS AIN1", "ADS AIN2(12V)", "ADS AIN3(5V)" };
+				  static const char *const un[SENS_COUNT] = {
+					  "C", "C", "C", "mV", "mV", "mV", "mV" };
+				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
+				  for (int i = 0; i < SENS_COUNT; i++) {
+					  const sensor_stat_t *s = &g_sensors[i];
+					  char a[16], b[16], c[16], d[16];
+					  fmt_f2(a, sizeof(a), s->last);
+					  fmt_f2(b, sizeof(b), s->min);
+					  fmt_f2(c, sizeof(c), s->max);
+					  fmt_f2(d, sizeof(d), s->mean);
+					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u n=%lu\n",
+						     nm[i], a, b, c, d, un[i], s->valid ? "OK " : "ERR",
+						     (unsigned long)s->err_total, (unsigned)s->err_streak,
+						     (unsigned long)s->samples);
+					  osDelay(2);
+				  }
 			  }
 			  else if (strcmp(RxBuffer, "scanner") == 0) {
 				  uint8_t devices_found = 0;
@@ -273,10 +307,10 @@ void UartTask_run(void *argument)
 				  printf("OK\r\n");
 			  }
 				  else if (strcmp(RxBuffer, "version") == 0) {
-				  printf("gpsdo-ui v0.1\r\n");
+				  printf("gpsdo-ui v0.2-diag\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | stats | status\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | stats | status | sensors | temperature\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];
