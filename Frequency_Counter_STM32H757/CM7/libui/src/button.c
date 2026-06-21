@@ -39,13 +39,15 @@ void ui_button_render(const ui_button_t *btn)
 
     int16_t cx = (int16_t)(btn->rect.x + btn->rect.w / 2);
     if (btn->value == NULL) {
-        int16_t by = (int16_t)(btn->rect.y + btn->rect.h / 2 + 6);
+        /* Jednoradkove tlacitko: popisek mono_22 (mono_20 +10%). */
+        int16_t by = (int16_t)(btn->rect.y + btn->rect.h / 2 + 8);
         prim_draw_text((prim_point_t){cx, by}, btn->label,
-                       &ui_font_mono_18, st.ink, PRIM_ALIGN_CENTER);
+                       &ui_font_mono_22, st.ink, PRIM_ALIGN_CENTER);
     } else {
-        prim_draw_text((prim_point_t){cx, (int16_t)(btn->rect.y + btn->rect.h / 2 - 2)},
-                       btn->label, &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
-        prim_draw_text((prim_point_t){cx, (int16_t)(btn->rect.y + btn->rect.h / 2 + 16)},
-                       btn->value, &ui_font_mono_18, st.ink, PRIM_ALIGN_CENTER);
+        /* Dvouradkove: popisek sans_18 + hodnota mono_22 (+10%). */
+        prim_draw_text((prim_point_t){cx, (int16_t)(btn->rect.y + btn->rect.h / 2 - 3)},
+                       btn->label, &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+        prim_draw_text((prim_point_t){cx, (int16_t)(btn->rect.y + btn->rect.h / 2 + 18)},
+                       btn->value, &ui_font_mono_22, st.ink, PRIM_ALIGN_CENTER);
     }
 }

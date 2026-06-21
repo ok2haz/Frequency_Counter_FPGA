@@ -13,6 +13,7 @@
 #include "screen_main.h"
 #include <ui/ui.h>
 #include <prim/prim.h>
+#include <stdio.h>   /* snprintf pro simulovany cas */
 
 #ifndef SCR_SDRAM_SECTION
 #  if defined(__GNUC__) && !defined(PRIM_HOST_BUILD)
@@ -24,6 +25,9 @@
 
 static prim_pixel_t bg_cache[SCR_MAIN_BG_CACHE_W * SCR_MAIN_BG_CACHE_H] SCR_SDRAM_SECTION;
 static bool cache_initialized = false;
+
+/* Simulovany cas HH:MM:SS (aktualizuje screen_main_redraw_time z uptime). */
+static char s_time_buf[16] = "14:32:07";
 
 /* Footer button hit areas, set during footer render. Index: 0=PERIOD/FREQ
  * toggle, 1=RUN/STOP, 2=GATE, 3=CHAN, 4=MENU. */
@@ -140,7 +144,7 @@ static void render_header(void)
     ui_pill_render(&p);
 
     int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;   /* half the margin */
-    prim_draw_text((prim_point_t){time_x, 23}, SCR_S_TIME, &ui_font_mono_25,
+    prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
     prim_draw_text((prim_point_t){time_x, 46}, SCR_S_DATE, &ui_font_sans_14,
                    UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
@@ -336,6 +340,28 @@ void screen_main_redraw_title(void)
     blit_bg_region((prim_rect_t){0, (int16_t)(SCR_MAIN_TITLE_Y - 18),
                                  UI_DIM_SCREEN_W, 28});
     render_body_title();
+}
+
+/* Simulovany cas HH:MM:SS (start 14:32:07 + uptime). Prekresli JEN oblast casu
+ * a JEN kdyz se zmeni sekunda (zadne zbytecne prekreslovani -> zadny "px sum"). */
+void screen_main_redraw_time(uint32_t ms_since_boot)
+{
+    static uint32_t last_sec = 0xFFFFFFFFu;
+    uint32_t sec = 14u * 3600u + 32u * 60u + 7u + ms_since_boot / 1000u;
+    if (sec == last_sec) return;
+    last_sec = sec;
+    snprintf(s_time_buf, sizeof(s_time_buf), "%02lu:%02lu:%02lu",
+             (unsigned long)((sec / 3600u) % 24u),
+             (unsigned long)((sec / 60u) % 60u),
+             (unsigned long)(sec % 60u));
+
+    int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;
+    int16_t tw = prim_text_width(s_time_buf, &ui_font_mono_25);   /* monospace -> stabilni */
+    /* Vycisti CELOU vysku glyfu (y 1..34), at nezbydou pixely nahore/dole.
+     * Datum je na baseline 46 (top ~35) -> 34 se ho nedotkne. */
+    blit_bg_region((prim_rect_t){(int16_t)(time_x - tw - 6), 1, (int16_t)(tw + 12), 33});
+    prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
+                   UI_COLOR_INK, PRIM_ALIGN_RIGHT);
 }
 
 /* Redraw only one footer button (clears just its rect from the bg cache). */

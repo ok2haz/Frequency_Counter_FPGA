@@ -24,6 +24,18 @@ static void d2d_wait(void)
     DMA2D->IFCR = DMA2D_IFCR_CTCIF | DMA2D_IFCR_CTEIF | DMA2D_IFCR_CCTCIF;
 }
 
+/* ⚠️ KOHERENCE: DMA2D zapisuje primo do SDRAM a OBCHAZI CPU D-cache. Po fill/blit
+ * je proto cache cilove oblasti ZASTARALA -> nasledne CPU kresleni textu (AA blend
+ * cte cilove pixely) by cetlo stara data -> "px sum"/spatne stinovani (videt hlavne
+ * u casu, mení se 1×/s). Zneplatnime cache dotcene oblasti. WT region -> zadne
+ * dirty radky k zahozeni (bezpecne). Bounding-box (vc. mezer mezi radky) staci. */
+static void d2d_inval(const void *dst, int16_t stride_px, int16_t w, int16_t h)
+{
+    if (h <= 0 || w <= 0) return;
+    uint32_t span = ((uint32_t)(h - 1) * (uint32_t)stride_px + (uint32_t)w) * 2u;
+    SCB_InvalidateDCache_by_Addr((uint32_t *)(uintptr_t)dst, (int32_t)span);
+}
+
 static void d2d_fill(prim_pixel_t *dst, int16_t stride_px, int16_t w, int16_t h,
                      prim_pixel_t color)
 {
@@ -35,6 +47,8 @@ static void d2d_fill(prim_pixel_t *dst, int16_t stride_px, int16_t w, int16_t h,
     DMA2D->OOR    = (uint32_t)(stride_px - w);
     DMA2D->NLR    = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
     DMA2D->CR    |= DMA2D_CR_START;
+    d2d_wait();                                  /* dokonci pred invalidaci */
+    d2d_inval(dst, stride_px, w, h);
 }
 
 static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *src,
@@ -50,6 +64,8 @@ static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *
     DMA2D->OOR     = (uint32_t)(dst_stride - w);
     DMA2D->NLR     = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
     DMA2D->CR     |= DMA2D_CR_START;
+    d2d_wait();                                  /* dokonci pred invalidaci */
+    d2d_inval(dst, dst_stride, w, h);
 }
 
 static const prim_dma2d_backend_t g_stm32_backend = {
@@ -63,69 +79,24 @@ void prim_stm32_use_dma2d(int enable)
     prim_set_dma2d_backend(enable ? &g_stm32_backend : 0);
 }
 
-/* ── Triple-buffered, tearing-free display ───────────────────────────────── */
+/* ── Single-buffer in-place rendering ────────────────────────────────────────
+ * LTDC scanuje FB0 (PRIM_FB_ADDR); kreslime primo do nej. MPU region 0 = Write-
+ * Through -> LTDC vidi data bez flipu. (Triple buffering / page-flip bylo zkouseno,
+ * ale pro mostly-staticke UI nema smysl a zpusobovalo problemy -> odstraneno;
+ * k dohledani v git historii.) */
 
-#define FB_W       800
-#define FB_H       480
-#define FB_STRIDE  FB_W
-#define FB_BYTES   ((uint32_t)FB_W * FB_H * 2u)   /* 768000 B, 32B-aligned */
-#define NUM_FB     3
+#define FB_W  800
+#define FB_H  480
 
-static const uint32_t s_fb_addr[NUM_FB] = {
-    PRIM_FB0_ADDR, PRIM_FB1_ADDR, PRIM_FB2_ADDR
-};
-static int        s_front = 0;   /* buffer currently scanned by LTDC */
-static int        s_back  = 1;   /* buffer we render into */
-static prim_fb_t *s_appfb = 0;   /* caller's descriptor, kept pointing at back */
-
-static prim_pixel_t *fb_px(int i) { return (prim_pixel_t *)s_fb_addr[i]; }
-
-prim_fb_t *prim_stm32_backfb(void) { return s_appfb; }
-
-void prim_stm32_present(void)
-{
-    /* ⚠️ TRIPLE BUFFERING DOČASNĚ VYPNUTO. Page-flip (LTDC VBR) + copy-forward +
-     * cache invalidate způsoboval systémový freeze HNED po naběhnutí obrazovky
-     * (zamrzl i FpgaTask/SPI -> HardFault/halt). NETESTOVÁNO na HW, k dořešení.
-     * Mezitím: single-buffer IN-PLACE — LTDC scanuje FB0, kreslíme přímo do něj
-     * (WT region -> LTDC vidí data bez flipu). present() je no-op. */
-    (void)s_front; (void)s_back; (void)s_appfb;
-}
-
-prim_status_t prim_stm32_canvas(prim_fb_t *canvas, int16_t w, int16_t h)
-{
-    if (w <= 0 || h <= 0) return PRIM_ERR_INVALID_ARG;
-    if ((uint32_t)w * (uint32_t)h * 2u > PRIM_CANVAS_POOL_BYTES)
-        return PRIM_ERR_INVALID_ARG;
-    return prim_fb_init(canvas, (prim_pixel_t *)PRIM_CANVAS_POOL_ADDR,
-                        w, h, (int16_t)(w * (int16_t)sizeof(prim_pixel_t)));
-}
-
-void prim_stm32_canvas_blit(const prim_fb_t *canvas, int16_t x, int16_t y)
-{
-    if (!canvas || !canvas->pixels) return;
-    d2d_wait();
-    prim_pixel_t *dst = fb_px(s_back) + (int)y * FB_STRIDE + x;
-    d2d_blit(dst, FB_STRIDE, canvas->pixels, canvas->stride_px,
-             canvas->width, canvas->height);
-    d2d_wait();
-    /* Canvas blit obesel D-cache na dotcenem obdelniku -> zneplatnit po radcich. */
-    for (int16_t row = 0; row < canvas->height; row++)
-        SCB_InvalidateDCache_by_Addr(
-            (uint32_t *)(dst + (int)row * FB_STRIDE),
-            (int32_t)((uint32_t)canvas->width * 2u));
-}
+/* Ponechano kvuli volajicim v app vrstve (render/clear/touch/tick). Single-
+ * buffer -> neni co prehazovat (kresli se primo do FB0, WT region). */
+void prim_stm32_present(void) { }
 
 void prim_stm32_init(prim_fb_t *fb)
 {
     __HAL_RCC_DMA2D_CLK_ENABLE();
-
-    /* Single-buffer in-place na FB0 (= PRIM_FB_ADDR), které scanuje LTDC. Triple
-     * buffering vypnuto (viz prim_stm32_present). Minimální init = jako původní. */
-    s_front = 0;
-    s_back  = 0;
-    s_appfb = fb;
-    prim_fb_init(fb, fb_px(0), FB_W, FB_H, FB_STRIDE * (int16_t)sizeof(prim_pixel_t));
+    prim_fb_init(fb, (prim_pixel_t *)PRIM_FB_ADDR, FB_W, FB_H,
+                 FB_W * (int16_t)sizeof(prim_pixel_t));
     prim_set_target(fb);
     prim_stm32_use_dma2d(1);
 }

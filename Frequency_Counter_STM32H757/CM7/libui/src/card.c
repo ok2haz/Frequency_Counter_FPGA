@@ -22,12 +22,12 @@ void ui_card_render_chrome(const ui_card_t *card)
     int16_t ty = (int16_t)(card->rect.y + UI_DIM_CARD_PAD_Y + 16);
     if (card->header_label) {
         prim_draw_text((prim_point_t){tx, ty}, card->header_label,
-                       &ui_font_sans_20, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     }
     if (card->header_right) {
         prim_draw_text((prim_point_t){(int16_t)(card->rect.x + card->rect.w
                                                  - UI_DIM_CARD_PAD_X), ty},
-                       card->header_right, &ui_font_sans_17,
+                       card->header_right, &ui_font_sans_16,
                        card->header_right_accent, PRIM_ALIGN_RIGHT);
     }
 }

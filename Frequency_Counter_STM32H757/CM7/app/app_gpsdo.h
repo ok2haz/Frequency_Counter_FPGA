@@ -30,3 +30,6 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 
 /** Periodic tick (~2 Hz from UiTask): refreshes the diagnostics values. */
 void app_gpsdo_tick(void);
+
+/** Hodinovy tik (~10 Hz z UiTask): na hlavni obrazovce prekresli simulovany cas. */
+void app_gpsdo_tick_clock(uint32_t ms_since_boot);

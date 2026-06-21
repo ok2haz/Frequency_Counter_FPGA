@@ -8,7 +8,7 @@
 #include <ui/fonts.h>
 #include <prim/prim.h>
 
-#define UI_BAR_TRACK_H 8
+#define UI_BAR_TRACK_H 10   /* tlustsi o ~20% (bylo 8) */
 #define UI_BAR_RADIUS  3
 #define UI_BAR_SEGS    20
 #define UI_BAR_GAP     2

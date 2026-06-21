@@ -28,18 +28,23 @@ const SANS = 'Inter-Regular.ttf';
 const SS = 4;          // supersample factor
 const BPP = 4;
 
-// 13 descriptors required by libui/include/ui/fonts.h.
+// Descriptory dle libui/include/ui/fonts.h (drz synchronni!).
 const FONTS = [
     ['ui_font_mono_14', MONO, 14], ['ui_font_mono_16', MONO, 16],
     ['ui_font_mono_18', MONO, 18], ['ui_font_mono_20', MONO, 20],
-    ['ui_font_mono_25', MONO, 25], ['ui_font_mono_30', MONO, 30],
+    ['ui_font_mono_22', MONO, 22],   // tlacitka (mono_20 +10%)
+    // mono_25 kresli jen: oddelovac tisicu "." (velke cislo) + cas "14:32:07" +
+    // nadpis "DIAGNOSTIKA" -> staci cislice/velka pismena/interpunkce (NE plny charset).
+    ['ui_font_mono_25', MONO, 25, '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ :.,-/'],
+    // mono_30 = decimal_font velkeho cisla -> kresli jen desetinnou "," (cislice pro jistotu).
+    ['ui_font_mono_30', MONO, 30, '0123456789,.'],
     // 75px (and the 52px fade for invalid digits) are used only for the main
     // number's digits → restrict to 0-9 to save flash.
     ['ui_font_mono_75', MONO, 75, '0123456789'],
     ['ui_font_mono_52', MONO, 52, '0123456789'],
     ['ui_font_sans_14', SANS, 14], ['ui_font_sans_16', SANS, 16],
-    ['ui_font_sans_17', SANS, 17], ['ui_font_sans_20', SANS, 20],
-    ['ui_font_sans_32', SANS, 32],
+    ['ui_font_sans_18', SANS, 18],   // tlacitka + nadpisy karet (sans_17 i sans_20 slouceny sem)
+    ['ui_font_sans_32', SANS, 32, 'Hz'],   // unit_font velkeho cisla -> jen "Hz"
 ];
 
 // Unicode subset (libprim text.h §9).

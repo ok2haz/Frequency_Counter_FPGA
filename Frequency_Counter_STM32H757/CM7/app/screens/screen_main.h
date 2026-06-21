@@ -37,6 +37,7 @@ int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 *
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 void screen_main_redraw_title(void);                /* redraw only the title row */
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
+void screen_main_redraw_time(uint32_t ms_since_boot);  /* simulovany cas HH:MM:SS.d, jen oblast casu */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 extern const char *SCR_S_GNSS_LOCK, *SCR_S_SYS_READY, *SCR_S_SAT_VAL;

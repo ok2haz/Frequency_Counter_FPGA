@@ -72,11 +72,25 @@ void StartUiTask(void *argument)
     static uint32_t last_tick = 0;
     if (HAL_GetTick() - last_tick >= 500) {
       last_tick = HAL_GetTick();
-      /* ⚠️ DOČASNĚ VYPNUTO (izolace freezu): RTOS statistiky (uxTaskGetSystemState/
-       * heap). Běží hned po startu obrazovky -> podezřelý z freezu. Jen uptime nech. */
-      g_uptime_s = HAL_GetTick() / 1000u;
-      (void)ui_idle_runtime;   /* potlač unused-function warning */
+      /* RTOS zdravi pro diagnostiku (heap, uptime, zatez CPU z idle delty).
+       * Bezpecne: bezi v UiTasku (8 KB stack), zadny printf (freeze byl printf
+       * v SensorsTasku, opraveno). */
+      g_uptime_s       = HAL_GetTick() / 1000u;
+      g_rtos_heap_free = (uint32_t)xPortGetFreeHeapSize();
+      g_rtos_heap_min  = (uint32_t)xPortGetMinimumEverFreeHeapSize();
+      static uint32_t prev_total = 0, prev_idle = 0;
+      uint32_t total = 0, idle = ui_idle_runtime(&total);
+      uint32_t dt = total - prev_total, di = idle - prev_idle;
+      prev_total = total; prev_idle = idle;
+      if (dt) g_rtos_cpu_pct = (di < dt) ? (uint32_t)(100u - (uint64_t)di * 100u / dt) : 0u;
       app_gpsdo_tick();
+    }
+
+    /* Simulovany cas na hlavni obrazovce ~10x/s (desetiny sekundy). */
+    static uint32_t last_clock = 0;
+    if (HAL_GetTick() - last_clock >= 100) {
+      last_clock = HAL_GetTick();
+      app_gpsdo_tick_clock(HAL_GetTick());
     }
 
     osDelay(40);
