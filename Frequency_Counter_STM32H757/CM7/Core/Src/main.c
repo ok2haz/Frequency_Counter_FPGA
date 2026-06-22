@@ -106,7 +106,7 @@ static void MPU_Config(void)
     MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
     MPU_InitStruct.Number           = MPU_REGION_NUMBER0;
     MPU_InitStruct.BaseAddress      = 0xC0000000;
-    MPU_InitStruct.Size             = MPU_REGION_SIZE_2MB;   /* zpět na známé-dobré 2MB (izolace freezu; triple buffer vypnut) */
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_4MB;   /* FB0/FB1/FB2 (triple buffer) + canvas pool, vse WT */
     MPU_InitStruct.SubRegionDisable = 0x00;
     MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
     MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;

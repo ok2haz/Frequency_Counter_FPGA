@@ -344,11 +344,11 @@ void screen_main_redraw_title(void)
 
 /* Simulovany cas HH:MM:SS (start 14:32:07 + uptime). Prekresli JEN oblast casu
  * a JEN kdyz se zmeni sekunda (zadne zbytecne prekreslovani -> zadny "px sum"). */
-void screen_main_redraw_time(uint32_t ms_since_boot)
+int screen_main_redraw_time(uint32_t ms_since_boot)
 {
     static uint32_t last_sec = 0xFFFFFFFFu;
     uint32_t sec = 14u * 3600u + 32u * 60u + 7u + ms_since_boot / 1000u;
-    if (sec == last_sec) return;
+    if (sec == last_sec) return 0;   /* sekunda se nezmenila -> nekreslit, neflipovat */
     last_sec = sec;
     snprintf(s_time_buf, sizeof(s_time_buf), "%02lu:%02lu:%02lu",
              (unsigned long)((sec / 3600u) % 24u),
@@ -362,6 +362,7 @@ void screen_main_redraw_time(uint32_t ms_since_boot)
     blit_bg_region((prim_rect_t){(int16_t)(time_x - tw - 6), 1, (int16_t)(tw + 12), 33});
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
+    return 1;   /* prekresleno -> flip */
 }
 
 /* Redraw only one footer button (clears just its rect from the bg cache). */

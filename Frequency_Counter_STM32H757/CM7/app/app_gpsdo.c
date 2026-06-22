@@ -141,11 +141,13 @@ static int dchg(char *cache, size_t n, const char *now)
 /* Redraw dynamic values. force=1 -> prekresli VSE (po blitu chrome jsou hodnoty
  * smazane); force=0 (tick) -> jen pole, ktera se ZMENILA -> usetri DMA2D fill +
  * cache invalidaci + CPU text u nemennych poli (vetsina). */
-static void draw_diag_values(int force)
+/* Vrati 1 pokud se NECO prekreslilo (-> volajici flipne present), jinak 0. */
+static int draw_diag_values(int force)
 {
     static char c_tv[3][20], c_tm[3][20], c_adc[4][20];
     static char c_spi[68], c_fpga[68], c_si[20], c_sys[4][20];
     char buf[24], key[26];
+    int drew = force;   /* force -> vse se kresli */
 
     /* ── Levy sloupec: teploty (hodnota + min/max) ── */
     static const sensor_id_t tid[3] = { SENS_T48, SENS_T49, SENS_T4A };
@@ -153,12 +155,12 @@ static void draw_diag_values(int force)
     for (int i = 0; i < 3; i++) {
         const sensor_stat_t *s = &g_sensors[tid[i]];
         fmt_minmax(buf, sizeof(buf), s);
-        if (force || dchg(c_tm[i], sizeof(c_tm[i]), buf))
-            dtext((int16_t)(DG_LLBL + 96), ty[i], 118, buf, UI_COLOR_INK_4, &ui_font_sans_14);
+        if (force || dchg(c_tm[i], sizeof(c_tm[i]), buf)) {
+            dtext((int16_t)(DG_LLBL + 96), ty[i], 118, buf, UI_COLOR_INK_4, &ui_font_sans_14); drew = 1; }
         fmt_temp(buf, sizeof(buf), s->last);
         snprintf(key, sizeof(key), "%c%s", s->valid ? 'V' : 'X', buf);  /* vykresleni zalezi i na valid */
-        if (force || dchg(c_tv[i], sizeof(c_tv[i]), key))
-            dval(DG_LVAL, ty[i], 104, buf, s->valid);
+        if (force || dchg(c_tv[i], sizeof(c_tv[i]), key)) {
+            dval(DG_LVAL, ty[i], 104, buf, s->valid); drew = 1; }
     }
 
     /* ADC napeti. */
@@ -166,19 +168,19 @@ static void draw_diag_values(int force)
         const sensor_stat_t *a = &g_sensors[SENS_ADS0 + k];
         snprintf(buf, sizeof(buf), "%ld mV", lround_f(a->last));
         snprintf(key, sizeof(key), "%c%s", a->valid ? 'V' : 'X', buf);
-        if (force || dchg(c_adc[k], sizeof(c_adc[k]), key))
-            dval(DG_LVAL, (int16_t)(236 + k * 28), 120, buf, a->valid);
+        if (force || dchg(c_adc[k], sizeof(c_adc[k]), key)) {
+            dval(DG_LVAL, (int16_t)(236 + k * 28), 120, buf, a->valid); drew = 1; }
     }
 
     /* ── Pravy sloupec ── */
     /* FPGA: SPI status (barva dle g_spi_ok -> klic vc. ok) + merici kvalita. */
     char sig[68];
     snprintf(sig, sizeof(sig), "%c%s", g_spi_ok ? 'O' : 'X', (const char *)g_spi_text);
-    if (force || dchg(c_spi, sizeof(c_spi), sig))
+    if (force || dchg(c_spi, sizeof(c_spi), sig)) {
         dtext(DG_RLBL, 104, DG_COLW - 24, (const char *)g_spi_text,
-              g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_14);
-    if (force || dchg(c_fpga, sizeof(c_fpga), (const char *)g_freq_info))
-        dtext(DG_RLBL, 132, DG_COLW - 24, (const char *)g_freq_info, UI_COLOR_INK_2, &ui_font_sans_14);
+              g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_14); drew = 1; }
+    if (force || dchg(c_fpga, sizeof(c_fpga), (const char *)g_freq_info)) {
+        dtext(DG_RLBL, 132, DG_COLW - 24, (const char *)g_freq_info, UI_COLOR_INK_2, &ui_font_sans_14); drew = 1; }
 
     /* Reference Si5356: lock status (retezec 1:1 se statusem -> staci porovnat si). */
     const char *si; prim_color_t sic;
@@ -187,21 +189,23 @@ static void draw_diag_values(int force)
     else if (g_si5356_status & SI5356_PLL_LOL)          { si = "PLL UNLOCK!"; sic = UI_COLOR_BAD; }
     else if (g_si5356_status & SI5356_SYS_CAL)          { si = "CALIB...";    sic = UI_COLOR_VIOLET; }
     else                                                { si = "LOCK OK";     sic = UI_COLOR_OK; }
-    if (force || dchg(c_si, sizeof(c_si), si))
-        dtext(DG_RLBL, 206, DG_COLW - 24, si, sic, &ui_font_mono_18);
+    if (force || dchg(c_si, sizeof(c_si), si)) {
+        dtext(DG_RLBL, 206, DG_COLW - 24, si, sic, &ui_font_mono_18); drew = 1; }
 
     /* System / RTOS. */
     snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_free);
-    if (force || dchg(c_sys[0], sizeof(c_sys[0]), buf)) dval(DG_RVAL, 288, 150, buf, 1);
+    if (force || dchg(c_sys[0], sizeof(c_sys[0]), buf)) { dval(DG_RVAL, 288, 150, buf, 1); drew = 1; }
     snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_min);
-    if (force || dchg(c_sys[1], sizeof(c_sys[1]), buf)) dval(DG_RVAL, 316, 150, buf, 1);
+    if (force || dchg(c_sys[1], sizeof(c_sys[1]), buf)) { dval(DG_RVAL, 316, 150, buf, 1); drew = 1; }
     snprintf(buf, sizeof(buf), "%lu %%", (unsigned long)g_rtos_cpu_pct);
-    if (force || dchg(c_sys[2], sizeof(c_sys[2]), buf)) dval(DG_RVAL, 344, 150, buf, 1);
+    if (force || dchg(c_sys[2], sizeof(c_sys[2]), buf)) { dval(DG_RVAL, 344, 150, buf, 1); drew = 1; }
     { uint32_t s = g_uptime_s;
       snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu",
                (unsigned long)(s / 3600u), (unsigned long)((s / 60u) % 60u),
                (unsigned long)(s % 60u)); }
-    if (force || dchg(c_sys[3], sizeof(c_sys[3]), buf)) dval(DG_RVAL, 372, 150, buf, 1);
+    if (force || dchg(c_sys[3], sizeof(c_sys[3]), buf)) { dval(DG_RVAL, 372, 150, buf, 1); drew = 1; }
+
+    return drew;
 }
 
 void app_gpsdo_render_diag(void)
@@ -255,8 +259,8 @@ void app_gpsdo_render_diag(void)
         dlabel(DG_RLBL, 344, "CPU");
         dlabel(DG_RLBL, 372, "Uptime");
     }
-    draw_diag_values(first);   /* first=1 -> vse; jinak jen zmenena pole */
-    prim_stm32_present();   /* flip hotovy snimek na displej (tearing-free) */
+    /* present (flip) jen kdyz se neco prekreslilo (first=1 vzdy kresli chrome+vse). */
+    if (draw_diag_values(first)) prim_stm32_present();
 }
 
 void app_gpsdo_clear(void)
@@ -281,8 +285,7 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    screen_main_redraw_time(ms_since_boot);
-    prim_stm32_present();
+    if (screen_main_redraw_time(ms_since_boot)) prim_stm32_present();   /* flip jen pri zmene */
 }
 
 bool app_gpsdo_handle_touch(int16_t x, int16_t y)

@@ -16,7 +16,7 @@
 #include "app_gpsdo.h"
 #include "freertos_shared.h"
 
-extern LTDC_HandleTypeDef hltdc;
+/* (LTDC adresu ridi prim_stm32_present() v app/hal -> hltdc tu uz netreba.) */
 
 /* Runtime IDLE tasku + celkovy runtime (pro vypocet zatize CPU). configUSE_TRACE_
  * FACILITY + configGENERATE_RUN_TIME_STATS jsou zapnute (viz FreeRTOSConfig). */
@@ -49,32 +49,38 @@ void StartUiTask(void *argument)
     uint8_t req = g_screen_req;
     if (req) {
       g_screen_req = 0;
-      HAL_LTDC_SetAddress(&hltdc, 0xC0000000u, 0);   /* single-buffer: LTDC scanuje FB0 */
+      /* LTDC scan-out adresu ridi prim_stm32_present() (page-flip pri vblanku). */
       if (req == 4) app_gpsdo_clear();
       else          app_gpsdo_render_main();
     }
 
-    /* Dotek pro tlacitka (FT5x06 @ I2C4, pod sdilenym mutexem). Panel je
-     * zrcadleny v X i Y -> screen = (799-x, 479-y). Hranove spousteni
-     * (reaguje jen na nabeznou hranu doteku, ne na drzeni). */
+    /* Dotek pro tlacitka (FT5x06 @ I2C4). Panel zrcadleny X i Y -> (799-x,479-y).
+     * ⚠️ MUSI se cist CELY 31B ramec (ft5x06_read_touch) — i 1B "probe" TD_STATUS
+     * je castecne cteni a controller po nem DRZI I2C -> dalsi transakce zatuhne
+     * (overeno: freeze po prvnim doteku). Gate ~67 ms (15 Hz) = kompromis
+     * latence/CPU. Render az MIMO mutex. Hranove spousteni (jen zacatek doteku). */
     static uint8_t was_down = 0;
-    ft5x06_touch_t t;
-    if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
-      uint8_t ok = ft5x06_read_touch(&hi2c4, &t);
-      osMutexRelease(i2c4MutexHandle);
-      if (ok && t.valid && !was_down) {
-        app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y));
+    static uint32_t last_touch = 0;
+    if (HAL_GetTick() - last_touch >= 66) {
+      last_touch = HAL_GetTick();
+      ft5x06_touch_t t; int got = 0;
+      if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
+        got = ft5x06_read_touch(&hi2c4, &t);
+        osMutexRelease(i2c4MutexHandle);
       }
-      was_down = (uint8_t)(ok && t.valid);
+      if (got) {
+        if (t.valid && !was_down)
+          app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y));
+        was_down = (uint8_t)t.valid;
+      }
     }
 
-    /* Obnova zivych hodnot v diagnostice ~2x/s (na hlavni obrazovce no-op). */
+    /* Obnova diagnostiky + RTOS zdravi 1x/s (senzory jsou 1/s, status se meni
+     * pomalu -> 1 Hz staci; puli prekreslovani/presenty na diagu i volani
+     * uxTaskGetSystemState. Na hlavni obrazovce je app_gpsdo_tick no-op). */
     static uint32_t last_tick = 0;
-    if (HAL_GetTick() - last_tick >= 500) {
+    if (HAL_GetTick() - last_tick >= 1000) {
       last_tick = HAL_GetTick();
-      /* RTOS zdravi pro diagnostiku (heap, uptime, zatez CPU z idle delty).
-       * Bezpecne: bezi v UiTasku (8 KB stack), zadny printf (freeze byl printf
-       * v SensorsTasku, opraveno). */
       g_uptime_s       = HAL_GetTick() / 1000u;
       g_rtos_heap_free = (uint32_t)xPortGetFreeHeapSize();
       g_rtos_heap_min  = (uint32_t)xPortGetMinimumEverFreeHeapSize();
