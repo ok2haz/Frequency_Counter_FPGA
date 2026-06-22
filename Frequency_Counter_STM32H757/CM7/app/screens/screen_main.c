@@ -14,6 +14,7 @@
 #include <ui/ui.h>
 #include <prim/prim.h>
 #include <stdio.h>   /* snprintf pro simulovany cas */
+#include <string.h>  /* strncpy pro simulovane cislice */
 
 #ifndef SCR_SDRAM_SECTION
 #  if defined(__GNUC__) && !defined(PRIM_HOST_BUILD)
@@ -165,26 +166,51 @@ static void render_body_title(void)
                    PRIM_ALIGN_RIGHT);
 }
 
+/* Velke cislo kmitoctu je SIMULOVANE: integer cast staticka, posledni 2 desetinne
+ * cislice (sigma/floor) se dithuji (screen_main_redraw_freq, ~10x/s). Drzime
+ * mutovatelne segmenty (kopie SCR_MAIN_DIGITS) + cachovany deskriptor a rect. */
+static ui_digit_segment_t s_num_seg[8];
+static char               s_num_buf[8][8];
+static ui_big_number_t    s_num;
+static prim_rect_t        s_num_tail_rect = {0, 0, 0, 0};  /* jen ditherovany ocas */
+static int                s_num_ready = 0;
+
+#define SCR_FREQ_TAIL_FROM 5   /* od ktereho segmentu se dithuje (posledni 2 cislice) */
+
+static void num_build(void)
+{
+    int n = SCR_MAIN_DIGIT_COUNT;
+    if (n > 8) n = 8;
+    for (int i = 0; i < n; i++) {
+        strncpy(s_num_buf[i], SCR_MAIN_DIGITS[i].text, sizeof(s_num_buf[i]) - 1);
+        s_num_buf[i][sizeof(s_num_buf[i]) - 1] = '\0';
+        s_num_seg[i].text          = s_num_buf[i];
+        s_num_seg[i].level         = SCR_MAIN_DIGITS[i].level;
+        s_num_seg[i].with_underline = SCR_MAIN_DIGITS[i].with_underline;
+    }
+    s_num = (ui_big_number_t){
+        .x_center = UI_DIM_SCREEN_W / 2, .y_baseline = SCR_MAIN_NUMBER_Y_BASELINE,
+        .main_font = &ui_font_mono_75, .fade_font = &ui_font_mono_52,
+        .sep_font = &ui_font_mono_25, .decimal_font = &ui_font_mono_30,
+        .unit_font = &ui_font_sans_32, .segments = s_num_seg, .segment_count = (int16_t)n,
+        .separators = SCR_MAIN_SEPS, .sep_color = UI_COLOR_INK_3,
+        .decimal_color = UI_COLOR_ACC, .unit = SCR_S_UNIT_HZ, .unit_color = UI_COLOR_INK_2,
+    };
+    /* Tail rect: jen od ditherovaneho segmentu po pravy okraj cisla (vc. jednotky). */
+    int16_t w    = ui_big_number_width(&s_num);
+    int16_t left = (int16_t)(UI_DIM_SCREEN_W / 2 - w / 2);
+    int16_t top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
+    int16_t tail_x = ui_big_number_seg_x(&s_num, SCR_FREQ_TAIL_FROM);
+    s_num_tail_rect = (prim_rect_t){ (int16_t)(tail_x - 2), top,
+                                     (int16_t)(left + w - tail_x + 8), 92 };
+    s_num_ready = 1;
+}
+
 /* Big number rendered directly over the gradient background. */
 static void render_body_number(void)
 {
-    ui_big_number_t n = {
-        .x_center      = UI_DIM_SCREEN_W / 2,
-        .y_baseline    = SCR_MAIN_NUMBER_Y_BASELINE,
-        .main_font     = &ui_font_mono_75,
-        .fade_font     = &ui_font_mono_52,   /* invalid digits 30 % smaller */
-        .sep_font      = &ui_font_mono_25,
-        .decimal_font  = &ui_font_mono_30,
-        .unit_font     = &ui_font_sans_32,
-        .segments      = SCR_MAIN_DIGITS,
-        .segment_count = SCR_MAIN_DIGIT_COUNT,
-        .separators    = SCR_MAIN_SEPS,
-        .sep_color     = UI_COLOR_INK_3,
-        .decimal_color = UI_COLOR_ACC,
-        .unit          = SCR_S_UNIT_HZ,
-        .unit_color    = UI_COLOR_INK_2,
-    };
-    ui_big_number_render(&n);
+    if (!s_num_ready) num_build();   /* jednou; jitterovany stav pak prezije full render */
+    ui_big_number_render(&s_num);
 }
 
 static void render_card_allan(prim_rect_t rect)
@@ -246,15 +272,32 @@ static void render_card_trend(prim_rect_t rect)
     ui_sparkline_render(&sp);
 }
 
-static void render_card_signal(prim_rect_t rect)
+/* Signal bargraf je SIMULOVANY (animovany ~30x/s, viz screen_main_redraw_signal).
+ * Drzime jeho rect + aktualni hodnotu, aby sel prekreslit jen on (partial). */
+static prim_rect_t s_signal_rect = {0, 0, 0, 0};
+static int16_t     s_signal_pct  = 0;   /* simulace ho hned prepise (animace ~30x/s) */
+
+/* dBm z pct: rozsah bargrafu 0..100 % -> -80..+20 dBm (100 dB). */
+static int signal_dbm(int16_t pct) { return (int)pct - 80; }
+
+/* Plne vykresleni signal karty (chrome + label + bar) — pro full render. */
+static void draw_signal_card(prim_rect_t rect, int16_t pct)
 {
+    static char val[16];
     ui_card_t card = {.rect = rect};
     ui_card_render_chrome(&card);
     prim_rect_t inner = ui_card_inner_rect(&card);
-    ui_bargraph_t bar = {.rect = inner, .value_pct = SCR_SIGNAL_PCT,
+    snprintf(val, sizeof(val), "%d dBm", signal_dbm(pct));
+    ui_bargraph_t bar = {.rect = inner, .value_pct = pct,
                          .color = UI_COLOR_OK, .label = SCR_S_SIGNAL_L,
-                         .value_text = SCR_S_SIGNAL_V};
+                         .value_text = val};
     ui_bargraph_render(&bar);
+}
+
+static void render_card_signal(prim_rect_t rect)
+{
+    s_signal_rect = rect;                 /* zapamatuj pro partial redraw */
+    draw_signal_card(rect, s_signal_pct);
 }
 
 static void render_right_column(prim_rect_t rect)
@@ -363,6 +406,42 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
     return 1;   /* prekresleno -> flip */
+}
+
+/* LEAN prekresleni signal bargrafu (pro animaci ~30x/s): NEkresli chrome, pozadi
+ * ani label (jsou staticke z render_main) -> levne. Smaze jen value text (vpravo)
+ * a necha ui_bargraph track-fill prekreslit segmenty. Vrati 1 pokud kreslil. */
+int screen_main_redraw_signal(int16_t pct)
+{
+    if (s_signal_rect.w == 0) return 0;
+    s_signal_pct = pct;
+    ui_card_t card = {.rect = s_signal_rect};
+    prim_rect_t inner = ui_card_inner_rect(&card);
+    char val[16];
+    snprintf(val, sizeof(val), "%d dBm", signal_dbm(pct));
+    /* smaz jen value text vpravo (label vlevo se netkneme -> zustava) */
+    prim_fill_rect((prim_rect_t){(int16_t)(inner.x + inner.w - 96), (int16_t)(inner.y - 2),
+                                 98, 20}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    ui_bargraph_t bar = {.rect = inner, .value_pct = pct, .color = UI_COLOR_OK,
+                         .label = NULL, .value_text = val};   /* label=NULL -> nekresli */
+    ui_bargraph_render(&bar);
+    return 1;
+}
+
+/* Simulace kmitoctu: dithuje posledni 2 desetinne cislice (sigma+floor), integer
+ * cast staticka. LEVNE — prekresli jen ditherovany ocas (od SCR_FREQ_TAIL_FROM),
+ * ne cele velke cislo (mono_75 je drahy). Obnova pozadi jen pod ocasem. Vrati 1. */
+int screen_main_redraw_freq(void)
+{
+    if (!s_num_ready) return 0;
+    static uint32_t seed = 0x9E3779B9u;
+    seed = seed * 1664525u + 1013904223u;
+    s_num_buf[SCR_FREQ_TAIL_FROM][0]     = (char)('0' + (int)((seed >> 16) % 10u)); /* sigma */
+    seed = seed * 1664525u + 1013904223u;
+    s_num_buf[SCR_FREQ_TAIL_FROM + 1][0] = (char)('0' + (int)((seed >> 16) % 10u)); /* floor */
+    blit_bg_region(s_num_tail_rect);
+    ui_big_number_render_tail(&s_num, SCR_FREQ_TAIL_FROM);
+    return 1;
 }
 
 /* Redraw only one footer button (clears just its rect from the bg cache). */

@@ -19,7 +19,18 @@
 /* Definice pro TMP117 */
 #define TMP117_ADDR         (0x48 << 1)
 #define TMP117_REG_TEMP     0x00
+#define TMP117_REG_CONFIG   0x01
 #define TMP117_RESOLUTION   0.0078125f
+/* Config: MOD=00 continuous, CONV=011 (cyklus 500 ms), AVG=01 (8 prumeru)
+ * -> 2 cerstve vzorky/s (default 0x0220 = 1 s cyklus). */
+#define TMP117_CFG_2HZ      0x01A0u
+
+/* Jednorazove nastavi TMP117 na 500ms konverzni cyklus (2x/s). */
+static void tmp117_set_2hz(I2C_HandleTypeDef *hi2c, uint16_t addr8)
+{
+    uint8_t cfg[2] = { (uint8_t)(TMP117_CFG_2HZ >> 8), (uint8_t)(TMP117_CFG_2HZ & 0xFF) };
+    HAL_I2C_Mem_Write(hi2c, addr8, TMP117_REG_CONFIG, I2C_MEMADD_SIZE_8BIT, cfg, 2, 100);
+}
 
 /* ── Statistika senzoru (zapis g_sensors[], viz sensor_stat.h) ──────────── */
 /* ⚠️ ŽÁDNÝ printf zde! Běží v SensorsTasku s malým stackem (~512–1024 B);
@@ -72,8 +83,19 @@ void SensorsTask_run(void *argument)
 
   // Inicializace času pro přesné vzorkování
   TickType_t xLastWakeTime;
-  const TickType_t xFrequency = pdMS_TO_TICKS(1000); // 1 sekunda
+  const TickType_t xFrequency = pdMS_TO_TICKS(500); // 2x za sekundu
   xLastWakeTime = xTaskGetTickCount();
+
+  // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
+  if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
+    tmp117_set_2hz(&hi2c4, TMP117_ADDR);          // 0x48 (I2C4)
+    osMutexRelease(i2c4MutexHandle);
+  }
+  if (osMutexAcquire(i2c1MutexHandle, 200) == osOK) {
+    tmp117_set_2hz(&hi2c1, (0x49 << 1));          // 0x49 (I2C1)
+    tmp117_set_2hz(&hi2c1, (0x4A << 1));          // 0x4A (I2C1)
+    osMutexRelease(i2c1MutexHandle);
+  }
 
   for(;;) {
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===

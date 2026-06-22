@@ -17,7 +17,7 @@ const char *SCR_S_CAL_L     = "CAL";
 const char *SCR_S_CAL_V     = "4 min";
 const char *SCR_S_HOLD_L    = "HOLD";
 const char *SCR_S_HOLD_V    = "2h 14m";
-const char *SCR_S_TIME      = "14:32:07";
+/* Cas je dynamicky (s_time_buf v screen_main.c, simulovany z uptime), uz NENI staticky. */
 const char *SCR_S_DATE      = "Út · 2026-06-16 · UTC";
 
 /* ── Title row (mode/channel/gate now come from the live UI state in
@@ -47,8 +47,7 @@ const char *SCR_S_TREND_L  = "Trend 60 s";
 const char *SCR_S_TREND_R  = "● stabilní · ±2,4×10⁻¹² p–p";
 /* Input signal intensity bargraph (replaces Perioda T / Reference cards). */
 const char *SCR_S_SIGNAL_L = "Signál vstupu";
-const char *SCR_S_SIGNAL_V = "-60 dBm";
-const int16_t SCR_SIGNAL_PCT = 67;      /* fill to ~2/3 (green ends here) */
+/* Hodnota i % bargrafu jsou SIMULOVANE (app_gpsdo_tick_signal) -> staticke pryc. */
 
 /* ── Allan curve — pixels inside the chart inner rect (320×130) ── */
 const prim_point_t SCR_ALLAN_CURVE[] = {

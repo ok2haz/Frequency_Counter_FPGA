@@ -279,13 +279,45 @@ void app_gpsdo_tick(void)
     if (s_view == 1) app_gpsdo_render_diag();   /* live refresh of diagnostics */
 }
 
-/* Hodinovy tik (~10x/s): jen na hlavni obrazovce prekresli simulovany cas. */
+/* Hodinovy tik (~kazdych 100 ms): jen na hlavni obrazovce prekresli simulovany cas. */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 {
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();
     if (screen_main_redraw_time(ms_since_boot)) prim_stm32_present();   /* flip jen pri zmene */
+}
+
+/* Animace signal bargrafu (SIMULACE): hodnota miri k nahodnemu CILI po krocich
+ * MAX 1 dilek (5 %); po dosazeni cile zvoli novy. Volat 30x/s z UiTasku. Jen na
+ * hlavni obrazovce. Flip jen kdyz se hodnota zmenila. */
+void app_gpsdo_tick_signal(void)
+{
+    if (s_view != 0) return;
+    static int16_t  pct = 0, target = 0;
+    static uint32_t seed = 0x1234567u;
+
+    if (pct == target) {                 /* cil dosazen -> novy (zarovnany na segment) */
+        seed = seed * 1103515245u + 12345u;
+        target = (int16_t)(((seed >> 16) % 21u) * 5u);   /* 0,5,...,100 */
+    }
+    int16_t old = pct;
+    if (pct < target)      pct += 5;     /* max jeden dilek (5 %) za krok */
+    else if (pct > target) pct -= 5;
+    if (pct == old) return;              /* nic se nezmenilo -> neflipovat */
+
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    if (screen_main_redraw_signal(pct)) prim_stm32_present();
+}
+
+/* Simulace kmitoctu (~10x/s, jen hlavni obrazovka): dither poslednich cislic. */
+void app_gpsdo_tick_freq(void)
+{
+    if (s_view != 0) return;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    if (screen_main_redraw_freq()) prim_stm32_present();
 }
 
 bool app_gpsdo_handle_touch(int16_t x, int16_t y)

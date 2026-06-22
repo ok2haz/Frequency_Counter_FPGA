@@ -28,8 +28,8 @@
 #define SDRAM_BASE        0xC0000000UL
 #define TEST_OFFSET       0x00001000UL   /* RAM_D2 test (bezpecne mimo struktury) */
 #define SDRAM_TEST_OFFSET 0x00400000UL   /* SDRAM test @0xC0400000 = MPU region 1 (WB
-                                          * scratch), MIMO triple-buffer region 0 (4MB)
-                                          * FB0/FB1/FB2/canvas. Drive bylo 0x1C0000 = uvnitr
+                                          * scratch), MIMO triple-buffer region 0 (4MB,
+                                          * FB0/FB1/FB2). Drive bylo 0x1C0000 = uvnitr
                                           * region 0 -> kolidovalo by s FB1/FB2. */
 
 #define LCD_WIDTH         800

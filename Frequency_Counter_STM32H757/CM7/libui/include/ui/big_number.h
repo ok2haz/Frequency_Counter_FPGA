@@ -26,3 +26,12 @@ typedef struct {
 } ui_big_number_t;
 
 UI_API void ui_big_number_render(const ui_big_number_t *n);
+
+/** Celkova sirka cisla (vc. separatoru a jednotky) — pro clear oblast pri partial redraw. */
+UI_API int16_t ui_big_number_width(const ui_big_number_t *n);
+
+/** x, kde zacina segment 'from' (pro partial redraw koncovych cislic). */
+UI_API int16_t ui_big_number_seg_x(const ui_big_number_t *n, int16_t from);
+
+/** Vykresli jen segmenty [from..konec] + jednotku (partial redraw menicich se cislic). */
+UI_API void ui_big_number_render_tail(const ui_big_number_t *n, int16_t from);

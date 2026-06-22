@@ -75,11 +75,10 @@ void StartUiTask(void *argument)
       }
     }
 
-    /* Obnova diagnostiky + RTOS zdravi 1x/s (senzory jsou 1/s, status se meni
-     * pomalu -> 1 Hz staci; puli prekreslovani/presenty na diagu i volani
-     * uxTaskGetSystemState. Na hlavni obrazovce je app_gpsdo_tick no-op). */
+    /* Obnova diagnostiky + RTOS zdravi 2x/s (senzory cteny take 2x/s).
+     * Na hlavni obrazovce je app_gpsdo_tick no-op (jen diag). */
     static uint32_t last_tick = 0;
-    if (HAL_GetTick() - last_tick >= 1000) {
+    if (HAL_GetTick() - last_tick >= 500) {
       last_tick = HAL_GetTick();
       g_uptime_s       = HAL_GetTick() / 1000u;
       g_rtos_heap_free = (uint32_t)xPortGetFreeHeapSize();
@@ -92,13 +91,28 @@ void StartUiTask(void *argument)
       app_gpsdo_tick();
     }
 
-    /* Simulovany cas na hlavni obrazovce ~10x/s (desetiny sekundy). */
+    /* Cas na hlavni obrazovce: kontrola ~kazdych 100 ms, prekresli jen pri zmene sekundy. */
     static uint32_t last_clock = 0;
     if (HAL_GetTick() - last_clock >= 100) {
       last_clock = HAL_GetTick();
       app_gpsdo_tick_clock(HAL_GetTick());
     }
 
-    osDelay(40);
+    /* Animace simulovaneho signal bargrafu 30x/s (krok max 1 dilek, target-seeking,
+     * lean redraw). */
+    static uint32_t last_sig = 0;
+    if (HAL_GetTick() - last_sig >= 33) {
+      last_sig = HAL_GetTick();
+      app_gpsdo_tick_signal();
+    }
+
+    /* Simulace kmitoctu 10x/s (dither poslednich cislic velkeho cisla). */
+    static uint32_t last_freq = 0;
+    if (HAL_GetTick() - last_freq >= 100) {
+      last_freq = HAL_GetTick();
+      app_gpsdo_tick_freq();
+    }
+
+    osDelay(33);   /* smycka ~30 Hz: bargraf 30x/s + freq 10x/s, touch 15x/s */
   }
 }

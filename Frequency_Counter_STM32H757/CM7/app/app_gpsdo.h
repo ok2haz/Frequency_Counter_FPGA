@@ -33,3 +33,9 @@ void app_gpsdo_tick(void);
 
 /** Hodinovy tik (~10 Hz z UiTask): na hlavni obrazovce prekresli simulovany cas. */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot);
+
+/** Animace simulovaneho signal bargrafu (~30 Hz z UiTask, jen hlavni obrazovka). */
+void app_gpsdo_tick_signal(void);
+
+/** Simulace kmitoctu (~10 Hz z UiTask, jen hlavni obrazovka): dither cislic. */
+void app_gpsdo_tick_freq(void);
