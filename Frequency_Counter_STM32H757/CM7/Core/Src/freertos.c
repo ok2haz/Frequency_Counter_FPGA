@@ -84,6 +84,13 @@ volatile uint8_t g_spi_dirty = 1;
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
 
+/* Touch event (SensorsTask cte FT5x06 na I2C4 a pri DOWN edge zapise sem; UiTask
+ * jen drainuje -> blokujici I2C cteni je MIMO render task). g_touch_xy = (x<<16)|y
+ * v display-space (uz zrcadleno), 32bit zapis/cteni je atomicky; g_touch_seq se
+ * zvysi pri kazdem novem doteku (UiTask porovnava se svym poslednim). */
+volatile uint32_t g_touch_xy  = 0;
+volatile uint8_t  g_touch_seq = 0;
+
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
 volatile uint32_t g_rtos_heap_min  = 0;

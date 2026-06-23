@@ -39,3 +39,9 @@ void app_gpsdo_tick_signal(void);
 
 /** Simulace kmitoctu (~20 Hz z UiTask, jen hlavni obrazovka): per-segment dirty redraw. */
 void app_gpsdo_tick_freq(void);
+
+/**
+ * @brief Present coalescing: jeden flip pro vsechny nahromadene zmeny z ticku.
+ *        Vola UiTask na ~30 Hz gate (ticky uz neflipuji samy). Vrati 1 pri flipu.
+ */
+int app_gpsdo_flush(void);

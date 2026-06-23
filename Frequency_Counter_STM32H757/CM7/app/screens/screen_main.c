@@ -177,6 +177,10 @@ static char               s_num_buf[8][8];    /* aktualni cislice (zive) */
 static char               s_num_prev[8][8];   /* cislice z minuleho snimku (per-segment dirty) */
 static ui_big_number_t    s_num;
 static int                s_num_ready = 0;
+/* Cachovana geometrie cisla (monospace -> konstantni; spocte se v num_build,
+ * redraw_freq uz neprochazi prim_text_width kazdy snimek). */
+static int16_t            s_num_w, s_num_left, s_num_top;
+static int16_t            s_seg_x[8];   /* x-pozice zacatku kazde skupiny cislic */
 
 /* Simulacni stav kmitoctu (integer matematika, bez float). N = vsechny cislice
  * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
@@ -212,6 +216,12 @@ static void num_build(void)
         .separators = SCR_MAIN_SEPS, .sep_color = UI_COLOR_INK_3,
         .decimal_color = UI_COLOR_ACC, .unit = SCR_S_UNIT_HZ, .unit_color = UI_COLOR_INK_2,
     };
+    /* Cache geometrie (jednou): sirka, levy okraj, top a x-pozice vsech skupin. */
+    s_num_w    = ui_big_number_width(&s_num);
+    s_num_left = (int16_t)(UI_DIM_SCREEN_W / 2 - s_num_w / 2);
+    s_num_top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
+    for (int i = 0; i < n; i++) s_seg_x[i] = ui_big_number_seg_x(&s_num, (int16_t)i);
+
     /* Spocti layout cislic z delek segmentu + pozice desetinne carky (sep ',').
      * Stred = 10 MHz zarovnane na celou cast (zbytek = desetinna mista). */
     s_freq_total = 0;
@@ -468,24 +478,35 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
     return 1;   /* prekresleno -> flip */
 }
 
-/* LEAN prekresleni signal bargrafu (pro animaci ~30x/s): NEkresli chrome, pozadi
- * ani label (jsou staticke z render_main) -> levne. Smaze jen value text (vpravo)
- * a necha ui_bargraph track-fill prekreslit segmenty. Vrati 1 pokud kreslil. */
+/* LEAN prekresleni signal bargrafu (animace ~30x/s): chrome/pozadi/label/stopa jsou
+ * staticke z render_main. INCREMENTAL — prekresli jen segmenty zmenene od minula
+ * (typicky 1, krok 5 %) + value text vpravo. Misto ~20 fillu jen rozdil. Vrati 1. */
 int screen_main_redraw_signal(int16_t pct)
 {
     if (s_signal_rect.w == 0) return 0;
+    int16_t old = s_signal_pct;       /* hodnota aktualne na obrazovce */
     s_signal_pct = pct;
     ui_card_t card = {.rect = s_signal_rect};
     prim_rect_t inner = ui_card_inner_rect(&card);
-    char val[16];
-    snprintf(val, sizeof(val), "%d dBm", signal_dbm(pct));
-    /* smaz jen value text vpravo (label vlevo se netkneme -> zustava) */
-    prim_fill_rect((prim_rect_t){(int16_t)(inner.x + inner.w - 96), (int16_t)(inner.y - 2),
-                                 98, 20}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    ui_bargraph_t bar = {.rect = inner, .value_pct = pct, .color = UI_COLOR_OK,
-                         .label = NULL, .value_text = val};   /* label=NULL -> nekresli */
-    ui_bargraph_render(&bar);
-    return 1;
+    int drew = 0;
+
+    /* Value text (dBm) vpravo: smaz box + prekresli JEN kdyz se zobrazena hodnota
+     * zmenila (u realnych, pomalu menicich se dat setri; u simulace se meni vzdy). */
+    int dbm = signal_dbm(pct);
+    static int last_dbm = 0x7FFFFFFF;
+    if (dbm != last_dbm) {
+        last_dbm = dbm;
+        char val[16];
+        snprintf(val, sizeof(val), "%d dBm", dbm);
+        prim_fill_rect((prim_rect_t){(int16_t)(inner.x + inner.w - 96), (int16_t)(inner.y - 2),
+                                     98, 20}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        ui_bargraph_value(&inner, val, UI_COLOR_OK);
+        drew = 1;
+    }
+
+    /* Segmenty: jen rozdil old -> pct (rozsvit/zhasni). */
+    if (ui_bargraph_update(&inner, old, pct) > 0) drew = 1;
+    return drew;
 }
 
 /* Posune simulovany kmitocet o jeden spojity krok, prepise cislice a prekresli
@@ -504,15 +525,12 @@ int screen_main_redraw_freq(void)
         if (strcmp(s_num_buf[i], s_num_prev[i]) != 0) { from = i; break; }
     if (from < 0) return 0;                          /* nic se nezmenilo -> neflipovat */
 
-    int16_t w    = ui_big_number_width(&s_num);
-    int16_t left = (int16_t)(UI_DIM_SCREEN_W / 2 - w / 2);
-    int16_t top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
-    int16_t x0   = ui_big_number_seg_x(&s_num, (int16_t)from);
+    int16_t x0 = s_seg_x[from];                      /* cachovana geometrie (num_build) */
     /* Obnov pozadi od x0 doprava (po pravy okraj cisla vc. jednotky) a prekresli
      * jen ocas. x0-2 zasahne max okraj predchoziho separatoru, jehoz inkoust je
      * uprostred advance -> bez rezidua. */
-    blit_bg_region((prim_rect_t){ (int16_t)(x0 - 2), top,
-                                  (int16_t)(left + w - x0 + 8), 92 });
+    blit_bg_region((prim_rect_t){ (int16_t)(x0 - 2), s_num_top,
+                                  (int16_t)(s_num_left + s_num_w - x0 + 8), 92 });
     prim_set_glyph_accel(1);                 /* HW glyfy jen pro mereny kmitocet */
     ui_big_number_render_tail(&s_num, (int16_t)from);
     prim_set_glyph_accel(0);

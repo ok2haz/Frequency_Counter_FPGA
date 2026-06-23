@@ -93,8 +93,10 @@ static void d2d_fill(prim_pixel_t *dst, int16_t stride_px, int16_t w, int16_t h,
     d2d_inval(dst, stride_px, w, h);
 }
 
-static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *src,
-                     int16_t src_stride, int16_t w, int16_t h)
+/* do_inval=0: vynech zneplatneni D-cache (jen kdyz cilovou oblast NIKDO CPU necte
+ * pred prepsanim — viz copy-forward nize). Jinak 1 (CPU AA blend by cetl stara data). */
+static void d2d_blit_ex(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *src,
+                        int16_t src_stride, int16_t w, int16_t h, int do_inval)
 {
     mark_dirty(dst, w, h);
     d2d_wait();
@@ -108,7 +110,13 @@ static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *
     DMA2D->NLR     = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
     DMA2D->CR     |= DMA2D_CR_START;
     d2d_wait();
-    d2d_inval(dst, dst_stride, w, h);
+    if (do_inval) d2d_inval(dst, dst_stride, w, h);
+}
+
+static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *src,
+                     int16_t src_stride, int16_t w, int16_t h)
+{
+    d2d_blit_ex(dst, dst_stride, src, src_stride, w, h, 1);   /* libprim blit: CPU smi cist -> inval */
 }
 
 /* ── DMA2D glyph blend (velky text bez CPU rasterizace) ────────────────────────
@@ -200,11 +208,15 @@ void prim_stm32_use_dma2d(int enable)
 
 /* ── Page-flip + dirty copy-forward ────────────────────────────────────────── */
 
-/* Zkopiruje jeden obdelnik z front -> back (s_in_present potlaci re-marking). */
+/* Zkopiruje jeden obdelnik z front -> back (s_in_present potlaci re-marking).
+ * BEZ inval: copy-forward cilove pixely CPU nikdy necte ve stale stavu — bud je
+ * cte LTDC/DMA2D primo ze SDRAM, nebo je pristi snimek prepise; a CPU AA text
+ * vzdy kresli pres CERSTVY clear teho snimku (ne pres copy-forward). Usetri
+ * ~860 cache-line invalidaci/rect (number-tail) × ~60×/s. */
 static void copy_rect(const prim_rect_t *r)
 {
     int off = (int)r->y * FB_W + r->x;
-    d2d_blit(fb_px(s_back) + off, FB_W, fb_px(s_front) + off, FB_W, r->w, r->h);
+    d2d_blit_ex(fb_px(s_back) + off, FB_W, fb_px(s_front) + off, FB_W, r->w, r->h, 0);
 }
 
 void prim_stm32_present(void)
@@ -227,7 +239,7 @@ void prim_stm32_present(void)
      * Pri full priznaku nebo prilis mnoha obdelnicich kopiruj cely snimek. */
     s_in_present = 1;
     if (dfull_prev || dfull_cur) {
-        d2d_blit(fb_px(s_back), FB_W, fb_px(s_front), FB_W, FB_W, FB_H);
+        d2d_blit_ex(fb_px(s_back), FB_W, fb_px(s_front), FB_W, FB_W, FB_H, 0);  /* copy-forward: bez inval */
     } else {
         for (int i = 0; i < nd_prev; i++) copy_rect(&d_prev[i]);
         for (int i = 0; i < nd_cur;  i++) copy_rect(&d_cur[i]);

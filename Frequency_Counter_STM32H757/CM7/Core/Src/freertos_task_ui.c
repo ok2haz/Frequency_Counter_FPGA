@@ -11,10 +11,9 @@
 #include "main.h"
 #include "cmsis_os2.h"
 
-#include "i2c.h"          /* hi2c4 */
-#include "ft5x06.h"
 #include "app_gpsdo.h"
 #include "freertos_shared.h"
+/* Touch cte SensorsTask (I2C4) -> tady uz zadny i2c.h/ft5x06.h ani I2C4 mutex. */
 
 /* (LTDC adresu ridi prim_stm32_present() v app/hal -> hltdc tu uz netreba.) */
 
@@ -54,25 +53,15 @@ void StartUiTask(void *argument)
       else          app_gpsdo_render_main();
     }
 
-    /* Dotek pro tlacitka (FT5x06 @ I2C4). Panel zrcadleny X i Y -> (799-x,479-y).
-     * ⚠️ MUSI se cist CELY 31B ramec (ft5x06_read_touch) — i 1B "probe" TD_STATUS
-     * je castecne cteni a controller po nem DRZI I2C -> dalsi transakce zatuhne
-     * (overeno: freeze po prvnim doteku). Gate ~67 ms (15 Hz) = kompromis
-     * latence/CPU. Render az MIMO mutex. Hranove spousteni (jen zacatek doteku). */
-    static uint8_t was_down = 0;
-    static uint32_t last_touch = 0;
-    if (HAL_GetTick() - last_touch >= 66) {
-      last_touch = HAL_GetTick();
-      ft5x06_touch_t t; int got = 0;
-      if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
-        got = ft5x06_read_touch(&hi2c4, &t);
-        osMutexRelease(i2c4MutexHandle);
-      }
-      if (got) {
-        if (t.valid && !was_down)
-          app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y));
-        was_down = (uint8_t)t.valid;
-      }
+    /* Dotek: FT5x06 cte SensorsTask (I2C4) a pri DOWN edge zapise g_touch_xy +
+     * zvysi g_touch_seq. Tady jen DRAINUJEME (porovnani seq) a volame render —
+     * handle_touch MUSI byt v UiTasku (libui neni thread-safe). Blokujici 31B I2C
+     * cteni je tim mimo render task. Souradnice uz jsou v display-space (zrcadleno). */
+    static uint8_t last_touch_seq = 0;
+    if (g_touch_seq != last_touch_seq) {
+      last_touch_seq = g_touch_seq;
+      uint32_t p = g_touch_xy;
+      app_gpsdo_handle_touch((int16_t)(p >> 16), (int16_t)(p & 0xFFFFu));
     }
 
     /* Obnova diagnostiky + RTOS zdravi 2x/s (senzory cteny take 2x/s).
@@ -111,6 +100,14 @@ void StartUiTask(void *argument)
     if (HAL_GetTick() - last_freq >= 50) {
       last_freq = HAL_GetTick();
       app_gpsdo_tick_freq();
+    }
+
+    /* Present coalescing: ticky vyse jen renderuji (znaci dirty); jeden flip na
+     * ~30 Hz gate slouci vsechny zmeny -> mene VBR flipu + sjednoceny copy-forward. */
+    static uint32_t last_present = 0;
+    if (HAL_GetTick() - last_present >= 33) {
+      last_present = HAL_GetTick();
+      app_gpsdo_flush();
     }
 
     osDelay(10);   /* smycka ~100 Hz (jemne gate): freq 20x/s, bargraf ~30x/s, touch 15x/s */

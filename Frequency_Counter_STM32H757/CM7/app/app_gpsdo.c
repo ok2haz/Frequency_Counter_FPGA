@@ -33,6 +33,13 @@ static prim_fb_t s_fb;
 static int s_inited = 0;
 static int s_view = 0;          /* 0 = main, 1 = diagnostics */
 
+/* Present coalescing: vysokofrekvencni ticky (clock/signal/freq) jen renderuji a
+ * nastavi s_dirty; jeden flip pak udela app_gpsdo_flush() (UiTask ho vola na ~30Hz
+ * gate). Snizi pocet VBR flipu + sjednoti copy-forward. Vzacne udalosti (touch,
+ * prepnuti obrazovky, render/clear) prezentuji hned pres present_now(). */
+static int s_dirty = 0;
+static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
+
 /* Back button on the diagnostics screen. */
 /* Back button lives in the bottom bar, in the same slot as the main MENU. */
 static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
@@ -57,7 +64,7 @@ void app_gpsdo_render_main(void)
     prim_set_target(&s_fb);
     prim_reset_clip();
     screen_main_render();
-    prim_stm32_present();   /* flip hotovy snimek na displej (tearing-free) */
+    present_now();          /* flip hotovy snimek na displej (tearing-free) */
 }
 
 /* ── Diagnostics screen ─────────────────────────────────────── */
@@ -260,7 +267,7 @@ void app_gpsdo_render_diag(void)
         dlabel(DG_RLBL, 372, "Uptime");
     }
     /* present (flip) jen kdyz se neco prekreslilo (first=1 vzdy kresli chrome+vse). */
-    if (draw_diag_values(first)) prim_stm32_present();
+    if (draw_diag_values(first)) present_now();
 }
 
 void app_gpsdo_clear(void)
@@ -271,7 +278,7 @@ void app_gpsdo_clear(void)
     prim_reset_clip();
     prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
                    UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
-    prim_stm32_present();
+    present_now();
 }
 
 void app_gpsdo_tick(void)
@@ -285,7 +292,7 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    if (screen_main_redraw_time(ms_since_boot)) prim_stm32_present();   /* flip jen pri zmene */
+    if (screen_main_redraw_time(ms_since_boot)) s_dirty = 1;   /* flip odlozen na flush */
 }
 
 /* Animace signal bargrafu (SIMULACE): hodnota miri k nahodnemu CILI po krocich
@@ -308,7 +315,7 @@ void app_gpsdo_tick_signal(void)
 
     prim_set_target(&s_fb);
     prim_reset_clip();
-    if (screen_main_redraw_signal(pct)) prim_stm32_present();
+    if (screen_main_redraw_signal(pct)) s_dirty = 1;   /* flip odlozen na flush */
 }
 
 /* Simulace kmitoctu (~20x/s, jen hlavni obrazovka): per-segment dirty redraw. */
@@ -317,7 +324,16 @@ void app_gpsdo_tick_freq(void)
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    if (screen_main_redraw_freq()) prim_stm32_present();
+    if (screen_main_redraw_freq()) s_dirty = 1;   /* flip odlozen na flush */
+}
+
+/* Present coalescing: jeden flip pro vsechny nahromadene zmeny (clock/signal/freq).
+ * Vola UiTask na ~30Hz gate. Vrati 1 pokud flipnul. */
+int app_gpsdo_flush(void)
+{
+    if (!s_dirty) return 0;
+    present_now();
+    return 1;
 }
 
 bool app_gpsdo_handle_touch(int16_t x, int16_t y)
@@ -331,7 +347,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             prim_reset_clip();
             screen_main_redraw_button(b);            /* only the pressed button */
             if (b != 1) screen_main_redraw_title();  /* RUN doesn't change the title */
-            prim_stm32_present();
+            present_now();
             return true;
         }
     } else {

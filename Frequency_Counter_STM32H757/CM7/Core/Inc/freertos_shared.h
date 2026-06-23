@@ -41,6 +41,10 @@ extern volatile uint8_t g_spi_dirty;
 extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
 extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
 
+/* ── Touch event (SensorsTask cte FT5x06 @ I2C4, UiTask drainuje -> render) ── */
+extern volatile uint32_t g_touch_xy;       /* (x<<16)|y, display-space (zrcadleno) */
+extern volatile uint8_t  g_touch_seq;      /* ++ pri kazdem novem DOWN doteku */
+
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
 extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */

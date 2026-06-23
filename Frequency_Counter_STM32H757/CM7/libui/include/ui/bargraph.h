@@ -16,3 +16,10 @@ typedef struct {
 } ui_bargraph_t;
 
 UI_API void ui_bargraph_render(const ui_bargraph_t *b);
+
+/** Vykresli jen value text (vpravo nahore) — pro partial update bez full renderu. */
+UI_API void ui_bargraph_value(const prim_rect_t *rect, const char *text, prim_color_t color);
+
+/** Incremental: prekresli jen segmenty zmenene mezi old_pct a new_pct (rozsvic/zhasni).
+ *  Stopa/ramecek/value text se netknou. Vraci pocet zmenenych segmentu. */
+UI_API int ui_bargraph_update(const prim_rect_t *rect, int16_t old_pct, int16_t new_pct);
