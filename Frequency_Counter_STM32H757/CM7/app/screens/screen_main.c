@@ -166,16 +166,32 @@ static void render_body_title(void)
                    PRIM_ALIGN_RIGHT);
 }
 
-/* Velke cislo kmitoctu je SIMULOVANE: integer cast staticka, posledni 2 desetinne
- * cislice (sigma/floor) se dithuji (screen_main_redraw_freq, ~10x/s). Drzime
- * mutovatelne segmenty (kopie SCR_MAIN_DIGITS) + cachovany deskriptor a rect. */
+/* Velke cislo kmitoctu je SIMULOVANE: hodnota je realisticky kmitocet (~10 MHz),
+ * ktery se meni SPOJITE (mean-revert random walk) 20x/s -> nizke cislice zivot,
+ * vyssi stabilni. Pocet mist je PEVNY (zero-pad) podle layoutu segmentu.
+ * Prekresleni je PER-SEGMENT DIRTY (screen_main_redraw_freq): prekresli jen
+ * skupiny cislic, ktere se zmenily (resp. ocas od nich) -> stabilni cela cast se
+ * neprekresluje. Drzime zive + predchozi cislice (shadow) + deskriptor. */
 static ui_digit_segment_t s_num_seg[8];
-static char               s_num_buf[8][8];
+static char               s_num_buf[8][8];    /* aktualni cislice (zive) */
+static char               s_num_prev[8][8];   /* cislice z minuleho snimku (per-segment dirty) */
 static ui_big_number_t    s_num;
-static prim_rect_t        s_num_tail_rect = {0, 0, 0, 0};  /* jen ditherovany ocas */
 static int                s_num_ready = 0;
 
-#define SCR_FREQ_TAIL_FROM 5   /* od ktereho segmentu se dithuje (posledni 2 cislice) */
+/* Simulacni stav kmitoctu (integer matematika, bez float). N = vsechny cislice
+ * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
+static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
+static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
+static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
+
+static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
+
+static uint64_t pow10_u64(int e)
+{
+    uint64_t p = 1;
+    while (e-- > 0) p *= 10u;
+    return p;
+}
 
 static void num_build(void)
 {
@@ -196,21 +212,65 @@ static void num_build(void)
         .separators = SCR_MAIN_SEPS, .sep_color = UI_COLOR_INK_3,
         .decimal_color = UI_COLOR_ACC, .unit = SCR_S_UNIT_HZ, .unit_color = UI_COLOR_INK_2,
     };
-    /* Tail rect: jen od ditherovaneho segmentu po pravy okraj cisla (vc. jednotky). */
-    int16_t w    = ui_big_number_width(&s_num);
-    int16_t left = (int16_t)(UI_DIM_SCREEN_W / 2 - w / 2);
-    int16_t top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
-    int16_t tail_x = ui_big_number_seg_x(&s_num, SCR_FREQ_TAIL_FROM);
-    s_num_tail_rect = (prim_rect_t){ (int16_t)(tail_x - 2), top,
-                                     (int16_t)(left + w - tail_x + 8), 92 };
-    s_num_ready = 1;
+    /* Spocti layout cislic z delek segmentu + pozice desetinne carky (sep ',').
+     * Stred = 10 MHz zarovnane na celou cast (zbytek = desetinna mista). */
+    s_freq_total = 0;
+    int int_digits = 0;
+    int comma_seen = 0;
+    for (int i = 0; i < n; i++) {
+        int L = (int)strlen(SCR_MAIN_DIGITS[i].text);
+        s_freq_total += L;
+        if (!comma_seen) {
+            int_digits += L;
+            if (SCR_MAIN_SEPS && (size_t)i < strlen(SCR_MAIN_SEPS)
+                && SCR_MAIN_SEPS[i] == ',') comma_seen = 1;
+        }
+    }
+    int frac_digits = s_freq_total - int_digits;
+    s_freq_center = 10000000ull * pow10_u64(frac_digits);   /* 10 MHz */
+    s_freq_n      = s_freq_center;
+    freq_fill_segments();                            /* pocatecni 10 MHz do segmentu */
+    for (int i = 0; i < n; i++) strcpy(s_num_prev[i], s_num_buf[i]);   /* shadow = init */
+    s_num_ready   = 1;
 }
 
-/* Big number rendered directly over the gradient background. */
+/* Spojity krok kmitoctu: mean-revert random walk kolem stredu (10 MHz).
+ * Krok ~±0,05 Hz (LSB = 10^-frac Hz), navrat /32 -> hodnota se pohybuje v pasmu
+ * ~±0,3 Hz: cele cislo (10.000.000) stabilni, desetinna mista zivot. */
+static void freq_step(void)
+{
+    static uint32_t rng = 0xDEADBEEFu;
+    rng = rng * 1664525u + 1013904223u;
+    int32_t step = (int32_t)((rng >> 12) & 0xFFFFF) - 0x80000;  /* ±524288 */
+    int64_t off  = (int64_t)s_freq_n - (int64_t)s_freq_center;
+    off += step - (off / 32);                                   /* random walk + decay (/32) */
+    int64_t v = (int64_t)s_freq_center + off;
+    if (v < 0) v = 0;
+    s_freq_n = (uint64_t)v;
+}
+
+/* Rozlozi s_freq_n do segmentu (MSB first, zero-pad na pevnou sirku). */
+static void freq_fill_segments(void)
+{
+    char d[20];
+    uint64_t v = s_freq_n;
+    for (int i = s_freq_total - 1; i >= 0; i--) { d[i] = (char)('0' + (int)(v % 10u)); v /= 10u; }
+    int p = 0, n = s_num.segment_count;
+    for (int s = 0; s < n; s++) {
+        int L = (int)strlen(SCR_MAIN_DIGITS[s].text);
+        for (int k = 0; k < L; k++) s_num_buf[s][k] = d[p++];
+        s_num_buf[s][L] = '\0';
+    }
+}
+
+/* Big number rendered directly over the gradient background. HW (DMA2D) glyph
+ * blend zapnut JEN pro tohle velke cislo (mereny kmitocet) — ostatni text jede CPU. */
 static void render_body_number(void)
 {
     if (!s_num_ready) num_build();   /* jednou; jitterovany stav pak prezije full render */
+    prim_set_glyph_accel(1);
     ui_big_number_render(&s_num);
+    prim_set_glyph_accel(0);
 }
 
 static void render_card_allan(prim_rect_t rect)
@@ -428,19 +488,35 @@ int screen_main_redraw_signal(int16_t pct)
     return 1;
 }
 
-/* Simulace kmitoctu: dithuje posledni 2 desetinne cislice (sigma+floor), integer
- * cast staticka. LEVNE — prekresli jen ditherovany ocas (od SCR_FREQ_TAIL_FROM),
- * ne cele velke cislo (mono_75 je drahy). Obnova pozadi jen pod ocasem. Vrati 1. */
+/* Posune simulovany kmitocet o jeden spojity krok, prepise cislice a prekresli
+ * cele cislo — ale PER-SEGMENT DIRTY: zmeny jsou v nizkych cislicich, takze staci
+ * prekreslit OCAS od prvni zmenene skupiny doprava; stabilni vyssi cislice (cela
+ * cast) se neprekresluji. Obraz je pixel-identicky s full redrawem, ale za zlomek
+ * zateze (typicky 2-4 mono_75 glyfy misto 15). Volat ~20x/s. Vrati 1 pri zmene. */
 int screen_main_redraw_freq(void)
 {
     if (!s_num_ready) return 0;
-    static uint32_t seed = 0x9E3779B9u;
-    seed = seed * 1664525u + 1013904223u;
-    s_num_buf[SCR_FREQ_TAIL_FROM][0]     = (char)('0' + (int)((seed >> 16) % 10u)); /* sigma */
-    seed = seed * 1664525u + 1013904223u;
-    s_num_buf[SCR_FREQ_TAIL_FROM + 1][0] = (char)('0' + (int)((seed >> 16) % 10u)); /* floor */
-    blit_bg_region(s_num_tail_rect);
-    ui_big_number_render_tail(&s_num, SCR_FREQ_TAIL_FROM);
+    freq_step();
+    freq_fill_segments();
+
+    int from = -1;                                  /* prvni zmenena skupina cislic */
+    for (int i = 0; i < s_num.segment_count; i++)
+        if (strcmp(s_num_buf[i], s_num_prev[i]) != 0) { from = i; break; }
+    if (from < 0) return 0;                          /* nic se nezmenilo -> neflipovat */
+
+    int16_t w    = ui_big_number_width(&s_num);
+    int16_t left = (int16_t)(UI_DIM_SCREEN_W / 2 - w / 2);
+    int16_t top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
+    int16_t x0   = ui_big_number_seg_x(&s_num, (int16_t)from);
+    /* Obnov pozadi od x0 doprava (po pravy okraj cisla vc. jednotky) a prekresli
+     * jen ocas. x0-2 zasahne max okraj predchoziho separatoru, jehoz inkoust je
+     * uprostred advance -> bez rezidua. */
+    blit_bg_region((prim_rect_t){ (int16_t)(x0 - 2), top,
+                                  (int16_t)(left + w - x0 + 8), 92 });
+    prim_set_glyph_accel(1);                 /* HW glyfy jen pro mereny kmitocet */
+    ui_big_number_render_tail(&s_num, (int16_t)from);
+    prim_set_glyph_accel(0);
+    for (int i = from; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
     return 1;
 }
 

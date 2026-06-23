@@ -111,10 +111,86 @@ static void d2d_blit(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_t *
     d2d_inval(dst, dst_stride, w, h);
 }
 
+/* ── DMA2D glyph blend (velky text bez CPU rasterizace) ────────────────────────
+ * Fonty drzi glyfy jako packed coverage (1/2/4/8 bpp). Misto CPU per-pixel blendu
+ * (text.c) expandujeme glyf JEDNOU do A8 dlazdice v SDRAM atlasu (Device pamet,
+ * non-cached -> DMA2D cte primo, jako bg_cache) a pak ho per-snimek blendujeme
+ * pres pozadi cistym DMA2D (FG=A8 alfa, barva z FGCOLR). Cache: klic = ukazatel
+ * na coverage data (stabilni, unikatni per glyf). Mark_dirty ZAMERNE neni — text
+ * vzdy nasleduje po clear (fill/blit), jehoz dirty rect ho pokryva (jako CPU text). */
+#ifndef PRIM_HOST_BUILD
+#  define GLYPH_SDRAM __attribute__((section(".sdram"), aligned(32)))
+#else
+#  define GLYPH_SDRAM
+#endif
+#define GLYPH_CACHE_N      96
+#define GLYPH_ATLAS_BYTES  (256u * 1024u)
+static uint8_t  s_glyph_atlas[GLYPH_ATLAS_BYTES] GLYPH_SDRAM;
+static uint32_t s_glyph_used;
+static struct { const uint8_t *key; uint8_t *tile; } s_gc[GLYPH_CACHE_N];
+static int      s_gc_n;
+
+/* Jeden coverage vzorek (0..255) z packed bitmapy — jako glyph_cov v text.c. */
+static uint8_t glyph_cov_a8(const uint8_t *bm, uint32_t idx, uint8_t bpp)
+{
+    switch (bpp) {
+    case 8: return bm[idx];
+    case 4: { uint8_t b = bm[idx >> 1]; uint8_t v = (idx & 1) ? (b & 0x0Fu) : (b >> 4);
+              return (uint8_t)(v * 17u); }
+    case 2: { uint8_t b = bm[idx >> 2]; uint8_t sh = (uint8_t)(6 - 2 * (idx & 3));
+              return (uint8_t)(((b >> sh) & 3u) * 85u); }
+    case 1: { uint8_t b = bm[idx >> 3]; return ((b >> (7 - (idx & 7))) & 1u) ? 255u : 0u; }
+    default: return 0u;
+    }
+}
+
+/* Vrati A8 dlazdici glyfu z cache; pri promahu ji expanduje do atlasu (jednou).
+ * NULL = atlas/cache plny -> volajici spadne na CPU. */
+static uint8_t *glyph_tile(const uint8_t *cov, uint8_t bpp, int16_t w, int16_t h)
+{
+    for (int i = 0; i < s_gc_n; i++)
+        if (s_gc[i].key == cov) return s_gc[i].tile;        /* hit */
+    if (s_gc_n >= GLYPH_CACHE_N) return 0;
+    uint32_t bytes = (uint32_t)w * (uint32_t)h;
+    if (s_glyph_used + bytes > GLYPH_ATLAS_BYTES) return 0;
+    uint8_t *tile = &s_glyph_atlas[s_glyph_used];
+    for (uint32_t idx = 0; idx < bytes; idx++) tile[idx] = glyph_cov_a8(cov, idx, bpp);
+    s_gc[s_gc_n].key = cov; s_gc[s_gc_n].tile = tile; s_gc_n++;
+    s_glyph_used += bytes;
+    return tile;
+}
+
+static int d2d_draw_glyph(prim_pixel_t *dst, int16_t stride_px, const uint8_t *cov,
+                          uint8_t bpp, int16_t w, int16_t h, prim_color_t color)
+{
+    if (w <= 0 || h <= 0) return 0;
+    uint8_t *tile = glyph_tile(cov, bpp, w, h);
+    if (tile == 0) return 0;                                /* nevejde se -> CPU */
+    d2d_wait();
+    /* M2M + PFC + blending: FG = A8 dlazdice (alfa), barva z FGCOLR; BG = OUT = dst. */
+    DMA2D->CR      = (0x2u << DMA2D_CR_MODE_Pos);
+    DMA2D->FGMAR   = (uint32_t)tile;
+    DMA2D->FGOR    = 0;                                     /* dlazdice tesne (stride=w) */
+    DMA2D->FGPFCCR = 0x9u;                                  /* CM = A8 (alfa, barva z FGCOLR) */
+    DMA2D->FGCOLR  = (uint32_t)(color & 0x00FFFFFFu);       /* 0xRRGGBB */
+    DMA2D->BGMAR   = (uint32_t)dst;
+    DMA2D->BGOR    = (uint32_t)(stride_px - w);
+    DMA2D->BGPFCCR = DMA2D_PFC_RGB565;
+    DMA2D->OMAR    = (uint32_t)dst;
+    DMA2D->OOR     = (uint32_t)(stride_px - w);
+    DMA2D->OPFCCR  = DMA2D_PFC_RGB565;
+    DMA2D->NLR     = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
+    DMA2D->CR     |= DMA2D_CR_START;
+    d2d_wait();
+    d2d_inval(dst, stride_px, w, h);
+    return 1;
+}
+
 static const prim_dma2d_backend_t g_stm32_backend = {
-    .fill_rect = d2d_fill,
-    .blit      = d2d_blit,
-    .wait      = d2d_wait,
+    .fill_rect  = d2d_fill,
+    .blit       = d2d_blit,
+    .wait       = d2d_wait,
+    .draw_glyph = d2d_draw_glyph,
 };
 
 void prim_stm32_use_dma2d(int enable)

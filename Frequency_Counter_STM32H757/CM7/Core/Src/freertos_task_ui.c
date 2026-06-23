@@ -106,13 +106,13 @@ void StartUiTask(void *argument)
       app_gpsdo_tick_signal();
     }
 
-    /* Simulace kmitoctu 10x/s (dither poslednich cislic velkeho cisla). */
+    /* Simulace kmitoctu 20x/s (spojita zmena, per-segment dirty redraw). */
     static uint32_t last_freq = 0;
-    if (HAL_GetTick() - last_freq >= 100) {
+    if (HAL_GetTick() - last_freq >= 50) {
       last_freq = HAL_GetTick();
       app_gpsdo_tick_freq();
     }
 
-    osDelay(33);   /* smycka ~30 Hz: bargraf 30x/s + freq 10x/s, touch 15x/s */
+    osDelay(10);   /* smycka ~100 Hz (jemne gate): freq 20x/s, bargraf ~30x/s, touch 15x/s */
   }
 }

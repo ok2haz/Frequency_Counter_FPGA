@@ -18,7 +18,13 @@
       "Bash(git branch *)",
       "Bash(git checkout *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git merge --no-ff triplebuffer-dirtyrect -m ' *2)",
+      "Bash(git --no-pager diff -- \"Frequency_Counter_STM32H757/.claude/settings.local.json\")",
+      "Bash(git --no-pager diff)",
+      "Bash(git merge --no-ff triplebuffer-dirtyrect -m ' *)",
+      "Bash(git push *)",
+      "Bash(git --no-pager diff -- ':!CM7/Debug')"
     ]
   }
 }

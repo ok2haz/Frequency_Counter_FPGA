@@ -311,7 +311,7 @@ void app_gpsdo_tick_signal(void)
     if (screen_main_redraw_signal(pct)) prim_stm32_present();
 }
 
-/* Simulace kmitoctu (~10x/s, jen hlavni obrazovka): dither poslednich cislic. */
+/* Simulace kmitoctu (~20x/s, jen hlavni obrazovka): per-segment dirty redraw. */
 void app_gpsdo_tick_freq(void)
 {
     if (s_view != 0) return;

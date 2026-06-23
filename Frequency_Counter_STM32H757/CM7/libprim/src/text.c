@@ -7,6 +7,15 @@
 #include <stddef.h>
 #include "internal/fb_impl.h"
 #include "internal/font_impl.h"
+#include "internal/dma2d_backend.h"   /* prim_dma2d() — volitelny HW glyph blend */
+
+/* Pod touto vyskou glyfu se HW (DMA2D) cesta nevyplati (rezie spusteni > CPU). */
+#define PRIM_GLYPH_HW_MIN_H 24
+
+/* HW glyph blend je default VYPNUTY -> text jede CPU. Cilene se zapina jen kolem
+ * velkeho textu (mereny kmitocet) pres prim_set_glyph_accel(). */
+static int s_glyph_accel = 0;
+void prim_set_glyph_accel(int enable) { s_glyph_accel = enable ? 1 : 0; }
 
 uint32_t prim_internal_utf8_next(const char **s)
 {
@@ -88,6 +97,12 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
         else                            pen = (int16_t)(pos.x - tw);
     }
 
+    /* Volitelny HW glyph blend (DMA2D): vyplati se jen u velkych glyfu plne uvnitr
+     * clipu a u nepruhledne barvy (HW cesta moduluje jen coverage). Jinak CPU. */
+    const prim_dma2d_backend_t *acc = prim_dma2d();
+    int hw_ok = (s_glyph_accel && acc != NULL && acc->draw_glyph != NULL &&
+                 (color & 0xFF000000u) == 0xFF000000u);
+
     /* pos.y is the baseline. */
     const char *s = utf8;
     while (*s) {
@@ -97,6 +112,20 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
         const uint8_t *bm = font->bitmap_data + g->bitmap_offset;
         int16_t gx0 = (int16_t)(pen + g->ox);
         int16_t gy0 = (int16_t)(pos.y - g->oy);
+
+        if (hw_ok && g->h >= PRIM_GLYPH_HW_MIN_H) {
+            prim_fb_t *fb = prim_internal_target();
+            prim_rect_t gr = { gx0, gy0, g->w, g->h }, cr;
+            /* jen kdyz je glyf CELY viditelny (neorezany) -> presny obdelnik */
+            if (fb != NULL && prim_internal_clip_rect(gr, &cr) &&
+                cr.x == gx0 && cr.y == gy0 && cr.w == g->w && cr.h == g->h &&
+                acc->draw_glyph(&fb->pixels[(int)gy0 * fb->stride_px + gx0],
+                                fb->stride_px, bm, font->bpp, g->w, g->h, color)) {
+                pen = (int16_t)(pen + g->advance);
+                continue;
+            }
+        }
+
         for (int gy = 0; gy < g->h; gy++) {
             for (int gx = 0; gx < g->w; gx++) {
                 uint8_t cov = glyph_cov(bm, gx, gy, g->w, font->bpp);

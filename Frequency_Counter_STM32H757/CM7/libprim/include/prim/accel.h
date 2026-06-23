@@ -22,6 +22,12 @@ typedef struct {
                  int16_t w, int16_t h);
     /** Block until the engine is idle. */
     void (*wait)(void);
+    /** Optional HW glyph blend (NULL = neni). Blenduje coverage bitmapu `cov`
+     *  (packed continuous, `bpp` bitu/px, w×h) pres dst (RGB565, dst uz miri na
+     *  levy horni roh glyfu) barvou `color`. Vraci nenulu pokud zpracoval; 0 =>
+     *  volajici pouzije CPU cestu. Smi si glyfy cachovat (klic = ukazatel `cov`). */
+    int (*draw_glyph)(prim_pixel_t *dst, int16_t stride_px, const uint8_t *cov,
+                      uint8_t bpp, int16_t w, int16_t h, prim_color_t color);
 } prim_dma2d_backend_t;
 
 /** Install (or NULL to disable) the DMA2D backend. */
