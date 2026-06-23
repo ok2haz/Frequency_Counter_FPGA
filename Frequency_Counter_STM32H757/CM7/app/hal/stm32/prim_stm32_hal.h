@@ -1,13 +1,14 @@
 #pragma once
 /**
  * @file prim_stm32_hal.h
- * @brief STM32H757 HAL bridge for libprim: single-buffer RGB565 framebuffer +
- *        DMA2D backend.
+ * @brief STM32H757 HAL bridge for libprim: triple-buffered, tearing-free RGB565
+ *        display + DMA2D backend.
  *
- * LTDC scans FB0 in WT-cacheable SDRAM; libprim renders in-place into it. The
- * DMA2D backend (fill/blit) invalidates the destination D-cache after each op so
- * subsequent CPU text anti-aliasing reads coherent pixels. The display pipeline
- * (LTDC/DSI/TC358762, RGB565 BURST) is otherwise untouched.
+ * 3 framebuffery ve WT-cacheable SDRAM (MPU region 0). Render cílí skrytý "back"
+ * buffer; prim_stm32_present() ho flipne na LTDC scan-out při vblanku (tearing-
+ * free, non-blocking) a copy-forwarduje do nového back jen ZMĚNĚNÉ oblasti
+ * (dirty-rect). DMA2D backend (fill/blit) po každém zápisu invaliduje cílovou
+ * D-cache (CPU anti-aliasing pak čte koherentní data). Detaily v prim_stm32_hal.c.
  */
 
 #include <stdint.h>
@@ -15,14 +16,14 @@
 #include <prim/types.h>
 
 #ifndef PRIM_FB_ADDR
-#define PRIM_FB_ADDR 0xC0000000u   /* FB0; LTDC scan-out (RGB565) */
+#define PRIM_FB_ADDR 0xC0000000u   /* FB0; LTDC scan-out při bootu (RGB565) */
 #endif
 
-/** Initialize libprim over FB0 + install the DMA2D backend. Call once at boot. */
+/** Init: 3 framebuffery + DMA2D backend; libprim target = back buffer. Volat jednou. */
 void prim_stm32_init(prim_fb_t *fb);
 
-/** No-op (single-buffer). Ponechano kvuli volajicim; pri jednom bufferu neni co
- *  prehazovat — kresli se primo do FB0 (WT region -> LTDC vidi data). */
+/** Flip back bufferu na LTDC (při vblanku, tearing-free) + dirty-rect copy-forward.
+ *  Volat po každém snímku — ideálně jen když se něco překreslilo. */
 void prim_stm32_present(void);
 
 /** Enable (default) or disable the register-level DMA2D backend at runtime. */

@@ -98,15 +98,15 @@ static void MPU_Config(void)
     /* Vypnout MPU pred zmenou */
     HAL_MPU_Disable();
 
-    /* Region 0: SDRAM framebuffery + canvas pool (0xC0000000, 4 MB, Write-Through).
-     * Triple buffering: FB0 @C0000000, FB1 @C0100000, FB2 @C0200000, off-screen
-     * canvas pool @C0300000 (vse RGB565, 1 MB stride). WT = CPU zapisy jdou hned
+    /* Region 0: SDRAM framebuffery (0xC0000000, 4 MB, Write-Through).
+     * Triple buffering: FB0 @C0000000, FB1 @C0100000, FB2 @C0200000 (vse RGB565,
+     * 1 MB stride); zbytek regionu (@C0300000) rezerva. WT = CPU zapisy jdou hned
      * do SDRAM (LTDC/DMA2D ctou konzistentni data). DMA2D zapisy ale obchazi
      * D-cache -> po DMA2D copy/blit do FB se cache zneplatnuje v prim_stm32_hal.c. */
     MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
     MPU_InitStruct.Number           = MPU_REGION_NUMBER0;
     MPU_InitStruct.BaseAddress      = 0xC0000000;
-    MPU_InitStruct.Size             = MPU_REGION_SIZE_2MB;   /* zpět na známé-dobré 2MB (izolace freezu; triple buffer vypnut) */
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_4MB;   /* FB0/FB1/FB2 (triple buffer), vse WT */
     MPU_InitStruct.SubRegionDisable = 0x00;
     MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL0;
     MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;

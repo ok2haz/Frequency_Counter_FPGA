@@ -54,14 +54,14 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 - **SDRAM = 32 MB** (FMC: 9 col + 13 row bits × 4 banky × 16 bit).
 - **SDRAM mapa:** **Region 0 (4MB WT, `0xC0000000`):** triple buffer **FB0 `0xC0000000`, FB1 `0xC0100000`, FB2 `0xC0200000`** + **off-screen canvas pool `0xC0300000`** (1 MB), vše RGB565, 1 MB stride. **Region 1 (4MB WBWA cached, `0xC0400000`):** `sdram` test buffer (`sdram write/read`) + scratch; dřív bignum workspace. **`.sdram` linker sekce `0xC0800000`** (16 MB, default/Device map): libprim glow scratch + `bg_cache` (předrenderované pozadí). SDRAM celkem 32 MB.
 
-### Triple buffering / tearing-free / off-screen canvas (prim_stm32_hal.c)
-> **⚠️ AKTUÁLNĚ VYPNUTO.** Page-flip (LTDC VBR) + copy-forward + cache invalidate způsoboval **systémový freeze hned po naběhnutí obrazovky** (zamrzl i FpgaTask/SPI → HardFault/halt). `prim_stm32_present()` je teď **no-op** a `prim_stm32_init` binduje **single-buffer FB0** (in-place render, LTDC scanuje FB0, WT region → vidí data). UiTask zase nastavuje LTDC adresu na `0xC0000000`. **K dořešení s testem na HW** (najít, proč page-flip/DMA2D faultoval). Niže je původní záměr.
-- **3 framebuffery** (FB0/1/2) + page-flip. Render cílí VŽDY skrytý **back** buffer; `prim_stm32_present()` ho flipne na LTDC scan-out **při vertikálním zatemnění** (`LTDC->SRCR = LTDC_SRCR_VBR`, NE `HAL_LTDC_SetAddress` = immediate → tearing) → **bez tearingu**. Po flipu **copy-forward** (DMA2D) zobrazeného snímku do nového back bufferu, aby inkrementální (partial) renderer (`bg_cache`, `put_val`, `redraw_button`) stavěl na správném základu.
-- **Volá `app_gpsdo`** po každém vykreslení (`render_main`/`render_diag`/`clear`/touch). UiTask už LTDC adresu nenastavuje (řídí ji present).
-- **⚠️ Cache koherence:** DMA2D obchází CPU D-cache → po copy-forward i canvas blitu se zneplatní cache cílového rozsahu (`SCB_InvalidateDCache_by_Addr`); WT region → žádné dirty řádky k zahození. Bez toho by AA hrany textu četly zastaralé pixely.
-- **Off-screen canvas:** `prim_stm32_canvas(&cv, w, h)` (pool `0xC0300000`, 1 MB, jeden naráz) → `prim_set_target(&cv)` → kresli → `prim_stm32_canvas_blit(&cv, x, y)` (DMA2D na back buffer).
-- **⚠️ `testRED`/`test` UART příkazy** píšou natvrdo do FB0 (`0xC0000000`) — při běžícím UI (page-flip) LTDC obvykle scanuje jiný buffer → nemusí být vidět. Bring-up reziduum.
-- **⚠️ Build:** nové API je v `prim_stm32_hal.c` (už se kompiluje) — žádný nový build soubor. Změna je **netestovaná na HW** (toolchain mimo PATH) → ověřit na desce; revert = `present()` nechat jen flipnout bez copy-forward, nebo binding zpět na jediný FB0.
+### Triple buffering / tearing-free (prim_stm32_hal.c) — AKTIVNÍ
+- **3 framebuffery** (FB0 `0xC0000000` / FB1 `0xC0100000` / FB2 `0xC0200000`) v MPU region 0 (4 MB WT). Render cílí VŽDY skrytý **back**; `prim_stm32_present()` flipne LTDC na back **při vblanku** (`LTDC->SRCR=LTDC_SRCR_VBR`, NE `HAL_LTDC_SetAddress`=immediate → tearing). **Non-blocking:** čeká na PŘEDCHOZÍ flip, ne na aktuální → při nízké kadenci žádný ~17 ms spin (3. buffer garantuje, že copy-forward nepíše do scanovaného bufferu).
+- **Dirty-rect copy-forward:** po flipu se do nového back zkopírují **jen změněné oblasti** (ne 768 KB) — levné. Sledování v DMA2D backendu: každý fill/blit zaznamená svůj obdélník (`mark_dirty`). ⚠️ **Každý partial redraw MUSÍ začít fill/blit (clear)**, jinak se ta oblast nezkopíruje dopředu (problikávání). Triple → nový back je 2 snímky starý → kopíruje se sjednocení dirty z posledních 2 snímků.
+- **`present` jen při změně:** `draw_diag_values`/`screen_main_redraw_time` vracejí, zda kreslily; volající flipne jen pak (jinak zbytečný flip).
+- Volá `app_gpsdo` po každém vykreslení; UiTask LTDC adresu neřídí.
+- **⚠️ Cache koherence:** DMA2D obchází CPU D-cache → po každém fill/blit se zneplatní cílová oblast (`SCB_InvalidateDCache_by_Addr`); WT → bez dirty řádků. Bez toho AA hrany textu čtou stará data („px šum").
+- **⚠️ `testRED`/`test` UART příkazy** píšou natvrdo do FB0 — při page-flipu nemusí být vidět (bring-up reziduum).
+- **Historie:** buffer byl dočasně vypnut při hledání freezu — ten byl ale **printf v SensorsTasku** (malý stack), NE buffer; po opravě znovu zapnut. CPU dopad ~0 % (dirty-rect). Off-screen canvas API odstraněno (nepoužité).
 
 ### Akcelerace / linker
 - Grafiku dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.

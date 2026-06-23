@@ -11,7 +11,14 @@
       "PowerShell(& \".\\\\tools\\\\node-v20.18.1-win-x64\\\\node.exe\" \".\\\\CM7\\\\libui\\\\tools\\\\font_gen\\\\gen_fonts.js\")",
       "PowerShell(& \".\\\\tools\\\\node-v20.18.1-win-x64\\\\node.exe\" \".\\\\CM7\\\\libui\\\\tools\\\\font_gen\\\\gen_fonts.js\"; Write-Output \"--- head ---\"; Get-Content \".\\\\CM7\\\\libui\\\\src\\\\fonts\\\\ui_font_sans_14.c\" -TotalCount 4)",
       "PowerShell(& \".\\\\tools\\\\node-v20.18.1-win-x64\\\\node.exe\" \".\\\\CM7\\\\libui\\\\tools\\\\font_gen\\\\check_glyphs.js\")",
-      "PowerShell(& \".\\\\tools\\\\node-v20.18.1-win-x64\\\\node.exe\" \".\\\\CM7\\\\libui\\\\tools\\\\font_gen\\\\gen_fonts.js\"; Write-Output \"--- 207B v mono_20? ---\"; Select-String -Path \".\\\\CM7\\\\libui\\\\src\\\\fonts\\\\ui_font_mono_20.c\" -Pattern \"\\\\{8347,\" -SimpleMatch | Select-Object -First 1)"
+      "PowerShell(& \".\\\\tools\\\\node-v20.18.1-win-x64\\\\node.exe\" \".\\\\CM7\\\\libui\\\\tools\\\\font_gen\\\\gen_fonts.js\"; Write-Output \"--- 207B v mono_20? ---\"; Select-String -Path \".\\\\CM7\\\\libui\\\\src\\\\fonts\\\\ui_font_mono_20.c\" -Pattern \"\\\\{8347,\" -SimpleMatch | Select-Object -First 1)",
+      "Bash(ls -la ..)",
+      "Bash(find . -iname \"*.ioc\")",
+      "Bash(find .. -maxdepth 2 -iname \"*.ioc\")",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

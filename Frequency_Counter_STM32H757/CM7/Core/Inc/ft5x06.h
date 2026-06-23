@@ -57,6 +57,9 @@ bool ft5x06_probe(I2C_HandleTypeDef *hi2c);
  * @return true pokud I2C cteni proslo
  */
 bool ft5x06_read_touch(I2C_HandleTypeDef *hi2c, ft5x06_touch_t *touch);
+/* ⚠️ NEDELAT "levny" 1B probe TD_STATUS pro detekci doteku — i 1B je castecne
+ * cteni a controller po nem DRZI I2C -> zatuhne (overeno: freeze po 1. doteku).
+ * Vzdy cti cely ramec pres ft5x06_read_touch. */
 
 /**
  * @brief Naparsuje touch frame (FT5X06_FRAME_LEN bytu od TD_STATUS) do touch.

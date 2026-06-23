@@ -37,21 +37,22 @@ int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 *
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 void screen_main_redraw_title(void);                /* redraw only the title row */
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
-void screen_main_redraw_time(uint32_t ms_since_boot);  /* simulovany cas HH:MM:SS.d, jen oblast casu */
+int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas HH:MM:SS; vrati 1 pokud prekreslil (zmena sekundy) */
+int  screen_main_redraw_signal(int16_t pct);           /* simulovany signal bargraf; vrati 1 pokud kreslil */
+int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (dither poslednich cislic); vrati 1 */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 extern const char *SCR_S_GNSS_LOCK, *SCR_S_SYS_READY, *SCR_S_SAT_VAL;
 extern const char *SCR_S_HDOP_L, *SCR_S_HDOP_V;
 extern const char *SCR_S_CAL_L, *SCR_S_CAL_V, *SCR_S_HOLD_L, *SCR_S_HOLD_V;
-extern const char *SCR_S_TIME, *SCR_S_DATE;
+extern const char *SCR_S_DATE;   /* cas je dynamicky (screen_main_redraw_time), ne staticky */
 extern const char *SCR_S_TITLE_RIGHT;
 extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
 extern const int16_t SCR_MAIN_DIGIT_COUNT;
 extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
 extern const char *SCR_S_OFFSET_L, *SCR_S_OFFSET_V, *SCR_S_SIGMA_L, *SCR_S_SIGMA_V;
 extern const char *SCR_S_TREND_L, *SCR_S_TREND_R;
-extern const char *SCR_S_SIGNAL_L, *SCR_S_SIGNAL_V;   /* input signal bargraph */
-extern const int16_t SCR_SIGNAL_PCT;
+extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
 extern const prim_point_t SCR_ALLAN_CURVE[];
 extern const int16_t SCR_ALLAN_CURVE_COUNT;
 extern const char *SCR_ALLAN_X_TICKS[], *SCR_ALLAN_Y_TICKS[];

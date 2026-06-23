@@ -28,8 +28,8 @@
 #define SDRAM_BASE        0xC0000000UL
 #define TEST_OFFSET       0x00001000UL   /* RAM_D2 test (bezpecne mimo struktury) */
 #define SDRAM_TEST_OFFSET 0x00400000UL   /* SDRAM test @0xC0400000 = MPU region 1 (WB
-                                          * scratch), MIMO triple-buffer region 0 (4MB)
-                                          * FB0/FB1/FB2/canvas. Drive bylo 0x1C0000 = uvnitr
+                                          * scratch), MIMO triple-buffer region 0 (4MB,
+                                          * FB0/FB1/FB2). Drive bylo 0x1C0000 = uvnitr
                                           * region 0 -> kolidovalo by s FB1/FB2. */
 
 #define LCD_WIDTH         800
@@ -360,17 +360,29 @@ void UartTask_run(void *argument)
 				  UBaseType_t nb = uxTaskGetSystemState(tb, 12, &t1);
 				  uint32_t total = t1 - t0;
 				  if (total == 0) total = 1;
-				  printf("=== CPU za 1s (DWT @480MHz) ===\n");
-				  printf("TASK             CPU  STACK_FREE\n");
+				  printf("=== STATS (CPU za 1s, DWT@480MHz) ===\n");
+				  printf("TASK             CPU PRI STACKFREE ST\n");
+				  uint32_t idle_pct = 0;
 				  for (UBaseType_t i = 0; i < nb; i++) {
 					  uint32_t prev = 0;
 					  for (UBaseType_t j = 0; j < na; j++)
 						  if (ta[j].xHandle == tb[i].xHandle) { prev = ta[j].ulRunTimeCounter; break; }
 					  uint32_t d = tb[i].ulRunTimeCounter - prev;
 					  uint32_t pct = (uint32_t)(((uint64_t)d * 100u) / total);
-					  printf("%-16s %2lu%%  %lu B\n", tb[i].pcTaskName,
-							 (unsigned long)pct, (unsigned long)(tb[i].usStackHighWaterMark * 4u));
+					  /* stav: X=run R=ready B=blocked S=susp D=deleted */
+					  char st = "XRBSD?"[(tb[i].eCurrentState <= eDeleted) ? tb[i].eCurrentState : 5];
+					  if (tb[i].pcTaskName[0] == 'I' && tb[i].pcTaskName[1] == 'D') idle_pct = pct;
+					  printf("%-16s %2lu%% %2lu  %5lu B %c\n", tb[i].pcTaskName,
+							 (unsigned long)pct, (unsigned long)tb[i].uxCurrentPriority,
+							 (unsigned long)(tb[i].usStackHighWaterMark * 4u), st);
+					  osDelay(2);
 				  }
+				  printf("--- CPU load: %lu%% | tasku: %lu\n",
+						 (unsigned long)(idle_pct <= 100 ? 100u - idle_pct : 0u), (unsigned long)nb);
+				  printf("Heap: %lu B free, %lu B min-ever\n",
+						 (unsigned long)xPortGetFreeHeapSize(),
+						 (unsigned long)xPortGetMinimumEverFreeHeapSize());
+				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
 			  }
 			  else if (strcmp(RxBuffer, "status") == 0)  {
 				  printf("RUNNING\n");
