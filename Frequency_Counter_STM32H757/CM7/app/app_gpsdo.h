@@ -34,11 +34,20 @@ void app_gpsdo_tick(void);
 /** Hodinovy tik (~10 Hz z UiTask): na hlavni obrazovce prekresli simulovany cas. */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot);
 
-/** Animace simulovaneho signal bargrafu (~30 Hz z UiTask, jen hlavni obrazovka). */
+/** Animace simulovaneho signal bargrafu (~10 Hz z UiTask, jen RUN, hlavni obrazovka). */
 void app_gpsdo_tick_signal(void);
 
 /** Simulace kmitoctu (~20 Hz z UiTask, jen hlavni obrazovka): per-segment dirty redraw. */
 void app_gpsdo_tick_freq(void);
+
+/** GPSDO statistika ze simulovaneho kmitoctu: vzorkovani frakcni odchylky (~2 Hz). */
+void app_gpsdo_tick_stats_sample(void);
+
+/** GPSDO statistika: zive prekresleni trend + offset/sigma (~2 Hz). */
+void app_gpsdo_tick_stats_draw(void);
+
+/** GPSDO statistika: zive prekresleni Allan grafu (~1 Hz, tezsi render). */
+void app_gpsdo_tick_allan_draw(void);
 
 /**
  * @brief Present coalescing: jeden flip pro vsechny nahromadene zmeny z ticku.

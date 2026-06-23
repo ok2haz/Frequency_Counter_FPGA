@@ -296,21 +296,21 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 }
 
 /* Animace signal bargrafu (SIMULACE): hodnota miri k nahodnemu CILI po krocich
- * MAX 1 dilek (5 %); po dosazeni cile zvoli novy. Volat 30x/s z UiTasku. Jen na
- * hlavni obrazovce. Flip jen kdyz se hodnota zmenila. */
+ * 1 % (= 1 dBm, dbm=pct-80). Volat 10x/s z UiTasku. Jen na hlavni obrazovce.
+ * Flip jen kdyz se hodnota zmenila. */
 void app_gpsdo_tick_signal(void)
 {
-    if (s_view != 0) return;
+    if (s_view != 0 || !screen_main_is_running()) return;   /* STOP -> zamrzne */
     static int16_t  pct = 0, target = 0;
     static uint32_t seed = 0x1234567u;
 
-    if (pct == target) {                 /* cil dosazen -> novy (zarovnany na segment) */
+    if (pct == target) {                 /* cil dosazen -> novy (0..100 %) */
         seed = seed * 1103515245u + 12345u;
-        target = (int16_t)(((seed >> 16) % 21u) * 5u);   /* 0,5,...,100 */
+        target = (int16_t)((seed >> 16) % 101u);   /* 0..100 */
     }
     int16_t old = pct;
-    if (pct < target)      pct += 5;     /* max jeden dilek (5 %) za krok */
-    else if (pct > target) pct -= 5;
+    if (pct < target)      pct += 1;     /* krok 1 % = 1 dBm */
+    else if (pct > target) pct -= 1;
     if (pct == old) return;              /* nic se nezmenilo -> neflipovat */
 
     prim_set_target(&s_fb);
@@ -321,10 +321,35 @@ void app_gpsdo_tick_signal(void)
 /* Simulace kmitoctu (~20x/s, jen hlavni obrazovka): per-segment dirty redraw. */
 void app_gpsdo_tick_freq(void)
 {
-    if (s_view != 0) return;
+    if (s_view != 0 || !screen_main_is_running()) return;   /* STOP -> cislo zamrzne */
     prim_set_target(&s_fb);
     prim_reset_clip();
     if (screen_main_redraw_freq()) s_dirty = 1;   /* flip odlozen na flush */
+}
+
+/* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~2x/s). */
+void app_gpsdo_tick_stats_sample(void)
+{
+    if (s_view != 0 || !screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
+    screen_main_stats_sample();
+}
+
+/* GPSDO statistika: zive prekresleni trend + offset/sigma (~2x/s, jen RUN). */
+void app_gpsdo_tick_stats_draw(void)
+{
+    if (s_view != 0 || !screen_main_is_running()) return;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    if (screen_main_redraw_stats()) s_dirty = 1;   /* flip odlozen na flush */
+}
+
+/* GPSDO statistika: zive prekresleni Allan grafu (~1x/s, tezsi render, jen RUN). */
+void app_gpsdo_tick_allan_draw(void)
+{
+    if (s_view != 0 || !screen_main_is_running()) return;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    if (screen_main_redraw_allan()) s_dirty = 1;
 }
 
 /* Present coalescing: jeden flip pro vsechny nahromadene zmeny (clock/signal/freq).

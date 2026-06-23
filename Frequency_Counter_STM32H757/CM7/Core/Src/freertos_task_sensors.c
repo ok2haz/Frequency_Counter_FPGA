@@ -14,7 +14,6 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ads1115.h"
 #include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
-#include "ft5x06.h"       /* touch poll (presunuto sem z UiTasku, viz CLAUDE.md #2) */
 #include "freertos_shared.h"
 
 /* Definice pro TMP117 */
@@ -82,13 +81,11 @@ void SensorsTask_run(void *argument)
   uint8_t rawData[2];
   int16_t tempRaw;
 
-  // Smycka bezi na ~10 Hz kvuli touch pollu (FT5x06 @ I2C4); senzory se ctou
-  // gated 2x/s. Touch cteni (31 B, ~3 ms) je tak MIMO render task (UiTask).
+  // Senzory 2x/s. (Touch poll je v UiTasku — presun do tohoto tasku zpusoboval
+  // selhani touch + free-run I2C4 pri saturaci, viz historie.)
   TickType_t xLastWakeTime;
-  const TickType_t xPeriod = pdMS_TO_TICKS(100);   // ~10 Hz (touch poll; mensi rezie nez 15)
+  const TickType_t xFrequency = pdMS_TO_TICKS(500);   // 2x za sekundu
   xLastWakeTime = xTaskGetTickCount();
-  uint32_t last_sensors = 0;                       // gate pro senzory (500 ms)
-  uint8_t  was_down = 0;                            // touch edge detekce
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
@@ -102,31 +99,6 @@ void SensorsTask_run(void *argument)
   }
 
   for(;;) {
-	// === Touch poll (~15 Hz) na I2C4. Edge detekce; pri DOWN zapis do g_touch_*. ===
-	// ⚠️ FT5x06 MUSI cist cely 31B ramec (ft5x06_read_touch) — viz CLAUDE.md.
-	{
-	  ft5x06_touch_t t; int got = 0;
-	  if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
-		got = ft5x06_read_touch(&hi2c4, &t);
-		osMutexRelease(i2c4MutexHandle);
-	  }
-	  if (got) {
-		if (t.valid && !was_down) {
-		  uint16_t mx = (uint16_t)(799 - t.x), my = (uint16_t)(479 - t.y);  // panel zrcadleny X+Y
-		  g_touch_xy = ((uint32_t)mx << 16) | my;
-		  g_touch_seq++;   // UiTask si toho vsimne a zavola handle_touch (render)
-		}
-		was_down = (uint8_t)t.valid;
-	  }
-	}
-
-	// === Senzory gated na 2x/s (touch smycka je rychlejsi) ===
-	if ((uint32_t)(xTaskGetTickCount() - last_sensors) < pdMS_TO_TICKS(500)) {
-	  vTaskDelayUntil(&xLastWakeTime, xPeriod);
-	  continue;
-	}
-	last_sensors = xTaskGetTickCount();
-
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
 	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
@@ -193,7 +165,7 @@ void SensorsTask_run(void *argument)
 	  }
 	}
 
-	// Cekani na dalsi iteraci smycky (~66 ms; touch poll kazdou iteraci)
-	vTaskDelayUntil(&xLastWakeTime, xPeriod);
+	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
+	vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }

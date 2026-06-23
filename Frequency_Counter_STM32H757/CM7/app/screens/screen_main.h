@@ -39,7 +39,11 @@ void screen_main_redraw_title(void);                /* redraw only the title row
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
 int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas HH:MM:SS; vrati 1 pokud prekreslil (zmena sekundy) */
 int  screen_main_redraw_signal(int16_t pct);           /* simulovany signal bargraf; vrati 1 pokud kreslil */
-int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (dither poslednich cislic); vrati 1 */
+int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
+void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~2x/s) */
+int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~2x/s); vrati 1 */
+int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
+bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 extern const char *SCR_S_GNSS_LOCK, *SCR_S_SYS_READY, *SCR_S_SAT_VAL;
@@ -50,14 +54,12 @@ extern const char *SCR_S_TITLE_RIGHT;
 extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
 extern const int16_t SCR_MAIN_DIGIT_COUNT;
 extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
-extern const char *SCR_S_OFFSET_L, *SCR_S_OFFSET_V, *SCR_S_SIGMA_L, *SCR_S_SIGMA_V;
-extern const char *SCR_S_TREND_L, *SCR_S_TREND_R;
+/* Offset/sigma/trend hodnoty jsou POCITANE ze statistiky (screen_main.c), jen labely zde. */
+extern const char *SCR_S_OFFSET_L;
+extern const char *SCR_S_TREND_L;
 extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
-extern const prim_point_t SCR_ALLAN_CURVE[];
-extern const int16_t SCR_ALLAN_CURVE_COUNT;
-extern const char *SCR_ALLAN_X_TICKS[], *SCR_ALLAN_Y_TICKS[];
-extern const char *SCR_ALLAN_X_LABEL, *SCR_ALLAN_CURSOR_L;
-extern const int16_t SCR_SPARKLINE_VALUES[];
-extern const int16_t SCR_SPARKLINE_COUNT, SCR_SPARKLINE_SIGMA_MIN, SCR_SPARKLINE_SIGMA_MAX;
+/* Allan: osy staticke, krivka POCITANA (ADEV) v render_card_allan. */
+extern const char *SCR_ALLAN_Y_TICKS[];   /* X popisky (τ) generuje render_card_allan dynamicky */
+extern const char *SCR_ALLAN_X_LABEL;
 extern const char *SCR_S_BTN_RUN, *SCR_S_BTN_GATE_L,
                   *SCR_S_BTN_CHAN_L, *SCR_S_BTN_MENU;

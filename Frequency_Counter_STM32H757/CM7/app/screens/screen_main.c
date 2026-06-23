@@ -15,6 +15,7 @@
 #include <prim/prim.h>
 #include <stdio.h>   /* snprintf pro simulovany cas */
 #include <string.h>  /* strncpy pro simulovane cislice */
+#include <math.h>    /* sqrtf, log10f, fabsf — GPSDO statistika (cold path, 1-2/s) */
 
 #ifndef SCR_SDRAM_SECTION
 #  if defined(__GNUC__) && !defined(PRIM_HOST_BUILD)
@@ -40,9 +41,12 @@ static const char *MODE_NAME[2] = {"FREQUENCY", "PERIOD"};
 static const char *CHAN_NAME[2] = {"CH A", "CH B"};
 static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
-    st = {0, 1, 1, false};   /* FREQUENCY, CH B, 1 s, stopped (shows "▶ RUN") */
+    st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
+
+/* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
+bool screen_main_is_running(void) { return st.running; }
 
 static bool pt_in(int16_t x, int16_t y, prim_rect_t r)
 {
@@ -283,69 +287,284 @@ static void render_body_number(void)
     prim_set_glyph_accel(0);
 }
 
+/* ── GPSDO statistika ze SIMULOVANEHO kmitoctu ──────────────────────────────
+ * Frakcni odchylka y=(f-f0)/f0 (f0=10 MHz). Poctiva magnituda (~1e-8 dle kolisani
+ * simulace). Vzorkuje se ~2x/s do ring bufferu (jen pri RUN); z nej: offset
+ * (klouzavy prumer), sigma@1s (ADEV tau=1s), drift (df/dt), p-p okna a Allan
+ * krivka ADEV(tau). Prekresleni trend/karty 2x/s, Allan 1x/s. Float je OK (cold
+ * path, ~1-2x/s; mimo no-float pravidlo pro protokol kmitoctu). */
+#define STAT_N 120                  /* 2/s -> 60 s historie */
+static float s_y[STAT_N];
+static int   s_y_head = 0, s_y_count = 0;
+
+static void stats_sample(void)
+{
+    /* off_n = odchylka v LSB (LSB=1e-7 Hz), f0=1e7 Hz -> y = off_n*1e-14 */
+    int64_t off_n = (int64_t)s_freq_n - (int64_t)s_freq_center;
+    s_y[s_y_head] = (float)off_n * 1e-14f;
+    s_y_head = (s_y_head + 1) % STAT_N;
+    if (s_y_count < STAT_N) s_y_count++;
+}
+
+static float stat_at(int age)   /* age 0 = nejnovejsi */
+{
+    int idx = (s_y_head - 1 - age + 2 * STAT_N) % STAT_N;
+    return s_y[idx];
+}
+
+static float stats_mean(int n)
+{
+    if (n > s_y_count) n = s_y_count;
+    if (n <= 0) return 0.0f;
+    float s = 0; for (int i = 0; i < n; i++) s += stat_at(i);
+    return s / (float)n;
+}
+
+static float stats_pp(int n)
+{
+    if (n > s_y_count) n = s_y_count;
+    if (n <= 0) return 0.0f;
+    float mn = stat_at(0), mx = mn;
+    for (int i = 1; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    return mx - mn;
+}
+
+/* Non-overlapping ADEV pro tau = m vzorku (tau0=0,5 s). Potrebuje >=2 bloky. */
+static float stats_adev(int m)
+{
+    int blocks = s_y_count / m;
+    if (blocks < 2) return 0.0f;
+    float prev = 0; int have = 0; double acc = 0; int nd = 0;
+    for (int b = 0; b < blocks; b++) {
+        float bs = 0;
+        for (int j = 0; j < m; j++) bs += stat_at(b * m + j);
+        bs /= (float)m;
+        if (have) { float d = bs - prev; acc += (double)d * d; nd++; }
+        prev = bs; have = 1;
+    }
+    return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
+}
+
+/* Drift (df/dt) = linearni trend frakcni odchylky pres okno [1/s]. Metoda dvou
+ * pulek: (prumer novejsi pulky - prumer starsi pulky) / odstup centroidu. */
+static float stats_drift(void)
+{
+    int h = s_y_count / 2;
+    if (h < 1) return 0.0f;
+    float nm = 0, om = 0;
+    for (int i = 0; i < h; i++) { nm += stat_at(i); om += stat_at(s_y_count - 1 - i); }
+    nm /= (float)h; om /= (float)h;
+    float dt = (float)h * 0.5f;           /* odstup centroidu pulek [s] (vzorky×0,5 s) */
+    return (dt > 0.0f) ? (nm - om) / dt : 0.0f;
+}
+
+/* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
+ * (mono_14/16 maji plny charset vc. ⁰..⁹⁻⁺). with_sign: + pro kladne. */
+static void fmt_frac(char *buf, int len, float v, int with_sign)
+{
+    static const char *const SUP[10] = {"⁰","¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"};
+    float a = fabsf(v);
+    if (a < 1e-15f) { snprintf(buf, len, "0"); return; }
+    int e = 0;
+    while (a < 1.0f && e < 30) { a *= 10.0f; e++; }   /* hodnoty <1 -> e>0 (10⁻e) */
+    while (a >= 10.0f) { a /= 10.0f; e--; }
+    int M = (int)a;
+    int m = (int)((a - (float)M) * 10.0f + 0.5f);
+    if (m >= 10) { m = 0; M++; }
+    int ae = (e < 0) ? -e : e;
+    char es[12]; es[0] = '\0';
+    if (ae >= 10) strcat(es, SUP[(ae / 10) % 10]);
+    strcat(es, SUP[ae % 10]);
+    const char *sign    = (v < 0) ? "-" : (with_sign ? "+" : "");
+    const char *expsign = (e < 0) ? "⁺" : "⁻";
+    snprintf(buf, len, "%s%d,%d×10%s%s", sign, M, m, expsign, es);
+}
+
+/* Rect karet pro zive prekresleni (zachyceno pri full renderu). */
+static prim_rect_t s_allan_rect = {0,0,0,0};
+static prim_rect_t s_trend_rect = {0,0,0,0};
+static prim_rect_t s_small_rect = {0,0,0,0};
+
 static void render_card_allan(prim_rect_t rect)
 {
+    s_allan_rect = rect;                          /* pro zive prekresleni */
+    char hdr[40];
+    char sig[24]; fmt_frac(sig, sizeof(sig), stats_adev(2), 0);  /* sigma@1s = tau 2 vzorky */
+    snprintf(hdr, sizeof(hdr), "@1s %s", sig);
     ui_card_t card = {.rect = rect, .header_label = "Allan σy(τ)",
-                      .header_right = "@ 1 s · 3,5×10⁻¹²",
+                      .header_right = hdr,
                       .header_right_accent = UI_COLOR_ACC};
     ui_card_render_chrome(&card);
     prim_rect_t ci = ui_card_inner_rect(&card);
-    /* Reserve a left gutter for Y-axis labels and a bottom strip for X labels,
-     * and a small right margin so the last tick ("1k") stays inside. */
+    /* Levy okraj (36) na Y popisky, dolni pruh (22) na X popisky τ, maly pravy okraj. */
     prim_rect_t inner = {(int16_t)(ci.x + 36), ci.y,
                          (int16_t)(ci.w - 36 - 8), (int16_t)(ci.h - 22)};
 
-    ui_chart_loglog_t chart = {.inner = inner, .x_decade_count = 4,
-        .y_decade_count = 4, .x_min_exp = -1, .y_min_exp = -13,
-        .x_label = SCR_ALLAN_X_LABEL, .x_tick_labels = SCR_ALLAN_X_TICKS,
-        .y_tick_labels = SCR_ALLAN_Y_TICKS};
-    ui_chart_loglog_render_grid(&chart);
-    ui_chart_loglog_render_floor(&chart, (int16_t)(inner.y + (inner.h * 3) / 4),
-                                 "GPSDO floor");
-    ui_chart_loglog_render_curve(&chart, SCR_ALLAN_CURVE, SCR_ALLAN_CURVE_COUNT,
-                                 UI_COLOR_ACC, true);
-    ui_chart_loglog_render_cursor(&chart,
-        (prim_point_t){(int16_t)(inner.x + inner.w / 4), (int16_t)(inner.y + 40)},
-        SCR_ALLAN_CURSOR_L);
+    /* Vlastni log-log osa: Y pevna (1e-10..1e-6), X = [tau_min..tau_max] v log10 —
+     * DYNAMICKA: krivka zacina PRESNE u leveho okraje (tau_min) a roztahuje se
+     * vpravo s nejdelsim dostupnym tau. (Genericky log-log chart umel jen cele
+     * dekady -> osa neslo zacit u 0,5 s, proto vlastni.) */
+    const int Y_MIN = -10, Y_DEC = 4;
+
+    /* Y mrizka + dekadove popisky. */
+    for (int j = 0; j <= Y_DEC; j++) {
+        int16_t y = (int16_t)(inner.y + (int32_t)j * inner.h / Y_DEC);
+        prim_draw_line((prim_point_t){inner.x, y},
+                       (prim_point_t){(int16_t)(inner.x + inner.w), y}, 1, UI_COLOR_LINE);
+        prim_draw_text((prim_point_t){(int16_t)(inner.x - 6), (int16_t)(y + 4)},
+                       SCR_ALLAN_Y_TICKS[j], &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+    }
+
+    /* ADEV body (tau = m*0,5 s). */
+    static const int MS[] = {1, 2, 4, 8, 16, 32};
+    float taus[6], adevs[6]; int np = 0;
+    for (unsigned k = 0; k < sizeof(MS) / sizeof(MS[0]); k++) {
+        float a = stats_adev(MS[k]);
+        if (a <= 0.0f) continue;
+        taus[np] = (float)MS[k] * 0.5f; adevs[np] = a; np++;
+    }
+    if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
+        prim_draw_text((prim_point_t){(int16_t)(inner.x + inner.w / 2),
+                                      (int16_t)(inner.y + inner.h / 2)},
+                       "Waiting for data...", &ui_font_sans_14,
+                       UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+        return;
+    }
+
+    float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
+    float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
+    float xspan = lmax - lmin;
+    if (xspan < 1e-6f) xspan = 1.0f;
+
+    prim_point_t pts[6];
+    for (int i = 0; i < np; i++) {
+        float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres celou sirku */
+        float ly = (log10f(adevs[i]) - (float)Y_MIN) / (float)Y_DEC;
+        if (ly < 0.0f) ly = 0.0f;
+        if (ly > 1.0f) ly = 1.0f;
+        int16_t x = (int16_t)(inner.x + fx * inner.w);
+        prim_draw_line((prim_point_t){x, inner.y},               /* X mrizka v bode tau */
+                       (prim_point_t){x, (int16_t)(inner.y + inner.h)}, 1, UI_COLOR_LINE);
+        char tl[8];                                              /* popisek tau [s] */
+        if (taus[i] < 0.95f) snprintf(tl, sizeof(tl), "0,%d", (int)(taus[i] * 10.0f + 0.5f));
+        else                 snprintf(tl, sizeof(tl), "%d", (int)(taus[i] + 0.5f));
+        prim_draw_text((prim_point_t){x, (int16_t)(inner.y + inner.h + 14)},
+                       tl, &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+        pts[i].x = x;
+        pts[i].y = (int16_t)(inner.y + (1.0f - ly) * inner.h);
+    }
+    for (int i = 1; i < np; i++)
+        prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
+    for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
+        prim_fill_circle(pts[i], 3, UI_COLOR_ACC);
+    if (SCR_ALLAN_X_LABEL)
+        prim_draw_text((prim_point_t){(int16_t)(inner.x + inner.w),
+                                      (int16_t)(inner.y + inner.h + 28)},
+                       SCR_ALLAN_X_LABEL, &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
 }
 
-static void render_two_small_cards(prim_rect_t rect,
-                                   const char *la, const char *va, prim_color_t ca,
-                                   const char *lb, const char *vb, prim_color_t cb)
+/* Jedna mala karta: header label + hodnota (mono_16). Hodnota posunuta vys (+11). */
+static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
 {
-    int16_t half = (int16_t)((rect.w - SCR_MAIN_CARD_SECTION_GAP) / 2);
-    ui_card_t a = {.rect = {rect.x, rect.y, half, rect.h}, .header_label = la};
-    ui_card_t b = {.rect = {(int16_t)(rect.x + half + SCR_MAIN_CARD_SECTION_GAP),
-                            rect.y, half, rect.h}, .header_label = lb};
-    ui_card_render_chrome(&a);
-    ui_card_render_chrome(&b);
-    prim_rect_t ia = ui_card_inner_rect(&a);
-    prim_rect_t ib = ui_card_inner_rect(&b);
-    prim_draw_text((prim_point_t){ia.x, (int16_t)(ia.y + 15)}, va,
-                   &ui_font_mono_16, ca, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){ib.x, (int16_t)(ib.y + 15)}, vb,
-                   &ui_font_mono_16, cb, PRIM_ALIGN_LEFT);
+    ui_card_t card = {.rect = r, .header_label = label};
+    ui_card_render_chrome(&card);
+    prim_rect_t in = ui_card_inner_rect(&card);
+    prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
+                   &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
 }
+
+/* TRI uzke karty ze statistiky: Offset (klouzavy prumer y), σy@1s (ADEV tau=1s),
+ * Drift (df/dt — rychlost ujizdeni kmitoctu). */
+static void draw_offset_sigma(prim_rect_t rect)
+{
+    s_small_rect = rect;                          /* pro zive prekresleni */
+    int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
+    int16_t w   = (int16_t)((rect.w - 2 * gap) / 3);
+    char off[24]; fmt_frac(off, sizeof(off), stats_mean(8),   1);
+    char s1[24];  fmt_frac(s1,  sizeof(s1),  stats_adev(2),   0);   /* tau 1 s (2 vzorky) */
+    char dr[24];  fmt_frac(dr,  sizeof(dr),  stats_drift(),   1);   /* df/dt [1/s] */
+    draw_stat_card((prim_rect_t){rect.x, rect.y, w, rect.h}, SCR_S_OFFSET_L, off, UI_COLOR_OK);
+    draw_stat_card((prim_rect_t){(int16_t)(rect.x + w + gap), rect.y, w, rect.h},
+                   "σy 1s", s1, UI_COLOR_VIOLET);
+    draw_stat_card((prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h},
+                   "Drift/s", dr, UI_COLOR_ACC);
+}
+
+#define SPARK_N 21
+static int16_t s_spark[SPARK_N];
 
 static void render_card_trend(prim_rect_t rect)
 {
+    s_trend_rect = rect;                          /* pro zive prekresleni */
+
+    /* Sparkline: SPARK_N bodu rovnomerne pres CELOU 60s historii (vlevo=nejstarsi).
+     * PEVNE meritko ±FS -> stred 128 (neposkakuje pri sliding window jako autoscale)
+     * -> koherentni 60s historie. FS odpovida rozsahu kolisani simulace. */
+    const float FS = 4e-8f;                       /* full-scale frakcni odchylky */
+    int n = (s_y_count < SPARK_N) ? s_y_count : SPARK_N;
+    if (n < 2) n = 2;
+    float sum = 0;
+    for (int k = 0; k < n; k++) {
+        int age = (n - 1 - k) * ((s_y_count > 1 ? s_y_count - 1 : 1)) / (n - 1);
+        float v = stat_at(age);
+        sum += v;
+        float u = (v / FS + 1.0f) * 0.5f;         /* -FS..+FS -> 0..1 */
+        if (u < 0.0f) u = 0.0f;
+        if (u > 1.0f) u = 1.0f;
+        s_spark[k] = (int16_t)(40.0f + u * 175.0f);
+    }
+    float mean = sum / (float)n, sd = stats_adev(2);
+    float ulo = ((mean - sd) / FS + 1.0f) * 0.5f;
+    float uhi = ((mean + sd) / FS + 1.0f) * 0.5f;
+    if (ulo < 0.0f) ulo = 0.0f;
+    if (uhi > 1.0f) uhi = 1.0f;
+    int16_t sig_lo = (int16_t)(40.0f + ulo * 175.0f);
+    int16_t sig_hi = (int16_t)(40.0f + uhi * 175.0f);
+
+    /* Header vpravo: p-p okna. */
+    static char tr[48];
+    char pp[24]; fmt_frac(pp, sizeof(pp), stats_pp(n), 0);
+    snprintf(tr, sizeof(tr), "● %s p-p", pp);
+
     ui_card_t card = {.rect = rect, .header_label = SCR_S_TREND_L,
-                      .header_right = SCR_S_TREND_R,
-                      .header_right_accent = UI_COLOR_OK};
+                      .header_right = tr, .header_right_accent = UI_COLOR_OK};
     ui_card_render_chrome(&card);
     prim_rect_t inner = ui_card_inner_rect(&card);
-    ui_sparkline_t sp = {.inner = inner, .y_values = SCR_SPARKLINE_VALUES,
-        .count = SCR_SPARKLINE_COUNT, .show_sigma_band = true,
-        .sigma_min = SCR_SPARKLINE_SIGMA_MIN, .sigma_max = SCR_SPARKLINE_SIGMA_MAX,
+    ui_sparkline_t sp = {.inner = inner, .y_values = s_spark,
+        .count = (int16_t)n, .show_sigma_band = true,
+        .sigma_min = sig_lo, .sigma_max = sig_hi,
         .show_endpoint_marker = true, .fill_below = false,
         .stroke_color = UI_COLOR_ACC};
     ui_sparkline_render(&sp);
+
+    /* Tenka regresni (trendova) cara pres syrove vzorky — ukaze smer/drift, aniz by
+     * skryla sum. Least-squares fit s_spark[k] vs k; mapovani 1:1 se sparkline. */
+    float si = 0, sv = 0, sii = 0, siv = 0;
+    for (int k = 0; k < n; k++) {
+        si += (float)k; sv += (float)s_spark[k];
+        sii += (float)k * (float)k; siv += (float)k * (float)s_spark[k];
+    }
+    float denom = (float)n * sii - si * si;
+    if (denom > 1e-3f || denom < -1e-3f) {
+        float slope = ((float)n * siv - si * sv) / denom;
+        float inter = (sv - slope * si) / (float)n;
+        float v0 = inter, v1 = inter + slope * (float)(n - 1);
+        if (v0 < 0) v0 = 0;
+        if (v0 > 255) v0 = 255;
+        if (v1 < 0) v1 = 0;
+        if (v1 > 255) v1 = 255;
+        int16_t y0 = (int16_t)(inner.y + inner.h - 1 - (int)(v0 * (inner.h - 1) / 255.0f));
+        int16_t y1 = (int16_t)(inner.y + inner.h - 1 - (int)(v1 * (inner.h - 1) / 255.0f));
+        prim_draw_line((prim_point_t){inner.x, y0},
+                       (prim_point_t){(int16_t)(inner.x + inner.w - 1), y1},
+                       1, UI_COLOR_OK);
+    }
 }
 
-/* Signal bargraf je SIMULOVANY (animovany ~30x/s, viz screen_main_redraw_signal).
- * Drzime jeho rect + aktualni hodnotu, aby sel prekreslit jen on (partial). */
+/* Signal bargraf je SIMULOVANY (animovany ~10x/s, krok 1 dBm, zobrazeni s 1
+ * desetinou; viz screen_main_redraw_signal). Drzime rect + hodnotu pro partial redraw. */
 static prim_rect_t s_signal_rect = {0, 0, 0, 0};
-static int16_t     s_signal_pct  = 0;   /* simulace ho hned prepise (animace ~30x/s) */
+static int16_t     s_signal_pct  = 0;   /* simulace ho hned prepise */
 
 /* dBm z pct: rozsah bargrafu 0..100 % -> -80..+20 dBm (100 dB). */
 static int signal_dbm(int16_t pct) { return (int)pct - 80; }
@@ -378,9 +597,7 @@ static void render_right_column(prim_rect_t rect)
     int16_t trend_h = (int16_t)(rect.h - small_h - signal_h - 2 * gap);
 
     int16_t y = rect.y;
-    render_two_small_cards((prim_rect_t){rect.x, y, rect.w, small_h},
-        SCR_S_OFFSET_L, SCR_S_OFFSET_V, UI_COLOR_OK,
-        SCR_S_SIGMA_L, SCR_S_SIGMA_V, UI_COLOR_VIOLET);
+    draw_offset_sigma((prim_rect_t){rect.x, y, rect.w, small_h});
     y = (int16_t)(y + small_h + gap);
     render_card_trend((prim_rect_t){rect.x, y, rect.w, trend_h});
     y = (int16_t)(y + trend_h + gap);
@@ -409,8 +626,8 @@ static void footer_button_def(int i, const char **label, const char **value,
     *value = 0;
     switch (i) {
     case 0: *label = MODE_NAME[st.mode ? 0 : 1]; *var = UI_BUTTON_NORMAL; break;
-    case 1: *label = st.running ? "STOP" : SCR_S_BTN_RUN;
-            *var = st.running ? UI_BUTTON_ACTIVE : UI_BUTTON_RUN; break;
+    case 1: *label = st.running ? SCR_S_BTN_RUN : "STOP";   /* invertovano: label = stav */
+            *var = st.running ? UI_BUTTON_RUN : UI_BUTTON_ACTIVE; break;
     case 2: *label = SCR_S_BTN_GATE_L; *value = GATE_VAL[st.gate];  *var = UI_BUTTON_NORMAL; break;
     case 3: *label = SCR_S_BTN_CHAN_L; *value = CHAN_NAME[st.chan]; *var = UI_BUTTON_NORMAL; break;
     default: *label = SCR_S_BTN_MENU;  *var = UI_BUTTON_NORMAL; break;
@@ -478,9 +695,9 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
     return 1;   /* prekresleno -> flip */
 }
 
-/* LEAN prekresleni signal bargrafu (animace ~30x/s): chrome/pozadi/label/stopa jsou
- * staticke z render_main. INCREMENTAL — prekresli jen segmenty zmenene od minula
- * (typicky 1, krok 5 %) + value text vpravo. Misto ~20 fillu jen rozdil. Vrati 1. */
+/* Incremental prekresleni signal bargrafu (animace ~10x/s, dBm krok 1): chrome/
+ * pozadi/label/stopa jsou staticke z render_main; prekresli jen segmenty zmenene
+ * od minula + value text (dBm s 1 des. mistem). Misto ~20 fillu jen rozdil. Vrati 1. */
 int screen_main_redraw_signal(int16_t pct)
 {
     if (s_signal_rect.w == 0) return 0;
@@ -490,16 +707,21 @@ int screen_main_redraw_signal(int16_t pct)
     prim_rect_t inner = ui_card_inner_rect(&card);
     int drew = 0;
 
-    /* Value text (dBm) vpravo: smaz box + prekresli JEN kdyz se zobrazena hodnota
-     * zmenila (u realnych, pomalu menicich se dat setri; u simulace se meni vzdy). */
+    /* Value text (dBm s 1 desetinnym mistem) vpravo: smaz box + prekresli jen pri
+     * zmene celeho dBm (= kazdy krok). Desetina = simulovany sum (0..9). */
     int dbm = signal_dbm(pct);
     static int last_dbm = 0x7FFFFFFF;
     if (dbm != last_dbm) {
         last_dbm = dbm;
+        static uint32_t dseed = 1u;
+        dseed = dseed * 1103515245u + 12345u;
+        int frac = (int)((dseed >> 22) % 10u);
         char val[16];
-        snprintf(val, sizeof(val), "%d dBm", dbm);
-        prim_fill_rect((prim_rect_t){(int16_t)(inner.x + inner.w - 96), (int16_t)(inner.y - 2),
-                                     98, 20}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        snprintf(val, sizeof(val), "%d,%d dBm", dbm, frac);
+        /* sirsi clear box (122 px): zaporne "-60,5 dBm" je sirsi nez kladne -> jinak
+         * zustane reziduum znamenka "-" vlevo pri prechodu do kladnych. */
+        prim_fill_rect((prim_rect_t){(int16_t)(inner.x + inner.w - 120), (int16_t)(inner.y - 2),
+                                     122, 20}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
         ui_bargraph_value(&inner, val, UI_COLOR_OK);
         drew = 1;
     }
@@ -529,12 +751,37 @@ int screen_main_redraw_freq(void)
     /* Obnov pozadi od x0 doprava (po pravy okraj cisla vc. jednotky) a prekresli
      * jen ocas. x0-2 zasahne max okraj predchoziho separatoru, jehoz inkoust je
      * uprostred advance -> bez rezidua. */
+    /* vyska 88 (ne 92): konci nad horni hranou pravych karet (offset/σ) -> jejich
+     * okraj uz neproblikava pri 20Hz prekreslovani kmitoctu. */
     blit_bg_region((prim_rect_t){ (int16_t)(x0 - 2), s_num_top,
-                                  (int16_t)(s_num_left + s_num_w - x0 + 8), 92 });
+                                  (int16_t)(s_num_left + s_num_w - x0 + 8), 88 });
     prim_set_glyph_accel(1);                 /* HW glyfy jen pro mereny kmitocet */
     ui_big_number_render_tail(&s_num, (int16_t)from);
     prim_set_glyph_accel(0);
     for (int i = from; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
+    return 1;
+}
+
+/* Navzorkuje aktualni frakcni odchylku do statistiky (volat ~2x/s). */
+void screen_main_stats_sample(void)
+{
+    stats_sample();
+}
+
+/* Zive prekresleni trend + offset/sigma (lehke; volat ~2x/s). Vrati 1. */
+int screen_main_redraw_stats(void)
+{
+    if (s_trend_rect.w == 0) return 0;            /* jeste nebyl full render */
+    blit_bg_region(s_trend_rect); render_card_trend(s_trend_rect);
+    blit_bg_region(s_small_rect); draw_offset_sigma(s_small_rect);
+    return 1;
+}
+
+/* Zive prekresleni Allan grafu (tezsi: grid + krivka; volat ~1x/s). Vrati 1. */
+int screen_main_redraw_allan(void)
+{
+    if (s_allan_rect.w == 0) return 0;
+    blit_bg_region(s_allan_rect); render_card_allan(s_allan_rect);
     return 1;
 }
 

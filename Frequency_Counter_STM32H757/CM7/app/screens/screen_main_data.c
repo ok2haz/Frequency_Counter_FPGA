@@ -38,37 +38,17 @@ const int16_t SCR_MAIN_DIGIT_COUNT = 7;
 const char *SCR_MAIN_SEPS = "..,.";   /* 4 separators between 5 groups */
 const char *SCR_S_UNIT_HZ = "Hz";
 
-/* ── Cards ──────────────────────────────────────────────────── */
-const char *SCR_S_OFFSET_L = "Offset";
-const char *SCR_S_OFFSET_V = "+1,2×10⁻¹¹";
-const char *SCR_S_SIGMA_L  = "σy @ 1 s";
-const char *SCR_S_SIGMA_V  = "±2,1×10⁻¹²";
+/* ── Cards (jen LABELY; hodnoty offset/sigma/trend jsou POCITANE ze statistiky
+ *    simulovaneho kmitoctu — viz screen_main.c) ──────────────────────────── */
+const char *SCR_S_OFFSET_L = "Offset";   /* σy 1s/10s labely jsou literaly v screen_main.c */
 const char *SCR_S_TREND_L  = "Trend 60 s";
-const char *SCR_S_TREND_R  = "● stabilní · ±2,4×10⁻¹² p–p";
-/* Input signal intensity bargraph (replaces Perioda T / Reference cards). */
 const char *SCR_S_SIGNAL_L = "Signál vstupu";
-/* Hodnota i % bargrafu jsou SIMULOVANE (app_gpsdo_tick_signal) -> staticke pryc. */
 
-/* ── Allan curve — pixels inside the chart inner rect (320×130) ── */
-const prim_point_t SCR_ALLAN_CURVE[] = {
-    {30, 16}, {66, 30}, {100, 50}, {135, 60}, {170, 66},
-    {205, 72}, {240, 76}, {275, 76}, {310, 74},
-};
-const int16_t SCR_ALLAN_CURVE_COUNT = 9;
-
-const char *SCR_ALLAN_X_TICKS[] = {"0,1", "1", "10", "100", "1k"};
-const char *SCR_ALLAN_Y_TICKS[] = {"10⁻⁹", "10⁻¹⁰", "10⁻¹¹", "10⁻¹²", "10⁻¹³"};
+/* ── Allan graf: Y popisky (dekady, horni indexy — mono_14 ma plny charset).
+ * Magnituda ~1e-8 -> 10⁻⁶ (nahore) .. 10⁻¹⁰ (dole). X osa je DYNAMICKA a popisky τ
+ * si render_card_allan generuje sam (proto tu uz neni X_TICKS). */
+const char *SCR_ALLAN_Y_TICKS[] = {"10⁻⁶", "10⁻⁷", "10⁻⁸", "10⁻⁹", "10⁻¹⁰"};
 const char *SCR_ALLAN_X_LABEL   = "τ [s]";
-const char *SCR_ALLAN_CURSOR_L  = "τ = 1 s";
-
-/* ── Sparkline (21 samples, normalized 0..255) ──────────────── */
-const int16_t SCR_SPARKLINE_VALUES[] = {
-    115, 140, 102, 153, 122, 148, 97, 140, 166, 115,
-    148, 128, 153, 133, 107, 140, 128, 153, 122, 140, 133,
-};
-const int16_t SCR_SPARKLINE_COUNT     = 21;
-const int16_t SCR_SPARKLINE_SIGMA_MIN = 107;
-const int16_t SCR_SPARKLINE_SIGMA_MAX = 148;
 
 /* ── Footer button labels (values like gate time / channel come from the
  *    live UI state in screen_main.c). ── */
