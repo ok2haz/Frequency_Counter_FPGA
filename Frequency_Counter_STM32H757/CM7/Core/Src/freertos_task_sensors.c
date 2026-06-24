@@ -75,6 +75,41 @@ void sensor_stat_reset(sensor_id_t id)
     s->min = s->max = s->mean = 0.0f;
 }
 
+/* ── I2C1 recovery (robustnost: vypadek 1 senzoru nesmi shodit zbytek sbernice) ──
+ * Pokud nejaky cip drzi SDA / bus se zasekne, dalsi cteni na I2C1 timeoutuji a
+ * kaskadou padaji vsechny (vc. ADS). Recovery: 9 SCL pulzu uvolni slave drzici
+ * SDA, pak re-init peripherálu. PB8=SCL, PB9=SDA (I2C1, BEZ ATTINY -> bezpecne,
+ * na rozdil od I2C4). Spousti se JEN pri "wedge" chybe (BERR/ARLO/TIMEOUT), NE
+ * pri pouhem NACK (chybejici cip 0x4A) -> absentni cip nezpusobi re-init. */
+static void i2c1_delay(void) { for (volatile int i = 0; i < 2000; i++) { } }   /* ~par us */
+
+static void i2c1_recover(void)
+{
+    HAL_I2C_DeInit(&hi2c1);                                    /* uvolni AF piny + error */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitTypeDef g = {0};
+    g.Pin = GPIO_PIN_9; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;        /* SDA vstup */
+    HAL_GPIO_Init(GPIOB, &g);
+    g.Pin = GPIO_PIN_8; g.Mode = GPIO_MODE_OUTPUT_OD; g.Pull = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_LOW;                             /* SCL open-drain out */
+    HAL_GPIO_Init(GPIOB, &g);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    for (int i = 0; i < 9; i++) {                              /* 9 pulzu -> slave pusti SDA */
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); i2c1_delay();
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   i2c1_delay();
+        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_SET) break;        /* SDA uvolneno */
+    }
+    MX_I2C1_Init();                                           /* PB8/9 zpet na I2C AF + init */
+}
+
+/* Recover JEN pri skutecnem zaseknuti sbernice (ne NACK absentniho cipu). */
+static void i2c1_recover_if_wedged(void)
+{
+    uint32_t e = HAL_I2C_GetError(&hi2c1);
+    if (e & (HAL_I2C_ERROR_BERR | HAL_I2C_ERROR_ARLO | HAL_I2C_ERROR_TIMEOUT))
+        i2c1_recover();
+}
+
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
@@ -136,6 +171,7 @@ void SensorsTask_run(void *argument)
 	  sensor_fail(SENS_T4A);
 	  g_si5356_ok = 0;
 	}
+	i2c1_recover_if_wedged();   /* zaseknuty bus uvolni PRED ADS (jinak kaskada) */
 
 	for (uint8_t ch = 0; ch < 4; ch++) {
 	  sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
@@ -144,7 +180,7 @@ void SensorsTask_run(void *argument)
 		started = ads1115_start(&hi2c1, ch);
 		osMutexRelease(i2c1MutexHandle);
 	  }
-	  if (!started) { sensor_fail(sid); continue; }
+	  if (!started) { sensor_fail(sid); i2c1_recover_if_wedged(); continue; }
 
 	  osDelay(9);   /* 128 SPS -> ~7.8 ms konverze */
 	  int16_t raw;
@@ -163,6 +199,7 @@ void SensorsTask_run(void *argument)
 	  } else {
 		sensor_fail(sid);
 	  }
+	  i2c1_recover_if_wedged();   /* po kazdem kanalu: zaseknuti neprenese na dalsi */
 	}
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)

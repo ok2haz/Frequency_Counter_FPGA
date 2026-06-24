@@ -436,21 +436,27 @@ static void render_card_allan(prim_rect_t rect)
     float xspan = lmax - lmin;
     if (xspan < 1e-6f) xspan = 1.0f;
 
+    /* X mrizka + popisky v MOCNINACH 10 (standardni log scale: 1, 10, 100 s) —
+     * jen dekady padajici do dynamickeho rozsahu [tau_min..tau_max]. */
+    for (int e = (int)ceilf(lmin); e <= (int)floorf(lmax); e++) {
+        float fx = ((float)e - lmin) / xspan;
+        int16_t x = (int16_t)(inner.x + fx * inner.w);
+        prim_draw_line((prim_point_t){x, inner.y},
+                       (prim_point_t){x, (int16_t)(inner.y + inner.h)}, 1, UI_COLOR_LINE);
+        char dl[8];
+        if (e < 0)      snprintf(dl, sizeof(dl), "0,%d", (int)(powf(10.0f, (float)e) * 10.0f + 0.5f));
+        else { long v = 1; for (int j = 0; j < e; j++) v *= 10; snprintf(dl, sizeof(dl), "%ld", v); }
+        prim_draw_text((prim_point_t){x, (int16_t)(inner.y + inner.h + 14)},
+                       dl, &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+    }
+
     prim_point_t pts[6];
     for (int i = 0; i < np; i++) {
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres celou sirku */
         float ly = (log10f(adevs[i]) - (float)Y_MIN) / (float)Y_DEC;
         if (ly < 0.0f) ly = 0.0f;
         if (ly > 1.0f) ly = 1.0f;
-        int16_t x = (int16_t)(inner.x + fx * inner.w);
-        prim_draw_line((prim_point_t){x, inner.y},               /* X mrizka v bode tau */
-                       (prim_point_t){x, (int16_t)(inner.y + inner.h)}, 1, UI_COLOR_LINE);
-        char tl[8];                                              /* popisek tau [s] */
-        if (taus[i] < 0.95f) snprintf(tl, sizeof(tl), "0,%d", (int)(taus[i] * 10.0f + 0.5f));
-        else                 snprintf(tl, sizeof(tl), "%d", (int)(taus[i] + 0.5f));
-        prim_draw_text((prim_point_t){x, (int16_t)(inner.y + inner.h + 14)},
-                       tl, &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
-        pts[i].x = x;
+        pts[i].x = (int16_t)(inner.x + fx * inner.w);
         pts[i].y = (int16_t)(inner.y + (1.0f - ly) * inner.h);
     }
     for (int i = 1; i < np; i++)
