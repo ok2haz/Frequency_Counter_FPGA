@@ -40,8 +40,8 @@ void screen_main_redraw_button(int idx);            /* redraw only one footer bu
 int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas HH:MM:SS; vrati 1 pokud prekreslil (zmena sekundy) */
 int  screen_main_redraw_signal(int16_t pct);           /* simulovany signal bargraf; vrati 1 pokud kreslil */
 int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
-void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~2x/s) */
-int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~2x/s); vrati 1 */
+void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
+int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 

@@ -327,14 +327,14 @@ void app_gpsdo_tick_freq(void)
     if (screen_main_redraw_freq()) s_dirty = 1;   /* flip odlozen na flush */
 }
 
-/* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~2x/s). */
+/* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~1x/s). */
 void app_gpsdo_tick_stats_sample(void)
 {
     if (s_view != 0 || !screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     screen_main_stats_sample();
 }
 
-/* GPSDO statistika: zive prekresleni trend + offset/sigma (~2x/s, jen RUN). */
+/* GPSDO statistika: zive prekresleni trend + offset/sigma (~1x/s, jen RUN). */
 void app_gpsdo_tick_stats_draw(void)
 {
     if (s_view != 0 || !screen_main_is_running()) return;

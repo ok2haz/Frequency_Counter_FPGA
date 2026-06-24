@@ -40,10 +40,10 @@ void app_gpsdo_tick_signal(void);
 /** Simulace kmitoctu (~20 Hz z UiTask, jen hlavni obrazovka): per-segment dirty redraw. */
 void app_gpsdo_tick_freq(void);
 
-/** GPSDO statistika ze simulovaneho kmitoctu: vzorkovani frakcni odchylky (~2 Hz). */
+/** GPSDO statistika ze simulovaneho kmitoctu: vzorkovani frakcni odchylky (~1 Hz). */
 void app_gpsdo_tick_stats_sample(void);
 
-/** GPSDO statistika: zive prekresleni trend + offset/sigma (~2 Hz). */
+/** GPSDO statistika: zive prekresleni trend + offset/sigma (~1 Hz). */
 void app_gpsdo_tick_stats_draw(void);
 
 /** GPSDO statistika: zive prekresleni Allan grafu (~1 Hz, tezsi render). */

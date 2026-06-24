@@ -110,14 +110,14 @@ void StartUiTask(void *argument)
       app_gpsdo_tick_freq();
     }
 
-    /* GPSDO statistika: vzorkovani frakcni odchylky 2x/s; trend+offset+sigma
-     * prekreslit 2x/s, Allan (tezsi render) 1x/s. */
+    /* GPSDO statistika: vzorkovani frakcni odchylky 1x/s (τ0=1s -> dekadova osa);
+     * trend+offset+σy+drift prekreslit 1x/s, Allan (tezsi render) 1x/s. */
     static uint32_t last_stat_s = 0, last_stat_d = 0, last_allan = 0;
-    if (HAL_GetTick() - last_stat_s >= 500) {
+    if (HAL_GetTick() - last_stat_s >= 1000) {       /* vzorkovani 1/s (τ0=1s, dekady) */
       last_stat_s = HAL_GetTick();
       app_gpsdo_tick_stats_sample();
     }
-    if (HAL_GetTick() - last_stat_d >= 500) {
+    if (HAL_GetTick() - last_stat_d >= 1000) {       /* trend/offset/σy/drift 1/s */
       last_stat_d = HAL_GetTick();
       app_gpsdo_tick_stats_draw();
     }

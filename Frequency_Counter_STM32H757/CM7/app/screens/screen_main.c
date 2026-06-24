@@ -15,7 +15,7 @@
 #include <prim/prim.h>
 #include <stdio.h>   /* snprintf pro simulovany cas */
 #include <string.h>  /* strncpy pro simulovane cislice */
-#include <math.h>    /* sqrtf, log10f, fabsf — GPSDO statistika (cold path, 1-2/s) */
+#include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 
 #ifndef SCR_SDRAM_SECTION
 #  if defined(__GNUC__) && !defined(PRIM_HOST_BUILD)
@@ -289,21 +289,27 @@ static void render_body_number(void)
 
 /* ── GPSDO statistika ze SIMULOVANEHO kmitoctu ──────────────────────────────
  * Frakcni odchylka y=(f-f0)/f0 (f0=10 MHz). Poctiva magnituda (~1e-8 dle kolisani
- * simulace). Vzorkuje se ~2x/s do ring bufferu (jen pri RUN); z nej: offset
- * (klouzavy prumer), sigma@1s (ADEV tau=1s), drift (df/dt), p-p okna a Allan
- * krivka ADEV(tau). Prekresleni trend/karty 2x/s, Allan 1x/s. Float je OK (cold
- * path, ~1-2x/s; mimo no-float pravidlo pro protokol kmitoctu). */
-#define STAT_N 120                  /* 2/s -> 60 s historie */
+ * simulace). Vzorkuje se 1x/s (jen pri RUN, τ0=1s) do (a) plocheho ring bufferu
+ * (kratkodobe: trend 60s, offset, drift, σy@1s) a (b) decimacni pyramidy
+ * (dlouhodoby Allan, tau 1..100000+ s, viz adev_feed). Prekresleni 1x/s. Float OK
+ * (cold path; mimo no-float pravidlo pro protokol kmitoctu). */
+/* Plochy ring = jen kratkodobe (trend 60s, offset, drift, σy@1s). DLOUHODOBY Allan
+ * (tau az 100000 s / 100+ dni) resi decimacni pyramida nize. Vzorkuje se 1/s. */
+#define STAT_N    120               /* 1/s -> 120 s (trend 60s + drift baseline) */
+#define TREND_WIN 60                /* trend sparkline = posledni okno 60 s (1/s) */
 static float s_y[STAT_N];
 static int   s_y_head = 0, s_y_count = 0;
+static void adev_feed(float v);     /* fwd — decimacni pyramida (dlouhodoby Allan) */
 
 static void stats_sample(void)
 {
     /* off_n = odchylka v LSB (LSB=1e-7 Hz), f0=1e7 Hz -> y = off_n*1e-14 */
     int64_t off_n = (int64_t)s_freq_n - (int64_t)s_freq_center;
-    s_y[s_y_head] = (float)off_n * 1e-14f;
+    float y = (float)off_n * 1e-14f;
+    s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
+    adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
 }
 
 static float stat_at(int age)   /* age 0 = nejnovejsi */
@@ -329,7 +335,8 @@ static float stats_pp(int n)
     return mx - mn;
 }
 
-/* Non-overlapping ADEV pro tau = m vzorku (tau0=0,5 s). Potrebuje >=2 bloky. */
+/* Non-overlapping ADEV plocheho ringu pro tau = m vzorku (tau0=1 s, 1/s). Pouziva
+ * se pro σy@1s (m=1). Dlouhodoby Allan dela pyramida (adev_stage). >=2 bloky. */
 static float stats_adev(int m)
 {
     int blocks = s_y_count / m;
@@ -354,8 +361,53 @@ static float stats_drift(void)
     float nm = 0, om = 0;
     for (int i = 0; i < h; i++) { nm += stat_at(i); om += stat_at(s_y_count - 1 - i); }
     nm /= (float)h; om /= (float)h;
-    float dt = (float)h * 0.5f;           /* odstup centroidu pulek [s] (vzorky×0,5 s) */
+    float dt = (float)h;                  /* odstup centroidu pulek [s] (vzorky × 1 s) */
     return (dt > 0.0f) ? (nm - om) / dt : 0.0f;
+}
+
+/* ── Decimacni pyramida pro DLOUHODOBY Allan (tau 1..100000 s, ohranicena pamet) ──
+ * Vzorek y (1/s) jde do stage 0; po 10 vzorcich se jejich prumer posune do dalsi
+ * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~640 B
+ * (plochy buffer by chtel desitky MB). */
+#define ADEV_STAGES 6                 /* tau = 1, 10, 100, 1k, 10k, 100k s */
+#define ADEV_RING   24                /* prumeru na stage (na ADEV vypocet) */
+typedef struct { float ring[ADEV_RING]; int16_t head, count; float acc; int16_t acc_n; } adev_stage_t;
+static adev_stage_t s_adev[ADEV_STAGES];
+
+static void adev_feed(float v)
+{
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        adev_stage_t *st = &s_adev[s];
+        st->ring[st->head] = v;
+        st->head = (int16_t)((st->head + 1) % ADEV_RING);
+        if (st->count < ADEV_RING) st->count++;
+        st->acc += v;
+        if (++st->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
+        v = st->acc / 10.0f; st->acc = 0; st->acc_n = 0;   /* dekadovy prumer -> dal */
+    }
+}
+
+static float adev_rat(const adev_stage_t *st, int i)       /* i-ty nejstarsi prvek */
+{
+    int idx = (st->head - st->count + i + 2 * ADEV_RING) % ADEV_RING;
+    return st->ring[idx];
+}
+
+/* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
+static float adev_stage(int s, int m)
+{
+    const adev_stage_t *st = &s_adev[s];
+    int blocks = st->count / m;
+    if (blocks < 2) return 0.0f;
+    float prev = 0; int have = 0; double acc = 0; int nd = 0;
+    for (int b = 0; b < blocks; b++) {
+        float bs = 0;
+        for (int j = 0; j < m; j++) bs += adev_rat(st, b * m + j);
+        bs /= (float)m;
+        if (have) { float d = bs - prev; acc += (double)d * d; nd++; }
+        prev = bs; have = 1;
+    }
+    return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
 }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
@@ -389,7 +441,7 @@ static void render_card_allan(prim_rect_t rect)
 {
     s_allan_rect = rect;                          /* pro zive prekresleni */
     char hdr[40];
-    char sig[24]; fmt_frac(sig, sizeof(sig), stats_adev(2), 0);  /* sigma@1s = tau 2 vzorky */
+    char sig[24]; fmt_frac(sig, sizeof(sig), stats_adev(1), 0);  /* σy@1s (τ=1s, vzorky 1/s) */
     snprintf(hdr, sizeof(hdr), "@1s %s", sig);
     ui_card_t card = {.rect = rect, .header_label = "Allan σy(τ)",
                       .header_right = hdr,
@@ -401,9 +453,8 @@ static void render_card_allan(prim_rect_t rect)
                          (int16_t)(ci.w - 36 - 8), (int16_t)(ci.h - 22)};
 
     /* Vlastni log-log osa: Y pevna (1e-10..1e-6), X = [tau_min..tau_max] v log10 —
-     * DYNAMICKA: krivka zacina PRESNE u leveho okraje (tau_min) a roztahuje se
-     * vpravo s nejdelsim dostupnym tau. (Genericky log-log chart umel jen cele
-     * dekady -> osa neslo zacit u 0,5 s, proto vlastni.) */
+     * DYNAMICKA: krivka zacina u tau_min (1 s) a roztahuje se vpravo s nejdelsim
+     * dostupnym tau (az 100000+ s pri dlouhem behu). */
     const int Y_MIN = -10, Y_DEC = 4;
 
     /* Y mrizka + dekadove popisky. */
@@ -415,13 +466,18 @@ static void render_card_allan(prim_rect_t rect)
                        SCR_ALLAN_Y_TICKS[j], &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
     }
 
-    /* ADEV body (tau = m*0,5 s). */
-    static const int MS[] = {1, 2, 4, 8, 16, 32};
-    float taus[6], adevs[6]; int np = 0;
-    for (unsigned k = 0; k < sizeof(MS) / sizeof(MS[0]); k++) {
-        float a = stats_adev(MS[k]);
-        if (a <= 0.0f) continue;
-        taus[np] = (float)MS[k] * 0.5f; adevs[np] = a; np++;
+    /* ADEV body z decimacni pyramidy: per stage tau = {1,2,5}×10^s s (log spacing
+     * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
+     * az k 100000+ s (100 dni), pamet ohranicena. */
+    static const int SM[] = {1, 2, 5};
+    float taus[20], adevs[20]; int np = 0;
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
+        for (int mi = 0; mi < 3; mi++) {
+            float a = adev_stage(s, SM[mi]);
+            if (a <= 0.0f) continue;
+            taus[np] = dec * (float)SM[mi]; adevs[np] = a; np++;
+        }
     }
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(inner.x + inner.w / 2),
@@ -436,21 +492,22 @@ static void render_card_allan(prim_rect_t rect)
     float xspan = lmax - lmin;
     if (xspan < 1e-6f) xspan = 1.0f;
 
-    /* X mrizka + popisky v MOCNINACH 10 (standardni log scale: 1, 10, 100 s) —
+    /* X mrizka + popisky v MOCNINACH 10 (log scale: 1,10,100,1k,10k,100k s) —
      * jen dekady padajici do dynamickeho rozsahu [tau_min..tau_max]. */
     for (int e = (int)ceilf(lmin); e <= (int)floorf(lmax); e++) {
         float fx = ((float)e - lmin) / xspan;
         int16_t x = (int16_t)(inner.x + fx * inner.w);
         prim_draw_line((prim_point_t){x, inner.y},
                        (prim_point_t){x, (int16_t)(inner.y + inner.h)}, 1, UI_COLOR_LINE);
-        char dl[8];
-        if (e < 0)      snprintf(dl, sizeof(dl), "0,%d", (int)(powf(10.0f, (float)e) * 10.0f + 0.5f));
-        else { long v = 1; for (int j = 0; j < e; j++) v *= 10; snprintf(dl, sizeof(dl), "%ld", v); }
+        char dl[8];                                 /* tau_min >= 1 s -> e >= 0 (10^e) */
+        long v = 1;
+        for (int j = 0; j < e; j++) v *= 10;
+        snprintf(dl, sizeof(dl), "%ld", v);
         prim_draw_text((prim_point_t){x, (int16_t)(inner.y + inner.h + 14)},
                        dl, &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
     }
 
-    prim_point_t pts[6];
+    prim_point_t pts[20];
     for (int i = 0; i < np; i++) {
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres celou sirku */
         float ly = (log10f(adevs[i]) - (float)Y_MIN) / (float)Y_DEC;
@@ -487,7 +544,7 @@ static void draw_offset_sigma(prim_rect_t rect)
     int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
     int16_t w   = (int16_t)((rect.w - 2 * gap) / 3);
     char off[24]; fmt_frac(off, sizeof(off), stats_mean(8),   1);
-    char s1[24];  fmt_frac(s1,  sizeof(s1),  stats_adev(2),   0);   /* tau 1 s (2 vzorky) */
+    char s1[24];  fmt_frac(s1,  sizeof(s1),  stats_adev(1),   0);   /* σy@1s (τ=1s, 1/s) */
     char dr[24];  fmt_frac(dr,  sizeof(dr),  stats_drift(),   1);   /* df/dt [1/s] */
     draw_stat_card((prim_rect_t){rect.x, rect.y, w, rect.h}, SCR_S_OFFSET_L, off, UI_COLOR_OK);
     draw_stat_card((prim_rect_t){(int16_t)(rect.x + w + gap), rect.y, w, rect.h},
@@ -503,15 +560,16 @@ static void render_card_trend(prim_rect_t rect)
 {
     s_trend_rect = rect;                          /* pro zive prekresleni */
 
-    /* Sparkline: SPARK_N bodu rovnomerne pres CELOU 60s historii (vlevo=nejstarsi).
-     * PEVNE meritko ±FS -> stred 128 (neposkakuje pri sliding window jako autoscale)
-     * -> koherentni 60s historie. FS odpovida rozsahu kolisani simulace. */
+    /* Sparkline: SPARK_N bodu pres POSLEDNICH 60 s (TREND_WIN), vlevo=nejstarsi.
+     * (Buffer je delsi kvuli Allan, ale trend zustava 60s okno.) PEVNE meritko ±FS
+     * -> stred 128 (neposkakuje pri sliding window). */
     const float FS = 4e-8f;                       /* full-scale frakcni odchylky */
-    int n = (s_y_count < SPARK_N) ? s_y_count : SPARK_N;
+    int win = (s_y_count < TREND_WIN) ? s_y_count : TREND_WIN;   /* posledni 60s okno */
+    int n = (win < SPARK_N) ? win : SPARK_N;
     if (n < 2) n = 2;
     float sum = 0;
     for (int k = 0; k < n; k++) {
-        int age = (n - 1 - k) * ((s_y_count > 1 ? s_y_count - 1 : 1)) / (n - 1);
+        int age = (n - 1 - k) * ((win > 1 ? win - 1 : 1)) / (n - 1);
         float v = stat_at(age);
         sum += v;
         float u = (v / FS + 1.0f) * 0.5f;         /* -FS..+FS -> 0..1 */
@@ -519,7 +577,7 @@ static void render_card_trend(prim_rect_t rect)
         if (u > 1.0f) u = 1.0f;
         s_spark[k] = (int16_t)(40.0f + u * 175.0f);
     }
-    float mean = sum / (float)n, sd = stats_adev(2);
+    float mean = sum / (float)n, sd = stats_adev(1);   /* σy@1s pro sigma band */
     float ulo = ((mean - sd) / FS + 1.0f) * 0.5f;
     float uhi = ((mean + sd) / FS + 1.0f) * 0.5f;
     if (ulo < 0.0f) ulo = 0.0f;
@@ -527,9 +585,9 @@ static void render_card_trend(prim_rect_t rect)
     int16_t sig_lo = (int16_t)(40.0f + ulo * 175.0f);
     int16_t sig_hi = (int16_t)(40.0f + uhi * 175.0f);
 
-    /* Header vpravo: p-p okna. */
+    /* Header vpravo: p-p celeho 60s okna. */
     static char tr[48];
-    char pp[24]; fmt_frac(pp, sizeof(pp), stats_pp(n), 0);
+    char pp[24]; fmt_frac(pp, sizeof(pp), stats_pp(win), 0);
     snprintf(tr, sizeof(tr), "● %s p-p", pp);
 
     ui_card_t card = {.rect = rect, .header_label = SCR_S_TREND_L,
@@ -768,13 +826,13 @@ int screen_main_redraw_freq(void)
     return 1;
 }
 
-/* Navzorkuje aktualni frakcni odchylku do statistiky (volat ~2x/s). */
+/* Navzorkuje aktualni frakcni odchylku do statistiky (plochy ring + pyramida, ~1x/s). */
 void screen_main_stats_sample(void)
 {
     stats_sample();
 }
 
-/* Zive prekresleni trend + offset/sigma (lehke; volat ~2x/s). Vrati 1. */
+/* Zive prekresleni trend + offset/sigma (lehke; volat ~1x/s). Vrati 1. */
 int screen_main_redraw_stats(void)
 {
     if (s_trend_rect.w == 0) return 0;            /* jeste nebyl full render */
