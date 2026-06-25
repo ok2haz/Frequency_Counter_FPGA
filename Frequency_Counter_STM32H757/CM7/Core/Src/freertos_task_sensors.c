@@ -99,7 +99,17 @@ static void i2c1_recover(void)
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   i2c1_delay();
         if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_SET) break;        /* SDA uvolneno */
     }
-    MX_I2C1_Init();                                           /* PB8/9 zpet na I2C AF + init */
+    /* ⚠️ re-init BEZ MX_I2C1_Init (ta ma Error_Handler = nekonecna smycka pri
+     * selhani HAL_I2C_Init -> pri ODPOJENEM/plovoucim busu by zamrzl CELY program).
+     * Selhani re-initu tu jen tise -> zkusi se dalsi cyklus. hi2c1.Init zustava z bootu. */
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    g.Pin = GPIO_PIN_8 | GPIO_PIN_9; g.Mode = GPIO_MODE_AF_OD;
+    g.Pull = GPIO_NOPULL; g.Speed = GPIO_SPEED_FREQ_LOW; g.Alternate = GPIO_AF4_I2C1;
+    HAL_GPIO_Init(GPIOB, &g);                                  /* PB8/9 zpet na I2C AF */
+    if (HAL_I2C_Init(&hi2c1) == HAL_OK) {
+        HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE);
+        HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0);
+    }
 }
 
 /* Recover JEN pri skutecnem zaseknuti sbernice (ne NACK absentniho cipu). */
@@ -180,7 +190,7 @@ void SensorsTask_run(void *argument)
 		started = ads1115_start(&hi2c1, ch);
 		osMutexRelease(i2c1MutexHandle);
 	  }
-	  if (!started) { sensor_fail(sid); i2c1_recover_if_wedged(); continue; }
+	  if (!started) { sensor_fail(sid); continue; }
 
 	  osDelay(9);   /* 128 SPS -> ~7.8 ms konverze */
 	  int16_t raw;
@@ -199,8 +209,8 @@ void SensorsTask_run(void *argument)
 	  } else {
 		sensor_fail(sid);
 	  }
-	  i2c1_recover_if_wedged();   /* po kazdem kanalu: zaseknuti neprenese na dalsi */
 	}
+	i2c1_recover_if_wedged();   /* jednou za cyklus po ADS (max 2 recovery/cyklus s tim pred ADS) */
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);
