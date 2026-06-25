@@ -112,12 +112,17 @@ static void i2c1_recover(void)
     }
 }
 
-/* Recover JEN pri skutecnem zaseknuti sbernice (ne NACK absentniho cipu). */
+/* Recover JEN pri skutecnem zaseknuti sbernice (ne NACK absentniho cipu).
+ * Pod mutexem -> nekoliduje s UART prikazy (si5356/scan1), ktere taky sahaji na
+ * I2C1 z UartTasku. Pri neziskani mutexu se preskoci (zkusi pristi cyklus). */
 static void i2c1_recover_if_wedged(void)
 {
     uint32_t e = HAL_I2C_GetError(&hi2c1);
-    if (e & (HAL_I2C_ERROR_BERR | HAL_I2C_ERROR_ARLO | HAL_I2C_ERROR_TIMEOUT))
+    if (!(e & (HAL_I2C_ERROR_BERR | HAL_I2C_ERROR_ARLO | HAL_I2C_ERROR_TIMEOUT))) return;
+    if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
         i2c1_recover();
+        osMutexRelease(i2c1MutexHandle);
+    }
 }
 
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
