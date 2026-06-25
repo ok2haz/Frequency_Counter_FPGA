@@ -123,7 +123,7 @@ const osThreadAttr_t UartTask_attributes = {
 osThreadId_t I2C4TaskHandle;
 const osThreadAttr_t I2C4Task_attributes = {
   .name = "I2C4Task",
-  .stack_size = 256 * 4,
+  .stack_size = 384 * 4,                 /* 1536 B: I2C1 recovery (HAL_I2C_Init + GPIO) -> rezerva */
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for UartRxQueue */
