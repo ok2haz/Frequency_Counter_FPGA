@@ -148,7 +148,8 @@ void SensorsTask_run(void *argument)
   const TickType_t xFrequency = pdMS_TO_TICKS(500);   // 2x za sekundu (0x48 + gate I2C1)
   xLastWakeTime = xTaskGetTickCount();
   uint32_t   i2c1_streak = 0;                         // po sobe jdouci selhani cele I2C1
-  TickType_t i2c1_next   = 0;                         // kdy zase zkusit I2C1 (back-off)
+  TickType_t i2c1_last   = 0;                         // tick posledniho pokusu o I2C1
+  uint32_t   i2c1_iv     = 0;                          // back-off interval [ticks], 0 = hned
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
@@ -179,7 +180,9 @@ void SensorsTask_run(void *argument)
 
 	// === FPGA deska na I2C1: TMP117 0x49/0x4A + ADS1115 — s BACK-OFF pri mrtvem busu ===
 	// 0x48 vyse (I2C4) cte vzdy 2x/s; tento I2C1 blok se pri trvalem selhani zpomaluje.
-	if (xTaskGetTickCount() >= i2c1_next) {
+	// wrap-safe gate (unsigned rozdil; prezije preteceni ticku ~49,7 dne -> 100 dni OK)
+	if ((uint32_t)(xTaskGetTickCount() - i2c1_last) >= i2c1_iv) {
+	  i2c1_last = xTaskGetTickCount();
 	  int any_ok = 0;   // jakekoli HAL_OK -> bus zije (NACK absentniho 0x4A se nepocita)
 	  if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
 		uint8_t tb[2];
@@ -233,7 +236,7 @@ void SensorsTask_run(void *argument)
 	  /* back-off: uspech -> reset na normal; jinak rampa intervalu (viz i2c1_backoff_ms). */
 	  if (any_ok) i2c1_streak = 0;
 	  else if (i2c1_streak < 1000) i2c1_streak++;
-	  i2c1_next = xTaskGetTickCount() + pdMS_TO_TICKS(i2c1_backoff_ms(i2c1_streak));
+	  i2c1_iv = pdMS_TO_TICKS(i2c1_backoff_ms(i2c1_streak));
 	}
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
