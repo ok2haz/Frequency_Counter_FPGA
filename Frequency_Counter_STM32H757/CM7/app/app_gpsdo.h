@@ -18,6 +18,12 @@ void app_gpsdo_render_main(void);
 /** Render the diagnostics screen (comm test, TMP117 temps, ADC). */
 void app_gpsdo_render_diag(void);
 
+/** Render the GPS/GNSS info screen (skeleton; opened by tapping the GNSS pill). */
+void app_gpsdo_render_gps(void);
+
+/** Render the System Health screen (RTOS/heap/stacks/I2C/links; SYS pill). Live. */
+void app_gpsdo_render_health(void);
+
 /** Clear the framebuffer to the background color. */
 void app_gpsdo_clear(void);
 

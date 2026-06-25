@@ -8,6 +8,7 @@
 #include "screens/screen_main.h"
 #include "hal/stm32/prim_stm32_hal.h"
 #include "sensor_stat.h"        /* g_sensors[] (hodnota + valid + statistika) */
+#include "cmsis_os2.h"          /* osThreadGetStackSpace (volny stack tasku) */
 #include <prim/prim.h>
 #include <ui/ui.h>
 #include <stdio.h>
@@ -24,6 +25,10 @@ extern volatile uint32_t g_rtos_heap_min;        /* min-ever-free heap [B] */
 extern volatile uint32_t g_rtos_cpu_pct;         /* CPU load [%] */
 extern volatile uint32_t g_uptime_s;             /* uptime [s] */
 
+/* FreeRTOS task handles (defined in freertos.c) — pro volny stack v System Health. */
+extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
+                    I2C4TaskHandle, defaultTaskHandle;
+
 /* Si5356 status bits (reg 218 / 0xDA). */
 #define SI5356_SYS_CAL    (1u << 0)
 #define SI5356_LOS_CLKIN  (1u << 2)
@@ -31,7 +36,7 @@ extern volatile uint32_t g_uptime_s;             /* uptime [s] */
 
 static prim_fb_t s_fb;
 static int s_inited = 0;
-static int s_view = 0;          /* 0 = main, 1 = diagnostics */
+static int s_view = 0;          /* 0 = main, 1 = diagnostics, 2 = gps/gnss */
 
 /* Present coalescing: vysokofrekvencni ticky (clock/signal/freq) jen renderuji a
  * nastavi s_dirty; jeden flip pak udela app_gpsdo_flush() (UiTask ho vola na ~30Hz
@@ -270,6 +275,217 @@ void app_gpsdo_render_diag(void)
     if (draw_diag_values(first)) present_now();
 }
 
+/* GPS / GNSS okno (otevre se tapem na GNSS pill, ZPET zpet na main). SKELETON —
+ * data jsou zatim placeholdery; az prijde GPS feature (g_gps_*), napoji se sem. */
+void app_gpsdo_render_gps(void)
+{
+    app_gpsdo_init();
+    s_view = 2;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+    ui_button_render(&back);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "GNSS / GPS",
+                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+
+    /* ── Levy sloupec: FIX + Druzice ── */
+    ui_card_t c_fix = {.rect = {DG_LX, 58, DG_COLW, 90}, .header_label = "FIX"};
+    ui_card_render_chrome(&c_fix);
+    prim_draw_text((prim_point_t){DG_LLBL, 112}, "NO GPS", &ui_font_mono_25,
+                   UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){DG_LLBL, 138}, "-- / -- druzic", &ui_font_sans_16,
+                   UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+
+    ui_card_t c_sat = {.rect = {DG_LX, 158, DG_COLW, 246},
+                       .header_label = "Druzice  C/N0 [dBHz]"};
+    ui_card_render_chrome(&c_sat);
+    prim_draw_text((prim_point_t){DG_LX + DG_COLW / 2, 270}, "Waiting for GPS...",
+                   &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+    dlabel(DG_LLBL, 392, "HDOP --   PDOP --");
+
+    /* ── Pravy sloupec: Cas/RTC + Poloha + TIMEPULSE + Prijimac ── */
+    ui_card_t c_time = {.rect = {DG_RX, 58, DG_COLW, 76}, .header_label = "Cas / RTC"};
+    ui_card_render_chrome(&c_time);
+    prim_draw_text((prim_point_t){DG_RLBL, 104}, "--:--:-- UTC", &ui_font_mono_16,
+                   UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){DG_RLBL, 126}, "RTC: ---", &ui_font_sans_14,
+                   UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+
+    ui_card_t c_pos = {.rect = {DG_RX, 144, DG_COLW, 98}, .header_label = "Poloha"};
+    ui_card_render_chrome(&c_pos);
+    dlabel(DG_RLBL, 190, "Lat   --");
+    dlabel(DG_RLBL, 214, "Lon   --");
+    dlabel(DG_RLBL, 238, "Alt   --");
+
+    ui_card_t c_tp = {.rect = {DG_RX, 252, DG_COLW, 68}, .header_label = "TIMEPULSE"};
+    ui_card_render_chrome(&c_tp);
+    prim_draw_text((prim_point_t){DG_RLBL, 298}, "10 Hz (no fix)", &ui_font_mono_16,
+                   UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+
+    ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74}, .header_label = "Prijimac"};
+    ui_card_render_chrome(&c_rx);
+    prim_draw_text((prim_point_t){DG_RLBL, 376}, "NEO-7M  9600 8N1  UBX",
+                   &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+
+    present_now();
+}
+
+/* ── System Health okno (s_view=3) ────────────────────────────────────────
+ * Otevre se tapem na SYS pill (vedle GNSS). Hlubsi pohled nez diagnostika:
+ * RTOS pamet+CPU, volny stack tasku (osThreadGetStackSpace), I2C chybovost
+ * (z g_sensors err citacu), stav linku (FPGA/Si5356/senzory) a napajeci vetve.
+ * Live refresh ~2x/s pres app_gpsdo_tick (stejny first/values split jako diag). */
+
+/* Agreguje I2C chybovost ze skupiny senzoru: streak = max souvislych chyb,
+ * total = soucet chyb od bootu. (Health = streak==0 -> ted OK.) */
+static void i2c_health(const sensor_id_t *ids, int n, uint16_t *streak, uint32_t *total)
+{
+    uint16_t st = 0; uint32_t tot = 0;
+    for (int i = 0; i < n; i++) {
+        const sensor_stat_t *s = &g_sensors[ids[i]];
+        if (s->err_streak > st) st = s->err_streak;
+        tot += s->err_total;
+    }
+    *streak = st; *total = tot;
+}
+
+/* Prekresli dynamicke hodnoty System Health. force=1 -> vse (po blitu chrome),
+ * force=0 (tick) -> jen zmenena pole. Vrati 1 pokud neco kreslil. */
+static int draw_health_values(int force)
+{
+    static char c_rtos[4][20], c_stk[5][16], c_i2c[2][40], c_lnk[3][40], c_pwr[2][16];
+    char buf[36], key[40];   /* "I2C1 FPGA: CHYBA (<u32>)" az 29 zn. -> bez truncation */
+    int drew = force;
+
+    /* ── Levy sloupec: RTOS pamet / CPU / uptime ── */
+    snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_free);
+    if (force || dchg(c_rtos[0], sizeof(c_rtos[0]), buf)) { dval(DG_LVAL, 104, 150, buf, 1); drew = 1; }
+    snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_min);
+    if (force || dchg(c_rtos[1], sizeof(c_rtos[1]), buf)) { dval(DG_LVAL, 132, 150, buf, 1); drew = 1; }
+    snprintf(buf, sizeof(buf), "%lu %%", (unsigned long)g_rtos_cpu_pct);
+    if (force || dchg(c_rtos[2], sizeof(c_rtos[2]), buf)) { dval(DG_LVAL, 160, 150, buf, 1); drew = 1; }
+    { uint32_t s = g_uptime_s;
+      snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", (unsigned long)(s / 3600u),
+               (unsigned long)((s / 60u) % 60u), (unsigned long)(s % 60u)); }
+    if (force || dchg(c_rtos[3], sizeof(c_rtos[3]), buf)) { dval(DG_LVAL, 188, 150, buf, 1); drew = 1; }
+
+    /* ── Levy sloupec: volny stack tasku (high-water headroom, bajty) ── */
+    osThreadId_t thr[5] = { UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
+                            I2C4TaskHandle, defaultTaskHandle };
+    static const int16_t sy[5] = { 264, 292, 320, 348, 376 };
+    for (int i = 0; i < 5; i++) {
+        uint32_t fb = thr[i] ? osThreadGetStackSpace(thr[i]) : 0;
+        snprintf(buf, sizeof(buf), "%lu B", (unsigned long)fb);
+        /* < 64 B headroom = varovani (cerveny '!'); jinak svetla hodnota. */
+        if (force || dchg(c_stk[i], sizeof(c_stk[i]), buf)) {
+            dval(DG_LVAL, sy[i], 120, buf, fb >= 64); drew = 1; }
+    }
+
+    /* ── Pravy sloupec: I2C chybovost (celobarevne radky) ── */
+    static const sensor_id_t i2c1_ids[5] = { SENS_T49, SENS_ADS0, SENS_ADS1,
+                                             SENS_ADS2, SENS_ADS3 };  /* T4A vynechan (neosazen) */
+    static const sensor_id_t i2c4_ids[1] = { SENS_T48 };
+    uint16_t s1, s4; uint32_t t1, t4;
+    i2c_health(i2c1_ids, 5, &s1, &t1);
+    i2c_health(i2c4_ids, 1, &s4, &t4);
+    snprintf(buf, sizeof(buf), "I2C1 FPGA: %s (%lu)", s1 ? "CHYBA" : "OK", (unsigned long)t1);
+    snprintf(key, sizeof(key), "%c%s", s1 ? 'X' : 'O', buf);
+    if (force || dchg(c_i2c[0], sizeof(c_i2c[0]), key)) {
+        dtext(DG_RLBL, 104, DG_COLW - 24, buf, s1 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_16); drew = 1; }
+    snprintf(buf, sizeof(buf), "I2C4 panel: %s (%lu)", s4 ? "CHYBA" : "OK", (unsigned long)t4);
+    snprintf(key, sizeof(key), "%c%s", s4 ? 'X' : 'O', buf);
+    if (force || dchg(c_i2c[1], sizeof(c_i2c[1]), key)) {
+        dtext(DG_RLBL, 132, DG_COLW - 24, buf, s4 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_16); drew = 1; }
+
+    /* ── Pravy sloupec: periferie / linky ── */
+    snprintf(buf, sizeof(buf), "FPGA SPI: %s", g_spi_ok ? "LINK OK" : "NO LINK");
+    snprintf(key, sizeof(key), "%c%s", g_spi_ok ? 'O' : 'X', buf);
+    if (force || dchg(c_lnk[0], sizeof(c_lnk[0]), key)) {
+        dtext(DG_RLBL, 200, DG_COLW - 24, buf, g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_16); drew = 1; }
+    const char *si; prim_color_t sic;
+    if (!g_si5356_ok)                            { si = "N/A (I2C)";   sic = UI_COLOR_INK_3; }
+    else if (g_si5356_status & SI5356_LOS_CLKIN) { si = "LOS CLKIN!";  sic = UI_COLOR_BAD; }
+    else if (g_si5356_status & SI5356_PLL_LOL)   { si = "PLL UNLOCK!"; sic = UI_COLOR_BAD; }
+    else if (g_si5356_status & SI5356_SYS_CAL)   { si = "CALIB...";    sic = UI_COLOR_VIOLET; }
+    else                                         { si = "LOCK OK";     sic = UI_COLOR_OK; }
+    snprintf(buf, sizeof(buf), "Ref Si5356: %s", si);
+    if (force || dchg(c_lnk[1], sizeof(c_lnk[1]), buf)) {
+        dtext(DG_RLBL, 228, DG_COLW - 24, buf, sic, &ui_font_mono_16); drew = 1; }
+    int nok = 0; for (int i = 0; i < SENS_COUNT; i++) if (g_sensors[i].valid) nok++;
+    snprintf(buf, sizeof(buf), "Senzory: %d/%d OK", nok, (int)SENS_COUNT);
+    snprintf(key, sizeof(key), "%c%s", (nok >= SENS_COUNT - 1) ? 'O' : 'X', buf);  /* -1: 0x4A neosazen */
+    if (force || dchg(c_lnk[2], sizeof(c_lnk[2]), key)) {
+        dtext(DG_RLBL, 256, DG_COLW - 24, buf,
+              (nok >= SENS_COUNT - 1) ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_mono_16); drew = 1; }
+
+    /* ── Pravy sloupec: napajeci vetve (z ADS, mV -> V se 2 desetinami) ── */
+    static const struct { sensor_id_t id; int16_t y; } pwr[2] = {
+        { SENS_ADS2, 340 }, { SENS_ADS3, 372 } };
+    for (int i = 0; i < 2; i++) {
+        const sensor_stat_t *a = &g_sensors[pwr[i].id];
+        long mv = lround_f(a->last);
+        snprintf(buf, sizeof(buf), "%ld.%02ld V", mv / 1000, (mv % 1000) / 10);
+        if (force || dchg(c_pwr[i], sizeof(c_pwr[i]), buf)) {
+            dval(DG_RVAL, pwr[i].y, 130, buf, a->valid); drew = 1; }
+    }
+
+    return drew;
+}
+
+void app_gpsdo_render_health(void)
+{
+    app_gpsdo_init();
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+
+    int first = (s_view != 3);
+    if (first) {
+        s_view = 3;
+        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+        ui_button_render(&back);
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
+                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+
+        /* Levy: RTOS + Stack tasku. */
+        ui_card_t c_rtos = {.rect = {DG_LX, 58, DG_COLW, 150},
+                            .header_label = "RTOS / Pamet"};
+        ui_card_render_chrome(&c_rtos);
+        dlabel(DG_LLBL, 104, "Heap free");
+        dlabel(DG_LLBL, 132, "Heap min");
+        dlabel(DG_LLBL, 160, "CPU");
+        dlabel(DG_LLBL, 188, "Uptime");
+
+        ui_card_t c_stk = {.rect = {DG_LX, 218, DG_COLW, 186},
+                           .header_label = "Stack tasku (volno)"};
+        ui_card_render_chrome(&c_stk);
+        dlabel(DG_LLBL, 264, "UiTask");
+        dlabel(DG_LLBL, 292, "FpgaTask");
+        dlabel(DG_LLBL, 320, "UartTask");
+        dlabel(DG_LLBL, 348, "I2C4Task");
+        dlabel(DG_LLBL, 376, "Default");
+
+        /* Pravy: I2C + Linky + Napajeni. */
+        ui_card_t c_i2c = {.rect = {DG_RX, 58, DG_COLW, 86},
+                           .header_label = "I2C sbernice (chyby)"};
+        ui_card_render_chrome(&c_i2c);
+
+        ui_card_t c_lnk = {.rect = {DG_RX, 154, DG_COLW, 116},
+                           .header_label = "Periferie / linky"};
+        ui_card_render_chrome(&c_lnk);
+
+        ui_card_t c_pwr = {.rect = {DG_RX, 280, DG_COLW, 124},
+                           .header_label = "Napajeni"};
+        ui_card_render_chrome(&c_pwr);
+        dlabel(DG_RLBL, 340, "12V vetev");
+        dlabel(DG_RLBL, 372, "5V vetev");
+    }
+    if (draw_health_values(first)) present_now();
+}
+
 void app_gpsdo_clear(void)
 {
     app_gpsdo_init();
@@ -283,7 +499,8 @@ void app_gpsdo_clear(void)
 
 void app_gpsdo_tick(void)
 {
-    if (s_view == 1) app_gpsdo_render_diag();   /* live refresh of diagnostics */
+    if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
+    else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */
 }
 
 /* Hodinovy tik (~kazdych 100 ms): jen na hlavni obrazovce prekresli simulovany cas. */
@@ -364,6 +581,8 @@ int app_gpsdo_flush(void)
 bool app_gpsdo_handle_touch(int16_t x, int16_t y)
 {
     if (s_view == 0) {
+        if (screen_main_hit_gnss(x, y)) { app_gpsdo_render_gps(); return true; }   /* GNSS pill */
+        if (screen_main_hit_sys(x, y))  { app_gpsdo_render_health(); return true; }  /* SYS pill */
         int b = screen_main_hit_button(x, y);
         if (b == 4) { app_gpsdo_render_diag(); return true; }   /* MENU */
         if (b >= 0) {                                /* PERIOD/RUN/GATE/CHAN */

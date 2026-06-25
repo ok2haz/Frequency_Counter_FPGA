@@ -216,11 +216,21 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
 - **UART `scan1`** = I2C scan na I2C1 (s popisky zařízení). `scanner` zůstává pro I2C4.
 - **Diagnostická obrazovka** (`app_gpsdo_render_diag`, tlačítko MENU → ZPĚT): **dvousloupcový layout** (`DG_*` makra v `app_gpsdo.c`). **Levý sloupec:** Teploty TMP117 (0x48/0x49/0x4A) — `last` + `min/max` (z `g_sensors[]`); ADC ADS1115 (AIN0–3). **Pravý sloupec:** *Komunikace + měření FPGA* (`g_spi_text` zeleně/červeně + `g_freq_info` = gate/PH/SEQ), *Reference Si5356* (lock z `g_si5356_status`: LOCK OK / LOS CLKIN! / PLL UNLOCK! / CALIB…), *System/RTOS* (heap free/min, CPU %, uptime). Neplatný senzor = ztlumeně + červený `!`. Refresh ~2×/s z `app_gpsdo_tick` (UiTask), tearing-free přes `prim_stm32_present`.
   - **Datové zdroje:** Si5356 status čte SensorsTask (`si5356_read_status`, reg 218) do `g_si5356_status`/`g_si5356_ok`; RTOS zdraví počítá UiTask (`xPortGetFreeHeapSize`, idle-delta CPU %) do `g_rtos_*`/`g_uptime_s`.
+- **Okna z hlavičkových pilulek** (`s_view`: 0=main, 1=diag, 2=gps, 3=health; návrat sdíleným `BACK_RECT`). Rect pilulek se zachytává v `render_header` (`s_gnss_pill_rect`/`s_sys_pill_rect`), `screen_main_hit_gnss/sys` testuje zásah:
+  - **GNSS pill → GPS/GNSS okno** (`app_gpsdo_render_gps`, s_view=2): **SKELETON** (FIX, družice C/N0, čas/RTC, poloha, TIMEPULSE, přijímač) — placeholdery, napojí se až přijde GPS feature ([[gps-todo]]). Statické (bez live refresh).
+  - **SYS pill → System Health okno** (`app_gpsdo_render_health`, s_view=3): **živé** (refresh 2×/s v `app_gpsdo_tick`, stejný first/values split jako diag). RTOS (heap/CPU/uptime), **volný stack tasků** (`osThreadGetStackSpace`, byty; <64 B → červený `!`), I2C chybovost (agregace `g_sensors[].err_total/streak`, **0x4A vyřazen** = neosazen), linky (FPGA/Si5356/senzory n/7), napájecí větve 12V/5V. `osThreadGetStackSpace` jen při otevřeném okně (scan stacku nezatěžuje běžný provoz).
 - **NEPOVOLOVAT I2C1 v IOC** (init je ručně v USER CODE).
 
 ## UART TX
 `_write` (main.c) chráněn `uartTxMutexHandle` (serializace printf z více tasků, jen za běhu
 scheduleru) + timeout 100 ms (~1150 B/řádek, bez utínání). Pořád blokující HAL_UART_Transmit.
+
+## UART RX (usart.c)
+RX přes IT + fronta `UartRxQueue`. `RxCpltCallback` zařadí bajt a znovu nahodí `Receive_IT`.
+**⚠️ `HAL_UART_ErrorCallback` (ORE/FE/NE/PE — typicky šum při hot-plugu kabelu) MUSÍ před
+re-armem zavolat `HAL_UART_AbortReceive` + vynulovat `ErrorCode`.** Bez toho po chybě `RxState`
+zůstane `BUSY` → `HAL_UART_Receive_IT` vrátí `HAL_BUSY` → **RX se už nikdy nenahodí (mrtvá
+konzole, TX/výpisy jedou dál).** AbortReceive v IT režimu neblokuje (ISR-safe).
 
 ## Build / flash
 STM32CubeIDE: vyber projekt **H757_LED_CM7** → Build (Ctrl+B) → Run (Ctrl+F11, config CM7).

@@ -48,9 +48,23 @@ const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 /* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
 bool screen_main_is_running(void) { return st.running; }
 
+/* Hlavickove pilulky — rect zachyceny pri render_header; tap -> okno. */
+static prim_rect_t s_gnss_pill_rect = {0, 0, 0, 0};  /* GNSS lock -> GPS okno */
+static prim_rect_t s_sys_pill_rect  = {0, 0, 0, 0};  /* SYS ready -> System Health */
+
 static bool pt_in(int16_t x, int16_t y, prim_rect_t r)
 {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+bool screen_main_hit_gnss(int16_t x, int16_t y)
+{
+    return s_gnss_pill_rect.w != 0 && pt_in(x, y, s_gnss_pill_rect);
+}
+
+bool screen_main_hit_sys(int16_t x, int16_t y)
+{
+    return s_sys_pill_rect.w != 0 && pt_in(x, y, s_sys_pill_rect);
 }
 
 int screen_main_hit_button(int16_t x, int16_t y)
@@ -126,10 +140,14 @@ static void render_header(void)
 
     p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_OK,
                     .value = SCR_S_GNSS_LOCK, .has_led = true};
-    ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    ui_pill_render(&p);
+    s_gnss_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> GPS okno */
+    x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
 
     p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_OK, .value = SCR_S_SYS_READY};
-    ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    ui_pill_render(&p);
+    s_sys_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> System Health */
+    x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
 
     p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL, .value = SCR_S_SAT_VAL,
                     .icon_render = ui_icon_sat_dish, .icon_size = 22,

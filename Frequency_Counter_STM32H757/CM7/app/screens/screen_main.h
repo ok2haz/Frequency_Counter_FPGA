@@ -44,6 +44,8 @@ void screen_main_stats_sample(void);                   /* navzorkuj frakcni odch
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
+bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
+bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 extern const char *SCR_S_GNSS_LOCK, *SCR_S_SYS_READY, *SCR_S_SAT_VAL;

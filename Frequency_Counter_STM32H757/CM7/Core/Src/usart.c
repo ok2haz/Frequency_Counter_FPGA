@@ -183,6 +183,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     __HAL_UART_CLEAR_FEFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);
     __HAL_UART_CLEAR_PEFLAG(huart);
+    /* ⚠️ Reset RxState na READY pred re-armem — jinak po chybe zustane BUSY a
+     * HAL_UART_Receive_IT vrati HAL_BUSY -> RX uz nikdy nenabehne (mrtva konzole). */
+    HAL_UART_AbortReceive(huart);
+    huart->ErrorCode = HAL_UART_ERROR_NONE;
     HAL_UART_Receive_IT(&huart1, &RxByte, 1);
   }
 }
