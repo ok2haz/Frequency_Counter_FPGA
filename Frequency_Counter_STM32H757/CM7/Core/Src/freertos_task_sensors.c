@@ -125,6 +125,17 @@ static void i2c1_recover_if_wedged(void)
     }
 }
 
+/* Back-off interval podle poctu po sobe jdoucich SELHANI cele I2C1 (mrtvy bus):
+ * 3x @500ms (normal) -> 3x @1s -> 2x @2s -> @10s. Setri CPU pri odpojene FPGA
+ * desce, pri uspechu reset -> chytne se do ~0,5 s. */
+static uint32_t i2c1_backoff_ms(uint32_t streak)
+{
+    if (streak < 3) return 500;     /* 3 pokusy normalne (streak 0,1,2) */
+    if (streak < 6) return 1000;    /* 3 pokusy @ 1 s (streak 3,4,5) */
+    if (streak < 8) return 2000;    /* 2 pokusy @ 2 s (streak 6,7) */
+    return 10000;                   /* pak @ 10 s */
+}
+
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
@@ -134,8 +145,10 @@ void SensorsTask_run(void *argument)
   // Senzory 2x/s. (Touch poll je v UiTasku — presun do tohoto tasku zpusoboval
   // selhani touch + free-run I2C4 pri saturaci, viz historie.)
   TickType_t xLastWakeTime;
-  const TickType_t xFrequency = pdMS_TO_TICKS(500);   // 2x za sekundu
+  const TickType_t xFrequency = pdMS_TO_TICKS(500);   // 2x za sekundu (0x48 + gate I2C1)
   xLastWakeTime = xTaskGetTickCount();
+  uint32_t   i2c1_streak = 0;                         // po sobe jdouci selhani cele I2C1
+  TickType_t i2c1_next   = 0;                         // kdy zase zkusit I2C1 (back-off)
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
@@ -164,58 +177,64 @@ void SensorsTask_run(void *argument)
 	  sensor_fail(SENS_T48);   /* drzi posledni dobrou hodnotu, valid=0, loguje */
 	}
 
-	// === FPGA deska na I2C1: TMP117 0x49/0x4A + ADS1115 4 kanaly ===
-	if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-	  uint8_t tb[2];
-	  if (HAL_I2C_Mem_Read(&hi2c1, (0x49 << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK)
-		sensor_update(SENS_T49, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION);
-	  else
-		sensor_fail(SENS_T49);
-	  if (HAL_I2C_Mem_Read(&hi2c1, (0x4A << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK)
-		sensor_update(SENS_T4A, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION);
-	  else
-		sensor_fail(SENS_T4A);
-	  /* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
-	  uint8_t si_st;
-	  if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; }
-	  else                                    { g_si5356_ok = 0; }
-	  osMutexRelease(i2c1MutexHandle);
-	} else {
-	  /* I2C1 sbernice nedostupna -> oba TMP117 na ni jako chyba */
-	  sensor_fail(SENS_T49);
-	  sensor_fail(SENS_T4A);
-	  g_si5356_ok = 0;
-	}
-	i2c1_recover_if_wedged();   /* zaseknuty bus uvolni PRED ADS (jinak kaskada) */
-
-	for (uint8_t ch = 0; ch < 4; ch++) {
-	  sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
-	  int started = 0;
+	// === FPGA deska na I2C1: TMP117 0x49/0x4A + ADS1115 — s BACK-OFF pri mrtvem busu ===
+	// 0x48 vyse (I2C4) cte vzdy 2x/s; tento I2C1 blok se pri trvalem selhani zpomaluje.
+	if (xTaskGetTickCount() >= i2c1_next) {
+	  int any_ok = 0;   // jakekoli HAL_OK -> bus zije (NACK absentniho 0x4A se nepocita)
 	  if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-		started = ads1115_start(&hi2c1, ch);
+		uint8_t tb[2];
+		if (HAL_I2C_Mem_Read(&hi2c1, (0x49 << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK) {
+		  sensor_update(SENS_T49, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION); any_ok = 1;
+		} else sensor_fail(SENS_T49);
+		if (HAL_I2C_Mem_Read(&hi2c1, (0x4A << 1), 0x00, I2C_MEMADD_SIZE_8BIT, tb, 2, 50) == HAL_OK) {
+		  sensor_update(SENS_T4A, (float)((int16_t)((tb[0] << 8) | tb[1])) * TMP117_RESOLUTION); any_ok = 1;
+		} else sensor_fail(SENS_T4A);
+		/* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
+		uint8_t si_st;
+		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
+		else                                    { g_si5356_ok = 0; }
 		osMutexRelease(i2c1MutexHandle);
-	  }
-	  if (!started) { sensor_fail(sid); continue; }
-
-	  osDelay(9);   /* 128 SPS -> ~7.8 ms konverze */
-	  int16_t raw;
-	  int got = 0;
-	  if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-		got = ads1115_read_raw(&hi2c1, &raw);
-		osMutexRelease(i2c1MutexHandle);
-	  }
-	  if (got) {
-		int32_t mv = ads1115_raw_to_mv(raw);
-		/* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
-		   AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
-		if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
-		else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
-		sensor_update(sid, (float)mv);
 	  } else {
-		sensor_fail(sid);
+		sensor_fail(SENS_T49);
+		sensor_fail(SENS_T4A);
+		g_si5356_ok = 0;
 	  }
+	  i2c1_recover_if_wedged();   /* zaseknuty bus uvolni PRED ADS (jinak kaskada) */
+
+	  for (uint8_t ch = 0; ch < 4; ch++) {
+		sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
+		int started = 0;
+		if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
+		  started = ads1115_start(&hi2c1, ch);
+		  osMutexRelease(i2c1MutexHandle);
+		}
+		if (!started) { sensor_fail(sid); continue; }
+
+		osDelay(9);   /* 128 SPS -> ~7.8 ms konverze */
+		int16_t raw;
+		int got = 0;
+		if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
+		  got = ads1115_read_raw(&hi2c1, &raw);
+		  osMutexRelease(i2c1MutexHandle);
+		}
+		if (got) {
+		  int32_t mv = ads1115_raw_to_mv(raw);
+		  /* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
+			 AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
+		  if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
+		  else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
+		  sensor_update(sid, (float)mv); any_ok = 1;
+		} else {
+		  sensor_fail(sid);
+		}
+	  }
+	  i2c1_recover_if_wedged();   /* jednou za cyklus po ADS (max 2 recovery/cyklus) */
+
+	  /* back-off: uspech -> reset na normal; jinak rampa intervalu (viz i2c1_backoff_ms). */
+	  if (any_ok) i2c1_streak = 0;
+	  else if (i2c1_streak < 1000) i2c1_streak++;
+	  i2c1_next = xTaskGetTickCount() + pdMS_TO_TICKS(i2c1_backoff_ms(i2c1_streak));
 	}
-	i2c1_recover_if_wedged();   /* jednou za cyklus po ADS (max 2 recovery/cyklus s tim pred ADS) */
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);
