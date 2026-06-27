@@ -61,28 +61,30 @@ bloky respektovat (pokud byl zapnutý „Keep User Code"), ale tyhle jsou mimo b
 
 ---
 
-## 3) Integrační kód (NAPÍŠU JÁ po regenu)
+## 3) Integrační kód — UŽ PŘEDPŘIPRAVENO (dormantní, čeká na regen)
 
-Generovaný CDC je jen skeleton — dolepí se:
+Hotovo a v repu (kompiluje se naprázdno, dokud `USE_USB_CDC_CONSOLE=0`):
+- **`usb_console.c/.h`** — TX **ring buffer** (`CDC_Transmit_FS` není blokující → `USBD_BUSY`
+  se nesmí ztratit) + RX most `usb_console_on_rx()` → `UartRxQueue`. Přepínač
+  `USE_USB_CDC_CONSOLE` (default 0).
+- **`main.c _write`** předdrátováno přes `console_send()`: `#if USE_USB_CDC_CONSOLE` → USB,
+  jinak USART1 (jako dosud). Default 0 = **žádná změna chování** do regenu.
 
-- **`usbd_cdc_if.c` → `CDC_Receive_FS`:** příchozí bajty cpát do **stávající `UartRxQueue`**
-  (`osMessageQueuePut` z ISR kontextu) → UartTask parser beze změny. Hned re-arm
-  `USBD_CDC_SetRxBuffer` + `USBD_CDC_ReceivePacket`.
-- **`_write` (main.c) → USB TX přes ring buffer:** `CDC_Transmit_FS` vrací `USBD_BUSY`,
-  dokud předchozí přenos neskončí (NENÍ blokující jako UART!). Přidat malý **TX ring buffer**
-  + flush ve smyčce / TxCplt. Bez toho se printf ztrácí. Zachovat `uartTxMutexHandle`.
-- **Volba výstupu:** `_write` primárně USB; USART1 zůstává volný pro GPS (9600).
-  (Volitelně: dokud není GPS, nechat fallback na USART1.)
-- **`MX_USB_DEVICE_Init()`** volá CubeMX v `main()` — ověřit pořadí (po `MX_GPIO_Init`,
-  klidně před schedulerem).
+Po regenu zbývá (pár řádků):
+- **Přepnout `USE_USB_CDC_CONSOLE` na 1** (v `usb_console.h` nebo `-DUSE_USB_CDC_CONSOLE=1`).
+- **`usbd_cdc_if.c → CDC_Receive_FS`:** přidat řádek `usb_console_on_rx(Buf, *Len);` před
+  re-arm `USBD_CDC_ReceivePacket`. (Generovaný soubor neexistuje před regenem → nelze předpsat.)
+- Ověřit, že `MX_USB_DEVICE_Init()` volá CubeMX v `main()` (po `MX_GPIO_Init`).
+- *(Volitelně)* `usb_console_tx_pump()` do CDC TxComplete pro spolehlivý drain bez dalšího printf.
 
 ---
 
 ## 4) Pořadí kroků
 
-1. (volitelně) `git checkout -b feature/usb-cdc`
-2. CubeMX: bod 1 → Generate Code
-3. `git diff` → projít checklist bodu 2, re-aplikovat co chybí
-4. Říct mi „regen hotov" → napíšu integrační kód (bod 3)
-5. Build + flash z CubeIDE → na PC nový COM port → test konzole
-6. Merge do `main`
+1. *(volitelně)* `git checkout -b feature/usb-cdc`
+2. CubeMX: bod 1 → **Generate Code**
+3. `git diff` → projít checklist bodu 2, re-aplikovat co regen smázl
+4. Aktivovat: `USE_USB_CDC_CONSOLE=1` + řádek v `CDC_Receive_FS` (bod 3)
+5. **Refresh projektu v CubeIDE** (ať vezme nový `usb_console.c`) → Build + flash
+6. PC: nový COM port (VID_0483 PID_5740, **NE** COM3/COM11) → test konzole
+7. Merge do `main`

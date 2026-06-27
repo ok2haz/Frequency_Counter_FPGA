@@ -36,6 +36,7 @@
 #include "ft5x06.h"
 #include "beeper.h"
 #include "si5356.h"
+#include "usb_console.h"   /* prepinac konzole USART1 <-> USB CDC (USE_USB_CDC_CONSOLE) */
 extern UART_HandleTypeDef huart1;
 extern I2C_HandleTypeDef hi2c4;
 extern DSI_HandleTypeDef hdsi;
@@ -400,6 +401,18 @@ void PeriphCommonClock_Config(void)
   */
 extern osMutexId_t uartTxMutexHandle;
 
+/* Vystup jednoho bloku konzole: USB CDC (neblokujici, ring) nebo USART1 (blokujici).
+ * Prepina USE_USB_CDC_CONSOLE (usb_console.h) — vychozi 0 = USART1 jako dosud. */
+static HAL_StatusTypeDef console_send(uint8_t *buf, uint16_t n)
+{
+#if USE_USB_CDC_CONSOLE
+  usb_console_tx(buf, n);
+  return HAL_OK;
+#else
+  return HAL_UART_Transmit(&huart1, buf, n, 100);
+#endif
+}
+
 int _write(int file, char *ptr, int len)
 {
   /* \n -> \r\n expanze: kazda zprava zacne na novem radku od kraje (jinak LF
@@ -417,11 +430,11 @@ int _write(int file, char *ptr, int len)
     }
     buf[n++] = (uint8_t)ptr[i];
     if (n >= (int)sizeof(buf) - 1) {                 /* prubezny flush */
-      if (HAL_UART_Transmit(&huart1, buf, (uint16_t)n, 100) != HAL_OK) { status = HAL_ERROR; break; }
+      if (console_send(buf, (uint16_t)n) != HAL_OK) { status = HAL_ERROR; break; }
       n = 0;
     }
   }
-  if (status == HAL_OK && n > 0) status = HAL_UART_Transmit(&huart1, buf, (uint16_t)n, 100);
+  if (status == HAL_OK && n > 0) status = console_send(buf, (uint16_t)n);
   if (locked) osMutexRelease(uartTxMutexHandle);
 
   /* Vrátí počet vstupních znaku, nebo -1 při chybě */
