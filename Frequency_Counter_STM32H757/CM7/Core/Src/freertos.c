@@ -21,12 +21,14 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
+#include "FreeRTOS.h"
 #include "cmsis_os2.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>            /* printf v MX_FREERTOS_Init */
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
+#include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -104,12 +106,19 @@ const osThreadAttr_t FpgaTask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* GpsRxQueue: USART1 RX (ISR) -> defaultTask drain. 256 B ~= 266 ms @ 9600.
+ * GPS NMEA parsujeme v idle defaultTask (NE vlastni task) — heap (15 KB) uz
+ * nepojme 6. task; defaultTask stejne jen idloval. */
+osMessageQueueId_t GpsRxQueueHandle;
+const osMessageQueueAttr_t GpsRxQueue_attributes = {
+  .name = "GpsRxQueue"
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 256 * 4,                 /* defaultTask je v podstate idle (jen yield) */
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -123,7 +132,7 @@ const osThreadAttr_t UartTask_attributes = {
 osThreadId_t I2C4TaskHandle;
 const osThreadAttr_t I2C4Task_attributes = {
   .name = "I2C4Task",
-  .stack_size = 384 * 4,                 /* 1536 B: I2C1 recovery (HAL_I2C_Init + GPIO) -> rezerva */
+  .stack_size = 384 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for UartRxQueue */
@@ -134,14 +143,17 @@ const osMessageQueueAttr_t UartRxQueue_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+/* Manualne vytvorene tasky (NEJSOU v .ioc) — prototypy zde v USER CODE, aby je
+ * regen nesmazal (driv byly v generovane sekci -> USB regen je odstranil). */
+void StartUiTask(void *argument);
+void StartFpgaTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
 void StartUartTask(void *argument);
 void StartI2C4(void *argument);
-void StartUiTask(void *argument);
-void StartFpgaTask(void *argument);
 
+extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /**
@@ -169,10 +181,10 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of UartRxQueue */
-  UartRxQueueHandle = osMessageQueueNew (64, sizeof(uint8_t), &UartRxQueue_attributes);  /* 1 byte/prvek = shodne s RxByte i rxChar (driv uint16_t -> stack overflow) */
+  UartRxQueueHandle = osMessageQueueNew (64, sizeof(uint8_t), &UartRxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  GpsRxQueueHandle = osMessageQueueNew(256, sizeof(uint8_t), &GpsRxQueue_attributes);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -194,6 +206,7 @@ void MX_FREERTOS_Init(void) {
   if (FpgaTaskHandle == NULL) {
     printf("[ERR] FpgaTask se nevytvoril - malo FreeRTOS heapu\n");
   }
+  /* GpsTask zrusen — GPS NMEA se drainuje v defaultTask (heap setreni). */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -211,10 +224,19 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
+  gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
   /* Infinite loop */
   for(;;)
   {
+    /* Drain GPS RX fronty (ISR -> GpsRxQueue) a krmeni NMEA parseru. Non-blocking
+     * get; pri 9600 ~5 B/5ms, fronta 256 B ma velkou rezervu. */
+    uint8_t gc;
+    while (osMessageQueueGet(GpsRxQueueHandle, &gc, NULL, 0) == osOK) {
+      gps_feed_char((char)gc);
+    }
     osDelay(5);
   }
   /* USER CODE END StartDefaultTask */
@@ -251,3 +273,4 @@ void StartI2C4(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 /* USER CODE END Application */
+

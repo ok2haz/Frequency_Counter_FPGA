@@ -18,11 +18,14 @@ void app_gpsdo_render_main(void);
 /** Render the diagnostics screen (comm test, TMP117 temps, ADC). */
 void app_gpsdo_render_diag(void);
 
-/** Render the GPS/GNSS info screen (skeleton; opened by tapping the GNSS pill). */
+/** Render the GPS/GNSS info screen (live: FIX/sats/HDOP/time/pos; GNSS pill). */
 void app_gpsdo_render_gps(void);
 
 /** Render the System Health screen (RTOS/heap/stacks/I2C/links; SYS pill). Live. */
 void app_gpsdo_render_health(void);
+
+/** Render the all-sensors submenu (opened from System Health "SENZORY >"). Live. */
+void app_gpsdo_render_sensors(void);
 
 /** Clear the framebuffer to the background color. */
 void app_gpsdo_clear(void);
@@ -37,7 +40,8 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 /** Periodic tick (~2 Hz from UiTask): refreshes the diagnostics values. */
 void app_gpsdo_tick(void);
 
-/** Hodinovy tik (~10 Hz z UiTask): na hlavni obrazovce prekresli simulovany cas. */
+/** Hodinovy tik (~10 Hz z UiTask): na hlavni obrazovce prekresli cas/datum z GPS
+ *  + horni listu (GNSS lock / pocet druzic) pri zmene fixu. */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot);
 
 /** Animace simulovaneho signal bargrafu (~10 Hz z UiTask, jen RUN, hlavni obrazovka). */

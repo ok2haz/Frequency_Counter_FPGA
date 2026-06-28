@@ -53,9 +53,6 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOI_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  /* PB12 = FPGA CS (active-low). MUSI byt HIGH uz od bootu (CS deasserted),
-   * jinak STM drzi CS asertovany behem konfigurace FPGA z flash (kontrakt §1/§8).
-   * !!! Pri regeneraci z IOC: nastav PB12 default Output Level = High !!! */
   HAL_GPIO_WritePin(SPI2_RCK_GPIO_Port, SPI2_RCK_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */

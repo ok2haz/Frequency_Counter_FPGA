@@ -14,7 +14,7 @@
 #include "usbd_cdc_if.h"   /* CDC_Transmit_FS, USBD_OK / USBD_BUSY */
 #include "cmsis_os2.h"
 
-extern osMessageQueueId_t UartRxQueueHandle;   /* freertos.c — sdileno s USART1 RX */
+extern osMessageQueueId_t UartRxQueueHandle;   /* freertos.c — fronta konzole (USB CDC RX; USART1 jde do GpsRxQueue) */
 
 #define TXRING_SZ   1024u            /* mocnina 2 */
 #define TXRING_MASK (TXRING_SZ - 1u)

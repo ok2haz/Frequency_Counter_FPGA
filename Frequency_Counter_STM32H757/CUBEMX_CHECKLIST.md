@@ -56,10 +56,12 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (~100 kHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
 - ⚠️ **Rezervuj PB8/PB9 v IOC** (jako GPIO, Locked), ať je CubeMX nepřiřadí jinam při regeneraci → jinak tichý pin-konflikt. Mutex `i2c1MutexHandle`.
 
-## USART1 (konzole/printf)
+## USART1 (UART pro GPS; printf-konzole je na USB CDC, viz níže)
+- 🔴🔴 **USART1 MUSÍ BÝT POVOLEN V `.ioc` (Connectivity → USART1 → Asynchronous).** Když v `.ioc` chybí, **každý „Generate Code" SMAŽE CELÝ UART**: smaže HAL driver (`Drivers/.../stm32h7xx_hal_uart.c/.h`, `ll_usart.h`, `ll_lpuart.h`), zakomentuje `HAL_UART_MODULE_ENABLED` v `hal_conf.h`, zahodí `USART1_IRQHandler` z `stm32h7xx_it.c` i `MX_USART1_UART_Init()` z `main.c`. Pak se projekt **NESESTAVÍ** (`huart1`/`HAL_UART_*` undefined, `usart.h` missing). Ruční obnova vydrží jen do dalšího regenu — **jediná trvalá oprava = USART1 v `.ioc`.** (Zjištěno opakovaně 2026-06-28: regen po přidání USB CDC opakovaně shazoval UART, protože USART1 vypadl z `.ioc`.)
 - **115200 8N1**, no flow control
 - TX=**PB14**, RX=**PA10**
-- NVIC: USART1 global IRQ **enabled, preempt priorita 5**
+- NVIC: USART1 global IRQ **enabled, preempt priorita 5** (RX přes IT → musí být v NVIC, jinak GPS RX nenaskočí)
+- Po regenu ověř: `USART1\:I` v `CortexM7.IPs`, `NVIC1.USART1_IRQn=true\:5\:0...`, `PB14.Signal=USART1_TX`, `PA10.Signal=USART1_RX`, a `Mcu.PinNN=PB14`.
 - ⚠️ **PA10 (RX) = Pull-up.** Nastav v IOC (PA10 → GPIO settings → Pull-up). Bez kabelu RX plave → bouře IRQ (prio 5) → scheduler hladoví → „program nenaběhne". Pojistka je i v `usart.c` USER CODE MspInit (přepíše NOPULL na PULLUP) + `HAL_UART_ErrorCallback` (zotavení po ORE/FE/NE) — obojí regen-safe, ale do IOC dej pull-up taky kvůli konzistenci.
 
 ## GPIO

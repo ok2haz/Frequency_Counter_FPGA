@@ -15,7 +15,7 @@
  * Postup: viz USB_CDC_PLAN.md.
  */
 #ifndef USE_USB_CDC_CONSOLE
-#define USE_USB_CDC_CONSOLE 0
+#define USE_USB_CDC_CONSOLE 1
 #endif
 
 /* TX: zaradi data do ring bufferu (NEBLOKUJICI — CDC_Transmit_FS neceka). */

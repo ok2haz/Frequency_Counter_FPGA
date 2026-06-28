@@ -8,6 +8,7 @@
 #include "screens/screen_main.h"
 #include "hal/stm32/prim_stm32_hal.h"
 #include "sensor_stat.h"        /* g_sensors[] (hodnota + valid + statistika) */
+#include "gps.h"                /* gps_get() — zive GPS data do GNSS okna */
 #include "cmsis_os2.h"          /* osThreadGetStackSpace (volny stack tasku) */
 #include <prim/prim.h>
 #include <ui/ui.h>
@@ -36,7 +37,7 @@ extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
 
 static prim_fb_t s_fb;
 static int s_inited = 0;
-static int s_view = 0;          /* 0 = main, 1 = diagnostics, 2 = gps/gnss */
+static int s_view = 0;          /* 0=main 1=diag 2=gps 3=health 4=senzory(podmenu health) */
 
 /* Present coalescing: vysokofrekvencni ticky (clock/signal/freq) jen renderuji a
  * nastavi s_dirty; jeden flip pak udela app_gpsdo_flush() (UiTask ho vola na ~30Hz
@@ -48,6 +49,8 @@ static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
 /* Back button on the diagnostics screen. */
 /* Back button lives in the bottom bar, in the same slot as the main MENU. */
 static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
+/* "SENZORY >" tlacitko v System Health (bottom-left) -> podmenu vsech senzoru. */
+static const prim_rect_t SENS_BTN_RECT = {18, 417, 180, 61};
 
 static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 {
@@ -126,6 +129,34 @@ static void dtext(int16_t x, int16_t baseline, int16_t boxw, const char *v,
     prim_set_clip(box);
     prim_draw_text((prim_point_t){x, baseline}, v, font, col, PRIM_ALIGN_LEFT);
     prim_reset_clip();
+}
+
+/* Center-aligned live text in a cleared box (GPS okno). */
+static void dtext_c(int16_t cx, int16_t baseline, int16_t boxw, const char *v,
+                    prim_color_t col, const prim_font_t *font)
+{
+    prim_rect_t box = {(int16_t)(cx - boxw / 2), (int16_t)(baseline - 16), boxw, 22};
+    prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_set_clip(box);
+    prim_draw_text((prim_point_t){cx, baseline}, v, font, col, PRIM_ALIGN_CENTER);
+    prim_reset_clip();
+}
+
+/* GPS souradnice -> "dd.ddddddH" (bez float v printf, integer extrakce). */
+static void fmt_ll(float v, char pos, char neg, char *out, size_t n)
+{
+    char h = (v >= 0.0f) ? pos : neg;
+    if (v < 0.0f) v = -v;
+    long ud = (long)(v * 1000000.0f + 0.5f);
+    snprintf(out, n, "%ld.%06ld%c", ud / 1000000, ud % 1000000, h);
+}
+
+/* float DOP/1-desetinne -> "1.7" (bez %f). */
+static void fmt_d1(float v, char *out, size_t n)
+{
+    if (v <= 0.0f) { snprintf(out, n, "--"); return; }
+    long t = (long)(v * 10.0f + 0.5f);
+    snprintf(out, n, "%ld.%ld", t / 10, t % 10);
 }
 
 /* Round a float reading to long without pulling in <math.h>. */
@@ -275,61 +306,114 @@ void app_gpsdo_render_diag(void)
     if (draw_diag_values(first)) present_now();
 }
 
-/* GPS / GNSS okno (otevre se tapem na GNSS pill, ZPET zpet na main). SKELETON —
- * data jsou zatim placeholdery; az prijde GPS feature (g_gps_*), napoji se sem. */
+/* Zive hodnoty GPS okna (s_view=2). force=1 po vykresleni chrome -> vse;
+ * force=0 (tick) -> jen zmenena pole. Vrati 1 pokud se neco prekreslilo. */
+static int draw_gps_values(int force)
+{
+    static char c_fix[16], c_sat[24], c_sum[32], c_dop[28], c_time[20], c_date[16];
+    static char c_lat[24], c_lon[24], c_alt[20], c_tp[20];
+    char buf[64], a[16], b[16];
+    gps_data_t g;
+    gps_get(&g);
+    int drew = force;
+
+    /* FIX status */
+    const char *fs; prim_color_t fc;
+    if      (g.valid && g.fix_mode == 3) { fs = "FIX 3D"; fc = UI_COLOR_OK; }
+    else if (g.valid && g.fix_mode == 2) { fs = "FIX 2D"; fc = UI_COLOR_OK; }
+    else if (g.fix_quality > 0)          { fs = "FIX";    fc = UI_COLOR_OK; }
+    else                                 { fs = "NO FIX"; fc = UI_COLOR_INK_3; }
+    if (force || dchg(c_fix, sizeof c_fix, fs)) {
+        /* FIX je mono_25 (glyfy ~30 px) -> standardni dtext clear (22 px) by nechal
+         * zbytky nad/pod -> vlastni vyssi clear box (jako hodiny v headeru). */
+        prim_fill_rect((prim_rect_t){DG_LLBL, 90, 220, 30}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){DG_LLBL, 112}, fs, &ui_font_mono_25, fc, PRIM_ALIGN_LEFT);
+        drew = 1; }
+
+    snprintf(buf, sizeof buf, "%u / %u druzic", g.num_sat, g.sats_in_view);
+    if (force || dchg(c_sat, sizeof c_sat, buf)) {
+        dtext(DG_LLBL, 138, 220, buf, UI_COLOR_INK_4, &ui_font_sans_16); drew = 1; }
+
+    /* velka karta: centrovany souhrn */
+    snprintf(buf, sizeof buf, g.fix_quality ? "%u druzic v dosahu" : "Hledam druzice... (%u)",
+             g.sats_in_view);
+    if (force || dchg(c_sum, sizeof c_sum, buf)) {
+        dtext_c((int16_t)(DG_LX + DG_COLW / 2), 270, DG_COLW - 24, buf,
+                g.fix_quality ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_sans_14); drew = 1; }
+
+    fmt_d1(g.hdop, a, sizeof a); fmt_d1(g.pdop, b, sizeof b);
+    snprintf(buf, sizeof buf, "HDOP %s   PDOP %s", a, b);
+    if (force || dchg(c_dop, sizeof c_dop, buf)) {
+        dtext(DG_LLBL, 392, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
+
+    /* cas + datum (Cas/RTC karta) */
+    snprintf(buf, sizeof buf, "%02u:%02u:%02u UTC", g.hour, g.minute, g.second);
+    if (force || dchg(c_time, sizeof c_time, buf)) {
+        dtext(DG_RLBL, 104, 220, buf, g.valid ? UI_COLOR_INK : UI_COLOR_INK_3,
+              &ui_font_mono_16); drew = 1; }
+    snprintf(buf, sizeof buf, "%04u-%02u-%02u", g.year, g.month, g.day);
+    if (force || dchg(c_date, sizeof c_date, buf)) {
+        dtext(DG_RLBL, 126, 220, buf, UI_COLOR_INK_4, &ui_font_sans_14); drew = 1; }
+
+    /* poloha */
+    if (g.valid) fmt_ll(g.lat_deg, 'N', 'S', a, sizeof a); else snprintf(a, sizeof a, "--");
+    snprintf(buf, sizeof buf, "Lat   %s", a);
+    if (force || dchg(c_lat, sizeof c_lat, buf)) {
+        dtext(DG_RLBL, 190, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
+    if (g.valid) fmt_ll(g.lon_deg, 'E', 'W', a, sizeof a); else snprintf(a, sizeof a, "--");
+    snprintf(buf, sizeof buf, "Lon   %s", a);
+    if (force || dchg(c_lon, sizeof c_lon, buf)) {
+        dtext(DG_RLBL, 214, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
+    if (g.fix_quality) snprintf(buf, sizeof buf, "Alt   %ld m", lround_f(g.alt_m));
+    else               snprintf(buf, sizeof buf, "Alt   --");
+    if (force || dchg(c_alt, sizeof c_alt, buf)) {
+        dtext(DG_RLBL, 238, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
+
+    /* TIMEPULSE (modul: 1 Hz s fixem; bez fixu default 1 Hz tez, ale neaktivni) */
+    const char *tp; prim_color_t tc;
+    if (g.fix_quality) { tp = "100 kHz (fix)"; tc = UI_COLOR_OK; }
+    else               { tp = "5 Hz (no fix)"; tc = UI_COLOR_WARN; }
+    if (force || dchg(c_tp, sizeof c_tp, tp)) {
+        dtext(DG_RLBL, 298, 200, tp, tc, &ui_font_mono_16); drew = 1; }
+
+    return drew;
+}
+
+/* GPS / GNSS okno (tap na GNSS pill, ZPET zpet na main). Zive (refresh ~2x/s
+ * v app_gpsdo_tick). First entry kresli chrome, pak jen zmenena pole. */
 void app_gpsdo_render_gps(void)
 {
     app_gpsdo_init();
-    s_view = 2;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "GNSS / GPS",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
-    /* ── Levy sloupec: FIX + Druzice ── */
-    ui_card_t c_fix = {.rect = {DG_LX, 58, DG_COLW, 90}, .header_label = "FIX"};
-    ui_card_render_chrome(&c_fix);
-    prim_draw_text((prim_point_t){DG_LLBL, 112}, "NO GPS", &ui_font_mono_25,
-                   UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){DG_LLBL, 138}, "-- / -- druzic", &ui_font_sans_16,
-                   UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    int first = (s_view != 2);
+    if (first) {
+        s_view = 2;
+        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+        ui_button_render(&back);
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "GNSS / GPS",
+                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
-    ui_card_t c_sat = {.rect = {DG_LX, 158, DG_COLW, 246},
-                       .header_label = "Druzice  C/N0 [dBHz]"};
-    ui_card_render_chrome(&c_sat);
-    prim_draw_text((prim_point_t){DG_LX + DG_COLW / 2, 270}, "Waiting for GPS...",
-                   &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
-    dlabel(DG_LLBL, 392, "HDOP --   PDOP --");
-
-    /* ── Pravy sloupec: Cas/RTC + Poloha + TIMEPULSE + Prijimac ── */
-    ui_card_t c_time = {.rect = {DG_RX, 58, DG_COLW, 76}, .header_label = "Cas / RTC"};
-    ui_card_render_chrome(&c_time);
-    prim_draw_text((prim_point_t){DG_RLBL, 104}, "--:--:-- UTC", &ui_font_mono_16,
-                   UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){DG_RLBL, 126}, "RTC: ---", &ui_font_sans_14,
-                   UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-
-    ui_card_t c_pos = {.rect = {DG_RX, 144, DG_COLW, 98}, .header_label = "Poloha"};
-    ui_card_render_chrome(&c_pos);
-    dlabel(DG_RLBL, 190, "Lat   --");
-    dlabel(DG_RLBL, 214, "Lon   --");
-    dlabel(DG_RLBL, 238, "Alt   --");
-
-    ui_card_t c_tp = {.rect = {DG_RX, 252, DG_COLW, 68}, .header_label = "TIMEPULSE"};
-    ui_card_render_chrome(&c_tp);
-    prim_draw_text((prim_point_t){DG_RLBL, 298}, "10 Hz (no fix)", &ui_font_mono_16,
-                   UI_COLOR_WARN, PRIM_ALIGN_LEFT);
-
-    ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74}, .header_label = "Prijimac"};
-    ui_card_render_chrome(&c_rx);
-    prim_draw_text((prim_point_t){DG_RLBL, 376}, "NEO-7M  9600 8N1  UBX",
-                   &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-
-    present_now();
+        ui_card_t c_fix = {.rect = {DG_LX, 58, DG_COLW, 90}, .header_label = "FIX"};
+        ui_card_render_chrome(&c_fix);
+        ui_card_t c_sat = {.rect = {DG_LX, 158, DG_COLW, 246},
+                           .header_label = "Druzice"};
+        ui_card_render_chrome(&c_sat);
+        ui_card_t c_time = {.rect = {DG_RX, 58, DG_COLW, 76}, .header_label = "Cas / datum (UTC)"};
+        ui_card_render_chrome(&c_time);
+        ui_card_t c_pos = {.rect = {DG_RX, 144, DG_COLW, 98}, .header_label = "Poloha"};
+        ui_card_render_chrome(&c_pos);
+        ui_card_t c_tp = {.rect = {DG_RX, 252, DG_COLW, 68}, .header_label = "TIMEPULSE"};
+        ui_card_render_chrome(&c_tp);
+        ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74}, .header_label = "Prijimac"};
+        ui_card_render_chrome(&c_rx);
+        prim_draw_text((prim_point_t){DG_RLBL, 376}, "NEO-7M  9600 8N1",
+                       &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
+    if (draw_gps_values(first)) present_now();
 }
 
 /* ── System Health okno (s_view=3) ────────────────────────────────────────
@@ -447,6 +531,8 @@ void app_gpsdo_render_health(void)
                   screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
         ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
         ui_button_render(&back);
+        ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY >"};
+        ui_button_render(&sens);
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
@@ -486,6 +572,65 @@ void app_gpsdo_render_health(void)
     if (draw_health_values(first)) present_now();
 }
 
+/* ── Podmenu vsech senzoru (s_view=4), otevre se z System Health ────────── */
+static int draw_sensors_values(int force)
+{
+    static char c[SENS_COUNT][96];
+    static const char *NM[SENS_COUNT] = {
+        "TMP 0x48", "TMP 0x49", "TMP 0x4A", "ADS AIN0", "ADS AIN1", "12V AIN2", "5V  AIN3" };
+    char buf[96], key[104], lv[16], mn[16], mx[16], av[16];
+    int drew = force;
+    for (int i = 0; i < SENS_COUNT; i++) {
+        const sensor_stat_t *s = &g_sensors[i];
+        int temp = (i < SENS_ADS0);
+        if (temp) {
+            fmt_temp(lv, sizeof lv, s->last); fmt_temp(mn, sizeof mn, s->min);
+            fmt_temp(mx, sizeof mx, s->max);  fmt_temp(av, sizeof av, s->mean);
+        } else {
+            snprintf(lv, sizeof lv, "%ld", lround_f(s->last));
+            snprintf(mn, sizeof mn, "%ld", lround_f(s->min));
+            snprintf(mx, sizeof mx, "%ld", lround_f(s->max));
+            snprintf(av, sizeof av, "%ld", lround_f(s->mean));
+        }
+        const char *u = temp ? "C" : "mV";
+        if (s->samples == 0)
+            snprintf(buf, sizeof buf, "%-9s  --- (zadny vzorek)  e%lu",
+                     NM[i], (unsigned long)s->err_total);
+        else
+            snprintf(buf, sizeof buf, "%-9s %s%s  %s/%s %s  e%lu",
+                     NM[i], lv, u, mn, mx, av, (unsigned long)s->err_total);
+        int16_t yy = (int16_t)(108 + i * 40);
+        snprintf(key, sizeof key, "%c%s", s->valid ? 'V' : 'X', buf);  /* redraw i pri zmene valid */
+        if (force || dchg(c[i], sizeof c[i], key)) {
+            dtext(DG_LLBL, yy, 744, buf, s->valid ? UI_COLOR_INK : UI_COLOR_INK_3,
+                  &ui_font_mono_16);
+            drew = 1;
+        }
+    }
+    return drew;
+}
+
+void app_gpsdo_render_sensors(void)
+{
+    app_gpsdo_init();
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    int first = (s_view != 4);
+    if (first) {
+        s_view = 4;
+        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+        ui_button_render(&back);
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SENZORY",
+                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        ui_card_t c = {.rect = {DG_LX, 58, 764, 346},
+                       .header_label = "Vsechny senzory  (last  min/max  avg  chyby)"};
+        ui_card_render_chrome(&c);
+    }
+    if (draw_sensors_values(first)) present_now();
+}
+
 void app_gpsdo_clear(void)
 {
     app_gpsdo_init();
@@ -500,16 +645,30 @@ void app_gpsdo_clear(void)
 void app_gpsdo_tick(void)
 {
     if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
+    else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
     else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */
+    else if (s_view == 4) app_gpsdo_render_sensors(); /* live refresh of senzory podmenu */
 }
 
-/* Hodinovy tik (~kazdych 100 ms): jen na hlavni obrazovce prekresli simulovany cas. */
+/* Hodinovy tik (~kazdych 100 ms): na hlavni obrazovce prekresli cas/datum z GPS
+ * a (pri zmene sat/fix) horni listu (GNSS lock + pocet druzic). */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 {
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();
     if (screen_main_redraw_time(ms_since_boot)) s_dirty = 1;   /* flip odlozen na flush */
+
+    /* Horni lista (GNSS lock + pocet druzic) jen pri ZMENE GPS stavu — sat/fix
+     * se meni pomalu, takze redraw headeru bezi vzacne (ne kazdy tik). */
+    static int last_sat = -1, last_fixq = -1;
+    gps_data_t g;
+    gps_get(&g);
+    if ((int)g.num_sat != last_sat || (int)g.fix_quality != last_fixq) {
+        last_sat = (int)g.num_sat;
+        last_fixq = (int)g.fix_quality;
+        if (screen_main_redraw_header()) s_dirty = 1;
+    }
 }
 
 /* Animace signal bargrafu (SIMULACE): hodnota miri k nahodnemu CILI po krocich
@@ -595,8 +754,14 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             return true;
         }
     } else {
+        /* System Health -> tap na "SENZORY >" otevre podmenu vsech senzoru. */
+        if (s_view == 3 && in_rect(x, y, SENS_BTN_RECT)) {
+            app_gpsdo_render_sensors();
+            return true;
+        }
         if (in_rect(x, y, BACK_RECT)) {
-            app_gpsdo_render_main();
+            if (s_view == 4) app_gpsdo_render_health();  /* ze senzoru zpet na Health */
+            else app_gpsdo_render_main();                /* jinak na hlavni obrazovku */
             return true;
         }
     }

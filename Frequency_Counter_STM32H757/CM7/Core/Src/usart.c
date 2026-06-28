@@ -163,11 +163,15 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 }
 
 /* USER CODE BEGIN 1 */
+/* USART1 je vyhrazen pro GPS (NEO-7M); konzole je na USB CDC. RX bajty proto
+ * jdou do GpsRxQueue (GpsTask je sklada do NMEA vet), NE do UartRxQueue. */
+extern osMessageQueueId_t GpsRxQueueHandle;
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-	osMessageQueuePut(UartRxQueueHandle, &RxByte, 0, 0);
+	osMessageQueuePut(GpsRxQueueHandle, &RxByte, 0, 0);
     HAL_UART_Receive_IT(&huart1, &RxByte, 1);
   }
 }

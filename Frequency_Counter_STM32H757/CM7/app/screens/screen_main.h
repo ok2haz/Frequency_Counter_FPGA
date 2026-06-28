@@ -37,7 +37,8 @@ int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 *
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 void screen_main_redraw_title(void);                /* redraw only the title row */
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
-int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas HH:MM:SS; vrati 1 pokud prekreslil (zmena sekundy) */
+int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati 1 pokud prekreslil */
+int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
 int  screen_main_redraw_signal(int16_t pct);           /* simulovany signal bargraf; vrati 1 pokud kreslil */
 int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
@@ -48,10 +49,10 @@ bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hla
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
-extern const char *SCR_S_GNSS_LOCK, *SCR_S_SYS_READY, *SCR_S_SAT_VAL;
+/* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
+extern const char *SCR_S_SYS_READY;
 extern const char *SCR_S_HDOP_L, *SCR_S_HDOP_V;
 extern const char *SCR_S_CAL_L, *SCR_S_CAL_V, *SCR_S_HOLD_L, *SCR_S_HOLD_V;
-extern const char *SCR_S_DATE;   /* cas je dynamicky (screen_main_redraw_time), ne staticky */
 extern const char *SCR_S_TITLE_RIGHT;
 extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
 extern const int16_t SCR_MAIN_DIGIT_COUNT;

@@ -13,8 +13,9 @@
 #include "screen_main.h"
 #include <ui/ui.h>
 #include <prim/prim.h>
-#include <stdio.h>   /* snprintf pro simulovany cas */
-#include <string.h>  /* strncpy pro simulovane cislice */
+#include "gps.h"     /* gps_get() — zive GNSS lock / pocet druzic / cas+datum v headeru */
+#include <stdio.h>   /* snprintf pro cas/datum */
+#include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 
 #ifndef SCR_SDRAM_SECTION
@@ -138,8 +139,21 @@ static void render_header(void)
     int16_t y = (UI_DIM_HEADER_H - UI_DIM_PILL_H) / 2;
     ui_pill_t p;
 
-    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_OK,
-                    .value = SCR_S_GNSS_LOCK, .has_led = true};
+    /* Zive GPS: GNSS lock pill + pocet druzic (SAT pill) + datum z GPS. */
+    gps_data_t g;
+    gps_get(&g);
+    char sat_v[8], date_v[16];
+    const char *gnss_s; ui_pill_variant_t gnss_var;
+    if      (g.valid && g.fix_mode == 3) { gnss_s = "GNSS 3D";  gnss_var = UI_PILL_OK; }
+    else if (g.fix_quality > 0)          { gnss_s = "GNSS FIX"; gnss_var = UI_PILL_OK; }
+    else if (g.sats_in_view > 0)         { gnss_s = "ACQUIRE";  gnss_var = UI_PILL_WARN; }
+    else                                 { gnss_s = "NO GNSS";  gnss_var = UI_PILL_BAD; }
+    snprintf(sat_v, sizeof sat_v, "%u", g.num_sat);
+    if (g.valid) snprintf(date_v, sizeof date_v, "%04u-%02u-%02u", g.year, g.month, g.day);
+    else         snprintf(date_v, sizeof date_v, "no fix");
+
+    p = (ui_pill_t){.x = x, .y = y, .variant = gnss_var,
+                    .value = gnss_s, .has_led = true};
     ui_pill_render(&p);
     s_gnss_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> GPS okno */
     x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
@@ -149,7 +163,7 @@ static void render_header(void)
     s_sys_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> System Health */
     x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
 
-    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL, .value = SCR_S_SAT_VAL,
+    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL, .value = sat_v,
                     .icon_render = ui_icon_sat_dish, .icon_size = 22,
                     .icon_color = UI_COLOR_OK_SOFT};
     ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
@@ -169,7 +183,7 @@ static void render_header(void)
     int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;   /* half the margin */
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
-    prim_draw_text((prim_point_t){time_x, 46}, SCR_S_DATE, &ui_font_sans_14,
+    prim_draw_text((prim_point_t){time_x, 46}, date_v, &ui_font_sans_14,
                    UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
 }
 
@@ -756,25 +770,59 @@ void screen_main_redraw_title(void)
 
 /* Simulovany cas HH:MM:SS (start 14:32:07 + uptime). Prekresli JEN oblast casu
  * a JEN kdyz se zmeni sekunda (zadne zbytecne prekreslovani -> zadny "px sum"). */
+/* Cas + datum z GPS (UTC). Bez fixu "--:--:--" / "no fix". Prekresli jen kdyz se
+ * zmeni sekunda (cas) nebo datum -> zadny zbytecny redraw. Bez RTC -> mezi RMC
+ * vetami (1 Hz) cas stoji; pri ztrate fixu zamrzne (RTC continuita = navazujici). */
 int screen_main_redraw_time(uint32_t ms_since_boot)
 {
-    static uint32_t last_sec = 0xFFFFFFFFu;
-    uint32_t sec = 14u * 3600u + 32u * 60u + 7u + ms_since_boot / 1000u;
-    if (sec == last_sec) return 0;   /* sekunda se nezmenila -> nekreslit, neflipovat */
-    last_sec = sec;
-    snprintf(s_time_buf, sizeof(s_time_buf), "%02lu:%02lu:%02lu",
-             (unsigned long)((sec / 3600u) % 24u),
-             (unsigned long)((sec / 60u) % 60u),
-             (unsigned long)(sec % 60u));
+    (void)ms_since_boot;
+    static uint32_t last_key  = 0xFFFFFFFFu;
+    static char     last_date[16] = "";
+    gps_data_t g;
+    gps_get(&g);
+
+    char tb[16], db[16];
+    uint32_t key;
+    if (g.valid) {
+        snprintf(tb, sizeof tb, "%02u:%02u:%02u", g.hour, g.minute, g.second);
+        snprintf(db, sizeof db, "%04u-%02u-%02u", g.year, g.month, g.day);
+        key = (uint32_t)g.hour * 3600u + (uint32_t)g.minute * 60u + g.second;
+    } else {
+        snprintf(tb, sizeof tb, "--:--:--");
+        snprintf(db, sizeof db, "no fix");
+        key = 0xFFFFFFFEu;
+    }
+    int tchg = (key != last_key);
+    int dchg = (strcmp(db, last_date) != 0);
+    if (!tchg && !dchg) return 0;
+    last_key = key;
+    strncpy(last_date, db, sizeof last_date - 1); last_date[sizeof last_date - 1] = '\0';
+    strncpy(s_time_buf, tb, sizeof s_time_buf - 1); s_time_buf[sizeof s_time_buf - 1] = '\0';
 
     int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;
-    int16_t tw = prim_text_width(s_time_buf, &ui_font_mono_25);   /* monospace -> stabilni */
-    /* Vycisti CELOU vysku glyfu (y 1..34), at nezbydou pixely nahore/dole.
-     * Datum je na baseline 46 (top ~35) -> 34 se ho nedotkne. */
-    blit_bg_region((prim_rect_t){(int16_t)(time_x - tw - 6), 1, (int16_t)(tw + 12), 33});
-    prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
-                   UI_COLOR_INK, PRIM_ALIGN_RIGHT);
-    return 1;   /* prekresleno -> flip */
+    if (tchg) {   /* cas: baseline 23, glyf y 1..34 (datum @46 se nedotkne) */
+        int16_t tw = prim_text_width(s_time_buf, &ui_font_mono_25);
+        blit_bg_region((prim_rect_t){(int16_t)(time_x - tw - 6), 1, (int16_t)(tw + 12), 33});
+        prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
+                       UI_COLOR_INK, PRIM_ALIGN_RIGHT);
+    }
+    if (dchg) {   /* datum: baseline 46, top ~35 */
+        int16_t dw = prim_text_width(db, &ui_font_sans_14);
+        blit_bg_region((prim_rect_t){(int16_t)(time_x - dw - 6), 35, (int16_t)(dw + 12), 18});
+        prim_draw_text((prim_point_t){time_x, 46}, db, &ui_font_sans_14,
+                       UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    }
+    return 1;
+}
+
+/* Partial redraw horni listy z GPS: blitne header strip z bg cache a prekresli
+ * pilulky (GNSS lock + pocet druzic) + cas/datum. Volat jen pri zmene GPS stavu
+ * (sat/fix) — render_header cte gps_get() sam. */
+int screen_main_redraw_header(void)
+{
+    blit_bg_region((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_HEADER_H});
+    render_header();
+    return 1;
 }
 
 /* Incremental prekresleni signal bargrafu (animace ~10x/s, dBm krok 1): chrome/

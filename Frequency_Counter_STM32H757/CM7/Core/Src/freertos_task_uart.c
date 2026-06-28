@@ -16,6 +16,7 @@
 #include <stdbool.h>
 
 #include "usart.h"        /* huart1, RxByte */
+#include "gps.h"          /* gps_format_status (prikaz "gps") */
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ft5x06.h"
 #include "fpga_freq.h"
@@ -70,7 +71,9 @@ void UartTask_run(void *argument)
 
 	printf("UART task ready\n");
 
-	HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+	/* USART1 RX uz nenahazujeme zde — USART1 je vyhrazen pro GPS (NEO-7M),
+	 * RX nahodi gps_init() a bajty jdou do GpsRxQueue. Konzole bere RX z USB CDC
+	 * (CDC_Receive_FS -> usb_console_on_rx -> UartRxQueue). */
   /* Infinite loop */
   for(;;)
   {
@@ -310,7 +313,7 @@ void UartTask_run(void *argument)
 				  printf("gpsdo-ui v0.2-diag\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | stats | status | sensors | temperature\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | stats | status | sensors | temperature\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];
@@ -319,6 +322,16 @@ void UartTask_run(void *argument)
 				  fbuf[sizeof(fbuf) - 1] = '\0';
 				  taskEXIT_CRITICAL();
 				  printf("FREQ: %s\n", fbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps") == 0) {
+				  char gbuf[96];
+				  gps_format_status(gbuf, sizeof(gbuf));
+				  printf("GPS: %s\n", gbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gpsraw") == 0) {
+				  char gbuf[128];
+				  gps_format_raw(gbuf, sizeof(gbuf));
+				  printf("GPSRAW: %s\n", gbuf);
 			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */

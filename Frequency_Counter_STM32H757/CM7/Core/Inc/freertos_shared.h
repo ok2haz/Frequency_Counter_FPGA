@@ -18,6 +18,7 @@ extern osMutexId_t i2c4MutexHandle;        /* I2C4: TMP117 0x48 + touch + backli
 extern osMutexId_t i2c1MutexHandle;        /* I2C1: FPGA deska (TMP117 x2, ADS1115, Si5356) */
 extern osMutexId_t uartTxMutexHandle;      /* serializace printf/_write */
 extern osMessageQueueId_t UartRxQueueHandle;
+extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NMEA) */
 
 /* ── Teploty / ADS1115 ──────────────────────────────────────────────────
  * Hodnota + platnost + statistika jsou v g_sensors[] (viz sensor_stat.h).

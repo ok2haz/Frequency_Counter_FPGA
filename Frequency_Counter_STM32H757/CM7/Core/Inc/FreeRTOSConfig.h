@@ -70,13 +70,7 @@ extern uint32_t SystemCoreClock;
 #define configUSE_SB_COMPLETED_CALLBACK          ( valueNotSetted )
 #define configUSE_MINI_LIST_ITEM                ( valueNotSetted )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)24576)
-/* USER: drive nedefinovano (=0) -> preteceni stacku/heapu se tiche prepsalo do
- * sousedni pameti a shodilo jiny task (napr. UART po "screen main"). Teper
- * detekovano hooky vApplicationStackOverflowHook / vApplicationMallocFailedHook
- * ve freertos.c. POZN.: pri regeneraci z CubeMX nastav tyto dva v FreeRTOS UI. */
-#define configCHECK_FOR_STACK_OVERFLOW           2
-#define configUSE_MALLOC_FAILED_HOOK             1
+#define configTOTAL_HEAP_SIZE                    ((size_t)15360)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configHEAP_CLEAR_MEMORY_ON_FREE          0
 #define configUSE_TRACE_FACILITY                 1

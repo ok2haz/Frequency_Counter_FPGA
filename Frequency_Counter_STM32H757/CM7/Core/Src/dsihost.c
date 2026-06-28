@@ -45,7 +45,7 @@ void MX_DSIHOST_DSI_Init(void)
   /* USER CODE END DSIHOST_Init 1 */
   hdsi.Instance = DSI;
   hdsi.Init.AutomaticClockLaneControl = DSI_AUTO_CLK_LANE_CTRL_DISABLE;
-  hdsi.Init.TXEscapeCkdiv = 5;  /* FIX: 87.5/5 = 17.5 MHz (under 20 MHz max), was 4 -> 21.875 MHz out of spec */
+  hdsi.Init.TXEscapeCkdiv = 5;
   hdsi.Init.NumberOfLanes = DSI_ONE_DATA_LANE;
   PLLInit.PLLNDIV = 70;
   PLLInit.PLLIDF = DSI_PLL_IN_DIV1;
@@ -67,15 +67,12 @@ void MX_DSIHOST_DSI_Init(void)
   {
     Error_Handler();
   }
-  /* PhyTimings - HS↔LP transition times v lanebyteclock units (87.5 MHz = 11.4 ns per unit).
-   * Puvodne CubeMX defaults byly podezrele nizke (DataLane 17/18, StopWaitTime 0).
-   * Hodnoty z ST BSP example pro STM32H747I-DISCO + DSI panel: 35/35/35/35/10. */
-  PhyTimings.ClockLaneHS2LPTime = 35;   /* bylo 28 */
-  PhyTimings.ClockLaneLP2HSTime = 35;   /* bylo 36 */
-  PhyTimings.DataLaneHS2LPTime = 35;    /* bylo 18 - DRAMATICKE zvyseni */
-  PhyTimings.DataLaneLP2HSTime = 35;    /* bylo 17 - DRAMATICKE zvyseni */
+  PhyTimings.ClockLaneHS2LPTime = 35;
+  PhyTimings.ClockLaneLP2HSTime = 35;
+  PhyTimings.DataLaneHS2LPTime = 35;
+  PhyTimings.DataLaneLP2HSTime = 35;
   PhyTimings.DataLaneMaxReadTime = 0;
-  PhyTimings.StopWaitTime = 10;         /* bylo 0 - PHY zadny settling cas */
+  PhyTimings.StopWaitTime = 10;
   if (HAL_DSI_ConfigPhyTimer(&hdsi, &PhyTimings) != HAL_OK)
   {
     Error_Handler();
@@ -89,13 +86,9 @@ void MX_DSIHOST_DSI_Init(void)
     Error_Handler();
   }
   VidCfg.VirtualChannelID = 0;
-  VidCfg.ColorCoding = DSI_RGB565;   /* prechod na RGB565 (16bpp) - obchazi 3-byte alignment rotaci kanalu */
+  VidCfg.ColorCoding = DSI_RGB565;
   VidCfg.LooselyPacked = DSI_LOOSELY_PACKED_DISABLE;
-  VidCfg.Mode = DSI_VID_MODE_BURST;   /* Barevna rotace R->G->B korelovala s NB_PULSES
-                                       * (objevila se pri burst->NB_PULSES, drzela i po prechodu
-                                       * na RGB565). Burst mel barvy spravne. RGB565 (2 byty/px)
-                                       * drzi shear pryc nezavisle na modu -> burst + RGB565
-                                       * = ciste pruhy + spravna barva. */
+  VidCfg.Mode = DSI_VID_MODE_BURST;
   VidCfg.PacketSize = 800;
   VidCfg.NumberOfChunks = 0;
   VidCfg.NullPacketSize = 0;

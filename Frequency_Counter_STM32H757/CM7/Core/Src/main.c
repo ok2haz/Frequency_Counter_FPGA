@@ -25,6 +25,7 @@
 #include "ltdc.h"
 #include "spi.h"
 #include "usart.h"
+#include "usb_device.h"
 #include "gpio.h"
 #include "fmc.h"
 
@@ -87,7 +88,7 @@ static void MPU_Config(void);
   * dokud neprijde SCB_CleanDCache flush. LTDC ale cte primo ze SDRAM pres AXI,
   * coz vede k race conditions zejmena pri psani menicich se dat.
   *
-  * Tato funkce konfiguruje 2 MB region na 0xC0000000 jako Write-Through cache:
+  * Tato funkce konfiguruje 4 MB region na 0xC0000000 jako Write-Through cache:
   *   - CPU zapisy jdou IHNED do SDRAM (LTDC vidi konzistentni data)
   *   - CPU cteni stale vyuziva cache (rychle)
   *   - Neni potreba explicitni SCB_CleanDCache po zapisu do FB
@@ -117,8 +118,8 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;  /* WT = Cacheable+NotBufferable */
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-    /* Region 1: pracovni pamet pro bignum vypocet pi (0xC0400000, 4 MB, Normal Write-Back).
-     * Mimo framebuffery (region 0 = 2 MB); cachovane (WBWA) kvuli rychlosti bignum operaci.
+    /* Region 1: sdram test buffer (UART 'sdram' write/read) + scratch (0xC0400000,
+     * 4 MB, Normal Write-Back). Mimo framebuffery (region 0 = 4 MB); cachovane (WBWA).
      * Jen CPU (necte LTDC/DMA2D) -> WB je OK. */
     MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
     MPU_InitStruct.Number           = MPU_REGION_NUMBER1;
@@ -216,10 +217,10 @@ Error_Handler();
   MX_GPIO_Init();
   MX_FMC_Init();
   MX_SPI2_Init();
-  MX_USART1_UART_Init();
   MX_I2C4_Init();
   MX_DSIHOST_DSI_Init();
   MX_LTDC_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /* I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71) */
@@ -328,14 +329,15 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 1;
   RCC_OscInitStruct.PLL.PLLN = 96;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 15;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;

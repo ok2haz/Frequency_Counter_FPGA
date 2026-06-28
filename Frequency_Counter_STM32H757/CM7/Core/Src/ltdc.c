@@ -44,14 +44,14 @@ void MX_LTDC_Init(void)
   hltdc.Init.VSPolarity = LTDC_VSPOLARITY_AL;
   hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
   hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IPC;
-  hltdc.Init.HorizontalSync = 1;     /* HSA = 2 pixelu, HAL pouziva HSA-1 */
-  hltdc.Init.VerticalSync = 1;       /* VSA = 2 radky */
-  hltdc.Init.AccumulatedHBP = 47;    /* HSA+HBP-1 = 2+46-1 */
-  hltdc.Init.AccumulatedVBP = 22;    /* VSA+VBP-1 = 2+21-1 */
-  hltdc.Init.AccumulatedActiveW = 847;  /* HSA+HBP+ActiveW-1 = 2+46+800-1 */
-  hltdc.Init.AccumulatedActiveH = 502;  /* VSA+VBP+ActiveH-1 = 2+21+480-1 */
-  hltdc.Init.TotalWidth = 849;       /* HSA+HBP+ActiveW+HFP-1 = 2+46+800+2-1 */
-  hltdc.Init.TotalHeigh = 509;       /* VSA+VBP+ActiveH+VFP-1 = 2+21+480+7-1 */
+  hltdc.Init.HorizontalSync = 1;
+  hltdc.Init.VerticalSync = 1;
+  hltdc.Init.AccumulatedHBP = 47;
+  hltdc.Init.AccumulatedVBP = 22;
+  hltdc.Init.AccumulatedActiveW = 847;
+  hltdc.Init.AccumulatedActiveH = 502;
+  hltdc.Init.TotalWidth = 849;
+  hltdc.Init.TotalHeigh = 509;
   hltdc.Init.Backcolor.Blue = 0;
   hltdc.Init.Backcolor.Green = 0;
   hltdc.Init.Backcolor.Red = 0;
@@ -63,7 +63,7 @@ void MX_LTDC_Init(void)
   pLayerCfg.WindowX1 = 800;
   pLayerCfg.WindowY0 = 0;
   pLayerCfg.WindowY1 = 480;
-  pLayerCfg.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;  /* 16bpp - 2 byty/pixel, sude zarovnani */
+  pLayerCfg.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
   pLayerCfg.Alpha = 255;
   pLayerCfg.Alpha0 = 0;
   pLayerCfg.BlendingFactor1 = LTDC_BLENDING_FACTOR1_CA;
@@ -104,7 +104,7 @@ void HAL_LTDC_MspInit(LTDC_HandleTypeDef* ltdcHandle)
     PeriphClkInitStruct.PLL3.PLL3R = 7;
     PeriphClkInitStruct.PLL3.PLL3RGE = RCC_PLL3VCIRANGE_3;
     PeriphClkInitStruct.PLL3.PLL3VCOSEL = RCC_PLL3VCOMEDIUM;
-    PeriphClkInitStruct.PLL3.PLL3FRACN = 4096;
+    PeriphClkInitStruct.PLL3.PLL3FRACN = 4096.0;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
