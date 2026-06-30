@@ -1,0 +1,47 @@
+# CODEOWNERS — automatické přiřazení reviewera na PR podle cesty.
+# Funguje JEN když je na GitHubu zapnutá branch protection s "Require review
+# from Code Owners" (Settings → Branches → main).
+#
+# ⚠️ Nahraď @kamarad za skutečný GitHub handle spolupracovníka.
+# Poslední vyhovující řádek vyhrává (jako .gitignore).
+
+# ── Výchozí vlastník (fallback na cokoliv) ──
+*                                   @ok2haz
+
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ NEBEZPEČNÉ / SDÍLENÉ — vždy review "IOC ownera" (CubeMX + sdílený init).
+#    Sem dva lidi současně regenerovat NESMÍ (merge peklo v generovaném kódu).
+# ─────────────────────────────────────────────────────────────────────────
+*.ioc                               @ok2haz
+.mxproject                          @ok2haz
+**/CM7/Core/Src/main.c              @ok2haz
+**/CM7/Core/Src/freertos.c          @ok2haz
+**/CM7/Core/Src/gpio.c              @ok2haz
+**/CM7/Core/Src/dsihost.c           @ok2haz
+**/CM7/Core/Src/ltdc.c              @ok2haz
+**/CM7/Core/Src/fmc.c               @ok2haz
+**/*.ld                             @ok2haz
+**/Drivers/                         @ok2haz
+**/Middlewares/                     @ok2haz
+
+# Centrální "kultura" — pravidla projektu (změna = oba musí vědět)
+**/CLAUDE.md                        @ok2haz
+**/CUBEMX_CHECKLIST.md              @ok2haz
+CONTRIBUTING.md                     @ok2haz
+
+# ─────────────────────────────────────────────────────────────────────────
+# Moduly rozdělené po vlastnících (PŘÍKLAD — uprav podle dohody).
+# Tady review NEvyžaduje druhého, vlastník modulu rozhoduje sám.
+# ─────────────────────────────────────────────────────────────────────────
+# Display / UI:
+# **/CM7/app/                       @ok2haz
+# **/CM7/libprim/                   @ok2haz
+# **/CM7/libui/                     @ok2haz
+#
+# FPGA / GPS / senzory (kamarád):
+# **/CM7/Core/Src/fpga_freq.c       @kamarad
+# **/CM7/Core/Src/gps.c             @kamarad
+# **/CM7/Core/Src/si5356.c          @kamarad
+# **/CM7/Core/Src/ads1115.c         @kamarad
+# **/CM7/Core/Src/freertos_task_sensors.c  @kamarad
+# **/CM7/Core/Src/freertos_task_fpga.c     @kamarad

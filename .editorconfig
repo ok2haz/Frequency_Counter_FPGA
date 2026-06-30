@@ -1,0 +1,28 @@
+# EditorConfig — sjednocení napříč editory/IDE pro oba spolupracovníky.
+# https://editorconfig.org  (CubeIDE/VSCode/CLion to čtou; CubeIDE přes plugin)
+root = true
+
+# ── Univerzální pravidla (vysoká hodnota, bez reformátování existujícího kódu) ──
+[*]
+charset = utf-8                 # ⚠️ české komentáře s diakritikou -> nutné UTF-8
+end_of_line = lf                # repo je LF-kanonické (viz .gitattributes); editor ukládá LF
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Markdown: koncové mezery můžou být dvě = zalomení řádku -> netrimovat
+[*.md]
+trim_trailing_whitespace = false
+
+# Binární / generované, kde se whitespace nehlídá
+[*.{pdf,png,jpg,jpeg,gif,ico,bin,elf,hex,a}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+# ── Odsazení: NEpředepisujeme tvrdě (codebase je smíšený) ──
+# Pravidlo: drž se stylu SOUSEDNÍHO kódu v souboru.
+#   - CubeMX-generované (main.c, gpio.c, …)        = 2 mezery
+#   - app/ + libprim/ + libui/                     = 4 mezery
+#   - některé freertos_task_*.c                    = taby
+# Editorconfig schválně neřeší indent_style/size, aby nevznikaly reformátovací diffy.
