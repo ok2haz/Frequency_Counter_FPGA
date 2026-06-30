@@ -20,16 +20,22 @@ Když potřebuješ novou periferii / změnu v `.ioc`:
 2. Owner ji zaregeneruje na samostatné větvi, projde `CUBEMX_CHECKLIST.md`, **mergne první**.
 3. Ty si pak svou větev **rebasneš** na novou main.
 
-## 2) Rozdělení modulů (minimalizuje kolize)
-Projekt je čistě rozdělený — držte se hranic:
+## 2) Oba rovnocenní — bez pevného vlastnictví
+**Oba můžete sahat na cokoli.** Per-modulové vlastnictví záměrně neřešíme.
+Aby ale práce nekolidovala, drž se dvou věcí:
 
-| Oblast | Soubory |
-|---|---|
-| **Display / UI** | `CM7/libprim/`, `CM7/libui/`, `CM7/app/` (+ `screens/`, `hal/`) |
-| **FPGA / GPS / senzory** | `fpga_freq.c`, `gps.c`, `si5356.c`, `ads1115.c`, `freertos_task_sensors.c`, `freertos_task_fpga.c` |
-| **⚠️ Sdílené (koordinovat / PR review)** | `H757_LED.ioc` + generované, `freertos.c` (task table + globály), `main.c` init, `*.ld`, `Drivers/`, `CLAUDE.md`, `CUBEMX_CHECKLIST.md` |
+- **Neformálně:** než začneš větší práci, řekni druhému, na čem děláš (ať neoba
+  saháte na ten samý soubor). Projekt je hezky rozdělený (`libprim`/`libui`/`app`
+  vs. `fpga_freq`/`gps`/senzory) — využijte to jako přirozené hranice.
+- **⚠️ Tvrdě (jediné pravidlo):** **sdílené / CubeMX-generované soubory** vyžadují
+  koordinaci a review toho druhého — viz níže.
 
-Vlastnictví je vidět i v `.github/CODEOWNERS` (doplň GitHub handle kamaráda).
+**Sdílené soubory** (kde dva současné zásahy bolí): `H757_LED.ioc` + generované,
+`main.c` init, `freertos.c` (task table + globály), `gpio.c`, `dsihost.c`, `ltdc.c`,
+`fmc.c`, `*.ld`, `Drivers/`, `CLAUDE.md`, `CUBEMX_CHECKLIST.md`.
+Na ně `.github/CODEOWNERS` přidá **oba jako reviewery** → PR na sdílený soubor
+musí schválit ten druhý (autor sám sebe neschválí). Ostatní soubory owner nemají
+→ měníte je volně.
 
 ## 3) Větve a PR
 - `main` = **vždy buildovatelný a stabilní**. Na GitHubu zapnout branch protection
