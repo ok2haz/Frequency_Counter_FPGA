@@ -42,6 +42,12 @@ extern volatile uint8_t g_spi_dirty;
 extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
 extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
 
+/* ── RTC (zapisuje defaultTask přes rtc_app_tick, čte UART/UI) ───────────────
+ * RTC běží z LSE (32.768 kHz), disciplinuje se z GPS UTC. Text "YYYY-MM-DD HH:MM:SS".
+ * g_rtc_synced: 1 = už srovnán z GPS, 0 = volný běh od bootu. */
+extern volatile char    g_rtc_text[24];
+extern volatile uint8_t g_rtc_synced;
+
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
 extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */

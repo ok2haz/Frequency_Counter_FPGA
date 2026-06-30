@@ -12,9 +12,60 @@
 #include "cmsis_os2.h"
 
 #include "i2c.h"          /* hi2c1, hi2c4 */
+#include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
 #include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
 #include "freertos_shared.h"
+
+/* ── ADC3 factory kalibrace (system memory) ───────────────────────────────
+ * ⚠️ Na STM32H7 jsou VSECHNY tyto hodnoty 16-BITOVE (overeno `adcraw`:
+ * VREFINT_CAL=24291 = 1.22V @ 16-bit). Pozor: LL makra __LL_ADC_CALC_* u VREFINT
+ * predpokladaji 12-bit kalibraci -> daji spatne VDDA. Proto pocitame RUCNE v
+ * 16-bit (VREF_CHARAC = 3300 mV). */
+#define ADC_TS_CAL1     (*(volatile uint16_t *)0x1FF1E820UL)   /* teplota @ 30 °C  (16-bit) */
+#define ADC_TS_CAL2     (*(volatile uint16_t *)0x1FF1E840UL)   /* teplota @ 110 °C (16-bit) */
+#define ADC_VREFINT_CAL (*(volatile uint16_t *)0x1FF1E860UL)   /* VREFINT @ 3.3V   (16-bit) */
+#define ADC_VREF_CHARAC 3300u                                  /* VREF+ pri tovarni kalibraci [mV] (TS_CAL/VREFINT_CAL @ 3,3 V) */
+
+/* ⚠️ ADC3 channel preselection: na H7 musi mit kazdy kanal bit v PCSEL, jinak je
+ * analogovy vstup ODPOJENY a railuje (zjisteno: HAL_ADC_ConfigChannel ho na teto
+ * verzi NENASTAVIL -> PCSEL=0). Interni kanaly: VBAT=17, TEMPSENSOR=18, VREFINT=19. */
+#define ADC3_INT_PCSEL  ((1u << 17) | (1u << 18) | (1u << 19))
+
+/* SW prumerovani: ADC interni kanaly (vysokoimpedancni zdroje + sum reference)
+ * jednorazove kolisaji -> prumer N vzorku snizi sum o ~sqrt(N) (16 -> 4x).
+ * HW oversampling zamerne nepouzivame (format Ratio je na H757 mezi HAL cestami
+ * nejednoznacny). ~16*262us = ~4 ms/kanal @ Low prio, 2x/s -> ~2,7 % CPU. */
+#define ADC3_AVG_N   16
+
+/* Precte JEDEN ADC3 kanal (single conversion, rank1), prumer ADC3_AVG_N vzorku.
+ * Scan polling vsech 3 najednou na H7 internim kanalum RAILOVAL na 0xFFFF -> citame
+ * po jednom. SensorsTask init prepne hadc3 na ScanConvMode=DISABLE, NbrOfConversion=1. */
+static int adc3_read_chan(uint32_t channel, uint32_t *out)
+{
+    ADC_ChannelConfTypeDef sc = {0};
+    sc.Channel      = channel;
+    sc.Rank         = ADC_REGULAR_RANK_1;
+    sc.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
+    sc.SingleDiff   = ADC_SINGLE_ENDED;
+    sc.OffsetNumber = ADC_OFFSET_NONE;
+    if (HAL_ADC_ConfigChannel(&hadc3, &sc) != HAL_OK) return 0;
+    /* ⚠️ Pojistky (HAL je na teto H7 verzi nenastavil -> kanaly railovaly 0xFFFF),
+     * pisi se dokud ADEN=0 (pred Start): (a) interni analogove cesty v ADC3 common,
+     * (b) channel preselection PCSEL — bez nej je analogovy vstup odpojeny. */
+    ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+    ADC3->PCSEL |= (1u << ((ADC3->SQR1 >> 6) & 0x1Fu));   /* preselect kanal z rank1 (SQR1) */
+
+    uint32_t sum = 0; int n = 0;
+    for (int i = 0; i < ADC3_AVG_N; i++) {
+        if (HAL_ADC_Start(&hadc3) != HAL_OK) break;
+        if (HAL_ADC_PollForConversion(&hadc3, 20) == HAL_OK) { sum += HAL_ADC_GetValue(&hadc3); n++; }
+        HAL_ADC_Stop(&hadc3);
+    }
+    if (n == 0) return 0;
+    *out = sum / (uint32_t)n;
+    return 1;
+}
 
 /* Definice pro TMP117 */
 #define TMP117_ADDR         (0x48 << 1)
@@ -162,6 +213,21 @@ void SensorsTask_run(void *argument)
     osMutexRelease(i2c1MutexHandle);
   }
 
+  // ⚠️ ADC3 prescaler: generated MX_ADC3_Init VYNECHAL ClockPrescaler (i kdyz .ioc
+  // ma DIV8) -> ADC bezel na 25 MHz (PRESC=DIV1) + BOOST nastaveny na nizsi rozsah
+  // -> vysokoimpedancni VREFINT/teplota se nestihly ustalit a RAILOVALY na 0xFFFF.
+  // DIV8 -> 3.125 MHz, HAL dopocita spravny BOOST -> interni kanaly cti spravne.
+  hadc3.Init.ClockPrescaler  = ADC_CLOCK_ASYNC_DIV8;
+  hadc3.Init.ScanConvMode    = ADC_SCAN_DISABLE;
+  hadc3.Init.NbrOfConversion = 1;
+  HAL_ADC_Init(&hadc3);
+  HAL_ADCEx_Calibration_Start(&hadc3, ADC_CALIB_OFFSET, ADC_SINGLE_ENDED);
+  // Zapnout interni analogove cesty (VREFINT/teplota/VBAT) + channel preselection
+  // (oboji HAL nenastavil) + stabilizace cidla (~120us). PCSEL/CCR jdou psat (ADEN=0).
+  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+  ADC3->PCSEL |= ADC3_INT_PCSEL;
+  osDelay(2);
+
   for(;;) {
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
 	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
@@ -237,6 +303,35 @@ void SensorsTask_run(void *argument)
 	  if (any_ok) i2c1_streak = 0;
 	  else if (i2c1_streak < 1000) i2c1_streak++;
 	  i2c1_iv = pdMS_TO_TICKS(i2c1_backoff_ms(i2c1_streak));
+	}
+
+	// === ADC3: MCU teplota jadra + VDDA (z VREFINT) + VBAT (interni kanaly) ===
+	// Cteni po jednom kanalu (adc3_read_chan) — scan polling na H7 railoval.
+	// Rucni 16-bit prepocet (kalibrace jsou 16-bit). Nezavisle na I2C, 2x/s.
+	uint32_t rt = 0, rv = 0, rb = 0;
+	int a_t = adc3_read_chan(ADC_CHANNEL_TEMPSENSOR, &rt);
+	int a_v = adc3_read_chan(ADC_CHANNEL_VREFINT,    &rv);
+	int a_b = adc3_read_chan(ADC_CHANNEL_VBAT,       &rb);
+	if (a_v && rv) {
+	  /* vref = MERENA VREF+ [mV] = VREFINT_CAL * 3300 / VREFINT_DATA. Formula je
+	   * reference-agnosticka -> vraci SKUTECNE VREF+ at uz je to VDDA (3300) nebo
+	   * VREFBUF (~2500). Zobrazuje se jako "VREF" (na teto desce ~2,5 V z VREFBUF). */
+	  uint32_t vref = ADC_VREF_CHARAC * (uint32_t)ADC_VREFINT_CAL / rv;
+	  sensor_update(SENS_VDDA, (float)vref);
+	  if (a_t) {
+		/* TS_CAL jsou merene pri VREF+=3,3 V -> rt prepocti na 3,3V-ekvivalent
+		 * (rt * vref/3300), jinak by teplota byla mimo (VREFBUF != 3,3 V). */
+		float ts   = (float)rt * (float)vref / (float)ADC_VREF_CHARAC;
+		int   span = (int)ADC_TS_CAL2 - (int)ADC_TS_CAL1;   /* 30..110 °C */
+		float tc   = span ? ((ts - (float)ADC_TS_CAL1) * 80.0f / (float)span + 30.0f) : 0.0f;
+		sensor_update(SENS_CORE_T, tc);
+	  } else sensor_fail(SENS_CORE_T);
+	  if (a_b) {
+		uint32_t vbat = (uint32_t)((uint64_t)rb * vref / 65535u) * 4u;   /* vnitrni delic /4 */
+		sensor_update(SENS_VBAT, (float)vbat);
+	  } else sensor_fail(SENS_VBAT);
+	} else {
+	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)

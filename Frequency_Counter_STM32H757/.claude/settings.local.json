@@ -50,7 +50,11 @@
       "Bash(grep -o \"USART1\\\\\\\\\\\\\\\\:I\" H757_LED.ioc)",
       "Bash(xargs grep -ln \"ui_pill_t\")",
       "Bash(grep -rnE \"^\\\\s*//\\\\s*\\\\w+.*;|^\\\\s*/\\\\*.*\\\\\\(\\\\\\).*\\\\*/\" Core/Src app)",
-      "Bash(git commit -m '@ *)"
+      "Bash(git commit -m '@ *)",
+      "Bash(git commit *)",
+      "Bash(grep -n \"gpsraw\\\\|\\\\`freq\\\\`, \\\\`fpgaraw\\\\|version\\\\`, \\\\`help\" CLAUDE.md)",
+      "Bash(grep -iv \"vref_charac\\\\|//\\\\|/\\\\*\")",
+      "Bash(grep -rnE \"^\\\\s*//\\\\s*\\(if|for|while|HAL_|prim_|return|printf\\)\" app/ Core/Src/fpga_freq.c Core/Src/gps.c)"
     ]
   }
 }

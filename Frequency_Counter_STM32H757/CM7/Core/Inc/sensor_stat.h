@@ -1,8 +1,8 @@
 /*
  * sensor_stat.h
  *
- * Sdílený stav senzorů (teploty TMP117 ×3, napětí ADS1115 ×4): poslední hodnota
- * + platnost + statistika (min/max/avg) + čítače chyb. Slouží displeji,
+ * Sdílený stav senzorů (3× TMP117 + 4× ADS1115 + 3× ADC3 interní = 10): poslední
+ * hodnota + platnost + statistika (min/max/avg) + čítače chyb. Slouží displeji,
  * UART výpisu i budoucí matematice/statistice/logu.
  *
  * Čistý C header (jen <stdint.h>), BEZ RTOS/HAL závislostí — smí ho includovat
@@ -29,6 +29,10 @@ typedef enum {
     SENS_ADS1,      /* ADS1115 AIN1                  [mV] */
     SENS_ADS2,      /* ADS1115 AIN2 = 12V větev      [mV] */
     SENS_ADS3,      /* ADS1115 AIN3 = 5V větev       [mV] */
+    SENS_CORE_T,    /* MCU teplota jádra (ADC3 TEMPSENSOR)       [°C] */
+    SENS_VDDA,      /* VREF+ z ADC3 VREFINT (= VREFBUF ~2,5 V, NE VDDA;
+                       enum název SENS_VDDA ponechán kvůli stabilitě indexů; label "VREF") [mV] */
+    SENS_VBAT,      /* VBAT (ADC3, vnitřní dělič /4)             [mV] */
     SENS_COUNT
 } sensor_id_t;
 

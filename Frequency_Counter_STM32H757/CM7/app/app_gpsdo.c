@@ -25,6 +25,8 @@ extern volatile uint32_t g_rtos_heap_free;       /* free heap [B] */
 extern volatile uint32_t g_rtos_heap_min;        /* min-ever-free heap [B] */
 extern volatile uint32_t g_rtos_cpu_pct;         /* CPU load [%] */
 extern volatile uint32_t g_uptime_s;             /* uptime [s] */
+extern volatile char     g_rtc_text[24];         /* "YYYY-MM-DD HH:MM:SS" (RTC z LSE, sync z GPS) */
+extern volatile uint8_t  g_rtc_synced;           /* 1 = RTC srovnan z GPS */
 
 /* FreeRTOS task handles (defined in freertos.c) — pro volny stack v System Health. */
 extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
@@ -187,8 +189,8 @@ static int dchg(char *cache, size_t n, const char *now)
 /* Vrati 1 pokud se NECO prekreslilo (-> volajici flipne present), jinak 0. */
 static int draw_diag_values(int force)
 {
-    static char c_tv[3][20], c_tm[3][20], c_adc[4][20];
-    static char c_spi[68], c_fpga[68], c_si[20], c_sys[4][20];
+    static char c_tv[3][20], c_tm[3][20], c_adc[4][20], c_mcu[3][20];
+    static char c_spi[68], c_fpga[68], c_si[20], c_sys[5][20];
     char buf[24], key[26];
     int drew = force;   /* force -> vse se kresli */
 
@@ -215,6 +217,19 @@ static int draw_diag_values(int force)
             dval(DG_LVAL, (int16_t)(236 + k * 28), 120, buf, a->valid); drew = 1; }
     }
 
+    /* MCU interni (ADC3): teplota jadra [°C] + VDDA/VBAT [mV]. */
+    { const sensor_stat_t *mt = &g_sensors[SENS_CORE_T];
+      fmt_temp(buf, sizeof(buf), mt->last);
+      snprintf(key, sizeof(key), "%c%s", mt->valid ? 'V' : 'X', buf);
+      if (force || dchg(c_mcu[0], sizeof(c_mcu[0]), key)) { dval(DG_LVAL, 394, 104, buf, mt->valid); drew = 1; } }
+    for (int k = 0; k < 2; k++) {
+        const sensor_stat_t *mv = &g_sensors[SENS_VDDA + k];
+        snprintf(buf, sizeof(buf), "%ld mV", lround_f(mv->last));
+        snprintf(key, sizeof(key), "%c%s", mv->valid ? 'V' : 'X', buf);
+        if (force || dchg(c_mcu[1 + k], sizeof(c_mcu[1 + k]), key)) {
+            dval(DG_LVAL, (int16_t)(422 + k * 28), 120, buf, mv->valid); drew = 1; }
+    }
+
     /* ── Pravy sloupec ── */
     /* FPGA: SPI status (barva dle g_spi_ok -> klic vc. ok) + merici kvalita. */
     char sig[68];
@@ -235,18 +250,28 @@ static int draw_diag_values(int force)
     if (force || dchg(c_si, sizeof(c_si), si)) {
         dtext(DG_RLBL, 206, DG_COLW - 24, si, sic, &ui_font_mono_18); drew = 1; }
 
-    /* System / RTOS. */
+    /* System / RTOS / RTC. */
     snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_free);
     if (force || dchg(c_sys[0], sizeof(c_sys[0]), buf)) { dval(DG_RVAL, 288, 150, buf, 1); drew = 1; }
     snprintf(buf, sizeof(buf), "%lu B", (unsigned long)g_rtos_heap_min);
-    if (force || dchg(c_sys[1], sizeof(c_sys[1]), buf)) { dval(DG_RVAL, 316, 150, buf, 1); drew = 1; }
+    if (force || dchg(c_sys[1], sizeof(c_sys[1]), buf)) { dval(DG_RVAL, 314, 150, buf, 1); drew = 1; }
     snprintf(buf, sizeof(buf), "%lu %%", (unsigned long)g_rtos_cpu_pct);
-    if (force || dchg(c_sys[2], sizeof(c_sys[2]), buf)) { dval(DG_RVAL, 344, 150, buf, 1); drew = 1; }
+    if (force || dchg(c_sys[2], sizeof(c_sys[2]), buf)) { dval(DG_RVAL, 340, 150, buf, 1); drew = 1; }
     { uint32_t s = g_uptime_s;
       snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu",
                (unsigned long)(s / 3600u), (unsigned long)((s / 60u) % 60u),
                (unsigned long)(s % 60u)); }
-    if (force || dchg(c_sys[3], sizeof(c_sys[3]), buf)) { dval(DG_RVAL, 372, 150, buf, 1); drew = 1; }
+    if (force || dchg(c_sys[3], sizeof(c_sys[3]), buf)) { dval(DG_RVAL, 366, 150, buf, 1); drew = 1; }
+
+    /* RTC: cas HH:MM:SS z g_rtc_text ("YYYY-MM-DD HH:MM:SS"). synced=0 -> ztlumeny
+     * + "no GPS" (jeste nesrovnano z GPS). Klic vc. sync stavu (rozhoduje o barve). */
+    { char rt[24]; uint8_t rsy;
+      strncpy(rt, (const char *)g_rtc_text, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+      rsy = g_rtc_synced;
+      if (rsy && strlen(rt) >= 19) snprintf(buf, sizeof(buf), "%.8s", rt + 11);
+      else                         snprintf(buf, sizeof(buf), "no GPS");
+      snprintf(key, sizeof(key), "%c%s", rsy ? 'V' : 'X', buf);
+      if (force || dchg(c_sys[4], sizeof(c_sys[4]), key)) { dval(DG_RVAL, 392, 150, buf, rsy); drew = 1; } }
 
     return drew;
 }
@@ -277,13 +302,20 @@ void app_gpsdo_render_diag(void)
         dlabel(DG_LLBL, 132, "0x49");
         dlabel(DG_LLBL, 160, "0x4A");
 
-        ui_card_t c_adc = {.rect = {DG_LX, 190, DG_COLW, 214},
+        ui_card_t c_adc = {.rect = {DG_LX, 190, DG_COLW, 150},
                            .header_label = "ADC ADS1115"};
         ui_card_render_chrome(&c_adc);
         dlabel(DG_LLBL, 236, "AIN0");
         dlabel(DG_LLBL, 264, "AIN1");
         dlabel(DG_LLBL, 292, "AIN2 (12V)");
         dlabel(DG_LLBL, 320, "AIN3 (5V)");
+
+        ui_card_t c_mcu = {.rect = {DG_LX, 348, DG_COLW, 124},
+                           .header_label = "MCU (jadro / napajeni)"};
+        ui_card_render_chrome(&c_mcu);
+        dlabel(DG_LLBL, 394, "Teplota jadra");
+        dlabel(DG_LLBL, 422, "VREF");
+        dlabel(DG_LLBL, 450, "VBAT");
 
         /* Right column: FPGA + Reference + System. */
         ui_card_t c_fpga = {.rect = {DG_RX, 58, DG_COLW, 92},
@@ -295,12 +327,13 @@ void app_gpsdo_render_diag(void)
         ui_card_render_chrome(&c_ref);
 
         ui_card_t c_sys = {.rect = {DG_RX, 242, DG_COLW, 162},
-                           .header_label = "System / RTOS"};
+                           .header_label = "System / RTOS / RTC"};
         ui_card_render_chrome(&c_sys);
         dlabel(DG_RLBL, 288, "Heap free");
-        dlabel(DG_RLBL, 316, "Heap min");
-        dlabel(DG_RLBL, 344, "CPU");
-        dlabel(DG_RLBL, 372, "Uptime");
+        dlabel(DG_RLBL, 314, "Heap min");
+        dlabel(DG_RLBL, 340, "CPU");
+        dlabel(DG_RLBL, 366, "Uptime");
+        dlabel(DG_RLBL, 392, "RTC (UTC)");
     }
     /* present (flip) jen kdyz se neco prekreslilo (first=1 vzdy kresli chrome+vse). */
     if (draw_diag_values(first)) present_now();
@@ -346,12 +379,17 @@ static int draw_gps_values(int force)
     if (force || dchg(c_dop, sizeof c_dop, buf)) {
         dtext(DG_LLBL, 392, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
 
-    /* cas + datum (Cas/RTC karta) */
-    snprintf(buf, sizeof buf, "%02u:%02u:%02u UTC", g.hour, g.minute, g.second);
+    /* cas + datum z RTC (LSE, disciplinovany GPS). RTC tika i bez fixu -> karta
+     * je vzdy zive; synced=0 (volny beh od bootu) ztlumime. g_rtc_text =
+     * "YYYY-MM-DD HH:MM:SS" -> [0..9] datum, [11..18] cas. */
+    char rt[24]; uint8_t rsy;
+    strncpy(rt, (const char *)g_rtc_text, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+    rsy = g_rtc_synced;
+    snprintf(buf, sizeof buf, "%s UTC", (strlen(rt) >= 19) ? rt + 11 : "--:--:--");
     if (force || dchg(c_time, sizeof c_time, buf)) {
-        dtext(DG_RLBL, 104, 220, buf, g.valid ? UI_COLOR_INK : UI_COLOR_INK_3,
+        dtext(DG_RLBL, 104, 220, buf, rsy ? UI_COLOR_INK : UI_COLOR_INK_3,
               &ui_font_mono_16); drew = 1; }
-    snprintf(buf, sizeof buf, "%04u-%02u-%02u", g.year, g.month, g.day);
+    snprintf(buf, sizeof buf, "%.10s", rt);   /* datum "YYYY-MM-DD" (sync stav nese barva casu) */
     if (force || dchg(c_date, sizeof c_date, buf)) {
         dtext(DG_RLBL, 126, 220, buf, UI_COLOR_INK_4, &ui_font_sans_14); drew = 1; }
 
@@ -572,39 +610,41 @@ void app_gpsdo_render_health(void)
     if (draw_health_values(first)) present_now();
 }
 
-/* ── Podmenu vsech senzoru (s_view=4), otevre se z System Health ────────── */
+/* ── Podmenu vsech senzoru (s_view=4), otevre se z System Health ──────────
+ * Cisty prehled AKTUALNICH hodnot, dva sloupce jako diagnostika: vlevo Teploty,
+ * vpravo Napeti. Jmena (dlabel) kresli render_sensors jednou; zive hodnoty
+ * (dval, zarovnane vpravo) tady. Bez min/max/avg/err — jen aktualni hodnota. */
+#define SENS_R0   132                /* y prvniho radku */
+#define SENS_DY    32                /* rozteč radku */
+
+/* Rozmisteni: id senzoru + sloupec (xr value) + radek (y) + zda je to teplota. */
+static const struct { uint8_t id; int16_t xr; int16_t y; uint8_t temp; }
+SENS_ROW[SENS_COUNT] = {
+    { SENS_T48,    DG_LVAL, SENS_R0 + 0 * SENS_DY, 1 },   /* leva: Teploty */
+    { SENS_T49,    DG_LVAL, SENS_R0 + 1 * SENS_DY, 1 },
+    { SENS_T4A,    DG_LVAL, SENS_R0 + 2 * SENS_DY, 1 },
+    { SENS_CORE_T, DG_LVAL, SENS_R0 + 3 * SENS_DY, 1 },
+    { SENS_ADS0,   DG_RVAL, SENS_R0 + 0 * SENS_DY, 0 },   /* prava: Napeti */
+    { SENS_ADS1,   DG_RVAL, SENS_R0 + 1 * SENS_DY, 0 },
+    { SENS_ADS2,   DG_RVAL, SENS_R0 + 2 * SENS_DY, 0 },
+    { SENS_ADS3,   DG_RVAL, SENS_R0 + 3 * SENS_DY, 0 },
+    { SENS_VDDA,   DG_RVAL, SENS_R0 + 4 * SENS_DY, 0 },
+    { SENS_VBAT,   DG_RVAL, SENS_R0 + 5 * SENS_DY, 0 },
+};
+
 static int draw_sensors_values(int force)
 {
-    static char c[SENS_COUNT][96];
-    static const char *NM[SENS_COUNT] = {
-        "TMP 0x48", "TMP 0x49", "TMP 0x4A", "ADS AIN0", "ADS AIN1", "12V AIN2", "5V  AIN3" };
-    char buf[96], key[104], lv[16], mn[16], mx[16], av[16];
+    static char c[SENS_COUNT][20];
+    char buf[20], key[24];
     int drew = force;
     for (int i = 0; i < SENS_COUNT; i++) {
-        const sensor_stat_t *s = &g_sensors[i];
-        int temp = (i < SENS_ADS0);
-        if (temp) {
-            fmt_temp(lv, sizeof lv, s->last); fmt_temp(mn, sizeof mn, s->min);
-            fmt_temp(mx, sizeof mx, s->max);  fmt_temp(av, sizeof av, s->mean);
-        } else {
-            snprintf(lv, sizeof lv, "%ld", lround_f(s->last));
-            snprintf(mn, sizeof mn, "%ld", lround_f(s->min));
-            snprintf(mx, sizeof mx, "%ld", lround_f(s->max));
-            snprintf(av, sizeof av, "%ld", lround_f(s->mean));
-        }
-        const char *u = temp ? "C" : "mV";
-        if (s->samples == 0)
-            snprintf(buf, sizeof buf, "%-9s  --- (zadny vzorek)  e%lu",
-                     NM[i], (unsigned long)s->err_total);
-        else
-            snprintf(buf, sizeof buf, "%-9s %s%s  %s/%s %s  e%lu",
-                     NM[i], lv, u, mn, mx, av, (unsigned long)s->err_total);
-        int16_t yy = (int16_t)(108 + i * 40);
-        snprintf(key, sizeof key, "%c%s", s->valid ? 'V' : 'X', buf);  /* redraw i pri zmene valid */
+        const sensor_stat_t *s = &g_sensors[SENS_ROW[i].id];
+        if (s->samples == 0)       snprintf(buf, sizeof buf, "---");
+        else if (SENS_ROW[i].temp) fmt_temp(buf, sizeof buf, s->last);        /* "23.45 C" */
+        else                       snprintf(buf, sizeof buf, "%ld mV", lround_f(s->last));
+        snprintf(key, sizeof key, "%c%s", s->valid ? 'V' : 'X', buf);   /* redraw i pri zmene valid */
         if (force || dchg(c[i], sizeof c[i], key)) {
-            dtext(DG_LLBL, yy, 744, buf, s->valid ? UI_COLOR_INK : UI_COLOR_INK_3,
-                  &ui_font_mono_16);
-            drew = 1;
+            dval(SENS_ROW[i].xr, SENS_ROW[i].y, 150, buf, s->valid); drew = 1;
         }
     }
     return drew;
@@ -625,8 +665,25 @@ void app_gpsdo_render_sensors(void)
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SENZORY",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
         ui_card_t c = {.rect = {DG_LX, 58, 764, 346},
-                       .header_label = "Vsechny senzory  (last  min/max  avg  chyby)"};
+                       .header_label = "Aktualni hodnoty senzoru"};
         ui_card_render_chrome(&c);
+
+        /* podnadpisy sloupcu */
+        prim_draw_text((prim_point_t){DG_LLBL, 104}, "TEPLOTY  [C]", &ui_font_mono_16,
+                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_RLBL, 104}, "NAPETI  [mV]", &ui_font_mono_16,
+                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        /* jmena senzoru (poradi musi sedet se SENS_ROW) */
+        dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "TMP 0x48");
+        dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "TMP 0x49");
+        dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "TMP 0x4A");
+        dlabel(DG_LLBL, SENS_R0 + 3 * SENS_DY, "MCU jadro");
+        dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "ADS AIN0");
+        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "ADS AIN1");
+        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "12V vetev");
+        dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "5V vetev");
+        dlabel(DG_RLBL, SENS_R0 + 4 * SENS_DY, "VREF");
+        dlabel(DG_RLBL, SENS_R0 + 5 * SENS_DY, "VBAT");
     }
     if (draw_sensors_values(first)) present_now();
 }

@@ -29,6 +29,7 @@
 #include <stdio.h>            /* printf v MX_FREERTOS_Init */
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
+#include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,6 +87,10 @@ volatile uint8_t g_spi_dirty = 1;
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
 
+/* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte) */
+volatile char    g_rtc_text[24]  = "---------- --:--:--";   /* presny tvar: [0..9]=datum [11..18]=cas */
+volatile uint8_t g_rtc_synced    = 0;
+
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
 volatile uint32_t g_rtos_heap_min  = 0;
@@ -118,7 +123,7 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 256 * 4,
+  .stack_size = 384 * 4,   /* 1536 B: GPS NMEA parse (f[24]) + rtc_app_tick snprintf — rezerva (regen vraci na 256, hlidat!) */
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -237,6 +242,7 @@ void StartDefaultTask(void *argument)
     while (osMessageQueueGet(GpsRxQueueHandle, &gc, NULL, 0) == osOK) {
       gps_feed_char((char)gc);
     }
+    rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
     osDelay(5);
   }
   /* USER CODE END StartDefaultTask */

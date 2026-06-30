@@ -14,7 +14,8 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - PLL1: M=1, N=96, P=2, Q=2, R=2, VCO Wide, FRACN=0 → **SYSCLK 480 MHz**
 - AHB /2 → HCLK **240 MHz**; APB1/2/3/4 = /2 → **120 MHz**
 - PLL2: M=1, N=20, P=1, Q=1, R=2, VCO Wide, FRACN=0 → **200 MHz** → FMC + SPI123(SPI2)
-- PLL3: M=1, N=17, P=2, Q=2, R=7, VCO Medium, **FRACN=4096** → **25 MHz** → LTDC pixel clock
+- PLL3: M=1, N=17, P=2, Q=2, R=7, VCO Medium, **FRACN=4096** → **25 MHz** → LTDC pixel clock **+ ADC3** (PLL3R)
+  - ⚠️ **Od přidání ADC3 (sdílí PLL3R) CubeMX přesunul PLL3 init z `ltdc.c` `HAL_LTDC_MspInit` do `PeriphCommonClock_Config` (main.c)** — `ltdc.c` MspInit teď PLL3 NEnastavuje, jen `__HAL_RCC_LTDC_CLK_ENABLE`. Při ladění pixel clocku koukej do `PeriphCommonClock_Config` (PLL3 + `RCC_PERIPHCLK_LTDC|ADC` + `AdcClockSelection=PLL3`). Volá se brzy (po `SystemClock_Config`, před display init) → OK.
 - DSI clock source: **D-PHY**
 - I2C4 clock: **D3PCLK1** (PCLK4 = 120 MHz)
 - USART1 clock: **D2PCLK2** (PCLK2 = 120 MHz)
@@ -89,10 +90,26 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - **Region 1: `0xC0400000`, 4 MB, WBWA** — `sdram` test buffer + scratch.
 - (`.sdram` linker sekce `0xC0800000` = default/Device map; libprim glow + `bg_cache`.)
 
-## ADC3 (interní teplota jádra / VREFINT / VBAT) — PŘIDAT do IOC
-- **Zatím NENÍ v IOC** a `HAL_ADC_MODULE_ENABLED` je vypnuté → ADC HAL soubory v `Drivers/` chybí.
-- Postup: v IOC zapni **ADC3**, kanály **Temperature Sensor / VREFINT / VBAT**, Resolution 16-bit, software trigger; ověř **ADC clock source** (RCC už má ADCFreq 200 MHz přes PLL2). `Generate Code` → dotáhne `stm32h7xx_hal_adc.c/_ex.c` + `adc.c` + `HAL_ADC_MODULE_ENABLED`.
-- Přepočet (TS_CAL1/2 @0x1FF1E820/40, VREFINT_CAL @0x1FF1E860) + čtení v SensorsTask + zobrazení v diagnostice dodá kód v USER CODE (až bude ADC v IOC).
+## ADC3 (interní teplota jádra / VREFINT / VBAT) — V IOC ✅ (hotovo)
+- **ADC3** na **Cortex-M7**, kanály **Temperature Sensor / VREFINT / VBAT** (Rank 1/2/3, jen interní → žádné GPIO piny, jen `VP_ADC3_*` virtuální).
+- **16-bit, Scan ON, Continuous OFF (single-shot), software trigger**, Sampling **810.5 cyklů** (vysokoimpedanční interní zdroje → dlouhý sampling kvůli přesnosti).
+- **ADC clock source = PLL3 (PLL3R 25 MHz), prescaler ASYNC DIV8 → 3,125 MHz** (`AdcClockSelection=RCC_ADCCLKSOURCE_PLL3`, `ClockPrescalerADC3=ADC_CLOCK_ASYNC_DIV8`). Pomalý ADC clock + dlouhý sampling = přesné čtení pomalých senzorů (čteno ~2×/s). PLL3 sdílí s LTDC → viz pozn. u PLL3 výše (init v `PeriphCommonClock_Config`).
+- Generate Code dotáhl `stm32h7xx_hal_adc.c/_ex.c` + `adc.c`/`MX_ADC3_Init` + `HAL_ADC_MODULE_ENABLED`. **ADC NVIC vypnuté** (čteme blocking/polling v SensorsTask, žádné IRQ).
+- **App vrstva HOTOVA (regen-safe, `freertos_task_sensors.c` + `app_gpsdo.c`):** čtení v SensorsTask, přepočet TS_CAL1/2 (@0x1FF1E820/40) + VREFINT_CAL (@0x1FF1E860) → VDDA; VBAT = raw×VDDA/65535×4. Hodnoty v `g_sensors[SENS_CORE_T/VDDA/VBAT]` (`SENS_COUNT` 7→10). Zobrazení: diag karta „MCU (jádro/napájení)", okno SENZORY, UART `sensors`/`adcraw` (debug).
+- ⚠️⚠️ **HW-tricky věci (NUTNÉ, jinak interní kanály railují na 0xFFFF):**
+  0. **🔑🔑 VREF+ NENÍ na desce spojen s VDDA → reference budí `VREFBUF` (`main.c` USER CODE 2).** **KRITICKÉ: `__HAL_RCC_VREF_CLK_ENABLE()` PŘED konfigurací VREFBUF** — VREFBUF má vlastní clock `RCC_APB4ENR.VREFEN` (NE SYSCFG!); bez něj je `VREFBUF->CSR` mrtvý (zápisy ignorovány, ENVR nedrží, VREF+ visí ~0,5 V, ADC railuje). Pak `VoltageScalingConfig(SCALE0 ≈ 2,5 V)` + `HighImpedanceConfig(DISABLE)` + `EnableVREFBUF`. **VREF+ vyžaduje ≥1 µF kondenzátor** (na desce dodán) pro stabilitu (VRR ready). Reference je tedy **~2,5 V (NE 3,3 V)** → senzor „VREF", teplota má korekci `×vref/3300`. Ověření: `adcraw` → `CSR=0x09`.
+  1. **Kalibrace jsou 16-BIT** (ne 12-bit jak tvrdí HAL komentář; VREFINT_CAL=24291=1,22 V). LL makra `__LL_ADC_CALC_*` u VREFINT předpokládají 12-bit → **dají špatně**. Počítáme ručně 16-bit (VREF_CHARAC=3300 mV = napětí při tovární kalibraci, NE aktuální VREF+).
+  2. **`ClockPrescaler` CubeMX VYNECHAL** z generovaného `MX_ADC3_Init` (i když .ioc má DIV8) → ADC běžel na **25 MHz** (PRESC=DIV1) + BOOST na nižší rozsah → vysokoimpedanční VREFINT/teplota railovaly. **SensorsTask init nastaví `hadc3.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV8` + `HAL_ADC_Init`** → 3,125 MHz, správný BOOST. **Po regenu zkontroluj, že ClockPrescaler je pořád ošéfovaný v SensorsThas initu.**
+  3. **Interní cesty** (VREFEN/TSEN/VBATEN v `ADC3_COMMON->CCR`) jistíme ručně.
+  4. **Single-channel režim** (ScanConvMode=DISABLE, NbrOfConversion=1, čtení po jednom `adc3_read_chan`) — scan polling všech 3 byl nespolehlivý.
+
+## RTC (LSE 32.768 kHz na PC14/PC15) — V IOC ✅ (hotovo)
+- **LSE:** RCC → Low Speed Clock (LSE) = **Crystal/Ceramic Resonator** → PC14=`RCC_OSC32_IN`, PC15=`RCC_OSC32_OUT`.
+- **RTC:** Timers → RTC → **Activate Clock Source + Activate Calendar**, přiřazeno **Cortex-M7** kontextu. Hour format 24, **AsynchPrediv=127, SynchPrediv=255** (→ 1 Hz), Data format **Binary**.
+- **Clock source = LSE** (Clock Config RTC mux; `RCC_RTCCLKSOURCE_LSE`). RTCFreq=32768.
+- Generate Code dotáhne `stm32h7xx_hal_rtc.c/_ex` + `HAL_RTC_MODULE_ENABLED` + `rtc.c`/`MX_RTC_Init`; do `SystemClock_Config` přidá LSE (`HAL_PWR_EnableBkUpAccess`, `LSEDRIVE_LOW`).
+- ⚠️ **defaultTask stack 256→384 words** (`Tasks01`) — `rtc_app_tick` přidává `snprintf` do GPS-parse tasku.
+- **App vrstva je v `rtc.c`/`rtc.h` USER CODE blocích (regen-safe):** `rtc_app_tick()` (sync z GPS UTC + format `g_rtc_text`), backup-register guard (`RTC_SYNC_MAGIC` v BKP_DR0) v `Check_RTC_BKUP`. Volá se z defaultTask. Viz CLAUDE.md „RTC".
 
 ## NEJDE nastavit v IOC — zůstává v USER CODE / vlastních souborech (regenerace neohrozí)
 - Vlastní moduly: `tc358762.c`, `ws_panel.c`, `ft5x06.c`, `fpga_freq.c`, `si5356.c`, `ads1115.c`, `beeper.c`

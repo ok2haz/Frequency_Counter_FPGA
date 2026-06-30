@@ -20,9 +20,11 @@
 #include "main.h"
 #include "FreeRTOS.h"
 #include "cmsis_os2.h"
+#include "adc.h"
 #include "dsihost.h"
 #include "i2c.h"
 #include "ltdc.h"
+#include "rtc.h"
 #include "spi.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -221,7 +223,26 @@ Error_Handler();
   MX_DSIHOST_DSI_Init();
   MX_LTDC_Init();
   MX_USART1_UART_Init();
+  MX_RTC_Init();
+  MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
+
+  /* ⚠️ ADC reference VREFBUF: VREF+ (pin 43) NENI na desce spojen s VDDA (zamerne —
+   * kvuli sumu ze SMPS), budi se vnitrnim bufferem. Bez reference VREF+ visi (~0,5 V)
+   * a ADC3 interni kanaly railuji na 0xFFFF. SCALE0 = VREF_OUT1 ~2,5 V (zmereno 2,51 V),
+   * HIZ=0 -> buffer skutecne zene pin VREF+. Vyzaduje >=1uF na VREF+ (na desce dodano).
+   * ⚠️🔑 KLICOVE: VREFBUF ma VLASTNI clock `RCC_APB4ENR.VREFEN` (NE pres SYSCFG!) —
+   * bez `__HAL_RCC_VREF_CLK_ENABLE()` je cely VREFBUF->CSR MRTVY (zapisy ignorovany,
+   * cteni vraci 0, ENVR nedrzi). Tohle byla nejskrytejsi pricina railovani.
+   * Neni fatal: kdyby buffer nenabehl, ADC railuje, ale zbytek (displej/FPGA) pojede;
+   * stav pres `adcraw` (VREFBUF CSR=0x09 = ENVR+VRR). SensorsTask meri skutecne VREF+
+   * z VREFINT (self-measuring) -> presna hodnota SCALE0 nemusi sedet, dopocita se. */
+  __HAL_RCC_VREF_CLK_ENABLE();
+  HAL_SYSCFG_VREFBUF_VoltageScalingConfig(SYSCFG_VREFBUF_VOLTAGE_SCALE0);
+  HAL_SYSCFG_VREFBUF_HighImpedanceConfig(SYSCFG_VREFBUF_HIGH_IMPEDANCE_DISABLE);
+  if (HAL_SYSCFG_EnableVREFBUF() != HAL_OK) {
+    printf("[WARN] VREFBUF nenabehl (VRR timeout) - ADC reference plovouci\n");
+  }
 
   /* I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71) */
   MX_I2C1_Init();
@@ -326,11 +347,18 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
+  /** Configure LSE Drive Capability
+  */
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE
+                              |RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
@@ -376,7 +404,8 @@ void PeriphCommonClock_Config(void)
 
   /** Initializes the peripherals clock
   */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FMC|RCC_PERIPHCLK_SPI2;
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FMC|RCC_PERIPHCLK_ADC
+                              |RCC_PERIPHCLK_SPI2|RCC_PERIPHCLK_LTDC;
   PeriphClkInitStruct.PLL2.PLL2M = 1;
   PeriphClkInitStruct.PLL2.PLL2N = 20;
   PeriphClkInitStruct.PLL2.PLL2P = 1;
@@ -385,8 +414,17 @@ void PeriphCommonClock_Config(void)
   PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_3;
   PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2VCOWIDE;
   PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
+  PeriphClkInitStruct.PLL3.PLL3M = 1;
+  PeriphClkInitStruct.PLL3.PLL3N = 17;
+  PeriphClkInitStruct.PLL3.PLL3P = 2;
+  PeriphClkInitStruct.PLL3.PLL3Q = 2;
+  PeriphClkInitStruct.PLL3.PLL3R = 7;
+  PeriphClkInitStruct.PLL3.PLL3RGE = RCC_PLL3VCIRANGE_3;
+  PeriphClkInitStruct.PLL3.PLL3VCOSEL = RCC_PLL3VCOMEDIUM;
+  PeriphClkInitStruct.PLL3.PLL3FRACN = 4096;
   PeriphClkInitStruct.FmcClockSelection = RCC_FMCCLKSOURCE_PLL2;
   PeriphClkInitStruct.Spi123ClockSelection = RCC_SPI123CLKSOURCE_PLL2;
+  PeriphClkInitStruct.AdcClockSelection = RCC_ADCCLKSOURCE_PLL3;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();

@@ -21,6 +21,7 @@
 #include "ft5x06.h"
 #include "fpga_freq.h"
 #include "si5356.h"
+#include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
@@ -131,9 +132,10 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "sensors") == 0) {
 				  static const char *const nm[SENS_COUNT] = {
 					  "TMP117 0x48", "TMP117 0x49", "TMP117 0x4A",
-					  "ADS AIN0", "ADS AIN1", "ADS AIN2(12V)", "ADS AIN3(5V)" };
+					  "ADS AIN0", "ADS AIN1", "ADS AIN2(12V)", "ADS AIN3(5V)",
+					  "MCU jadro", "VREF", "VBAT" };
 				  static const char *const un[SENS_COUNT] = {
-					  "C", "C", "C", "mV", "mV", "mV", "mV" };
+					  "C", "C", "C", "mV", "mV", "mV", "mV", "C", "mV", "mV" };
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
 				  for (int i = 0; i < SENS_COUNT; i++) {
 					  const sensor_stat_t *s = &g_sensors[i];
@@ -313,7 +315,7 @@ void UartTask_run(void *argument)
 				  printf("gpsdo-ui v0.2-diag\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | stats | status | sensors | temperature\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];
@@ -332,6 +334,58 @@ void UartTask_run(void *argument)
 				  char gbuf[128];
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
+			  }
+			  else if (strcmp(RxBuffer, "adcraw") == 0) {
+				  /* Diag ADC3: raw 3 internich kanalu (cteno po jednom jako SensorsTask)
+				   * + spocitane hodnoty. VREF = merena VREF+ (na teto desce VREFBUF ~2,5 V). */
+				  static const uint32_t ch[3] = { ADC_CHANNEL_TEMPSENSOR,
+						  ADC_CHANNEL_VREFINT, ADC_CHANNEL_VBAT };
+				  uint32_t r[3] = {0};
+				  for (int i = 0; i < 3; i++) {
+					  ADC_ChannelConfTypeDef sc = {0};
+					  sc.Channel = ch[i]; sc.Rank = ADC_REGULAR_RANK_1;
+					  sc.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
+					  sc.SingleDiff = ADC_SINGLE_ENDED; sc.OffsetNumber = ADC_OFFSET_NONE;
+					  HAL_ADC_ConfigChannel(&hadc3, &sc);
+					  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+					  ADC3->PCSEL |= (1u << ((ADC3->SQR1 >> 6) & 0x1Fu));
+					  if (HAL_ADC_Start(&hadc3) == HAL_OK &&
+						  HAL_ADC_PollForConversion(&hadc3, 20) == HAL_OK)
+						  r[i] = HAL_ADC_GetValue(&hadc3);
+					  HAL_ADC_Stop(&hadc3);
+				  }
+				  uint32_t rt = r[0], rv = r[1], rb = r[2];
+				  uint16_t vc = *(volatile uint16_t *)0x1FF1E860UL;   /* VREFINT_CAL */
+				  uint16_t t1 = *(volatile uint16_t *)0x1FF1E820UL;   /* TS_CAL1 30C */
+				  uint16_t t2 = *(volatile uint16_t *)0x1FF1E840UL;   /* TS_CAL2 110C */
+				  printf("ADCRAW raw: temp=%lu vref=%lu vbat=%lu  (CAL VREFINT=%u TS1=%u TS2=%u)\n",
+						 (unsigned long)rt, (unsigned long)rv, (unsigned long)rb, vc, t1, t2);
+				  if (rv && (t2 != t1)) {
+					  uint32_t vref = 3300u * vc / rv;                 /* merena VREF+ [mV] */
+					  uint32_t ts   = rt * vref / 3300u;               /* 3,3V-ekvivalent */
+					  int32_t  tcx10 = ((int32_t)ts - (int32_t)t1) * 800 / ((int32_t)t2 - (int32_t)t1) + 300;
+					  uint32_t vbat = (uint32_t)((uint64_t)rb * vref / 65535u) * 4u;
+					  printf("  -> VREF=%lumV  TEMP=%ld.%01ld C  VBAT=%lumV\n",
+							 (unsigned long)vref, (long)(tcx10 / 10), (long)(tcx10 < 0 ? -tcx10 % 10 : tcx10 % 10),
+							 (unsigned long)vbat);
+				  } else {
+					  printf("  -> VREF cteni selhalo (rail?) — zkontroluj VREFBUF/VREF+\n");
+				  }
+				  /* Stav VREFBUF: CSR bit0=ENVR bit1=HIZ bit3=VRR(ready) bity6:4=VRS.
+				   * Spravne (SCALE0, ready) = ENVR+VRR -> 0x...9. CCR = trim (nenulovy). */
+				  printf("  VREFBUF CSR=0x%08lX CCR=0x%08lX  ADC CCR=0x%08lX PCSEL=0x%08lX\n",
+						 (unsigned long)VREFBUF->CSR, (unsigned long)VREFBUF->CCR,
+						 (unsigned long)ADC3_COMMON->CCR, (unsigned long)ADC3->PCSEL);
+			  }
+			  else if (strcmp(RxBuffer, "rtc") == 0) {
+				  char rbuf[24];
+				  uint8_t sy;
+				  taskENTER_CRITICAL();
+				  strncpy(rbuf, (const char *)g_rtc_text, sizeof(rbuf) - 1);
+				  rbuf[sizeof(rbuf) - 1] = '\0';
+				  sy = g_rtc_synced;
+				  taskEXIT_CRITICAL();
+				  printf("RTC: %s UTC %s\n", rbuf, sy ? "(GPS sync)" : "(volny beh, bez GPS)");
 			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */

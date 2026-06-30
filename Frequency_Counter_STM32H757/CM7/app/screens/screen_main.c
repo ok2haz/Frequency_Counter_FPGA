@@ -18,6 +18,26 @@
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 
+/* RTC cas (defaultTask zapise pres rtc_app_tick) — hodiny v headeru z RTC, ne
+ * GPS-direct: tikaji plynule i pri ztrate fixu (RTC bezi z LSE). */
+extern volatile char    g_rtc_text[24];   /* "YYYY-MM-DD HH:MM:SS" */
+extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
+
+/* Vytahne cas "HH:MM:SS" a datum "YYYY-MM-DD" z g_rtc_text. Dokud nebyl RTC
+ * srovnan z GPS, vraci placeholdery "--:--:--" / "no GPS". time8/date10 = char[16]. */
+static void rtc_time_date(char *time8, char *date10)
+{
+    char rt[24];
+    strncpy(rt, (const char *)g_rtc_text, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+    if (g_rtc_synced && strlen(rt) >= 19) {
+        snprintf(time8,  16, "%.8s",  rt + 11);   /* "HH:MM:SS" */
+        snprintf(date10, 16, "%.10s", rt);        /* "YYYY-MM-DD" */
+    } else {
+        snprintf(time8,  16, "--:--:--");
+        snprintf(date10, 16, "no GPS");
+    }
+}
+
 #ifndef SCR_SDRAM_SECTION
 #  if defined(__GNUC__) && !defined(PRIM_HOST_BUILD)
 #    define SCR_SDRAM_SECTION __attribute__((section(".sdram"), aligned(32)))
@@ -149,8 +169,8 @@ static void render_header(void)
     else if (g.sats_in_view > 0)         { gnss_s = "ACQUIRE";  gnss_var = UI_PILL_WARN; }
     else                                 { gnss_s = "NO GNSS";  gnss_var = UI_PILL_BAD; }
     snprintf(sat_v, sizeof sat_v, "%u", g.num_sat);
-    if (g.valid) snprintf(date_v, sizeof date_v, "%04u-%02u-%02u", g.year, g.month, g.day);
-    else         snprintf(date_v, sizeof date_v, "no fix");
+    /* GNSS/SAT pilulky zustavaji z GPS (odrazi fix); datum bere RTC (tika i bez fixu). */
+    { char tdummy[16]; rtc_time_date(tdummy, date_v); }   /* header chce jen datum */
 
     p = (ui_pill_t){.x = x, .y = y, .variant = gnss_var,
                     .value = gnss_s, .has_led = true};
@@ -768,34 +788,24 @@ void screen_main_redraw_title(void)
     render_body_title();
 }
 
-/* Simulovany cas HH:MM:SS (start 14:32:07 + uptime). Prekresli JEN oblast casu
- * a JEN kdyz se zmeni sekunda (zadne zbytecne prekreslovani -> zadny "px sum"). */
-/* Cas + datum z GPS (UTC). Bez fixu "--:--:--" / "no fix". Prekresli jen kdyz se
- * zmeni sekunda (cas) nebo datum -> zadny zbytecny redraw. Bez RTC -> mezi RMC
- * vetami (1 Hz) cas stoji; pri ztrate fixu zamrzne (RTC continuita = navazujici). */
+/* Cas + datum z RTC (LSE, disciplinovany GPS UTC). Tika plynule 1×/s i pri
+ * ztrate fixu; pred prvnim GPS syncem "--:--:--" / "no GPS". Prekresli JEN oblast
+ * casu a JEN kdyz se zmeni sekunda nebo datum (zadny zbytecny redraw -> zadny "px sum"). */
 int screen_main_redraw_time(uint32_t ms_since_boot)
 {
     (void)ms_since_boot;
-    static uint32_t last_key  = 0xFFFFFFFFu;
+    static char     last_time[16] = "";
     static char     last_date[16] = "";
-    gps_data_t g;
-    gps_get(&g);
 
+    /* Cas + datum z RTC (LSE, disciplinovany GPS) -> tika plynule i pri ztrate
+     * fixu. Dokud nebyl srovnan z GPS, ukazuje "--:--:--" / "no GPS". */
     char tb[16], db[16];
-    uint32_t key;
-    if (g.valid) {
-        snprintf(tb, sizeof tb, "%02u:%02u:%02u", g.hour, g.minute, g.second);
-        snprintf(db, sizeof db, "%04u-%02u-%02u", g.year, g.month, g.day);
-        key = (uint32_t)g.hour * 3600u + (uint32_t)g.minute * 60u + g.second;
-    } else {
-        snprintf(tb, sizeof tb, "--:--:--");
-        snprintf(db, sizeof db, "no fix");
-        key = 0xFFFFFFFEu;
-    }
-    int tchg = (key != last_key);
+    rtc_time_date(tb, db);
+
+    int tchg = (strcmp(tb, last_time) != 0);
     int dchg = (strcmp(db, last_date) != 0);
     if (!tchg && !dchg) return 0;
-    last_key = key;
+    strncpy(last_time, tb, sizeof last_time - 1); last_time[sizeof last_time - 1] = '\0';
     strncpy(last_date, db, sizeof last_date - 1); last_date[sizeof last_date - 1] = '\0';
     strncpy(s_time_buf, tb, sizeof s_time_buf - 1); s_time_buf[sizeof s_time_buf - 1] = '\0';
 
