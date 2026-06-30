@@ -716,14 +716,16 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
     prim_reset_clip();
     if (screen_main_redraw_time(ms_since_boot)) s_dirty = 1;   /* flip odlozen na flush */
 
-    /* Horni lista (GNSS lock + pocet druzic) jen pri ZMENE GPS stavu — sat/fix
-     * se meni pomalu, takze redraw headeru bezi vzacne (ne kazdy tik). */
-    static int last_sat = -1, last_fixq = -1;
+    /* Horni lista (GNSS lock + druzice + HDOP) jen pri ZMENE GPS stavu — sat/fix/HDOP
+     * se meni pomalu (~1 Hz z GGA), takze redraw headeru bezi vzacne (ne kazdy tik). */
+    static int last_sat = -1, last_fixq = -1, last_hdop10 = -1;
     gps_data_t g;
     gps_get(&g);
-    if ((int)g.num_sat != last_sat || (int)g.fix_quality != last_fixq) {
+    int hdop10 = (int)(g.hdop * 10.0f + 0.5f);   /* HDOP na 1 des. misto -> change-detect */
+    if ((int)g.num_sat != last_sat || (int)g.fix_quality != last_fixq || hdop10 != last_hdop10) {
         last_sat = (int)g.num_sat;
         last_fixq = (int)g.fix_quality;
+        last_hdop10 = hdop10;
         if (screen_main_redraw_header()) s_dirty = 1;
     }
 }

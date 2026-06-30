@@ -162,13 +162,22 @@ static void render_header(void)
     /* Zive GPS: GNSS lock pill + pocet druzic (SAT pill) + datum z GPS. */
     gps_data_t g;
     gps_get(&g);
-    char sat_v[8], date_v[16];
+    char sat_v[8], date_v[16], hdop_v[8];
     const char *gnss_s; ui_pill_variant_t gnss_var;
     if      (g.valid && g.fix_mode == 3) { gnss_s = "GNSS 3D";  gnss_var = UI_PILL_OK; }
     else if (g.fix_quality > 0)          { gnss_s = "GNSS FIX"; gnss_var = UI_PILL_OK; }
     else if (g.sats_in_view > 0)         { gnss_s = "ACQUIRE";  gnss_var = UI_PILL_WARN; }
     else                                 { gnss_s = "NO GNSS";  gnss_var = UI_PILL_BAD; }
     snprintf(sat_v, sizeof sat_v, "%u", g.num_sat);
+    /* HDOP z GPS (GGA/GSA): 1 des. misto, ceska carka. Bez fixu "--".
+     * Cap 99,9 (vyssi HDOP = nesmyslny fix; zaroven omezi rozsah pro snprintf). */
+    if (g.fix_quality > 0 && g.hdop > 0.0f) {
+        int h10 = (int)(g.hdop * 10.0f + 0.5f);
+        if (h10 < 0) h10 = 0; else if (h10 > 999) h10 = 999;   /* bound [0,999] -> snprintf bezpecne */
+        snprintf(hdop_v, sizeof hdop_v, "%d,%d", h10 / 10, h10 % 10);
+    } else {
+        snprintf(hdop_v, sizeof hdop_v, "--");
+    }
     /* GNSS/SAT pilulky zustavaji z GPS (odrazi fix); datum bere RTC (tika i bez fixu). */
     { char tdummy[16]; rtc_time_date(tdummy, date_v); }   /* header chce jen datum */
 
@@ -189,7 +198,7 @@ static void render_header(void)
     ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
 
     p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL,
-                    .label = SCR_S_HDOP_L, .value = SCR_S_HDOP_V};
+                    .label = SCR_S_HDOP_L, .value = hdop_v};   /* reálné HDOP z GPS */
     ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
 
     p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL,

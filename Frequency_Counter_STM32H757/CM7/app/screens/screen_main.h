@@ -51,7 +51,7 @@ bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlav
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
 extern const char *SCR_S_SYS_READY;
-extern const char *SCR_S_HDOP_L, *SCR_S_HDOP_V;
+extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
 extern const char *SCR_S_CAL_L, *SCR_S_CAL_V, *SCR_S_HOLD_L, *SCR_S_HOLD_V;
 extern const char *SCR_S_TITLE_RIGHT;
 extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
