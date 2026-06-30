@@ -27,3 +27,7 @@ Thumbs.db
 .DS_Store
 *.swp
 *~
+
+# Claude Code — lokální per-uživatel nastavení (permissiony), NEsdílet mezi spolupracovníky
+# (sdílená pravidla patří do .claude/settings.json, ne .local)
+.claude/settings.local.json
