@@ -16,6 +16,15 @@
 
 #include <stdint.h>
 
+#define GPS_MAX_SATS 16   /* max druzic v poli sats[] (GSV); vic ignorujeme */
+
+/* Jedna druzice z GSV: PRN, elevace, sila signalu C/N0. */
+typedef struct {
+  uint8_t prn;    /* cislo druzice */
+  uint8_t elev;   /* elevace [°] (0..90); zatim jen ukladano (budouci sky-view) */
+  uint8_t snr;    /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
+} gps_sat_t;
+
 typedef struct {
   uint8_t  valid;       /* 1 = posledni veta dava platny fix (RMC status 'A') */
   uint8_t  fix_quality; /* GGA: 0 = no fix, 1 = GPS, 2 = DGPS */
@@ -33,14 +42,16 @@ typedef struct {
   float    pdop;        /* GSA pozicni DOP */
   uint32_t sentences;   /* pocet naparsovanych vet RMC/GGA/GSA/GSV (CRC ok) — diag */
   uint32_t fixes;       /* pocet platnych fixu — diag */
+  gps_sat_t sats[GPS_MAX_SATS];  /* druzice v dosahu (PRN + C/N0), z GSV */
+  uint8_t   sat_count;           /* pocet platnych polozek v sats[] */
 } gps_data_t;
 
 /* Inicializace: prepne USART1 na 9600 8N1 (regen-safe, nezavisle na .ioc),
- * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 5 Hz / 100 kHz).
+ * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 1 PPS).
  * Vola se na zacatku draineru v defaultTask. */
 void gps_init(void);
 
-/* UBX-CFG-TP5: TIMEPULSE pin = 5 Hz (no fix) / 100 kHz (fix), GNSS-locked.
+/* UBX-CFG-TP5: TIMEPULSE pin = 1 PPS (1 Hz), s fixem disciplinovany na UTC.
  * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init; lze i samostatne. */
 void gps_config_timepulse(void);
 

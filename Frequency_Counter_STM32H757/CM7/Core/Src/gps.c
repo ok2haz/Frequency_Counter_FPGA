@@ -144,15 +144,39 @@ static void parse_gsa(char **f, int nf)
   taskEXIT_CRITICAL();
 }
 
-/* $xxGSV: 3=numSatsInView (bereme jen z 1. zpravy v davce) */
+/* $xxGSV: 1=total 2=msgnum 3=inview, pak skupiny po 4: prn,elev,azim,snr(C/N0).
+ * Akumuluje druzice napric zpravami davky (msgnum 1..total) do s_gsv_acc,
+ * po posledni zprave (msgnum>=total) commitne do s_gps.sats. Bezi jen v defaultTask
+ * (jediny kontext) -> akumulator bez zamku; kriticka sekce jen kolem s_gps.
+ * POZOR: predpoklada JEDNO souhvezdi (GPGSV). Az bude GLONASS (viz [[gps-todo]]),
+ * GLGSV davky maji vlastni total/msgnum a resetovaly by tento akumulator -> nutna
+ * akumulace per-talker (GP/GL/GN) nebo spolecny buffer klicovany podle talkeru. */
+static gps_sat_t s_gsv_acc[GPS_MAX_SATS];
+static uint8_t   s_gsv_n;
+
 static void parse_gsv(char **f, int nf)
 {
   if (nf < 4) return;
-  uint8_t msgnum = (uint8_t)atoi_simple(f[2]);
-  if (msgnum != 1) return;                 /* in-view je stejne ve vsech, ber z prvni */
+  int total  = atoi_simple(f[1]);
+  int msgnum = atoi_simple(f[2]);
   uint8_t inview = (uint8_t)atoi_simple(f[3]);
+
+  if (msgnum <= 1) s_gsv_n = 0;            /* novy batch -> reset akumulatoru */
+  for (int i = 4; i + 3 < nf && s_gsv_n < GPS_MAX_SATS; i += 4) {
+    uint8_t prn = (uint8_t)atoi_simple(f[i]);
+    if (prn == 0) continue;                /* prazdny slot */
+    s_gsv_acc[s_gsv_n].prn  = prn;
+    s_gsv_acc[s_gsv_n].elev = (uint8_t)atoi_simple(f[i + 1]);
+    s_gsv_acc[s_gsv_n].snr  = (uint8_t)atoi_simple(f[i + 3]);   /* prazdne -> 0 = netrackovana */
+    s_gsv_n++;
+  }
+
   taskENTER_CRITICAL();
   s_gps.sats_in_view = inview;
+  if (total > 0 && msgnum >= total) {      /* davka kompletni -> commit */
+    for (uint8_t k = 0; k < s_gsv_n; k++) s_gps.sats[k] = s_gsv_acc[k];
+    s_gps.sat_count = s_gsv_n;
+  }
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
@@ -201,14 +225,15 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
   HAL_UART_Transmit(&huart1, f, i, 100);
 }
 
-/* UBX-CFG-TP5 (0x06 0x31, 32 B): TIMEPULSE pin = 5 Hz bez fixu, 100 kHz s
- * fixem (lockedOtherSet), disciplinovano na GNSS, 50% strida, zarovnano na TOW. */
+/* UBX-CFG-TP5 (0x06 0x31, 32 B): TIMEPULSE pin = 1 PPS. Bez fixu volny 1 Hz,
+ * s fixem 1 Hz disciplinovany na GNSS a zarovnany na UTC vterinu (alignToTow),
+ * 50% strida (stridava hrana na vrcholu vteriny). */
 void gps_config_timepulse(void)
 {
   uint8_t pl[32] = {0};
   pl[0]  = 0;                                  /* tpIdx = 0 (TIMEPULSE) */
-  pl[8]  = 5;                                  /* freqPeriod = 5 Hz (no lock) */
-  pl[12] = 0xA0; pl[13] = 0x86; pl[14] = 0x01; /* freqPeriodLock = 100000 Hz */
+  pl[8]  = 1;                                  /* freqPeriod = 1 Hz (no lock) */
+  pl[12] = 0x01; pl[13] = 0x00; pl[14] = 0x00; /* freqPeriodLock = 1 Hz (1 PPS) */
   pl[19] = 0x80;                               /* pulseLenRatio = 50% (2^31) */
   pl[23] = 0x80;                               /* pulseLenRatioLock = 50% */
   /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|alignToTow|polarity = 0x6F */
@@ -224,7 +249,8 @@ void gps_init(void)
   huart1.Init.BaudRate = 9600;
   HAL_UART_Init(&huart1);
 
-  /* TIMEPULSE config (5 Hz bez fixu / 100 kHz s fixem). Vyzaduje zapojene STM
+  /* TIMEPULSE config (1 PPS: 1 Hz volny bez fixu / 1 Hz disciplinovany s fixem).
+   * Vyzaduje zapojene STM
    * PB14 (USART1 TX) -> GPS RX. Posila se v RAM modulu (plati do power-cyklu).
    * ⚠️ MUSI byt PRED HAL_UART_Receive_IT: HAL_UART_Transmit (blokujici) drzi
    * huart->Lock; kdyby uz bezel RX IT, RxCpltCallback by pri re-armu dostal

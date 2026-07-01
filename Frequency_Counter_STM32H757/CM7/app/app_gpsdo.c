@@ -343,8 +343,8 @@ void app_gpsdo_render_diag(void)
  * force=0 (tick) -> jen zmenena pole. Vrati 1 pokud se neco prekreslilo. */
 static int draw_gps_values(int force)
 {
-    static char c_fix[16], c_sat[24], c_sum[32], c_dop[28], c_time[20], c_date[16];
-    static char c_lat[24], c_lon[24], c_alt[20], c_tp[20];
+    static char c_fix[16], c_sat[24], c_bars[64], c_dop[28], c_time[20], c_date[16];
+    static char c_lat[24], c_lon[24], c_alt[20], c_tp[20], c_rx[40];
     char buf[64], a[16], b[16];
     gps_data_t g;
     gps_get(&g);
@@ -367,12 +367,57 @@ static int draw_gps_values(int force)
     if (force || dchg(c_sat, sizeof c_sat, buf)) {
         dtext(DG_LLBL, 138, 220, buf, UI_COLOR_INK_4, &ui_font_sans_16); drew = 1; }
 
-    /* velka karta: centrovany souhrn */
-    snprintf(buf, sizeof buf, g.fix_quality ? "%u druzic v dosahu" : "Hledam druzice... (%u)",
-             g.sats_in_view);
-    if (force || dchg(c_sum, sizeof c_sum, buf)) {
-        dtext_c((int16_t)(DG_LX + DG_COLW / 2), 270, DG_COLW - 24, buf,
-                g.fix_quality ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_sans_14); drew = 1; }
+    /* VERTIKALNI signal bars per druzice (setrizene podle C/N0 sestupne), barevne
+     * dle sily. Nahrazuje textovy souhrn -> graficky prehled (jako u-center). */
+    {
+        gps_sat_t sv[GPS_MAX_SATS];
+        int nsv = g.sat_count;                        /* uint8_t 0..GPS_MAX_SATS -> vzdy >=0 */
+        if (nsv > GPS_MAX_SATS) nsv = GPS_MAX_SATS;   /* pojistka proti pretekani sv[] */
+        for (int i = 0; i < nsv; i++) sv[i] = g.sats[i];
+        for (int i = 1; i < nsv; i++) {               /* insertion sort podle snr desc */
+            gps_sat_t t = sv[i]; int j = i - 1;
+            while (j >= 0 && sv[j].snr < t.snr) { sv[j + 1] = sv[j]; j--; }
+            sv[j + 1] = t;
+        }
+        int n = nsv > 12 ? 12 : nsv;                  /* kresli se jen 12 nejsilnejsich (sirka karty) */
+        /* zmenovy klic jen z KRESLENYCH sloupcu (pocet + jejich C/N0) -> zadny
+         * falesny redraw pri zmene slabe, nezobrazene druzice; key <= c_bars */
+        char key[48]; int kp = snprintf(key, sizeof key, "%d", n);
+        for (int i = 0; i < n && kp < (int)sizeof key - 5; i++)
+            kp += snprintf(key + kp, sizeof key - kp, ".%u", sv[i].snr);
+        if (force || dchg(c_bars, sizeof c_bars, key)) {
+            /* clear jen oblast baru (190..370) — NESMI zasahnout HDOP/PDOP @392 */
+            prim_fill_rect((prim_rect_t){DG_LLBL, 190, DG_COLW - 24, 180},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            if (n == 0) {
+                dtext_c((int16_t)(DG_LX + DG_COLW / 2), 274, DG_COLW - 24,
+                        "Hledam druzice...", UI_COLOR_WARN, &ui_font_sans_14);
+            } else {
+                const int16_t base = 346;             /* dolni hrana sloupcu */
+                const int16_t maxh = 140;             /* vyska pro C/N0 = 55 dB-Hz */
+                const int16_t area = DG_COLW - 24;    /* 352 px sirka */
+                int16_t slot = (int16_t)(area / n);   /* DYNAMICKA sirka slotu dle poctu druzic (n>=1) */
+                int16_t bw = (int16_t)(slot * 2 / 3); /* sloupec ~2/3 slotu, zbytek mezera */
+                if (bw < 3) bw = 3;
+                int16_t startx = DG_LLBL;             /* bary vyplni celou sirku karty */
+                for (int i = 0; i < n; i++) {          /* i < n <= nsv <= GPS_MAX_SATS */
+                    uint8_t snr = sv[i].snr;
+                    prim_color_t col = (snr >= 38) ? UI_COLOR_OK :
+                                       (snr >= 25) ? UI_COLOR_WARN :
+                                       (snr > 0)   ? UI_COLOR_BAD : UI_COLOR_INK_4;
+                    int16_t cx = (int16_t)(startx + i * slot + slot / 2);
+                    int16_t h  = (int16_t)((snr > 55 ? 55 : snr) * maxh / 55);
+                    if (h < 2) h = 2;                  /* min pahyl */
+                    prim_fill_rect((prim_rect_t){(int16_t)(cx - bw / 2), (int16_t)(base - h),
+                                   bw, h}, col, PRIM_BLEND_REPLACE);
+                    char pr[6]; snprintf(pr, sizeof pr, "%u", sv[i].prn);   /* PRN 0..255 -> max 3 zn */
+                    prim_draw_text((prim_point_t){cx, 360}, pr, &ui_font_mono_14,
+                                   UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+                }
+            }
+            drew = 1;
+        }
+    }
 
     fmt_d1(g.hdop, a, sizeof a); fmt_d1(g.pdop, b, sizeof b);
     snprintf(buf, sizeof buf, "HDOP %s   PDOP %s", a, b);
@@ -407,12 +452,19 @@ static int draw_gps_values(int force)
     if (force || dchg(c_alt, sizeof c_alt, buf)) {
         dtext(DG_RLBL, 238, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
 
-    /* TIMEPULSE (modul: 1 Hz s fixem; bez fixu default 1 Hz tez, ale neaktivni) */
+    /* TIMEPULSE = 1 PPS: s fixem 1 Hz disciplinovany na UTC, bez fixu volny 1 Hz */
     const char *tp; prim_color_t tc;
-    if (g.fix_quality) { tp = "100 kHz (fix)"; tc = UI_COLOR_OK; }
-    else               { tp = "5 Hz (no fix)"; tc = UI_COLOR_WARN; }
+    if (g.fix_quality) { tp = "1 PPS (fix)";  tc = UI_COLOR_OK; }
+    else               { tp = "1 Hz (volny)"; tc = UI_COLOR_WARN; }
     if (force || dchg(c_tp, sizeof c_tp, tp)) {
         dtext(DG_RLBL, 298, 200, tp, tc, &ui_font_mono_16); drew = 1; }
+
+    /* Prijimac: zive statistiky linky (naparsovane vety + platne fixy) — rostou,
+     * dokud GPS tece -> dukaz zivosti (staticke "NEO-7M 9600 8N1" je v chrome). */
+    snprintf(buf, sizeof buf, "Vet: %lu   Fix: %lu",
+             (unsigned long)g.sentences, (unsigned long)g.fixes);
+    if (force || dchg(c_rx, sizeof c_rx, buf)) {
+        dtext(DG_RLBL, 390, DG_COLW - 24, buf, UI_COLOR_INK_4, &ui_font_mono_14); drew = 1; }
 
     return drew;
 }
@@ -448,7 +500,7 @@ void app_gpsdo_render_gps(void)
         ui_card_render_chrome(&c_tp);
         ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74}, .header_label = "Prijimac"};
         ui_card_render_chrome(&c_rx);
-        prim_draw_text((prim_point_t){DG_RLBL, 376}, "NEO-7M  9600 8N1",
+        prim_draw_text((prim_point_t){DG_RLBL, 366}, "NEO-7M  9600 8N1",
                        &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     }
     if (draw_gps_values(first)) present_now();
