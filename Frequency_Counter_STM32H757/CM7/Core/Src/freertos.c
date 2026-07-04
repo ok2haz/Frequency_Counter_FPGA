@@ -30,6 +30,7 @@
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
+#include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -243,6 +244,8 @@ void StartDefaultTask(void *argument)
       gps_feed_char((char)gc);
     }
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
+    usb_console_tx_pump();   /* dopumpuj CDC TX ring (ocasek po USBD_BUSY by jinak
+                              * cekal az na dalsi printf); prazdny ring = okamzity return */
     osDelay(5);
   }
   /* USER CODE END StartDefaultTask */

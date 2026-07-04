@@ -246,6 +246,7 @@ static int                s_num_ready = 0;
  * redraw_freq uz neprochazi prim_text_width kazdy snimek). */
 static int16_t            s_num_w, s_num_left, s_num_top;
 static int16_t            s_seg_x[8];   /* x-pozice zacatku kazde skupiny cislic */
+static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> cache misto strlen v hot-path) */
 
 /* Simulacni stav kmitoctu (integer matematika, bez float). N = vsechny cislice
  * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
@@ -294,6 +295,7 @@ static void num_build(void)
     int comma_seen = 0;
     for (int i = 0; i < n; i++) {
         int L = (int)strlen(SCR_MAIN_DIGITS[i].text);
+        s_seg_len[i] = (uint8_t)L;            /* cache pro freq_fill_segments (hot-path) */
         s_freq_total += L;
         if (!comma_seen) {
             int_digits += L;
@@ -332,7 +334,7 @@ static void freq_fill_segments(void)
     for (int i = s_freq_total - 1; i >= 0; i--) { d[i] = (char)('0' + (int)(v % 10u)); v /= 10u; }
     int p = 0, n = s_num.segment_count;
     for (int s = 0; s < n; s++) {
-        int L = (int)strlen(SCR_MAIN_DIGITS[s].text);
+        int L = s_seg_len[s];                /* cachovana delka (num_build) misto strlen */
         for (int k = 0; k < L; k++) s_num_buf[s][k] = d[p++];
         s_num_buf[s][L] = '\0';
     }

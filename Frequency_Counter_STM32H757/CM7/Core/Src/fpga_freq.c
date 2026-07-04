@@ -4,6 +4,7 @@
  */
 #include "fpga_freq.h"
 #include "stm32h7xx_hal.h"
+#include "cmsis_os2.h"   /* SPI2 mutex: FpgaTask poll vs UART fpgaraw/fpgaloop */
 #include <string.h>
 #include <stdio.h>
 
@@ -121,14 +122,28 @@ static void delay_us(uint32_t us)
 static void cs_low(void)  { HAL_GPIO_WritePin(FPGA_CS_GPIO_Port, FPGA_CS_Pin, GPIO_PIN_RESET); }
 static void cs_high(void) { HAL_GPIO_WritePin(FPGA_CS_GPIO_Port, FPGA_CS_Pin, GPIO_PIN_SET); }
 
+/* SPI2 mutex: xfer() vola FpgaTask (poll 20 Hz) i UartTask (fpgaraw/fpgaloop).
+ * Bez zamku by se dve transakce prokladaly (CS/SCK kolize -> rozbity ramec,
+ * u FPGA slave rozhozene pocitani bitu). Vytvari fpga_freq_init (bezi uz pod
+ * schedulerem z FpgaTasku). */
+static osMutexId_t s_spi_mtx;
+
 static bool xfer(const uint8_t *tx, uint8_t *rx)
 {
+    bool locked = false;
+    if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) {
+        if (osMutexAcquire(s_spi_mtx, 100) != osOK) return false;
+        locked = true;
+    }
+
     cs_low();
     delay_us(FPGA_CS_GAP_US);                         /* CS low -> 1. SCK (>=1 us) */
     HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(&hspi2, (uint8_t *)tx, rx, FR_LEN, 100);
     delay_us(FPGA_CS_GAP_US);                         /* posledni SCK -> CS high (>=1 us) */
     cs_high();
     delay_us(FPGA_FRAME_GAP_US);                      /* pauza mezi ramci (>=20 us) */
+
+    if (locked) osMutexRelease(s_spi_mtx);
     return (st == HAL_OK);
 }
 
@@ -160,6 +175,8 @@ bool fpga_freq_crc_selftest(void)
 void fpga_freq_init(void)
 {
     dwt_init();                  /* cyklovy citac pro presne us prodlevy */
+
+    if (s_spi_mtx == NULL) s_spi_mtx = osMutexNew(NULL);   /* serializace xfer() */
 
     if (!fpga_freq_crc_selftest()) {
         /* CRC build neodpovida FPGA -> nezahajovat komunikaci (kontrakt bod 7.1) */
@@ -273,16 +290,33 @@ bool fpga_freq_signal_lost(void)
     return s_last_seen && (s_last.error_flags & FPGA_ERR_SIGNAL_LOST);
 }
 
+/* Prahy prepnuti zdroje S HYSTEREZI (x1e5): nahoru na /16 nad ~380 MHz, zpet na
+ * /4 az pod ~360 MHz. Bez hystereze mereni sumici kolem prahu preskakovalo mezi
+ * zdroji s ruznym rozlisenim (posledni cislice "blikaly" mezi dvema hodnotami). */
+#define FPGA_SEL_UP_X1E5    38000000000000ULL   /* 380 MHz: /4 -> /16 */
+#define FPGA_SEL_DOWN_X1E5  36000000000000ULL   /* 360 MHz: /16 -> /4 */
+
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16)
 {
     /* /4 ma nejlepsi rozliseni; nad ~380 MHz je pin28 (/4 -> ~95 MHz) u stropu -> /16.
-     * 380 MHz * 1e5 = 38e12. */
-    bool f4_ok  = !(m->error_flags & FPGA_ERR_MEAS) &&
-                  m->frequency_x100000 < 38000000000000ULL;
+     * Sticky stav (jediny konzument = FpgaTask): drzi zvoleny zdroj, prepina jen
+     * pri prekroceni prahu s hysterezi nebo pri chybe aktivniho zdroje. */
+    static int s_use16 = 0;
+    bool f4_err = (m->error_flags & FPGA_ERR_MEAS) != 0;
     bool f16_ok = !(m->status2 & FPGA_ST2_DIV16_ERR);
-    int  u16    = (!f4_ok && f16_ok) ? 1 : 0;
-    if (used16) *used16 = u16;
-    return u16 ? m->freq16_x100000 : m->frequency_x100000;
+
+    if (s_use16) {
+        /* zpet na /4 jen kdyz /4 meri a je bezpecne pod prahem (hystereze),
+         * nebo kdyz /16 sam chybuje a /4 je pouzitelny */
+        if (!f4_err && (m->frequency_x100000 < FPGA_SEL_DOWN_X1E5 || !f16_ok))
+            s_use16 = 0;
+    } else {
+        if ((f4_err || m->frequency_x100000 >= FPGA_SEL_UP_X1E5) && f16_ok)
+            s_use16 = 1;
+    }
+
+    if (used16) *used16 = s_use16;
+    return s_use16 ? m->freq16_x100000 : m->frequency_x100000;
 }
 
 void fpga_freq_format_val(uint64_t v, char *buf, int buflen)

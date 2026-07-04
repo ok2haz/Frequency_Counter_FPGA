@@ -72,14 +72,17 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - (PG7 = bývalý Saleae trigger LED_2 — nepoužité)
 
 ## FreeRTOS (CMSIS_V2)
-- Heap: **15360 B**, heap_4 ; PRIO_BITS=4 ; MAX_SYSCALL_INTERRUPT_PRIORITY=5
-- Tasky (stack ve words):
+- Heap: **32768 B** (`configTOTAL_HEAP_SIZE`; drží ho i .ioc klíč
+  `FREERTOS_M7.configTOTAL_HEAP_SIZE=32768` → regen nevrací default. Dřívějších
+  15360 B = přesně součet stacků → nešel vytvořit žádný další task/objekt.)
+  heap_4 ; PRIO_BITS=4 ; MAX_SYSCALL_INTERRUPT_PRIORITY=5
+- Tasky (stack ve words; defaultTask/I2C4Task 384 už v .ioc — regen hlídat):
   | Task | Priorita | Stack (words) |
   |---|---|---|
-  | defaultTask | Normal | 128 |
+  | defaultTask | Normal | 384 |
   | UartTask | Normal | 512 |
-  | I2C4Task | Low | 128 |
-  | **UiTask** (přidat) | BelowNormal | 1024 |
+  | I2C4Task | Low | 384 |
+  | **UiTask** (přidat) | BelowNormal | 2048 |
   | **FpgaTask** (přidat) | Normal | 512 |
 - Queue **UartRxQueue**: 64 items, **item size uint8_t (1 byte)** ← teď je v IOC uint16_t, OPRAVIT (jinak stack overflow)
 - Mutexy (přidat): **i2c4Mutex**, **uartTxMutex**

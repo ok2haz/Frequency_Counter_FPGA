@@ -65,8 +65,11 @@ void fpga_freq_format_val(uint64_t freq_x100000, char *buf, int buflen);
 /** Jako fpga_freq_format_val pro primarni /4 (m->frequency_x100000). */
 void fpga_freq_format(const fpga_meas_t *m, char *buf, int buflen);
 
-/** Vybere zobrazovany zdroj: /4 (nejlepsi rozliseni) dokud je bez chyby a pod stropem,
- *  jinak /16. Vrati zvoleny freq_x100000; *used16 (smi byt NULL) = 1 kdyz /16. */
+/** Vybere zobrazovany zdroj: /4 (nejlepsi rozliseni) dokud je bez chyby a pod
+ *  stropem, jinak /16. S HYSTEREZI (nahoru ~380 MHz, dolu ~360 MHz) a sticky
+ *  stavem — drzi zdroj, dokud neni duvod prepnout (zadne prebliknuti u prahu).
+ *  ⚠️ Ma vnitrni stav -> volat z JEDINEHO kontextu (FpgaTask).
+ *  Vrati zvoleny freq_x100000; *used16 (smi byt NULL) = 1 kdyz /16. */
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16);
 
 /** Naformatuje vedlejsi udaje: "<src> PH:<present>/<fine> GATE:<ns>NS SEQ:<n>[ chyba]".
