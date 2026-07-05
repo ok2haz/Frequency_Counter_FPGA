@@ -24,6 +24,7 @@
 #include "dsihost.h"
 #include "i2c.h"
 #include "ltdc.h"
+#include "quadspi.h"
 #include "rtc.h"
 #include "spi.h"
 #include "usart.h"
@@ -225,6 +226,7 @@ Error_Handler();
   MX_USART1_UART_Init();
   MX_RTC_Init();
   MX_ADC3_Init();
+  MX_QUADSPI_Init();
   /* USER CODE BEGIN 2 */
 
   /* ⚠️ ADC reference VREFBUF: VREF+ (pin 43) NENI na desce spojen s VDDA (zamerne —
