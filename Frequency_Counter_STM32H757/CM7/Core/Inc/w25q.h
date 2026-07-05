@@ -25,7 +25,8 @@ uint32_t w25q_read_jedec(void);
  *  Vrati true kdyz ID sedi (chip pripraven). Nutne pred read/write/erase. */
 bool w25q_init(void);
 
-/** Read (32-bit adresa, 4-byte mode, 1-line). Vrati true = OK. */
+/** Read (32-bit adresa, 4-byte mode). Quad Fast Read 0x6C (4-line) po quad-enable,
+ *  jinak fallback Fast Read 0x0C (1-line). Blokujici polling. Vrati true = OK. */
 bool w25q_read(uint32_t addr, uint8_t *buf, uint32_t len);
 
 /** Write (handluje hranice 256B stranek). ⚠️ Cilova oblast MUSI byt PREDEM

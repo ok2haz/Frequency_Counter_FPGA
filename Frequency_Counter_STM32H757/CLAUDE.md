@@ -228,19 +228,42 @@ Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená n
   IO0=**PD11**(AF9), IO1=**PD12**(AF9), IO2=**PF7**(AF9), IO3=**PD13**(AF9), /RESET=**PH1**(GPIO out high).
   ⚠️ `SPI2_RCK_Pin`(PB12/FPGA CS) i `QSPI_BK1_IO1_Pin`(PD12) mají stejnou masku `GPIO_PIN_12`, ale
   různé porty (B vs D) → není konflikt.
-- **CubeMX QUADSPI:** `FlashSize=25` (2²⁶ = 64 MB — KRITICKÉ), `ClockPrescaler=23` (kernel 240 MHz →
-  SCLK 10 MHz, konzervativní rozjezd; W25Q zvládá 133 MHz), `SampleShifting=HALFCYCLE`, `ClockMode=0`,
-  single flash. `MX_QUADSPI_Init` generovaný v `quadspi.c` (`hqspi`).
+- **CubeMX QUADSPI:** `FlashSize=25` (2²⁶ = 64 MB — KRITICKÉ), `SampleShifting=HALFCYCLE`, `ClockMode=0`,
+  single flash. `MX_QUADSPI_Init` generovaný v `quadspi.c` (`hqspi`). CubeMX prescaler=23 (10 MHz) je jen
+  default — **driver `w25q_init` ho přebíjí na `W25Q_SCK_PRESCALER=3` → SCLK 60 MHz** (regen-safe, jako
+  FPGA SPI baud). **Read = Quad Fast Read 0x6C** (4-line, 8 dummy) — ⚠️ nad 50 MHz nutné dummy (plain
+  Read 0x13 je stropován 50 MHz). Ověřeno `qspispeed` verify=OK @ 60 MHz.
+  - **⚠️ Propustnost pollovaného čtení ~4,6 MB/s** (strop `HAL_QSPI_Receive` = CPU čte FIFO bajt po bajtu,
+    ~215 ns/B), NE limit SCK. Raw 60 MHz quad = ~30 MB/s → odemkne až **DMA (`HAL_QSPI_Receive_DMA`/MDMA)
+    nebo memory-mapped mód**. Pro malá data (config/kalib) je 4,6 MB/s hluboko nad potřebou; DMA přidat
+    až u bulk read (fonty XIP / čtení logů). Viz [[revize-2026-07-03]] TODO.
 - **⚠️ 4-byte adresování:** 64 MB > 16 MB → 3bajtová adresa nestačí. Driver dělá `EN4B` (0xB7) v initu
   + nativní 4-byte příkazy (READ `0x13` / PP `0x12` / SE `0x21`, `QSPI_ADDRESS_32_BITS`).
 - **Driver `w25q.c`:** `w25q_read_jedec` (bez init), `w25q_init` (SW reset 66h/99h → JEDEC check →
   EN4B → quad-enable SR2), `w25q_read` / `w25q_write` (handluje 256B stránky; ⚠️ cíl musí být předem
-  smazán) / `w25q_erase_sector` (4 KB), WIP polling (`wait_ready`). Zatím **1-line** přenosy (bezpečné);
-  quad-enable jen pro budoucí rychlé čtení. `w25q_format_status` pro diag.
-- **UART:** `qspiid` (JEDEC ID, čeká EF4020), `qspitest` (init + destruktivní self-test sektoru 0).
-- **Plánované využití (viz [[revize-2026-07-03]] backlog):** perzistentní config/kalibrace (robustnější
-  než BKP), **datalogging dlouhodobé stability** (Allan/drift/holdover — killer app GPSDO), externí flash
-  v paměťové diagnostice, volitelně memory-mapped XIP (@0x90000000) + quad read.
+  smazán) / `w25q_erase_sector` (4 KB), WIP polling (`wait_ready`). **Read = Quad Fast Read 0x6C** (4-line,
+  `s_quad` z quad-enable; fallback Fast Read 0x0C 1-line); zápis/erase/registry 1-line. `w25q_format_status` pro diag.
+- **UART:** `qspiid` (JEDEC ID, čeká EF4020), `qspitest` (init + destruktivní self-test sektoru 0),
+  `qspispeed` (64 KB timed read + verify → KB/s), `storetest` (blob store self-test na CALIB regionu).
+
+### Region mapa + storage vrstva (w25q_map.h, w25q_store.c/h) — HOTOVO/ověřeno
+Deska je **generická** (použitelná i jinam) → regiony obecné, ne GPSDO-specifické. Zarovnané na 64 KB:
+| Offset | Velikost | Region | Účel |
+|---|---|---|---|
+| `0x000000` | 64 KB | **CONFIG** | runtime nastavení (časté změny), wear-leveled store |
+| `0x010000` | 64 KB | **CALIB** | kalibrace + zařízení param (zřídka), wear-leveled store |
+| `0x020000` | ~63,9 MB | **DATA** | generický bulk / logy (app-defined, zatím nevyužito) |
+
+- **`w25q_store`** = generický **kruhový wear-leveled blob store** nad regionem: 1 blob (max **4080 B** = 1 sektor)
+  na region, každý zápis jde do dalšího sektoru (round-robin → N× endurance), nejnovější platný `seq` vyhrává.
+  **Power-safe:** payload se zapíše první, hlavička (magic+seq+CRC16) NAPOSLED → výpadek uprostřed zápisu =
+  magic chybí = záznam neplatný, starý zůstává. API `w25q_store_init/read/write`. Nezná app obsah (jen bajty).
+  Ověřeno `storetest` (write/read/CRC + rotace sektorů OK).
+- **⚠️ Cap 4080 B/blob** (1 sektor). Stačí na kalib params; velký LUT → multi-sektor rozšíření nebo DATA region (viz [[revize-2026-07-03]]).
+- **Config split (revidovatelné, viz [[revize-2026-07-03]]):** **malé UI nastavení zůstává v RTC BKP** (instantní,
+  bez wear); **QSPI flash na store/log/kalibraci** (velká/trvalá data). BKP a flash config se NEmíchají.
+- **Plánované využití:** reálná kalibrace → CALIB store, **datalogging stability** (Allan/drift/holdover — killer
+  app GPSDO) → DATA region, externí flash v paměťové diagnostice, volitelně memory-mapped XIP (@0x90000000) + quad read.
 
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
 Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0x70303AEE jako I2C4).

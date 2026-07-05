@@ -21,6 +21,8 @@
 #include "ft5x06.h"
 #include "fpga_freq.h"
 #include "w25q.h"          /* W25Q512 QSPI flash — bring-up prikazy qspiid/qspitest */
+#include "w25q_store.h"    /* genericky blob store — prikaz storetest */
+#include "w25q_map.h"      /* region mapa (CONFIG/CALIB/DATA) */
 #include "si5356.h"
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
@@ -390,6 +392,60 @@ void UartTask_run(void *argument)
 					  int ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
 					  printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
 						     (int)e, (int)w, (int)r, ok ? "OK" : "MISMATCH");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "storetest") == 0) {
+				  /* Test genericke store vrstvy na CONFIG regionu (base 0x0 -> hlida i
+				   * base-0 edge case). Destruktivni, region zatim nevyuzity.
+				   * Init -> write blob -> read+verify -> 2. write (rotace sektoru). */
+				  if (!w25q_init()) {
+					  printf("STORE: QSPI init FAIL (zkontroluj qspiid)\n");
+				  } else {
+					  w25q_store_t st;
+					  w25q_store_init(&st, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS);
+					  printf("STORE init: active=0x%06lX seq=%lu\n",
+						     (unsigned long)st.active, (unsigned long)st.seq);
+					  const char *msg = "GPSDO store test blob";
+					  uint32_t mlen = (uint32_t)strlen(msg) + 1;
+					  char rd[64];
+					  bool w = w25q_store_write(&st, msg, mlen);
+					  uint32_t n = w25q_store_read(&st, rd, sizeof(rd));
+					  int ok = (w && n == mlen && strcmp(rd, msg) == 0);
+					  uint32_t prev = st.active;
+					  printf("STORE w/r: w=%d len=%lu verify=%s seq=%lu active=0x%06lX\n",
+						     (int)w, (unsigned long)n, ok ? "OK" : "FAIL",
+						     (unsigned long)st.seq, (unsigned long)st.active);
+					  w25q_store_write(&st, msg, mlen);   /* 2. zapis -> seq++, rotace sektoru */
+					  printf("STORE 2nd: seq=%lu active=0x%06lX (rotace:%s)\n",
+						     (unsigned long)st.seq, (unsigned long)st.active,
+						     (st.active != prev) ? "OK" : "NE");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "qspispeed") == 0) {
+				  /* Propustnost cteni pri aktualni SCK (60 MHz quad). Zapise 64 KB pattern
+				   * do DATA regionu, pak CASOVANY read (DWT) + verify. ⚠️ DESTRUKTIVNI na
+				   * DATA[0..64KB). Zapis je pomaly (erase+PP ~1-2 s), meri se jen cteni. */
+				  if (!w25q_init()) {
+					  printf("QSPI speed: init FAIL\n");
+				  } else {
+					  uint8_t buf[512];
+					  uint32_t base = W25Q_DATA_BASE, total = 64u * 1024u;
+					  for (uint32_t a = 0; a < total; a += W25Q_SECTOR_SIZE) w25q_erase_sector(base + a);
+					  for (uint32_t off = 0; off < total; off += sizeof(buf)) {
+						  for (int i = 0; i < (int)sizeof(buf); i++) buf[i] = (uint8_t)((off + i) & 0xFF);
+						  w25q_write(base + off, buf, sizeof(buf));
+					  }
+					  uint32_t t0 = DWT->CYCCNT; int ok = 1;
+					  for (uint32_t off = 0; off < total && ok; off += sizeof(buf)) {
+						  if (!w25q_read(base + off, buf, sizeof(buf))) { ok = 0; break; }
+						  for (int i = 0; i < (int)sizeof(buf); i++)
+							  if (buf[i] != (uint8_t)((off + i) & 0xFF)) { ok = 0; break; }
+					  }
+					  uint32_t us = (DWT->CYCCNT - t0) / (SystemCoreClock / 1000000u);
+					  uint32_t kbps = us ? (uint32_t)((uint64_t)total * 1000u / us) : 0;
+					  printf("QSPI speed: read %lu KB in %lu us -> %lu KB/s verify=%s\n",
+						     (unsigned long)(total / 1024u), (unsigned long)us,
+						     (unsigned long)kbps, ok ? "OK" : "FAIL");
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
