@@ -27,6 +27,10 @@ void app_gpsdo_render_health(void);
 /** Render the all-sensors submenu (opened from System Health "SENZORY >"). Live. */
 void app_gpsdo_render_sensors(void);
 
+/** Render the memory-usage submenu (opened from System Health "PAMET >"). Live.
+ *  Interni FLASH/RAM (linker), RTOS heap, externi SDRAM 32 MB + W25Q 64 MB (JEDEC). */
+void app_gpsdo_render_mem(void);
+
 /** Clear the framebuffer to the background color. */
 void app_gpsdo_clear(void);
 

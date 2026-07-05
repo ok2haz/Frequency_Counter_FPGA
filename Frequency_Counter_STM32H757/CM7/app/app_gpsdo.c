@@ -9,6 +9,7 @@
 #include "hal/stm32/prim_stm32_hal.h"
 #include "sensor_stat.h"        /* g_sensors[] (hodnota + valid + statistika) */
 #include "gps.h"                /* gps_get() — zive GPS data do GNSS okna */
+#include "w25q.h"               /* w25q_read_jedec — externi flash v okne PAMET */
 #include "cmsis_os2.h"          /* osThreadGetStackSpace (volny stack tasku) */
 #include <prim/prim.h>
 #include <ui/ui.h>
@@ -32,6 +33,9 @@ extern volatile uint8_t  g_rtc_synced;           /* 1 = RTC srovnan z GPS */
 extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
                     I2C4TaskHandle, defaultTaskHandle;
 
+/* Linker symboly (adresy) pro vyuziti interni FLASH/RAM v okne PAMET. */
+extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+
 /* Si5356 status bits (reg 218 / 0xDA). */
 #define SI5356_SYS_CAL    (1u << 0)
 #define SI5356_LOS_CLKIN  (1u << 2)
@@ -39,7 +43,7 @@ extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
 
 static prim_fb_t s_fb;
 static int s_inited = 0;
-static int s_view = 0;          /* 0=main 1=diag 2=gps 3=health 4=senzory(podmenu health) */
+static int s_view = 0;          /* 0=main 1=diag 2=gps 3=health 4=senzory 5=pamet (podmenu health) */
 
 /* Present coalescing: vysokofrekvencni ticky (clock/signal/freq) jen renderuji a
  * nastavi s_dirty; jeden flip pak udela app_gpsdo_flush() (UiTask ho vola na ~30Hz
@@ -53,6 +57,8 @@ static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
 static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
 /* "SENZORY >" tlacitko v System Health (bottom-left) -> podmenu vsech senzoru. */
 static const prim_rect_t SENS_BTN_RECT = {18, 417, 180, 61};
+/* "PAMET >" tlacitko v System Health (bottom-mid) -> podokno vyuziti pameti. */
+static const prim_rect_t MEM_BTN_RECT = {210, 417, 180, 61};
 
 static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 {
@@ -623,6 +629,8 @@ void app_gpsdo_render_health(void)
         ui_button_render(&back);
         ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY >"};
         ui_button_render(&sens);
+        ui_button_t mem = {.rect = MEM_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "PAMET >"};
+        ui_button_render(&mem);
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
@@ -740,6 +748,71 @@ void app_gpsdo_render_sensors(void)
     if (draw_sensors_values(first)) present_now();
 }
 
+/* ── Podokno PAMET (s_view=5), otevre se z System Health ──────────────────
+ * Vyuziti pameti: interni FLASH/RAM (staticky z linker symbolu), RTOS heap
+ * (live), externi SDRAM 32 MB + W25Q 64 MB (JEDEC). Staticke hodnoty se kresli
+ * jednou (first); live se refreshuje jen RTOS heap. JEDEC se cte 1x pri otevreni
+ * (⚠️ QSPI zatim bez mutexu — kolize s UART qspi* je nepravdepodobna, viz TODO). */
+static int draw_mem_values(int force)
+{
+    static char c[20];
+    char buf[24];
+    int drew = force;
+    snprintf(buf, sizeof buf, "%lu/32 KB", (unsigned long)(g_rtos_heap_free / 1024u));
+    if (force || dchg(c, sizeof c, buf)) {
+        dval(DG_LVAL, SENS_R0 + 2 * SENS_DY, 175, buf, 1); drew = 1;   /* RTOS heap volne */
+    }
+    return drew;
+}
+
+void app_gpsdo_render_mem(void)
+{
+    app_gpsdo_init();
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    int first = (s_view != 5);
+    if (first) {
+        s_view = 5;
+        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+        ui_button_render(&back);
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "PAMET",
+                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
+                          .header_label = "Vyuziti pameti  (pouzite / celkem)"};
+        ui_card_render_chrome(&card);
+
+        prim_draw_text((prim_point_t){DG_LLBL, 104}, "INTERNI", &ui_font_mono_16,
+                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_RLBL, 104}, "EXTERNI", &ui_font_mono_16,
+                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "FLASH (CM7)");
+        dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "RAM D1");
+        dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "RTOS heap");
+        dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "SDRAM (FMC)");
+        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "QSPI W25Q");
+        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "  JEDEC");
+
+        char b[24];
+        /* interni FLASH (CM7 bank 1024 KB): image = _sidata + velikost .data - 0x08000000 */
+        uint32_t fl = ((uint32_t)&_sidata + ((uint32_t)&_edata - (uint32_t)&_sdata)) - 0x08000000u;
+        snprintf(b, sizeof b, "%lu/1024 KB", (unsigned long)(fl / 1024u));
+        dval(DG_LVAL, SENS_R0 + 0 * SENS_DY, 175, b, 1);
+        /* interni RAM_D1 (512 KB): staticky .data + .bss */
+        uint32_t rm = ((uint32_t)&_edata - (uint32_t)&_sdata) + ((uint32_t)&_ebss - (uint32_t)&_sbss);
+        snprintf(b, sizeof b, "%lu/512 KB", (unsigned long)(rm / 1024u));
+        dval(DG_LVAL, SENS_R0 + 1 * SENS_DY, 175, b, 1);
+        /* externi (staticke velikosti) */
+        dval(DG_RVAL, SENS_R0 + 0 * SENS_DY, 175, "32 MB", 1);   /* SDRAM FMC */
+        dval(DG_RVAL, SENS_R0 + 1 * SENS_DY, 175, "64 MB", 1);   /* W25Q */
+        uint32_t id = w25q_read_jedec();
+        snprintf(b, sizeof b, "%06lX %s", (unsigned long)id, id == W25Q_JEDEC_ID ? "OK" : "--");
+        dval(DG_RVAL, SENS_R0 + 2 * SENS_DY, 175, b, id == W25Q_JEDEC_ID);
+    }
+    if (draw_mem_values(first)) present_now();
+}
+
 void app_gpsdo_clear(void)
 {
     app_gpsdo_init();
@@ -757,6 +830,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
     else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */
     else if (s_view == 4) app_gpsdo_render_sensors(); /* live refresh of senzory podmenu */
+    else if (s_view == 5) app_gpsdo_render_mem();     /* live refresh (RTOS heap) okna PAMET */
 }
 
 /* Hodinovy tik (~kazdych 100 ms): na hlavni obrazovce prekresli cas/datum z GPS
@@ -865,14 +939,18 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             return true;
         }
     } else {
-        /* System Health -> tap na "SENZORY >" otevre podmenu vsech senzoru. */
+        /* System Health -> tap na "SENZORY >" / "PAMET >" otevre podokno. */
         if (s_view == 3 && in_rect(x, y, SENS_BTN_RECT)) {
             app_gpsdo_render_sensors();
             return true;
         }
+        if (s_view == 3 && in_rect(x, y, MEM_BTN_RECT)) {
+            app_gpsdo_render_mem();
+            return true;
+        }
         if (in_rect(x, y, BACK_RECT)) {
-            if (s_view == 4) app_gpsdo_render_health();  /* ze senzoru zpet na Health */
-            else app_gpsdo_render_main();                /* jinak na hlavni obrazovku */
+            if (s_view == 4 || s_view == 5) app_gpsdo_render_health();  /* z podokna zpet na Health */
+            else app_gpsdo_render_main();                               /* jinak na hlavni obrazovku */
             return true;
         }
     }
