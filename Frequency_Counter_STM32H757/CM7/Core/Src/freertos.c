@@ -45,7 +45,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-/* Makra tasku (RX_BUF_SIZE, TMP117_*, LCD_*, MAKE_RGB, …) jsou v jejich
+/* Makra tasku (RX_BUF_SIZE, RAM/SDRAM test adresy, …) jsou v jejich
  * freertos_task_*.c, kde se používají. */
 /* USER CODE END PM */
 
@@ -59,6 +59,21 @@
  * Zapisuje SensorsTask pres sensor_update()/sensor_fail(). Nulova init je OK
  * (samples=0 -> min/max/mean se lazy-inicializuji prvnim platnym vzorkem). */
 sensor_stat_t g_sensors[SENS_COUNT] = {0};
+
+/* Popisná metadata senzorů (label + jednotka) — jediný zdroj pravdy (UART `sensors`,
+ * příp. UI). Pořadí = sensor_id_t (viz sensor_stat.h). */
+const sensor_desc_t g_sensor_desc[SENS_COUNT] = {
+  { "TMP117 0x48",   "C"  },   /* SENS_T48   */
+  { "TMP117 0x49",   "C"  },   /* SENS_T49   */
+  { "TMP117 0x4A",   "C"  },   /* SENS_T4A   */
+  { "ADS AIN0",      "mV" },   /* SENS_ADS0  */
+  { "ADS AIN1",      "mV" },   /* SENS_ADS1  */
+  { "ADS AIN2(12V)", "mV" },   /* SENS_ADS2  */
+  { "ADS AIN3(5V)",  "mV" },   /* SENS_ADS3  */
+  { "MCU jadro",     "C"  },   /* SENS_CORE_T */
+  { "VREF",          "mV" },   /* SENS_VDDA (VREF+) */
+  { "VBAT",          "mV" },   /* SENS_VBAT  */
+};
 
 /* Mutex pro sdileni I2C4 sbernice (TMP117 task + dotykove UI + backlight) */
 osMutexId_t i2c4MutexHandle;
@@ -92,6 +107,12 @@ volatile uint8_t g_si5356_ok     = 0;
 volatile char    g_rtc_text[24]  = "---------- --:--:--";   /* presny tvar: [0..9]=datum [11..18]=cas */
 volatile uint8_t g_rtc_synced    = 0;
 
+/* Ulozene UI nastaveni (persist v BKP_DR1): default = {FREQ, CH B, GATE 1s, RUN}
+ * = bit1(chan=1) | bit2(gate=1) | bit4(run=1) = 0x16. MX_RTC_Init ho prepise
+ * z BKP, pokud tam je platny magic (warm reset s drzenou backup domenou). */
+volatile uint8_t g_ui_cfg        = 0x16;
+volatile uint8_t g_ui_cfg_dirty  = 0;
+
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
 volatile uint32_t g_rtos_heap_min  = 0;
@@ -124,7 +145,7 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 384 * 4,   /* 1536 B: GPS NMEA parse (f[24]) + rtc_app_tick snprintf — rezerva (regen vraci na 256, hlidat!) */
+  .stack_size = 384 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -244,9 +265,10 @@ void StartDefaultTask(void *argument)
       gps_feed_char((char)gc);
     }
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
+    rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     usb_console_tx_pump();   /* dopumpuj CDC TX ring (ocasek po USBD_BUSY by jinak
                               * cekal az na dalsi printf); prazdny ring = okamzity return */
-    osDelay(5);
+    osDelay(10);   /* 100 Hz: GPS drain (9600 bd ~10 B/tick, fronta 256 hl.) + rtc + usb pump */
   }
   /* USER CODE END StartDefaultTask */
 }

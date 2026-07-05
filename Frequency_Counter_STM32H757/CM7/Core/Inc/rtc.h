@@ -38,6 +38,9 @@ extern RTC_HandleTypeDef hrtc;
 /* Magic v BKP_DR0 = "RTC uz byl srovnan z GPS". Pouziva ho guard v MX_RTC_Init
  * (USER CODE Check_RTC_BKUP) i rtc_app_tick — proto je tady, ne v .c. */
 #define RTC_SYNC_MAGIC   0x32F2u
+/* BKP_DR1: horni 3 bajty = magic (platne ulozene UI nastaveni), spodni bajt = packed
+ * config (bit0 mode, bit1 chan, bity2:3 gate, bit4 running). Persist pres warm reset. */
+#define RTC_UICFG_MAGIC  0x5AC0DE00u
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);
@@ -50,6 +53,10 @@ void MX_RTC_Init(void);
  * VESKERY pristup k RTC registrum je VYHRADNE odsud (defaultTask) -> UART/UI
  * ctou jen sdilene g_rtc_text/g_rtc_synced (zadna cross-task HAL_RTC kolize). */
 void rtc_app_tick(void);
+
+/* Ulozi UI nastaveni (g_ui_cfg) do BKP_DR1, jen pokud g_ui_cfg_dirty (setri BKP).
+ * Volat z defaultTask (jediny kontext pristupu k RTC/BKP). */
+void rtc_save_uicfg_if_dirty(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

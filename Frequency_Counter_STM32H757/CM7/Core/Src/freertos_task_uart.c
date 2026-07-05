@@ -20,6 +20,7 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ft5x06.h"
 #include "fpga_freq.h"
+#include "w25q.h"          /* W25Q512 QSPI flash — bring-up prikazy qspiid/qspitest */
 #include "si5356.h"
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
@@ -34,18 +35,6 @@
                                           * FB0/FB1/FB2). Drive bylo 0x1C0000 = uvnitr
                                           * region 0 -> kolidovalo by s FB1/FB2. */
 
-#define LCD_WIDTH         800
-#define LCD_HEIGHT        480
-#define FB_ADDR           0xC0000000u   /* framebuffer @ SDRAM (RGB565), shodne s PRIM_FB_ADDR */
-
-/*
- * MAKE_RGB - RGB565 (16bpp): R[5] G[6] B[5]. Bere 8-bit slozky a oreze na 5/6/5.
- * Spravne barvy na displeji pri DSI BURST + RGB565 (viz dsihost.c).
- */
-#define MAKE_RGB(r, g, b)  ((uint16_t)((((uint16_t)(r) & 0xF8) << 8) | \
-                           (((uint16_t)(g) & 0xFC) << 3) | \
-                           (((uint16_t)(b) & 0xF8) >> 3)))
-
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
@@ -58,11 +47,11 @@ static void fmt_f2(char *b, size_t n, float v)
 }
 
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
-char RxBuffer[RX_BUF_SIZE];
-uint8_t RxIndex = 0;
+static char RxBuffer[RX_BUF_SIZE];
+static uint8_t RxIndex = 0;
 
-uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
-uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
+static uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
+static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
 
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
 void UartTask_run(void *argument)
@@ -130,12 +119,6 @@ void UartTask_run(void *argument)
 				  printf("TEPLOTA: %s C%s\n", v, s->valid ? "" : " (STALE - chyba cteni)");
 			  }
 			  else if (strcmp(RxBuffer, "sensors") == 0) {
-				  static const char *const nm[SENS_COUNT] = {
-					  "TMP117 0x48", "TMP117 0x49", "TMP117 0x4A",
-					  "ADS AIN0", "ADS AIN1", "ADS AIN2(12V)", "ADS AIN3(5V)",
-					  "MCU jadro", "VREF", "VBAT" };
-				  static const char *const un[SENS_COUNT] = {
-					  "C", "C", "C", "mV", "mV", "mV", "mV", "C", "mV", "mV" };
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
 				  for (int i = 0; i < SENS_COUNT; i++) {
 					  const sensor_stat_t *s = &g_sensors[i];
@@ -145,7 +128,7 @@ void UartTask_run(void *argument)
 					  fmt_f2(c, sizeof(c), s->max);
 					  fmt_f2(d, sizeof(d), s->mean);
 					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u n=%lu\n",
-						     nm[i], a, b, c, d, un[i], s->valid ? "OK " : "ERR",
+						     g_sensor_desc[i].label, a, b, c, d, g_sensor_desc[i].unit, s->valid ? "OK " : "ERR",
 						     (unsigned long)s->err_total, (unsigned)s->err_streak,
 						     (unsigned long)s->samples);
 					  osDelay(2);
@@ -187,38 +170,6 @@ void UartTask_run(void *argument)
 				  }
 
 
-			  }
-
-			  else if (strcmp(RxBuffer, "testRED") == 0) {
-				  uint16_t *fb = (uint16_t *)FB_ADDR;
-				  uint16_t red = MAKE_RGB(0xFF, 0x00, 0x00);
-				  for(int i = 0; i < (LCD_WIDTH * LCD_HEIGHT); i++) {
-					  fb[i] = red;
-				  }
-				  /* Vyhodit cache, aby LTDC videl ciste data v SDRAM (RGB565 = 2 byty/px) */
-				  SCB_CleanDCache_by_Addr((uint32_t*)FB_ADDR, LCD_WIDTH * LCD_HEIGHT * 2);
-				  printf("TEST RED - OK (RGB565)\n");
-			  }
-
-			  else if (strcmp(RxBuffer, "test") == 0) {
-				  /* 3 svisle pruhy R/G/B podle X (kazdy radek obsahuje 3 ruzne barvy) */
-				  uint16_t *pixelPtr = (uint16_t *)FB_ADDR;
-				  uint16_t red   = MAKE_RGB(0xFF, 0x00, 0x00);
-				  uint16_t green = MAKE_RGB(0x00, 0xFF, 0x00);
-				  uint16_t blue  = MAKE_RGB(0x00, 0x00, 0xFF);
-
-				  for (uint32_t y = 0; y < LCD_HEIGHT; y++) {
-				      for (uint32_t x = 0; x < LCD_WIDTH; x++) {
-				          if (x < 266)      *pixelPtr = red;     // Cervena tretina
-				          else if (x < 533) *pixelPtr = green;   // Zelena tretina
-				          else              *pixelPtr = blue;    // Modra tretina
-
-				          pixelPtr++;
-				      }
-				  }
-				  /* Vyhodit cache, aby LTDC videl ciste data v SDRAM (RGB565 = 2 byty/px) */
-				  SCB_CleanDCache_by_Addr((uint32_t*)FB_ADDR, LCD_WIDTH * LCD_HEIGHT * 2);
-				  printf("TEST - OK (3 svisle pruhy podle X, RGB565)\n");
 			  }
 
 			  else if (strcmp(RxBuffer, "touch") == 0) {
@@ -417,6 +368,28 @@ void UartTask_run(void *argument)
 				  for (int i = 0; i < 64; i++) {
 					  p += snprintf(line + p, sizeof(line) - p, "%02X ", rx[i]);
 					  if ((i & 0xF) == 0xF) { printf("[%02d] %s\n", i - 15, line); p = 0; }
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "qspiid") == 0) {
+				  /* Bring-up krok 1: JEDEC ID. Cekame EF 40 20 (W25Q512JV). Nevyzaduje init. */
+				  uint32_t id = w25q_read_jedec();
+				  printf("QSPI JEDEC ID: %06lX  (%s)\n", (unsigned long)id,
+					     (id == W25Q_JEDEC_ID) ? "W25Q512JV OK" : "NEODPOVIDA (cekam EF4020)");
+			  }
+			  else if (strcmp(RxBuffer, "qspitest") == 0) {
+				  /* Bring-up krok 2: init + erase sektoru 0 + zapis/cteni vzorku + verify.
+				   * DESTRUKTIVNI na sektor 0 (flash zatim nic nepouziva). */
+				  if (!w25q_init()) {
+					  printf("QSPI: init/JEDEC FAIL (zkontroluj qspiid)\n");
+				  } else {
+					  uint8_t wr[16], rd[16];
+					  for (int i = 0; i < 16; i++) wr[i] = (uint8_t)(0xA0 + i);
+					  bool e = w25q_erase_sector(0);
+					  bool w = w25q_write(0, wr, sizeof(wr));
+					  bool r = w25q_read(0, rd, sizeof(rd));
+					  int ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
+					  printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
+						     (int)e, (int)w, (int)r, ok ? "OK" : "MISMATCH");
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {

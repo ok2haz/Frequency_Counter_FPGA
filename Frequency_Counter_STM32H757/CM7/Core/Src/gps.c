@@ -1,6 +1,6 @@
 /*
  * gps.c — u-blox NEO-7M, NMEA parser ($xxRMC + $xxGGA) na USART1 @ 9600.
- * Viz gps.h. RX: ISR -> GpsRxQueue -> GpsTask -> gps_feed_char().
+ * Viz gps.h. RX: ISR -> GpsRxQueue -> defaultTask drain -> gps_feed_char().
  */
 #include "gps.h"
 #include "usart.h"        /* huart1, RxByte */

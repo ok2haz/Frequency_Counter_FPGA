@@ -24,15 +24,25 @@ static volatile uint16_t s_tail;     /* odeslano do CDC */
 
 void usb_console_tx_pump(void)
 {
+  /* ⚠️ Volano ze DVOU kontextu: defaultTask (bez zamku) i _write->usb_console_tx
+   * (pod uartTxMutex). Bez serializace by dva soubezne pumpy videly stejny tail,
+   * poslaly stejny blok 2x a rozjely s_tail. PRIMASK kriticka sekce = plna
+   * mutualni exkluze; funguje i PRED spustenim scheduleru (early printf z main
+   * USER CODE 2) a nezavisi na FreeRTOS. CDC_Transmit_FS je neblokujici (jen
+   * naprogramuje endpoint / vrati USBD_BUSY) -> maskovani IRQ na par us je OK. */
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   uint16_t used = (uint16_t)(s_head - s_tail);
-  if (used == 0u) return;
-  /* CDC bere souvisly buffer -> posli blok od tail do konce ringu (max do wrapu). */
-  uint16_t t     = (uint16_t)(s_tail & TXRING_MASK);
-  uint16_t chunk = (uint16_t)(TXRING_SZ - t);
-  if (chunk > used) chunk = used;
-  if (CDC_Transmit_FS(&s_tx[t], chunk) == USBD_OK)
-    s_tail = (uint16_t)(s_tail + chunk);
-  /* USBD_BUSY -> data zustanou v ringu, zkusi se pri dalsim pump(). */
+  if (used) {
+    /* CDC bere souvisly buffer -> posli blok od tail do konce ringu (max do wrapu). */
+    uint16_t t     = (uint16_t)(s_tail & TXRING_MASK);
+    uint16_t chunk = (uint16_t)(TXRING_SZ - t);
+    if (chunk > used) chunk = used;
+    if (CDC_Transmit_FS(&s_tx[t], chunk) == USBD_OK)
+      s_tail = (uint16_t)(s_tail + chunk);
+    /* USBD_BUSY -> data zustanou v ringu, zkusi se pri dalsim pump(). */
+  }
+  __set_PRIMASK(primask);
 }
 
 void usb_console_tx(const uint8_t *data, uint16_t len)
@@ -40,8 +50,12 @@ void usb_console_tx(const uint8_t *data, uint16_t len)
   for (uint16_t i = 0; i < len; i++) {
     if ((uint16_t)(s_head - s_tail) >= TXRING_MASK) {   /* plny ring */
       usb_console_tx_pump();
-      if ((uint16_t)(s_head - s_tail) >= TXRING_MASK)
-        s_tail++;                                       /* drop nejstarsi (console) */
+      if ((uint16_t)(s_head - s_tail) >= TXRING_MASK) {
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        s_tail++;                                       /* drop nejstarsi (console) — atomicky vuci pump() */
+        __set_PRIMASK(primask);
+      }
     }
     s_tx[s_head & TXRING_MASK] = data[i];
     s_head++;

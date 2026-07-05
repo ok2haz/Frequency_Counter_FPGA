@@ -48,6 +48,13 @@ extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten *
 extern volatile char    g_rtc_text[24];
 extern volatile uint8_t g_rtc_synced;
 
+/* ── Uložené UI nastavení (persist v RTC BKP_DR1) ───────────────────────────
+ * bit0 mode, bit1 chan, bity2:3 gate, bit4 running. UiTask (screen_main_button_action)
+ * ho přepakuje při změně tlačítka + nastaví dirty; defaultTask (rtc_save_uicfg_if_dirty)
+ * zapíše do BKP. Načtení z BKP dělá MX_RTC_Init před schedulerem. */
+extern volatile uint8_t g_ui_cfg;
+extern volatile uint8_t g_ui_cfg_dirty;
+
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
 extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */

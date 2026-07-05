@@ -62,9 +62,6 @@ bool fpga_freq_poll(fpga_meas_t *out);
 /** Naformatuje kmitocet x100000: "123.456.789,01234Hz" (tecky=tisice, carka=des., 5 mist). */
 void fpga_freq_format_val(uint64_t freq_x100000, char *buf, int buflen);
 
-/** Jako fpga_freq_format_val pro primarni /4 (m->frequency_x100000). */
-void fpga_freq_format(const fpga_meas_t *m, char *buf, int buflen);
-
 /** Vybere zobrazovany zdroj: /4 (nejlepsi rozliseni) dokud je bez chyby a pod
  *  stropem, jinak /16. S HYSTEREZI (nahoru ~380 MHz, dolu ~360 MHz) a sticky
  *  stavem — drzi zdroj, dokud neni duvod prepnout (zadne prebliknuti u prahu).

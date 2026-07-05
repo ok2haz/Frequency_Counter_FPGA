@@ -344,11 +344,6 @@ void fpga_freq_format_val(uint64_t v, char *buf, int buflen)
     snprintf(buf, buflen, "%s,%05luHz", grp, (unsigned long)frac);
 }
 
-void fpga_freq_format(const fpga_meas_t *m, char *buf, int buflen)
-{
-    fpga_freq_format_val(m->frequency_x100000, buf, buflen);
-}
-
 /* uint64 -> decimal string (nano-printf neumi %llu) */
 static int u64_to_str(uint64_t v, char *out)
 {

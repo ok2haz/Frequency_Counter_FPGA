@@ -81,6 +81,13 @@ void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
+  /* Nacti ulozene UI nastaveni (mode/chan/gate/running) z BKP_DR1 -> g_ui_cfg.
+   * Bezi v main() pred schedulerem, takze g_ui_cfg je platny drive nez UiTask
+   * poprve kresli (screen_main_init ho rozbali do st). Cteni BKP nevyzaduje DBP;
+   * neplatny magic -> g_ui_cfg zustane default z freertos.c. */
+  uint32_t uicfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = (uint8_t)(uicfg & 0xFFu);
+
   /* Pokud RTC uz bezel a byl srovnan z GPS (magic v BKP_DR0) a backup domena
    * prezila reset (VBAT/napajeni drzi), NEPREPISUJ cas defaultni 0:00 hodnotou
    * nize — RTC si nese spravny cas dal. Pri studenem startu (BKP=0) se guard
@@ -219,6 +226,16 @@ void rtc_app_tick(void)
   g_rtc_text[sizeof(g_rtc_text) - 1] = '\0';
   g_rtc_synced = s_synced;
   taskEXIT_CRITICAL();
+}
+
+/* Ulozi UI nastaveni do BKP_DR1 jen pri zmene. Vola defaultTask (jediny kontext
+ * pristupu k RTC/BKP). Dirty se cisti PRED zapisem -> soubezna zmena z UiTasku
+ * se neztrati (persistne se pri pristim ticku). */
+void rtc_save_uicfg_if_dirty(void)
+{
+  if (!g_ui_cfg_dirty) return;
+  g_ui_cfg_dirty = 0;
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, RTC_UICFG_MAGIC | (uint32_t)g_ui_cfg);
 }
 /* USER CODE END 1 */
 

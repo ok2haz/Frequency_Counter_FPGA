@@ -23,6 +23,12 @@
 extern volatile char    g_rtc_text[24];   /* "YYYY-MM-DD HH:MM:SS" */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 
+/* Ulozene UI nastaveni (persist v RTC BKP): nacte se jednou v screen_main_init,
+ * pakuje se pri zmene tlacitka; defaultTask ho zapise do BKP. bit0 mode / bit1
+ * chan / bity2:3 gate / bit4 running. */
+extern volatile uint8_t g_ui_cfg;
+extern volatile uint8_t g_ui_cfg_dirty;
+
 /* Vytahne cas "HH:MM:SS" a datum "YYYY-MM-DD" z g_rtc_text. Dokud nebyl RTC
  * srovnan z GPS, vraci placeholdery "--:--:--" / "no GPS". time8/date10 = char[16]. */
 static void rtc_time_date(char *time8, char *date10)
@@ -102,8 +108,12 @@ void screen_main_button_action(int idx)
     case 1: st.running = !st.running;            break;   /* RUN <-> STOP */
     case 2: st.gate = (int8_t)((st.gate + 1) % 4); break; /* cycle gate */
     case 3: st.chan = (int8_t)(st.chan ? 0 : 1); break;   /* CH A <-> CH B */
-    default: break;                                       /* 4 = MENU: handled by caller */
+    default: return;                                      /* 4 = MENU: nic k ulozeni */
     }
+    /* Zapamatuj nastaveni -> defaultTask ho persistne do BKP (prezije warm reset). */
+    g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
+                         | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
+    g_ui_cfg_dirty = 1;
 }
 
 /* ── Background pre-render (boot) ───────────────────────────── */
@@ -138,6 +148,18 @@ void screen_main_invalidate(void) { cache_initialized = false; }
 
 void screen_main_init(void)
 {
+    /* Jednou po bootu: aplikuj ulozene nastaveni (g_ui_cfg nacetl MX_RTC_Init z BKP
+     * pred schedulerem). Guard je nezavisly na cache -> screen_main_invalidate
+     * (reset cache) uz nastaveni znovu neprepise. */
+    static bool s_cfg_loaded = false;
+    if (!s_cfg_loaded) {
+        s_cfg_loaded = true;
+        uint8_t c   = g_ui_cfg;
+        st.mode     = (int8_t)( c        & 1);
+        st.chan     = (int8_t)((c >> 1)  & 1);
+        st.gate     = (int8_t)((c >> 2)  & 3);
+        st.running  = ((c >> 4) & 1) != 0;
+    }
     if (cache_initialized) return;
     render_background_to_cache();
     cache_initialized = true;

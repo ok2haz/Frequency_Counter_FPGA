@@ -220,6 +220,28 @@ Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušen
 (GPIO+TIM7+NVIC) voláno v main.c USER CODE 2. Ovládá **tlačítko BEEP** v UI (toggle, zelené=hraje).
 TIM7_IRQHandler v stm32h7xx_it.c USER CODE. **Nepoužívej TIM7 jinde / nepovoluj v IOC.**
 
+## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
+Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
+(schéma `STM32H747BIT.pdf`, sheet `USB_SD_FLASH`). **Bring-up HOTOVÝ** — `qspiid`→`EF4020`,
+`qspitest` erase/write/read/verify OK.
+- **Piny (v .ioc, CubeMX-managed → regen-safe):** CLK=**PF10**(AF9), NCS=**PG6**(AF10),
+  IO0=**PD11**(AF9), IO1=**PD12**(AF9), IO2=**PF7**(AF9), IO3=**PD13**(AF9), /RESET=**PH1**(GPIO out high).
+  ⚠️ `SPI2_RCK_Pin`(PB12/FPGA CS) i `QSPI_BK1_IO1_Pin`(PD12) mají stejnou masku `GPIO_PIN_12`, ale
+  různé porty (B vs D) → není konflikt.
+- **CubeMX QUADSPI:** `FlashSize=25` (2²⁶ = 64 MB — KRITICKÉ), `ClockPrescaler=23` (kernel 240 MHz →
+  SCLK 10 MHz, konzervativní rozjezd; W25Q zvládá 133 MHz), `SampleShifting=HALFCYCLE`, `ClockMode=0`,
+  single flash. `MX_QUADSPI_Init` generovaný v `quadspi.c` (`hqspi`).
+- **⚠️ 4-byte adresování:** 64 MB > 16 MB → 3bajtová adresa nestačí. Driver dělá `EN4B` (0xB7) v initu
+  + nativní 4-byte příkazy (READ `0x13` / PP `0x12` / SE `0x21`, `QSPI_ADDRESS_32_BITS`).
+- **Driver `w25q.c`:** `w25q_read_jedec` (bez init), `w25q_init` (SW reset 66h/99h → JEDEC check →
+  EN4B → quad-enable SR2), `w25q_read` / `w25q_write` (handluje 256B stránky; ⚠️ cíl musí být předem
+  smazán) / `w25q_erase_sector` (4 KB), WIP polling (`wait_ready`). Zatím **1-line** přenosy (bezpečné);
+  quad-enable jen pro budoucí rychlé čtení. `w25q_format_status` pro diag.
+- **UART:** `qspiid` (JEDEC ID, čeká EF4020), `qspitest` (init + destruktivní self-test sektoru 0).
+- **Plánované využití (viz [[revize-2026-07-03]] backlog):** perzistentní config/kalibrace (robustnější
+  než BKP), **datalogging dlouhodobé stability** (Allan/drift/holdover — killer app GPSDO), externí flash
+  v paměťové diagnostice, volitelně memory-mapped XIP (@0x90000000) + quad read.
+
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
 Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0x70303AEE jako I2C4).
 `MX_I2C1_Init` je **self-contained v i2c.c USER CODE 1** (GPIO+clock tam, regen-safe) — voláno v main.c USER CODE 2 před schedulerem. Mutex `i2c1MutexHandle`.
