@@ -758,9 +758,13 @@ static int draw_mem_values(int force)
     static char c[20];
     char buf[24];
     int drew = force;
-    snprintf(buf, sizeof buf, "%lu/32 KB", (unsigned long)(g_rtos_heap_free / 1024u));
+    /* POUZITE heap (konzistentni s "pouzite/celkem" hlavickou i FLASH/RAM sloupci):
+     * used = celkem - volne. 32 KB = configTOTAL_HEAP_SIZE. */
+    uint32_t total = 32u * 1024u;
+    uint32_t used  = (total > g_rtos_heap_free) ? (total - g_rtos_heap_free) : 0u;
+    snprintf(buf, sizeof buf, "%lu/32 KB", (unsigned long)(used / 1024u));
     if (force || dchg(c, sizeof c, buf)) {
-        dval(DG_LVAL, SENS_R0 + 2 * SENS_DY, 175, buf, 1); drew = 1;   /* RTOS heap volne */
+        dval(DG_LVAL, SENS_R0 + 2 * SENS_DY, 175, buf, 1); drew = 1;   /* RTOS heap pouzite */
     }
     return drew;
 }
