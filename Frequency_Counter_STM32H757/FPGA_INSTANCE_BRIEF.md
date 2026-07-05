@@ -160,6 +160,23 @@ Zisk 1,25ns mřížky: σy @1 s ~6,5e-10 (2× proti 2,5 ns).
 hlavní clock. Pokud clock tree/PLL nenalockuje, SPI logika neběží → STM vidí `RX0:FF`.
 **Ověř: vede 100 MHz na clock-capable pin a PLL/global buffer v designu lockuje?**
 
+## 0c. MĚŘICÍ FRONT-END (ze schématu `FPGA_module.pdf`, list 2 `FPGA_Core`)
+Řetězec měřeného signálu **PŘED** vstupem do FPGA (samostatné čipy na desce, ne fabric):
+- **Vstupy:** 2 kanály — **CH A (`J1`) / CH B (`J2`)**, tvarované komparátorem **`MAX9601`**
+  (`U1`, dual ultrarychlý komparátor). Toto je „tvarovač"; **strop řetězce ~1,4 GHz.**
+- **Dělič = JEDINÝ čítač `MC100EP016A`** (`U2`, 8-bit synchronní binární čítač, ECL, ~1,4 GHz).
+  Jeho Q výstupy jsou binární odbočky: **Q1 = ÷4**, **Q3 = ÷16**. Výstupy jdou přes
+  ECL→LVTTL převodníky **`MC100EPT23DT`** (`U20`/`U24`) na 3,3 V (`DIV_Bit…`) do FPGA.
+- **Mapa na FPGA:** **pin28 = /4** (primár), **pin27 = /16** (rozšíření rozsahu). Guardy
+  25/26/29/30 (stínění 27/28) — viz header mapa §0b.
+
+⚠️ **`/4` a `/16` NEJSOU nezávislé** — jsou to dvě odbočky TÉHOŽ čítače nad TÍMŽE tvarovačem.
+Miscount čítače / výpadek tvarovače u 1,4 GHz se projeví v OBOU shodně. Porovnání `freq_x100000`
+(/4) vs `freq16_x100000` (/16) na STM je proto jen **downstream sanity** (chytne rozbité čítání
+na jednom pinu ve FPGA), **ne nezávislá validace front-endu.** `/16` primárně = **rozsah nad
+~400 MHz** (kde by /4 výstup přesáhl ~100 MHz strop fabricu). Skutečně nezávislý cross-check by
+vyžadoval druhý samostatný dělič (ideálně nesoudělný poměr) = HW úprava desky.
+
 ## 1. Role a piny (strana FPGA)
 - **STM = MASTER** (generuje SCK + CS), **FPGA = SLAVE** (jen reaguje, NEGENERUJE hodiny).
 - 3.3 V LVCMOS33, bez level shifteru. **Společná zem nutná.**
