@@ -25,7 +25,7 @@
 /* ── Text ───────────────────────────────────────────────────── */
 #define UI_COLOR_INK            PRIM_RGB(0xE3, 0xED, 0xF7)
 #define UI_COLOR_INK_2          PRIM_RGB(0x9A, 0xA6, 0xB4)
-#define UI_COLOR_INK_3          PRIM_RGB(0x6B, 0x77, 0x85)
+#define UI_COLOR_INK_3          PRIM_RGB(0x7C, 0x88, 0x96)  /* label/dim tier — mirne zesvetleno pro lepsi kontrast textu */
 #define UI_COLOR_INK_4          PRIM_RGB(0x3A, 0x48, 0x58)
 #define UI_COLOR_INK_5          PRIM_RGB(0x1E, 0x27, 0x36)
 

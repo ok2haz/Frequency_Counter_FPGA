@@ -225,15 +225,25 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
   HAL_UART_Transmit(&huart1, f, i, 100);
 }
 
-/* UBX-CFG-TP5 (0x06 0x31, 32 B): TIMEPULSE pin = 1 PPS. Bez fixu volny 1 Hz,
- * s fixem 1 Hz disciplinovany na GNSS a zarovnany na UTC vterinu (alignToTow),
- * 50% strida (stridava hrana na vrcholu vteriny). */
+/* TIMEPULSE kmitocty. S FIXEM = GPSDO PLL reference (musi sedet s delickou OCXO,
+ * JP2: 100 kHz / 1 MHz -> pro 1MHz zmen na 1000000). BEZ FIXU = 10 Hz: sama
+ * FREKVENCE slouzi desce jako lock-indikator (detektor: 100 kHz -> disciplinuj,
+ * 10 Hz -> hold VC OCXO = holdover). NIKDY nevystup 100 kHz z interniho osc modulu. */
+#define GPS_TP_FREQ_HZ        100000u   /* s fixem: GPSDO PLL reference */
+#define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: MANDATORY 10 Hz (hold indikator) */
+
+/* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 100 kHz disciplinovany na
+ * GNSS + zarovnany na UTC (alignToTow); freqPeriod (no lock) = 10 Hz. 50% strida. */
 void gps_config_timepulse(void)
 {
+  uint32_t fl = GPS_TP_FREQ_HZ;         /* s fixem */
+  uint32_t fn = GPS_TP_FREQ_NOFIX_HZ;   /* bez fixu */
   uint8_t pl[32] = {0};
   pl[0]  = 0;                                  /* tpIdx = 0 (TIMEPULSE) */
-  pl[8]  = 1;                                  /* freqPeriod = 1 Hz (no lock) */
-  pl[12] = 0x01; pl[13] = 0x00; pl[14] = 0x00; /* freqPeriodLock = 1 Hz (1 PPS) */
+  pl[8]  = (uint8_t)fn; pl[9]  = (uint8_t)(fn >> 8);  /* freqPeriod (no lock) = 10 Hz */
+  pl[10] = (uint8_t)(fn >> 16); pl[11] = (uint8_t)(fn >> 24);
+  pl[12] = (uint8_t)fl; pl[13] = (uint8_t)(fl >> 8);  /* freqPeriodLock (fix) = 100 kHz */
+  pl[14] = (uint8_t)(fl >> 16); pl[15] = (uint8_t)(fl >> 24);
   pl[19] = 0x80;                               /* pulseLenRatio = 50% (2^31) */
   pl[23] = 0x80;                               /* pulseLenRatioLock = 50% */
   /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|alignToTow|polarity = 0x6F */
@@ -249,7 +259,7 @@ void gps_init(void)
   huart1.Init.BaudRate = 9600;
   HAL_UART_Init(&huart1);
 
-  /* TIMEPULSE config (1 PPS: 1 Hz volny bez fixu / 1 Hz disciplinovany s fixem).
+  /* TIMEPULSE config (100 kHz GPSDO PLL reference; viz gps_config_timepulse).
    * Vyzaduje zapojene STM
    * PB14 (USART1 TX) -> GPS RX. Posila se v RAM modulu (plati do power-cyklu).
    * ⚠️ MUSI byt PRED HAL_UART_Receive_IT: HAL_UART_Transmit (blokujici) drzi

@@ -55,9 +55,9 @@ static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
 /* Back button on the diagnostics screen. */
 /* Back button lives in the bottom bar, in the same slot as the main MENU. */
 static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
-/* "SENZORY >" tlacitko v System Health (bottom-left) -> podmenu vsech senzoru. */
+/* "SENZORY" tlacitko v System Health (bottom-left) -> podmenu vsech senzoru. */
 static const prim_rect_t SENS_BTN_RECT = {18, 417, 180, 61};
-/* "PAMET >" tlacitko v System Health (bottom-mid) -> podokno vyuziti pameti. */
+/* "PAMET" tlacitko v System Health (bottom-mid) -> podokno vyuziti pameti. */
 static const prim_rect_t MEM_BTN_RECT = {210, 417, 180, 61};
 
 static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
@@ -114,13 +114,17 @@ static void dlabel(int16_t x, int16_t y, const char *s)
                    PRIM_ALIGN_LEFT);
 }
 
-/* Right-aligned live value: clear its box then redraw. valid==0 → dimmed + red "!". */
+/* Right-aligned live value: clear its box then redraw. valid==0 → dimmed + red "!".
+ * Kresli se pod CLIPEM boxu — text delsi nez boxw se orizne, misto aby pretekl
+ * doleva pres label (dtext/dtext_c clipuji odjakziva, dval byl jediny bez). */
 static void dval(int16_t xr, int16_t baseline, int16_t boxw, const char *v, int valid)
 {
-    prim_fill_rect((prim_rect_t){(int16_t)(xr - boxw), (int16_t)(baseline - 17),
-                                 boxw, 22}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_rect_t box = {(int16_t)(xr - boxw), (int16_t)(baseline - 17), boxw, 22};
+    prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_set_clip(box);
     prim_draw_text((prim_point_t){xr, baseline}, v, &ui_font_mono_18,
                    valid ? UI_COLOR_INK : UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    prim_reset_clip();
     if (!valid)
         prim_draw_text((prim_point_t){(int16_t)(xr - boxw + 2), baseline}, "!",
                        &ui_font_mono_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
@@ -202,38 +206,38 @@ static int draw_diag_values(int force)
 
     /* ── Levy sloupec: teploty (hodnota + min/max) ── */
     static const sensor_id_t tid[3] = { SENS_T48, SENS_T49, SENS_T4A };
-    static const int16_t     ty[3]  = { 104, 132, 160 };
+    static const int16_t     ty[3]  = { 104, 130, 156 };
     for (int i = 0; i < 3; i++) {
         const sensor_stat_t *s = &g_sensors[tid[i]];
         fmt_minmax(buf, sizeof(buf), s);
         if (force || dchg(c_tm[i], sizeof(c_tm[i]), buf)) {
-            dtext((int16_t)(DG_LLBL + 96), ty[i], 118, buf, UI_COLOR_INK_4, &ui_font_sans_14); drew = 1; }
+            dtext((int16_t)(DG_LLBL + 96), ty[i], 118, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
         fmt_temp(buf, sizeof(buf), s->last);
         snprintf(key, sizeof(key), "%c%s", s->valid ? 'V' : 'X', buf);  /* vykresleni zalezi i na valid */
         if (force || dchg(c_tv[i], sizeof(c_tv[i]), key)) {
             dval(DG_LVAL, ty[i], 104, buf, s->valid); drew = 1; }
     }
 
-    /* ADC napeti. */
+    /* MCU teplota jadra (4. radek karty Teploty, y=182). */
+    { const sensor_stat_t *mt = &g_sensors[SENS_CORE_T];
+      fmt_temp(buf, sizeof(buf), mt->last);
+      snprintf(key, sizeof(key), "%c%s", mt->valid ? 'V' : 'X', buf);
+      if (force || dchg(c_mcu[0], sizeof(c_mcu[0]), key)) { dval(DG_LVAL, 182, 104, buf, mt->valid); drew = 1; } }
+
+    /* Napeti: ADS1115 AIN0..3 (258/284/310/336) + MCU VREF/VBAT (362/388). Roztec 26. */
     for (int k = 0; k < 4; k++) {
         const sensor_stat_t *a = &g_sensors[SENS_ADS0 + k];
         snprintf(buf, sizeof(buf), "%ld mV", lround_f(a->last));
         snprintf(key, sizeof(key), "%c%s", a->valid ? 'V' : 'X', buf);
         if (force || dchg(c_adc[k], sizeof(c_adc[k]), key)) {
-            dval(DG_LVAL, (int16_t)(236 + k * 28), 120, buf, a->valid); drew = 1; }
+            dval(DG_LVAL, (int16_t)(258 + k * 26), 120, buf, a->valid); drew = 1; }
     }
-
-    /* MCU interni (ADC3): teplota jadra [°C] + VDDA/VBAT [mV]. */
-    { const sensor_stat_t *mt = &g_sensors[SENS_CORE_T];
-      fmt_temp(buf, sizeof(buf), mt->last);
-      snprintf(key, sizeof(key), "%c%s", mt->valid ? 'V' : 'X', buf);
-      if (force || dchg(c_mcu[0], sizeof(c_mcu[0]), key)) { dval(DG_LVAL, 394, 104, buf, mt->valid); drew = 1; } }
     for (int k = 0; k < 2; k++) {
         const sensor_stat_t *mv = &g_sensors[SENS_VDDA + k];
         snprintf(buf, sizeof(buf), "%ld mV", lround_f(mv->last));
         snprintf(key, sizeof(key), "%c%s", mv->valid ? 'V' : 'X', buf);
         if (force || dchg(c_mcu[1 + k], sizeof(c_mcu[1 + k]), key)) {
-            dval(DG_LVAL, (int16_t)(422 + k * 28), 120, buf, mv->valid); drew = 1; }
+            dval(DG_LVAL, (int16_t)(362 + k * 26), 120, buf, mv->valid); drew = 1; }
     }
 
     /* ── Pravy sloupec ── */
@@ -241,10 +245,12 @@ static int draw_diag_values(int force)
     char sig[68];
     snprintf(sig, sizeof(sig), "%c%s", g_spi_ok ? 'O' : 'X', (const char *)g_spi_text);
     if (force || dchg(c_spi, sizeof(c_spi), sig)) {
+        /* mono_14 ZAMERNE (jediny 14px text v oknech): NOLINK radek ma az 38 zn
+         * (38x10=380 px @16 > box 352 -> orizl by se RX0/CRC ocas; @14 = 304 px OK). */
         dtext(DG_RLBL, 104, DG_COLW - 24, (const char *)g_spi_text,
               g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_14); drew = 1; }
     if (force || dchg(c_fpga, sizeof(c_fpga), (const char *)g_freq_info)) {
-        dtext(DG_RLBL, 132, DG_COLW - 24, (const char *)g_freq_info, UI_COLOR_INK_2, &ui_font_sans_14); drew = 1; }
+        dtext(DG_RLBL, 132, DG_COLW - 24, (const char *)g_freq_info, UI_COLOR_INK_2, &ui_font_sans_16); drew = 1; }
 
     /* Reference Si5356: lock status (retezec 1:1 se statusem -> staci porovnat si). */
     const char *si; prim_color_t sic;
@@ -300,28 +306,27 @@ void app_gpsdo_render_diag(void)
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "DIAGNOSTIKA",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
-        /* Left column: Teploty + ADC. */
-        ui_card_t c_temp = {.rect = {DG_LX, 58, DG_COLW, 122},
-                            .header_label = "Teploty TMP117  (last  min/max)"};
+        /* Left column: Teploty (vc. MCU jadra) + Napeti (ADS1115 + MCU).
+         * ⚠️ FOOTER PRAVIDLO: spodni lista (y >= 416) je VZDY dedikovana
+         * tlacitkum -> obsah konci <= 404. (Drivejsi 3. karta "MCU" sahala
+         * do 472 = do listy; jeji radky jsou slouceny sem, roztec 26 px.) */
+        ui_card_t c_temp = {.rect = {DG_LX, 58, DG_COLW, 144},
+                            .header_label = "Teploty  (last  min/max)"};
         ui_card_render_chrome(&c_temp);
         dlabel(DG_LLBL, 104, "0x48");
-        dlabel(DG_LLBL, 132, "0x49");
-        dlabel(DG_LLBL, 160, "0x4A");
+        dlabel(DG_LLBL, 130, "0x49");
+        dlabel(DG_LLBL, 156, "0x4A");
+        dlabel(DG_LLBL, 182, "MCU");
 
-        ui_card_t c_adc = {.rect = {DG_LX, 190, DG_COLW, 150},
-                           .header_label = "ADC ADS1115"};
+        ui_card_t c_adc = {.rect = {DG_LX, 212, DG_COLW, 192},
+                           .header_label = "Napeti (ADS1115 + MCU)"};
         ui_card_render_chrome(&c_adc);
-        dlabel(DG_LLBL, 236, "AIN0");
-        dlabel(DG_LLBL, 264, "AIN1");
-        dlabel(DG_LLBL, 292, "AIN2 (12V)");
-        dlabel(DG_LLBL, 320, "AIN3 (5V)");
-
-        ui_card_t c_mcu = {.rect = {DG_LX, 348, DG_COLW, 124},
-                           .header_label = "MCU (jadro / napajeni)"};
-        ui_card_render_chrome(&c_mcu);
-        dlabel(DG_LLBL, 394, "Teplota jadra");
-        dlabel(DG_LLBL, 422, "VREF");
-        dlabel(DG_LLBL, 450, "VBAT");
+        dlabel(DG_LLBL, 258, "AIN0");
+        dlabel(DG_LLBL, 284, "AIN1");
+        dlabel(DG_LLBL, 310, "AIN2 (12V)");
+        dlabel(DG_LLBL, 336, "AIN3 (5V)");
+        dlabel(DG_LLBL, 362, "VREF");
+        dlabel(DG_LLBL, 388, "VBAT");
 
         /* Right column: FPGA + Reference + System. */
         ui_card_t c_fpga = {.rect = {DG_RX, 58, DG_COLW, 92},
@@ -371,7 +376,7 @@ static int draw_gps_values(int force)
 
     snprintf(buf, sizeof buf, "%u / %u druzic", g.num_sat, g.sats_in_view);
     if (force || dchg(c_sat, sizeof c_sat, buf)) {
-        dtext(DG_LLBL, 138, 220, buf, UI_COLOR_INK_4, &ui_font_sans_16); drew = 1; }
+        dtext(DG_LLBL, 138, 220, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
 
     /* VERTIKALNI signal bars per druzice (setrizene podle C/N0 sestupne), barevne
      * dle sily. Nahrazuje textovy souhrn -> graficky prehled (jako u-center). */
@@ -397,7 +402,7 @@ static int draw_gps_values(int force)
                            UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
             if (n == 0) {
                 dtext_c((int16_t)(DG_LX + DG_COLW / 2), 274, DG_COLW - 24,
-                        "Hledam druzice...", UI_COLOR_WARN, &ui_font_sans_14);
+                        "Hledam druzice...", UI_COLOR_WARN, &ui_font_sans_16);
             } else {
                 const int16_t base = 346;             /* dolni hrana sloupcu */
                 const int16_t maxh = 140;             /* vyska pro C/N0 = 55 dB-Hz */
@@ -417,7 +422,7 @@ static int draw_gps_values(int force)
                     prim_fill_rect((prim_rect_t){(int16_t)(cx - bw / 2), (int16_t)(base - h),
                                    bw, h}, col, PRIM_BLEND_REPLACE);
                     char pr[6]; snprintf(pr, sizeof pr, "%u", sv[i].prn);   /* PRN 0..255 -> max 3 zn */
-                    prim_draw_text((prim_point_t){cx, 360}, pr, &ui_font_mono_14,
+                    prim_draw_text((prim_point_t){cx, 360}, pr, &ui_font_mono_16,
                                    UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
                 }
             }
@@ -442,7 +447,7 @@ static int draw_gps_values(int force)
               &ui_font_mono_16); drew = 1; }
     snprintf(buf, sizeof buf, "%.10s", rt);   /* datum "YYYY-MM-DD" (sync stav nese barva casu) */
     if (force || dchg(c_date, sizeof c_date, buf)) {
-        dtext(DG_RLBL, 126, 220, buf, UI_COLOR_INK_4, &ui_font_sans_14); drew = 1; }
+        dtext(DG_RLBL, 126, 220, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
 
     /* poloha */
     if (g.valid) fmt_ll(g.lat_deg, 'N', 'S', a, sizeof a); else snprintf(a, sizeof a, "--");
@@ -458,10 +463,11 @@ static int draw_gps_values(int force)
     if (force || dchg(c_alt, sizeof c_alt, buf)) {
         dtext(DG_RLBL, 238, DG_COLW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
 
-    /* TIMEPULSE = 1 PPS: s fixem 1 Hz disciplinovany na UTC, bez fixu volny 1 Hz */
+    /* TIMEPULSE: s fixem 100 kHz (GPSDO PLL reference, disciplinovany na GNSS);
+     * bez fixu 10 Hz (frekvence = lock indikator pro desku -> hold VC / holdover). */
     const char *tp; prim_color_t tc;
-    if (g.fix_quality) { tp = "1 PPS (fix)";  tc = UI_COLOR_OK; }
-    else               { tp = "1 Hz (volny)"; tc = UI_COLOR_WARN; }
+    if (g.fix_quality) { tp = "100 kHz (disc.)"; tc = UI_COLOR_OK; }
+    else               { tp = "10 Hz (hold)";    tc = UI_COLOR_WARN; }
     if (force || dchg(c_tp, sizeof c_tp, tp)) {
         dtext(DG_RLBL, 298, 200, tp, tc, &ui_font_mono_16); drew = 1; }
 
@@ -470,7 +476,7 @@ static int draw_gps_values(int force)
     snprintf(buf, sizeof buf, "Vet: %lu   Fix: %lu",
              (unsigned long)g.sentences, (unsigned long)g.fixes);
     if (force || dchg(c_rx, sizeof c_rx, buf)) {
-        dtext(DG_RLBL, 390, DG_COLW - 24, buf, UI_COLOR_INK_4, &ui_font_mono_14); drew = 1; }
+        dtext(DG_RLBL, 384, DG_COLW - 24, buf, UI_COLOR_INK_2, &ui_font_mono_16); drew = 1; }
 
     return drew;
 }
@@ -504,10 +510,11 @@ void app_gpsdo_render_gps(void)
         ui_card_render_chrome(&c_pos);
         ui_card_t c_tp = {.rect = {DG_RX, 252, DG_COLW, 68}, .header_label = "TIMEPULSE"};
         ui_card_render_chrome(&c_tp);
-        ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74}, .header_label = "Prijimac"};
+        /* Model do HEADERU (staticky) -> karta unese 1 zivy radek statistik bez
+         * prekryvu (74px na 3 radky nestacilo -> header se kryl s modelem). */
+        ui_card_t c_rx = {.rect = {DG_RX, 330, DG_COLW, 74},
+                          .header_label = "Prijimac  NEO-7M 9600 8N1"};
         ui_card_render_chrome(&c_rx);
-        prim_draw_text((prim_point_t){DG_RLBL, 366}, "NEO-7M  9600 8N1",
-                       &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     }
     if (draw_gps_values(first)) present_now();
 }
@@ -627,9 +634,9 @@ void app_gpsdo_render_health(void)
                   screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
         ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
         ui_button_render(&back);
-        ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY >"};
+        ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY"};
         ui_button_render(&sens);
-        ui_button_t mem = {.rect = MEM_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "PAMET >"};
+        ui_button_t mem = {.rect = MEM_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "PAMET"};
         ui_button_render(&mem);
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
@@ -943,7 +950,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             return true;
         }
     } else {
-        /* System Health -> tap na "SENZORY >" / "PAMET >" otevre podokno. */
+        /* System Health -> tap na "SENZORY" / "PAMET" otevre podokno. */
         if (s_view == 3 && in_rect(x, y, SENS_BTN_RECT)) {
             app_gpsdo_render_sensors();
             return true;
