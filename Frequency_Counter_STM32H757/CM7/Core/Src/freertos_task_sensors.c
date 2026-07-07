@@ -201,6 +201,7 @@ void SensorsTask_run(void *argument)
   uint32_t   i2c1_streak = 0;                         // po sobe jdouci selhani cele I2C1
   TickType_t i2c1_last   = 0;                         // tick posledniho pokusu o I2C1
   uint32_t   i2c1_iv     = 0;                          // back-off interval [ticks], 0 = hned
+  uint32_t   cyc         = 0;                          // citac cyklu (ADC3 jen kazdy 2. -> 1 Hz)
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
@@ -307,7 +308,10 @@ void SensorsTask_run(void *argument)
 
 	// === ADC3: MCU teplota jadra + VDDA (z VREFINT) + VBAT (interni kanaly) ===
 	// Cteni po jednom kanalu (adc3_read_chan) — scan polling na H7 railoval.
-	// Rucni 16-bit prepocet (kalibrace jsou 16-bit). Nezavisle na I2C, 2x/s.
+	// Rucni 16-bit prepocet (kalibrace jsou 16-bit). Nezavisle na I2C.
+	// ⚠️ JEN KAZDY 2. CYKLUS (1 Hz): jadro/VREF/VBAT se meni pomalu -> 2 Hz zbytecne;
+	// setri ~1,3 % CPU (3 kanaly x 16 vzorku busy-poll ~12,6 ms se pulnou frekvenci).
+	if ((cyc++ & 1u) == 0u) {
 	uint32_t rt = 0, rv = 0, rb = 0;
 	int a_t = adc3_read_chan(ADC_CHANNEL_TEMPSENSOR, &rt);
 	int a_v = adc3_read_chan(ADC_CHANNEL_VREFINT,    &rv);
@@ -333,6 +337,7 @@ void SensorsTask_run(void *argument)
 	} else {
 	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}
+	}   /* konec ADC3 bloku (1 Hz) */
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);
