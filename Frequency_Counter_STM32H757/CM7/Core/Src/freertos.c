@@ -103,7 +103,12 @@ volatile uint8_t g_spi_dirty = 1;
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
 
-/* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte) */
+/* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte).
+ * ⚠️ UI ctenari (UiTask: screen_main/rtc_time_date, app_gpsdo diag/gps) ctou BEZ
+ * zamku — ZAMERNE: torn read je mozny jen v ~200ns okne zapisu 1x/s a projevi se
+ * nejvyse 100ms kosmetickym glitchem casu (dalsi tick prekresli spravne). Zadna
+ * korupce (ctenari kopiruji do lokalu + nulou ukoncuji). UART cesta cte pod
+ * taskENTER_CRITICAL (tam vadi i jednorazovy vypis). */
 volatile char    g_rtc_text[24]  = "---------- --:--:--";   /* presny tvar: [0..9]=datum [11..18]=cas */
 volatile uint8_t g_rtc_synced    = 0;
 

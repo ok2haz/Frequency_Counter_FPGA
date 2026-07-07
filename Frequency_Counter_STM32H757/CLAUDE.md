@@ -217,8 +217,10 @@ RTC běží z **LSE krystalu 32.768 kHz** (PC14=OSC32_IN, PC15=OSC32_OUT), presc
 ## Beeper (beeper.c/h) — PH9, 800 Hz
 Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušením @1600 Hz
 (`HAL_TIM_PeriodElapsedCallback` v main.c → `beeper_isr_toggle()` přepíná PH9). `beeper_init`
-(GPIO+TIM7+NVIC) voláno v main.c USER CODE 2. Ovládá **tlačítko BEEP** v UI (toggle, zelené=hraje).
-TIM7_IRQHandler v stm32h7xx_it.c USER CODE. **Nepoužívej TIM7 jinde / nepovoluj v IOC.**
+(GPIO+TIM7+NVIC) voláno v main.c USER CODE 2. **⚠️ `beeper_set()` teď NEVOLÁ NIKDO** — dřívější
+tlačítko BEEP zaniklo s přechodem na libui obrazovku; API + HW zůstávají připravené (kandidát:
+alarm ztráty GPS locku / SIGNAL_LOST). TIM7_IRQHandler v stm32h7xx_it.c USER CODE.
+**Nepoužívej TIM7 jinde / nepovoluj v IOC.**
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
