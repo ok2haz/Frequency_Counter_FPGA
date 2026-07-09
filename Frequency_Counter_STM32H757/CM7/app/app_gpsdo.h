@@ -31,6 +31,10 @@ void app_gpsdo_render_sensors(void);
  *  Interni FLASH/RAM (linker), RTOS heap, externi SDRAM 32 MB + W25Q 64 MB (JEDEC). */
 void app_gpsdo_render_mem(void);
 
+/** Render the histogram window (opened by tapping the Allan card on main).
+ *  Distribution of fractional deviation y = (f-f0)/f0. */
+void app_gpsdo_render_histogram(void);
+
 /** Clear the framebuffer to the background color. */
 void app_gpsdo_clear(void);
 

@@ -522,6 +522,12 @@ static prim_rect_t s_allan_rect = {0,0,0,0};
 static prim_rect_t s_trend_rect = {0,0,0,0};
 static prim_rect_t s_small_rect = {0,0,0,0};
 
+/* Tap do Allan karty (hlavni obrazovka) -> otevre histogram okno (analyza mereni). */
+bool screen_main_hit_allan(int16_t x, int16_t y)
+{
+    return s_allan_rect.w != 0 && pt_in(x, y, s_allan_rect);
+}
+
 static void render_card_allan(prim_rect_t rect)
 {
     s_allan_rect = rect;                          /* pro zive prekresleni */
@@ -532,6 +538,11 @@ static void render_card_allan(prim_rect_t rect)
                       .header_right = hdr,
                       .header_right_accent = UI_COLOR_ACC};
     ui_card_render_chrome(&card);
+    /* Ztlumene '↗' hned za titulkem = naznak ze karta je klikaci (tap -> histogram okno). */
+    int16_t hx = (int16_t)(rect.x + UI_DIM_CARD_PAD_X
+                           + prim_text_width("Allan σy(τ)", &ui_font_sans_18) + 6);
+    prim_draw_text((prim_point_t){hx, (int16_t)(rect.y + UI_DIM_CARD_PAD_Y + 16)},
+                   "↗", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t ci = ui_card_inner_rect(&card);
     /* Levy okraj (36) na Y popisky, dolni pruh (22) na X popisky τ, maly pravy okraj. */
     prim_rect_t inner = {(int16_t)(ci.x + 36), ci.y,
@@ -956,6 +967,88 @@ int screen_main_redraw_allan(void)
     if (s_allan_rect.w == 0) return 0;
     blit_bg_region(s_allan_rect); render_card_allan(s_allan_rect);
     return 1;
+}
+
+/* Histogram distribuce frakcni odchylky y (poslednich s_y_count vzorku, τ0=1s).
+ * Auto-range [min..max], svisle sloupce; mean cara + overlay N/mean/sigma. Kresli
+ * do 'rect' (uvnitr karty histogram okna) a sam si ho vycisti -> lze volat 2x/s.
+ * ⚠️ Data plni stats_sample POUZE na hlavni obrazovce (sim); v okne = snapshot.
+ * Az budou realna data z FPGA (feed nezavisly na s_view), bude histogram zivy. */
+void screen_main_render_histogram(prim_rect_t rect)
+{
+    prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* clear + dirty-rect */
+
+    int n = s_y_count;
+    if (n < 4) {
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w / 2),
+                                      (int16_t)(rect.y + rect.h / 2)},
+                       "Waiting for data...", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+        return;
+    }
+
+    /* prochod 1: min/max/mean */
+    float mn = stat_at(0), mx = mn, sum = 0.0f;
+    for (int i = 0; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+    float mean = sum / (float)n;
+    float span = mx - mn;
+    if (span < 1e-18f) span = 1e-18f;                    /* degenerace -> vyhni se /0 */
+
+    /* prochod 2: binovani + rozptyl (sample stddev distribuce, ne ADEV) */
+    #define HIST_BINS 24
+    int bins[HIST_BINS] = {0};
+    double var = 0.0;
+    for (int i = 0; i < n; i++) {
+        float v = stat_at(i);
+        int b = (int)((v - mn) / span * (float)HIST_BINS);
+        if (b < 0) b = 0; else if (b >= HIST_BINS) b = HIST_BINS - 1;
+        bins[b]++;
+        double d = (double)(v - mean); var += d * d;
+    }
+    float sd = (n > 1) ? (float)sqrt(var / (double)n) : 0.0f;
+    int peak = 1;
+    for (int b = 0; b < HIST_BINS; b++) if (bins[b] > peak) peak = bins[b];
+
+    /* plot area: leva rezerva na peak-count, dolni na y-popisky */
+    prim_rect_t in = {(int16_t)(rect.x + 34), (int16_t)(rect.y + 26),
+                      (int16_t)(rect.w - 42), (int16_t)(rect.h - 48)};
+
+    prim_draw_line((prim_point_t){in.x, (int16_t)(in.y + in.h)},          /* baseline */
+                   (prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h)}, 1, UI_COLOR_LINE);
+    char cb[12]; snprintf(cb, sizeof cb, "%d", peak);
+    prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(in.y + 6)}, cb,
+                   &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+
+    int16_t bw = (int16_t)(in.w / HIST_BINS); if (bw < 2) bw = 2;
+    for (int b = 0; b < HIST_BINS; b++) {
+        if (bins[b] == 0) continue;
+        int16_t h = (int16_t)((int32_t)bins[b] * in.h / peak); if (h < 1) h = 1;
+        int16_t bx = (int16_t)(in.x + b * bw);
+        prim_fill_rect((prim_rect_t){bx, (int16_t)(in.y + in.h - h),
+                                     (int16_t)(bw - 1), h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
+    }
+
+    /* mean svisla cara (zelena) */
+    int16_t mpx = (int16_t)(in.x + (int16_t)((mean - mn) / span * (float)in.w));
+    prim_draw_line((prim_point_t){mpx, in.y}, (prim_point_t){mpx, (int16_t)(in.y + in.h)},
+                   1, UI_COLOR_OK);
+
+    /* X popisky: min (vlevo) / max (vpravo) ve frac notaci */
+    char lb[24], rb[24];
+    fmt_frac(lb, sizeof lb, mn, 1);
+    fmt_frac(rb, sizeof rb, mx, 1);
+    prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
+                   &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h + 16)}, rb,
+                   &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+
+    /* overlay: N / mean / sigma (vpravo nahore) */
+    char ov[80], mb[24], sb[24];
+    fmt_frac(mb, sizeof mb, mean, 1);
+    fmt_frac(sb, sizeof sb, sd, 0);
+    snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
+    prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
+                   &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+    #undef HIST_BINS
 }
 
 /* Redraw only one footer button (clears just its rect from the bg cache). */

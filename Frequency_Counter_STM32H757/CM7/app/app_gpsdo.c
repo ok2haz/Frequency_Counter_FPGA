@@ -824,6 +824,31 @@ void app_gpsdo_render_mem(void)
     if (draw_mem_values(first)) present_now();
 }
 
+/* ── Histogram okno (s_view=6): otevre se tapem na Allan kartu (hlavni obrazovka).
+ * Distribuce frakcni odchylky y (mereni). Plot dela screen_main (ma data ring). */
+void app_gpsdo_render_histogram(void)
+{
+    app_gpsdo_init();
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    int first = (s_view != 6);
+    if (first) {
+        s_view = 6;
+        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+        ui_button_render(&back);
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "HISTOGRAM",
+                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
+                          .header_label = "Distribuce y = (f-f0)/f0"};
+        ui_card_render_chrome(&card);
+    }
+    screen_main_render_histogram((prim_rect_t){(int16_t)(DG_LX + 8), 96,
+                                               (int16_t)(764 - 16), 300});
+    present_now();
+}
+
 void app_gpsdo_clear(void)
 {
     app_gpsdo_init();
@@ -842,6 +867,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */
     else if (s_view == 4) app_gpsdo_render_sensors(); /* live refresh of senzory podmenu */
     else if (s_view == 5) app_gpsdo_render_mem();     /* live refresh (RTOS heap) okna PAMET */
+    else if (s_view == 6) app_gpsdo_render_histogram(); /* live/snapshot histogram mereni */
 }
 
 /* Hodinovy tik (~kazdych 100 ms): na hlavni obrazovce prekresli cas/datum z GPS
@@ -938,6 +964,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
     if (s_view == 0) {
         if (screen_main_hit_gnss(x, y)) { app_gpsdo_render_gps(); return true; }   /* GNSS pill */
         if (screen_main_hit_sys(x, y))  { app_gpsdo_render_health(); return true; }  /* SYS pill */
+        if (screen_main_hit_allan(x, y)) { app_gpsdo_render_histogram(); return true; }  /* Allan karta -> histogram */
         int b = screen_main_hit_button(x, y);
         if (b == 4) { app_gpsdo_render_diag(); return true; }   /* MENU */
         if (b >= 0) {                                /* PERIOD/RUN/GATE/CHAN */

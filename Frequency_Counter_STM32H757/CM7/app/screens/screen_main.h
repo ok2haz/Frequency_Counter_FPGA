@@ -47,6 +47,8 @@ int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
+bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan karty -> histogram okno? */
+void screen_main_render_histogram(prim_rect_t rect);   /* histogram distribuce y do rect (okno) */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
