@@ -160,7 +160,7 @@ Zisk 1,25ns mřížky: σy @1 s ~6,5e-10 (2× proti 2,5 ns).
 hlavní clock. Pokud clock tree/PLL nenalockuje, SPI logika neběží → STM vidí `RX0:FF`.
 **Ověř: vede 100 MHz na clock-capable pin a PLL/global buffer v designu lockuje?**
 
-## 0c. MĚŘICÍ FRONT-END (ze schématu `FPGA_module.pdf`, list 2 `FPGA_Core`)
+## 0c. MĚŘICÍ FRONT-END (ze schématu `../Frequency_Counter_FPGA_Module/FPGA_module_schematic.pdf`, list 2 `FPGA_Core`)
 Řetězec měřeného signálu **PŘED** vstupem do FPGA (samostatné čipy na desce, ne fabric):
 - **Vstupy:** 2 kanály — **CH A (`J1`) / CH B (`J2`)**, tvarované komparátorem **`MAX9601`**
   (`U1`, dual ultrarychlý komparátor). Toto je „tvarovač"; **strop řetězce ~1,4 GHz.**
