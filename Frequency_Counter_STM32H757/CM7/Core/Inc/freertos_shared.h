@@ -55,6 +55,17 @@ extern volatile uint8_t g_rtc_synced;
 extern volatile uint8_t g_ui_cfg;
 extern volatile uint8_t g_ui_cfg_dirty;
 
+/* ── Systemove nastaveni (persist v RTC BKP_DR2) ────────────────────────────
+ * Jas displeje (0-255, backlight PWM pres ATTINY), globalni mute zvuku a auto-dim
+ * (ztlumeni po necinnosti). UiTask (okno Nastaveni) meni + nastavi dirty;
+ * defaultTask (rtc_save_syscfg_if_dirty) zapise do BKP. Nacteni z BKP dela
+ * MX_RTC_Init pred schedulerem. */
+extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
+extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
+extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
+extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, preset 15..600) */
+extern volatile uint8_t g_sys_cfg_dirty; /* 1 = zmena -> defaultTask ulozi do BKP */
+
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
 extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */

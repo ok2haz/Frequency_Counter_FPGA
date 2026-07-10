@@ -26,6 +26,7 @@
 #include "si5356.h"
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
+#include "alarm.h"          /* alarm_test — UART "beep" */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -339,6 +340,18 @@ void UartTask_run(void *argument)
 				  sy = g_rtc_synced;
 				  taskEXIT_CRITICAL();
 				  printf("RTC: %s UTC %s\n", rbuf, sy ? "(GPS sync)" : "(volny beh, bez GPS)");
+			  }
+			  else if (strcmp(RxBuffer, "beep") == 0 || strcmp(RxBuffer, "beep test") == 0) {
+				  alarm_test();
+				  printf("BEEP: test%s\n", g_sound_muted ? " (POZOR: zvuk je vypnuty v Nastaveni)" : "");
+			  }
+			  else if (strcmp(RxBuffer, "beep on") == 0) {
+				  g_sound_muted = 0; g_sys_cfg_dirty = 1;
+				  printf("BEEP: zvuk ZAPNUT\n");
+			  }
+			  else if (strcmp(RxBuffer, "beep off") == 0) {
+				  g_sound_muted = 1; g_sys_cfg_dirty = 1;
+				  printf("BEEP: zvuk VYPNUT (mute)\n");
 			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */

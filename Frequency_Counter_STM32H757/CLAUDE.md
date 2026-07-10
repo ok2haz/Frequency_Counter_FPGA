@@ -74,7 +74,7 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 ### FreeRTOS tasky (freertos.c)
 | Task | Priorita | Stack |
 |---|---|---|
-| defaultTask | Normal | 1536 B (GPS drain + rtc_app_tick snprintf) |
+| defaultTask | Normal | 1536 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + USB pump) |
 | UartTask | Normal | 2048 B |
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
@@ -120,9 +120,11 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 > **Historie:** dřívější ručně psané `gfx.c`/`touch_ui.c` UI i pokus o **LVGL v9** obrazovku (`lv_port_disp.c`, `ui_main_screen.c`, vendored `Middlewares/Third_Party/lvgl`) byly **odstraněny** a nahrazeny libprim/libui/app. K dohledání v git historii.
 
 ## UART příkazy (StartUartTask)
-`led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `scanner`, `testDSI`,
+`led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `adcraw`, `scanner`, `testDSI`,
 `testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `gps`, `gpsraw`, `rtc`, `fpgaraw`,
-`fpgaloop`, `stats`, `status`, `ui`, **`ping`/`screen main`/`clear`/`version`/`help`**.
+`fpgaloop`, `stats`, `status`, `ui`, `qspiid`/`qspitest`/`qspispeed`/`storetest` (W25Q),
+**`beep`/`beep test`** (testovací pípnutí, mute platí i pro test — odpověď na to upozorní),
+**`beep on`/`beep off`** (globální mute, persist BKP_DR2), **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 `temperature` = TMP117 0x48 + příznak `(STALE)` při chybě čtení. `sensors` = dump všech 10 senzorů
 (`last/min/max/avg`, stav OK/ERR, `err_total/streak/samples`) — viz `g_sensors[]`/`sensor_stat.h`.
@@ -209,18 +211,37 @@ RTC běží z **LSE krystalu 32.768 kHz** (PC14=OSC32_IN, PC15=OSC32_OUT), presc
 - **App vrstva je regen-safe v `rtc.c`/`rtc.h` USER CODE blocích** (jako `MX_I2C1_Init` v i2c.c — žádný nový soubor). `rtc_app_tick()` (telo v `USER CODE 1`) se volá z **defaultTask** (vedle GPS drainu), throttle **1 Hz** uvnitř.
 - **Sync z GPS:** při platném a „sane" GPS fixu (`gps_get`, rok 2024–2099 atd.) srovná RTC z UTC — **první fix hned, pak re-sync každých 10 min** (`RTC_RESYNC_MS`, drift LSE ~ppm). Přesnost = přesnost GPS UTC, mezi syncy drží LSE.
 - **Perzistence přes reset:** po syncu zapíše `RTC_SYNC_MAGIC` (0x32F2) do **BKP_DR0**; guard v `MX_RTC_Init` (`USER CODE Check_RTC_BKUP`) při tom magicu **přeskočí** defaultní `SetTime/SetDate 0:00` → RTC drží správný čas přes warm reset (dokud žije backup domain). ⚠️ Bez VBAT baterie přežije jen reset (NRST/SW/WDG), ne plný power-cycle.
+- **BKP registry:** **DR0** = RTC sync magic; **DR1** = UI config (mode/chan/gate/run, magic `RTC_UICFG_MAGIC`, save `rtc_save_uicfg_if_dirty`); **DR2** = systémové nastavení (bity7:0 jas, bit8 mute, bit9 auto-dim en, bity10:15 auto-dim prodleva /15 s; magic `RTC_SYSCFG_MAGIC`, save `rtc_save_syscfg_if_dirty`). Načtení všech v `MX_RTC_Init` (před schedulerem), zápis výhradně defaultTask.
 - **Vlákno:** VEŠKERÝ přístup k RTC registrům je **výhradně z defaultTask** (`rtc_app_tick`). UART/UI čtou jen sdílené `g_rtc_text` ("YYYY-MM-DD HH:MM:SS") / `g_rtc_synced` (1=sync z GPS) — žádná cross-task HAL_RTC kolize. `g_rtc_text`/`g_rtc_synced` definované ve `freertos.c`, extern ve `freertos_shared.h`.
 - **Zobrazení:** UART příkaz **`rtc`** (čas + sync stav). **Hlavní obrazovka** (header, `screen_main_redraw_time` + `render_header` date) i **GPS okno** karta „Čas / datum" čtou RTC přes helper `rtc_time_date()` (parse `g_rtc_text`) — **hodiny tikají plynule 1×/s i při ztrátě fixu** (dřív GPS-direct → mezi RMC stály a bez fixu zamrzly). Před prvním GPS syncem `--:--:--` / `no GPS`; v GPS okně nesynchronizovaný čas **ztlumený** (`UI_COLOR_INK_3`). GNSS/SAT pilulky zůstávají z GPS (odráží fix). **Diagnostika** (karta „System / RTOS / RTC") ukazuje RTC čas `HH:MM:SS` (ztlumený `no GPS` dokud nesrovnán).
 - ⚠️ **defaultTask stack 256→384 words** kvůli `snprintf` v `rtc_app_tick` (historie: formátování v malém tasku už jednou přeteklo stack).
 - ⚠️ **Při čtení RTC vždy `HAL_RTC_GetTime` PŘED `HAL_RTC_GetDate`** (čtení TR odemkne shadow registry, jinak se DR zasekne). **NEpovoluj RTC NVIC** (Alarm/WakeUp) v IOC — jen kalendář.
 
-## Beeper (beeper.c/h) — PH9, 800 Hz
+## Beeper (beeper.c/h) — PH9, 800 Hz + alarm vrstva (alarm.c/h)
 Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušením @1600 Hz
 (`HAL_TIM_PeriodElapsedCallback` v main.c → `beeper_isr_toggle()` přepíná PH9). `beeper_init`
-(GPIO+TIM7+NVIC) voláno v main.c USER CODE 2. **⚠️ `beeper_set()` teď NEVOLÁ NIKDO** — dřívější
-tlačítko BEEP zaniklo s přechodem na libui obrazovku; API + HW zůstávají připravené (kandidát:
-alarm ztráty GPS locku / SIGNAL_LOST). TIM7_IRQHandler v stm32h7xx_it.c USER CODE.
+(GPIO+TIM7+NVIC) voláno v main.c USER CODE 2. TIM7_IRQHandler v stm32h7xx_it.c USER CODE.
 **Nepoužívej TIM7 jinde / nepovoluj v IOC.**
+- **`alarm.c/h` = jediný volající `beeper_set()`.** `alarm_tick()` (defaultTask ~100 Hz) hlídá
+  **hrany** dvou stavů: FPGA `g_freq_stale` (SIGNAL_LOST/mrtvý link) a GPS lock (`gps_get`:
+  valid ∨ fix_mode≥2). Ztráta signálu = 3 pípnutí, ztráta GPS locku = 2, obnovení = 1.
+  **Start tichý** (guardy `s_*_ever` — první link-up/první fix nepípne, bench bez antény taky ne).
+  Pattern neblokující (HAL_GetTick fáze), vyhodnocení stavů jen 5×/s (gps_get kopíruje ~200 B
+  v kritické sekci), časování pípnutí 100×/s. **Mute** = `g_sound_muted` (okno Nastavení /
+  UART `beep off`) umlčí okamžitě i test; prev-stavy se při mute dál aktualizují (po odmutení
+  žádné pípnutí na starou hranu). UART: `beep`/`beep test`, `beep on`, `beep off`.
+
+## IWDG watchdog (watchdog.c/h) — ~4 s, heartbeat UiTask+FpgaTask
+**IWDG1** (LSI ~32 kHz, /64, reload 2000 → ~4 s), **registrová implementace** (KR/PR/RLR) —
+`HAL_IWDG_MODULE_ENABLED` je v hal_conf VYPNUTÝ, modul je nezávislý a regen-safe.
+- `watchdog_init()` v main.c USER CODE 2 (těsně před schedulerem). ⚠️ **Sekvence dle RM0399:
+  nejdřív START (0xCCCC)** — ten HW zapne LSI; teprve pak UNLOCK+PR+RLR+wait SR+RELOAD
+  (bez běžícího LSI se PR/RLR update nikdy nepotvrdí — stejné pořadí jako HAL_IWDG_Init).
+- **Heartbeat model:** `watchdog_kick_ui()`/`watchdog_kick_fpga()` na začátku smyček UiTask/
+  FpgaTask; `watchdog_supervise()` (defaultTask ~100 Hz) obnoví IWDG **jen když oba heartbeaty
+  < 2,5 s staré** → zatuhnutí jednoho tasku (ne jen celého scheduleru) = HW reset. Startup
+  grace 8 s. **UartTask se nemonitoruje** (legitimně blokuje: `scanner` ~2,5 s, `fpgaloop` ~3 s).
+- V DEBUG buildu `__HAL_DBGMCU_FREEZE_IWDG1()` (breakpoint neresetuje). Release bez freeze.
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
@@ -287,9 +308,11 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
 - **UART `scan1`** = I2C scan na I2C1 (s popisky zařízení). `scanner` zůstává pro I2C4.
 - **Diagnostická obrazovka** (`app_gpsdo_render_diag`, tlačítko MENU → ZPĚT): **dvousloupcový layout** (`DG_*` makra v `app_gpsdo.c`). **Levý sloupec:** Teploty TMP117 (0x48/0x49/0x4A) — `last` + `min/max` (z `g_sensors[]`); ADC ADS1115 (AIN0–3); **MCU (jádro/napájení)** karta — teplota jádra + VDDA + VBAT (z ADC3, `SENS_CORE_T/VDDA/VBAT`). **Pravý sloupec:** *Komunikace + měření FPGA* (`g_spi_text` zeleně/červeně + `g_freq_info` = gate/PH/SEQ), *Reference Si5356* (lock z `g_si5356_status`: LOCK OK / LOS CLKIN! / PLL UNLOCK! / CALIB…), *System / RTOS / RTC* (heap free/min, CPU %, uptime, **RTC čas HH:MM:SS** z `g_rtc_text` — ztlumený + `no GPS` dokud nesrovnán z GPS). Neplatný senzor = ztlumeně + červený `!`. Refresh ~2×/s z `app_gpsdo_tick` (UiTask), tearing-free přes `prim_stm32_present`.
   - **Datové zdroje:** Si5356 status čte SensorsTask (`si5356_read_status`, reg 218) do `g_si5356_status`/`g_si5356_ok`; RTOS zdraví počítá UiTask (`xPortGetFreeHeapSize`, idle-delta CPU %) do `g_rtos_*`/`g_uptime_s`.
-- **Okna z hlavičkových pilulek** (`s_view`: 0=main, 1=diag, 2=gps, 3=health; návrat sdíleným `BACK_RECT`). Rect pilulek se zachytává v `render_header` (`s_gnss_pill_rect`/`s_sys_pill_rect`), `screen_main_hit_gnss/sys` testuje zásah:
+- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení; návrat sdíleným `BACK_RECT` — z podoken 4/5/7 na Health, jinak na main). Rect pilulek se zachytává v `render_header` (`s_gnss_pill_rect`/`s_sys_pill_rect`), `screen_main_hit_gnss/sys` testuje zásah:
   - **GNSS pill → GPS/GNSS okno** (`app_gpsdo_render_gps`, s_view=2): **ŽIVÉ** (refresh ~2×/s v `app_gpsdo_tick`, first/values split jako diag). FIX 2D/3D, čas+datum z **RTC**, poloha (lat/lon/alt), HDOP/PDOP, TIMEPULSE (**s fixem 100 kHz** = GPSDO PLL reference disciplinovaná na GNSS / **bez fixu 10 Hz** = lock indikátor pro desku → hold VC OCXO), **Přijímač** = model v headeru karty + živé statistiky linky (`Vet:`/`Fix:` z `g.sentences`/`g.fixes` — rostou = link žije). **Karta Družice = grafické VERTIKÁLNÍ sloupce C/N0 per družice** (z GSV: `parse_gsv` plní `g.sats[]` PRN+elev+C/N0; UI seřadí podle síly sestupně, výška ∝ C/N0, **šířka dynamická podle počtu družic** — vyplní kartu, barva zelená/žlutá/červená dle síly, top 12, PRN pod sloupcem). `gps_sat_t`/`GPS_MAX_SATS` v `gps.h`. Změnový klíč jen z kreslených sloupců (žádný falešný redraw slabých neviditelných družic). GLONASS zatím vypnuté (jen GPGSV, viz [[gps-todo]]).
-  - **SYS pill → System Health okno** (`app_gpsdo_render_health`, s_view=3): **živé** (refresh 2×/s v `app_gpsdo_tick`, stejný first/values split jako diag). RTOS (heap/CPU/uptime), **volný stack tasků** (`osThreadGetStackSpace`, byty; <64 B → červený `!`), I2C chybovost (agregace `g_sensors[].err_total/streak`, **0x4A vyřazen** = neosazen), linky (FPGA/Si5356/senzory n/10), napájecí větve 12V/5V. **SENZORY > podmenu** (`app_gpsdo_render_sensors`, s_view=4) = přehled **aktuálních hodnot** všech 10 senzorů, dvousloupcově (vlevo Teploty, vpravo Napětí), `dlabel`+`dval` jako diag. Min/max/avg/err jen přes UART `sensors`. `osThreadGetStackSpace` jen při otevřeném okně (scan stacku nezatěžuje běžný provoz).
+  - **SYS pill → System Health okno** (`app_gpsdo_render_health`, s_view=3): **živé** (refresh 2×/s v `app_gpsdo_tick`, stejný first/values split jako diag). RTOS (heap/CPU/uptime), **volný stack tasků** (`osThreadGetStackSpace`, byty; <64 B → červený `!`), I2C chybovost (agregace `g_sensors[].err_total/streak`, **0x4A vyřazen** = neosazen), linky (FPGA/Si5356/senzory n/10), napájecí větve 12V/5V. **SENZORY > podmenu** (`app_gpsdo_render_sensors`, s_view=4) = přehled **aktuálních hodnot** všech 10 senzorů, dvousloupcově (vlevo Teploty, vpravo Napětí), `dlabel`+`dval` jako diag. Min/max/avg/err jen přes UART `sensors`. `osThreadGetStackSpace` jen při otevřeném okně (scan stacku nezatěžuje běžný provoz). **PAMET podmenu** (`app_gpsdo_render_mem`, s_view=5) = využití interní FLASH/RAM (linker symboly), RTOS heap (used/total), SDRAM 32 MB, W25Q 64 MB (JEDEC). **NASTAVENI podokno** (`app_gpsdo_render_settings`, s_view=7, tlačítko v Health footeru): mute zvuku (ikona `ui_icon_speaker/_muted` — přeškrtnutý reproduktor), jas displeje −/+ (bargraf + %, clamp 25..255), auto-dim zap/vyp + prodleva −/+ (presety 15/30/60/120/300/600 s). Zapisuje `g_brightness`/`g_sound_muted`/`g_autodim_en`/`g_autodim_sec` + `g_sys_cfg_dirty` → defaultTask persistne do **BKP_DR2**. Statické okno (není v ticku, překreslí se při tapu).
+  - **Histogram okno** (`app_gpsdo_render_histogram`, s_view=6, **tap na Allan kartu** na hlavní obrazovce — ztlumené „↗" za titulkem karty značí klikatelnost, `screen_main_hit_allan`): vlevo **histogram rozdělení y=(f−f₀)/f₀** (24 binů, auto-range, mean=zelená + medián=amber čára, **Gaussova referenční křivka** z (mean,σ), overlay N/x̄/s/med), vpravo **σy(τ) Allan tabulka** (τ=1/10/100/1k/10k s z ADEV pyramidy, `--` bez dat). Tlačítko **Y: LIN/LOG** (levý footer slot) přepíná osu (`screen_main_hist_logy/toggle`). **Change-key skip:** tick 2×/s překreslí JEN při změně `screen_main_stats_version()` (čítač vzorků) nebo lin/log osy — jinak žádný sort/Gauss/ADEV/flip naprázdno. ⚠️ Data plní `stats_sample` jen na hlavní obrazovce (sim) → v okně zatím **snapshot**; s reálnými daty (feed nezávislý na okně) bude živý automaticky. Plot i tabulka si čistí svůj rect (`PRIM_BLEND_REPLACE`) → text MUSÍ mít baseline uvnitř rectu (ascent!), jinak AA hrany mimo clear oblast při refreshi tuhnou.
+- **Auto-dim** (UiTask): po `g_autodim_sec` bez doteku ztlumí backlight na 20/255 (`AUTODIM_LEVEL`, nikdy tma); **první dotek jen probudí** (nespustí akci tlačítka). Aplikace jasu = výhradně UiTask (`ws_panel_set_backlight` @ I2C4 pod mutexem, jen při změně cíle); app vrstva mění jen `g_brightness`.
 - **NEPOVOLOVAT I2C1 v IOC** (init je ručně v USER CODE).
 
 ## UART TX

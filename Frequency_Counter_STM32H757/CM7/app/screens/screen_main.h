@@ -49,6 +49,10 @@ bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hla
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan karty -> histogram okno? */
 void screen_main_render_histogram(prim_rect_t rect);   /* histogram distribuce y do rect (okno) */
+void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka do rect (okno) */
+bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */
+void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
+uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */

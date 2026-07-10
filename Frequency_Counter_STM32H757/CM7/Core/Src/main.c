@@ -40,6 +40,8 @@
 #include "ft5x06.h"
 #include "beeper.h"
 #include "si5356.h"
+#include "watchdog.h"      /* IWDG1 watchdog (init pred schedulerem) */
+#include "freertos_shared.h"  /* g_brightness — ulozeny jas z BKP */
 #include "usb_console.h"   /* prepinac konzole USART1 <-> USB CDC (USE_USB_CDC_CONSOLE) */
 extern UART_HandleTypeDef huart1;
 extern I2C_HandleTypeDef hi2c4;
@@ -293,8 +295,8 @@ Error_Handler();
   /* 6) Reload LTDC layer - aby zacal tlacit pixely z framebufferu */
   HAL_LTDC_Reload(&hltdc, LTDC_RELOAD_IMMEDIATE);
 
-  /* 7) Zapnout podsviceni */
-  ws_panel_set_backlight(&hi2c4, 200);
+  /* 7) Zapnout podsviceni na ulozeny jas (g_brightness z BKP, jinak default 200) */
+  ws_panel_set_backlight(&hi2c4, g_brightness);
 
   printf("=== Display init dokoncen ===\n");
 
@@ -307,6 +309,9 @@ Error_Handler();
   }
 display_skip:
   ;
+  /* IWDG1 watchdog (~4 s) — az tesne pred schedulerem (min. hlidany cas pred
+   * prvnim refreshem z defaultTasku; startup grace pokryje rozjezd tasku). */
+  watchdog_init();
   /* USER CODE END 2 */
 
   /* Init scheduler */

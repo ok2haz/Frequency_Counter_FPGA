@@ -88,6 +88,16 @@ void MX_RTC_Init(void)
   uint32_t uicfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
   if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = (uint8_t)(uicfg & 0xFFu);
 
+  /* Systemove nastaveni (jas/mute) z BKP_DR2. Neplatny magic -> default z freertos.c. */
+  uint32_t syscfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR2);
+  if ((syscfg & 0xFFFF0000u) == RTC_SYSCFG_MAGIC) {
+    g_brightness  = (uint8_t)(syscfg & 0xFFu);
+    g_sound_muted = (uint8_t)((syscfg >> 8) & 0x01u);
+    g_autodim_en  = (uint8_t)((syscfg >> 9) & 0x01u);
+    uint16_t dsec = (uint16_t)(((syscfg >> 10) & 0x3Fu) * 15u);   /* bity10:15 = s/15 */
+    if (dsec >= 15u) g_autodim_sec = dsec;                        /* 0 -> ponech default 60 */
+  }
+
   /* Pokud RTC uz bezel a byl srovnan z GPS (magic v BKP_DR0) a backup domena
    * prezila reset (VBAT/napajeni drzi), NEPREPISUJ cas defaultni 0:00 hodnotou
    * nize — RTC si nese spravny cas dal. Pri studenem startu (BKP=0) se guard
@@ -236,6 +246,18 @@ void rtc_save_uicfg_if_dirty(void)
   if (!g_ui_cfg_dirty) return;
   g_ui_cfg_dirty = 0;
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, RTC_UICFG_MAGIC | (uint32_t)g_ui_cfg);
+}
+
+/* Ulozi systemove nastaveni (jas + mute + auto-dim) do BKP_DR2 jen pri zmene. Viz rtc.h. */
+void rtc_save_syscfg_if_dirty(void)
+{
+  if (!g_sys_cfg_dirty) return;
+  g_sys_cfg_dirty = 0;
+  uint32_t v = RTC_SYSCFG_MAGIC | (uint32_t)g_brightness
+             | ((uint32_t)(g_sound_muted ? 1u : 0u) << 8)
+             | ((uint32_t)(g_autodim_en ? 1u : 0u) << 9)
+             | (((uint32_t)(g_autodim_sec / 15u) & 0x3Fu) << 10);   /* bity10:15 = s/15 */
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, v);
 }
 /* USER CODE END 1 */
 

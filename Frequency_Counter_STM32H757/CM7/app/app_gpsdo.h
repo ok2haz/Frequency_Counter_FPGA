@@ -35,6 +35,10 @@ void app_gpsdo_render_mem(void);
  *  Distribution of fractional deviation y = (f-f0)/f0. */
 void app_gpsdo_render_histogram(void);
 
+/** Render the settings window (opened from System Health "NASTAVENI").
+ *  Sound mute (alarm), display brightness, auto-dim on/off + delay. RTC BKP persist. */
+void app_gpsdo_render_settings(void);
+
 /** Clear the framebuffer to the background color. */
 void app_gpsdo_clear(void);
 

@@ -386,6 +386,8 @@ static float s_y[STAT_N];
 static int   s_y_head = 0, s_y_count = 0;
 static void adev_feed(float v);     /* fwd — decimacni pyramida (dlouhodoby Allan) */
 
+static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
+
 static void stats_sample(void)
 {
     /* off_n = odchylka v LSB (LSB=1e-7 Hz), f0=1e7 Hz -> y = off_n*1e-14 */
@@ -395,7 +397,12 @@ static void stats_sample(void)
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
     adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
+    s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
 }
+
+/* Verze statistickych dat — histogram okno se prekresli jen kdyz se zmeni
+ * (v okne se nevzorkuje -> obsah je konstantni, zadne 2x/s prazdne redraws). */
+uint32_t screen_main_stats_version(void) { return s_stats_ver; }
 
 static float stat_at(int age)   /* age 0 = nejnovejsi */
 {
@@ -969,8 +976,26 @@ int screen_main_redraw_allan(void)
     return 1;
 }
 
+/* Prepinac lin/log Y osy histogramu (log zviditelni slabe biny/chvosty). */
+static bool s_hist_logy = false;
+bool screen_main_hist_logy(void)        { return s_hist_logy; }
+void screen_main_hist_toggle_logy(void) { s_hist_logy = !s_hist_logy; }
+
+/* Vyska sloupce/krivky v px: linearni (count/peak) nebo log (log10(1+count)/log10(1+peak)). */
+static int16_t hist_h(float count, int peak, int16_t H, bool logy)
+{
+    if (count <= 0.0f) return 0;
+    float frac = logy ? (log10f(1.0f + count) / log10f(1.0f + (float)peak))
+                      : (count / (float)peak);
+    if (frac > 1.0f) frac = 1.0f;
+    int16_t h = (int16_t)(frac * (float)H);
+    return (h < 1) ? 1 : h;
+}
+
 /* Histogram distribuce frakcni odchylky y (poslednich s_y_count vzorku, τ0=1s).
- * Auto-range [min..max], svisle sloupce; mean cara + overlay N/mean/sigma. Kresli
+ * Auto-range [min..max], svisle sloupce; mean (zelena) + median (amber) cara +
+ * Gaussova referencni krivka (ocekavane cetnosti pri normalnim rozdeleni) +
+ * overlay N/mean/sigma/median. Lin/log Y (screen_main_hist_toggle_logy). Kresli
  * do 'rect' (uvnitr karty histogram okna) a sam si ho vycisti -> lze volat 2x/s.
  * ⚠️ Data plni stats_sample POUZE na hlavni obrazovce (sim); v okne = snapshot.
  * Az budou realna data z FPGA (feed nezavisly na s_view), bude histogram zivy. */
@@ -986,19 +1011,23 @@ void screen_main_render_histogram(prim_rect_t rect)
         return;
     }
 
-    /* prochod 1: min/max/mean */
-    float mn = stat_at(0), mx = mn, sum = 0.0f;
-    for (int i = 0; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+    /* Jedna kopie ringu do lokalniho pole (stat_at dela modulo — dal uz jen
+     * linearni pristupy); poradi je pro min/max/mean/biny/median nepodstatne. */
+    float srt[STAT_N];
+    for (int i = 0; i < n; i++) srt[i] = stat_at(i);
+
+    float mn = srt[0], mx = mn, sum = 0.0f;
+    for (int i = 0; i < n; i++) { float v = srt[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
     float mean = sum / (float)n;
     float span = mx - mn;
     if (span < 1e-18f) span = 1e-18f;                    /* degenerace -> vyhni se /0 */
 
-    /* prochod 2: binovani + rozptyl (sample stddev distribuce, ne ADEV) */
+    /* binovani + rozptyl (sample stddev distribuce, ne ADEV) */
     #define HIST_BINS 24
     int bins[HIST_BINS] = {0};
     double var = 0.0;
     for (int i = 0; i < n; i++) {
-        float v = stat_at(i);
+        float v = srt[i];
         int b = (int)((v - mn) / span * (float)HIST_BINS);
         if (b < 0) b = 0; else if (b >= HIST_BINS) b = HIST_BINS - 1;
         bins[b]++;
@@ -1008,29 +1037,60 @@ void screen_main_render_histogram(prim_rect_t rect)
     int peak = 1;
     for (int b = 0; b < HIST_BINS; b++) if (bins[b] > peak) peak = bins[b];
 
+    /* median: insertion sort in-place (n<=120, cold path — kresli se jen pri zmene dat) */
+    for (int i = 1; i < n; i++) {
+        float k = srt[i]; int j = i - 1;
+        while (j >= 0 && srt[j] > k) { srt[j + 1] = srt[j]; j--; }
+        srt[j + 1] = k;
+    }
+    float median = (n & 1) ? srt[n / 2] : 0.5f * (srt[n / 2 - 1] + srt[n / 2]);
+    bool logy = s_hist_logy;
+
     /* plot area: leva rezerva na peak-count, dolni na y-popisky */
     prim_rect_t in = {(int16_t)(rect.x + 34), (int16_t)(rect.y + 26),
                       (int16_t)(rect.w - 42), (int16_t)(rect.h - 48)};
 
     prim_draw_line((prim_point_t){in.x, (int16_t)(in.y + in.h)},          /* baseline */
                    (prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h)}, 1, UI_COLOR_LINE);
-    char cb[12]; snprintf(cb, sizeof cb, "%d", peak);
+    char cb[16]; snprintf(cb, sizeof cb, "%d%s", peak, logy ? " log" : "");
     prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(in.y + 6)}, cb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
 
     int16_t bw = (int16_t)(in.w / HIST_BINS); if (bw < 2) bw = 2;
     for (int b = 0; b < HIST_BINS; b++) {
         if (bins[b] == 0) continue;
-        int16_t h = (int16_t)((int32_t)bins[b] * in.h / peak); if (h < 1) h = 1;
+        int16_t h = hist_h((float)bins[b], peak, in.h, logy);
         int16_t bx = (int16_t)(in.x + b * bw);
         prim_fill_rect((prim_rect_t){bx, (int16_t)(in.y + in.h - h),
                                      (int16_t)(bw - 1), h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
     }
 
-    /* mean svisla cara (zelena) */
+    /* Gaussova referencni krivka: ocekavane cetnosti N*binW*pdf(v) pri normalnim
+     * rozdeleni (mean,sd) -> porovnani tvaru (pretazeni / tezke chvosty). */
+    if (sd > 1e-18f) {
+        const float binW = span / (float)HIST_BINS;
+        const float kk = (float)n * binW / (sd * 2.5066283f);     /* N*binW/(sd*sqrt(2π)) */
+        int16_t py_prev = 0, have_prev = 0;
+        for (int px = 0; px <= in.w; px += 3) {
+            float v = mn + (float)px / (float)in.w * span;
+            float z = (v - mean) / sd;
+            int16_t hy = hist_h(kk * expf(-0.5f * z * z), peak, in.h, logy);
+            int16_t py = (int16_t)(in.y + in.h - hy);
+            int16_t cx = (int16_t)(in.x + px);
+            if (have_prev)
+                prim_draw_line((prim_point_t){(int16_t)(cx - 3), py_prev},
+                               (prim_point_t){cx, py}, 1, UI_COLOR_INK_2);
+            py_prev = py; have_prev = 1;
+        }
+    }
+
+    /* mean (zelena) + median (amber) svisle cary */
     int16_t mpx = (int16_t)(in.x + (int16_t)((mean - mn) / span * (float)in.w));
     prim_draw_line((prim_point_t){mpx, in.y}, (prim_point_t){mpx, (int16_t)(in.y + in.h)},
                    1, UI_COLOR_OK);
+    int16_t dpx = (int16_t)(in.x + (int16_t)((median - mn) / span * (float)in.w));
+    prim_draw_line((prim_point_t){dpx, in.y}, (prim_point_t){dpx, (int16_t)(in.y + in.h)},
+                   1, UI_COLOR_WARN);
 
     /* X popisky: min (vlevo) / max (vpravo) ve frac notaci */
     char lb[24], rb[24];
@@ -1041,14 +1101,44 @@ void screen_main_render_histogram(prim_rect_t rect)
     prim_draw_text((prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h + 16)}, rb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
 
-    /* overlay: N / mean / sigma (vpravo nahore) */
+    /* overlay: N/mean/sigma (radek 1, vpravo nahore) + median (radek 2, amber) */
     char ov[80], mb[24], sb[24];
     fmt_frac(mb, sizeof mb, mean, 1);
     fmt_frac(sb, sizeof sb, sd, 0);
     snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
                    &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+    char db[28]; fmt_frac(mb, sizeof mb, median, 1);
+    snprintf(db, sizeof db, "med=%s", mb);
+    prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 36)}, db,
+                   &ui_font_mono_14, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
     #undef HIST_BINS
+}
+
+/* σy(τ) tabulka: Allanova deviace pro dekadova τ (1..10k s). τ=1s z kratkeho ringu
+ * (stats_adev), delsi z decimacni pyramidy (adev_stage). "--" dokud neni dost dat.
+ * Kresli do 'rect' + sam vycisti -> volatelne 2x/s vedle histogramu. */
+void screen_main_render_stats_table(prim_rect_t rect)
+{
+    prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    /* Baseline uvnitr cisteneho rectu (ascent 16 px) — jinak by AA hrany nad
+     * rectem pri 2x/s refreshi postupne tuhly (kresli se mimo clear oblast). */
+    prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)}, "σy(τ)  Allan",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    static const char *TL[5] = {"1 s", "10 s", "100 s", "1 ks", "10 ks"};
+    int16_t ry = (int16_t)(rect.y + 46);
+    for (int i = 0; i < 5; i++) {
+        float a = (i == 0) ? stats_adev(1) : adev_stage(i, 1);
+        char vb[24];
+        if (a > 0.0f) fmt_frac(vb, sizeof vb, a, 0);
+        else { vb[0] = vb[1] = '-'; vb[2] = '\0'; }
+        int16_t ty = (int16_t)(ry + i * 30);
+        prim_draw_text((prim_point_t){rect.x, ty}, TL[i],
+                       &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ty}, vb,
+                       &ui_font_mono_14, (a > 0.0f) ? UI_COLOR_INK_2 : UI_COLOR_INK_4,
+                       PRIM_ALIGN_RIGHT);
+    }
 }
 
 /* Redraw only one footer button (clears just its rect from the bg cache). */

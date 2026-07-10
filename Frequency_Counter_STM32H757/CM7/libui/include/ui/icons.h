@@ -18,3 +18,5 @@ UI_API void ui_icon_gear       (prim_point_t pos, int16_t size, prim_color_t col
 UI_API void ui_icon_chart_line (prim_point_t pos, int16_t size, prim_color_t color);
 UI_API void ui_icon_chart_histo(prim_point_t pos, int16_t size, prim_color_t color);
 UI_API void ui_icon_warning    (prim_point_t pos, int16_t size, prim_color_t color);
+UI_API void ui_icon_speaker    (prim_point_t pos, int16_t size, prim_color_t color);
+UI_API void ui_icon_speaker_muted(prim_point_t pos, int16_t size, prim_color_t color);

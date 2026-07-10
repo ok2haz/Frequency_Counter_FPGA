@@ -13,8 +13,10 @@
 
 #include "i2c.h"          /* hi2c4 (touch) */
 #include "ft5x06.h"
+#include "ws_panel.h"     /* ws_panel_set_backlight — jas displeje */
 #include "app_gpsdo.h"
 #include "freertos_shared.h"
+#include "watchdog.h"     /* watchdog_kick_ui — heartbeat */
 
 /* (LTDC adresu ridi prim_stm32_present() v app/hal -> hltdc tu uz netreba.) */
 
@@ -44,6 +46,7 @@ void StartUiTask(void *argument)
   g_screen_req = 3;
 
   for (;;) {
+    watchdog_kick_ui();   /* heartbeat pro IWDG (zatuhnuti UiTasku -> reset) */
     /* UART prikazy "screen main"/"clear"/"ui" nastavi g_screen_req; zde se
      * obslouzi (req 3 = hlavni obrazovka, 4 = smazani). */
     uint8_t req = g_screen_req;
@@ -59,6 +62,8 @@ void StartUiTask(void *argument)
      * DRZI I2C -> freeze. Gate ~66 ms (15 Hz). Hranove spousteni (jen zacatek doteku). */
     static uint8_t was_down = 0;
     static uint32_t last_touch = 0;
+    static uint32_t s_last_activity = 0;   /* posledni dotek (pro auto-dim) */
+    static uint8_t  s_dimmed = 0;          /* 1 = podsviceni ztlumene necinnosti */
     if (HAL_GetTick() - last_touch >= 66) {
       last_touch = HAL_GetTick();
       ft5x06_touch_t t; int got = 0;
@@ -67,9 +72,33 @@ void StartUiTask(void *argument)
         osMutexRelease(i2c4MutexHandle);
       }
       if (got) {
-        if (t.valid && !was_down)
-          app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y));
+        if (t.valid && !was_down) {
+          s_last_activity = HAL_GetTick();
+          if (s_dimmed) s_dimmed = 0;      /* probuzeni: prvni dotek jen rozsviti, nespusti akci */
+          else app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y));
+        }
         was_down = (uint8_t)t.valid;
+      }
+    }
+
+    /* Auto-dim + aplikace jasu: app (okno Nastaveni) meni jen g_brightness; HW zapis
+     * (ATTINY backlight @ I2C4 pod mutexem) je zde. Po g_autodim_sec necinnosti ztlumi na
+     * AUTODIM_LEVEL (dotek probudi); vypinatelne g_autodim_en. Zapise se jen pri zmene. */
+    #define AUTODIM_LEVEL  20u      /* ztlumeny jas (nikdy uplna tma) */
+    static int s_bl = -1;
+    if (s_bl < 0) {
+      s_bl = g_brightness;              /* prevezmi bootovaci hodnotu (uz nastavena v main.c) */
+      s_last_activity = HAL_GetTick();  /* pocitej necinnost od bootu */
+    }
+    uint32_t autodim_ms = (uint32_t)g_autodim_sec * 1000u;   /* prodleva z Nastaveni */
+    if (!g_autodim_en) s_dimmed = 0;
+    else if (!s_dimmed && (HAL_GetTick() - s_last_activity) > autodim_ms) s_dimmed = 1;
+    uint8_t bl_target = s_dimmed ? AUTODIM_LEVEL : g_brightness;
+    if ((uint8_t)s_bl != bl_target) {
+      if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
+        ws_panel_set_backlight(&hi2c4, bl_target);
+        osMutexRelease(i2c4MutexHandle);
+        s_bl = bl_target;
       }
     }
 

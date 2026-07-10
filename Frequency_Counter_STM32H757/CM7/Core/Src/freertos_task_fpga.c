@@ -16,6 +16,7 @@
 
 #include "fpga_freq.h"
 #include "freertos_shared.h"
+#include "watchdog.h"     /* watchdog_kick_fpga — heartbeat */
 
 void StartFpgaTask(void *argument)
 {
@@ -30,6 +31,7 @@ void StartFpgaTask(void *argument)
   uint32_t fails = 0;
   uint8_t  lost  = 0;
   for (;;) {
+    watchdog_kick_fpga();   /* heartbeat pro IWDG (zatuhnuti FpgaTasku -> reset) */
     if (fpga_freq_poll(&m)) {
       fails = 0;
       /* Vyber zobrazovany zdroj: /4 (nejlepsi rozliseni) dokud bez chyby a pod ~380 MHz,

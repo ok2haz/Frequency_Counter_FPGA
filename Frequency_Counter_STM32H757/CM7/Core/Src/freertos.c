@@ -30,6 +30,8 @@
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
+#include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
+#include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -92,7 +94,7 @@ volatile uint8_t g_screen_req  = 0;
 volatile char    g_freq_text[48] = "----------,-----Hz";
 volatile char    g_freq_info[64] = "";                 /* vedlejsi udaje (gate/edges/ch) */
 volatile uint8_t g_freq_dirty = 1;
-volatile uint8_t g_freq_stale = 0;                     /* 1 = SEQ se dlouho nehnula (mozna ztrata signalu) -> UI ztlumi */
+volatile uint8_t g_freq_stale = 0;                     /* 1 = FPGA SIGNAL_LOST flag nebo mrtvy link -> UI ztlumi, alarm pipne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_spi_text[64] = "SPI WAIT";
@@ -117,6 +119,13 @@ volatile uint8_t g_rtc_synced    = 0;
  * z BKP, pokud tam je platny magic (warm reset s drzenou backup domenou). */
 volatile uint8_t g_ui_cfg        = 0x16;
 volatile uint8_t g_ui_cfg_dirty  = 0;
+
+/* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
+volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
+volatile uint8_t g_sound_muted   = 0;     /* 0 = zvuk zapnut */
+volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut */
+volatile uint16_t g_autodim_sec  = 60;    /* prodleva auto-dim [s] (preset 15..600) */
+volatile uint8_t g_sys_cfg_dirty = 0;
 
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
@@ -271,6 +280,9 @@ void StartDefaultTask(void *argument)
     }
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
+    rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
+    alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
+    watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     usb_console_tx_pump();   /* dopumpuj CDC TX ring (ocasek po USBD_BUSY by jinak
                               * cekal az na dalsi printf); prazdny ring = okamzity return */
     osDelay(10);   /* 100 Hz: GPS drain (9600 bd ~10 B/tick, fronta 256 hl.) + rtc + usb pump */

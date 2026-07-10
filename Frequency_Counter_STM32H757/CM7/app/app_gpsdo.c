@@ -28,6 +28,11 @@ extern volatile uint32_t g_rtos_cpu_pct;         /* CPU load [%] */
 extern volatile uint32_t g_uptime_s;             /* uptime [s] */
 extern volatile char     g_rtc_text[24];         /* "YYYY-MM-DD HH:MM:SS" (RTC z LSE, sync z GPS) */
 extern volatile uint8_t  g_rtc_synced;           /* 1 = RTC srovnan z GPS */
+extern volatile uint8_t  g_brightness;           /* jas displeje 0-255 (okno Nastaveni) */
+extern volatile uint8_t  g_sound_muted;          /* 1 = zvuk vypnut */
+extern volatile uint8_t  g_autodim_en;           /* 1 = auto-dim po necinnosti */
+extern volatile uint16_t g_autodim_sec;          /* prodleva auto-dim [s] (preset 15..600) */
+extern volatile uint8_t  g_sys_cfg_dirty;        /* 1 = zmena jas/mute/dim -> persist do BKP */
 
 /* FreeRTOS task handles (defined in freertos.c) — pro volny stack v System Health. */
 extern osThreadId_t UiTaskHandle, FpgaTaskHandle, UartTaskHandle,
@@ -59,6 +64,19 @@ static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
 static const prim_rect_t SENS_BTN_RECT = {18, 417, 180, 61};
 /* "PAMET" tlacitko v System Health (bottom-mid) -> podokno vyuziti pameti. */
 static const prim_rect_t MEM_BTN_RECT = {210, 417, 180, 61};
+/* Histogram okno: lin/log Y toggle (bottom-left) + plot (leva cast) + σy(τ) tabulka (prava). */
+static const prim_rect_t LOGY_RECT       = {18, 417, 180, 61};
+static const prim_rect_t HIST_PLOT_RECT  = {26, 96, 540, 300};
+static const prim_rect_t HIST_TABLE_RECT = {582, 100, 180, 292};
+/* "NASTAVENI" tlacitko v System Health (bottom, vedle SENZORY/PAMET). */
+static const prim_rect_t SET_BTN_RECT = {402, 417, 180, 61};
+/* Ovladace v okne Nastaveni: mute + jas -/+ + auto-dim (zap/vyp + prodleva -/+). */
+static const prim_rect_t MUTE_RECT   = {560, 88, 200, 58};    /* karta Zvuk */
+static const prim_rect_t BR_MINUS    = {50, 212, 84, 58};     /* karta Jas */
+static const prim_rect_t BR_PLUS     = {148, 212, 84, 58};
+static const prim_rect_t ADEN_RECT   = {50, 330, 180, 60};    /* karta Auto-dim: zap/vyp */
+static const prim_rect_t DIM_MINUS   = {402, 330, 66, 60};    /* prodleva - */
+static const prim_rect_t DIM_PLUS    = {620, 330, 66, 60};    /* prodleva + */
 
 static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 {
@@ -638,6 +656,8 @@ void app_gpsdo_render_health(void)
         ui_button_render(&sens);
         ui_button_t mem = {.rect = MEM_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "PAMET"};
         ui_button_render(&mem);
+        ui_button_t set = {.rect = SET_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "NASTAVENI"};
+        ui_button_render(&set);
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
@@ -824,10 +844,23 @@ void app_gpsdo_render_mem(void)
     if (draw_mem_values(first)) present_now();
 }
 
+/* Tlacitko lin/log Y v histogram okne (label odrazi aktualni stav osy). */
+static void render_logy_btn(void)
+{
+    ui_button_t b = {.rect = LOGY_RECT, .variant = UI_BUTTON_NORMAL,
+                     .label = screen_main_hist_logy() ? "Y: LOG" : "Y: LIN"};
+    ui_button_render(&b);
+}
+
 /* ── Histogram okno (s_view=6): otevre se tapem na Allan kartu (hlavni obrazovka).
- * Distribuce frakcni odchylky y (mereni). Plot dela screen_main (ma data ring). */
+ * Leva cast = histogram distribuce y (mean/median/Gauss, lin/log Y), prava cast =
+ * σy(τ) Allan tabulka. Ploty dela screen_main (ma data ring + ADEV pyramidu).
+ * Change-key skip: prekresli se JEN pri zmene dat (stats_version) nebo lin/log
+ * osy — v okne se nevzorkuje (sim jen na hl. obrazovce), takze 2x/s tick jinak
+ * nic nedela (zadny sort/Gauss/ADEV naprazdno, zadny zbytecny flip). */
 void app_gpsdo_render_histogram(void)
 {
+    static uint32_t s_hist_key;
     app_gpsdo_init();
     prim_set_target(&s_fb);
     prim_reset_clip();
@@ -841,11 +874,109 @@ void app_gpsdo_render_histogram(void)
         prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "HISTOGRAM",
                        &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
         ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
-                          .header_label = "Distribuce y = (f-f0)/f0"};
+                          .header_label = "Rozdeleni y = (f-f0)/f0   |   Allan σy(τ)"};
         ui_card_render_chrome(&card);
+        /* svisly delic mezi plotem a tabulkou */
+        prim_draw_line((prim_point_t){572, 92}, (prim_point_t){572, 398}, 1, UI_COLOR_LINE);
     }
-    screen_main_render_histogram((prim_rect_t){(int16_t)(DG_LX + 8), 96,
-                                               (int16_t)(764 - 16), 300});
+    uint32_t key = screen_main_stats_version()
+                 ^ (screen_main_hist_logy() ? 0x80000000u : 0u);
+    if (first || key != s_hist_key) {
+        s_hist_key = key;
+        render_logy_btn();                       /* label sleduje lin/log stav */
+        screen_main_render_histogram(HIST_PLOT_RECT);
+        screen_main_render_stats_table(HIST_TABLE_RECT);
+        present_now();
+    }
+}
+
+/* Zmena jasu o delta (krok), clamp [25..255] (nikdy uplna tma -> vzdy videt na ovladani).
+ * Zapisuje g_brightness; HW aplikaci dela UiTask pod I2C4 mutexem. */
+static void brightness_step(int delta)
+{
+    int v = (int)g_brightness + delta;
+    if (v < 25) v = 25;
+    if (v > 255) v = 255;
+    g_brightness = (uint8_t)v;
+    g_sys_cfg_dirty = 1;
+}
+
+/* Preset prodlevy auto-dim [s]; -/+ kroci mezi nimi. */
+static const uint16_t DIM_PRESETS[] = {15, 30, 60, 120, 300, 600};
+#define DIM_PRESET_N ((int)(sizeof(DIM_PRESETS) / sizeof(DIM_PRESETS[0])))
+
+static void autodim_step(int dir)
+{
+    int i = 0;
+    for (int k = 0; k < DIM_PRESET_N; k++) if (DIM_PRESETS[k] <= g_autodim_sec) i = k;
+    i += dir;
+    if (i < 0) i = 0; else if (i >= DIM_PRESET_N) i = DIM_PRESET_N - 1;
+    g_autodim_sec = DIM_PRESETS[i];
+    g_sys_cfg_dirty = 1;
+}
+
+/* ── Okno Nastaveni (s_view=7): otevre se z System Health -> "NASTAVENI".
+ * 3 karty: Zvuk (mute alarmu), Jas displeje, Auto-dim (zap/vyp + prodleva). Staticke
+ * (neni v ticku), prekresli se cele pri tapu. Zapisuje g_* + dirty pro BKP persist. */
+void app_gpsdo_render_settings(void)
+{
+    app_gpsdo_init();
+    s_view = 7;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+    ui_button_render(&back);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 34}, "NASTAVENI",
+                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+
+    /* ── Karta Zvuk ── */
+    ui_card_t c1 = {.rect = {DG_LX, 62, 764, 104},
+                    .header_label = "Zvuk (alarm SIGNAL_LOST / ztrata GPS)"};
+    ui_card_render_chrome(&c1);
+    bool muted = g_sound_muted;
+    if (muted) ui_icon_speaker_muted((prim_point_t){50, 96}, 42, UI_COLOR_BAD);
+    else       ui_icon_speaker((prim_point_t){50, 96}, 42, UI_COLOR_OK);
+    prim_draw_text((prim_point_t){112, 134}, muted ? "Zvuk vypnut" : "Zvuk zapnut",
+                   &ui_font_sans_18, muted ? UI_COLOR_BAD : UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+    ui_button_t mb = {.rect = MUTE_RECT, .variant = UI_BUTTON_NORMAL,
+                      .label = muted ? "ZAPNOUT" : "VYPNOUT"};
+    ui_button_render(&mb);
+
+    /* ── Karta Jas ── */
+    ui_card_t c2 = {.rect = {DG_LX, 180, 764, 96}, .header_label = "Jas displeje"};
+    ui_card_render_chrome(&c2);
+    ui_button_t bmin = {.rect = BR_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+    ui_button_t bplus = {.rect = BR_PLUS, .variant = UI_BUTTON_NORMAL, .label = "+"};
+    ui_button_render(&bmin);
+    ui_button_render(&bplus);
+    prim_rect_t track = {270, 224, 300, 32};
+    prim_fill_rect(track, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    int16_t fillw = (int16_t)((int32_t)track.w * g_brightness / 255);
+    if (fillw > 0)
+        prim_fill_rect((prim_rect_t){track.x, track.y, fillw, track.h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
+    prim_stroke_rect_rounded(track, 2, 1, UI_COLOR_LINE);
+    char pb[8]; snprintf(pb, sizeof pb, "%d%%", (int)g_brightness * 100 / 255);
+    prim_draw_text((prim_point_t){588, 248}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+
+    /* ── Karta Auto-dim ── */
+    ui_card_t c3 = {.rect = {DG_LX, 290, 764, 116},
+                    .header_label = "Auto-dim (ztlumi po necinnosti, setri panel)"};
+    ui_card_render_chrome(&c3);
+    ui_button_t adb = {.rect = ADEN_RECT, .variant = UI_BUTTON_NORMAL,
+                       .label = g_autodim_en ? "ZAPNUTO" : "VYPNUTO"};
+    ui_button_render(&adb);
+    prim_draw_text((prim_point_t){268, 350}, "Prodleva:", &ui_font_sans_18,
+                   g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    ui_button_t dmin = {.rect = DIM_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+    ui_button_t dplus = {.rect = DIM_PLUS, .variant = UI_BUTTON_NORMAL, .label = "+"};
+    ui_button_render(&dmin);
+    ui_button_render(&dplus);
+    char tb[12]; snprintf(tb, sizeof tb, "%u s", (unsigned)g_autodim_sec);
+    prim_draw_text((prim_point_t){543, 372}, tb, &ui_font_mono_22,
+                   g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+
     present_now();
 }
 
@@ -986,9 +1117,37 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             app_gpsdo_render_mem();
             return true;
         }
+        if (s_view == 3 && in_rect(x, y, SET_BTN_RECT)) {   /* Health -> Nastaveni */
+            app_gpsdo_render_settings();
+            return true;
+        }
+        if (s_view == 7) {                                  /* okno Nastaveni: ovladace */
+            if (in_rect(x, y, MUTE_RECT)) {
+                g_sound_muted = g_sound_muted ? 0 : 1;
+                g_sys_cfg_dirty = 1;
+                app_gpsdo_render_settings();
+                return true;
+            }
+            if (in_rect(x, y, BR_MINUS)) { brightness_step(-26); app_gpsdo_render_settings(); return true; }
+            if (in_rect(x, y, BR_PLUS))  { brightness_step(+26); app_gpsdo_render_settings(); return true; }
+            if (in_rect(x, y, ADEN_RECT)) {
+                g_autodim_en = g_autodim_en ? 0 : 1;
+                g_sys_cfg_dirty = 1;
+                app_gpsdo_render_settings();
+                return true;
+            }
+            if (in_rect(x, y, DIM_MINUS)) { autodim_step(-1); app_gpsdo_render_settings(); return true; }
+            if (in_rect(x, y, DIM_PLUS))  { autodim_step(+1); app_gpsdo_render_settings(); return true; }
+        }
+        if (s_view == 6 && in_rect(x, y, LOGY_RECT)) {     /* histogram: prepni lin/log Y */
+            screen_main_hist_toggle_logy();
+            app_gpsdo_render_histogram();   /* zmena osy zmeni change-key -> prekresli */
+            return true;
+        }
         if (in_rect(x, y, BACK_RECT)) {
-            if (s_view == 4 || s_view == 5) app_gpsdo_render_health();  /* z podokna zpet na Health */
-            else app_gpsdo_render_main();                               /* jinak na hlavni obrazovku */
+            if (s_view == 4 || s_view == 5 || s_view == 7)
+                app_gpsdo_render_health();          /* z podokna (senzory/pamet/nastaveni) zpet na Health */
+            else app_gpsdo_render_main();            /* jinak na hlavni obrazovku */
             return true;
         }
     }
