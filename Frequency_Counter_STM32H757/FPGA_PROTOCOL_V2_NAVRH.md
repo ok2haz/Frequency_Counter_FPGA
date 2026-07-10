@@ -138,3 +138,49 @@ speciální ACK rámec). Když FPGA SET_CONFIG neumí (caps bit1=0), STM ho nepo
 5. `clk_status` bit0: detekce přítomnosti 10 MHz — má FPGA jak? (čítač 10 MHz hran
    za 100MHz okno.)
 6. SCK 4 MHz — ověřit integritu (CRC čítač na STM to změří sám).
+
+---
+
+# ODPOVĚĎ FPGA STRANY — IMPLEMENTOVÁNO (2026-07-07, bitstream FW 0x0200)
+
+v2 je implementována (`Frequency_Counter_FPGA_Module`, VERSION=0x02, rámec 128 B,
+CRC přes 0..125, CRC na 126/127, PAYLOAD_LEN=114). Odpovědi na otevřené body:
+
+1. **128 B rámec + rozložení: ANO**, 1:1 dle návrhu výše. caps = **0x0013**.
+2. **Gap-free okna: ANO** — uzavírací hrana okna N je první hranou okna N+1
+   (win_seq monotónní, +1 za okno; window[0]=nejnovější, window[1]=předchozí).
+3. **Základní okno: přes SET_CONFIG** (config_id 0x01): 0=100 ms, 1=250 ms
+   (default po startu), 2=1 s. FPGA gate sám nemění.
+4. win_seq/edges u32: ANO (interně 26 bitů period/okno).
+5. clk_status: bit0=1 (10 MHz běží implicitně — celá aplikační doména z něj žije,
+   bez něj rámec nevznikne), bit1=0 (žádný PLL). caps bit2=0.
+6. **SCK: zatím max ~2 MHz** (PHY oversampluje 10MHz doménou; rámec ~512 µs,
+   při 20 Hz pollingu ~1 % linky). Zvýšení na 4–20 MHz = přesun PHY na clk_p0,
+   plánováno spolu s flash-bridge streamem (BOARD_V20_CHECKLIST §6).
+
+## Rozšíření nad rámec návrhu (k odsouhlasení STM stranou)
+
+- **caps bit4 = Λ/Ω + fine rozšíření v rezervě DATA** (abs 100..117):
+  100 = {fine_last[3:2], fine_first[1:0]} krajních hran okna,
+  101..107 = **S1** (u56) = Σ ts_rel, 108..117 = **S2** (u80) = Σ S1
+  (LSB = tick 2,5 ns, vztaženo k první hraně okna). Λ/Ω regrese: body i=0..N
+  (t₀=0, t_N=Δt, N=edge_count): Σt=S1, Σi·t=N·S1−S2; LSQ slope
+  β = (Σi·t − Σi·Σt/(N+1)) / (Σi² − (Σi)²/(N+1)); f = PRESC/(β·2,5 ns), PRESC=4.
+  Kvantizace i nelinearita binů klesá ~1/√N (při N≈10⁶ příspěvek FPGA ~1e-11).
+- **SET_CONFIG config_id 0x02 = cal_mode** (0/1): 1 = vstup /4 přepnut na interní
+  ring oscilátor (~6–10 MHz) pro code-density kalibraci binů bez vstupního
+  signálu. Okna kolem přepnutí zahodit.
+- **TYPE 0xA0 (autokalibrace)**: STM pošle rámec TYPE=0xA0 (payload se ignoruje)
+  → příští TX rámec je **0xA0 CAL report**: 12..23 hist0..3 (4×u24 histogram fine
+  kódů za poslední okno — čítá se trvale i na měřeném signálu = background
+  tracking šířek binů/teplotního driftu), 24 fine kódy, 25 flags{bit0=cal_mode},
+  26..32 S1, 33..42 S2, 43..46 edges (u32), 47..125 = 0.
+
+## Migrace STM driveru (checklist)
+
+- [ ] rámec 64→128 B (compile-time přepínač dle návrhu), CRC 0..125, CRC @126/127
+- [ ] parser: VERSION==0x02; offsety 12..59 beze změny (v1 kód lze recyklovat)
+- [ ] nová pole: fw_version (60), caps (62), clk_status (64), win_count (65),
+      window[0] (68), window[1] (84); statistika/gate z window streamu
+- [ ] volitelně: SET_CONFIG 0x01 (GATE tlačítko!), 0x02 cal_mode; 0xA0 CAL report;
+      Λ/Ω výpočet z S1/S2 (u128 mezivýpočty nebo double)
