@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────
+#  Frequency_Counter_FPGA — co se nemá verzovat
+# ─────────────────────────────────────────────────────────────────────────
+
+# STM32CubeIDE build výstupy (generované per-core, plně reprodukovatelné buildem)
+Debug/
+Release/
+
+# Vendored Node.js runtime — používá jen tools/gen_fonts.ps1, není to zdroják
+# (bez lomítka uprostřed → platí v libovolné hloubce, i pod Frequency_Counter_STM32H757/tools/)
+node-v20.18.1-win-x64/
+
+# Běžné build/toolchain artefakty (jistota i mimo Debug/Release)
+*.o
+*.d
+*.su
+*.lst
+*.list
+*.map
+*.elf
+*.bin
+*.hex
+*.cyclo
+
+# OS / editor smetí
+Thumbs.db
+.DS_Store
+*.swp
+*~
+
+# Claude Code — lokální per-uživatel nastavení (permissiony), NEsdílet mezi spolupracovníky
+# (sdílená pravidla patří do .claude/settings.json, ne .local)
+.claude/settings.local.json
+
+# Gowin build výstupy — plně reprodukovatelné (gw_sh build.tcl)
+impl/
+*.gprj.user
+
+# KiCad pracovní smetí (zdrojáky .kicad_sch/.kicad_pcb SE verzují)
+FPGA_module-backups/
+fp-info-cache
+*.lck
+desktop.ini
+# KiCad autosave / backup soubory (nikdy neverzovat)
+_autosave-*
+*-bak
+\#auto_saved_files#
+
+# odvozené pomocné soubory
+_pdf_text.txt

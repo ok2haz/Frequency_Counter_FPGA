@@ -134,3 +134,37 @@ void ui_icon_warning(prim_point_t pos, int16_t size, prim_color_t color)
     prim_draw_line(ICON_PT(12, 10), ICON_PT(12, 15), 2, color);
     prim_fill_circle(ICON_PT(12, 18), ICON_SC(1), color);
 }
+
+/* Reproduktor: magnet (rect) + kuzel (trapez). Sdilene telo pro on/muted. */
+static void speaker_body(prim_color_t color)
+{
+    prim_fill_rect((prim_rect_t){ICON_PT(3, 9).x, ICON_PT(3, 9).y,
+                                 ICON_SC(4), ICON_SC(6)}, color, PRIM_BLEND_OVER);
+    prim_path_t *p = prim_path_create(5);
+    if (p) {
+        prim_path_move_to(p, ICON_PT(7, 9));
+        prim_path_line_to(p, ICON_PT(12, 4));
+        prim_path_line_to(p, ICON_PT(12, 20));
+        prim_path_line_to(p, ICON_PT(7, 15));
+        prim_path_close(p);
+        prim_path_fill(p, color);
+        prim_path_destroy(p);
+    }
+}
+
+/* Reproduktor se zvukovymi vlnami (zvuk zapnut). */
+void ui_icon_speaker(prim_point_t pos, int16_t size, prim_color_t color)
+{
+    ICON_BEGIN(pos, size);
+    speaker_body(color);
+    prim_draw_arc(ICON_PT(12, 12), ICON_SC(5), 2, color, -55, 55);
+    prim_draw_arc(ICON_PT(12, 12), ICON_SC(8), 2, color, -55, 55);
+}
+
+/* Preskrtnuty reproduktor (zvuk vypnut) — schematicka znacka mute. */
+void ui_icon_speaker_muted(prim_point_t pos, int16_t size, prim_color_t color)
+{
+    ICON_BEGIN(pos, size);
+    speaker_body(color);
+    prim_draw_line(ICON_PT(3, 4), ICON_PT(21, 21), 2, color);   /* diagonalni preskrtnuti */
+}

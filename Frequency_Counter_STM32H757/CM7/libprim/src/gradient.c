@@ -7,6 +7,16 @@
 #include <prim/fill.h>
 #include "internal/fb_impl.h"
 
+/* Floor integer sqrt (Newton) — O(~log) misto per-pixel lineárního hledání.
+ * Vraci floor(sqrt(v)) shodne s drivejsim `while ((d+1)*(d+1)<=v) d++`. */
+static inline int32_t isqrt32(int32_t v)
+{
+    if (v <= 0) return 0;
+    int32_t x = v, y = (x + 1) >> 1;
+    while (y < x) { x = y; y = (x + v / x) >> 1; }
+    return x;   /* floor pro v>=1 */
+}
+
 static inline prim_color_t lerp_argb(prim_color_t a, prim_color_t b, int32_t t,
                                      int32_t span)
 {
@@ -72,9 +82,7 @@ void prim_fill_gradient_radial(prim_rect_t rect, prim_point_t center,
             } else if (d2 >= outer2) {
                 c = outer;
             } else {
-                /* Integer sqrt for the distance. */
-                int32_t d = 0;
-                while ((d + 1) * (d + 1) <= d2) d++;
+                int32_t d = isqrt32(d2);   /* rychly floor sqrt (bylo per-pixel O(r)) */
                 c = lerp_argb(inner, outer, d - inner_r, span);
             }
             row[x] = prim_argb_to_565(c);

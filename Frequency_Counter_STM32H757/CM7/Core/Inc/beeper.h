@@ -7,12 +7,19 @@
 #define BEEPER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /** Inicializace: PH9 jako vystup + TIM7 (1600 Hz IRQ). Nezapina ton. */
 void beeper_init(void);
 
 /** Zapne (true) / vypne (false) ton 800 Hz. */
 void beeper_set(bool on);
+
+/** Prehraje ton zadane frekvence [Hz] (0 = ticho). Pro melodie. */
+void beeper_tone(uint16_t freq_hz);
+
+/** Kratka vzestupna boot melodie (blokujici osDelay; volat 1x z tasku pri startu). */
+void beeper_boot_melody(void);
 
 /** @return true pokud ton hraje. */
 bool beeper_is_on(void);

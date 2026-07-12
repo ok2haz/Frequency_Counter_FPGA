@@ -38,6 +38,21 @@ extern RTC_HandleTypeDef hrtc;
 /* Magic v BKP_DR0 = "RTC uz byl srovnan z GPS". Pouziva ho guard v MX_RTC_Init
  * (USER CODE Check_RTC_BKUP) i rtc_app_tick — proto je tady, ne v .c. */
 #define RTC_SYNC_MAGIC   0x32F2u
+/* BKP_DR1: horni 3 bajty = magic (platne ulozene UI nastaveni), spodni bajt = packed
+ * config (bit0 mode, bit1 chan, bity2:3 gate, bit4 running). Persist pres warm reset. */
+#define RTC_UICFG_MAGIC  0x5AC0DE00u
+/* BKP_DR2: horni 16 bitu = magic, spodni 16 = systemove nastaveni
+ * (bity7:0 jas 0-255, bit8 mute, bit9 auto-dim en, bity10:15 auto-dim prodleva
+ * v nasobcich 15 s). Persist pres warm reset. */
+#define RTC_SYSCFG_MAGIC 0x53C00000u
+/* BKP_DR3..DR5: crash black-box (zapisuji FreeRTOS hooky pred spinem -> IWDG
+ * reset; MX_RTC_Init po bootu precte, vystavi g_crash_text a smaze).
+ * DR3 = magic | kind (1 = stack overflow, 2 = malloc fail), DR4+DR5 = 8 znaku
+ * jmena tasku (little-endian po 4). */
+#define RTC_CRASH_MAGIC  0xC7A50000u
+/* BKP_DR6: systemove nastaveni 2 (DR2 payload je plny) — bit0 svetle schema,
+ * bit1 english. Persist pres warm reset. */
+#define RTC_SYSCFG2_MAGIC 0x53C10000u
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);
@@ -50,6 +65,14 @@ void MX_RTC_Init(void);
  * VESKERY pristup k RTC registrum je VYHRADNE odsud (defaultTask) -> UART/UI
  * ctou jen sdilene g_rtc_text/g_rtc_synced (zadna cross-task HAL_RTC kolize). */
 void rtc_app_tick(void);
+
+/* Ulozi UI nastaveni (g_ui_cfg) do BKP_DR1, jen pokud g_ui_cfg_dirty (setri BKP).
+ * Volat z defaultTask (jediny kontext pristupu k RTC/BKP). */
+void rtc_save_uicfg_if_dirty(void);
+
+/* Ulozi systemove nastaveni (jas/mute/auto-dim) do BKP_DR2, jen pokud
+ * g_sys_cfg_dirty. Volat z defaultTask (jediny kontext pristupu k RTC/BKP). */
+void rtc_save_syscfg_if_dirty(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

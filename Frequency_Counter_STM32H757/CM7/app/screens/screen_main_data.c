@@ -11,10 +11,10 @@
 /* GNSS lock pill, pocet druzic, cas i datum jsou ZIVE z GPS (render_header /
  * screen_main_redraw_time v screen_main.c ctou gps_get()). Drivejsi staticke
  * SCR_S_GNSS_LOCK / SCR_S_SAT_VAL / SCR_S_DATE proto odstraneny.
- * HDOP/CAL/HOLD zustavaji statickymi placeholdery (zatim bez dat). */
+ * HDOP je take ZIVE z GPS (render_header formatuje g.hdop). CAL/HOLD zustavaji
+ * statickymi placeholdery (zatim bez dat). */
 const char *SCR_S_SYS_READY = "System";
-const char *SCR_S_HDOP_L    = "HDOP";
-const char *SCR_S_HDOP_V    = "0,8";
+const char *SCR_S_HDOP_L    = "HDOP";   /* hodnota se bere ZIVE z GPS (g.hdop) */
 const char *SCR_S_CAL_L     = "CAL";
 const char *SCR_S_CAL_V     = "4 min";
 const char *SCR_S_HOLD_L    = "HOLD";

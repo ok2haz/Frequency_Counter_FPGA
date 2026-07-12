@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Tang_nano_9k")(type "KiCad")(uri "${KIPRJMOD}/Tang_nano_9k.pretty")(options "")(descr ""))
+)

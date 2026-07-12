@@ -81,6 +81,47 @@ void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
+  /* Nacti ulozene UI nastaveni (mode/chan/gate/running) z BKP_DR1 -> g_ui_cfg.
+   * Bezi v main() pred schedulerem, takze g_ui_cfg je platny drive nez UiTask
+   * poprve kresli (screen_main_init ho rozbali do st). Cteni BKP nevyzaduje DBP;
+   * neplatny magic -> g_ui_cfg zustane default z freertos.c. */
+  uint32_t uicfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = (uint8_t)(uicfg & 0xFFu);
+
+  /* Systemove nastaveni (jas/mute) z BKP_DR2. Neplatny magic -> default z freertos.c. */
+  uint32_t syscfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR2);
+  if ((syscfg & 0xFFFF0000u) == RTC_SYSCFG_MAGIC) {
+    g_brightness  = (uint8_t)(syscfg & 0xFFu);
+    g_sound_muted = (uint8_t)((syscfg >> 8) & 0x01u);
+    g_autodim_en  = (uint8_t)((syscfg >> 9) & 0x01u);
+    uint16_t dsec = (uint16_t)(((syscfg >> 10) & 0x3Fu) * 15u);   /* bity10:15 = s/15 */
+    if (dsec >= 15u) g_autodim_sec = dsec;                        /* 0 -> ponech default 60 */
+  }
+
+  /* Systemove nastaveni 2 (schema/jazyk) z BKP_DR6. */
+  uint32_t syscfg2 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR6);
+  if ((syscfg2 & 0xFFFF0000u) == RTC_SYSCFG2_MAGIC) {
+    g_theme_light = (uint8_t)(syscfg2 & 0x01u);
+    g_lang_en     = (uint8_t)((syscfg2 >> 1) & 0x01u);
+  }
+
+  /* Crash black-box (BKP_DR3..5, zapsal FreeRTOS hook pred IWDG resetem):
+   * kind + jmeno tasku -> g_crash_text ("stack:UiTask" / "malloc fail"), pak
+   * smazat (reportuje se jen jednou, do dalsiho crashe). */
+  uint32_t cr = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR3);
+  if ((cr & 0xFFFF0000u) == RTC_CRASH_MAGIC) {
+    char name[9];
+    uint32_t n0 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR4);
+    uint32_t n1 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR5);
+    for (int i = 0; i < 4; i++) { name[i] = (char)(n0 >> (8 * i)); name[4 + i] = (char)(n1 >> (8 * i)); }
+    name[8] = '\0';
+    if ((cr & 0xFFu) == 1u)
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "stack:%s", name);
+    else
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);
+  }
+
   /* Pokud RTC uz bezel a byl srovnan z GPS (magic v BKP_DR0) a backup domena
    * prezila reset (VBAT/napajeni drzi), NEPREPISUJ cas defaultni 0:00 hodnotou
    * nize — RTC si nese spravny cas dal. Pri studenem startu (BKP=0) se guard
@@ -219,6 +260,32 @@ void rtc_app_tick(void)
   g_rtc_text[sizeof(g_rtc_text) - 1] = '\0';
   g_rtc_synced = s_synced;
   taskEXIT_CRITICAL();
+}
+
+/* Ulozi UI nastaveni do BKP_DR1 jen pri zmene. Vola defaultTask (jediny kontext
+ * pristupu k RTC/BKP). Dirty se cisti PRED zapisem -> soubezna zmena z UiTasku
+ * se neztrati (persistne se pri pristim ticku). */
+void rtc_save_uicfg_if_dirty(void)
+{
+  if (!g_ui_cfg_dirty) return;
+  g_ui_cfg_dirty = 0;
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, RTC_UICFG_MAGIC | (uint32_t)g_ui_cfg);
+}
+
+/* Ulozi systemove nastaveni (jas + mute + auto-dim) do BKP_DR2 jen pri zmene. Viz rtc.h. */
+void rtc_save_syscfg_if_dirty(void)
+{
+  if (!g_sys_cfg_dirty) return;
+  g_sys_cfg_dirty = 0;
+  uint32_t v = RTC_SYSCFG_MAGIC | (uint32_t)g_brightness
+             | ((uint32_t)(g_sound_muted ? 1u : 0u) << 8)
+             | ((uint32_t)(g_autodim_en ? 1u : 0u) << 9)
+             | (((uint32_t)(g_autodim_sec / 15u) & 0x3Fu) << 10);   /* bity10:15 = s/15 */
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, v);
+  uint32_t v2 = RTC_SYSCFG2_MAGIC
+              | ((uint32_t)(g_theme_light ? 1u : 0u))
+              | ((uint32_t)(g_lang_en ? 1u : 0u) << 1);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, v2);
 }
 /* USER CODE END 1 */
 

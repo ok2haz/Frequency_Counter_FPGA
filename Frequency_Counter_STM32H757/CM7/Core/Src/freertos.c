@@ -30,6 +30,12 @@
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
+#include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
+#include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
+#include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
+#include "screens/screen_main.h"   /* screen_main_selftest — run_selftests() */
+#include "app_gpsdo.h"        /* app_gpsdo_selftest (Maidenhead lokator) */
+#include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,7 +50,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-/* Makra tasku (RX_BUF_SIZE, TMP117_*, LCD_*, MAKE_RGB, …) jsou v jejich
+/* Makra tasku (RX_BUF_SIZE, RAM/SDRAM test adresy, …) jsou v jejich
  * freertos_task_*.c, kde se používají. */
 /* USER CODE END PM */
 
@@ -58,6 +64,21 @@
  * Zapisuje SensorsTask pres sensor_update()/sensor_fail(). Nulova init je OK
  * (samples=0 -> min/max/mean se lazy-inicializuji prvnim platnym vzorkem). */
 sensor_stat_t g_sensors[SENS_COUNT] = {0};
+
+/* Popisná metadata senzorů (label + jednotka) — jediný zdroj pravdy (UART `sensors`,
+ * příp. UI). Pořadí = sensor_id_t (viz sensor_stat.h). */
+const sensor_desc_t g_sensor_desc[SENS_COUNT] = {
+  { "TMP117 0x48",   "C"  },   /* SENS_T48   */
+  { "TMP117 0x49",   "C"  },   /* SENS_T49   */
+  { "TMP117 0x4A",   "C"  },   /* SENS_T4A   */
+  { "ADS AIN0",      "mV" },   /* SENS_ADS0  */
+  { "ADS AIN1",      "mV" },   /* SENS_ADS1  */
+  { "ADS AIN2(12V)", "mV" },   /* SENS_ADS2  */
+  { "ADS AIN3(5V)",  "mV" },   /* SENS_ADS3  */
+  { "MCU jadro",     "C"  },   /* SENS_CORE_T */
+  { "VREF",          "mV" },   /* SENS_VDDA (VREF+) */
+  { "VBAT",          "mV" },   /* SENS_VBAT  */
+};
 
 /* Mutex pro sdileni I2C4 sbernice (TMP117 task + dotykove UI + backlight) */
 osMutexId_t i2c4MutexHandle;
@@ -76,7 +97,7 @@ volatile uint8_t g_screen_req  = 0;
 volatile char    g_freq_text[48] = "----------,-----Hz";
 volatile char    g_freq_info[64] = "";                 /* vedlejsi udaje (gate/edges/ch) */
 volatile uint8_t g_freq_dirty = 1;
-volatile uint8_t g_freq_stale = 0;                     /* 1 = SEQ se dlouho nehnula (mozna ztrata signalu) -> UI ztlumi */
+volatile uint8_t g_freq_stale = 0;                     /* 1 = FPGA SIGNAL_LOST flag nebo mrtvy link -> UI ztlumi, alarm pipne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_spi_text[64] = "SPI WAIT";
@@ -87,9 +108,54 @@ volatile uint8_t g_spi_dirty = 1;
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
 
-/* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte) */
+/* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte).
+ * ⚠️ UI ctenari (UiTask: screen_main/rtc_time_date, app_gpsdo diag/gps) ctou BEZ
+ * zamku — ZAMERNE: torn read je mozny jen v ~200ns okne zapisu 1x/s a projevi se
+ * nejvyse 100ms kosmetickym glitchem casu (dalsi tick prekresli spravne). Zadna
+ * korupce (ctenari kopiruji do lokalu + nulou ukoncuji). UART cesta cte pod
+ * taskENTER_CRITICAL (tam vadi i jednorazovy vypis). */
 volatile char    g_rtc_text[24]  = "---------- --:--:--";   /* presny tvar: [0..9]=datum [11..18]=cas */
 volatile uint8_t g_rtc_synced    = 0;
+
+/* Ulozene UI nastaveni (persist v BKP_DR1): default = {FREQ, CH B, GATE 1s, RUN}
+ * = bit1(chan=1) | bit2(gate=1) | bit4(run=1) = 0x16. MX_RTC_Init ho prepise
+ * z BKP, pokud tam je platny magic (warm reset s drzenou backup domenou). */
+volatile uint8_t g_ui_cfg        = 0x16;
+volatile uint8_t g_ui_cfg_dirty  = 0;
+
+/* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
+volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
+volatile uint8_t g_sound_muted   = 0;     /* 0 = zvuk zapnut */
+volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut */
+volatile uint16_t g_autodim_sec  = 60;    /* prodleva auto-dim [s] (preset 15..600) */
+volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
+volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
+volatile uint8_t g_sys_cfg_dirty = 0;
+volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela NVIC_SystemReset */
+
+/* Diagnostika resetu: RCC->RSR zachycene v main.c; crash black-box z BKP (rtc.c);
+ * vysledek boot selftestu (defaultTask). Health okno + UART je zobrazuji. */
+volatile uint32_t g_reset_rsr    = 0;
+volatile char     g_reset_text[12] = "---";
+volatile uint8_t  g_reset_bad    = 0;
+volatile char     g_crash_text[16] = "";
+volatile uint8_t  g_selftest_res = 0;
+
+/* Pure-logic unit testy (zadny HW, zadny sdileny stav). Boot (defaultTask) +
+ * UART "selftest". Nastavi g_selftest_res pro indikator v Health okne. */
+int run_selftests(void)
+{
+  int pass = 0;
+  pass += fpga_freq_crc_selftest()    ? 1 : 0;
+  pass += fpga_freq_select_selftest() ? 1 : 0;
+  pass += gps_selftest()              ? 1 : 0;
+  pass += screen_main_selftest()      ? 1 : 0;
+  pass += app_gpsdo_selftest()        ? 1 : 0;
+  int ok = (pass == 5);
+  g_selftest_res = ok ? 1 : 2;
+  printf("SELFTEST: %d/5 %s\n", pass, ok ? "PASS" : "FAIL");
+  return ok;
+}
 
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
@@ -123,7 +189,7 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 384 * 4,   /* 1536 B: GPS NMEA parse (f[24]) + rtc_app_tick snprintf — rezerva (regen vraci na 256, hlidat!) */
+  .stack_size = 384 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -233,6 +299,7 @@ void StartDefaultTask(void *argument)
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
   gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
+  run_selftests();   /* boot selftest (pure-logic, ~ms); FAIL -> cerveny indikator v Health */
   /* Infinite loop */
   for(;;)
   {
@@ -243,7 +310,17 @@ void StartDefaultTask(void *argument)
       gps_feed_char((char)gc);
     }
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
-    osDelay(5);
+    rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
+    rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
+    alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
+    watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
+    if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */
+      osDelay(50);
+      NVIC_SystemReset();                  /* softwarovy reset (uz se nevraci) */
+    }
+    usb_console_tx_pump();   /* dopumpuj CDC TX ring (ocasek po USBD_BUSY by jinak
+                              * cekal az na dalsi printf); prazdny ring = okamzity return */
+    osDelay(10);   /* 100 Hz: GPS drain (9600 bd ~10 B/tick, fronta 256 hl.) + rtc + usb pump */
   }
   /* USER CODE END StartDefaultTask */
 }

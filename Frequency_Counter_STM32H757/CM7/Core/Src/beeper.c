@@ -7,6 +7,9 @@
  */
 #include "beeper.h"
 #include "stm32h7xx_hal.h"
+#include "cmsis_os2.h"   /* osDelay — boot melodie (task kontext) */
+
+#define BEEP_ARR_800HZ  624u   /* 1 MHz / 625 = 1600 Hz update -> 800 Hz toggle */
 
 TIM_HandleTypeDef htim7;
 
@@ -45,10 +48,40 @@ void beeper_set(bool on)
     if (on == s_on) return;
     s_on = on;
     if (on) {
+        __HAL_TIM_SET_AUTORELOAD(&htim7, BEEP_ARR_800HZ);   /* alarm = pevnych 800 Hz */
         HAL_TIM_Base_Start_IT(&htim7);
     } else {
         HAL_TIM_Base_Stop_IT(&htim7);
         HAL_GPIO_WritePin(BEEP_PORT, BEEP_PIN, GPIO_PIN_RESET);   /* idle low */
+    }
+}
+
+/* Tón zadane frekvence [Hz] (0 = ticho). TIM7 update = 2x freq -> ctvercovy signal. */
+void beeper_tone(uint16_t freq_hz)
+{
+    if (freq_hz == 0) { beeper_set(false); return; }
+    uint32_t arr = 1000000u / (2u * (uint32_t)freq_hz);   /* 1 MHz timer clock */
+    if (arr) arr--;
+    __HAL_TIM_SET_AUTORELOAD(&htim7, arr);
+    if (!s_on) {
+        s_on = true;
+        __HAL_TIM_SET_COUNTER(&htim7, 0);
+        HAL_TIM_Base_Start_IT(&htim7);
+    }
+}
+
+/* Boot melodie: kratky vzestupny C-dur arpeggio + rozlozeni ("power-on" jingle).
+ * Blokujici (osDelay) — vola se JEDNOU pri startu z UiTasku (grace watchdogu kryje). */
+void beeper_boot_melody(void)
+{
+    static const struct { uint16_t f, ms; } NOTES[] = {
+        { 784, 95 }, { 1047, 95 }, { 1319, 95 }, { 1568, 190 },   /* G5 C6 E6 G6 */
+    };
+    for (unsigned i = 0; i < sizeof(NOTES) / sizeof(NOTES[0]); i++) {
+        beeper_tone(NOTES[i].f);
+        osDelay(NOTES[i].ms);
+        beeper_set(false);
+        osDelay(14);                 /* kratka pauza mezi tony (artikulace) */
     }
 }
 

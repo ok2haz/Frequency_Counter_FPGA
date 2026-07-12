@@ -56,12 +56,22 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define QSPI_BK1_IO2_Pin GPIO_PIN_7
+#define QSPI_BK1_IO2_GPIO_Port GPIOF
+#define QSPI_CLK_Pin GPIO_PIN_10
+#define QSPI_CLK_GPIO_Port GPIOF
 #define SPI2_RCK_Pin GPIO_PIN_12
 #define SPI2_RCK_GPIO_Port GPIOB
+#define QSPI_BK1_IO0_Pin GPIO_PIN_11
+#define QSPI_BK1_IO0_GPIO_Port GPIOD
+#define QSPI_BK1_IO1_Pin GPIO_PIN_12
+#define QSPI_BK1_IO1_GPIO_Port GPIOD
+#define QSPI_BK1_IO3_Pin GPIO_PIN_13
+#define QSPI_BK1_IO3_GPIO_Port GPIOD
 #define LED_1_Pin GPIO_PIN_3
 #define LED_1_GPIO_Port GPIOG
-#define SPI2_RES_Pin GPIO_PIN_4
-#define SPI2_RES_GPIO_Port GPIOI
+#define QSPI_BK1_NCS_Pin GPIO_PIN_6
+#define QSPI_BK1_NCS_GPIO_Port GPIOG
 
 /* USER CODE BEGIN Private defines */
 

@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include "internal/fb_impl.h"
 #include "internal/font_impl.h"
+#include "internal/alpha_blend.h"     /* prim_blend565 — primy blend v CPU smycce */
 #include "internal/dma2d_backend.h"   /* prim_dma2d() — volitelny HW glyph blend */
 
 /* Pod touto vyskou glyfu se HW (DMA2D) cesta nevyplati (rezie spusteni > CPU). */
@@ -126,11 +127,24 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
             }
         }
 
-        for (int gy = 0; gy < g->h; gy++) {
-            for (int gx = 0; gx < g->w; gx++) {
-                uint8_t cov = glyph_cov(bm, gx, gy, g->w, font->bpp);
-                if (cov) prim_internal_blend_px((int16_t)(gx0 + gx),
-                                                (int16_t)(gy0 + gy), color, cov);
+        /* CPU cesta: glyf se orizne JEDNOU (rect ∩ clip ∩ fb), pak tesna smycka
+         * s primym blendem do radku. Drivejsi prim_internal_blend_px delal
+         * clip_test (vc. volani prim_internal_clip) na KAZDY pixel — dominantni
+         * rezie CPU textu. Vystup je pixel-identicky (stejny prim_blend565). */
+        {
+            prim_fb_t *fb = prim_internal_target();
+            prim_rect_t gr = { gx0, gy0, g->w, g->h }, cr;
+            if (fb != NULL && prim_internal_clip_rect(gr, &cr)) {
+                int ox = cr.x - gx0;                 /* offset oriznuti uvnitr glyfu */
+                int oy = cr.y - gy0;
+                for (int ry = 0; ry < cr.h; ry++) {
+                    prim_pixel_t *row = &fb->pixels[(cr.y + ry) * fb->stride_px + cr.x];
+                    int gy = oy + ry;
+                    for (int rx = 0; rx < cr.w; rx++) {
+                        uint8_t cov = glyph_cov(bm, ox + rx, gy, g->w, font->bpp);
+                        if (cov) row[rx] = prim_blend565(row[rx], color, cov);
+                    }
+                }
             }
         }
         pen = (int16_t)(pen + g->advance);

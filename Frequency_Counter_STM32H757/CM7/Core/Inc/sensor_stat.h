@@ -51,6 +51,16 @@ typedef struct {
 
 extern sensor_stat_t g_sensors[SENS_COUNT];
 
+/* Popisná metadata senzoru (název + jednotka) — JEDNO místo pravdy pro UART výpis
+ * i UI/diagnostiku (dřív duplicitní pole v každém konzumentovi). Index = sensor_id_t.
+ * Definováno ve freertos.c. */
+typedef struct {
+    const char *label;   /* název, např. "TMP117 0x48" */
+    const char *unit;    /* jednotka, "C" / "mV" */
+} sensor_desc_t;
+
+extern const sensor_desc_t g_sensor_desc[SENS_COUNT];
+
 /* Zaznamená PLATNÝ vzorek: last=value, aktualizuje min/max/mean/samples,
  * valid=1, err_streak=0. Min/max/mean se lazy-inicializují prvním vzorkem. */
 void sensor_update(sensor_id_t id, float value);

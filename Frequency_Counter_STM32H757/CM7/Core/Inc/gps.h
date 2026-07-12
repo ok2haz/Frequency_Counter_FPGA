@@ -15,6 +15,17 @@
 #define INC_GPS_H_
 
 #include <stdint.h>
+#include <stdbool.h>
+
+#define GPS_MAX_SATS 16   /* max druzic v poli sats[] (GSV); vic ignorujeme */
+
+/* Jedna druzice z GSV: PRN, elevace, sila signalu C/N0. */
+typedef struct {
+  uint8_t  prn;    /* cislo druzice */
+  uint8_t  elev;   /* elevace [°] (0..90) */
+  uint8_t  snr;    /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
+  uint16_t azim;   /* azimut [°] (0..359, 0 = sever) — sky plot v GPS okne */
+} gps_sat_t;
 
 typedef struct {
   uint8_t  valid;       /* 1 = posledni veta dava platny fix (RMC status 'A') */
@@ -33,14 +44,17 @@ typedef struct {
   float    pdop;        /* GSA pozicni DOP */
   uint32_t sentences;   /* pocet naparsovanych vet RMC/GGA/GSA/GSV (CRC ok) — diag */
   uint32_t fixes;       /* pocet platnych fixu — diag */
+  gps_sat_t sats[GPS_MAX_SATS];  /* druzice v dosahu (PRN + C/N0), z GSV */
+  uint8_t   sat_count;           /* pocet platnych polozek v sats[] */
 } gps_data_t;
 
 /* Inicializace: prepne USART1 na 9600 8N1 (regen-safe, nezavisle na .ioc),
- * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 5 Hz / 100 kHz).
+ * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 100 kHz/10 Hz).
  * Vola se na zacatku draineru v defaultTask. */
 void gps_init(void);
 
-/* UBX-CFG-TP5: TIMEPULSE pin = 5 Hz (no fix) / 100 kHz (fix), GNSS-locked.
+/* UBX-CFG-TP5: TIMEPULSE = s fixem 100 kHz (GPSDO PLL reference, disciplinovane
+ * na GNSS), bez fixu 10 Hz (frekvence = lock indikator -> deska drzi VC OCXO).
  * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init; lze i samostatne. */
 void gps_config_timepulse(void);
 
@@ -57,5 +71,9 @@ void gps_format_status(char *buf, int n);
 /* Diagnostika linky STM<->GPS: pocet syrovych bajtu, validnich vet a posledni
  * prijaty NMEA radek doslova (i pri vadnem checksumu). */
 void gps_format_raw(char *buf, int n);
+
+/* Selftest cistych parser helperu (souradnice/cisla/hex) — nemeni zadny sdileny
+ * stav, bezpecne za behu. Soucast UART "selftest". @return true = OK. */
+bool gps_selftest(void);
 
 #endif /* INC_GPS_H_ */
