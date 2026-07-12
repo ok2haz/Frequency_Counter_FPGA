@@ -98,6 +98,30 @@ void MX_RTC_Init(void)
     if (dsec >= 15u) g_autodim_sec = dsec;                        /* 0 -> ponech default 60 */
   }
 
+  /* Systemove nastaveni 2 (schema/jazyk) z BKP_DR6. */
+  uint32_t syscfg2 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR6);
+  if ((syscfg2 & 0xFFFF0000u) == RTC_SYSCFG2_MAGIC) {
+    g_theme_light = (uint8_t)(syscfg2 & 0x01u);
+    g_lang_en     = (uint8_t)((syscfg2 >> 1) & 0x01u);
+  }
+
+  /* Crash black-box (BKP_DR3..5, zapsal FreeRTOS hook pred IWDG resetem):
+   * kind + jmeno tasku -> g_crash_text ("stack:UiTask" / "malloc fail"), pak
+   * smazat (reportuje se jen jednou, do dalsiho crashe). */
+  uint32_t cr = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR3);
+  if ((cr & 0xFFFF0000u) == RTC_CRASH_MAGIC) {
+    char name[9];
+    uint32_t n0 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR4);
+    uint32_t n1 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR5);
+    for (int i = 0; i < 4; i++) { name[i] = (char)(n0 >> (8 * i)); name[4 + i] = (char)(n1 >> (8 * i)); }
+    name[8] = '\0';
+    if ((cr & 0xFFu) == 1u)
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "stack:%s", name);
+    else
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);
+  }
+
   /* Pokud RTC uz bezel a byl srovnan z GPS (magic v BKP_DR0) a backup domena
    * prezila reset (VBAT/napajeni drzi), NEPREPISUJ cas defaultni 0:00 hodnotou
    * nize — RTC si nese spravny cas dal. Pri studenem startu (BKP=0) se guard
@@ -258,6 +282,10 @@ void rtc_save_syscfg_if_dirty(void)
              | ((uint32_t)(g_autodim_en ? 1u : 0u) << 9)
              | (((uint32_t)(g_autodim_sec / 15u) & 0x3Fu) << 10);   /* bity10:15 = s/15 */
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, v);
+  uint32_t v2 = RTC_SYSCFG2_MAGIC
+              | ((uint32_t)(g_theme_light ? 1u : 0u))
+              | ((uint32_t)(g_lang_en ? 1u : 0u) << 1);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, v2);
 }
 /* USER CODE END 1 */
 

@@ -69,6 +69,14 @@ void fpga_freq_format_val(uint64_t freq_x100000, char *buf, int buflen);
  *  Vrati zvoleny freq_x100000; *used16 (smi byt NULL) = 1 kdyz /16. */
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16);
 
+/** Ciste jadro volby /4<->/16 (bez stavu; stav drzi wrapper fpga_freq_select).
+ *  Vraci novy use16 pro predchozi stav + mereni. Unit-testovatelne. */
+int fpga_freq_select_core(int use16, const fpga_meas_t *m);
+
+/** Selftest hystereze volby zdroje na syntetickych ramcich (UART "selftest").
+ *  Nemeni runtime stav. @return true = vsechny kroky OK. */
+bool fpga_freq_select_selftest(void);
+
 /** Naformatuje vedlejsi udaje: "<src> PH:<present>/<fine> GATE:<ns>NS SEQ:<n>[ chyba]".
  *  use16 != 0 -> zdroj "/16", jinak "/4". */
 void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int buflen);

@@ -141,7 +141,23 @@ speciální ACK rámec). Když FPGA SET_CONFIG neumí (caps bit1=0), STM ho nepo
 
 ---
 
-# ODPOVĚĎ FPGA STRANY — IMPLEMENTOVÁNO (2026-07-07, bitstream FW 0x0200)
+# ODPOVĚĎ FPGA STRANY — IMPLEMENTOVÁNO (aktuální bitstream FW 0x0201)
+
+## Changelog bitstreamu
+
+- **0x0200** (2026-07-07): první implementace v2.
+- **0x0201** (2026-07-10): opravy z auditu (koherence rámce: S1/S2 latch spolu
+  s oknem; rx_pend proti ztrátě povelu mimo IDLE; tx_valid — PHY drží poslední
+  KOMPLETNÍ rámec, nikdy mix payload/CRC; saturace histogramu na 0xFFFFFF;
+  ignorace SCK hran nad 1024) + **error_flags bit3 = Δt alias** (okno bez hran
+  > 42,9 s → hodnota neplatná, zahodit).
+  **Pravidla pro STM driver:** (1) `dt_ticks = round(dt_ns·2/5)` — bezztrátová
+  rekonstrukce ticků; gate syntézu sčítat v TICÍCH, ne v ns (dt_ns je floor,
+  jinak systematika ~−1e-9). (2) ACKovat pouze DATA rámce (ne 0xA0 — sdílí
+  SEQUENCE a shodil by FRESH nepřečteného měření). (3) Po epizodě SIGNAL_LOST
+  zahodit první okno. (4) Polling ≥ 2× tempo oken, jinak díry ve win_seq.
+  (5) Degenerovaný histogram (1–2 biny) = soudělný vstup → Λ negainuje,
+  vykazovat nejistotu ~bin/T.
 
 v2 je implementována (`Frequency_Counter_FPGA_Module`, VERSION=0x02, rámec 128 B,
 CRC přes 0..125, CRC na 126/127, PAYLOAD_LEN=114). Odpovědi na otevřené body:

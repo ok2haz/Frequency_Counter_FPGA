@@ -82,6 +82,7 @@ static uint16_t crc16_ccitt(const uint8_t *d, int n)
 /* === Sestaveni TX ramce === */
 static void build_frame(uint8_t type, uint32_t seq, const uint8_t *payload, uint16_t plen, uint8_t *f)
 {
+    if (plen > 50) plen = 50;      /* klamp PRED zapisem PAYLOAD_LEN (konzistence pole vs. data) */
     memset(f, 0, FR_LEN);
     f[0] = FR_MAGIC;
     f[1] = FR_VERSION;
@@ -94,7 +95,7 @@ static void build_frame(uint8_t type, uint32_t seq, const uint8_t *payload, uint
     f[8] = (uint8_t)(plen);
     f[9] = (uint8_t)(plen >> 8);
     /* f[10..11] RESERVED = 0 */
-    if (payload && plen) memcpy(&f[FR_PAYLOAD], payload, plen > 50 ? 50 : plen);
+    if (payload && plen) memcpy(&f[FR_PAYLOAD], payload, plen);
     uint16_t crc = crc16_ccitt(f, 62);
     f[62] = (uint8_t)(crc);        /* low byte */
     f[63] = (uint8_t)(crc >> 8);   /* high byte */
@@ -296,27 +297,65 @@ bool fpga_freq_signal_lost(void)
 #define FPGA_SEL_UP_X1E5    38000000000000ULL   /* 380 MHz: /4 -> /16 */
 #define FPGA_SEL_DOWN_X1E5  36000000000000ULL   /* 360 MHz: /16 -> /4 */
 
+/* Ciste jadro volby zdroje (bez stavu -> unit-testovatelne v selftestu).
+ * Vraci novy use16 pro dany predchozi stav + mereni. */
+int fpga_freq_select_core(int use16, const fpga_meas_t *m)
+{
+    bool f4_err = (m->error_flags & FPGA_ERR_MEAS) != 0;
+    bool f16_ok = !(m->status2 & FPGA_ST2_DIV16_ERR);
+
+    if (use16) {
+        /* zpet na /4 jen kdyz /4 meri a je bezpecne pod prahem (hystereze),
+         * nebo kdyz /16 sam chybuje a /4 je pouzitelny */
+        if (!f4_err && (m->frequency_x100000 < FPGA_SEL_DOWN_X1E5 || !f16_ok))
+            use16 = 0;
+    } else {
+        if ((f4_err || m->frequency_x100000 >= FPGA_SEL_UP_X1E5) && f16_ok)
+            use16 = 1;
+    }
+    return use16;
+}
+
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16)
 {
     /* /4 ma nejlepsi rozliseni; nad ~380 MHz je pin28 (/4 -> ~95 MHz) u stropu -> /16.
      * Sticky stav (jediny konzument = FpgaTask): drzi zvoleny zdroj, prepina jen
      * pri prekroceni prahu s hysterezi nebo pri chybe aktivniho zdroje. */
     static int s_use16 = 0;
-    bool f4_err = (m->error_flags & FPGA_ERR_MEAS) != 0;
-    bool f16_ok = !(m->status2 & FPGA_ST2_DIV16_ERR);
-
-    if (s_use16) {
-        /* zpet na /4 jen kdyz /4 meri a je bezpecne pod prahem (hystereze),
-         * nebo kdyz /16 sam chybuje a /4 je pouzitelny */
-        if (!f4_err && (m->frequency_x100000 < FPGA_SEL_DOWN_X1E5 || !f16_ok))
-            s_use16 = 0;
-    } else {
-        if ((f4_err || m->frequency_x100000 >= FPGA_SEL_UP_X1E5) && f16_ok)
-            s_use16 = 1;
-    }
-
+    s_use16 = fpga_freq_select_core(s_use16, m);
     if (used16) *used16 = s_use16;
     return s_use16 ? m->freq16_x100000 : m->frequency_x100000;
+}
+
+/* Selftest hystereze /4<->/16 na syntetickych ramcich (cista logika, nemeni
+ * runtime stav FpgaTasku). Soucast UART "selftest". */
+bool fpga_freq_select_selftest(void)
+{
+    fpga_meas_t m;
+    memset(&m, 0, sizeof m);
+    int u = 0, ok = 1;
+    #define SEL_MHZ(x) ((uint64_t)(x) * 1000000ULL * 100000ULL)
+
+    m.frequency_x100000 = SEL_MHZ(100);                      /* 100 MHz -> /4 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 0);
+    m.frequency_x100000 = SEL_MHZ(390);                      /* 390 MHz -> /16 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 1);
+    m.frequency_x100000 = SEL_MHZ(370);                      /* 370: hystereze -> drzi /16 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 1);
+    m.frequency_x100000 = SEL_MHZ(350);                      /* 350: pod 360 -> zpet /4 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 0);
+    m.frequency_x100000 = SEL_MHZ(370);                      /* 370 z /4 strany -> drzi /4 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 0);
+    m.error_flags = FPGA_ERR_MEAS;                           /* /4 chybuje -> /16 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 1);
+    m.error_flags = 0; m.status2 = FPGA_ST2_DIV16_ERR;       /* /16 chybuje -> zpet /4 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 0);
+    m.frequency_x100000 = SEL_MHZ(500);                      /* vysoko, ale /16 vadny -> drzi /4 */
+    u = fpga_freq_select_core(u, &m); ok &= (u == 0);
+
+    #undef SEL_MHZ
+    printf("fpga: select hystereze selftest %s\n", ok ? "OK" : "FAIL");
+    return ok != 0;
 }
 
 void fpga_freq_format_val(uint64_t v, char *buf, int buflen)

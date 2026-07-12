@@ -167,6 +167,7 @@ static void parse_gsv(char **f, int nf)
     if (prn == 0) continue;                /* prazdny slot */
     s_gsv_acc[s_gsv_n].prn  = prn;
     s_gsv_acc[s_gsv_n].elev = (uint8_t)atoi_simple(f[i + 1]);
+    s_gsv_acc[s_gsv_n].azim = (uint16_t)atoi_simple(f[i + 2]);  /* 0..359, 0 = sever */
     s_gsv_acc[s_gsv_n].snr  = (uint8_t)atoi_simple(f[i + 3]);   /* prazdne -> 0 = netrackovana */
     s_gsv_n++;
   }
@@ -322,6 +323,31 @@ void gps_format_status(char *buf, int n)
   snprintf(buf, (size_t)n, "FIX:%u SAT:%02u %04u-%02u-%02u %02u:%02u:%02u %s %s ALT:%dm",
            g.fix_quality, g.num_sat, g.year, g.month, g.day,
            g.hour, g.minute, g.second, la, lo, (int)g.alt_m);
+}
+
+/* Selftest cistych parser helperu (nemeni s_gps ani s_line -> bezpecne z UartTasku
+ * za behu; soucast UART "selftest"). Kontroluje prevod NMEA souradnic, ciselne
+ * konverze a hex nibble (checksum aritmetika). */
+bool gps_selftest(void)
+{
+  int ok = 1;
+  float lat = nmea_coord("5007.7104", 'N');      /* 50° + 7.7104' = 50.128507° */
+  ok &= (lat > 50.1284f && lat < 50.1287f);
+  float lon = nmea_coord("01430.5000", 'W');     /* -(14° + 30.5') = -14.508333° */
+  ok &= (lon < -14.5082f && lon > -14.5085f);
+  ok &= (nmea_coord("123", 'N') == 0.0f);        /* bez tecky -> 0 (odmitnuto) */
+  ok &= (atoi_simple("-123") == -123);
+  ok &= (atoi_simple("047") == 47);
+  float f = atof_simple("12.75");
+  ok &= (f > 12.749f && f < 12.751f);
+  ok &= (d2("47") == 47);
+  ok &= (hexnib('a') == 10 && hexnib('F') == 15 && hexnib('7') == 7);
+  /* XOR checksum vzoroveho tela vety: "GPGLL" = 0x47^0x50^0x47^0x4C^0x4C */
+  uint8_t cs = 0; const char *b = "GPGLL";
+  for (const char *p = b; *p; p++) cs ^= (uint8_t)*p;
+  ok &= (cs == ('G' ^ 'P' ^ 'G' ^ 'L' ^ 'L'));
+  printf("gps: parser selftest %s\n", ok ? "OK" : "FAIL");
+  return ok != 0;
 }
 
 void gps_format_raw(char *buf, int n)

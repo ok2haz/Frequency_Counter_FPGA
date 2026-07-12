@@ -19,4 +19,13 @@ void alarm_tick(void);
  *  (alarm_tick ho okamzite umlci) — UART odpoved na to upozorni. */
 void alarm_test(void);
 
+/** Pozadavek na kratky "click" (dotek tlacitka, ~12 ms). Thread-safe: jen
+ *  nastavi flag, prehraje ho alarm_tick (defaultTask) — smi volat UiTask.
+ *  Mute plati; bezici alarm pattern ma prednost (click se zahodi). */
+void alarm_click(void);
+
+/* Pocitadla alarmovych udalosti (okno Alarmy). */
+extern volatile unsigned int g_alarm_fpga_lost;   /* pocet ztrat FPGA signalu */
+extern volatile unsigned int g_alarm_gps_lost;    /* pocet ztrat GPS locku */
+
 #endif /* ALARM_H */

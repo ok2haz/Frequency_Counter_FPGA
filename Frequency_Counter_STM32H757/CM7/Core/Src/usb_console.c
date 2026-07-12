@@ -57,7 +57,9 @@ void usb_console_tx(const uint8_t *data, uint16_t len)
         __set_PRIMASK(primask);
       }
     }
-    s_tx[s_head & TXRING_MASK] = data[i];
+    /* volatile store bajtu -> kompilator ho nesmi presunout az ZA s_head++
+     * (pump by jinak mohl poslat jeste nezapsany bajt) */
+    *(volatile uint8_t *)&s_tx[s_head & TXRING_MASK] = data[i];
     s_head++;
   }
   usb_console_tx_pump();

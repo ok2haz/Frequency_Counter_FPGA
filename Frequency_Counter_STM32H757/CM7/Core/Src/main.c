@@ -42,6 +42,7 @@
 #include "si5356.h"
 #include "watchdog.h"      /* IWDG1 watchdog (init pred schedulerem) */
 #include "freertos_shared.h"  /* g_brightness — ulozeny jas z BKP */
+#include <string.h>        /* strncpy — g_reset_text */
 #include "usb_console.h"   /* prepinac konzole USART1 <-> USB CDC (USE_USB_CDC_CONSOLE) */
 extern UART_HandleTypeDef huart1;
 extern I2C_HandleTypeDef hi2c4;
@@ -230,6 +231,34 @@ Error_Handler();
   MX_ADC3_Init();
   MX_QUADSPI_Init();
   /* USER CODE BEGIN 2 */
+
+  /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
+   * aby pristi boot videl cerstvou pricinu. IWDG1RSTF = watchdog zasahl (system
+   * v behu zatuhl a auto-zotavil se) -> Health okno to ukaze cervene. */
+  g_reset_rsr = RCC->RSR;
+  RCC->RSR |= RCC_RSR_RMVF;
+  {
+    const char *rc; uint8_t bad = 0;
+    if      (g_reset_rsr & RCC_RSR_IWDG1RSTF) { rc = "WATCHDOG!"; bad = 1; }
+    else if (g_reset_rsr & RCC_RSR_WWDG1RSTF) { rc = "WWDG!";     bad = 1; }
+    else if (g_reset_rsr & RCC_RSR_SFT1RSTF)    rc = "SW reset";
+    else if (g_reset_rsr & RCC_RSR_PORRSTF)     rc = "power-on";
+    else if (g_reset_rsr & RCC_RSR_BORRSTF)     rc = "brownout";
+    else if (g_reset_rsr & RCC_RSR_PINRSTF)     rc = "NRST pin";
+    else                                        rc = "---";
+    strncpy((char *)g_reset_text, rc, sizeof(g_reset_text) - 1);
+    g_reset_text[sizeof(g_reset_text) - 1] = '\0';
+    g_reset_bad = bad;
+    printf("[RESET] pricina: %s%s\n", rc,
+           bad ? " (system zatuhl a byl auto-resetovan!)" : "");
+  }
+
+  /* ⚠️ Vycisti framebuffery na CERNO hned na zacatku: SDRAM (FMC, 0xC0000000)
+   * NENI resetem nulovana -> po soft resetu (napr. Menu->Restart) drzi POSLEDNI
+   * snimek pred restartem (klidne trend/jine okno) a LTDC ho zacne skenovat drive,
+   * nez ho UiTask prekresli -> vypadalo, ze system "nabootuje do trendu". Cerne FB
+   * = cisty start. FB0/1/2 = 3x 1 MB stride od 0xC0000000. */
+  memset((void *)0xC0000000u, 0, 3u * 0x100000u);
 
   /* ⚠️ ADC reference VREFBUF: VREF+ (pin 43) NENI na desce spojen s VDDA (zamerne —
    * kvuli sumu ze SMPS), budi se vnitrnim bufferem. Bez reference VREF+ visi (~0,5 V)

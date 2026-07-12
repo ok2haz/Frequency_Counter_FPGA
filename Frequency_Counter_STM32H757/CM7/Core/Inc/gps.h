@@ -15,14 +15,16 @@
 #define INC_GPS_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #define GPS_MAX_SATS 16   /* max druzic v poli sats[] (GSV); vic ignorujeme */
 
 /* Jedna druzice z GSV: PRN, elevace, sila signalu C/N0. */
 typedef struct {
-  uint8_t prn;    /* cislo druzice */
-  uint8_t elev;   /* elevace [°] (0..90); zatim jen ukladano (budouci sky-view) */
-  uint8_t snr;    /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
+  uint8_t  prn;    /* cislo druzice */
+  uint8_t  elev;   /* elevace [°] (0..90) */
+  uint8_t  snr;    /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
+  uint16_t azim;   /* azimut [°] (0..359, 0 = sever) — sky plot v GPS okne */
 } gps_sat_t;
 
 typedef struct {
@@ -69,5 +71,9 @@ void gps_format_status(char *buf, int n);
 /* Diagnostika linky STM<->GPS: pocet syrovych bajtu, validnich vet a posledni
  * prijaty NMEA radek doslova (i pri vadnem checksumu). */
 void gps_format_raw(char *buf, int n);
+
+/* Selftest cistych parser helperu (souradnice/cisla/hex) — nemeni zadny sdileny
+ * stav, bezpecne za behu. Soucast UART "selftest". @return true = OK. */
+bool gps_selftest(void);
 
 #endif /* INC_GPS_H_ */

@@ -193,10 +193,12 @@ void SensorsTask_run(void *argument)
   uint8_t rawData[2];
   int16_t tempRaw;
 
-  // Senzory 2x/s. (Touch poll je v UiTasku — presun do tohoto tasku zpusoboval
-  // selhani touch + free-run I2C4 pri saturaci, viz historie.)
+  // Smycka 10 Hz: kazdy tik RF_Level fast-path (AIN1 -> zivy bargraf), plny
+  // sber senzoru jen kazdy 5. tik (= 2x/s jako drive). (Touch poll je v UiTasku —
+  // presun do tohoto tasku zpusoboval selhani touch + free-run I2C4, viz historie.)
   TickType_t xLastWakeTime;
-  const TickType_t xFrequency = pdMS_TO_TICKS(500);   // 2x za sekundu (0x48 + gate I2C1)
+  const TickType_t xFrequency = pdMS_TO_TICKS(100);   // 10 Hz (RF fast-path)
+  uint8_t sub = 0;                                    // 0 = plny sber, 1..4 = jen RF
   xLastWakeTime = xTaskGetTickCount();
   uint32_t   i2c1_streak = 0;                         // po sobe jdouci selhani cele I2C1
   TickType_t i2c1_last   = 0;                         // tick posledniho pokusu o I2C1
@@ -230,6 +232,33 @@ void SensorsTask_run(void *argument)
   osDelay(2);
 
   for(;;) {
+	// === RF_Level fast-path (AIN1, ~10 Hz): na NE-sweep ticich, jen kdyz je I2C1
+	// zdrava (streak==0 — pri mrtvem busu nehammerovat, sweep ridi back-off).
+	// Jedine misto rychleho zapisu SENS_ADS1 mimo sweep (porad jediny writer task).
+	if (sub != 0) {
+	  if (i2c1_streak == 0) {
+		int started = 0;
+		if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
+		  started = ads1115_start(&hi2c1, 1);              /* AIN1 = RF_Level */
+		  osMutexRelease(i2c1MutexHandle);
+		}
+		if (started) {
+		  osDelay(9);                                      /* 128 SPS konverze */
+		  int16_t raw; int got = 0;
+		  if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
+			got = ads1115_read_raw(&hi2c1, &raw);
+			osMutexRelease(i2c1MutexHandle);
+		  }
+		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw));
+		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
+		}
+	  }
+	  if (++sub >= 5) sub = 0;
+	  vTaskDelayUntil(&xLastWakeTime, xFrequency);
+	  continue;
+	}
+	sub = 1;
+
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
 	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;

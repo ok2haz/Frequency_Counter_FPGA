@@ -45,6 +45,14 @@ extern RTC_HandleTypeDef hrtc;
  * (bity7:0 jas 0-255, bit8 mute, bit9 auto-dim en, bity10:15 auto-dim prodleva
  * v nasobcich 15 s). Persist pres warm reset. */
 #define RTC_SYSCFG_MAGIC 0x53C00000u
+/* BKP_DR3..DR5: crash black-box (zapisuji FreeRTOS hooky pred spinem -> IWDG
+ * reset; MX_RTC_Init po bootu precte, vystavi g_crash_text a smaze).
+ * DR3 = magic | kind (1 = stack overflow, 2 = malloc fail), DR4+DR5 = 8 znaku
+ * jmena tasku (little-endian po 4). */
+#define RTC_CRASH_MAGIC  0xC7A50000u
+/* BKP_DR6: systemove nastaveni 2 (DR2 payload je plny) — bit0 svetle schema,
+ * bit1 english. Persist pres warm reset. */
+#define RTC_SYSCFG2_MAGIC 0x53C10000u
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);

@@ -32,6 +32,9 @@
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
+#include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
+#include "screens/screen_main.h"   /* screen_main_selftest — run_selftests() */
+#include "app_gpsdo.h"        /* app_gpsdo_selftest (Maidenhead lokator) */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -125,7 +128,34 @@ volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
 volatile uint8_t g_sound_muted   = 0;     /* 0 = zvuk zapnut */
 volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut */
 volatile uint16_t g_autodim_sec  = 60;    /* prodleva auto-dim [s] (preset 15..600) */
+volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
+volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
 volatile uint8_t g_sys_cfg_dirty = 0;
+volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela NVIC_SystemReset */
+
+/* Diagnostika resetu: RCC->RSR zachycene v main.c; crash black-box z BKP (rtc.c);
+ * vysledek boot selftestu (defaultTask). Health okno + UART je zobrazuji. */
+volatile uint32_t g_reset_rsr    = 0;
+volatile char     g_reset_text[12] = "---";
+volatile uint8_t  g_reset_bad    = 0;
+volatile char     g_crash_text[16] = "";
+volatile uint8_t  g_selftest_res = 0;
+
+/* Pure-logic unit testy (zadny HW, zadny sdileny stav). Boot (defaultTask) +
+ * UART "selftest". Nastavi g_selftest_res pro indikator v Health okne. */
+int run_selftests(void)
+{
+  int pass = 0;
+  pass += fpga_freq_crc_selftest()    ? 1 : 0;
+  pass += fpga_freq_select_selftest() ? 1 : 0;
+  pass += gps_selftest()              ? 1 : 0;
+  pass += screen_main_selftest()      ? 1 : 0;
+  pass += app_gpsdo_selftest()        ? 1 : 0;
+  int ok = (pass == 5);
+  g_selftest_res = ok ? 1 : 2;
+  printf("SELFTEST: %d/5 %s\n", pass, ok ? "PASS" : "FAIL");
+  return ok;
+}
 
 /* RTOS zdravi (UiTask zapise, diagnostika cte) */
 volatile uint32_t g_rtos_heap_free = 0;
@@ -269,6 +299,7 @@ void StartDefaultTask(void *argument)
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
   gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
+  run_selftests();   /* boot selftest (pure-logic, ~ms); FAIL -> cerveny indikator v Health */
   /* Infinite loop */
   for(;;)
   {
@@ -283,6 +314,10 @@ void StartDefaultTask(void *argument)
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
+    if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */
+      osDelay(50);
+      NVIC_SystemReset();                  /* softwarovy reset (uz se nevraci) */
+    }
     usb_console_tx_pump();   /* dopumpuj CDC TX ring (ocasek po USBD_BUSY by jinak
                               * cekal az na dalsi printf); prazdny ring = okamzity return */
     osDelay(10);   /* 100 Hz: GPS drain (9600 bd ~10 B/tick, fronta 256 hl.) + rtc + usb pump */

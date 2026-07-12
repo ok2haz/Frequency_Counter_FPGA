@@ -20,6 +20,10 @@
 extern volatile unsigned char g_freq_stale;    /* 1 = FPGA signal lost / mrtvy link */
 extern volatile unsigned char g_sound_muted;   /* 1 = globalni mute (Nastaveni) */
 
+/* Pocitadla udalosti pro okno Alarmy (definice zde, extern v alarm.h). */
+volatile unsigned int g_alarm_fpga_lost = 0;   /* pocet ztrat FPGA signalu */
+volatile unsigned int g_alarm_gps_lost  = 0;   /* pocet ztrat GPS locku */
+
 /* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ── */
 static unsigned char  s_pulses_left;   /* zbyva ON pulzu */
 static unsigned short s_on_ms, s_off_ms;
@@ -67,12 +71,23 @@ static unsigned char s_fpga_ever = 0;        /* uz nekdy byl link OK (jinak star
 static unsigned char s_gps_lock_prev = 0;    /* boot = jeste nikdy zamknuto */
 static unsigned char s_gps_ever = 0;         /* uz nekdy byl lock (jinak neresime jeho ztratu) */
 
+/* Touch click: UiTask jen nastavi flag, prehraje ho alarm_tick (jeden vlastnik
+ * pattern stavu = defaultTask -> zadny cross-task zapis do s_phase). */
+static volatile unsigned char s_click_req;
+void alarm_click(void) { s_click_req = 1; }
+
 void alarm_tick(void)
 {
     /* Mute: umlci okamzite (i rozehrany pattern). */
     if (g_sound_muted && (s_phase != 0 || beeper_is_on())) pattern_stop();
     /* Presne casovani pipnuti — kazdy tik (~100 Hz), jen kdyz neni mute. */
     if (!g_sound_muted) pattern_service();
+
+    /* Touch click (~12 ms tick @800 Hz): jen kdyz nehraje alarm pattern. */
+    if (s_click_req) {
+        s_click_req = 0;
+        if (!g_sound_muted && s_phase == 0) pattern_start(1, 12, 0);
+    }
 
     /* Vyhodnoceni stavu (hrany) jen 5x/s — gps_get kopiruje ~200B v kriticke sekci. */
     static unsigned int last_eval;
@@ -100,6 +115,7 @@ void alarm_tick(void)
         s_fpga_ever = 1;
     } else if (fpga_bad && !s_fpga_bad_prev && s_fpga_ever) {
         pattern_start(3, 80, 80);                    /* ztrata signalu */
+        g_alarm_fpga_lost++;                         /* pocitadlo pro okno Alarmy */
     }
     s_fpga_bad_prev = fpga_bad;
 
@@ -109,6 +125,7 @@ void alarm_tick(void)
         s_gps_ever = 1;
     } else if (!lock && s_gps_lock_prev && s_gps_ever) {
         pattern_start(2, 120, 120);                 /* ztrata locku */
+        g_alarm_gps_lost++;                         /* pocitadlo pro okno Alarmy */
     }
     s_gps_lock_prev = lock;
 }

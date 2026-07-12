@@ -64,7 +64,21 @@ extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
 extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, preset 15..600) */
+extern volatile uint8_t g_theme_light;   /* 0 = tmave schema (default), 1 = svetle (BKP_DR6) */
+extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_sys_cfg_dirty; /* 1 = zmena -> defaultTask ulozi do BKP */
+extern volatile uint8_t g_reboot_req;    /* 1 = softwarovy restart (Menu->Restart); provede defaultTask */
+
+/* ── Diagnostika resetu + selftest (24/7 auto-recovery reporting) ───────────
+ * g_reset_rsr = RCC->RSR zachycene v main.c (pak RMVF clear -> priste cerstve).
+ * g_crash_text = crash black-box z BKP_DR3..5 ("stack:UiTask" / "malloc fail"),
+ * prazdny = zadny zaznam. g_selftest_res: 0 = nespusten, 1 = PASS, 2 = FAIL. */
+extern volatile uint32_t g_reset_rsr;
+extern volatile char     g_reset_text[12];  /* dekodovana pricina ("WATCHDOG!"...) */
+extern volatile uint8_t  g_reset_bad;       /* 1 = IWDG/WWDG (cervene v Health) */
+extern volatile char     g_crash_text[16];
+extern volatile uint8_t  g_selftest_res;
+int run_selftests(void);   /* pure-logic testy (boot + UART "selftest"); 1 = vse OK */
 
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
 extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */

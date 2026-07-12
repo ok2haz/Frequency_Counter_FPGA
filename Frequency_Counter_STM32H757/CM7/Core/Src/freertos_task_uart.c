@@ -27,6 +27,8 @@
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
 #include "alarm.h"          /* alarm_test — UART "beep" */
+#include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
+#include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -141,8 +143,16 @@ void UartTask_run(void *argument)
 				  uint8_t devices_found = 0;
 				  uint8_t result = 0;
 
+				  /* ⚠️ Per-adresa POD i2c4Mutex (audit 2026-07-10: drive bez mutexu ->
+				   * kolize s touch pollem UiTasku na temze HAL handle). Mutex se drzi
+				   * jen na jeden probe, mezi adresami se pousti (touch/TMP117 dychaji). */
 				  for (uint16_t i = 1; i < 128; i++) {
-					  result = HAL_I2C_IsDeviceReady( &hi2c4, (uint16_t)(i << 1), 3, 10);
+					  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+						  result = HAL_I2C_IsDeviceReady( &hi2c4, (uint16_t)(i << 1), 3, 10);
+						  osMutexRelease(i2c4MutexHandle);
+					  } else {
+						  result = HAL_BUSY;
+					  }
 					  if (result == HAL_OK) {
 						  printf( "Adresa zarizeni: 0x%02X (7-bit) | 0x%02X (8-bit)\n", i, (i << 1));
 						  devices_found++;
@@ -266,10 +276,15 @@ void UartTask_run(void *argument)
 				  printf("OK\r\n");
 			  }
 				  else if (strcmp(RxBuffer, "version") == 0) {
-				  printf("gpsdo-ui v0.2-diag\r\n");
+				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest\r\n");
+			  }
+			  else if (strcmp(RxBuffer, "selftest") == 0) {
+				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
+				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
+				  run_selftests();
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];
@@ -352,6 +367,17 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "beep off") == 0) {
 				  g_sound_muted = 1; g_sys_cfg_dirty = 1;
 				  printf("BEEP: zvuk VYPNUT (mute)\n");
+			  }
+			  else if (strncmp(RxBuffer, "backlight ", 10) == 0) {
+				  /* Test jasu z konzole (diagnostika ATTINY runtime zapisu): nastavi
+				   * g_brightness, HW zapis udela UiTask pod mutexem (stejna cesta
+				   * jako Nastaveni/auto-dim). Sleduj pak touch + `temperature`. */
+				  int v = 0; const char *p = &RxBuffer[10];
+				  while (*p >= '0' && *p <= '9' && v < 1000) { v = v * 10 + (*p - '0'); p++; }
+				  if (v > 255) v = 255;
+				  if (v < 5)   v = 5;      /* nikdy uplna tma */
+				  g_brightness = (uint8_t)v; g_sys_cfg_dirty = 1;
+				  printf("BACKLIGHT: %d (aplikuje UiTask; pri aktivnim dimu az po probuzeni)\n", v);
 			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */
