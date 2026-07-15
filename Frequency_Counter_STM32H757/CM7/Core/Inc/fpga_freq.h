@@ -85,6 +85,12 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
  *  Autoritativni z FPGA (watchdog ~2.5 s); funguje i kdyz mereni neni VALID. */
 bool fpga_freq_signal_lost(void);
 
+/** Kopie posledniho naparsovaneho DATA ramce (latch — i nefresh/invalid, takze
+ *  error_flags/phase_status jsou videt i pri ztrate signalu). Kopiruje pod
+ *  kratkym IRQ-off -> bezpecne z jineho tasku nez FpgaTask (okno Citac v UiTasku).
+ *  @return false = zadny DATA ramec zatim nedorazil (out se nemeni). */
+bool fpga_freq_get_last(fpga_meas_t *out);
+
 /** Diagnostika: jeden 64B prenos (posle ACK), syrova odpoved do rx64 (min. 64 B).
  *  @return true pokud HAL prenos prosel (rika nic o platnosti dat). */
 bool fpga_freq_raw_xfer(uint8_t *rx64);

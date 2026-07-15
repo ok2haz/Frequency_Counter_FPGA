@@ -78,6 +78,16 @@ extern volatile char     g_reset_text[12];  /* dekodovana pricina ("WATCHDOG!"..
 extern volatile uint8_t  g_reset_bad;       /* 1 = IWDG/WWDG (cervene v Health) */
 extern volatile char     g_crash_text[16];
 extern volatile uint8_t  g_selftest_res;
+/* Per-test vysledky selftestu (0=nespusten, 1=PASS, 2=FAIL). Poradi = poradi
+ * volani v run_selftests: [0]=CRC16, [1]=hystereze /4<->/16, [2]=GPS parser,
+ * [3]=format/histogram (screen_main), [4]=Maidenhead lokator (app_gpsdo).
+ * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
+#define SELFTEST_N 5
+extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
+/* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
+ * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane
+ * misto tiche tmy (Error_Handler). Ukazuje se v Health karte System + SYS pill amber. */
+extern volatile uint8_t  g_cm4_absent;
 int run_selftests(void);   /* pure-logic testy (boot + UART "selftest"); 1 = vse OK */
 
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */

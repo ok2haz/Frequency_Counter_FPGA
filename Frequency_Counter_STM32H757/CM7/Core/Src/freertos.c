@@ -138,22 +138,27 @@ volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela 
 volatile uint32_t g_reset_rsr    = 0;
 volatile char     g_reset_text[12] = "---";
 volatile uint8_t  g_reset_bad    = 0;
+volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bezime degradovane, viz main.c */
 volatile char     g_crash_text[16] = "";
 volatile uint8_t  g_selftest_res = 0;
+volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
 
 /* Pure-logic unit testy (zadny HW, zadny sdileny stav). Boot (defaultTask) +
- * UART "selftest". Nastavi g_selftest_res pro indikator v Health okne. */
+ * UART "selftest" + okno Selftest (UiTask, tlacitko SPUSTIT). Nastavi
+ * g_selftest_res (souhrn) + g_selftest_detail[] (per-test, okno Selftest). */
 int run_selftests(void)
 {
+  uint8_t r[SELFTEST_N];
+  r[0] = fpga_freq_crc_selftest()    ? 1 : 2;
+  r[1] = fpga_freq_select_selftest() ? 1 : 2;
+  r[2] = gps_selftest()              ? 1 : 2;
+  r[3] = screen_main_selftest()      ? 1 : 2;
+  r[4] = app_gpsdo_selftest()        ? 1 : 2;
   int pass = 0;
-  pass += fpga_freq_crc_selftest()    ? 1 : 0;
-  pass += fpga_freq_select_selftest() ? 1 : 0;
-  pass += gps_selftest()              ? 1 : 0;
-  pass += screen_main_selftest()      ? 1 : 0;
-  pass += app_gpsdo_selftest()        ? 1 : 0;
-  int ok = (pass == 5);
+  for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
+  int ok = (pass == SELFTEST_N);
   g_selftest_res = ok ? 1 : 2;
-  printf("SELFTEST: %d/5 %s\n", pass, ok ? "PASS" : "FAIL");
+  printf("SELFTEST: %d/%d %s\n", pass, SELFTEST_N, ok ? "PASS" : "FAIL");
   return ok;
 }
 
