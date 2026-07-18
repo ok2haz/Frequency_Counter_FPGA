@@ -59,3 +59,24 @@ musí schválit ten druhý (autor sám sebe neschválí). Ostatní soubory owner
 ## 6) Build / test
 - Build i flash **jen z STM32CubeIDE** (CM7 → Build → Run, config CM7). Toolchain
   není v CI → každý ověří lokálně + ideálně na HW před PR (viz PR checklist).
+
+## 7) ⚠️ Dual-core flash — NAFLASHUJ OBĚ JÁDRA
+STM32H757 = **dvě jádra ve dvou flash bankách**. Displej + veškerá logika běží na
+**CM7 (bank1 `@0x08000000`)**, ale CM7 na startu čeká, až nabootuje **CM4
+(bank2 `@0x08100000`)** — dual-core HSEM/D2 handshake. **Když naflashuješ jen CM7,
+CM4 v bank2 nenaběhne** → dřív to znamenalo tichý zásek v `Error_Handler` **před**
+inicializací displeje = **černá obrazovka** (klasické „jednomu jde, druhému ne").
+
+**Firmware je od teď odolný** (CM7 pokračuje degradovaně, ukáže „CM4 (D2): ABSENT"
+v System Health + amber SYS pill + UART `[BOOT] CM4 nenabehl`), ale **správně je
+flashnout obě banky:**
+
+- **CubeIDE:** spusť build+flash pro **CM7 i CM4 projekt** (dvě Run konfigurace), ne jen CM7.
+- **CubeProgrammer:** načti oba `.elf` (CM7 `@0x08000000`, CM4 `@0x08100000`) → Program.
+  Nebo naflashuj jeden **combined image** — viz `tools/make_release_image.ps1`.
+- **Option bytes** (CubeProgrammer, tab OB): **`BCM7=1` A `BCM4=1`** (boot obou jader),
+  `nSWBOOT0`/`BOOT_ADD0/1` na defaultech. Repo spoléhá na hardwarový boot obou jader.
+
+**Diagnostika tmavého displeje:** připoj UART (USART1, 115200 8N1) a pošli `ping`.
+- ticho → CM7 nedojel = dual-core boot (option bytes / neflashnutá bank2).
+- `pong` → CM7 běží, problém je panel/backlight (I2C4/ATTINY — viz `CLAUDE.md`).

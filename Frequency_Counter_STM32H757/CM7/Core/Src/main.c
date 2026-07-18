@@ -175,12 +175,18 @@ int main(void)
   SCB_EnableDCache();
 
 /* USER CODE BEGIN Boot_Mode_Sequence_1 */
-  /* Wait until CPU2 boots and enters in stop mode or timeout*/
+  /* Wait until CPU2 boots and enters in stop mode or timeout.
+   * ⚠️ NEspadnout do Error_Handler pri timeoutu! Displej + veskera logika bezi
+   * na CM7; CM4 dnes jen blika LED. Kdyz CM4 nenabehne (prazdna/vadna bank2 nebo
+   * BCM4=0 v option bytes), D2CKRDY se nikdy nenastavi -> puvodni Error_Handler
+   * = tichy zasek PRED init displeje = CERNA obrazovka. Misto toho pokracujeme
+   * degradovane a priznak g_cm4_absent zviditelnime (UART boot log + Health + SYS
+   * pill amber). Behem tohoto boot fragmentu jeste nebezi HAL/UART, jen RAM zapis. */
   timeout = 0xFFFF;
   while((__HAL_RCC_GET_FLAG(RCC_FLAG_D2CKRDY) != RESET) && (timeout-- > 0));
   if ( timeout < 0 )
   {
-  Error_Handler();
+    g_cm4_absent = 1;
   }
 /* USER CODE END Boot_Mode_Sequence_1 */
   /* MCU Configuration--------------------------------------------------------*/
@@ -206,12 +212,14 @@ __HAL_RCC_HSEM_CLK_ENABLE();
 HAL_HSEM_FastTake(HSEM_ID_0);
 /*Release HSEM in order to notify the CPU2(CM4)*/
 HAL_HSEM_Release(HSEM_ID_0,0);
-/* wait until CPU2 wakes up from stop mode */
+/* wait until CPU2 wakes up from stop mode.
+ * ⚠️ Stejny duvod jako Boot_Mode_Sequence_1: kdyz CM4 vubec nenabehl, ani se
+ * neprobudi z HSEM -> timeout. Pokracuj degradovane misto tiche tmy. */
 timeout = 0xFFFF;
 while((__HAL_RCC_GET_FLAG(RCC_FLAG_D2CKRDY) == RESET) && (timeout-- > 0));
 if ( timeout < 0 )
 {
-Error_Handler();
+g_cm4_absent = 1;
 }
 /* USER CODE END Boot_Mode_Sequence_2 */
 
@@ -252,6 +260,13 @@ Error_Handler();
     printf("[RESET] pricina: %s%s\n", rc,
            bad ? " (system zatuhl a byl auto-resetovan!)" : "");
   }
+
+  /* CM4 (D2) boot handshake vyhodnoceny v Boot_Mode_Sequence_1/2 (pred UART).
+   * Kdyz nenabehl, jedeme dal (displej je na CM7) — jen o tom nahlas rekni:
+   * typicky priznak = naflashovana jen bank1, nebo BCM4=0 v option bytes. */
+  if (g_cm4_absent)
+    printf("[BOOT] CM4 (D2) nenabehl -> degradovany rezim. Zkontroluj: "
+           "naflashovana bank2 @0x08100000 + option byte BCM4=1.\n");
 
   /* ⚠️ Vycisti framebuffery na CERNO hned na zacatku: SDRAM (FMC, 0xC0000000)
    * NENI resetem nulovana -> po soft resetu (napr. Menu->Restart) drzi POSLEDNI
