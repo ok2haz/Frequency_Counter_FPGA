@@ -27,10 +27,13 @@ extern volatile uint8_t g_sound_muted;    /* 1 = mute -> ikona v headeru */
 extern volatile uint8_t  g_spi_ok;         /* FPGA link */
 extern volatile uint8_t  g_freq_stale;     /* FPGA SIGNAL_LOST / mrtvy link */
 extern volatile uint8_t  g_si5356_ok;      /* Si5356 status precten */
-extern volatile uint8_t  g_si5356_status;  /* reg218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
+extern volatile uint8_t  g_si5356_status;  /* reg218: bit0 SYS_CAL, bit2 LOS_XTAL, bit3 LOS_CLKIN, bit4 PLL_LOL (AN565) */
 extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
+extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
+extern volatile char    g_rtc_text_local[24];  /* cas v lokalni zone (rtc_app_tick) */
+extern volatile char    g_tz_label[8];         /* "UTC" / "UTC+2" (label zony k datu) */
 
 /* Ulozene UI nastaveni (persist v RTC BKP): nacte se jednou v screen_main_init,
  * pakuje se pri zmene tlacitka; defaultTask ho zapise do BKP. bit0 mode / bit1
@@ -38,12 +41,14 @@ extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 extern volatile uint8_t g_ui_cfg;
 extern volatile uint8_t g_ui_cfg_dirty;
 
-/* Vytahne cas "HH:MM:SS" a datum "YYYY-MM-DD" z g_rtc_text. Dokud nebyl RTC
- * srovnan z GPS, vraci placeholdery "--:--:--" / "no GPS". time8/date10 = char[16]. */
+/* Vytahne cas "HH:MM:SS" a datum "YYYY-MM-DD" z g_rtc_text_local (cas v
+ * ZVOLENE casove zone z Nastaveni; UTC kdyz je zona 0 — label zony k tomu dava
+ * g_tz_label). Dokud nebyl RTC srovnan z GPS, vraci placeholdery
+ * "--:--:--" / "no GPS". time8/date10 = char[16]. */
 static void rtc_time_date(char *time8, char *date10)
 {
     char rt[24];
-    strncpy(rt, (const char *)g_rtc_text, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+    strncpy(rt, (const char *)g_rtc_text_local, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
     if (g_rtc_synced && strlen(rt) >= 19) {
         snprintf(time8,  16, "%.8s",  rt + 11);   /* "HH:MM:SS" */
         snprintf(date10, 16, "%.10s", rt);        /* "YYYY-MM-DD" */
@@ -105,8 +110,14 @@ bool screen_main_hit_sys(int16_t x, int16_t y)
 
 /* Agregace zdravi systemu do SYS pilulky: 0=OK(zelena) 1=warn(amber) 2=chyba(cervena).
  * Cerpa ze VSECH chybovych zdroju. AMBER = degradace (funguje), RED = kriticke. */
+/* Si5356 reg 218 — bitova mapa OVERENA z AN565 (drivejsi bit2=LOS_CLKIN byla
+ * chyba; bit2 je LOS_XTAL = krystal, ktery na desce NENI osazen -> trvale 1,
+ * benigni, IGNORUJE se). Skutecnou ztratu 10 MHz na CLKIN hlasi bit3 — a POZOR,
+ * PLL_LOL se pri fyzicke ztrate vstupu NEasertuje (AN565: LOL = rozdil >5000 ppm
+ * na PFD, ne odpojeny vstup) -> LOS_CLKIN je HLAVNI indikator ztraty reference. */
 #define SI_SYS_CAL   0x01u
-#define SI_LOS_CLKIN 0x04u
+#define SI_LOS_XTAL  0x04u   /* bit2: bez krystalu trvale 1 — nehodnotit */
+#define SI_LOS_CLKIN 0x08u   /* bit3: ztrata 10 MHz na CLKIN (pin 4) */
 #define SI_PLL_LOL   0x10u
 static int compute_sys_level(void)
 {
@@ -115,10 +126,13 @@ static int compute_sys_level(void)
     if (g_freq_stale || !g_spi_ok) lvl = 1;               /* FPGA SIGNAL_LOST / mrtvy link */
     if (!g_si5356_ok || (g_si5356_status & SI_SYS_CAL)) lvl = 1;  /* ref necteno / kalibruje */
     if (g_reset_bad) lvl = 1;                             /* watchdog/crash reset (zotaveno) */
+    if (g_cm4_absent) lvl = 1;                            /* CM4 (D2) nenabehl -> degradovane */
     for (int i = 0; i < SENS_COUNT; i++)
         if (i != (int)SENS_T4A && g_sensors[i].err_streak > 0) { lvl = 1; break; }  /* 0x4A neosazen */
-    /* RED: kriticke (prebiji) */
-    if (g_si5356_ok && (g_si5356_status & (SI_LOS_CLKIN | SI_PLL_LOL))) lvl = 2;  /* ztrata ref! */
+    /* RED: kriticke (prebiji). LOS_CLKIN (bit3) = ztrata 10 MHz reference — LOL se
+     * pri fyzicke ztrate vstupu NEasertuje (viz komentar u SI_* vyse), takze LOS je
+     * tady nutny. SI_LOS_XTAL (bit2) se zamerne NEhodnoti (bez krystalu trvale 1). */
+    if (g_si5356_ok && (g_si5356_status & (SI_LOS_CLKIN | SI_PLL_LOL))) lvl = 2;
     if (g_selftest_res == 2) lvl = 2;                     /* selftest FAIL */
     return lvl;
 }
@@ -281,8 +295,8 @@ static void render_header(void)
     int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;   /* half the margin */
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
-    /* "UTC" na radek DATA (vpravo dole) — mimo radu pilulek -> zadna kolize. */
-    char dutc[24]; snprintf(dutc, sizeof dutc, "%s UTC", date_v);
+    /* Label zony ("UTC"/"UTC+2") na radek DATA (vpravo dole) — mimo pilulky. */
+    char dutc[24]; snprintf(dutc, sizeof dutc, "%s %s", date_v, (const char *)g_tz_label);
     prim_draw_text((prim_point_t){time_x, 46}, dutc, &ui_font_sans_14,
                    UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
 }
@@ -435,6 +449,7 @@ static void render_body_number(void)
 static float s_y[STAT_N];
 static int   s_y_head = 0, s_y_count = 0;
 static void adev_feed(float v);     /* fwd — decimacni pyramida (dlouhodoby Allan) */
+static void trend_feed(float v);    /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
 
@@ -447,6 +462,7 @@ static void stats_sample(void)
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
     adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
+    trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
 }
 
@@ -534,6 +550,66 @@ static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prv
     int idx = (sg->head - sg->count + i + 2 * ADEV_RING) % ADEV_RING;
     return sg->ring[idx];
 }
+
+/* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
+ * Plochy ring s_y[] pokryje jen 120 s; okno 30 dni by v nem chtelo 2,6 M vzorku
+ * (~10 MB). Stejny princip jako ADEV pyramida vyse, ale JEMNEJSI decimace (×4
+ * misto ×10) a delsi ringy -> hladsi krivka i u dlouhych oken. Stage s ma
+ * rozliseni 4^s sekund a rozsah TR_RING*4^s:
+ *   s=0: krok 1 s  rozsah 128 s      s=5: krok 1024 s  rozsah 1,5 dne
+ *   s=1: krok 4 s  rozsah 8,5 min    s=6: krok 4096 s  rozsah 6,1 dne
+ *   s=2: krok 16 s rozsah 34 min     s=7: krok 16384 s rozsah 24 dni
+ *   s=3: krok 64 s rozsah 2,3 h      s=8: krok 65536 s rozsah 97 dni
+ *   s=4: krok 256 s rozsah 9,1 h
+ * Pamet ~4,7 kB (9 x 128 float) v RAM_D1 (512 kB) — zanedbatelne. */
+#define TR_STAGES 9
+#define TR_RING   128
+#define TR_DECIM  4
+typedef struct { float ring[TR_RING]; int16_t head, count; float acc; int16_t acc_n; } tr_stage_t;
+static tr_stage_t s_tr[TR_STAGES];
+
+static void trend_feed(float v)
+{
+    for (int s = 0; s < TR_STAGES; s++) {
+        tr_stage_t *sg = &s_tr[s];
+        sg->ring[sg->head] = v;
+        sg->head = (int16_t)((sg->head + 1) % TR_RING);
+        if (sg->count < TR_RING) sg->count++;
+        sg->acc += v;
+        if (++sg->acc_n < TR_DECIM) return;            /* vyssi stage jeste nema co krmit */
+        v = sg->acc / (float)TR_DECIM; sg->acc = 0; sg->acc_n = 0;
+    }
+}
+
+static int32_t tr_res(int s)            /* rozliseni stage [s/vzorek] = 4^s */
+{
+    int32_t r = 1; for (int i = 0; i < s; i++) r *= TR_DECIM; return r;
+}
+
+/* Nejnizsi (= nejjemnejsi) stage, jehoz rozsah pokryje pozadovane okno [s]. */
+static int tr_pick(int32_t win_s)
+{
+    for (int s = 0; s < TR_STAGES; s++)
+        if ((int64_t)TR_RING * tr_res(s) >= (int64_t)win_s) return s;
+    return TR_STAGES - 1;
+}
+
+static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
+{
+    const tr_stage_t *sg = &s_tr[s];
+    int idx = (sg->head - 1 - age + 2 * TR_RING) % TR_RING;
+    return sg->ring[idx];
+}
+
+/* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). */
+static void fmt_dur(char *b, int n, int32_t s)
+{
+    if      (s < 60)    snprintf(b, n, "%ld s",   (long)s);
+    else if (s < 3600)  snprintf(b, n, "%ld min", (long)(s / 60));
+    else if (s < 86400) snprintf(b, n, "%ld h",   (long)(s / 3600));
+    else                snprintf(b, n, "%ld d",   (long)(s / 86400));
+}
+void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 
 /* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
 static float adev_stage(int s, int m)
@@ -938,7 +1014,7 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
 {
     (void)ms_since_boot;
     static char     last_time[16] = "";
-    static char     last_date[16] = "";
+    static char     last_date[26] = "";   /* "YYYY-MM-DD UTC+14" (datum + label zony) */
     static uint8_t  last_icons = 0xFF;
 
     /* Cas + datum z RTC (LSE, disciplinovany GPS) -> tika plynule i pri ztrate
@@ -951,12 +1027,15 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
      * kolize s pilulkami (drivejsi "UTC"/"H" u casu do HOLD pilulky narazely). */
     uint8_t icons = (uint8_t)(g_sound_muted ? 1u : 0u);
 
+    /* Radek data nese i label zony ("UTC+2") -> klic je SLOZENY retezec, aby se
+     * prekreslil i pri zmene zony v Nastaveni beze zmeny samotneho data. */
+    char dl[26]; snprintf(dl, sizeof dl, "%s %s", db, (const char *)g_tz_label);
     int tchg = (strcmp(tb, last_time) != 0);
-    int dchg = (strcmp(db, last_date) != 0);
+    int dchg = (strcmp(dl, last_date) != 0);
     int ichg = (icons != last_icons);
     if (!tchg && !dchg && !ichg) return 0;
     strncpy(last_time, tb, sizeof last_time - 1); last_time[sizeof last_time - 1] = '\0';
-    strncpy(last_date, db, sizeof last_date - 1); last_date[sizeof last_date - 1] = '\0';
+    strncpy(last_date, dl, sizeof last_date - 1); last_date[sizeof last_date - 1] = '\0';
     last_icons = icons;
     strncpy(s_time_buf, tb, sizeof s_time_buf - 1); s_time_buf[sizeof s_time_buf - 1] = '\0';
 
@@ -969,11 +1048,12 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
         if (icons & 1u)   /* mute: preskrtnuty reproduktor tesne vlevo od casu */
             ui_icon_speaker_muted((prim_point_t){(int16_t)(time_x - tw - 22), 4}, 18, UI_COLOR_BAD);
     }
-    if (dchg) {   /* datum + "UTC" (baseline 46, vpravo dole — mimo pilulky) */
-        char dutc[24]; snprintf(dutc, sizeof dutc, "%s UTC", db);
-        int16_t dw = prim_text_width(dutc, &ui_font_sans_14);
-        blit_bg_region((prim_rect_t){(int16_t)(time_x - dw - 6), 35, (int16_t)(dw + 12), 18});
-        prim_draw_text((prim_point_t){time_x, 46}, dutc, &ui_font_sans_14,
+    if (dchg) {   /* datum + label zony (baseline 46, vpravo dole — mimo pilulky).
+                   * Clear FIXNI sirkou (150 px > nejdelsi "YYYY-MM-DD UTC+14"):
+                   * pri zkraceni labelu (UTC+14 -> UTC) by clear dle nove sirky
+                   * nechal zbytky stareho delsiho textu. */
+        blit_bg_region((prim_rect_t){(int16_t)(time_x - 150), 35, 156, 18});
+        prim_draw_text((prim_point_t){time_x, 46}, dl, &ui_font_sans_14,
                        UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
     }
     return 1;
@@ -1246,27 +1326,38 @@ void screen_main_render_stats_table(prim_rect_t rect)
     }
 }
 
-/* Casove okno fullscreen trendu [s] (= vzorky, 1/s). Prepinatelne tlacitky. */
-static int s_trend_secs = 120;
-void screen_main_trend_set_secs(int s) { if (s > 0) s_trend_secs = s; }
-int  screen_main_trend_secs(void)      { return s_trend_secs; }
+/* Casove okno fullscreen trendu [s]. Prepinatelne tlacitky (presety 1 min..60 dni;
+ * dlouha okna se kresli z decimacni pyramidy s_tr[], viz trend_feed). */
+static int32_t s_trend_secs = 120;
+void screen_main_trend_set_secs(int s) { if (s > 0) s_trend_secs = (int32_t)s; }
+int  screen_main_trend_secs(void)      { return (int)s_trend_secs; }
 
-/* Fullscreen trend: posledních s_trend_secs vzorku (okno prepinatelne tlacitky;
- * ring drzi max STAT_N=120 s). Auto-scale s min/max popisky (fmt_frac), mrizka,
- * overlay okno/drift. Kresli do 'rect' + sam si vycisti -> change-key volani. */
+/* Fullscreen trend: posledních s_trend_secs z decimacni pyramidy — vybere se
+ * nejjemnejsi stage, ktery okno pokryje (tr_pick). Kdyz jeste nema dost dat
+ * (vyssi stage se plni pomalu — napr. stage 8 az po 18 h behu), spadne se na
+ * nejvyssi stage s aspon 2 vzorky, aby bylo VZDY videt neco misto "waiting".
+ * Auto-scale s min/max popisky (fmt_frac), mrizka, overlay okno/krok/drift. */
 void screen_main_render_trend_big(prim_rect_t rect)
 {
     prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    int n = s_y_count;
-    if (n > s_trend_secs) n = s_trend_secs;   /* posledni s_trend_secs vzorku */
+
+    /* 'ts', ne 'st' — 'st' je globalni UI stav (stejny duvod jako 'sg' u ADEV). */
+    int ts = tr_pick(s_trend_secs);
+    while (ts > 0 && s_tr[ts].count < 2) ts--;   /* fallback na to, co uz mame */
+    int32_t res = tr_res(ts);
+    int32_t want = s_trend_secs / res;           /* kolik vzorku okno potrebuje */
+    if (want > TR_RING) want = TR_RING;
+    int n = s_tr[ts].count;
+    if ((int32_t)n > want) n = (int)want;
+
     if (n < 2) {
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w / 2),
                                       (int16_t)(rect.y + rect.h / 2)},
                        "Waiting for data...", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
-    float mn = stat_at(0), mx = mn;
-    for (int i = 1; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    float mn = tr_at(ts, 0), mx = mn;
+    for (int i = 1; i < n; i++) { float v = tr_at(ts, i); if (v < mn) mn = v; if (v > mx) mx = v; }
     float span = mx - mn;
     if (span < 1e-18f) span = 1e-18f;
 
@@ -1281,7 +1372,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     /* krivka: nejstarsi vlevo -> nejnovejsi vpravo */
     int16_t px_prev = 0, py_prev = 0;
     for (int i = 0; i < n; i++) {
-        float v = stat_at(n - 1 - i);
+        float v = tr_at(ts, n - 1 - i);
         int16_t px = (int16_t)(in.x + (int32_t)i * in.w / (n - 1));
         int16_t py = (int16_t)(in.y + in.h - (int16_t)((v - mn) / span * (float)in.h));
         if (i) prim_draw_line((prim_point_t){px_prev, py_prev}, (prim_point_t){px, py},
@@ -1299,9 +1390,16 @@ void screen_main_render_trend_big(prim_rect_t rect)
     fmt_frac(lb, sizeof lb, mn, 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    /* overlay: okno + drift (vpravo nahore/dole) */
-    char ov[40], fb2[24];
-    snprintf(ov, sizeof ov, "okno %d s  (N=%d)", s_trend_secs, n);
+    /* overlay: okno + skutecne pokryty cas + krok decimace (vpravo nahore).
+     * "pokryto" = n*res muze byt MENE nez okno, dokud stage nenasbira data. */
+    char ov[96], fb2[24], dw[16], dr[16], dc[16];
+    fmt_dur(dw, sizeof dw, s_trend_secs);
+    fmt_dur(dr, sizeof dr, res);
+    fmt_dur(dc, sizeof dc, (int32_t)n * res);
+    if ((int32_t)n * res < s_trend_secs - res)      /* jeste se sbira -> ukaz oboji */
+        snprintf(ov, sizeof ov, "okno %s · zatim %s · krok %s", dw, dc, dr);
+    else
+        snprintf(ov, sizeof ov, "okno %s · krok %s · N=%d", dw, dr, n);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w - 6), (int16_t)(in.y - 6)}, ov,
                    &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
     fmt_frac(fb2, sizeof fb2, stats_drift(), 1);

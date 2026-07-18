@@ -54,6 +54,9 @@ bool screen_main_hit_trend(int16_t x, int16_t y);      /* tap do trend karty -> 
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */
 int  screen_main_trend_secs(void);                     /* aktualni okno trendu [s] */
+/* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). Sdileno s app
+ * vrstvou, aby popisek tlacitka a overlay trendu formatovaly stejne. */
+void screen_main_fmt_dur(char *buf, int len, int32_t secs);
 void screen_main_render_histogram(prim_rect_t rect);   /* histogram distribuce y do rect (okno) */
 void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka do rect (okno) */
 bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */

@@ -15,6 +15,7 @@
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
 #include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
+#include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
 #include "freertos_shared.h"
 
 /* ── ADC3 factory kalibrace (system memory) ───────────────────────────────
@@ -318,10 +319,13 @@ void SensorsTask_run(void *argument)
 		}
 		if (got) {
 		  int32_t mv = ads1115_raw_to_mv(raw);
-		  /* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
-			 AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
-		  if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
-		  else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
+		  /* AIN2 = 12V vetev pres odporovy delic, AIN3 = 5V vetev pres delic ->
+			 skutecne napeti. Gain je editovatelna kalibrace (g_calib, okno
+			 Kalibrace); vychozi = datasheet pomer (13417/2814, 4978/2526).
+			 ⚠️ Kratke okno pri bootu pred calib_load() (UiTask) jede na vychozich
+			 hodnotach z calib.c — kosmeticke, diagnosticke cteni ~1 Hz. */
+		  if      (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
+		  else if (ch == 3) mv = (int32_t)((float)mv * g_calib.gain_5v  + 0.5f);
 		  sensor_update(sid, (float)mv); any_ok = 1;
 		} else {
 		  sensor_fail(sid);

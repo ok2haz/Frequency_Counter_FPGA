@@ -30,6 +30,7 @@
 #include "freertos_shared.h"  /* sdilene globaly + task prototypy (tasky jsou ve freertos_task_*.c) */
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
+#include "syscfg.h"           /* syscfg_flash_tick — zrcadlo nastaveni do W25Q flash */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
@@ -116,6 +117,12 @@ volatile uint8_t g_si5356_ok     = 0;
  * taskENTER_CRITICAL (tam vadi i jednorazovy vypis). */
 volatile char    g_rtc_text[24]  = "---------- --:--:--";   /* presny tvar: [0..9]=datum [11..18]=cas */
 volatile uint8_t g_rtc_synced    = 0;
+/* Lokalni cas dle zvolene zony (rtc_app_tick aplikuje g_tz_offset_h na UTC,
+ * vc. prehoupnuti data). Hlavni obrazovka + screensaver; GPS okno/diag = UTC. */
+volatile char    g_rtc_text_local[24] = "---------- --:--:--";
+volatile char    g_tz_label[8]   = "UTC";   /* "UTC" / "UTC+2" / "CET" / "CEST" (pise rtc_app_tick) */
+volatile int8_t  g_tz_offset_h   = 0;       /* rucni posun od UTC [h], -12..+14, persist BKP_DR6 */
+volatile uint8_t g_tz_auto       = 0;       /* 1 = AUTO CET/CEST (EU pravidlo), persist BKP_DR6 bit7 */
 
 /* Ulozene UI nastaveni (persist v BKP_DR1): default = {FREQ, CH B, GATE 1s, RUN}
  * = bit1(chan=1) | bit2(gate=1) | bit4(run=1) = 0x16. MX_RTC_Init ho prepise
@@ -132,6 +139,10 @@ volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
 volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
 volatile uint8_t g_sys_cfg_dirty = 0;
 volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela NVIC_SystemReset */
+/* 1 = pri bootu byla platna syscfg BKP (warm reset, BKP prezila) -> syscfg_load
+ * NEpretahne z flash (BKP je nejnovejsi). 0 = studeny start (BKP smazana
+ * power-cyclem) -> flash je autoritativni. Nastavuje MX_RTC_Init (DR2 magic). */
+volatile uint8_t g_syscfg_bkp_valid = 0;
 
 /* Diagnostika resetu: RCC->RSR zachycene v main.c; crash black-box z BKP (rtc.c);
  * vysledek boot selftestu (defaultTask). Health okno + UART je zobrazuji. */
@@ -154,6 +165,7 @@ int run_selftests(void)
   r[2] = gps_selftest()              ? 1 : 2;
   r[3] = screen_main_selftest()      ? 1 : 2;
   r[4] = app_gpsdo_selftest()        ? 1 : 2;
+  r[5] = rtc_selftest()              ? 1 : 2;   /* kalendar (tz prehoupnuti) + EU DST hranice */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);
@@ -317,6 +329,7 @@ void StartDefaultTask(void *argument)
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
+    syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */

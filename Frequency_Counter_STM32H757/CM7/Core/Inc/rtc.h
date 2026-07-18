@@ -29,7 +29,7 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>   /* rtc_selftest */
 /* USER CODE END Includes */
 
 extern RTC_HandleTypeDef hrtc;
@@ -51,7 +51,9 @@ extern RTC_HandleTypeDef hrtc;
  * jmena tasku (little-endian po 4). */
 #define RTC_CRASH_MAGIC  0xC7A50000u
 /* BKP_DR6: systemove nastaveni 2 (DR2 payload je plny) — bit0 svetle schema,
- * bit1 english. Persist pres warm reset. */
+ * bit1 english, bity2:6 casova zona (tz+13 -> 1..27 = -12..+14 h; 0 = legacy
+ * zaznam -> UTC), bit7 = AUTO CET/CEST (EU pravidlo, ignoruje bity2:6).
+ * Persist pres warm reset. */
 #define RTC_SYSCFG2_MAGIC 0x53C10000u
 /* USER CODE END Private defines */
 
@@ -73,6 +75,16 @@ void rtc_save_uicfg_if_dirty(void);
 /* Ulozi systemove nastaveni (jas/mute/auto-dim) do BKP_DR2, jen pokud
  * g_sys_cfg_dirty. Volat z defaultTask (jediny kontext pristupu k RTC/BKP). */
 void rtc_save_syscfg_if_dirty(void);
+
+/* EU pravidlo letniho casu: CEST (UTC+2) od posledni nedele brezna 01:00 UTC
+ * do posledni nedele rijna 01:00 UTC, jinak CET (UTC+1). Cista funkce (bez HW)
+ * -> pouziva ji rtc_app_tick, okno Nastaveni (zivy label) i selftest.
+ * @return 1 = plati CEST, 0 = CET. Vstup = UTC datum + hodina. */
+int rtc_cest_active(uint16_t y, uint8_t month, uint8_t day, uint8_t hour_utc);
+
+/* Pure-logic selftest kalendarni matematiky (rtc_apply_tz prehoupnuti pres
+ * pulnoc/mesic/rok/prestupny unor + rtc_cest_active hranice DST). Bez HW. */
+bool rtc_selftest(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus
