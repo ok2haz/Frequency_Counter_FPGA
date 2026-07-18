@@ -220,7 +220,7 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t UartTaskHandle;
 const osThreadAttr_t UartTask_attributes = {
   .name = "UartTask",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,   /* 4 KB — viz .ioc FREERTOS_M7.Tasks01 (regeneruje se odtud) */
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for I2C4Task */
