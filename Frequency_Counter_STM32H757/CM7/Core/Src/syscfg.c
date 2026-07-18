@@ -6,7 +6,8 @@
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
-#include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, ... */
+#include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, qspiMutexHandle */
+#include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
 
@@ -15,6 +16,11 @@
  * bez paddingu-zavislosti (cteme/zapisujeme celou strukturu, kompilator stejny). */
 #define SYSCFG_BLOB_MAGIC   0x53434647u   /* "SCFG" */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
+/* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
+ * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
+ * obsazene flash radeji hned odejde a zkusi to za dalsi tick (pending zustane). */
+#define SYSCFG_LOCK_LOAD_MS 1000u
+#define SYSCFG_LOCK_SAVE_MS 10u
 
 typedef struct {
     uint32_t magic;
@@ -48,17 +54,20 @@ static void pack(syscfg_blob_t *b)
 
 void syscfg_load(void)
 {
-    if (!w25q_init()) return;   /* flash nedostupna -> zustanou BKP/default hodnoty */
-    if (!w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS)) return;
+    /* Cely init+cteni pod jednim zamkem — mezi w25q_init (SW reset cipu) a ctenim
+     * nesmi vlezt jiny kontext, jinak by cetl z prave resetovaneho cipu. */
+    if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_LOAD_MS) != osOK) return;
 
-    /* Warm reset: BKP uz drzi nejnovejsi -> flash NEpretezovat (byla by max o
-     * debounce okno starsi). Store je pripraveny pro zapis. */
-    if (g_syscfg_bkp_valid) return;
-
-    /* Studeny start (BKP smazana power-cyclem): flash je autoritativni. */
     syscfg_blob_t b;
-    uint32_t n = w25q_store_read(&s_store, &b, sizeof b);
-    if (n != sizeof(b) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash */
+    uint32_t n = 0;
+    if (w25q_init() && w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS)) {
+        /* Warm reset: BKP uz drzi nejnovejsi -> flash NEcist (byla by max o debounce
+         * okno starsi). Store je i tak inicializovany, aby fungoval zapis. */
+        if (!g_syscfg_bkp_valid) n = w25q_store_read(&s_store, &b, sizeof b);
+    }
+    osMutexRelease(qspiMutexHandle);
+
+    if (n != sizeof(b) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/warm reset */
 
     /* Sanitizace (CRC uz sedi, ale kdyby layout/verze poskodila rozsah). */
     g_brightness  = (b.brightness < 25) ? 25 : b.brightness;
@@ -77,7 +86,12 @@ bool syscfg_save(void)
     if (!s_store.ready) return false;   /* syscfg_load nevolan / flash nedostupna */
     syscfg_blob_t b;
     pack(&b);
-    return w25q_store_write(&s_store, &b, sizeof b);
+    /* Kratky timeout: volajici (syscfg_flash_tick z defaultTask) pri neuspechu
+     * jen nechá pending=1 a zkusi to za dalsi tick — zadne blokovani watchdogu. */
+    if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_SAVE_MS) != osOK) return false;
+    bool ok = w25q_store_write(&s_store, &b, sizeof b);
+    osMutexRelease(qspiMutexHandle);
+    return ok;
 }
 
 void syscfg_flash_tick(void)

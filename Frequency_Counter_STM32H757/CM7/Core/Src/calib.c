@@ -6,6 +6,12 @@
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
+#include "freertos_shared.h"   /* qspiMutexHandle — W25Q sdili vic tasku */
+#include "cmsis_os2.h"         /* osMutexAcquire/Release */
+
+/* Timeouty QSPI mutexu: boot (calib_load) i ULOZIT (calib_save) bezi v UiTask
+ * na explicitni akci uzivatele, takze si muzou pockat i na bezici erase (~400 ms). */
+#define CALIB_LOCK_MS 1000u
 
 /* Vychozi (datasheet) hodnoty - stejne cisla jako drivejsi #define konstanty
  * v app_gpsdo.c / freertos_task_sensors.c, ted jen jednou zde. */
@@ -36,11 +42,17 @@ static w25q_store_t s_store;
 
 void calib_load(void)
 {
-    if (!w25q_init()) return;   /* flash nedostupna -> g_calib zustava na vychozich */
-    w25q_store_init(&s_store, W25Q_CALIB_BASE, W25Q_CALIB_SECTORS);
-
+    /* Init + cteni pod jednim zamkem (w25q_init resetuje cip — mezi tim a ctenim
+     * nesmi vlezt jiny kontext). */
+    if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return;
     calib_blob_t b;
-    uint32_t n = w25q_store_read(&s_store, &b, sizeof b);
+    uint32_t n = 0;
+    if (w25q_init()) {   /* flash nedostupna -> g_calib zustava na vychozich */
+        w25q_store_init(&s_store, W25Q_CALIB_BASE, W25Q_CALIB_SECTORS);
+        n = w25q_store_read(&s_store, &b, sizeof b);
+    }
+    osMutexRelease(qspiMutexHandle);
+
     if (n == sizeof(b) && b.magic == CALIB_BLOB_MAGIC) {
         g_calib.ad8307_slope_mv_db   = b.ad8307_slope_mv_db;
         g_calib.ad8307_intercept_dbm = b.ad8307_intercept_dbm;
@@ -60,5 +72,8 @@ bool calib_save(void)
         g_calib.gain_12v,
         g_calib.gain_5v,
     };
-    return w25q_store_write(&s_store, &b, sizeof b);
+    if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return false;
+    bool ok = w25q_store_write(&s_store, &b, sizeof b);
+    osMutexRelease(qspiMutexHandle);
+    return ok;
 }

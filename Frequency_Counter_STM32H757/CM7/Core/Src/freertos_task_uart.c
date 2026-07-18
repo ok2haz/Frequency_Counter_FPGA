@@ -32,6 +32,11 @@
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
+/* QSPI prikazy (qspiid/qspitest/storetest/qspispeed) sahaji na W25Q, kterou sdili
+ * i syscfg auto-save (defaultTask) a calib_save (UiTask) -> cela operace pod
+ * qspiMutexHandle. Timeout velkorysy: prikaz je manualni diagnostika a klidne
+ * pocka i na bezici erase (~400 ms/sektor). */
+#define QSPI_CMD_LOCK_MS  2000u
 #define RAM_BASE          0x30000000UL
 #define SDRAM_BASE        0xC0000000UL
 #define TEST_OFFSET       0x00001000UL   /* RAM_D2 test (bezpecne mimo struktury) */
@@ -413,32 +418,47 @@ void UartTask_run(void *argument)
 			  }
 			  else if (strcmp(RxBuffer, "qspiid") == 0) {
 				  /* Bring-up krok 1: JEDEC ID. Cekame EF 40 20 (W25Q512JV). Nevyzaduje init. */
-				  uint32_t id = w25q_read_jedec();
-				  printf("QSPI JEDEC ID: %06lX  (%s)\n", (unsigned long)id,
+				  uint32_t id = 0; int got = 0;
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) == osOK) {
+					  id = w25q_read_jedec(); got = 1;
+					  osMutexRelease(qspiMutexHandle);
+				  }
+				  if (!got) printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  else printf("QSPI JEDEC ID: %06lX  (%s)\n", (unsigned long)id,
 					     (id == W25Q_JEDEC_ID) ? "W25Q512JV OK" : "NEODPOVIDA (cekam EF4020)");
 			  }
 			  else if (strcmp(RxBuffer, "qspitest") == 0) {
 				  /* Bring-up krok 2: init + erase sektoru 0 + zapis/cteni vzorku + verify.
-				   * DESTRUKTIVNI na sektor 0 (flash zatim nic nepouziva). */
-				  if (!w25q_init()) {
-					  printf("QSPI: init/JEDEC FAIL (zkontroluj qspiid)\n");
-				  } else {
-					  uint8_t wr[16], rd[16];
-					  for (int i = 0; i < 16; i++) wr[i] = (uint8_t)(0xA0 + i);
-					  bool e = w25q_erase_sector(0);
-					  bool w = w25q_write(0, wr, sizeof(wr));
-					  bool r = w25q_read(0, rd, sizeof(rd));
-					  int ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
-					  printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
-						     (int)e, (int)w, (int)r, ok ? "OK" : "MISMATCH");
+				   * DESTRUKTIVNI na sektor 0. Cela sekvence pod QSPI zamkem — erase+write+read
+				   * musi projit vcelku (jinak by mezi ne vlezl syscfg auto-save z defaultTask). */
+				  int got = 0, init_ok = 0, e = 0, w = 0, r = 0, ok = 0;
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) == osOK) {
+					  got = 1;
+					  if (w25q_init()) {
+						  init_ok = 1;
+						  uint8_t wr[16], rd[16];
+						  for (int i = 0; i < 16; i++) wr[i] = (uint8_t)(0xA0 + i);
+						  e = w25q_erase_sector(0);
+						  w = w25q_write(0, wr, sizeof(wr));
+						  r = w25q_read(0, rd, sizeof(rd));
+						  ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
+					  }
+					  osMutexRelease(qspiMutexHandle);
 				  }
+				  if (!got)          printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  else if (!init_ok) printf("QSPI: init/JEDEC FAIL (zkontroluj qspiid)\n");
+				  else printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
+					     e, w, r, ok ? "OK" : "MISMATCH");
 			  }
 			  else if (strcmp(RxBuffer, "storetest") == 0) {
 				  /* Test genericke store vrstvy na CONFIG regionu (base 0x0 -> hlida i
 				   * base-0 edge case). Destruktivni, region zatim nevyuzity.
 				   * Init -> write blob -> read+verify -> 2. write (rotace sektoru). */
-				  if (!w25q_init()) {
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) != osOK) {
+					  printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  } else if (!w25q_init()) {
 					  printf("STORE: QSPI init FAIL (zkontroluj qspiid)\n");
+					  osMutexRelease(qspiMutexHandle);
 				  } else {
 					  w25q_store_t st;
 					  w25q_store_init(&st, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS);
@@ -458,14 +478,18 @@ void UartTask_run(void *argument)
 					  printf("STORE 2nd: seq=%lu active=0x%06lX (rotace:%s)\n",
 						     (unsigned long)st.seq, (unsigned long)st.active,
 						     (st.active != prev) ? "OK" : "NE");
+					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "qspispeed") == 0) {
 				  /* Propustnost cteni pri aktualni SCK (60 MHz quad). Zapise 64 KB pattern
 				   * do DATA regionu, pak CASOVANY read (DWT) + verify. ⚠️ DESTRUKTIVNI na
 				   * DATA[0..64KB). Zapis je pomaly (erase+PP ~1-2 s), meri se jen cteni. */
-				  if (!w25q_init()) {
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) != osOK) {
+					  printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  } else if (!w25q_init()) {
 					  printf("QSPI speed: init FAIL\n");
+					  osMutexRelease(qspiMutexHandle);
 				  } else {
 					  uint8_t buf[512];
 					  uint32_t base = W25Q_DATA_BASE, total = 64u * 1024u;
@@ -485,6 +509,7 @@ void UartTask_run(void *argument)
 					  printf("QSPI speed: read %lu KB in %lu us -> %lu KB/s verify=%s\n",
 						     (unsigned long)(total / 1024u), (unsigned long)us,
 						     (unsigned long)kbps, ok ? "OK" : "FAIL");
+					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {

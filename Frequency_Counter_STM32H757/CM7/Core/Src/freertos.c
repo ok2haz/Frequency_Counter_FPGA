@@ -89,6 +89,13 @@ osMutexId_t i2c1MutexHandle;
 
 /* Mutex pro UART TX (printf z vice tasku se nesmi michat) - pouziva _write v main.c */
 osMutexId_t uartTxMutexHandle;
+/* QSPI (W25Q) — od 2026-07-18 na flash sahaji TRI kontexty: defaultTask
+ * (syscfg_flash_tick auto-save), UiTask (calib_save na ULOZIT, w25q_read_jedec
+ * v oknech Pamet/Datalog) a UartTask (qspiid/qspitest/storetest/qspispeed).
+ * ⚠️ Zamyka se na urovni LOGICKE operace, ne jednotlivych w25q_* volani —
+ * w25q_store_write = erase + zapis payloadu + zapis hlavicky a ty MUSI probehnout
+ * jako celek (jinak by soubezny zapis rozbil power-safe poradi). */
+osMutexId_t qspiMutexHandle;
 
 /* Pozadavek na obrazovku: UART nastavi, UiTask obslouzi (libprim/libui neni
  * thread-safe -> kresli VYHRADNE UiTask). 3 = "screen main", 4 = "clear". */
@@ -258,6 +265,7 @@ void MX_FREERTOS_Init(void) {
   i2c4MutexHandle  = osMutexNew(NULL);   /* chrani I2C4 (TMP117 + touch + backlight) */
   i2c1MutexHandle  = osMutexNew(NULL);   /* chrani I2C1 (FPGA deska: TMP117 x2, ADS1115) */
   uartTxMutexHandle = osMutexNew(NULL);  /* serializuje printf/_write */
+  qspiMutexHandle  = osMutexNew(NULL);   /* chrani W25Q (syscfg/calib/UART prikazy) */
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */

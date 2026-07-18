@@ -17,6 +17,12 @@
 extern osMutexId_t i2c4MutexHandle;        /* I2C4: TMP117 0x48 + touch + backlight */
 extern osMutexId_t i2c1MutexHandle;        /* I2C1: FPGA deska (TMP117 x2, ADS1115, Si5356) */
 extern osMutexId_t uartTxMutexHandle;      /* serializace printf/_write */
+/* QSPI (W25Q): defaultTask (syscfg auto-save) + UiTask (calib_save, JEDEC v oknech)
+ * + UartTask (qspi* prikazy). ⚠️ Zamykej celou LOGICKOU operaci (w25q_store_write =
+ * erase+payload+hlavicka), ne jednotliva w25q_* volani. Doporucene timeouty:
+ * defaultTask kratky (~10 ms, nesmi zdrzet watchdog — pri neuspechu zkusi priste),
+ * UiTask/UART delsi (erase az ~400 ms). */
+extern osMutexId_t qspiMutexHandle;
 extern osMessageQueueId_t UartRxQueueHandle;
 extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NMEA) */
 

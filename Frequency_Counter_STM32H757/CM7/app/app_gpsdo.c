@@ -275,6 +275,24 @@ static void dtext_c(int16_t cx, int16_t baseline, int16_t boxw, const char *v,
     prim_reset_clip();
 }
 
+/* ── Spolecna hlavicka okna: pozadi + BACK + nadpis ─────────────────────────
+ * Tenhle blok byl doslova zkopirovany v 19 render funkcich — kazda kopie byla
+ * dalsi misto, kde se mohly rozejit souradnice (viz historie oprav layoutu
+ * 2026-07-18). Volajici pak uz jen dokresli sve karty/tlacitka.
+ * title_y: WIN_TITLE_Y (38) pro vetsinu oken; okno Nastaveni ma hustsi layout
+ * a nadpis o 4 px vys (WIN_TITLE_Y_TIGHT) — proto je to parametr, ne konstanta. */
+#define WIN_TITLE_Y        38
+#define WIN_TITLE_Y_TIGHT  34
+static void window_chrome(const char *title, int16_t title_y)
+{
+    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
+    ui_button_render(&back);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, title_y}, title,
+                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+}
+
 /* GPS souradnice -> "dd.ddddddH" (bez float v printf, integer extrakce). */
 static void fmt_ll(float v, char pos, char neg, char *out, size_t n)
 {
@@ -469,11 +487,7 @@ void app_gpsdo_render_diag(void)
     if (first) {
         /* First entry: draw the static chrome + labels exactly once. */
         s_view = 1;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL,
-                            .label = "< ZPET"};
-        ui_button_render(&back);
+        window_chrome("DIAGNOSTIKA", WIN_TITLE_Y);
         ui_button_t diagbtn = {.rect = DIAG_DIAGRAM_BTN_RECT, .variant = UI_BUTTON_NORMAL,
                                .label = "DIAGRAM"};
         ui_button_render(&diagbtn);
@@ -483,8 +497,6 @@ void app_gpsdo_render_diag(void)
         ui_button_t stbtn = {.rect = DIAG_ST_BTN_RECT, .variant = UI_BUTTON_NORMAL,
                              .label = "SELFTEST"};
         ui_button_render(&stbtn);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "DIAGNOSTIKA",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
         /* Left column: Teploty (vc. MCU jadra) + Napeti (ADS1115 + MCU).
          * ⚠️ FOOTER PRAVIDLO: spodni lista (y >= 416) je VZDY dedikovana
@@ -730,12 +742,7 @@ void app_gpsdo_render_gps(void)
     int first = (s_view != 2);
     if (first) {
         s_view = 2;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "GNSS / GPS",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("GNSS / GPS", WIN_TITLE_Y);
 
         /* Levy (siroky) sloupec: FIX (bez nadpisu — FIX/druzice/DOP/TimePulse jsou
          * uvnitr) + Druzice roztazena AZ PO SPODNI OKRAJ (vyjimka z footer pravidla —
@@ -910,10 +917,7 @@ void app_gpsdo_render_health(void)
     int first = (s_view != 3);
     if (first) {
         s_view = 3;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
+        window_chrome("SYSTEM HEALTH", WIN_TITLE_Y);
         ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY"};
         ui_button_render(&sens);
         ui_button_t hdiag = {.rect = HEALTH_DIAG_BTN_RECT, .variant = UI_BUTTON_NORMAL,
@@ -921,8 +925,6 @@ void app_gpsdo_render_health(void)
         ui_button_render(&hdiag);
         ui_button_t set = {.rect = SET_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "NASTAVENI"};
         ui_button_render(&set);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SYSTEM HEALTH",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 
         /* Levy: RTOS + Stack tasku. */
         ui_card_t c_rtos = {.rect = {DG_LX, 58, DG_COLW, 122},
@@ -1008,12 +1010,7 @@ void app_gpsdo_render_sensors(void)
     int first = (s_view != 4);
     if (first) {
         s_view = 4;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SENZORY",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("SENZORY", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 58, 764, 346},
                        .header_label = "Aktualni hodnoty senzoru"};
         ui_card_render_chrome(&c);
@@ -1067,12 +1064,7 @@ void app_gpsdo_render_mem(void)
     int first = (s_view != 5);
     if (first) {
         s_view = 5;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "PAMET",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("PAMET", WIN_TITLE_Y);
         ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
                           .header_label = "Vyuziti pameti  (pouzite / celkem)"};
         ui_card_render_chrome(&card);
@@ -1130,12 +1122,7 @@ void app_gpsdo_render_histogram(void)
     int first = (s_view != 6);
     if (first) {
         s_view = 6;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "HISTOGRAM",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("HISTOGRAM", WIN_TITLE_Y);
         ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
                           .header_label = "Rozdeleni y = (f-f0)/f0   |   Allan σy(τ)"};
         ui_card_render_chrome(&card);
@@ -1187,13 +1174,8 @@ void app_gpsdo_render_trend(void)
     int first = (s_view != 9);
     if (first) {
         s_view = 9;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
+        window_chrome("TREND  y = (f-f0)/f0", WIN_TITLE_Y);
         render_trend_scale_btns();
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "TREND  y = (f-f0)/f0",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
         ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
                           .header_label = "Frakcni odchylka v case"};
         ui_card_render_chrome(&card);
@@ -1215,12 +1197,7 @@ void app_gpsdo_render_about(void)
     int first = (s_view != 10);
     if (first) {
         s_view = 10;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "O PRISTROJI",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("O PRISTROJI", WIN_TITLE_Y);
         ui_card_t c1 = {.rect = {DG_LX, 62, 764, 200}, .header_label = "GPSDO / citac kmitoctu"};
         ui_card_render_chrome(&c1);
         prim_draw_text((prim_point_t){DG_LLBL, 108}, "Firmware:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -1355,12 +1332,7 @@ void app_gpsdo_render_settings(void)
     s_view = 7;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 34}, "NASTAVENI",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+    window_chrome("NASTAVENI", WIN_TITLE_Y_TIGHT);
 
     /* ── Levy sloupec: Zvuk ── */
     ui_card_t c1 = {.rect = {DG_LX, 58, DG_COLW, 88},
@@ -1602,12 +1574,7 @@ void app_gpsdo_render_menu(void)
     s_view = 12;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "MENU",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+    window_chrome("MENU", WIN_TITLE_Y);
     for (int i = 0; i < MENU_N; i++) {
         ui_button_t b = {.rect = MENU_ITEMS[i].rect, .label = MENU_ITEMS[i].label,
                          .variant = UI_BUTTON_NORMAL};
@@ -1653,12 +1620,7 @@ static void app_gpsdo_render_reference(void)
     static char c_lock[24];
     if (first) {
         s_view = 14;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "REFERENCE  Si5356",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("REFERENCE  Si5356", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Vernier reference (4-fazovy TDC)"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 112}, "Vstup:",  &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -1750,14 +1712,9 @@ static void app_gpsdo_render_kalib(void)
     s_view = 15;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
+    window_chrome("KALIBRACE", WIN_TITLE_Y);
     ui_button_t save = {.rect = KALIB_SAVE_RECT, .variant = UI_BUTTON_ACTIVE, .label = "ULOZIT"};
     ui_button_render(&save);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "KALIBRACE",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
     ui_card_t c = {.rect = {DG_LX, 62, 764, 320}, .header_label = "Kalibracni konstanty"};
     ui_card_render_chrome(&c);
 
@@ -1802,12 +1759,7 @@ static void app_gpsdo_render_holdover(void)
     static int s_last_state = -1;
     if (first) {
         s_view = 16;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "HOLDOVER",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("HOLDOVER", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Stav disciplinace GPSDO"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 116}, "Rezim:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -1852,12 +1804,7 @@ static void app_gpsdo_render_datalog(void)
     s_view = 17;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "DATALOG",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+    window_chrome("DATALOG", WIN_TITLE_Y);
     ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Zaznam mereni do W25Q (DATA region)"};
     ui_card_render_chrome(&c);
     char b[32];
@@ -1887,12 +1834,7 @@ static void app_gpsdo_render_alarms(void)
     static char c_mute[12], c_f[12], c_g[12];
     if (first) {
         s_view = 18;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "ALARMY",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("ALARMY", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Zvukove alarmy (beeper) — co je hlidano"};
         ui_card_render_chrome(&c);
         kv_row(116, "FPGA SIGNAL_LOST:", "hlidano (3x pip)", UI_COLOR_INK_2);
@@ -1949,12 +1891,7 @@ static void app_gpsdo_render_counter(void)
     static int  c_ph = -1;   /* posledni kresleny phase_status (-1 = jeste nic) */
     if (first) {
         s_view = 19;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "CITAC  detail mereni",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("CITAC  detail mereni", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 340}, .header_label = "FPGA reciproke mereni (SPI2)"};
         ui_card_render_chrome(&c);
         dlabel(DG_LLBL, 104, "SPI link");
@@ -2057,14 +1994,9 @@ static void app_gpsdo_render_selftest(void)
     s_view = 20;
     prim_set_target(&s_fb);
     prim_reset_clip();
-    prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-              screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-    ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-    ui_button_render(&back);
+    window_chrome("SELFTEST", WIN_TITLE_Y);
     ui_button_t run = {.rect = ST_RUN_RECT, .variant = UI_BUTTON_ACTIVE, .label = "SPUSTIT"};
     ui_button_render(&run);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "SELFTEST",
-                   &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
     ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
@@ -2150,12 +2082,7 @@ static void app_gpsdo_render_cas(void)
     static char c_utc[26], c_loc[34], c_sync[8];
     if (first) {
         s_view = 22;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "CAS  zobrazovaci zona",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("CAS  zobrazovaci zona", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 340},
                        .header_label = "Casova zona (RTC bezi v UTC z GPS)"};
         ui_card_render_chrome(&c);
@@ -2382,12 +2309,7 @@ static void app_gpsdo_render_commdiag(void)
     static uint32_t c_key = 0xFFFFFFFFu;
     if (first) {
         s_view = 21;
-        prim_blit((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                  screen_main_bg(), UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
-        ui_button_t back = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "< ZPET"};
-        ui_button_render(&back);
-        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 38}, "KOMUNIKACE  blokove schema",
-                       &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+        window_chrome("KOMUNIKACE  blokove schema", WIN_TITLE_Y);
         ui_card_t c = {.rect = {DG_LX, 62, 764, 320}, .header_label = "Zive spoje (barva = stav)"};
         ui_card_render_chrome(&c);
         c_key = 0xFFFFFFFFu;   /* vynuti prvni redraw */
