@@ -44,11 +44,12 @@ const char *SCR_S_OFFSET_L = "Offset";   /* σy 1s/10s labely jsou literaly v sc
 const char *SCR_S_TREND_L  = "Trend 60 s";
 const char *SCR_S_SIGNAL_L = "Signál vstupu";
 
-/* ── Allan graf: Y popisky (dekady, horni indexy — mono_14 ma plny charset).
- * Magnituda ~1e-8 -> 10⁻⁶ (nahore) .. 10⁻¹⁰ (dole). X osa je DYNAMICKA a popisky τ
- * si render_card_allan generuje sam (proto tu uz neni X_TICKS). */
+/* ── Allan graf: Y popisky (dekady, horni indexy — mono fonty maji plny charset).
+ * Magnituda ~1e-8 -> 10⁻⁶ (nahore) .. 10⁻¹⁰ (dole). Pouziva je sdileny renderer
+ * `allan_plot` (karta na hlavni obrazovce mono_14, okno ALLAN mono_16). X osa je
+ * DYNAMICKA — popisky τ si graf generuje sam. Osu "τ [s]" vysvetluje header
+ * karty okna (drivejsi SCR_ALLAN_X_LABEL odstranen). */
 const char *SCR_ALLAN_Y_TICKS[] = {"10⁻⁶", "10⁻⁷", "10⁻⁸", "10⁻⁹", "10⁻¹⁰"};
-const char *SCR_ALLAN_X_LABEL   = "τ [s]";
 
 /* ── Footer button labels (values like gate time / channel come from the
  *    live UI state in screen_main.c). ── */

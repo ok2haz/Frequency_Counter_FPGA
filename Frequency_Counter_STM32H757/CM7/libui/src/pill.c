@@ -10,6 +10,10 @@
 #include <prim/prim.h>
 #include "internal/layout.h"
 
+/* Label mono_16 (bylo mono_14, 2026-07-19) — srovnano s hodnotou (stejny
+ * font, jen barva odlisuje). Vyzadovalo uzsi UI_DIM_PILL_GAP/INNER_GAP
+ * (viz dimensions.h) aby se rada 6 pilulek porad vesla pred hodiny i
+ * v nejhorsim soucasnem stavu (dlouhe texty ve VICE pilulkach najednou). */
 int16_t ui_pill_measure(const ui_pill_t *pill)
 {
     if (pill == NULL) return 0;
@@ -21,7 +25,7 @@ int16_t ui_pill_measure(const ui_pill_t *pill)
         w = (int16_t)(w + s + UI_DIM_PILL_INNER_GAP);
     }
     if (pill->label) {
-        w = (int16_t)(w + prim_text_width(pill->label, &ui_font_mono_14)
+        w = (int16_t)(w + prim_text_width(pill->label, &ui_font_mono_16)
                         + UI_DIM_PILL_INNER_GAP);
     }
     if (pill->value) {
@@ -59,8 +63,8 @@ void ui_pill_render(ui_pill_t *pill)
     int16_t text_y = (int16_t)(cy_mid + 5);   /* approx baseline */
     if (pill->label) {
         prim_draw_text((prim_point_t){cx, text_y}, pill->label,
-                       &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        cx = (int16_t)(cx + prim_text_width(pill->label, &ui_font_mono_14)
+                       &ui_font_mono_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        cx = (int16_t)(cx + prim_text_width(pill->label, &ui_font_mono_16)
                          + UI_DIM_PILL_INNER_GAP);
     }
     if (pill->value) {

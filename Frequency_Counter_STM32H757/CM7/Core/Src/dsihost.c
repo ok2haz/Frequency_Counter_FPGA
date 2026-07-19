@@ -21,7 +21,7 @@
 #include "dsihost.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "bootled.h"
 /* USER CODE END 0 */
 
 DSI_HandleTypeDef hdsi;
@@ -32,7 +32,7 @@ void MX_DSIHOST_DSI_Init(void)
 {
 
   /* USER CODE BEGIN DSIHOST_Init 0 */
-
+  bootled_step(BOOTLED_STEP_DSIHOST);
   /* USER CODE END DSIHOST_Init 0 */
 
   DSI_PLLInitTypeDef PLLInit = {0};

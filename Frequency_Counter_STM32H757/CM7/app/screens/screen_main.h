@@ -14,16 +14,28 @@
 #include <ui/digit_group.h>
 
 /* ── Screen-specific layout constants (beyond UI_DIM_*). ─────── */
-#define SCR_MAIN_HEADER_X          5       /* pill row near the left edge */
+/* 2026-07-19: obvod hlavicky vyuzit az na doraz (byl 5 px vlevo, 12 px vpravo
+ * u hodin — cisty nevyuzity okraj obrazovky, nikdo tam nic nekresli).
+ * ⚠️ Rozpoctem rady pilulek NENI levy okraj TEXTU hodin, ale levy okraj CLEAR
+ * ZON sekundoveho redrawu casu/data (x=648/644, viz screen_main_redraw_time)
+ * -> rada je omezena HDR_PILL_LIMIT + fit-checkem v render_header a mezery
+ * pilulek zustavaji kompaktni 4/5 (viz dimensions.h; docasny navrat na 5/6
+ * revize tehoz dne vratila — s 5/6 by uz TYPICKA rada zasahla do clear zony). */
+#define SCR_MAIN_HEADER_X          2       /* pill row near the left edge (bylo 5) */
+#define SCR_MAIN_CLOCK_MARGIN      6       /* hodiny/zona od praveho okraje (bylo 12 pres UI_DIM_PADDING_X/2) */
 #define SCR_MAIN_TITLE_Y           (UI_DIM_BODY_Y + 20)
 /* Number + everything below position (tuned). */
 #define SCR_MAIN_NUMBER_Y_BASELINE (UI_DIM_BODY_Y + 94)
 #define SCR_MAIN_GRID_Y            (UI_DIM_BODY_Y + 110)
 #define SCR_MAIN_GRID_GAP          14
-#define SCR_MAIN_GRID_LEFT_RATIO   53      /* percent (≈1.15 : 1) */
+/* 47 % (364 px) Allan vlevo | 398 px pravy sloupec (2026-07-19; bylo 53 % —
+ * zuzeno, aby karty statistik (1/3 z praveho sloupce = 125 px) unesly hodnoty
+ * mono_18: nejhorsi "+9,9×10⁻¹⁰" = 100 px, vnitrek karty 113 px). */
+#define SCR_MAIN_GRID_LEFT_RATIO   47
 
 #define SCR_MAIN_CARD_SECTION_GAP  11
-#define SCR_MAIN_SMALL_CARD_H      56
+/* (SCR_MAIN_SMALL_CARD_H odstranen 2026-07-19 — mrtva konstanta, vysku
+ * stat karet urcuje render_body_grid_v1/v2 lokalne.) */
 
 #define SCR_MAIN_BG_CACHE_W        UI_DIM_SCREEN_W
 #define SCR_MAIN_BG_CACHE_H        UI_DIM_SCREEN_H
@@ -49,8 +61,9 @@ bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni?
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 int  screen_main_sys_poll(void);                       /* 1 = zmena SYS zdravi -> prekresli header */
-bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan karty -> histogram okno? */
+bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan nahledu -> ALLAN okno? */
 bool screen_main_hit_trend(int16_t x, int16_t y);      /* tap do trend karty -> fullscreen trend? */
+void screen_main_render_allan_big(prim_rect_t rect);   /* fullscreen Allan log-log graf (okno) */
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */
 int  screen_main_trend_secs(void);                     /* aktualni okno trendu [s] */
@@ -63,6 +76,12 @@ bool screen_main_hist_logy(void);                       /* stav lin/log Y osy hi
 void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
+
+/* ── DOCASNA A/B srovnavaci vetev hlavni mrizky (2026-07-19, k odstraneni
+ * po vyhodnoceni — viz STATUS.md TODO a komentar u screen_main_toggle_layout
+ * v screen_main.c). Prepina footer tlacitko slotu 0 (docasne "Main SW"). ── */
+void screen_main_toggle_layout(void);                   /* prepni stary/novy layout hlavni mrizky */
+bool screen_main_layout_is_old(void);                   /* 1 = aktivni stary (pred 4,3" audit) layout */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
@@ -77,8 +96,8 @@ extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
 extern const char *SCR_S_OFFSET_L;
 extern const char *SCR_S_TREND_L;
 extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
-/* Allan: osy staticke, krivka POCITANA (ADEV) v render_card_allan. */
-extern const char *SCR_ALLAN_Y_TICKS[];   /* X popisky (τ) generuje render_card_allan dynamicky */
-extern const char *SCR_ALLAN_X_LABEL;
+/* Allan: Y dekady staticke (sdileny renderer allan_plot — karta mono_14, velke
+ * okno mono_16), krivka POCITANA (ADEV), X popisky dynamicke. */
+extern const char *SCR_ALLAN_Y_TICKS[];
 extern const char *SCR_S_BTN_RUN, *SCR_S_BTN_GATE_L,
                   *SCR_S_BTN_CHAN_L, *SCR_S_BTN_MENU;

@@ -21,7 +21,7 @@
 #include "adc.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "bootled.h"
 /* USER CODE END 0 */
 
 ADC_HandleTypeDef hadc3;
@@ -31,7 +31,7 @@ void MX_ADC3_Init(void)
 {
 
   /* USER CODE BEGIN ADC3_Init 0 */
-
+  bootled_step(BOOTLED_STEP_ADC3);
   /* USER CODE END ADC3_Init 0 */
 
   ADC_ChannelConfTypeDef sConfig = {0};

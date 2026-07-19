@@ -76,7 +76,7 @@ extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
 
 static prim_fb_t s_fb;
 static int s_inited = 0;
-static int s_view = 0;          /* 0=main 1=diag 2=gps 3=health 4=senzory 5=pamet (podmenu health) */
+static int s_view = 0;          /* 0=main 1=diag 2=gps ... 23=allan — plny seznam oken v CLAUDE.md */
 
 /* Present coalescing: vysokofrekvencni ticky (clock/signal/freq) jen renderuji a
  * nastavi s_dirty; jeden flip pak udela app_gpsdo_flush() (UiTask ho vola na ~30Hz
@@ -84,6 +84,26 @@ static int s_view = 0;          /* 0=main 1=diag 2=gps 3=health 4=senzory 5=pame
  * prepnuti obrazovky, render/clear) prezentuji hned pres present_now(). */
 static int s_dirty = 0;
 static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
+
+/* ── Spolecny prolog okna (TODO #12/A1) ──────────────────────────────────────
+ * `app_gpsdo_init(); prim_set_target(&s_fb); prim_reset_clip();` byl doslova
+ * zkopirovany v 24 render funkcich (radove dalsich ~70 radku) — kazda kopie
+ * byla dalsi misto, kde se mohl rozejit init/target/clip. window_prep() to
+ * sjednocuje; window_first(N) navic vyresi "je tohle prvni vstup do okna N?"
+ * (zmena s_view) pro oken s live-redraw dispatchem (app_gpsdo_tick). Poradi
+ * `s_view = N;` vuci prep() NEZALEZI (nezavisle stavy) — volajici ho muze
+ * priradit pred i za window_prep()/window_first(), podle toho, co je citelnejsi. */
+static void window_prep(void)
+{
+    app_gpsdo_init();
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+}
+static int window_first(uint8_t view_id)
+{
+    window_prep();
+    return (s_view != (int)view_id);
+}
 
 /* Back button on the diagnostics screen. */
 /* Back button lives in the bottom bar, in the same slot as the main MENU. */
@@ -95,6 +115,12 @@ static const prim_rect_t SENS_BTN_RECT = {18, 417, 180, 61};
 static const prim_rect_t HEALTH_DIAG_BTN_RECT = {210, 417, 180, 61};
 /* Histogram okno: lin/log Y toggle (bottom-left) + plot (leva cast) + σy(τ) tabulka (prava). */
 static const prim_rect_t LOGY_RECT       = {18, 417, 180, 61};
+/* SESTERSKA okna analyz (2026-07-19): ALLAN (s_view=23, velky log-log graf) <->
+ * HISTOGRAM (s_view=6, rozdeleni). Tap na Allan nahled na hlavni obrazovce
+ * otevre ALLAN; tlacitko v patce prepina mezi obema BEZ nav_push -> BACK se
+ * z obou vraci tam, odkud byla dvojice otevrena (typicky main). */
+static const prim_rect_t HIST_ALLAN_RECT = {210, 417, 180, 61};  /* v histogramu: -> ALLAN */
+static const prim_rect_t ALLAN_HIST_RECT = {18, 417, 220, 61};   /* v allanu: -> HISTOGRAM */
 /* Trend okno: RELATIVNI +/- casove okno (presety 10/20/30/60/120 s), hodnota mezi. */
 static const prim_rect_t TREND_MINUS = {18, 417, 90, 61};
 static const prim_rect_t TREND_PLUS  = {214, 417, 90, 61};
@@ -122,21 +148,28 @@ static const prim_rect_t DIAG_DIAGRAM_BTN_RECT = {18, 417, 160, 61};
 static const prim_rect_t DIAG_MEM_BTN_RECT     = {190, 417, 150, 61};
 static const prim_rect_t DIAG_ST_BTN_RECT      = {352, 417, 160, 61};
 /* Ovladace v okne Nastaveni (2 sloupce jako diag): levy = Zvuk / Jas / Auto-dim,
- * pravy = Vzhled (schema) / Jazyk (+ rezerva na dalsi polozky). */
-static const prim_rect_t MUTE_RECT   = {230, 74, 148, 56};    /* Zvuk: zap/vyp */
-static const prim_rect_t BR_MINUS    = {30, 188, 72, 56};     /* Jas - */
-static const prim_rect_t BR_PLUS     = {110, 188, 72, 56};    /* Jas + */
-static const prim_rect_t ADEN_RECT   = {30, 300, 140, 56};    /* Auto-dim zap/vyp */
-static const prim_rect_t DIM_MINUS   = {186, 300, 56, 56};    /* prodleva - */
-static const prim_rect_t DIM_PLUS    = {316, 300, 56, 56};    /* prodleva + */
-static const prim_rect_t THEME_RECT  = {602, 74, 160, 56};    /* Vzhled: TMAVE/SVETLE */
-static const prim_rect_t LANG_RECT   = {602, 166, 160, 56};   /* Jazyk: CESKY/ENGLISH */
-/* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun. */
-static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 56};   /* AUTO <-> RUCNI */
-static const prim_rect_t TZ_MINUS     = {30, 310, 72, 56};    /* rucni posun - */
-static const prim_rect_t TZ_PLUS      = {250, 310, 72, 56};   /* rucni posun + */
-static const prim_rect_t REF_RECT    = {410, 262, 372, 56};   /* Reference Si5356 (presunuto z Menu) */
-static const prim_rect_t ABOUT_RECT  = {410, 340, 372, 56};   /* O pristroji (dolni pravy) */
+ * pravy = Vzhled (schema) / Jazyk (+ rezerva na dalsi polozky).
+ * ⚠️ TODO #11(1b) HOTOVO 2026-07-19: 56 px (6,6 mm) -> 64 px (7,5 mm, nad
+ * doporucenym minimem 7 mm). MUTE/THEME/LANG mely v kartach dost rezervy
+ * (button koncil 16-24 px pred spodnim okrajem karty) -> zmena JEN vysky
+ * bez zasahu do karet c1/c4/c5. Jas (c2) a Auto-dim (c3) mely rezervu jen
+ * 10-12 px -> karty c2/c3 se zvetsily o 8 px kazda (viz app_gpsdo_render_settings),
+ * cerpano ze 42 px volneho prostoru pred paticnkou (bylo 368->410 px). */
+static const prim_rect_t MUTE_RECT   = {230, 74, 148, 64};    /* Zvuk: zap/vyp */
+static const prim_rect_t BR_MINUS    = {30, 188, 72, 64};     /* Jas - */
+static const prim_rect_t BR_PLUS     = {110, 188, 72, 64};    /* Jas + */
+static const prim_rect_t ADEN_RECT   = {30, 308, 140, 64};    /* Auto-dim zap/vyp */
+static const prim_rect_t DIM_MINUS   = {186, 308, 56, 64};    /* prodleva - */
+static const prim_rect_t DIM_PLUS    = {316, 308, 56, 64};    /* prodleva + */
+static const prim_rect_t THEME_RECT  = {602, 74, 160, 64};    /* Vzhled: TMAVE/SVETLE */
+static const prim_rect_t LANG_RECT   = {602, 166, 160, 64};   /* Jazyk: CESKY/ENGLISH */
+/* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
+ * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
+static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
+static const prim_rect_t TZ_MINUS     = {30, 310, 72, 64};    /* rucni posun - */
+static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + */
+static const prim_rect_t REF_RECT    = {410, 262, 372, 64};   /* Reference Si5356 (presunuto z Menu) */
+static const prim_rect_t ABOUT_RECT  = {410, 340, 372, 64};   /* O pristroji (dolni pravy) */
 
 static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 {
@@ -181,24 +214,56 @@ void app_gpsdo_init(void)
 
 void app_gpsdo_render_main(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 0;
     s_nav_sp = 0;    /* hlavni obrazovka = koren navigace */
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     screen_main_render();
     present_now();          /* flip hotovy snimek na displej (tearing-free) */
 }
 
 /* ── Diagnostics screen ─────────────────────────────────────── */
 
-/* Format a temperature without %f (nano.specs may omit float printf). 2 des. mista. */
+/* Rozklad float na (cele, des) bez %f (nano.specs), decimals 1..3. Ciste
+ * cislo — sjednocuje aritmetiku ctyr drivejsich temer identickych kopii
+ * (fmt_temp, fmt_d1, fmt_fN, fmt_minmax), viz TODO #12/A2. Vraci JEN cisla
+ * (ne string): fmt_minmax kombinuje DVA vysledky do jednoho snprintf, stejne
+ * jako puvodne — samostatny mezikrok "naformatuj do bufferu, pak %s%s slep"
+ * by kaskadovite roztahl GCC -Wformat-truncation worst-case pres vic bufferu
+ * (overeno pri prvnim pokusu: rostouci buf[24]->32 si vyzadalo i key[26]...). */
+static void fixed_split(float v, int decimals, int32_t *whole, int32_t *frac)
+{
+    int32_t scale = 1;
+    for (int i = 0; i < decimals; i++) scale *= 10;
+    int32_t t = (int32_t)(v * (float)scale + (v >= 0.0f ? 0.5f : -0.5f));
+    *whole = t / scale;
+    *frac  = t % scale; if (*frac < 0) *frac = -*frac;
+}
+
+/* Jedna hodnota -> "cele.des" (decimals 1..3). ZADNA jednotka/sentinel navic
+ * — to resi volajici (fmt_temp pridava " C", fmt_d1 ma "--" sentinel).
+ * ⚠️ sgn: pro v v (-1;0) je cela cast 0 a %ld minus nevytiskne — bez explicitni
+ * predpony by "-0.5" vyslo jako "0.5" (ZTRATA ZNAMENKA; pre-existujici chyba
+ * vsech ctyr puvodnich fmt_* kopii, nalezena revizi 2026-07-19 — realne
+ * zasahne zaporne teploty -0.99..-0.01 °C). */
+static void fmt_fixed(char *buf, size_t n, float v, int decimals)
+{
+    int32_t w, f;
+    fixed_split(v, decimals, &w, &f);
+    const char *sgn = (v < 0.0f && w == 0 && f != 0) ? "-" : "";
+    switch (decimals) {
+    case 1: snprintf(buf, n, "%s%ld.%01ld", sgn, (long)w, (long)f); break;
+    case 2: snprintf(buf, n, "%s%ld.%02ld", sgn, (long)w, (long)f); break;
+    case 3: snprintf(buf, n, "%s%ld.%03ld", sgn, (long)w, (long)f); break;
+    default: snprintf(buf, n, "%ld", (long)w); break;
+    }
+}
+
+/* Teplota "23.45 C" (2 des. + jednotka). */
 static void fmt_temp(char *buf, size_t n, float v)
 {
-    int t = (int)(v * 100.0f + (v >= 0.0f ? 0.5f : -0.5f));
-    int w = t / 100, f = t % 100;
-    if (f < 0) f = -f;
-    snprintf(buf, n, "%d.%02d C", w, f);
+    char num[16];
+    fmt_fixed(num, sizeof num, v, 2);
+    snprintf(buf, n, "%s C", num);
 }
 
 /* ── Dvousloupcový layout diagnostiky ──────────────────────────────────── */
@@ -211,6 +276,24 @@ static void fmt_temp(char *buf, size_t n, float v)
 #define DG_RLBL  (DG_RX + 12)                    /* right col label x */
 #define DG_LVAL  (DG_LX + DG_COLW - 14)          /* left col value right edge */
 #define DG_RVAL  (DG_RX + DG_COLW - 14)          /* right col value right edge */
+
+/* TODO #12/A4 (castecne): celoplosna karta jednoho okna existovala v 5 ruznych
+ * variantach geometrie (y 58 vs 62, h 200..346) — spodni hrana kolisala 13-55 px
+ * pred paticnkou bez zjevneho duvodu. Tyhle dve konstanty pojmenovavaji dve
+ * SKUTECNE pouzivane (identicke) varianty (5+5 oken), aby se aspon nerozchazely
+ * NAHODOU pri budouci uprave jednoho z nich. ⚠️ Zbyle vyjimky (About, Kalibrace,
+ * Citac/Cas, Komunikace) maji vlastni obsah ruzne vysoky — sjednotit i je na
+ * jednu spolecnou vysku by chtelo overit polohu radku v kazdem z nich zvlast
+ * (riziko prekryvu); ponechano jako samostatny TODO. */
+static const prim_rect_t DG_CARD_FULL_A = {DG_LX, 58, 764, 346};  /* Senzory/Pamet/Histogram/Allan/Trend */
+static const prim_rect_t DG_CARD_FULL_B = {DG_LX, 62, 764, 300};  /* Reference/Holdover/Datalog/Alarmy/Selftest */
+/* TODO #12/A4 dokonceno 2026-07-19: Citac + Cas mely stejnou geometrii, jen
+ * duplikovanou (ne zamerne odlisnou jako zbyle vyjimky). O pristroji (2 karty
+ * 200+130), Kalibrace (348) a Komunikace (320) zustavaji SAMOSTATNE — kazda
+ * pouzita jen jednou, pojmenovani konstanty by tam nebylo DRY, jen navic
+ * neduvod uvrstva (viz zasada "no premature abstraction"). Timhle je A4
+ * uzavrena — vic skutecne duplicitni geometrie v souboru neni. */
+static const prim_rect_t DG_CARD_FULL_C = {DG_LX, 62, 764, 340};  /* Citac/Cas */
 
 /* GPS okno ma NEsymetricke sloupce: levy (Druzice: sky/bar prepinatelne dotykem)
  * je siroky, pravy (cas/poloha/timepulse/prijimac) zmenseny ~1/3. */
@@ -235,17 +318,37 @@ static void dlabel(int16_t x, int16_t y, const char *s)
                    PRIM_ALIGN_LEFT);
 }
 
-/* Right-aligned live value: clear its box then redraw. valid==0 → dimmed + red "!".
- * Kresli se pod CLIPEM boxu — text delsi nez boxw se orizne, misto aby pretekl
- * doleva pres label (dtext/dtext_c clipuji odjakziva, dval byl jediny bez). */
-static void dval(int16_t xr, int16_t baseline, int16_t boxw, const char *v, int valid)
+/* ── Box-cisteny zivy text (TODO #12/A3) ─────────────────────────────────────
+ * dval/dtext/dtext_c byly tri skoro identicke funkce lisici se jen zarovnanim
+ * — a navic se rozchazely v geometrii boxu (dval `baseline-17`, ostatni dve
+ * `baseline-16` — 1px nesrovnalost, objevena pri teto revizi). dtext_a je
+ * spolecny zaklad (LEFT/CENTER/RIGHT), sjednoceny na `baseline-16`; dtext/
+ * dtext_c jsou uz jen tenke obalky (volajici beze zmeny), dval zustava
+ * vlastni specializovanou funkci (fixni font mono_18, barva dle `valid`,
+ * "!" znacka pro neplatna data) postavenou nad stejnym zakladem. */
+typedef enum { DTEXT_LEFT, DTEXT_CENTER, DTEXT_RIGHT } dtext_align_t;
+
+static void dtext_a(int16_t pos, int16_t baseline, int16_t boxw, const char *v,
+                    prim_color_t col, const prim_font_t *font, dtext_align_t align)
 {
-    prim_rect_t box = {(int16_t)(xr - boxw), (int16_t)(baseline - 17), boxw, 22};
+    int16_t box_x = (align == DTEXT_LEFT)   ? pos
+                   : (align == DTEXT_CENTER) ? (int16_t)(pos - boxw / 2)
+                   :                           (int16_t)(pos - boxw);
+    prim_rect_t box = {box_x, (int16_t)(baseline - 16), boxw, 22};
     prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     prim_set_clip(box);
-    prim_draw_text((prim_point_t){xr, baseline}, v, &ui_font_mono_18,
-                   valid ? UI_COLOR_INK : UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    prim_align_t palign = (align == DTEXT_LEFT)   ? PRIM_ALIGN_LEFT
+                         : (align == DTEXT_CENTER) ? PRIM_ALIGN_CENTER
+                         :                            PRIM_ALIGN_RIGHT;
+    prim_draw_text((prim_point_t){pos, baseline}, v, font, col, palign);
     prim_reset_clip();
+}
+
+/* Right-aligned live value: clear its box then redraw. valid==0 → dimmed + red "!". */
+static void dval(int16_t xr, int16_t baseline, int16_t boxw, const char *v, int valid)
+{
+    dtext_a(xr, baseline, boxw, v, valid ? UI_COLOR_INK : UI_COLOR_INK_3,
+           &ui_font_mono_18, DTEXT_RIGHT);
     if (!valid)
         prim_draw_text((prim_point_t){(int16_t)(xr - boxw + 2), baseline}, "!",
                        &ui_font_mono_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
@@ -256,24 +359,12 @@ static void dval(int16_t xr, int16_t baseline, int16_t boxw, const char *v, int 
  * nepřeteče kartu. */
 static void dtext(int16_t x, int16_t baseline, int16_t boxw, const char *v,
                   prim_color_t col, const prim_font_t *font)
-{
-    prim_rect_t box = {x, (int16_t)(baseline - 16), boxw, 22};
-    prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_set_clip(box);
-    prim_draw_text((prim_point_t){x, baseline}, v, font, col, PRIM_ALIGN_LEFT);
-    prim_reset_clip();
-}
+{ dtext_a(x, baseline, boxw, v, col, font, DTEXT_LEFT); }
 
 /* Center-aligned live text in a cleared box (GPS okno). */
 static void dtext_c(int16_t cx, int16_t baseline, int16_t boxw, const char *v,
                     prim_color_t col, const prim_font_t *font)
-{
-    prim_rect_t box = {(int16_t)(cx - boxw / 2), (int16_t)(baseline - 16), boxw, 22};
-    prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_set_clip(box);
-    prim_draw_text((prim_point_t){cx, baseline}, v, font, col, PRIM_ALIGN_CENTER);
-    prim_reset_clip();
-}
+{ dtext_a(cx, baseline, boxw, v, col, font, DTEXT_CENTER); }
 
 /* ── Spolecna hlavicka okna: pozadi + BACK + nadpis ─────────────────────────
  * Tenhle blok byl doslova zkopirovany v 19 render funkcich — kazda kopie byla
@@ -302,12 +393,13 @@ static void fmt_ll(float v, char pos, char neg, char *out, size_t n)
     snprintf(out, n, "%ld.%06ld%c", ud / 1000000, ud % 1000000, h);
 }
 
-/* float DOP/1-desetinne -> "1.7" (bez %f). */
+/* float DOP/1-desetinne -> "1.7" (bez %f); "--" pro neplatne (<=0). Obracene
+ * poradi argumentu (v,out,n) oproti fmt_fixed(buf,n,v,decimals) — puvodni
+ * volani v draw_gps_values zustavaji beze zmeny. */
 static void fmt_d1(float v, char *out, size_t n)
 {
     if (v <= 0.0f) { snprintf(out, n, "--"); return; }
-    long t = (long)(v * 10.0f + 0.5f);
-    snprintf(out, n, "%ld.%ld", t / 10, t % 10);
+    fmt_fixed(out, n, v, 1);
 }
 
 /* Round a float reading to long without pulling in <math.h>. */
@@ -352,16 +444,28 @@ bool app_gpsdo_selftest(void)
 static void fmt_minmax(char *buf, size_t n, const sensor_stat_t *s)
 {
     if (s->samples == 0) { snprintf(buf, n, "--/--"); return; }
-    int lo = (int)(s->min * 10.0f + (s->min >= 0 ? 0.5f : -0.5f));
-    int hi = (int)(s->max * 10.0f + (s->max >= 0 ? 0.5f : -0.5f));
-    /* clamp na realny rozsah senzoru (teploty ±125.0) — ohranici i GCC
-     * -Wformat-truncation analyzu (jinak pocita s 11mistnym intem) */
-    if (lo > 9999) lo = 9999;
-    if (lo < -9999) lo = -9999;
-    if (hi > 9999) hi = 9999;
-    if (hi < -9999) hi = -9999;
-    int lf = lo % 10, hf = hi % 10; if (lf < 0) lf = -lf; if (hf < 0) hf = -hf;
-    snprintf(buf, n, "%d.%d/%d.%d", lo / 10, lf, hi / 10, hf);
+    /* clamp na realny rozsah senzoru (teploty ±125.0) pred fmt_fixed — samo
+     * o sobe by na tomto rozsahu nepretekly, klamp jen drzi vystup rozumny
+     * pri necekane hodnote (senzor error apod). Puvodne se klampoval az
+     * zaokrouhleny int (×10, hranice 9999 = 999.9); ekvivalentni na floatu. */
+    float lo = s->min, hi = s->max;
+    if (lo > 999.9f) lo = 999.9f; else if (lo < -999.9f) lo = -999.9f;
+    if (hi > 999.9f) hi = 999.9f; else if (hi < -999.9f) hi = -999.9f;
+    int32_t lw, lf, hw, hf;
+    fixed_split(lo, 1, &lw, &lf);
+    fixed_split(hi, 1, &hw, &hf);
+    /* Klamp na VYSTUPU fixed_split (i kdyz uz vstupni float je klampnuty vyse):
+     * GCC -Wformat-truncation nedokaze protahnout rozsahovou analyzu pres
+     * float aritmetiku uvnitr fixed_split, takze bez tohohle vidi lw/hw jako
+     * "cely int32" -> az 26 B do buf[24]. S explicitnim klampem primo na
+     * hodnotach predanych do snprintf uz rozsah spocita (shoduje se s tim,
+     * jak to delal puvodni kod pred timto sjednocenim). */
+    if (lw > 999) lw = 999; else if (lw < -999) lw = -999;
+    if (hw > 999) hw = 999; else if (hw < -999) hw = -999;
+    /* sgn: stejna oprava ztraty znamenka u -0.x jako ve fmt_fixed (viz tam). */
+    const char *ls = (lo < 0.0f && lw == 0 && lf != 0) ? "-" : "";
+    const char *hs = (hi < 0.0f && hw == 0 && hf != 0) ? "-" : "";
+    snprintf(buf, n, "%s%d.%d/%s%d.%d", ls, (int)lw, (int)lf, hs, (int)hw, (int)hf);
 }
 
 /* Change-detect: vrati 1 (a aktualizuje cache) kdyz se 'now' lisi od 'cache'. */
@@ -399,7 +503,7 @@ static int draw_diag_values(int force)
         const sensor_stat_t *s = &g_sensors[tid[i]];
         fmt_minmax(buf, sizeof(buf), s);
         if (force || dchg(c_tm[i], sizeof(c_tm[i]), buf)) {
-            dtext((int16_t)(DG_LLBL + 140), ty[i], 100, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
+            dtext((int16_t)(DG_LLBL + 140), ty[i], 100, buf, UI_COLOR_INK_3, &ui_font_sans_18); drew = 1; }
         fmt_temp(buf, sizeof(buf), s->last);
         snprintf(key, sizeof(key), "%c%s", s->valid ? 'V' : 'X', buf);  /* vykresleni zalezi i na valid */
         if (force || dchg(c_tv[i], sizeof(c_tv[i]), key)) {
@@ -433,6 +537,10 @@ static int draw_diag_values(int force)
          * (38x10=380 px @16 > box 352 -> orizl by se RX0/CRC ocas; @14 = 304 px OK). */
         dtext(DG_RLBL, 104, DG_COLW - 24, (const char *)g_spi_text,
               g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_14); drew = 1; }
+    /* ⚠️ TODO #11(2b): NEbumpovano — absolutni worst-case (vsechny chybove
+     * priznaky + max SEQ/gate soucasne) uz na mono_16 preteka box 352 px,
+     * na mono_18 jeste vic (overeno tabulkou fontu); realny obsah je kratsi,
+     * ale bez jistoty to radsi nechat na soucasnem fontu. */
     if (force || dchg(c_fpga, sizeof(c_fpga), (const char *)g_freq_info)) {
         dtext(DG_RLBL, 132, DG_COLW - 24, (const char *)g_freq_info, UI_COLOR_INK_2, &ui_font_sans_16); drew = 1; }
 
@@ -479,11 +587,7 @@ static int draw_diag_values(int force)
 
 void app_gpsdo_render_diag(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-
-    int first = (s_view != 1);
+    int first = window_first(1);
     if (first) {
         /* First entry: draw the static chrome + labels exactly once. */
         s_view = 1;
@@ -578,12 +682,15 @@ static int draw_gps_values(int force)
     /* ── Radek 2 karty FIX: pocet druzic (vlevo) + HDOP/PDOP (vpravo, presunuto sem) ── */
     snprintf(buf, sizeof buf, "%u / %u druzic", g.num_sat, g.sats_in_view);
     if (force || dchg(c_sat, sizeof c_sat, buf)) {
-        dtext(GPS_LLBL, 134, 200, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
+        dtext(GPS_LLBL, 134, 200, buf, UI_COLOR_INK_3, &ui_font_sans_18); drew = 1; }
     fmt_d1(g.hdop, a, sizeof a); fmt_d1(g.pdop, b, sizeof b);
     snprintf(buf, sizeof buf, "HDOP %s   PDOP %s", a, b);
     if (force || dchg(c_dop, sizeof c_dop, buf)) {
         prim_fill_rect((prim_rect_t){300, 118, (int16_t)(GPS_LX + GPS_LW - 14 - 300), 24},
                        UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        /* ⚠️ TODO #11(2b): NEbumpovano — box ~206 px, i kratsi "HDOP 9.9 PDOP 9.9"
+         * uz na mono_18 preteka (overeno tabulkou fontu), box neni dtext-clipovany
+         * (jen fill_rect clear) -> preteceni by bylo VIDITELNE, ne tiche. */
         prim_draw_text((prim_point_t){(int16_t)(GPS_LX + GPS_LW - 14), 134}, buf,
                        &ui_font_mono_16, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT); drew = 1; }
     /* naznak prepinani zobrazeni druzic (staticky) vpravo v hlavicce karty Druzice */
@@ -618,7 +725,7 @@ static int draw_gps_values(int force)
                            UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
             if (nsv == 0) {
                 dtext_c((int16_t)(GPS_LX + GPS_LW / 2), 330, GPS_LW - 24,
-                        "Hledam druzice...", UI_COLOR_WARN, &ui_font_sans_16);
+                        "Hledam druzice...", UI_COLOR_WARN, &ui_font_sans_18);
             } else if (s_gps_polar) {
                 /* ── Sky plot na plnou plochu: velky kruh r=132, stred=zenit, N nahore ── */
                 const int16_t scx = (int16_t)(GPS_LX + GPS_LW / 2), scy = 332, sr = 132;
@@ -692,24 +799,24 @@ static int draw_gps_values(int force)
     snprintf(buf, sizeof buf, "%s UTC", (strlen(rt) >= 19) ? rt + 11 : "--:--:--");
     if (force || dchg(c_time, sizeof c_time, buf)) {
         dtext(GPS_RLBL, 104, GPS_RW - 24, buf, rsy ? UI_COLOR_INK : UI_COLOR_INK_3,
-              &ui_font_mono_16); drew = 1; }
+              &ui_font_mono_18); drew = 1; }
     snprintf(buf, sizeof buf, "%.10s", rt);   /* datum "YYYY-MM-DD" (sync stav nese barva casu) */
     if (force || dchg(c_date, sizeof c_date, buf)) {
-        dtext(GPS_RLBL, 126, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_sans_16); drew = 1; }
+        dtext(GPS_RLBL, 126, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_sans_18); drew = 1; }
 
     /* poloha */
     if (g.valid) fmt_ll(g.lat_deg, 'N', 'S', a, sizeof a); else snprintf(a, sizeof a, "--");
     snprintf(buf, sizeof buf, "Lat  %s", a);
     if (force || dchg(c_lat, sizeof c_lat, buf)) {
-        dtext(GPS_RLBL, 190, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_16); drew = 1; }
+        dtext(GPS_RLBL, 190, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
     if (g.valid) fmt_ll(g.lon_deg, 'E', 'W', a, sizeof a); else snprintf(a, sizeof a, "--");
     snprintf(buf, sizeof buf, "Lon  %s", a);
     if (force || dchg(c_lon, sizeof c_lon, buf)) {
-        dtext(GPS_RLBL, 214, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_16); drew = 1; }
+        dtext(GPS_RLBL, 214, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
     if (g.fix_quality) snprintf(buf, sizeof buf, "Alt  %ld m", lround_f(g.alt_m));
     else               snprintf(buf, sizeof buf, "Alt  --");
     if (force || dchg(c_alt, sizeof c_alt, buf)) {
-        dtext(GPS_RLBL, 238, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_16); drew = 1; }
+        dtext(GPS_RLBL, 238, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
 
     /* Lokator (Maidenhead grid) — karta bez nadpisu, jen "Locator <hodnota>"
      * (vetsim pismem, vycentrovano ve volne karte 252..320). */
@@ -725,6 +832,9 @@ static int draw_gps_values(int force)
      * dokud GPS tece -> dukaz zivosti (staticke "NEO-7M" je v chrome). */
     snprintf(buf, sizeof buf, "Vet:%lu Fix:%lu",
              (unsigned long)g.sentences, (unsigned long)g.fixes);
+    /* ⚠️ TODO #11(2b): NEbumpovano na mono_18 — pocitadla rostou bez limitu
+     * (roky provozu), realny 7-8 mistny stav uz PRETEKA i pri soucasnem
+     * mono_16 (226 px box, overeno tabulkou fontu) -> bump by to jen zhorsil. */
     if (force || dchg(c_rx, sizeof c_rx, buf)) {
         dtext(GPS_RLBL, 384, GPS_RW - 24, buf, UI_COLOR_INK_2, &ui_font_mono_16); drew = 1; }
 
@@ -735,11 +845,7 @@ static int draw_gps_values(int force)
  * v app_gpsdo_tick). First entry kresli chrome, pak jen zmenena pole. */
 void app_gpsdo_render_gps(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-
-    int first = (s_view != 2);
+    int first = window_first(2);
     if (first) {
         s_view = 2;
         window_chrome("GNSS / GPS", WIN_TITLE_Y);
@@ -824,17 +930,17 @@ static int draw_health_values(int force)
     snprintf(buf, sizeof(buf), "I2C1 FPGA: %s (%lu)", s1 ? "CHYBA" : "OK", (unsigned long)t1);
     snprintf(key, sizeof(key), "%c%s", s1 ? 'X' : 'O', buf);
     if (force || dchg(c_i2c[0], sizeof(c_i2c[0]), key)) {
-        dtext(DG_RLBL, 104, DG_COLW - 24, buf, s1 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_16); drew = 1; }
+        dtext(DG_RLBL, 104, DG_COLW - 24, buf, s1 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_18); drew = 1; }
     snprintf(buf, sizeof(buf), "I2C4 panel: %s (%lu)", s4 ? "CHYBA" : "OK", (unsigned long)t4);
     snprintf(key, sizeof(key), "%c%s", s4 ? 'X' : 'O', buf);
     if (force || dchg(c_i2c[1], sizeof(c_i2c[1]), key)) {
-        dtext(DG_RLBL, 132, DG_COLW - 24, buf, s4 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_16); drew = 1; }
+        dtext(DG_RLBL, 132, DG_COLW - 24, buf, s4 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_18); drew = 1; }
 
     /* ── Pravy sloupec: periferie / linky ── */
     snprintf(buf, sizeof(buf), "FPGA SPI: %s", g_spi_ok ? "LINK OK" : "NO LINK");
     snprintf(key, sizeof(key), "%c%s", g_spi_ok ? 'O' : 'X', buf);
     if (force || dchg(c_lnk[0], sizeof(c_lnk[0]), key)) {
-        dtext(DG_RLBL, 200, DG_COLW - 24, buf, g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_16); drew = 1; }
+        dtext(DG_RLBL, 200, DG_COLW - 24, buf, g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_18); drew = 1; }
     const char *si; prim_color_t sic;
     if (!g_si5356_ok)                            { si = "N/A (I2C)";   sic = UI_COLOR_INK_3; }
     else if (g_si5356_status & SI5356_LOS_CLKIN) { si = "LOS CLKIN!";  sic = UI_COLOR_BAD; }
@@ -843,13 +949,13 @@ static int draw_health_values(int force)
     else                                         { si = "LOCK OK";     sic = UI_COLOR_OK; }
     snprintf(buf, sizeof(buf), "Ref Si5356: %s", si);
     if (force || dchg(c_lnk[1], sizeof(c_lnk[1]), buf)) {
-        dtext(DG_RLBL, 228, DG_COLW - 24, buf, sic, &ui_font_mono_16); drew = 1; }
+        dtext(DG_RLBL, 228, DG_COLW - 24, buf, sic, &ui_font_mono_18); drew = 1; }
     int nok = 0; for (int i = 0; i < SENS_COUNT; i++) if (g_sensors[i].valid) nok++;
     snprintf(buf, sizeof(buf), "Senzory: %d/%d OK", nok, (int)SENS_COUNT);
     snprintf(key, sizeof(key), "%c%s", (nok >= SENS_COUNT - 1) ? 'O' : 'X', buf);  /* -1: 0x4A neosazen */
     if (force || dchg(c_lnk[2], sizeof(c_lnk[2]), key)) {
         dtext(DG_RLBL, 256, DG_COLW - 24, buf,
-              (nok >= SENS_COUNT - 1) ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_mono_16); drew = 1; }
+              (nok >= SENS_COUNT - 1) ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_mono_18); drew = 1; }
 
     /* ── Pravy sloupec: karta System (napajeni souhrnne / uptime / reset / selftest).
      * Konkretni napeti vetvi jsou v Diagnostice + SENZORY; tady jen verdikt. ── */
@@ -867,34 +973,40 @@ static int draw_health_values(int force)
           else             { ps = "FAIL"; pc = UI_COLOR_BAD; }
       }
       snprintf(buf, sizeof(buf), "Power supplies: %s", ps);
-      /* mono_14 + radky od 328: hlavicka karty ("System") ma baseline 305 —
-       * s mono_16 od 316 se prekryvaly (ascent 16 sahal na 300). */
+      /* TODO #11(2b) 2026-07-19: bump na mono_18 tam, kde se vejde (overeno
+       * tabulkou fontu). Tenhle radek ("Power supplies: FAIL" max 20 zn.) i
+       * Uptime nize maji velkou rezervu (352 px box, realny obsah <200 px). */
       if (force || dchg(c_sys2[0], sizeof(c_sys2[0]), buf)) {
-          dtext(DG_RLBL, 328, DG_COLW - 24, buf, pc, &ui_font_mono_14); drew = 1; } }
+          dtext(DG_RLBL, 328, DG_COLW - 24, buf, pc, &ui_font_mono_18); drew = 1; } }
     { uint32_t s = g_uptime_s;
       snprintf(buf, sizeof(buf), "Uptime: %lu:%02lu:%02lu", (unsigned long)(s / 3600u),
                (unsigned long)((s / 60u) % 60u), (unsigned long)(s % 60u));
       if (force || dchg(c_sys2[1], sizeof(c_sys2[1]), buf)) {
-          dtext(DG_RLBL, 350, DG_COLW - 24, buf, UI_COLOR_INK_2, &ui_font_mono_14); drew = 1; } }
+          dtext(DG_RLBL, 350, DG_COLW - 24, buf, UI_COLOR_INK_2, &ui_font_mono_18); drew = 1; } }
     if (g_crash_text[0])
         snprintf(buf, sizeof(buf), "Reset: %s %s", (const char *)g_reset_text,
                  (const char *)g_crash_text);
     else
         snprintf(buf, sizeof(buf), "Reset: %s", (const char *)g_reset_text);
     int rbad = g_reset_bad || g_crash_text[0];
+    /* ⚠️ TODO #11(2b): NEbumpovano — nejdelsi radek Reset ("Reset: " +
+     * g_reset_text[12] + " " + g_crash_text[16]) = 34 zn. = 340 px pri
+     * mono_16 (bezva bez rezervy, box 352 px); pri mono_18 by to bylo
+     * 374 px > 352 -> orizlo by se (overeno tabulkou fontu). */
     if (force || dchg(c_sys2[2], sizeof(c_sys2[2]), buf)) {
         dtext(DG_RLBL, 372, DG_COLW - 24, buf,
-              rbad ? UI_COLOR_BAD : UI_COLOR_INK_3, &ui_font_mono_14); drew = 1; }
+              rbad ? UI_COLOR_BAD : UI_COLOR_INK_3, &ui_font_mono_16); drew = 1; }
     /* Selftest + CM4 (D2) sdili jeden radek (oba kratke fixni retezce - "Selftest:
-     * FAIL" max 14 zn., "CM4:ABSENT" max 10 zn. - sirka radku 352 px pri mono_14
-     * je nekolikanasobne vetsi, zadne riziko prekryvu). Drive samostatny radek
-     * CM4 na baseline 416 kolidoval s paticnimi tlacitky (zacinaji na y=417). */
+     * FAIL" max 14 zn. v boxu 190 px, "CM4:ABSENT" max 10 zn. v boxu 156 px;
+     * pri mono_18 (advance 11) to je 154 resp. 110 px - porad s rezervou, zadne
+     * riziko prekryvu, overeno tabulkou fontu). Drive samostatny radek CM4 na
+     * baseline 416 kolidoval s paticnimi tlacitky (zacinaji na y=417). */
     snprintf(buf, sizeof(buf), "Selftest: %s",
              g_selftest_res == 1 ? "PASS" : (g_selftest_res == 2 ? "FAIL" : "---"));
     if (force || dchg(c_sys2[3], sizeof(c_sys2[3]), buf)) {
         dtext(DG_RLBL, 394, 190, buf,
               g_selftest_res == 1 ? UI_COLOR_OK
-              : (g_selftest_res == 2 ? UI_COLOR_BAD : UI_COLOR_INK_4), &ui_font_mono_14);
+              : (g_selftest_res == 2 ? UI_COLOR_BAD : UI_COLOR_INK_3), &ui_font_mono_18);
         drew = 1; }
 
     /* CM4 (D2) boot: degradovany rezim kdyz nenabehl (prazdna bank2 / BCM4=0).
@@ -902,7 +1014,7 @@ static int draw_health_values(int force)
     snprintf(buf, sizeof(buf), "CM4:%s", g_cm4_absent ? "ABSENT" : "OK");
     if (force || dchg(c_sys2[4], sizeof(c_sys2[4]), buf)) {
         dtext((int16_t)(DG_RLBL + 196), 394, (int16_t)(DG_COLW - 24 - 196), buf,
-              g_cm4_absent ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_14);
+              g_cm4_absent ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_18);
         drew = 1; }
 
     return drew;
@@ -910,11 +1022,7 @@ static int draw_health_values(int force)
 
 void app_gpsdo_render_health(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-
-    int first = (s_view != 3);
+    int first = window_first(3);
     if (first) {
         s_view = 3;
         window_chrome("SYSTEM HEALTH", WIN_TITLE_Y);
@@ -1004,21 +1112,18 @@ static int draw_sensors_values(int force)
 
 void app_gpsdo_render_sensors(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 4);
+    int first = window_first(4);
     if (first) {
         s_view = 4;
         window_chrome("SENZORY", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 58, 764, 346},
+        ui_card_t c = {.rect = DG_CARD_FULL_A,
                        .header_label = "Aktualni hodnoty senzoru"};
         ui_card_render_chrome(&c);
 
         /* podnadpisy sloupcu */
-        prim_draw_text((prim_point_t){DG_LLBL, 104}, "TEPLOTY  [C]", &ui_font_mono_16,
+        prim_draw_text((prim_point_t){DG_LLBL, 104}, "TEPLOTY  [C]", &ui_font_mono_18,
                        UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_RLBL, 104}, "NAPETI  [mV]", &ui_font_mono_16,
+        prim_draw_text((prim_point_t){DG_RLBL, 104}, "NAPETI  [mV]", &ui_font_mono_18,
                        UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         /* jmena senzoru (poradi musi sedet se SENS_ROW) */
         dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "STM board");
@@ -1058,20 +1163,17 @@ static int draw_mem_values(int force)
 
 void app_gpsdo_render_mem(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 5);
+    int first = window_first(5);
     if (first) {
         s_view = 5;
         window_chrome("PAMET", WIN_TITLE_Y);
-        ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
+        ui_card_t card = {.rect = DG_CARD_FULL_A,
                           .header_label = "Vyuziti pameti  (pouzite / celkem)"};
         ui_card_render_chrome(&card);
 
-        prim_draw_text((prim_point_t){DG_LLBL, 104}, "INTERNI", &ui_font_mono_16,
+        prim_draw_text((prim_point_t){DG_LLBL, 104}, "INTERNI", &ui_font_mono_18,
                        UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_RLBL, 104}, "EXTERNI", &ui_font_mono_16,
+        prim_draw_text((prim_point_t){DG_RLBL, 104}, "EXTERNI", &ui_font_mono_18,
                        UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "FLASH (CM7)");
         dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "RAM D1");
@@ -1116,18 +1218,19 @@ static void render_logy_btn(void)
 void app_gpsdo_render_histogram(void)
 {
     static uint32_t s_hist_key;
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 6);
+    int first = window_first(6);
     if (first) {
         s_view = 6;
         window_chrome("HISTOGRAM", WIN_TITLE_Y);
-        ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
+        ui_card_t card = {.rect = DG_CARD_FULL_A,
                           .header_label = "Rozdeleni y = (f-f0)/f0   |   Allan σy(τ)"};
         ui_card_render_chrome(&card);
         /* svisly delic mezi plotem a tabulkou */
         prim_draw_line((prim_point_t){572, 92}, (prim_point_t){572, 398}, 1, UI_COLOR_LINE);
+        /* prepnuti na sesterske okno ALLAN (velky log-log graf) */
+        ui_button_t sw = {.rect = HIST_ALLAN_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "ALLAN"};
+        ui_button_render(&sw);
     }
     uint32_t key = screen_main_stats_version()
                  ^ (screen_main_hist_logy() ? 0x80000000u : 0u);
@@ -1135,6 +1238,41 @@ void app_gpsdo_render_histogram(void)
         s_hist_key = key;
         render_logy_btn();                       /* label sleduje lin/log stav */
         screen_main_render_histogram(HIST_PLOT_RECT);
+        screen_main_render_stats_table(HIST_TABLE_RECT);
+        present_now();
+    }
+}
+
+/* ── ALLAN fullscreen (s_view=23): velky log-log graf σy(τ) + tabulka. ───────
+ * Otevira se tapem na Allan NAHLED na hlavni obrazovce (ktery od 2026-07-19
+ * nema popisky os — tohle okno je ma). Tlacitko HISTOGRAM prepne na sesterske
+ * okno rozdeleni (a tam zpet tlacitko ALLAN) — prepinani je BEZ nav_push,
+ * takze BACK z obou vede tam, odkud byla dvojice otevrena. Sdili geometrii
+ * plot/tabulka s histogramem (HIST_PLOT/TABLE_RECT). Zive pres change-key
+ * stats_version (~1x/s pri RUN; vzorkovani bezi i mimo okno). */
+static void app_gpsdo_render_allan(void)
+{
+    static uint32_t s_allan_key;
+    int first = window_first(23);
+    if (first) {
+        s_view = 23;
+        /* ⚠️ Titulek jen ASCII — mono_25 (font nadpisu) NEMA recke glyfy σ/τ
+         * (chybejici glyf se preskoci -> "ALLAN y()"); σy(τ) nese header karty
+         * v sans_18, ktery plny charset ma. */
+        window_chrome("ALLAN", WIN_TITLE_Y);
+        ui_card_t card = {.rect = DG_CARD_FULL_A,
+                          .header_label = "Allanova deviace, log-log (X = τ [s])"};
+        ui_card_render_chrome(&card);
+        /* svisly delic mezi grafem a tabulkou (stejny jako v histogramu) */
+        prim_draw_line((prim_point_t){572, 92}, (prim_point_t){572, 398}, 1, UI_COLOR_LINE);
+        ui_button_t sw = {.rect = ALLAN_HIST_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "HISTOGRAM"};
+        ui_button_render(&sw);
+    }
+    uint32_t key = screen_main_stats_version();
+    if (first || key != s_allan_key) {
+        s_allan_key = key;
+        screen_main_render_allan_big(HIST_PLOT_RECT);
         screen_main_render_stats_table(HIST_TABLE_RECT);
         present_now();
     }
@@ -1168,15 +1306,12 @@ static void render_trend_scale_btns(void)
 void app_gpsdo_render_trend(void)
 {
     static uint32_t s_trend_key;
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 9);
+    int first = window_first(9);
     if (first) {
         s_view = 9;
         window_chrome("TREND  y = (f-f0)/f0", WIN_TITLE_Y);
         render_trend_scale_btns();
-        ui_card_t card = {.rect = {DG_LX, 58, 764, 346},
+        ui_card_t card = {.rect = DG_CARD_FULL_A,
                           .header_label = "Frakcni odchylka v case"};
         ui_card_render_chrome(&card);
     }
@@ -1191,10 +1326,7 @@ void app_gpsdo_render_trend(void)
  * selftest, (sériové cislo pozdeji z CALIB store). Staticke + uptime tick. */
 void app_gpsdo_render_about(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 10);
+    int first = window_first(10);
     if (first) {
         s_view = 10;
         window_chrome("O PRISTROJI", WIN_TITLE_Y);
@@ -1203,13 +1335,13 @@ void app_gpsdo_render_about(void)
         prim_draw_text((prim_point_t){DG_LLBL, 108}, "Firmware:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 108}, FW_VERSION_FULL, &ui_font_mono_18, UI_COLOR_INK, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 140}, "Build:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 140}, __DATE__ " " __TIME__, &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 140}, __DATE__ " " __TIME__, &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 172}, "Autori:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 172}, "OK2HAZ & OK2JNJ", &ui_font_mono_18, UI_COLOR_ACC, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 204}, "MCU:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 204}, "STM32H757 (CM7+CM4) @ 480 MHz", &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 204}, "STM32H757 (CM7+CM4) @ 480 MHz", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 236}, "Serial:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 236}, "(neprideleno)", &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 160), 236}, "(neprideleno)", &ui_font_mono_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
 
         ui_card_t c2 = {.rect = {DG_LX, 274, 764, 130}, .header_label = "Stav"};
         ui_card_render_chrome(&c2);
@@ -1275,27 +1407,31 @@ static void settings_upd_mute(void)
     ui_button_render(&mb);
 }
 
+/* Track/procenta jsou centrovane na stred BR_MINUS/PLUS (y=188,h=64 -> stred
+ * 220; drive h=56 -> stred216). Posunuto +4 px se zvetsenim tlacitek. */
 static void settings_upd_jas(void)
 {
-    prim_fill_rect((prim_rect_t){194, 196, 188, 42}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_rect_t track = {196, 200, 118, 32};
+    prim_fill_rect((prim_rect_t){194, 198, 188, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_rect_t track = {196, 204, 118, 32};
     prim_fill_rect(track, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
     int16_t fillw = (int16_t)((int32_t)track.w * g_brightness / 255);
     if (fillw > 0)
         prim_fill_rect((prim_rect_t){track.x, track.y, fillw, track.h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(track, 2, 1, UI_COLOR_LINE);
     char pb[8]; snprintf(pb, sizeof pb, "%d%%", (int)g_brightness * 100 / 255);
-    prim_draw_text((prim_point_t){324, 224}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){324, 228}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
 }
 
+/* Hodnota prodlevy centrovana mezi DIM_MINUS/PLUS (x=279, stejne jako drive);
+ * y posunuto s ADEN_RECT/DIM_* (300->308, h56->64, stred 328->340). */
 static void settings_upd_dim(void)
 {
     ui_button_t adb = {.rect = ADEN_RECT, .variant = UI_BUTTON_NORMAL,
                        .label = g_autodim_en ? "ZAPNUTO" : "VYPNUTO"};
     ui_button_render(&adb);
-    prim_fill_rect((prim_rect_t){244, 306, 72, 38}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_fill_rect((prim_rect_t){244, 314, 72, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     char tb[12]; snprintf(tb, sizeof tb, "%u s", (unsigned)g_autodim_sec);
-    prim_draw_text((prim_point_t){279, 336}, tb, &ui_font_mono_22,
+    prim_draw_text((prim_point_t){279, 348}, tb, &ui_font_mono_22,
                    g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
 }
 
@@ -1328,10 +1464,8 @@ static void tz_step(int dir)
  * pri tapu. Zapisuje g_* + dirty pro BKP persist (DR2 + DR6). */
 void app_gpsdo_render_settings(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 7;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     window_chrome("NASTAVENI", WIN_TITLE_Y_TIGHT);
 
     /* ── Levy sloupec: Zvuk ── */
@@ -1340,8 +1474,8 @@ void app_gpsdo_render_settings(void)
     ui_card_render_chrome(&c1);
     settings_upd_mute();
 
-    /* ── Levy sloupec: Jas ── */
-    ui_card_t c2 = {.rect = {DG_LX, 156, DG_COLW, 100}, .header_label = "Jas displeje"};
+    /* ── Levy sloupec: Jas ── (108 px, bylo 100 — button 56->64 px potreboval +8) */
+    ui_card_t c2 = {.rect = {DG_LX, 156, DG_COLW, 108}, .header_label = "Jas displeje"};
     ui_card_render_chrome(&c2);
     ui_button_t bmin = {.rect = BR_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
     ui_button_t bplus = {.rect = BR_PLUS, .variant = UI_BUTTON_NORMAL, .label = "+"};
@@ -1349,8 +1483,9 @@ void app_gpsdo_render_settings(void)
     ui_button_render(&bplus);
     settings_upd_jas();
 
-    /* ── Levy sloupec: Auto-dim (zap/vyp + prodleva -/+) ── */
-    ui_card_t c3 = {.rect = {DG_LX, 266, DG_COLW, 102},
+    /* ── Levy sloupec: Auto-dim (zap/vyp + prodleva -/+) ── (posunuto 266->274,
+     * 110 px misto 102 — stejny duvod jako c2; navazuje bez mezery navic). */
+    ui_card_t c3 = {.rect = {DG_LX, 274, DG_COLW, 110},
                     .header_label = "Auto-dim (hodiny po necinnosti)"};
     ui_card_render_chrome(&c3);
     ui_button_t dmin = {.rect = DIM_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
@@ -1492,10 +1627,8 @@ static void splash_status(void)   /* prekresli JEN status radek (selftest) */
 
 void app_gpsdo_boot_splash(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 11;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
                    PRIM_RGB(0, 0, 0), PRIM_BLEND_REPLACE);
     prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 180}, "GPSDO",
@@ -1504,9 +1637,9 @@ void app_gpsdo_boot_splash(void)
                    &ui_font_sans_18, UI_COLOR_INK_2, PRIM_ALIGN_CENTER);
     prim_draw_line((prim_point_t){260, 240}, (prim_point_t){540, 240}, 2, UI_COLOR_LINE_HI);
     prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 268}, FW_VERSION_FULL "   " __DATE__,
-                   &ui_font_mono_16, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+                   &ui_font_mono_18, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
     prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 452}, "OK2HAZ & OK2JNJ",
-                   &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+                   &ui_font_mono_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
     splash_status();
 }
 
@@ -1533,21 +1666,35 @@ static void app_gpsdo_render_confirm_restart(void);
  * Pamet + Selftest = tlacitka ve footeru Diagnostiky (technicky hub).
  * Diagnostika ZUSTAVA i dlazdici (caste pouziti). */
 enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
-       ACT_KALIB, ACT_HOLDOVER, ACT_DATALOG, ACT_ALARMS, ACT_CAS };
-/* Menu 3×3 = 9 dlazdic. w=248, gap 14 (x=24/286/548); h=88, gap 12
- * (y=72/172/272 -> konci 360, pred footerem 417). Restart NENI dlazdice —
- * je ve footeru vpravo vedle ZPET (MENU_RESTART_RECT) jako systemova akce. */
-#define MENU_N 9
+       ACT_KALIB, ACT_HOLDOVER, ACT_DATALOG, ACT_ALARMS, ACT_CAS,
+       ACT_PLACEHOLDER };   /* sdileno vsemi 3 prazdnymi dlazdicemi radku 4 — viz menu_activate */
+/* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9 — 3 nove sloty jsou
+ * "Placeholder N", pripravene pro budouci funkce). w=248, gap 14; h=76, gap 10
+ * (y=68/154/240/326 -> radek4 konci 402, 15 px pred footerem 417 — bylo
+ * h=88/gap12/y=72/172/272, 4. radek by se do puvodni vysky nevesel bez
+ * zmenseni). Sloupce x viz komentar u MENU_ITEMS nize. Dotykovy cil 76 px =
+ * 8,9 mm, porad nad doporucenymi 7 mm. Restart NENI dlazdice — je ve footeru
+ * vpravo vedle ZPET (MENU_RESTART_RECT) jako systemova akce. */
+#define MENU_N 12
+/* x = 14/276/538 (bylo 24/286/548, 2026-07-19): puvodni sloupce mely
+ * NESYMETRICKY okraj — 24 px vlevo, ale jen 4 px vpravo (548+248=796,
+ * 800-796=4) — cisty nevyuzity pruh napravo. 3×248 + 2×14(gap) = 744,
+ * 800-744=56 volnych px -> symetricky rozdeleno 28/28, tj. 14 px na kazdou
+ * stranu mrizky. Sirka dlazdic beze zmeny (56 volnych px uz je "spravedlive"
+ * rozdelenych, ne ze by zbyvalo navic na vetsi dlazdice). */
 static const struct { prim_rect_t rect; const char *label; uint8_t act; } MENU_ITEMS[MENU_N] = {
-    { {24,  72, 248, 88}, "Diagnostika",   ACT_DIAG },
-    { {286, 72, 248, 88}, "Nastaveni",     ACT_SETTINGS },
-    { {548, 72, 248, 88}, "System Health", ACT_HEALTH },
-    { {24, 172, 248, 88}, "Citac",         ACT_COUNTER },
-    { {286,172, 248, 88}, "Holdover",      ACT_HOLDOVER },
-    { {548,172, 248, 88}, "Datalog",       ACT_DATALOG },
-    { {24, 272, 248, 88}, "Alarmy",        ACT_ALARMS },
-    { {286,272, 248, 88}, "Kalibrace",     ACT_KALIB },
-    { {548,272, 248, 88}, "Cas",           ACT_CAS },
+    { {14,  68, 248, 76}, "Diagnostika",   ACT_DIAG },
+    { {276, 68, 248, 76}, "Nastaveni",     ACT_SETTINGS },
+    { {538, 68, 248, 76}, "System Health", ACT_HEALTH },
+    { {14, 154, 248, 76}, "Citac",         ACT_COUNTER },
+    { {276,154, 248, 76}, "Holdover",      ACT_HOLDOVER },
+    { {538,154, 248, 76}, "Datalog",       ACT_DATALOG },
+    { {14, 240, 248, 76}, "Alarmy",        ACT_ALARMS },
+    { {276,240, 248, 76}, "Kalibrace",     ACT_KALIB },
+    { {538,240, 248, 76}, "Cas",           ACT_CAS },
+    { {14, 326, 248, 76}, "Placeholder 1", ACT_PLACEHOLDER },
+    { {276,326, 248, 76}, "Placeholder 2", ACT_PLACEHOLDER },
+    { {538,326, 248, 76}, "Placeholder 3", ACT_PLACEHOLDER },
 };
 /* Restart ve footeru (stejna urovan jako BACK_RECT {650,417}, vlevo od nej). */
 static const prim_rect_t MENU_RESTART_RECT = {460, 417, 170, 61};
@@ -1564,16 +1711,15 @@ static void menu_activate(uint8_t act)
     case ACT_DATALOG:   app_gpsdo_render_datalog();   break;
     case ACT_ALARMS:    app_gpsdo_render_alarms();    break;
     case ACT_CAS:       app_gpsdo_render_cas();       break;
+    case ACT_PLACEHOLDER: break;   /* prazdna dlazdice (radek 4) — zatim bez funkce */
     default: break;   /* Restart neni ACT_* — footer tlacitko -> confirm okno (s_view=13) */
     }
 }
 
-void app_gpsdo_render_menu(void)
+/* Obsah Menu BEZ s_view/present — sdili ho render_menu a modalni dialog
+ * potvrzeni restartu (ten si menu prekresli jako podklad pod ztmavenim). */
+static void menu_draw_body(void)
 {
-    app_gpsdo_init();
-    s_view = 12;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     window_chrome("MENU", WIN_TITLE_Y);
     for (int i = 0; i < MENU_N; i++) {
         ui_button_t b = {.rect = MENU_ITEMS[i].rect, .label = MENU_ITEMS[i].label,
@@ -1583,6 +1729,13 @@ void app_gpsdo_render_menu(void)
     /* Restart ve footeru vpravo (vedle ZPET) — systemova akce mimo mrizku. */
     ui_button_t rst = {.rect = MENU_RESTART_RECT, .variant = UI_BUTTON_ACTIVE, .label = "RESTART"};
     ui_button_render(&rst);
+}
+
+void app_gpsdo_render_menu(void)
+{
+    window_prep();
+    s_view = 12;
+    menu_draw_body();
     present_now();
 }
 
@@ -1591,20 +1744,29 @@ static const prim_rect_t CONFIRM_NO  = {230, 250, 150, 64};
 static const prim_rect_t CONFIRM_YES = {420, 250, 150, 64};
 static void app_gpsdo_render_confirm_restart(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 13;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    /* ztlumene pozadi (ponech menu) + centralni box */
+    /* Modalni dialog NAD menu. Menu si prekreslime sami: pri triple bufferingu
+     * neni zarucene, co prave ziskany back buffer obsahuje, a alfa michani by
+     * pak ztmavilo neznamy podklad. Teprve pres nej jde polopruhledna cerna.
+     * (Driv tu byl REPLACE fill plnou cernou => menu zmizelo uplne, prestoze
+     * komentar sliboval "ztlumene pozadi (ponech menu)".)
+     * Pozn.: alfa < 0xFF vyrazuje DMA2D fast-path ve prim_fill_rect -> ztmaveni
+     * je CPU pres 384k px. Bezi JEDNOU pri otevreni dialogu, ne v ticku. */
+    menu_draw_body();
     prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                   PRIM_RGB(0, 0, 0), PRIM_BLEND_REPLACE);
+                   PRIM_RGBA(0, 0, 0, 170), PRIM_BLEND_OVER);
     prim_fill_rect_rounded((prim_rect_t){190, 150, 420, 200}, UI_DIM_CARD_RADIUS,
                            UI_COLOR_BG_CARD, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded((prim_rect_t){190, 150, 420, 200}, UI_DIM_CARD_RADIUS, 1, UI_COLOR_WARN);
     prim_draw_text((prim_point_t){400, 210}, "Opravdu restartovat?",
                    &ui_font_mono_25, UI_COLOR_INK, PRIM_ALIGN_CENTER);
-    ui_button_t no  = {.rect = CONFIRM_NO,  .variant = UI_BUTTON_NORMAL, .label = "NE"};
-    ui_button_t yes = {.rect = CONFIRM_YES, .variant = UI_BUTTON_ACTIVE, .label = "ANO"};
+    /* ⚠️ Zvyrazneny (ACTIVE) je NE, tedy BEZPECNA volba — u destruktivniho
+     * potvrzeni ma byt vizualnim defaultem. Driv bylo ACTIVE na ANO, coz je
+     * presne naopak; navic tenhle dialog uz jednou stal za bugem "bootuje do
+     * trendu" (prst drzeny na ANO pres reset, viz s_touch_primed v UiTask). */
+    ui_button_t no  = {.rect = CONFIRM_NO,  .variant = UI_BUTTON_ACTIVE, .label = "NE"};
+    ui_button_t yes = {.rect = CONFIRM_YES, .variant = UI_BUTTON_NORMAL, .label = "ANO"};
     ui_button_render(&no);
     ui_button_render(&yes);
     present_now();
@@ -1613,24 +1775,21 @@ static void app_gpsdo_render_confirm_restart(void)
 /* ── Reference (s_view=14): stav Si5356 + konfigurace 4×100 MHz vernier hodin. ── */
 static void app_gpsdo_render_reference(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 14);
+    int first = window_first(14);
     static char c_lock[24];
     if (first) {
         s_view = 14;
         window_chrome("REFERENCE  Si5356", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Vernier reference (4-fazovy TDC)"};
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Vernier reference (4-fazovy TDC)"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 112}, "Vstup:",  &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 112}, "10 MHz -> VCO 2,2 GHz (N=220) /22", &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 112}, "10 MHz -> VCO 2,2 GHz (N=220) /22", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 148}, "Vystup:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 148}, "4x 100 MHz, faze 0/90/180/270 (2,5 ns)", &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 148}, "4x 100 MHz, faze 0/90/180/270 (2,5 ns)", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 184}, "Pouziti:",&ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 184}, "reciproky citac FPGA, jemny krok 2,5 ns", &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 184}, "reciproky citac FPGA, jemny krok 2,5 ns", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 240}, "Stav (reg 218):", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 300}, "Presnost = ppm vstupnich 10 MHz (Si5356).", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_LLBL, 300}, "Presnost = ppm vstupnich 10 MHz (Si5356).", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_lock[0] = '\0';
     }
     /* zivy lock status (LOS_CLKIN bit3 = ztrata reference = cervena; LOS_XTAL
@@ -1651,44 +1810,61 @@ static void app_gpsdo_render_reference(void)
  * (calib_save, blokujici erase+write). ADC3 VREF + TDC krok zustavaji
  * read-only (HW konstanty, nejde je kalibrovat timto mechanismem). */
 
-/* uint/float -> "w.f" bez %f (nano.specs). decimals = 1 nebo 3. */
-static void fmt_fN(char *buf, size_t n, float v, int decimals)
-{
-    int32_t scale = (decimals == 3) ? 1000 : 10;
-    int32_t t = (int32_t)(v * (float)scale + (v >= 0.0f ? 0.5f : -0.5f));
-    int32_t w = t / scale, f = t % scale; if (f < 0) f = -f;
-    if (decimals == 3) snprintf(buf, n, "%ld.%03ld", (long)w, (long)f);
-    else                snprintf(buf, n, "%ld.%01ld", (long)w, (long)f);
-}
-
+/* TODO #11(1b) HOTOVO 2026-07-19: radky 104/144/184/224 (roztec 40) -> 110/176/
+ * 242/308 (roztec 66), tlacitka 50x34 -> 60x60 (7,0 mm, na hranici doporuceneho
+ * minima). Vetsi roztec uvolnila 2 readonly radky (VREF/TDC) + status na
+ * spodek karty — viz app_gpsdo_render_kalib. */
 static const struct { volatile float *val; float step, lo, hi; int decimals;
                       const char *label, *unit; int16_t y; } KALIB_ROWS[4] = {
-    { &g_calib.ad8307_slope_mv_db,     0.5f,  10.0f,   40.0f, 1, "AD8307 slope",     "mV/dB", 104 },
-    { &g_calib.ad8307_intercept_dbm,   0.5f, -100.0f, -60.0f, 1, "AD8307 intercept", "dBm",   144 },
-    { &g_calib.gain_12v,               0.010f, 4.000f, 5.500f, 3, "12V delic gain",  "x",     184 },
-    { &g_calib.gain_5v,                0.005f, 1.500f, 2.500f, 3, "5V delic gain",   "x",     224 },
+    { &g_calib.ad8307_slope_mv_db,     0.5f,  10.0f,   40.0f, 1, "AD8307 slope",     "mV/dB", 110 },
+    { &g_calib.ad8307_intercept_dbm,   0.5f, -100.0f, -60.0f, 1, "AD8307 intercept", "dBm",   176 },
+    { &g_calib.gain_12v,               0.010f, 4.000f, 5.500f, 3, "12V delic gain",  "x",     242 },
+    { &g_calib.gain_5v,                0.005f, 1.500f, 2.500f, 3, "5V delic gain",   "x",     308 },
 };
-#define KALIB_BTN_W 50
-#define KALIB_BTN_H 34
-#define KALIB_MINUS_X 590
-#define KALIB_PLUS_X  650
-static prim_rect_t kalib_minus_rect(int16_t y) { return (prim_rect_t){KALIB_MINUS_X, (int16_t)(y - 26), KALIB_BTN_W, KALIB_BTN_H}; }
-static prim_rect_t kalib_plus_rect(int16_t y)  { return (prim_rect_t){KALIB_PLUS_X,  (int16_t)(y - 26), KALIB_BTN_W, KALIB_BTN_H}; }
+#define KALIB_BTN_W 60
+#define KALIB_BTN_H 60
+#define KALIB_MINUS_X 588
+#define KALIB_PLUS_X  656
+static prim_rect_t kalib_minus_rect(int16_t y) { return (prim_rect_t){KALIB_MINUS_X, (int16_t)(y - 30), KALIB_BTN_W, KALIB_BTN_H}; }
+static prim_rect_t kalib_plus_rect(int16_t y)  { return (prim_rect_t){KALIB_PLUS_X,  (int16_t)(y - 30), KALIB_BTN_W, KALIB_BTN_H}; }
+
+/* ── Hit-slop tlacitek -/+ ──────────────────────────────────────────────────
+ * I po zvetseni na 60x60 (7,0 mm) pridavame drobny hit-slop do volneho mista:
+ *   - vodorovne: MINUS az k boxu hodnoty (ten konci na x=572), PLUS az k
+ *     vnitrnimu okraji karty (DG_LX+764-14 = 768); mezeru mezi tlacitky
+ *     delime na pul (hranice 652), aby si nekradla doteky,
+ *   - svisle +-3 px = na pul mezery mezi radky (roztec radku 66, tlacitko 60). */
+#define KALIB_HIT_SY   3
+#define KALIB_HIT_MID  652                       /* delici cara mezi -/+ */
+static prim_rect_t kalib_minus_hit(int16_t y)
+{
+    return (prim_rect_t){576, (int16_t)(y - 30 - KALIB_HIT_SY),
+                         KALIB_HIT_MID - 576, KALIB_BTN_H + 2 * KALIB_HIT_SY};
+}
+static prim_rect_t kalib_plus_hit(int16_t y)
+{
+    return (prim_rect_t){KALIB_HIT_MID, (int16_t)(y - 30 - KALIB_HIT_SY),
+                         768 - KALIB_HIT_MID, KALIB_BTN_H + 2 * KALIB_HIT_SY};
+}
 static const prim_rect_t KALIB_SAVE_RECT = {18, 417, 220, 61};
 
 static void kalib_row_redraw(int i)
 {
     char vb[16], full[24];
-    fmt_fN(vb, sizeof vb, *KALIB_ROWS[i].val, KALIB_ROWS[i].decimals);
+    fmt_fixed(vb, sizeof vb, *KALIB_ROWS[i].val, KALIB_ROWS[i].decimals);
     snprintf(full, sizeof full, "%s %s", vb, KALIB_ROWS[i].unit);
-    /* boxw=310: box konci na x=572, 18 px pred KALIB_MINUS_X(590) — siriji by
+    /* boxw=312: box konci na x=572, 16 px pred KALIB_MINUS_X(588) — siriji by
      * kazdy redraw hodnoty prekryl/smazal levy okraj tlacitka MINUS. */
-    dtext((int16_t)(DG_LLBL + 230), KALIB_ROWS[i].y, 310, full, UI_COLOR_ACC, &ui_font_mono_18);
+    dtext((int16_t)(DG_LLBL + 230), KALIB_ROWS[i].y, 312, full, UI_COLOR_ACC, &ui_font_mono_18);
 }
 
+/* Status/napoveda radek: prazdne/vychozi = staticka napoveda (bylo samostatnym
+ * radkem "Zmena se projevi..." — sloucen sem, uvolnil misto pro vetsi tlacitka).
+ * Po editaci WARN "Zmeneno...", po ULOZIT OK/BAD vysledek zapisu. */
 static void kalib_status_redraw(const char *msg, prim_color_t col)
 {
-    dtext(DG_LLBL, 372, 500, msg, col, &ui_font_sans_16);
+    if (!msg || !msg[0]) { msg = "Zmena se projevi ihned; ULOZIT zapise do W25Q (prezije reset)."; col = UI_COLOR_INK_4; }
+    dtext(DG_LLBL, 402, 740, msg, col, &ui_font_sans_16);
 }
 
 /* Krok jedne polozky o step (smer +1/-1), clamp <lo,hi>, prekresli jen tu
@@ -1708,14 +1884,15 @@ static void kalib_step(int i, int dir)
 
 static void app_gpsdo_render_kalib(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 15;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     window_chrome("KALIBRACE", WIN_TITLE_Y);
     ui_button_t save = {.rect = KALIB_SAVE_RECT, .variant = UI_BUTTON_ACTIVE, .label = "ULOZIT"};
     ui_button_render(&save);
-    ui_card_t c = {.rect = {DG_LX, 62, 764, 320}, .header_label = "Kalibracni konstanty"};
+    /* Karta 348 px (bylo 320) — 4 radky s 60px tlacitky (roztec66, radek1..4
+     * konci 308+30=338) + 2 readonly radky (346/374) + status (402) uz presahly
+     * puvodnich 320; 348 je konci presne pred paticnkou (62+348=410, footer 417). */
+    ui_card_t c = {.rect = {DG_LX, 62, 764, 348}, .header_label = "Kalibracni konstanty"};
     ui_card_render_chrome(&c);
 
     for (int i = 0; i < 4; i++) {
@@ -1727,15 +1904,16 @@ static void app_gpsdo_render_kalib(void)
         ui_button_render(&pb);
         kalib_row_redraw(i);
     }
-    /* Read-only HW konstanty (nejdou timto mechanismem kalibrovat). */
-    prim_draw_text((prim_point_t){DG_LLBL, 264}, "ADC3 VREF", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 230), 264}, "VREFINT_CAL x 3300 / data (16-bit)", &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){DG_LLBL, 304}, "TDC jemny krok", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 230), 304}, "2,5 ns (Si5356 90 faze)", &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    /* Read-only HW konstanty (nejdou timto mechanismem kalibrovat). Puvodni
+     * samostatny radek "Zmena se projevi..." odstranen — sloucen do vychozi
+     * napovedy status radku (kalib_status_redraw), uvolnil misto pro vetsi
+     * tlacitka v radcich vyse. */
+    prim_draw_text((prim_point_t){DG_LLBL, 346}, "ADC3 VREF", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 230), 346}, "VREFINT_CAL x 3300 / data (16-bit)", &ui_font_mono_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){DG_LLBL, 374}, "TDC jemny krok", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 230), 374}, "2,5 ns (Si5356 90 faze)", &ui_font_mono_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
 
-    prim_draw_text((prim_point_t){DG_LLBL, 344}, "Zmena se projevi ihned; ULOZIT zapise do W25Q (prezije reset).",
-                   &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    kalib_status_redraw("", UI_COLOR_INK_4);
+    kalib_status_redraw(NULL, UI_COLOR_INK_4);   /* NULL -> vychozi napoveda */
     present_now();
 }
 
@@ -1743,29 +1921,26 @@ static void app_gpsdo_render_kalib(void)
 static void kv_row(int16_t y, const char *k, const char *v, prim_color_t vc)
 {
     prim_draw_text((prim_point_t){DG_LLBL, y}, k, &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 250), y}, v, &ui_font_mono_16, vc, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 250), y}, v, &ui_font_mono_18, vc, PRIM_ALIGN_LEFT);
 }
 
 /* ── Holdover (s_view=16): stav disciplinace GPSDO (WARMUP/LOCK/HOLDOVER) z GPS
  * fixu + FPGA linku + timepulse. Zive (uptime tik). Zdroj OCXO teploty = 0x49. ── */
 static void app_gpsdo_render_holdover(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 16);
+    int first = window_first(16);
     static char c_st[16], c_gps[24], c_tp[16], c_ocxo[16], c_since[20];
     static uint32_t s_state_since;
     static int s_last_state = -1;
     if (first) {
         s_view = 16;
         window_chrome("HOLDOVER", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Stav disciplinace GPSDO"};
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Stav disciplinace GPSDO"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 116}, "Rezim:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 344},
                        "WARMUP=nabeh OCXO  LOCK=disc. z GNSS  HOLDOVER=drzi VC bez fixu",
-                       &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_st[0] = c_gps[0] = c_tp[0] = c_ocxo[0] = c_since[0] = '\0';
         s_last_state = -1;
     }
@@ -1788,8 +1963,14 @@ static void app_gpsdo_render_holdover(void)
     if (first || dchg(c_gps, sizeof c_gps, b)) kv_row(160, "GPS lock:", b, g.valid ? UI_COLOR_OK : UI_COLOR_INK_2);
     snprintf(b, sizeof b, "%s", g.fix_quality ? "100 kHz (disc.)" : "10 Hz (hold)");
     if (first || dchg(c_tp, sizeof c_tp, b)) kv_row(196, "Timepulse:", b, g.fix_quality ? UI_COLOR_OK : UI_COLOR_WARN);
+    /* fmt_temp (stejne jako Diagnostika/Senzory) — driv se tu formatovalo inline
+     * a rozchazelo se to se zbytkem UI ve DVOU vecech:
+     *   1) desetinna CARKA misto tecky (jedine takove misto v celem UI),
+     *   2) u ZAPORNYCH hodnot to davalo nesmysl: (long)(-5.3) = -5, zbytek
+     *      (-5.3 - -5)*10 = -3 => "-5,-3 C"; pro -0.5 dokonce "0,-5 C" (ztrata
+     *      znamenka). OCXO sice zaporne nebude, ale byla to tikajici mina. */
     { const sensor_stat_t *o = &g_sensors[SENS_T49];
-      if (o->valid) snprintf(b, sizeof b, "%ld,%01ld C", (long)o->last, (long)((o->last - (long)o->last) * 10)); else snprintf(b, sizeof b, "--");
+      if (o->valid) fmt_temp(b, sizeof b, o->last); else snprintf(b, sizeof b, "--");
       if (first || dchg(c_ocxo, sizeof c_ocxo, b)) kv_row(232, "OCXO tepl.:", b, UI_COLOR_INK_2); }
     snprintf(b, sizeof b, "%lu s", (unsigned long)(g_uptime_s - s_state_since));
     if (first || dchg(c_since, sizeof c_since, b)) kv_row(268, "V rezimu:", b, UI_COLOR_INK_2);
@@ -1800,12 +1981,10 @@ static void app_gpsdo_render_holdover(void)
  * (roadmap [[w25q-flash]]) — okno je vstupni bod, ukazuje kapacitu + JEDEC. ── */
 static void app_gpsdo_render_datalog(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 17;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     window_chrome("DATALOG", WIN_TITLE_Y);
-    ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Zaznam mereni do W25Q (DATA region)"};
+    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Zaznam mereni do W25Q (DATA region)"};
     ui_card_render_chrome(&c);
     char b[32];
     kv_row(116, "Stav:",     "NEAKTIVNI (planovano)", UI_COLOR_WARN);
@@ -1819,7 +1998,7 @@ static void app_gpsdo_render_datalog(void)
     kv_row(260, "Flash ID:", b, id == W25Q_JEDEC_ID ? UI_COLOR_OK : UI_COLOR_BAD);
     prim_draw_text((prim_point_t){DG_LLBL, 344},
                    "Append-only log f/teplot/locku; rekonstrukce Allanu po bootu.",
-                   &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                   &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
 }
 
@@ -1827,15 +2006,12 @@ static void app_gpsdo_render_datalog(void)
  * Doplnuje Nastaveni (jen globalni mute) o PREHLED co spousti alarm + historii. ── */
 static void app_gpsdo_render_alarms(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 18);
+    int first = window_first(18);
     static char c_mute[12], c_f[12], c_g[12];
     if (first) {
         s_view = 18;
         window_chrome("ALARMY", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Zvukove alarmy (beeper) — co je hlidano"};
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Zvukove alarmy (beeper) — co je hlidano"};
         ui_card_render_chrome(&c);
         kv_row(116, "FPGA SIGNAL_LOST:", "hlidano (3x pip)", UI_COLOR_INK_2);
         kv_row(152, "Ztrata GPS locku:", "hlidano (2x pip)", UI_COLOR_INK_2);
@@ -1843,7 +2019,7 @@ static void app_gpsdo_render_alarms(void)
         prim_draw_text((prim_point_t){DG_LLBL, 260}, "Udalosti od startu:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 348},
                        "Vypnuti zvuku globalne v Nastaveni; mute plati i pro alarmy.",
-                       &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_mute[0] = c_f[0] = c_g[0] = '\0';
     }
     char b[12];
@@ -1883,16 +2059,13 @@ static void cnt_nibble(int16_t x, int16_t baseline, uint8_t nib, int seen)
 
 static void app_gpsdo_render_counter(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 19);
+    int first = window_first(19);
     static char c_link[64], c_f4[48], c_f16[48], c_edge[24], c_gate[24], c_seq[16], c_err[24];
     static int  c_ph = -1;   /* posledni kresleny phase_status (-1 = jeste nic) */
     if (first) {
         s_view = 19;
         window_chrome("CITAC  detail mereni", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 62, 764, 340}, .header_label = "FPGA reciproke mereni (SPI2)"};
+        ui_card_t c = {.rect = DG_CARD_FULL_C, .header_label = "FPGA reciproke mereni (SPI2)"};
         ui_card_render_chrome(&c);
         dlabel(DG_LLBL, 104, "SPI link");
         dlabel(DG_LLBL, 138, "f (/4)");     /* pin28, primar */
@@ -1903,10 +2076,10 @@ static void app_gpsdo_render_counter(void)
         dlabel(DG_LLBL, 308, "Chyby");
         dlabel(DG_LLBL, 342, "Faze");
         prim_draw_text((prim_point_t){(int16_t)(CNT_VX + 130), 342}, "fine",
-                       &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 384},
                        "pin28 = /4 (primar)   pin27 = /16 (rozsah)   zdrave faze = 4+4 zelene",
-                       &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_link[0] = c_f4[0] = c_f16[0] = c_edge[0] = c_gate[0] = c_seq[0] = c_err[0] = '\0';
         c_ph = -1;
     }
@@ -1917,10 +2090,12 @@ static void app_gpsdo_render_counter(void)
     char b[48];
 
     /* SPI status (stejny text jako Diagnostika, barva dle linky) — bez mezikopie,
-     * status muze mit az 63 znaku (b je jen 48 B) */
+     * status muze mit az 63 znaku (b je jen 48 B). Box CNT_VW=588 je (na rozdil
+     * od uzsiho DG_COLW-24 v Diagnostice) dost velky i pro realny NOLINK radek
+     * pri mono_18 (overeno tabulkou fontu — proto TADY bump, v Diagnostice ne). */
     if (first || dchg(c_link, sizeof c_link, (const char *)g_spi_text))
         { dtext(CNT_VX, 104, CNT_VW, (const char *)g_spi_text,
-                g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_16); drew = 1; }
+                g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_18); drew = 1; }
 
     /* Kmitocty obou odbocek (delicka uz zahrnuta ve FPGA). Chyba zdroje -> cervene. */
     if (seen) fpga_freq_format_val(m.frequency_x100000, b, sizeof b); else snprintf(b, sizeof b, "--");
@@ -1942,19 +2117,19 @@ static void app_gpsdo_render_counter(void)
     if (seen) snprintf(b, sizeof b, "%lu period", (unsigned long)m.edge_count);
     else      snprintf(b, sizeof b, "--");
     if (first || dchg(c_edge, sizeof c_edge, b))
-        { dtext(CNT_VX, 206, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_16); drew = 1; }
+        { dtext(CNT_VX, 206, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_18); drew = 1; }
 
     /* Gate v ms (~250, kolisa — reciproke okno ceka na hrany) */
     if (seen) snprintf(b, sizeof b, "%lu.%03lu ms", (unsigned long)(m.gate_time_ns / 1000000ULL),
                        (unsigned long)((m.gate_time_ns % 1000000ULL) / 1000ULL));
     else      snprintf(b, sizeof b, "--");
     if (first || dchg(c_gate, sizeof c_gate, b))
-        { dtext(CNT_VX, 240, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_16); drew = 1; }
+        { dtext(CNT_VX, 240, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_18); drew = 1; }
 
     if (seen) snprintf(b, sizeof b, "%lu", (unsigned long)m.sequence);
     else      snprintf(b, sizeof b, "--");
     if (first || dchg(c_seq, sizeof c_seq, b))
-        { dtext(CNT_VX, 274, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_16); drew = 1; }
+        { dtext(CNT_VX, 274, CNT_VW, b, UI_COLOR_INK_2, &ui_font_mono_18); drew = 1; }
 
     /* Dekodovane chybove priznaky (error_flags + status2) */
     if (!seen) snprintf(b, sizeof b, "--");
@@ -1969,7 +2144,7 @@ static void app_gpsdo_render_counter(void)
     if (first || dchg(c_err, sizeof c_err, b)) {
         int ok = seen && strcmp(b, "zadne") == 0;
         dtext(CNT_VX, 308, CNT_VW, b, !seen ? UI_COLOR_INK_3 : (ok ? UI_COLOR_OK : UI_COLOR_BAD),
-              &ui_font_mono_16); drew = 1;
+              &ui_font_mono_18); drew = 1;
     }
 
     /* Fazovy status: present[3:0] + fine_seen[3:0] (zdrave = vse zelene = 0xFF) */
@@ -1990,14 +2165,12 @@ static void app_gpsdo_render_counter(void)
 static const prim_rect_t ST_RUN_RECT = {18, 417, 180, 61};
 static void app_gpsdo_render_selftest(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 20;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     window_chrome("SELFTEST", WIN_TITLE_Y);
     ui_button_t run = {.rect = ST_RUN_RECT, .variant = UI_BUTTON_ACTIVE, .label = "SPUSTIT"};
     ui_button_render(&run);
-    ui_card_t c = {.rect = {DG_LX, 62, 764, 300}, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
+    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
     static const char *NAMES[6] = {
@@ -2028,7 +2201,7 @@ static void app_gpsdo_render_selftest(void)
                    PRIM_ALIGN_LEFT);
     prim_draw_text((prim_point_t){DG_LLBL, 336},
                    "Destruktivni HW testy zvlast: UART qspitest / storetest.",
-                   &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                   &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
 }
 
@@ -2061,29 +2234,46 @@ static void cas_zone_value(char *out, size_t n)
 }
 
 /* Partial update rezimu: AUTO/RUCNI tlacitko + velka hodnota zony mezi -/+. */
+/* Hodnota zony centrovana na stred TZ_MINUS/PLUS (y=310,h=64 -> stred342;
+ * drive h=56 -> stred338). Posunuto +4 px se zvetsenim tlacitek. */
 static void cas_upd_mode(void)
 {
+    /* ⚠️ Klíčové: REPLACE clear PŘED ui_button_render (bylo bez něj — bug,
+     * viz níže). Tohle je JEDINÝ přepínač v appce, ktery meni VARIANTU (a tedy
+     * barvu) tlačítka při partial redrawu bez předchozího blit_bg_region —
+     * footer tlačítka (RUN/STOP…) mají blit_bg_region v screen_main_redraw_button,
+     * ostatní partial-redraw tlačítka v appce (MUTE/AUTODIM/LANG) drží stále
+     * stejnou variantu (NORMAL), takže i bez clearu vypadají OK.
+     * Root cause: prim_fill_rect_rounded kreslí rohy přes aa_corner ->
+     * prim_internal_blend_px, ktery pise PRIMO do framebufferu a OBCHAZI
+     * mark_dirty (ten se vola jen z DMA2D d2d_fill/d2d_blit_ex). Rohy tlacitka
+     * se tedy NIKDY nezaznamenaji jako "dirty" -> pri triple bufferingu
+     * (copy-forward jen oznacenych oblasti) se do noveho back bufferu
+     * nezkopiruji a zustane tam "duch" ze 2 snimku zpet — po zmene varianty
+     * (jina barva) je to videt jako čtverečky v rozich tlačítka. REPLACE
+     * clear pres CELY obdelnik pred kreslenim jde DMA2D rychlou cestou (viz
+     * fill.c: blend==REPLACE), ktera mark_dirty VOLA — takze nasledny AA
+     * blend rohu uz spada do JIZ oznacene (a tedy spravne kopirovane) oblasti,
+     * presne jako to dela dtext_a pro text (viz komentar v prim_stm32_hal.c). */
+    prim_fill_rect(TZ_AUTO_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     ui_button_t ab = {.rect = TZ_AUTO_RECT,
                       .variant = g_tz_auto ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
                       .label = g_tz_auto ? "AUTO CET/CEST" : "RUCNI POSUN"};
     ui_button_render(&ab);
     char b[12];
     cas_zone_value(b, sizeof b);
-    prim_fill_rect((prim_rect_t){106, 314, 140, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_draw_text((prim_point_t){176, 346}, b, &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+    prim_fill_rect((prim_rect_t){106, 318, 140, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){176, 350}, b, &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 }
 
 static void app_gpsdo_render_cas(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 22);
+    int first = window_first(22);
     static char c_utc[26], c_loc[34], c_sync[8];
     if (first) {
         s_view = 22;
         window_chrome("CAS  zobrazovaci zona", WIN_TITLE_Y);
-        ui_card_t c = {.rect = {DG_LX, 62, 764, 340},
+        ui_card_t c = {.rect = DG_CARD_FULL_C,
                        .header_label = "Casova zona (RTC bezi v UTC z GPS)"};
         ui_card_render_chrome(&c);
         dlabel(DG_LLBL, 122, "UTC");
@@ -2096,7 +2286,7 @@ static void app_gpsdo_render_cas(void)
         cas_upd_mode();
         prim_draw_text((prim_point_t){DG_LLBL, 392},
                        "AUTO = EU letni cas (CET/CEST). -/+ prepne na rucni posun.",
-                       &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_utc[0] = c_loc[0] = c_sync[0] = '\0';
     }
     int drew = first;
@@ -2134,7 +2324,13 @@ static const prim_rect_t CD_FPGA  = {510, 316, 160, 52};  /* x:510-670  stred 59
 
 /* Uzel: zaobleny ramecek (vypln BG_0), OBRYS 2 px v barve stavu + stavova
  * "LED" tecka vpravo nahore -> stav uzlu je citelny i bez cteni popisku spoje.
- * Text mono_16 vystredeny, orezany do vnitrku (nikdy nepretece pres ramecek). */
+ * Text mono_18 (TODO #11(2b), bylo mono_16) vystredeny, orezany do vnitrku.
+ * ⚠️ Sirku i vysku box tb overit podle SKUTECNYCH glyfu (oy/h z font tabulky),
+ * NE podle nominalniho ascent/descent fontu (ten je worst-case pro CELOU
+ * znakovou sadu vc. diakritiky, realne pouzite znaky — velka pismena/cislice
+ * — maji nizsi oy). Pro mono_18 velka pismena/cislice: oy=14 (skutecny vrsek
+ * glyfu baseline-14), box top = baseline-18 -> 4 px rezerva; box bottom =
+ * baseline+6, nejnizsi pouzity glyf konci baseline+1 -> 5 px rezerva. */
 static void cd_node(prim_rect_t r, const char *label, prim_color_t status)
 {
     prim_fill_rect_rounded(r, 10, UI_COLOR_BG_0, PRIM_BLEND_OVER);
@@ -2143,7 +2339,7 @@ static void cd_node(prim_rect_t r, const char *label, prim_color_t status)
     prim_rect_t tb = {(int16_t)(r.x + 6), (int16_t)(r.y + r.h / 2 - 12), (int16_t)(r.w - 12), 24};
     prim_set_clip(tb);
     prim_draw_text((prim_point_t){(int16_t)(r.x + r.w / 2), (int16_t)(r.y + r.h / 2 + 6)},
-                   label, &ui_font_mono_16, UI_COLOR_INK, PRIM_ALIGN_CENTER);
+                   label, &ui_font_mono_18, UI_COLOR_INK, PRIM_ALIGN_CENTER);
     prim_reset_clip();
 }
 
@@ -2200,7 +2396,10 @@ static void cd_label_chip(int16_t cx, int16_t cy, const char *text, prim_color_t
 }
 
 /* Levy/pravy zarovnany popisek (bocni "external source" bloky OCXO/RF) —
- * stejny orez, jen jine zarovnani a ukotveni na x. */
+ * stejny orez, jen jine zarovnani a ukotveni na x. Box (y-16, h=22) overen
+ * proti SKUTECNYM glyfum OCXO/RF popisku (sans_18: velka pismena/cislice
+ * oy=14 -> 2 px rezerva nahore; 'p' nejnizsi pouzity descender h-oy=4 ->
+ * 2 px rezerva dole) — viz volajici cd_redraw_all, TODO #11(2b). */
 static void cd_label_x(int16_t x, int16_t y, int16_t boxw, const char *text,
                        prim_color_t col, prim_align_t align, const prim_font_t *font)
 {
@@ -2257,9 +2456,11 @@ static void cd_redraw_all(void)
     cd_node(CD_FPGA, "FPGA GW1NR-9", c_fpga);
 
     /* Externi zdroje (mimo desku) — jen popisek + stav, sipka vede dovnitr skupiny. */
-    cd_label_x(28, 334, 116, "OCXO 10MHz", UI_COLOR_INK_3, PRIM_ALIGN_LEFT, &ui_font_sans_16);
+    /* box 116->124 (TODO #11(2b)): "OCXO 10MHz" pri sans_18 potrebuje 115 px
+     * (overeno tabulkou fontu) — v 116 by mel jen 1 px rezervy, 124 dava 9 px. */
+    cd_label_x(28, 334, 124, "OCXO 10MHz", UI_COLOR_INK_3, PRIM_ALIGN_LEFT, &ui_font_sans_18);
     cd_label_x(28, 356, 116, clk_st, c_clk, PRIM_ALIGN_LEFT, &ui_font_mono_14);
-    cd_label_x(772, 334, 86, "RF vstup", UI_COLOR_INK_3, PRIM_ALIGN_RIGHT, &ui_font_sans_16);
+    cd_label_x(772, 334, 86, "RF vstup", UI_COLOR_INK_3, PRIM_ALIGN_RIGHT, &ui_font_sans_18);
     cd_label_x(772, 356, 86, rf_st, c_rf, PRIM_ALIGN_RIGHT, &ui_font_mono_14);
 
     /* Spoje (pravouhle trasy; sbernice y=166 nad STM32, SPI2 elbow y=270). */
@@ -2302,10 +2503,7 @@ static uint32_t cd_state_key(void)
 
 static void app_gpsdo_render_commdiag(void)
 {
-    app_gpsdo_init();
-    prim_set_target(&s_fb);
-    prim_reset_clip();
-    int first = (s_view != 21);
+    int first = window_first(21);
     static uint32_t c_key = 0xFFFFFFFFu;
     if (first) {
         s_view = 21;
@@ -2324,10 +2522,8 @@ static void app_gpsdo_render_commdiag(void)
 
 void app_gpsdo_clear(void)
 {
-    app_gpsdo_init();
+    window_prep();
     s_view = 0;
-    prim_set_target(&s_fb);
-    prim_reset_clip();
     prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
                    UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
     present_now();
@@ -2341,6 +2537,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 4) app_gpsdo_render_sensors(); /* live refresh of senzory podmenu */
     else if (s_view == 5) app_gpsdo_render_mem();     /* live refresh (RTOS heap) okna PAMET */
     else if (s_view == 6) app_gpsdo_render_histogram(); /* live/snapshot histogram mereni */
+    else if (s_view == 23) app_gpsdo_render_allan();  /* fullscreen Allan graf (zivy) */
     else if (s_view == 8) saver_draw();               /* screensaver hodiny (1x/s dle RTC) */
     else if (s_view == 9) app_gpsdo_render_trend();   /* fullscreen trend (zivy) */
     else if (s_view == 10) app_gpsdo_render_about();  /* O pristroji (uptime tick) */
@@ -2458,11 +2655,21 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
     if (s_view == 0) {
         if (screen_main_hit_gnss(x, y)) { nav_push(0); app_gpsdo_render_gps(); return true; }   /* GNSS pill */
         if (screen_main_hit_sys(x, y))  { nav_push(0); app_gpsdo_render_health(); return true; }  /* SYS pill */
-        if (screen_main_hit_allan(x, y)) { nav_push(0); app_gpsdo_render_histogram(); return true; }  /* Allan -> histogram */
+        if (screen_main_hit_allan(x, y)) { nav_push(0); app_gpsdo_render_allan(); return true; }  /* Allan nahled -> ALLAN okno */
         if (screen_main_hit_trend(x, y)) { nav_push(0); app_gpsdo_render_trend(); return true; }      /* trend -> fullscreen */
         int b = screen_main_hit_button(x, y);
+        if (b == 0) {   /* ⚠️ DOCASNE: "Main SW" A/B prepinac layoutu (misto PERIOD/FREQ,
+                         * viz footer_button_def + screen_main_toggle_layout) — cela
+                         * mrizka meni geometrii, staci proto plny screen_main_render(). */
+            screen_main_toggle_layout();
+            prim_set_target(&s_fb);
+            prim_reset_clip();
+            screen_main_render();
+            present_now();
+            return true;
+        }
         if (b == 4) { nav_push(0); app_gpsdo_render_menu(); return true; }   /* MENU -> rozcestnik */
-        if (b >= 0) {                                /* PERIOD/RUN/GATE/CHAN */
+        if (b >= 0) {                                /* RUN/GATE/CHAN (PERIOD/FREQ docasne vyrazen, viz b==0 vyse) */
             screen_main_button_action(b);
             prim_set_target(&s_fb);
             prim_reset_clip();
@@ -2550,13 +2757,22 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             for (int i = 0; i < MENU_N; i++)
                 if (in_rect(x, y, MENU_ITEMS[i].rect)) {
-                    nav_push(12); menu_activate(MENU_ITEMS[i].act);
+                    /* Placeholder nikam nenaviguje (zustava s_view=12) -> nav_push
+                     * by jen zanesl zasobnik neprislusnym zaznamem (BACK by pak
+                     * z nejakeho pozdejsiho okna musel projit Menu 2x). */
+                    if (MENU_ITEMS[i].act != ACT_PLACEHOLDER) nav_push(12);
+                    menu_activate(MENU_ITEMS[i].act);
                     return true;
                 }
         }
-        if (s_view == 13) {                                /* potvrzeni restartu */
+        if (s_view == 13) {                                /* potvrzeni restartu = MODAL */
             if (in_rect(x, y, CONFIRM_YES)) { g_reboot_req = 1; return true; }   /* Ano -> defaultTask reset */
             if (in_rect(x, y, CONFIRM_NO))  { app_gpsdo_render_menu(); return true; }  /* Ne -> zpet do Menu */
+            /* ⚠️ Modal: vsechny ostatni tapy polykame. Bez tohohle returnu se
+             * propadly az na spolecny BACK_RECT nize — a ten je v tomhle okne
+             * NEVIDITELNY (dialog nekresli window_chrome), takze vpravo dole byl
+             * slepy hotspot, ktery dialog zrusil. Zavrit ho jde jen pres NE. */
+            return false;
         }
         if (s_view == 9) {                                 /* trend: relativni +/- casove okno */
             int step = 0;
@@ -2575,6 +2791,16 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 6 && in_rect(x, y, LOGY_RECT)) {     /* histogram: prepni lin/log Y */
             screen_main_hist_toggle_logy();
             app_gpsdo_render_histogram();   /* zmena osy zmeni change-key -> prekresli */
+            return true;
+        }
+        /* Sesterske prepinani ALLAN <-> HISTOGRAM (bez nav_push — BACK obou oken
+         * se vraci k tomu, odkud byla dvojice otevrena, ne k sobe navzajem). */
+        if (s_view == 6 && in_rect(x, y, HIST_ALLAN_RECT)) {
+            app_gpsdo_render_allan();
+            return true;
+        }
+        if (s_view == 23 && in_rect(x, y, ALLAN_HIST_RECT)) {
+            app_gpsdo_render_histogram();
             return true;
         }
         if (s_view == 20 && in_rect(x, y, ST_RUN_RECT)) {  /* Selftest: spustit znovu */
@@ -2598,13 +2824,23 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 15) {                                /* Kalibrace: -/+ na 4 radcich + ULOZIT */
             for (int i = 0; i < 4; i++) {
                 int16_t yy = KALIB_ROWS[i].y;
-                if (in_rect(x, y, kalib_minus_rect(yy))) { kalib_step(i, -1); return true; }
-                if (in_rect(x, y, kalib_plus_rect(yy)))  { kalib_step(i, +1); return true; }
+                /* _hit (ne _rect): vizual zustava 50x34, dotykovy cil je vetsi. */
+                if (in_rect(x, y, kalib_minus_hit(yy))) { kalib_step(i, -1); return true; }
+                if (in_rect(x, y, kalib_plus_hit(yy)))  { kalib_step(i, +1); return true; }
             }
             if (in_rect(x, y, KALIB_SAVE_RECT)) {
-                bool ok = calib_save();      /* blokujici (erase+write ~stovky ms) */
+                /* calib_save() = erase+zapis sektoru W25Q, blokuje ~stovky ms
+                 * a po tu dobu UiTask nekresli. Bez odezvy to vypada jako
+                 * "tlacitko nereaguje" a uzivatel tapne znovu -> proto NEJDRIV
+                 * vykreslit "Ukladam..." a FLIPNOUT, teprve pak zapisovat. */
                 prim_set_target(&s_fb);
                 prim_reset_clip();
+                kalib_status_redraw("Ukladam do W25Q...", UI_COLOR_WARN);
+                present_now();
+                bool ok = calib_save();
+                /* dtext uvnitr kalib_status_redraw si oblast nejdriv vyplni
+                 * (fill_rect) -> mark_dirty sedi a copy-forward pres 3 buffery
+                 * je v poradku i pro tenhle druhy, castecny redraw. */
                 kalib_status_redraw(ok ? "Ulozeno do W25Q." : "Chyba zapisu do flash!",
                                     ok ? UI_COLOR_OK : UI_COLOR_BAD);
                 present_now();

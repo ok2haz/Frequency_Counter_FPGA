@@ -22,6 +22,7 @@
 
 /* USER CODE BEGIN 0 */
 #include "app_uart.h"
+#include "bootled.h"
 
 uint8_t RxByte;
 /* USER CODE END 0 */
@@ -34,7 +35,7 @@ void MX_USART1_UART_Init(void)
 {
 
   /* USER CODE BEGIN USART1_Init 0 */
-
+  bootled_step(BOOTLED_STEP_USART1);
   /* USER CODE END USART1_Init 0 */
 
   /* USER CODE BEGIN USART1_Init 1 */

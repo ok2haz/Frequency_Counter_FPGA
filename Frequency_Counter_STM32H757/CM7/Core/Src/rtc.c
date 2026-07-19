@@ -27,6 +27,7 @@
 #include "freertos_shared.h"   /* g_rtc_text / g_rtc_synced (def. ve freertos.c) */
 #include <stdio.h>
 #include <string.h>
+#include "bootled.h"
 
 #define RTC_RESYNC_MS   600000u   /* re-sync z GPS kazdych 10 min (drift LSE ~ppm) */
 #define RTC_TICK_MS       1000u   /* throttle rtc_app_tick: max 1x/s */
@@ -55,7 +56,7 @@ void MX_RTC_Init(void)
 {
 
   /* USER CODE BEGIN RTC_Init 0 */
-
+  bootled_step(BOOTLED_STEP_RTC);
   /* USER CODE END RTC_Init 0 */
 
   RTC_TimeTypeDef sTime = {0};

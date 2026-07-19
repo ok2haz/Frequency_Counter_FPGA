@@ -21,7 +21,7 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "bootled.h"
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c4;
@@ -31,7 +31,7 @@ void MX_I2C4_Init(void)
 {
 
   /* USER CODE BEGIN I2C4_Init 0 */
-
+  bootled_step(BOOTLED_STEP_I2C4);
   /* USER CODE END I2C4_Init 0 */
 
   /* USER CODE BEGIN I2C4_Init 1 */
@@ -144,6 +144,7 @@ I2C_HandleTypeDef hi2c1;
 
 void MX_I2C1_Init(void)
 {
+  bootled_step(BOOTLED_STEP_I2C1);
   GPIO_InitTypeDef gpio = {0};
   RCC_PeriphCLKInitTypeDef pclk = {0};
 

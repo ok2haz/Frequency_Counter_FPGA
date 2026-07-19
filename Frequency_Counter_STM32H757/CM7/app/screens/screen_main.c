@@ -89,6 +89,25 @@ const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 /* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
 bool screen_main_is_running(void) { return st.running; }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * DOCASNA A/B SROVNAVACI VETEV (2026-07-19, viz STATUS.md TODO #14):
+ * stary layout hlavni mrizky (pred audit pro 4,3" panel — Allan 53 % sirky,
+ * offset karty mono_16, signal jen v pravem sloupci vys.43) vs. novy (audit
+ * pro 4,3" — hybrid: Allan 47 % pres celou vysku, offset karty mono_18 vetsi,
+ * signal v pravem sloupci vys.54). Prepina se footer tlacitkem, ktere jinak
+ * prepina PERIOD/FREQ mod (slot 0, docasne prejmenovane "Main SW" — viz
+ * footer_button_def + touch handler v app_gpsdo.c). AZ bude vybrano, cely
+ * tenhle blok (s_layout_old + *_v1 funkce + dispatch v draw_stat_card a
+ * render_body_grid) SMAZAT — viz STATUS.md TODO #14.
+ * ⚠️ DEFAULT = STARY layout (2026-07-19): "main old" je referencni/frozen
+ * stav, na kterem se dal NEDELAJI zmeny. Vsechny dalsi UI upravy hlavni
+ * obrazovky (font, rozlozeni, ...) cili na "main new" (v2, render_body_grid_v2 /
+ * *_v2 funkce) — ten se pri kazdem otevreni okna musi rucne prepnout tlacitkem
+ * "Main SW". Az padne rozhodnuti, v2 se stane jedinym kodem (viz TODO #14). */
+static bool s_layout_old = true;
+void screen_main_toggle_layout(void) { s_layout_old = !s_layout_old; }
+bool screen_main_layout_is_old(void) { return s_layout_old; }
+
 /* Hlavickove pilulky — rect zachyceny pri render_header; tap -> okno. */
 static prim_rect_t s_gnss_pill_rect = {0, 0, 0, 0};  /* GNSS lock -> GPS okno */
 static prim_rect_t s_sys_pill_rect  = {0, 0, 0, 0};  /* SYS ready -> System Health */
@@ -98,14 +117,38 @@ static bool pt_in(int16_t x, int16_t y, prim_rect_t r)
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
+/* ── Hit-slop pilulek ────────────────────────────────────────────────────────
+ * Panel je 4,3" 800x480 => 8,54 px/mm (217 DPI). Pilulka je vizualne vysoka
+ * UI_DIM_PILL_H = 46 px = 5,4 mm (2026-07-19: 30 -> 36 -> 42 -> 46) — porad pod
+ * doporucenymi ~7 mm pro prst, a pritom je to JEDINA cesta z hlavni obrazovky
+ * do GPS okna / System Health. Proto se navic rozsiruje TESTOVACI obdelnik:
+ *   - svisle az k okrajum hlavicky (0..UI_DIM_HEADER_H) -> 46 px => ~52 px
+ *     (6,1 mm, clampnuto pt_in_pill); vic nejde, nize uz zacina telo obrazovky
+ *     a kradli bychom mu tapy,
+ *   - vodorovne jen o POLOVINU mezery mezi pilulkami (UI_DIM_PILL_GAP/2), aby si
+ *     sousedni pilulky (GNSS | SYS | SAT | HDOP jsou v jedne rade) nekradly doteky. */
+#define PILL_SLOP_X  (UI_DIM_PILL_GAP / 2)
+#define PILL_SLOP_Y  11
+
+static bool pt_in_pill(int16_t x, int16_t y, prim_rect_t r)
+{
+    if (r.w == 0) return false;
+    int16_t y0 = (int16_t)(r.y - PILL_SLOP_Y);
+    int16_t y1 = (int16_t)(r.y + r.h + PILL_SLOP_Y);
+    if (y0 < 2) y0 = 2;
+    if (y1 > UI_DIM_HEADER_H - 2) y1 = UI_DIM_HEADER_H - 2;
+    return x >= r.x - PILL_SLOP_X && x < r.x + r.w + PILL_SLOP_X
+        && y >= y0 && y < y1;
+}
+
 bool screen_main_hit_gnss(int16_t x, int16_t y)
 {
-    return s_gnss_pill_rect.w != 0 && pt_in(x, y, s_gnss_pill_rect);
+    return pt_in_pill(x, y, s_gnss_pill_rect);
 }
 
 bool screen_main_hit_sys(int16_t x, int16_t y)
 {
-    return s_sys_pill_rect.w != 0 && pt_in(x, y, s_sys_pill_rect);
+    return pt_in_pill(x, y, s_sys_pill_rect);
 }
 
 /* Agregace zdravi systemu do SYS pilulky: 0=OK(zelena) 1=warn(amber) 2=chyba(cervena).
@@ -226,7 +269,30 @@ static int16_t draw_word(int16_t x, int16_t y, const char *text,
     return (int16_t)(x + prim_text_width(text, font));
 }
 
-/* Header: only the pills that fit (no overflow into the clock area). */
+/* Header: only the pills that fit (no overflow into the clock area).
+ * HDR_PILL_LIMIT = zacatek "zony hodin": clear obdelnik sekundoveho redrawu
+ * casu zacina na x=648 (time_x 794 - hodiny 120 - 26 na mute ikonu) a datovy
+ * na x=644 (time_x-150) — a ten s pilulkami vysky 46 koliduje i SVISLE (pas
+ * y 35..53 vs pilulky 5..51). Pilulka nesmi zasahnout ani do jedne zony,
+ * jinak ji kazdy tik hodin/zmena data oreze. 640 = 644 - 4 px rezerva.
+ * ⚠️ Fit-check byl komentarem vyse SLIBOVANY odjakziva, ale kod ho nedelal
+ * (nalezeno revizi 2026-07-19): pri soubehu dlouhych stavu ("GNSS FIX" +
+ * "SYS ERR") rada pretekala do clear zon. Pilulky jdou v poradi dulezitosti
+ * -> pri pretlaku vypadne POSLEDNI (HOLD; v jedinem pretekajicim scenari
+ * stejne nemuze byt holdover aktivni — "GNSS FIX" = zivy fix). */
+#define HDR_PILL_LIMIT 640
+
+/* Vykresli pilulku jen kdyz se CELA vejde pred HDR_PILL_LIMIT; pri vykresleni
+ * posune x o sirku+GAP. Vraci 1 = vykresleno (volajici smi zachytit rect). */
+static int hdr_pill_fit(ui_pill_t *p, int16_t *x)
+{
+    if ((int16_t)(*x + ui_pill_measure(p)) > HDR_PILL_LIMIT) return 0;
+    p->x = *x;
+    ui_pill_render(p);
+    *x = (int16_t)(*x + p->computed_width + UI_DIM_PILL_GAP);
+    return 1;
+}
+
 static void render_header(void)
 {
     int16_t x = SCR_MAIN_HEADER_X;
@@ -255,11 +321,12 @@ static void render_header(void)
     /* GNSS/SAT pilulky zustavaji z GPS (odrazi fix); datum bere RTC (tika i bez fixu). */
     { char tdummy[16]; rtc_time_date(tdummy, date_v); }   /* header chce jen datum */
 
-    p = (ui_pill_t){.x = x, .y = y, .variant = gnss_var,
+    p = (ui_pill_t){.y = y, .variant = gnss_var,
                     .value = gnss_s, .has_led = true};
-    ui_pill_render(&p);
-    s_gnss_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> GPS okno */
-    x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    if (hdr_pill_fit(&p, &x))   /* vzdy se vejde (prvni), rect pro tap -> GPS okno */
+        s_gnss_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};
+    else
+        s_gnss_pill_rect = (prim_rect_t){0, 0, 0, 0};
 
     /* SYS pilulka barevne dle agregovaneho zdravi (zelena/amber/cervena). */
     s_sys_level = compute_sys_level();
@@ -267,32 +334,38 @@ static void render_header(void)
                            : (s_sys_level == 1) ? UI_PILL_WARN : UI_PILL_BAD;
     const char *sysl = (s_sys_level == 0) ? "SYS OK"
                      : (s_sys_level == 1) ? "SYS !" : "SYS ERR";
-    p = (ui_pill_t){.x = x, .y = y, .variant = sysv, .value = sysl};
-    ui_pill_render(&p);
-    s_sys_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};  /* tap -> System Health */
-    x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    p = (ui_pill_t){.y = y, .variant = sysv, .value = sysl};
+    if (hdr_pill_fit(&p, &x))   /* rect pro tap -> System Health */
+        s_sys_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};
+    else
+        s_sys_pill_rect = (prim_rect_t){0, 0, 0, 0};
 
-    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL, .value = sat_v,
+    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL, .value = sat_v,
                     .icon_render = ui_icon_sat_dish, .icon_size = 22,
                     .icon_color = UI_COLOR_OK_SOFT};
-    ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    hdr_pill_fit(&p, &x);
 
-    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL,
+    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
                     .label = SCR_S_HDOP_L, .value = hdop_v};   /* reálné HDOP z GPS */
-    ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
-
-    p = (ui_pill_t){.x = x, .y = y, .variant = UI_PILL_NORMAL,
-                    .label = SCR_S_CAL_L, .value = SCR_S_CAL_V};
-    ui_pill_render(&p); x = (int16_t)(x + p.computed_width + UI_DIM_PILL_GAP);
+    hdr_pill_fit(&p, &x);
 
     /* HOLD pilulka: AMBER pri holdoveru (fix ztracen pote, co uz nekdy byl) —
-     * nahrazuje drivejsi zvlastni "H" u casu (kolidovalo s UTC/pilulkou). */
+     * nahrazuje drivejsi zvlastni "H" u casu (kolidovalo s UTC/pilulkou).
+     * ⚠️ HOLD je PRED CAL (poradi = dulezitost pro fit-check): HOLD nese ZIVY
+     * stav (holdover), CAL je zatim staticky placeholder ("4 min"). V holdover
+     * stavech ("NO GNSS"/"ACQUIRE" + SYS ERR) rada preteka o ~6 px — s puvodnim
+     * poradim by fit-check vyradil prave indikator holdoveru (overeno simulaci
+     * pres tabulky fontu, revize 2026-07-19); takhle vypadne postradatelny CAL. */
     int hold = (!g.valid && g.fixes > 0);
-    p = (ui_pill_t){.x = x, .y = y, .variant = hold ? UI_PILL_WARN : UI_PILL_NORMAL,
+    p = (ui_pill_t){.y = y, .variant = hold ? UI_PILL_WARN : UI_PILL_NORMAL,
                     .label = SCR_S_HOLD_L, .value = SCR_S_HOLD_V};
-    ui_pill_render(&p);
+    hdr_pill_fit(&p, &x);
 
-    int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;   /* half the margin */
+    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
+                    .label = SCR_S_CAL_L, .value = SCR_S_CAL_V};
+    hdr_pill_fit(&p, &x);
+
+    int16_t time_x = UI_DIM_SCREEN_W - SCR_MAIN_CLOCK_MARGIN;
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
     /* Label zony ("UTC"/"UTC+2") na radek DATA (vpravo dole) — mimo pilulky. */
@@ -691,6 +764,117 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
     return s_trend_rect.w != 0 && pt_in(x, y, s_trend_rect);
 }
 
+/* ADEV body z decimacni pyramidy: per stage tau = {1,2,5}×10^s s (log spacing
+ * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
+ * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
+ * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
+static int adev_points(float *taus, float *adevs, int max)
+{
+    static const int SM[] = {1, 2, 5};
+    int np = 0;
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
+        for (int mi = 0; mi < 3; mi++) {
+            if (np >= max) return np;
+            float a = adev_stage(s, SM[mi]);
+            if (a <= 0.0f) continue;
+            taus[np] = dec * (float)SM[mi]; adevs[np] = a; np++;
+        }
+    }
+    return np;
+}
+
+/* Spolecne log-log mapovani ADEV krivky do 'inner' (+ markery). Y pevne dekady
+ * 10^ALLAN_Y_MIN..10^(ALLAN_Y_MIN+ALLAN_Y_DEC), X dynamicky [tau_min..tau_max].
+ * Sdili nahled (marker_r=2) i velky graf (marker_r=3). */
+#define ALLAN_Y_MIN  (-10)
+#define ALLAN_Y_DEC  4
+static void allan_plot_curve(prim_rect_t inner, const float *taus,
+                             const float *adevs, int np, int16_t marker_r)
+{
+    float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
+    float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
+    float xspan = lmax - lmin;
+    if (xspan < 1e-6f) xspan = 1.0f;
+    prim_point_t pts[20];
+    if (np > 20) np = 20;
+    for (int i = 0; i < np; i++) {
+        float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
+        float ly = (log10f(adevs[i]) - (float)ALLAN_Y_MIN) / (float)ALLAN_Y_DEC;
+        if (ly < 0.0f) ly = 0.0f;
+        if (ly > 1.0f) ly = 1.0f;
+        pts[i].x = (int16_t)(inner.x + fx * inner.w);
+        pts[i].y = (int16_t)(inner.y + (1.0f - ly) * inner.h);
+    }
+    for (int i = 1; i < np; i++)
+        prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
+    for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
+        prim_fill_circle(pts[i], marker_r, UI_COLOR_ACC);
+}
+
+/* Kompletni log-log ADEV graf do 'area' (Y+X mrizka, dekadove popisky, krivka).
+ * Sdili KARTA na hlavni obrazovce a fullscreen okno ALLAN. Popisky mono_16 v
+ * OBOU (2026-07-19: karta byla mono_14, sjednoceno kvuli citelnosti — soucast
+ * TODO #11(2b), aplikovano cileně na Allan). Rezervy (resl/resb) jsou
+ * napocitane na sirku "10⁻¹⁰" pri mono_16 (advance 10+10+7+10+10=47 px + 6 px
+ * mezera k ose = min. 53 px; pouzito 58 (par px navic rezervy). 'big' dal
+ * rozlisuje jen odsazeni (okno ma vic mista nez karta v hlavni mrizce).
+ * Rezervy na popisky si funkce bere z 'area' sama. */
+static void allan_plot(prim_rect_t area, int big)
+{
+    const prim_font_t *lf = &ui_font_mono_16;
+    prim_color_t lc  = UI_COLOR_INK_3;
+    int16_t resl = 58;                    /* leva rezerva na "10⁻¹⁰" (mono_16, viz komentar vyse) */
+    int16_t resb = big ? 34 : 26;          /* dolni pruh na dekadove popisky τ */
+    int16_t rest = big ? 12 : 0;          /* horni odsazeni (okno) */
+    prim_rect_t in = {(int16_t)(area.x + resl), (int16_t)(area.y + rest),
+                      (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
+
+    float taus[20], adevs[20];
+    int np = adev_points(taus, adevs, 20);
+    if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
+        prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
+                                      (int16_t)(in.y + in.h / 2 + 5)},
+                       "Waiting for data...", &ui_font_sans_16,
+                       UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+        return;
+    }
+
+    /* Y mrizka + dekadove popisky (pevny rozsah ALLAN_Y_MIN..+ALLAN_Y_DEC). */
+    for (int j = 0; j <= ALLAN_Y_DEC; j++) {
+        int16_t y = (int16_t)(in.y + (int32_t)j * in.h / ALLAN_Y_DEC);
+        prim_draw_line((prim_point_t){in.x, y},
+                       (prim_point_t){(int16_t)(in.x + in.w), y}, 1, UI_COLOR_LINE);
+        prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(y + 5)},
+                       SCR_ALLAN_Y_TICKS[j], lf, lc, PRIM_ALIGN_RIGHT);
+    }
+
+    /* X mrizka + popisky v MOCNINACH 10 — jen dekady v [tau_min..tau_max]. */
+    float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
+    float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
+    float xspan = lmax - lmin;
+    if (xspan < 1e-6f) xspan = 1.0f;
+    for (int e = (int)ceilf(lmin); e <= (int)floorf(lmax); e++) {
+        float fx = ((float)e - lmin) / xspan;
+        int16_t x = (int16_t)(in.x + fx * in.w);
+        prim_draw_line((prim_point_t){x, in.y},
+                       (prim_point_t){x, (int16_t)(in.y + in.h)}, 1, UI_COLOR_LINE);
+        char dl[8];                                 /* tau_min >= 1 s -> e >= 0 (10^e) */
+        long v = 1;
+        for (int j = 0; j < e; j++) v *= 10;
+        snprintf(dl, sizeof(dl), "%ld", v);
+        prim_draw_text((prim_point_t){x, (int16_t)(in.y + in.h + (big ? 18 : 16))},
+                       dl, lf, lc, PRIM_ALIGN_CENTER);
+    }
+
+    allan_plot_curve(in, taus, adevs, np, 3);
+}
+
+/* Allan karta na hlavni obrazovce: vlevo pres vysku statistik+trendu (364×176,
+ * finalni tvar 2026-07-19 — vyssi nez docasny nahled 100 px, ale ne pres celou
+ * mrizku jako puvodne 242). MA plne osy (mono_14); jeste vetsi graf + σy(τ)
+ * tabulku ma fullscreen okno ALLAN po tapu ('↗' v headeru). Header nese zivou
+ * σy@1s. */
 static void render_card_allan(prim_rect_t rect)
 {
     s_allan_rect = rect;                          /* pro zive prekresleni */
@@ -701,98 +885,31 @@ static void render_card_allan(prim_rect_t rect)
                       .header_right = hdr,
                       .header_right_accent = UI_COLOR_ACC};
     ui_card_render_chrome(&card);
-    /* Ztlumene '↗' hned za titulkem = naznak ze karta je klikaci (tap -> histogram okno). */
+    /* Ztlumene '↗' hned za titulkem = naznak ze karta je klikaci (tap -> ALLAN okno). */
     int16_t hx = (int16_t)(rect.x + UI_DIM_CARD_PAD_X
                            + prim_text_width("Allan σy(τ)", &ui_font_sans_18) + 6);
     prim_draw_text((prim_point_t){hx, (int16_t)(rect.y + UI_DIM_CARD_PAD_Y + 16)},
-                   "↗", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    prim_rect_t ci = ui_card_inner_rect(&card);
-    /* Levy okraj (36) na Y popisky, dolni pruh (22) na X popisky τ, maly pravy okraj. */
-    prim_rect_t inner = {(int16_t)(ci.x + 36), ci.y,
-                         (int16_t)(ci.w - 36 - 8), (int16_t)(ci.h - 22)};
-
-    /* Vlastni log-log osa: Y pevna (1e-10..1e-6), X = [tau_min..tau_max] v log10 —
-     * DYNAMICKA: krivka zacina u tau_min (1 s) a roztahuje se vpravo s nejdelsim
-     * dostupnym tau (az 100000+ s pri dlouhem behu). */
-    const int Y_MIN = -10, Y_DEC = 4;
-
-    /* Y mrizka + dekadove popisky. */
-    for (int j = 0; j <= Y_DEC; j++) {
-        int16_t y = (int16_t)(inner.y + (int32_t)j * inner.h / Y_DEC);
-        prim_draw_line((prim_point_t){inner.x, y},
-                       (prim_point_t){(int16_t)(inner.x + inner.w), y}, 1, UI_COLOR_LINE);
-        prim_draw_text((prim_point_t){(int16_t)(inner.x - 6), (int16_t)(y + 4)},
-                       SCR_ALLAN_Y_TICKS[j], &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
-    }
-
-    /* ADEV body z decimacni pyramidy: per stage tau = {1,2,5}×10^s s (log spacing
-     * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
-     * az k 100000+ s (100 dni), pamet ohranicena. */
-    static const int SM[] = {1, 2, 5};
-    float taus[20], adevs[20]; int np = 0;
-    for (int s = 0; s < ADEV_STAGES; s++) {
-        float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
-        for (int mi = 0; mi < 3; mi++) {
-            float a = adev_stage(s, SM[mi]);
-            if (a <= 0.0f) continue;
-            taus[np] = dec * (float)SM[mi]; adevs[np] = a; np++;
-        }
-    }
-    if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
-        prim_draw_text((prim_point_t){(int16_t)(inner.x + inner.w / 2),
-                                      (int16_t)(inner.y + inner.h / 2)},
-                       "Waiting for data...", &ui_font_sans_14,
-                       UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
-        return;
-    }
-
-    float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
-    float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
-    float xspan = lmax - lmin;
-    if (xspan < 1e-6f) xspan = 1.0f;
-
-    /* X mrizka + popisky v MOCNINACH 10 (log scale: 1,10,100,1k,10k,100k s) —
-     * jen dekady padajici do dynamickeho rozsahu [tau_min..tau_max]. */
-    for (int e = (int)ceilf(lmin); e <= (int)floorf(lmax); e++) {
-        float fx = ((float)e - lmin) / xspan;
-        int16_t x = (int16_t)(inner.x + fx * inner.w);
-        prim_draw_line((prim_point_t){x, inner.y},
-                       (prim_point_t){x, (int16_t)(inner.y + inner.h)}, 1, UI_COLOR_LINE);
-        char dl[8];                                 /* tau_min >= 1 s -> e >= 0 (10^e) */
-        long v = 1;
-        for (int j = 0; j < e; j++) v *= 10;
-        snprintf(dl, sizeof(dl), "%ld", v);
-        prim_draw_text((prim_point_t){x, (int16_t)(inner.y + inner.h + 14)},
-                       dl, &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
-    }
-
-    prim_point_t pts[20];
-    for (int i = 0; i < np; i++) {
-        float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres celou sirku */
-        float ly = (log10f(adevs[i]) - (float)Y_MIN) / (float)Y_DEC;
-        if (ly < 0.0f) ly = 0.0f;
-        if (ly > 1.0f) ly = 1.0f;
-        pts[i].x = (int16_t)(inner.x + fx * inner.w);
-        pts[i].y = (int16_t)(inner.y + (1.0f - ly) * inner.h);
-    }
-    for (int i = 1; i < np; i++)
-        prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
-    for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
-        prim_fill_circle(pts[i], 3, UI_COLOR_ACC);
-    if (SCR_ALLAN_X_LABEL)
-        prim_draw_text((prim_point_t){(int16_t)(inner.x + inner.w),
-                                      (int16_t)(inner.y + inner.h + 28)},
-                       SCR_ALLAN_X_LABEL, &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+                   "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    allan_plot(ui_card_inner_rect(&card), 0);
 }
 
-/* Jedna mala karta: header label + hodnota (mono_16). Hodnota posunuta vys (+11). */
+/* Jedna mala karta: header label + hodnota. Hodnota mono_18 (2026-07-19, bylo
+ * mono_16 — karty se roztahly na 1/3 sirky, takze je misto; mono_18 MA horni
+ * indexy ⁰..⁹⁻ pro fmt_frac). Baseline in.y+15: glyf 18px zacina AZ POD
+ * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32).
+ * ⚠️ DOCASNY dispatch na s_layout_old (mono_16+11, puvodni pred 4,3" audit) —
+ * soucast A/B srovnavaci vetve, viz komentar u screen_main_toggle_layout. */
 static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
 {
     ui_card_t card = {.rect = r, .header_label = label};
     ui_card_render_chrome(&card);
     prim_rect_t in = ui_card_inner_rect(&card);
-    prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
-                   &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
+    if (s_layout_old)
+        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
+                       &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
+    else
+        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 15)}, val,
+                       &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
 }
 
 /* TRI uzke karty ze statistiky: Offset (klouzavy prumer y), σy@1s (ADEV tau=1s),
@@ -856,7 +973,7 @@ static void render_card_trend(prim_rect_t rect)
     int16_t hx = (int16_t)(rect.x + UI_DIM_CARD_PAD_X
                            + prim_text_width(SCR_S_TREND_L, &ui_font_sans_18) + 6);
     prim_draw_text((prim_point_t){hx, (int16_t)(rect.y + UI_DIM_CARD_PAD_Y + 16)},
-                   "↗", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+                   "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t inner = ui_card_inner_rect(&card);
     ui_sparkline_t sp = {.inner = inner, .y_values = s_spark,
         .count = (int16_t)n, .show_sigma_band = true,
@@ -924,13 +1041,29 @@ static void render_card_signal(prim_rect_t rect)
     draw_signal_card(rect, s_signal_pct);
 }
 
-static void render_right_column(prim_rect_t rect)
+/* Mrizka = HYBRID (layout pro 4,3" panel, finalni tvar 2026-07-19):
+ *   vlevo  Allan graf pres CELOU vysku mrizky (364×242 — plne osy s popisky;
+ *          predtim koncil nad signal radkem, ted se roztahl az dolu, protoze
+ *          signal bargraf uz nejede pres levou cast),
+ *   vpravo statistiky Offset/σ@1s/Drift (3× 125×64, hodnoty mono_18),
+ *          POD nimi mini trend (398×100, tap -> fullscreen okno),
+ *          a UPLNE DOLE RF signal bargraf (398×54) — bargraf je JEN v prave
+ *          casti (drive pres celou sirku 776 px; zuzeno na pozadavek
+ *          "bargraf jen v prave casti").
+ * Pozn.: horni hrana mrizky MUSI zustat na SCR_MAIN_GRID_Y (166) — clear
+ * oblast velkeho cisla (redraw_freq, s_num_top+88) konci presne na ni. */
+/* ── DOCASNA V1 (stary layout, pred 4,3" audit — presna rekonstrukce z HEAD
+ * pred touto revizi): Allan 53 % sirky, pravy sloupec stacked offset(h54,
+ * mono_16)/trend/signal(h43), vsechny gapy SCR_MAIN_CARD_SECTION_GAP(11).
+ * Soucast A/B srovnavaci vetve — SMAZAT spolu s ostatnimi *_v1/s_layout_old
+ * kusy az bude vybrano, viz TODO. Pomer 53 je HARDCODED literal (ne macro,
+ * ktery uz slouzi novemu layoutu s hodnotou 47). */
+static void render_right_column_v1(prim_rect_t rect)
 {
     int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
-    int16_t small_h = 54;     /* taller: header + value no longer clips at bottom */
-    int16_t signal_h = 43;    /* bargraph fits without bottom overflow */
+    int16_t small_h = 54;
+    int16_t signal_h = 43;
     int16_t trend_h = (int16_t)(rect.h - small_h - signal_h - 2 * gap);
-
     int16_t y = rect.y;
     draw_offset_sigma((prim_rect_t){rect.x, y, rect.w, small_h});
     y = (int16_t)(y + small_h + gap);
@@ -939,19 +1072,52 @@ static void render_right_column(prim_rect_t rect)
     render_card_signal((prim_rect_t){rect.x, y, rect.w, signal_h});
 }
 
-static void render_body_grid(void)
+static void render_body_grid_v1(void)
 {
     int16_t right_margin = 12;
-    int16_t allan_left = right_margin;   /* equal margins on both sides */
+    int16_t allan_left = right_margin;
     int16_t grid_y = SCR_MAIN_GRID_Y;
     int16_t grid_h = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);
     int16_t grid_w = (int16_t)(UI_DIM_SCREEN_W - right_margin - allan_left);
-    int16_t left_w = (int16_t)((grid_w * SCR_MAIN_GRID_LEFT_RATIO) / 100);
+    int16_t left_w = (int16_t)((grid_w * 53) / 100);            /* puvodni pomer, pred zuzenim na 47 */
     int16_t right_w = (int16_t)(grid_w - left_w - SCR_MAIN_GRID_GAP);
     int16_t left_x = allan_left;
     int16_t right_x = (int16_t)(left_x + left_w + SCR_MAIN_GRID_GAP);
     render_card_allan((prim_rect_t){left_x, grid_y, left_w, grid_h});
-    render_right_column((prim_rect_t){right_x, grid_y, right_w, grid_h});
+    render_right_column_v1((prim_rect_t){right_x, grid_y, right_w, grid_h});
+}
+
+/* Aktualni (4,3"-laděny) layout — viz komentar u vrcholu funkce v predchozi
+ * revizi (hybridni mrizka: Allan 47 % pres celou vysku, pravy sloupec
+ * offset/trend/signal). */
+static void render_body_grid_v2(void)
+{
+    int16_t m       = 12;                     /* vnejsi okraj (obe strany) */
+    int16_t gap     = 12;                     /* svisla mezera */
+    int16_t grid_y  = SCR_MAIN_GRID_Y;
+    int16_t grid_h  = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);  /* 242 */
+    int16_t grid_w  = (int16_t)(UI_DIM_SCREEN_W - 2 * m);                                /* 776 */
+    int16_t signal_h = 54;
+    int16_t stats_h  = 64;
+    int16_t trend_h  = (int16_t)(grid_h - stats_h - signal_h - 2 * gap);                 /* 100 */
+    int16_t allan_w  = (int16_t)((grid_w * SCR_MAIN_GRID_LEFT_RATIO) / 100);             /* 364 */
+    int16_t right_x  = (int16_t)(m + allan_w + SCR_MAIN_GRID_GAP);                       /* 390 */
+    int16_t right_w  = (int16_t)(grid_w - allan_w - SCR_MAIN_GRID_GAP);                  /* 398 */
+
+    render_card_allan((prim_rect_t){m, grid_y, allan_w, grid_h});
+    draw_offset_sigma((prim_rect_t){right_x, grid_y, right_w, stats_h});
+    render_card_trend((prim_rect_t){right_x, (int16_t)(grid_y + stats_h + gap),
+                                    right_w, trend_h});
+    render_card_signal((prim_rect_t){right_x,
+                                     (int16_t)(grid_y + stats_h + gap + trend_h + gap),
+                                     right_w, signal_h});
+}
+
+/* Dispatch A/B — viz screen_main_toggle_layout. */
+static void render_body_grid(void)
+{
+    if (s_layout_old) render_body_grid_v1();
+    else              render_body_grid_v2();
 }
 
 /* Label/value/variant of footer button i, derived from the UI state. */
@@ -960,7 +1126,13 @@ static void footer_button_def(int i, const char **label, const char **value,
 {
     *value = 0;
     switch (i) {
-    case 0: *label = MODE_NAME[st.mode ? 0 : 1]; *var = UI_BUTTON_NORMAL; break;
+    /* ⚠️ DOCASNE (A/B srovnani): slot 0 normalne prepina PERIOD/FREQ mod —
+     * dokud probiha vyhodnoceni layoutu, je prekryty "Main SW" prepinacem
+     * (viz screen_main_toggle_layout + touch handler v app_gpsdo.c, b==0).
+     * Puvodni radek `case 0: *label = MODE_NAME[st.mode ? 0 : 1]; ...` az po
+     * odstraneni teto vetve vratit. */
+    case 0: *label = "Main SW"; *value = screen_main_layout_is_old() ? "OLD" : "NEW";
+            *var = UI_BUTTON_NORMAL; break;
     case 1: *label = st.running ? SCR_S_BTN_RUN : "STOP";   /* invertovano: label = stav */
             *var = st.running ? UI_BUTTON_RUN : UI_BUTTON_ACTIVE; break;
     case 2: *label = SCR_S_BTN_GATE_L; *value = GATE_VAL[st.gate];  *var = UI_BUTTON_NORMAL; break;
@@ -1039,7 +1211,7 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
     last_icons = icons;
     strncpy(s_time_buf, tb, sizeof s_time_buf - 1); s_time_buf[sizeof s_time_buf - 1] = '\0';
 
-    int16_t time_x = UI_DIM_SCREEN_W - UI_DIM_PADDING_X / 2;
+    int16_t time_x = UI_DIM_SCREEN_W - SCR_MAIN_CLOCK_MARGIN;
     if (tchg || ichg) {   /* cas: baseline 23, glyf y 1..34 (datum @46 se nedotkne) */
         int16_t tw = prim_text_width(s_time_buf, &ui_font_mono_25);
         blit_bg_region((prim_rect_t){(int16_t)(time_x - tw - 26), 1, (int16_t)(tw + 32), 33});
@@ -1192,7 +1364,7 @@ void screen_main_render_histogram(prim_rect_t rect)
     if (n < 4) {
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w / 2),
                                       (int16_t)(rect.y + rect.h / 2)},
-                       "Waiting for data...", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+                       "Waiting for data...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
 
@@ -1292,7 +1464,7 @@ void screen_main_render_histogram(prim_rect_t rect)
     fmt_frac(sb, sizeof sb, sd, 0);
     snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
-                   &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+                   &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
     char db[28]; fmt_frac(mb, sizeof mb, median, 1);
     snprintf(db, sizeof db, "med=%s", mb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 36)}, db,
@@ -1306,10 +1478,12 @@ void screen_main_render_histogram(prim_rect_t rect)
 void screen_main_render_stats_table(prim_rect_t rect)
 {
     prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    /* Baseline uvnitr cisteneho rectu (ascent 16 px) — jinak by AA hrany nad
-     * rectem pri 2x/s refreshi postupne tuhly (kresli se mimo clear oblast). */
+    /* Baseline uvnitr cisteneho rectu — jinak by AA hrany nad rectem pri 2x/s
+     * refreshi postupne tuhly (kresli se mimo clear oblast). sans_18 (TODO
+     * #11(2b), bylo sans_16): skutecny oy velkych pismen je 14 (ne nominalni
+     * ascent 18), takze pri baseline=rect.y+18 zustava 4 px rezervy nahore. */
     prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)}, "σy(τ)  Allan",
-                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+                   &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     static const char *TL[5] = {"1 s", "10 s", "100 s", "1 ks", "10 ks"};
     int16_t ry = (int16_t)(rect.y + 46);
     for (int i = 0; i < 5; i++) {
@@ -1324,6 +1498,16 @@ void screen_main_render_stats_table(prim_rect_t rect)
                        &ui_font_mono_14, (a > 0.0f) ? UI_COLOR_INK_2 : UI_COLOR_INK_4,
                        PRIM_ALIGN_RIGHT);
     }
+}
+
+/* Fullscreen Allan graf (okno ALLAN, s_view=23): stejny renderer jako karta na
+ * hlavni obrazovce (allan_plot), ale big=1 -> popisky mono_16 (na 4,3" citelne)
+ * a vetsi rezervy. Sam si vycisti rect (REPLACE + dirty-rect) -> volatelne 2x/s;
+ * osu "τ [s]" vysvetluje header karty v app_gpsdo (tady jen dekadova cisla). */
+void screen_main_render_allan_big(prim_rect_t rect)
+{
+    prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* clear + dirty-rect */
+    allan_plot(rect, 1);
 }
 
 /* Casove okno fullscreen trendu [s]. Prepinatelne tlacitky (presety 1 min..60 dni;
@@ -1353,7 +1537,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     if (n < 2) {
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w / 2),
                                       (int16_t)(rect.y + rect.h / 2)},
-                       "Waiting for data...", &ui_font_sans_16, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+                       "Waiting for data...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
     float mn = tr_at(ts, 0), mx = mn;
@@ -1401,7 +1585,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     else
         snprintf(ov, sizeof ov, "okno %s · krok %s · N=%d", dw, dr, n);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w - 6), (int16_t)(in.y - 6)}, ov,
-                   &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+                   &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
     fmt_frac(fb2, sizeof fb2, stats_drift(), 1);
     snprintf(ov, sizeof ov, "drift %s/min", fb2);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w - 6), (int16_t)(in.y + in.h + 16)}, ov,

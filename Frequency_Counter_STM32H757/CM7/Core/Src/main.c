@@ -41,6 +41,7 @@
 #include "beeper.h"
 #include "si5356.h"
 #include "watchdog.h"      /* IWDG1 watchdog (init pred schedulerem) */
+#include "bootled.h"       /* boot selftest blikani na LED_1 (PG3) */
 #include "freertos_shared.h"  /* g_brightness — ulozeny jas z BKP */
 #include <string.h>        /* strncpy — g_reset_text */
 #include "usb_console.h"   /* prepinac konzole USART1 <-> USB CDC (USE_USB_CDC_CONSOLE) */
@@ -314,18 +315,21 @@ g_cm4_absent = 1;
   /* 2) Probe MCU a precist FW ID */
   if (!ws_panel_probe(&hi2c4)) {
       printf("[ERR] Panel probe selhal - pokracuji bez displeje\n");
+      bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
       goto display_skip;
   }
 
   /* 3) Power-on sekvence: napajeni LCD, uvolnit reset bridge, backlight enable */
   if (!ws_panel_power_on(&hi2c4)) {
       printf("[ERR] Panel power-on selhal\n");
+      bootled_blink_once(BOOTLED_STEP_PANEL_POWERON);
       goto display_skip;
   }
 
   /* 4) Spustit DSI signal - bridge ho potrebuje pred inicializaci */
   if (HAL_DSI_Start(&hdsi) != HAL_OK) {
       printf("[ERR] HAL_DSI_Start selhal\n");
+      bootled_blink_once(BOOTLED_STEP_DSI_START);
       goto display_skip;
   }
   HAL_Delay(50);
@@ -333,6 +337,7 @@ g_cm4_absent = 1;
   /* 5) Inicializovat TC358762 bridge pres DSI generic write */
   if (!tc358762_init(&hdsi)) {
       printf("[ERR] TC358762 init selhal\n");
+      bootled_blink_once(BOOTLED_STEP_TC358762);
       goto display_skip;
   }
 
@@ -401,7 +406,7 @@ void SystemClock_Config(void)
   /** Configure LSE Drive Capability
   */
   HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_MEDIUMLOW);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -568,9 +573,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
-  }
+  bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
