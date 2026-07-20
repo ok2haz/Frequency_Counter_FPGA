@@ -28,9 +28,17 @@
 #define SCR_MAIN_NUMBER_Y_BASELINE (UI_DIM_BODY_Y + 94)
 #define SCR_MAIN_GRID_Y            (UI_DIM_BODY_Y + 110)
 #define SCR_MAIN_GRID_GAP          14
-/* 47 % (364 px) Allan vlevo | 398 px pravy sloupec (2026-07-19; bylo 53 % —
- * zuzeno, aby karty statistik (1/3 z praveho sloupce = 125 px) unesly hodnoty
- * mono_18: nejhorsi "+9,9×10⁻¹⁰" = 100 px, vnitrek karty 113 px). */
+/* Vnejsi okraj mrizky vlevo i vpravo. 12 -> 4 (2026-07-20): 12 px po obou
+ * stranach byl cisty nevyuzity pruh — Allan zleva i pravy sloupec (trend/drift)
+ * zprava do nej jen "koukaly". 4 px staci, aby se zaobleny roh karty
+ * (UI_DIM_CARD_RADIUS 16) neslepil s hranou panelu. Zisk 16 px sirky se dle
+ * SCR_MAIN_GRID_LEFT_RATIO deli mezi Allan (+8) a pravy sloupec (+8).
+ * Plati pro OBA layouty (v1 i v2). */
+#define SCR_MAIN_GRID_MARGIN       4
+/* 47 % (372 px pri okraji 4) Allan vlevo | 406 px pravy sloupec (2026-07-19;
+ * bylo 53 % — zuzeno, aby karty statistik (1/3 z praveho sloupce) unesly hodnoty
+ * mono_18: nejhorsi "+9,9×10⁻¹⁰" = 100 px). Pri okraji 4 je vnitrek stat karty
+ * 1/3 z 406 = 128 px (bylo 125) -> rezerva na mono_18 se JESTE zvetsila. */
 #define SCR_MAIN_GRID_LEFT_RATIO   47
 
 #define SCR_MAIN_CARD_SECTION_GAP  11
@@ -53,6 +61,7 @@ int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati
 int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
 int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
+void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni (pri prepnuti RUN/STOP) */
 void screen_main_freq_sim_step(void);                  /* krok simulace BEZ kresleni (mimo main obrazovku) */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */

@@ -29,6 +29,12 @@ typedef struct {
     /* tlacitka */
     prim_color_t btn_run_top, btn_run_bot, btn_run_border;
     prim_color_t btn_act_top, btn_act_bot, btn_act_border;
+    prim_color_t btn_stop_top, btn_stop_bot, btn_stop_border;
+    /* Podbarveni velkeho kmitoctu pri STOP (mereni stoji) — POLOPRUHLEDNA
+     * cervena (alfa!), michá se pres gradient pozadi. ⚠️ Alfa < 0xFF vyrazuje
+     * DMA2D fast-path v prim_fill_rect -> CPU fill; nevadi, kresli se jen pri
+     * plnem renderu a pri stisku RUN/STOP (pri STOP zadny 20Hz redraw nebezi). */
+    prim_color_t freq_stop_bg;
 } ui_theme_t;
 
 UI_API extern const ui_theme_t *g_ui_theme;   /* aktivni paleta (default tmava) */
@@ -75,3 +81,9 @@ UI_API int  ui_theme_is_light(void);
 #define UI_COLOR_BTN_ACT_TOP    (g_ui_theme->btn_act_top)
 #define UI_COLOR_BTN_ACT_BOT    (g_ui_theme->btn_act_bot)
 #define UI_COLOR_BTN_ACT_BORDER (g_ui_theme->btn_act_border)
+#define UI_COLOR_BTN_STOP_TOP    (g_ui_theme->btn_stop_top)
+#define UI_COLOR_BTN_STOP_BOT    (g_ui_theme->btn_stop_bot)
+#define UI_COLOR_BTN_STOP_BORDER (g_ui_theme->btn_stop_border)
+
+/* ── Stav mereni ────────────────────────────────────────────── */
+#define UI_COLOR_FREQ_STOP_BG   (g_ui_theme->freq_stop_bg)

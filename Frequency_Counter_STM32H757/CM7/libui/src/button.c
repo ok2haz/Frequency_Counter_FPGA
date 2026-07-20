@@ -17,6 +17,9 @@ static btn_style_t style_of(ui_button_variant_t v)
     case UI_BUTTON_RUN:
         return (btn_style_t){UI_COLOR_BTN_RUN_TOP, UI_COLOR_BTN_RUN_BOT,
                              UI_COLOR_BTN_RUN_BORDER, UI_COLOR_OK_SOFT};
+    case UI_BUTTON_STOP:
+        return (btn_style_t){UI_COLOR_BTN_STOP_TOP, UI_COLOR_BTN_STOP_BOT,
+                             UI_COLOR_BTN_STOP_BORDER, UI_COLOR_BAD};
     case UI_BUTTON_ACTIVE:
         return (btn_style_t){UI_COLOR_BTN_ACT_TOP, UI_COLOR_BTN_ACT_BOT,
                              UI_COLOR_BTN_ACT_BORDER, UI_COLOR_ACC};

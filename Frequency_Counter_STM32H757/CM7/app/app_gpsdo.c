@@ -11,6 +11,7 @@
 #include "gps.h"                /* gps_get() — zive GPS data do GNSS okna */
 #include "w25q.h"               /* w25q_read_jedec — externi flash v okne PAMET */
 #include "w25q_map.h"           /* W25Q_DATA_BASE/SIZE — okno Datalog */
+#include "datalog.h"            /* datalog_get_status/set_enabled — okno Datalog */
 #include "alarm.h"              /* g_alarm_* pocitadla — okno Alarmy */
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
 #include "calib.h"              /* g_calib, calib_load/save — okno Kalibrace */
@@ -51,7 +52,7 @@ extern volatile char     g_reset_text[12];       /* pricina posledniho resetu (m
 extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene) */
 extern volatile char     g_crash_text[16];       /* crash black-box z BKP ("stack:UiTask") */
 extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 2=FAIL */
-extern volatile uint8_t  g_selftest_detail[6];   /* per-test vysledky (poradi viz freertos_shared.h) */
+extern volatile uint8_t  g_selftest_detail[7];   /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
 int run_selftests(void);                         /* pure-logic testy — okno Selftest (SPUSTIT) */
@@ -1924,6 +1925,21 @@ static void kv_row(int16_t y, const char *k, const char *v, prim_color_t vc)
     prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 250), y}, v, &ui_font_mono_18, vc, PRIM_ALIGN_LEFT);
 }
 
+/* Totez, ale pro ZIVE prekreslovane radky: nejdriv vycisti box hodnoty. Bez toho
+ * by kratsi nova hodnota nechala ocas te predchozi ("1234 / 20" pres "1234 / 2043136")
+ * a diky dirty-rect copy-forwardu by tam ten ocas i zustal. Label se nemeni ->
+ * prekresluje se jen hodnota. Sirka 380 = po pravy vnitrni okraj karty
+ * DG_CARD_FULL_B (DG_LX+764-14 minus DG_LLBL+250), vyska kryje ascent+descent
+ * mono_18 (glyf zacina ~y-18, descender ~y+4). */
+static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first)
+{
+    prim_fill_rect((prim_rect_t){(int16_t)(DG_LLBL + 250), (int16_t)(y - 22), 380, 30},
+                   UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    if (first)
+        prim_draw_text((prim_point_t){DG_LLBL, y}, k, &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 250), y}, v, &ui_font_mono_18, vc, PRIM_ALIGN_LEFT);
+}
+
 /* ── Holdover (s_view=16): stav disciplinace GPSDO (WARMUP/LOCK/HOLDOVER) z GPS
  * fixu + FPGA linku + timepulse. Zive (uptime tik). Zdroj OCXO teploty = 0x49. ── */
 static void app_gpsdo_render_holdover(void)
@@ -1979,26 +1995,61 @@ static void app_gpsdo_render_holdover(void)
 
 /* ── Datalog (s_view=17): stav logovani do W25Q DATA regionu. Zatim neaktivni
  * (roadmap [[w25q-flash]]) — okno je vstupni bod, ukazuje kapacitu + JEDEC. ── */
+/* Footer okna Datalog: ZAPNOUT/VYPNOUT logovani (vlevo, vedle ZPET vpravo). */
+static const prim_rect_t DL_TOGGLE_RECT = {18, 417, 220, 61};
+
 static void app_gpsdo_render_datalog(void)
 {
-    window_prep();
-    s_view = 17;
-    window_chrome("DATALOG", WIN_TITLE_Y);
-    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Zaznam mereni do W25Q (DATA region)"};
-    ui_card_render_chrome(&c);
-    char b[32];
-    kv_row(116, "Stav:",     "NEAKTIVNI (planovano)", UI_COLOR_WARN);
-    snprintf(b, sizeof b, "0x%06lX", (unsigned long)W25Q_DATA_BASE);
-    kv_row(152, "DATA base:", b, UI_COLOR_INK_2);
-    snprintf(b, sizeof b, "%lu MB", (unsigned long)(W25Q_DATA_SIZE / (1024u * 1024u)));
-    kv_row(188, "Kapacita:", b, UI_COLOR_INK_2);
-    kv_row(224, "Zaznam:",   "~32 B / 10 s -> ~600 dni", UI_COLOR_INK_2);
-    uint32_t id = w25q_read_jedec();
-    snprintf(b, sizeof b, "%06lX %s", (unsigned long)id, id == W25Q_JEDEC_ID ? "OK" : "--");
-    kv_row(260, "Flash ID:", b, id == W25Q_JEDEC_ID ? UI_COLOR_OK : UI_COLOR_BAD);
-    prim_draw_text((prim_point_t){DG_LLBL, 344},
-                   "Append-only log f/teplot/locku; rekonstrukce Allanu po bootu.",
-                   &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    int first = window_first(17);
+    static char c_stav[24], c_rec[40], c_seq[16], c_err[16];
+    if (first) {
+        s_view = 17;
+        window_chrome("DATALOG", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_B,
+                       .header_label = "Zaznam stability (32 B / 10 s, kruhovy log)"};
+        ui_card_render_chrome(&c);
+        c_stav[0] = c_rec[0] = c_seq[0] = c_err[0] = '\0';
+    }
+
+    datalog_status_t st;
+    datalog_get_status(&st);
+    char b[40];
+
+    /* Tlacitko nabizi AKCI (stejny princip jako footer RUN/STOP na hlavni
+     * obrazovce): kdyz log bezi, nabizi VYPNOUT (cervene). */
+    ui_button_t tg = {.rect = DL_TOGGLE_RECT,
+                      .variant = st.enabled ? UI_BUTTON_STOP : UI_BUTTON_RUN,
+                      .label = st.enabled ? "VYPNOUT" : "ZAPNOUT"};
+    if (first) ui_button_render(&tg);
+
+    snprintf(b, sizeof b, "%s (%s)", st.ready ? (st.enabled ? "BEZI" : "ZASTAVEN") : "NEDOSTUPNE",
+             st.backend);
+    if (first || dchg(c_stav, sizeof c_stav, b))
+        kv_row_live(116, "Stav:", b, !st.ready ? UI_COLOR_BAD : (st.enabled ? UI_COLOR_OK : UI_COLOR_WARN), first);
+
+    /* Zaznamy + kolik dni to pri 10 s/zaznam vydrzi nez se zacne prepisovat. */
+    snprintf(b, sizeof b, "%lu / %lu%s", (unsigned long)st.records,
+             (unsigned long)st.capacity_rec, st.wrapped ? " (prepis)" : "");
+    if (first || dchg(c_rec, sizeof c_rec, b)) kv_row_live(152, "Zaznamu:", b, UI_COLOR_INK_2, first);
+
+    if (first) {
+        unsigned long dni = (unsigned long)((uint64_t)st.capacity_rec * DATALOG_PERIOD_S / 86400u);
+        snprintf(b, sizeof b, "%lu dni (%lu MB)", dni,
+                 (unsigned long)(W25Q_DATA_SIZE / (1024u * 1024u)));
+        kv_row(188, "Kapacita:", b, UI_COLOR_INK_2);
+    }
+
+    snprintf(b, sizeof b, "%lu", (unsigned long)st.last_seq);
+    if (first || dchg(c_seq, sizeof c_seq, b)) kv_row_live(224, "Posledni seq:", b, UI_COLOR_INK_2, first);
+
+    snprintf(b, sizeof b, "%lu", (unsigned long)st.write_errors);
+    if (first || dchg(c_err, sizeof c_err, b))
+        kv_row_live(260, "Chyb zapisu:", b, st.write_errors ? UI_COLOR_WARN : UI_COLOR_INK_2, first);
+
+    if (first)
+        prim_draw_text((prim_point_t){DG_LLBL, 344},
+                       "f + teploty + Vc + GPS lock; SD karta pripravena (datalog_sd.c).",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
 }
 
@@ -2173,17 +2224,21 @@ static void app_gpsdo_render_selftest(void)
     ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
-    static const char *NAMES[6] = {
+    #define ST_N 7                  /* = SELFTEST_N (freertos_shared.h) */
+    static const char *NAMES[ST_N] = {
         "CRC16 (SPI protokol)",     /* crc16("123456789") == 0x29B1 */
         "Hystereze /4 <-> /16",     /* fpga_freq_select_core na syntetickych ramcich */
         "GPS parser (NMEA)",
         "Format + histogram",       /* fmt_frac + hist_h vektory (screen_main) */
         "Maidenhead lokator",
         "Kalendar + DST (zona)",    /* rtc_apply_tz prehoupnuti + EU CET/CEST hranice */
+        "Datalog zaznam + CRC",     /* pack/unpack 32B zaznamu + kalendar->unix */
     };
     int pass = 0;
-    for (int i = 0; i < 6; i++) {
-        int16_t yy = (int16_t)(104 + i * 32);   /* roztec 32 (6 radku konci na 264) */
+    for (int i = 0; i < ST_N; i++) {
+        /* Roztec 28 (bylo 32): 7. radek by pri 32 skoncil na 296 a narazil do
+         * "Celkem" na 300. Pri 28 konci posledni na 272 -> 28 px rezerva. */
+        int16_t yy = (int16_t)(104 + i * 28);
         dlabel(DG_LLBL, yy, NAMES[i]);
         uint8_t r = g_selftest_detail[i];
         const char *rs = (r == 1) ? "PASS" : (r == 2) ? "FAIL" : "---";
@@ -2194,11 +2249,12 @@ static void app_gpsdo_render_selftest(void)
     }
     char b[24];
     if (g_selftest_res == 0) snprintf(b, sizeof b, "nespusten");
-    else                     snprintf(b, sizeof b, "%d/6 %s", pass, pass == 6 ? "PASS" : "FAIL");
+    else                     snprintf(b, sizeof b, "%d/%d %s", pass, ST_N, pass == ST_N ? "PASS" : "FAIL");
     dlabel(DG_LLBL, 300, "Celkem");
     prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 340), 300}, b, &ui_font_mono_18,
-                   g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == 6 ? UI_COLOR_OK : UI_COLOR_BAD),
+                   g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == ST_N ? UI_COLOR_OK : UI_COLOR_BAD),
                    PRIM_ALIGN_LEFT);
+    #undef ST_N
     prim_draw_text((prim_point_t){DG_LLBL, 336},
                    "Destruktivni HW testy zvlast: UART qspitest / storetest.",
                    &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -2543,6 +2599,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 10) app_gpsdo_render_about();  /* O pristroji (uptime tick) */
     else if (s_view == 14) app_gpsdo_render_reference(); /* Reference (zivy Si5356 lock) */
     else if (s_view == 16) app_gpsdo_render_holdover();  /* Holdover (zivy stav) */
+    else if (s_view == 17) app_gpsdo_render_datalog();   /* Datalog (zivy pocet zaznamu) */
     else if (s_view == 18) app_gpsdo_render_alarms();    /* Alarmy (zivy mute + pocitadla) */
     else if (s_view == 19) app_gpsdo_render_counter();   /* Citac (zivy detail mereni FPGA) */
     else if (s_view == 21) app_gpsdo_render_commdiag();  /* Komunikace: blokove schema (zive) */
@@ -2674,7 +2731,11 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             prim_set_target(&s_fb);
             prim_reset_clip();
             screen_main_redraw_button(b);            /* only the pressed button */
-            if (b != 1) screen_main_redraw_title();  /* RUN doesn't change the title */
+            /* RUN/STOP nemeni titulek, zato meni PODBARVENI kmitoctu (STOP =
+             * lehce cervene). Pri STOP uz 20Hz tick_freq nebezi, takze podklad
+             * musime prekreslit tady — jinak by zustal ve stare barve. */
+            if (b == 1) screen_main_redraw_freq_area();
+            else        screen_main_redraw_title();
             present_now();
             return true;
         }
@@ -2820,6 +2881,17 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, TZ_MINUS)) { tz_step(-1); CAS_UPD(); return true; }
             if (in_rect(x, y, TZ_PLUS))  { tz_step(+1); CAS_UPD(); return true; }
             #undef CAS_UPD
+        }
+        if (s_view == 17 && in_rect(x, y, DL_TOGGLE_RECT)) {   /* Datalog: ZAPNOUT/VYPNOUT */
+            datalog_set_enabled(!datalog_enabled());
+            /* Persist resi syscfg_flash_tick sam: jeho shadow-diff porovnava CELY
+             * blob (vcetne datalog_en), takze zmenu zachyti bez explicitniho
+             * dirty priznaku. BKP (DR2/DR6) datalog_en nenese — je jen ve flash. */
+            /* Meni se i tlacitko + popisky -> vynut PLNY render okna. window_first()
+             * pozna "prvni vstup" podle zmeny s_view, takze ho docasne zneplatnime. */
+            s_view = -1;
+            app_gpsdo_render_datalog();
+            return true;
         }
         if (s_view == 15) {                                /* Kalibrace: -/+ na 4 radcich + ULOZIT */
             for (int i = 0; i < 4; i++) {

@@ -29,6 +29,7 @@
 #include "alarm.h"          /* alarm_test — UART "beep" */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
+#include "datalog.h"        /* UART "datalog [on|off|erase|dump]" */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -284,12 +285,73 @@ void UartTask_run(void *argument)
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | datalog [on|off|erase|dump] | stacktest\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {
+				  const char *arg = RxBuffer[7] == ' ' ? &RxBuffer[8] : "";
+				  if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0) {
+					  datalog_set_enabled(arg[1] == 'n');
+					  printf("DATALOG: logovani %s\n", datalog_enabled() ? "ZAPNUTO" : "VYPNUTO");
+				  } else if (strcmp(arg, "erase") == 0) {
+					  /* Destruktivni + dlouhe (erase celeho DATA regionu). Drzi QSPI
+					   * mutex uvnitr; UartTask NENI hlidan watchdogem, takze smi cekat. */
+					  printf("DATALOG: mazu cely log, cekej...\n");
+					  printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+				  } else if (strcmp(arg, "dump") == 0) {
+					  /* Poslednich 10 zaznamu, nejnovejsi prvni (rychla kontrola obsahu). */
+					  datalog_rec_t r;
+					  for (uint32_t i = 0; i < 10u; i++) {
+						  if (!datalog_read_back(i, &r)) break;
+						  /* Kmitocet pres fpga_freq_format_val — u64 se do printf
+						   * nedava (%llu nemusi nano-printf umet, stejny duvod jako
+						   * jinde v projektu: zadny float/64b format v konzoli). */
+						  char fb[32];
+						  fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d fl=0x%02X sat=%u\n",
+							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv,
+							     (unsigned)r.flags, (unsigned)r.sats);
+					  }
+				  } else {
+					  char db[80];
+					  datalog_format_status(db, sizeof db);
+					  printf("%s\n", db);
+					  printf("  (datalog on|off|erase|dump)\n");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "stacktest yes") == 0) {
+				  /* STATUS.md TODO #10: overeni, ze detekce preteceni zasobniku funguje
+				   * CELOU cestou (hook -> crash_blackbox -> BKP_DR3..5 -> MX_RTC_Init ->
+				   * Health "Reset:"). Zapnuti (configCHECK_FOR_STACK_OVERFLOW=2) bylo
+				   * dosud overene jen staticky preprocesorem — sama detekce se ozve az
+				   * pri skutecnem preteceni.
+				   * Zamerne prepise stack UartTasku a hned yielduje: FreeRTOS pri
+				   * prepnuti kontextu porovna stack pattern -> vApplicationStackOverflowHook
+				   * -> zapis do BKP -> __disable_irq() + spin -> zadne heartbeaty ->
+				   * IWDG resetne do ~4 s. Po bootu MUSI byt videt "Reset: ... stack:UartTask"
+				   * (System Health / UART `status`).
+				   * ⚠️ Vyzaduje presne "stacktest yes" — samotne "stacktest" jen vypise
+				   * napovedu, aby to neslo spustit omylem/preklepem.
+				   * ⚠️ Bez VBAT baterie testuj WARM resetem (BKP neprezije power-cycle). */
+				  /* Velikost: UartTask ma 1024 slov = 4096 B, ramec UartTask_run ~1256 B
+				   * pri -O0 -> 3600 B pretece o ~760 B. Zamerne JEN o par set bajtu, ne
+				   * o cele KB: chceme spolehlive prepsat 20B watermark na dne zasobniku,
+				   * ale co nejmene rozsypat sousedni FreeRTOS heap (jinak hrozi HardFault
+				   * DRIV nez se stihne zavolat hook — a to by test neotestoval nic). */
+				  printf("STACKTEST: pretekam stack UartTasku, ceka se IWDG reset (~4 s)...\n");
+				  volatile char waste[3600];
+				  for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
+				  osDelay(1);            /* yield -> kontrola stack patternu -> hook */
+				  printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
+			  }
+			  else if (strcmp(RxBuffer, "stacktest") == 0) {
+				  printf("STACKTEST: zamerne pretece stack a vyvola IWDG reset.\n");
+				  printf("  Potvrd prikazem: stacktest yes\n");
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];

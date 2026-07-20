@@ -38,6 +38,11 @@ static const ui_theme_t THEME_DARK = {
     .btn_act_top    = PRIM_RGB(0x0F, 0x22, 0x3A),
     .btn_act_bot    = PRIM_RGB(0x0A, 0x16, 0x26),
     .btn_act_border = PRIM_RGB(0x2A, 0x4A, 0x6E),
+    /* STOP = cervena obdoba RUN (stejne jasy, jen cerveny odstin). */
+    .btn_stop_top    = PRIM_RGB(0x2C, 0x0F, 0x14),
+    .btn_stop_bot    = PRIM_RGB(0x1D, 0x0A, 0x0E),
+    .btn_stop_border = PRIM_RGB(0x64, 0x2E, 0x36),
+    .freq_stop_bg    = PRIM_RGBA(0xF8, 0x71, 0x71, 38),   /* ~15 % — "lehce cervenne" */
 };
 
 /* Svetla paleta: stejne role, prevracene jasy; akcenty ztmavene kvuli kontrastu
@@ -71,6 +76,11 @@ static const ui_theme_t THEME_LIGHT = {
     .btn_act_top    = PRIM_RGB(0xD4, 0xE4, 0xF5),
     .btn_act_bot    = PRIM_RGB(0xC3, 0xD8, 0xEE),
     .btn_act_border = PRIM_RGB(0x6E, 0x96, 0xC2),
+    .btn_stop_top    = PRIM_RGB(0xF6, 0xD7, 0xD7),
+    .btn_stop_bot    = PRIM_RGB(0xEF, 0xC7, 0xC7),
+    .btn_stop_border = PRIM_RGB(0xC9, 0x7A, 0x7A),
+    /* Na svetlem podkladu staci nizsi alfa (tmava cervena vic "prekryva"). */
+    .freq_stop_bg    = PRIM_RGBA(0xDC, 0x26, 0x26, 30),
 };
 
 const ui_theme_t *g_ui_theme = &THEME_DARK;

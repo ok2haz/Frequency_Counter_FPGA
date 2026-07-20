@@ -31,6 +31,7 @@
 #include "gps.h"              /* gps_init/gps_feed_char — drain v defaultTask */
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
 #include "syscfg.h"           /* syscfg_flash_tick — zrcadlo nastaveni do W25Q flash */
+#include "datalog.h"          /* datalog_init/tick — zaznam stability do W25Q DATA (TODO #6) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
@@ -173,6 +174,7 @@ int run_selftests(void)
   r[3] = screen_main_selftest()      ? 1 : 2;
   r[4] = app_gpsdo_selftest()        ? 1 : 2;
   r[5] = rtc_selftest()              ? 1 : 2;   /* kalendar (tz prehoupnuti) + EU DST hranice */
+  r[6] = datalog_selftest()          ? 1 : 2;   /* serializace 32B zaznamu + CRC + kalendar->unix */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);
@@ -325,6 +327,10 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN StartDefaultTask */
   gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
   run_selftests();   /* boot selftest (pure-logic, ~ms); FAIL -> cerveny indikator v Health */
+  /* Datalog az TADY (ne v main.c): potrebuje bezici scheduler kvuli qspiMutexHandle.
+   * Na poradi vuci syscfg_load (UiTask) NEZALEZI — init jen najde pozici zapisu,
+   * priznak zap/vyp nastavuje syscfg_load pozdeji pres datalog_set_enabled. */
+  datalog_init();
   /* Infinite loop */
   for(;;)
   {
@@ -338,6 +344,7 @@ void StartDefaultTask(void *argument)
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
+    datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */

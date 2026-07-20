@@ -15,6 +15,14 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 > pořád najdou prvky pod hranicí (viz TODO #11 ve `STATUS.md`). Přepočet: **1 mm = 8,54 px**.
 > **Přehled ideálních vs. aktuálních velikostí všech prvků = `UI_SIZES.md` — po každé změně layoutu ho aktualizuj.**
 
+**Footer RUN/STOP (2026-07-20): label = AKCE, ne stav.** Běží-li měření, tlačítko nabízí **červené „STOP"**
+(`UI_BUTTON_STOP` — nová varianta v libui + `btn_stop_*` v obou paletách); při zastaveném **zelené „RUN"**.
+Dřív to bylo obráceně (label = stav), což mátlo. Stav navíc nese **podbarvení velkého kmitočtu**:
+při STOP se zóna čísla překryje `UI_COLOR_FREQ_STOP_BG` (poloprůhledná červená, ~15 %) → na první pohled
+je vidět, že měření stojí. ⚠️ Alfa < 0xFF vyřazuje DMA2D fast-path (CPU fill), ale **při STOP neběží 20Hz
+`tick_freq`**, takže se kreslí jen při plném renderu a při stisku → CPU dopad ~0. Přepnutí RUN/STOP proto
+MUSÍ volat `screen_main_redraw_freq_area()` (per-segment dirty cesta by podklad nepřekreslila).
+
 **Hlavní obrazovka existuje DOČASNĚ ve dvou verzích** (A/B srovnání na HW, viz STATUS.md TODO #14): **default = STARÁ (`s_layout_old=true`, zamrzlá referenční, žádné další úpravy)**; footer tlačítko slotu 0 („Main SW", dočasně místo PERIOD/FREQ) přepíná na **NOVOU (v2) = hybridní mřížka** (`render_body_grid_v2`): **vlevo Allan graf 364×242** (přes CELOU výšku mřížky, plné osy — sdílený `allan_plot` má od #11(2b) popisky mono_16 v kartě i okně), **vpravo statistiky** Offset/σ@1s/Drift (3× 125×64, hodnoty mono_18 — proto `SCR_MAIN_GRID_LEFT_RATIO` snížen 53→47 %, jinak by se „+9,9×10⁻¹⁰" nevešlo), **pod nimi mini trend** (398×100) **a úplně dole RF signál bargraf** (398×54) — jen v pravé části. Tap na Allan → okno ALLAN (s_view=23), tap na trend → fullscreen trend (s_view=9). Horní hrana mřížky MUSÍ zůstat na `SCR_MAIN_GRID_Y` (166) — clear oblast velkého čísla (`redraw_freq`) končí přesně na ní. **Pilulky v headeru**: `UI_DIM_PILL_H=46` (5,4 mm, strop = 4 px před spodní linkou hlavičky) + hit-slop přes výšku headeru (`pt_in_pill`, efektivně ~52 px). ⚠️ **Řadu pilulek limituje `HDR_PILL_LIMIT` (640) + fit-check `hdr_pill_fit`** — rozpočtem NENÍ text hodin, ale levý okraj clear zón sekundového redrawu času/data (x=648/644, `screen_main_redraw_time`); pilulka, která se nevejde, se vynechá (pořadí = důležitost: GNSS, SYS, SAT, HDOP, **HOLD před CAL** — CAL je statický placeholder, HOLD nese živý holdover stav).
 
 ## ⚠️ Funkční konfigurace displeje (nepřepisovat naslepo)
@@ -135,11 +143,14 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 `led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `adcraw`, `scanner`, `testDSI`,
 `testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `gps`, `gpsraw`, `rtc`, `fpgaraw`,
 `fpgaloop`, `stats`, `status`, `ui`, `qspiid`/`qspitest`/`qspispeed`/`storetest` (W25Q),
+**`datalog [on|off|erase|dump]`** (záznam stability, viz „Datalog"), **`stacktest yes`** (⚠️ záměrně
+přeteče stack UartTasku → IWDG reset; ověření řetězce detekce, viz TODO #10),
 **`beep`/`beep test`** (testovací pípnutí, mute platí i pro test — odpověď na to upozorní),
 **`beep on`/`beep off`** (globální mute, persist BKP_DR2), **`selftest`** (čistě-logické unit testy
 za běhu: CRC16 vektor, hystereze /4↔/16 přes `fpga_freq_select_core` (bezstavové jádro), GPS parser
 helpery (`gps_selftest`), fmt_frac+hist_h vektory (`screen_main_selftest`), Maidenhead
-(`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`) — žádný HW, žádný sdílený
+(`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`), datalog záznam+CRC+čas (`datalog_selftest`)
+— žádný HW, žádný sdílený
 stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 `temperature` = TMP117 0x48 + příznak `(STALE)` při chybě čtení. `sensors` = dump všech 10 senzorů
@@ -327,8 +338,34 @@ Deska je **generická** (použitelná i jinam) → regiony obecné, ne GPSDO-spe
   `calib_save()` jen na tlačítko ULOZIT (blokující erase+write, needěje se to periodicky).
   Prázdný/nevalidní záznam → vychozí (datasheet) hodnoty. ⚠️ Krátké okno při bootu (SensorsTask
   běží dřív než `app_gpsdo_init()`) čte 12V/5V default gain, ne uloženou kalibraci — kosmetické.
-- **Plánované využití zbytku DATA regionu:** **datalogging stability** (Allan/drift/holdover — killer
-  app GPSDO) → DATA region, externí flash v paměťové diagnostice, volitelně memory-mapped XIP (@0x90000000) + quad read.
+### Datalog (datalog.c/h, datalog_sd.c) — DATA region, HOTOVO 2026-07-20 (TODO #6)
+**Append-only kruhový log stability** do W25Q **DATA** regionu. Záznam **32 B / 10 s** → ~276 kB/den,
+DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje nejstarší — log nikdy „nedojde").
+- **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
+  `seq(0)`, `t_unix(4)`, `freq_x100000(8)`, `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
+  `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
+  `DATALOG_F_*` = GPS_VALID/FIX_3D/FPGA_LINK/SIGNAL_LOST/DIV16/HOLDOVER.
+  ⚠️ **RF se ukládá SYROVĚ v mV**, ne v dBm — kalibrace (`g_calib`) se může změnit, syrová hodnota ne.
+- **Pozice zápisu se po bootu ODVODÍ ze `seq`** (`find_head`: blok s nejvyšším seq v 1. záznamu → v něm
+  první volný slot; smazaná flash = `0xFFFFFFFF` = volno). **Žádná hlavička/metadata** → log přežije
+  reset i výpadek napájení. Na hranici erase bloku se blok nejdřív smaže (= zahodí 128 nejstarších).
+- **Vlákno:** `datalog_tick()` volá **výhradně defaultTask** (vedle `syscfg_flash_tick`), throttle 10 s
+  uvnitř. QSPI přes `qspiMutexHandle` s **krátkým timeoutem (10 ms)** — při obsazené flash vzorek zahodí
+  (`write_errors++`) a jede dál; defaultTask krmí watchdog a nesmí čekat.
+- **⚠️ Úložiště je za abstrakcí `datalog_backend_t`** (probe/read/write/erase + `erase_size`/`capacity`).
+  `datalog_init` zkusí **SD** a spadne na **W25Q** → až bude SD osazená, log se přepne bez zásahu volajících.
+  **SD backend = `datalog_sd.c`, `probe()` vrací false** (zatím neaktivní); v souboru je **5bodový plán**
+  co dodělat (SDMMC1 v .ioc PC8-12/PD2, cache koherence DMA bufferů, 512B blokový RMW, FatFs, hot-unplug).
+  Rozdíl NOR vs SD = jen `erase_size` (SD = 0 → `erase` smí být NULL).
+- **Zap/vyp** = `datalog_set_enabled` (okno Datalog tlačítko ZAPNOUT/VYPNOUT, UART `datalog on|off`),
+  **persist v syscfg blobu** (W25Q CONFIG). ⚠️ Kvůli novému poli se **magic zvedl `"SCFG"` → `"SCF2"`**
+  → první boot po této změně nastavení nenačte (neznámý magic) a vrátí výchozí; při první změně se uloží nově.
+- **Okno Datalog (s_view=17) je ŽIVÉ** (v `app_gpsdo_tick`): stav/backend, záznamů/kapacita, seq, chyby zápisu.
+  Používá `kv_row_live` (na rozdíl od `kv_row` si **čistí box hodnoty** — jinak by kratší hodnota nechala ocas té delší).
+- **UART `datalog [on|off|erase|dump]`** (`erase` = destruktivní smazání celého logu, `dump` = posledních 10 záznamů).
+- **Selftest 7/7** (`datalog_selftest`): round-trip pack/unpack, detekce poškozeného bajtu přes CRC,
+  prázdný slot, kalendář→unix vektory.
+- **Plánované dál:** rekonstrukce Allanovy pyramidy z logu po bootu; export přes USB CDC; memory-mapped XIP.
 
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
 Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0x70303AEE jako I2C4).
@@ -390,5 +427,6 @@ Toolchain (arm-none-eabi) není v PATH tohoto prostředí, ale **je na disku**:
 **Testy:** UART `selftest` = neblokující pure-logic unit testy na targetu (idiom
 projektu — testy běží na zařízení, ne na hostu; `run_selftests` ve freertos.c, i při bootu):
 CRC16, hystereze /4↔/16 (`fpga_freq_select_core`), GPS parser (`gps_selftest`), fmt_frac+hist_h
-(`screen_main_selftest`), Maidenhead lokátor (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`) → „SELFTEST: 6/6 PASS".
+(`screen_main_selftest`), Maidenhead lokátor (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`),
+datalog záznam+CRC+čas (`datalog_selftest`) → „SELFTEST: 7/7 PASS".
 `qspitest`/`storetest` = destruktivní HW testy.

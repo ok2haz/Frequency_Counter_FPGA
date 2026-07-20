@@ -499,11 +499,30 @@ static void freq_fill_segments(void)
     }
 }
 
+/* Obdelnik velkeho cisla (vc. jednotky) = clear/podbarvovaci zona. Shodny s
+ * partial-redraw oblasti v screen_main_redraw_freq: vyska 88 konci presne nad
+ * horni hranou karet mrizky (SCR_MAIN_GRID_Y), takze jim podbarveni nezasahuje
+ * do okraju. Platny az po num_build (cachovana geometrie). */
+static prim_rect_t freq_area(void)
+{
+    return (prim_rect_t){(int16_t)(s_num_left - 2), s_num_top,
+                         (int16_t)(s_num_w + 10), 88};
+}
+
+/* STOP -> lehke cervene podbarveni cele zony kmitoctu (mereni STOJI). Kresli se
+ * jen kdyz je zastaveno; pri RUN zustava cisty gradient. */
+static void freq_tint_if_stopped(void)
+{
+    if (st.running) return;
+    prim_fill_rect(freq_area(), UI_COLOR_FREQ_STOP_BG, PRIM_BLEND_OVER);
+}
+
 /* Big number rendered directly over the gradient background. HW (DMA2D) glyph
  * blend zapnut JEN pro tohle velke cislo (mereny kmitocet) — ostatni text jede CPU. */
 static void render_body_number(void)
 {
     if (!s_num_ready) num_build();   /* jednou; jitterovany stav pak prezije full render */
+    freq_tint_if_stopped();          /* az PO num_build — potrebuje cachovanou geometrii */
     prim_set_glyph_accel(1);
     ui_big_number_render(&s_num);
     prim_set_glyph_accel(0);
@@ -1074,7 +1093,7 @@ static void render_right_column_v1(prim_rect_t rect)
 
 static void render_body_grid_v1(void)
 {
-    int16_t right_margin = 12;
+    int16_t right_margin = SCR_MAIN_GRID_MARGIN;
     int16_t allan_left = right_margin;
     int16_t grid_y = SCR_MAIN_GRID_Y;
     int16_t grid_h = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);
@@ -1092,17 +1111,17 @@ static void render_body_grid_v1(void)
  * offset/trend/signal). */
 static void render_body_grid_v2(void)
 {
-    int16_t m       = 12;                     /* vnejsi okraj (obe strany) */
+    int16_t m       = SCR_MAIN_GRID_MARGIN;   /* vnejsi okraj (obe strany) */
     int16_t gap     = 12;                     /* svisla mezera */
     int16_t grid_y  = SCR_MAIN_GRID_Y;
     int16_t grid_h  = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);  /* 242 */
-    int16_t grid_w  = (int16_t)(UI_DIM_SCREEN_W - 2 * m);                                /* 776 */
+    int16_t grid_w  = (int16_t)(UI_DIM_SCREEN_W - 2 * m);                                /* 792 */
     int16_t signal_h = 54;
     int16_t stats_h  = 64;
     int16_t trend_h  = (int16_t)(grid_h - stats_h - signal_h - 2 * gap);                 /* 100 */
-    int16_t allan_w  = (int16_t)((grid_w * SCR_MAIN_GRID_LEFT_RATIO) / 100);             /* 364 */
+    int16_t allan_w  = (int16_t)((grid_w * SCR_MAIN_GRID_LEFT_RATIO) / 100);             /* 372 */
     int16_t right_x  = (int16_t)(m + allan_w + SCR_MAIN_GRID_GAP);                       /* 390 */
-    int16_t right_w  = (int16_t)(grid_w - allan_w - SCR_MAIN_GRID_GAP);                  /* 398 */
+    int16_t right_w  = (int16_t)(grid_w - allan_w - SCR_MAIN_GRID_GAP);                  /* 406 */
 
     render_card_allan((prim_rect_t){m, grid_y, allan_w, grid_h});
     draw_offset_sigma((prim_rect_t){right_x, grid_y, right_w, stats_h});
@@ -1133,8 +1152,12 @@ static void footer_button_def(int i, const char **label, const char **value,
      * odstraneni teto vetve vratit. */
     case 0: *label = "Main SW"; *value = screen_main_layout_is_old() ? "OLD" : "NEW";
             *var = UI_BUTTON_NORMAL; break;
-    case 1: *label = st.running ? SCR_S_BTN_RUN : "STOP";   /* invertovano: label = stav */
-            *var = st.running ? UI_BUTTON_RUN : UI_BUTTON_ACTIVE; break;
+    /* Label = AKCE, ne stav (2026-07-20): bezi-li mereni, tlacitko nabizi "STOP"
+     * (cervene), pri zastavenem nabizi "RUN" (zelene). Drive to bylo obracene
+     * (label = stav) — matouci, protoze zelene "RUN" svitilo prave kdyz uz bezi.
+     * Stav mereni nese navic PODBARVENI velkeho kmitoctu (freq_tint_if_stopped). */
+    case 1: *label = st.running ? "STOP" : SCR_S_BTN_RUN;
+            *var = st.running ? UI_BUTTON_STOP : UI_BUTTON_RUN; break;
     case 2: *label = SCR_S_BTN_GATE_L; *value = GATE_VAL[st.gate];  *var = UI_BUTTON_NORMAL; break;
     case 3: *label = SCR_S_BTN_CHAN_L; *value = CHAN_NAME[st.chan]; *var = UI_BUTTON_NORMAL; break;
     default: *label = SCR_S_BTN_MENU;  *var = UI_BUTTON_NORMAL; break;
@@ -1308,6 +1331,20 @@ int screen_main_redraw_freq(void)
     prim_set_glyph_accel(0);
     for (int i = from; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
     return 1;
+}
+
+/* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,
+ * STOP = lehce cervene). Vola se pri PREPNUTI RUN/STOP — tam se meni podklad,
+ * ne cislice, takze per-segment dirty cesta (screen_main_redraw_freq) by nic
+ * neprekreslila (a pri STOP uz stejne nebezi). */
+void screen_main_redraw_freq_area(void)
+{
+    if (!s_num_ready) return;
+    blit_bg_region(freq_area());
+    freq_tint_if_stopped();
+    prim_set_glyph_accel(1);
+    ui_big_number_render(&s_num);
+    prim_set_glyph_accel(0);
 }
 
 /* Navzorkuje aktualni frakcni odchylku do statistiky (plochy ring + pyramida, ~1x/s). */
