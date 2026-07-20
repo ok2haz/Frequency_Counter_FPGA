@@ -125,8 +125,13 @@ void MX_RTC_Init(void)
     uint32_t n1 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR5);
     for (int i = 0; i < 4; i++) { name[i] = (char)(n0 >> (8 * i)); name[4 + i] = (char)(n1 >> (8 * i)); }
     name[8] = '\0';
-    if ((cr & 0xFFu) == 1u)
+    uint32_t kind = (cr & 0xFFu);
+    if (kind == 1u)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "stack:%s", name);
+    else if (kind == 3u)
+      /* Zapsal watchdog_supervise tesne pred vyprsenim IWDG: task prestal koupat
+       * (heartbeat > 2,5 s). Bez tohoto by byl prosty watchdog reset nemy. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "stall:%s", name);
     else
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);

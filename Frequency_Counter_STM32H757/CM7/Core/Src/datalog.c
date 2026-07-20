@@ -192,6 +192,13 @@ static void find_head(void)
         uint32_t seq = get_u32(b);
         if (seq == DATALOG_SEQ_EMPTY || seq == 0) continue;
         if (!found || seq > best_seq) { found = true; best_seq = seq; best_blk = i; }
+        /* ⚠️ Sken je 16352 QSPI transakci (cely DATA region po 4 KB blocich) a
+         * `w25q_read` uvnitr POLLUJE FIFO bez yieldu. Bez tohoto ustoupeni by
+         * defaultTask drzel CPU v kuse — a protoze prave defaultTask obnovuje
+         * IWDG (watchdog_supervise), byl by dost dlouhy sken WATCHDOG RESET
+         * (boot grace je jen 8 s). Yield po kazdych 512 blocich pusti ke slovu
+         * UiTask/FpgaTask (heartbeaty) i zbytek smycky defaultTask. */
+        if ((i & 511u) == 511u) osDelay(1);
     }
 
     if (!found) {                       /* prazdne uloziste */

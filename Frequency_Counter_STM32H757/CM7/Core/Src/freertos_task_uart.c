@@ -48,6 +48,10 @@
 
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 
+/* Task handles (definovane ve freertos.c) — volny stack v prikazu `status`. */
+extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
+                    UiTaskHandle, FpgaTaskHandle;
+
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
 static void fmt_f2(char *b, size_t n, float v)
 {
@@ -607,7 +611,32 @@ void UartTask_run(void *argument)
 				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
 			  }
 			  else if (strcmp(RxBuffer, "status") == 0)  {
-				  printf("RUNNING\n");
+				  /* Diagnostika restartu + zdravi tasku. Drive to vypisovalo jen
+				   * "RUNNING" (nepouzitelne pri honu na nahodny watchdog reset) —
+				   * pricina resetu byla dostupna JEN v okne System Health. */
+				  printf("RUNNING %s  uptime %lus\n", FW_VERSION_FULL, (unsigned long)g_uptime_s);
+				  printf("Reset: %s%s%s\n", (const char *)g_reset_text,
+					     g_crash_text[0] ? "  " : "", (const char *)g_crash_text);
+				  printf("  RSR=0x%08lX%s\n", (unsigned long)g_reset_rsr,
+					     g_reset_bad ? "  <-- WATCHDOG/CRASH" : "");
+				  printf("Heap: free %lu B, min-ever %lu B   CPU %lu%%\n",
+					     (unsigned long)g_rtos_heap_free, (unsigned long)g_rtos_heap_min,
+					     (unsigned long)g_rtos_cpu_pct);
+				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
+				   * preteceni (a tim i na "stall"/HardFault). */
+				  static const struct { const char *n; osThreadId_t *h; } TL[] = {
+					  {"default", &defaultTaskHandle}, {"Uart", &UartTaskHandle},
+					  {"I2C4",    &I2C4TaskHandle},    {"Ui",   &UiTaskHandle},
+					  {"Fpga",    &FpgaTaskHandle},
+				  };
+				  for (unsigned i = 0; i < sizeof(TL) / sizeof(TL[0]); i++) {
+					  if (*TL[i].h == NULL) continue;
+					  printf("  stack %-7s free %lu B\n", TL[i].n,
+						     (unsigned long)osThreadGetStackSpace(*TL[i].h));
+				  }
+				  char db[80];
+				  datalog_format_status(db, sizeof db);
+				  printf("%s\n", db);
 			  }
 			  else {
 				  printf("ERR unknown command\r\n");

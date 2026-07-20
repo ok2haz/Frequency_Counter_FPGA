@@ -153,6 +153,9 @@ helpery (`gps_selftest`), fmt_frac+hist_h vektory (`screen_main_selftest`), Maid
 — žádný HW, žádný sdílený
 stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
+**`status`** = od 2026-07-20 plná diagnostika (dřív jen „RUNNING"): verze + uptime, **příčina resetu
++ crash black-box** (`stall:UiTask`, `stack:UartTask`, …), RSR, heap free/min, CPU %, **volný stack
+všech 5 tasků** a stav datalogu. První místo, kam sáhnout při náhodném restartu.
 `temperature` = TMP117 0x48 + příznak `(STALE)` při chybě čtení. `sensors` = dump všech 10 senzorů
 (`last/min/max/avg`, stav OK/ERR, `err_total/streak/samples`) — viz `g_sensors[]`/`sensor_stat.h`.
 Neznámý příkaz → `ERR unknown command`. `ui` i `screen main` znovu vykreslí hlavní obrazovku
@@ -279,6 +282,18 @@ Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušen
   < 2,5 s staré** → zatuhnutí jednoho tasku (ne jen celého scheduleru) = HW reset. Startup
   grace 8 s. **UartTask se nemonitoruje** (legitimně blokuje: `scanner` ~2,5 s, `fpgaloop` ~3 s).
 - V DEBUG buildu `__HAL_DBGMCU_FREEZE_IWDG1()` (breakpoint neresetuje). Release bez freeze.
+- **⚠️ Diagnostika „kdo se zasekl" (2026-07-20):** `watchdog_supervise` při odmítnutí refreshe zapíše
+  do crash black-boxu (BKP_DR3..5, **kind 3**) jméno tasku se starým heartbeatem → po restartu
+  `g_crash_text` = **`stall:UiTask` / `stall:FpgaTask` / `stall:BOTH`**. Bez toho byl prostý IWDG reset
+  němý (RSR řekl jen „watchdog", ne který task). Zapisuje se **jen jednou za běh** (`s_stall_logged`).
+- **⚠️ Blokující operace v taskech s heartbeatem ukrajují z 2,5 s limitu.** Nejhorší třída jsou
+  **QSPI erase/write**: `w25q.c wait_ready()` čekal až 1000 ms (sector erase 50–400 ms) v **čistém
+  spinu**. Volá ho defaultTask (syscfg auto-save, datalog) i UiTask (`calib_save`) — a protože
+  defaultTask je Normal a UiTask BelowNormal, erase v defaultTasku UiTask **úplně vyhladověl**
+  (heartbeat stárl) a defaultTask se sám nedostal na `watchdog_supervise`. Od 2026-07-20 `wait_ready`
+  **ustupuje scheduleru** (`osDelay(1)` mezi dotazy, jen když scheduler běží). **Pravidlo: žádný spin
+  delší než ~10 ms v defaultTask/UiTask/FpgaTask** — buď `osDelay`, nebo to přesuň do UartTasku
+  (ten se nemonitoruje).
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
