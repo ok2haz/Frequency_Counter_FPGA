@@ -103,7 +103,13 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 ## Kde co hledat (mapa dokumentů)
 
 **Kořen repa:** `CONTRIBUTING.md` (workflow, IOC-owner pravidlo, **§7 dual-core flash**) ·
-`STATUS.md` (tento soubor) · `tools/make_release_image.ps1` (combined CM7+CM4 image).
+`STATUS.md` (tento soubor) · **`NAVOD.md` (uživatelský návod — pro obsluhu, ne pro vývoj)** ·
+`tools/make_release_image.ps1` (combined CM7+CM4 image).
+
+> ⚠️ **`NAVOD.md` drž v souladu s realitou.** Má nahoře tabulku „Stav vývoje", která přiznává,
+> že měřený kmitočet je zatím simulace — **po dokončení #1/#2 ji aktualizuj**, jinak bude návod
+> lhát o tom hlavním. Totéž u dočasného tlačítka „Main SW" (#14) a jednorázového resetu
+> nastavení ve v0.4.0.
 
 > ⚠️ **STM32H757 = dual-core. Flashuj OBĚ banky** (CM7 `@0x08000000` + CM4 `@0x08100000`)
 > a měj `BCM4=1` v option bytes, jinak černý displej. Detaily → `CONTRIBUTING.md` §7.
