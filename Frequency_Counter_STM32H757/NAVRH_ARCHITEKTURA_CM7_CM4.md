@@ -1,5 +1,9 @@
 # NÁVRH: Architektura CM7/CM4 + chybějící subsystémy — k diskusi
 
+> 🔄 **Revize 2026-07-20 (firmware v0.4.0) — čti §11 na konci.** Od sepsání návrhu se část
+> předpokladů změnila (datalog už existuje, USB CDC běží) a v návrhu IPC je **kritická chyba**
+> (sdílená paměť by se na CM7 kešovala). §11 to opravuje; text §1–§10 je jinak platný.
+
 Stav: **NÁVRH. Nic z toho zatím není v kódu** (kromě already-hotových základů:
 QSPI/W25Q store, USB CDC konzole, beeper driver bez volajícího).
 Cíl: rozdělit práci mezi jádra, zapojit dosud mrtvý CM4, a naplánovat SD kartu,
@@ -184,3 +188,141 @@ Měření reálně: UART `stats` / System Health CPU %.
 3. **SDMMC1 piny v .ioc** (PC8–PC12+PD2 standard? potvrdit + DET pin).
 4. **Protokol v2 s FPGA** — gap-free okna jsou podmínkou plné GATE syntézy (fáze 1).
 5. CM4 projekt: build config v repu je, ale nikdy neběžel nic reálného — ověřit boot gate.
+
+---
+
+# 11. Revize 2026-07-20 (firmware v0.4.0)
+
+Návrh vznikl před v0.4.0. Tahle sekce ho **neruší** — opravuje jednu kritickou chybu,
+srovnává ho s tím, co mezitím vzniklo, a doplňuje tři věci, které v něm chyběly.
+
+## 11.1 🔴 KRITICKÉ: IPC přes SRAM4 je v navrženém tvaru ROZBITÉ
+
+§3 navrhuje seqlock nad sdílenou SRAM4 (`0x38000000`). **Tak jak je to popsané, fungovat nebude.**
+
+**Proč:** `MPU_Config()` v `main.c` konfiguruje jen **region 0** (`0xC0000000`, framebuffery, WT)
+a **region 1** (`0xC0400000`, scratch, WBWA). Pro `0x38000000` **žádný region neexistuje**, takže
+platí výchozí mapa ARMv7-M: oblast `0x20000000–0x3FFFFFFF` = *Normal, cacheable, write-back,
+write-allocate*. Jinými slovy **CM7 si sdílenou paměť nakešuje**:
+
+- zápisy CM7 uvíznou v D-cache a CM4 (bez cache, čte skutečnou SRAM) je **neuvidí**,
+- CM7 bude číst zastaralé řádky s daty, která mezitím zapsal CM4.
+
+Seqlock to nezachrání — kešuje se i samotné `seq`, takže CM7 může donekonečna číst starou
+hodnotu a myslet si, že se nic nezměnilo.
+
+**Oprava — přidat MPU region pro SRAM4 jako NEKEŠOVATELNÝ:**
+
+```c
+/* Region 2: IPC okno CM7<->CM4 (SRAM4, D3). NESMI byt kesovatelne — CM4 nema
+ * D-cache a cetl by jinou pamet nez do ktere pise CM7. Shareable + non-cacheable. */
+MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
+MPU_InitStruct.BaseAddress      = 0x38000000;
+MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
+MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;
+MPU_InitStruct.IsShareable      = MPU_ACCESS_SHAREABLE;
+MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
+MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
+```
+
+⚠️ **Write-Through by NESTAČIL.** WT sice pošle zápisy CM7 do paměti (CM4 by je viděl), ale
+**čtení** CM7 by pořád chodilo z cache → data od CM4 by CM7 neviděl. IPC je obousměrné,
+takže jedině **non-cacheable**.
+
+> Tohle je stejná třída chyby, na kterou projekt už jednou narazil u DMA2D (viz „Cache
+> koherence" v `CLAUDE.md`). Tam se řeší explicitní invalidací; tady je čistší MPU, protože
+> IPC blok je malý a přistupuje se k němu často.
+
+## 11.2 🔴 Seqlock potřebuje bariéry, jinak ho přeuspořádá kompilátor
+
+§3 popisuje `seq++` → data → `seq++`. Bez bariér to **není korektní ani po opravě 11.1** —
+kompilátor i procesor smí zápisy přeuspořádat a CM4 uvidí nová data pod starým `seq`
+(nebo naopak). Minimální správná podoba:
+
+```c
+/* Zapisovatel (CM7) */
+s->seq++;            /* licha = zapis probiha */
+__DMB();             /* seq viditelne PRED daty */
+memcpy(&s->data, &snap, sizeof snap);
+__DMB();             /* data viditelna PRED zvysenim seq */
+s->seq++;            /* suda = konzistentni */
+
+/* Ctenar (CM4) */
+do {
+    a = s->seq; __DMB();
+    memcpy(&out, &s->data, sizeof out);
+    __DMB(); b = s->seq;
+} while ((a & 1u) || a != b);
+```
+
+Pole `seq` musí být `volatile uint32_t`. Bez `volatile` smí kompilátor čtení ve smyčce
+vyhodit úplně.
+
+## 11.3 Co se od sepsání návrhu změnilo
+
+| Návrh říká | Realita v0.4.0 | Důsledek pro plán |
+|---|---|---|
+| §2: **LogTask** jako nový task pro SD/FatFs | **Datalog už existuje** (`datalog.c/h`) — běží v defaultTask na CM7, zapisuje do W25Q, 32 B / 10 s, ~600 dní | LogTask **není potřeba jako nový task**. SD = jen **další backend** (`datalog_backend_t`), rozhraní je hotové a `datalog_sd.c` má připravený 5bodový plán. |
+| §5: HTTP download logů ze SD přes „IPC file-read" nad FatFs | Datalog má `datalog_read_back(n)` — jednotné čtení bez ohledu na úložiště | File-read okno by **nemělo sahat na FatFs**, ale volat `datalog_read_back()`. Funguje pak stejně pro W25Q i SD a odpadá „jediný vlastník FatFs" jako riziko. |
+| §6: SCPI přes USB CDC „fáze 2" | **CDC konzole běží** (`USE_USB_CDC_CONSOLE=1`), USART1 je volný pro GPS | Transport je hotový, zbývá jen napojit parser. SCPI po USB je levnější, než návrh předpokládal. |
+| §9 fáze 2: „SD logging" | Logování běží, chybí jen médium | Fáze 2 se smrskla na „dopsat SD backend + SDMMC1 v .ioc". |
+| §8: selftest neuveden | Selftest **7/7** včetně datalogu | Přidat kontrolu IPC (magic+verze) jako 8. test, až vznikne. |
+
+**Nemění se:** rozdělení „CM7 = přístroj, CM4 = konektivita", ETH+lwIP na CM4, SCPI na 5025,
+CPU rozpočet i fázování §9 od fáze 3 dál.
+
+## 11.4 🟡 Chybí: co když se zasekne CM4
+
+Návrh řeší, že CM4 **nenaběhne** (`g_cm4_absent`, boot gate), ale ne že **přestane odpovídat
+za běhu**. Dnešní watchdog (IWDG1) hlídá jen CM7 a jeho tasky.
+
+Doplnit:
+
+- **IWDG2** — CM4 má vlastní nezávislý watchdog, použít ho stejně jako IWDG1 na CM7.
+- **Heartbeat v IPC** — CM4 inkrementuje čítač ve snapshotu (nebo ve vlastním poli); CM7 ho
+  sleduje a při zamrznutí zobrazí `SYS !` (amber, degradovaný provoz — přístroj měří dál,
+  jen nemá síť). **CM7 nesmí kvůli mrtvému CM4 resetovat sám sebe** — konektivita je
+  doplněk, ne podmínka měření.
+- Symetricky: CM4 pozná mrtvý CM7 podle zamrzlého `seq` a přestane vydávat data přes SCPI/HTTP,
+  místo aby servíroval staré hodnoty jako aktuální.
+
+Rozšíření `stall:<task>` black-boxu (viz `CLAUDE.md`, watchdog) o `stall:CM4` je přímočaré.
+
+## 11.5 🟡 Vlastnictví D2 SRAM je dnes u CM7 — vyřešit před předáním
+
+§8 to zmiňuje jednou větou, ale je to konkrétnější:
+
+- `CM7/STM32H757BITX_FLASH.ld` má `RAM_D2 (xrw) : ORIGIN = 0x30000000, LENGTH = 288K`,
+- `freertos_task_uart.c` používá `RAM_BASE 0x30000000` pro UART `ram write/read`.
+
+Než CM4 dostane D2 (ETH deskriptory + lwIP heap), je potřeba **rozdělit D2 v obou linker
+skriptech** a test buffer buď přesunout, nebo zrušit. Jinak si jádra tiše přepíšou paměť —
+a bude to vypadat jako náhodná chyba sítě.
+
+## 11.6 🟡 Dvě pasti, na které projekt už doplatil
+
+- **Per-core hodiny periferií.** Na H7 má každé jádro vlastní sadu RCC enable bitů
+  (`RCC_C1_*ENR` / `RCC_C2_*ENR`). Periferie přiřazená CM4 musí mít hodiny zapnuté **z CM4**.
+  CubeMX to řeší přiřazením kontextu, ale při ručních úpravách (kterých je v tomhle projektu
+  hodně — `MX_I2C1_Init` v USER CODE, `fpga_freq_init`, …) je to snadné minout.
+- **Žádné blokující spiny v taskech s heartbeatem.** Lekce z v0.4.0: `w25q wait_ready()`
+  spinoval až 1 s a vyhladověl UiTask. Pro CM4 to platí stejně — **lwIP ani SCPI nesmí
+  spouštět operace nad W25Q/SD přímo**. Flash zůstává výhradně CM7 a přes IPC se posílá jen
+  žádost, kterou CM7 vyřídí ve svém tempu.
+
+## 11.7 Doporučené pořadí (upravené §9)
+
+Fáze 1 (MathTask + reálná data) je pořád **blokovaná #2** — SPI link. Do té doby dává smysl
+dělat jen věci, které na měření nezávisí:
+
+| # | Fáze | Blokováno? |
+|---|---|---|
+| 0 | **MPU region pro SRAM4 + seqlock s bariérami** (11.1, 11.2) | ne — udělat dřív než cokoli IPC |
+| 3 | CM4 oživení + IPC „hello" + heartbeat (11.4) | ne |
+| 2′ | SD backend do `datalog` (SDMMC1 v .ioc) | ne |
+| 7 | Encoder, J7 LED, AlarmMgr | ne |
+| 1 | MathTask + reálná data → headline | **ano (#2)** |
+| 4–6, 8 | ETH, SCPI, web, USBTMC | až po 3 |
+
+⚠️ Ani jedna z těchto fází by neměla předběhnout **#2**. Síť, SCPI ani webserver nemají co
+publikovat, dokud přístroj neměří — jinak se jen vybuduje víc vrstev nad simulovaným číslem.
