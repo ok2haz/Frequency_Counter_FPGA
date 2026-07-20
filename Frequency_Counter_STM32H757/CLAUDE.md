@@ -271,6 +271,21 @@ Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušen
   UART `beep off`) umlčí okamžitě i test; prev-stavy se při mute dál aktualizují (po odmutení
   žádné pípnutí na starou hranu). UART: `beep`/`beep test`, `beep on`, `beep off`.
 
+## Boot POST diagnostika (bootled.c/h) — LED_1 (PG3) + pípání (PH9)
+Každý sledovaný init při startu si zapíše pořadové číslo (`bootled_step`); při zaseknutí
+v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a SOUČASNĚ N× pípne**
+(800 Hz, 150 ms svit+tón / 150 ms tma+ticho). Happy path = jen zápis do proměnné, žádné zdržení.
+- **⚠️ Pípání NEPOUŽÍVÁ `beeper.c`.** Ten generuje tón přes **TIM7 IRQ**, jenže `bootled_fail()` běží
+  z `Error_Handler()`, kde jsou **přerušení vypnutá** (přesně proto tenhle modul používá i **DWT**
+  místo `HAL_Delay`) → TIM7 by nikdy netikl. Tón se proto **bit-banguje přímo na PH9** stejným DWT
+  časováním (`BOOT_BEEP_HALF_US` 625 µs = 800 Hz, shodně s `beeper.c`). GPIO init je idempotentní,
+  nezávislý na tom, jestli `beeper_init`/`MX_GPIO_Init` už proběhly.
+- **Mute (`g_sound_muted`) se ZÁMĚRNĚ neuplatňuje** — není to UX zvuk, ale hlášení poruchy; při raném
+  `Error_Handler` navíc nemusí být BKP s nastavením ještě načtená.
+- Důvod: když selže panel, LED je jediný výstup — a v krabičce nemusí být vidět. Pípání projde i zavřeným přístrojem.
+- ⚠️ Při selhání *před* `SystemClock_Config` je `SystemCoreClock` ještě default → délky (a tedy i výška
+  tónu) budou mimo; vzor blikání/pípání zůstává čitelný. Platí to i pro původní blikání.
+
 ## IWDG watchdog (watchdog.c/h) — ~4 s, heartbeat UiTask+FpgaTask
 **IWDG1** (LSI ~32 kHz, /64, reload 2000 → ~4 s), **registrová implementace** (KR/PR/RLR) —
 `HAL_IWDG_MODULE_ENABLED` je v hal_conf VYPNUTÝ, modul je nezávislý a regen-safe.
