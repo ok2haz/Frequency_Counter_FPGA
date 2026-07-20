@@ -40,26 +40,71 @@ doména CM4** — bez D-cache odpadají cache-koherenční pasti ETH DMA na H7;
 
 ## 2. Rozdělení tasků
 
-### CM7 (FreeRTOS — dnešní + nové)
-| Task | Prio | Role |
-|---|---|---|
-| FpgaTask | Normal | SPI2 poll FPGA (20 Hz), protokol v1→v2 |
-| **MathTask** *(nový)* | Normal | **matematika měření**: gap-free Σhran/ΣΔt (protokol v2), syntéza GATE 0,1/1/10/100 s, klouzavé statistiky (mean/σ/min/max/p-p), **ADEV pyramida z reálných dat**, lineární drift, Ω/LSQ regrese, korelace s teplotou OCXO. Plní UI + IPC snapshot. `double` FPU. |
-| UiTask | BelowNormal | displej + touch + **encoder** (TIM1 CNT delta poll ~15 Hz vedle touche) + **J7 LED** (zrcadlí stav: LOCK/ALARM/LOG/…) + **J7 tlačítka** (debounce scan) |
-| SensorsTask | Low | I2C senzory + ADC3 (beze změny) |
-| defaultTask | Normal | GPS drain, RTC, BKP config, **IPC servis** (cmd ring z CM4 → aplikuj, snapshot publikuj) |
-| **LogTask** *(nový)* | Low | **SD karta**: FatFs zápis měření/eventů (CSV/bin), rotace souborů, `SD:` stav do UI; jediný vlastník FatFs |
-| — | — | **AlarmMgr** (modul, ne task): beeper vzory (ztráta locku/SIGNAL_LOST/SD plná), mute v UI, config v BKP/flash |
+> Aktualizováno 2026-07-20 podle §11 (LogTask zrušen — datalog už existuje).
+> **Tato sekce je autoritativní**; §11 je revizní protokol s odůvodněním.
 
-USB (CDC) zůstává na CM7 (už funguje; SCPI parser bude sdílený — viz §6).
+### ⚠️ Nejdřív jedno rozlišení: doména ≠ jádro
 
-### CM4 (FreeRTOS — nové, dnes prázdné jádro)
+`D1/D2/D3` jsou **napájecí a hodinové domény**, ne vlastnictví jádra. **CM7 může ovládat
+periferie v D2 a naopak** — přiřazení k jádru je věc kontextu v CubeMX, ne fyzického umístění.
+ETH proto nedáváme na CM4 „protože je v D2", ale ze dvou konkrétních důvodů:
+(a) jeho DMA deskriptory a buffery leží v **D2 SRAM**, kterou CM4 čte **bez D-cache** → odpadá
+celá třída koherenčních pastí, na které se na H7 běžně naráží; (b) **izolace** — zaplavení
+sítě nebo pád stacku se nesmí dotknout měření.
+
+### CM7 (480 MHz, double FPU, I/D cache) = **PŘÍSTROJ**
+
+Měření, matematika, UI, lokální I/O, úložiště. Vlastní displej, SDRAM, DMA2D, veškerou flash.
+
+| Task | Prio | Stack | Role | Stav |
+|---|---|---|---|---|
+| defaultTask | Normal | 1536 B | GPS drain, RTC, persist nastavení, **datalog**, alarmy, `watchdog_supervise`, USB pump · **+ IPC servis** (publikuj snapshot, aplikuj cmd ring) | dnes běží, IPC nový |
+| UartTask | Normal | 4 KB | konzole (USB CDC / USART1) a její příkazy · **+ SCPI parser** (týž zdroják jako na CM4) | dnes běží |
+| FpgaTask | Normal | 2 KB | SPI2 poll FPGA 20 Hz, protokol v1→v2 | dnes běží |
+| **MathTask** | Normal | — | matematika měření: gap-free Σhran/ΣΔt, syntéza GATE 0,1/1/10/100 s, klouzavé statistiky, **ADEV pyramida z reálných dat**, drift, LSQ regrese, korelace s teplotou OCXO. Plní UI i IPC snapshot. **`double` FPU — proto CM7, CM4 má jen single.** | **nový**, blokován #2 |
+| UiTask | BelowNormal | 8 KB | render displeje, touch, backlight, auto-dim · **+ encoder** (TIM1 CNT delta při touch pollu) · **+ J7 LED** (zrcadlí stav 2 Hz) · **+ J7 tlačítka** | dnes běží |
+| I2C4Task (Sensors) | Low | 1536 B | TMP117 ×3, ADS1115, ADC3, status Si5356 | dnes běží, beze změny |
+| — (modul) | — | — | **AlarmMgr**: vzory beeperu, mute, konfigurace | nový |
+
+**Periferie CM7:** LTDC + DSI + DMA2D (displej), FMC (SDRAM 32 MB), QUADSPI (W25Q 64 MB),
+SPI2 (FPGA), I2C1 + I2C4 (senzory, panel, touch), USART1 (GPS), USB OTG FS (CDC konzole),
+ADC3, RTC + BKP, TIM7 (beeper), IWDG1 · **plánované:** SDMMC1 (SD karta), TIM1 (encoder).
+
+**Paměť CM7:** FLASH **bank 1** (`0x08000000`, 1 MB) · AXI SRAM D1 · DTCM/ITCM ·
+SDRAM 32 MB (`0xC0000000`) · W25Q 64 MB (QSPI).
+
+> ⚠️ **Veškerá flash (W25Q i SD) zůstává výhradně CM7.** Síť na ni nesahá přímo — přes IPC
+> pošle žádost a CM7 ji vyřídí ve svém tempu. Důvod: `w25q wait_ready()` blokuje při erase
+> desítky až stovky ms (lekce z v0.4.0, viz `CLAUDE.md` watchdog) a jediný vlastník úložiště
+> je zároveň to, co dělá zbytečným „sdílený FatFs" jako riziko.
+
+### CM4 (240 MHz, single FPU, bez cache) = **KONEKTIVITA**
+
+Dnes jádro jen bliká — 240 MHz leží ladem. Dostane celý síťový stack a vzdálená rozhraní.
+
 | Task | Role |
 |---|---|
-| **NetTask** | lwIP + ETH driver (RMII, deskriptory v D2), DHCP/static, link status |
-| **ScpiTask** | **SCPI server na TCP 5025** (raw socket, standard lab přístrojů) — parser `libscpi`; GET čte IPC snapshot, SET posílá do cmd ringu |
-| **HttpTask** | webserver (lwIP httpd): statická remote-UI stránka (HTML+JS v CM4 flash), **REST/JSON** (`/api/meas`, `/api/status`), volitelně WebSocket push 1 Hz; **soubory z SD přes HTTP** (CM7 je podá přes IPC file-read protokol — NE sdílený FatFs) |
-| **SvcTask** | mDNS (LXI-style discovery, `gpsdo.local`), SNTP (cross-check času), telnet konzole (volitelně) |
+| **NetTask** | lwIP + ETH driver (RMII, deskriptory v D2), DHCP/statická IP, stav linky |
+| **ScpiTask** | **SCPI server na TCP 5025** (raw socket = standard lab. přístrojů, VISA `TCPIP::…::5025::SOCKET`), parser `libscpi`. GET čte IPC snapshot, SET jde do cmd ringu. |
+| **HttpTask** | webserver: statická SPA v CM4 flash, **REST/JSON** (`/api/meas`, `/api/status`), push 1 Hz. Stahování logů přes IPC → **`datalog_read_back()`**, NE přes FatFs (funguje pak stejně pro W25Q i SD). |
+| **SvcTask** | mDNS (`gpsdo.local`, LXI-lite), SNTP cross-check času, volitelně telnet |
+
+**Periferie CM4:** ETH (RMII + PHY LAN87xx). Nic dalšího.
+
+**Paměť CM4:** FLASH **bank 2** (`0x08100000`, 1 MB — lwIP+httpd+SCPI+mDNS ≈ 200–350 KB
++ web assets) · **D2 SRAM** (`0x30000000`, 288 KB — ETH deskriptory ~32 KB, lwIP heap 32–64 KB,
+stacky ~20 KB). ⚠️ D2 dnes patří v linkeru CM7 → viz #22.
+
+### Hranice mezi jádry
+
+| Prostředek | Kdo |
+|---|---|
+| **SRAM4** (D3, `0x38000000`, 64 KB) | **sdílené — JEN pro IPC.** Snapshot (seqlock, CM7→CM4) + cmd/resp ringy. ⚠️ **Musí být non-cacheable (MPU region), viz #19.** |
+| **HSEM** | boot gate CM4 |
+| všechno ostatní | **nesdílí se** — žádné sdílené periferie, žádný sdílený FatFs, žádné křížové HAL handly |
+
+**Co teče mezi jádry:** jen malý, verzovaný stav — snapshot měření a stavu (~1 KB) směrem
+k CM4, příkazy (GATE, RUN/STOP, kanál, log on/off) směrem k CM7. Nic víc.
 
 ## 3. IPC CM7↔CM4 — sdílená SRAM4 (D3, 64 KB, 0x38000000)
 
@@ -70,7 +115,7 @@ Bez OpenAMP — jednoduchý, auditovatelný protokol (styl FPGA rámce):
 | **`ipc_snapshot_t`** (~1 KB) | CM7→CM4 | **seqlock**: `seq++` (lichá=zápis), data, `seq++`; CM4 čte, při změně seq opakuje. Obsah: freq×1e5 (/4,/16, zvolený), stats (σ@τ, drift, offset, ADEV body), GPS (fix/sat/čas), senzory souhrn, health, alarmy, uptime, verze. |
 | **cmd ring** (16×64 B) | CM4→CM7 | SCPI/web SETy: GATE, RUN/STOP, CHAN, log on/off… defaultTask aplikuje, odpověď do resp ringu (echo id + status) |
 | **resp ring** (16×64 B) | CM7→CM4 | odpovědi + async eventy (alarm) |
-| **file-read okno** (4 KB) | CM7→CM4 | HTTP download logů z SD: CM4 žádá (path,offset), LogTask plní |
+| **file-read okno** (4 KB) | CM7→CM4 | HTTP download logů: CM4 žádá (index záznamu), CM7 plní přes `datalog_read_back()` — NE přes FatFs (viz §11.3) |
 
 Notifikace: začít **pollingem** (CM4 10–50 Hz — pro laboratorní použití stačí a je
 nejjednodušší); HSEM IRQ přidat až bude třeba latence. Boot CM4 přes stávající
@@ -86,7 +131,7 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
 - **Rozpočet logování:** záznam ~64 B × 4 Hz ≈ **22 MB/den** → 32 GB ≈ **4 roky**
   nepřetržitě. Kapacita není limit; limitem je kvalita karty (výpadky napájení →
   f_sync po dávkách, žurnál nepotřebujeme).
-- Card-detect (SDMMC1_DET) → hot-plug: mount/unmount v LogTasku, stav v UI/PAMĚŤ okně.
+- Card-detect (SDMMC1_DET) → hot-plug: mount/unmount v SD backendu datalogu, stav v UI/PAMĚŤ okně.
 
 ## 5. Ethernet + webserver — nativně, žádný modul
 
@@ -145,14 +190,14 @@ z velké části HW (DMA2D/LTDC/dirty-rect) — nové tasky soutěží jen o CPU
 | Přírůstek CM7 | CPU | Pozn. |
 |---|---|---|
 | MathTask | <1 % | feed 4 Hz O(6); přepočty 1 Hz nad ~120 floaty, double FPU |
-| LogTask (SD, Low prio) | <1 % | dávkované 64B záznamy, IDMA, f_sync ~2 s |
+| datalog + SD backend (defaultTask) | <1 % | dávkované 64B záznamy, IDMA, f_sync ~2 s |
 | Beeper ISR 1600 Hz | ~0,1 % | toggle |
 | Encoder/J7 LED | ~0 % | HW čítač; GPIO 2 Hz |
 | SCPI přes CDC | <0,5 % | jen při příkazu |
 | IPC snapshot 10 Hz | ~0 % | memcpy ~1 KB → SRAM4 |
 | **Σ nové** | **~2–3 %** | vs. ~10–15 % uvolněných zrušením 20 Hz sim |
 
-Pojistky: síť celá na CM4 (nárazová zátěž se renderu nedotkne); LogTask POD
+Pojistky: síť celá na CM4 (nárazová zátěž se renderu nedotkne); zápis úložiště POD
 prioritou UI; pravidlo „nic blokujícího v UiTasku" trvá. Záložní páky: **-O2/
 Release build** (největší), SPI SCK ↑, event-driven redraw, DMA2D IT-yield.
 Měření reálně: UART `stats` / System Health CPU %.
@@ -173,7 +218,7 @@ Měření reálně: UART `stats` / System Health CPU %.
 | # | Fáze | Jádro | Závislost |
 |---|---|---|---|
 | 1 | **MathTask + reálná data → headline** (+ GATE syntéza) | CM7 | protokol v2 (gap-free okna) pro plný GATE; základ i bez v2 |
-| 2 | **SD logging** (SDMMC1+FatFs, LogTask, UI stav) | CM7 | .ioc SDMMC1 |
+| 2 | **SD backend do datalogu** (SDMMC1 + `datalog_sd.c`) | CM7 | .ioc SDMMC1 |
 | 3 | **CM4 oživení + IPC** (snapshot+ringy, „hello" po UART/ITM) | oba | — |
 | 4 | **ETH + lwIP + ping/DHCP** | CM4 | 3 |
 | 5 | **SCPI 5025 + SCPI přes CDC** | CM4+CM7 | 3,4 |
