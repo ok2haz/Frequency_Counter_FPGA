@@ -131,6 +131,46 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 | 29 | **Encoder + J7 LED/tlačítka + AlarmMgr** | CM7 | Nezávislé na všem ostatním, dá se dělat kdykoli. Encoder PA8/PA9 přes TIM1 v HW kvadratuře (0 % CPU), PC13 tlačítko; J7 = 6 LED zrcadlících stav (PWR/LOCK/DISC/ALARM/LOG/LINK). ⚠️ **Tlačítka na J7 — potvrdit, jestli tam vůbec jsou** a na kterých pinech. AlarmMgr = modul, ne task. |
 | 30 | **mDNS/LXI discovery + USBTMC** | oba | ⬅ #25, #26. `_scpi-raw._tcp`, hostname `gpsdo.local` = LXI-lite. USBTMC = VISA bez socketu. **MSC (přístroj jako flash disk) zamítnuto** — kolize vlastnictví FatFs s logováním; export souborů řeší #26. |
 
+#### Postup migrace krok za krokem (M0–M12)
+
+> **Zadání tohoto žebříku:** po **každém** kroku musí přístroj **dál měřit a zobrazovat**,
+> krok musí jít **samostatně ověřit** a **samostatně vrátit zpět**. Žádný krok nesmí být
+> „velký třesk". Kroky `M` = pořadí provedení, sloupec „Pokrývá" mapuje na úkoly #19–#30.
+>
+> **Průběžné pravidlo po každém kroku (regresní minimum):**
+> 1. `selftest` → musí být **7/7 PASS**,
+> 2. `status` → porovnat s baseline z M0 (heap, volný stack tasků, CPU %) — **výrazný propad
+>    volného stacku nebo skok CPU je červená vlajka**,
+> 3. displej: hlavní obrazovka překresluje, hodiny tikají, dotyk reaguje,
+> 4. nechat běžet **≥30 min** a zkontrolovat, že nepřibyl watchdog reset (`status` → `Reset:`).
+>
+> ⚠️ **Od M3 dál se flashují OBĚ banky** (CM7 `@0x08000000` + CM4 `@0x08100000`, `BCM4=1`).
+> Použij `tools/make_release_image.ps1`. Flashnutí jen bank1 = **černý displej** (viz `CONTRIBUTING.md` §7).
+
+| Krok | Cíl | Jak ověřit (kritérium PASS) | Návrat zpět | Pokrývá |
+|---|---|---|---|---|
+| **M0** | **Záchytný bod.** Nic neměnit. Flashnout dnešní stav, uložit si výstup `status` jako referenci (heap, volný stack všech 5 tasků, CPU %, `Reset:`). Ověřit, že umíš flashnout obě banky. | Přístroj běží; **výstup `status` uložený do souboru** — bez baseline se později nepozná, co krok rozbil. | — | — |
+| **M1** | **MPU region 2 pro SRAM4** (`0x38000000`, 64 KB, **non-cacheable + shareable**). Nic ho zatím nepoužívá. | Krok musí být **neviditelný**: displej beze změny (region 0/1 nedotčeny), `sdram write/read` OK, `qspitest` OK, regresní minimum. ⚠️ Chybná MPU konfigurace se projeví jako rozbitý framebuffer nebo HardFault — proto tenhle krok samostatně. | revert `MPU_Config()` | #19 |
+| **M2** | **Ověřit, že SRAM4 opravdu NENÍ kešovaná.** UART `ipctest`: přečíst zpět `MPU->RASR` a ověřit bity TEX/C/B; zapsat vzor přes DMA a přečíst CPU **bez** `SCB_InvalidateDCache` — musí být vidět nová data. | `ipctest` → `PASS (uncached)`. **Když tenhle test neprojde, NEPOKRAČUJ** — celé IPC by pak bylo postavené na písku a chyby by se projevily až jako náhodné nekonzistence. | — (jen test) | #19 |
+| **M3** | **CM4 „hello".** Minimální firmware do bank 2: bliká LED jiným rytmem než POST + inkrementuje čítač v SRAM4. CM7 ho čte a ukazuje v `status`. | `status` → `CM4: alive, cnt=N`, a při druhém volání je **N vyšší**. ⚠️ **Zároveň otestovat opak:** flashnout jen bank 1 → přístroj **musí nabootovat** a hlásit `CM4:ABSENT` + `SYS !` (degradovaně, ne černý displej). | flashnout původní bank 2 | #20 |
+| **M4** | **IPC snapshot + seqlock.** Sdílená hlavička (`ipc_shared.h`) pro oba projekty: **magic + verze**, pak malý snapshot (uptime, kmitočet, GPS fix). CM7 publikuje, CM4 čte a **echuje zpět kontrolní součet**. | `status` → `IPC: v1 OK, echo match, torn=0`. **Nesouhlas echa nebo rostoucí `torn` = seqlock nebo koherence je špatně.** Necha běžet 30 min a sledovat `torn`. | vypnout publikaci (jeden `#define`) | #20 |
+| **M5** | **cmd/resp ringy.** CM4 periodicky posílá **neškodný NOP příkaz**, CM7 ho aplikuje a odpoví do resp ringu. Zatím **žádný příkaz, který něco mění**. | `status` → počet odeslaných příkazů (CM4) == počet zpracovaných (CM7) == počet přijatých odpovědí. Rozjetí čísel = ztráta v ringu. | vypnout `#define` | #20 |
+| **M6** | **Liveness a degradace — cíleně otestovat všechny tři poruchy.** IWDG2 na CM4 + heartbeat ve snapshotu + `stall:CM4` v black-boxu. | **Tři samostatné testy:** (a) nezaflashovaná bank 2 → `CM4:ABSENT`, měří dál; (b) CM4 zaseknutý (debug příkaz) → CM7 ukáže `SYS !`, **měří dál a NERESETUJE se**; (c) CM7 zaseknutý (`stacktest yes`) → CM4 přestane vydávat data jako aktuální. **Tenhle krok je hlavní pojistka „nic se nerozbije".** | — | #21 |
+| **M7** | **Rozdělit D2 SRAM** v obou linker skriptech; `ram` test buffer (`0x30000000`, UART `ram write/read`) přesunout nebo zrušit. | `.map` obou jader: **žádný překryv** v D2. `ram write/read` buď funguje na nové adrese, nebo je odstraněn z `help`. Regresní minimum. ⚠️ **Musí být hotové PŘED M9** — jinak si ETH deskriptory a CM7 tiše přepíšou paměť. | revert linkerů | #22 |
+| **M8** | **Audit per-core RCC + kontextů v `.ioc`.** Projít ruční inity v USER CODE (`MX_I2C1_Init`, `fpga_freq_init`, `beeper_init`, `watchdog_init`) proti tomu, které jádro periferii vlastní. Zkusit **CubeMX regen** a ověřit, že USER CODE bloky přežily. | Build obou jader bez varování o dvojí inicializaci; po regenu `git diff` ukáže **jen EOL změny** (stejně jako při regenu 2026-07-19). Regresní minimum. | `git checkout` po regenu | #23 |
+| **M9** | **ETH na CM4 — jen link, DHCP a ping.** Žádný lwIP aplikační stack. | Ping z PC projde. **A hlavně zátěžový test:** `ping -f` (flood) několik minut → **displej nesmí zpomalit, `status` nesmí ukázat watchdog reset, CPU % na CM7 se nesmí hnout.** Tohle je test izolace jader — pokud tady CM7 utrpí, návrh dělení je špatně a je lepší to zjistit teď než po webserveru. | vypnout NetTask | #24 |
+| **M10** | **SCPI přes USB CDC** (na CM7, **bez sítě**). Parser na transportu, který už funguje. | `*IDN?` přes USB vrátí správný řetězec; `MEAS:FREQ?` vrátí totéž, co je na displeji. Nulové riziko — síť se vůbec neúčastní. | vypnout `#define` | #25 |
+| **M11** | **SCPI přes TCP 5025** — týž parser, jiný transport, data z IPC snapshotu. | Z PC přes socket: `*IDN?`, `MEAS:FREQ?` — hodnoty **musí souhlasit s displejem a s USB variantou**. Rozdíl = chyba ve snapshotu, ne v SCPI. | vypnout ScpiTask | #25 |
+| **M12** | **Webserver** (REST/JSON → SPA → stahování logů přes `datalog_read_back()`). | `/api/meas` vrací totéž co SCPI a displej; stažený log souhlasí s `datalog dump`. | vypnout HttpTask | #26 |
+
+**Mimo žebřík (nezávislé, dají se dělat kdykoli):** #28 SD backend, #29 encoder/J7/AlarmMgr.
+**Blokované #2:** #27 MathTask. **Až po M12:** #30.
+
+> ⚠️ **Dvě místa, kde se to nejspíš pokazí, a proto mají vlastní krok:**
+> **M2** (kdyby SRAM4 zůstala kešovaná, IPC by „skoro fungovalo" a padalo náhodně) a
+> **M6** (bez cíleného testu poruch se degradace nikdy neověří — pozná se až v provozu).
+> Ani jeden z nich nic nepřidává funkčně; oba existují čistě proto, aby se chyba našla hned.
+
 ---
 
 ## Kde co hledat (mapa dokumentů)
