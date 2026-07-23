@@ -113,6 +113,8 @@ void MX_RTC_Init(void)
     uint32_t tzc = (syscfg2 >> 2) & 0x1Fu;
     if (tzc >= 1u && tzc <= 27u) g_tz_offset_h = (int8_t)((int32_t)tzc - 13);
     g_tz_auto = (uint8_t)((syscfg2 >> 7) & 0x01u);
+    g_anim_enabled = (uint8_t)((syscfg2 >> 8) & 0x01u);   /* bit8 = animace ZAP/VYP (okno Animace) */
+    g_digit_anim_enabled = (uint8_t)((syscfg2 >> 9) & 0x01u);  /* bit9 = zvyrazneni cislic ZAP/VYP */
   }
 
   /* Crash black-box (BKP_DR3..5, zapsal FreeRTOS hook pred IWDG resetem):
@@ -132,6 +134,16 @@ void MX_RTC_Init(void)
       /* Zapsal watchdog_supervise tesne pred vyprsenim IWDG: task prestal koupat
        * (heartbeat > 2,5 s). Bez tohoto by byl prosty watchdog reset nemy. */
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "stall:%s", name);
+    else if (kind == 4u) {
+      /* HardFault: DR4 (=n0) = stacknuty LR = CALLER (funkce, ktera udelala
+       * spatny call -> addr2line na .elf), DR5 (=n1) = SCB->CFSR (typ). Ukaz
+       * adresu + 1 pismeno typu: B=BusFault, U=UsageFault, M=MemManage. */
+      char t = (n1 & 0x0000FF00u) ? 'B'
+             : (n1 & 0xFFFF0000u) ? 'U'
+             : (n1 & 0x000000FFu) ? 'M' : '?';
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "HF@%08lX%c",
+               (unsigned long)n0, t);
+    }
     else
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);
@@ -397,7 +409,9 @@ void rtc_save_syscfg_if_dirty(void)
               | ((uint32_t)(g_theme_light ? 1u : 0u))
               | ((uint32_t)(g_lang_en ? 1u : 0u) << 1)
               | ((((uint32_t)((int32_t)g_tz_offset_h + 13)) & 0x1Fu) << 2)   /* bity2:6 = tz+13 (1..27) */
-              | ((uint32_t)(g_tz_auto ? 1u : 0u) << 7);                       /* bit7 = AUTO CET/CEST */
+              | ((uint32_t)(g_tz_auto ? 1u : 0u) << 7)                       /* bit7 = AUTO CET/CEST */
+              | ((uint32_t)(g_anim_enabled ? 1u : 0u) << 8)                  /* bit8 = animace ZAP/VYP */
+              | ((uint32_t)(g_digit_anim_enabled ? 1u : 0u) << 9);           /* bit9 = zvyrazneni cislic */
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, v2);
 }
 /* USER CODE END 1 */

@@ -57,14 +57,19 @@ int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 *
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 void screen_main_redraw_title(void);                /* redraw only the title row */
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
+void screen_main_button_flash_start(int idx);       /* micro-flash overlay pri stisku (item 3) */
+int  screen_main_button_flash_tick(void);           /* ~20 Hz krok; 1 = prekreslil (odezni flash) */
 int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati 1 pokud prekreslil */
 int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
 int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
+int  screen_main_freq_flash_tick(void);                /* ~20 Hz: odezni zvyrazneni zmenene skupiny cislic (item 8) */
 void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni (pri prepnuti RUN/STOP) */
 void screen_main_freq_sim_step(void);                  /* krok simulace BEZ kresleni (mimo main obrazovku) */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
+int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd Offset/σ/Drift (item 2, jen v2) */
+int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
@@ -94,7 +99,6 @@ bool screen_main_layout_is_old(void);                   /* 1 = aktivni stary (pr
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
-extern const char *SCR_S_SYS_READY;
 extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
 extern const char *SCR_S_CAL_L, *SCR_S_CAL_V, *SCR_S_HOLD_L, *SCR_S_HOLD_V;
 extern const char *SCR_S_TITLE_RIGHT;

@@ -8,6 +8,8 @@
 #include <prim/prim.h>
 #include "internal/layout.h"
 
+prim_color_t ui_digit_level_color(ui_digit_level_t level) { return ui_level_color(level); }
+
 int16_t ui_digit_group_width(const ui_digit_group_t *g)
 {
     if (g == NULL) return 0;

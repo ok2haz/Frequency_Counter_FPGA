@@ -55,6 +55,12 @@ void fpga_freq_restart(void);
 /** true = posledni poll dostal platny ramec (MAGIC+CRC ok), tj. link je ziva. */
 bool fpga_freq_link_ok(void);
 
+/** Pocet ramcu se spatnym CRC od bootu (diagnostika linky, UART `status`). */
+uint32_t fpga_freq_crc_count(void);
+
+/** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
+uint32_t fpga_freq_crc_last_age_s(void);
+
 /** Jeden 64B full-duplex prenos (posle ACK posledni seq, prijme aktualni ramec).
  *  @return true pokud prislo NOVE platne cerstve mereni (CRC ok, VALID, FRESH, nova SEQUENCE). */
 bool fpga_freq_poll(fpga_meas_t *out);

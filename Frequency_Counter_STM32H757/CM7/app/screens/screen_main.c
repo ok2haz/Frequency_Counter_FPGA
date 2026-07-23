@@ -11,6 +11,7 @@
  */
 
 #include "screen_main.h"
+#include "../anim.h"  /* anim_t/anim_reset/anim_set/anim_step — sdileno s app_gpsdo.c */
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
 #include <prim/prim.h>
@@ -32,6 +33,8 @@ extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
 extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
+extern volatile uint8_t g_anim_enabled;   /* 1 = animace zapnute (okno Animace) */
+extern volatile uint8_t g_digit_anim_enabled;  /* 1 = zvyrazneni zmenene cislice (samostatny prepinac) */
 extern volatile char    g_rtc_text_local[24];  /* cas v lokalni zone (rtc_app_tick) */
 extern volatile char    g_tz_label[8];         /* "UTC" / "UTC+2" (label zony k datu) */
 
@@ -411,6 +414,10 @@ static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> 
 static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
 static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
 static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
+static int      s_first_frac_seg = 0;/* index prvni ZLOMKOVE skupiny (za des. carkou); segmenty
+                                      * < s_first_frac_seg jsou celociselna cast. Highlight zmenene
+                                      * cislice (item 8) se spousti JEN pro ne — zlomkovy ocas
+                                      * jitruje kazdy tik a delal by z pulzu trvale svitici cast. */
 
 static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
 
@@ -451,6 +458,7 @@ static void num_build(void)
     s_freq_total = 0;
     int int_digits = 0;
     int comma_seen = 0;
+    s_first_frac_seg = n;                     /* default: zadna carka -> vse celociselne */
     for (int i = 0; i < n; i++) {
         int L = (int)strlen(SCR_MAIN_DIGITS[i].text);
         s_seg_len[i] = (uint8_t)L;            /* cache pro freq_fill_segments (hot-path) */
@@ -458,7 +466,7 @@ static void num_build(void)
         if (!comma_seen) {
             int_digits += L;
             if (SCR_MAIN_SEPS && (size_t)i < strlen(SCR_MAIN_SEPS)
-                && SCR_MAIN_SEPS[i] == ',') comma_seen = 1;
+                && SCR_MAIN_SEPS[i] == ',') { comma_seen = 1; s_first_frac_seg = i + 1; }
         }
     }
     int frac_digits = s_freq_total - int_digits;
@@ -931,25 +939,184 @@ static void draw_stat_card(prim_rect_t r, const char *label, const char *val, pr
                        &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
 }
 
+/* ── Eased Offset/σ/Drift (item 2, jen v2 layout) ────────────────────────────
+ * Karty se plne prekresluji 1x/s (screen_main_redraw_stats). Misto okamziteho
+ * skoku na novou hodnotu drzi 3 anim_t (raw float, PRED formatovanim fmt_frac)
+ * — 20Hz tik (screen_main_tick_stats_anim) je plynule dojede a mezitim
+ * prekresluje JEN hodnotu (box clear + text), ne cely chrome karty.
+ * `stats_anim_resync()` se vola PRED plnym screen renderem (render_body_grid_v2)
+ * -> pri navratu na hlavni obrazovku po case v podnabidce se cislo NEukaze
+ * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
+static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
+static prim_rect_t s_stat_card_rect[3];
+static char        s_stat_cache[3][24];   /* cache = velikost zdroje (off/s1/dr[24]), viz STATUS.md #13 */
+
+static void stats_anim_resync(void)
+{
+    anim_reset(&s_anim_off,   stats_mean(8));
+    anim_reset(&s_anim_sig,   stats_adev(1));
+    anim_reset(&s_anim_drift, stats_drift());
+}
+
 /* TRI uzke karty ze statistiky: Offset (klouzavy prumer y), σy@1s (ADEV tau=1s),
- * Drift (df/dt — rychlost ujizdeni kmitoctu). */
+ * Drift (df/dt — rychlost ujizdeni kmitoctu). v2: hodnoty jsou EASED (s_anim_*.cur,
+ * anim_set tady jen nastavi novy cil — krok dela 20Hz tik); v1 (zamrzla vetev,
+ * viz screen_main_toggle_layout) zustava beze zmeny, presny puvodni raw vypocet. */
 static void draw_offset_sigma(prim_rect_t rect)
 {
     s_small_rect = rect;                          /* pro zive prekresleni */
     int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
     int16_t w   = (int16_t)((rect.w - 2 * gap) / 3);
-    char off[24]; fmt_frac(off, sizeof(off), stats_mean(8),   1);
-    char s1[24];  fmt_frac(s1,  sizeof(s1),  stats_adev(1),   0);   /* σy@1s (τ=1s, 1/s) */
-    char dr[24];  fmt_frac(dr,  sizeof(dr),  stats_drift(),   1);   /* df/dt [1/s] */
-    draw_stat_card((prim_rect_t){rect.x, rect.y, w, rect.h}, SCR_S_OFFSET_L, off, UI_COLOR_OK);
-    draw_stat_card((prim_rect_t){(int16_t)(rect.x + w + gap), rect.y, w, rect.h},
-                   "σy 1s", s1, UI_COLOR_VIOLET);
-    draw_stat_card((prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h},
-                   "Drift/s", dr, UI_COLOR_ACC);
+    s_stat_card_rect[0] = (prim_rect_t){rect.x, rect.y, w, rect.h};
+    s_stat_card_rect[1] = (prim_rect_t){(int16_t)(rect.x + w + gap), rect.y, w, rect.h};
+    s_stat_card_rect[2] = (prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h};
+
+    char off[24], s1[24], dr[24];
+    if (s_layout_old) {
+        fmt_frac(off, sizeof(off), stats_mean(8), 1);
+        fmt_frac(s1,  sizeof(s1),  stats_adev(1), 0);   /* σy@1s (τ=1s, 1/s) */
+        fmt_frac(dr,  sizeof(dr),  stats_drift(), 1);   /* df/dt [1/s] */
+    } else {
+        anim_set(&s_anim_off,   stats_mean(8));
+        anim_set(&s_anim_sig,   stats_adev(1));
+        anim_set(&s_anim_drift, stats_drift());
+        fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
+        fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);
+        fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);
+        strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
+    }
+    draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
+    draw_stat_card(s_stat_card_rect[1], "σy 1s", s1, UI_COLOR_VIOLET);
+    draw_stat_card(s_stat_card_rect[2], "Drift/s", dr, UI_COLOR_ACC);
 }
+
+/* Hodnota jedne stat karty bez chrome (jen box clear + text) — pro 20Hz partial
+ * update mezi 1Hz plnymi redrawy vyse. Geometrie/baseline shodne s draw_stat_card. */
+static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
+{
+    prim_rect_t r = s_stat_card_rect[idx];
+    ui_card_t card = {.rect = r};
+    prim_rect_t in = ui_card_inner_rect(&card);
+    int16_t base = (int16_t)(in.y + 15);            /* v2 only (viz tick nize) */
+    prim_fill_rect((prim_rect_t){in.x, (int16_t)(base - 16), in.w, 22},
+                   UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){in.x, base}, val, &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
+}
+
+/* ~20 Hz z app_gpsdo tick_anim (s_view=0): eased dojezd Offset/σ/Drift. Jen v2
+ * layout a jen kdyz karty uz byly aspon jednou vykresleny (rect.w>0) a mereni
+ * bezi (STOP zamrzne stats jako jinde). Vraci 1 pokud neco prekreslil. */
+int screen_main_tick_stats_anim(void)
+{
+    if (s_layout_old) return 0;
+    if (!screen_main_is_running()) return 0;
+    if (s_stat_card_rect[0].w == 0) return 0;
+
+    int m0 = anim_step(&s_anim_off,   0.15f, 1e-13f);
+    int m1 = anim_step(&s_anim_sig,   0.15f, 1e-13f);
+    int m2 = anim_step(&s_anim_drift, 0.15f, 1e-13f);
+
+    int drew = 0;
+    char buf[24];
+    if (m0) {
+        fmt_frac(buf, sizeof buf, s_anim_off.cur, 1);
+        if (strcmp(buf, s_stat_cache[0]) != 0) {
+            strcpy(s_stat_cache[0], buf); draw_stat_card_value(0, buf, UI_COLOR_OK); drew = 1; }
+    }
+    if (m1) {
+        fmt_frac(buf, sizeof buf, s_anim_sig.cur, 0);
+        if (strcmp(buf, s_stat_cache[1]) != 0) {
+            strcpy(s_stat_cache[1], buf); draw_stat_card_value(1, buf, UI_COLOR_VIOLET); drew = 1; }
+    }
+    if (m2) {
+        fmt_frac(buf, sizeof buf, s_anim_drift.cur, 1);
+        if (strcmp(buf, s_stat_cache[2]) != 0) {
+            strcpy(s_stat_cache[2], buf); draw_stat_card_value(2, buf, UI_COLOR_ACC); drew = 1; }
+    }
+    return drew;
+}
+
+/* fwd — definovano nize (partial-redraw clear z bg_cache); potrebuje ho uz
+ * screen_main_tick_trend_anim (item 4, eased sparkline). */
+static void blit_bg_region(prim_rect_t r);
 
 #define SPARK_N 21
 static int16_t s_spark[SPARK_N];
+
+/* ── Eased trend sparkline (item 4, jen v2 layout) ───────────────────────────
+ * Misto okamziteho skoku krivky na novou sadu bodu kazdou sekundu (screen_main
+ * _redraw_stats) drzime `s_spark_prev` (naposledy VYKRESLENA sada) a plynule
+ * (20Hz tik) interpolujeme k nove `s_spark` (cil) pres TREND_ANIM_STEPS kroku
+ * (~1s). Sigma band + header p-p NEjsou eased (tise se prebarvi az pri
+ * dalsim 1Hz redrawu — subtilni podbarveni, na rozdil od krivky nerusi).
+ * `trend_anim_resync()` (volano PRED render_card_trend z render_body_grid_v2,
+ * stejny vzor jako stats_anim_resync) zajisti, ze FULL render (otevreni okna /
+ * navrat z podnabidky) ukaze cil OKAMZITE, ne zastarale nedojete misto. */
+#define TREND_ANIM_STEPS 20
+static int16_t     s_spark_prev[SPARK_N];
+static prim_rect_t s_trend_inner;
+static int         s_trend_n         = 0;
+static int16_t     s_trend_sig_lo, s_trend_sig_hi;
+static int         s_trend_phase     = TREND_ANIM_STEPS;   /* STEPS = "dojeto", tik je no-op */
+static int         s_trend_resync_pending = 0;
+
+static void trend_anim_resync(void) { s_trend_resync_pending = 1; }
+
+/* Sdileny obsah plochy grafu: sigma band + polyline + koncovy bod + regresni
+ * cara. Pouziva jak plny render (nize), tak 20Hz eased tik (interpolovane
+ * hodnoty). Regresni cara je LSQ fit arr[k] vs k — mapovani 1:1 se sparkline. */
+static void trend_plot_draw(prim_rect_t inner, const int16_t *arr, int n,
+                           int16_t sig_lo, int16_t sig_hi)
+{
+    ui_sparkline_t sp = {.inner = inner, .y_values = arr, .count = (int16_t)n,
+        .show_sigma_band = true, .sigma_min = sig_lo, .sigma_max = sig_hi,
+        .show_endpoint_marker = true, .fill_below = false, .stroke_color = UI_COLOR_ACC};
+    ui_sparkline_render(&sp);
+
+    float si = 0, sv = 0, sii = 0, siv = 0;
+    for (int k = 0; k < n; k++) {
+        si += (float)k; sv += (float)arr[k];
+        sii += (float)k * (float)k; siv += (float)k * (float)arr[k];
+    }
+    float denom = (float)n * sii - si * si;
+    if (denom > 1e-3f || denom < -1e-3f) {
+        float slope = ((float)n * siv - si * sv) / denom;
+        float inter = (sv - slope * si) / (float)n;
+        float v0 = inter, v1 = inter + slope * (float)(n - 1);
+        if (v0 < 0) v0 = 0;
+        if (v0 > 255) v0 = 255;
+        if (v1 < 0) v1 = 0;
+        if (v1 > 255) v1 = 255;
+        int16_t y0 = (int16_t)(inner.y + inner.h - 1 - (int)(v0 * (inner.h - 1) / 255.0f));
+        int16_t y1 = (int16_t)(inner.y + inner.h - 1 - (int)(v1 * (inner.h - 1) / 255.0f));
+        prim_draw_line((prim_point_t){inner.x, y0},
+                       (prim_point_t){(int16_t)(inner.x + inner.w - 1), y1},
+                       1, UI_COLOR_OK);
+    }
+}
+
+/* ~20 Hz z app_gpsdo tick_anim (s_view=0): eased dojezd sparkline krivky.
+ * Prekresluje JEN plochu grafu (blit_bg_region + trend_plot_draw), ne cely
+ * chrome karty. Konci sam (vraci 0), kdyz uz je fazi na cili. */
+int screen_main_tick_trend_anim(void)
+{
+    if (s_layout_old) return 0;
+    if (!screen_main_is_running()) return 0;
+    if (s_trend_n == 0 || s_trend_phase >= TREND_ANIM_STEPS) return 0;
+
+    s_trend_phase++;
+    float t = (float)s_trend_phase / (float)TREND_ANIM_STEPS;
+    int16_t disp[SPARK_N];
+    for (int i = 0; i < s_trend_n; i++)
+        disp[i] = (int16_t)(s_spark_prev[i] + (s_spark[i] - s_spark_prev[i]) * t + 0.5f);
+
+    blit_bg_region(s_trend_inner);
+    trend_plot_draw(s_trend_inner, disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
+
+    if (s_trend_phase >= TREND_ANIM_STEPS)             /* dojeto -> dalsi cyklus interpoluje ODSUD */
+        memcpy(s_spark_prev, s_spark, sizeof(int16_t) * (size_t)s_trend_n);
+    return 1;
+}
 
 static void render_card_trend(prim_rect_t rect)
 {
@@ -994,35 +1161,24 @@ static void render_card_trend(prim_rect_t rect)
     prim_draw_text((prim_point_t){hx, (int16_t)(rect.y + UI_DIM_CARD_PAD_Y + 16)},
                    "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t inner = ui_card_inner_rect(&card);
-    ui_sparkline_t sp = {.inner = inner, .y_values = s_spark,
-        .count = (int16_t)n, .show_sigma_band = true,
-        .sigma_min = sig_lo, .sigma_max = sig_hi,
-        .show_endpoint_marker = true, .fill_below = false,
-        .stroke_color = UI_COLOR_ACC};
-    ui_sparkline_render(&sp);
 
-    /* Tenka regresni (trendova) cara pres syrove vzorky — ukaze smer/drift, aniz by
-     * skryla sum. Least-squares fit s_spark[k] vs k; mapovani 1:1 se sparkline. */
-    float si = 0, sv = 0, sii = 0, siv = 0;
-    for (int k = 0; k < n; k++) {
-        si += (float)k; sv += (float)s_spark[k];
-        sii += (float)k * (float)k; siv += (float)k * (float)s_spark[k];
+    if (s_layout_old) {                            /* zamrzla v1 vetev — beze zmeny, bez easingu */
+        trend_plot_draw(inner, s_spark, n, sig_lo, sig_hi);
+        return;
     }
-    float denom = (float)n * sii - si * si;
-    if (denom > 1e-3f || denom < -1e-3f) {
-        float slope = ((float)n * siv - si * sv) / denom;
-        float inter = (sv - slope * si) / (float)n;
-        float v0 = inter, v1 = inter + slope * (float)(n - 1);
-        if (v0 < 0) v0 = 0;
-        if (v0 > 255) v0 = 255;
-        if (v1 < 0) v1 = 0;
-        if (v1 > 255) v1 = 255;
-        int16_t y0 = (int16_t)(inner.y + inner.h - 1 - (int)(v0 * (inner.h - 1) / 255.0f));
-        int16_t y1 = (int16_t)(inner.y + inner.h - 1 - (int)(v1 * (inner.h - 1) / 255.0f));
-        prim_draw_line((prim_point_t){inner.x, y0},
-                       (prim_point_t){(int16_t)(inner.x + inner.w - 1), y1},
-                       1, UI_COLOR_OK);
+
+    s_trend_inner = inner; s_trend_sig_lo = sig_lo; s_trend_sig_hi = sig_hi;
+    /* Zmena poctu bodu (n) by interpolaci mezi ruzne dlouhymi poli rozbila —
+     * stejne jako resync/vypnute animace jen skoc rovnou na cil. */
+    if (s_trend_resync_pending || !g_anim_enabled || n != s_trend_n) {
+        s_trend_n = n;
+        memcpy(s_spark_prev, s_spark, sizeof(int16_t) * (size_t)n);
+        s_trend_resync_pending = 0;
+        s_trend_phase = TREND_ANIM_STEPS;           /* uz na cili */
+    } else {
+        s_trend_phase = 0;                          /* novy cil -> rozjed dojezd od s_spark_prev */
     }
+    trend_plot_draw(inner, s_spark_prev, s_trend_n, sig_lo, sig_hi);
 }
 
 /* Signal bargraf = REALNY vstupni vykon z AD8307 log-detektoru (ADS1115 AIN1;
@@ -1124,6 +1280,12 @@ static void render_body_grid_v2(void)
     int16_t right_w  = (int16_t)(grid_w - allan_w - SCR_MAIN_GRID_GAP);                  /* 406 */
 
     render_card_allan((prim_rect_t){m, grid_y, allan_w, grid_h});
+    /* Resync PRED draw_offset_sigma: tohle je FULL render (window open / navrat
+     * z podnabidky) -> ukaz cil OKAMZITE (zadny "dojezd od stare hodnoty" pri
+     * prvnim zobrazeni). Periodicky 1Hz redraw (screen_main_redraw_stats) volne
+     * draw_offset_sigma BEZ resyncu -> tam uz se hodnota eased dojizdi. */
+    stats_anim_resync();
+    trend_anim_resync();
     draw_offset_sigma((prim_rect_t){right_x, grid_y, right_w, stats_h});
     render_card_trend((prim_rect_t){right_x, (int16_t)(grid_y + stats_h + gap),
                                     right_w, trend_h});
@@ -1307,6 +1469,40 @@ void screen_main_freq_sim_step(void)
     freq_step();
 }
 
+/* ── Zvyrazneni zmenene skupiny cislic (item 8) ──────────────────────────────
+ * Po per-segment redrawu (nize) se prvni zmeneny segment na par snimku
+ * prebarvi na accent, pak se vrati na normalni (level-based) barvu. Prekresli
+ * se JEN glyf toho segmentu (stejny text, stejna pozice, stejny font — druhy
+ * draw pres prvni beze zbytku, zadny extra clear netreba). Respektuje
+ * g_anim_enabled (VYP = zadny flash, tail render uz je ve finalni barve). */
+#define FREQ_FLASH_FRAMES 4
+static int s_freq_flash_seg    = -1;
+static int s_freq_flash_frames = 0;
+
+static void freq_seg_draw_color(int i, prim_color_t col)
+{
+    if (i < 0 || i >= s_num.segment_count) return;
+    const ui_digit_segment_t *seg = &s_num_seg[i];
+    const prim_font_t *f = (seg->level != UI_DIGIT_CERTAIN && s_num.fade_font)
+                          ? s_num.fade_font : s_num.main_font;
+    prim_set_glyph_accel(1);
+    prim_draw_text((prim_point_t){s_seg_x[i], s_num.y_baseline}, seg->text, f, col,
+                   PRIM_ALIGN_LEFT);
+    prim_set_glyph_accel(0);
+}
+
+/* ~20 Hz z app_gpsdo tick_anim (s_view=0): po vyprseni FREQ_FLASH_FRAMES vrati
+ * zvyrazneny segment na normalni barvu. Vrati 1 pokud prekreslil (=> flip). */
+int screen_main_freq_flash_tick(void)
+{
+    if (s_freq_flash_seg < 0) return 0;
+    if (--s_freq_flash_frames > 0) return 0;
+    int seg = s_freq_flash_seg;
+    s_freq_flash_seg = -1;
+    freq_seg_draw_color(seg, ui_digit_level_color(s_num_seg[seg].level));
+    return 1;
+}
+
 int screen_main_redraw_freq(void)
 {
     if (!s_num_ready) return 0;
@@ -1330,6 +1526,17 @@ int screen_main_redraw_freq(void)
     ui_big_number_render_tail(&s_num, (int16_t)from);
     prim_set_glyph_accel(0);
     for (int i = from; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
+
+    if (g_anim_enabled && g_digit_anim_enabled && from < s_first_frac_seg) {
+        /* Zvyrazni PRVNI zmeneny segment (samostatny prepinac + master) — ale JEN
+         * kdyz je v CELOCISELNE casti. Zlomkovy ocas se meni kazdy tik, takze
+         * highlight na nem by nebyl izolovany pulz, ale trvale svitici cast
+         * (viz CLAUDE.md). Tim padem flash pulzne jen pri skutecne zmene cisla,
+         * ne pri jitteru poslednich mist. */
+        freq_seg_draw_color(from, UI_COLOR_ACC);
+        s_freq_flash_seg    = from;
+        s_freq_flash_frames = FREQ_FLASH_FRAMES;
+    }
     return 1;
 }
 
@@ -1639,6 +1846,39 @@ void screen_main_redraw_button(int idx)
     footer_button_def(idx, &l, &v, &var);
     ui_button_t b = {.rect = r, .variant = var, .label = l, .value = v};
     ui_button_render(&b);
+}
+
+/* ── Micro-flash tlacitka pri stisku (item 3) ────────────────────────────────
+ * Kratky zvyrazneny obrys pres tlacitko (2-3 tiky ~20 Hz = ~120 ms), pak se
+ * flash odstrani prekreslenim tlacitka (screen_main_redraw_button, ktery uz
+ * dela blit_bg_region -> mark_dirty). Obrys je INSET (o 3 px mensi nez
+ * tlacitko), takze lezi cely uvnitr dirty rectu, ktery uz zavolal volajici
+ * (screen_main_redraw_button hned po zmacknuti) — zadny dalsi clear netreba
+ * (viz CLAUDE.md: AA/stroke obsah musi byt uvnitr predchoziho REPLACE clearu). */
+#define BTN_FLASH_FRAMES 3
+static int s_flash_idx    = -1;
+static int s_flash_frames = 0;
+
+void screen_main_button_flash_start(int idx)
+{
+    if (!g_anim_enabled) return;             /* globalni vypinac (okno Animace) -> zadny flash */
+    if (idx < 0 || idx >= SCR_BTN_COUNT) return;
+    prim_rect_t r = s_btn_rect[idx];
+    prim_rect_t in = {(int16_t)(r.x + 3), (int16_t)(r.y + 3),
+                      (int16_t)(r.w - 6), (int16_t)(r.h - 6)};
+    prim_stroke_rect_rounded(in, 12, 2, UI_COLOR_ACC);
+    s_flash_idx    = idx;
+    s_flash_frames = BTN_FLASH_FRAMES;
+}
+
+int screen_main_button_flash_tick(void)
+{
+    if (s_flash_idx < 0) return 0;
+    if (--s_flash_frames > 0) return 0;
+    int idx = s_flash_idx;
+    s_flash_idx = -1;
+    screen_main_redraw_button(idx);   /* prekresleni tlacitka smaze flash obrys */
+    return 1;
 }
 
 void screen_main_render(void)

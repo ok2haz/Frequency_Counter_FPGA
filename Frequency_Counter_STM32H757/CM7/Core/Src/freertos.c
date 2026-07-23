@@ -145,6 +145,8 @@ volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut *
 volatile uint16_t g_autodim_sec  = 60;    /* prodleva auto-dim [s] (preset 15..600) */
 volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
 volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
+volatile uint8_t g_anim_enabled  = 1;     /* 1 = animace zapnute (default), persist BKP_DR6 bit8 */
+volatile uint8_t g_digit_anim_enabled = 1;  /* 1 = zvyrazneni cislic zapnute (default), BKP_DR6 bit9 */
 volatile uint8_t g_sys_cfg_dirty = 0;
 volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela NVIC_SystemReset */
 /* 1 = pri bootu byla platna syscfg BKP (warm reset, BKP prezila) -> syscfg_load

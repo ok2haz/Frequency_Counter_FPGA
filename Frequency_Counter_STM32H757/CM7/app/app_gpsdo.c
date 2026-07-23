@@ -5,6 +5,7 @@
  */
 
 #include "app_gpsdo.h"
+#include "anim.h"                /* anim_t/anim_reset/anim_set/anim_step — sdileno se screen_main.c */
 #include "screens/screen_main.h"
 #include "hal/stm32/prim_stm32_hal.h"
 #include "sensor_stat.h"        /* g_sensors[] (hodnota + valid + statistika) */
@@ -47,6 +48,8 @@ extern volatile uint8_t  g_autodim_en;           /* 1 = auto-dim po necinnosti *
 extern volatile uint16_t g_autodim_sec;          /* prodleva auto-dim [s] (preset 15..600) */
 extern volatile uint8_t  g_theme_light;          /* 0 = tmave schema, 1 = svetle */
 extern volatile uint8_t  g_lang_en;              /* 0 = cesky, 1 = english (texty postupne) */
+/* g_anim_enabled je deklarovan v anim.h (sdileno se screen_main.c). */
+extern volatile uint8_t  g_digit_anim_enabled;   /* 1 = zvyrazneni zmenene cislice v headline (samostatny prepinac) */
 extern volatile uint8_t  g_sys_cfg_dirty;        /* 1 = zmena jas/mute/dim -> persist do BKP */
 extern volatile char     g_reset_text[12];       /* pricina posledniho resetu (main.c) */
 extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene) */
@@ -85,6 +88,33 @@ static int s_view = 0;          /* 0=main 1=diag 2=gps ... 23=allan — plny sez
  * prepnuti obrazovky, render/clear) prezentuji hned pres present_now(). */
 static int s_dirty = 0;
 static void present_now(void) { prim_stm32_present(); s_dirty = 0; }
+
+/* Forward decl — goto_view/nav i touch je potrebuji pred definici nize. */
+static void app_gpsdo_render_anim(void);       /* Animace/prepinace (s_view=24) */
+static void app_gpsdo_render_animdemo(void);   /* Prehled vsech animaci ve smycce (s_view=25) */
+
+/* ── Flash tlacitka/pilulky pri stisku (2px accent OBRYS pres prvek) ──────────
+ * `rad` = zaobleni dle prvku (UI_DIM_BUTTON_RADIUS tlacitko / UI_DIM_PILL_RADIUS
+ * pilulka). Obrys NEzakryva text — kresli se PRES uz vykresleny prvek (popisek
+ * zustava), takze netreba label ani re-render obsahu. Neblokuje: nakresli + flipne,
+ * akce volajiciho hned potom prekresli + flipne. Diky double-buffered vsync flipu
+ * (present_now ceka na dokonceni PREDCHOZIHO) se obrys zobrazi 1 frame (~17 ms =
+ * page-flip floor, mene fyzicky nejde).
+ * ⚠️ VOLA SE JEN u in-place prvku, ktere po stisku ZUSTANOU (anim/cas/trend
+ * toggly; RUN/GATE/CHAN maji vlastni flash). U NAVIGACNICH tlacitek/pilulek se
+ * ZAMERNE nevola — tam by ten 1 frame navic jen zdrzoval prepnuti okna (2026-07-22,
+ * odezva = sama zmena obrazovky). Obrys jde mimo dirty-rect copy-forward -> volat
+ * jen pred akci, ktera dotceny rect prekresli. Gate g_anim_enabled. */
+static void tap_flash_r(prim_rect_t r, int16_t rad)
+{
+    if (!g_anim_enabled || r.w <= 6 || r.h <= 6) return;
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    prim_stroke_rect_rounded(r, rad, 2, UI_COLOR_ACC);
+    present_now();
+}
+static inline void tap_flash(prim_rect_t r)      { tap_flash_r(r, UI_DIM_BUTTON_RADIUS); }
+static inline void tap_flash_pill(prim_rect_t r) { tap_flash_r(r, UI_DIM_PILL_RADIUS); }
 
 /* ── Spolecny prolog okna (TODO #12/A1) ──────────────────────────────────────
  * `app_gpsdo_init(); prim_set_target(&s_fb); prim_reset_clip();` byl doslova
@@ -191,6 +221,7 @@ static void goto_view(uint8_t v)
     case 3:  app_gpsdo_render_health();   break;   /* Health (spawnuje senzory/pamet/nastaveni) */
     case 7:  app_gpsdo_render_settings(); break;   /* Nastaveni (spawnuje O pristroji) */
     case 12: app_gpsdo_render_menu();     break;   /* Menu rozcestnik */
+    case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
     default: app_gpsdo_render_main();     break;   /* koren */
     }
 }
@@ -405,6 +436,8 @@ static void fmt_d1(float v, char *out, size_t n)
 
 /* Round a float reading to long without pulling in <math.h>. */
 static long lround_f(float v) { return (long)(v >= 0.0f ? v + 0.5f : v - 0.5f); }
+
+/* anim_t/anim_reset/anim_set/anim_step jsou v anim.h (sdileno se screen_main.c). */
 
 /* Maidenhead lokator (10 znaku, 5 paru: field/square/subsquare/ext/ext2),
  * napr. "JN89NS85KN". Vstup = zem. sirka/delka [°]. Pary 3+5 velkymi pismeny. */
@@ -1409,18 +1442,42 @@ static void settings_upd_mute(void)
 }
 
 /* Track/procenta jsou centrovane na stred BR_MINUS/PLUS (y=188,h=64 -> stred
- * 220; drive h=56 -> stred216). Posunuto +4 px se zvetsenim tlacitek. */
-static void settings_upd_jas(void)
+ * 220; drive h=56 -> stred216). Posunuto +4 px se zvetsenim tlacitek.
+ * Parametrizovano hodnotou (ne primo g_brightness) — item 1 animaci ("eased
+ * jas"): skutecny HW backlight (g_brightness) se aplikuje OKAMZITE (UiTask,
+ * ws_panel_set_backlight), ale VIZUALNI bar na obrazovce plynule dojizdi
+ * (s_settings_br, viz settings_tick_jas) — hardwarove stmivani nesmi mit lag,
+ * jen kresleny ukazatel. */
+static void settings_draw_jas_bar(int16_t br)
 {
     prim_fill_rect((prim_rect_t){194, 198, 188, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     prim_rect_t track = {196, 204, 118, 32};
     prim_fill_rect(track, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
-    int16_t fillw = (int16_t)((int32_t)track.w * g_brightness / 255);
+    int16_t fillw = (int16_t)((int32_t)track.w * br / 255);
     if (fillw > 0)
         prim_fill_rect((prim_rect_t){track.x, track.y, fillw, track.h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(track, 2, 1, UI_COLOR_LINE);
-    char pb[8]; snprintf(pb, sizeof pb, "%d%%", (int)g_brightness * 100 / 255);
+    char pb[8]; snprintf(pb, sizeof pb, "%d%%", (int)br * 100 / 255);
     prim_draw_text((prim_point_t){324, 228}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+}
+
+/* Plny (okamzity) render na aktualni g_brightness — pouzito jen pri OTEVRENI
+ * okna (kdy ma bar rovnou ukazovat spravnou hodnotu, zadny nabeh). */
+static void settings_upd_jas(void) { settings_draw_jas_bar((int16_t)g_brightness); }
+
+/* Eased dojezd baru k g_brightness (~20 Hz z app_gpsdo_tick_anim, jen s_view=7).
+ * anim_step respektuje g_anim_enabled (VYP -> okamzity skok, chovani jako pred
+ * timhle bodem). Kreslí se JEN pri zmene (anim_step vraci 0 v klidu). */
+static anim_t s_settings_br;
+static void settings_tick_jas(void)
+{
+    anim_set(&s_settings_br, (float)g_brightness);
+    if (anim_step(&s_settings_br, 0.3f, 0.6f)) {
+        prim_set_target(&s_fb);
+        prim_reset_clip();
+        settings_draw_jas_bar((int16_t)(s_settings_br.cur + 0.5f));
+        s_dirty = 1;   /* flip odlozen na flush */
+    }
 }
 
 /* Hodnota prodlevy centrovana mezi DIM_MINUS/PLUS (x=279, stejne jako drive);
@@ -1468,6 +1525,7 @@ void app_gpsdo_render_settings(void)
     window_prep();
     s_view = 7;
     window_chrome("NASTAVENI", WIN_TITLE_Y_TIGHT);
+    anim_reset(&s_settings_br, (float)g_brightness);   /* bez nabehu pri OTEVRENI okna */
 
     /* ── Levy sloupec: Zvuk ── */
     ui_card_t c1 = {.rect = {DG_LX, 58, DG_COLW, 88},
@@ -1611,7 +1669,42 @@ void app_gpsdo_exit_screensaver(void)
 }
 
 /* ── Boot splash: logo + FW/build + prubeh selftestu. Cerne pozadi, velky
- * nazev + akcentni linka; radek "Selftest" se prekresluje z g_selftest_res. */
+ * nazev + akcentni linka; radek "Selftest" se prekresluje z g_selftest_res.
+ * ── Fade-in (item 9): volajici (StartUiTask) drzi splash pres 10 volani
+ * app_gpsdo_boot_splash_tick() po 100 ms (~1 s) PRED hlavni obrazovkou — na
+ * rozdil od bezneho UiTask cyklu je tohle jednorazova sekvence PRED
+ * schedulerovou smyckou, takze plny redraw kazdy tik (misto dirty-rect) je
+ * v poradku (10x pri bootu, ne za behu). Obsah se kresli s barvou linearne
+ * interpolovanou cerna->cil (fade_color) — kazdy tik NEJDRIV vycisti cele
+ * pozadi na cernou (ne jen prekresli pres predchozi), jinak by se AA hrany
+ * textu kumulovaly pres sebe (na rozdil od digit-highlight/button-flash
+ * tricku tady barva mezi tiky NENI identicka, takze "presna stejna kresba
+ * dvakrat" trik nefunguje — potrebuje skutecny clear). */
+#define SPLASH_FADE_TICKS 8   /* z 10 celkovych tiku — poslednich ~200 ms na cilove barve */
+static int s_splash_frame = 0;
+
+static prim_color_t fade_color(prim_color_t c, float t)   /* t=0 cerna, t=1 cilova barva */
+{
+    if (t >= 1.0f) return c;
+    if (t <= 0.0f) return PRIM_RGB(0, 0, 0);
+    return PRIM_RGB((uint8_t)(PRIM_R(c) * t), (uint8_t)(PRIM_G(c) * t), (uint8_t)(PRIM_B(c) * t));
+}
+
+static void splash_draw_content(float t)
+{
+    prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
+                   PRIM_RGB(0, 0, 0), PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 180}, "GPSDO",
+                   &ui_font_mono_75, fade_color(UI_COLOR_ACC, t), PRIM_ALIGN_CENTER);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 218}, "citac kmitoctu",
+                   &ui_font_sans_18, fade_color(UI_COLOR_INK_2, t), PRIM_ALIGN_CENTER);
+    prim_draw_line((prim_point_t){260, 240}, (prim_point_t){540, 240}, 2, fade_color(UI_COLOR_LINE_HI, t));
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 268}, FW_VERSION_FULL "   " __DATE__,
+                   &ui_font_mono_18, fade_color(UI_COLOR_INK_3, t), PRIM_ALIGN_CENTER);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 452}, "OK2HAZ & OK2JNJ",
+                   &ui_font_mono_18, fade_color(UI_COLOR_INK_4, t), PRIM_ALIGN_CENTER);
+}
+
 static void splash_status(void)   /* prekresli JEN status radek (selftest) */
 {
     prim_set_target(&s_fb);
@@ -1630,23 +1723,26 @@ void app_gpsdo_boot_splash(void)
 {
     window_prep();
     s_view = 11;
-    prim_fill_rect((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_SCREEN_H},
-                   PRIM_RGB(0, 0, 0), PRIM_BLEND_REPLACE);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 180}, "GPSDO",
-                   &ui_font_mono_75, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 218}, "citac kmitoctu",
-                   &ui_font_sans_18, UI_COLOR_INK_2, PRIM_ALIGN_CENTER);
-    prim_draw_line((prim_point_t){260, 240}, (prim_point_t){540, 240}, 2, UI_COLOR_LINE_HI);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 268}, FW_VERSION_FULL "   " __DATE__,
-                   &ui_font_mono_18, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 452}, "OK2HAZ & OK2JNJ",
-                   &ui_font_mono_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+    s_splash_frame = 0;
+    if (!g_anim_enabled) {   /* VYP -> rovnou cilove barvy, zadny fade */
+        splash_draw_content(1.0f);
+        s_splash_frame = SPLASH_FADE_TICKS;
+    } else {
+        splash_draw_content(0.0f);   /* t=0: cerna na cerne = neviditelne (prvni snimek fade-in) */
+    }
     splash_status();
 }
 
 void app_gpsdo_boot_splash_tick(void)
 {
-    if (s_view == 11) splash_status();
+    if (s_view != 11) return;
+    if (s_splash_frame < SPLASH_FADE_TICKS) {
+        s_splash_frame++;
+        prim_set_target(&s_fb);
+        prim_reset_clip();
+        splash_draw_content((float)s_splash_frame / (float)SPLASH_FADE_TICKS);
+    }
+    splash_status();   /* zivy selftest radek — beze zmeny, bezi kazdy tik i po dojetem fade */
 }
 
 /* ── Menu (rozcestnik, s_view=12): z hlavni obrazovky tlacitkem MENU. Mrizka 3×4.
@@ -1661,6 +1757,7 @@ static void app_gpsdo_render_alarms(void);
 static void app_gpsdo_render_counter(void);
 static void app_gpsdo_render_selftest(void);
 static void app_gpsdo_render_cas(void);
+static void app_gpsdo_render_anim(void);
 static void app_gpsdo_render_confirm_restart(void);
 /* Pozn.: NEJSOU dlazdice (dostupne z kontextu, kam patri): Senzory + Diagnostika
  * = tlacitka v System Health; O pristroji + Reference = tlacitka v Nastaveni;
@@ -1668,7 +1765,8 @@ static void app_gpsdo_render_confirm_restart(void);
  * Diagnostika ZUSTAVA i dlazdici (caste pouziti). */
 enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
        ACT_KALIB, ACT_HOLDOVER, ACT_DATALOG, ACT_ALARMS, ACT_CAS,
-       ACT_PLACEHOLDER };   /* sdileno vsemi 3 prazdnymi dlazdicemi radku 4 — viz menu_activate */
+       ACT_ANIM,             /* Animace/demo (s_view=24) — drive Placeholder 1 */
+       ACT_PLACEHOLDER };   /* sdileno zbyvajicimi prazdnymi dlazdicemi radku 4 — viz menu_activate */
 /* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9 — 3 nove sloty jsou
  * "Placeholder N", pripravene pro budouci funkce). w=248, gap 14; h=76, gap 10
  * (y=68/154/240/326 -> radek4 konci 402, 15 px pred footerem 417 — bylo
@@ -1693,7 +1791,7 @@ static const struct { prim_rect_t rect; const char *label; uint8_t act; } MENU_I
     { {14, 240, 248, 76}, "Alarmy",        ACT_ALARMS },
     { {276,240, 248, 76}, "Kalibrace",     ACT_KALIB },
     { {538,240, 248, 76}, "Cas",           ACT_CAS },
-    { {14, 326, 248, 76}, "Placeholder 1", ACT_PLACEHOLDER },
+    { {14, 326, 248, 76}, "Animace",       ACT_ANIM },
     { {276,326, 248, 76}, "Placeholder 2", ACT_PLACEHOLDER },
     { {538,326, 248, 76}, "Placeholder 3", ACT_PLACEHOLDER },
 };
@@ -1712,6 +1810,7 @@ static void menu_activate(uint8_t act)
     case ACT_DATALOG:   app_gpsdo_render_datalog();   break;
     case ACT_ALARMS:    app_gpsdo_render_alarms();    break;
     case ACT_CAS:       app_gpsdo_render_cas();       break;
+    case ACT_ANIM:      app_gpsdo_render_anim();      break;
     case ACT_PLACEHOLDER: break;   /* prazdna dlazdice (radek 4) — zatim bez funkce */
     default: break;   /* Restart neni ACT_* — footer tlacitko -> confirm okno (s_view=13) */
     }
@@ -1848,6 +1947,7 @@ static prim_rect_t kalib_plus_hit(int16_t y)
                          768 - KALIB_HIT_MID, KALIB_BTN_H + 2 * KALIB_HIT_SY};
 }
 static const prim_rect_t KALIB_SAVE_RECT = {18, 417, 220, 61};
+static uint32_t s_kalib_spin_frame = 0;   /* pro spinner ikonu pri ULOZIT (item 6) */
 
 static void kalib_row_redraw(int i)
 {
@@ -2075,11 +2175,179 @@ static void app_gpsdo_render_alarms(void)
     }
     char b[12];
     snprintf(b, sizeof b, "%s", g_sound_muted ? "MUTE" : "zapnut");
-    if (first || dchg(c_mute, sizeof c_mute, b)) kv_row(224, "Zvuk:", b, g_sound_muted ? UI_COLOR_BAD : UI_COLOR_OK);
+    if (first || dchg(c_mute, sizeof c_mute, b)) kv_row_live(224, "Zvuk:", b, g_sound_muted ? UI_COLOR_BAD : UI_COLOR_OK, first);
     snprintf(b, sizeof b, "%u", g_alarm_fpga_lost);
-    if (first || dchg(c_f, sizeof c_f, b)) kv_row(292, "  FPGA ztrat:", b, g_alarm_fpga_lost ? UI_COLOR_WARN : UI_COLOR_INK_2);
+    if (first || dchg(c_f, sizeof c_f, b)) kv_row_live(292, "  FPGA ztrat:", b, g_alarm_fpga_lost ? UI_COLOR_WARN : UI_COLOR_INK_2, first);
     snprintf(b, sizeof b, "%u", g_alarm_gps_lost);
-    if (first || dchg(c_g, sizeof c_g, b)) kv_row(320, "  GPS ztrat:", b, g_alarm_gps_lost ? UI_COLOR_WARN : UI_COLOR_INK_2);
+    if (first || dchg(c_g, sizeof c_g, b)) kv_row_live(320, "  GPS ztrat:", b, g_alarm_gps_lost ? UI_COLOR_WARN : UI_COLOR_INK_2, first);
+    present_now();
+}
+
+/* Pasmo RF bargrafu (dBm) — sdileno oknem Animace/demo (anim_target_pct nize)
+ * i realnym RF tickem (app_gpsdo_tick_signal, dal v souboru). Definovano tady,
+ * protoze anim_target_pct je pouziva jako prvni. */
+#define RF_DBM_MIN            (-80)      /* spodek bargrafu */
+#define RF_DBM_MAX            (10)       /* vrch bargrafu (AD8307 zvlada az ~+17) */
+
+/* ── Animace / demo (s_view=24): ukazka `anim` helperu (ease-out dojezd k cili)
+ * na RF bargrafu. CIL skace (realny RF, nebo — bez signalu — demo sekvence
+ * urovni), AKTUALNI ho plynule dojizdi. Plynula animace bezi z app_gpsdo_tick_anim
+ * (~20 Hz z UiTask), NE z 2 Hz app_gpsdo_tick — proto je pohyb hladky. Prekresluje
+ * se JEN zmeneny kus (ui_bargraph_update = jen zmenene segmenty + dtext s clearem),
+ * takze animace je dirty-rect friendly a CPU dopad je zanedbatelny. ── */
+static const prim_rect_t ANIM_BAR_RECT    = {40, 168, 704, 34};   /* label/value radek + stopa */
+static const prim_rect_t ANIM_TOGGLE_RECT = {DG_LLBL, 78, 260, 50};  /* globalni ZAP/VYP animaci
+                                                                       * (offset 78-62=16 od vrsku karty,
+                                                                       * stejny jako MUTE_RECT v Nastaveni). */
+static const prim_rect_t ANIM_DIGIT_TOGGLE_RECT = {310, 78, 300, 50};  /* samostatny prepinac
+                                                                         * zvyrazneni cislic, vedle
+                                                                         * ANIM_TOGGLE_RECT (stejny radek). */
+static const prim_rect_t ANIM_DEMO_RECT = {18, 417, 300, 61};  /* footer: -> subokno prikladu
+                                                                * vsech animaci ve smycce (s_view=25) */
+static anim_t   s_anim_bar;              /* eased pct 0..100 */
+static uint32_t s_anim_frame;            /* citac tiku (demo sekvence) */
+static int16_t  s_anim_last_pct = -1;    /* posl. vykreslene lit pct (incremental) */
+static char     s_anim_c_tgt[12], s_anim_c_cur[12];   /* dchg cache cil/aktualni */
+
+/* Cilova hodnota bargrafu v %: realny RF pokud je vzorek, jinak demo sekvence
+ * (skoky drzene ~2 s -> viditelny ease-out nabeh na kazdou uroven). */
+static int16_t anim_target_pct(int *is_demo)
+{
+    const sensor_stat_t *rf = &g_sensors[SENS_ADS1];
+    if (rf->samples != 0) {
+        *is_demo = 0;
+        float mv = rf->last; if (mv < 0.0f) mv = 0.0f;
+        float dbm = mv / g_calib.ad8307_slope_mv_db + g_calib.ad8307_intercept_dbm;
+        int16_t p = (int16_t)((dbm - (float)RF_DBM_MIN) * 100.0f / (float)(RF_DBM_MAX - RF_DBM_MIN));
+        if (p < 0) p = 0; else if (p > 100) p = 100;
+        return p;
+    }
+    *is_demo = 1;
+    static const int16_t LV[] = {5, 90, 35, 100, 20, 70};
+    uint32_t idx = (s_anim_frame / 40u) % (uint32_t)(sizeof(LV) / sizeof(LV[0]));  /* 40 tiku ~2 s */
+    return LV[idx];
+}
+
+/* Globalni prepinac animaci (g_anim_enabled) — VYP zpusobi, ze VSECHNY anim_t
+ * (na kterekoli obrazovce) skoci okamzite na cil (viz anim_step). Tlacitko zde
+ * v Animaci, ne v Nastaveni (na prani — animace jsou "hraci", ne systemove). */
+static void anim_toggle_redraw(void)
+{
+    ui_button_t tb = {.rect = ANIM_TOGGLE_RECT, .variant = UI_BUTTON_NORMAL,
+                      .label = g_anim_enabled ? "ANIMACE: ZAPNUTO" : "ANIMACE: VYPNUTO"};
+    ui_button_render(&tb);
+}
+
+/* Samostatny prepinac zvyrazneni zmenene cislice v headline (item 8) — NAVIC
+ * k master g_anim_enabled (viz screen_main_redraw_freq: vyzaduje OBA ZAP).
+ * Vlastni tlacitko, protoze tahle konkretni animace muze u rychle jitrujiciho
+ * mereni pusobit spis jako "trvale svitici" nez izolovany pulz (viz CLAUDE.md) —
+ * uzivatel ji chce moci vypnout samostatne, aniz by prisel o zbytek animaci. */
+static void digit_toggle_redraw(void)
+{
+    ui_button_t tb = {.rect = ANIM_DIGIT_TOGGLE_RECT, .variant = UI_BUTTON_NORMAL,
+                      .label = g_digit_anim_enabled ? "CISLICE: ZAPNUTO" : "CISLICE: VYPNUTO"};
+    ui_button_render(&tb);
+}
+
+static void app_gpsdo_render_anim(void)
+{
+    int first = window_first(24);
+    if (first) {
+        s_view = 24;
+        window_chrome("ANIMACE / DEMO", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "anim helper — ease-out dojezd k cili"};
+        ui_card_render_chrome(&c);
+        anim_toggle_redraw();
+        digit_toggle_redraw();
+        /* Footer: vstup do subokna s priklady VSECH animaci (bezi nepretrzite). */
+        ui_button_t demo_btn = {.rect = ANIM_DEMO_RECT, .variant = UI_BUTTON_NORMAL,
+                                .label = "PRIKLADY ANIMACI >"};
+        ui_button_render(&demo_btn);
+
+        s_anim_frame = 0;                        /* demo sekvence zacne od zacatku */
+        int demo = 0;
+        int16_t tgt = anim_target_pct(&demo);
+        anim_reset(&s_anim_bar, 0.0f);           /* nabehne z 0 na cil (uvodni animace) */
+        s_anim_last_pct = -1;                    /* vynutit plny prvni render segmentu */
+        s_anim_c_tgt[0] = s_anim_c_cur[0] = '\0';  /* pri re-entry vynutit prekresleni cislic */
+
+        /* Bargraf (plny render vcetne stopy) — dal se aktualizuje jen incrementalne. */
+        ui_bargraph_t bg = {.rect = ANIM_BAR_RECT, .value_pct = 0,
+                            .color = UI_COLOR_ACC, .label = "RF uroven (ease-out)",
+                            .value_text = "0 %"};
+        ui_bargraph_render(&bg);
+
+        dlabel(DG_LLBL, 250, "Cil (skace):");
+        dlabel(DG_LLBL, 286, "Aktualni (eased):");
+        prim_draw_text((prim_point_t){DG_LLBL, 344},
+                       demo ? "Bez RF signalu -> demo sekvence urovni. Cil skoci, bar plynule dojede."
+                            : "Cil = realny RF (AD8307). Bar plynule sleduje merenou uroven.",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        (void)tgt;
+    }
+    /* Prvni vykresleni hodnot zaridi tick (nize) — tady jen chrome. */
+    present_now();
+}
+
+/* ── Subokno "PRIKLADY ANIMACI" (s_view=25) ──────────────────────────────────
+ * Sest dlazdic, kazda demonstruje jeden typ animace pouzity v UI, vse bezi
+ * NEPRETRZITE ve smycce z app_gpsdo_tick_anim (~20 Hz). Ucel: overit, ze kazda
+ * animace renderuje spravne, bez nutnosti trefit se do ~150ms flashe na realnem
+ * tlacitku / rozeznat ji v jitrujicim mereni. ⚠️ Zamerne NEZAVISI na
+ * g_anim_enabled — je to ukazka, ma se hybat i kdyz jsou animace v UI vypnute
+ * (proto vlastni raw ease `ad_ease`, ne `anim_step`). Kazdy tik prekresli vnitrek
+ * kazde dlazdice (clear BG_CARD -> obsah); obsah lezi cely uvnitr toho clearu
+ * (REPLACE fill = mark_dirty) -> copy-forward pres 3 buffery v poradku. ── */
+#define AD_TILE_W 375
+#define AD_TILE_H 104
+static const prim_rect_t AD_TILE[6] = {
+    { 18,  68, AD_TILE_W, AD_TILE_H}, {407,  68, AD_TILE_W, AD_TILE_H},
+    { 18, 182, AD_TILE_W, AD_TILE_H}, {407, 182, AD_TILE_W, AD_TILE_H},
+    { 18, 296, AD_TILE_W, AD_TILE_H}, {407, 296, AD_TILE_W, AD_TILE_H},
+};
+static const char *const AD_HDR[6] = {
+    "1. Ease-out bar",       "2. Pulsujici LED",
+    "3. Flash tlacitka",     "4. Eased cislo",
+    "5. Zvyrazneni cislice", "6. Prolinani (fade)",
+};
+
+/* Vnitrni obsahovy obdelnik dlazdice (pod hlavickou karty). */
+static prim_rect_t ad_content(int i)
+{
+    prim_rect_t t = AD_TILE[i];
+    return (prim_rect_t){(int16_t)(t.x + 12), (int16_t)(t.y + 40),
+                         (int16_t)(t.w - 24), (int16_t)(t.h - 52)};
+}
+
+static uint32_t s_ad_frame;    /* citac tiku smycky */
+static anim_t   s_ad_bar;      /* dlazdice 1: eased 0..100 */
+static anim_t   s_ad_num;      /* dlazdice 4: eased cislo */
+static int      s_ad_digit;    /* dlazdice 5: posledni cislice 0..9 */
+
+/* Raw ease-out (ignoruje g_anim_enabled — demo se ma hybat vzdy). */
+static float ad_ease(anim_t *a, float k)
+{
+    float d = a->target - a->cur;
+    if (d < 0.5f && d > -0.5f) a->cur = a->target;
+    else                       a->cur += d * k;
+    return a->cur;
+}
+
+static void app_gpsdo_render_animdemo(void)
+{
+    window_prep();
+    s_view = 25;
+    window_chrome("PRIKLADY ANIMACI", WIN_TITLE_Y);
+    for (int i = 0; i < 6; i++) {
+        ui_card_t c = {.rect = AD_TILE[i], .header_label = AD_HDR[i]};
+        ui_card_render_chrome(&c);
+    }
+    /* Reset stavu -> smycka od zacatku (obsah dokresli tick_animdemo ~20 Hz). */
+    s_ad_frame = 0;
+    anim_reset(&s_ad_bar, 0.0f);
+    anim_reset(&s_ad_num, 0.0f);
+    s_ad_digit = 0;
     present_now();
 }
 
@@ -2378,6 +2646,17 @@ static const prim_rect_t CD_GROUP = {158, 292, 524, 84};  /* carkovana skupina "
 static const prim_rect_t CD_SI    = {170, 316, 120, 52};  /* x:170-290  stred 230, y 316-368 */
 static const prim_rect_t CD_FPGA  = {510, 316, 160, 52};  /* x:510-670  stred 590 */
 
+/* Cache 5 uzlu (rect + aktualni stavova barva) pro cd_pulse_tick (item 5) —
+ * naplni cd_redraw_all po kazdem prekresleni, cte 20Hz pulse tik. */
+static const prim_rect_t *const CD_NODE_RECT[5] = { &CD_GPS, &CD_SENS, &CD_STM, &CD_SI, &CD_FPGA };
+/* Popisky uzlu (index = CD_NODE_RECT) — sdileno cd_redraw_all i cd_pulse_tick
+ * (pulz obnovuje popisek v LED boxu u sirokych uzlu). */
+static const char *const CD_LABEL[5] = {
+    "GPS NEO-7M", "SENZORY", "STM32H757", "Si5356A", "FPGA GW1NR-9",
+};
+static prim_color_t s_cd_color[5];
+static uint32_t     s_cd_pulse_frame = 0;
+
 /* Uzel: zaobleny ramecek (vypln BG_0), OBRYS 2 px v barve stavu + stavova
  * "LED" tecka vpravo nahore -> stav uzlu je citelny i bez cteni popisku spoje.
  * Text mono_18 (TODO #11(2b), bylo mono_16) vystredeny, orezany do vnitrku.
@@ -2505,11 +2784,11 @@ static void cd_redraw_all(void)
     /* ── Kresleni v poradi: skupina -> uzly -> spoje -> popisky (chip navrch,
      * aby prekryl caru pod sebou a zustal citelny). ── */
     cd_group(CD_GROUP, "FPGA deska");
-    cd_node(CD_GPS,  "GPS NEO-7M",   c_gps);
-    cd_node(CD_SENS, "SENZORY",      c_sens);
-    cd_node(CD_STM,  "STM32H757",    UI_COLOR_ACC);   /* "my" uzel — akcentni, ne stavovy */
-    cd_node(CD_SI,   "Si5356A",      c_si);
-    cd_node(CD_FPGA, "FPGA GW1NR-9", c_fpga);
+    cd_node(CD_GPS,  CD_LABEL[0], c_gps);
+    cd_node(CD_SENS, CD_LABEL[1], c_sens);
+    cd_node(CD_STM,  CD_LABEL[2], UI_COLOR_ACC);   /* "my" uzel — akcentni, ne stavovy */
+    cd_node(CD_SI,   CD_LABEL[3], c_si);
+    cd_node(CD_FPGA, CD_LABEL[4], c_fpga);
 
     /* Externi zdroje (mimo desku) — jen popisek + stav, sipka vede dovnitr skupiny. */
     /* box 116->124 (TODO #11(2b)): "OCXO 10MHz" pri sans_18 potrebuje 115 px
@@ -2537,6 +2816,53 @@ static void cd_redraw_all(void)
     cd_label_chip(495, 275, buf, c_spi);
     snprintf(buf, sizeof buf, "4x100MHz: %s", si_st);
     cd_label_chip(400, 347, buf, c_si);
+
+    s_cd_color[0] = c_gps; s_cd_color[1] = c_sens; s_cd_color[2] = UI_COLOR_ACC;
+    s_cd_color[3] = c_si;  s_cd_color[4] = c_fpga;   /* pro cd_pulse_tick (item 5) */
+}
+
+/* ── Pulsujici stavova LED (item 5) ───────────────────────────────────────────
+ * cd_redraw_all() prekresluje CELY diagram jen pri zmene cd_state_key() (2 Hz
+ * gate) — LED tecka by tak byla staticka. Uzly v poruchovem stavu (BAD/WARN)
+ * navic ~20 Hz "dychaji" (trojuhelnikova vlna radiusu 4..6..4 px, perioda
+ * ~2,4 s) — priblizi pozornost k tomu, co potrebuje reseni; OK/ACC uzly
+ * zustavaji staticke (nerozptyluji). Kazdy tik nejdriv vycisti male okoli
+ * tecky (UI_COLOR_BG_0 = vypln uzlu, viz cd_node) — kruh meni polomer (ne jen
+ * barvu jako digit-highlight), takze potrebuje skutecny clear, ne jen
+ * prekresleni identickeho tvaru. */
+static int cd_is_alarm_color(prim_color_t c) { return c == UI_COLOR_BAD || c == UI_COLOR_WARN; }
+
+static int cd_pulse_tick(void)
+{
+    if (!g_anim_enabled) return 0;      /* VYP -> staticka tecka z posledniho cd_redraw_all */
+    s_cd_pulse_frame++;
+    int phase = (int)(s_cd_pulse_frame % 24u);          /* 0..23, perioda ~1,2 s @ 20 Hz */
+    int tri   = (phase < 12) ? phase : (24 - phase);    /* trojuhelnik 0..12..0 */
+    int16_t radius = (int16_t)(4 + (tri * 2) / 12);     /* 4..6..4 px */
+
+    int drew = 0;
+    for (int i = 0; i < 5; i++) {
+        if (!cd_is_alarm_color(s_cd_color[i])) continue;
+        prim_rect_t r = *CD_NODE_RECT[i];
+        prim_point_t c = {(int16_t)(r.x + r.w - 13), (int16_t)(r.y + 13)};
+        /* ⚠️ Clear box MUSI pokryt MAX polomer (6) + AA okraj (~1 px) SYMETRICKY:
+         * ±8 od stredu = 16x16. Puvodni 12x12 (jen do c.x+5/c.y+5) nechal on-axis
+         * pixel kruhu na c.x+6/c.y+6 i AA ramp na ±7 NEsmazane -> pri zmensovani
+         * polomeru zustavaly jako "duchove carky" vpravo/dole od LED. Box je cely
+         * v interieru uzlu (netka se ani borderu, ani vstupnich spoju). */
+        prim_rect_t box = {(int16_t)(c.x - 8), (int16_t)(c.y - 8), 16, 16};
+        prim_fill_rect(box, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        prim_fill_circle(c, radius, s_cd_color[i]);
+        /* U sirokych uzlu (FPGA GW1NR-9) zasahuje popisek az do LED rohu -> clear
+         * ukrojil horni pixely poslednich znaku. Obnovit je: clip na box + text
+         * ve stejne pozici/poradi jako cd_node (kruh nejdriv, text nahoru). */
+        prim_set_clip(box);
+        prim_draw_text((prim_point_t){(int16_t)(r.x + r.w / 2), (int16_t)(r.y + r.h / 2 + 6)},
+                       CD_LABEL[i], &ui_font_mono_18, UI_COLOR_INK, PRIM_ALIGN_CENTER);
+        prim_reset_clip();
+        drew = 1;
+    }
+    return drew;
 }
 
 /* Stavovy klic (1 znak/stav) — pri zmene se cely diagram prekresli. */
@@ -2635,9 +2961,9 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
  * obrazovce. Flip jen pri zmene. AD8307: Vout ~ log(Pin), slope ~25 mV/dB,
  * intercept ~-84 dBm -> dBm = mV/slope + intercept. Bargraf mapuje pasmo
  * RF_DBM_MIN..MAX. Slope/intercept jsou editovatelna kalibrace (`g_calib`,
- * okno Kalibrace) — vychozi jsou datasheet hodnoty AD8307. */
-#define RF_DBM_MIN            (-80)      /* spodek bargrafu */
-#define RF_DBM_MAX            (10)       /* vrch bargrafu (AD8307 zvlada az ~+17) */
+ * okno Kalibrace) — vychozi jsou datasheet hodnoty AD8307.
+ * ⚠️ RF_DBM_MIN/MAX jsou definovane vyse (pred oknem Animace/demo, ktere je
+ * pouziva jako prvni — anim_target_pct). */
 void app_gpsdo_tick_signal(void)
 {
     if (s_view != 0) return;             /* RF level je zivy HW udaj (bez RUN gate) */
@@ -2652,6 +2978,189 @@ void app_gpsdo_tick_signal(void)
     prim_set_target(&s_fb);
     prim_reset_clip();
     if (screen_main_redraw_signal(pct, dbm10)) s_dirty = 1;   /* flip odlozen na flush */
+}
+
+/* Okno Animace/demo (s_view=24): krok ease-out helperu + incrementalni
+ * prekresleni JEN zmenenych segmentu bargrafu a dvou cislic (dtext si cisti
+ * box -> mark_dirty -> copy-forward pres 3 buffery v poradku). Bez signalu
+ * bezi demo sekvence urovni. */
+static void tick_anim_demo(void)
+{
+    s_anim_frame++;
+
+    int demo = 0;
+    int16_t tgt = anim_target_pct(&demo);
+    anim_set(&s_anim_bar, (float)tgt);
+    int moved = anim_step(&s_anim_bar, 0.25f, 0.4f);   /* k=0.25 dojezd, snap 0.4 % */
+
+    int16_t cur_pct = (int16_t)(s_anim_bar.cur + 0.5f);
+    if (cur_pct < 0) cur_pct = 0; else if (cur_pct > 100) cur_pct = 100;
+
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+
+    int drew = 0;
+
+    /* Bargraf: jen segmenty zmenene proti posledne vykreslenemu pct. */
+    int16_t prev = (s_anim_last_pct < 0) ? 0 : s_anim_last_pct;
+    if (s_anim_last_pct < 0 || cur_pct != prev) {
+        if (ui_bargraph_update(&ANIM_BAR_RECT, prev, cur_pct) > 0 || s_anim_last_pct < 0) {
+            char vt[12]; snprintf(vt, sizeof vt, "%d %%", cur_pct);
+            /* Clear boxu value textu PRED prekreslenim (jinak kratsi hodnota nechá
+             * ocas delší a AA hrany se scitaji) — stejny pattern jako redraw_signal. */
+            prim_fill_rect((prim_rect_t){(int16_t)(ANIM_BAR_RECT.x + ANIM_BAR_RECT.w - 120),
+                                         (int16_t)(ANIM_BAR_RECT.y - 2), 122, 20},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            ui_bargraph_value(&ANIM_BAR_RECT, vt, UI_COLOR_ACC);
+            drew = 1;
+        }
+        s_anim_last_pct = cur_pct;
+    }
+
+    /* Cislice cil/aktualni (dchg -> jen pri zmene; dtext si cisti box). */
+    char b[12];
+    snprintf(b, sizeof b, "%d %%", tgt);
+    if (dchg(s_anim_c_tgt, sizeof s_anim_c_tgt, b)) {
+        dtext((int16_t)(DG_LLBL + 230), 250, 120, b, UI_COLOR_INK_2, &ui_font_mono_18); drew = 1; }
+    snprintf(b, sizeof b, "%d %%", cur_pct);
+    if (dchg(s_anim_c_cur, sizeof s_anim_c_cur, b)) {
+        dtext((int16_t)(DG_LLBL + 230), 286, 120, b, UI_COLOR_ACC, &ui_font_mono_18); drew = 1; }
+
+    if (drew || moved) s_dirty = 1;   /* flip odlozen na flush */
+}
+
+/* Subokno "PRIKLADY ANIMACI" (s_view=25): jeden tik smycky — prekresli vnitrek
+ * kazde ze 6 dlazdic. Vzdy neco kresli -> vzdy s_dirty. */
+static void tick_animdemo(void)
+{
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    uint32_t f = ++s_ad_frame;
+    char buf[16];
+
+    /* 1. Ease-out bar: cil skace kazde ~2 s, aktualni plynule dojizdi. */
+    {
+        static const int16_t LV[6] = {10, 85, 40, 95, 25, 65};
+        anim_set(&s_ad_bar, (float)LV[(f / 40u) % 6u]);
+        float v = ad_ease(&s_ad_bar, 0.25f);
+        prim_rect_t cr = ad_content(0);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        /* ⚠️ Value text baseline MUSI byt UVNITR cr (ne na cr.y = horni hrana),
+         * jinak glyf ascentuje NAD clear oblast -> pri kazdem tiku se neprepise
+         * a cisla se navrstvi do necitelneho chumlu. Baseline cr.y+15 = glyf cely
+         * v cr; stopa posunuta niz (cr.y+28), aby se nekryly. */
+        snprintf(buf, sizeof buf, "%d %%", (int)(v + 0.5f));
+        prim_draw_text((prim_point_t){(int16_t)(cr.x + cr.w), (int16_t)(cr.y + 15)}, buf,
+                       &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+        prim_rect_t track = {cr.x, (int16_t)(cr.y + 28), cr.w, 18};
+        prim_fill_rect_rounded(track, 6, UI_COLOR_BG_0, PRIM_BLEND_OVER);
+        int16_t fw = (int16_t)(cr.w * v / 100.0f);
+        if (fw > 4) prim_fill_rect_rounded((prim_rect_t){track.x, track.y, fw, track.h},
+                                           6, UI_COLOR_ACC, PRIM_BLEND_OVER);
+    }
+
+    /* 2. Pulsujici LED: radius 6..12..6 (trojuhelnik), barva cykluje OK/WARN/BAD. */
+    {
+        prim_rect_t cr = ad_content(1);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        int phase = (int)(f % 48u);
+        int tri = (phase < 24) ? phase : (48 - phase);   /* 0..24..0 */
+        int16_t radius = (int16_t)(6 + (tri * 6) / 24);  /* 6..12..6 px */
+        prim_color_t col; const char *nm;
+        switch ((f / 60u) % 3u) {
+            case 0:  col = UI_COLOR_OK;   nm = "stav: OK";    break;
+            case 1:  col = UI_COLOR_WARN; nm = "stav: WARN";  break;
+            default: col = UI_COLOR_BAD;  nm = "stav: CHYBA"; break;
+        }
+        prim_point_t c = {(int16_t)(cr.x + 24), (int16_t)(cr.y + cr.h / 2)};
+        prim_fill_circle(c, radius, col);
+        prim_draw_text((prim_point_t){(int16_t)(cr.x + 54), (int16_t)(cr.y + cr.h / 2 - 2)},
+                       nm, &ui_font_mono_18, col, PRIM_ALIGN_LEFT);
+    }
+
+    /* 3. Flash tlacitka: staticke tlacitko, kazde ~1,5 s na 5 tiku accent obrys. */
+    {
+        prim_rect_t cr = ad_content(2);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_rect_t btn = {(int16_t)(cr.x + 40), (int16_t)(cr.y + 4),
+                           (int16_t)(cr.w - 80), (int16_t)(cr.h - 12)};
+        prim_fill_rect_rounded(btn, 10, UI_COLOR_BG_0, PRIM_BLEND_OVER);
+        prim_stroke_rect_rounded(btn, 10, 1, UI_COLOR_LINE);
+        prim_draw_text((prim_point_t){(int16_t)(btn.x + btn.w / 2), (int16_t)(btn.y + btn.h / 2 - 2)},
+                       "STISK", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_CENTER);
+        if ((f % 30u) < 5u)   /* flash okno: 5 z 30 tiku (~250 ms z 1,5 s) */
+            prim_stroke_rect_rounded(btn, 10, 2, UI_COLOR_ACC);
+    }
+
+    /* 4. Eased cislo: skoci na novy cil kazde ~1,7 s, plynule dojede. */
+    {
+        prim_rect_t cr = ad_content(3);
+        if (f % 34u == 1u)   /* novy cil (pseudonahodny, deterministicky) */
+            anim_set(&s_ad_num, (float)((int)((f * 2654435761u) % 2000u) - 1000));
+        float v = ad_ease(&s_ad_num, 0.2f);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        snprintf(buf, sizeof buf, "%+ld", lround_f(v));
+        prim_draw_text((prim_point_t){(int16_t)(cr.x + cr.w / 2), (int16_t)(cr.y + cr.h / 2 + 6)},
+                       buf, &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+    }
+
+    /* 5. Zvyrazneni cislice: posledni cislice se meni a na 5 tiku problikne accent. */
+    {
+        prim_rect_t cr = ad_content(4);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        uint32_t chg = f % 25u;
+        if (chg == 1u) s_ad_digit = (s_ad_digit + 1) % 10;
+        const char *pref = "10 000 00";
+        char last[2] = {(char)('0' + s_ad_digit), '\0'};
+        int16_t pw = prim_text_width(pref, &ui_font_mono_25);
+        int16_t lw = prim_text_width("0", &ui_font_mono_25);
+        int16_t x0 = (int16_t)(cr.x + cr.w / 2 - (pw + lw) / 2);
+        int16_t by = (int16_t)(cr.y + cr.h / 2 + 6);
+        prim_draw_text((prim_point_t){x0, by}, pref, &ui_font_mono_25, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_color_t dc = (chg < 5u) ? UI_COLOR_ACC : UI_COLOR_INK_2;
+        prim_draw_text((prim_point_t){(int16_t)(x0 + pw), by}, last, &ui_font_mono_25, dc, PRIM_ALIGN_LEFT);
+    }
+
+    /* 6. Prolinani (fade): text plynule prechazi cerna->accent->cerna. */
+    {
+        prim_rect_t cr = ad_content(5);
+        prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        int phase = (int)(f % 60u);
+        int tri = (phase < 30) ? phase : (60 - phase);   /* 0..30..0 */
+        float t = (float)tri / 30.0f;
+        prim_draw_text((prim_point_t){(int16_t)(cr.x + cr.w / 2), (int16_t)(cr.y + cr.h / 2 + 6)},
+                       "FADE", &ui_font_mono_25, fade_color(UI_COLOR_ACC, t), PRIM_ALIGN_CENTER);
+    }
+
+    s_dirty = 1;   /* neco se vzdy zmenilo -> flip pri flush */
+}
+
+/* Hlavni obrazovka (s_view=0): micro-flash tlacitka (item 3) + (dal se sem
+ * pripoji eased statistiky/trend/digit-highlight). */
+static void tick_anim_main(void)
+{
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    if (screen_main_button_flash_tick()) s_dirty = 1;
+    if (screen_main_freq_flash_tick())   s_dirty = 1;
+    if (screen_main_tick_stats_anim())   s_dirty = 1;
+    if (screen_main_tick_trend_anim())   s_dirty = 1;
+}
+
+/* Rychly tik animaci (~20 Hz z UiTask): dispatch dle otevreneho okna. Kazda
+ * vetev je no-op mimo sve okno -> zanedbatelny dopad, kdyz zadne z nich neni
+ * otevrene (typicky beh na hlavni obrazovce). */
+void app_gpsdo_tick_anim(void)
+{
+    if      (s_view == 0)  tick_anim_main();
+    else if (s_view == 24) tick_anim_demo();
+    else if (s_view == 25) tick_animdemo();
+    else if (s_view == 7)  settings_tick_jas();
+    else if (s_view == 21) {
+        prim_set_target(&s_fb);
+        prim_reset_clip();
+        if (cd_pulse_tick()) s_dirty = 1;
+    }
 }
 
 /* Simulace kmitoctu (~20x/s, jen hlavni obrazovka): per-segment dirty redraw. */
@@ -2731,6 +3240,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             prim_set_target(&s_fb);
             prim_reset_clip();
             screen_main_redraw_button(b);            /* only the pressed button */
+            screen_main_button_flash_start(b);        /* micro-flash (item 3); no-op kdyz g_anim_enabled=0 */
             /* RUN/STOP nemeni titulek, zato meni PODBARVENI kmitoctu (STOP =
              * lehce cervene). Pri STOP uz 20Hz tick_freq nebezi, takze podklad
              * musime prekreslit tady — jinak by zustal ve stare barve. */
@@ -2777,8 +3287,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 SETTINGS_UPD(settings_upd_mute);
                 return true;
             }
-            if (in_rect(x, y, BR_MINUS)) { brightness_step(-26); SETTINGS_UPD(settings_upd_jas); return true; }
-            if (in_rect(x, y, BR_PLUS))  { brightness_step(+26); SETTINGS_UPD(settings_upd_jas); return true; }
+            /* Jas: g_brightness (a tedy HW backlight) se meni OKAMZITE; bar na
+             * obrazovce jen dostane novy cil a plynule ho dojede (settings_tick_jas
+             * z app_gpsdo_tick_anim, ~20 Hz). Prvni krok hned tady, aby stisk mel
+             * viditelnou okamzitou odezvu (necekalo se na dalsi tik). */
+            if (in_rect(x, y, BR_MINUS)) { brightness_step(-26); SETTINGS_UPD(settings_tick_jas); return true; }
+            if (in_rect(x, y, BR_PLUS))  { brightness_step(+26); SETTINGS_UPD(settings_tick_jas); return true; }
             if (in_rect(x, y, ADEN_RECT)) {
                 g_autodim_en = g_autodim_en ? 0 : 1;
                 g_sys_cfg_dirty = 1;
@@ -2811,6 +3325,33 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             app_gpsdo_render_gps();                        /* change-key prekresli kartu Druzice */
             return true;
         }
+        if (s_view == 24 && in_rect(x, y, ANIM_TOGGLE_RECT)) {   /* Animace: globalni ZAP/VYP */
+            /* ⚠️ tap_flash az PO precteni stavu by nesvitilo pri VYP->ZAP prechodu
+             * (gate g_anim_enabled=0). Flashni PRED zmenou stavu podle STAREHO. */
+            tap_flash(ANIM_TOGGLE_RECT);
+            g_anim_enabled = g_anim_enabled ? 0 : 1;
+            g_sys_cfg_dirty = 1;
+            prim_set_target(&s_fb);
+            prim_reset_clip();
+            anim_toggle_redraw();
+            present_now();
+            return true;
+        }
+        if (s_view == 24 && in_rect(x, y, ANIM_DIGIT_TOGGLE_RECT)) {  /* Zvyrazneni cislic: samostatny ZAP/VYP */
+            tap_flash(ANIM_DIGIT_TOGGLE_RECT);
+            g_digit_anim_enabled = g_digit_anim_enabled ? 0 : 1;
+            g_sys_cfg_dirty = 1;
+            prim_set_target(&s_fb);
+            prim_reset_clip();
+            digit_toggle_redraw();
+            present_now();
+            return true;
+        }
+        if (s_view == 24 && in_rect(x, y, ANIM_DEMO_RECT)) {   /* -> subokno prikladu vsech animaci */
+            nav_push(24);
+            app_gpsdo_render_animdemo();
+            return true;
+        }
         if (s_view == 12) {                                /* Menu rozcestnik: dlazdice + Restart */
             if (in_rect(x, y, MENU_RESTART_RECT)) {
                 app_gpsdo_render_confirm_restart();        /* potvrzeni (bez nav_push) */
@@ -2820,8 +3361,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 if (in_rect(x, y, MENU_ITEMS[i].rect)) {
                     /* Placeholder nikam nenaviguje (zustava s_view=12) -> nav_push
                      * by jen zanesl zasobnik neprislusnym zaznamem (BACK by pak
-                     * z nejakeho pozdejsiho okna musel projit Menu 2x). */
-                    if (MENU_ITEMS[i].act != ACT_PLACEHOLDER) nav_push(12);
+                     * z nejakeho pozdejsiho okna musel projit Menu 2x). Flash jen
+                     * pro aktivni dlazdice — placeholder nic neprekresli -> duch. */
+                    if (MENU_ITEMS[i].act != ACT_PLACEHOLDER) { nav_push(12); }
                     menu_activate(MENU_ITEMS[i].act);
                     return true;
                 }
@@ -2840,6 +3382,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, TREND_MINUS)) step = -1;
             else if (in_rect(x, y, TREND_PLUS)) step = +1;
             if (step) {
+                tap_flash(step < 0 ? TREND_MINUS : TREND_PLUS); /* render_trend_scale_btns nize prekresli tlacitka -> bez ducha */
                 trend_secs_step(step);
                 prim_set_target(&s_fb); prim_reset_clip();
                 render_trend_scale_btns();                 /* prekresli hodnotu okna */
@@ -2873,6 +3416,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             #define CAS_UPD() do { prim_set_target(&s_fb); prim_reset_clip(); \
                                    cas_upd_mode(); present_now(); } while (0)
             if (in_rect(x, y, TZ_AUTO_RECT)) {
+                tap_flash(TZ_AUTO_RECT); /* cas_upd_mode nize prekresli tlacitko -> bez ducha */
                 g_tz_auto = g_tz_auto ? 0 : 1;
                 g_sys_cfg_dirty = 1;
                 CAS_UPD();
@@ -2908,11 +3452,26 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 prim_set_target(&s_fb);
                 prim_reset_clip();
                 kalib_status_redraw("Ukladam do W25Q...", UI_COLOR_WARN);
+                /* ⚠️ item 6 (spinner): calib_save() nize je JEDNO blokujici
+                 * volani (w25q_store_write = erase+payload+hlavicka, viz
+                 * w25q_store.c) bez zadneho yield bodu, ktery by šel odsud
+                 * vyuzit — UiTask je pak jednovlaknove zaseknuty uvnitr
+                 * calib_save() az do navratu, takze SKUTECNY vicesnimkovy
+                 * spin behem zapisu neni mozny bez zasahu do sdileneho (a
+                 * power-safety kriticky serazeneho) w25q_store. Misto
+                 * predstirane animace je tu aspon staticka ikona (otoceni
+                 * se meni mezi jednotlivymi stisky ULOZIT, ne behem jednoho). */
+                int16_t tw = prim_text_width("Ukladam do W25Q...", &ui_font_sans_16);
+                s_kalib_spin_frame++;
+                int16_t ang = (int16_t)((s_kalib_spin_frame * 47u) % 360u);
+                prim_draw_arc((prim_point_t){(int16_t)(DG_LLBL + tw + 20), 396}, 8, 3,
+                             UI_COLOR_WARN, ang, 270);
                 present_now();
                 bool ok = calib_save();
                 /* dtext uvnitr kalib_status_redraw si oblast nejdriv vyplni
                  * (fill_rect) -> mark_dirty sedi a copy-forward pres 3 buffery
-                 * je v poradku i pro tenhle druhy, castecny redraw. */
+                 * je v poradku i pro tenhle druhy, castecny redraw (smaze i
+                 * spinner ikonu, ktera lezi uvnitr stejneho clear boxu). */
                 kalib_status_redraw(ok ? "Ulozeno do W25Q." : "Chyba zapisu do flash!",
                                     ok ? UI_COLOR_OK : UI_COLOR_BAD);
                 present_now();

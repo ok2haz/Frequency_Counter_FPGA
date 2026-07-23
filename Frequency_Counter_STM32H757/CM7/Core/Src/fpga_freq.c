@@ -49,6 +49,7 @@ static uint32_t g_last_seq = 0xFFFFFFFFu;  /* posledni potvrzena seq */
 static uint32_t g_sck_hz   = 0;
 static uint8_t  s_link_ok  = 0;            /* 1 = posledni poll dostal platny ramec (MAGIC+CRC) */
 static uint32_t g_rx_crc   = 0;            /* pocet ramcu se spatnym CRC */
+static uint32_t g_rx_crc_last_ms = 0;      /* HAL_GetTick() pri posledni CRC chybe (0=zadna) -> "uptime od posledni" */
 static uint8_t  g_init_ok  = 0;            /* 1 = init+selftest OK, smime komunikovat */
 static uint8_t  g_xfer_ok  = 0;            /* 1 = posledni HAL_SPI prenos vratil HAL_OK */
 static uint8_t  g_last_rx0 = 0;            /* prvni prijaty bajt z MISO (bring-up diag) */
@@ -161,6 +162,19 @@ bool fpga_freq_link_ok(void)
     return s_link_ok != 0;
 }
 
+/* Pocet ramcu se spatnym CRC od bootu (diagnostika linky). */
+uint32_t fpga_freq_crc_count(void)
+{
+    return g_rx_crc;
+}
+
+/* "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba). */
+uint32_t fpga_freq_crc_last_age_s(void)
+{
+    if (g_rx_crc == 0) return 0;
+    return (HAL_GetTick() - g_rx_crc_last_ms) / 1000u;
+}
+
 /* Akceptacni krok 1: CRC self-test. crc16("123456789") MUSI byt 0x29B1,
  * jinak nase CRC neodpovida FPGA a nesmime nic posilat. */
 bool fpga_freq_crc_selftest(void)
@@ -265,7 +279,7 @@ bool fpga_freq_poll(fpga_meas_t *out)
 
     uint16_t crc_calc = crc16_ccitt(rx, 62);
     uint16_t crc_rx   = (uint16_t)rx[62] | ((uint16_t)rx[63] << 8);
-    if (crc_calc != crc_rx) { g_rx_crc++; s_link_ok = 0; return false; }
+    if (crc_calc != crc_rx) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s_link_ok = 0; return false; }
 
     s_link_ok = 1;   /* platny ramec dorazil -> link je ziva (i kdyz neni nove mereni) */
 

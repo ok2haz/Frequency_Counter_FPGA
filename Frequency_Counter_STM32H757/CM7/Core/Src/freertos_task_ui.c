@@ -222,6 +222,13 @@ void StartUiTask(void *argument)
       app_gpsdo_tick_freq();
     }
 
+    /* Animace/demo okno 20x/s (ease-out krok bargrafu; no-op mimo s_view=24). */
+    static uint32_t last_anim = 0;
+    if (HAL_GetTick() - last_anim >= 50) {
+      last_anim = HAL_GetTick();
+      app_gpsdo_tick_anim();
+    }
+
     /* GPSDO statistika: vzorkovani frakcni odchylky 1x/s (τ0=1s -> dekadova osa);
      * trend+offset+σy+drift prekreslit 1x/s, Allan (tezsi render) 1x/s. */
     static uint32_t last_stat_s = 0, last_stat_d = 0, last_allan = 0;

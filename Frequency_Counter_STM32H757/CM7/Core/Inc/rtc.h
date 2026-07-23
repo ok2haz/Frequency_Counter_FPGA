@@ -52,9 +52,16 @@ extern RTC_HandleTypeDef hrtc;
 #define RTC_CRASH_MAGIC  0xC7A50000u
 /* BKP_DR6: systemove nastaveni 2 (DR2 payload je plny) — bit0 svetle schema,
  * bit1 english, bity2:6 casova zona (tz+13 -> 1..27 = -12..+14 h; 0 = legacy
- * zaznam -> UTC), bit7 = AUTO CET/CEST (EU pravidlo, ignoruje bity2:6).
- * Persist pres warm reset. */
-#define RTC_SYSCFG2_MAGIC 0x53C10000u
+ * zaznam -> UTC), bit7 = AUTO CET/CEST (EU pravidlo, ignoruje bity2:6),
+ * bit8 = animace ZAP/VYP (okno Animace), bit9 = zvyrazneni cislic ZAP/VYP.
+ * Persist pres warm reset.
+ * ⚠️ Magic zvednut 0x53C10000 -> 0x53C20000 kdyz pribyly anim bity 8/9:
+ * legacy zaznam (magic 0x53C1) mel bity 8/9 = 0 a NEmel legacy-guard jako
+ * casova zona -> pri warm resetu vypnul animace (default je ZAP). Bump zajisti,
+ * ze stary zaznam se odmitne cely -> uplatni se defaulty (anim ON). Jednorazovy
+ * dusledek: prvni warm reset po teto zmene vrati i schema/jazyk/zonu na default
+ * (na cold bootu jsou stejne autoritativni z flash SCF4). */
+#define RTC_SYSCFG2_MAGIC 0x53C20000u
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);

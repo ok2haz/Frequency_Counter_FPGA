@@ -96,21 +96,8 @@ bool ws_panel_power_on(I2C_HandleTypeDef *hi2c)
 
 bool ws_panel_set_backlight(I2C_HandleTypeDef *hi2c, uint8_t brightness)
 {
-    /* REG_PWM = primy jas 0-255, BEZ inverze */
-    if (!ws_write_reg(hi2c, WS_REG_PWM, brightness)) return false;
-    printf("ws_panel: backlight = %u\n", brightness);
-    return true;
-}
-
-bool ws_panel_power_off(I2C_HandleTypeDef *hi2c)
-{
-    ws_write_reg(hi2c, WS_REG_PWM, 0);
-    HAL_Delay(10);
-    ws_write_reg(hi2c, WS_REG_PORTA, 0);
-    HAL_Delay(10);
-    ws_write_reg(hi2c, WS_REG_PORTB, 0);
-    HAL_Delay(10);
-    ws_write_reg(hi2c, WS_REG_PORTC, 0);
-    HAL_Delay(30);
-    return true;
+    /* REG_PWM = primy jas 0-255, BEZ inverze. Vola UiTask pri kazde zmene jasu
+     * (jas +/-, auto-dim) -> ZADNY printf zde (byl by noise z hlidaneho UiTasku;
+     * chyba zapisu se projevi navratovou hodnotou). */
+    return ws_write_reg(hi2c, WS_REG_PWM, brightness);
 }

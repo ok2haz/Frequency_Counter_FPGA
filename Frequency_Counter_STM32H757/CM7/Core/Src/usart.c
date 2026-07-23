@@ -21,7 +21,7 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
-#include "app_uart.h"
+#include "cmsis_os2.h"     /* osMessageQueuePut do GpsRxQueue */
 #include "bootled.h"
 
 uint8_t RxByte;
@@ -165,7 +165,11 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
 /* USER CODE BEGIN 1 */
 /* USART1 je vyhrazen pro GPS (NEO-7M); konzole je na USB CDC. RX bajty proto
- * jdou do GpsRxQueue (GpsTask je sklada do NMEA vet), NE do UartRxQueue. */
+ * jdou do GpsRxQueue (GpsTask je sklada do NMEA vet), NE do UartRxQueue.
+ * ⚠️ USART1 RX (PA10) je HW napojeno na GPS TX -> je to VZDY GPS, nezavisle na
+ * USE_USB_CDC_CONSOLE. Ten prepinac meni jen VYSTUP konzole (printf: USB CDC vs
+ * USART1 TX); VSTUP konzole je vzdy USB CDC (CDC_Receive_FS -> UartRxQueue).
+ * Proto se tu zamerne nerouti podle USE_USB_CDC_CONSOLE. */
 extern osMessageQueueId_t GpsRxQueueHandle;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)

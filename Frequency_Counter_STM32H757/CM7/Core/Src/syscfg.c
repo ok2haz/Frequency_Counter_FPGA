@@ -17,9 +17,11 @@
  * bez paddingu-zavislosti (cteme/zapisujeme celou strukturu, kompilator stejny). */
 /* ⚠️ Magic se MUSI zmenit pri kazde zmene layoutu blobu — jinak by se stary
  * zaznam nacetl jako novy a pole by se posunula. 2026-07-20 pribylo datalog_en
- * -> "SCFG" -> "SCF2". Dusledek: prvni boot po teto zmene najde neznamy magic,
- * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434632u   /* "SCF2" (drive "SCFG" 0x53434647) */
+ * -> "SCFG" -> "SCF2". 2026-07-21 pribylo anim_en -> "SCF2" -> "SCF3", pak jeste
+ * tyz den digit_anim_en -> "SCF3" -> "SCF4". Dusledek: prvni boot po teto zmene
+ * najde neznamy magic, nastaveni se vrati na vychozi a pri prvni zmene se ulozi
+ * uz v novem formatu. */
+#define SYSCFG_BLOB_MAGIC   0x53434634u   /* "SCF4" (drive "SCF3" 0x53434633, "SCF2" 0x53434632, "SCFG" 0x53434647) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -39,6 +41,8 @@ typedef struct {
     uint8_t  tz_auto;
     uint8_t  ui_cfg;
     uint8_t  datalog_en;   /* 1 = zaznam stability bezi (okno Datalog) */
+    uint8_t  anim_en;      /* 1 = animace zapnute (okno Animace) */
+    uint8_t  digit_anim_en;  /* 1 = zvyrazneni zmenene cislice v headline (samostatny prepinac) */
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -57,6 +61,8 @@ static void pack(syscfg_blob_t *b)
     b->tz_auto      = g_tz_auto;
     b->ui_cfg       = g_ui_cfg;
     b->datalog_en   = datalog_enabled() ? 1u : 0u;
+    b->anim_en      = g_anim_enabled ? 1u : 0u;
+    b->digit_anim_en = g_digit_anim_enabled ? 1u : 0u;
 }
 
 void syscfg_load(void)
@@ -87,6 +93,8 @@ void syscfg_load(void)
     g_tz_auto     = b.tz_auto ? 1 : 0;
     g_ui_cfg      = b.ui_cfg;
     datalog_set_enabled(b.datalog_en != 0);
+    g_anim_enabled = b.anim_en ? 1 : 0;
+    g_digit_anim_enabled = b.digit_anim_en ? 1 : 0;
 }
 
 bool syscfg_save(void)

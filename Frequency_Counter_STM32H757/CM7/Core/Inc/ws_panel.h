@@ -65,9 +65,4 @@ bool ws_panel_power_on(I2C_HandleTypeDef *hi2c);
  */
 bool ws_panel_set_backlight(I2C_HandleTypeDef *hi2c, uint8_t brightness);
 
-/**
- * @brief  Power-off sekvence. Backlight off, panel power off, bridge reset.
- */
-bool ws_panel_power_off(I2C_HandleTypeDef *hi2c);
-
 #endif /* WS_PANEL_H */

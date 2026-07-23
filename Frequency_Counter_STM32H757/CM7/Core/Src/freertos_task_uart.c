@@ -68,6 +68,24 @@ static uint8_t RxIndex = 0;
 static uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
 static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
 
+/* ── stacktest: ZAMERNE pretece stack UartTasku (test detekce -> IWDG reset) ──
+ * ⚠️ MUSI byt VLASTNI (noinline) funkce, ne local `waste[]` v UartTask_run:
+ * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze 3600B `waste`
+ * jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack ->
+ * task pretekal VZDY (uz za normalniho provozu), ne jen pri stacktestu. To
+ * zpusobovalo HardFault s poskozenym ramcem pri PRVNIM USB znaku (echo cesta
+ * do USB HAL prohloubila stack az za hranice) — viz STATUS #34, 2026-07-22.
+ * Jako samostatna funkce se 3600 B alokuje AZ pri volani -> ramec UartTask_run
+ * spadl zpet na ~1,3 kB a task se do 4 kB v pohode vejde; pretece se JEN kdyz
+ * uzivatel spusti "stacktest yes" (na to zustala funkce zachovana). */
+__attribute__((noinline)) static void stacktest_overflow(void)
+{
+  volatile char waste[3600];
+  for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
+  osDelay(1);            /* yield -> kontrola stack patternu -> hook */
+  printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
+}
+
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
 void UartTask_run(void *argument)
 {
@@ -137,14 +155,18 @@ void UartTask_run(void *argument)
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
 				  for (int i = 0; i < SENS_COUNT; i++) {
 					  const sensor_stat_t *s = &g_sensors[i];
-					  char a[16], b[16], c[16], d[16];
+					  char a[16], b[16], c[16], d[16], le[16];
 					  fmt_f2(a, sizeof(a), s->last);
 					  fmt_f2(b, sizeof(b), s->min);
 					  fmt_f2(c, sizeof(c), s->max);
 					  fmt_f2(d, sizeof(d), s->mean);
-					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u n=%lu\n",
+					  /* "uptime od posledni chyby" — jak davno byla posledni chyba cteni. */
+					  if (s->err_total) snprintf(le, sizeof(le), "%lus",
+						     (unsigned long)((HAL_GetTick() - s->err_last_ms) / 1000u));
+					  else              snprintf(le, sizeof(le), "-");
+					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u last=%s n=%lu\n",
 						     g_sensor_desc[i].label, a, b, c, d, g_sensor_desc[i].unit, s->valid ? "OK " : "ERR",
-						     (unsigned long)s->err_total, (unsigned)s->err_streak,
+						     (unsigned long)s->err_total, (unsigned)s->err_streak, le,
 						     (unsigned long)s->samples);
 					  osDelay(2);
 				  }
@@ -342,16 +364,14 @@ void UartTask_run(void *argument)
 				   * ⚠️ Vyzaduje presne "stacktest yes" — samotne "stacktest" jen vypise
 				   * napovedu, aby to neslo spustit omylem/preklepem.
 				   * ⚠️ Bez VBAT baterie testuj WARM resetem (BKP neprezije power-cycle). */
-				  /* Velikost: UartTask ma 1024 slov = 4096 B, ramec UartTask_run ~1256 B
-				   * pri -O0 -> 3600 B pretece o ~760 B. Zamerne JEN o par set bajtu, ne
-				   * o cele KB: chceme spolehlive prepsat 20B watermark na dne zasobniku,
-				   * ale co nejmene rozsypat sousedni FreeRTOS heap (jinak hrozi HardFault
-				   * DRIV nez se stihne zavolat hook — a to by test neotestoval nic). */
+				  /* Velikost: UartTask 4096 B, ramec UartTask_run ~1,3 kB + echo/USB cesta
+				   * ~1 kB -> stacktest_overflow() pridá 3616 B -> spolehlive pretece dno
+				   * zasobniku (prepise 20B watermark -> hook). Zamerne v samostatne funkci
+				   * (viz komentar u stacktest_overflow) — jako local v UartTask_run by tech
+				   * 3600 B nafouklo ramec VZDY a task by pretekal i za normalu (byl to
+				   * puvod HardFaultu pri prvnim USB znaku). */
 				  printf("STACKTEST: pretekam stack UartTasku, ceka se IWDG reset (~4 s)...\n");
-				  volatile char waste[3600];
-				  for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
-				  osDelay(1);            /* yield -> kontrola stack patternu -> hook */
-				  printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
+				  stacktest_overflow();
 			  }
 			  else if (strcmp(RxBuffer, "stacktest") == 0) {
 				  printf("STACKTEST: zamerne pretece stack a vyvola IWDG reset.\n");
@@ -634,6 +654,14 @@ void UartTask_run(void *argument)
 					  printf("  stack %-7s free %lu B\n", TL[i].n,
 						     (unsigned long)osThreadGetStackSpace(*TL[i].h));
 				  }
+				  /* FPGA link + CRC chyby (pocet + jak davno byla posledni). */
+				  if (fpga_freq_crc_count())
+					  printf("FPGA: link %s, CRC err %lu, last %lus ago\n",
+						     fpga_freq_link_ok() ? "OK" : "NOLINK",
+						     (unsigned long)fpga_freq_crc_count(),
+						     (unsigned long)fpga_freq_crc_last_age_s());
+				  else
+					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
 				  char db[80];
 				  datalog_format_status(db, sizeof db);
 				  printf("%s\n", db);

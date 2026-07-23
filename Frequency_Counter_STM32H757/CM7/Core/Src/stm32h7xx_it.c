@@ -87,7 +87,26 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* Crash black-box: kind 4 + KDE to spadlo. PC=0x00000001 (skok na NULL fn
+   * pointer) uz zname -> ted potrebuji CALLER. Stacknuty LR (frame offset 0x14)
+   * = navratova adresa uvnitr funkce, ktera ten spatny `blx` udelala (blx sam
+   * nastavi LR na instrukci ZA sebou) -> addr2line na .elf da presnou funkci/
+   * radek. DR4 = stacknuty LR, DR5 = SCB->CFSR (typ). Primy zapis registru
+   * (zadne volani ve fault kontextu); DBP uz povolen. Exception frame na MSP
+   * nebo PSP dle EXC_RETURN (LR) bit2. Pak HNED reset. */
+  uint32_t hf_lr = 0;
+  __asm volatile (
+    "tst  lr, #4        \n"
+    "ite  eq            \n"
+    "mrseq r0, msp      \n"
+    "mrsne r0, psp      \n"
+    "ldr  %0, [r0, #20] \n"   /* frame offset 0x14 = stacknuty LR (caller) */
+    : "=r" (hf_lr) :: "r0", "cc");
+  PWR->CR1 |= PWR_CR1_DBP;         /* povol zapis do backup domeny (shodne s watchdog.c/freertos_hooks.c) */
+  RTC->BKP3R = 0xC7A50000u | 4u;   /* RTC_CRASH_MAGIC | kind 4 = HardFault */
+  RTC->BKP4R = hf_lr;
+  RTC->BKP5R = SCB->CFSR;
+  NVIC_SystemReset();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {

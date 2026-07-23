@@ -283,8 +283,16 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
 {
   uint8_t result = USBD_OK;
   /* USER CODE BEGIN 7 */
+  /* ⚠️ Guard PRED derefem pClassData: pred enumeraci / po odpojeni / behem USB
+   * resetu je dev_state != CONFIGURED a pClassData muze byt NULL -> puvodni
+   * `hcdc->TxState` by spadl do HardFaultu (HardFault_Handler = for(;;) ->
+   * IWDG "watchdog" reset = zamrznuti pri pripojeni/psani). USBD_BUSY = data
+   * zustanou v ring bufferu (usb_console_tx), odeslou se az bude linka hotova. */
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
+    return USBD_BUSY;
+  }
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
-  if (hcdc->TxState != 0){
+  if (hcdc == NULL || hcdc->TxState != 0){
     return USBD_BUSY;
   }
   USBD_CDC_SetTxBuffer(&hUsbDeviceFS, Buf, Len);

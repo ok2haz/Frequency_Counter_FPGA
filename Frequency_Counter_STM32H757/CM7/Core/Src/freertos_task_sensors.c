@@ -115,16 +115,9 @@ void sensor_fail(sensor_id_t id)
     sensor_stat_t *s = &g_sensors[id];
 
     s->err_total++;
+    s->err_last_ms = HAL_GetTick();   /* cas posledni chyby -> "uptime od posledni" (UART sensors) */
     if (s->err_streak < 0xFFFF) s->err_streak++;
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
-}
-
-void sensor_stat_reset(sensor_id_t id)
-{
-    if (id >= SENS_COUNT) return;
-    sensor_stat_t *s = &g_sensors[id];
-    s->samples = 0;
-    s->min = s->max = s->mean = 0.0f;
 }
 
 /* ── I2C1 recovery (robustnost: vypadek 1 senzoru nesmi shodit zbytek sbernice) ──

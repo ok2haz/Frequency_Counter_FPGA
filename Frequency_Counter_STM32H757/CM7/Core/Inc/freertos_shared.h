@@ -79,6 +79,10 @@ extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 
 extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, preset 15..600) */
 extern volatile uint8_t g_theme_light;   /* 0 = tmave schema (default), 1 = svetle (BKP_DR6) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
+extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
+extern volatile uint8_t g_digit_anim_enabled;  /* 1 = zvyrazneni zmenene cislice v headline (default);
+                                                 * samostatny prepinac (okno Animace, BKP_DR6 bit9),
+                                                 * NEZAVISLY na g_anim_enabled ale i tak vyzaduje oba ZAP */
 extern volatile uint8_t g_sys_cfg_dirty; /* 1 = zmena -> defaultTask ulozi do BKP */
 extern volatile uint8_t g_reboot_req;    /* 1 = softwarovy restart (Menu->Restart); provede defaultTask */
 extern volatile uint8_t g_syscfg_bkp_valid; /* 1 = syscfg BKP platna pri bootu (warm reset) -> syscfg_load netahne z flash */

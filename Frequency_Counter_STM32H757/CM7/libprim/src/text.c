@@ -22,19 +22,27 @@ uint32_t prim_internal_utf8_next(const char **s)
 {
     const unsigned char *p = (const unsigned char *)*s;
     uint32_t cp;
+    /* ⚠️ Pokracovaci bajty se kontroluji proti '\0' (p[k] != 0) — useknuta
+     * multibyte sekvence na konci retezce by jinak precetla az 3 bajty ZA
+     * terminatorem. Nevalidni/useknuty lead byte -> preskoc 1 bajt a vrat U+FFFD
+     * (glyf se stejne nenajde -> vykresli se nic). Pro platny UTF-8 chovani beze
+     * zmeny; prim_text_width i draw_text sdili tenhle dekoder -> zustavaji v syncu. */
     if (p[0] < 0x80u) {
         cp = p[0]; if (p[0]) (*s)++;
-    } else if ((p[0] & 0xE0u) == 0xC0u) {
+    } else if ((p[0] & 0xE0u) == 0xC0u && p[1]) {
         cp = ((uint32_t)(p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu);
         *s += 2;
-    } else if ((p[0] & 0xF0u) == 0xE0u) {
+    } else if ((p[0] & 0xF0u) == 0xE0u && p[1] && p[2]) {
         cp = ((uint32_t)(p[0] & 0x0Fu) << 12) | ((uint32_t)(p[1] & 0x3Fu) << 6) |
              (p[2] & 0x3Fu);
         *s += 3;
-    } else {
+    } else if ((p[0] & 0xF8u) == 0xF0u && p[1] && p[2] && p[3]) {
         cp = ((uint32_t)(p[0] & 0x07u) << 18) | ((uint32_t)(p[1] & 0x3Fu) << 12) |
              ((uint32_t)(p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
         *s += 4;
+    } else {
+        cp = 0xFFFDu;                 /* neplatny/useknuty -> replacement char */
+        (*s)++;                       /* posun o 1 bajt (nikdy za '\0') */
     }
     return cp;
 }
