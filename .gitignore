@@ -27,6 +27,12 @@ node-v20.18.1-win-x64/
 Backup/
 *.bak
 
+# Vendor datasheety / app notes (stažené reference, nepatří do repa;
+# pozor: FPGA_module.pdf = verzovaný export schématu, ten NEignorovat)
+[Ss][Ii]5356*.pdf
+*_AN[0-9]*.pdf
+*datasheet*.pdf
+
 # OS / editor smetí
 Thumbs.db
 .DS_Store
