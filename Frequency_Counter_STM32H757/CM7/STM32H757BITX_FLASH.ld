@@ -181,6 +181,22 @@ SECTIONS
     . = ALIGN(32);
   } >SDRAM
 
+  /* IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB). NOLOAD
+   * (plni se za behu, zadny load z FLASH). ⚠️ MUSI byt non-cacheable — zajistuje
+   * MPU region 2 v main.c MPU_Config(); bez toho by CM7 cetl stara data z D-cache
+   * a IPC by "skoro fungovalo" a padalo nahodne. Zatim jen REZERVACE celeho D3
+   * regionu (nic jineho ho nepouziva); vlastni obsah (ipc_snapshot + cmd/resp
+   * ringy) prijde s IPC vrstvou. Data se sem umisti: __attribute__((section(".ipc_shared"))). */
+  .ipc_shared (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sipc_shared = .;
+    KEEP(*(.ipc_shared))
+    KEEP(*(.ipc_shared*))
+    . = ALIGN(32);
+    _eipc_shared = .;
+  } >RAM_D3
+
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :
   {

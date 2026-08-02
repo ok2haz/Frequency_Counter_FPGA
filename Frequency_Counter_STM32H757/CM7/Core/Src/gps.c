@@ -252,6 +252,24 @@ void gps_config_timepulse(void)
   ubx_send(0x06, 0x31, pl, 32);
 }
 
+/* UBX-CFG-TMODE2 (0x06 0x3D, 28 B): timeMode 0=disabled 1=survey-in. Pro survey-in
+ * naseto svinMinDur [s] (off 20) + svinAccLimit [mm] (off 24), zbytek 0. */
+void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm)
+{
+  uint8_t pl[28] = {0};
+  pl[0] = 1;                                   /* timeMode = survey-in */
+  pl[20] = (uint8_t)min_dur_s; pl[21] = (uint8_t)(min_dur_s >> 8);
+  pl[22] = (uint8_t)(min_dur_s >> 16); pl[23] = (uint8_t)(min_dur_s >> 24);
+  pl[24] = (uint8_t)acc_limit_mm; pl[25] = (uint8_t)(acc_limit_mm >> 8);
+  pl[26] = (uint8_t)(acc_limit_mm >> 16); pl[27] = (uint8_t)(acc_limit_mm >> 24);
+  ubx_send(0x06, 0x3D, pl, 28);
+}
+void gps_survey_disable_cmd(void)
+{
+  uint8_t pl[28] = {0};                        /* timeMode = 0 (disabled) */
+  ubx_send(0x06, 0x3D, pl, 28);
+}
+
 /* ── Verejne API ───────────────────────────────────────────────────────── */
 void gps_init(void)
 {

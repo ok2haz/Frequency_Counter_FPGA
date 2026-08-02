@@ -32,6 +32,8 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | Kalibrace `−`/`+` — vizuál | 60×60 | **7,0** | 7 mm | ✓ (bylo 50×34/4,0 mm; přeskládáno — viz log) |
 | Trend okno `−`/`+` | 90×61 | 7,1 | 7 mm | ✓ |
 | Selftest SPUSTIT / Kalibrace ULOŽIT | 180–220×61 | 7,1 | 7 mm | ✓ |
+| MATH/LIMITY ovladače (MATH/M/B±/NULL/LIMITY/PÁSMO±/ALARM) | 64–204×**64** | **7,5** | 7 mm | ✓ (2026-08-01; audit odhalil první návrh 56/6,6 mm → opraveno na 64) |
+| PREHLED↔GRAFY sesterský toggle (footer) | 200×61 | 7,1 | 7 mm | ✓ |
 
 ## Typografie (kde se co používá)
 
@@ -49,6 +51,17 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 
 ## Změnový log
 
+- **2026-08-01 (self-survey / sestavy / auto-cal + warm-up + audit)**:
+  - **SELF-SURVEY (s_view=32)** — vstup tlačítkem **SURVEY** v GPS okně (footer pravý sloupec {532,417,112,61}/7,1 mm ✓). Okno: START/STOP {18,417,220,61} + živé kv řádky (Stav/Vzorků/Rozptyl H/Poloha vč. výšky).
+  - **SESTAVY (s_view=33)** — vstup **SESTAVY >** ve footeru Nastavení {18,417,200,61}. Slot −/+ {40,116,64,64}/{214,116,64,64} (7,5 mm ✓), footer ULOŽIT/NAČÍST/SMAZAT {18/176/334,417,150,61}. Číslo slotu mono_52, přehled slotů mono_25. **Audit: přidána hláška akce** (uloženo/načteno/smazáno/**chyba zápisu**) — dřív tichá chyba flash.
+  - **AUTO-CAL** — tlačítko v okně Kalibrace {260,417,210,61} vedle ULOŽIT; výsledek self-checku do status řádku (402).
+  - **Warm-up** — bez nové geometrie (jen text v OCXO řádku okna Holdover: `45.2 C +0.03/m`).
+  - **Audit**: všechny nové dotykové cíle ≥60 px; opraven placeholder komentář `(#)`, mrtvý výpočet `malt` (→ zobrazena výška), tichá chyba zápisu sestavy. Compile sweep 12 souborů `-Wall -Wextra -Wshadow` (+ `-O2 -Wmaybe-uninitialized -Warray-bounds`) = 0 varování mimo CubeMX boilerplate.
+- **2026-08-01 (nová okna PREHLED KANALU + MATH/LIMITY + audit)**:
+  - **PREHLED KANALU (s_view=30)** — horizontální bargrafy všech kanálů (sesterské ke GRAFY). Jen zobrazení + footer toggle (200×61/7,1 mm ✓). Dvě karty: Teploty {18,58,764,150} (4 řádky, rozteč 28) + Napájení+RF {18,216,764,194} (6 řádků, rozteč 26). Bar track 452 px, hodnota box 100 px vpravo (670–770), labely vlevo (32–≤132) mimo clear zónu (od 210). Řádky = jen čtení → rozteč 26/28 px OK (ne dotykové cíle).
+  - **MATH/LIMITY (s_view=31)** — Math Mx+B + limit pass/fail. Karta A {18,58,764,182} (X/Y hodnoty mono_18 vpravo, tlačítka řada y=170), karta B {18,246,764,166} (badge verdiktu {30,288,190,54}, Lo/Hi + pásmo/FAIL text mono_16, tlačítka y=346). Badge → Lo/Hi rezerva 20 px (220→240). Hodnoty X/Y bez `%f` (`fmt_hz`, integer extrakce).
+  - **⚠️ Audit nález (opraveno)**: první návrh tlačítek MATH/LIMITY měl **h=56 px (6,6 mm)** — pod projektovým standardem 64 px z #11. Přeskládáno na **64 px (7,5 mm)**: karty A/B o 2 px vyšší, tlačítka posunuta (170/346), clear zóny a baseline Lo/Hi/B-box/FAIL přepočteny. Ostatní geometrie (překryvy boxů, clear před partial redraw, labely mimo hodnotové boxy) ověřena — bez nálezu.
+  - **Kompilační ověření**: `meas_math.c`, `alarm.c`, `syscfg.c`, `screen_main.c`, `app_gpsdo.c` přes cílový GCC `-Wall -Wextra -Wshadow` → 0 varování. Selftest 7→**8** (`meas_math_selftest`).
 - **2026-07-20 (7. vlna — RUN/STOP + okraje mřížky)**: první vlna po tom, co v0.3.0 **proběhla na HW bez problémů** (6. vlna tedy potvrzena reálně, ne jen výpočtem).
   - **RUN/STOP obráceně**: footer slot 1 nese nově **AKCI**, ne stav — při běžícím měření **červené „STOP"** (nová varianta `UI_BUTTON_STOP` v libui + `btn_stop_top/bot/border` v tmavé i světlé paletě, ink = `UI_COLOR_BAD`), při zastaveném zelené „RUN". Dřív label = stav, tj. zelené „RUN" svítilo právě když už běželo.
   - **Podbarvení kmitočtu při STOP**: zóna velkého čísla (`freq_area()` = šířka čísla + 10 px, výška 88 — shodná s clear zónou per-segment redrawu) se překryje `UI_COLOR_FREQ_STOP_BG` = poloprůhledná červená (tmavé téma alfa 38/255 ≈ 15 %, světlé 30/255 — na světlém podkladu tmavá červená víc „kryje"). ⚠️ Alfa < 0xFF vyřazuje DMA2D fast-path → CPU fill ~61k px, ale **při STOP neběží 20Hz `tick_freq`**, takže se to kreslí jen při plném renderu a při stisku → CPU dopad ~0. Přepnutí RUN/STOP proto volá nové `screen_main_redraw_freq_area()` (per-segment dirty cesta by podklad nepřekreslila — nemění se číslice, jen podklad).

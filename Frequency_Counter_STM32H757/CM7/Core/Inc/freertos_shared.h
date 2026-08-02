@@ -80,10 +80,16 @@ extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, p
 extern volatile uint8_t g_theme_light;   /* 0 = tmave schema (default), 1 = svetle (BKP_DR6) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
-extern volatile uint8_t g_digit_anim_enabled;  /* 1 = zvyrazneni zmenene cislice v headline (default);
-                                                 * samostatny prepinac (okno Animace, BKP_DR6 bit9),
-                                                 * NEZAVISLY na g_anim_enabled ale i tak vyzaduje oba ZAP */
+/* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
+ * bitu + globalu v samostatnem bezzavislostnim headeru (sdili firmware i app). */
+#include "fx_flags.h"
 extern volatile uint8_t g_sys_cfg_dirty; /* 1 = zmena -> defaultTask ulozi do BKP */
+/* Ulozeny vysledek self-survey (persist v syscfg flash blobu, zapisuje se na STOP;
+ * survey_stop() plni, syscfg_load obnovuje). g_survey_valid=1 -> data platna. */
+extern volatile uint8_t  g_survey_valid;
+extern volatile uint32_t g_survey_n;
+extern volatile double   g_survey_lat, g_survey_lon;
+extern volatile float    g_survey_alt, g_survey_spread;
 extern volatile uint8_t g_reboot_req;    /* 1 = softwarovy restart (Menu->Restart); provede defaultTask */
 extern volatile uint8_t g_syscfg_bkp_valid; /* 1 = syscfg BKP platna pri bootu (warm reset) -> syscfg_load netahne z flash */
 
@@ -101,7 +107,7 @@ extern volatile uint8_t  g_selftest_res;
  * [3]=format/histogram (screen_main), [4]=Maidenhead lokator (app_gpsdo),
  * [5]=kalendar/DST (rtc_selftest), [6]=datalog zaznam+CRC+cas (datalog_selftest).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 7
+#define SELFTEST_N 10
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane

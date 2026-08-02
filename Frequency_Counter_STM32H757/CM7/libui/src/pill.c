@@ -34,10 +34,22 @@ int16_t ui_pill_measure(const ui_pill_t *pill)
     return w;
 }
 
+void ui_pill_variant_colors(ui_pill_variant_t v, prim_color_t *bg,
+                            prim_color_t *border, prim_color_t *value)
+{
+    ui_pill_style_t st = ui_pill_style(v);
+    if (bg)     *bg     = st.bg;
+    if (border) *border = st.border;
+    if (value)  *value  = st.value;
+}
+
 void ui_pill_render(ui_pill_t *pill)
 {
     if (pill == NULL) return;
     ui_pill_style_t st = ui_pill_style(pill->variant);
+    if (pill->override_style) {   /* externi prolinani barvy (viz ui_pill_t) */
+        st.bg = pill->ovr_bg; st.border = pill->ovr_border; st.value = pill->ovr_value;
+    }
     int16_t w = ui_pill_measure(pill);
     pill->computed_width = w;
 

@@ -14,6 +14,7 @@
 #include "../anim.h"  /* anim_t/anim_reset/anim_set/anim_step — sdileno s app_gpsdo.c */
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
+#include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include <prim/prim.h>
 #include "gps.h"     /* gps_get() — zive GNSS lock / pocet druzic / cas+datum v headeru */
 #include <stdio.h>   /* snprintf pro cas/datum */
@@ -32,9 +33,9 @@ extern volatile uint8_t  g_si5356_status;  /* reg218: bit0 SYS_CAL, bit2 LOS_XTA
 extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
 extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
+extern volatile uint32_t g_rtos_cpu_pct;   /* CM7 CPU vytizeni [%] (pocita UiTask) — header */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 extern volatile uint8_t g_anim_enabled;   /* 1 = animace zapnute (okno Animace) */
-extern volatile uint8_t g_digit_anim_enabled;  /* 1 = zvyrazneni zmenene cislice (samostatny prepinac) */
 extern volatile char    g_rtc_text_local[24];  /* cas v lokalni zone (rtc_app_tick) */
 extern volatile char    g_tz_label[8];         /* "UTC" / "UTC+2" (label zony k datu) */
 
@@ -184,6 +185,11 @@ static int compute_sys_level(void)
 }
 
 static int s_sys_level = -1;   /* posledni vykreslena uroven (pro poll zmeny) */
+/* Efekt FX_SYS_XFADE: plynule prolinani barvy SYS pilulky pri zmene urovne.
+ * s_sys_mix 0 = barva urovne s_sys_from_level, 1 = barva s_sys_level (usazeno). */
+static int   s_sys_from_level = -1;
+static float s_sys_mix        = 1.0f;
+#define SYS_XFADE_STEP 0.14f   /* ~7 tiku @20 Hz -> ~0,35 s */
 
 /* Vrati 1 pokud se uroven SYS zdravi zmenila od posledniho render_header -> volajici
  * (UiTask na hl. obrazovce) pak zavola screen_main_redraw_header. */
@@ -282,8 +288,11 @@ static int16_t draw_word(int16_t x, int16_t y, const char *text,
  * (nalezeno revizi 2026-07-19): pri soubehu dlouhych stavu ("GNSS FIX" +
  * "SYS ERR") rada pretekala do clear zon. Pilulky jdou v poradi dulezitosti
  * -> pri pretlaku vypadne POSLEDNI (HOLD; v jedinem pretekajicim scenari
- * stejne nemuze byt holdover aktivni — "GNSS FIX" = zivy fix). */
-#define HDR_PILL_LIMIT 640
+ * stejne nemuze byt holdover aktivni — "GNSS FIX" = zivy fix).
+ * ⚠️ 2026-07-25 snizeno 640->590: mezi pilulky a hodiny pribyl dvouradkovy blok
+ * vytizeni CPU (CM7/CM4, viz screen_main_redraw_cpu, x 592..640). Rezerva mensi
+ * -> v nejhorsim souběhu dlouhych stavu vypadne CAL (staticky placeholder). */
+#define HDR_PILL_LIMIT 590
 
 /* Vykresli pilulku jen kdyz se CELA vejde pred HDR_PILL_LIMIT; pri vykresleni
  * posune x o sirku+GAP. Vraci 1 = vykresleno (volajici smi zachytit rect). */
@@ -294,6 +303,38 @@ static int hdr_pill_fit(ui_pill_t *p, int16_t *x)
     ui_pill_render(p);
     *x = (int16_t)(*x + p->computed_width + UI_DIM_PILL_GAP);
     return 1;
+}
+
+/* Linearni interpolace dvou RGB barev (t: 0=a, 1=b). Pro cross-fade SYS pilulky. */
+static prim_color_t color_lerp(prim_color_t a, prim_color_t b, float t)
+{
+    if (t <= 0.0f) return a;
+    if (t >= 1.0f) return b;
+    int ra = PRIM_R(a), ga = PRIM_G(a), ba = PRIM_B(a);
+    return PRIM_RGB((uint8_t)(ra + (PRIM_R(b) - ra) * t),
+                    (uint8_t)(ga + (PRIM_G(b) - ga) * t),
+                    (uint8_t)(ba + (PRIM_B(b) - ba) * t));
+}
+
+/* SYS pilulka: barva urovne. Pri behu cross-fade (s_sys_mix<1) se barvy prolnou
+ * z urovne s_sys_from_level do s_sys_level; text uz je cilovy (usadi ho plny
+ * render_header). x nastavi volajici (hdr_pill_fit / tick). */
+static ui_pill_variant_t sys_variant(int level)
+{
+    return (level == 0) ? UI_PILL_OK : (level == 1) ? UI_PILL_WARN : UI_PILL_BAD;
+}
+static void sys_pill_setup(ui_pill_t *p, int16_t y)
+{
+    const char *sysl = (s_sys_level == 0) ? "SYS OK"
+                     : (s_sys_level == 1) ? "SYS !" : "SYS ERR";
+    prim_color_t bg0, bd0, vl0, bg1, bd1, vl1;
+    ui_pill_variant_colors(sys_variant(s_sys_from_level), &bg0, &bd0, &vl0);
+    ui_pill_variant_colors(sys_variant(s_sys_level),      &bg1, &bd1, &vl1);
+    float t = s_sys_mix;
+    *p = (ui_pill_t){.y = y, .value = sysl, .override_style = true,
+                     .ovr_bg     = color_lerp(bg0, bg1, t),
+                     .ovr_border = color_lerp(bd0, bd1, t),
+                     .ovr_value  = color_lerp(vl0, vl1, t)};
 }
 
 static void render_header(void)
@@ -331,13 +372,21 @@ static void render_header(void)
     else
         s_gnss_pill_rect = (prim_rect_t){0, 0, 0, 0};
 
-    /* SYS pilulka barevne dle agregovaneho zdravi (zelena/amber/cervena). */
-    s_sys_level = compute_sys_level();
-    ui_pill_variant_t sysv = (s_sys_level == 0) ? UI_PILL_OK
-                           : (s_sys_level == 1) ? UI_PILL_WARN : UI_PILL_BAD;
-    const char *sysl = (s_sys_level == 0) ? "SYS OK"
-                     : (s_sys_level == 1) ? "SYS !" : "SYS ERR";
-    p = (ui_pill_t){.y = y, .variant = sysv, .value = sysl};
+    /* SYS pilulka barevne dle agregovaneho zdravi; pri zmene urovne se barva
+     * PLYNULE prolne (efekt FX_SYS_XFADE) misto skoku — text/layout se usadi hned,
+     * prolina se jen barva (dokresli screen_main_tick_sys_xfade @20 Hz). */
+    int new_sys = compute_sys_level();
+    if (new_sys != s_sys_level) {
+        if (s_sys_level >= 0 && (g_fx_enabled & FX_SYS_XFADE)) {
+            s_sys_from_level = s_sys_level;   /* rozjed prolinani ze stare barvy */
+            s_sys_mix = 0.0f;
+        } else {
+            s_sys_from_level = new_sys;       /* prvni render / efekt VYP -> hned cilova */
+            s_sys_mix = 1.0f;
+        }
+        s_sys_level = new_sys;
+    }
+    sys_pill_setup(&p, y);
     if (hdr_pill_fit(&p, &x))   /* rect pro tap -> System Health */
         s_sys_pill_rect = (prim_rect_t){p.x, p.y, p.computed_width, UI_DIM_PILL_H};
     else
@@ -353,19 +402,18 @@ static void render_header(void)
     hdr_pill_fit(&p, &x);
 
     /* HOLD pilulka: AMBER pri holdoveru (fix ztracen pote, co uz nekdy byl) —
-     * nahrazuje drivejsi zvlastni "H" u casu (kolidovalo s UTC/pilulkou).
-     * ⚠️ HOLD je PRED CAL (poradi = dulezitost pro fit-check): HOLD nese ZIVY
-     * stav (holdover), CAL je zatim staticky placeholder ("4 min"). V holdover
-     * stavech ("NO GNSS"/"ACQUIRE" + SYS ERR) rada preteka o ~6 px — s puvodnim
-     * poradim by fit-check vyradil prave indikator holdoveru (overeno simulaci
-     * pres tabulky fontu, revize 2026-07-19); takhle vypadne postradatelny CAL. */
+     * nahrazuje drivejsi zvlastni "H" u casu. HOLD je PRED CAL (dulezitejsi: nese
+     * zivy holdover stav) -> pri pretlaku vypadne az CAL, HOLD se vzdy vejde. */
     int hold = (!g.valid && g.fixes > 0);
     p = (ui_pill_t){.y = y, .variant = hold ? UI_PILL_WARN : UI_PILL_NORMAL,
                     .label = SCR_S_HOLD_L, .value = SCR_S_HOLD_V};
     hdr_pill_fit(&p, &x);
 
-    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
-                    .label = SCR_S_CAL_L, .value = SCR_S_CAL_V};
+    /* CAL: KOMPAKTNI "ribbon" chip (LED + "CAL", bez hodnoty) — placeholder
+     * kalibracniho stavu. Uzsi nez drivejsi "CAL 4 min" pilulka (~67 vs ~90 px),
+     * takze se za HOLD pred CPU blok (x=592) v typickem stavu vejde; v nejhorsim
+     * pretlaku ho fit-check vynecha (posledni = nejmene dulezity, HOLD zustane). */
+    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL, .value = "CAL", .has_led = true};
     hdr_pill_fit(&p, &x);
 
     int16_t time_x = UI_DIM_SCREEN_W - SCR_MAIN_CLOCK_MARGIN;
@@ -375,6 +423,7 @@ static void render_header(void)
     char dutc[24]; snprintf(dutc, sizeof dutc, "%s %s", date_v, (const char *)g_tz_label);
     prim_draw_text((prim_point_t){time_x, 46}, dutc, &ui_font_sans_14,
                    UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    screen_main_redraw_cpu(1);   /* blok vytizeni CPU mezi pilulkami a hodinami */
 }
 
 static void render_body_title(void)
@@ -414,10 +463,6 @@ static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> 
 static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
 static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
 static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
-static int      s_first_frac_seg = 0;/* index prvni ZLOMKOVE skupiny (za des. carkou); segmenty
-                                      * < s_first_frac_seg jsou celociselna cast. Highlight zmenene
-                                      * cislice (item 8) se spousti JEN pro ne — zlomkovy ocas
-                                      * jitruje kazdy tik a delal by z pulzu trvale svitici cast. */
 
 static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
 
@@ -458,7 +503,6 @@ static void num_build(void)
     s_freq_total = 0;
     int int_digits = 0;
     int comma_seen = 0;
-    s_first_frac_seg = n;                     /* default: zadna carka -> vse celociselne */
     for (int i = 0; i < n; i++) {
         int L = (int)strlen(SCR_MAIN_DIGITS[i].text);
         s_seg_len[i] = (uint8_t)L;            /* cache pro freq_fill_segments (hot-path) */
@@ -466,7 +510,7 @@ static void num_build(void)
         if (!comma_seen) {
             int_digits += L;
             if (SCR_MAIN_SEPS && (size_t)i < strlen(SCR_MAIN_SEPS)
-                && SCR_MAIN_SEPS[i] == ',') { comma_seen = 1; s_first_frac_seg = i + 1; }
+                && SCR_MAIN_SEPS[i] == ',') comma_seen = 1;
         }
     }
     int frac_digits = s_freq_total - int_digits;
@@ -795,7 +839,9 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
  * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
-static int adev_points(float *taus, float *adevs, int max)
+/* ns (nepovinne, NULL-safe): pocet ADEV paru na kazdy tau bod (= blocks-1) —
+ * slouzi ke konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+static int adev_points(float *taus, float *adevs, int *ns, int max)
 {
     static const int SM[] = {1, 2, 5};
     int np = 0;
@@ -805,7 +851,9 @@ static int adev_points(float *taus, float *adevs, int max)
             if (np >= max) return np;
             float a = adev_stage(s, SM[mi]);
             if (a <= 0.0f) continue;
-            taus[np] = dec * (float)SM[mi]; adevs[np] = a; np++;
+            taus[np] = dec * (float)SM[mi]; adevs[np] = a;
+            if (ns) { int blocks = s_adev[s].count / SM[mi]; ns[np] = (blocks > 1) ? blocks - 1 : 1; }
+            np++;
         }
     }
     return np;
@@ -816,23 +864,111 @@ static int adev_points(float *taus, float *adevs, int max)
  * Sdili nahled (marker_r=2) i velky graf (marker_r=3). */
 #define ALLAN_Y_MIN  (-10)
 #define ALLAN_Y_DEC  4
+
+/* ── Metrika Allan okna: 0=ADEV(σy), 1=TDEV, 2=MTIE (prepina segmented control
+ * v okne ALLAN). TDEV/MTIE jsou ODVOZENE z ADEV: TDEV(τ)=τ·ADEV/√3 (platí pro
+ * MDEV≈ADEV), MTIE(τ)~√3·τ·ADEV je jen ODHAD obalky — presny MTIE by chtel
+ * ulozenou fazi (time error), kterou nemame. Popisky to priznavaji ("z ADEV"/
+ * "odhad"). Metrika meni jen KRIVKU + Y osu; σy(τ) tabulka zustava ADEV referenci. */
+static int s_allan_metric = 0;
+void screen_main_set_allan_metric(int m) { s_allan_metric = (m < 0) ? 0 : (m > 2 ? 2 : m); }
+int  screen_main_allan_metric(void)      { return s_allan_metric; }
+
+/* Hodnota zobrazene metriky z ADEV a tau. */
+static float allan_metric_value(float tau, float adev)
+{
+    switch (s_allan_metric) {
+    case 1:  return tau * adev * 0.5773503f;   /* TDEV = τ·ADEV/√3 */
+    case 2:  return tau * adev * 1.7320508f;   /* MTIE ~ √3·τ·ADEV (odhad) */
+    default: return adev;                      /* ADEV = σy(τ) */
+    }
+}
+
+/* Y rozsah [10^ymin .. 10^(ymin+dec)] dle metriky. ADEV pevny (10⁻⁶..10⁻¹⁰ jako
+ * drive); TDEV/MTIE AUTO-RANGE dle skutecnych hodnot — jejich magnituda je
+ * nepredvidatelna (τ·ADEV nasobky), pevny rozsah by krivku uspal na okraj osy. */
+static void allan_metric_yrange(const float *vals, int np, int *ymin, int *dec)
+{
+    if (s_allan_metric == 0) { *ymin = ALLAN_Y_MIN; *dec = ALLAN_Y_DEC; return; }
+    float lo = 1e30f, hi = -1e30f;
+    for (int i = 0; i < np; i++) {
+        if (vals[i] <= 0.0f) continue;
+        float l = log10f(vals[i]);
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+    }
+    if (lo > hi) { *ymin = -12; *dec = 5; return; }   /* fallback: zadna platna data */
+    int y0 = (int)floorf(lo) - 1;                     /* 1 dekada rezervy dole */
+    int y1 = (int)ceilf(hi) + 1;                      /* 1 dekada rezervy nahore */
+    int d = y1 - y0; if (d < 2) d = 2; else if (d > 8) d = 8;
+    *ymin = y0; *dec = d;
+}
+
+/* Popisek dekady "10⁻N" (horni index). Nahrazuje pevne SCR_ALLAN_Y_TICKS —
+ * pro ADEV vraci identicke retezce, pro TDEV/MTIE dekady jineho rozsahu. */
+static void allan_ylabel(char *buf, size_t n, int exp)
+{
+    static const char *const SUP[10] = {"⁰","¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"};
+    int ae = exp < 0 ? -exp : exp;
+    char es[12]; es[0] = '\0';
+    if (ae >= 10) strcat(es, SUP[(ae / 10) % 10]);
+    strcat(es, SUP[ae % 10]);
+    snprintf(buf, n, "10%s%s", exp < 0 ? "⁻" : "⁺", es);
+}
+
+/* Log-hodnota metriky -> pixel y v 'inner' (Y rozsah [ymin..ymin+dec] dekad). */
+static int16_t allan_y(prim_rect_t inner, float log_val, int ymin, int dec)
+{
+    float ly = (log_val - (float)ymin) / (float)dec;
+    if (ly < 0.0f) ly = 0.0f; else if (ly > 1.0f) ly = 1.0f;
+    return (int16_t)(inner.y + (1.0f - ly) * inner.h);
+}
+
+/* Konfidencni pas (efekt FX_ALLAN_CONF): meke accent podbarveni mezi horni
+ * (yup) a dolni (ylo) mezi ADEV odhadu. Per-sloupec svisla vypln mezi
+ * interpolovanymi mezemi (np<=20 bodu -> levne). Kresli se POD krivku. */
+static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
+                            const int16_t *ylo, int np)
+{
+    for (int i = 1; i < np; i++) {
+        int16_t x0 = pts[i - 1].x, x1 = pts[i].x;
+        int16_t cols = (int16_t)(x1 - x0);
+        if (cols < 1) cols = 1;
+        for (int16_t c = 0; c <= cols; c++) {
+            int16_t cx = (int16_t)(x0 + c);
+            int16_t yu = (int16_t)(yup[i - 1] + (int32_t)(yup[i] - yup[i - 1]) * c / cols);
+            int16_t yl = (int16_t)(ylo[i - 1] + (int32_t)(ylo[i] - ylo[i - 1]) * c / cols);
+            if (yl < yu) { int16_t t = yu; yu = yl; yl = t; }
+            prim_fill_rect((prim_rect_t){cx, yu, 1, (int16_t)(yl - yu + 1)},
+                           PRIM_ALPHA(UI_COLOR_ACC, 0x22), PRIM_BLEND_OVER);
+        }
+    }
+}
+
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
-                             const float *adevs, int np, int16_t marker_r)
+                             const float *vals, const int *ns, int np,
+                             int16_t marker_r, int ymin, int dec)
 {
     float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
     float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
     float xspan = lmax - lmin;
     if (xspan < 1e-6f) xspan = 1.0f;
     prim_point_t pts[20];
+    int16_t yup[20], ylo[20];
     if (np > 20) np = 20;
     for (int i = 0; i < np; i++) {
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
-        float ly = (log10f(adevs[i]) - (float)ALLAN_Y_MIN) / (float)ALLAN_Y_DEC;
-        if (ly < 0.0f) ly = 0.0f;
-        if (ly > 1.0f) ly = 1.0f;
         pts[i].x = (int16_t)(inner.x + fx * inner.w);
-        pts[i].y = (int16_t)(inner.y + (1.0f - ly) * inner.h);
+        pts[i].y = allan_y(inner, log10f(vals[i]), ymin, dec);
+        /* Konfidencni mez: rel. pulsirka ~ 0,8/sqrt(paru) (1. rad, white FM);
+         * pro TDEV/MTIE stejna relativni nejistota (jsou τ·ADEV nasobky). */
+        float f = 0.0f;
+        if (ns) { int nd = ns[i] < 1 ? 1 : ns[i]; f = 0.8f / sqrtf((float)nd); if (f > 0.9f) f = 0.9f; }
+        yup[i] = allan_y(inner, log10f(vals[i] * (1.0f + f)), ymin, dec);
+        ylo[i] = allan_y(inner, log10f(vals[i] * (1.0f - f)), ymin, dec);
     }
+    if (ns && (g_fx_enabled & FX_ALLAN_CONF))        /* pas POD krivku */
+        allan_band_fill(pts, yup, ylo, np);
     for (int i = 1; i < np; i++)
         prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
     for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
@@ -858,7 +994,8 @@ static void allan_plot(prim_rect_t area, int big)
                       (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
 
     float taus[20], adevs[20];
-    int np = adev_points(taus, adevs, 20);
+    int ns[20];
+    int np = adev_points(taus, adevs, ns, 20);
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
                                       (int16_t)(in.y + in.h / 2 + 5)},
@@ -867,13 +1004,18 @@ static void allan_plot(prim_rect_t area, int big)
         return;
     }
 
-    /* Y mrizka + dekadove popisky (pevny rozsah ALLAN_Y_MIN..+ALLAN_Y_DEC). */
-    for (int j = 0; j <= ALLAN_Y_DEC; j++) {
-        int16_t y = (int16_t)(in.y + (int32_t)j * in.h / ALLAN_Y_DEC);
+    /* Transformuj na zvolenou metriku (ADEV/TDEV/MTIE) + urci Y rozsah (TDEV/MTIE
+     * auto-range dle hodnot). Y mrizka + dekadove popisky (allan_ylabel). */
+    float vals[20];
+    for (int i = 0; i < np; i++) vals[i] = allan_metric_value(taus[i], adevs[i]);
+    int ymin, dec; allan_metric_yrange(vals, np, &ymin, &dec);
+    for (int j = 0; j <= dec; j++) {
+        int16_t y = (int16_t)(in.y + (int32_t)j * in.h / dec);
         prim_draw_line((prim_point_t){in.x, y},
                        (prim_point_t){(int16_t)(in.x + in.w), y}, 1, UI_COLOR_LINE);
+        char ylb[12]; allan_ylabel(ylb, sizeof ylb, ymin + dec - j);
         prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(y + 5)},
-                       SCR_ALLAN_Y_TICKS[j], lf, lc, PRIM_ALIGN_RIGHT);
+                       ylb, lf, lc, PRIM_ALIGN_RIGHT);
     }
 
     /* X mrizka + popisky v MOCNINACH 10 — jen dekady v [tau_min..tau_max]. */
@@ -894,7 +1036,7 @@ static void allan_plot(prim_rect_t area, int big)
                        dl, lf, lc, PRIM_ALIGN_CENTER);
     }
 
-    allan_plot_curve(in, taus, adevs, np, 3);
+    allan_plot_curve(in, taus, vals, ns, np, 3, ymin, dec);
 }
 
 /* Allan karta na hlavni obrazovce: vlevo pres vysku statistik+trendu (364×176,
@@ -917,7 +1059,12 @@ static void render_card_allan(prim_rect_t rect)
                            + prim_text_width("Allan σy(τ)", &ui_font_sans_18) + 6);
     prim_draw_text((prim_point_t){hx, (int16_t)(rect.y + UI_DIM_CARD_PAD_Y + 16)},
                    "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    /* Karta na hlavni obrazovce = VZDY ADEV (σy(τ)) preview — header je pevny
+     * "Allan σy(τ)". TDEV/MTIE se prepina jen v okne ALLAN (s_allan_metric je
+     * globalni, tak ho na dobu renderu karty docasne srovnam na ADEV). */
+    int save = s_allan_metric; s_allan_metric = 0;
     allan_plot(ui_card_inner_rect(&card), 0);
+    s_allan_metric = save;
 }
 
 /* Jedna mala karta: header label + hodnota. Hodnota mono_18 (2026-07-19, bylo
@@ -1070,7 +1217,9 @@ static void trend_plot_draw(prim_rect_t inner, const int16_t *arr, int n,
 {
     ui_sparkline_t sp = {.inner = inner, .y_values = arr, .count = (int16_t)n,
         .show_sigma_band = true, .sigma_min = sig_lo, .sigma_max = sig_hi,
-        .show_endpoint_marker = true, .fill_below = false, .stroke_color = UI_COLOR_ACC};
+        .show_endpoint_marker = true,
+        .fill_below = (g_fx_enabled & FX_SPARK_FILL) != 0,   /* area chart vypln (efekt) */
+        .stroke_color = UI_COLOR_ACC};
     ui_sparkline_render(&sp);
 
     float si = 0, sv = 0, sii = 0, siv = 0;
@@ -1416,6 +1565,30 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
     return 1;
 }
 
+/* Dvouradkovy blok vytizeni CPU v headeru (mezi CAL pilulkou a hodinami, x 592..642):
+ * CM7 (real, g_rtos_cpu_pct) NAHORE, CM4 DOLE — oboji nejmensim fontem (mono_14).
+ * ⚠️ CM4 NENI instrumentovan (nema merene idle -> zadny cross-core CPU udaj) ->
+ * "--" (nebo "off" kdyz nenabehl, g_cm4_absent). Realny CM4 % by chtel merit
+ * idle na CM4 + poslat pres shared RAM/HSEM. Zive z tick_clock (change-detect na
+ * CM7 %). force=1 = plny render (render_header). CM7 barevne dle zateze. */
+#define CPU_HDR_R 642      /* pravy okraj bloku = tesne pred zonou hodin (datum od x=644) */
+static uint32_t s_cpu_shown = 999;
+int screen_main_redraw_cpu(int force)
+{
+    uint32_t c7 = g_rtos_cpu_pct; if (c7 > 99) c7 = 99;
+    if (!force && c7 == s_cpu_shown) return 0;
+    s_cpu_shown = c7;
+    blit_bg_region((prim_rect_t){594, 1, 49, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
+    char l[12];
+    prim_color_t col = (c7 < 70) ? UI_COLOR_OK : (c7 < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
+    snprintf(l, sizeof l, "7:%lu%%", (unsigned long)c7);
+    prim_draw_text((prim_point_t){CPU_HDR_R, 22}, l, &ui_font_mono_14, col, PRIM_ALIGN_RIGHT);
+    const char *c4 = g_cm4_absent ? "4:off" : "4:--";
+    prim_draw_text((prim_point_t){CPU_HDR_R, 45}, c4, &ui_font_mono_14,
+                   g_cm4_absent ? UI_COLOR_BAD : UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+    return 1;
+}
+
 /* Partial redraw horni listy z GPS: blitne header strip z bg cache a prekresli
  * pilulky (GNSS lock + pocet druzic) + cas/datum. Volat jen pri zmene GPS stavu
  * (sat/fix) — render_header cte gps_get() sam. */
@@ -1423,6 +1596,24 @@ int screen_main_redraw_header(void)
 {
     blit_bg_region((prim_rect_t){0, 0, UI_DIM_SCREEN_W, UI_DIM_HEADER_H});
     render_header();
+    return 1;
+}
+
+/* Efekt FX_SYS_XFADE: po zmene urovne SYS pilulky (render_header nastavil
+ * s_sys_mix=0) plynule prolne jeji barvu behem ~7 tiku. Prekresluje JEN pilulku
+ * na miste — rect je uz usazeny plnym render_header, sirka se nemeni (stejny
+ * text), takze sousedni pilulky se netykaji. ~20 Hz z tick_anim_main. Vrati 1
+ * pokud kreslil (flip odlozen na flush). */
+int screen_main_tick_sys_xfade(void)
+{
+    if (s_sys_mix >= 1.0f) return 0;               /* usazeno, neni co prolinat */
+    if (s_sys_pill_rect.w == 0) { s_sys_mix = 1.0f; return 0; }  /* pilulka pretekla (neviditelna) */
+    s_sys_mix += SYS_XFADE_STEP;
+    if (s_sys_mix > 1.0f) s_sys_mix = 1.0f;
+    blit_bg_region(s_sys_pill_rect);               /* podklad headeru pod pilulkou */
+    ui_pill_t p; sys_pill_setup(&p, s_sys_pill_rect.y);
+    p.x = s_sys_pill_rect.x;
+    ui_pill_render(&p);
     return 1;
 }
 
@@ -1469,38 +1660,26 @@ void screen_main_freq_sim_step(void)
     freq_step();
 }
 
-/* ── Zvyrazneni zmenene skupiny cislic (item 8) ──────────────────────────────
- * Po per-segment redrawu (nize) se prvni zmeneny segment na par snimku
- * prebarvi na accent, pak se vrati na normalni (level-based) barvu. Prekresli
- * se JEN glyf toho segmentu (stejny text, stejna pozice, stejny font — druhy
- * draw pres prvni beze zbytku, zadny extra clear netreba). Respektuje
- * g_anim_enabled (VYP = zadny flash, tail render uz je ve finalni barve). */
-#define FREQ_FLASH_FRAMES 4
-static int s_freq_flash_seg    = -1;
-static int s_freq_flash_frames = 0;
-
-static void freq_seg_draw_color(int i, prim_color_t col)
+/* Frakcni odchylka simulovaneho kmitoctu -> 0..1 (0,5 = stred 10 MHz). Pasmo
+ * ~±0,4 Hz mapuje na plny rozsah. Slouzi spektrogramu (vodopad Δf). */
+float screen_main_freq_dev_unit(void)
 {
-    if (i < 0 || i >= s_num.segment_count) return;
-    const ui_digit_segment_t *seg = &s_num_seg[i];
-    const prim_font_t *f = (seg->level != UI_DIGIT_CERTAIN && s_num.fade_font)
-                          ? s_num.fade_font : s_num.main_font;
-    prim_set_glyph_accel(1);
-    prim_draw_text((prim_point_t){s_seg_x[i], s_num.y_baseline}, seg->text, f, col,
-                   PRIM_ALIGN_LEFT);
-    prim_set_glyph_accel(0);
+    if (s_freq_center == 0 || !s_num_ready) return 0.5f;
+    int64_t off = (int64_t)s_freq_n - (int64_t)s_freq_center;
+    float lsb_per_hz = (float)s_freq_center / 1.0e7f;   /* s_freq_center = 1e7 * 10^frac */
+    float dev_hz = (float)off / lsb_per_hz;
+    float u = 0.5f + dev_hz / 0.8f;                     /* ±0,4 Hz -> [0,1] */
+    if (u < 0.0f) u = 0.0f; else if (u > 1.0f) u = 1.0f;
+    return u;
 }
 
-/* ~20 Hz z app_gpsdo tick_anim (s_view=0): po vyprseni FREQ_FLASH_FRAMES vrati
- * zvyrazneny segment na normalni barvu. Vrati 1 pokud prekreslil (=> flip). */
-int screen_main_freq_flash_tick(void)
+/* Aktualni zobrazovany kmitocet v Hz (double). s_freq_n je v LSB = 10^-frac Hz,
+ * s_freq_center = 1e7 * 10^frac -> Hz = s_freq_n * 1e7 / s_freq_center. Zdroj pro
+ * Math/limity (#43/#44). ⚠️ Dnes SIMULACE (headline) — po #2 reálný FPGA kmitocet. */
+double screen_main_freq_hz(void)
 {
-    if (s_freq_flash_seg < 0) return 0;
-    if (--s_freq_flash_frames > 0) return 0;
-    int seg = s_freq_flash_seg;
-    s_freq_flash_seg = -1;
-    freq_seg_draw_color(seg, ui_digit_level_color(s_num_seg[seg].level));
-    return 1;
+    if (!s_num_ready || s_freq_center == 0) return 0.0;
+    return (double)s_freq_n * 1.0e7 / (double)s_freq_center;
 }
 
 int screen_main_redraw_freq(void)
@@ -1526,17 +1705,6 @@ int screen_main_redraw_freq(void)
     ui_big_number_render_tail(&s_num, (int16_t)from);
     prim_set_glyph_accel(0);
     for (int i = from; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
-
-    if (g_anim_enabled && g_digit_anim_enabled && from < s_first_frac_seg) {
-        /* Zvyrazni PRVNI zmeneny segment (samostatny prepinac + master) — ale JEN
-         * kdyz je v CELOCISELNE casti. Zlomkovy ocas se meni kazdy tik, takze
-         * highlight na nem by nebyl izolovany pulz, ale trvale svitici cast
-         * (viz CLAUDE.md). Tim padem flash pulzne jen pri skutecne zmene cisla,
-         * ne pri jitteru poslednich mist. */
-        freq_seg_draw_color(from, UI_COLOR_ACC);
-        s_freq_flash_seg    = from;
-        s_freq_flash_frames = FREQ_FLASH_FRAMES;
-    }
     return 1;
 }
 
@@ -1553,6 +1721,10 @@ void screen_main_redraw_freq_area(void)
     ui_big_number_render(&s_num);
     prim_set_glyph_accel(0);
 }
+
+/* FX_HEAD_GLOW (bloom za kmitoctem pri cerstvem mereni) ODSTRANEN 2026-07-26 na
+ * prani uzivatele — vcetne ovladaciho tlacitka v okne EFEKTY. K dohledani v git
+ * historii (screen_main_tick_head_glow / head_glow_render). */
 
 /* Navzorkuje aktualni frakcni odchylku do statistiky (plochy ring + pyramida, ~1x/s). */
 void screen_main_stats_sample(void)

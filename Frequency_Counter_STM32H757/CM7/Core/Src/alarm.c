@@ -14,6 +14,7 @@
 #include "alarm.h"
 #include "beeper.h"
 #include "gps.h"
+#include "meas_math.h"       /* g_meas_verdict + g_meas_cfg — limit pass/fail alarm (#44) */
 #include "stm32h7xx_hal.h"
 
 /* Sdilene stavy (definice ve freertos.c). */
@@ -21,8 +22,9 @@ extern volatile unsigned char g_freq_stale;    /* 1 = FPGA signal lost / mrtvy l
 extern volatile unsigned char g_sound_muted;   /* 1 = globalni mute (Nastaveni) */
 
 /* Pocitadla udalosti pro okno Alarmy (definice zde, extern v alarm.h). */
-volatile unsigned int g_alarm_fpga_lost = 0;   /* pocet ztrat FPGA signalu */
-volatile unsigned int g_alarm_gps_lost  = 0;   /* pocet ztrat GPS locku */
+volatile unsigned int g_alarm_fpga_lost  = 0;  /* pocet ztrat FPGA signalu */
+volatile unsigned int g_alarm_gps_lost   = 0;  /* pocet ztrat GPS locku */
+volatile unsigned int g_alarm_limit_fail = 0;  /* pocet prechodu PASS->FAIL limitu (#44) */
 
 /* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ── */
 static unsigned char  s_pulses_left;   /* zbyva ON pulzu */
@@ -70,6 +72,8 @@ static unsigned char s_fpga_bad_prev = 1;    /* boot = predpokladej mrtvy link (
 static unsigned char s_fpga_ever = 0;        /* uz nekdy byl link OK (jinak start tichy) */
 static unsigned char s_gps_lock_prev = 0;    /* boot = jeste nikdy zamknuto */
 static unsigned char s_gps_ever = 0;         /* uz nekdy byl lock (jinak neresime jeho ztratu) */
+static unsigned char s_meas_fail_prev = 0;   /* limit FAIL v predchozim vyhodnoceni */
+static unsigned char s_meas_ever = 0;        /* uz nekdy byl PASS (jinak: zapnuti limitu na spatne hodnote nepipne) */
 
 /* Touch click: UiTask jen nastavi flag, prehraje ho alarm_tick (jeden vlastnik
  * pattern stavu = defaultTask -> zadny cross-task zapis do s_phase). */
@@ -98,6 +102,11 @@ void alarm_tick(void)
     gps_data_t g; gps_get(&g);
     unsigned char fpga_bad = g_freq_stale ? 1 : 0;
     unsigned char lock = (g.valid || g.fix_mode >= 2) ? 1 : 0;
+    /* Limit pass/fail (#44): aktivni jen kdyz limity i alarm zapnute. FAIL = LO|HI.
+     * s_meas_ever se armuje jen skutecnym PASS -> zapnuti limitu na uz spatne
+     * hodnote nezpusobi pipnuti (az prechod PASS->FAIL). Vypnuti limitu resetuje. */
+    unsigned char meas_active = (g_meas_cfg.limit_en && g_meas_cfg.alarm_en) ? 1 : 0;
+    unsigned char meas_fail = (g_meas_verdict == MEAS_LO || g_meas_verdict == MEAS_HI) ? 1 : 0;
 
     if (g_sound_muted) {
         /* drz prev stavy aktualni, aby po odmuteni nepipl na starou (davno proslou) hranu */
@@ -105,6 +114,8 @@ void alarm_tick(void)
         s_fpga_bad_prev = fpga_bad;
         if (lock) s_gps_ever = 1;
         s_gps_lock_prev = lock;
+        if (!meas_active) { s_meas_fail_prev = 0; s_meas_ever = 0; }
+        else { if (g_meas_verdict == MEAS_PASS) s_meas_ever = 1; s_meas_fail_prev = meas_fail; }
         return;
     }
 
@@ -128,6 +139,20 @@ void alarm_tick(void)
         g_alarm_gps_lost++;                         /* pocitadlo pro okno Alarmy */
     }
     s_gps_lock_prev = lock;
+
+    /* Limit pass/fail: PASS->FAIL = 4 pipnuti, FAIL->PASS = 1 (obnoveni). */
+    if (!meas_active) {
+        s_meas_fail_prev = 0; s_meas_ever = 0;      /* vypnuto -> zadna hrana pri pristim zapnuti */
+    } else {
+        if (meas_fail && !s_meas_fail_prev && s_meas_ever) {
+            pattern_start(4, 70, 70);               /* mimo meze */
+            g_alarm_limit_fail++;
+        } else if (!meas_fail && s_meas_fail_prev) {
+            pattern_start(1, 150, 0);               /* zpet v mezich */
+        }
+        if (g_meas_verdict == MEAS_PASS) s_meas_ever = 1;   /* arm jen realnym PASS */
+        s_meas_fail_prev = meas_fail;
+    }
 }
 
 void alarm_test(void)

@@ -27,7 +27,17 @@ typedef struct {
     int16_t icon_size;
     prim_color_t icon_color;
     bool has_led;                  /**< green LED with glow on the left */
+    /* Prepis stylu: pri override_style=true se misto barev varianty pouziji
+     * ovr_* (bg/border/value). Slouzi pro plynule prolinani barvy zvenci
+     * (napr. SYS pilulka cross-fade v screen_main). */
+    bool         override_style;
+    prim_color_t ovr_bg, ovr_border, ovr_value;
 } ui_pill_t;
 
 UI_API void    ui_pill_render(ui_pill_t *pill);
 UI_API int16_t ui_pill_measure(const ui_pill_t *pill);
+
+/** Barvy varianty (bg/border/value) — pro externi prolinani (cross-fade).
+ *  Kterykoli vystupni ukazatel smi byt NULL. */
+UI_API void ui_pill_variant_colors(ui_pill_variant_t v, prim_color_t *bg,
+                                    prim_color_t *border, prim_color_t *value);

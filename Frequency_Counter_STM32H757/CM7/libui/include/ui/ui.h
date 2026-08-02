@@ -19,6 +19,7 @@
 #include <ui/pill.h>
 #include <ui/card.h>
 #include <ui/button.h>
+#include <ui/segmented.h>
 #include <ui/sparkline.h>
 #include <ui/digit_group.h>
 #include <ui/big_number.h>

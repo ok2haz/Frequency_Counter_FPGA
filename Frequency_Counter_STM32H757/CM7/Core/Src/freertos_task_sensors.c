@@ -16,6 +16,7 @@
 #include "ads1115.h"
 #include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
+#include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
 
 /* ── ADC3 factory kalibrace (system memory) ───────────────────────────────
@@ -181,6 +182,36 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
     return 10000;                   /* pak @ 10 s */
 }
 
+/* ── ADS1115 per-kanal PGA ────────────────────────────────────────────────
+ * Kazda konverze prepisuje Config registr (kvuli MUX) -> PGA per kanal je zdarma.
+ * Rev2 dle SKUTECNE osazenych delicu ve schematu v2.0 (netlist 2026-07-27):
+ *   AIN0 OCXO_VC_Sense: R51=15k  / R52=10k  (0-5V  -> 2.00V) -> +-2.048V ✓
+ *   AIN1 RF_Level (AD8307): R53=1k ser.     (~0.25-2.6V)     -> +-4.096V
+ *          ⚠️ R54=10k je STALE OSAZEN -> zatezuje vystup AD8307 (25mV/dB do int.
+ *             12,5k) a srazi strmost. Pro presnost R54 -> DNP (viz TODO §7).
+ *   AIN2 VBUS: R55=100k / R56=4k99 (0-40V -> 1.90V)          -> +-2.048V ✓
+ *   AIN3 +5V:  R57=15k  / R58=10k  (0-5V  -> 2.00V)          -> +-2.048V ✓
+ * AIN0/AIN2/AIN3 mapovany na ~2V -> +-2.048V; jen AIN1 (AD8307, ~2.6V) je +-4.096V.
+ * Az bude v2.0 deska osazena, prepni REV2 na 1 + prepocitat g_calib:
+ *   gain_12v pro delic 100k/4k99 (=x21.0), gain_5v pro 15k/10k (=x2.5, drive 8k2/10k),
+ *   + pridat skalovani AIN0 x2.5 (OCXO_VC) — viz BOARD_V20 §7.2. */
+#ifndef ADS1115_HW_DIVIDERS_REV2
+#define ADS1115_HW_DIVIDERS_REV2 0    /* 0 = stara deska (delice 5k1/10k) */
+#endif
+
+#if ADS1115_HW_DIVIDERS_REV2
+static const ads1115_pga_t k_ads_pga[4] = {
+    ADS1115_PGA_2V048,   /* AIN0 OCXO_VC_Sense (15k/10k -> 2.00V) */
+    ADS1115_PGA_4V096,   /* AIN1 RF_Level (AD8307, ~2.6V) */
+    ADS1115_PGA_2V048,   /* AIN2 VBUS (100k/4k99 -> 1.90V @ 40V) */
+    ADS1115_PGA_2V048,   /* AIN3 +5V (15k/10k -> 2.00V) */
+};
+#else
+static const ads1115_pga_t k_ads_pga[4] = {   /* stara deska: vse +-4.096V */
+    ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096,
+};
+#endif
+
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
@@ -233,7 +264,7 @@ void SensorsTask_run(void *argument)
 	  if (i2c1_streak == 0) {
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
-		  started = ads1115_start(&hi2c1, 1);              /* AIN1 = RF_Level */
+		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = RF_Level */
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (started) {
@@ -243,7 +274,7 @@ void SensorsTask_run(void *argument)
 			got = ads1115_read_raw(&hi2c1, &raw);
 			osMutexRelease(i2c1MutexHandle);
 		  }
-		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw));
+		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw, k_ads_pga[1]));
 		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
 		}
 	  }
@@ -298,7 +329,7 @@ void SensorsTask_run(void *argument)
 		sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-		  started = ads1115_start(&hi2c1, ch);
+		  started = ads1115_start(&hi2c1, ch, k_ads_pga[ch]);
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (!started) { sensor_fail(sid); continue; }
@@ -311,7 +342,7 @@ void SensorsTask_run(void *argument)
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (got) {
-		  int32_t mv = ads1115_raw_to_mv(raw);
+		  int32_t mv = ads1115_raw_to_mv(raw, k_ads_pga[ch]);
 		  /* AIN2 = 12V vetev pres odporovy delic, AIN3 = 5V vetev pres delic ->
 			 skutecne napeti. Gain je editovatelna kalibrace (g_calib, okno
 			 Kalibrace); vychozi = datasheet pomer (13417/2814, 4978/2526).
@@ -364,6 +395,10 @@ void SensorsTask_run(void *argument)
 	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}
 	}   /* konec ADC3 bloku (1 Hz) */
+
+	// Kratkodoba historie senzoru (RAM decimacni pyramida, okno Grafy #31).
+	// Volano z 2 Hz plneho sweepu; uvnitr decimuje na SENSOR_HIST_BASE_S.
+	sensor_hist_feed();
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);

@@ -58,6 +58,14 @@ void gps_init(void);
  * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init; lze i samostatne. */
 void gps_config_timepulse(void);
 
+/* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
+ * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích
+ * (LEA-6T/M8T…); NEO-7M příkaz nejspíš NAKne = neškodné. Firmwarové průměrování
+ * polohy (app vrstva) běží nezávisle na tomto příkazu. Blokující TX (jen na tap). */
+void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm);
+/* Vypne time-mód (timeMode=0). */
+void gps_survey_disable_cmd(void);
+
 /* Krmeni parseru jednim bajtem (vola GpsTask z GpsRxQueue). */
 void gps_feed_char(char c);
 

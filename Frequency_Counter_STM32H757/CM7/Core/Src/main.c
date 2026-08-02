@@ -141,6 +141,25 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
+    /* Region 2: IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB)
+     * — Normal NON-CACHEABLE + SHAREABLE. Bez D-cache: zapisy CM7 uvidi CM4 (a
+     * naopak) bez SCB_Clean/Invalidate -> zaklad pro seqlock IPC snapshot + cmd/resp
+     * ringy. Linker sekce .ipc_shared @RAM_D3 (STM32H757BITX_FLASH.ld). Zatim jen
+     * priprava regionu (IPC vrstva prijde pozdeji). ⚠️ Bez tohoto by SRAM4 bela
+     * default kesovana -> IPC "skoro funguje" a pada nahodne. */
+    MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+    MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
+    MPU_InitStruct.BaseAddress      = 0x38000000;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
+    MPU_InitStruct.SubRegionDisable = 0x00;
+    MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;            /* TEX=001,C=0,B=0 -> Normal non-cacheable */
+    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+    MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+    MPU_InitStruct.IsShareable      = MPU_ACCESS_SHAREABLE;
+    MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
+    MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
     /* Zapnout MPU s default mapou pro nechraneny privilegovany pristup */
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }

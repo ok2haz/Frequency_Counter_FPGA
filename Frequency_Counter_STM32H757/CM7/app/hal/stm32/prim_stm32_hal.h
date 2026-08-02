@@ -28,3 +28,6 @@ void prim_stm32_present(void);
 
 /** Enable (default) or disable the register-level DMA2D backend at runtime. */
 void prim_stm32_use_dma2d(int enable);
+
+/** Adresa aktualne zobrazeneho (front) framebufferu, RGB565 800x480 — screenshot. */
+const void *prim_stm32_front_addr(void);

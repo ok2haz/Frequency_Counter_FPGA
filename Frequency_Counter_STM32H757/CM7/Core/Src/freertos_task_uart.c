@@ -30,6 +30,8 @@
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
 #include "datalog.h"        /* UART "datalog [on|off|erase|dump]" */
+#include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
+#include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -311,12 +313,23 @@ void UartTask_run(void *argument)
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | datalog [on|off|erase|dump] | stacktest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strcmp(RxBuffer, "screenshot") == 0) {
+				  /* Export obrazovky do BMP pres USB CDC (~1,15 MB, sekundy). ROZPRACOVANO
+				   * — best-effort tok; UartTask neni hlidan watchdogem, smi blokovat. */
+				  screenshot_emit_bmp();
+			  }
+			  else if (strcmp(RxBuffer, "autocal") == 0) {
+				  autocal_run();
+				  char ab[280];
+				  autocal_format_full(ab, sizeof ab);
+				  printf("%s", ab);
 			  }
 			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {
 				  const char *arg = RxBuffer[7] == ' ' ? &RxBuffer[8] : "";

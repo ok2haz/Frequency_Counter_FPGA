@@ -36,6 +36,9 @@ static prim_fb_t *s_appfb  = 0;          /* app deskriptor (drzime jeho pixels n
 
 static prim_pixel_t *fb_px(int i) { return (prim_pixel_t *)s_fb_addr[i]; }
 
+/* Adresa aktualne ZOBRAZENEHO (front) bufferu — pro screenshot export (RGB565). */
+const void *prim_stm32_front_addr(void) { return (const void *)s_fb_addr[s_front]; }
+
 /* ── Dirty-rect (copy-forward jen zmenenych oblasti) ───────────────────────────
  * Triple buffer: novy back je 2 snimky stary -> kopiruje se sjednoceni dirty
  * z poslednich 2 snimku (prev + cur). Plne prekresleni = velky obdelnik (cely FB)

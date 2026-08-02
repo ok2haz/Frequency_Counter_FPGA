@@ -108,10 +108,14 @@ void StartUiTask(void *argument)
     static uint8_t  s_dimmed = 0;          /* 1 = podsviceni ztlumene necinnosti */
     static uint8_t  s_i2c4_fail = 0;    /* po sobe jdouci HAL selhani touch cteni */
     static uint32_t s_i2c4_rec_t = 0;   /* cas posledniho pokusu o recovery */
-    /* Gate 33 ms (30 Hz; drive 66/15 Hz — latence tapu az 76 ms citelna hlavne
-     * v Nastaveni). I2C4 zatez: 31 B ramec ~3 ms @100 kHz x 30 Hz = ~9 % busu
-     * (sdileno s TMP117 2x/s + backlight zridka — bezpecne pod saturaci). */
-    if (HAL_GetTick() - last_touch >= 33) {
+    /* ADAPTIVNI gate: 33 ms (30 Hz) BEHEM a ~1,5 s PO interakci (svizne tapy —
+     * hlavne opakovane +/- v Nastaveni), jinak 66 ms (15 Hz) v klidu. Touch cteni
+     * je 31 B ~3 ms @100 kHz -> 30 Hz = ~9 % CPU, 15 Hz = ~4,5 %. V typickem stavu
+     * (sledovani hlavni obrazovky, zadny dotek) se tak usetri ~4,5 % CPU; jediny
+     * dopad je latence PRVNIHO tapu po klidu az 66 ms (jednorazova, neznatelna).
+     * Cteni je vzdy CELY ramec -> zadne riziko freeze (viz varovani vyse). */
+    uint32_t touch_gate = (was_down || (HAL_GetTick() - s_last_activity) < 1500u) ? 33u : 66u;
+    if (HAL_GetTick() - last_touch >= touch_gate) {
       last_touch = HAL_GetTick();
       ft5x06_touch_t t; int got = 0, attempted = 0;
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {

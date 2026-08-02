@@ -37,6 +37,9 @@
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
 #include "screens/screen_main.h"   /* screen_main_selftest — run_selftests() */
 #include "app_gpsdo.h"        /* app_gpsdo_selftest (Maidenhead lokator) */
+#include "meas_math.h"        /* meas_math_selftest — Math/limity (#43/#44) */
+#include "setup.h"            /* setup_selftest — sanitizace sestavy */
+#include "autocal.h"          /* autocal_selftest — verdikt self-checku */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -140,13 +143,19 @@ volatile uint8_t g_ui_cfg_dirty  = 0;
 
 /* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
 volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
+/* Ulozeny vysledek self-survey (persist syscfg flash; viz freertos_shared.h). */
+volatile uint8_t  g_survey_valid  = 0;
+volatile uint32_t g_survey_n      = 0;
+volatile double   g_survey_lat = 0.0, g_survey_lon = 0.0;
+volatile float    g_survey_alt = 0.0f, g_survey_spread = 0.0f;
 volatile uint8_t g_sound_muted   = 0;     /* 0 = zvuk zapnut */
 volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut */
-volatile uint16_t g_autodim_sec  = 60;    /* prodleva auto-dim [s] (preset 15..600) */
+volatile uint16_t g_autodim_sec  = 300;   /* prodleva auto-dim [s] = 5 min default (preset 15..600) */
 volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
 volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
 volatile uint8_t g_anim_enabled  = 1;     /* 1 = animace zapnute (default), persist BKP_DR6 bit8 */
-volatile uint8_t g_digit_anim_enabled = 1;  /* 1 = zvyrazneni cislic zapnute (default), BKP_DR6 bit9 */
+volatile uint16_t g_fx_enabled   = FX_ALL;  /* bitmaska grafickych efektu (okno Animace->EFEKTY),
+                                             * persist JEN v syscfg flash blobu (viz freertos_shared.h) */
 volatile uint8_t g_sys_cfg_dirty = 0;
 volatile uint8_t g_reboot_req    = 0;     /* Menu->Restart -> defaultTask udela NVIC_SystemReset */
 /* 1 = pri bootu byla platna syscfg BKP (warm reset, BKP prezila) -> syscfg_load
@@ -177,6 +186,9 @@ int run_selftests(void)
   r[4] = app_gpsdo_selftest()        ? 1 : 2;
   r[5] = rtc_selftest()              ? 1 : 2;   /* kalendar (tz prehoupnuti) + EU DST hranice */
   r[6] = datalog_selftest()          ? 1 : 2;   /* serializace 32B zaznamu + CRC + kalendar->unix */
+  r[7] = meas_math_selftest()        ? 1 : 2;   /* Math Mx+B + NULL + limit pass/fail vektory (#43/#44) */
+  r[8] = setup_selftest()            ? 1 : 2;   /* sanitizace slotu sestavy (clamp jas/dim/zona/M) */
+  r[9] = autocal_selftest()          ? 1 : 2;   /* verdikt self-checku (PASS/WARN/FAIL pasma) */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);

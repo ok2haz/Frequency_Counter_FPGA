@@ -61,15 +61,18 @@ void screen_main_button_flash_start(int idx);       /* micro-flash overlay pri s
 int  screen_main_button_flash_tick(void);           /* ~20 Hz krok; 1 = prekreslil (odezni flash) */
 int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati 1 pokud prekreslil */
 int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
+int  screen_main_redraw_cpu(int force);                /* blok vytizeni CPU (CM7/CM4) v headeru; vrati 1 pokud kreslil */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
 int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
-int  screen_main_freq_flash_tick(void);                /* ~20 Hz: odezni zvyrazneni zmenene skupiny cislic (item 8) */
 void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni (pri prepnuti RUN/STOP) */
 void screen_main_freq_sim_step(void);                  /* krok simulace BEZ kresleni (mimo main obrazovku) */
+float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
+double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
 int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd Offset/σ/Drift (item 2, jen v2) */
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
+int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
@@ -78,6 +81,8 @@ int  screen_main_sys_poll(void);                       /* 1 = zmena SYS zdravi -
 bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan nahledu -> ALLAN okno? */
 bool screen_main_hit_trend(int16_t x, int16_t y);      /* tap do trend karty -> fullscreen trend? */
 void screen_main_render_allan_big(prim_rect_t rect);   /* fullscreen Allan log-log graf (okno) */
+void screen_main_set_allan_metric(int m);              /* 0=ADEV,1=TDEV,2=MTIE (prepinac v okne ALLAN) */
+int  screen_main_allan_metric(void);                   /* aktualni metrika 0/1/2 */
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */
 int  screen_main_trend_secs(void);                     /* aktualni okno trendu [s] */
@@ -100,7 +105,7 @@ bool screen_main_layout_is_old(void);                   /* 1 = aktivni stary (pr
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
 extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
-extern const char *SCR_S_CAL_L, *SCR_S_CAL_V, *SCR_S_HOLD_L, *SCR_S_HOLD_V;
+extern const char *SCR_S_HOLD_L, *SCR_S_HOLD_V;
 extern const char *SCR_S_TITLE_RIGHT;
 extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
 extern const int16_t SCR_MAIN_DIGIT_COUNT;
@@ -109,8 +114,5 @@ extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
 extern const char *SCR_S_OFFSET_L;
 extern const char *SCR_S_TREND_L;
 extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
-/* Allan: Y dekady staticke (sdileny renderer allan_plot — karta mono_14, velke
- * okno mono_16), krivka POCITANA (ADEV), X popisky dynamicke. */
-extern const char *SCR_ALLAN_Y_TICKS[];
 extern const char *SCR_S_BTN_RUN, *SCR_S_BTN_GATE_L,
                   *SCR_S_BTN_CHAN_L, *SCR_S_BTN_MENU;

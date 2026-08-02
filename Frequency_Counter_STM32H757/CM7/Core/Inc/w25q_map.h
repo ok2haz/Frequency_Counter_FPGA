@@ -20,8 +20,15 @@
 #define W25Q_CALIB_BASE      0x010000u
 #define W25Q_CALIB_SECTORS   16u                      /* 64 KB */
 
-/* Generic bulk / logy (app-defined, zatim nevyuzito). */
-#define W25Q_DATA_BASE       0x020000u
-#define W25Q_DATA_SIZE       (W25Q_SIZE_BYTES - W25Q_DATA_BASE)   /* ~63,875 MB */
+/* Ulozene sestavy (instrument setup profily, #) — wear-leveled blob store.
+ * Vsech N slotu = JEDEN blob (male, << 4080 B cap). ⚠️ Pridano 2026-08-01:
+ * DATA_BASE posunuto 0x020000 -> 0x030000 (o 64 KB) => datalog se po tomto flashi
+ * jednou zalozi znovu (stare zaznamy na 0x020000 osiroti — benigni, bring-up). */
+#define W25Q_SETUP_BASE      0x020000u
+#define W25Q_SETUP_SECTORS   16u                      /* 64 KB (wear-leveling headroom) */
+
+/* Generic bulk / logy (datalog). */
+#define W25Q_DATA_BASE       0x030000u
+#define W25Q_DATA_SIZE       (W25Q_SIZE_BYTES - W25Q_DATA_BASE)   /* ~63,8 MB */
 
 #endif /* INC_W25Q_MAP_H_ */

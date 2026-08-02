@@ -8,15 +8,15 @@
 #define ADS_REG_CONFIG       0x01
 #define ADS_TIMEOUT          50
 
-bool ads1115_start(I2C_HandleTypeDef *hi2c, uint8_t ch)
+bool ads1115_start(I2C_HandleTypeDef *hi2c, uint8_t ch, ads1115_pga_t pga)
 {
-    if (ch > 3) return false;
+    if (ch > 3 || pga > ADS1115_PGA_0V256) return false;
 
-    /* Config: OS=1 (start) | MUX=100+ch (AINch vs GND) | PGA=001 (+-4.096V)
+    /* Config: OS=1 (start) | MUX=100+ch (AINch vs GND) | PGA (per kanal)
      *       | MODE=1 (single-shot) | DR=100 (128 SPS) | COMP_QUE=11 (disable). */
     uint16_t cfg = (1u << 15)
                  | ((uint16_t)(0x04u + ch) << 12)
-                 | (1u << 9)
+                 | ((uint16_t)pga << 9)
                  | (1u << 8)
                  | (4u << 5)
                  | 0x0003u;
