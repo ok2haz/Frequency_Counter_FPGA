@@ -1549,7 +1549,7 @@ static const struct {
     { SENS_VDDA,   "REF 2V5",    2300.f,  2700.f,  2500.f, 0.001f, 2, " V",   0 },
     { SENS_VBAT,   "VBAT",       2500.f,  3300.f,  3000.f, 0.001f, 2, " V",   0 },
     { SENS_ADS0,   "OCXO Vc",       0.f,  3300.f,  1650.f, 0.001f, 2, " V",   0 },
-    { SENS_ADS1,   "RF level",    -80.f,   10.f,    -1.f, 1.f,     1, " dBm", 1 },
+    { SENS_ADS1,   "RF level",    -80.f,   10.f,  -100.f, 1.f,     1, " dBm", 1 },  /* nom < lo = zadny REF marker (RF nema ocekavanou hodnotu) */
 };
 /* Stred radku (y) pro index r (0..3 = karta Teploty, 4..9 = karta Napajeni). */
 static int16_t hbar_cy(int r)
@@ -1558,58 +1558,111 @@ static int16_t hbar_cy(int r)
                    : (int16_t)(266 + (r - 4) * 26);   /* 266..396 (6 radku)  */
 }
 
+/* ── Segmentovany horizontalni bar (#47 granularita) ─────────────────────────
+ * Stopa je slozena z HB_SEGS malych segmentu; vyplneny usek = AKTUALNI hodnota,
+ * plus barevne markery MIN / MAX / REFERENCNI (nominal) prekresli svuj segment
+ * -> na prvni pohled aktualni hodnota vs. dosud videny rozsah [min,max] i
+ * ocekavana (nominalni) hodnota. Barvy viz legenda (hbar_legend):
+ *   AKT = zelena/amber vypln, REF = accent, MIN = violet, MAX = cervena. */
+#define HB_SEGS  45          /* pocet segmentu (452 px / ~10 px na segment) */
+#define HB_SGAP  2           /* mezera mezi segmenty [px]                   */
+
+/* Prepocet SYROVE hodnoty senzoru (s->last/min/max) na zobrazovanou jednotku. */
+static float hbar_disp(int r, float raw)
+{
+    if (HBAR[r].rf) {   /* AD8307: dBm = mV/slope + intercept */
+        float slope = g_calib.ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.f;
+        return raw / slope + g_calib.ad8307_intercept_dbm;
+    }
+    return raw * HBAR[r].scale;
+}
+/* Zobrazovana hodnota -> pct (0..100) v rozsahu baru [lo..hi]. */
+static int16_t hbar_pct_disp(int r, float disp)
+{
+    float bar = (disp - HBAR[r].lo) / (HBAR[r].hi - HBAR[r].lo);
+    if (bar < 0.f) bar = 0.f; else if (bar > 1.f) bar = 1.f;
+    return (int16_t)(bar * 100.f + 0.5f);
+}
+/* Obdelnik segmentu i uvnitr stopy tr (vyska = stopa bez 1px okraje). */
+static prim_rect_t hb_seg(prim_rect_t tr, int16_t i)
+{
+    int16_t sw = (int16_t)((tr.w - (HB_SEGS - 1) * HB_SGAP) / HB_SEGS);
+    if (sw < 1) sw = 1;
+    int16_t sx = (int16_t)(tr.x + i * (sw + HB_SGAP));
+    return (prim_rect_t){ sx, (int16_t)(tr.y + 1), sw, (int16_t)(tr.h - 2) };
+}
+/* Segment, ktery kryje danou pct pozici (marker). */
+static int16_t hb_marker_idx(int16_t pct)
+{
+    int16_t i = (int16_t)((int32_t)pct * HB_SEGS / 100);
+    if (i >= HB_SEGS) i = (int16_t)(HB_SEGS - 1);
+    if (i < 0) i = 0;
+    return i;
+}
+
 /* Zobrazovana hodnota radku r + odpovidajici bar_pct (0..100). Vraci 1 kdyz
  * jsou platna data (samples>0). RF prepocita mV->dBm z kalibrace. */
 static int hbar_value(int r, char *out, size_t n, int16_t *pct_out)
 {
     const sensor_stat_t *s = &g_sensors[HBAR[r].id];
     if (!s->samples) { snprintf(out, n, "--"); *pct_out = 0; return 0; }
-    float disp;
-    if (HBAR[r].rf) {   /* AD8307: dBm = mV/slope + intercept */
-        float slope = g_calib.ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.f;
-        disp = s->last / slope + g_calib.ad8307_intercept_dbm;
-    } else {
-        disp = s->last * HBAR[r].scale;
-    }
-    float bar = (disp - HBAR[r].lo) / (HBAR[r].hi - HBAR[r].lo);
-    if (bar < 0.f) bar = 0.f; else if (bar > 1.f) bar = 1.f;
-    *pct_out = (int16_t)(bar * 100.f + 0.5f);
+    float disp = hbar_disp(r, s->last);
+    *pct_out = hbar_pct_disp(r, disp);
     char num[16]; fmt_fixed(num, sizeof num, disp, HBAR[r].deci);
     snprintf(out, n, "%s%s", num, HBAR[r].unit);
     return 1;
 }
 
-/* Prekresli dynamickou cast JEDNOHO radku (track + fill + nominal + hodnota).
+/* Kompaktni legenda barev markeru — ve footeru vpravo od tlacitka "< GRAFY"
+ * (kresli se jednou). ⚠️ NELZE vedle nadpisu: window_chrome kresli titulek
+ * CENTROVANE (SCREEN_W/2, mono_25) a "PREHLED KANALU" saha az ~x=505 -> kolize. */
+static void hbar_legend(void)
+{
+    struct { const char *t; prim_color_t c; } it[4] = {
+        { "AKT", UI_COLOR_OK },     { "REF", UI_COLOR_ACC },
+        { "MIN", UI_COLOR_VIOLET }, { "MAX", UI_COLOR_BAD },
+    };
+    int16_t x = 250;                 /* za tlacitkem GRAFY (18..218), y = stred footeru */
+    for (int i = 0; i < 4; i++) {
+        prim_fill_rect((prim_rect_t){x, 440, 14, 14}, it[i].c, PRIM_BLEND_OVER);
+        prim_draw_text((prim_point_t){(int16_t)(x + 18), 452}, it[i].t,
+                       &ui_font_mono_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        x = (int16_t)(x + 78);
+    }
+}
+
+/* Prekresli dynamickou cast JEDNOHO radku (track + segmenty + markery + hodnota).
  * Cely radek se nejdriv vycisti (REPLACE) -> mark_dirty pokryje copy-forward. */
-static void hbar_row_draw(int r, int16_t pct, int valid, int samples, const char *val)
+static void hbar_row_draw(int r, int16_t pct, int16_t minp, int16_t maxp,
+                          int valid, int samples, const char *val)
 {
     int16_t cy = hbar_cy(r);
     /* Vycisti dynamickou zonu radku (za labelem az po hodnotu). */
     prim_fill_rect((prim_rect_t){HB_TRACK_X, (int16_t)(cy - 11),
                    (int16_t)(HB_VAL_XR - HB_TRACK_X), 22}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    /* Stopa. */
+    /* Stopa (podklad). */
     prim_rect_t tr = {HB_TRACK_X, (int16_t)(cy - 7), HB_TRACK_W, 14};
     prim_fill_rect_rounded(tr, 3, UI_COLOR_INK_5, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(tr, 3, 1, UI_COLOR_LINE);
-    prim_color_t col = UI_COLOR_INK_5;
     if (samples) {
         int has_nom = (HBAR[r].nom > HBAR[r].lo);
         int ok = 1;
         if (has_nom) {
-            float dev = (HBAR[r].hi - HBAR[r].lo) * 0.15f;
+            float dev  = (HBAR[r].hi - HBAR[r].lo) * 0.15f;
             float disp = HBAR[r].lo + (HBAR[r].hi - HBAR[r].lo) * pct / 100.f;
             ok = (disp > HBAR[r].nom - dev) && (disp < HBAR[r].nom + dev);
         }
-        col = valid ? (ok ? UI_COLOR_OK : UI_COLOR_WARN) : UI_COLOR_INK_5;
-        int16_t fw = (int16_t)((int32_t)HB_TRACK_W * pct / 100);
-        if (fw > 0)
-            prim_fill_rect_rounded((prim_rect_t){tr.x, tr.y, fw, tr.h}, 3, col, PRIM_BLEND_OVER);
-        if (has_nom) {   /* nominalni marker = svisla ryska pres stopu (accent) */
-            int16_t nx = (int16_t)(tr.x + (int32_t)HB_TRACK_W *
-                         (int16_t)((HBAR[r].nom - HBAR[r].lo) * 100.f /
-                                   (HBAR[r].hi - HBAR[r].lo)) / 100);
-            prim_fill_rect((prim_rect_t){(int16_t)(nx - 1), (int16_t)(cy - 11), 2, 22},
-                           UI_COLOR_ACC, PRIM_BLEND_OVER);
+        /* AKTUALNI = vyplneny usek segmentu (zelena/amber dle odchylky). */
+        prim_color_t base = valid ? (ok ? UI_COLOR_OK : UI_COLOR_WARN) : UI_COLOR_INK_4;
+        int16_t lit = (int16_t)(((int32_t)pct * HB_SEGS + 50) / 100);
+        for (int16_t i = 0; i < lit; i++)
+            prim_fill_rect(hb_seg(tr, i), base, PRIM_BLEND_OVER);
+        /* Markery kresli PRES vypln (at jsou videt i uvnitr zelene): */
+        prim_fill_rect(hb_seg(tr, hb_marker_idx(minp)), UI_COLOR_VIOLET, PRIM_BLEND_OVER); /* MIN */
+        prim_fill_rect(hb_seg(tr, hb_marker_idx(maxp)), UI_COLOR_BAD,    PRIM_BLEND_OVER); /* MAX */
+        if (has_nom) {                                                  /* REFERENCNI (nominal) */
+            int16_t refp = hbar_pct_disp(r, HBAR[r].nom);
+            prim_fill_rect(hb_seg(tr, hb_marker_idx(refp)), UI_COLOR_ACC, PRIM_BLEND_OVER);
         }
     }
     /* Hodnota vpravo (vlastni box-clear). */
@@ -1620,12 +1673,13 @@ static void hbar_row_draw(int r, int16_t pct, int valid, int samples, const char
 
 static void app_gpsdo_render_hbars(void)
 {
-    static int16_t  s_pct[HBAR_ROWS];
+    static int16_t  s_pct[HBAR_ROWS], s_minp[HBAR_ROWS], s_maxp[HBAR_ROWS];
     static char     s_val[HBAR_ROWS][16];
     int first = window_first(30);
     if (first) {
         s_view = 30;
         window_chrome("PREHLED KANALU", WIN_TITLE_Y);
+        hbar_legend();
         ui_card_t ct = {.rect = HB_CARD_T, .header_label = "Teploty [C]"};
         ui_card_render_chrome(&ct);
         ui_card_t cv = {.rect = HB_CARD_V, .header_label = "Napajeni + RF"};
@@ -1639,17 +1693,20 @@ static void app_gpsdo_render_hbars(void)
                           .label = "< GRAFY"};
         ui_button_render(&gb);
     }
-    /* Per-radek zmena: prekresli jen radky, kde se zmenilo pct nebo text. */
+    /* Per-radek zmena: prekresli jen radky, kde se zmenilo pct/min/max nebo text. */
     int drew = first;
     for (int r = 0; r < HBAR_ROWS; r++) {
         char val[16]; int16_t pct;
         const sensor_stat_t *s = &g_sensors[HBAR[r].id];
         int valid = s->valid;
         hbar_value(r, val, sizeof val, &pct);
-        if (first || pct != s_pct[r] || strcmp(val, s_val[r]) != 0) {
-            s_pct[r] = pct;
+        int16_t minp = s->samples ? hbar_pct_disp(r, hbar_disp(r, s->min)) : 0;
+        int16_t maxp = s->samples ? hbar_pct_disp(r, hbar_disp(r, s->max)) : 0;
+        if (first || pct != s_pct[r] || minp != s_minp[r] || maxp != s_maxp[r]
+                  || strcmp(val, s_val[r]) != 0) {
+            s_pct[r] = pct; s_minp[r] = minp; s_maxp[r] = maxp;
             snprintf(s_val[r], sizeof s_val[r], "%s", val);
-            hbar_row_draw(r, pct, valid, s->samples, val);
+            hbar_row_draw(r, pct, minp, maxp, valid, s->samples, val);
             drew = 1;
         }
     }

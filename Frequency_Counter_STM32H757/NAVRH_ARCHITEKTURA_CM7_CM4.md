@@ -135,8 +135,9 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
 
 ## 5. Ethernet + webserver — nativně, žádný modul
 
-- **PHY na desce** (LAN87xx, RMII, 25 MHz zdroj) → `ETH` periferie + **lwIP na CM4**.
-  100 Mbit, plná kontrola stacku, 0 Kč HW navíc. W5500 modul zamítnut (viz §0).
+- **PHY na desce = `LAN8742A`** (potvrzeno ze schématu list 4/7, 2026-08-06), RMII,
+  25 MHz zdroj → `ETH` periferie + **lwIP na CM4**. 100 Mbit, plná kontrola stacku,
+  0 Kč HW navíc. W5500 modul zamítnut (viz §0). Detail zprovoznění = §6a.
 - **Známé H7 pasti (zapsat do checklistů):** deskriptory + RX buffery v D2
   ne-cache (CM4 D-cache nemá → odpadá), MPU na CM7 straně D2 nechat být; PHY
   adresa/strapy dle desky; ETH_RES pulz při initu.
@@ -163,6 +164,86 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
   STATus:OPERation:CONDition?     ; lock/alarm bity
   MMEMory:CATalog?  MMEMory:DATA? <file>   ; logy z SD
   ```
+
+## 6a. Zprovoznění a nasazení SCPI + Ethernetu (detail)
+
+> Rozpracování §5/§6 se zaměřením na **clocking, autonegotiaci rychlosti a
+> velikosti paketů**. Váže se na žebřík M9–M12 (viz §11 a `STATUS.md`). Přidáno
+> 2026-08-06. ⚠️ Zlaté pravidlo trvá: **nic ze sítě nesmí předběhnout #2** (reálná
+> data z FPGA) — SCPI/web vracející simulaci je horší než mlčení.
+
+### 6a.1 Hardware a clocking (LAN8742A, RMII)
+- **PHY = `LAN8742A` (U4), předpokládaný režim „REF_CLK OUT".** 25 MHz **oscilátor**
+  (ECS-2520MV, X1 — single-ended, XTAL2 = NC) → `XTAL1/CLKIN` (pin 5), PHY interní PLL
+  vyrobí **50 MHz RMII** na `INT/REFCLKO` (pin 14, R21 33 Ω) → zpět do MAC `ETH_REF_CLK`.
+  Magnetika **TG110-E050N5xx** (TR1), RJ45 **J8**. Není potřeba externí 50 MHz oscilátor —
+  dělá ho PHY. ⚠️ **Režim REF_CLK OUT závisí na strapu `nINTSEL`** — ověřit ze schématu,
+  že je nastaven na výstup ref. hodin (jinak MAC nedostane RMII clock a link nenaběhne).
+- **Piny (RMII):** ETH_TXD0/1, TX_EN, RXD0/1, CRS_DV, MDC, MDIO, REF_CLK, ETH_RES(nRST),
+  ETH_INT. Deskriptory + RX/TX buffery v **D2 SRAM** — CM4 **nemá D-cache** → žádná
+  cache maintenance (hlavní důvod, proč ETH patří na CM4, ne na CM7).
+- ⚠️ **PHY adresa (PHYAD):** strapy R22–R26 (10k) na RXD0/MODE0, RXD1/MODE1,
+  CRS_DV/MODE2, RXER/PHYAD0 — **dopočítat ze skutečných pull-up/down a MUSÍ sedět
+  s HAL/lwIP konfigurací** (jinak MDIO scan PHY nenajde). Bezpečně: init udělá
+  **scan adres 0–31** a najde první živou (čtení PHY ID = `0x0007C130/C131` pro
+  LAN8742A) — nezávislé na strapu.
+
+### 6a.2 Bring-up sekvence (M9: link + DHCP + ping)
+1. **Reset PHY:** pulz `ETH_RES` (nRST) low ≥100 µs, po náběhu ≥ ~a pár ms než PHY odpoví na MDIO.
+2. **SMI/MDIO:** scan adres → čtení **PHY ID (reg 2/3)** = ověření `LAN8742A`. Uložit PHYAD.
+3. **Autonegotiace** (viz 6a.3) → počkat na dokončení → přečíst výsledek.
+4. **MAC config z výsledku** (Speed/Duplex) → `HAL_ETH_SetMACConfig`.
+5. **DMA deskriptory** (D2) + start RX/TX, lwIP `netif` up.
+6. **DHCP** (default) nebo statická IP (fallback po ~5 s bez DHCP).
+7. **Ping** z PC projde = M9 splněno. **Flood test** `ping -f` = test izolace jader:
+   displej na CM7 nesmí zpomalit, žádný watchdog reset, CPU % CM7 se nehne.
+
+### 6a.3 Autonegotiace rychlosti (IEEE 802.3 clause 28)
+- **Princip:** PHY inzeruje své schopnosti (registr **ANAR, reg 4**) — 10/100,
+  half/full, případně 802.3x PAUSE. Link partner (switch) totéž přes FLP burst,
+  výsledek se **rozhodne prioritně** (100FD > 100HD > 10FD > 10HD).
+- **MAC autoneg NEDĚLÁ** — jen se řídí PHY. Po `AUTONEG COMPLETE` (BMSR reg 1 bit5)
+  přečíst **rozlišený režim**: LAN8742A má vendor **reg 31 (PSCSR)** bity HCDSPEED
+  → přímý „100M full" apod.; HAL `lan8742.c` to obalí do
+  `LAN8742_GetLinkState()` → např. `LAN8742_STATUS_100MBITS_FULLDUPLEX`.
+- **Doporučení:** inzerovat **plný rozsah (10/100, half/full)** a nechat rozhodnout
+  link partner — na switchi typicky vyjde **100BASE-TX FD**. Forced 100FD (bez autoneg)
+  jen pro debug SI. **Flow control (PAUSE) inzerovat** — při stahování logu s malými
+  RX buffery na CM4 pomůže RX PAUSE proti přetečení DMA ringu.
+- **Link change:** hlídat přes `ETH_INT` (PHY interrupt) nebo 1 Hz poll BMSR;
+  při změně re-číst rychlost a přenastavit MAC (10↔100). Stav → IPC snapshot → J7 LINK LED.
+
+### 6a.4 Velikosti paketů a jejich účel
+Rychlost (10/100) ovlivňuje jen **propustnost**, ne velikosti — MTU zůstává 1500 vždy.
+
+| Vrstva | Velikost | Účel |
+|---|---|---|
+| **Ethernet MTU** | **1500 B** (rámec 1518) | standard; **žádné jumbo** — switch nemusí umět, RAM na CM4 drahá, náš provoz to nepotřebuje |
+| **TCP MSS** | **1460 B** (1500−20 IP−20 TCP) | lwIP `TCP_MSS`; největší segment bez IP fragmentace |
+| **RX/TX DMA buffer** | **≥1524 B** × N (4/4) | jeden plný rámec/deskriptor, back-to-back příjem bez CPU; D2 SRAM |
+| **TCP okno (`TCP_WND`)** | ~2–4× MSS (2920–5840 B) | kompromis propustnost ↔ RAM na CM4 |
+| **lwIP `PBUF_POOL_BUFSIZE`** | ≥ plný rámec | RX buffering; počet poolů dle zátěže |
+
+**Aplikační payloady — proč které velikosti:**
+- **SCPI raw 5025:** drobné (`*IDN?`→~7 B dotaz / ~60 B odpověď; `MEAS:FREQ?`→~20 B).
+  Hluboko pod MSS → jeden malý segment, **latency-bound**. ⚠️ **`TCP_NODELAY`
+  (vypnout Nagle)** — jinak se interaktivní odpovědi zdrží ~200 ms. Účel: odezva jako lab. přístroj.
+- **1 Hz status push / WebSocket:** JSON snapshot ~200–500 B → 1 segment. Držet
+  IPC snapshot **< MSS**, ať se vejde do jednoho segmentu. Účel: živý dashboard.
+- **Stahování logu (`datalog_read_back()`):** **bulk** — chceme **plné 1460 B
+  segmenty** + slušné okno. 32 B záznamy → ~45 záznamů/segment. Účel: efektivní
+  přenos, minimum režie na paket. (Čtení přes datalog abstrakci — funguje pro W25Q i SD.)
+- **Web SPA:** statická z CM4 flash, plné MSS segmenty; ideálně **gzip**
+  předkomprimovat = méně paketů, méně flash.
+
+### 6a.5 Nasazení
+- **MAC adresa** z 96-bit unique ID MCU (locally-administered bit) → stabilní unikát bez EEPROM.
+- **DHCP** default + **statická fallback**; **mDNS `gpsdo.local`** (`_scpi-raw._tcp`) = LXI-lite.
+- **USB CDC transport SCPI jde hned** (`USE_USB_CDC_CONSOLE=1` běží) — jen napojit
+  `libscpi` parser; síťová varianta 5025 sdílí tentýž zdroják (GET čte IPC snapshot,
+  SET → cmd ring). Test: `*IDN?`/`MEAS:FREQ?` přes USB i TCP **musí dát shodnou hodnotu i s displejem**.
+- ⚠️ **CM4 stejně jako CM7: nic blokujícího déle než ~10 ms** v síťovém tasku
+  (stejné pravidlo jako `wait_ready` incident) — lwIP callbacky nesmí spinovat.
 
 ## 7. Menší subsystémy
 

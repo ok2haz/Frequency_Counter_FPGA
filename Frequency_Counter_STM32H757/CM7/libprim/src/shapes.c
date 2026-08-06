@@ -87,9 +87,14 @@ void prim_draw_line_dashed(prim_point_t from, prim_point_t to, int16_t thickness
     }
 }
 
-/* Annular band + optional angular sector. */
+/* Annular band + optional angular sector.
+ * `quad` (0..3) = fast-path pro OSOVĚ zarovnaný 90° výsek (rohy zaoblených rámečků):
+ * úhlový test se udělá prostou kontrolou znamének (dx,dy) místo `atan2f` NA PIXEL.
+ * quad<0 = obecný výsek přes `atan2f` (budíky/kužel/Allan — beze změny) nebo (sector=false)
+ * plný kruh. Mapování (obrazovka, y dolů): 0=[0,90] vpravo-nahoře, 1=[90,180] vlevo-nahoře,
+ * 2=[180,270] vlevo-dole, 3=[270,360] vpravo-dole. Pixel-identické s atan2f verzí. */
 static void ring_sector(prim_point_t c, float r_out, float r_in,
-                        prim_color_t color, bool sector,
+                        prim_color_t color, bool sector, int quad,
                         float a_start_deg, float a_sweep_deg)
 {
     int16_t minx = (int16_t)floorf(c.x - r_out - 1);
@@ -113,9 +118,20 @@ static void ring_sector(prim_point_t c, float r_out, float r_in,
             if (cov > 1.0f) cov = 1.0f;
 
             if (sector) {
-                float ang = atan2f(-dy, dx) * 57.2957795f; /* deg, y-up */
-                while (ang < a0) ang += 360.0f;
-                if (ang > a1) continue;
+                if (quad >= 0) {                 /* osově zarovnaný 90° roh: bez atan2f */
+                    bool in;
+                    switch (quad) {
+                    case 0:  in = (dx >= 0.0f && dy <= 0.0f); break;  /* [0,90]   */
+                    case 1:  in = (dx <= 0.0f && dy <= 0.0f); break;  /* [90,180] */
+                    case 2:  in = (dx <= 0.0f && dy >= 0.0f); break;  /* [180,270]*/
+                    default: in = (dx >= 0.0f && dy >= 0.0f); break;  /* [270,360]*/
+                    }
+                    if (!in) continue;
+                } else {                         /* obecný výsek */
+                    float ang = atan2f(-dy, dx) * 57.2957795f; /* deg, y-up */
+                    while (ang < a0) ang += 360.0f;
+                    if (ang > a1) continue;
+                }
             }
             prim_internal_blend_px(x, y, color, (uint8_t)(cov * 255.0f + 0.5f));
         }
@@ -128,13 +144,13 @@ void prim_draw_circle(prim_point_t center, int16_t radius, int16_t thickness,
     if (radius <= 0) return;
     if (thickness <= 0) thickness = 1;
     ring_sector(center, (float)radius, (float)(radius - thickness),
-                color, false, 0.0f, 360.0f);
+                color, false, -1, 0.0f, 360.0f);
 }
 
 void prim_fill_circle(prim_point_t center, int16_t radius, prim_color_t color)
 {
     if (radius <= 0) return;
-    ring_sector(center, (float)radius, 0.0f, color, false, 0.0f, 360.0f);
+    ring_sector(center, (float)radius, 0.0f, color, false, -1, 0.0f, 360.0f);
 }
 
 void prim_draw_arc(prim_point_t center, int16_t radius, int16_t thickness,
@@ -143,6 +159,18 @@ void prim_draw_arc(prim_point_t center, int16_t radius, int16_t thickness,
 {
     if (radius <= 0) return;
     if (thickness <= 0) thickness = 1;
+    /* Fast-path: osově zarovnaný 90° oblouk (rohy zaoblených rámečků) -> quadrantový
+     * znaménkový test místo atan2f/px. Jinak quad=-1 = obecný atan2f (budíky/kužel). */
+    int quad = -1;
+    if (sweep_angle_deg == 90) {
+        switch (start_angle_deg) {
+        case 0:   quad = 0; break;
+        case 90:  quad = 1; break;
+        case 180: quad = 2; break;
+        case 270: quad = 3; break;
+        default:  break;
+        }
+    }
     ring_sector(center, (float)radius, (float)(radius - thickness),
-                color, true, (float)start_angle_deg, (float)sweep_angle_deg);
+                color, true, quad, (float)start_angle_deg, (float)sweep_angle_deg);
 }
