@@ -19,10 +19,13 @@
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
 #include "calib.h"              /* g_calib, calib_load/save — okno Kalibrace */
 #include "meas_math.h"          /* g_meas_cfg + Math/limity (#43/#44) — okno MATH */
+#include "meas_present.h"       /* perioda/jednotky/nominal/statistika/TFOM (#67) — okno MERENI */
 #include "setup.h"              /* uloz/nacti sestavu — okno SESTAVY (s_view=33) */
 #include "autocal.h"            /* autokalibrace / self-check — tlacitko AUTO-CAL v Kalibraci */
 #include "syscfg.h"             /* syscfg_load — nastaveni z W25Q flash (prezije power-cycle) */
 #include "cmsis_os2.h"          /* osThreadGetStackSpace (volny stack tasku) */
+#include "FreeRTOS.h"           /* taskENTER_CRITICAL — atomicka publikace g_survey_* (S2) */
+#include "task.h"
 #include <prim/prim.h>
 #include <ui/ui.h>
 #include <stdio.h>
@@ -64,7 +67,7 @@ extern volatile char     g_reset_text[12];       /* pricina posledniho resetu (m
 extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene) */
 extern volatile char     g_crash_text[16];       /* crash black-box z BKP ("stack:UiTask") */
 extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 2=FAIL */
-extern volatile uint8_t  g_selftest_detail[10];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=10) */
+extern volatile uint8_t  g_selftest_detail[11];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=11) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
 int run_selftests(void);                         /* pure-logic testy — okno Selftest (SPUSTIT) */
@@ -3053,12 +3056,19 @@ static void survey_stop(void)
     s_survey.active = 0;
     gps_survey_disable_cmd();
     if (s_survey.n >= 2) {   /* persist vysledek do syscfg flash (prezije power-cycle) */
-        g_survey_valid  = 1;
+        /* ⚠️ S2: g_survey_lat/lon jsou double (8 B = 2 STR). defaultTask (Normal, syscfg
+         * flash save) muze preemptnout tenhle UiTask (BelowNormal) uprostred zapisu ->
+         * trhany double -> nesmyslna souradnice do flashe. Kriticka sekce udela CELY
+         * publish atomicky. Ctenar (syscfg) chranit netreba: UiTask (nizsi prio) ho
+         * nemuze preemptnout, takze jeho cteni je vuci nam atomicke. valid nakonec. */
+        taskENTER_CRITICAL();
         g_survey_n      = s_survey.n;
         g_survey_lat    = s_survey.mlat;
         g_survey_lon    = s_survey.mlon;
         g_survey_alt    = (float)s_survey.malt;
         g_survey_spread = s_survey.spread_m;
+        g_survey_valid  = 1;
+        taskEXIT_CRITICAL();
     }
 }
 
@@ -3446,6 +3456,97 @@ static void cnt_nibble(int16_t x, int16_t baseline, uint8_t nib, int seen)
     }
 }
 
+/* ── Okno MERENI (s_view=34) — prezentace mereni (#67) ────────────────────────
+ * Perioda / odchylka v jednotkach (Hz/ppm/ppb/ppt/rel) / auto-nominal / offset /
+ * statistika N vzorku (mean/σ/p-p) / TFOM. Jadro = meas_present.c/h (selftest
+ * 11/11). Sesterske k Citaci (footer "< CITAC" / "MERENI >", bez nav_push -> BACK
+ * z obou vede do Menu). Vzorky statistiky pridava app_gpsdo_tick_stats_sample
+ * (1/s, jen RUN). ⚠️ Nad screen_main_freq_hz() = DNES SIMULACE -> plny smysl po #2. */
+static uint8_t    s_meas_mode = 0;             /* 0 = FREKV, 1 = PERIODA */
+static mp_unit_t  s_meas_unit = MP_UNIT_PPB;
+static mp_stats_t s_meas_stats;                /* akumulace v tick_stats_sample */
+static const prim_rect_t CNT_MEAS_BTN  = {18,  417, 200, 61};   /* Citac -> MERENI */
+static const prim_rect_t MEAS_MODE_BTN = {18,  417, 140, 61};
+static const prim_rect_t MEAS_UNIT_BTN = {166, 417, 140, 61};
+static const prim_rect_t MEAS_RST_BTN  = {314, 417, 130, 61};
+static const prim_rect_t MEAS_CNT_BTN  = {452, 417, 190, 61};   /* MERENI -> Citac */
+
+static void app_gpsdo_render_meas(void)
+{
+    int first = window_first(34);
+    static char c_pri[48], c_nom[48], c_dev[48], c_off[48], c_tf[24],
+                c_n[24], c_mean[48], c_sd[32], c_pp[32];
+    if (first) {
+        s_view = 34;
+        window_chrome("MERENI  prezentace", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_C, .header_label = "Perioda / odchylka / statistika / TFOM"};
+        ui_card_render_chrome(&c);
+        ui_button_t bm = {.rect = MEAS_MODE_BTN, .variant = UI_BUTTON_NORMAL,
+                          .label = s_meas_mode ? "PERIODA" : "FREKV."};
+        ui_button_render(&bm);
+        ui_button_t bu = {.rect = MEAS_UNIT_BTN, .variant = UI_BUTTON_NORMAL,
+                          .label = mp_unit_label(s_meas_unit)};
+        ui_button_render(&bu);
+        ui_button_t br = {.rect = MEAS_RST_BTN, .variant = UI_BUTTON_NORMAL, .label = "RESET"};
+        ui_button_render(&br);
+        ui_button_t bc = {.rect = MEAS_CNT_BTN, .variant = UI_BUTTON_NORMAL, .label = "< CITAC"};
+        ui_button_render(&bc);
+        c_pri[0]=c_nom[0]=c_dev[0]=c_off[0]=c_tf[0]=c_n[0]=c_mean[0]=c_sd[0]=c_pp[0]='\0';
+    }
+    double hz  = screen_main_freq_hz();
+    double nom = mp_nominal_auto(hz);
+    int drew = first;
+    char b[48], db[32];
+
+    /* Primarni readout: FREKV (fmt_hz, double) nebo PERIODA v ns. */
+    if (s_meas_mode) { double ns = mp_period_s(hz) * 1e9; fmt_fixed(db, sizeof db, (float)ns, 4);
+                       snprintf(b, sizeof b, "%s ns", db); }
+    else             fmt_hz(hz, b, sizeof b);
+    if (first || dchg(c_pri, sizeof c_pri, b)) { kv_row_live(104, "Primarni:", b, UI_COLOR_INK, first); drew = 1; }
+
+    /* Auto-nominal (nejblizsi kulata reference). */
+    fmt_hz(nom, b, sizeof b);
+    if (first || dchg(c_nom, sizeof c_nom, b)) { kv_row_live(138, "Nominal:", b, UI_COLOR_INK_2, first); drew = 1; }
+
+    /* Odchylka ve zvolene jednotce. */
+    fmt_fixed(db, sizeof db, (float)mp_deviation(hz, nom, s_meas_unit), 4);
+    snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
+    if (first || dchg(c_dev, sizeof c_dev, b)) { kv_row_live(172, "Odchylka:", b, UI_COLOR_ACC, first); drew = 1; }
+
+    /* Offset od nominalu [Hz]. */
+    fmt_hz(hz - nom, b, sizeof b);
+    if (first || dchg(c_off, sizeof c_off, b)) { kv_row_live(206, "Offset:", b, UI_COLOR_INK_2, first); drew = 1; }
+
+    /* TFOM (odhad z kvality GPS + holdover/warmup). */
+    { gps_data_t g; gps_get(&g);
+      int holdover = (!g.valid && g.fixes > 0);
+      int warmup   = !warmup_ready(NULL);   /* NULL = nezajima nas sklon, jen bool */
+      mp_tfom_t tf = mp_tfom(g.valid, g.fix_mode, g.num_sat, g.hdop, holdover, warmup);
+      snprintf(b, sizeof b, "%u  %s", (unsigned)tf.level, tf.label);
+      if (first || dchg(c_tf, sizeof c_tf, b)) {
+          prim_color_t tc = (tf.level <= 2) ? UI_COLOR_OK : (tf.level <= 6) ? UI_COLOR_WARN : UI_COLOR_BAD;
+          kv_row_live(240, "TFOM:", b, tc, first); drew = 1;
+      }
+    }
+
+    /* Statistika N vzorku (Welford; akumuluje tick_stats_sample 1/s jen RUN, RESET nuluje). */
+    snprintf(b, sizeof b, "%lu", (unsigned long)s_meas_stats.n);
+    if (first || dchg(c_n, sizeof c_n, b)) { kv_row_live(274, "Vzorku (N):", b, UI_COLOR_INK_2, first); drew = 1; }
+
+    fmt_hz(s_meas_stats.mean, b, sizeof b);
+    if (first || dchg(c_mean, sizeof c_mean, b)) { kv_row_live(308, "Prumer:", b, UI_COLOR_INK, first); drew = 1; }
+
+    fmt_fixed(db, sizeof db, (float)mp_stats_sd(&s_meas_stats), 5);
+    snprintf(b, sizeof b, "%s Hz", db);
+    if (first || dchg(c_sd, sizeof c_sd, b)) { kv_row_live(342, "σ (n-1):", b, UI_COLOR_VIOLET, first); drew = 1; }
+
+    fmt_fixed(db, sizeof db, (float)mp_stats_p2p(&s_meas_stats), 5);
+    snprintf(b, sizeof b, "%s Hz", db);
+    if (first || dchg(c_pp, sizeof c_pp, b)) { kv_row_live(384, "Peak-peak:", b, UI_COLOR_INK_2, first); drew = 1; }
+
+    if (drew) present_now();
+}
+
 static void app_gpsdo_render_counter(void)
 {
     int first = window_first(19);
@@ -3469,6 +3570,8 @@ static void app_gpsdo_render_counter(void)
         prim_draw_text((prim_point_t){DG_LLBL, 384},
                        "pin28 = /4 (primar)   pin27 = /16 (rozsah)   zdrave faze = 4+4 zelene",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        ui_button_t bmeas = {.rect = CNT_MEAS_BTN, .variant = UI_BUTTON_NORMAL, .label = "MERENI >"};
+        ui_button_render(&bmeas);   /* -> sesterske okno MERENI (#67, bez nav_push) */
         c_link[0] = c_f4[0] = c_f16[0] = c_edge[0] = c_gate[0] = c_seq[0] = c_err[0] = '\0';
         c_ph = -1;
     }
@@ -3562,7 +3665,7 @@ static void app_gpsdo_render_selftest(void)
     ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
-    #define ST_N 10                 /* = SELFTEST_N (freertos_shared.h) */
+    #define ST_N 11                 /* = SELFTEST_N (freertos_shared.h) */
     static const char *NAMES[ST_N] = {
         "CRC16 (SPI protokol)",     /* crc16("123456789") == 0x29B1 */
         "Hystereze /4 <-> /16",     /* fpga_freq_select_core na syntetickych ramcich */
@@ -3574,12 +3677,13 @@ static void app_gpsdo_render_selftest(void)
         "Math + limity",            /* meas_math: Mx+B, NULL, pass/fail (#43/#44) */
         "Sestava (sanitizace)",     /* setup: clamp jas/dim/zona/M (#54) */
         "Auto-cal (verdikt)",       /* autocal: PASS/WARN/FAIL pasma (#68) */
+        "Prezentace mereni",        /* meas_present: perioda/nominal/jednotky/stat/TFOM (#67) */
     };
     int pass = 0;
     for (int i = 0; i < ST_N; i++) {
-        /* Roztec 22 (10 testu, 2026-08-01 pridan setup+autocal): od 100 -> posledni
-         * na 100+9*22=298, "Celkem" na 322 -> 24 px rezerva; karta konci na 362. */
-        int16_t yy = (int16_t)(100 + i * 22);
+        /* Roztec 20 (11 testu, 2026-08-07 pridan meas_present): od 100 -> posledni
+         * na 100+10*20=300, "Celkem" na 322 -> 40 px rezerva; karta konci na 362. */
+        int16_t yy = (int16_t)(100 + i * 20);
         dlabel(DG_LLBL, yy, NAMES[i]);
         uint8_t r = g_selftest_detail[i];
         const char *rs = (r == 1) ? "PASS" : (r == 2) ? "FAIL" : "---";
@@ -4156,6 +4260,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 30) app_gpsdo_render_hbars();     /* Prehled kanalu: horizontalni bargrafy */
     else if (s_view == 31) app_gpsdo_render_math();      /* Math/limity (zive X/Y/verdikt) */
     else if (s_view == 32) app_gpsdo_render_survey();    /* Self-survey (zive prumerovani polohy) */
+    else if (s_view == 34) app_gpsdo_render_meas();      /* MERENI: perioda/jednotky/statistika/TFOM (#67) */
 }
 
 /* Hodinovy tik (~kazdych 100 ms): na hlavni obrazovce prekresli cas/datum z GPS
@@ -4414,6 +4519,7 @@ void app_gpsdo_tick_stats_sample(void)
      * nikdy nedosahly dlouhych tau). Kresleni je gatovane zvlast (draw ticky). */
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     screen_main_stats_sample();
+    mp_stats_add(&s_meas_stats, screen_main_freq_hz());   /* statistika okna MERENI (#67, RESET nuluje) */
     /* #44: prubezne vyhodnoceni limitu (nezavisle na oknu -> alarm hlida i mimo
      * okno MATH). Verdikt cte alarm.c (edge PASS->FAIL). Levne (1x/s). */
     g_meas_verdict = (uint8_t)meas_limit_eval(&g_meas_cfg,
@@ -4530,6 +4636,25 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 30 && in_rect(x, y, HBARS_GRAF_BTN)) {   /* PREHLED -> GRAFY (bez nav_push) */
             app_gpsdo_render_graphs();
             return true;
+        }
+        if (s_view == 19 && in_rect(x, y, CNT_MEAS_BTN)) {     /* CITAC -> MERENI (sesterske, bez nav_push) */
+            app_gpsdo_render_meas();
+            return true;
+        }
+        if (s_view == 34) {                                    /* okno MERENI: ovladace */
+            if (in_rect(x, y, MEAS_MODE_BTN)) {                /* FREKV <-> PERIODA (meni label -> full render) */
+                s_meas_mode ^= 1; s_view = 0xFF; app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_UNIT_BTN)) {                /* cyklus jednotky (meni label -> full render) */
+                s_meas_unit = (mp_unit_t)((s_meas_unit + 1) % MP_UNIT_N);
+                s_view = 0xFF; app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_RST_BTN)) {                 /* reset statistiky */
+                mp_stats_reset(&s_meas_stats); app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_CNT_BTN)) {                 /* MERENI -> CITAC (sesterske) */
+                app_gpsdo_render_counter(); return true;
+            }
         }
         if (s_view == 31) {                                 /* okno MATH / LIMITY: ovladace */
             int hit = 1;

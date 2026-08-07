@@ -154,7 +154,7 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 | 64 | **Vstupní front-end vyšší třídy** — prescaler kanály do GHz–desítek GHz (mikrovlnný down-convert), šířkopásmové filtry, nastavitelná citlivost/práh, 50 Ω/1 MΩ, diferenciální/vysokoimpedanční | HW | 🔴 analog; dnes strop ~1,4 GHz (MAX9601) |
 | 65 | **Telecom timing rozhraní** — IEEE 1588 **PTP** (GM/slave), **SyncE**, **IRIG-B**, **NTP/ToD** + distribuční **1PPS / 10 MHz výstupy** s health flagy | CM4 + HW | ⬅ ETH na CM4 (#24–26) + výstupní HW |
 | 66 | **PLL lock / settling time + FM/PM/AM demodulace** (rozšíření modulation domain #48) — doba ustálení po skoku, deviace, chirp | STM32 + FPGA | 🟡 ⬅ #48 + front-end |
-| 67 | **Prezentace měření (SW cluster)** — volitelné jednotky odchylky (Hz/ppm/ppb/ppt/relativní), min/max capture s časovou značkou, **rozpočet nejistoty per měření** (error budget, rozšíření #51) | STM32 | ✅ SW; smysl po #2 |
+| 67 | 🔶 **Prezentace měření (SW cluster) — JÁDRO HOTOVO 2026-08-07, okno PENDING.** Pure-logic `meas_present.c/h` (perioda T=1/f, **odchylka od nominálu ve volitelných jednotkách Hz/ppm/ppb/ppt/rel**, auto-nominál = nejbližší kulatá reference, **freq offset**, statistika N vzorků Welford **mean/σ/min/max/p-p**, **TFOM** odhad z GPS kvality). Selftest **11/11** (`mp_selftest`, wired do run_selftests). **Okno MĚŘENÍ (s_view=34) HOTOVO 2026-08-07** — sesterské k Čítači (footer „MERENI >" / „< CITAC", bez nav_push): řádky Primární (FREKV/PERIODA toggle), Nominál (auto), Odchylka (cyklus jednotky), Offset, TFOM, N/Průměr/σ/p-p; tlačítka MODE/JEDNOTKA/RESET. Vzorky statistiky z `app_gpsdo_tick_stats_sample` (1/s, jen RUN). ⚠️ Aplikuje na `screen_main_freq_hz()` = DNES SIMULACE → plný smysl po #2. **Zbývá:** manuální nominál (dnes jen auto), min/max capture s časovou značkou + error budget (#51), persist mode/unit v syscfg. | STM32 | ✅ jádro+okno; reálná data ⬅ #2 |
 | 68 | 🔶 **Autokalibrace / self-check — ROZPRACOVÁNO 2026-08-01.** `autocal.c/h`: verifikace (guard-band) referencí a napájení z `g_sensors` (VREF ~2,5 V, 12V/5V ±5 %, VBAT) → PASS/WARN/FAIL. UART `autocal` (report) + tlačítko **AUTO-CAL** v okně Kalibrace (výsledek do status řádku). **Staged** (jasně označené, zatím se neprovádějí): ADC3 HW self-cal (⬅ koordinovaný reinit v SensorsTasku — ADC3 vlastní SensorsTask), timebase offset vs GPS (⬅ #2), RF slope/intercept (⬅ externí RF reference → manuální okno Kalibrace). Bezpečné (nic nezapisuje do HW). Kompilačně ověřeno. | STM32 | verifikace hotová; coefficient auto-set ⬅ ext. reference / #2 |
 
 ### Přechod na dvě jádra (CM7 / CM4)
@@ -229,6 +229,56 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 > Ani jeden z nich nic nepřidává funkčně; oba existují čistě proto, aby se chyba našla hned.
 
 ---
+
+## ✅ Checklist ověření na HW — zobrazení + funkčnost všech features
+
+> Projít na reálném displeji: každá položka = **otevřít → ověřit zobrazení (nic se neořezává/nepřekrývá/neduchuje)
+> + funkčnost (tlačítka, změna stavu, persistence)**. ⚠️ Většina UI a všechny statistiky/headline jsou zatím
+> nad SIMULACÍ (#2) — ověřuje se **UI/logika**, ne správnost čísel. Odškrtávej `[x]`.
+
+### A) Nové / změněné tento cyklus (2026-08-06/07) — ověřit přednostně
+- [ ] **PŘEHLED KANÁLŮ (s_view=30):** segmentované bary; markery AKT(zelená/amber)/REF(accent)/MIN(violet)/MAX(červená) na správných pozicích; **legenda ve footeru** vpravo od „< GRAFY" (nekoliduje s titulkem); RF řádek **nemá** REF marker; hodnoty vpravo se neořezávají.
+- [ ] **MĚŘENÍ (s_view=34, #67):** vstup přes Čítač → footer „MERENI >" (a zpět „< CITAC"). Řádky: Primární (tlačítko FREKV↔PERIODA), Nominál (auto), Odchylka (tlačítko cyklu jednotky Hz/ppm/ppb/ppt/rel), Offset, TFOM (barva dle úrovně), N/Průměr/σ/Peak-peak. Tlačítko RESET nuluje statistiku. Řádky se nepřekrývají, hodnoty se neořezávají. *(Statistika roste jen při RUN; hodnoty ze simulace do #2.)*
+- [ ] **Selftest (s_view=20):** ukazuje **11/11 PASS** (přibyl „Prezentace mereni"); řádky se nepřekrývají s „Celkem".
+- [ ] **Perf regrese — BEZ artefaktů:** zaoblené rohy karet/tlačítek/pilulek/stop barů čisté (AA LUT `fill.c`); orámování bez zubů (arc bez atan2f `shapes.c`); **žádní „duchové"** po překreslení kdekoli (dedup dirty rectů v `present`); veškerý text ostrý bez šumu (glyph loop `text.c`).
+
+### B) Hlavní obrazovka (s_view=0)
+- [ ] Headline kmitočet + jednotka; **RUN/STOP** (červené STOP při běhu, zelené RUN při stopu) + podbarvení čísla při STOP.
+- [ ] Footer tlačítka (dočasně „Main SW" #14 → přepíná starý/nový layout); GATE/CHAN reagují + bliknou.
+- [ ] Pilulky headeru (GNSS/SYS/SAT/HDOP/HOLD/CAL) — vejdou se, správné barvy; tap GNSS→GPS okno, tap SYS→Health.
+- [ ] Čas/datum tiká 1×/s (lokální čas + label zóny); ikony mute/holdover.
+- [ ] Tap Allan náhled→ALLAN okno; tap trend→trend fullscreen.
+
+### C) Průchod všemi okny (otevřít z Menu / kontextu → zpět BACK vede správně)
+- [ ] **GPS (2):** FIX, TP 100k/10Hz, družice (bargraf ↔ sky plot tapem), lokátor, čas UTC. Tlačítko SURVEY→Self-survey.
+- [ ] **Diagnostika (1):** teploty/napětí/FPGA/Si5356/RTOS; footer DIAGRAM/PAMET/SELFTEST/ZPĚT.
+- [ ] **System Health (3):** RTOS, stacky, I2C chyby, linky, reset důvod; footer SENZORY/DIAGNOSTIKA/NASTAVENI/GRAFY.
+- [ ] **Senzory (4)** · **Paměť (5)** · **Grafy (29)** (teploty+napájení) · **Přehled kanálů (30)** (viz A).
+- [ ] **Histogram (6) ↔ ALLAN (23) ↔ Spektrogram (26):** záložky VIEW_TABS; LIN/LOG; ADEV/TDEV/MTIE.
+- [ ] **Trend fullscreen (9):** presety 1 min…60 dní (−/+).
+- [ ] **Nastavení (7):** mute, jas −/+ (bar + HW), auto-dim, téma TMAVÉ/SVĚTLÉ (přepne paletu), jazyk; REFERENCE(14), O PŘÍSTROJI(10), SESTAVY(33).
+- [ ] **Menu (12):** 12 dlaždic + Restart (→ potvrzení 13). Dlaždice: Diagnostika, Nastavení, Health, Čítač(19), Holdover(16), Datalog(17), Alarmy(18), Kalibrace(15), Čas(22), Animace(24), Math/Limity(31), Status ribbon(28).
+- [ ] **Čítač (19):** živý SPI/měření detail, obě odbočky /4+/16, fázový status.
+- [ ] **Holdover (16):** WARMUP/LOCK/HOLDOVER/NO-LOCK; OCXO warm-up sklon; (kandidát na TFOM #67).
+- [ ] **Kalibrace (15):** editace slope/intercept/gain −/+; ULOZIT (persist W25Q); AUTO-CAL verdikt.
+- [ ] **Datalog (17):** stav/kapacita/seq; ZAPNOUT/VYPNOUT. **Alarmy (18):** počítadla + mute.
+- [ ] **Čas (22):** UTC + lokální; AUTO CET/CEST ↔ ruční −/+.
+- [ ] **Reference (14):** Si5356 lock stav. **O přístroji (10):** verze = git tag, build, autoři.
+- [ ] **Komunikace/diagram (21):** uzly + stavové LED (pulzují při BAD/WARN), spoje barvené stavem.
+- [ ] **Animace (24) → Příklady (25) / EFEKTY (27):** přepínače ZAP/VYP; 6 demo animací běží.
+- [ ] **Math/Limity (31):** MATH m/B/NULL, verdikt PASS/FAIL, pásmo, LIMITY/ALARM.
+- [ ] **Self-survey (32):** START/STOP, rozptyl klesá, persist polohy.
+- [ ] **Sestavy (33):** 8 slotů uložit/načíst/smazat (načtení aplikuje téma/jas).
+- [ ] **Screensaver (8):** auto-dim po nečinnosti → velké hodiny; dotek probudí (nespustí akci).
+- [ ] **Boot splash (11):** logo + build + Selftest řádek.
+
+### D) Persistence (přežije reset i power-cycle)
+- [ ] Jas/téma/jazyk/mute/auto-dim/zóna/efekty/animace/Math/survey — po **power-cycle** drží (W25Q syscfg).
+- [ ] Kalibrace (W25Q CALIB) + Sestavy (W25Q SETUP) drží. RTC čas přes warm reset (BKP), přes power-cycle jen s VBAT.
+
+### E) Zvuk / alarmy / watchdog
+- [ ] Boot jingle (pokud ne mute); mute umlčí i test. Alarm: ztráta signálu 3×, ztráta GPS 2×, limit FAIL 4×, obnova 1×.
+- [ ] `stacktest yes` → po ~4 s IWDG reset → Health „Reset: stack:UartTask" (ověření detekce #10).
 
 ## Kde co hledat (mapa dokumentů)
 
