@@ -107,9 +107,10 @@ extern volatile uint8_t  g_selftest_res;
  * [3]=format/histogram (screen_main), [4]=Maidenhead lokator (app_gpsdo),
  * [5]=kalendar/DST (rtc_selftest), [6]=datalog zaznam+CRC+cas (datalog_selftest),
  * [7]=Math/limity (meas_math #43/#44), [8]=setup sanitizace (#54),
- * [9]=autocal verdikt (#68), [10]=prezentace mereni (meas_present #67).
+ * [9]=autocal verdikt (#68), [10]=prezentace mereni (meas_present #67),
+ * [11]=SCPI parser (scpi_selftest #25).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 11
+#define SELFTEST_N 12
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane

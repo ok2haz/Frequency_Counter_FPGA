@@ -39,6 +39,7 @@
 #include "app_gpsdo.h"        /* app_gpsdo_selftest (Maidenhead lokator) */
 #include "meas_math.h"        /* meas_math_selftest — Math/limity (#43/#44) */
 #include "meas_present.h"     /* mp_selftest — prezentace mereni (#67) */
+#include "scpi.h"             /* scpi_selftest — SCPI parser (#25) */
 #include "setup.h"            /* setup_selftest — sanitizace sestavy */
 #include "autocal.h"          /* autocal_selftest — verdikt self-checku */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
@@ -191,6 +192,7 @@ int run_selftests(void)
   r[8] = setup_selftest()            ? 1 : 2;   /* sanitizace slotu sestavy (clamp jas/dim/zona/M) */
   r[9] = autocal_selftest()          ? 1 : 2;   /* verdikt self-checku (PASS/WARN/FAIL pasma) */
   r[10] = mp_selftest()              ? 1 : 2;   /* prezentace: perioda/nominal/jednotky/statistika/TFOM (#67) */
+  r[11] = scpi_selftest()            ? 1 : 2;   /* SCPI parser: case/kratka-dlouha forma/hierarchie (#25) */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);

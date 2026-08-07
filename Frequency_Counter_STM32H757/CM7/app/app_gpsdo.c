@@ -67,7 +67,7 @@ extern volatile char     g_reset_text[12];       /* pricina posledniho resetu (m
 extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene) */
 extern volatile char     g_crash_text[16];       /* crash black-box z BKP ("stack:UiTask") */
 extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 2=FAIL */
-extern volatile uint8_t  g_selftest_detail[11];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=11) */
+extern volatile uint8_t  g_selftest_detail[12];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=12) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
 int run_selftests(void);                         /* pure-logic testy — okno Selftest (SPUSTIT) */
@@ -3667,7 +3667,7 @@ static void app_gpsdo_render_selftest(void)
     ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
-    #define ST_N 11                 /* = SELFTEST_N (freertos_shared.h) */
+    #define ST_N 12                 /* = SELFTEST_N (freertos_shared.h) */
     static const char *NAMES[ST_N] = {
         "CRC16 (SPI protokol)",     /* crc16("123456789") == 0x29B1 */
         "Hystereze /4 <-> /16",     /* fpga_freq_select_core na syntetickych ramcich */
@@ -3680,11 +3680,12 @@ static void app_gpsdo_render_selftest(void)
         "Sestava (sanitizace)",     /* setup: clamp jas/dim/zona/M (#54) */
         "Auto-cal (verdikt)",       /* autocal: PASS/WARN/FAIL pasma (#68) */
         "Prezentace mereni",        /* meas_present: perioda/nominal/jednotky/stat/TFOM (#67) */
+        "SCPI parser",              /* scpi_selftest: case/kratka-dlouha forma/hierarchie (#25) */
     };
     int pass = 0;
     for (int i = 0; i < ST_N; i++) {
-        /* Roztec 20 (11 testu, 2026-08-07 pridan meas_present): od 100 -> posledni
-         * na 100+10*20=300, "Celkem" na 322 -> 40 px rezerva; karta konci na 362. */
+        /* Roztec 20 (12 testu, 2026-08-07 pridan SCPI): od 100 -> posledni na
+         * 100+11*20=320; "Celkem" na 340 -> karta B konci na 362 (18 px rezerva). */
         int16_t yy = (int16_t)(100 + i * 20);
         dlabel(DG_LLBL, yy, NAMES[i]);
         uint8_t r = g_selftest_detail[i];
@@ -3697,8 +3698,8 @@ static void app_gpsdo_render_selftest(void)
     char b[24];
     if (g_selftest_res == 0) snprintf(b, sizeof b, "nespusten");
     else                     snprintf(b, sizeof b, "%d/%d %s", pass, ST_N, pass == ST_N ? "PASS" : "FAIL");
-    dlabel(DG_LLBL, 322, "Celkem");
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 340), 322}, b, &ui_font_mono_18,
+    dlabel(DG_LLBL, 340, "Celkem");
+    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 340), 340}, b, &ui_font_mono_18,
                    g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == ST_N ? UI_COLOR_OK : UI_COLOR_BAD),
                    PRIM_ALIGN_LEFT);
     #undef ST_N

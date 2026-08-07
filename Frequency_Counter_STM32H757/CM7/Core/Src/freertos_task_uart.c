@@ -32,6 +32,7 @@
 #include "datalog.h"        /* UART "datalog [on|off|erase|dump]" */
 #include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
+#include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -313,12 +314,24 @@ void UartTask_run(void *argument)
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strncmp(RxBuffer, "scpi", 4) == 0 &&
+			           (RxBuffer[4] == ' ' || RxBuffer[4] == '\0')) {
+				  /* SCPI-99 pres USB konzoli (#25): "scpi <prikaz>" -> scpi_process.
+				   * Prefix "scpi " je jen pro SDILENOU konzoli (aby nekolidoval s
+				   * "version" apod.); dedikovany TCP 5025 na CM4 bude volat scpi_process
+				   * primo bez prefixu. Napr.: scpi *IDN?  |  scpi MEAS:FREQ? */
+				  const char *arg = (RxBuffer[4] == ' ') ? &RxBuffer[5] : "";
+				  char resp[128];
+				  size_t rn = scpi_process(arg, resp, sizeof resp);
+				  if (rn) printf("%s\r\n", resp);   /* dotaz -> odpoved; akce (*RST) -> ticho */
+				  else    printf("\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "screenshot") == 0) {
 				  /* Export obrazovky do BMP pres USB CDC (~1,15 MB, sekundy). ROZPRACOVANO
