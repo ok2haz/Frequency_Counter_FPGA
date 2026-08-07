@@ -60,10 +60,13 @@ const prim_glyph_t *prim_internal_glyph(const prim_font_t *font, uint32_t cp)
     return NULL;
 }
 
-/* Read one coverage sample at (gx,gy) inside a glyph of given bpp. */
-static uint8_t glyph_cov(const uint8_t *bm, int gx, int gy, int gw, uint8_t bpp)
+/* Coverage vzorek na LINEARNIM indexu idx (= gy*gw + gx) v glyfu bpp.
+ * ⚠️ Index predpocita volajici (base+rx) -> zadny per-pixel multiply gy*gw.
+ * always_inline: pri -O0 (flashovany build) by se jinak volalo per-pixel s call/ret
+ * rezii — nejdrazsi cast CPU textu; inline ji odstrani. Pixel-identicke. */
+__attribute__((always_inline)) static inline
+uint8_t glyph_cov(const uint8_t *bm, uint32_t idx, uint8_t bpp)
 {
-    uint32_t idx = (uint32_t)gy * gw + gx;
     switch (bpp) {
     case 8: return bm[idx];
     case 4: { uint8_t b = bm[idx >> 1]; uint8_t v = (idx & 1) ? (b & 0x0Fu) : (b >> 4);
@@ -147,9 +150,9 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
                 int oy = cr.y - gy0;
                 for (int ry = 0; ry < cr.h; ry++) {
                     prim_pixel_t *row = &fb->pixels[(cr.y + ry) * fb->stride_px + cr.x];
-                    int gy = oy + ry;
+                    uint32_t base = (uint32_t)(oy + ry) * (uint32_t)g->w + (uint32_t)ox;  /* radek: multiply 1x */
                     for (int rx = 0; rx < cr.w; rx++) {
-                        uint8_t cov = glyph_cov(bm, ox + rx, gy, g->w, font->bpp);
+                        uint8_t cov = glyph_cov(bm, base + (uint32_t)rx, font->bpp);
                         if (cov) row[rx] = prim_blend565(row[rx], color, cov);
                     }
                 }
