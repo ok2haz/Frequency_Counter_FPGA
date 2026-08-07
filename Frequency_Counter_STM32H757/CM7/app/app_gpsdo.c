@@ -2524,9 +2524,11 @@ enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
        ACT_ANIM,             /* Animace/demo (s_view=24) — drive Placeholder 1 */
        ACT_RIBBON,           /* Status ribbon demo (s_view=28) — drive Placeholder 3 */
        ACT_MATH,             /* Math/limity (s_view=31, #43/#44) — drive Placeholder 2 */
-       ACT_PLACEHOLDER };   /* prazdna dlazdice (Spektrogram presunut do zalozek Allan/Hist) */
-/* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9 — 3 nove sloty jsou
- * "Placeholder N", pripravene pro budouci funkce). w=248, gap 14; h=76, gap 10
+       ACT_PLACEHOLDER };   /* NEPOUZITY hook pro pripadnou prazdnou dlazdici — dnes
+                             * zadna dlazdice ho nema (12/12 obsazeno); guard v touch
+                             * + case nize proto zustavaji "pro jistotu" (viz nav_push). */
+/* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9; 4. rada = Animace/Math/Status
+ * ribbon — vsech 12 slotu je dnes obsazenych realnymi funkcemi). w=248, gap 14; h=76, gap 10
  * (y=68/154/240/326 -> radek4 konci 402, 15 px pred footerem 417 — bylo
  * h=88/gap12/y=72/172/272, 4. radek by se do puvodni vysky nevesel bez
  * zmenseni). Sloupce x viz komentar u MENU_ITEMS nize. Dotykovy cil 76 px =
@@ -3258,7 +3260,7 @@ static void app_gpsdo_render_alarms(void)
         ui_card_render_chrome(&c);
         kv_row(116, "FPGA SIGNAL_LOST:", "hlidano (3x pip)", UI_COLOR_INK_2);
         kv_row(152, "Ztrata GPS locku:", "hlidano (2x pip)", UI_COLOR_INK_2);
-        kv_row(188, "Frekv. limit:",     "TODO (Faze 0)",    UI_COLOR_INK_4);
+        kv_row(188, "Frekv. limit:",     "hlidano (4x pip)", UI_COLOR_INK_2);   /* #44 hotovo: PASS->FAIL = 4x pip */
         prim_draw_text((prim_point_t){DG_LLBL, 260}, "Udalosti od startu:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 348},
                        "Vypnuti zvuku globalne v Nastaveni; mute plati i pro alarmy.",
@@ -4646,7 +4648,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 s_meas_mode ^= 1; s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_UNIT_BTN)) {                /* cyklus jednotky (meni label -> full render) */
-                s_meas_unit = (mp_unit_t)((s_meas_unit + 1) % MP_UNIT_N);
+                /* Jen Hz/ppm/ppb/ppt (% MP_UNIT_REL=4) — REL (raw zlomek ~1e-9) by se
+                 * ve fmt_fixed(,4) zobrazil vzdy jako 0.0000; pouzivatel zada tyto 4. */
+                s_meas_unit = (mp_unit_t)((s_meas_unit + 1) % MP_UNIT_REL);
                 s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_RST_BTN)) {                 /* reset statistiky */
