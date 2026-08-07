@@ -19,8 +19,11 @@ static char up(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 
 static int kw_match(const char *in, int in_len, const char *pat, int pat_len)
 {
-    int mand = 0;
-    while (mand < pat_len && pat[mand] >= 'A' && pat[mand] <= 'Z') mand++;
+    /* Povinne = vse KROME koncove male abbreviace (ne "vedouci velka") — jinak by
+     * '*' u common commandu (*IDN) dal mand=0 a matchnul i zkraceniny (*ID?, *?). */
+    int opt = 0;
+    while (opt < pat_len && pat[pat_len - 1 - opt] >= 'a' && pat[pat_len - 1 - opt] <= 'z') opt++;
+    int mand = pat_len - opt;
     if (in_len < mand || in_len > pat_len) return 0;
     for (int i = 0; i < in_len; i++)
         if (up(in[i]) != up(pat[i])) return 0;
@@ -146,6 +149,9 @@ int scpi_selftest(void)
 
     { size_t nn = scpi_process("FOO:BAR?", b, sizeof b);                                    /* neznámý */
       ok &= (nn > 0 && b[0] == '-'); }
+    scpi_process("*ID?", b, sizeof b);             ok &= (b[0] == '-');                     /* zkracenina NESMI matchnout *IDN */
+    scpi_process("?", b, sizeof b);                ok &= (b[0] == '-');                     /* prazdna hlavicka != *IDN */
+    scpi_process("SYST:TEMPXY?", b, sizeof b);     ok &= (b[0] == '-');                     /* delsi nez plna forma neprojde */
     { size_t nn = scpi_process("MEAS:FREQ?", b, sizeof b); ok &= (nn > 0); }                /* odpoví (NaN bez HW) */
     { size_t nn = scpi_process("SYST:ERR", b, sizeof b); ok &= (nn > 0 && b[0] == '-'); }   /* dotaz bez '?' = neznámý */
 

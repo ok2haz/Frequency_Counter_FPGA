@@ -2523,10 +2523,7 @@ enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
        ACT_KALIB, ACT_HOLDOVER, ACT_DATALOG, ACT_ALARMS, ACT_CAS,
        ACT_ANIM,             /* Animace/demo (s_view=24) — drive Placeholder 1 */
        ACT_RIBBON,           /* Status ribbon demo (s_view=28) — drive Placeholder 3 */
-       ACT_MATH,             /* Math/limity (s_view=31, #43/#44) — drive Placeholder 2 */
-       ACT_PLACEHOLDER };   /* NEPOUZITY hook pro pripadnou prazdnou dlazdici — dnes
-                             * zadna dlazdice ho nema (12/12 obsazeno); guard v touch
-                             * + case nize proto zustavaji "pro jistotu" (viz nav_push). */
+       ACT_MATH };           /* Math/limity (s_view=31, #43/#44) — drive Placeholder 2 */
 /* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9; 4. rada = Animace/Math/Status
  * ribbon — vsech 12 slotu je dnes obsazenych realnymi funkcemi). w=248, gap 14; h=76, gap 10
  * (y=68/154/240/326 -> radek4 konci 402, 15 px pred footerem 417 — bylo
@@ -2573,7 +2570,6 @@ static void menu_activate(uint8_t act)
     case ACT_ANIM:      app_gpsdo_render_anim();      break;
     case ACT_RIBBON:    app_gpsdo_render_ribbon();    break;
     case ACT_MATH:      app_gpsdo_render_math();      break;
-    case ACT_PLACEHOLDER: break;   /* prazdna dlazdice — zatim bez funkce */
     default: break;   /* Restart neni ACT_* — footer tlacitko -> confirm okno (s_view=13) */
     }
 }
@@ -3459,9 +3455,9 @@ static void cnt_nibble(int16_t x, int16_t baseline, uint8_t nib, int seen)
 }
 
 /* ── Okno MERENI (s_view=34) — prezentace mereni (#67) ────────────────────────
- * Perioda / odchylka v jednotkach (Hz/ppm/ppb/ppt/rel) / auto-nominal / offset /
- * statistika N vzorku (mean/σ/p-p) / TFOM. Jadro = meas_present.c/h (selftest
- * 11/11). Sesterske k Citaci (footer "< CITAC" / "MERENI >", bez nav_push -> BACK
+ * Perioda / odchylka v jednotkach (Hz/ppm/ppb/ppt) / auto-nominal / offset /
+ * statistika N vzorku (mean/σ/p-p) / TFOM. Jadro = meas_present.c/h (pure-logic,
+ * kryto selftestem). Sesterske k Citaci (footer "< CITAC" / "MERENI >", bez nav_push -> BACK
  * z obou vede do Menu). Vzorky statistiky pridava app_gpsdo_tick_stats_sample
  * (1/s, jen RUN). ⚠️ Nad screen_main_freq_hz() = DNES SIMULACE -> plny smysl po #2. */
 static uint8_t    s_meas_mode = 0;             /* 0 = FREKV, 1 = PERIODA */
@@ -4828,11 +4824,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             for (int i = 0; i < MENU_N; i++)
                 if (in_rect(x, y, MENU_ITEMS[i].rect)) {
-                    /* Placeholder nikam nenaviguje (zustava s_view=12) -> nav_push
-                     * by jen zanesl zasobnik neprislusnym zaznamem (BACK by pak
-                     * z nejakeho pozdejsiho okna musel projit Menu 2x). Flash jen
-                     * pro aktivni dlazdice — placeholder nic neprekresli -> duch. */
-                    if (MENU_ITEMS[i].act != ACT_PLACEHOLDER) { nav_push(12); }
+                    /* Vsech 12 dlazdic naviguje -> vzdy pushni Menu na zasobnik
+                     * (BACK z otevreneho okna vede zpet do Menu). */
+                    nav_push(12);
                     menu_activate(MENU_ITEMS[i].act);
                     return true;
                 }
