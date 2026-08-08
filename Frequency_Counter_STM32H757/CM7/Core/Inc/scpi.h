@@ -11,6 +11,26 @@
  * Podporuje SCPI krátkou/dlouhou formu (MEAS ↔ MEASure), case-insensitive,
  * dvojtečkovou hierarchii (SYSTem:ERRor?) a `?` dotazy.
  *
+ * Podporované příkazy (dotazy vrací hodnotu, akce nic):
+ *   *IDN?  *OPC?  *RST  *CLS
+ *   SYSTem:VERSion?  SYSTem:ERRor?  SYSTem:TEMPerature?
+ *   SYSTem:GPS:STATus?  SYSTem:GPS:TIME?  SYSTem:GPS:POSition?
+ *   MEASure:FREQuency?  MEASure:FREQuency:DIV16?   (reálný /4 resp. /16 kmitočet)
+ *   CALCulate:DATA?  CALCulate:LIMit:FAIL?         (Math Mx+B/NULL + limit, viz meas_math)
+ *   STATus:OPERation:CONDition?
+ *
+ * SET příkazy (akce, bez výstupu; každý má i `?` dotaz na readback):
+ *   CALCulate:MATH:STATe ON|OFF   CALCulate:MATH:M <num>   CALCulate:MATH:B <num>
+ *   CALCulate:NULL:STATe ON|OFF   CALCulate:NULL:ACQuire   (zachytí referenci z živého X)
+ *   CALCulate:LIMit:STATe ON|OFF  CALCulate:LIMit:LOWer <hz>   CALCulate:LIMit:UPPer <hz>
+ *   Argumenty: číslo (`1e6`, `-2.5`, `1.5E-3`) nebo bool (`ON/OFF/1/0`). Chybný arg → −224.
+ *   ⚠️ SET zapisují `g_meas_cfg` z UartTasku → commit celé cfg pod krátkou kritickou
+ *   sekcí (UiTask nikdy nevidí roztržený double).
+ *
+ * ⚠️ **Chybová fronta** (`SYSTem:ERRor?`) je modulový stav = JEDNA session (stačí
+ * pro jediný USB CDC transport). Souběžný TCP 5025 na CM4 bude potřebovat
+ * per-session kontext (jinak je `scpi_process` čistá funkce). `*CLS` frontu maže.
+ *
  * ⚠️ **Zlaté pravidlo (STATUS.md):** `MEASure:FREQuency?` vrací REÁLNÝ FPGA
  * kmitočet (`fpga_freq_get_last`), NE simulovaný headline. Bez platného měření
  * (link down / SIGNAL_LOST) vrací SCPI „not-a-number" `9.91E37`. Ostatní dotazy
