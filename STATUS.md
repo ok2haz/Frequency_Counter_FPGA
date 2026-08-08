@@ -263,6 +263,16 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 - [ ] **CALC subsystém (Math/limity):** v okně Math/Limity (31) nastav M/B/NULL a limity → `scpi CALC:DATA?` = `Y=m·X+b` nad reálným kmitočtem; `scpi CALC:LIM:FAIL?` = `0` (v mezích/off) / `1` (FAIL). Ověř, že sedí s verdiktem v okně.
 - [ ] **SET příkazy + arg parsing (2026-08-08):** `scpi CALC:MATH:M 2` → `scpi CALC:MATH:M?` vrátí `2.00000`; `scpi CALC:MATH:B 100`, `scpi CALC:MATH:STAT ON` → zkontroluj, že se **okno Math/Limity (31) aktualizovalo** (M/B/stav sedí). `scpi CALC:LIM:LOW 9.9e6` + `CALC:LIM:UPP 10.1e6` + `CALC:LIM:STAT ON` → limity nastaveny. `scpi CALC:NULL:ACQ` (při platném kmitočtu) zachytí referenci. Chybný arg `scpi CALC:MATH:M xyz` → `-224` + zapíše se do `SYST:ERR?`.
 - [ ] **Ostatní:** `scpi SYST:TEMP?` (OCXO °C), `scpi STAT:OPER:COND?` (bit0 FPGA link, bit1 GPS lock, bit2 ref lock).
+
+**SCPI — rozšíření 2026-08-08 (IEEE 488.2 compliance, VISA-ready před ETH):**
+- [ ] **IEEE 488.2 status model:** `scpi *ESR?` (přečte + smaže Standard Event Status), `scpi *ESE 32`→`*ESE?`=`32`, `scpi *SRE?`, `scpi *STB?`. Po `scpi FOO?` musí `*ESR?` mít bit5 (CME, `32`) a `*STB?` bit2 (EAV, `4`); `*ESR?` podruhé = `0` (čtení maže). Chybný arg (`CALC:MATH:M xyz`) → `*ESR?` bit4 (EXE, `16`). `*CLS` smaže ESR i frontu.
+- [ ] **Common commands:** `scpi *OPC` → `*ESR?` bit0 (`1`); `scpi *OPC?`=`1`; `scpi *WAI` (ticho); `scpi *TST?`=`0` když poslední selftest PASS (jinak `1`); `scpi *RST` (ticho).
+- [ ] **Fronta — počet + alias:** `scpi SYST:ERR:COUN?` = počet chyb; `scpi SYST:ERR:NEXT?` = totéž co `SYST:ERR?` (popne).
+- [ ] **Compound (`;`):** `scpi *CLS;*ESE 32;*ESE?;*STB?` → provede vše, vrátí dvě odpovědi spojené `;` (`32;0`). `scpi *IDN?;SYST:VERS?` → dvě hodnoty přes `;`.
+- [ ] **Frekvenční jednotky:** `scpi CALC:LIM:UPP 10.1MHZ` → `CALC:LIM:UPP?` ≈ `10100000`; `100KHZ`, `1GHZ`, `2M` fungují (mega = velké i malé M — jen Hz doména).
+- [ ] **Teplota s selektorem:** `scpi SYST:TEMP? BOARD` (0x48), `MCU` (jádro), `FPGA` (neosazen → `9.91E37`); bez arg = OCXO.
+- [ ] **Kmitočet — obě větve + FETCh:** `scpi MEAS:FREQ:ALL?` = `f4,f16`; `scpi FETC:FREQ?` = totéž co `MEAS:FREQ?`.
+- [ ] **Questionable:** `scpi STAT:QUES:COND?` (bit0 kmitočet podezřelý, bit1 čas/GPS, bit2 reference) — inverzní k `OPER:COND?`.
 - [ ] **⚠️ Pozn.:** `MEAS:FREQ?`/`CALC:*` jsou plně smysluplné až po **#2** (reálný SPI link místo simulace headline); do té doby ukazují reálná FPGA data z driveru, ne simulovaný headline.
 
 **Sky plot / bargraf — prefix souhvězdí (navazuje na GLONASS):**
