@@ -427,5 +427,8 @@ bool datalog_selftest(void)
     if (datalog_text_to_unix("2000-03-01 00:00:00") != 951868800u) return false;
     if (datalog_text_to_unix("2026-07-20 12:34:56") != 1784550896u) return false;
     if (datalog_text_to_unix("nesmysl") != 0u) return false;
+
+    /* 5) SD backend: 512B read-modify-write layer (SD zatím neaktivní, jen logika) */
+    if (!datalog_sd_selftest()) return false;
     return true;
 }

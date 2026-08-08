@@ -398,7 +398,11 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
   `datalog_init` zkusí **SD** a spadne na **W25Q** → až bude SD osazená, log se přepne bez zásahu volajících.
   **SD backend = `datalog_sd.c`, `probe()` vrací false** (zatím neaktivní); v souboru je **5bodový plán**
   co dodělat (SDMMC1 v .ioc PC8-12/PD2, cache koherence DMA bufferů, 512B blokový RMW, FatFs, hot-unplug).
-  Rozdíl NOR vs SD = jen `erase_size` (SD = 0 → `erase` smí být NULL).
+  Rozdíl NOR vs SD = jen `erase_size` (SD = 0 → `erase` smí být NULL). **512B RMW layer HOTOVÝ 2026-08-08**
+  (generický `blk_io_t` + `blk_read`/`blk_write` = překlad byte-offsetu na 512B bloky vč. spanningu a
+  read-modify-write částečných bloků; `sd_read`/`sd_write` už ho volají). Chybí jen **HAL 512B primitiva**
+  `sd_hal_rd`/`sd_hal_wr` (dnes vracejí false, čekají na SDMMC1). RMW je kryté `datalog_sd_selftest`
+  (RAM fake blok, bez HW) — volá ho `datalog_selftest`.
 - **Zap/vyp** = `datalog_set_enabled` (okno Datalog tlačítko ZAPNOUT/VYPNOUT, UART `datalog on|off`),
   **persist v syscfg blobu** (W25Q CONFIG). ⚠️ Kvůli novému poli se **magic zvedl `"SCFG"` → `"SCF2"`**
   → první boot po této změně nastavení nenačte (neznámý magic) a vrátí výchozí; při první změně se uloží nově.

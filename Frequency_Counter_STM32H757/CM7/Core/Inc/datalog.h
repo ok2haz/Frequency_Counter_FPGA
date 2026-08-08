@@ -70,6 +70,10 @@ typedef struct {
 extern const datalog_backend_t datalog_backend_w25q;
 extern const datalog_backend_t datalog_backend_sd;   /* zatim probe()==false, viz datalog_sd.c */
 
+/* Pure-logic test 512B RMW layeru SD backendu (proti RAM fake bloku, bez HW).
+ * Volá ho datalog_selftest → součást UART "selftest". @return true = OK. */
+bool datalog_sd_selftest(void);
+
 /* ── Stav pro UI/UART ──────────────────────────────────────────────────────── */
 typedef struct {
     const char *backend;      /* jmeno aktivniho backendu; "--" = zadny */
