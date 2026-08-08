@@ -236,6 +236,44 @@ DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
 > + funkčnost (tlačítka, změna stavu, persistence)**. ⚠️ Většina UI a všechny statistiky/headline jsou zatím
 > nad SIMULACÍ (#2) — ověřuje se **UI/logika**, ne správnost čísel. Odškrtávej `[x]`.
 
+### A0) Nové 2026-08-08 — GLONASS parser + SCPI rozšíření (napsáno bez HW, ověřit přednostně)
+
+> Kód přeložen čistě (`arm-none-eabi-gcc -Wall -Wextra -Wshadow -fanalyzer`), logika krytá
+> selftestem; **HW ověření zbývá.** Dotčené: `gps.c/h`, `scpi.c/h`, `freertos_task_uart.c`.
+
+**GLONASS — per-talker GSV akumulace + `gps glonass` (UBX-CFG-GNSS):**
+- [ ] **Baseline selftest:** UART `selftest` → řádek „GPS parser" **PASS** (nový per-talker test `gsv_feed`/`gsv_merge` běží i bez antény — čistá logika).
+- [ ] **Před zapnutím:** `gpsraw` ukáže jen `$GP…` věty; GPS okno (s_view=2) karta Družice = jen GPS družice.
+- [ ] **Zapnutí:** UART `gps glonass` → odpověď „UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS)".
+- [ ] **Ověření příjmu:** po ~2–5 s `gpsraw` → přicházejí i **`$GLGSV`** věty, `SENT` roste.
+- [ ] **⚠️ Regrese původního bugu:** v GPS okně **GPS družice NEZMIZÍ**, když dorazí GLONASS — **obě konstelace vidět SOUČASNĚ** (dřív jeden akumulátor → GLGSV vynuloval GPGSV).
+- [ ] **Počet družic:** `sats_in_view` (družice v dosahu) = **součet** GPS+GLONASS; víc družic než před zapnutím.
+- [ ] **Sky plot / bargraf:** tap na kartu Družice přepne bargraf↔sky plot; GLONASS PRN v rozsahu **65–96**, tečky na správných azimutech/elevacích.
+- [ ] **NAK varianta:** pokud NEO-7M má jednosouhvězdí FW → `$GLGSV` nepřijdou, GPS jede dál (neškodné). → kandidát na **NEO-M8** (Galileo/BeiDou).
+- [ ] **(volitelné, až po ověření dat)** obarvit sky plot/bargraf dle pole `gps_sat_t.constel` (GPS/GLONASS/Galileo/BeiDou).
+- [ ] **(rozhodnutí)** po úspěšném ověření zvážit, zda `gps_config_gnss()` volat automaticky v `gps_init` (dnes záměrně opt-in — reconfig nešel ověřit bez HW).
+
+**SCPI — error queue + nové dotazy (přes `scpi <cmd>` na USB konzoli):**
+- [ ] **Baseline selftest:** `selftest` → řádek „SCPI parser" **PASS** (pokrývá nové příkazy i chování fronty).
+- [ ] **Identita:** `scpi *IDN?` → `OK2HAZ,GPSDO-Counter,0,<verze>`.
+- [ ] **Chybová fronta (SCPI-99):** `scpi SYST:ERR?` → `0,"No error"` (prázdno) → `scpi FOO?` (neznámý) vrátí `-113,"Undefined header"` → `scpi SYST:ERR?` → `-113,"Undefined header"` → znovu `scpi SYST:ERR?` → `0,"No error"` (fronta vyprázdněna).
+- [ ] **`*CLS` maže frontu:** `scpi FOO?` → `scpi *CLS` → `scpi SYST:ERR?` → `0,"No error"`.
+- [ ] **Kmitočet /4 vs /16:** `scpi MEAS:FREQ?` a `scpi MEAS:FREQ:DIV16?` → reálný kmitočet (bez FPGA linku obojí `9.91E37`); při signálu **obě větve stejný reálný kmitočet** (FPGA už dělič zahrnuje).
+- [ ] **GPS dotazy:** `scpi SYST:GPS:TIME?` → `hh:mm:ss` při fixu (jinak `9.91E37`); `scpi SYST:GPS:POS?` → `lat,lon,alt`.
+- [ ] **CALC subsystém (Math/limity):** v okně Math/Limity (31) nastav M/B/NULL a limity → `scpi CALC:DATA?` = `Y=m·X+b` nad reálným kmitočtem; `scpi CALC:LIM:FAIL?` = `0` (v mezích/off) / `1` (FAIL). Ověř, že sedí s verdiktem v okně.
+- [ ] **SET příkazy + arg parsing (2026-08-08):** `scpi CALC:MATH:M 2` → `scpi CALC:MATH:M?` vrátí `2.00000`; `scpi CALC:MATH:B 100`, `scpi CALC:MATH:STAT ON` → zkontroluj, že se **okno Math/Limity (31) aktualizovalo** (M/B/stav sedí). `scpi CALC:LIM:LOW 9.9e6` + `CALC:LIM:UPP 10.1e6` + `CALC:LIM:STAT ON` → limity nastaveny. `scpi CALC:NULL:ACQ` (při platném kmitočtu) zachytí referenci. Chybný arg `scpi CALC:MATH:M xyz` → `-224` + zapíše se do `SYST:ERR?`.
+- [ ] **Ostatní:** `scpi SYST:TEMP?` (OCXO °C), `scpi STAT:OPER:COND?` (bit0 FPGA link, bit1 GPS lock, bit2 ref lock).
+- [ ] **⚠️ Pozn.:** `MEAS:FREQ?`/`CALC:*` jsou plně smysluplné až po **#2** (reálný SPI link místo simulace headline); do té doby ukazují reálná FPGA data z driveru, ne simulovaný headline.
+
+**Sky plot / bargraf — prefix souhvězdí (navazuje na GLONASS):**
+- [ ] GPS okno (2) → karta Družice: PRN mají **písmenný prefix dle RINEX** — `G05` (GPS), `R68` (GLONASS), `E12` (Galileo), `C07` (BeiDou). Platí v bargrafu i sky plotu.
+- [ ] Barva tečky/sloupce zůstává **dle C/N0** (zelená/žlutá/červená) — prefix je jen textový, C/N0 se neztratí.
+- [ ] Bez GLONASS (jen GPS) = všechny prefixy `G` (žádná regrese zobrazení).
+
+**Datalog SD backend — 512B RMW layer (SW hotové, SD stále neaktivní):**
+- [ ] `selftest` → řádek „Datalog zaznam + CRC" **PASS** (nově pokrývá i SD RMW layer proti RAM fake bloku — čistá logika, bez SD). Toto ověří **správnost blokové vrstvy bez HW**.
+- [ ] SD backend zůstává neaktivní (`probe()==false`) → datalog jede dál na W25Q (žádná změna chování). SD bring-up (SDMMC1 v .ioc, HAL 512B primitiva, cache koherence) = samostatný HW krok, viz komentář v `datalog_sd.c`.
+
 ### A) Nové / změněné tento cyklus (2026-08-06/07) — ověřit přednostně
 - [ ] **PŘEHLED KANÁLŮ (s_view=30):** segmentované bary; markery AKT(zelená/amber)/REF(accent)/MIN(violet)/MAX(červená) na správných pozicích; **legenda ve footeru** vpravo od „< GRAFY" (nekoliduje s titulkem); RF řádek **nemá** REF marker; hodnoty vpravo se neořezávají.
 - [ ] **MĚŘENÍ (s_view=34, #67):** vstup přes Čítač → footer „MERENI >" (a zpět „< CITAC"). Řádky: Primární (tlačítko FREKV↔PERIODA), Nominál (auto), Odchylka (tlačítko cyklu jednotky Hz/ppm/ppb/ppt/rel), Offset, TFOM (barva dle úrovně), N/Průměr/σ/Peak-peak. Tlačítko RESET nuluje statistiku. Řádky se nepřekrývají, hodnoty se neořezávají. *(Statistika roste jen při RUN; hodnoty ze simulace do #2.)*

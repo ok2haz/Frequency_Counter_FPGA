@@ -17,14 +17,25 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define GPS_MAX_SATS 16   /* max druzic v poli sats[] (GSV); vic ignorujeme */
+#define GPS_MAX_SATS 24   /* max druzic v poli sats[] (GSV, multi-souhvezdi); vic ignorujeme */
+
+/* Souhvezdi (index do GSV akumulatoru + barveni sky plotu). Odvozeno z 2-znak
+ * NMEA talkeru: GP=GPS, GL=GLONASS, GA=Galileo, GB/BD=BeiDou. */
+typedef enum {
+  GPS_CONSTEL_GPS = 0,
+  GPS_CONSTEL_GLONASS,
+  GPS_CONSTEL_GALILEO,
+  GPS_CONSTEL_BEIDOU,
+  GPS_CONSTEL_N          /* pocet podporovanych souhvezdi */
+} gps_constel_t;
 
 /* Jedna druzice z GSV: PRN, elevace, sila signalu C/N0. */
 typedef struct {
-  uint8_t  prn;    /* cislo druzice */
-  uint8_t  elev;   /* elevace [°] (0..90) */
-  uint8_t  snr;    /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
-  uint16_t azim;   /* azimut [°] (0..359, 0 = sever) — sky plot v GPS okne */
+  uint8_t  prn;      /* cislo druzice */
+  uint8_t  elev;     /* elevace [°] (0..90) */
+  uint8_t  snr;      /* C/N0 [dB-Hz], 0 = netrackovana (prazdne pole v GSV) */
+  uint8_t  constel;  /* gps_constel_t — souhvezdi (per-talker, sky plot) */
+  uint16_t azim;     /* azimut [°] (0..359, 0 = sever) — sky plot v GPS okne */
 } gps_sat_t;
 
 typedef struct {
@@ -65,6 +76,14 @@ void gps_config_timepulse(void);
 void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm);
 /* Vypne time-mód (timeMode=0). */
 void gps_survey_disable_cmd(void);
+
+/* UBX-CFG-GNSS (0x06 0x3E): zapne GPS+SBAS+GLONASS(+QZSS) souběžně → přijímač
+ * začne vysílat GLGSV a per-talker GSV se skládá do sats[] napříč souhvezdími.
+ * ⚠️ Best-effort a NEvolá se automaticky z gps_init: reconfig GNSS nejde bez HW
+ * ověřit a špatný blok by mohl vypnout GPS → spouští se JEN explicitně (UART
+ * "gps glonass") na HW, kde uživatel výsledek vidí. NEO-7M příkaz může NAKnout
+ * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak. */
+void gps_config_gnss(void);
 
 /* Krmeni parseru jednim bajtem (vola GpsTask z GpsRxQueue). */
 void gps_feed_char(char c);

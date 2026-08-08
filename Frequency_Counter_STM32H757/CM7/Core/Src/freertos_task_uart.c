@@ -314,7 +314,7 @@ void UartTask_run(void *argument)
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -420,6 +420,13 @@ void UartTask_run(void *argument)
 				  char gbuf[128];
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
+				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
+				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
+				   * "gpsraw" (mely by prijit i $GLGSV vety). */
+				  gps_config_gnss();
+				  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
 			  }
 			  else if (strcmp(RxBuffer, "adcraw") == 0) {
 				  /* Diag ADC3: raw 3 internich kanalu (cteno po jednom jako SensorsTask)

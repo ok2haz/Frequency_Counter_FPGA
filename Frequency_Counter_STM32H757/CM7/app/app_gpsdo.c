@@ -770,6 +770,9 @@ static int draw_gps_values(int force)
      * sky plot (az/el), prepinatelne dotykem (s_gps_polar). Barva = C/N0. */
     {
         gps_sat_t sv[GPS_MAX_SATS];
+        /* RINEX písmeno souhvězdí (gps_constel_t: GPS/GLONASS/Galileo/BeiDou) —
+         * prefix PRN (G05/R68/E12/C07) odliší souhvězdí; barva zůstává = C/N0. */
+        static const char k_constel_ltr[GPS_CONSTEL_N] = { 'G', 'R', 'E', 'C' };
         int nsv = g.sat_count;                        /* uint8_t 0..GPS_MAX_SATS -> vzdy >=0 */
         if (nsv > GPS_MAX_SATS) nsv = GPS_MAX_SATS;   /* pojistka proti pretekani sv[] */
         for (int i = 0; i < nsv; i++) sv[i] = g.sats[i];
@@ -783,7 +786,8 @@ static int draw_gps_values(int force)
         uint32_t skyh = s_gps_polar ? 0xA5u : 0x5Au;
         for (int i = 0; i < nsv; i++)
             skyh = skyh * 31u + sv[i].prn + (uint32_t)(sv[i].azim / 4u) * 7u
-                 + (uint32_t)(sv[i].elev / 4u) * 13u + (sv[i].snr / 8u);
+                 + (uint32_t)(sv[i].elev / 4u) * 13u + (sv[i].snr / 8u)
+                 + (uint32_t)sv[i].constel * 17u;
         char key[64]; int kp = snprintf(key, sizeof key, "%d_%08lx", n, (unsigned long)skyh);
         for (int i = 0; i < n && kp < (int)sizeof key - 5; i++)
             kp += snprintf(key + kp, sizeof key - kp, ".%u", sv[i].snr);
@@ -821,7 +825,8 @@ static int draw_gps_values(int force)
                                        (snr > 0)   ? UI_COLOR_BAD : UI_COLOR_INK_4;
                     prim_fill_circle((prim_point_t){px, py}, (int16_t)(snr > 0 ? 6 : 3), col);
                     if (snr > 0) {                    /* PRN vedle tecky */
-                        char pr[6]; snprintf(pr, sizeof pr, "%u", sv[i].prn);
+                        char pr[8]; snprintf(pr, sizeof pr, "%c%u",
+                            (sv[i].constel < GPS_CONSTEL_N) ? k_constel_ltr[sv[i].constel] : '?', sv[i].prn);
                         prim_draw_text((prim_point_t){(int16_t)(px + 8), (int16_t)(py + 4)}, pr,
                                        &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
                     }
@@ -849,7 +854,8 @@ static int draw_gps_values(int force)
                         prim_draw_text((prim_point_t){cx, (int16_t)(base - h - 4)}, sn,
                                        &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
                     }
-                    char pr[6]; snprintf(pr, sizeof pr, "%u", sv[i].prn);
+                    char pr[8]; snprintf(pr, sizeof pr, "%c%u",
+                        (sv[i].constel < GPS_CONSTEL_N) ? k_constel_ltr[sv[i].constel] : '?', sv[i].prn);
                     prim_draw_text((prim_point_t){cx, 468}, pr, &ui_font_mono_14,
                                    UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
                 }
