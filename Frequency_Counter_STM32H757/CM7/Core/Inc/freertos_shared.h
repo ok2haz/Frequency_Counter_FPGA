@@ -121,6 +121,11 @@ extern volatile uint8_t  g_cm4_absent;
  * "nabehl a mluvi" (alive) od "D2 ready ale IPC ticho" (absent=0, alive=0). Dokud
  * CM4 nebootuje z bank2, zustava 0 (spravne). */
 extern volatile uint8_t  g_cm4_alive;
+/* g_cm4_stall_count = kolikrat CM4 prestal odpovidat PO tom, co uz jednou zil
+ * (hrana alive->dead, defaultTask). Rozlisuje "nikdy nenabehl" (g_cm4_absent) od
+ * "bezel a zasekl se" — druhe je pro CM4 vlastni IWDG2 (self-reset), CM7 to jen
+ * pozoruje + loguje "stall:CM4" (NEsahá na crash black-box, ten je o resetu CM7). */
+extern volatile uint32_t g_cm4_stall_count;
 int run_selftests(void);   /* pure-logic testy (boot + UART "selftest"); 1 = vse OK */
 
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */

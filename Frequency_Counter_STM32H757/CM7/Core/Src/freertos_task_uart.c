@@ -675,6 +675,12 @@ void UartTask_run(void *argument)
 				  printf("Heap: free %lu B, min-ever %lu B   CPU %lu%%\n",
 					     (unsigned long)g_rtos_heap_free, (unsigned long)g_rtos_heap_min,
 					     (unsigned long)g_rtos_cpu_pct);
+				  /* CM4 (D2): nenabootoval / bezi+mluvi (IPC heartbeat) / D2 ready ale ticho;
+				   * stall x<n> = kolikrat se CM4 zasekl po ozivu (zotaveni pres jeho IWDG2). */
+				  printf("CM4: %s, stall x%lu\n",
+					     g_cm4_absent ? "ABSENT (nenabootoval - bank2/BCM4)" :
+					     (g_cm4_alive ? "alive (IPC heartbeat)" : "SILENT (D2 ready, IPC ticho)"),
+					     (unsigned long)g_cm4_stall_count);
 				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
 				   * preteceni (a tim i na "stall"/HardFault). */
 				  static const struct { const char *n; osThreadId_t *h; } TL[] = {

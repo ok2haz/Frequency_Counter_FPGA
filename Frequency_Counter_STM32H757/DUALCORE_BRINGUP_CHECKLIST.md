@@ -160,10 +160,26 @@ ale jede degradovaně a nastaví `g_cm4_absent`.
 
 ---
 
-## 8) 🟡 Co ZŮSTÁVÁ jako TODO (mimo tento bring-up)
+## 8) ✅ IWDG2 + stall:CM4 (HOTOVO 2026-08-09) — 🔴 OVĚŘ RESET SCOPE
+
+**IWDG2 na CM4** (`CM4/Core/Src/iwdg2.c`): nezávislý watchdog ~4 s, registrová sekvence (zrcadlo
+CM7 `watchdog.c`), kick v každé iteraci CM4 smyčky. Zaseknutá smyčka → IWDG2 reset CM4.
+**stall:CM4 na CM7** (`freertos.c` defaultTask): hrana heartbeatu alive→dead → log `stall:CM4`
++ `g_cm4_stall_count` (viditelné v UART `status`: „CM4: …, stall x<n>"). CM7 **se kvůli tomu
+NEresetuje** (§11.4) a **NEsahá na crash black-box** (ten je o resetu CM7); CM4 se zotaví sám IWDG2.
+
+- [ ] 🔴 **Verifikace reset scope IWDG2 (PŘED spolehnutím):** předpoklad je, že IWDG2 resetuje
+  **jen doménu CPU2/CM4**, ne celý systém (samostatný flag `RCC_RSR_IWDG2RSTF` bit 27; dvě
+  nezávislé IWDG = per-core design). **Ověř na HW:** nech CM4 zaseknout (např. dočasně vlož
+  `while(1){}` do CM4 smyčky za kick) → po ~4 s se má resetovat **JEN CM4** (CM7 displej běží
+  dál, UART hlásí `stall:CM4` + pak `obnoveno`). **Kdyby se resetoval i CM7/displej** → IWDG2 je
+  system-scope → **nekickovat/odebrat** a řešit recovery jinak (CM7 drží/pustí CPU2 přes RCC).
+- [ ] Sekvence po zaseknutí (očekávaná): `4:OK` → `4:--` (heartbeat zamrzl) → UART `stall:CM4` →
+  ~4 s → CM4 IWDG2 reset → CM4 reboot → `4:OK` + UART `obnoveno`.
+
+## 9) 🟡 Co ZŮSTÁVÁ jako TODO (mimo tento bring-up)
 
 - [ ] **Producent cmd ringu na CM4** (příkazy CM4→CM7): dozraje až se SCPI/web na CM4 (`#25`/`#26`) — CM4 dnes nemá odkud brát příkazy.
-- [ ] **IWDG2 na CM4** + `stall:CM4` do crash black-boxu (`NAVRH §11.4`) — hlídání zaseknutého CM4 za běhu.
 - [ ] **Reálný CM4 CPU %** ve snapshotu (`cm4_cpu_pct`): dnes CM4 posílá `0` (bare loop, bez idle měření) → CPU blok ukazuje jen `4:OK`, ne procenta.
 - [ ] **ETH/lwIP na CM4** (`#24`): až pak se D2 SRAM2/3 opravdu využije (deskriptory + heap) — hlídat per-core clock.
 

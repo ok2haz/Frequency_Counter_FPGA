@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
+#include "iwdg2.h"     /* nezavisly watchdog CM4 (~4 s); zaseknuta smycka -> reset CM4 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -111,12 +112,14 @@ int main(void)
   Beep(1680, 200);
   HAL_Delay(400);
   ipc_cm4_init();   /* IPC: reset lokalniho stavu pred ctenim snapshotu */
+  iwdg2_init();     /* watchdog CM4 az TED (po beep ~1,2 s) — startup neprodleva mimo timeout */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  iwdg2_kick();   /* obnov watchdog CM4 (smycka ~800 ms << 4 s timeout) */
 	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
 	  if (!ipc_cm4_ready()) ipc_cm4_check();
 	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "4:xx%"). */

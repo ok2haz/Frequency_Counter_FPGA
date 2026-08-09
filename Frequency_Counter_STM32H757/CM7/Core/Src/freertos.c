@@ -173,6 +173,7 @@ volatile char     g_reset_text[12] = "---";
 volatile uint8_t  g_reset_bad    = 0;
 volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bezime degradovane, viz main.c */
 volatile uint8_t  g_cm4_alive    = 0;  /* 1 = CM4 heartbeat v IPC roste (defaultTask z ipc_cm4_alive) */
+volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
 volatile uint8_t  g_selftest_res = 0;
 volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
@@ -371,6 +372,21 @@ void StartDefaultTask(void *argument)
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, throttle ~2 Hz uvnitr) (#19/#20) */
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (dnes prazdny ring — CM4 nebezi) */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
+    /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4):
+     * CM4 se zotavi vlastnim IWDG2, CM7 to jen pozoruje + loguje + pocita. NEsahá na
+     * crash black-box (ten je "pricina posledniho resetu CM7"). Armuje se az po 1. ozivu. */
+    {
+      static uint8_t s_cm4_prev, s_cm4_ever;
+      if (g_cm4_alive && !s_cm4_prev) {                 /* dead->alive */
+        if (s_cm4_ever) printf("[CM4] obnoveno (IPC heartbeat opet roste)\n");
+        s_cm4_ever = 1;
+      } else if (!g_cm4_alive && s_cm4_prev && s_cm4_ever) {   /* alive->dead = stall */
+        g_cm4_stall_count++;
+        printf("[CM4] stall:CM4 — heartbeat zamrzl (%lu.), CM4 IWDG2 by se mel zotavit\n",
+               (unsigned long)g_cm4_stall_count);
+      }
+      s_cm4_prev = g_cm4_alive;
+    }
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */
       osDelay(50);
