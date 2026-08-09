@@ -23,6 +23,7 @@
  *   MEASure:FREQuency?  (=FETCh:FREQuency?)  :DIV16?  :ALL?  (reálný /4, /16, oba)
  *   MEASure:VOLTage? [P12|P5|VC|VREF|VBAT]  (default P12)   MEASure:POWer?  (RF dBm)
  *   SENSe:FREQuency:GATE?  SENSe:FREQuency:CHANnel?          (poslední FPGA rámec)
+ *   MMEMory:CATalog?  MMEMory:DATA:COUNt?  MMEMory:DATA? <n> (datalog: souhrn/počet/n-tý záznam)
  *   CALCulate:DATA?  CALCulate:LIMit:FAIL?         (Math Mx+B/NULL + limit, viz meas_math)
  *   STATus:OPERation:CONDition?  STATus:QUEStionable:CONDition?
  *

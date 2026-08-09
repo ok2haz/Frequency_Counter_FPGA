@@ -10,6 +10,7 @@
 #include "calib.h"             /* g_calib — AD8307 dBm (MEAS:POWer? RF) */
 #include "freertos_shared.h"   /* g_spi_ok, g_si5356_status/_ok, g_selftest_res, g_uptime_s */
 #include "meas_math.h"         /* g_meas_cfg — CALCulate subsystem */
+#include "datalog.h"           /* datalog_get_status/read_back — MMEMory subsystem */
 #include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomický commit g_meas_cfg */
 #include "task.h"
 #include <string.h>
@@ -401,6 +402,46 @@ static size_t scpi_exec_one(scpi_ctx_t *c, const char *line, char *out, size_t o
         return strlen(out);
     }
 
+    /* ── MMEMory (datalog W25Q/SD — REÁLNÁ logovaná data, ne simulace) ───────────
+     * Kruhový log stability (32 B/10 s). freq je REÁLNÝ z FPGA (0 dokud #2), teploty/
+     * Vc/GPS reálné. CATalog? = souhrn, DATA:COUNt? = počet, DATA? <n> = n-tý od konce. */
+    if (hdr_match(hdr, "MMEMory:DATA:COUNt") && is_query) {   /* počet záznamů */
+        datalog_status_t st; datalog_get_status(&st);         /* jen cache, bez flash I/O */
+        snprintf(out, out_sz, "%lu", (unsigned long)st.records);
+        return strlen(out);
+    }
+    if (hdr_match(hdr, "MMEMory:CATalog") && is_query) {      /* souhrn logu */
+        datalog_status_t st; datalog_get_status(&st);
+        snprintf(out, out_sz, "\"%s\",%lu,%lu,%lu,%lu,%u",
+                 st.backend ? st.backend : "--",
+                 (unsigned long)st.records, (unsigned long)st.capacity_rec,
+                 (unsigned long)st.last_seq, (unsigned long)st.write_errors,
+                 (unsigned)(st.wrapped ? 1u : 0u));
+        return strlen(out);
+    }
+    if (hdr_match(hdr, "MMEMory:DATA") && is_query) {         /* n-tý záznam od nejnovějšího */
+        int nok = 0; double nn = scpi_num(arg, &nok);
+        if (!nok || nn < 0.0) {
+            scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
+        }
+        datalog_rec_t r;                                      /* ⚠️ čte W25Q pod QSPI mutexem (blokující ~ms) */
+        if (!datalog_read_back((uint32_t)nn, &r)) {
+            scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+        }
+        /* CSV: seq,t_unix,freq[Hz],t_ocxo[C],t_board[C],vc[mV],rf[dBm],flags,sats,hdop
+         * (neplatné 16b hodnoty → NaN 9.91E37; HDOP 255=n/a → NaN). */
+        char fq[24], to[12], tb[12], rf[12], hd[12];
+        fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
+        if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
+        if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
+        if (r.rf_dbm10 == DATALOG_INVALID16)     snprintf(rf, sizeof rf, "9.91E37"); else fmt_scpi_f2(r.rf_dbm10 / 10.0f, rf, sizeof rf);
+        if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
+        snprintf(out, out_sz, "%lu,%lu,%s,%s,%s,%d,%s,%u,%u,%s",
+                 (unsigned long)r.seq, (unsigned long)r.t_unix, fq, to, tb,
+                 (int)r.ocxo_vc_mv, rf, (unsigned)r.flags, (unsigned)r.sats, hd);
+        return strlen(out);
+    }
+
     /* ── CALCulate (Math Mx+B/NULL + limitní pass/fail, viz meas_math.c) ────────
      * Aplikuje živou konfiguraci `g_meas_cfg` na REÁLNÝ /4 kmitočet. */
     if (hdr_match(hdr, "CALCulate:DATA") && is_query) {       /* Y = math(X) [Hz] */
@@ -564,6 +605,8 @@ int scpi_selftest(void)
     ok &= (scpi_process_ctx(&x, "MEAS:POW?",      b, sizeof b) > 0);     /* RF dBm (AD8307) */
     ok &= (scpi_process_ctx(&x, "SENS:FREQ:GATE?", b, sizeof b) > 0);    /* hradlo [s] */
     ok &= (scpi_process_ctx(&x, "SENS:FREQ:CHAN?", b, sizeof b) > 0);    /* kanál */
+    ok &= (scpi_process_ctx(&x, "MMEM:CAT?", b, sizeof b) > 0);          /* datalog souhrn (cache) */
+    ok &= (scpi_process_ctx(&x, "MMEM:DATA:COUN?", b, sizeof b) > 0);    /* počet záznamů */
 
     /* Chybová fronta: neznámý příkaz -> -113 inline i do fronty; SYST:ERR? popne. */
     scpi_ctx_init(&x);
