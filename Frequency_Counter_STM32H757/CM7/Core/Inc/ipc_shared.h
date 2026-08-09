@@ -188,3 +188,17 @@ static inline int ipc_resp_pop(ipc_resp_t *r) {
     IPC_DMB(); g_ipc.resp.tail = t + 1u;
     return 1;
 }
+
+/* ── CM7-strana IPC (ipc.c). CM4 si implementuje vlastni konzumenta; tyto
+ * funkce bezi na CM7. Viz ipc.c. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu, pred publikaci) */
+void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
+int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
+int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
+int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
+#ifdef __cplusplus
+}
+#endif

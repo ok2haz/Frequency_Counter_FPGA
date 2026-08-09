@@ -42,6 +42,7 @@
 #include "scpi.h"             /* scpi_selftest — SCPI parser (#25) */
 #include "setup.h"            /* setup_selftest — sanitizace sestavy */
 #include "autocal.h"          /* autocal_selftest — verdikt self-checku */
+#include "ipc_shared.h"       /* ipc_init/publish/service/selftest — IPC CM7<->CM4 (#19/#20) */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -193,6 +194,7 @@ int run_selftests(void)
   r[9] = autocal_selftest()          ? 1 : 2;   /* verdikt self-checku (PASS/WARN/FAIL pasma) */
   r[10] = mp_selftest()              ? 1 : 2;   /* prezentace: perioda/nominal/jednotky/statistika/TFOM (#67) */
   r[11] = scpi_selftest()            ? 1 : 2;   /* SCPI parser: case/kratka-dlouha forma/hierarchie (#25) */
+  r[12] = ipc_selftest()             ? 1 : 2;   /* IPC seqlock parita + cmd/resp ring push/pop/wrap (#19/#20) */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);
@@ -349,6 +351,7 @@ void StartDefaultTask(void *argument)
    * Na poradi vuci syscfg_load (UiTask) NEZALEZI — init jen najde pozici zapisu,
    * priznak zap/vyp nastavuje syscfg_load pozdeji pres datalog_set_enabled. */
   datalog_init();
+  ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
   /* Infinite loop */
   for(;;)
   {
@@ -364,6 +367,8 @@ void StartDefaultTask(void *argument)
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
+    ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, throttle ~2 Hz uvnitr) (#19/#20) */
+    ipc_service();    /* zpracuj pripadne prikazy z CM4 (dnes prazdny ring — CM4 nebezi) */
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */
       osDelay(50);
