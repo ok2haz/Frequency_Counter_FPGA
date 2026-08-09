@@ -6,8 +6,9 @@
 #include "version.h"           /* FW_VERSION_FULL — *IDN? */
 #include "fpga_freq.h"         /* fpga_freq_get_last — REÁLNÝ kmitočet (ne sim) */
 #include "gps.h"               /* gps_get — SYST:GPS:STAT? */
-#include "sensor_stat.h"       /* g_sensors[] — SYST:TEMP? */
-#include "freertos_shared.h"   /* g_spi_ok, g_si5356_status/_ok, g_selftest_res */
+#include "sensor_stat.h"       /* g_sensors[] — SYST:TEMP?, MEAS:VOLT?/POW? */
+#include "calib.h"             /* g_calib — AD8307 dBm (MEAS:POWer? RF) */
+#include "freertos_shared.h"   /* g_spi_ok, g_si5356_status/_ok, g_selftest_res, g_uptime_s */
 #include "meas_math.h"         /* g_meas_cfg — CALCulate subsystem */
 #include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomický commit g_meas_cfg */
 #include "task.h"
@@ -76,6 +77,14 @@ static void fmt_scpi_hz_d(double hz, char *out, size_t n)
     snprintf(out, n, "%s%lu.%05lu", neg ? "-" : "", (unsigned long)whole, (unsigned long)frac);
 }
 
+/* nanosekundy -> "d.dddddd" sekundy (6 des. míst; pro SENS:FREQ:GATE?). */
+static void fmt_scpi_sec_ns(uint64_t ns, char *out, size_t n)
+{
+    uint32_t whole = (uint32_t)(ns / 1000000000u);         /* celé sekundy */
+    uint32_t us    = (uint32_t)((ns % 1000000000u) / 1000u); /* mikrosekundy = 6 des. míst */
+    snprintf(out, n, "%lu.%06lu", (unsigned long)whole, (unsigned long)us);
+}
+
 /* stupně -> "±d.dddddd" (6 des. míst; pro SYST:GPS:POS?). */
 static void fmt_scpi_deg6(float v, char *out, size_t n)
 {
@@ -84,19 +93,17 @@ static void fmt_scpi_deg6(float v, char *out, size_t n)
     snprintf(out, n, "%s%ld.%06ld", neg ? "-" : "", (long)(ud / 1000000), (long)(ud % 1000000));
 }
 
-/* ── Chybová fronta (SCPI-99 SYSTem:ERRor?) ──────────────────────────────────
- * ⚠️ Modulový stav = JEDNA session. Dnes stačí (jediný transport = USB CDC).
- * Až přibude souběžný TCP 5025 na CM4, chybová fronta se musí přesunout do
- * per-session kontextu (scpi_process je jinak čistá funkce). */
-#define SCPI_ERRQ_N 8
-static int     s_err_q[SCPI_ERRQ_N];
-static uint8_t s_err_head, s_err_count;
+/* ── Chybová fronta + status registry (SCPI-99 SYSTem:ERRor? + IEEE 488.2) ─────
+ * PER-SESSION: veškerý stav je ve `scpi_ctx_t` (scpi.h). Každý transport má svůj
+ * kontext → nezávislé fronty i status (USB CDC teď, souběžný TCP 5025 na CM4 pak).
+ * `scpi_process` bez ctx používá jediný sdílený default (USB konzole).
+ * ESR = Standard Event Status Register (latched, *ESR? čte a maže); ESE/SRE enable. */
+static scpi_ctx_t s_default_ctx;   /* zero-init při načtení = čistý stav (fronta prázdná) */
 
-/* IEEE 488.2 status model (minimální). ESR = Standard Event Status Register
- * (latched, čte se přes *ESR? a čtením se maže); ESE/SRE = enable masky. */
-static uint8_t s_esr;    /* bit0 OPC, bit4 EXE (−2xx), bit5 CME (−1xx) */
-static uint8_t s_ese;    /* event status enable (*ESE) */
-static uint8_t s_sre;    /* service request enable (*SRE) */
+void scpi_ctx_init(scpi_ctx_t *ctx)
+{
+    if (ctx) memset(ctx, 0, sizeof *ctx);
+}
 
 static const char *scpi_err_msg(int code)
 {
@@ -111,27 +118,27 @@ static const char *scpi_err_msg(int code)
         default:   return "Error";
     }
 }
-static void scpi_err_push(int code)
+static void scpi_err_push(scpi_ctx_t *c, int code)
 {
     /* Latch do ESR: −1xx = Command Error (bit5), −2xx = Execution Error (bit4). */
-    if (code <= -100 && code > -200) s_esr |= 0x20u;
-    else if (code <= -200 && code > -300) s_esr |= 0x10u;
-    if (s_err_count >= SCPI_ERRQ_N) {              /* plná fronta -> overflow marker */
-        s_err_q[(s_err_head + SCPI_ERRQ_N - 1) % SCPI_ERRQ_N] = -350;
+    if (code <= -100 && code > -200) c->esr |= 0x20u;
+    else if (code <= -200 && code > -300) c->esr |= 0x10u;
+    if (c->err_count >= SCPI_ERRQ_N) {             /* plná fronta -> overflow marker */
+        c->err_q[(c->err_head + SCPI_ERRQ_N - 1) % SCPI_ERRQ_N] = -350;
         return;
     }
-    s_err_q[(s_err_head + s_err_count) % SCPI_ERRQ_N] = code;
-    s_err_count++;
+    c->err_q[(c->err_head + c->err_count) % SCPI_ERRQ_N] = code;
+    c->err_count++;
 }
-static int scpi_err_pop(void)                       /* 0 = prázdná (No error) */
+static int scpi_err_pop(scpi_ctx_t *c)              /* 0 = prázdná (No error) */
 {
-    if (s_err_count == 0) return 0;
-    int code = s_err_q[s_err_head];
-    s_err_head = (uint8_t)((s_err_head + 1) % SCPI_ERRQ_N);
-    s_err_count--;
+    if (c->err_count == 0) return 0;
+    int code = c->err_q[c->err_head];
+    c->err_head = (uint8_t)((c->err_head + 1) % SCPI_ERRQ_N);
+    c->err_count--;
     return code;
 }
-static void scpi_err_clear(void) { s_err_head = 0; s_err_count = 0; }
+static void scpi_err_clear(scpi_ctx_t *c) { c->err_head = 0; c->err_count = 0; }
 
 /* Poslední REÁLNÝ (ne simulovaný) kmitočet /4 v Hz. @return 1 = platné. */
 static int scpi_real_freq_hz(double *hz)
@@ -216,8 +223,9 @@ static int scpi_calc_set(meas_cfg_t *c, const char *hdr, const char *arg, int *e
     return 0;
 }
 
-/* Zpracuje JEDNU programovou jednotku (bez ';'). Compound rozdělí scpi_process. */
-static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
+/* Zpracuje JEDNU programovou jednotku (bez ';'). Compound rozdělí scpi_process.
+ * Stav (chyby/status) je v `c` = kontext session. */
+static size_t scpi_exec_one(scpi_ctx_t *c, const char *line, char *out, size_t out_sz)
 {
     if (line == NULL || out == NULL || out_sz == 0) return 0;
     out[0] = '\0';
@@ -240,7 +248,7 @@ static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
     }
     if (hdr_match(hdr, "*OPC")) {                             /* Operation Complete */
         if (is_query) { snprintf(out, out_sz, "1"); return strlen(out); }
-        s_esr |= 0x01u;                                       /* synchronní → OPC hned */
+        c->esr |= 0x01u;                                       /* synchronní → OPC hned */
         return 0;
     }
     if (hdr_match(hdr, "*WAI") && !is_query) { return 0; }    /* no-op (vše synchronní) */
@@ -249,39 +257,43 @@ static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
         return strlen(out);
     }
     if (hdr_match(hdr, "*RST") && !is_query) { return 0; }    /* no-op (nesahá na HW) */
-    if (hdr_match(hdr, "*CLS") && !is_query) { scpi_err_clear(); s_esr = 0; return 0; }  /* clear status */
+    if (hdr_match(hdr, "*CLS") && !is_query) { scpi_err_clear(c); c->esr = 0; return 0; }  /* clear status */
     if (hdr_match(hdr, "*ESR")) {                             /* Event Status Register */
-        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)s_esr); s_esr = 0; return strlen(out); }
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)c->esr); c->esr = 0; return strlen(out); }
     }
     if (hdr_match(hdr, "*ESE")) {                             /* Event Status Enable */
-        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)s_ese); return strlen(out); }
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)c->ese); return strlen(out); }
         int ok = 0; double v = scpi_num(arg, &ok);
-        if (ok) { s_ese = (uint8_t)v; return 0; }
-        scpi_err_push(-224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
+        if (ok) { c->ese = (uint8_t)v; return 0; }
+        scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
     }
     if (hdr_match(hdr, "*SRE")) {                             /* Service Request Enable */
-        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)s_sre); return strlen(out); }
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)c->sre); return strlen(out); }
         int ok = 0; double v = scpi_num(arg, &ok);
-        if (ok) { s_sre = (uint8_t)v; return 0; }
-        scpi_err_push(-224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
+        if (ok) { c->sre = (uint8_t)v; return 0; }
+        scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
     }
     if (hdr_match(hdr, "*STB") && is_query) {                 /* Status Byte */
         unsigned stb = 0;
-        if (s_err_count > 0)      stb |= 0x04u;              /* EAV: fronta chyb neprázdná */
-        if (s_esr & s_ese)        stb |= 0x20u;              /* ESB: povolený ESR bit */
-        if (stb & s_sre)          stb |= 0x40u;              /* MSS: povolený summary bit */
+        if (c->err_count > 0)      stb |= 0x04u;              /* EAV: fronta chyb neprázdná */
+        if (c->esr & c->ese)        stb |= 0x20u;              /* ESB: povolený ESR bit */
+        if (stb & c->sre)          stb |= 0x40u;              /* MSS: povolený summary bit */
         snprintf(out, out_sz, "%u", stb); return strlen(out);
     }
 
     /* ── SYSTem ────────────────────────────────────────────────────────────── */
     if (hdr_match(hdr, "SYSTem:VERSion") && is_query) { snprintf(out, out_sz, "1999.0"); return strlen(out); }
+    if (hdr_match(hdr, "SYSTem:UPTime") && is_query) {       /* doba běhu [s] */
+        snprintf(out, out_sz, "%lu", (unsigned long)g_uptime_s);
+        return strlen(out);
+    }
     if (hdr_match(hdr, "SYSTem:ERRor:COUNt") && is_query) {   /* počet chyb ve frontě */
-        snprintf(out, out_sz, "%u", (unsigned)s_err_count);
+        snprintf(out, out_sz, "%u", (unsigned)c->err_count);
         return strlen(out);
     }
     if ((hdr_match(hdr, "SYSTem:ERRor") ||                    /* SCPI-99 + IEEE 488.2 alias */
          hdr_match(hdr, "SYSTem:ERRor:NEXT")) && is_query) {
-        int code = scpi_err_pop();
+        int code = scpi_err_pop(c);
         snprintf(out, out_sz, "%d,\"%s\"", code, scpi_err_msg(code));
         return strlen(out);
     }
@@ -350,6 +362,45 @@ static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
         return strlen(out);
     }
 
+    /* Napětí napájecích větví (REÁLNÁ HW data z ADS1115/ADC3, ve voltech).
+     * P12=12V (AIN2), P5=5V (AIN3), VC=OCXO ladicí (AIN0), VREF (~2,5 V), VBAT.
+     * g_sensors drží mV (12V/5V už po gain z kalibrace) → /1000 = V. */
+    if (hdr_match(hdr, "MEASure:VOLTage") && is_query) {
+        sensor_id_t id = SENS_ADS2;                          /* default = 12V větev */
+        if      (kw_ci(arg, "P5")  || kw_ci(arg, "5V"))   id = SENS_ADS3;
+        else if (kw_ci(arg, "VC")  || kw_ci(arg, "OCXO")) id = SENS_ADS0;
+        else if (kw_ci(arg, "VREF"))                      id = SENS_VDDA;
+        else if (kw_ci(arg, "VBAT") || kw_ci(arg, "BAT")) id = SENS_VBAT;
+        const sensor_stat_t *s = &g_sensors[id];
+        if (s->valid) fmt_scpi_f2(s->last / 1000.0f, out, out_sz);   /* mV → V */
+        else          snprintf(out, out_sz, "9.91E37");
+        return strlen(out);
+    }
+    /* RF vstupní výkon [dBm] z AD8307 log-detektoru (AIN1) přes živou kalibraci. */
+    if (hdr_match(hdr, "MEASure:POWer") && is_query) {
+        const sensor_stat_t *s = &g_sensors[SENS_ADS1];
+        float slope = g_calib.ad8307_slope_mv_db;
+        if (s->valid && slope > 1.0f)
+            fmt_scpi_f2(s->last / slope + g_calib.ad8307_intercept_dbm, out, out_sz);
+        else
+            snprintf(out, out_sz, "9.91E37");
+        return strlen(out);
+    }
+
+    /* ── SENSe (parametry měření z FPGA — REÁLNÁ data z posledního rámce) ─────── */
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE") && is_query) {  /* hradlovací okno [s] */
+        fpga_meas_t m;
+        if (fpga_freq_get_last(&m) && m.gate_time_ns) fmt_scpi_sec_ns(m.gate_time_ns, out, out_sz);
+        else                                          snprintf(out, out_sz, "9.91E37");
+        return strlen(out);
+    }
+    if (hdr_match(hdr, "SENSe:FREQuency:CHANnel") && is_query) { /* aktivní kanál (id) */
+        fpga_meas_t m;
+        if (fpga_freq_get_last(&m)) snprintf(out, out_sz, "%u", (unsigned)m.channel_id);
+        else                        snprintf(out, out_sz, "9.91E37");
+        return strlen(out);
+    }
+
     /* ── CALCulate (Math Mx+B/NULL + limitní pass/fail, viz meas_math.c) ────────
      * Aplikuje živou konfiguraci `g_meas_cfg` na REÁLNÝ /4 kmitočet. */
     if (hdr_match(hdr, "CALCulate:DATA") && is_query) {       /* Y = math(X) [Hz] */
@@ -371,14 +422,14 @@ static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
                      hdr_match(hdr, "CALCulate:MATH:B") || hdr_match(hdr, "CALCulate:NULL:STATe") ||
                      hdr_match(hdr, "CALCulate:LIMit:STATe") || hdr_match(hdr, "CALCulate:LIMit:LOWer") ||
                      hdr_match(hdr, "CALCulate:LIMit:UPPer"))) {
-        meas_cfg_t c; taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();
-        if      (hdr_match(hdr, "CALCulate:MATH:STATe"))  snprintf(out, out_sz, "%u", (unsigned)c.math_en);
-        else if (hdr_match(hdr, "CALCulate:MATH:M"))      fmt_scpi_hz_d(c.m,  out, out_sz);
-        else if (hdr_match(hdr, "CALCulate:MATH:B"))      fmt_scpi_hz_d(c.b,  out, out_sz);
-        else if (hdr_match(hdr, "CALCulate:NULL:STATe"))  snprintf(out, out_sz, "%u", (unsigned)c.null_en);
-        else if (hdr_match(hdr, "CALCulate:LIMit:STATe")) snprintf(out, out_sz, "%u", (unsigned)c.limit_en);
-        else if (hdr_match(hdr, "CALCulate:LIMit:LOWer")) fmt_scpi_hz_d(c.lo, out, out_sz);
-        else                                             fmt_scpi_hz_d(c.hi, out, out_sz);
+        meas_cfg_t mc; taskENTER_CRITICAL(); mc = g_meas_cfg; taskEXIT_CRITICAL();
+        if      (hdr_match(hdr, "CALCulate:MATH:STATe"))  snprintf(out, out_sz, "%u", (unsigned)mc.math_en);
+        else if (hdr_match(hdr, "CALCulate:MATH:M"))      fmt_scpi_hz_d(mc.m,  out, out_sz);
+        else if (hdr_match(hdr, "CALCulate:MATH:B"))      fmt_scpi_hz_d(mc.b,  out, out_sz);
+        else if (hdr_match(hdr, "CALCulate:NULL:STATe"))  snprintf(out, out_sz, "%u", (unsigned)mc.null_en);
+        else if (hdr_match(hdr, "CALCulate:LIMit:STATe")) snprintf(out, out_sz, "%u", (unsigned)mc.limit_en);
+        else if (hdr_match(hdr, "CALCulate:LIMit:LOWer")) fmt_scpi_hz_d(mc.lo, out, out_sz);
+        else                                             fmt_scpi_hz_d(mc.hi, out, out_sz);
         return strlen(out);
     }
 
@@ -420,32 +471,32 @@ static size_t scpi_exec_one(const char *line, char *out, size_t out_sz)
                 taskENTER_CRITICAL(); g_meas_cfg = tmp; taskEXIT_CRITICAL();
                 return 0;
             }
-            scpi_err_push(-230);
+            scpi_err_push(c, -230);
             snprintf(out, out_sz, "-230,\"Data corrupt or stale\"");
             return strlen(out);
         }
         meas_cfg_t tmp; taskENTER_CRITICAL(); tmp = g_meas_cfg; taskEXIT_CRITICAL();
         int err = 0;
         if (scpi_calc_set(&tmp, hdr, arg, &err)) {
-            if (err) { scpi_err_push(-224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out); }
+            if (err) { scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out); }
             taskENTER_CRITICAL(); g_meas_cfg = tmp; taskEXIT_CRITICAL();
             return 0;   /* akce OK → ticho */
         }
     }
 
     /* Neznámý příkaz — do chybové fronty (SYST:ERR?) + inline odpověď pro konzoli. */
-    scpi_err_push(-113);
+    scpi_err_push(c, -113);
     snprintf(out, out_sz, "-113,\"Undefined header\"");
     return strlen(out);
 }
 
-size_t scpi_process(const char *line, char *out, size_t out_sz)
+size_t scpi_process_ctx(scpi_ctx_t *ctx, const char *line, char *out, size_t out_sz)
 {
-    if (line == NULL || out == NULL || out_sz == 0) return 0;
+    if (ctx == NULL || line == NULL || out == NULL || out_sz == 0) return 0;
     out[0] = '\0';
 
     /* Rychlá cesta: bez ';' = jedna jednotka → byte-identické s dřívějškem. */
-    if (strchr(line, ';') == NULL) return scpi_exec_one(line, out, out_sz);
+    if (strchr(line, ';') == NULL) return scpi_exec_one(ctx, line, out, out_sz);
 
     /* Složená zpráva (IEEE 488.2): jednotky oddělené ';', odpovědi dotazů spojené
      * ';'. Akce (bez výstupu) nepřidávají oddělovač. ⚠️ Zjednodušení: BEZ SCPI
@@ -465,7 +516,7 @@ size_t scpi_process(const char *line, char *out, size_t out_sz)
         if (*t == '\0') continue;               /* prázdná jednotka (např. koncový ';') */
 
         char rb[64];
-        size_t rn = scpi_exec_one(sub, rb, sizeof rb);
+        size_t rn = scpi_exec_one(ctx, sub, rb, sizeof rb);
         if (rn == 0) continue;                  /* akce → žádná odpověď, žádný oddělovač */
         if (total && total + 1 < out_sz) out[total++] = ';';
         size_t room = (total + 1 < out_sz) ? out_sz - total - 1 : 0;
@@ -478,39 +529,60 @@ size_t scpi_process(const char *line, char *out, size_t out_sz)
     return total;
 }
 
+/* Bez ctx = sdílený default kontext (USB CDC konzole; jediná session). */
+size_t scpi_process(const char *line, char *out, size_t out_sz)
+{
+    return scpi_process_ctx(&s_default_ctx, line, out, out_sz);
+}
+
 /* ── Selftest (parser: case, krátká/dlouhá forma, hierarchie, status, compound) ── */
 int scpi_selftest(void)
 {
     int ok = 1; char b[80];
-    scpi_err_clear();   /* čistý start (selftest běží i za provozu) */
+    scpi_ctx_t x; scpi_ctx_init(&x);   /* lokální session (selftest běží i za provozu) */
 
-    scpi_process("*IDN?", b, sizeof b);            ok &= (strncmp(b, "OK2HAZ,", 7) == 0);
-    scpi_process("*idn?", b, sizeof b);            ok &= (strncmp(b, "OK2HAZ,", 7) == 0);  /* case */
-    scpi_process("*OPC?", b, sizeof b);            ok &= (strcmp(b, "1") == 0);
-    ok &= (scpi_process("*RST", b, sizeof b) == 0);                                        /* akce = 0 */
+    scpi_process_ctx(&x, "*IDN?", b, sizeof b);            ok &= (strncmp(b, "OK2HAZ,", 7) == 0);
+    scpi_process_ctx(&x, "*idn?", b, sizeof b);            ok &= (strncmp(b, "OK2HAZ,", 7) == 0);  /* case */
+    scpi_process_ctx(&x, "*OPC?", b, sizeof b);            ok &= (strcmp(b, "1") == 0);
+    ok &= (scpi_process_ctx(&x, "*RST", b, sizeof b) == 0);                                        /* akce = 0 */
 
-    scpi_process("SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "0,", 2) == 0);        /* prázdná fronta */
-    scpi_process("SYSTem:ERRor?", b, sizeof b);    ok &= (strncmp(b, "0,", 2) == 0);        /* dlouhá forma */
-    scpi_process("system:version?", b, sizeof b);  ok &= (strcmp(b, "1999.0") == 0);        /* case+dlouhá */
+    scpi_process_ctx(&x, "SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "0,", 2) == 0);        /* prázdná fronta */
+    scpi_process_ctx(&x, "SYSTem:ERRor?", b, sizeof b);    ok &= (strncmp(b, "0,", 2) == 0);        /* dlouhá forma */
+    scpi_process_ctx(&x, "system:version?", b, sizeof b);  ok &= (strcmp(b, "1999.0") == 0);        /* case+dlouhá */
 
     /* Nové dotazy — jen že odpoví (bez HW/fixu vrací NaN 9.91E37). */
-    ok &= (scpi_process("MEAS:FREQ?", b, sizeof b) > 0);
-    ok &= (scpi_process("MEAS:FREQ:DIV16?", b, sizeof b) > 0);   /* /16 větev */
-    ok &= (scpi_process("SYST:GPS:TIME?", b, sizeof b) > 0);
-    ok &= (scpi_process("SYST:GPS:POS?", b, sizeof b) > 0);      /* krátká forma POSition */
-    ok &= (scpi_process("CALC:DATA?", b, sizeof b) > 0);         /* Math Y=m*X+b */
-    ok &= (scpi_process("CALC:LIM:FAIL?", b, sizeof b) > 0);     /* limit pass/fail */
+    ok &= (scpi_process_ctx(&x, "MEAS:FREQ?", b, sizeof b) > 0);
+    ok &= (scpi_process_ctx(&x, "MEAS:FREQ:DIV16?", b, sizeof b) > 0);   /* /16 větev */
+    ok &= (scpi_process_ctx(&x, "SYST:GPS:TIME?", b, sizeof b) > 0);
+    ok &= (scpi_process_ctx(&x, "SYST:GPS:POS?", b, sizeof b) > 0);      /* krátká forma POSition */
+    ok &= (scpi_process_ctx(&x, "CALC:DATA?", b, sizeof b) > 0);         /* Math Y=m*X+b */
+    ok &= (scpi_process_ctx(&x, "CALC:LIM:FAIL?", b, sizeof b) > 0);     /* limit pass/fail */
+    ok &= (scpi_process_ctx(&x, "SYST:UPT?", b, sizeof b) > 0);          /* uptime [s] */
+    ok &= (scpi_process_ctx(&x, "MEAS:VOLT? P12", b, sizeof b) > 0);     /* 12V větev [V] */
+    ok &= (scpi_process_ctx(&x, "MEAS:VOLT? P5",  b, sizeof b) > 0);     /* 5V větev */
+    ok &= (scpi_process_ctx(&x, "MEAS:VOLT?",     b, sizeof b) > 0);     /* default = 12V */
+    ok &= (scpi_process_ctx(&x, "MEAS:POW?",      b, sizeof b) > 0);     /* RF dBm (AD8307) */
+    ok &= (scpi_process_ctx(&x, "SENS:FREQ:GATE?", b, sizeof b) > 0);    /* hradlo [s] */
+    ok &= (scpi_process_ctx(&x, "SENS:FREQ:CHAN?", b, sizeof b) > 0);    /* kanál */
 
     /* Chybová fronta: neznámý příkaz -> -113 inline i do fronty; SYST:ERR? popne. */
-    scpi_err_clear();
-    { size_t nn = scpi_process("FOO:BAR?", b, sizeof b);          ok &= (nn > 0 && b[0] == '-'); }
-    scpi_process("*ID?", b, sizeof b);             ok &= (b[0] == '-');   /* zkracenina NESMI matchnout *IDN */
-    scpi_process("?", b, sizeof b);                ok &= (b[0] == '-');   /* prázdná hlavička != *IDN */
-    scpi_process("SYST:TEMPXY?", b, sizeof b);     ok &= (b[0] == '-');   /* delší než plná forma neprojde */
-    { size_t nn = scpi_process("SYST:ERR", b, sizeof b); ok &= (nn > 0 && b[0] == '-'); }  /* dotaz bez '?' */
-    scpi_process("SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "-113,", 5) == 0);     /* pop = -113 */
-    scpi_err_clear();
-    scpi_process("SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "0,", 2) == 0);        /* po clear prázdno */
+    scpi_ctx_init(&x);
+    { size_t nn = scpi_process_ctx(&x, "FOO:BAR?", b, sizeof b);          ok &= (nn > 0 && b[0] == '-'); }
+    scpi_process_ctx(&x, "*ID?", b, sizeof b);             ok &= (b[0] == '-');   /* zkracenina NESMI matchnout *IDN */
+    scpi_process_ctx(&x, "?", b, sizeof b);                ok &= (b[0] == '-');   /* prázdná hlavička != *IDN */
+    scpi_process_ctx(&x, "SYST:TEMPXY?", b, sizeof b);     ok &= (b[0] == '-');   /* delší než plná forma neprojde */
+    { size_t nn = scpi_process_ctx(&x, "SYST:ERR", b, sizeof b); ok &= (nn > 0 && b[0] == '-'); }  /* dotaz bez '?' */
+    scpi_process_ctx(&x, "SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "-113,", 5) == 0);     /* pop = -113 */
+    scpi_ctx_init(&x);
+    scpi_process_ctx(&x, "SYST:ERR?", b, sizeof b);        ok &= (strncmp(b, "0,", 2) == 0);        /* po clear prázdno */
+
+    /* Izolace session: chyba v jednom kontextu neovlivní druhý (jádro per-session). */
+    {
+        scpi_ctx_t a, c2; scpi_ctx_init(&a); scpi_ctx_init(&c2);
+        scpi_process_ctx(&a, "BOGUS?", b, sizeof b);                     /* -113 do fronty a */
+        scpi_process_ctx(&c2, "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '0');  /* c2 čistý */
+        scpi_process_ctx(&a,  "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '1');  /* a má chybu */
+    }
 
     /* Parsování argumentů (bez libc). */
     { int q; ok &= (scpi_num("1000000", &q) > 999999.0 && scpi_num("1000000", &q) < 1000001.0 && q); }
@@ -548,42 +620,40 @@ int scpi_selftest(void)
     }
 
     /* IEEE 488.2 status model + ERR:COUN? + ERR:NEXT? + MEAS:FREQ:ALL?. */
-    scpi_err_clear(); s_esr = 0; s_ese = 0;
-    scpi_process("FOO?", b, sizeof b);                                   /* -113 -> CME */
-    scpi_process("SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '1');    /* 1 chyba ve frontě */
-    scpi_process("*STB?", b, sizeof b);          ok &= (atoi(b) & 0x04); /* EAV */
-    scpi_process("*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x20); /* CME latch */
-    scpi_process("*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);   /* čtení smazalo */
-    scpi_process("SYST:ERR:NEXT?", b, sizeof b); ok &= (strncmp(b, "-113,", 5) == 0);  /* NEXT alias popne */
-    scpi_process("*ESE 32", b, sizeof b);
-    scpi_process("*ESE?", b, sizeof b);          ok &= (atoi(b) == 32);
-    scpi_process("CALC:MATH:M xyz", b, sizeof b);                        /* -224 -> EXE */
-    scpi_process("*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x10); /* EXE latch */
-    scpi_process("*CLS", b, sizeof b);
-    scpi_process("*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);   /* *CLS smazal ESR */
-    scpi_process("SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '0');    /* *CLS smazal frontu */
-    ok &= (scpi_process("MEAS:FREQ:ALL?", b, sizeof b) > 0 && strchr(b, ',') != NULL);
+    scpi_ctx_init(&x);
+    scpi_process_ctx(&x, "FOO?", b, sizeof b);                                   /* -113 -> CME */
+    scpi_process_ctx(&x, "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '1');    /* 1 chyba ve frontě */
+    scpi_process_ctx(&x, "*STB?", b, sizeof b);          ok &= (atoi(b) & 0x04); /* EAV */
+    scpi_process_ctx(&x, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x20); /* CME latch */
+    scpi_process_ctx(&x, "*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);   /* čtení smazalo */
+    scpi_process_ctx(&x, "SYST:ERR:NEXT?", b, sizeof b); ok &= (strncmp(b, "-113,", 5) == 0);  /* NEXT alias popne */
+    scpi_process_ctx(&x, "*ESE 32", b, sizeof b);
+    scpi_process_ctx(&x, "*ESE?", b, sizeof b);          ok &= (atoi(b) == 32);
+    scpi_process_ctx(&x, "CALC:MATH:M xyz", b, sizeof b);                        /* -224 -> EXE */
+    scpi_process_ctx(&x, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x10); /* EXE latch */
+    scpi_process_ctx(&x, "*CLS", b, sizeof b);
+    scpi_process_ctx(&x, "*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);   /* *CLS smazal ESR */
+    scpi_process_ctx(&x, "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '0');    /* *CLS smazal frontu */
+    ok &= (scpi_process_ctx(&x, "MEAS:FREQ:ALL?", b, sizeof b) > 0 && strchr(b, ',') != NULL);
 
     /* Common commands: *OPC (event -> ESR bit0), *WAI (no-op), *TST? (0/1). */
-    scpi_process("*CLS", b, sizeof b);
-    scpi_process("*OPC", b, sizeof b);
-    scpi_process("*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x01);  /* OPC latch */
-    ok &= (scpi_process("*WAI", b, sizeof b) == 0);                       /* akce = 0 */
-    ok &= (scpi_process("*TST?", b, sizeof b) > 0);                       /* 0=PASS / 1 */
+    scpi_process_ctx(&x, "*CLS", b, sizeof b);
+    scpi_process_ctx(&x, "*OPC", b, sizeof b);
+    scpi_process_ctx(&x, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x01);  /* OPC latch */
+    ok &= (scpi_process_ctx(&x, "*WAI", b, sizeof b) == 0);                       /* akce = 0 */
+    ok &= (scpi_process_ctx(&x, "*TST?", b, sizeof b) > 0);                       /* 0=PASS / 1 */
 
     /* Selektor čidla + FETCh alias + questionable (bez HW jen že odpoví). */
-    ok &= (scpi_process("SYST:TEMP? BOARD", b, sizeof b) > 0);
-    ok &= (scpi_process("SYST:TEMP? MCU",   b, sizeof b) > 0);
-    ok &= (scpi_process("FETC:FREQ?",       b, sizeof b) > 0);            /* FETCh alias */
-    ok &= (scpi_process("STAT:QUES:COND?",  b, sizeof b) > 0);
+    ok &= (scpi_process_ctx(&x, "SYST:TEMP? BOARD", b, sizeof b) > 0);
+    ok &= (scpi_process_ctx(&x, "SYST:TEMP? MCU",   b, sizeof b) > 0);
+    ok &= (scpi_process_ctx(&x, "FETC:FREQ?",       b, sizeof b) > 0);            /* FETCh alias */
+    ok &= (scpi_process_ctx(&x, "STAT:QUES:COND?",  b, sizeof b) > 0);
 
     /* Compound (IEEE 488.2 ';'): jednotky se provedou popořadě, dotazy spojí ';',
      * akce oddělovač nepřidá. */
-    scpi_err_clear(); s_esr = 0; s_ese = 0;
-    scpi_process("*ESE 24;*ESE?", b, sizeof b);  ok &= (strcmp(b, "24") == 0);    /* obě jednotky */
-    scpi_process("*ESE?;*ESE?",   b, sizeof b);  ok &= (strcmp(b, "24;24") == 0); /* ';' join */
-    scpi_process("*ESE 8;*ESE?",  b, sizeof b);  ok &= (strcmp(b, "8") == 0);     /* akce bez ';' */
-
-    scpi_err_clear(); s_esr = 0; s_ese = 0; s_sre = 0;   /* neponech stav ze selftestu */
+    scpi_ctx_init(&x);
+    scpi_process_ctx(&x, "*ESE 24;*ESE?", b, sizeof b);  ok &= (strcmp(b, "24") == 0);    /* obě jednotky */
+    scpi_process_ctx(&x, "*ESE?;*ESE?",   b, sizeof b);  ok &= (strcmp(b, "24;24") == 0); /* ';' join */
+    scpi_process_ctx(&x, "*ESE 8;*ESE?",  b, sizeof b);  ok &= (strcmp(b, "8") == 0);     /* akce bez ';' */
     return ok;
 }

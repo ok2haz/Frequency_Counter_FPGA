@@ -17,10 +17,12 @@
  *   *ESR?  *ESE <m>|*ESE?  *SRE <m>|*SRE?  *STB?   (minimální status model)
  *
  * Podporované příkazy (dotazy vrací hodnotu, akce nic):
- *   SYSTem:VERSion?  SYSTem:ERRor?(=…:NEXT?)  SYSTem:ERRor:COUNt?
+ *   SYSTem:VERSion?  SYSTem:UPTime?  SYSTem:ERRor?(=…:NEXT?)  SYSTem:ERRor:COUNt?
  *   SYSTem:TEMPerature? [OCXO|BOARD|MCU|FPGA]  (default OCXO 0x49)
  *   SYSTem:GPS:STATus?  SYSTem:GPS:TIME?  SYSTem:GPS:POSition?
  *   MEASure:FREQuency?  (=FETCh:FREQuency?)  :DIV16?  :ALL?  (reálný /4, /16, oba)
+ *   MEASure:VOLTage? [P12|P5|VC|VREF|VBAT]  (default P12)   MEASure:POWer?  (RF dBm)
+ *   SENSe:FREQuency:GATE?  SENSe:FREQuency:CHANnel?          (poslední FPGA rámec)
  *   CALCulate:DATA?  CALCulate:LIMit:FAIL?         (Math Mx+B/NULL + limit, viz meas_math)
  *   STATus:OPERation:CONDition?  STATus:QUEStionable:CONDition?
  *
@@ -33,10 +35,11 @@
  *   ⚠️ SET zapisují `g_meas_cfg` z UartTasku → commit celé cfg pod krátkou kritickou
  *   sekcí (UiTask nikdy nevidí roztržený double).
  *
- * ⚠️ **Chybová fronta** (`SYSTem:ERRor?`) + status registry jsou modulový stav =
- * JEDNA session (stačí pro jediný USB CDC transport). Souběžný TCP 5025 na CM4
- * bude potřebovat per-session kontext (jinak je `scpi_process` čistá funkce).
- * `*CLS` frontu i status maže.
+ * ⚠️ **Chybová fronta** (`SYSTem:ERRor?`) + status registry jsou PER-SESSION
+ * (`scpi_ctx_t`) — každý transport má vlastní kontext, takže USB CDC a budoucí
+ * souběžný TCP 5025 na CM4 mají nezávislé fronty i status. `scpi_process` bez ctx
+ * používá jediný sdílený default (USB konzole); TCP volá `scpi_process_ctx` s
+ * vlastním kontextem per spojení. `*CLS` frontu i status daného ctx maže.
  *
  * ⚠️ **Zlaté pravidlo (STATUS.md):** `MEASure:FREQuency?` vrací REÁLNÝ FPGA
  * kmitočet (`fpga_freq_get_last`), NE simulovaný headline. Bez platného měření
@@ -47,13 +50,34 @@
  * newlibu vypnutý, viz fmt_hz v app vrstvě).
  */
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** Zpracuje jednu programovou zprávu (bez CRLF; víc jednotek přes ';'). Odpověď
- *  (vč. '\0') do out; vrací její délku bez '\0' (0 = žádná — např. SET/akce). */
+/** Kontext JEDNÉ SCPI session: chybová fronta + IEEE 488.2 status registry.
+ *  Každý transport (USB CDC teď, TCP 5025 na CM4 pak) má vlastní instanci →
+ *  nezávislé fronty i status. Zeroed = čistý stav (viz scpi_ctx_init). */
+#define SCPI_ERRQ_N 8
+typedef struct {
+    int      err_q[SCPI_ERRQ_N];   /* kruhová fronta chybových kódů */
+    uint8_t  err_head, err_count;
+    uint8_t  esr;                  /* Standard Event Status Register (latched) */
+    uint8_t  ese;                  /* Event Status Enable (*ESE) */
+    uint8_t  sre;                  /* Service Request Enable (*SRE) */
+} scpi_ctx_t;
+
+/** Vynuluje kontext (prázdná fronta, ESR/ESE/SRE = 0). Volat před 1. použitím
+ *  vlastního kontextu (např. při navázání TCP spojení). */
+void scpi_ctx_init(scpi_ctx_t *ctx);
+
+/** Zpracuje jednu programovou zprávu v daném kontextu (bez CRLF; víc jednotek
+ *  přes ';'). Odpověď (vč. '\0') do out; vrací délku bez '\0' (0 = žádná). */
+size_t scpi_process_ctx(scpi_ctx_t *ctx, const char *line, char *out, size_t out_sz);
+
+/** Jako scpi_process_ctx, ale nad SDÍLENÝM default kontextem (USB CDC konzole,
+ *  jediná session). Zachováno kvůli stávajícímu volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);
 
 /** Pure-logic unit test (parser: case, krátká/dlouhá forma, hierarchie, status
