@@ -6,7 +6,7 @@
 **  Author      : STM32CubeIDE
 **
 **  Abstract    : Linker script for STM32H7 series
-**                1024Kbytes FLASH and 288Kbytes RAM
+**                1024Kbytes FLASH and 160Kbytes RAM (D2 SRAM2+3; SRAM1 = CM7)
 **
 **                Set heap size, stack size and stack location according
 **                to application requirements.
@@ -44,7 +44,7 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
 FLASH (rx)     : ORIGIN = 0x08100000, LENGTH = 1024K
-RAM (xrw)      : ORIGIN = 0x10000000, LENGTH = 288K
+RAM (xrw)      : ORIGIN = 0x10020000, LENGTH = 160K  /* D2 SPLIT: CM4 = SRAM2+3 (160K). SRAM1 (0x10000000, 128K) patri CM7 (viz CM7 linker RAM_D2 + NAVRH §11.5). Shodne s CM4 _RAM.ld. Drive 0x10000000/288K = kolidovalo s CM7 diagnostikou D2. */
 }
 
 /* Define output sections */

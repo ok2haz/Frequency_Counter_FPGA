@@ -414,16 +414,26 @@ Doplnit:
 
 Rozšíření `stall:<task>` black-boxu (viz `CLAUDE.md`, watchdog) o `stall:CM4` je přímočaré.
 
-## 11.5 🟡 Vlastnictví D2 SRAM je dnes u CM7 — vyřešit před předáním
+## 11.5 ✅ Vlastnictví D2 SRAM rozděleno (2026-08-09)
 
-§8 to zmiňuje jednou větou, ale je to konkrétnější:
+Dřív si D2 (288K) nárokovala **celá obě jádra**: CM7 `RAM_D2 @0x30000000/288K`, CM4
+`RAM @0x10000000/288K` (= tentýž fyzický D2, CM4-alias). CM7 tam nic nelinkoval, jen
+diagnostický `ram write/read` (`RAM_BASE 0x30000000`, ~78 KB od 0x30001000). Kolize by
+udeřila, až CM4 dostane ETH (lwIP heap + deskriptory v D2).
 
-- `CM7/STM32H757BITX_FLASH.ld` má `RAM_D2 (xrw) : ORIGIN = 0x30000000, LENGTH = 288K`,
-- `freertos_task_uart.c` používá `RAM_BASE 0x30000000` pro UART `ram write/read`.
+**Rozděleno bankově zarovnaně** (D2 = SRAM1 128K @0x30000000 + SRAM2 128K @0x30020000 +
+SRAM3 32K @0x30040000):
+- **SRAM1 (128K) → CM7**: `RAM_D2 @0x30000000 LENGTH 128K` (oba CM7 linkery). Diagnostický
+  `ram` test (0x30001000, ~78 KB) se do SRAM1 vejde; CM7 do RAM_D2 jinak **nic nelinkuje**.
+- **SRAM2+3 (160K) → CM4**: `RAM @0x10020000 LENGTH 160K` (CM4 FLASH.ld — **sjednoceno s CM4
+  `_RAM.ld`**, které tuto konfiguraci ST-tooling už vygeneroval; `RAM_EXEC @0x10000000/128K`
+  = SRAM1 se pro flash build nepoužívá). `_estack` vrchol `0x10048000` beze změny.
 
-Než CM4 dostane D2 (ETH deskriptory + lwIP heap), je potřeba **rozdělit D2 v obou linker
-skriptech** a test buffer buď přesunout, nebo zrušit. Jinak si jádra tiše přepíšou paměť —
-a bude to vypadat jako náhodná chyba sítě.
+**Validace (bez HW):** všechny 4 linkery parsují; **CM4 relink novým skriptem OK** (sekce
+relokované na 0x10020000, footprint 1,6 KB / 160K, žádné přetečení); CM7 map = do D2
+nelinkuje nic; regiony disjunktní (CM7 fyz. [0,128K), CM4 fyz. [128K,288K)).
+⚠️ **HW-gated (nevalidovatelné bez flashe bank2):** CM4 skutečně bootující a používající
+0x10020000; D2 SRAM2/3 clock enable **z CM4 strany** (per-core RCC, viz §11.6).
 
 ## 11.6 🟡 Dvě pasti, na které projekt už doplatil
 

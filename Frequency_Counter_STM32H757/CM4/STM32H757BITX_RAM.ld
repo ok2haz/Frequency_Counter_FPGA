@@ -44,7 +44,7 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
 RAM_EXEC (rx)  : ORIGIN = 0x10000000, LENGTH = 128K
-RAM (xrw)      : ORIGIN = 0x10020000, LENGTH = 160K
+RAM (xrw)      : ORIGIN = 0x10020000, LENGTH = 160K  /* D2 SPLIT: CM4 = SRAM2+3. SRAM1 (RAM_EXEC 0x10000000) patri CM7 (RAM_D2, NAVRH §11.5). */
 }
 
 /* Define output sections */
