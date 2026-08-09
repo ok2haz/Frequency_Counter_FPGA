@@ -45,7 +45,11 @@ int ipc_cm4_read(ipc_snapshot_t *out)
         *out = g_ipc.snap;                        /* kopie cele struktury */
         retry = ipc_snap_rd_retry(&g_ipc.snap, s);
     } while (retry && ++tries < 8);
-    return !retry;                                /* 1 = konzistentni kopie */
+    /* ⚠️ Per-read kontrola magicu: ipc_init (razitko g_ipc na CM7) dela memset BEZ
+     * seqlocku -> pri bootu uzke okno, kdy je snap vynulovan (seq=0, sude, "konzistentni")
+     * a magic=0. Bez teto kontroly by CM4 vratil vynulovana data jako platna. Odmitnutim
+     * na magicu je cteni robustni vuci memsetu i re-initu za behu. */
+    return !retry && out->magic == IPC_MAGIC;     /* 1 = konzistentni a platny snapshot */
 }
 
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)

@@ -9,6 +9,16 @@
 >
 > ⚠️ **Než začneš:** zálohuj funkční `.ioc` a option bytes (přečti a ulož je z CubeProgrammeru).
 > Špatný option byte (BCM4 + boot adresa) může vést k tomu, že se **nespustí ani jedno jádro**.
+>
+> 🔴 **MÍRA JISTOTY (čti kriticky):** tento dokument je **hypotéza z auditu statického kódu**, ne
+> ověřený postup — **runtime dvoujádra nikdo nespustil**. Validováno je jen: kompilace obou stran
+> (`-Wall -Wextra -Wshadow`) + relink CM4 novým linkerem. Neověřené a případně nepřesné: přesný
+> RCC bit/makro pro SRAM4 clock, jestli shareability mismatch (sekce 3) vadí, přesné názvy/formát
+> option bytů ve tvé verzi CubeProgrammeru. Ber kroky jako **vodítko + kontrolní body**, ne evangelium.
+>
+> ✅ **Ověřeno auditem 2026-08-09:** CM7 i CM4 mají shodný `USE_PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO`
+> (napájení jádra — musí zůstat shodné, jinak brownout); CM4 projekt je **folder-based** (`Core` v
+> `sourceEntries`) → nové soubory `ipc_cm4.c` se do buildu vezmou automaticky.
 
 ---
 
@@ -72,6 +82,16 @@ IPC snapshot + ringy leží v **SRAM4 (D3, `0x38000000`, 64 KB)**. Ani CM7, ani 
 
 ⚠️ Je to **symetrický** problém: kdyby SRAM4 clock chyběl, selže i publikace z CM7 (taky netestováno na HW).
 
+**🔴 Shareability / MPU na CM4 (podceněno v předchozí verzi):** CM7 má `0x38000000` v MPU region 2
+jako **NON-CACHEABLE + SHAREABLE**. CM4 **nemá ŽÁDNOU MPU** (`CORTEX_M4.MPU_Control=__NULL`) →
+přistupuje s **default atributy** (Normal, non-shareable). Koherence dat drží (CM4 nemá D-cache,
+CM7 je non-cacheable), ale **shareability se NESHODUJE** → korektní mezijaderné pořadí spoléhá
+**výhradně na `__DMB()` bariéry** v seqlocku. Na Cortex-M je DMB *pravděpodobně* dostačující, ale:
+- [ ] Pokud IPC „skoro funguje / náhodně tearuje" → přidat na CM4 **MPU region pro `0x38000000`**
+  se stejnými atributy jako CM7 (Device NEBO Normal non-cacheable + shareable). Bez toho je to
+  latentní riziko, které se na stole neprojeví a v krabičce ano.
+- Tvrzení „CM4 nemá D-cache → nepotřebuje MPU" (sekce 5) platí **jen pro cacheability**, ne pro ordering.
+
 ---
 
 ## 4) 🟡 D2 SRAM split (HOTOVO v linkerech) — jen ověřit, nerozbít
@@ -83,6 +103,14 @@ Rozdělení paměti je hotové (`STATUS.md` #22), **linkery NEjsou řízené `.i
 - [ ] CM4 `_estack` vyjde `0x10048000` (vrchol D2). CM4 firmware zabírá ~2 KB → 160K je obří rezerva.
 - [ ] ⚠️ **Per-core clock pro D2 SRAM2/3:** až CM4 dostane ETH/lwIP (heap v D2), musí mít
   SRAM2/3 clock povolený **z CM4** (`RCC_C2_AHB2ENR`). Dnes CM4 do D2 skoro nic nedává, ale hlídej u ETH.
+
+**🟡 Kompromis rozdělení (vědomý, ale sub-optimální):** CM7 dostal **celý SRAM1 (128K), který
+LINKEREM NEVYUŽÍVÁ** — ověřeno, že žádná `>RAM_D2` sekce; jediný uživatel je diagnostický
+`ram write/read` (~78 KB od `0x30001000`). Split tak **upřednostnil zachování bring-up
+diagnostiky před maximem místa pro CM4/ETH**. CM4 má 160K; pro lwIP + ETH deskriptory obvykle stačí
+(heap ~16-32K + PBUF + deskriptory ~ desítky K), ale **není to ověřené proti reálné ETH konfiguraci**.
+- [ ] Až bude ETH/lwIP: pokud 160K nestačí (hodně TCP spojení / velká okna), **přerozdělit** —
+  zmenšit/přesunout CM7 `ram` diagnostiku (např. na 4K slot nebo do RAM_D1/SDRAM) a dát CM4 víc D2.
 
 ---
 
