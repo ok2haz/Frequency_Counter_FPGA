@@ -31,7 +31,8 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  1u
+#define IPC_VERSION  2u             /* v2 (2026-08-09): plna sada senzoru+kalibrace do snapshotu
+                                       (aby CM4 obsloužil SCPI/web bez pristupu ke g_sensors/g_calib) */
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
@@ -67,11 +68,23 @@ typedef struct {
     uint8_t  gps_num_sat;
     uint8_t  _pad_gps;
 
-    /* Senzory (souhrn). */
-    int16_t  t_ocxo_c100;          /* OCXO teplota × 100 [°C] */
-    int16_t  t_board_c100;
-    uint16_t ocxo_vc_mv;           /* ladici napeti EFC */
-    uint16_t rf_mv;                /* RF level (SYROVE mV, jako datalog) */
+    /* Senzory — PLNA sada (v2), aby CM4 (SCPI/web) obslouzil dotazy BEZ pristupu ke
+     * g_sensors/g_calib (na CM4 nejsou). Teploty × 100 °C, napeti mV, kalibrace RF. */
+    float    ad8307_slope_mv_db;   /* AD8307 kalibrace (aby CM4 spocital MEAS:POWer? dBm) */
+    float    ad8307_intercept_dbm;
+    int16_t  t_ocxo_c100;          /* OCXO (TMP117 0x49) × 100 [°C] */
+    int16_t  t_board_c100;         /* STM deska (TMP117 0x48) */
+    int16_t  t_mcu_c100;           /* MCU jadro (ADC3) */
+    uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0) */
+    uint16_t rf_mv;                /* RF level SYROVE mV (AD8307, AIN1) */
+    uint16_t v_12v_mv;             /* 12V vetev (AIN2, uz po gain) */
+    uint16_t v_5v_mv;              /* 5V vetev (AIN3) */
+    uint16_t vref_mv;              /* VREF+ ~2,5 V (ADC3) */
+    uint16_t vbat_mv;              /* VBAT (ADC3) */
+    uint8_t  channel_id;           /* aktivni kanal FPGA */
+    uint8_t  si5356_status;        /* Si5356 reg 218 (reference lock: LOS_CLKIN/PLL_LOL) */
+    uint8_t  si5356_ok;            /* 1 = status precten */
+    uint8_t  _pad_s;
 
     /* Zdravi / stav. */
     uint32_t flags;                /* IPC_F_* */

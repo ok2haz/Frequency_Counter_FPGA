@@ -337,8 +337,12 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   CM7 = NON-CACHEABLE + SHAREABLE** (`main.c MPU_Config`); bez toho by CM7 cache viděla stará data. CM4 nemá
   D-cache ani MPU pro SRAM4 → ordering visí **jen na `__DMB()`** (shareability se neshoduje — viz bring-up §3).
 - **Snapshot CM7→CM4** (seqlock, `seq` liché = zápis): `ipc.c` `ipc_publish` (~2 Hz z defaultTask, **JEN reálná
-  data** z `fpga_freq_get_last`/`gps_get`/`g_sensors`/health; ⚠️ statistika sigma/offset/drift ZÁMĚRNĚ neplněná
-  dokud #2 = simulace headline). Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
+  data** z `fpga_freq_get_last`/`gps_get`/`g_sensors`/`g_calib`/health; ⚠️ statistika sigma/offset/drift ZÁMĚRNĚ
+  neplněná dokud #2 = simulace headline). **v2 (2026-08-09): PLNÁ sada instrument-state** — všechny teploty
+  (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307 kalibrace**, Si5356 stav, kanál →
+  CM4 obslouží SCPI/web (`MEAS:VOLT?`/`SYST:TEMP?`/`MEAS:POW?`) **bez přístupu ke `g_sensors`/`g_calib`**
+  (na CM4 nejsou). ⚠️ Rozšíření layoutu = **`IPC_VERSION` 1→2** (CM4 ověří po bootu; nesouhlas → IPC off).
+  Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
   `ipc_ring_cmd/resp_*`) + `g_ipc`-vázané zkratky → `ipc_selftest` běží nad **lokální** instancí (žádný race s publisherem).
 - **CM4 konzument** (`CM4/Core/Src/ipc_cm4.c`): `ipc_cm4_read` (seqlock, **bounded retry ≤8** — CM4 se nesmí
   zaseknout, + **per-read kontrola magicu** kvůli neseqlocknutému memsetu v `ipc_init` při bootu), `ipc_cm4_heartbeat`

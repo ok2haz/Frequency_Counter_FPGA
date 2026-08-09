@@ -23,6 +23,7 @@
 #include "fpga_freq.h"        /* fpga_freq_get_last — REALNY kmitocet /4 i /16 */
 #include "gps.h"              /* gps_get — GPS cast snapshotu */
 #include "sensor_stat.h"      /* g_sensors[] — teploty + napajeni + RF */
+#include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
 #include "freertos_shared.h"  /* g_spi_ok, g_freq_stale, g_si5356_*, g_ui_cfg, g_uptime_s, ... */
 #include "cmsis_os2.h"        /* osKernelGetTickCount — throttle bez HAL zavislosti */
 #include <string.h>
@@ -110,8 +111,19 @@ void ipc_publish(void)
 
     g_ipc.snap.t_ocxo_c100  = (int16_t)(g_sensors[SENS_T49].last * 100.0f);
     g_ipc.snap.t_board_c100 = (int16_t)(g_sensors[SENS_T48].last * 100.0f);
+    g_ipc.snap.t_mcu_c100   = (int16_t)(g_sensors[SENS_CORE_T].last * 100.0f);
     g_ipc.snap.ocxo_vc_mv   = (uint16_t)(g_sensors[SENS_ADS0].valid ? g_sensors[SENS_ADS0].last : 0.0f);
     g_ipc.snap.rf_mv        = (uint16_t)(g_sensors[SENS_ADS1].valid ? g_sensors[SENS_ADS1].last : 0.0f);
+    g_ipc.snap.v_12v_mv     = (uint16_t)(g_sensors[SENS_ADS2].valid ? g_sensors[SENS_ADS2].last : 0.0f);
+    g_ipc.snap.v_5v_mv      = (uint16_t)(g_sensors[SENS_ADS3].valid ? g_sensors[SENS_ADS3].last : 0.0f);
+    g_ipc.snap.vref_mv      = (uint16_t)(g_sensors[SENS_VDDA].valid ? g_sensors[SENS_VDDA].last : 0.0f);
+    g_ipc.snap.vbat_mv      = (uint16_t)(g_sensors[SENS_VBAT].valid ? g_sensors[SENS_VBAT].last : 0.0f);
+    g_ipc.snap.channel_id   = meas_ok ? m.channel_id : 0u;
+    g_ipc.snap.si5356_status = g_si5356_status;
+    g_ipc.snap.si5356_ok    = g_si5356_ok;
+    /* Kalibrace RF (aby CM4 spocital MEAS:POW? dBm z rf_mv) — g_calib je volatile float. */
+    g_ipc.snap.ad8307_slope_mv_db  = g_calib.ad8307_slope_mv_db;
+    g_ipc.snap.ad8307_intercept_dbm = g_calib.ad8307_intercept_dbm;
 
     g_ipc.snap.flags        = flags;
     g_ipc.snap.sys_level    = sysl;

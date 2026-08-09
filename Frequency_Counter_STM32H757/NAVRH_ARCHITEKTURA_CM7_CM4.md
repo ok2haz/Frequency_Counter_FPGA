@@ -462,3 +462,30 @@ dělat jen věci, které na měření nezávisí:
 
 ⚠️ Ani jedna z těchto fází by neměla předběhnout **#2**. Síť, SCPI ani webserver nemají co
 publikovat, dokud přístroj neměří — jinak se jen vybuduje víc vrstev nad simulovaným číslem.
+
+## 11.8 ✅ Revize rozdělení úkolů jader (kritická validace 2026-08-09)
+
+Otázka: nepřesunout I2C/beeper/… na CM4 kvůli vybalancování? **Verdikt: NE — rozdělení nechat.**
+Řídí ho (v pořadí důležitosti), NE „vytížení CPU":
+
+1. **🔴 Měření musí přežít smrt CM4** (§11.4). Cokoli měření-kritického (**FPGA SPI2, GPS, senzory,
+   RTC**) MUSÍ zůstat na CM7 — na CM4 by pád konektivity oslepil přístroj.
+2. **Lokalita dat** — smyčka naměř→spočítej→zobraz je nejtěsnější na jednom jádru (CM7).
+3. **Pevné vazby**: displej = D1 (DMA2D/LTDC/framebuffery) → nelze mimo CM7; statistika = **double FPU**
+   (jen M7; M4F je single-precision).
+4. CM4 = **nezávislá síťová zátěž** (ETH/SCPI-TCP/web), jejíž data neживí měření (klienti čtou snapshot);
+   ETH DMA navíc těží z **D2-bez-cache**.
+
+**Steelman „přesunout" — proč to padá:** I2C senzory jsou 2 Hz (levné) + měření-kritické (teplotní komp.) →
+přesun skoro nic neušetří a oslepí přístroj při pádu CM4. Beeper = ISR + alarm logika na CM7 (potřebuje
+měřicí stav) → split je složitější. **CM7 hrdlo = renderování (D1, nepřesunutelné)** → přesun periférií
+neuleví; měřicí tasky jsou navíc už nad renderem v prioritě (scheduler je izoluje i na jednom jádru).
+→ **CM4 není load-balancer dnešního přístroje, je rezerva pro síťovou fázi.**
+
+**Implementovaný důsledek validace — datový kontrakt.** Aby byl split *realizovatelný* (SCPI/web na CM4),
+musí snapshot nést **kompletní instrument-state**, protože CM4 nemá `g_sensors`/`g_calib`. Rozšířeno
+(**`IPC_VERSION` 1→2**): všechny teploty (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307
+kalibrace** (aby CM4 spočítalo dBm), Si5356 stav, kanál. Bez toho by SCPI dotazy `MEAS:VOLT?`/`SYST:TEMP?`/
+`MEAS:POW?` po přesunu na TCP praskly (dnes fungují jen protože SCPI běží na CM7 s přímým přístupem).
+**Zbývá do snapshotu/kontraktu:** Math cfg (`g_meas_cfg`) pro `CALC:` dotazy — až se cmd-ring config sync
+(zatím config-write přes cmd ring, ne snapshot).
