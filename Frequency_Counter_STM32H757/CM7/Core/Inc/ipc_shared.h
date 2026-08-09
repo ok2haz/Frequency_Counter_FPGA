@@ -147,47 +147,55 @@ enum {
 #define IPC_DMB() __asm volatile ("dmb 0xF" ::: "memory")
 #endif
 
-/* ── SEQLOCK — PUBLIKACE (JEN CM7). Mezi begin/end zapis VSECH poli snap:
- *     ipc_snap_publish_begin(); g_ipc.snap.freq_x100000 = ...; ...; ipc_snap_publish_end(); */
-static inline void ipc_snap_publish_begin(void) { g_ipc.snap.seq++; IPC_DMB(); }
-static inline void ipc_snap_publish_end(void)   { IPC_DMB(); g_ipc.snap.seq++; }
+/* ── SEQLOCK jadro — pracuje nad DANYM snapshotem (ne jen g_ipc) → testovatelne
+ * na lokalni kopii bez sdileneho stavu. Publikace JEN CM7, cteni JEN CM4. */
+static inline void ipc_snap_wr_begin(volatile ipc_snapshot_t *s) { s->seq++; IPC_DMB(); }
+static inline void ipc_snap_wr_end  (volatile ipc_snapshot_t *s) { IPC_DMB(); s->seq++; }
+static inline uint32_t ipc_snap_rd_begin(volatile ipc_snapshot_t *s)             { uint32_t v = s->seq; IPC_DMB(); return v; }
+static inline int      ipc_snap_rd_retry(volatile ipc_snapshot_t *s, uint32_t v) { IPC_DMB(); return (v & 1u) || (v != s->seq); }
 
-/* ── SEQLOCK — CTENI (JEN CM4). Vzor:
- *     ipc_snapshot_t local; uint32_t s;
- *     do { s = ipc_snap_read_begin(); local = g_ipc.snap; } while (ipc_snap_read_retry(s)); */
-static inline uint32_t ipc_snap_read_begin(void)       { uint32_t s = g_ipc.snap.seq; IPC_DMB(); return s; }
-static inline int      ipc_snap_read_retry(uint32_t s) { IPC_DMB(); return (s & 1u) || (s != g_ipc.snap.seq); }
+/* ── SPSC ring jadro (nad danym ringem). Vraci 1 = uspech. */
+static inline int ipc_ring_cmd_push(volatile ipc_cmd_ring_t *rg, const ipc_cmd_t *c) {
+    uint32_t h = rg->head;
+    if ((h - rg->tail) >= IPC_RING_N) return 0;            /* plno */
+    rg->slot[h & (IPC_RING_N - 1u)] = *c;
+    IPC_DMB(); rg->head = h + 1u;                          /* zverejni az PO zapisu slotu */
+    return 1;
+}
+static inline int ipc_ring_cmd_pop(volatile ipc_cmd_ring_t *rg, ipc_cmd_t *c) {
+    uint32_t t = rg->tail;
+    if (rg->head == t) return 0;                           /* prazdno */
+    IPC_DMB(); *c = rg->slot[t & (IPC_RING_N - 1u)];
+    IPC_DMB(); rg->tail = t + 1u;
+    return 1;
+}
+static inline int ipc_ring_resp_push(volatile ipc_resp_ring_t *rg, const ipc_resp_t *r) {
+    uint32_t h = rg->head;
+    if ((h - rg->tail) >= IPC_RING_N) return 0;
+    rg->slot[h & (IPC_RING_N - 1u)] = *r;
+    IPC_DMB(); rg->head = h + 1u;
+    return 1;
+}
+static inline int ipc_ring_resp_pop(volatile ipc_resp_ring_t *rg, ipc_resp_t *r) {
+    uint32_t t = rg->tail;
+    if (rg->head == t) return 0;
+    IPC_DMB(); *r = rg->slot[t & (IPC_RING_N - 1u)];
+    IPC_DMB(); rg->tail = t + 1u;
+    return 1;
+}
 
-/* ── cmd ring: CM4 producent (push), CM7 konzument (pop). Vraci 1 = uspech. */
-static inline int ipc_cmd_push(const ipc_cmd_t *c) {
-    uint32_t h = g_ipc.cmd.head;
-    if ((h - g_ipc.cmd.tail) >= IPC_RING_N) return 0;      /* plno */
-    g_ipc.cmd.slot[h & (IPC_RING_N - 1u)] = *c;
-    IPC_DMB(); g_ipc.cmd.head = h + 1u;                    /* zverejni az PO zapisu slotu */
-    return 1;
-}
-static inline int ipc_cmd_pop(ipc_cmd_t *c) {
-    uint32_t t = g_ipc.cmd.tail;
-    if (g_ipc.cmd.head == t) return 0;                     /* prazdno */
-    IPC_DMB(); *c = g_ipc.cmd.slot[t & (IPC_RING_N - 1u)];
-    IPC_DMB(); g_ipc.cmd.tail = t + 1u;
-    return 1;
-}
-/* ── resp ring: CM7 producent (push), CM4 konzument (pop). */
-static inline int ipc_resp_push(const ipc_resp_t *r) {
-    uint32_t h = g_ipc.resp.head;
-    if ((h - g_ipc.resp.tail) >= IPC_RING_N) return 0;
-    g_ipc.resp.slot[h & (IPC_RING_N - 1u)] = *r;
-    IPC_DMB(); g_ipc.resp.head = h + 1u;
-    return 1;
-}
-static inline int ipc_resp_pop(ipc_resp_t *r) {
-    uint32_t t = g_ipc.resp.tail;
-    if (g_ipc.resp.head == t) return 0;
-    IPC_DMB(); *r = g_ipc.resp.slot[t & (IPC_RING_N - 1u)];
-    IPC_DMB(); g_ipc.resp.tail = t + 1u;
-    return 1;
-}
+/* ── g_ipc-vazane zkratky pro PRODUKCNI kod (call-sites beze zmeny).
+ *   SEQLOCK PUBLIKACE (JEN CM7): ipc_snap_publish_begin(); ...zapis poli...; ipc_snap_publish_end();
+ *   SEQLOCK CTENI (JEN CM4): do { s = ipc_snap_read_begin(); local = g_ipc.snap; } while (ipc_snap_read_retry(s));
+ *   cmd ring: CM4 push / CM7 pop.  resp ring: CM7 push / CM4 pop. */
+static inline void ipc_snap_publish_begin(void) { ipc_snap_wr_begin(&g_ipc.snap); }
+static inline void ipc_snap_publish_end(void)   { ipc_snap_wr_end(&g_ipc.snap); }
+static inline uint32_t ipc_snap_read_begin(void)       { return ipc_snap_rd_begin(&g_ipc.snap); }
+static inline int      ipc_snap_read_retry(uint32_t s) { return ipc_snap_rd_retry(&g_ipc.snap, s); }
+static inline int ipc_cmd_push(const ipc_cmd_t *c)   { return ipc_ring_cmd_push(&g_ipc.cmd, c); }
+static inline int ipc_cmd_pop(ipc_cmd_t *c)          { return ipc_ring_cmd_pop(&g_ipc.cmd, c); }
+static inline int ipc_resp_push(const ipc_resp_t *r) { return ipc_ring_resp_push(&g_ipc.resp, r); }
+static inline int ipc_resp_pop(ipc_resp_t *r)        { return ipc_ring_resp_pop(&g_ipc.resp, r); }
 
 /* ── CM7-strana IPC (ipc.c). CM4 si implementuje vlastni konzumenta; tyto
  * funkce bezi na CM7. Viz ipc.c. */

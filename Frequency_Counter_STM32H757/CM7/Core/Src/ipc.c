@@ -27,17 +27,22 @@
 #include "cmsis_os2.h"        /* osKernelGetTickCount — throttle bez HAL zavislosti */
 #include <string.h>
 
-/* ── Init: orazitkuj snapshot (magic/verze/velikost) + vynuluj ringy a cm4 stav.
- * Volat JEDNOU z CM7 pred rozjezdem publikace (defaultTask, pred smyckou). CM4 po
- * bootu overi magic+version+size; nesouhlas -> IPC vypne a jede degradovane. */
-void ipc_init(void)
+/* ── Razitko: vynuluj celou sdilenou strukturu (seq=0 sude, ringy prazdne) a
+ * orazitkuj snapshot (magic/verze/velikost). Pracuje nad DANOU instanci → sdili
+ * ho ipc_init (g_ipc) i selftest (lokalni kopie), zadny duplikat. */
+static void ipc_stamp(volatile ipc_shared_t *p)
 {
-    memset((void *)&g_ipc, 0, sizeof(g_ipc));   /* seq=0 (sude=konzistentni), ringy prazdne */
-    g_ipc.snap.magic   = IPC_MAGIC;
-    g_ipc.snap.version = (uint16_t)IPC_VERSION;
-    g_ipc.snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
-    IPC_DMB();                                   /* magic viditelny pred prvni publikaci */
+    memset((void *)p, 0, sizeof *p);
+    p->snap.magic   = IPC_MAGIC;
+    p->snap.version = (uint16_t)IPC_VERSION;
+    p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
+    IPC_DMB();
 }
+
+/* ── Init: orazitkuj sdileny g_ipc. Volat JEDNOU z CM7 pred rozjezdem publikace
+ * (defaultTask, pred smyckou). CM4 po bootu overi magic+version+size; nesouhlas
+ * -> IPC vypne a jede degradovane. */
+void ipc_init(void) { ipc_stamp(&g_ipc); }
 
 /* Minimalni agregace zdravi z REALNYCH globalu (samostatna od app compute_sys_level,
  * ktera zije v UI vrstve). 0=OK, 1=warn (degradovano, meri dal), 2=err (kriticke). */
@@ -122,21 +127,23 @@ void ipc_publish(void)
  * stav vlastneny UiTaskem -> doplni se az s CM4 bring-upem (aby sel otestovat proti
  * zivemu producentovi). Neznamy/zatim neimplementovany prikaz -> status=1. Vraci
  * pocet zpracovanych prikazu (0 = prazdny ring = bezna cesta, kdyz CM4 nebezi). */
-int ipc_service(void)
+/* Jadro servisu nad DANYMI ringy (→ testovatelne na lokalni kopii). */
+static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_ring_t *resp)
 {
     int handled = 0;
     ipc_cmd_t c;
-    while (ipc_cmd_pop(&c)) {
-        ipc_resp_t r = { .id = c.id, .status = 0u, .value = c.arg };
+    while (ipc_ring_cmd_pop(cmd, &c)) {
+        ipc_resp_t r = { .id = c.id, .status = 0u, ._pad = 0, .value = c.arg };
         switch (c.type) {
             case IPC_CMD_NOP:  break;                 /* zdravi ringu (M5 test) — echo OK */
             default:           r.status = 1u; break;  /* zatim neimplementovano */
         }
-        ipc_resp_push(&r);   /* pri plnem resp ringu se odpoved zahodi (CM4 si vyzada znovu) */
+        ipc_ring_resp_push(resp, &r);   /* pri plnem resp ringu se odpoved zahodi (CM4 si vyzada znovu) */
         handled++;
     }
     return handled;
 }
+int ipc_service(void) { return ipc_service_rings(&g_ipc.cmd, &g_ipc.resp); }
 
 /* ── Liveness CM4: heartbeat ve snapshotu CM4 roste ~1/s. @return 1 = zivy
  * (pokrocil za posledni ~3 s). Bez beziciho CM4 vraci vzdy 0 (spravne). */
@@ -150,67 +157,71 @@ int ipc_cm4_alive(void)
     return (now - s_last_ms) < 3000u;
 }
 
-/* ── Pure-logic selftest: seqlock parita + cmd/resp ring (push/pop/wrap/full/empty).
- * ⚠️ Ring cast je destruktivni pro g_ipc — proto bezi JEN kdyz CM4 nebezi
- * (g_cm4_absent). Se zivym CM4 by kolidovala s producentem, takze se preskoci
- * (ringy jsou stejne provozovane za behu). Na konci ipc_init() vrati cisty stav. */
+/* ── Pure-logic selftest: seqlock parita + cteni-retry + cmd/resp ring
+ * (push/pop/wrap/full/empty) + servis dispatch. Bezi nad LOKALNI instanci `t`
+ * (static → nezatezuje stack malych tasku), takze NEsaha na zivy g_ipc → zadny
+ * soubeh s ipc_publish/ipc_service z defaultTasku, kdyz se selftest spusti za
+ * behu (UART "selftest"). Neni reentrantni (run_selftests je serializovany). */
 int ipc_selftest(void)
 {
+    static ipc_shared_t t;   /* lokalni IPC instance (bss, ~0,5 kB), NE g_ipc */
     int ok = 1;
 
-    /* Magic/verze/velikost po initu. */
-    ipc_init();
-    ok &= (g_ipc.snap.magic == IPC_MAGIC);
-    ok &= (g_ipc.snap.version == (uint16_t)IPC_VERSION);
-    ok &= (g_ipc.snap.size == (uint16_t)sizeof(ipc_snapshot_t));
-    ok &= ((g_ipc.snap.seq & 1u) == 0u);          /* sude = konzistentni */
+    /* Razitko: magic/verze/velikost + seq sude (konzistentni). */
+    ipc_stamp(&t);
+    ok &= (t.snap.magic == IPC_MAGIC);
+    ok &= (t.snap.version == (uint16_t)IPC_VERSION);
+    ok &= (t.snap.size == (uint16_t)sizeof(ipc_snapshot_t));
+    ok &= ((t.snap.seq & 1u) == 0u);
 
     /* Seqlock parita: begin -> liche, end -> sude a +2. */
-    uint32_t s0 = g_ipc.snap.seq;
-    ipc_snap_publish_begin();
-    ok &= (g_ipc.snap.seq & 1u);                  /* probiha zapis */
-    ipc_snap_publish_end();
-    ok &= ((g_ipc.snap.seq & 1u) == 0u) && (g_ipc.snap.seq == s0 + 2u);
+    uint32_t s0 = t.snap.seq;
+    ipc_snap_wr_begin(&t.snap);
+    ok &= (t.snap.seq & 1u);                       /* probiha zapis */
+    ipc_snap_wr_end(&t.snap);
+    ok &= ((t.snap.seq & 1u) == 0u) && (t.snap.seq == s0 + 2u);
 
-    if (g_cm4_absent) {   /* destruktivni ring test jen bez ziveho CM4 */
-        ipc_init();
-        /* cmd ring: naplnit pres kapacitu -> drzi presne IPC_RING_N. */
-        ipc_cmd_t c = { .type = IPC_CMD_NOP, ._pad = 0, .id = 0, .arg = 0 };
-        int pushed = 0;
-        for (int i = 0; i < IPC_RING_N + 3; i++) { c.id = (uint16_t)i; if (ipc_cmd_push(&c)) pushed++; }
-        ok &= (pushed == IPC_RING_N);
-        /* vyprazdnit -> presne IPC_RING_N, poradi FIFO, pak prazdno. */
-        ipc_cmd_t o; int popped = 0; int fifo = 1;
-        while (ipc_cmd_pop(&o)) { if (o.id != (uint16_t)popped) fifo = 0; popped++; }
-        ok &= (popped == IPC_RING_N) && fifo;
-        ok &= (ipc_cmd_pop(&o) == 0);             /* prazdno */
+    /* Ctenarsky protokol: mimo zapis nedava retry; rozecteny zapis (liche) ano. */
+    { uint32_t s = ipc_snap_rd_begin(&t.snap); ok &= (ipc_snap_rd_retry(&t.snap, s) == 0); }
+    ipc_snap_wr_begin(&t.snap);
+    { uint32_t s = ipc_snap_rd_begin(&t.snap); ok &= (ipc_snap_rd_retry(&t.snap, s) != 0); }
+    ipc_snap_wr_end(&t.snap);
 
-        /* wrap pres hranici: push+pop opakovane posune head/tail za IPC_RING_N. */
-        for (int i = 0; i < IPC_RING_N * 3; i++) {
-            c.id = (uint16_t)(1000 + i);
-            ok &= ipc_cmd_push(&c);
-            ok &= ipc_cmd_pop(&o) && (o.id == (uint16_t)(1000 + i));
-        }
+    /* cmd ring: naplnit pres kapacitu -> drzi presne IPC_RING_N, FIFO poradi. */
+    ipc_stamp(&t);
+    ipc_cmd_t c = { .type = IPC_CMD_NOP, ._pad = 0, .id = 0, .arg = 0 };
+    int pushed = 0;
+    for (int i = 0; i < IPC_RING_N + 3; i++) { c.id = (uint16_t)i; if (ipc_ring_cmd_push(&t.cmd, &c)) pushed++; }
+    ok &= (pushed == IPC_RING_N);
+    ipc_cmd_t o; int popped = 0, fifo = 1;
+    while (ipc_ring_cmd_pop(&t.cmd, &o)) { if (o.id != (uint16_t)popped) fifo = 0; popped++; }
+    ok &= (popped == IPC_RING_N) && fifo;
+    ok &= (ipc_ring_cmd_pop(&t.cmd, &o) == 0);     /* prazdno */
 
-        /* resp ring symetricky. */
-        ipc_resp_t r = { .id = 7, .status = 0, ._pad = 0, .value = 42 }, rr;
-        ok &= ipc_resp_push(&r);
-        ok &= ipc_resp_pop(&rr) && rr.id == 7 && rr.value == 42;
-        ok &= (ipc_resp_pop(&rr) == 0);
-
-        /* servis: NOP echuje status=0, neznamy typ status=1. */
-        ipc_init();
-        ipc_cmd_t nop = { .type = IPC_CMD_NOP, ._pad = 0, .id = 55, .arg = 9 };
-        ipc_cmd_push(&nop);
-        ok &= (ipc_service() == 1);
-        ipc_resp_t sr;
-        ok &= ipc_resp_pop(&sr) && sr.id == 55 && sr.status == 0 && sr.value == 9;
-        ipc_cmd_t bad = { .type = 0xFE, ._pad = 0, .id = 56, .arg = 0 };
-        ipc_cmd_push(&bad);
-        ipc_service();
-        ok &= ipc_resp_pop(&sr) && sr.id == 56 && sr.status == 1;
+    /* wrap pres hranici: push+pop opakovane posune head/tail za IPC_RING_N. */
+    for (int i = 0; i < IPC_RING_N * 3; i++) {
+        c.id = (uint16_t)(1000 + i);
+        ok &= ipc_ring_cmd_push(&t.cmd, &c);
+        ok &= ipc_ring_cmd_pop(&t.cmd, &o) && (o.id == (uint16_t)(1000 + i));
     }
 
-    ipc_init();   /* cisty stav pro provoz */
+    /* resp ring symetricky. */
+    ipc_resp_t r = { .id = 7, .status = 0, ._pad = 0, .value = 42 }, rr;
+    ok &= ipc_ring_resp_push(&t.resp, &r);
+    ok &= ipc_ring_resp_pop(&t.resp, &rr) && rr.id == 7 && rr.value == 42;
+    ok &= (ipc_ring_resp_pop(&t.resp, &rr) == 0);
+
+    /* servis: NOP echuje status=0, neznamy typ status=1. */
+    ipc_stamp(&t);
+    ipc_cmd_t nop = { .type = IPC_CMD_NOP, ._pad = 0, .id = 55, .arg = 9 };
+    ipc_ring_cmd_push(&t.cmd, &nop);
+    ok &= (ipc_service_rings(&t.cmd, &t.resp) == 1);
+    ipc_resp_t sr;
+    ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 55 && sr.status == 0 && sr.value == 9;
+    ipc_cmd_t bad = { .type = 0xFE, ._pad = 0, .id = 56, .arg = 0 };
+    ipc_ring_cmd_push(&t.cmd, &bad);
+    ipc_service_rings(&t.cmd, &t.resp);
+    ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 56 && sr.status == 1;
+
     return ok;
 }
