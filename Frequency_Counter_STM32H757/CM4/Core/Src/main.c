@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,17 +110,31 @@ int main(void)
   HAL_Delay(400);
   Beep(1680, 200);
   HAL_Delay(400);
+  ipc_cm4_init();   /* IPC: reset lokalniho stavu pred ctenim snapshotu */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_Delay(400);
-	  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
-	  HAL_Delay(400);
-	  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_RESET);
-	//  Beep(1000, 10);
+	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
+	  if (!ipc_cm4_ready()) ipc_cm4_check();
+	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "4:xx%"). */
+	  ipc_snapshot_t snap;
+	  int have = ipc_cm4_ready() && ipc_cm4_read(&snap);
+	  ipc_cm4_heartbeat(0u, HAL_GetTick() / 1000u);   /* cpu% zatim 0 (bare smycka, bez RTOS) */
+
+	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze
+	   * snapshotu CM7; jinak (bez IPC / bez fixu) pomalu blika = holy heartbeat. */
+	  if (have && (snap.flags & IPC_F_GPS_VALID)) {
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
+		  HAL_Delay(800);
+	  } else {
+		  HAL_Delay(400);
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
+		  HAL_Delay(400);
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_RESET);
+	  }
 
     /* USER CODE END WHILE */
 

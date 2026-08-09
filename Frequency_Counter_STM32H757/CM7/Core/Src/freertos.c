@@ -172,6 +172,7 @@ volatile uint32_t g_reset_rsr    = 0;
 volatile char     g_reset_text[12] = "---";
 volatile uint8_t  g_reset_bad    = 0;
 volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bezime degradovane, viz main.c */
+volatile uint8_t  g_cm4_alive    = 0;  /* 1 = CM4 heartbeat v IPC roste (defaultTask z ipc_cm4_alive) */
 volatile char     g_crash_text[16] = "";
 volatile uint8_t  g_selftest_res = 0;
 volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
@@ -369,6 +370,7 @@ void StartDefaultTask(void *argument)
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, throttle ~2 Hz uvnitr) (#19/#20) */
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (dnes prazdny ring — CM4 nebezi) */
+    g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
     watchdog_supervise();  /* IWDG refresh jen kdyz UiTask+FpgaTask koply (jinak reset) */
     if (g_reboot_req) {                    /* Menu -> Restart: persist stihne dobehnout vyse */
       osDelay(50);

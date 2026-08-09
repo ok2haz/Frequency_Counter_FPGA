@@ -33,6 +33,7 @@ extern volatile uint8_t  g_si5356_status;  /* reg218: bit0 SYS_CAL, bit2 LOS_XTA
 extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
 extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
+extern volatile uint8_t  g_cm4_alive;      /* 1 = CM4 heartbeat v IPC roste (bezi + mluvi) */
 extern volatile uint32_t g_rtos_cpu_pct;   /* CM7 CPU vytizeni [%] (pocita UiTask) — header */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 extern volatile uint8_t g_anim_enabled;   /* 1 = animace zapnute (okno Animace) */
@@ -1573,19 +1574,29 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
  * CM7 %). force=1 = plny render (render_header). CM7 barevne dle zateze. */
 #define CPU_HDR_R 642      /* pravy okraj bloku = tesne pred zonou hodin (datum od x=644) */
 static uint32_t s_cpu_shown = 999;
+static uint8_t  s_cm4_shown = 255;
+/* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("4:--"), 1 = heartbeat
+ * roste, CM4 mluvi pres IPC ("4:OK"), 2 = nenabehl ("4:off"). */
+static uint8_t cm4_state(void)
+{
+    if (g_cm4_absent) return 2;
+    return g_cm4_alive ? 1u : 0u;
+}
 int screen_main_redraw_cpu(int force)
 {
     uint32_t c7 = g_rtos_cpu_pct; if (c7 > 99) c7 = 99;
-    if (!force && c7 == s_cpu_shown) return 0;
-    s_cpu_shown = c7;
+    uint8_t  c4st = cm4_state();
+    if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown) return 0;
+    s_cpu_shown = c7; s_cm4_shown = c4st;
     blit_bg_region((prim_rect_t){594, 1, 49, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
     char l[12];
     prim_color_t col = (c7 < 70) ? UI_COLOR_OK : (c7 < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
     snprintf(l, sizeof l, "7:%lu%%", (unsigned long)c7);
     prim_draw_text((prim_point_t){CPU_HDR_R, 22}, l, &ui_font_mono_14, col, PRIM_ALIGN_RIGHT);
-    const char *c4 = g_cm4_absent ? "4:off" : "4:--";
-    prim_draw_text((prim_point_t){CPU_HDR_R, 45}, c4, &ui_font_mono_14,
-                   g_cm4_absent ? UI_COLOR_BAD : UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+    /* CM4: "4:OK" (zelene, IPC ziva) / "4:--" (sede, D2 ready ale ticho) / "4:off" (cervene). */
+    const char *c4 = (c4st == 2) ? "4:off" : (c4st == 1) ? "4:OK" : "4:--";
+    prim_color_t col4 = (c4st == 2) ? UI_COLOR_BAD : (c4st == 1) ? UI_COLOR_OK : UI_COLOR_INK_4;
+    prim_draw_text((prim_point_t){CPU_HDR_R, 45}, c4, &ui_font_mono_14, col4, PRIM_ALIGN_RIGHT);
     return 1;
 }
 

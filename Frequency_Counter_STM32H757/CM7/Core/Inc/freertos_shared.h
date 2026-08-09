@@ -116,6 +116,11 @@ extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane
  * misto tiche tmy (Error_Handler). Ukazuje se v Health karte System + SYS pill amber. */
 extern volatile uint8_t  g_cm4_absent;
+/* g_cm4_alive = 1: CM4 heartbeat v IPC snapshotu roste (< ~3 s) -> CM4 bezi A
+ * komunikuje pres SRAM4. Nastavuje defaultTask z ipc_cm4_alive() (#20). Rozlisuje
+ * "nabehl a mluvi" (alive) od "D2 ready ale IPC ticho" (absent=0, alive=0). Dokud
+ * CM4 nebootuje z bank2, zustava 0 (spravne). */
+extern volatile uint8_t  g_cm4_alive;
 int run_selftests(void);   /* pure-logic testy (boot + UART "selftest"); 1 = vse OK */
 
 /* ── RTOS zdraví (zapisuje UiTask ~2×/s, čte diagnostika) ───────────────── */
