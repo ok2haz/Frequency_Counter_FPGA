@@ -3,8 +3,9 @@
 ## Přehled
 STM32H757 dual-core (CM4 + CM7) projekt generovaný v STM32CubeIDE.
 - **CM7** = hlavní jádro, veškerá logika (FreeRTOS, displej, SDRAM, I2C, UART).
-- **CM4** = jednoduché (GPIO + timer).
+- **CM4** = konektivita (výhled: ETH/SCPI/web); dnes GPIO+timer (beep+LED) + **IPC konzument** + **IWDG2**. ⚠️ **CM4 dnes NEBOOTUJE** (bank2 neflashnuta) → `g_cm4_absent`, „4:off". Aktivace = `DUALCORE_BRINGUP_CHECKLIST.md`.
 - Veškerý vývoj displeje je v `CM7/Core/Src/`.
+- **Dvoujádro CM7↔CM4** viz sekce „Dvoujádro / IPC" níže + `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11 + `DUALCORE_BRINGUP_CHECKLIST.md`.
 
 Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Waveshare **4,3"** 800×480 IPS panel. ATTINY MCU @ I2C 0x45 (power/backlight/reset), TMP117 @ 0x48 (teplota), FT5x06 (touch).
 
@@ -93,7 +94,7 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 ### FreeRTOS tasky (freertos.c)
 | Task | Priorita | Stack |
 |---|---|---|
-| defaultTask | Normal | 1536 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + USB pump) |
+| defaultTask | Normal | 1536 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + **ipc_publish/ipc_service + CM4 stall detekce** + USB pump) |
 | UartTask | Normal | 2048 B |
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
@@ -157,7 +158,8 @@ stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`ping`/`screen m
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 **`status`** = od 2026-07-20 plná diagnostika (dřív jen „RUNNING"): verze + uptime, **příčina resetu
 + crash black-box** (`stall:UiTask`, `stack:UartTask`, …), RSR, heap free/min, CPU %, **volný stack
-všech 5 tasků**, **FPGA link + počet CRC chyb + jak dávno byla poslední** (`fpga_freq_crc_count/last_age_s`)
+všech 5 tasků**, **stav CM4** (`CM4: ABSENT/alive/SILENT, stall x<n>` — viz sekce Dvoujádro), **FPGA link
++ počet CRC chyb + jak dávno byla poslední** (`fpga_freq_crc_count/last_age_s`)
 a stav datalogu. První místo, kam sáhnout při náhodném restartu. (Reset sám nese „uptime od poslední" =
 aktuální uptime — čas od posledního resetu; počet resetů se napříč power-cyklem nedrží, persistence
 záměrně nezvolena.)
@@ -318,6 +320,42 @@ v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a 
   **ustupuje scheduleru** (`osDelay(1)` mezi dotazy, jen když scheduler běží). **Pravidlo: žádný spin
   delší než ~10 ms v defaultTask/UiTask/FpgaTask** — buď `osDelay`, nebo to přesuň do UartTasku
   (ten se nemonitoruje).
+- **⚠️ IWDG2 = nezávislý watchdog CM4** (`CM4/Core/Src/iwdg2.c`, zrcadlo IWDG1): stejné parametry
+  (~4 s, registrová sekvence, `HAL_IWDG` vypnutý). CM4 je bare-metal → **žádný heartbeat, prostý
+  `iwdg2_kick()`** v každé iteraci hlavní smyčky; `iwdg2_init()` **až po beep melodii** (blokuje
+  ~1,2 s), aby startup nespotřeboval timeout. Zaseknutá CM4 smyčka → IWDG2 reset CM4. DEBUG freeze =
+  `__HAL_DBGMCU_FREEZE2_IWDG2()` (APB4FZ2). **🔴 RESET SCOPE IWDG2 = OVĚŘIT NA HW** (předpoklad
+  CPU2/CM4-only, per-core; kdyby byl system-wide, shodil by i CM7/displej → nepoužívat; postup
+  `DUALCORE_BRINGUP_CHECKLIST.md` §8). CM4 stall na CM7 pozoruje `stall:CM4` (viz sekce Dvoujádro).
+
+## Dvoujádro / IPC (CM7 ↔ CM4) — `ipc_shared.h`, `ipc.c`, `CM4/…/ipc_cm4.c`
+⚠️ **CM4 dnes NEBOOTUJE** (bank2 neflashnuta, `g_cm4_absent=1` → „4:off" v CPU bloku headeru = SPRÁVNĚ).
+Kód obou stran je **napsaný a zkompilovaný**; runtime čeká na HW aktivaci (**`DUALCORE_BRINGUP_CHECKLIST.md`**:
+option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh + revize `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11.
+- **Sdílená paměť = SRAM4 / D3 `0x38000000`, 64 KB** (`ipc_shared.h`, `g_ipc = *(volatile ipc_shared_t*)IPC_BASE` —
+  **shodná adresa pro obě jádra**). Magic „IPC1" + verze + size (CM4 ověří po bootu). ⚠️ **MPU region 2 na
+  CM7 = NON-CACHEABLE + SHAREABLE** (`main.c MPU_Config`); bez toho by CM7 cache viděla stará data. CM4 nemá
+  D-cache ani MPU pro SRAM4 → ordering visí **jen na `__DMB()`** (shareability se neshoduje — viz bring-up §3).
+- **Snapshot CM7→CM4** (seqlock, `seq` liché = zápis): `ipc.c` `ipc_publish` (~2 Hz z defaultTask, **JEN reálná
+  data** z `fpga_freq_get_last`/`gps_get`/`g_sensors`/health; ⚠️ statistika sigma/offset/drift ZÁMĚRNĚ neplněná
+  dokud #2 = simulace headline). Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
+  `ipc_ring_cmd/resp_*`) + `g_ipc`-vázané zkratky → `ipc_selftest` běží nad **lokální** instancí (žádný race s publisherem).
+- **CM4 konzument** (`CM4/Core/Src/ipc_cm4.c`): `ipc_cm4_read` (seqlock, **bounded retry ≤8** — CM4 se nesmí
+  zaseknout, + **per-read kontrola magicu** kvůli neseqlocknutému memsetu v `ipc_init` při bootu), `ipc_cm4_heartbeat`
+  (živost → CM7). Zapojeno v CM4 `main.c` smyčce; **LED_2 svítí při GPS fixu ze snapshotu** = viditelný důkaz round-tripu.
+  ⚠️ **`ipc_shared.h` sdílen RELATIVNÍM include** `"../../../CM7/Core/Inc/ipc_shared.h"` (CM4/CM7 sourozenci → regen-safe,
+  žádná změna include path).
+- **CM7 čte CM4 heartbeat:** defaultTask `ipc_cm4_alive()` → `g_cm4_alive` → **CPU blok headeru trojstav**
+  `4:OK` (zeleně) / `4:--` (D2 ready, IPC ticho) / `4:off` (nenabootoval). **stall:CM4:** hrana alive→dead →
+  log `stall:CM4` + `g_cm4_stall_count` (UART `status`). ⚠️ **CM7 se kvůli mrtvému CM4 NERESETUJE** (§11.4) a
+  **NESAHÁ na crash black-box** (ten = příčina resetu CM7); CM4 se zotaví vlastním IWDG2.
+- **Boot gate** (`main.c` Boot_Mode_Sequence_1/2, HSEM + `RCC_FLAG_D2CKRDY`): timeout → `g_cm4_absent=1`,
+  **NEspadne do Error_Handler** (degradovaný běh, UART `[BOOT] CM4 nenabehl`). VTOR z auto-remapu
+  (`USER_VECT_TAB_ADDRESS` zakomentovaný) → boot řídí **option bytes**.
+- **D2 SRAM split** (linkery, regen-safe): **SRAM1 128K → CM7** (`RAM_D2 @0x30000000/128K`; CM7 do D2 nic
+  nelinkuje, jen diagnostický `ram write/read`), **SRAM2+3 160K → CM4** (`RAM @0x10020000/160K`, CM4-alias).
+  ⚠️ Kolize „obě jádra celý D2" byla latentní do ETH; teď disjunktní.
+- **cmd ring (CM4→CM7)** = zatím NOP echo skeleton (`ipc_service`); reálný dispatch dozraje se SCPI/web na CM4.
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
