@@ -487,5 +487,8 @@ musí snapshot nést **kompletní instrument-state**, protože CM4 nemá `g_sens
 (**`IPC_VERSION` 1→2**): všechny teploty (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307
 kalibrace** (aby CM4 spočítalo dBm), Si5356 stav, kanál. Bez toho by SCPI dotazy `MEAS:VOLT?`/`SYST:TEMP?`/
 `MEAS:POW?` po přesunu na TCP praskly (dnes fungují jen protože SCPI běží na CM7 s přímým přístupem).
-**Zbývá do snapshotu/kontraktu:** Math cfg (`g_meas_cfg`) pro `CALC:` dotazy — až se cmd-ring config sync
-(zatím config-write přes cmd ring, ne snapshot).
+**Math cfg config sync HOTOVO (v3):** čtení = cfg mirror ve snapshotu (`math_m/b/null_ref/lim_lo/hi` + flagy →
+CM4 obslouží `CALC:` readbacky + `CALC:DATA?/LIM?`); zápis = cmd ring `IPC_CMD_CFG_SET` (`ipc_cfg_apply` na
+CM7 → `g_meas_cfg`, mirror `scpi_calc_set`, commit jen při reálné změně). `ipc_cmd_t` rozšířen o `double argd`
+(aby `lo/hi/m/b` nesly plný rozsah). **g_meas_cfg zůstává single-source-of-truth na CM7** (CM4 jen navrhuje
+změny přes ring, CM7 je jediný zapisovatel). **Zbývá:** GATE/RUN/CHAN/LOG dispatch (dozraje se SCPI/web na CM4).

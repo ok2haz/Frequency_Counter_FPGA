@@ -341,7 +341,8 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   neplněná dokud #2 = simulace headline). **v2 (2026-08-09): PLNÁ sada instrument-state** — všechny teploty
   (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307 kalibrace**, Si5356 stav, kanál →
   CM4 obslouží SCPI/web (`MEAS:VOLT?`/`SYST:TEMP?`/`MEAS:POW?`) **bez přístupu ke `g_sensors`/`g_calib`**
-  (na CM4 nejsou). ⚠️ Rozšíření layoutu = **`IPC_VERSION` 1→2** (CM4 ověří po bootu; nesouhlas → IPC off).
+  (na CM4 nejsou). **v3 přidal Math/limit cfg mirror** (viz cmd ring níže). ⚠️ Rozšíření layoutu = **`IPC_VERSION`
+  →3** (v2 senzory+kalibrace, v3 Math cfg; CM4 ověří po bootu, nesouhlas → IPC off).
   Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
   `ipc_ring_cmd/resp_*`) + `g_ipc`-vázané zkratky → `ipc_selftest` běží nad **lokální** instancí (žádný race s publisherem).
 - **CM4 konzument** (`CM4/Core/Src/ipc_cm4.c`): `ipc_cm4_read` (seqlock, **bounded retry ≤8** — CM4 se nesmí
@@ -359,7 +360,12 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
 - **D2 SRAM split** (linkery, regen-safe): **SRAM1 128K → CM7** (`RAM_D2 @0x30000000/128K`; CM7 do D2 nic
   nelinkuje, jen diagnostický `ram write/read`), **SRAM2+3 160K → CM4** (`RAM @0x10020000/160K`, CM4-alias).
   ⚠️ Kolize „obě jádra celý D2" byla latentní do ETH; teď disjunktní.
-- **cmd ring (CM4→CM7)** = zatím NOP echo skeleton (`ipc_service`); reálný dispatch dozraje se SCPI/web na CM4.
+- **cmd ring (CM4→CM7) + config sync (v3):** `IPC_CMD_CFG_SET` (key `IPC_CFG_*` + `arg`/`double argd`) → CM7
+  `ipc_service` aplikuje Math/limity na `g_meas_cfg` (`ipc_cfg_apply`, mirror `scpi_calc_set`; commit jen při
+  reálné změně, kritická sekce). Čtení zpět = **cfg mirror ve snapshotu** (`math_m/b/null_ref/lim_lo/hi` + flagy)
+  → CM4 obslouží `CALC:` readbacky + `CALC:DATA?/LIM?` bez `g_meas_cfg`. NULL:ACQ používá reálný FPGA kmitočet.
+  ⚠️ `ipc_cmd_t` rozšířen o `key`+`double argd` (aby `lo/hi/m/b` nesly plný rozsah, ne jen uint32) → `IPC_VERSION` 3.
+  Ostatní příkazy (GATE/RUN/CHAN/LOG) dozrají se SCPI/web na CM4 (dnes status=1).
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce

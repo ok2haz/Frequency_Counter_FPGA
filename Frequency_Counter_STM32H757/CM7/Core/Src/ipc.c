@@ -24,7 +24,10 @@
 #include "gps.h"              /* gps_get — GPS cast snapshotu */
 #include "sensor_stat.h"      /* g_sensors[] — teploty + napajeni + RF */
 #include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
+#include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
 #include "freertos_shared.h"  /* g_spi_ok, g_freq_stale, g_si5356_*, g_ui_cfg, g_uptime_s, ... */
+#include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomicky commit g_meas_cfg */
+#include "task.h"
 #include "cmsis_os2.h"        /* osKernelGetTickCount — throttle bez HAL zavislosti */
 #include <string.h>
 
@@ -131,31 +134,81 @@ void ipc_publish(void)
     g_ipc.snap.cm7_cpu_pct  = g_rtos_cpu_pct;
     g_ipc.snap.reset_cause  = g_reset_rsr;
 
+    /* Math/limit cfg mirror (v3) — konzistentni kopie (kriticka sekce kvuli double). */
+    { meas_cfg_t mc; taskENTER_CRITICAL(); mc = g_meas_cfg; taskEXIT_CRITICAL();
+      g_ipc.snap.math_m   = mc.m;   g_ipc.snap.math_b   = mc.b;   g_ipc.snap.null_ref = mc.null_ref;
+      g_ipc.snap.lim_lo   = mc.lo;  g_ipc.snap.lim_hi   = mc.hi;
+      g_ipc.snap.math_en  = mc.math_en; g_ipc.snap.null_en = mc.null_en; g_ipc.snap.limit_en = mc.limit_en; }
+
     ipc_snap_publish_end();
 }
 
+/* Posledni REALNY kmitocet /4 [Hz] (pro NULL_ACQ). @return 1 = platne. */
+static int ipc_real_freq_hz(double *hz)
+{
+    fpga_meas_t m;
+    if (fpga_freq_get_last(&m) && (m.measurement_status & 0x01u)
+        && !(m.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        *hz = (double)m.frequency_x100000 / 100000.0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Aplikuje JEDEN CFG_SET klic na PREDANOU cfg (mirror scpi_calc_set — testovatelne na
+ * lokalni cfg). @return 1 = klic rozpoznan a aplikovan. NULL_ACQ potrebuje platny freq_hz
+ * (>0); jinak 0 (neni co nulovat). Bool klice berou `arg`, double klice `argd`. */
+static int ipc_cfg_apply(meas_cfg_t *c, uint8_t key, uint32_t arg, double argd, double freq_hz)
+{
+    switch (key) {
+        case IPC_CFG_MATH_EN:  c->math_en  = arg ? 1u : 0u; return 1;
+        case IPC_CFG_MATH_M:   c->m  = argd; return 1;
+        case IPC_CFG_MATH_B:   c->b  = argd; return 1;
+        case IPC_CFG_NULL_EN:  c->null_en  = arg ? 1u : 0u; return 1;
+        case IPC_CFG_NULL_ACQ: if (freq_hz > 0.0) { meas_math_capture_null(c, freq_hz); return 1; } return 0;
+        case IPC_CFG_LIM_EN:   c->limit_en = arg ? 1u : 0u; return 1;
+        case IPC_CFG_LIM_LO:   c->lo = argd; return 1;
+        case IPC_CFG_LIM_HI:   c->hi = argd; return 1;
+        default:               return 0;
+    }
+}
+
 /* ── Servis prikazu z CM4 (cmd ring -> odpoved do resp ringu). Vola defaultTask.
- * ⚠️ Dnes SKELETON: NOP echuje OK; realny dispatch SETu (GATE/RUN/CHAN/LOG) zameni
- * stav vlastneny UiTaskem -> doplni se az s CM4 bring-upem (aby sel otestovat proti
- * zivemu producentovi). Neznamy/zatim neimplementovany prikaz -> status=1. Vraci
- * pocet zpracovanych prikazu (0 = prazdny ring = bezna cesta, kdyz CM4 nebezi). */
-/* Jadro servisu nad DANYMI ringy (→ testovatelne na lokalni kopii). */
-static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_ring_t *resp)
+ * NOP echuje OK; CFG_SET aplikuje Math/limit config na predanou cfg; neznamy typ/klic
+ * -> status=1. Jadro nad DANYMI ringy+cfg → testovatelne na lokalni kopii. */
+static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_ring_t *resp,
+                             meas_cfg_t *cfg, double freq_hz)
 {
     int handled = 0;
     ipc_cmd_t c;
     while (ipc_ring_cmd_pop(cmd, &c)) {
         ipc_resp_t r = { .id = c.id, .status = 0u, ._pad = 0, .value = c.arg };
         switch (c.type) {
-            case IPC_CMD_NOP:  break;                 /* zdravi ringu (M5 test) — echo OK */
-            default:           r.status = 1u; break;  /* zatim neimplementovano */
+            case IPC_CMD_NOP:      break;                       /* zdravi ringu — echo OK */
+            case IPC_CMD_CFG_SET:  if (!ipc_cfg_apply(cfg, c.key, c.arg, c.argd, freq_hz)) r.status = 1u; break;
+            default:               r.status = 1u; break;        /* GATE/RUN/CHAN/LOG dozraje s CM4 */
         }
         ipc_ring_resp_push(resp, &r);   /* pri plnem resp ringu se odpoved zahodi (CM4 si vyzada znovu) */
         handled++;
     }
     return handled;
 }
-int ipc_service(void) { return ipc_service_rings(&g_ipc.cmd, &g_ipc.resp); }
+
+/* Produkcni servis: kopie g_meas_cfg -> local, aplikace CFG_SET, commit JEN pri realne
+ * zmene (jinak by 100Hz commit klobrcoval soubezne zapisy UI/USB SCPI do g_meas_cfg).
+ * Zbytkovy race (UI zmeni mezi kopii a commitem) je stejny jako u scpi.c SET — vzacny,
+ * config je user-driven. NULL_ACQ dostane realny kmitocet z FPGA. */
+int ipc_service(void)
+{
+    meas_cfg_t before, cfg;
+    taskENTER_CRITICAL(); before = cfg = g_meas_cfg; taskEXIT_CRITICAL();
+    double fhz = 0.0; (void)ipc_real_freq_hz(&fhz);
+    int n = ipc_service_rings(&g_ipc.cmd, &g_ipc.resp, &cfg, fhz);
+    if (memcmp(&cfg, &before, sizeof cfg) != 0) {   /* commit jen kdyz CFG_SET neco zmenil */
+        taskENTER_CRITICAL(); g_meas_cfg = cfg; taskEXIT_CRITICAL();
+    }
+    return n;
+}
 
 /* ── Liveness CM4: heartbeat ve snapshotu CM4 roste ~1/s. @return 1 = zivy
  * (pokrocil za posledni ~3 s). Bez beziciho CM4 vraci vzdy 0 (spravne). */
@@ -201,7 +254,7 @@ int ipc_selftest(void)
 
     /* cmd ring: naplnit pres kapacitu -> drzi presne IPC_RING_N, FIFO poradi. */
     ipc_stamp(&t);
-    ipc_cmd_t c = { .type = IPC_CMD_NOP, ._pad = 0, .id = 0, .arg = 0 };
+    ipc_cmd_t c = { .type = IPC_CMD_NOP, .key = 0, .id = 0, .arg = 0, .argd = 0 };
     int pushed = 0;
     for (int i = 0; i < IPC_RING_N + 3; i++) { c.id = (uint16_t)i; if (ipc_ring_cmd_push(&t.cmd, &c)) pushed++; }
     ok &= (pushed == IPC_RING_N);
@@ -223,17 +276,38 @@ int ipc_selftest(void)
     ok &= ipc_ring_resp_pop(&t.resp, &rr) && rr.id == 7 && rr.value == 42;
     ok &= (ipc_ring_resp_pop(&t.resp, &rr) == 0);
 
-    /* servis: NOP echuje status=0, neznamy typ status=1. */
+    /* servis nad lokalni cfg: NOP echo, CFG_SET aplikace, neznamy typ status=1. */
     ipc_stamp(&t);
-    ipc_cmd_t nop = { .type = IPC_CMD_NOP, ._pad = 0, .id = 55, .arg = 9 };
+    meas_cfg_t tc; meas_math_defaults(&tc);
+    ipc_cmd_t nop = { .type = IPC_CMD_NOP, .key = 0, .id = 55, .arg = 9, .argd = 0 };
     ipc_ring_cmd_push(&t.cmd, &nop);
-    ok &= (ipc_service_rings(&t.cmd, &t.resp) == 1);
+    ok &= (ipc_service_rings(&t.cmd, &t.resp, &tc, 1e7) == 1);
     ipc_resp_t sr;
     ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 55 && sr.status == 0 && sr.value == 9;
-    ipc_cmd_t bad = { .type = 0xFE, ._pad = 0, .id = 56, .arg = 0 };
+    /* CFG_SET M=2 pres ring -> aplikuje se na lokalni cfg. */
+    ipc_cmd_t cs = { .type = IPC_CMD_CFG_SET, .key = IPC_CFG_MATH_M, .id = 56, .arg = 0, .argd = 2.0 };
+    ipc_ring_cmd_push(&t.cmd, &cs);
+    ipc_service_rings(&t.cmd, &t.resp, &tc, 1e7);
+    ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 56 && sr.status == 0;
+    ok &= (tc.m > 1.99 && tc.m < 2.01);
+    ipc_cmd_t bad = { .type = 0xFE, .key = 0, .id = 57, .arg = 0, .argd = 0 };
     ipc_ring_cmd_push(&t.cmd, &bad);
-    ipc_service_rings(&t.cmd, &t.resp);
-    ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 56 && sr.status == 1;
+    ipc_service_rings(&t.cmd, &t.resp, &tc, 1e7);
+    ok &= ipc_ring_resp_pop(&t.resp, &sr) && sr.id == 57 && sr.status == 1;
+
+    /* ipc_cfg_apply primo — vsechny klice + edge (neznamy klic, NULL_ACQ bez/s freq). */
+    {
+        meas_cfg_t c2; meas_math_defaults(&c2);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_MATH_M, 0, 2.0, 0) == 1 && c2.m > 1.99 && c2.m < 2.01);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_MATH_B, 0, 100.0, 0) == 1 && c2.b > 99.9 && c2.b < 100.1);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_MATH_EN, 1, 0, 0) == 1 && c2.math_en == 1);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_LIM_LO, 0, 9.9e6, 0) == 1 && c2.lo > 9.8e6 && c2.lo < 10.0e6);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_LIM_HI, 0, 1.011e7, 0) == 1 && c2.hi > 1.010e7);
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_LIM_EN, 1, 0, 0) == 1 && c2.limit_en == 1);
+        ok &= (ipc_cfg_apply(&c2, 0xEE, 0, 0, 0) == 0);                      /* neznamy klic */
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_NULL_ACQ, 0, 0, 0.0) == 0);        /* bez platneho freq */
+        ok &= (ipc_cfg_apply(&c2, IPC_CFG_NULL_ACQ, 0, 0, 1e7) == 1 && c2.null_en == 1);  /* s freq */
+    }
 
     return ok;
 }

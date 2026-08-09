@@ -31,8 +31,8 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  2u             /* v2 (2026-08-09): plna sada senzoru+kalibrace do snapshotu
-                                       (aby CM4 obsloužil SCPI/web bez pristupu ke g_sensors/g_calib) */
+#define IPC_VERSION  3u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+                                       cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7) */
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
@@ -94,14 +94,21 @@ typedef struct {
     uint32_t uptime_s;
     uint32_t cm7_cpu_pct;
     uint32_t reset_cause;          /* RCC->RSR (raw) */
+
+    /* Math/limit konfigurace (g_meas_cfg mirror — CM4 pro CALC: readback + CALC:DATA?/LIM?).
+     * ⚠️ Zapis z CM4 jde OPACNE pres cmd ring (IPC_CMD_CFG_SET -> CM7 aplikuje na g_meas_cfg),
+     * projevi se pak tady. Snapshot je z pohledu CM4 READ-ONLY. Odpovida meas_cfg_t (meas_math.h). */
+    double   math_m, math_b, null_ref, lim_lo, lim_hi;
+    uint8_t  math_en, null_en, limit_en, _pad_cfg;
 } ipc_snapshot_t;
 
 /* ── Prikaz CM4 -> CM7 + odpoved CM7 -> CM4. */
 typedef struct {
     uint8_t  type;                 /* IPC_CMD_* */
-    uint8_t  _pad;
+    uint8_t  key;                  /* pro IPC_CMD_CFG_SET: ktere pole (IPC_CFG_*) */
     uint16_t id;                   /* pro parovani s odpovedi */
-    uint32_t arg;                  /* GATE index / CHAN / 0|1 */
+    uint32_t arg;                  /* celociselny arg (GATE index / CHAN / bool 0|1) */
+    double   argd;                 /* double arg (config: m/b/lo/hi) — cely rozsah kmitoctu */
 } ipc_cmd_t;
 
 typedef struct {
@@ -153,6 +160,20 @@ enum {
     IPC_CMD_RUNSTOP,   /* arg = 0 stop / 1 run */
     IPC_CMD_CHAN,      /* arg = kanal */
     IPC_CMD_LOG,       /* arg = 0 off / 1 on (datalog) */
+    IPC_CMD_CFG_SET,   /* Math/limit config-set: key=IPC_CFG_*, hodnota v arg (bool) nebo argd (double) */
+};
+
+/* ── Klice pro IPC_CMD_CFG_SET (config sync Math/limity, CM4 SCPI/web -> g_meas_cfg na CM7).
+ * CM7 aplikuje pres ipc_cfg_apply (mirror scpi.c CALC SET). Cteni zpet = snapshot cfg mirror. */
+enum {
+    IPC_CFG_MATH_EN = 0,  /* arg 0/1 */
+    IPC_CFG_MATH_M,       /* argd */
+    IPC_CFG_MATH_B,       /* argd */
+    IPC_CFG_NULL_EN,      /* arg 0/1 */
+    IPC_CFG_NULL_ACQ,     /* akce: zachyt aktualni kmitocet jako null_ref (potrebuje platne mereni) */
+    IPC_CFG_LIM_EN,       /* arg 0/1 */
+    IPC_CFG_LIM_LO,       /* argd */
+    IPC_CFG_LIM_HI,       /* argd */
 };
 
 /* ── Pametova bariera (core-agnostic; funguje na CM7 i CM4, bez CMSIS zavislosti). */
