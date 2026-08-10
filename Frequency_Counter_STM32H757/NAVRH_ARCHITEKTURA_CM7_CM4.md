@@ -508,6 +508,11 @@ Kritický audit IPC (snapshot/ring/heartbeat/notifikace). **Implementováno:**
   Latence měření → snapshot je teď ~jeden defaultTask tik. CPU dopad ~0 (NAVRH §8 rozpočtoval i 10 Hz).
 - **🟡 C. cfg kopie uvnitř seqlocku → HOTOVO.** `taskENTER_CRITICAL(g_meas_cfg)` bylo mezi `publish_begin`/
   `end` → prodlužovalo seq-odd okno (maskovalo IRQ) = víc retry na CM4. Přesunuto PŘED `publish_begin`.
+- **🟡 H. `ipc_service` plýtval při prázdném ringu → HOTOVO (2. audit pass).** Běží 100 Hz z defaultTasku;
+  i s **prázdným cmd ringem** (běžný stav — CM4 posílá config zřídka) dělal každý tik 2× kopii `g_meas_cfg`
+  (IRQ-off) + `fpga_freq_get_last` (IRQ-off) + memcmp naprázdno. Přidán **fast-path `head==tail` early-out**
+  (SPSC prázdný check = porovnání dvou volatile čítačů) → idle cesta je teď prakticky zdarma. (Nález z
+  kritického re-review vlastních změn A–C.)
 
 **Zbývá (design pozn., nízká priorita / HW):**
 - **🟡 D. CM4 IPC servis svázaný s LED smyčkou (~800 ms)** → pomalé zpracování resp ringu. Dnes CM4 nic

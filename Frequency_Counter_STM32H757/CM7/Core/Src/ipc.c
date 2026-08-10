@@ -210,6 +210,13 @@ static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_rin
  * config je user-driven. NULL_ACQ dostane realny kmitocet z FPGA. */
 int ipc_service(void)
 {
+    /* ⚠️ Fast-path: prazdny cmd ring = bezna cesta (100 Hz z defaultTasku, CM4 posila
+     * prikazy zridka) -> okamzity return. Bez toho by se KAZDY tik delala 2× kopie
+     * g_meas_cfg + fpga_freq_get_last (oboji IRQ-off) + memcmp naprazdno. SPSC empty
+     * check (head==tail) je jen porovnani dvou volatile citacu; pripadny stale head
+     * jen o tik zpozdi zpracovani (pop uvnitr ma spravne DMB). */
+    if (g_ipc.cmd.head == g_ipc.cmd.tail) return 0;
+
     meas_cfg_t before, cfg;
     taskENTER_CRITICAL(); before = cfg = g_meas_cfg; taskEXIT_CRITICAL();
     double fhz = 0.0; (void)ipc_real_freq_hz(&fhz);
