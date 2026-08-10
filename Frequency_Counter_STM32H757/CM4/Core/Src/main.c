@@ -122,9 +122,10 @@ int main(void)
 	  iwdg2_kick();   /* obnov watchdog CM4 (smycka ~800 ms << 4 s timeout) */
 	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
 	  if (!ipc_cm4_ready()) ipc_cm4_check();
-	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "4:xx%"). */
+	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "4:xx%").
+	   * ⚠️ Duveryhodne JEN kdyz CM7 zije (snapshot seq roste) — jinak jsou to stara data. */
 	  ipc_snapshot_t snap;
-	  int have = ipc_cm4_ready() && ipc_cm4_read(&snap);
+	  int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);
 	  ipc_cm4_heartbeat(0u, HAL_GetTick() / 1000u);   /* cpu% zatim 0 (bare smycka, bez RTOS) */
 
 	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze

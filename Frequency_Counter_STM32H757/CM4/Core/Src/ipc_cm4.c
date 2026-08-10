@@ -52,6 +52,20 @@ int ipc_cm4_read(ipc_snapshot_t *out)
     return !retry && out->magic == IPC_MAGIC;     /* 1 = konzistentni a platny snapshot */
 }
 
+int ipc_cm4_cm7_alive(uint32_t now_ms)
+{
+    /* Liveness CM7 z pohledu CM4: snapshot `seq` roste (CM7 publikuje na kazde mereni
+     * + >=2 Hz heartbeat). Zamrzly seq = zaseknuty CM7 -> CM4 NESMI servirovat stara
+     * data jako aktualni (SCPI/web = chyba/offline), NAVRH §11.4. Symetricke k CM7
+     * ipc_cm4_alive. Bez tohoto by ipc_cm4_read vracel posledni snapshot jako platny
+     * i po zaseknuti CM7 (seqlock je konzistentni, jen zamrzly). */
+    static uint32_t s_last_seq, s_last_ms;
+    if (!s_ready) return 0;
+    uint32_t seq = g_ipc.snap.seq;
+    if (seq != s_last_seq) { s_last_seq = seq; s_last_ms = now_ms; return 1; }
+    return (now_ms - s_last_ms) < 2000u;   /* seq nezmenen >2 s -> CM7 zamrzly */
+}
+
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
 {
     g_ipc.cm4.magic        = IPC_MAGIC;           /* potvrdi CM7, ze CM4 opravdu zapisuje */

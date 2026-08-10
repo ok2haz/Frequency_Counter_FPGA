@@ -492,3 +492,31 @@ CM4 obslouží `CALC:` readbacky + `CALC:DATA?/LIM?`); zápis = cmd ring `IPC_CM
 CM7 → `g_meas_cfg`, mirror `scpi_calc_set`, commit jen při reálné změně). `ipc_cmd_t` rozšířen o `double argd`
 (aby `lo/hi/m/b` nesly plný rozsah). **g_meas_cfg zůstává single-source-of-truth na CM7** (CM4 jen navrhuje
 změny přes ring, CM7 je jediný zapisovatel). **Zbývá:** GATE/RUN/CHAN/LOG dispatch (dozraje se SCPI/web na CM4).
+
+## 11.9 🔍 Audit komunikace CM7↔CM4 (2026-08-10) — nálezy + zlepšení
+
+Kritický audit IPC (snapshot/ring/heartbeat/notifikace). **Implementováno:**
+
+- **🔴 A. CM4 nedetekoval zamrzlý CM7 → HOTOVO.** `ipc_cm4_read` vracel poslední snapshot jako
+  platný, i když CM7 zamrznul (seqlock zůstal konzistentní, jen `seq` se přestal měnit) → CM4 by
+  servíroval **stará data jako aktuální** (SCPI/web). Nový `ipc_cm4_cm7_alive(now_ms)` sleduje růst
+  `seq` (>2 s beze změny = mrtvý CM7); CM4 smyčka teď snapshotu nedůvěřuje, když CM7 nežije. Symetrické
+  k CM7-straně `ipc_cm4_alive`. Naplňuje §11.4 („CM4 pozná mrtvý CM7 podle zamrzlého seq").
+- **🟡 B. Snapshot podvzorkovával měření → HOTOVO (event-driven).** Pevný 2 Hz throttle vs FPGA ~4 měření/s
+  (gate 0,25 s) → SCPI/web klient viděl každé druhé měření, data až 500 ms stará. `ipc_publish` teď publikuje
+  **na každé nové měření** (`seq_meas` se změní) NEBO ≥2 Hz (heartbeat, aby `seq` rostl pro liveness A).
+  Latence měření → snapshot je teď ~jeden defaultTask tik. CPU dopad ~0 (NAVRH §8 rozpočtoval i 10 Hz).
+- **🟡 C. cfg kopie uvnitř seqlocku → HOTOVO.** `taskENTER_CRITICAL(g_meas_cfg)` bylo mezi `publish_begin`/
+  `end` → prodlužovalo seq-odd okno (maskovalo IRQ) = víc retry na CM4. Přesunuto PŘED `publish_begin`.
+
+**Zbývá (design pozn., nízká priorita / HW):**
+- **🟡 D. CM4 IPC servis svázaný s LED smyčkou (~800 ms)** → pomalé zpracování resp ringu. Dnes CM4 nic
+  nedělá; při reálné práci (SCPI/web) mít proper loop (50–100 Hz servis nezávislý na LED).
+- **🟢 E. Notifikace = polling.** HSEM IRQ (CM7 budí CM4 na nový snapshot, CM4 budí CM7 na cmd) = nižší
+  latence + CM4 může spát (WFI, power). Až bude potřeba; polling je dle §11.4 záměrný start.
+- **🟢 F. File-read okno pro download logů (#26)** — není; SRAM4 je z ~99 % volná (680 B / 64 KB) → místo je.
+- **🟢 G. Gap-free měřicí FIFO** (Ω-counter/MDA #48/#27) — snapshot je STAV, ne proud; gap-free potřebuje
+  FIFO ve sdílené paměti. Inherentní limit snapshot modelu; řeší se až s MathTaskem.
+
+**Obstálo (bez zásahu):** seqlock korektnost (DMB + bounded retry + per-read magic), SPSC ringy, velikosti
+rámců/ringů, SET→readback latence (zmírněná optimistic local update v `scpi_src.set_cfg`).

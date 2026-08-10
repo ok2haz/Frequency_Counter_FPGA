@@ -38,6 +38,11 @@ int  ipc_cm4_ready(void);
  *  zapisu CM7). @return 1 = konzistentni kopie, 0 = neready / CM7 zapisuje moc casto. */
 int  ipc_cm4_read(ipc_snapshot_t *out);
 
+/** Liveness CM7 z pohledu CM4 (snapshot `seq` roste). @return 1 = CM7 zije, 0 =
+ *  zamrzly (seq nezmenen >2 s) -> CM4 NESMI servirovat stara data jako aktualni.
+ *  `now_ms` = HAL_GetTick() (drzime ipc_cm4.c HAL-free). Viz NAVRH §11.4. */
+int  ipc_cm4_cm7_alive(uint32_t now_ms);
+
 /** Publikuj zivost CM4 do g_ipc.cm4 (CM7 cte pro "4:xx%" v headeru + liveness).
  *  Heartbeat se inkrementuje AZ PO zapisu dat (bariera) -> CM7 nevidi roztrzeno. */
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s);

@@ -336,7 +336,8 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   **shodná adresa pro obě jádra**). Magic „IPC1" + verze + size (CM4 ověří po bootu). ⚠️ **MPU region 2 na
   CM7 = NON-CACHEABLE + SHAREABLE** (`main.c MPU_Config`); bez toho by CM7 cache viděla stará data. CM4 nemá
   D-cache ani MPU pro SRAM4 → ordering visí **jen na `__DMB()`** (shareability se neshoduje — viz bring-up §3).
-- **Snapshot CM7→CM4** (seqlock, `seq` liché = zápis): `ipc.c` `ipc_publish` (~2 Hz z defaultTask, **JEN reálná
+- **Snapshot CM7→CM4** (seqlock, `seq` liché = zápis): `ipc.c` `ipc_publish` (**event-driven: na každé nové
+  měření `seq_meas` NEBO ≥2 Hz heartbeat** — 2 Hz fixní by podvzorkoval FPGA ~4 měření/s; audit §11.9), **JEN reálná
   data** z `fpga_freq_get_last`/`gps_get`/`g_sensors`/`g_calib`/health; ⚠️ statistika sigma/offset/drift ZÁMĚRNĚ
   neplněná dokud #2 = simulace headline). **v2 (2026-08-09): PLNÁ sada instrument-state** — všechny teploty
   (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307 kalibrace**, Si5356 stav, kanál →
@@ -346,8 +347,10 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
   `ipc_ring_cmd/resp_*`) + `g_ipc`-vázané zkratky → `ipc_selftest` běží nad **lokální** instancí (žádný race s publisherem).
 - **CM4 konzument** (`CM4/Core/Src/ipc_cm4.c`): `ipc_cm4_read` (seqlock, **bounded retry ≤8** — CM4 se nesmí
-  zaseknout, + **per-read kontrola magicu** kvůli neseqlocknutému memsetu v `ipc_init` při bootu), `ipc_cm4_heartbeat`
-  (živost → CM7). Zapojeno v CM4 `main.c` smyčce; **LED_2 svítí při GPS fixu ze snapshotu** = viditelný důkaz round-tripu.
+  zaseknout, + **per-read kontrola magicu** kvůli neseqlocknutému memsetu v `ipc_init` při bootu),
+  **`ipc_cm4_cm7_alive(now_ms)`** (sleduje růst snapshot `seq` → **CM4 nedůvěřuje starým datům při zamrzlém CM7**,
+  §11.4/§11.9 — jinak by servíroval stará data jako živá), `ipc_cm4_heartbeat` (živost → CM7). Zapojeno v CM4
+  `main.c` smyčce; **LED_2 svítí při GPS fixu ze snapshotu** (jen když CM7 žije) = viditelný důkaz round-tripu.
   ⚠️ **`ipc_shared.h` sdílen RELATIVNÍM include** `"../../../CM7/Core/Inc/ipc_shared.h"` (CM4/CM7 sourozenci → regen-safe,
   žádná změna include path).
 - **CM7 čte CM4 heartbeat:** defaultTask `ipc_cm4_alive()` → `g_cm4_alive` → **CPU blok headeru trojstav**

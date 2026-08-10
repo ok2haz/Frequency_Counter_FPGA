@@ -64,18 +64,29 @@ static uint8_t ipc_sys_level(const gps_data_t *g)
  * Vola defaultTask v hlavni smycce. */
 void ipc_publish(void)
 {
-    static uint32_t s_last_ms;
+    static uint32_t s_last_ms, s_last_seq_meas;
     uint32_t now = osKernelGetTickCount();
-    if ((now - s_last_ms) < 500u) return;        /* ~2 Hz */
-    s_last_ms = now;
 
     /* Posbirej realny stav MIMO seqlock (kratke drzeni licheho seq = min. retry CM4). */
     fpga_meas_t m;
     int have_meas = fpga_freq_get_last(&m);
-    int meas_ok   = have_meas && (m.measurement_status & 0x01u)
-                    && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
+
+    /* EVENT-DRIVEN: publikuj na NOVE mereni (seq_meas se zmeni) NEBO periodicky (>=2 Hz
+     * heartbeat, aby snapshot seq stale rostl -> CM4 pozna zivy CM7). FPGA meri ~4/s
+     * (gate 0,25 s) -> pevny 2 Hz throttle by mereni PODVZORKOVAL; takhle snapshot chytne
+     * kazde mereni s min. latenci (~jeden defaultTask tik po tom, co ho FpgaTask zverejni). */
+    int meas_new = have_meas && (m.sequence != s_last_seq_meas);
+    if (!meas_new && (now - s_last_ms) < 500u) return;
+    s_last_ms = now;
+    if (have_meas) s_last_seq_meas = m.sequence;
+
+    int meas_ok = have_meas && (m.measurement_status & 0x01u)
+                  && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
 
     gps_data_t g; gps_get(&g);
+    /* Math/limit cfg kopie MIMO seqlock (kriticka sekce kvuli double) — zkracuje seq-odd
+     * okno (drive byla uvnitr begin/end -> maskovala IRQ behem publikace = vic retry CM4). */
+    meas_cfg_t mc; taskENTER_CRITICAL(); mc = g_meas_cfg; taskEXIT_CRITICAL();
 
     uint32_t flags = 0;
     if (g_spi_ok)                        flags |= IPC_F_FPGA_LINK;
@@ -134,11 +145,10 @@ void ipc_publish(void)
     g_ipc.snap.cm7_cpu_pct  = g_rtos_cpu_pct;
     g_ipc.snap.reset_cause  = g_reset_rsr;
 
-    /* Math/limit cfg mirror (v3) — konzistentni kopie (kriticka sekce kvuli double). */
-    { meas_cfg_t mc; taskENTER_CRITICAL(); mc = g_meas_cfg; taskEXIT_CRITICAL();
-      g_ipc.snap.math_m   = mc.m;   g_ipc.snap.math_b   = mc.b;   g_ipc.snap.null_ref = mc.null_ref;
-      g_ipc.snap.lim_lo   = mc.lo;  g_ipc.snap.lim_hi   = mc.hi;
-      g_ipc.snap.math_en  = mc.math_en; g_ipc.snap.null_en = mc.null_en; g_ipc.snap.limit_en = mc.limit_en; }
+    /* Math/limit cfg mirror (v3) — z predem posbirane kopie `mc` (mimo seqlock, viz vyse). */
+    g_ipc.snap.math_m   = mc.m;   g_ipc.snap.math_b   = mc.b;   g_ipc.snap.null_ref = mc.null_ref;
+    g_ipc.snap.lim_lo   = mc.lo;  g_ipc.snap.lim_hi   = mc.hi;
+    g_ipc.snap.math_en  = mc.math_en; g_ipc.snap.null_en = mc.null_en; g_ipc.snap.limit_en = mc.limit_en;
 
     ipc_snap_publish_end();
 }
