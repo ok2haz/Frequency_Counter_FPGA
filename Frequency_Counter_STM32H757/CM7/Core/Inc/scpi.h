@@ -52,6 +52,8 @@
  */
 #include <stddef.h>
 #include <stdint.h>
+#include "meas_math.h"   /* meas_cfg_t — scpi_src_t.meas (CALC subsystem) */
+#include "datalog.h"     /* datalog_rec_t — read_log (MMEM:DATA?) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,20 +71,89 @@ typedef struct {
     uint8_t  sre;                  /* Service Request Enable (*SRE) */
 } scpi_ctx_t;
 
-/** Vynuluje kontext (prázdná fronta, ESR/ESE/SRE = 0). Volat před 1. použitím
- *  vlastního kontextu (např. při navázání TCP spojení). */
+/* ── Zdroj dat (abstrakce mezi CM7 globály a CM4 IPC snapshotem) ──────────────
+ * Parser/handlery (`scpi.c`) jsou DATA-SOURCE nezávislé — čtou z `scpi_src_t`.
+ * Backend ho naplní: CM7 z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`
+ * (`scpi_src_load_cm7`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
+ * říkají, co je platné — neplatné → dotaz vrátí SCPI NaN `9.91E37`. Akce (config
+ * SET, čtení logu) jsou callbacky (na CM7 zápis `g_meas_cfg`/datalog, na CM4 cmd ring). */
+#define SCPI_V_FREQ    (1u << 0)   /* platné měření /4 */
+#define SCPI_V_DIV16   (1u << 1)   /* platná /16 větev */
+#define SCPI_V_FRAME   (1u << 2)   /* existuje poslední DATA rámec (gate/kanál) */
+#define SCPI_V_T_OCXO  (1u << 3)
+#define SCPI_V_T_BOARD (1u << 4)
+#define SCPI_V_T_MCU   (1u << 5)
+#define SCPI_V_T_FPGA  (1u << 6)
+#define SCPI_V_VC      (1u << 7)
+#define SCPI_V_RF      (1u << 8)
+#define SCPI_V_V12     (1u << 9)
+#define SCPI_V_V5      (1u << 10)
+#define SCPI_V_VREF    (1u << 11)
+#define SCPI_V_VBAT    (1u << 12)
+#define SCPI_V_GPS     (1u << 13)  /* GPS fix (čas/poloha platné) */
+
+/* SCPI CALC SET klíče (nezávislé na transportu/IPC; backend je namapuje). */
+enum {
+    SCPI_CFG_MATH_EN = 0,  /* vu 0/1 */
+    SCPI_CFG_MATH_M,       /* vd */
+    SCPI_CFG_MATH_B,       /* vd */
+    SCPI_CFG_NULL_EN,      /* vu 0/1 */
+    SCPI_CFG_NULL_ACQ,     /* akce (potřebuje platný kmitočet) */
+    SCPI_CFG_LIM_EN,       /* vu 0/1 */
+    SCPI_CFG_LIM_LO,       /* vd */
+    SCPI_CFG_LIM_HI,       /* vd */
+};
+
+typedef struct scpi_src scpi_src_t;
+struct scpi_src {
+    uint32_t valid;                 /* SCPI_V_* */
+    /* Kmitočet (×1e5, dělička už zahrnuta). */
+    uint64_t freq4_x100000, freq16_x100000;
+    uint32_t gate_ns;
+    uint8_t  channel_id;
+    uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
+    /* Teploty [0,01 °C]. */
+    int16_t  t_ocxo_c100, t_board_c100, t_mcu_c100, t_fpga_c100;
+    /* Napětí [mV] + RF kalibrace. */
+    uint16_t ocxo_vc_mv, rf_mv, v_12v_mv, v_5v_mv, vref_mv, vbat_mv;
+    float    ad8307_slope_mv_db, ad8307_intercept_dbm;
+    /* GPS. */
+    uint8_t  gps_fix_mode, gps_num_sat, gps_hour, gps_min, gps_sec;
+    float    gps_lat_deg, gps_lon_deg, gps_alt_m;
+    /* Stav. */
+    uint8_t  spi_ok, si5356_status, si5356_ok, selftest_pass;
+    uint32_t uptime_s;
+    /* Math/limity (CALC readbacky + CALC:DATA?/LIM?). */
+    meas_cfg_t meas;
+    /* Datalog (MMEM:CAT?/DATA:COUN?). */
+    const char *dl_backend;
+    uint32_t dl_records, dl_capacity_rec, dl_last_seq, dl_write_errors;
+    uint8_t  dl_wrapped;
+    /* ── Akce (backend-specifické; NULL = nepodporováno). ── */
+    void *be;                       /* backend kontext (např. IPC ring na CM4) */
+    /* Aplikuj CALC SET (SCPI_CFG_* klíč, bool vu / double vd). @return 1 = OK.
+     * Aktualizuje i src->meas (aby compound SET→readback sedělo). */
+    int (*set_cfg)(scpi_src_t *s, uint8_t key, uint32_t vu, double vd);
+    /* Přečti n-tý datalog záznam od nejnovějšího (MMEM:DATA?). @return 1 = OK. */
+    int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
+};
+
+/** Vynuluje kontext (prázdná fronta, ESR/ESE/SRE = 0). */
 void scpi_ctx_init(scpi_ctx_t *ctx);
 
-/** Zpracuje jednu programovou zprávu v daném kontextu (bez CRLF; víc jednotek
- *  přes ';'). Odpověď (vč. '\0') do out; vrací délku bez '\0' (0 = žádná). */
-size_t scpi_process_ctx(scpi_ctx_t *ctx, const char *line, char *out, size_t out_sz);
+/** Zpracuje jednu programovou zprávu (bez CRLF; víc jednotek přes ';') v daném
+ *  kontextu nad daným zdrojem dat. Odpověď (vč. '\0') do out; vrací délku (0 = žádná). */
+size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char *out, size_t out_sz);
 
-/** Jako scpi_process_ctx, ale nad SDÍLENÝM default kontextem (USB CDC konzole,
- *  jediná session). Zachováno kvůli stávajícímu volajícímu (freertos_task_uart.c). */
+#if defined(CORE_CM7)
+/** CM7 backend: naplní src z globálů + nastaví akce (g_meas_cfg / datalog). */
+void   scpi_src_load_cm7(scpi_src_t *src);
+/** USB konzole (CM7): načte CM7 zdroj + zpracuje nad SDÍLENÝM default kontextem.
+ *  Signatura zachována kvůli volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);
+#endif
 
-/** Pure-logic unit test (parser: case, krátká/dlouhá forma, hierarchie, status
- *  model, compound, jednotky) — 1 = PASS. Netestuje HW hodnoty (jen že odpoví). */
+/** Pure-logic unit test (parser + status model + config apply) — 1 = PASS. */
 int scpi_selftest(void);
 
 #ifdef __cplusplus

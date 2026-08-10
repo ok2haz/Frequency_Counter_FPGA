@@ -361,11 +361,16 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   nelinkuje, jen diagnostický `ram write/read`), **SRAM2+3 160K → CM4** (`RAM @0x10020000/160K`, CM4-alias).
   ⚠️ Kolize „obě jádra celý D2" byla latentní do ETH; teď disjunktní.
 - **cmd ring (CM4→CM7) + config sync (v3):** `IPC_CMD_CFG_SET` (key `IPC_CFG_*` + `arg`/`double argd`) → CM7
-  `ipc_service` aplikuje Math/limity na `g_meas_cfg` (`ipc_cfg_apply`, mirror `scpi_calc_set`; commit jen při
-  reálné změně, kritická sekce). Čtení zpět = **cfg mirror ve snapshotu** (`math_m/b/null_ref/lim_lo/hi` + flagy)
-  → CM4 obslouží `CALC:` readbacky + `CALC:DATA?/LIM?` bez `g_meas_cfg`. NULL:ACQ používá reálný FPGA kmitočet.
+  `ipc_service` aplikuje Math/limity na `g_meas_cfg` (`ipc_cfg_apply`; commit jen při reálné změně, kritická
+  sekce). Čtení zpět = **cfg mirror ve snapshotu** (`math_m/b/null_ref/lim_lo/hi` + flagy) → CM4 obslouží `CALC:`
+  readbacky + `CALC:DATA?/LIM?` bez `g_meas_cfg`. NULL:ACQ používá reálný FPGA kmitočet.
   ⚠️ `ipc_cmd_t` rozšířen o `key`+`double argd` (aby `lo/hi/m/b` nesly plný rozsah, ne jen uint32) → `IPC_VERSION` 3.
   Ostatní příkazy (GATE/RUN/CHAN/LOG) dozrají se SCPI/web na CM4 (dnes status=1).
+- **SCPI je DATA-SOURCE nezávislé** (`scpi.c/h`, 2026-08-10): parser+handlery čtou z `scpi_src_t` (instrument-state
+  + validity bity `SCPI_V_*` + akce `set_cfg`/`read_log`), NE z globálů. **CM7 backend** `scpi_src_load_cm7`
+  (`#if CORE_CM7`) plní z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`/datalog; `scpi_process` =
+  wrapper (USB volající beze změny). **CM4 backend** (výhled) naplní tentýž `scpi_src_t` z **IPC snapshotu** +
+  `set_cfg` přes cmd ring → stejné jádro pro USB-CM7 i TCP-CM4. Jádro ověřeně kompiluje jako `-DCORE_CM4` (bez globálů).
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
