@@ -12,6 +12,7 @@
 #include "cmsis_os2.h"
 
 #include <stdio.h>
+#include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
 #include <string.h>
 #include <stdbool.h>
 
@@ -29,6 +30,7 @@
 #include "alarm.h"          /* alarm_test — UART "beep" */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
+#include "sd_export.h"      /* UART "sd mount/unmount/export" — SD jako export (#28) */
 #include "datalog.h"        /* UART "datalog [on|off|erase|dump]" */
 #include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
@@ -343,6 +345,58 @@ void UartTask_run(void *argument)
 				  char ab[280];
 				  autocal_format_full(ab, sizeof ab);
 				  printf("%s", ab);
+			  }
+			  /* SD karta = EXPORTNI medium (W25Q zustava autoritativni, viz sd_export.h).
+			   * ⚠️ mount i export BLOKUJI (HAL_SD_Init desitky-stovky ms, zapis sekundy) —
+			   * proto jsou tady v UartTasku, ktery NENI hlidan watchdogem. Z defaultTask/
+			   * UiTask je NEVOLAT. Detekce karty bezi levne v defaultTasku (sd_export_tick). */
+			  else if (strncmp(RxBuffer, "sd", 2) == 0 && (RxBuffer[2] == '\0' || RxBuffer[2] == ' ')) {
+				  const char *arg = RxBuffer[2] == ' ' ? &RxBuffer[3] : "";
+				  if (strcmp(arg, "mount") == 0) {
+					  printf("SD: mountuji...\n");
+					  printf("SD: %s (%s)\n", sd_export_mount() ? "OK" : "FAIL", sd_export_state_str());
+				  } else if (strcmp(arg, "unmount") == 0) {
+					  sd_export_unmount();
+					  printf("SD: odmountovano (%s)\n", sd_export_state_str());
+				  } else if (strncmp(arg, "export", 6) == 0) {
+					  uint32_t n = (uint32_t)atoi(arg[6] == ' ' ? &arg[7] : "");   /* 0 = vse */
+					  printf("SD: exportuji %s do GPSDO.CSV, cekej...\n", n ? "cast logu" : "cely log");
+					  int32_t w = sd_export_run(n);
+					  if (w < 0) printf("SD: export FAIL (%s)\n", sd_export_state_str());
+					  else       printf("SD: export OK, %ld zaznamu\n", (long)w);
+				  } else if (strcmp(arg, "diag") == 0) {
+					  sd_export_diag();
+				  } else if (strcmp(arg, "test") == 0) {
+					  sd_export_selftest();
+				  } else if (strncmp(arg, "det invert", 10) == 0) {
+					  const char *a2 = arg[10] == ' ' ? &arg[11] : "";
+					  datalog_sd_det_invert(strcmp(a2, "off") != 0);
+					  printf("SD: polarita detekce = %s\n", datalog_sd_det_inverted()
+					         ? "OBRACENA (HIGH = karta)" : "vychozi (LOW = karta)");
+					  printf("SD: PE3=%s -> %s\n", datalog_sd_det_raw() ? "HIGH" : "LOW",
+					         datalog_sd_detect_status() ? "KARTA" : "prazdno");
+				  } else if (strcmp(arg, "det") == 0) {
+					  /* Diagnostika card-detect pinu bez debuggeru. Dle zapojeni J13
+					   * (spinac DET_A=GND / DET_B=PE3 + 47k pull-up) ma byt
+					   * LOW = karta vlozena. Zkus vysunout/zasunout a porovnej. */
+					  printf("SD: PE3 syrove = %s   polarita = %s\n",
+					         datalog_sd_det_raw() ? "HIGH" : "LOW",
+					         datalog_sd_det_inverted() ? "OBRACENA (HIGH=karta)" : "vychozi (LOW=karta)");
+					  printf("SD: vyhodnoceno=%s  debounced=%s  force=%s\n",
+					         datalog_sd_detect_status() ? "KARTA" : "prazdno",
+					         datalog_sd_card_present() ? "vlozena" : "chybi",
+					         datalog_sd_det_forced() ? "ZAPNUTO" : "vypnuto");
+				  } else if (strncmp(arg, "force", 5) == 0) {
+					  const char *a2 = arg[5] == ' ' ? &arg[6] : "";
+					  datalog_sd_det_force(strcmp(a2, "off") != 0);
+					  printf("SD: override detekce %s\n",
+					         datalog_sd_det_forced() ? "ZAPNUT (detekce se ignoruje)" : "vypnut");
+				  } else {
+					  printf("SD: karta %s, stav: %s%s\n",
+					         datalog_sd_card_present() ? "VLOZENA" : "chybi", sd_export_state_str(),
+					         datalog_sd_det_forced() ? "  [force]" : "");
+					  printf("SD: prikazy: sd diag | sd test | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
+				  }
 			  }
 			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {
 				  const char *arg = RxBuffer[7] == ' ' ? &RxBuffer[8] : "";

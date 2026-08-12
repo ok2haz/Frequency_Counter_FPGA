@@ -68,7 +68,38 @@ typedef struct {
 } datalog_backend_t;
 
 extern const datalog_backend_t datalog_backend_w25q;
-extern const datalog_backend_t datalog_backend_sd;   /* zatim probe()==false, viz datalog_sd.c */
+/* ⚠️ NENI `const` (na rozdil od W25Q): `capacity` se da zjistit az z vlozene karty,
+ * takze ji vyplni `probe()` po `HAL_SD_GetCardInfo`. Konzumenti drzi ukazatel na
+ * `const datalog_backend_t`, takze se pro ne nic nemeni. */
+extern datalog_backend_t datalog_backend_sd;   /* probe()==false dokud neni SDMMC1, viz datalog_sd.c */
+
+/** Je v slotu vlozena SD karta? (card-detect PE3, debounced.)
+ *  Nezavisi na tom, jestli je SD backend aktivni — je to ciste GPIO, takze UI
+ *  muze hlasit pritomnost karty i pri `DATALOG_SD_RAW_OK == 0`.
+ *  ⚠️ Debounce je "N shodnych cteni po sobe" -> casovou konstantu urcuje kadence
+ *  volajiciho. Volat pravidelne (napr. 2 Hz z defaultTasku / pri prekresleni okna). */
+bool datalog_sd_card_present(void);
+
+/** Syrova uroven card-detect pinu: 0 = LOW (= karta vlozena dle zapojeni J13),
+ *  1 = HIGH (prazdny slot). Pro diagnostiku z konzole — UART `sd det`. */
+int  datalog_sd_det_raw(void);
+
+/** ⚠️ Override detekce. Card-detect je jen pomucka; jestli karta opravdu je,
+ *  rozhodne az `HAL_SD_Init`. Kdyz spinac v socketu nefunguje, `sd force on`
+ *  detekci obejde a SD cesta se da presto vyzkouset.
+ *  `datalog_sd_det_forced()` vraci int (ne bool) — vola se i z generovaneho
+ *  `fatfs_platform.c`, kde neni kam pridat include. */
+void datalog_sd_det_force(bool on);
+int  datalog_sd_det_forced(void);
+
+/** ⚠️ Prohozeni polarity detekce za behu (`sd det invert on`), bez reflashe.
+ *  Vychozi: LOW = karta vlozena. Nektere sokety maji spinac obracene. */
+void datalog_sd_det_invert(bool on);
+int  datalog_sd_det_inverted(void);
+
+/** Vyhodnoceni detekce BEZ debounce: 1 = karta pritomna. Zohlednuje force
+ *  i invert. Vola to i generovany `fatfs_platform.c`, aby FatFs videl totez. */
+int  datalog_sd_detect_status(void);
 
 /* Pure-logic test 512B RMW layeru SD backendu (proti RAM fake bloku, bez HW).
  * Volá ho datalog_selftest → součást UART "selftest". @return true = OK. */

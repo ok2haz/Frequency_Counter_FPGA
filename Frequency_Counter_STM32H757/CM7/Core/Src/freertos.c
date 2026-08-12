@@ -32,6 +32,7 @@
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
 #include "syscfg.h"           /* syscfg_flash_tick — zrcadlo nastaveni do W25Q flash */
 #include "datalog.h"          /* datalog_init/tick — zaznam stability do W25Q DATA (TODO #6) */
+#include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
@@ -237,7 +238,7 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 384 * 4,
+  .stack_size = 640 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -368,9 +369,10 @@ void StartDefaultTask(void *argument)
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
+    sd_export_tick();            /* SD: detekce karty + auto-unmount (LEVNY; mount/export = UartTask) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
-    ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, throttle ~2 Hz uvnitr) (#19/#20) */
-    ipc_service();    /* zpracuj pripadne prikazy z CM4 (dnes prazdny ring — CM4 nebezi) */
+    ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, event-driven uvnitr) (#19/#20) */
+    ipc_service();    /* zpracuj pripadne prikazy z CM4 (cmd ring) */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
     /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4):
      * CM4 se zotavi vlastnim IWDG2, CM7 to jen pozoruje + loguje + pocita. NEsahá na
