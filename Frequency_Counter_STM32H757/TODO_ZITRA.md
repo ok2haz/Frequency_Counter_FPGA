@@ -106,6 +106,17 @@
       `scpi.c:<řádek>` prvního neúspěšného assertu. **Odpovídá na dotaz „co SCPI parser, hlásí chybu
       při startu" — konkrétní příčinu ukáže až první flash.**
 
+- [x] ✅ **SCPI selftest OPRAVEN 2026-08-13 — příčina nalezena čtením, ne hádáním.** Padal na tom,
+      že po `CALC:NULL:ACQuire` čekal pořád absolutní hodnotu (`2*1e7+100`), jenže
+      `meas_math_capture_null()` referenci **nejen zachytí, ale rovnou zapne relativní režim**
+      → Y klesne na 0 a padly hned dva asserty (druhý čekal `MEAS_HI`, dostal `MEAS_LO`).
+      **Chyba byla v očekávání testu, ne v parseru** — `meas_math_selftest` tutéž sémantiku
+      očekává správně. Test teď ověřuje OBĚ větve (absolutní i relativní).
+- [x] ✅ **Rozšíření SCPI 2026-08-13** — `SYST:CAP?`, `SYST:ERR:ALL?`, `STAT:PRES`, `SENS:FUNC?`,
+      `SENS:ROSC:SOUR?/LOCK?`, `MEAS:PER?`, `MEAS:FREQ:STAL?`, `SYST:TEMP:ALL?`, `MEAS:VOLT:ALL?`.
+      Vše **jen nad poli, která `scpi_src_t` už má** → žádný bump `IPC_VERSION` a CM4 se bude
+      chovat identicky. Selftest rozšířen na 101 assertů.
+
 - [ ] **`_Static_assert` mezi `SCPI_CFG_*` a `IPC_CFG_*`.** Dva paralelní enumy, které musí sedět
       1:1 bez jakéhokoli compile-time hlídání. ⚠️ **Blokující pro ETH etapu F6** — přeházené pořadí
       by tiše zapsalo `LIM:LOW` do `null_ref`.

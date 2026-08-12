@@ -76,6 +76,23 @@ static void fmt_scpi_hz_d(double hz, char *out, size_t n)
     uint32_t frac  = (uint32_t)(x % 100000u);
     snprintf(out, n, "%s%lu.%05lu", neg ? "-" : "", (unsigned long)whole, (unsigned long)frac);
 }
+/* Perioda [s] z kmitočtu — 15 des. míst (femtosekundové rozlišení).
+ * Proč tolik: při 1,4 GHz (strop tvarovače) je perioda 714 ps, takže i
+ * pikosekundový krok by byl 0,14 % — pro čítač nepoužitelné. Formátuje se
+ * celočíselnou extrakcí (nano.specs nemá %f). */
+static void fmt_scpi_period_s(double hz, char *out, size_t n)
+{
+    if (hz <= 0.0) { snprintf(out, n, "9.91E37"); return; }
+    uint64_t fs   = (uint64_t)(1.0 / hz * 1e15 + 0.5);    /* perioda ve femtosekundách */
+    uint64_t frac = fs % 1000000000000000ull;
+    /* ⚠️ Zlomek (15 cifer) se NEVEJDE do `unsigned long` (32 bit na ARM) a
+     * newlib-nano neumí `%llu` — proto se tiskne po dvou 32bitových půlkách,
+     * stejný důvod, proč se všude jinde castuje na `unsigned long`. */
+    snprintf(out, n, "%lu.%07lu%08lu",
+             (unsigned long)(fs / 1000000000000000ull),
+             (unsigned long)(frac / 100000000ull),        /* horních 7 cifer */
+             (unsigned long)(frac % 100000000ull));       /* dolních 8 cifer */
+}
 /* ns -> "d.dddddd" sekundy (6 des. míst; SENS:FREQ:GATE?). */
 static void fmt_scpi_sec_ns(uint64_t ns, char *out, size_t n)
 {
@@ -267,6 +284,25 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
 
     /* ── SYSTem ────────────────────────────────────────────────────────────── */
     if (hdr_match(hdr, "SYSTem:VERSion") && is_query) { snprintf(out, out_sz, "1999.0"); return strlen(out); }
+    /* SCPI-99 povinné. Bez něj VISA/IVI ovladače při inicializaci dostanou -113
+     * a hned si zaplní chybovou frontu. */
+    if (hdr_match(hdr, "SYSTem:CAPability") && is_query) {
+        snprintf(out, out_sz, "\"COUNTER\""); return strlen(out);
+    }
+    /* Vyprázdní CELOU frontu najednou (SCPI-99 21.8.3) — jeden dotaz místo
+     * smyčky `SYST:ERR?` dokud nepřijde 0. */
+    if (hdr_match(hdr, "SYSTem:ERRor:ALL") && is_query) {
+        size_t t = 0;
+        do {
+            int code = scpi_err_pop(c);
+            int w = snprintf(out + t, out_sz - t, "%s%d,\"%s\"",
+                             t ? ";" : "", code, scpi_err_msg(code));
+            if (w <= 0 || (size_t)w >= out_sz - t) break;
+            t += (size_t)w;
+            if (code == 0) break;                 /* 0 = fronta prázdná, konec */
+        } while (c->err_count > 0 && t + 24 < out_sz);
+        return t;
+    }
     if (hdr_match(hdr, "SYSTem:UPTime") && is_query) {
         snprintf(out, out_sz, "%lu", (unsigned long)src->uptime_s); return strlen(out);
     }
@@ -285,6 +321,18 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (src->valid & vb) fmt_scpi_f2(c100 / 100.0f, out, out_sz);
         else                 snprintf(out, out_sz, "9.91E37");
         return strlen(out);
+    }
+    /* Všechny teploty jedním dotazem — pro web/TCP klienta je 1 round-trip
+     * místo 4 znát rozdíl; pořadí OCXO,BOARD,MCU,FPGA. */
+    if (hdr_match(hdr, "SYSTem:TEMPerature:ALL") && is_query) {
+        char t[4][16];
+        const int16_t   v[4] = { src->t_ocxo_c100, src->t_board_c100, src->t_mcu_c100, src->t_fpga_c100 };
+        const uint32_t  m[4] = { SCPI_V_T_OCXO,    SCPI_V_T_BOARD,    SCPI_V_T_MCU,    SCPI_V_T_FPGA };
+        for (int i = 0; i < 4; i++) {
+            if (src->valid & m[i]) fmt_scpi_f2(v[i] / 100.0f, t[i], sizeof t[i]);
+            else                   snprintf(t[i], sizeof t[i], "9.91E37");
+        }
+        snprintf(out, out_sz, "%s,%s,%s,%s", t[0], t[1], t[2], t[3]); return strlen(out);
     }
     if (hdr_match(hdr, "SYSTem:GPS:STATus") && is_query) {
         snprintf(out, out_sz, "%u,%u", (unsigned)src->gps_fix_mode, (unsigned)src->gps_num_sat); return strlen(out);
@@ -321,6 +369,28 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
         return strlen(out);
+    }
+    /* Perioda = 1/f. Pro čítač je to základní veličina, kterou SCPI tree doteď
+     * neuměl. Jde ze STEJNÉHO reálného kmitočtu jako MEAS:FREQ? (ne simulace). */
+    if (hdr_match(hdr, "MEASure:PERiod") && is_query) {
+        fmt_scpi_period_s(src_freq_hz(src), out, out_sz); return strlen(out);
+    }
+    /* 1 = poslednímu měření NELZE věřit (ztráta signálu / chyba / neplatné).
+     * Klient tak nemusí odvozovat důvěryhodnost z 9.91E37. */
+    if (hdr_match(hdr, "MEASure:FREQuency:STALe") && is_query) {
+        snprintf(out, out_sz, "%d", (!(src->valid & SCPI_V_FREQ) || src->freq_err) ? 1 : 0);
+        return strlen(out);
+    }
+    /* Všechny napájecí větve jedním dotazem: 12V,5V,VC,VREF,VBAT. */
+    if (hdr_match(hdr, "MEASure:VOLTage:ALL") && is_query) {
+        char t[5][16];
+        const uint16_t v[5] = { src->v_12v_mv, src->v_5v_mv, src->ocxo_vc_mv, src->vref_mv, src->vbat_mv };
+        const uint32_t m[5] = { SCPI_V_V12,    SCPI_V_V5,    SCPI_V_VC,       SCPI_V_VREF,  SCPI_V_VBAT };
+        for (int i = 0; i < 5; i++) {
+            if (src->valid & m[i]) fmt_scpi_f2(v[i] / 1000.0f, t[i], sizeof t[i]);
+            else                   snprintf(t[i], sizeof t[i], "9.91E37");
+        }
+        snprintf(out, out_sz, "%s,%s,%s,%s,%s", t[0], t[1], t[2], t[3], t[4]); return strlen(out);
     }
     if (hdr_match(hdr, "MEASure:VOLTage") && is_query) {      /* [V], výběr větve */
         uint16_t mv = src->v_12v_mv; uint32_t vb = SCPI_V_V12;   /* default 12V */
@@ -415,6 +485,26 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     }
 
     /* ── STATus ────────────────────────────────────────────────────────────── */
+    /* Měřená funkce (SCPI-99 SENSe). Čítač umí jedinou → konstanta, ale ovladače
+     * se na to ptají a bez odpovědi by dostaly -113. */
+    if (hdr_match(hdr, "SENSe:FUNCtion") && is_query) {
+        snprintf(out, out_sz, "\"FREQ\""); return strlen(out);
+    }
+    /* Reference: GPSDO má interní OCXO (rozváděný Si5356), externí vstup není. */
+    if (hdr_match(hdr, "SENSe:ROSCillator:SOURce") && is_query) {
+        snprintf(out, out_sz, "INT"); return strlen(out);
+    }
+    /* 1 = reference v pořádku. ⚠️ Hodnotí se LOS_CLKIN (bit3) a PLL_LOL (bit4);
+     * bit2 = LOS_XTAL je na této desce TRVALE 1 (krystal XA/XB neosazen, piny
+     * uzemněné) — kdyby se počítal, hlásila by reference chybu pořád. */
+    if (hdr_match(hdr, "SENSe:ROSCillator:LOCKed") && is_query) {
+        int lk = (src->si5356_ok && !(src->si5356_status & ((1u << 3) | (1u << 4)))) ? 1 : 0;
+        snprintf(out, out_sz, "%d", lk); return strlen(out);
+    }
+    /* SCPI-99 povinné. OPERation/QUEStionable ENABLE registry zatím nemáme
+     * (jen 488.2 ESE/SRE), takže je to fakticky no-op — ale MUSÍ se přijmout,
+     * jinak inicializační sekvence `*RST;*CLS;STAT:PRES` skončí chybou. */
+    if (hdr_match(hdr, "STATus:PRESet") && !is_query) { return 0; }
     if (hdr_match(hdr, "STATus:OPERation:CONDition") && is_query) {
         unsigned w = 0;
         if (src->spi_ok)                                     w |= 1u << 0;
@@ -633,7 +723,47 @@ int scpi_selftest(void)
         ok &= (strncmp(b, "10000000.", 9) == 0);
         sv.valid |= SCPI_V_T_OCXO; sv.t_ocxo_c100 = 4512;              /* 45,12 °C */
         scpi_process_ctx(&x, &sv, "SYST:TEMP?", b, sizeof b);          ok &= (strncmp(b, "45.1", 4) == 0);
+
+        /* Perioda ze stejneho kmitocu: 10 MHz -> 100 ns = 0,000000100000000 s. */
+        scpi_process_ctx(&x, &sv, "MEAS:PER?", b, sizeof b);
+        ok &= (strcmp(b, "0.000000100000000") == 0);
+        /* Platny kmitocet bez chyby -> neni stale. */
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ:STAL?", b, sizeof b);     ok &= (strcmp(b, "0") == 0);
+        sv.freq_err = 1;
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ:STAL?", b, sizeof b);     ok &= (strcmp(b, "1") == 0);
+        /* Agregaty: OCXO plati, zbytek NaN -> presne 4 resp. 5 poli. */
+        scpi_process_ctx(&x, &sv, "SYST:TEMP:ALL?", b, sizeof b);
+        ok &= (strncmp(b, "45.12,9.91E37,9.91E37,9.91E37", 29) == 0);
+        scpi_process_ctx(&x, &sv, "MEAS:VOLT:ALL?", b, sizeof b);
+        { int commas = 0; for (const char *p = b; *p; p++) if (*p == ',') commas++; ok &= (commas == 4); }
+        /* Reference: si5356_ok=0 -> nezamceno; ok + jen LOS_XTAL(bit2) -> zamceno
+         * (bit2 je na teto desce trvale 1, nesmi se hodnotit). */
+        scpi_process_ctx(&x, &sv, "SENS:ROSC:LOCK?", b, sizeof b);     ok &= (strcmp(b, "0") == 0);
+        sv.si5356_ok = 1; sv.si5356_status = 0x04;
+        scpi_process_ctx(&x, &sv, "SENS:ROSC:LOCK?", b, sizeof b);     ok &= (strcmp(b, "1") == 0);
+        sv.si5356_status = 0x08;                                       /* LOS_CLKIN */
+        scpi_process_ctx(&x, &sv, "SENS:ROSC:LOCK?", b, sizeof b);     ok &= (strcmp(b, "0") == 0);
     }
+
+    /* Nove SCPI-99 povinne prikazy + SENSe konstanty. */
+    scpi_ctx_init(&x);
+    scpi_process_ctx(&x, &src, "SYST:CAP?",   b, sizeof b);  ok &= (strcmp(b, "\"COUNTER\"") == 0);
+    scpi_process_ctx(&x, &src, "SENS:FUNC?",  b, sizeof b);  ok &= (strcmp(b, "\"FREQ\"") == 0);
+    scpi_process_ctx(&x, &src, "SENS:ROSC:SOUR?", b, sizeof b); ok &= (strcmp(b, "INT") == 0);
+    ok &= (scpi_process_ctx(&x, &src, "STAT:PRES", b, sizeof b) == 0);   /* prijmout, ticho */
+    ok &= (scpi_process_ctx(&x, &src, "SYST:ERR?", b, sizeof b) > 0 && strncmp(b, "0,", 2) == 0);
+    /* SYST:ERR:ALL? vyprazdni celou frontu jednim dotazem. */
+    scpi_process_ctx(&x, &src, "FOO?", b, sizeof b);
+    scpi_process_ctx(&x, &src, "BAR?", b, sizeof b);
+    scpi_process_ctx(&x, &src, "SYST:ERR:ALL?", b, sizeof b);
+    { int semi = 0; for (const char *p = b; *p; p++) if (*p == ';') semi++;
+      /* Dve chyby = dve polozky, jeden oddelovac. ⚠️ ZADNA koncova "0,No error"
+       * — ta se vraci JEN kdyz je fronta prazdna (viz assert nize). */
+      ok &= (strncmp(b, "-113,", 5) == 0 && semi == 1); }
+    scpi_process_ctx(&x, &src, "SYST:ERR:COUN?", b, sizeof b);   ok &= (b[0] == '0');
+    /* Prazdna fronta -> jen "0,..." bez oddelovace. */
+    scpi_process_ctx(&x, &src, "SYST:ERR:ALL?", b, sizeof b);
+    ok &= (strncmp(b, "0,", 2) == 0 && strchr(b, ';') == NULL);
 
     /* Chybová fronta + izolace session. */
     scpi_ctx_init(&x);
@@ -680,11 +810,24 @@ int scpi_selftest(void)
         ok &= (scpi_cfg_apply(&c, SCPI_CFG_LIM_HI, 0, 1.01e7, 0) == 1);
         ok &= (scpi_cfg_apply(&c, SCPI_CFG_LIM_EN, 1, 0, 0) == 1 && c.limit_en == 1);
         ok &= (scpi_cfg_apply(&c, 0xEE, 0, 0, 0) == 0);                        /* neznámý klíč */
-        ok &= (scpi_cfg_apply(&c, SCPI_CFG_NULL_ACQ, 0, 0, 0.0) == 0);         /* bez freq */
-        ok &= (scpi_cfg_apply(&c, SCPI_CFG_NULL_ACQ, 0, 0, 1e7) == 1);         /* s freq */
+        ok &= (scpi_cfg_apply(&c, SCPI_CFG_NULL_ACQ, 0, 0, 0.0) == 0);         /* bez freq = nic */
+
+        /* Absolutni vetev — jeste PRED zachycenim NULL. */
         double y = meas_math_apply(&c, 1e7);                                    /* 2*1e7+100 */
         ok &= (y > 20000099.0 && y < 20000101.0);
-        ok &= (meas_limit_eval(&c, y) == MEAS_HI);
+        ok &= (meas_limit_eval(&c, y) == MEAS_HI);                              /* nad hi = 10,1 MHz */
+
+        /* ⚠️ Relativni vetev. `NULL:ACQuire` NEJEN zachyti referenci, ale rovnou
+         * ZAPNE relativni rezim (`meas_math_capture_null` dela `null_en = 1`) —
+         * proto po nem Y klesne na nulu. Puvodni verze testu tady cekala porad
+         * 2*1e7+100 a padala (to byl ten "SCPI parser FAIL" pri startu);
+         * chyba byla v ocekavani testu, ne v parseru. */
+        ok &= (scpi_cfg_apply(&c, SCPI_CFG_NULL_ACQ, 0, 0, 1e7) == 1);
+        ok &= (c.null_en == 1 && c.null_ref > 20000099.0 && c.null_ref < 20000101.0);
+        double yr = meas_math_apply(&c, 1e7);
+        ok &= (yr > -1e-6 && yr < 1e-6);                                        /* sam se sebou = 0 */
+        ok &= (meas_limit_eval(&c, yr) == MEAS_LO);                             /* 0 je pod lo = 9,9 MHz */
+        ok &= (meas_math_apply(&c, 1e7 + 5.0) > 9.99 && meas_math_apply(&c, 1e7 + 5.0) < 10.01);  /* +5 Hz -> +10 (M=2) */
     }
 
     /* SET přes handler (dummy src.set_cfg → src.meas) + readback ve stejné cestě. */

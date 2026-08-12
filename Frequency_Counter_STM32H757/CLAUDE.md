@@ -374,6 +374,24 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   (`#if CORE_CM7`) plní z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`/datalog; `scpi_process` =
   wrapper (USB volající beze změny). **CM4 backend** (výhled) naplní tentýž `scpi_src_t` z **IPC snapshotu** +
   `set_cfg` přes cmd ring → stejné jádro pro USB-CM7 i TCP-CM4. Jádro ověřeně kompiluje jako `-DCORE_CM4` (bez globálů).
+- **Rozšíření 2026-08-13 (jen nad poli, která `scpi_src_t` UŽ má → CM7 i budoucí CM4 se chovají
+  IDENTICKY, bez bumpu `IPC_VERSION`):** `SYST:CAP?`, **`SYST:ERR:ALL?`** (vyprázdní celou frontu
+  jedním dotazem; ⚠️ po výpisu chyb **nepřipojuje** koncovou `0,"No error"` — ta se vrací jen
+  u prázdné fronty), **`STAT:PRES`** (fakticky no-op, protože OPER/QUES *enable* registry nemáme —
+  ale MUSÍ se přijmout, jinak inicializační `*RST;*CLS;STAT:PRES` z VISA/IVI ovladače skončí
+  chybou a zaplní frontu), `SENS:FUNC?` → `"FREQ"`, `SENS:ROSC:SOUR?` → `INT`, **`SENS:ROSC:LOCK?`**
+  (⚠️ hodnotí jen LOS_CLKIN bit3 + PLL_LOL bit4 — **bit2 LOS_XTAL je na této desce trvale 1**),
+  **`MEAS:PER?`** (perioda = 1/f), `MEAS:FREQ:STAL?` (1 = měření nedůvěryhodné),
+  **`SYST:TEMP:ALL?`** + **`MEAS:VOLT:ALL?`** (agregáty = 1 round-trip místo 4/5 — na TCP to bude znát).
+  ⚠️ **Perioda má 15 des. míst (femtosekundy):** při 1,4 GHz je perioda 714 ps, takže i pikosekundový
+  krok by byl 0,14 % — pro čítač nepoužitelné. Zlomek se tiskne **po dvou 32bitových půlkách**
+  (`%07lu%08lu`), protože 15 cifer se do `unsigned long` nevejde a newlib-nano neumí `%llu`.
+- ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`, vypisuje
+  ho `run_selftests` při FAILu). Je to **101 kontrol slitých do jedné návratové hodnoty** a na hostiteli
+  se test spustit NEDÁ (v tomhle prostředí není nativní C kompilátor, jen arm-none-eabi, ani WSL).
+  **Historie:** test dlouho padal proto, že po `CALC:NULL:ACQuire` čekal pořád neposunutou hodnotu —
+  jenže `meas_math_capture_null()` referenci nejen zachytí, ale rovnou **zapne relativní režim**
+  (`null_en = 1`), takže Y klesne na nulu. Chyba byla v očekávání testu, ne v parseru.
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce

@@ -72,9 +72,13 @@ DWORD get_fattime(void)
    * dvakrat a shodnout se: pisar tiká 1x za sekundu, takze dve cteni tesne za
    * sebou prakticky nemuzou padnout do dvou ruznych zapisu. Kdyz se lisi,
    * bereme druhou kopii — ta uz je za zapisem. */
-  char snap[24];
+  /* Kopiruje se jen 19 znaku formatu + NUL, ne cele pole: `g_rtc_text_local`
+   * ma vlastni `extern` deklaraci ve CTYRECH souborech (generovane soubory
+   * nemaji USER CODE blok pro include) a nesouhlas velikosti by linker
+   * NEODHALIL. Cist min, nez je deklarovano, je proti tomu imunni. */
+  char snap[20];
   for (int attempt = 0; attempt < 3; attempt++) {
-    char again[24];
+    char again[20];
     unsigned i;
     for (i = 0; i < sizeof snap;  i++) snap[i]  = g_rtc_text_local[i];
     for (i = 0; i < sizeof again; i++) again[i] = g_rtc_text_local[i];

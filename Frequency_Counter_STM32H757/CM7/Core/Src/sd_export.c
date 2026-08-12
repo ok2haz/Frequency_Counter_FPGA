@@ -298,11 +298,16 @@ bool sd_export_selftest(void)
     printf("SD TEST: FatFs neni v buildu\n");
     return false;
 #else
-    if (!sd_export_mount()) { printf("SD TEST: mount selhal (%s)\n", sd_export_state_str()); return false; }
-
+    /* ⚠️ `s_busy` se nastavuje PRED mountem, ne po nem. `sd_export_mount()` uvnitr
+     * nastavi `s_mounted = true` a kdyby priznak jeste neplatil, mohl by tik v
+     * defaultTasku v tom okamziku videt `s_mounted && !s_busy` a svazek pod nami
+     * odmountovat. Okno je male, ale zadarmo se zavre timhle poradim. */
     s_busy = true;                 /* drzi auto-unmount v `sd_export_tick()` po dobu testu */
-    bool ok = selftest_body();
+    bool mounted = sd_export_mount();
+    bool ok      = mounted ? selftest_body() : false;
     s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
+
+    if (!mounted) printf("SD TEST: mount selhal (%s)\n", sd_export_state_str());
     return ok;
 #endif
 }
@@ -358,10 +363,9 @@ int32_t sd_export_run(uint32_t max_rec)
     (void)max_rec;
     return -1;
 #else
-    if (!sd_export_mount()) return -1;
-
+    /* ⚠️ `s_busy` PRED mountem — viz duvod u `sd_export_selftest()`. */
     s_busy = true;                 /* drzi auto-unmount po dobu zapisu */
-    int32_t r = export_body(max_rec);
+    int32_t r = sd_export_mount() ? export_body(max_rec) : -1;
     s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
     return r;
 #endif
