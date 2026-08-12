@@ -1573,8 +1573,22 @@ static int16_t hbar_cy(int r)
  * -> na prvni pohled aktualni hodnota vs. dosud videny rozsah [min,max] i
  * ocekavana (nominalni) hodnota. Barvy viz legenda (hbar_legend):
  *   AKT = zelena/amber vypln, REF = accent, MIN = violet, MAX = cervena. */
-#define HB_SEGS  45          /* pocet segmentu (452 px / ~10 px na segment) */
-#define HB_SGAP  2           /* mezera mezi segmenty [px]                   */
+/* Granularita horizontalnich baru — vyvoj 2026-08-12:
+ *   45 segmentu: sw = (452 - 44*2)/45 = 8 px, krok 2,22 %   (puvodni)
+ *   56 segmentu: sw = (452 - 55*2)/56 = 6 px, krok 1,79 %
+ *   64 segmentu: sw = (452 - 63*2)/64 = 5 px, krok 1,56 %   <- ted
+ * Geometrie je parametricka (hb_seg si sw dopocita, hb_marker_idx skaluje pct),
+ * takze staci menit HB_SEGS. Segmenty zaberou 64*5 + 63*2 = 446 z 452 px; 6 px
+ * vpravo zustane nevyuzitych — zamerne se to nedorovnava, aby hb_seg zustalo
+ * trivialni (pouziva ho i kresleni markeru).
+ *
+ * ⚠️ FYZIKALNI STROP: panel ma 8,54 px/mm, takze 5px segment = 0,59 mm. Markery
+ * MIN/MAX/REF kresli JEDINY segment — pod ~4 px (0,47 mm) uz je barevny prouzek
+ * spatne rozeznatelny. Dalsi zjemneni pri HB_SGAP=2 srazi sw na 4 px; jit vys
+ * znamena zmensit i mezeru na 1 px (napr. 75 segmentu = sw 5 px, krok 1,33 %),
+ * coz ale setre "LED bar" vzhled -> bar zacne splyvat v plnou listu. */
+#define HB_SEGS  64          /* pocet segmentu (452 px / 7 px na segment vc. mezery) */
+#define HB_SGAP  2           /* mezera mezi segmenty [px]                            */
 
 /* Prepocet SYROVE hodnoty senzoru (s->last/min/max) na zobrazovanou jednotku. */
 static float hbar_disp(int r, float raw)
@@ -3135,7 +3149,9 @@ static void setups_render_dynamic(void)
     int used = (mask >> s_setup_slot) & 1;
     /* Cislo slotu (mezi -/+). */
     prim_fill_rect((prim_rect_t){112, 120, 96, 56}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    char sn[8]; snprintf(sn, sizeof sn, "%d", s_setup_slot + 1);
+    /* sn[12] (ne [8]): slot je vzdy 1..8, ale GCC to z `int` nedokaze dovodit a hlasi
+     * -Wformat-truncation. Sirsi buffer je levnejsi nez cast/klamny %.1d. */
+    char sn[12]; snprintf(sn, sizeof sn, "%d", s_setup_slot + 1);
     prim_draw_text((prim_point_t){160, 162}, sn, &ui_font_mono_52, UI_COLOR_INK, PRIM_ALIGN_CENTER);
     /* Stav slotu. */
     prim_fill_rect((prim_rect_t){300, 120, 470, 34}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
