@@ -237,14 +237,13 @@ void sd_export_diag(void)
 #define SD_TEST_CHUNK  512u
 #define SD_TEST_CHUNKS 16u
 
-bool sd_export_selftest(void)
+/* ⚠️ Telo je vyclenene ZAMERNE. `s_busy` se nastavuje a rusi jen ve wrapperu
+ * nize, takze ho NELZE zapomenout uvolnit na nektere z ~8 chybovych cest.
+ * Prvni verze tuhle chybu presne udelala (audit 2026-08-12): priznak zustal
+ * viset a natrvalo vypnul auto-unmount. Stejny vzor pouziva i `sd_export_run`. */
+#ifdef SD_EXPORT_FATFS
+static bool selftest_body(void)
 {
-#ifndef SD_EXPORT_FATFS
-    printf("SD TEST: FatFs neni v buildu\n");
-    return false;
-#else
-    if (!sd_export_mount()) { printf("SD TEST: mount selhal (%s)\n", sd_export_state_str()); return false; }
-
     static uint8_t buf[SD_TEST_CHUNK];   /* static: 512 B na stack UartTasku je zbytecne */
     FIL f; UINT bw, br; FRESULT fr;
 
@@ -290,18 +289,28 @@ bool sd_export_selftest(void)
            (unsigned)(SD_TEST_CHUNK * SD_TEST_CHUNKS / 1024u));
     printf("  cela cesta FatFs -> BSP_SD -> HAL_SD -> IDMA -> karta funguje\n");
     return true;
+}
+#endif /* SD_EXPORT_FATFS */
+
+bool sd_export_selftest(void)
+{
+#ifndef SD_EXPORT_FATFS
+    printf("SD TEST: FatFs neni v buildu\n");
+    return false;
+#else
+    if (!sd_export_mount()) { printf("SD TEST: mount selhal (%s)\n", sd_export_state_str()); return false; }
+
+    s_busy = true;                 /* drzi auto-unmount v `sd_export_tick()` po dobu testu */
+    bool ok = selftest_body();
+    s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
+    return ok;
 #endif
 }
 
-int32_t sd_export_run(uint32_t max_rec)
+#ifdef SD_EXPORT_FATFS
+/* Telo exportu — `s_busy` resi wrapper, viz komentar u `selftest_body()`. */
+static int32_t export_body(uint32_t max_rec)
 {
-#ifndef SD_EXPORT_FATFS
-    (void)max_rec;
-    return -1;
-#else
-    if (!sd_export_mount()) return -1;
-    s_busy = true;
-
     datalog_status_t st;
     datalog_get_status(&st);
     uint32_t total = st.records;
@@ -339,7 +348,21 @@ int32_t sd_export_run(uint32_t max_rec)
         written++;
     }
     f_close(&f);      /* flush + aktualizace adresáře — bez toho je soubor prázdný */
-    s_busy = false;
     return written;
+}
+#endif /* SD_EXPORT_FATFS */
+
+int32_t sd_export_run(uint32_t max_rec)
+{
+#ifndef SD_EXPORT_FATFS
+    (void)max_rec;
+    return -1;
+#else
+    if (!sd_export_mount()) return -1;
+
+    s_busy = true;                 /* drzi auto-unmount po dobu zapisu */
+    int32_t r = export_body(max_rec);
+    s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
+    return r;
 #endif
 }

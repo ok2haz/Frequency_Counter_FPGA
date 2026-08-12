@@ -3672,7 +3672,10 @@ static void app_gpsdo_render_counter(void)
 }
 
 /* ── Selftest (s_view=20): per-test vysledky pure-logic unit testu + tlacitko
- * SPUSTIT (run_selftests bezi v UiTasku — zadny HW, zadny sdileny stav, ~ms).
+ * SPUSTIT (run_selftests bezi v UiTasku — zadny HW, ~ms).
+ * ⚠️ Sdileny stav TAM JE (nekolik testu drzi velke buffery jako `static`, aby
+ * nepretekly stack) — hlida ho zamek uvnitr `run_selftests()`; soubeh s
+ * defaultTaskem/UartTaskem vrati posledni znamy vysledek misto spusteni.
  * Plny redraw pri kazdem volani (staticke okno, neni v ticku). ── */
 static const prim_rect_t ST_RUN_RECT = {18, 417, 180, 61};
 static void app_gpsdo_render_selftest(void)

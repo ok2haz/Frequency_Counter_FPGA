@@ -179,11 +179,33 @@ volatile char     g_crash_text[16] = "";
 volatile uint8_t  g_selftest_res = 0;
 volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
 
-/* Pure-logic unit testy (zadny HW, zadny sdileny stav). Boot (defaultTask) +
- * UART "selftest" + okno Selftest (UiTask, tlacitko SPUSTIT). Nastavi
- * g_selftest_res (souhrn) + g_selftest_detail[] (per-test, okno Selftest). */
+/* Pure-logic unit testy (zadny HW). Boot (defaultTask) + UART "selftest" +
+ * okno Selftest (UiTask, tlacitko SPUSTIT). Nastavi g_selftest_res (souhrn) +
+ * g_selftest_detail[] (per-test, okno Selftest).
+ *
+ * ⚠️ NENI REENTRANTNI (2026-08-12): nektere testy drzi velke buffery jako
+ * `static`, aby nepretekly stack malych tasku — `gps_selftest` (gsv_state_t +
+ * gps_sat_t[24]) a `scpi_selftest` (2x scpi_src_t), stejne jako odjakziva
+ * `ipc_selftest`. Bez toho `gps_selftest` protrhl stack defaultTasku a prepsal
+ * FreeRTOS heap (viz #10). Puvodni komentar tvrdil "zadny sdileny stav" — to uz
+ * neplati, takze souběh TRI volajicich musi hlidat tenhle zamek.
+ * Souběžne volani se neceka: vrati posledni znamy vysledek (testy trvaji ~ms,
+ * kolize je stejne teoreticka a blokovat UiTask by bylo horsi).
+ *
+ * ⚠️ VOLAT AZ ZA BEZICIM SCHEDULEREM. Vsechna tri volani to splnuji
+ * (StartDefaultTask, UartTask "selftest", UiTask SPUSTIT). Pred
+ * vTaskStartScheduler ma port `uxCriticalNesting` inicializovane na
+ * 0xaaaaaaaa, takze by ho `taskEXIT_CRITICAL()` snizil na nenulu a
+ * prerusen by uz NIKDY nepovolil -> HAL_Delay/SysTick by zamrzly.
+ * (Scheduler ho pri startu nuluje, proto je za nim par enter/exit v poradku.) */
 int run_selftests(void)
 {
+  static volatile uint8_t s_running;
+  taskENTER_CRITICAL();
+  if (s_running) { taskEXIT_CRITICAL(); return g_selftest_res == 1; }
+  s_running = 1;
+  taskEXIT_CRITICAL();
+
   uint8_t r[SELFTEST_N];
   r[0] = fpga_freq_crc_selftest()    ? 1 : 2;
   r[1] = fpga_freq_select_selftest() ? 1 : 2;
@@ -203,6 +225,7 @@ int run_selftests(void)
   int ok = (pass == SELFTEST_N);
   g_selftest_res = ok ? 1 : 2;
   printf("SELFTEST: %d/%d %s\n", pass, SELFTEST_N, ok ? "PASS" : "FAIL");
+  s_running = 0;                 /* ⚠️ uvolnit zamek — bez toho by se testy spustily JEN JEDNOU */
   return ok;
 }
 
