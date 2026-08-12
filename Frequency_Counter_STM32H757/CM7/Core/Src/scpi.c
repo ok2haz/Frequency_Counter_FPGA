@@ -70,6 +70,14 @@ static void fmt_scpi_f2(float v, char *out, size_t n)
 /* double Hz -> "±d.ddddd" (5 des. míst; CALC:DATA?/readbacky). */
 static void fmt_scpi_hz_d(double hz, char *out, size_t n)
 {
+    /* ⚠️ Rozsahová pojistka. Vstup NENÍ jen měřený kmitočet — jde sem i `m`, `b`,
+     * `lo`, `hi` a výsledek `m·x+b`, tedy hodnoty, které uživatel nastavuje
+     * PŘÍMO příkazem (`CALC:MATH:M 1e30`) a `scpi_num` je bez reptání přečte.
+     * Nad ~4,3e9 by tiše přetekl `whole` (uint32), nad ~1,8e14 už je přetypování
+     * double na uint64 NEDEFINOVANÉ chování. Mez 4e9 je nad stropem tvarovače
+     * (1,4 GHz), takže žádnou platnou hodnotu neodřízne.
+     * Zápis přes `!(… && …)` chytá i NaN (porovnání s NaN jsou vždy false). */
+    if (!(hz > -4.0e9 && hz < 4.0e9)) { snprintf(out, n, "9.91E37"); return; }
     int neg = (hz < 0.0); if (neg) hz = -hz;
     uint64_t x = (uint64_t)(hz * 100000.0 + 0.5);
     uint32_t whole = (uint32_t)(x / 100000u);
@@ -82,7 +90,13 @@ static void fmt_scpi_hz_d(double hz, char *out, size_t n)
  * celočíselnou extrakcí (nano.specs nemá %f). */
 static void fmt_scpi_period_s(double hz, char *out, size_t n)
 {
-    if (hz <= 0.0) { snprintf(out, n, "9.91E37"); return; }
+    /* ⚠️ Horní mez periody NENÍ kosmetika: `1/hz * 1e15` pro hz < ~5,5e-5
+     * přeteče uint64 (max 1,845e19) a přetypování double mimo rozsah je
+     * NEDEFINOVANÉ chování, ne jen špatné číslo. Dosažitelné je to — stačí
+     * rámec s `freq4_x100000` v jednotkách (10⁻⁵ Hz), třeba po poškození dat.
+     * 10 000 s je bezpečně pod mezí (1e19) a zároveň hluboko za tím, co čítač
+     * vůbec umí změřit (reciproké okno přeteče už nad ~21,5 s). */
+    if (hz <= 0.0 || (1.0 / hz) > 1.0e4) { snprintf(out, n, "9.91E37"); return; }
     uint64_t fs   = (uint64_t)(1.0 / hz * 1e15 + 0.5);    /* perioda ve femtosekundách */
     uint64_t frac = fs % 1000000000000000ull;
     /* ⚠️ Zlomek (15 cifer) se NEVEJDE do `unsigned long` (32 bit na ARM) a
@@ -292,15 +306,24 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* Vyprázdní CELOU frontu najednou (SCPI-99 21.8.3) — jeden dotaz místo
      * smyčky `SYST:ERR?` dokud nepřijde 0. */
     if (hdr_match(hdr, "SYSTem:ERRor:ALL") && is_query) {
+        /* Nejdelší možná položka: `;-224,"Illegal parameter value"` = 31 znaků
+         * (nejdelší hláška má 23) + NUL. Dřív tu bylo 24 — na tuhle položku by
+         * to nestačilo a spoléhalo by se na ořezovou větev níž. */
+        #define SCPI_ERR_ITEM_MAX 32u
         size_t t = 0;
         do {
             int code = scpi_err_pop(c);
             int w = snprintf(out + t, out_sz - t, "%s%d,\"%s\"",
                              t ? ";" : "", code, scpi_err_msg(code));
-            if (w <= 0 || (size_t)w >= out_sz - t) break;
+            /* Nevešlo se → zahoď nedopsanou položku. ⚠️ `snprintf` do bufferu
+             * UŽ zapsal ořezek, takže se musí ručně zaříznout zpátky na `t` —
+             * jinak by návratová délka nesouhlasila s obsahem a volající
+             * (který `out` tiskne jako řetězec) by vypsal půlku položky. */
+            if (w <= 0 || (size_t)w >= out_sz - t) { out[t] = '\0'; break; }
             t += (size_t)w;
             if (code == 0) break;                 /* 0 = fronta prázdná, konec */
-        } while (c->err_count > 0 && t + 24 < out_sz);
+        } while (c->err_count > 0 && t + SCPI_ERR_ITEM_MAX < out_sz);
+        #undef SCPI_ERR_ITEM_MAX
         return t;
     }
     if (hdr_match(hdr, "SYSTem:UPTime") && is_query) {
@@ -743,6 +766,20 @@ int scpi_selftest(void)
         scpi_process_ctx(&x, &sv, "SENS:ROSC:LOCK?", b, sizeof b);     ok &= (strcmp(b, "1") == 0);
         sv.si5356_status = 0x08;                                       /* LOS_CLKIN */
         scpi_process_ctx(&x, &sv, "SENS:ROSC:LOCK?", b, sizeof b);     ok &= (strcmp(b, "0") == 0);
+
+        /* ── Rozsahove pojistky formatovacu (audit 2026-08-13) ──────────────
+         * Obe cesty slo vyvolat BEZNYM prikazem a obe koncily pretypovanim
+         * double mimo rozsah cile = NEDEFINOVANE chovani. Testuje se proto
+         * hranicni chovani, ne jen stastna cesta. */
+        sv.freq4_x100000 = 1;                    /* 1e-5 Hz -> perioda 1e5 s */
+        scpi_process_ctx(&x, &sv, "MEAS:PER?", b, sizeof b);
+        ok &= (strcmp(b, "9.91E37") == 0);       /* mimo rozsah, ne pretecena cislice */
+        sv.freq4_x100000 = 1000000000000ull;     /* zpet na 10 MHz */
+
+        sv.meas.math_en = 1; sv.meas.m = 1e30; sv.meas.b = 0.0;
+        scpi_process_ctx(&x, &sv, "CALC:MATH:M?", b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
+        scpi_process_ctx(&x, &sv, "CALC:DATA?",   b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
+        meas_math_defaults(&sv.meas);            /* uklid pro pripadne dalsi pouziti */
     }
 
     /* Nove SCPI-99 povinne prikazy + SENSe konstanty. */

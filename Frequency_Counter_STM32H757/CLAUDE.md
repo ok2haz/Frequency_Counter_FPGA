@@ -558,7 +558,7 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
 - **Okno Datalog (s_view=17) je ŽIVÉ** (v `app_gpsdo_tick`): stav/backend, záznamů/kapacita, seq, chyby zápisu.
   Používá `kv_row_live` (na rozdíl od `kv_row` si **čistí box hodnoty** — jinak by kratší hodnota nechala ocas té delší).
 - **UART `datalog [on|off|erase|dump]`** (`erase` = destruktivní smazání celého logu, `dump` = posledních 10 záznamů).
-- **Selftest 10/10** (`datalog_selftest` = 7.): round-trip pack/unpack, detekce poškozeného bajtu přes CRC,
+- **Selftest** (`datalog_selftest` = 7. z 13): round-trip pack/unpack, detekce poškozeného bajtu přes CRC,
   prázdný slot, kalendář→unix vektory. (8. = `meas_math_selftest`; 9. = `setup_selftest` = sanitizace
   slotu sestavy `slot_sanitize`; 10. = `autocal_selftest` = verdikt pásem `ac_verdict`.)
 - **Plánované dál:** rekonstrukce Allanovy pyramidy z logu po bootu; export přes USB CDC; memory-mapped XIP.
@@ -646,7 +646,9 @@ projektu — testy běží na zařízení, ne na hostu; `run_selftests` ve freer
 CRC16, hystereze /4↔/16 (`fpga_freq_select_core`), GPS parser (`gps_selftest`), fmt_frac+hist_h
 (`screen_main_selftest`), Maidenhead lokátor (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`),
 datalog záznam+CRC+čas (`datalog_selftest`), Math Mx+B/NULL/limit pass-fail (`meas_math_selftest`)
-→ „SELFTEST: 10/10 PASS" (+ setup sanitizace + autocal verdikt).
+→ **„SELFTEST: 13/13 PASS"** (`SELFTEST_N` = 13, indexy 0..12; dál setup sanitizace, autocal
+verdikt, prezentace měření, **SCPI parser** a **IPC seqlock+ring**).
+⚠️ **Při FAILu se vypíšou i indexy** neúspěšných testů a u SCPI přímo `scpi.c:<řádek>`.
 `qspitest`/`storetest` = destruktivní HW testy.
 ⚠️ **`run_selftests()` NENÍ reentrantní a má vlastní zámek.** Několik testů drží velké buffery
 jako `static` (`gps_selftest`, `scpi_selftest`, `ipc_selftest`) — jinak by přetekly stack malých
