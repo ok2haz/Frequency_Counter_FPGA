@@ -558,9 +558,14 @@ static int scpi_test_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
 
 int scpi_selftest(void)
 {
+    /* ⚠️ `src` je STATIC: `scpi_src_t` je velká struktura a `run_selftests()` běží
+     * v defaultTasku (2560 B stack). Jako lokál dělal tenhle test 672 B rámec —
+     * druhý největší po `gps_selftest`, který přesně takhle protrhl stack a přepsal
+     * FreeRTOS heap (viz komentář u `static gsv_state_t st` v gps.c). Stejný vzor
+     * jako `static ipc_shared_t t` v `ipc_selftest`; run_selftests je serializovaný. */
     int ok = 1; char b[80];
     scpi_ctx_t x; scpi_ctx_init(&x);
-    scpi_src_t src; memset(&src, 0, sizeof src);   /* dummy: vše neplatné, defaultní cfg */
+    static scpi_src_t src; memset(&src, 0, sizeof src);   /* dummy: vše neplatné, defaultní cfg */
     meas_math_defaults(&src.meas);
     src.dl_backend = "--";
     src.set_cfg = scpi_test_set_cfg;   /* SET aplikuje na src.meas */
@@ -594,7 +599,8 @@ int scpi_selftest(void)
 
     /* Platný zdroj: MEAS:FREQ? vrátí číslo (ne NaN). */
     {
-        scpi_src_t sv; memset(&sv, 0, sizeof sv); meas_math_defaults(&sv.meas);
+        static scpi_src_t sv;   /* static ze stejneho duvodu jako `src` vyse */
+        memset(&sv, 0, sizeof sv); meas_math_defaults(&sv.meas);
         sv.valid = SCPI_V_FREQ; sv.freq4_x100000 = 1000000000000ull;   /* 10 MHz ×1e5 */
         scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);
         ok &= (strncmp(b, "10000000.", 9) == 0);

@@ -460,7 +460,13 @@ bool gps_selftest(void)
   /* GSV per-talker akumulace: GLGSV NESMI vynulovat prave nasbirane GPGSV
    * (jadro GLONASS opravy — driv se souhvezdi navzajem prepisovala). */
   {
-    gsv_state_t st; memset(&st, 0, sizeof st);
+    /* ⚠️ `st` + `out` jsou STATIC, ne lokalni: dohromady maji pres 1 kB a
+     * run_selftests() bezi v defaultTasku (1536 B stack) -> jako lokaly protrhly
+     * dno stacku a prepsaly heap pod nim (FreeRTOS mutexy) -> configASSERT v
+     * osMutexAcquire -> zamrznuti s vypnutymi IRQ -> IWDG reset. Stejny duvod a
+     * stejny vzor jako `static ipc_shared_t t` v ipc_selftest; run_selftests je
+     * serializovany, takze static nevadi. */
+    static gsv_state_t st; memset(&st, 0, sizeof st);
     char l1[] = "GPGSV,1,1,02,05,30,100,40,12,45,200,35";  /* 2 GPS druzice */
     char l2[] = "GLGSV,1,1,01,68,20,300,30";               /* 1 GLONASS druzice */
     char *f1[24]; int n1 = tokenize(l1, f1, 24);
@@ -469,7 +475,7 @@ bool gps_selftest(void)
                       (uint8_t)atoi_simple(f1[3]), f1, n1);
     int d2 = gsv_feed(&st, GPS_CONSTEL_GLONASS, atoi_simple(f2[1]), atoi_simple(f2[2]),
                       (uint8_t)atoi_simple(f2[3]), f2, n2);
-    gps_sat_t out[GPS_MAX_SATS];
+    static gps_sat_t out[GPS_MAX_SATS];   /* static ze stejneho duvodu jako `st` vyse */
     uint8_t m = gsv_merge(&st, out, GPS_MAX_SATS);
     ok &= (d1 == 1 && d2 == 1);                    /* obe jednozpravove davky hotove */
     ok &= (m == 3);                                /* 2 GPS + 1 GLONASS SOUCASNE */

@@ -94,7 +94,29 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* ⚠️ PER-CORE RCC (audit #23, 2026-08-11) — CM4 si musi povolit hodiny ve SVE
+   * domene (RCC_C2_*ENR), ne v domene CM7.
+   *
+   * Past: `__HAL_RCC_XXX_CLK_ENABLE()` zapisuje VZDY do `RCC->xxxENR` = registr
+   * CPU1 (CM7) — makra NEJSOU prepinana podle `CORE_CM4`, C2 varianty jsou
+   * samostatna rodina `__HAL_RCC_C2_XXX_CLK_ENABLE()`. Generovany kod CubeMX
+   * (MX_GPIO_Init, HAL_TIM_Base_MspInit, HAL_MspInit) pouziva plain varianty,
+   * takze CM4 dosud povoloval hodiny CM7. Dnes to "funguje", protoze periferie
+   * je clockovana, kdyz je bit v KTEREMKOLI z obou registru — jenze prirazeni
+   * domene rozhoduje pri low-power a autonomnim behu D2. S ETH by to kouslo.
+   *
+   * Reseni je regen-safe: generovany kod NEmenime (prepsal by ho regen), jen
+   * tady navic povolime tytez hodiny i v C2 domene. Redundantni zapis nevadi.
+   * Musi byt PRED MX_GPIO_Init/MX_TIM12_Init. */
+  __HAL_RCC_C2_GPIOG_CLK_ENABLE();    /* LED_2 (PG7) */
+  __HAL_RCC_C2_TIM12_CLK_ENABLE();    /* beeper PWM */
+  __HAL_RCC_C2_HSEM_CLK_ENABLE();     /* boot gate + budouci notifikace */
+  __HAL_RCC_C2_SYSCFG_CLK_ENABLE();
+  /* D2 SRAM2+3 = domaci RAM CM4 (linker `RAM @0x10020000/160K`). Dnes bezi na
+   * reset-default, ale ETH deskriptory a lwIP heap tu poblezi -> vlastnit je
+   * explicitne (DUALCORE_BRINGUP_CHECKLIST.md §4). */
+  __HAL_RCC_C2_D2SRAM2_CLK_ENABLE();
+  __HAL_RCC_C2_D2SRAM3_CLK_ENABLE();
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
