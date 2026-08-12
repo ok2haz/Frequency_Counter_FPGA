@@ -22,10 +22,12 @@
 #include "cmsis_os2.h"
 #include "adc.h"
 #include "dsihost.h"
+#include "fatfs.h"
 #include "i2c.h"
 #include "ltdc.h"
 #include "quadspi.h"
 #include "rtc.h"
+#include "sdmmc.h"
 #include "spi.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -258,6 +260,8 @@ g_cm4_absent = 1;
   MX_RTC_Init();
   MX_ADC3_Init();
   MX_QUADSPI_Init();
+  MX_SDMMC1_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),

@@ -56,6 +56,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SD_DET_Pin GPIO_PIN_3
+#define SD_DET_GPIO_Port GPIOE
 #define QSPI_BK1_IO2_Pin GPIO_PIN_7
 #define QSPI_BK1_IO2_GPIO_Port GPIOF
 #define QSPI_CLK_Pin GPIO_PIN_10
