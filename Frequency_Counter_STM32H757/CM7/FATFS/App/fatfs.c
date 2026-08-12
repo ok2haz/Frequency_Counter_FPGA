@@ -65,7 +65,24 @@ DWORD get_fattime(void)
     return ((DWORD)(2020 - 1980) << 25) | ((DWORD)1 << 21) | ((DWORD)1 << 16);
   }
 
-  const volatile char *s = g_rtc_text_local;
+  /* ⚠️ Retezec prepisuje defaultTask (`strncpy` v rtc_app_tick, 1 Hz) bez zamku,
+   * takze cteni z UartTasku muze zastihnout pulku stare a pulku nove hodnoty.
+   * Nejhorsi realny dopad je razitko o sekundu vedle, pres pulnoc ale i o den.
+   * Zamek se sem nehodi (get_fattime vola FatFs zevnitr f_write). Staci precist
+   * dvakrat a shodnout se: pisar tiká 1x za sekundu, takze dve cteni tesne za
+   * sebou prakticky nemuzou padnout do dvou ruznych zapisu. Kdyz se lisi,
+   * bereme druhou kopii — ta uz je za zapisem. */
+  char snap[24];
+  for (int attempt = 0; attempt < 3; attempt++) {
+    char again[24];
+    unsigned i;
+    for (i = 0; i < sizeof snap;  i++) snap[i]  = g_rtc_text_local[i];
+    for (i = 0; i < sizeof again; i++) again[i] = g_rtc_text_local[i];
+    for (i = 0; i < sizeof snap;  i++) if (snap[i] != again[i]) break;
+    if (i == sizeof snap) break;   /* dve po sobe jdouci cteni shodna -> stabilni */
+  }
+
+  const char *s = snap;
   #define D2(i)  (uint32_t)(((s[i] - '0') * 10) + (s[(i) + 1] - '0'))
   uint32_t year = (uint32_t)(((s[0]-'0')*1000) + ((s[1]-'0')*100) + ((s[2]-'0')*10) + (s[3]-'0'));
   uint32_t mon  = D2(5),  day = D2(8);

@@ -225,6 +225,15 @@ int run_selftests(void)
   int ok = (pass == SELFTEST_N);
   g_selftest_res = ok ? 1 : 2;
   printf("SELFTEST: %d/%d %s\n", pass, SELFTEST_N, ok ? "PASS" : "FAIL");
+  if (!ok) {
+    /* Bez tohohle je "12/13 FAIL" nedohledatelne — cislo indexu je mapa do
+     * komentaru u r[] vyse i do okna Selftest (g_selftest_detail). */
+    printf("  FAIL:");
+    for (int i = 0; i < SELFTEST_N; i++) if (r[i] != 1) printf(" #%d", i);
+    printf("\n");
+    if (r[11] != 1)   /* SCPI je ~90 assertu v jedne navratove hodnote */
+      printf("  SCPI: prvni chyba na scpi.c:%d\n", scpi_selftest_fail_line());
+  }
   s_running = 0;                 /* ⚠️ uvolnit zamek — bez toho by se testy spustily JEN JEDNOU */
   return ok;
 }

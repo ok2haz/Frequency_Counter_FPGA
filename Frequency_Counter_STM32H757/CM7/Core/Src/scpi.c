@@ -556,6 +556,31 @@ static int scpi_test_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
     return scpi_cfg_apply(&s->meas, key, vu, vd, 1e7);
 }
 
+/* ── Který assert spadl ──────────────────────────────────────────────────────
+ * `scpi_selftest()` je ~90 kontrol slitých do jednoho `ok`, takže „FAIL" sám
+ * o sobě neřekne nic použitelného — a bez nativního kompilátoru na PC se test
+ * nedá spustit jinde než na cíli. Proto si pamatuje ŘÁDEK prvního neúspěšného
+ * assertu; UART `selftest` ho vypíše.
+ *
+ * Trik s makrem místo přepsání všech ~90 řádků na `CK(...)`: `ok` se uvnitř
+ * funkce expanduje na `*scpi_st_chk(__LINE__)`, takže z `ok &= X` je
+ * `*scpi_st_chk(L) &= X`. `scpi_st_chk` se dostane ke slovu PŘED zápisem, tedy
+ * ještě vidí výsledek předchozího assertu — a když je nulový, zapamatuje si
+ * jeho řádek. Nezávisí to na pořadí vyhodnocení `X` vs. `scpi_st_chk(L)`,
+ * protože zápis do `ok` nastane až po obou. */
+static int  s_st_ok = 1;      /* akumulátor (drží ho makro `ok`) */
+static int  s_st_line;        /* řádek právě probíhajícího assertu */
+static int  s_st_fail_line;   /* řádek PRVNÍHO neúspěšného assertu; 0 = žádný */
+
+static int *scpi_st_chk(int line)
+{
+    if (!s_st_ok && !s_st_fail_line) s_st_fail_line = s_st_line;
+    s_st_line = line;
+    return &s_st_ok;
+}
+
+int scpi_selftest_fail_line(void) { return s_st_fail_line; }
+
 int scpi_selftest(void)
 {
     /* ⚠️ `src` je STATIC: `scpi_src_t` je velká struktura a `run_selftests()` běží
@@ -563,7 +588,9 @@ int scpi_selftest(void)
      * druhý největší po `gps_selftest`, který přesně takhle protrhl stack a přepsal
      * FreeRTOS heap (viz komentář u `static gsv_state_t st` v gps.c). Stejný vzor
      * jako `static ipc_shared_t t` v `ipc_selftest`; run_selftests je serializovaný. */
-    int ok = 1; char b[80];
+    s_st_ok = 1; s_st_line = 0; s_st_fail_line = 0;
+    #define ok (*scpi_st_chk(__LINE__))
+    char b[80];
     scpi_ctx_t x; scpi_ctx_init(&x);
     static scpi_src_t src; memset(&src, 0, sizeof src);   /* dummy: vše neplatné, defaultní cfg */
     meas_math_defaults(&src.meas);
@@ -697,5 +724,9 @@ int scpi_selftest(void)
     scpi_process_ctx(&x, &src, "*ESE 24;*ESE?", b, sizeof b);  ok &= (strcmp(b, "24") == 0);
     scpi_process_ctx(&x, &src, "*ESE?;*ESE?",   b, sizeof b);  ok &= (strcmp(b, "24;24") == 0);
     scpi_process_ctx(&x, &src, "*ESE 8;*ESE?",  b, sizeof b);  ok &= (strcmp(b, "8") == 0);
-    return ok;
+    #undef ok
+
+    /* Posledni assert uz zadny dalsi `scpi_st_chk` nenasleduje -> dovyhodnotit. */
+    if (!s_st_ok && !s_st_fail_line) s_st_fail_line = s_st_line;
+    return s_st_ok;
 }

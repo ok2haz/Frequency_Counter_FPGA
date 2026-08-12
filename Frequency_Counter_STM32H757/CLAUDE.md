@@ -524,6 +524,11 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
 - ⚠️ **Souběh:** `sd_export_tick()` (defaultTask) při vytažení karty odmountovává, ale export/test
   běží v UartTasku → příznak **`s_busy`** auto-unmount po dobu blokující operace přeskočí.
   `_FS_REENTRANT=1` chrání operace nad svazkem, **deregistraci svazku ne**.
+  **Příznak se nastavuje VÝHRADNĚ ve wrapperu** (`sd_export_selftest`/`sd_export_run`), tělo je
+  vyčleněné do `selftest_body`/`export_body` → `s_busy = true; r = body(); s_busy = false;`.
+  Důvod: první verze ho v `selftest` vůbec nenastavila a v `run` neuklidila na 3 chybových cestách
+  (jeden neúspěšný export = **natrvalo vypnutý auto-unmount**). Přibývající `return` uvnitř těla
+  o příznaku nic neví, takže se ta chyba nemůže vrátit. ⚠️ **Nový `return` patří do těla, ne do wrapperu.**
 - **⚠️ IDMA + D-cache (nejspíš příčina STATUS #69 „init OK, karta se vidí, DMA nejede"):** IDMA
   **nedosáhne na DTCM** a AXI SRAM je **cacheable WB**. Proto `sd_hal_*` používá **statický bounce
   buffer v `.bss` (RAM_D1) zarovnaný na 32 B** + clean/invalidate, ne buffer volajícího —
@@ -625,3 +630,10 @@ CRC16, hystereze /4↔/16 (`fpga_freq_select_core`), GPS parser (`gps_selftest`)
 datalog záznam+CRC+čas (`datalog_selftest`), Math Mx+B/NULL/limit pass-fail (`meas_math_selftest`)
 → „SELFTEST: 10/10 PASS" (+ setup sanitizace + autocal verdikt).
 `qspitest`/`storetest` = destruktivní HW testy.
+⚠️ **`run_selftests()` NENÍ reentrantní a má vlastní zámek.** Několik testů drží velké buffery
+jako `static` (`gps_selftest`, `scpi_selftest`, `ipc_selftest`) — jinak by přetekly stack malých
+tasků (přesně to způsobilo boot-loop, viz [[triple-buffer-freeze]]). Tím ale vznikl sdílený stav
+mezi **třemi** volajícími (defaultTask při bootu, UartTask `selftest`, UiTask SPUSTIT); souběh
+se nečeká, vrátí se poslední známý výsledek. ⚠️ **Volat až za běžícím schedulerem** — před
+`vTaskStartScheduler` má port `uxCriticalNesting = 0xaaaaaaaa`, takže by `taskEXIT_CRITICAL()`
+přerušení už nikdy nepovolil (SysTick/`HAL_Delay` by zamrzly).

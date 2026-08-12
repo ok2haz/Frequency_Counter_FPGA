@@ -40,6 +40,10 @@
       `sd test` (zápis 8 kB + zpětné porovnání obsahu) je pak finální důkaz celé cesty.
       ⚠️ Firmware s auditními opravami je **zbuilděný, ale NENAFLASHOVANÝ** (ST-LINK odpojen).
 
+- [ ] **Při prvním flashi si přečíst boot výpis `SELFTEST:`** — nově vypíše i indexy failujících
+      testů a u SCPI přímo `scpi.c:<řádek>` prvního neúspěšného assertu. Tím se zavře otevřená
+      otázka „SCPI parser hlásí chybu při startu" bez dalšího hádání.
+
 - [ ] **Card-detect PE3 nereaguje** — HIGH i se zasunutou kartou. Nikdy se nezměřilo s kartou
       VENKU, takže může jít i o obrácenou polaritu (`sd det invert on`). Dohledat ve schématu,
       kam `SDMMC1_DET` doopravdy vede. **Není blokátor** — `sd force on` to obejde.
@@ -79,6 +83,28 @@
 ---
 
 ## P3 — nálezy z revize kódu (malé, nezávislé na HW)
+
+- [x] ✅ **`s_busy` v `sd_export.c` — OPRAVENO 2026-08-13.** Audit našel dvě díry: `sd_export_selftest()`
+      příznak **vůbec nenastavovala** (moje skriptovaná úprava tiše neproběhla) a `sd_export_run()`
+      ho **nevyčistila na žádné chybové cestě** → jeden neúspěšný export natrvalo vypnul auto-unmount.
+      Místo záplatování ~10 návratových cest je tělo vyčleněné (`selftest_body`/`export_body`) a
+      příznak se nastavuje jen ve wrapperu → ta chyba nemůže vzniknout znovu.
+- [x] ✅ **Zámek `run_selftests()` — DOKONČEN 2026-08-13.** Byl přidán jen z poloviny (acquire bez
+      release), takže by se testy spustily **jednou** a pak už jen vracely starý výsledek. Doplněno
+      `s_running = 0` + varování, že funkce smí běžet **až za schedulerem** (před `vTaskStartScheduler`
+      má port `uxCriticalNesting = 0xaaaaaaaa` → `taskEXIT_CRITICAL()` by přerušení už nepovolil).
+- [x] ✅ **Třetí kopie `hsd1.Init` v `sd_probe()` smazána 2026-08-13** — byla dvojnásobně mrtvá
+      (`DATALOG_SD_RAW_OK=0` ji nepustí dál a `main.c:263` handle stejně vyplní dřív), a přitom
+      třetí místo k ručnímu srovnávání s `.ioc`.
+- [x] ✅ **`get_fattime()` torn-read ošetřen 2026-08-13** — `g_rtc_text_local` přepisuje defaultTask
+      bez zámku, takže čtení z UartTasku mohlo zastihnout půlku staré a půlku nové hodnoty
+      (přes půlnoc razítko o den vedle). Zámek sem nejde (volá to FatFs zevnitř `f_write`), takže
+      se čte dvakrát a musí se to shodnout.
+- [x] ✅ **`scpi_selftest` teď řekne, KTERÝ assert spadl (2026-08-13).** Bylo ~90 kontrol slitých do
+      jedné návratové hodnoty a bez nativního kompilátoru na PC se test nedá spustit jinde než na
+      cíli → „FAIL" byl nedohledatelný. `selftest` nově vypíše i seznam failujících indexů a u SCPI
+      `scpi.c:<řádek>` prvního neúspěšného assertu. **Odpovídá na dotaz „co SCPI parser, hlásí chybu
+      při startu" — konkrétní příčinu ukáže až první flash.**
 
 - [ ] **`_Static_assert` mezi `SCPI_CFG_*` a `IPC_CFG_*`.** Dva paralelní enumy, které musí sedět
       1:1 bez jakéhokoli compile-time hlídání. ⚠️ **Blokující pro ETH etapu F6** — přeházené pořadí

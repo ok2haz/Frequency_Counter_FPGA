@@ -310,23 +310,19 @@ static bool sd_probe(void)
      * Tohle je zároveň to, co dělá „běh bez karty" zadarmo. */
     if (!datalog_sd_card_present()) return false;
 
-    /* ⚠️ Init děláme TADY, ne v `MX_SDMMC1_SD_Init()` — ta má na selhání
+    /* ⚠️ `HAL_SD_Init` děláme TADY, ne v `MX_SDMMC1_SD_Init()` — ta má na selhání
      * `Error_Handler()` (= `bootled_fail()`, mrtvý přístroj), a `HAL_SD_Init`
      * selže pokaždé, když není vložená karta. Proto je generovaná funkce vyřazená
      * early-returnem v USER CODE (viz sdmmc.c) a lifecycle SD vlastní tenhle soubor.
      * Chybějící karta = `probe()` vrátí false = datalog jede dál na W25Q.
      *
-     * ⚠️ Hodnoty MUSÍ sedět s `MX_SDMMC1_SD_Init()` v sdmmc.c (zdroj pravdy = .ioc).
-     * Při změně konfigurace v CubeMX je srovnej. ClockDiv=2 → SDMMC_CK =
-     * 64 MHz / (2 × 2) = **16 MHz** (viz CUBEMX_CHECKLIST.md, sekce SDMMC1). */
-    if (hsd1.Instance == NULL) {
-        hsd1.Instance            = SDMMC1;
-        hsd1.Init.ClockEdge      = SDMMC_CLOCK_EDGE_RISING;
-        hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
-        hsd1.Init.BusWide        = SDMMC_BUS_WIDE_4B;
-        hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-        hsd1.Init.ClockDiv       = 2;
-    }
+     * `hsd1.Init` se tu ale UŽ NEPLNÍ. Vyplní ho `MX_SDMMC1_SD_Init()` volaná
+     * z `main.c` (jen vyplní handle a vrátí se), takže je hotový dřív, než sem
+     * kdy dojde řízení. Dřív tu byla TŘETÍ kopie těch hodnot — nedosažitelná,
+     * a přitom třetí místo, které se muselo ručně srovnávat s `.ioc`. Smazána;
+     * zdroj pravdy je `.ioc` → `sdmmc.c`. */
+    if (hsd1.Instance == NULL) return false;   /* early-return v sdmmc.c chybí/rozbitý */
+
     /* Karta nemusí být vložená → HAL_SD_Init smí selhat, není to chyba. */
     if (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
         if (HAL_SD_Init(&hsd1) != HAL_OK) return false;

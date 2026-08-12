@@ -155,6 +155,10 @@ size_t scpi_process(const char *line, char *out, size_t out_sz);
 
 /** Pure-logic unit test (parser + status model + config apply) — 1 = PASS. */
 int scpi_selftest(void);
+/* Radek prvniho neuspesneho assertu ve `scpi_selftest()` (0 = zadny). Test je
+ * ~90 kontrol slitych do jedne navratove hodnoty, takze bez tohohle je „FAIL"
+ * nedohledatelny — a bez nativniho kompilatoru ho nejde spustit na PC. */
+int scpi_selftest_fail_line(void);
 
 #ifdef __cplusplus
 }
