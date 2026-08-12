@@ -171,6 +171,13 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
 > velikosti paketů**. Váže se na žebřík M9–M12 (viz §11 a `STATUS.md`). Přidáno
 > 2026-08-06. ⚠️ Zlaté pravidlo trvá: **nic ze sítě nesmí předběhnout #2** (reálná
 > data z FPGA) — SCPI/web vracející simulaci je horší než mlčení.
+>
+> ➜ **Etapový plán realizace (F0–F8, mapování na M9–M12) = `ETH_BRINGUP_CHECKLIST.md`**
+> (2026-08-11). Řídicí princip: *každý nevratný závazek až po levném důkazu* — proto
+> F0 ověří PHY **z CM7 bez regenerace `.ioc`** a otázka „FreeRTOS na CM4, nebo holá
+> smyčka" se **záměrně rozhoduje až v F4**, kdy pro ni budou data (F0–F3 jsou na ní
+> nezávislé). ⚠️ Tabulka tasků v §2 (NetTask/ScpiTask/HttpTask/SvcTask) tedy zatím
+> **není závazná** — je to varianta pro případ, že F4 vyjde na FreeRTOS.
 
 ### 6a.1 Hardware a clocking (LAN8742A, RMII)
 - **PHY = `LAN8742A` (U4), předpokládaný režim „REF_CLK OUT".** 25 MHz **oscilátor**

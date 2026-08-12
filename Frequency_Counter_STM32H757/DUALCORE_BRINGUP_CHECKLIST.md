@@ -131,6 +131,10 @@ FATFS_M4, IWDG2, WWDG2, VREFBUF, PDM2PCM_M4, BDMA`** — tyhle **NEjsou** v hal_
   `"../../../CM7/Core/Inc/ipc_shared.h"`) — **regen-safe** (USER CODE + nové soubory). Až budeš chtít,
   přidej `CM7/Core/Inc` do include path CM4 projektu a přepni na `<ipc_shared.h>`.
 - [ ] `CORTEX_M4.MPU_Control = __NULL` (MPU na CM4 vypnuté) — **správně**, CM4 nemá D-cache, SRAM4 nepotřebuje MPU.
+- [ ] 🔴 **`IWDG2` v CubeMX NIKDY nekonfiguruj.** Je v `.ioc` jen v seznamu IP; `HAL_IWDG` modul je
+  vypnutý a watchdog je **registrová** implementace v `CM4/Core/Src/iwdg2.c`. Konfigurace by
+  vygenerovala `MX_IWDG2_Init` a tloukla by se s `iwdg2_init()`. (Totéž platí pro `IWDG1` na CM7 —
+  viz `CUBEMX_CHECKLIST.md`.)
 
 ---
 

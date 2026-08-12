@@ -114,10 +114,213 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - ⚠️ **defaultTask stack 256→384 words** (`Tasks01`) — `rtc_app_tick` přidává `snprintf` do GPS-parse tasku.
 - **App vrstva je v `rtc.c`/`rtc.h` USER CODE blocích (regen-safe):** `rtc_app_tick()` (sync z GPS UTC + format `g_rtc_text`), backup-register guard (`RTC_SYNC_MAGIC` v BKP_DR0) v `Check_RTC_BKUP`. Volá se z defaultTask. Viz CLAUDE.md „RTC".
 
+## SDMMC1 (SD karta pro datalog, #28) — V IOC ✅ (zapnuto 2026-08-11)
+- **Peripherals → SDMMC1 → Mode = `SD 4 bits Wide bus`**, přiřazeno **Cortex-M7** kontextu (`PinAttribute=CortexM7`).
+- **Piny (ověřeno proti schématu, list `USB_SD_FLASH`):** PC8=`D0`, PC9=`D1`, PC10=`D2`, PC11=`D3`, PC12=`CK`, PD2=`CMD`. AF12 (`GPIO_AF12_SDIO1`), Speed **VERY_HIGH**.
+- **PD2 (CMD) = `GPIO_PULLUP`**, datové linky `NOPULL` — na desce jsou externí pull-upy **R56–R61**, takže je to správně.
+- **Clock:** `SdmmcClockSelection = PLL` (PLL1Q), `SDMMCFreq_Value = 64 MHz`, **`SDMMC1.ClockDiv = 2`**.
+  → `SDMMC_CK = 64 MHz / (2 × ClockDiv)` = **16 MHz**. Init/identifikaci na 400 kHz řeší HAL sám.
+  ⚠️ **Pro první bring-up zvaž `ClockDiv = 4` (8 MHz)**: deska má na SD VDD jen C75 100n (chybí bulk 4,7–10 µF) a na CK není sériový tlumicí odpor (~22–33 Ω) → při vyšším kmitočtu překmity. Zvyšovat až po ověření.
+- Generate Code dotáhne `stm32h7xx_hal_sd.c/_ex`, `stm32h7xx_ll_sdmmc.c`, `HAL_SD_MODULE_ENABLED` a `sdmmc.c`/`MX_SDMMC1_SD_Init`.
+
+### ⬅ JEŠTĚ DOPLNIT: card-detect (pro hot-plug + detekci přítomnosti)
+Ověřeno ze schématu (list 7/7 `USB_SD_FLASH` + list 2/7 `CPU`), 2026-08-11:
+- Socket **J13 `Micro_SD_DM3AT`**: card-detect je **mechanický spínač** mezi
+  **DET_A (pin 10) = GND** a **DET_B (pin 9) = net `SDMMC1_DET`**, který má **47k pull-up**
+  na +3V3 (jeden z R56–R61). → **karta vložena = LOW**, prázdný slot = HIGH.
+- Net `SDMMC1_DET` končí na **PE3** — potvrzeno uživatelem proti schématu 2026-08-11.
+  (Můj prvotní odečet z vykresleného PDF říkal PE2 — **byl špatně**. Oba piny jsou v `.ioc` volné,
+  takže to `.ioc` samo nerozliší; platí PE3.)
+- [ ] V CubeMX: **PE3 → `GPIO_Input`**, `GPIO_PuPd = PULLUP` (externí pull-up sice je, ale
+      interní nic nestojí), `GPIO_Label = SD_DET`, kontext **Cortex-M7**.
+      ⚠️ Není to nutné — `datalog_sd.c` si pin konfiguruje **sám** (idempotentně, stejný
+      regen-safe vzor jako CS pin ve `fpga_freq_init`), takže to funguje i bez `.ioc`.
+      V CubeMX to zapiš hlavně proto, aby ten pin nikdo omylem nepřiřadil jinam.
+- [ ] **EXTI nepovolovat** — detekci dělej **pollingem** (stejný styl jako touch a senzory):
+      ISR + debounce mechanického spínače je zbytečná komplikace.
+- **NEPOTŘEBUJEŠ:** DMA (SDMMC má vlastní interní IDMA), NVIC `SDMMC1 global interrupt`
+  (jedeme blokující `HAL_SD_ReadBlocks/WriteBlocks`), FatFs (jen pokud padne volba na FS).
+
+### 🔴 KRITICKÉ po každé regeneraci: `MX_SDMMC1_SD_Init()` musí zůstat vyřazená
+CubeMX generuje v `MX_SDMMC1_SD_Init()` na selhání `HAL_SD_Init` volání **`Error_Handler()`**,
+což na CM7 znamená `__disable_irq(); bootled_fail();` = **nekonečné blikání LED_1, mrtvý přístroj
+bez displeje a bez konzole**. `HAL_SD_Init` přitom selže **pokaždé, když není vložená karta** →
+boot bez karty by přístroj zabil.
+
+Řešení (regen-safe, protože je v USER CODE): v `sdmmc.c` se v bloku
+`/* USER CODE BEGIN SDMMC1_Init 0 */` **vyplní handle a pak se udělá `return;`**, čímž se
+přeskočí jen samotné `HAL_SD_Init` (a s ním `Error_Handler`). Skutečný init pak dělá
+`BSP_SD_Init()` při mountu, kde je selhání legitimní výsledek (bez karty → datalog jede dál
+na W25Q — stejná filozofie jako `goto display_skip` u panelu nebo `g_cm4_absent` u CM4).
+
+### ⚠️⚠️ HANDLE SE MUSÍ VYPLNIT — holý `return;` NESTAČÍ (nález 2026-08-12)
+První verze téhle opravy měla v USER CODE jen `return;`. **Rozbilo to celou SD cestu** a stálo
+to půl dne ladění. Důvod: `HAL_SD_MspInit()` začíná
+
+```c
+if (sdHandle->Instance == SDMMC1)
+```
+
+takže s `hsd1.Instance == NULL` se **nezapnou hodiny SDMMC1 ani nenakonfigurují piny**.
+Naměřeno přes GDB: `hsd1.Init` celé nulové a registry `@0x52007000` samé nuly — periferie
+mrtvá. `BSP_SD_Init()` pak selhával bez ohledu na kartu.
+
+Správně tedy:
+```c
+/* USER CODE BEGIN SDMMC1_Init 0 */
+  hsd1.Instance = SDMMC1;
+  hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
+  hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
+  hsd1.Init.BusWide             = SDMMC_BUS_WIDE_4B;
+  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
+  hsd1.Init.ClockDiv            = 2;
+  return;   /* preskoc jen HAL_SD_Init (Error_Handler pri chybejici karte) */
+/* USER CODE END SDMMC1_Init 0 */
+```
+Plnění struktury na HW nesahá, takže boot bez karty zůstává bezpečný.
+
+- [ ] Po regeneraci ověř, že blok v `SDMMC1_Init 0` **pořád je** — a že vyplňuje handle, ne jen `return`.
+- [ ] Hodnoty drž v sync s generovanými níže (zdroj pravdy = `.ioc`) i se `sd_probe()` v `datalog_sd.c`.
+
+### `get_fattime()` — časová razítka souborů
+CubeMX generuje v `CM7/FATFS/App/fatfs.c` stub `return 0;` → soubory na kartě by měly na PC
+neplatné datum. V USER CODE bloku je proto implementace čtoucí **`g_rtc_text_local`**
+(RTC disciplinované z GPS).
+⚠️ **Nesmí volat `HAL_RTC`** — běží z UartTasku a přístup k RTC registrům je vyhrazený
+defaultTasku (viz `CLAUDE.md` „RTC / Vlákno"). Proto se čte hotový řetězec, jako to dělá UI.
+- [ ] Když měníš v CubeMX konfiguraci SDMMC1, **srovnej hodnoty i v `sd_probe()`** (zrcadlí `Init` strukturu).
+
+## 🔴 PO REGENERACI S NOVÝMI SOUBORY: Close Project → Open Project (F5 NESTAČÍ!)
+Když CubeMX přidá **nové zdrojové soubory** (nová periferie, middleware), zapíše je do `.project`
+jako `<link>` entry. Eclipse ale `.project` parsuje **jen při otevření projektu** — z něj staví
+model workspace včetně linkovaných zdrojů. Generátor makefilů (`sources.mk`, `subdir.mk`) čerpá
+z toho modelu.
+
+⚠️ **`F5 (Refresh)` to NEVYŘEŠÍ** — jen odsvěží stav souborů, o kterých Eclipse *už ví*; definice
+linkovaných zdrojů znovu nečte. `Clean` taky ne — vygeneruje makefily ze stejného zastaralého modelu.
+
+Projev: kompilace proběhne, ale **link padne na `undefined reference`** na symboly z nově přidaných
+souborů (`HAL_SD_*`, `f_mount`, `FATFS_LinkDriver`, …) + `Unknown destination type (ARM/Thumb)` a
+`dangerous relocation`. Přitom `.project` i soubory na disku jsou v pořádku.
+
+**Rychlá diagnóza** (potvrdí, že jde o tohle a ne o chybu v kódu):
+```
+grep SUBDIRS -A30 CM7/Debug/sources.mk          # chybí tam nová složka?
+grep -c hal_sd CM7/Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk   # 0 = stale makefile
+```
+
+- [ ] **Close Project → Open Project** → Clean → Build.
+- [ ] Ověř, že se ve stromu objevily nové soubory (`stm32h7xx_hal_sd.c`, `Middlewares/.../FatFs`).
+- [ ] Poslední záchrana: smazat projekt z workspace **s odškrtnutým** „Delete project contents on
+      disk" → `File → Import → Existing Projects into Workspace`. Model se postaví od nuly, na disku
+      se nic neztratí.
+
+### ✅ VYŘEŠENO 2026-08-12 — reimport zabral, žádná zaplata už není potřeba
+Po **reimportu projektu do workspace** si IDE model konečně postavilo od nuly a nové soubory
+zná: `Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk` obsahuje `stm32h7xx_hal_sd.c`,
+`Debug/Middlewares/Third_Party/FatFs/subdir.mk` vzniklo, `objects.list` má FatFs objekty
+a `Debug/makefile` má příslušný `-include`. Build z IDE i z příkazové řádky projde (`exit=0`).
+
+**Mezitímní zaplata `CM7/makefile.defs` byla odstraněna** — jakmile IDE soubory zahrnulo samo,
+linkovaly se dvakrát (117 chyb `multiple definition of 'HAL_SD_Init'` / `'f_mount'` …).
+Tenhle symptom = *„zaplata už není potřeba, smaž ji"*, ne skutečná chyba.
+
+<details><summary>Postup pro případ, že se problém vrátí (jiný projekt / jiná periferie)</summary>
+
+Zásahy přímo do `Debug/` nemají smysl — IDE si makefily přegeneruje a přepíše je. Použij hook,
+který CDT nikdy negeneruje: `Debug/makefile` dělá `-include ../makefile.defs` (řádek 43), tedy
+**`CM7/makefile.defs`**. Načte se po `objects.mk` (kde je `USER_OBJS :=`) a před linkovacím
+pravidlem `gcc -o ... @"objects.list" $(USER_OBJS) ...` → objekty jdou na linkovací řádku
+**mimo `objects.list`**, takže je to na modelu IDE nezávislé. Do souboru patří `USER_OBJS +=`
+pro každý chybějící objekt + překladová pravidla (do vlastního adresáře, např. `_extra/`).
+
+⚠️ **Je to dočasné.** Kontrola, kdy zaplatu smazat:
+`grep -c hal_sd Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk` → `>0` znamená, že IDE už soubory
+zná, a zaplata musí pryč.
+</details>
+
+**Pasti, na které jsem narazil při ladění** (kdyby bylo někdy potřeba psát do `Debug/` přímo):
+- `Debug/makefile` má **explicitní `-include <dir>/subdir.mk` pro každou složku** — `SUBDIRS`
+  v `sources.mk` je jen kosmetika a přidání tam nic neudělá.
+- `Debug/objects.list` **nemá v makefile žádné pravidlo** — objekty se přeloží, ale linker o nich
+  neví, protože dostává starý seznam.
+- Generované makefily mají **CRLF**; zapisovat s `newline=''`, jinak vznikne literální `\n`
+  místo pokračování řádku.
+- `syscall.c` FatFs je v `src/option/`, ne v `src/`.
+
+Build mimo IDE: `PATH=<...externaltools.make.../tools/bin>:<...gnu-tools.../tools/bin>` + `make -j4 all`.
+
+## FATFS (SD karta jako export) — V IOC ✅ (zapnuto 2026-08-11)
+- Middleware → **FATFS → SD Card**; `FATFS0.BSP.instance = PE3`, `name = Detect_SDIO`, `mode = Input`
+  → CubeMX si sám vygeneruje detekci karty do `fatfs_platform.c` (`SD_DETECT_PIN = GPIO_PIN_3`,
+  `SD_DETECT_GPIO_PORT = GPIOE`). Polarita sedí s HW: **LOW = karta vložena**.
+- Vygeneruje `CM7/FATFS/{App,Target}` + `Middlewares/Third_Party/FatFs`. `MX_FATFS_Init()` se volá
+  z `main.c` — jen registruje driver, na HW nesahá.
+- ✅ **`BSP_SD_Init()` sám kontroluje přítomnost karty** (vrátí `MSD_ERROR_SD_NOT_PRESENT`) a pak
+  volá `HAL_SD_Init` + `HAL_SD_ConfigWideBusOperation(4B)`. Karta se tedy inicializuje **líně přes
+  FatFs** → vyřazení `MX_SDMMC1_SD_Init()` (viz výše) je nejen bezpečné, ale **správné**.
+- Konfigurace `ffconf.h`: `_USE_LFN = 0` → **jen 8.3 jména** (`GPSDO.CSV` vyhovuje);
+  `_FS_REENTRANT = 1` (vyžaduje `src/option/syscall.c` — CubeMX ho dodá); `_FS_TINY = 0`
+  → `FIL` má vlastní 512B buffer, takže `sd_export_run()` má **808 B rámec** (běží v UartTasku, 4 kB).
+
+### 🔴 KRITICKÉ: dvě volby v `sd_diskio.c`, které CubeMX nechává VYPNUTÉ
+Obě jsou v USER CODE blocích, takže **přežijí regeneraci** — ale po prvním vygenerování je
+nutné je zapnout ručně:
+
+```c
+#define ENABLE_SD_DMA_CACHE_MAINTENANCE  1   /* USER CODE enableSDDmaCacheMaintenance */
+#define ENABLE_SCRATCH_BUFFER                /* USER CODE enableScratchBuffer        */
+```
+
+- **Bez prvního není ŽÁDNÁ cache maintenance.** CM7 má zapnutou D-cache (`SCB_EnableDCache()`,
+  `main.c`) a FatFs buffery leží v cacheable AXI SRAM; SDMMC na H7 jede přes **IDMA** i u
+  blokujících `HAL_SD_ReadBlocks/WriteBlocks`. Zápis by šel z RAM (stará data), čtení z cache
+  (stará data) → **přesně symptom `STATUS.md` #69** „init projde, karta se vidí, přenos nejede".
+- **Bez druhého je ta maintenance nebezpečná.** ST ji jinak dělá přímo nad bufferem volajícího:
+  `alignedAddr = buff & ~0x1F; SCB_InvalidateDCache_by_Addr(alignedAddr, …)`. FatFs buffery ani
+  uživatelské buffery **nejsou zarovnané na 32 B** → invalidace zasáhne i cache linku se
+  sousedními daty a **zahodí do nich zapsané dirty hodnoty** (tichá korupce cizí paměti, u
+  zásobníkového bufferu klidně živého stack framu). Scratch buffer je `ALIGN_32BYTES` a všechno
+  jde přes něj → hazard mizí. Cena = jedno memcpy na 512B blok.
+- [ ] Po regeneraci ověř, že **oba `#define` v `sd_diskio.c` pořád jsou**.
+
+## 🔴 IP, které jsou v `.ioc` uvedené, ale NESMÍ se konfigurovat (audit 2026-08-11)
+
+`.ioc` nese v `CortexM7.IPs` / `CortexM4.IPs` víc IP, než se reálně staví. Většina je neškodná,
+**dvě jsou past**:
+
+| IP | Proč se nesmí konfigurovat |
+|---|---|
+| **`IWDG1`** (CM7) | `HAL_IWDG_MODULE_ENABLED` je v `hal_conf` **vypnutý** — watchdog je **registrová** implementace ve `watchdog.c` (heartbeat model, crash black-box do BKP). Konfigurace v CubeMX by vygenerovala `MX_IWDG1_Init` a tloukla by se s `watchdog_init()`. |
+| **`IWDG2`** (CM4) | Totéž pro `CM4/Core/Src/iwdg2.c`. Navíc **reset scope IWDG2 je pořád neověřený** (`DUALCORE_BRINGUP_CHECKLIST.md` §8). |
+
+- [ ] **IWDG1 ani IWDG2 v CubeMX NIKDY nekonfiguruj** (nechat neaktivované v seznamu je v pořádku —
+      generuje se jen to, co je nastavené).
+
+**Aspirační IP — regen je může začít generovat** (nabobtná image, možné konflikty). Před
+regenerací zkontroluj, že zůstaly nenastavené:
+
+| Jádro | IP |
+|---|---|
+| CM7 | `OPENAMP_M7`, `PDM2PCM_M7`, `USB_HOST_M7`, `WWDG1`, `BDMA` |
+| CM4 | `OPENAMP_M4`, `PDM2PCM_M4`, `USB_DEVICE_M4`, `USB_HOST_M4`, `FATFS_M4`, `WWDG2`, `VREFBUF` |
+
+(CM4 seznam hlídá i `DUALCORE_BRINGUP_CHECKLIST.md` §5.)
+
+**`VREFBUF`** je v `.ioc` u obou jader, ale konfiguruje se **ručně v `main.c` USER CODE 2**
+(`__HAL_RCC_VREF_CLK_ENABLE()` + `HAL_SYSCFG_VREFBUF_*`) — CubeMX na H7 nenastaví ten
+**klíčový clock enable** `RCC_APB4ENR.VREFEN`, bez kterého je celý `VREFBUF->CSR` mrtvý.
+- [ ] **VREFBUF v CubeMX nekonfiguruj** — nechal by dojem, že je hotový, a ADC by railoval.
+
 ## NEJDE nastavit v IOC — zůstává v USER CODE / vlastních souborech (regenerace neohrozí)
 - Vlastní moduly: `tc358762.c`, `ws_panel.c`, `ft5x06.c`, `fpga_freq.c`, `si5356.c`, `ads1115.c`, `beeper.c`
 - Grafika `app/` + `libprim/` + `libui/` (triple buffering, present, off-screen canvas v `prim_stm32_hal.c`); `sensor_stat.h` (`g_sensors[]`)
 - `MX_I2C1_Init` (i2c.c USER CODE), `MPU_Config`, `_write`, init sekvence displeje (main.c USER CODE 2)
 - Split tasky `freertos_task_*.c` + globály v `freertos.c` USER CODE Variables (vč. `g_sensors`, `g_si5356_*`, `g_rtos_*`)
 - Těla tasků, UART příkazy, mutex wrapy, SPI2 runtime prescaler, použití fronty (1B), CS pin (PB12) konfiguruje `fpga_freq_init`
-- Po regeneraci ověř: **DSI hodnoty**, queue item size (1B), přidané tasky/mutexy, **PB12 output + default High**, **PA10 pull-up**, MPU region 0 = 4 MB
+- Po regeneraci ověř: **DSI hodnoty**, queue item size (1B), přidané tasky/mutexy, **PB12 output + default High**, MPU region 0 = 4 MB, **`return;` v `SDMMC1_Init 0`** (viz sekce SDMMC1)
+- ⚠️ **PA10 pull-up se v `.ioc` NENASTAVUJE** (a nemá — je to `USART1_RX`, `Mode=Asynchronous`).
+  Řeší se **regen-safe v `usart.c` USER CODE `USART1_MspInit 1`**, kde se generovaný `GPIO_NOPULL`
+  přepíše na `GPIO_PULLUP`. Důvod je vážný: bez kabelu RX plave → falešné start bity → bouře
+  USART1 IRQ (prio 5 = `configMAX_SYSCALL`) → ISR preemptuje tasky → *„program nenaběhne"*.
+  **Po regeneraci ověř, že ten USER CODE blok pořád je** — ne že něco chybí v `.ioc`.

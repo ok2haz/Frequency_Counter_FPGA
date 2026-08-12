@@ -452,13 +452,83 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
   (`write_errors++`) a jede dál; defaultTask krmí watchdog a nesmí čekat.
 - **⚠️ Úložiště je za abstrakcí `datalog_backend_t`** (probe/read/write/erase + `erase_size`/`capacity`).
   `datalog_init` zkusí **SD** a spadne na **W25Q** → až bude SD osazená, log se přepne bez zásahu volajících.
-  **SD backend = `datalog_sd.c`, `probe()` vrací false** (zatím neaktivní); v souboru je **5bodový plán**
-  co dodělat (SDMMC1 v .ioc PC8-12/PD2, cache koherence DMA bufferů, 512B blokový RMW, FatFs, hot-unplug).
   Rozdíl NOR vs SD = jen `erase_size` (SD = 0 → `erase` smí být NULL). **512B RMW layer HOTOVÝ 2026-08-08**
   (generický `blk_io_t` + `blk_read`/`blk_write` = překlad byte-offsetu na 512B bloky vč. spanningu a
-  read-modify-write částečných bloků; `sd_read`/`sd_write` už ho volají). Chybí jen **HAL 512B primitiva**
-  `sd_hal_rd`/`sd_hal_wr` (dnes vracejí false, čekají na SDMMC1). RMW je kryté `datalog_sd_selftest`
-  (RAM fake blok, bez HW) — volá ho `datalog_selftest`.
+  read-modify-write částečných bloků). RMW je kryté `datalog_sd_selftest` (RAM fake blok, bez HW).
+
+### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
+**SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12), `ClockDiv=2`
+→ **SDMMC_CK 16 MHz**. Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
+- **`sd_hal_rd`/`sd_hal_wr` hotové**, za `#ifdef HAL_SD_MODULE_ENABLED` (aktivují se samy se SDMMC1).
+- **Card-detect = `PE3`** (`datalog_sd_card_present()`, debounced). Socket J13 má mechanický
+  spínač DET_A(GND)–DET_B + 47k pull-up → **karta vložena = LOW**. Pin si `datalog_sd.c`
+  konfiguruje **sám** (idempotentně, jako CS ve `fpga_freq_init`) → funguje i bez `.ioc`.
+  Je **mimo** `#ifdef HAL_SD_MODULE_ENABLED` (čisté GPIO), takže UI hlásí přítomnost karty
+  i při vypnutém SD backendu. **Bez karty se `HAL_SD_Init` ani nezkouší** — to dělá „běh
+  bez karty" zadarmo. **Hot-removal:** `sd_still_there()` kontroluje pin před každým blokem,
+  při vytažení shodí `s_sd_ok` + `HAL_SD_DeInit` → další zápisy selžou hned místo ~200 ms
+  timeoutu (defaultTask nesmí čekat). Vytržení uprostřed zápisu je bezpečné — každý 32B
+  záznam má CRC16, takže se poškozený při čtení přeskočí.
+
+### SD export (`sd_export.c/h`) — mount/unmount + CSV
+- **Dělba podle blokování (kritické):** `sd_export_tick()` je **levný** (čtení GPIO + případný
+  rychlý `f_mount(NULL)`) → volá ho **defaultTask** ~2 Hz. `sd_export_mount()` a
+  `sd_export_run()` **BLOKUJÍ** (`HAL_SD_Init` desítky–stovky ms, zápis souboru sekundy) →
+  **VÝHRADNĚ z UartTasku**, který není hlídaný watchdogem.
+- **Auto-UNmount ano, auto-mount NE.** Odmountování při vytažení je instantní (jen zahodí
+  ukazatel), takže se vejde do defaultTasku. Mount je blokující → dělá se explicitně.
+- **UART: `sd` / `sd mount` / `sd unmount` / `sd export [N]`** → `GPSDO.CSV` (oddělovač **`;`**
+  kvůli českému Excelu; čas jako **unix sekundy**; kmitočet bez `%f` — celé Hz + 5 desetin).
+  Zapisuje se **chronologicky** (nejstarší první), `datalog_read_back(0)` je nejnovější.
+- ⚠️ **Tlačítko v UI zatím není** — běželo by v UiTasku (watchdog) a potřebovalo by worker;
+  stejné omezení jako `calib_save()`.
+- **FatFs zapnutý 2026-08-11** (CubeMX: FATFS → SD Card, `Detect_SDIO = PE3`). `BSP_SD_Init()`
+  sám kontroluje přítomnost karty a pak volá `HAL_SD_Init` + 4-bit → karta se inicializuje
+  **líně přes FatFs**, proto je `MX_SDMMC1_SD_Init()` vyřazená správně.
+  `_USE_LFN=0` → jen 8.3 jména (`GPSDO.CSV` vyhovuje); `_FS_TINY=0` → `FIL` má vlastní 512B
+  buffer → **`sd_export_run()` má 808 B rámec** (UartTask 4 kB, základ ~1,3 kB → ~1,8 kB rezerva).
+- 🔴 **V `sd_diskio.c` MUSÍ zůstat zapnuté `ENABLE_SD_DMA_CACHE_MAINTENANCE` + `ENABLE_SCRATCH_BUFFER`**
+  (oba v USER CODE, přežijí regen). CubeMX je nechává vypnuté; bez prvního není žádná cache
+  maintenance (D-cache je zapnutá, IDMA čte/píše RAM → **symptom #69**), bez druhého se dělá nad
+  nezarovnaným bufferem volajícího a zahazuje dirty data sousedů. Detaily v `CUBEMX_CHECKLIST.md`.
+- ⚠️ **Dvě nezávislé detekce téhož pinu (PE3):** `datalog_sd_card_present()` (debounced, app API)
+  a `BSP_SD_IsDetected()` (raw, používá ho FatFs uvnitř). Nekolidují — jen čtení, stejný pin.
+- **✅ ROZHODNUTO 2026-08-11: W25Q je autoritativní úložiště, SD je JEN EXPORT** (`sd_export.c/h`).
+  W25Q uveze ~600 dní, takže o data se nikdy nepřijde; SD slouží k tomu, k čemu má — vytáhnout
+  a přečíst na PC. Tím odpadá **kontinuita `seq`** (log by se vytažením karty roztrhl mezi dvě
+  média), **přepis MBR** i **ztráta dat při vyjmutí** (přeruší se jen export).
+- **⚠️⚠️ `DATALOG_SD_RAW_OK` = 0 a takové zůstane** → `probe()` vrací false, SD backend je inertní.
+  RAW blokový zápis by šel od offsetu 0 = **LBA 0 = MBR karty** a první zápis by ji pro PC
+  zničil. Define zůstává jen jako nouzová varianta — **nezapínat**.
+- **🔴 Boot bez karty NESMÍ zabít přístroj:** `MX_SDMMC1_SD_Init()` má na selhání `Error_Handler()`
+  (= `bootled_fail()`, mrtvý přístroj), a `HAL_SD_Init` selže vždy bez vložené karty. Proto se
+  v USER CODE **vyplní handle a hned `return`** — přeskočí se jen `HAL_SD_Init`, které pak dělá
+  `BSP_SD_Init()` při mountu. Stejná filozofie jako `goto display_skip` u panelu a `g_cm4_absent` u CM4.
+  ⚠️⚠️ **Holý `return;` NESTAČÍ** (stálo půl dne, 2026-08-12): `HAL_SD_MspInit()` začíná
+  `if (sdHandle->Instance == SDMMC1)`, takže s `Instance == NULL` se **nezapnou hodiny SDMMC1
+  ani nenakonfigurují piny**. Ověřeno přes GDB: `hsd1.Init` nulové, registry `@0x52007000` samé nuly.
+- **✅ SD hardware ověřen na HW (2026-08-12, přes GDB):** s obejitou detekcí vrátí `BSP_SD_Init()`
+  `MSD_OK`, karta se ohlásí jako **SDHC 14,5 GB**, `CardState = TRANSFER`, `CLKCR = 0x4002`
+  (4-bit, 16 MHz). **Tím padá podezření na STATUS #69** — SDMMC1 komunikuje spolehlivě.
+- **⚠️ Card-detect PE3 NEREAGUJE:** čte HIGH i se zasunutou kartou (změřeno GDB i `sd det`).
+  Buď spínač v socketu není zapojený, nebo je net jinde, nebo má obrácenou polaritu (nikdy se
+  nezměřilo s kartou VENKU). Softwarový únik: **`sd force on`** detekci obejde, **`sd det invert on`**
+  prohodí polaritu za běhu. Není to blokátor — datalog jede na W25Q, SD je jen export.
+- **UART příkazy SD:** `sd diag` (stavová diagnostika — rozliší selhání HW vrstvy vs. souborového
+  systému), `sd test` (**zápis 8 kB + zpětné čtení a porovnání obsahu** → prověří multi-blokový
+  přenos i cache maintenance), `sd det [invert on|off]`, `sd force [on|off]`, `sd mount`/`unmount`,
+  `sd export [N]`.
+- **`get_fattime()`** (`CM7/FATFS/App/fatfs.c` USER CODE) čte **`g_rtc_text_local`** → exportované
+  soubory mají správné datum. ⚠️ **Nevolá `HAL_RTC`** — běží z UartTasku a RTC registry patří
+  výhradně defaultTasku.
+- ⚠️ **Souběh:** `sd_export_tick()` (defaultTask) při vytažení karty odmountovává, ale export/test
+  běží v UartTasku → příznak **`s_busy`** auto-unmount po dobu blokující operace přeskočí.
+  `_FS_REENTRANT=1` chrání operace nad svazkem, **deregistraci svazku ne**.
+- **⚠️ IDMA + D-cache (nejspíš příčina STATUS #69 „init OK, karta se vidí, DMA nejede"):** IDMA
+  **nedosáhne na DTCM** a AXI SRAM je **cacheable WB**. Proto `sd_hal_*` používá **statický bounce
+  buffer v `.bss` (RAM_D1) zarovnaný na 32 B** + clean/invalidate, ne buffer volajícího —
+  `blk_read`/`blk_write` mají `uint8_t blk[512]` na **nezarovnaném stacku** a cache maintenance
+  nad ním by zasáhla sousední linky a poškodila okolní data.
 - **Zap/vyp** = `datalog_set_enabled` (okno Datalog tlačítko ZAPNOUT/VYPNOUT, UART `datalog on|off`),
   **persist v syscfg blobu** (W25Q CONFIG). ⚠️ Kvůli novému poli se **magic zvedl `"SCFG"` → `"SCF2"`**
   → první boot po této změně nastavení nenačte (neznámý magic) a vrátí výchozí; při první změně se uloží nově.
