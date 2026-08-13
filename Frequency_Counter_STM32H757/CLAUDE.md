@@ -343,7 +343,17 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307 kalibrace**, Si5356 stav, kanál →
   CM4 obslouží SCPI/web (`MEAS:VOLT?`/`SYST:TEMP?`/`MEAS:POW?`) **bez přístupu ke `g_sensors`/`g_calib`**
   (na CM4 nejsou). **v3 přidal Math/limit cfg mirror** (viz cmd ring níže). ⚠️ Rozšíření layoutu = **`IPC_VERSION`
-  →3** (v2 senzory+kalibrace, v3 Math cfg; CM4 ověří po bootu, nesouhlas → IPC off).
+  →4** (v2 senzory+kalibrace, v3 Math cfg, **v4 `sens_valid` + `t_fpga_c100`**; CM4 ověří magic+verzi+size
+  po bootu, nesouhlas → IPC off). **⚠️⚠️ Při změně `IPC_VERSION` se MUSÍ přeflashnout OBĚ banky** —
+  jinak nová CM7 a stará CM4 nesouhlasí a IPC zůstane vypnutá (`4:--`).
+- **`sens_valid` (v4, 2026-08-13):** maska platnosti hodnot ve snapshotu, **bitové pozice ZÁMĚRNĚ shodné
+  se `SCPI_V_*`** → CM4 backend udělá `src->valid = snap.sens_valid` a chová se bit za bit jako CM7 na USB.
+  Shodu hlídá 14 `_Static_assert` v `ipc.c` (+ 8 dalších pro `SCPI_CFG_*` vs `IPC_CFG_*`) — ty dvě hlavičky
+  se jinak nepotkají v jedné translation unit, takže rozejití by nikdo nechytil. Do v3 se **neplatná napětí
+  publikovala jako 0** (nerozeznatelné od skutečné nuly) a **neplatné teploty jako poslední dobrá hodnota**
+  bez příznaku → `MEAS:VOLT?` by přes USB vrátilo `9.91E37` a přes TCP nulu = dvě různé pravdy o tomtéž
+  přístroji. Hodnota se teď publikuje vždy (poslední dobrá se hodí pro trendy), ale **bez bitu se nesmí
+  servírovat jako měření**. `t_fpga_c100` do v3 ve snapshotu vůbec nebylo → `SYST:TEMP? FPGA` nešlo na CM4 zodpovědět.
   Seqlock/ring helpery jsou **parametrizované ukazatelem** (`ipc_snap_wr/rd_*`,
   `ipc_ring_cmd/resp_*`) + `g_ipc`-vázané zkratky → `ipc_selftest` běží nad **lokální** instancí (žádný race s publisherem).
 - **CM4 konzument** (`CM4/Core/Src/ipc_cm4.c`): `ipc_cm4_read` (seqlock, **bounded retry ≤8** — CM4 se nesmí

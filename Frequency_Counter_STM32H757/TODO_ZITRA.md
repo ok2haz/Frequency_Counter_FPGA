@@ -123,10 +123,18 @@
       v jedné translation unit, takže to nemohl odhalit žádný kompilátor. 8 assertů v `ipc.c`
       (`scpi.h` se tam includuje výhradně kvůli nim). **Ověřeno injektáží chyby** — po vložení
       položky do jednoho výčtu build spadne, po obnovení projde. Tím padá blokátor ETH etapy F6.
-- [ ] **`ipc_cm4_cm7_alive()` hlásí „alive" při bootu**, než CM7 poprvé publikuje snapshot
-      (`s_last_seq`/`snap.seq` obojí 0 → `(now-0) < 2000`). CM4 pak ~2 s servíruje nuly jako platná data.
-- [ ] **Snapshot posílá napětí jako 0 místo „neplatné".** CM7 SCPI hlásí `9.91E37` (NaN), CM4 by
-      hlásil `0.00 V` → rozdílná sémantika `MEAS:VOLT?` mezi USB a TCP. Chce validity bity → `IPC_VERSION` bump.
+- [x] ✅ **`ipc_cm4_cm7_alive()` při bootu — OPRAVENO 2026-08-13.** Potvrzeno: `s_last_seq` i `s_last_ms`
+      startují na nule, takže `seq == s_last_seq` (0 == 0) spadlo na `(now-0) < 2000` = pravda.
+      CM4 první ~2 s servíroval prázdný snapshot jako živá data (magic už orazítkoval `ipc_init`,
+      takže `ipc_cm4_read` ho propustil). Přidána větev `if (seq == 0) return 0` — „ještě
+      nepublikoval" NENÍ „publikoval a zamrzl".
+- [x] ✅ **Validity bity ve snapshotu — HOTOVO 2026-08-13, `IPC_VERSION` 3 → 4.** Bylo to širší, než
+      zněl původní zápis: napětí padala na 0 (nerozeznatelné od skutečné nuly), ale **teploty se
+      nekontrolovaly vůbec** — publikovala se poslední dobrá hodnota jako aktuální. Navíc ve snapshotu
+      **chybělo `t_fpga_c100`**, takže `SYST:TEMP? FPGA` nešlo na CM4 zodpovědět.
+      Přidáno `sens_valid` s bitovými pozicemi **shodnými se `SCPI_V_*`** → CM4 backend udělá
+      `src->valid = snap.sens_valid`. Shodu hlídá 14 `_Static_assert`, ověřeno injektáží chyby.
+      ⚠️ **Nutno přeflashnout OBĚ banky** — CM4 ověřuje verzi i size, při neshodě vypne IPC (`4:--`).
 - [ ] **`scpi_process` dělá plný sweep senzorů i pro `*IDN?`** (10 senzorů, `gps_get` v kritické
       sekci, `fpga_freq_get_last` IRQ-off). Načítat líně nebo gatovat dle subsystému.
 

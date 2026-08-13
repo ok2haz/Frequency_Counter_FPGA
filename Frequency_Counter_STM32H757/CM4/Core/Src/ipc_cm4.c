@@ -62,6 +62,15 @@ int ipc_cm4_cm7_alive(uint32_t now_ms)
     static uint32_t s_last_seq, s_last_ms;
     if (!s_ready) return 0;
     uint32_t seq = g_ipc.snap.seq;
+    /* ⚠️ CM7 jeste ANI JEDNOU nepublikoval. Bez teto vetve by se to tvarilo jako
+     * ziva CM7: `s_last_seq` i `s_last_ms` startuji na nule, takze `seq == s_last_seq`
+     * (0 == 0) spadne rovnou na `(now_ms - 0) < 2000` = pravda. CM4 by prvni ~2 s po
+     * bootu serviroval PRAZDNY snapshot jako aktualni data (magic uz orazitkoval
+     * `ipc_init`, takze `ipc_cm4_read` ho propusti). "Jeste nepublikoval" NENI
+     * "publikoval a zamrzl" — pro SCPI/web to musi byt offline, ne nuly.
+     * `seq == 0` je spolehlivy priznak: seqlock ho pri prvnim publish zvedne na 2
+     * a k pretoceni uint32 by pri ~4 publish/s doslo za ~34 let. */
+    if (seq == 0u) return 0;
     if (seq != s_last_seq) { s_last_seq = seq; s_last_ms = now_ms; return 1; }
     return (now_ms - s_last_ms) < 2000u;   /* seq nezmenen >2 s -> CM7 zamrzly */
 }

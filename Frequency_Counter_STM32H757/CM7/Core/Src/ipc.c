@@ -124,15 +124,45 @@ void ipc_publish(void)
     g_ipc.snap.gps_num_sat  = g.num_sat;
     /* rtc_unix: zdroj UTC->unix zije v datalog/rtc vrstve; doplni se s MathTaskem. */
 
-    g_ipc.snap.t_ocxo_c100  = (int16_t)(g_sensors[SENS_T49].last * 100.0f);
-    g_ipc.snap.t_board_c100 = (int16_t)(g_sensors[SENS_T48].last * 100.0f);
-    g_ipc.snap.t_mcu_c100   = (int16_t)(g_sensors[SENS_CORE_T].last * 100.0f);
-    g_ipc.snap.ocxo_vc_mv   = (uint16_t)(g_sensors[SENS_ADS0].valid ? g_sensors[SENS_ADS0].last : 0.0f);
-    g_ipc.snap.rf_mv        = (uint16_t)(g_sensors[SENS_ADS1].valid ? g_sensors[SENS_ADS1].last : 0.0f);
-    g_ipc.snap.v_12v_mv     = (uint16_t)(g_sensors[SENS_ADS2].valid ? g_sensors[SENS_ADS2].last : 0.0f);
-    g_ipc.snap.v_5v_mv      = (uint16_t)(g_sensors[SENS_ADS3].valid ? g_sensors[SENS_ADS3].last : 0.0f);
-    g_ipc.snap.vref_mv      = (uint16_t)(g_sensors[SENS_VDDA].valid ? g_sensors[SENS_VDDA].last : 0.0f);
-    g_ipc.snap.vbat_mv      = (uint16_t)(g_sensors[SENS_VBAT].valid ? g_sensors[SENS_VBAT].last : 0.0f);
+    /* ⚠️ Hodnota + BIT PLATNOSTI musi vzniknout ZAROVEN a stejnym pravidlem jako
+     * ve `scpi_src_load_cm7()`, jinak by tentyz pristroj rekl pres USB neco jineho
+     * nez pres TCP. Dokud bit neni nastaven, obsah pole je nezavazny (drzime tam
+     * posledni dobrou hodnotu — pro trendy se hodi, jako mereni se servirovat NESMI).
+     * Do v3 se neplatna napeti publikovala jako 0 (nerozeznatelne od skutecne nuly)
+     * a neplatne teploty vubec neoznacene. */
+    uint32_t sv = 0u;
+    #define IPC_PUB_SENS(id, field, scale, bit)                                   \
+        do { g_ipc.snap.field = (typeof(g_ipc.snap.field))(g_sensors[id].last * (scale)); \
+             if (g_sensors[id].valid) sv |= (bit); } while (0)
+
+    IPC_PUB_SENS(SENS_T49,    t_ocxo_c100,  100.0f, IPC_V_T_OCXO);
+    IPC_PUB_SENS(SENS_T48,    t_board_c100, 100.0f, IPC_V_T_BOARD);
+    IPC_PUB_SENS(SENS_CORE_T, t_mcu_c100,   100.0f, IPC_V_T_MCU);
+    IPC_PUB_SENS(SENS_T4A,    t_fpga_c100,  100.0f, IPC_V_T_FPGA);   /* 0x4A dnes neosazen */
+    IPC_PUB_SENS(SENS_ADS0,   ocxo_vc_mv,     1.0f, IPC_V_VC);
+    IPC_PUB_SENS(SENS_ADS1,   rf_mv,          1.0f, IPC_V_RF);
+    IPC_PUB_SENS(SENS_ADS2,   v_12v_mv,       1.0f, IPC_V_V12);
+    IPC_PUB_SENS(SENS_ADS3,   v_5v_mv,        1.0f, IPC_V_V5);
+    IPC_PUB_SENS(SENS_VDDA,   vref_mv,        1.0f, IPC_V_VREF);
+    IPC_PUB_SENS(SENS_VBAT,   vbat_mv,        1.0f, IPC_V_VBAT);
+    #undef IPC_PUB_SENS
+
+    /* Mereni + GPS do tehoz slova — CM4 pak jen priradi `src->valid = snap.sens_valid`.
+     * Podminky MUSI doslova odpovidat `scpi_src_load_cm7()` (scpi.c):
+     *   FRAME  = `fpga_freq_get_last()` vratil ramec (zdejsi `have_meas`),
+     *   FREQ   = k tomu measurement_status bit0 a zadny SIGNAL_LOST (`meas_ok`),
+     *   DIV16  = k tomu bez FPGA_ST2_DIV16_ERR.
+     * ⚠️ FREQ zamerne NEvyzaduje novou SEQ — `scpi_src_load_cm7` ji taky nekontroluje
+     * (staleness hlasi zvlast `MEAS:FREQ:STAL?`). */
+    if (have_meas) {
+        sv |= IPC_V_FRAME;
+        if (meas_ok) {
+            sv |= IPC_V_FREQ;
+            if (!(m.status2 & FPGA_ST2_DIV16_ERR)) sv |= IPC_V_DIV16;
+        }
+    }
+    if (g.valid) sv |= IPC_V_GPS;
+    g_ipc.snap.sens_valid = sv;
     g_ipc.snap.channel_id   = meas_ok ? m.channel_id : 0u;
     g_ipc.snap.si5356_status = g_si5356_status;
     g_ipc.snap.si5356_ok    = g_si5356_ok;
@@ -189,6 +219,25 @@ _Static_assert((int)SCPI_CFG_NULL_ACQ == (int)IPC_CFG_NULL_ACQ, "SCPI/IPC klic N
 _Static_assert((int)SCPI_CFG_LIM_EN   == (int)IPC_CFG_LIM_EN,   "SCPI/IPC klic LIM_EN se rozesel");
 _Static_assert((int)SCPI_CFG_LIM_LO   == (int)IPC_CFG_LIM_LO,   "SCPI/IPC klic LIM_LO se rozesel");
 _Static_assert((int)SCPI_CFG_LIM_HI   == (int)IPC_CFG_LIM_HI,   "SCPI/IPC klic LIM_HI se rozesel");
+
+/* ⚠️ Totez pro masku platnosti: `snap.sens_valid` se na CM4 priradi PRIMO do
+ * `scpi_src_t.valid`, takze bitove pozice musi sedet 1:1 se `SCPI_V_*`.
+ * Rozejiti by nebylo videt jako chyba — jen by treba `MEAS:VOLT? P5` hlasilo
+ * NaN misto hodnoty (nebo hur: hodnotu misto NaN). */
+_Static_assert((int)SCPI_V_FREQ    == (int)IPC_V_FREQ,    "SCPI/IPC bit FREQ se rozesel");
+_Static_assert((int)SCPI_V_DIV16   == (int)IPC_V_DIV16,   "SCPI/IPC bit DIV16 se rozesel");
+_Static_assert((int)SCPI_V_FRAME   == (int)IPC_V_FRAME,   "SCPI/IPC bit FRAME se rozesel");
+_Static_assert((int)SCPI_V_T_OCXO  == (int)IPC_V_T_OCXO,  "SCPI/IPC bit T_OCXO se rozesel");
+_Static_assert((int)SCPI_V_T_BOARD == (int)IPC_V_T_BOARD, "SCPI/IPC bit T_BOARD se rozesel");
+_Static_assert((int)SCPI_V_T_MCU   == (int)IPC_V_T_MCU,   "SCPI/IPC bit T_MCU se rozesel");
+_Static_assert((int)SCPI_V_T_FPGA  == (int)IPC_V_T_FPGA,  "SCPI/IPC bit T_FPGA se rozesel");
+_Static_assert((int)SCPI_V_VC      == (int)IPC_V_VC,      "SCPI/IPC bit VC se rozesel");
+_Static_assert((int)SCPI_V_RF      == (int)IPC_V_RF,      "SCPI/IPC bit RF se rozesel");
+_Static_assert((int)SCPI_V_V12     == (int)IPC_V_V12,     "SCPI/IPC bit V12 se rozesel");
+_Static_assert((int)SCPI_V_V5      == (int)IPC_V_V5,      "SCPI/IPC bit V5 se rozesel");
+_Static_assert((int)SCPI_V_VREF    == (int)IPC_V_VREF,    "SCPI/IPC bit VREF se rozesel");
+_Static_assert((int)SCPI_V_VBAT    == (int)IPC_V_VBAT,    "SCPI/IPC bit VBAT se rozesel");
+_Static_assert((int)SCPI_V_GPS     == (int)IPC_V_GPS,     "SCPI/IPC bit GPS se rozesel");
 
 static int ipc_cfg_apply(meas_cfg_t *c, uint8_t key, uint32_t arg, double argd, double freq_hz)
 {

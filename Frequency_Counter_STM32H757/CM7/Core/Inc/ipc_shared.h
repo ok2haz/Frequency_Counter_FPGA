@@ -31,8 +31,34 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  3u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
-                                       cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7) */
+#define IPC_VERSION  4u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+                                       cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
+                                       v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100 */
+
+/* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
+ * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
+ * backend mohl udelat proste `src->valid = snap.sens_valid;` a choval se
+ * BIT ZA BIT stejne jako CM7 na USB. Shodu hlida `_Static_assert` v ipc.c —
+ * ty dva hlavickove soubory se jinak nepotkaji v jedne translation unit.
+ *
+ * Duvod existence: do v3 se neplatna napeti publikovala jako 0 a neplatne
+ * teploty dokonce jako POSLEDNI DOBRA hodnota (bez priznaku, ze je stara).
+ * CM7 pritom na USB vraci `9.91E37`. `MEAS:VOLT?` by tedy pres USB rekl NaN
+ * a pres TCP „0.00 V" — dve ruzne pravdy o tomtez pristroji. */
+#define IPC_V_FREQ    (1u << 0)   /* platne mereni /4 (CRC+VALID+FRESH+nova SEQ) */
+#define IPC_V_DIV16   (1u << 1)   /* platna /16 vetev */
+#define IPC_V_FRAME   (1u << 2)   /* existuje posledni DATA ramec (gate/kanal) */
+#define IPC_V_T_OCXO  (1u << 3)
+#define IPC_V_T_BOARD (1u << 4)
+#define IPC_V_T_MCU   (1u << 5)
+#define IPC_V_T_FPGA  (1u << 6)
+#define IPC_V_VC      (1u << 7)
+#define IPC_V_RF      (1u << 8)
+#define IPC_V_V12     (1u << 9)
+#define IPC_V_V5      (1u << 10)
+#define IPC_V_VREF    (1u << 11)
+#define IPC_V_VBAT    (1u << 12)
+#define IPC_V_GPS     (1u << 13)  /* GPS fix (cas/poloha platne) */
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
@@ -75,6 +101,9 @@ typedef struct {
     int16_t  t_ocxo_c100;          /* OCXO (TMP117 0x49) × 100 [°C] */
     int16_t  t_board_c100;         /* STM deska (TMP117 0x48) */
     int16_t  t_mcu_c100;           /* MCU jadro (ADC3) */
+    int16_t  t_fpga_c100;          /* FPGA deska (TMP117 0x4A — dnes NEOSAZEN -> bit v sens_valid = 0).
+                                    * Do v3 pole chybelo uplne, takze `SYST:TEMP? FPGA` na CM4
+                                    * nesla vubec zodpovedet — dalsi rozdil proti USB. */
     uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0) */
     uint16_t rf_mv;                /* RF level SYROVE mV (AD8307, AIN1) */
     uint16_t v_12v_mv;             /* 12V vetev (AIN2, uz po gain) */
@@ -85,6 +114,9 @@ typedef struct {
     uint8_t  si5356_status;        /* Si5356 reg 218 (reference lock: LOS_CLKIN/PLL_LOL) */
     uint8_t  si5356_ok;            /* 1 = status precten */
     uint8_t  _pad_s;
+    uint32_t sens_valid;           /* IPC_V_* — KTERE hodnoty vyse jsou platne (v4).
+                                    * Hodnota bez nastaveneho bitu je NEPLATNA a nesmi se
+                                    * servirovat jako mereni (SCPI -> 9.91E37). */
 
     /* Zdravi / stav. */
     uint32_t flags;                /* IPC_F_* */
