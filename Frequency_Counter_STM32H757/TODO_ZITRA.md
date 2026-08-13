@@ -45,9 +45,10 @@
       a startuje na 1, takže `1 & 4 = 0` — assert shodil výsledek právě když podmínka
       **platila**. Týkalo se 4 kontrol status modelu; ta s `& 0x01` procházela jen náhodou.
 
-- [ ] **Card-detect PE3 nereaguje** — HIGH i se zasunutou kartou. Nikdy se nezměřilo s kartou
-      VENKU, takže může jít i o obrácenou polaritu (`sd det invert on`). Dohledat ve schématu,
-      kam `SDMMC1_DET` doopravdy vede. **Není blokátor** — `sd force on` to obejde.
+- [x] ✅ **Card-detect PE3 VYŘEŠEN 2026-08-13 — byla to mechanická závada slotu, ne software.**
+      Kontakt v pouzdře karty, uživatel opravil. Polarita LOW = karta je správně.
+      ⚠️ Detekce měla celou dobu pravdu; my ji obcházeli přes `sd force on`. Potvrdil to až
+      `CMD_RSP_TIMEOUT` z `HAL_SD_Init` (po lince nepřišlo nic), což s „prázdno" souhlasilo.
 
 ---
 

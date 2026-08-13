@@ -563,10 +563,15 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
 - **✅ SD hardware ověřen na HW (2026-08-12, přes GDB):** s obejitou detekcí vrátí `BSP_SD_Init()`
   `MSD_OK`, karta se ohlásí jako **SDHC 14,5 GB**, `CardState = TRANSFER`, `CLKCR = 0x4002`
   (4-bit, 16 MHz). **Tím padá podezření na STATUS #69** — SDMMC1 komunikuje spolehlivě.
-- **⚠️ Card-detect PE3 NEREAGUJE:** čte HIGH i se zasunutou kartou (změřeno GDB i `sd det`).
-  Buď spínač v socketu není zapojený, nebo je net jinde, nebo má obrácenou polaritu (nikdy se
-  nezměřilo s kartou VENKU). Softwarový únik: **`sd force on`** detekci obejde, **`sd det invert on`**
-  prohodí polaritu za běhu. Není to blokátor — datalog jede na W25Q, SD je jen export.
+- **✅ Card-detect PE3 FUNGUJE (vyřešeno 2026-08-13 — mechanicky, ne softwarově).** Polarita je
+  **LOW = karta zasunuta**, jak předpokládal návrh i `SD_franta.md`.
+  ⚠️ **Poučení, které stálo dost času:** PE3 dlouho četl HIGH i „se zasunutou" kartou a my z toho
+  usoudili, že je detekce rozbitá (nezapojený DET pin, obrácená polarita…) a začali ji obcházet
+  přes `sd force on`. **Detekce měla celou dobu pravdu** — chyba byla v pouzdře/kontaktech slotu,
+  karta fyzicky nedosedala. Potvrdilo to až to, že `HAL_SD_Init` vrátil `CMD_RSP_TIMEOUT`
+  (= po lince nepřišlo nic), což s „prázdno" na PE3 **souhlasilo**. Uživatel kontakt opravil.
+  **Zásada: když dva nezávislé zdroje (detekce + odezva karty) říkají totéž, neobcházej je —
+  ověř hardware.** `sd force on` / `sd det invert on` zůstávají jen jako nouzový únik.
 - **UART příkazy SD:** `sd diag` (stavová diagnostika — rozliší selhání HW vrstvy vs. souborového
   systému), `sd test` (**zápis 8 kB + zpětné čtení a porovnání obsahu** → prověří multi-blokový
   přenos i cache maintenance), `sd det [invert on|off]`, `sd force [on|off]`, `sd mount`/`unmount`,
