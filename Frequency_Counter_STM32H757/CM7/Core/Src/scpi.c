@@ -873,18 +873,22 @@ int scpi_selftest(void)
     scpi_process_ctx(&x, &src, "CALC:MATH:M?", b, sizeof b);  ok &= (strncmp(b, "2.", 2) == 0);
     scpi_process_ctx(&x, &src, "CALC:MATH:M xyz", b, sizeof b); ok &= (strncmp(b, "-224", 4) == 0);  /* chybný arg */
 
-    /* IEEE 488.2 status model + compound. */
+    /* IEEE 488.2 status model + compound.
+     * ⚠️ POZOR NA `ok &= (vyraz & MASKA)`: akumulator `ok` se sluce BITOVYM AND
+     * a startuje na 1, takze `1 & 0x04` = 0 -> assert by shodil vysledek i pri
+     * SPLNENE podmince. Testy nad bitovymi maskami proto MUSI mit `!= 0`.
+     * Presne tohle drzelo "SCPI parser FAIL" i po oprave NULL:ACQ. */
     scpi_ctx_init(&x);
     scpi_process_ctx(&x, &src, "FOO?", b, sizeof b);
     scpi_process_ctx(&x, &src, "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '1');
-    scpi_process_ctx(&x, &src, "*STB?", b, sizeof b);          ok &= (atoi(b) & 0x04);
-    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x20);
+    scpi_process_ctx(&x, &src, "*STB?", b, sizeof b);          ok &= ((atoi(b) & 0x04) != 0);
+    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= ((atoi(b) & 0x20) != 0);
     scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);
     scpi_process_ctx(&x, &src, "SYST:ERR:NEXT?", b, sizeof b); ok &= (strncmp(b, "-113,", 5) == 0);
     scpi_process_ctx(&x, &src, "*ESE 32", b, sizeof b);
     scpi_process_ctx(&x, &src, "*ESE?", b, sizeof b);          ok &= (atoi(b) == 32);
     scpi_process_ctx(&x, &src, "CALC:MATH:M xyz", b, sizeof b);
-    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x10);
+    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= ((atoi(b) & 0x10) != 0);
     scpi_process_ctx(&x, &src, "*CLS", b, sizeof b);
     scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= (atoi(b) == 0);
     scpi_process_ctx(&x, &src, "SYST:ERR:COUN?", b, sizeof b); ok &= (b[0] == '0');
@@ -892,7 +896,7 @@ int scpi_selftest(void)
 
     scpi_process_ctx(&x, &src, "*CLS", b, sizeof b);
     scpi_process_ctx(&x, &src, "*OPC", b, sizeof b);
-    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= (atoi(b) & 0x01);
+    scpi_process_ctx(&x, &src, "*ESR?", b, sizeof b);          ok &= ((atoi(b) & 0x01) != 0);
     ok &= (scpi_process_ctx(&x, &src, "*WAI", b, sizeof b) == 0);
     ok &= (scpi_process_ctx(&x, &src, "*TST?", b, sizeof b) > 0);
 
