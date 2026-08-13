@@ -911,7 +911,13 @@ static void allan_ylabel(char *buf, size_t n, int exp)
 {
     static const char *const SUP[10] = {"⁰","¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"};
     int ae = exp < 0 ? -exp : exp;
-    char es[12]; es[0] = '\0';
+    /* ⚠️ Kazdy horni index je v UTF-8 TRI bajty, ne jeden. Exponent ma nejvyse
+     * dve cifry (osa jde ~10⁻⁶..10⁻¹⁶), takze `es` potrebuje 2×3 + NUL = 7 B.
+     * Drive tu bylo `es[12]`: vejit se to vzdy veslo, ale kompilator to dokazat
+     * nemohl a pri -Os hlasil -Wformat-truncation (2 + 3 znamenko + az 11 z `es`).
+     * Presna velikost z toho dela kontrolovatelny fakt misto predpokladu.
+     * Cely popisek: "10" + znamenko(3) + es(6) + NUL = 12 = `ylb[12]` u volajiciho. */
+    char es[7]; es[0] = '\0';
     if (ae >= 10) strcat(es, SUP[(ae / 10) % 10]);
     strcat(es, SUP[ae % 10]);
     snprintf(buf, n, "10%s%s", exp < 0 ? "⁻" : "⁺", es);

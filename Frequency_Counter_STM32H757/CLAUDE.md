@@ -655,6 +655,16 @@ V IDE: *Project → Build Configurations → Set Active → Release*. (Adresář
 zatím neexistuje, protože se nikdy nestavěla — makefily si IDE vygeneruje samo.)
 ⚠️ Optimalizace mění časování — po přepnutí ověř na HW to, co na něm visí: DWT `delay_us`
 (SPI2/FPGA rámce), bit-bang pípání v `bootled_fail()`, I2C recovery pulzy.
+✅ **Riziko latentního UB prověřeno (2026-08-13):** celý projekt přeložen `-Os` s
+`-Wmaybe-uninitialized -Wstrict-aliasing=2` — to jsou varování, která `-O0` vypsat
+NEUMÍ, protože potřebují datový tok z optimalizátoru. Mimo vendor kód vzniklo
+**jediné** (`-Wformat-truncation` v `allan_ylabel`, mezitím opraveno) a **žádné**
+uninitialized/aliasing. Přepnutí na Release tedy neodemkne skrytou UB — zbývá
+ověřit už jen to časování výše.
+
+**⚠️ UTF-8 v popiskách:** horní indexy (`⁻¹²`) jsou **3 bajty na znak**, ne jeden.
+`allan_ylabel` skládá „10" + znaménko(3) + dvě cifry(6) + NUL = přesně 12 B. Buffery
+pro takové řetězce dimenzuj podle bajtů, ne podle počtu znaků.
 
 **Kde je flash doopravdy** (z map souboru, Debug/-O0, celkem 686 KB):
 `.rodata` 333 KB — z toho **fonty ~285 KB = 41 % celého programu** (`ui_font_mono_22` sám 46 KB);
