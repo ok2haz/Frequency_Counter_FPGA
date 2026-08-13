@@ -618,6 +618,8 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
 - **⚠️ REORGANIZACE 2026-08-13 (2. iterace): Nastavení = ČISTÝ rozcestník.**
 Všechny přímé ovládače se odstěhovaly do tematických podoken: **jas + auto-dim → nové
 okno DISPLEJ (`s_view=36`)**, **zvuk (mute) → okno ALARMY** (patří k tomu, co umlčuje).
+**Vzhled** se 2026-08-13 přesunul ještě dál — do okna **DISPLEJ** (je to vlastnost displeje,
+ne obecné nastavení); mřížka se o buňku přeskládala, aby v ní nezůstala díra.
 Nastavení je díky tomu mřížka **3×4 přes celou šířku** se **stejnou geometrií jako Menu**
 (w=246, h=76, x=18/278/538, y=68/154/240/326 → dotykový cíl 8,9 mm): DISPLEJ · Vzhled ·
 Jazyk · ALARMY · CAS · SIT · KALIBRACE · REFERENCE · ANIMACE · SESTAVY · O PRISTROJI

@@ -238,22 +238,28 @@ static const prim_rect_t DIM_PLUS    = {316, 308, 56, 64};    /* prodleva + */
 #define SETNAV_XA   18
 #define SETNAV_XB  278
 #define SETNAV_XC  538
+/* ⚠️ 2026-08-13: `Vzhled` se presunul do okna DISPLEJ (je to vlastnost displeje,
+ * ne obecne nastaveni) — mrizka se proto o jednu bunku PRESKLADALA, aby v ni
+ * nezustala díra uprostred. Volne jsou ted posledni dve bunky vpravo dole. */
 static const prim_rect_t DISPNAV_RECT = {SETNAV_XA,  68, SETNAV_W, SETNAV_H};  /* -> Displej (36) */
-static const prim_rect_t THEME_RECT   = {SETNAV_XB,  68, SETNAV_W, SETNAV_H};  /* Vzhled (prepinac) */
-static const prim_rect_t LANG_RECT    = {SETNAV_XC,  68, SETNAV_W, SETNAV_H};  /* Jazyk (prepinac) */
-static const prim_rect_t ALRMNAV_RECT = {SETNAV_XA, 154, SETNAV_W, SETNAV_H};  /* -> Alarmy (18) */
-static const prim_rect_t CASNAV_RECT  = {SETNAV_XB, 154, SETNAV_W, SETNAV_H};  /* -> Cas (22) */
-static const prim_rect_t NET_RECT     = {SETNAV_XC, 154, SETNAV_W, SETNAV_H};  /* -> Sit (35) */
-static const prim_rect_t KALIBNAV_RECT= {SETNAV_XA, 240, SETNAV_W, SETNAV_H};  /* -> Kalibrace (15) */
-static const prim_rect_t ANIMNAV_RECT = {SETNAV_XC, 240, SETNAV_W, SETNAV_H};  /* -> Animace (24) */
+static const prim_rect_t LANG_RECT    = {SETNAV_XB,  68, SETNAV_W, SETNAV_H};  /* Jazyk (prepinac) */
+static const prim_rect_t ALRMNAV_RECT = {SETNAV_XC,  68, SETNAV_W, SETNAV_H};  /* -> Alarmy (18) */
+static const prim_rect_t CASNAV_RECT  = {SETNAV_XA, 154, SETNAV_W, SETNAV_H};  /* -> Cas (22) */
+static const prim_rect_t NET_RECT     = {SETNAV_XB, 154, SETNAV_W, SETNAV_H};  /* -> Sit (35) */
+static const prim_rect_t KALIBNAV_RECT= {SETNAV_XC, 154, SETNAV_W, SETNAV_H};  /* -> Kalibrace (15) */
+static const prim_rect_t ANIMNAV_RECT = {SETNAV_XB, 240, SETNAV_W, SETNAV_H};  /* -> Animace (24) */
+/* Vzhled (prepinac) — uz NENI v Nastaveni, zije v okne DISPLEJ (prava karta).
+ * ⚠️ Souradnice natvrdo: `DG_RX` (= DG_MX 18 + DG_COLW 376 + DG_GAP 12 = 406) je
+ * definovane az nize v souboru, takze se tu na nej odkazat neda. 406 + 14 = 420. */
+static const prim_rect_t THEME_RECT   = {420, 190, 200, 64};
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
 static const prim_rect_t TZ_MINUS     = {30, 310, 72, 64};    /* rucni posun - */
 static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + */
-static const prim_rect_t REF_RECT    = {SETNAV_XB, 240, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
-static const prim_rect_t ABOUT_RECT  = {SETNAV_XB, 326, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
-static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XA, 326, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
+static const prim_rect_t REF_RECT    = {SETNAV_XA, 240, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
+static const prim_rect_t ABOUT_RECT  = {SETNAV_XA, 326, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
+static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XC, 240, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
@@ -2342,10 +2348,9 @@ void app_gpsdo_render_settings(void)
     /* ── Mrizka 3x4. `Vzhled` a `Jazyk` jsou PREPINACE (label nese stav), zbytek
      * naviguje do podoken. Poradi po radcich podle cetnosti pouziti. Posledni
      * bunka (SETNAV_XC, 326) je zamerne volna — rezerva. ── */
-    settings_upd_theme();
     settings_upd_lang();
     static const struct { const prim_rect_t *r; const char *label; } SETNAV[] = {
-        { &DISPNAV_RECT,    "DISPLEJ >"     },
+        { &DISPNAV_RECT,    "DISPLEJ >"     },   /* Vzhled je uvnitr nej */
         { &ALRMNAV_RECT,    "ALARMY >"      },
         { &CASNAV_RECT,     "CAS >"         },
         { &NET_RECT,        "SIT >"         },
@@ -3902,15 +3907,20 @@ static void app_gpsdo_render_display(void)
     ui_button_render(&dplus);
     settings_upd_dim();
 
-    ui_card_t c3 = {.rect = {DG_RX, 156, DG_COLW, 228}, .header_label = "Pozn."};
+    /* Vzhled (barevne schema) — presunuto sem z Nastaveni 2026-08-13. */
+    ui_card_t c3 = {.rect = {DG_RX, 156, DG_COLW, 110}, .header_label = "Vzhled"};
     ui_card_render_chrome(&c3);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 200},
+    settings_upd_theme();
+
+    ui_card_t c4 = {.rect = {DG_RX, 274, DG_COLW, 110}, .header_label = "Pozn."};
+    ui_card_render_chrome(&c4);
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 310},
                    "Auto-dim po necinnosti ztlumi podsviceni",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 226},
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 336},
                    "a zobrazi velke hodiny. Prvni dotek jen",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 252},
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 362},
                    "probudi, nespusti akci tlacitka.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
@@ -4891,15 +4901,6 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             #define SETTINGS_UPD(fn) do { prim_set_target(&s_fb); prim_reset_clip(); \
                                           fn(); present_now(); } while (0)
             if (in_rect(x, y, DISPNAV_RECT)) { nav_push(7); app_gpsdo_render_display(); return true; }
-            if (in_rect(x, y, THEME_RECT)) {                /* tmave <-> svetle schema */
-                g_theme_light = g_theme_light ? 0 : 1;
-                g_sys_cfg_dirty = 1;
-                ui_theme_select(g_theme_light);
-                screen_main_invalidate();                   /* bg_cache je v barvach stareho schematu */
-                screen_main_init();                         /* prestavet HNED (settings bg blituje) */
-                app_gpsdo_render_settings();
-                return true;
-            }
             if (in_rect(x, y, LANG_RECT)) {                 /* CZ <-> EN (texty postupne) */
                 g_lang_en = g_lang_en ? 0 : 1;
                 g_sys_cfg_dirty = 1;
@@ -5080,6 +5081,17 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             if (in_rect(x, y, DIM_MINUS)) { autodim_step(-1); DISP_UPD(settings_upd_dim); return true; }
             if (in_rect(x, y, DIM_PLUS))  { autodim_step(+1); DISP_UPD(settings_upd_dim); return true; }
+            if (in_rect(x, y, THEME_RECT)) {                /* tmave <-> svetle schema */
+                g_theme_light = g_theme_light ? 0 : 1;
+                g_sys_cfg_dirty = 1;
+                ui_theme_select(g_theme_light);
+                /* ⚠️ `bg_cache` je predrenderovane ve STARYCH barvach — bez tohohle
+                 * by nove schema platilo jen na cerstve kreslene prvky. */
+                screen_main_invalidate();
+                screen_main_init();
+                app_gpsdo_render_display();                 /* prekreslit v novych barvach */
+                return true;
+            }
             #undef DISP_UPD
         }
         if (s_view == 18 && in_rect(x, y, MUTE_RECT)) {    /* Alarmy: zvuk zap/vyp */
