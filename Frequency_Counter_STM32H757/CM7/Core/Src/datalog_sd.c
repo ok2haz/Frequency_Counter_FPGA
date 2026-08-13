@@ -24,21 +24,22 @@
  *    osazeni chybi -> pak se detekce dela jen pres `HAL_SD_Init`).
  *    ⚠️ SDMMC1 clock jde z PLL1Q / PLL2R — zkontrolovat, ze deleni da <= 25 MHz
  *    pro init fazi (`ClockDiv`), teprve pak zvysovat.
- * 2) **DMA nebo IDMA**: SDMMC na H7 ma vlastni interni DMA (IDMA). ⚠️ **I blokujici
- *    `HAL_SD_ReadBlocks`/`WriteBlocks` na H7 pouziva IDMA pro datovou fazi** (ne jen
- *    `_DMA` varianty) → nasledujici plati VZDY:
- *    - ⚠️⚠️ **IDMA NEDOSAHNE na DTCM (`0x20000000`).** Init (CMD/response) projde,
- *      ale prvni ReadBlocks/WriteBlocks s bufferem v DTCM tise selze/DTIMEOUT
- *      ("init OK, karta videt, DMA nejede"). V TOMTO projektu je vsak default
- *      `.data/.bss`/stack v **RAM_D1 = AXI SRAM `0x24000000`** (viz linker),
- *      takze buffer tam IDMA dosahne — pokud ho nekdo NEumisti explicitne do DTCM.
- *    - ⚠️ AXI SRAM `0x24000000` je ale **cacheable (D-cache WB)** → nutna koherence:
- *      buffer `__attribute__((aligned(32)))`, delka zaokrouhlena na 32 B,
- *      `SCB_CleanDCache_by_Addr` PRED WriteBlocks, `SCB_InvalidateDCache_by_Addr`
- *      PO ReadBlocks (jinak "DMA probehne" ale data jsou zkazena/CRC error).
- *      Nejcistsi: buffer v **ne-cachovane MPU oblasti** (jako plan pro SRAM4/D3,
- *      viz CLAUDE.md MPU) → zadna rucni maintenance. (Stejny problem jako DMA2D
- *      vs D-cache, viz CLAUDE.md "Cache koherence".)
+ * 2) **DMA nebo IDMA**: SDMMC na H7 ma vlastni interni DMA (IDMA), ale pouzivaji ho
+ *    jen `_DMA`/`_IT` varianty.
+ *    ⚠️⚠️ **OPRAVENO 2026-08-13 — drive tu stalo, ze IDMA pouzivaji i blokujici
+ *    `HAL_SD_ReadBlocks`/`WriteBlocks`. NENI TO PRAVDA** a stalo to hodne casu:
+ *    blokujici varianta na H7 prehazuje data **procesorem pres FIFO**
+ *    (`SDMMC_ReadFIFO()` ve smycce, viz `stm32h7xx_hal_sd.c`). Z toho plyne:
+ *    - **Cache maintenance kolem nich je nejen zbytecna, ale u cteni SKODLIVA.**
+ *      Data pise CPU, takze lezi v D-cache jako DIRTY; `SCB_InvalidateDCache_by_Addr`
+ *      po cteni je bez zapisu zpet ZAHODI a z bufferu se precte obsah RAM = nuly.
+ *      Presne tak `sd fs` hlasil "karta neni naformatovana" u karty, kterou
+ *      `f_mount` (ten jde pres `_DMA`) namountoval bez problemu.
+ *    - **DTCM omezeni se blokujici cesty netyka** (CPU dosahne vsude). Plati jen
+ *      pro `_DMA` varianty, ktere pouziva `sd_diskio.c` pod FatFs — tam uz cache
+ *      maintenance je a je spravne (zarovnany buffer / `scratch`, clean pred
+ *      zapisem, invalidate po cteni).
+ *    Pravidlo: **cache maintenance patri VYHRADNE k `_DMA`/`_IT` variantam.**
  *    - Elektrika (viz schema list 7/7): pull-upy R56-R61 na CMD/DAT jsou, ale na
  *      SD VDD je JEN C75 100n (chybi bulk 4.7-10uF → propad pri zapisovem burstu)
  *      a na SDMMC1_CK neni serioovy tlumici odpor (~22-33R) → prekmity pri vyssim
@@ -282,11 +283,9 @@ static bool sd_hal_rd(void *ctx, uint32_t lba, uint8_t *b)
     (void)ctx;
     if (!sd_still_there()) return false;
     if (!s_sd_ok || !sd_wait_ready(SD_READY_MS)) return false;
-    /* Clean+Invalidate PŘED přenosem: kdyby v cache zůstala špinavá linka, mohla by
-     * se během DMA vyplavit přes čerstvá data. Invalidate PO: aby CPU nečetl staré. */
-    SCB_CleanInvalidateDCache_by_Addr((uint32_t *)(void *)s_bounce, SD_BLK);
+    /* ⚠️ ZADNA cache maintenance — `HAL_SD_ReadBlocks` je CPU/FIFO cesta (viz rozbor
+     * v hlavicce souboru). Invalidace po cteni by ZAHODILA prave nactena data. */
     if (HAL_SD_ReadBlocks(&hsd1, s_bounce, lba, 1u, SD_XFER_MS) != HAL_OK) return false;
-    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_bounce, SD_BLK);
     memcpy(b, s_bounce, SD_BLK);
     return true;
 }
@@ -296,7 +295,8 @@ static bool sd_hal_wr(void *ctx, uint32_t lba, const uint8_t *b)
     (void)ctx;
     if (!sd_still_there() || !s_sd_ok) return false;
     memcpy(s_bounce, b, SD_BLK);
-    SCB_CleanDCache_by_Addr((uint32_t *)(void *)s_bounce, SD_BLK);   /* data do RAM, ať je IDMA vidí */
+    /* ⚠️ Zadny clean — `HAL_SD_WriteBlocks` cte buffer procesorem (FIFO), takze
+     * si data vezme z vlastni cache. Viz rozbor v hlavicce souboru. */
     if (!sd_wait_ready(SD_READY_MS)) return false;
     if (HAL_SD_WriteBlocks(&hsd1, s_bounce, lba, 1u, SD_XFER_MS) != HAL_OK) return false;
     return sd_wait_ready(SD_READY_MS);   /* zápis musí doběhnout, než pustíme další */

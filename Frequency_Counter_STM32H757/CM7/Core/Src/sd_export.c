@@ -21,6 +21,7 @@
 #include "bsp_driver_sd.h"   /* BSP_SD_Init — izolace HW vrstvy pri diagnostice */
 #include "sdmmc.h"           /* hsd1 */
 #include "ff_gen_drv.h"      /* Disk_drvTypeDef — reset is_initialized pri unmountu */
+#include "cmsis_os2.h"       /* osDelay — polite polling v BSP_SD_GetCardState */
 #endif
 
 /* ⚠️ Rolling index misto pevneho nazvu (2026-08-13). Drive se psalo vzdy do
@@ -196,18 +197,69 @@ static const char *fr_str(FRESULT r)
 
 volatile uint8_t g_sd_req = SD_REQ_NONE;
 
+/* Snapshot pro UI — plni VYHRADNE UartTask (`sd_export_service`) + levny tik. */
+static sd_ui_info_t s_ui;
+
+const sd_ui_info_t *sd_export_ui_info(void)
+{
+    /* Levna pole se daji obnovit kdykoli; pomale (kapacita) plni jen service. */
+    s_ui.state   = (uint8_t)s_state;
+    s_ui.busy    = s_busy ? 1u : 0u;
+#ifdef SD_EXPORT_FATFS
+    s_ui.present = datalog_sd_card_present() ? 1u : 0u;
+#else
+    s_ui.present = 0u;
+#endif
+    return &s_ui;
+}
+
+/* Zjisti typ FS + kapacitu/volne misto. ⚠️ BLOKUJE (`f_getfree` u FAT16 nebo
+ * neplatneho FSINFO projde celou FAT) -> jen z UartTasku, jen po zmene stavu. */
+static void ui_refresh_capacity(void)
+{
+#ifdef SD_EXPORT_FATFS
+    s_ui.total_mb = 0; s_ui.free_mb = 0; s_ui.fs[0] = '\0';
+    if (!s_mounted) return;
+    FATFS *fs; DWORD fre_clust;
+    if (f_getfree("", &fre_clust, &fs) != FR_OK) return;
+    /* Klastry -> MB. `csize` je v sektorech, sektor 512 B -> /2048 = MB. */
+    DWORD tot_clust = (fs->n_fatent - 2);
+    s_ui.total_mb = (uint32_t)(((uint64_t)tot_clust * fs->csize) / 2048u);
+    s_ui.free_mb  = (uint32_t)(((uint64_t)fre_clust * fs->csize) / 2048u);
+    const char *n = (fs->fs_type == FS_FAT12) ? "FAT12"
+                  : (fs->fs_type == FS_FAT16) ? "FAT16"
+                  : (fs->fs_type == FS_FAT32) ? "FAT32" : "?";
+    snprintf(s_ui.fs, sizeof s_ui.fs, "%s", n);
+#endif
+}
+
 void sd_export_service(void)
 {
     uint8_t r = g_sd_req;
     if (r == SD_REQ_NONE) return;
     g_sd_req = SD_REQ_NONE;          /* vzit driv, nez se zacne pracovat */
     if (r == SD_REQ_MOUNT) {
-        printf("SD: auto-mount po vlozeni karty: %s (%s)\r\n",
-               sd_export_mount() ? "OK" : "FAIL", sd_export_state_str());
+        bool ok = sd_export_mount();
+        printf("SD: mount: %s (%s)\r\n", ok ? "OK" : "FAIL", sd_export_state_str());
+        snprintf(s_ui.msg, sizeof s_ui.msg, "%s", ok ? "Namountovano" : "Mount selhal");
+        ui_refresh_capacity();
+    } else if (r == SD_REQ_UNMOUNT) {
+        sd_export_unmount();
+        printf("SD: odmountovano\r\n");
+        snprintf(s_ui.msg, sizeof s_ui.msg, "Odmountovano - lze vyjmout");
+        ui_refresh_capacity();
     } else if (r == SD_REQ_EXPORT) {
         int32_t w = sd_export_run(0);
-        if (w < 0) printf("SD: export FAIL (%s)\r\n", sd_export_state_str());
-        else       printf("SD: exportovano %ld zaznamu\r\n", (long)w);
+        if (w < 0) { printf("SD: export FAIL (%s)\r\n", sd_export_state_str());
+                     snprintf(s_ui.msg, sizeof s_ui.msg, "Export SELHAL"); }
+        else       { printf("SD: exportovano %ld zaznamu\r\n", (long)w);
+                     snprintf(s_ui.msg, sizeof s_ui.msg, "Exportovano %ld zaznamu", (long)w); }
+        ui_refresh_capacity();
+    } else if (r == SD_REQ_TEST) {
+        bool ok = sd_export_selftest();
+        snprintf(s_ui.msg, sizeof s_ui.msg, "%s", ok ? "Test zapis/cteni PROSEL"
+                                                     : "Test SELHAL - viz konzole");
+        ui_refresh_capacity();
     }
 }
 
@@ -310,6 +362,73 @@ uint8_t BSP_SD_Init(void)
 }
 #endif
 
+/* ── Prepsani `BSP_SD_ReadBlocks_DMA` / `BSP_SD_WriteBlocks_DMA` ─────────────
+ * Obe jsou v `bsp_driver_sd.c` `__weak`, takze tohle je regen-safe.
+ *
+ * PROC: `sd_diskio.c` vede kazdy prenos pres tyhle dve funkce a pak ceka na
+ * zpravu ve fronte `SDQueueID`, kterou posila obsluha preruseni SDMMC1. Cela ta
+ * asynchronni masinerie ale prinasi tri problemy, ktere pro nas nemaji zadnou
+ * protihodnotu:
+ *   - IDMA nedosahne na DTCM a AXI SRAM je cacheable -> nutna rucni cache
+ *     maintenance, kterou ST dela nad NEZAROVNANYMI buffery volajiciho,
+ *   - „scratch" cesta, ktera to mela resit, ma v zapisove vetvi dve chyby
+ *     (chybejici `Clean` a cekani na `READ_CPLT_MSG`) -> tise selhavajici zapis,
+ *   - bez obsluhy preruseni cekala kazda operace `SD_TIMEOUT` = 30 s.
+ *
+ * Blokujici `HAL_SD_ReadBlocks`/`WriteBlocks` na H7 prehazuji data **procesorem
+ * pres FIFO** (`SDMMC_ReadFIFO()` ve smycce) — tedy zadne IDMA, zadny pozadavek
+ * na zarovnani, zadna cache maintenance, zadne preruseni. Za to platime tim, ze
+ * je CPU po dobu prenosu vytizeny: 512 B pri 4-bit / 16 MHz ~ 64 us, takze
+ * export stovek kB stoji desitky ms. Bezi to VYHRADNE z UartTasku, ktery
+ * watchdog nehlida, takze je to prijatelna cena za jednoduchost a spolehlivost.
+ * (Stejnou cestou uz jede `datalog_sd.c` a overene funguje.)
+ *
+ * Dokonceni si hlasime sami — `sd_diskio.c` pak najde zpravu uz ve fronte
+ * a jeho `osMessageQueueGet` se vrati okamzite. */
+#ifdef SD_EXPORT_FATFS
+uint8_t BSP_SD_ReadBlocks_DMA(uint32_t *pData, uint32_t ReadAddr, uint32_t NumOfBlocks)
+{
+    /* Timeout skaluje s poctem bloku; 1 s zakladu bohate staci i pomale karte. */
+    uint32_t to = 1000u + NumOfBlocks * 100u;
+    if (HAL_SD_ReadBlocks(&hsd1, (uint8_t *)pData, ReadAddr, NumOfBlocks, to) != HAL_OK)
+        return MSD_ERROR;
+    BSP_SD_ReadCpltCallback();     /* posle READ_CPLT_MSG do SDQueueID */
+    return MSD_OK;
+}
+
+uint8_t BSP_SD_WriteBlocks_DMA(uint32_t *pData, uint32_t WriteAddr, uint32_t NumOfBlocks)
+{
+    uint32_t to = 1000u + NumOfBlocks * 100u;
+    if (HAL_SD_WriteBlocks(&hsd1, (uint8_t *)pData, WriteAddr, NumOfBlocks, to) != HAL_OK)
+        return MSD_ERROR;
+    BSP_SD_WriteCpltCallback();    /* posle WRITE_CPLT_MSG do SDQueueID */
+    return MSD_OK;
+}
+#endif
+
+/* ── Prepsani `BSP_SD_GetCardState()` — POLITE POLLING ───────────────────────
+ * `sd_diskio.c` na ni ceka v NEKOLIKA tesnych smyckach bez jakehokoli yieldu:
+ *     while (osKernelGetTickCount() - timer < SD_TIMEOUT)
+ *         if (BSP_SD_GetCardState() == SD_TRANSFER_OK) break;
+ * a `SD_TIMEOUT` je **30 sekund**. Kdyz karta z jakehokoli duvodu nedojede,
+ * UartTask (Normal) tim na 30 s uplne vyhladovi UiTask (BelowNormal) —
+ * prestane fungovat DOTYK a `watchdog_kick_ui()` zestarne natolik, ze IWDG
+ * shodi desku. `SD_TIMEOUT` je bohuzel mimo USER CODE blok, takze ho snizit
+ * regen-safe nejde; tahle funkce ale `__weak` je.
+ *
+ * Reseni: kdyz karta NENI pripravena, ustoupime scheduleru na 1 ms. V typickem
+ * (zdravem) pripade se vraci `SD_TRANSFER_OK` hned a zadne zdrzeni nevznikne.
+ * Stejny idiom jako `w25q.c wait_ready()` a stejne pravidlo projektu:
+ * „zadny spin delsi nez ~10 ms v tasku, ktery neco blokuje". */
+#ifdef SD_EXPORT_FATFS
+uint8_t BSP_SD_GetCardState(void)
+{
+    if (HAL_SD_GetCardState(&hsd1) == HAL_SD_CARD_TRANSFER) return SD_TRANSFER_OK;
+    if (osKernelGetState() == osKernelRunning) osDelay(1);   /* nehladov UiTask */
+    return SD_TRANSFER_BUSY;
+}
+#endif
+
 /* ── `sd init` — SD inicializace PO KROCICH ──────────────────────────────────
  * `sd fs` restartuje desku uvnitr `HAL_SD_Init()`. Crash black-box ukazal
  * PC v `xTaskIncrementTick` (SysTick) pri cteni `pxCurrentTCB->uxPriority`,
@@ -388,7 +507,15 @@ void sd_export_fs(void)
         printf("  cteni LBA 0 SELHALO -> HW vrstva nebo karta\r\n");
         return;
     }
-    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_fsbuf, sizeof s_fsbuf);
+    /* ⚠️⚠️ ZDE NESMI BYT `SCB_InvalidateDCache_by_Addr` (odstraneno 2026-08-13).
+     * `BSP_SD_ReadBlocks` -> `HAL_SD_ReadBlocks` je na H7 **CPU cteni z FIFO**
+     * (`SDMMC_ReadFIFO` v smycce), NE IDMA — data tedy pise procesor a lezi
+     * v D-cache jako DIRTY. Invalidace bez clean je zahodi a z bufferu se pak
+     * precte to, co bylo v RAM = same nuly. Presne to hlasilo
+     * "LBA 0 nema podpis 0x55AA (0000) -> karta neni naformatovana", zatimco
+     * `f_mount` (jde pres `BSP_SD_ReadBlocks_DMA`, tam je cache maintenance
+     * na miste) tutez kartu namountoval bez problemu.
+     * Pravidlo: cache maintenance patri jen k `_DMA`/`_IT` variantam. */
 
     if (s_fsbuf[510] != 0x55u || s_fsbuf[511] != 0xAAu) {
         printf("  LBA 0 nema podpis 0x55AA (%02X%02X) -> karta neni naformatovana\r\n",
@@ -423,7 +550,7 @@ void sd_export_fs(void)
     if (BSP_SD_ReadBlocks((uint32_t *)(void *)s_fsbuf, first_lba, 1, 2000) != MSD_OK) {
         printf("  cteni boot sektoru particie SELHALO\r\n"); return;
     }
-    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_fsbuf, sizeof s_fsbuf);
+    /* ⚠️ Zadna invalidace — viz komentar u cteni LBA 0 vyse. */
     fs_show_vbr(s_fsbuf, "particie 1");
 #endif
 }
@@ -521,7 +648,16 @@ static bool selftest_body(void)
             f_close(&f); return false;
         }
     }
-    f_close(&f);   /* flush + adresar */
+    /* ⚠️ Navratovou hodnotu `f_close` KONTROLOVAT. Prave tady se zapisuje
+     * adresarova polozka — kdyz to selze, `f_write` uz hlasilo OK a chyba se
+     * projevi az o kus dal jako zavadejici FR_NO_FILE pri otevreni pro cteni
+     * (presne tak vypadalo selhani rozbite scratch cesty v `sd_diskio.c`). */
+    fr = f_close(&f);
+    if (fr != FR_OK) {
+        printf("SD TEST: f_close(w) = %d %s -> adresarova polozka se nezapsala\n",
+               (int)fr, fr_str(fr));
+        return false;
+    }
 
     /* --- cteni a overeni obsahu --- */
     fr = f_open(&f, SD_TEST_FILE, FA_READ);

@@ -75,14 +75,20 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
  * Notice: This is applicable only for cortex M7 based platform.
  */
 /* USER CODE BEGIN enableSDDmaCacheMaintenance */
-/* ⚠️⚠️ MUSÍ být zapnuté. Tenhle projekt má na CM7 zapnutou D-cache a FatFs buffery
- * leží v cacheable AXI SRAM (RAM_D1). SDMMC na H7 používá pro datovou fázi **IDMA**
- * — a to i u blokujících `HAL_SD_ReadBlocks/WriteBlocks`, ne jen u `_DMA` variant.
- * Bez cache maintenance tedy:
- *   - zápis: data zůstanou v D-cache, IDMA přečte staré RAM → na kartu jde nesmysl
- *   - čtení: IDMA zapíše RAM, CPU čte starou cache → přečte se nesmysl
- * Projev = „init projde, karta se vidí, pak datový přenos nejede" (STATUS #69). */
-#define ENABLE_SD_DMA_CACHE_MAINTENANCE  1
+/* ⚠️⚠️ VYPNUTO 2026-08-13 — a je to SPRÁVNĚ, i když tu dřív stálo opačné tvrzení.
+ *
+ * Předpoklad, na kterém stálo to původní „MUSÍ být zapnuté", byl chybný:
+ * blokující `HAL_SD_ReadBlocks/WriteBlocks` na H7 **nepoužívají IDMA** — přehazují
+ * data procesorem přes FIFO (`SDMMC_ReadFIFO()` ve smyčce, viz `stm32h7xx_hal_sd.c`).
+ * A protože `BSP_SD_ReadBlocks_DMA`/`WriteBlocks_DMA` jsou v tomhle projektu
+ * **přepsané na blokující polled variantu** (`sd_export.c`, `__weak` v
+ * `bsp_driver_sd.c`), neteče přes IDMA vůbec nic.
+ *
+ * Cache maintenance je pak nejen zbytečná, ale u čtení PŘÍMO ŠKODLIVÁ: data píše
+ * CPU, takže leží v D-cache jako dirty, a `SCB_InvalidateDCache_by_Addr()` je bez
+ * zápisu zpět zahodí. Přesně proto `sd fs` hlásil „karta není naformátovaná"
+ * (samé nuly) u karty, kterou `f_mount` bez problému namountoval. */
+#define ENABLE_SD_DMA_CACHE_MAINTENANCE  0
 /* USER CODE END enableSDDmaCacheMaintenance */
 
 /*
@@ -91,19 +97,31 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
 * transfer data
 */
 /* USER CODE BEGIN enableScratchBuffer */
-/* ⚠️⚠️ MUSÍ být zapnuté SPOLU s ENABLE_SD_DMA_CACHE_MAINTENANCE výše.
- * Bez scratch bufferu dělá ST cache maintenance PŘÍMO nad bufferem volajícího:
- *     alignedAddr = (uint32_t)buff & ~0x1F;
- *     SCB_InvalidateDCache_by_Addr(alignedAddr, count*BLOCKSIZE + (buff - alignedAddr));
- * Jenže FatFs buffery (`FATFS.win`, `FIL.buf`) ani uživatelské buffery **nejsou
- * zarovnané na 32 B**. Invalidace pak zasáhne i cache linku se SOUSEDNÍMI daty a
- * **zahodí do nich zapsané (dirty) hodnoty** — tichá korupce cizí paměti, u
- * zásobníkového bufferu klidně živého stack framu.
- * Se zapnutým scratch bufferem jde všechno přes `ALIGN_32BYTES(static uint8_t
- * scratch[512])` + memcpy → cache ops se dějí jen nad ním a hazard mizí.
- * Cena: jedno memcpy na 512B blok. Pro export logu naprosto zanedbatelné.
- * (Stejný důvod a stejný vzor jako bounce buffer v `datalog_sd.c`.) */
-#define ENABLE_SCRATCH_BUFFER
+/* ⚠️⚠️ ZÁMĚRNĚ VYPNUTO 2026-08-13 — scratch cesta je v ST-čkovém kódu ROZBITÁ.
+ *
+ * Scratch („slow path") se bere pro každý buffer nezarovnaný na 32 B — a přesně
+ * takové FatFs předává (`FIL.buf` uvnitř `FIL` na zásobníku, `FATFS.win`).
+ * V ZÁPISOVÉ větvi jsou v ní dvě chyby:
+ *
+ *  1) `SCB_InvalidateDCache_by_Addr(scratch, …)` se volá **před** `memcpy` do
+ *     scratche, a `Clean` po něm chybí úplně. Data tedy zůstanou v D-cache jako
+ *     dirty a na kartu se zapíše starý obsah RAM.
+ *  2) Čeká se na `READ_CPLT_MSG`, přestože zápis posílá `WRITE_CPLT_MSG`
+ *     (kopie z read větve). Dokončení se tak nikdy nepotvrdí a další blok se
+ *     pouští do ještě obsazené periferie.
+ *
+ * Projev: `f_write` + `f_close` projdou bez chyby, ale adresářová položka se
+ * nezapíše → následné `f_open(FA_READ)` vrátí **FR_NO_FILE (4)**. Přesně to
+ * hlásil `sd test`.
+ *
+ * Bez scratche jde všechno „fast path" bez ohledu na zarovnání — což je u nás
+ * v pořádku, protože `BSP_SD_*Blocks_DMA` jsou přepsané na blokující CPU/FIFO
+ * přenos (`sd_export.c`): ten nemá ani požadavek na zarovnání, ani na DTCM,
+ * ani na cache maintenance. Zarovnání řešil scratch jen kvůli IDMA, které tu
+ * nefiguruje.
+ * ⚠️ Kdyby se někdy vracelo ke skutečnému IDMA, musí se zapnout OBOJE — a napřed
+ * opravit ty dvě chyby výše. */
+/* #define ENABLE_SCRATCH_BUFFER */
 /* USER CODE END enableScratchBuffer */
 
 /* Private variables ---------------------------------------------------------*/

@@ -50,10 +50,30 @@ const char       *sd_export_state_str(void);
  * je NESMI volat UiTask (hlidany watchdogem) ani defaultTask (krmi watchdog).
  * UI i auto-mount proto jen nastavi tenhle priznak a skutecnou praci udela
  * UartTask, ktery hlidany neni. Stejny vzor jako `g_screen_req` pro kresleni. */
-#define SD_REQ_NONE    0u
-#define SD_REQ_MOUNT   1u
-#define SD_REQ_EXPORT  2u
+#define SD_REQ_NONE     0u
+#define SD_REQ_MOUNT    1u
+#define SD_REQ_EXPORT   2u
+#define SD_REQ_UNMOUNT  3u
+#define SD_REQ_TEST     4u
 extern volatile uint8_t g_sd_req;
+
+/* ── Snapshot pro UI (okno SD KARTA, s_view=37) ──────────────────────────────
+ * UiTask NESMI volat FatFs (`f_getfree` projde u FAT16/poskozeneho FSINFO celou
+ * tabulku FAT = jednotky sekund se zamcenou kartou, a UiTask hlida watchdog).
+ * Vsechno pomale proto pocita UartTask v `sd_export_service()` a UI uz jen cte
+ * tenhle hotovy snapshot. Stejna filozofie jako `g_rtc_text` vs. HAL_RTC. */
+typedef struct {
+    uint8_t  state;        /* sd_export_state_t */
+    uint8_t  busy;         /* 1 = UartTask prave dela blokujici operaci */
+    uint8_t  present;      /* card-detect PE3 */
+    uint32_t total_mb;     /* 0 = neznamo (nenamountovano) */
+    uint32_t free_mb;
+    char     fs[8];        /* "FAT16"/"FAT32"/"exFAT"/"" */
+    char     msg[40];      /* vysledek posledni operace pro uzivatele */
+} sd_ui_info_t;
+
+/** @return snapshot pro UI. Bezpecne z UiTasku — jen cteni, nic neblokuje. */
+const sd_ui_info_t *sd_export_ui_info(void);
 
 /** Obslouzi cekajici pozadavek (vola VYHRADNE UartTask ve sve smycce). */
 void sd_export_service(void);

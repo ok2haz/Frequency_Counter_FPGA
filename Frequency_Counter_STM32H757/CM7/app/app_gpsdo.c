@@ -14,6 +14,7 @@
 #include "w25q.h"               /* w25q_read_jedec — externi flash v okne PAMET */
 #include "w25q_map.h"           /* W25Q_DATA_BASE/SIZE — okno Datalog */
 #include "datalog.h"            /* datalog_get_status/set_enabled — okno Datalog */
+#include "sd_export.h"          /* stav SD + g_sd_req — okno SD karta (s_view=37) */
 #include "sensor_hist.h"        /* sensor_hist_series — RAM historie pro okno Grafy (#31) */
 #include "alarm.h"              /* g_alarm_* pocitadla — okno Alarmy */
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
@@ -260,6 +261,7 @@ static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + *
 static const prim_rect_t REF_RECT    = {SETNAV_XA, 240, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
 static const prim_rect_t ABOUT_RECT  = {SETNAV_XA, 326, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
 static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XC, 240, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
+static const prim_rect_t SDNAV_RECT  = {SETNAV_XC, 326, SETNAV_W, SETNAV_H};  /* -> SD karta (37) */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
@@ -285,6 +287,7 @@ static int     s_nav_sp = 0;
 static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] = from; }
 static void app_gpsdo_render_net(void);      /* Sit / ETH (s_view=35) */
 static void app_gpsdo_render_display(void);  /* Displej: jas + auto-dim (s_view=36) */
+static void app_gpsdo_render_sd(void);       /* SD karta (s_view=37) */
 static void goto_view(uint8_t v)
 {
     switch (v) {
@@ -295,6 +298,7 @@ static void goto_view(uint8_t v)
     case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
     case 35: app_gpsdo_render_net();      break;   /* Sit (dnes bez podoken, pro symetrii) */
     case 36: app_gpsdo_render_display();  break;   /* Displej */
+    case 37: app_gpsdo_render_sd();       break;   /* SD karta */
     default: app_gpsdo_render_main();     break;   /* koren */
     }
 }
@@ -2347,7 +2351,7 @@ void app_gpsdo_render_settings(void)
 
     /* ── Mrizka 3x4. `Vzhled` a `Jazyk` jsou PREPINACE (label nese stav), zbytek
      * naviguje do podoken. Poradi po radcich podle cetnosti pouziti. Posledni
-     * bunka (SETNAV_XC, 326) je zamerne volna — rezerva. ── */
+     * Mrizka je od 2026-08-13 PLNA (posledni bunka = SD KARTA). ── */
     settings_upd_lang();
     static const struct { const prim_rect_t *r; const char *label; } SETNAV[] = {
         { &DISPNAV_RECT,    "DISPLEJ >"     },   /* Vzhled je uvnitr nej */
@@ -2359,6 +2363,7 @@ void app_gpsdo_render_settings(void)
         { &ANIMNAV_RECT,    "ANIMACE >"     },
         { &SETUP_ENTER_RECT,"SESTAVY >"     },
         { &ABOUT_RECT,      "O PRISTROJI >" },
+        { &SDNAV_RECT,      "SD KARTA >"    },
     };
     for (unsigned i = 0; i < sizeof SETNAV / sizeof SETNAV[0]; i++) {
         ui_button_t nb = {.rect = *SETNAV[i].r, .variant = UI_BUTTON_NORMAL,
@@ -3928,6 +3933,87 @@ static void app_gpsdo_render_display(void)
     present_now();
 }
 
+/* ── Okno SD KARTA (s_view=37) ───────────────────────────────────────────────
+ * Vstup: dlazdice „SD KARTA >" v Nastaveni.
+ * ⚠️ VSECHNY akce jsou jen POZADAVKY (`g_sd_req`) — skutecnou praci dela
+ * UartTask v `sd_export_service()`. Mount trva stovky ms, test a export
+ * sekundy; kdyby to bezelo tady, UiTask by prestal krmit watchdog a IWDG by
+ * desku shodil. Stejny vzor jako `g_screen_req` pro kresleni.
+ * Kapacitu/volne misto taky pocita UartTask (`f_getfree` umi u FAT16 projit
+ * celou FAT) — UI cte hotovy snapshot `sd_export_ui_info()`. */
+static const prim_rect_t SD_MOUNT_RECT  = { 18, 417, 200, 61};
+static const prim_rect_t SD_TEST_RECT   = {228, 417, 190, 61};
+static const prim_rect_t SD_EXPORT_RECT = {428, 417, 210, 61};
+
+static void app_gpsdo_render_sd(void)
+{
+    int first = window_first(37);
+    static char c_karta[24], c_stav[28], c_kap[40], c_fs[16], c_msg[40];
+    static uint8_t c_mount_lbl = 0xFF;   /* 0 = "PRIPOJIT", 1 = "ODPOJIT" */
+    if (first) {
+        s_view = 37;
+        window_chrome("SD KARTA", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_B,
+                       .header_label = "Exportni medium (autoritativni log zustava ve W25Q)"};
+        ui_card_render_chrome(&c);
+        c_karta[0] = c_stav[0] = c_kap[0] = c_fs[0] = c_msg[0] = '\0';
+        c_mount_lbl = 0xFF;
+    }
+
+    const sd_ui_info_t *si = sd_export_ui_info();
+    char b[40];
+
+    /* Tlacitko nabizi AKCI, ne stav (stejne jako footer RUN/STOP). */
+    uint8_t want_unmount = (si->state == SD_EXP_MOUNTED) ? 1u : 0u;
+    if (first || want_unmount != c_mount_lbl) {
+        c_mount_lbl = want_unmount;
+        ui_button_t mb = {.rect = SD_MOUNT_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = want_unmount ? "ODPOJIT" : "PRIPOJIT"};
+        prim_fill_rect(SD_MOUNT_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);  /* zmena labelu */
+        ui_button_render(&mb);
+    }
+    if (first) {
+        ui_button_t tb = {.rect = SD_TEST_RECT,   .variant = UI_BUTTON_NORMAL, .label = "TEST"};
+        ui_button_t eb = {.rect = SD_EXPORT_RECT, .variant = UI_BUTTON_NORMAL, .label = "EXPORT CSV"};
+        ui_button_t bb = {.rect = BACK_RECT,      .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&tb); ui_button_render(&eb); ui_button_render(&bb);
+    }
+
+    snprintf(b, sizeof b, "%s", si->present ? "VLOZENA" : "chybi ve slotu");
+    if (first || dchg(c_karta, sizeof c_karta, b))
+        kv_row_live(116, "Karta:", b, si->present ? UI_COLOR_OK : UI_COLOR_INK_3, first);
+
+    snprintf(b, sizeof b, "%s%s", sd_export_state_str(), si->busy ? "  (pracuji...)" : "");
+    if (first || dchg(c_stav, sizeof c_stav, b))
+        kv_row_live(152, "Stav:", b,
+                    (si->state == SD_EXP_ERROR)   ? UI_COLOR_BAD :
+                    (si->state == SD_EXP_MOUNTED) ? UI_COLOR_OK  : UI_COLOR_INK_2, first);
+
+    snprintf(b, sizeof b, "%s", si->fs[0] ? si->fs : "--");
+    if (first || dchg(c_fs, sizeof c_fs, b))
+        kv_row_live(188, "Soubor. system:", b, UI_COLOR_INK_2, first);
+
+    if (si->total_mb) snprintf(b, sizeof b, "%lu / %lu MB volno",
+                               (unsigned long)si->free_mb, (unsigned long)si->total_mb);
+    else              snprintf(b, sizeof b, "--");
+    if (first || dchg(c_kap, sizeof c_kap, b))
+        kv_row_live(224, "Misto:", b, UI_COLOR_INK_2, first);
+
+    snprintf(b, sizeof b, "%s", si->msg[0] ? si->msg : "--");
+    if (first || dchg(c_msg, sizeof c_msg, b))
+        kv_row_live(260, "Posledni akce:", b, UI_COLOR_INK_2, first);
+
+    if (first) {
+        prim_draw_text((prim_point_t){DG_LLBL, 310},
+                       "EXPORT zapise datalog z W25Q do GPSDOnnn.CSV (oddelovac ;).",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_LLBL, 340},
+                       "Pred vyjmutim karty dej ODPOJIT. Operace bezi na pozadi.",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
+    present_now();
+}
+
 static void app_gpsdo_render_net(void)
 {
     int first = window_first(35);
@@ -4456,6 +4542,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 30) app_gpsdo_render_hbars();     /* Prehled kanalu: horizontalni bargrafy */
     else if (s_view == 31) app_gpsdo_render_math();      /* Math/limity (zive X/Y/verdikt) */
     else if (s_view == 32) app_gpsdo_render_survey();    /* Self-survey (zive prumerovani polohy) */
+    else if (s_view == 37) app_gpsdo_render_sd();        /* SD karta (zivy stav + vysledek akce) */
     else if (s_view == 34) app_gpsdo_render_meas();      /* MERENI: perioda/jednotky/statistika/TFOM (#67) */
 }
 
@@ -4916,7 +5003,22 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, ALRMNAV_RECT)) { nav_push(7); app_gpsdo_render_alarms();   return true; }
             if (in_rect(x, y, KALIBNAV_RECT)){ nav_push(7); app_gpsdo_render_kalib();    return true; }
             if (in_rect(x, y, ANIMNAV_RECT)) { nav_push(7); app_gpsdo_render_anim();     return true; }
+            if (in_rect(x, y, SDNAV_RECT))   { nav_push(7); app_gpsdo_render_sd();       return true; }
             #undef SETTINGS_UPD
+        }
+        if (s_view == 37) {                                 /* okno SD KARTA */
+            /* ⚠️ Jen POZADAVEK — blokujici praci dela UartTask (`sd_export_service`).
+             * `g_sd_req` se prepise jen kdyz je volny, aby rychly dvojtap
+             * nezahodil uz cekajici akci. */
+            uint8_t req = 0;
+            if      (in_rect(x, y, SD_MOUNT_RECT))
+                req = (sd_export_ui_info()->state == SD_EXP_MOUNTED) ? SD_REQ_UNMOUNT : SD_REQ_MOUNT;
+            else if (in_rect(x, y, SD_TEST_RECT))   req = SD_REQ_TEST;
+            else if (in_rect(x, y, SD_EXPORT_RECT)) req = SD_REQ_EXPORT;
+            if (req) {
+                if (g_sd_req == SD_REQ_NONE) g_sd_req = req;
+                return true;
+            }
         }
         if (s_view == 33) {                                 /* okno SESTAVY: slot -/+, uloz/nacti/smaz */
             int redraw = 0, reload = 0;
