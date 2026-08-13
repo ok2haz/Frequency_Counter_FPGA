@@ -135,6 +135,13 @@ volatile uint8_t g_rtc_synced    = 0;
 /* Lokalni cas dle zvolene zony (rtc_app_tick aplikuje g_tz_offset_h na UTC,
  * vc. prehoupnuti data). Hlavni obrazovka + screensaver; GPS okno/diag = UTC. */
 volatile char    g_rtc_text_local[24] = "---------- --:--:--";
+
+/* Sitova konfigurace — vychozi: DHCP zapnuty, staticke hodnoty jen jako rozumny
+ * vychozi bod, kdyby ho uzivatel vypnul. Viz freertos_shared.h. */
+volatile uint8_t  g_net_dhcp = 1u;
+volatile uint32_t g_net_ip   = 0xC0A80164u;   /* 192.168.1.100 */
+volatile uint32_t g_net_mask = 0xFFFFFF00u;   /* 255.255.255.0 */
+volatile uint32_t g_net_gw   = 0xC0A80101u;   /* 192.168.1.1 */
 volatile char    g_tz_label[8]   = "UTC";   /* "UTC" / "UTC+2" / "CET" / "CEST" (pise rtc_app_tick) */
 volatile int8_t  g_tz_offset_h   = 0;       /* rucni posun od UTC [h], -12..+14, persist BKP_DR6 */
 volatile uint8_t g_tz_auto       = 0;       /* 1 = AUTO CET/CEST (EU pravidlo), persist BKP_DR6 bit7 */

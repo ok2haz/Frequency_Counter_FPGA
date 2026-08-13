@@ -57,6 +57,17 @@ extern volatile uint8_t g_rtc_synced;
  * na UTC (vc. prehoupnuti data) -> g_rtc_text_local + g_tz_label ("UTC"/"UTC+2").
  * Hlavni obrazovka + screensaver ctou local; GPS okno + diag zustavaji UTC. */
 extern volatile char    g_rtc_text_local[24];
+
+/* ── Sitova konfigurace (okno Sit, s_view=35). Persist v syscfg blobu (W25Q).
+ * ⚠️ Dnes je to POUZE ULOZENA KONFIGURACE — nic ji nekonzumuje, protoze ETH je
+ * blokovana hardwarem (PHY dostava 10 MHz misto 25, viz ETH_BRINGUP_CHECKLIST
+ * §2). Az bude clock spraveny a prijde lwIP (etapa F5), pouzije se beze zmeny:
+ * `g_net_dhcp` -> `dhcp_start()` vs `netif_set_addr()`. Adresy v HOST poradi
+ * (0xC0A80164 = 192.168.1.100). */
+extern volatile uint8_t  g_net_dhcp;      /* 1 = DHCP klient, 0 = staticka adresa */
+extern volatile uint32_t g_net_ip;        /* staticka IP */
+extern volatile uint32_t g_net_mask;      /* maska */
+extern volatile uint32_t g_net_gw;        /* brana */
 extern volatile char    g_tz_label[8];
 extern volatile int8_t  g_tz_offset_h;    /* -12..+14 h, persist BKP_DR6 (UiTask pise, defaultTask cte) */
 extern volatile uint8_t g_tz_auto;        /* 1 = AUTO CET/CEST (EU pravidlo), persist BKP_DR6 bit7 */

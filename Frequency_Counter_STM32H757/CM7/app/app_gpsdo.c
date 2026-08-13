@@ -46,6 +46,9 @@ extern volatile uint32_t g_uptime_s;             /* uptime [s] */
 extern volatile char     g_rtc_text[24];         /* "YYYY-MM-DD HH:MM:SS" (RTC z LSE, sync z GPS) — UTC */
 extern volatile char     g_rtc_text_local[24];   /* totez v lokalni zone (screensaver, okno Cas) */
 extern volatile char     g_tz_label[8];          /* "UTC"/"UTC+2"/"CET"/"CEST" (pise rtc_app_tick) */
+/* Sitova konfigurace (okno Sit, s_view=35) — persist v syscfg blobu. */
+extern volatile uint8_t  g_net_dhcp;
+extern volatile uint32_t g_net_ip, g_net_mask, g_net_gw;
 extern volatile int8_t   g_tz_offset_h;          /* casova zona -12..+14 h (okno Cas) */
 extern volatile uint8_t  g_tz_auto;              /* 1 = AUTO CET/CEST (EU pravidlo) */
 int rtc_cest_active(uint16_t y, uint8_t month, uint8_t day, uint8_t hour_utc); /* rtc.h (cista fce) */
@@ -216,16 +219,32 @@ static const prim_rect_t BR_PLUS     = {110, 188, 72, 64};    /* Jas + */
 static const prim_rect_t ADEN_RECT   = {30, 308, 140, 64};    /* Auto-dim zap/vyp */
 static const prim_rect_t DIM_MINUS   = {186, 308, 56, 64};    /* prodleva - */
 static const prim_rect_t DIM_PLUS    = {316, 308, 56, 64};    /* prodleva + */
-static const prim_rect_t THEME_RECT  = {602, 74, 160, 64};    /* Vzhled: TMAVE/SVETLE */
-static const prim_rect_t LANG_RECT   = {602, 166, 160, 64};   /* Jazyk: CESKY/ENGLISH */
+/* ── Prava polovina okna Nastaveni = MRIZKA 2x5 (2026-08-13) ────────────────
+ * Nastaveni se stalo rozcestnikem: Menu se vyprazdnilo na placeholdery a vsechno,
+ * co je konfigurace (Cas, Alarmy, Kalibrace, Animace, Sit), se presunulo sem.
+ * Leva polovina zustava primym ovladanim (zvuk / jas / auto-dim).
+ * Geometrie: x=410/600 (w=182, mezera 8), y=72/140/208/276/344 (h=62, mezera 6);
+ * posledni rada konci na 406, footer zacina 417. Dotykovy cil 62 px = 7,3 mm,
+ * tesne nad projektovym minimem 7 mm (viz UI_SIZES.md). */
+#define SETNAV_X0  410
+#define SETNAV_X1  600
+#define SETNAV_W   182
+#define SETNAV_H   62
+static const prim_rect_t THEME_RECT  = {SETNAV_X0,  72, SETNAV_W, SETNAV_H};  /* Vzhled */
+static const prim_rect_t LANG_RECT   = {SETNAV_X1,  72, SETNAV_W, SETNAV_H};  /* Jazyk */
+static const prim_rect_t NET_RECT    = {SETNAV_X0, 140, SETNAV_W, SETNAV_H};  /* -> Sit (s_view=35) */
+static const prim_rect_t CASNAV_RECT = {SETNAV_X1, 140, SETNAV_W, SETNAV_H};  /* -> Cas (22) */
+static const prim_rect_t ALRMNAV_RECT= {SETNAV_X0, 208, SETNAV_W, SETNAV_H};  /* -> Alarmy (18) */
+static const prim_rect_t KALIBNAV_RECT={SETNAV_X1, 208, SETNAV_W, SETNAV_H};  /* -> Kalibrace (15) */
+static const prim_rect_t ANIMNAV_RECT= {SETNAV_X0, 276, SETNAV_W, SETNAV_H};  /* -> Animace (24) */
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
 static const prim_rect_t TZ_MINUS     = {30, 310, 72, 64};    /* rucni posun - */
 static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + */
-static const prim_rect_t REF_RECT    = {410, 262, 372, 64};   /* Reference Si5356 (presunuto z Menu) */
-static const prim_rect_t ABOUT_RECT  = {410, 340, 372, 64};   /* O pristroji (dolni pravy) */
-static const prim_rect_t SETUP_ENTER_RECT = {18, 417, 200, 61};  /* Nastaveni footer -> okno SESTAVY */
+static const prim_rect_t REF_RECT    = {SETNAV_X1, 276, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
+static const prim_rect_t ABOUT_RECT  = {SETNAV_X0, 344, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
+static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_X1, 344, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
@@ -245,6 +264,7 @@ static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 static uint8_t s_nav_stack[6];
 static int     s_nav_sp = 0;
 static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] = from; }
+static void app_gpsdo_render_net(void);   /* Sit / ETH (s_view=35) — volano z goto_view i z Nastaveni */
 static void goto_view(uint8_t v)
 {
     switch (v) {
@@ -253,6 +273,7 @@ static void goto_view(uint8_t v)
     case 7:  app_gpsdo_render_settings(); break;   /* Nastaveni (spawnuje O pristroji) */
     case 12: app_gpsdo_render_menu();     break;   /* Menu rozcestnik */
     case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
+    case 35: app_gpsdo_render_net();      break;   /* Sit (dnes bez podoken, pro symetrii) */
     default: app_gpsdo_render_main();     break;   /* koren */
     }
 }
@@ -2329,23 +2350,26 @@ void app_gpsdo_render_settings(void)
                        .label = g_theme_light ? "SVETLE" : "TMAVE"};
     ui_button_render(&thb);
 
-    /* ── Pravy sloupec: Jazyk ── */
-    ui_card_t c5 = {.rect = {DG_RX, 156, DG_COLW, 82}, .header_label = "Jazyk / Language"};
-    ui_card_render_chrome(&c5);
     settings_upd_lang();
-    /* (Casova zona ma VLASTNI okno "Cas" — dlazdice v Menu, s_view=22.) */
 
-    /* ── Reference Si5356 (presunuto z Menu dlazdice sem) ── */
-    ui_button_t rb = {.rect = REF_RECT, .variant = UI_BUTTON_NORMAL, .label = "REFERENCE Si5356 >"};
-    ui_button_render(&rb);
-
-    /* ── O pristroji (tlacitko dolni pravy) ── */
-    ui_button_t ab = {.rect = ABOUT_RECT, .variant = UI_BUTTON_NORMAL, .label = "O PRISTROJI >"};
-    ui_button_render(&ab);
-
-    /* ── Sestavy (uloz/nacti profil nastaveni) — footer vlevo od BACK ── */
-    ui_button_t sb = {.rect = SETUP_ENTER_RECT, .variant = UI_BUTTON_NORMAL, .label = "SESTAVY >"};
-    ui_button_render(&sb);
+    /* ── Mrizka rozcestniku (2x5). Vzhled/Jazyk jsou PREPINACE (drzi stav),
+     * zbytek jsou navigace do podoken. Poradi po radcich = podle toho, jak casto
+     * se to pouziva, ne abecedne. ── */
+    static const struct { const prim_rect_t *r; const char *label; } SETNAV[] = {
+        { &NET_RECT,        "SIT >"       },
+        { &CASNAV_RECT,     "CAS >"       },
+        { &ALRMNAV_RECT,    "ALARMY >"    },
+        { &KALIBNAV_RECT,   "KALIBRACE >" },
+        { &ANIMNAV_RECT,    "ANIMACE >"   },
+        { &REF_RECT,        "REFERENCE >" },
+        { &ABOUT_RECT,      "O PRISTROJI >" },
+        { &SETUP_ENTER_RECT,"SESTAVY >"   },
+    };
+    for (unsigned i = 0; i < sizeof SETNAV / sizeof SETNAV[0]; i++) {
+        ui_button_t nb = {.rect = *SETNAV[i].r, .variant = UI_BUTTON_NORMAL,
+                          .label = SETNAV[i].label};
+        ui_button_render(&nb);
+    }
 
     present_now();
 }
@@ -2541,9 +2565,11 @@ static void app_gpsdo_render_efekty(void);       /* Prepinace grafickych efektu 
  * Diagnostika ZUSTAVA i dlazdici (caste pouziti). */
 enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
        ACT_KALIB, ACT_HOLDOVER, ACT_DATALOG, ACT_ALARMS, ACT_CAS,
-       ACT_ANIM,             /* Animace/demo (s_view=24) — drive Placeholder 1 */
-       ACT_RIBBON,           /* Status ribbon demo (s_view=28) — drive Placeholder 3 */
-       ACT_MATH };           /* Math/limity (s_view=31, #43/#44) — drive Placeholder 2 */
+       ACT_ANIM,             /* Animace/demo (s_view=24) — dnes uz jen z Nastaveni */
+       ACT_RIBBON,           /* Status ribbon demo (s_view=28) */
+       ACT_MATH,             /* Math/limity (s_view=31, #43/#44) */
+       ACT_NET,              /* Sit / ETH (s_view=35) — dostupne z Nastaveni */
+       ACT_FREE };           /* volny slot pro budouci pouziti (no-op, NEdela nav_push) */
 /* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9; 4. rada = Animace/Math/Status
  * ribbon — vsech 12 slotu je dnes obsazenych realnymi funkcemi). w=248, gap 14; h=76, gap 10
  * (y=68/154/240/326 -> radek4 konci 402, 15 px pred footerem 417 — bylo
@@ -2565,10 +2591,14 @@ static const struct { prim_rect_t rect; const char *label; uint8_t act; } MENU_I
     { {14, 154, 248, 76}, "Citac",         ACT_COUNTER },
     { {276,154, 248, 76}, "Holdover",      ACT_HOLDOVER },
     { {538,154, 248, 76}, "Datalog",       ACT_DATALOG },
-    { {14, 240, 248, 76}, "Alarmy",        ACT_ALARMS },
-    { {276,240, 248, 76}, "Kalibrace",     ACT_KALIB },
-    { {538,240, 248, 76}, "Cas",           ACT_CAS },
-    { {14, 326, 248, 76}, "Animace",       ACT_ANIM },
+    /* ⚠️ 2026-08-13: Alarmy / Kalibrace / Cas / Animace se PRESUNULY do okna
+     * Nastaveni (mrizka rozcestniku vpravo) — je to konfigurace, ne nastroje.
+     * Tyto ctyri sloty jsou proto volne pro budouci funkce. `ACT_FREE` je
+     * zamerne no-op: dotyk NEdela nav_push, takze se nikam nenaviguje. */
+    { {14, 240, 248, 76}, "-",             ACT_FREE },
+    { {276,240, 248, 76}, "-",             ACT_FREE },
+    { {538,240, 248, 76}, "-",             ACT_FREE },
+    { {14, 326, 248, 76}, "-",             ACT_FREE },
     { {276,326, 248, 76}, "Math/Limity",   ACT_MATH },
     { {538,326, 248, 76}, "Status ribbon", ACT_RIBBON },
 };
@@ -2588,6 +2618,8 @@ static void menu_activate(uint8_t act)
     case ACT_ALARMS:    app_gpsdo_render_alarms();    break;
     case ACT_CAS:       app_gpsdo_render_cas();       break;
     case ACT_ANIM:      app_gpsdo_render_anim();      break;
+    case ACT_NET:       app_gpsdo_render_net();       break;
+    case ACT_FREE:      break;   /* volny slot — zamerne nic (viz MENU_ITEMS) */
     case ACT_RIBBON:    app_gpsdo_render_ribbon();    break;
     case ACT_MATH:      app_gpsdo_render_math();      break;
     default: break;   /* Restart neni ACT_* — footer tlacitko -> confirm okno (s_view=13) */
@@ -3792,6 +3824,94 @@ static void cas_upd_mode(void)
     prim_draw_text((prim_point_t){176, 350}, b, &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
 }
 
+/* ── Okno SIT (s_view=35) — konfigurace Ethernetu ────────────────────────────
+ * Vstup: Nastaveni -> "SIT >". Drzi DHCP vs statickou adresu; hodnoty persistuji
+ * v syscfg blobu (W25Q).
+ *
+ * ⚠️ POCTIVE K UZIVATELI: dnes to NIC nekonfiguruje. ETH je blokovana hardwarem —
+ * PHY LAN8742A dostava 10 MHz misto pozadovanych 25 MHz (X1 je sdileny s HSE
+ * procesoru a jde pres R6 do site OSC_25M), takze neodpovi ani na MDIO. Overeno
+ * prikazem `eth`, detaily v ETH_BRINGUP_CHECKLIST.md §2. Okno to proto rovnou
+ * rika na prvni karte, misto aby predstiralo funkcni sit.
+ *
+ * Az bude clock spraveny a prijde lwIP (etapa F5), pouzije se tato konfigurace
+ * beze zmeny: `g_net_dhcp` -> `dhcp_start()`, jinak `netif_set_addr()`.
+ * DHCP klienta NEBUDEME psat — lwIP ho ma (`LWIP_DHCP`), viz F5. */
+static const prim_rect_t NET_DHCP_RECT  = { 40, 268, 190, 64};   /* DHCP ZAP/VYP */
+static const prim_rect_t NET_FIELD_RECT = {246, 268, 176, 64};   /* IP / MASKA / BRANA */
+static const prim_rect_t NET_OCT_RECT   = {438, 268, 130, 64};   /* vyber oktetu 1..4 */
+static const prim_rect_t NET_MINUS_RECT = {584, 268,  90, 64};
+static const prim_rect_t NET_PLUS_RECT  = {684, 268,  98, 64};
+static uint8_t s_net_field = 0;   /* 0=IP 1=maska 2=brana */
+static uint8_t s_net_oct   = 0;   /* 0..3 (zleva) */
+
+static volatile uint32_t *net_field_ptr(void)
+{
+    return (s_net_field == 0) ? &g_net_ip : (s_net_field == 1) ? &g_net_mask : &g_net_gw;
+}
+static void net_fmt(char *b, size_t n, uint32_t a)
+{
+    snprintf(b, n, "%lu.%lu.%lu.%lu", (unsigned long)((a >> 24) & 0xFFu),
+             (unsigned long)((a >> 16) & 0xFFu), (unsigned long)((a >> 8) & 0xFFu),
+             (unsigned long)(a & 0xFFu));
+}
+/* Prekresli radek hodnoty + popisky tlacitek (volano pri kazde zmene). */
+static void net_upd_values(void)
+{
+    static const char *const FLD[3] = { "IP", "MASKA", "BRANA" };
+    char b[24];
+    ui_button_t db = {.rect = NET_DHCP_RECT,
+                      .variant = g_net_dhcp ? UI_BUTTON_RUN : UI_BUTTON_STOP,
+                      .label = g_net_dhcp ? "DHCP: ZAP" : "DHCP: VYP"};
+    ui_button_render(&db);
+    ui_button_t fb = {.rect = NET_FIELD_RECT, .variant = UI_BUTTON_NORMAL, .label = FLD[s_net_field]};
+    ui_button_render(&fb);
+    snprintf(b, sizeof b, "OKTET %u", (unsigned)(s_net_oct + 1u));
+    ui_button_t ob = {.rect = NET_OCT_RECT, .variant = UI_BUTTON_NORMAL, .label = b};
+    ui_button_render(&ob);
+
+    /* Pri DHCP jsou staticke hodnoty jen informativni -> ztlumene. */
+    net_fmt(b, sizeof b, *net_field_ptr());
+    prim_fill_rect((prim_rect_t){40, 344, 500, 40}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){40, 374}, b, &ui_font_mono_25,
+                   g_net_dhcp ? UI_COLOR_INK_3 : UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+}
+
+static void app_gpsdo_render_net(void)
+{
+    int first = window_first(35);
+    if (first) {
+        s_view = 35;
+        window_chrome("SIT  Ethernet", WIN_TITLE_Y);
+
+        ui_card_t c1 = {.rect = {18, 58, 764, 186}, .header_label = "Stav linky"};
+        ui_card_render_chrome(&c1);
+        prim_draw_text((prim_point_t){40, 112}, "Link: NEDOSTUPNY - blokovano hardwarem",
+                       &ui_font_mono_20, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 148},
+                       "PHY LAN8742A dostava 10 MHz misto 25 MHz (X1 je sdileny s HSE",
+                       &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 174},
+                       "procesoru a jde pres R6 do site OSC_25M) -> neodpovi ani na MDIO.",
+                       &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 208},
+                       "Reseni: odpojit R6 a privest samostatnych 25 MHz. Overeni: UART `eth`.",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+
+        ui_card_t c2 = {.rect = {18, 252, 764, 154},
+                        .header_label = "Konfigurace (ulozi se, pouzije az po oprave HW)"};
+        ui_card_render_chrome(&c2);
+        ui_button_t mb = {.rect = NET_MINUS_RECT, .variant = UI_BUTTON_NORMAL, .label = "-"};
+        ui_button_t pb = {.rect = NET_PLUS_RECT,  .variant = UI_BUTTON_NORMAL, .label = "+"};
+        ui_button_render(&mb);
+        ui_button_render(&pb);
+        net_upd_values();
+        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&bb);
+    }
+    present_now();
+}
+
 static void app_gpsdo_render_cas(void)
 {
     int first = window_first(22);
@@ -4767,6 +4887,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, REF_RECT))   { nav_push(7); app_gpsdo_render_reference(); return true; }
             if (in_rect(x, y, ABOUT_RECT)) { nav_push(7); app_gpsdo_render_about(); return true; }
             if (in_rect(x, y, SETUP_ENTER_RECT)) { nav_push(7); app_gpsdo_render_setups(); return true; }
+            /* Presunuto z Menu dlazdic 2026-08-13 — je to konfigurace, patri sem. */
+            if (in_rect(x, y, NET_RECT))     { nav_push(7); app_gpsdo_render_net();      return true; }
+            if (in_rect(x, y, CASNAV_RECT))  { nav_push(7); app_gpsdo_render_cas();      return true; }
+            if (in_rect(x, y, ALRMNAV_RECT)) { nav_push(7); app_gpsdo_render_alarms();   return true; }
+            if (in_rect(x, y, KALIBNAV_RECT)){ nav_push(7); app_gpsdo_render_kalib();    return true; }
+            if (in_rect(x, y, ANIMNAV_RECT)) { nav_push(7); app_gpsdo_render_anim();     return true; }
             #undef SETTINGS_UPD
         }
         if (s_view == 33) {                                 /* okno SESTAVY: slot -/+, uloz/nacti/smaz */
@@ -4850,8 +4976,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             for (int i = 0; i < MENU_N; i++)
                 if (in_rect(x, y, MENU_ITEMS[i].rect)) {
-                    /* Vsech 12 dlazdic naviguje -> vzdy pushni Menu na zasobnik
-                     * (BACK z otevreneho okna vede zpet do Menu). */
+                    /* ⚠️ Volny slot NEnaviguje — nesmi tedy pushnout Menu na
+                     * zasobnik, jinak by se BACK zanoroval do prazdna. */
+                    if (MENU_ITEMS[i].act == ACT_FREE) return true;
                     nav_push(12);
                     menu_activate(MENU_ITEMS[i].act);
                     return true;
@@ -4917,6 +5044,29 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             run_selftests();                /* pure-logic (~ms), bezpecne z UiTasku */
             app_gpsdo_render_selftest();    /* prekresli per-test vysledky */
             return true;
+        }
+        if (s_view == 35) {                                /* Sit: DHCP + staticka adresa */
+            int hit = 0;
+            if (in_rect(x, y, NET_DHCP_RECT))       { g_net_dhcp = g_net_dhcp ? 0u : 1u; hit = 1; }
+            else if (in_rect(x, y, NET_FIELD_RECT)) { s_net_field = (uint8_t)((s_net_field + 1u) % 3u); hit = 1; }
+            else if (in_rect(x, y, NET_OCT_RECT))   { s_net_oct   = (uint8_t)((s_net_oct + 1u) % 4u);  hit = 1; }
+            else if (in_rect(x, y, NET_MINUS_RECT) || in_rect(x, y, NET_PLUS_RECT)) {
+                /* Krok po jednotkach vybraneho oktetu, wrap 0..255 (bez preteceni
+                 * do sousedniho oktetu — uzivatel meni prave jeden bajt). */
+                volatile uint32_t *f = net_field_ptr();
+                unsigned sh = (unsigned)(24 - 8 * s_net_oct);
+                uint32_t cur = (*f >> sh) & 0xFFu;
+                cur = in_rect(x, y, NET_PLUS_RECT) ? ((cur + 1u) & 0xFFu)
+                                                   : ((cur + 255u) & 0xFFu);
+                *f = (*f & ~(0xFFu << sh)) | (cur << sh);
+                hit = 1;
+            }
+            if (hit) {
+                g_sys_cfg_dirty = 1;   /* debounced zapis do W25Q (syscfg_flash_tick) */
+                prim_set_target(&s_fb); prim_reset_clip();
+                net_upd_values(); present_now();
+                return true;
+            }
         }
         if (s_view == 22) {                                /* Cas: AUTO/RUCNI + posun -/+ */
             #define CAS_UPD() do { prim_set_target(&s_fb); prim_reset_clip(); \

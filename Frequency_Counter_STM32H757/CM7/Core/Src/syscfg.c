@@ -25,7 +25,7 @@
  * (g_meas_cfg, #43/#44) -> "SCF6" -> "SCF7", pak vysledek self-survey (poloha)
  * -> "SCF7" -> "SCF8". Dusledek: prvni boot po teto zmene najde neznamy magic,
  * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434638u   /* "SCF8" (drive "SCF7" ..637, "SCF6" ..636, ...) */
+#define SYSCFG_BLOB_MAGIC   0x53434639u   /* "SCF9" (2026-08-13: + sitova konfigurace) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -64,6 +64,10 @@ typedef struct {
     uint32_t survey_n;
     double   survey_lat, survey_lon;
     float    survey_alt, survey_spread;
+    /* Sit (okno Sit, s_view=35). Dnes se JEN UKLADA — ETH je blokovana HW
+     * (PHY dostava 10 MHz misto 25). Az prijde lwIP, cte se odsud. */
+    uint8_t  net_dhcp;
+    uint32_t net_ip, net_mask, net_gw;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -104,6 +108,10 @@ static void pack(syscfg_blob_t *b)
     b->survey_lon    = g_survey_lon;
     b->survey_alt    = g_survey_alt;
     b->survey_spread = g_survey_spread;
+    b->net_dhcp      = g_net_dhcp ? 1u : 0u;
+    b->net_ip        = g_net_ip;
+    b->net_mask      = g_net_mask;
+    b->net_gw        = g_net_gw;
 }
 
 void syscfg_load(void)
@@ -145,6 +153,10 @@ void syscfg_load(void)
     g_survey_lon    = b.survey_lon;
     g_survey_alt    = b.survey_alt;
     g_survey_spread = b.survey_spread;
+    g_net_dhcp      = b.net_dhcp ? 1u : 0u;
+    g_net_ip        = b.net_ip;
+    g_net_mask      = b.net_mask;
+    g_net_gw        = b.net_gw;
 
     /* Ostatni pole: pri WARM resetu ma prednost BKP (uz drzi nejnovejsi) -> nechat. */
     if (g_syscfg_bkp_valid) return;
