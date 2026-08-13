@@ -93,10 +93,31 @@ nezávisle na 50 MHz RMII ref. hodinách.** PHY odpovídá na MDIO, i kdyby `nIN
   hodiny:** 50 MHz REF_CLK (výstup do MAC, řídí ho nINTSEL) a **25 MHz vstupní
   takt**, bez kterého PHY neběží vůbec. Hláška v příkazu `eth` opravena.
 
+  **Proč zrovna 25 MHz (a proč 10 nestačí ani částečně):** vnitřní PLL PHY je
+  navržená na pevný poměr — z 25 MHz dělá **125 MHz** pro 100BASE-TX (linková
+  rychlost je 125 Mbaud) a 50 MHz pro REF_CLK OUT. **Není žádný registr ani strap,
+  kterým by se vstupní kmitočet přeladil.** Při 10 MHz by i v ideálním případě
+  vyšlo 50 MHz místo 125 → na drátě by to nebyl Ethernet a žádný protějšek by se
+  nesesynchronizoval; 10BASE-T by dopadl stejně. Reálně PLL při 2,5× mimo rozsah
+  vůbec nezachytí a čip zůstane v interním resetu → mlčí i na MDIO, což odpovídá
+  pozorování. **Zkrátka: 25 MHz je zadrátované v návrhu PLL, ne konfigurovatelné.**
+
   **Doporučené řešení: odpojit R6 a přivést PHY samostatných 25 MHz** (levný XO,
   Ethernet nepotřebuje disciplinovaný takt, stačí ±50 ppm). ⚠️ **R5 nechat** —
-  to jsou hodiny procesoru. Zamítnuté varianty: volný výstup Si5356 (všechny
-  4 nese 4-fázový TDC), MCO z STM32 (PA8 i PC9 obsazené — encoder, SDMMC1).
+  to jsou hodiny procesoru.
+
+  **Zamítnuté varianty (ověřeno výpočtem, ne odhadem):**
+  - **Si5356** — má přesně 4 výstupy a všechny nese 4-fázový TDC. Žádný nezbývá.
+  - **MCO z STM32** — ⚠️ zamítnuto ze dvou nezávislých důvodů. (1) `MCO2` umí přes
+    PLL2 vyrobit 25 MHz, ale sedí na **PC9 = SDMMC1_D1** (SD karta, obsazené).
+    (2) `MCO1` je na **PA8** (encoder, zatím neimplementovaný → pin by šel uvolnit),
+    jenže **PLL1 nikdy nedá přesně 25 MHz**: VCO je 960 MHz (10 × N96) a
+    `960 / 25 = 38,4` — MCO dělič i `PLLQ` jsou celočíselné, takže to nevyjde
+    v žádné kombinaci. Snížit VCO na 800 MHz (25 × 32) by znamenalo SYSCLK
+    400 místo 480 MHz, tedy −17 % výkonu při už tak 60% zátěži. Nevyplatí se.
+  - **Režim REF_CLK IN (50 MHz na XTAL1)** — stejně potřebuje externí zdroj
+    hodin, navíc změnu strapu `nINTSEL` a přepojení pinu 14 (stal by se z něj
+    `nINT`, ale je drátovaný do `ETH_REF_CLK`). Víc práce než varianta s XO.
 
   **Tohle je ten „nejlevnější únik" z §0.** Dokud se HW neupraví, F1–F8 nemá smysl začínat.
 
