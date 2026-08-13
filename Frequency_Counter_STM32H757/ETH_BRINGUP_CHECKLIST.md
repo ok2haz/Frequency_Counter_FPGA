@@ -75,7 +75,30 @@ nezávisle na 50 MHz RMII ref. hodinách.** PHY odpovídá na MDIO, i kdyby `nIN
 - [x] ✅ **`eth clk` HOTOV** (TIM2_CH2 v režimu externích hodin na PA1, okno 100 ms z DWT) → musí být **50 MHz**. Timerem v external-clock režimu
       (pokud pin sedí na TIM vstupu), jinak osciloskopem. **Tím se ověří strap `nINTSEL`**
       (režim „REF_CLK OUT"), který §6a.1 sám označuje jen jako *předpokládaný*.
-- [ ] ✅ **Výstup:** víme, že PHY žije, známe jeho adresu, a víme, že MAC dostane hodiny.
+- [x] 🔴 **VÝSLEDEK F0 (2026-08-13): PHY NEODPOVÍDÁ — a je známo proč. ETH je blokovaná HW.**
+
+  `eth` na cíli: `=> ZADNY PHY NEODPOVIDA na SMI` (sken všech 32 adres).
+  **Příčina nalezena a uživatelem potvrzena na desce:** `X1` je **10 MHz**
+  (`HSE_VALUE` 10 MHz, PLL 10×96/2 = 480 MHz sedí). Podle listu 2/7 jde jeho
+  výstup přes **R5 (50 Ω) do `RCC_OSC`** (HSE procesoru) **a přes R6 (50 Ω) do
+  `OSC_25M`**, což je `XTAL1/CLKIN` PHY (list 4/7, pin 5; XTAL2 nezapojen).
+  **LAN8742A vyžaduje 25 MHz** — dostává 10 → nenaběhne a neodpoví ani na MDIO.
+
+  Jeden oscilátor nemůže obsloužit obojí: GPSDO potřebuje 10 MHz pro časovou
+  základnu, PHY 25 MHz. Síť je *pojmenovaná* `OSC_25M`, takže záměr byl 25 MHz.
+
+  ⚠️ **Oprava vlastní dřívější formulace:** tvrzení „SMI nezávisí na REF_CLK,
+  takže mlčení nelze vysvětlit strapem nINTSEL" je o nINTSEL pravdivé, ale
+  sváděla k závěru, že PHY nepotřebuje žádné hodiny. **Jsou to dvoje různé
+  hodiny:** 50 MHz REF_CLK (výstup do MAC, řídí ho nINTSEL) a **25 MHz vstupní
+  takt**, bez kterého PHY neběží vůbec. Hláška v příkazu `eth` opravena.
+
+  **Doporučené řešení: odpojit R6 a přivést PHY samostatných 25 MHz** (levný XO,
+  Ethernet nepotřebuje disciplinovaný takt, stačí ±50 ppm). ⚠️ **R5 nechat** —
+  to jsou hodiny procesoru. Zamítnuté varianty: volný výstup Si5356 (všechny
+  4 nese 4-fázový TDC), MCO z STM32 (PA8 i PC9 obsazené — encoder, SDMMC1).
+
+  **Tohle je ten „nejlevnější únik" z §0.** Dokud se HW neupraví, F1–F8 nemá smysl začínat.
 
 ⚠️ Příkaz `eth` je bring-up rezidum — nechat ho jako diagnostiku (jako `fpgaraw`), ale
 označit komentářem, že bit-bang MDIO je jen pro F0 a produkčně to dělá HAL z CM4.

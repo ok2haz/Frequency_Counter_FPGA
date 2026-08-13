@@ -186,6 +186,11 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
   Magnetika **TG110-E050N5xx** (TR1), RJ45 **J8**. Není potřeba externí 50 MHz oscilátor —
   dělá ho PHY. ⚠️ **Režim REF_CLK OUT závisí na strapu `nINTSEL`** — ověřit ze schématu,
   že je nastaven na výstup ref. hodin (jinak MAC nedostane RMII clock a link nenaběhne).
+- 🔴 **BLOKÁTOR (F0, 2026-08-13): PHY dostává 10 MHz místo 25 MHz.** `X1` je 10 MHz
+  (sdílený s HSE procesoru) a jde přes **R6** do `OSC_25M` = `XTAL1/CLKIN` LAN8742A,
+  který vyžaduje **25 MHz**. Proto `eth` nenajde PHY na žádné z 32 adres.
+  **Řešení: odpojit R6, přivést samostatných 25 MHz** (R5 = HSE nechat!).
+  Do té doby jsou etapy F1–F8 bezpředmětné.
 - **✅ PINMAPA (vytažena ze schématu 2026-08-13, do té doby v repu CHYBĚLA):**
 
   | signál | STM32 | | signál | STM32 | | signál | STM32 |

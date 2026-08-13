@@ -495,9 +495,16 @@ void UartTask_run(void *argument)
 
 					  if (found < 0) {
 						  printf("  => ZADNY PHY NEODPOVIDA na SMI.\r\n");
-						  printf("     Zkontroluj: napajeni PHY (+3V3), ETH_RES (PG14) nedrzi v resetu,\r\n");
-						  printf("     zapojeni MDC/MDIO, pull-up na MDIO. SMI nezavisi na REF_CLK,\r\n");
-						  printf("     takze mlceni NENI vysvetlitelne spatnym nINTSEL.\r\n");
+						  printf("  ⚠️ ZNAMA PRICINA NA TETO DESCE (potvrzeno 2026-08-13):\r\n");
+						  printf("     PHY dostava 10 MHz misto 25 MHz. X1 je 10 MHz (spolecny s HSE\r\n");
+						  printf("     procesoru) a jde pres R6 do site OSC_25M = XTAL1/CLKIN LAN8742A,\r\n");
+						  printf("     ktery vyzaduje 25 MHz -> nenabehne a neodpovi ani na MDIO.\r\n");
+						  printf("     Reseni: odpojit R6 a privest samostatnych 25 MHz (R5 = HSE nechat!).\r\n");
+						  printf("     Dokud to plati, nema smysl hledat chybu jinde.\r\n");
+						  printf("     ⚠️ Pozor na zamenu dvou RUZNYCH hodin: SMI je clockovane MDC, takze\r\n");
+						  printf("     na 50 MHz REF_CLK (strap nINTSEL) opravdu NEzavisi — PHY ale\r\n");
+						  printf("     potrebuje svuj 25 MHz VSTUPNI takt, a ten mu chybi.\r\n");
+						  printf("     Az bude clock spraveny: napajeni PHY, ETH_RES (PG14), MDC/MDIO.\r\n");
 					  } else {
 						  uint16_t bmcr = eth_phy_read((uint8_t)found, 0);
 						  uint16_t bmsr = eth_phy_read((uint8_t)found, 1);
