@@ -154,7 +154,7 @@ za běhu: CRC16 vektor, hystereze /4↔/16 přes `fpga_freq_select_core` (bezsta
 helpery (`gps_selftest`), fmt_frac+hist_h vektory (`screen_main_selftest`), Maidenhead
 (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`), datalog záznam+CRC+čas (`datalog_selftest`)
 — žádný HW, žádný sdílený
-stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`ping`/`screen main`/`clear`/`version`/`help`**.
+stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`eth`/`eth clk`** (ETH bring-up F0: bit-bang SMI z CM7 — reset PHY, sken adres 0–31, ID/BMCR/BMSR LAN8742A; `clk` změří REF_CLK na PA1 přes TIM2. Piny si nastavuje sám, **nic v `.ioc`** — viz `ETH_BRINGUP_CHECKLIST.md` §2. Bring-up reziduum jako `fpgaraw`), **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 **`status`** = od 2026-07-20 plná diagnostika (dřív jen „RUNNING"): verze + uptime, **příčina resetu
 + crash black-box** (`stall:UiTask`, `stack:UartTask`, …), RSR, heap free/min, CPU %, **volný stack

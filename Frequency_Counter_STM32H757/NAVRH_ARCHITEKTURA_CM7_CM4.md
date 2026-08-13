@@ -186,6 +186,20 @@ HSEM gate (`system_stm32h7xx_dualcore_boot`), CM4 čeká na `IPC_MAGIC` v SRAM4.
   Magnetika **TG110-E050N5xx** (TR1), RJ45 **J8**. Není potřeba externí 50 MHz oscilátor —
   dělá ho PHY. ⚠️ **Režim REF_CLK OUT závisí na strapu `nINTSEL`** — ověřit ze schématu,
   že je nastaven na výstup ref. hodin (jinak MAC nedostane RMII clock a link nenaběhne).
+- **✅ PINMAPA (vytažena ze schématu 2026-08-13, do té doby v repu CHYBĚLA):**
+
+  | signál | STM32 | | signál | STM32 | | signál | STM32 |
+  |---|---|---|---|---|---|---|---|
+  | ETH_REF_CLK | **PA1** | | ETH_MDC | **PC1** | | ETH_TX_EN | **PG11** |
+  | ETH_MDIO | **PA2** | | ETH_RXD0 | **PC4** | | ETH_TXD0 | **PG13** |
+  | ETH_CRS_DV | **PA7** | | ETH_RXD1 | **PC5** | | ETH_TXD1 | **PB13** |
+  | ETH_RES | **PG14** | | ETH_INT | **PG12** | | | |
+
+  Zdroj: `STM32H747BIT.pdf` list **4/7** (Ethernet, PHY LAN8742A U4) + **2/7** (CPU).
+  Všech 11 pinů je v `.ioc` **volných** (ověřeno) a odpovídá standardnímu RMII mapování
+  STM32H7 (AF11) → regen v F3 je přiřadí beze změn v okolí.
+  **Strapy ze schématu:** `RXER/PHYAD0` stažen k GND přes R20 → **PHYAD = 0**.
+  `nINTSEL` (LED2) ze schématu jednoznačně přečíst nejde → řeší `eth clk`.
 - **Piny (RMII):** ETH_TXD0/1, TX_EN, RXD0/1, CRS_DV, MDC, MDIO, REF_CLK, ETH_RES(nRST),
   ETH_INT. Deskriptory + RX/TX buffery v **D2 SRAM** — CM4 **nemá D-cache** → žádná
   cache maintenance (hlavní důvod, proč ETH patří na CM4, ne na CM7).

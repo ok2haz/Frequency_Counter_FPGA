@@ -60,16 +60,19 @@ Klíčové zjištění, na kterém to stojí: **SMI/MDIO je clockované signále
 nezávisle na 50 MHz RMII ref. hodinách.** PHY odpovídá na MDIO, i kdyby `nINTSEL` byl
 špatně. Obě otázky se tak dají řešit odděleně.
 
-- [ ] **Vytáhnout pinmapu ze schématu** (`Ethernet.kicad_sch`, list 4/7) — v repu **není**,
+- [x] ✅ **Pinmapa vytažena 2026-08-13** — schéma v repu **je** (`STM32H747BIT.pdf`, list 4/7
+      Ethernet + 2/7 CPU), jen ho nikdo neotevřel. Zapsána do `NAVRH…md` §6a.1 i do komentáře
+      u příkazu `eth`. PHY = **LAN8742A**, strap `PHYAD0`→GND ⇒ očekávaná adresa **0**.
+      **Původní znění:** „v repu **není**,
       dokumenty znají jen názvy signálů. Potřebné: `MDC`, `MDIO`, `ETH_RES`, `ETH_REF_CLK`,
       `ETH_INT`. Zapsat do `NAVRH…md` §6a.1 (dnes tam jsou jen jména).
-- [ ] **UART/CDC příkaz `eth`** na CM7 — přesně v idiomu `scanner` / `si5356` / `fpgaraw`:
+- [x] ✅ **Příkaz `eth` HOTOV 2026-08-13** (inline v `freertos_task_uart.c`, idiom `scanner`):
   - pulz `ETH_RES` low ≥100 µs, pak pár ms
   - **bit-bang SMI** na MDC/MDIO (GPIO je přístupné z obou jader, nezávisle na tom, komu
     ETH v `.ioc` patří)
   - **scan adres 0–31**, číst PHY ID (reg 2 a 3) → očekáváno `0x0007C130` / `0x0007C131`
   - vypsat nalezenou PHYAD a BMSR (stav linku)
-- [ ] **Změřit `ETH_REF_CLK`** → musí být **50 MHz**. Timerem v external-clock režimu
+- [x] ✅ **`eth clk` HOTOV** (TIM2_CH2 v režimu externích hodin na PA1, okno 100 ms z DWT) → musí být **50 MHz**. Timerem v external-clock režimu
       (pokud pin sedí na TIM vstupu), jinak osciloskopem. **Tím se ověří strap `nINTSEL`**
       (režim „REF_CLK OUT"), který §6a.1 sám označuje jen jako *předpokládaný*.
 - [ ] ✅ **Výstup:** víme, že PHY žije, známe jeho adresu, a víme, že MAC dostane hodiny.

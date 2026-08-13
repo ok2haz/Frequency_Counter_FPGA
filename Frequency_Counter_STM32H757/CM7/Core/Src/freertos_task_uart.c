@@ -66,6 +66,121 @@ static void fmt_f2(char *b, size_t n, float v)
 	snprintf(b, n, "%ld.%02ld", w, f);
 }
 
+/* ══════════════ ETH bring-up, etapa F0 — diagnostika PHY z CM7 ══════════════
+ * Cil: zodpovedet dve HW neznamé JESTE PRED tim, nez se sahne na `.ioc`
+ * (viz ETH_BRINGUP_CHECKLIST.md §2). Zamerne se tu tedy NIC neregeneruje a
+ * NIC se nepridava do CubeMX — vsechny piny si tenhle kod konfiguruje SAM,
+ * stejnym regen-safe idiomem jako CS ve `fpga_freq_init` nebo PE3 v `datalog_sd`.
+ *
+ * ⚠️ BRING-UP REZIDUUM (jako `fpgaraw`): bit-bang SMI je JEN pro F0. Produkcne
+ * bude MDIO obsluhovat HAL z CM4 (`HAL_ETH_ReadPHYRegister`). Nemazat ale —
+ * diagnostika "odpovida PHY?" nezavisla na tom, komu ETH v `.ioc` patri, je
+ * pri kazdem dalsim problemu se sítí to prvni, po cem sahnes.
+ *
+ * PINMAPA — vytazena ze schematu `STM32H747BIT.pdf` list 4/7 (Ethernet) + 2/7
+ * (CPU) dne 2026-08-13. Do te doby v repu CHYBELA (dokumenty znaly jen nazvy
+ * signalu), takze tohle je jeji prvni zapis do kodu:
+ *
+ *   ETH_REF_CLK  PA1    ETH_MDC   PC1     ETH_TX_EN  PG11
+ *   ETH_MDIO     PA2    ETH_RXD0  PC4     ETH_TXD0   PG13
+ *   ETH_CRS_DV   PA7    ETH_RXD1  PC5     ETH_TXD1   PB13
+ *   ETH_RES      PG14   ETH_INT   PG12
+ *
+ * Vsech 11 pinu je v `.ioc` VOLNYCH (overeno) a odpovida standardnimu RMII
+ * mapovani STM32H7 (AF11), takze regen v F3 je bude umet priradit beze zmen.
+ *
+ * PHY = **LAN8742A** (U4). Strapy ze schematu: `RXER/PHYAD0` stazen k GND pres
+ * R20 -> ocekavana **PHYAD = 0**. `INT/REFCLKO` (pin 14) jde pres seriovych 33 R
+ * do `ETH_REF_CLK` a na `XTAL1/CLKIN` sedi externi 25 MHz oscilator -> PHY ma
+ * 50 MHz REF_CLK GENEROVAT. To ale zavisi na strapu `nINTSEL` (LED2), ktery se
+ * ze schematu jednoznacne precist neda — proto `eth clk`.
+ *
+ * Proc to jde bez 50 MHz hodin: **SMI je clockovane MDC**, tedy nezavisle na
+ * RMII ref. hodinach. PHY odpovi na MDIO, i kdyby byl `nINTSEL` spatne. */
+#define ETH_MDC_PORT   GPIOC
+#define ETH_MDC_PIN    GPIO_PIN_1
+#define ETH_MDIO_PORT  GPIOA
+#define ETH_MDIO_PIN   GPIO_PIN_2
+#define ETH_RES_PORT   GPIOG
+#define ETH_RES_PIN    GPIO_PIN_14
+#define ETH_REFCLK_PIN GPIO_PIN_1        /* PA1 */
+
+/* DWT cyklovy citac (uz bezi kvuli runtime statistikam) — ne NOP smycka. */
+static void eth_delay_us(uint32_t us)
+{
+	uint32_t start = DWT->CYCCNT;
+	uint32_t ticks = us * (SystemCoreClock / 1000000u);
+	while ((DWT->CYCCNT - start) < ticks) { __NOP(); }
+}
+
+/* MDC half-perioda. Spec dovoluje 2,5 MHz; jdeme hluboko pod to (~250 kHz),
+ * protoze pri cteni drzi MDIO jen slaby vnitrni pull-up. */
+#define ETH_MDC_HALF_US 2u
+
+static void eth_mdio_dir(int out)
+{
+	GPIO_InitTypeDef g = {0};
+	g.Pin   = ETH_MDIO_PIN;
+	g.Mode  = out ? GPIO_MODE_OUTPUT_PP : GPIO_MODE_INPUT;
+	g.Pull  = out ? GPIO_NOPULL : GPIO_PULLUP;
+	g.Speed = GPIO_SPEED_FREQ_HIGH;
+	HAL_GPIO_Init(ETH_MDIO_PORT, &g);
+}
+
+static void eth_pins_init(void)
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
+	GPIO_InitTypeDef g = {0};
+	g.Mode = GPIO_MODE_OUTPUT_PP; g.Pull = GPIO_NOPULL; g.Speed = GPIO_SPEED_FREQ_HIGH;
+	g.Pin = ETH_MDC_PIN;  HAL_GPIO_Init(ETH_MDC_PORT, &g);
+	g.Pin = ETH_RES_PIN;  HAL_GPIO_Init(ETH_RES_PORT, &g);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_SET);   /* reset neaktivni */
+	eth_mdio_dir(1);
+}
+
+/* Jeden takt MDC. PHY vzorkuje MDIO na NABEZNE hrane, data vystavuje na sestupne
+ * -> pri cteni vzorkujeme az po nabezne hrane. */
+static int eth_mdc_clock(void)
+{
+	eth_delay_us(ETH_MDC_HALF_US);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_SET);
+	eth_delay_us(ETH_MDC_HALF_US);
+	int bit = (HAL_GPIO_ReadPin(ETH_MDIO_PORT, ETH_MDIO_PIN) == GPIO_PIN_SET);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_RESET);
+	return bit;
+}
+
+static void eth_smi_write_bits(uint32_t val, int n)
+{
+	for (int i = n - 1; i >= 0; i--) {
+		HAL_GPIO_WritePin(ETH_MDIO_PORT, ETH_MDIO_PIN,
+		                  ((val >> i) & 1u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		(void)eth_mdc_clock();
+	}
+}
+
+/* IEEE 802.3 clause 22 read: PRE(32x1) ST(01) OP(10) PHYAD(5) REGAD(5) TA(Z0) DATA(16).
+ * @return registr, nebo 0xFFFF kdyz PHY neodpovi (MDIO drzi pull-up nahore). */
+static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
+{
+	eth_mdio_dir(1);
+	eth_smi_write_bits(0xFFFFFFFFu, 32);              /* preamble */
+	eth_smi_write_bits(0x1u, 2);                      /* ST = 01 */
+	eth_smi_write_bits(0x2u, 2);                      /* OP = 10 (read) */
+	eth_smi_write_bits(phyad & 0x1Fu, 5);
+	eth_smi_write_bits(reg   & 0x1Fu, 5);
+	eth_mdio_dir(0);                                  /* turnaround: linku pousti host */
+	(void)eth_mdc_clock();                            /* TA bit 1 (Z) */
+	(void)eth_mdc_clock();                            /* TA bit 2 (PHY vystavi 0) */
+	uint16_t v = 0;
+	for (int i = 0; i < 16; i++) v = (uint16_t)((v << 1) | eth_mdc_clock());
+	(void)eth_mdc_clock();                            /* idle */
+	return v;
+}
+
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
 static char RxBuffer[RX_BUF_SIZE];
 static uint8_t RxIndex = 0;
@@ -315,8 +430,93 @@ void UartTask_run(void *argument)
 				  else if (strcmp(RxBuffer, "version") == 0) {
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
+			  /* ETH F0: `eth` = reset + sken SMI adres + dekod PHY; `eth clk` = zmer REF_CLK.
+			   * BLOKUJE stovky ms (sken 32 adres x 2 registry) — UartTask neni pod watchdogem. */
+			  else if (strncmp(RxBuffer, "eth", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  const char *sub = (RxBuffer[3] == ' ') ? &RxBuffer[4] : "";
+
+				  if (strcmp(sub, "clk") == 0) {
+					  /* ETH_REF_CLK (PA1) pres TIM2_CH2 v rezimu externich hodin.
+					   * TIM2 je 32bit a v `.ioc` VOLNY. Pri 50 MHz / 100 ms = 5e6 kroku. */
+					  __HAL_RCC_TIM2_CLK_ENABLE();
+					  GPIO_InitTypeDef g = {0};
+					  g.Pin = ETH_REFCLK_PIN; g.Mode = GPIO_MODE_AF_PP; g.Pull = GPIO_NOPULL;
+					  g.Speed = GPIO_SPEED_FREQ_VERY_HIGH; g.Alternate = GPIO_AF1_TIM2;
+					  HAL_GPIO_Init(GPIOA, &g);
+
+					  TIM2->CR1   = 0;
+					  TIM2->PSC   = 0;
+					  TIM2->ARR   = 0xFFFFFFFFu;
+					  TIM2->CCMR1 = (TIM2->CCMR1 & ~(0x3u << 8)) | (0x1u << 8);  /* CC2S=01: IC2 na TI2 */
+					  TIM2->CCER &= ~(TIM_CCER_CC2P | TIM_CCER_CC2NP);           /* nabezna hrana */
+					  TIM2->SMCR  = (0x6u << 4) | 0x7u;                          /* TS=110 (TI2FP2), SMS=111 */
+					  TIM2->CNT   = 0;
+					  uint32_t c0 = DWT->CYCCNT;
+					  TIM2->CR1  |= TIM_CR1_CEN;
+					  uint32_t win = SystemCoreClock / 10u;                      /* presne 100 ms z DWT */
+					  while ((DWT->CYCCNT - c0) < win) { __NOP(); }
+					  uint32_t cnt = TIM2->CNT;
+					  TIM2->CR1 &= ~TIM_CR1_CEN;
+
+					  uint32_t khz = cnt / 100u;      /* kroku za 100 ms -> kHz */
+					  printf("ETH REF_CLK (PA1): %lu kroku/100ms -> %lu.%03lu MHz\r\n",
+					         (unsigned long)cnt, (unsigned long)(khz / 1000u),
+					         (unsigned long)(khz % 1000u));
+					  if (cnt == 0)
+						  printf("  => ZADNE HODINY. Strap nINTSEL (LED2) nejspis NENI v rezimu REF_CLK OUT,\r\n"
+						         "     nebo nebezi 25 MHz oscilator na XTAL1/CLKIN. Overit osciloskopem.\r\n");
+					  else if (khz > 49000u && khz < 51000u)
+						  printf("  => OK, 50 MHz. MAC dostane hodiny, nINTSEL je spravne.\r\n");
+					  else
+						  printf("  => MIMO 50 MHz (+/-2%%). Zkontrolovat oscilator a strapy.\r\n");
+				  }
+				  else {
+					  printf("ETH F0 (PHY LAN8742A, bit-bang SMI z CM7):\r\n");
+					  printf("  piny: MDC=PC1 MDIO=PA2 RES=PG14 REF_CLK=PA1 (ze schematu 4/7+2/7)\r\n");
+					  eth_pins_init();
+
+					  /* Hardwarovy reset PHY: >=100 us low, pak >=1 ms na nabeh. */
+					  HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_RESET);
+					  eth_delay_us(200);
+					  HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_SET);
+					  osDelay(10);
+
+					  int found = -1;
+					  for (uint8_t a = 0; a < 32; a++) {
+						  uint16_t id1 = eth_phy_read(a, 2);
+						  uint16_t id2 = eth_phy_read(a, 3);
+						  if (id1 == 0xFFFF || (id1 == 0 && id2 == 0)) continue;   /* prazdno */
+						  printf("  PHYAD %2u: ID1=0x%04X ID2=0x%04X (OUI 0x%08lX)\r\n",
+						         (unsigned)a, id1, id2,
+						         (unsigned long)(((uint32_t)id1 << 16) | id2));
+						  if (found < 0) found = a;
+					  }
+
+					  if (found < 0) {
+						  printf("  => ZADNY PHY NEODPOVIDA na SMI.\r\n");
+						  printf("     Zkontroluj: napajeni PHY (+3V3), ETH_RES (PG14) nedrzi v resetu,\r\n");
+						  printf("     zapojeni MDC/MDIO, pull-up na MDIO. SMI nezavisi na REF_CLK,\r\n");
+						  printf("     takze mlceni NENI vysvetlitelne spatnym nINTSEL.\r\n");
+					  } else {
+						  uint16_t bmcr = eth_phy_read((uint8_t)found, 0);
+						  uint16_t bmsr = eth_phy_read((uint8_t)found, 1);
+						  uint16_t scsr = eth_phy_read((uint8_t)found, 31);  /* LAN8742A special status */
+						  printf("  nalezen PHY na adrese %d (ocekavana 0 dle strapu PHYAD0->GND)\r\n", found);
+						  printf("  BMCR=0x%04X  AN=%s speed=%s duplex=%s\r\n", bmcr,
+						         (bmcr & (1u << 12)) ? "on" : "off",
+						         (bmcr & (1u << 13)) ? "100M" : "10M",
+						         (bmcr & (1u <<  8)) ? "full" : "half");
+						  printf("  BMSR=0x%04X  link=%s AN-done=%s\r\n", bmsr,
+						         (bmsr & (1u << 2)) ? "UP" : "down",
+						         (bmsr & (1u << 5)) ? "ano" : "ne");
+						  printf("  SCSR=0x%04X  (bity 4:2 = vysledna rychlost/duplex po AN)\r\n", scsr);
+						  printf("  => PHY ZIJE. Zbyva overit hodiny: `eth clk`\r\n");
+					  }
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest | eth [clk]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
