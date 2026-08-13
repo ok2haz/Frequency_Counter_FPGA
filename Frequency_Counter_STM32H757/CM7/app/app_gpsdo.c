@@ -213,7 +213,7 @@ static const prim_rect_t DIAG_ST_BTN_RECT      = {352, 417, 160, 61};
  * bez zasahu do karet c1/c4/c5. Jas (c2) a Auto-dim (c3) mely rezervu jen
  * 10-12 px -> karty c2/c3 se zvetsily o 8 px kazda (viz app_gpsdo_render_settings),
  * cerpano ze 42 px volneho prostoru pred paticnkou (bylo 368->410 px). */
-static const prim_rect_t MUTE_RECT   = {230, 74, 148, 64};    /* Zvuk: zap/vyp */
+static const prim_rect_t MUTE_RECT   = {230, 354, 148, 64};   /* Zvuk zap/vyp — v okne ALARMY */
 static const prim_rect_t BR_MINUS    = {30, 188, 72, 64};     /* Jas - */
 static const prim_rect_t BR_PLUS     = {110, 188, 72, 64};    /* Jas + */
 static const prim_rect_t ADEN_RECT   = {30, 308, 140, 64};    /* Auto-dim zap/vyp */
@@ -226,25 +226,34 @@ static const prim_rect_t DIM_PLUS    = {316, 308, 56, 64};    /* prodleva + */
  * Geometrie: x=410/600 (w=182, mezera 8), y=72/140/208/276/344 (h=62, mezera 6);
  * posledni rada konci na 406, footer zacina 417. Dotykovy cil 62 px = 7,3 mm,
  * tesne nad projektovym minimem 7 mm (viz UI_SIZES.md). */
-#define SETNAV_X0  410
-#define SETNAV_X1  600
-#define SETNAV_W   182
-#define SETNAV_H   62
-static const prim_rect_t THEME_RECT  = {SETNAV_X0,  72, SETNAV_W, SETNAV_H};  /* Vzhled */
-static const prim_rect_t LANG_RECT   = {SETNAV_X1,  72, SETNAV_W, SETNAV_H};  /* Jazyk */
-static const prim_rect_t NET_RECT    = {SETNAV_X0, 140, SETNAV_W, SETNAV_H};  /* -> Sit (s_view=35) */
-static const prim_rect_t CASNAV_RECT = {SETNAV_X1, 140, SETNAV_W, SETNAV_H};  /* -> Cas (22) */
-static const prim_rect_t ALRMNAV_RECT= {SETNAV_X0, 208, SETNAV_W, SETNAV_H};  /* -> Alarmy (18) */
-static const prim_rect_t KALIBNAV_RECT={SETNAV_X1, 208, SETNAV_W, SETNAV_H};  /* -> Kalibrace (15) */
-static const prim_rect_t ANIMNAV_RECT= {SETNAV_X0, 276, SETNAV_W, SETNAV_H};  /* -> Animace (24) */
+/* ⚠️ 2026-08-13 (2. iterace): Nastaveni je CISTY ROZCESTNIK — vsechny primé
+ * ovladace se odstehovaly do tematickych podoken:
+ *   - jas + auto-dim -> nove okno DISPLEJ (s_view=36),
+ *   - zvuk (mute)    -> okno ALARMY (patri k tomu, co umlcuje).
+ * Diky tomu je mrizka 3x4 pres CELOU sirku okna a ma stejnou geometrii jako
+ * Menu (w=246, h=76, x=18/278/538, y=68/154/240/326) — jednotny vzhled obou
+ * rozcestniku a dotykovy cil 76 px = 8,9 mm. */
+#define SETNAV_W   246
+#define SETNAV_H   76
+#define SETNAV_XA   18
+#define SETNAV_XB  278
+#define SETNAV_XC  538
+static const prim_rect_t DISPNAV_RECT = {SETNAV_XA,  68, SETNAV_W, SETNAV_H};  /* -> Displej (36) */
+static const prim_rect_t THEME_RECT   = {SETNAV_XB,  68, SETNAV_W, SETNAV_H};  /* Vzhled (prepinac) */
+static const prim_rect_t LANG_RECT    = {SETNAV_XC,  68, SETNAV_W, SETNAV_H};  /* Jazyk (prepinac) */
+static const prim_rect_t ALRMNAV_RECT = {SETNAV_XA, 154, SETNAV_W, SETNAV_H};  /* -> Alarmy (18) */
+static const prim_rect_t CASNAV_RECT  = {SETNAV_XB, 154, SETNAV_W, SETNAV_H};  /* -> Cas (22) */
+static const prim_rect_t NET_RECT     = {SETNAV_XC, 154, SETNAV_W, SETNAV_H};  /* -> Sit (35) */
+static const prim_rect_t KALIBNAV_RECT= {SETNAV_XA, 240, SETNAV_W, SETNAV_H};  /* -> Kalibrace (15) */
+static const prim_rect_t ANIMNAV_RECT = {SETNAV_XC, 240, SETNAV_W, SETNAV_H};  /* -> Animace (24) */
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
 static const prim_rect_t TZ_MINUS     = {30, 310, 72, 64};    /* rucni posun - */
 static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + */
-static const prim_rect_t REF_RECT    = {SETNAV_X1, 276, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
-static const prim_rect_t ABOUT_RECT  = {SETNAV_X0, 344, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
-static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_X1, 344, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
+static const prim_rect_t REF_RECT    = {SETNAV_XB, 240, SETNAV_W, SETNAV_H};  /* -> Reference (14) */
+static const prim_rect_t ABOUT_RECT  = {SETNAV_XB, 326, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
+static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XA, 326, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
@@ -264,7 +273,8 @@ static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
 static uint8_t s_nav_stack[6];
 static int     s_nav_sp = 0;
 static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] = from; }
-static void app_gpsdo_render_net(void);   /* Sit / ETH (s_view=35) — volano z goto_view i z Nastaveni */
+static void app_gpsdo_render_net(void);      /* Sit / ETH (s_view=35) */
+static void app_gpsdo_render_display(void);  /* Displej: jas + auto-dim (s_view=36) */
 static void goto_view(uint8_t v)
 {
     switch (v) {
@@ -274,6 +284,7 @@ static void goto_view(uint8_t v)
     case 12: app_gpsdo_render_menu();     break;   /* Menu rozcestnik */
     case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
     case 35: app_gpsdo_render_net();      break;   /* Sit (dnes bez podoken, pro symetrii) */
+    case 36: app_gpsdo_render_display();  break;   /* Displej */
     default: app_gpsdo_render_main();     break;   /* koren */
     }
 }
@@ -2218,11 +2229,14 @@ static void autodim_step(int dir)
  * svou oblast (BG_CARD) POD hlavickou karty a prekresli button/hodnotu. */
 static void settings_upd_mute(void)
 {
-    prim_fill_rect((prim_rect_t){28, 88, 184, 52}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    /* ⚠️ Od 2026-08-13 zije tenhle ovladac v okne ALARMY (s_view=18), ne v
+     * Nastaveni — vypnuti zvuku patri k tomu, co umlcuje. Souradnice jsou proto
+     * v souradnicich karty Alarmu. */
+    prim_fill_rect((prim_rect_t){28, 368, 184, 52}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     bool muted = g_sound_muted;
-    if (muted) ui_icon_speaker_muted((prim_point_t){32, 84}, 40, UI_COLOR_BAD);
-    else       ui_icon_speaker((prim_point_t){32, 84}, 40, UI_COLOR_OK);
-    prim_draw_text((prim_point_t){88, 112}, muted ? "vypnut" : "zapnut",
+    if (muted) ui_icon_speaker_muted((prim_point_t){32, 364}, 40, UI_COLOR_BAD);
+    else       ui_icon_speaker((prim_point_t){32, 364}, 40, UI_COLOR_OK);
+    prim_draw_text((prim_point_t){88, 392}, muted ? "vypnut" : "zapnut",
                    &ui_font_sans_18, muted ? UI_COLOR_BAD : UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
     ui_button_t mb = {.rect = MUTE_RECT, .variant = UI_BUTTON_NORMAL,
                       .label = muted ? "ZAPNOUT" : "VYPNOUT"};
@@ -2281,10 +2295,16 @@ static void settings_upd_dim(void)
                    g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
 }
 
+static void settings_upd_theme(void)
+{
+    ui_button_t tb = {.rect = THEME_RECT, .variant = UI_BUTTON_NORMAL,
+                      .label = g_theme_light ? "VZHLED: SVETLY" : "VZHLED: TMAVY"};
+    ui_button_render(&tb);
+}
 static void settings_upd_lang(void)
 {
     ui_button_t lb = {.rect = LANG_RECT, .variant = UI_BUTTON_NORMAL,
-                      .label = g_lang_en ? "ENGLISH" : "CESKY"};
+                      .label = g_lang_en ? "JAZYK: ENGLISH" : "JAZYK: CESKY"};
     ui_button_render(&lb);
 }
 
@@ -2315,55 +2335,21 @@ void app_gpsdo_render_settings(void)
     window_chrome("NASTAVENI", WIN_TITLE_Y_TIGHT);
     anim_reset(&s_settings_br, (float)g_brightness);   /* bez nabehu pri OTEVRENI okna */
 
-    /* ── Levy sloupec: Zvuk ── */
-    ui_card_t c1 = {.rect = {DG_LX, 58, DG_COLW, 88},
-                    .header_label = "Zvuk (alarmy)"};
-    ui_card_render_chrome(&c1);
-    settings_upd_mute();
-
-    /* ── Levy sloupec: Jas ── (108 px, bylo 100 — button 56->64 px potreboval +8) */
-    ui_card_t c2 = {.rect = {DG_LX, 156, DG_COLW, 108}, .header_label = "Jas displeje"};
-    ui_card_render_chrome(&c2);
-    ui_button_t bmin = {.rect = BR_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
-    ui_button_t bplus = {.rect = BR_PLUS, .variant = UI_BUTTON_NORMAL, .label = "+"};
-    ui_button_render(&bmin);
-    ui_button_render(&bplus);
-    settings_upd_jas();
-
-    /* ── Levy sloupec: Auto-dim (zap/vyp + prodleva -/+) ── (posunuto 266->274,
-     * 110 px misto 102 — stejny duvod jako c2; navazuje bez mezery navic). */
-    ui_card_t c3 = {.rect = {DG_LX, 274, DG_COLW, 110},
-                    .header_label = "Auto-dim (hodiny po necinnosti)"};
-    ui_card_render_chrome(&c3);
-    ui_button_t dmin = {.rect = DIM_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
-    ui_button_t dplus = {.rect = DIM_PLUS, .variant = UI_BUTTON_NORMAL, .label = "+"};
-    ui_button_render(&dmin);
-    ui_button_render(&dplus);
-    settings_upd_dim();
-
-    /* ── Pravy sloupec: Vzhled (barevne schema) ── */
-    ui_card_t c4 = {.rect = {DG_RX, 58, DG_COLW, 88}, .header_label = "Vzhled"};
-    ui_card_render_chrome(&c4);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 112}, "Schema:",
-                   &ui_font_sans_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-    ui_button_t thb = {.rect = THEME_RECT, .variant = UI_BUTTON_NORMAL,
-                       .label = g_theme_light ? "SVETLE" : "TMAVE"};
-    ui_button_render(&thb);
-
+    /* ── Mrizka 3x4. `Vzhled` a `Jazyk` jsou PREPINACE (label nese stav), zbytek
+     * naviguje do podoken. Poradi po radcich podle cetnosti pouziti. Posledni
+     * bunka (SETNAV_XC, 326) je zamerne volna — rezerva. ── */
+    settings_upd_theme();
     settings_upd_lang();
-
-    /* ── Mrizka rozcestniku (2x5). Vzhled/Jazyk jsou PREPINACE (drzi stav),
-     * zbytek jsou navigace do podoken. Poradi po radcich = podle toho, jak casto
-     * se to pouziva, ne abecedne. ── */
     static const struct { const prim_rect_t *r; const char *label; } SETNAV[] = {
-        { &NET_RECT,        "SIT >"       },
-        { &CASNAV_RECT,     "CAS >"       },
-        { &ALRMNAV_RECT,    "ALARMY >"    },
-        { &KALIBNAV_RECT,   "KALIBRACE >" },
-        { &ANIMNAV_RECT,    "ANIMACE >"   },
-        { &REF_RECT,        "REFERENCE >" },
+        { &DISPNAV_RECT,    "DISPLEJ >"     },
+        { &ALRMNAV_RECT,    "ALARMY >"      },
+        { &CASNAV_RECT,     "CAS >"         },
+        { &NET_RECT,        "SIT >"         },
+        { &KALIBNAV_RECT,   "KALIBRACE >"   },
+        { &REF_RECT,        "REFERENCE >"   },
+        { &ANIMNAV_RECT,    "ANIMACE >"     },
+        { &SETUP_ENTER_RECT,"SESTAVY >"     },
         { &ABOUT_RECT,      "O PRISTROJI >" },
-        { &SETUP_ENTER_RECT,"SESTAVY >"   },
     };
     for (unsigned i = 0; i < sizeof SETNAV / sizeof SETNAV[0]; i++) {
         ui_button_t nb = {.rect = *SETNAV[i].r, .variant = UI_BUTTON_NORMAL,
@@ -3312,9 +3298,12 @@ static void app_gpsdo_render_alarms(void)
         kv_row(152, "Ztrata GPS locku:", "hlidano (2x pip)", UI_COLOR_INK_2);
         kv_row(188, "Frekv. limit:",     "hlidano (4x pip)", UI_COLOR_INK_2);   /* #44 hotovo: PASS->FAIL = 4x pip */
         prim_draw_text((prim_point_t){DG_LLBL, 260}, "Udalosti od startu:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 348},
-                       "Vypnuti zvuku globalne v Nastaveni; mute plati i pro alarmy.",
+        /* Ovladac zvuku (2026-08-13 presunut z Nastaveni — patri k tomu, co umlcuje).
+         * Mute plati globalne, tedy i na testovaci pipnuti a boot melodii. */
+        prim_draw_text((prim_point_t){DG_LLBL, 340},
+                       "Zvuk (mute plati globalne — i na test a startovni melodii):",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        settings_upd_mute();
         c_mute[0] = c_f[0] = c_g[0] = '\0';
     }
     char b[12];
@@ -3875,6 +3864,50 @@ static void net_upd_values(void)
     prim_fill_rect((prim_rect_t){40, 344, 500, 40}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     prim_draw_text((prim_point_t){40, 374}, b, &ui_font_mono_25,
                    g_net_dhcp ? UI_COLOR_INK_3 : UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+}
+
+/* ── Okno DISPLEJ (s_view=36) ────────────────────────────────────────────────
+ * Jas + auto-dim, presunute z Nastaveni 2026-08-13 (Nastaveni je od te doby
+ * cisty rozcestnik). Geometrie ovladacu (BR_*, ADEN_*, DIM_*) zustala beze
+ * zmeny — lezela v leve polovine okna, coz tady sedi stejne dobre. */
+static void app_gpsdo_render_display(void)
+{
+    window_prep();
+    s_view = 36;
+    window_chrome("DISPLEJ", WIN_TITLE_Y_TIGHT);
+    anim_reset(&s_settings_br, (float)g_brightness);   /* bez nabehu pri otevreni */
+
+    ui_card_t c1 = {.rect = {DG_LX, 156, DG_COLW, 108}, .header_label = "Jas displeje"};
+    ui_card_render_chrome(&c1);
+    ui_button_t bmin  = {.rect = BR_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+    ui_button_t bplus = {.rect = BR_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
+    ui_button_render(&bmin);
+    ui_button_render(&bplus);
+    settings_upd_jas();
+
+    ui_card_t c2 = {.rect = {DG_LX, 274, DG_COLW, 110},
+                    .header_label = "Auto-dim (hodiny po necinnosti)"};
+    ui_card_render_chrome(&c2);
+    ui_button_t dmin  = {.rect = DIM_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+    ui_button_t dplus = {.rect = DIM_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
+    ui_button_render(&dmin);
+    ui_button_render(&dplus);
+    settings_upd_dim();
+
+    ui_card_t c3 = {.rect = {DG_RX, 156, DG_COLW, 228}, .header_label = "Pozn."};
+    ui_card_render_chrome(&c3);
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 200},
+                   "Auto-dim po necinnosti ztlumi podsviceni",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 226},
+                   "a zobrazi velke hodiny. Prvni dotek jen",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 252},
+                   "probudi, nespusti akci tlacitka.",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+    ui_button_render(&bb);
+    present_now();
 }
 
 static void app_gpsdo_render_net(void)
@@ -4632,7 +4665,7 @@ void app_gpsdo_tick_anim(void)
     if      (s_view == 0)  tick_anim_main();
     else if (s_view == 24) tick_anim_demo();
     else if (s_view == 25) tick_animdemo();
-    else if (s_view == 7)  settings_tick_jas();
+    else if (s_view == 36) settings_tick_jas();   /* eased jas bar (okno Displej) */
     else if (s_view == 21) {
         prim_set_target(&s_fb);
         prim_reset_clip();
@@ -4849,26 +4882,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
              * Cele okno se kresli jen pri vstupu a pri zmene schematu. */
             #define SETTINGS_UPD(fn) do { prim_set_target(&s_fb); prim_reset_clip(); \
                                           fn(); present_now(); } while (0)
-            if (in_rect(x, y, MUTE_RECT)) {
-                g_sound_muted = g_sound_muted ? 0 : 1;
-                g_sys_cfg_dirty = 1;
-                SETTINGS_UPD(settings_upd_mute);
-                return true;
-            }
-            /* Jas: g_brightness (a tedy HW backlight) se meni OKAMZITE; bar na
-             * obrazovce jen dostane novy cil a plynule ho dojede (settings_tick_jas
-             * z app_gpsdo_tick_anim, ~20 Hz). Prvni krok hned tady, aby stisk mel
-             * viditelnou okamzitou odezvu (necekalo se na dalsi tik). */
-            if (in_rect(x, y, BR_MINUS)) { brightness_step(-26); SETTINGS_UPD(settings_tick_jas); return true; }
-            if (in_rect(x, y, BR_PLUS))  { brightness_step(+26); SETTINGS_UPD(settings_tick_jas); return true; }
-            if (in_rect(x, y, ADEN_RECT)) {
-                g_autodim_en = g_autodim_en ? 0 : 1;
-                g_sys_cfg_dirty = 1;
-                SETTINGS_UPD(settings_upd_dim);
-                return true;
-            }
-            if (in_rect(x, y, DIM_MINUS)) { autodim_step(-1); SETTINGS_UPD(settings_upd_dim); return true; }
-            if (in_rect(x, y, DIM_PLUS))  { autodim_step(+1); SETTINGS_UPD(settings_upd_dim); return true; }
+            if (in_rect(x, y, DISPNAV_RECT)) { nav_push(7); app_gpsdo_render_display(); return true; }
             if (in_rect(x, y, THEME_RECT)) {                /* tmave <-> svetle schema */
                 g_theme_light = g_theme_light ? 0 : 1;
                 g_sys_cfg_dirty = 1;
@@ -5043,6 +5057,28 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 20 && in_rect(x, y, ST_RUN_RECT)) {  /* Selftest: spustit znovu */
             run_selftests();                /* pure-logic (~ms), bezpecne z UiTasku */
             app_gpsdo_render_selftest();    /* prekresli per-test vysledky */
+            return true;
+        }
+        if (s_view == 36) {                                /* Displej: jas + auto-dim */
+            #define DISP_UPD(fn) do { prim_set_target(&s_fb); prim_reset_clip();                                       fn(); present_now(); } while (0)
+            /* Jas se meni OKAMZITE (HW backlight); bar jen dostane novy cil a
+             * plynule ho dojede (settings_tick_jas @20 Hz). Prvni krok hned tady,
+             * aby stisk mel viditelnou odezvu. */
+            if (in_rect(x, y, BR_MINUS)) { brightness_step(-26); DISP_UPD(settings_tick_jas); return true; }
+            if (in_rect(x, y, BR_PLUS))  { brightness_step(+26); DISP_UPD(settings_tick_jas); return true; }
+            if (in_rect(x, y, ADEN_RECT)) {
+                g_autodim_en = g_autodim_en ? 0 : 1; g_sys_cfg_dirty = 1;
+                DISP_UPD(settings_upd_dim); return true;
+            }
+            if (in_rect(x, y, DIM_MINUS)) { autodim_step(-1); DISP_UPD(settings_upd_dim); return true; }
+            if (in_rect(x, y, DIM_PLUS))  { autodim_step(+1); DISP_UPD(settings_upd_dim); return true; }
+            #undef DISP_UPD
+        }
+        if (s_view == 18 && in_rect(x, y, MUTE_RECT)) {    /* Alarmy: zvuk zap/vyp */
+            g_sound_muted = g_sound_muted ? 0 : 1;
+            g_sys_cfg_dirty = 1;
+            prim_set_target(&s_fb); prim_reset_clip();
+            settings_upd_mute(); present_now();
             return true;
         }
         if (s_view == 35) {                                /* Sit: DHCP + staticka adresa */
