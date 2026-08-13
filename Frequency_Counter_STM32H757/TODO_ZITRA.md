@@ -142,6 +142,16 @@
 
 ## P4 — připravené, nezačaté
 
+- [ ] 🔴 **ETH — ODLOŽENO do výměny oscilátoru (rozhodnuto 2026-08-13).** Etapa F0
+      uzavřena s jednoznačným výsledkem: PHY LAN8742A nedostává 25 MHz, ale 10
+      (X1 je sdílený s HSE procesoru). Řešení = **výměna X1 za 25 MHz TCXO**.
+      ⚠️ Tím se změní i HSE procesoru → **kompletní recept na přepočet hodin je
+      v `CLOCK_25MHZ_MIGRACE.md`** (všechny tři PLL i DSI si udrží stejné VCO,
+      takže se nemění žádný odvozený kmitočet). Až bude TCXO osazený:
+      1. aplikovat migraci hodin, 2. `eth` musí najít PHY na adrese 0,
+      3. teprve pak pokračovat F1–F8. Do té doby ETH nezačínat.
+
+
 - [ ] **ETH etapa F0** (`ETH_BRINGUP_CHECKLIST.md`): vytáhnout ze schématu piny `MDC`/`MDIO`/
       `ETH_RES` (v repu **nejsou**) + UART příkaz `eth` = bit-bang MDIO, scan adres 0–31, čtení
       PHY ID (`0x0007C130/1`) + změřit REF_CLK 50 MHz. **Bez regenerace `.ioc`, nulové riziko.**
