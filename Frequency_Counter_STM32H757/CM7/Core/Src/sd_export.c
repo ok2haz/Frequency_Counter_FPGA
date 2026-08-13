@@ -54,6 +54,43 @@ static volatile bool s_busy;
 /* Auto-mount se zada jen JEDNOU po vlozeni karty (viz `sd_export_tick`). */
 static uint8_t s_mount_tried;
 
+/* ── Ochrana UiTasku pred zaseknutym HAL ─────────────────────────────────────
+ * ⚠️⚠️ HAL SD je plny TESNYCH SMYCEK BEZ YIELDU, jejichz timeout je
+ * `SDMMC_SWDATATIMEOUT` / `SDMMC_DATATIMEOUT` = **0xFFFFFFFF ≈ 49 dni**, tedy
+ * prakticky nekonecno (`SD_SendSDStatus`, zaverecne "verify ready" v
+ * `HAL_SD_Init`, cekani na `DPSMACT`). Jsou ve vendor kodu, takze je nejde
+ * ohranicit ani prinutit ustoupit scheduleru.
+ *
+ * Kdyz se do takove smycky dostane UartTask (Normal), vyhladovi UiTask
+ * (BelowNormal) -> prestane fungovat dotyk, `watchdog_kick_ui()` zestarne a
+ * IWDG shodi CELOU desku. Presne to delalo `sd fs` na karte, ktera se zasekla.
+ *
+ * Reseni: po dobu blokujici prace se volajici task srazi na `osPriorityLow`,
+ * tedy POD UiTask. Zaseknuty HAL pak zere jen zbytkovy cas — displej, dotyk
+ * i watchdog bezi dal a pristroj prezije i mrtvou kartu. Zustane viset jen
+ * konzole, coz je oproti resetu desky nesrovnatelne lepsi.
+ * ⚠️ Kdyz se task zasekne natrvalo, prioritu uz nikdo nevrati — a to je
+ * ZAMER: presne v tom stavu ji potrebujeme nizkou. */
+static osPriority_t s_prio_saved;
+static uint8_t      s_prio_depth;   /* vnoreni (selftest -> mount) */
+
+void sd_blocking_begin(void)
+{
+    if (osKernelGetState() != osKernelRunning) return;
+    if (s_prio_depth++ == 0) {
+        osThreadId_t me = osThreadGetId();
+        s_prio_saved = osThreadGetPriority(me);
+        (void)osThreadSetPriority(me, osPriorityLow);
+    }
+}
+
+void sd_blocking_end(void)
+{
+    if (osKernelGetState() != osKernelRunning) return;
+    if (s_prio_depth && --s_prio_depth == 0)
+        (void)osThreadSetPriority(osThreadGetId(), s_prio_saved);
+}
+
 /* ── Levný tik (defaultTask ~2 Hz) ───────────────────────────────────────────
  * Dělá JEN to, co je rychlé: čtení GPIO + při vytažení karty odmountování
  * (`f_mount(NULL,…)` jen zahodí ukazatel, na médium nesahá).
@@ -238,6 +275,7 @@ void sd_export_service(void)
     uint8_t r = g_sd_req;
     if (r == SD_REQ_NONE) return;
     g_sd_req = SD_REQ_NONE;          /* vzit driv, nez se zacne pracovat */
+    sd_blocking_begin();             /* po dobu prace pod UiTask (viz sd_export.h) */
     if (r == SD_REQ_MOUNT) {
         bool ok = sd_export_mount();
         printf("SD: mount: %s (%s)\r\n", ok ? "OK" : "FAIL", sd_export_state_str());
@@ -261,6 +299,7 @@ void sd_export_service(void)
                                                      : "Test SELHAL - viz konzole");
         ui_refresh_capacity();
     }
+    sd_blocking_end();
 }
 
 /* ── `sd fs` — CO JE NA KARTE DOOPRAVDY ──────────────────────────────────────
@@ -327,9 +366,30 @@ uint8_t BSP_SD_Init(void)
     HAL_NVIC_SetPriority(SDMMC1_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
 
+    /* ⚠️⚠️ ZAMERNE NEVOLAME `HAL_SD_Init()` (zmena 2026-08-13). Ta uvnitr dela
+     * `HAL_SD_GetCardStatus()` (ACMD13, 64B datovy prenos) a zaverecne cekani na
+     * TRANSFER — obojí s timeoutem `SDMMC_SWDATATIMEOUT`/`SDMMC_DATATIMEOUT`
+     * = 0xFFFFFFFF ≈ 49 dni, tedy prakticky nekonecnou tesnou smyckou. Kdyz karta
+     * to ACMD13 neodbavi, `sd fs` zamrzne a IWDG shodi desku. Presne to se stalo.
+     * `HAL_SD_GetCardStatus` slouzi v `HAL_SD_Init` JEN k urceni `CardSpeed`,
+     * kterou tady nikdo nepouziva -> preskocit ji nic nestoji.
+     *
+     * Skladame proto init z casti s rozumnym chovanim — presne tu sekvenci,
+     * kterou `sd init` na teto karte proveril krok po kroku:
+     *   MspInit (hodiny+piny) -> HAL_SD_InitCard -> OHRANICENE cekani na TRANSFER
+     *   -> ConfigWideBusOperation(4B) s fallbackem na 1B.
+     * ⚠️ `HAL_SD_InitCard` MspInit NEvola (dela to jen `HAL_SD_Init`), takze si
+     * ho musime zavolat sami — jinak nebezi hodiny SDMMC1 ani nejsou piny v AF. */
+    if (hsd1.State == HAL_SD_STATE_RESET) {
+        hsd1.Lock = HAL_UNLOCKED;
+        HAL_SD_MspInit(&hsd1);
+    }
+
     hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;          /* identifikace vzdy 1-bit */
-    if (HAL_SD_Init(&hsd1) != HAL_OK) {
+    hsd1.State = HAL_SD_STATE_PROGRAMMING;
+    if (HAL_SD_InitCard(&hsd1) != HAL_OK) {
         uint32_t ec = hsd1.ErrorCode;
+        hsd1.State = HAL_SD_STATE_READY;
         printf("SD: HAL_SD_Init selhal, ErrorCode=0x%08lX = %s\r\n", (unsigned long)ec,
                (ec & SDMMC_ERROR_CMD_RSP_TIMEOUT) ? "CMD_RSP_TIMEOUT (karta NEODPOVIDA na prikaz)" :
                (ec & SDMMC_ERROR_CMD_CRC_FAIL)    ? "CMD_CRC_FAIL (odpoved prisla, ale s chybnym CRC)" :
@@ -352,12 +412,31 @@ uint8_t BSP_SD_Init(void)
         }
         return MSD_ERROR;
     }
+
+    /* OHRANICENE cekani na TRANSFER (HAL by tu tocil ~49 dni). 1 s bohate staci —
+     * karta po identifikaci prechazi do TRANSFER v jednotkach ms; kdyz ne, je
+     * zaseknuta a dalsi cekani uz nic nezmeni. */
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
+        if ((HAL_GetTick() - t0) > 1000u) {
+            printf("SD: karta se po identifikaci nedostala do TRANSFER (zaseknuta)\r\n");
+            printf("  -> vyjmi a znovu zasun kartu; kdyz to trva, precti ji v PC\r\n");
+            hsd1.State = HAL_SD_STATE_READY;
+            return MSD_ERROR;
+        }
+        if (osKernelGetState() == osKernelRunning) osDelay(1);
+    }
+
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;             /* sticky -> vynulovat pred prepnutim */
     if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK) {
         printf("SD: prepnuti na 4-bit selhalo -> pokracuji v 1-bit (karta funguje dal)\r\n");
         hsd1.ErrorCode = HAL_SD_ERROR_NONE;
         (void)HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B);
     }
+    /* Dorovnat to, co by jinak nastavil zaver `HAL_SD_Init`. */
+    hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+    hsd1.Context   = SD_CONTEXT_NONE;
+    hsd1.State     = HAL_SD_STATE_READY;
     return MSD_OK;
 }
 #endif
@@ -639,7 +718,16 @@ static bool selftest_body(void)
 
     /* --- zapis --- */
     fr = f_open(&f, SD_TEST_FILE, FA_CREATE_ALWAYS | FA_WRITE);
-    if (fr != FR_OK) { printf("SD TEST: f_open(w) = %d %s\n", (int)fr, fr_str(fr)); return false; }
+    if (fr != FR_OK) {
+        printf("SD TEST: f_open(w) = %d %s\n", (int)fr, fr_str(fr));
+        /* U FR_DISK_ERR rekni, co hlasi spodni vrstva — jinak se hada, jestli je
+         * problem v karte, v prenosu, nebo v souborovem systemu. */
+        if (fr == FR_DISK_ERR)
+            printf("  HAL: ErrorCode=0x%08lX stav=%lu (4=TRANSFER) STA=0x%08lX\n",
+                   (unsigned long)hsd1.ErrorCode, (unsigned long)HAL_SD_GetCardState(&hsd1),
+                   (unsigned long)SDMMC1->STA);
+        return false;
+    }
     for (uint32_t c = 0; c < SD_TEST_CHUNKS; c++) {
         for (uint32_t i = 0; i < SD_TEST_CHUNK; i++)
             buf[i] = (uint8_t)(c * 7u + i * 31u + 0x5Au);   /* deterministicky vzor */

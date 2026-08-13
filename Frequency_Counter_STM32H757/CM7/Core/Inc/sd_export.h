@@ -78,6 +78,21 @@ const sd_ui_info_t *sd_export_ui_info(void);
 /** Obslouzi cekajici pozadavek (vola VYHRADNE UartTask ve sve smycce). */
 void sd_export_service(void);
 
+/* ── Ochrana UiTasku pred zaseknutym HAL ─────────────────────────────────────
+ * ⚠️⚠️ HAL SD ma nekolik TESNYCH SMYCEK BEZ YIELDU s timeoutem
+ * `SDMMC_SWDATATIMEOUT`/`SDMMC_DATATIMEOUT` = 0xFFFFFFFF ≈ **49 dni** (napr.
+ * `SD_SendSDStatus`, zaverecne cekani v `HAL_SD_Init`, cekani na `DPSMACT`).
+ * Jsou ve vendor kodu -> nejde je ohranicit ani prinutit ustoupit scheduleru.
+ * Kdyz do nich spadne UartTask (Normal), vyhladovi UiTask (BelowNormal):
+ * prestane dotyk, `watchdog_kick_ui()` zestarne a IWDG shodi CELOU desku.
+ *
+ * Proto se volajici task po dobu blokujici prace se SD srazi POD UiTask.
+ * Obal VZDY cely blok prikazu (jeden vstup, jeden vystup) — ne jednotlive
+ * funkce s ranymi `return`; stejne pouceni jako u `s_busy`. Vnoreni resi
+ * vnitrni citac, takze vicenasobne volani nevadi. */
+void sd_blocking_begin(void);
+void sd_blocking_end(void);
+
 /** ⚠️ BLOKUJE (desitky az stovky ms) — jen z UartTasku. @return true = namountovano. */
 bool sd_export_mount(void);
 

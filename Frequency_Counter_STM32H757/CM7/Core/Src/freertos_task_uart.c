@@ -637,6 +637,12 @@ void UartTask_run(void *argument)
 			   * UiTask je NEVOLAT. Detekce karty bezi levne v defaultTasku (sd_export_tick). */
 			  else if (strncmp(RxBuffer, "sd", 2) == 0 && (RxBuffer[2] == '\0' || RxBuffer[2] == ' ')) {
 				  const char *arg = RxBuffer[2] == ' ' ? &RxBuffer[3] : "";
+				  /* ⚠️ Po dobu prace se SD jde UartTask POD UiTask — HAL SD ma tesne
+				   * smycky s timeoutem ~49 dni a zaseknuta karta by jinak vyhladovela
+				   * UiTask, zabila dotyk a IWDG by shodil desku. Obaluje se CELY blok
+				   * (jeden vstup, jeden vystup), ne jednotlive funkce s ranymi return —
+				   * stejne pouceni jako u `s_busy`. Viz sd_export.h. */
+				  sd_blocking_begin();
 				  if (strcmp(arg, "mount") == 0) {
 					  printf("SD: mountuji...\n");
 					  printf("SD: %s (%s)\n", sd_export_mount() ? "OK" : "FAIL", sd_export_state_str());
@@ -691,6 +697,7 @@ void UartTask_run(void *argument)
 					         datalog_sd_det_forced() ? "  [force]" : "");
 					  printf("SD: prikazy: sd init | sd fs | sd diag | sd test | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
 				  }
+				  sd_blocking_end();
 			  }
 			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {
 				  const char *arg = RxBuffer[7] == ' ' ? &RxBuffer[8] : "";
