@@ -94,6 +94,13 @@ bool ws_panel_power_on(I2C_HandleTypeDef *hi2c)
     return true;
 }
 
+/* Zapis PORTC za behu — pouziva ho recovery touche (viz freertos_task_ui.c).
+ * Bez printf ze stejneho duvodu jako u backlightu: vola to hlidany UiTask. */
+bool ws_panel_set_portc(I2C_HandleTypeDef *hi2c, uint8_t value)
+{
+    return ws_write_reg(hi2c, WS_REG_PORTC, value);
+}
+
 bool ws_panel_set_backlight(I2C_HandleTypeDef *hi2c, uint8_t brightness)
 {
     /* REG_PWM = primy jas 0-255, BEZ inverze. Vola UiTask pri kazde zmene jasu

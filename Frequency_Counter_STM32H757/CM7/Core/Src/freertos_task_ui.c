@@ -108,6 +108,9 @@ void StartUiTask(void *argument)
     static uint8_t  s_dimmed = 0;          /* 1 = podsviceni ztlumene necinnosti */
     static uint8_t  s_i2c4_fail = 0;    /* po sobe jdouci HAL selhani touch cteni */
     static uint32_t s_i2c4_rec_t = 0;   /* cas posledniho pokusu o recovery */
+    static uint8_t  s_i2c4_busy = 0;    /* mutex se nepodarilo vzit (drive tise ignorovano) */
+    static uint32_t s_touch_grace = 0;  /* po HW resetu TP: ~400 ms nepocitat chyby */
+    static uint32_t s_touch_resets = 0; /* kolikrat uz se TP resetoval (diagnostika) */
     /* ADAPTIVNI gate: 33 ms (30 Hz) BEHEM a ~1,5 s PO interakci (svizne tapy —
      * hlavne opakovane +/- v Nastaveni), jinak 66 ms (15 Hz) v klidu. Touch cteni
      * je 31 B ~3 ms @100 kHz -> 30 Hz = ~9 % CPU, 15 Hz = ~4,5 %. V typickem stavu
@@ -125,17 +128,45 @@ void StartUiTask(void *argument)
       }
       /* Detekce mrtve sbernice: pocitej JEN skutecna HAL selhani (mutex timeout
        * neni chyba busu — napr. bezici `scanner`). Po ~0,5 s souvislych chyb
-       * zkus bus recovery (max 1x/5 s). */
+       * zkus recovery (max 1x/5 s). */
       if (attempted) { if (got) s_i2c4_fail = 0; else if (s_i2c4_fail < 250) s_i2c4_fail++; }
+      else if (s_i2c4_busy < 250) s_i2c4_busy++;   /* mutex se nepodarilo vzit — viditelne v `status` */
+
       if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > 5000u) {
         s_i2c4_rec_t = HAL_GetTick();
-        printf("touch: I2C4 nereaguje (%u chyb) -> bus recovery\n", s_i2c4_fail);
+        printf("touch: I2C4 nereaguje (%u chyb, %u x mutex busy) -> recovery #%lu (bus + HW reset TP)\n",
+               s_i2c4_fail, s_i2c4_busy, (unsigned long)(s_touch_resets + 1u));
         if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+          /* 1) Uvolnit sbernici, kdyby ji nekdo drzel. ⚠️ `i2c4_recover` pulzuje SCL
+           *    JEN kdyz je SDA v nule; kdyz sbernice volna je, jen reinicializuje I2C4. */
           i2c4_recover();
+
+          /* 2) HARDWAROVY RESET DOTYKOVEHO RADICE pres ATTINY (nalez 2026-08-13).
+           * Merenim na cili se ukazalo, ze pri mrtvem touchi je sbernice VOLNA
+           * (SCL=1, SDA=1) a I2C4 bez chybovych priznaku — FT5x06 proste neACKuje
+           * svou adresu. Pulzy na SCL tedy leci neco, co se tu vubec nedeje.
+           * Skutecne dosazitelne priciny jsou dve a OBE spravi tenhle krok:
+           *   a) FT5x06 je zaseknuty/uspany (nema zadnou spravu power mode),
+           *   b) ATTINY ma poskozeny `PORTC` a drzi `RST_TP_N` v nule — sousedni
+           *      zapis podsviceni (auto-dim!) jde po TEZE sbernici a ATTINY je
+           *      bit-bang slave, ktery muze ztratit synchronizaci (viz varovani
+           *      u zapisu jasu nize).
+           * Prepsanim PORTC na znamou dobrou hodnotu se opravi (b) a pulz
+           * `RST_TP_N` resetuje (a). Ostatni bity (LCD/bridge/backlight) zustavaji
+           * v provoznim stavu, takze obraz problikne nanejvys dotykovym radicem. */
+          ws_panel_set_portc(&hi2c4, (uint8_t)(WS_PC_RUN & ~WS_PC_RST_TP_N));
+          osDelay(5);                       /* FT5x06 nRST potrebuje >1 ms */
+          ws_panel_set_portc(&hi2c4, WS_PC_RUN);
           osMutexRelease(i2c4MutexHandle);
         }
+        /* FT5x06 po resetu nabiha ~300 ms — do te doby by kazde cteni selhalo a
+         * hned by si vyzadalo dalsi recovery. */
+        s_touch_grace = HAL_GetTick();
         s_i2c4_fail = 0;
+        s_touch_resets++;
       }
+      /* Behem nabehu po resetu chyby nepocitej (jinak by se recovery retezila). */
+      if ((HAL_GetTick() - s_touch_grace) < 400u) s_i2c4_fail = 0;
       if (got) {
         /* ⚠️ Boot-priming: FT5x06 NENI resetem nulovan a uzivatel muze pri
          * Menu->Restart drzet prst na "Ano" pres reset -> prvni poll by videl
