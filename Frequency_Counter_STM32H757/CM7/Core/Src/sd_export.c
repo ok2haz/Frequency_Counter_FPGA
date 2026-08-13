@@ -193,6 +193,92 @@ void sd_export_service(void)
     }
 }
 
+/* ── `sd fs` — CO JE NA KARTE DOOPRAVDY ──────────────────────────────────────
+ * Doted jsme o formatu jen SPEKULOVALI ("karta 14,5 GB, mozna exFAT"). Tohle to
+ * MERI: precte LBA 0 mimo FatFs (primo pres BSP_SD) a dekoduje ho.
+ *
+ * Proc to rozhoduje: `ffconf.h` ma `_FS_EXFAT = 0`, takze exFAT kartu `f_mount`
+ * odmitne s `FR_NO_FILESYSTEM` — a to vypada uplne stejne jako "rozbita karta".
+ * Rozliseni je jednorazova informace, ktera usetri hodiny hadani.
+ *
+ * ⚠️ BLOKUJE (BSP_SD_Init az stovky ms) — jen z UartTasku.
+ * ⚠️ Buffer je staticky a zarovnany na 32 B + invalidace D-cache: SDMMC jede na
+ *    H7 pres IDMA, ktera obchazi cache (viz `sd_hal_rd` v datalog_sd.c). */
+#ifdef SD_EXPORT_FATFS
+static uint8_t s_fsbuf[512] __attribute__((aligned(32)));
+
+static void fs_show_vbr(const uint8_t *b, const char *what)
+{
+    /* exFAT ma "EXFAT   " na offsetu 3, FAT32 "FAT32   " na 0x52, FAT12/16 na 0x36. */
+    if (memcmp(b + 3, "EXFAT   ", 8) == 0) {
+        printf("  %s: exFAT  ⚠️ FatFs ho NEUMI (_FS_EXFAT = 0) -> naformatuj FAT32\r\n", what);
+    } else if (memcmp(b + 0x52, "FAT32   ", 8) == 0) {
+        printf("  %s: FAT32  ✅ tohle FatFs umi\r\n", what);
+    } else if (memcmp(b + 0x36, "FAT16   ", 8) == 0 || memcmp(b + 0x36, "FAT12   ", 8) == 0) {
+        printf("  %s: %.8s  ✅ tohle FatFs umi\r\n", what, (const char *)(b + 0x36));
+    } else if (memcmp(b + 3, "NTFS    ", 8) == 0) {
+        printf("  %s: NTFS  ⚠️ nepodporovano -> naformatuj FAT32\r\n", what);
+    } else {
+        printf("  %s: neznamy (jump=%02X%02X%02X, sig=%02X%02X)\r\n",
+               what, b[0], b[1], b[2], b[510], b[511]);
+    }
+}
+#endif
+
+void sd_export_fs(void)
+{
+#ifndef SD_EXPORT_FATFS
+    printf("SD FS: FatFs neni v buildu\r\n");
+#else
+    printf("SD FS: ctu LBA 0 primo pres BSP_SD (mimo FatFs)\r\n");
+    if (BSP_SD_Init() != MSD_OK) {
+        printf("  BSP_SD_Init selhal -> karta neni, nebo nenabehla HW vrstva (zkus `sd force on`)\r\n");
+        return;
+    }
+    if (BSP_SD_ReadBlocks((uint32_t *)(void *)s_fsbuf, 0, 1, 2000) != MSD_OK) {
+        printf("  cteni LBA 0 SELHALO -> HW vrstva nebo karta\r\n");
+        return;
+    }
+    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_fsbuf, sizeof s_fsbuf);
+
+    if (s_fsbuf[510] != 0x55u || s_fsbuf[511] != 0xAAu) {
+        printf("  LBA 0 nema podpis 0x55AA (%02X%02X) -> karta neni naformatovana\r\n",
+               s_fsbuf[510], s_fsbuf[511]);
+        return;
+    }
+    /* MBR vs. rovnou boot sektor: VBR zacina skokovou instrukci EB/E9. */
+    if (s_fsbuf[0] == 0xEBu || s_fsbuf[0] == 0xE9u) {
+        printf("  LBA 0 je rovnou boot sektor (bez particni tabulky)\r\n");
+        fs_show_vbr(s_fsbuf, "format");
+        return;
+    }
+    printf("  LBA 0 je MBR, particni tabulka:\r\n");
+    uint32_t first_lba = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint8_t *e = s_fsbuf + 0x1BE + 16 * i;
+        uint8_t  type = e[4];
+        uint32_t lba  = (uint32_t)e[8] | ((uint32_t)e[9] << 8) |
+                        ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);
+        uint32_t cnt  = (uint32_t)e[12] | ((uint32_t)e[13] << 8) |
+                        ((uint32_t)e[14] << 16) | ((uint32_t)e[15] << 24);
+        if (type == 0u) continue;
+        const char *nm = (type == 0x0Bu || type == 0x0Cu) ? "FAT32"
+                       : (type == 0x07u)                  ? "exFAT/NTFS"
+                       : (type == 0x06u || type == 0x0Eu) ? "FAT16" : "?";
+        printf("   #%d typ=0x%02X (%s) LBA=%lu velikost=%lu MB\r\n",
+               i, type, nm, (unsigned long)lba, (unsigned long)(cnt / 2048u));
+        if (first_lba == 0u) first_lba = lba;
+    }
+    if (first_lba == 0u) { printf("  zadna particni polozka -> nenaformatovano\r\n"); return; }
+
+    if (BSP_SD_ReadBlocks((uint32_t *)(void *)s_fsbuf, first_lba, 1, 2000) != MSD_OK) {
+        printf("  cteni boot sektoru particie SELHALO\r\n"); return;
+    }
+    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_fsbuf, sizeof s_fsbuf);
+    fs_show_vbr(s_fsbuf, "particie 1");
+#endif
+}
+
 void sd_export_diag(void)
 {
 #ifndef SD_EXPORT_FATFS
