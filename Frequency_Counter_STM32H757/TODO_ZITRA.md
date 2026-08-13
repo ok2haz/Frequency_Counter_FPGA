@@ -117,9 +117,12 @@
       Vše **jen nad poli, která `scpi_src_t` už má** → žádný bump `IPC_VERSION` a CM4 se bude
       chovat identicky. Selftest rozšířen na 101 assertů.
 
-- [ ] **`_Static_assert` mezi `SCPI_CFG_*` a `IPC_CFG_*`.** Dva paralelní enumy, které musí sedět
-      1:1 bez jakéhokoli compile-time hlídání. ⚠️ **Blokující pro ETH etapu F6** — přeházené pořadí
-      by tiše zapsalo `LIM:LOW` do `null_ref`.
+- [x] ✅ **`_Static_assert` mezi `SCPI_CFG_*` a `IPC_CFG_*` — HOTOVO 2026-08-13.** Riziko potvrzeno:
+      `ipc_cfg_apply()` v `ipc.c` je byte-za-byte duplikát `scpi_cfg_apply()` a klíč se přes cmd
+      ring přenáší jako **holé číslo, bez převodu**. Ty dvě hlavičky se navíc nikdy nepotkaly
+      v jedné translation unit, takže to nemohl odhalit žádný kompilátor. 8 assertů v `ipc.c`
+      (`scpi.h` se tam includuje výhradně kvůli nim). **Ověřeno injektáží chyby** — po vložení
+      položky do jednoho výčtu build spadne, po obnovení projde. Tím padá blokátor ETH etapy F6.
 - [ ] **`ipc_cm4_cm7_alive()` hlásí „alive" při bootu**, než CM7 poprvé publikuje snapshot
       (`s_last_seq`/`snap.seq` obojí 0 → `(now-0) < 2000`). CM4 pak ~2 s servíruje nuly jako platná data.
 - [ ] **Snapshot posílá napětí jako 0 místo „neplatné".** CM7 SCPI hlásí `9.91E37` (NaN), CM4 by

@@ -25,6 +25,7 @@
 #include "sensor_stat.h"      /* g_sensors[] — teploty + napajeni + RF */
 #include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
 #include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
+#include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
 #include "freertos_shared.h"  /* g_spi_ok, g_freq_stale, g_si5356_*, g_ui_cfg, g_uptime_s, ... */
 #include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomicky commit g_meas_cfg */
 #include "task.h"
@@ -168,6 +169,27 @@ static int ipc_real_freq_hz(double *hz)
 /* Aplikuje JEDEN CFG_SET klic na PREDANOU cfg (mirror scpi_calc_set — testovatelne na
  * lokalni cfg). @return 1 = klic rozpoznan a aplikovan. NULL_ACQ potrebuje platny freq_hz
  * (>0); jinak 0 (neni co nulovat). Bool klice berou `arg`, double klice `argd`. */
+/* ⚠️⚠️ `SCPI_CFG_*` (scpi.h) a `IPC_CFG_*` (ipc_shared.h) jsou DVA paralelní
+ * výčty, které MUSÍ sedět 1:1. CM4 SCPI parser vyrobí `SCPI_CFG_*` klíč, pošle
+ * ho cmd ringem jako `ipc_cmd_t.key` a `ipc_cfg_apply()` ho níže přečte jako
+ * `IPC_CFG_*` — mezi nimi NENÍ žádný převod, je to holý přenos čísla.
+ * Kdyby někdo do jednoho výčtu vložil položku, hodnoty by se tiše posunuly a
+ * třeba `CALC:LIM:LOW` by zapsal do `null_ref`: bez chyby, bez varování,
+ * jen špatná data. Doteď to nešlo odhalit ani teoreticky — ty dvě hlavičky se
+ * nikdy nepotkaly v jedné translation unit. `scpi.h` se sem includuje
+ * VÝHRADNĚ kvůli téhle kontrole.
+ * (Alternativa = smazat tenhle duplikát a volat rovnou `scpi_cfg_apply()`,
+ * které je veřejné a pure. Je to čistší, ale mění dvoujádrový kontrakt —
+ * záměrně to nedělám bez zadání.) */
+_Static_assert((int)SCPI_CFG_MATH_EN  == (int)IPC_CFG_MATH_EN,  "SCPI/IPC klic MATH_EN se rozesel");
+_Static_assert((int)SCPI_CFG_MATH_M   == (int)IPC_CFG_MATH_M,   "SCPI/IPC klic MATH_M se rozesel");
+_Static_assert((int)SCPI_CFG_MATH_B   == (int)IPC_CFG_MATH_B,   "SCPI/IPC klic MATH_B se rozesel");
+_Static_assert((int)SCPI_CFG_NULL_EN  == (int)IPC_CFG_NULL_EN,  "SCPI/IPC klic NULL_EN se rozesel");
+_Static_assert((int)SCPI_CFG_NULL_ACQ == (int)IPC_CFG_NULL_ACQ, "SCPI/IPC klic NULL_ACQ se rozesel");
+_Static_assert((int)SCPI_CFG_LIM_EN   == (int)IPC_CFG_LIM_EN,   "SCPI/IPC klic LIM_EN se rozesel");
+_Static_assert((int)SCPI_CFG_LIM_LO   == (int)IPC_CFG_LIM_LO,   "SCPI/IPC klic LIM_LO se rozesel");
+_Static_assert((int)SCPI_CFG_LIM_HI   == (int)IPC_CFG_LIM_HI,   "SCPI/IPC klic LIM_HI se rozesel");
+
 static int ipc_cfg_apply(meas_cfg_t *c, uint8_t key, uint32_t arg, double argd, double freq_hz)
 {
     switch (key) {
