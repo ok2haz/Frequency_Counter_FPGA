@@ -658,9 +658,16 @@ zatím neexistuje, protože se nikdy nestavěla — makefily si IDE vygeneruje s
 
 **Kde je flash doopravdy** (z map souboru, Debug/-O0, celkem 686 KB):
 `.rodata` 333 KB — z toho **fonty ~285 KB = 41 % celého programu** (`ui_font_mono_22` sám 46 KB);
-`.text` 353 KB. **Mazání nepoužitých funkcí velikost NEZMĚNÍ** — `-ffunction-sections`
+`.text` 353 KB. **Mazání nepoužitých FUNKCÍ velikost NEZMĚNÍ** — `-ffunction-sections`
 + `--gc-sections` je zahodí už dnes (ověřeno: po odstranění 24 mrtvých funkcí byl `.elf`
-bajt za bajt stejný). Pořadí páky podle výnosu: **Release −151 KB → fonty −? → zbytek**.
+bajt za bajt stejný). ⚠️ **Neplatí to pro nedosažitelné VĚTVE uvnitř živé funkce** — ty
+linker odstranit neumí a stojí flash doopravdy. Případ z 2026-08-13: po odstranění
+`prim_path_quad_to()`/`prim_path_arc()` zůstaly jejich `case` větve ve `flatten()` (path.c)
+a držely při životě celý `bezier.c`; jejich dobrání ušetřilo **888 B** a zmenšilo
+`prim_path_op_t` z 20 na 8 B (cesty se alokují na haldě → i úspora RAM).
+**Poučení: když odstraníš producenta, dober i konzumenta** — půlka odstraněné
+funkcionality je horší než obě čisté varianty.
+Pořadí páky podle výnosu: **Release −151 KB → fonty (~285 KB, ale kvalita) → zbytek**.
 Toolchain (arm-none-eabi) není v PATH tohoto prostředí, ale **je na disku**:
 `C:\ST\STM32CubeIDE_2.1.0\...\gnu-tools-for-stm32.14.3...\tools\bin\arm-none-eabi-gcc.exe`
 (GCC 14.3) — použitelný pro **kompilátorový audit** (`-Wall -Wextra -Wshadow` +

@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file path.h
- * @brief Opaque composite path API (move/line/quad/arc, stroke & fill).
+ * @brief Opaque composite path API (move/line/close + fill).
  *
  * A path allocates its op buffer once at prim_path_create() (outside the hot
  * path) and is freed at prim_path_destroy(). No allocation happens during

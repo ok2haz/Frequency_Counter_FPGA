@@ -1,6 +1,6 @@
 /**
  * @file path.c
- * @brief Composite path: build ops, flatten to a polyline, stroke or fill.
+ * @brief Composite path: build ops, flatten to a polyline, fill.
  *
  * Allocation happens only in prim_path_create()/destroy() (explicit lifecycle,
  * outside the render hot path). Stroke/fill flatten into a fixed-size scratch
@@ -9,10 +9,8 @@
 
 #include <prim/path.h>
 #include <prim/shapes.h>
-#include <math.h>
-#include <stdlib.h>
+#include <stdlib.h>              /* malloc/free — lifecycle cesty (NE abs, ten byl jen pro ARC) */
 #include "internal/path_impl.h"
-#include "internal/bezier.h"
 #include "internal/rasterizer.h"
 
 #define PATH_MAX_FLAT PRIM_RASTER_MAX_PTS
@@ -80,26 +78,6 @@ static int16_t flatten(const prim_path_t *p, prim_point_t *out, int16_t cap)
             cur = op->p0;
             if (n < cap) out[n++] = cur;
             break;
-        case PRIM_OP_QUAD: {
-            int16_t segs = prim_internal_quad_seg_count(cur, op->p1, op->p0, 32);
-            for (int16_t s = 1; s <= segs && n < cap; s++) {
-                int32_t t = (int32_t)s * 256 / segs;
-                out[n++] = prim_internal_quad_eval(cur, op->p1, op->p0, t);
-            }
-            cur = op->p0;
-            break;
-        }
-        case PRIM_OP_ARC: {
-            int16_t segs = (int16_t)(abs(op->a1) / 6 + 2);
-            for (int16_t s = 0; s <= segs && n < cap; s++) {
-                float a = (op->a0 + (float)op->a1 * s / segs) * 0.0174532925f;
-                out[n++] = (prim_point_t){
-                    (int16_t)(op->p1.x + op->radius * cosf(a)),
-                    (int16_t)(op->p1.y - op->radius * sinf(a))};
-            }
-            if (n > 0) cur = out[n - 1];
-            break;
-        }
         case PRIM_OP_CLOSE:
             cur = start;
             if (n < cap) out[n++] = start;
