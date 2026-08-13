@@ -86,4 +86,3 @@ static const ui_theme_t THEME_LIGHT = {
 const ui_theme_t *g_ui_theme = &THEME_DARK;
 
 void ui_theme_select(int light) { g_ui_theme = light ? &THEME_LIGHT : &THEME_DARK; }
-int  ui_theme_is_light(void)    { return g_ui_theme == &THEME_LIGHT; }

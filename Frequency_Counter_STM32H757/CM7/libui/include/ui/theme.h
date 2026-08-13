@@ -42,7 +42,6 @@ UI_API extern const ui_theme_t *g_ui_theme;   /* aktivni paleta (default tmava) 
 /** Prepne paletu (0 = tmava, 1 = svetla). Volajici MUSI nasledne zneplatnit
  *  predrenderovane cache (bg_cache) a prekreslit obrazovku. */
 UI_API void ui_theme_select(int light);
-UI_API int  ui_theme_is_light(void);
 
 /* ── Background ─────────────────────────────────────────────── */
 #define UI_COLOR_BG_0           (g_ui_theme->bg0)

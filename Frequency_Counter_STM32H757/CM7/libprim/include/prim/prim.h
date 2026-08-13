@@ -25,7 +25,5 @@
 #include <prim/text.h>
 
 /** @brief Library semantic version string, e.g. "0.1.0". */
-PRIM_API const char *prim_version(void);
 
 /** @brief Last error message for the current context (never NULL). */
-PRIM_API const char *prim_last_error(void);

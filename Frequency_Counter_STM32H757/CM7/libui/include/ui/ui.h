@@ -27,4 +27,3 @@
 #include <ui/icons.h>
 
 /** @brief libui semantic version string. */
-UI_API const char *ui_version(void);

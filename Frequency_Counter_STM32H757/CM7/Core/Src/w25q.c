@@ -194,12 +194,3 @@ bool w25q_erase_sector(uint32_t addr)
     if (HAL_QSPI_Command(&hqspi, &c, QSPI_TMO) != HAL_OK) return false;
     return wait_ready(1000);   /* sector erase ~50-400 ms */
 }
-
-void w25q_format_status(char *buf, int buflen)
-{
-    uint32_t id = w25q_read_jedec();
-    if (id == W25Q_JEDEC_ID)
-        snprintf(buf, buflen, "W25Q512 64MB ID:%06lX OK", (unsigned long)id);
-    else
-        snprintf(buf, buflen, "QSPI NOLINK ID:%06lX (cekam EF4020)", (unsigned long)id);
-}

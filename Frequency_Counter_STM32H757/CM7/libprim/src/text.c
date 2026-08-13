@@ -92,6 +92,8 @@ int16_t prim_text_width(const char *utf8, const prim_font_t *font)
     return (int16_t)w;
 }
 
+/* ⚠️ Ve firmwaru se nevola (linker ji zahodi), ale NENI mrtva:
+ * assertuje na ni `libprim/tests/test_text.c` v hostitelske CMake sade. */
 int16_t prim_text_height(const prim_font_t *font)
 {
     return font ? font->line_height : 0;

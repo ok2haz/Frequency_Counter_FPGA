@@ -1,12 +1,10 @@
 /**
  * @file ui.c
- * @brief libui version reporting.
+ * @brief ZAMERNE PRAZDNE — zustava jen kvuli build systemu.
+ *
+ * Obsahovalo `ui_version()`, ktere nikdo nevolal (verzi FW hlasi `version.h`
+ * pres UART `version` i displej). Odstraneno 2026-08-13, viz git historie.
+ * Duvod, proc soubor zustava, je stejny jako u `digit_group.c`.
  */
 
 #include <ui/ui.h>
-
-#ifndef UI_VERSION_STRING
-#define UI_VERSION_STRING "0.1.0"
-#endif
-
-const char *ui_version(void) { return UI_VERSION_STRING; }

@@ -39,13 +39,6 @@ void prim_path_destroy(prim_path_t *p)
     free(p);
 }
 
-void prim_path_reset(prim_path_t *p)
-{
-    if (p == NULL) return;
-    p->op_count = 0;
-    p->is_closed = false;
-}
-
 static void push(prim_path_t *p, prim_path_op_t op)
 {
     if (p == NULL || p->op_count >= p->op_capacity) return;
@@ -62,19 +55,6 @@ void prim_path_line_to(prim_path_t *p, prim_point_t pt)
 {
     push(p, (prim_path_op_t){.kind = PRIM_OP_LINE, .p0 = pt});
     if (p) p->current_point = pt;
-}
-
-void prim_path_quad_to(prim_path_t *p, prim_point_t ctrl, prim_point_t end)
-{
-    push(p, (prim_path_op_t){.kind = PRIM_OP_QUAD, .p0 = end, .p1 = ctrl});
-    if (p) p->current_point = end;
-}
-
-void prim_path_arc(prim_path_t *p, prim_point_t center, int16_t radius,
-                   int16_t start_deg, int16_t sweep_deg)
-{
-    push(p, (prim_path_op_t){.kind = PRIM_OP_ARC, .p1 = center,
-                             .radius = radius, .a0 = start_deg, .a1 = sweep_deg});
 }
 
 void prim_path_close(prim_path_t *p)
@@ -127,16 +107,6 @@ static int16_t flatten(const prim_path_t *p, prim_point_t *out, int16_t cap)
         }
     }
     return n;
-}
-
-void prim_path_stroke(prim_path_t *p, int16_t thickness, prim_color_t color)
-{
-    if (p == NULL || p->op_count == 0) return;
-    prim_point_t pts[PATH_MAX_FLAT];
-    int16_t n = flatten(p, pts, PATH_MAX_FLAT);
-    for (int16_t i = 1; i < n; i++) {
-        prim_draw_line(pts[i - 1], pts[i], thickness, color);
-    }
 }
 
 void prim_path_fill(prim_path_t *p, prim_color_t color)

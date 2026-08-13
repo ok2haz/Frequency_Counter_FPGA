@@ -425,7 +425,7 @@ Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená n
 - **Driver `w25q.c`:** `w25q_read_jedec` (bez init), `w25q_init` (SW reset 66h/99h → JEDEC check →
   EN4B → quad-enable SR2), `w25q_read` / `w25q_write` (handluje 256B stránky; ⚠️ cíl musí být předem
   smazán) / `w25q_erase_sector` (4 KB), WIP polling (`wait_ready`). **Read = Quad Fast Read 0x6C** (4-line,
-  `s_quad` z quad-enable; fallback Fast Read 0x0C 1-line); zápis/erase/registry 1-line. `w25q_format_status` pro diag.
+  `s_quad` z quad-enable; fallback Fast Read 0x0C 1-line); zápis/erase/registry 1-line.
 - **UART:** `qspiid` (JEDEC ID, čeká EF4020), `qspitest` (init + destruktivní self-test sektoru 0),
   `qspispeed` (64 KB timed read + verify → KB/s), `storetest` (blob store self-test na CALIB regionu).
 
@@ -647,6 +647,20 @@ konzole, TX/výpisy jedou dál).** AbortReceive v IT režimu neblokuje (ISR-safe
 
 ## Build / flash
 STM32CubeIDE: vyber projekt **H757_LED_CM7** → Build (Ctrl+B) → Run (Ctrl+F11, config CM7).
+**⚠️ Velikost FW: stavěj konfiguraci `Release`, ne `Debug`.** Debug jede na **`-O0`**;
+`Release` je v `.cproject` už nachystaná s **`-Os`** a od Debugu se **neliší ničím jiným**
+(stejné defines včetně `DEBUG`, takže `__HAL_DBGMCU_FREEZE_IWDG1` a spol. se chovají stejně).
+Změřeno plným buildem 2026-08-13: **676 612 → 525 688 B, tj. −150 924 B (−22 %)**, 0 varování.
+V IDE: *Project → Build Configurations → Set Active → Release*. (Adresář `CM7/Release/`
+zatím neexistuje, protože se nikdy nestavěla — makefily si IDE vygeneruje samo.)
+⚠️ Optimalizace mění časování — po přepnutí ověř na HW to, co na něm visí: DWT `delay_us`
+(SPI2/FPGA rámce), bit-bang pípání v `bootled_fail()`, I2C recovery pulzy.
+
+**Kde je flash doopravdy** (z map souboru, Debug/-O0, celkem 686 KB):
+`.rodata` 333 KB — z toho **fonty ~285 KB = 41 % celého programu** (`ui_font_mono_22` sám 46 KB);
+`.text` 353 KB. **Mazání nepoužitých funkcí velikost NEZMĚNÍ** — `-ffunction-sections`
++ `--gc-sections` je zahodí už dnes (ověřeno: po odstranění 24 mrtvých funkcí byl `.elf`
+bajt za bajt stejný). Pořadí páky podle výnosu: **Release −151 KB → fonty −? → zbytek**.
 Toolchain (arm-none-eabi) není v PATH tohoto prostředí, ale **je na disku**:
 `C:\ST\STM32CubeIDE_2.1.0\...\gnu-tools-for-stm32.14.3...\tools\bin\arm-none-eabi-gcc.exe`
 (GCC 14.3) — použitelný pro **kompilátorový audit** (`-Wall -Wextra -Wshadow` +

@@ -26,11 +26,8 @@ typedef struct {
     int16_t segment_count;
 } ui_digit_group_t;
 
-UI_API void    ui_digit_group_render(const ui_digit_group_t *g);
-UI_API int16_t ui_digit_group_width(const ui_digit_group_t *g);
 
 /** Ink color pro danou uroven jistoty (CERTAIN/SIGMA/FLOOR) — verejny obal nad
  *  internim ui_level_color, aby si app vrstva mohla spocitat "normalni" barvu
  *  segmentu (napr. pro navrat po docasnem zvyrazneni), aniz by znala libui
  *  interni layout.h. */
-UI_API prim_color_t ui_digit_level_color(ui_digit_level_t level);

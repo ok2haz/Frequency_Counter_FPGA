@@ -43,7 +43,6 @@ typedef enum {
  *  Auto-MOUNT se ZAMERNE nedela — je blokujici (viz hlavicka). */
 void sd_export_tick(void);
 
-sd_export_state_t sd_export_state(void);
 const char       *sd_export_state_str(void);
 
 /** ⚠️ BLOKUJE (desitky az stovky ms) — jen z UartTasku. @return true = namountovano. */

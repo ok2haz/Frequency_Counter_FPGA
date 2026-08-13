@@ -71,8 +71,6 @@ void sd_export_tick(void)
 #endif
 }
 
-sd_export_state_t sd_export_state(void) { return s_state; }
-
 const char *sd_export_state_str(void)
 {
     switch (s_state) {

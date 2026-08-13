@@ -44,11 +44,6 @@ PRIM_API void        prim_set_target(prim_fb_t *fb);
 PRIM_API prim_fb_t  *prim_get_target(void);
 
 /** Direct addressing helpers (used by the SW rasterizer and the fb_impl). */
-PRIM_API prim_pixel_t *prim_fb_pixels(prim_fb_t *fb);
-PRIM_API int16_t       prim_fb_width(const prim_fb_t *fb);
-PRIM_API int16_t       prim_fb_height(const prim_fb_t *fb);
-PRIM_API int16_t       prim_fb_stride(const prim_fb_t *fb);
 
 PRIM_API void        prim_set_clip(prim_rect_t rect);
 PRIM_API void        prim_reset_clip(void);
-PRIM_API prim_rect_t prim_get_clip(void);

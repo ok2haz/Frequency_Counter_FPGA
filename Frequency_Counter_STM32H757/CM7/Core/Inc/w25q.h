@@ -37,6 +37,5 @@ bool w25q_write(uint32_t addr, const uint8_t *buf, uint32_t len);
 bool w25q_erase_sector(uint32_t addr);
 
 /** Diagnosticky radek: "W25Q512 64MB ID:EF4020 OK" / "QSPI NOLINK ID:...". */
-void w25q_format_status(char *buf, int buflen);
 
 #endif /* INC_W25Q_H_ */
