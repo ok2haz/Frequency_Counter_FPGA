@@ -132,38 +132,48 @@ void StartUiTask(void *argument)
       if (attempted) { if (got) s_i2c4_fail = 0; else if (s_i2c4_fail < 250) s_i2c4_fail++; }
       else if (s_i2c4_busy < 250) s_i2c4_busy++;   /* mutex se nepodarilo vzit — viditelne v `status` */
 
-      if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > 5000u) {
+      /* ⚠️⚠️ PREPSANO 2026-08-13 po nalezu na HW. Prvni verze delala recovery
+       * kazdych 5 s DONEKONECNA a pokazde hned po `HAL_I2C_Init` zapisovala do
+       * ATTINY dva PORTC bajty BEZ klidovych mezer. Na cili se ukazalo, ze pak
+       * neodpovida NIC na I2C4 (ani ATTINY 0x45, ani FT5x06) pri VOLNE sbernici
+       * (SCL=1, SDA=1) a bez chybovych priznaku — tedy same NACKy. Jinymi slovy:
+       * zachrana s velkou pravdepodobnosti ROZBIJELA bit-bang slave automat
+       * ATTINY, pred cimz kod na jinem miste sam varuje.
+       *
+       * Nova pravidla:
+       *  1) ZPOMALOVANI misto bušení: 5 s -> 30 s -> 5 min. Kdyz to nepomohlo
+       *     poteti, uz se ATTINY NEDOTYKAME vubec (viz bod 3).
+       *  2) Klidove mezery kolem KAZDEHO zapisu do ATTINY (stejne jako u jasu).
+       *  3) Nejdriv se ZEPTAME, jestli ATTINY vubec odpovida
+       *     (`HAL_I2C_IsDeviceReady`). Kdyz ne, zapis by stejne neprosel a jen
+       *     by dal mlatil do zaseknuteho automatu -> preskocit.
+       * Zaseknuty ATTINY uz z principu nejde ozivit po sbernici, kterou sam
+       * neobsluhuje — to umi jen power-cycle. Cilem je NEZHORSOVAT. */
+      uint32_t rec_gap = (s_touch_resets < 2u) ? 5000u
+                       : (s_touch_resets < 5u) ? 30000u : 300000u;
+      if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > rec_gap) {
         s_i2c4_rec_t = HAL_GetTick();
-        printf("touch: I2C4 nereaguje (%u chyb, %u x mutex busy) -> recovery #%lu (bus + HW reset TP)\n",
-               s_i2c4_fail, s_i2c4_busy, (unsigned long)(s_touch_resets + 1u));
+        s_touch_resets++;
+        printf("touch: I2C4 nereaguje (%u chyb, %u x mutex busy) -> recovery #%lu\n",
+               s_i2c4_fail, s_i2c4_busy, (unsigned long)s_touch_resets);
         if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
-          /* 1) Uvolnit sbernici, kdyby ji nekdo drzel. ⚠️ `i2c4_recover` pulzuje SCL
-           *    JEN kdyz je SDA v nule; kdyz sbernice volna je, jen reinicializuje I2C4. */
-          i2c4_recover();
-
-          /* 2) HARDWAROVY RESET DOTYKOVEHO RADICE pres ATTINY (nalez 2026-08-13).
-           * Merenim na cili se ukazalo, ze pri mrtvem touchi je sbernice VOLNA
-           * (SCL=1, SDA=1) a I2C4 bez chybovych priznaku — FT5x06 proste neACKuje
-           * svou adresu. Pulzy na SCL tedy leci neco, co se tu vubec nedeje.
-           * Skutecne dosazitelne priciny jsou dve a OBE spravi tenhle krok:
-           *   a) FT5x06 je zaseknuty/uspany (nema zadnou spravu power mode),
-           *   b) ATTINY ma poskozeny `PORTC` a drzi `RST_TP_N` v nule — sousedni
-           *      zapis podsviceni (auto-dim!) jde po TEZE sbernici a ATTINY je
-           *      bit-bang slave, ktery muze ztratit synchronizaci (viz varovani
-           *      u zapisu jasu nize).
-           * Prepsanim PORTC na znamou dobrou hodnotu se opravi (b) a pulz
-           * `RST_TP_N` resetuje (a). Ostatni bity (LCD/bridge/backlight) zustavaji
-           * v provoznim stavu, takze obraz problikne nanejvys dotykovym radicem. */
-          ws_panel_set_portc(&hi2c4, (uint8_t)(WS_PC_RUN & ~WS_PC_RST_TP_N));
-          osDelay(5);                       /* FT5x06 nRST potrebuje >1 ms */
-          ws_panel_set_portc(&hi2c4, WS_PC_RUN);
+          i2c4_recover();          /* pasivni: pulzy SCL jen kdyz SDA drzi dole + re-init */
+          /* Sahat na ATTINY jen kdyz opravdu odpovida, a jen prvnich par pokusu. */
+          if (s_touch_resets <= 5u &&
+              HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 20) == HAL_OK) {
+            osDelay(2);
+            ws_panel_set_portc(&hi2c4, (uint8_t)(WS_PC_RUN & ~WS_PC_RST_TP_N));
+            osDelay(5);            /* FT5x06 nRST potrebuje >1 ms */
+            ws_panel_set_portc(&hi2c4, WS_PC_RUN);
+            osDelay(2);
+            s_touch_grace = HAL_GetTick();   /* radic nabiha ~300 ms */
+          } else if (s_touch_resets == 6u) {
+            printf("touch: ATTINY neodpovida ani po 5 pokusech -> davam ruce pryc.\n"
+                   "       I2C4 (touch + TMP117 0x48 + podsviceni) je mrtva az do power-cyclu.\n");
+          }
           osMutexRelease(i2c4MutexHandle);
         }
-        /* FT5x06 po resetu nabiha ~300 ms — do te doby by kazde cteni selhalo a
-         * hned by si vyzadalo dalsi recovery. */
-        s_touch_grace = HAL_GetTick();
         s_i2c4_fail = 0;
-        s_touch_resets++;
       }
       /* Behem nabehu po resetu chyby nepocitej (jinak by se recovery retezila). */
       if ((HAL_GetTick() - s_touch_grace) < 400u) s_i2c4_fail = 0;
