@@ -286,10 +286,27 @@ void SensorsTask_run(void *argument)
 
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
 	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
+	/* ⚠️ BACK-OFF NA I2C4 (2026-08-13). Sbernici sdili touch (UiTask, ~15-30 Hz),
+	 * podsviceni a tenhle TMP117. Kdyz sbernice umre, KAZDE cteni tady vycerpa cely
+	 * HAL timeout, a to POD MUTEXEM — touch se pak k busu casto vubec nedostane.
+	 * Proto stejny vzor jako u I2C1: pri opakovanem selhani cist ridceji.
+	 * Timeout zkracen 100 -> 20 ms: samotne cteni 2 B @100 kHz trva ~0,3 ms, takze
+	 * 100 ms se uplatnilo VYHRADNE pri poruse — a prave tam nejvic skodilo. */
+	static uint32_t i2c4_streak = 0;    /* po sobe jdouci selhani cteni 0x48 */
+	static uint32_t i2c4_skip   = 0;    /* kolik cyklu jeste preskocit */
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
-	if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
-	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 100);
+	if (i2c4_skip > 0) {
+	  i2c4_skip--;                      /* back-off: tenhle cyklus se na bus nesaha */
+	  i2cStatus = HAL_BUSY;             /* != HAL_OK -> sensor_fail nize (drzi posl. dobrou) */
+	} else if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 20);
 	  osMutexRelease(i2c4MutexHandle);
+	}
+	if (i2cStatus == HAL_OK) { i2c4_streak = 0; }
+	else if (i2c4_skip == 0) {
+	  if (i2c4_streak < 100) i2c4_streak++;
+	  /* Cyklus je 500 ms -> 3x normalne, pak 1 s, 2 s, nakonec 10 s (jako I2C1). */
+	  i2c4_skip = (i2c4_streak < 3) ? 0 : (i2c4_streak < 6) ? 1 : (i2c4_streak < 8) ? 3 : 19;
 	}
 	if (i2cStatus == HAL_OK) {
 	  // MSB v rawData[0], LSB v rawData[1]; 0.0078125 °C/LSB

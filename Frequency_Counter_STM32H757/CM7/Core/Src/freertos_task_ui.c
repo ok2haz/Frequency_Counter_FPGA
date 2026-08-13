@@ -130,7 +130,11 @@ void StartUiTask(void *argument)
        * neni chyba busu — napr. bezici `scanner`). Po ~0,5 s souvislych chyb
        * zkus recovery (max 1x/5 s). */
       if (attempted) { if (got) s_i2c4_fail = 0; else if (s_i2c4_fail < 250) s_i2c4_fail++; }
-      else if (s_i2c4_busy < 250) s_i2c4_busy++;   /* mutex se nepodarilo vzit — viditelne v `status` */
+      else if (s_i2c4_busy < 250) s_i2c4_busy++;
+      /* ⚠️ Nulovat i pri uspechu — jinak je to SOUCET OD STARTU, ktery se jen
+       * nasytí na 250 a v logu pak strasi "250 x mutex busy" i kdyz je zrovna
+       * vsechno v poradku. Takhle to hlasi AKTUALNI serii, coz je pouzitelne. */
+      if (attempted && got) s_i2c4_busy = 0;
 
       /* ⚠️⚠️ PREPSANO 2026-08-13 po nalezu na HW. Prvni verze delala recovery
        * kazdych 5 s DONEKONECNA a pokazde hned po `HAL_I2C_Init` zapisovala do
