@@ -278,10 +278,23 @@ void sd_export_fs(void)
     printf("SD FS: FatFs neni v buildu\r\n");
 #else
     printf("SD FS: ctu LBA 0 primo pres BSP_SD (mimo FatFs)\r\n");
-    if (BSP_SD_Init() != MSD_OK) {
-        printf("  BSP_SD_Init selhal -> karta neni, nebo nenabehla HW vrstva (zkus `sd force on`)\r\n");
+    /* ⚠️ Znacky prubehu: `sd fs` shodil desku HardFaultem a bez nich nejde
+     * poznat, JESTLI to bylo v init, nebo az ve cteni. Kazda se vypise a
+     * dojde na UART DRIV, nez se pokracuje. */
+    /* ⚠️⚠️ NESAHAT na registry SDMMC1 pred uspesnym `HAL_SD_Init()`.
+     * `MX_SDMMC1_SD_Init()` u nas jen vyplni handle a vrati se, takze
+     * `HAL_SD_MspInit()` — a s nim ZAPNUTI HODIN periferie — probehne az uvnitr
+     * prvniho `HAL_SD_Init()`. Cteni `SDMMC1->*` driv konci BusFaultem.
+     * Puvodne tu jako "optimalizace" bylo `HAL_SD_GetCardState()`, coz je presne
+     * ten pripad. Pravidlo prevzato z `SD_franta.md`. */
+    printf("  [1] BSP_SD_Init...\r\n");
+    uint8_t init_st = BSP_SD_Init();
+    printf("  [1] navrat=%u (0=OK, 2=NENI KARTA)\r\n", (unsigned)init_st);
+    if (init_st != MSD_OK) {
+        printf("  -> karta neni, nebo nenabehla HW vrstva (zkus `sd force on`)\r\n");
         return;
     }
+    printf("  [2] cteni LBA 0...\r\n");
     if (BSP_SD_ReadBlocks((uint32_t *)(void *)s_fsbuf, 0, 1, 2000) != MSD_OK) {
         printf("  cteni LBA 0 SELHALO -> HW vrstva nebo karta\r\n");
         return;

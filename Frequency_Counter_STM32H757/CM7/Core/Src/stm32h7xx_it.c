@@ -105,7 +105,10 @@ void HardFault_Handler(void)
   PWR->CR1 |= PWR_CR1_DBP;         /* povol zapis do backup domeny (shodne s watchdog.c/freertos_hooks.c) */
   RTC->BKP3R = 0xC7A50000u | 4u;   /* RTC_CRASH_MAGIC | kind 4 = HardFault */
   RTC->BKP4R = hf_lr;
-  RTC->BKP5R = SCB->CFSR;
+  /* ⚠️ Do DR5 nove BFAR (adresa, ktera fault zpusobila), kdyz je platna —
+   * typ faultu se pozna i z pouheho priznaku, ale ADRESA rekne, CO se sahalo.
+   * BFARVALID = CFSR bit15. Bez adresy jsme u BusFaultu slepi. */
+  RTC->BKP5R = (SCB->CFSR & (1u << 15)) ? SCB->BFAR : SCB->CFSR;
   NVIC_SystemReset();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
