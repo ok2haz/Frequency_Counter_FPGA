@@ -22,7 +22,13 @@
 #include "sdmmc.h"           /* hsd1 */
 #endif
 
-#define SD_EXPORT_FILE   "GPSDO.CSV"
+/* ⚠️ Rolling index misto pevneho nazvu (2026-08-13). Drive se psalo vzdy do
+ * `GPSDO.CSV` s `FA_CREATE_ALWAYS`, takze kazdy dalsi export PREPSAL ten minuly —
+ * snadno se tak prislo o data, ktera uz na karte byla.
+ * Format `GPSDOnnn.CSV` se vejde do 8.3, takze NEPOTREBUJE `_USE_LFN` (dnes 0);
+ * casove razitko v nazvu by ho vyzadovalo. Datum a cas nese sam soubor
+ * (`get_fattime` z RTC), takze se poradi da urcit i tak. */
+#define SD_EXPORT_MAX_IDX  999u
 /* ⚠️ Oddělovač `;`, ne `,`: české Excel/LibreOffice s českým národním nastavením
  * očekává středník, jinak naskládá celý řádek do jednoho sloupce. */
 #define SD_CSV_SEP       ";"
@@ -67,6 +73,13 @@ void sd_export_tick(void)
     /* Karta je tam. Stav ERROR držíme, dokud ji uživatel nevytáhne — jinak bychom
      * po každém neúspěšném mountu zkoušeli znovu a mlátili do vadné karty. */
     if (s_state == SD_EXP_ERROR) return;
+    /* AUTO-MOUNT (2026-08-13): tik jen POZADA, mountuje UartTask. Sam mountovat
+     * nesmi — `f_mount(opt=1)` vola `BSP_SD_Init` (desitky az stovky ms) a tenhle
+     * kod bezi v defaultTasku, ktery krmi watchdog (pravidlo "zadny spin > 10 ms").
+     * Zada se jen na HRANE (nenamountovano -> karta prítomna), takze pri trvale
+     * nemountovatelne karte se to neopakuje: neuspesny mount nastavi ERROR a ten
+     * se drzi do vytazeni. */
+    if (!s_mounted && g_sd_req == SD_REQ_NONE) g_sd_req = SD_REQ_MOUNT;
     s_state = s_mounted ? SD_EXP_MOUNTED : SD_EXP_PRESENT;
 #endif
 }
@@ -162,6 +175,23 @@ static const char *fr_str(FRESULT r)
     }
 }
 #endif
+
+volatile uint8_t g_sd_req = SD_REQ_NONE;
+
+void sd_export_service(void)
+{
+    uint8_t r = g_sd_req;
+    if (r == SD_REQ_NONE) return;
+    g_sd_req = SD_REQ_NONE;          /* vzit driv, nez se zacne pracovat */
+    if (r == SD_REQ_MOUNT) {
+        printf("SD: auto-mount po vlozeni karty: %s (%s)\r\n",
+               sd_export_mount() ? "OK" : "FAIL", sd_export_state_str());
+    } else if (r == SD_REQ_EXPORT) {
+        int32_t w = sd_export_run(0);
+        if (w < 0) printf("SD: export FAIL (%s)\r\n", sd_export_state_str());
+        else       printf("SD: exportovano %ld zaznamu\r\n", (long)w);
+    }
+}
 
 void sd_export_diag(void)
 {
@@ -312,6 +342,17 @@ bool sd_export_selftest(void)
 
 #ifdef SD_EXPORT_FATFS
 /* Telo exportu — `s_busy` resi wrapper, viz komentar u `selftest_body()`. */
+/* Najde prvni volny `GPSDOnnn.CSV`. @return 1 = nalezeno (jmeno v `out`). */
+static int export_next_name(char *out, size_t n)
+{
+    for (uint32_t i = 1; i <= SD_EXPORT_MAX_IDX; i++) {
+        FILINFO fno;
+        snprintf(out, n, "GPSDO%03lu.CSV", (unsigned long)i);
+        if (f_stat(out, &fno) == FR_NO_FILE) return 1;
+    }
+    return 0;   /* 999 exportu na karte — at si uzivatel uklidi */
+}
+
 static int32_t export_body(uint32_t max_rec)
 {
     datalog_status_t st;
@@ -320,11 +361,21 @@ static int32_t export_body(uint32_t max_rec)
     if (total == 0u) return 0;
     if (max_rec != 0u && max_rec < total) total = max_rec;
 
-    FIL f;
-    if (f_open(&f, SD_EXPORT_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+    char fname[16];
+    if (!export_next_name(fname, sizeof fname)) {
+        printf("SD: na karte uz je %lu exportu, uvolni misto\r\n",
+               (unsigned long)SD_EXPORT_MAX_IDX);
         s_state = SD_EXP_ERROR;
         return -1;
     }
+    FIL f;
+    /* `FA_CREATE_NEW` (ne ALWAYS): kdyby se mezi `f_stat` a `f_open` soubor
+     * objevil, radeji selzeme, nez abychom neco prepsali. */
+    if (f_open(&f, fname, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
+        s_state = SD_EXP_ERROR;
+        return -1;
+    }
+    printf("SD: zapisuji %s\r\n", fname);
 
     char line[160];
     UINT bw;

@@ -45,6 +45,19 @@ void sd_export_tick(void);
 
 const char       *sd_export_state_str(void);
 
+/* ── Pozadavky na BLOKUJICI operace SD ───────────────────────────────────────
+ * ⚠️ `sd_export_mount()` i `sd_export_run()` blokuji stovky ms az sekundy, takze
+ * je NESMI volat UiTask (hlidany watchdogem) ani defaultTask (krmi watchdog).
+ * UI i auto-mount proto jen nastavi tenhle priznak a skutecnou praci udela
+ * UartTask, ktery hlidany neni. Stejny vzor jako `g_screen_req` pro kresleni. */
+#define SD_REQ_NONE    0u
+#define SD_REQ_MOUNT   1u
+#define SD_REQ_EXPORT  2u
+extern volatile uint8_t g_sd_req;
+
+/** Obslouzi cekajici pozadavek (vola VYHRADNE UartTask ve sve smycce). */
+void sd_export_service(void);
+
 /** ⚠️ BLOKUJE (desitky az stovky ms) — jen z UartTasku. @return true = namountovano. */
 bool sd_export_mount(void);
 

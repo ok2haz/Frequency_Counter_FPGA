@@ -154,7 +154,9 @@ za běhu: CRC16 vektor, hystereze /4↔/16 přes `fpga_freq_select_core` (bezsta
 helpery (`gps_selftest`), fmt_frac+hist_h vektory (`screen_main_selftest`), Maidenhead
 (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`), datalog záznam+CRC+čas (`datalog_selftest`)
 — žádný HW, žádný sdílený
-stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`eth`/`eth clk`** (ETH bring-up F0: bit-bang SMI z CM7 — reset PHY, sken adres 0–31, ID/BMCR/BMSR LAN8742A; `clk` změří REF_CLK na PA1 přes TIM2. Piny si nastavuje sám, **nic v `.ioc`** — viz `ETH_BRINGUP_CHECKLIST.md` §2. Bring-up reziduum jako `fpgaraw`), **`ping`/`screen main`/`clear`/`version`/`help`**.
+stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`enc`** (encoder #29: TIM1 v encoder mode na PA8/PA9 + tlačítko PC13, 10 s živého výpisu
+kroků a stisků; piny si nastavuje sám, **nic v `.ioc`**. ⚠️ Jen HW vrstva — model fokusu v UI
+neexistuje a je to návrhové rozhodnutí, ne kód), **`eth`/`eth clk`** (ETH bring-up F0: bit-bang SMI z CM7 — reset PHY, sken adres 0–31, ID/BMCR/BMSR LAN8742A; `clk` změří REF_CLK na PA1 přes TIM2. Piny si nastavuje sám, **nic v `.ioc`** — viz `ETH_BRINGUP_CHECKLIST.md` §2. Bring-up reziduum jako `fpgaraw`), **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 **`status`** = od 2026-07-20 plná diagnostika (dřív jen „RUNNING"): verze + uptime, **příčina resetu
 + crash black-box** (`stall:UiTask`, `stack:UartTask`, …), RSR, heap free/min, CPU %, **volný stack
@@ -324,9 +326,14 @@ v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a 
   (~4 s, registrová sekvence, `HAL_IWDG` vypnutý). CM4 je bare-metal → **žádný heartbeat, prostý
   `iwdg2_kick()`** v každé iteraci hlavní smyčky; `iwdg2_init()` **až po beep melodii** (blokuje
   ~1,2 s), aby startup nespotřeboval timeout. Zaseknutá CM4 smyčka → IWDG2 reset CM4. DEBUG freeze =
-  `__HAL_DBGMCU_FREEZE2_IWDG2()` (APB4FZ2). **🔴 RESET SCOPE IWDG2 = OVĚŘIT NA HW** (předpoklad
-  CPU2/CM4-only, per-core; kdyby byl system-wide, shodil by i CM7/displej → nepoužívat; postup
-  `DUALCORE_BRINGUP_CHECKLIST.md` §8). CM4 stall na CM7 pozoruje `stall:CM4` (viz sekce Dvoujádro).
+  `__HAL_DBGMCU_FREEZE2_IWDG2()` (APB4FZ2). **🔴 ZMĚŘENO 2026-08-13: reset scope IWDG2 je SYSTEM-WIDE, ne per-core → IWDG2 je VYPNUTÝ.**
+  Ověřeno přímo: dočasná CM4, která po 20 s přestala krmit watchdog, shodila **celý přístroj** —
+  uptime CM7 pak cykloval `3 → 13 → 22 → 8 → 17 s` (reset každých ~24 s); po vrácení roste
+  monotónně `51 → 63 → 75 → 87`. Předpoklad „CPU2/CM4-only" tedy **neplatil**. Zapnutý IWDG2 by
+  znamenal, že zaseknutá CM4 (dnes dělá téměř nic) shodí i displej a měření — výrazně horší než
+  zaseknutá CM4 samotná. **Zaseknutí se ale neztratí:** CM7 ho vidí přes heartbeat, loguje
+  `stall:CM4` a počítá `g_cm4_stall_count` (UART `status`). Až na CM4 poběží ETH/SCPI, dá se
+  přidat cílený restart CM4 z CM7 — to už je ale něco jiného než nezávislý watchdog. CM4 stall na CM7 pozoruje `stall:CM4` (viz sekce Dvoujádro).
 
 ## Dvoujádro / IPC (CM7 ↔ CM4) — `ipc_shared.h`, `ipc.c`, `CM4/…/ipc_cm4.c`
 ⚠️ **CM4 dnes NEBOOTUJE** (bank2 neflashnuta, `g_cm4_absent=1` → „4:off" v CPU bloku headeru = SPRÁVNĚ).

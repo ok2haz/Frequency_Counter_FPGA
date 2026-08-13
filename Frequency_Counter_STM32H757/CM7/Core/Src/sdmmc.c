@@ -53,13 +53,18 @@ void MX_SDMMC1_SD_Init(void)
    *
    * ⚠️ Hodnoty MUSI sedet s generovanymi nize (zdroj pravdy = .ioc). Pri zmene
    * konfigurace SDMMC1 v CubeMX je srovnej — i v `sd_probe()` v datalog_sd.c.
-   * ClockDiv=2 -> SDMMC_CK = 64 MHz / (2 x 2) = 16 MHz. */
+   * ⚠️ ClockDiv=4 -> SDMMC_CK = 64 MHz / (2 x 4) = 8 MHz (bring-up, 2026-08-13).
+   * Snizeno z 2 (16 MHz) zamerne: deska ma na SD VDD jen C75 100n (chybi bulk
+   * 4,7-10 uF) a na CK neni seriovy tlumici odpor ~22-33 R, takze pri 16 MHz
+   * hrozi prekmity. HW sice pri 16 MHz odpovida (CardState=TRANSFER), ale
+   * SOUVISLY PRENOS se nikdy neprokazal — `f_mount` zatim selhava. Az `sd test`
+   * projde, jde vratit na 2 a overit znovu. ⚠️ Hodnota je i v `.ioc`. */
   hsd1.Instance = SDMMC1;
   hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
   hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd1.Init.BusWide             = SDMMC_BUS_WIDE_4B;
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-  hsd1.Init.ClockDiv            = 2;
+  hsd1.Init.ClockDiv            = 4;
   return;   /* skutecny HAL_SD_Init az v BSP_SD_Init() pri mountu */
   /* USER CODE END SDMMC1_Init 0 */
 
@@ -71,7 +76,7 @@ void MX_SDMMC1_SD_Init(void)
   hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-  hsd1.Init.ClockDiv = 2;
+  hsd1.Init.ClockDiv = 4;
   if (HAL_SD_Init(&hsd1) != HAL_OK)
   {
     Error_Handler();

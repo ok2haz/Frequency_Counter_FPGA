@@ -257,6 +257,10 @@ static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XA, 326, SETNAV_W, SETNAV_H}
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
+/* Okno Datalog (s_view=17): EXPORT na SD. ⚠️ Tlacitko jen POZADA — samotny
+ * export blokuje sekundy a UiTask je hlidany watchdogem, takze praci udela
+ * UartTask (`sd_export_service`). Drive tu tlacitko chybelo prave proto. */
+static const prim_rect_t DLOG_EXPORT_RECT = {18, 417, 220, 61};
 static const prim_rect_t SETUP_SAVE_RECT  = {18,  417, 150, 61};
 static const prim_rect_t SETUP_LOAD_RECT  = {176, 417, 150, 61};
 static const prim_rect_t SETUP_ERASE_RECT = {334, 417, 150, 61};
@@ -3238,6 +3242,10 @@ static void app_gpsdo_render_datalog(void)
         ui_card_t c = {.rect = DG_CARD_FULL_B,
                        .header_label = "Zaznam stability (32 B / 10 s, kruhovy log)"};
         ui_card_render_chrome(&c);
+        /* EXPORT na SD — jen pozadavek, praci udela UartTask (viz sd_export.h). */
+        ui_button_t eb = {.rect = DLOG_EXPORT_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "EXPORT NA SD"};
+        ui_button_render(&eb);
         c_stav[0] = c_rec[0] = c_seq[0] = c_err[0] = '\0';
     }
 

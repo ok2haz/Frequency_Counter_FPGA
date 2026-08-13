@@ -28,6 +28,7 @@
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
 #include "alarm.h"          /* alarm_test — UART "beep" */
+#include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
 #include "sd_export.h"      /* UART "sd mount/unmount/export" — SD jako export (#28) */
@@ -179,6 +180,61 @@ static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
 	for (int i = 0; i < 16; i++) v = (uint16_t)((v << 1) | eth_mdc_clock());
 	(void)eth_mdc_clock();                            /* idle */
 	return v;
+}
+
+/* ══════════════════ Encoder (#29) — HW vrstva + diagnostika ═════════════════
+ * Kvadraturni encoder na **TIM1** v encoder modu + tlacitko. Piny POTVRZENE ze
+ * schematu (list 2/7, konektor J2): `PA8` = ENCODER_CH1 (TIM1_CH1, AF1),
+ * `PA9` = ENCODER_CH2 (TIM1_CH2, AF1), `PC13` = ENCODER_CH3 = tlacitko.
+ * Vsechny tri jsou v `.ioc` VOLNE, takze se to obejde bez regenerace — periferii
+ * i piny si tenhle kod konfiguruje sam (regen-safe idiom jako CS ve
+ * `fpga_freq_init` nebo PE3 v `datalog_sd`).
+ *
+ * ⚠️ TIM1 dela vsechnu praci v HW: `CNT` se sam inkrementuje/dekrementuje podle
+ * smeru otaceni a je odolny proti zakmitum (obe hrany obou kanalu). Software
+ * jen cte rozdil, takze tu neni zadne preruseni ani polling na urovni hran.
+ *
+ * ⚠️⚠️ TOHLE JE JEN HW VRSTVA. Skutecna prace u #29 je **model fokusu** — ve
+ * dotykovem UI dnes zadny neexistuje (neni "vybrany prvek", ktery by se otacenim
+ * menil). To je navrhove rozhodnuti, ne kod, a zamerne se ho nedotykam:
+ * `enc` prikaz slouzi k overeni, ze HW cte spravne, nez se do toho investuje.
+ *
+ * PC13 pozn.: lezi v backup domene, ma omezenou proudovou zatizitelnost, ale
+ * jako VSTUP s pull-upem je bez problemu. */
+#define ENC_BTN_PORT   GPIOC
+#define ENC_BTN_PIN    GPIO_PIN_13
+
+static void enc_init(void)
+{
+    static uint8_t done;
+    if (done) return;
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_TIM1_CLK_ENABLE();
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;      /* CH1/CH2 */
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_PULLUP;                  /* encoder spina na zem */
+    g.Speed     = GPIO_SPEED_FREQ_LOW;
+    g.Alternate = GPIO_AF1_TIM1;
+    HAL_GPIO_Init(GPIOA, &g);
+
+    g.Pin = ENC_BTN_PIN; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(ENC_BTN_PORT, &g);
+
+    /* Encoder mode 3 = pocita obe hrany obou kanalu (nejjemnejsi kroky).
+     * Filtr ICxF = 0xF (max) — mechanicke encodery zakmitavaji. */
+    TIM1->CR1   = 0;
+    TIM1->PSC   = 0;
+    TIM1->ARR   = 0xFFFFu;                      /* 16bit wrap; sleduje se ROZDIL */
+    TIM1->CCMR1 = (0x1u << 0) | (0x1u << 8)     /* CC1S=01 (TI1), CC2S=01 (TI2) */
+                | (0xFu << 4) | (0xFu << 12);   /* IC1F=IC2F=15 (max filtr) */
+    TIM1->CCER  = 0;                            /* obe hrany nerotovane */
+    TIM1->SMCR  = 0x3u;                         /* SMS=011 = encoder mode 3 */
+    TIM1->CNT   = 0;
+    TIM1->CR1  |= TIM_CR1_CEN;
+    done = 1;
 }
 
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
@@ -522,8 +578,30 @@ void UartTask_run(void *argument)
 					  }
 				  }
 			  }
+			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
+			  else if (strcmp(RxBuffer, "enc") == 0) {
+				  enc_init();
+				  printf("ENC: TIM1 encoder mode, CH1=PA8 CH2=PA9 tlacitko=PC13\r\n");
+				  printf("     otacej a mackej 10 s (kladne = jeden smer, zaporne = druhy)\r\n");
+				  uint16_t base = (uint16_t)TIM1->CNT;
+				  int16_t  last = 0;
+				  uint8_t  lastb = 0xFF;
+				  for (int i = 0; i < 100; i++) {
+					  int16_t d = (int16_t)((uint16_t)TIM1->CNT - base);
+					  uint8_t b = (HAL_GPIO_ReadPin(ENC_BTN_PORT, ENC_BTN_PIN) == GPIO_PIN_RESET);
+					  if (d != last || b != lastb) {
+						  printf("  kroku=%d  tlacitko=%s\r\n", (int)d, b ? "STISK" : "-");
+						  last = d; lastb = b;
+					  }
+					  osDelay(100);
+				  }
+				  printf("ENC: konec. Celkem kroku=%d\r\n",
+						 (int)((int16_t)((uint16_t)TIM1->CNT - base)));
+				  if ((int16_t)((uint16_t)TIM1->CNT - base) == 0)
+					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
+			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest | eth [clk]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -978,6 +1056,9 @@ void UartTask_run(void *argument)
 			  }
 		  }
 	  }
+    /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
+     * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
+    sd_export_service();
     osDelay(1);
   }
 }

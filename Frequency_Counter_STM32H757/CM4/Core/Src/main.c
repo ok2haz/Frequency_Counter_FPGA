@@ -134,7 +134,22 @@ int main(void)
   Beep(1680, 200);
   HAL_Delay(400);
   ipc_cm4_init();   /* IPC: reset lokalniho stavu pred ctenim snapshotu */
-  iwdg2_init();     /* watchdog CM4 az TED (po beep ~1,2 s) — startup neprodleva mimo timeout */
+  /* ⚠️⚠️ IWDG2 ZAMERNE VYPNUTY (zmereno na HW 2026-08-13) ─────────────────────
+   * Reset scope IWDG2 je **SYSTEM-WIDE, ne per-core**. Overeno primo: docasna
+   * CM4, ktera po 20 s prestala krmit watchdog, shodila CELY pristroj —
+   * uptime CM7 pak cykloval 3 -> 13 -> 22 -> 8 -> 17 s, tedy reset kazdych ~24 s.
+   * Predpoklad "CPU2/CM4-only" z DUALCORE_BRINGUP_CHECKLIST §8 tedy NEPLATI.
+   *
+   * Zapnuty IWDG2 by znamenal, ze zaseknuta CM4 (ktera dnes dela temer nic)
+   * shodi i displej a mereni. To je vyrazne horsi nez zaseknuta CM4 samotna,
+   * proto se nepouziva — presne jak pro tenhle pripad predepisuje CLAUDE.md.
+   *
+   * Zaseknuti CM4 se NEZTRATI: CM7 ho vidi pres heartbeat (`ipc_cm4_alive`),
+   * loguje `stall:CM4` a pocita `g_cm4_stall_count` (UART `status`).
+   * Az bude na CM4 bezet ETH/SCPI, da se pridat cileny restart CM4 z CM7
+   * (drzet ho v resetu pres RCC) — to uz je ale jina vec nez nezavisly watchdog.
+   * iwdg2_init(); */
+  (void)iwdg2_init;   /* ponechano prelozene, at je to jednorazove vratitelne */
   /* USER CODE END 2 */
 
   /* Infinite loop */
