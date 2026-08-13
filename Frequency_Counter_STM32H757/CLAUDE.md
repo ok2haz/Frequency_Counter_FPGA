@@ -707,6 +707,17 @@ Toolchain (arm-none-eabi) není v PATH tohoto prostředí, ale **je na disku**:
 `C:\ST\STM32CubeIDE_2.1.0\...\gnu-tools-for-stm32.14.3...\tools\bin\arm-none-eabi-gcc.exe`
 (GCC 14.3) — použitelný pro **kompilátorový audit** (`-Wall -Wextra -Wshadow` +
 `-fanalyzer`) jednotlivých souborů bez IDE. Flash/link jen z IDE.
+⚠️⚠️ **CPU zátěž NEMĚŘ přes ladicí sondu.** `STM32_Programmer_CLI -c mode=HOTPLUG -r32 …`
+cíl na dobu čtení **zastaví**. Běhový čítač FreeRTOS (DWT CYCCNT) přitom běží dál, ale
+IDLE task se nevykonává → `g_rtos_cpu_pct` v následujícím okně vyjde **nafouklý**, a čím
+častěji se čte, tím víc. Změřeno 2026-08-13: jedno izolované čtení dalo 71 %, po přechodu
+na opakované čtení 95–98 %, zatímco **`stats` (bez sondy) ukázal 60 % a IDLE 40 %** —
+a to sedí s dlouhodobou zkušeností, že zátěž nešla přes 80 % ani po dnech běhu.
+**Jediné důvěryhodné měření CPU je UART `stats`** (per-task, DWT okno 1 s, bez debuggeru).
+Sonda je v pořádku na *stavová* data (čítače, registry, řetězce) — ne na cokoli časového.
+⚠️ Ze stejného důvodu může halt sondy rozbít probíhající I2C/SPI transakci, takže
+čítače chyb čtené za běhu sondy můžou být nadhodnocené.
+
 **Testy:** UART `selftest` = neblokující pure-logic unit testy na targetu (idiom
 projektu — testy běží na zařízení, ne na hostu; `run_selftests` ve freertos.c, i při bootu):
 CRC16, hystereze /4↔/16 (`fpga_freq_select_core`), GPS parser (`gps_selftest`), fmt_frac+hist_h

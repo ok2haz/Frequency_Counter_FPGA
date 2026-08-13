@@ -607,9 +607,18 @@ static int scpi_src_read_log_cm7(scpi_src_t *s, uint32_t from_newest, datalog_re
     return datalog_read_back(from_newest, out) ? 1 : 0;   /* ⚠️ blokující QSPI čtení */
 }
 
-void scpi_src_load_cm7(scpi_src_t *src)
+/* ⚠️ `full == 0` naplni JEN to, co je zadarmo (globaly), a preskoci drahe cesty:
+ * `gps_get()` (kopie ~200 B v kriticke sekci) a `fpga_freq_get_last()` (kopie
+ * latche s vypnutymi IRQ). Pouziva se pro IEEE 488.2 spolecne prikazy (`*IDN?`
+ * a spol.), ktere ze zdroje nectou NIC krome `selftest_pass` — viz `scpi_process`.
+ * Sensory/kalibrace zustavaji i v levne variante: je to jen cteni globalu bez
+ * zamku, tedy rove tak drahe jako ta podminka navic. */
+static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 {
     memset(src, 0, sizeof *src);
+    src->selftest_pass = (g_selftest_res == 1);
+    src->uptime_s      = g_uptime_s;
+    if (!full) return;
     fpga_meas_t m;
     if (fpga_freq_get_last(&m)) {
         src->valid |= SCPI_V_FRAME;
@@ -642,8 +651,7 @@ void scpi_src_load_cm7(scpi_src_t *src)
         src->gps_lat_deg = g.lat_deg; src->gps_lon_deg = g.lon_deg; src->gps_alt_m = g.alt_m;
     }
     src->spi_ok = g_spi_ok; src->si5356_status = g_si5356_status; src->si5356_ok = g_si5356_ok;
-    src->selftest_pass = (g_selftest_res == 1);
-    src->uptime_s = g_uptime_s;
+    /* (`selftest_pass` a `uptime_s` uz nastavila levna cast nahore.) */
     taskENTER_CRITICAL(); src->meas = g_meas_cfg; taskEXIT_CRITICAL();
     datalog_status_t st; datalog_get_status(&st);
     src->dl_backend      = st.backend ? st.backend : "--";
@@ -655,9 +663,21 @@ void scpi_src_load_cm7(scpi_src_t *src)
 }
 
 static scpi_ctx_t s_default_ctx;   /* USB CDC = jediná session */
+void scpi_src_load_cm7(scpi_src_t *src) { scpi_src_load_cm7_ex(src, 1); }
+
 size_t scpi_process(const char *line, char *out, size_t out_sz)
 {
-    scpi_src_t src; scpi_src_load_cm7(&src);
+    /* Spolecne prikazy IEEE 488.2 (`*IDN?`, `*OPC?`, `*CLS`, `*ESR?`, `*ESE`,
+     * `*STB?`, `*RST`, `*WAI`, `*TST?`) ctou ze `scpi_src_t` JEDINE
+     * `selftest_pass`. Nema tedy smysl kvuli nim delat `gps_get` v kriticke
+     * sekci a `fpga_freq_get_last` s vypnutymi IRQ.
+     * ⚠️ Zamerne se to omezuje na `*` prikazy BEZ `;`. Sirsi maska "co ktery
+     * prikaz potrebuje" by sla napsat, ale za cenu realneho rizika: spatne
+     * urcena maska = tise SPATNA odpoved. Tady je nulove — mnozina poli, ktera
+     * `*` prikazy ctou, je uzavrena a overitelna pohledem. Slozena zprava
+     * muze obsahovat cokoli, proto se u ni nacita vse. */
+    int cheap = (line != NULL && line[0] == '*' && strchr(line, ';') == NULL);
+    scpi_src_t src; scpi_src_load_cm7_ex(&src, !cheap);
     return scpi_process_ctx(&s_default_ctx, &src, line, out, out_sz);
 }
 #endif /* CORE_CM7 */
