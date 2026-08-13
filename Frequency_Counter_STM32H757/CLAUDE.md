@@ -526,6 +526,24 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
   (oba v USER CODE, přežijí regen). CubeMX je nechává vypnuté; bez prvního není žádná cache
   maintenance (D-cache je zapnutá, IDMA čte/píše RAM → **symptom #69**), bez druhého se dělá nad
   nezarovnaným bufferem volajícího a zahazuje dirty data sousedů. Detaily v `CUBEMX_CHECKLIST.md`.
+- **⚠️ PŘEVZATO Z POSTUPU FRANTIŠKA (`C:\Claude_obecne\SD_franta.md`, rozchodil SD na TÉMŽE HW):**
+  - **`BSP_SD_Init()` je přepsaný** v `sd_export.c` (generovaná verze je `__weak` → regen-safe).
+    Důvod: `HAL_SD_Init()` na konci volá `HAL_SD_ConfigWideBusOperation(Init.BusWide)`, takže
+    s `Init.BusWide = 4B` proběhne přepnutí **uvnitř identifikace** — a když selže, **spadne celá
+    inicializace**, přestože karta v 1-bit režimu funguje. Proto identifikace běží **vždy 1-bit**
+    a na 4 bity se přepíná až potom, s fallbackem. ⚠️ V `.ioc` musí `SD_4_bits_Wide_bus` ZŮSTAT —
+    jen díky němu `HAL_SD_MspInit` nakonfiguruje piny D1–D3; liší se pouze runtime `Init.BusWide`.
+  - **`hsd1.ErrorCode` je „sticky"** (HAL ho přiřazuje přes `|=`) a `ConfigWideBusOperation` na konci
+    kontroluje jeho celý obsah → **před každým přepnutím se musí vynulovat**, jinak i úspěšný
+    fallback vrátí zděděnou chybu.
+  - **`disk.is_initialized[0] = 0` při unmountu** (`ff_gen_drv.c` si pamatuje, že `disk_initialize()`
+    už proběhl, a podruhé ho nezavolá) — jinak mount bez karty skončí `FR_DISK_ERR` místo čistého
+    `FR_NOT_READY`, tedy zavádějící diagnostikou.
+  - **Deskový erratum:** externí pull-up, který měl být na **CMD**, je omylem na **CLK**. CMD (PD2)
+    proto **musí mít interní pull-up** — v našem `.ioc` už `GPIO_PULLUP` je ✅. Není to open-drain,
+    ale tři-stav při obratu směru: v mezeře `N_CR` linku nedrží nikdo a bez pull-upu plave.
+  - ⚠️ **Nepoužívat `-fsyntax-only`** na rychlou kontrolu — zastaví překlad před middle-endem, takže
+    celá třída varování (`-Wformat-truncation`, `-Wmaybe-uninitialized`, `-Wstringop-*`) vůbec nevznikne.
 - ⚠️ **Dvě nezávislé detekce téhož pinu (PE3):** `datalog_sd_card_present()` (debounced, app API)
   a `BSP_SD_IsDetected()` (raw, používá ho FatFs uvnitř). Nekolidují — jen čtení, stejný pin.
 - **✅ ROZHODNUTO 2026-08-11: W25Q je autoritativní úložiště, SD je JEN EXPORT** (`sd_export.c/h`).

@@ -7,7 +7,8 @@
 #include "w25q_store.h"
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, qspiMutexHandle */
-#include "datalog.h"           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
+#include "datalog.h"
+#include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
@@ -25,7 +26,7 @@
  * (g_meas_cfg, #43/#44) -> "SCF6" -> "SCF7", pak vysledek self-survey (poloha)
  * -> "SCF7" -> "SCF8". Dusledek: prvni boot po teto zmene najde neznamy magic,
  * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434639u   /* "SCF9" (2026-08-13: + sitova konfigurace) */
+#define SYSCFG_BLOB_MAGIC   0x53434641u   /* "SCFA" (2026-08-13: + sd_det_force) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -68,6 +69,11 @@ typedef struct {
      * (PHY dostava 10 MHz misto 25). Az prijde lwIP, cte se odsud. */
     uint8_t  net_dhcp;
     uint32_t net_ip, net_mask, net_gw;
+    /* Override card-detect (PE3). Na teto desce cte PE3 HIGH i se zasunutou
+     * kartou, takze bez override neprojde ani `BSP_SD_Init` (vrati NENI KARTA).
+     * Persist proto, ze jinak by se `sd force on` muselo psat po kazdem bootu
+     * a auto-mount i tlacitko EXPORT by byly k nicemu. */
+    uint8_t  sd_det_force;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -112,6 +118,7 @@ static void pack(syscfg_blob_t *b)
     b->net_ip        = g_net_ip;
     b->net_mask      = g_net_mask;
     b->net_gw        = g_net_gw;
+    b->sd_det_force  = datalog_sd_det_forced() ? 1u : 0u;
 }
 
 void syscfg_load(void)
@@ -157,6 +164,7 @@ void syscfg_load(void)
     g_net_ip        = b.net_ip;
     g_net_mask      = b.net_mask;
     g_net_gw        = b.net_gw;
+    datalog_sd_det_force(b.sd_det_force ? 1 : 0);
 
     /* Ostatni pole: pri WARM resetu ma prednost BKP (uz drzi nejnovejsi) -> nechat. */
     if (g_syscfg_bkp_valid) return;

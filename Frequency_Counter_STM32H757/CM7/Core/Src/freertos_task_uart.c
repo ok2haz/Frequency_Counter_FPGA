@@ -678,6 +678,7 @@ void UartTask_run(void *argument)
 				  } else if (strncmp(arg, "force", 5) == 0) {
 					  const char *a2 = arg[5] == ' ' ? &arg[6] : "";
 					  datalog_sd_det_force(strcmp(a2, "off") != 0);
+					  g_sys_cfg_dirty = 1;   /* persist do W25Q (prezije reboot) */
 					  printf("SD: override detekce %s\n",
 					         datalog_sd_det_forced() ? "ZAPNUT (detekce se ignoruje)" : "vypnut");
 				  } else {

@@ -20,6 +20,7 @@
 #include "ff.h"
 #include "bsp_driver_sd.h"   /* BSP_SD_Init — izolace HW vrstvy pri diagnostice */
 #include "sdmmc.h"           /* hsd1 */
+#include "ff_gen_drv.h"      /* Disk_drvTypeDef — reset is_initialized pri unmountu */
 #endif
 
 /* ⚠️ Rolling index misto pevneho nazvu (2026-08-13). Drive se psalo vzdy do
@@ -121,6 +122,12 @@ void sd_export_unmount(void)
 {
 #ifdef SD_EXPORT_FATFS
     if (s_mounted) { f_mount(NULL, "", 0); s_mounted = false; }
+    /* ⚠️ `ff_gen_drv.c` si pamatuje, ze `disk_initialize()` uz probehl, a podruhe
+     * ho NEZAVOLA. Bez tohohle by mount bez karty skoncil az chybou cteni
+     * (`FR_DISK_ERR`) misto cisteho `FR_NOT_READY` — tedy zavadejici diagnostika.
+     * (Prevzato z postupu Frantiska, `SD_franta.md`.) */
+    extern Disk_drvTypeDef disk;
+    disk.is_initialized[0] = 0;
     s_state = datalog_sd_card_present() ? SD_EXP_PRESENT : SD_EXP_ABSENT;
 #endif
 }
@@ -222,6 +229,46 @@ static void fs_show_vbr(const uint8_t *b, const char *what)
         printf("  %s: neznamy (jump=%02X%02X%02X, sig=%02X%02X)\r\n",
                what, b[0], b[1], b[2], b[510], b[511]);
     }
+}
+#endif
+
+/* ── Prepsani slabeho `BSP_SD_Init()` z bsp_driver_sd.c ──────────────────────
+ * Prevzato z postupu, kterym Frantisek rozchodil SD na TEMZE hardwaru
+ * (`SD_franta.md`). Generovana verze ma dve slabiny:
+ *
+ * 1) `HAL_SD_Init()` na svem konci vola `HAL_SD_ConfigWideBusOperation(Init.BusWide)`.
+ *    Kdyz je `Init.BusWide` rovnou 4B (jako u nas z `.ioc`), probehne prepnuti na
+ *    4 bity JESTE UVNITR identifikace — a kdyz selze, **spadne cela inicializace**,
+ *    prestoze karta v 1-bit rezimu funguje bez problemu.
+ *    -> Identifikace proto bezi VZDY v 1-bit a na 4 bity se prepina az potom,
+ *       s fallbackem zpet na 1-bit.
+ *    ⚠️ V `.ioc` musi `SD_4_bits_Wide_bus` ZUSTAT — jen diky nemu `HAL_SD_MspInit`
+ *    nakonfiguruje piny D1..D3. Lisi se pouze runtime hodnota `Init.BusWide`.
+ *
+ * 2) `hsd1.ErrorCode` je v HAL "sticky" (prirazuje se pres `|=`) a
+ *    `HAL_SD_ConfigWideBusOperation()` na konci kontroluje jeho CELY obsah.
+ *    Bez vynulovani by i uspesny fallback na 1-bit vratil chybu zdedenou
+ *    z neuspesneho pokusu o 4-bit.
+ *
+ * `BSP_SD_Init` je v generovanem souboru `__weak`, takze tohle je regen-safe. */
+#ifdef SD_EXPORT_FATFS
+uint8_t BSP_SD_Init(void)
+{
+    if (BSP_SD_IsDetected() != SD_PRESENT) return MSD_ERROR_SD_NOT_PRESENT;
+
+    hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;          /* identifikace vzdy 1-bit */
+    if (HAL_SD_Init(&hsd1) != HAL_OK) {
+        printf("SD: HAL_SD_Init selhal (ErrorCode=0x%08lX)\r\n",
+               (unsigned long)hsd1.ErrorCode);
+        return MSD_ERROR;
+    }
+    hsd1.ErrorCode = HAL_SD_ERROR_NONE;             /* sticky -> vynulovat pred prepnutim */
+    if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK) {
+        printf("SD: prepnuti na 4-bit selhalo -> pokracuji v 1-bit (karta funguje dal)\r\n");
+        hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+        (void)HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B);
+    }
+    return MSD_OK;
 }
 #endif
 
