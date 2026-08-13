@@ -258,8 +258,27 @@ uint8_t BSP_SD_Init(void)
 
     hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;          /* identifikace vzdy 1-bit */
     if (HAL_SD_Init(&hsd1) != HAL_OK) {
-        printf("SD: HAL_SD_Init selhal (ErrorCode=0x%08lX)\r\n",
-               (unsigned long)hsd1.ErrorCode);
+        uint32_t ec = hsd1.ErrorCode;
+        printf("SD: HAL_SD_Init selhal, ErrorCode=0x%08lX = %s\r\n", (unsigned long)ec,
+               (ec & SDMMC_ERROR_CMD_RSP_TIMEOUT) ? "CMD_RSP_TIMEOUT (karta NEODPOVIDA na prikaz)" :
+               (ec & SDMMC_ERROR_CMD_CRC_FAIL)    ? "CMD_CRC_FAIL (odpoved prisla, ale s chybnym CRC)" :
+               (ec & SDMMC_ERROR_DATA_TIMEOUT)    ? "DATA_TIMEOUT" : "jiny");
+        /* Registry uz cist SMIME — `HAL_SD_MspInit()` probehl uvnitr `HAL_SD_Init`,
+         * takze hodiny SDMMC1 bezi. Tohle rozlisi "karta tam neni" od "je tam,
+         * ale nekomunikuje": `POWER` ukaze, jestli radic vubec napajel kartu,
+         * `CLKCR` skutecny takt a sirku sbernice. */
+        printf("  SDMMC1 POWER=0x%08lX CLKCR=0x%08lX STA=0x%08lX\r\n",
+               (unsigned long)SDMMC1->POWER, (unsigned long)SDMMC1->CLKCR,
+               (unsigned long)SDMMC1->STA);
+        if (ec & SDMMC_ERROR_CMD_RSP_TIMEOUT) {
+            printf("  => Karta na CMD0/CMD8 vubec neodpovedela. V tomhle poradi zkontroluj:\r\n");
+            printf("     1) je karta OPRAVDU zasunuta a dosednuta? PE3 hlasi 'prazdno' a\r\n");
+            printf("        tenhle timeout s tim SOUHLASI — muze mit pravdu.\r\n");
+            printf("     2) kontakty socketu J13 / jina karta\r\n");
+            printf("     3) napajeni karty (deska ma na SD VDD jen C75 100n, chybi bulk)\r\n");
+            printf("     Pozn.: pres GDB uz karta jednou nabehla (SDHC 14,5 GB, TRANSFER),\r\n");
+            printf("     takze slot JAKO TAKOVY funguje — ukazuje to spis na kontakt.\r\n");
+        }
         return MSD_ERROR;
     }
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;             /* sticky -> vynulovat pred prepnutim */
