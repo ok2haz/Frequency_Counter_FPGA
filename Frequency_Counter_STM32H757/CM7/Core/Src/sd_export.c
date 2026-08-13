@@ -50,6 +50,9 @@ static bool  s_mounted;
  * přeskočí (karta stejně fyzicky zmizela, zápis doběhne s chybou a uklidí se). */
 static volatile bool s_busy;
 
+/* Auto-mount se zada jen JEDNOU po vlozeni karty (viz `sd_export_tick`). */
+static uint8_t s_mount_tried;
+
 /* ── Levný tik (defaultTask ~2 Hz) ───────────────────────────────────────────
  * Dělá JEN to, co je rychlé: čtení GPIO + při vytažení karty odmountování
  * (`f_mount(NULL,…)` jen zahodí ukazatel, na médium nesahá).
@@ -68,6 +71,7 @@ void sd_export_tick(void)
             f_mount(NULL, "", 0);      /* rychlé — jen odpojí FS z ukazatele */
             s_mounted = false;
         }
+        s_mount_tried = 0;   /* pri pristim vlozeni se zkusi znovu */
         s_state = SD_EXP_ABSENT;
         return;
     }
@@ -80,7 +84,14 @@ void sd_export_tick(void)
      * Zada se jen na HRANE (nenamountovano -> karta prítomna), takze pri trvale
      * nemountovatelne karte se to neopakuje: neuspesny mount nastavi ERROR a ten
      * se drzi do vytazeni. */
-    if (!s_mounted && g_sd_req == SD_REQ_NONE) g_sd_req = SD_REQ_MOUNT;
+    /* ⚠️ Jen JEDNOU po vlozeni. Puvodne se zadalo pri kazdem tiku, dokud nebylo
+     * namountovano — pri karte, ktera mountovat nejde, to znamenalo pokus 2x za
+     * sekundu donekonecna a michalo se to do jine prace se SD. */
+    if (!s_mounted && !s_mount_tried && g_sd_req == SD_REQ_NONE) {
+        s_mount_tried = 1;
+        g_sd_req = SD_REQ_MOUNT;
+    }
+    if (s_mounted) s_mount_tried = 0;   /* po uspechu povol dalsi pokus pri pristim vlozeni */
     s_state = s_mounted ? SD_EXP_MOUNTED : SD_EXP_PRESENT;
 #endif
 }
@@ -256,6 +267,14 @@ uint8_t BSP_SD_Init(void)
 {
     if (BSP_SD_IsDetected() != SD_PRESENT) return MSD_ERROR_SD_NOT_PRESENT;
 
+    /* ⚠️ NVIC pro SDMMC1 — bez nej `sd_diskio.c` ceka 30 s na zpravu, kterou
+     * nema kdo poslat (podrobne v `stm32h7xx_it.c`, `SDMMC1_IRQHandler`).
+     * Nastavuje se tady, ne v `.ioc`: je to idempotentni a regen-safe, stejnym
+     * vzorem jako CS pin ve `fpga_freq_init`. Priorita 5 = strop pro obsluhy,
+     * ktere smi volat FreeRTOS API. */
+    HAL_NVIC_SetPriority(SDMMC1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
+
     hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;          /* identifikace vzdy 1-bit */
     if (HAL_SD_Init(&hsd1) != HAL_OK) {
         uint32_t ec = hsd1.ErrorCode;
@@ -290,6 +309,57 @@ uint8_t BSP_SD_Init(void)
     return MSD_OK;
 }
 #endif
+
+/* ── `sd init` — SD inicializace PO KROCICH ──────────────────────────────────
+ * `sd fs` restartuje desku uvnitr `HAL_SD_Init()`. Crash black-box ukazal
+ * PC v `xTaskIncrementTick` (SysTick) pri cteni `pxCurrentTCB->uxPriority`,
+ * BFAR = 0xC54D0A40 (mimo osazenou SDRAM) — tedy PREPSANOU strukturu FreeRTOS,
+ * ne chybu v samotnem SD kodu. Zasobnik to neni (cely retezec ~880 B, UartTask
+ * ma 4 kB), takze je potreba zjistit, KTERY HAL krok to zpusobi.
+ *
+ * Tenhle prikaz proto nevola `HAL_SD_Init()` jako celek, ale jeho casti zvlast
+ * a mezi nimi tiskne znacku. Posledni vypsana znacka = krok, ktery to shodil.
+ * ⚠️ BLOKUJE — jen z UartTasku. */
+void sd_export_init_steps(void)
+{
+#ifndef SD_EXPORT_FATFS
+    printf("SD INIT: FatFs neni v buildu\r\n");
+#else
+    printf("SD INIT po krocich (posledni vypsana znacka = kde to spadlo):\r\n");
+
+    printf("  [a] detekce karty...\r\n");
+    if (BSP_SD_IsDetected() != SD_PRESENT) {
+        printf("      NENI KARTA -> konec\r\n"); return;
+    }
+
+    printf("  [b] HAL_SD_InitCard (CMD0/CMD8/ACMD41/CMD2/CMD3, 1-bit)...\r\n");
+    hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+    HAL_StatusTypeDef r = HAL_SD_InitCard(&hsd1);
+    printf("      navrat=%d ErrorCode=0x%08lX\r\n", (int)r, (unsigned long)hsd1.ErrorCode);
+    if (r != HAL_OK) return;
+
+    printf("  [c] GetCardCID/CSD...\r\n");
+    HAL_SD_CardCIDTypeDef cid; HAL_SD_CardCSDTypeDef csd;
+    (void)HAL_SD_GetCardCID(&hsd1, &cid);
+    (void)HAL_SD_GetCardCSD(&hsd1, &csd);
+    HAL_SD_CardInfoTypeDef ci;
+    if (HAL_SD_GetCardInfo(&hsd1, &ci) == HAL_OK) {
+        printf("      typ=%lu bloku=%lu x %lu B (~%lu MB)\r\n",
+               (unsigned long)ci.CardType, (unsigned long)ci.LogBlockNbr,
+               (unsigned long)ci.LogBlockSize,
+               (unsigned long)(((uint64_t)ci.LogBlockNbr * ci.LogBlockSize) >> 20));
+    }
+
+    printf("  [d] ConfigWideBusOperation 4-bit (cte SCR pres FIFO)...\r\n");
+    hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+    r = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
+    printf("      navrat=%d ErrorCode=0x%08lX\r\n", (int)r, (unsigned long)hsd1.ErrorCode);
+
+    printf("  [e] hotovo. CLKCR=0x%08lX POWER=0x%08lX stav=%lu (4=TRANSFER)\r\n",
+           (unsigned long)SDMMC1->CLKCR, (unsigned long)SDMMC1->POWER,
+           (unsigned long)HAL_SD_GetCardState(&hsd1));
+#endif
+}
 
 void sd_export_fs(void)
 {

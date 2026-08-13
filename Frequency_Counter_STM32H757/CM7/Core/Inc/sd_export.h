@@ -67,6 +67,8 @@ bool sd_export_mount(void);
 void sd_export_diag(void);
 /** `sd fs` — precte LBA 0 mimo FatFs a rekne, JAKY format na karte je. */
 void sd_export_fs(void);
+/** `sd init` — SD inicializace po krocich se znackami (hledani mista padu). */
+void sd_export_init_steps(void);
 
 /** Rozsireny test (UART `sd test`): zapise 8 KB na kartu, precte zpet a overi
  *  OBSAH — tim prověří celou cestu FatFs -> BSP_SD -> HAL_SD -> IDMA -> karta,

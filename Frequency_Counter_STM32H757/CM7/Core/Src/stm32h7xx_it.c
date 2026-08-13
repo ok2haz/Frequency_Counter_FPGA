@@ -236,4 +236,29 @@ void TIM7_IRQHandler(void)
 {
   HAL_TIM_IRQHandler(&htim7);
 }
+
+/* ⚠️⚠️ SDMMC1 — PRIDANO 2026-08-13, bez tohohle byl FatFs STRUKTURALNE ROZBITY.
+ *
+ * `sd_diskio.c` (ST) provadi kazde cteni/zapis pres `BSP_SD_ReadBlocks_DMA()`
+ * a pak ceka na zpravu ve fronte `SDQueueID`. Tu zpravu posila JEDINE retezec
+ *     SDMMC1_IRQHandler -> HAL_SD_IRQHandler -> HAL_SD_RxCpltCallback
+ *                       -> BSP_SD_ReadCpltCallback -> osMessageQueuePut
+ * Jenze `SDMMC1_IRQHandler` v projektu NEEXISTOVAL (ve startupu je `__weak`
+ * napojeny na `Default_Handler`) a NVIC nebyl povoleny — takze zprava nemohla
+ * NIKDY prijit. Dusledek: kazdy `f_mount`/`f_read` cekal celych `SD_TIMEOUT`
+ * = **30 sekund**, pak vratil chybu a nechal `hsd1.State` viset v BUSY.
+ * Kdyz takove volani padlo do defaultTasku (auto-mount po vlozeni karty), nestihl
+ * `watchdog_supervise()` a desku shodil IWDG (~4 s) — presne pozorovane
+ * "po `sd fs` je vzdy reset".
+ *
+ * Priorita 5 = `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`; nizsi (cislo)
+ * nesmi byt, obsluha vola FreeRTOS API (`osMessageQueuePut`).
+ * NVIC se povoluje v `BSP_SD_Init()` (sd_export.c) — regen-safe, mimo `.ioc`.
+ * Blokujici cesta `datalog_sd.c` (`HAL_SD_ReadBlocks`/`WriteBlocks`, FIFO polling)
+ * zadne preruseni nepovoluje, takze se s touhle obsluhou nebije. */
+extern SD_HandleTypeDef hsd1;
+void SDMMC1_IRQHandler(void)
+{
+  HAL_SD_IRQHandler(&hsd1);
+}
 /* USER CODE END 1 */

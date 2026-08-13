@@ -138,8 +138,38 @@ Ověřeno ze schématu (list 7/7 `USB_SD_FLASH` + list 2/7 `CPU`), 2026-08-11:
       V CubeMX to zapiš hlavně proto, aby ten pin nikdo omylem nepřiřadil jinam.
 - [ ] **EXTI nepovolovat** — detekci dělej **pollingem** (stejný styl jako touch a senzory):
       ISR + debounce mechanického spínače je zbytečná komplikace.
-- **NEPOTŘEBUJEŠ:** DMA (SDMMC má vlastní interní IDMA), NVIC `SDMMC1 global interrupt`
-  (jedeme blokující `HAL_SD_ReadBlocks/WriteBlocks`), FatFs (jen pokud padne volba na FS).
+- **NEPOTŘEBUJEŠ:** DMA (SDMMC má vlastní interní IDMA — ve FatFs Advanced Settings musí být
+  `Use dma template = Disabled`).
+
+### 🔴🔴 SDMMC1 global interrupt MUSÍ být povolený (od 2026-08-13)
+**Dřív tu stálo „nepotřebuješ" — to platilo jen dokud jedinou cestou ke kartě byl `datalog_sd.c`
+(blokující `HAL_SD_ReadBlocks/WriteBlocks` = FIFO polling, bez přerušení). Zapnutím FatFs to
+přestalo platit a nikdo to nepřepsal.** ST-čkový `sd_diskio.c` dělá **každé** čtení i zápis přes
+`BSP_SD_ReadBlocks_DMA()` a pak čeká na zprávu ve frontě `SDQueueID`. Tu pošle jedině řetězec
+
+```
+SDMMC1_IRQHandler → HAL_SD_IRQHandler → HAL_SD_RxCpltCallback
+                  → BSP_SD_ReadCpltCallback → osMessageQueuePut(SDQueueID)
+```
+
+`SDMMC1_IRQHandler` ale v projektu **neexistoval** (ve `startup_stm32h757bitx.s` je `__weak`
+napojený na `Default_Handler`) a NVIC nebyl povolený → zpráva nemohla nikdy přijít. Každý
+`f_mount`/`f_read`/`f_write` proto čekal celých `SD_TIMEOUT` = **30 s**, pak vrátil chybu.
+UartTask přitom točil `BSP_SD_GetCardState()` v těsné smyčce → **UiTask (BelowNormal) hladověl**,
+`watchdog_kick_ui()` se nevolal a desku po ~4 s shodil IWDG. Navenek: „`sd fs` zamrzne konzoli
+a restartuje desku".
+
+Řešení je v kódu a je **regen-safe** — v `.ioc` nic zapínat nemusíš:
+- obsluha `SDMMC1_IRQHandler` je v `stm32h7xx_it.c` v **`USER CODE BEGIN 1`**,
+- `HAL_NVIC_SetPriority(SDMMC1_IRQn, 5, 0)` + `EnableIRQ` dělá `BSP_SD_Init()` v `sd_export.c`
+  (idempotentní, stejný vzor jako CS pin ve `fpga_freq_init`).
+
+⚠️ **Kdybys to přesto zapínal v CubeMX**, dej `SDMMC1 global interrupt` prioritu **5** (obsluha
+volá FreeRTOS API, `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` = 5) a **vypni generování
+obsluhy** (sloupec *Code generation* → `Generate IRQ handler` = ne), jinak vznikne
+**duplicitní symbol** s tím naším v `USER CODE 1`.
+
+- **FatFs:** viz vlastní sekce níže (jen pokud padne volba na FS).
 
 ### 🔴 KRITICKÉ po každé regeneraci: `MX_SDMMC1_SD_Init()` musí zůstat vyřazená
 CubeMX generuje v `MX_SDMMC1_SD_Init()` na selhání `HAL_SD_Init` volání **`Error_Handler()`**,

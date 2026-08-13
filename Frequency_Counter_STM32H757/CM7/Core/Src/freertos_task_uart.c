@@ -675,6 +675,10 @@ void UartTask_run(void *argument)
 					  /* CO JE NA KARTE DOOPRAVDY — cte LBA 0 mimo FatFs a dekoduje
 					   * MBR/boot sektor. Doted se format jen ODHADOVAL. */
 					  sd_export_fs();
+				  } else if (strcmp(arg, "init") == 0) {
+					  /* Inicializace karty PO KROCICH se znackami — posledni vypsana
+					   * znacka rekne, ktery HAL krok pripadny pad zpusobil. */
+					  sd_export_init_steps();
 				  } else if (strncmp(arg, "force", 5) == 0) {
 					  const char *a2 = arg[5] == ' ' ? &arg[6] : "";
 					  datalog_sd_det_force(strcmp(a2, "off") != 0);
@@ -685,7 +689,7 @@ void UartTask_run(void *argument)
 					  printf("SD: karta %s, stav: %s%s\n",
 					         datalog_sd_card_present() ? "VLOZENA" : "chybi", sd_export_state_str(),
 					         datalog_sd_det_forced() ? "  [force]" : "");
-					  printf("SD: prikazy: sd fs | sd diag | sd test | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
+					  printf("SD: prikazy: sd init | sd fs | sd diag | sd test | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
 				  }
 			  }
 			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {

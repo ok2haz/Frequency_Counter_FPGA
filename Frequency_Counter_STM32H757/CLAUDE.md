@@ -526,6 +526,14 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
   (oba v USER CODE, přežijí regen). CubeMX je nechává vypnuté; bez prvního není žádná cache
   maintenance (D-cache je zapnutá, IDMA čte/píše RAM → **symptom #69**), bez druhého se dělá nad
   nezarovnaným bufferem volajícího a zahazuje dirty data sousedů. Detaily v `CUBEMX_CHECKLIST.md`.
+- 🔴🔴 **`SDMMC1_IRQHandler` MUSÍ existovat a NVIC být povolený** (`stm32h7xx_it.c` USER CODE 1 +
+  `HAL_NVIC_SetPriority(SDMMC1_IRQn, 5, 0)` v `BSP_SD_Init`). `sd_diskio.c` dělá **každý** přenos
+  přes `BSP_SD_ReadBlocks_DMA` a čeká na zprávu z `SDQueueID`, kterou posílá **jedině** ta obsluha.
+  Bez ní čekal každý `f_mount`/`f_read` celých `SD_TIMEOUT` = **30 s** v těsné smyčce
+  `BSP_SD_GetCardState()` → UartTask vyhladověl UiTask (BelowNormal) → `watchdog_kick_ui()` se
+  nevolal → **IWDG reset**. Navenek „`sd fs` zamrzne konzoli a restartuje desku" (2026-08-13).
+  Priorita **5**, obsluha volá FreeRTOS API. Blokující cesta `datalog_sd.c` (FIFO polling) žádné
+  přerušení nepovoluje, takže se s tím nebije.
 - **⚠️ PŘEVZATO Z POSTUPU FRANTIŠKA (`C:\Claude_obecne\SD_franta.md`, rozchodil SD na TÉMŽE HW):**
   - **`BSP_SD_Init()` je přepsaný** v `sd_export.c` (generovaná verze je `__weak` → regen-safe).
     Důvod: `HAL_SD_Init()` na konci volá `HAL_SD_ConfigWideBusOperation(Init.BusWide)`, takže
