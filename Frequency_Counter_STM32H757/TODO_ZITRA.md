@@ -40,9 +40,10 @@
       `sd test` (zápis 8 kB + zpětné porovnání obsahu) je pak finální důkaz celé cesty.
       ⚠️ Firmware s auditními opravami je **zbuilděný, ale NENAFLASHOVANÝ** (ST-LINK odpojen).
 
-- [ ] **Při prvním flashi si přečíst boot výpis `SELFTEST:`** — nově vypíše i indexy failujících
-      testů a u SCPI přímo `scpi.c:<řádek>` prvního neúspěšného assertu. Tím se zavře otevřená
-      otázka „SCPI parser hlásí chybu při startu" bez dalšího hádání.
+- [x] ✅ **SCPI selftest OPRAVEN a OVĚŘEN NA HW 2026-08-13 — `13/13 PASS`.** Diagnostika řádku
+      ukázala `scpi.c:880`: `ok &= (atoi(b) & 0x04)`. Akumulátor se slučuje **bitovým AND**
+      a startuje na 1, takže `1 & 4 = 0` — assert shodil výsledek právě když podmínka
+      **platila**. Týkalo se 4 kontrol status modelu; ta s `& 0x01` procházela jen náhodou.
 
 - [ ] **Card-detect PE3 nereaguje** — HIGH i se zasunutou kartou. Nikdy se nezměřilo s kartou
       VENKU, takže může jít i o obrácenou polaritu (`sd det invert on`). Dohledat ve schématu,
@@ -152,9 +153,9 @@
       3. teprve pak pokračovat F1–F8. Do té doby ETH nezačínat.
 
 
-- [ ] **ETH etapa F0** (`ETH_BRINGUP_CHECKLIST.md`): vytáhnout ze schématu piny `MDC`/`MDIO`/
-      `ETH_RES` (v repu **nejsou**) + UART příkaz `eth` = bit-bang MDIO, scan adres 0–31, čtení
-      PHY ID (`0x0007C130/1`) + změřit REF_CLK 50 MHz. **Bez regenerace `.ioc`, nulové riziko.**
+- [x] ✅ **ETH etapa F0 UZAVŘENA 2026-08-13.** Pinmapa vytažena ze schématu (bylo v repu celou
+      dobu — `STM32H747BIT.pdf` list 4/7+2/7), příkaz `eth` napsán a spuštěn na HW.
+      **Výsledek negativní: PHY mlčí, protože dostává 10 MHz místo 25.** Viz odložení ETH výše.
 - [ ] **#29 encoder** (`ENCODER_J7_NAVRH.md`): piny **potvrzené ze schématu** — `PA8`/`PA9` =
       TIM1 CH1/CH2, `PC13` = tlačítko, konektor J2. **Riziko „PA9 = USB VBUS" je vyvrácené**
       (USB je na PA11/PA12). Blokátor padl, jde to dělat kdykoli.
@@ -164,7 +165,19 @@
 
 ---
 
-## P5 — nové zadání
+## P5 — čeká na ověření očima (dnes naflashováno, nezkontrolováno)
+
+- [ ] 🔴 **Touch po auto-dimu** — oprava naflashována 2026-08-13. Nechat běžet přes auto-dim
+      a sledovat: v logu se má objevit `touch: I2C4 nereaguje (N chyb, M x mutex busy) ->
+      recovery #1` a **touch má potom ožít**. Kdyby neožil, zbývá varianta, že ATTINY drží
+      i něco dalšího — pak přidat do recovery celou `ws_panel_init` sekvenci.
+- [ ] **Vzhled přestavěného Nastavení + nová okna** — rozvržení je **spočítané, ne viděné**.
+      Zkontrolovat: mřížka 3×4 v Nastavení (nejdelší popisky `O PRISTROJI >`, `KALIBRACE >`),
+      okno **DISPLEJ** (jas + auto-dim), okno **SÍŤ**, zvuk v okně **ALARMY**.
+- [ ] ⚠️ **Nastavení se po tomhle flashi vrátila na výchozí** — syscfg magic šel „SCF8" → „SCF9"
+      (přibyla síťová konfigurace). Přenastavit jas/téma/zónu/Math a uložit.
+
+## P5b — starší zadání
 
 - [x] ✅ **Horizontální bargrafy: segmenty užší o 30 % — HOTOVO 2026-08-12** (okno PŘEHLED KANÁLŮ,
       `s_view=30`, `app_gpsdo.c`). Potvrzena varianta „užší segmenty".
