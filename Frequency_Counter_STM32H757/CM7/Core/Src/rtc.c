@@ -134,12 +134,16 @@ void MX_RTC_Init(void)
        * (heartbeat > 2,5 s). Bez tohoto by byl prosty watchdog reset nemy. */
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "stall:%s", name);
     else if (kind == 4u) {
-      /* HardFault: DR4 (=n0) = stacknuty LR = CALLER (funkce, ktera udelala
-       * spatny call -> addr2line na .elf), DR5 (=n1) = SCB->CFSR (typ). Ukaz
-       * adresu + 1 pismeno typu: B=BusFault, U=UsageFault, M=MemManage. */
-      char t = (n1 & 0x0000FF00u) ? 'B'
-             : (n1 & 0xFFFF0000u) ? 'U'
-             : (n1 & 0x000000FFu) ? 'M' : '?';
+      /* HardFault (od 2026-08-13): DR4 (=n0) = stacknute **PC** = presna
+       * instrukce, kde to spadlo (`addr2line` na .elf). DR5 (=n1) = SCB->CFSR,
+       * DR7 = SCB->BFAR = adresa, ktera BusFault zpusobila.
+       * Drive se ukladalo LR (navrat do volajiciho) a handler byl bezna C funkce
+       * s prologem, takze pro fault v handler modu vracel nesmysl. */
+      g_crash_cfsr = n1;
+      g_crash_bfar = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR7);
+      char t = (n1 & 0x0000FF00u) ? 'B'        /* BusFault   */
+             : (n1 & 0xFFFF0000u) ? 'U'        /* UsageFault */
+             : (n1 & 0x000000FFu) ? 'M' : '?'; /* MemManage  */
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "HF@%08lX%c",
                (unsigned long)n0, t);
     }

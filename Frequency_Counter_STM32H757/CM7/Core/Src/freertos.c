@@ -183,6 +183,8 @@ volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bez
 volatile uint8_t  g_cm4_alive    = 0;  /* 1 = CM4 heartbeat v IPC roste (defaultTask z ipc_cm4_alive) */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
+volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
+volatile uint32_t g_crash_bfar = 0;   /* SCB->BFAR = adresa, ktera fault zpusobila */
 volatile uint8_t  g_selftest_res = 0;
 volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
 

@@ -1014,6 +1014,9 @@ void UartTask_run(void *argument)
 				  printf("RUNNING %s  uptime %lus\n", FW_VERSION_FULL, (unsigned long)g_uptime_s);
 				  printf("Reset: %s%s%s\n", (const char *)g_reset_text,
 					     g_crash_text[0] ? "  " : "", (const char *)g_crash_text);
+				  if (g_crash_text[0] == 'H')   /* HardFault -> vypis i CFSR a adresu */
+					  printf("  CFSR=0x%08lX  BFAR=0x%08lX (adresa, ktera fault zpusobila)\r\n",
+					         (unsigned long)g_crash_cfsr, (unsigned long)g_crash_bfar);
 				  printf("  RSR=0x%08lX%s\n", (unsigned long)g_reset_rsr,
 					     g_reset_bad ? "  <-- WATCHDOG/CRASH" : "");
 				  printf("Heap: free %lu B, min-ever %lu B   CPU %lu%%\n",

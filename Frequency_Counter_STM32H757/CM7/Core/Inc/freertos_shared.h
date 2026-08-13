@@ -56,6 +56,7 @@ extern volatile uint8_t g_rtc_synced;
 /* Lokalni cas dle casove zony (Nastaveni): rtc_app_tick aplikuje g_tz_offset_h
  * na UTC (vc. prehoupnuti data) -> g_rtc_text_local + g_tz_label ("UTC"/"UTC+2").
  * Hlavni obrazovka + screensaver ctou local; GPS okno + diag zustavaji UTC. */
+extern volatile uint32_t g_crash_cfsr, g_crash_bfar;  /* detail posledniho HardFaultu */
 extern volatile char    g_rtc_text_local[24];
 
 /* ── Sitova konfigurace (okno Sit, s_view=35). Persist v syscfg blobu (W25Q).

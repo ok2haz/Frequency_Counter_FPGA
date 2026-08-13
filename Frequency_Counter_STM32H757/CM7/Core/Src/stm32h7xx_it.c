@@ -84,38 +84,42 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-void HardFault_Handler(void)
+/* USER CODE BEGIN HardFault_capture */
+/* Zachyceni kontextu HardFaultu. ⚠️ PREPSANO 2026-08-13 — puvodni verze mela
+ * dve vady, kvuli kterym vracela nepouzitelne cislo:
+ *  1) Handler byl bezna C funkce, takze mu GCC vygeneroval PROLOG. Ten posune
+ *     MSP, takze `ldr [msp, #20]` uz necetl exception frame, ale prolog. Pro
+ *     fault v handler modu (SysTick/PendSV) tedy vychazela nahodna data —
+ *     opakovane napr. adresa `pxReadyTasksLists`, coz svadelo k honeni prizraku.
+ *     -> handler je ted `naked` a ukazatel na ramec predava do C funkce.
+ *  2) Ukladalo se stacknute LR = navrat do VOLAJICIHO. Uzitecnejsi je stacknute
+ *     **PC** = presna instrukce, kde to spadlo (`addr2line` na .elf).
+ * Nove se uklada PC (DR4), CFSR (DR5) a BFAR (DR7) — BFAR je adresa, ktera
+ * BusFault zpusobila, tedy "co se sahalo". */
+void hard_fault_capture(uint32_t *frame);
+void hard_fault_capture(uint32_t *frame)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-  /* Crash black-box: kind 4 + KDE to spadlo. PC=0x00000001 (skok na NULL fn
-   * pointer) uz zname -> ted potrebuji CALLER. Stacknuty LR (frame offset 0x14)
-   * = navratova adresa uvnitr funkce, ktera ten spatny `blx` udelala (blx sam
-   * nastavi LR na instrukci ZA sebou) -> addr2line na .elf da presnou funkci/
-   * radek. DR4 = stacknuty LR, DR5 = SCB->CFSR (typ). Primy zapis registru
-   * (zadne volani ve fault kontextu); DBP uz povolen. Exception frame na MSP
-   * nebo PSP dle EXC_RETURN (LR) bit2. Pak HNED reset. */
-  uint32_t hf_lr = 0;
-  __asm volatile (
-    "tst  lr, #4        \n"
-    "ite  eq            \n"
-    "mrseq r0, msp      \n"
-    "mrsne r0, psp      \n"
-    "ldr  %0, [r0, #20] \n"   /* frame offset 0x14 = stacknuty LR (caller) */
-    : "=r" (hf_lr) :: "r0", "cc");
-  PWR->CR1 |= PWR_CR1_DBP;         /* povol zapis do backup domeny (shodne s watchdog.c/freertos_hooks.c) */
-  RTC->BKP3R = 0xC7A50000u | 4u;   /* RTC_CRASH_MAGIC | kind 4 = HardFault */
-  RTC->BKP4R = hf_lr;
-  /* ⚠️ Do DR5 nove BFAR (adresa, ktera fault zpusobila), kdyz je platna —
-   * typ faultu se pozna i z pouheho priznaku, ale ADRESA rekne, CO se sahalo.
-   * BFARVALID = CFSR bit15. Bez adresy jsme u BusFaultu slepi. */
-  RTC->BKP5R = (SCB->CFSR & (1u << 15)) ? SCB->BFAR : SCB->CFSR;
+  uint32_t cfsr = SCB->CFSR;
+  PWR->CR1 |= PWR_CR1_DBP;          /* povol zapis do backup domeny */
+  RTC->BKP3R = 0xC7A50000u | 4u;    /* RTC_CRASH_MAGIC | kind 4 = HardFault */
+  RTC->BKP4R = frame[6];            /* stacknute PC = kde to spadlo */
+  RTC->BKP5R = cfsr;
+  RTC->BKP7R = (cfsr & (1u << 15)) ? SCB->BFAR : 0u;   /* BFARVALID -> adresa */
   NVIC_SystemReset();
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+}
+/* USER CODE END HardFault_capture */
+
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  /* Bez prologu -> `msp`/`psp` ukazuje PRESNE na exception frame.
+   * EXC_RETURN bit2 rozlisuje, ktery zasobnik se pouzil. */
+  __asm volatile (
+    "tst  lr, #4             \n"
+    "ite  eq                 \n"
+    "mrseq r0, msp           \n"
+    "mrsne r0, psp           \n"
+    "b    hard_fault_capture \n"
+  );
 }
 
 /**
