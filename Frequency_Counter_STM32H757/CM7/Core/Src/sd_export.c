@@ -435,6 +435,26 @@ static void sd_apply_init_config(void)
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
 }
 
+/* Prepne kartu i host na 4-bit sbernici BEZ `HAL_SD_ConfigWideBusOperation`
+ * (ta cte SCR neohranicenou datovou smyckou). CMD55 + ACMD6 = bezdatove prikazy
+ * (5 s CMDTIMEOUT) -> bezpecne. Poradi je dulezite: nejdriv rekni KARTE (ACMD6),
+ * teprve pak prepni WIDBUS na HOSTU (jinak by host cetl 4 linky, kdyz karta jeste
+ * budi jen DAT0). @return true = 4-bit; false = zustava 1-bit. */
+#ifdef SD_EXPORT_FATFS
+static bool sd_try_4bit(void)
+{
+    /* CMD55 APP_CMD s RCA karty */
+    if (SDMMC_CmdAppCommand(SDMMC1, (uint32_t)(hsd1.SdCard.RelCardAdd << 16)) != HAL_SD_ERROR_NONE)
+        return false;
+    /* ACMD6 SET_BUS_WIDTH, arg 2 = 4-bit (0 = 1-bit) */
+    if (SDMMC_CmdBusWidth(SDMMC1, 2u) != HAL_SD_ERROR_NONE)
+        return false;
+    hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
+    (void)SDMMC_Init(SDMMC1, hsd1.Init);              /* host WIDBUS = 4-bit */
+    return true;
+}
+#endif
+
 uint8_t BSP_SD_Init(void)
 {
     if (BSP_SD_IsDetected() != SD_PRESENT) return MSD_ERROR_SD_NOT_PRESENT;
@@ -519,21 +539,16 @@ uint8_t BSP_SD_Init(void)
      * transfer takt 16 MHz i WIDBUS=1B. */
     (void)SDMMC_Init(SDMMC1, hsd1.Init);
 
-    /* ⚠️⚠️ ZAMERNE NEPREPINAME NA 4-bit (zmena 2026-08-14). `HAL_SD_ConfigWideBusOperation`
-     * cte pred prepnutim SCR registr karty DATOVYM prenosem pres FIFO — a to je
-     * JEDINA neohranicena datova smycka v celem initu: jeji SW timeout je
-     * `SDMMC_DATATIMEOUT` = 0xFFFFFFFF (~49 dni) a hardwarovy DTIMER taky, takze
-     * kdyz SCR data z karty nedorazi (prvni datovy prenos vubec — vsechno pred tim
-     * jsou bezdatove prikazy CMD0/8/ACMD41/CMD2/CMD3/CMD13), toci se donekonecna
-     * a IWDG shodi desku. Srazeni priority (`sd_blocking_begin`) to samo NEzachrani
-     * — empiricky overeno na HW 2026-08-14: `sd init` -> kousne -> watchdog reset.
-     *
-     * Reseni: init konci v 1-bit. Vsechny nasledne datove prenosy jdou pres
-     * `HAL_SD_ReadBlocks`/`WriteBlocks`, ktere berou timeout od NAS (~1 s), takze
-     * se korektne VRATI s chybou misto zaseknuti. 1-bit @ 16 MHz = ~2 MB/s bohate
-     * staci na export CSV (desitky-stovky kB). 4-bit je jen rychlostni optimalizace
-     * a da se pripadne dodelat RUCNE (ACMD6 + CLKCR.WIDBUS bez SCR cteni),
-     * az bude datova cesta overene funkcni (viz `sd init` krok [d]). */
+    /* 4-bit sbernice (2026-08-14). ⚠️ NE `HAL_SD_ConfigWideBusOperation` — ta cte
+     * pred prepnutim SCR registr karty DATOVYM prenosem s NEohranicenou smyckou
+     * (`SDMMC_DATATIMEOUT` ~49 dni) a driv (bez HWFC) o to zasekla desku. Prepneme
+     * rucne: CMD55 + ACMD6 (bezdatove prikazy, 5s CMDTIMEOUT) rekne karte 4-bit,
+     * pak SDMMC_Init nastavi WIDBUS na hostu. Fallback: pri chybe zustan v 1-bit
+     * (karta funguje dal). Viz sd_try_4bit(). */
+    if (!sd_try_4bit()) {
+        hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+        (void)SDMMC_Init(SDMMC1, hsd1.Init);
+    }
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     hsd1.Context   = SD_CONTEXT_NONE;
     hsd1.State     = HAL_SD_STATE_READY;
@@ -912,8 +927,11 @@ void sd_export_diag(void)
 #define SD_TEST_CHUNKS 16u
 
 #define SD_SPEED_FILE  "SDSPEED.BIN"
-#define SD_SPEED_BUF   4096u           /* velky blok = min. rezie FatFs na volani */
-#define SD_SPEED_KB    512u            /* velikost testovaciho souboru [KB] */
+#define SD_SPEED_BUF   32768u          /* 32 KB blok — doporucena velikost (amortizuje rezii
+                                        * prikazu/FAT, karta programuje sekvencne; nad 64 KB
+                                        * uz zisk plochne). Blokujici FIFO -> na umisteni bufferu
+                                        * nezalezi; 32 KB staticky v .bss je OK. */
+#define SD_SPEED_KB    1024u           /* 1 MB testovaci soubor (stabilni mereni pri 4-bit) */
 
 /* ── Test rychlosti zapisu/cteni ─────────────────────────────────────────────
  * Zapise a zpetne precte SD_SPEED_KB velky soubor po SD_SPEED_BUF blocich,
@@ -923,7 +941,7 @@ void sd_export_diag(void)
 #ifdef SD_EXPORT_FATFS
 static bool sd_speed_test(uint32_t *out_w_kbs, uint32_t *out_r_kbs)
 {
-    static uint8_t sbuf[SD_SPEED_BUF];   /* static: 4 KB na stack UartTasku nepatri */
+    static uint8_t sbuf[SD_SPEED_BUF];   /* static: 32 KB na stack UartTasku nepatri */
     FIL f; UINT bw, br; FRESULT fr;
     const uint32_t iters = (SD_SPEED_KB * 1024u) / SD_SPEED_BUF;
     uint32_t t0, dt;
@@ -933,6 +951,11 @@ static bool sd_speed_test(uint32_t *out_w_kbs, uint32_t *out_r_kbs)
     /* --- zapis --- */
     fr = f_open(&f, SD_SPEED_FILE, FA_CREATE_ALWAYS | FA_WRITE);
     if (fr != FR_OK) { printf("SD SPEED: f_open(w)=%d %s\n", (int)fr, fr_str(fr)); return false; }
+    /* PREDALOKACE: souvisly blok dopredu -> zapis pak nesaha do FAT (zadne pomale
+     * jednoblokove updaty pri rustu souboru). Best-effort: kdyz neni souvisle misto,
+     * jede se normalne (jen pomaleji). */
+    if (f_expand(&f, (FSIZE_t)SD_SPEED_KB * 1024u, 1) != FR_OK)
+        printf("SD SPEED: f_expand se nepodaril (fragmentace?) -> zapis bez predalokace\n");
     t0 = HAL_GetTick();
     for (uint32_t i = 0; i < iters; i++) {
         if (f_write(&f, sbuf, SD_SPEED_BUF, &bw) != FR_OK || bw != SD_SPEED_BUF) {

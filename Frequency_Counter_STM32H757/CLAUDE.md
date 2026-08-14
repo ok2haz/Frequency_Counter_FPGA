@@ -508,6 +508,12 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
   HAL transfer takt+HWFC jinak aplikoval. `HAL_SD_InitCard` sám nechá CLKCR na init hodinách (400 kHz).
   ⚠️ Doplnit HWFC i do `.ioc` přes CubeMX (viz CUBEMX_CHECKLIST). **`sd init` má krokovou diagnostiku
   `[a]..[e]`** (probe datové cesty přes CMDTRANS i DPSM_ENABLE) — první místo pro budoucí SD bring-up.
+- **4-bit sběrnice (2026-08-14):** po identifikaci `sd_try_4bit()` = **CMD55 + ACMD6** (bezdatové příkazy)
+  řekne kartě 4-bit, pak `SDMMC_Init` nastaví host `WIDBUS=4B`. ⚠️ **NE `HAL_SD_ConfigWideBusOperation`**
+  (ta čte SCR neohraničenou datovou smyčkou → dřív IWDG). Fallback při chybě = zůstat 1-bit. **Rychlost
+  zápisu** dál táhne hlavně program-time karty; pomáhá **`f_expand` předalokace** (`_USE_EXPAND=1` v ffconf
+  — MUSÍ zůstat) a **32 KB bloky** (doporučená velikost, `SD_SPEED_BUF`). Vyšší takt/CK odpor/bulk kondík
+  = HW TODO ve STATUS #69.
 - **`sd_hal_rd`/`sd_hal_wr` hotové**, za `#ifdef HAL_SD_MODULE_ENABLED` (aktivují se samy se SDMMC1).
 - **Card-detect = `PE3`** (`datalog_sd_card_present()`, debounced). Socket J13 má mechanický
   spínač DET_A(GND)–DET_B + 47k pull-up → **karta vložena = LOW**. Pin si `datalog_sd.c`
