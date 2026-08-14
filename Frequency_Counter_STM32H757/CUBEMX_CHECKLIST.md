@@ -301,6 +301,15 @@ Build mimo IDE: `PATH=<...externaltools.make.../tools/bin>:<...gnu-tools.../tool
 - Konfigurace `ffconf.h`: `_USE_LFN = 0` → **jen 8.3 jména** (`GPSDO.CSV` vyhovuje);
   `_FS_REENTRANT = 1` (vyžaduje `src/option/syscall.c` — CubeMX ho dodá); `_FS_TINY = 0`
   → `FIL` má vlastní 512B buffer, takže `sd_export_run()` má **808 B rámec** (běží v UartTasku, 4 kB).
+- 🔴🔴 **`ffconf.h` SE REGENERUJE Z `.ioc` A NAŠE ÚPRAVY LEŽÍ MIMO USER CODE (jen hlavička ho má).**
+  `.ioc` přitom FatFs parametry **NEDRŽÍ** (má jen `FATFS.BSP.number=1` + PE3), takže Generate Code
+  může `ffconf.h` **vrátit na defaulty a shodit build**. **PŘED regenerací nastav v CubeMX
+  FATFS → Advanced Settings / Set defines tyto hodnoty** (jinak se rozbije):
+  - **`USE_MKFS = Enabled`** (`_USE_MKFS 1`) — bez něj `f_mkfs` neexistuje → **FORMAT tlačítko/`sd format` NEZKOMPILUJE**.
+  - **`USE_EXPAND = Enabled`** (`_USE_EXPAND 1`) — bez něj `f_expand` neexistuje → **předalokace v `sd_export.c` NEZKOMPILUJE**.
+  - `CODE_PAGE = 850`, `USE_STRFUNC = 2`, `MAX_SS = MIN_SS = 512`, `USE_LFN = 0`, `FS_RPATH = 0`, `FS_EXFAT = 0`
+    (dorovnat na aktuální `ffconf.h`, jinak se změní chování).
+  ⚠️ Po regeneraci **VŽDY zkontroluj `ffconf.h` diff** — je to jediné místo těchto voleb a `.ioc` je nechytá.
 
 ### 🔴 KRITICKÉ: dvě volby v `sd_diskio.c`, které CubeMX nechává VYPNUTÉ
 Obě jsou v USER CODE blocích, takže **přežijí regeneraci** — ale po prvním vygenerování je
