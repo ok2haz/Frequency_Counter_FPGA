@@ -64,7 +64,7 @@
 #define _USE_FASTSEEK        1
 /* This option switches fast seek feature. (0:Disable or 1:Enable) */
 
-#define	_USE_EXPAND		1   /* f_expand — predalokace souboru (rychly zapis bez FAT rezie); viz sd_export.c */
+#define	_USE_EXPAND		1
 /* This option switches f_expand function. (0:Disable or 1:Enable) */
 
 #define _USE_CHMOD		0

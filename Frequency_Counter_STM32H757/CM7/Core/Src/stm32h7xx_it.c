@@ -51,7 +51,23 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/* Zachyceni kontextu HardFaultu do crash black-boxu (BKP registry, kind 4).
+ * ⚠️ Tento helper je ZAMERNE v `USER CODE BEGIN 0` -> PREZIJE regeneraci z .ioc.
+ * Naproti tomu samotny `HardFault_Handler` nize je `naked` (mimo USER CODE) a
+ * regen ho PREPISE na prazdny `while(1)` — po kazde regeneraci ho vrat (viz
+ * CUBEMX_CHECKLIST). Historie oprav (commit b5f8411): handler MUSI byt `naked`,
+ * jinak jeho prolog posune MSP a `frame[6]` uz necte exception frame, ale prolog. */
+void hard_fault_capture(uint32_t *frame);
+void hard_fault_capture(uint32_t *frame)
+{
+  uint32_t cfsr = SCB->CFSR;
+  PWR->CR1 |= PWR_CR1_DBP;          /* povol zapis do backup domeny */
+  RTC->BKP3R = 0xC7A50000u | 4u;    /* RTC_CRASH_MAGIC | kind 4 = HardFault */
+  RTC->BKP4R = frame[6];            /* stacknute PC = kde to spadlo (addr2line) */
+  RTC->BKP5R = cfsr;
+  RTC->BKP7R = (cfsr & (1u << 15)) ? SCB->BFAR : 0u;   /* BFARVALID -> adresa */
+  NVIC_SystemReset();
+}
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -84,31 +100,10 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-/* USER CODE BEGIN HardFault_capture */
-/* Zachyceni kontextu HardFaultu. ⚠️ PREPSANO 2026-08-13 — puvodni verze mela
- * dve vady, kvuli kterym vracela nepouzitelne cislo:
- *  1) Handler byl bezna C funkce, takze mu GCC vygeneroval PROLOG. Ten posune
- *     MSP, takze `ldr [msp, #20]` uz necetl exception frame, ale prolog. Pro
- *     fault v handler modu (SysTick/PendSV) tedy vychazela nahodna data —
- *     opakovane napr. adresa `pxReadyTasksLists`, coz svadelo k honeni prizraku.
- *     -> handler je ted `naked` a ukazatel na ramec predava do C funkce.
- *  2) Ukladalo se stacknute LR = navrat do VOLAJICIHO. Uzitecnejsi je stacknute
- *     **PC** = presna instrukce, kde to spadlo (`addr2line` na .elf).
- * Nove se uklada PC (DR4), CFSR (DR5) a BFAR (DR7) — BFAR je adresa, ktera
- * BusFault zpusobila, tedy "co se sahalo". */
-void hard_fault_capture(uint32_t *frame);
-void hard_fault_capture(uint32_t *frame)
-{
-  uint32_t cfsr = SCB->CFSR;
-  PWR->CR1 |= PWR_CR1_DBP;          /* povol zapis do backup domeny */
-  RTC->BKP3R = 0xC7A50000u | 4u;    /* RTC_CRASH_MAGIC | kind 4 = HardFault */
-  RTC->BKP4R = frame[6];            /* stacknute PC = kde to spadlo */
-  RTC->BKP5R = cfsr;
-  RTC->BKP7R = (cfsr & (1u << 15)) ? SCB->BFAR : 0u;   /* BFARVALID -> adresa */
-  NVIC_SystemReset();
-}
-/* USER CODE END HardFault_capture */
-
+/* ⚠️⚠️ REGEN-CLOBBER: tuhle naked verzi CubeMX pri Generate Code PREPISE zpet na
+ * prazdny `while(1)` (byla mimo USER CODE). Po kazde regeneraci ji sem vrat —
+ * jinak HardFault jen zatuhne bez zapisu do crash black-boxu. Helper
+ * `hard_fault_capture` je v USER CODE 0 a regen prezije. Viz CUBEMX_CHECKLIST. */
 __attribute__((naked)) void HardFault_Handler(void)
 {
   /* Bez prologu -> `msp`/`psp` ukazuje PRESNE na exception frame.
