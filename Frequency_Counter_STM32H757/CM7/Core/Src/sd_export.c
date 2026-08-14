@@ -129,7 +129,10 @@ void sd_export_tick(void)
         s_mount_tried = 1;
         g_sd_req = SD_REQ_MOUNT;
     }
-    if (s_mounted) s_mount_tried = 0;   /* po uspechu povol dalsi pokus pri pristim vlozeni */
+    /* ⚠️ `s_mount_tried` se NEresetuje pri namountovani — jinak by rucni ODPOJIT
+     * (s_mounted->false) hned spustil auto-mount a karta by se do 0,5 s vratila
+     * ("odpojeni nereaguje"). Guard se povoli az VYTAZENIM karty (radek vyse:
+     * !present -> s_mount_tried = 0), tedy auto-mount jen pri NOVEM vlozeni. */
     s_state = s_mounted ? SD_EXP_MOUNTED : SD_EXP_PRESENT;
 #endif
 }
