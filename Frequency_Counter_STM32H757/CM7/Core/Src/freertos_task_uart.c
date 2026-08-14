@@ -276,7 +276,11 @@ void UartTask_run(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  if (osMessageQueueGet(UartRxQueueHandle, &rxChar, NULL, osWaitForever) == osOK) {		// cte zpravu - znak UartRxQueueHandle
+	  /* ⚠️ NE osWaitForever: smycka musi pravidelne propadnout na sd_export_service()
+	   * (blokujici SD prace vyzadana z UI). S osWaitForever bezel service jen po
+	   * prijeti znaku z konzole -> tlacitka v okne SD karta jen pipla, ale nereagovala.
+	   * 50 ms = latence odezvy tlacitka; znak se stejne zpracuje hned, jak dorazi. */
+	  if (osMessageQueueGet(UartRxQueueHandle, &rxChar, NULL, 50u) == osOK) {		// cte zpravu - znak UartRxQueueHandle
 	      if (rxChar == '\b' || rxChar == 0x7F) {				// Vizuální smazání znaku v terminálu:
 	    	  if (RxIndex > 0) {
 	    		  RxIndex--;
