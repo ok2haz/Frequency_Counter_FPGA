@@ -273,6 +273,30 @@ static void ui_refresh_capacity(void)
 #endif
 }
 
+/* ⚠️⚠️ DESTRUKTIVNI: naformatuje CELOU kartu na FAT32 (f_mkfs) -> smaze vsechna
+ * data. Vola se JEN po dvojim potvrzeni v UI (nebo `sd format yes yes`). BLOKUJE
+ * (u velke karty i sekundy) -> vyhradne z UartTasku pres `sd_export_service`.
+ * @return true = OK. */
+#ifdef SD_EXPORT_FATFS
+static bool sd_export_format(void)
+{
+    static uint8_t work[512];            /* f_mkfs work buffer (>= _MAX_SS) */
+    if (!datalog_sd_card_present()) { s_state = SD_EXP_ABSENT; return false; }
+
+    sd_export_unmount();                 /* svazek nesmi byt namountovany */
+    printf("SD: FORMATUJI na FAT32 (smaze vse), cekej...\r\n");
+    /* FM_FAT32 bez FM_SFD -> partitioned (MBR + jedna FAT32 particie), jako mel
+     * puvodni layout karty; au=0 -> automaticka velikost clusteru. */
+    FRESULT fr = f_mkfs("", FM_FAT32, 0, work, sizeof work);
+    if (fr != FR_OK) {
+        printf("SD: f_mkfs = %d %s\r\n", (int)fr, fr_str(fr));
+        return false;
+    }
+    printf("SD: format OK\r\n");
+    return true;
+}
+#endif
+
 void sd_export_service(void)
 {
     uint8_t r = g_sd_req;
@@ -305,6 +329,17 @@ void sd_export_service(void)
             snprintf(s_ui.msg, sizeof s_ui.msg, "%s", ok ? "Test zapis/cteni PROSEL"
                                                          : "Test SELHAL - viz konzole");
         ui_refresh_capacity();
+    } else if (r == SD_REQ_FORMAT) {
+#ifdef SD_EXPORT_FATFS
+        bool ok = sd_export_format();
+        if (ok) {                       /* po formatu rovnou namountuj */
+            (void)sd_export_mount();
+            snprintf(s_ui.msg, sizeof s_ui.msg, "Naformatovano FAT32");
+        } else {
+            snprintf(s_ui.msg, sizeof s_ui.msg, "Format SELHAL - viz konzole");
+        }
+        ui_refresh_capacity();
+#endif
     }
     sd_blocking_end();
 }

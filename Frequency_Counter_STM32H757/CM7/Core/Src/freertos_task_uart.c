@@ -663,6 +663,16 @@ void UartTask_run(void *argument)
 					  sd_export_diag();
 				  } else if (strcmp(arg, "test") == 0) {
 					  sd_export_selftest();
+				  } else if (strncmp(arg, "format", 6) == 0) {
+					  /* ⚠️ DESTRUKTIVNI — dvoji potvrzeni i na konzoli. Praci udela
+					   * sd_export_service() (taky UartTask) po nastaveni pozadavku. */
+					  if (strcmp(arg, "format yes yes") == 0) {
+						  printf("SD: FORMATUJI (smaze vse)...\n");
+						  g_sd_req = SD_REQ_FORMAT;
+					  } else {
+						  printf("SD: format je DESTRUKTIVNI (smaze VSE na karte).\n");
+						  printf("    Pro potvrzeni napis:  sd format yes yes\n");
+					  }
 				  } else if (strncmp(arg, "det invert", 10) == 0) {
 					  const char *a2 = arg[10] == ' ' ? &arg[11] : "";
 					  datalog_sd_det_invert(strcmp(a2, "off") != 0);
@@ -699,7 +709,7 @@ void UartTask_run(void *argument)
 					  printf("SD: karta %s, stav: %s%s\n",
 					         datalog_sd_card_present() ? "VLOZENA" : "chybi", sd_export_state_str(),
 					         datalog_sd_det_forced() ? "  [force]" : "");
-					  printf("SD: prikazy: sd init | sd fs | sd diag | sd test | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
+					  printf("SD: prikazy: sd init | sd fs | sd diag | sd test | sd format yes yes | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
 				  }
 				  sd_blocking_end();
 			  }

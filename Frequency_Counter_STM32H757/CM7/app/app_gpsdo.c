@@ -3941,15 +3941,23 @@ static void app_gpsdo_render_display(void)
  * desku shodil. Stejny vzor jako `g_screen_req` pro kresleni.
  * Kapacitu/volne misto taky pocita UartTask (`f_getfree` umi u FAT16 projit
  * celou FAT) — UI cte hotovy snapshot `sd_export_ui_info()`. */
-static const prim_rect_t SD_MOUNT_RECT  = { 18, 417, 200, 61};
-static const prim_rect_t SD_TEST_RECT   = {228, 417, 190, 61};
-static const prim_rect_t SD_EXPORT_RECT = {428, 417, 210, 61};
+static const prim_rect_t SD_MOUNT_RECT  = { 18, 417, 148, 61};
+static const prim_rect_t SD_TEST_RECT   = {174, 417, 118, 61};
+static const prim_rect_t SD_EXPORT_RECT = {300, 417, 158, 61};
+static const prim_rect_t SD_FORMAT_RECT = {466, 417, 172, 61};
+/* Dvoji potvrzeni FORMATU (destruktivni). 0=idle, 1=1. potvrzeni, 2=2. potvrzeni
+ * -> az dalsi stisk skutecne formatuje. Auto-zrus po SD_FMT_TIMEOUT_S bez stisku
+ * nebo pri stisku jineho tlacitka. */
+#define SD_FMT_TIMEOUT_S 6u
+static uint8_t  s_sd_fmt_stage = 0;
+static uint32_t s_sd_fmt_arm_s = 0;
 
 static void app_gpsdo_render_sd(void)
 {
     int first = window_first(37);
     static char c_karta[24], c_stav[28], c_kap[40], c_fs[16], c_msg[40], c_spd[40];
     static uint8_t c_mount_lbl = 0xFF;   /* 0 = "PRIPOJIT", 1 = "ODPOJIT" */
+    static uint8_t c_fmt = 0xFF;         /* posledni vykresleny stupen potvrzeni formatu */
     if (first) {
         s_view = 37;
         window_chrome("SD KARTA", WIN_TITLE_Y);
@@ -3958,10 +3966,15 @@ static void app_gpsdo_render_sd(void)
         ui_card_render_chrome(&c);
         c_karta[0] = c_stav[0] = c_kap[0] = c_fs[0] = c_msg[0] = c_spd[0] = '\0';
         c_mount_lbl = 0xFF;
+        c_fmt = 0xFF;
+        s_sd_fmt_stage = 0;              /* pri vstupu do okna format vzdy neaktivni */
     }
 
     const sd_ui_info_t *si = sd_export_ui_info();
     char b[44];   /* radek "Rychlost:" muze byt az ~41 B */
+
+    /* Auto-zrus armovani formatu po timeoutu (bezpecnost — nenech desku "napulceste"). */
+    if (s_sd_fmt_stage && (g_uptime_s - s_sd_fmt_arm_s) >= SD_FMT_TIMEOUT_S) s_sd_fmt_stage = 0;
 
     /* Tlacitko nabizi AKCI, ne stav (stejne jako footer RUN/STOP). */
     uint8_t want_unmount = (si->state == SD_EXP_MOUNTED) ? 1u : 0u;
@@ -3977,6 +3990,25 @@ static void app_gpsdo_render_sd(void)
         ui_button_t eb = {.rect = SD_EXPORT_RECT, .variant = UI_BUTTON_NORMAL, .label = "EXPORT CSV"};
         ui_button_t bb = {.rect = BACK_RECT,      .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
         ui_button_render(&tb); ui_button_render(&eb); ui_button_render(&bb);
+    }
+
+    /* Tlacitko FORMAT + dvoji potvrzeni. Prekresli se pri zmene stupne (i timeout). */
+    if (first || s_sd_fmt_stage != c_fmt) {
+        c_fmt = s_sd_fmt_stage;
+        ui_button_t fb = {.rect = SD_FORMAT_RECT,
+                          .variant = s_sd_fmt_stage ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                          .label = (s_sd_fmt_stage == 2) ? "SMAZAT! 2/2"
+                                 : (s_sd_fmt_stage == 1) ? "POTVRDIT 1/2" : "FORMAT"};
+        prim_fill_rect(SD_FORMAT_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);   /* zmena labelu/barvy */
+        ui_button_render(&fb);
+        /* Varovny radek nad tlacitky — jen kdyz je format armovany. */
+        prim_fill_rect((prim_rect_t){DG_LLBL, 386, 620, 24}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        if (s_sd_fmt_stage)
+            prim_draw_text((prim_point_t){DG_LLBL, 386},
+                           (s_sd_fmt_stage == 2)
+                               ? "!!! DALSI STISK SMAZE VSECHNA DATA NA KARTE !!!"
+                               : "FORMAT smaze VSE na karte. Potvrd 2x (jinak se po 6 s zrusi).",
+                           &ui_font_sans_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
     }
 
     snprintf(b, sizeof b, "%s", si->present ? "VLOZENA" : "chybi ve slotu");
@@ -5017,6 +5049,15 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             #undef SETTINGS_UPD
         }
         if (s_view == 37) {                                 /* okno SD KARTA */
+            /* FORMAT = DVOJI potvrzeni: 1. stisk armuje, 2. potvrdi, 3. spusti.
+             * Kazdy stisk posune stupen; teprve ze stupne 2 se posle pozadavek. */
+            if (in_rect(x, y, SD_FORMAT_RECT)) {
+                if      (s_sd_fmt_stage == 0) { s_sd_fmt_stage = 1; s_sd_fmt_arm_s = g_uptime_s; }
+                else if (s_sd_fmt_stage == 1) { s_sd_fmt_stage = 2; s_sd_fmt_arm_s = g_uptime_s; }
+                else { if (g_sd_req == SD_REQ_NONE) g_sd_req = SD_REQ_FORMAT; s_sd_fmt_stage = 0; }
+                app_gpsdo_render_sd();                       /* okamzita zmena labelu + varovani */
+                return true;
+            }
             /* ⚠️ Jen POZADAVEK — blokujici praci dela UartTask (`sd_export_service`).
              * `g_sd_req` se prepise jen kdyz je volny, aby rychly dvojtap
              * nezahodil uz cekajici akci. */
@@ -5026,6 +5067,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             else if (in_rect(x, y, SD_TEST_RECT))   req = SD_REQ_TEST;
             else if (in_rect(x, y, SD_EXPORT_RECT)) req = SD_REQ_EXPORT;
             if (req) {
+                if (s_sd_fmt_stage) { s_sd_fmt_stage = 0; app_gpsdo_render_sd(); }  /* jiny tap zrusi armovani formatu */
                 if (g_sd_req == SD_REQ_NONE) g_sd_req = req;
                 return true;
             }

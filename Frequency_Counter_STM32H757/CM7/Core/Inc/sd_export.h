@@ -55,6 +55,7 @@ const char       *sd_export_state_str(void);
 #define SD_REQ_EXPORT   2u
 #define SD_REQ_UNMOUNT  3u
 #define SD_REQ_TEST     4u
+#define SD_REQ_FORMAT   5u   /* ⚠️ DESTRUKTIVNI — smaze celou kartu (f_mkfs FAT32) */
 extern volatile uint8_t g_sd_req;
 
 /* ── Snapshot pro UI (okno SD KARTA, s_view=37) ──────────────────────────────
