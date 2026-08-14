@@ -494,6 +494,17 @@ DATA region 63,9 MB → **~600 dní** než se kruh přepíše (pak se přepisuje
 ### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
 **SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12), `ClockDiv=2`
 → **SDMMC_CK 16 MHz**. Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
+- 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE (v `.ioc` CHYBĚL — vyřešeno 2026-08-14).** Bez něj má
+  `CLKCR` bit17 `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → karta
+  až do `TRANSFER`) projdou, ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`,
+  `HAL_SD_ReadBlocks` SW timeout). Tohle blokovalo SD celé dny a vypadalo jako HW vada DAT0 — přitom byl
+  HW celou dobu v pořádku (potvrdil funkční referenční projekt `H757_SDcard_01/`, který HWFC zapnutý má).
+  **Fix regen-safe v `sd_export.c`:** `sd_apply_init_config()` nastaví `hsd1.Init.HardwareFlowControl`
+  + `SDMMC_Init(SDMMC1, hsd1.Init)` po `HAL_SD_InitCard` **ručně zapíše CLKCR** — nutné, protože init
+  skládáme sami a vynecháváme `HAL_SD_ConfigWideBusOperation` (ta má 49denní SCR smyčku → IWDG), kde by
+  HAL transfer takt+HWFC jinak aplikoval. `HAL_SD_InitCard` sám nechá CLKCR na init hodinách (400 kHz).
+  ⚠️ Doplnit HWFC i do `.ioc` přes CubeMX (viz CUBEMX_CHECKLIST). **`sd init` má krokovou diagnostiku
+  `[a]..[e]`** (probe datové cesty přes CMDTRANS i DPSM_ENABLE) — první místo pro budoucí SD bring-up.
 - **`sd_hal_rd`/`sd_hal_wr` hotové**, za `#ifdef HAL_SD_MODULE_ENABLED` (aktivují se samy se SDMMC1).
 - **Card-detect = `PE3`** (`datalog_sd_card_present()`, debounced). Socket J13 má mechanický
   spínač DET_A(GND)–DET_B + 47k pull-up → **karta vložena = LOW**. Pin si `datalog_sd.c`

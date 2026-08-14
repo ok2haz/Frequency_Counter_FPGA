@@ -120,7 +120,16 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - **PD2 (CMD) = `GPIO_PULLUP`**, datové linky `NOPULL` — na desce jsou externí pull-upy **R56–R61**, takže je to správně.
 - **Clock:** `SdmmcClockSelection = PLL` (PLL1Q), `SDMMCFreq_Value = 64 MHz`, **`SDMMC1.ClockDiv = 2`**.
   → `SDMMC_CK = 64 MHz / (2 × ClockDiv)` = **16 MHz**. Init/identifikaci na 400 kHz řeší HAL sám.
-  ⚠️ **Pro první bring-up zvaž `ClockDiv = 4` (8 MHz)**: deska má na SD VDD jen C75 100n (chybí bulk 4,7–10 µF) a na CK není sériový tlumicí odpor (~22–33 Ω) → při vyšším kmitočtu překmity. Zvyšovat až po ověření.
+  ⚠️ Deska má na SD VDD jen C75 100n (chybí bulk 4,7–10 µF) a na CK není sériový tlumicí odpor (~22–33 Ω) → teoreticky překmity při vyšším taktu; 16 MHz ale ověřeně jede (`sd test` bit po bitu shodné, 2026-08-14).
+- 🔴🔴 **`SDMMC1.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE` — KRITICKÉ, v `.ioc` CHYBĚLO!**
+  (V CubeMX: SDMMC1 → Parameter Settings → **Hardware Flow Control = Enable**.) Bez něj má `CLKCR`
+  bit17 `HWFC_EN = 0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD, karta až
+  do `TRANSFER`) projdou, ale **blokový přenos nedostane ani bajt** — `DPSMACT` visí, `STA=0x1000`,
+  `HAL_SD_ReadBlocks` skončí SW timeoutem. Přesně tohle blokovalo SD půl dne (2026-08-14); odhalil to
+  funkční Frantův projekt `H757_SDcard_01`, který HWFC zapnutý má. **Dokud to není v `.ioc`**, řeší to
+  regen-safe runtime override v `sd_export.c` (`sd_apply_init_config` nastaví `hsd1.Init.HardwareFlowControl`
+  + `SDMMC_Init(SDMMC1, hsd1.Init)` po `HAL_SD_InitCard` zapíše CLKCR — protože init skládáme sami
+  a vynecháváme `HAL_SD_ConfigWideBusOperation`, kde by ho HAL jinak aplikoval).
 - Generate Code dotáhne `stm32h7xx_hal_sd.c/_ex`, `stm32h7xx_ll_sdmmc.c`, `HAL_SD_MODULE_ENABLED` a `sdmmc.c`/`MX_SDMMC1_SD_Init`.
 
 ### ⬅ JEŠTĚ DOPLNIT: card-detect (pro hot-plug + detekci přítomnosti)

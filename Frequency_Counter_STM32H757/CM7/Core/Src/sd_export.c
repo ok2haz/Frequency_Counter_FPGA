@@ -354,6 +354,45 @@ static void fs_show_vbr(const uint8_t *b, const char *what)
  *
  * `BSP_SD_Init` je v generovanem souboru `__weak`, takze tohle je regen-safe. */
 #ifdef SD_EXPORT_FATFS
+/* ⚠️ DAT linky (PC8..PC11 = D0..D3) maji v .ioc/`HAL_SD_MspInit` `GPIO_NOPULL`,
+ * a deska nema spolehlivy EXTERNI pull-up na DAT — dle erratum (`SD_franta.md`)
+ * sedi pull-up urceny pro CMD omylem na CLK, takze CMD jede na INTERNIM pull-upu
+ * (PD2 = `GPIO_PULLUP`) a na DAT nezbylo nic. Plovouci DAT0 -> host nedetekuje
+ * start bit datoveho bloku -> `DPSMACT` visi bez jedineho bajtu (`STA=0x1000`,
+ * zmereno na 2 kartach 2026-08-14: prikazy OK, data 0). SD spec pull-upy na DAT
+ * vyzaduje. Zapneme tedy INTERNI pull-up na D0..D3 — tentyz vzor jako u CMD.
+ * CK (PC12) NECHAVAME NOPULL: je to hostem buzeny push-pull, pull-up nepotrebuje.
+ * Idempotentni + regen-safe (nesaha na .ioc, jen prekonfiguruje piny po MspInit). */
+static void sd_dat_pullup_enable(void)
+{
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_InitTypeDef g = {0};
+    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11;   /* D0..D3, NE CK(PC12) */
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_PULLUP;
+    g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF12_SDIO1;
+    HAL_GPIO_Init(GPIOC, &g);
+}
+
+/* ⚠️⚠️ KLIC K DATOVE CESTE (2026-08-14): naplni `hsd1.Init` PRESNE jako funkcni
+ * Frantuv projekt na TEMZE HW (`H757_SDcard_01/sdcard.c sd_apply_config`).
+ * Nejdulezitejsi je `HardwareFlowControl = ENABLE` — nase `.ioc` ho NEMA
+ * (`SDMMC1.IPParameters=ClockDiv` bez HWFC), takze CLKCR bit17 HWFC_EN=0
+ * (zmereno `CLKCR=0x51`). Na H7 SDMMC bez flow controlu datova cesta selhava:
+ * blokovy prenos nedostane ani bajt, `DPSMACT` visi (prikazy pritom jedou) —
+ * presne nas symptom. Franta ma HWFC zapnuty a cte/zapisuje. Nastavujeme cely
+ * Init jako on. Regen-safe (runtime, nesaha na .ioc — spravne reseni je doplnit
+ * HWFC i do .ioc pres CubeMX, viz CUBEMX_CHECKLIST). */
+static void sd_apply_init_config(void)
+{
+    hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
+    hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
+    hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
+    hsd1.Init.ClockDiv            = 2;                 /* 64MHz/(2*2)=16 MHz, jako Franta */
+    hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
+}
+
 uint8_t BSP_SD_Init(void)
 {
     if (BSP_SD_IsDetected() != SD_PRESENT) return MSD_ERROR_SD_NOT_PRESENT;
@@ -384,8 +423,9 @@ uint8_t BSP_SD_Init(void)
         hsd1.Lock = HAL_UNLOCKED;
         HAL_SD_MspInit(&hsd1);
     }
+    sd_dat_pullup_enable();                         /* interni pull-up na DAT0..3 (pojistka) */
+    sd_apply_init_config();                         /* HWFC ENABLE + Init jako Franta (KLIC) */
 
-    hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;          /* identifikace vzdy 1-bit */
     hsd1.State = HAL_SD_STATE_PROGRAMMING;
     if (HAL_SD_InitCard(&hsd1) != HAL_OK) {
         uint32_t ec = hsd1.ErrorCode;
@@ -427,13 +467,31 @@ uint8_t BSP_SD_Init(void)
         if (osKernelGetState() == osKernelRunning) osDelay(1);
     }
 
-    hsd1.ErrorCode = HAL_SD_ERROR_NONE;             /* sticky -> vynulovat pred prepnutim */
-    if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK) {
-        printf("SD: prepnuti na 4-bit selhalo -> pokracuji v 1-bit (karta funguje dal)\r\n");
-        hsd1.ErrorCode = HAL_SD_ERROR_NONE;
-        (void)HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B);
-    }
-    /* Dorovnat to, co by jinak nastavil zaver `HAL_SD_Init`. */
+    /* ⚠️⚠️ KLIC (2026-08-14): aplikuj TRANSFER konfiguraci do CLKCR sami.
+     * `HAL_SD_InitCard` nechava CLKCR na INIT hodinach (`ClockDiv=81` @400kHz, HWFC=0);
+     * transfer ClockDiv + HWFC se v normalnim `HAL_SD_Init` nastavi az uvnitr
+     * `HAL_SD_ConfigWideBusOperation` (na jeho konci `SDMMC_Init(hsd->Init)`), kterou
+     * jsme vynechali kvuli SCR zaseknuti. Bez toho zustane HWFC_EN=0 a data nejdou
+     * (zmereno: `CLKCR=0x51`). `SDMMC_Init` saha VYHRADNE na CLKCR (jen clock/HWFC/
+     * WIDBUS), na stav karty ne -> bezpecne po identifikaci. Tim se zapne HWFC,
+     * transfer takt 16 MHz i WIDBUS=1B. */
+    (void)SDMMC_Init(SDMMC1, hsd1.Init);
+
+    /* ⚠️⚠️ ZAMERNE NEPREPINAME NA 4-bit (zmena 2026-08-14). `HAL_SD_ConfigWideBusOperation`
+     * cte pred prepnutim SCR registr karty DATOVYM prenosem pres FIFO — a to je
+     * JEDINA neohranicena datova smycka v celem initu: jeji SW timeout je
+     * `SDMMC_DATATIMEOUT` = 0xFFFFFFFF (~49 dni) a hardwarovy DTIMER taky, takze
+     * kdyz SCR data z karty nedorazi (prvni datovy prenos vubec — vsechno pred tim
+     * jsou bezdatove prikazy CMD0/8/ACMD41/CMD2/CMD3/CMD13), toci se donekonecna
+     * a IWDG shodi desku. Srazeni priority (`sd_blocking_begin`) to samo NEzachrani
+     * — empiricky overeno na HW 2026-08-14: `sd init` -> kousne -> watchdog reset.
+     *
+     * Reseni: init konci v 1-bit. Vsechny nasledne datove prenosy jdou pres
+     * `HAL_SD_ReadBlocks`/`WriteBlocks`, ktere berou timeout od NAS (~1 s), takze
+     * se korektne VRATI s chybou misto zaseknuti. 1-bit @ 16 MHz = ~2 MB/s bohate
+     * staci na export CSV (desitky-stovky kB). 4-bit je jen rychlostni optimalizace
+     * a da se pripadne dodelat RUCNE (ACMD6 + CLKCR.WIDBUS bez SCR cteni),
+     * az bude datova cesta overene funkcni (viz `sd init` krok [d]). */
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     hsd1.Context   = SD_CONTEXT_NONE;
     hsd1.State     = HAL_SD_STATE_READY;
@@ -508,6 +566,68 @@ uint8_t BSP_SD_GetCardState(void)
 }
 #endif
 
+/* ── Ohraniceny probe: 1 blok (512 B) pres DPSM_ENABLE ───────────────────────
+ * Rozhodujici experiment (2026-08-14). `HAL_SD_ReadBlocks` startuje data pres
+ * CMDTRANS (config.DPSM=DISABLE + __SDMMC_CMDTRANS_ENABLE) a na teto karte
+ * timeoutuje bez jedineho bajtu. Naproti tomu SCR cteni (`SD_FindSCR`), ktere
+ * na teto karte JEDNOU proslo (GDB 2026-08-12 -> 4-bit), pouziva klasicky
+ * DPSM_ENABLE. Tenhle probe cte plny 512B blok STEJNYM mechanismem jako SCR:
+ *   - projde-li -> problem je v CMDTRANS ceste (SW-opravitelne: blokovy read si
+ *     napiseme sami pres DPSM_ENABLE, jako to dela `SD_FindSCR`),
+ *   - selze-li stejne (DATA_TIMEOUT) -> DAT linka neunese 512B prenos (HW).
+ * Vendor smycka je nahrazena vlastni s SW timeoutem, takze se nezasekne. */
+#ifdef SD_EXPORT_FATFS
+static HAL_StatusTypeDef sd_probe_read_dpsm(uint8_t *buf, uint32_t timeout_ms, uint32_t *out_sta)
+{
+    SDMMC_DataInitTypeDef config;
+    uint32_t *p = (uint32_t *)(void *)buf;
+    uint32_t dataremaining = 512U;
+    uint32_t t0;
+
+    if (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) { *out_sta = SDMMC1->STA; return HAL_ERROR; }
+
+    __HAL_SD_CLEAR_FLAG(&hsd1, SDMMC_STATIC_DATA_FLAGS);
+    SDMMC1->DCTRL = 0U;
+    __SDMMC_CMDTRANS_DISABLE(SDMMC1);               /* NE CMDTRANS -> klasicky DPSM */
+
+    config.DataTimeOut   = SDMMC_DATATIMEOUT;       /* HW DTIMER velky, hlida nas SW timeout */
+    config.DataLength    = 512U;
+    config.DataBlockSize = SDMMC_DATABLOCK_SIZE_512B;
+    config.TransferDir   = SDMMC_TRANSFER_DIR_TO_SDMMC;
+    config.TransferMode  = SDMMC_TRANSFER_MODE_BLOCK;
+    config.DPSM          = SDMMC_DPSM_ENABLE;        /* <<< jako SD_FindSCR */
+    (void)SDMMC_ConfigData(SDMMC1, &config);
+
+    if (SDMMC_CmdReadSingleBlock(SDMMC1, 0U) != HAL_SD_ERROR_NONE) {
+        *out_sta = SDMMC1->STA;
+        SDMMC1->DCTRL = 0U;
+        __HAL_SD_CLEAR_FLAG(&hsd1, SDMMC_STATIC_DATA_FLAGS);
+        return HAL_ERROR;                           /* CMD17 R1 chyba */
+    }
+
+    t0 = HAL_GetTick();
+    while (!__HAL_SD_GET_FLAG(&hsd1, SDMMC_FLAG_RXOVERR | SDMMC_FLAG_DCRCFAIL |
+                              SDMMC_FLAG_DTIMEOUT | SDMMC_FLAG_DATAEND)) {
+        if (__HAL_SD_GET_FLAG(&hsd1, SDMMC_FLAG_RXFIFOHF) && dataremaining >= SDMMC_FIFO_SIZE) {
+            for (uint32_t i = 0; i < SDMMC_FIFO_SIZE / 4U; i++)
+                *p++ = SDMMC_ReadFIFO(SDMMC1);
+            dataremaining -= SDMMC_FIFO_SIZE;
+        }
+        if ((HAL_GetTick() - t0) >= timeout_ms) {
+            *out_sta = SDMMC1->STA;
+            SDMMC1->DCTRL = 0U;
+            __HAL_SD_CLEAR_FLAG(&hsd1, SDMMC_STATIC_DATA_FLAGS);
+            return HAL_TIMEOUT;                      /* zadna data v case */
+        }
+    }
+    *out_sta = SDMMC1->STA;
+    SDMMC1->DCTRL = 0U;
+    HAL_StatusTypeDef r = ((*out_sta & SDMMC_FLAG_DATAEND) && dataremaining == 0U) ? HAL_OK : HAL_ERROR;
+    __HAL_SD_CLEAR_FLAG(&hsd1, SDMMC_STATIC_DATA_FLAGS);
+    return r;
+}
+#endif
+
 /* ── `sd init` — SD inicializace PO KROCICH ──────────────────────────────────
  * `sd fs` restartuje desku uvnitr `HAL_SD_Init()`. Crash black-box ukazal
  * PC v `xTaskIncrementTick` (SysTick) pri cteni `pxCurrentTCB->uxPriority`,
@@ -530,8 +650,11 @@ void sd_export_init_steps(void)
         printf("      NENI KARTA -> konec\r\n"); return;
     }
 
+    sd_dat_pullup_enable();     /* interni pull-up na DAT0..3 (pojistka pro nepatrny pull-up) */
+    sd_apply_init_config();     /* HWFC ENABLE + Init jako funkcni Frantuv projekt */
+    printf("  [a2] Init: HWFC=ENABLE, ClockDiv=2, 1-bit (dle funkcniho H757_SDcard_01)\r\n");
+
     printf("  [b] HAL_SD_InitCard (CMD0/CMD8/ACMD41/CMD2/CMD3, 1-bit)...\r\n");
-    hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
     HAL_StatusTypeDef r = HAL_SD_InitCard(&hsd1);
     printf("      navrat=%d ErrorCode=0x%08lX\r\n", (int)r, (unsigned long)hsd1.ErrorCode);
     if (r != HAL_OK) return;
@@ -548,10 +671,50 @@ void sd_export_init_steps(void)
                (unsigned long)(((uint64_t)ci.LogBlockNbr * ci.LogBlockSize) >> 20));
     }
 
-    printf("  [d] ConfigWideBusOperation 4-bit (cte SCR pres FIFO)...\r\n");
+    /* [c2] KLIC: aplikuj transfer takt + HWFC do CLKCR (HAL_SD_InitCard ho nechal
+     * na init hodinach 400kHz/HWFC=0). SDMMC_Init saha jen na CLKCR. */
+    printf("  [c2] aplikuji transfer takt + HWFC (SDMMC_Init)...\r\n");
+    (void)SDMMC_Init(SDMMC1, hsd1.Init);
+    printf("      CLKCR=0x%08lX  (HWFC_EN bit17=%lu, CLKDIV=%lu)\r\n",
+           (unsigned long)SDMMC1->CLKCR,
+           (unsigned long)((SDMMC1->CLKCR >> 17) & 1u),
+           (unsigned long)(SDMMC1->CLKCR & 0x3FFu));
+
+    /* ⚠️ [d] uz NENI `ConfigWideBusOperation` — ta se na teto karte zasekla:
+     * SCR cteni je neohranicena datova smycka (~49 dni) -> IWDG (HW 2026-08-14).
+     * Misto toho ohraniceny PROBE datove cesty: precti 1 blok (LBA 0) v 1-bit
+     * s timeoutem 1 s. `HAL_SD_ReadBlocks` bere timeout od nas, takze se VRATI
+     * misto zaseknuti a rekne, jestli datova cesta vubec jede (dosud neovereno —
+     * GDB testoval jen prikazy, ne data). Blokujici HAL na H7 tahne data CPU pres
+     * FIFO (ne IDMA) -> zadna cache maintenance netreba; buffer je stejne aligned. */
+    printf("  [d] datova cesta: ctu 1 blok (LBA 0) v 1-bit, timeout 1 s...\r\n");
+    static uint8_t s_probe[512] __attribute__((aligned(32)));
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
-    r = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
-    printf("      navrat=%d ErrorCode=0x%08lX\r\n", (int)r, (unsigned long)hsd1.ErrorCode);
+    r = HAL_SD_ReadBlocks(&hsd1, s_probe, 0, 1, 1000);
+    printf("      navrat=%d ErrorCode=0x%08lX -> %s\r\n", (int)r, (unsigned long)hsd1.ErrorCode,
+           r == HAL_OK ? "OK - DATOVA CESTA JEDE" :
+           (hsd1.ErrorCode & SDMMC_ERROR_DATA_TIMEOUT)  ? "DATA_TIMEOUT - data z karty NEDORAZILA (HW datovych linek / kontakt / napajeni)" :
+           (hsd1.ErrorCode & SDMMC_ERROR_DATA_CRC_FAIL) ? "DATA_CRC_FAIL - data dorazila POSKOZENA (integrita linek / rychlost)" :
+                                                          "jina chyba (viz ErrorCode)");
+    if (r == HAL_OK)
+        printf("      prvni bajty: %02X %02X %02X %02X ... [510]=%02X [511]=%02X (55 AA = MBR/boot sektor)\r\n",
+               s_probe[0], s_probe[1], s_probe[2], s_probe[3], s_probe[510], s_probe[511]);
+
+    /* [d2] TENTYZ blok pres DPSM_ENABLE (jako SCR, ktere kdysi proslo) — odlisi
+     * CMDTRANS cestu (SW) od mrtve DAT linky (HW). Viz `sd_probe_read_dpsm`. */
+    printf("  [d2] tyz blok pres DPSM_ENABLE (mechanismus SCR), timeout 1 s...\r\n");
+    memset(s_probe, 0, sizeof s_probe);
+    uint32_t sta = 0;
+    HAL_StatusTypeDef r2 = sd_probe_read_dpsm(s_probe, 1000, &sta);
+    printf("      navrat=%d STA=0x%08lX -> %s\r\n", (int)r2, (unsigned long)sta,
+           r2 == HAL_OK                          ? "OK - DPSM cesta JEDE (CMDTRANS byl viník -> SW oprava)" :
+           (sta & SDMMC_FLAG_DTIMEOUT)           ? "DTIMEOUT - data NEDORAZILA i pres DPSM (HW DAT linky / kontakt)" :
+           (sta & SDMMC_FLAG_DCRCFAIL)           ? "DCRCFAIL - data dorazila POSKOZENA (integrita linek)" :
+           (sta & SDMMC_FLAG_RXOVERR)            ? "RXOVERR - CPU nestihl FIFO (takt moc rychly)" :
+                                                   "SW timeout - zadna data (DAT linka / kontakt)");
+    if (r2 == HAL_OK)
+        printf("      prvni bajty: %02X %02X %02X %02X ... [510]=%02X [511]=%02X (55 AA = MBR/boot sektor)\r\n",
+               s_probe[0], s_probe[1], s_probe[2], s_probe[3], s_probe[510], s_probe[511]);
 
     printf("  [e] hotovo. CLKCR=0x%08lX POWER=0x%08lX stav=%lu (4=TRANSFER)\r\n",
            (unsigned long)SDMMC1->CLKCR, (unsigned long)SDMMC1->POWER,
