@@ -150,12 +150,22 @@ int main(void)
    * (drzet ho v resetu pres RCC) — to uz je ale jina vec nez nezavisly watchdog.
    * iwdg2_init(); */
   (void)iwdg2_init;   /* ponechano prelozene, at je to jednorazove vratitelne */
+
+  /* DWT cyklovy citac pro mereni VLASTNI zateze CM4 (idle-based) -> publikuje se
+   * pres IPC heartbeat jako "4:xx%" v CM7 headeru. Clock-agnosticky: pocita se
+   * pomer busy_cyc / total_cyc, netreba znat SystemCoreClock (na CM4 nemusi byt
+   * spravne, protoze CM4 nevola SystemClock_Config). */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+  uint32_t s_cm4_busy_cyc = 0, s_cm4_win_cyc0 = 0, s_cm4_win_ms = 0, s_cm4_pct = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  uint32_t cyc0 = DWT->CYCCNT;   /* start mereni work-cyklu teto iterace */
 	  iwdg2_kick();   /* obnov watchdog CM4 (smycka ~800 ms << 4 s timeout) */
 	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
 	  if (!ipc_cm4_ready()) ipc_cm4_check();
@@ -163,7 +173,19 @@ int main(void)
 	   * ⚠️ Duveryhodne JEN kdyz CM7 zije (snapshot seq roste) — jinak jsou to stara data. */
 	  ipc_snapshot_t snap;
 	  int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);
-	  ipc_cm4_heartbeat(0u, HAL_GetTick() / 1000u);   /* cpu% zatim 0 (bare smycka, bez RTOS) */
+	  ipc_cm4_heartbeat(s_cm4_pct, HAL_GetTick() / 1000u);   /* posledni zmerena vlastni zatez [%] */
+
+	  /* Zmer VLASTNI zatez: work-cykly teto iterace (vse KROME nasledneho HAL_Delay,
+	   * ktere je "idle"). Kazdou ~1 s spocitej pomer busy/total -> s_cm4_pct. CM4 dnes
+	   * dela skoro nic -> ~0 %; s ETH/SCPI to naskoci samo. */
+	  s_cm4_busy_cyc += DWT->CYCCNT - cyc0;
+	  uint32_t cm4_now = HAL_GetTick();
+	  if (cm4_now - s_cm4_win_ms >= 1000u) {
+		  uint32_t total = DWT->CYCCNT - s_cm4_win_cyc0;   /* celkove cykly v okne (unsigned wrap OK) */
+		  s_cm4_pct = total ? (uint32_t)((uint64_t)s_cm4_busy_cyc * 100u / total) : 0u;
+		  if (s_cm4_pct > 100u) s_cm4_pct = 100u;
+		  s_cm4_busy_cyc = 0u; s_cm4_win_cyc0 = DWT->CYCCNT; s_cm4_win_ms = cm4_now;
+	  }
 
 	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze
 	   * snapshotu CM7; jinak (bez IPC / bez fixu) pomalu blika = holy heartbeat. */

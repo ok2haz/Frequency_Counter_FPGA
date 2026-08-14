@@ -272,6 +272,7 @@ void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu,
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
+uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
 #ifdef __cplusplus
 }

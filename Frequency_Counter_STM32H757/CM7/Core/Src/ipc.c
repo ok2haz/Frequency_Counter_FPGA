@@ -310,6 +310,15 @@ int ipc_cm4_alive(void)
     return (now - s_last_ms) < 3000u;
 }
 
+/* ── CM4 vlastni zatez [%] z heartbeatu (pro "4:xx%" v headeru). Bez CM4 (magic
+ * nezapsan) vraci 0. Clamp 0..100. */
+uint32_t ipc_cm4_cpu_pct(void)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
+    uint32_t p = g_ipc.cm4.cm4_cpu_pct;
+    return (p > 100u) ? 100u : p;
+}
+
 /* ── Pure-logic selftest: seqlock parita + cteni-retry + cmd/resp ring
  * (push/pop/wrap/full/empty) + servis dispatch. Bezi nad LOKALNI instanci `t`
  * (static → nezatezuje stack malych tasku), takze NEsaha na zivy g_ipc → zadny

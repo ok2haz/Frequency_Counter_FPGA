@@ -34,6 +34,7 @@ extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
 extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
 extern volatile uint8_t  g_cm4_alive;      /* 1 = CM4 heartbeat v IPC roste (bezi + mluvi) */
+extern volatile uint8_t  g_cm4_cpu_pct;    /* CM4 vlastni zatez [%] z IPC heartbeatu -> "4:xx%" */
 extern volatile uint32_t g_rtos_cpu_pct;   /* CM7 CPU vytizeni [%] (pocita UiTask) — header */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 extern volatile uint8_t g_anim_enabled;   /* 1 = animace zapnute (okno Animace) */
@@ -1574,13 +1575,16 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
 
 /* Dvouradkovy blok vytizeni CPU v headeru (mezi CAL pilulkou a hodinami, x 592..642):
  * CM7 (real, g_rtos_cpu_pct) NAHORE, CM4 DOLE — oboji nejmensim fontem (mono_14).
- * ⚠️ CM4 NENI instrumentovan (nema merene idle -> zadny cross-core CPU udaj) ->
- * "--" (nebo "off" kdyz nenabehl, g_cm4_absent). Realny CM4 % by chtel merit
- * idle na CM4 + poslat pres shared RAM/HSEM. Zive z tick_clock (change-detect na
- * CM7 %). force=1 = plny render (render_header). CM7 barevne dle zateze. */
+ * CM4 % (od 2026-08-14): CM4 meri VLASTNI idle-based zatez pres DWT (main.c),
+ * publikuje ji v IPC heartbeatu (cm4_cpu_pct), CM7 ji cte (g_cm4_cpu_pct) ->
+ * "4:xx%" kdyz zive / "4:--" (D2 ready, IPC ticho) / "4:off" (nenabehl). CM4 dnes
+ * dela skoro nic -> typicky "4:0%"; s ETH/SCPI naskoci realna zatez sama.
+ * ⚠️ CM4 mereni se projevi az po FLASHI bank2 aktualnim CM4 buildem. Zive z
+ * tick_clock (change-detect na CM7 % i CM4 %). force=1 = plny render. */
 #define CPU_HDR_R 642      /* pravy okraj bloku = tesne pred zonou hodin (datum od x=644) */
 static uint32_t s_cpu_shown = 999;
 static uint8_t  s_cm4_shown = 255;
+static uint8_t  s_cm4_pct_shown = 255;   /* posledni vykreslene CM4 % (change-detect) */
 /* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("4:--"), 1 = heartbeat
  * roste, CM4 mluvi pres IPC ("4:OK"), 2 = nenabehl ("4:off"). */
 static uint8_t cm4_state(void)
@@ -1592,17 +1596,25 @@ int screen_main_redraw_cpu(int force)
 {
     uint32_t c7 = g_rtos_cpu_pct; if (c7 > 99) c7 = 99;
     uint8_t  c4st = cm4_state();
-    if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown) return 0;
-    s_cpu_shown = c7; s_cm4_shown = c4st;
+    uint32_t c4p = g_cm4_cpu_pct; if (c4p > 99) c4p = 99;
+    if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown) return 0;
+    s_cpu_shown = c7; s_cm4_shown = c4st; s_cm4_pct_shown = (uint8_t)c4p;
     blit_bg_region((prim_rect_t){594, 1, 49, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
     char l[12];
     prim_color_t col = (c7 < 70) ? UI_COLOR_OK : (c7 < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
     snprintf(l, sizeof l, "7:%lu%%", (unsigned long)c7);
     prim_draw_text((prim_point_t){CPU_HDR_R, 22}, l, &ui_font_mono_14, col, PRIM_ALIGN_RIGHT);
-    /* CM4: "4:OK" (zelene, IPC ziva) / "4:--" (sede, D2 ready ale ticho) / "4:off" (cervene). */
-    const char *c4 = (c4st == 2) ? "4:off" : (c4st == 1) ? "4:OK" : "4:--";
-    prim_color_t col4 = (c4st == 2) ? UI_COLOR_BAD : (c4st == 1) ? UI_COLOR_OK : UI_COLOR_INK_4;
-    prim_draw_text((prim_point_t){CPU_HDR_R, 45}, c4, &ui_font_mono_14, col4, PRIM_ALIGN_RIGHT);
+    /* CM4: "4:xx%" (barevne dle zateze, kdyz IPC ziva) / "4:--" (sede, D2 ready ale ticho)
+     * / "4:off" (cervene, nenabehl). CM4 dnes dela skoro nic -> typicky "4:0%". */
+    char l4[12]; prim_color_t col4;
+    if (c4st == 1) {
+        snprintf(l4, sizeof l4, "4:%lu%%", (unsigned long)c4p);
+        col4 = (c4p < 70) ? UI_COLOR_OK : (c4p < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
+    } else {
+        snprintf(l4, sizeof l4, "%s", (c4st == 2) ? "4:off" : "4:--");
+        col4 = (c4st == 2) ? UI_COLOR_BAD : UI_COLOR_INK_4;
+    }
+    prim_draw_text((prim_point_t){CPU_HDR_R, 45}, l4, &ui_font_mono_14, col4, PRIM_ALIGN_RIGHT);
     return 1;
 }
 

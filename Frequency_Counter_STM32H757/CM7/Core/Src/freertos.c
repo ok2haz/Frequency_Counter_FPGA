@@ -181,6 +181,7 @@ volatile char     g_reset_text[12] = "---";
 volatile uint8_t  g_reset_bad    = 0;
 volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bezime degradovane, viz main.c */
 volatile uint8_t  g_cm4_alive    = 0;  /* 1 = CM4 heartbeat v IPC roste (defaultTask z ipc_cm4_alive) */
+volatile uint8_t  g_cm4_cpu_pct  = 0;  /* CM4 vlastni zatez [%] z IPC heartbeatu -> header "4:xx%" */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
@@ -417,6 +418,7 @@ void StartDefaultTask(void *argument)
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, event-driven uvnitr) (#19/#20) */
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (cmd ring) */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
+    g_cm4_cpu_pct = g_cm4_alive ? (uint8_t)ipc_cm4_cpu_pct() : 0u;   /* -> header "4:xx%" */
     /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4):
      * CM4 se zotavi vlastnim IWDG2, CM7 to jen pozoruje + loguje + pocita. NEsahá na
      * crash black-box (ten je "pricina posledniho resetu CM7"). Armuje se az po 1. ozivu. */
