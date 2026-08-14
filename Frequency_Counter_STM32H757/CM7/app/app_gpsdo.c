@@ -3948,7 +3948,7 @@ static const prim_rect_t SD_EXPORT_RECT = {428, 417, 210, 61};
 static void app_gpsdo_render_sd(void)
 {
     int first = window_first(37);
-    static char c_karta[24], c_stav[28], c_kap[40], c_fs[16], c_msg[40];
+    static char c_karta[24], c_stav[28], c_kap[40], c_fs[16], c_msg[40], c_spd[40];
     static uint8_t c_mount_lbl = 0xFF;   /* 0 = "PRIPOJIT", 1 = "ODPOJIT" */
     if (first) {
         s_view = 37;
@@ -3956,12 +3956,12 @@ static void app_gpsdo_render_sd(void)
         ui_card_t c = {.rect = DG_CARD_FULL_B,
                        .header_label = "Exportni medium (autoritativni log zustava ve W25Q)"};
         ui_card_render_chrome(&c);
-        c_karta[0] = c_stav[0] = c_kap[0] = c_fs[0] = c_msg[0] = '\0';
+        c_karta[0] = c_stav[0] = c_kap[0] = c_fs[0] = c_msg[0] = c_spd[0] = '\0';
         c_mount_lbl = 0xFF;
     }
 
     const sd_ui_info_t *si = sd_export_ui_info();
-    char b[40];
+    char b[44];   /* radek "Rychlost:" muze byt az ~41 B */
 
     /* Tlacitko nabizi AKCI, ne stav (stejne jako footer RUN/STOP). */
     uint8_t want_unmount = (si->state == SD_EXP_MOUNTED) ? 1u : 0u;
@@ -4003,12 +4003,22 @@ static void app_gpsdo_render_sd(void)
     if (first || dchg(c_msg, sizeof c_msg, b))
         kv_row_live(260, "Posledni akce:", b, UI_COLOR_INK_2, first);
 
+    /* Rychlost z posledniho TESTu (KB/s -> MB/s se 2 desetin, bez float). */
+    if (si->test_w_kbs) snprintf(b, sizeof b, "zapis %lu.%02lu / cteni %lu.%02lu MB/s",
+                                 (unsigned long)(si->test_w_kbs / 1024u),
+                                 (unsigned long)((si->test_w_kbs % 1024u) * 100u / 1024u),
+                                 (unsigned long)(si->test_r_kbs / 1024u),
+                                 (unsigned long)((si->test_r_kbs % 1024u) * 100u / 1024u));
+    else                snprintf(b, sizeof b, "-- (spust TEST)");
+    if (first || dchg(c_spd, sizeof c_spd, b))
+        kv_row_live(296, "Rychlost:", b, UI_COLOR_INK_2, first);
+
     if (first) {
-        prim_draw_text((prim_point_t){DG_LLBL, 310},
-                       "EXPORT zapise datalog z W25Q do GPSDOnnn.CSV (oddelovac ;).",
+        prim_draw_text((prim_point_t){DG_LLBL, 330},
+                       "TEST overi integritu + zmeri rychlost zapisu/cteni.",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 340},
-                       "Pred vyjmutim karty dej ODPOJIT. Operace bezi na pozadi.",
+        prim_draw_text((prim_point_t){DG_LLBL, 358},
+                       "EXPORT zapise datalog z W25Q do GPSDOnnn.CSV. Pred vyjmutim ODPOJIT.",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     }
     present_now();

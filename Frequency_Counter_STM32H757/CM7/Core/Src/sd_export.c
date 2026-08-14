@@ -295,8 +295,12 @@ void sd_export_service(void)
         ui_refresh_capacity();
     } else if (r == SD_REQ_TEST) {
         bool ok = sd_export_selftest();
-        snprintf(s_ui.msg, sizeof s_ui.msg, "%s", ok ? "Test zapis/cteni PROSEL"
-                                                     : "Test SELHAL - viz konzole");
+        if (ok && s_ui.test_w_kbs)
+            snprintf(s_ui.msg, sizeof s_ui.msg, "Test OK  W:%lu R:%lu KB/s",
+                     (unsigned long)s_ui.test_w_kbs, (unsigned long)s_ui.test_r_kbs);
+        else
+            snprintf(s_ui.msg, sizeof s_ui.msg, "%s", ok ? "Test zapis/cteni PROSEL"
+                                                         : "Test SELHAL - viz konzole");
         ui_refresh_capacity();
     }
     sd_blocking_end();
@@ -869,6 +873,68 @@ void sd_export_diag(void)
 #define SD_TEST_CHUNK  512u
 #define SD_TEST_CHUNKS 16u
 
+#define SD_SPEED_FILE  "SDSPEED.BIN"
+#define SD_SPEED_BUF   4096u           /* velky blok = min. rezie FatFs na volani */
+#define SD_SPEED_KB    512u            /* velikost testovaciho souboru [KB] */
+
+/* ── Test rychlosti zapisu/cteni ─────────────────────────────────────────────
+ * Zapise a zpetne precte SD_SPEED_KB velky soubor po SD_SPEED_BUF blocich,
+ * zmeri cas (`HAL_GetTick`, ms) a spocita KB/s. Best-effort — vola se az po
+ * uspesnem verify testu, takze samotny prenos uz je proveren. Rychlosti do
+ * *out_w_kbs / *out_r_kbs (0 = nezmereno). @return false jen pri chybe I/O. */
+#ifdef SD_EXPORT_FATFS
+static bool sd_speed_test(uint32_t *out_w_kbs, uint32_t *out_r_kbs)
+{
+    static uint8_t sbuf[SD_SPEED_BUF];   /* static: 4 KB na stack UartTasku nepatri */
+    FIL f; UINT bw, br; FRESULT fr;
+    const uint32_t iters = (SD_SPEED_KB * 1024u) / SD_SPEED_BUF;
+    uint32_t t0, dt;
+
+    for (uint32_t i = 0; i < SD_SPEED_BUF; i++) sbuf[i] = (uint8_t)(i * 37u + 0x5Au);
+
+    /* --- zapis --- */
+    fr = f_open(&f, SD_SPEED_FILE, FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr != FR_OK) { printf("SD SPEED: f_open(w)=%d %s\n", (int)fr, fr_str(fr)); return false; }
+    t0 = HAL_GetTick();
+    for (uint32_t i = 0; i < iters; i++) {
+        if (f_write(&f, sbuf, SD_SPEED_BUF, &bw) != FR_OK || bw != SD_SPEED_BUF) {
+            printf("SD SPEED: f_write %lu selhal\n", (unsigned long)i);
+            f_close(&f); f_unlink(SD_SPEED_FILE); return false;
+        }
+    }
+    fr = f_sync(&f);                     /* flush pred zmerenim casu */
+    dt = HAL_GetTick() - t0; if (dt == 0u) dt = 1u;
+    *out_w_kbs = (SD_SPEED_KB * 1000u) / dt;
+    if (fr != FR_OK) { printf("SD SPEED: f_sync=%d %s\n", (int)fr, fr_str(fr));
+                       f_close(&f); f_unlink(SD_SPEED_FILE); return false; }
+    f_close(&f);
+
+    /* --- cteni --- */
+    fr = f_open(&f, SD_SPEED_FILE, FA_READ);
+    if (fr != FR_OK) { printf("SD SPEED: f_open(r)=%d %s\n", (int)fr, fr_str(fr));
+                       f_unlink(SD_SPEED_FILE); return false; }
+    t0 = HAL_GetTick();
+    for (uint32_t i = 0; i < iters; i++) {
+        if (f_read(&f, sbuf, SD_SPEED_BUF, &br) != FR_OK || br != SD_SPEED_BUF) {
+            printf("SD SPEED: f_read %lu selhal\n", (unsigned long)i);
+            f_close(&f); f_unlink(SD_SPEED_FILE); return false;
+        }
+    }
+    dt = HAL_GetTick() - t0; if (dt == 0u) dt = 1u;
+    *out_r_kbs = (SD_SPEED_KB * 1000u) / dt;
+    f_close(&f);
+    f_unlink(SD_SPEED_FILE);
+
+    printf("SD SPEED: zapis %lu KB/s (%lu.%02lu MB/s), cteni %lu KB/s (%lu.%02lu MB/s), soubor %lu KB\n",
+           (unsigned long)*out_w_kbs, (unsigned long)(*out_w_kbs / 1024u),
+           (unsigned long)((*out_w_kbs % 1024u) * 100u / 1024u),
+           (unsigned long)*out_r_kbs, (unsigned long)(*out_r_kbs / 1024u),
+           (unsigned long)((*out_r_kbs % 1024u) * 100u / 1024u),
+           (unsigned long)SD_SPEED_KB);
+    return true;
+}
+#endif /* SD_EXPORT_FATFS */
+
 /* ⚠️ Telo je vyclenene ZAMERNE. `s_busy` se nastavuje a rusi jen ve wrapperu
  * nize, takze ho NELZE zapomenout uvolnit na nektere z ~8 chybovych cest.
  * Prvni verze tuhle chybu presne udelala (audit 2026-08-12): priznak zustal
@@ -938,6 +1004,11 @@ static bool selftest_body(void)
     printf("SD TEST: ✅ OK — %u KB zapsano a precteno zpet bit po bitu shodne\n",
            (unsigned)(SD_TEST_CHUNK * SD_TEST_CHUNKS / 1024u));
     printf("  cela cesta FatFs -> BSP_SD -> HAL_SD -> IDMA -> karta funguje\n");
+
+    /* Po overeni integrity jeste zmer rychlost (best-effort — verdikt testu
+     * urcuje verify vyse, ne rychlost). Vysledek do UI snapshotu. */
+    s_ui.test_w_kbs = 0; s_ui.test_r_kbs = 0;
+    (void)sd_speed_test(&s_ui.test_w_kbs, &s_ui.test_r_kbs);
     return true;
 }
 #endif /* SD_EXPORT_FATFS */

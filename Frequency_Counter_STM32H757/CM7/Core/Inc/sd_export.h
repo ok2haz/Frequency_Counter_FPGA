@@ -70,6 +70,8 @@ typedef struct {
     uint32_t free_mb;
     char     fs[8];        /* "FAT16"/"FAT32"/"exFAT"/"" */
     char     msg[40];      /* vysledek posledni operace pro uzivatele */
+    uint32_t test_w_kbs;   /* rychlost zapisu z posledniho TESTu [KB/s], 0 = nezmereno */
+    uint32_t test_r_kbs;   /* rychlost cteni  z posledniho TESTu [KB/s], 0 = nezmereno */
 } sd_ui_info_t;
 
 /** @return snapshot pro UI. Bezpecne z UiTasku — jen cteni, nic neblokuje. */
