@@ -31,4 +31,11 @@
 #define W25Q_DATA_BASE       0x030000u
 #define W25Q_DATA_SIZE       (W25Q_SIZE_BYTES - W25Q_DATA_BASE)   /* ~63,8 MB */
 
+/* ⚠️ Datalog ZAMERNE vyuzije jen ~1/3 DATA regionu (zbytek zustava volny pro dalsi
+ * bulk pouziti — fonty XIP, rekonstrukce Allan pyramidy apod.). Zarovnano DOLU na
+ * erase sektor (4 KB), aby to byl cely pocet bloku. 1/3 = ~22,3 MB = 696 960 zaznamu
+ * po 32 B => pri 10s vzorkovani ~80 dni kruhoveho logu (pak se prepisuje nejstarsi).
+ * Pozn.: plny region by byl ~242 dni (NE „600", jak driv chybne uvadela dokumentace). */
+#define W25Q_DATALOG_SIZE    (((W25Q_DATA_SIZE / 3u) / W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE)
+
 #endif /* INC_W25Q_MAP_H_ */

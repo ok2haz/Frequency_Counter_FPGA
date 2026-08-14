@@ -2,11 +2,13 @@
  * @file    datalog.h
  * @brief   Append-only zaznam stability mereni (STATUS.md TODO #6).
  *
- * Perioda DATALOG_PERIOD_S (10 s), zaznam DATALOG_REC_SIZE (32 B) -> ~276 kB/den.
- * Nad W25Q DATA regionem (~63,9 MB) to vychazi na **~600 dni** nez se kruh
- * prepise; po naplneni se prepisuje NEJSTARSI zaznam (kruhovy buffer, log nikdy
- * "nedojde"). Ucel: rekonstrukce Allanovy deviace / driftu / holdoveru po bootu
- * a dlouhodoba analyza mimo pristroj.
+ * Perioda DATALOG_PERIOD_S (10 s), zaznam DATALOG_REC_SIZE (32 B) -> ~270 kB/den
+ * (8640 zaznamu/den). Datalog vyuziva ZAMERNE jen ~1/3 W25Q DATA regionu
+ * (`W25Q_DATALOG_SIZE` ~22,3 MB = 696 960 zaznamu) => **~80 dni** kruhoveho logu;
+ * po naplneni se prepisuje NEJSTARSI zaznam (log nikdy "nedojde"). Zbyle 2/3 DATA
+ * regionu zustavaji volne pro dalsi bulk pouziti. (Plny region by byl ~242 dni —
+ * driv tu chybne stalo „~600".) Ucel: rekonstrukce Allanovy deviace / driftu /
+ * holdoveru po bootu a dlouhodoba analyza mimo pristroj.
  *
  * ── ULOZISTE JE ZA ABSTRAKCI (`datalog_backend_t`) ─────────────────────────
  * Backend je jen "blokove zarizeni" (read/write/erase + kapacita). Implementovany

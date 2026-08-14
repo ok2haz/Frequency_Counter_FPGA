@@ -168,7 +168,7 @@ static bool w25q_be_erase(uint32_t off)
 const datalog_backend_t datalog_backend_w25q = {
     .name = "W25Q", .probe = w25q_be_probe, .read = w25q_be_read,
     .write = w25q_be_write, .erase = w25q_be_erase,
-    .erase_size = W25Q_SECTOR_SIZE, .capacity = W25Q_DATA_SIZE,
+    .erase_size = W25Q_SECTOR_SIZE, .capacity = W25Q_DATALOG_SIZE,  /* jen 1/3 DATA regionu, viz w25q_map.h */
 };
 
 /* ── Hledani pozice zapisu po bootu ───────────────────────────────────────────
