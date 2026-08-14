@@ -66,6 +66,8 @@ void hard_fault_capture(uint32_t *frame)
   RTC->BKP4R = frame[6];            /* stacknute PC = kde to spadlo (addr2line) */
   RTC->BKP5R = cfsr;
   RTC->BKP7R = (cfsr & (1u << 15)) ? SCB->BFAR : 0u;   /* BFARVALID -> adresa */
+  RTC->BKP8R = frame[5];            /* stacknute LR = ODKUD se skocilo (caller!) */
+  RTC->BKP9R = SCB->HFSR;           /* HFSR: bit1 VECTTBL, bit30 FORCED, bit31 DEBUGEVT */
   NVIC_SystemReset();
 }
 /* USER CODE END 0 */

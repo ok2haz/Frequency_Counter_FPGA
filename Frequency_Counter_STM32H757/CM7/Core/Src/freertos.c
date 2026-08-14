@@ -185,6 +185,8 @@ volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:C
 volatile char     g_crash_text[16] = "";
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
 volatile uint32_t g_crash_bfar = 0;   /* SCB->BFAR = adresa, ktera fault zpusobila */
+volatile uint32_t g_crash_lr   = 0;   /* stacknute LR = odkud se skocilo (caller) */
+volatile uint32_t g_crash_hfsr = 0;   /* SCB->HFSR (VECTTBL/FORCED/DEBUGEVT) */
 volatile uint8_t  g_selftest_res = 0;
 volatile uint8_t  g_selftest_detail[SELFTEST_N] = {0};  /* per-test 0=--- 1=PASS 2=FAIL (poradi viz freertos_shared.h) */
 

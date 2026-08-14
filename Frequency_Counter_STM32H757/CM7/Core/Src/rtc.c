@@ -141,6 +141,8 @@ void MX_RTC_Init(void)
        * s prologem, takze pro fault v handler modu vracel nesmysl. */
       g_crash_cfsr = n1;
       g_crash_bfar = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR7);
+      g_crash_lr   = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR8);   /* odkud se skocilo (caller) */
+      g_crash_hfsr = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR9);   /* VECTTBL/FORCED/DEBUGEVT */
       char t = (n1 & 0x0000FF00u) ? 'B'        /* BusFault   */
              : (n1 & 0xFFFF0000u) ? 'U'        /* UsageFault */
              : (n1 & 0x000000FFu) ? 'M' : '?'; /* MemManage  */
