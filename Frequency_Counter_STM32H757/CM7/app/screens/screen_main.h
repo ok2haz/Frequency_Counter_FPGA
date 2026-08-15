@@ -55,6 +55,9 @@ void screen_main_invalidate(void);  /* force cache rebuild */
 const prim_pixel_t *screen_main_bg(void);    /* shared background cache (RGB565) */
 int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 */
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
+/* ── Dalkove ovladani (SCPI). Stav mereni vlastni UiTask — SCPI jen zapise
+ * `g_ui_cfg_req` a UiTask ho aplikuje timhle. @return 1 = zmenilo se. */
+int    screen_main_apply_cfg_req(void);
 void screen_main_redraw_title(void);                /* redraw only the title row */
 void screen_main_redraw_button(int idx);            /* redraw only one footer button */
 void screen_main_button_flash_start(int idx);       /* micro-flash overlay pri stisku (item 3) */

@@ -205,6 +205,12 @@ enum {
     IPC_CFG_LIM_EN,       /* arg 0/1 */
     IPC_CFG_LIM_LO,       /* argd */
     IPC_CFG_LIM_HI,       /* argd */
+    /* Instrument SET (2026-08-15) — stav mereni, ne Math. ⚠️ Poradi 1:1 se `SCPI_CFG_*`.
+     * Rozsireni VYCTU nemeni layout `ipc_cmd_t` (klic je uint8_t), takze `IPC_VERSION`
+     * se NEZVYSUJE: stara CM4 nove klice neposila a nova CM7 jim rozumi. */
+    IPC_CFG_GATE,         /* arg = index brany 0..3 */
+    IPC_CFG_CHAN,         /* arg = kanal 0/1 */
+    IPC_CFG_RUN,          /* arg = 0 STOP / 1 RUN */
 };
 
 /* ── Pametova bariera (core-agnostic; funguje na CM7 i CM4, bez CMSIS zavislosti). */

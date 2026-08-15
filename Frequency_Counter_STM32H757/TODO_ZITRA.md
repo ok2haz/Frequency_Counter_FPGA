@@ -39,6 +39,17 @@
 
 ## P1 — odblokované, dá se dělat hned
 
+- [ ] **SCPI — zbývající subsystémy** (jádro + SET hotové 2026-08-15, viz níže):
+  - **`STAT:OPER?` / `STAT:QUES?` + `:ENABle`/`:CONDition`** — dnes je implementovaný jen
+    `STAT:PRES` jako no-op, protože OPER/QUES *enable* registry neexistují. Pro plný status
+    model (a `*STB?` bit 3/7) je potřeba doplnit. **Data už jsou** (`src->freq_err`,
+    `si5356_status`, `spi_ok`) — chybí registry a maskovací logika.
+  - `SYST:DATE`/`SYST:TIME` **set** — nastavit RTC bez GPS (dnes jde čas jen číst).
+  - `DISP:BRIGhtness <0-100>` — jas přes SCPI (`g_brightness` existuje).
+  - `CONF:FREQuency`, `*OPT?`.
+  - ⏸ **Až s HW:** `TRIG:SOUR IMM|EXT|BUS` + `*TRG`, `INP:COUP/IMP/ATT`
+    (nemáme přepínatelný vstup — implementovat by znamenalo lhát), `CAL:*`, `FORM:DATA`.
+
 - [ ] **#29 encoder** (`ENCODER_J7_NAVRH.md`): HW vrstva hotová (UART `enc`, TIM1 PA8/PA9 +
       tlačítko PC13). Chybí **model fokusu v UI** — návrhové rozhodnutí, ne kód.
 - [ ] **SD drobnosti:** formát exportu (dnes `GPSDOnnn.CSV` přírůstkově — ověřit chování),

@@ -46,6 +46,11 @@ extern volatile char    g_tz_label[8];         /* "UTC" / "UTC+2" (label zony k 
  * chan / bity2:3 gate / bit4 running. */
 extern volatile uint8_t g_ui_cfg;
 extern volatile uint8_t g_ui_cfg_dirty;
+/* Dalkovy SET (SCPI z UartTasku) -> aplikuje `screen_main_apply_cfg_req` v UiTasku.
+ * Definice ve freertos.c, popis v freertos_shared.h (ten se sem zamerne neincluduje —
+ * app vrstva si drzi jen tenhle uzky extern kontrakt, jako u ostatnich globalu). */
+extern volatile uint8_t g_ui_cfg_req;
+extern volatile uint8_t g_ui_cfg_req_pend;
 
 /* Vytahne cas "HH:MM:SS" a datum "YYYY-MM-DD" z g_rtc_text_local (cas v
  * ZVOLENE casove zone z Nastaveni; UTC kdyz je zona 0 — label zony k tomu dava
@@ -220,6 +225,29 @@ void screen_main_button_action(int idx)
     g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
                          | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
     g_ui_cfg_dirty = 1;
+}
+
+/* ── Dalkove nastaveni stavu mereni (SCPI) ──────────────────────────────────
+ * ⚠️ VLAKNA: `st` vlastni VYHRADNE UiTask. SCPI bezi v UartTasku, takze zapise
+ * jen pozadavek (`g_ui_cfg_req`) a TAHLE funkce ho aplikuje — vola ji UiTask ze
+ * sveho tiku. Vraci 1, kdyz se neco zmenilo (volajici pak prekresli footer).
+ * Gettery nize ctou `st` bez zamku: jsou to jednotlive int8/bool (atomicke na
+ * ARM) a SCPI je jen zobrazuje, takze pripadne zachyceni "pulky zmeny" nevadi. */
+int screen_main_apply_cfg_req(void)
+{
+    if (!g_ui_cfg_req_pend) return 0;
+    uint8_t c = g_ui_cfg_req;
+    g_ui_cfg_req_pend = 0;
+
+    int8_t mode = (int8_t)( c        & 1);
+    int8_t chan = (int8_t)((c >> 1)  & 1);
+    int8_t gate = (int8_t)((c >> 2)  & 3);
+    bool   run  = ((c >> 4) & 1) != 0;
+    if (mode == st.mode && chan == st.chan && gate == st.gate && run == st.running)
+        return 0;                                  /* nic noveho -> zadny redraw */
+    st.mode = mode; st.chan = chan; st.gate = gate; st.running = run;
+    g_ui_cfg = c; g_ui_cfg_dirty = 1;              /* persist do BKP (jako z UI) */
+    return 1;
 }
 
 /* ── Background pre-render (boot) ───────────────────────────── */

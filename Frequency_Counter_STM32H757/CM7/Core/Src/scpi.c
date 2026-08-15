@@ -107,6 +107,32 @@ static void fmt_scpi_period_s(double hz, char *out, size_t n)
              (unsigned long)(frac / 100000000ull),        /* horních 7 cifer */
              (unsigned long)(frac % 100000000ull));       /* dolních 8 cifer */
 }
+/* Index brany 0..3 -> sekundy. Tabulka je ZDROJ PRAVDY pro SCPI i pro prevod
+ * opacnym smerem (`scpi_gate_idx_from_s`); UI ma tytez hodnoty jako popisky. */
+static double scpi_gate_s(uint8_t idx)
+{
+    static const double G[4] = {0.1, 1.0, 10.0, 100.0};
+    return G[idx & 3];
+}
+/* Sekundy -> index brany. @return 0..3, nebo -1 kdyz hodnota neodpovida presetu.
+ * Tolerance 1 % kryje zapis "0.1" i "1E-1". */
+static int scpi_gate_idx_from_s(double sec)
+{
+    for (int i = 0; i < 4; i++) {
+        double g = scpi_gate_s((uint8_t)i), d = sec - g;
+        if (d < 0) d = -d;
+        if (d <= g * 0.01) return i;
+    }
+    return -1;
+}
+/* double -> "d.dddddd" (6 des. mist, bez %f — newlib-nano). */
+static void fmt_scpi_f6(double v, char *out, uint32_t out_sz)
+{
+    long ip = (long)v;
+    long fp = (long)((v - (double)ip) * 1000000.0 + 0.5);
+    if (fp < 0) fp = -fp;
+    snprintf(out, out_sz, "%ld.%06ld", ip, fp);
+}
 /* ns -> "d.dddddd" sekundy (6 des. míst; SENS:FREQ:GATE?). */
 static void fmt_scpi_sec_ns(uint64_t ns, char *out, size_t n)
 {
@@ -235,6 +261,13 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
     if (hdr_match(hdr, "CALCulate:LIMit:STATe")) { *key = SCPI_CFG_LIM_EN;   *vu = (uint32_t)scpi_bool(arg, &ok); if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:LIMit:LOWer")) { *key = SCPI_CFG_LIM_LO;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:LIMit:UPPer")) { *key = SCPI_CFG_LIM_HI;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
+    /* ── Instrument SET (2026-08-15). Na rozdil od CALC nejdou do `meas_cfg_t`,
+     * ale do stavu mereni — backend je obslouzi zvlast (viz `set_cfg`). ── */
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE"))    { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);            if (!ok) *err = 1; return 1; }
+    if (hdr_match(hdr, "SENSe:FREQuency:CHANnel")) { *key = SCPI_CFG_CHAN; *vu = (uint32_t)scpi_num(arg, &ok);  if (!ok) *err = 1; return 1; }
+    /* INITiate[:IMMediate] = spustit mereni, ABORt = zastavit (oboji bez parametru). */
+    if (hdr_match(hdr, "INITiate:IMMediate") || hdr_match(hdr, "INITiate")) { *key = SCPI_CFG_RUN; *vu = 1u; return 1; }
+    if (hdr_match(hdr, "ABORt"))                                           { *key = SCPI_CFG_RUN; *vu = 0u; return 1; }
     return 0;
 }
 
@@ -388,6 +421,15 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         else                           snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
+    /* READ? = INITiate + FETCh? (SCPI-99). Merit u nas bezi kontinualne, takze
+     * "INIT" znamena zapnout RUN, kdyz stoji — a hned vratit posledni hodnotu.
+     * Ovladace (VISA/IVI) tenhle jednoradkovy tvar cekaji jako zakladni zpusob mereni. */
+    if (hdr_match(hdr, "READ") && is_query) {
+        if (!src->set_running && src->set_cfg) (void)src->set_cfg(src, SCPI_CFG_RUN, 1u, 0.0);
+        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
+        else                          snprintf(out, out_sz, "9.91E37");
+        return strlen(out);
+    }
     if ((hdr_match(hdr, "MEASure:FREQuency") || hdr_match(hdr, "FETCh:FREQuency")) && is_query) {
         if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
@@ -433,15 +475,23 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     }
 
     /* ── SENSe (parametry z posledního FPGA rámce) ─────────────────────────── */
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE") && is_query) {
+    /* ⚠️ GATE?/CHAN? vraci NASTAVENOU hodnotu, ne udaj z posledniho FPGA ramce —
+     * SCPI kontrakt je "co zapisu, to precte zpet" (`SENS:FREQ:GATE 1` -> `?` -> 1).
+     * Skutecne zmerene okno (kolisa kolem nominalu) je na `SENS:FREQ:GATE:ACTual?`. */
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE:ACTual") && is_query) {
         if ((src->valid & SCPI_V_FRAME) && src->gate_ns) fmt_scpi_sec_ns(src->gate_ns, out, out_sz);
         else                                             snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE") && is_query) {
+        fmt_scpi_f6(scpi_gate_s(src->set_gate_idx), out, out_sz); return strlen(out);
+    }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel") && is_query) {
-        if (src->valid & SCPI_V_FRAME) snprintf(out, out_sz, "%u", (unsigned)src->channel_id);
-        else                           snprintf(out, out_sz, "9.91E37");
-        return strlen(out);
+        snprintf(out, out_sz, "%u", (unsigned)src->set_chan); return strlen(out);
+    }
+    /* Bezi mereni? (readback pro INITiate/ABORt) */
+    if (hdr_match(hdr, "INITiate:CONTinuous") && is_query) {
+        snprintf(out, out_sz, "%u", (unsigned)src->set_running); return strlen(out);
     }
 
     /* ── MMEMory (datalog) ─────────────────────────────────────────────────── */
@@ -594,6 +644,29 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
 /* Config SET na CM7: zapíše g_meas_cfg (kritická sekce) + zrcadlo src->meas. */
 static int scpi_src_set_cfg_cm7(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
 {
+    /* ── Instrument SET (GATE/CHAN/RUN): NEjde do `g_meas_cfg`, ale do stavu mereni,
+     * ktery vlastni UiTask. SCPI bezi v UartTasku -> zapiseme jen POZADAVEK a UiTask
+     * ho aplikuje (`screen_main_apply_cfg_req`) vcetne prekresleni footeru.
+     * Skladame na AKTUALNI `g_ui_cfg`, aby dva SETy za sebou nesmazaly jeden druhy. */
+    if (key == SCPI_CFG_GATE || key == SCPI_CFG_CHAN || key == SCPI_CFG_RUN) {
+        uint8_t cur = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
+        if (key == SCPI_CFG_GATE) {
+            int gi = scpi_gate_idx_from_s(vd);
+            if (gi < 0) return 0;                       /* mimo presety -> -222 */
+            cur = (uint8_t)((cur & ~(3u << 2)) | ((uint32_t)gi << 2));
+            s->set_gate_idx = (uint8_t)gi;
+        } else if (key == SCPI_CFG_CHAN) {
+            if (vu > 1u) return 0;                      /* mame jen kanal 0/1 */
+            cur = (uint8_t)((cur & ~(1u << 1)) | ((vu & 1u) << 1));
+            s->set_chan = (uint8_t)vu;
+        } else {
+            cur = (uint8_t)((cur & ~(1u << 4)) | ((vu ? 1u : 0u) << 4));
+            s->set_running = vu ? 1u : 0u;
+        }
+        g_ui_cfg_req = cur;
+        g_ui_cfg_req_pend = 1;                          /* az teprve ted -> UiTask cte hotovou hodnotu */
+        return 1;
+    }
     double fhz = src_freq_hz(s);   /* pro NULL_ACQ */
     meas_cfg_t tmp; taskENTER_CRITICAL(); tmp = g_meas_cfg; taskEXIT_CRITICAL();
     if (!scpi_cfg_apply(&tmp, key, vu, vd, fhz)) return 0;
@@ -615,6 +688,16 @@ static int scpi_src_read_log_cm7(scpi_src_t *s, uint32_t from_newest, datalog_re
  * zamku, tedy rove tak drahe jako ta podminka navic. */
 static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 {
+    /* Nastaveny stav mereni (SET/readback). Cte se z `g_ui_cfg` = tentyz zdroj,
+     * ktery pouziva UI i persistence do BKP; kodovani: bit0 mode, bit1 chan,
+     * bity2:3 gate, bit4 run. Kdyz ceka nas vlastni SET, uz ma prednost (aby
+     * `SET;readback` v JEDNE zprave vratilo novou hodnotu, ne tu predchozi). */
+    {
+        uint8_t c = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
+        src->set_chan     = (uint8_t)((c >> 1) & 1u);
+        src->set_gate_idx = (uint8_t)((c >> 2) & 3u);
+        src->set_running  = (uint8_t)((c >> 4) & 1u);
+    }
     memset(src, 0, sizeof *src);
     src->selftest_pass = (g_selftest_res == 1);
     src->uptime_s      = g_uptime_s;
@@ -686,6 +769,12 @@ size_t scpi_process(const char *line, char *out, size_t out_sz)
 /* Testovací set_cfg: aplikuje na src->meas (test freq pro NULL_ACQ). */
 static int scpi_test_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
 {
+    /* Instrument klice (GATE/CHAN/RUN) nejdou do `meas_cfg_t` — v testu je aplikujeme
+     * rovnou na `src`, aby slo overit SET->readback bez bezicich tasku. */
+    if (key == SCPI_CFG_GATE) { int gi = scpi_gate_idx_from_s(vd); if (gi < 0) return 0;
+                                s->set_gate_idx = (uint8_t)gi; return 1; }
+    if (key == SCPI_CFG_CHAN) { if (vu > 1u) return 0; s->set_chan = (uint8_t)vu; return 1; }
+    if (key == SCPI_CFG_RUN)  { s->set_running = vu ? 1u : 0u; return 1; }
     return scpi_cfg_apply(&s->meas, key, vu, vd, 1e7);
 }
 
@@ -754,6 +843,35 @@ int scpi_selftest(void)
     ok &= (scpi_process_ctx(&x, &src, "MEAS:POW?",      b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN?", b, sizeof b) > 0);
+
+    /* ── Instrument SET + readback (2026-08-15). Do teto chvile bylo SCPI mimo
+     * Math read-only, takze prave tohle je jadro noveho chovani. ── */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
+    ok &= (src.set_gate_idx == 2);                       /* 10 s = index 2 */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b);
+    ok &= (strncmp(b, "10.000000", 9) == 0);             /* readback = nastavena hodnota */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.1", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* toleranci 1 % projde i "1E-1" */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 3.7", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* mimo preset -> SET se NEaplikuje */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 1", b, sizeof b);
+    ok &= (src.set_chan == 1);
+    scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN?", b, sizeof b);
+    ok &= (b[0] == '1');
+    scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 5", b, sizeof b);
+    ok &= (src.set_chan == 1);                           /* mame jen 0/1 -> beze zmeny */
+    /* INITiate / ABORt / INIT:CONT? */
+    scpi_process_ctx(&x, &src, "ABOR", b, sizeof b);
+    ok &= (src.set_running == 0);
+    scpi_process_ctx(&x, &src, "INIT", b, sizeof b);
+    ok &= (src.set_running == 1);
+    scpi_process_ctx(&x, &src, "INIT:CONT?", b, sizeof b);
+    ok &= (b[0] == '1');
+    scpi_process_ctx(&x, &src, "ABOR", b, sizeof b);
+    ok &= (src.set_running == 0);
+    /* READ? = INIT + FETCh -> musi mereni ZAPNOUT i kdyz stalo */
+    scpi_process_ctx(&x, &src, "READ?", b, sizeof b);
+    ok &= (src.set_running == 1);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:CAT?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:DATA:COUN?", b, sizeof b) > 0);
 

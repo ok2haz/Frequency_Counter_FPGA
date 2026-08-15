@@ -78,6 +78,14 @@ extern volatile uint8_t g_tz_auto;        /* 1 = AUTO CET/CEST (EU pravidlo), pe
  * zapíše do BKP. Načtení z BKP dělá MX_RTC_Init před schedulerem. */
 extern volatile uint8_t g_ui_cfg;
 extern volatile uint8_t g_ui_cfg_dirty;
+/* ── Dalkove nastaveni stavu mereni (SCPI `SENS:FREQ:GATE/CHAN`, `INIT`/`ABOR`).
+ * ⚠️ Stav mereni (`st` v screen_main.c) vlastni VYHRADNE UiTask — SCPI bezi
+ * v UartTasku, takze do nej NESMI sahat primo. Misto toho zapise POZADAVEK
+ * (stejne kodovani jako `g_ui_cfg`) a UiTask ho aplikuje ve svem tiku
+ * (`screen_main_apply_cfg_req`) vcetne prekresleni footeru. Stejny vzor jako
+ * `g_screen_req` pro kresleni. */
+extern volatile uint8_t g_ui_cfg_req;       /* pozadovana hodnota (kodovani g_ui_cfg) */
+extern volatile uint8_t g_ui_cfg_req_pend;  /* 1 = ceka na aplikaci UiTaskem */
 
 /* ── Systemove nastaveni (persist v RTC BKP_DR2) ────────────────────────────
  * Jas displeje (0-255, backlight PWM pres ATTINY), globalni mute zvuku a auto-dim

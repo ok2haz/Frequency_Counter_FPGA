@@ -220,6 +220,9 @@ _Static_assert((int)SCPI_CFG_NULL_ACQ == (int)IPC_CFG_NULL_ACQ, "SCPI/IPC klic N
 _Static_assert((int)SCPI_CFG_LIM_EN   == (int)IPC_CFG_LIM_EN,   "SCPI/IPC klic LIM_EN se rozesel");
 _Static_assert((int)SCPI_CFG_LIM_LO   == (int)IPC_CFG_LIM_LO,   "SCPI/IPC klic LIM_LO se rozesel");
 _Static_assert((int)SCPI_CFG_LIM_HI   == (int)IPC_CFG_LIM_HI,   "SCPI/IPC klic LIM_HI se rozesel");
+_Static_assert((int)SCPI_CFG_GATE     == (int)IPC_CFG_GATE,     "SCPI/IPC klic GATE se rozesel");
+_Static_assert((int)SCPI_CFG_CHAN     == (int)IPC_CFG_CHAN,     "SCPI/IPC klic CHAN se rozesel");
+_Static_assert((int)SCPI_CFG_RUN      == (int)IPC_CFG_RUN,      "SCPI/IPC klic RUN se rozesel");
 
 /* ⚠️ Totez pro masku platnosti: `snap.sens_valid` se na CM4 priradi PRIMO do
  * `scpi_src_t.valid`, takze bitove pozice musi sedet 1:1 se `SCPI_V_*`.

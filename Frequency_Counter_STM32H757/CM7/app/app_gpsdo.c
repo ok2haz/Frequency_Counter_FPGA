@@ -4644,6 +4644,18 @@ void app_gpsdo_tick(void)
  * a (pri zmene sat/fix) horni listu (GNSS lock + pocet druzic). */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 {
+    /* ⚠️ Dalkovy SET (SCPI `SENS:FREQ:GATE/CHAN`, `INIT`/`ABOR`) se aplikuje TADY,
+     * protoze stav mereni vlastni UiTask (SCPI bezi v UartTasku a smi zapsat jen
+     * pozadavek). Musi to byt PRED `s_view` guardem: prikaz smi prijit i kdyz je
+     * uzivatel v jinem okne — jinak by se ztratil. Footer se prekresli jen kdyz
+     * jsme na hlavni obrazovce, jinak si zmenu vezme az plny render pri navratu. */
+    if (screen_main_apply_cfg_req() && s_view == 0) {
+        prim_set_target(&s_fb);
+        prim_reset_clip();
+        for (int b = 0; b < 4; b++) screen_main_redraw_button(b);   /* RUN/GATE/CHAN/mode */
+        screen_main_redraw_freq_area();     /* RUN/STOP meni podbarveni zony cisla */
+        s_dirty = 1;
+    }
     if (s_view != 0) return;
     prim_set_target(&s_fb);
     prim_reset_clip();

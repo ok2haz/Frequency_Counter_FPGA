@@ -417,6 +417,18 @@ bank2 flashnutá.
   ⚠️ **Perioda má 15 des. míst (femtosekundy):** při 1,4 GHz je perioda 714 ps, takže i pikosekundový
   krok by byl 0,14 % — pro čítač nepoužitelné. Zlomek se tiskne **po dvou 32bitových půlkách**
   (`%07lu%08lu`), protože 15 cifer se do `unsigned long` nevejde a newlib-nano neumí `%llu`.
+- **SET příkazy (2026-08-15) — SCPI přestalo být read-only.** Nově `SENS:FREQ:GATE <s>`
+  (presety 0,1/1/10/100 s, tolerance 1 %), `SENS:FREQ:CHAN <0|1>`, **`INIT`/`INIT:IMM`**
+  (RUN), **`ABOR`** (STOP), **`READ?`** (= INIT + FETCh, jednořádkové měření pro VISA/IVI)
+  a `INIT:CONT?` readback. ⚠️ **Vláknový most:** stav měření (`st` v `screen_main.c`) vlastní
+  UiTask, SCPI běží v UartTasku → SET zapíše jen **požadavek** (`g_ui_cfg_req` +
+  `g_ui_cfg_req_pend`, kódování jako `g_ui_cfg`) a UiTask ho aplikuje v `app_gpsdo_tick_clock`
+  přes `screen_main_apply_cfg_req()` (překreslí footer + zónu čísla, persist do BKP).
+  Aplikace běží **před** `s_view` guardem, aby příkaz nezmizel, když je uživatel v jiném okně.
+  ⚠️ `SENS:FREQ:GATE?`/`CHAN?` vracejí **nastavenou** hodnotu (SCPI set/readback kontrakt);
+  skutečně změřené okno z FPGA rámce je nově na **`SENS:FREQ:GATE:ACTual?`**.
+  Klíče `SCPI_CFG_GATE/CHAN/RUN` mají protějšky `IPC_CFG_*` (hlídají `_Static_assert`), takže
+  je CM4 pošle přes cmd ring beze změny; rozšíření výčtu nemění layout → `IPC_VERSION` beze změny.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`, vypisuje
   ho `run_selftests` při FAILu). Je to **101 kontrol slitých do jedné návratové hodnoty** a na hostiteli
   se test spustit NEDÁ (v tomhle prostředí není nativní C kompilátor, jen arm-none-eabi, ani WSL).

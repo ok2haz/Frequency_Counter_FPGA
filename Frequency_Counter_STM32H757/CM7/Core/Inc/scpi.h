@@ -102,6 +102,12 @@ enum {
     SCPI_CFG_LIM_EN,       /* vu 0/1 */
     SCPI_CFG_LIM_LO,       /* vd */
     SCPI_CFG_LIM_HI,       /* vd */
+    /* ── Instrument SET (2026-08-15): nejdou do `meas_cfg_t`, ale do stavu mereni
+     * (`g_ui_cfg`), takze je backend obsluhuje zvlast — `scpi_cfg_apply()` je NEzna.
+     * ⚠️ Poradi MUSI sedet s `IPC_CFG_*` (hlida `_Static_assert` v ipc.c). */
+    SCPI_CFG_GATE,         /* vu = index brany 0..3 (0,1 / 1 / 10 / 100 s) */
+    SCPI_CFG_CHAN,         /* vu = kanal 0/1 (A/B) */
+    SCPI_CFG_RUN,          /* vu = 0 STOP / 1 RUN */
 };
 
 typedef struct scpi_src scpi_src_t;
@@ -109,8 +115,13 @@ struct scpi_src {
     uint32_t valid;                 /* SCPI_V_* */
     /* Kmitočet (×1e5, dělička už zahrnuta). */
     uint64_t freq4_x100000, freq16_x100000;
-    uint32_t gate_ns;
-    uint8_t  channel_id;
+    uint32_t gate_ns;               /* SKUTECNE zmerene okno z ramce (SENS:FREQ:GATE:ACTual?) */
+    uint8_t  channel_id;            /* kanal hlaseny ramcem */
+    /* NASTAVENY stav mereni (SET/readback: `SENS:FREQ:GATE?/CHAN?`, `INIT:CONT?`).
+     * Zdroj je `g_ui_cfg` (CM7) resp. snapshot (CM4) — NE posledni FPGA ramec. */
+    uint8_t  set_gate_idx;          /* 0..3 */
+    uint8_t  set_chan;              /* 0/1 */
+    uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
     /* Teploty [0,01 °C]. */
     int16_t  t_ocxo_c100, t_board_c100, t_mcu_c100, t_fpga_c100;
