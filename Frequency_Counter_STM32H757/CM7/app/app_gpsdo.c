@@ -396,7 +396,10 @@ static void fmt_temp(char *buf, size_t n, float v)
  * jednu spolecnou vysku by chtelo overit polohu radku v kazdem z nich zvlast
  * (riziko prekryvu); ponechano jako samostatny TODO. */
 static const prim_rect_t DG_CARD_FULL_A = {DG_LX, 58, 764, 346};  /* Senzory/Pamet/Histogram/Allan/Trend */
-static const prim_rect_t DG_CARD_FULL_B = {DG_LX, 62, 764, 300};  /* Reference/Holdover/Datalog/Alarmy/Selftest */
+static const prim_rect_t DG_CARD_FULL_B = {DG_LX, 62, 764, 300};  /* Reference/Datalog/Alarmy/Survey/Sestavy/SD */
+/* Vysoka varianta: konci 407, tj. 10 px nad footerem (417) — pro okna s hodne
+ * obsahem (Selftest, Holdover). Zadani z HW pruchodu 2026-08-15. */
+static const prim_rect_t DG_CARD_FULL_TALL = {DG_LX, 62, 764, 345};
 /* TODO #12/A4 dokonceno 2026-07-19: Citac + Cas mely stejnou geometrii, jen
  * duplikovanou (ne zamerne odlisnou jako zbyle vyjimky). O pristroji (2 karty
  * 200+130), Kalibrace (348) a Komunikace (320) zustavaji SAMOSTATNE — kazda
@@ -2939,9 +2942,9 @@ static void ocxo_gauge_draw(void)
  * model — headline je simulace; realna data by dosadila zmereny drift + OCXO tempco.
  * ⚠️ Vypln/hrany jdou pres prim_internal_blend_px -> spolehaji na uvodni clear. */
 #define CONE_X  30
-#define CONE_Y  282
+#define CONE_Y  292
 #define CONE_W  445
-#define CONE_H  46
+#define CONE_H  56
 static void holdover_cone_draw(int state, uint32_t t_in_state_s)
 {
     prim_fill_rect((prim_rect_t){CONE_X, CONE_Y, CONE_W, CONE_H}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -2999,13 +3002,13 @@ static void app_gpsdo_render_holdover(void)
     if (first) {
         s_view = 16;
         window_chrome("HOLDOVER", WIN_TITLE_Y);
-        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Stav disciplinace GPSDO"};
+        ui_card_t c = {.rect = DG_CARD_FULL_TALL, .header_label = "Stav disciplinace GPSDO"};
         ui_card_render_chrome(&c);
-        prim_draw_text((prim_point_t){DG_LLBL, 116}, "Rezim:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_LLBL, 122}, "Rezim:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         /* ⚠️ baseline 344 -> 352 (HW pruchod 2026-08-15): sans_18 ma ascent 18,
          * takze text zacinal na 326 a lezel UVNITR drift-kuzele (CONE_Y 286..338).
          * Kuzel zaroven posunut na 282..328 -> text 334..357, karta konci 362. */
-        prim_draw_text((prim_point_t){DG_LLBL, 352},
+        prim_draw_text((prim_point_t){DG_LLBL, 384},
                        "WARMUP=nabeh OCXO  LOCK=disc. z GNSS  HOLDOVER=drzi VC bez fixu",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_st[0] = c_gps[0] = c_tp[0] = c_ocxo[0] = c_since[0] = '\0';
@@ -3023,8 +3026,8 @@ static void app_gpsdo_render_holdover(void)
     if (st != s_last_state) { s_last_state = st; s_state_since = g_uptime_s; }
 
     if (first || dchg(c_st, sizeof c_st, sl)) {
-        prim_fill_rect((prim_rect_t){(int16_t)(DG_LLBL + 120), 92, 260, 34}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 120), 118}, sl, &ui_font_mono_25, sc, PRIM_ALIGN_LEFT);
+        prim_fill_rect((prim_rect_t){(int16_t)(DG_LLBL + 120), 98, 260, 34}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 120), 124}, sl, &ui_font_mono_25, sc, PRIM_ALIGN_LEFT);
     }
     char b[24];
     snprintf(b, sizeof b, "%s", g.valid ? (g.fix_mode == 3 ? "3D fix" : "2D fix") : (g.fixes > 0 ? "ztracen" : "zadny"));
@@ -3732,7 +3735,7 @@ static void app_gpsdo_render_selftest(void)
     window_chrome("SELFTEST", WIN_TITLE_Y);
     ui_button_t run = {.rect = ST_RUN_RECT, .variant = UI_BUTTON_ACTIVE, .label = "SPUSTIT"};
     ui_button_render(&run);
-    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
+    ui_card_t c = {.rect = DG_CARD_FULL_TALL, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
     /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
     #define ST_N 13                 /* = SELFTEST_N (freertos_shared.h) */
@@ -3766,7 +3769,7 @@ static void app_gpsdo_render_selftest(void)
     int pass = 0;
     for (int i = 0; i < ST_N; i++) {
         int16_t col = (i < ST_SPLIT) ? (int16_t)ST_COL_A : (int16_t)ST_COL_B;
-        int16_t yy  = (int16_t)(100 + (i < ST_SPLIT ? i : i - ST_SPLIT) * ST_ROW_DY);
+        int16_t yy  = (int16_t)(112 + (i < ST_SPLIT ? i : i - ST_SPLIT) * ST_ROW_DY);
         dlabel(col, yy, NAMES[i]);
         uint8_t r = g_selftest_detail[i];
         const char *rs = (r == 1) ? "PASS" : (r == 2) ? "FAIL" : "---";
@@ -3778,8 +3781,8 @@ static void app_gpsdo_render_selftest(void)
     char b[24];
     if (g_selftest_res == 0) snprintf(b, sizeof b, "nespusten");
     else                     snprintf(b, sizeof b, "%d/%d %s", pass, ST_N, pass == ST_N ? "PASS" : "FAIL");
-    dlabel(ST_COL_A, 292, "Celkem");
-    prim_draw_text((prim_point_t){(int16_t)(ST_COL_A + ST_RES_DX), 292}, b, &ui_font_mono_18,
+    dlabel(ST_COL_A, 312, "Celkem");
+    prim_draw_text((prim_point_t){(int16_t)(ST_COL_A + ST_RES_DX), 312}, b, &ui_font_mono_18,
                    g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == ST_N ? UI_COLOR_OK : UI_COLOR_BAD),
                    PRIM_ALIGN_LEFT);
     /* ⚠️ Indikace BEHU: vysledek je pokazde stejny (13/13), takze bez tohohle
@@ -3789,7 +3792,7 @@ static void app_gpsdo_render_selftest(void)
         char rb[40];
         snprintf(rb, sizeof rb, "beh #%u v %lu s", (unsigned)s_selftest_runs,
                  (unsigned long)s_selftest_last_s);
-        prim_draw_text((prim_point_t){(int16_t)ST_COL_B, 292}, rb, &ui_font_mono_18,
+        prim_draw_text((prim_point_t){(int16_t)ST_COL_B, 312}, rb, &ui_font_mono_18,
                        UI_COLOR_ACC, PRIM_ALIGN_LEFT);
     }
     #undef ST_N
@@ -3798,7 +3801,7 @@ static void app_gpsdo_render_selftest(void)
     #undef ST_COL_B
     #undef ST_RES_DX
     #undef ST_SPLIT
-    prim_draw_text((prim_point_t){DG_LLBL, 332},
+    prim_draw_text((prim_point_t){DG_LLBL, 356},
                    "Destruktivni HW testy zvlast: UART qspitest / storetest.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
