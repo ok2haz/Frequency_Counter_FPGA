@@ -42,6 +42,11 @@ static void bmp_header(uint8_t *hdr, uint32_t imgsize)
     le32(hdr + 34, imgsize);
 }
 
+/* Sdileny radkovy buffer (2400 B). ⚠️ Jeden pro OBE cesty (USB i SD) — driv mel
+ * kazda funkce vlastni `static row[]`, tedy 4800 B v .bss zbytecne. Obe bezi
+ * VYHRADNE z UartTasku a ten je zpracovava seriove, takze se nemohou potkat. */
+static uint8_t s_row[SS_W * 3];
+
 /* Prevede jeden radek RGB565 -> BGR888 (poradi slozek dle BMP). */
 static void row_565_to_bgr(const uint16_t *src, uint8_t *dst)
 {
@@ -78,19 +83,11 @@ void screenshot_emit_bmp(void)
     le32(hdr + 34, imgsize);
     emit(hdr, 54);
 
-    static uint8_t row[SS_W * 3];              /* 2400 B BSS (ne stack) */
     for (int y = SS_H - 1; y >= 0; y--) {      /* BMP jde zdola nahoru */
-        const uint16_t *src = fb + (uint32_t)y * SS_W;
-        int p = 0;
-        for (int x = 0; x < SS_W; x++) {
-            uint16_t px = src[x];              /* RGB565 -> BGR888 */
-            row[p++] = (uint8_t)((px & 0x1F) << 3);          /* B */
-            row[p++] = (uint8_t)(((px >> 5) & 0x3F) << 2);   /* G */
-            row[p++] = (uint8_t)(((px >> 11) & 0x1F) << 3);  /* R */
-        }
+        row_565_to_bgr(fb + (uint32_t)y * SS_W, s_row);
         for (uint32_t off = 0; off < rowbytes; off += 256u) {
             uint32_t c = rowbytes - off; if (c > 256u) c = 256u;
-            emit(row + off, (uint16_t)c);
+            emit(s_row + off, (uint16_t)c);
         }
         osDelay(1);                            /* nech USB odtéct (UartTask nemonitorován) */
     }
@@ -145,10 +142,9 @@ int screenshot_save_sd(char *name_out, unsigned name_sz)
     bmp_header(hdr, rowbytes * SS_H);
     if (f_write(&f, hdr, sizeof hdr, &bw) != FR_OK || bw != sizeof hdr) { f_close(&f); return -5; }
 
-    static uint8_t row[SS_W * 3];                  /* 2400 B v .bss, ne na stacku */
     for (int y = SS_H - 1; y >= 0; y--) {          /* BMP jde zdola nahoru */
-        row_565_to_bgr(snap + (uint32_t)y * SS_W, row);
-        if (f_write(&f, row, rowbytes, &bw) != FR_OK || bw != rowbytes) { f_close(&f); return -6; }
+        row_565_to_bgr(snap + (uint32_t)y * SS_W, s_row);
+        if (f_write(&f, s_row, rowbytes, &bw) != FR_OK || bw != rowbytes) { f_close(&f); return -6; }
     }
     /* `f_sync` před `f_close`: kdyby zápis selhal, `f_close` už vlastní sync
      * neudělá a adresářová položka by zůstala nedopsaná (stejné poučení jako

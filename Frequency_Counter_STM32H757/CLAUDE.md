@@ -144,7 +144,7 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 `led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `adcraw`, `scanner`, `testDSI`,
 `testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `gps`, `gpsraw`, `rtc`, `fpgaraw`,
 `fpgaloop`, `stats`, `status`, `ui`, `qspiid`/`qspitest`/`qspispeed`/`storetest` (W25Q),
-**`screenshot`** (⚠️ ROZPRACOVÁNO — front FB → BMP přes USB CDC, ~1,15 MB/sekundy, best-effort tok; `screenshot.c`),
+**`screenshot [sd]`** (export obrazovky do BMP; `screenshot.c`): **`screenshot sd`** = doporučená cesta — snímek se nejdřív zkopíruje do SDRAM scratche (anti-tearing, UiTask jinak během zápisu flipne) a FatFs zapíše celý `SHOTnnn.BMP` na kartu. Holé **`screenshot`** posílá 1,15 MB přes USB CDC (~sekundy, ⚠️ best-effort tok + snímá živý FB → u animované obrazovky pruhy ze dvou framů),
 **`autocal`** (self-check referencí/napájení VREF/12V/5V/VBAT → PASS/WARN/FAIL; staged kroky ADC/timebase/RF; `autocal.c`, ROZPRACOVÁNO),
 **`datalog [on|off|erase|dump]`** (záznam stability, viz „Datalog"), **`stacktest yes`** (⚠️ záměrně
 přeteče stack UartTasku → IWDG reset; ověření řetězce detekce, viz TODO #10),
