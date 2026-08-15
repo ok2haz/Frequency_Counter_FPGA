@@ -107,6 +107,25 @@ static void fmt_scpi_period_s(double hz, char *out, size_t n)
              (unsigned long)(frac / 100000000ull),        /* horních 7 cifer */
              (unsigned long)(frac % 100000000ull));       /* dolních 8 cifer */
 }
+/* Rozparsuje tri cela cisla oddelena carkami ("2026,8,15"). @return 1 = OK.
+ * Bezstavove — testovatelne bez HW (soucast `scpi_selftest`). */
+static int scpi_parse3(const char *s, int *a, int *b, int *cc)
+{
+    if (!s) return 0;
+    int v[3] = {0, 0, 0}, k = 0, seen = 0, neg = 0;
+    for (; *s && k < 3; s++) {
+        if (*s == '-') { neg = 1; continue; }
+        if (*s >= '0' && *s <= '9') { v[k] = v[k] * 10 + (*s - '0'); seen = 1; continue; }
+        if (*s == ',') { if (!seen) return 0; if (neg) v[k] = -v[k]; k++; seen = 0; neg = 0; continue; }
+        if (*s == ' ') continue;
+        return 0;                       /* nepovoleny znak */
+    }
+    if (!seen || k != 2) return 0;      /* musi byt presne tri cisla */
+    if (neg) v[2] = -v[2];
+    *a = v[0]; *b = v[1]; *cc = v[2];
+    return 1;
+}
+
 /* Index brany 0..3 -> sekundy. Tabulka je ZDROJ PRAVDY pro SCPI i pro prevod
  * opacnym smerem (`scpi_gate_idx_from_s`); UI ma tytez hodnoty jako popisky. */
 static double scpi_gate_s(uint8_t idx)
@@ -366,6 +385,50 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
 
     /* ── SYSTem ────────────────────────────────────────────────────────────── */
     if (hdr_match(hdr, "SYSTem:VERSion") && is_query) { snprintf(out, out_sz, "1999.0"); return strlen(out); }
+    /* ── SYSTem:DATE / SYSTem:TIME (SCPI-99) ─────────────────────────────────
+     * Dotaz cte RTC (uz naformatovany v `g_rtc_text` = "YYYY-MM-DD HH:MM:SS",
+     * plni ho defaultTask). SET zapise jen POZADAVEK — RTC registry vlastni
+     * VYHRADNE defaultTask (`rtc_app_tick`), SCPI bezi v UartTasku.
+     * ⚠️ Rucne nastaveny cas prezije jen do dalsiho GPS fixu: GPS je autoritativni
+     * a `rtc_try_sync` ho prepise. Ma tedy smysl jen bez antény. */
+    if (hdr_match(hdr, "SYSTem:DATE")) {
+        if (is_query) {
+            /* `g_rtc_text` = "YYYY-MM-DD HH:MM:SS" (plni defaultTask). Cteme z nej
+             * primo aritmetikou - zadne pomocne buffery ani terminatory. */
+            const volatile char *rt = g_rtc_text;
+            int yy = (rt[0]-'0')*1000 + (rt[1]-'0')*100 + (rt[2]-'0')*10 + (rt[3]-'0');
+            int mo = (rt[5]-'0')*10 + (rt[6]-'0');
+            int dd = (rt[8]-'0')*10 + (rt[9]-'0');
+            snprintf(out, out_sz, "%d,%d,%d", yy, mo, dd);
+            return strlen(out);
+        }
+        int yy = 0, mm = 0, dd = 0;
+        if (scpi_parse3(arg, &yy, &mm, &dd) &&
+            yy >= 2000 && yy <= 2099 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+            g_rtc_set_y = (uint16_t)yy; g_rtc_set_mo = (uint8_t)mm; g_rtc_set_d = (uint8_t)dd;
+            g_rtc_set_pend |= 0x01u;          /* az nakonec -> defaultTask cte hotove hodnoty */
+            return 0;
+        }
+        scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+    }
+    if (hdr_match(hdr, "SYSTem:TIME")) {
+        if (is_query) {
+            const volatile char *rt = g_rtc_text;
+            int hh = (rt[11]-'0')*10 + (rt[12]-'0');
+            int mm = (rt[14]-'0')*10 + (rt[15]-'0');
+            int ss = (rt[17]-'0')*10 + (rt[18]-'0');
+            snprintf(out, out_sz, "%d,%d,%d", hh, mm, ss);
+            return strlen(out);
+        }
+        int hh = 0, mi2 = 0, ss = 0;
+        if (scpi_parse3(arg, &hh, &mi2, &ss) &&
+            hh >= 0 && hh <= 23 && mi2 >= 0 && mi2 <= 59 && ss >= 0 && ss <= 59) {
+            g_rtc_set_h = (uint8_t)hh; g_rtc_set_mi = (uint8_t)mi2; g_rtc_set_s = (uint8_t)ss;
+            g_rtc_set_pend |= 0x02u;
+            return 0;
+        }
+        scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+    }
     /* *OPT? — seznam osazenych voleb (IEEE 488.2). Prazdny retezec = zadne volby;
      * my hlasime, co pristroj realne umi, aby si ovladac nemusel hadat. */
     if (hdr_match(hdr, "*OPT") && is_query) {
@@ -975,6 +1038,18 @@ int scpi_selftest(void)
     ok &= (b[0] == '5');                                  /* ~50 % zpet */
     scpi_process_ctx(&x, &src, "DISP:BRIG 150", b, sizeof b);
     ok &= (strncmp(b, "-222", 4) == 0);                   /* mimo rozsah -> chyba */
+
+    /* ── SYST:DATE/TIME: parser tri cisel + odmitnuti nesmyslu (2026-08-15) ── */
+    { int a1 = 0, a2 = 0, a3 = 0;
+      ok &= (scpi_parse3("2026,8,15", &a1, &a2, &a3) && a1 == 2026 && a2 == 8 && a3 == 15);
+      ok &= (scpi_parse3(" 12 , 34 , 56 ", &a1, &a2, &a3) && a1 == 12 && a2 == 34 && a3 == 56);
+      ok &= (scpi_parse3("2026,8", &a1, &a2, &a3) == 0);        /* jen dve cisla */
+      ok &= (scpi_parse3("2026,8,15,1", &a1, &a2, &a3) == 0);   /* ctyri cisla */
+      ok &= (scpi_parse3("2026,x,15", &a1, &a2, &a3) == 0); }   /* nepovoleny znak */
+    scpi_process_ctx(&x, &src, "SYST:DATE 2026,13,1", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                   /* mesic 13 -> chyba */
+    scpi_process_ctx(&x, &src, "SYST:TIME 25,0,0", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                   /* hodina 25 -> chyba */
     ok &= (scpi_process_ctx(&x, &src, "MMEM:CAT?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:DATA:COUN?", b, sizeof b) > 0);
 

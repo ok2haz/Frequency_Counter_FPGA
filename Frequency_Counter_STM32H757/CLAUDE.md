@@ -427,6 +427,11 @@ bank2 flashnutá.
   Aplikace běží **před** `s_view` guardem, aby příkaz nezmizel, když je uživatel v jiném okně.
   ⚠️ `SENS:FREQ:GATE?`/`CHAN?` vracejí **nastavenou** hodnotu (SCPI set/readback kontrakt);
   skutečně změřené okno z FPGA rámce je nově na **`SENS:FREQ:GATE:ACTual?`**.
+- **`SYST:DATE`/`SYST:TIME` (2026-08-15):** dotaz čte `g_rtc_text`, SET jde přes **request-most**
+  (`g_rtc_set_*` + `g_rtc_set_pend`) — RTC registry vlastní výhradně defaultTask, který požadavek
+  aplikuje v `rtc_app_tick` **před** `rtc_try_sync()`, takže při GPS fixu má poslední slovo GPS.
+  ⚠️ Ručně zadaný čas **nenastavuje** `s_synced` ani BKP magic → UI dál správně hlásí „no GPS".
+  Smysl to má jen bez antény.
   Klíče `SCPI_CFG_GATE/CHAN/RUN` mají protějšky `IPC_CFG_*` (hlídají `_Static_assert`), takže
   je CM4 pošle přes cmd ring beze změny; rozšíření výčtu nemění layout → `IPC_VERSION` beze změny.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`, vypisuje

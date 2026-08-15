@@ -181,6 +181,10 @@ volatile char     g_reset_text[12] = "---";
 volatile uint8_t  g_reset_bad    = 0;
 volatile uint8_t  g_cm4_absent   = 0;  /* 1 = CM4 (D2) nenabehl pri bootu -> bezime degradovane, viz main.c */
 volatile uint8_t  g_cm4_alive    = 0;  /* 1 = CM4 heartbeat v IPC roste (defaultTask z ipc_cm4_alive) */
+volatile uint16_t g_rtc_set_y = 0;   /* rucni nastaveni RTC (SCPI) — viz freertos_shared.h */
+volatile uint8_t  g_rtc_set_mo = 0, g_rtc_set_d = 0;
+volatile uint8_t  g_rtc_set_h = 0, g_rtc_set_mi = 0, g_rtc_set_s = 0;
+volatile uint8_t  g_rtc_set_pend = 0;
 volatile uint8_t  g_ui_cfg_req      = 0;  /* SCPI -> UiTask: pozadovany stav mereni */
 volatile uint8_t  g_ui_cfg_req_pend = 0;  /* 1 = ceka na aplikaci (viz freertos_shared.h) */
 volatile uint8_t  g_cm4_cpu_pct  = 0;  /* CM4 vlastni zatez [%] z IPC heartbeatu -> header "CM4:xx%" */

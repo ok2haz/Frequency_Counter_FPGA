@@ -42,11 +42,11 @@
 - [x] ✅ **SCPI — USB strana kompletní 2026-08-15.** Doplněno: SET (`SENS:FREQ:GATE/CHAN`,
       `INIT`/`ABOR`/`READ?`), **STATus OPER/QUES** event+enable registry s latchováním hran
       + summary bity v `*STB?`, `DISP:BRIG`, `*OPT?`, `CONF:FREQ`.
-- [ ] **SCPI — zbytek** (malé): `SYST:DATE`/`SYST:TIME` **set** — ⚠️ RTC registry vlastní
-      VÝHRADNĚ defaultTask, takže to chce request-most jako `g_ui_cfg_req`; hodnotu to má jen
-      v laboratoři bez GPS antény (jinak se RTC disciplinuje z GPS).
+- [x] ✅ **SCPI USB strana KOMPLETNÍ 2026-08-15** — doplněno i `SYST:DATE`/`SYST:TIME` (SET přes
+      request-most do defaultTasku, aplikuje se před GPS syncem, ručně zadaný čas se netváří
+      jako disciplinovaný).
       ⏸ **Až s HW:** `TRIG:SOUR` + `*TRG`, `INP:COUP/IMP/ATT` (nemáme přepínatelný vstup —
-      implementace by lhala), `CAL:*`, `FORM:DATA`.
+      implementace by lhala), `CAL:*`, `FORM:DATA`. TCP varianta ⬅ CM4/ETH.
 - [x] ✅ **#55 screenshot** — `screenshot sd` ukládá `SHOTnnn.BMP` na kartu (anti-tearing přes
       SDRAM scratch, FatFs zapíše celý soubor). USB varianta zůstává pro běh bez karty.
 - [x] ✅ **#67 okno MĚŘENÍ** — bylo hotové, chyběl jen vstupní bod; přidána dlaždice v Menu.
