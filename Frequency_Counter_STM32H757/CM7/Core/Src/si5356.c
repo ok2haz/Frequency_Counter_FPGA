@@ -10,7 +10,10 @@
 #define REG_OEB_ALL 0xE6        /* bit4 (0x10) = OEB_ALL: 1 = vsechny vystupy OFF */
 #define REG_E2      0xE2        /* apply pulse (bit2 0x04) */
 #define REG_SOFTRST 0xF6        /* bit1 (0x02) = SOFT_RESET */
-#define REG_STATUS  0xDA        /* 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
+#define REG_STATUS  0xDA        /* 218 (AN565): bit0 SYS_CAL, bit2 LOS_XTAL (bez
+                                 * krystalu trvale 1 — XA/XB uzemnene), bit3
+                                 * LOS_CLKIN (ztrata 10 MHz, pin 4), bit4 PLL_LOL.
+                                 * ⚠️ drivejsi komentar "bit2=LOS_CLKIN" byl spatne. */
 
 typedef struct { uint8_t addr; uint8_t val; uint8_t mask; } si_reg_t;
 
@@ -118,10 +121,11 @@ bool si5356_init(I2C_HandleTypeDef *hi2c)
 
     uint8_t st = 0;
     rd(hi2c, REG_STATUS, &st);
-    printf("Si5356A init: zapisy=%s, status218=0x%02X%s%s%s\n",
+    printf("Si5356A init: zapisy=%s, status218=0x%02X%s%s%s%s\n",
            ok ? "OK" : "CHYBA", st,
            (st & 0x01) ? " SYS_CAL" : "",
-           (st & 0x04) ? " LOS_CLKIN!" : "",
+           (st & 0x04) ? " LOS_XTAL(bez krystalu, ok)" : "",
+           (st & 0x08) ? " LOS_CLKIN!" : "",
            (st & 0x10) ? " PLL_LOL!" : "");
     return ok;
 }

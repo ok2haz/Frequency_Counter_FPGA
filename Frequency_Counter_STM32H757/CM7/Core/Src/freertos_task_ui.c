@@ -78,7 +78,9 @@ void StartUiTask(void *argument)
    * Kresli VYHRADNE tento task (libprim/libui nejsou thread-safe). */
   app_gpsdo_boot_splash();
   if (!g_sound_muted) beeper_boot_melody();   /* vzestupny "power-on" jingle (~0,5 s), pokud neni mute */
-  for (int i = 0; i < 10; i++) {           /* ~1 s + melodie ~= 1,5 s splash celkem */
+  /* 10 -> 5 tiku (2026-08-15): cely start byl 4,2 s od power-on a splash z toho
+   * delal ~1,5 s. Fade ma SPLASH_FADE_TICKS=5, takze 5 tiku ho prave dokonci. */
+  for (int i = 0; i < 5; i++) {            /* ~0,5 s + melodie ~= 1 s splash celkem */
     app_gpsdo_boot_splash_tick();
     osDelay(100);
   }
@@ -108,10 +110,17 @@ void StartUiTask(void *argument)
     static uint8_t  s_dimmed = 0;          /* 1 = podsviceni ztlumene necinnosti */
     static uint8_t  s_i2c4_fail = 0;    /* po sobe jdouci HAL selhani touch cteni */
     static uint32_t s_i2c4_rec_t = 0;   /* cas posledniho pokusu o recovery */
-    /* Gate 33 ms (30 Hz; drive 66/15 Hz — latence tapu az 76 ms citelna hlavne
-     * v Nastaveni). I2C4 zatez: 31 B ramec ~3 ms @100 kHz x 30 Hz = ~9 % busu
-     * (sdileno s TMP117 2x/s + backlight zridka — bezpecne pod saturaci). */
-    if (HAL_GetTick() - last_touch >= 33) {
+    static uint8_t  s_i2c4_busy = 0;    /* mutex se nepodarilo vzit (drive tise ignorovano) */
+    static uint32_t s_touch_grace = 0;  /* po HW resetu TP: ~400 ms nepocitat chyby */
+    static uint32_t s_touch_resets = 0; /* kolikrat uz se TP resetoval (diagnostika) */
+    /* ADAPTIVNI gate: 33 ms (30 Hz) BEHEM a ~1,5 s PO interakci (svizne tapy —
+     * hlavne opakovane +/- v Nastaveni), jinak 66 ms (15 Hz) v klidu. Touch cteni
+     * je 31 B ~3 ms @100 kHz -> 30 Hz = ~9 % CPU, 15 Hz = ~4,5 %. V typickem stavu
+     * (sledovani hlavni obrazovky, zadny dotek) se tak usetri ~4,5 % CPU; jediny
+     * dopad je latence PRVNIHO tapu po klidu az 66 ms (jednorazova, neznatelna).
+     * Cteni je vzdy CELY ramec -> zadne riziko freeze (viz varovani vyse). */
+    uint32_t touch_gate = (was_down || (HAL_GetTick() - s_last_activity) < 1500u) ? 33u : 66u;
+    if (HAL_GetTick() - last_touch >= touch_gate) {
       last_touch = HAL_GetTick();
       ft5x06_touch_t t; int got = 0, attempted = 0;
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
@@ -121,17 +130,59 @@ void StartUiTask(void *argument)
       }
       /* Detekce mrtve sbernice: pocitej JEN skutecna HAL selhani (mutex timeout
        * neni chyba busu — napr. bezici `scanner`). Po ~0,5 s souvislych chyb
-       * zkus bus recovery (max 1x/5 s). */
+       * zkus recovery (max 1x/5 s). */
       if (attempted) { if (got) s_i2c4_fail = 0; else if (s_i2c4_fail < 250) s_i2c4_fail++; }
-      if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > 5000u) {
+      else if (s_i2c4_busy < 250) s_i2c4_busy++;
+      /* ⚠️ Nulovat i pri uspechu — jinak je to SOUCET OD STARTU, ktery se jen
+       * nasytí na 250 a v logu pak strasi "250 x mutex busy" i kdyz je zrovna
+       * vsechno v poradku. Takhle to hlasi AKTUALNI serii, coz je pouzitelne. */
+      if (attempted && got) s_i2c4_busy = 0;
+
+      /* ⚠️⚠️ PREPSANO 2026-08-13 po nalezu na HW. Prvni verze delala recovery
+       * kazdych 5 s DONEKONECNA a pokazde hned po `HAL_I2C_Init` zapisovala do
+       * ATTINY dva PORTC bajty BEZ klidovych mezer. Na cili se ukazalo, ze pak
+       * neodpovida NIC na I2C4 (ani ATTINY 0x45, ani FT5x06) pri VOLNE sbernici
+       * (SCL=1, SDA=1) a bez chybovych priznaku — tedy same NACKy. Jinymi slovy:
+       * zachrana s velkou pravdepodobnosti ROZBIJELA bit-bang slave automat
+       * ATTINY, pred cimz kod na jinem miste sam varuje.
+       *
+       * Nova pravidla:
+       *  1) ZPOMALOVANI misto bušení: 5 s -> 30 s -> 5 min. Kdyz to nepomohlo
+       *     poteti, uz se ATTINY NEDOTYKAME vubec (viz bod 3).
+       *  2) Klidove mezery kolem KAZDEHO zapisu do ATTINY (stejne jako u jasu).
+       *  3) Nejdriv se ZEPTAME, jestli ATTINY vubec odpovida
+       *     (`HAL_I2C_IsDeviceReady`). Kdyz ne, zapis by stejne neprosel a jen
+       *     by dal mlatil do zaseknuteho automatu -> preskocit.
+       * Zaseknuty ATTINY uz z principu nejde ozivit po sbernici, kterou sam
+       * neobsluhuje — to umi jen power-cycle. Cilem je NEZHORSOVAT. */
+      uint32_t rec_gap = (s_touch_resets < 2u) ? 5000u
+                       : (s_touch_resets < 5u) ? 30000u : 300000u;
+      if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > rec_gap) {
         s_i2c4_rec_t = HAL_GetTick();
-        printf("touch: I2C4 nereaguje (%u chyb) -> bus recovery\n", s_i2c4_fail);
+        s_touch_resets++;
+        printf("touch: I2C4 nereaguje (%u chyb, %u x mutex busy) -> recovery #%lu\n",
+               s_i2c4_fail, s_i2c4_busy, (unsigned long)s_touch_resets);
         if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
-          i2c4_recover();
+          i2c4_recover();          /* pasivni: pulzy SCL jen kdyz SDA drzi dole + re-init */
+          /* Sahat na ATTINY jen kdyz opravdu odpovida, a jen prvnich par pokusu. */
+          if (s_touch_resets <= 5u &&
+              HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 20) == HAL_OK) {
+            osDelay(2);
+            ws_panel_set_portc(&hi2c4, (uint8_t)(WS_PC_RUN & ~WS_PC_RST_TP_N));
+            osDelay(5);            /* FT5x06 nRST potrebuje >1 ms */
+            ws_panel_set_portc(&hi2c4, WS_PC_RUN);
+            osDelay(2);
+            s_touch_grace = HAL_GetTick();   /* radic nabiha ~300 ms */
+          } else if (s_touch_resets == 6u) {
+            printf("touch: ATTINY neodpovida ani po 5 pokusech -> davam ruce pryc.\n"
+                   "       I2C4 (touch + TMP117 0x48 + podsviceni) je mrtva az do power-cyclu.\n");
+          }
           osMutexRelease(i2c4MutexHandle);
         }
         s_i2c4_fail = 0;
       }
+      /* Behem nabehu po resetu chyby nepocitej (jinak by se recovery retezila). */
+      if ((HAL_GetTick() - s_touch_grace) < 400u) s_i2c4_fail = 0;
       if (got) {
         /* ⚠️ Boot-priming: FT5x06 NENI resetem nulovan a uzivatel muze pri
          * Menu->Restart drzet prst na "Ano" pres reset -> prvni poll by videl
@@ -220,6 +271,13 @@ void StartUiTask(void *argument)
     if (HAL_GetTick() - last_freq >= 50) {
       last_freq = HAL_GetTick();
       app_gpsdo_tick_freq();
+    }
+
+    /* Animace/demo okno 20x/s (ease-out krok bargrafu; no-op mimo s_view=24). */
+    static uint32_t last_anim = 0;
+    if (HAL_GetTick() - last_anim >= 50) {
+      last_anim = HAL_GetTick();
+      app_gpsdo_tick_anim();
     }
 
     /* GPSDO statistika: vzorkovani frakcni odchylky 1x/s (τ0=1s -> dekadova osa);

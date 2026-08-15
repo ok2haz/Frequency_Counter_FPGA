@@ -22,6 +22,7 @@
 #include "fmc.h"
 
 /* USER CODE BEGIN 0 */
+#include "bootled.h"
 static FMC_SDRAM_CommandTypeDef Command;
 #define REFRESH_COUNT        1835
 
@@ -45,7 +46,7 @@ SDRAM_HandleTypeDef hsdram1;
 void MX_FMC_Init(void)
 {
   /* USER CODE BEGIN FMC_Init 0 */
-
+  bootled_step(BOOTLED_STEP_FMC);
   /* USER CODE END FMC_Init 0 */
 
   FMC_SDRAM_TimingTypeDef SdramTiming = {0};

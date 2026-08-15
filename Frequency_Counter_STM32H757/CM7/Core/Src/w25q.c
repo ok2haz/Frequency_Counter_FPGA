@@ -8,6 +8,7 @@
  */
 #include "w25q.h"
 #include "stm32h7xx_hal.h"
+#include "cmsis_os2.h"   /* osDelay/osKernelGetState — yield ve wait_ready */
 #include <stdio.h>
 
 extern QSPI_HandleTypeDef hqspi;
@@ -66,15 +67,26 @@ uint32_t w25q_read_jedec(void)
     return ((uint32_t)id[0] << 16) | ((uint32_t)id[1] << 8) | (uint32_t)id[2];
 }
 
-/* Ceka na WIP=0 (konec zapisu/erase) s timeoutem [ms]. */
+/* Ceka na WIP=0 (konec zapisu/erase) s timeoutem [ms].
+ *
+ * ⚠️ USTUPUJE SCHEDULERU (osDelay(1) mezi dotazy), pokud uz bezi. Sector erase
+ * trva 50-400 ms a drive se cely tenhle cas SPINOVALO bez yieldu — volajici je
+ * pritom bud defaultTask (syscfg auto-save, datalog) nebo UiTask (calib_save).
+ * defaultTask ma prioritu Normal, UiTask BelowNormal, takze erase v defaultTasku
+ * UiTask uplne vyhladovel a jeho watchdog heartbeat mezitim starnul — primy
+ * ukrojek z 2,5s limitu watchdog_supervise (a defaultTask po tu dobu sam
+ * neobnovoval IWDG, protoze se nedostal na dalsi iteraci smycky).
+ * Dotazovani 1x/ms je pro operaci delky desitek az stovek ms bohate dost. */
 static bool wait_ready(uint32_t tmo_ms)
 {
     uint32_t t0 = HAL_GetTick();
+    bool sched = (osKernelGetState() == osKernelRunning);
     for (;;) {
         uint8_t sr;
         if (!rd_reg(CMD_RDSR1, &sr, 1)) return false;
         if (!(sr & SR1_WIP)) return true;
         if (HAL_GetTick() - t0 > tmo_ms) return false;
+        if (sched) osDelay(1);   /* pred schedulerem (w25q_init z main.c) se spinuje */
     }
 }
 
@@ -181,13 +193,4 @@ bool w25q_erase_sector(uint32_t addr)
     c.DataMode        = QSPI_DATA_NONE;
     if (HAL_QSPI_Command(&hqspi, &c, QSPI_TMO) != HAL_OK) return false;
     return wait_ready(1000);   /* sector erase ~50-400 ms */
-}
-
-void w25q_format_status(char *buf, int buflen)
-{
-    uint32_t id = w25q_read_jedec();
-    if (id == W25Q_JEDEC_ID)
-        snprintf(buf, buflen, "W25Q512 64MB ID:%06lX OK", (unsigned long)id);
-    else
-        snprintf(buf, buflen, "QSPI NOLINK ID:%06lX (cekam EF4020)", (unsigned long)id);
 }

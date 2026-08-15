@@ -44,6 +44,7 @@ typedef struct {
     float    mean;        /* aritmetický průměr (running) z platných vzorků */
     uint32_t samples;     /* počet platných vzorků od resetu (0 = ještě žádný) */
     uint32_t err_total;   /* celkový počet chyb čtení od bootu */
+    uint32_t err_last_ms; /* HAL_GetTick() v okamžiku poslední chyby (0 = žádná) → "uptime od poslední" */
     uint16_t err_streak;  /* po sobě jdoucí chyby (0 = poslední čtení OK) */
     uint8_t  valid;       /* 1 = poslední čtení bylo platné */
     uint8_t  _pad;
@@ -68,8 +69,5 @@ void sensor_update(sensor_id_t id, float value);
 /* Zaznamená CHYBU čtení: valid=0, err_total++, err_streak++. 'last' zůstává
  * (poslední dobrá hodnota) → matematika/log mají ignorovat podle valid. */
 void sensor_fail(sensor_id_t id);
-
-/* Vynuluje statistiku (min/max/mean/samples) jednoho senzoru; last/valid/chyby nechá. */
-void sensor_stat_reset(sensor_id_t id);
 
 #endif /* INC_SENSOR_STAT_H_ */

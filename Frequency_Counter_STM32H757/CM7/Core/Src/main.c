@@ -22,10 +22,12 @@
 #include "cmsis_os2.h"
 #include "adc.h"
 #include "dsihost.h"
+#include "fatfs.h"
 #include "i2c.h"
 #include "ltdc.h"
 #include "quadspi.h"
 #include "rtc.h"
+#include "sdmmc.h"
 #include "spi.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -41,6 +43,7 @@
 #include "beeper.h"
 #include "si5356.h"
 #include "watchdog.h"      /* IWDG1 watchdog (init pred schedulerem) */
+#include "bootled.h"       /* boot selftest blikani na LED_1 (PG3) */
 #include "freertos_shared.h"  /* g_brightness — ulozeny jas z BKP */
 #include <string.h>        /* strncpy — g_reset_text */
 #include "usb_console.h"   /* prepinac konzole USART1 <-> USB CDC (USE_USB_CDC_CONSOLE) */
@@ -140,6 +143,25 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
+    /* Region 2: IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB)
+     * — Normal NON-CACHEABLE + SHAREABLE. Bez D-cache: zapisy CM7 uvidi CM4 (a
+     * naopak) bez SCB_Clean/Invalidate -> zaklad pro seqlock IPC snapshot + cmd/resp
+     * ringy. Linker sekce .ipc_shared @RAM_D3 (STM32H757BITX_FLASH.ld). Zatim jen
+     * priprava regionu (IPC vrstva prijde pozdeji). ⚠️ Bez tohoto by SRAM4 bela
+     * default kesovana -> IPC "skoro funguje" a pada nahodne. */
+    MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+    MPU_InitStruct.Number           = MPU_REGION_NUMBER2;
+    MPU_InitStruct.BaseAddress      = 0x38000000;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
+    MPU_InitStruct.SubRegionDisable = 0x00;
+    MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;            /* TEX=001,C=0,B=0 -> Normal non-cacheable */
+    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+    MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+    MPU_InitStruct.IsShareable      = MPU_ACCESS_SHAREABLE;
+    MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
+    MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
     /* Zapnout MPU s default mapou pro nechraneny privilegovany pristup */
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }
@@ -175,12 +197,18 @@ int main(void)
   SCB_EnableDCache();
 
 /* USER CODE BEGIN Boot_Mode_Sequence_1 */
-  /* Wait until CPU2 boots and enters in stop mode or timeout*/
+  /* Wait until CPU2 boots and enters in stop mode or timeout.
+   * ⚠️ NEspadnout do Error_Handler pri timeoutu! Displej + veskera logika bezi
+   * na CM7; CM4 dnes jen blika LED. Kdyz CM4 nenabehne (prazdna/vadna bank2 nebo
+   * BCM4=0 v option bytes), D2CKRDY se nikdy nenastavi -> puvodni Error_Handler
+   * = tichy zasek PRED init displeje = CERNA obrazovka. Misto toho pokracujeme
+   * degradovane a priznak g_cm4_absent zviditelnime (UART boot log + Health + SYS
+   * pill amber). Behem tohoto boot fragmentu jeste nebezi HAL/UART, jen RAM zapis. */
   timeout = 0xFFFF;
   while((__HAL_RCC_GET_FLAG(RCC_FLAG_D2CKRDY) != RESET) && (timeout-- > 0));
   if ( timeout < 0 )
   {
-  Error_Handler();
+    g_cm4_absent = 1;
   }
 /* USER CODE END Boot_Mode_Sequence_1 */
   /* MCU Configuration--------------------------------------------------------*/
@@ -206,12 +234,14 @@ __HAL_RCC_HSEM_CLK_ENABLE();
 HAL_HSEM_FastTake(HSEM_ID_0);
 /*Release HSEM in order to notify the CPU2(CM4)*/
 HAL_HSEM_Release(HSEM_ID_0,0);
-/* wait until CPU2 wakes up from stop mode */
+/* wait until CPU2 wakes up from stop mode.
+ * ⚠️ Stejny duvod jako Boot_Mode_Sequence_1: kdyz CM4 vubec nenabehl, ani se
+ * neprobudi z HSEM -> timeout. Pokracuj degradovane misto tiche tmy. */
 timeout = 0xFFFF;
 while((__HAL_RCC_GET_FLAG(RCC_FLAG_D2CKRDY) == RESET) && (timeout-- > 0));
 if ( timeout < 0 )
 {
-Error_Handler();
+g_cm4_absent = 1;
 }
 /* USER CODE END Boot_Mode_Sequence_2 */
 
@@ -230,6 +260,8 @@ Error_Handler();
   MX_RTC_Init();
   MX_ADC3_Init();
   MX_QUADSPI_Init();
+  MX_SDMMC1_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
@@ -252,6 +284,13 @@ Error_Handler();
     printf("[RESET] pricina: %s%s\n", rc,
            bad ? " (system zatuhl a byl auto-resetovan!)" : "");
   }
+
+  /* CM4 (D2) boot handshake vyhodnoceny v Boot_Mode_Sequence_1/2 (pred UART).
+   * Kdyz nenabehl, jedeme dal (displej je na CM7) — jen o tom nahlas rekni:
+   * typicky priznak = naflashovana jen bank1, nebo BCM4=0 v option bytes. */
+  if (g_cm4_absent)
+    printf("[BOOT] CM4 (D2) nenabehl -> degradovany rezim. Zkontroluj: "
+           "naflashovana bank2 @0x08100000 + option byte BCM4=1.\n");
 
   /* ⚠️ Vycisti framebuffery na CERNO hned na zacatku: SDRAM (FMC, 0xC0000000)
    * NENI resetem nulovana -> po soft resetu (napr. Menu->Restart) drzi POSLEDNI
@@ -299,18 +338,21 @@ Error_Handler();
   /* 2) Probe MCU a precist FW ID */
   if (!ws_panel_probe(&hi2c4)) {
       printf("[ERR] Panel probe selhal - pokracuji bez displeje\n");
+      bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
       goto display_skip;
   }
 
   /* 3) Power-on sekvence: napajeni LCD, uvolnit reset bridge, backlight enable */
   if (!ws_panel_power_on(&hi2c4)) {
       printf("[ERR] Panel power-on selhal\n");
+      bootled_blink_once(BOOTLED_STEP_PANEL_POWERON);
       goto display_skip;
   }
 
   /* 4) Spustit DSI signal - bridge ho potrebuje pred inicializaci */
   if (HAL_DSI_Start(&hdsi) != HAL_OK) {
       printf("[ERR] HAL_DSI_Start selhal\n");
+      bootled_blink_once(BOOTLED_STEP_DSI_START);
       goto display_skip;
   }
   HAL_Delay(50);
@@ -318,6 +360,7 @@ Error_Handler();
   /* 5) Inicializovat TC358762 bridge pres DSI generic write */
   if (!tc358762_init(&hdsi)) {
       printf("[ERR] TC358762 init selhal\n");
+      bootled_blink_once(BOOTLED_STEP_TC358762);
       goto display_skip;
   }
 
@@ -386,7 +429,7 @@ void SystemClock_Config(void)
   /** Configure LSE Drive Capability
   */
   HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_MEDIUMLOW);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -553,9 +596,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
-  }
+  bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

@@ -11,6 +11,7 @@ typedef enum {
     UI_BUTTON_NORMAL,
     UI_BUTTON_ACTIVE,
     UI_BUTTON_RUN,
+    UI_BUTTON_STOP,   /**< cervena — destruktivni/zastavujici akce (footer STOP) */
 } ui_button_variant_t;
 
 typedef struct {

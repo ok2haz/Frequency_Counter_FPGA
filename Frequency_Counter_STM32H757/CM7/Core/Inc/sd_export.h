@@ -1,0 +1,129 @@
+/**
+ * @file    sd_export.h
+ * @brief   SD karta jako EXPORTNI medium (FatFs) — mount/unmount + zapis logu do CSV.
+ *
+ * ── ARCHITEKTURA (rozhodnuto 2026-08-11) ─────────────────────────────────────
+ * **W25Q je autoritativni uloziste datalogu, SD je jen export.**
+ *   - W25Q uveze ~80 dni pri 32 B/10 s (datalog zabira 1/3 DATA regionu,
+ *     `W25Q_DATALOG_SIZE`) -> o data se nikdy neprijde
+ *   - SD slouzi k tomu, k cemu ma: vytahnout a precist na PC
+ *
+ * Tim odpadaji tri problemy, ktere by melo "SD jako primarni uloziste":
+ *   1) **kontinuita `seq`** — log by se pri vytazeni/vlozeni karty roztrhl mezi dve media
+ *   2) **prepis MBR** — RAW blokovy zapis od LBA 0 znicil kartu pro PC (viz `DATALOG_SD_RAW_OK`)
+ *   3) **ztrata dat pri vyjmuti** — takhle se preresi jen export, log bezi dal
+ *
+ * ── VLAKNA (kriticke) ────────────────────────────────────────────────────────
+ * ⚠️ `sd_export_tick()` je LEVNY (jedno cteni GPIO + pripadny rychly unmount) ->
+ *    vola ho **defaultTask** ~2 Hz. Drzi pravidlo "zadny spin > ~10 ms" (CLAUDE.md).
+ * ⚠️ `sd_export_mount()` a `sd_export_run()` **BLOKUJI** (HAL_SD_Init = desitky az
+ *    stovky ms, zapis souboru sekundy) -> volat **VYHRADNE z UartTasku**, ktery
+ *    NENI hlidany watchdogem. Z defaultTask/UiTask/FpgaTask je NEVOLAT.
+ *    UI (okno SD KARTA, s_view=37) proto jen nastavi `g_sd_req` a praci udela
+ *    UartTask v `sd_export_service()` — worker, ktery tomu omezeni vyhovuje.
+ *
+ * ✅ FatFs je v projektu od 2026-08-11 (CubeMX: FATFS -> SD Card). Kod je i tak
+ *    za `__has_include("ff.h")`, takze se prelozi i bez nej.
+ * ✅ SD je funkcni od 2026-08-14 (4-bit, ~16 MHz). Root cause driveho "prenos
+ *    nejede" byl vypnuty `HardwareFlowControl` — viz CLAUDE.md sekce SD karta.
+ */
+#ifndef INC_SD_EXPORT_H_
+#define INC_SD_EXPORT_H_
+
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef enum {
+    SD_EXP_NO_FATFS = 0,  /* FatFs neni v buildu (CubeMX) */
+    SD_EXP_ABSENT,        /* slot prazdny (card-detect PE3) */
+    SD_EXP_PRESENT,       /* karta vlozena, ale nenamountovana */
+    SD_EXP_MOUNTED,       /* FatFs namountovan, lze exportovat */
+    SD_EXP_ERROR,         /* mount/zapis selhal (spatny FS, vadna karta) */
+} sd_export_state_t;
+
+/** Levny tik: detekce karty + AUTO-UNMOUNT pri vytazeni. Vola defaultTask ~2 Hz.
+ *  Auto-MOUNT se ZAMERNE nedela — je blokujici (viz hlavicka). */
+void sd_export_tick(void);
+
+const char       *sd_export_state_str(void);
+
+/* ── Pozadavky na BLOKUJICI operace SD ───────────────────────────────────────
+ * ⚠️ `sd_export_mount()` i `sd_export_run()` blokuji stovky ms az sekundy, takze
+ * je NESMI volat UiTask (hlidany watchdogem) ani defaultTask (krmi watchdog).
+ * UI i auto-mount proto jen nastavi tenhle priznak a skutecnou praci udela
+ * UartTask, ktery hlidany neni. Stejny vzor jako `g_screen_req` pro kresleni. */
+#define SD_REQ_NONE     0u
+#define SD_REQ_MOUNT    1u
+#define SD_REQ_EXPORT   2u
+#define SD_REQ_UNMOUNT  3u
+#define SD_REQ_TEST     4u
+#define SD_REQ_FORMAT   5u   /* ⚠️ DESTRUKTIVNI — smaze celou kartu (f_mkfs FAT32) */
+extern volatile uint8_t g_sd_req;
+
+/* ── Snapshot pro UI (okno SD KARTA, s_view=37) ──────────────────────────────
+ * UiTask NESMI volat FatFs (`f_getfree` projde u FAT16/poskozeneho FSINFO celou
+ * tabulku FAT = jednotky sekund se zamcenou kartou, a UiTask hlida watchdog).
+ * Vsechno pomale proto pocita UartTask v `sd_export_service()` a UI uz jen cte
+ * tenhle hotovy snapshot. Stejna filozofie jako `g_rtc_text` vs. HAL_RTC. */
+typedef struct {
+    uint8_t  state;        /* sd_export_state_t */
+    uint8_t  busy;         /* 1 = UartTask prave dela blokujici operaci */
+    uint8_t  present;      /* card-detect PE3 */
+    uint32_t total_mb;     /* 0 = neznamo (nenamountovano) */
+    uint32_t free_mb;
+    char     fs[8];        /* "FAT16"/"FAT32"/"exFAT"/"" */
+    char     msg[40];      /* vysledek posledni operace pro uzivatele */
+    uint32_t test_w_kbs;   /* rychlost zapisu z posledniho TESTu [KB/s], 0 = nezmereno */
+    uint32_t test_r_kbs;   /* rychlost cteni  z posledniho TESTu [KB/s], 0 = nezmereno */
+} sd_ui_info_t;
+
+/** @return snapshot pro UI. Bezpecne z UiTasku — jen cteni, nic neblokuje. */
+const sd_ui_info_t *sd_export_ui_info(void);
+
+/** Obslouzi cekajici pozadavek (vola VYHRADNE UartTask ve sve smycce). */
+void sd_export_service(void);
+
+/* ── Ochrana UiTasku pred zaseknutym HAL ─────────────────────────────────────
+ * ⚠️⚠️ HAL SD ma nekolik TESNYCH SMYCEK BEZ YIELDU s timeoutem
+ * `SDMMC_SWDATATIMEOUT`/`SDMMC_DATATIMEOUT` = 0xFFFFFFFF ≈ **49 dni** (napr.
+ * `SD_SendSDStatus`, zaverecne cekani v `HAL_SD_Init`, cekani na `DPSMACT`).
+ * Jsou ve vendor kodu -> nejde je ohranicit ani prinutit ustoupit scheduleru.
+ * Kdyz do nich spadne UartTask (Normal), vyhladovi UiTask (BelowNormal):
+ * prestane dotyk, `watchdog_kick_ui()` zestarne a IWDG shodi CELOU desku.
+ *
+ * Proto se volajici task po dobu blokujici prace se SD srazi POD UiTask.
+ * Obal VZDY cely blok prikazu (jeden vstup, jeden vystup) — ne jednotlive
+ * funkce s ranymi `return`; stejne pouceni jako u `s_busy`. Vnoreni resi
+ * vnitrni citac, takze vicenasobne volani nevadi. */
+void sd_blocking_begin(void);
+void sd_blocking_end(void);
+
+/** ⚠️ BLOKUJE (desitky az stovky ms) — jen z UartTasku. @return true = namountovano. */
+bool sd_export_mount(void);
+
+/** Podrobna diagnostika (UART `sd diag`): rozlisi, jestli selhala HW vrstva
+ *  (`HAL_SD_Init` — karta/SDMMC/hodiny) nebo souborovy system (`f_mount` — karta
+ *  neni FAT32). ⚠️ BLOKUJE — jen z UartTasku. */
+void sd_export_diag(void);
+/** `sd fs` — precte LBA 0 mimo FatFs a rekne, JAKY format na karte je. */
+void sd_export_fs(void);
+/** `sd init` — SD inicializace po krocich se znackami (hledani mista padu). */
+void sd_export_init_steps(void);
+
+/** Rozsireny test (UART `sd test`, tlacitko TEST): zapise 8 KB, precte zpet a
+ *  overi OBSAH — tim proveri celou cestu FatFs -> BSP_SD -> HAL_SD -> karta
+ *  vcetne multi-blokoveho prenosu. Po uspechu zmeri i PROPUSTNOST (1 MB po
+ *  32 KB blocich -> `test_w_kbs`/`test_r_kbs`). Soubory po sobe smaze.
+ *  ⚠️ BLOKUJE (sekundy) — jen z UartTasku. */
+bool sd_export_selftest(void);
+
+/** Odmountuje (rychle). Bezpecne volat i kdyz neni namountovano. */
+void sd_export_unmount(void);
+
+/** Exportuje datalog z W25Q do CSV na karte. Mountuje sam, kdyz je potreba.
+ *  ⚠️ BLOKUJE (sekundy az desitky sekund) — jen z UartTasku.
+ *  @param max_rec  0 = vse, jinak jen N nejnovejsich zaznamu
+ *  @return pocet zapsanych zaznamu, nebo -1 pri chybe. */
+int32_t sd_export_run(uint32_t max_rec);
+
+#endif /* INC_SD_EXPORT_H_ */

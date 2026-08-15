@@ -22,19 +22,27 @@ uint32_t prim_internal_utf8_next(const char **s)
 {
     const unsigned char *p = (const unsigned char *)*s;
     uint32_t cp;
+    /* ⚠️ Pokracovaci bajty se kontroluji proti '\0' (p[k] != 0) — useknuta
+     * multibyte sekvence na konci retezce by jinak precetla az 3 bajty ZA
+     * terminatorem. Nevalidni/useknuty lead byte -> preskoc 1 bajt a vrat U+FFFD
+     * (glyf se stejne nenajde -> vykresli se nic). Pro platny UTF-8 chovani beze
+     * zmeny; prim_text_width i draw_text sdili tenhle dekoder -> zustavaji v syncu. */
     if (p[0] < 0x80u) {
         cp = p[0]; if (p[0]) (*s)++;
-    } else if ((p[0] & 0xE0u) == 0xC0u) {
+    } else if ((p[0] & 0xE0u) == 0xC0u && p[1]) {
         cp = ((uint32_t)(p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu);
         *s += 2;
-    } else if ((p[0] & 0xF0u) == 0xE0u) {
+    } else if ((p[0] & 0xF0u) == 0xE0u && p[1] && p[2]) {
         cp = ((uint32_t)(p[0] & 0x0Fu) << 12) | ((uint32_t)(p[1] & 0x3Fu) << 6) |
              (p[2] & 0x3Fu);
         *s += 3;
-    } else {
+    } else if ((p[0] & 0xF8u) == 0xF0u && p[1] && p[2] && p[3]) {
         cp = ((uint32_t)(p[0] & 0x07u) << 18) | ((uint32_t)(p[1] & 0x3Fu) << 12) |
              ((uint32_t)(p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
         *s += 4;
+    } else {
+        cp = 0xFFFDu;                 /* neplatny/useknuty -> replacement char */
+        (*s)++;                       /* posun o 1 bajt (nikdy za '\0') */
     }
     return cp;
 }
@@ -52,10 +60,13 @@ const prim_glyph_t *prim_internal_glyph(const prim_font_t *font, uint32_t cp)
     return NULL;
 }
 
-/* Read one coverage sample at (gx,gy) inside a glyph of given bpp. */
-static uint8_t glyph_cov(const uint8_t *bm, int gx, int gy, int gw, uint8_t bpp)
+/* Coverage vzorek na LINEARNIM indexu idx (= gy*gw + gx) v glyfu bpp.
+ * ⚠️ Index predpocita volajici (base+rx) -> zadny per-pixel multiply gy*gw.
+ * always_inline: pri -O0 (flashovany build) by se jinak volalo per-pixel s call/ret
+ * rezii — nejdrazsi cast CPU textu; inline ji odstrani. Pixel-identicke. */
+__attribute__((always_inline)) static inline
+uint8_t glyph_cov(const uint8_t *bm, uint32_t idx, uint8_t bpp)
 {
-    uint32_t idx = (uint32_t)gy * gw + gx;
     switch (bpp) {
     case 8: return bm[idx];
     case 4: { uint8_t b = bm[idx >> 1]; uint8_t v = (idx & 1) ? (b & 0x0Fu) : (b >> 4);
@@ -81,6 +92,8 @@ int16_t prim_text_width(const char *utf8, const prim_font_t *font)
     return (int16_t)w;
 }
 
+/* ⚠️ Ve firmwaru se nevola (linker ji zahodi), ale NENI mrtva:
+ * assertuje na ni `libprim/tests/test_text.c` v hostitelske CMake sade. */
 int16_t prim_text_height(const prim_font_t *font)
 {
     return font ? font->line_height : 0;
@@ -139,9 +152,9 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
                 int oy = cr.y - gy0;
                 for (int ry = 0; ry < cr.h; ry++) {
                     prim_pixel_t *row = &fb->pixels[(cr.y + ry) * fb->stride_px + cr.x];
-                    int gy = oy + ry;
+                    uint32_t base = (uint32_t)(oy + ry) * (uint32_t)g->w + (uint32_t)ox;  /* radek: multiply 1x */
                     for (int rx = 0; rx < cr.w; rx++) {
-                        uint8_t cov = glyph_cov(bm, ox + rx, gy, g->w, font->bpp);
+                        uint8_t cov = glyph_cov(bm, base + (uint32_t)rx, font->bpp);
                         if (cov) row[rx] = prim_blend565(row[rx], color, cov);
                     }
                 }

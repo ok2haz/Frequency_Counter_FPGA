@@ -21,7 +21,7 @@
 #include "quadspi.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "bootled.h"
 /* USER CODE END 0 */
 
 QSPI_HandleTypeDef hqspi;
@@ -31,7 +31,7 @@ void MX_QUADSPI_Init(void)
 {
 
   /* USER CODE BEGIN QUADSPI_Init 0 */
-
+  bootled_step(BOOTLED_STEP_QUADSPI);
   /* USER CODE END QUADSPI_Init 0 */
 
   /* USER CODE BEGIN QUADSPI_Init 1 */

@@ -15,6 +15,8 @@
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
 #include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
+#include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
+#include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
 
 /* ── ADC3 factory kalibrace (system memory) ───────────────────────────────
@@ -114,16 +116,9 @@ void sensor_fail(sensor_id_t id)
     sensor_stat_t *s = &g_sensors[id];
 
     s->err_total++;
+    s->err_last_ms = HAL_GetTick();   /* cas posledni chyby -> "uptime od posledni" (UART sensors) */
     if (s->err_streak < 0xFFFF) s->err_streak++;
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
-}
-
-void sensor_stat_reset(sensor_id_t id)
-{
-    if (id >= SENS_COUNT) return;
-    sensor_stat_t *s = &g_sensors[id];
-    s->samples = 0;
-    s->min = s->max = s->mean = 0.0f;
 }
 
 /* ── I2C1 recovery (robustnost: vypadek 1 senzoru nesmi shodit zbytek sbernice) ──
@@ -187,6 +182,36 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
     return 10000;                   /* pak @ 10 s */
 }
 
+/* ── ADS1115 per-kanal PGA ────────────────────────────────────────────────
+ * Kazda konverze prepisuje Config registr (kvuli MUX) -> PGA per kanal je zdarma.
+ * Rev2 dle SKUTECNE osazenych delicu ve schematu v2.0 (netlist 2026-07-27):
+ *   AIN0 OCXO_VC_Sense: R51=15k  / R52=10k  (0-5V  -> 2.00V) -> +-2.048V ✓
+ *   AIN1 RF_Level (AD8307): R53=1k ser.     (~0.25-2.6V)     -> +-4.096V
+ *          ⚠️ R54=10k je STALE OSAZEN -> zatezuje vystup AD8307 (25mV/dB do int.
+ *             12,5k) a srazi strmost. Pro presnost R54 -> DNP (viz TODO §7).
+ *   AIN2 VBUS: R55=100k / R56=4k99 (0-40V -> 1.90V)          -> +-2.048V ✓
+ *   AIN3 +5V:  R57=15k  / R58=10k  (0-5V  -> 2.00V)          -> +-2.048V ✓
+ * AIN0/AIN2/AIN3 mapovany na ~2V -> +-2.048V; jen AIN1 (AD8307, ~2.6V) je +-4.096V.
+ * Az bude v2.0 deska osazena, prepni REV2 na 1 + prepocitat g_calib:
+ *   gain_12v pro delic 100k/4k99 (=x21.0), gain_5v pro 15k/10k (=x2.5, drive 8k2/10k),
+ *   + pridat skalovani AIN0 x2.5 (OCXO_VC) — viz BOARD_V20 §7.2. */
+#ifndef ADS1115_HW_DIVIDERS_REV2
+#define ADS1115_HW_DIVIDERS_REV2 0    /* 0 = stara deska (delice 5k1/10k) */
+#endif
+
+#if ADS1115_HW_DIVIDERS_REV2
+static const ads1115_pga_t k_ads_pga[4] = {
+    ADS1115_PGA_2V048,   /* AIN0 OCXO_VC_Sense (15k/10k -> 2.00V) */
+    ADS1115_PGA_4V096,   /* AIN1 RF_Level (AD8307, ~2.6V) */
+    ADS1115_PGA_2V048,   /* AIN2 VBUS (100k/4k99 -> 1.90V @ 40V) */
+    ADS1115_PGA_2V048,   /* AIN3 +5V (15k/10k -> 2.00V) */
+};
+#else
+static const ads1115_pga_t k_ads_pga[4] = {   /* stara deska: vse +-4.096V */
+    ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096,
+};
+#endif
+
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
@@ -239,7 +264,7 @@ void SensorsTask_run(void *argument)
 	  if (i2c1_streak == 0) {
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
-		  started = ads1115_start(&hi2c1, 1);              /* AIN1 = RF_Level */
+		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = RF_Level */
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (started) {
@@ -249,7 +274,7 @@ void SensorsTask_run(void *argument)
 			got = ads1115_read_raw(&hi2c1, &raw);
 			osMutexRelease(i2c1MutexHandle);
 		  }
-		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw));
+		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw, k_ads_pga[1]));
 		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
 		}
 	  }
@@ -261,10 +286,27 @@ void SensorsTask_run(void *argument)
 
 	// === TMP117 @ 0x48 na I2C4 (displej). Mutex: I2C4 sdili touch + backlight ===
 	// TMP117 drzi pointer, ale HAL_I2C_Mem_Read je nejjistejsi.
+	/* ⚠️ BACK-OFF NA I2C4 (2026-08-13). Sbernici sdili touch (UiTask, ~15-30 Hz),
+	 * podsviceni a tenhle TMP117. Kdyz sbernice umre, KAZDE cteni tady vycerpa cely
+	 * HAL timeout, a to POD MUTEXEM — touch se pak k busu casto vubec nedostane.
+	 * Proto stejny vzor jako u I2C1: pri opakovanem selhani cist ridceji.
+	 * Timeout zkracen 100 -> 20 ms: samotne cteni 2 B @100 kHz trva ~0,3 ms, takze
+	 * 100 ms se uplatnilo VYHRADNE pri poruse — a prave tam nejvic skodilo. */
+	static uint32_t i2c4_streak = 0;    /* po sobe jdouci selhani cteni 0x48 */
+	static uint32_t i2c4_skip   = 0;    /* kolik cyklu jeste preskocit */
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
-	if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
-	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 100);
+	if (i2c4_skip > 0) {
+	  i2c4_skip--;                      /* back-off: tenhle cyklus se na bus nesaha */
+	  i2cStatus = HAL_BUSY;             /* != HAL_OK -> sensor_fail nize (drzi posl. dobrou) */
+	} else if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 20);
 	  osMutexRelease(i2c4MutexHandle);
+	}
+	if (i2cStatus == HAL_OK) { i2c4_streak = 0; }
+	else if (i2c4_skip == 0) {
+	  if (i2c4_streak < 100) i2c4_streak++;
+	  /* Cyklus je 500 ms -> 3x normalne, pak 1 s, 2 s, nakonec 10 s (jako I2C1). */
+	  i2c4_skip = (i2c4_streak < 3) ? 0 : (i2c4_streak < 6) ? 1 : (i2c4_streak < 8) ? 3 : 19;
 	}
 	if (i2cStatus == HAL_OK) {
 	  // MSB v rawData[0], LSB v rawData[1]; 0.0078125 °C/LSB
@@ -304,7 +346,7 @@ void SensorsTask_run(void *argument)
 		sensor_id_t sid = (sensor_id_t)(SENS_ADS0 + ch);
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 100) == osOK) {
-		  started = ads1115_start(&hi2c1, ch);
+		  started = ads1115_start(&hi2c1, ch, k_ads_pga[ch]);
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (!started) { sensor_fail(sid); continue; }
@@ -317,11 +359,14 @@ void SensorsTask_run(void *argument)
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (got) {
-		  int32_t mv = ads1115_raw_to_mv(raw);
-		  /* AIN2 = 12V vetev pres odporovy delic (real 13.417V @ 2.814V na ADS),
-			 AIN3 = 5V vetev pres delic (real 4.978V @ 2.526V na ADS) -> skutecne napeti */
-		  if      (ch == 2) mv = (int32_t)((int64_t)mv * 13417 / 2814);
-		  else if (ch == 3) mv = (int32_t)((int64_t)mv * 4978  / 2526);
+		  int32_t mv = ads1115_raw_to_mv(raw, k_ads_pga[ch]);
+		  /* AIN2 = 12V vetev pres odporovy delic, AIN3 = 5V vetev pres delic ->
+			 skutecne napeti. Gain je editovatelna kalibrace (g_calib, okno
+			 Kalibrace); vychozi = datasheet pomer (13417/2814, 4978/2526).
+			 ⚠️ Kratke okno pri bootu pred calib_load() (UiTask) jede na vychozich
+			 hodnotach z calib.c — kosmeticke, diagnosticke cteni ~1 Hz. */
+		  if      (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
+		  else if (ch == 3) mv = (int32_t)((float)mv * g_calib.gain_5v  + 0.5f);
 		  sensor_update(sid, (float)mv); any_ok = 1;
 		} else {
 		  sensor_fail(sid);
@@ -367,6 +412,10 @@ void SensorsTask_run(void *argument)
 	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}
 	}   /* konec ADC3 bloku (1 Hz) */
+
+	// Kratkodoba historie senzoru (RAM decimacni pyramida, okno Grafy #31).
+	// Volano z 2 Hz plneho sweepu; uvnitr decimuje na SENSOR_HIST_BASE_S.
+	sensor_hist_feed();
 
 	// Cekani na dalsi cyklus (presne 500 ms od posledniho probuzeni)
 	vTaskDelayUntil(&xLastWakeTime, xFrequency);

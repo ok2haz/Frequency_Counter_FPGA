@@ -13,10 +13,7 @@
  * SCR_S_GNSS_LOCK / SCR_S_SAT_VAL / SCR_S_DATE proto odstraneny.
  * HDOP je take ZIVE z GPS (render_header formatuje g.hdop). CAL/HOLD zustavaji
  * statickymi placeholdery (zatim bez dat). */
-const char *SCR_S_SYS_READY = "System";
 const char *SCR_S_HDOP_L    = "HDOP";   /* hodnota se bere ZIVE z GPS (g.hdop) */
-const char *SCR_S_CAL_L     = "CAL";
-const char *SCR_S_CAL_V     = "4 min";
 const char *SCR_S_HOLD_L    = "HOLD";
 const char *SCR_S_HOLD_V    = "2h 14m";
 
@@ -44,11 +41,6 @@ const char *SCR_S_OFFSET_L = "Offset";   /* σy 1s/10s labely jsou literaly v sc
 const char *SCR_S_TREND_L  = "Trend 60 s";
 const char *SCR_S_SIGNAL_L = "Signál vstupu";
 
-/* ── Allan graf: Y popisky (dekady, horni indexy — mono_14 ma plny charset).
- * Magnituda ~1e-8 -> 10⁻⁶ (nahore) .. 10⁻¹⁰ (dole). X osa je DYNAMICKA a popisky τ
- * si render_card_allan generuje sam (proto tu uz neni X_TICKS). */
-const char *SCR_ALLAN_Y_TICKS[] = {"10⁻⁶", "10⁻⁷", "10⁻⁸", "10⁻⁹", "10⁻¹⁰"};
-const char *SCR_ALLAN_X_LABEL   = "τ [s]";
 
 /* ── Footer button labels (values like gate time / channel come from the
  *    live UI state in screen_main.c). ── */

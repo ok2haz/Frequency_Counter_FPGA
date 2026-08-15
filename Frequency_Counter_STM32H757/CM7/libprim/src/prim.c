@@ -1,23 +1,12 @@
 /**
  * @file prim.c
- * @brief Library-wide version and last-error reporting.
+ * @brief ZAMERNE PRAZDNE — zustava jen kvuli build systemu.
+ *
+ * Obsahovalo `prim_version()` a dvojici `prim_last_error()` /
+ * `prim_internal_set_error()`. Chybovy kanal se nikdy nezapojil — libprim hlasi
+ * chyby navratovou hodnotou a firmware diagnostiku resi pres UART `status`
+ * a crash black-box (BKP_DR3..5). Odstraneno 2026-08-13, viz git historie.
+ * Duvod, proc soubor zustava, je stejny jako u `digit_group.c`.
  */
 
 #include <prim/prim.h>
-
-#ifndef PRIM_VERSION_STRING
-#define PRIM_VERSION_STRING "0.1.0"
-#endif
-
-static const char *g_last_error = "";
-
-const char *prim_version(void) { return PRIM_VERSION_STRING; }
-
-const char *prim_last_error(void) { return g_last_error; }
-
-/* Internal setter, not exported as API. */
-PRIM_INTERNAL void prim_internal_set_error(const char *msg);
-PRIM_INTERNAL void prim_internal_set_error(const char *msg)
-{
-    g_last_error = (msg != 0) ? msg : "";
-}

@@ -36,6 +36,9 @@ static prim_fb_t *s_appfb  = 0;          /* app deskriptor (drzime jeho pixels n
 
 static prim_pixel_t *fb_px(int i) { return (prim_pixel_t *)s_fb_addr[i]; }
 
+/* Adresa aktualne ZOBRAZENEHO (front) bufferu — pro screenshot export (RGB565). */
+const void *prim_stm32_front_addr(void) { return (const void *)s_fb_addr[s_front]; }
+
 /* ── Dirty-rect (copy-forward jen zmenenych oblasti) ───────────────────────────
  * Triple buffer: novy back je 2 snimky stary -> kopiruje se sjednoceni dirty
  * z poslednich 2 snimku (prev + cur). Plne prekresleni = velky obdelnik (cely FB)
@@ -219,6 +222,45 @@ static void copy_rect(const prim_rect_t *r)
     d2d_blit_ex(fb_px(s_back) + off, FB_W, fb_px(s_front) + off, FB_W, r->w, r->h, 0);
 }
 
+/* `a` plne obsahuje `b` (vc. shody). Int aritmetika (int16 souradnice). */
+static int rect_covers(const prim_rect_t *a, const prim_rect_t *b)
+{
+    return b->x >= a->x && b->y >= a->y &&
+           (int)b->x + b->w <= (int)a->x + a->w &&
+           (int)b->y + b->h <= (int)a->y + a->h;
+}
+
+/* Copy-forward dirty prev+cur s DEDUP. prev a cur se casto prekryvaji nebo shoduji
+ * (napr. freq rect / stat karta se prekresluji kazdy snimek -> jsou v prev I cur)
+ * -> bez dedup se STEJNA oblast kopiruje vICEkrat (DMA2D blit + wait navic/rect).
+ * Vyhodime SHODNE a plne OBSAZENE obdelniky. ⚠️ Kopirovana mnozina = PRESNE
+ * sjednoceni vstupu (keep drzi jen puvodni obdelniky, nikdy vetsi): rect se prida
+ * jen kdyz ho zadny drzeny nekryje, a ty ktere on kryje se odeberou -> pokryti se
+ * NIKDY nezmensi ani nezvetsi mimo dirty => zadne riziko problikavani/duchu.
+ * ZADNY bbox-merge (ten by kopiroval mimo dirty). O(n^2), n<=2*MAX_DIRTY, 1x/present. */
+static void copy_forward_dedup(void)
+{
+    static prim_rect_t keep[2 * MAX_DIRTY];
+    int nk = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        const prim_rect_t *src = pass ? d_cur : d_prev;
+        int n = pass ? nd_cur : nd_prev;
+        for (int i = 0; i < n; i++) {
+            prim_rect_t r = src[i];
+            int skip = 0;
+            for (int j = 0; j < nk; j++)
+                if (rect_covers(&keep[j], &r)) { skip = 1; break; }   /* uz pokryto */
+            if (skip) continue;
+            int w = 0;                                                /* odeber pokryte novym r */
+            for (int j = 0; j < nk; j++)
+                if (!rect_covers(&r, &keep[j])) keep[w++] = keep[j];
+            nk = w;
+            keep[nk++] = r;
+        }
+    }
+    for (int i = 0; i < nk; i++) copy_rect(&keep[i]);
+}
+
 void prim_stm32_present(void)
 {
     /* NON-BLOCKING flip: cekej na PREDCHOZI flip (pri nizke kadenci OKAMZITE), ne
@@ -241,8 +283,7 @@ void prim_stm32_present(void)
     if (dfull_prev || dfull_cur) {
         d2d_blit_ex(fb_px(s_back), FB_W, fb_px(s_front), FB_W, FB_W, FB_H, 0);  /* copy-forward: bez inval */
     } else {
-        for (int i = 0; i < nd_prev; i++) copy_rect(&d_prev[i]);
-        for (int i = 0; i < nd_cur;  i++) copy_rect(&d_cur[i]);
+        copy_forward_dedup();          /* sjednoceni prev+cur bez redundantnich blitu */
     }
     s_in_present = 0;
 

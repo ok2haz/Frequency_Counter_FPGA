@@ -1,6 +1,13 @@
 /**
  * @file bezier.c
  * @brief Quadratic Bezier flattening (8.8 fixed-point parameter).
+ *
+ * ⚠️ OD 2026-08-13 BEZ VOLAJICIHO — linker to cele zahodi (`--gc-sections`),
+ * takze to nestoji ani bajt flash. Jedinym uzivatelem byla vetev `PRIM_OP_QUAD`
+ * ve `flatten()` (path.c), ktera zmizela spolu s `prim_path_quad_to()`.
+ * Soubor se NEMAZE, protoze odebrani zdrojaku vyzaduje zasah do modelu
+ * STM32CubeIDE — a matematika je spravna a otestovana, takze az bude potreba
+ * krivka v ceste, staci vratit `prim_path_quad_to()` + `case PRIM_OP_QUAD`.
  */
 
 #include "internal/bezier.h"

@@ -19,6 +19,7 @@
 #include <ui/pill.h>
 #include <ui/card.h>
 #include <ui/button.h>
+#include <ui/segmented.h>
 #include <ui/sparkline.h>
 #include <ui/digit_group.h>
 #include <ui/big_number.h>
@@ -26,4 +27,3 @@
 #include <ui/icons.h>
 
 /** @brief libui semantic version string. */
-UI_API const char *ui_version(void);

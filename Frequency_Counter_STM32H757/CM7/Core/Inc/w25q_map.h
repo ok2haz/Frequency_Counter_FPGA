@@ -20,8 +20,22 @@
 #define W25Q_CALIB_BASE      0x010000u
 #define W25Q_CALIB_SECTORS   16u                      /* 64 KB */
 
-/* Generic bulk / logy (app-defined, zatim nevyuzito). */
-#define W25Q_DATA_BASE       0x020000u
-#define W25Q_DATA_SIZE       (W25Q_SIZE_BYTES - W25Q_DATA_BASE)   /* ~63,875 MB */
+/* Ulozene sestavy (instrument setup profily, #) — wear-leveled blob store.
+ * Vsech N slotu = JEDEN blob (male, << 4080 B cap). ⚠️ Pridano 2026-08-01:
+ * DATA_BASE posunuto 0x020000 -> 0x030000 (o 64 KB) => datalog se po tomto flashi
+ * jednou zalozi znovu (stare zaznamy na 0x020000 osiroti — benigni, bring-up). */
+#define W25Q_SETUP_BASE      0x020000u
+#define W25Q_SETUP_SECTORS   16u                      /* 64 KB (wear-leveling headroom) */
+
+/* Generic bulk / logy (datalog). */
+#define W25Q_DATA_BASE       0x030000u
+#define W25Q_DATA_SIZE       (W25Q_SIZE_BYTES - W25Q_DATA_BASE)   /* ~63,8 MB */
+
+/* ⚠️ Datalog ZAMERNE vyuzije jen ~1/3 DATA regionu (zbytek zustava volny pro dalsi
+ * bulk pouziti — fonty XIP, rekonstrukce Allan pyramidy apod.). Zarovnano DOLU na
+ * erase sektor (4 KB), aby to byl cely pocet bloku. 1/3 = ~22,3 MB = 696 960 zaznamu
+ * po 32 B => pri 10s vzorkovani ~80 dni kruhoveho logu (pak se prepisuje nejstarsi).
+ * Pozn.: plny region by byl ~242 dni (NE „600", jak driv chybne uvadela dokumentace). */
+#define W25Q_DATALOG_SIZE    (((W25Q_DATA_SIZE / 3u) / W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE)
 
 #endif /* INC_W25Q_MAP_H_ */

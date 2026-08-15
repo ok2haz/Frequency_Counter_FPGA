@@ -26,6 +26,26 @@ static volatile unsigned int s_ui_ms;
 static volatile unsigned int s_fpga_ms;
 static unsigned int s_init_ms;
 static unsigned char s_ready;
+static unsigned char s_stall_logged;   /* black-box se zapisuje jen jednou za beh */
+
+/* Crash black-box pro STALL (kind 3) — stejny format jako FreeRTOS hooky ve
+ * freertos_hooks.c (BKP_DR3 magic+kind, DR4/DR5 jmeno tasku), takze to po resetu
+ * precte tentyz kod v MX_RTC_Init -> g_crash_text = "stall:UiTask".
+ * ⚠️ Bez tohoto zaznamu je prosty IWDG reset NEDIAGNOSTIKOVATELNY: vis jen ze
+ * watchdog stekl, ne KTERY task prestal koupat. Prime zapisy RTC->BKPxR (HAL tu
+ * nevolat — bezime ve smycce defaultTask a HAL_RTCEx_* zamyka backup domenu). */
+static void stall_blackbox(const char *name)
+{
+    PWR->CR1 |= PWR_CR1_DBP;
+    unsigned int n0 = 0, n1 = 0;
+    for (int i = 0; i < 8 && name[i]; i++) {
+        if (i < 4) n0 |= (unsigned int)(unsigned char)name[i] << (8 * i);
+        else       n1 |= (unsigned int)(unsigned char)name[i] << (8 * (i - 4));
+    }
+    RTC->BKP4R = n0;
+    RTC->BKP5R = n1;
+    RTC->BKP3R = 0xC7A50000u | 3u;   /* RTC_CRASH_MAGIC | kind 3 = stall (magic naposled) */
+}
 
 void watchdog_init(void)
 {
@@ -62,8 +82,18 @@ void watchdog_supervise(void)
         return;
     }
     /* Obnov jen kdyz oba kriticke tasky nedavno koply. */
-    if ((now - s_ui_ms) < WDG_STALL_MS && (now - s_fpga_ms) < WDG_STALL_MS) {
+    int ui_stale   = ((now - s_ui_ms)   >= WDG_STALL_MS);
+    int fpga_stale = ((now - s_fpga_ms) >= WDG_STALL_MS);
+    if (!ui_stale && !fpga_stale) {
         IWDG1->KR = IWDG_KEY_RELOAD;
+        return;
     }
-    /* jinak: nechame IWDG vyprset -> HW reset */
+    /* Nechame IWDG vyprset -> HW reset. Nez k tomu dojde (~1,5 s zbyva), zapis
+     * DO ZALOHOVANE domeny KDO se zasekl — po restartu to ukaze System Health
+     * ("stall:UiTask") a UART `status`. Jen jednou: opakovany zapis pri 100 Hz
+     * by nic nepridal a zbytecne sahal do BKP. */
+    if (!s_stall_logged) {
+        s_stall_logged = 1;
+        stall_blackbox(ui_stale ? (fpga_stale ? "BOTH" : "UiTask") : "FpgaTask");
+    }
 }

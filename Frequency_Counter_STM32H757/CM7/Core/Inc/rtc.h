@@ -29,7 +29,7 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>   /* rtc_selftest */
 /* USER CODE END Includes */
 
 extern RTC_HandleTypeDef hrtc;
@@ -51,8 +51,17 @@ extern RTC_HandleTypeDef hrtc;
  * jmena tasku (little-endian po 4). */
 #define RTC_CRASH_MAGIC  0xC7A50000u
 /* BKP_DR6: systemove nastaveni 2 (DR2 payload je plny) — bit0 svetle schema,
- * bit1 english. Persist pres warm reset. */
-#define RTC_SYSCFG2_MAGIC 0x53C10000u
+ * bit1 english, bity2:6 casova zona (tz+13 -> 1..27 = -12..+14 h; 0 = legacy
+ * zaznam -> UTC), bit7 = AUTO CET/CEST (EU pravidlo, ignoruje bity2:6),
+ * bit8 = animace ZAP/VYP (okno Animace), bit9 = zvyrazneni cislic ZAP/VYP.
+ * Persist pres warm reset.
+ * ⚠️ Magic zvednut 0x53C10000 -> 0x53C20000 kdyz pribyly anim bity 8/9:
+ * legacy zaznam (magic 0x53C1) mel bity 8/9 = 0 a NEmel legacy-guard jako
+ * casova zona -> pri warm resetu vypnul animace (default je ZAP). Bump zajisti,
+ * ze stary zaznam se odmitne cely -> uplatni se defaulty (anim ON). Jednorazovy
+ * dusledek: prvni warm reset po teto zmene vrati i schema/jazyk/zonu na default
+ * (na cold bootu jsou stejne autoritativni z flash SCF4). */
+#define RTC_SYSCFG2_MAGIC 0x53C20000u
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);
@@ -73,6 +82,16 @@ void rtc_save_uicfg_if_dirty(void);
 /* Ulozi systemove nastaveni (jas/mute/auto-dim) do BKP_DR2, jen pokud
  * g_sys_cfg_dirty. Volat z defaultTask (jediny kontext pristupu k RTC/BKP). */
 void rtc_save_syscfg_if_dirty(void);
+
+/* EU pravidlo letniho casu: CEST (UTC+2) od posledni nedele brezna 01:00 UTC
+ * do posledni nedele rijna 01:00 UTC, jinak CET (UTC+1). Cista funkce (bez HW)
+ * -> pouziva ji rtc_app_tick, okno Nastaveni (zivy label) i selftest.
+ * @return 1 = plati CEST, 0 = CET. Vstup = UTC datum + hodina. */
+int rtc_cest_active(uint16_t y, uint8_t month, uint8_t day, uint8_t hour_utc);
+
+/* Pure-logic selftest kalendarni matematiky (rtc_apply_tz prehoupnuti pres
+ * pulnoc/mesic/rok/prestupny unor + rtc_cest_active hranice DST). Bez HW. */
+bool rtc_selftest(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

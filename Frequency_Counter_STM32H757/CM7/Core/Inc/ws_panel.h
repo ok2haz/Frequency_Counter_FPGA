@@ -65,9 +65,13 @@ bool ws_panel_power_on(I2C_HandleTypeDef *hi2c);
  */
 bool ws_panel_set_backlight(I2C_HandleTypeDef *hi2c, uint8_t brightness);
 
-/**
- * @brief  Power-off sekvence. Backlight off, panel power off, bridge reset.
- */
-bool ws_panel_power_off(I2C_HandleTypeDef *hi2c);
+/** Hodnota `WS_REG_PORTC` za normalniho provozu: backlight povolen a VSECHNY
+ *  resety uvolnene. Shodne s krokem 4 power-on sekvence. */
+#define WS_PC_RUN  (WS_PC_LED_EN | WS_PC_RST_BRIDGE_N | WS_PC_RST_LCD_N | WS_PC_RST_TP_N)
+
+/** Primy zapis do `WS_REG_PORTC` (reset signaly + backlight enable).
+ *  Urceno pro recovery za behu — sekvenci a prodlevy resi volajici, aby tenhle
+ *  soubor nemusel znat RTOS. ⚠️ Volat pod `i2c4MutexHandle`. */
+bool ws_panel_set_portc(I2C_HandleTypeDef *hi2c, uint8_t value);
 
 #endif /* WS_PANEL_H */

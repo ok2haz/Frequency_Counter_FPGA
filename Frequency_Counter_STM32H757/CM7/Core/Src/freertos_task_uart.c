@@ -12,6 +12,7 @@
 #include "cmsis_os2.h"
 
 #include <stdio.h>
+#include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
 #include <string.h>
 #include <stdbool.h>
 
@@ -27,11 +28,22 @@
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
 #include "alarm.h"          /* alarm_test — UART "beep" */
+#include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
+#include "sd_export.h"      /* UART "sd mount/unmount/export" — SD jako export (#28) */
+#include "datalog.h"        /* UART "datalog [on|off|erase|dump]" */
+#include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
+#include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
+#include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
+/* QSPI prikazy (qspiid/qspitest/storetest/qspispeed) sahaji na W25Q, kterou sdili
+ * i syscfg auto-save (defaultTask) a calib_save (UiTask) -> cela operace pod
+ * qspiMutexHandle. Timeout velkorysy: prikaz je manualni diagnostika a klidne
+ * pocka i na bezici erase (~400 ms/sektor). */
+#define QSPI_CMD_LOCK_MS  2000u
 #define RAM_BASE          0x30000000UL
 #define SDRAM_BASE        0xC0000000UL
 #define TEST_OFFSET       0x00001000UL   /* RAM_D2 test (bezpecne mimo struktury) */
@@ -42,6 +54,10 @@
 
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 
+/* Task handles (definovane ve freertos.c) — volny stack v prikazu `status`. */
+extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
+                    UiTaskHandle, FpgaTaskHandle;
+
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
 static void fmt_f2(char *b, size_t n, float v)
 {
@@ -51,12 +67,200 @@ static void fmt_f2(char *b, size_t n, float v)
 	snprintf(b, n, "%ld.%02ld", w, f);
 }
 
+/* ══════════════ ETH bring-up, etapa F0 — diagnostika PHY z CM7 ══════════════
+ * Cil: zodpovedet dve HW neznamé JESTE PRED tim, nez se sahne na `.ioc`
+ * (viz ETH_BRINGUP_CHECKLIST.md §2). Zamerne se tu tedy NIC neregeneruje a
+ * NIC se nepridava do CubeMX — vsechny piny si tenhle kod konfiguruje SAM,
+ * stejnym regen-safe idiomem jako CS ve `fpga_freq_init` nebo PE3 v `datalog_sd`.
+ *
+ * ⚠️ BRING-UP REZIDUUM (jako `fpgaraw`): bit-bang SMI je JEN pro F0. Produkcne
+ * bude MDIO obsluhovat HAL z CM4 (`HAL_ETH_ReadPHYRegister`). Nemazat ale —
+ * diagnostika "odpovida PHY?" nezavisla na tom, komu ETH v `.ioc` patri, je
+ * pri kazdem dalsim problemu se sítí to prvni, po cem sahnes.
+ *
+ * PINMAPA — vytazena ze schematu `STM32H747BIT.pdf` list 4/7 (Ethernet) + 2/7
+ * (CPU) dne 2026-08-13. Do te doby v repu CHYBELA (dokumenty znaly jen nazvy
+ * signalu), takze tohle je jeji prvni zapis do kodu:
+ *
+ *   ETH_REF_CLK  PA1    ETH_MDC   PC1     ETH_TX_EN  PG11
+ *   ETH_MDIO     PA2    ETH_RXD0  PC4     ETH_TXD0   PG13
+ *   ETH_CRS_DV   PA7    ETH_RXD1  PC5     ETH_TXD1   PB13
+ *   ETH_RES      PG14   ETH_INT   PG12
+ *
+ * Vsech 11 pinu je v `.ioc` VOLNYCH (overeno) a odpovida standardnimu RMII
+ * mapovani STM32H7 (AF11), takze regen v F3 je bude umet priradit beze zmen.
+ *
+ * PHY = **LAN8742A** (U4). Strapy ze schematu: `RXER/PHYAD0` stazen k GND pres
+ * R20 -> ocekavana **PHYAD = 0**. `INT/REFCLKO` (pin 14) jde pres seriovych 33 R
+ * do `ETH_REF_CLK` a na `XTAL1/CLKIN` sedi externi 25 MHz oscilator -> PHY ma
+ * 50 MHz REF_CLK GENEROVAT. To ale zavisi na strapu `nINTSEL` (LED2), ktery se
+ * ze schematu jednoznacne precist neda — proto `eth clk`.
+ *
+ * Proc to jde bez 50 MHz hodin: **SMI je clockovane MDC**, tedy nezavisle na
+ * RMII ref. hodinach. PHY odpovi na MDIO, i kdyby byl `nINTSEL` spatne. */
+#define ETH_MDC_PORT   GPIOC
+#define ETH_MDC_PIN    GPIO_PIN_1
+#define ETH_MDIO_PORT  GPIOA
+#define ETH_MDIO_PIN   GPIO_PIN_2
+#define ETH_RES_PORT   GPIOG
+#define ETH_RES_PIN    GPIO_PIN_14
+#define ETH_REFCLK_PIN GPIO_PIN_1        /* PA1 */
+
+/* DWT cyklovy citac (uz bezi kvuli runtime statistikam) — ne NOP smycka. */
+static void eth_delay_us(uint32_t us)
+{
+	uint32_t start = DWT->CYCCNT;
+	uint32_t ticks = us * (SystemCoreClock / 1000000u);
+	while ((DWT->CYCCNT - start) < ticks) { __NOP(); }
+}
+
+/* MDC half-perioda. Spec dovoluje 2,5 MHz; jdeme hluboko pod to (~250 kHz),
+ * protoze pri cteni drzi MDIO jen slaby vnitrni pull-up. */
+#define ETH_MDC_HALF_US 2u
+
+static void eth_mdio_dir(int out)
+{
+	GPIO_InitTypeDef g = {0};
+	g.Pin   = ETH_MDIO_PIN;
+	g.Mode  = out ? GPIO_MODE_OUTPUT_PP : GPIO_MODE_INPUT;
+	g.Pull  = out ? GPIO_NOPULL : GPIO_PULLUP;
+	g.Speed = GPIO_SPEED_FREQ_HIGH;
+	HAL_GPIO_Init(ETH_MDIO_PORT, &g);
+}
+
+static void eth_pins_init(void)
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	__HAL_RCC_GPIOG_CLK_ENABLE();
+	GPIO_InitTypeDef g = {0};
+	g.Mode = GPIO_MODE_OUTPUT_PP; g.Pull = GPIO_NOPULL; g.Speed = GPIO_SPEED_FREQ_HIGH;
+	g.Pin = ETH_MDC_PIN;  HAL_GPIO_Init(ETH_MDC_PORT, &g);
+	g.Pin = ETH_RES_PIN;  HAL_GPIO_Init(ETH_RES_PORT, &g);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_SET);   /* reset neaktivni */
+	eth_mdio_dir(1);
+}
+
+/* Jeden takt MDC. PHY vzorkuje MDIO na NABEZNE hrane, data vystavuje na sestupne
+ * -> pri cteni vzorkujeme az po nabezne hrane. */
+static int eth_mdc_clock(void)
+{
+	eth_delay_us(ETH_MDC_HALF_US);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_SET);
+	eth_delay_us(ETH_MDC_HALF_US);
+	int bit = (HAL_GPIO_ReadPin(ETH_MDIO_PORT, ETH_MDIO_PIN) == GPIO_PIN_SET);
+	HAL_GPIO_WritePin(ETH_MDC_PORT, ETH_MDC_PIN, GPIO_PIN_RESET);
+	return bit;
+}
+
+static void eth_smi_write_bits(uint32_t val, int n)
+{
+	for (int i = n - 1; i >= 0; i--) {
+		HAL_GPIO_WritePin(ETH_MDIO_PORT, ETH_MDIO_PIN,
+		                  ((val >> i) & 1u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		(void)eth_mdc_clock();
+	}
+}
+
+/* IEEE 802.3 clause 22 read: PRE(32x1) ST(01) OP(10) PHYAD(5) REGAD(5) TA(Z0) DATA(16).
+ * @return registr, nebo 0xFFFF kdyz PHY neodpovi (MDIO drzi pull-up nahore). */
+static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
+{
+	eth_mdio_dir(1);
+	eth_smi_write_bits(0xFFFFFFFFu, 32);              /* preamble */
+	eth_smi_write_bits(0x1u, 2);                      /* ST = 01 */
+	eth_smi_write_bits(0x2u, 2);                      /* OP = 10 (read) */
+	eth_smi_write_bits(phyad & 0x1Fu, 5);
+	eth_smi_write_bits(reg   & 0x1Fu, 5);
+	eth_mdio_dir(0);                                  /* turnaround: linku pousti host */
+	(void)eth_mdc_clock();                            /* TA bit 1 (Z) */
+	(void)eth_mdc_clock();                            /* TA bit 2 (PHY vystavi 0) */
+	uint16_t v = 0;
+	for (int i = 0; i < 16; i++) v = (uint16_t)((v << 1) | eth_mdc_clock());
+	(void)eth_mdc_clock();                            /* idle */
+	return v;
+}
+
+/* ══════════════════ Encoder (#29) — HW vrstva + diagnostika ═════════════════
+ * Kvadraturni encoder na **TIM1** v encoder modu + tlacitko. Piny POTVRZENE ze
+ * schematu (list 2/7, konektor J2): `PA8` = ENCODER_CH1 (TIM1_CH1, AF1),
+ * `PA9` = ENCODER_CH2 (TIM1_CH2, AF1), `PC13` = ENCODER_CH3 = tlacitko.
+ * Vsechny tri jsou v `.ioc` VOLNE, takze se to obejde bez regenerace — periferii
+ * i piny si tenhle kod konfiguruje sam (regen-safe idiom jako CS ve
+ * `fpga_freq_init` nebo PE3 v `datalog_sd`).
+ *
+ * ⚠️ TIM1 dela vsechnu praci v HW: `CNT` se sam inkrementuje/dekrementuje podle
+ * smeru otaceni a je odolny proti zakmitum (obe hrany obou kanalu). Software
+ * jen cte rozdil, takze tu neni zadne preruseni ani polling na urovni hran.
+ *
+ * ⚠️⚠️ TOHLE JE JEN HW VRSTVA. Skutecna prace u #29 je **model fokusu** — ve
+ * dotykovem UI dnes zadny neexistuje (neni "vybrany prvek", ktery by se otacenim
+ * menil). To je navrhove rozhodnuti, ne kod, a zamerne se ho nedotykam:
+ * `enc` prikaz slouzi k overeni, ze HW cte spravne, nez se do toho investuje.
+ *
+ * PC13 pozn.: lezi v backup domene, ma omezenou proudovou zatizitelnost, ale
+ * jako VSTUP s pull-upem je bez problemu. */
+#define ENC_BTN_PORT   GPIOC
+#define ENC_BTN_PIN    GPIO_PIN_13
+
+static void enc_init(void)
+{
+    static uint8_t done;
+    if (done) return;
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_TIM1_CLK_ENABLE();
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;      /* CH1/CH2 */
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_PULLUP;                  /* encoder spina na zem */
+    g.Speed     = GPIO_SPEED_FREQ_LOW;
+    g.Alternate = GPIO_AF1_TIM1;
+    HAL_GPIO_Init(GPIOA, &g);
+
+    g.Pin = ENC_BTN_PIN; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(ENC_BTN_PORT, &g);
+
+    /* Encoder mode 3 = pocita obe hrany obou kanalu (nejjemnejsi kroky).
+     * Filtr ICxF = 0xF (max) — mechanicke encodery zakmitavaji. */
+    TIM1->CR1   = 0;
+    TIM1->PSC   = 0;
+    TIM1->ARR   = 0xFFFFu;                      /* 16bit wrap; sleduje se ROZDIL */
+    TIM1->CCMR1 = (0x1u << 0) | (0x1u << 8)     /* CC1S=01 (TI1), CC2S=01 (TI2) */
+                | (0xFu << 4) | (0xFu << 12);   /* IC1F=IC2F=15 (max filtr) */
+    TIM1->CCER  = 0;                            /* obe hrany nerotovane */
+    TIM1->SMCR  = 0x3u;                         /* SMS=011 = encoder mode 3 */
+    TIM1->CNT   = 0;
+    TIM1->CR1  |= TIM_CR1_CEN;
+    done = 1;
+}
+
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
 static char RxBuffer[RX_BUF_SIZE];
 static uint8_t RxIndex = 0;
 
 static uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
 static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
+
+/* ── stacktest: ZAMERNE pretece stack UartTasku (test detekce -> IWDG reset) ──
+ * ⚠️ MUSI byt VLASTNI (noinline) funkce, ne local `waste[]` v UartTask_run:
+ * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze 3600B `waste`
+ * jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack ->
+ * task pretekal VZDY (uz za normalniho provozu), ne jen pri stacktestu. To
+ * zpusobovalo HardFault s poskozenym ramcem pri PRVNIM USB znaku (echo cesta
+ * do USB HAL prohloubila stack az za hranice) — viz STATUS #34, 2026-07-22.
+ * Jako samostatna funkce se 3600 B alokuje AZ pri volani -> ramec UartTask_run
+ * spadl zpet na ~1,3 kB a task se do 4 kB v pohode vejde; pretece se JEN kdyz
+ * uzivatel spusti "stacktest yes" (na to zustala funkce zachovana). */
+__attribute__((noinline)) static void stacktest_overflow(void)
+{
+  volatile char waste[3600];
+  for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
+  osDelay(1);            /* yield -> kontrola stack patternu -> hook */
+  printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
+}
 
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
 void UartTask_run(void *argument)
@@ -72,7 +276,11 @@ void UartTask_run(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  if (osMessageQueueGet(UartRxQueueHandle, &rxChar, NULL, osWaitForever) == osOK) {		// cte zpravu - znak UartRxQueueHandle
+	  /* ⚠️ NE osWaitForever: smycka musi pravidelne propadnout na sd_export_service()
+	   * (blokujici SD prace vyzadana z UI). S osWaitForever bezel service jen po
+	   * prijeti znaku z konzole -> tlacitka v okne SD karta jen pipla, ale nereagovala.
+	   * 50 ms = latence odezvy tlacitka; znak se stejne zpracuje hned, jak dorazi. */
+	  if (osMessageQueueGet(UartRxQueueHandle, &rxChar, NULL, 50u) == osOK) {		// cte zpravu - znak UartRxQueueHandle
 	      if (rxChar == '\b' || rxChar == 0x7F) {				// Vizuální smazání znaku v terminálu:
 	    	  if (RxIndex > 0) {
 	    		  RxIndex--;
@@ -127,14 +335,18 @@ void UartTask_run(void *argument)
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
 				  for (int i = 0; i < SENS_COUNT; i++) {
 					  const sensor_stat_t *s = &g_sensors[i];
-					  char a[16], b[16], c[16], d[16];
+					  char a[16], b[16], c[16], d[16], le[16];
 					  fmt_f2(a, sizeof(a), s->last);
 					  fmt_f2(b, sizeof(b), s->min);
 					  fmt_f2(c, sizeof(c), s->max);
 					  fmt_f2(d, sizeof(d), s->mean);
-					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u n=%lu\n",
+					  /* "uptime od posledni chyby" — jak davno byla posledni chyba cteni. */
+					  if (s->err_total) snprintf(le, sizeof(le), "%lus",
+						     (unsigned long)((HAL_GetTick() - s->err_last_ms) / 1000u));
+					  else              snprintf(le, sizeof(le), "-");
+					  printf("%-13s %s/%s/%s/%s %s  %s  err=%lu strk=%u last=%s n=%lu\n",
 						     g_sensor_desc[i].label, a, b, c, d, g_sensor_desc[i].unit, s->valid ? "OK " : "ERR",
-						     (unsigned long)s->err_total, (unsigned)s->err_streak,
+						     (unsigned long)s->err_total, (unsigned)s->err_streak, le,
 						     (unsigned long)s->samples);
 					  osDelay(2);
 				  }
@@ -278,13 +490,299 @@ void UartTask_run(void *argument)
 				  else if (strcmp(RxBuffer, "version") == 0) {
 				  printf(FW_VERSION_FULL "\r\n");   /* jedina definice ve version.h (== displej) */
 			  }
+			  /* ETH F0: `eth` = reset + sken SMI adres + dekod PHY; `eth clk` = zmer REF_CLK.
+			   * BLOKUJE stovky ms (sken 32 adres x 2 registry) — UartTask neni pod watchdogem. */
+			  else if (strncmp(RxBuffer, "eth", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  const char *sub = (RxBuffer[3] == ' ') ? &RxBuffer[4] : "";
+
+				  if (strcmp(sub, "clk") == 0) {
+					  /* ETH_REF_CLK (PA1) pres TIM2_CH2 v rezimu externich hodin.
+					   * TIM2 je 32bit a v `.ioc` VOLNY. Pri 50 MHz / 100 ms = 5e6 kroku. */
+					  __HAL_RCC_TIM2_CLK_ENABLE();
+					  GPIO_InitTypeDef g = {0};
+					  g.Pin = ETH_REFCLK_PIN; g.Mode = GPIO_MODE_AF_PP; g.Pull = GPIO_NOPULL;
+					  g.Speed = GPIO_SPEED_FREQ_VERY_HIGH; g.Alternate = GPIO_AF1_TIM2;
+					  HAL_GPIO_Init(GPIOA, &g);
+
+					  TIM2->CR1   = 0;
+					  TIM2->PSC   = 0;
+					  TIM2->ARR   = 0xFFFFFFFFu;
+					  TIM2->CCMR1 = (TIM2->CCMR1 & ~(0x3u << 8)) | (0x1u << 8);  /* CC2S=01: IC2 na TI2 */
+					  TIM2->CCER &= ~(TIM_CCER_CC2P | TIM_CCER_CC2NP);           /* nabezna hrana */
+					  TIM2->SMCR  = (0x6u << 4) | 0x7u;                          /* TS=110 (TI2FP2), SMS=111 */
+					  TIM2->CNT   = 0;
+					  uint32_t c0 = DWT->CYCCNT;
+					  TIM2->CR1  |= TIM_CR1_CEN;
+					  uint32_t win = SystemCoreClock / 10u;                      /* presne 100 ms z DWT */
+					  while ((DWT->CYCCNT - c0) < win) { __NOP(); }
+					  uint32_t cnt = TIM2->CNT;
+					  TIM2->CR1 &= ~TIM_CR1_CEN;
+
+					  uint32_t khz = cnt / 100u;      /* kroku za 100 ms -> kHz */
+					  printf("ETH REF_CLK (PA1): %lu kroku/100ms -> %lu.%03lu MHz\r\n",
+					         (unsigned long)cnt, (unsigned long)(khz / 1000u),
+					         (unsigned long)(khz % 1000u));
+					  if (cnt == 0)
+						  printf("  => ZADNE HODINY. Strap nINTSEL (LED2) nejspis NENI v rezimu REF_CLK OUT,\r\n"
+						         "     nebo nebezi 25 MHz oscilator na XTAL1/CLKIN. Overit osciloskopem.\r\n");
+					  else if (khz > 49000u && khz < 51000u)
+						  printf("  => OK, 50 MHz. MAC dostane hodiny, nINTSEL je spravne.\r\n");
+					  else
+						  printf("  => MIMO 50 MHz (+/-2%%). Zkontrolovat oscilator a strapy.\r\n");
+				  }
+				  else {
+					  printf("ETH F0 (PHY LAN8742A, bit-bang SMI z CM7):\r\n");
+					  printf("  piny: MDC=PC1 MDIO=PA2 RES=PG14 REF_CLK=PA1 (ze schematu 4/7+2/7)\r\n");
+					  eth_pins_init();
+
+					  /* Hardwarovy reset PHY: >=100 us low, pak >=1 ms na nabeh. */
+					  HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_RESET);
+					  eth_delay_us(200);
+					  HAL_GPIO_WritePin(ETH_RES_PORT, ETH_RES_PIN, GPIO_PIN_SET);
+					  osDelay(10);
+
+					  int found = -1;
+					  for (uint8_t a = 0; a < 32; a++) {
+						  uint16_t id1 = eth_phy_read(a, 2);
+						  uint16_t id2 = eth_phy_read(a, 3);
+						  if (id1 == 0xFFFF || (id1 == 0 && id2 == 0)) continue;   /* prazdno */
+						  printf("  PHYAD %2u: ID1=0x%04X ID2=0x%04X (OUI 0x%08lX)\r\n",
+						         (unsigned)a, id1, id2,
+						         (unsigned long)(((uint32_t)id1 << 16) | id2));
+						  if (found < 0) found = a;
+					  }
+
+					  if (found < 0) {
+						  printf("  => ZADNY PHY NEODPOVIDA na SMI.\r\n");
+						  printf("  ⚠️ ZNAMA PRICINA NA TETO DESCE (potvrzeno 2026-08-13):\r\n");
+						  printf("     PHY dostava 10 MHz misto 25 MHz. X1 je 10 MHz (spolecny s HSE\r\n");
+						  printf("     procesoru) a jde pres R6 do site OSC_25M = XTAL1/CLKIN LAN8742A,\r\n");
+						  printf("     ktery vyzaduje 25 MHz -> nenabehne a neodpovi ani na MDIO.\r\n");
+						  printf("     Reseni: odpojit R6 a privest samostatnych 25 MHz (R5 = HSE nechat!).\r\n");
+						  printf("     Dokud to plati, nema smysl hledat chybu jinde.\r\n");
+						  printf("     ⚠️ Pozor na zamenu dvou RUZNYCH hodin: SMI je clockovane MDC, takze\r\n");
+						  printf("     na 50 MHz REF_CLK (strap nINTSEL) opravdu NEzavisi — PHY ale\r\n");
+						  printf("     potrebuje svuj 25 MHz VSTUPNI takt, a ten mu chybi.\r\n");
+						  printf("     Az bude clock spraveny: napajeni PHY, ETH_RES (PG14), MDC/MDIO.\r\n");
+					  } else {
+						  uint16_t bmcr = eth_phy_read((uint8_t)found, 0);
+						  uint16_t bmsr = eth_phy_read((uint8_t)found, 1);
+						  uint16_t scsr = eth_phy_read((uint8_t)found, 31);  /* LAN8742A special status */
+						  printf("  nalezen PHY na adrese %d (ocekavana 0 dle strapu PHYAD0->GND)\r\n", found);
+						  printf("  BMCR=0x%04X  AN=%s speed=%s duplex=%s\r\n", bmcr,
+						         (bmcr & (1u << 12)) ? "on" : "off",
+						         (bmcr & (1u << 13)) ? "100M" : "10M",
+						         (bmcr & (1u <<  8)) ? "full" : "half");
+						  printf("  BMSR=0x%04X  link=%s AN-done=%s\r\n", bmsr,
+						         (bmsr & (1u << 2)) ? "UP" : "down",
+						         (bmsr & (1u << 5)) ? "ano" : "ne");
+						  printf("  SCSR=0x%04X  (bity 4:2 = vysledna rychlost/duplex po AN)\r\n", scsr);
+						  printf("  => PHY ZIJE. Zbyva overit hodiny: `eth clk`\r\n");
+					  }
+				  }
+			  }
+			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
+			  else if (strcmp(RxBuffer, "enc") == 0) {
+				  enc_init();
+				  printf("ENC: TIM1 encoder mode, CH1=PA8 CH2=PA9 tlacitko=PC13\r\n");
+				  printf("     otacej a mackej 10 s (kladne = jeden smer, zaporne = druhy)\r\n");
+				  uint16_t base = (uint16_t)TIM1->CNT;
+				  int16_t  last = 0;
+				  uint8_t  lastb = 0xFF;
+				  for (int i = 0; i < 100; i++) {
+					  int16_t d = (int16_t)((uint16_t)TIM1->CNT - base);
+					  uint8_t b = (HAL_GPIO_ReadPin(ENC_BTN_PORT, ENC_BTN_PIN) == GPIO_PIN_RESET);
+					  if (d != last || b != lastb) {
+						  printf("  kroku=%d  tlacitko=%s\r\n", (int)d, b ? "STISK" : "-");
+						  last = d; lastb = b;
+					  }
+					  osDelay(100);
+				  }
+				  printf("ENC: konec. Celkem kroku=%d\r\n",
+						 (int)((int16_t)((uint16_t)TIM1->CNT - base)));
+				  if ((int16_t)((uint16_t)TIM1->CNT - base) == 0)
+					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
+			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strncmp(RxBuffer, "scpi", 4) == 0 &&
+			           (RxBuffer[4] == ' ' || RxBuffer[4] == '\0')) {
+				  /* SCPI-99 pres USB konzoli (#25): "scpi <prikaz>" -> scpi_process.
+				   * Prefix "scpi " je jen pro SDILENOU konzoli (aby nekolidoval s
+				   * "version" apod.); dedikovany TCP 5025 na CM4 bude volat scpi_process
+				   * primo bez prefixu. Napr.: scpi *IDN?  |  scpi MEAS:FREQ? */
+				  const char *arg = (RxBuffer[4] == ' ') ? &RxBuffer[5] : "";
+				  char resp[128];
+				  size_t rn = scpi_process(arg, resp, sizeof resp);
+				  if (rn) printf("%s\r\n", resp);   /* dotaz -> odpoved; akce (*RST) -> ticho */
+				  else    printf("\r\n");
+			  }
+			  else if (strcmp(RxBuffer, "screenshot sd") == 0) {
+				  /* DOPORUCENA cesta: uloz snimek na SD kartu. Resi tearing (kopie do
+				   * SDRAM scratche pred zapisem) i spolehlivost (FatFs zapise cely
+				   * soubor). BLOKUJE sekundy -> UartTask, ktery neni pod watchdogem. */
+				  char sname[16] = "";
+				  sd_blocking_begin();
+				  int sr = screenshot_save_sd(sname, sizeof sname);
+				  sd_blocking_end();
+				  if (sr == 0) printf("SCREENSHOT: ulozeno jako %s\n", sname);
+				  else         printf("SCREENSHOT: chyba %d (%s)\n", sr, sd_export_state_str());
+			  }
+			  else if (strcmp(RxBuffer, "screenshot") == 0) {
+				  /* Export pres USB CDC (~1,15 MB, sekundy). ⚠️ Snima ZIVY front buffer
+				   * a tok je best-effort, takze u animovane obrazovky muze mit pruhy
+				   * ze dvou framu. Spolehlivejsi je `screenshot sd`. */
+				  screenshot_emit_bmp();
+			  }
+			  else if (strcmp(RxBuffer, "autocal") == 0) {
+				  autocal_run();
+				  char ab[280];
+				  autocal_format_full(ab, sizeof ab);
+				  printf("%s", ab);
+			  }
+			  /* SD karta = EXPORTNI medium (W25Q zustava autoritativni, viz sd_export.h).
+			   * ⚠️ mount i export BLOKUJI (HAL_SD_Init desitky-stovky ms, zapis sekundy) —
+			   * proto jsou tady v UartTasku, ktery NENI hlidan watchdogem. Z defaultTask/
+			   * UiTask je NEVOLAT. Detekce karty bezi levne v defaultTasku (sd_export_tick). */
+			  else if (strncmp(RxBuffer, "sd", 2) == 0 && (RxBuffer[2] == '\0' || RxBuffer[2] == ' ')) {
+				  const char *arg = RxBuffer[2] == ' ' ? &RxBuffer[3] : "";
+				  /* ⚠️ Po dobu prace se SD jde UartTask POD UiTask — HAL SD ma tesne
+				   * smycky s timeoutem ~49 dni a zaseknuta karta by jinak vyhladovela
+				   * UiTask, zabila dotyk a IWDG by shodil desku. Obaluje se CELY blok
+				   * (jeden vstup, jeden vystup), ne jednotlive funkce s ranymi return —
+				   * stejne pouceni jako u `s_busy`. Viz sd_export.h. */
+				  sd_blocking_begin();
+				  if (strcmp(arg, "mount") == 0) {
+					  printf("SD: mountuji...\n");
+					  printf("SD: %s (%s)\n", sd_export_mount() ? "OK" : "FAIL", sd_export_state_str());
+				  } else if (strcmp(arg, "unmount") == 0) {
+					  sd_export_unmount();
+					  printf("SD: odmountovano (%s)\n", sd_export_state_str());
+				  } else if (strncmp(arg, "export", 6) == 0) {
+					  uint32_t n = (uint32_t)atoi(arg[6] == ' ' ? &arg[7] : "");   /* 0 = vse */
+					  printf("SD: exportuji %s do GPSDO.CSV, cekej...\n", n ? "cast logu" : "cely log");
+					  int32_t w = sd_export_run(n);
+					  if (w < 0) printf("SD: export FAIL (%s)\n", sd_export_state_str());
+					  else       printf("SD: export OK, %ld zaznamu\n", (long)w);
+				  } else if (strcmp(arg, "diag") == 0) {
+					  sd_export_diag();
+				  } else if (strcmp(arg, "test") == 0) {
+					  sd_export_selftest();
+				  } else if (strncmp(arg, "format", 6) == 0) {
+					  /* ⚠️ DESTRUKTIVNI — dvoji potvrzeni i na konzoli. Praci udela
+					   * sd_export_service() (taky UartTask) po nastaveni pozadavku. */
+					  if (strcmp(arg, "format yes yes") == 0) {
+						  printf("SD: FORMATUJI (smaze vse)...\n");
+						  g_sd_req = SD_REQ_FORMAT;
+					  } else {
+						  printf("SD: format je DESTRUKTIVNI (smaze VSE na karte).\n");
+						  printf("    Pro potvrzeni napis:  sd format yes yes\n");
+					  }
+				  } else if (strncmp(arg, "det invert", 10) == 0) {
+					  const char *a2 = arg[10] == ' ' ? &arg[11] : "";
+					  datalog_sd_det_invert(strcmp(a2, "off") != 0);
+					  printf("SD: polarita detekce = %s\n", datalog_sd_det_inverted()
+					         ? "OBRACENA (HIGH = karta)" : "vychozi (LOW = karta)");
+					  printf("SD: PE3=%s -> %s\n", datalog_sd_det_raw() ? "HIGH" : "LOW",
+					         datalog_sd_detect_status() ? "KARTA" : "prazdno");
+				  } else if (strcmp(arg, "det") == 0) {
+					  /* Diagnostika card-detect pinu bez debuggeru. Dle zapojeni J13
+					   * (spinac DET_A=GND / DET_B=PE3 + 47k pull-up) ma byt
+					   * LOW = karta vlozena. Zkus vysunout/zasunout a porovnej. */
+					  printf("SD: PE3 syrove = %s   polarita = %s\n",
+					         datalog_sd_det_raw() ? "HIGH" : "LOW",
+					         datalog_sd_det_inverted() ? "OBRACENA (HIGH=karta)" : "vychozi (LOW=karta)");
+					  printf("SD: vyhodnoceno=%s  debounced=%s  force=%s\n",
+					         datalog_sd_detect_status() ? "KARTA" : "prazdno",
+					         datalog_sd_card_present() ? "vlozena" : "chybi",
+					         datalog_sd_det_forced() ? "ZAPNUTO" : "vypnuto");
+				  } else if (strcmp(arg, "fs") == 0) {
+					  /* CO JE NA KARTE DOOPRAVDY — cte LBA 0 mimo FatFs a dekoduje
+					   * MBR/boot sektor. Doted se format jen ODHADOVAL. */
+					  sd_export_fs();
+				  } else if (strcmp(arg, "init") == 0) {
+					  /* Inicializace karty PO KROCICH se znackami — posledni vypsana
+					   * znacka rekne, ktery HAL krok pripadny pad zpusobil. */
+					  sd_export_init_steps();
+				  } else if (strncmp(arg, "force", 5) == 0) {
+					  const char *a2 = arg[5] == ' ' ? &arg[6] : "";
+					  datalog_sd_det_force(strcmp(a2, "off") != 0);
+					  g_sys_cfg_dirty = 1;   /* persist do W25Q (prezije reboot) */
+					  printf("SD: override detekce %s\n",
+					         datalog_sd_det_forced() ? "ZAPNUT (detekce se ignoruje)" : "vypnut");
+				  } else {
+					  printf("SD: karta %s, stav: %s%s\n",
+					         datalog_sd_card_present() ? "VLOZENA" : "chybi", sd_export_state_str(),
+					         datalog_sd_det_forced() ? "  [force]" : "");
+					  printf("SD: prikazy: sd init | sd fs | sd diag | sd test | sd format yes yes | sd det [invert on|off] | sd force [on|off] | sd mount | sd unmount | sd export [N]\n");
+				  }
+				  sd_blocking_end();
+			  }
+			  else if (strncmp(RxBuffer, "datalog", 7) == 0) {
+				  const char *arg = RxBuffer[7] == ' ' ? &RxBuffer[8] : "";
+				  if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0) {
+					  datalog_set_enabled(arg[1] == 'n');
+					  printf("DATALOG: logovani %s\n", datalog_enabled() ? "ZAPNUTO" : "VYPNUTO");
+				  } else if (strcmp(arg, "erase") == 0) {
+					  /* Destruktivni + dlouhe (erase celeho DATA regionu). Drzi QSPI
+					   * mutex uvnitr; UartTask NENI hlidan watchdogem, takze smi cekat. */
+					  printf("DATALOG: mazu cely log, cekej...\n");
+					  printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+				  } else if (strcmp(arg, "dump") == 0) {
+					  /* Poslednich 10 zaznamu, nejnovejsi prvni (rychla kontrola obsahu). */
+					  datalog_rec_t r;
+					  for (uint32_t i = 0; i < 10u; i++) {
+						  if (!datalog_read_back(i, &r)) break;
+						  /* Kmitocet pres fpga_freq_format_val — u64 se do printf
+						   * nedava (%llu nemusi nano-printf umet, stejny duvod jako
+						   * jinde v projektu: zadny float/64b format v konzoli). */
+						  char fb[32];
+						  fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d fl=0x%02X sat=%u\n",
+							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv,
+							     (unsigned)r.flags, (unsigned)r.sats);
+					  }
+				  } else {
+					  char db[80];
+					  datalog_format_status(db, sizeof db);
+					  printf("%s\n", db);
+					  printf("  (datalog on|off|erase|dump)\n");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "stacktest yes") == 0) {
+				  /* STATUS.md TODO #10: overeni, ze detekce preteceni zasobniku funguje
+				   * CELOU cestou (hook -> crash_blackbox -> BKP_DR3..5 -> MX_RTC_Init ->
+				   * Health "Reset:"). Zapnuti (configCHECK_FOR_STACK_OVERFLOW=2) bylo
+				   * dosud overene jen staticky preprocesorem — sama detekce se ozve az
+				   * pri skutecnem preteceni.
+				   * Zamerne prepise stack UartTasku a hned yielduje: FreeRTOS pri
+				   * prepnuti kontextu porovna stack pattern -> vApplicationStackOverflowHook
+				   * -> zapis do BKP -> __disable_irq() + spin -> zadne heartbeaty ->
+				   * IWDG resetne do ~4 s. Po bootu MUSI byt videt "Reset: ... stack:UartTask"
+				   * (System Health / UART `status`).
+				   * ⚠️ Vyzaduje presne "stacktest yes" — samotne "stacktest" jen vypise
+				   * napovedu, aby to neslo spustit omylem/preklepem.
+				   * ⚠️ Bez VBAT baterie testuj WARM resetem (BKP neprezije power-cycle). */
+				  /* Velikost: UartTask 4096 B, ramec UartTask_run ~1,3 kB + echo/USB cesta
+				   * ~1 kB -> stacktest_overflow() pridá 3616 B -> spolehlive pretece dno
+				   * zasobniku (prepise 20B watermark -> hook). Zamerne v samostatne funkci
+				   * (viz komentar u stacktest_overflow) — jako local v UartTask_run by tech
+				   * 3600 B nafouklo ramec VZDY a task by pretekal i za normalu (byl to
+				   * puvod HardFaultu pri prvnim USB znaku). */
+				  printf("STACKTEST: pretekam stack UartTasku, ceka se IWDG reset (~4 s)...\n");
+				  stacktest_overflow();
+			  }
+			  else if (strcmp(RxBuffer, "stacktest") == 0) {
+				  printf("STACKTEST: zamerne pretece stack a vyvola IWDG reset.\n");
+				  printf("  Potvrd prikazem: stacktest yes\n");
 			  }
 			  else if (strcmp(RxBuffer, "freq") == 0) {
 				  char fbuf[48];
@@ -303,6 +801,13 @@ void UartTask_run(void *argument)
 				  char gbuf[128];
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
+				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
+				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
+				   * "gpsraw" (mely by prijit i $GLGSV vety). */
+				  gps_config_gnss();
+				  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
 			  }
 			  else if (strcmp(RxBuffer, "adcraw") == 0) {
 				  /* Diag ADC3: raw 3 internich kanalu (cteno po jednom jako SensorsTask)
@@ -413,32 +918,47 @@ void UartTask_run(void *argument)
 			  }
 			  else if (strcmp(RxBuffer, "qspiid") == 0) {
 				  /* Bring-up krok 1: JEDEC ID. Cekame EF 40 20 (W25Q512JV). Nevyzaduje init. */
-				  uint32_t id = w25q_read_jedec();
-				  printf("QSPI JEDEC ID: %06lX  (%s)\n", (unsigned long)id,
+				  uint32_t id = 0; int got = 0;
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) == osOK) {
+					  id = w25q_read_jedec(); got = 1;
+					  osMutexRelease(qspiMutexHandle);
+				  }
+				  if (!got) printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  else printf("QSPI JEDEC ID: %06lX  (%s)\n", (unsigned long)id,
 					     (id == W25Q_JEDEC_ID) ? "W25Q512JV OK" : "NEODPOVIDA (cekam EF4020)");
 			  }
 			  else if (strcmp(RxBuffer, "qspitest") == 0) {
 				  /* Bring-up krok 2: init + erase sektoru 0 + zapis/cteni vzorku + verify.
-				   * DESTRUKTIVNI na sektor 0 (flash zatim nic nepouziva). */
-				  if (!w25q_init()) {
-					  printf("QSPI: init/JEDEC FAIL (zkontroluj qspiid)\n");
-				  } else {
-					  uint8_t wr[16], rd[16];
-					  for (int i = 0; i < 16; i++) wr[i] = (uint8_t)(0xA0 + i);
-					  bool e = w25q_erase_sector(0);
-					  bool w = w25q_write(0, wr, sizeof(wr));
-					  bool r = w25q_read(0, rd, sizeof(rd));
-					  int ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
-					  printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
-						     (int)e, (int)w, (int)r, ok ? "OK" : "MISMATCH");
+				   * DESTRUKTIVNI na sektor 0. Cela sekvence pod QSPI zamkem — erase+write+read
+				   * musi projit vcelku (jinak by mezi ne vlezl syscfg auto-save z defaultTask). */
+				  int got = 0, init_ok = 0, e = 0, w = 0, r = 0, ok = 0;
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) == osOK) {
+					  got = 1;
+					  if (w25q_init()) {
+						  init_ok = 1;
+						  uint8_t wr[16], rd[16];
+						  for (int i = 0; i < 16; i++) wr[i] = (uint8_t)(0xA0 + i);
+						  e = w25q_erase_sector(0);
+						  w = w25q_write(0, wr, sizeof(wr));
+						  r = w25q_read(0, rd, sizeof(rd));
+						  ok = (e && w && r && memcmp(wr, rd, sizeof(wr)) == 0);
+					  }
+					  osMutexRelease(qspiMutexHandle);
 				  }
+				  if (!got)          printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  else if (!init_ok) printf("QSPI: init/JEDEC FAIL (zkontroluj qspiid)\n");
+				  else printf("QSPI test: erase=%d write=%d read=%d verify=%s\n",
+					     e, w, r, ok ? "OK" : "MISMATCH");
 			  }
 			  else if (strcmp(RxBuffer, "storetest") == 0) {
 				  /* Test genericke store vrstvy na CONFIG regionu (base 0x0 -> hlida i
 				   * base-0 edge case). Destruktivni, region zatim nevyuzity.
 				   * Init -> write blob -> read+verify -> 2. write (rotace sektoru). */
-				  if (!w25q_init()) {
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) != osOK) {
+					  printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  } else if (!w25q_init()) {
 					  printf("STORE: QSPI init FAIL (zkontroluj qspiid)\n");
+					  osMutexRelease(qspiMutexHandle);
 				  } else {
 					  w25q_store_t st;
 					  w25q_store_init(&st, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS);
@@ -458,14 +978,18 @@ void UartTask_run(void *argument)
 					  printf("STORE 2nd: seq=%lu active=0x%06lX (rotace:%s)\n",
 						     (unsigned long)st.seq, (unsigned long)st.active,
 						     (st.active != prev) ? "OK" : "NE");
+					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "qspispeed") == 0) {
 				  /* Propustnost cteni pri aktualni SCK (60 MHz quad). Zapise 64 KB pattern
 				   * do DATA regionu, pak CASOVANY read (DWT) + verify. ⚠️ DESTRUKTIVNI na
 				   * DATA[0..64KB). Zapis je pomaly (erase+PP ~1-2 s), meri se jen cteni. */
-				  if (!w25q_init()) {
+				  if (osMutexAcquire(qspiMutexHandle, QSPI_CMD_LOCK_MS) != osOK) {
+					  printf("QSPI: sbernice zaneprazdnena, zkus znovu\n");
+				  } else if (!w25q_init()) {
 					  printf("QSPI speed: init FAIL\n");
+					  osMutexRelease(qspiMutexHandle);
 				  } else {
 					  uint8_t buf[512];
 					  uint32_t base = W25Q_DATA_BASE, total = 64u * 1024u;
@@ -485,6 +1009,7 @@ void UartTask_run(void *argument)
 					  printf("QSPI speed: read %lu KB in %lu us -> %lu KB/s verify=%s\n",
 						     (unsigned long)(total / 1024u), (unsigned long)us,
 						     (unsigned long)kbps, ok ? "OK" : "FAIL");
+					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
@@ -520,7 +1045,52 @@ void UartTask_run(void *argument)
 				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
 			  }
 			  else if (strcmp(RxBuffer, "status") == 0)  {
-				  printf("RUNNING\n");
+				  /* Diagnostika restartu + zdravi tasku. Drive to vypisovalo jen
+				   * "RUNNING" (nepouzitelne pri honu na nahodny watchdog reset) —
+				   * pricina resetu byla dostupna JEN v okne System Health. */
+				  printf("RUNNING %s  uptime %lus\n", FW_VERSION_FULL, (unsigned long)g_uptime_s);
+				  printf("Reset: %s%s%s\n", (const char *)g_reset_text,
+					     g_crash_text[0] ? "  " : "", (const char *)g_crash_text);
+				  if (g_crash_text[0] == 'H') {  /* HardFault -> vypis i CFSR/BFAR/LR/HFSR */
+					  printf("  CFSR=0x%08lX  BFAR=0x%08lX (adresa, ktera fault zpusobila)\r\n",
+					         (unsigned long)g_crash_cfsr, (unsigned long)g_crash_bfar);
+					  printf("  LR=0x%08lX (odkud se skocilo, addr2line -e .elf)  HFSR=0x%08lX\r\n",
+					         (unsigned long)g_crash_lr, (unsigned long)g_crash_hfsr);
+				  }
+				  printf("  RSR=0x%08lX%s\n", (unsigned long)g_reset_rsr,
+					     g_reset_bad ? "  <-- WATCHDOG/CRASH" : "");
+				  printf("Heap: free %lu B, min-ever %lu B   CPU %lu%%\n",
+					     (unsigned long)g_rtos_heap_free, (unsigned long)g_rtos_heap_min,
+					     (unsigned long)g_rtos_cpu_pct);
+				  /* CM4 (D2): nenabootoval / bezi+mluvi (IPC heartbeat) / D2 ready ale ticho;
+				   * stall x<n> = kolikrat se CM4 zasekl po ozivu (zotaveni pres jeho IWDG2). */
+				  printf("CM4: %s, stall x%lu\n",
+					     g_cm4_absent ? "ABSENT (nenabootoval - bank2/BCM4)" :
+					     (g_cm4_alive ? "alive (IPC heartbeat)" : "SILENT (D2 ready, IPC ticho)"),
+					     (unsigned long)g_cm4_stall_count);
+				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
+				   * preteceni (a tim i na "stall"/HardFault). */
+				  static const struct { const char *n; osThreadId_t *h; } TL[] = {
+					  {"default", &defaultTaskHandle}, {"Uart", &UartTaskHandle},
+					  {"I2C4",    &I2C4TaskHandle},    {"Ui",   &UiTaskHandle},
+					  {"Fpga",    &FpgaTaskHandle},
+				  };
+				  for (unsigned i = 0; i < sizeof(TL) / sizeof(TL[0]); i++) {
+					  if (*TL[i].h == NULL) continue;
+					  printf("  stack %-7s free %lu B\n", TL[i].n,
+						     (unsigned long)osThreadGetStackSpace(*TL[i].h));
+				  }
+				  /* FPGA link + CRC chyby (pocet + jak davno byla posledni). */
+				  if (fpga_freq_crc_count())
+					  printf("FPGA: link %s, CRC err %lu, last %lus ago\n",
+						     fpga_freq_link_ok() ? "OK" : "NOLINK",
+						     (unsigned long)fpga_freq_crc_count(),
+						     (unsigned long)fpga_freq_crc_last_age_s());
+				  else
+					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  char db[80];
+				  datalog_format_status(db, sizeof db);
+				  printf("%s\n", db);
 			  }
 			  else {
 				  printf("ERR unknown command\r\n");
@@ -534,6 +1104,9 @@ void UartTask_run(void *argument)
 			  }
 		  }
 	  }
+    /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
+     * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
+    sd_export_service();
     osDelay(1);
   }
 }

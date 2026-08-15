@@ -27,5 +27,6 @@ void alarm_click(void);
 /* Pocitadla alarmovych udalosti (okno Alarmy). */
 extern volatile unsigned int g_alarm_fpga_lost;   /* pocet ztrat FPGA signalu */
 extern volatile unsigned int g_alarm_gps_lost;    /* pocet ztrat GPS locku */
+extern volatile unsigned int g_alarm_limit_fail;  /* pocet prechodu PASS->FAIL limitu (#44) */
 
 #endif /* ALARM_H */

@@ -55,6 +55,12 @@ void fpga_freq_restart(void);
 /** true = posledni poll dostal platny ramec (MAGIC+CRC ok), tj. link je ziva. */
 bool fpga_freq_link_ok(void);
 
+/** Pocet ramcu se spatnym CRC od bootu (diagnostika linky, UART `status`). */
+uint32_t fpga_freq_crc_count(void);
+
+/** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
+uint32_t fpga_freq_crc_last_age_s(void);
+
 /** Jeden 64B full-duplex prenos (posle ACK posledni seq, prijme aktualni ramec).
  *  @return true pokud prislo NOVE platne cerstve mereni (CRC ok, VALID, FRESH, nova SEQUENCE). */
 bool fpga_freq_poll(fpga_meas_t *out);
@@ -84,6 +90,12 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
 /** true = posledni DATA ramec hlasil ztratu signalu (error_flags bit1 SIGNAL_LOST).
  *  Autoritativni z FPGA (watchdog ~2.5 s); funguje i kdyz mereni neni VALID. */
 bool fpga_freq_signal_lost(void);
+
+/** Kopie posledniho naparsovaneho DATA ramce (latch — i nefresh/invalid, takze
+ *  error_flags/phase_status jsou videt i pri ztrate signalu). Kopiruje pod
+ *  kratkym IRQ-off -> bezpecne z jineho tasku nez FpgaTask (okno Citac v UiTasku).
+ *  @return false = zadny DATA ramec zatim nedorazil (out se nemeni). */
+bool fpga_freq_get_last(fpga_meas_t *out);
 
 /** Diagnostika: jeden 64B prenos (posle ACK), syrova odpoved do rx64 (min. 64 B).
  *  @return true pokud HAL prenos prosel (rika nic o platnosti dat). */

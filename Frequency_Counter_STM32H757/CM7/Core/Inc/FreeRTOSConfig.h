@@ -172,6 +172,20 @@ standard names. */
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
 
+/* ⚠️ DETEKCE PRETECENI ZASOBNIKU + SELHANI MALLOCU (audit 2026-07-18).
+ * Obe volby BYLY NEDEFINOVANE -> FreeRTOS.h je bral jako 0 -> hooky
+ * vApplicationStackOverflowHook / vApplicationMallocFailedHook ve
+ * freertos_hooks.c se NIKDY nevolaly. Crash black-box (BKP_DR3..5, "stack:<task>")
+ * tedy byl mrtvy kod, prestoze je dokumentovany jako ochrana — a projekt uz jedno
+ * preteceni zazil (printf v SensorsTasku).
+ * Metoda 2 = vzor na konci zasobniku + kontrola pri kazdem prepnuti kontextu
+ * (spolehlivejsi nez 1, rezie zanedbatelna).
+ * ⚠️ Zamerne TADY (USER CODE), ne pres CubeMX GUI — je to regen-safe stejne jako
+ * configGENERATE_RUN_TIME_STATS nize. NENASTAVUJ je zaroven v CubeMX (Config
+ * parameters), vzniklo by dvoji #define. */
+#define configCHECK_FOR_STACK_OVERFLOW       2
+#define configUSE_MALLOC_FAILED_HOOK         1
+
 /* Run-time stats: casova baze = DWT cycle counter (480 MHz, bez extra periferie).
  * Prikaz "stats" v UARTu pak ukaze realne CPU% per task (delta za 1s). */
 #define configGENERATE_RUN_TIME_STATS        1

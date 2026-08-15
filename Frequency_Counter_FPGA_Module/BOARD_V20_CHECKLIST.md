@@ -153,3 +153,78 @@ sdílené spoje na modulu), 27–29, 40–47 (1V8 banka!), HDMI, pozice 25 (+3V3
 
 Závěr: zapojení SPI na 54/55/56/57 dle sekce 2 je pro tento cíl správné a optimální — nic se nemění,
 jen se doplní RTL most + protokol + STM podpora.
+
+## 7. Analogový front-end — revize přesnosti (2026-07-26, re-check 2026-07-27)
+
+Z validace schématu + netlistu. **ADS1115 per-kanál PGA je už hotový ve FW**
+(`ads1115_start(hi2c, ch, pga)` + tabulka `k_ads_pga[4]` v `freertos_task_sensors.c`,
+zatím pod `ADS1115_HW_DIVIDERS_REV2 = 0`). Níže je HW + navazující FW, co zbývá.
+
+**Stav po úpravách schématu 2026-07-27 (netlist + Si5356/OCXO/MIC920 datasheety ověřeny):**
+- ✅ HOTOVO: U4 TLV9001 **přepinován** (buffer VBB funguje) · MAX9601 prahy R5/R7/R8/**R10=22k** +
+  R8 na +5V (±0,93 V) · OCXO_VC R51=15k/R52=10k · **VBUS R55=100k/R56=4k99** · **+5V R57=15k/R58=10k** ·
+  **10MHz_GPSDO_CLK3 dopojen** · **MIC920 komparátory bias 12k/12k → 1,65 V** (R104/R105 na U16 OCXO,
+  R106/R107 na U18 Ext ref; na uzlu C60/C70 → zachová amplitudu). Všechny 4 ADC děliče → ±2,048 V.
+- ✅ OVĚŘENO datasheetem/podklady (NENÍ chyba):
+  · **Si5356 SSC_DIS** 1,048 V ∈ [0,85; 1,3] = SSC vypnutý. OEB=GND (výstupy on). XA/XB=GND.
+  · **Pin 63** = RPLL_T_in = dedikovaný PLL vstup, ne boot-strap → 10 MHz OK.
+  · **OCXO NVG47A1282 = sinus** (+3 dBm) → komparátor nutný; **MIC920 = op-amp** → bias nutný (přidán).
+  · **Thévenin Q→EPT23 130/82** (VTT=1,28 V = VCC−2) = standardní PECL, **neměnit** (VTT musí být < VOL).
+- ❌ ZBÝVÁ (jediná věc):
+  1. **R54 = 10k STÁLE OSAZEN** — zatěžuje výstup AD8307 (srazí 25 mV/dB). **R54 → DNP.**
+- FW po osazení desky: přepnout REV2=1; přeměřit `g_calib.gain_12v` (100k/4k99 = ×21,0) a
+  `gain_5v` (15k/10k = ×2,5, dřív 8k2/10k); přidat AIN0 ×2,5 (OCXO_VC).
+- Rev2 PGA tabulka ve FW: AIN0/AIN2/**AIN3**=±2,048, AIN1=±4,096.
+
+### 7.1 ADC děliče (U8 ADS1115, VDD = 3,3 V) — namapovat na PGA hranici pod VDD
+Cíl „co nejpřesněji": plný rozsah čidla → ~2,0 V, PGA ±2,048 V (plné 15bit, rezerva k VDD).
+Všechny odpory **0,1 % / ≤25 ppm/°C** (u VBUS je chyba poměru ~2× tolerance).
+
+| AIN | Signál | Změna odporů | Výsledek | PGA |
+|----|--------|--------------|----------|-----|
+| 0 | OCXO_VC_Sense (0–5 V) | **R51 → 15k, R52 → 10k** | 5→2,00 V | ±2,048 V |
+| 1 | RF_Level (AD8307) | **R53 → 1k (sériově), R54 → DNP** | přímo | ±4,096 V |
+| 2 | VBUS (0–42 V) | **R55 → 100k, R56 → 4k99** | 40→1,90 V | ±2,048 V |
+| 3 | +5 V (0–5 V) | **R57 → 15k, R58 → 10k** | 5→2,00 V | ±2,048 V |
+
+- **⚠️ AIN1 (AD8307) — kritické: NEzatěžovat výstup na GND!** Detektor má výstup 2 µA/dB
+  do interního 12,5 kΩ = 25 mV/dB, bez bufferu. Stávající R53=5k1 / R54=10k (15 kΩ na G)
+  sráží strmost na ~13,6 mV/dB → měření RF je zkreslené. Řešení: R54 vyjmout, R53 jen malý
+  sériový (1k, ESD + anti-alias s C38), PGA ±4,096 V pokryje 0,25–2,6 V pod VDD.
+- **AIN2 (VBUS) — přeběh:** dnešní R55=56k/R56=9k1 dá při 40 V **5,59 V** > abs. max vstupu
+  ADS1115 (VDD+0,3 = 3,6 V) → poškození. Nové 100k/4k99: FS 42 V, při 40 V 1,90 V, Zs 4,75 k.
+- C37–C40 (10n) nechat (RC pól ~2–3 kHz, pro DC monitoring OK).
+
+### 7.2 Navazující FW (až bude HW hotový)
+- V `freertos_task_sensors.c` přepnout **`ADS1115_HW_DIVIDERS_REV2` → 1** (aktivuje PGA tabulku).
+- Přepočítat kalibraci `g_calib.gain_12v` (VBUS, nový poměr 105k/4,99k = ×21,04) a
+  `g_calib.gain_5v` (+5 V, nový poměr 25k/10k = ×2,5).
+- **AIN0 OCXO_VC_Sense**: přidat škálování ×2,5 (25k/10k) → reportovat skutečné VC napětí
+  (dnes se ukládá jen mV na pinu, bez přepočtu).
+- **AIN1 RF_Level**: aplikovat 2bodovou kalibraci AD8307 (slope 25 mV/dB, intercept) →
+  dBm/dBW; ADC LSB (0,005 dB) není omezení, detektor ±0,5 dB je.
+- Kalibrace absolutní přesnosti: změřit regulovaných +5 V a známý OCXO_VC (DAC) → dopočítat
+  gain/offset ADC (maže i tempco interní reference ADS1115).
+- (Volitelně) použít pin **ALERT/RDY = `ADC_RDY`** (R63 pull-up → STM J5.12) jako
+  conversion-ready IRQ místo `osDelay(9)` — nastavit Hi_thresh MSB=1, Lo_thresh MSB=0,
+  COMP_QUE ≠ 11.
+- Layout: **Kelvin / hvězdové zemnění** dolních odporů děličů přímo ke GND pinu U8.
+
+### 7.3 Prahy komparátorů MAX9601 (U1) — zúžit a symetrizovat
+- Dnes: kanál A (R6) rozsah jezdce **±4,17 V**, kanál B (R9) **+2,61…−4,31 V** (R8 na +3V3).
+  Nepoškodí (v mezích Vee…Vcc), ale rozsah je ~10× širší, než je použitelné (signál u 0 V),
+  u krajů opouští common-mode → komparátor „zamrzne"; navíc kanály nejsou symetrické.
+- **R5 = R7 = R8 = R10 → 22k** a **R8 přepojit z +3V3 na +5V** → oba kanály ±0,93 V.
+  (Pro jemnější ±0,5 V dej 47k.) Ověřit abs. max differential input MAX9601 v datasheetu.
+
+### 7.4 OZ / komparátory — pinout (uzavřeno)
+- **U16, U18 (MIC920) OK** — symbol `OPA365xxDBV_1` (pad1=IN+, pad3=IN−, pad4=OUT) odpovídá
+  reálnému nestandardnímu pinoutu MIC920 dle datasheetu. Beze změny.
+- **U4 (TLV9001) — ✅ OPRAVENO 2026-07-27.** Přepinováno na pad1=OUT / pad3=IN+ / pad4=IN−
+  (netlist: VBB→R33→pad3, výstup pad1 svázán s pad4=IN− → unity buffer VBB). Odpovídá reálnému
+  TLV9001 DCK, buffer VBB pro reference `~D0/~D1` U5 teď funguje. (Alternativa „U4 vynechat +
+  VBB přímo" už netřeba.)
+
+### 7.5 Napájení — kontrola rozsahu VBUS
+- List 5 pozn.: VBUS až 36–40 V. **LMR33630 (U23/U24)** doporučené Vin max = 36 V (abs 42 V)
+  → při 40 V bez rezervy. Ověřit i napěťový derating vstupních C (C96/C97 100u, C98/C99) na ≥ 50 V.

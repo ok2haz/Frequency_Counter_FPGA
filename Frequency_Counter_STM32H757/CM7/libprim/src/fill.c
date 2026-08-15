@@ -45,26 +45,60 @@ void prim_fill_rect(prim_rect_t rect, prim_color_t color, prim_blend_t blend)
     sw_fill(r, color, blend);
 }
 
+/* Coverage (alfa 0..255) jednoho pixelu zaobleneho rohu — 4 subsample vzdalenosti.
+ * (offsety 0,25/0,75 px). Celociselne (zadny float — FPU-neutralni). */
+static uint8_t aa_sample(int16_t dx, int16_t dy, int32_t r2x16)
+{
+    int cov = 0;
+    for (int s = 0; s < 4; s++) {
+        int32_t sx = dx * 4 + ((s & 1) ? 3 : 1);
+        int32_t sy = dy * 4 + ((s & 2) ? 3 : 1);
+        if (sx * sx + sy * sy <= r2x16) cov++;
+    }
+    return (uint8_t)(cov * 255 / 4);
+}
+
+/* ── Coverage LUT zaobleneho rohu ──────────────────────────────────────────────
+ * Vzor coverage zavisi JEN na polomeru, jenze aa_corner se vola na KAZDY zaobleny
+ * obdelnik 4x (karty, tlacitka, pilulky, stopy baru) a pokazde znovu pocital
+ * 4 subsample vzdalenosti/px. Spocteme alfu JEDNOU per polomer -> pak uz jen lookup.
+ * Pixel-identicke. Fallback (LUT plna / r>max) = puvodni primy vypocet, tj. nikdy
+ * horsi nez drive. RAM: AA_LUT_N × (RMAX+1)² B (~3,5 kB v RAM_D1). Zadny float. */
+#define AA_LUT_RMAX 20
+#define AA_LUT_N     8
+static struct { int16_t r; uint8_t a[(AA_LUT_RMAX + 1) * (AA_LUT_RMAX + 1)]; } s_aa_lut[AA_LUT_N];
+static int s_aa_lut_n;
+
+static const uint8_t *aa_cov_lut(int16_t r)
+{
+    if (r < 0 || r > AA_LUT_RMAX) return NULL;              /* fallback na primy vypocet */
+    for (int i = 0; i < s_aa_lut_n; i++)
+        if (s_aa_lut[i].r == r) return s_aa_lut[i].a;       /* hit */
+    if (s_aa_lut_n >= AA_LUT_N) return NULL;                /* cache plna -> fallback */
+    uint8_t *a = s_aa_lut[s_aa_lut_n].a;
+    int32_t r2x16 = (int32_t)r * r * 16;
+    int16_t stride = (int16_t)(r + 1);
+    for (int16_t dy = 0; dy <= r; dy++)
+        for (int16_t dx = 0; dx <= r; dx++)
+            a[dy * stride + dx] = aa_sample(dx, dy, r2x16);
+    s_aa_lut[s_aa_lut_n].r = r;
+    return s_aa_lut[s_aa_lut_n++].a;
+}
+
 /* Anti-aliased quarter-circle corner. (cx,cy) is the rounding-circle CENTER
  * (inner corner of the radius square); pixels are plotted outward by (qx,qy)
- * and filled when within radius r of the center. Sampled 4x for coverage. */
+ * and filled when within radius r of the center. Coverage z LUT (viz vyse). */
 static void aa_corner(int16_t cx, int16_t cy, int16_t r, int16_t qx, int16_t qy,
                       prim_color_t color)
 {
-    int32_t r2x16 = (int32_t)r * r * 16;
+    const uint8_t *lut = aa_cov_lut(r);
+    int32_t r2x16 = lut ? 0 : (int32_t)r * r * 16;         /* jen pro fallback vetev */
+    int16_t stride = (int16_t)(r + 1);
     for (int16_t dy = 0; dy <= r; dy++) {
         for (int16_t dx = 0; dx <= r; dx++) {
-            int16_t cov = 0;
-            for (int s = 0; s < 4; s++) {
-                /* sub-sample distance from the center (offsets 0.25/0.75 px) */
-                int32_t sx = dx * 4 + ((s & 1) ? 3 : 1);
-                int32_t sy = dy * 4 + ((s & 2) ? 3 : 1);
-                if (sx * sx + sy * sy <= r2x16) cov++;
-            }
-            if (cov == 0) continue;
-            int16_t px = (int16_t)(cx + qx * dx);
-            int16_t py = (int16_t)(cy + qy * dy);
-            prim_internal_blend_px(px, py, color, (uint8_t)(cov * 255 / 4));
+            uint8_t a = lut ? lut[dy * stride + dx] : aa_sample(dx, dy, r2x16);
+            if (a == 0) continue;
+            prim_internal_blend_px((int16_t)(cx + qx * dx), (int16_t)(cy + qy * dy), color, a);
         }
     }
 }

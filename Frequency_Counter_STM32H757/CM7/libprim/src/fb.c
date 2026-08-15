@@ -41,10 +41,6 @@ void prim_set_target(prim_fb_t *fb)
 
 prim_fb_t *prim_get_target(void) { return g_prim_target; }
 
-prim_pixel_t *prim_fb_pixels(prim_fb_t *fb) { return fb ? fb->pixels : NULL; }
-int16_t prim_fb_width(const prim_fb_t *fb)  { return fb ? fb->width : 0; }
-int16_t prim_fb_height(const prim_fb_t *fb) { return fb ? fb->height : 0; }
-int16_t prim_fb_stride(const prim_fb_t *fb) { return fb ? fb->stride_px : 0; }
 
 void prim_set_clip(prim_rect_t rect)
 {
@@ -60,8 +56,6 @@ void prim_reset_clip(void)
     }
     g_prim_clip_set = false;
 }
-
-prim_rect_t prim_get_clip(void) { return g_prim_clip; }
 
 /* ── Internal accessors ─────────────────────────────────────── */
 

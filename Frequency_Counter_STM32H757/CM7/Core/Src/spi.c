@@ -21,7 +21,7 @@
 #include "spi.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "bootled.h"
 /* USER CODE END 0 */
 
 SPI_HandleTypeDef hspi2;
@@ -31,7 +31,7 @@ void MX_SPI2_Init(void)
 {
 
   /* USER CODE BEGIN SPI2_Init 0 */
-
+  bootled_step(BOOTLED_STEP_SPI2);
   /* USER CODE END SPI2_Init 0 */
 
   /* USER CODE BEGIN SPI2_Init 1 */

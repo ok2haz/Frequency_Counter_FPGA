@@ -23,7 +23,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
+#include "iwdg2.h"     /* nezavisly watchdog CM4 (~4 s); zaseknuta smycka -> reset CM4 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +94,29 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* ⚠️ PER-CORE RCC (audit #23, 2026-08-11) — CM4 si musi povolit hodiny ve SVE
+   * domene (RCC_C2_*ENR), ne v domene CM7.
+   *
+   * Past: `__HAL_RCC_XXX_CLK_ENABLE()` zapisuje VZDY do `RCC->xxxENR` = registr
+   * CPU1 (CM7) — makra NEJSOU prepinana podle `CORE_CM4`, C2 varianty jsou
+   * samostatna rodina `__HAL_RCC_C2_XXX_CLK_ENABLE()`. Generovany kod CubeMX
+   * (MX_GPIO_Init, HAL_TIM_Base_MspInit, HAL_MspInit) pouziva plain varianty,
+   * takze CM4 dosud povoloval hodiny CM7. Dnes to "funguje", protoze periferie
+   * je clockovana, kdyz je bit v KTEREMKOLI z obou registru — jenze prirazeni
+   * domene rozhoduje pri low-power a autonomnim behu D2. S ETH by to kouslo.
+   *
+   * Reseni je regen-safe: generovany kod NEmenime (prepsal by ho regen), jen
+   * tady navic povolime tytez hodiny i v C2 domene. Redundantni zapis nevadi.
+   * Musi byt PRED MX_GPIO_Init/MX_TIM12_Init. */
+  __HAL_RCC_C2_GPIOG_CLK_ENABLE();    /* LED_2 (PG7) */
+  __HAL_RCC_C2_TIM12_CLK_ENABLE();    /* beeper PWM */
+  __HAL_RCC_C2_HSEM_CLK_ENABLE();     /* boot gate + budouci notifikace */
+  __HAL_RCC_C2_SYSCFG_CLK_ENABLE();
+  /* D2 SRAM2+3 = domaci RAM CM4 (linker `RAM @0x10020000/160K`). Dnes bezi na
+   * reset-default, ale ETH deskriptory a lwIP heap tu poblezi -> vlastnit je
+   * explicitne (DUALCORE_BRINGUP_CHECKLIST.md §4). */
+  __HAL_RCC_C2_D2SRAM2_CLK_ENABLE();
+  __HAL_RCC_C2_D2SRAM3_CLK_ENABLE();
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
@@ -110,17 +133,73 @@ int main(void)
   HAL_Delay(400);
   Beep(1680, 200);
   HAL_Delay(400);
+  ipc_cm4_init();   /* IPC: reset lokalniho stavu pred ctenim snapshotu */
+  /* ⚠️⚠️ IWDG2 ZAMERNE VYPNUTY (zmereno na HW 2026-08-13) ─────────────────────
+   * Reset scope IWDG2 je **SYSTEM-WIDE, ne per-core**. Overeno primo: docasna
+   * CM4, ktera po 20 s prestala krmit watchdog, shodila CELY pristroj —
+   * uptime CM7 pak cykloval 3 -> 13 -> 22 -> 8 -> 17 s, tedy reset kazdych ~24 s.
+   * Predpoklad "CPU2/CM4-only" z DUALCORE_BRINGUP_CHECKLIST §8 tedy NEPLATI.
+   *
+   * Zapnuty IWDG2 by znamenal, ze zaseknuta CM4 (ktera dnes dela temer nic)
+   * shodi i displej a mereni. To je vyrazne horsi nez zaseknuta CM4 samotna,
+   * proto se nepouziva — presne jak pro tenhle pripad predepisuje CLAUDE.md.
+   *
+   * Zaseknuti CM4 se NEZTRATI: CM7 ho vidi pres heartbeat (`ipc_cm4_alive`),
+   * loguje `stall:CM4` a pocita `g_cm4_stall_count` (UART `status`).
+   * Az bude na CM4 bezet ETH/SCPI, da se pridat cileny restart CM4 z CM7
+   * (drzet ho v resetu pres RCC) — to uz je ale jina vec nez nezavisly watchdog.
+   * iwdg2_init(); */
+  (void)iwdg2_init;   /* ponechano prelozene, at je to jednorazove vratitelne */
+
+  /* DWT cyklovy citac pro mereni VLASTNI zateze CM4 (idle-based) -> publikuje se
+   * pres IPC heartbeat jako "CM4:xx%" v CM7 headeru. Clock-agnosticky: pocita se
+   * pomer busy_cyc / total_cyc, netreba znat SystemCoreClock (na CM4 nemusi byt
+   * spravne, protoze CM4 nevola SystemClock_Config). */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+  /* Lokalni v main() (ta nikdy neskonci) — proto BEZ prefixu `s_`, ktery je
+   * v projektu vyhrazeny pro file-scope/static promenne. */
+  uint32_t cm4_busy_cyc = 0, cm4_win_cyc0 = 0, cm4_win_ms = 0, cm4_pct = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_Delay(400);
-	  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
-	  HAL_Delay(400);
-	  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_RESET);
-	//  Beep(1000, 10);
+	  uint32_t cyc0 = DWT->CYCCNT;   /* start mereni work-cyklu teto iterace */
+	  iwdg2_kick();   /* obnov watchdog CM4 (smycka ~800 ms << 4 s timeout) */
+	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
+	  if (!ipc_cm4_ready()) ipc_cm4_check();
+	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "CM4:xx%").
+	   * ⚠️ Duveryhodne JEN kdyz CM7 zije (snapshot seq roste) — jinak jsou to stara data. */
+	  ipc_snapshot_t snap;
+	  int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);
+	  ipc_cm4_heartbeat(cm4_pct, HAL_GetTick() / 1000u);   /* posledni zmerena vlastni zatez [%] */
+
+	  /* Zmer VLASTNI zatez: work-cykly teto iterace (vse KROME nasledneho HAL_Delay,
+	   * ktere je "idle"). Kazdou ~1 s spocitej pomer busy/total -> cm4_pct. CM4 dnes
+	   * dela skoro nic -> ~0 %; s ETH/SCPI to naskoci samo. */
+	  cm4_busy_cyc += DWT->CYCCNT - cyc0;
+	  uint32_t cm4_now = HAL_GetTick();
+	  if (cm4_now - cm4_win_ms >= 1000u) {
+		  uint32_t total = DWT->CYCCNT - cm4_win_cyc0;   /* celkove cykly v okne (unsigned wrap OK) */
+		  cm4_pct = total ? (uint32_t)((uint64_t)cm4_busy_cyc * 100u / total) : 0u;
+		  if (cm4_pct > 100u) cm4_pct = 100u;
+		  cm4_busy_cyc = 0u; cm4_win_cyc0 = DWT->CYCCNT; cm4_win_ms = cm4_now;
+	  }
+
+	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze
+	   * snapshotu CM7; jinak (bez IPC / bez fixu) pomalu blika = holy heartbeat. */
+	  if (have && (snap.flags & IPC_F_GPS_VALID)) {
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
+		  HAL_Delay(800);
+	  } else {
+		  HAL_Delay(400);
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_SET);
+		  HAL_Delay(400);
+		  HAL_GPIO_WritePin(LED_2_GPIO_Port, LED_2_Pin, GPIO_PIN_RESET);
+	  }
 
     /* USER CODE END WHILE */
 

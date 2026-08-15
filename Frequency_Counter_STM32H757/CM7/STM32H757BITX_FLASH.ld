@@ -47,7 +47,7 @@ MEMORY
   RAM_D1 (xrw)   : ORIGIN = 0x24000000, LENGTH =  512K
   FLASH   (rx)   : ORIGIN = 0x08000000, LENGTH = 1024K    /* Memory is divided. Actual start is 0x08000000 and actual length is 2048K */
   DTCMRAM (xrw)  : ORIGIN = 0x20000000, LENGTH = 128K
-  RAM_D2 (xrw)   : ORIGIN = 0x30000000, LENGTH = 288K
+  RAM_D2 (xrw)   : ORIGIN = 0x30000000, LENGTH = 128K  /* D2 SPLIT: CM7 = SRAM1 (128K). CM4 vlastni SRAM2+3 (160K @0x10020000, viz CM4 linker + NAVRH §11.5). Diagnosticky 'ram write/read' (0x30001000, ~78 KB) se vejde do SRAM1. CM7 do RAM_D2 nic nelinkuje. */
   RAM_D3 (xrw)   : ORIGIN = 0x38000000, LENGTH = 64K
   ITCMRAM (xrw)  : ORIGIN = 0x00000000, LENGTH = 64K
   /* Externi SDRAM scratch (FMC). 0xC0800000 = volne nad bignum regionem
@@ -180,6 +180,22 @@ SECTIONS
     *(.sdram*)
     . = ALIGN(32);
   } >SDRAM
+
+  /* IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB). NOLOAD
+   * (plni se za behu, zadny load z FLASH). ⚠️ MUSI byt non-cacheable — zajistuje
+   * MPU region 2 v main.c MPU_Config(); bez toho by CM7 cetl stara data z D-cache
+   * a IPC by "skoro fungovalo" a padalo nahodne. Zatim jen REZERVACE celeho D3
+   * regionu (nic jineho ho nepouziva); vlastni obsah (ipc_snapshot + cmd/resp
+   * ringy) prijde s IPC vrstvou. Data se sem umisti: __attribute__((section(".ipc_shared"))). */
+  .ipc_shared (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sipc_shared = .;
+    KEEP(*(.ipc_shared))
+    KEEP(*(.ipc_shared*))
+    . = ALIGN(32);
+    _eipc_shared = .;
+  } >RAM_D3
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :
