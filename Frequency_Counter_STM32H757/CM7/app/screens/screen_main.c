@@ -294,7 +294,8 @@ static int16_t draw_word(int16_t x, int16_t y, const char *text,
  * ⚠️ 2026-07-25 snizeno 640->590: mezi pilulky a hodiny pribyl dvouradkovy blok
  * vytizeni CPU (CM7/CM4, viz screen_main_redraw_cpu, x 592..640). Rezerva mensi
  * -> v nejhorsim souběhu dlouhych stavu vypadne CAL (staticky placeholder). */
-#define HDR_PILL_LIMIT 590
+#define HDR_PILL_LIMIT 580   /* 590 -> 580 (2026-08-15): CPU blok se rozsiril kvuli
+                              * popiskum "CM7:"/"CM4:" misto "7:"/"4:" (56 px textu). */
 
 /* Vykresli pilulku jen kdyz se CELA vejde pred HDR_PILL_LIMIT; pri vykresleni
  * posune x o sirku+GAP. Vraci 1 = vykresleno (volajici smi zachytit rect). */
@@ -1599,19 +1600,19 @@ int screen_main_redraw_cpu(int force)
     uint32_t c4p = g_cm4_cpu_pct; if (c4p > 99) c4p = 99;
     if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown) return 0;
     s_cpu_shown = c7; s_cm4_shown = c4st; s_cm4_pct_shown = (uint8_t)c4p;
-    blit_bg_region((prim_rect_t){594, 1, 49, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
+    blit_bg_region((prim_rect_t){582, 1, 61, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
     char l[12];
     prim_color_t col = (c7 < 70) ? UI_COLOR_OK : (c7 < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
-    snprintf(l, sizeof l, "7:%lu%%", (unsigned long)c7);
+    snprintf(l, sizeof l, "CM7:%lu%%", (unsigned long)c7);
     prim_draw_text((prim_point_t){CPU_HDR_R, 22}, l, &ui_font_mono_14, col, PRIM_ALIGN_RIGHT);
     /* CM4: "4:xx%" (barevne dle zateze, kdyz IPC ziva) / "4:--" (sede, D2 ready ale ticho)
      * / "4:off" (cervene, nenabehl). CM4 dnes dela skoro nic -> typicky "4:0%". */
     char l4[12]; prim_color_t col4;
     if (c4st == 1) {
-        snprintf(l4, sizeof l4, "4:%lu%%", (unsigned long)c4p);
+        snprintf(l4, sizeof l4, "CM4:%lu%%", (unsigned long)c4p);
         col4 = (c4p < 70) ? UI_COLOR_OK : (c4p < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
     } else {
-        snprintf(l4, sizeof l4, "%s", (c4st == 2) ? "4:off" : "4:--");
+        snprintf(l4, sizeof l4, "%s", (c4st == 2) ? "CM4:off" : "CM4:--");
         col4 = (c4st == 2) ? UI_COLOR_BAD : UI_COLOR_INK_4;
     }
     prim_draw_text((prim_point_t){CPU_HDR_R, 45}, l4, &ui_font_mono_14, col4, PRIM_ALIGN_RIGHT);
@@ -2056,7 +2057,7 @@ void screen_main_redraw_button(int idx)
  * tlacitko), takze lezi cely uvnitr dirty rectu, ktery uz zavolal volajici
  * (screen_main_redraw_button hned po zmacknuti) — zadny dalsi clear netreba
  * (viz CLAUDE.md: AA/stroke obsah musi byt uvnitr predchoziho REPLACE clearu). */
-#define BTN_FLASH_FRAMES 3
+#define BTN_FLASH_FRAMES 2   /* 3 -> 2 (2026-08-15): pусobilo dlouze */
 static int s_flash_idx    = -1;
 static int s_flash_frames = 0;
 

@@ -44,7 +44,8 @@ Dnes už jen ověř, že to drží:
 
 - [ ] Velký kmitočet se hýbe (**zatím simulace** — reálný je až po #1/#2)
 - [ ] Header: čas tiká 1×/s, datum, label zóny, GNSS/SYS/SAT/HDOP pilulky
-- [ ] **RF bargraf dole = REÁLNÝ** (AD8307 přes ADS1115 AIN1) — zakryj/odpoj vstup, musí klesnout
+- [ ] ⏸ **RF bargraf dole = REÁLNÝ** (AD8307 přes ADS1115 AIN1) — **ODLOŽENO: ověřit až bude
+      připojená plná FPGA deska** (bez ní na AIN1 nic smysluplného není)
 - [ ] Footer **RUN/STOP**: při běhu nabízí červené „STOP", po stisku zelené „RUN"
 - [ ] Při STOP: **zóna velkého čísla se podbarví červeně** (~15 %)
 - [ ] Micro-flash tlačítka při stisku (2px accent obrys, ~3 tiky)

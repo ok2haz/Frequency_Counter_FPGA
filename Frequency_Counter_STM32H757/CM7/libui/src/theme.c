@@ -42,7 +42,7 @@ static const ui_theme_t THEME_DARK = {
     .btn_stop_top    = PRIM_RGB(0x2C, 0x0F, 0x14),
     .btn_stop_bot    = PRIM_RGB(0x1D, 0x0A, 0x0E),
     .btn_stop_border = PRIM_RGB(0x64, 0x2E, 0x36),
-    .freq_stop_bg    = PRIM_RGBA(0xF8, 0x71, 0x71, 38),   /* ~15 % — "lehce cervenne" */
+    .freq_stop_bg    = PRIM_RGBA(0xF8, 0x71, 0x71, 72),   /* ~28 % (2026-08-15: 38 bylo pri STOP sotva videt) */
 };
 
 /* Svetla paleta: stejne role, prevracene jasy; akcenty ztmavene kvuli kontrastu
@@ -80,7 +80,7 @@ static const ui_theme_t THEME_LIGHT = {
     .btn_stop_bot    = PRIM_RGB(0xEF, 0xC7, 0xC7),
     .btn_stop_border = PRIM_RGB(0xC9, 0x7A, 0x7A),
     /* Na svetlem podkladu staci nizsi alfa (tmava cervena vic "prekryva"). */
-    .freq_stop_bg    = PRIM_RGBA(0xDC, 0x26, 0x26, 30),
+    .freq_stop_bg    = PRIM_RGBA(0xDC, 0x26, 0x26, 58),   /* svetle tema: 30 -> 58 (viz tmave) */
 };
 
 const ui_theme_t *g_ui_theme = &THEME_DARK;

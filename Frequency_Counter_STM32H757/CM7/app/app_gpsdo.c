@@ -215,11 +215,11 @@ static const prim_rect_t DIAG_ST_BTN_RECT      = {352, 417, 160, 61};
  * 10-12 px -> karty c2/c3 se zvetsily o 8 px kazda (viz app_gpsdo_render_settings),
  * cerpano ze 42 px volneho prostoru pred paticnkou (bylo 368->410 px). */
 static const prim_rect_t MUTE_RECT   = {230, 354, 148, 64};   /* Zvuk zap/vyp — v okne ALARMY */
-static const prim_rect_t BR_MINUS    = {30, 188, 72, 64};     /* Jas - */
-static const prim_rect_t BR_PLUS     = {110, 188, 72, 64};    /* Jas + */
-static const prim_rect_t ADEN_RECT   = {30, 308, 140, 64};    /* Auto-dim zap/vyp */
-static const prim_rect_t DIM_MINUS   = {186, 308, 56, 64};    /* prodleva - */
-static const prim_rect_t DIM_PLUS    = {316, 308, 56, 64};    /* prodleva + */
+static const prim_rect_t BR_MINUS    = {30, 112, 72, 64};     /* Jas - (y 188->112, layout 2026-08-15) */
+static const prim_rect_t BR_PLUS     = {110, 112, 72, 64};    /* Jas + */
+static const prim_rect_t ADEN_RECT   = {30, 232, 140, 64};    /* Auto-dim zap/vyp (y 308->232) */
+static const prim_rect_t DIM_MINUS   = {186, 232, 56, 64};    /* prodleva - */
+static const prim_rect_t DIM_PLUS    = {316, 232, 56, 64};    /* prodleva + */
 /* ── Prava polovina okna Nastaveni = MRIZKA 2x5 (2026-08-13) ────────────────
  * Nastaveni se stalo rozcestnikem: Menu se vyprazdnilo na placeholdery a vsechno,
  * co je konfigurace (Cas, Alarmy, Kalibrace, Animace, Sit), se presunulo sem.
@@ -252,7 +252,7 @@ static const prim_rect_t ANIMNAV_RECT = {SETNAV_XB, 240, SETNAV_W, SETNAV_H};  /
 /* Vzhled (prepinac) — uz NENI v Nastaveni, zije v okne DISPLEJ (prava karta).
  * ⚠️ Souradnice natvrdo: `DG_RX` (= DG_MX 18 + DG_COLW 376 + DG_GAP 12 = 406) je
  * definovane az nize v souboru, takze se tu na nej odkazat neda. 406 + 14 = 420. */
-static const prim_rect_t THEME_RECT   = {420, 190, 200, 64};
+static const prim_rect_t THEME_RECT   = {420, 112, 200, 64};   /* Vzhled (y 190->112) */
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
@@ -2266,15 +2266,15 @@ static void settings_upd_mute(void)
  * jen kresleny ukazatel. */
 static void settings_draw_jas_bar(int16_t br)
 {
-    prim_fill_rect((prim_rect_t){194, 198, 188, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_rect_t track = {196, 204, 118, 32};
+    prim_fill_rect((prim_rect_t){194, 122, 188, 48}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_rect_t track = {196, 128, 118, 32};
     prim_fill_rect(track, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
     int16_t fillw = (int16_t)((int32_t)track.w * br / 255);
     if (fillw > 0)
         prim_fill_rect((prim_rect_t){track.x, track.y, fillw, track.h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(track, 2, 1, UI_COLOR_LINE);
     char pb[8]; snprintf(pb, sizeof pb, "%d%%", (int)br * 100 / 255);
-    prim_draw_text((prim_point_t){324, 228}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){324, 152}, pb, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
 }
 
 /* Plny (okamzity) render na aktualni g_brightness — pouzito jen pri OTEVRENI
@@ -2303,9 +2303,9 @@ static void settings_upd_dim(void)
     ui_button_t adb = {.rect = ADEN_RECT, .variant = UI_BUTTON_NORMAL,
                        .label = g_autodim_en ? "ZAPNUTO" : "VYPNUTO"};
     ui_button_render(&adb);
-    prim_fill_rect((prim_rect_t){244, 314, 72, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_fill_rect((prim_rect_t){244, 238, 72, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     char tb[12]; snprintf(tb, sizeof tb, "%u s", (unsigned)g_autodim_sec);
-    prim_draw_text((prim_point_t){279, 348}, tb, &ui_font_mono_22,
+    prim_draw_text((prim_point_t){279, 272}, tb, &ui_font_mono_22,
                    g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
 }
 
@@ -2475,7 +2475,8 @@ void app_gpsdo_exit_screensaver(void)
  * textu kumulovaly pres sebe (na rozdil od digit-highlight/button-flash
  * tricku tady barva mezi tiky NENI identicka, takze "presna stejna kresba
  * dvakrat" trik nefunguje — potrebuje skutecny clear). */
-#define SPLASH_FADE_TICKS 8   /* z 10 celkovych tiku — poslednich ~200 ms na cilove barve */
+#define SPLASH_FADE_TICKS 5   /* = pocet tiku splash smycky (freertos_task_ui.c);
+                               * 2026-08-15 zkraceno 8 -> 5 spolu se splash 10 -> 5 tiku */
 static int s_splash_frame = 0;
 
 static prim_color_t fade_color(prim_color_t c, float t)   /* t=0 cerna, t=1 cilova barva */
@@ -2938,9 +2939,9 @@ static void ocxo_gauge_draw(void)
  * model — headline je simulace; realna data by dosadila zmereny drift + OCXO tempco.
  * ⚠️ Vypln/hrany jdou pres prim_internal_blend_px -> spolehaji na uvodni clear. */
 #define CONE_X  30
-#define CONE_Y  286
+#define CONE_Y  282
 #define CONE_W  445
-#define CONE_H  52
+#define CONE_H  46
 static void holdover_cone_draw(int state, uint32_t t_in_state_s)
 {
     prim_fill_rect((prim_rect_t){CONE_X, CONE_Y, CONE_W, CONE_H}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -3001,7 +3002,10 @@ static void app_gpsdo_render_holdover(void)
         ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Stav disciplinace GPSDO"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 116}, "Rezim:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 344},
+        /* ⚠️ baseline 344 -> 352 (HW pruchod 2026-08-15): sans_18 ma ascent 18,
+         * takze text zacinal na 326 a lezel UVNITR drift-kuzele (CONE_Y 286..338).
+         * Kuzel zaroven posunut na 282..328 -> text 334..357, karta konci 362. */
+        prim_draw_text((prim_point_t){DG_LLBL, 352},
                        "WARMUP=nabeh OCXO  LOCK=disc. z GNSS  HOLDOVER=drzi VC bez fixu",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_st[0] = c_gps[0] = c_tp[0] = c_ocxo[0] = c_since[0] = '\0';
@@ -3717,6 +3721,10 @@ static void app_gpsdo_render_counter(void)
  * defaultTaskem/UartTaskem vrati posledni znamy vysledek misto spusteni.
  * Plny redraw pri kazdem volani (staticke okno, neni v ticku). ── */
 static const prim_rect_t ST_RUN_RECT = {18, 417, 180, 61};
+/* Pocitadlo behu selftestu + uptime posledniho — viditelna zpetna vazba tlacitka
+ * SPUSTIT (vysledek 13/13 je porad stejny, viz komentar v render_selftest). */
+static uint16_t s_selftest_runs   = 0;
+static uint32_t s_selftest_last_s = 0;
 static void app_gpsdo_render_selftest(void)
 {
     window_prep();
@@ -3743,15 +3751,26 @@ static void app_gpsdo_render_selftest(void)
         "SCPI parser",              /* scpi_selftest: case/kratka-dlouha forma/hierarchie (#25) */
         "IPC seqlock + ring",       /* ipc_selftest: seqlock parita + cmd/resp ring (#19/#20) */
     };
+    /* ⚠️ LAYOUT PREPSAN 2026-08-15 (HW pruchod): puvodni JEDEN sloupec s rozteci
+     * 18 px se PREKRYVAL — `ui_font_mono_18` ma `line_height` 23 (ascent 18 +
+     * descent 5), takze roztec 18 nechala nula mezeru a descent zasahoval do
+     * dalsiho radku. Ted DVA SLOUPCE (7 + 6 testu) s rozteci 26 px: text se
+     * neprekryva a karta je vyuzita po sirce (drive prazdna prava polovina).
+     * Sirka labelu: nejdelsi je "Datalog zaznam + CRC" = 20 znaku x 11 px
+     * (mono_18 advance) = 220 px -> vysledek na +240 se bezpecne vejde. */
+    #define ST_ROW_DY  26
+    #define ST_COL_A   DG_LLBL              /* levy sloupec: label */
+    #define ST_COL_B   (DG_LX + 392)        /* pravy sloupec: label */
+    #define ST_RES_DX  240                  /* offset vysledku od labelu */
+    #define ST_SPLIT   7                    /* prvnich 7 testu vlevo, zbytek vpravo */
     int pass = 0;
     for (int i = 0; i < ST_N; i++) {
-        /* Roztec 18 (13 testu, 2026-08-09 pridan IPC): od 98 -> posledni na
-         * 98+12*18=314; "Celkem" na 332 -> karta B konci na 362 (⚠️ overit na displeji). */
-        int16_t yy = (int16_t)(98 + i * 18);
-        dlabel(DG_LLBL, yy, NAMES[i]);
+        int16_t col = (i < ST_SPLIT) ? (int16_t)ST_COL_A : (int16_t)ST_COL_B;
+        int16_t yy  = (int16_t)(100 + (i < ST_SPLIT ? i : i - ST_SPLIT) * ST_ROW_DY);
+        dlabel(col, yy, NAMES[i]);
         uint8_t r = g_selftest_detail[i];
         const char *rs = (r == 1) ? "PASS" : (r == 2) ? "FAIL" : "---";
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 340), yy}, rs, &ui_font_mono_18,
+        prim_draw_text((prim_point_t){(int16_t)(col + ST_RES_DX), yy}, rs, &ui_font_mono_18,
                        (r == 1) ? UI_COLOR_OK : (r == 2) ? UI_COLOR_BAD : UI_COLOR_INK_4,
                        PRIM_ALIGN_LEFT);
         if (r == 1) pass++;
@@ -3759,12 +3778,27 @@ static void app_gpsdo_render_selftest(void)
     char b[24];
     if (g_selftest_res == 0) snprintf(b, sizeof b, "nespusten");
     else                     snprintf(b, sizeof b, "%d/%d %s", pass, ST_N, pass == ST_N ? "PASS" : "FAIL");
-    dlabel(DG_LLBL, 332, "Celkem");
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 340), 332}, b, &ui_font_mono_18,
+    dlabel(ST_COL_A, 292, "Celkem");
+    prim_draw_text((prim_point_t){(int16_t)(ST_COL_A + ST_RES_DX), 292}, b, &ui_font_mono_18,
                    g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == ST_N ? UI_COLOR_OK : UI_COLOR_BAD),
                    PRIM_ALIGN_LEFT);
+    /* ⚠️ Indikace BEHU: vysledek je pokazde stejny (13/13), takze bez tohohle
+     * nebylo poznat, jestli SPUSTIT vubec neco udelalo — pusobilo to jako "znovu
+     * se nespusti" (HW pruchod 2026-08-15). Cislo behu + uptime se meni vzdy. */
+    if (s_selftest_runs) {
+        char rb[40];
+        snprintf(rb, sizeof rb, "beh #%u v %lu s", (unsigned)s_selftest_runs,
+                 (unsigned long)s_selftest_last_s);
+        prim_draw_text((prim_point_t){(int16_t)ST_COL_B, 292}, rb, &ui_font_mono_18,
+                       UI_COLOR_ACC, PRIM_ALIGN_LEFT);
+    }
     #undef ST_N
-    prim_draw_text((prim_point_t){DG_LLBL, 350},
+    #undef ST_ROW_DY
+    #undef ST_COL_A
+    #undef ST_COL_B
+    #undef ST_RES_DX
+    #undef ST_SPLIT
+    prim_draw_text((prim_point_t){DG_LLBL, 332},
                    "Destruktivni HW testy zvlast: UART qspitest / storetest.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
@@ -3844,11 +3878,14 @@ static void cas_upd_mode(void)
  * Az bude clock spraveny a prijde lwIP (etapa F5), pouzije se tato konfigurace
  * beze zmeny: `g_net_dhcp` -> `dhcp_start()`, jinak `netif_set_addr()`.
  * DHCP klienta NEBUDEME psat — lwIP ho ma (`LWIP_DHCP`), viz F5. */
-static const prim_rect_t NET_DHCP_RECT  = { 40, 268, 190, 64};   /* DHCP ZAP/VYP */
-static const prim_rect_t NET_FIELD_RECT = {246, 268, 176, 64};   /* IP / MASKA / BRANA */
-static const prim_rect_t NET_OCT_RECT   = {438, 268, 130, 64};   /* vyber oktetu 1..4 */
-static const prim_rect_t NET_MINUS_RECT = {584, 268,  90, 64};
-static const prim_rect_t NET_PLUS_RECT  = {684, 268,  98, 64};
+/* ⚠️ y POSUNUTO 268 -> 284 (HW pruchod 2026-08-15): header_label karty se kresli
+ * na baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = rect.y+25, takze u karty
+ * zacinajici na 248 sahal text do ~278 a PREKRYVAL tlacitka na 268. */
+static const prim_rect_t NET_DHCP_RECT  = { 40, 284, 190, 64};   /* DHCP ZAP/VYP */
+static const prim_rect_t NET_FIELD_RECT = {246, 284, 176, 64};   /* IP / MASKA / BRANA */
+static const prim_rect_t NET_OCT_RECT   = {438, 284, 130, 64};   /* vyber oktetu 1..4 */
+static const prim_rect_t NET_MINUS_RECT = {584, 284,  90, 64};
+static const prim_rect_t NET_PLUS_RECT  = {684, 284,  98, 64};
 static uint8_t s_net_field = 0;   /* 0=IP 1=maska 2=brana */
 static uint8_t s_net_oct   = 0;   /* 0..3 (zleva) */
 
@@ -3879,8 +3916,8 @@ static void net_upd_values(void)
 
     /* Pri DHCP jsou staticke hodnoty jen informativni -> ztlumene. */
     net_fmt(b, sizeof b, *net_field_ptr());
-    prim_fill_rect((prim_rect_t){40, 344, 500, 40}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    prim_draw_text((prim_point_t){40, 374}, b, &ui_font_mono_25,
+    prim_fill_rect((prim_rect_t){40, 354, 500, 42}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){40, 386}, b, &ui_font_mono_25,
                    g_net_dhcp ? UI_COLOR_INK_3 : UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
 }
 
@@ -3895,7 +3932,11 @@ static void app_gpsdo_render_display(void)
     window_chrome("DISPLEJ", WIN_TITLE_Y_TIGHT);
     anim_reset(&s_settings_br, (float)g_brightness);   /* bez nabehu pri otevreni */
 
-    ui_card_t c1 = {.rect = {DG_LX, 156, DG_COLW, 108}, .header_label = "Jas displeje"};
+    /* ⚠️ LAYOUT PREPSAN 2026-08-15 (HW pruchod): karty posunuty NAHORU (nad nimi
+     * bylo ~96 px prazdna) a poznamka je nove DOLE PRES CELOU SIRKU — driv sedela
+     * vpravo dole ve ctvrtine a text v ni byl natesno. Ovladace (BR_*, ADEN_*,
+     * DIM_*, THEME_RECT) posunuty o -76 px; pouzivaji se VYHRADNE v tomto okne. */
+    ui_card_t c1 = {.rect = {DG_LX, 76, DG_COLW, 108}, .header_label = "Jas displeje"};
     ui_card_render_chrome(&c1);
     ui_button_t bmin  = {.rect = BR_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
     ui_button_t bplus = {.rect = BR_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
@@ -3903,7 +3944,7 @@ static void app_gpsdo_render_display(void)
     ui_button_render(&bplus);
     settings_upd_jas();
 
-    ui_card_t c2 = {.rect = {DG_LX, 274, DG_COLW, 110},
+    ui_card_t c2 = {.rect = {DG_LX, 194, DG_COLW, 110},
                     .header_label = "Auto-dim (hodiny po necinnosti)"};
     ui_card_render_chrome(&c2);
     ui_button_t dmin  = {.rect = DIM_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
@@ -3913,20 +3954,20 @@ static void app_gpsdo_render_display(void)
     settings_upd_dim();
 
     /* Vzhled (barevne schema) — presunuto sem z Nastaveni 2026-08-13. */
-    ui_card_t c3 = {.rect = {DG_RX, 156, DG_COLW, 110}, .header_label = "Vzhled"};
+    ui_card_t c3 = {.rect = {DG_RX, 76, DG_COLW, 110}, .header_label = "Vzhled"};
     ui_card_render_chrome(&c3);
     settings_upd_theme();
 
-    ui_card_t c4 = {.rect = {DG_RX, 274, DG_COLW, 110}, .header_label = "Pozn."};
+    /* Poznamka DOLE PRES CELOU SIRKU (764 px) -> text se vejde na 2 radky misto 3
+     * natesno. Header label karty ma baseline rect.y+25 (=339), proto prvni radek
+     * az na 368; karta konci 410, footer zacina 417. */
+    ui_card_t c4 = {.rect = {DG_LX, 314, 764, 96}, .header_label = "Pozn."};
     ui_card_render_chrome(&c4);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 310},
-                   "Auto-dim po necinnosti ztlumi podsviceni",
+    prim_draw_text((prim_point_t){(int16_t)(DG_LX + 14), 368},
+                   "Auto-dim po necinnosti ztlumi podsviceni a zobrazi velke hodiny.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 336},
-                   "a zobrazi velke hodiny. Prvni dotek jen",
-                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 362},
-                   "probudi, nespusti akci tlacitka.",
+    prim_draw_text((prim_point_t){(int16_t)(DG_LX + 14), 394},
+                   "Prvni dotek jen probudi, nespusti akci tlacitka.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
     ui_button_render(&bb);
@@ -4063,7 +4104,7 @@ static void app_gpsdo_render_net(void)
         s_view = 35;
         window_chrome("SIT  Ethernet", WIN_TITLE_Y);
 
-        ui_card_t c1 = {.rect = {18, 58, 764, 186}, .header_label = "Stav linky"};
+        ui_card_t c1 = {.rect = {18, 58, 764, 182}, .header_label = "Stav linky"};
         ui_card_render_chrome(&c1);
         prim_draw_text((prim_point_t){40, 112}, "Link: NEDOSTUPNY - blokovano hardwarem",
                        &ui_font_mono_20, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
@@ -4077,7 +4118,7 @@ static void app_gpsdo_render_net(void)
                        "Reseni: odpojit R6 a privest samostatnych 25 MHz. Overeni: UART `eth`.",
                        &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
 
-        ui_card_t c2 = {.rect = {18, 252, 764, 154},
+        ui_card_t c2 = {.rect = {18, 248, 764, 158},
                         .header_label = "Konfigurace (ulozi se, pouzije az po oprave HW)"};
         ui_card_render_chrome(&c2);
         ui_button_t mb = {.rect = NET_MINUS_RECT, .variant = UI_BUTTON_NORMAL, .label = "-"};
@@ -5219,6 +5260,8 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         }
         if (s_view == 20 && in_rect(x, y, ST_RUN_RECT)) {  /* Selftest: spustit znovu */
             run_selftests();                /* pure-logic (~ms), bezpecne z UiTasku */
+            s_selftest_runs++;              /* viditelna zpetna vazba (vysledek se nemeni) */
+            s_selftest_last_s = g_uptime_s;
             app_gpsdo_render_selftest();    /* prekresli per-test vysledky */
             return true;
         }

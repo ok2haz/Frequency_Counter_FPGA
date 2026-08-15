@@ -78,7 +78,9 @@ void StartUiTask(void *argument)
    * Kresli VYHRADNE tento task (libprim/libui nejsou thread-safe). */
   app_gpsdo_boot_splash();
   if (!g_sound_muted) beeper_boot_melody();   /* vzestupny "power-on" jingle (~0,5 s), pokud neni mute */
-  for (int i = 0; i < 10; i++) {           /* ~1 s + melodie ~= 1,5 s splash celkem */
+  /* 10 -> 5 tiku (2026-08-15): cely start byl 4,2 s od power-on a splash z toho
+   * delal ~1,5 s. Fade ma SPLASH_FADE_TICKS=5, takze 5 tiku ho prave dokonci. */
+  for (int i = 0; i < 5; i++) {            /* ~0,5 s + melodie ~= 1 s splash celkem */
     app_gpsdo_boot_splash_tick();
     osDelay(100);
   }
