@@ -39,23 +39,26 @@
 
 ## P1 — odblokované, dá se dělat hned
 
-- [ ] **SCPI — zbývající subsystémy** (jádro + SET hotové 2026-08-15, viz níže):
-  - **`STAT:OPER?` / `STAT:QUES?` + `:ENABle`/`:CONDition`** — dnes je implementovaný jen
-    `STAT:PRES` jako no-op, protože OPER/QUES *enable* registry neexistují. Pro plný status
-    model (a `*STB?` bit 3/7) je potřeba doplnit. **Data už jsou** (`src->freq_err`,
-    `si5356_status`, `spi_ok`) — chybí registry a maskovací logika.
-  - `SYST:DATE`/`SYST:TIME` **set** — nastavit RTC bez GPS (dnes jde čas jen číst).
-  - `DISP:BRIGhtness <0-100>` — jas přes SCPI (`g_brightness` existuje).
-  - `CONF:FREQuency`, `*OPT?`.
-  - ⏸ **Až s HW:** `TRIG:SOUR IMM|EXT|BUS` + `*TRG`, `INP:COUP/IMP/ATT`
-    (nemáme přepínatelný vstup — implementovat by znamenalo lhát), `CAL:*`, `FORM:DATA`.
+- [x] ✅ **SCPI — USB strana kompletní 2026-08-15.** Doplněno: SET (`SENS:FREQ:GATE/CHAN`,
+      `INIT`/`ABOR`/`READ?`), **STATus OPER/QUES** event+enable registry s latchováním hran
+      + summary bity v `*STB?`, `DISP:BRIG`, `*OPT?`, `CONF:FREQ`.
+- [ ] **SCPI — zbytek** (malé): `SYST:DATE`/`SYST:TIME` **set** — ⚠️ RTC registry vlastní
+      VÝHRADNĚ defaultTask, takže to chce request-most jako `g_ui_cfg_req`; hodnotu to má jen
+      v laboratoři bez GPS antény (jinak se RTC disciplinuje z GPS).
+      ⏸ **Až s HW:** `TRIG:SOUR` + `*TRG`, `INP:COUP/IMP/ATT` (nemáme přepínatelný vstup —
+      implementace by lhala), `CAL:*`, `FORM:DATA`.
+- [x] ✅ **#55 screenshot** — `screenshot sd` ukládá `SHOTnnn.BMP` na kartu (anti-tearing přes
+      SDRAM scratch, FatFs zapíše celý soubor). USB varianta zůstává pro běh bez karty.
+- [x] ✅ **#67 okno MĚŘENÍ** — bylo hotové, chyběl jen vstupní bod; přidána dlaždice v Menu.
+- [x] ✅ **#35 audit** — sweep 0 varování, `-fanalyzer` čistý, nálezy opraveny (viz STATUS).
 
 - [ ] **#29 encoder** (`ENCODER_J7_NAVRH.md`): HW vrstva hotová (UART `enc`, TIM1 PA8/PA9 +
       tlačítko PC13). Chybí **model fokusu v UI** — návrhové rozhodnutí, ne kód.
 - [ ] **SD drobnosti:** formát exportu (dnes `GPSDOnnn.CSV` přírůstkově — ověřit chování),
       auto-mount při vložení karty (dnes jen request-flag).
-- [ ] **#55 screenshot** (front FB → BMP přes USB CDC), **#67 okno prezentace měření**,
-      **#68 autocal** — rozpracované.
+- [ ] **#68 autocal** — rozpracované: dnes jen verifikace guard-bandů (VREF/12V/5V/VBAT →
+      PASS/WARN/FAIL). Staged kroky (ADC3 self-cal, timebase vs GPS, RF slope/intercept)
+      čekají na #2 resp. externí RF referenci.
 
 ---
 
