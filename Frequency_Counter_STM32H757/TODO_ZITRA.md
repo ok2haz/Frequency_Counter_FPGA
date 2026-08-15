@@ -1,197 +1,71 @@
-# TODO — prioritní, na zítra (2026-08-12)
+# TODO — aktuální stav (2026-08-15)
 
-> Nedokončené věci z relace 2026-08-11 (boot-loop fix → audity → SD/FatFs) + nové zadání.
-> Řazeno podle toho, co blokuje co. Čísla `#nn` odkazují na `STATUS.md`.
-
----
-
-## P0 — blokuje všechno ostatní
-
-- [x] ✅ **Build rozchozen 2026-08-12** — `make exit=0`, vznikl `.elf` (text 664 340 B, data 956 B,
-      bss 1 891 632 B) i `.hex`. Ověřeno, že v `.elf` jsou `HAL_SD_Init`, `f_mount`, `f_open`,
-      `sd_export_run`, `datalog_sd_card_present`, `BSP_SD_IsDetected`.
-      **V kódu ani v `.ioc` nebyla chyba** — `.project` měl všech 64 `<link>` správně.
-      Zastaralé byly **generované makefily v `Debug/`**; F5 ani Clean je nepřegenerovaly.
-      Dopsáno ručně (postup v `CUBEMX_CHECKLIST.md`): include v `Debug/makefile`,
-      `subdir.mk` pro FatFs + HAL SD, a hlavně **`objects.list`, který nemá v makefile pravidlo**.
-
-- [x] ✅ **Build drží i po regeneraci z IDE** — ruční zásahy do `Debug/` si IDE opravdu přepsalo
-      (potvrzeno), takže je nahradil **`CM7/makefile.defs`**: hook `-include ../makefile.defs`
-      (řádek 43 `Debug/makefile`) plní `USER_OBJS`, které jde na linkovací řádku **mimo
-      `objects.list`**. Nezávislé na modelu IDE. Ověřeno `make exit=0` + symboly v `.elf`.
-
-- [x] ✅ **Reimport projektu zabral 2026-08-12** — IDE model postavený od nuly, nové soubory zná
-      (`subdir.mk` má `hal_sd`, FatFs `subdir.mk` vzniklo, `objects.list` má FatFs objekty).
-      Zaplata **`CM7/makefile.defs` odstraněna** — projevila se 117× `multiple definition`,
-      což byl signál „už není potřeba", ne chyba. Build z IDE i z CLI: `exit=0`, 0 chyb.
-
-- [x] ✅ **Test „boot bez karty" PROŠEL 2026-08-12** — displej naběhne, žádné blikání LED_1.
-      Ošetření přes USER CODE v `MX_SDMMC1_SD_Init()` drží.
-
-- [x] ✅ **SD hardware ověřen (GDB, 2026-08-12)** — `BSP_SD_Init() = MSD_OK`, karta **SDHC 14,5 GB**,
-      `CardState = TRANSFER`, `CLKCR = 0x4002` (4-bit, 16 MHz). **STATUS #69 tím padá.**
-      ⚠️ Cesta k tomu vedla přes chybu, kterou jsem si sám udělal: holý `return;` v USER CODE
-      nechal `hsd1.Instance == NULL`, takže `HAL_SD_MspInit()` (`if (Instance == SDMMC1)`) vůbec
-      nezapnul hodiny SDMMC1. Opraveno — handle se teď vyplní a přeskočí se jen `HAL_SD_Init`.
-
-- [ ] 🔴 **Dokončit SD: `sd force on` → `sd diag` → naformátovat na FAT32 → `sd test`.**
-      Poslední známý stav: HW jede, ale **`f_mount` selhává**. Silné podezření **`FR_NO_FILESYSTEM`** —
-      `ffconf.h` má `_FS_EXFAT = 0` a karta 14,5 GB může být exFAT.
-      `sd test` (zápis 8 kB + zpětné porovnání obsahu) je pak finální důkaz celé cesty.
-      ⚠️ Firmware s auditními opravami je **zbuilděný, ale NENAFLASHOVANÝ** (ST-LINK odpojen).
-
-- [x] ✅ **SCPI selftest OPRAVEN a OVĚŘEN NA HW 2026-08-13 — `13/13 PASS`.** Diagnostika řádku
-      ukázala `scpi.c:880`: `ok &= (atoi(b) & 0x04)`. Akumulátor se slučuje **bitovým AND**
-      a startuje na 1, takže `1 & 4 = 0` — assert shodil výsledek právě když podmínka
-      **platila**. Týkalo se 4 kontrol status modelu; ta s `& 0x01` procházela jen náhodou.
-
-- [x] ✅ **Card-detect PE3 VYŘEŠEN 2026-08-13 — byla to mechanická závada slotu, ne software.**
-      Kontakt v pouzdře karty, uživatel opravil. Polarita LOW = karta je správně.
-      ⚠️ Detekce měla celou dobu pravdu; my ji obcházeli přes `sd force on`. Potvrdil to až
-      `CMD_RSP_TIMEOUT` z `HAL_SD_Init` (po lince nepřišlo nic), což s „prázdno" souhlasilo.
+> Přepsáno po dokončení **ověřovacího průchodu na HW** (`HW_OVERENI_PRUCHOD.md`).
+> Předchozí verze byla z 2026-08-12 a z poloviny už neplatila.
+> Čísla `#nn` odkazují na `STATUS.md`.
 
 ---
 
-## P1 — dokončit SD/FatFs (rozpracované)
+## ✅ Hotovo v relaci 2026-08-14/15
 
-- [ ] **`SDMMC1.ClockDiv` 2 → 4** (16 → 8 MHz) pro bring-up. Deska má na SD VDD jen C75 100n
-      (chybí bulk 4,7–10 µF) a na CK není sériový tlumicí odpor → při 16 MHz hrozí překmity.
-      Zvýšit zpět, až přenos poběží. ⚠️ Změnit **i v `sd_probe()`**, které `Init` zrcadlí.
-- [ ] **PE3 → `GPIO_PuPd = Pull-up`** v CubeMX. Dnes generuje `GPIO_NOPULL`; funguje to (externí
-      47k na desce) a `sd_det_init()` si stejně nastaví PULLUP — čistě konzistence.
-- [ ] **Rozhodnout formát exportu.** Dnes `sd export` → `GPSDO.CSV` s `FA_CREATE_ALWAYS`, tedy
-      **přepisuje**. Varianty: (a) nechat, (b) přírůstkově (`FA_OPEN_APPEND`), (c) časové razítko
-      v názvu. ⚠️ Pro (c) je nutné zapnout **`_USE_LFN`** — teď je 0, tedy jen 8.3 jména.
-- [ ] **Auto-mount při vložení karty.** Dnes se mountuje líně až při prvním `sd export`
-      (mount blokuje → nesmí do defaultTasku). Chce to buď request-flag zpracovaný v UartTasku,
-      nebo to nechat tak, jak je (insert → EXPORT je použitelné UX).
-- [ ] **Tlačítko EXPORT v okně Datalog.** Neudělané schválně: běželo by v UiTasku, který je hlídaný
-      watchdogem, a export blokuje sekundy → potřebuje worker. Stejné omezení jako `calib_save()`.
-
----
-
-## P2 — ověřovací dluh (nic z toho nikdy neběželo na HW)
-
-- [ ] **Projet `HW_OVERENI_PRUCHOD.md`** — jeden průchod, **11 funkcí** implementovaných naslepo
-      (#31, #32, #33, #43, #44, #47, #52, #53, #54, #67, #68). Po ověření překlopit v `STATUS.md`
-      🔶 → ✅.
-- [ ] **`stacktest yes`** → po restartu musí `status` ukázat `stack:UartTask` (#10). Audit zjistil,
-      **proč hook při boot-loopu mlčel**: `configASSERT` shodil systém s vypnutými přerušeními dřív,
-      než nastalo další přepnutí kontextu, a metoda 2 kontroluje vzorek právě tam. Detekce není
-      rozbitá, jen ji šlo předběhnout — tenhle test (pomalé přetékání) ji spustit **má**.
-- [ ] **Ověřit opravu per-core RCC na CM4** (#23) — `__HAL_RCC_C2_*` v `USER CODE BEGIN Init`.
-      Projev by byl jen při low-power/ETH, takže stačí, že CM4 dál běží a `4:OK` svítí.
+- **SD karta plně funkční.** Root cause „přenos nejede" = vypnutý `HardwareFlowControl`
+  (+ CLKCR se nikdy nepřenastavil na transfer konfiguraci, protože obcházíme zaseklý
+  `HAL_SD_ConfigWideBusOperation`). Odhalil to funkční referenční projekt `H757_SDcard_01`.
+  Dále: 4-bit sběrnice (ACMD6 bez SCR čtení), 32 KB bloky, `f_expand` předalokace,
+  okno SD KARTA (PŘIPOJIT/ODPOJIT, TEST s měřením rychlosti, EXPORT CSV, FORMAT s dvojím
+  potvrzením), `sd init` kroková diagnostika `[a]..[e]`.
+- **CM4 běží + IPC round-trip HW-ověřený.** „CM4 nebootuje / bank2 neflashnutá" byla
+  **mylná diagnóza** — maskoval ho připojený debugger. Header ukazuje `CM4:xx%`
+  (CM4 měří vlastní zátěž přes DWT).
+- **HardFault vyřešen** — byl to leftover breakpoint sondy (`HFSR` bit31 DEBUGEVT),
+  ne chyba kódu. Crash black-box nově ukládá i `LR` (odkud se skočilo) a `HFSR`.
+- **Datalog omezen na 1/3 W25Q DATA regionu** (~80 dní místo ~242).
+- **Ověřovací průchod 11 funkcí** (#31/#32/#33/#43/#44/#47/#52/#53/#54/#67/#68) → ✅.
+- **#10 detekce přetečení zásobníku ověřena** (`stacktest yes` → `stack:UartTask`).
+- **Audit:** `-Wall -Wextra -Wshadow` sweep 73 souborů = 0 varování, `-fanalyzer` čistý,
+  žádný mrtvý kód. Opraveny 2 clear boxy pod baseline a **`FIL` ze stacku do .bss**
+  (UartTask ušetřil ~1,1 kB).
 
 ---
 
-## P3 — nálezy z revize kódu (malé, nezávislé na HW)
+## P0 — největší funkční dluh
 
-- [x] ✅ **`s_busy` v `sd_export.c` — OPRAVENO 2026-08-13.** Audit našel dvě díry: `sd_export_selftest()`
-      příznak **vůbec nenastavovala** (moje skriptovaná úprava tiše neproběhla) a `sd_export_run()`
-      ho **nevyčistila na žádné chybové cestě** → jeden neúspěšný export natrvalo vypnul auto-unmount.
-      Místo záplatování ~10 návratových cest je tělo vyčleněné (`selftest_body`/`export_body`) a
-      příznak se nastavuje jen ve wrapperu → ta chyba nemůže vzniknout znovu.
-- [x] ✅ **Zámek `run_selftests()` — DOKONČEN 2026-08-13.** Byl přidán jen z poloviny (acquire bez
-      release), takže by se testy spustily **jednou** a pak už jen vracely starý výsledek. Doplněno
-      `s_running = 0` + varování, že funkce smí běžet **až za schedulerem** (před `vTaskStartScheduler`
-      má port `uxCriticalNesting = 0xaaaaaaaa` → `taskEXIT_CRITICAL()` by přerušení už nepovolil).
-- [x] ✅ **Třetí kopie `hsd1.Init` v `sd_probe()` smazána 2026-08-13** — byla dvojnásobně mrtvá
-      (`DATALOG_SD_RAW_OK=0` ji nepustí dál a `main.c:263` handle stejně vyplní dřív), a přitom
-      třetí místo k ručnímu srovnávání s `.ioc`.
-- [x] ✅ **`get_fattime()` torn-read ošetřen 2026-08-13** — `g_rtc_text_local` přepisuje defaultTask
-      bez zámku, takže čtení z UartTasku mohlo zastihnout půlku staré a půlku nové hodnoty
-      (přes půlnoc razítko o den vedle). Zámek sem nejde (volá to FatFs zevnitř `f_write`), takže
-      se čte dvakrát a musí se to shodnout.
-- [x] ✅ **`scpi_selftest` teď řekne, KTERÝ assert spadl (2026-08-13).** Bylo ~90 kontrol slitých do
-      jedné návratové hodnoty a bez nativního kompilátoru na PC se test nedá spustit jinde než na
-      cíli → „FAIL" byl nedohledatelný. `selftest` nově vypíše i seznam failujících indexů a u SCPI
-      `scpi.c:<řádek>` prvního neúspěšného assertu. **Odpovídá na dotaz „co SCPI parser, hlásí chybu
-      při startu" — konkrétní příčinu ukáže až první flash.**
-
-- [x] ✅ **SCPI selftest OPRAVEN 2026-08-13 — příčina nalezena čtením, ne hádáním.** Padal na tom,
-      že po `CALC:NULL:ACQuire` čekal pořád absolutní hodnotu (`2*1e7+100`), jenže
-      `meas_math_capture_null()` referenci **nejen zachytí, ale rovnou zapne relativní režim**
-      → Y klesne na 0 a padly hned dva asserty (druhý čekal `MEAS_HI`, dostal `MEAS_LO`).
-      **Chyba byla v očekávání testu, ne v parseru** — `meas_math_selftest` tutéž sémantiku
-      očekává správně. Test teď ověřuje OBĚ větve (absolutní i relativní).
-- [x] ✅ **Rozšíření SCPI 2026-08-13** — `SYST:CAP?`, `SYST:ERR:ALL?`, `STAT:PRES`, `SENS:FUNC?`,
-      `SENS:ROSC:SOUR?/LOCK?`, `MEAS:PER?`, `MEAS:FREQ:STAL?`, `SYST:TEMP:ALL?`, `MEAS:VOLT:ALL?`.
-      Vše **jen nad poli, která `scpi_src_t` už má** → žádný bump `IPC_VERSION` a CM4 se bude
-      chovat identicky. Selftest rozšířen na 101 assertů.
-
-- [x] ✅ **`_Static_assert` mezi `SCPI_CFG_*` a `IPC_CFG_*` — HOTOVO 2026-08-13.** Riziko potvrzeno:
-      `ipc_cfg_apply()` v `ipc.c` je byte-za-byte duplikát `scpi_cfg_apply()` a klíč se přes cmd
-      ring přenáší jako **holé číslo, bez převodu**. Ty dvě hlavičky se navíc nikdy nepotkaly
-      v jedné translation unit, takže to nemohl odhalit žádný kompilátor. 8 assertů v `ipc.c`
-      (`scpi.h` se tam includuje výhradně kvůli nim). **Ověřeno injektáží chyby** — po vložení
-      položky do jednoho výčtu build spadne, po obnovení projde. Tím padá blokátor ETH etapy F6.
-- [x] ✅ **`ipc_cm4_cm7_alive()` při bootu — OPRAVENO 2026-08-13.** Potvrzeno: `s_last_seq` i `s_last_ms`
-      startují na nule, takže `seq == s_last_seq` (0 == 0) spadlo na `(now-0) < 2000` = pravda.
-      CM4 první ~2 s servíroval prázdný snapshot jako živá data (magic už orazítkoval `ipc_init`,
-      takže `ipc_cm4_read` ho propustil). Přidána větev `if (seq == 0) return 0` — „ještě
-      nepublikoval" NENÍ „publikoval a zamrzl".
-- [x] ✅ **Validity bity ve snapshotu — HOTOVO 2026-08-13, `IPC_VERSION` 3 → 4.** Bylo to širší, než
-      zněl původní zápis: napětí padala na 0 (nerozeznatelné od skutečné nuly), ale **teploty se
-      nekontrolovaly vůbec** — publikovala se poslední dobrá hodnota jako aktuální. Navíc ve snapshotu
-      **chybělo `t_fpga_c100`**, takže `SYST:TEMP? FPGA` nešlo na CM4 zodpovědět.
-      Přidáno `sens_valid` s bitovými pozicemi **shodnými se `SCPI_V_*`** → CM4 backend udělá
-      `src->valid = snap.sens_valid`. Shodu hlídá 14 `_Static_assert`, ověřeno injektáží chyby.
-      ⚠️ **Nutno přeflashnout OBĚ banky** — CM4 ověřuje verzi i size, při neshodě vypne IPC (`4:--`).
-- [ ] **`scpi_process` dělá plný sweep senzorů i pro `*IDN?`** (10 senzorů, `gps_get` v kritické
-      sekci, `fpga_freq_get_last` IRQ-off). Načítat líně nebo gatovat dle subsystému.
+- [ ] 🔴 **#2 FPGA SPI link** (`FPGA: link NOLINK`, symptom `RX0:FF` = FPGA nebudí MISO).
+      **Blokuje všechno podstatné:** velké číslo na hlavní obrazovce je pořád SIMULACE,
+      stejně tak trend/Allan/histogram/spektrogram/Math. Datalog zapisuje kmitočet 0.
+      Diagnostika připravená: UART `fpgaraw`, `fpgaloop`, okno Čítač.
 
 ---
 
-## P4 — připravené, nezačaté
+## P1 — odblokované, dá se dělat hned
 
-- [ ] 🔴 **ETH — ODLOŽENO do výměny oscilátoru (rozhodnuto 2026-08-13).** Etapa F0
-      uzavřena s jednoznačným výsledkem: PHY LAN8742A nedostává 25 MHz, ale 10
-      (X1 je sdílený s HSE procesoru). Řešení = **výměna X1 za 25 MHz TCXO**.
-      ⚠️ Tím se změní i HSE procesoru → **kompletní recept na přepočet hodin je
-      v `CLOCK_25MHZ_MIGRACE.md`** (všechny tři PLL i DSI si udrží stejné VCO,
-      takže se nemění žádný odvozený kmitočet). Až bude TCXO osazený:
-      1. aplikovat migraci hodin, 2. `eth` musí najít PHY na adrese 0,
-      3. teprve pak pokračovat F1–F8. Do té doby ETH nezačínat.
-
-
-- [x] ✅ **ETH etapa F0 UZAVŘENA 2026-08-13.** Pinmapa vytažena ze schématu (bylo v repu celou
-      dobu — `STM32H747BIT.pdf` list 4/7+2/7), příkaz `eth` napsán a spuštěn na HW.
-      **Výsledek negativní: PHY mlčí, protože dostává 10 MHz místo 25.** Viz odložení ETH výše.
-- [ ] **#29 encoder** (`ENCODER_J7_NAVRH.md`): piny **potvrzené ze schématu** — `PA8`/`PA9` =
-      TIM1 CH1/CH2, `PC13` = tlačítko, konektor J2. **Riziko „PA9 = USB VBUS" je vyvrácené**
-      (USB je na PA11/PA12). Blokátor padl, jde to dělat kdykoli.
-- [ ] 🔴 **Ověřit reset scope IWDG2** (`DUALCORE_BRINGUP_CHECKLIST.md` §8). Za celé ladění
-      boot-loopu se `IWDG2RSTF` (bit 27) ani jednou neasertoval → pořád nevíme, jestli je
-      per-core, nebo shodí celý systém.
+- [ ] **#29 encoder** (`ENCODER_J7_NAVRH.md`): HW vrstva hotová (UART `enc`, TIM1 PA8/PA9 +
+      tlačítko PC13). Chybí **model fokusu v UI** — návrhové rozhodnutí, ne kód.
+- [ ] **SD drobnosti:** formát exportu (dnes `GPSDOnnn.CSV` přírůstkově — ověřit chování),
+      auto-mount při vložení karty (dnes jen request-flag).
+- [ ] **#55 screenshot** (front FB → BMP přes USB CDC), **#67 okno prezentace měření**,
+      **#68 autocal** — rozpracované.
 
 ---
 
-## P5 — čeká na ověření očima (dnes naflashováno, nezkontrolováno)
+## P2 — čeká na hardware
 
-- [ ] 🔴 **Touch po auto-dimu** — oprava naflashována 2026-08-13. Nechat běžet přes auto-dim
-      a sledovat: v logu se má objevit `touch: I2C4 nereaguje (N chyb, M x mutex busy) ->
-      recovery #1` a **touch má potom ožít**. Kdyby neožil, zbývá varianta, že ATTINY drží
-      i něco dalšího — pak přidat do recovery celou `ws_panel_init` sekvenci.
-- [ ] **Vzhled přestavěného Nastavení + nová okna** — rozvržení je **spočítané, ne viděné**.
-      Zkontrolovat: mřížka 3×4 v Nastavení (nejdelší popisky `O PRISTROJI >`, `KALIBRACE >`),
-      okno **DISPLEJ** (jas + auto-dim), okno **SÍŤ**, zvuk v okně **ALARMY**.
-- [ ] ⚠️ **Nastavení se po tomhle flashi vrátila na výchozí** — syscfg magic šel „SCF8" → „SCF9"
-      (přibyla síťová konfigurace). Přenastavit jas/téma/zónu/Math a uložit.
+- [ ] 🔴 **ETH → a s ním SCPI/TCP + web na CM4.** Blokované: PHY LAN8742A dostává
+      **10 MHz místo 25** (X1 sdílený s HSE procesoru). Řešení = **výměna X1 za 25 MHz TCXO**,
+      pak `CLOCK_25MHZ_MIGRACE.md` (VCO všech PLL zůstává, nic odvozeného se nemění),
+      pak `eth` musí najít PHY na adrese 0. Do té doby ETH nezačínat.
+      ⚠️ CM4 strana IPC je hotová a běží — chybí **jen** ten síťový stack.
+- [ ] **SD rychlost (volitelné):** vyšší SDMMC takt (16 → 25/50 MHz) až po
+      (a) sériovém tlumicím odporu ~22–33 Ω na CK a (b) bulk kondenzátoru 4,7–10 µF
+      na SD VDD. Viz STATUS #69. Dnešní rychlost na export bohatě stačí.
+- [ ] **RF bargraf** — ověřit až bude připojená plná FPGA deska.
 
-## P5b — starší zadání
+---
 
-- [x] ✅ **Horizontální bargrafy: segmenty užší o 30 % — HOTOVO 2026-08-12** (okno PŘEHLED KANÁLŮ,
-      `s_view=30`, `app_gpsdo.c`). Potvrzena varianta „užší segmenty".
+## P3 — konfigurace / hygiena
 
-  `HB_SEGS` **45 → 56** (jediná změněná konstanta — geometrie je parametrická, `hb_seg()` si
-  `sw` dopočítá a `hb_marker_idx()` škáluje procenta stejně):
-
-  | | segment | zabere | krok |
-  |---|---|---|---|
-  | dřív (45) | 8 px | 448/452 px | 2,22 % |
-  | teď (56) | **6 px** | 446/452 px | **1,79 %** |
-
-- [ ] **Ověřit bargrafy vizuálně na displeji.** `hb_marker_idx()` teď dělí jemněji → markery
-      MIN/MAX/REF budou přesnější, ale mohou se víc překrývat s výplní. Zkontrolovat čitelnost
-      (6 px segment + 2 px mezera je blízko hranici rozlišitelnosti — 8,54 px/mm, tj. segment
-      ≈ 0,7 mm). Součást průchodu `HW_OVERENI_PRUCHOD.md` §2.
+- [ ] **CubeMX:** doplnit `USE_MKFS`/`USE_EXPAND` do FATFS Advanced (USE_EXPAND už v `.ioc`
+      je, MKFS je default) — viz `CUBEMX_CHECKLIST.md`.
+- [ ] ⚠️ **Po každém Generate Code vrátit naked `HardFault_Handler`** v `stm32h7xx_it.c`
+      (regen ho přepíše na prázdný `while(1)`; helper v USER CODE 0 přežije).
+- [ ] **Vizuální doladění** zbytku UI podle `UI_SIZES.md` (prvky pod 7 mm dotykovým cílem).
