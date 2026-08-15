@@ -580,12 +580,32 @@ uint8_t BSP_SD_Init(void)
  * Dokonceni si hlasime sami — `sd_diskio.c` pak najde zpravu uz ve fronte
  * a jeho `osMessageQueueGet` se vrati okamzite. */
 #ifdef SD_EXPORT_FATFS
+/* ⚠️⚠️ ÚKLID PO NEÚSPĚCHU (převzato z `H757_SDcard_01`, 2026-08-15).
+ * `HAL_SD_ReadBlocks` při timeoutu sice vrátí `hsd->State` na READY, ale
+ * **datový automat (DPSM) a karta v tom přenosu můžou pokračovat** — karta
+ * zůstane ve stavu "sending data" a KAŽDÝ další příkaz pak selže, dokud se
+ * nevypne napájení. `HAL_SD_Abort()` pošle CMD12 (STOP_TRANSMISSION) a uklidí
+ * periferii, takže jedna neúspěšná operace neshodí SD až do restartu.
+ * Bez tohohle byl každý timeout fakticky trvalý. */
+static uint8_t sd_xfer_fail(void)
+{
+    (void)HAL_SD_Abort(&hsd1);
+    /* Dej kartě chvíli na návrat do TRANSFER; ohraničeně (200 ms) a s yieldem,
+     * ať to nezdrží volajícího víc, než je nutné. */
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
+        if ((HAL_GetTick() - t0) > 200u) break;
+        if (osKernelGetState() == osKernelRunning) osDelay(1);
+    }
+    return MSD_ERROR;
+}
+
 uint8_t BSP_SD_ReadBlocks_DMA(uint32_t *pData, uint32_t ReadAddr, uint32_t NumOfBlocks)
 {
     /* Timeout skaluje s poctem bloku; 1 s zakladu bohate staci i pomale karte. */
     uint32_t to = 1000u + NumOfBlocks * 100u;
     if (HAL_SD_ReadBlocks(&hsd1, (uint8_t *)pData, ReadAddr, NumOfBlocks, to) != HAL_OK)
-        return MSD_ERROR;
+        return sd_xfer_fail();
     BSP_SD_ReadCpltCallback();     /* posle READ_CPLT_MSG do SDQueueID */
     return MSD_OK;
 }
@@ -594,7 +614,7 @@ uint8_t BSP_SD_WriteBlocks_DMA(uint32_t *pData, uint32_t WriteAddr, uint32_t Num
 {
     uint32_t to = 1000u + NumOfBlocks * 100u;
     if (HAL_SD_WriteBlocks(&hsd1, (uint8_t *)pData, WriteAddr, NumOfBlocks, to) != HAL_OK)
-        return MSD_ERROR;
+        return sd_xfer_fail();
     BSP_SD_WriteCpltCallback();    /* posle WRITE_CPLT_MSG do SDQueueID */
     return MSD_OK;
 }
@@ -883,6 +903,21 @@ void sd_export_diag(void)
         if (f_getfree("", &fre_clust, &fs) == FR_OK) {
             uint32_t free_mb = (uint32_t)(((uint64_t)fre_clust * fs->csize * 512u) >> 20);
             printf("  volne      : %lu MB\n", (unsigned long)free_mb);
+        }
+        /* ⚠️ SKUTECNA sirka sbernice a takt z CLKCR, ne z toho, co jsme CHTELI
+         * nastavit: `BSP_SD_Init` prepina na 4-bit s fallbackem na 1-bit, takze
+         * bez tohohle vypisu nejde poznat, ze fallback nastal (a proc je prenos
+         * pomalejsi). Prevzato z pristupu `H757_SDcard_01`, ktery sirku hlasi taky.
+         * SDMMC_CK = kernel_clk / (2 x CLKDIV); kernel je 64 MHz z PLL1Q. */
+        {
+            uint32_t clkcr  = SDMMC1->CLKCR;
+            uint32_t div    = clkcr & 0x3FFu;
+            uint32_t widbus = (clkcr >> 14) & 3u;          /* 0=1-bit, 1=4-bit, 2=8-bit */
+            uint32_t khz    = div ? (64000u / (2u * div)) : 64000u;
+            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz%s\n",
+                   (widbus == 1u) ? "4-bit" : (widbus == 2u) ? "8-bit" : "1-bit",
+                   (unsigned long)(khz / 1000u), (unsigned long)(khz % 1000u),
+                   (widbus == 0u) ? "   <-- FALLBACK na 1-bit (4-bit se nepodaril)" : "");
         }
         printf("  => SD FUNGUJE, lze exportovat (`sd export`)\n");
         return;
