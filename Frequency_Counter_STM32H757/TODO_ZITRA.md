@@ -62,6 +62,32 @@
 
 ---
 
+## 🔜 NA ZÍTRA — zrychlit SD (HW úprava + jedna konstanta)
+
+**Zjištění 2026-08-15:** Frantův projekt `H757_SDcard_01` jede na **48 MHz** (`ClockDiv = 0`
+= bypass děličky, kernel 48 MHz) — a to na **TÉŽE desce**. Tím padá dosavadní obava
+ze STATUS #69, že deska vyšší takt nesnese; empiricky ho snese.
+⚠️ Můj dřívější závěr „Franta jede 12 MHz, brát si od něj nemáme co" byl **chybný** —
+četl jsem starší lokální kopii, ne aktuální GitHub.
+
+### 1) HW úpravy (uživatel)
+- [ ] **Odstranit R60** — pull-up na `SDMMC1_CK`, který tam nemá co dělat (patřil na CMD,
+      viz erratum desky). Do teď byl neškodný, ale při 32+ MHz už zhoršuje hrany.
+- [ ] **Přidat bulk kondenzátor 4,7–10 µF na SD VDD** — dnes je tam jen C75 100n,
+      což při zápisovém burstu nedrží napájení.
+
+### 2) SW (jedna konstanta)
+- [ ] **`ClockDiv` 2 → 1** = `SDMMC_CK` **16 → 32 MHz** (`sd_apply_init_config()` v `sd_export.c`,
+      pro konzistenci i `.ioc`).
+      ⚠️ **`ClockDiv = 0` u nás NEPŘEVZÍT:** máme kernel **64 MHz** (Franta 48), takže bypass
+      by dal **64 MHz** = nad SD High-Speed limitem 50 MHz. `ClockDiv=1` → 32 MHz je bezpečně
+      pod ním a pod hodnotou, kterou Franta na stejném HW prokázal.
+- [ ] **Ověřit:** `sd diag` (musí hlásit `4-bit, SDMMC_CK 32.000 MHz`, ne fallback) →
+      `sd test` (rychlost zápisu/čtení — dnes 0,43 / 1,32 MB/s) → `sd export`.
+      Při chybách CRC/timeoutu vrátit na 2 a řešit HW.
+
+---
+
 ## P2 — čeká na hardware
 
 - [ ] 🔴 **ETH → a s ním SCPI/TCP + web na CM4.** Blokované: PHY LAN8742A dostává
@@ -69,9 +95,8 @@
       pak `CLOCK_25MHZ_MIGRACE.md` (VCO všech PLL zůstává, nic odvozeného se nemění),
       pak `eth` musí najít PHY na adrese 0. Do té doby ETH nezačínat.
       ⚠️ CM4 strana IPC je hotová a běží — chybí **jen** ten síťový stack.
-- [ ] **SD rychlost (volitelné):** vyšší SDMMC takt (16 → 25/50 MHz) až po
-      (a) sériovém tlumicím odporu ~22–33 Ω na CK a (b) bulk kondenzátoru 4,7–10 µF
-      na SD VDD. Viz STATUS #69. Dnešní rychlost na export bohatě stačí.
+- [x] ➡️ **SD rychlost — přesunuto nahoru na „NA ZÍTRA"** (máme důkaz z Frantova projektu,
+      že deska vyšší takt zvládne; čeká jen na odstranění R60 + bulk kondík).
 - [ ] **RF bargraf** — ověřit až bude připojená plná FPGA deska.
 
 ---
