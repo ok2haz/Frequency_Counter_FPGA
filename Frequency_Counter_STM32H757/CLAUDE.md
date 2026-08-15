@@ -3,7 +3,7 @@
 ## Přehled
 STM32H757 dual-core (CM4 + CM7) projekt generovaný v STM32CubeIDE.
 - **CM7** = hlavní jádro, veškerá logika (FreeRTOS, displej, SDRAM, I2C, UART).
-- **CM4** = konektivita (výhled: ETH/SCPI/web); dnes GPIO+timer (beep+LED) + **IPC konzument** + **IWDG2**. ⚠️ **CM4 dnes NEBOOTUJE** (bank2 neflashnuta) → `g_cm4_absent`, „4:off". Aktivace = `DUALCORE_BRINGUP_CHECKLIST.md`.
+- **CM4** = konektivita (výhled: ETH/SCPI/web); dnes GPIO+timer (beep+LED) + **IPC konzument** + vlastní CPU% přes DWT. ✅ **CM4 BĚŽÍ (ověřeno na HW 2026-08-14)** — `CM4: alive (IPC heartbeat)`, header „4:xx%". ⚠️ **ALE JEN BEZ AKTIVNÍ SONDY** — viz „Dvoujádro / IPC".
 - Veškerý vývoj displeje je v `CM7/Core/Src/`.
 - **Dvoujádro CM7↔CM4** viz sekce „Dvoujádro / IPC" níže + `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11 + `DUALCORE_BRINGUP_CHECKLIST.md`.
 
@@ -336,9 +336,20 @@ v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a 
   přidat cílený restart CM4 z CM7 — to už je ale něco jiného než nezávislý watchdog. CM4 stall na CM7 pozoruje `stall:CM4` (viz sekce Dvoujádro).
 
 ## Dvoujádro / IPC (CM7 ↔ CM4) — `ipc_shared.h`, `ipc.c`, `CM4/…/ipc_cm4.c`
-⚠️ **CM4 dnes NEBOOTUJE** (bank2 neflashnuta, `g_cm4_absent=1` → „4:off" v CPU bloku headeru = SPRÁVNĚ).
-Kód obou stran je **napsaný a zkompilovaný**; runtime čeká na HW aktivaci (**`DUALCORE_BRINGUP_CHECKLIST.md`**:
-option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh + revize `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11.
+✅ **CM4 BĚŽÍ A IPC ROUND-TRIP FUNGUJE — ověřeno na HW 2026-08-14** (`status` → `CM4: alive (IPC heartbeat), stall x0`;
+header „4:xx%"). Obousměrný link je tím HW-ověřený: CM4 přijal snapshot (ověřil magic+verzi, jinak by mlčel)
+**a** publikuje heartbeat zpět. Option bytes byly správně už z výroby (`BCM4=1`, `BOOT_CM4_ADD0=0x810`),
+bank2 flashnutá.
+- 🔴🔴 **PODMÍNKA: ŽÁDNÁ AKTIVNÍ LADICÍ SONDA. Testuj CM4 VÝHRADNĚ po čistém power-cyklu bez debug session.**
+  Celé měsíce se věřilo, že „CM4 nebootuje / bank2 není flashnutá" — **nebyla to pravda**. CM4 byl celou dobu
+  funkční; maskoval ho **připojený debugger**, který rozbíjí boot handshake CM7↔CM4 (HSEM/`D2CKRDY`) →
+  boot gate CM7 vyprší → `g_cm4_absent=1` → „4:off". Táž sonda navíc dělala **falešné HardFaulty**
+  (`HF@24000000`, `HFSR=0x80000000` = DEBUGEVT: leftover flash breakpoint přes FPB remapuje fetch do RAM).
+  **Postup po každém flashi: Terminate debug session → Remove All Breakpoints → úplný power-cycle** (ne NRST).
+  Teprve pak je `status` vypovídající. Platí i pro měření CPU (viz „CPU zátěž NEMĚŘ přes ladicí sondu").
+- Návrh + revize `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11; bring-up postup `DUALCORE_BRINGUP_CHECKLIST.md`
+  (SRAM4 clock, .ioc regen pozor). ⚠️ Ta část o „nutnosti nastavit option bytes" je pro tuhle desku
+  **bezpředmětná** — jsou správně (ověřeno čtením přes CubeProgrammer CLI).
 - **Sdílená paměť = SRAM4 / D3 `0x38000000`, 64 KB** (`ipc_shared.h`, `g_ipc = *(volatile ipc_shared_t*)IPC_BASE` —
   **shodná adresa pro obě jádra**). Magic „IPC1" + verze + size (CM4 ověří po bootu). ⚠️ **MPU region 2 na
   CM7 = NON-CACHEABLE + SHAREABLE** (`main.c MPU_Config`); bez toho by CM7 cache viděla stará data. CM4 nemá
@@ -370,8 +381,11 @@ option bytes BCM4/BOOT_CM4_ADD0, flash bank2, SRAM4 clock, .ioc regen). Návrh +
   `main.c` smyčce; **LED_2 svítí při GPS fixu ze snapshotu** (jen když CM7 žije) = viditelný důkaz round-tripu.
   ⚠️ **`ipc_shared.h` sdílen RELATIVNÍM include** `"../../../CM7/Core/Inc/ipc_shared.h"` (CM4/CM7 sourozenci → regen-safe,
   žádná změna include path).
-- **CM7 čte CM4 heartbeat:** defaultTask `ipc_cm4_alive()` → `g_cm4_alive` → **CPU blok headeru trojstav**
-  `4:OK` (zeleně) / `4:--` (D2 ready, IPC ticho) / `4:off` (nenabootoval). **stall:CM4:** hrana alive→dead →
+- **CM7 čte CM4 heartbeat:** defaultTask `ipc_cm4_alive()` → `g_cm4_alive` + `ipc_cm4_cpu_pct()` →
+  `g_cm4_cpu_pct` → **CPU blok headeru** (2026-08-14): **`4:xx%`** = živý, s **reálnou zátěží CM4**
+  (CM4 si ji měří sám přes DWT — busy/total cykly za ~1 s okno, clock-agnosticky, publikuje v heartbeatu;
+  dnes ~0 %, protože CM4 skoro nic nedělá — naskočí s ETH/SCPI) / `4:--` (D2 ready, IPC ticho) /
+  `4:off` (nenabootoval). **stall:CM4:** hrana alive→dead →
   log `stall:CM4` + `g_cm4_stall_count` (UART `status`). ⚠️ **CM7 se kvůli mrtvému CM4 NERESETUJE** (§11.4) a
   **NESAHÁ na crash black-box** (ten = příčina resetu CM7); CM4 se zotaví vlastním IWDG2.
 - **Boot gate** (`main.c` Boot_Mode_Sequence_1/2, HSEM + `RCC_FLAG_D2CKRDY`): timeout → `g_cm4_absent=1`,
