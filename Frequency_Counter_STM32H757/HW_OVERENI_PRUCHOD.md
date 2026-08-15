@@ -4,7 +4,13 @@
 > Účel: odbavit ověřovací dluh — **11 funkcí je napsaných, ale nikdy neběželo na displeji**.
 > Pořadí je zvolené tak, aby se přístroj nemusel restartovat víckrát než nutně.
 >
-> Vytvořeno 2026-08-11 po opravě boot-loopu. Legenda: ✅ funguje · ⚠️ funguje s výhradou · ❌ nefunguje
+> Vytvořeno 2026-08-11 po opravě boot-loopu, **aktualizováno 2026-08-15** (reorganizace Nastavení,
+> SD zprovozněno, CM4 běží). Legenda: ✅ funguje · ⚠️ funguje s výhradou · ❌ nefunguje
+>
+> 🔴🔴 **CELÝ PRŮCHOD DĚLEJ BEZ AKTIVNÍ LADICÍ SONDY** — po flashi *Terminate* debug session,
+> *Run → Remove All Breakpoints* a **úplný power-cycle**. Připojený debugger rozbíjí boot
+> handshake CM7↔CM4 (CM4 pak hlásí „off") a leftover breakpointy dělají falešné HardFaulty
+> (`HF@…`, `HFSR` bit31 DEBUGEVT). Zjištěno 2026-08-14 — stálo to týdny mylné diagnózy.
 
 ---
 
@@ -15,21 +21,22 @@
 - [ ] Boot melodie (vzestupné arpeggio) — pokud není mute
 - [ ] UART/USB CDC: `SELFTEST: 13/13 PASS`
 - [ ] UART `status` → `Reset: power-on` (ne `WATCHDOG!`), prázdný crash black-box
-- [ ] Header, CPU blok vpravo: **`4:OK` zeleně** (CM4 běží a mluví přes IPC)
+- [ ] Header, CPU blok vpravo: **`7:xx%` (CM7) + `4:xx%` (CM4)** — CM4 běží a mluví přes IPC.
+      CM4 dnes skoro nic nedělá → čekej **`4:0%`**; `4:--` = IPC ticho, `4:off` = nenaběhl
 - [ ] CM4 LED_2 bliká ~1,25 Hz
 
 ⚠️ Když je `4:--`, CM4 běží, ale IPC mlčí → `DUALCORE_BRINGUP_CHECKLIST.md` §3.
 
-### 0b. SDMMC1 — 🔴 test „boot bez karty" (nové 2026-08-11)
+### 0b. SD karta — ✅ ZPROVOZNĚNA 2026-08-14 (jen regresní kontrola)
 
-Po zapnutí SDMMC1 v `.ioc` je tohle **nejdůležitější jednotlivý test**. CubeMX generuje
-v `MX_SDMMC1_SD_Init()` na selhání `Error_Handler()` = `bootled_fail()` = mrtvý přístroj;
-`HAL_SD_Init` selže vždy bez karty. Vyřazeno `return;`em v USER CODE (viz `CUBEMX_CHECKLIST.md`).
+Root cause tehdejšího „nejede přenos" byl **vypnutý `HardwareFlowControl`** (viz STATUS #28/#69).
+Dnes už jen ověř, že to drží:
 
 - [ ] **Boot BEZ vložené karty** → displej naběhne normálně, **žádné blikání LED_1**
-- [ ] **Boot S vloženou kartou** → totéž (`DATALOG_SD_RAW_OK=0` → SD se ani nezkouší)
-- [ ] Okno Datalog ukazuje backend **`W25Q`** (ne SD) — to je zatím správně
-- [ ] ⚠️ Kartu **nepoužívej takovou, o jejíž obsah nechceš přijít** — až se RAW zapne, přepíše se od MBR
+- [ ] **Boot S vloženou kartou** → totéž
+- [ ] Okno Datalog ukazuje backend **`W25Q`** — to je **záměr** (SD = jen export, `DATALOG_SD_RAW_OK=0`)
+- [ ] UART `sd init` → krok `[c2]` musí ukázat **`HWFC_EN bit17=1`**, kroky `[d]`/`[d2]` **OK + `…55 AA`**
+- [ ] UART `sd fs` → `FAT32`, `sd mount` → OK, `sd test` → shoda + rychlosti
 
 ---
 
@@ -64,24 +71,41 @@ v `MX_SDMMC1_SD_Init()` na selhání `Error_Handler()` = `bootled_fail()` = mrtv
 
 ---
 
-## 3. Průchod okny z Menu
+## 3. Průchod okny z Menu + Nastavení
 
-Otevřít, ověřit obsah, **BACK musí vést tam, odkud jsi přišel**:
+Otevřít, ověřit obsah, **BACK musí vést tam, odkud jsi přišel**.
+
+⚠️ **Reorganizace 2026-08-13:** Menu = **nástroje**, Nastavení = **konfigurace**. Z Menu se do
+Nastavení přesunuly **Čas, Alarmy, Kalibrace, Animace**. V Menu (3×4) tak dnes jsou:
+Diagnostika · Nastavení · System Health · Čítač · Holdover · Datalog · **4× volný slot „-"**
+· Math/Limity · Status ribbon; **Restart = footer** vedle ZPĚT.
+- [ ] Tap na volný slot „-" **NEsmí nikam navigovat** (je to `ACT_FREE` no-op — jinak by se
+      BACK zanořoval do prázdna)
 
 - [ ] Diagnostika → dvousloupcová, teploty vlevo (labely dle umístění), komunikace vpravo
   - [ ] Footer: DIAGRAM → blokové schéma (pulzující LED u BAD/WARN uzlů), PAMĚŤ, SELFTEST
-- [ ] Nastavení → jas −/+ (bar plynule dojíždí, **HW jas okamžitě**), mute, auto-dim, téma, jazyk
+- [ ] **Nastavení = ČISTÝ ROZCESTNÍK** (reorganizace 2026-08-13) — mřížka **3×4 přes celou šířku**,
+      stejná geometrie jako Menu. Žádné přímé ovládače tu **už nejsou**:
+      DISPLEJ · Vzhled · Jazyk · ALARMY · CAS · SIT · KALIBRACE · REFERENCE · ANIMACE · SESTAVY ·
+      O PRISTROJI · SD KARTA. (Vzhled a Jazyk jsou **přepínače** — label nese stav.)
+  - [ ] **DISPLEJ** (s_view=36, NOVÉ): jas −/+ (bar plynule dojíždí, **HW jas okamžitě**),
+        auto-dim zap/vyp + prodleva, Vzhled (TMAVÉ/SVĚTLÉ)
+  - [ ] **SÍŤ** (s_view=35, NOVÉ): DHCP zap/vyp, statická IP/maska/brána (výběr pole a oktetu, −/+ s wrapem).
+        ⚠️ Dnes se to **jen ukládá** — ETH je blokované HW (PHY 10 MHz); okno to na první kartě přiznává
+  - [ ] **SD KARTA** (s_view=37, NOVÉ): živý stav (karta/FS/místo/**Rychlost**), **PŘIPOJIT↔ODPOJIT**
+        (label = akce), **TEST** (integrita + rychlost zápisu/čtení), **EXPORT CSV**,
+        **FORMAT** = ⚠️ dvojí potvrzení („FORMAT" → „POTVRDIT 1/2" → „SMAZAT! 2/2", auto-zrušení po 6 s)
   - [ ] **SESTAVY >** (#54): slot −/+, ULOŽIT → NAČÍST → aplikuje i téma a jas
 - [ ] System Health → stacky tasků, I2C chybovost, „Power supplies: OK"
 - [ ] **Čítač** → syrový detail FPGA (dnes bez linku = NOLINK, očekávané)
 - [ ] **Holdover** (#52) → stav WARMUP/LOCK/HOLDOVER + OCXO řádek `45.2 C +0.03/m`, fialově dokud náběh
   - [ ] OCXO budík (`FX_OCXO_GAUGE`) — půlkruh s barevnými zónami
 - [ ] **Datalog** → backend `W25Q`, počet záznamů roste (10 s/záznam)
-- [ ] Alarmy → počitadla + živý mute stav
-- [ ] Kalibrace (#68) → −/+ mění hodnoty živě; **AUTO-CAL** → PASS/WARN/FAIL do status řádku
-- [ ] Čas → AUTO CET/CEST ↔ ruční, −/+ posun, živý UTC i lokální čas
+- [ ] **Alarmy** → počitadla + **zvuk/mute je nově TADY** (přesunuto z Nastavení — patří k tomu, co umlčuje)
+- [ ] **Kalibrace** (#68, ⬅ nově z Nastavení) → −/+ mění hodnoty živě; **AUTO-CAL** → PASS/WARN/FAIL do status řádku
+- [ ] **Čas** (⬅ nově z Nastavení) → AUTO CET/CEST ↔ ruční, −/+ posun, živý UTC i lokální čas
 - [ ] **Math/Limity** (#43/#44) → MATH zap, M cyklus, B ±, NULL; pásmo ± → verdikt PASS/FAIL LO/HI
-- [ ] **Animace** (#33) → přepínač ZAP/VYP, RF bar plynule dojíždí
+- [ ] **Animace** (#33, ⬅ nově z Nastavení) → přepínač ZAP/VYP, RF bar plynule dojíždí
   - [ ] **PŘÍKLADY ANIMACÍ** → 6 dlaždic, všechny se hýbou i při vypnutých animacích
   - [ ] **EFEKTY >** → 6 přepínačů, každý viditelně mění vzhled
 - [ ] Status ribbon → LED chipy GPS/FPGA/REF/SENS
