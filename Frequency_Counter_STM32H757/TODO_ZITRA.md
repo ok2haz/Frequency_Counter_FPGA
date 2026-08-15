@@ -62,10 +62,28 @@
 
 ---
 
-## P3 — konfigurace / hygiena
+## P3 — konfigurace / hygiena ✅ HOTOVO 2026-08-15
 
-- [ ] **CubeMX:** doplnit `USE_MKFS`/`USE_EXPAND` do FATFS Advanced (USE_EXPAND už v `.ioc`
-      je, MKFS je default) — viz `CUBEMX_CHECKLIST.md`.
-- [ ] ⚠️ **Po každém Generate Code vrátit naked `HardFault_Handler`** v `stm32h7xx_it.c`
-      (regen ho přepíše na prázdný `while(1)`; helper v USER CODE 0 přežije).
-- [ ] **Vizuální doladění** zbytku UI podle `UI_SIZES.md` (prvky pod 7 mm dotykovým cílem).
+- [x] ✅ **CubeMX FatFs volby ověřeny** — `_USE_MKFS=1` i `_USE_EXPAND=1` jsou v `ffconf.h`
+      a **přežily regeneraci**. `_USE_EXPAND` je zapsaný i v `.ioc` (`FATFS_M7._USE_EXPAND=1`);
+      `_USE_MKFS` v `.ioc` být nemusí — je to default pro režim SD Card, což potvrdil regen.
+      Kontrola po každém regenu zůstává v `CUBEMX_CHECKLIST.md`.
+- [x] ✅ **HardFault pravidlo zdokumentováno** — naked `HardFault_Handler` je v kódu
+      (`stm32h7xx_it.c:109`), helper `hard_fault_capture` v `USER CODE 0` (přežije regen),
+      varování v `CUBEMX_CHECKLIST.md`. Není to úkol, ale trvalé pravidlo po každém Generate Code.
+- [x] ✅ **`UI_SIZES.md` aktualizován** (8. vlna) — tři nová okna (DISPLEJ/SÍŤ/SD KARTA),
+      `DG_CARD_FULL_TALL`, header `CM7:/CM4:`, nová sekce **„Svislá geometrie textu"** s tabulkou
+      `line_height` per font a třemi pravidly (rozteč ≠ ascent; clear box nad baseline; header
+      karty zabírá prvních ~30 px) — to je destilát 10 chyb z HW průchodu.
+- [x] ✅ **Opraven nález z revize:** `DIM_MINUS`/`DIM_PLUS` (auto-dim prodleva) byly **56 px
+      široké = 6,6 mm**, jediný dotykový cíl pod 7mm minimem. Rozšířeny na **64×64** (7,5 mm),
+      místo vzato ze 74 px prázdna mezi nimi. **V UI teď není žádný cíl pod minimem** kromě
+      pilulek v headeru, které limituje výška headeru (dokumentováno).
+
+---
+
+## Doporučené pořadí dál
+
+1. **#2 FPGA SPI link** (P0) — jediná věc, po které přístroj začne skutečně měřit.
+2. **#29 encoder** nebo rozpracované #55/#67/#68 (P1) — dá se dělat hned.
+3. **ETH** (P2) — až bude osazený 25 MHz TCXO.

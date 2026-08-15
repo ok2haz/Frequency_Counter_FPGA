@@ -14,7 +14,7 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | Cap height textu | ≈ 0,72 × `ascent` fontu |
 | Čitelnost | cap ≥ 1,9 mm (16′ na 40 cm) pohodlná; 1,35 mm čitelné z ~30–35 cm |
 
-## Dotykové cíle (stav 2026-07-19)
+## Dotykové cíle (stav 2026-08-15)
 
 | Prvek | px (š×v) | mm (výška) | Ideál | Stav |
 |---|---|---|---|---|
@@ -34,6 +34,12 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | Selftest SPUSTIT / Kalibrace ULOŽIT | 180–220×61 | 7,1 | 7 mm | ✓ |
 | MATH/LIMITY ovladače (MATH/M/B±/NULL/LIMITY/PÁSMO±/ALARM) | 64–204×**64** | **7,5** | 7 mm | ✓ (2026-08-01; audit odhalil první návrh 56/6,6 mm → opraveno na 64) |
 | PREHLED↔GRAFY sesterský toggle (footer) | 200×61 | 7,1 | 7 mm | ✓ |
+| **SD KARTA footer** (PŘIPOJIT/ODPOJIT 148, TEST 118, EXPORT CSV 158, FORMAT 172, ZPĚT 133) | ×**61** | 7,1 | 7 mm | ✓ (nejužší TEST 118 px = 13,8 mm) |
+| **SÍŤ ovladače** (DHCP 190, pole 176, oktet 130, − 90, + 98) | ×**64** | 7,5 | 7 mm | ✓ |
+| **DISPLEJ** — jas ± | 72×64 | 7,5 | 7 mm | ✓ |
+| **DISPLEJ** — auto-dim ZAP/VYP | 140×64 | 7,5 | 7 mm | ✓ |
+| **DISPLEJ** — auto-dim prodleva ± | 64×64 | 7,5 | 7 mm | ✓ (2026-08-15 zvětšeno ze **56 px / 6,6 mm** — byl to jediný cíl pod minimem; místo se vzalo z 74 px prázdna mezi tlačítky) |
+| **DISPLEJ** — Vzhled (téma) | 200×64 | 7,5 | 7 mm | ✓ |
 
 ## Typografie (kde se co používá)
 
@@ -49,7 +55,62 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 
 **Pravidlo:** hodnoty, které uživatel ČTE, nesmí být pod mono_16; pod mono_14 nesmí být nic.
 
+## Svislá geometrie textu — dvě pravidla, která stála 10 chyb
+
+Průchod na HW 2026-08-15 odhalil **jednu systematickou třídu chyby** ve třech oknech.
+Obě pravidla plynou z toho, že `prim_draw_text` bere Y jako **baseline** a kreslí od ní
+**nahoru** o `ascent`:
+
+**1) Rozteč řádků = `line_height`, NE `ascent`.**
+Font `mono_18` má `ascent` 18, ale `line_height` **23** (+ `descent` 5). Rozteč 18 px tedy
+nenechá žádnou mezeru a descent zasahuje do dalšího řádku. Používej `line_height` + 2–3 px.
+
+| Font | ascent | descent | line_height | min. bezpečná rozteč |
+|---|---|---|---|---|
+| mono_14 | 14 | 4 | 18 | 20 |
+| mono_16 / sans_16 | 16 | ~5 | ~21 | 23 |
+| mono_18 / sans_18 | 18 | 5 | 23 | **26** |
+| mono_22 | 22 | ~6 | ~28 | 30 |
+| mono_25 | 25 | ~7 | ~32 | 34 |
+
+**2) Clear box musí ležet NAD baseline.**
+Box pro partial redraw musí začínat na `baseline − ascent − 2`, ne na `baseline`. Jinak se
+starý text nesmaže a nový se kreslí přes něj (projev: „blikající text se přepisuje přes sebe").
+Nalezeno u varování FORMAT v SD okně (box od baseline → celý text zůstával) i u řádku FIX
+v GPS okně (box o 3 px níž → zůstávaly vršky glyfů).
+
+**3) Header karty zabírá prvních ~30 px.** `ui_card_render_chrome` kreslí `header_label` na
+baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = **`rect.y + 25`**, text tedy sahá do
+`rect.y + 30`. První obsahový řádek i tlačítka musí začínat až za tím.
+
 ## Změnový log
+
+- **2026-08-15 (8. vlna — HW průchod + tři nová okna)**: první vlna ověřená **okem na displeji**
+  (dosud se layout počítal z tabulek fontů). Průchod `HW_OVERENI_PRUCHOD.md` našel 10 chyb.
+  - **Tři nová okna**: **DISPLEJ** (s_view=36 — jas + auto-dim + Vzhled, přesunuto z Nastavení),
+    **SÍŤ** (35 — DHCP/IP/maska/brána, dnes jen ukládá; ETH je blokovaná HW),
+    **SD KARTA** (37 — PŘIPOJIT/ODPOJIT, TEST s měřením rychlosti, EXPORT CSV, FORMAT
+    s dvojím potvrzením). Všechny dotykové cíle ≥61 px ✓ (viz tabulka).
+  - **Nastavení = čistý rozcestník 3×4** (246×76 = 8,9 mm ✓), stejná geometrie jako Menu.
+  - **⚠️ Překryvy textu (3 okna)** — společná příčina, viz nová sekce „Svislá geometrie textu":
+    **SELFTEST** měl rozteč 18 px při `mono_18` (line_height 23) → přepsáno na **dva sloupce**
+    (7+6 testů, rozteč **26**), čímž se využila i prázdná pravá polovina karty;
+    **SÍŤ** měla tlačítka na y=268 pod header labelem karty (končí 277) → karta 248, ovládače 284;
+    **HOLDOVER** měl drift-kužel (286..338) přes spodní vysvětlivku (od 326) → kužel 292..348, text 384.
+  - **Nová karta `DG_CARD_FULL_TALL`** {18,62,764,**345**} → končí 407, tj. **10 px nad footerem**
+    (zadání z průchodu). Používají ji Selftest a Holdover; `DG_CARD_FULL_B` (300) zůstal
+    pro ostatních 7 oken beze změny.
+  - **Header — CPU blok**: popisky `7:xx%`/`4:xx%` → **`CM7:xx%`/`CM4:xx%`** (čitelnost).
+    `mono_14` advance 8 px → 7 znaků = 56 px, blok měl 49 → rozšířen na 61 px a
+    **`HDR_PILL_LIMIT` 590 → 580**. Důsledek: CAL pilulka (poslední v pořadí) vypadne o něco dřív.
+  - **Čitelnost/odezva**: podbarvení kmitočtu při STOP alfa 38 → **72** (~15 % → ~28 %, bylo sotva
+    vidět); micro-flash tlačítek 3 → **2** tiky; boot splash 10 → **5** tiků (+ `SPLASH_FADE_TICKS`
+    8 → 5) → start **4,2 s → ~3,7 s**.
+  - **Nález z revize dokumentu (opraveno hned)**: `DIM_MINUS`/`DIM_PLUS` v okně DISPLEJ byly
+    **56 px široké** (6,6 mm) — jediný dotykový cíl pod minimem v celém UI (výška 64 px byla OK).
+    Rozšířeny na **64×64** (7,5 mm); místo se vzalo ze 74 px prázdna mezi nimi, hodnota prodlevy
+    re-centrována na x=278. **Tím není v UI žádný cíl pod 7 mm** kromě pilulek v headeru, které
+    jsou stropem výšky headeru (dokumentováno výše).
 
 - **2026-08-01 (self-survey / sestavy / auto-cal + warm-up + audit)**:
   - **SELF-SURVEY (s_view=32)** — vstup tlačítkem **SURVEY** v GPS okně (footer pravý sloupec {532,417,112,61}/7,1 mm ✓). Okno: START/STOP {18,417,220,61} + živé kv řádky (Stav/Vzorků/Rozptyl H/Poloha vč. výšky).

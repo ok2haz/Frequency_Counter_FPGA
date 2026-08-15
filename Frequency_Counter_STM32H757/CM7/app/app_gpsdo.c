@@ -218,8 +218,8 @@ static const prim_rect_t MUTE_RECT   = {230, 354, 148, 64};   /* Zvuk zap/vyp �
 static const prim_rect_t BR_MINUS    = {30, 112, 72, 64};     /* Jas - (y 188->112, layout 2026-08-15) */
 static const prim_rect_t BR_PLUS     = {110, 112, 72, 64};    /* Jas + */
 static const prim_rect_t ADEN_RECT   = {30, 232, 140, 64};    /* Auto-dim zap/vyp (y 308->232) */
-static const prim_rect_t DIM_MINUS   = {186, 232, 56, 64};    /* prodleva - */
-static const prim_rect_t DIM_PLUS    = {316, 232, 56, 64};    /* prodleva + */
+static const prim_rect_t DIM_MINUS   = {182, 232, 64, 64};    /* prodleva - (56->64 px: 6,6 -> 7,5 mm, UI_SIZES 2026-08-15) */
+static const prim_rect_t DIM_PLUS    = {310, 232, 64, 64};    /* prodleva + */
 /* ── Prava polovina okna Nastaveni = MRIZKA 2x5 (2026-08-13) ────────────────
  * Nastaveni se stalo rozcestnikem: Menu se vyprazdnilo na placeholdery a vsechno,
  * co je konfigurace (Cas, Alarmy, Kalibrace, Animace, Sit), se presunulo sem.
@@ -2309,9 +2309,9 @@ static void settings_upd_dim(void)
     ui_button_t adb = {.rect = ADEN_RECT, .variant = UI_BUTTON_NORMAL,
                        .label = g_autodim_en ? "ZAPNUTO" : "VYPNUTO"};
     ui_button_render(&adb);
-    prim_fill_rect((prim_rect_t){244, 238, 72, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_fill_rect((prim_rect_t){248, 238, 60, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     char tb[12]; snprintf(tb, sizeof tb, "%u s", (unsigned)g_autodim_sec);
-    prim_draw_text((prim_point_t){279, 272}, tb, &ui_font_mono_22,
+    prim_draw_text((prim_point_t){278, 272}, tb, &ui_font_mono_22,
                    g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
 }
 
