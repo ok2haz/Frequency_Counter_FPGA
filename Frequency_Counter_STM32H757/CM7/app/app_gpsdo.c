@@ -2561,6 +2561,7 @@ static void app_gpsdo_render_selftest(void);
 static void app_gpsdo_render_cas(void);
 static void app_gpsdo_render_anim(void);
 static void app_gpsdo_render_math(void);   /* fwd (volano z menu_activate) — okno Math/limity */
+static void app_gpsdo_render_meas(void);   /* fwd (volano z menu_activate) — okno Mereni (#67) */
 static void app_gpsdo_render_confirm_restart(void);
 static void app_gpsdo_render_waterfall(void);   /* Spektrogram Δf (s_view=26) */
 static void waterfall_tick(void);
@@ -2576,6 +2577,7 @@ enum { ACT_DIAG = 1, ACT_SETTINGS, ACT_HEALTH, ACT_COUNTER,
        ACT_RIBBON,           /* Status ribbon demo (s_view=28) */
        ACT_MATH,             /* Math/limity (s_view=31, #43/#44) */
        ACT_NET,              /* Sit / ETH (s_view=35) — dostupne z Nastaveni */
+       ACT_MEAS,             /* Mereni: prezentace (s_view=34, #67) */
        ACT_FREE };           /* volny slot pro budouci pouziti (no-op, NEdela nav_push) */
 /* Menu 3×4 = 12 dlazdic (2026-07-19 rozsireno z 3×3=9; 4. rada = Animace/Math/Status
  * ribbon — vsech 12 slotu je dnes obsazenych realnymi funkcemi). w=248, gap 14; h=76, gap 10
@@ -2602,7 +2604,7 @@ static const struct { prim_rect_t rect; const char *label; uint8_t act; } MENU_I
      * Nastaveni (mrizka rozcestniku vpravo) — je to konfigurace, ne nastroje.
      * Tyto ctyri sloty jsou proto volne pro budouci funkce. `ACT_FREE` je
      * zamerne no-op: dotyk NEdela nav_push, takze se nikam nenaviguje. */
-    { {14, 240, 248, 76}, "-",             ACT_FREE },
+    { {14, 240, 248, 76}, "Mereni",        ACT_MEAS },
     { {276,240, 248, 76}, "-",             ACT_FREE },
     { {538,240, 248, 76}, "-",             ACT_FREE },
     { {14, 326, 248, 76}, "-",             ACT_FREE },
@@ -2626,6 +2628,7 @@ static void menu_activate(uint8_t act)
     case ACT_CAS:       app_gpsdo_render_cas();       break;
     case ACT_ANIM:      app_gpsdo_render_anim();      break;
     case ACT_NET:       app_gpsdo_render_net();       break;
+    case ACT_MEAS:      app_gpsdo_render_meas();      break;   /* #67, s_view=34 */
     case ACT_FREE:      break;   /* volny slot — zamerne nic (viz MENU_ITEMS) */
     case ACT_RIBBON:    app_gpsdo_render_ribbon();    break;
     case ACT_MATH:      app_gpsdo_render_math();      break;
