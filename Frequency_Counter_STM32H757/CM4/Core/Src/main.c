@@ -158,7 +158,9 @@ int main(void)
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0;
   DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
-  uint32_t s_cm4_busy_cyc = 0, s_cm4_win_cyc0 = 0, s_cm4_win_ms = 0, s_cm4_pct = 0;
+  /* Lokalni v main() (ta nikdy neskonci) — proto BEZ prefixu `s_`, ktery je
+   * v projektu vyhrazeny pro file-scope/static promenne. */
+  uint32_t cm4_busy_cyc = 0, cm4_win_cyc0 = 0, cm4_win_ms = 0, cm4_pct = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -173,18 +175,18 @@ int main(void)
 	   * ⚠️ Duveryhodne JEN kdyz CM7 zije (snapshot seq roste) — jinak jsou to stara data. */
 	  ipc_snapshot_t snap;
 	  int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);
-	  ipc_cm4_heartbeat(s_cm4_pct, HAL_GetTick() / 1000u);   /* posledni zmerena vlastni zatez [%] */
+	  ipc_cm4_heartbeat(cm4_pct, HAL_GetTick() / 1000u);   /* posledni zmerena vlastni zatez [%] */
 
 	  /* Zmer VLASTNI zatez: work-cykly teto iterace (vse KROME nasledneho HAL_Delay,
-	   * ktere je "idle"). Kazdou ~1 s spocitej pomer busy/total -> s_cm4_pct. CM4 dnes
+	   * ktere je "idle"). Kazdou ~1 s spocitej pomer busy/total -> cm4_pct. CM4 dnes
 	   * dela skoro nic -> ~0 %; s ETH/SCPI to naskoci samo. */
-	  s_cm4_busy_cyc += DWT->CYCCNT - cyc0;
+	  cm4_busy_cyc += DWT->CYCCNT - cyc0;
 	  uint32_t cm4_now = HAL_GetTick();
-	  if (cm4_now - s_cm4_win_ms >= 1000u) {
-		  uint32_t total = DWT->CYCCNT - s_cm4_win_cyc0;   /* celkove cykly v okne (unsigned wrap OK) */
-		  s_cm4_pct = total ? (uint32_t)((uint64_t)s_cm4_busy_cyc * 100u / total) : 0u;
-		  if (s_cm4_pct > 100u) s_cm4_pct = 100u;
-		  s_cm4_busy_cyc = 0u; s_cm4_win_cyc0 = DWT->CYCCNT; s_cm4_win_ms = cm4_now;
+	  if (cm4_now - cm4_win_ms >= 1000u) {
+		  uint32_t total = DWT->CYCCNT - cm4_win_cyc0;   /* celkove cykly v okne (unsigned wrap OK) */
+		  cm4_pct = total ? (uint32_t)((uint64_t)cm4_busy_cyc * 100u / total) : 0u;
+		  if (cm4_pct > 100u) cm4_pct = 100u;
+		  cm4_busy_cyc = 0u; cm4_win_cyc0 = DWT->CYCCNT; cm4_win_ms = cm4_now;
 	  }
 
 	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze

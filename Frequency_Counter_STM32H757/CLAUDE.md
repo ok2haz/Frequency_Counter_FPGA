@@ -554,6 +554,11 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
 - **FatFs zapnutý 2026-08-11** (CubeMX: FATFS → SD Card, `Detect_SDIO = PE3`). `BSP_SD_Init()`
   sám kontroluje přítomnost karty a pak volá `HAL_SD_Init` + 4-bit → karta se inicializuje
   **líně přes FatFs**, proto je `MX_SDMMC1_SD_Init()` vyřazená správně.
+  ⚠️ **`FIL`/`DIR`/`FILINFO` NIKDY na stack tasku** — při `_FS_TINY=0` nese `FIL` vlastní 512B
+  sektorový buffer (~560 B). Na stacku dělal ze `selftest_body` 1176 B a z `export_body` 920 B,
+  takže po SD operacích klesla rezerva UartTasku na ~660 B (změřeno `status` 2026-08-15).
+  Řešení = `static FIL` (funkce běží výhradně z UartTasku a nejsou vnořené) → `sd_export_selftest`
+  spadl na **56 B**. RAM_D1 má ~386 KB volných, takže je to zadarmo.
   `_USE_LFN=0` → jen 8.3 jména (`GPSDO.CSV` vyhovuje); `_FS_TINY=0` → `FIL` má vlastní 512B
   buffer → **`sd_export_run()` má 808 B rámec** (UartTask 4 kB, základ ~1,3 kB → ~1,8 kB rezerva).
 - 🔴🔴 **`sd_diskio.c`: `ENABLE_SD_DMA_CACHE_MAINTENANCE` = 0 a `ENABLE_SCRATCH_BUFFER` VYPNUTÝ**

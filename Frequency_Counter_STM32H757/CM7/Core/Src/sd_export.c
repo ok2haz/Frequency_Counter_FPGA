@@ -942,7 +942,14 @@ void sd_export_diag(void)
 static bool sd_speed_test(uint32_t *out_w_kbs, uint32_t *out_r_kbs)
 {
     static uint8_t sbuf[SD_SPEED_BUF];   /* static: 32 KB na stack UartTasku nepatri */
-    FIL f; UINT bw, br; FRESULT fr;
+    /* ⚠️ `FIL` je STATICKY, ne na stacku: pri `_FS_TINY=0` v sobe nese vlastni
+     * 512B sektorovy buffer (~560 B). Na stacku delal ze `selftest_body` 1176 B
+     * a z `export_body` 920 B, takze po SD operacich klesla rezerva UartTasku
+     * na ~660 B (zmereno `status` 2026-08-15). Vsechny tyhle funkce bezi
+     * VYHRADNE z UartTasku a nejsou vnorene, takze staticka instance je
+     * bezpecna; kazda ma vlastni, aby se nemohly potkat (`sd_speed_test` se
+     * vola z konce `selftest_body`). RAM_D1 ma ~386 KB volnych. */
+    static FIL f; UINT bw, br; FRESULT fr;
     const uint32_t iters = (SD_SPEED_KB * 1024u) / SD_SPEED_BUF;
     uint32_t t0, dt;
 
@@ -1004,7 +1011,14 @@ static bool sd_speed_test(uint32_t *out_w_kbs, uint32_t *out_r_kbs)
 static bool selftest_body(void)
 {
     static uint8_t buf[SD_TEST_CHUNK];   /* static: 512 B na stack UartTasku je zbytecne */
-    FIL f; UINT bw, br; FRESULT fr;
+    /* ⚠️ `FIL` je STATICKY, ne na stacku: pri `_FS_TINY=0` v sobe nese vlastni
+     * 512B sektorovy buffer (~560 B). Na stacku delal ze `selftest_body` 1176 B
+     * a z `export_body` 920 B, takze po SD operacich klesla rezerva UartTasku
+     * na ~660 B (zmereno `status` 2026-08-15). Vsechny tyhle funkce bezi
+     * VYHRADNE z UartTasku a nejsou vnorene, takze staticka instance je
+     * bezpecna; kazda ma vlastni, aby se nemohly potkat (`sd_speed_test` se
+     * vola z konce `selftest_body`). RAM_D1 ma ~386 KB volnych. */
+    static FIL f; UINT bw, br; FRESULT fr;
 
     /* --- zapis --- */
     fr = f_open(&f, SD_TEST_FILE, FA_CREATE_ALWAYS | FA_WRITE);
@@ -1122,7 +1136,7 @@ static int32_t export_body(uint32_t max_rec)
         s_state = SD_EXP_ERROR;
         return -1;
     }
-    FIL f;
+    static FIL f;   /* ⚠️ staticky, ne na stacku — viz duvod u `selftest_body` */
     /* `FA_CREATE_NEW` (ne ALWAYS): kdyby se mezi `f_stat` a `f_open` soubor
      * objevil, radeji selzeme, nez abychom neco prepsali. */
     if (f_open(&f, fname, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
