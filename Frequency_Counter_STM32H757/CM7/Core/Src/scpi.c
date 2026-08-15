@@ -271,6 +271,39 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
     return 0;
 }
 
+/* ── SCPI-99 OPERation / QUEStionable CONDition ──────────────────────────────
+ * Okamzity stav (ne latched). Bitove pozice jsou nase (SCPI je pro pristroj
+ * nedefinuje), ale MUSI byt stabilni — klient si je mapuje natvrdo:
+ *   OPER  bit0 = FPGA link ziva, bit1 = GPS fix, bit2 = reference zamcena
+ *   QUES  bit0 = mereni neduveryhodne, bit1 = bez GPS fixu, bit2 = ztrata reference
+ * Sdili je `:CONDition` dotaz i latchovani do `:EVENt` (viz `scpi_status_latch`). */
+static uint16_t scpi_oper_cond(const scpi_src_t *src)
+{
+    uint16_t w = 0;
+    if (src->spi_ok)                                                      w |= 1u << 0;
+    if ((src->valid & SCPI_V_GPS) && src->gps_fix_mode >= 2)              w |= 1u << 1;
+    if (src->si5356_ok && !(src->si5356_status & ((1u << 3) | (1u << 4)))) w |= 1u << 2;
+    return w;
+}
+static uint16_t scpi_ques_cond(const scpi_src_t *src)
+{
+    uint16_t w = 0;
+    if (!src->spi_ok || !(src->valid & SCPI_V_FREQ) || src->freq_err)      w |= 1u << 0;
+    if (!((src->valid & SCPI_V_GPS) && src->gps_fix_mode >= 2))           w |= 1u << 1;
+    if (!src->si5356_ok || (src->si5356_status & ((1u << 3) | (1u << 4)))) w |= 1u << 2;
+    return w;
+}
+/* Zlatchuj NABEZNE HRANY condition do EVENt registru (SCPI transition filter,
+ * defaultne pozitivni). Vola se na zacatku kazdeho zpracovani prikazu, takze
+ * kratka udalost mezi dvema dotazy klienta nezapadne. */
+static void scpi_status_latch(scpi_ctx_t *c, const scpi_src_t *src)
+{
+    uint16_t o = scpi_oper_cond(src), q = scpi_ques_cond(src);
+    c->oper_ev |= (uint16_t)(o & ~c->oper_prev);
+    c->ques_ev |= (uint16_t)(q & ~c->ques_prev);
+    c->oper_prev = o; c->ques_prev = q;
+}
+
 /* Kmitočet /4 [Hz] ze zdroje (0 = neplatné). */
 static double src_freq_hz(const scpi_src_t *s)
 {
@@ -323,14 +356,41 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     }
     if (hdr_match(hdr, "*STB") && is_query) {
         unsigned stb = 0;
-        if (c->err_count > 0) stb |= 0x04u;
-        if (c->esr & c->ese)  stb |= 0x20u;
-        if (stb & c->sre)     stb |= 0x40u;
+        if (c->err_count > 0)          stb |= 0x04u;   /* bit2: chybova fronta */
+        if (c->ques_ev & c->ques_ena)  stb |= 0x08u;   /* bit3: QUEStionable summary */
+        if (c->esr & c->ese)           stb |= 0x20u;   /* bit5: ESB */
+        if (c->oper_ev & c->oper_ena)  stb |= 0x80u;   /* bit7: OPERation summary */
+        if (stb & c->sre)              stb |= 0x40u;   /* bit6: MSS/RQS */
         snprintf(out, out_sz, "%u", stb); return strlen(out);
     }
 
     /* ── SYSTem ────────────────────────────────────────────────────────────── */
     if (hdr_match(hdr, "SYSTem:VERSion") && is_query) { snprintf(out, out_sz, "1999.0"); return strlen(out); }
+    /* *OPT? — seznam osazenych voleb (IEEE 488.2). Prazdny retezec = zadne volby;
+     * my hlasime, co pristroj realne umi, aby si ovladac nemusel hadat. */
+    if (hdr_match(hdr, "*OPT") && is_query) {
+        snprintf(out, out_sz, "GPSDO,DATALOG,SD"); return strlen(out);
+    }
+    /* CONFigure:FREQuency — u citace jedina merena funkce, takze je to fakticky
+     * potvrzeni rezimu. Pripadny parametr (ocekavany kmitocet/rozsah) ignorujeme:
+     * merime reciprocne pres celý rozsah, takze rozsah nastavovat netreba. */
+    if (hdr_match(hdr, "CONFigure:FREQuency") && !is_query) { return 0; }
+    if (hdr_match(hdr, "CONFigure") && is_query) { snprintf(out, out_sz, "\"FREQ\""); return strlen(out); }
+    /* DISPlay:BRIGhtness 0..100 [%] -> `g_brightness` 0..255 (HW backlight aplikuje
+     * UiTask). ⚠️ Clamp na 25..255 jako v UI — uplna tma by displej "ztratila"
+     * a uzivatel by nemel jak jas vratit zpet dotykem. */
+    if (hdr_match(hdr, "DISPlay:BRIGhtness")) {
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)((g_brightness * 100u + 127u) / 255u)); return strlen(out); }
+        int ok = 0; double v = scpi_num(arg, &ok);
+        if (ok && v >= 0.0 && v <= 100.0) {
+            uint32_t b = (uint32_t)(v * 255.0 / 100.0 + 0.5);
+            if (b < 25u)  b = 25u;
+            if (b > 255u) b = 255u;
+            g_brightness = (uint8_t)b; g_sys_cfg_dirty = 1;   /* persist (BKP + syscfg blob) */
+            return 0;
+        }
+        scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+    }
     /* SCPI-99 povinné. Bez něj VISA/IVI ovladače při inicializaci dostanou -113
      * a hned si zaplní chybovou frontu. */
     if (hdr_match(hdr, "SYSTem:CAPability") && is_query) {
@@ -577,20 +637,32 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* SCPI-99 povinné. OPERation/QUEStionable ENABLE registry zatím nemáme
      * (jen 488.2 ESE/SRE), takže je to fakticky no-op — ale MUSÍ se přijmout,
      * jinak inicializační sekvence `*RST;*CLS;STAT:PRES` skončí chybou. */
-    if (hdr_match(hdr, "STATus:PRESet") && !is_query) { return 0; }
+    /* PRESet dle SCPI-99: enable registry na 0 (event/condition se NEmazou). */
+    if (hdr_match(hdr, "STATus:PRESet") && !is_query) { c->oper_ena = 0; c->ques_ena = 0; return 0; }
     if (hdr_match(hdr, "STATus:OPERation:CONDition") && is_query) {
-        unsigned w = 0;
-        if (src->spi_ok)                                     w |= 1u << 0;
-        if ((src->valid & SCPI_V_GPS) && src->gps_fix_mode >= 2) w |= 1u << 1;
-        if (src->si5356_ok && !(src->si5356_status & ((1u << 3) | (1u << 4)))) w |= 1u << 2;
-        snprintf(out, out_sz, "%u", w); return strlen(out);
+        snprintf(out, out_sz, "%u", (unsigned)scpi_oper_cond(src)); return strlen(out);
     }
     if (hdr_match(hdr, "STATus:QUEStionable:CONDition") && is_query) {
-        unsigned w = 0;
-        if (!src->spi_ok || !(src->valid & SCPI_V_FREQ) || src->freq_err)     w |= 1u << 0;
-        if (!((src->valid & SCPI_V_GPS) && src->gps_fix_mode >= 2))           w |= 1u << 1;
-        if (!src->si5356_ok || (src->si5356_status & ((1u << 3) | (1u << 4)))) w |= 1u << 2;
-        snprintf(out, out_sz, "%u", w); return strlen(out);
+        snprintf(out, out_sz, "%u", (unsigned)scpi_ques_cond(src)); return strlen(out);
+    }
+    /* EVENt (= holy `STAT:OPER?`): latched, CTENI MAZE. */
+    if ((hdr_match(hdr, "STATus:OPERation:EVENt") || hdr_match(hdr, "STATus:OPERation")) && is_query) {
+        snprintf(out, out_sz, "%u", (unsigned)c->oper_ev); c->oper_ev = 0; return strlen(out);
+    }
+    if ((hdr_match(hdr, "STATus:QUEStionable:EVENt") || hdr_match(hdr, "STATus:QUEStionable")) && is_query) {
+        snprintf(out, out_sz, "%u", (unsigned)c->ques_ev); c->ques_ev = 0; return strlen(out);
+    }
+    if (hdr_match(hdr, "STATus:OPERation:ENABle")) {
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)c->oper_ena); return strlen(out); }
+        int ok = 0; double v = scpi_num(arg, &ok);
+        if (ok) { c->oper_ena = (uint16_t)v; return 0; }
+        scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
+    }
+    if (hdr_match(hdr, "STATus:QUEStionable:ENABle")) {
+        if (is_query) { snprintf(out, out_sz, "%u", (unsigned)c->ques_ena); return strlen(out); }
+        int ok = 0; double v = scpi_num(arg, &ok);
+        if (ok) { c->ques_ena = (uint16_t)v; return 0; }
+        scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out);
     }
 
     /* ── CALC SET (akce; přes src->set_cfg → g_meas_cfg na CM7 / cmd ring na CM4) ── */
@@ -612,6 +684,9 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
 {
     if (ctx == NULL || src == NULL || line == NULL || out == NULL || out_sz == 0) return 0;
     out[0] = '\0';
+    /* Zlatchuj hrany OPER/QUES condition -> EVENt. Musi to byt PRED vykonanim
+     * prikazu, aby `STAT:QUES?` videl i udalost, ktera nastala tesne pred dotazem. */
+    scpi_status_latch(ctx, src);
     if (strchr(line, ';') == NULL) return scpi_exec_one(ctx, src, line, out, out_sz);
 
     /* Složená zpráva (IEEE 488.2): jednotky ';', odpovědi dotazů spojené ';'. */
@@ -872,6 +947,34 @@ int scpi_selftest(void)
     /* READ? = INIT + FETCh -> musi mereni ZAPNOUT i kdyz stalo */
     scpi_process_ctx(&x, &src, "READ?", b, sizeof b);
     ok &= (src.set_running == 1);
+
+    /* ── STATus OPER/QUES: EVENt je latched a CTENI HO MAZE (2026-08-15) ── */
+    src.spi_ok = 0;                                       /* vse spatne -> QUES bit0 nabezna hrana */
+    scpi_process_ctx(&x, &src, "STAT:QUES:COND?", b, sizeof b);
+    ok &= (b[0] != '0');                                  /* condition hlasi problem */
+    scpi_process_ctx(&x, &src, "STAT:QUES?", b, sizeof b);
+    ok &= (b[0] != '0');                                  /* event zlatchovan */
+    scpi_process_ctx(&x, &src, "STAT:QUES?", b, sizeof b);
+    ok &= (strcmp(b, "0") == 0);                          /* druhe cteni uz nuluje */
+    scpi_process_ctx(&x, &src, "STAT:QUES:ENAB 7", b, sizeof b);
+    scpi_process_ctx(&x, &src, "STAT:QUES:ENAB?", b, sizeof b);
+    ok &= (strcmp(b, "7") == 0);
+    scpi_process_ctx(&x, &src, "STAT:PRES", b, sizeof b); /* PRESet -> enable = 0 */
+    scpi_process_ctx(&x, &src, "STAT:QUES:ENAB?", b, sizeof b);
+    ok &= (strcmp(b, "0") == 0);
+    scpi_process_ctx(&x, &src, "STAT:OPER:COND?", b, sizeof b);
+    ok &= (b[0] >= '0' && b[0] <= '9');   /* vraci cislo, ne prazdno */
+
+    /* *OPT? / CONF? / DISP:BRIG (readback v %) */
+    scpi_process_ctx(&x, &src, "*OPT?", b, sizeof b);
+    ok &= (strstr(b, "GPSDO") != NULL);
+    scpi_process_ctx(&x, &src, "CONF?", b, sizeof b);
+    ok &= (strncmp(b, "\"FREQ\"", 6) == 0);
+    scpi_process_ctx(&x, &src, "DISP:BRIG 50", b, sizeof b);
+    scpi_process_ctx(&x, &src, "DISP:BRIG?", b, sizeof b);
+    ok &= (b[0] == '5');                                  /* ~50 % zpet */
+    scpi_process_ctx(&x, &src, "DISP:BRIG 150", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                   /* mimo rozsah -> chyba */
     ok &= (scpi_process_ctx(&x, &src, "MMEM:CAT?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:DATA:COUN?", b, sizeof b) > 0);
 

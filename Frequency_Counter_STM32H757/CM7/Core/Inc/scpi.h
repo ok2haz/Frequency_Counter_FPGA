@@ -69,6 +69,14 @@ typedef struct {
     uint8_t  esr;                  /* Standard Event Status Register (latched) */
     uint8_t  ese;                  /* Event Status Enable (*ESE) */
     uint8_t  sre;                  /* Service Request Enable (*SRE) */
+    /* ── SCPI-99 OPERation / QUEStionable (doplneno 2026-08-15) ─────────────────
+     * `:CONDition` = OKAMZITY stav (pocita se ze zdroje pri kazdem dotazu).
+     * `:EVENt` (= holy `STAT:OPER?`) je LATCHED: nabezna hrana condition bitu ho
+     * nastavi a **cteni ho vynuluje** — presne proto existuje, aby klient nepropasl
+     * kratkou udalost mezi dvema dotazy. `prev` drzi predchozi condition kvuli
+     * detekci hrany; latchuje se pri kazdem `scpi_process` (klient se pta periodicky). */
+    uint16_t oper_ev, oper_ena, oper_prev;
+    uint16_t ques_ev, ques_ena, ques_prev;
 } scpi_ctx_t;
 
 /* ── Zdroj dat (abstrakce mezi CM7 globály a CM4 IPC snapshotem) ──────────────
