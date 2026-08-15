@@ -4,7 +4,8 @@
  *
  * ── ARCHITEKTURA (rozhodnuto 2026-08-11) ─────────────────────────────────────
  * **W25Q je autoritativni uloziste datalogu, SD je jen export.**
- *   - W25Q DATA region uveze ~600 dni pri 32 B/10 s -> o data se nikdy neprijde
+ *   - W25Q uveze ~80 dni pri 32 B/10 s (datalog zabira 1/3 DATA regionu,
+ *     `W25Q_DATALOG_SIZE`) -> o data se nikdy neprijde
  *   - SD slouzi k tomu, k cemu ma: vytahnout a precist na PC
  *
  * Tim odpadaji tri problemy, ktere by melo "SD jako primarni uloziste":
@@ -18,12 +19,13 @@
  * ⚠️ `sd_export_mount()` a `sd_export_run()` **BLOKUJI** (HAL_SD_Init = desitky az
  *    stovky ms, zapis souboru sekundy) -> volat **VYHRADNE z UartTasku**, ktery
  *    NENI hlidany watchdogem. Z defaultTask/UiTask/FpgaTask je NEVOLAT.
- *    (Proto je export dnes jen UART prikaz — tlacitko v UI by bezelo v UiTasku a
- *    potrebovalo by worker; stejne omezeni jako `calib_save()`.)
+ *    UI (okno SD KARTA, s_view=37) proto jen nastavi `g_sd_req` a praci udela
+ *    UartTask v `sd_export_service()` — worker, ktery tomu omezeni vyhovuje.
  *
- * ⚠️ FatFs zatim NENI v projektu. Kod je za `__has_include("ff.h")` a **aktivuje se
- *    sam**, jakmile se v CubeMX zapne Middleware -> FATFS -> SD Card. Do te doby
- *    `sd_export_*` vraci "nedostupne" a nic se nerozbije.
+ * ✅ FatFs je v projektu od 2026-08-11 (CubeMX: FATFS -> SD Card). Kod je i tak
+ *    za `__has_include("ff.h")`, takze se prelozi i bez nej.
+ * ✅ SD je funkcni od 2026-08-14 (4-bit, ~16 MHz). Root cause driveho "prenos
+ *    nejede" byl vypnuty `HardwareFlowControl` — viz CLAUDE.md sekce SD karta.
  */
 #ifndef INC_SD_EXPORT_H_
 #define INC_SD_EXPORT_H_
@@ -108,10 +110,11 @@ void sd_export_fs(void);
 /** `sd init` — SD inicializace po krocich se znackami (hledani mista padu). */
 void sd_export_init_steps(void);
 
-/** Rozsireny test (UART `sd test`): zapise 8 KB na kartu, precte zpet a overi
- *  OBSAH — tim prověří celou cestu FatFs -> BSP_SD -> HAL_SD -> IDMA -> karta,
- *  vcetne multi-blokoveho prenosu a cache maintenance (STATUS #69).
- *  Soubor `SDTEST.BIN` po sobe smaze. ⚠️ BLOKUJE — jen z UartTasku. */
+/** Rozsireny test (UART `sd test`, tlacitko TEST): zapise 8 KB, precte zpet a
+ *  overi OBSAH — tim proveri celou cestu FatFs -> BSP_SD -> HAL_SD -> karta
+ *  vcetne multi-blokoveho prenosu. Po uspechu zmeri i PROPUSTNOST (1 MB po
+ *  32 KB blocich -> `test_w_kbs`/`test_r_kbs`). Soubory po sobe smaze.
+ *  ⚠️ BLOKUJE (sekundy) — jen z UartTasku. */
 bool sd_export_selftest(void);
 
 /** Odmountuje (rychle). Bezpecne volat i kdyz neni namountovano. */

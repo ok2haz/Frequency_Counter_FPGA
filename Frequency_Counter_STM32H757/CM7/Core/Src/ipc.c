@@ -7,12 +7,13 @@
  * tady je CM7-strana logiky, ktera je HW-nezavisla a bezi uz ted, jeste nez
  * nabehne CM4.
  *
- * ⚠️ STAV DVOUJADRA: CM4 (domena D2, bank2) zatim NEBEZI zamerne — `g_cm4_absent`
- * (viz freertos_shared.h). Publisher presto bezi na CM7: SRAM4 je non-cacheable
- * (MPU region 2, `main.c`) + vyhrazena linkerem (sekce `.ipc_shared` @RAM_D3), takze
- * snapshot je konzistentne pripraveny a jakmile se CM4 flashne, zacne ho cist BEZ
- * jakekoli zmeny na CM7. Cmd/resp servis je zatim skeleton (echo NOP) — realny
- * dispatch SETu (GATE/RUN/CHAN/LOG) dozraje s CM4 bring-upem, kdy ho lze otestovat.
+ * ✅ STAV DVOUJADRA (2026-08-14): CM4 BEZI a round-trip je HW-OVERENY — CM4 cte
+ * snapshot (overil magic+verzi) a publikuje heartbeat zpet (`CM4: alive`).
+ * SRAM4 je non-cacheable (MPU region 2, `main.c`) + vyhrazena linkerem (sekce
+ * `.ipc_shared` @RAM_D3). ⚠️ CM4 testuj VZDY po power-cyklu BEZ ladici sondy —
+ * pripojeny debugger rozbiji boot handshake a CM4 pak vypada jako nenabehly.
+ * Cmd/resp servis: `IPC_CMD_CFG_SET` (Math/limity) je funkcni, zbytek (GATE/RUN/
+ * CHAN/LOG) dozraje se SCPI/webem na CM4 — tam vznikne producent prikazu.
  *
  * ⚠️ ZLATE PRAVIDLO (STATUS.md): do snapshotu se plni JEN realna data. Statistika
  * (sigma_tau/offset/drift) se ZATIM NEPUBLIKUJE — jejich zdroj je dnes simulace
@@ -310,7 +311,7 @@ int ipc_cm4_alive(void)
     return (now - s_last_ms) < 3000u;
 }
 
-/* ── CM4 vlastni zatez [%] z heartbeatu (pro "4:xx%" v headeru). Bez CM4 (magic
+/* ── CM4 vlastni zatez [%] z heartbeatu (pro "CM4:xx%" v headeru). Bez CM4 (magic
  * nezapsan) vraci 0. Clamp 0..100. */
 uint32_t ipc_cm4_cpu_pct(void)
 {

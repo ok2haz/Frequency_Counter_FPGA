@@ -56,8 +56,6 @@ extern volatile uint8_t g_rtc_synced;
 /* Lokalni cas dle casove zony (Nastaveni): rtc_app_tick aplikuje g_tz_offset_h
  * na UTC (vc. prehoupnuti data) -> g_rtc_text_local + g_tz_label ("UTC"/"UTC+2").
  * Hlavni obrazovka + screensaver ctou local; GPS okno + diag zustavaji UTC. */
-extern volatile uint32_t g_crash_cfsr, g_crash_bfar;  /* detail posledniho HardFaultu */
-extern volatile uint32_t g_crash_lr, g_crash_hfsr;    /* LR (caller) + HFSR posledniho HardFaultu */
 extern volatile char    g_rtc_text_local[24];
 
 /* ── Sitova konfigurace (okno Sit, s_view=35). Persist v syscfg blobu (W25Q).
@@ -114,6 +112,11 @@ extern volatile uint32_t g_reset_rsr;
 extern volatile char     g_reset_text[12];  /* dekodovana pricina ("WATCHDOG!"...) */
 extern volatile uint8_t  g_reset_bad;       /* 1 = IWDG/WWDG (cervene v Health) */
 extern volatile char     g_crash_text[16];
+/* Detail posledniho HardFaultu (crash black-box, BKP_DR4/5/7/8/9): CFSR/BFAR +
+ * LR = ODKUD se skocilo (faulting PC casto nic nerekne) a HFSR (bit31 DEBUGEVT
+ * = fault zpusobila ladici sonda, ne kod). Tiskne UART `status`. */
+extern volatile uint32_t g_crash_cfsr, g_crash_bfar;
+extern volatile uint32_t g_crash_lr, g_crash_hfsr;
 extern volatile uint8_t  g_selftest_res;
 /* Per-test vysledky selftestu (0=nespusten, 1=PASS, 2=FAIL). Poradi = poradi
  * volani v run_selftests: [0]=CRC16, [1]=hystereze /4<->/16, [2]=GPS parser,
@@ -132,7 +135,8 @@ extern volatile uint8_t  g_cm4_absent;
 /* g_cm4_alive = 1: CM4 heartbeat v IPC snapshotu roste (< ~3 s) -> CM4 bezi A
  * komunikuje pres SRAM4. Nastavuje defaultTask z ipc_cm4_alive() (#20). Rozlisuje
  * "nabehl a mluvi" (alive) od "D2 ready ale IPC ticho" (absent=0, alive=0). Dokud
- * CM4 nebootuje z bank2, zustava 0 (spravne). */
+ * bez beziciho CM4 zustava 0. (CM4 od 2026-08-14 na HW BEZI — driv se myslelo,
+ * ze nebootuje, ale maskoval ho pripojeny debugger; viz CLAUDE.md Dvoujadro.) */
 extern volatile uint8_t  g_cm4_alive;
 /* g_cm4_stall_count = kolikrat CM4 prestal odpovidat PO tom, co uz jednou zil
  * (hrana alive->dead, defaultTask). Rozlisuje "nikdy nenabehl" (g_cm4_absent) od

@@ -152,7 +152,7 @@ int main(void)
   (void)iwdg2_init;   /* ponechano prelozene, at je to jednorazove vratitelne */
 
   /* DWT cyklovy citac pro mereni VLASTNI zateze CM4 (idle-based) -> publikuje se
-   * pres IPC heartbeat jako "4:xx%" v CM7 headeru. Clock-agnosticky: pocita se
+   * pres IPC heartbeat jako "CM4:xx%" v CM7 headeru. Clock-agnosticky: pocita se
    * pomer busy_cyc / total_cyc, netreba znat SystemCoreClock (na CM4 nemusi byt
    * spravne, protoze CM4 nevola SystemClock_Config). */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -169,7 +169,7 @@ int main(void)
 	  iwdg2_kick();   /* obnov watchdog CM4 (smycka ~800 ms << 4 s timeout) */
 	  /* IPC: dokud CM7 neorazitkuje snapshot, zkousej overit hlavicku. */
 	  if (!ipc_cm4_ready()) ipc_cm4_check();
-	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "4:xx%").
+	  /* Precti aktualni snapshot (seqlock) + publikuj heartbeat pro CM7 (liveness / "CM4:xx%").
 	   * ⚠️ Duveryhodne JEN kdyz CM7 zije (snapshot seq roste) — jinak jsou to stara data. */
 	  ipc_snapshot_t snap;
 	  int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);

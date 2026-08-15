@@ -58,7 +58,8 @@
  *    SD zive, je potreba osetrit vypadek za behu (write chyba -> `s_errors`
  *    roste; zvazit fallback zpet na W25Q nebo hlaseni v okne Datalog).
  *
- * Poznamka k volbe: W25Q (64 MB) staci na ~600 dni pri 32 B/10 s, takze SD NENI
+ * Poznamka k volbe: W25Q staci na ~80 dni pri 32 B/10 s (datalog ma vyhrazenou
+ * 1/3 DATA regionu, `W25Q_DATALOG_SIZE`), takze SD NENI
  * nutnost — je to komfort (vyjmout, precist na PC, prakticky neomezena kapacita).
  */
 #include "datalog.h"

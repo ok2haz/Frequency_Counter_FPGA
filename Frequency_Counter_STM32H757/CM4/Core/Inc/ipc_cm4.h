@@ -8,7 +8,9 @@
  * projektu, takze zadna zmena build configu (regen-safe). Az vznikne spolecny
  * include path v obou projektech, nahradit za <ipc_shared.h>.
  *
- * ⚠️ STAV (2026-08-09): CM4 zatim NEBOOTUJE (bank2 neflashnuta, `g_cm4_absent` na
+ * ✅ STAV (2026-08-14): CM4 BEZI a IPC round-trip je HW-OVERENY (`CM4: alive`).
+ * ⚠️ Testuj VZDY po power-cyklu BEZ ladici sondy — pripojeny debugger rozbiji boot
+ * handshake CM7<->CM4 a CM4 pak vypada jako nenabehly. Puvodni pozn. (`g_cm4_absent` na
  * CM7). Tento konzument je NAPSANY a kompiluje se pro M4, ale RUNTIME (skutecne
  * mezijaderne cteni snapshotu) se overi az po flashnuti bank2 + boot gate. Logika
  * seqlocku je SDILENA s CM7 (tytez pointer-core helpery `ipc_snap_rd_*`, kryté
@@ -43,7 +45,7 @@ int  ipc_cm4_read(ipc_snapshot_t *out);
  *  `now_ms` = HAL_GetTick() (drzime ipc_cm4.c HAL-free). Viz NAVRH §11.4. */
 int  ipc_cm4_cm7_alive(uint32_t now_ms);
 
-/** Publikuj zivost CM4 do g_ipc.cm4 (CM7 cte pro "4:xx%" v headeru + liveness).
+/** Publikuj zivost CM4 do g_ipc.cm4 (CM7 cte pro "CM4:xx%" v headeru + liveness).
  *  Heartbeat se inkrementuje AZ PO zapisu dat (bariera) -> CM7 nevidi roztrzeno. */
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s);
 

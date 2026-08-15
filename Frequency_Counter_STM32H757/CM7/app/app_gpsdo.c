@@ -783,7 +783,10 @@ static int draw_gps_values(int force)
     else if (g.fix_quality > 0)          { fs = "FIX: OK";        fc = UI_COLOR_OK; }
     else                                 { fs = "FIX: No signal"; fc = UI_COLOR_INK_3; }
     if (force || dchg(c_fix, sizeof c_fix, fs)) {
-        prim_fill_rect((prim_rect_t){GPS_LLBL, 74, 288, 30}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        /* ⚠️ box MUSI zacinat nad baseline: mono_25 kresli 25 px NAHORU od 96,
+         * tj. od 71 — puvodni box od 74 nechaval horni 3 px stareho textu
+         * (audit 2026-08-15, stejna trida chyby jako u FORMAT varovani v SD okne). */
+        prim_fill_rect((prim_rect_t){GPS_LLBL, 70, 288, 34}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
         prim_draw_text((prim_point_t){GPS_LLBL, 96}, fs, &ui_font_mono_25, fc, PRIM_ALIGN_LEFT);
         drew = 1; }
 
@@ -4045,8 +4048,13 @@ static void app_gpsdo_render_sd(void)
                                  : (s_sd_fmt_stage == 1) ? "POTVRDIT 1/2" : "FORMAT"};
         prim_fill_rect(SD_FORMAT_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);   /* zmena labelu/barvy */
         ui_button_render(&fb);
-        /* Varovny radek nad tlacitky — jen kdyz je format armovany. */
-        prim_fill_rect((prim_rect_t){DG_LLBL, 386, 620, 24}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        /* Varovny radek nad tlacitky — jen kdyz je format armovany.
+         * ⚠️ Clear box MUSI lezet NAD baseline: `prim_draw_text` kresli od
+         * baseline NAHORU o `ascent` (sans_18: 18 nahoru, 5 dolu), takze text
+         * na baseline 386 zabira 368..391. Puvodni box {386, v:24} = 386..410
+         * cistil POD textem a stary napis zustaval -> pri prepnuti stupne se
+         * varovani prekreslovalo pres sebe (HW pruchod 2026-08-15). */
+        prim_fill_rect((prim_rect_t){DG_LLBL, 366, 620, 28}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
         if (s_sd_fmt_stage)
             prim_draw_text((prim_point_t){DG_LLBL, 386},
                            (s_sd_fmt_stage == 2)

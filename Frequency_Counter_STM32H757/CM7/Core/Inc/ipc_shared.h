@@ -20,12 +20,11 @@
  * EABI zarovnani to zaruci. Pri ZMENE layoutu zvednout `IPC_VERSION` (CM4 overi
  * `magic`+`version`+`size` po bootu; nesouhlas -> IPC vypnout, jet degradovane).
  *
- * ⚠️ STAV: zatim JEN definice + CM7 publikace (viz `ipc_snap_publish_*`). CM4 to
- * zacne cist az bude jeho firmware; tehdy se header nasdili obema projektum
- * (spolecny include path — pozdejsi krok, souvisi s .ioc/projektem).
+ * ✅ STAV (2026-08-14): OBE strany bezi na HW — CM7 publikuje, CM4 cte a posila
+ * heartbeat zpet. Header sdili CM4 pres RELATIVNI include
+ * (`../../../CM7/Core/Inc/ipc_shared.h`) — regen-safe, bez zasahu do include path.
  *
- * Migrace: krok M4 zebriku (STATUS.md). Test M4 = CM4 echuje kontrolni soucet,
- * `torn=0` po 30 min.
+ * Migrace: krok M4 zebriku (STATUS.md) je timto splneny.
  */
 #include <stdint.h>
 
@@ -154,7 +153,7 @@ typedef struct {
 typedef struct { volatile uint32_t head, tail; ipc_cmd_t  slot[IPC_RING_N]; } ipc_cmd_ring_t;
 typedef struct { volatile uint32_t head, tail; ipc_resp_t slot[IPC_RING_N]; } ipc_resp_ring_t;
 
-/* ── CM4 -> CM7: heartbeat (liveness) + vlastni zatez (pro "4:xx%" v headeru). */
+/* ── CM4 -> CM7: heartbeat (liveness) + vlastni zatez (pro "CM4:xx%" v headeru). */
 typedef struct {
     uint32_t magic;                /* IPC_MAGIC — potvrdi, ze CM4 opravdu zapisuje */
     volatile uint32_t heartbeat;   /* CM4 inkrementuje ~1/s; CM7 hlida stari (liveness) */

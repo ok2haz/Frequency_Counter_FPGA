@@ -34,7 +34,7 @@ extern volatile uint8_t  g_selftest_res;   /* 0=--- 1=PASS 2=FAIL */
 extern volatile uint8_t  g_reset_bad;      /* 1 = posledni reset = watchdog/crash */
 extern volatile uint8_t  g_cm4_absent;     /* 1 = CM4 (D2) nenabehl -> degradovane */
 extern volatile uint8_t  g_cm4_alive;      /* 1 = CM4 heartbeat v IPC roste (bezi + mluvi) */
-extern volatile uint8_t  g_cm4_cpu_pct;    /* CM4 vlastni zatez [%] z IPC heartbeatu -> "4:xx%" */
+extern volatile uint8_t  g_cm4_cpu_pct;    /* CM4 vlastni zatez [%] z IPC heartbeatu -> "CM4:xx%" */
 extern volatile uint32_t g_rtos_cpu_pct;   /* CM7 CPU vytizeni [%] (pocita UiTask) — header */
 extern volatile uint8_t g_rtc_synced;     /* 1 = uz srovnano z GPS */
 extern volatile uint8_t g_anim_enabled;   /* 1 = animace zapnute (okno Animace) */
@@ -1578,7 +1578,7 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
  * CM7 (real, g_rtos_cpu_pct) NAHORE, CM4 DOLE — oboji nejmensim fontem (mono_14).
  * CM4 % (od 2026-08-14): CM4 meri VLASTNI idle-based zatez pres DWT (main.c),
  * publikuje ji v IPC heartbeatu (cm4_cpu_pct), CM7 ji cte (g_cm4_cpu_pct) ->
- * "4:xx%" kdyz zive / "4:--" (D2 ready, IPC ticho) / "4:off" (nenabehl). CM4 dnes
+ * "CM4:xx%" kdyz zive / "CM4:--" (D2 ready, IPC ticho) / "CM4:off" (nenabehl). CM4 dnes
  * dela skoro nic -> typicky "4:0%"; s ETH/SCPI naskoci realna zatez sama.
  * ⚠️ CM4 mereni se projevi az po FLASHI bank2 aktualnim CM4 buildem. Zive z
  * tick_clock (change-detect na CM7 % i CM4 %). force=1 = plny render. */
@@ -1586,8 +1586,8 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
 static uint32_t s_cpu_shown = 999;
 static uint8_t  s_cm4_shown = 255;
 static uint8_t  s_cm4_pct_shown = 255;   /* posledni vykreslene CM4 % (change-detect) */
-/* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("4:--"), 1 = heartbeat
- * roste, CM4 mluvi pres IPC ("4:OK"), 2 = nenabehl ("4:off"). */
+/* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("CM4:--"), 1 = heartbeat
+ * roste, CM4 mluvi pres IPC ("CM4:xx%"), 2 = nenabehl ("CM4:off"). */
 static uint8_t cm4_state(void)
 {
     if (g_cm4_absent) return 2;
@@ -1605,8 +1605,8 @@ int screen_main_redraw_cpu(int force)
     prim_color_t col = (c7 < 70) ? UI_COLOR_OK : (c7 < 90) ? UI_COLOR_WARN : UI_COLOR_BAD;
     snprintf(l, sizeof l, "CM7:%lu%%", (unsigned long)c7);
     prim_draw_text((prim_point_t){CPU_HDR_R, 22}, l, &ui_font_mono_14, col, PRIM_ALIGN_RIGHT);
-    /* CM4: "4:xx%" (barevne dle zateze, kdyz IPC ziva) / "4:--" (sede, D2 ready ale ticho)
-     * / "4:off" (cervene, nenabehl). CM4 dnes dela skoro nic -> typicky "4:0%". */
+    /* CM4: "CM4:xx%" (barevne dle zateze, kdyz IPC ziva) / "CM4:--" (sede, D2 ready ale ticho)
+     * / "CM4:off" (cervene, nenabehl). CM4 dnes dela skoro nic -> typicky "4:0%". */
     char l4[12]; prim_color_t col4;
     if (c4st == 1) {
         snprintf(l4, sizeof l4, "CM4:%lu%%", (unsigned long)c4p);
