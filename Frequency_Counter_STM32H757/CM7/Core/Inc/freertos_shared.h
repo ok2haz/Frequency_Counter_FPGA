@@ -53,6 +53,17 @@ extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten *
  * g_rtc_synced: 1 = už srovnán z GPS, 0 = volný běh od bootu. */
 extern volatile char    g_rtc_text[24];
 extern volatile uint8_t g_rtc_synced;
+/* ── Rucni nastaveni RTC (SCPI `SYST:DATE`/`SYST:TIME`) ─────────────────────────
+ * ⚠️ RTC registry vlastni VYHRADNE defaultTask (`rtc_app_tick`) — SCPI bezi
+ * v UartTasku a NESMI do nich sahat. Zapise proto jen pozadavek a defaultTask ho
+ * aplikuje. Stejny vzor jako `g_ui_cfg_req` pro stav mereni.
+ * ⚠️ Rucne nastaveny cas prezije jen do dalsiho GPS fixu — GPS je autoritativni
+ * a `rtc_try_sync` ho prepise (prvni fix hned). Rucni set ma tedy smysl jen bez
+ * antény; SCPI to hlasi v odpovedi `SYST:TIME?` nepremo pres `g_rtc_synced`. */
+extern volatile uint16_t g_rtc_set_y;    /* rok 2000..2099 */
+extern volatile uint8_t  g_rtc_set_mo, g_rtc_set_d;
+extern volatile uint8_t  g_rtc_set_h, g_rtc_set_mi, g_rtc_set_s;
+extern volatile uint8_t  g_rtc_set_pend; /* bit0 = nastav datum, bit1 = nastav cas */
 /* Lokalni cas dle casove zony (Nastaveni): rtc_app_tick aplikuje g_tz_offset_h
  * na UTC (vc. prehoupnuti data) -> g_rtc_text_local + g_tz_label ("UTC"/"UTC+2").
  * Hlavni obrazovka + screensaver ctou local; GPS okno + diag zustavaji UTC. */

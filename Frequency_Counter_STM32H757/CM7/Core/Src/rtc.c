@@ -346,6 +346,30 @@ void rtc_app_tick(void)
     if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_SYNC_MAGIC) s_synced = 1;
   }
 
+  /* ⚠️ Rucni set (SCPI `SYST:DATE`/`SYST:TIME`) se aplikuje TADY — RTC registry
+   * patri vyhradne tomuhle tasku. Poradi je zamerne PRED `rtc_try_sync()`: kdyz
+   * je GPS fix, prepise rucni hodnotu hned v temze tiku, takze se pristroj nikdy
+   * neustali na horsim zdroji casu, nez ma k dispozici. */
+  if (g_rtc_set_pend) {
+    uint8_t what = g_rtc_set_pend;
+    g_rtc_set_pend = 0;
+    RTC_TimeTypeDef st; RTC_DateTypeDef sd;
+    /* Doplnit chybejici polovinu ze soucasneho RTC (GetTime PRED GetDate!). */
+    if (HAL_RTC_GetTime(&hrtc, &st, RTC_FORMAT_BIN) == HAL_OK &&
+        HAL_RTC_GetDate(&hrtc, &sd, RTC_FORMAT_BIN) == HAL_OK) {
+      if (what & 0x02u) { st.Hours = g_rtc_set_h; st.Minutes = g_rtc_set_mi; st.Seconds = g_rtc_set_s; }
+      if (what & 0x01u) { sd.Year = (uint8_t)(g_rtc_set_y - 2000u); sd.Month = g_rtc_set_mo; sd.Date = g_rtc_set_d; }
+      st.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+      st.StoreOperation = RTC_STOREOPERATION_RESET;
+      sd.WeekDay = RTC_WEEKDAY_MONDAY;         /* nepouzivame, HAL chce platnou hodnotu */
+      if (HAL_RTC_SetTime(&hrtc, &st, RTC_FORMAT_BIN) == HAL_OK &&
+          HAL_RTC_SetDate(&hrtc, &sd, RTC_FORMAT_BIN) == HAL_OK) {
+        /* ⚠️ `s_synced` NEnastavujeme a magic do BKP NEpiseme: rucne zadany cas
+         * NENI disciplinovany z GPS. UI i UART tak dal spravne hlasi "no GPS". */
+      }
+    }
+  }
+
   rtc_try_sync();
 
   /* Aktualni RTC cas -> g_rtc_text. POZOR: GetTime MUSI predchazet GetDate
