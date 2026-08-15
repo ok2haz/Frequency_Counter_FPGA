@@ -605,7 +605,7 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -624,9 +624,21 @@ void UartTask_run(void *argument)
 				  if (rn) printf("%s\r\n", resp);   /* dotaz -> odpoved; akce (*RST) -> ticho */
 				  else    printf("\r\n");
 			  }
+			  else if (strcmp(RxBuffer, "screenshot sd") == 0) {
+				  /* DOPORUCENA cesta: uloz snimek na SD kartu. Resi tearing (kopie do
+				   * SDRAM scratche pred zapisem) i spolehlivost (FatFs zapise cely
+				   * soubor). BLOKUJE sekundy -> UartTask, ktery neni pod watchdogem. */
+				  char sname[16] = "";
+				  sd_blocking_begin();
+				  int sr = screenshot_save_sd(sname, sizeof sname);
+				  sd_blocking_end();
+				  if (sr == 0) printf("SCREENSHOT: ulozeno jako %s\n", sname);
+				  else         printf("SCREENSHOT: chyba %d (%s)\n", sr, sd_export_state_str());
+			  }
 			  else if (strcmp(RxBuffer, "screenshot") == 0) {
-				  /* Export obrazovky do BMP pres USB CDC (~1,15 MB, sekundy). ROZPRACOVANO
-				   * — best-effort tok; UartTask neni hlidan watchdogem, smi blokovat. */
+				  /* Export pres USB CDC (~1,15 MB, sekundy). ⚠️ Snima ZIVY front buffer
+				   * a tok je best-effort, takze u animovane obrazovky muze mit pruhy
+				   * ze dvou framu. Spolehlivejsi je `screenshot sd`. */
 				  screenshot_emit_bmp();
 			  }
 			  else if (strcmp(RxBuffer, "autocal") == 0) {
