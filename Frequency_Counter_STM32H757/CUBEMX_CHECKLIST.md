@@ -374,12 +374,17 @@ regenerací zkontroluj, že zůstaly nenastavené:
 - Split tasky `freertos_task_*.c` + globály v `freertos.c` USER CODE Variables (vč. `g_sensors`, `g_si5356_*`, `g_rtos_*`)
 - Těla tasků, UART příkazy, mutex wrapy, SPI2 runtime prescaler, použití fronty (1B), CS pin (PB12) konfiguruje `fpga_freq_init`
 - Po regeneraci ověř: **DSI hodnoty**, queue item size (1B), přidané tasky/mutexy, **PB12 output + default High**, MPU region 0 = 4 MB, **`return;` v `SDMMC1_Init 0`** (viz sekce SDMMC1)
-- 🔴 **`HardFault_Handler` v `stm32h7xx_it.c` — REGEN HO PŘEPÍŠE na prázdný `while(1)`!** Musí to být
-  `__attribute__((naked))` verze (skok na `hard_fault_capture`), aby prolog neposunul MSP a šel číst
-  exception frame (stacknuté PC). Naked funkce je **mimo USER CODE** → CubeMX ji při každém Generate
-  Code zahodí. **Po každé regeneraci ji vrať** (viz git historie / commit b5f8411). Helper
-  `hard_fault_capture` je v `USER CODE 0` a regen přežije; klobrduje se jen ta naked funkce.
-  Bez obnovy: HardFault jen zatuhne, do crash black-boxu (BKP, kind 4 = PC/CFSR/BFAR) se nic nezapíše.
+- ✅ **`HardFault_Handler` — VYŘEŠENO 2026-08-16, už se neklobrduje.** Do té doby ho regen mazal
+  při každém `Generate Code` (15. i 16. 8.), protože `naked` funkce nemůže být uvnitř USER CODE bloku.
+  **Řešení je přímo v CubeMX:** *NVIC → Code generation → u `Hard fault interrupt` odškrtnout
+  **„Generate IRQ handler"*** (v `.ioc` = `NVIC1.HardFault_IRQn` **pole 6 → `false`**, přesně jak to
+  má FreeRTOS u PendSV/SysTick — proto se ty dva taky negenerují). CubeMX pak handler negeneruje
+  a náš `naked` žije v **`USER CODE 1`**, kam regen nesahá.
+  ⚠️ Kdyby to políčko někdo zase zaškrtl, vznikne **duplicitní symbol** (generovaný + náš)
+  → build spadne, což je lepší než tiché smazání. Pojistka: `tools/post_generate.ps1`
+  (spustitelný ručně nebo jako *Project Manager → Script (after generation)*).
+  Handler MUSÍ zůstat `naked`: prolog běžné C funkce posune MSP a `frame[6]` pak nečte
+  exception frame, ale prolog (proto dřív vracel nesmyslné adresy).
 - ⚠️ **PA10 pull-up se v `.ioc` NENASTAVUJE** (a nemá — je to `USART1_RX`, `Mode=Asynchronous`).
   Řeší se **regen-safe v `usart.c` USER CODE `USART1_MspInit 1`**, kde se generovaný `GPIO_NOPULL`
   přepíše na `GPIO_PULLUP`. Důvod je vážný: bez kabelu RX plave → falešné start bity → bouře

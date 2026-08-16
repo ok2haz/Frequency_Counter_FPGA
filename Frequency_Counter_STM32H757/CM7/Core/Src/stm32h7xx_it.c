@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32h7xx_it.c
@@ -102,23 +102,6 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-/* ⚠️⚠️ REGEN-CLOBBER: tuhle naked verzi CubeMX pri Generate Code PREPISE zpet na
- * prazdny `while(1)` (je mimo USER CODE). Po kazde regeneraci ji sem vrat —
- * jinak HardFault jen zatuhne bez zapisu do crash black-boxu. Helper
- * `hard_fault_capture` je v USER CODE 0 a regen prezije. Viz CUBEMX_CHECKLIST.
- * (Smazano regenem uz podruhe: 2026-08-15 a 2026-08-16.) */
-__attribute__((naked)) void HardFault_Handler(void)
-{
-  /* Bez prologu -> `msp`/`psp` ukazuje PRESNE na exception frame.
-   * EXC_RETURN bit2 rozlisuje, ktery zasobnik se pouzil. */
-  __asm volatile (
-    "tst  lr, #4             \n"
-    "ite  eq                 \n"
-    "mrseq r0, msp           \n"
-    "mrsne r0, psp           \n"
-    "b    hard_fault_capture \n"
-  );
-}
 
 /**
   * @brief This function handles Memory management fault.
@@ -259,4 +242,29 @@ void SDMMC1_IRQHandler(void)
 {
   HAL_SD_IRQHandler(&hsd1);
 }
+
+/* HardFault: crash black-box (PC/LR/CFSR/BFAR/HFSR -> BKP registry).
+ *
+ * Handler je ZAMERNE TADY, v USER CODE 1, a v `.ioc` je u HardFault odskrtnute
+ * "Generate IRQ handler" (`NVIC1.HardFault_IRQn` pole 6 = false, stejne jako to
+ * ma FreeRTOS u PendSV/SysTick). Diky tomu ho CubeMX NEGENERUJE a regen ho uz
+ * nemuze prepsat - do 2026-08-16 zil mimo USER CODE a `Generate Code` ho smazal
+ * pokazde (15. i 16. 8.), takze crash black-box HardFaultu byl tise nefunkcni.
+ *
+ * MUSI byt `naked`: prolog bezne C funkce posune MSP, takze `frame[6]` uz necte
+ * exception frame, ale prolog (kvuli tomu vracel drive nesmyslne adresy).
+ * EXC_RETURN bit2 rozlisuje, ktery zasobnik se pouzil. */
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  __asm volatile (
+    "tst  lr, #4             \n"
+    "ite  eq                 \n"
+    "mrseq r0, msp           \n"
+    "mrsne r0, psp           \n"
+    "b    hard_fault_capture \n"
+  );
+
+
+}
+
 /* USER CODE END 1 */
