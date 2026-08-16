@@ -118,8 +118,15 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - **Peripherals → SDMMC1 → Mode = `SD 4 bits Wide bus`**, přiřazeno **Cortex-M7** kontextu (`PinAttribute=CortexM7`).
 - **Piny (ověřeno proti schématu, list `USB_SD_FLASH`):** PC8=`D0`, PC9=`D1`, PC10=`D2`, PC11=`D3`, PC12=`CK`, PD2=`CMD`. AF12 (`GPIO_AF12_SDIO1`), Speed **VERY_HIGH**.
 - **PD2 (CMD) = `GPIO_PULLUP`**, datové linky `NOPULL` — na desce jsou externí pull-upy **R56–R61**, takže je to správně.
-- **Clock:** `SdmmcClockSelection = PLL` (PLL1Q), `SDMMCFreq_Value = 64 MHz`, **`SDMMC1.ClockDiv = 2`**.
-  → `SDMMC_CK = 64 MHz / (2 × ClockDiv)` = **16 MHz**. Init/identifikaci na 400 kHz řeší HAL sám.
+- **Clock:** `SdmmcClockSelection = PLL` (PLL1Q), `SDMMCFreq_Value = 64 MHz`, **`SDMMC1.ClockDiv = 1`**
+  (v CubeMX: *SDMMC1 → Parameter Settings → **SDMMC clock divide factor***).
+  → `SDMMC_CK = 64 MHz / (2 × ClockDiv)` = **32 MHz**. Init/identifikaci na 400 kHz řeší HAL sám.
+  ⚠️ **`ClockDiv = 0` NEPOUŽÍVAT** — to je bypass děličky = **64 MHz**, nad SD High-Speed
+  limitem 50 MHz. (Referenční projekt `H757_SDcard_01` má 0, ale jeho kernel je 48 MHz → 48 MHz.)
+  ⚠️⚠️ **Hodnota je na TŘECH místech a musí sedět:** `.ioc`, USER CODE blok v `sdmmc.c`
+  (ten se jako jediný reálně vykoná — generovaný kód je za `return`) a `sd_apply_init_config()`
+  v `sd_export.c` (přepíše to při mountu). Do 2026-08-16 se rozcházely a v `sdmmc.c` zůstával
+  dokonce `HWFC = DISABLE`, tedy konfigurace, se kterou **datová cesta vůbec nejede**.
   ⚠️ Deska má na SD VDD jen C75 100n (chybí bulk 4,7–10 µF) a na CK není sériový tlumicí odpor (~22–33 Ω) → teoreticky překmity při vyšším taktu; 16 MHz ale ověřeně jede (`sd test` bit po bitu shodné, 2026-08-14).
 - 🔴🔴 **`SDMMC1.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE` — KRITICKÉ, v `.ioc` CHYBĚLO!**
   (V CubeMX: SDMMC1 → Parameter Settings → **Hardware Flow Control = Enable**.) Bez něj má `CLKCR`

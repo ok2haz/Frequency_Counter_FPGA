@@ -70,15 +70,20 @@ ze STATUS #69, že deska vyšší takt nesnese; empiricky ho snese.
 ⚠️ Můj dřívější závěr „Franta jede 12 MHz, brát si od něj nemáme co" byl **chybný** —
 četl jsem starší lokální kopii, ne aktuální GitHub.
 
-### 1) HW úpravy (uživatel)
-- [ ] **Odstranit R60** — pull-up na `SDMMC1_CK`, který tam nemá co dělat (patřil na CMD,
-      viz erratum desky). Do teď byl neškodný, ale při 32+ MHz už zhoršuje hrany.
-- [ ] **Přidat bulk kondenzátor 4,7–10 µF na SD VDD** — dnes je tam jen C75 100n,
-      což při zápisovém burstu nedrží napájení.
+### 1) HW úpravy — ✅ HOTOVO 2026-08-16
+- [x] ✅ **R60 odstraněn** (pull-up na `SDMMC1_CK`, patřil na CMD dle erratum desky).
+- [x] ✅ **Bulk kondenzátor na SD VDD navýšen na 10 µF** (byl jen C75 100n).
+- [x] ✅ **R55 odstraněn** (1,5 kΩ pull-up z +3V3 na D+) — STM32H7 má v OTG_FS PHY vlastní
+      interní pull-up řízený `USBD_Start()`. Externí byl navíc a hlásil hostu „připojeno"
+      hned po zapnutí, tedy ~2,5 s předtím, než firmware USB inicializuje → Windows to
+      odbylo jako „Unknown USB Device" a **nepomohl ani reset desky** (pull-up byl natvrdo).
+      Teď se USB připojí, až je firmware připravený.
 
-### 2) SW (jedna konstanta)
-- [ ] **`ClockDiv` 2 → 1** = `SDMMC_CK` **16 → 32 MHz** (`sd_apply_init_config()` v `sd_export.c`,
-      pro konzistenci i `.ioc`).
+### 2) SW — ✅ NASTAVENO 2026-08-16 (čeká na ověření na HW)
+- [x] ✅ **`ClockDiv` 2 → 1** = `SDMMC_CK` **16 → 32 MHz**. Srovnáno na všech třech místech:
+      `.ioc`, USER CODE v `sdmmc.c` a `sd_apply_init_config()` v `sd_export.c`.
+      ⚠️ Při té příležitosti opraveno, že `sdmmc.c` měl `HWFC = DISABLE` (konfigurace, se
+      kterou datová cesta vůbec nejede) — zachraňoval nás jen přepis v `BSP_SD_Init()`.
       ⚠️ **`ClockDiv = 0` u nás NEPŘEVZÍT:** máme kernel **64 MHz** (Franta 48), takže bypass
       by dal **64 MHz** = nad SD High-Speed limitem 50 MHz. `ClockDiv=1` → 32 MHz je bezpečně
       pod ním a pod hodnotou, kterou Franta na stejném HW prokázal.

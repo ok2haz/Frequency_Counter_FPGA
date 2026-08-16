@@ -431,7 +431,10 @@ static void sd_apply_init_config(void)
     hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
     hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
-    hsd1.Init.ClockDiv            = 2;                 /* 64MHz/(2*2)=16 MHz, jako Franta */
+    /* SDMMC_CK = 64 MHz / (2 x ClockDiv). 1 -> 32 MHz (2026-08-16, po HW uprave:
+     * R60 = pull-up na CK odstranen, bulk kondik na SD VDD 10 uF). Drive 2 = 16 MHz.
+     * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad SD HS limitem 50 MHz. */
+    hsd1.Init.ClockDiv            = 1;
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
 }
 

@@ -51,20 +51,24 @@ void MX_SDMMC1_SD_Init(void)
    * nulove a registry @0x52007000 byly same nuly. Holy `return;` tedy rozbil celou
    * SD cestu. Plneni struktury na HW nesaha, takze boot bez karty zustava bezpecny.
    *
-   * ⚠️ Hodnoty MUSI sedet s generovanymi nize (zdroj pravdy = .ioc). Pri zmene
-   * konfigurace SDMMC1 v CubeMX je srovnej — i v `sd_probe()` v datalog_sd.c.
-   * ⚠️ ClockDiv=4 -> SDMMC_CK = 64 MHz / (2 x 4) = 8 MHz (bring-up, 2026-08-13).
-   * Snizeno z 2 (16 MHz) zamerne: deska ma na SD VDD jen C75 100n (chybi bulk
-   * 4,7-10 uF) a na CK neni seriovy tlumici odpor ~22-33 R, takze pri 16 MHz
-   * hrozi prekmity. HW sice pri 16 MHz odpovida (CardState=TRANSFER), ale
-   * SOUVISLY PRENOS se nikdy neprokazal — `f_mount` zatim selhava. Az `sd test`
-   * projde, jde vratit na 2 a overit znovu. ⚠️ Hodnota je i v `.ioc`. */
+   * ⚠️⚠️ HODNOTY MUSI SEDET S `sd_apply_init_config()` v `sd_export.c` (ta je
+   * pri mountu prepise) I S `.ioc`. Do 2026-08-16 se rozchazely: tady bylo
+   * `HWFC = DISABLE` a `ClockDiv = 4`, tj. presne ta konfigurace, se kterou
+   * datova cesta NEJEDE (vypnuty flow control = blokovy prenos nedostane ani
+   * bajt, viz CLAUDE.md sekce SD). Zachranovalo nas jen to, ze `BSP_SD_Init()`
+   * vsechno prepisuje — kdyby tu prepisovaci cestu nekdo odstranil, SD by se
+   * tise vratilo k rozbite konfiguraci. Proto je to ted srovnane.
+   * ⚠️ ClockDiv=1 -> SDMMC_CK = 64 MHz / (2 x 1) = 32 MHz (2026-08-16, po HW
+   * uprave: odstranen R60 = pull-up na CK, bulk kondik na SD VDD navysen na
+   * 10 uF). Drive 4 (8 MHz) z opatrnosti pri bring-upu, pak 2 (16 MHz).
+   * ⚠️ `ClockDiv = 0` NEPOUZIVAT: to je bypass delicky = 64 MHz, nad SD
+   * High-Speed limitem 50 MHz. (Frantuv projekt ma 0, ale kernel 48 MHz.) */
   hsd1.Instance = SDMMC1;
   hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
   hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd1.Init.BusWide             = SDMMC_BUS_WIDE_4B;
-  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-  hsd1.Init.ClockDiv            = 4;
+  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
+  hsd1.Init.ClockDiv            = 1;
   return;   /* skutecny HAL_SD_Init az v BSP_SD_Init() pri mountu */
   /* USER CODE END SDMMC1_Init 0 */
 
@@ -76,7 +80,7 @@ void MX_SDMMC1_SD_Init(void)
   hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
-  hsd1.Init.ClockDiv = 4;
+  hsd1.Init.ClockDiv = 1;
   if (HAL_SD_Init(&hsd1) != HAL_OK)
   {
     Error_Handler();
