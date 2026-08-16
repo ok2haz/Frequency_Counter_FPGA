@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32h7xx_it.c
@@ -98,10 +98,6 @@ void NMI_Handler(void)
   }
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
-
-/**
-  * @brief This function handles Hard fault interrupt.
-  */
 
 /**
   * @brief This function handles Memory management fault.

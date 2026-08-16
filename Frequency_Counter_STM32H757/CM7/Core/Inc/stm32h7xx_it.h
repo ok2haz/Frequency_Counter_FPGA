@@ -47,7 +47,6 @@ extern "C" {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void NMI_Handler(void);
-void HardFault_Handler(void);
 void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
@@ -56,7 +55,16 @@ void USART1_IRQHandler(void);
 void TIM6_DAC_IRQHandler(void);
 void OTG_FS_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+/* Prototypy obsluh, ktere si CubeMX NEgeneruje a my je mame v `stm32h7xx_it.c`
+ * v USER CODE 1. Bez nich hlasi `-Wmissing-prototypes` (v nasem beznem sweepu
+ * `-Wall -Wextra` se to neprojevi, ale je to zbytecna nevraznost).
+ *   HardFault - od 2026-08-16 ma v NVIC odskrtnute "Generate IRQ handler",
+ *               takze CubeMX zahodil i jeho prototyp; nase verze je `naked`.
+ *   TIM7      - beeper (1600 Hz -> 800 Hz ton na PH9); TIM7 v .ioc zamerne neni.
+ *   SDMMC1    - bez nej ceka FatFs 30 s na zpravu, kterou nema kdo poslat. */
+void HardFault_Handler(void);
+void TIM7_IRQHandler(void);
+void SDMMC1_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus
