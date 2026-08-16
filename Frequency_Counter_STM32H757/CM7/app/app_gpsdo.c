@@ -1605,11 +1605,17 @@ static const struct {
     { SENS_CORE_T, "MCU jadro",  0.f, 90.f,  -1.f, 1.f,     1, " C",   0 },
     { SENS_T49,    "OCXO",       0.f, 70.f,  -1.f, 1.f,     1, " C",   0 },
     { SENS_T4A,    "FPGA board", 0.f, 70.f,  -1.f, 1.f,     1, " C",   0 },
-    { SENS_ADS2,   "12V vetev", 10800.f, 13200.f, 12000.f, 0.001f, 2, " V",   0 },
-    { SENS_ADS3,   "5V vetev",   4500.f,  5500.f,  5000.f, 0.001f, 2, " V",   0 },
-    { SENS_VDDA,   "REF 2V5",    2300.f,  2700.f,  2500.f, 0.001f, 2, " V",   0 },
-    { SENS_VBAT,   "VBAT",       2500.f,  3300.f,  3000.f, 0.001f, 2, " V",   0 },
-    { SENS_ADS0,   "OCXO Vc",       0.f,  3300.f,  1650.f, 0.001f, 2, " V",   0 },
+    /* ⚠️ `lo`/`hi`/`nom` MUSI byt v ZOBRAZOVANE jednotce (tedy uz po `scale`), ne
+     * v syrove hodnote senzoru. Do 2026-08-16 tu byly MILIVOLTY (10800/13200/12000),
+     * zatimco `hbar_disp()` prevadi syrovych 13092 mV na 13.092 V -> porovnavaly se
+     * volty s milivolty, `bar` vyslo zaporne a clamp ho srazil na 0. Vysledek: bar
+     * byl PRAZDNY, ackoli hodnota vpravo (jde pres tentyz `hbar_disp`) byla spravne.
+     * REF marker to nechytil, protoze se pocita primo z `nom` — tedy mV proti mV. */
+    { SENS_ADS2,   "12V vetev",  10.8f,  13.2f,  12.0f,  0.001f, 2, " V",   0 },
+    { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 2, " V",   0 },
+    { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 2, " V",   0 },
+    { SENS_VBAT,   "VBAT",        2.5f,   3.3f,   3.0f,  0.001f, 2, " V",   0 },
+    { SENS_ADS0,   "OCXO Vc",     0.0f,   3.3f,   1.65f, 0.001f, 2, " V",   0 },
     { SENS_ADS1,   "RF level",    -80.f,   10.f,  -100.f, 1.f,     1, " dBm", 1 },  /* nom < lo = zadny REF marker (RF nema ocekavanou hodnotu) */
 };
 /* Stred radku (y) pro index r (0..3 = karta Teploty, 4..9 = karta Napajeni). */
