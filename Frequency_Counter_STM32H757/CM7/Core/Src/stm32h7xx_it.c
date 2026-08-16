@@ -103,9 +103,10 @@ void NMI_Handler(void)
   * @brief This function handles Hard fault interrupt.
   */
 /* ⚠️⚠️ REGEN-CLOBBER: tuhle naked verzi CubeMX pri Generate Code PREPISE zpet na
- * prazdny `while(1)` (byla mimo USER CODE). Po kazde regeneraci ji sem vrat —
+ * prazdny `while(1)` (je mimo USER CODE). Po kazde regeneraci ji sem vrat —
  * jinak HardFault jen zatuhne bez zapisu do crash black-boxu. Helper
- * `hard_fault_capture` je v USER CODE 0 a regen prezije. Viz CUBEMX_CHECKLIST. */
+ * `hard_fault_capture` je v USER CODE 0 a regen prezije. Viz CUBEMX_CHECKLIST.
+ * (Smazano regenem uz podruhe: 2026-08-15 a 2026-08-16.) */
 __attribute__((naked)) void HardFault_Handler(void)
 {
   /* Bez prologu -> `msp`/`psp` ukazuje PRESNE na exception frame.
