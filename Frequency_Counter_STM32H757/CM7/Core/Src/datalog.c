@@ -174,7 +174,10 @@ const datalog_backend_t datalog_backend_w25q = {
 /* ── Hledani pozice zapisu po bootu ───────────────────────────────────────────
  * Blok, ktery ma v PRVNIM zaznamu nejvyssi seq, je nejnovejsi (seq roste
  * monotonne pres cely region). V nem se pak linearne najde prvni volny slot.
- * Cte jen 4 B na blok -> pri 16352 blocich ~65 kB, ~15 ms @ 4,6 MB/s.
+ * Cte CELY 32B zaznam na blok a overuje jeho CRC (2026-08-16; drive jen 4 B se
+ * seq, coz propustilo garbage — viz komentar ve skenu). Pri 5445 blocich
+ * (1/3 DATA regionu) je to ~174 kB, ~38 ms @ 4,6 MB/s. Zbytecne to neroste:
+ * QSPI cteni je stropovane pollingem FIFO, ne velikosti bloku.
  * ⚠️ Pro SD backend (erase_size == 0) je "blok" cely region a vnitrni scan by
  * byl linearni pres miliony zaznamu -> az bude SD ziva, nahradit BINARNIM
  * hledanim hranice seq (log je monotonni, takze binarni scan je primocary). */
@@ -185,12 +188,21 @@ static void find_head(void)
     if (rpb == 0) rpb = s_be->capacity / DATALOG_REC_SIZE;   /* SD: jeden "blok" = cely region */
 
     uint32_t best_blk = 0, best_seq = 0;
+    uint32_t blk_with_data = 0;         /* kolik bloku ma platny prvni zaznam (viz wrap nize) */
     bool found = false;
     for (uint32_t i = 0; i < nblk; i++) {
-        uint8_t b[4];
-        if (!s_be->read(i * s_be->erase_size, b, 4)) continue;
-        uint32_t seq = get_u32(b);
-        if (seq == DATALOG_SEQ_EMPTY || seq == 0) continue;
+        /* ⚠️ Cte se CELY 32B zaznam a overuje se CRC (`unpack_rec`), ne jen 4 bajty
+         * seq jako driv. Bez te kontroly prosel jako platny i GARBAGE z flash —
+         * a protoze se bere blok s NEJVYSSIM seq, staci jediny poskozeny bajt,
+         * aby si datalog myslel, ze hlava je uplne jinde. Presne to nastalo po
+         * zmene kapacity regionu 2026-08-15: `seq` vyslo 3823341906 (~1,2 mld let
+         * pri 10 s/zaznam) a stav logu byl cely mimo. */
+        uint8_t b[DATALOG_REC_SIZE];
+        datalog_rec_t probe;
+        if (!s_be->read(i * s_be->erase_size, b, DATALOG_REC_SIZE)) continue;
+        if (!unpack_rec(b, &probe)) continue;    /* prazdny NEBO poskozeny -> preskoc */
+        uint32_t seq = probe.seq;
+        blk_with_data++;
         if (!found || seq > best_seq) { found = true; best_seq = seq; best_blk = i; }
         /* ⚠️ Sken je 16352 QSPI transakci (cely DATA region po 4 KB blocich) a
          * `w25q_read` uvnitr POLLUJE FIFO bez yieldu. Bez tohoto ustoupeni by
@@ -221,10 +233,26 @@ static void find_head(void)
     s_head = base + used * DATALOG_REC_SIZE;
     if (s_head >= s_be->capacity) s_head = 0;
 
-    /* Kruh uz obehl, kdyz je zaznamu vic nez se do regionu vejde. */
+    /* ⚠️ Kolik zaznamu v logu JE, se pozna ze STAVU FLASH — ne z absolutni hodnoty
+     * `seq`. Driv tu stalo `s_wrapped = (s_seq > cap_rec)`, coz mlcky predpoklada,
+     * ze log zacal na seq=1 a od te doby se nezmenila kapacita ani se nic nesmazalo.
+     * Po zmensení regionu na 1/3 (2026-08-15) to hlasilo PLNY log (696960 zaznamu),
+     * zatimco realne jich bylo 42989 — export pak zbytecne prosel 653k prazdnych
+     * slotu. `seq` navic po dostatecne dlouhem behu pretece, takze na nem pocet
+     * zaznamu stavet nelze vubec.
+     *
+     * Pocitame z toho, kolik BLOKU ma platna data: bloky se plni sekvencne, takze
+     * (pocet plnych bloku - 1) * rpb + zaznamy v bloku s hlavou. Kruh povazujeme
+     * za obehnuty, kdyz maji data uz vsechny bloky krome jednoho — pri wrapu se
+     * totiz nejstarsi blok prave smazal, takze prazdny zustava. */
     uint32_t cap_rec = s_be->capacity / DATALOG_REC_SIZE;
-    s_wrapped = (s_seq > cap_rec);
-    s_count   = s_wrapped ? cap_rec : s_seq;
+    s_wrapped = (nblk > 1u) && (blk_with_data >= nblk - 1u);
+    if (s_wrapped) {
+        s_count = cap_rec;
+    } else {
+        uint32_t c = (blk_with_data ? (blk_with_data - 1u) * rpb : 0u) + used;
+        s_count = (c > cap_rec) ? cap_rec : c;
+    }
 }
 
 void datalog_init(void)
