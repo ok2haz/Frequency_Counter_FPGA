@@ -1596,26 +1596,34 @@ static const prim_rect_t HB_CARD_V = {18, 216, 764, 194};   /* Napajeni */
 
 /* Popis radku: id senzoru, label, rozsah baru [lo..hi], nominal (<=lo = zadny
  * marker/ok-warn, jen valid=zelena), scale (last -> zobrazovana jednotka),
- * pocet desetin, jednotka. RF (index 9) ma rf=1 = prepocet mV->dBm z g_calib. */
+ * pocet desetin, jednotka. RF (index 9) ma rf=1 = prepocet mV->dBm z g_calib.
+ *
+ * `deci` (2026-08-16, na vyzadani): teploty na SETINY, napeti na TISICINY —
+ * ADS1115 ma 16 bit na +-4,096 V (125 uV/LSB) a TMP117 0,0078 C/LSB, takze ta
+ * mista nesou skutecne rozliseni, nedopisuji se nuly. Vic uz nema smysl: sum
+ * poslednich mV je vetsi nez krok. ⚠️ Strop je `HB_VAL_W` = 100 px pri mono_16
+ * (10 px/znak) = **10 znaku**; nejdelsi realny retezec je "-61.2 dBm" (9) a
+ * "13.092 V" (8) — dalsi desetinne misto u dBm uz by se do boxu neveslo.
+ * `fmt_fixed` umi `decimals` jen 1..3 (jinak utne na cele cislo). */
 static const struct {
     uint8_t id; const char *lab; float lo, hi, nom, scale; uint8_t deci;
     const char *unit; uint8_t rf;
 } HBAR[HBAR_ROWS] = {
-    { SENS_T48,    "STM board",  0.f, 70.f,  -1.f, 1.f,     1, " C",   0 },
-    { SENS_CORE_T, "MCU jadro",  0.f, 90.f,  -1.f, 1.f,     1, " C",   0 },
-    { SENS_T49,    "OCXO",       0.f, 70.f,  -1.f, 1.f,     1, " C",   0 },
-    { SENS_T4A,    "FPGA board", 0.f, 70.f,  -1.f, 1.f,     1, " C",   0 },
+    { SENS_T48,    "STM board",  0.f, 70.f,  -1.f, 1.f,     2, " C",   0 },
+    { SENS_CORE_T, "MCU jadro",  0.f, 90.f,  -1.f, 1.f,     2, " C",   0 },
+    { SENS_T49,    "OCXO",       0.f, 70.f,  -1.f, 1.f,     2, " C",   0 },
+    { SENS_T4A,    "FPGA board", 0.f, 70.f,  -1.f, 1.f,     2, " C",   0 },
     /* ⚠️ `lo`/`hi`/`nom` MUSI byt v ZOBRAZOVANE jednotce (tedy uz po `scale`), ne
      * v syrove hodnote senzoru. Do 2026-08-16 tu byly MILIVOLTY (10800/13200/12000),
      * zatimco `hbar_disp()` prevadi syrovych 13092 mV na 13.092 V -> porovnavaly se
      * volty s milivolty, `bar` vyslo zaporne a clamp ho srazil na 0. Vysledek: bar
      * byl PRAZDNY, ackoli hodnota vpravo (jde pres tentyz `hbar_disp`) byla spravne.
      * REF marker to nechytil, protoze se pocita primo z `nom` — tedy mV proti mV. */
-    { SENS_ADS2,   "12V vetev",  10.8f,  13.2f,  12.0f,  0.001f, 2, " V",   0 },
-    { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 2, " V",   0 },
-    { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 2, " V",   0 },
-    { SENS_VBAT,   "VBAT",        2.5f,   3.3f,   3.0f,  0.001f, 2, " V",   0 },
-    { SENS_ADS0,   "OCXO Vc",     0.0f,   3.3f,   1.65f, 0.001f, 2, " V",   0 },
+    { SENS_ADS2,   "12V vetev",  10.8f,  13.2f,  12.0f,  0.001f, 3, " V",   0 },
+    { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 3, " V",   0 },
+    { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 3, " V",   0 },
+    { SENS_VBAT,   "VBAT",        2.5f,   3.3f,   3.0f,  0.001f, 3, " V",   0 },
+    { SENS_ADS0,   "OCXO Vc",     0.0f,   3.3f,   1.65f, 0.001f, 3, " V",   0 },
     { SENS_ADS1,   "RF level",    -80.f,   10.f,  -100.f, 1.f,     1, " dBm", 1 },  /* nom < lo = zadny REF marker (RF nema ocekavanou hodnotu) */
 };
 /* Stred radku (y) pro index r (0..3 = karta Teploty, 4..9 = karta Napajeni). */
@@ -1714,13 +1722,15 @@ static void hbar_legend(void)
 
 /* Prekresli dynamickou cast JEDNOHO radku (track + segmenty + markery + hodnota).
  * Cely radek se nejdriv vycisti (REPLACE) -> mark_dirty pokryje copy-forward. */
-static void hbar_row_draw(int r, int16_t pct, int16_t minp, int16_t maxp,
-                          int valid, int samples, const char *val)
+static void hbar_row_bar(int r, int16_t pct, int16_t minp, int16_t maxp,
+                         int valid, int samples)
 {
     int16_t cy = hbar_cy(r);
-    /* Vycisti dynamickou zonu radku (za labelem az po hodnotu). */
-    prim_fill_rect((prim_rect_t){HB_TRACK_X, (int16_t)(cy - 11),
-                   (int16_t)(HB_VAL_XR - HB_TRACK_X), 22}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    /* Vycisti zonu STOPY (label vlevo je staticky, box hodnoty vpravo si cisti
+     * `dtext_a` sam) — clear je zaroven ten `mark_dirty`, na ktery se veze
+     * copy-forward zaobleni stopy (`aa_corner` jde mimo DMA2D). */
+    prim_fill_rect((prim_rect_t){HB_TRACK_X, (int16_t)(cy - 11), HB_TRACK_W, 22},
+                   UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     /* Stopa (podklad). */
     prim_rect_t tr = {HB_TRACK_X, (int16_t)(cy - 7), HB_TRACK_W, 14};
     prim_fill_rect_rounded(tr, 3, UI_COLOR_INK_5, PRIM_BLEND_OVER);
@@ -1746,8 +1756,16 @@ static void hbar_row_draw(int r, int16_t pct, int16_t minp, int16_t maxp,
             prim_fill_rect(hb_seg(tr, hb_marker_idx(refp)), UI_COLOR_ACC, PRIM_BLEND_OVER);
         }
     }
-    /* Hodnota vpravo (vlastni box-clear). */
-    dtext_a(HB_VAL_XR, (int16_t)(cy + 6), HB_VAL_W, val,
+}
+
+/* Hodnota vpravo (vlastni box-clear) — oddelena od stopy, protoze se meni
+ * MNOHEM casteji: pri 3 desetinach preblikne kazdy mV sumu, zatimco bar se
+ * hne az pri ~1 % rozsahu (u 12V vetve 24 mV). Kdyby oboji kreslil jeden
+ * `hbar_row_draw` jako do 2026-08-16, prekresloval by se pri kazdem tiku
+ * cely radek vcetne 64 segmentu — pri 2 Hz a peti napetovych radcich zbytecne. */
+static void hbar_row_val(int r, int valid, int samples, const char *val)
+{
+    dtext_a(HB_VAL_XR, (int16_t)(hbar_cy(r) + 6), HB_VAL_W, val,
             samples ? (valid ? UI_COLOR_INK : UI_COLOR_INK_3) : UI_COLOR_INK_4,
             &ui_font_mono_16, DTEXT_RIGHT);
 }
@@ -1756,6 +1774,7 @@ static void app_gpsdo_render_hbars(void)
 {
     static int16_t  s_pct[HBAR_ROWS], s_minp[HBAR_ROWS], s_maxp[HBAR_ROWS];
     static char     s_val[HBAR_ROWS][16];
+    static uint8_t  s_valid[HBAR_ROWS];
     int first = window_first(30);
     if (first) {
         s_view = 30;
@@ -1783,13 +1802,21 @@ static void app_gpsdo_render_hbars(void)
         hbar_value(r, val, sizeof val, &pct);
         int16_t minp = s->samples ? hbar_pct_disp(r, hbar_disp(r, s->min)) : 0;
         int16_t maxp = s->samples ? hbar_pct_disp(r, hbar_disp(r, s->max)) : 0;
-        if (first || pct != s_pct[r] || minp != s_minp[r] || maxp != s_maxp[r]
-                  || strcmp(val, s_val[r]) != 0) {
+        /* ⚠️ `valid` MUSI byt v obou klicich: pri vypadku senzoru drzi `last`
+         * posledni dobrou hodnotu, takze se pct ani text NEZMENI — bez tohohle
+         * by radek zustal zeleny a vypadek by nebyl videt (chyba do 2026-08-16). */
+        int vchg = first || (uint8_t)valid != s_valid[r];
+        if (vchg || pct != s_pct[r] || minp != s_minp[r] || maxp != s_maxp[r]) {
             s_pct[r] = pct; s_minp[r] = minp; s_maxp[r] = maxp;
-            snprintf(s_val[r], sizeof s_val[r], "%s", val);
-            hbar_row_draw(r, pct, minp, maxp, valid, s->samples, val);
+            hbar_row_bar(r, pct, minp, maxp, valid, s->samples);
             drew = 1;
         }
+        if (vchg || strcmp(val, s_val[r]) != 0) {
+            snprintf(s_val[r], sizeof s_val[r], "%s", val);
+            hbar_row_val(r, valid, s->samples, val);
+            drew = 1;
+        }
+        s_valid[r] = (uint8_t)valid;
     }
     if (drew) present_now();
 }
