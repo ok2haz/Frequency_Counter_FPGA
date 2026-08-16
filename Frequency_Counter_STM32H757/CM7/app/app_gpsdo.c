@@ -4005,7 +4005,7 @@ static uint32_t s_sd_fmt_arm_s = 0;
 static void app_gpsdo_render_sd(void)
 {
     int first = window_first(37);
-    static char c_karta[24], c_stav[28], c_kap[40], c_fs[16], c_msg[40], c_spd[40];
+    static char c_karta[24], c_stav[36], c_kap[40], c_fs[16], c_msg[40], c_spd[40];   /* c_stav: "exportuji 696960 / 696960" = 25 zn. */
     static uint8_t c_mount_lbl = 0xFF;   /* 0 = "PRIPOJIT", 1 = "ODPOJIT" */
     static uint8_t c_fmt = 0xFF;         /* posledni vykresleny stupen potvrzeni formatu */
     if (first) {
@@ -4070,7 +4070,14 @@ static void app_gpsdo_render_sd(void)
     if (first || dchg(c_karta, sizeof c_karta, b))
         kv_row_live(116, "Karta:", b, si->present ? UI_COLOR_OK : UI_COLOR_INK_3, first);
 
-    snprintf(b, sizeof b, "%s%s", sd_export_state_str(), si->busy ? "  (pracuji...)" : "");
+    /* Pri exportu ukaz PRUBEH (kolik zaznamu uz je hotovo) — bez toho to pri
+     * stovkach tisic zaznamu vypada, ze se pristroj zasekl. UartTask cislo
+     * prubezne prepisuje, tenhle tik ho cte 2x/s. */
+    if (si->busy && si->prog_total)
+        snprintf(b, sizeof b, "exportuji %lu / %lu",
+                 (unsigned long)si->prog_done, (unsigned long)si->prog_total);
+    else
+        snprintf(b, sizeof b, "%s%s", sd_export_state_str(), si->busy ? "  (pracuji...)" : "");
     if (first || dchg(c_stav, sizeof c_stav, b))
         kv_row_live(152, "Stav:", b,
                     (si->state == SD_EXP_ERROR)   ? UI_COLOR_BAD :

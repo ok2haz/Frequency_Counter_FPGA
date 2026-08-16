@@ -1194,7 +1194,11 @@ static int32_t export_body(uint32_t max_rec)
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,
      * takže jdeme od konce. Pro log v souboru je vzestupný čas přirozenější. */
     int32_t written = 0;
+    /* Prubeh pro UI: UiTask ho cte 2x/s ze snapshotu. Zapis dvou uint32 je levny,
+     * takze se aktualizuje kazdy zaznam bez throttlingu. */
+    s_ui.prog_done = 0; s_ui.prog_total = total;
     for (uint32_t i = total; i-- > 0; ) {
+        s_ui.prog_done = total - i;
         datalog_rec_t r;
         if (!datalog_read_back(i, &r)) continue;   /* poškozený CRC / prázdný slot → přeskoč */
         n = fmt_row(line, sizeof line, &r);
@@ -1222,6 +1226,7 @@ int32_t sd_export_run(uint32_t max_rec)
     s_busy = true;                 /* drzi auto-unmount po dobu zapisu */
     int32_t r = sd_export_mount() ? export_body(max_rec) : -1;
     s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
+    s_ui.prog_total = 0;           /* 0 = zadny export nebezi (UI schova radek prubehu) */
     return r;
 #endif
 }

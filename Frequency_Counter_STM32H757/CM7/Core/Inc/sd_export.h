@@ -75,6 +75,10 @@ typedef struct {
     char     msg[40];      /* vysledek posledni operace pro uzivatele */
     uint32_t test_w_kbs;   /* rychlost zapisu z posledniho TESTu [KB/s], 0 = nezmereno */
     uint32_t test_r_kbs;   /* rychlost cteni  z posledniho TESTu [KB/s], 0 = nezmereno */
+    /* Prubeh exportu (UartTask je prubezne prepisuje, UiTask cte a kresli).
+     * `prog_total` = 0 -> zadny export nebezi. Export stovek tisic zaznamu trva
+     * desitky sekund a bez tohohle to vypada, ze se nic nedeje. */
+    uint32_t prog_done, prog_total;
 } sd_ui_info_t;
 
 /** @return snapshot pro UI. Bezpecne z UiTasku — jen cteni, nic neblokuje. */
