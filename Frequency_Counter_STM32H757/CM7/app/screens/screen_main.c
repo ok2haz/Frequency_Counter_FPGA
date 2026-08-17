@@ -783,7 +783,15 @@ static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
  * `s_stats_ver++` je NUTNE (ne jen memset) — histogram/Allan okna prekreslujou
  * jen pri zmene verze, bez inkrementu by po resetu zustal na displeji stary obsah
  * az do dalsiho realneho vzorku. Volitelne z UART "meas reset" (UartTask) i
- * tlacitka v okne Alarmy (UiTask) — cisty RAM zapis, zadny mutex netreba. */
+ * tlacitka v okne Alarmy (UiTask) — cisty RAM zapis, zadny mutex netreba.
+ * ⚠️ Nutny je i resync eased hodnot (Offset/σ/Drift + trend sparkline, jen v2
+ * layout): `anim_step` dojizdi k CILI, takze bez resyncu by se po resetu cisla
+ * ~1-2 s PLYNULE snasela k nule misto okamziteho skoku — vypadalo by to, jako
+ * ze reset "chvili trva". Stejny duvod, proc je volaji plne rendery (radek
+ * ~1490). Pri STARÉM layoutu jsou obe no-op. */
+static void stats_anim_resync(void);   /* fwd — definice az u eased statistik */
+static void trend_anim_resync(void);   /* fwd */
+
 void screen_main_stats_reset(void)
 {
     memset(s_y, 0, sizeof s_y);
@@ -791,6 +799,8 @@ void screen_main_stats_reset(void)
     memset(s_adev, 0, sizeof s_adev);
     memset(s_tr, 0, sizeof s_tr);
     s_stats_ver++;
+    stats_anim_resync();
+    trend_anim_resync();
 }
 
 /* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). */

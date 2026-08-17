@@ -431,14 +431,22 @@ bool datalog_erase_all(void)
     return ok;
 }
 
-volatile uint8_t g_datalog_erase_req = 0;
+volatile uint8_t g_datalog_erase_req  = 0;
+volatile uint8_t g_datalog_erase_busy = 0;
 
 void datalog_erase_service(void)
 {
     if (!g_datalog_erase_req) return;
-    g_datalog_erase_req = 0;
+    /* ⚠️ `g_datalog_erase_req` se NULUJE AZ PO dokonceni (ne pred zacatkem).
+     * Erase celeho regionu trva az minuty a UI po tu dobu vidi priznak porad
+     * nastaveny -> jeho `if (!g_datalog_erase_req)` guard funguje jako dedup a
+     * druhe projiti potvrzovaci sekvenci uz dalsi (zbytecny) erase nezaradi.
+     * Kdyby se priznak shodil hned, slo by behem jednoho mazani zaradit dalsi. */
+    g_datalog_erase_busy = 1;    /* UI to ukaze v radku Stav — jinak vypada zaseknute */
     printf("DATALOG: mazu cely log (z UI), cekej...\n");
     printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+    g_datalog_erase_busy = 0;
+    g_datalog_erase_req  = 0;
 }
 
 /* ── Selftest (pure logic, bez HW — soucast UART "selftest") ───────────────── */

@@ -14,7 +14,7 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | Cap height textu | ≈ 0,72 × `ascent` fontu |
 | Čitelnost | cap ≥ 1,9 mm (16′ na 40 cm) pohodlná; 1,35 mm čitelné z ~30–35 cm |
 
-## Dotykové cíle (stav 2026-08-15)
+## Dotykové cíle (stav 2026-08-17)
 
 | Prvek | px (š×v) | mm (výška) | Ideál | Stav |
 |---|---|---|---|---|
@@ -40,6 +40,9 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | **DISPLEJ** — auto-dim ZAP/VYP | 140×64 | 7,5 | 7 mm | ✓ |
 | **DISPLEJ** — auto-dim prodleva ± | 64×64 | 7,5 | 7 mm | ✓ (2026-08-15 zvětšeno ze **56 px / 6,6 mm** — byl to jediný cíl pod minimem; místo se vzalo z 74 px prázdna mezi tlačítky) |
 | **DISPLEJ** — Vzhled (téma) | 200×64 | 7,5 | 7 mm | ✓ |
+| **SENZORY** — RESET MIN/MAX (footer) | 300×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **DATALOG** — SMAZAT LOG (footer, dvojí potvrzení) | 220×61 | 7,1 | 7 mm | ✓ (2026-08-17; vedle ZAPNOUT/VYPNOUT 220×61. Nahradilo mrtvé „EXPORT NA SD", které sedělo na **identickém rectu** jako ZAPNOUT/VYPNOUT a nemělo touch handler) |
+| **ALARMY** — RESET STATISTIK (footer) | **200**×61 | 7,1 | 7 mm | ✓ (2026-08-17; šířka 200, ne 300 jako u Senzorů — `MUTE_RECT` {230,354,148,64} sahá spodní hranou na y=418, tedy 1 px do řádku footeru) |
 
 ## Typografie (kde se co používá)
 

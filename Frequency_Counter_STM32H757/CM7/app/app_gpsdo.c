@@ -3355,10 +3355,16 @@ static void app_gpsdo_render_datalog(void)
                            &ui_font_sans_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
     }
 
-    snprintf(b, sizeof b, "%s (%s)", st.ready ? (st.enabled ? "BEZI" : "ZASTAVEN") : "NEDOSTUPNE",
-             st.backend);
+    /* Behem mazani (az minuty, blokujici v UartTasku) to musi byt videt — jinak
+     * pristroj vypada zaseknute a uzivatel zkousi mackat dal. */
+    if (g_datalog_erase_busy) snprintf(b, sizeof b, "MAZU LOG... (cekej)");
+    else snprintf(b, sizeof b, "%s (%s)", st.ready ? (st.enabled ? "BEZI" : "ZASTAVEN") : "NEDOSTUPNE",
+                  st.backend);
     if (first || dchg(c_stav, sizeof c_stav, b))
-        kv_row_live(116, "Stav:", b, !st.ready ? UI_COLOR_BAD : (st.enabled ? UI_COLOR_OK : UI_COLOR_WARN), first);
+        kv_row_live(116, "Stav:", b,
+                    g_datalog_erase_busy ? UI_COLOR_WARN
+                                         : (!st.ready ? UI_COLOR_BAD
+                                                      : (st.enabled ? UI_COLOR_OK : UI_COLOR_WARN)), first);
 
     /* Zaznamy + kolik dni to pri 10 s/zaznam vydrzi nez se zacne prepisovat. */
     snprintf(b, sizeof b, "%lu / %lu%s", (unsigned long)st.records,

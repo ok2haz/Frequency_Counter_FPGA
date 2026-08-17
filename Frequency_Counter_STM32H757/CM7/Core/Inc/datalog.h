@@ -149,8 +149,12 @@ bool datalog_erase_all(void);
  *  celeho DATA regionu (~5,4k sektoru) muze trvat AZ MINUTY -> nesmi bezet
  *  primo v UiTasku (zamrzly dotyk + IWDG). Tlacitko jen nastavi tenhle priznak,
  *  datalog_erase_service() (VOLAT VYHRADNE z UartTasku, ten neni hlidany
- *  watchdogem) ho vykona. Stejny vzor jako `g_sd_req`/`sd_export_service`. */
+ *  watchdogem) ho vykona. Stejny vzor jako `g_sd_req`/`sd_export_service`.
+ *  `g_datalog_erase_busy` = mazani prave bezi (UI to ukaze, jinak by minuty
+ *  trvajici operace vypadala jako zaseknuty pristroj). Priznak `_req` zustava
+ *  nastaveny po celou dobu mazani -> zaroven slouzi jako dedup. */
 extern volatile uint8_t g_datalog_erase_req;
+extern volatile uint8_t g_datalog_erase_busy;
 void datalog_erase_service(void);
 
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).

@@ -71,13 +71,16 @@ void sensor_update(sensor_id_t id, float value);
  * (poslední dobrá hodnota) → matematika/log mají ignorovat podle valid. */
 void sensor_fail(sensor_id_t id);
 
-/* Vynuluje min/max/mean/samples VŠECH senzorů (start nové akumulace) — `last`,
- * `valid` a `err_*` zůstávají (aktuální hodnota a chybová historie nejsou totéž
- * co měřená statistika). Smí volat i UartTask/UiTask (UART `sensors reset` /
- * tlačítko v okně Senzory), ne jen SensorsTask — `sensor_stat_t` už dnes
- * toleruje netrhané čtení bez zámku (viz výše), takže benigní rasa s právě
- * probíhajícím `sensor_update()` je přijatelná stejně jako jinde v téhle
- * struktuře (nejhůř jeden vzorek spustí "lazy init" znovu). */
+/* Restartuje statistiku VŠECH senzorů od aktuální hodnoty: min=max=mean=last,
+ * samples=1. `last`, `valid` a `err_*` zůstávají (aktuální hodnota a chybová
+ * historie nejsou totéž co měřená statistika).
+ * ⚠️ `samples` se ZÁMĚRNĚ nenuluje — zbytek kódu ho čte jako „má senzor vůbec
+ * hodnotu?" (datalog by zapsal INVALID16, UI by ukázalo „---"); detaily
+ * v implementaci. Senzor, který ještě nikdy nic nepřečetl, se přeskočí.
+ * Smí volat i UartTask/UiTask (UART `sensors reset` / tlačítko v okně Senzory),
+ * ne jen SensorsTask — `sensor_stat_t` už dnes toleruje netrhané čtení bez
+ * zámku (viz výše), takže benigní rasa s právě probíhajícím `sensor_update()`
+ * je přijatelná stejně jako jinde v téhle struktuře. */
 void sensor_stat_reset_all(void);
 
 #endif /* INC_SENSOR_STAT_H_ */
