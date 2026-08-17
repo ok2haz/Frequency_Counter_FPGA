@@ -422,7 +422,16 @@ static const prim_rect_t DG_CARD_FULL_C = {DG_LX, 62, 764, 340};  /* Citac/Cas *
 #define GPS_RW    250                             /* pravy sloupec sirka (~2/3 z 376) */
 /* Tlacitko SURVEY (footer pravy sloupec, pred BACK@650) -> okno Self-survey (s_view=32). */
 static const prim_rect_t GPS_SURVEY_BTN = {532, 417, 112, 61};
-static const prim_rect_t GPS_QUAL_BTN   = {330, 417, 190, 61};   /* -> okno KVALITA GPS (38) */
+/* ⚠️ Vstup do okna KVALITA GPS je TAP NA KARTU "Prijimac", ne footer tlacitko.
+ * Duvod (chyba z prvni verze, 2026-08-17): footer tohoto okna je obsazeny —
+ * karta Druzice je ZAMERNA vyjimka roztazena az po spodni okraj (x 18..520,
+ * y 160..478, viz komentar u jejiho renderu), takze cela leva polovina radku
+ * y=417 je karta; v pravem sloupci uz sedi SURVEY (532..644) a ZPET (650..783).
+ * Tlacitko umistene do {330,417,...} leželo CELE uvnitr karty Druzice a bargraf
+ * ho pri kazdem obnoveni (2x/s) prekreslil -> na displeji nebylo videt.
+ * Tap na kartu je navic zavedeny idiom teto codebase (Allan, trend, prepinac
+ * bar/sky na teze obrazovce) vcetne ztlumeneho '↗' v headeru. */
+static const prim_rect_t GPS_QUAL_RECT  = {GPS_RX, 330, GPS_RW, 74};   /* karta Prijimac */
 #define GPS_RLBL  (GPS_RX + 12)                   /* 544 */
 
 /* GPS okno: karta Druzice — prepinani zobrazeni (bargraf <-> sky plot) dotykem.
@@ -999,13 +1008,21 @@ void app_gpsdo_render_gps(void)
         ui_card_render_chrome(&c_pos);
         ui_card_t c_loc = {.rect = {GPS_RX, 252, GPS_RW, 68}};   /* Lokator — bez nadpisu */
         ui_card_render_chrome(&c_loc);
-        ui_card_t c_rx = {.rect = {GPS_RX, 330, GPS_RW, 74},
+        ui_card_t c_rx = {.rect = GPS_QUAL_RECT,
                           .header_label = "Prijimac NEO-7M"};
         ui_card_render_chrome(&c_rx);
+        /* Ztlumene '↗' hned za titulkem = naznak, ze karta je klikaci (tap -> okno
+         * KVALITA GPS). Pozice se pocita STEJNE jako u Allan/trend karet na hlavni
+         * obrazovce (sirka titulku z tabulky fontu + 6 px), aby to sedelo i kdyby
+         * se popisek zmenil. */
+        {   const char *rxt = "Prijimac NEO-7M";
+            int16_t hx = (int16_t)(GPS_QUAL_RECT.x + UI_DIM_CARD_PAD_X
+                                   + prim_text_width(rxt, &ui_font_sans_18) + 6);
+            prim_draw_text((prim_point_t){hx, (int16_t)(GPS_QUAL_RECT.y + UI_DIM_CARD_PAD_Y + 16)},
+                           "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        }
         ui_button_t sv = {.rect = GPS_SURVEY_BTN, .variant = UI_BUTTON_NORMAL, .label = "SURVEY >"};
         ui_button_render(&sv);
-        ui_button_t qb = {.rect = GPS_QUAL_BTN, .variant = UI_BUTTON_NORMAL, .label = "KVALITA >"};
-        ui_button_render(&qb);
     }
     if (draw_gps_values(first)) present_now();
 }
@@ -5742,7 +5759,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             nav_push(2); app_gpsdo_render_survey();
             return true;
         }
-        if (s_view == 2 && in_rect(x, y, GPS_QUAL_BTN)) {     /* GPS -> okno KVALITA GPS */
+        /* ⚠️ MUSI byt PRED testem GPS_SAT_RECT nize: karta Druzice zabira
+         * x 18..520, karta Prijimac 532..782 — neprekryvaji se, ale poradi
+         * drzime kvuli citelnosti (uzsi cil driv). */
+        if (s_view == 2 && in_rect(x, y, GPS_QUAL_RECT)) {    /* tap Prijimac -> KVALITA GPS */
             nav_push(2); app_gpsdo_render_gpsq();
             return true;
         }
