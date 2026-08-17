@@ -284,13 +284,22 @@ static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] =
 static void app_gpsdo_render_net(void);      /* Sit / ETH (s_view=35) */
 static void app_gpsdo_render_display(void);  /* Displej: jas + auto-dim (s_view=36) */
 static void app_gpsdo_render_sd(void);       /* SD karta (s_view=37) */
+static void app_gpsdo_render_kalib(void);    /* Kalibrace (s_view=15) — spawnuje pruvodce */
+static void app_gpsdo_render_alarms(void);   /* Alarmy (s_view=18) — spawnuje okno PRAHY */
 static void goto_view(uint8_t v)
 {
     switch (v) {
     case 1:  app_gpsdo_render_diag();     break;   /* Diagnostika (spawnuje Komunikaci) */
+    /* ⚠️ `case 2` DOPLNEN 2026-08-17. `nav_push(2)` se pouzival uz driv (GPS ->
+     * SURVEY), ale goto_view ho neznal -> spadlo to do `default` a ZPET ze
+     * Self-survey vedlo na HLAVNI OBRAZOVKU misto zpatky do GPS okna. Stejnou
+     * chybu by zdedilo nove okno KVALITA GPS (38). */
+    case 2:  app_gpsdo_render_gps();      break;   /* GPS (spawnuje survey + kvalitu) */
     case 3:  app_gpsdo_render_health();   break;   /* Health (spawnuje senzory/pamet/nastaveni) */
     case 7:  app_gpsdo_render_settings(); break;   /* Nastaveni (spawnuje O pristroji) */
     case 12: app_gpsdo_render_menu();     break;   /* Menu rozcestnik */
+    case 15: app_gpsdo_render_kalib();    break;   /* Kalibrace (spawnuje pruvodce) */
+    case 18: app_gpsdo_render_alarms();   break;   /* Alarmy (spawnuje okno PRAHY) */
     case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
     case 35: app_gpsdo_render_net();      break;   /* Sit (dnes bez podoken, pro symetrii) */
     case 36: app_gpsdo_render_display();  break;   /* Displej */
@@ -413,6 +422,7 @@ static const prim_rect_t DG_CARD_FULL_C = {DG_LX, 62, 764, 340};  /* Citac/Cas *
 #define GPS_RW    250                             /* pravy sloupec sirka (~2/3 z 376) */
 /* Tlacitko SURVEY (footer pravy sloupec, pred BACK@650) -> okno Self-survey (s_view=32). */
 static const prim_rect_t GPS_SURVEY_BTN = {532, 417, 112, 61};
+static const prim_rect_t GPS_QUAL_BTN   = {330, 417, 190, 61};   /* -> okno KVALITA GPS (38) */
 #define GPS_RLBL  (GPS_RX + 12)                   /* 544 */
 
 /* GPS okno: karta Druzice — prepinani zobrazeni (bargraf <-> sky plot) dotykem.
@@ -994,6 +1004,8 @@ void app_gpsdo_render_gps(void)
         ui_card_render_chrome(&c_rx);
         ui_button_t sv = {.rect = GPS_SURVEY_BTN, .variant = UI_BUTTON_NORMAL, .label = "SURVEY >"};
         ui_button_render(&sv);
+        ui_button_t qb = {.rect = GPS_QUAL_BTN, .variant = UI_BUTTON_NORMAL, .label = "KVALITA >"};
+        ui_button_render(&qb);
     }
     if (draw_gps_values(first)) present_now();
 }
@@ -2588,10 +2600,9 @@ void app_gpsdo_boot_splash_tick(void)
  * primo z hl. obrazovky pres pilulku/tap, NEjsou tu). Staticke (neni v ticku). */
 extern volatile uint8_t g_reboot_req;
 static void app_gpsdo_render_reference(void);       /* fwd (volano z menu_activate) */
-static void app_gpsdo_render_kalib(void);
+/* kalib + alarms uz maji fwd deklaraci u `goto_view` vyse (spawnuji podokna). */
 static void app_gpsdo_render_holdover(void);
 static void app_gpsdo_render_datalog(void);
-static void app_gpsdo_render_alarms(void);
 static void app_gpsdo_render_counter(void);
 static void app_gpsdo_render_selftest(void);
 static void app_gpsdo_render_cas(void);
@@ -2804,6 +2815,7 @@ static prim_rect_t kalib_plus_hit(int16_t y)
 }
 static const prim_rect_t KALIB_SAVE_RECT = {18, 417, 220, 61};
 static const prim_rect_t KALIB_AUTOCAL_RECT = {260, 417, 210, 61};   /* AUTO-CAL self-check */
+static const prim_rect_t KALIB_WIZ_RECT = {482, 417, 158, 61};       /* -> pruvodce (s_view=40) */
 static uint32_t s_kalib_spin_frame = 0;   /* pro spinner ikonu pri ULOZIT (item 6) */
 
 static void kalib_row_redraw(int i)
@@ -2849,6 +2861,8 @@ static void app_gpsdo_render_kalib(void)
     ui_button_render(&save);
     ui_button_t acb = {.rect = KALIB_AUTOCAL_RECT, .variant = UI_BUTTON_NORMAL, .label = "AUTO-CAL"};
     ui_button_render(&acb);
+    ui_button_t wzb = {.rect = KALIB_WIZ_RECT, .variant = UI_BUTTON_NORMAL, .label = "PRUVODCE >"};
+    ui_button_render(&wzb);
     /* Karta 348 px (bylo 320) — 4 radky s 60px tlacitky (roztec66, radek1..4
      * konci 308+30=338) + 2 readonly radky (346/374) + status (402) uz presahly
      * puvodnich 320; 348 je konci presne pred paticnkou (62+348=410, footer 417). */
@@ -3394,6 +3408,456 @@ static void app_gpsdo_render_datalog(void)
 
 /* ── Alarmy (s_view=18): monitor alarmovych udalosti (co je hlidano + pocitadla).
  * Doplnuje Nastaveni (jen globalni mute) o PREHLED co spousti alarm + historii. ── */
+/* ── Pruvodce kalibraci napeti (s_view=40) ───────────────────────────────────
+ * Vstup tlacitkem PRUVODCE v okne Kalibrace. Resi praktickou otazku, kterou
+ * rucni krokovani gainu neresi: "pristroj ukazuje 4,827 V — je to skutecne
+ * napeti, nebo je vedle delic?" Uzivatel zmeri vetev multimetrem, navoli tu
+ * hodnotu a firmware dopocita gain sam.
+ *
+ * Matematika: `sensor_update` uklada uz PRENASOBENOU hodnotu
+ * (`mv_zobrazene = mv_ads * gain`), takze syrovou hodnotu ADS znat nepotrebujeme:
+ *     novy_gain = stary_gain * (skutecne / zobrazene)
+ * Diky tomu je prevod nezavisly na tom, jaky gain je zrovna nastaveny. */
+#define WIZ_BRANCH_N 2
+static const struct {
+    uint8_t sens; volatile float *gain; float nom_mv, lo_gain, hi_gain; const char *name;
+} WIZ_BR[WIZ_BRANCH_N] = {
+    { SENS_ADS2, &g_calib.gain_12v, 12000.0f, 4.000f, 5.500f, "12V vetev" },
+    { SENS_ADS3, &g_calib.gain_5v,   5000.0f, 1.500f, 2.500f, "5V vetev"  },
+};
+static int   s_wiz_br     = 0;      /* vybrana vetev */
+static float s_wiz_target = 0.0f;   /* co ukazuje multimetr [mV] */
+
+/* ⚠️ Vyska 64 px (7,5 mm) — projektove minimum dotykoveho cile je 7 mm. */
+static const prim_rect_t WIZ_BRANCH_RECT = { 32,  96, 200, 64};
+static const prim_rect_t WIZ_MINUS       = {560, 232,  96, 64};
+static const prim_rect_t WIZ_PLUS        = {664, 232,  96, 64};
+static const prim_rect_t WIZ_APPLY_RECT  = { 18, 417, 200, 61};
+static const prim_rect_t WIZ_SAVE_RECT   = {230, 417, 200, 61};
+
+/* Zobrazena hodnota vetve [mV]; 0 = zatim nezmereno. */
+static float wiz_measured_mv(void)
+{
+    const sensor_stat_t *s = &g_sensors[WIZ_BR[s_wiz_br].sens];
+    return (s->samples && s->valid) ? s->last : 0.0f;
+}
+
+/* Cil = to, co ukazuje multimetr. Pri vstupu/prepnuti vetve se nastavi na
+ * aktualne merenou hodnotu, aby uzivatel jen "dojel" na spravne cislo. */
+static void wiz_reset_target(void)
+{
+    float m = wiz_measured_mv();
+    s_wiz_target = (m > 0.0f) ? m : WIZ_BR[s_wiz_br].nom_mv;
+}
+
+/* Gain, ktery by vysel z aktualniho cile. 0 = nelze spocitat. */
+static float wiz_new_gain(void)
+{
+    float m = wiz_measured_mv();
+    if (m < 100.0f) return 0.0f;                     /* nic nemerime -> nedelit */
+    float g = *WIZ_BR[s_wiz_br].gain * (s_wiz_target / m);
+    if (g < WIZ_BR[s_wiz_br].lo_gain || g > WIZ_BR[s_wiz_br].hi_gain) return 0.0f;
+    return g;
+}
+
+static void app_gpsdo_render_wizard(void)
+{
+    int first = window_first(40);
+    static char c_meas[24], c_tgt[24], c_gain[48];   /* stejne velke jako zdroje (viz TODO #13) */
+    static int  c_br = -1;
+    if (first) {
+        s_view = 40;
+        window_chrome("PRUVODCE KALIBRACI", WIN_TITLE_Y);
+        ui_card_t c = {.rect = {DG_LX, 62, 764, 300},
+                       .header_label = "Kalibrace delice podle multimetru"};
+        ui_card_render_chrome(&c);
+        prim_draw_text((prim_point_t){260, 136}, "1. zmer vetev multimetrem",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){ 32, 204}, "Pristroj mereni:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){ 32, 272}, "2. navol, co ukazuje multimetr:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){ 32, 340}, "Novy gain:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        ui_button_t mb = {.rect = WIZ_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+        ui_button_t pb = {.rect = WIZ_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
+        ui_button_t ab = {.rect = WIZ_APPLY_RECT, .variant = UI_BUTTON_NORMAL, .label = "POUZIT"};
+        ui_button_t sb = {.rect = WIZ_SAVE_RECT,  .variant = UI_BUTTON_NORMAL, .label = "ULOZIT"};
+        ui_button_t bb = {.rect = BACK_RECT,      .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&mb); ui_button_render(&pb);
+        ui_button_render(&ab); ui_button_render(&sb); ui_button_render(&bb);
+        prim_draw_text((prim_point_t){DG_LLBL, 388},
+                       "POUZIT zmeni gain hned (zkontroluj radek Pristroj); ULOZIT ho zapise do W25Q.",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        wiz_reset_target();
+        c_meas[0] = c_tgt[0] = c_gain[0] = '\0'; c_br = -1;
+    }
+
+    if (first || c_br != s_wiz_br) {
+        c_br = s_wiz_br;
+        ui_button_t br = {.rect = WIZ_BRANCH_RECT, .variant = UI_BUTTON_ACTIVE,
+                          .label = WIZ_BR[s_wiz_br].name};
+        prim_fill_rect(WIZ_BRANCH_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* meni label */
+        ui_button_render(&br);
+    }
+
+    char b[24], num[16];
+    /* Zive merena hodnota. */
+    float m = wiz_measured_mv();
+    if (m > 0.0f) { fmt_fixed(num, sizeof num, m / 1000.0f, 3); snprintf(b, sizeof b, "%s V", num); }
+    else          snprintf(b, sizeof b, "--");
+    if (first || dchg(c_meas, sizeof c_meas, b)) {
+        prim_fill_rect((prim_rect_t){300, 182, 240, 30}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){300, 204}, b, &ui_font_mono_22, UI_COLOR_INK, PRIM_ALIGN_LEFT);
+    }
+    /* Cilova (namerena multimetrem) hodnota. */
+    fmt_fixed(num, sizeof num, s_wiz_target / 1000.0f, 3);
+    snprintf(b, sizeof b, "%s V", num);
+    if (first || dchg(c_tgt, sizeof c_tgt, b)) {
+        prim_fill_rect((prim_rect_t){300, 250, 240, 30}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){300, 272}, b, &ui_font_mono_22, UI_COLOR_ACC, PRIM_ALIGN_LEFT);
+    }
+    /* Dopocitany gain (nebo duvod, proc to nejde). ⚠️ Vlastni buffer, NE sdilene
+     * `b`: skladaji se dve `fmt_fixed` hodnoty (kazda az 15 B worst-case) a
+     * pouzit `b` zaroven jako mezivysledek i cil znamenalo utnuti. `c_gain` ma
+     * stejnou velikost jako zdroj — jinak by dve ruzne hodnoty se shodnym
+     * prefixem vypadaly jako "beze zmeny" (viz TODO #13 o dchg cache). */
+    float g = wiz_new_gain();
+    char gainb[48];
+    if (g > 0.0f) { char gn[16], go[16];
+                    fmt_fixed(gn, sizeof gn, g, 3);
+                    fmt_fixed(go, sizeof go, *WIZ_BR[s_wiz_br].gain, 3);
+                    snprintf(gainb, sizeof gainb, "%s  (ted %s)", gn, go); }
+    else if (m < 100.0f) snprintf(gainb, sizeof gainb, "-- (nic se nemeri)");
+    else                 snprintf(gainb, sizeof gainb, "-- (mimo rozsah)");
+    if (first || dchg(c_gain, sizeof c_gain, gainb)) {
+        prim_fill_rect((prim_rect_t){300, 318, 420, 30}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){300, 340}, gainb, &ui_font_mono_18,
+                       (g > 0.0f) ? UI_COLOR_OK : UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
+    present_now();
+}
+
+/* ── Okno KVALITA GPS (s_view=38): historie prijmu z datalogu ────────────────
+ * Vstup tlacitkem KVALITA v okne GPS. Odpovida na otazku, kterou zivy pohled na
+ * druzice zodpovedet neumi: "je moje antena dobre umistena?" — tedy jak vypadal
+ * prijem za posledni hodiny/dny, ne jak vypada TED.
+ *
+ * Zdroj = datalog (`sats`, `hdop10`, `flags`), tj. REALNA data; na teto desce uz
+ * je jich ~5,5 dne. Kmitocet v logu je zatim 0 (⬅ #2), ale GPS pole jsou plna
+ * od zacatku, takze tohle okno je uzitecne HNED.
+ *
+ * ⚠️ Renderuje se JEN pri vstupu a pri zmene presetu — jeden render dela stovky
+ * blokujicich `datalog_read_back` (QSPI) a periodicke obnovovani by v UiTasku
+ * porusilo pravidlo "zadny spin > 10 ms". Historie hodin az dnu je stejne
+ * minuty stara, takze na tom nic neni videt. Stejny vzor jako okno GRAFY. */
+static const struct { int32_t secs; const char *name; } GPSQ_PRESETS[] = {
+    {   3600, "1 h"   },
+    {  21600, "6 h"   },
+    {  86400, "1 den" },
+    { 604800, "7 dni" },
+};
+#define GPSQ_PRESET_N ((int)(sizeof(GPSQ_PRESETS)/sizeof(GPSQ_PRESETS[0])))
+static int s_gpsq_idx = 1;   /* default 6 h */
+
+static const prim_rect_t GPSQ_MINUS   = { 18, 417,  90, 61};
+static const prim_rect_t GPSQ_PLUS    = {214, 417,  90, 61};
+static const prim_rect_t GPSQ_PLOT_S  = { 26,  96, 748, 104};   /* pocet druzic */
+static const prim_rect_t GPSQ_PLOT_H  = { 26, 264, 748, 104};   /* HDOP          */
+
+/* Souhrn za zvolene okno (plni `gpsq_series`). */
+typedef struct {
+    int   n;              /* pocet vzoku v grafu */
+    int   fix3d_pct;      /* % zaznamu s 3D fixem */
+    float sat_min, sat_max, sat_avg;
+    float hdop_min, hdop_max, hdop_avg;
+    int32_t span_s;       /* skutecne pokryty cas */
+} gpsq_sum_t;
+
+/* Nacte serii (field 0 = pocet druzic, 1 = HDOP) do s_gbuf + naplni souhrn.
+ * Souhrn se pocita ve STEJNEM pruchodu jako serie druzic (field 0), aby se
+ * datalog necetl dvakrat — kazdy pruchod je stovky blokujicich QSPI cteni. */
+static int gpsq_series(int field, int32_t win_s, float *mn, float *mx, gpsq_sum_t *sum)
+{
+    datalog_status_t st; datalog_get_status(&st);
+    if (!st.ready || st.records < 2) return 0;
+    int32_t nrec_win = win_s / (int32_t)DATALOG_PERIOD_S; if (nrec_win < 2) nrec_win = 2;
+    int32_t nrec = (nrec_win < (int32_t)st.records) ? nrec_win : (int32_t)st.records;
+    int npts = (int)nrec; if (npts > GRAPH_MAXPTS) npts = GRAPH_MAXPTS; if (npts < 2) return 0;
+    int32_t stride = nrec / npts; if (stride < 1) stride = 1;
+
+    float mnv = 1e30f, mxv = -1e30f, acc = 0; int nacc = 0, nfix = 0;
+    for (int i = 0; i < npts; i++) {
+        uint32_t fn = (uint32_t)((npts - 1 - i) * stride);   /* oldest -> newest */
+        datalog_rec_t r; float v = 0;
+        if (datalog_read_back(fn, &r)) {
+            if (field == 0) { v = (float)r.sats; }
+            /* hdop10 == 255 je sentinel "neplatne" (viz datalog.c sample) —
+             * nesmi se dostat do statistiky jako HDOP 25,5. */
+            else            { v = (r.hdop10 == 255u) ? -1.0f : (float)r.hdop10 * 0.1f; }
+            if (sum && (r.flags & DATALOG_F_FIX_3D)) nfix++;
+        }
+        if (v >= 0.0f) { acc += v; nacc++; if (v < mnv) mnv = v; if (v > mxv) mxv = v; }
+        s_gbuf[i] = (v < 0.0f) ? 0.0f : v;   /* neplatny HDOP kreslime jako 0 = "bez fixu" */
+    }
+    if (nacc == 0) { mnv = 0; mxv = 1; }
+    if (mn) *mn = mnv;
+    if (mx) *mx = mxv;
+    if (sum) {
+        sum->n         = npts;
+        sum->span_s    = (int32_t)(npts - 1) * stride * (int32_t)DATALOG_PERIOD_S;
+        sum->fix3d_pct = (npts > 0) ? (nfix * 100 / npts) : 0;
+        if (field == 0) { sum->sat_min = mnv; sum->sat_max = mxv;
+                          sum->sat_avg = nacc ? acc / (float)nacc : 0.0f; }
+        else            { sum->hdop_min = mnv; sum->hdop_max = mxv;
+                          sum->hdop_avg = nacc ? acc / (float)nacc : 0.0f; }
+    }
+    return npts;
+}
+
+static void app_gpsdo_render_gpsq(void)
+{
+    int first = window_first(38);
+    static int c_idx = -1;
+    if (first) {
+        s_view = 38;
+        window_chrome("KVALITA GPS", WIN_TITLE_Y);
+        ui_card_t cs = {.rect = {18,  58, 764, 160}, .header_label = "Pocet druzic (z datalogu)"};
+        ui_card_t ch = {.rect = {18, 226, 764, 160}, .header_label = "HDOP (nizsi = lepsi)"};
+        ui_card_render_chrome(&cs);
+        ui_card_render_chrome(&ch);
+        ui_button_t mb = {.rect = GPSQ_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
+        ui_button_t pb = {.rect = GPSQ_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
+        ui_button_t bb = {.rect = BACK_RECT,  .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&mb); ui_button_render(&pb); ui_button_render(&bb);
+        c_idx = -1;
+    }
+    if (!first && c_idx == s_gpsq_idx) { present_now(); return; }   /* zadna zmena -> zadne QSPI cteni */
+    c_idx = s_gpsq_idx;
+
+    int32_t win = GPSQ_PRESETS[s_gpsq_idx].secs;
+    gpsq_sum_t sum; memset(&sum, 0, sizeof sum);
+
+    /* Druzice — osa 0..max (aspon 12, at se pocet nezvetsuje opticky pri malo druzicich). */
+    float mn = 0, mx = 0;
+    int n = gpsq_series(0, win, &mn, &mx, &sum);
+    graph_grid(GPSQ_PLOT_S);
+    if (n >= 2) {
+        float top = (mx > 12.0f) ? mx : 12.0f;
+        graph_plot(GPSQ_PLOT_S, n, 0.0f, top, UI_COLOR_OK);
+        char lb[24]; snprintf(lb, sizeof lb, "0 - %d", (int)(top + 0.5f));
+        prim_draw_text((prim_point_t){(int16_t)(GPSQ_PLOT_S.x + 4), (int16_t)(GPSQ_PLOT_S.y + 16)},
+                       lb, &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    }
+
+    /* HDOP — mensi je lepsi, takze osa 0..max (aspon 3). */
+    float hmn = 0, hmx = 0;
+    int nh = gpsq_series(1, win, &hmn, &hmx, &sum);
+    graph_grid(GPSQ_PLOT_H);
+    if (nh >= 2) {
+        float top = (hmx > 3.0f) ? hmx : 3.0f;
+        graph_plot(GPSQ_PLOT_H, nh, 0.0f, top, UI_COLOR_ACC);
+        char lb[24]; fmt_fixed(lb, sizeof lb, top, 1);
+        char l2[28]; snprintf(l2, sizeof l2, "0 - %s", lb);
+        prim_draw_text((prim_point_t){(int16_t)(GPSQ_PLOT_H.x + 4), (int16_t)(GPSQ_PLOT_H.y + 16)},
+                       l2, &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+    }
+
+    /* Souhrnny radek + preset. Vlastni clear (meni se pri kazde zmene okna). */
+    /* Vyska 24 (ne 26): 392+26=418 by o 1 px zaslo do radku footeru (y=417). */
+    prim_fill_rect((prim_rect_t){18, 392, 764, 24}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    /* 144 B: GCC pocita worst case podle VELIKOSTI zdrojovych bufferu (dur[16],
+     * sa/ha/hx[12] a `%d` az 11 znaku), coz da ~127 B — realny text ma ~81 a na
+     * sans_14 se do 764 px vejde (~109 znaku). Radeji buffer nez kratsi hlaseni. */
+    char info[144];
+    if (n >= 2) {
+        char sa[12], ha[12], hx[12], dur[16];
+        fmt_fixed(sa, sizeof sa, sum.sat_avg,  1);
+        fmt_fixed(ha, sizeof ha, sum.hdop_avg, 1);
+        fmt_fixed(hx, sizeof hx, sum.hdop_max, 1);
+        screen_main_fmt_dur(dur, sizeof dur, sum.span_s);
+        /* ⚠️ Drzet KRATKE: `info[96]` a sans_14 na 764 px unese ~109 znaku, ale
+         * GCC pocita worst-case delky vsech %s -> delsi formulace uz hlasila
+         * -Wformat-truncation. Tahle varianta ma worst case ~81 B. */
+        snprintf(info, sizeof info,
+                 "okno %s  |  3D fix %d %%  |  druzic %s (min %d)  |  HDOP %s (max %s)",
+                 dur, sum.fix3d_pct, sa, (int)(sum.sat_min + 0.5f), ha, hx);
+    } else {
+        snprintf(info, sizeof info, "V datalogu zatim neni dost zaznamu pro toto okno.");
+    }
+    prim_draw_text((prim_point_t){DG_LLBL, 410}, info, &ui_font_sans_14,
+                   UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+
+    /* Popisek presetu mezi -/+ (fixni clear, kratsi text by nechal ocas). */
+    prim_fill_rect((prim_rect_t){112, 425, 96, 46}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){160, 456}, GPSQ_PRESETS[s_gpsq_idx].name,
+                   &ui_font_mono_22, UI_COLOR_INK, PRIM_ALIGN_CENTER);
+    present_now();
+}
+
+/* ── Okno PRAHY (s_view=39): meze prahoveho monitoru ─────────────────────────
+ * Vstup tlacitkem PRAHY v okne Alarmy. Samostatne okno proto, ze okno Alarmy je
+ * uz plne (3 hlidane stavy + zvuk + 2 pocitadla + MUTE + footer) a tohle
+ * potrebuje 3 prepinace + 4 hodnoty s -/+.
+ *
+ * Layout: 4 radky, kazdy [ZAP/VYP] [popis] [hodnota] [-] [+].
+ * Hodnoty se meni ZIVE (g_mon_cfg), persist resi `syscfg_flash_tick` sam pres
+ * shadow-diff celeho blobu — zadny dirty priznak netreba (stejne jako datalog_en). */
+/* ⚠️ Vyska 64 px (7,5 mm), NE 56 (6,6 mm) — projektove minimum dotykoveho cile
+ * je 7 mm (UI_SIZES.md). Roztec radku 66 = stejna jako v okne Kalibrace, takze
+ * 4. radek konci na 294+64=358, tesne uvnitr karty (62..362). */
+static const prim_rect_t THR_ROW_EN[4] = {   /* ZAP/VYP prepinac radku */
+    {  32,  96, 120, 64}, {  32, 162, 120, 64}, {  32, 228, 120, 64}, {  32, 294, 120, 64},
+};
+static const prim_rect_t THR_ROW_MINUS[4] = {
+    { 590,  96,  84, 64}, { 590, 162,  84, 64}, { 590, 228,  84, 64}, { 590, 294,  84, 64},
+};
+static const prim_rect_t THR_ROW_PLUS[4] = {
+    { 682,  96,  84, 64}, { 682, 162,  84, 64}, { 682, 228,  84, 64}, { 682, 294,  84, 64},
+};
+/* Radky: 0 = VBAT dolni mez, 1 = OCXO dolni, 2 = OCXO horni, 3 = ADEV max.
+ * ⚠️ Radky 1 a 2 sdili JEDEN prepinac (`ocxo_en`) — pasmo se nezapina po pulkach. */
+#define THR_ROWS 4
+
+/* Kolik ubere/pridá jeden stisk na danem radku. */
+static void thr_step(int row, int dir)
+{
+    switch (row) {
+    case 0:  /* VBAT [mV], krok 50 mV, rozumny rozsah 2,0–3,3 V */
+        g_mon_cfg.vbat_lo_mv += (float)dir * 50.0f;
+        if (g_mon_cfg.vbat_lo_mv < 2000.0f) g_mon_cfg.vbat_lo_mv = 2000.0f;
+        if (g_mon_cfg.vbat_lo_mv > 3300.0f) g_mon_cfg.vbat_lo_mv = 3300.0f;
+        break;
+    case 1:  /* OCXO dolni [°C], krok 1; nesmi prelezt horni (min. 2 °C pasmo) */
+        g_mon_cfg.ocxo_lo_c += (float)dir;
+        if (g_mon_cfg.ocxo_lo_c < 0.0f) g_mon_cfg.ocxo_lo_c = 0.0f;
+        if (g_mon_cfg.ocxo_lo_c > g_mon_cfg.ocxo_hi_c - 2.0f)
+            g_mon_cfg.ocxo_lo_c = g_mon_cfg.ocxo_hi_c - 2.0f;
+        break;
+    case 2:  /* OCXO horni [°C] */
+        g_mon_cfg.ocxo_hi_c += (float)dir;
+        if (g_mon_cfg.ocxo_hi_c > 90.0f) g_mon_cfg.ocxo_hi_c = 90.0f;
+        if (g_mon_cfg.ocxo_hi_c < g_mon_cfg.ocxo_lo_c + 2.0f)
+            g_mon_cfg.ocxo_hi_c = g_mon_cfg.ocxo_lo_c + 2.0f;
+        break;
+    default: /* ADEV max — DEKADOVY krok (1e-12 .. 1e-6), linearni by byl k nicemu */
+        if (dir > 0) g_mon_cfg.adev_max *= 10.0f;
+        else         g_mon_cfg.adev_max /= 10.0f;
+        if (g_mon_cfg.adev_max < 1e-12f) g_mon_cfg.adev_max = 1e-12f;
+        if (g_mon_cfg.adev_max > 1e-6f)  g_mon_cfg.adev_max = 1e-6f;
+        break;
+    }
+}
+
+/* Text hodnoty radku. ADEV bez %f — dekadovy exponent se slozi rucne. */
+static void thr_fmt_val(int row, char *b, size_t n)
+{
+    switch (row) {
+    case 0:  fmt_fixed(b, n, g_mon_cfg.vbat_lo_mv / 1000.0f, 2);
+             { size_t l = strlen(b); snprintf(b + l, n - l, " V"); } break;
+    case 1:  fmt_fixed(b, n, g_mon_cfg.ocxo_lo_c, 0);
+             { size_t l = strlen(b); snprintf(b + l, n - l, " C"); } break;
+    case 2:  fmt_fixed(b, n, g_mon_cfg.ocxo_hi_c, 0);
+             { size_t l = strlen(b); snprintf(b + l, n - l, " C"); } break;
+    default: {   /* 1e-12 .. 1e-6 -> "1e-11" (dekadovy krok => vzdy mocnina 10) */
+        int e = 0; float v = g_mon_cfg.adev_max;
+        while (v < 0.5f && e > -20) { v *= 10.0f; e--; }
+        snprintf(b, n, "1e%d", e);
+        break; }
+    }
+}
+
+static void thr_row_enabled(int row, uint8_t *en_out)
+{
+    *en_out = (row == 0) ? g_mon_cfg.vbat_en
+            : (row == 3) ? g_mon_cfg.adev_en
+                         : g_mon_cfg.ocxo_en;   /* radky 1+2 sdili ocxo_en */
+}
+
+/* Popisek radku + AKTUALNI hodnota veliciny. Bez ni by uzivatel nastavoval mez
+ * naslepo ("je 2,60 V moc, nebo malo?"). σy@1s se zamerne neukazuje — je to dnes
+ * simulace a psat k ni konkretni cislo by budilo zdani realneho mereni. */
+static void thr_label(int row, char *b, size_t n)
+{
+    static const char *BASE[THR_ROWS] = {
+        "VBAT pod", "OCXO pod", "OCXO nad", "sigma@1s nad",
+    };
+    const sensor_stat_t *s = (row == 0) ? &g_sensors[SENS_VBAT] : &g_sensors[SENS_T49];
+    char cur[16];
+    if (row == 3 || !s->samples) { snprintf(b, n, "%s", BASE[row]); return; }
+    if (row == 0) fmt_fixed(cur, sizeof cur, s->last / 1000.0f, 2);
+    else          fmt_fixed(cur, sizeof cur, s->last, 1);
+    snprintf(b, n, "%s  (ted %s%s)", BASE[row], cur, (row == 0) ? " V" : " C");
+}
+
+/* Stav podminky -> barva popisku: zelena OK, cervena mimo mez, ztlumena vypnuto. */
+static prim_color_t thr_state_col(int row, uint8_t en)
+{
+    if (!en) return UI_COLOR_INK_3;
+    uint8_t bad = (row == 0) ? g_mon_vbat_bad
+                : (row == 3) ? g_mon_adev_bad
+                             : g_mon_ocxo_bad;
+    return bad ? UI_COLOR_BAD : UI_COLOR_OK;
+}
+
+static void app_gpsdo_render_prahy(void)
+{
+    int first = window_first(39);
+    static char c_val[THR_ROWS][16], c_lbl[THR_ROWS][40];
+    static uint8_t c_en[THR_ROWS], c_bad[THR_ROWS];
+    if (first) {
+        s_view = 39;
+        window_chrome("PRAHY", WIN_TITLE_Y);
+        ui_card_t c = {.rect = {DG_LX, 62, 764, 300},
+                       .header_label = "Meze hlidanych velicin (alarm + SYS pilulka)"};
+        ui_card_render_chrome(&c);
+        for (int i = 0; i < THR_ROWS; i++) { c_val[i][0] = '\0'; c_lbl[i][0] = '\0';
+                                             c_en[i] = 0xFF; c_bad[i] = 0xFF; }
+        prim_draw_text((prim_point_t){DG_LLBL, 388},
+                       "sigma@1s se dnes pocita ze SIMULACE — zapinat az po zprovozneni FPGA.",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&bb);
+    }
+
+    for (int i = 0; i < THR_ROWS; i++) {
+        uint8_t en; thr_row_enabled(i, &en);
+        if (first || en != c_en[i]) {
+            c_en[i] = en;
+            ui_button_t eb = {.rect = THR_ROW_EN[i],
+                              .variant = en ? UI_BUTTON_RUN : UI_BUTTON_STOP,
+                              .label = en ? "ZAP" : "VYP"};
+            prim_fill_rect(THR_ROW_EN[i], UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);  /* meni barvu i label */
+            ui_button_render(&eb);
+        }
+        if (first) {
+            ui_button_t mb = {.rect = THR_ROW_MINUS[i], .variant = UI_BUTTON_NORMAL, .label = "-"};
+            ui_button_t pb = {.rect = THR_ROW_PLUS[i],  .variant = UI_BUTTON_NORMAL, .label = "+"};
+            ui_button_render(&mb); ui_button_render(&pb);
+        }
+        /* Popisek + aktualni hodnota; barva = stav podminky. Prekresluje se i pri
+         * pouhe zmene stavu (bad), proto je `bad` soucasti zmenoveho klice. */
+        char lb[40]; thr_label(i, lb, sizeof lb);
+        uint8_t bad = (thr_state_col(i, en) == UI_COLOR_BAD) ? 1u : 0u;
+        if (first || bad != c_bad[i] || dchg(c_lbl[i], sizeof c_lbl[i], lb)) {
+            c_bad[i] = bad;
+            /* ⚠️ Clear box MUSI lezet NAD baseline: prim_draw_text kresli od
+             * baseline nahoru o `ascent` (sans_18: 18 nahoru, 5 dolu). */
+            prim_fill_rect((prim_rect_t){170, (int16_t)(THR_ROW_EN[i].y + 16), 250, 32},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            prim_draw_text((prim_point_t){170, (int16_t)(THR_ROW_EN[i].y + 38)}, lb,
+                           &ui_font_sans_18, thr_state_col(i, en), PRIM_ALIGN_LEFT);
+        }
+        char v[16]; thr_fmt_val(i, v, sizeof v);
+        if (first || dchg(c_val[i], sizeof c_val[i], v)) {
+            /* Vlastni clear boxu hodnoty (kratsi text by jinak nechal ocas). */
+            prim_fill_rect((prim_rect_t){430, (int16_t)(THR_ROW_EN[i].y + 10), 150, 42},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            prim_draw_text((prim_point_t){570, (int16_t)(THR_ROW_EN[i].y + 38)}, v,
+                           &ui_font_mono_22, en ? UI_COLOR_INK : UI_COLOR_INK_3,
+                           PRIM_ALIGN_RIGHT);
+        }
+    }
+    present_now();
+}
+
 /* Footer: vynuluje Allan/Histogram/Trend akumulaci (screen_main.c) + pocitadla
  * alarmu (g_alarm_*). Volano primo z UiTasku (touch handler bezi tady), takze
  * `screen_main_stats_reset()` jde volat naprimo — request-flag (`g_stats_reset_req`)
@@ -3402,6 +3866,7 @@ static void app_gpsdo_render_datalog(void)
  * v teto obrazovce) je {230,354,148,64} a jeho spodni hrana (354+64=418) sahá
  * o 1 px do radku footeru (y=417) — sirsi tlacitko by se s nim vodorovne prekrylo. */
 static const prim_rect_t ALARM_RESET_RECT = {18, 417, 200, 61};
+static const prim_rect_t ALARM_THR_RECT   = {230, 417, 180, 61};   /* -> okno PRAHY (39) */
 
 static void app_gpsdo_render_alarms(void)
 {
@@ -3415,6 +3880,9 @@ static void app_gpsdo_render_alarms(void)
         ui_button_t rb = {.rect = ALARM_RESET_RECT, .variant = UI_BUTTON_NORMAL,
                           .label = "RESET STATISTIK"};
         ui_button_render(&rb);
+        ui_button_t tb = {.rect = ALARM_THR_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "PRAHY >"};
+        ui_button_render(&tb);
         kv_row(116, "FPGA SIGNAL_LOST:", "hlidano (3x pip)", UI_COLOR_INK_2);
         kv_row(152, "Ztrata GPS locku:", "hlidano (2x pip)", UI_COLOR_INK_2);
         kv_row(188, "Frekv. limit:",     "hlidano (4x pip)", UI_COLOR_INK_2);   /* #44 hotovo: PASS->FAIL = 4x pip */
@@ -4727,6 +5195,8 @@ void app_gpsdo_tick(void)
     else if (s_view == 16) app_gpsdo_render_holdover();  /* Holdover (zivy stav) */
     else if (s_view == 17) app_gpsdo_render_datalog();   /* Datalog (zivy pocet zaznamu) */
     else if (s_view == 18) app_gpsdo_render_alarms();    /* Alarmy (zivy mute + pocitadla) */
+    else if (s_view == 39) app_gpsdo_render_prahy();     /* Prahy (zive hodnoty + stav podminek) */
+    else if (s_view == 40) app_gpsdo_render_wizard();    /* Pruvodce kalibraci (zive merena hodnota) */
     else if (s_view == 19) app_gpsdo_render_counter();   /* Citac (zivy detail mereni FPGA) */
     else if (s_view == 21) app_gpsdo_render_commdiag();  /* Komunikace: blokove schema (zive) */
     else if (s_view == 22) app_gpsdo_render_cas();       /* Cas / zona (zivy UTC + lokalni) */
@@ -5009,6 +5479,10 @@ void app_gpsdo_tick_stats_sample(void)
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     screen_main_stats_sample();
     mp_stats_add(&s_meas_stats, screen_main_freq_hz());   /* statistika okna MERENI (#67, RESET nuluje) */
+    /* σy@1s -> Core globál pro prahovy monitor v alarm.c. ⚠️ Stejny most jako
+     * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
+     * hodnota publikuje pres globál. */
+    g_adev_1s = screen_main_adev_1s();
     /* #44: prubezne vyhodnoceni limitu (nezavisle na oknu -> alarm hlida i mimo
      * okno MATH). Verdikt cte alarm.c (edge PASS->FAIL). Levne (1x/s). */
     g_meas_verdict = (uint8_t)meas_limit_eval(&g_meas_cfg,
@@ -5268,6 +5742,20 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             nav_push(2); app_gpsdo_render_survey();
             return true;
         }
+        if (s_view == 2 && in_rect(x, y, GPS_QUAL_BTN)) {     /* GPS -> okno KVALITA GPS */
+            nav_push(2); app_gpsdo_render_gpsq();
+            return true;
+        }
+        if (s_view == 38) {                                   /* KVALITA GPS: preset -/+ */
+            if (in_rect(x, y, GPSQ_MINUS)) {
+                if (s_gpsq_idx > 0) { s_gpsq_idx--; app_gpsdo_render_gpsq(); }
+                return true;
+            }
+            if (in_rect(x, y, GPSQ_PLUS)) {
+                if (s_gpsq_idx < GPSQ_PRESET_N - 1) { s_gpsq_idx++; app_gpsdo_render_gpsq(); }
+                return true;
+            }
+        }
         if (s_view == 2 && in_rect(x, y, GPS_SAT_RECT)) {  /* GPS: prepni bargraf <-> sky plot */
             s_gps_polar = !s_gps_polar;
             app_gpsdo_render_gps();                        /* change-key prekresli kartu Druzice */
@@ -5492,6 +5980,67 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             alarm_reset_counters();
             app_gpsdo_render_alarms();
             return true;
+        }
+        if (s_view == 18 && in_rect(x, y, ALARM_THR_RECT)) {    /* Alarmy -> okno PRAHY */
+            nav_push(18); app_gpsdo_render_prahy();
+            return true;
+        }
+        if (s_view == 15 && in_rect(x, y, KALIB_WIZ_RECT)) {    /* Kalibrace -> PRUVODCE */
+            nav_push(15); app_gpsdo_render_wizard();
+            return true;
+        }
+        if (s_view == 40) {                                     /* PRUVODCE KALIBRACI */
+            if (in_rect(x, y, WIZ_BRANCH_RECT)) {               /* prepni 12V <-> 5V */
+                s_wiz_br = (s_wiz_br + 1) % WIZ_BRANCH_N;
+                wiz_reset_target();                             /* cil vzdy od aktualne merene */
+                app_gpsdo_render_wizard(); return true;
+            }
+            if (in_rect(x, y, WIZ_MINUS) || in_rect(x, y, WIZ_PLUS)) {
+                float dir = in_rect(x, y, WIZ_PLUS) ? 1.0f : -1.0f;
+                s_wiz_target += dir * 10.0f;                    /* krok 10 mV */
+                /* Drz cil v +-20 % kolem jmenovite hodnoty — mimo to uz by
+                 * vysledny gain stejne vypadl z povoleneho rozsahu. */
+                float nom = WIZ_BR[s_wiz_br].nom_mv;
+                if (s_wiz_target < nom * 0.8f) s_wiz_target = nom * 0.8f;
+                if (s_wiz_target > nom * 1.2f) s_wiz_target = nom * 1.2f;
+                app_gpsdo_render_wizard(); return true;
+            }
+            if (in_rect(x, y, WIZ_APPLY_RECT)) {                /* dopocitany gain -> g_calib */
+                float g = wiz_new_gain();
+                if (g > 0.0f) *WIZ_BR[s_wiz_br].gain = g;       /* projevi se hned v SensorsTask */
+                app_gpsdo_render_wizard(); return true;
+            }
+            if (in_rect(x, y, WIZ_SAVE_RECT)) {                 /* persist do W25Q CALIB */
+                /* calib_save() blokuje ~stovky ms a UiTask po tu dobu nekresli —
+                 * stejny duvod jako u ULOZIT v Kalibraci: nejdriv napis + flip. */
+                prim_set_target(&s_fb);
+                prim_reset_clip();
+                prim_fill_rect((prim_rect_t){DG_LLBL, 366, 620, 28}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+                prim_draw_text((prim_point_t){DG_LLBL, 388}, "Ukladam do W25Q...",
+                               &ui_font_sans_18, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+                present_now();
+                bool ok = calib_save();
+                prim_fill_rect((prim_rect_t){DG_LLBL, 366, 620, 28}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+                prim_draw_text((prim_point_t){DG_LLBL, 388},
+                               ok ? "Ulozeno do W25Q." : "ULOZENI SELHALO — viz konzole.",
+                               &ui_font_sans_18, ok ? UI_COLOR_OK : UI_COLOR_BAD, PRIM_ALIGN_LEFT);
+                present_now();
+                return true;
+            }
+        }
+        if (s_view == 39) {                                     /* okno PRAHY: ZAP/VYP + -/+ */
+            for (int i = 0; i < THR_ROWS; i++) {
+                if (in_rect(x, y, THR_ROW_EN[i])) {
+                    /* Radky 1+2 (OCXO dolni/horni) sdili jeden prepinac — pasmo
+                     * se nezapina po pulkach. */
+                    if      (i == 0) g_mon_cfg.vbat_en = !g_mon_cfg.vbat_en;
+                    else if (i == 3) g_mon_cfg.adev_en = !g_mon_cfg.adev_en;
+                    else             g_mon_cfg.ocxo_en = !g_mon_cfg.ocxo_en;
+                    app_gpsdo_render_prahy(); return true;
+                }
+                if (in_rect(x, y, THR_ROW_MINUS[i])) { thr_step(i, -1); app_gpsdo_render_prahy(); return true; }
+                if (in_rect(x, y, THR_ROW_PLUS[i]))  { thr_step(i, +1); app_gpsdo_render_prahy(); return true; }
+            }
         }
         if (s_view == 15) {                                /* Kalibrace: -/+ na 4 radcich + ULOZIT */
             for (int i = 0; i < 4; i++) {

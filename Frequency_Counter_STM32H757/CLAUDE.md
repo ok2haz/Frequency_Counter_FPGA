@@ -288,6 +288,9 @@ Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušen
   v kritické sekci), časování pípnutí 100×/s. **Mute** = `g_sound_muted` (okno Nastavení /
   UART `beep off`) umlčí okamžitě i test; prev-stavy se při mute dál aktualizují (po odmutení
   žádné pípnutí na starou hranu). UART: `beep`/`beep test`, `beep on`, `beep off`.
+  **Od 2026-08-17 navíc `mon_eval()` = prahový monitor** (VBAT / OCXO pásmo / σy@1s — viz sekce
+  níže): pattern **3× 200 ms** (pomalejší a delší než FPGA 80 ms a GPS 120 ms — „něco se pomalu
+  kazí", ne „právě se ztratil signál"), počítadla `g_alarm_vbat/ocxo/adev`.
 
 ## Boot POST diagnostika (bootled.c/h) — LED_1 (PG3) + pípání (PH9)
 Každý sledovaný init při startu si zapíše pořadové číslo (`bootled_step`); při zaseknutí
@@ -725,7 +728,53 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
   - **Diagnostika = technický hub.** Footer: **DIAGRAM** (blokové schéma, s_view=21) | **PAMET** (s_view=5) | **SELFTEST** (s_view=20) | ZPĚT. Do Diagnostiky se dá i z **System Health** (tlačítko DIAGNOSTIKA) a z Menu dlaždice.
   - **Tlačítko DIAGRAM** → **Komunikace: blokové schéma** (`app_gpsdo_render_commdiag`, s_view=21). Uzly: GPS NEO-7M, SENZORY, STM32H757, Si5356A, FPGA GW1NR-9. **Grafika (přepracováno 2026-07-18):** uzel = zaoblený rámeček, výplň BG_0, **obrys 2 px v barvě stavu + stavová „LED" tečka** vpravo nahoře (stav čitelný bez čtení popisků); STM32 má akcentní barvu (= „my", ne stavový). **Čárkovaný skupinový rámeček „FPGA deska"** (`cd_group`, fieldset styl — popisek přerušuje rámeček) kolem Si5356+FPGA. Popisky spojů na **„pilulce"** (`cd_label_chip`) — **šířka se přizpůsobí textu** (`prim_text_width`, žádný prázdný blok), výplň BG_0 překryje čáru pod textem → popisek sedí přímo NA spoji a zůstává čitelný. Spoje = pravoúhlé trasy (`cd_path`) barvené stavem: GPS→STM32 (UART/1PPS), SENZORY↔STM32 (I2C1/I2C4, `i2c_health()`), STM32→FPGA (SPI2, `g_spi_ok`), OCXO→Si5356 (CLKIN, `SI5356_LOS_CLKIN`), Si5356→FPGA (4×100 MHz), RF vstup→FPGA (`g_freq_stale`). Celý diagram se překresluje najednou při změně `cd_state_key()`.
     ⚠️ **Šířka uzlů = text (mono_16, 10 px/znak) + ~18 px padding/stranu** (historie: uzly měly 90-130 px prázdné rezervy). **Postranní popisky OCXO/RF** mají šířku ověřenou proti reálné šířce textu — „OCXO 10MHz" @ sans_16 potřebuje ~104 px, dřívější box 90 px ho **ořezával**.
-- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta**).
+- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta, 38=kvalita GPS (historie sats/HDOP z datalogu), 39=prahy (meze monitoru), 40=průvodce kalibrací**).
+
+### Prahový monitor reálných veličin (alarm.c, okno PRAHY s_view=39) — 2026-08-17
+Do 2026-08-17 hlídal `alarm.c` jen **události** (FPGA link, GPS lock, limit pass/fail) — z deseti
+senzorů, které měří 24/7 reálná data, **ani jeden**. Doplněny tři prahové podmínky nad skutečně
+měřenými veličinami: **VBAT pod mezí** (záložní CR2032 pro RTC/BKP — degradace, o které se jinak
+nedozvíš, dokud tiše nepřijdeš o čas a nastavení při odpojení napájení), **OCXO mimo teplotní pásmo**
+(rozladěná pec) a **σy@1s nad prahem**.
+- **Konfigurace `mon_cfg_t`** (`g_mon_cfg` v alarm.h) + persist v syscfg blobu (magic **„SCFA"→„SCFB"**,
+  tedy jeden boot s výchozím nastavením). Výchozí: VBAT 2,60 V ZAP, OCXO 45–55 °C ZAP.
+- ⚠️ **`adev_en` je výchozí VYPNUTÝ** — σy@1s se dnes počítá ze **simulace** headline (~1e-8), takže
+  jakýkoli realistický práh by pípal na šum. Mechanika je hotová a správná; zapnout až po #2.
+- **Hystereze je povinná** (`band_eval`): VBAT ±30 mV, OCXO ±0,5 °C, ADEV ±10 %. Bez ní by veličina
+  sedící přesně na prahu překlápěla stav při každém vyhodnocení (5×/s) a pípala donekonečna.
+- **Start tichý** (`s_*_ever`): alarm se ozve až po jednom dobrém čtení, takže trvale vybitá baterie
+  nepípá při každém bootu — na displeji ji vidíš (SYS pilulka + okno PRAHY) tak jako tak.
+- **Vyhodnocení běží i při mute** (`mon_eval` je před mute větví): `g_mon_*_bad` čte SYS pilulka a okna,
+  takže musí odrážet skutečnost; mute umlčuje **jen pípnutí**.
+- **σy@1s se předává přes globál `g_adev_1s`** (plní `app_gpsdo_tick_stats_sample` ze
+  `screen_main_adev_1s()`) — Core vrstva nesmí sahat do `app/screens/`, stejný most jako `g_meas_verdict`.
+- **SYS pilulka**: všechny tři jsou **AMBER** (degradace). RED zůstává vyhrazená ztrátě reference
+  a selftest FAILu, tedy stavům, kdy přístroj buď neměří, nebo měří špatně a neví o tom.
+
+### Okno KVALITA GPS (s_view=38) — historie příjmu z datalogu
+Vstup tlačítkem **KVALITA** v okně GPS. Odpovídá na otázku, kterou živý pohled na družice nezodpoví:
+*„je moje anténa dobře umístěná?"* — graf **počtu družic** a **HDOP** v čase + souhrn (% času s 3D fixem,
+průměr/min družic, průměr/max HDOP). Zdroj = datalog (`sats`, `hdop10`, `flags`), tedy **reálná data**
+(kmitočet v logu je zatím 0 ⬅ #2, ale GPS pole jsou plná od začátku → okno je užitečné hned).
+Presety 1 h / 6 h / 1 den / 7 dní. ⚠️ **Renderuje se jen při vstupu a při změně presetu** — jeden render
+dělá stovky blokujících `datalog_read_back`; periodické obnovování by v UiTasku porušilo pravidlo
+„žádný spin > 10 ms" (stejný vzor jako okno GRAFY). `hdop10 == 255` je sentinel „neplatné" a nesmí
+se dostat do statistiky jako HDOP 25,5.
+
+### Průvodce kalibrací napětí (s_view=40)
+Vstup tlačítkem **PRŮVODCE** v okně Kalibrace. Řeší to, co ruční krokování gainu neřeší: *„přístroj
+ukazuje 4,827 V — je to skutečné napětí, nebo je vedle dělič?"* Uživatel vybere větev (12V/5V), navolí
+hodnotu změřenou multimetrem a firmware dopočítá gain. **POUŽÍT** ho nastaví živě (řádek „Přístroj
+měření" se hned srovná), **ULOŽIT** persistuje do W25Q CALIB.
+- Matematika: `sensor_update` ukládá už **přenásobenou** hodnotu, takže syrovou hodnotu ADS znát
+  nepotřebujeme: **`nový_gain = starý_gain × (skutečné / zobrazené)`**. Převod je tím nezávislý na
+  aktuálně nastaveném gainu.
+- Guardy: nic se neměří (< 100 mV) → nedělíme; výsledný gain mimo `KALIB_ROWS` rozsah → nenabídne se.
+
+### ⚠️ Oprava navigace (2026-08-17)
+`goto_view` neznal `case 2` / `15` / `18`, přestože `nav_push(2)` se používal už dřív (GPS → SURVEY).
+Spadlo to do `default` → **ZPĚT ze Self-survey vedlo na hlavní obrazovku místo zpátky do GPS okna**.
+Doplněno; nová okna 38/39/40 by tu chybu jinak zdědila.
 - **Okno GRAFY (s_view=29, STATUS.md #31)** — časový průběh teplot + napájení. Vstup: tlačítko **GRAFY** ve **footeru System Health** (footer proto přeskládán na 4 tlačítka: SENZORY/DIAGNOSTIKA/NASTAVENI/GRAFY nestejných šířek + BACK). Layout: vlevo dva grafy (nahoře **Teploty** — 4 série STM/MCU/OCXO/FPGA se *sdílenou* osou + legenda s aktuální hodnotou; dole **OCXO Vc** — jedna série, autoscale + overlay rozsah/okno), vpravo 5 **vertikálních bargrafů** aktuálních napájecích větví (12V/5V/REF/BAT/Vc) s **nominálním markerem** (#32). **Kombinovaný zdroj:** krátká okna (≤1 h) z **RAM decimační pyramidy** (`sensor_hist.c/h` — per-senzor, idiom `trend_feed`, plněná ze SensorsTasku 2Hz plného sweepu přes `sensor_hist_feed`, base 2 s, 4 stage ×4 → ~3,4 h, ~15 kB RAM_D1), dlouhá okna (6 h/1 den/7 dní) z **datalogu** (W25Q — jen veličiny, které datalog ukládá: OCXO+deska teplota, OCXO Vc; ostatní série se u dlouhých oken v grafu vynechají, legenda je ztlumí). Footer presety −/+ (3 min…7 dní). ⚠️ **Datalog okna se renderují JEN při vstupu/změně presetu** (klíč stabilní per preset), ne periodicky — jeden render dělá stovky blokujících `datalog_read_back` a periodické obnovování by v UiTasku porušilo pravidlo „žádný spin >10 ms" (dlouhá historie je stejně minuty/hodiny stará). RAM okna se hýbou 1×/s (`g_uptime_s`). ⚠️ Headline/statistiky jsou pořád simulace, ale tohle okno kreslí **reálné senzory** (teploty/napájení jsou skutečná HW data).
 - **Okno PREHLED KANALU (s_view=30, STATUS.md #47)** — **sesterské** okno ke GRAFY (přepínač ve footeru obou, tlačítka `PREHLED >` / `< GRAFY`, přepíná **bez `nav_push`** → BACK z obou vede tam, odkud byla dvojice otevřena = System Health). Zatímco GRAFY ukazuje **časový průběh**, tohle je **aktuální stav všech kanálů jako horizontální bargrafy** s nominálním markerem + číselnou hodnotou vpravo → odchylka od očekávané hodnoty na první pohled. Dvě karty: **Teploty** (STM/MCU/OCXO/FPGA board, rozsah 0–70/90 °C, bez nominálu) + **Napájení + RF** (12V/5V/REF/VBAT/OCXO Vc s nominálem a ok/warn barvením dle ±15 % pásma, + **RF v dBm** přes `g_calib` AD8307 slope/intercept). Data **reálná** (`g_sensors[]`), refresh z `app_gpsdo_tick` s **per-řádek change-detect** (pct + **min/max** + text; flip jen při změně řádku). Bary kreslí lokální `hbar_row_draw` (ne `ui_bargraph`) — **segmentovaný** track (`HB_SEGS=45` × ~10 px, `hb_seg`/`hb_marker_idx`) s **barevnými markery** (2026-08-06): **AKT** = vyplněný úsek (zelená/amber dle ±15 % pásma) = aktuální hodnota, **REF** = accent segment na nominálu, **MIN** = violet segment na `s->min`, **MAX** = červený segment na `s->max` (peak-hold, z `g_sensors[].min/max`). Markery se kreslí PŘES výplň (viditelné i uvnitř zelené). Legenda barev `hbar_legend()` vpravo od nadpisu (kreslí se jednou). Přepočet syrové hodnoty na jednotku sdílí `hbar_disp`/`hbar_pct_disp` (RF přes `g_calib`). Popis řádků v `HBAR[]`. ⚠️ Jako u GRAFY: senzory jsou skutečná HW data, headline zůstává simulace; geometrie počítaná (tabulky fontů) — vzhled ověřit na displeji.
 - **Okno MATH / LIMITY (s_view=31, STATUS.md #43/#44)** — dlaždice **„Math/Limity"** v Menu (dřív Placeholder 2). **#43 Math Mx+B + NULL/relativní:** transformace `Y = M·X + B`, pak (při NULL) `Y −= null_ref` (relativní režim, „null then measure"). **#44 limit pass/fail:** meze `lo/hi` nad výslednou Y → verdikt PASS / FAIL LO / FAIL HI. Pure-logic jádro `meas_math.c/h` (Core, `g_meas_cfg` + `g_meas_verdict`, selftest 8/8). UI: karta A (X měřeno, Y výsledek, tlačítka MATH/M-cyklus/B±/NULL), karta B (verdikt badge, Lo/Hi, PÁSMO ±, LIMITY/ALARM přepínače). **Limity se nastavují jako pásmo kolem aktuální Y** (`math_recenter_limits`: lo/hi = Y ± preset pásmo; recenter při změně math/null/pásma). **⚠️ Průběžné vyhodnocení běží i mimo okno** (`app_gpsdo_tick_stats_sample` → `g_meas_verdict`), takže **alarm hlídá limity na pozadí**: `alarm.c` beepne na hranu PASS→FAIL (4 pípnutí) / FAIL→PASS (1), armuje se jen skutečným PASS (zapnutí limitu na už špatné hodnotě nepípne), respektuje mute; počítadlo `g_alarm_limit_fail`. ⚠️ **Aplikuje se na `screen_main_freq_hz()` = DNES SIMULACE headline** → plný smysl po reálném SPI linku (#2). **Persist v syscfg flash blobu** (`g_meas_cfg` = math/null/limit/alarm flagy + m/b/null_ref/lo/hi jako doubles; magic `"SCF6"`→`"SCF7"`) — NE v BKP → `syscfg_load` aplikuje vždy (jako fx/anim), UI preset indexy (M, pásmo) se dopočtou z cfg při otevření okna (`math_sync_idx`). Formátování Hz bez `%f` (`fmt_hz`, integer extrakce, nano.specs).

@@ -10,6 +10,7 @@
 #include "datalog.h"
 #include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
+#include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
@@ -24,9 +25,10 @@
  * fx_en -> "SCF4" -> "SCF5". 2026-07-25 ODEBRAN digit_anim_en (zvyrazneni cislic
  * zruseno) -> "SCF5" -> "SCF6". 2026-08-01 pribyla persistence Math/limity
  * (g_meas_cfg, #43/#44) -> "SCF6" -> "SCF7", pak vysledek self-survey (poloha)
- * -> "SCF7" -> "SCF8". Dusledek: prvni boot po teto zmene najde neznamy magic,
+ * -> "SCF7" -> "SCF8". 2026-08-17 pribyl prahovy monitor (mon_cfg: VBAT/OCXO/ADEV)
+ * -> "SCFA" -> "SCFB". Dusledek: prvni boot po teto zmene najde neznamy magic,
  * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434641u   /* "SCFA" (2026-08-13: + sd_det_force) */
+#define SYSCFG_BLOB_MAGIC   0x53434642u   /* "SCFB" (2026-08-17: + prahovy monitor mon_cfg) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -74,6 +76,12 @@ typedef struct {
      * Persist proto, ze jinak by se `sd force on` muselo psat po kazdem bootu
      * a auto-mount i tlacitko EXPORT by byly k nicemu. */
     uint8_t  sd_det_force;
+    /* Prahovy monitor realnych velicin (okno PRAHY, s_view=39). NENI v BKP ->
+     * flash je jediny zdroj, takze se aplikuje VZDY (jako fx/meas/survey). */
+    uint8_t  mon_vbat_en, mon_ocxo_en, mon_adev_en;
+    float    mon_vbat_lo_mv;
+    float    mon_ocxo_lo_c, mon_ocxo_hi_c;
+    float    mon_adev_max;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -119,10 +127,23 @@ static void pack(syscfg_blob_t *b)
     b->net_mask      = g_net_mask;
     b->net_gw        = g_net_gw;
     b->sd_det_force  = datalog_sd_det_forced() ? 1u : 0u;
+    b->mon_vbat_en    = g_mon_cfg.vbat_en ? 1u : 0u;
+    b->mon_ocxo_en    = g_mon_cfg.ocxo_en ? 1u : 0u;
+    b->mon_adev_en    = g_mon_cfg.adev_en ? 1u : 0u;
+    b->mon_vbat_lo_mv = g_mon_cfg.vbat_lo_mv;
+    b->mon_ocxo_lo_c  = g_mon_cfg.ocxo_lo_c;
+    b->mon_ocxo_hi_c  = g_mon_cfg.ocxo_hi_c;
+    b->mon_adev_max   = g_mon_cfg.adev_max;
 }
 
 void syscfg_load(void)
 {
+    /* Vychozi prahy JAKO PRVNI — `g_mon_cfg` je prosty globál (vynulovany), takze
+     * bez tohohle by pri prazdne flash / starem magicu / neuspesnem zamku platily
+     * nuly: `vbat_lo_mv = 0` = nikdy nealarmuje, `ocxo_hi_c = 0` = alarmuje vzdy.
+     * Nastavit je MUSIME i na chybovych cestach, proto pred zamkem. */
+    mon_cfg_defaults(&g_mon_cfg);
+
     /* Cely init+cteni pod jednim zamkem — mezi w25q_init (SW reset cipu) a ctenim
      * nesmi vlezt jiny kontext, jinak by cetl z prave resetovaneho cipu. */
     if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_LOAD_MS) != osOK) return;
@@ -160,6 +181,21 @@ void syscfg_load(void)
     g_survey_lon    = b.survey_lon;
     g_survey_alt    = b.survey_alt;
     g_survey_spread = b.survey_spread;
+    /* Prahovy monitor: NENI v BKP -> aplikuj VZDY (jako fx/meas/survey).
+     * Sanitizace: nesmyslny rozsah by monitor zablokoval (nikdy nealarmuje) nebo
+     * naopak rozdrncal (alarmuje porad) — pri nesmyslu zustavaji defaulty. */
+    g_mon_cfg.vbat_en = b.mon_vbat_en ? 1 : 0;
+    g_mon_cfg.ocxo_en = b.mon_ocxo_en ? 1 : 0;
+    g_mon_cfg.adev_en = b.mon_adev_en ? 1 : 0;
+    if (b.mon_vbat_lo_mv > 1000.0f && b.mon_vbat_lo_mv < 3600.0f)
+        g_mon_cfg.vbat_lo_mv = b.mon_vbat_lo_mv;
+    if (b.mon_ocxo_lo_c < b.mon_ocxo_hi_c &&
+        b.mon_ocxo_lo_c > -40.0f && b.mon_ocxo_hi_c < 125.0f) {
+        g_mon_cfg.ocxo_lo_c = b.mon_ocxo_lo_c;
+        g_mon_cfg.ocxo_hi_c = b.mon_ocxo_hi_c;
+    }
+    if (b.mon_adev_max > 0.0f) g_mon_cfg.adev_max = b.mon_adev_max;
+
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;
     g_net_mask      = b.net_mask;

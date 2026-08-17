@@ -14,6 +14,7 @@
 #include "../anim.h"  /* anim_t/anim_reset/anim_set/anim_step — sdileno s app_gpsdo.c */
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
+#include "alarm.h"         /* g_mon_*_bad — prahovy monitor v SYS pilulce */
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include <prim/prim.h>
 #include "gps.h"     /* gps_get() — zive GNSS lock / pocet druzic / cas+datum v headeru */
@@ -183,6 +184,11 @@ static int compute_sys_level(void)
     if (g_cm4_absent) lvl = 1;                            /* CM4 (D2) nenabehl -> degradovane */
     for (int i = 0; i < SENS_COUNT; i++)
         if (i != (int)SENS_T4A && g_sensors[i].err_streak > 0) { lvl = 1; break; }  /* 0x4A neosazen */
+    /* Prahovy monitor (2026-08-17): VBAT na konci zivota, OCXO mimo teplotni
+     * pasmo, σy@1s nad prahem. Vse AMBER = "neco se kazi, ale pristroj funguje" —
+     * RED zustava vyhrazena ztrate reference a selftest FAILu, tedy stavum, kdy
+     * pristroj bud nemeri, nebo mere spatne a nevi o tom. */
+    if (g_mon_vbat_bad || g_mon_ocxo_bad || g_mon_adev_bad) lvl = 1;
     /* RED: kriticke (prebiji). LOS_CLKIN (bit3) = ztrata 10 MHz reference — LOL se
      * pri fyzicke ztrate vstupu NEasertuje (viz komentar u SI_* vyse), takze LOS je
      * tady nutny. SI_LOS_XTAL (bit2) se zamerne NEhodnoti (bez krystalu trvale 1). */
@@ -644,6 +650,12 @@ static void stats_sample(void)
 /* Verze statistickych dat — histogram okno se prekresli jen kdyz se zmeni
  * (v okne se nevzorkuje -> obsah je konstantni, zadne 2x/s prazdne redraws). */
 uint32_t screen_main_stats_version(void) { return s_stats_ver; }
+
+/* σy@τ=1s pro prahovy monitor (alarm.c). Vraci 0, dokud neni aspon 2 bloky
+ * vzorku — volajici to MUSI odlisit od "vynikajici stability", jinak by prazdna
+ * statistika vypadala jako nula. `stats_adev` je definovana az nize, proto fwd. */
+static float stats_adev(int m);
+float screen_main_adev_1s(void) { return stats_adev(1); }
 
 static float stat_at(int age)   /* age 0 = nejnovejsi */
 {

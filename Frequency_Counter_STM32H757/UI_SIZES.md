@@ -43,6 +43,19 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | **SENZORY** — RESET MIN/MAX (footer) | 300×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
 | **DATALOG** — SMAZAT LOG (footer, dvojí potvrzení) | 220×61 | 7,1 | 7 mm | ✓ (2026-08-17; vedle ZAPNOUT/VYPNOUT 220×61. Nahradilo mrtvé „EXPORT NA SD", které sedělo na **identickém rectu** jako ZAPNOUT/VYPNOUT a nemělo touch handler) |
 | **ALARMY** — RESET STATISTIK (footer) | **200**×61 | 7,1 | 7 mm | ✓ (2026-08-17; šířka 200, ne 300 jako u Senzorů — `MUTE_RECT` {230,354,148,64} sahá spodní hranou na y=418, tedy 1 px do řádku footeru) |
+| **ALARMY** — PRAHY > (footer) | 180×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **GPS** — KVALITA > (footer) | 190×61 | 7,1 | 7 mm | ✓ (2026-08-17; mezi levým okrajem a SURVEY na x=532) |
+| **KALIBRACE** — PRŮVODCE > (footer) | 158×61 | 7,1 | 7 mm | ✓ (2026-08-17; volné místo mezi AUTO-CAL a ZPĚT) |
+| **KVALITA GPS** — preset −/+ | 90×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **PRAHY** — ZAP/VYP řádku | 120×**64** | 7,5 | 7 mm | ✓ (2026-08-17; rozteč řádků 66 = stejná jako Kalibrace) |
+| **PRAHY** — hodnota −/+ | 84×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — výběr větve | 200×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — hodnota −/+ | 96×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — POUŽÍT / ULOŽIT (footer) | 200×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+
+> ⚠️ Nové ovladače v oknech PRAHY a PRŮVODCE byly původně navrženy **56 px (6,6 mm)**
+> a při kontrole proti tomuto souboru zvětšeny na 64. Je to přesně ten případ, který
+> už řešil auto-dim 2026-08-15 — 56 px je pod projektovým minimem.
 
 ## Typografie (kde se co používá)
 
