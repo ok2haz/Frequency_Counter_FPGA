@@ -71,8 +71,26 @@ static uint32_t get_u32(const uint8_t *p)
 static uint64_t get_u64(const uint8_t *p) { return (uint64_t)get_u32(p) | ((uint64_t)get_u32(p + 4) << 32); }
 
 /* Rozvrzeni 32B zaznamu: 0 seq, 4 t_unix, 8 freq, 16 t_ocxo, 18 t_board,
- * 20 vc_mv, 22 rf_dbm10, 24 flags, 25 sats, 26 hdop10, 27 spare,
- * 28 CRC16 (bajty 0..27), 30 rezerva. */
+ * 20 vc_mv, 22 rf_dbm10, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
+ * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 rezerva.
+ * ⚠️ Bajt 27 byl do 2026-08-17 `spare` (vzdy 0) a je UVNITR CRC. Diky tomu, ze
+ * je 0 vyhrazena jako "nezaznamenano", se stare zaznamy ctou dal spravne a
+ * format zustava 32 B — zadna migrace ani verze zaznamu netreba. */
+static uint8_t vbat_encode(int16_t mv)
+{
+    if (mv == DATALOG_INVALID16) return DATALOG_VBAT_NONE;
+    int32_t code = ((int32_t)mv - DATALOG_VBAT_BASE_MV) / DATALOG_VBAT_STEP_MV;
+    if (code < 1)   code = 1;     /* pod 2008 mV je CR2032 stejne mrtva; 0 = sentinel */
+    if (code > 255) code = 255;
+    return (uint8_t)code;
+}
+
+static int16_t vbat_decode(uint8_t code)
+{
+    if (code == DATALOG_VBAT_NONE) return DATALOG_INVALID16;
+    return (int16_t)(DATALOG_VBAT_BASE_MV + (int32_t)code * DATALOG_VBAT_STEP_MV);
+}
+
 static void pack_rec(uint8_t *b, const datalog_rec_t *r)
 {
     memset(b, 0, DATALOG_REC_SIZE);
@@ -86,6 +104,7 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     b[24] = r->flags;
     b[25] = r->sats;
     b[26] = r->hdop10;
+    b[27] = vbat_encode(r->vbat_mv);
     put_u16(b + 28, crc16(b, 28));
 }
 
@@ -104,6 +123,7 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->flags         = b[24];
     r->sats          = b[25];
     r->hdop10        = b[26];
+    r->vbat_mv       = vbat_decode(b[27]);   /* stare zaznamy: 0 -> DATALOG_INVALID16 */
     return true;
 }
 
@@ -324,6 +344,7 @@ static void sample(datalog_rec_t *r)
     /* RF: ADS AIN1 je mV z AD8307; prevod na dBm dela UI (kalibrace g_calib).
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
     r->rf_dbm10     = sens_mv(SENS_ADS1);
+    r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
 
     gps_data_t g;
     gps_get(&g);
@@ -459,6 +480,7 @@ bool datalog_selftest(void)
         .t_ocxo_c100 = -1234, .t_board_c100 = 4567,
         .ocxo_vc_mv = 2500, .rf_dbm10 = -455,
         .flags = DATALOG_F_GPS_VALID | DATALOG_F_DIV16, .sats = 9, .hdop10 = 12,
+        .vbat_mv = 2920,
     };
     uint8_t b[DATALOG_REC_SIZE];
     datalog_rec_t r;
@@ -468,6 +490,29 @@ bool datalog_selftest(void)
     if (r.t_ocxo_c100 != a.t_ocxo_c100 || r.t_board_c100 != a.t_board_c100) return false;
     if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_dbm10 != a.rf_dbm10) return false;
     if (r.flags != a.flags || r.sats != a.sats || r.hdop10 != a.hdop10) return false;
+    /* VBAT je kvantovany na 8 mV, takze round-trip NENI presny — 2920 sedne
+     * na 2920 (2920-2000=920, 920/8=115 -> 2000+115*8), ale obecne se testuje
+     * jen to, ze se hodnota vejde do kroku. */
+    if (r.vbat_mv < a.vbat_mv - DATALOG_VBAT_STEP_MV ||
+        r.vbat_mv > a.vbat_mv + DATALOG_VBAT_STEP_MV) return false;
+    /* ⚠️ Zpetna kompatibilita: STARY zaznam ma bajt 27 = 0 a MUSI se precist jako
+     * "nezaznamenano", ne jako mrtva baterie 2,00 V. Sestavime takovy zaznam
+     * rucne (vcetne prepocteneho CRC) a overime. */
+    {   uint8_t old[DATALOG_REC_SIZE];
+        datalog_rec_t o;
+        pack_rec(old, &a);
+        old[27] = 0u;                       /* jako by ho zapsal firmware pred 2026-08-17 */
+        put_u16(old + 28, crc16(old, 28));  /* CRC bajt 27 pokryva -> prepocitat */
+        if (!unpack_rec(old, &o)) return false;
+        if (o.vbat_mv != DATALOG_INVALID16) return false;
+    }
+    /* Neplatne cteni senzoru se ulozi jako "nezaznamenano". */
+    {   datalog_rec_t n = a; n.vbat_mv = DATALOG_INVALID16;
+        uint8_t nb[DATALOG_REC_SIZE]; datalog_rec_t nr;
+        pack_rec(nb, &n);
+        if (nb[27] != DATALOG_VBAT_NONE) return false;
+        if (!unpack_rec(nb, &nr) || nr.vbat_mv != DATALOG_INVALID16) return false;
+    }
 
     /* 2) poskozeny bajt musi CRC odhalit */
     b[10] ^= 0xFFu;

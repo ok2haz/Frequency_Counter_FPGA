@@ -47,9 +47,25 @@ typedef struct {
     uint8_t  flags;            /* viz DATALOG_F_* */
     uint8_t  sats;             /* pocet pouzitych druzic (GGA) */
     uint8_t  hdop10;           /* HDOP x10; 255 = n/a */
+    /* Zalozni baterie (CR2032, ADC3 VBAT) [mV]; DATALOG_INVALID16 = nezaznamenano.
+     * ⚠️ Na flash se veze v JEDINEM volnem bajtu 27 (`spare`) — kroku 8 mV, viz
+     * DATALOG_VBAT_* nize. Duvod: prahovy monitor VBAT (alarm.c) umi krinout, az
+     * je baterie vybita, ale degradace CR2032 trva mesice a bez zaznamu nejde
+     * odhadnout, KDY ji vymenit. */
+    int16_t  vbat_mv;
 } datalog_rec_t;
 
 #define DATALOG_INVALID16   ((int16_t)0x8000)   /* sentinel neplatne hodnoty */
+
+/* ── Kodovani VBAT do 1 bajtu (offset 27) ────────────────────────────────────
+ * kod = (mV - 2000) / 8, tedy 1..255 -> 2008..4040 mV pri rozliseni 8 mV.
+ * Pro baterii je to bohate: sleduje se trend pres mesice, ne mV.
+ * ⚠️ kod 0 je vyhrazen jako "nezaznamenano" — diky tomu se STARE zaznamy (kde
+ * byl bajt 27 vzdy 0) neprectou jako mrtva baterie 2,00 V. Proto taky zadny
+ * magic/verze zaznamu: format zustava 32 B a zpetne se cte spravne. */
+#define DATALOG_VBAT_BASE_MV  2000
+#define DATALOG_VBAT_STEP_MV  8
+#define DATALOG_VBAT_NONE     0u
 
 #define DATALOG_F_GPS_VALID   (1u << 0)   /* RMC status 'A' */
 #define DATALOG_F_FIX_3D      (1u << 1)   /* GSA fix_mode >= 3 */

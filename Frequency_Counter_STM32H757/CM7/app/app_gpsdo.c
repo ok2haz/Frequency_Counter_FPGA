@@ -1366,11 +1366,15 @@ static const struct { uint8_t id; const char *lab; float lo, hi, nom; } GRAPH_BA
     { SENS_ADS0, "Vc",      0.f,  3300.f,  1650.f },
 };
 
-/* Datalog nabizi jen 3 veliciny -> mapovani senzor->pole (jinak -1 = neni). */
+/* Datalog nese jen 4 z merenych velicin -> mapovani senzor->pole (-1 = neni).
+ * VBAT pribyl 2026-08-17 (bajt 27 zaznamu) — u dlouhych oken tedy nove jde
+ * videt i stárnutí zalozni CR2032. Zaznamy porizene driv ho nemaji a
+ * `graph_series_dlog` je preskoci (drzi posledni platnou hodnotu). */
 static int graph_dlog_field(uint8_t sens)
-{ return sens == SENS_T49 ? 0 : sens == SENS_T48 ? 1 : sens == SENS_ADS0 ? 2 : -1; }
+{ return sens == SENS_T49 ? 0 : sens == SENS_T48 ? 1 : sens == SENS_ADS0 ? 2
+       : sens == SENS_VBAT ? 3 : -1; }
 
-/* Nacte serii z DATALOGU (field 0=OCXO t, 1=deska t, 2=OCXO Vc) do out (oldest→new). */
+/* Nacte serii z DATALOGU (field 0=OCXO t, 1=deska t, 2=OCXO Vc, 3=VBAT) do out (oldest→new). */
 static int graph_series_dlog(int field, int32_t win_s, float *out, int max_out,
                              float *mn, float *mx, int32_t *span_s)
 {
@@ -1386,9 +1390,11 @@ static int graph_series_dlog(int field, int32_t win_s, float *out, int max_out,
         datalog_rec_t r; float v = 0; int ok = 0;
         if (datalog_read_back(fn, &r)) {
             int16_t raw = (field == 0) ? r.t_ocxo_c100
-                        : (field == 1) ? r.t_board_c100 : r.ocxo_vc_mv;
+                        : (field == 1) ? r.t_board_c100
+                        : (field == 2) ? r.ocxo_vc_mv : r.vbat_mv;
             ok = (raw != DATALOG_INVALID16);
-            v  = (field == 2) ? (float)raw : (float)raw * 0.01f;
+            /* Teploty jsou v setinach °C, napeti (Vc i VBAT) uz v mV. */
+            v  = (field >= 2) ? (float)raw : (float)raw * 0.01f;
         }
         if (!ok) v = havelast ? last : 0;
         else     { last = v; havelast = 1; }
@@ -1490,11 +1496,19 @@ static void graph_render_temps(int32_t win_s, int use_dlog)
     }
 }
 
-/* Graf OCXO ladiciho napeti (jedna serie, autoscale) + overlay min/max/okno. */
+/* ── Dolni graf: OCXO Vc ↔ VBAT, prepinatelne TAPEM ─────────────────────────
+ * VBAT (zalozni CR2032) se od 2026-08-17 loguje do datalogu, takze u dlouhych
+ * oken jde videt jeji stárnutí — a to je jediny zpusob, jak odhadnout, KDY ji
+ * vymenit (prahovy alarm krikne az kdyz je pozde).
+ * ⚠️ Zamerne PREPINAC, ne dve serie v jednom grafu: Vc se pohybuje kolem 1,9 V
+ * a VBAT kolem 2,9 V, takze spolecny autoscale by obe kresliky zmackl do ~30 %
+ * vysky. Tap na kartu je navic zavedeny idiom (karta Druzice bar↔sky). */
+static bool s_graph_vbat = false;   /* false = OCXO Vc (vychozi), true = VBAT */
+
 static void graph_render_vc(int32_t win_s, int use_dlog)
 {
     float mn, mx; int32_t span = 0;
-    int n = graph_fetch(SENS_ADS0, win_s, use_dlog, &mn, &mx, &span);
+    int n = graph_fetch(s_graph_vbat ? SENS_VBAT : SENS_ADS0, win_s, use_dlog, &mn, &mx, &span);
     graph_grid(GRAPH_PLOT_V);
     if (n < 2) {
         prim_draw_text((prim_point_t){(int16_t)(GRAPH_PLOT_V.x + GRAPH_PLOT_V.w / 2),
@@ -1503,7 +1517,8 @@ static void graph_render_vc(int32_t win_s, int use_dlog)
         return;
     }
     float pad = (mx - mn) * 0.08f; if (pad < 1.0f) pad = 1.0f;
-    graph_plot(GRAPH_PLOT_V, n, mn - pad, mx + pad, UI_COLOR_ACC);
+    graph_plot(GRAPH_PLOT_V, n, mn - pad, mx + pad,
+               s_graph_vbat ? UI_COLOR_WARN : UI_COLOR_ACC);
     char b[16], o[40], sp[16];
     fmt_fixed(b, sizeof b, mx, 0);
     dtext(GRAPH_PLOT_V.x + 2, (int16_t)(GRAPH_PLOT_V.y + 14), 80, b, UI_COLOR_INK_3, &ui_font_mono_14);
@@ -1584,8 +1599,14 @@ static void app_gpsdo_render_graphs(void)
         window_chrome("GRAFY", WIN_TITLE_Y);
         ui_card_t ct = {.rect = GRAPH_CARD_T, .header_label = "Teploty [C] v case"};
         ui_card_render_chrome(&ct);
-        ui_card_t cv = {.rect = GRAPH_CARD_V, .header_label = "OCXO ladici napeti [mV]"};
+        ui_card_t cv = {.rect = GRAPH_CARD_V,
+                        .header_label = s_graph_vbat ? "VBAT — zalozni baterie [mV]"
+                                                     : "OCXO ladici napeti [mV]"};
         ui_card_render_chrome(&cv);
+        /* Naznak prepinatelnosti — stejny vzor jako "TAP: bar/sky" u karty Druzice. */
+        prim_draw_text((prim_point_t){(int16_t)(GRAPH_CARD_V.x + GRAPH_CARD_V.w - 12),
+                                      (int16_t)(GRAPH_CARD_V.y + 25)},
+                       "TAP: Vc/VBAT", &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
         ui_card_t cb = {.rect = GRAPH_CARD_B, .header_label = "Napajeci vetve [V]"};
         ui_card_render_chrome(&cb);
         graph_render_footer();
@@ -5610,6 +5631,13 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             if (in_rect(x, y, GRAPH_BARS_BTN)) {   /* -> sesterske PREHLED KANALU (bez nav_push) */
                 app_gpsdo_render_hbars();
+                return true;
+            }
+            /* Tap na dolni kartu prepne serii OCXO Vc <-> VBAT. Meni se i titulek
+             * karty -> vynut PLNY render (stejny vzor jako preset -/+ vyse). */
+            if (in_rect(x, y, GRAPH_CARD_V)) {
+                s_graph_vbat = !s_graph_vbat; s_view = 0xFF;
+                app_gpsdo_render_graphs();
                 return true;
             }
         }

@@ -518,7 +518,19 @@ DATA regionu zůstávají volné pro další bulk použití (fonty XIP, rekonstr
 region = ~242 dní; dřív tu chybně stálo „~600".)
 - **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
   `seq(0)`, `t_unix(4)`, `freq_x100000(8)`, `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
-  `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
+  `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
+  - **`vbat(27)` — záložní CR2032, přidáno 2026-08-17.** Prahový monitor (alarm.c) umí křiknout,
+    až je baterie vybitá, ale degradace CR2032 trvá měsíce a bez záznamu nejde odhadnout, **kdy**
+    ji vyměnit. Vešlo se do **jediného volného bajtu 27** (dřív `spare`, uvnitř CRC), takže formát
+    zůstal 32 B a **žádná migrace nebyla potřeba**: kód `(mV−2000)/8` → 1..255 = 2008..4040 mV
+    s krokem 8 mV (na baterii bohatě — sleduje se trend přes měsíce, ne mV; chyba ≤4 mV).
+    ⚠️ **Kód 0 je vyhrazen jako „nezaznamenáno"** — díky tomu se starší záznamy (kde byl bajt 27
+    vždy 0) nepřečtou jako mrtvá baterie 2,00 V, ale jako `DATALOG_INVALID16`. Kryje to selftest
+    (round-trip vč. kvantizace, starý záznam s přepočteným CRC, neplatné čtení senzoru).
+    Konzumenti: CSV export (sloupec `vbat_mV`, prázdná buňka u starých záznamů), `MMEM:DATA?`
+    (SCPI NaN `9.91E37`), UART `datalog dump` (`Vbat=`) a **okno GRAFY** — dolní graf se **tapem
+    přepíná OCXO Vc ↔ VBAT** (`TAP: Vc/VBAT`). Záměrně přepínač, ne dvě série v jedné ose: Vc je
+    kolem 1,9 V a VBAT kolem 2,9 V, takže společný autoscale by obě křivky zmáčkl do ~30 % výšky.
   `DATALOG_F_*` = GPS_VALID/FIX_3D/FPGA_LINK/SIGNAL_LOST/DIV16/HOLDOVER.
   ⚠️ **RF se ukládá SYROVĚ v mV**, ne v dBm — kalibrace (`g_calib`) se může změnit, syrová hodnota ne.
 - **Pozice zápisu se po bootu ODVODÍ ze `seq`** (`find_head`: blok s nejvyšším seq v 1. záznamu → v něm

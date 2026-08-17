@@ -200,13 +200,18 @@ static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
     if (r->rf_dbm10     != DATALOG_INVALID16)
         snprintf(rf,  sizeof rf,  "%d.%01u", r->rf_dbm10 / 10, (unsigned)(abs(r->rf_dbm10) % 10));
 
+    /* VBAT: prazdna bunka pro zaznamy porizene pred 2026-08-17 (nezaznamenano). */
+    char vb[12] = "";
+    if (r->vbat_mv != DATALOG_INVALID16) snprintf(vb, sizeof vb, "%d", (int)r->vbat_mv);
+
     return snprintf(b, n,
         "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%lu.%05lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
-        SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u\r\n",
+        SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u"
+        SD_CSV_SEP "%s\r\n",
         (unsigned long)r->seq, (unsigned long)r->t_unix,
         (unsigned long)hz, (unsigned long)frc,
         toc, tbo, (int)r->ocxo_vc_mv, rf,
-        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10);
+        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
 }
 #endif
 
@@ -1188,7 +1193,7 @@ static int32_t export_body(uint32_t max_rec)
     int n = snprintf(line, sizeof line,
         "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
         "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_dBm" SD_CSV_SEP
-        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10\r\n");
+        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
     f_write(&f, line, (UINT)n, &bw);
 
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,

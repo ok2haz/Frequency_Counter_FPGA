@@ -749,9 +749,12 @@ void UartTask_run(void *argument)
 						   * jinde v projektu: zadny float/64b format v konzoli). */
 						  char fb[32];
 						  fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
-						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d fl=0x%02X sat=%u\n",
+						  char vb[12];
+						  if (r.vbat_mv == DATALOG_INVALID16) snprintf(vb, sizeof vb, "--");
+						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s fl=0x%02X sat=%u\n",
 							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
-							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb,
 							     (unsigned)r.flags, (unsigned)r.sats);
 					  }
 				  } else {

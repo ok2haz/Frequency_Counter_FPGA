@@ -638,15 +638,17 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (!src->read_log || !src->read_log(src, (uint32_t)nn, &r)) {
             scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
         }
-        char fq[24], to[12], tb[12], rf[12], hd[12];
+        char fq[24], to[12], tb[12], rf[12], hd[12], vb[12];
         fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
         if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
         if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
         if (r.rf_dbm10 == DATALOG_INVALID16)     snprintf(rf, sizeof rf, "9.91E37"); else fmt_scpi_f2(r.rf_dbm10 / 10.0f, rf, sizeof rf);
         if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
-        snprintf(out, out_sz, "%lu,%lu,%s,%s,%s,%d,%s,%u,%u,%s",
+        /* VBAT [V]; zaznamy z doby pred 2026-08-17 ho nemaji -> SCPI NaN. */
+        if (r.vbat_mv == DATALOG_INVALID16)      snprintf(vb, sizeof vb, "9.91E37"); else fmt_scpi_f2(r.vbat_mv / 1000.0f, vb, sizeof vb);
+        snprintf(out, out_sz, "%lu,%lu,%s,%s,%s,%d,%s,%u,%u,%s,%s",
                  (unsigned long)r.seq, (unsigned long)r.t_unix, fq, to, tb,
-                 (int)r.ocxo_vc_mv, rf, (unsigned)r.flags, (unsigned)r.sats, hd);
+                 (int)r.ocxo_vc_mv, rf, (unsigned)r.flags, (unsigned)r.sats, hd, vb);
         return strlen(out);
     }
 
