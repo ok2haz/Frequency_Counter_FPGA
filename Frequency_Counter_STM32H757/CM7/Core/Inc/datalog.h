@@ -43,7 +43,13 @@ typedef struct {
     int16_t  t_ocxo_c100;      /* teplota OCXO [0,01 C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;     /* teplota STM desky [0,01 C] */
     int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0) */
-    int16_t  rf_dbm10;         /* uroven RF [0,1 dBm] (AD8307 pres ADS AIN1) */
+    /* ⚠️ Uroven RF v SYROVYCH mV z AD8307 (ADS AIN1), NE v dBm. Je to zamer:
+     * kalibrace (g_calib.ad8307_*) se muze zmenit, syrova hodnota ne — dBm se
+     * dopocita az pri zobrazeni. Pole se do 2026-08-18 jmenovalo `rf_dbm10` a
+     * PRESNE TA ZAMENA jmena za obsah zpusobila, ze CSV export i SCPI
+     * `MMEM:DATA?` delily hodnotu deseti a servirovaly ji jako dBm: 571 mV
+     * vyslo jako "57,1 dBm" (spravne je -61,2 dBm). Odhaleno testem pres UART. */
+    int16_t  rf_mv;
     uint8_t  flags;            /* viz DATALOG_F_* */
     uint8_t  sats;             /* pocet pouzitych druzic (GGA) */
     uint8_t  hdop10;           /* HDOP x10; 255 = n/a */

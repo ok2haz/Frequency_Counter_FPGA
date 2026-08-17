@@ -197,8 +197,13 @@ static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
         snprintf(toc, sizeof toc, "%d.%02u", r->t_ocxo_c100 / 100, (unsigned)(abs(r->t_ocxo_c100) % 100));
     if (r->t_board_c100 != DATALOG_INVALID16)
         snprintf(tbo, sizeof tbo, "%d.%02u", r->t_board_c100 / 100, (unsigned)(abs(r->t_board_c100) % 100));
-    if (r->rf_dbm10     != DATALOG_INVALID16)
-        snprintf(rf,  sizeof rf,  "%d.%01u", r->rf_dbm10 / 10, (unsigned)(abs(r->rf_dbm10) % 10));
+    /* ⚠️ `rf_mv` jsou SYROVE mV z AD8307, ne dBm x10. Do 2026-08-18 se tu delilo
+     * deseti a do sloupce nazvaneho `rf_dBm` slo "57.1" misto -61,2 dBm.
+     * Do CSV jde ted SYROVA hodnota pod spravnym nazvem (`rf_mV`) — je to
+     * bezztratove a odpovida to filozofii datalogu (kalibrace se muze zmenit,
+     * syrova hodnota ne); dBm si uzivatel dopocita konstantami z okna Kalibrace. */
+    if (r->rf_mv     != DATALOG_INVALID16)
+        snprintf(rf,  sizeof rf,  "%d", (int)r->rf_mv);
 
     /* VBAT: prazdna bunka pro zaznamy porizene pred 2026-08-17 (nezaznamenano). */
     char vb[12] = "";
@@ -1192,7 +1197,7 @@ static int32_t export_body(uint32_t max_rec)
     UINT bw;
     int n = snprintf(line, sizeof line,
         "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
-        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_dBm" SD_CSV_SEP
+        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_mV" SD_CSV_SEP
         "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
     f_write(&f, line, (UINT)n, &bw);
 

@@ -642,7 +642,16 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
         if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
         if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
-        if (r.rf_dbm10 == DATALOG_INVALID16)     snprintf(rf, sizeof rf, "9.91E37"); else fmt_scpi_f2(r.rf_dbm10 / 10.0f, rf, sizeof rf);
+        /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10 — prevod stejnym vzorcem jako
+         * `MEAS:POW?` (AD8307 slope/intercept z kalibrace). Do 2026-08-18 se tu
+         * delilo deseti a 571 mV vyslo jako "57,1" v poli, ktere se tvari jako
+         * dBm (spravne -61,2). Guard na slope: 0 by delilo nulou. */
+        if (r.rf_mv == DATALOG_INVALID16) {
+            snprintf(rf, sizeof rf, "9.91E37");
+        } else {
+            float slope = src->ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.0f;
+            fmt_scpi_f2((float)r.rf_mv / slope + src->ad8307_intercept_dbm, rf, sizeof rf);
+        }
         if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
         /* VBAT [V]; zaznamy z doby pred 2026-08-17 ho nemaji -> SCPI NaN. */
         if (r.vbat_mv == DATALOG_INVALID16)      snprintf(vb, sizeof vb, "9.91E37"); else fmt_scpi_f2(r.vbat_mv / 1000.0f, vb, sizeof vb);

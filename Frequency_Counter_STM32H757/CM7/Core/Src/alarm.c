@@ -143,7 +143,13 @@ static void mon_edge(uint8_t bad, volatile uint8_t *state, uint8_t *ever,
                      volatile unsigned int *cnt)
 {
     if (!bad) {
-        if (*state) {                                  /* navrat do mezi */
+        /* ⚠️ Navratove pipnuti JEN kdyz uz drive byl dobry stav (`*ever`) — jinak
+         * by kazdy boot pipl. Zmereno na HW 2026-08-18: VBAT ma pri startu
+         * transient (min 2516 mV proti ustalenym 2932), tedy POD vychozim prahem
+         * 2600 mV. Prvni vyhodnoceni by dalo bad=1, druhe bad=0 -> "navrat do
+         * mezi" a pipnuti pri KAZDEM zapnuti pristroje. Stejny guard uz maji
+         * FPGA i GPS vetve nize. */
+        if (*state && *ever) {                         /* navrat do mezi */
             if (!g_sound_muted) pattern_start(1, 150, 0);
         }
         *ever = 1;

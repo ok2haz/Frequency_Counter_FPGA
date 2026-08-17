@@ -71,7 +71,7 @@ static uint32_t get_u32(const uint8_t *p)
 static uint64_t get_u64(const uint8_t *p) { return (uint64_t)get_u32(p) | ((uint64_t)get_u32(p + 4) << 32); }
 
 /* Rozvrzeni 32B zaznamu: 0 seq, 4 t_unix, 8 freq, 16 t_ocxo, 18 t_board,
- * 20 vc_mv, 22 rf_dbm10, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
+ * 20 vc_mv, 22 rf_mv, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
  * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 rezerva.
  * ⚠️ Bajt 27 byl do 2026-08-17 `spare` (vzdy 0) a je UVNITR CRC. Diky tomu, ze
  * je 0 vyhrazena jako "nezaznamenano", se stare zaznamy ctou dal spravne a
@@ -100,7 +100,7 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     put_u16(b + 16, (uint16_t)r->t_ocxo_c100);
     put_u16(b + 18, (uint16_t)r->t_board_c100);
     put_u16(b + 20, (uint16_t)r->ocxo_vc_mv);
-    put_u16(b + 22, (uint16_t)r->rf_dbm10);
+    put_u16(b + 22, (uint16_t)r->rf_mv);
     b[24] = r->flags;
     b[25] = r->sats;
     b[26] = r->hdop10;
@@ -119,7 +119,7 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->t_ocxo_c100   = (int16_t)get_u16(b + 16);
     r->t_board_c100  = (int16_t)get_u16(b + 18);
     r->ocxo_vc_mv    = (int16_t)get_u16(b + 20);
-    r->rf_dbm10      = (int16_t)get_u16(b + 22);
+    r->rf_mv      = (int16_t)get_u16(b + 22);
     r->flags         = b[24];
     r->sats          = b[25];
     r->hdop10        = b[26];
@@ -343,7 +343,7 @@ static void sample(datalog_rec_t *r)
     r->ocxo_vc_mv   = sens_mv(SENS_ADS0);     /* ladici napeti */
     /* RF: ADS AIN1 je mV z AD8307; prevod na dBm dela UI (kalibrace g_calib).
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
-    r->rf_dbm10     = sens_mv(SENS_ADS1);
+    r->rf_mv     = sens_mv(SENS_ADS1);
     r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
 
     gps_data_t g;
@@ -478,7 +478,7 @@ bool datalog_selftest(void)
         .seq = 0x01020304u, .t_unix = 1782000000u,
         .freq_x100000 = 1000000012345ull,
         .t_ocxo_c100 = -1234, .t_board_c100 = 4567,
-        .ocxo_vc_mv = 2500, .rf_dbm10 = -455,
+        .ocxo_vc_mv = 2500, .rf_mv = -455,
         .flags = DATALOG_F_GPS_VALID | DATALOG_F_DIV16, .sats = 9, .hdop10 = 12,
         .vbat_mv = 2920,
     };
@@ -488,7 +488,7 @@ bool datalog_selftest(void)
     if (!unpack_rec(b, &r)) return false;
     if (r.seq != a.seq || r.t_unix != a.t_unix || r.freq_x100000 != a.freq_x100000) return false;
     if (r.t_ocxo_c100 != a.t_ocxo_c100 || r.t_board_c100 != a.t_board_c100) return false;
-    if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_dbm10 != a.rf_dbm10) return false;
+    if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_mv != a.rf_mv) return false;
     if (r.flags != a.flags || r.sats != a.sats || r.hdop10 != a.hdop10) return false;
     /* VBAT je kvantovany na 8 mV, takze round-trip NENI presny — 2920 sedne
      * na 2920 (2920-2000=920, 920/8=115 -> 2000+115*8), ale obecne se testuje

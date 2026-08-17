@@ -291,7 +291,14 @@ void UartTask_run(void *argument)
 			  RxBuffer[RxIndex] = '\0';							// na konec zpravy da 0, aby fungovalo porovnavani funkci strcmp
 			  RxIndex = 0;
 
-			  if (strcmp(RxBuffer, "led on") == 0) {
+			  /* ⚠️ PRAZDNY radek se IGNORUJE (2026-08-18). Terminaly bezne posilaji
+			   * Enter jako CRLF; tahle vetev bere '\r' i '\n' jako konec radku, takze
+			   * po kazdem prikazu prisel jeste jeden PRAZDNY -> "ERR unknown command".
+			   * Navenek to vypadalo, ze deska kazdy prikaz odmitne (overeno na HW
+			   * pres COM8: s CRLF chyba po kazdem prikazu, s holym CR ne). Prazdny
+			   * vstup neni chyba — uzivatel jen zmackl Enter. */
+			  if (RxBuffer[0] == '\0') { /* nic */ }
+			  else if (strcmp(RxBuffer, "led on") == 0) {
 				  HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_RESET);
 				  printf("LED ON - OK \n");
 			  }

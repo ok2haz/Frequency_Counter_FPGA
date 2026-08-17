@@ -519,6 +519,13 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
 - **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
   `seq(0)`, `t_unix(4)`, `freq_x100000(8)`, `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
   `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
+  - ⚠️ **`rf_mv(22)` jsou SYROVÉ mV, ne dBm** (přejmenováno z `rf_dbm10` 2026-08-18). Uložení
+    v mV je záměr — kalibrace `g_calib.ad8307_*` se může změnit, syrová hodnota ne. Jenže staré
+    jméno pole neodpovídalo obsahu a **oba konzumenti to vzali doslova**: CSV export i SCPI
+    `MMEM:DATA?` dělily deseti a servírovaly výsledek jako dBm → 571 mV vyšlo jako **„57,1 dBm"**
+    místo −61,2 dBm (nesmysl: 57 dBm = 500 W na vstupu čítače). Odhaleno testem přes UART
+    2026-08-18. Opraveno: SCPI převádí přes kalibraci stejným vzorcem jako `MEAS:POW?`,
+    CSV sloupec se jmenuje `rf_mV` a nese syrovou hodnotu.
   - **`vbat(27)` — záložní CR2032, přidáno 2026-08-17.** Prahový monitor (alarm.c) umí křiknout,
     až je baterie vybitá, ale degradace CR2032 trvá měsíce a bez záznamu nejde odhadnout, **kdy**
     ji vyměnit. Vešlo se do **jediného volného bajtu 27** (dřív `spare`, uvnitř CRC), takže formát
