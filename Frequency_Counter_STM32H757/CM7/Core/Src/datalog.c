@@ -218,16 +218,25 @@ static void find_head(void)
         return;
     }
 
-    /* Prvni volny slot v nejnovejsim bloku. */
+    /* Prvni volny slot v nejnovejsim bloku.
+     * ⚠️ Stejna CRC kontrola jako vyse (unpack_rec), NE jen syrovy `seq` — bez ni
+     * tenhle vnitrni scan verí garbage stejne, jako to do 2026-08-16 delal vnejsi
+     * (viz komentar u nej). Overeno na HW pres sondu 2026-08-17 PO fixu vnejsiho
+     * scanu: `s_count` uz vyslo spravne (47043), ale `s_seq` byl 3823345955 —
+     * temer identicka hodnota jako historicka garbage 3823341906 zminovana vyse
+     * (stary obsah flash zpred zmenseni regionu 2026-08-15, ktery neni cisty 0xFF,
+     * ale ani platny zaznam). Poskozeny/neplatny slot se ted bere jako HRANICE
+     * hlavy stejne jako prazdny — dalsi realny zapis ho proste prepise spravnymi
+     * daty (samo-opravne), takze zadne zvlastni osetreni netreba. */
     uint32_t base = best_blk * s_be->erase_size;
     uint32_t used = rpb;                /* default: blok je plny */
     uint32_t last = best_seq;
     for (uint32_t k = 0; k < rpb; k++) {
         uint8_t b[DATALOG_REC_SIZE];
+        datalog_rec_t probe;
         if (!s_be->read(base + k * DATALOG_REC_SIZE, b, DATALOG_REC_SIZE)) { used = k; break; }
-        uint32_t seq = get_u32(b);
-        if (seq == DATALOG_SEQ_EMPTY) { used = k; break; }
-        last = seq;
+        if (!unpack_rec(b, &probe)) { used = k; break; }   /* prazdny NEBO poskozeny -> hranice */
+        last = probe.seq;
     }
     s_seq  = last;
     s_head = base + used * DATALOG_REC_SIZE;

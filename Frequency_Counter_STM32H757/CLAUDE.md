@@ -94,13 +94,18 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 ### FreeRTOS tasky (freertos.c)
 | Task | Priorita | Stack |
 |---|---|---|
-| defaultTask | Normal | 1536 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + **ipc_publish/ipc_service + CM4 stall detekce** + USB pump) |
-| UartTask | Normal | 2048 B |
+| defaultTask | Normal | 2560 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + **ipc_publish/ipc_service + CM4 stall detekce** + USB pump) |
+| UartTask | Normal | 4096 B |
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
 | FpgaTask | Normal | 2048 B |
 | UartRxQueue | — | 64 × 1 B |
 | GpsRxQueue | — | 256 × 1 B |
+
+⚠️ **Tabulka drž synchronní se skutečnými `.stack_size` v `freertos.c`** (audit 2026-08-17
+odhalil rozjetí: dřív tu bylo 1536/2048 B, realita 2560/4096 B — defaultTask rostl kvůli
+`rtc_app_tick` snprintf, UartTask kvůli TODO #9 bumpu 512→1024 words). Součet stacků
+18 432 B ze 32 768 B heapu = 14 336 B rezerva na malloc/haldu.
 
 PRIO_BITS=4, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5.
 **Heap `configTOTAL_HEAP_SIZE` = 32768 B** (drženo i v .ioc klíčem
