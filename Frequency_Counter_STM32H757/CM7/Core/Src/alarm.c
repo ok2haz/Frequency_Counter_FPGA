@@ -26,6 +26,13 @@ volatile unsigned int g_alarm_fpga_lost  = 0;  /* pocet ztrat FPGA signalu */
 volatile unsigned int g_alarm_gps_lost   = 0;  /* pocet ztrat GPS locku */
 volatile unsigned int g_alarm_limit_fail = 0;  /* pocet prechodu PASS->FAIL limitu (#44) */
 
+void alarm_reset_counters(void)
+{
+    g_alarm_fpga_lost = 0;
+    g_alarm_gps_lost = 0;
+    g_alarm_limit_fail = 0;
+}
+
 /* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ── */
 static unsigned char  s_pulses_left;   /* zbyva ON pulzu */
 static unsigned short s_on_ms, s_off_ms;

@@ -97,6 +97,7 @@ void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka
 bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */
 void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
+void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
 
 /* ── DOCASNA A/B srovnavaci vetev hlavni mrizky (2026-07-19, k odstraneni

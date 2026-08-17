@@ -331,6 +331,10 @@ void UartTask_run(void *argument)
 				  fmt_f2(v, sizeof(v), s->last);
 				  printf("TEPLOTA: %s C%s\n", v, s->valid ? "" : " (STALE - chyba cteni)");
 			  }
+			  else if (strcmp(RxBuffer, "sensors reset") == 0) {
+				  sensor_stat_reset_all();
+				  printf("SENZORY: min/max/mean vynulovany (last/valid/chyby zustavaji)\n");
+			  }
 			  else if (strcmp(RxBuffer, "sensors") == 0) {
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
 				  for (int i = 0; i < SENS_COUNT; i++) {
@@ -605,7 +609,7 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1012,6 +1016,13 @@ void UartTask_run(void *argument)
 					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
+			  else if (strcmp(RxBuffer, "meas reset") == 0) {
+				  /* Allan/Histogram/Trend akumulace zmeni jen UiTask (kresli je,
+				   * neni thread-safe) -> pozadavek, ne primy zapis (viz g_screen_req). */
+				  g_stats_reset_req = 1;
+				  alarm_reset_counters();   /* g_alarm_* jsou proste volatile globaly, bezzamkove */
+				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
+			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
 				  static TaskStatus_t ta[12], tb[12];
 				  uint32_t t0 = 0, t1 = 0;
@@ -1107,6 +1118,9 @@ void UartTask_run(void *argument)
     /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
      * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
     sd_export_service();
+    /* Stejny duvod: smazani celeho datalogu (~5,4k sektoru) muze trvat minuty,
+     * o UI tlacitko jen pozada (viz datalog.h). */
+    datalog_erase_service();
     osDelay(1);
   }
 }

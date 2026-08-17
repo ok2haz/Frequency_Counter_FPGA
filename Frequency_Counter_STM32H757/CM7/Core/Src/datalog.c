@@ -431,6 +431,16 @@ bool datalog_erase_all(void)
     return ok;
 }
 
+volatile uint8_t g_datalog_erase_req = 0;
+
+void datalog_erase_service(void)
+{
+    if (!g_datalog_erase_req) return;
+    g_datalog_erase_req = 0;
+    printf("DATALOG: mazu cely log (z UI), cekej...\n");
+    printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+}
+
 /* ── Selftest (pure logic, bez HW — soucast UART "selftest") ───────────────── */
 bool datalog_selftest(void)
 {

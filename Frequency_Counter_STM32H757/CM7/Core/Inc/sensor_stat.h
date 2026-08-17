@@ -9,7 +9,8 @@
  * jak firmware (Core/Src), tak decoupled app/ vrstva (UI).
  *
  * Zápis: VÝHRADNĚ SensorsTask (freertos_task_sensors.c) přes sensor_update()
- * (platný vzorek) / sensor_fail() (chyba čtení). Čtení: kdokoli.
+ * (platný vzorek) / sensor_fail() (chyba čtení). Čtení: kdokoli. ⚠️ Výjimka:
+ * sensor_stat_reset_all() smí volat i jiný task (UART/UI) — viz komentář u ní.
  *
  * ⚠️ Sdílení bez zámku (jako ostatní g_* stavy). Hodnoty se mění ~1×/s; případné
  * roztržené čtení vícebajtové položky je pro monitor/diagnostiku akceptovatelné.
@@ -69,5 +70,14 @@ void sensor_update(sensor_id_t id, float value);
 /* Zaznamená CHYBU čtení: valid=0, err_total++, err_streak++. 'last' zůstává
  * (poslední dobrá hodnota) → matematika/log mají ignorovat podle valid. */
 void sensor_fail(sensor_id_t id);
+
+/* Vynuluje min/max/mean/samples VŠECH senzorů (start nové akumulace) — `last`,
+ * `valid` a `err_*` zůstávají (aktuální hodnota a chybová historie nejsou totéž
+ * co měřená statistika). Smí volat i UartTask/UiTask (UART `sensors reset` /
+ * tlačítko v okně Senzory), ne jen SensorsTask — `sensor_stat_t` už dnes
+ * toleruje netrhané čtení bez zámku (viz výše), takže benigní rasa s právě
+ * probíhajícím `sensor_update()` je přijatelná stejně jako jinde v téhle
+ * struktuře (nejhůř jeden vzorek spustí "lazy init" znovu). */
+void sensor_stat_reset_all(void);
 
 #endif /* INC_SENSOR_STAT_H_ */

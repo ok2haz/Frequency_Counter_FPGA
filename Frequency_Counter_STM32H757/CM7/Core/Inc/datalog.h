@@ -145,6 +145,14 @@ void datalog_format_status(char *buf, int buflen);
  *  Blokujici (radove sekundy pro velky region) -> volat jen z UART/UI akce. */
 bool datalog_erase_all(void);
 
+/** Pozadavek na smazani logu z UI (okno Datalog, tlacitko "SMAZAT LOG"). Erase
+ *  celeho DATA regionu (~5,4k sektoru) muze trvat AZ MINUTY -> nesmi bezet
+ *  primo v UiTasku (zamrzly dotyk + IWDG). Tlacitko jen nastavi tenhle priznak,
+ *  datalog_erase_service() (VOLAT VYHRADNE z UartTasku, ten neni hlidany
+ *  watchdogem) ho vykona. Stejny vzor jako `g_sd_req`/`sd_export_service`. */
+extern volatile uint8_t g_datalog_erase_req;
+void datalog_erase_service(void);
+
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).
  *  Bez HW a bez sdileneho stavu -> soucast UART "selftest". */
 bool datalog_selftest(void);

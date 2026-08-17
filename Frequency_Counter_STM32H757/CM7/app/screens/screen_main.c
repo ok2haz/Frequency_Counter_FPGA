@@ -776,6 +776,23 @@ static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
     return sg->ring[idx];
 }
 
+/* Vynuluje veskerou akumulovanou statistiku "namerenych hodnot citacem":
+ * plochy ring (trend 60s/offset/sigma@1s/drift), ADEV pyramidu (dlouhodoby
+ * Allan) i trend pyramidu (dlouhodoby trend az ~60 dni). Nezasahuje `s_meas_stats`
+ * (okno MERENI ma vlastni RESET tlacitko/mp_stats_reset — jina akumulace).
+ * `s_stats_ver++` je NUTNE (ne jen memset) — histogram/Allan okna prekreslujou
+ * jen pri zmene verze, bez inkrementu by po resetu zustal na displeji stary obsah
+ * az do dalsiho realneho vzorku. Volitelne z UART "meas reset" (UartTask) i
+ * tlacitka v okne Alarmy (UiTask) — cisty RAM zapis, zadny mutex netreba. */
+void screen_main_stats_reset(void)
+{
+    memset(s_y, 0, sizeof s_y);
+    s_y_head = 0; s_y_count = 0;
+    memset(s_adev, 0, sizeof s_adev);
+    memset(s_tr, 0, sizeof s_tr);
+    s_stats_ver++;
+}
+
 /* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). */
 static void fmt_dur(char *b, int n, int32_t s)
 {

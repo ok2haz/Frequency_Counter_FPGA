@@ -16,6 +16,7 @@
 #include "ft5x06.h"
 #include "ws_panel.h"     /* ws_panel_set_backlight — jas displeje */
 #include "app_gpsdo.h"
+#include "screens/screen_main.h"   /* screen_main_stats_reset — g_stats_reset_req */
 #include "freertos_shared.h"
 #include "watchdog.h"     /* watchdog_kick_ui — heartbeat */
 #include "alarm.h"        /* alarm_click — zvukova odezva doteku */
@@ -98,6 +99,14 @@ void StartUiTask(void *argument)
       /* LTDC scan-out adresu ridi prim_stm32_present() (page-flip pri vblanku). */
       if (req == 4) app_gpsdo_clear();
       else          app_gpsdo_render_main();
+    }
+    /* UART "meas reset" nastavi g_stats_reset_req; screen_main.c stav smi menit
+     * jen UiTask (viz g_screen_req vyse). Alarm citace resetuje primo volajici
+     * task — g_alarm_* jsou proste volatile globaly, stejne bezzamkove jako
+     * jinde v projektu. */
+    if (g_stats_reset_req) {
+      g_stats_reset_req = 0;
+      screen_main_stats_reset();
     }
 
     /* Dotek pro tlacitka (FT5x06 @ I2C4). Panel zrcadleny X i Y -> (799-x,479-y).

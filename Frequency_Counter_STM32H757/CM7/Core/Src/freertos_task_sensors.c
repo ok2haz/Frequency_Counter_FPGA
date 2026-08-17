@@ -121,6 +121,15 @@ void sensor_fail(sensor_id_t id)
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
 }
 
+void sensor_stat_reset_all(void)
+{
+    for (int i = 0; i < SENS_COUNT; i++) {
+        sensor_stat_t *s = &g_sensors[i];
+        s->min = s->max = s->mean = 0.0f;
+        s->samples = 0;      /* dalsi vzorek udela lazy-init min=max=mean=value, jako po bootu */
+    }
+}
+
 /* ── I2C1 recovery (robustnost: vypadek 1 senzoru nesmi shodit zbytek sbernice) ──
  * Pokud nejaky cip drzi SDA / bus se zasekne, dalsi cteni na I2C1 timeoutuji a
  * kaskadou padaji vsechny (vc. ADS). Recovery: 9 SCL pulzu uvolni slave drzici

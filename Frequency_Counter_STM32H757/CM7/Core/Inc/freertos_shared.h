@@ -33,6 +33,11 @@ extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NM
 /* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
 extern volatile uint8_t g_screen_req;
 
+/* ── Požadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
+ * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
+ * jen UiTask (kreslí ho, není thread-safe). Servisuje `StartUiTask`. ─────── */
+extern volatile uint8_t g_stats_reset_req;
+
 /* ── Kmitočet z FPGA (FpgaTask -> UiTask) ──────────────────────────────── */
 extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];

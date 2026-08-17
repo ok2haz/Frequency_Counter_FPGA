@@ -109,6 +109,10 @@ osMutexId_t qspiMutexHandle;
  * thread-safe -> kresli VYHRADNE UiTask). 3 = "screen main", 4 = "clear". */
 volatile uint8_t g_screen_req  = 0;
 
+/* Pozadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
+ * UiTask, viz screen_main_stats_reset). Stejny duvod jako g_screen_req. */
+volatile uint8_t g_stats_reset_req = 0;
+
 /* Naformatovany kmitocet z FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_freq_text[48] = "----------,-----Hz";
 volatile char    g_freq_info[64] = "";                 /* vedlejsi udaje (gate/edges/ch) */

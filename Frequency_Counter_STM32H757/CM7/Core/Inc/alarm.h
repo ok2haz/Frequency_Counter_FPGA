@@ -29,4 +29,10 @@ extern volatile unsigned int g_alarm_fpga_lost;   /* pocet ztrat FPGA signalu */
 extern volatile unsigned int g_alarm_gps_lost;    /* pocet ztrat GPS locku */
 extern volatile unsigned int g_alarm_limit_fail;  /* pocet prechodu PASS->FAIL limitu (#44) */
 
+/** Vynuluje vsechna tri pocitadla (UART "meas reset" + tlacitko v okne Alarmy).
+ *  Nesaha na hranove guardy uvnitr alarm_tick (s_*_ever) — ty rizeni, jestli se
+ *  ma pripistnout dalsi udalost, ne kolik jich uz bylo; reset citace na tom nic
+ *  nemeni. */
+void alarm_reset_counters(void);
+
 #endif /* ALARM_H */

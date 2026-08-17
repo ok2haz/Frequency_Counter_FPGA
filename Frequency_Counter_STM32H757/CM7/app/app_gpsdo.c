@@ -265,10 +265,6 @@ static const prim_rect_t SDNAV_RECT  = {SETNAV_XC, 326, SETNAV_W, SETNAV_H};  /*
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
-/* Okno Datalog (s_view=17): EXPORT na SD. ⚠️ Tlacitko jen POZADA — samotny
- * export blokuje sekundy a UiTask je hlidany watchdogem, takze praci udela
- * UartTask (`sd_export_service`). Drive tu tlacitko chybelo prave proto. */
-static const prim_rect_t DLOG_EXPORT_RECT = {18, 417, 220, 61};
 static const prim_rect_t SETUP_SAVE_RECT  = {18,  417, 150, 61};
 static const prim_rect_t SETUP_LOAD_RECT  = {176, 417, 150, 61};
 static const prim_rect_t SETUP_ERASE_RECT = {334, 417, 150, 61};
@@ -1242,6 +1238,10 @@ static int draw_sensors_values(int force)
     return drew;
 }
 
+/* Footer: vynuluje min/max/mean vsech senzoru (RAM, okamzite — na rozdil od
+ * datalogu tu neni co blokujiciho, staci normalni tlacitko bez potvrzeni). */
+static const prim_rect_t SENS_RESET_RECT = {18, 417, 300, 61};
+
 void app_gpsdo_render_sensors(void)
 {
     int first = window_first(4);
@@ -1251,6 +1251,9 @@ void app_gpsdo_render_sensors(void)
         ui_card_t c = {.rect = DG_CARD_FULL_A,
                        .header_label = "Aktualni hodnoty senzoru"};
         ui_card_render_chrome(&c);
+        ui_button_t rb = {.rect = SENS_RESET_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "RESET MIN/MAX"};
+        ui_button_render(&rb);
 
         /* podnadpisy sloupcu */
         prim_draw_text((prim_point_t){DG_LLBL, 104}, "TEPLOTY  [C]", &ui_font_mono_18,
@@ -3285,29 +3288,44 @@ static void app_gpsdo_render_setups(void)
 
 /* ── Datalog (s_view=17): stav logovani do W25Q DATA regionu. Zatim neaktivni
  * (roadmap [[w25q-flash]]) — okno je vstupni bod, ukazuje kapacitu + JEDEC. ── */
-/* Footer okna Datalog: ZAPNOUT/VYPNOUT logovani (vlevo, vedle ZPET vpravo). */
+/* Footer okna Datalog: ZAPNOUT/VYPNOUT logovani (vlevo), SMAZAT LOG (vedle),
+ * ZPET vpravo (window_chrome). ⚠️ Puvodni "EXPORT NA SD" tlacitko na tomhle
+ * miste (`DLOG_EXPORT_RECT`, stejny rect jako DL_TOGGLE_RECT) bylo mrtve —
+ * nemelo touch handler A navic ho ZAPNOUT/VYPNOUT prekreslovalo pres sebe
+ * (identicky rect), takze nebylo ani videt. Nalezeno 2026-08-17, odstraneno;
+ * misto se vyuzilo pro skutecne funkcni SMAZAT LOG. Export na SD uz existuje
+ * plnohodnotne v oknu SD KARTA (`SD_EXPORT_RECT`, s_view=37). */
 static const prim_rect_t DL_TOGGLE_RECT = {18, 417, 220, 61};
+static const prim_rect_t DL_ERASE_RECT  = {250, 417, 220, 61};
+/* Dvoji potvrzeni SMAZANI (destruktivni, az minuty erase) — stejny vzor jako
+ * SD FORMAT (SD_FORMAT_RECT/s_sd_fmt_stage). 0=idle,1=1.potvrzeni,2=2.potvrzeni
+ * -> dalsi stisk posle pozadavek. Auto-zrus po timeoutu nebo jinym tapem. */
+#define DL_ERASE_TIMEOUT_S 6u
+static uint8_t  s_dl_erase_stage = 0;
+static uint32_t s_dl_erase_arm_s = 0;
 
 static void app_gpsdo_render_datalog(void)
 {
     int first = window_first(17);
     static char c_stav[24], c_rec[40], c_seq[16], c_err[16];
+    static uint8_t c_erase = 0xFF;
     if (first) {
         s_view = 17;
         window_chrome("DATALOG", WIN_TITLE_Y);
         ui_card_t c = {.rect = DG_CARD_FULL_B,
                        .header_label = "Zaznam stability (32 B / 10 s, kruhovy log)"};
         ui_card_render_chrome(&c);
-        /* EXPORT na SD — jen pozadavek, praci udela UartTask (viz sd_export.h). */
-        ui_button_t eb = {.rect = DLOG_EXPORT_RECT, .variant = UI_BUTTON_NORMAL,
-                          .label = "EXPORT NA SD"};
-        ui_button_render(&eb);
         c_stav[0] = c_rec[0] = c_seq[0] = c_err[0] = '\0';
+        c_erase = 0xFF;
+        s_dl_erase_stage = 0;             /* pri vstupu do okna vzdy neaktivni */
     }
 
     datalog_status_t st;
     datalog_get_status(&st);
     char b[40];
+
+    /* Auto-zrus armovani smazani po timeoutu (stejna bezpecnost jako SD FORMAT). */
+    if (s_dl_erase_stage && (g_uptime_s - s_dl_erase_arm_s) >= DL_ERASE_TIMEOUT_S) s_dl_erase_stage = 0;
 
     /* Tlacitko nabizi AKCI (stejny princip jako footer RUN/STOP na hlavni
      * obrazovce): kdyz log bezi, nabizi VYPNOUT (cervene). */
@@ -3315,6 +3333,27 @@ static void app_gpsdo_render_datalog(void)
                       .variant = st.enabled ? UI_BUTTON_STOP : UI_BUTTON_RUN,
                       .label = st.enabled ? "VYPNOUT" : "ZAPNOUT"};
     if (first) ui_button_render(&tg);
+
+    /* SMAZAT LOG + dvoji potvrzeni. Prekresli se pri zmene stupne (i timeout). */
+    if (first || s_dl_erase_stage != c_erase) {
+        c_erase = s_dl_erase_stage;
+        ui_button_t eb = {.rect = DL_ERASE_RECT,
+                          .variant = s_dl_erase_stage ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                          .label = (s_dl_erase_stage == 2) ? "SMAZAT! 2/2"
+                                 : (s_dl_erase_stage == 1) ? "POTVRDIT 1/2" : "SMAZAT LOG"};
+        prim_fill_rect(DL_ERASE_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        ui_button_render(&eb);
+        /* Varovny radek nad tlacitky, jen kdyz je armovano (stejny vzor jako
+         * SD FORMAT — clear box NAD baseline, jinak zustanou duchy pri zmene
+         * stupne, viz komentar tam). */
+        prim_fill_rect((prim_rect_t){DG_LLBL, 366, 620, 28}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        if (s_dl_erase_stage)
+            prim_draw_text((prim_point_t){DG_LLBL, 386},
+                           (s_dl_erase_stage == 2)
+                               ? "!!! DALSI STISK SMAZE CELY LOG (nevratne) !!!"
+                               : "Smaze VSECHNY zaznamy. Potvrd 2x (jinak se po 6 s zrusi).",
+                           &ui_font_sans_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
+    }
 
     snprintf(b, sizeof b, "%s (%s)", st.ready ? (st.enabled ? "BEZI" : "ZASTAVEN") : "NEDOSTUPNE",
              st.backend);
@@ -3349,6 +3388,15 @@ static void app_gpsdo_render_datalog(void)
 
 /* ── Alarmy (s_view=18): monitor alarmovych udalosti (co je hlidano + pocitadla).
  * Doplnuje Nastaveni (jen globalni mute) o PREHLED co spousti alarm + historii. ── */
+/* Footer: vynuluje Allan/Histogram/Trend akumulaci (screen_main.c) + pocitadla
+ * alarmu (g_alarm_*). Volano primo z UiTasku (touch handler bezi tady), takze
+ * `screen_main_stats_reset()` jde volat naprimo — request-flag (`g_stats_reset_req`)
+ * je jen pro UART cestu (jina task, viz komentar u definice).
+ * ⚠️ Sirka 200 (ne 300 jako u SENS_RESET_RECT): `MUTE_RECT` (Zvuk zap/vyp,
+ * v teto obrazovce) je {230,354,148,64} a jeho spodni hrana (354+64=418) sahá
+ * o 1 px do radku footeru (y=417) — sirsi tlacitko by se s nim vodorovne prekrylo. */
+static const prim_rect_t ALARM_RESET_RECT = {18, 417, 200, 61};
+
 static void app_gpsdo_render_alarms(void)
 {
     int first = window_first(18);
@@ -3358,6 +3406,9 @@ static void app_gpsdo_render_alarms(void)
         window_chrome("ALARMY", WIN_TITLE_Y);
         ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Zvukove alarmy (beeper) — co je hlidano"};
         ui_card_render_chrome(&c);
+        ui_button_t rb = {.rect = ALARM_RESET_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "RESET STATISTIK"};
+        ui_button_render(&rb);
         kv_row(116, "FPGA SIGNAL_LOST:", "hlidano (3x pip)", UI_COLOR_INK_2);
         kv_row(152, "Ztrata GPS locku:", "hlidano (2x pip)", UI_COLOR_INK_2);
         kv_row(188, "Frekv. limit:",     "hlidano (4x pip)", UI_COLOR_INK_2);   /* #44 hotovo: PASS->FAIL = 4x pip */
@@ -5073,6 +5124,11 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             app_gpsdo_render_meas();
             return true;
         }
+        if (s_view == 4 && in_rect(x, y, SENS_RESET_RECT)) {   /* Senzory: RESET MIN/MAX */
+            sensor_stat_reset_all();
+            app_gpsdo_render_sensors();
+            return true;
+        }
         if (s_view == 34) {                                    /* okno MERENI: ovladace */
             if (in_rect(x, y, MEAS_MODE_BTN)) {                /* FREKV <-> PERIODA (meni label -> full render) */
                 s_meas_mode ^= 1; s_view = 0xFF; app_gpsdo_render_meas(); return true;
@@ -5402,6 +5458,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             #undef CAS_UPD
         }
         if (s_view == 17 && in_rect(x, y, DL_TOGGLE_RECT)) {   /* Datalog: ZAPNOUT/VYPNOUT */
+            if (s_dl_erase_stage) s_dl_erase_stage = 0;   /* jiny tap zrusi armovani smazani */
             datalog_set_enabled(!datalog_enabled());
             /* Persist resi syscfg_flash_tick sam: jeho shadow-diff porovnava CELY
              * blob (vcetne datalog_en), takze zmenu zachyti bez explicitniho
@@ -5410,6 +5467,24 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
              * pozna "prvni vstup" podle zmeny s_view, takze ho docasne zneplatnime. */
             s_view = -1;
             app_gpsdo_render_datalog();
+            return true;
+        }
+        if (s_view == 17 && in_rect(x, y, DL_ERASE_RECT)) {    /* Datalog: SMAZAT LOG, dvoji potvrzeni */
+            if      (s_dl_erase_stage == 0) { s_dl_erase_stage = 1; s_dl_erase_arm_s = g_uptime_s; }
+            else if (s_dl_erase_stage == 1) { s_dl_erase_stage = 2; s_dl_erase_arm_s = g_uptime_s; }
+            else {
+                /* Jen pozadavek — blokujici erase (az minuty) dela UartTask,
+                 * viz datalog_erase_service(). Nepretez uz cekajici pozadavek. */
+                if (!g_datalog_erase_req) g_datalog_erase_req = 1;
+                s_dl_erase_stage = 0;
+            }
+            app_gpsdo_render_datalog();                        /* okamzita zmena labelu + varovani */
+            return true;
+        }
+        if (s_view == 18 && in_rect(x, y, ALARM_RESET_RECT)) {  /* Alarmy: RESET STATISTIK */
+            screen_main_stats_reset();   /* Allan/Histogram/Trend — bezi primo, jsme v UiTasku */
+            alarm_reset_counters();
+            app_gpsdo_render_alarms();
             return true;
         }
         if (s_view == 15) {                                /* Kalibrace: -/+ na 4 radcich + ULOZIT */
