@@ -4139,6 +4139,48 @@ static const prim_rect_t MEAS_UNIT_BTN = {166, 417, 140, 61};
 static const prim_rect_t MEAS_RST_BTN  = {314, 417, 130, 61};
 static const prim_rect_t MEAS_CNT_BTN  = {452, 417, 190, 61};   /* MERENI -> Citac */
 
+/* ── Rucni nominal (#67) ─────────────────────────────────────────────────────
+ * Footer okna je plny (MODE/JEDNOTKA/RESET/CITAC/ZPET) a karta nema volny radek,
+ * takze se nominal prepina TAPEM NA JEHO RADEK — zavedeny idiom teto codebase
+ * (karta Druzice bar/sky, Allan, trend). Index 0 = AUTO (nejblizsi kulata
+ * reference), dal pevne hodnoty, ktere realne pouzijes jako etalon. */
+static const struct { const char *lab; double hz; } MEAS_NOM[] = {
+    { "auto",     0.0        },
+    { "1 MHz",    1000000.0  },
+    { "5 MHz",    5000000.0  },
+    { "10 MHz",   10000000.0 },
+    { "100 MHz",  100000000.0},
+};
+#define MEAS_NOM_N ((int)(sizeof(MEAS_NOM)/sizeof(MEAS_NOM[0])))
+static uint8_t s_meas_nom_idx = 0;
+/* Radek "Nominal:" (y=138) a "Peak-peak:" (y=384) jsou tapovaci — rect kryje
+ * label i hodnotu, vyska = rozteci radku. */
+static const prim_rect_t MEAS_NOM_RECT = {DG_LLBL, 118, 620, 34};
+static const prim_rect_t MEAS_PP_RECT  = {DG_LLBL, 364, 620, 34};
+/* Peak-peak radek prepina p2p <-> min/max s casem (kdy nastaly). */
+static uint8_t  s_meas_pp_minmax = 0;
+static uint32_t s_meas_min_t = 0, s_meas_max_t = 0;   /* uptime [s] pri poslednim min/max */
+
+/* Persist nastaveni okna MERENI — viz app_gpsdo.h. `s_meas_pp_minmax` se
+ * ZAMERNE nepersistuje: je to okamzity pohled na tentyz udaj, ne nastaveni. */
+uint8_t app_gpsdo_meas_ui_get(void)
+{
+    return (uint8_t)((s_meas_mode & 1u)
+                     | (((uint8_t)s_meas_unit & 7u) << 1)
+                     | ((s_meas_nom_idx & 7u) << 4));
+}
+
+void app_gpsdo_meas_ui_set(uint8_t p)
+{
+    s_meas_mode = (uint8_t)(p & 1u);
+    uint8_t u = (uint8_t)((p >> 1) & 7u);
+    /* Sanitizace: cyklus tlacitka jde jen po MP_UNIT_REL, vetsi hodnota by
+     * `mp_unit_label` poslala mimo tabulku. */
+    s_meas_unit = (mp_unit_t)((u < (uint8_t)MP_UNIT_REL) ? u : (uint8_t)MP_UNIT_PPB);
+    uint8_t n = (uint8_t)((p >> 4) & 7u);
+    s_meas_nom_idx = (uint8_t)((n < MEAS_NOM_N) ? n : 0u);
+}
+
 static void app_gpsdo_render_meas(void)
 {
     int first = window_first(34);
@@ -4162,7 +4204,8 @@ static void app_gpsdo_render_meas(void)
         c_pri[0]=c_nom[0]=c_dev[0]=c_off[0]=c_tf[0]=c_n[0]=c_mean[0]=c_sd[0]=c_pp[0]='\0';
     }
     double hz  = screen_main_freq_hz();
-    double nom = mp_nominal_auto(hz);
+    /* Index 0 = AUTO (dopocitat z mereni), jinak pevne zvolena reference. */
+    double nom = (s_meas_nom_idx == 0) ? mp_nominal_auto(hz) : MEAS_NOM[s_meas_nom_idx].hz;
     int drew = first;
     char b[48], db[32];
 
@@ -4172,8 +4215,10 @@ static void app_gpsdo_render_meas(void)
     else             fmt_hz(hz, b, sizeof b);
     if (first || dchg(c_pri, sizeof c_pri, b)) { kv_row_live(104, "Primarni:", b, UI_COLOR_INK, first); drew = 1; }
 
-    /* Auto-nominal (nejblizsi kulata reference). */
-    fmt_hz(nom, b, sizeof b);
+    /* Nominal — AUTO (nejblizsi kulata reference) nebo rucne zvoleny. Zdroj je
+     * v zavorce, aby bylo poznat, jestli se cislo dopocitava z mereni. */
+    { char nb[32]; fmt_hz(nom, nb, sizeof nb);
+      snprintf(b, sizeof b, "%s  (%s)", nb, MEAS_NOM[s_meas_nom_idx].lab); }
     if (first || dchg(c_nom, sizeof c_nom, b)) { kv_row_live(138, "Nominal:", b, UI_COLOR_INK_2, first); drew = 1; }
 
     /* Odchylka ve zvolene jednotce. */
@@ -4208,9 +4253,22 @@ static void app_gpsdo_render_meas(void)
     snprintf(b, sizeof b, "%s Hz", db);
     if (first || dchg(c_sd, sizeof c_sd, b)) { kv_row_live(342, "σ (n-1):", b, UI_COLOR_VIOLET, first); drew = 1; }
 
-    fmt_fixed(db, sizeof db, (float)mp_stats_p2p(&s_meas_stats), 5);
-    snprintf(b, sizeof b, "%s Hz", db);
-    if (first || dchg(c_pp, sizeof c_pp, b)) { kv_row_live(384, "Peak-peak:", b, UI_COLOR_INK_2, first); drew = 1; }
+    /* Peak-peak NEBO min/max s casem, kdy nastaly (tap na radek prepina).
+     * Casova znacka je to, co u dlouheho mereni zajima — "kdy to ujelo". */
+    if (s_meas_pp_minmax && s_meas_stats.n) {
+        char lo[20], hi[20];
+        fmt_fixed(lo, sizeof lo, (float)(s_meas_stats.min - nom), 3);
+        fmt_fixed(hi, sizeof hi, (float)(s_meas_stats.max - nom), 3);
+        snprintf(b, sizeof b, "%s@%lus / %s@%lus", lo, (unsigned long)s_meas_min_t,
+                 hi, (unsigned long)s_meas_max_t);
+    } else {
+        fmt_fixed(db, sizeof db, (float)mp_stats_p2p(&s_meas_stats), 5);
+        snprintf(b, sizeof b, "%s Hz", db);
+    }
+    if (first || dchg(c_pp, sizeof c_pp, b)) {
+        kv_row_live(384, s_meas_pp_minmax ? "Min/max:" : "Peak-peak:", b, UI_COLOR_INK_2, first);
+        drew = 1;
+    }
 
     if (drew) present_now();
 }
@@ -5516,7 +5574,14 @@ void app_gpsdo_tick_stats_sample(void)
      * nikdy nedosahly dlouhych tau). Kresleni je gatovane zvlast (draw ticky). */
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     screen_main_stats_sample();
-    mp_stats_add(&s_meas_stats, screen_main_freq_hz());   /* statistika okna MERENI (#67, RESET nuluje) */
+    /* Statistika okna MERENI (#67, RESET nuluje). Casovou znacku min/max si
+     * hlida app vrstva — `mp_stats_add` je ciste-logicke jadro bez pojmu casu,
+     * takze se jen porovna, jestli se hranice prave posunula. */
+    { double pmin = s_meas_stats.min, pmax = s_meas_stats.max;
+      uint32_t pn = s_meas_stats.n;
+      mp_stats_add(&s_meas_stats, screen_main_freq_hz());
+      if (pn == 0 || s_meas_stats.min != pmin) s_meas_min_t = g_uptime_s;
+      if (pn == 0 || s_meas_stats.max != pmax) s_meas_max_t = g_uptime_s; }
     /* σy@1s -> Core globál pro prahovy monitor v alarm.c. ⚠️ Stejny most jako
      * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
      * hodnota publikuje pres globál. */
@@ -5665,7 +5730,18 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_RST_BTN)) {                 /* reset statistiky */
-                mp_stats_reset(&s_meas_stats); app_gpsdo_render_meas(); return true;
+                mp_stats_reset(&s_meas_stats);
+                s_meas_min_t = s_meas_max_t = g_uptime_s;
+                app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_NOM_RECT)) {                /* tap: nominal auto <-> presety */
+                s_meas_nom_idx = (uint8_t)((s_meas_nom_idx + 1) % MEAS_NOM_N);
+                g_sys_cfg_dirty = 1;                           /* persist (syscfg shadow-diff) */
+                s_view = 0xFF; app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_PP_RECT)) {                 /* tap: p2p <-> min/max s casem */
+                s_meas_pp_minmax ^= 1u;
+                s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_CNT_BTN)) {                 /* MERENI -> CITAC (sesterske) */
                 app_gpsdo_render_counter(); return true;

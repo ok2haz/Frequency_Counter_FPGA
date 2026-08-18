@@ -11,6 +11,7 @@
 #include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
+#include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
@@ -28,7 +29,7 @@
  * -> "SCF7" -> "SCF8". 2026-08-17 pribyl prahovy monitor (mon_cfg: VBAT/OCXO/ADEV)
  * -> "SCFA" -> "SCFB". Dusledek: prvni boot po teto zmene najde neznamy magic,
  * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434642u   /* "SCFB" (2026-08-17: + prahovy monitor mon_cfg) */
+#define SYSCFG_BLOB_MAGIC   0x53434643u   /* "SCFC" (2026-08-18: + nastaveni okna MERENI) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -82,6 +83,9 @@ typedef struct {
     float    mon_vbat_lo_mv;
     float    mon_ocxo_lo_c, mon_ocxo_hi_c;
     float    mon_adev_max;
+    /* Okno MERENI (#67): rezim/jednotka/nominal zabalene v jednom bajtu.
+     * Vlastnikem stavu je app vrstva, sem se jen zrcadli (app_gpsdo_meas_ui_*). */
+    uint8_t  meas_ui;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -134,6 +138,7 @@ static void pack(syscfg_blob_t *b)
     b->mon_ocxo_lo_c  = g_mon_cfg.ocxo_lo_c;
     b->mon_ocxo_hi_c  = g_mon_cfg.ocxo_hi_c;
     b->mon_adev_max   = g_mon_cfg.adev_max;
+    b->meas_ui        = app_gpsdo_meas_ui_get();
 }
 
 void syscfg_load(void)
@@ -195,6 +200,10 @@ void syscfg_load(void)
         g_mon_cfg.ocxo_hi_c = b.mon_ocxo_hi_c;
     }
     if (b.mon_adev_max > 0.0f) g_mon_cfg.adev_max = b.mon_adev_max;
+
+    /* Okno MERENI: NENI v BKP -> aplikuj VZDY (jako fx/meas/survey/monitor).
+     * Sanitizaci rozsahu resi `app_gpsdo_meas_ui_set`. */
+    app_gpsdo_meas_ui_set(b.meas_ui);
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;

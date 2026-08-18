@@ -618,7 +618,7 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -748,6 +748,39 @@ void UartTask_run(void *argument)
 					   * mutex uvnitr; UartTask NENI hlidan watchdogem, takze smi cekat. */
 					  printf("DATALOG: mazu cely log, cekej...\n");
 					  printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+				  } else if (strncmp(arg, "csv", 3) == 0) {
+					  /* Export CELEHO logu do konzole jako CSV (#46) — doplnek k SD
+					   * exportu pro beh BEZ karty. Volitelne `datalog csv <N>` =
+					   * jen poslednich N zaznamu.
+					   * ⚠️ Kazdy radek je jedno blokujici QSPI cteni; pri 48k
+					   * zaznamech to na 115200 Bd trva desitky minut, proto ten
+					   * limit. `osDelay(1)` mezi radky nechava dychat ostatni tasky
+					   * (UartTask sice neni pod watchdogem, ale UiTask ano). */
+					  uint32_t want = 0;
+					  { const char *p = arg + 3;
+					    while (*p == ' ') p++;
+					    while (*p >= '0' && *p <= '9') { want = want * 10u + (uint32_t)(*p - '0'); p++; } }
+					  datalog_status_t st; datalog_get_status(&st);
+					  uint32_t total = st.records;
+					  if (want && want < total) total = want;
+					  printf("seq;t_unix;freq_hz;t_ocxo_C;t_board_C;ocxo_vc_mV;rf_mV;flags;sats;hdop10;vbat_mV\n");
+					  uint32_t done = 0;
+					  for (uint32_t i = total; i-- > 0; ) {      /* chronologicky */
+						  datalog_rec_t r;
+						  if (!datalog_read_back(i, &r)) continue;
+						  char fb[32]; fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
+						  char vb[12];
+						  if (r.vbat_mv == DATALOG_INVALID16) vb[0] = '\0';
+						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
+						  printf("%lu;%lu;%s;%d;%d;%d;%d;0x%02X;%u;%u;%s\n",
+							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
+							     (int)r.t_ocxo_c100, (int)r.t_board_c100,
+							     (int)r.ocxo_vc_mv, (int)r.rf_mv,
+							     (unsigned)r.flags, (unsigned)r.sats, (unsigned)r.hdop10, vb);
+						  done++;
+						  osDelay(1);
+					  }
+					  printf("# hotovo: %lu zaznamu\n", (unsigned long)done);
 				  } else if (strcmp(arg, "dump") == 0) {
 					  /* Poslednich 10 zaznamu, nejnovejsi prvni (rychla kontrola obsahu). */
 					  datalog_rec_t r;
@@ -770,7 +803,7 @@ void UartTask_run(void *argument)
 					  char db[80];
 					  datalog_format_status(db, sizeof db);
 					  printf("%s\n", db);
-					  printf("  (datalog on|off|erase|dump)\n");
+					  printf("  (datalog on|off|erase|dump|csv [N])\n");
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stacktest yes") == 0) {
