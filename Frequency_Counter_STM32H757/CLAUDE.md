@@ -145,6 +145,50 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 
 > **Historie:** dřívější ručně psané `gfx.c`/`touch_ui.c` UI i pokus o **LVGL v9** obrazovku (`lv_port_disp.c`, `ui_main_screen.c`, vendored `Middlewares/Third_Party/lvgl`) byly **odstraněny** a nahrazeny libprim/libui/app. K dohledání v git historii.
 
+## Vývoj bez FPGA desky — co ho odblokovalo (2026-08-18)
+
+**Emulátor FPGA rámců (`fpga_sim_*`, UART `fpgasim`).** Headline byl do teď náhodná
+procházka v `screen_main.c`, která celou cestu z FPGA **obcházela** — netestovaná tak
+zůstávala celá naše polovina kontraktu. `fpga_freq_poll()` má přitom ideální injekční bod:
+`xfer()` je jediné místo, kde vzniká obsah `rx[]`. Emulátor složí syntetický 64B DATA rámec
+**včetně správného CRC** a všechno za tím (MAGIC, CRC, `parse_data`, latch, VALID/FRESH/SEQ,
+výběr odbočky) běží beze změny. Odemyká #1 a dovoluje vyrobit, co na stole nezařídíš:
+SIGNAL_LOST, skok přes práh 380 MHz, poškozené CRC, díru v `phase_status`.
+⚠️ **Nevaliduje** drátovou vrstvu, časování ani logiku FPGA. ⚠️ **Pojistky:** výchozí vypnuto,
+nepersistuje se, `DATALOG_F_SIM` (bit 6) zůstane v logu navždy, info řádek začíná `SIM `,
+`status` to hlásí. Tempo: nová SEQ jen ~4×/s (reálná FPGA má gate 0,25 s), i když FpgaTask
+polluje 20×/s — jinak by emulace vyráběla 20 měření/s a zkreslila vše, co se opírá o tempo.
+
+**Disciplinace LSE podle GPS (`rtc_lse_*`, UART `rtc cal`).** `rtc_try_sync()` každých 10 min
+přepsal čas a odchylku **zahodil** — přitom právě ona je měření driftu vlastního krystalu.
+Fáze se snímá **na hraně GPS sekundy** (GPS dává jen celé sekundy) přes sub-sekundový registr
+RTC (1/256 s = 3,9 ms); drift = Δfáze/Δčas. ⚠️ Latence NMEA je přibližně konstantní, takže se
+v **rozdílu** dvou fází vyruší — proto se měří rozdíl, ne absolutní fáze. ⚠️ Vzorkovač běží
+**před** 1Hz throttlem `rtc_app_tick` (jinak by se s 1 Hz GPS aliasovalo). Okno 8 min → ~12 ppm
+na okno; běžící průměr ~2 ppm po 6 h, ~1 ppm po dni. Korekce jde do **`RTC_CALR`** (smooth
+calibration, krok 0,954 ppm) až od 12 oken a nejvýš 1×/h; skládá se (CALR už nějakou drží).
+`RTC_CALR` žije v backup doméně → přežije reset bez zvláštní persistence.
+
+**Flight recorder (`flightrec.c`, UART `flightrec`).** Crash black-box říká *co* se stalo,
+ne *co se dělo předtím* — proto TODO #18 visel. Kruhový buffer 60 s (CPU, heap, **nejmenší
+volný stack**, teploty, I2C chybovost) žije v RAM; do W25Q se sype až při poruše (detekovaný
+stall, hook přetečení stacku/malloc, `flightrec test`). ⚠️ **Cílový sektor je předem smazaný** —
+při poruše zbývá do IWDG ~1,5 s a erase trvá 50–400 ms, takže by se často nestihl.
+⚠️ **Nezapisuje se z HardFault handleru** (`w25q wait_ready` ustupuje scheduleru → v exception
+kontextu by zatuhlo).
+
+**Rekonstrukce dlouhých τ ADEV z datalogu.** Restart dosud vynuloval pyramidu. ⚠️ Vzorek z logu
+se vkládá od **stage 1**, ne 0: stage 1 má τ = 10 s = přesně kadenci logu, takže převod je
+exaktní. Sypat log do stage 0 (τ0 = 1 s) by dalo σy(τ) špatně **o celý řád** a přitom věrohodně.
+⚠️ **Trend pyramida se záměrně nerekonstruuje** (decimuje po 4, 10 s na žádnou stage nesedne).
+Běží po dávkách 20 záznamů/tik (~2 min na pozadí); přeskakuje `freq == 0` a `DATALOG_F_SIM`.
+
+**SCPI nad IPC snapshotem (`ipc_scpi_src_from_snap`, UART `scpi ipc <cmd>`).** Největší riziko
+TCP poloviny #25 není socket, ale jestli snapshot nese vše, co SCPI potřebuje. `scpi ipc X`
+pustí tentýž parser nad snapshotem a porovná s `scpi X` → **SHODA / ROZDIL**, ověřitelné bez ETH
+i bez flashe bank 2. ⚠️ Zbývá přeložit `scpi.c` do CM4 obrazu (linked resource v `CM4/.project`)
++ řetězcový kanál ve sdílené struktuře.
+
 ## UART příkazy (StartUartTask)
 `led on/off`, `ram write/read`, `sdram write/read`, `temperature`, `sensors`, `adcraw`, `scanner`, `testDSI`,
 `testRED`, `test` (RGB565 sanity), `touch`, `touchloop`, `scan1`, `si5356`, `freq`, `gps`, `gpsraw`, `rtc`, `fpgaraw`,
