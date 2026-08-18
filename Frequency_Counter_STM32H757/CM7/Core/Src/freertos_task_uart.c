@@ -796,20 +796,20 @@ void UartTask_run(void *argument)
 					  datalog_status_t st; datalog_get_status(&st);
 					  uint32_t total = st.records;
 					  if (want && want < total) total = want;
-					  printf("seq;t_unix;freq_hz;t_ocxo_C;t_board_C;ocxo_vc_mV;rf_mV;flags;sats;hdop10;vbat_mV\n");
+					  /* ⚠️ Formatuje se SDILENYM `sd_export_csv_*`, at je vypis do konzole
+					   * bajt za bajtem tentyz soubor jako `sd export`. Vlastni formatovani
+					   * se drive rozeslo: kmitocet sel pres displejovy `fpga_freq_format_val`
+					   * (tisicove tecky + "Hz" uvnitr ciselne bunky), teploty v setinach pod
+					   * hlavickou `_C` a neplatna hodnota jako -32768 misto prazdne bunky. */
+					  char line[160];
+					  sd_export_csv_header(line, sizeof line);
+					  printf("%s", line);
 					  uint32_t done = 0;
 					  for (uint32_t i = total; i-- > 0; ) {      /* chronologicky */
 						  datalog_rec_t r;
 						  if (!datalog_read_back(i, &r)) continue;
-						  char fb[32]; fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
-						  char vb[12];
-						  if (r.vbat_mv == DATALOG_INVALID16) vb[0] = '\0';
-						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
-						  printf("%lu;%lu;%s;%d;%d;%d;%d;0x%02X;%u;%u;%s\n",
-							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
-							     (int)r.t_ocxo_c100, (int)r.t_board_c100,
-							     (int)r.ocxo_vc_mv, (int)r.rf_mv,
-							     (unsigned)r.flags, (unsigned)r.sats, (unsigned)r.hdop10, vb);
+						  sd_export_csv_row(line, sizeof line, &r);
+						  printf("%s", line);
 						  done++;
 						  osDelay(1);
 					  }
@@ -1119,9 +1119,14 @@ void UartTask_run(void *argument)
 			  else if (strncmp(RxBuffer, "flightrec", 9) == 0) {
 				  const char *a = (RxBuffer[9] == ' ') ? &RxBuffer[10] : "";
 				  if (strcmp(a, "test") == 0) {
-					  /* Overeni cele cesty bez cekani na skutecnou poruchu. */
+					  /* Overeni cele cesty bez cekani na skutecnou poruchu.
+					   * ⚠️ Hlas vysledek, ne zamer — `flightrec_dump` tise nedela nic,
+					   * kdyz neni pripravena flash nebo uz se za tohohle behu dumplo. */
 					  flightrec_dump("test");
-					  printf("FLIGHTREC: testovaci dump zapsan, precti `flightrec`\n");
+					  if (flightrec_have())
+						  printf("FLIGHTREC: testovaci dump zapsan, precti `flightrec`\n");
+					  else
+						  printf("FLIGHTREC: dump se NEPOVEDL (flash nepripravena, nebo uz se za tohohle behu dumplo)\n");
 				  } else if (!flightrec_report()) {
 					  printf("FLIGHTREC: zadny ulozeny zaznam\n");
 					  printf("  Dumpuje se pri detekovanem stallu / preteceni stacku / selhani malloc.\n");

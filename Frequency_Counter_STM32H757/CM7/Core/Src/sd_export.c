@@ -184,11 +184,15 @@ void sd_export_unmount(void)
 #endif
 }
 
-#ifdef SD_EXPORT_FATFS
 /* Jeden CSV řádek. ⚠️ Bez `%f` a bez `%llu` (nano.specs): kmitočet se rozloží na
  * celé Hz + 5 desetinných míst, obojí se vejde do uint32 (1,4 GHz × 1e5 by uint32
- * přeteklo, proto se dělí ještě v uint64). Sentinel DATALOG_INVALID16 → prázdná buňka. */
-static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
+ * přeteklo, proto se dělí ještě v uint64). Sentinel DATALOG_INVALID16 → prázdná buňka.
+ * ⚠️ ZÁMĚRNĚ mimo `#ifdef SD_EXPORT_FATFS` a nestatické: tentýž formát používá
+ * i UART `datalog csv` (export do konzole pro běh bez karty). Dokud měl každý
+ * svůj vlastní formátovač, lišily se — konzole psala kmitočet přes displejový
+ * `fpga_freq_format_val` (tisícové tečky + „Hz" uvnitř číselné buňky), teploty
+ * v setinách pod hlavičkou `_C` a `-32768` místo prázdné buňky. */
+int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
 {
     uint32_t hz  = (uint32_t)(r->freq_x100000 / 100000u);
     uint32_t frc = (uint32_t)(r->freq_x100000 % 100000u);
@@ -218,7 +222,14 @@ static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
         toc, tbo, (int)r->ocxo_vc_mv, rf,
         (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
 }
-#endif
+
+int sd_export_csv_header(char *b, size_t n)
+{
+    return snprintf(b, n,
+        "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
+        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_mV" SD_CSV_SEP
+        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
+}
 
 /* ── Diagnostika SD (UART `sd diag`) ─────────────────────────────────────────
  * Smysl: rozlišit, KDE to stojí. `sd mount` sám o sobě řekne jen „FAIL", ale
@@ -1195,10 +1206,7 @@ static int32_t export_body(uint32_t max_rec)
 
     char line[160];
     UINT bw;
-    int n = snprintf(line, sizeof line,
-        "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
-        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_mV" SD_CSV_SEP
-        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
+    int n = sd_export_csv_header(line, sizeof line);
     f_write(&f, line, (UINT)n, &bw);
 
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,
@@ -1211,7 +1219,7 @@ static int32_t export_body(uint32_t max_rec)
         s_ui.prog_done = total - i;
         datalog_rec_t r;
         if (!datalog_read_back(i, &r)) continue;   /* poškozený CRC / prázdný slot → přeskoč */
-        n = fmt_row(line, sizeof line, &r);
+        n = sd_export_csv_row(line, sizeof line, &r);
         if (n <= 0) continue;
         if (f_write(&f, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
             /* Nejčastější příčina: karta vytažená za běhu exportu. */

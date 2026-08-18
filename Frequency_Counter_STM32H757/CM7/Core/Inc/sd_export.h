@@ -32,6 +32,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>    /* size_t — CSV formatovace nize */
+#include "datalog.h"   /* datalog_rec_t — sdileny CSV format (sd_export_csv_row) */
 
 typedef enum {
     SD_EXP_NO_FATFS = 0,  /* FatFs neni v buildu (CubeMX) */
@@ -129,5 +131,14 @@ void sd_export_unmount(void);
  *  @param max_rec  0 = vse, jinak jen N nejnovejsich zaznamu
  *  @return pocet zapsanych zaznamu, nebo -1 pri chybe. */
 int32_t sd_export_run(uint32_t max_rec);
+
+/** CSV formát datalogu — JEDEN zdroj pravdy pro kartu i pro konzoli.
+ *  Používá to `sd export` (soubor na SD) i UART `datalog csv` (výpis do konzole),
+ *  aby se oba exporty nerozešly. Dostupné i v buildu bez FatFs.
+ *  Konvence: oddělovač `;`, desetinná tečka, neplatná hodnota = prázdná buňka,
+ *  kmitočet jako celé Hz + 5 desetin (bez tisícových oddělovačů a bez jednotky).
+ *  @return délka jako `snprintf` (bez NUL). */
+int sd_export_csv_header(char *b, size_t n);
+int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r);
 
 #endif /* INC_SD_EXPORT_H_ */

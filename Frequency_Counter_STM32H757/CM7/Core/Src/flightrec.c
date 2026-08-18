@@ -43,6 +43,8 @@ static uint8_t   s_ready;         /* flash pripravena (predem smazany sektor) */
 static uint8_t   s_have_dump;     /* ve flash je platny zaznam */
 static uint32_t  s_write_off;     /* offset predem smazaneho ciloveho sektoru */
 static uint32_t  s_read_off;      /* offset posledniho platneho dumpu */
+static uint8_t   s_have_read;     /* s_read_off ukazuje na platny dump */
+static uint32_t  s_seq_next;      /* seq pro PRISTI dump (nejvyssi nalezeny + 1) */
 static uint8_t   s_dumped;        /* uz jsme za tohohle behu dumpli (jen 1x) */
 
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -122,6 +124,7 @@ static bool hdr_unpack(const uint8_t *b, uint32_t *seq, uint16_t *n, uint32_t *u
 void flightrec_init(void)
 {
     s_ready = 0; s_have_dump = 0; s_head = 0; s_count = 0; s_dumped = 0;
+    s_have_read = 0; s_seq_next = 1u;
     if (osMutexAcquire(qspiMutexHandle, 500u) != osOK) return;
 
     /* Najdi sektor s nejvyssim seq (= posledni dump) a prvni VOLNY (smazany). */
@@ -137,7 +140,12 @@ void flightrec_init(void)
             free_idx = (int)i;                      /* smazany -> pouzitelny hned */
         }
     }
+    /* ⚠️ seq NESMI byt odvozena od uptime — to se po resetu vraci k nule, takze by
+     * novejsi dump mohl mit nizsi seq nez starsi a `init` by pak vyhrabal ten stary.
+     * Proto navazujeme na nejvyssi nalezenou hodnotu. */
     s_have_dump = have_best ? 1u : 0u;
+    s_have_read = s_have_dump;
+    if (have_best) s_seq_next = best_seq + 1u;
 
     /* Cilovy sektor pro PRISTI dump. Kdyz zadny smazany neni, smaz nejstarsi
      * (nejnizsi index za poslednim) — deje se to jen jednou za 64 dumpu. */
@@ -201,7 +209,7 @@ void flightrec_dump(const char *reason)
     if (osMutexAcquire(qspiMutexHandle, FR_LOCK_MS) != osOK) return;
 
     uint8_t buf[FR_REC_SIZE];
-    hdr_pack(buf, (uint32_t)g_uptime_s + 1u, s_count, g_uptime_s, reason);
+    hdr_pack(buf, s_seq_next, s_count, g_uptime_s, reason);
     if (w25q_write(s_write_off, buf, FR_REC_SIZE)) {
         /* Vzorky od NEJSTARSIHO po nejnovejsi. */
         uint16_t start = (uint16_t)((s_head + FR_DEPTH - s_count) % FR_DEPTH);
@@ -210,7 +218,13 @@ void flightrec_dump(const char *reason)
             if (!w25q_write(s_write_off + FR_REC_SIZE + (uint32_t)i * FR_REC_SIZE,
                             buf, FR_REC_SIZE)) break;
         }
+        /* ⚠️ Bez tehle dvojice cetl `flightrec_report` porad z `s_read_off`, ktery
+         * plni jen `init` z JIZ existujiciho dumpu — cerstve zapsany dump se tedy
+         * neprecetl (pri prvnim behu dokonce z offsetu 0). */
+        s_read_off  = s_write_off;
+        s_have_read = 1;
         s_have_dump = 1;
+        s_seq_next++;
     }
     osMutexRelease(qspiMutexHandle);
 }
@@ -219,7 +233,7 @@ bool flightrec_have(void) { return s_have_dump ? true : false; }
 
 bool flightrec_report(void)
 {
-    if (!s_have_dump) return false;
+    if (!s_have_dump || !s_have_read) return false;
     uint8_t b[FR_REC_SIZE];
     uint32_t seq, up; uint16_t n; char r2[4];
 
@@ -237,6 +251,10 @@ bool flightrec_report(void)
         ok = w25q_read(s_read_off + FR_REC_SIZE + (uint32_t)i * FR_REC_SIZE, b, sizeof b);
         osMutexRelease(qspiMutexHandle);
         if (!ok) break;
+        /* Hlavicka se zapisuje PRVNI (at pri poruse prezije aspon duvod), takze
+         * pri prerusenem dumpu muze byt zbytek jeste smazany — takove vzorky
+         * neni co tisknout. */
+        if (get32(b) == 0xFFFFFFFFu && get32(b + 4) == 0xFFFFFFFFu) break;
         fr_rec_t r; rec_unpack(b, &r);
         printf("  %5u %4u  %6lu  %7lu   %3d.%u %3d.%u  %5u   %c%c%c\n",
                (unsigned)r.uptime_s, (unsigned)r.cpu_pct,
