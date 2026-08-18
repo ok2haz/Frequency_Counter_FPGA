@@ -499,6 +499,10 @@ static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> 
  * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
 static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
 static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
+/* Tentyz stred, ale v Hz — pro rekonstrukci z datalogu (ta pocita y z Hz, ne
+ * z LSB). Drzime obe formy, at se nikde nedopocitava zpetne z `s_freq_center`
+ * (pocet desetinnych mist je vlastnost formatovani, ne mereni). */
+static double   s_freq_nominal_hz = 0.0;
 static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
 
 static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
@@ -552,6 +556,7 @@ static void num_build(void)
     }
     int frac_digits = s_freq_total - int_digits;
     s_freq_center = 10000000ull * pow10_u64(frac_digits);   /* 10 MHz */
+    s_freq_nominal_hz = 10000000.0;                          /* tentyz stred v Hz */
     s_freq_n      = s_freq_center;
     freq_fill_segments();                            /* pocatecni 10 MHz do segmentu */
     for (int i = 0; i < n; i++) strcpy(s_num_prev[i], s_num_buf[i]);   /* shadow = init */
@@ -719,9 +724,12 @@ static float stats_drift(void)
 typedef struct { float ring[ADEV_RING]; int16_t head, count; float acc; int16_t acc_n; } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
-static void adev_feed(float v)
+/* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
+ * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
+ * ma kadenci PRESNE 10 s = tau stage 1. */
+static void adev_feed_from(int s0, float v)
 {
-    for (int s = 0; s < ADEV_STAGES; s++) {
+    for (int s = s0; s < ADEV_STAGES; s++) {
         adev_stage_t *sg = &s_adev[s];    /* 'sg', ne 'st' — nekolidovat s globalnim UI stavem */
         sg->ring[sg->head] = v;
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
@@ -730,6 +738,35 @@ static void adev_feed(float v)
         if (++sg->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
         v = sg->acc / 10.0f; sg->acc = 0; sg->acc_n = 0;   /* dekadovy prumer -> dal */
     }
+}
+
+static void adev_feed(float v) { adev_feed_from(0, v); }
+
+/* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
+ * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
+ * se musela nabirat znovu od nuly — po restartu jsi o hodiny mereni prisel.
+ * Datalog ale drzi kmitocet po 10 s klidne dny dozadu.
+ *
+ * ⚠️ KLICOVE: vzorek z logu se vklada od STAGE 1, ne od stage 0. Stage 1 ma
+ * tau = 10 s, coz je PRESNE kadence datalogu, takze prevod je exaktni — zadne
+ * prevzorkovani, zadna zmena tau0. Kdyby se log sypal do stage 0 (tau0 = 1 s),
+ * vysla by sigma_y(tau) systematicky SPATNE o cely rad a pritom by vypadala
+ * verohodne. Stage 0 zustava prazdna, dokud ji nenaplni zive vzorky — a to je
+ * spravne: log zadna 1s data nema.
+ *
+ * ⚠️ Trend pyramida se ZAMERNE nerekonstruuje: decimuje po 4 (1/4/16 s), takze
+ * 10s kadence loguje na zadnou jeji stage nesedne a musela by se prevzorkovat —
+ * tim by se zkreslila casova osa. Dlouha okna trendu maji misto toho cist
+ * datalog primo, stejnym vzorem jako okno GRAFY. */
+void screen_main_adev_seed_10s(float y) { adev_feed_from(1, y); }
+
+/* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
+ * Je to tentyz stred, jaky pouziva `stats_sample` (jen v Hz misto v LSB), takze
+ * rekonstrukce z logu a zive vzorky mluvi o TEMZE — jinak by se v jedne pyramide
+ * michaly dve ruzne reference. 0 = velke cislo jeste nebylo inicializovano. */
+double screen_main_freq_nominal(void)
+{
+    return s_num_ready ? s_freq_nominal_hz : 0.0;
 }
 
 static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prvek */

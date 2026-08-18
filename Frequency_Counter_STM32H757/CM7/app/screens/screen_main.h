@@ -99,6 +99,13 @@ void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y os
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
 float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
+/* Vlozi vzorek z DATALOGU (kadence 10 s) do ADEV pyramidy od stage 1.
+ * ⚠️ NE od stage 0: stage 1 ma tau = 10 s = presne kadenci logu, takze prevod je
+ * exaktni. Sypat log do stage 0 (tau0 = 1 s) by dalo sigma_y(tau) spatne o rad
+ * a pritom verohodne vypadajici. Detaily u implementace. */
+void  screen_main_adev_seed_10s(float y);
+/** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
+double screen_main_freq_nominal(void);
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
 
 /* ── DOCASNA A/B srovnavaci vetev hlavni mrizky (2026-07-19, k odstraneni

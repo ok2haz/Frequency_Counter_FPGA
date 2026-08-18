@@ -102,6 +102,11 @@ void app_gpsdo_tick_allan_draw(void);
  */
 int app_gpsdo_flush(void);
 
+/** Naplanuje rekonstrukci ADEV pyramidy z datalogu — dlouha tau tak prezijou
+ *  restart. Samotne cteni bezi PO DAVKACH z `app_gpsdo_tick_stats_sample`
+ *  (jeden zaznam = blokujici QSPI cteni, najednou by to shodilo watchdog). */
+void app_gpsdo_stats_seed_start(void);
+
 /* ── Persist nastaveni okna MERENI (#67) ─────────────────────────────────────
  * Rezim/jednotka/nominal jsou `static` v app vrstve (jediny vlastnik = UiTask),
  * takze misto dalsiho globálu je vystaveno explicitni API a `syscfg.c` si stav

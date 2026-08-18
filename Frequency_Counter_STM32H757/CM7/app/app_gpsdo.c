@@ -324,6 +324,10 @@ void app_gpsdo_init(void)
     screen_main_init();
     calib_load();   /* W25Q CALIB store -> g_calib (blokujici, ~ms; prazdno = vychozi hodnoty) */
     setup_init();   /* W25Q SETUP store -> ulozene sestavy (okno SESTAVY) */
+    /* Rekonstrukce dlouhych tau z datalogu — jen se NAPLANUJE, samotne cteni
+     * bezi po davkach z tick_stats_sample (blokujici QSPI nesmi do initu, ktery
+     * drzi prvni render obrazovky). */
+    app_gpsdo_stats_seed_start();
     s_inited = 1;
 }
 
@@ -5566,12 +5570,68 @@ void app_gpsdo_tick_freq(void)
     if (screen_main_redraw_freq()) s_dirty = 1;   /* flip odlozen na flush */
 }
 
+/* ── Rekonstrukce ADEV pyramidy z datalogu po bootu (STATUS.md G) ────────────
+ * Kazdy restart dosud vynuloval statistiku, takze dlouha tau se nabirala znovu
+ * od nuly. Log ale drzi kmitocet po 10 s klidne dny dozadu.
+ *
+ * ⚠️ BEZI PO DAVKACH. Jeden zaznam = jedno blokujici QSPI cteni; 48k zaznamu
+ * najednou by UiTask zablokovalo na minuty a IWDG by desku shodil. Nacita se
+ * proto ADEV_SEED_CHUNK zaznamu za tik (~20 Hz), tedy ~400/s — 48k zaznamu
+ * zabere ~2 min na pozadi, behem kterych pristroj normalne funguje.
+ * ⚠️ Zaznamy s freq == 0 (doba bez FPGA linku) i s priznakem SIM se PRESKAKUJI:
+ * nula neni mereni a emulovana data nepatri do statistiky stability. */
+#define ADEV_SEED_CHUNK   20u
+static uint32_t s_seed_left  = 0;     /* kolik zaznamu jeste zbyva (0 = hotovo/nezacato) */
+static uint32_t s_seed_done  = 0;     /* kolik uz vlozeno (diagnostika) */
+static uint8_t  s_seed_state = 0;     /* 0 = nezacato, 1 = bezi, 2 = hotovo */
+
+void app_gpsdo_stats_seed_start(void)
+{
+    datalog_status_t st; datalog_get_status(&st);
+    if (!st.ready || st.records < 4u) { s_seed_state = 2; return; }
+    /* Vic nez ADEV_RING(24) x 10^4 vzorku uz nema co pridat — nejvyssi stage se
+     * stejne prepise. Strop drzi dobu rekonstrukce v jednotkach minut. */
+    uint32_t cap = 24u * 10000u;
+    s_seed_left  = (st.records < cap) ? st.records : cap;
+    s_seed_done  = 0;
+    s_seed_state = 1;
+}
+
+/* Vrati 1, dokud rekonstrukce bezi (volajici pak nemusi delat nic jineho). */
+static int stats_seed_tick(void)
+{
+    if (s_seed_state != 1) return 0;
+    for (uint32_t k = 0; k < ADEV_SEED_CHUNK && s_seed_left; k++) {
+        s_seed_left--;
+        datalog_rec_t r;
+        /* od NEJSTARSIHO k nejnovejsimu -> index od konce */
+        if (!datalog_read_back(s_seed_left, &r)) continue;
+        if (r.freq_x100000 == 0u) continue;                 /* bez FPGA linku */
+        if (r.flags & DATALOG_F_SIM) continue;              /* emulovana data */
+        double hz = (double)r.freq_x100000 * 1e-5;
+        double f0 = screen_main_freq_nominal();
+        if (f0 <= 0.0) continue;
+        screen_main_adev_seed_10s((float)((hz - f0) / f0));
+        s_seed_done++;
+    }
+    if (s_seed_left == 0) {
+        s_seed_state = 2;
+        printf("ADEV: rekonstrukce z datalogu hotova, %lu vzorku (tau0=10 s)\n",
+               (unsigned long)s_seed_done);
+    }
+    return 1;
+}
+
 /* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~1x/s). */
 void app_gpsdo_tick_stats_sample(void)
 {
     /* Vzorkuje se VZDY kdyz mereni bezi — nezavisle na zobrazenem okne (drive
      * jen na main -> Allan/histogram se zastavily pri screensaveru/oknech a
      * nikdy nedosahly dlouhych tau). Kresleni je gatovane zvlast (draw ticky). */
+    /* Rekonstrukce z datalogu ma prednost pred zivym vzorkovanim: dokud bezi,
+     * plni pyramidu historii (po davkach, ~2 min na pozadi). Zive vzorky by se
+     * do ni mezitim michaly ve spatnem poradi (novejsi pred starsimi). */
+    if (stats_seed_tick()) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     screen_main_stats_sample();
     /* Statistika okna MERENI (#67, RESET nuluje). Casovou znacku min/max si
