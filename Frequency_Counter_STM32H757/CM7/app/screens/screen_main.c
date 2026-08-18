@@ -863,21 +863,78 @@ static void fmt_dur(char *b, int n, int32_t s)
 void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 
 /* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
-static float adev_stage(int s, int m)
+/* ── Estimatory stability nad ringem jedne stage (τ0 = 10^s s) ───────────────
+ * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_rat`).
+ * Vsechny tri jsou OVERLAPPING (Riley, NIST SP1065) — z TYCHZ dat davaji vyrazne
+ * lepsi konfidenci nez non-overlapping varianta, ktera tu byla do 2026-08-18:
+ * ta pri tau = m·τ0 zahodila vetsinu moznych dvojic (pouzila jen M/m bloku misto
+ * M-2m+1 prekryvajicich se). Na dlouhych tau, kde je vzorku nejmene, to byl
+ * rozdil mezi "nekolik paru" a "radove vic".
+ *
+ *   ADEV  σ²  = 1/(2m²(M-2m+1))   Σ_j [ Σ_i (y_{i+m} - y_i) ]²
+ *   HDEV  H²  = 1/(6m²(M-3m+1))   Σ_j [ Σ_i (y_{i+2m} - 2y_{i+m} + y_i) ]²
+ *   MDEV  M²  = 1/(2m⁴(M-3m+2))   Σ_j [ Σ_i Σ_k (y_{k+m} - y_k) ]²
+ *
+ * K cemu to je (proc tri, a ne jen ADEV):
+ *   MDEV rozlisi BILY a BLIKAVY fazovy sum, ktere maji v ADEV stejny sklon —
+ *        ADEV je od sebe neodlisi, MDEV ano (jiny sklon).
+ *   HDEV je imunni vuci LINEARNIMU DRIFTU (druhe diference), takze u OCXO se
+ *        stárnutím ukaze skutecny sum misto driftove rampy.
+ * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s. */
+#define ADEV_KIND_ADEV  0
+#define ADEV_KIND_MDEV  1
+#define ADEV_KIND_HDEV  2
+
+static float adev_stage_kind(int s, int m, int kind)
 {
     const adev_stage_t *sg = &s_adev[s];
-    int blocks = sg->count / m;
-    if (blocks < 2) return 0.0f;
-    float prev = 0; int have = 0; double acc = 0; int nd = 0;
-    for (int b = 0; b < blocks; b++) {
-        float bs = 0;
-        for (int j = 0; j < m; j++) bs += adev_rat(sg, b * m + j);
-        bs /= (float)m;
-        if (have) { float d = bs - prev; acc += (double)d * (double)d; nd++; }
-        prev = bs; have = 1;
+    int M = sg->count;
+    if (m < 1) m = 1;
+
+    double acc = 0.0;
+    int n = 0;
+
+    if (kind == ADEV_KIND_HDEV) {
+        if (M < 3 * m + 1) return 0.0f;
+        for (int j = 0; j + 3 * m <= M - 1; j++) {
+            double inner = 0.0;
+            for (int i = j; i < j + m; i++)
+                inner += (double)adev_rat(sg, i + 2 * m)
+                       - 2.0 * (double)adev_rat(sg, i + m)
+                       + (double)adev_rat(sg, i);
+            acc += inner * inner; n++;
+        }
+        if (n == 0) return 0.0f;
+        return sqrtf((float)(acc / (6.0 * (double)m * (double)m * (double)n)));
     }
-    return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
+
+    if (kind == ADEV_KIND_MDEV) {
+        if (M < 3 * m + 1) return 0.0f;
+        for (int j = 0; j + 3 * m - 1 <= M - 1; j++) {
+            double inner = 0.0;
+            for (int i = j; i < j + m; i++)
+                for (int k = i; k < i + m; k++)
+                    inner += (double)adev_rat(sg, k + m) - (double)adev_rat(sg, k);
+            acc += inner * inner; n++;
+        }
+        if (n == 0) return 0.0f;
+        double m4 = (double)m * (double)m * (double)m * (double)m;
+        return sqrtf((float)(acc / (2.0 * m4 * (double)n)));
+    }
+
+    /* ADEV (overlapping) */
+    if (M < 2 * m + 1) return 0.0f;
+    for (int j = 0; j + 2 * m <= M - 1; j++) {
+        double inner = 0.0;
+        for (int i = j; i < j + m; i++)
+            inner += (double)adev_rat(sg, i + m) - (double)adev_rat(sg, i);
+        acc += inner * inner; n++;
+    }
+    if (n == 0) return 0.0f;
+    return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
+
+static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
  * (mono_14/16 maji plny charset vc. ⁰..⁹⁻⁺). with_sign: + pro kladne. */
@@ -946,20 +1003,30 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
  * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
-/* ns (nepovinne, NULL-safe): pocet ADEV paru na kazdy tau bod (= blocks-1) —
- * slouzi ke konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+/* ns (nepovinne, NULL-safe): pocet clenu sumy na kazdy tau bod — slouzi ke
+ * konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
 static int adev_points(float *taus, float *adevs, int *ns, int max)
 {
     static const int SM[] = {1, 2, 5};
+    int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
         for (int mi = 0; mi < 3; mi++) {
             if (np >= max) return np;
-            float a = adev_stage(s, SM[mi]);
+            int m = SM[mi];
+            float a = adev_stage_kind(s, m, kind);
             if (a <= 0.0f) continue;
-            taus[np] = dec * (float)SM[mi]; adevs[np] = a;
-            if (ns) { int blocks = s_adev[s].count / SM[mi]; ns[np] = (blocks > 1) ? blocks - 1 : 1; }
+            taus[np] = dec * (float)m; adevs[np] = a;
+            /* Pocet clenu sumy = sirka konfidencniho pasu (~1/sqrt(2n)).
+             * U OVERLAPPING variant je jich radove vic nez u puvodnich
+             * non-overlapping bloku — pas je proto uzsi, a to opravnene. */
+            if (ns) {
+                int M = s_adev[s].count;
+                int n = (kind == ADEV_KIND_ADEV) ? (M - 2 * m) : (M - 3 * m + 1);
+                ns[np] = (n > 1) ? n : 1;
+            }
             np++;
         }
     }
@@ -972,22 +1039,41 @@ static int adev_points(float *taus, float *adevs, int *ns, int max)
 #define ALLAN_Y_MIN  (-10)
 #define ALLAN_Y_DEC  4
 
-/* ── Metrika Allan okna: 0=ADEV(σy), 1=TDEV, 2=MTIE (prepina segmented control
- * v okne ALLAN). TDEV/MTIE jsou ODVOZENE z ADEV: TDEV(τ)=τ·ADEV/√3 (platí pro
- * MDEV≈ADEV), MTIE(τ)~√3·τ·ADEV je jen ODHAD obalky — presny MTIE by chtel
- * ulozenou fazi (time error), kterou nemame. Popisky to priznavaji ("z ADEV"/
- * "odhad"). Metrika meni jen KRIVKU + Y osu; σy(τ) tabulka zustava ADEV referenci. */
+/* ── Metrika Allan okna (segmented v okne ALLAN) ─────────────────────────────
+ *   0 = ADEV  σy(τ)         — overlapping
+ *   1 = MDEV  Mod σy(τ)     — rozlisi bily vs blikavy fazovy sum (ADEV ne)
+ *   2 = HDEV  Hσy(τ)        — imunni vuci linearnimu driftu (druhe diference)
+ *   3 = TDEV  σx(τ)         — od 2026-08-18 EXAKTNI: TDEV = τ·MDEV/√3 je DEFINICE.
+ *                             Driv se pocital z ADEV, coz plati jen pri MDEV≈ADEV
+ *                             (tedy ne u fazoveho sumu, kde se prave lisi).
+ *   4 = MTIE                — porad jen ODHAD (√3·τ·ADEV): presny MTIE potrebuje
+ *                             ULOZENOU FAZI (time error), kterou bez 1PPS TIC
+ *                             (#36) nemame. Popisek to priznava.
+ * Metrika meni jen KRIVKU + Y osu; σy(τ) tabulka zustava ADEV referenci. */
+#define ALLAN_METRIC_N 5
 static int s_allan_metric = 0;
-void screen_main_set_allan_metric(int m) { s_allan_metric = (m < 0) ? 0 : (m > 2 ? 2 : m); }
+void screen_main_set_allan_metric(int m)
+{ s_allan_metric = (m < 0) ? 0 : (m >= ALLAN_METRIC_N ? ALLAN_METRIC_N - 1 : m); }
 int  screen_main_allan_metric(void)      { return s_allan_metric; }
 
-/* Hodnota zobrazene metriky z ADEV a tau. */
-static float allan_metric_value(float tau, float adev)
+/* Ktery estimator se ma pro aktualni metriku pocitat nad ringem stage. */
+static int allan_metric_kind(void)
 {
     switch (s_allan_metric) {
-    case 1:  return tau * adev * 0.5773503f;   /* TDEV = τ·ADEV/√3 */
-    case 2:  return tau * adev * 1.7320508f;   /* MTIE ~ √3·τ·ADEV (odhad) */
-    default: return adev;                      /* ADEV = σy(τ) */
+    case 1:  return ADEV_KIND_MDEV;
+    case 2:  return ADEV_KIND_HDEV;
+    case 3:  return ADEV_KIND_MDEV;   /* TDEV se odvozuje z MDEV (definice) */
+    default: return ADEV_KIND_ADEV;   /* 0 = ADEV, 4 = MTIE (odhad z ADEV) */
+    }
+}
+
+/* Hodnota zobrazene metriky ze spocteneho estimatoru a tau. */
+static float allan_metric_value(float tau, float base)
+{
+    switch (s_allan_metric) {
+    case 3:  return tau * base * 0.5773503f;   /* TDEV = τ·MDEV/√3 (exaktni) */
+    case 4:  return tau * base * 1.7320508f;   /* MTIE ~ √3·τ·ADEV (ODHAD) */
+    default: return base;                      /* ADEV / MDEV / HDEV primo */
     }
 }
 

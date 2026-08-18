@@ -171,7 +171,9 @@ static const prim_rect_t VIEW_TABS_RECT = {18, 417, 300, 61};    /* zalozky ALLA
 static const char *const VIEW_TAB_LABELS[3] = {"ALLAN", "HIST", "SPEKTR"};
 static const prim_rect_t LOGY_RECT       = {330, 417, 180, 61};  /* histogram: lin/log Y (footer stred) */
 static const prim_rect_t ALLAN_METRIC_RECT = {330, 417, 300, 61}; /* allan: prepinac ADEV/TDEV/MTIE (footer stred) */
-static const char *const ALLAN_METRIC_SEG[3] = {"ADEV", "TDEV", "MTIE"};
+/* 5 segmentu v 300 px = 60 px/segment = 7,0 mm — presne na projektovem minimu
+ * dotykoveho cile (UI_SIZES.md). Uz se nesmi pridat sesty. */
+static const char *const ALLAN_METRIC_SEG[5] = {"ADEV", "MDEV", "HDEV", "TDEV", "MTIE"};
 
 /* Sdilena zalozka (segmented) — vybrany = aktivni pohled (0=ALLAN 1=HIST 2=SPEKTR). */
 static void view_tabs_render(int active)
@@ -2189,7 +2191,7 @@ void app_gpsdo_render_histogram(void)
 static void allan_metric_render(void)
 {
     ui_segmented_t sc = {.rect = ALLAN_METRIC_RECT, .labels = ALLAN_METRIC_SEG,
-                         .n = 3, .selected = (uint8_t)screen_main_allan_metric()};
+                         .n = 5, .selected = (uint8_t)screen_main_allan_metric()};
     ui_segmented_render(&sc);
 }
 
@@ -6047,7 +6049,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         }
         if (s_view == 23 && in_rect(x, y, ALLAN_METRIC_RECT)) {   /* prepinac ADEV/TDEV/MTIE */
             ui_segmented_t sc = {.rect = ALLAN_METRIC_RECT, .labels = ALLAN_METRIC_SEG,
-                                 .n = 3, .selected = (uint8_t)screen_main_allan_metric()};
+                                 .n = 5, .selected = (uint8_t)screen_main_allan_metric()};
             int seg = ui_segmented_hit(&sc, x, y);
             if (seg >= 0 && seg != screen_main_allan_metric()) {
                 screen_main_set_allan_metric(seg);
