@@ -77,6 +77,8 @@ int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd O
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
+/** Delka zvoleneho hradla [s] (0,1/1/10/100) — rozpocet nejistoty. */
+double screen_main_gate_seconds(void);
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */

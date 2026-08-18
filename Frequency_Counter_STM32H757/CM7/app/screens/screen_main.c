@@ -93,12 +93,17 @@ static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
 static const char *MODE_NAME[2] = {"FREQUENCY", "PERIOD"};
 static const char *CHAN_NAME[2] = {"CH A", "CH B"};
 static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
+/* Tataz sada v sekundach — pro rozpocet nejistoty (rozliseni ~ tdc/gate).
+ * ⚠️ Drzet SYNCHRONNI s GATE_VAL: popisek a hodnota musi rikat totez. */
+static const float GATE_SEC[4] = {0.1f, 1.0f, 10.0f, 100.0f};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
     st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 
 /* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
+double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
+
 bool screen_main_is_running(void) { return st.running; }
 
 /* ════════════════════════════════════════════════════════════════════════

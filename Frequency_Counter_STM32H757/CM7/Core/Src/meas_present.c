@@ -151,6 +151,76 @@ double mp_filt_add(mp_filt_state_t *f, double x)
                        : 0.5 * (t[f->n / 2 - 1] + t[f->n / 2]);
 }
 
+/* ── Rozpocet nejistoty (viz meas_present.h) ────────────────────────────────── */
+void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
+               double ref_ppb, mp_budget_t *o)
+{
+    if (o == NULL) return;
+    memset(o, 0, sizeof *o);
+    if (gate_s <= 0.0) gate_s = 1.0;
+
+    /* Rozliseni: kvantizace na obou hranach hradla -> sqrt(2)·tdc/gate. */
+    o->u_res_rel = 1.41421356 * (tdc_ps * 1e-12) / gate_s;
+    o->u_sta_rel = (sigma_y > 0.0) ? sigma_y : 0.0;
+    o->u_ref_rel = ref_ppb * 1e-9;
+
+    double s = o->u_res_rel * o->u_res_rel
+             + o->u_sta_rel * o->u_sta_rel
+             + o->u_ref_rel * o->u_ref_rel;
+    o->u_tot_rel = sqrt(s);
+    o->u_tot_hz  = o->u_tot_rel * ((hz > 0.0) ? hz : 0.0);
+
+    /* Kolik cifer ma smysl ukazovat: log10(1/u). Napr. u = 1e-9 -> 9 cifer.
+     * Strop 15 = mez double; podlaha 1 = aspon jedna cifra. */
+    if (o->u_tot_rel > 0.0) {
+        double d = -log10(o->u_tot_rel);
+        o->digits = (int)(d + 0.5);
+        if (o->digits < 1)  o->digits = 1;
+        if (o->digits > 15) o->digits = 15;
+    } else {
+        o->digits = 15;
+    }
+}
+
+/* ── Linearni proklad (drift/aging i tempco) ─────────────────────────────────
+ * Akumulujeme sumy, ne body — pamet O(1) i pro tisice vzorku. */
+void mp_fit_reset(mp_fit_t *f)
+{
+    if (f) memset(f, 0, sizeof *f);
+}
+
+void mp_fit_add(mp_fit_t *f, double x, double y)
+{
+    if (f == NULL) return;
+    f->n++;
+    f->sx  += x;
+    f->sy  += y;
+    f->sxx += x * x;
+    f->syy += y * y;
+    f->sxy += x * y;
+}
+
+int mp_fit_solve(mp_fit_t *f)
+{
+    if (f == NULL || f->n < 3u) return 0;
+    double n = (double)f->n;
+    double dx = n * f->sxx - f->sx * f->sx;      /* n·Sxx - Sx² */
+    /* Nulovy rozptyl X (vsechny vzorky ve stejnem case/teplote) -> smernice
+     * neni definovana. Radeji "nevim" nez deleni skoro nulou. */
+    if (dx <= 0.0 || dx < 1e-30) return 0;
+
+    f->b = (n * f->sxy - f->sx * f->sy) / dx;
+    f->a = (f->sy - f->b * f->sx) / n;
+
+    double dy = n * f->syy - f->sy * f->sy;
+    /* Konstantni Y (dokonaly, ale nulovy signal) -> korelace nedefinovana; b je
+     * pritom platne (0), takze vratime uspech s r = 0. */
+    f->r = (dy > 0.0) ? ((n * f->sxy - f->sx * f->sy) / sqrt(dx * dy)) : 0.0;
+    if (f->r >  1.0) f->r =  1.0;                /* zaokrouhlovaci prestrel */
+    if (f->r < -1.0) f->r = -1.0;
+    return 1;
+}
+
 int mp_selftest(void)
 {
     int ok = 1;
@@ -218,6 +288,53 @@ int mp_selftest(void)
         /* Nezinicializovany stav nesmi nic pokazit (win = 0). */
         mp_filt_state_t z; memset(&z, 0, sizeof z); z.mode = MP_FILT_AVG;
         ok &= (mp_filt_add(&z, 7.0) == 7.0);
+    }
+
+    /* ── Rozpocet nejistoty ───────────────────────────────────────────────── */
+    {   mp_budget_t bd;
+        /* Cisty prispevek rozliseni: TDC 2500 ps, hradlo 1 s, zadny jiny zdroj.
+         * u = sqrt(2)·2,5e-9 / 1 = 3,54e-9 */
+        mp_budget(1e7, 1.0, 2500.0, 0.0, 0.0, &bd);
+        ok &= (bd.u_res_rel > 3.5e-9 && bd.u_res_rel < 3.6e-9);
+        ok &= (bd.u_tot_rel > 3.5e-9 && bd.u_tot_rel < 3.6e-9);
+        /* Delsi hradlo musi rozliseni ZLEPSIT primo umerne. */
+        mp_budget_t bd10;
+        mp_budget(1e7, 10.0, 2500.0, 0.0, 0.0, &bd10);
+        ok &= (bd10.u_res_rel < bd.u_res_rel * 0.11);
+
+        /* Kvadraticky soucet: 3-4-5 trojuhelnik (3e-9 a 4e-9 -> 5e-9). */
+        mp_budget(1e7, 1.0, 0.0, 3e-9, 4.0, &bd);
+        ok &= (bd.u_tot_rel > 4.99e-9 && bd.u_tot_rel < 5.01e-9);
+        ok &= (bd.u_tot_hz  > 4.99e-2 && bd.u_tot_hz  < 5.01e-2);   /* x 1e7 Hz */
+        /* Pocet platnych cifer z u = 5e-9 -> log10(1/u) = 8,3 -> 8 */
+        ok &= (bd.digits == 8);
+    }
+
+    /* ── Linearni proklad ─────────────────────────────────────────────────── */
+    {   mp_fit_t ft;
+        /* Presna primka y = 2 + 3x -> a=2, b=3, r=1 */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 10; i++) mp_fit_add(&ft, (double)i, 2.0 + 3.0 * (double)i);
+        ok &= (mp_fit_solve(&ft) == 1);
+        ok &= (ft.b > 2.999 && ft.b < 3.001);
+        ok &= (ft.a > 1.999 && ft.a < 2.001);
+        ok &= (ft.r > 0.999);
+        /* Klesajici primka -> r = -1 */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 10; i++) mp_fit_add(&ft, (double)i, -5.0 * (double)i);
+        ok &= (mp_fit_solve(&ft) == 1 && ft.r < -0.999);
+        /* Malo bodu -> odmitnout (radeji nic nez smernice ze dvou vzorku). */
+        mp_fit_reset(&ft);
+        mp_fit_add(&ft, 0.0, 0.0); mp_fit_add(&ft, 1.0, 1.0);
+        ok &= (mp_fit_solve(&ft) == 0);
+        /* Nulovy rozptyl X (vse ve stejnem case) -> smernice nedefinovana. */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, 7.0, (double)i);
+        ok &= (mp_fit_solve(&ft) == 0);
+        /* Konstantni Y -> b = 0 a r = 0, ale VYPOCET PROJDE (validni vysledek). */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, (double)i, 3.0);
+        ok &= (mp_fit_solve(&ft) == 1 && ft.b > -1e-9 && ft.b < 1e-9);
     }
 
     return ok;

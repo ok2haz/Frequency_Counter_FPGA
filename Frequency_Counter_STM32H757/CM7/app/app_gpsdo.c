@@ -2648,6 +2648,7 @@ static void app_gpsdo_render_reference(void);       /* fwd (volano z menu_activa
 static void app_gpsdo_render_holdover(void);
 static void app_gpsdo_render_datalog(void);
 static void app_gpsdo_render_counter(void);
+static void app_gpsdo_render_analyza(void);   /* ANALYZA (s_view=41) — treti sourozenec rotace */
 static void app_gpsdo_render_selftest(void);
 static void app_gpsdo_render_cas(void);
 static void app_gpsdo_render_anim(void);
@@ -3579,6 +3580,164 @@ static void app_gpsdo_render_wizard(void)
     present_now();
 }
 
+/* ── Okno ANALYZA (s_view=41) ────────────────────────────────────────────────
+ * Kam se to veslo: NIKAM. Footer okna MERENI je plny (MODE/JEDNOTKA/RESET/
+ * CITAC/ZPET) a jeho karta ma 9 radku az k y=402. Misto natlaceni dalsich radku
+ * je ANALYZA TRETI SOUROZENEC v uz existujici rotaci: dvojice CITAC <-> MERENI
+ * se meni na CYKLUS CITAC -> MERENI -> ANALYZA -> CITAC. Stavajici footer
+ * tlacitko jen meni popisek, takze to nestoji ANI JEDEN novy pixel.
+ *
+ * Obsah (vse nad daty, ktera uz sbirame — bez FPGA):
+ *   ROZPOCET NEJISTOTY (#2/#51) + ROZLISENI HRADLA (#7): rozklad na prispevky
+ *     (rozliseni / stabilita / reference), rozsirena U (k=2) a pocet smysluplnych
+ *     cifer. To je presne to, cim se tovarni citac lisi od amaterskeho — nerekne
+ *     jen cislo, ale i jak moc mu verit.
+ *   DRIFT / AGING (#3): linearni proklad OCXO Vc v case z datalogu.
+ *   TEMPCO (#4): proklad Vc vuci teplote OCXO. ⚠️ Funguje UZ DNES, bez FPGA —
+ *     obe veliciny se loguji od zacatku.
+ *
+ * ⚠️ U prokladu se vedle smernice VZDY ukazuje korelace r. Bez ni nepoznas,
+ * jestli spoctena smernice neco znamena, nebo je to proklad sumu; |r| < 0,5
+ * proto vypis oznaci jako neprukazny misto aby tiskl vabive cislo. */
+static const prim_rect_t ANA_MEAS_BTN = {452, 417, 190, 61};   /* ANALYZA -> CITAC */
+
+/* Relativni hodnota -> citelna jednotka. Prispevky nejistoty se pohybuji pres
+ * cely rozsah 1e-13..1e-6, takze pevna jednotka by byla bud samé nuly, nebo
+ * nesmyslne velke cislo — meritko se proto voli podle velikosti.
+ * ⚠️ Bez `%f`/`%e` (nano.specs): integer extrakce jako jinde v projektu. */
+static void fmt_sci_ppb(double rel, char *b, size_t n)
+{
+    if (rel <= 0.0) { snprintf(b, n, "--"); return; }
+    const char *u; double v;
+    if      (rel >= 1e-6) { v = rel * 1e6;  u = "ppm"; }
+    else if (rel >= 1e-9) { v = rel * 1e9;  u = "ppb"; }
+    else                  { v = rel * 1e12; u = "ppt"; }
+    char num[16];
+    fmt_fixed(num, sizeof num, (float)v, (v < 10.0) ? 2 : 1);
+    snprintf(b, n, "%s %s", num, u);
+}
+
+/* Vysledky prokladu — pocitaji se jen pri vstupu do okna (blokujici QSPI). */
+static mp_fit_t  s_ana_drift, s_ana_tempco;
+static int       s_ana_drift_ok, s_ana_tempco_ok;
+static uint32_t  s_ana_span_s;
+
+/* Nacte z datalogu vzorky pro oba proklady. Jeden pruchod, obe osy zaroven —
+ * kazdy zaznam je blokujici QSPI cteni, takze druhy pruchod by byl zbytecne
+ * drahy. Omezeno na ANA_MAX_REC nejnovejsich zaznamu (~1 den pri 10 s). */
+#define ANA_MAX_REC 8640u
+static void ana_recompute(void)
+{
+    mp_fit_reset(&s_ana_drift);
+    mp_fit_reset(&s_ana_tempco);
+    s_ana_drift_ok = s_ana_tempco_ok = 0;
+    s_ana_span_s = 0;
+
+    datalog_status_t st; datalog_get_status(&st);
+    if (!st.ready || st.records < 4u) return;
+    uint32_t n = (st.records < ANA_MAX_REC) ? st.records : ANA_MAX_REC;
+    /* Decimace: nemusime cist kazdy zaznam, proklad z ~200 bodu je stejne dobry
+     * a 200 QSPI cteni je ~0,2 s misto ~9 s u 8640. */
+    uint32_t stride = (n > 200u) ? (n / 200u) : 1u;
+
+    uint32_t t_new = 0, t_old = 0; int have_t = 0;
+    for (uint32_t i = 0; i < n; i += stride) {
+        datalog_rec_t r;
+        if (!datalog_read_back(i, &r)) continue;
+        if (r.ocxo_vc_mv == DATALOG_INVALID16) continue;
+        double vc = (double)r.ocxo_vc_mv;
+        /* Drift: X = cas [h] od nejnovejsiho zaznamu (zaporny do minulosti). */
+        if (r.t_unix) {
+            if (!have_t) { t_new = r.t_unix; have_t = 1; }
+            t_old = r.t_unix;
+            mp_fit_add(&s_ana_drift, -((double)(t_new - r.t_unix)) / 3600.0, vc);
+        }
+        /* Tempco: X = teplota OCXO [°C]. */
+        if (r.t_ocxo_c100 != DATALOG_INVALID16)
+            mp_fit_add(&s_ana_tempco, (double)r.t_ocxo_c100 * 0.01, vc);
+    }
+    if (have_t && t_new > t_old) s_ana_span_s = t_new - t_old;
+    s_ana_drift_ok  = mp_fit_solve(&s_ana_drift);
+    s_ana_tempco_ok = mp_fit_solve(&s_ana_tempco);
+}
+
+/* "smernice jednotka (r=0.87)" nebo priznani, ze to neni prukazne. */
+static void ana_fit_text(const mp_fit_t *f, int ok, const char *unit, char *b, size_t n)
+{
+    if (!ok) { snprintf(b, n, "-- (malo dat)"); return; }
+    char sb[16], rb[16];
+    fmt_fixed(sb, sizeof sb, (float)f->b, 3);
+    fmt_fixed(rb, sizeof rb, (float)f->r, 2);
+    double ar = (f->r < 0) ? -f->r : f->r;
+    /* ⚠️ Slaba korelace = smernice je proklad sumu. Rict to rovnou je poctivejsi
+     * nez vytisknout vabive cislo a nechat uzivatele, at si domysli. */
+    snprintf(b, n, "%s %s  (r=%s%s)", sb, unit, rb, (ar < 0.5) ? ", neprukazne" : "");
+}
+
+static void app_gpsdo_render_analyza(void)
+{
+    int first = window_first(41);
+    static char c_u[48], c_res[40], c_sta[40], c_ref[40], c_dig[24],
+                c_dr[48], c_tc[48], c_span[32];
+    if (first) {
+        s_view = 41;
+        window_chrome("ANALYZA", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_C,
+                       .header_label = "Rozpocet nejistoty / drift / tempco"};
+        ui_card_render_chrome(&c);
+        ui_button_t bc = {.rect = ANA_MEAS_BTN, .variant = UI_BUTTON_NORMAL, .label = "< CITAC"};
+        ui_button_render(&bc);
+        c_u[0]=c_res[0]=c_sta[0]=c_ref[0]=c_dig[0]=c_dr[0]=c_tc[0]=c_span[0]='\0';
+        ana_recompute();     /* blokujici QSPI — jen pri vstupu, ne v tiku */
+    }
+
+    double hz    = screen_main_freq_hz();
+    double gate  = screen_main_gate_seconds();
+    double sigma = screen_main_adev_1s();
+    mp_budget_t bd;
+    /* TDC krok 2,5 ns = Si5356 4 faze po 90° (HW konstanta, viz okno Kalibrace).
+     * Reference: GPSDO disciplinovany na GNSS -> radove 1 ppb systematicky. */
+    mp_budget(hz, gate, 2500.0, (double)sigma, 1.0, &bd);
+
+    int drew = first;
+    char b[64], v[24];
+
+    /* Rozsirena nejistota U (k=2). ⚠️ `k` MUSI byt u cisla uvedene, jinak je
+     * udaj nejednoznacny (u vs U se lisi dvojnasobne). */
+    fmt_fixed(v, sizeof v, (float)(bd.u_tot_hz * 2.0), 5);
+    { char rel[20]; fmt_sci_ppb(bd.u_tot_rel * 2.0, rel, sizeof rel);
+      snprintf(b, sizeof b, "+-%s Hz  (%s, k=2)", v, rel); }
+    if (first || dchg(c_u, sizeof c_u, b)) { kv_row_live(104, "Nejistota U:", b, UI_COLOR_ACC, first); drew = 1; }
+
+    /* Rozklad na prispevky — bez nej neni poznat, CO nejistotu zeneka. */
+    fmt_sci_ppb(bd.u_res_rel, b, sizeof b);
+    if (first || dchg(c_res, sizeof c_res, b)) { kv_row_live(140, "  rozliseni:", b, UI_COLOR_INK_2, first); drew = 1; }
+    fmt_sci_ppb(bd.u_sta_rel, b, sizeof b);
+    if (first || dchg(c_sta, sizeof c_sta, b)) { kv_row_live(174, "  stabilita:", b, UI_COLOR_INK_2, first); drew = 1; }
+    fmt_sci_ppb(bd.u_ref_rel, b, sizeof b);
+    if (first || dchg(c_ref, sizeof c_ref, b)) { kv_row_live(208, "  reference:", b, UI_COLOR_INK_2, first); drew = 1; }
+
+    /* ⚠️ ZADNE `%f` — projekt linkuje nano.specs bez float formatovani (tise by
+     * to vytisklo nesmysl). Hradlo je z pevne sady 0,1/1/10/100 s, takze staci
+     * jedno desetinne misto pres `fmt_fixed` (integer extrakce). */
+    { char gs[12]; fmt_fixed(gs, sizeof gs, (float)gate, 1);
+      snprintf(b, sizeof b, "%d  (hradlo %s s)", bd.digits, gs); }
+    if (first || dchg(c_dig, sizeof c_dig, b)) { kv_row_live(242, "Platnych cifer:", b, UI_COLOR_OK, first); drew = 1; }
+
+    /* Drift + tempco (z datalogu, prepocitane pri vstupu). */
+    ana_fit_text(&s_ana_drift, s_ana_drift_ok, "mV/h", b, sizeof b);
+    if (first || dchg(c_dr, sizeof c_dr, b)) { kv_row_live(288, "Drift Vc:", b, UI_COLOR_INK, first); drew = 1; }
+    ana_fit_text(&s_ana_tempco, s_ana_tempco_ok, "mV/C", b, sizeof b);
+    if (first || dchg(c_tc, sizeof c_tc, b)) { kv_row_live(322, "Tempco Vc:", b, UI_COLOR_INK, first); drew = 1; }
+
+    if (s_ana_span_s) { char d[16]; screen_main_fmt_dur(d, sizeof d, (int32_t)s_ana_span_s);
+                        snprintf(b, sizeof b, "%s zpetne z datalogu", d); }
+    else              snprintf(b, sizeof b, "-- (datalog zatim prazdny)");
+    if (first || dchg(c_span, sizeof c_span, b)) { kv_row_live(356, "Okno prokladu:", b, UI_COLOR_INK_3, first); drew = 1; }
+
+    if (drew) present_now();
+}
+
 /* ── Okno KVALITA GPS (s_view=38): historie prijmu z datalogu ────────────────
  * Vstup tlacitkem KVALITA v okne GPS. Odpovida na otazku, kterou zivy pohled na
  * druzice zodpovedet neumi: "je moje antena dobre umistena?" — tedy jak vypadal
@@ -4231,7 +4390,7 @@ static void app_gpsdo_render_meas(void)
         ui_button_render(&bu);
         ui_button_t br = {.rect = MEAS_RST_BTN, .variant = UI_BUTTON_NORMAL, .label = "RESET"};
         ui_button_render(&br);
-        ui_button_t bc = {.rect = MEAS_CNT_BTN, .variant = UI_BUTTON_NORMAL, .label = "< CITAC"};
+        ui_button_t bc = {.rect = MEAS_CNT_BTN, .variant = UI_BUTTON_NORMAL, .label = "ANALYZA >"};
         ui_button_render(&bc);
         c_pri[0]=c_nom[0]=c_dev[0]=c_off[0]=c_tf[0]=c_n[0]=c_mean[0]=c_sd[0]=c_pp[0]='\0';
     }
@@ -5332,6 +5491,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 18) app_gpsdo_render_alarms();    /* Alarmy (zivy mute + pocitadla) */
     else if (s_view == 39) app_gpsdo_render_prahy();     /* Prahy (zive hodnoty + stav podminek) */
     else if (s_view == 40) app_gpsdo_render_wizard();    /* Pruvodce kalibraci (zive merena hodnota) */
+    else if (s_view == 41) app_gpsdo_render_analyza();   /* Analyza (zivy rozpocet nejistoty) */
     else if (s_view == 19) app_gpsdo_render_counter();   /* Citac (zivy detail mereni FPGA) */
     else if (s_view == 21) app_gpsdo_render_commdiag();  /* Komunikace: blokove schema (zive) */
     else if (s_view == 22) app_gpsdo_render_cas();       /* Cas / zona (zivy UTC + lokalni) */
@@ -5805,6 +5965,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             app_gpsdo_render_graphs();
             return true;
         }
+        if (s_view == 41 && in_rect(x, y, ANA_MEAS_BTN)) {     /* ANALYZA -> CITAC (uzavre rotaci) */
+            app_gpsdo_render_counter();
+            return true;
+        }
         if (s_view == 19 && in_rect(x, y, CNT_MEAS_BTN)) {     /* CITAC -> MERENI (sesterske, bez nav_push) */
             app_gpsdo_render_meas();
             return true;
@@ -5844,8 +6008,8 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 s_meas_pp_minmax ^= 1u;
                 s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
-            if (in_rect(x, y, MEAS_CNT_BTN)) {                 /* MERENI -> CITAC (sesterske) */
-                app_gpsdo_render_counter(); return true;
+            if (in_rect(x, y, MEAS_CNT_BTN)) {                 /* MERENI -> ANALYZA (rotace) */
+                app_gpsdo_render_analyza(); return true;
             }
         }
         if (s_view == 31) {                                 /* okno MATH / LIMITY: ovladace */
