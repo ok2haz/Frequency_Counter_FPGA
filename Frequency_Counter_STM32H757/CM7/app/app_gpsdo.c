@@ -4167,13 +4167,37 @@ static const prim_rect_t MEAS_PP_RECT  = {DG_LLBL, 364, 620, 34};
 static uint8_t  s_meas_pp_minmax = 0;
 static uint32_t s_meas_min_t = 0, s_meas_max_t = 0;   /* uptime [s] pri poslednim min/max */
 
+/* ── Filtr merení (#5) ───────────────────────────────────────────────────────
+ * Tap na radek "Primarni:" cykluje VYP -> PRUMER 8 -> MEDIAN 9 -> VYP.
+ * ⚠️ Filtruje se POUZE zobrazovana hodnota. Do Allan/histogram/datalogu jdou dal
+ * SYROVA mereni — filtrovana data by sigma_y(tau) umele vylepsila a to je presne
+ * ten druh cisla, kteremu by se pak nedalo verit. */
+static const prim_rect_t MEAS_PRI_RECT = {DG_LLBL, 84, 620, 34};
+static mp_filt_state_t   s_meas_filt;
+static uint8_t           s_meas_filt_idx = 0;   /* 0=VYP, 1=PRUM8, 2=MED9 */
+
+static void meas_filt_apply_idx(void)
+{
+    switch (s_meas_filt_idx) {
+    case 1:  mp_filt_reset(&s_meas_filt, MP_FILT_AVG, 8); break;
+    case 2:  mp_filt_reset(&s_meas_filt, MP_FILT_MED, 9); break;   /* liche = ostry median */
+    default: mp_filt_reset(&s_meas_filt, MP_FILT_OFF, 1); break;
+    }
+}
+
 /* Persist nastaveni okna MERENI — viz app_gpsdo.h. `s_meas_pp_minmax` se
  * ZAMERNE nepersistuje: je to okamzity pohled na tentyz udaj, ne nastaveni. */
 uint8_t app_gpsdo_meas_ui_get(void)
 {
+    /* bit0 rezim | bity1:3 jednotka | bity4:6 nominal | bit7 filtr(0/1)
+     * ⚠️ Na filtr zbyl JEN JEDEN bit, takze se uklada "zapnuty/vypnuty" a typ
+     * (prumer vs median) se pri obnove vrati na PRUMER. Radeji nez rozsirovat
+     * blob o dalsi bajt kvuli jedne trojhodnote — uzivatel si typ prepne jednim
+     * tapem a rozdil je viditelny primo v radku. */
     return (uint8_t)((s_meas_mode & 1u)
                      | (((uint8_t)s_meas_unit & 7u) << 1)
-                     | ((s_meas_nom_idx & 7u) << 4));
+                     | ((s_meas_nom_idx & 7u) << 4)
+                     | ((s_meas_filt_idx ? 1u : 0u) << 7));
 }
 
 void app_gpsdo_meas_ui_set(uint8_t p)
@@ -4185,6 +4209,8 @@ void app_gpsdo_meas_ui_set(uint8_t p)
     s_meas_unit = (mp_unit_t)((u < (uint8_t)MP_UNIT_REL) ? u : (uint8_t)MP_UNIT_PPB);
     uint8_t n = (uint8_t)((p >> 4) & 7u);
     s_meas_nom_idx = (uint8_t)((n < MEAS_NOM_N) ? n : 0u);
+    s_meas_filt_idx = (p & 0x80u) ? 1u : 0u;      /* zapnuty -> PRUMER (viz vyse) */
+    meas_filt_apply_idx();
 }
 
 static void app_gpsdo_render_meas(void)
@@ -4215,10 +4241,17 @@ static void app_gpsdo_render_meas(void)
     int drew = first;
     char b[48], db[32];
 
-    /* Primarni readout: FREKV (fmt_hz, double) nebo PERIODA v ns. */
-    if (s_meas_mode) { double ns = mp_period_s(hz) * 1e9; fmt_fixed(db, sizeof db, (float)ns, 4);
-                       snprintf(b, sizeof b, "%s ns", db); }
-    else             fmt_hz(hz, b, sizeof b);
+    /* Primarni readout: FREKV (fmt_hz, double) nebo PERIODA v ns.
+     * Filtr (#5) se aplikuje JEN tady — statistika nize a vse ostatni pracuje se
+     * syrovym `hz` (viz komentar u MEAS_PRI_RECT). */
+    { double shown = mp_filt_add(&s_meas_filt, hz);
+      if (s_meas_mode) { double ns = mp_period_s(shown) * 1e9; fmt_fixed(db, sizeof db, (float)ns, 4);
+                         snprintf(b, sizeof b, "%s ns", db); }
+      else             fmt_hz(shown, b, sizeof b);
+      if (s_meas_filt_idx) {                      /* pri zapnutem filtru rekni JAKY */
+          size_t l = strlen(b);
+          snprintf(b + l, sizeof b - l, "  [%s]", mp_filt_label(s_meas_filt.mode));
+      } }
     if (first || dchg(c_pri, sizeof c_pri, b)) { kv_row_live(104, "Primarni:", b, UI_COLOR_INK, first); drew = 1; }
 
     /* Nominal — AUTO (nejblizsi kulata reference) nebo rucne zvoleny. Zdroj je
@@ -5795,6 +5828,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 mp_stats_reset(&s_meas_stats);
                 s_meas_min_t = s_meas_max_t = g_uptime_s;
                 app_gpsdo_render_meas(); return true;
+            }
+            if (in_rect(x, y, MEAS_PRI_RECT)) {                /* tap: filtr VYP/PRUM/MED */
+                s_meas_filt_idx = (uint8_t)((s_meas_filt_idx + 1) % 3);
+                meas_filt_apply_idx();
+                g_sys_cfg_dirty = 1;                           /* persist v syscfg */
+                s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_NOM_RECT)) {                /* tap: nominal auto <-> presety */
                 s_meas_nom_idx = (uint8_t)((s_meas_nom_idx + 1) % MEAS_NOM_N);

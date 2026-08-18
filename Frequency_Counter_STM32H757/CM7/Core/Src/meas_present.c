@@ -5,6 +5,7 @@
  */
 #include "meas_present.h"
 #include <math.h>
+#include <string.h>   /* memset — selftest filtru */
 
 /* ── Running statistika (Welford) ────────────────────────────────────────── */
 void mp_stats_reset(mp_stats_t *s)
@@ -100,6 +101,56 @@ mp_tfom_t mp_tfom(int gps_valid, int fix_mode, int sats, float hdop,
 }
 
 /* ── Selftest ────────────────────────────────────────────────────────────── */
+/* ── Filtr merení (viz meas_present.h) ─────────────────────────────────────── */
+void mp_filt_reset(mp_filt_state_t *f, mp_filt_t mode, uint8_t win)
+{
+    if (f == NULL) return;
+    f->n = 0; f->head = 0;
+    f->mode = (mode < MP_FILT_N) ? mode : MP_FILT_OFF;
+    if (win < 1) win = 1;
+    if (win > MP_FILT_MAX) win = MP_FILT_MAX;
+    f->win = win;
+}
+
+const char *mp_filt_label(mp_filt_t m)
+{
+    switch (m) {
+    case MP_FILT_AVG: return "PRUM";
+    case MP_FILT_MED: return "MED";
+    default:          return "VYP";
+    }
+}
+
+double mp_filt_add(mp_filt_state_t *f, double x)
+{
+    if (f == NULL || f->mode == MP_FILT_OFF) return x;
+    if (f->win < 1 || f->win > MP_FILT_MAX) return x;      /* nezinicializovany */
+
+    f->buf[f->head] = x;
+    f->head = (uint8_t)((f->head + 1u) % f->win);
+    if (f->n < f->win) f->n++;
+
+    if (f->mode == MP_FILT_AVG) {
+        double s = 0.0;
+        for (uint8_t i = 0; i < f->n; i++) s += f->buf[i];
+        return s / (double)f->n;
+    }
+
+    /* Median: kopie + insertion sort. n <= 16, takze O(n²) je levnejsi nez
+     * cokoli chytrejsiho a hlavne bez alokace. */
+    double t[MP_FILT_MAX];
+    for (uint8_t i = 0; i < f->n; i++) t[i] = f->buf[i];
+    for (uint8_t i = 1; i < f->n; i++) {
+        double v = t[i]; int j = (int)i - 1;
+        while (j >= 0 && t[j] > v) { t[j + 1] = t[j]; j--; }
+        t[j + 1] = v;
+    }
+    /* Sudy pocet -> prumer dvou prostrednich (jinak by se vysledek pri kazdem
+     * dalsim vzorku skokove prehazoval mezi dvema hodnotami). */
+    return (f->n & 1u) ? t[f->n / 2]
+                       : 0.5 * (t[f->n / 2 - 1] + t[f->n / 2]);
+}
+
 int mp_selftest(void)
 {
     int ok = 1;
@@ -136,6 +187,38 @@ int mp_selftest(void)
     ok &= (mp_tfom(1, 3, 8, 0.8f, 0, 0).level == 1);   /* dobrý lock */
     ok &= (mp_tfom(0, 0, 0, 0.0f, 1, 0).level == 6);   /* holdover */
     ok &= (mp_tfom(0, 0, 0, 0.0f, 0, 0).level == 8);   /* no lock */
+
+    /* ── Filtr merení ─────────────────────────────────────────────────────── */
+    {   mp_filt_state_t f;
+        /* VYP musi vratit vstup beze zmeny. */
+        mp_filt_reset(&f, MP_FILT_OFF, 8);
+        ok &= (mp_filt_add(&f, 42.0) == 42.0);
+
+        /* PRUMER: 1..4 -> 1; 1,5; 2; 2,5 */
+        mp_filt_reset(&f, MP_FILT_AVG, 4);
+        ok &= (mp_filt_add(&f, 1.0) == 1.0);
+        ok &= (mp_filt_add(&f, 2.0) == 1.5);
+        ok &= (mp_filt_add(&f, 3.0) == 2.0);
+        ok &= (mp_filt_add(&f, 4.0) == 2.5);
+
+        /* MEDIAN musi VYSTRELEK ZAHODIT — to je cely duvod, proc existuje.
+         * Okno 5, hodnoty 10,10,10,10 + jeden skok 1000 -> median zustava 10,
+         * zatimco prumer by vyskocil na ~208. */
+        mp_filt_reset(&f, MP_FILT_MED, 5);
+        (void)mp_filt_add(&f, 10.0); (void)mp_filt_add(&f, 10.0);
+        (void)mp_filt_add(&f, 10.0); (void)mp_filt_add(&f, 10.0);
+        ok &= (mp_filt_add(&f, 1000.0) == 10.0);
+
+        /* Sudy pocet vzorku -> prumer dvou prostrednich (bez skokoveho prepinani). */
+        mp_filt_reset(&f, MP_FILT_MED, 4);
+        (void)mp_filt_add(&f, 1.0); (void)mp_filt_add(&f, 2.0);
+        (void)mp_filt_add(&f, 3.0);
+        ok &= (mp_filt_add(&f, 4.0) == 2.5);
+
+        /* Nezinicializovany stav nesmi nic pokazit (win = 0). */
+        mp_filt_state_t z; memset(&z, 0, sizeof z); z.mode = MP_FILT_AVG;
+        ok &= (mp_filt_add(&z, 7.0) == 7.0);
+    }
 
     return ok;
 }

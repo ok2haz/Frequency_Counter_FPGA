@@ -56,7 +56,34 @@ typedef struct { uint8_t level; const char *label; } mp_tfom_t;
 mp_tfom_t mp_tfom(int gps_valid, int fix_mode, int sats, float hdop,
                   int holdover, int warmup);
 
-/* Pure-logic unit test (perioda/nominál/jednotky/statistika/TFOM) — 1 = PASS. */
+/* ══════════════ Filtr měření (potlačení výstřelků) ══════════════════════════
+ * Standardní výbava továrních čítačů: zobrazovaná hodnota se filtruje přes
+ * posledních N měření. Dvě různé role:
+ *   PRŮMĚR  — sníží šum o √N, ale JEDINÝ výstřelek se rozprostře do všech N
+ *             následujících hodnot,
+ *   MEDIÁN  — výstřelek zahodí úplně (robustní statistika), ale šum nesníží.
+ * Proto obojí, ne jen jedno: na šum průměr, na rušení medián.
+ * ⚠️ Filtr mění POUZE zobrazovanou hodnotu. Do statistiky (Allan/histogram/
+ * datalog) jdou dál SYROVÁ měření — filtrovaná data by σy(τ) uměle vylepšila
+ * a to je přesně ten druh čísla, kterému by se pak nedalo věřit. */
+typedef enum { MP_FILT_OFF = 0, MP_FILT_AVG, MP_FILT_MED, MP_FILT_N } mp_filt_t;
+
+#define MP_FILT_MAX   16          /* strop okna (RAM i doba doběhu) */
+
+typedef struct {
+    double   buf[MP_FILT_MAX];
+    uint8_t  n;                   /* kolik je zaplněno */
+    uint8_t  head;
+    uint8_t  win;                 /* šířka okna 1..MP_FILT_MAX */
+    mp_filt_t mode;
+} mp_filt_state_t;
+
+void        mp_filt_reset(mp_filt_state_t *f, mp_filt_t mode, uint8_t win);
+/** Přidá vzorek a vrátí filtrovanou hodnotu (při MP_FILT_OFF vrací vstup). */
+double      mp_filt_add(mp_filt_state_t *f, double x);
+const char *mp_filt_label(mp_filt_t m);   /* "VYP" / "PRUM" / "MED" */
+
+/* Pure-logic unit test (perioda/nominál/jednotky/statistika/TFOM/filtr) — 1 = PASS. */
 int mp_selftest(void);
 
 #ifdef __cplusplus
