@@ -412,3 +412,95 @@ int ipc_selftest(void)
 
     return ok;
 }
+
+/* ══════════════ SCPI nad IPC snapshotem (priprava CM4 backendu, #25) ═════════
+ * Naplni `scpi_src_t` VYHRADNE ze snapshotu — presne to, co bude delat CM4.
+ * Viz komentar u deklarace v ipc_shared.h.
+ *
+ * ⚠️ Bity platnosti se prenaseji PRIMYM prirazenim (`valid = sens_valid`), ne
+ * prekladem — SCPI_V_* a IPC_V_* maji ZAMERNE shodne pozice a hlidaji to
+ * staticke asserty nize. Kdyby se rozesly, preklad by neprosel.
+ *
+ * ⚠️ Co snapshot NEMA, zustava nulove/neplatne — a to je spravne: lepe "nevim"
+ * nez vymysleny udaj. Konkretne datalog (MMEM:*) a `selftest_pass` snapshot
+ * dnes nenese, takze CM4 na ne odpovi prazdno; az to bude potreba, doplni se do
+ * snapshotu s bumpem IPC_VERSION (dnes by to byla mrtva vaha). */
+_Static_assert((int)SCPI_V_FREQ    == (int)IPC_V_FREQ,    "SCPI/IPC bit FREQ se rozesel");
+_Static_assert((int)SCPI_V_DIV16   == (int)IPC_V_DIV16,   "SCPI/IPC bit DIV16 se rozesel");
+_Static_assert((int)SCPI_V_FRAME   == (int)IPC_V_FRAME,   "SCPI/IPC bit FRAME se rozesel");
+_Static_assert((int)SCPI_V_T_OCXO  == (int)IPC_V_T_OCXO,  "SCPI/IPC bit T_OCXO se rozesel");
+_Static_assert((int)SCPI_V_T_BOARD == (int)IPC_V_T_BOARD, "SCPI/IPC bit T_BOARD se rozesel");
+_Static_assert((int)SCPI_V_T_MCU   == (int)IPC_V_T_MCU,   "SCPI/IPC bit T_MCU se rozesel");
+_Static_assert((int)SCPI_V_T_FPGA  == (int)IPC_V_T_FPGA,  "SCPI/IPC bit T_FPGA se rozesel");
+_Static_assert((int)SCPI_V_VC      == (int)IPC_V_VC,      "SCPI/IPC bit VC se rozesel");
+_Static_assert((int)SCPI_V_RF      == (int)IPC_V_RF,      "SCPI/IPC bit RF se rozesel");
+_Static_assert((int)SCPI_V_V12     == (int)IPC_V_V12,     "SCPI/IPC bit V12 se rozesel");
+_Static_assert((int)SCPI_V_V5      == (int)IPC_V_V5,      "SCPI/IPC bit V5 se rozesel");
+_Static_assert((int)SCPI_V_VREF    == (int)IPC_V_VREF,    "SCPI/IPC bit VREF se rozesel");
+_Static_assert((int)SCPI_V_VBAT    == (int)IPC_V_VBAT,    "SCPI/IPC bit VBAT se rozesel");
+_Static_assert((int)SCPI_V_GPS     == (int)IPC_V_GPS,     "SCPI/IPC bit GPS se rozesel");
+
+int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
+{
+    scpi_src_t *s = (scpi_src_t *)src_out;
+    const ipc_snapshot_t *sn = (const ipc_snapshot_t *)snap_in;
+    if (s == NULL || sn == NULL) return 0;
+    memset(s, 0, sizeof *s);
+    if (sn->magic != IPC_MAGIC || sn->version != IPC_VERSION) return 0;
+
+    s->valid = sn->sens_valid;          /* pozice bitu jsou shodne, viz asserty vyse */
+
+    s->freq4_x100000  = sn->freq4_x100000;
+    s->freq16_x100000 = sn->freq16_x100000;
+    s->gate_ns        = sn->gate_ns;
+    s->channel_id     = sn->channel_id;
+
+    s->t_ocxo_c100  = sn->t_ocxo_c100;
+    s->t_board_c100 = sn->t_board_c100;
+    s->t_mcu_c100   = sn->t_mcu_c100;
+    s->t_fpga_c100  = sn->t_fpga_c100;
+
+    s->ocxo_vc_mv = sn->ocxo_vc_mv;
+    s->rf_mv      = sn->rf_mv;
+    s->v_12v_mv   = sn->v_12v_mv;
+    s->v_5v_mv    = sn->v_5v_mv;
+    s->vref_mv    = sn->vref_mv;
+    s->vbat_mv    = sn->vbat_mv;
+    s->ad8307_slope_mv_db   = sn->ad8307_slope_mv_db;
+    s->ad8307_intercept_dbm = sn->ad8307_intercept_dbm;
+
+    s->gps_fix_mode = sn->gps_fix_mode;
+    s->gps_num_sat  = sn->gps_num_sat;
+    s->gps_lat_deg  = (float)sn->gps_lat_e7 * 1e-7f;
+    s->gps_lon_deg  = (float)sn->gps_lon_e7 * 1e-7f;
+    s->gps_alt_m    = (float)sn->gps_alt_cm * 0.01f;
+    /* Cas: snapshot nese unix, `scpi_src_t` hodiny/minuty/sekundy. Prevod je
+     * ciste modularni — datum SCPI z tohohle pole necte (`SYST:GPS:TIME?`). */
+    { uint32_t sod = sn->rtc_unix % 86400u;
+      s->gps_hour = (uint8_t)(sod / 3600u);
+      s->gps_min  = (uint8_t)((sod / 60u) % 60u);
+      s->gps_sec  = (uint8_t)(sod % 60u); }
+
+    s->si5356_status = sn->si5356_status;
+    s->si5356_ok     = sn->si5356_ok;
+    s->uptime_s      = sn->uptime_s;
+    s->spi_ok        = (sn->flags & IPC_F_FPGA_LINK) ? 1u : 0u;
+    s->freq_err      = (sn->flags & IPC_F_SIGNAL_LOST) ? 1u : 0u;
+    s->set_running   = (sn->flags & IPC_F_RUNNING) ? 1u : 0u;
+    s->set_chan      = sn->channel_id ? 1u : 0u;
+
+    /* Math/limit cfg mirror (CALC readbacky). */
+    s->meas.math_en  = sn->math_en ? 1 : 0;
+    s->meas.null_en  = sn->null_en ? 1 : 0;
+    s->meas.limit_en = sn->limit_en ? 1 : 0;
+    s->meas.m        = sn->math_m;
+    s->meas.b        = sn->math_b;
+    s->meas.null_ref = sn->null_ref;
+    s->meas.lo       = sn->lim_lo;
+    s->meas.hi       = sn->lim_hi;
+
+    /* set_cfg/read_log zustavaji NULL: zapis konfigurace jde z CM4 cmd ringem
+     * (jiny mechanismus) a datalog snapshot nenese. NULL = "nepodporovano",
+     * parser to korektne odmitne misto vymysleni hodnoty. */
+    return 1;
+}

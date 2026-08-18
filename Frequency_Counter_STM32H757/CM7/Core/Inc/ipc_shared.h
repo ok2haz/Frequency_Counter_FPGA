@@ -279,6 +279,21 @@ int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prik
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
+
+/* ── SCPI nad IPC snapshotem (priprava CM4 backendu, #25) ────────────────────
+ * Naplni `scpi_src_t` VYHRADNE z IPC snapshotu — presne to, co bude delat CM4,
+ * az na nem SCPI pojede pres TCP. Deklarace je `void *`, aby `ipc_shared.h`
+ * nemusel tahnout `scpi.h` (a naopak) — implementace v `ipc.c`, kde jsou oba.
+ *
+ * ⚠️ SMYSL: nejvetsi riziko TCP poloviny #25 neni socket, ale otazka "nese
+ * snapshot vsechno, co SCPI potrebuje, a sedi bity platnosti?". Tohle se da
+ * overit UZ TED na CM7 — `scpi ipc <cmd>` proti `scpi <cmd>` musi dat SHODNOU
+ * odpoved. Staticke asserty hlidaji, ze SCPI_V_* == IPC_V_*, ale runtime dukaz
+ * do ted neexistoval.
+ *
+ * @param snap  ukazatel na `ipc_snapshot_t` (typicky prectena kopie).
+ * @return 1 = snapshot vypada platne (magic/verze), 0 = nepouzitelny. */
+int ipc_scpi_src_from_snap(void *src_out, const void *snap);
 #ifdef __cplusplus
 }
 #endif

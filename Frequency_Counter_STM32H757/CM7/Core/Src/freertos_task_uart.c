@@ -38,6 +38,7 @@
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 #include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
 #include "flightrec.h"      /* UART "flightrec" — kontext pred resetem (#18) */
+#include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -618,12 +619,38 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strncmp(RxBuffer, "scpi ipc ", 9) == 0) {
+				  /* ── SCPI nad IPC SNAPSHOTEM (priprava CM4 backendu, #25) ──────
+				   * Spusti TENTYZ parser, ale se zdrojem dat naplnenym VYHRADNE
+				   * z IPC snapshotu — presne to, co bude delat CM4 pres TCP.
+				   * Vypise obe odpovedi vedle sebe, takze rozdil je videt hned.
+				   *
+				   * ⚠️ Smysl: nejvetsi riziko TCP poloviny #25 neni socket, ale
+				   * otazka "nese snapshot vsechno, co SCPI potrebuje?". Tohle je
+				   * runtime dukaz — bez ETH, bez flashe bank 2, hned na stole.
+				   * Rozdil znamena diru ve snapshotu, ne chybu parseru. */
+				  const char *arg = &RxBuffer[9];
+				  static scpi_src_t src_ipc;      /* ~200 B — NE na stack UartTasku */
+				  static scpi_ctx_t ctx_ipc;
+				  char r_cm7[160], r_ipc[160];
+				  size_t n7 = scpi_process(arg, r_cm7, sizeof r_cm7);
+				  if (!ipc_scpi_src_from_snap(&src_ipc, (const void *)&g_ipc.snap)) {
+					  printf("SCPI/IPC: snapshot neni platny (magic/verze) — publikoval uz CM7?\n");
+				  } else {
+					  scpi_ctx_init(&ctx_ipc);
+					  size_t ni = scpi_process_ctx(&ctx_ipc, &src_ipc, arg, r_ipc, sizeof r_ipc);
+					  printf("  CM7 : %s\n", n7 ? r_cm7 : "(bez odpovedi)");
+					  printf("  IPC : %s\n", ni ? r_ipc : "(bez odpovedi)");
+					  printf("  => %s\n", (n7 == ni && strcmp(r_cm7, r_ipc) == 0)
+						                    ? "SHODA" : "!! ROZDIL — dira ve snapshotu");
+				  }
 			  }
 			  else if (strncmp(RxBuffer, "scpi", 4) == 0 &&
 			           (RxBuffer[4] == ' ' || RxBuffer[4] == '\0')) {
