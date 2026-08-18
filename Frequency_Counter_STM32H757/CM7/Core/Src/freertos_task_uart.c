@@ -616,7 +616,7 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | fpgasim [on|off|fault] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1026,6 +1026,46 @@ void UartTask_run(void *argument)
 					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "fpgasim", 7) == 0) {
+				  /* Emulator FPGA ramcu — viz fpga_freq.h. Syntaxe:
+				   *   fpgasim                     stav
+				   *   fpgasim off
+				   *   fpgasim on [Hz] [noise_ppb] [drift_ppb/h]
+				   *   fpgasim fault none|lost|crc|div16|phase           */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strncmp(a, "on", 2) == 0) {
+					  /* Rucni parsovani (zadny sscanf — nano.specs). */
+					  const char *p = a + 2;
+					  double hz = 0; float noi = 0.f, dr = 0.f;
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { hz = hz * 10.0 + (*p - '0'); p++; }
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { noi = noi * 10.f + (float)(*p - '0'); p++; }
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { dr = dr * 10.f + (float)(*p - '0'); p++; }
+					  if (hz < 1.0) hz = 10000000.0;
+					  fpga_sim_set(1, hz, noi, dr);
+					  char hb[32]; fpga_freq_format_val((uint64_t)(hz * 100000.0), hb, sizeof hb);
+					  printf("FPGASIM: ZAPNUTO %s  sum +-%d ppb  drift %d ppb/h\n",
+						     hb, (int)noi, (int)dr);
+					  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
+				  } else if (strncmp(a, "off", 3) == 0) {
+					  fpga_sim_set(0, 0, 0, 0);
+					  printf("FPGASIM: vypnuto (zpet na skutecne SPI)\n");
+				  } else if (strncmp(a, "fault", 5) == 0) {
+					  const char *w = (a[5] == ' ') ? &a[6] : "";
+					  if (fpga_sim_fault(w)) printf("FPGASIM: porucha = %s\n", w);
+					  else printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase)\n");
+				  } else {
+					  if (fpga_sim_active()) {
+						  char hb[32]; fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
+						  printf("FPGASIM: AKTIVNI, %s\n", hb);
+					  } else {
+						  printf("FPGASIM: vypnuto\n");
+					  }
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "meas reset") == 0) {
 				  /* Allan/Histogram/Trend akumulace zmeni jen UiTask (kresli je,
 				   * neni thread-safe) -> pozadavek, ne primy zapis (viz g_screen_req). */
@@ -1109,6 +1149,13 @@ void UartTask_run(void *argument)
 						     (unsigned long)fpga_freq_crc_last_age_s());
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni
+				   * misto, kam se sahne pri diagnostice. */
+				  if (fpga_sim_active()) {
+					  char hb[32];
+					  fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
+					  printf("  ⚠️ FPGASIM AKTIVNI (%s) — kmitocet NENI meren!\n", hb);
+				  }
 				  char db[80];
 				  datalog_format_status(db, sizeof db);
 				  printf("%s\n", db);

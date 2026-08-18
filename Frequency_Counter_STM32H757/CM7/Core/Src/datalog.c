@@ -355,6 +355,7 @@ static void sample(datalog_rec_t *r)
     if (g_freq_stale)                           f |= DATALOG_F_SIGNAL_LOST;
     if (use16)                                  f |= DATALOG_F_DIV16;
     if (!g.valid && g.fixes > 0)                f |= DATALOG_F_HOLDOVER;
+    if (fpga_sim_active())                      f |= DATALOG_F_SIM;   /* emulovany kmitocet */
     r->flags  = f;
     r->sats   = g.num_sat;
     r->hdop10 = (g.hdop > 0.0f && g.hdop < 25.0f) ? (uint8_t)(g.hdop * 10.0f + 0.5f) : 255u;

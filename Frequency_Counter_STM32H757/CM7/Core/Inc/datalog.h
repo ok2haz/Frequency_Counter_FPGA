@@ -79,6 +79,10 @@ typedef struct {
 #define DATALOG_F_SIGNAL_LOST (1u << 3)   /* FPGA SIGNAL_LOST / mrtvy link */
 #define DATALOG_F_DIV16       (1u << 4)   /* mereno pres odbocku /16 (jinak /4) */
 #define DATALOG_F_HOLDOVER    (1u << 5)   /* fix ztracen po tom, co uz jednou byl */
+/* ⚠️ Kmitocet v zaznamu pochazi z EMULATORU ramcu (`fpga_sim_*`), ne z FPGA.
+ * Priznak je v logu navzdy, takze se emulovana data uz nikdy nezamysli za
+ * merena — ani po exportu do CSV, ani za pul roku pri analyze. */
+#define DATALOG_F_SIM         (1u << 6)
 
 /* ── Backend uloziste (W25Q / SD / ...) ────────────────────────────────────── */
 typedef struct {
