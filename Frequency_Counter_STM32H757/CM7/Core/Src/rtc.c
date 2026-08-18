@@ -306,6 +306,121 @@ bool rtc_selftest(void)
   return ok != 0;
 }
 
+/* ══════════════ Disciplinace LSE podle GPS (viz rtc.h) ══════════════════════ */
+/* ⚠️ Okno 8 min (ne kratsi): sum jednoho mereni je dany rozlisenim faze (~4 ms
+ * na kazdem konci) plus jitterem detekce hrany, dohromady ~6 ms. Pri 8 min to
+ * vyjde ~12 ppm/okno; pri 2 min by to bylo ~50 ppm a prumer by konvergoval
+ * 4x pomaleji. 8 min se navic pohodlne vejde do 10minutoveho resync intervalu,
+ * takze na kazdy interval pripadne prave jedno okno. */
+#define LSE_MIN_WINDOW_MS   480000u
+#define LSE_TRUST_WINDOWS   12u       /* od kolika oken je prumer duveryhodny (~2 h) */
+#define LSE_CALIB_MIN_MS    3600000u  /* korekci prepisovat nejvys 1x za hodinu */
+#define LSE_PPM_SANE        250.0f    /* mimo tohle to neni drift, ale chyba mereni */
+
+static uint8_t  s_lse_sec_prev = 0xFFu;  /* posledni videna GPS sekunda (detekce hrany) */
+static uint8_t  s_lse_have_ref = 0;
+static int32_t  s_lse_ref_ph;            /* referencni faze [ms] */
+static uint32_t s_lse_ref_tick;          /* HAL_GetTick reference */
+static float    s_lse_ppm_last = 0.0f;
+static float    s_lse_ppm_avg  = 0.0f;
+static uint32_t s_lse_n        = 0;
+static float    s_lse_cal_ppm  = 0.0f;   /* co je zapsane v RTC_CALR */
+static uint32_t s_lse_cal_ms   = 0;      /* kdy se naposled psalo */
+
+float    rtc_lse_ppm(void)       { return s_lse_ppm_avg; }
+float    rtc_lse_ppm_last(void)  { return s_lse_ppm_last; }
+uint32_t rtc_lse_windows(void)   { return s_lse_n; }
+float    rtc_lse_calib_ppm(void) { return s_lse_cal_ppm; }
+
+void rtc_lse_reset(void)
+{
+    s_lse_have_ref = 0; s_lse_n = 0;
+    s_lse_ppm_avg = s_lse_ppm_last = 0.0f;
+    s_lse_sec_prev = 0xFFu;
+}
+
+/* Faze RTC vuci GPS sekunde [ms], zabalena do <-30000, +30000>.
+ * ⚠️ `HAL_RTC_GetTime` MUSI predchazet `GetDate` (cteni TR odemyka shadow
+ * registry) — a `SubSeconds`/`SecondFraction` plati jen z te same GetTime. */
+static int32_t rtc_phase_ms(const gps_data_t *g)
+{
+    RTC_TimeTypeDef t = {0};
+    RTC_DateTypeDef d = {0};
+    if (HAL_RTC_GetTime(&hrtc, &t, RTC_FORMAT_BIN) != HAL_OK) return INT32_MIN;
+    (void)HAL_RTC_GetDate(&hrtc, &d, RTC_FORMAT_BIN);
+
+    /* SubSeconds odpocitava DOLU od SecondFraction -> zlomek uplynule sekundy. */
+    uint32_t sf = t.SecondFraction ? t.SecondFraction : 255u;
+    int32_t frac_ms = (int32_t)(((uint32_t)(sf - t.SubSeconds) * 1000u) / (sf + 1u));
+
+    int32_t rtc_ms = (int32_t)t.Seconds * 1000 + frac_ms;
+    int32_t gps_ms = (int32_t)g->second * 1000;
+    int32_t diff   = rtc_ms - gps_ms;
+    while (diff >  30000) diff -= 60000;   /* obe jsou sekundy v ramci minuty */
+    while (diff < -30000) diff += 60000;
+    return diff;
+}
+
+/* Zapise korekci do RTC_CALR (smooth calibration, okno 32 s).
+ * ppm > 0 znamena "RTC bezi napred" -> musime ho ZPOMALIT.
+ * Krok CALM je 2^-20 = 0,9537 ppm; CALP pridava +512 pulzu (+488 ppm). */
+static void rtc_lse_apply_calib(float drift_ppm)
+{
+    float want = -drift_ppm;                     /* korekce ma drift vyrusit */
+    int32_t units = (int32_t)(want / 0.95367432f + (want >= 0 ? 0.5f : -0.5f));
+    uint32_t calp = RTC_SMOOTHCALIB_PLUSPULSES_RESET;
+    if (units > 0) { calp = RTC_SMOOTHCALIB_PLUSPULSES_SET; units = 512 - units; }
+    else           { units = -units; }
+    if (units < 0)   units = 0;
+    if (units > 511) units = 511;
+    if (HAL_RTCEx_SetSmoothCalib(&hrtc, RTC_SMOOTHCALIB_PERIOD_32SEC,
+                                 calp, (uint32_t)units) == HAL_OK) {
+        s_lse_cal_ppm = ((calp == RTC_SMOOTHCALIB_PLUSPULSES_SET ? 512.0f : 0.0f)
+                         - (float)units) * 0.95367432f;
+        s_lse_cal_ms  = HAL_GetTick();
+    }
+}
+
+/* Vzorkovac driftu — vola se na KAZDEM pruchodu rtc_app_tick (tj. tempem
+ * defaultTasku, ne 1x/s), aby se hrana GPS sekundy zachytila co nejdriv. */
+static void rtc_lse_sample(void)
+{
+    gps_data_t g;
+    gps_get(&g);
+    if (!gps_time_sane(&g)) { s_lse_sec_prev = 0xFFu; return; }
+    if (g.second == s_lse_sec_prev) return;       /* zadna nova GPS sekunda */
+    s_lse_sec_prev = g.second;
+
+    int32_t ph = rtc_phase_ms(&g);
+    if (ph == INT32_MIN) return;
+    uint32_t now = HAL_GetTick();
+
+    if (!s_lse_have_ref) {                        /* prvni bod po syncu = reference */
+        s_lse_ref_ph = ph; s_lse_ref_tick = now; s_lse_have_ref = 1;
+        return;
+    }
+
+    uint32_t dt = now - s_lse_ref_tick;
+    if (dt < LSE_MIN_WINDOW_MS) return;           /* prilis kratke okno -> velky sum */
+
+    float ppm = (float)(ph - s_lse_ref_ph) * 1000.0f / (float)dt;
+    /* Novy referencni bod = tenhle (okna navazuji, faze se nekumuluje pres sync). */
+    s_lse_ref_ph = ph; s_lse_ref_tick = now;
+
+    if (ppm > LSE_PPM_SANE || ppm < -LSE_PPM_SANE) return;   /* vypadek, ne drift */
+    s_lse_ppm_last = ppm;
+    s_lse_n++;
+    s_lse_ppm_avg += (ppm - s_lse_ppm_avg) / (float)s_lse_n;  /* bezici prumer */
+
+    /* Korekci zapisujeme az kdyz je prumer duveryhodny, a nejvys 1x za hodinu —
+     * casty prepis CALR by menil takt pod rukama prave beziciho mereni. */
+    if (s_lse_n >= LSE_TRUST_WINDOWS &&
+        (s_lse_cal_ms == 0 || (now - s_lse_cal_ms) >= LSE_CALIB_MIN_MS)) {
+        /* Korekce se SKLADA: CALR uz nejakou drzi a prumer meri drift PO ni. */
+        rtc_lse_apply_calib(s_lse_ppm_avg - s_lse_cal_ppm);
+    }
+}
+
 /* Srovna RTC podle aktualniho GPS fixu (pokud je platny a nadesel cas re-syncu).
  * Vola se jen z rtc_app_tick (defaultTask). */
 static void rtc_try_sync(void)
@@ -332,10 +447,19 @@ static void rtc_try_sync(void)
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_SYNC_MAGIC);   /* prezije warm reset */
   s_synced = 1;
   s_last_sync = now;
+  /* ⚠️ Srovnani casem SKOKOVE meni fazi -> stara reference driftu uz neplati.
+   * Bez tohohle by dalsi okno namerilo skok jako obri "drift". */
+  s_lse_have_ref = 0;
+  s_lse_sec_prev = 0xFFu;
 }
 
 void rtc_app_tick(void)
 {
+  /* ⚠️ ZAMERNE PRED throttlem: vzorkovac driftu musi bezet tempem defaultTasku
+   * (~100 Hz), aby hranu GPS sekundy zachytil co nejdriv. Pri 1 Hz by se s 1 Hz
+   * GPS aktualizaci aliasovalo a latence detekce by kolisala o celou sekundu. */
+  rtc_lse_sample();
+
   uint32_t now = HAL_GetTick();
   if ((now - s_last_tick) < RTC_TICK_MS) return;   /* throttle ~1 Hz */
   s_last_tick = now;

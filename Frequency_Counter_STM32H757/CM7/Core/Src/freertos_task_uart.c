@@ -36,6 +36,7 @@
 #include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
+#include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -864,6 +865,28 @@ void UartTask_run(void *argument)
 				  printf("  VREFBUF CSR=0x%08lX CCR=0x%08lX  ADC CCR=0x%08lX PCSEL=0x%08lX\n",
 						 (unsigned long)VREFBUF->CSR, (unsigned long)VREFBUF->CCR,
 						 (unsigned long)ADC3_COMMON->CCR, (unsigned long)ADC3->PCSEL);
+			  }
+			  else if (strncmp(RxBuffer, "rtc cal", 7) == 0) {
+				  /* Drift vlastniho LSE krystalu merený proti GPS (viz rtc.h). */
+				  if (strcmp(&RxBuffer[7], " reset") == 0) {
+					  rtc_lse_reset();
+					  printf("RTC CAL: statistika vynulovana, merim znovu\n");
+				  } else {
+					  uint32_t n = rtc_lse_windows();
+					  char a[16], l[16], c[16];
+					  fmt_f2(a, sizeof a, rtc_lse_ppm());
+					  fmt_f2(l, sizeof l, rtc_lse_ppm_last());
+					  fmt_f2(c, sizeof c, rtc_lse_calib_ppm());
+					  printf("RTC CAL: drift LSE %s ppm (prumer z %lu oken po 8 min)\n",
+						     n ? a : "--", (unsigned long)n);
+					  printf("  posledni okno: %s ppm   korekce v RTC_CALR: %s ppm\n",
+						     n ? l : "--", c);
+					  if (n == 0)
+						  printf("  (jeste zadne okno — potrebuje GPS fix a ~8 min behu)\n");
+					  else if (n < 12)
+						  printf("  ⚠️ prumer je zatim SUMOVY (jedno okno ~12 ppm); duveryhodny od ~12 oken (~2 h)\n");
+					  printf("  `rtc cal reset` zacne merit znovu\n");
+				  }
 			  }
 			  else if (strcmp(RxBuffer, "rtc") == 0) {
 				  char rbuf[24];

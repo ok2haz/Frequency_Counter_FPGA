@@ -92,6 +92,34 @@ int rtc_cest_active(uint16_t y, uint8_t month, uint8_t day, uint8_t hour_utc);
 /* Pure-logic selftest kalendarni matematiky (rtc_apply_tz prehoupnuti pres
  * pulnoc/mesic/rok/prestupny unor + rtc_cest_active hranice DST). Bez HW. */
 bool rtc_selftest(void);
+
+/* ══════════════ Disciplinace LSE podle GPS (mereni driftu vlastniho krystalu) ══
+ * RTC bezi z krystalu LSE 32,768 kHz a kazdych 10 minut se srovnava podle GPS.
+ * Ta odchylka, kterou pritom zahazoval, JE MERENI — drift vlastni casove
+ * zakladny v ppm. Je to funkcni miniatura celeho GPSDO (zmer chybu proti GNSS,
+ * aplikuj korekci, drz holdover), jen na RTC misto OCXO — a nepotrebuje ani
+ * FPGA, ani jediny novy soucastku.
+ *
+ * ── Jak se to meri ─────────────────────────────────────────────────────────
+ * GPS dava jen CELE sekundy, takze se faze snima na HRANE GPS sekundy: v tom
+ * okamziku se precte sub-sekundovy registr RTC (SynchPrediv=255 -> 1/256 s =
+ * 3,9 ms). Drift = (faze_ted - faze_referencni) / uplynuly_cas.
+ * ⚠️ NMEA veta dorazi s latenci po skutecne sekunde (UART + parsovani), ale ta
+ * je pribliznе KONSTANTNI, takze se v ROZDILU dvou bodu vyrusi. Prave proto se
+ * meri rozdil dvou fazi, ne absolutni faze.
+ * ⚠️ Jedno 10minutove okno ma sum ~10-20 ppm (rozliseni + jitter defaultTasku).
+ * Pouzitelne cislo dava az BEZICI PRUMER: ~1,5 ppm po 6 h, ~1 ppm po dni. */
+
+/** Bezici prumer driftu LSE [ppm]; kladne = RTC bezi NAPRED. */
+float    rtc_lse_ppm(void);
+/** Posledni jednotlive okno [ppm] (sumove, jen orientacne). */
+float    rtc_lse_ppm_last(void);
+/** Pocet zmerenych oken v prumeru (0 = jeste nic; duveryhodne od ~12). */
+uint32_t rtc_lse_windows(void);
+/** Aktualne zapsana korekce do RTC_CALR [ppm]; 0 = zadna. */
+float    rtc_lse_calib_ppm(void);
+/** Zahodi namerenou statistiku a zacne merit znovu (UART `rtc cal reset`). */
+void     rtc_lse_reset(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus
