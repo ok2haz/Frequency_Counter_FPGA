@@ -38,4 +38,13 @@
  * Pozn.: plny region by byl ~242 dni (NE „600", jak driv chybne uvadela dokumentace). */
 #define W25Q_DATALOG_SIZE    (((W25Q_DATA_SIZE / 3u) / W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE)
 
+/* ── FLIGHT RECORDER (kontext pred resetem, STATUS.md #18) ───────────────────
+ * Hned ZA datalogem, tedy ve volnych 2/3 DATA regionu. 64 sektoru = 256 kB;
+ * z toho se v jednu chvili pouziva JEDEN (ostatni jsou rezerva pro rotaci kvuli
+ * zivotnosti flash — dump se deje jen pri poruse, takze i pri jednom dumpu
+ * denne to vydrzi radove stovky let). */
+#define W25Q_FLIGHTREC_BASE     (W25Q_DATA_BASE + W25Q_DATALOG_SIZE)
+#define W25Q_FLIGHTREC_SECTORS  64u
+#define W25Q_FLIGHTREC_SIZE     (W25Q_FLIGHTREC_SECTORS * W25Q_SECTOR_SIZE)
+
 #endif /* INC_W25Q_MAP_H_ */

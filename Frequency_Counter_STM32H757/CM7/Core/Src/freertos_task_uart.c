@@ -37,6 +37,7 @@
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 #include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
+#include "flightrec.h"      /* UART "flightrec" — kontext pred resetem (#18) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -617,7 +618,7 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | fpgasim [on|off|fault] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1049,6 +1050,18 @@ void UartTask_run(void *argument)
 					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "flightrec", 9) == 0) {
+				  const char *a = (RxBuffer[9] == ' ') ? &RxBuffer[10] : "";
+				  if (strcmp(a, "test") == 0) {
+					  /* Overeni cele cesty bez cekani na skutecnou poruchu. */
+					  flightrec_dump("test");
+					  printf("FLIGHTREC: testovaci dump zapsan, precti `flightrec`\n");
+				  } else if (!flightrec_report()) {
+					  printf("FLIGHTREC: zadny ulozeny zaznam\n");
+					  printf("  Dumpuje se pri detekovanem stallu / preteceni stacku / selhani malloc.\n");
+					  printf("  `flightrec test` vyrobi zaznam hned (overeni cesty).\n");
+				  }
+			  }
 			  else if (strncmp(RxBuffer, "fpgasim", 7) == 0) {
 				  /* Emulator FPGA ramcu — viz fpga_freq.h. Syntaxe:
 				   *   fpgasim                     stav
@@ -1179,6 +1192,8 @@ void UartTask_run(void *argument)
 					  fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
 					  printf("  ⚠️ FPGASIM AKTIVNI (%s) — kmitocet NENI meren!\n", hb);
 				  }
+				  if (flightrec_have())
+					  printf("  flight recorder: je ulozeny zaznam -> `flightrec`\n");
 				  char db[80];
 				  datalog_format_status(db, sizeof db);
 				  printf("%s\n", db);

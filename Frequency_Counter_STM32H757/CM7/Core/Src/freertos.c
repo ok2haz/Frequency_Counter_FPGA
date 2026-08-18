@@ -32,6 +32,7 @@
 #include "rtc.h"              /* rtc_app_tick — sync RTC z GPS v defaultTask */
 #include "syscfg.h"           /* syscfg_flash_tick — zrcadlo nastaveni do W25Q flash */
 #include "datalog.h"          /* datalog_init/tick — zaznam stability do W25Q DATA (TODO #6) */
+#include "flightrec.h"        /* flightrec_init/tick — kontext pred resetem (TODO #18) */
 #include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
@@ -408,6 +409,7 @@ void StartDefaultTask(void *argument)
    * Na poradi vuci syscfg_load (UiTask) NEZALEZI — init jen najde pozici zapisu,
    * priznak zap/vyp nastavuje syscfg_load pozdeji pres datalog_set_enabled. */
   datalog_init();
+  flightrec_init();            /* kontext pred resetem (#18) — po w25q_init */
   ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
   /* Infinite loop */
   for(;;)
@@ -423,6 +425,7 @@ void StartDefaultTask(void *argument)
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
+    flightrec_tick();            /* flight recorder: 1x/s do RAM (do flash az pri poruse) */
     sd_export_tick();            /* SD: detekce karty + auto-unmount (LEVNY; mount/export = UartTask) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, event-driven uvnitr) (#19/#20) */
