@@ -366,6 +366,15 @@ static int32_t rtc_phase_ms(const gps_data_t *g)
  * Krok CALM je 2^-20 = 0,9537 ppm; CALP pridava +512 pulzu (+488 ppm). */
 static void rtc_lse_apply_calib(float drift_ppm)
 {
+    /* ⚠️ RECALPF: po zapisu do RTC_CALR je registr BLOKOVANY az do konce
+     * nasledujiciho 32s kalibracniho cyklu. `HAL_RTCEx_SetSmoothCalib` na nej
+     * ceka TESNOU SMYCKOU s timeoutem 1000 ms — a my bezime v defaultTask, ktery
+     * krmi IWDG (pravidlo projektu: zadny spin > ~10 ms). Kdyz je priznak
+     * nastaveny, radeji tenhle kruh preskocime a zkusime za hodinu znovu; nic se
+     * neztrati, korekce je stejne pomala velicina.
+     * (H757 nema TAMP -> HAL jde vetvi s RTC_ISR, ne ICSR.) */
+    if ((RTC->ISR & RTC_ISR_RECALPF) != 0u) return;
+
     float want = -drift_ppm;                     /* korekce ma drift vyrusit */
     int32_t units = (int32_t)(want / 0.95367432f + (want >= 0 ? 0.5f : -0.5f));
     uint32_t calp = RTC_SMOOTHCALIB_PLUSPULSES_RESET;

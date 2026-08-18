@@ -637,9 +637,15 @@ void UartTask_run(void *argument)
 				   * runtime dukaz — bez ETH, bez flashe bank 2, hned na stole.
 				   * Rozdil znamena diru ve snapshotu, ne chybu parseru. */
 				  const char *arg = &RxBuffer[9];
-				  static scpi_src_t src_ipc;      /* ~200 B — NE na stack UartTasku */
+				  /* ⚠️ VSE staticke, nic na stack UartTasku. `scpi_src_t` ma ~200 B
+				   * a dva odpovedni buffery dalsich 320 — dohromady pres 500 B na
+				   * tasku, ktery mel pri mereni 1580 B volnych. Projekt uz jednou
+				   * na presne tohle doplatil (`FIL` na stacku, viz CLAUDE.md
+				   * sd_export) a `stacktest` incident byl z teze rodiny. Funkce
+				   * bezi vyhradne z UartTasku a neni vnorena -> staticke je bezpecne. */
+				  static scpi_src_t src_ipc;
 				  static scpi_ctx_t ctx_ipc;
-				  char r_cm7[160], r_ipc[160];
+				  static char r_cm7[160], r_ipc[160];
 				  size_t n7 = scpi_process(arg, r_cm7, sizeof r_cm7);
 				  if (!ipc_scpi_src_from_snap(&src_ipc, (const void *)&g_ipc.snap)) {
 					  printf("SCPI/IPC: snapshot neni platny (magic/verze) — publikoval uz CM7?\n");

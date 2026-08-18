@@ -193,6 +193,24 @@ extern void     RunTimeStats_Init(void);
 extern uint32_t RunTimeStats_GetCount(void);
 #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()  RunTimeStats_Init()
 #define portGET_RUN_TIME_COUNTER_VALUE()          RunTimeStats_GetCount()
+
+/* ⚠️ POJISTKA (audit .ioc konzistence 2026-08-18). `configUSE_TRACE_FACILITY`
+ * a `INCLUDE_uxTaskGetStackHighWaterMark` jsou dnes v GENEROVANE casti tohoto
+ * souboru (mimo USER CODE) a `.ioc` je NEMA v `FREERTOS_M7.IPParameters` —
+ * drzi je tedy jen vychozi nastaveni CubeMX. Kdyby se pri nejakem regenu/upgradu
+ * prepnuly na 0, TICHE by prestaly fungovat CTYRI veci najednou:
+ *   `stats` (per-task CPU + stack), stacky v okne System Health,
+ *   `status` (volny stack tasku) a flight recorder (nejmensi volny stack).
+ * Zadna z nich by nehlasila chybu — jen by ukazovaly nuly, coz je nejhorsi druh
+ * regrese. `#ifndef` je bezpecne: dokud CubeMX hodnotu generuje, tohle je no-op
+ * (zadne dvoji #define, viz varovani u hooku vyse); az kdyby ji vypustil,
+ * prevezme se odsud. */
+#ifndef configUSE_TRACE_FACILITY
+#define configUSE_TRACE_FACILITY             1
+#endif
+#ifndef INCLUDE_uxTaskGetStackHighWaterMark
+#define INCLUDE_uxTaskGetStackHighWaterMark  1
+#endif
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */
