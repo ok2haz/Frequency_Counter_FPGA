@@ -145,6 +145,39 @@ Veřejné API: `app_gpsdo_render_main()` / `app_gpsdo_render_diag()` / `app_gpsd
 
 > **Historie:** dřívější ručně psané `gfx.c`/`touch_ui.c` UI i pokus o **LVGL v9** obrazovku (`lv_port_disp.c`, `ui_main_screen.c`, vendored `Middlewares/Third_Party/lvgl`) byly **odstraněny** a nahrazeny libprim/libui/app. K dohledání v git historii.
 
+### Metrologická vrstva (2026-08-18) — co dělá z čítače přístroj
+
+**Overlapping ADEV + MDEV + HDEV.** Původní `adev_stage` byl **non-overlapping**:
+při τ = m·τ0 rozdělil ring na M/m disjunktních bloků a zahodil většinu dostupných
+dvojic. Overlapping varianta (Riley, NIST SP1065) vytěží M−2m+1 překrývajících se
+členů z **týchž dat** — na dlouhých τ, kde je vzorků nejméně, je to rozdíl mezi
+„pár párů" a „řádově víc". Konfidenční pás (`ns`) to zohledňuje a je proto užší.
+**MDEV** rozliší bílý a blikavý fázový šum (v ADEV mají stejný sklon), **HDEV**
+je díky druhým diferencím imunní vůči lineárnímu driftu. ⚠️ **TDEV je nově
+EXAKTNÍ** — definice je τ·MDEV/√3; dosud se počítala z ADEV, což platí jen když
+MDEV ≈ ADEV, tedy právě ne u fázového šumu. ⚠️ **MTIE zůstává odhad** a popisek to
+přiznává: přesný MTIE potřebuje uloženou fázi (⬅ #36). Přepínač v okně ALLAN má
+5 segmentů = 60 px = **přesně projektové minimum** dotykového cíle, šestý se
+už nevejde.
+
+**Okno ANALÝZA (s_view=41).** Kam se to vešlo: nikam — footer MĚŘENÍ je plný
+a karta má 9 řádků. Řešení: **třetí sourozenec v existující rotaci**
+ČÍTAČ → MĚŘENÍ → ANALÝZA → ČÍTAČ; stávající tlačítko jen mění popisek, takže to
+nestojí ani jeden nový pixel. Obsah: **rozpočet nejistoty** (rozlišení hradla
+√2·tdc/gate + σy@τ + ppb reference, sčítané kvadraticky; zobrazuje se **rozklad**,
+ne jen součet), **počet platných číslic** = log10(1/u), **drift Vc** a **tempco
+Vc↔T**. ⚠️ U nejistoty je vždy uvedeno **k=2** — u vs U se liší dvojnásobně.
+⚠️ U prokladů se vždy ukazuje **korelace r** a při |r| < 0,5 se výsledek označí
+za neprůkazný; bez toho by uživatel četl proklad šumu jako měření.
+⚠️ **Tempco funguje už dnes, bez FPGA** — teplota OCXO i Vc se logují od začátku.
+Datalog se čte **jedním průchodem pro obě osy** + decimace na ~200 bodů (0,2 s
+místo 9 s) a **jen při vstupu do okna**.
+
+**Filtr měření (#5).** PRŮMĚR 8 sníží šum o √N, ale jediný výstřelek rozprostře
+do N hodnot; MEDIÁN 9 (liché okno = ostrý) výstřelek zahodí, ale šum nesníží —
+proto obojí. ⚠️ **Filtruje se POUZE zobrazovaná hodnota**; do Allan/histogramu/
+datalogu jdou dál syrová měření, protože filtrovaná data by σy(τ) uměle vylepšila.
+
 ## Vývoj bez FPGA desky — co ho odblokovalo (2026-08-18)
 
 **Emulátor FPGA rámců (`fpga_sim_*`, UART `fpgasim`).** Headline byl do teď náhodná
@@ -791,7 +824,7 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
   - **Diagnostika = technický hub.** Footer: **DIAGRAM** (blokové schéma, s_view=21) | **PAMET** (s_view=5) | **SELFTEST** (s_view=20) | ZPĚT. Do Diagnostiky se dá i z **System Health** (tlačítko DIAGNOSTIKA) a z Menu dlaždice.
   - **Tlačítko DIAGRAM** → **Komunikace: blokové schéma** (`app_gpsdo_render_commdiag`, s_view=21). Uzly: GPS NEO-7M, SENZORY, STM32H757, Si5356A, FPGA GW1NR-9. **Grafika (přepracováno 2026-07-18):** uzel = zaoblený rámeček, výplň BG_0, **obrys 2 px v barvě stavu + stavová „LED" tečka** vpravo nahoře (stav čitelný bez čtení popisků); STM32 má akcentní barvu (= „my", ne stavový). **Čárkovaný skupinový rámeček „FPGA deska"** (`cd_group`, fieldset styl — popisek přerušuje rámeček) kolem Si5356+FPGA. Popisky spojů na **„pilulce"** (`cd_label_chip`) — **šířka se přizpůsobí textu** (`prim_text_width`, žádný prázdný blok), výplň BG_0 překryje čáru pod textem → popisek sedí přímo NA spoji a zůstává čitelný. Spoje = pravoúhlé trasy (`cd_path`) barvené stavem: GPS→STM32 (UART/1PPS), SENZORY↔STM32 (I2C1/I2C4, `i2c_health()`), STM32→FPGA (SPI2, `g_spi_ok`), OCXO→Si5356 (CLKIN, `SI5356_LOS_CLKIN`), Si5356→FPGA (4×100 MHz), RF vstup→FPGA (`g_freq_stale`). Celý diagram se překresluje najednou při změně `cd_state_key()`.
     ⚠️ **Šířka uzlů = text (mono_16, 10 px/znak) + ~18 px padding/stranu** (historie: uzly měly 90-130 px prázdné rezervy). **Postranní popisky OCXO/RF** mají šířku ověřenou proti reálné šířce textu — „OCXO 10MHz" @ sans_16 potřebuje ~104 px, dřívější box 90 px ho **ořezával**.
-- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta, 38=kvalita GPS (historie sats/HDOP z datalogu), 39=prahy (meze monitoru), 40=průvodce kalibrací**).
+- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta, 38=kvalita GPS (historie sats/HDOP z datalogu), 39=prahy (meze monitoru), 40=průvodce kalibrací, 41=analýza (nejistota/drift/tempco)**).
 
 ### Prahový monitor reálných veličin (alarm.c, okno PRAHY s_view=39) — 2026-08-17
 Do 2026-08-17 hlídal `alarm.c` jen **události** (FPGA link, GPS lock, limit pass/fail) — z deseti
