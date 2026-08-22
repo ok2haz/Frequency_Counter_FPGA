@@ -105,7 +105,10 @@ void MX_RTC_Init(void)
   /* Systemove nastaveni 2 (schema/jazyk/casova zona) z BKP_DR6. */
   uint32_t syscfg2 = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR6);
   if ((syscfg2 & 0xFFFF0000u) == RTC_SYSCFG2_MAGIC) {
-    g_theme_light = (uint8_t)(syscfg2 & 0x01u);
+    /* Schema = 3 bity: bit0 (nizsi, = puvodni "svetle") + bit9 + bit10 (vyssi
+     * dva, >>8 je posunou na bity 1..2). Stare zaznamy maji bit9/bit10=0 ->
+     * 0/1 = tmave/svetle jako drive (zpetne kompatibilni). Index 0..4 (UI_THEME_*). */
+    g_theme_idx   = (uint8_t)((syscfg2 & 0x01u) | ((syscfg2 >> 8) & 0x06u));
     g_lang_en     = (uint8_t)((syscfg2 >> 1) & 0x01u);
     /* bity2:6 = casova zona kodovana (tz + 13): 1..27 = -12..+14 h.
      * 0 = zaznam z doby PRED touto featurou (bity byly 0) -> ponech default UTC.
@@ -568,11 +571,12 @@ void rtc_save_syscfg_if_dirty(void)
              | (((uint32_t)(g_autodim_sec / 15u) & 0x3Fu) << 10);   /* bity10:15 = s/15 */
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, v);
   uint32_t v2 = RTC_SYSCFG2_MAGIC
-              | ((uint32_t)(g_theme_light ? 1u : 0u))
+              | ((uint32_t)(g_theme_idx & 0x01u))                            /* bit0  = schema (nizsi bit) */
               | ((uint32_t)(g_lang_en ? 1u : 0u) << 1)
               | ((((uint32_t)((int32_t)g_tz_offset_h + 13)) & 0x1Fu) << 2)   /* bity2:6 = tz+13 (1..27) */
               | ((uint32_t)(g_tz_auto ? 1u : 0u) << 7)                       /* bit7 = AUTO CET/CEST */
-              | ((uint32_t)(g_anim_enabled ? 1u : 0u) << 8);                 /* bit8 = animace ZAP/VYP */
+              | ((uint32_t)(g_anim_enabled ? 1u : 0u) << 8)                  /* bit8 = animace ZAP/VYP */
+              | ((uint32_t)((g_theme_idx >> 1) & 0x03u) << 9);               /* bity9:10 = schema (vyssi dva bity) */
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, v2);
 }
 /* USER CODE END 1 */

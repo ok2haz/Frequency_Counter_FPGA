@@ -83,3 +83,14 @@ void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
     IPC_DMB();                                    /* data viditelna PRED inkrementem heartbeatu */
     g_ipc.cm4.heartbeat    = ++s_hb;              /* CM7 sleduje rust -> liveness */
 }
+
+/* Publikace stavu ETH linky (v5, F1). Dnes CM4 vola s down/0 (lwIP az F5), pak
+ * realne z netif. Nezavisle na heartbeatu (link se meni ridceji nez 1/s). */
+void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32_t ip)
+{
+    g_ipc.cm4.net_ip         = ip;
+    g_ipc.cm4.net_speed_mbps = speed_mbps;
+    g_ipc.cm4.net_duplex     = duplex;
+    IPC_DMB();
+    g_ipc.cm4.net_link       = link_up ? 1u : 0u;   /* link naposled (CM7 na nej gate-uje) */
+}

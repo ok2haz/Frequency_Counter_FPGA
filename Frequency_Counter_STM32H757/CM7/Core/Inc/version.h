@@ -11,10 +11,14 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* ⚠️ v0.6.0 (2026-08-22) = přechod HSE 10 → 25 MHz (X1/TCXO). PLL1/2/3 přepočteny
+ * (VCO identická, mění se jen vstupní dělič M + DSI NDIV), výstupy beze změny.
+ * TENTO A VYŠŠÍ FW NENABĚHNE NA DESCE S 10 MHz HSE (PLL se nezamkne). + 5 barevných
+ * schémat (KONTRAST), odstranění A/B větve hlavní obrazovky. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 5
+#define FW_VERSION_MINOR 6
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.5.0"
+#define FW_VERSION_STR   "v0.6.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

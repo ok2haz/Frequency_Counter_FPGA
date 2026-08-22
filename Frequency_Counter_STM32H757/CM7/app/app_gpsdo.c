@@ -58,7 +58,7 @@ extern volatile uint8_t  g_brightness;           /* jas displeje 0-255 (okno Nas
 extern volatile uint8_t  g_sound_muted;          /* 1 = zvuk vypnut */
 extern volatile uint8_t  g_autodim_en;           /* 1 = auto-dim po necinnosti */
 extern volatile uint16_t g_autodim_sec;          /* prodleva auto-dim [s] (preset 15..600) */
-extern volatile uint8_t  g_theme_light;          /* 0 = tmave schema, 1 = svetle */
+extern volatile uint8_t  g_theme_idx;            /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*) */
 extern volatile uint8_t  g_lang_en;              /* 0 = cesky, 1 = english (texty postupne) */
 /* g_anim_enabled je deklarovan v anim.h (sdileno se screen_main.c). */
 extern volatile uint8_t  g_sys_cfg_dirty;        /* 1 = zmena jas/mute/dim -> persist do BKP */
@@ -74,6 +74,7 @@ extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 
 extern volatile uint8_t  g_selftest_detail[13];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=13) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
+extern volatile uint8_t  g_cm4_net_up;           /* 1 = ETH link UP (z CM4, IPC v5, F1) -> Health "NET:" */
 int run_selftests(void);                         /* pure-logic testy — okno Selftest (SPUSTIT) */
 
 /* FreeRTOS task handles (defined in freertos.c) — pro volny stack v System Health. */
@@ -321,7 +322,7 @@ void app_gpsdo_init(void)
     /* Nastaveni z W25Q flash (prezije power-cycle) PRED tematem/renderem — pri
      * studenem startu (BKP smazana) je flash autoritativni pro jas/schema/zonu/... */
     syscfg_load();
-    ui_theme_select(g_theme_light);   /* ulozene schema PRED prvnim renderem */
+    ui_theme_select(g_theme_idx);   /* ulozene schema PRED prvnim renderem */
     prim_stm32_init(&s_fb);
     screen_main_init();
     calib_load();   /* W25Q CALIB store -> g_calib (blokujici, ~ms; prazdno = vychozi hodnoty) */
@@ -1170,12 +1171,17 @@ static int draw_health_values(int force)
               : (g_selftest_res == 2 ? UI_COLOR_BAD : UI_COLOR_INK_3), &ui_font_mono_18);
         drew = 1; }
 
-    /* CM4 (D2) boot: degradovany rezim kdyz nenabehl (prazdna bank2 / BCM4=0).
-     * Amber (funguje, jen bez konektivity jadra) — konzistentni se SYS pill. */
-    snprintf(buf, sizeof(buf), "CM4:%s", g_cm4_absent ? "ABSENT" : "OK");
+    /* CM4 (D2) boot + stav ETH linky (F1, IPC v5). CM4 ABSENT = degradovany rezim
+     * (prazdna bank2 / BCM4=0), amber. Kdyz CM4 bezi, pripoj NET stav (link z CM4;
+     * dnes vzdy "down" nez prijde lwIP ve F5). Mono_16 (advance 10) -> "CM4:OK
+     * NET:down" = 150 px do boxu 156 px (overeno). */
+    if (g_cm4_absent)
+        snprintf(buf, sizeof(buf), "CM4:ABSENT");
+    else
+        snprintf(buf, sizeof(buf), "CM4:OK NET:%s", g_cm4_net_up ? "UP" : "down");
     if (force || dchg(c_sys2[4], sizeof(c_sys2[4]), buf)) {
         dtext((int16_t)(DG_RLBL + 196), 394, (int16_t)(DG_COLW - 24 - 196), buf,
-              g_cm4_absent ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_18);
+              g_cm4_absent ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_16);
         drew = 1; }
 
     return drew;
@@ -2407,10 +2413,17 @@ static void settings_upd_dim(void)
                    g_autodim_en ? UI_COLOR_INK_2 : UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
 }
 
+/* Nazvy 5 schemat (index = UI_THEME_*). Bez prefixu "VZHLED:" — karta nad
+ * tlacitkem uz ma header "Vzhled", a "KONTRAST" s prefixem (16 zn.) by pri
+ * mono_22 (13 px/zn.) pretekl 200px tlacitko. Cyklicke (viz touch handler). */
+static const char *const THEME_LABELS[UI_THEME_COUNT] = {
+    "TMAVE", "SVETLE", "STREDNI", "OBRYS", "KONTRAST" };
+
 static void settings_upd_theme(void)
 {
+    uint8_t ti = g_theme_idx < UI_THEME_COUNT ? g_theme_idx : 0;
     ui_button_t tb = {.rect = THEME_RECT, .variant = UI_BUTTON_NORMAL,
-                      .label = g_theme_light ? "VZHLED: SVETLY" : "VZHLED: TMAVY"};
+                      .label = THEME_LABELS[ti]};
     ui_button_render(&tb);
 }
 static void settings_upd_lang(void)
@@ -4730,14 +4743,15 @@ static void cas_upd_mode(void)
  * Vstup: Nastaveni -> "SIT >". Drzi DHCP vs statickou adresu; hodnoty persistuji
  * v syscfg blobu (W25Q).
  *
- * ⚠️ POCTIVE K UZIVATELI: dnes to NIC nekonfiguruje. ETH je blokovana hardwarem —
- * PHY LAN8742A dostava 10 MHz misto pozadovanych 25 MHz (X1 je sdileny s HSE
- * procesoru a jde pres R6 do site OSC_25M), takze neodpovi ani na MDIO. Overeno
- * prikazem `eth`, detaily v ETH_BRINGUP_CHECKLIST.md §2. Okno to proto rovnou
- * rika na prvni karte, misto aby predstiralo funkcni sit.
+ * ⚠️ POCTIVE K UZIVATELI: dnes to NIC nekonfiguruje. HODINY UZ JSOU SPRAVNE
+ * (HSE 10->25 MHz, v0.6.0, PHY dostava 25 MHz na CLKIN — overeno scope), ale PHY
+ * zatim NEODPOVIDA na MDIO (REF_CLK=0 = vnitrni PLL PHY se nezamkla). Resi se HW:
+ * uroven/tvar 25 MHz (TCXO clipped-sine vs CMOS), nRST net, nINTSEL strap.
+ * Diagnostika `eth`/`eth clk`, detaily STATUS #24 + ETH_BRINGUP_CHECKLIST.md §2.
+ * Okno to rovnou rika, misto aby predstiralo funkcni sit.
  *
- * Az bude clock spraveny a prijde lwIP (etapa F5), pouzije se tato konfigurace
- * beze zmeny: `g_net_dhcp` -> `dhcp_start()`, jinak `netif_set_addr()`.
+ * Az PHY ozije a prijde lwIP (etapa F5), pouzije se tato konfigurace beze zmeny:
+ * `g_net_dhcp` -> `dhcp_start()`, jinak `netif_set_addr()`.
  * DHCP klienta NEBUDEME psat — lwIP ho ma (`LWIP_DHCP`), viz F5. */
 /* ⚠️ y POSUNUTO 268 -> 284 (HW pruchod 2026-08-15): header_label karty se kresli
  * na baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = rect.y+25, takze u karty
@@ -4979,16 +4993,16 @@ static void app_gpsdo_render_net(void)
 
         ui_card_t c1 = {.rect = {18, 58, 764, 182}, .header_label = "Stav linky"};
         ui_card_render_chrome(&c1);
-        prim_draw_text((prim_point_t){40, 112}, "Link: NEDOSTUPNY - blokovano hardwarem",
-                       &ui_font_mono_20, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 112}, "Link: DOWN - hodiny 25 MHz OK, PHY se ladi",
+                       &ui_font_mono_20, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){40, 148},
-                       "PHY LAN8742A dostava 10 MHz misto 25 MHz (X1 je sdileny s HSE",
+                       "HSE prehozen na 25 MHz (v0.6.0), PHY dostava 25 MHz na CLKIN,",
                        &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){40, 174},
-                       "procesoru a jde pres R6 do site OSC_25M) -> neodpovi ani na MDIO.",
+                       "ale zatim neodpovida na MDIO - resi se HW (uroven hodin / nRST).",
                        &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){40, 208},
-                       "Reseni: odpojit R6 a privest samostatnych 25 MHz. Overeni: UART `eth`.",
+                       "Pak zbyva zapnout ETH (lwIP na CM4). Diagnostika: UART `eth`.",
                        &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
 
         ui_card_t c2 = {.rect = {18, 248, 764, 158},
@@ -5882,18 +5896,8 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (screen_main_hit_allan(x, y)) { nav_push(0); app_gpsdo_render_allan(); return true; }  /* Allan nahled -> ALLAN okno */
         if (screen_main_hit_trend(x, y)) { nav_push(0); app_gpsdo_render_trend(); return true; }      /* trend -> fullscreen */
         int b = screen_main_hit_button(x, y);
-        if (b == 0) {   /* ⚠️ DOCASNE: "Main SW" A/B prepinac layoutu (misto PERIOD/FREQ,
-                         * viz footer_button_def + screen_main_toggle_layout) — cela
-                         * mrizka meni geometrii, staci proto plny screen_main_render(). */
-            screen_main_toggle_layout();
-            prim_set_target(&s_fb);
-            prim_reset_clip();
-            screen_main_render();
-            present_now();
-            return true;
-        }
         if (b == 4) { nav_push(0); app_gpsdo_render_menu(); return true; }   /* MENU -> rozcestnik */
-        if (b >= 0) {                                /* RUN/GATE/CHAN (PERIOD/FREQ docasne vyrazen, viz b==0 vyse) */
+        if (b >= 0) {                                /* PERIOD/FREQ (slot 0), RUN/GATE/CHAN */
             screen_main_button_action(b);
             prim_set_target(&s_fb);
             prim_reset_clip();
@@ -6110,7 +6114,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             else if (in_rect(x, y, SETUP_LOAD_RECT))  { reload = setup_load(s_setup_slot) ? 1 : 0;
                                                         s_setup_msg = reload ? 2 : 5; redraw = 1; }
             if (reload) {   /* nactena sestava muze zmenit tema/jas -> plny refresh jako prepinac schematu */
-                ui_theme_select(g_theme_light);
+                ui_theme_select(g_theme_idx);
                 screen_main_invalidate();
                 screen_main_init();
                 s_view = 0xFF;                              /* vynut full render okna v novem tematu */
@@ -6283,10 +6287,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             if (in_rect(x, y, DIM_MINUS)) { autodim_step(-1); DISP_UPD(settings_upd_dim); return true; }
             if (in_rect(x, y, DIM_PLUS))  { autodim_step(+1); DISP_UPD(settings_upd_dim); return true; }
-            if (in_rect(x, y, THEME_RECT)) {                /* tmave <-> svetle schema */
-                g_theme_light = g_theme_light ? 0 : 1;
+            if (in_rect(x, y, THEME_RECT)) {                /* cyklus schemat: tmave->svetle->stredni->obrys->kontrast */
+                g_theme_idx = (uint8_t)((g_theme_idx + 1u) % UI_THEME_COUNT);
                 g_sys_cfg_dirty = 1;
-                ui_theme_select(g_theme_light);
+                ui_theme_select(g_theme_idx);
                 /* ⚠️ `bg_cache` je predrenderovane ve STARYCH barvach — bez tohohle
                  * by nove schema platilo jen na cerstve kreslene prvky. */
                 screen_main_invalidate();

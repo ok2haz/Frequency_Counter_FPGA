@@ -9,12 +9,12 @@ a NEMUSÍ vygenerovat stejné → **regenerace může zhasnout displej.** Pokud 
 Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 
 ## RCC / Clock Configuration
-- HSE: **BYPASS, 10 MHz**
+- HSE: **BYPASS, 25 MHz** (od 2026-08-22 / v0.6.0; dřív 10 MHz — X1/TCXO sdílený s ETH PHY, viz STATUS #24). ⚠️ **Vstup PLL po M je 5 MHz → `PLLxRGE = VCIRANGE_2` (4-8 MHz)**, dřív RANGE_3.
 - Power: **SMPS 1.8V** (PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO), **VOS Scale 0**, **Flash latency 4**
-- PLL1: M=1, N=96, P=2, Q=2, R=2, VCO Wide, FRACN=0 → **SYSCLK 480 MHz**
+- PLL1: **M=5, N=192**, P=2, Q=15, R=2, VCO Wide, FRACN=0 → **SYSCLK 480 MHz** (VCO 960 = beze změny; dřív M=1/N=96 @ 10 MHz)
 - AHB /2 → HCLK **240 MHz**; APB1/2/3/4 = /2 → **120 MHz**
-- PLL2: M=1, N=20, P=1, Q=1, R=2, VCO Wide, FRACN=0 → **200 MHz** → FMC + SPI123(SPI2)
-- PLL3: M=1, N=17, P=2, Q=2, R=7, VCO Medium, **FRACN=4096** → **25 MHz** → LTDC pixel clock **+ ADC3** (PLL3R)
+- PLL2: **M=5, N=40**, P=1, Q=1, R=2, VCO Wide, FRACN=0 → **200 MHz** → FMC + SPI123(SPI2) (dřív M=1/N=20)
+- PLL3: **M=5, N=35**, P=2, Q=2, R=7, VCO Medium, **FRACN=0** → **25 MHz** → LTDC pixel clock **+ ADC3** (PLL3R) (dřív M=1/N=17/FRACN=4096; VCO 175 = beze změny)
   - ⚠️ **Od přidání ADC3 (sdílí PLL3R) CubeMX přesunul PLL3 init z `ltdc.c` `HAL_LTDC_MspInit` do `PeriphCommonClock_Config` (main.c)** — `ltdc.c` MspInit teď PLL3 NEnastavuje, jen `__HAL_RCC_LTDC_CLK_ENABLE`. Při ladění pixel clocku koukej do `PeriphCommonClock_Config` (PLL3 + `RCC_PERIPHCLK_LTDC|ADC` + `AdcClockSelection=PLL3`). Volá se brzy (po `SystemClock_Config`, před display init) → OK.
 - DSI clock source: **D-PHY**
 - I2C4 clock: **D3PCLK1** (PCLK4 = 120 MHz)
@@ -23,7 +23,7 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 
 ## DSI Host  ⚠️
 - Number of lanes: **1**
-- DSI PLL: NDIV=**70**, IDF=DIV1, ODF=DIV1; TX escape clock div = **5**
+- DSI PLL: NDIV=**28**, IDF=DIV1, ODF=DIV1; TX escape clock div = **5** (dřív NDIV=70 @ 10 MHz HSE; VCO 1400 = beze změny → 700 Mbps)
 - Auto clock lane control: Disable
 - Video mode: **Burst**
 - Color coding: **RGB565**

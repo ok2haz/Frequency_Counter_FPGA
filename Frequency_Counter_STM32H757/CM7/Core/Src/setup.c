@@ -6,7 +6,7 @@
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
-#include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, g_sys_cfg_dirty, qspiMutexHandle */
+#include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, g_sys_cfg_dirty, qspiMutexHandle */
 #include "meas_math.h"         /* g_meas_cfg */
 #include "cmsis_os2.h"
 #include <string.h>
@@ -19,7 +19,7 @@ typedef struct {
     uint8_t  used;
     uint8_t  brightness, sound_muted, autodim_en;
     uint16_t autodim_sec;
-    uint8_t  theme_light, lang_en;
+    uint8_t  theme_idx, lang_en;   /* theme_idx 0..4 = UI_THEME_* (drive "theme_light" 0/1, stejny bajt) */
     int8_t   tz_offset_h;
     uint8_t  tz_auto, ui_cfg, anim_en;
     uint16_t fx_en;
@@ -86,7 +86,7 @@ bool setup_save(int slot)
     s->sound_muted  = g_sound_muted;
     s->autodim_en   = g_autodim_en;
     s->autodim_sec  = g_autodim_sec;
-    s->theme_light  = g_theme_light;
+    s->theme_idx    = g_theme_idx;
     s->lang_en      = g_lang_en;
     s->tz_offset_h  = g_tz_offset_h;
     s->tz_auto      = g_tz_auto;
@@ -115,7 +115,7 @@ bool setup_load(int slot)
     g_sound_muted = s.sound_muted ? 1 : 0;
     g_autodim_en  = s.autodim_en ? 1 : 0;
     g_autodim_sec = s.autodim_sec;
-    g_theme_light = s.theme_light ? 1 : 0;
+    g_theme_idx   = (uint8_t)(s.theme_idx & 0x07u);   /* 0..4 (UI_THEME_*) */
     g_lang_en     = s.lang_en ? 1 : 0;
     g_tz_offset_h = s.tz_offset_h;
     g_tz_auto     = s.tz_auto ? 1 : 0;

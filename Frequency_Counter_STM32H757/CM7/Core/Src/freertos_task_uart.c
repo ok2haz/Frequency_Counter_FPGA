@@ -176,12 +176,14 @@ static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
 	eth_smi_write_bits(0x2u, 2);                      /* OP = 10 (read) */
 	eth_smi_write_bits(phyad & 0x1Fu, 5);
 	eth_smi_write_bits(reg   & 0x1Fu, 5);
-	eth_mdio_dir(0);                                  /* turnaround: linku pousti host */
-	(void)eth_mdc_clock();                            /* TA bit 1 (Z) */
-	(void)eth_mdc_clock();                            /* TA bit 2 (PHY vystavi 0) */
+	eth_mdio_dir(0);                                  /* turnaround: host pousti linku */
+	/* TA = JEDEN takt. LAN8742A na teto desce vystavuje MSB dat uz behem 2. TA
+	 * bitu, takze 2 TA takty cetly o 1 bit POZDE: ID 0x0007C131 vyslo jako
+	 * 0x000F8263 (= hodnota << 1 s pretecenim MSB), a stejne posunute i BMCR/BMSR.
+	 * 1 TA takt to srovna (empiricky overeno na HW 2026-08-22). */
+	(void)eth_mdc_clock();                            /* TA (PHY vzapeti vystavi MSB) */
 	uint16_t v = 0;
 	for (int i = 0; i < 16; i++) v = (uint16_t)((v << 1) | eth_mdc_clock());
-	(void)eth_mdc_clock();                            /* idle */
 	return v;
 }
 
@@ -569,16 +571,15 @@ void UartTask_run(void *argument)
 
 					  if (found < 0) {
 						  printf("  => ZADNY PHY NEODPOVIDA na SMI.\r\n");
-						  printf("  ⚠️ ZNAMA PRICINA NA TETO DESCE (potvrzeno 2026-08-13):\r\n");
-						  printf("     PHY dostava 10 MHz misto 25 MHz. X1 je 10 MHz (spolecny s HSE\r\n");
-						  printf("     procesoru) a jde pres R6 do site OSC_25M = XTAL1/CLKIN LAN8742A,\r\n");
-						  printf("     ktery vyzaduje 25 MHz -> nenabehne a neodpovi ani na MDIO.\r\n");
-						  printf("     Reseni: odpojit R6 a privest samostatnych 25 MHz (R5 = HSE nechat!).\r\n");
-						  printf("     Dokud to plati, nema smysl hledat chybu jinde.\r\n");
-						  printf("     ⚠️ Pozor na zamenu dvou RUZNYCH hodin: SMI je clockovane MDC, takze\r\n");
-						  printf("     na 50 MHz REF_CLK (strap nINTSEL) opravdu NEzavisi — PHY ale\r\n");
-						  printf("     potrebuje svuj 25 MHz VSTUPNI takt, a ten mu chybi.\r\n");
-						  printf("     Az bude clock spraveny: napajeni PHY, ETH_RES (PG14), MDC/MDIO.\r\n");
+						  printf("  Piny CPU<->PHY overeny proti schematu 4/7+2/7 (vsech 11 sedi).\r\n");
+						  printf("  Hodiny 25 MHz CMOS OK, VDD OK, PG14 reset OK, REF_CLK=0 -> vnitrni\r\n");
+						  printf("  PLL PHY nebezi. Nejcastejsi pricina 'mrtveho' LAN8742A pri OK\r\n");
+						  printf("  hodinach/napajeni (v poradi):\r\n");
+						  printf("     1) RBIAS (pin 24) MUSI mit 12,1k 1%% do GND -> bez toho zadny bias,\r\n");
+						  printf("        zadna PLL, zadna odpoved. ZKONTROLUJ PRVNI.\r\n");
+						  printf("     2) VDDCR (pin 6) = vystup 1,2V regul. -> jen blokovaci C, NESMI byt\r\n");
+						  printf("        externe napajen (schema flaguje 'KONTROLA napajeni-pin6').\r\n");
+						  printf("     3) nRST(pin15)/MDC(13)/MDIO(12) spojitost PRIMO na pinech PHY.\r\n");
 					  } else {
 						  uint16_t bmcr = eth_phy_read((uint8_t)found, 0);
 						  uint16_t bmsr = eth_phy_read((uint8_t)found, 1);

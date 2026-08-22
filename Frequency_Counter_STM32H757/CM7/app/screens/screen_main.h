@@ -32,8 +32,7 @@
  * stranach byl cisty nevyuzity pruh — Allan zleva i pravy sloupec (trend/drift)
  * zprava do nej jen "koukaly". 4 px staci, aby se zaobleny roh karty
  * (UI_DIM_CARD_RADIUS 16) neslepil s hranou panelu. Zisk 16 px sirky se dle
- * SCR_MAIN_GRID_LEFT_RATIO deli mezi Allan (+8) a pravy sloupec (+8).
- * Plati pro OBA layouty (v1 i v2). */
+ * SCR_MAIN_GRID_LEFT_RATIO deli mezi Allan (+8) a pravy sloupec (+8). */
 #define SCR_MAIN_GRID_MARGIN       4
 /* 47 % (372 px pri okraji 4) Allan vlevo | 406 px pravy sloupec (2026-07-19;
  * bylo 53 % — zuzeno, aby karty statistik (1/3 z praveho sloupce) unesly hodnoty
@@ -43,7 +42,7 @@
 
 #define SCR_MAIN_CARD_SECTION_GAP  11
 /* (SCR_MAIN_SMALL_CARD_H odstranen 2026-07-19 — mrtva konstanta, vysku
- * stat karet urcuje render_body_grid_v1/v2 lokalne.) */
+ * stat karet urcuje render_body_grid lokalne.) */
 
 #define SCR_MAIN_BG_CACHE_W        UI_DIM_SCREEN_W
 #define SCR_MAIN_BG_CACHE_H        UI_DIM_SCREEN_H
@@ -109,12 +108,6 @@ void  screen_main_adev_seed_10s(float y);
 /** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
 double screen_main_freq_nominal(void);
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
-
-/* ── DOCASNA A/B srovnavaci vetev hlavni mrizky (2026-07-19, k odstraneni
- * po vyhodnoceni — viz STATUS.md TODO a komentar u screen_main_toggle_layout
- * v screen_main.c). Prepina footer tlacitko slotu 0 (docasne "Main SW"). ── */
-void screen_main_toggle_layout(void);                   /* prepni stary/novy layout hlavni mrizky */
-bool screen_main_layout_is_old(void);                   /* 1 = aktivni stary (pred 4,3" audit) layout */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */

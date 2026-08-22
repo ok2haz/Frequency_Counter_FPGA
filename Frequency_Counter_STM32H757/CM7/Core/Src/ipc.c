@@ -323,6 +323,23 @@ uint32_t ipc_cm4_cpu_pct(void)
     return (p > 100u) ? 100u : p;
 }
 
+/* ── Stav ETH linky z CM4 (v5, F1). @return 1 = link UP. Vyplni volitelne
+ * speed [Mbps], duplex (0=half/1=full) a IP (oktety a.b.c.d v uint32). Bez zapsaneho
+ * CM4 magicu vraci 0 a nuluje vystupy (degradovane "NET: down"). */
+int ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (speed_mbps) *speed_mbps = 0;
+        if (duplex)     *duplex     = 0;
+        if (ip)         *ip         = 0;
+        return 0;
+    }
+    if (speed_mbps) *speed_mbps = g_ipc.cm4.net_speed_mbps;
+    if (duplex)     *duplex     = g_ipc.cm4.net_duplex;
+    if (ip)         *ip         = g_ipc.cm4.net_ip;
+    return g_ipc.cm4.net_link ? 1 : 0;
+}
+
 /* ── Pure-logic selftest: seqlock parita + cteni-retry + cmd/resp ring
  * (push/pop/wrap/full/empty) + servis dispatch. Bezi nad LOKALNI instanci `t`
  * (static → nezatezuje stack malych tasku), takze NEsaha na zivy g_ipc → zadny

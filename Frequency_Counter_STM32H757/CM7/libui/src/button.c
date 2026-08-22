@@ -1,6 +1,6 @@
 /**
  * @file button.c
- * @brief Footer button with gradient body, border and 1-2 text lines.
+ * @brief Footer button with solid body, border and 1-2 text lines.
  */
 
 #include <ui/button.h>
@@ -9,24 +9,20 @@
 #include <ui/fonts.h>
 #include <prim/prim.h>
 
-typedef struct { prim_color_t top, bot, border, ink; } btn_style_t;
+typedef struct { prim_color_t fill, border, ink; } btn_style_t;
 
 static btn_style_t style_of(ui_button_variant_t v)
 {
     switch (v) {
     case UI_BUTTON_RUN:
-        return (btn_style_t){UI_COLOR_BTN_RUN_TOP, UI_COLOR_BTN_RUN_BOT,
-                             UI_COLOR_BTN_RUN_BORDER, UI_COLOR_OK_SOFT};
+        return (btn_style_t){UI_COLOR_BTN_RUN_TOP, UI_COLOR_BTN_RUN_BORDER, UI_COLOR_OK_SOFT};
     case UI_BUTTON_STOP:
-        return (btn_style_t){UI_COLOR_BTN_STOP_TOP, UI_COLOR_BTN_STOP_BOT,
-                             UI_COLOR_BTN_STOP_BORDER, UI_COLOR_BAD};
+        return (btn_style_t){UI_COLOR_BTN_STOP_TOP, UI_COLOR_BTN_STOP_BORDER, UI_COLOR_BAD};
     case UI_BUTTON_ACTIVE:
-        return (btn_style_t){UI_COLOR_BTN_ACT_TOP, UI_COLOR_BTN_ACT_BOT,
-                             UI_COLOR_BTN_ACT_BORDER, UI_COLOR_ACC};
+        return (btn_style_t){UI_COLOR_BTN_ACT_TOP, UI_COLOR_BTN_ACT_BORDER, UI_COLOR_ACC};
     case UI_BUTTON_NORMAL:
     default:
-        return (btn_style_t){UI_COLOR_BG_1, UI_COLOR_BG_0,
-                             UI_COLOR_LINE, UI_COLOR_INK_2};
+        return (btn_style_t){UI_COLOR_BTN_NORM_TOP, UI_COLOR_BTN_NORM_BORDER, UI_COLOR_INK_2};
     }
 }
 
@@ -37,7 +33,7 @@ void ui_button_render(const ui_button_t *btn)
 
     /* Solid rounded body (a rectangular gradient overlay would bleed square
      * corners past the rounded shape), then border. */
-    prim_fill_rect_rounded(btn->rect, UI_DIM_BUTTON_RADIUS, st.top, PRIM_BLEND_OVER);
+    prim_fill_rect_rounded(btn->rect, UI_DIM_BUTTON_RADIUS, st.fill, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(btn->rect, UI_DIM_BUTTON_RADIUS, 1, st.border);
 
     int16_t cx = (int16_t)(btn->rect.x + btn->rect.w / 2);

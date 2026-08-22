@@ -47,7 +47,7 @@ void MX_DSIHOST_DSI_Init(void)
   hdsi.Init.AutomaticClockLaneControl = DSI_AUTO_CLK_LANE_CTRL_DISABLE;
   hdsi.Init.TXEscapeCkdiv = 5;
   hdsi.Init.NumberOfLanes = DSI_ONE_DATA_LANE;
-  PLLInit.PLLNDIV = 70;
+  PLLInit.PLLNDIV = 28;
   PLLInit.PLLIDF = DSI_PLL_IN_DIV1;
   PLLInit.PLLODF = DSI_PLL_OUT_DIV1;
   if (HAL_DSI_Init(&hdsi, &PLLInit) != HAL_OK)

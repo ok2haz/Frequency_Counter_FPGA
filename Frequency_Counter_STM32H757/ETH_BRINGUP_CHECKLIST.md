@@ -126,23 +126,24 @@ označit komentářem, že bit-bang MDIO je jen pro F0 a produkčně to dělá H
 
 ---
 
-## 3. F1 — IPC v4 dopředu (příprava, ne důsledek)
+## 3. F1 — IPC v5 dopředu (příprava, ne důsledek) — ✅ HOTOVO 2026-08-22
 
-CM4 nemá konzoli ani displej. Bez tohohle kroku budeš M9 ladit jen debuggerem —
+CM4 nemá konzoli ani displej. Bez tohohle kroku bys M9 ladil jen debuggerem —
 proto **patří sem, ne až za rozjetou síť**. Na ETH nezávisí ani trochu.
 
-Dnes `ipc_cm4_status_t` nese jen `magic`, `heartbeat`, `cm4_cpu_pct`, `cm4_uptime_s`.
+- [x] ✅ **Rozšířeno `ipc_cm4_status_t`** o `net_ip` (IPv4 oktety), `net_link`, `net_speed_mbps`,
+      `net_duplex` (`ipc_shared.h`). Publikuje `ipc_cm4_set_net()` (CM4), čte `ipc_cm4_net()` (CM7).
+- [x] ✅ **`IPC_VERSION` 4 → 5** (ne 3→4 — v4 už zabral `sens_valid`). Obě strany ověřují
+      `magic`+`version`+`size`; nesouhlas → IPC off (`4:--`). ⚠️ **Nutno přeflashnout OBĚ banky.**
+- [x] ✅ **System Health**: řádek CM4 nově `CM4:OK NET:down` (mono_16, box 156 px). CM4 dnes
+      hlásí natvrdo `down` (`ipc_cm4_set_net(0,0,0,0)` v CM4 smyčce) — lwIP až F5.
+- [x] ✅ **`NET` chip v headeru ZAMÍTNUT** — `HDR_PILL_LIMIT` je na rozpočtu; Health je bezpečnější (dle plánu).
+- [x] ✅ Zapsáno do `CLAUDE.md` (IPC v5) a `STATUS.md` (#24).
+- **Most CM7:** `g_cm4_net_up` (defaultTask z `ipc_cm4_net()`), app vrstva čte globál (vzor jako `g_cm4_alive`).
 
-- [ ] Rozšířit `ipc_cm4_status_t` o **stav linky** (down/up, rychlost, duplex) a **IP adresu**.
-- [ ] Zvednout **`IPC_VERSION` 3 → 4** (obě strany ověřují `magic`+`version`+`size`;
-      nesouhlas → IPC off a degradovaný běh).
-- [ ] Zobrazit v okně **System Health**; CM4 zatím hlásí natvrdo `down`.
-- [ ] ⚠️ Zvážit `NET` chip v headeru, ale **pozor na `HDR_PILL_LIMIT`** — řada pilulek je
-      už dnes na rozpočtu (viz `CLAUDE.md`); Health je bezpečnější místo.
-- [ ] Zapsat v4 do `CLAUDE.md` a `STATUS.md`.
-
-✅ **Kritérium:** Health ukazuje `NET: down` a přežije to reset. Zobrazovací řetěz je
-odladěný dřív, než ho budeš potřebovat.
+✅ **Kritérium SPLNĚNO:** Health ukazuje `NET: down`, přežije reset (IPC re-init robustní na magic).
+Zobrazovací řetěz je odladěný dřív, než ho u F5 budu potřebovat. Kompilačně čisté (CM7+CM4,
+`-Wall -Wextra -Wshadow`). **Zbývá HW-ověřit na displeji po reflashi obou bank.**
 
 ---
 
@@ -215,7 +216,7 @@ chová se jako smyčka, ale sedí na standardním portu lwIP a další tasky jde
 - [ ] lwIP init, `ethernetif`, `netif` up (jeden kontext — task nebo smyčka dle F4).
 - [ ] Autonegotiace → `HAL_ETH_SetMACConfig` dle Speed/Duplex.
 - [ ] DHCP jako výchozí, **fallback na statickou IP po ~5 s** (přístroj musí být dostupný i bez DHCP).
-- [ ] Hlásit stav linky a IP přes **IPC v4** (řetěz je hotový z F1) → hned vidíš, co se děje.
+- [ ] Hlásit stav linky a IP přes **IPC v5** (řetěz je hotový z F1: `ipc_cm4_set_net()`) → hned vidíš, co se děje.
 - [ ] `iwdg2_kick()` — jeden kontext, zatím stačí prostý kick (viz §9).
 - [ ] ✅ **Kritérium:** `ping` z PC projde.
 - [ ] ✅ **Test izolace jader:** `ping -f` (flood) → **displej na CM7 se nesmí hnout**,
@@ -253,7 +254,7 @@ Neimplementované vracej jako chybu do `SYST:ERR?`, **ne jako vymyšlené čísl
 - [ ] Statická SPA v bank2 flash (dnes je v ní 8 KB z 1 MB).
 - [ ] `/api/meas`, `/api/status` = JSON ze snapshotu; start **pollingem 1 Hz**, WebSocket později.
 - [ ] Stahování logů: **IPC file-read okno** (§3 návrhu plánuje 4 KB, **zatím neexistuje**)
-      → CM7 plní přes `datalog_read_back()`. Další rozšíření = **IPC v5**.
+      → CM7 plní přes `datalog_read_back()`. Další rozšíření = **IPC v6**.
       Záměrně **ne přes FatFs** — funguje pak stejně pro W25Q i SD.
 
 ### F8 — Služby (**M12**)
@@ -284,8 +285,9 @@ nového. **Ověřit dřív, než na CM4 poběží něco, co se musí umět zotav
 | Verze | Obsah | Kdy |
 |---|---|---|
 | v3 | senzory, kalibrace, Math/limit cfg mirror | hotovo |
-| **v4** | + stav linky a IP (CM4→CM7) | **F1** (dopředu, nezávisle na ETH) |
-| **v5** | + file-read okno pro stahování logů | F7 |
+| v4 | sens_valid (maska platnosti) + t_fpga_c100 | hotovo (2026-08-13) |
+| **v5** | + stav ETH linky a IP (CM4→CM7) | ✅ **F1 HOTOVO (2026-08-22)** |
+| **v6** | + file-read okno pro stahování logů | F7 |
 
 ### Bezpečnost — rozhodnout před F6
 

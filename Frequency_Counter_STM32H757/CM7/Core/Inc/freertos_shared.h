@@ -112,7 +112,7 @@ extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
 extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, preset 15..600) */
-extern volatile uint8_t g_theme_light;   /* 0 = tmave schema (default), 1 = svetle (BKP_DR6) */
+extern volatile uint8_t g_theme_idx;     /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*, BKP_DR6 bit0+bity9:10) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
 /* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
@@ -162,6 +162,7 @@ extern volatile uint8_t  g_cm4_absent;
  * bez beziciho CM4 zustava 0. (CM4 od 2026-08-14 na HW BEZI — driv se myslelo,
  * ze nebootuje, ale maskoval ho pripojeny debugger; viz CLAUDE.md Dvoujadro.) */
 extern volatile uint8_t  g_cm4_alive;
+extern volatile uint8_t  g_cm4_net_up;   /* 1 = ETH link UP (z CM4, IPC v5, F1); Health "NET:" */
 /* g_cm4_stall_count = kolikrat CM4 prestal odpovidat PO tom, co uz jednou zil
  * (hrana alive->dead, defaultTask). Rozlisuje "nikdy nenabehl" (g_cm4_absent) od
  * "bezel a zasekl se" — druhe je pro CM4 vlastni IWDG2 (self-reset), CM7 to jen

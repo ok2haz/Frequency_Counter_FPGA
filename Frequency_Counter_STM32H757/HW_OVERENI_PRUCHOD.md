@@ -49,7 +49,7 @@ Dnes už jen ověř, že to drží:
 - [ ] Footer **RUN/STOP**: při běhu nabízí červené „STOP", po stisku zelené „RUN"
 - [ ] Při STOP: **zóna velkého čísla se podbarví červeně** (~15 %)
 - [ ] Micro-flash tlačítka při stisku (2px accent obrys, ~3 tiky)
-- [ ] Slot 0 footeru („Main SW") přepne na **v2 layout**: vlevo Allan graf, vpravo 3 statistiky, mini trend, RF bar
+- [ ] Slot 0 footeru = **PERIOD/FREQ** přepínač (A/B „Main SW" odstraněn 2026-08-19, #14 — natrvalo v2: vlevo Allan graf, vpravo 3 statistiky, mini trend, RF bar)
 - [ ] Tap na Allan → okno ALLAN; tap na trend → fullscreen trend
 
 ---

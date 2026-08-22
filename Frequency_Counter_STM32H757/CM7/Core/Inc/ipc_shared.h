@@ -30,9 +30,10 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  4u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  5u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
-                                       v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100 */
+                                       v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
+                                       v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -159,6 +160,13 @@ typedef struct {
     volatile uint32_t heartbeat;   /* CM4 inkrementuje ~1/s; CM7 hlida stari (liveness) */
     uint32_t cm4_cpu_pct;          /* CM4 idle-based zatez [%] */
     uint32_t cm4_uptime_s;
+    /* v5 (F1 ETH, 2026-08-22): stav ETH linky (CM4 -> CM7). Dnes CM4 hlasi natvrdo
+     * down/0 (lwIP prijde az F5); zobrazovaci retez (System Health) se ladi uz tady. */
+    uint32_t net_ip;               /* IPv4 jako oktety: bajt0=a .. bajt3=d (a.b.c.d); 0 = zadna IP */
+    uint8_t  net_link;             /* 0 = down, 1 = up */
+    uint8_t  net_speed_mbps;       /* 10 / 100 / 0 (neznamo) */
+    uint8_t  net_duplex;           /* 0 = half, 1 = full */
+    uint8_t  net_rsvd;             /* zarovnani na 4 */
 } ipc_cm4_status_t;
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
@@ -278,7 +286,12 @@ void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz 
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
+int  ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip); /* 1=link UP, ETH stav z CM4 (v5,F1) */
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
+
+/* ── CM4 -> CM7: publikace stavu ETH linky (v5, F1). Vola CM4 (dnes natvrdo down,
+ * po lwIP realne). speed_mbps=10/100/0, duplex 0=half/1=full, ip=oktety a.b.c.d. */
+void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32_t ip);
 
 /* ── SCPI nad IPC snapshotem (priprava CM4 backendu, #25) ────────────────────
  * Naplni `scpi_src_t` VYHRADNE z IPC snapshotu — presne to, co bude delat CM4,

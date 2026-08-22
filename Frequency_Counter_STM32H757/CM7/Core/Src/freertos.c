@@ -167,7 +167,7 @@ volatile float    g_survey_alt = 0.0f, g_survey_spread = 0.0f;
 volatile uint8_t g_sound_muted   = 0;     /* 0 = zvuk zapnut */
 volatile uint8_t g_autodim_en    = 1;     /* 1 = auto-dim po necinnosti zapnut */
 volatile uint16_t g_autodim_sec  = 300;   /* prodleva auto-dim [s] = 5 min default (preset 15..600) */
-volatile uint8_t g_theme_light   = 0;     /* 0 = tmave schema (default) */
+volatile uint8_t g_theme_idx     = 0;     /* schema 0..4 = tmave(def)/svetle/stredni/obrys/kontrast (UI_THEME_*) */
 volatile uint8_t g_lang_en       = 0;     /* 0 = cesky (default) */
 volatile uint8_t g_anim_enabled  = 1;     /* 1 = animace zapnute (default), persist BKP_DR6 bit8 */
 volatile uint16_t g_fx_enabled   = FX_ALL;  /* bitmaska grafickych efektu (okno Animace->EFEKTY),
@@ -193,6 +193,7 @@ volatile uint8_t  g_rtc_set_pend = 0;
 volatile uint8_t  g_ui_cfg_req      = 0;  /* SCPI -> UiTask: pozadovany stav mereni */
 volatile uint8_t  g_ui_cfg_req_pend = 0;  /* 1 = ceka na aplikaci (viz freertos_shared.h) */
 volatile uint8_t  g_cm4_cpu_pct  = 0;  /* CM4 vlastni zatez [%] z IPC heartbeatu -> header "CM4:xx%" */
+volatile uint8_t  g_cm4_net_up   = 0;  /* 1 = ETH link UP (z CM4 pres IPC v5, F1); 0 = down/bez CM4 */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
@@ -432,6 +433,7 @@ void StartDefaultTask(void *argument)
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (cmd ring) */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
     g_cm4_cpu_pct = g_cm4_alive ? (uint8_t)ipc_cm4_cpu_pct() : 0u;   /* -> header "CM4:xx%" */
+    g_cm4_net_up  = g_cm4_alive ? (uint8_t)ipc_cm4_net(NULL, NULL, NULL) : 0u;  /* ETH link -> Health "NET:" (v5, F1) */
     /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4):
      * CM4 se zotavi vlastnim IWDG2, CM7 to jen pozoruje + loguje + pocita. NEsahá na
      * crash black-box (ten je "pricina posledniho resetu CM7"). Armuje se az po 1. ozivu. */

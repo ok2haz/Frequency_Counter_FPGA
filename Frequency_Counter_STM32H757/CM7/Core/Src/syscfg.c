@@ -6,7 +6,7 @@
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
-#include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, qspiMutexHandle */
+#include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, qspiMutexHandle */
 #include "datalog.h"
 #include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
@@ -43,7 +43,7 @@ typedef struct {
     uint8_t  sound_muted;
     uint8_t  autodim_en;
     uint16_t autodim_sec;
-    uint8_t  theme_light;
+    uint8_t  theme_idx;     /* 0..4 = UI_THEME_* (drive "theme_light" 0/1 — stejny bajt/offset, kompat.) */
     uint8_t  lang_en;
     int8_t   tz_offset_h;
     uint8_t  tz_auto;
@@ -103,7 +103,7 @@ static void pack(syscfg_blob_t *b)
     b->sound_muted  = g_sound_muted;
     b->autodim_en   = g_autodim_en;
     b->autodim_sec  = g_autodim_sec;
-    b->theme_light  = g_theme_light;
+    b->theme_idx    = g_theme_idx;
     b->lang_en      = g_lang_en;
     b->tz_offset_h  = g_tz_offset_h;
     b->tz_auto      = g_tz_auto;
@@ -219,7 +219,7 @@ void syscfg_load(void)
     g_sound_muted = b.sound_muted ? 1 : 0;
     g_autodim_en  = b.autodim_en ? 1 : 0;
     g_autodim_sec = (b.autodim_sec >= 15 && b.autodim_sec <= 600) ? b.autodim_sec : 300;   /* default 5 min */
-    g_theme_light = b.theme_light ? 1 : 0;
+    g_theme_idx   = (uint8_t)(b.theme_idx & 0x07u);   /* 0..4 (UI_THEME_*); stary blob mel 0/1, sedi */
     g_lang_en     = b.lang_en ? 1 : 0;
     g_tz_offset_h = (b.tz_offset_h < -12) ? -12 : (b.tz_offset_h > 14 ? 14 : b.tz_offset_h);
     g_tz_auto     = b.tz_auto ? 1 : 0;

@@ -26,10 +26,16 @@ typedef struct {
     prim_color_t ink, ink2, ink3, ink4, ink5;
     /* akcenty */
     prim_color_t acc, acc_soft, ok, ok_soft, ok_bg, ok_border, warn, bad, violet;
-    /* tlacitka */
-    prim_color_t btn_run_top, btn_run_bot, btn_run_border;
-    prim_color_t btn_act_top, btn_act_bot, btn_act_border;
-    prim_color_t btn_stop_top, btn_stop_bot, btn_stop_border;
+    /* Tlacitka = JEDNA plna vypln (`_top`) + ramecek. Gradient (druha barva) se
+     * zamerne NEpouziva — pres zaoblene rohy by prebleedoval (viz button.c). */
+    prim_color_t btn_run_top,  btn_run_border;
+    prim_color_t btn_act_top,  btn_act_border;
+    prim_color_t btn_stop_top, btn_stop_border;
+    /* NORMAL tlacitko (GATE/CHAN/MENU/PERIOD + navigacni v oknech). Drive bralo
+     * primo BG_1/LINE (tj. splyvalo s pozadim) — ted vlastni role, aby se
+     * schemata "STREDNI" (svetlejsi vypln) a "OBRYS" (svetlejsi jen ramecek)
+     * lisila jen tady, bez sahnuti na pozadi. */
+    prim_color_t btn_norm_top, btn_norm_border;
     /* Podbarveni velkeho kmitoctu pri STOP (mereni stoji) — POLOPRUHLEDNA
      * cervena (alfa!), michá se pres gradient pozadi. ⚠️ Alfa < 0xFF vyrazuje
      * DMA2D fast-path v prim_fill_rect -> CPU fill; nevadi, kresli se jen pri
@@ -39,9 +45,21 @@ typedef struct {
 
 UI_API extern const ui_theme_t *g_ui_theme;   /* aktivni paleta (default tmava) */
 
-/** Prepne paletu (0 = tmava, 1 = svetla). Volajici MUSI nasledne zneplatnit
- *  predrenderovane cache (bg_cache) a prekreslit obrazovku. */
-UI_API void ui_theme_select(int light);
+/* Indexy schemat (persist jako 0..4 — viz g_theme_idx). 2/3 jsou varianty
+ * tmaveho schematu lisici se JEN vzhledem NORMAL tlacitek; 4 je samostatna
+ * vysoce kontrastni paleta. */
+enum {
+    UI_THEME_DARK        = 0,   /* puvodni tmave */
+    UI_THEME_LIGHT       = 1,   /* svetle */
+    UI_THEME_DARK_SOFTBTN= 2,   /* "STREDNI": tmave, ale NORMAL tlacitka svetlejsi vypln */
+    UI_THEME_DARK_FRAME  = 3,   /* "OBRYS": tmave, NORMAL tlacitka jen svetlejsi ramecek */
+    UI_THEME_HICONTRAST  = 4,   /* "KONTRAST": cerne pozadi, bily text, syte jasne akcenty */
+    UI_THEME_COUNT       = 5
+};
+
+/** Prepne paletu podle indexu 0..4 (UI_THEME_*). Volajici MUSI nasledne
+ *  zneplatnit predrenderovane cache (bg_cache) a prekreslit obrazovku. */
+UI_API void ui_theme_select(int idx);
 
 /* ── Background ─────────────────────────────────────────────── */
 #define UI_COLOR_BG_0           (g_ui_theme->bg0)
@@ -73,16 +91,15 @@ UI_API void ui_theme_select(int light);
 #define UI_COLOR_BAD            (g_ui_theme->bad)
 #define UI_COLOR_VIOLET         (g_ui_theme->violet)
 
-/* ── Buttons ────────────────────────────────────────────────── */
+/* ── Buttons (jedna plna vypln `_TOP` + ramecek `_BORDER`; viz theme.h struct) ── */
 #define UI_COLOR_BTN_RUN_TOP    (g_ui_theme->btn_run_top)
-#define UI_COLOR_BTN_RUN_BOT    (g_ui_theme->btn_run_bot)
 #define UI_COLOR_BTN_RUN_BORDER (g_ui_theme->btn_run_border)
 #define UI_COLOR_BTN_ACT_TOP    (g_ui_theme->btn_act_top)
-#define UI_COLOR_BTN_ACT_BOT    (g_ui_theme->btn_act_bot)
 #define UI_COLOR_BTN_ACT_BORDER (g_ui_theme->btn_act_border)
 #define UI_COLOR_BTN_STOP_TOP    (g_ui_theme->btn_stop_top)
-#define UI_COLOR_BTN_STOP_BOT    (g_ui_theme->btn_stop_bot)
 #define UI_COLOR_BTN_STOP_BORDER (g_ui_theme->btn_stop_border)
+#define UI_COLOR_BTN_NORM_TOP    (g_ui_theme->btn_norm_top)
+#define UI_COLOR_BTN_NORM_BORDER (g_ui_theme->btn_norm_border)
 
 /* ── Stav mereni ────────────────────────────────────────────── */
 #define UI_COLOR_FREQ_STOP_BG   (g_ui_theme->freq_stop_bg)

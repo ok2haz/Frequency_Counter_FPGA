@@ -106,25 +106,6 @@ double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
 
 bool screen_main_is_running(void) { return st.running; }
 
-/* ════════════════════════════════════════════════════════════════════════
- * DOCASNA A/B SROVNAVACI VETEV (2026-07-19, viz STATUS.md TODO #14):
- * stary layout hlavni mrizky (pred audit pro 4,3" panel — Allan 53 % sirky,
- * offset karty mono_16, signal jen v pravem sloupci vys.43) vs. novy (audit
- * pro 4,3" — hybrid: Allan 47 % pres celou vysku, offset karty mono_18 vetsi,
- * signal v pravem sloupci vys.54). Prepina se footer tlacitkem, ktere jinak
- * prepina PERIOD/FREQ mod (slot 0, docasne prejmenovane "Main SW" — viz
- * footer_button_def + touch handler v app_gpsdo.c). AZ bude vybrano, cely
- * tenhle blok (s_layout_old + *_v1 funkce + dispatch v draw_stat_card a
- * render_body_grid) SMAZAT — viz STATUS.md TODO #14.
- * ⚠️ DEFAULT = STARY layout (2026-07-19): "main old" je referencni/frozen
- * stav, na kterem se dal NEDELAJI zmeny. Vsechny dalsi UI upravy hlavni
- * obrazovky (font, rozlozeni, ...) cili na "main new" (v2, render_body_grid_v2 /
- * *_v2 funkce) — ten se pri kazdem otevreni okna musi rucne prepnout tlacitkem
- * "Main SW". Az padne rozhodnuti, v2 se stane jedinym kodem (viz TODO #14). */
-static bool s_layout_old = true;
-void screen_main_toggle_layout(void) { s_layout_old = !s_layout_old; }
-bool screen_main_layout_is_old(void) { return s_layout_old; }
-
 /* Hlavickove pilulky — rect zachyceny pri render_header; tap -> okno. */
 static prim_rect_t s_gnss_pill_rect = {0, 0, 0, 0};  /* GNSS lock -> GPS okno */
 static prim_rect_t s_sys_pill_rect  = {0, 0, 0, 0};  /* SYS ready -> System Health */
@@ -1274,28 +1255,22 @@ static void render_card_allan(prim_rect_t rect)
 /* Jedna mala karta: header label + hodnota. Hodnota mono_18 (2026-07-19, bylo
  * mono_16 — karty se roztahly na 1/3 sirky, takze je misto; mono_18 MA horni
  * indexy ⁰..⁹⁻ pro fmt_frac). Baseline in.y+15: glyf 18px zacina AZ POD
- * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32).
- * ⚠️ DOCASNY dispatch na s_layout_old (mono_16+11, puvodni pred 4,3" audit) —
- * soucast A/B srovnavaci vetve, viz komentar u screen_main_toggle_layout. */
+ * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32). */
 static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
 {
     ui_card_t card = {.rect = r, .header_label = label};
     ui_card_render_chrome(&card);
     prim_rect_t in = ui_card_inner_rect(&card);
-    if (s_layout_old)
-        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
-                       &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
-    else
-        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 15)}, val,
-                       &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 15)}, val,
+                   &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
 }
 
-/* ── Eased Offset/σ/Drift (item 2, jen v2 layout) ────────────────────────────
+/* ── Eased Offset/σ/Drift (item 2) ───────────────────────────────────────────
  * Karty se plne prekresluji 1x/s (screen_main_redraw_stats). Misto okamziteho
  * skoku na novou hodnotu drzi 3 anim_t (raw float, PRED formatovanim fmt_frac)
  * — 20Hz tik (screen_main_tick_stats_anim) je plynule dojede a mezitim
  * prekresluje JEN hodnotu (box clear + text), ne cely chrome karty.
- * `stats_anim_resync()` se vola PRED plnym screen renderem (render_body_grid_v2)
+ * `stats_anim_resync()` se vola PRED plnym screen renderem (render_body_grid)
  * -> pri navratu na hlavni obrazovku po case v podnabidce se cislo NEukaze
  * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
 static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
@@ -1310,9 +1285,8 @@ static void stats_anim_resync(void)
 }
 
 /* TRI uzke karty ze statistiky: Offset (klouzavy prumer y), σy@1s (ADEV tau=1s),
- * Drift (df/dt — rychlost ujizdeni kmitoctu). v2: hodnoty jsou EASED (s_anim_*.cur,
- * anim_set tady jen nastavi novy cil — krok dela 20Hz tik); v1 (zamrzla vetev,
- * viz screen_main_toggle_layout) zustava beze zmeny, presny puvodni raw vypocet. */
+ * Drift (df/dt — rychlost ujizdeni kmitoctu). Hodnoty jsou EASED (s_anim_*.cur,
+ * anim_set tady jen nastavi novy cil — krok dela 20Hz tik). */
 static void draw_offset_sigma(prim_rect_t rect)
 {
     s_small_rect = rect;                          /* pro zive prekresleni */
@@ -1323,19 +1297,13 @@ static void draw_offset_sigma(prim_rect_t rect)
     s_stat_card_rect[2] = (prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h};
 
     char off[24], s1[24], dr[24];
-    if (s_layout_old) {
-        fmt_frac(off, sizeof(off), stats_mean(8), 1);
-        fmt_frac(s1,  sizeof(s1),  stats_adev(1), 0);   /* σy@1s (τ=1s, 1/s) */
-        fmt_frac(dr,  sizeof(dr),  stats_drift(), 1);   /* df/dt [1/s] */
-    } else {
-        anim_set(&s_anim_off,   stats_mean(8));
-        anim_set(&s_anim_sig,   stats_adev(1));
-        anim_set(&s_anim_drift, stats_drift());
-        fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
-        fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);
-        fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);
-        strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
-    }
+    anim_set(&s_anim_off,   stats_mean(8));
+    anim_set(&s_anim_sig,   stats_adev(1));
+    anim_set(&s_anim_drift, stats_drift());
+    fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
+    fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
+    fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
+    strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
     draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
     draw_stat_card(s_stat_card_rect[1], "σy 1s", s1, UI_COLOR_VIOLET);
     draw_stat_card(s_stat_card_rect[2], "Drift/s", dr, UI_COLOR_ACC);
@@ -1359,7 +1327,6 @@ static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
  * bezi (STOP zamrzne stats jako jinde). Vraci 1 pokud neco prekreslil. */
 int screen_main_tick_stats_anim(void)
 {
-    if (s_layout_old) return 0;
     if (!screen_main_is_running()) return 0;
     if (s_stat_card_rect[0].w == 0) return 0;
 
@@ -1394,13 +1361,13 @@ static void blit_bg_region(prim_rect_t r);
 #define SPARK_N 21
 static int16_t s_spark[SPARK_N];
 
-/* ── Eased trend sparkline (item 4, jen v2 layout) ───────────────────────────
+/* ── Eased trend sparkline (item 4) ──────────────────────────────────────────
  * Misto okamziteho skoku krivky na novou sadu bodu kazdou sekundu (screen_main
  * _redraw_stats) drzime `s_spark_prev` (naposledy VYKRESLENA sada) a plynule
  * (20Hz tik) interpolujeme k nove `s_spark` (cil) pres TREND_ANIM_STEPS kroku
  * (~1s). Sigma band + header p-p NEjsou eased (tise se prebarvi az pri
  * dalsim 1Hz redrawu — subtilni podbarveni, na rozdil od krivky nerusi).
- * `trend_anim_resync()` (volano PRED render_card_trend z render_body_grid_v2,
+ * `trend_anim_resync()` (volano PRED render_card_trend z render_body_grid,
  * stejny vzor jako stats_anim_resync) zajisti, ze FULL render (otevreni okna /
  * navrat z podnabidky) ukaze cil OKAMZITE, ne zastarale nedojete misto. */
 #define TREND_ANIM_STEPS 20
@@ -1453,7 +1420,6 @@ static void trend_plot_draw(prim_rect_t inner, const int16_t *arr, int n,
  * chrome karty. Konci sam (vraci 0), kdyz uz je fazi na cili. */
 int screen_main_tick_trend_anim(void)
 {
-    if (s_layout_old) return 0;
     if (!screen_main_is_running()) return 0;
     if (s_trend_n == 0 || s_trend_phase >= TREND_ANIM_STEPS) return 0;
 
@@ -1515,11 +1481,6 @@ static void render_card_trend(prim_rect_t rect)
                    "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t inner = ui_card_inner_rect(&card);
 
-    if (s_layout_old) {                            /* zamrzla v1 vetev — beze zmeny, bez easingu */
-        trend_plot_draw(inner, s_spark, n, sig_lo, sig_hi);
-        return;
-    }
-
     s_trend_inner = inner; s_trend_sig_lo = sig_lo; s_trend_sig_hi = sig_hi;
     /* Zmena poctu bodu (n) by interpolaci mezi ruzne dlouhymi poli rozbila —
      * stejne jako resync/vypnute animace jen skoc rovnou na cil. */
@@ -1580,45 +1541,7 @@ static void render_card_signal(prim_rect_t rect)
  *          "bargraf jen v prave casti").
  * Pozn.: horni hrana mrizky MUSI zustat na SCR_MAIN_GRID_Y (166) — clear
  * oblast velkeho cisla (redraw_freq, s_num_top+88) konci presne na ni. */
-/* ── DOCASNA V1 (stary layout, pred 4,3" audit — presna rekonstrukce z HEAD
- * pred touto revizi): Allan 53 % sirky, pravy sloupec stacked offset(h54,
- * mono_16)/trend/signal(h43), vsechny gapy SCR_MAIN_CARD_SECTION_GAP(11).
- * Soucast A/B srovnavaci vetve — SMAZAT spolu s ostatnimi *_v1/s_layout_old
- * kusy az bude vybrano, viz TODO. Pomer 53 je HARDCODED literal (ne macro,
- * ktery uz slouzi novemu layoutu s hodnotou 47). */
-static void render_right_column_v1(prim_rect_t rect)
-{
-    int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
-    int16_t small_h = 54;
-    int16_t signal_h = 43;
-    int16_t trend_h = (int16_t)(rect.h - small_h - signal_h - 2 * gap);
-    int16_t y = rect.y;
-    draw_offset_sigma((prim_rect_t){rect.x, y, rect.w, small_h});
-    y = (int16_t)(y + small_h + gap);
-    render_card_trend((prim_rect_t){rect.x, y, rect.w, trend_h});
-    y = (int16_t)(y + trend_h + gap);
-    render_card_signal((prim_rect_t){rect.x, y, rect.w, signal_h});
-}
-
-static void render_body_grid_v1(void)
-{
-    int16_t right_margin = SCR_MAIN_GRID_MARGIN;
-    int16_t allan_left = right_margin;
-    int16_t grid_y = SCR_MAIN_GRID_Y;
-    int16_t grid_h = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);
-    int16_t grid_w = (int16_t)(UI_DIM_SCREEN_W - right_margin - allan_left);
-    int16_t left_w = (int16_t)((grid_w * 53) / 100);            /* puvodni pomer, pred zuzenim na 47 */
-    int16_t right_w = (int16_t)(grid_w - left_w - SCR_MAIN_GRID_GAP);
-    int16_t left_x = allan_left;
-    int16_t right_x = (int16_t)(left_x + left_w + SCR_MAIN_GRID_GAP);
-    render_card_allan((prim_rect_t){left_x, grid_y, left_w, grid_h});
-    render_right_column_v1((prim_rect_t){right_x, grid_y, right_w, grid_h});
-}
-
-/* Aktualni (4,3"-laděny) layout — viz komentar u vrcholu funkce v predchozi
- * revizi (hybridni mrizka: Allan 47 % pres celou vysku, pravy sloupec
- * offset/trend/signal). */
-static void render_body_grid_v2(void)
+static void render_body_grid(void)
 {
     int16_t m       = SCR_MAIN_GRID_MARGIN;   /* vnejsi okraj (obe strany) */
     int16_t gap     = 12;                     /* svisla mezera */
@@ -1647,26 +1570,15 @@ static void render_body_grid_v2(void)
                                      right_w, signal_h});
 }
 
-/* Dispatch A/B — viz screen_main_toggle_layout. */
-static void render_body_grid(void)
-{
-    if (s_layout_old) render_body_grid_v1();
-    else              render_body_grid_v2();
-}
-
 /* Label/value/variant of footer button i, derived from the UI state. */
 static void footer_button_def(int i, const char **label, const char **value,
                               ui_button_variant_t *var)
 {
     *value = 0;
     switch (i) {
-    /* ⚠️ DOCASNE (A/B srovnani): slot 0 normalne prepina PERIOD/FREQ mod —
-     * dokud probiha vyhodnoceni layoutu, je prekryty "Main SW" prepinacem
-     * (viz screen_main_toggle_layout + touch handler v app_gpsdo.c, b==0).
-     * Puvodni radek `case 0: *label = MODE_NAME[st.mode ? 0 : 1]; ...` az po
-     * odstraneni teto vetve vratit. */
-    case 0: *label = "Main SW"; *value = screen_main_layout_is_old() ? "OLD" : "NEW";
-            *var = UI_BUTTON_NORMAL; break;
+    /* Slot 0 = PERIOD/FREQ toggle. Label = AKCE (co se stiskem zapne), ne stav:
+     * v rezimu FREQUENCY nabizi "PERIOD" a naopak (MODE_NAME[st.mode ? 0 : 1]). */
+    case 0: *label = MODE_NAME[st.mode ? 0 : 1]; *var = UI_BUTTON_NORMAL; break;
     /* Label = AKCE, ne stav (2026-07-20): bezi-li mereni, tlacitko nabizi "STOP"
      * (cervene), pri zastavenem nabizi "RUN" (zelene). Drive to bylo obracene
      * (label = stav) — matouci, protoze zelene "RUN" svitilo prave kdyz uz bezi.
