@@ -1427,7 +1427,7 @@ static const struct { uint8_t id; const char *lab; float lo, hi, nom; } GRAPH_BA
     { SENS_ADS2, "12V", 10800.f, 13200.f, 12000.f },
     { SENS_ADS3, "5V",   4500.f,  5500.f,  5000.f },
     { SENS_VDDA, "REF",  2300.f,  2700.f,  2500.f },
-    { SENS_VBAT, "BAT",  2500.f,  3300.f,  3000.f },
+    { SENS_VBAT, "BAT",  2500.f,  3400.f,  3300.f },   /* CR2032, nominal 3,3 V */
     { SENS_ADS0, "Vc",      0.f,  3300.f,  1650.f },
 };
 
@@ -1740,7 +1740,7 @@ static const struct {
     { SENS_ADS2,   "12V vetev",  10.8f,  13.2f,  12.0f,  0.001f, 3, " V",   0 },
     { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 3, " V",   0 },
     { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 3, " V",   0 },
-    { SENS_VBAT,   "VBAT",        2.5f,   3.3f,   3.0f,  0.001f, 3, " V",   0 },
+    { SENS_VBAT,   "VBAT",        2.5f,   3.4f,   3.3f,  0.001f, 3, " V",   0 },   /* CR2032, nominal 3,3 V */
     { SENS_ADS0,   "OCXO Vc",     0.0f,   3.3f,   1.65f, 0.001f, 3, " V",   0 },
     { SENS_ADS1,   "RF level",    -80.f,   10.f,  -100.f, 1.f,     1, " dBm", 1 },  /* nom < lo = zadny REF marker (RF nema ocekavanou hodnotu) */
 };

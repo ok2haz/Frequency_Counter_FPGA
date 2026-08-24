@@ -40,10 +40,12 @@ volatile float   g_adev_1s      = 0.0f;
 void mon_cfg_defaults(mon_cfg_t *c)
 {
     if (c == NULL) return;
-    /* VBAT: CR2032 ma jmenovitych 3,0 V; pod ~2,6 V uz je na konci zivota a je
-     * cas ji vymenit (RTC domena bezi i niz, ale rezerva mizi). ZAPNUTO. */
+    /* VBAT: zalozni CR2032 s JMENOVITYMI 3,3 V (tato deska). Prah "vymen brzy"
+     * = 2,8 V: ~0,5 V pod nominalem, stale s velkou rezervou nad spodni hranici
+     * BKP/RTC domeny (~1,65 V) i nad kolenem CR2032 (~2,7 V). ZAPNUTO.
+     * (Drive 2,6 V pri predpokladu 3,0 V nominalu.) */
     c->vbat_en    = 1;
-    c->vbat_lo_mv = 2600.0f;
+    c->vbat_lo_mv = 2800.0f;
     /* OCXO: zmereno na teto desce 49,7–51,5 °C v ustalenem stavu, takze pasmo
      * 45–55 °C nechava rezervu na jinou okolni teplotu a pritom chyti rozladenou
      * pec. ZAPNUTO. */

@@ -30,10 +30,13 @@
  * -> "SCF7" -> "SCF8". 2026-08-17 pribyl prahovy monitor (mon_cfg: VBAT/OCXO/ADEV)
  * -> "SCFA" -> "SCFB". 2026-08-22 sit + okno MERENI -> "SCFB" -> "SCFC" -> "SCFD"
  * (vzdaleny pristup: web_ctrl_en/web_user/web_pass). 2026-08-23 rozlozeni hlavni
- * obrazovky (layout_classic) -> "SCFD" -> **"SCFE"**.
+ * obrazovky (layout_classic) -> "SCFD" -> "SCFE". 2026-08-24 zmena VYCHOZIHO
+ * prahu VBAT 2,6 -> 2,8 V (CR2032 s 3,3 V nominalem) -> "SCFE" -> **"SCFF"**
+ * (bump nutny, aby se novy vychozi prah projevil i na uz nakonfigurovanem kusu —
+ * jinak by se z flash nacetl stary 2,6 V; lze i rucne v okne PRAHY bez bumpu).
  * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
  * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434645u   /* "SCFE" (2026-08-23: + rozlozeni hlavni obrazovky) */
+#define SYSCFG_BLOB_MAGIC   0x53434646u   /* "SCFF" (2026-08-24: VBAT prah 2,6->2,8 V pro CR2032 3,3 V nominal) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri

@@ -1286,7 +1286,9 @@ měřenými veličinami: **VBAT pod mezí** (záložní CR2032 pro RTC/BKP — d
 nedozvíš, dokud tiše nepřijdeš o čas a nastavení při odpojení napájení), **OCXO mimo teplotní pásmo**
 (rozladěná pec) a **σy@1s nad prahem**.
 - **Konfigurace `mon_cfg_t`** (`g_mon_cfg` v alarm.h) + persist v syscfg blobu (magic **„SCFA"→„SCFB"**,
-  tedy jeden boot s výchozím nastavením). Výchozí: VBAT 2,60 V ZAP, OCXO 45–55 °C ZAP.
+  tedy jeden boot s výchozím nastavením). Výchozí: **VBAT 2,80 V** ZAP (CR2032 s **3,3 V nominálem** na
+  této desce; syscfg magic „SCFE"→„SCFF" 2026-08-24), OCXO 45–55 °C ZAP. Displejové nominály VBAT
+  (GRAFY vert. bar + PŘEHLED KANÁLŮ + web) = 3,3 V.
 - ⚠️ **`adev_en` je výchozí VYPNUTÝ** — σy@1s se dnes počítá ze **simulace** headline (~1e-8), takže
   jakýkoli realistický práh by pípal na šum. Mechanika je hotová a správná; zapnout až po #2.
 - **Hystereze je povinná** (`band_eval`): VBAT ±30 mV, OCXO ±0,5 °C, ADEV ±10 %. Bez ní by veličina
