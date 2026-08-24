@@ -261,7 +261,78 @@ grep -c hal_sd CM7/Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk   # 0 = stale ma
       disk" → `File → Import → Existing Projects into Workspace`. Model se postaví od nuly, na disku
       se nic neztratí.
 
-### ✅ VYŘEŠENO 2026-08-12 — reimport zabral, žádná zaplata už není potřeba
+### 🔁 VRÁTILO SE 2026-08-22 (regen ETH na CM4) — a tentokrát na OBOU jádrech
+**Tohle není jednorázová nehoda, ale chování, které se opakuje po KAŽDÉ regeneraci
+přidávající soubory.** Po zapnutí ETH na CM4 vypadly z buildu:
+
+| | v `.project` | v generovaném `Debug/` | projev |
+|---|---|---|---|
+| CM7 | FatFs ✅ (4 `<link>`) | **chybí** | `undefined reference to f_open` |
+| CM4 | `hal_eth` ✅ (4 `<link>`) | **chybí** | `undefined reference to HAL_ETH_Init` |
+
+⚠️ **Smazání `Debug/` NEPOMÁHÁ** (ověřeno — 253 MB pryč, plný rebuild, stejná chyba):
+IDE generuje ze svého modelu v paměti, ne z disku. A **regen sám o sobě konfiguraci
+nerozbil** — `git diff CM7/.cproject` byl jen `useByScannerDiscovery` u hex konverze,
+`.project` se nezměnil vůbec, exkluze nikde (`grep -c exclude .cproject` = 0),
+resource filtry žádné, FatFs i FreeRTOS mají tvarem **identické** `type1` odkazy.
+
+**Nejrychlejší důkaz, že je model zastaralý** (a ne chyba v kódu) — porovnej s buildem,
+který fungoval: `CM7/Release/sources.mk` (z 08-13) `Middlewares/Third_Party/FatFs`
+**má**, `CM7/Debug/sources.mk` ne.
+
+### 🔁 A JEŠTĚ JEDNA VARIANTA (2026-08-22, lwIP): IDE přepíše `makefile` + `objects.list`
+Když se zdroje přidají **ručně** (u nás lwIP, viz F5), IDE si při dalším buildu přegeneruje
+`makefile` a `objects.list` **ze svého modelu** a ručně doplněné položky z nich vyhodí.
+⚠️ **Ručně psané `subdir.mk` přitom PŘEŽIJÍ** (IDE cizí adresáře nemaže), takže se zdroje
+dál *překládají* — jen se **neslinkují**. Navenek: `undefined reference` na `lwip_init`,
+`dhcp_start`, `LAN8742_Init` … u souborů, které se očividně přeložily.
+
+Příčina je táž: folder linky přidané do `.project` **za běhu IDE** model nezná.
+- [ ] **Close Project → Open Project na CM4** → IDE si folder linky načte a `subdir.mk`
+      pro `Middlewares/Third_Party/LwIP` i `lan8742` si vygeneruje samo (přepíše ty ruční —
+      stejné cesty, takže nevznikne duplicita).
+- [ ] `scripts/build.sh` tenhle případ **hlásí sám**: „*N objektů se PŘELOŽÍ, ale NENÍ
+      v objects.list*" (porovnává `OBJS` ze všech `subdir.mk` proti `objects.list`).
+
+- [ ] **Close Project → Open Project na OBOU projektech** (CM7 i CM4), pak Clean → Build.
+- [ ] Nezapomeň, že `Release/` má tutéž vadu čekat — projde stejným zásahem.
+- [ ] Nezávislá cesta ven: **`scripts/build.sh`** staví obě jádra přes `make` bez IDE
+      (`./scripts/build.sh Debug BOTH`, `Release` pro flash). IDE pak potřebuješ jen na flashování.
+
+### 🔁 TŘETÍ VARIANTA (2026-08-23, SCPI na CM4): IDE regeneruje i adresář, který dobře zná
+Rozdíl proti lwIP výše: **`Core/Src` je adresář, který IDE managuje odjakživa** — tam žádné
+Close/Open nepotřebuje. Jenže když jsem do jeho `subdir.mk` **ručně** dopsal extra `-I` (potřebné
+pro `#include "scpi.h"` z `main.c`, protože `scpi.c` fyzicky leží mimo `Core/Inc` v `CM7/`), tahle
+ruční úprava nepřežila **první normální build z IDE** (`make -j12 all`) — IDE `Core/Src/subdir.mk`
+přegenerovalo ze svého modelu (`.cproject`), který o té `-I` nic nevěděl, a smazalo ji. Projev:
+`fatal error: scpi.h: No such file or directory`, přestože včera to samo přeložilo.
+
+Zároveň smazalo i `-include SCPI/subdir.mk` z `makefile` a `SCPI/*.o` z `objects.list` (cizí
+adresář `SCPI/` sám nezná → stejný mechanismus jako u lwIP výše: soubory se PŘELOŽÍ, ale
+NESLINKUJÍ — `undefined reference to scpi_selftest`).
+
+**Poučení, obecně platné:** ruční zásah do `Debug/*/subdir.mk` je bezpečný, JEN KDYŽ je adresář
+sám o sobě mimo dosah IDE (jako `SCPI/`, `LWIP/`, `Middlewares/Third_Party/LwIP/`). Jakmile se
+šahá do `subdir.mk` adresáře, který IDE **aktivně spravuje** (`Core/Src`, `Core/Inc`…), musí
+odpovídající `-I`/zdroj přibýt i **do `.cproject`** (`listOptionValue` v Include paths, oba configy
+Debug+Release, oba nástroje assembler+compiler) — jinak to při příštím běžném buildu z IDE zase spadne.
+- [x] Oprava: `CM7/Core/Inc` přidáno do `CM4/.cproject` (4× — Debug/Release × assembler/compiler),
+      `Core/Src/subdir.mk` + `makefile` + `objects.list` dorovnány ručně pro okamžitou funkčnost.
+- [x] Po Close/Open (2026-08-23) `.cproject` změna vydržela a build z IDE proběhl čistě.
+
+**✅ DOTAŽENO — druhé poučení, silnější než první:** i tak `.project` **chybělo úplně** — `scpi.c`/
+`meas_math.c`/`ipc_scpi.c` jsem napřed zapsal jen do ručního `Debug/SCPI/subdir.mk`, bez `<link>`
+v `.project`. IDE o nich nevědělo vůbec, takže *žádné* Close/Open by nepomohlo (nic k načtení).
+**Řešení: `<link>` přidat pod jménem JIŽ SPRAVOVANÉ složky** (`<name>Core/Src/scpi.c</name>`,
+`locationURI` mimo projekt), ne pod novým adresářem (`SCPI/`) — po jednom Close/Open si to IDE
+samo zařadilo do `Core/Src/subdir.mk`, který navíc už měl (z bodu výše) správnou `-I CM7/Core/Inc`.
+`Debug/SCPI/` se tím stal mrtvým adresářem — smazán, `scripts/build.sh`ho detektor ho ohlásil
+(„3 objekty se přeloží, ale nejsou v objects.list") díky orphan `subdir.mk`, ne díky skutečné chybě.
+- [ ] **Obecné pravidlo pro budoucí cizí soubory:** `<link>` v `.project` vždy pod jménem existující
+      spravované složky (`Core/Src/xxx.c`), ne pod novým názvem — obchází to nutnost učit IDE
+      o nové složce a stačí jedno Close/Open namísto opakovaných.
+
+### ✅ Poprvé vyřešeno 2026-08-12 — reimport zabral, žádná zaplata už není potřeba
 Po **reimportu projektu do workspace** si IDE model konečně postavilo od nuly a nové soubory
 zná: `Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk` obsahuje `stm32h7xx_hal_sd.c`,
 `Debug/Middlewares/Third_Party/FatFs/subdir.mk` vzniklo, `objects.list` má FatFs objekty
@@ -338,6 +409,57 @@ nutné je zapnout ručně:
   zásobníkového bufferu klidně živého stack framu). Scratch buffer je `ALIGN_32BYTES` a všechno
   jde přes něj → hazard mizí. Cena = jedno memcpy na 512B blok.
 - [ ] Po regeneraci ověř, že **oba `#define` v `sd_diskio.c` pořád jsou**.
+
+## ETH (LAN8742A, RMII) — V IOC ✅ na kontextu **CortexM4** (zapnuto 2026-08-22, F3)
+
+`.ioc`: `ETH:I` v `CortexM4.IPs`, `ETH.MediaInterface=HAL_ETH_RMII_MODE`,
+`MX_ETH_Init-ETH-…-CortexM4`. Piny (ověřeno proti schématu listy 4/7 + 2/7):
+`PA1` REF_CLK, `PA2` MDIO, `PA7` CRS_DV, `PC1` MDC, `PC4/PC5` RXD0/1, `PB13` TXD1,
+`PG11` TX_EN, `PG13` TXD0, `PG12` ETH_INT (GPIO), `PG14` ETH_RES (GPIO).
+
+✅ **`eth.c` a `eth.h` jsou BEZE ZMĚNY proti výstupu CubeMX** (ověřeno: `grep -c g_eth …` = 0).
+Regenerace ETH tedy **nemá co pokazit** — veškerá naše politika sedí v USER CODE blocích, které
+CubeMX zachovává. Jak to funguje:
+
+1. **Degradovaný bring-up přes `Error_Handler()` — `CM4/Core/Src/main.c`, samé USER CODE.**
+   CubeMX generuje do každého `MX_*_Init()` `Error_Handler()`, což je na CM4 `while(1)`.
+   `HAL_ETH_Init` přitom dělá SW reset MAC a **čeká** na něj — bez běžícího RMII REF_CLK
+   (50 MHz z PHY) vyprší, takže by nefunkční ethernet **zabil celou CM4** a s ní IPC
+   (`4:off`) — kvůli konektivitě bychom přišli o funkční dvoujádro.
+   Řešení **nesahá do generovaného kódu**: `Error_Handler()` **není `noreturn`** a jeho tělo
+   leží v `/* USER CODE BEGIN Error_Handler_Debug */`. Takže:
+   - `USER CODE BEGIN SysInit` → `g_init_nonfatal = 1;` (okno přes všechna `MX_*_Init`)
+   - `USER CODE BEGIN Error_Handler_Debug` → v tom okně jen `g_init_faults++; return;`
+   - `USER CODE BEGIN 2` → `g_init_nonfatal = 0;` (od té chvíle je zase skutečně fatální)
+
+   Okno je záměrně přes **všechny** periferie CM4, ne jen ETH: žádná z nich (pípák, LED, ETH)
+   nestojí za smrt celého jádra. CM7 si `Error_Handler` dovolit může (když nejede on, nejede
+   přístroj a `bootled_fail` to odpípá) — **CM4 je konektivita a ta smí chybět.**
+2. **Stav ETH se zjišťuje ZVENČÍ z handle:** `g_eth_init_ok = (heth.gState == HAL_ETH_STATE_READY)`,
+   PHY ID pak `HAL_ETH_ReadPHYRegister` v `USER CODE BEGIN 2`. Proto není potřeba nic
+   přidávat do `eth.c`. ⚠️ PHY ID se čte až po úspěšném initu (dřív není nastavený MDIO CSR
+   clock range) → `g_eth_phy_id == 0` znamená „nedošlo se sem", ne „PHY mlčí".
+
+🟡 **JEDINÁ ruční úprava mimo USER CODE — a regen na ni nesahá:**
+
+3. **`CM4/STM32H757BITX_FLASH.ld`: sekce `.eth_dma` + zkrácení `RAM`.**
+   ⚠️ Ověřeno na tomto regenu: **CubeMX linker skript nepřepsal** (`git status` ho neukázal) —
+   generuje se jednou. Přepis hrozí jen při změně paměťové konfigurace v CubeMX, takže
+   po regenu stačí `git diff` na `.ld` a kontrola `nm` níže.
+   Generovaný `eth.c` dává deskriptory do `.RxDescripSection`/`.TxDescripSection`, které
+   linker **neznal** → skončily jako orphan v `.data` na `0x10020010`. To je špatně dvakrát:
+   je to **CM4 alias** D2 (ETH DMA je AHB master a vidí D2 na `0x30xxxxxx`, na alias
+   nedosáhne) a `.data` se navíc zbytečně tahá z flash. Řešení: region
+   `ETH_D2 : ORIGIN = 0x30040000, LENGTH = 32K` (SRAM3, systémová adresa — dosáhne na ni
+   i CM4 CPU) + sekce `.eth_dma (NOLOAD)`.
+   ⚠️ **A hlavně `RAM` zkrácena 160K → 128K** (jen SRAM2). Kdyby dál sahala přes SRAM3,
+   linker by tam umístil `.bss`/`.data` a **tiše přepsal ETH deskriptory** — stejná fyzická
+   paměť, jen jiná adresa, takže by o kolizi nevěděl. CM4 zabírá ~4 KB, 128K je dost.
+   Kontrola: `arm-none-eabi-nm H757_LED_CM4.elf | grep DscrTab` musí dát
+   **`30040000 B`** (ne `1002xxxx D`).
+
+- [ ] Po regeneraci **není co vracet v `eth.c`** — jen ověř `nm` kontrolou výše, že linker sekce drží.
+- [ ] `ETH_PHY_ADDR` = **0** (ověřeno skenem z CM7: `eth` → „PHYAD 0"); žije v `main.c` USER CODE PD.
 
 ## 🔴 IP, které jsou v `.ioc` uvedené, ale NESMÍ se konfigurovat (audit 2026-08-11)
 

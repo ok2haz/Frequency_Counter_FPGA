@@ -15,7 +15,10 @@
 #include "w25q_map.h"           /* W25Q_DATA_BASE/SIZE — okno Datalog */
 #include "datalog.h"            /* datalog_get_status/set_enabled — okno Datalog */
 #include "sd_export.h"          /* stav SD + g_sd_req — okno SD karta (s_view=37) */
+#include "membench.h"           /* benchmark pameti + g_membench_req — okno PAMETI (s_view=43) */
 #include "sensor_hist.h"        /* sensor_hist_series — RAM historie pro okno Grafy (#31) */
+#include "ipc_shared.h"         /* IPC_VERSION — detekce nesouladu bank v System Health (v6).
+                                 * Cisty sdileny header (jen stdint, zadny HAL), stejny na obou jadrech. */
 #include "alarm.h"              /* g_alarm_* pocitadla — okno Alarmy */
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
 #include "calib.h"              /* g_calib, calib_load/save — okno Kalibrace */
@@ -74,7 +77,14 @@ extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 
 extern volatile uint8_t  g_selftest_detail[13];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=13) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
+extern volatile uint8_t  g_cm4_alive;            /* 1 = CM4 heartbeat ziva (IPC) */
 extern volatile uint8_t  g_cm4_net_up;           /* 1 = ETH link UP (z CM4, IPC v5, F1) -> Health "NET:" */
+extern volatile uint8_t  g_cm4_eth_ok;           /* 1 = HAL_ETH_Init na CM4 proslo (IPC v6, F3) */
+extern volatile uint32_t g_cm4_phy_id;           /* PHY ID z CM4 pres MDIO (0x0007C131 = LAN8742A) */
+extern volatile uint8_t  g_cm4_ipc_ver;          /* IPC_VERSION obrazu CM4; != IPC_VERSION = nesoulad bank */
+extern volatile uint8_t  g_web_ctrl_en;          /* 1 = vzdalene OVLADANI povoleno (W0) */
+extern volatile char     g_web_user[16];
+extern volatile char     g_web_pass[20];
 int run_selftests(void);                         /* pure-logic testy — okno Selftest (SPUSTIT) */
 
 /* FreeRTOS task handles (defined in freertos.c) — pro volny stack v System Health. */
@@ -256,6 +266,9 @@ static const prim_rect_t ANIMNAV_RECT = {SETNAV_XB, 240, SETNAV_W, SETNAV_H};  /
  * ⚠️ Souradnice natvrdo: `DG_RX` (= DG_MX 18 + DG_COLW 376 + DG_GAP 12 = 406) je
  * definovane az nize v souboru, takze se tu na nej odkazat neda. 406 + 14 = 420. */
 static const prim_rect_t THEME_RECT   = {420, 112, 200, 64};   /* Vzhled (y 190->112) */
+/* Rozlozeni hlavni obrazovky — pravy sloupec okna DISPLEJ, symetricky pod
+ * kartou Vzhled (stejne y jako Auto-dim vlevo). */
+static const prim_rect_t LAYOUT_RECT  = {420, 230, 240, 64};
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
@@ -265,6 +278,7 @@ static const prim_rect_t REF_RECT    = {SETNAV_XA, 240, SETNAV_W, SETNAV_H};  /*
 static const prim_rect_t ABOUT_RECT  = {SETNAV_XA, 326, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
 static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XC, 240, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
 static const prim_rect_t SDNAV_RECT  = {SETNAV_XC, 326, SETNAV_W, SETNAV_H};  /* -> SD karta (37) */
+static const prim_rect_t MEMBNAV_RECT= {SETNAV_XB, 326, SETNAV_W, SETNAV_H};  /* -> Pameti/benchmark (43) */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
 static const prim_rect_t SET_SLOT_PLUS  = {214, 116, 64, 64};
@@ -285,8 +299,10 @@ static uint8_t s_nav_stack[6];
 static int     s_nav_sp = 0;
 static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] = from; }
 static void app_gpsdo_render_net(void);      /* Sit / ETH (s_view=35) */
+static void app_gpsdo_render_access(void);   /* Pristup: jmeno/heslo (s_view=42) */
 static void app_gpsdo_render_display(void);  /* Displej: jas + auto-dim (s_view=36) */
 static void app_gpsdo_render_sd(void);       /* SD karta (s_view=37) */
+static void app_gpsdo_render_membench(void); /* Pameti / benchmark (s_view=43) */
 static void app_gpsdo_render_kalib(void);    /* Kalibrace (s_view=15) — spawnuje pruvodce */
 static void app_gpsdo_render_alarms(void);   /* Alarmy (s_view=18) — spawnuje okno PRAHY */
 static void goto_view(uint8_t v)
@@ -305,8 +321,10 @@ static void goto_view(uint8_t v)
     case 18: app_gpsdo_render_alarms();   break;   /* Alarmy (spawnuje okno PRAHY) */
     case 24: app_gpsdo_render_anim();     break;   /* Animace (spawnuje subokno prikladu) */
     case 35: app_gpsdo_render_net();      break;   /* Sit (dnes bez podoken, pro symetrii) */
+    case 42: app_gpsdo_render_access();   break;   /* Pristup (z okna Sit) */
     case 36: app_gpsdo_render_display();  break;   /* Displej */
     case 37: app_gpsdo_render_sd();       break;   /* SD karta */
+    case 43: app_gpsdo_render_membench(); break;   /* Pameti / benchmark */
     default: app_gpsdo_render_main();     break;   /* koren */
     }
 }
@@ -502,6 +520,24 @@ static void dtext(int16_t x, int16_t baseline, int16_t boxw, const char *v,
 static void dtext_c(int16_t cx, int16_t baseline, int16_t boxw, const char *v,
                     prim_color_t col, const prim_font_t *font)
 { dtext_a(cx, baseline, boxw, v, col, font, DTEXT_CENTER); }
+
+/* Jako dtext(), ale clear/clip box se pocita ze SKUTECNYCH metrik fontu
+ * (ascent/descent), ne z napevno danych 22 px v dtext_a. dtext_a je ladena pro
+ * mono_14/16/18 (ascent<=18) a pouziva se na desitkach mist -> nemenit globalne.
+ * Pro vyssi fonty (mono_20/25, okno PRISTUP) ale ten napevny box orizne HORNI
+ * cast glyfu (mono_25 ma ascent 26 -> orizne se 10 px z 26, tedy pres tretinu
+ * znaku) -> pismena splynou/zmizi a heslo na displeji vypada kratsi nebo jinak,
+ * nez skutecne je (nahlaseno 2026-08-23: opsane heslo z displeje nesedelo). */
+static void dtext_tall(int16_t x, int16_t baseline, int16_t boxw, const char *v,
+                       prim_color_t col, const prim_font_t *font)
+{
+    prim_rect_t box = {x, (int16_t)(baseline - font->ascent), boxw,
+                       (int16_t)(font->ascent + font->descent)};
+    prim_fill_rect(box, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_set_clip(box);
+    prim_draw_text((prim_point_t){x, baseline}, v, font, col, PRIM_ALIGN_LEFT);
+    prim_reset_clip();
+}
 
 /* ── Spolecna hlavicka okna: pozadi + BACK + nadpis ─────────────────────────
  * Tenhle blok byl doslova zkopirovany v 19 render funkcich — kazda kopie byla
@@ -1175,13 +1211,30 @@ static int draw_health_values(int force)
      * (prazdna bank2 / BCM4=0), amber. Kdyz CM4 bezi, pripoj NET stav (link z CM4;
      * dnes vzdy "down" nez prijde lwIP ve F5). Mono_16 (advance 10) -> "CM4:OK
      * NET:down" = 150 px do boxu 156 px (overeno). */
+    /* ⚠️ Do boxu 156 px se pri mono_16 (advance 10) vejde 15 znaku — "CM4:OK NET:down"
+     * je presne na doraz, takze PRIPOJIT dalsi udaj NELZE. Misto toho se ukazuje ten
+     * udaj, ktery v danem stavu neco rika: dokud link nejede (tj. do lwIP ve F5) je
+     * "NET:down" konstanta bez informace, kdezto PHY ID je zivy dukaz, ze CM4 mluvi
+     * s LAN8742A pres MDIO (= kriterium F3). Jakmile link nabehne, prebira NET. */
     if (g_cm4_absent)
         snprintf(buf, sizeof(buf), "CM4:ABSENT");
+    /* ⚠️ Nesoulad IPC verzi bank ma PREDNOST: v tomhle stavu CM4 zije a heartbeat bezi
+     * (takze header ukazuje "4:xx%"), ale snapshot IGNORUJE — displej by jinak klamal.
+     * "CM4:IPCv5!=6" = 12 znaku, vejde se. Lecba = preflashnout OBE banky. */
+    else if (g_cm4_ipc_ver != (uint8_t)IPC_VERSION)
+        snprintf(buf, sizeof(buf), "CM4:IPCv%u!=%u",
+                 (unsigned)g_cm4_ipc_ver, (unsigned)IPC_VERSION);
+    else if (g_cm4_net_up)
+        snprintf(buf, sizeof(buf), "CM4:OK NET:UP");
+    else if (g_cm4_eth_ok && g_cm4_phy_id != 0u)
+        snprintf(buf, sizeof(buf), "CM4:OK PHY:%04X", (unsigned)(g_cm4_phy_id & 0xFFFFu));
     else
-        snprintf(buf, sizeof(buf), "CM4:OK NET:%s", g_cm4_net_up ? "UP" : "down");
+        snprintf(buf, sizeof(buf), "CM4:OK ETH:--");
     if (force || dchg(c_sys2[4], sizeof(c_sys2[4]), buf)) {
         dtext((int16_t)(DG_RLBL + 196), 394, (int16_t)(DG_COLW - 24 - 196), buf,
-              g_cm4_absent ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_16);
+              (g_cm4_ipc_ver != (uint8_t)IPC_VERSION) ? UI_COLOR_BAD   /* nesoulad = mereni/data z CM4 nejsou platna */
+              : g_cm4_absent                          ? UI_COLOR_WARN
+              : (g_cm4_eth_ok ? UI_COLOR_OK : UI_COLOR_WARN), &ui_font_mono_16);
         drew = 1; }
 
     return drew;
@@ -2426,6 +2479,15 @@ static void settings_upd_theme(void)
                       .label = THEME_LABELS[ti]};
     ui_button_render(&tb);
 }
+/* Prepinac rozlozeni hlavni obrazovky. Label nese STAV (jako Vzhled/Jazyk),
+ * protoze rozlozeni neni akce, ale volba ze dvou rovnocennych variant. */
+static void settings_upd_layout(void)
+{
+    ui_button_t lb = {.rect = LAYOUT_RECT, .variant = UI_BUTTON_NORMAL,
+                      .label = screen_main_layout_is_classic() ? "KLASICKE" : "HYBRIDNI"};
+    prim_fill_rect(LAYOUT_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);  /* meni se label */
+    ui_button_render(&lb);
+}
 static void settings_upd_lang(void)
 {
     ui_button_t lb = {.rect = LANG_RECT, .variant = UI_BUTTON_NORMAL,
@@ -2462,7 +2524,8 @@ void app_gpsdo_render_settings(void)
 
     /* ── Mrizka 3x4. `Vzhled` a `Jazyk` jsou PREPINACE (label nese stav), zbytek
      * naviguje do podoken. Poradi po radcich podle cetnosti pouziti. Posledni
-     * Mrizka je od 2026-08-13 PLNA (posledni bunka = SD KARTA). ── */
+     * volna bunka (stredni sloupec, 4. radek) obsazena 2026-08-23 dlazdici
+     * PAMETI -> mrizka je opet PLNA. ── */
     settings_upd_lang();
     static const struct { const prim_rect_t *r; const char *label; } SETNAV[] = {
         { &DISPNAV_RECT,    "DISPLEJ >"     },   /* Vzhled je uvnitr nej */
@@ -2474,6 +2537,7 @@ void app_gpsdo_render_settings(void)
         { &ANIMNAV_RECT,    "ANIMACE >"     },
         { &SETUP_ENTER_RECT,"SESTAVY >"     },
         { &ABOUT_RECT,      "O PRISTROJI >" },
+        { &MEMBNAV_RECT,    "PAMETI >"      },
         { &SDNAV_RECT,      "SD KARTA >"    },
     };
     for (unsigned i = 0; i < sizeof SETNAV / sizeof SETNAV[0]; i++) {
@@ -4759,6 +4823,11 @@ static void cas_upd_mode(void)
 static const prim_rect_t NET_DHCP_RECT  = { 40, 284, 190, 64};   /* DHCP ZAP/VYP */
 static const prim_rect_t NET_FIELD_RECT = {246, 284, 176, 64};   /* IP / MASKA / BRANA */
 static const prim_rect_t NET_OCT_RECT   = {438, 284, 130, 64};   /* vyber oktetu 1..4 */
+/* Okno PRISTUP (s_view=42, WEB_UI_PLAN W0) — tlacitko v okne SIT + jeho vlastni ovladace. */
+static const prim_rect_t NET_ACCESS_RECT = {18, 417, 250, 56};   /* SIT -> PRISTUP */
+static const prim_rect_t ACC_TOGGLE_RECT = {430, 120, 300, 64};  /* ovladani ZAP/VYP */
+static const prim_rect_t ACC_NEWPASS_RECT= {430, 300, 300, 64};  /* nove heslo */
+
 static const prim_rect_t NET_MINUS_RECT = {584, 284,  90, 64};
 static const prim_rect_t NET_PLUS_RECT  = {684, 284,  98, 64};
 static uint8_t s_net_field = 0;   /* 0=IP 1=maska 2=brana */
@@ -4832,6 +4901,14 @@ static void app_gpsdo_render_display(void)
     ui_card_t c3 = {.rect = {DG_RX, 76, DG_COLW, 110}, .header_label = "Vzhled"};
     ui_card_render_chrome(&c3);
     settings_upd_theme();
+
+    /* Rozlozeni hlavni obrazovky (vraceno 2026-08-23) — symetricky pod Vzhledem,
+     * stejne y jako Auto-dim vlevo. Patri sem ze stejneho duvodu jako Vzhled:
+     * je to vlastnost displeje, ne mereni. */
+    ui_card_t c5 = {.rect = {DG_RX, 194, DG_COLW, 110},
+                    .header_label = "Rozlozeni hlavni obrazovky"};
+    ui_card_render_chrome(&c5);
+    settings_upd_layout();
 
     /* Poznamka DOLE PRES CELOU SIRKU (764 px) -> text se vejde na 2 radky misto 3
      * natesno. Header label karty ma baseline rect.y+25 (=339), proto prvni radek
@@ -4984,6 +5061,245 @@ static void app_gpsdo_render_sd(void)
     present_now();
 }
 
+/* ── Okno PAMETI (s_view=43) — benchmark RAM/FLASH ───────────────────────────
+ * Tabulka jeden radek = jedna pamet: nazev | velikost | zapis | cteni | vysledek.
+ * ⚠️ Tlacitko BENCHMARK jen NASTAVI `g_membench_req`; samotny beh (jednotky
+ * sekund) dela UartTask — v UiTasku by to shodilo watchdog (viz membench.h,
+ * stejny vzor jako SD TEST/EXPORT). Behem behu se okno prekresluje z ticku,
+ * takze je videt, na kterem cili to prave je. */
+static const prim_rect_t MEMB_RUN_RECT = {18, 417, 220, 61};
+
+/* ⚠️ SVISLA OSA — pozor na VLASTNI hlavicku karty. `ui_card_render_chrome` kresli
+ * `header_label` na baseline `rect.y + UI_DIM_CARD_PAD_Y + 16` = **rect.y + 25**,
+ * a to pres celou sirku karty. Prvni verze mela zahlavi sloupcu na baseline 86
+ * pri karte od y=62 (hlavicka tedy na 87) -> popisek karty lezel PRESNE pres
+ * "pamet / velikost / zapis" a text se prepisoval (nahlaseno pri HW testu
+ * 2026-08-23). Vsechno se proto posunulo dolu a karta je vyssi (FULL_A).
+ * Rozpocet: karta 58..404 | hlavicka karty 83 | zahlavi sloupcu 116 |
+ * 7 radku 146..326 | stavovy radek 356 | poznamka 384 (jeste uvnitr karty). */
+#define MEMB_ROW0    146       /* baseline prvniho radku tabulky */
+#define MEMB_ROWH     30
+#define MEMB_HDR_Y   116       /* baseline zahlavi sloupcu (pod hlavickou karty) */
+#define MEMB_STAT_Y  356       /* baseline stavoveho radku */
+/* Vodorovny rozpocet (karta uvnitr 24..776). Sloupec „testovano" je siroky kvuli
+ * tvaru „32 kB/64 MB" (max 11 znaku @ mono_16 = 110 px). */
+#define MEMB_X_NAME  (DG_LLBL)          /* w 128 -> 30..158  */
+#define MEMB_X_SIZE  (DG_LLBL + 132)    /* w 134 -> 162..296 */
+#define MEMB_X_WR    (DG_LLBL + 272)    /* w 110 -> 302..412 */
+#define MEMB_X_RD    (DG_LLBL + 388)    /* w 110 -> 418..528 */
+#define MEMB_X_RES   (DG_LLBL + 504)    /* w 226 -> 534..760 */
+
+/* Velikost v bajtech -> "4 MB" / "256 kB" (MB jen kdyz to vyjde bez zbytku). */
+static void memb_fmt_one(char *out, size_t n, uint32_t b, int with_unit)
+{
+    const uint32_t MB = 1024u * 1024u;
+    if (b >= MB && (b % MB) == 0u)
+        snprintf(out, n, "%lu%s", (unsigned long)(b / MB), with_unit ? " MB" : "");
+    else
+        snprintf(out, n, "%lu%s", (unsigned long)(b / 1024u), with_unit ? " kB" : "");
+}
+
+/* „testovano/celkem". Jednotka se u prvniho cisla vynecha, jen kdyz je stejna
+ * jako u druheho ("64/128 kB"); jinak ji nese kazde zvlast ("32 kB/64 MB") —
+ * jinak by 64 MB muselo vyjit jako "65536 kB". */
+static void memb_fmt_size(char *out, size_t n, uint32_t tested, uint32_t total)
+{
+    const uint32_t MB = 1024u * 1024u;
+    int t_mb = (tested >= MB && (tested % MB) == 0u);
+    int c_mb = (total  >= MB && (total  % MB) == 0u);
+    char a[16], b[16];
+    memb_fmt_one(a, sizeof a, tested, t_mb != c_mb);
+    memb_fmt_one(b, sizeof b, total, 1);
+    snprintf(out, n, "%s/%s", a, b);
+}
+
+/* kB/s -> "12,3 MB/s" (bez %f — nano.specs). Pod 1 MB/s zustava kB/s, jinak by
+ * QSPI (~1500 kB/s) vyslo jako "1,4" a rozdil mezi behy by zmizel. */
+static void memb_fmt_speed(char *out, size_t n, uint32_t kbs)
+{
+    if (kbs == 0u)          snprintf(out, n, "-");
+    else if (kbs < 1024u)   snprintf(out, n, "%lu kB/s", (unsigned long)kbs);
+    else                    snprintf(out, n, "%lu,%lu MB/s", (unsigned long)(kbs / 1024u),
+                                     (unsigned long)((kbs % 1024u) * 10u / 1024u));
+}
+
+static void memb_upd_values(int first)
+{
+    const membench_state_t *m = membench_state();
+    /* Klic musi pojmout nazev(14) + velikost(10) + dve rychlosti(2x16) + msg(26)
+     * + oddelovace => 96 B s rezervou (pri 64 B hlasil GCC -Wformat-truncation). */
+    static char c_row[MEMBENCH_TARGETS][96];
+    static char c_stat[48];
+    char b[96], sp1[16], sp2[16];
+
+    for (unsigned i = 0; i < m->n; i++) {
+        const membench_result_t *r = &m->r[i];
+        memb_fmt_speed(sp1, sizeof sp1, r->writable ? r->write_kbs : 0u);
+        memb_fmt_speed(sp2, sizeof sp2, r->read_kbs);
+        /* Zmenovy klic = cely obsah radku; bez nej by se 2x/s prekresloval
+         * celou tabulku i kdyz se nic nedeje (blikani + zbytecne CPU). */
+        /* Precizni delky ze stejneho duvodu jako u `phase` nize — `name`/`msg` plni
+         * UartTask soubezne s ctenim z UiTasku. */
+        snprintf(b, sizeof b, "%.13s|%lu/%lu|%s|%s|%.25s", r->name,
+                 (unsigned long)r->size_b, (unsigned long)r->total_b,
+                 sp1, sp2, r->tested || r->skipped ? r->msg : "");
+        if (!first && !dchg(c_row[i], sizeof c_row[i], b)) continue;
+        if (first) dchg(c_row[i], sizeof c_row[i], b);
+
+        /* Ohranicene kopie (viz duvod u zmenoveho klice vyse) — kreslici funkce
+         * jinak ctou az k terminatoru, ktery muze byt v tu chvili prepsany. */
+        char nm[MEMBENCH_NAME_N], ms[MEMBENCH_MSG_N];
+        snprintf(nm, sizeof nm, "%.13s", r->name);
+        snprintf(ms, sizeof ms, "%.25s", r->msg);
+
+        int16_t y = (int16_t)(MEMB_ROW0 + i * MEMB_ROWH);
+        dtext(MEMB_X_NAME, y, 128, nm, UI_COLOR_INK, &ui_font_mono_16);
+        memb_fmt_size(b, sizeof b, r->size_b, r->total_b);
+        dtext(MEMB_X_SIZE, y, 134, b, UI_COLOR_INK_3, &ui_font_mono_16);
+        dtext(MEMB_X_WR, y, 110, sp1, UI_COLOR_INK_2, &ui_font_mono_16);
+        dtext(MEMB_X_RD, y, 110, sp2, UI_COLOR_INK_2, &ui_font_mono_16);
+
+        /* Barva verdiktu: chyba = cervena, preskoceno = amber, jinak zelena. */
+        prim_color_t col = UI_COLOR_INK_3;
+        const char *res = "cekam";
+        if (r->skipped)          { col = UI_COLOR_WARN; res = ms; }
+        else if (r->bit_errors)  { col = UI_COLOR_BAD;  res = ms; }
+        else if (r->tested)      { col = UI_COLOR_OK;   res = ms; }
+        dtext(MEMB_X_RES, y, 226, res, col, &ui_font_mono_16);
+    }
+
+    /* Stavovy radek: prubeh nebo souhrn. */
+    /* ⚠️ `%.27s` (= sizeof phase - 1), ne holé `%s`: `phase` prepisuje UartTask,
+     * zatimco ho UiTask cte. Kdyby cteni trefilo okamzik, kdy je stary terminator
+     * uz prepsany a novy jeste nezapsany, holé `%s` by cetlo za konec pole do
+     * `r[]`. Precizni delka to ohranici — stejny duvod jako strncpy u g_rtc_text. */
+    if (m->running)        snprintf(b, sizeof b, "%.27s  (%lu %%)", m->phase, (unsigned long)m->prog_pct);
+    else if (m->done_once) snprintf(b, sizeof b, "%.27s", m->phase);
+    else                   snprintf(b, sizeof b, "Stiskni BENCHMARK (bezi ~5 s).");
+    if (first || dchg(c_stat, sizeof c_stat, b))
+        /* dtext_tall, ne dtext: mono_18 ma ascent 18, ale `dtext_a` cisti/orezava
+         * jen od baseline-16 -> horni 2 px glyfu by se orizly (viz dtext_tall). */
+        dtext_tall(DG_LLBL, MEMB_STAT_Y, 600, b,
+                   (!m->running && m->total_bit_errors) ? UI_COLOR_BAD : UI_COLOR_INK_2,
+                   &ui_font_mono_18);
+}
+
+static void app_gpsdo_render_membench(void)
+{
+    int first = window_first(43);
+    if (first) {
+        s_view = 43;
+        window_chrome("PAMETI  benchmark", WIN_TITLE_Y);
+        /* FULL_A (58..404), ne FULL_B — tabulka 7 radku + zahlavi + stavovy radek
+         * se do 300 px vysky nevejde, viz rozpocet u MEMB_ROW0. */
+        ui_card_t c = {.rect = DG_CARD_FULL_A,
+                       .header_label = "Rychlost zapisu/cteni + hledani chybnych bitu"};
+        ui_card_render_chrome(&c);
+        /* Zahlavi sloupcu — MUSI byt pod hlavickou karty (baseline 83), jinak se
+         * prekryji (viz komentar u MEMB_ROW0). */
+        dlabel(MEMB_X_NAME, MEMB_HDR_Y, "pamet");
+        /* „testovano", ne „velikost" — hodnota je testovany blok / kapacita cipu;
+         * jako „velikost" to cetl uzivatel jako kapacitu (SDRAM 512 kB misto 32 MB). */
+        dlabel(MEMB_X_SIZE, MEMB_HDR_Y, "testovano");
+        dlabel(MEMB_X_WR,   MEMB_HDR_Y, "zapis");
+        dlabel(MEMB_X_RD,   MEMB_HDR_Y, "cteni");
+        dlabel(MEMB_X_RES,  MEMB_HDR_Y, "vysledek");
+        ui_button_t rb = {.rect = MEMB_RUN_RECT, .variant = UI_BUTTON_RUN, .label = "BENCHMARK"};
+        ui_button_render(&rb);
+        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&bb);
+        prim_draw_text((prim_point_t){DG_LLBL, 384},
+                       "Testuje jen VYHRAZENE oblasti; data pristroje se nemeni. Interni FLASH se jen cte.",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
+    memb_upd_values(first);
+    present_now();
+}
+
+/* Prekresli menici se hodnoty okna PRISTUP (prepinac + jmeno + heslo). */
+static void acc_upd_values(void)
+{
+    ui_button_t tb = {.rect = ACC_TOGGLE_RECT,
+                      .variant = g_web_ctrl_en ? UI_BUTTON_RUN : UI_BUTTON_STOP,
+                      .label = g_web_ctrl_en ? "POVOLENO" : "ZAKAZANO"};
+    /* Varianta se meni -> vycisti podklad, jinak by v rozich zustali "duchove"
+     * (viz CLAUDE.md, past u cas_upd_mode). */
+    prim_fill_rect(ACC_TOGGLE_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    ui_button_render(&tb);
+    /* dtext_tall (ne dtext) -> mono_20/25 maji ascent > 16, napevny box v dtext_a
+     * by orizl horni cast pismen (viz komentar u dtext_tall). Baseline uzivatele
+     * je 204, ne 200: box mono_20 sahá 20 px nad baseline, pri 200 by zasahoval
+     * 4 px do ACC_TOGGLE_RECT nad nim (bottom=184). */
+    dtext_tall(230, 204, 380, (const char *)g_web_user, UI_COLOR_INK, &ui_font_mono_20);
+    dtext_tall(230, 250, 380, g_web_pass[0] ? (const char *)g_web_pass : "(zatim zadne)",
+              g_web_pass[0] ? UI_COLOR_ACC : UI_COLOR_WARN, &ui_font_mono_25);
+}
+
+/* ── Generator hesla (W0) ────────────────────────────────────────────────────
+ * Pristroj nema klavesnici, takze heslo se NEZADAVA — vygeneruje se a jen ZOBRAZI
+ * (uzivatel ho opise do prohlizece). Je to i bezpecnejsi vychozi stav nez nejake
+ * "admin/admin".
+ * ⚠️ NENI to kryptograficky generator: michame DWT cyklovy citac (vzorkovany
+ * v okamziku STISKU, takze ho utocnik nezna), uptime a sum z ADC. Na heslo do LAN
+ * to staci; kdyby melo jit o vic, patri sem TRNG periferie (dnes nezapnuta v .ioc).
+ * ⚠️ Audit 2026-08-23: delka VZDY byla pevnych 12 (tenhle cyklus nikdy negeneroval
+ * promennou delku) — co vypadalo jako "ruzne dlouhe heslo" byl ve skutecnosti bug
+ * ve vykreslovani (dtext_a orizl horni cast vysokych fontu, viz dtext_tall vyse),
+ * ktery nekdy udelal cast znaku necitelnou. Zkraceno na 8 + jen cislice/VELKA
+ * pismena (na uzivatelovo prani, at se to snaz opisuje) — abeceda bez 0/O/1/I,
+ * at se opsane heslo neplete se zamenitelnymi znaky. */
+static void web_gen_password(void)
+{
+    static const char AB[] = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    /* ⚠️ App vrstva nesmi tahat HAL/CMSIS (zadny DWT), takze entropii michame
+     * z toho, co je po ruce: uptime v okamziku STISKU (utocnik ho nezna), sum
+     * poslednich bitu analogovych senzoru a predchozi heslo. */
+    static uint32_t st = 0x12345678u;
+    st ^= (uint32_t)g_uptime_s * 2654435761u;
+    for (unsigned i = 0; i < SENS_COUNT; i++)
+        st ^= ((uint32_t)g_sensors[i].last) << (i * 3u + 1u);
+    for (unsigned i = 0; g_web_pass[i] && i < 8u; i++)
+        st = st * 31u + (uint8_t)g_web_pass[i];
+    for (int i = 0; i < 8; i++) {
+        st ^= st << 13; st ^= st >> 17; st ^= st << 5;      /* xorshift32 */
+        g_web_pass[i] = AB[st % (sizeof AB - 1)];
+    }
+    g_web_pass[8] = '\0';
+    g_sys_cfg_dirty = 1;                                    /* debounced zapis do W25Q */
+}
+
+static void app_gpsdo_render_access(void)
+{
+    int first = window_first(42);
+    if (first) {
+        s_view = 42;
+        window_chrome("PRISTUP  vzdalene ovladani", WIN_TITLE_Y);
+        ui_card_t c = {.rect = {18, 58, 764, 330},
+                       .header_label = "Prihlaseni pro SCPI/TCP a web"};
+        ui_card_render_chrome(&c);
+        dlabel(40, 120, "Ovladani");
+        dlabel(40, 204, "Uzivatel");   /* baseline 204, ne 200 -> viz dtext_tall vyse */
+        dlabel(40, 250, "Heslo");
+        prim_draw_text((prim_point_t){40, 300},
+                       "Heslo generuje pristroj - opis ho do prohlizece.",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 326},
+                       "Cteni je vzdy povolene; tenhle prepinac ridi jen ZAPIS",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){40, 352},
+                       "(RUN/STOP, brana, kanal) - ten muze zkazit bezici mereni.",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        ui_button_t nb = {.rect = ACC_NEWPASS_RECT, .variant = UI_BUTTON_NORMAL, .label = "NOVE HESLO"};
+        ui_button_render(&nb);
+        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+        ui_button_render(&bb);
+        acc_upd_values();
+    }
+    present_now();
+}
+
+static char c_net_link[40], c_net_ip[24], c_net_phy[28];
+
 static void app_gpsdo_render_net(void)
 {
     int first = window_first(35);
@@ -4991,32 +5307,63 @@ static void app_gpsdo_render_net(void)
         s_view = 35;
         window_chrome("SIT  Ethernet", WIN_TITLE_Y);
 
-        ui_card_t c1 = {.rect = {18, 58, 764, 182}, .header_label = "Stav linky"};
+        ui_card_t c1 = {.rect = {18, 58, 764, 182},
+                        .header_label = "Stav linky (zivy, z lwIP na CM4)"};
         ui_card_render_chrome(&c1);
-        prim_draw_text((prim_point_t){40, 112}, "Link: DOWN - hodiny 25 MHz OK, PHY se ladi",
-                       &ui_font_mono_20, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){40, 148},
-                       "HSE prehozen na 25 MHz (v0.6.0), PHY dostava 25 MHz na CLKIN,",
-                       &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){40, 174},
-                       "ale zatim neodpovida na MDIO - resi se HW (uroven hodin / nRST).",
-                       &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){40, 208},
-                       "Pak zbyva zapnout ETH (lwIP na CM4). Diagnostika: UART `eth`.",
+        dlabel(40, 112, "Link");
+        dlabel(40, 148, "IP adresa");
+        dlabel(40, 184, "PHY");
+        prim_draw_text((prim_point_t){40, 220},
+                       "IP prideluje DHCP server. Podrobnosti: UART `status`.",
                        &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        c_net_link[0] = c_net_ip[0] = c_net_phy[0] = '\0';
 
         ui_card_t c2 = {.rect = {18, 248, 764, 158},
-                        .header_label = "Konfigurace (ulozi se, pouzije az po oprave HW)"};
+                        .header_label = "Konfigurace (dnes se jen uklada - jede vzdy DHCP)"};
         ui_card_render_chrome(&c2);
         ui_button_t mb = {.rect = NET_MINUS_RECT, .variant = UI_BUTTON_NORMAL, .label = "-"};
         ui_button_t pb = {.rect = NET_PLUS_RECT,  .variant = UI_BUTTON_NORMAL, .label = "+"};
         ui_button_render(&mb);
         ui_button_render(&pb);
         net_upd_values();
+        ui_button_t ab = {.rect = NET_ACCESS_RECT, .variant = UI_BUTTON_NORMAL,
+                          .label = "PRISTUP >"};
+        ui_button_render(&ab);
         ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
         ui_button_render(&bb);
     }
-    present_now();
+
+    /* ── Zivy stav z lwIP na CM4 (F5). Publikuje ho `lwip_app_process()` pres IPC,
+     * CM7 ho jen cte — na siti sam nedela nic. ⚠️ `net_ip` nese oktety a.b.c.d
+     * v poradi bajtu, takze staci rozebrat po bajtech (zadny ntohl). */
+    int drew = first;
+    char b[40];
+    uint8_t sp = 0, dx = 0; uint32_t ip = 0;
+    int up = g_cm4_alive ? ipc_cm4_net(&sp, &dx, &ip) : 0;
+
+    if (g_cm4_absent)            snprintf(b, sizeof b, "CM4 nenabehla");
+    else if (!g_cm4_eth_ok)      snprintf(b, sizeof b, "ETH init selhal (REF_CLK?)");
+    else if (up)                 snprintf(b, sizeof b, "UP  %u Mbit %s", (unsigned)sp, dx ? "full" : "half");
+    else                         snprintf(b, sizeof b, "DOWN  (kabel?)");
+    if (first || dchg(c_net_link, sizeof c_net_link, b))
+        { dtext(230, 112, 540, b, up ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_mono_20); drew = 1; }
+
+    /* Bez linky nema smysl ukazovat starou adresu; s linkou a bez IP se jeste ceka na DHCP. */
+    if (!up)        snprintf(b, sizeof b, "--");
+    else if (!ip)   snprintf(b, sizeof b, "ceka na DHCP...");
+    else            snprintf(b, sizeof b, "%u.%u.%u.%u", (unsigned)(ip & 0xFFu),
+                             (unsigned)((ip >> 8) & 0xFFu), (unsigned)((ip >> 16) & 0xFFu),
+                             (unsigned)((ip >> 24) & 0xFFu));
+    if (first || dchg(c_net_ip, sizeof c_net_ip, b))
+        { dtext(230, 148, 540, b, (up && ip) ? UI_COLOR_ACC : UI_COLOR_INK_3, &ui_font_mono_20); drew = 1; }
+
+    if (g_cm4_phy_id == 0x0007C131UL) snprintf(b, sizeof b, "LAN8742A");
+    else if (g_cm4_phy_id)            snprintf(b, sizeof b, "ID 0x%08lX", (unsigned long)g_cm4_phy_id);
+    else                              snprintf(b, sizeof b, "neprecteno");
+    if (first || dchg(c_net_phy, sizeof c_net_phy, b))
+        { dtext(230, 184, 540, b, g_cm4_phy_id ? UI_COLOR_INK_2 : UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
+
+    if (drew) present_now();
 }
 
 static void app_gpsdo_render_cas(void)
@@ -5507,6 +5854,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 40) app_gpsdo_render_wizard();    /* Pruvodce kalibraci (zive merena hodnota) */
     else if (s_view == 41) app_gpsdo_render_analyza();   /* Analyza (zivy rozpocet nejistoty) */
     else if (s_view == 19) app_gpsdo_render_counter();   /* Citac (zivy detail mereni FPGA) */
+    else if (s_view == 35) app_gpsdo_render_net();       /* Sit (zivy link + IP z DHCP, F5) */
     else if (s_view == 21) app_gpsdo_render_commdiag();  /* Komunikace: blokove schema (zive) */
     else if (s_view == 22) app_gpsdo_render_cas();       /* Cas / zona (zivy UTC + lokalni) */
     else if (s_view == 26) waterfall_tick();             /* Spektrogram Δf (novy sloupec) */
@@ -5517,6 +5865,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 32) app_gpsdo_render_survey();    /* Self-survey (zive prumerovani polohy) */
     else if (s_view == 37) app_gpsdo_render_sd();        /* SD karta (zivy stav + vysledek akce) */
     else if (s_view == 34) app_gpsdo_render_meas();      /* MERENI: perioda/jednotky/statistika/TFOM (#67) */
+    else if (s_view == 43) app_gpsdo_render_membench();  /* PAMETI: prubeh a vysledky benchmarku */
 }
 
 /* Hodinovy tik (~kazdych 100 ms): na hlavni obrazovce prekresli cas/datum z GPS
@@ -6079,7 +6428,18 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, KALIBNAV_RECT)){ nav_push(7); app_gpsdo_render_kalib();    return true; }
             if (in_rect(x, y, ANIMNAV_RECT)) { nav_push(7); app_gpsdo_render_anim();     return true; }
             if (in_rect(x, y, SDNAV_RECT))   { nav_push(7); app_gpsdo_render_sd();       return true; }
+            if (in_rect(x, y, MEMBNAV_RECT)) { nav_push(7); app_gpsdo_render_membench(); return true; }
             #undef SETTINGS_UPD
+        }
+        if (s_view == 43) {                                 /* okno PAMETI */
+            /* ⚠️ Jen POZADAVEK — benchmark bezi jednotky sekund a UiTask je hlidany
+             * watchdogem (viz membench.h). Behem behu se dalsi stisk ignoruje. */
+            if (in_rect(x, y, MEMB_RUN_RECT)) {
+                if (!membench_state()->running && g_membench_req == MEMBENCH_REQ_NONE)
+                    g_membench_req = MEMBENCH_REQ_RUN;
+                tap_flash(MEMB_RUN_RECT);
+                return true;
+            }
         }
         if (s_view == 37) {                                 /* okno SD KARTA */
             /* FORMAT = DVOJI potvrzeni: 1. stisk armuje, 2. potvrdi, 3. spusti.
@@ -6298,6 +6658,20 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 app_gpsdo_render_display();                 /* prekreslit v novych barvach */
                 return true;
             }
+            if (in_rect(x, y, LAYOUT_RECT)) {               /* HYBRIDNI <-> KLASICKE */
+                screen_main_set_layout_classic(!screen_main_layout_is_classic());
+                g_sys_cfg_dirty = 1;                        /* persist do W25Q (debounced) */
+                /* ⚠️ Meni se cela geometrie mrizky, takze pri navratu na hlavni
+                 * obrazovku MUSI probehnout plny render — partial redraw by nechal
+                 * na obrazovce kusy predchoziho rozlozeni. `screen_main_render`
+                 * zavola `app_gpsdo_render_main` pri nav_back sam; tady staci
+                 * zneplatnit cache, aby se prekreslilo i pozadi karet. */
+                screen_main_invalidate();
+                screen_main_init();
+                tap_flash(LAYOUT_RECT);
+                DISP_UPD(settings_upd_layout);
+                return true;
+            }
             #undef DISP_UPD
         }
         if (s_view == 18 && in_rect(x, y, MUTE_RECT)) {    /* Alarmy: zvuk zap/vyp */
@@ -6327,6 +6701,28 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 g_sys_cfg_dirty = 1;   /* debounced zapis do W25Q (syscfg_flash_tick) */
                 prim_set_target(&s_fb); prim_reset_clip();
                 net_upd_values(); present_now();
+                return true;
+            }
+        }
+        if (s_view == 35 && in_rect(x, y, NET_ACCESS_RECT)) {   /* Sit -> Pristup */
+            nav_push(35); app_gpsdo_render_access(); return true;
+        }
+        if (s_view == 42) {                                /* Pristup: prepinac + nove heslo */
+            if (in_rect(x, y, ACC_TOGGLE_RECT)) {
+                tap_flash(ACC_TOGGLE_RECT);
+                g_web_ctrl_en = g_web_ctrl_en ? 0u : 1u;
+                g_sys_cfg_dirty = 1;
+                /* Prvni povoleni bez hesla by nechalo pristroj otevreny — vygeneruj ho. */
+                if (g_web_ctrl_en && !g_web_pass[0]) web_gen_password();
+                prim_set_target(&s_fb); prim_reset_clip();
+                acc_upd_values(); present_now();
+                return true;
+            }
+            if (in_rect(x, y, ACC_NEWPASS_RECT)) {
+                tap_flash(ACC_NEWPASS_RECT);
+                web_gen_password();
+                prim_set_target(&s_fb); prim_reset_clip();
+                acc_upd_values(); present_now();
                 return true;
             }
         }

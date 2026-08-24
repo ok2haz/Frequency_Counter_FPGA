@@ -24,7 +24,8 @@ je vidět, že měření stojí. ⚠️ Alfa < 0xFF vyřazuje DMA2D fast-path (C
 `tick_freq`**, takže se kreslí jen při plném renderu a při stisku → CPU dopad ~0. Přepnutí RUN/STOP proto
 MUSÍ volat `screen_main_redraw_freq_area()` (per-segment dirty cesta by podklad nepřekreslila).
 
-**Hlavní obrazovka = hybridní mřížka** (`render_body_grid`, dřív „v2"; A/B srovnávací větev odstraněna 2026-08-19, TODO #14 — vybrán nový 4,3" layout, starý `s_layout_old`/`*_v1` smazán, footer slot 0 vrácen na PERIOD/FREQ toggle): **vlevo Allan graf 364×242** (přes CELOU výšku mřížky, plné osy — sdílený `allan_plot` má od #11(2b) popisky mono_16 v kartě i okně), **vpravo statistiky** Offset/σ@1s/Drift (3× 125×64, hodnoty mono_18 — proto `SCR_MAIN_GRID_LEFT_RATIO` snížen 53→47 %, jinak by se „+9,9×10⁻¹⁰" nevešlo), **pod nimi mini trend** (398×100) **a úplně dole RF signál bargraf** (398×54) — jen v pravé části. Tap na Allan → okno ALLAN (s_view=23), tap na trend → fullscreen trend (s_view=9). Horní hrana mřížky MUSÍ zůstat na `SCR_MAIN_GRID_Y` (166) — clear oblast velkého čísla (`redraw_freq`) končí přesně na ní. **Pilulky v headeru**: `UI_DIM_PILL_H=46` (5,4 mm, strop = 4 px před spodní linkou hlavičky) + hit-slop přes výšku headeru (`pt_in_pill`, efektivně ~52 px). ⚠️ **Řadu pilulek limituje `HDR_PILL_LIMIT` (590, sníženo z 640 kvůli dvouřádkovému CPU bloku CM7/CM4 mezi pilulkami a hodinami, x 592..642, `screen_main_redraw_cpu`) + fit-check `hdr_pill_fit`** — rozpočtem je levý okraj CPU bloku resp. clear zón sekundového redrawu času/data (x=644, `screen_main_redraw_time`); pilulka, která se nevejde, se vynechá (pořadí = důležitost: GNSS, SYS, SAT, HDOP, HOLD, **CAL**). **CAL = kompaktní „ribbon" chip** (LED + „CAL", bez hodnoty; `has_led`, `UI_PILL_NORMAL`) — placeholder kalibračního stavu, ~67 px místo dřívější „CAL 4 min" pilulky (~90 px), takže se za HOLD před CPU blok v typickém stavu vejde; je **poslední v pořadí**, takže při přetlaku vypadne jako první (HOLD = živý holdover stav zůstane). (Historie: 2026-07-26 dočasně úplně odstraněn, pak vrácen jako užší chip.)
+**Hlavní obrazovka má DVĚ rozložení, přepínatelná v okně DISPLEJ** (`render_body_grid` → `_hybrid` / `_classic`, persist v syscfg; vráceno 2026-08-23 na přání uživatele poté, co byla A/B větev 2026-08-22 odstraněna — TODO #14 — a starý `s_layout_old`/`*_v1` smazán). ⚠️ **Přepínač je v okně DISPLEJ, NE ve footeru**: původně přebíjel footer slot 0, čímž se ztratil PERIOD/FREQ toggle; rozložení je vlastnost displeje, patří tedy vedle Vzhledu. ⚠️ **KLASICKÉ je zamrzlá větev** — nemá easing statistik ani trendu (tiky `screen_main_tick_stats_anim`/`_trend_anim` v něm hned vracejí 0) a záměrně se v něm už nedělají změny; každá další úprava hlavní obrazovky míří do hybridního. **KLASICKÉ**: Allan 53 % šířky, pravý sloupec stohovaný offset (v.54, mono_16) / trend / signál (v.43), všechny mezery `SCR_MAIN_CARD_SECTION_GAP`.
+**HYBRIDNÍ (výchozí)**: **vlevo Allan graf 364×242** (přes CELOU výšku mřížky, plné osy — sdílený `allan_plot` má od #11(2b) popisky mono_16 v kartě i okně), **vpravo statistiky** Offset/σ@1s/Drift (3× 125×64, hodnoty mono_18 — proto `SCR_MAIN_GRID_LEFT_RATIO` snížen 53→47 %, jinak by se „+9,9×10⁻¹⁰" nevešlo), **pod nimi mini trend** (398×100) **a úplně dole RF signál bargraf** (398×54) — jen v pravé části. Tap na Allan → okno ALLAN (s_view=23), tap na trend → fullscreen trend (s_view=9). Horní hrana mřížky MUSÍ zůstat na `SCR_MAIN_GRID_Y` (166) — clear oblast velkého čísla (`redraw_freq`) končí přesně na ní. **Pilulky v headeru**: `UI_DIM_PILL_H=46` (5,4 mm, strop = 4 px před spodní linkou hlavičky) + hit-slop přes výšku headeru (`pt_in_pill`, efektivně ~52 px). ⚠️ **Řadu pilulek limituje `HDR_PILL_LIMIT` (590, sníženo z 640 kvůli dvouřádkovému CPU bloku CM7/CM4 mezi pilulkami a hodinami, x 592..642, `screen_main_redraw_cpu`) + fit-check `hdr_pill_fit`** — rozpočtem je levý okraj CPU bloku resp. clear zón sekundového redrawu času/data (x=644, `screen_main_redraw_time`); pilulka, která se nevejde, se vynechá (pořadí = důležitost: GNSS, SYS, SAT, HDOP, HOLD, **CAL**). **CAL = kompaktní „ribbon" chip** (LED + „CAL", bez hodnoty; `has_led`, `UI_PILL_NORMAL`) — placeholder kalibračního stavu, ~67 px místo dřívější „CAL 4 min" pilulky (~90 px), takže se za HOLD před CPU blok v typickém stavu vejde; je **poslední v pořadí**, takže při přetlaku vypadne jako první (HOLD = živý holdover stav zůstane). (Historie: 2026-07-26 dočasně úplně odstraněn, pak vrácen jako užší chip.)
 
 ## ⚠️ Funkční konfigurace displeje (nepřepisovat naslepo)
 Displej funguje s **DSI BURST mode + RGB565**. Hard-won, jde to PROTI Linux rpi-6.6.y referenci:
@@ -239,6 +240,7 @@ i bez flashe bank 2. ⚠️ Zbývá přeložit `scpi.c` do CM4 obrazu (linked re
 `fpgaloop`, `stats`, `status`, `ui`, `qspiid`/`qspitest`/`qspispeed`/`storetest` (W25Q),
 **`screenshot [sd]`** (export obrazovky do BMP; `screenshot.c`): **`screenshot sd`** = doporučená cesta — snímek se nejdřív zkopíruje do SDRAM scratche (anti-tearing, UiTask jinak během zápisu flipne) a FatFs zapíše celý `SHOTnnn.BMP` na kartu. Holé **`screenshot`** posílá 1,15 MB přes USB CDC (~sekundy, ⚠️ best-effort tok + snímá živý FB → u animované obrazovky pruhy ze dvou framů),
 **`autocal`** (self-check referencí/napájení VREF/12V/5V/VBAT → PASS/WARN/FAIL; staged kroky ADC/timebase/RF; `autocal.c`, ROZPRACOVÁNO),
+**`membench`** (benchmark všech pamětí — rychlost zápisu/čtení + hledání chybných bitů; ⚠️ destruktivní **jen** pro vyhrazený SDRAM a W25Q scratch, interní FLASH se jen čte — viz sekce „Benchmark pamětí"),
 **`datalog [on|off|erase|dump]`** (záznam stability, viz „Datalog"), **`stacktest yes`** (⚠️ záměrně
 přeteče stack UartTasku → IWDG reset; ověření řetězce detekce, viz TODO #10),
 **`beep`/`beep test`** (testovací pípnutí, mute platí i pro test — odpověď na to upozorní),
@@ -457,12 +459,40 @@ bank2 flashnutá.
   (OCXO/deska/MCU), napětí (12V/5V/VREF/VBAT/Vc), RF mV + **AD8307 kalibrace**, Si5356 stav, kanál →
   CM4 obslouží SCPI/web (`MEAS:VOLT?`/`SYST:TEMP?`/`MEAS:POW?`) **bez přístupu ke `g_sensors`/`g_calib`**
   (na CM4 nejsou). **v3 přidal Math/limit cfg mirror** (viz cmd ring níže). ⚠️ Rozšíření layoutu = **`IPC_VERSION`
-  →5** (v2 senzory+kalibrace, v3 Math cfg, v4 `sens_valid` + `t_fpga_c100`, **v5 (F1, 2026-08-22) stav ETH
+  →6** (v2 senzory+kalibrace, v3 Math cfg, v4 `sens_valid` + `t_fpga_c100`, **v5 (F1, 2026-08-22) stav ETH
   linky/IP v `ipc_cm4_status_t`** — `net_ip`/`net_link`/`net_speed_mbps`/`net_duplex`, publikuje `ipc_cm4_set_net()`
-  z CM4, čte `ipc_cm4_net()` na CM7 → `g_cm4_net_up` → System Health „CM4:OK NET:down"; CM4 dnes hlásí natvrdo
-  down, reálné až s lwIP ve F5; CM4 ověří magic+verzi+size
-  po bootu, nesouhlas → IPC off). **⚠️⚠️ Při změně `IPC_VERSION` se MUSÍ přeflashnout OBĚ banky** —
-  jinak nová CM7 a stará CM4 nesouhlasí a IPC zůstane vypnutá (`4:--`).
+  z CM4, čte `ipc_cm4_net()` na CM7 → `g_cm4_net_up`; CM4 dnes hlásí natvrdo
+  down, reálné až s lwIP ve F5; **v6 (F3, 2026-08-22) `eth_phy_id` + `eth_init_ok`** — publikuje
+  `ipc_cm4_set_eth()` z CM4 po `MX_ETH_Init`, čte `ipc_cm4_eth()` → `g_cm4_eth_ok`/`g_cm4_phy_id`;
+  CM4 ověří magic+verzi+size
+  po bootu, nesouhlas → IPC off; **v7** `scpi_selftest_ok`, **v8** `web_ctrl_en`, **v9** `httpd_selftest_ok`,
+  **v10** `web_user`/`web_pass` (Basic Auth), **v11 (2026-08-23) `ui_cfg`** = NASTAVENÍ měření
+  (brána/kanál/RUN) — bez něj neměl CM4 z čeho odpovědět na `SENS:FREQ:GATE?`/`CHAN?`, viz „slepý
+  readback" níže; **v12 (2026-08-24) rozšíření webu** (viz „Web rozšíření v12" níže): snapshot
+  přibyl o **alarmy/prahy/selftest** (#4), **GPS družice `gps_sats[24]`** (sky plot, #5) a přibyl
+  **datalog transfer kanál** `ipc_datalog_xfer_t` (dlouhá historie 24h/7d/30d + CSV, #6).
+  **⚠️ v12 MĚNÍ layout PŘED `cm4` blokem** (snapshot vzrostl) → gracefull detekce nesouladu bank
+  (`cm4_ipc_version`) u tohoto bumpu NEFUNGUJE. **KÓD HOTOVÝ, NEOVĚŘENO NA HW.**).
+  **⚠️⚠️ Při změně `IPC_VERSION` se MUSÍ přeflashnout OBĚ banky.**
+  - **⚠️ Nesoulad bank byl do v6 prakticky NEVIDITELNÝ — pozor, `4:--` to NENÍ.** CM4 při neshodě
+    jen přestane přijímat snapshot (`s_ready=0` v `ipc_cm4_check`), ale **`ipc_cm4_heartbeat()` volá
+    dál a bez podmínky**; `ipc_cm4_alive()` na CM7 testuje pouze `cm4.magic` + růst heartbeatu →
+    hlásí **živou CM4** a v headeru svítí `4:xx%`, jako by bylo vše v pořádku. Jediným příznakem
+    byla LED_2, která nereaguje na GPS fix. **Od v6 to hlásí `cm4_ipc_version`** (razítkuje se
+    v každém heartbeatu, aby to přežilo samostatný reset CM7 a jeho `memset` v `ipc_init`):
+    System Health **`CM4:IPCv5!=6` červeně** (má přednost před NET/PHY) a UART `status`
+    → `⚠ IPC NESOULAD: CM4 obraz v5, CM7 ceka v6`. Starý obraz pole nezapisuje → zůstane 0 po
+    memsetu, což je taky správná odpověď („nehlásí verzi").
+    ⚠️ Detekce funguje, dokud se nemění layout **před** `cm4` blokem (`snap`/`cmd`/`resp`) — pak
+    si obě strany přestanou rozumět už v adrese. Pro v5→v6 to platí (`ipc_snapshot_t` beze změny).
+  - **Předletová pojistka:** `scripts/build.sh` varuje, když je některý obraz **starší než
+    `ipc_shared.h`** (typicky „přeložil jsem jen jedno jádro") — ověřeno, že varování skutečně padne.
+  - **System Health řádek CM4 (v6):** do boxu 156 px se při mono_16 vejde **15 znaků**, takže
+    „CM4:OK NET:down" je přesně na doraz a **nic dalšího připojit nelze**. Ukazuje se proto vždy ten
+    údaj, který v daném stavu něco říká: dokud link nejede (tj. do lwIP ve F5) je „NET:down" konstanta
+    bez informace, kdežto **`CM4:OK PHY:C131`** je živý důkaz, že CM4 mluví s LAN8742A přes MDIO
+    (= kritérium F3). Jakmile link naběhne, přebírá `NET:UP`; `ETH:--` = init na CM4 neprošel (amber).
+    Totéž podrobněji v UART `status` → `ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)`.
 - **`sens_valid` (v4, 2026-08-13):** maska platnosti hodnot ve snapshotu, **bitové pozice ZÁMĚRNĚ shodné
   se `SCPI_V_*`** → CM4 backend udělá `src->valid = snap.sens_valid` a chová se bit za bit jako CM7 na USB.
   Shodu hlídá 14 `_Static_assert` v `ipc.c` (+ 8 dalších pro `SCPI_CFG_*` vs `IPC_CFG_*`) — ty dvě hlavičky
@@ -491,8 +521,53 @@ bank2 flashnutá.
   **NEspadne do Error_Handler** (degradovaný běh, UART `[BOOT] CM4 nenabehl`). VTOR z auto-remapu
   (`USER_VECT_TAB_ADDRESS` zakomentovaný) → boot řídí **option bytes**.
 - **D2 SRAM split** (linkery, regen-safe): **SRAM1 128K → CM7** (`RAM_D2 @0x30000000/128K`; CM7 do D2 nic
-  nelinkuje, jen diagnostický `ram write/read`), **SRAM2+3 160K → CM4** (`RAM @0x10020000/160K`, CM4-alias).
+  nelinkuje, jen diagnostický `ram write/read`), **SRAM2 128K → CM4** (`RAM @0x10020000/128K`, CM4-alias)
+  a **SRAM3 32K → ETH DMA** (`ETH_D2 @0x30040000/32K`, sekce `.eth_dma`).
   ⚠️ Kolize „obě jádra celý D2" byla latentní do ETH; teď disjunktní.
+  - ⚠️ **CM4 `RAM` zkrácena 160K → 128K (2026-08-22, ETH F3).** SRAM3 se vyčlenila deskriptorům; kdyby
+    `RAM` dál sahala přes SRAM3, linker by tam umístil `.bss`/`.data` a **tiše přepsal ETH deskriptory**
+    (stejná fyzická paměť, jen jiná adresa → o kolizi neví). CM4 zabírá ~15 KB flash / ~4 KB RAM.
+  - ⚠️ **`ETH_D2` je SYSTÉMOVÁ adresa `0x30040000`, ne CM4 alias `0x10040000`.** ETH DMA je AHB master
+    a D2 SRAM vidí na `0x30xxxxxx`; na CM4-only alias nedosáhne. CM4 CPU na systémovou adresu dosáhne
+    taky, takže stačí jedna adresa pro obě strany. Bez vlastní sekce skončily `.RxDescripSection`/
+    `.TxDescripSection` z generovaného `eth.c` jako **orphan v `.data` na `0x10020010`** (a ještě se
+    tahaly z flash). Kontrola: `nm H757_LED_CM4.elf | grep DscrTab` → musí být **`30040000 B`**.
+    CM4 nemá D-cache → žádná cache maintenance kolem deskriptorů (výhoda oproti ETH na CM7).
+- **Ethernet + lwIP na CM4 (F5, 2026-08-22 — KÓD HOTOVÝ, NEOVĚŘENO NA HW).** `NO_SYS=1`
+  (bare-metal raw API, žádný RTOS na CM4) + **DHCP klient**. lwIP zaveden **ručně** z
+  `STM32Cube_FW_H7_V1.13.0` (v `.ioc` LWIP **není**): `Middlewares/Third_Party/LwIP`
+  (`src/core`, `core/ipv4`, `netif/ethernet.c`) + `Drivers/BSP/Components/lan8742`; glue
+  `CM4/LWIP/Target/ethernetif.c` (adaptovaný ST `LwIP_HTTP_Server_Raw`) a
+  `CM4/LWIP/App/lwip_app.c` (`lwip_app_init/process`). ⚠️ Jméno `lwip_app.c` (ne `lwip.c`)
+  je zvolené tak, aby budoucí CubeMX „Generate Code" s LWIP nekolidoval.
+  - 🔴🔴 **`LWIP_RAM_HEAP_POINTER` MUSÍ ZŮSTAT NEDEFINOVANÝ — nevracet pevnou adresu.**
+    ST příklady mají `#define LWIP_RAM_HEAP_POINTER (0x30004000)`, protože na **jednojádrovém**
+    H7 je D2 SRAM1 volná. Tady SRAM1 podle rozdělení D2 patří **CM7**, takže halda lwIP ležela
+    v cizí paměti a cokoli, co do SRAM1 zapsalo (`membench` cíl „SRAM1 D2", UART `ram write`),
+    **shodilo CM4 natrvalo** (IWDG2 je vypnutý). Bez toho define si lwIP alokuje `ram_heap`
+    jako statické pole v `.bss` CM4 → SRAM2, tedy do vlastní paměti. Kontrola:
+    `nm H757_LED_CM4.elf | grep ram_heap` → musí být **`1002xxxx`**, ne `3000xxxx`.
+    Cena: `.bss` CM4 +14 kB (MEM_SIZE) → ~65 kB ze 128 kB, pořád velká rezerva.
+  - ⚠️ **`ethernetif.c` NESMÍ duplikovat generovaný `eth.c`:** deskriptory, `EthHandle`
+    i `HAL_ETH_MspInit` z ST příkladu jsou odstraněné, používá se `heth` a `low_level_init`
+    ETH **znovu neinicializuje** (jen čte `heth.gState`) → `eth.c` zůstává netknutý regenerací.
+  - ⚠️ **MAC se bere z `heth.Init.MACAddr`, ne z `ETH_MAC_ADDR*`** — HW filtr programuje
+    `MX_ETH_Init` (00:80:E1:…), zatímco makra v `hal_conf` nesou 02:00:…; při rozejití by
+    ARP odpovídal špatnou adresou a spojení by tiše nefungovalo.
+  - ⚠️ **`ETH_RX_BUFFER_SIZE` musí = `heth.Init.RxBuffLen` (1536)** — ST příklad má 1000,
+    DMA by psala za konec bufferu.
+  - ⚠️ **Žádná cache maintenance** (`SCB_InvalidateDCache_by_Addr` odstraněno): CM4 nemá
+    D-cache a CMSIS ji pro něj ani nedefinuje. Přesně proto ETH patří na CM4.
+  - ⚠️ **Smyčka CM4 je rozdělená na rychlou a pomalou část.** Dřív končila `HAL_Delay(800)`
+    → lwIP obsloužen 1×/800 ms, RX ring (4 deskriptory) by přetekl a ping měl RTT ~1 s.
+    Teď: `lwip_app_process()` + `iwdg2_kick()` **každou iteraci (~1 ms)**, IPC snapshot +
+    heartbeat + ETH stav na **5 Hz**, LED_2 stavovým automatem místo blokujících delayů.
+  - **DHCP startuje/zastavuje link callback**, ne natvrdo — jinak by klient posílal DISCOVER
+    do odpojeného kabelu a po zapojení čekal na svůj backoff (lwIP ho zvedá na desítky s).
+  - **Paměť:** RAM 30 KB/128 KB (SRAM2), `.eth_dma` 12,7 KB/32 KB (SRAM3: deskriptory +
+    zero-copy RX pool 8×1568 B). CM4 obraz 12,9 → **84,6 KB**.
+  - ⚠️ **Statická IP zatím NEJDE** — okno SÍŤ (s_view=35) ji ukládá do syscfg, ale **IPC
+    snapshot ta pole nenese**, takže se k nim CM4 nedostane. Vždy jede DHCP.
 - **cmd ring (CM4→CM7) + config sync (v3):** `IPC_CMD_CFG_SET` (key `IPC_CFG_*` + `arg`/`double argd`) → CM7
   `ipc_service` aplikuje Math/limity na `g_meas_cfg` (`ipc_cfg_apply`; commit jen při reálné změně, kritická
   sekce). Čtení zpět = **cfg mirror ve snapshotu** (`math_m/b/null_ref/lim_lo/hi` + flagy) → CM4 obslouží `CALC:`
@@ -502,8 +577,177 @@ bank2 flashnutá.
 - **SCPI je DATA-SOURCE nezávislé** (`scpi.c/h`, 2026-08-10): parser+handlery čtou z `scpi_src_t` (instrument-state
   + validity bity `SCPI_V_*` + akce `set_cfg`/`read_log`), NE z globálů. **CM7 backend** `scpi_src_load_cm7`
   (`#if CORE_CM7`) plní z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`/datalog; `scpi_process` =
-  wrapper (USB volající beze změny). **CM4 backend** (výhled) naplní tentýž `scpi_src_t` z **IPC snapshotu** +
-  `set_cfg` přes cmd ring → stejné jádro pro USB-CM7 i TCP-CM4. Jádro ověřeně kompiluje jako `-DCORE_CM4` (bez globálů).
+  wrapper (USB volající beze změny).
+  - ⚠️ **Oprava přeceněného tvrzení (W2, 2026-08-23):** dřív tu stálo „jádro ověřeně kompiluje jako
+    `-DCORE_CM4` (bez globálů)" — platilo to jen pro izolovaný test mimo obraz CM4. Když se `scpi.c`
+    poprvé skutečně přidal do CM4 firmwaru, build **spadl**: `SYSTem:DATE/TIME` a `DISPlay:BRIGhtness`
+    sahaly na CM7 globály (`g_rtc_text`, `g_rtc_set_*`, `g_brightness`, `g_sys_cfg_dirty`) **mimo**
+    `#if defined(CORE_CM7)` guard — tenhle blok chránil jen CM7 backend (`scpi_src_load_cm7`/
+    `scpi_process`), ne celý parser. Opraveno přidáním `#else` větve → na CM4 obě komponenty vrací
+    SCPI-99 **`-241 "Hardware missing"`** (nová položka v `scpi_err_msg`) místo pádu překladu.
+    Věcně správně: displej i RTC registry jsou fyzicky jen na CM7, žádnou IPC cestu nemají a ani
+    nemají mít (vzhled/jas nejsou „přístroj", viz `WEB_UI_PLAN.md` 1.6).
+  - **SCPI na CM4 (W2, 2026-08-23): SKUTEČNĚ BĚŽÍ, ne jen se překládá.** `scpi.c` + `meas_math.c`
+    (obojí fyzicky v `CM7/Core/Src/`) se linkují i do CM4 obrazu (explicitní `subdir.mk` v `CM4/Debug/SCPI/`,
+    include `-I CM7/Core/Inc`) — CM4 obraz vzrostl 84,6 → **118,6 KB**. Za bootu CM4 spustí
+    `scpi_selftest()` (stejný pure-logic test, fabrikuje si vlastní `scpi_src_t`, bezpečné i bez
+    ETH/lwIP) a výsledek publikuje přes **IPC v7** (`ipc_cm4_set_scpi_selftest`) → CM7
+    `ipc_cm4_scpi_selftest()` → UART `status` → `SCPI(CM4): selftest PASS`. CM4 nemá konzoli,
+    takže IPC je jediný kanál, kterým se to zvenčí ověří — stejný idiom jako u PHY ID (F3).
+  - **Čtecí i zapisovací půlka jsou ve sdíleném `ipc_scpi.c`** (přesunuto z `ipc.c`, linkuje se do
+    OBOU jader): `ipc_scpi_src_from_snap()` (snapshot → `scpi_src_t`, čistá funkce) a
+    `ipc_scpi_set_cfg()` (přesná signatura `scpi_src_t.set_cfg` — SET validuje lokálně, pak
+    `IPC_CMD_CFG_SET` do cmd ringu; nečeká na odpověď, aby zůstal jádrově neutrální — žádné
+    `osDelay`/`HAL_Delay` v souboru společném oběma jádrům). Obojí zatím volá jen CM7 testovací
+    cesta (`scpi ipc <cmd>`, `freertos_task_uart.c`).
+  - **W3 (TCP 5025) HOTOVO 2026-08-23 — kód, HW test čeká.** `CM4/LWIP/App/scpi_tcp.c`:
+    raw lwIP server, statický pool 4 spojení (žádný malloc navíc), vlastní `scpi_ctx_t`
+    per spojení. `scpi_src_t` se plní **živě pro každý příkaz** (`ipc_cm4_read` +
+    `ipc_scpi_src_from_snap`), ne jen jednou při připojení — klient může poslat druhý
+    příkaz o minuty později. **W0 (vypínač ovládání z okna PŘÍSTUP) teď proudí přes
+    IPC v8** (`web_ctrl_en`, bývalý `_pad_cfg` — rozšíření zdarma, velikost snapshotu
+    beze změny): `src.set_cfg = (web_ctrl_en) ? ipc_scpi_set_cfg : NULL` — když je
+    ovládání zakázané, `set_cfg` zůstane `NULL` a SET tiše selže **existující**
+    NULL-guard ochranou parseru (`-230`), žádná nová chybová cesta. Odpověď `\r\n`
+    (SCPI-99 socket konvence), jediný `tcp_write` bez pacing fronty (`TCP_SND_BUF`
+    4×MSS ≈ 5,8 kB je o řád větší než max. odpověď 200 B — W4 s velkým HTML bude
+    pacing přes `tcp_sent` potřebovat, tohle ne). Test: `HW_OVERENI_PRUCHOD.md` §7d.
+  - **W4 (HTTP `/api/state`+`/api/scpi`) HOTOVO 2026-08-23 — kód, HW test čeká.**
+    `CM4/LWIP/App/httpd_min.c`: vlastní HTTP/1.1 server port 80 (ne vendorovaný lwIP
+    `httpd`/`fs.c` — stejný důvod jako hand-rolled SCPI, `makefsdata` by přidal krok
+    do buildu), pool 3 spojení, `Connection: close`. **`GET /api/state`** staví JSON
+    přes `scpi_src_t` (`ipc_scpi_src_from_snap`), NE přímo ze snapshotu — validita
+    polí (`SCPI_V_*` → `null` v JSON) je tak doslova stejná logika jako SCPI dotazy,
+    ne druhá kopie. Čísla bez `%f`: `fmt_scpi_hz_d` **vystaveno ze `scpi.c`**
+    (bylo `static`) a sdíleno mezi `CALC:*?` readbacky a JSON — jedna implementace
+    přetečení-guardu, ne dvě. **`POST /api/scpi`** jde stejnou cestou jako TCP 5025
+    (`set_cfg = ipc_scpi_set_cfg` jen když `web_ctrl_en`). Parser požadavku
+    (`httpd_parse_request`) je čistá funkce → **`httpd_min_selftest()`** (5 vektorů)
+    → **IPC v9** (`httpd_selftest_ok`, další znovupoužitý padding bajt) → `status`
+    → `HTTP(CM4): selftest PASS`. Test: `HW_OVERENI_PRUCHOD.md` §7e.
+    ⚠️ Jediný `tcp_write` bez `tcp_sent` pacing stačí jen pro W3/W4 (odpovědi <1,5 kB);
+    W5 (SPA) chunking skutečně potřebovalo.
+  - **W5 (SPA + Basic Auth) HOTOVO 2026-08-23, ověřeno na HW. TÍM JE PLÁN W0–W5 DOKONČEN.**
+    `SPA_HTML[]` (~12 kB, `.rodata`) na `GET /` — HTML+CSS+JS
+    pohromadě, **bez jediné dvojité uvozovky uvnitř** (jen jednoduché v HTML atributech
+    i JS řetězcích), aby šel celý blok napsat jako C řetězcový literál (sousední
+    řetězce se v C spojují) bez escapování — žádný build krok navíc.
+    ⚠️ **Ze stejného důvodu v ní nesmí být ani zpětné lomítko** (`\d`/`\B` v JS regulárním
+    výrazu by C překladač vzal jako neznámou escape sekvenci) → v JS **žádné regexy**;
+    oddělovač tisíců i `trim` jsou psané ručně. Atributy generované z JS přes `innerHTML`
+    jsou **bez uvozovek** (`class=cell`), takže víchodnotová třída by nešla zapsat —
+    stav se proto nese `data-` atributem (`data-st=bad`, `data-na=1`) a CSS ho čte
+    selektorem `[data-st=bad]`. Interaktivita jde přes `addEventListener` + `data-`
+    atributy (ne `onclick=`), což se stejnému problému vyhne úplně.
+    **Vzhled: decentní BIOS (2026-08-24).** Hranaté panely (radius 4 px), hlavičky sekcí
+    v mono s `[ ZÁVORKAMI ]`, jantarový akcent na tmavém podkladu. **Tři palety** cyklované
+    tlačítkem a persistované v `localStorage`: **JANTAR** (výchozí), **MODRÁ** (klasické
+    BIOS ladění) a **SVĚTLÁ**. ⚠️ Barvy křivek jsou **CSS proměnné** `--c0..--c3` a v SVG se
+    nastavují **třídou** (`class='ln s0'`), ne literálním `stroke='#38bdf8'` — jinak by se
+    grafy při přepnutí palety nepřebarvily.
+    **Detail grafu kliknutím** — každý graf (včetně Allanova) otevře překryvné okno
+    (Esc / klik mimo / tlačítko zavře) s velkou verzí, **popsanými osami** (5 úrovní Y,
+    stáří vzorku na X; u Allana dekády `1e-9` a hodnoty τ), **tabulkou statistik**
+    (poslední/min/max/pp/průměr/směrodatná odchylka/počet) a vysvětlivkou, co graf ukazuje.
+    Překreslí se i za běhu, takže zůstává živý. ⚠️ Popis grafu je **jeden zdroj pravdy**
+    (`spec(kind)` vrací série, měřítko i formátovač) — náhled i detail z něj čerpají oba,
+    takže nemůžou ukazovat jinak formátovanou tutéž veličinu.
+    **Podoba z 2026-08-24 (dashboard s grafy).** Velký headline kmitočtu,
+    stavové „pilulky" (FPGA link / GPS / reference / RUN), segmentové přepínače brány
+    a vstupu, které **zvýrazňují skutečně navolený stav ze snapshotu**
+    (`set_gate_idx`/`set_chan`, IPC v11), **4 živé grafy**, karty s bargrafy, GPS donut,
+    SCPI konzole s historií a **přepínač tmavého/světlého vzhledu** (persist `localStorage`).
+    Stránka vyrostla 12 → **29 kB** `.rodata` (CM4 obraz 145 → 162 kB z 1 MB).
+    - **Grafy staví klient z vlastního pollingu** (`H` = kruhový buffer, max 3600 vzorků
+      = 1 h při 1 Hz) — kmitočet jako **odchylka od průměru okna** (v absolutních Hz by
+      nebylo vidět nic), teploty (4 série), OCXO Vc a napájecí větve jako **% od nominálu**
+      (jinak by 12 V zploštilo zbytek). Okno 1/5/15/60 min přepínatelné.
+      ⚠️ **Historie je JEN v prohlížeči** — F5 ji zahodí a přes noc nepřežije. Delší
+      historie by musela jít z datalogu (`MMEM:DATA?`), což zatím web nedělá.
+    - **SVG bez uvozovkových potíží:** `viewBox='0 0 100 100'` + `preserveAspectRatio='none'`
+      (souřadnice = procenta, takže se nic nepřepočítává) + `vector-effect:non-scaling-stroke`,
+      aby se čáry roztažením nezdeformovaly. Popisky os jsou **HTML overlay**, ne `<text>` —
+      ten by se roztáhl s ním. Body se plní `setAttribute('points', …)`, tedy mimo `innerHTML`.
+    - **`rf_dbm` přidán do JSON** — počítá ho server **týmž vzorcem i podmínkou jako
+      `MEAS:POWer?`** (kalibrace AD8307 ze snapshotu). Kdyby to počítal klient, byla by to
+      druhá kopie kalibrace a web by mohl ukazovat něco jiného než SCPI.
+    - **ALLAN + DRIFT (2026-08-24) se počítají v prohlížeči z REÁLNÝCH měření.**
+      🔴 `sigma_tau`/`offset`/`drift` z IPC snapshotu se **záměrně nepoužívají** — CM7 je
+      neplní, protože jejich zdroj je zatím simulace headline (`ipc.c`). Servírovat je jako
+      měření by porušilo zlaté pravidlo.
+      - **Vzorky se berou podle `seq_meas`** (nově v JSON, přímo ze snapshotu — `scpi_src_t`
+        to pole nemá). ⚠️ Bez toho by poll na 1 Hz započítal tentýž výsledek několikrát;
+        opakované hodnoty vypadají jako dokonalá stabilita, takže **σy by vyšla nesmyslně
+        NÍZKÁ**. Buffer se navíc **zahodí při změně brány** — Allan potřebuje rovnoměrné
+        rozestupy a míchat dvě různá τ0 nelze.
+      - **τ0 = skutečný průměrný rozestup měření** z časových značek, ne nastavená brána:
+        tempo určuje FPGA a při nízkých kmitočtech se reciproké okno legitimně protáhne.
+      - **Overlapping ADEV** (posun po jednom vzorku, ne blokový) z fází
+        `x[k+1] = x[k] + y[k]·τ0`; τ = τ0·1,2,4,8,… Tabulka ukazuje i **počet párů** a při
+        <10 párech na nejdelším τ varuje, že jde jen o orientační hodnotu.
+      - **Drift = lineární proklad** s **korelací r**; při |r| < 0,5 se označí za neprůkazný
+        a proklad se do grafu **nekreslí** (jinak by uživatel četl proklad šumu jako drift).
+      - **Offset** proti **uživatelsky nastavitelnému nominálu** (auto-předvyplněný ze
+        zaokrouhlení prvního měření, tlačítko „= AKTUALNI"). Bez deklarovaného nominálu
+        nemá offset význam, takže se nefabrikuje. ⚠️ Když kmitočet chybí,
+    stránka **vypíše důvod** (STOP / SPI link DOWN / ztráta signálu), místo aby ukázala
+    prázdno — bez toho vypadá správné `null` (zlaté pravidlo) jako porucha webu.
+    ⚠️ **Pozor na rozdíl proti displeji:** headline na displeji je pořád **simulace**
+    (`freq_step()`, random walk kolem 10 MHz, STATUS #2), kdežto web servíruje reálná
+    data z FPGA. Bez připojené FPGA desky tedy displej ukazuje kmitočet a **web správně
+    `null`** — to není chyba webu.
+    Přihlášení se nově **ověřuje** (`login()` pošle `*IDN?` a přečte `auth_debug.match`
+    z `/api/state`), takže špatné heslo řekne „Neplatné jméno nebo heslo" hned;
+    dřív se jen tiše uložilo do `localStorage` a chyba se projevila až u prvního SET.
+    **HTTP Basic Auth**: přihlašovací jméno/heslo z okna PŘÍSTUP teď proudí přes
+    **IPC v10** (`web_user`/`web_pass` — poprvé od v8 SKUTEČNÝ růst snapshotu o 36 B,
+    ne recyklovaný padding). SPA ukládá do `localStorage`, posílá
+    `Authorization: Basic base64(user:pass)`; server (`check_auth`) dekóduje a
+    **bajtově** porovná — žádný speciální případ pro prázdné heslo (nikdy neprojde
+    samo o sobě). ⚠️ **TCP 5025 Basic Auth nemá** (VISA raw socket nezná HTTP hlavičky)
+    — spoléhá jen na `web_ctrl_en`; pro `POST /api/scpi` je tedy podmínka
+    **`web_ctrl_en` A SOUČASNĚ platné jméno/heslo**.
+    🔴 **Asynchronní odesílání po částech** (`pump_send()` + `tcp_sent` callback,
+    NE jeden `tcp_write` jako W3/W4): každé spojení má vlastní frontu
+    (hlavička→tělo). **Tělo JSON/SCPI je vždy ve connection-owned bufferu**
+    (`c->bodybuf`), **NE ve sdíleném static scratch jako ve W3/W4** — se sdíleným
+    bufferem by při souběžném rozesílání dvou spojení jedno přepsalo tělo druhého
+    uprostřed posílání. SPA stránka naopak ukazuje přímo do `.rodata` konstanty
+    (bezpečné sdílet mezi spojeními, nikdy se nemění). Test: `HW_OVERENI_PRUCHOD.md` §7f.
+    Plán + audit: `WEB_UI_PLAN.md`.
+  - **Web rozšíření v12 (2026-08-24) — KÓD HOTOVÝ, NEOVĚŘENO NA HW; kompiluje se
+    `-Wall -Wextra` bez varování na obou jádrech.** Šest bodů (#1–#6):
+    - **#1 Ovládání MATH/LIMITY/NULL/CAS ze SPA** — nová karta pošle SCPI (`CALC:MATH:M/B/STAT`,
+      `CALC:NULL:ACQ`, `CALC:LIM:LOW/UPP/STAT`, `SYST:DATE/TIME`) **týmž `POST /api/scpi`**, co
+      konzole. **Žádný nový server kód** — reuse existujícího `set_cfg` (podmínka `web_ctrl_en`
+      + Basic Auth). Tlačítka se zamknou při zakázaném ovládání jako segmenty.
+    - **#2 mDNS `gpsdo.local`** — **ručně psaný responder v `lwip_app.c`** (vendorovaný lwIP
+      `mdns` modul chybí, jen hlavičky). `LWIP_IGMP=1` (lwipopts), `NETIF_FLAG_IGMP` v
+      `ethernetif.c`, MAC `PassAllMulticast` + `igmp_joingroup_netif(224.0.0.251)` při link UP,
+      UDP 5353 → odpovídá na A-dotaz. ⚠️ **BEST-EFFORT** (jako `gps glonass`): závisí na tom, že
+      MAC přijme multicast a IGMP join projde; selže-li cokoli, CM4 běží dál bez mDNS.
+    - **#3 SSE push** (`GET /api/stream`) místo 1 Hz pollingu — **držené spojení**, `httpd_min_poll()`
+      (z hlavní smyčky CM4, throttle ~20 Hz) posílá `data: <state json>` při novém `seq_meas`.
+      ⚠️ **SPA má automatický fallback na 1 Hz poll** (EventSource `onerror`/timeout) → i kdyby
+      SSE selhalo, dashboard jede. `HTTPD_MAX_CONN` 3→**5** kvůli drženým spojením.
+    - **#4 Alarmy/prahy/selftest** ve `/api/state` (nová karta STAV) — počítadla `g_alarm_*`,
+      stav prahů `g_mon_*_bad`, `g_selftest_res`, `sys_level`. Čteno **přímo ze snapshotu**
+      (`scpi_src_t` je nemá).
+    - **#5 GPS sky plot** (`GET /api/sats`, SPA fetch ~3 s) — polární graf z `snap.gps_sats[24]`.
+      ⚠️ `ipc_sat_t` (v `ipc_shared.h`, bez `gps.h`) drží **shodný layout s `gps_sat_t`** — hlídá
+      **7 `_Static_assert`** (`offsetof` každého pole + velikost + `IPC_GPS_MAX_SATS==GPS_MAX_SATS`)
+      v `ipc.c`, publikace je pak `memcpy`.
+    - **#6 Dlouhá historie 24h/7d/30d + CSV** (`GET /api/log?win=…&n=48`) — **datalog vlastní jen
+      CM7** (W25Q), takže data tečou přes **nový IPC kanál `ipc_datalog_xfer_t`** (SRAM4, mimo
+      snapshot): CM4 zapíše požadavek (from/count/step, decimace) + zvedne `req_gen`; CM7
+      `ipc_datalog_service()` (defaultTask, blokující `datalog_read_back`) naplní `rec[]` a nastaví
+      `resp_gen`. HTTP odpověď je **ODLOŽENÁ** — dokončí ji `httpd_min_poll` (mode `HCONN_LOG`,
+      timeout 2 s). Jen **jeden transfer souběžně** (503 jinak). SPA přepíná graf mezi živým
+      oknem (buffer prohlížeče) a datalogem přes `src()`; **CSV export** (tlačítko) uloží
+      zobrazená data (bez zpětného lomítka v SPA → `String.fromCharCode(10)`). ⚠️ Datalog
+      neukládá 12V/5V/VREF ani MCU/FPGA teploty → v dlouhých oknech ty řady chybí.
+    ⚠️ **Rozsah snapshotu vzrostl** (alarmy + 144 B družic) → `HTTPD_BODYBUF_MAX` 1536→**4096**
+    (JSON historie ~2,7 kB). Test: doplnit do `HW_OVERENI_PRUCHOD.md`.
 - **Rozšíření 2026-08-13 (jen nad poli, která `scpi_src_t` UŽ má → CM7 i budoucí CM4 se chovají
   IDENTICKY, bez bumpu `IPC_VERSION`):** `SYST:CAP?`, **`SYST:ERR:ALL?`** (vyprázdní celou frontu
   jedním dotazem; ⚠️ po výpisu chyb **nepřipojuje** koncovou `0,"No error"` — ta se vrací jen
@@ -531,8 +775,25 @@ bank2 flashnutá.
   aplikuje v `rtc_app_tick` **před** `rtc_try_sync()`, takže při GPS fixu má poslední slovo GPS.
   ⚠️ Ručně zadaný čas **nenastavuje** `s_synced` ani BKP magic → UI dál správně hlásí „no GPS".
   Smysl to má jen bez antény.
-  Klíče `SCPI_CFG_GATE/CHAN/RUN` mají protějšky `IPC_CFG_*` (hlídají `_Static_assert`), takže
-  je CM4 pošle přes cmd ring beze změny; rozšíření výčtu nemění layout → `IPC_VERSION` beze změny.
+  Klíče `SCPI_CFG_GATE/CHAN/RUN` mají protějšky `IPC_CFG_*` (hlídají `_Static_assert`);
+  rozšíření výčtu nemění layout → `IPC_VERSION` beze změny.
+  - ✅ **W1 HOTOVO (2026-08-23), ověřeno na HW přes web:** `ipc_ui_cfg_apply()` (v `ipc.c`, oddělená
+    od čistého `ipc_cfg_apply` pro Math/limity) napojuje `IPC_CFG_GATE/CHAN/RUN` na **tentýž most**
+    `g_ui_cfg_req`+`g_ui_cfg_req_pend` → `screen_main_apply_cfg_req()` v UiTasku, jaký používá SCPI
+    přes USB — včetně identického bitového balení. RUN/STOP, brána i kanál z CM4 tedy fungují
+    (`IPC_CMD_LOG` → `datalog_set_enabled`). (Historie: do 2026-08-22 klíče existovaly jen v enumu
+    a padaly do `default:`.)
+  - 🔴 **⚠️ PAST, na kterou se přišlo až HW testem přes web (2026-08-23) — SLEPÝ READBACK.**
+    Zápis fungoval, ale **`SENS:FREQ:GATE?` / `CHAN?` přes TCP/HTTP vracely pořád `0.1` a `0`**,
+    takže to navenek vypadalo jako „brána a vstup nejdou nastavit". Příčina: snapshot nesl jen
+    `channel_id`/`gate_ns` = **co ohlásil FPGA rámec** (a při mrtvém SPI linku jsou nulové), ale
+    **nenesl NASTAVENÍ** (`g_ui_cfg`). `ipc_scpi_src_from_snap` proto `set_gate_idx` neplnil vůbec
+    (zůstal 0 z `memset`) a `set_chan` bral z `channel_id`. USB cesta byla přitom správně
+    (`scpi_src_load_cm7` dekóduje tytéž bity z `g_ui_cfg`) → **dvě různé pravdy o tomtéž přístroji**,
+    přesně to, čemu má `sens_valid` + `_Static_assert` disciplína bránit. Opraveno v **IPC v11**:
+    snapshot má `ui_cfg` (bývalý `_pad_s` → velikost beze změny) a obě jádra ho dekódují stejně.
+    **Poučení: readback musí číst NASTAVENÍ, ne poslední naměřenou hodnotu** — jinak se chyba
+    projeví teprve tehdy, když měření neběží, a vypadá jako porucha zápisu.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`, vypisuje
   ho `run_selftests` při FAILu). Je to **101 kontrol slitých do jedné návratové hodnoty** a na hostiteli
   se test spustit NEDÁ (v tomhle prostředí není nativní C kompilátor, jen arm-none-eabi, ani WSL).
@@ -585,7 +846,11 @@ Deska je **generická** (použitelná i jinam) → regiony obecné, ne GPSDO-spe
   BKP (DR1/DR2/DR6) přežije **jen warm reset** (bez VBAT ne power-cycle) → přidána druhá vrstva do
   **W25Q CONFIG store** (blob `{magic, brightness, mute, autodim_en/sec, theme, lang, tz_offset, tz_auto, ui_cfg,
   datalog_en, anim_en, fx_en, + Math/limity: meas_math/null/limit/alarm_en, m/b/null_ref/lo/hi doubles}`,
-  survey_valid/n/lat/lon/alt/spread (výsledek self-survey), aktuální magic „SCF8" — bez BKP zálohy jsou fx/anim/Math/survey aplikované vždy, ne jen při studeném startu).
+  survey_valid/n/lat/lon/alt/spread (výsledek self-survey), síť, prahový monitor, okno MĚŘENÍ,
+  vzdálený přístup (`web_ctrl_en`/`web_user`/`web_pass`) a **rozložení hlavní obrazovky**
+  (`layout_classic`, přidáno 2026-08-23) — **aktuální magic „SCFE"** (dřív SCF8/SCFD; každá změna
+  layoutu blobu = nový magic → první boot po ní načte výchozí a při první změně uloží nově;
+  bez BKP zálohy jsou fx/anim/Math/survey/rozložení aplikované vždy, ne jen při studeném startu).
   **`syscfg_load()`** (app_gpsdo_init, PŘED `ui_theme_select`+`screen_main_init` kvůli
   tématu/jasu při 1. renderu): při **studeném startu** (BKP smazána → `g_syscfg_bkp_valid=0`) je **flash autoritativní**;
   při **warm resetu** (`g_syscfg_bkp_valid=1`, nastaví MX_RTC_Init dle DR2 magicu) má přednost BKP a flash se jen
@@ -673,6 +938,180 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
   při vytažení shodí `s_sd_ok` + `HAL_SD_DeInit` → další zápisy selžou hned místo ~200 ms
   timeoutu (defaultTask nesmí čekat). Vytržení uprostřed zápisu je bezpečné — každý 32B
   záznam má CRC16, takže se poškozený při čtení přeskočí.
+
+### Benchmark pamětí (`membench.c/h`, okno PAMETI s_view=43, UART `membench`) — 2026-08-23
+Rychlost zápisu/čtení **a hlavně hledání chybných bitů** napříč všemi paměťmi. Vstup:
+dlaždice **PAMETI >** v Nastavení (obsadila poslední volnou buňku mřížky 3×4) → tlačítko
+**BENCHMARK**; nebo UART `membench` (vypíše tabulku).
+
+⚠️ **Sloupec „testovano" je `testovaný blok / kapacita čipu`, ne kapacita.** Testovat jde
+jen to, co nikdo nepoužívá, a ten rozdíl je často řádový — u SDRAM **4 MB z 32 MB** (zbytek
+drží framebuffery a linker sekce `.sdram`), u W25Q **32 kB z 64 MB**. Původně sloupec ukazoval
+jen testovaný blok pod hlavičkou „velikost" a četlo se to jako kapacita paměti (nahlášeno
+při HW testu 2026-08-23) — proto se od té doby zobrazují **obě** čísla.
+
+**Co se testuje a proč právě to** (6 cílů): **DTCM** `0x20000000` 64 kB ze 128 kB (linker sem
+nic neumisťuje — ověřeno v mapfile; TCM se z principu necachuje), **AXI SRAM** vlastní statický
+32 kB buffer z 512 kB (jediný cíl bez volné oblasti — je tam `.bss`/haldy), **SRAM1 D2**
+`0x30001000` 64 kB ze 128 kB (CM7 do D2 nic nelinkuje; CM4 sedí v SRAM2 `0x30020000` a SRAM3
+`0x30040000` — ověřeno v CM4 mapfile, žádný překryv), **SDRAM** `0xC0400000` **512 kB z 32 MB**
+(scratch v MPU region 1, sdílený s UART `sdram write/read` a se `screenshot`), **interní FLASH
+bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BASE` 32 kB ze 64 MB.
+- **SRAM4 / D3 se netestuje.** Do 2026-08-23 se testovala její „volná" horní půlka
+  (`0x38008000`, nad `sizeof(ipc_shared_t)`). Odebrána proto, že SRAM4 je paměť, ve které **žije
+  mezijaderné spojení**; hnát do ní sekundy provozu je proti pravidlu modulu („testuje se
+  výhradně paměť, kterou nikdo jiný nepoužívá") — argument „horní půlka je volná" platí
+  o **adresách**, ne o sběrnici. Přínos 16 kB je proti riziku nulový.
+- 🔴🔴 **VYŘEŠENO 2026-08-23, ✅ POTVRZENO NA HW (po opravě už `membench` CM4 neshazuje) —
+  benchmark shazoval CM4, protože SRAM1 NEBYLA volná: halda lwIP ležela na pevné adrese
+  `0x30004000`.** `lwipopts.h` mělo `LWIP_RAM_HEAP_POINTER (0x30004000)`
+  převzaté z ST příkladu pro **jednojádrový** H7, kde je D2 SRAM1 volná. Na téhle desce ale SRAM1
+  podle rozdělení D2 patří **CM7** — takže halda lwIP seděla v cizí paměti. Benchmark ji přepsal
+  → **CM4 spadla a s vypnutým IWDG2 už nenaběhla** (konec ETH/SCPI/webu do resetu desky).
+  **Opraveno odstraněním toho define** → lwIP si `ram_heap` alokuje jako statické pole v `.bss`
+  CM4 (ověřeno: `ram_heap` je teď na `0x10022400` = SRAM2, `.bss` CM4 vzrostla o 14 kB na 65 kB
+  ze 128 kB). ⚠️ **Týž problém měl i UART `ram write`** (píše 80 kB od `0x30001000`) — jen se
+  nikdy nespustil za běhu ETH, takže se na to nepřišlo.
+  - ⚠️ **Past v přiřazení viníka, na kterou se šláplo dvakrát:** `g_cm4_alive` odvozuje defaultTask
+    z okna **~3 s**, takže smrt CM4 se v něm projeví o několik sekund později a spadne na cíl,
+    který zrovna běží — typicky ten poslední a nejdelší (W25Q s erase). Tak vzniklo **mylné
+    obvinění W25Q**; předtím stejně mylně padlo podezření na SRAM4/D3. Teprve čtení **syrového
+    čítače heartbeatu** (`g_ipc.cm4.heartbeat`, CM4 ho zvedá 5×/s) s označením **jen prvního**
+    postiženého cíle ukázalo na SRAM1.
+  - **Stopa, která to potvrdila:** chyby v SRAM1 se shlukly kolem `0x30004000` a byly
+    jednorázové (jiný vzor pokaždé, ostatní vzory na téže adrese prošly) — tedy ne vadná buňka,
+    ale **cizí zápis**. Byla to lwIP, jak si psala do vlastní haldy uprostřed testu.
+  - **Poučení:** „linker sem nic neumisťuje" **není** důkaz, že je paměť volná — pevně zadrátovaná
+    adresa v konfiguraci middlewaru se v mapfile neprojeví. Při přidávání dalšího cíle grepni
+    i **absolutní adresy ve zdrojích obou jader**, nejen linker skripty.
+- **`__HAL_RCC_C1_D2SRAM1_CLK_ENABLE()`, ne společná varianta** — na dvoujádrovém H7 má každé
+  jádro vlastní sadu povolovacích bitů (`RCC_C1->AHB2ENR` vs `RCC->AHB2ENR`) a nás zajímá jen
+  přidělení pro CM7. Sahat na společný registr, když zároveň řešíme padání CM4, je zbytečné
+  riziko.
+- ⚠️ **Během SDRAM fáze může displej krátce trhat** — LTDC čte framebuffer z téhož čipu přes
+  tentýž FMC. Při 4 MB se obraz **rozsypal** (~46 MB/s potřebuje LTDC, test mu bral pásmo
+  několik sekund) → blok zmenšen na 512 kB (~0,4 s) a ustupuje se scheduleru po 32 kB.
+- ⚠️ **Interní FLASH se ZÁMĚRNĚ nikdy nezapisuje** — erase/write do banky, ze které se
+  zároveň vykonává kód, zastaví sběrnici; druhá banka patří CM4. Místo bitových chyb se
+  obraz přečte **dvakrát s invalidovanou cache** a součty se porovnají → to odhalí
+  **nestabilní čtení**, ne trvale špatný bit (ten by dal pokaždé stejný chybný součet;
+  trvalou vadu na H7 hlásí ECC flash sama).
+- **Vzory** (`pat_word`, čistá funkce indexu — verify si hodnotu **dopočítá znovu**, takže
+  se nikde nedrží kopie očekávaných dat v druhé, možná taky vadné paměti): `0x00`/`0xFF`
+  (stuck-at bit), `55/AA` (zkrat mezi sousedními datovými linkami), **adresa v adrese**
+  (chyba ADRESNÍCH linek — bez něj by se dva různě adresované, ale shodně zapsané bloky
+  tvářily jako OK), PRNG (data-závislý crosstalk).
+- 🔴 **Cache maintenance je tu otázka SPRÁVNOSTI, ne rychlosti.** Bez `clean` po zápisu by
+  data zůstala v D-cache a do paměti se vůbec nedostala; bez `invalidate` před čtením by
+  verify přečetl zpátky právě tu cache. **Vada paměti by se pak NIKDY neprojevila a
+  benchmark by hlásil OK na rozbité RAM.** Dělá se jen u cacheable cílů (AXI/SRAM1/SDRAM);
+  TCM a MPU non-cacheable D3 ji nepotřebují.
+- **Maska chybných bitů (`err_bitmask`) je ta informace, kvůli které se to dělá** — ukáže
+  rovnou na konkrétní datovou linku (např. samý bit 7 → jedna vadná dráha), spolu s adresou
+  první neshody. UART výpis ji tiskne jen když nějaká chyba padne.
+- 🔴 **Rozlišovací diagnostika (přidána 2026-08-23 po prvním HW běhu).** Souhrn „N chybných
+  bitů" řekne, ŽE je něco špatně, ale ne CO — první běh vrátil 8,2 M chybných bitů v SDRAM
+  a nešlo z toho poznat příčinu. Doplněno proto:
+  - **`pat_err[]` = chyby po jednotlivých vzorech.** Selže-li **jen** vzor „adresa", jsou vadné
+    ADRESNÍ linky, ne buňky; selžou-li všechny, jsou vadná data.
+  - **`first_err_got`/`want` = skutečně přečteno vs. čekáno.** Náhodné bity = rozpad obsahu;
+    cizí *platná* hodnota = překryv adres.
+  - **`alias_off` = test adresních linek** (unikátní hodnota na každou mocninu dvou). Vzory dat
+    vadnou adresaci **neodhalí** — dvě adresy mířící do téže buňky se tváří jako správný zápis.
+  - **`retain_err` = retenční test, JEN pro SDRAM** (jediná DRAM v systému): zapiš, **počkej 1 s**,
+    teprve pak ověř. Běžný „zapiš a hned ověř" test příliš pomalý refresh **nikdy neodhalí**,
+    protože data se rozpadají až po čase. Clean cache PŘED čekáním (jinak by se měřila retence
+    cache) a invalidate až PO něm.
+- 🔴🔴 **NÁLEZ: ADRESY V SDRAM SE OPAKUJÍ PO 2 MB — reálné a INTERMITENTNÍ.** Zápis na
+  `0xC0400000 + 2 MB` skončí na `0xC0400000`, tedy dvě různé adresy jsou fyzicky **tatáž buňka**.
+  ⚠️ **Objevuje se a mizí mezi běhy** — a to je právě ta nejhorší kombinace.
+  - ⚠️ **Opravená úvaha (2026-08-23):** krátce to vypadalo, že jde o collateral od padající CM4
+    (alias se objevoval jen v bězích, kde CM4 umírala, a po opravě haldy lwIP jednou nevyskočil).
+    **To je vyvráceno:** v následujícím běhu byla CM4 **zdravá** (žádný `stall:CM4`, všechny cíle
+    OK) **a alias se přesto vrátil**. Rozpadlé jádro tedy vyloučené je. Intermitence + naprostá
+    systematičnost důkazů (viz níže) ukazuje na **marginální (studený) spoj**, který jednou vede
+    a jindy ne. **Prozvonit `PF15`.**
+  Důkazy z běhu se 4 MB blokem, pro pořádek:
+  - vzor „adresa" dal **přesně 524 288** chybných bitů = přesně tolik, kolik předpovídá překryv
+    po 2 MB (každé slovo v dolní půlce má právě 1 chybný bit, `0x80000`),
+  - první chyba: na `0xC0400000` čekáno `0x00000000`, **přečteno `0x00080000`** = hodnota
+    zapsaná na index 524 288, tj. o 2 MB dál,
+  - vzory `0x00`/`0xFF`/`55-AA` prošly **bez jediné chyby** — a to sedí: konstanty překryv
+    nerozliší a `55/AA` závisí jen na paritě indexu, která se posunem o sudých 2 MB nemění.
+  **Retence po 1 s = 0 chyb**, takže refresh je v pořádku a dřívější podezření na `REFRESH_COUNT`
+  padlo (poznámka u něj v `fmc.c` ale zůstává — hodnota 1835 pořád nesedí s výpočtem 371 a stojí
+  za ověření zvlášť).
+  - **Odpovídalo by to nefunkční adresní lince `FMC_A9` = `PF15`** (mapování: řádkový bit 9 ↔
+    `HADDR[21]` ↔ `FMC_A9`; při 16bit sběrnici je řádek `HADDR[24:12]`). Firmware je v pořádku —
+    `PF15` je v `.ioc` i v `HAL_GPIO_Init(GPIOF, …)` s `GPIO_PIN_15` — takže by podezření mířilo
+    na **HW (spoj/pájka `PF15` ↔ A9 na SDRAM)**. ⚠️ Neproměřeno; a protože se to přestalo
+    opakovat, není to potvrzená vada — jen doporučení prozvonit, když je deska stejně otevřená.
+  - 🔴 **Nejdražší důsledek — a `membench` ho od 2026-08-23 PŘÍMO TESTUJE.** `FB2` (`0xC0200000`)
+    se od `FB0` (`0xC0000000`) liší **právě jen v `HADDR[21]`**, tedy v tom bitu, který vypadá
+    jako nefunkční; totéž canvas pool (`0xC0300000`) vs `FB1`. Kdyby sdílely paměť, **triple
+    buffering by byl fakticky double** a projevovalo by se to blikáním/trháním, které by nikdo
+    nespojoval s pamětí. Kontrola běží jen když je alias detekován (`fb_alias`, reverzibilní
+    jednoslovná sonda) a hlásí buď `!! FB0 … a FB2 … SDILEJI PAMET`, nebo uklidňující
+    `(framebuffery se ale navzajem NEprekryvaji)`. **Než se sáhne na cokoli v zobrazovacím
+    řetězci, přečti si tenhle řádek.**
+- 🔴 **Bezpečnostní pojistka (`sdram_safety_check`) — proto, že překryv existuje.** Když se adresy
+  opakují, „testuju jen vyhrazenou oblast" **přestává platit** a zápis do scratche může skončit
+  ve framebufferu. Staticky to zajistit nejde (závisí to na HW), takže se to **před každým během
+  změří**: jednoslovnou **reverzibilní** sondou se ověří, že testovaný blok nesdílí buňku s FB0/
+  FB1/FB2/canvas/`.sdram`; při kolizi se test **přeskočí** (`kolize s 0x…!`). Změřená vzdálenost
+  překryvu blok zároveň **zkrátí**, aby nehlásil falešné chyby z překryvu sám se sebou.
+- ⚠️ **Velikost SDRAM testu 4 MB → 512 kB:** při 4 MB se **rozbíjelo zobrazení**. Není to přepisem
+  framebufferu (ten hlídá pojistka výše), ale **propustností FMC** — LTDC musí z téže SDRAM
+  nepřetržitě číst ~46 MB/s a několikasekundový test mu bere pásmo → podtečení FIFO a rozsypaný
+  obraz. 512 kB = ~0,4 s provozu místo ~3 s; navíc se ustupuje scheduleru po 32 kB.
+- ⚠️ **Vlákna:** celý běh trvá jednotky sekund → smí běžet **jen v UartTasku** (jediný
+  nehlídaný watchdogem; stejné omezení jako `sd_export_run`). UI tlačítko proto jen nastaví
+  `g_membench_req` a `membench_service()` v UartTasku to vykoná; mezi vzory a cíli se
+  ustupuje scheduleru (`osDelay(1)`), aby nevyhladověl UiTask (BelowNormal).
+- ⚠️ **D2/D3 SRAM mají vlastní hodinový signál** (`RCC_AHB2ENR`), který CubeMX pro CM7 nikde
+  nezapíná — `membench_run` volá `__HAL_RCC_D2SRAM1_CLK_ENABLE()` (idempotentní). Bez toho
+  by celý region četl samé nuly a benchmark by hlásil „vadnou paměť" na zdravé desce.
+- **W25Q scratch** (`W25Q_BENCH_BASE`, 8 sektorů = 32 kB) leží **za flight recorderem**, tedy
+  ve volných 2/3 DATA regionu — nekoliduje s datalogem ani crash dumpem. Jen **2 vzory**
+  (adresa + 55/AA): každý stojí celý erase cyklus (8× 50–400 ms), pět vzorů jako u RAM by
+  test protáhlo na desítky sekund. ⚠️ NOR flash umí jen 1→0, takže **před každým vzorem musí
+  být erase** — bez něj by druhý zápis dal součin obou vzorů a test by hlásil neexistující chyby.
+- 🔴 **Past při návrhu okna (nalezeno HW testem 2026-08-23): karta si kreslí VLASTNÍ hlavičku
+  na baseline `rect.y + UI_DIM_CARD_PAD_Y + 16` = `rect.y + 25`, přes celou šířku.** První
+  verze měla záhlaví sloupců na baseline 86 při kartě od y=62 (hlavička tedy na 87) → popisek
+  karty ležel **přesně přes** „pamet / velikost / zapis" a text se přepisoval. **Pravidlo: první
+  vlastní řádek obsahu musí začínat aspoň ~30 px pod `rect.y` karty s hlavičkou**, nebo se
+  hlavička nesmí použít. Svislý rozpočet okna PAMETI je proto rozepsaný v komentáři u
+  `MEMB_ROW0` (karta 58..404 | hlavička karty 83 | záhlaví sloupců 116 | 7 řádků 146..326 |
+  stavový řádek 356 | poznámka 384).
+- ⚠️ **Řetězce ze snapshotu se čtou s `%.Ns`, ne holým `%s`** — `phase`/`msg` přepisuje UartTask
+  přesně ve chvíli, kdy je UiTask kreslí; kdyby čtení trefilo okamžik mezi přepsáním starého
+  terminátoru a zapsáním nového, holé `%s` by četlo za konec pole. Stejný důvod jako `strncpy`
+  u `g_rtc_text`.
+- ⚠️ **Jak číst naměřené rychlosti — a co změřené NENÍ.**
+  - ✅ **Pořadí pamětí je po opravě SPRÁVNÉ** (změřeno 2026-08-24, Debug/`-O0`):
+    zápis DTCM **333** > AXI SRAM 330 > SRAM1 D2 326 MB/s, čtení DTCM **263** > AXI 227 >
+    SRAM1 214 MB/s. DTCM (zero-wait-state TCM bez arbitrace) je nejrychlejší, jak má být.
+    ⚠️ **Před rozbalením smyčky vycházely všechny tři shodně ~187 MB/s** a DTCM dokonce
+    pomaleji než AXI — to je fyzikálně nemožné a byla to známka, že se měřila **režie
+    smyčky, ne paměť**. Absolutní čísla jsou v `-O0` pořád nadhodnocená režií; pro
+    porovnání s katalogem stavěj `Release` (`-Os`).
+  - **Rozbalení smyčky po 8** (`SPEED_UNROLL`) zvedlo RAM čísla ~1,75×, protože předtím
+    dominovala režie smyčky kolem jediného `volatile` přístupu. ⚠️ Uvnitř **jeden součet na
+    čtveřici**, ne osm samostatných `acc +=`: v `-O0` žije `acc` na zásobníku a každý samostatný
+    příkaz je celý round-trip. **Změřeno** — samostatné příkazy srazily čtení DTCM 263→202 MB/s.
+    (Původní úvaha tvrdila pravý opak; měření ji vyvrátilo. Neměnit bez změření.)
+  - ⚠️ **SDRAM je bez `SPEED_PASSES` neopakovatelná:** sdílí FMC s LTDC, který z téže paměti
+    nepřetržitě čte framebuffer (~46 MB/s). Zápis vyšel ve dvou po sobě jdoucích bězích **38
+    a 25 MB/s při identické smyčce**. Proto se měří **nejlepší z 3 průchodů** — rušení může
+    měření jen zpomalit, takže minimum je blíž skutečné propustnosti než průměr.
+  - ✅ **Nezávislé potvrzení, že měření není nesmysl:** W25Q čtení vychází 4571 kB/s = **4,46 MB/s**,
+    což sedí na dokumentovaný strop pollovaného QSPI čtení ~4,6 MB/s (CPU čte FIFO bajt po bajtu).
+- **Rychlost se měří zvlášť od ověřování**: zápis + samostatný čtecí průchod (součet do
+  `volatile`, jinak by GCC smyčku vyhodil jako mrtvý kód a „rychlost čtení" vyšla nesmyslně
+  vysoká); porovnávání běží až potom, neměřené — jinak by číslo neslo rychlost porovnávací
+  smyčky, ne paměti. RAM se měří přes **DWT CYCCNT**, QSPI přes `HAL_GetTick` (erase ve
+  stovkách ms by CYCCNT při 480 MHz přetekl — wrap za ~8,9 s).
 
 ### SD export (`sd_export.c/h`) — mount/unmount + CSV
 - **Dělba podle blokování (kritické):** `sd_export_tick()` je **levný** (čtení GPIO + případný
@@ -838,7 +1277,7 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
   - **Diagnostika = technický hub.** Footer: **DIAGRAM** (blokové schéma, s_view=21) | **PAMET** (s_view=5) | **SELFTEST** (s_view=20) | ZPĚT. Do Diagnostiky se dá i z **System Health** (tlačítko DIAGNOSTIKA) a z Menu dlaždice.
   - **Tlačítko DIAGRAM** → **Komunikace: blokové schéma** (`app_gpsdo_render_commdiag`, s_view=21). Uzly: GPS NEO-7M, SENZORY, STM32H757, Si5356A, FPGA GW1NR-9. **Grafika (přepracováno 2026-07-18):** uzel = zaoblený rámeček, výplň BG_0, **obrys 2 px v barvě stavu + stavová „LED" tečka** vpravo nahoře (stav čitelný bez čtení popisků); STM32 má akcentní barvu (= „my", ne stavový). **Čárkovaný skupinový rámeček „FPGA deska"** (`cd_group`, fieldset styl — popisek přerušuje rámeček) kolem Si5356+FPGA. Popisky spojů na **„pilulce"** (`cd_label_chip`) — **šířka se přizpůsobí textu** (`prim_text_width`, žádný prázdný blok), výplň BG_0 překryje čáru pod textem → popisek sedí přímo NA spoji a zůstává čitelný. Spoje = pravoúhlé trasy (`cd_path`) barvené stavem: GPS→STM32 (UART/1PPS), SENZORY↔STM32 (I2C1/I2C4, `i2c_health()`), STM32→FPGA (SPI2, `g_spi_ok`), OCXO→Si5356 (CLKIN, `SI5356_LOS_CLKIN`), Si5356→FPGA (4×100 MHz), RF vstup→FPGA (`g_freq_stale`). Celý diagram se překresluje najednou při změně `cd_state_key()`.
     ⚠️ **Šířka uzlů = text (mono_16, 10 px/znak) + ~18 px padding/stranu** (historie: uzly měly 90-130 px prázdné rezervy). **Postranní popisky OCXO/RF** mají šířku ověřenou proti reálné šířce textu — „OCXO 10MHz" @ sans_16 potřebuje ~104 px, dřívější box 90 px ho **ořezával**.
-- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta, 38=kvalita GPS (historie sats/HDOP z datalogu), 39=prahy (meze monitoru), 40=průvodce kalibrací, 41=analýza (nejistota/drift/tempco)**).
+- **Okna** (`s_view`: 0=main, 1=diag, 2=gps, 3=health, 4=senzory, 5=pamět, 6=histogram, 7=nastavení, 8=screensaver, 9=trend-fullscreen, 10=o-přístroji, 11=boot-splash, 12=menu-rozcestník, 13=confirm-restart, 14=reference, 15=kalibrace, **16=holdover, 17=datalog, 18=alarmy, 19=čítač, 20=selftest, 21=komunikace (blokové schéma), 22=čas (zóna), 23=allan-fullscreen, 24=animace/demo, 25=příklady animací (smyčka), 26=spektrogram Δf, 27=EFEKTY (přepínače), 28=status ribbon demo, 29=grafy (časový průběh senzorů), 30=přehled kanálů (horizontální bargrafy), 31=math/limity, 32=self-survey, 33=sestavy (uložit/načíst), 34=měření (prezentace: perioda/jednotky/statistika/TFOM, #67), 35=síť/ETH, 36=displej (jas+auto-dim+vzhled), 37=SD karta, 38=kvalita GPS (historie sats/HDOP z datalogu), 39=prahy (meze monitoru), 40=průvodce kalibrací, 41=analýza (nejistota/drift/tempco), 42=přístup (jméno/heslo pro web+SCPI), 43=paměti (benchmark RAM/FLASH)**).
 
 ### Prahový monitor reálných veličin (alarm.c, okno PRAHY s_view=39) — 2026-08-17
 Do 2026-08-17 hlídal `alarm.c` jen **události** (FPGA link, GPS lock, limit pass/fail) — z deseti
@@ -903,8 +1342,12 @@ ne obecné nastavení); mřížka se o buňku přeskládala, aby v ní nezůstal
 Nastavení je díky tomu mřížka **3×4 přes celou šířku** se **stejnou geometrií jako Menu**
 (w=246, h=76, x=18/278/538, y=68/154/240/326 → dotykový cíl 8,9 mm): DISPLEJ · Vzhled ·
 Jazyk · ALARMY · CAS · SIT · KALIBRACE · REFERENCE · ANIMACE · SESTAVY · O PRISTROJI ·
-**SD KARTA** (mřížka je od 2026-08-13 plná). Vzhled a Jazyk jsou **přepínače** (label nese stav), zbytek naviguje.
+**PAMETI** · **SD KARTA** (mřížka je od 2026-08-23 plná — poslední volnou buňku, střední
+sloupec 4. řádku, obsadila dlaždice PAMETI → okno benchmarku, `s_view=43`).
+Vzhled a Jazyk jsou **přepínače** (label nese stav), zbytek naviguje.
 ⚠️ Eased jas bar tiká nově v `s_view==36`, ne v 7.
+⚠️ **Okno DISPLEJ má od 2026-08-23 i přepínač rozložení hlavní obrazovky**
+(HYBRIDNÍ ↔ KLASICKÉ, `LAYOUT_RECT`, karta symetricky pod Vzhledem) — viz úvod dokumentu.
 
 **⚠️ REORGANIZACE 2026-08-13 (1. iterace): Nastavení = rozcestník konfigurace, Menu = nástroje.**
 Do okna **Nastavení** se z Menu přesunuly **Čas, Alarmy, Kalibrace, Animace** a přibyla
@@ -917,10 +1360,18 @@ zanořoval do prázdna.
 
 - **Okno SÍŤ (`s_view=35`)** — DHCP ZAP/VYP + statická IP/maska/brána (výběr pole a oktetu,
   `−/+` po jednotkách s wrapem 0..255, bez přetečení do sousedního oktetu). Persist v syscfg
-  blobu (magic **„SCF8" → „SCF9"**). ⚠️ **Dnes se to POUZE ukládá** — ETH je blokovaná HW
-  (PHY dostává 10 MHz místo 25) a okno to na první kartě přiznává, místo aby předstíralo
-  funkční síť. Až přijde lwIP (etapa F5): `g_net_dhcp` → `dhcp_start()`, jinak `netif_set_addr()`.
-  **DHCP klient se psát nebude — lwIP ho má** (`LWIP_DHCP`).
+  blobu (magic **„SCF8" → „SCF9"**).
+  - **Karta „Stav linky" je od F5 (2026-08-22) ŽIVÁ** (`s_view==35` v `app_gpsdo_tick`,
+    per-řádek change-detect): **Link** (UP + rychlost/duplex / DOWN / „ETH init selhal
+    (REF_CLK?)" / „CM4 nenabehla"), **IP adresa** přidělená DHCP serverem (accent barvou;
+    „ceka na DHCP..." dokud nepřijde) a **PHY** (`LAN8742A`). Hodnoty pochází z lwIP na CM4
+    přes IPC (`ipc_cm4_net`) — CM7 na síti sám nedělá nic. Totéž podrobněji v UART `status`.
+    ⚠️ Bez linky se **neukazuje stará IP** (jen `--`), aby okno nelhalo.
+  - ⚠️ **Konfigurace (DHCP ZAP/VYP + statická adresa) se pořád JEN UKLÁDÁ** — reálně jede
+    vždy DHCP. Chybí přenos: `g_net_dhcp`/statická adresa žijí v syscfg na CM7, ale
+    **IPC snapshot ta pole nenese**, takže se k nim CM4 nedostane. Doplnit spolu
+    s rozšířením snapshotu; pak `g_net_dhcp` → `dhcp_start()`, jinak `netif_set_addr()`.
+    **DHCP klient se psát nebude — lwIP ho má** (`LWIP_DHCP`).
 
 **MENU** (footer tlačítko na hlavní obrazovce, `b==4`) → **Menu rozcestník** (`app_gpsdo_render_menu`, s_view=12): **mřížka 3×4 = 12 dlaždic** (2026-07-19 rozšířeno z 3×3=9; h=76, gap 10, y=68/154/240/326 — zmenšeno z h=88/gap12, aby se 4. řádek vešel před footer; `MENU_ITEMS[MENU_N]` + `menu_activate()`, `ACT_*` enum — tabulka místo if-řetězce; **Restart NENÍ dlaždice — footer tlačítko vpravo vedle ZPĚT**, `MENU_RESTART_RECT` {460,417}). **Řádek 4 = „Animace" + „Math/Limity" + „Status ribbon"** (Animace = `ACT_ANIM` → s_view=24; Math/Limity = `ACT_MATH` → s_view=31, viz níže; Status ribbon = `ACT_RIBBON` → s_view=28). Poslední `ACT_PLACEHOLDER` slot byl 2026-08-01 obsazen Math/Limity; případný budoucí placeholder = no-op (`menu_activate` prázdný `case`, dotyk **nedělá `nav_push`**, protože nikam nenaviguje). Zbylých 9 dlaždic je jen SYSTEM/NÁSTROJE (kontextová okna GPS/Histogram/Trend NEJSOU v menu — dostupná přímo z hlavní obrazovky přes pilulku/tap): Diagnostika, Nastavení, System Health, **Čítač** (s_view=19, živý syrový detail měření FPGA: SPI status, obě odbočky /4 + /16 přes `fpga_freq_get_last()` — kopie latche posledního DATA rámce pod IRQ-off, bezpečné z UiTasku —, edge_count, gate ms, SEQ, dekódované error_flags, fázový status jako 4+4 indikátory present/fine; hlavní použití = SPI/měření bring-up), **Holdover** (s_view=16, živý stav disciplinace WARMUP/LOCK/HOLDOVER/NO-LOCK z GPS fixu + FPGA linku + timepulse + OCXO teploty 0x49), **Datalog** (s_view=17, vstupní bod pro logování do W25Q DATA regionu — zatím NEAKTIVNÍ, ukazuje base/kapacitu/JEDEC + plán ~32 B/10 s, 1/3 regionu → ~80 dní), **Alarmy** (s_view=18, přehled hlídaných podmínek + počitadla `g_alarm_fpga_lost`/`g_alarm_gps_lost` + živý mute stav — doplňuje Nastavení, které má jen globální mute), **Kalibrace** (s_view=15, **editovatelná**: AD8307 slope/intercept + ADS 12V/5V gain přes `-`/`+` na řádku — mění `g_calib` okamžitě živě, tlačítko ULOZIT persistuje do W25Q CALIB store přes `calib_save()`; ADC3 VREF + TDC krok zůstávají read-only HW konstanty), **Cas** (s_view=22, časová zóna AUTO CET/CEST / ruční — viz sekce RTC); **Restart** = footer tlačítko (ACTIVE variant) vedle ZPĚT. ⚠️ **NEJSOU dlaždice** (dostupné z kontextu, kam patří — reorganizace 2026-07-18): **Senzory** + **Diagnostika*** = tlačítka v System Health; **O přístroji** + **Reference** = tlačítka v Nastavení; **Paměť** + **Selftest** = tlačítka ve footeru Diagnostiky (technický hub). *Diagnostika zůstává i dlaždicí (časté použití). Restart → **potvrzovací okno** „Opravdu restartovat?" ANO/NE (s_view=13); ANO → `g_reboot_req=1` → defaultTask `NVIC_SystemReset`. Reference/Kalibrace/Holdover/Datalog/Alarmy/Čítač/Selftest = `app_gpsdo_render_reference/kalib/holdover/datalog/alarms/counter/selftest` (s_view=14/15/16/17/18/19/20); Holdover/Reference/Alarmy/Čítač jsou živé (v `app_gpsdo_tick`), Datalog/Kalibrace/Selftest statické (Selftest se překreslí po SPUSTIT).
 - **Animace — sada 2026-07-21, řízená globálním přepínačem + `anim.h`.** `anim_t{cur,target}` + `anim_reset/anim_set/anim_step(a,k,snap)` (ease-out: `cur += (target−cur)·k`, `snap` = práh pro dorovnání a zastavení překreslování) je od tétorevize **sdílený header `CM7/app/anim.h`** (`static inline`, ne `static` v jednom `.c`) — používá ho jak `app_gpsdo.c`, tak `screens/screen_main.c` (dvě různé translation units). **Globální přepínač `g_anim_enabled`** (perzist `BKP_DR6` bit8 + syscfg blob pole `anim_en`, magic bump `"SCF2"`→`"SCF3"`) žije v **okně Animace** (Menu → dlaždice „Animace", `ANIM_TOGGLE_RECT`) — `anim_step` sám o sobě při VYP okamžitě skočí na cíl, takže VŠECHNY dále popsané animace se bez zásahu volajícího chovají jako dřív (žádná per-volání kontrola flagu). Plynulost všude táhne **vlastní rychlý tik `app_gpsdo_tick_anim` @ ~20 Hz** (vedle `tick_freq` ve `freertos_task_ui.c`), dispatchovaný podle `s_view` — NE 2 Hz `app_gpsdo_tick`. Konkrétní animace:
@@ -961,6 +1412,42 @@ konzole, TX/výpisy jedou dál).** AbortReceive v IT režimu neblokuje (ISR-safe
 
 ## Build / flash
 STM32CubeIDE: vyber projekt **H757_LED_CM7** → Build (Ctrl+B) → Run (Ctrl+F11, config CM7).
+
+**⚠️ `Project → Clean`: kdy ano a kdy je to ŠKODLIVÉ.** Clean je operace nad **výstupy**, ne nad
+konfigurací — zahodí `.o` a **přegeneruje makefily z modelu, který má IDE v paměti**. Pomůže tedy
+jen na zastaralé *výstupy*, nikdy na zastaralý *model*.
+
+| změna | co udělat | proč |
+|---|---|---|
+| jen kód (`.c`/`.h`), bump verze | **nic — obyčejný Build** | `make` závislosti řeší sám; Clean je jen ztráta minut |
+| linker script, `ipc_shared.h` | Build, ale **obě jádra** | závislost `make` zná; nesoulad bank ne |
+| změna flagů/optimalizace uvnitř konfigurace | **Clean** té konfigurace | `.o` nesou staré flagy a `make` to nepozná |
+| Debug ↔ Release | Build | každá konfigurace má vlastní adresář |
+| **CubeMX „Generate Code", který přidal SOUBORY** | 🔴 **Close Project → Open Project → ověřit → teprve pak Clean → Build** | `.project` se parsuje **jen při otevření projektu** |
+
+🔴 **Po regenu je Clean PŘED Close/Open aktivně škodlivý:** přegeneruje makefily ze stále
+zastaralého modelu, takže z buildu zase vypadne middleware — a navíc přepíše případnou ruční
+záplatu v `Debug/`. `F5 (Refresh)` nepomůže taky: odsvěží soubory, o kterých Eclipse **už ví**,
+ale deklarace linkovaných zdrojů znovu nečte. Jediná operace, která model znovu načte z disku, je
+**Close → Open** (poslední záchrana = odebrat projekt z workspace *bez* mazání obsahu a reimportovat).
+Ověření **před** buildem (ať nestavíš minuty na rozbitém modelu):
+`grep -c FatFs CM7/Debug/sources.mk` a `grep -c hal_eth CM4/Debug/Drivers/STM32H7xx_HAL_Driver/subdir.mk`
+→ obojí musí být **> 0**. A po každém regenu `git diff` — ukáže, co CubeMX přepsal (včetně ručních úprav).
+
+**Build bez IDE: `./scripts/build.sh [Debug|Release] [BOTH|CM7|CM4]`** (přidáno 2026-08-22).
+Kromě stavění dělá **dvě kontroly, které dřív chyběly**: (a) porovná zdrojáky deklarované
+v `.project` proti generovaným `subdir.mk` → **zastaralý model IDE nahlásí jménem souboru
+ještě PŘED buildem** (místo záhadného `undefined reference` po minutách překladu);
+(b) varuje, když je některý obraz **starší než `ipc_shared.h`** (= „přeložil jsem jen jedno jádro"
+→ nesoulad bank). Obě kontroly jsou otestované vyvoláním té poruchy.
+Staví přes ST `make` + jejich `arm-none-eabi-gcc` (cesty hledá globem, přežije upgrade IDE) nad
+už vygenerovanými makefily; na konci vypíše velikosti obou obrazů a **`IPC_VERSION` s připomínkou
+flashnout obě banky**. Vzniklo proto, že po CubeMX regeneraci **IDE přestává přegenerovávat
+`Debug/*/subdir.mk`** a z buildu tiše vypadne middleware (2026-08-12 FatFs, 2026-08-22 FatFs na CM7
+**i** HAL ETH na CM4) — projeví se to až jako `undefined reference` při linkování, ačkoli
+`.project`/`.cproject` jsou v pořádku. Léčba je `Close Project → Open Project` (viz
+`CUBEMX_CHECKLIST.md`); skript je nezávislá cesta, jak mezitím vyrobit firmware.
+⚠️ Skript makefily **negeneruje** — poprvé je musí vyrobit IDE.
 **⚠️ Velikost FW: stavěj konfiguraci `Release`, ne `Debug`.** Debug jede na **`-O0`**;
 `Release` je v `.cproject` už nachystaná s **`-Os`** a od Debugu se **neliší ničím jiným**
 (stejné defines včetně `DEBUG`, takže `__HAL_DBGMCU_FREEZE_IWDG1` a spol. se chovají stejně).
@@ -1012,8 +1499,8 @@ projektu — testy běží na zařízení, ne na hostu; `run_selftests` ve freer
 CRC16, hystereze /4↔/16 (`fpga_freq_select_core`), GPS parser (`gps_selftest`), fmt_frac+hist_h
 (`screen_main_selftest`), Maidenhead lokátor (`app_gpsdo_selftest`), kalendář+DST (`rtc_selftest`),
 datalog záznam+CRC+čas (`datalog_selftest`), Math Mx+B/NULL/limit pass-fail (`meas_math_selftest`)
-→ **„SELFTEST: 13/13 PASS"** (`SELFTEST_N` = 13, indexy 0..12; dál setup sanitizace, autocal
-verdikt, prezentace měření, **SCPI parser** a **IPC seqlock+ring**).
+→ **„SELFTEST: 14/14 PASS"** (`SELFTEST_N` = 14, indexy 0..13; dál setup sanitizace, autocal
+verdikt, prezentace měření, **SCPI parser**, **IPC seqlock+ring** a **vzory benchmarku pamětí**).
 ⚠️ **Při FAILu se vypíšou i indexy** neúspěšných testů a u SCPI přímo `scpi.c:<řádek>`.
 `qspitest`/`storetest` = destruktivní HW testy.
 ⚠️ **`run_selftests()` NENÍ reentrantní a má vlastní zámek.** Několik testů drží velké buffery

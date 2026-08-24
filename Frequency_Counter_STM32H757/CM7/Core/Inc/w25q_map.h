@@ -47,4 +47,16 @@
 #define W25Q_FLIGHTREC_SECTORS  64u
 #define W25Q_FLIGHTREC_SIZE     (W25Q_FLIGHTREC_SECTORS * W25Q_SECTOR_SIZE)
 
+/* ── BENCHMARK scratch (okno PAMETI, membench.c) ─────────────────────────────
+ * ⚠️ DESTRUKTIVNI oblast: benchmark ji maze a prepisuje. Lezi za flight recorderem,
+ * tedy porad ve VOLNYCH 2/3 DATA regionu — zadny modul sem nesaha, takze se test
+ * nemuze potkat s datalogem ani s crash dumpem. Zamerne MALA (8 sektoru = 32 kB):
+ * kazdy beh benchmarku stoji tolik erase cyklu, kolik je vzoru, a jeden sektor
+ * mazani trva 50-400 ms -> vetsi oblast by test protahla na desitky sekund.
+ * Zivotnost: 2 vzory/beh, endurance W25Q 100k cyklu -> i pri 10 spustenich denne
+ * to vydrzi radove tisice let. */
+#define W25Q_BENCH_BASE     (W25Q_FLIGHTREC_BASE + W25Q_FLIGHTREC_SIZE)
+#define W25Q_BENCH_SECTORS  8u
+#define W25Q_BENCH_SIZE     (W25Q_BENCH_SECTORS * W25Q_SECTOR_SIZE)
+
 #endif /* INC_W25Q_MAP_H_ */

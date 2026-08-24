@@ -53,6 +53,14 @@ void screen_main_render(void);      /* full render into current target */
 void screen_main_invalidate(void);  /* force cache rebuild */
 const prim_pixel_t *screen_main_bg(void);    /* shared background cache (RGB565) */
 int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 */
+/* ── Rozlozeni hlavni obrazovky (prepinac v okne DISPLEJ, persist v syscfg) ──
+ * 0 = HYBRIDNI (vychozi, ladene pro 4,3": Allan 47 % pres celou vysku, cisla
+ *     statistik mono_18, RF bargraf v.54),
+ * 1 = KLASICKE (puvodni pred auditem: Allan 53 %, statistiky mono_16, RF v.43).
+ * ⚠️ Po zmene je nutny plny re-render (`screen_main_render`) — meni se cela
+ * geometrie mrizky, partial redraw by nechal na obrazovce kusy stareho. */
+void screen_main_set_layout_classic(int on);
+int  screen_main_layout_is_classic(void);
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 /* ── Dalkove ovladani (SCPI). Stav mereni vlastni UiTask — SCPI jen zapise
  * `g_ui_cfg_req` a UiTask ho aplikuje timhle. @return 1 = zmenilo se. */

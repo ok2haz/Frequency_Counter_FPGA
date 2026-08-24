@@ -106,6 +106,33 @@ double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
 
 bool screen_main_is_running(void) { return st.running; }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * DVA ROZLOZENI HLAVNI OBRAZOVKY (vraceno 2026-08-23 na prani uzivatele)
+ *
+ * HYBRIDNI (vychozi, `classic == false`) — ladene pro 4,3" panel: Allan zabira
+ *   47 % sirky, ale CELOU vysku mrizky; vpravo tri karty statistiky s hodnotami
+ *   v mono_18, pod nimi trend a dole RF bargraf (v.54). Cisla jsou vetsi a lip
+ *   citelna z 30-35 cm.
+ * KLASICKE (`classic == true`) — puvodni rozlozeni pred auditem pro 4,3": Allan
+ *   53 % sirky, pravy sloupec je stohovany offset(v.54, mono_16) / trend /
+ *   signal(v.43), vsechny mezery `SCR_MAIN_CARD_SECTION_GAP`. Vejde se vic
+ *   grafu, ale cisla jsou mensi.
+ *
+ * ⚠️ Klasicke rozlozeni je ZAMRZLA vetev: nema easing statistik ani trendu
+ * (tiky `screen_main_tick_stats_anim`/`_trend_anim` v nem hned vraci 0) a
+ * zamerne se v nem uz nedelaji zmeny — kazda dalsi uprava hlavni obrazovky
+ * miri do hybridniho. Historie: A/B vetev existovala uz 2026-07-19 (TODO #14),
+ * 2026-08-22 byla odstranena ve prospech hybridniho a ted je vracena zpet jako
+ * TRVALA volba uzivatele (prepinac v okne DISPLEJ, persist v syscfg).
+ * Puvodne se prepinalo footer tlacitkem, ktere ale prekryvalo PERIOD/FREQ —
+ * proto je prepinac ted v Nastaveni a footer si nechava svou funkci. */
+static bool s_layout_classic = false;
+void screen_main_set_layout_classic(int on)
+{
+    s_layout_classic = (on != 0);
+}
+int  screen_main_layout_is_classic(void) { return s_layout_classic ? 1 : 0; }
+
 /* Hlavickove pilulky — rect zachyceny pri render_header; tap -> okno. */
 static prim_rect_t s_gnss_pill_rect = {0, 0, 0, 0};  /* GNSS lock -> GPS okno */
 static prim_rect_t s_sys_pill_rect  = {0, 0, 0, 0};  /* SYS ready -> System Health */
@@ -1261,8 +1288,14 @@ static void draw_stat_card(prim_rect_t r, const char *label, const char *val, pr
     ui_card_t card = {.rect = r, .header_label = label};
     ui_card_render_chrome(&card);
     prim_rect_t in = ui_card_inner_rect(&card);
-    prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 15)}, val,
-                   &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
+    /* Klasicke rozlozeni ma uzsi karty -> mensi font a jina baseline (viz
+     * komentar u `screen_main_set_layout_classic`). */
+    if (s_layout_classic)
+        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
+                       &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
+    else
+        prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 15)}, val,
+                       &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
 }
 
 /* ── Eased Offset/σ/Drift (item 2) ───────────────────────────────────────────
@@ -1297,13 +1330,21 @@ static void draw_offset_sigma(prim_rect_t rect)
     s_stat_card_rect[2] = (prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h};
 
     char off[24], s1[24], dr[24];
-    anim_set(&s_anim_off,   stats_mean(8));
-    anim_set(&s_anim_sig,   stats_adev(1));
-    anim_set(&s_anim_drift, stats_drift());
-    fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
-    fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
-    fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
-    strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
+    if (s_layout_classic) {
+        /* Zamrzla vetev: presny puvodni RAW vypocet, bez easingu (a tedy i bez
+         * `s_stat_cache`, ktery plni jen 20Hz tik hybridniho rozlozeni). */
+        fmt_frac(off, sizeof(off), stats_mean(8), 1);
+        fmt_frac(s1,  sizeof(s1),  stats_adev(1), 0);   /* σy@1s (τ=1s, 1/s) */
+        fmt_frac(dr,  sizeof(dr),  stats_drift(), 1);   /* df/dt [1/s] */
+    } else {
+        anim_set(&s_anim_off,   stats_mean(8));
+        anim_set(&s_anim_sig,   stats_adev(1));
+        anim_set(&s_anim_drift, stats_drift());
+        fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
+        fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
+        fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
+        strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
+    }
     draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
     draw_stat_card(s_stat_card_rect[1], "σy 1s", s1, UI_COLOR_VIOLET);
     draw_stat_card(s_stat_card_rect[2], "Drift/s", dr, UI_COLOR_ACC);
@@ -1327,6 +1368,7 @@ static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
  * bezi (STOP zamrzne stats jako jinde). Vraci 1 pokud neco prekreslil. */
 int screen_main_tick_stats_anim(void)
 {
+    if (s_layout_classic) return 0;   /* zamrzla vetev — bez easingu (viz set_layout_classic) */
     if (!screen_main_is_running()) return 0;
     if (s_stat_card_rect[0].w == 0) return 0;
 
@@ -1420,6 +1462,7 @@ static void trend_plot_draw(prim_rect_t inner, const int16_t *arr, int n,
  * chrome karty. Konci sam (vraci 0), kdyz uz je fazi na cili. */
 int screen_main_tick_trend_anim(void)
 {
+    if (s_layout_classic) return 0;   /* zamrzla vetev — bez easingu (viz set_layout_classic) */
     if (!screen_main_is_running()) return 0;
     if (s_trend_n == 0 || s_trend_phase >= TREND_ANIM_STEPS) return 0;
 
@@ -1481,6 +1524,11 @@ static void render_card_trend(prim_rect_t rect)
                    "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t inner = ui_card_inner_rect(&card);
 
+    if (s_layout_classic) {          /* zamrzla vetev — beze zmeny, bez easingu */
+        trend_plot_draw(inner, s_spark, n, sig_lo, sig_hi);
+        return;
+    }
+
     s_trend_inner = inner; s_trend_sig_lo = sig_lo; s_trend_sig_hi = sig_hi;
     /* Zmena poctu bodu (n) by interpolaci mezi ruzne dlouhymi poli rozbila —
      * stejne jako resync/vypnute animace jen skoc rovnou na cil. */
@@ -1541,7 +1589,41 @@ static void render_card_signal(prim_rect_t rect)
  *          "bargraf jen v prave casti").
  * Pozn.: horni hrana mrizky MUSI zustat na SCR_MAIN_GRID_Y (166) — clear
  * oblast velkeho cisla (redraw_freq, s_num_top+88) konci presne na ni. */
-static void render_body_grid(void)
+/* ── KLASICKE rozlozeni (rekonstrukce puvodniho stavu pred auditem pro 4,3") ──
+ * Allan 53 % sirky, pravy sloupec stohovany offset(v.54, mono_16) / trend /
+ * signal(v.43), vsechny mezery `SCR_MAIN_CARD_SECTION_GAP`.
+ * ⚠️ Pomer 53 je HARDCODED literal (ne makro — `SCR_MAIN_GRID_LEFT_RATIO` uz
+ * slouzi hybridnimu rozlozeni s hodnotou 47). */
+static void render_right_column_classic(prim_rect_t rect)
+{
+    int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
+    int16_t small_h = 54;
+    int16_t signal_h = 43;
+    int16_t trend_h = (int16_t)(rect.h - small_h - signal_h - 2 * gap);
+    int16_t y = rect.y;
+    draw_offset_sigma((prim_rect_t){rect.x, y, rect.w, small_h});
+    y = (int16_t)(y + small_h + gap);
+    render_card_trend((prim_rect_t){rect.x, y, rect.w, trend_h});
+    y = (int16_t)(y + trend_h + gap);
+    render_card_signal((prim_rect_t){rect.x, y, rect.w, signal_h});
+}
+
+static void render_body_grid_classic(void)
+{
+    int16_t right_margin = SCR_MAIN_GRID_MARGIN;
+    int16_t allan_left = right_margin;
+    int16_t grid_y = SCR_MAIN_GRID_Y;
+    int16_t grid_h = (int16_t)(UI_DIM_BODY_H - (SCR_MAIN_GRID_Y - UI_DIM_BODY_Y) - 8);
+    int16_t grid_w = (int16_t)(UI_DIM_SCREEN_W - right_margin - allan_left);
+    int16_t left_w = (int16_t)((grid_w * 53) / 100);            /* puvodni pomer, pred zuzenim na 47 */
+    int16_t right_w = (int16_t)(grid_w - left_w - SCR_MAIN_GRID_GAP);
+    int16_t left_x = allan_left;
+    int16_t right_x = (int16_t)(left_x + left_w + SCR_MAIN_GRID_GAP);
+    render_card_allan((prim_rect_t){left_x, grid_y, left_w, grid_h});
+    render_right_column_classic((prim_rect_t){right_x, grid_y, right_w, grid_h});
+}
+
+static void render_body_grid_hybrid(void)
 {
     int16_t m       = SCR_MAIN_GRID_MARGIN;   /* vnejsi okraj (obe strany) */
     int16_t gap     = 12;                     /* svisla mezera */
@@ -1568,6 +1650,13 @@ static void render_body_grid(void)
     render_card_signal((prim_rect_t){right_x,
                                      (int16_t)(grid_y + stats_h + gap + trend_h + gap),
                                      right_w, signal_h});
+}
+
+/* Vyber rozlozeni — viz `screen_main_set_layout_classic`. */
+static void render_body_grid(void)
+{
+    if (s_layout_classic) render_body_grid_classic();
+    else                  render_body_grid_hybrid();
 }
 
 /* Label/value/variant of footer button i, derived from the UI state. */

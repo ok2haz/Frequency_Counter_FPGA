@@ -157,6 +157,24 @@ struct scpi_src {
     int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
 };
 
+/** Presety brány [s] -> index 0..3 (0,1 / 1 / 10 / 100 s); <0 = mimo presety.
+ *  Vystaveno kvuli sdilenemu IPC backendu (CM4 validuje branu lokalne, viz ipc_scpi.c). */
+int scpi_gate_idx_from_s(double sec);
+
+/** Index brány 0..3 -> sekundy (opak `scpi_gate_idx_from_s`). Sdíleno s JSON
+ *  v `httpd_min.c`, aby web nedržel vlastní kopii tabulky presetů. */
+double scpi_gate_s(uint8_t idx);
+
+/** double -> "±d.ddddd" (5 des. míst, bez `%f`), s ochranou proti přetečení
+ *  mimo ±4e9 (viz implementace) — vrací `"9.91E37"` (platné i jako JSON číslo).
+ *  Sdíleno mezi `CALC:*?` readbacky a `httpd_min.c` (`GET /api/state`). */
+void fmt_scpi_hz_d(double hz, char *out, size_t n);
+
+/** Aplikuje CALC/Math SET (`key`=SCPI_CFG_MATH/NULL/LIM_*) na `meas_cfg_t`. Cista
+ *  funkce (zadne globaly) — sdili ji CM7 backend i IPC most na CM4 (ipc_scpi.c).
+ *  `freq_hz` jen pro NULL_ACQ (aktualni kmitocet). @return 1 = OK. */
+int scpi_cfg_apply(meas_cfg_t *c, uint8_t key, uint32_t vu, double vd, double freq_hz);
+
 /** Vynuluje kontext (prázdná fronta, ESR/ESE/SRE = 0). */
 void scpi_ctx_init(scpi_ctx_t *ctx);
 
@@ -171,6 +189,16 @@ void   scpi_src_load_cm7(scpi_src_t *src);
  *  Signatura zachována kvůli volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);
 #endif
+
+/** IPC most (ipc_scpi.c, linkuje se do OBOU jader — W2/#25). Ctecí a zapisovací
+ *  půlka `scpi_src_t` nad IPC snapshotem/cmd ringem:
+ *    - `ipc_scpi_src_from_snap(src, snap)` — čtení: naplní `src` ze snapshotu
+ *      (cista funkce, žádné globály). @return 1 = snapshot platný (magic/verze).
+ *    - `ipc_scpi_set_cfg` má přesně signaturu `scpi_src_t.set_cfg` — přiřaď ho
+ *      přímo (`src->set_cfg = ipc_scpi_set_cfg;`) v CM4 backendu. Validuje lokálně
+ *      a pošle `IPC_CMD_CFG_SET` do cmd ringu; CM7 ho vyřídí v `ipc_service`. */
+int ipc_scpi_src_from_snap(void *src_out, const void *snap);
+int ipc_scpi_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd);
 
 /** Pure-logic unit test (parser + status model + config apply) — 1 = PASS. */
 int scpi_selftest(void);

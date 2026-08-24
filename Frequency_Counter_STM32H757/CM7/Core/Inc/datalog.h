@@ -183,6 +183,10 @@ extern volatile uint8_t g_datalog_erase_req;
 extern volatile uint8_t g_datalog_erase_busy;
 void datalog_erase_service(void);
 
+/** Aktualni UTC cas z RTC jako unix [s]; 0 = RTC nesynchronizovano z GPS.
+ *  ⚠️ Cte `g_rtc_text`/`g_rtc_synced` (pise defaultTask) -> volat jen z defaultTasku. */
+uint32_t datalog_now_unix(void);
+
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).
  *  Bez HW a bez sdileneho stavu -> soucast UART "selftest". */
 bool datalog_selftest(void);

@@ -30,10 +30,34 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  5u             /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  12u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
-                                       v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t */
+                                       v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
+                                       v6 (2026-08-22, F3): eth_phy_id + eth_init_ok (CM4 cte PHY pres HAL);
+                                       v7 (2026-08-23, W2): scpi_selftest_ok — dukaz, ze scpi.c+ipc_scpi.c
+                                       skutecne BEZI na CM4 (ne jen se prelozi), viz WEB_UI_PLAN.md;
+                                       v8 (2026-08-23, W3): web_ctrl_en (byval `_pad_cfg` — velikost
+                                       struktury beze zmeny, ale bumpnuto stejne kvuli detekci nesouladu
+                                       bank, viz CLAUDE.md „Nesoulad bank byl do v6 prakticky neviditelny");
+                                       v9 (2026-08-23, W4): httpd_selftest_ok (byval posledni `_eth_rsvd`
+                                       bajt — opet velikost beze zmeny);
+                                       v10 (2026-08-23, W5): web_user/web_pass (HTTP Basic Auth) — SKUTECNY
+                                       rust snapshotu o 36 B, ne recyklovany padding;
+                                       v11 (2026-08-23): ui_cfg (byval `_pad_s` -> velikost beze zmeny).
+                                       ⚠️ OPRAVA CHYBY, ne nova funkce: snapshot nenesl NASTAVENI mereni
+                                       (brana, kanal), takze `SENS:FREQ:GATE?`/`CHAN?` pres TCP/HTTP
+                                       vracely porad 0,1 s / kanal 0 bez ohledu na skutecnost — SET se
+                                       PROVEDL, jen nebyl videt. USB cesta byla spravne (dekoduje tytez
+                                       bity z `g_ui_cfg`, scpi_src_load_cm7) => dve ruzne pravdy o tomtez
+                                       pristroji, presne to, cemu ma `sens_valid`/`_Static_assert` branit;
+                                       v12 (2026-08-24): rozsireni webu — #4 alarmy/prahy/selftest ve
+                                       snapshotu, #5 GPS druzice (sky plot), #6 datalog transfer kanal
+                                       (dlouha historie 24h/7d/30d + CSV export z W25Q).
+                                       ⚠️⚠️ v12 MENI LAYOUT PRED `cm4` blokem (snapshot roste o alarmy+
+                                       druzice) -> gracefull detekce nesouladu bank (cm4_ipc_version na
+                                       znamem offsetu) TADY NEFUNGUJE. MUSI se preflashnout OBE banky;
+                                       jinak si jadra prestanou rozumet uz v adrese cm4 bloku. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -62,6 +86,19 @@
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
+#define IPC_GPS_MAX_SATS 24        /* v12: druzice ve snapshotu (sky plot); == GPS_MAX_SATS (hlida _Static_assert v ipc.c) */
+#define IPC_LOG_CHUNK    96        /* v12: datalog zaznamu na jeden transfer round-trip (dlouha historie webu) */
+
+/* ── v12: kompaktni kopie gps_sat_t pro sky plot na webu. ipc_shared.h nesmi
+ * tahnout gps.h (sdili se s CM4), takze layout se DRZI SHODNY s gps_sat_t rucne
+ * a kontroluje se `_Static_assert`em v ipc.c (offsetof kazdeho pole). 6 B. */
+typedef struct {
+    uint8_t  prn;      /* cislo druzice */
+    uint8_t  elev;     /* elevace [°] 0..90 */
+    uint8_t  snr;      /* C/N0 [dB-Hz], 0 = netrackovana */
+    uint8_t  constel;  /* gps_constel_t: 0=GPS 1=GLONASS 2=Galileo 3=BeiDou */
+    uint16_t azim;     /* azimut [°] 0..359 */
+} ipc_sat_t;
 
 /* ── Snapshot mereni + stavu: CM7 -> CM4 (~0,3 kB). SEQLOCK: `seq` licha = zapis. */
 typedef struct {
@@ -113,7 +150,12 @@ typedef struct {
     uint8_t  channel_id;           /* aktivni kanal FPGA */
     uint8_t  si5356_status;        /* Si5356 reg 218 (reference lock: LOS_CLKIN/PLL_LOL) */
     uint8_t  si5356_ok;            /* 1 = status precten */
-    uint8_t  _pad_s;
+    /* v11: NASTAVENI mereni (`g_ui_cfg`) — bit0 mode, bit1 kanal, bity3:2 index brany,
+     * bit4 RUN. ⚠️ Je to NASTAVENI, ne mereni: `channel_id`/`gate_ns` vyse hlasi, co
+     * skutecne rekl FPGA ramec (a pri mrtvem linku jsou nulove), kdezto tohle je to,
+     * co je na pristroji navolene. Bez tohohle bajtu nemel CM4 z ceho odpovedet na
+     * `SENS:FREQ:GATE?`/`CHAN?` a vracel vychozi 0,1 s / 0. Byval to `_pad_s`. */
+    uint8_t  ui_cfg;
     uint32_t sens_valid;           /* IPC_V_* — KTERE hodnoty vyse jsou platne (v4).
                                     * Hodnota bez nastaveneho bitu je NEPLATNA a nesmi se
                                     * servirovat jako mereni (SCPI -> 9.91E37). */
@@ -131,8 +173,70 @@ typedef struct {
      * ⚠️ Zapis z CM4 jde OPACNE pres cmd ring (IPC_CMD_CFG_SET -> CM7 aplikuje na g_meas_cfg),
      * projevi se pak tady. Snapshot je z pohledu CM4 READ-ONLY. Odpovida meas_cfg_t (meas_math.h). */
     double   math_m, math_b, null_ref, lim_lo, lim_hi;
-    uint8_t  math_en, null_en, limit_en, _pad_cfg;
+    uint8_t  math_en, null_en, limit_en;
+    /* v8 (2026-08-23, W3): hlavni vypinac vzdaleneho OVLADANI (okno PRISTUP na CM7).
+     * ⚠️ Byval to `_pad_cfg` (nevyuzity padding) -> rozsireni je bezplatne, velikost
+     * struktury se nemeni. Cteni je VZDY povolene (nezavisi na tomhle bitu); TCP SCPI
+     * server na CM4 ho kontroluje PRED tim, nez prirad `src->set_cfg`, takze zakazane
+     * ovladani znovu pouzije uz existujici NULL-callback ochranu parseru (zadna nova
+     * chybova cesta). Viz WEB_UI_PLAN.md W3. */
+    uint8_t  web_ctrl_en;
+    /* v10 (2026-08-23, W5): prihlasovaci udaje pro HTTP Basic Auth (okno PRISTUP).
+     * ⚠️ SKUTECNY rust struktury (ne recyklovany padding jako v8/v9) — porad se
+     * vejde daleko pod limit SRAM4 (64 KB), viz _Static_assert na konci souboru.
+     * Duvod, proc je to tady a ne jen `web_ctrl_en`: TCP 5025 (VISA raw socket)
+     * nema koncept HTTP hlavicek, takze tam autentizace nedava smysl a spoleha
+     * jen na `web_ctrl_en` (viz W3). Web je ale prohlizec — vic exponovany, jmeno
+     * heslo si zada navic. `web_ctrl_en` zustava HLAVNI vypinac pro OBA transporty;
+     * spravne jmeno+heslo je DALSI podminka navic, kterou HTTP transport pridava. */
+    char     web_user[16];
+    char     web_pass[20];
+
+    /* ── v12 (2026-08-24): rozsireni webu. ────────────────────────────────────
+     * #4 alarmy/prahy/selftest — dashboard karta STAV. Pocitadla nasycena na
+     * 0xFFFF (pro zobrazeni bohate). `mon_*_bad` = aktualni stav prahoveho
+     * monitoru (1 = mimo mez), `selftest_res` = g_selftest_res (0/1/2). */
+    uint16_t alarm_fpga_lost, alarm_gps_lost, alarm_limit_fail;
+    uint16_t alarm_vbat, alarm_ocxo, alarm_adev;
+    uint8_t  mon_vbat_bad, mon_ocxo_bad, mon_adev_bad;
+    uint8_t  selftest_res;
+
+    /* #5 GPS druzice (sky plot na webu). `gps_sat_count` = pocet platnych. */
+    uint8_t  gps_sat_count;
+    uint8_t  _pad_sk[3];
+    ipc_sat_t gps_sats[IPC_GPS_MAX_SATS];
 } ipc_snapshot_t;
+
+/* ── v12 #6: datalog transfer kanal (CM7 W25Q -> web) ───────────────────────
+ * Zvlast od snapshotu (seqlock), protoze prenos je NA VYZADANI a bulk.
+ * Handshake generaci: CM4 zapise pozadavek + zvedne `req_gen`; CM7 (defaultTask,
+ * `ipc_datalog_service`) precte az IPC_LOG_CHUNK zaznamu z datalogu (s decimaci),
+ * naplni `rec[]` a nastavi `resp_gen = req_gen`. CM4 pak sestavi JSON/CSV.
+ * ⚠️ Datalog cte JEN CM7 (W25Q je na CM7); CM4 na nej nema pristup -> tudy. */
+typedef struct {
+    uint32_t t_unix;               /* UTC [s]; 0 = RTC nesynchronizovano */
+    uint64_t freq_x100000;         /* kmitocet × 1e5 (zvoleny zdroj) */
+    int16_t  t_ocxo_c100;          /* OCXO [0,01 °C]; DATALOG_INVALID16 = neplatne */
+    int16_t  t_board_c100;         /* STM deska [0,01 °C] */
+    uint16_t ocxo_vc_mv;           /* ladici napeti [mV] */
+    uint16_t rf_mv;                /* RF SYROVE mV (dBm dopocita CM4 pres kalibraci) */
+    uint16_t vbat_mv;              /* VBAT [mV]; 0 = nezaznamenano */
+    uint8_t  flags;                /* DATALOG_F_* */
+    uint8_t  sats;                 /* pocet druzic */
+    uint8_t  hdop10;               /* HDOP × 10; 255 = n/a */
+    uint8_t  _pad;
+} ipc_log_rec_t;
+
+typedef struct {
+    volatile uint32_t req_gen;     /* CM4 zvedne pri NOVEM pozadavku (0 = zadny) */
+    uint32_t req_from;             /* index nejnovejsiho zaznamu (0 = posledni zapsany) */
+    uint16_t req_count;            /* kolik zaznamu (<= IPC_LOG_CHUNK) */
+    uint16_t req_step;             /* decimace: ber kazdy `req_step`-ty (>=1) */
+    volatile uint32_t resp_gen;    /* CM7 nastavi = req_gen po naplneni `rec[]` */
+    uint16_t resp_count;           /* kolik zaznamu SKUTECNE nacteno */
+    uint16_t resp_total;           /* kolik zaznamu v logu vubec je (pro UI rozsah) */
+    ipc_log_rec_t rec[IPC_LOG_CHUNK];
+} ipc_datalog_xfer_t;
 
 /* ── Prikaz CM4 -> CM7 + odpoved CM7 -> CM4. */
 typedef struct {
@@ -167,6 +271,28 @@ typedef struct {
     uint8_t  net_speed_mbps;       /* 10 / 100 / 0 (neznamo) */
     uint8_t  net_duplex;           /* 0 = half, 1 = full */
     uint8_t  net_rsvd;             /* zarovnani na 4 */
+    /* v6 (2026-08-22, F3): dukaz, ze ETH obsluhuje CM4 (ne CM7 bit-bang). */
+    uint32_t eth_phy_id;           /* PHYID1<<16|PHYID2; LAN8742A = 0x0007C131, 0 = neprecteno */
+    uint8_t  eth_init_ok;          /* 1 = HAL_ETH_Init na CM4 proslo (bezi RMII REF_CLK) */
+    /* ⚠️ IPC_VERSION, se kterou byl PRELOZEN OBRAZ CM4 (razitkuje se v kazdem heartbeatu).
+     * Duvod: nesoulad verzi byl do ted PRAKTICKY NEVIDITELNY. CM4 pri nesouladu jen
+     * prestane prijimat snapshot (`s_ready=0`), ale heartbeat publikuje DAL a bez podminky
+     * -> `ipc_cm4_alive()` (magic + rust heartbeatu) vraci 1 a v headeru svití "4:xx%",
+     * jako by bylo vse v poradku. Jediny priznak byla LED_2 nereagujici na GPS fix.
+     * Tenhle bajt to zviditelni: CM7 porovna s vlastni IPC_VERSION.
+     * ⚠️ Stara CM4 (bez tohoto pole) ho nikdy nezapise -> zustane 0 po memsetu v ipc_init,
+     * coz je taky spravna odpoved ("obraz je starsi, nehlasi verzi").
+     * ⚠️ Detekce funguje jen dokud se nemeni layout PRED `cm4` blokem (snap/cmd/resp) —
+     * pak si obe strany prestanou rozumet uz v adrese. Pro v5->v6 to plati (snap beze zmeny). */
+    uint8_t  cm4_ipc_version;      /* IPC_VERSION obrazu CM4; 0 = nehlasi (stary obraz) */
+    /* v7 (W2, 2026-08-23): dukaz, ze `scpi.c`+`ipc_scpi.c` na CM4 SKUTECNE BEZI (ne jen
+     * se preloz) — CM4 spusti `scpi_selftest()` jednou pri bootu a vysledek publikuje.
+     * 0 = jeste nedobehl / neni CM4, 1 = PASS, 2 = FAIL (viz scpi_selftest_fail_line). */
+    uint8_t  scpi_selftest_ok;
+    /* v9 (W4, 2026-08-23): dukaz, ze parser HTTP pozadavku na CM4 SKUTECNE BEZI —
+     * stejny idiom jako `scpi_selftest_ok` (byval posledni volny `_eth_rsvd` bajt).
+     * 0 = jeste nedobehl, 1 = PASS, 2 = FAIL. */
+    uint8_t  httpd_selftest_ok;
 } ipc_cm4_status_t;
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
@@ -175,6 +301,7 @@ typedef struct {
     ipc_cmd_ring_t   cmd;          /* CM4 -> CM7 */
     ipc_resp_ring_t  resp;         /* CM7 -> CM4 */
     ipc_cm4_status_t cm4;          /* CM4 -> CM7 */
+    ipc_datalog_xfer_t log;        /* CM4 <-> CM7 (v12, bulk historie na vyzadani) */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -284,19 +411,42 @@ extern "C" {
 void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu, pred publikaci) */
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
+void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
 int  ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip); /* 1=link UP, ETH stav z CM4 (v5,F1) */
+/* ETH bring-up stav z CM4 (v6, F3). @return 1 = HAL_ETH_Init na CM4 proslo.
+ * `phy_id` (nepovinne) = PHYID1<<16|PHYID2, 0 = neprecteno. Bez ziveho CM4 vraci 0. */
+int  ipc_cm4_eth(uint32_t *phy_id);
+/* IPC_VERSION, se kterou byl prelozen obraz CM4. 0 = CM4 nezapsala magic, nebo je to
+ * starsi obraz, ktery verzi nehlasi. ⚠️ Kdyz != IPC_VERSION, CM4 IGNORUJE snapshot
+ * (heartbeat ale bezi dal, takze "4:xx%" klame) -> je potreba preflashnout obe banky. */
+uint8_t ipc_cm4_ipc_version(void);
+/* Vysledek `scpi_selftest()` na CM4 (v7, W2). @return 0 = jeste nedobehl / neni CM4,
+ * 1 = PASS, 2 = FAIL. Dukaz, ze scpi.c+ipc_scpi.c na CM4 skutecne BEZI, ne jen se prelozi. */
+uint8_t ipc_cm4_scpi_selftest(void);
+/* Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejny vyznam navratove hodnoty
+ * jako `ipc_cm4_scpi_selftest`. */
+uint8_t ipc_cm4_httpd_selftest(void);
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
 
 /* ── CM4 -> CM7: publikace stavu ETH linky (v5, F1). Vola CM4 (dnes natvrdo down,
  * po lwIP realne). speed_mbps=10/100/0, duplex 0=half/1=full, ip=oktety a.b.c.d. */
 void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32_t ip);
 
+/* ── CM4 -> CM7: vysledek ETH bring-upu (v6, F3). Vola CM4 jednou po MX_ETH_Init. */
+void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id);
+
+/* ── CM4 -> CM7: vysledek `scpi_selftest()` na CM4 (v7, W2). ok: 1=PASS, 0=FAIL. */
+void ipc_cm4_set_scpi_selftest(uint8_t ok);
+
+/* ── CM4 -> CM7: vysledek `httpd_min_selftest()` na CM4 (v9, W4). ok: 1=PASS, 0=FAIL. */
+void ipc_cm4_set_httpd_selftest(uint8_t ok);
+
 /* ── SCPI nad IPC snapshotem (priprava CM4 backendu, #25) ────────────────────
  * Naplni `scpi_src_t` VYHRADNE z IPC snapshotu — presne to, co bude delat CM4,
  * az na nem SCPI pojede pres TCP. Deklarace je `void *`, aby `ipc_shared.h`
- * nemusel tahnout `scpi.h` (a naopak) — implementace v `ipc.c`, kde jsou oba.
+ * nemusel tahnout `scpi.h` (a naopak) — implementace v `ipc_scpi.c` (linkuje se do OBOU jader).
  *
  * ⚠️ SMYSL: nejvetsi riziko TCP poloviny #25 neni socket, ale otazka "nese
  * snapshot vsechno, co SCPI potrebuje, a sedi bity platnosti?". Tohle se da

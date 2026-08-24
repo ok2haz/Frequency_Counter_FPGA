@@ -165,6 +165,15 @@ static uint32_t datalog_text_to_unix(const char *s)
     return days_from_civil(Y, M, D) * 86400u + (uint32_t)(h * 3600 + mi * 60 + sec);
 }
 
+/* Verejny prevod aktualniho RTC (UTC) na unix — stejne pravidlo jako v zaznamu
+ * (0 = RTC nesynchronizovano z GPS). Cte `g_rtc_text`/`g_rtc_synced`, ktere pise
+ * defaultTask; volat VYHRADNE z defaultTasku (ipc_publish), jinak retez neni
+ * konzistentni. Slouzi hlavne k naplneni `rtc_unix` v IPC snapshotu (web/SCPI). */
+uint32_t datalog_now_unix(void)
+{
+    return g_rtc_synced ? datalog_text_to_unix((const char *)g_rtc_text) : 0u;
+}
+
 /* ── W25Q backend ─────────────────────────────────────────────────────────── */
 
 /* Probe = plny w25q_init(), NE jen JEDEC: bez initu neni zapnute 4-byte

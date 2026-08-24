@@ -78,6 +78,10 @@ int ipc_cm4_cm7_alive(uint32_t now_ms)
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
 {
     g_ipc.cm4.magic        = IPC_MAGIC;           /* potvrdi CM7, ze CM4 opravdu zapisuje */
+    /* Verze, se kterou je prelozen TENTO obraz CM4 -> CM7 pozna nesoulad bank.
+     * Razitkuje se v kazdem heartbeatu (ne jen jednou), aby to prezilo samostatny
+     * reset CM7 — ten pri `ipc_init` dela memset cele sdilene struktury. */
+    g_ipc.cm4.cm4_ipc_version = (uint8_t)IPC_VERSION;
     g_ipc.cm4.cm4_cpu_pct  = cpu_pct;
     g_ipc.cm4.cm4_uptime_s = uptime_s;
     IPC_DMB();                                    /* data viditelna PRED inkrementem heartbeatu */
@@ -93,4 +97,28 @@ void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32
     g_ipc.cm4.net_duplex     = duplex;
     IPC_DMB();
     g_ipc.cm4.net_link       = link_up ? 1u : 0u;   /* link naposled (CM7 na nej gate-uje) */
+}
+
+/* v6 (F3): vysledek ETH bring-upu. Stejny vzor jako set_net — hodnota napred,
+ * priznak platnosti naposled (CM7 na `eth_init_ok` gate-uje zobrazeni PHY ID). */
+void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id)
+{
+    g_ipc.cm4.eth_phy_id  = phy_id;
+    IPC_DMB();
+    g_ipc.cm4.eth_init_ok = init_ok ? 1u : 0u;
+}
+
+/* v7 (W2): vysledek `scpi_selftest()`. Vola se jednou pri bootu (viz main.c) — na
+ * rozdil od eth/net se sem nic pozdeji nevraci, takze se NEPUBLIKUJE opakovane
+ * ve smycce; hodnota po zapisu uz je definitivni pro cely beh. */
+void ipc_cm4_set_scpi_selftest(uint8_t ok)
+{
+    g_ipc.cm4.scpi_selftest_ok = ok ? 1u : 2u;
+}
+
+/* v9 (W4): vysledek `httpd_min_selftest()`. Stejny vzor jako scpi — jednorazovy
+ * zapis pri bootu, nepublikuje se opakovane. */
+void ipc_cm4_set_httpd_selftest(uint8_t ok)
+{
+    g_ipc.cm4.httpd_selftest_ok = ok ? 1u : 2u;
 }

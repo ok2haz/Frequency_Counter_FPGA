@@ -173,19 +173,44 @@ Rozpočet CM4 (160 KB, SRAM2+3), odhady z §2 návrhu:
 
 ---
 
-## 5. F3 — CubeMX: jen ETH (⚠️ první nevratný krok)
+## 5. F3 — CubeMX: jen ETH (⚠️ první nevratný krok) — ✅ KÓD HOTOVÝ 2026-08-22, čeká na HW ověření
 
 Záměrně **minimální regen**: žádné LWIP, žádný FreeRTOS. Menší změna = menší šance,
 že se rozbije funkční stav.
 
-- [ ] Přepnout kontext na **CortexM4** a přiřadit mu **ETH (RMII)**. Nic víc.
+### Co regenerace přinesla a co se muselo dodělat
+`.ioc` vyšlo správně (`ETH:I` v `CortexM4.IPs`, `MX_ETH_Init … CortexM4`, všech 11 pinů sedí
+proti schématu). Regen ale odhalil **tři věci, které by jinak tiše bolely**:
+
+1. 🔴 **Build spadl na obou jádrech** — IDE po regeneraci nepřegenerovalo `Debug/*/subdir.mk`,
+   takže z buildu vypadl FatFs (CM7) i HAL ETH (CM4): `undefined reference to f_open` /
+   `HAL_ETH_Init`, přestože `.project` byl v pořádku. Léčba + prevence viz `CUBEMX_CHECKLIST.md`
+   („VRÁTILO SE 2026-08-22"); nezávislá cesta ven = **`scripts/build.sh`**.
+2. 🔴 **`MX_ETH_Init` → `Error_Handler()` = `while(1)` na CM4.** `HAL_ETH_Init` čeká na SW reset
+   MAC, který bez běžícího RMII REF_CLK vyprší → shodilo by to **celou CM4** i s IPC (`4:off`),
+   tedy bychom kvůli nefunkčnímu ethernetu přišli o funkční dvoujádro. Upraveno na degradovaný
+   `return` + `g_eth_init_ok`.
+3. 🔴 **ETH DMA deskriptory skončily na `0x10020010` v `.data`** (orphan sekce — linker
+   `.RxDescripSection` neznal). To je CM4-only alias, kam **ETH DMA nedosáhne**. Vyčleněn region
+   `ETH_D2 @0x30040000` (SRAM3, systémová adresa) + `RAM` zkrácena 160K→128K, jinak by tam
+   linker tiše umístil `.bss`. Ověřeno: `nm` → `30040000 B DMARxDscrTab`.
+
+Obě úpravy (2) a (3) **regenerace smaže** — jsou zapsané v `CUBEMX_CHECKLIST.md` § ETH.
+
+- [x] Přepnout kontext na **CortexM4** a přiřadit mu **ETH (RMII)**. Nic víc.
 - [ ] ⚠️ **Odškrtnout aspirační IP CM4** (`DUALCORE_BRINGUP_CHECKLIST.md` §5):
       `OPENAMP_M4`, `USB_DEVICE_M4`, `USB_HOST_M4`, `FATFS_M4`, `PDM2PCM_M4`, `WWDG2`, `VREFBUF`.
 - [ ] `IWDG2` v `.ioc` **nezapínat** — `iwdg2.c` je ruční registrová implementace, HAL modul vypnutý.
 - [ ] Ověřit, že **USER CODE bloky přežily**: beep, LED_2, `ipc_cm4_init()`, `iwdg2_init()`, smyčka.
 - [ ] ⚠️ **Zdiffovat `.ioc` a `CM7/Core/Src/gpio.c`** — ETH piny nesmí přepsat nic z CM7 (FMC/LTDC/DSI).
-- [ ] Ověřit, že se **nic nerozbilo**: displej běží, `4:OK`, selftest projde.
-- [ ] `HAL_ETH_ReadPHYRegister` → potvrdit PHY ID **z CM4** (nejen z CM7 v F0).
+- [ ] ⬅ **ZBÝVÁ NA HW:** ověřit, že se **nic nerozbilo**: displej běží, `4:OK`, selftest projde.
+- [x] `HAL_ETH_ReadPHYRegister` → potvrdit PHY ID **z CM4** (nejen z CM7 v F0).
+      Implementováno: `eth.c` čte reg 2/3 po úspěšném initu → `g_eth_phy_id` → IPC v6
+      (`ipc_cm4_set_eth`) → CM7 `g_cm4_phy_id`. Vidět v **System Health** (`CM4:OK PHY:C131`)
+      a v UART **`status`** (`ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)`).
+      ⚠️ PHY ID se čte **až po** úspěšném `HAL_ETH_Init` (dřív není nastavený MDIO CSR clock
+      range) → `init no` znamená „CM4 se k MDIO nedostala", **ne** „PHY mlčí".
+      ⚠️ Vyžaduje **flash obou bank** (`IPC_VERSION` 5→6).
 
 ---
 
@@ -211,14 +236,52 @@ chová se jako smyčka, ale sedí na standardním portu lwIP a další tasky jde
 
 ---
 
-## 7. F5 — Link + DHCP + ping (**M9 hotovo**)
+## 7. F5 — Link + DHCP + ping — 🟡 KÓD HOTOVÝ 2026-08-22, NEOVĚŘENO NA HW
 
-- [ ] lwIP init, `ethernetif`, `netif` up (jeden kontext — task nebo smyčka dle F4).
-- [ ] Autonegotiace → `HAL_ETH_SetMACConfig` dle Speed/Duplex.
-- [ ] DHCP jako výchozí, **fallback na statickou IP po ~5 s** (přístroj musí být dostupný i bez DHCP).
-- [ ] Hlásit stav linky a IP přes **IPC v5** (řetěz je hotový z F1: `ipc_cm4_set_net()`) → hned vidíš, co se děje.
-- [ ] `iwdg2_kick()` — jeden kontext, zatím stačí prostý kick (viz §9).
-- [ ] ✅ **Kritérium:** `ping` z PC projde.
+**F4 rozhodnuto: `NO_SYS = 1` (bare-metal lwIP, bez RTOS).** CM4 je dnes holá `while(1)`
+smyčka — raw API + polling je nejmenší možný zásah a nepřidává FreeRTOS, jeho heap ani
+další stacky do 128 KB, které CM4 má. Na `NO_SYS = 0` se dá přejít, až to bude chtít
+webserver (F7) s blokujícími sockety; do té doby by RTOS byl jen režie navíc.
+
+**lwIP zaveden RUČNĚ, ne CubeMX** (v `.ioc` LWIP není): zdroje zkopírované
+z `STM32Cube_FW_H7_V1.13.0` — 30 `.c` z `LwIP/src/{core,core/ipv4,netif}` +
+`Drivers/BSP/Components/lan8742`. Glue: `CM4/LWIP/Target/ethernetif.c` (adaptovaný ST
+`LwIP_HTTP_Server_Raw` z H743I-EVAL) + `CM4/LWIP/App/lwip_app.c` (náš init/proces/DHCP).
+⚠️ Soubor se jmenuje `lwip_app.c`, ne `lwip.c`, aby budoucí CubeMX „Generate Code"
+s LWIP nezpůsobil kolizi dvou souborů se stejnou rolí.
+
+**Čtyři věci, které by to tiše rozbily (všechny ošetřené):**
+1. **`ETH_RX_BUFFER_SIZE` 1000 vs `heth.Init.RxBuffLen` 1536** — ST příklad má 1000, náš
+   generovaný `eth.c` programuje DMA na 1536. DMA by psala za konec bufferu. Srovnáno na 1536.
+2. **MAC adresa se lišila** — `low_level_init` bral `ETH_MAC_ADDR*` z `hal_conf` (02:00:…),
+   ale HW filtr naprogramoval `MX_ETH_Init` na 00:80:E1:…. ARP odpovědi by chodily se špatným
+   MAC. Teď se MAC bere **z `heth.Init.MACAddr`**, takže se nemůžou rozejít.
+3. **Duplicity s generovaným `eth.c`** — ST příklad si sám deklaruje `DMARxDscrTab`/
+   `DMATxDscrTab`, `EthHandle` i `HAL_ETH_MspInit`. Vše odstraněno, používá se `heth` z `eth.c`
+   a `low_level_init` **ETH znovu neinicializuje** (jen čte `heth.gState`) → `eth.c` zůstává netknutý.
+4. **`SCB_InvalidateDCache_by_Addr` v `HAL_ETH_RxLinkCallback`** — CM4 nemá D-cache a CMSIS
+   pro něj tu funkci ani nedefinuje. Odstraněno; právě tohle je důvod, proč ETH patří na CM4.
+
+**⚠️ Hlavní smyčka CM4 přestavěná.** Končila `HAL_Delay(800)`, takže by se lwIP obsloužil
+1× za 800 ms → RX ring (4 deskriptory) by při jakémkoli provozu přetekl a ping by měl RTT
+skoro sekundu. Teď: **rychlá část** (`lwip_app_process()` + `iwdg2_kick()`) každou iteraci
+(~1 ms), **pomalá část** (IPC snapshot, heartbeat, ETH stav) na ~5 Hz, LED_2 na stavovém
+automatu místo blokujících `HAL_Delay`.
+
+**Paměť** (ověřeno z `.map`): RAM 30 KB ze 128 KB (SRAM2), `.eth_dma` 12,7 KB z 32 KB (SRAM3
+— deskriptory + zero-copy RX pool 8×1568 B). CM4 obraz 12,9 KB → **84,6 KB** flash.
+
+- [x] lwIP init, `ethernetif`, `netif` up (bare-metal smyčka dle F4).
+- [x] Autonegotiace → `HAL_ETH_SetMACConfig` dle Speed/Duplex (`ethernet_link_check_state`).
+- [x] DHCP jako výchozí — startuje/zastavuje se **link callbackem**, ne natvrdo: jinak by
+      klient posílal DISCOVER do odpojeného kabelu a po zapojení čekal na svůj backoff.
+- [ ] ⬅ **ZBÝVÁ: fallback na statickou IP.** Okno SÍŤ na CM7 (s_view=35) sice DHCP on/off
+      i ruční adresu ukládá do syscfg, ale **IPC snapshot ta pole zatím nenese** → CM4 se k nim
+      nedostane. Doplnit spolu s rozšířením snapshotu.
+- [x] Hlásit stav linky a IP přes **IPC** (`ipc_cm4_set_net()`, publikuje se jen při změně)
+      → UART `status` řádek `NET: UP 100 Mbit full, IP 10.0.0.42`.
+- [x] `iwdg2_kick()` — jeden kontext, prostý kick (viz §9).
+- [ ] ⬅ **ZBÝVÁ (HW):** `ping` z PC projde.
 - [ ] ✅ **Test izolace jader:** `ping -f` (flood) → **displej na CM7 se nesmí hnout**,
       žádný watchdog reset, `g_rtos_cpu_pct` CM7 beze změny. Hlavní důkaz, že rozdělení
       jader dává smysl.

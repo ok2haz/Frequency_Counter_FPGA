@@ -45,6 +45,7 @@
 #include "setup.h"            /* setup_selftest — sanitizace sestavy */
 #include "autocal.h"          /* autocal_selftest — verdikt self-checku */
 #include "ipc_shared.h"       /* ipc_init/publish/service/selftest — IPC CM7<->CM4 (#19/#20) */
+#include "membench.h"         /* membench_selftest — vzory benchmarku pameti */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -194,6 +195,17 @@ volatile uint8_t  g_ui_cfg_req      = 0;  /* SCPI -> UiTask: pozadovany stav mer
 volatile uint8_t  g_ui_cfg_req_pend = 0;  /* 1 = ceka na aplikaci (viz freertos_shared.h) */
 volatile uint8_t  g_cm4_cpu_pct  = 0;  /* CM4 vlastni zatez [%] z IPC heartbeatu -> header "CM4:xx%" */
 volatile uint8_t  g_cm4_net_up   = 0;  /* 1 = ETH link UP (z CM4 pres IPC v5, F1); 0 = down/bez CM4 */
+volatile uint8_t  g_cm4_eth_ok   = 0;  /* 1 = HAL_ETH_Init na CM4 proslo (IPC v6, F3) */
+volatile uint32_t g_cm4_phy_id   = 0;  /* PHY ID precteny CM4 pres MDIO (0x0007C131 = LAN8742A) */
+volatile uint8_t  g_cm4_ipc_ver  = 0;
+/* ── Vzdaleny pristup (WEB_UI_PLAN W0). Autentizace pro SCPI/TCP i web.
+ * ⚠️ `g_web_ctrl_en` je hlavni vypinac OVLADANI (ne cteni): zapis muze zkazit
+ * bezici mereni, takze musi jit vypnout bez ohledu na heslo. Vychozi VYPNUTO.
+ * ⚠️ Heslo se generuje na pristroji a jen se ZOBRAZI (okno PRISTUP) — pristroj
+ * nema klavesnici, takze zadavani po znacich by bylo trapeni. */
+volatile uint8_t  g_web_ctrl_en = 0;
+volatile char     g_web_user[16] = "admin";
+volatile char     g_web_pass[20] = "";     /* prazdne = jeste nevygenerovano */  /* IPC_VERSION obrazu CM4; != IPC_VERSION => nesoulad bank */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
@@ -244,6 +256,7 @@ int run_selftests(void)
   r[10] = mp_selftest()              ? 1 : 2;   /* prezentace: perioda/nominal/jednotky/statistika/TFOM (#67) */
   r[11] = scpi_selftest()            ? 1 : 2;   /* SCPI parser: case/kratka-dlouha forma/hierarchie (#25) */
   r[12] = ipc_selftest()             ? 1 : 2;   /* IPC seqlock parita + cmd/resp ring push/pop/wrap (#19/#20) */
+  r[13] = membench_selftest()        ? 1 : 2;   /* generatory vzoru + pocitani chybnych bitu (okno PAMETI) */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);
@@ -431,12 +444,26 @@ void StartDefaultTask(void *argument)
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, event-driven uvnitr) (#19/#20) */
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (cmd ring) */
+    ipc_datalog_service();  /* v12: obsluz pripadny pozadavek CM4 na dlouhou historii z W25Q (#6) */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
     g_cm4_cpu_pct = g_cm4_alive ? (uint8_t)ipc_cm4_cpu_pct() : 0u;   /* -> header "CM4:xx%" */
     g_cm4_net_up  = g_cm4_alive ? (uint8_t)ipc_cm4_net(NULL, NULL, NULL) : 0u;  /* ETH link -> Health "NET:" (v5, F1) */
-    /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4):
-     * CM4 se zotavi vlastnim IWDG2, CM7 to jen pozoruje + loguje + pocita. NEsahá na
-     * crash black-box (ten je "pricina posledniho resetu CM7"). Armuje se az po 1. ozivu. */
+    {   /* ETH bring-up z CM4 -> Health "PHY:" (v6, F3). PHY ID cteny CM4 pres HAL/MDIO
+         * je dukaz, ze ethernet obsluhuje CM4 (CM7 `eth` je jen bit-bang diagnostika). */
+        uint32_t phy = 0;
+        g_cm4_eth_ok = g_cm4_alive ? (uint8_t)ipc_cm4_eth(&phy) : 0u;
+        g_cm4_phy_id = g_cm4_alive ? phy : 0u;
+        /* Nesoulad IPC verzi bank (v6): CM4 pri neshode IGNORUJE snapshot, ale heartbeat
+         * publikuje dal -> bez teto kontroly to vypada jako zdrava CM4 ("4:xx%"). */
+        g_cm4_ipc_ver = g_cm4_alive ? ipc_cm4_ipc_version() : 0u;
+    }
+    /* stall:CM4 detekce — hrany heartbeatu. CM4 stall NEresetuje CM7 (NAVRH §11.4);
+     * CM7 to jen pozoruje + loguje + pocita. NEsahá na crash black-box (ten je
+     * "pricina posledniho resetu CM7"). Armuje se az po 1. ozivu.
+     * ⚠️ OPRAVENO 2026-08-23: hlaska drive tvrdila „CM4 IWDG2 by se mel zotavit",
+     * jenze `iwdg2_init()` je v CM4 `main.c` ZAKOMENTOVANY (IWDG2 ma reset scope
+     * SYSTEM-WIDE, viz CLAUDE.md) — CM4 se tedy sama NEZOTAVI a zustane mrtva az
+     * do resetu cele desky. Ta veta uzivatele uklidnovala, kdyz nemela. */
     {
       static uint8_t s_cm4_prev, s_cm4_ever;
       if (g_cm4_alive && !s_cm4_prev) {                 /* dead->alive */
@@ -444,7 +471,8 @@ void StartDefaultTask(void *argument)
         s_cm4_ever = 1;
       } else if (!g_cm4_alive && s_cm4_prev && s_cm4_ever) {   /* alive->dead = stall */
         g_cm4_stall_count++;
-        printf("[CM4] stall:CM4 — heartbeat zamrzl (%lu.), CM4 IWDG2 by se mel zotavit\n",
+        printf("[CM4] stall:CM4 — heartbeat zamrzl (%lu.). IWDG2 je VYPNUTY -> CM4 zustane"
+               " mrtva az do resetu desky (ETH/SCPI/web nejedou).\n",
                (unsigned long)g_cm4_stall_count);
       }
       s_cm4_prev = g_cm4_alive;

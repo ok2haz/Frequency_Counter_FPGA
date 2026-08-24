@@ -12,6 +12,7 @@
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
+#include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
@@ -27,9 +28,12 @@
  * zruseno) -> "SCF5" -> "SCF6". 2026-08-01 pribyla persistence Math/limity
  * (g_meas_cfg, #43/#44) -> "SCF6" -> "SCF7", pak vysledek self-survey (poloha)
  * -> "SCF7" -> "SCF8". 2026-08-17 pribyl prahovy monitor (mon_cfg: VBAT/OCXO/ADEV)
- * -> "SCFA" -> "SCFB". Dusledek: prvni boot po teto zmene najde neznamy magic,
- * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434643u   /* "SCFC" (2026-08-18: + nastaveni okna MERENI) */
+ * -> "SCFA" -> "SCFB". 2026-08-22 sit + okno MERENI -> "SCFB" -> "SCFC" -> "SCFD"
+ * (vzdaleny pristup: web_ctrl_en/web_user/web_pass). 2026-08-23 rozlozeni hlavni
+ * obrazovky (layout_classic) -> "SCFD" -> **"SCFE"**.
+ * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
+ * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
+#define SYSCFG_BLOB_MAGIC   0x53434645u   /* "SCFE" (2026-08-23: + rozlozeni hlavni obrazovky) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -86,6 +90,16 @@ typedef struct {
     /* Okno MERENI (#67): rezim/jednotka/nominal zabalene v jednom bajtu.
      * Vlastnikem stavu je app vrstva, sem se jen zrcadli (app_gpsdo_meas_ui_*). */
     uint8_t  meas_ui;
+    /* ── Vzdaleny pristup (okno PRISTUP, s_view=42; WEB_UI_PLAN W0) ──────────
+     * Autentizace pro SCPI/TCP i web. ⚠️ `web_ctrl_en` je HLAVNI VYPINAC ovladani:
+     * cteni je neskodne, ale zapis (RUN/STOP, brana) muze zkazit bezici mereni,
+     * takze musi jit vypnout bez ohledu na heslo. Vychozi = VYPNUTO. */
+    uint8_t  web_ctrl_en;
+    char     web_user[16];
+    char     web_pass[20];
+    /* Rozlozeni hlavni obrazovky (0 = hybridni/vychozi, 1 = klasicke). Neni v BKP
+     * -> flash je jediny zdroj a aplikuje se VZDY (jako fx_en/anim_en). */
+    uint8_t  layout_classic;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -139,6 +153,12 @@ static void pack(syscfg_blob_t *b)
     b->mon_ocxo_hi_c  = g_mon_cfg.ocxo_hi_c;
     b->mon_adev_max   = g_mon_cfg.adev_max;
     b->meas_ui        = app_gpsdo_meas_ui_get();
+    b->web_ctrl_en    = g_web_ctrl_en ? 1u : 0u;
+    /* Blob je cely vynulovany memsetem vyse, takze staci zkopirovat s rezervou
+     * na terminator (pojistka proti nezakoncenemu retezci v globalu). */
+    strncpy(b->web_user, (const char *)g_web_user, sizeof b->web_user - 1);
+    strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
+    b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
 }
 
 void syscfg_load(void)
@@ -204,6 +224,20 @@ void syscfg_load(void)
     /* Okno MERENI: NENI v BKP -> aplikuj VZDY (jako fx/meas/survey/monitor).
      * Sanitizaci rozsahu resi `app_gpsdo_meas_ui_set`. */
     app_gpsdo_meas_ui_set(b.meas_ui);
+    /* Vzdaleny pristup (W0). ⚠️ Vypinac ovladani se NEDEDI z niceho jineho — pri
+     * neznamem magicu (prvni boot po teto zmene) zustane 0 = ovladani VYPNUTE,
+     * coz je spravny vychozi stav: radeji nedostupne nez nechranene. */
+    g_web_ctrl_en = b.web_ctrl_en ? 1u : 0u;
+    /* Kopiruj s vynucenym terminatorem — blob prisel z flash a muze byt poskozeny
+     * (CRC sice sedi, ale format je starsi/cizi), takze retezci nedaveruj. */
+    memcpy((void *)g_web_user, b.web_user, sizeof b.web_user);
+    memcpy((void *)g_web_pass, b.web_pass, sizeof b.web_pass);
+    g_web_user[sizeof b.web_user - 1] = '\0';
+    g_web_pass[sizeof b.web_pass - 1] = '\0';
+    /* Rozlozeni hlavni obrazovky — jako fx/anim se aplikuje VZDY (neni v BKP).
+     * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
+     * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
+    screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;
