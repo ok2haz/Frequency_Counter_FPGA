@@ -578,143 +578,51 @@ bank2 flashnutá.
   + validity bity `SCPI_V_*` + akce `set_cfg`/`read_log`), NE z globálů. **CM7 backend** `scpi_src_load_cm7`
   (`#if CORE_CM7`) plní z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`/datalog; `scpi_process` =
   wrapper (USB volající beze změny).
-  - ⚠️ **Oprava přeceněného tvrzení (W2, 2026-08-23):** dřív tu stálo „jádro ověřeně kompiluje jako
-    `-DCORE_CM4` (bez globálů)" — platilo to jen pro izolovaný test mimo obraz CM4. Když se `scpi.c`
-    poprvé skutečně přidal do CM4 firmwaru, build **spadl**: `SYSTem:DATE/TIME` a `DISPlay:BRIGhtness`
-    sahaly na CM7 globály (`g_rtc_text`, `g_rtc_set_*`, `g_brightness`, `g_sys_cfg_dirty`) **mimo**
-    `#if defined(CORE_CM7)` guard — tenhle blok chránil jen CM7 backend (`scpi_src_load_cm7`/
-    `scpi_process`), ne celý parser. Opraveno přidáním `#else` větve → na CM4 obě komponenty vrací
-    SCPI-99 **`-241 "Hardware missing"`** (nová položka v `scpi_err_msg`) místo pádu překladu.
-    Věcně správně: displej i RTC registry jsou fyzicky jen na CM7, žádnou IPC cestu nemají a ani
-    nemají mít (vzhled/jas nejsou „přístroj", viz `WEB_UI_PLAN.md` 1.6).
-  - **SCPI na CM4 (W2, 2026-08-23): SKUTEČNĚ BĚŽÍ, ne jen se překládá.** `scpi.c` + `meas_math.c`
-    (obojí fyzicky v `CM7/Core/Src/`) se linkují i do CM4 obrazu (explicitní `subdir.mk` v `CM4/Debug/SCPI/`,
-    include `-I CM7/Core/Inc`) — CM4 obraz vzrostl 84,6 → **118,6 KB**. Za bootu CM4 spustí
-    `scpi_selftest()` (stejný pure-logic test, fabrikuje si vlastní `scpi_src_t`, bezpečné i bez
-    ETH/lwIP) a výsledek publikuje přes **IPC v7** (`ipc_cm4_set_scpi_selftest`) → CM7
-    `ipc_cm4_scpi_selftest()` → UART `status` → `SCPI(CM4): selftest PASS`. CM4 nemá konzoli,
-    takže IPC je jediný kanál, kterým se to zvenčí ověří — stejný idiom jako u PHY ID (F3).
-  - **Čtecí i zapisovací půlka jsou ve sdíleném `ipc_scpi.c`** (přesunuto z `ipc.c`, linkuje se do
-    OBOU jader): `ipc_scpi_src_from_snap()` (snapshot → `scpi_src_t`, čistá funkce) a
-    `ipc_scpi_set_cfg()` (přesná signatura `scpi_src_t.set_cfg` — SET validuje lokálně, pak
-    `IPC_CMD_CFG_SET` do cmd ringu; nečeká na odpověď, aby zůstal jádrově neutrální — žádné
-    `osDelay`/`HAL_Delay` v souboru společném oběma jádrům). Obojí zatím volá jen CM7 testovací
-    cesta (`scpi ipc <cmd>`, `freertos_task_uart.c`).
-  - **W3 (TCP 5025) HOTOVO 2026-08-23 — kód, HW test čeká.** `CM4/LWIP/App/scpi_tcp.c`:
-    raw lwIP server, statický pool 4 spojení (žádný malloc navíc), vlastní `scpi_ctx_t`
-    per spojení. `scpi_src_t` se plní **živě pro každý příkaz** (`ipc_cm4_read` +
-    `ipc_scpi_src_from_snap`), ne jen jednou při připojení — klient může poslat druhý
-    příkaz o minuty později. **W0 (vypínač ovládání z okna PŘÍSTUP) teď proudí přes
-    IPC v8** (`web_ctrl_en`, bývalý `_pad_cfg` — rozšíření zdarma, velikost snapshotu
-    beze změny): `src.set_cfg = (web_ctrl_en) ? ipc_scpi_set_cfg : NULL` — když je
-    ovládání zakázané, `set_cfg` zůstane `NULL` a SET tiše selže **existující**
-    NULL-guard ochranou parseru (`-230`), žádná nová chybová cesta. Odpověď `\r\n`
-    (SCPI-99 socket konvence), jediný `tcp_write` bez pacing fronty (`TCP_SND_BUF`
-    4×MSS ≈ 5,8 kB je o řád větší než max. odpověď 200 B — W4 s velkým HTML bude
-    pacing přes `tcp_sent` potřebovat, tohle ne). Test: `HW_OVERENI_PRUCHOD.md` §7d.
-  - **W4 (HTTP `/api/state`+`/api/scpi`) HOTOVO 2026-08-23 — kód, HW test čeká.**
-    `CM4/LWIP/App/httpd_min.c`: vlastní HTTP/1.1 server port 80 (ne vendorovaný lwIP
-    `httpd`/`fs.c` — stejný důvod jako hand-rolled SCPI, `makefsdata` by přidal krok
-    do buildu), pool 3 spojení, `Connection: close`. **`GET /api/state`** staví JSON
-    přes `scpi_src_t` (`ipc_scpi_src_from_snap`), NE přímo ze snapshotu — validita
-    polí (`SCPI_V_*` → `null` v JSON) je tak doslova stejná logika jako SCPI dotazy,
-    ne druhá kopie. Čísla bez `%f`: `fmt_scpi_hz_d` **vystaveno ze `scpi.c`**
-    (bylo `static`) a sdíleno mezi `CALC:*?` readbacky a JSON — jedna implementace
-    přetečení-guardu, ne dvě. **`POST /api/scpi`** jde stejnou cestou jako TCP 5025
-    (`set_cfg = ipc_scpi_set_cfg` jen když `web_ctrl_en`). Parser požadavku
-    (`httpd_parse_request`) je čistá funkce → **`httpd_min_selftest()`** (5 vektorů)
-    → **IPC v9** (`httpd_selftest_ok`, další znovupoužitý padding bajt) → `status`
-    → `HTTP(CM4): selftest PASS`. Test: `HW_OVERENI_PRUCHOD.md` §7e.
-    ⚠️ Jediný `tcp_write` bez `tcp_sent` pacing stačí jen pro W3/W4 (odpovědi <1,5 kB);
-    W5 (SPA) chunking skutečně potřebovalo.
-  - **W5 (SPA + Basic Auth) HOTOVO 2026-08-23, ověřeno na HW. TÍM JE PLÁN W0–W5 DOKONČEN.**
-    `SPA_HTML[]` (~12 kB, `.rodata`) na `GET /` — HTML+CSS+JS
-    pohromadě, **bez jediné dvojité uvozovky uvnitř** (jen jednoduché v HTML atributech
-    i JS řetězcích), aby šel celý blok napsat jako C řetězcový literál (sousední
-    řetězce se v C spojují) bez escapování — žádný build krok navíc.
-    ⚠️ **Ze stejného důvodu v ní nesmí být ani zpětné lomítko** (`\d`/`\B` v JS regulárním
-    výrazu by C překladač vzal jako neznámou escape sekvenci) → v JS **žádné regexy**;
-    oddělovač tisíců i `trim` jsou psané ručně. Atributy generované z JS přes `innerHTML`
-    jsou **bez uvozovek** (`class=cell`), takže víchodnotová třída by nešla zapsat —
-    stav se proto nese `data-` atributem (`data-st=bad`, `data-na=1`) a CSS ho čte
-    selektorem `[data-st=bad]`. Interaktivita jde přes `addEventListener` + `data-`
-    atributy (ne `onclick=`), což se stejnému problému vyhne úplně.
-    **Vzhled: decentní BIOS (2026-08-24).** Hranaté panely (radius 4 px), hlavičky sekcí
-    v mono s `[ ZÁVORKAMI ]`, jantarový akcent na tmavém podkladu. **Tři palety** cyklované
-    tlačítkem a persistované v `localStorage`: **JANTAR** (výchozí), **MODRÁ** (klasické
-    BIOS ladění) a **SVĚTLÁ**. ⚠️ Barvy křivek jsou **CSS proměnné** `--c0..--c3` a v SVG se
-    nastavují **třídou** (`class='ln s0'`), ne literálním `stroke='#38bdf8'` — jinak by se
-    grafy při přepnutí palety nepřebarvily.
-    **Detail grafu kliknutím** — každý graf (včetně Allanova) otevře překryvné okno
-    (Esc / klik mimo / tlačítko zavře) s velkou verzí, **popsanými osami** (5 úrovní Y,
-    stáří vzorku na X; u Allana dekády `1e-9` a hodnoty τ), **tabulkou statistik**
-    (poslední/min/max/pp/průměr/směrodatná odchylka/počet) a vysvětlivkou, co graf ukazuje.
-    Překreslí se i za běhu, takže zůstává živý. ⚠️ Popis grafu je **jeden zdroj pravdy**
-    (`spec(kind)` vrací série, měřítko i formátovač) — náhled i detail z něj čerpají oba,
-    takže nemůžou ukazovat jinak formátovanou tutéž veličinu.
-    **Podoba z 2026-08-24 (dashboard s grafy).** Velký headline kmitočtu,
-    stavové „pilulky" (FPGA link / GPS / reference / RUN), segmentové přepínače brány
-    a vstupu, které **zvýrazňují skutečně navolený stav ze snapshotu**
-    (`set_gate_idx`/`set_chan`, IPC v11), **4 živé grafy**, karty s bargrafy, GPS donut,
-    SCPI konzole s historií a **přepínač tmavého/světlého vzhledu** (persist `localStorage`).
-    Stránka vyrostla 12 → **29 kB** `.rodata` (CM4 obraz 145 → 162 kB z 1 MB).
-    - **Grafy staví klient z vlastního pollingu** (`H` = kruhový buffer, max 3600 vzorků
-      = 1 h při 1 Hz) — kmitočet jako **odchylka od průměru okna** (v absolutních Hz by
-      nebylo vidět nic), teploty (4 série), OCXO Vc a napájecí větve jako **% od nominálu**
-      (jinak by 12 V zploštilo zbytek). Okno 1/5/15/60 min přepínatelné.
-      ⚠️ **Historie je JEN v prohlížeči** — F5 ji zahodí a přes noc nepřežije. Delší
-      historie by musela jít z datalogu (`MMEM:DATA?`), což zatím web nedělá.
-    - **SVG bez uvozovkových potíží:** `viewBox='0 0 100 100'` + `preserveAspectRatio='none'`
-      (souřadnice = procenta, takže se nic nepřepočítává) + `vector-effect:non-scaling-stroke`,
-      aby se čáry roztažením nezdeformovaly. Popisky os jsou **HTML overlay**, ne `<text>` —
-      ten by se roztáhl s ním. Body se plní `setAttribute('points', …)`, tedy mimo `innerHTML`.
-    - **`rf_dbm` přidán do JSON** — počítá ho server **týmž vzorcem i podmínkou jako
-      `MEAS:POWer?`** (kalibrace AD8307 ze snapshotu). Kdyby to počítal klient, byla by to
-      druhá kopie kalibrace a web by mohl ukazovat něco jiného než SCPI.
-    - **ALLAN + DRIFT (2026-08-24) se počítají v prohlížeči z REÁLNÝCH měření.**
-      🔴 `sigma_tau`/`offset`/`drift` z IPC snapshotu se **záměrně nepoužívají** — CM7 je
-      neplní, protože jejich zdroj je zatím simulace headline (`ipc.c`). Servírovat je jako
-      měření by porušilo zlaté pravidlo.
-      - **Vzorky se berou podle `seq_meas`** (nově v JSON, přímo ze snapshotu — `scpi_src_t`
-        to pole nemá). ⚠️ Bez toho by poll na 1 Hz započítal tentýž výsledek několikrát;
-        opakované hodnoty vypadají jako dokonalá stabilita, takže **σy by vyšla nesmyslně
-        NÍZKÁ**. Buffer se navíc **zahodí při změně brány** — Allan potřebuje rovnoměrné
-        rozestupy a míchat dvě různá τ0 nelze.
-      - **τ0 = skutečný průměrný rozestup měření** z časových značek, ne nastavená brána:
-        tempo určuje FPGA a při nízkých kmitočtech se reciproké okno legitimně protáhne.
-      - **Overlapping ADEV** (posun po jednom vzorku, ne blokový) z fází
-        `x[k+1] = x[k] + y[k]·τ0`; τ = τ0·1,2,4,8,… Tabulka ukazuje i **počet párů** a při
-        <10 párech na nejdelším τ varuje, že jde jen o orientační hodnotu.
-      - **Drift = lineární proklad** s **korelací r**; při |r| < 0,5 se označí za neprůkazný
-        a proklad se do grafu **nekreslí** (jinak by uživatel četl proklad šumu jako drift).
-      - **Offset** proti **uživatelsky nastavitelnému nominálu** (auto-předvyplněný ze
-        zaokrouhlení prvního měření, tlačítko „= AKTUALNI"). Bez deklarovaného nominálu
-        nemá offset význam, takže se nefabrikuje. ⚠️ Když kmitočet chybí,
-    stránka **vypíše důvod** (STOP / SPI link DOWN / ztráta signálu), místo aby ukázala
-    prázdno — bez toho vypadá správné `null` (zlaté pravidlo) jako porucha webu.
-    ⚠️ **Pozor na rozdíl proti displeji:** headline na displeji je pořád **simulace**
-    (`freq_step()`, random walk kolem 10 MHz, STATUS #2), kdežto web servíruje reálná
-    data z FPGA. Bez připojené FPGA desky tedy displej ukazuje kmitočet a **web správně
-    `null`** — to není chyba webu.
-    Přihlášení se nově **ověřuje** (`login()` pošle `*IDN?` a přečte `auth_debug.match`
-    z `/api/state`), takže špatné heslo řekne „Neplatné jméno nebo heslo" hned;
-    dřív se jen tiše uložilo do `localStorage` a chyba se projevila až u prvního SET.
-    **HTTP Basic Auth**: přihlašovací jméno/heslo z okna PŘÍSTUP teď proudí přes
-    **IPC v10** (`web_user`/`web_pass` — poprvé od v8 SKUTEČNÝ růst snapshotu o 36 B,
-    ne recyklovaný padding). SPA ukládá do `localStorage`, posílá
-    `Authorization: Basic base64(user:pass)`; server (`check_auth`) dekóduje a
-    **bajtově** porovná — žádný speciální případ pro prázdné heslo (nikdy neprojde
-    samo o sobě). ⚠️ **TCP 5025 Basic Auth nemá** (VISA raw socket nezná HTTP hlavičky)
-    — spoléhá jen na `web_ctrl_en`; pro `POST /api/scpi` je tedy podmínka
-    **`web_ctrl_en` A SOUČASNĚ platné jméno/heslo**.
-    🔴 **Asynchronní odesílání po částech** (`pump_send()` + `tcp_sent` callback,
-    NE jeden `tcp_write` jako W3/W4): každé spojení má vlastní frontu
-    (hlavička→tělo). **Tělo JSON/SCPI je vždy ve connection-owned bufferu**
-    (`c->bodybuf`), **NE ve sdíleném static scratch jako ve W3/W4** — se sdíleným
-    bufferem by při souběžném rozesílání dvou spojení jedno přepsalo tělo druhého
-    uprostřed posílání. SPA stránka naopak ukazuje přímo do `.rodata` konstanty
-    (bezpečné sdílet mezi spojeními, nikdy se nemění). Test: `HW_OVERENI_PRUCHOD.md` §7f.
-    Plán + audit: `WEB_UI_PLAN.md`.
+  - **SCPI/web na CM4 (W2–W5, plán W0–W5 dokončen; historie v git + `WEB_UI_PLAN.md`).**
+    `scpi.c` + `meas_math.c` (fyzicky v `CM7/Core/Src/`) se linkují i do CM4 obrazu (explicitní
+    `subdir.mk` v `CM4/Debug/SCPI/`, `-I CM7/Core/Inc`); běží tam SKUTEČNĚ, ne jen se překládají —
+    CM4 pustí `scpi_selftest()`/`httpd_min_selftest()` za bootu a výsledek hlásí přes IPC (v7/v9)
+    do UART `status` (CM4 nemá konzoli → IPC je jediný kanál na ověření, jako PHY ID u F3).
+    ⚠️ **Na CM4 vrací `DISPlay:*` a `SYST:DATE/TIME` SCPI-99 `-241 "Hardware missing"`** (`#else`
+    větev mimo `#if CORE_CM7`) — displej i RTC registry jsou fyzicky jen na CM7 a IPC cestu nemají
+    ani mít nemají (vzhled/jas nejsou „přístroj", `WEB_UI_PLAN.md` 1.6). Bez té větve build CM4 spadl.
+    - **Sdílený `ipc_scpi.c` (OBĚ jádra):** `ipc_scpi_src_from_snap()` (snapshot → `scpi_src_t`, čistá)
+      + `ipc_scpi_set_cfg()` (SET → `IPC_CMD_CFG_SET` do cmd ringu). ⚠️ **Žádné `osDelay`/`HAL_Delay`
+      v tomto souboru** (jádrově neutrální — nečeká na odpověď).
+    - **TCP 5025 (`scpi_tcp.c`)** raw lwIP, pool 4 spojení (bez mallocu). ⚠️ `scpi_src_t` se plní
+      **živě pro každý příkaz** (klient pošle druhý o minuty později), ne jednou při připojení.
+    - **HTTP port 80 (`httpd_min.c`)** vlastní HTTP/1.1 (ne vendorovaný lwIP `httpd`/`fs.c` —
+      `makefsdata` by přidal build krok, stejný důvod jako hand-rolled SCPI). ⚠️ **`GET /api/state`
+      staví JSON přes `scpi_src_t`, NE přímo ze snapshotu** → validita (`SCPI_V_*`→`null`) je táž
+      logika jako SCPI, ne druhá kopie. Čísla bez `%f` přes `fmt_scpi_hz_d` (sdíleno se `scpi.c`).
+    - **W0 vypínač ovládání = `web_ctrl_en` (IPC v8):** `src.set_cfg = web_ctrl_en ? ipc_scpi_set_cfg : NULL`
+      → zakázané ovládání spadne do **existující** NULL-guard ochrany parseru (`-230`), žádná nová cesta.
+    - **Basic Auth (IPC v10, `web_user`/`web_pass`):** `POST /api/scpi` vyžaduje `web_ctrl_en` **A** platné
+      jméno/heslo (`check_auth`, bajtové porovnání, prázdné heslo nikdy neprojde). ⚠️ **TCP 5025 Auth nemá**
+      (VISA raw socket nezná HTTP hlavičky) → spoléhá jen na `web_ctrl_en`.
+    - 🔴 **SPA (`SPA_HTML[]` v `.rodata`, `GET /`) — pravidla pro editaci** (aby zůstal C řetězcový literál
+      bez build kroku): **žádná dvojitá uvozovka ani zpětné lomítko uvnitř** → v JS **žádné regexy**
+      (oddělovač tisíců/`trim` ručně); atributy z `innerHTML` **bez uvozovek** (`class=cell`) → víchodnotový
+      stav přes `data-` atributy (`data-st=bad`) + CSS selektor; interaktivita `addEventListener`+`data-`,
+      ne `onclick=`. ⚠️ **Barvy křivek = CSS proměnné `--c0..--c3` nastavené TŘÍDOU** (`class='ln s0'`),
+      ne literální `stroke=` (jinak se graf při změně palety nepřebarví). ⚠️ **`spec(kind)` = jeden zdroj
+      pravdy** grafu (série+měřítko+formát) pro náhled i detail. 🔴 **Asynchronní odesílání** (`pump_send`
+      + `tcp_sent`): tělo JSON/SCPI **vždy v connection-owned `c->bodybuf`**, NE ve sdíleném scratchi
+      (souběžná spojení by si přepsala tělo); SPA stránka je `.rodata` konstanta (sdílet bezpečné).
+    - **Grafy staví klient z vlastního pollingu** (buffer max 3600 vzorků = 1 h @1 Hz): kmitočet jako
+      odchylka od průměru okna, napájení jako % od nominálu (jinak 12 V zploští zbytek). ⚠️ **Historie
+      byla jen v prohlížeči** (F5 ji zahodí) — dlouhá historie z datalogu přibyla ve v12 (#6, níže).
+    - ⚠️ **SVG:** `viewBox='0 0 100 100'` + `preserveAspectRatio='none'` (souřadnice = %), popisky os
+      jako HTML overlay (ne `<text>`, roztáhl by se), body přes `setAttribute('points',…)`.
+    - **`rf_dbm`, ALLAN, DRIFT počítá klient z REÁLNÝCH měření.** 🔴 `sigma_tau`/`offset`/`drift` ze
+      snapshotu se **záměrně nepoužívají** (CM7 je neplní — zdroj je simulace headline, `ipc.c`);
+      servírovat je jako měření by porušilo zlaté pravidlo. Vzorky se berou **podle `seq_meas`** (jinak
+      by 1 Hz poll započítal tentýž výsledek víckrát → σy nesmyslně NÍZKÁ) a buffer se **zahodí při změně
+      brány** (Allan chce rovnoměrné τ0). Overlapping ADEV z fází `x[k+1]=x[k]+y[k]·τ0`, τ0 = skutečný
+      rozestup měření; drift = lineární proklad s korelací r (|r|<0,5 → neprůkazný, nekreslí se). ⚠️ **Pozor
+      na rozdíl proti displeji:** headline na displeji je pořád simulace (STATUS #2), web servíruje reálná
+      FPGA data → bez FPGA desky displej ukazuje kmitočet a **web správně `null`** (ne chyba webu).
+      Když kmitočet chybí, SPA **vypíše důvod** (STOP / SPI DOWN / ztráta signálu) místo prázdna.
   - **Web rozšíření v12 (2026-08-24) — KÓD HOTOVÝ, NEOVĚŘENO NA HW; kompiluje se
     `-Wall -Wextra` bez varování na obou jádrech.** Šest bodů (#1–#6):
     - **#1 Ovládání MATH/LIMITY/NULL/CAS ze SPA** — nová karta pošle SCPI (`CALC:MATH:M/B/STAT`,
