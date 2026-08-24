@@ -11,6 +11,7 @@
  * mladsi nez WDG_STALL_MS. Po startu je grace okno (tasky se rozjizdi).
  */
 #include "watchdog.h"
+#include "flightrec.h"   /* flightrec_dump — kontext pred resetem (#18) */
 #include "stm32h7xx_hal.h"
 
 #define IWDG_KEY_UNLOCK   0x5555u
@@ -95,5 +96,11 @@ void watchdog_supervise(void)
     if (!s_stall_logged) {
         s_stall_logged = 1;
         stall_blackbox(ui_stale ? (fpga_stale ? "BOTH" : "UiTask") : "FpgaTask");
+        /* Black-box rekne KDO se zasekl, flight recorder CO SE DELO PREDTIM —
+         * teprve dohromady je z toho diagnostika (viz flightrec.h a #18).
+         * Bezime v defaultTask se zivym schedulerem a cilovy sektor je uz
+         * smazany, takze je to jen zapis stranek (jednotky ms) — do vyprseni
+         * IWDG (~1,5 s) se to pohodlne vejde. */
+        flightrec_dump("stall");
     }
 }

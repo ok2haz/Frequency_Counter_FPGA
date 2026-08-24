@@ -105,4 +105,39 @@ bool fpga_freq_raw_xfer(uint8_t *rx64);
  *  (rychlost SCK, stav linky, posledni potvrzena SEQ, pocet CRC chyb). */
 void fpga_freq_format_status(char *buf, int buflen);
 
+/* ══════════════ Emulator FPGA ramcu (vyvoj bez osazene FPGA desky) ══════════
+ * Misto `xfer()` slozi SYNTETICKY 64B DATA ramec. Vsechno za tim — kontrola
+ * MAGICu, overeni CRC, `parse_data`, latch, VALID/FRESH/SEQ, hystereze /4-/16 —
+ * bezi PRESNE jako s hardwarem, takze se testuje skutecna datova cesta, ne jeji
+ * obejiti. Nahrazuje tim horsi simulaci, ktera dosud zila az v UI vrstve
+ * (`screen_main.c` nahodna prochazka) a celou tuhle cestu preskakovala.
+ *
+ * ⚠️⚠️ NEVALIDUJE: dratovou vrstvu (CS/SCK/MISO), casovani ani logiku samotne
+ * FPGA. Overuje NASI polovinu kontraktu — to je presne to, co jinak nejde.
+ *
+ * ⚠️ POJISTKY proti zamene za realne mereni (simulace, ktera vypada verohodne,
+ * je horsi nez zadna): vychozi VYPNUTO, NEPERSISTUJE se, datalog zaznamy nesou
+ * `DATALOG_F_SIM`, info radek zacina "SIM", `status` to hlasi a SCPI ma
+ * `DIAG:SIM?`. */
+
+/** Zapne/vypne emulator. `hz` = nominalni kmitocet [Hz], `noise_ppb` = bila
+ *  slozka (+-) v ppb, `drift_ppb_h` = linearni stárnutí v ppb za hodinu.
+ *  Volat z UartTasku (`fpgasim`). */
+void fpga_sim_set(int on, double hz, float noise_ppb, float drift_ppb_h);
+
+/** 1 = emulator aktivni (cte UI, datalog, SCPI, `status`). */
+int  fpga_sim_active(void);
+
+/** Nominalni kmitocet emulatoru [Hz] (0 = vypnuto). */
+double fpga_sim_hz(void);
+
+/** Vnutit poruchu, kterou na stole nevyrobis. `what`:
+ *   "none"   zadna
+ *   "lost"   SIGNAL_LOST + DATA_VALID=0 (test ztlumeni + alarmu)
+ *   "crc"    poskozene CRC (musi ho chytit prijem, ne parse)
+ *   "div16"  chyba deleni /16 (status2 bit0 -> test vyberu odbocky)
+ *   "phase"  dira ve `phase_status` (chybejici faze TDC)
+ *  @return 0 = nezname jmeno poruchy. */
+int  fpga_sim_fault(const char *what);
+
 #endif /* FPGA_FREQ_H */

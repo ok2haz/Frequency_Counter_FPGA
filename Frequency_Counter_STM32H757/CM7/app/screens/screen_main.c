@@ -14,6 +14,7 @@
 #include "../anim.h"  /* anim_t/anim_reset/anim_set/anim_step — sdileno s app_gpsdo.c */
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
+#include "alarm.h"         /* g_mon_*_bad — prahovy monitor v SYS pilulce */
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include <prim/prim.h>
 #include "gps.h"     /* gps_get() — zive GNSS lock / pocet druzic / cas+datum v headeru */
@@ -92,32 +93,45 @@ static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
 static const char *MODE_NAME[2] = {"FREQUENCY", "PERIOD"};
 static const char *CHAN_NAME[2] = {"CH A", "CH B"};
 static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
+/* Tataz sada v sekundach — pro rozpocet nejistoty (rozliseni ~ tdc/gate).
+ * ⚠️ Drzet SYNCHRONNI s GATE_VAL: popisek a hodnota musi rikat totez. */
+static const float GATE_SEC[4] = {0.1f, 1.0f, 10.0f, 100.0f};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
     st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 
 /* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
+double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
+
 bool screen_main_is_running(void) { return st.running; }
 
 /* ════════════════════════════════════════════════════════════════════════
- * DOCASNA A/B SROVNAVACI VETEV (2026-07-19, viz STATUS.md TODO #14):
- * stary layout hlavni mrizky (pred audit pro 4,3" panel — Allan 53 % sirky,
- * offset karty mono_16, signal jen v pravem sloupci vys.43) vs. novy (audit
- * pro 4,3" — hybrid: Allan 47 % pres celou vysku, offset karty mono_18 vetsi,
- * signal v pravem sloupci vys.54). Prepina se footer tlacitkem, ktere jinak
- * prepina PERIOD/FREQ mod (slot 0, docasne prejmenovane "Main SW" — viz
- * footer_button_def + touch handler v app_gpsdo.c). AZ bude vybrano, cely
- * tenhle blok (s_layout_old + *_v1 funkce + dispatch v draw_stat_card a
- * render_body_grid) SMAZAT — viz STATUS.md TODO #14.
- * ⚠️ DEFAULT = STARY layout (2026-07-19): "main old" je referencni/frozen
- * stav, na kterem se dal NEDELAJI zmeny. Vsechny dalsi UI upravy hlavni
- * obrazovky (font, rozlozeni, ...) cili na "main new" (v2, render_body_grid_v2 /
- * *_v2 funkce) — ten se pri kazdem otevreni okna musi rucne prepnout tlacitkem
- * "Main SW". Az padne rozhodnuti, v2 se stane jedinym kodem (viz TODO #14). */
-static bool s_layout_old = true;
-void screen_main_toggle_layout(void) { s_layout_old = !s_layout_old; }
-bool screen_main_layout_is_old(void) { return s_layout_old; }
+ * DVA ROZLOZENI HLAVNI OBRAZOVKY (vraceno 2026-08-23 na prani uzivatele)
+ *
+ * HYBRIDNI (vychozi, `classic == false`) — ladene pro 4,3" panel: Allan zabira
+ *   47 % sirky, ale CELOU vysku mrizky; vpravo tri karty statistiky s hodnotami
+ *   v mono_18, pod nimi trend a dole RF bargraf (v.54). Cisla jsou vetsi a lip
+ *   citelna z 30-35 cm.
+ * KLASICKE (`classic == true`) — puvodni rozlozeni pred auditem pro 4,3": Allan
+ *   53 % sirky, pravy sloupec je stohovany offset(v.54, mono_16) / trend /
+ *   signal(v.43), vsechny mezery `SCR_MAIN_CARD_SECTION_GAP`. Vejde se vic
+ *   grafu, ale cisla jsou mensi.
+ *
+ * ⚠️ Klasicke rozlozeni je ZAMRZLA vetev: nema easing statistik ani trendu
+ * (tiky `screen_main_tick_stats_anim`/`_trend_anim` v nem hned vraci 0) a
+ * zamerne se v nem uz nedelaji zmeny — kazda dalsi uprava hlavni obrazovky
+ * miri do hybridniho. Historie: A/B vetev existovala uz 2026-07-19 (TODO #14),
+ * 2026-08-22 byla odstranena ve prospech hybridniho a ted je vracena zpet jako
+ * TRVALA volba uzivatele (prepinac v okne DISPLEJ, persist v syscfg).
+ * Puvodne se prepinalo footer tlacitkem, ktere ale prekryvalo PERIOD/FREQ —
+ * proto je prepinac ted v Nastaveni a footer si nechava svou funkci. */
+static bool s_layout_classic = false;
+void screen_main_set_layout_classic(int on)
+{
+    s_layout_classic = (on != 0);
+}
+int  screen_main_layout_is_classic(void) { return s_layout_classic ? 1 : 0; }
 
 /* Hlavickove pilulky — rect zachyceny pri render_header; tap -> okno. */
 static prim_rect_t s_gnss_pill_rect = {0, 0, 0, 0};  /* GNSS lock -> GPS okno */
@@ -183,6 +197,11 @@ static int compute_sys_level(void)
     if (g_cm4_absent) lvl = 1;                            /* CM4 (D2) nenabehl -> degradovane */
     for (int i = 0; i < SENS_COUNT; i++)
         if (i != (int)SENS_T4A && g_sensors[i].err_streak > 0) { lvl = 1; break; }  /* 0x4A neosazen */
+    /* Prahovy monitor (2026-08-17): VBAT na konci zivota, OCXO mimo teplotni
+     * pasmo, σy@1s nad prahem. Vse AMBER = "neco se kazi, ale pristroj funguje" —
+     * RED zustava vyhrazena ztrate reference a selftest FAILu, tedy stavum, kdy
+     * pristroj bud nemeri, nebo mere spatne a nevi o tom. */
+    if (g_mon_vbat_bad || g_mon_ocxo_bad || g_mon_adev_bad) lvl = 1;
     /* RED: kriticke (prebiji). LOS_CLKIN (bit3) = ztrata 10 MHz reference — LOL se
      * pri fyzicke ztrate vstupu NEasertuje (viz komentar u SI_* vyse), takze LOS je
      * tady nutny. SI_LOS_XTAL (bit2) se zamerne NEhodnoti (bez krystalu trvale 1). */
@@ -493,6 +512,10 @@ static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> 
  * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
 static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
 static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
+/* Tentyz stred, ale v Hz — pro rekonstrukci z datalogu (ta pocita y z Hz, ne
+ * z LSB). Drzime obe formy, at se nikde nedopocitava zpetne z `s_freq_center`
+ * (pocet desetinnych mist je vlastnost formatovani, ne mereni). */
+static double   s_freq_nominal_hz = 0.0;
 static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
 
 static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
@@ -546,6 +569,7 @@ static void num_build(void)
     }
     int frac_digits = s_freq_total - int_digits;
     s_freq_center = 10000000ull * pow10_u64(frac_digits);   /* 10 MHz */
+    s_freq_nominal_hz = 10000000.0;                          /* tentyz stred v Hz */
     s_freq_n      = s_freq_center;
     freq_fill_segments();                            /* pocatecni 10 MHz do segmentu */
     for (int i = 0; i < n; i++) strcpy(s_num_prev[i], s_num_buf[i]);   /* shadow = init */
@@ -645,6 +669,12 @@ static void stats_sample(void)
  * (v okne se nevzorkuje -> obsah je konstantni, zadne 2x/s prazdne redraws). */
 uint32_t screen_main_stats_version(void) { return s_stats_ver; }
 
+/* σy@τ=1s pro prahovy monitor (alarm.c). Vraci 0, dokud neni aspon 2 bloky
+ * vzorku — volajici to MUSI odlisit od "vynikajici stability", jinak by prazdna
+ * statistika vypadala jako nula. `stats_adev` je definovana az nize, proto fwd. */
+static float stats_adev(int m);
+float screen_main_adev_1s(void) { return stats_adev(1); }
+
 static float stat_at(int age)   /* age 0 = nejnovejsi */
 {
     int idx = (s_y_head - 1 - age + 2 * STAT_N) % STAT_N;
@@ -707,9 +737,12 @@ static float stats_drift(void)
 typedef struct { float ring[ADEV_RING]; int16_t head, count; float acc; int16_t acc_n; } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
-static void adev_feed(float v)
+/* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
+ * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
+ * ma kadenci PRESNE 10 s = tau stage 1. */
+static void adev_feed_from(int s0, float v)
 {
-    for (int s = 0; s < ADEV_STAGES; s++) {
+    for (int s = s0; s < ADEV_STAGES; s++) {
         adev_stage_t *sg = &s_adev[s];    /* 'sg', ne 'st' — nekolidovat s globalnim UI stavem */
         sg->ring[sg->head] = v;
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
@@ -718,6 +751,35 @@ static void adev_feed(float v)
         if (++sg->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
         v = sg->acc / 10.0f; sg->acc = 0; sg->acc_n = 0;   /* dekadovy prumer -> dal */
     }
+}
+
+static void adev_feed(float v) { adev_feed_from(0, v); }
+
+/* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
+ * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
+ * se musela nabirat znovu od nuly — po restartu jsi o hodiny mereni prisel.
+ * Datalog ale drzi kmitocet po 10 s klidne dny dozadu.
+ *
+ * ⚠️ KLICOVE: vzorek z logu se vklada od STAGE 1, ne od stage 0. Stage 1 ma
+ * tau = 10 s, coz je PRESNE kadence datalogu, takze prevod je exaktni — zadne
+ * prevzorkovani, zadna zmena tau0. Kdyby se log sypal do stage 0 (tau0 = 1 s),
+ * vysla by sigma_y(tau) systematicky SPATNE o cely rad a pritom by vypadala
+ * verohodne. Stage 0 zustava prazdna, dokud ji nenaplni zive vzorky — a to je
+ * spravne: log zadna 1s data nema.
+ *
+ * ⚠️ Trend pyramida se ZAMERNE nerekonstruuje: decimuje po 4 (1/4/16 s), takze
+ * 10s kadence loguje na zadnou jeji stage nesedne a musela by se prevzorkovat —
+ * tim by se zkreslila casova osa. Dlouha okna trendu maji misto toho cist
+ * datalog primo, stejnym vzorem jako okno GRAFY. */
+void screen_main_adev_seed_10s(float y) { adev_feed_from(1, y); }
+
+/* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
+ * Je to tentyz stred, jaky pouziva `stats_sample` (jen v Hz misto v LSB), takze
+ * rekonstrukce z logu a zive vzorky mluvi o TEMZE — jinak by se v jedne pyramide
+ * michaly dve ruzne reference. 0 = velke cislo jeste nebylo inicializovano. */
+double screen_main_freq_nominal(void)
+{
+    return s_num_ready ? s_freq_nominal_hz : 0.0;
 }
 
 static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prvek */
@@ -776,6 +838,33 @@ static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
     return sg->ring[idx];
 }
 
+/* Vynuluje veskerou akumulovanou statistiku "namerenych hodnot citacem":
+ * plochy ring (trend 60s/offset/sigma@1s/drift), ADEV pyramidu (dlouhodoby
+ * Allan) i trend pyramidu (dlouhodoby trend az ~60 dni). Nezasahuje `s_meas_stats`
+ * (okno MERENI ma vlastni RESET tlacitko/mp_stats_reset — jina akumulace).
+ * `s_stats_ver++` je NUTNE (ne jen memset) — histogram/Allan okna prekreslujou
+ * jen pri zmene verze, bez inkrementu by po resetu zustal na displeji stary obsah
+ * az do dalsiho realneho vzorku. Volitelne z UART "meas reset" (UartTask) i
+ * tlacitka v okne Alarmy (UiTask) — cisty RAM zapis, zadny mutex netreba.
+ * ⚠️ Nutny je i resync eased hodnot (Offset/σ/Drift + trend sparkline, jen v2
+ * layout): `anim_step` dojizdi k CILI, takze bez resyncu by se po resetu cisla
+ * ~1-2 s PLYNULE snasela k nule misto okamziteho skoku — vypadalo by to, jako
+ * ze reset "chvili trva". Stejny duvod, proc je volaji plne rendery (radek
+ * ~1490). Pri STARÉM layoutu jsou obe no-op. */
+static void stats_anim_resync(void);   /* fwd — definice az u eased statistik */
+static void trend_anim_resync(void);   /* fwd */
+
+void screen_main_stats_reset(void)
+{
+    memset(s_y, 0, sizeof s_y);
+    s_y_head = 0; s_y_count = 0;
+    memset(s_adev, 0, sizeof s_adev);
+    memset(s_tr, 0, sizeof s_tr);
+    s_stats_ver++;
+    stats_anim_resync();
+    trend_anim_resync();
+}
+
 /* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). */
 static void fmt_dur(char *b, int n, int32_t s)
 {
@@ -787,21 +876,78 @@ static void fmt_dur(char *b, int n, int32_t s)
 void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 
 /* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
-static float adev_stage(int s, int m)
+/* ── Estimatory stability nad ringem jedne stage (τ0 = 10^s s) ───────────────
+ * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_rat`).
+ * Vsechny tri jsou OVERLAPPING (Riley, NIST SP1065) — z TYCHZ dat davaji vyrazne
+ * lepsi konfidenci nez non-overlapping varianta, ktera tu byla do 2026-08-18:
+ * ta pri tau = m·τ0 zahodila vetsinu moznych dvojic (pouzila jen M/m bloku misto
+ * M-2m+1 prekryvajicich se). Na dlouhych tau, kde je vzorku nejmene, to byl
+ * rozdil mezi "nekolik paru" a "radove vic".
+ *
+ *   ADEV  σ²  = 1/(2m²(M-2m+1))   Σ_j [ Σ_i (y_{i+m} - y_i) ]²
+ *   HDEV  H²  = 1/(6m²(M-3m+1))   Σ_j [ Σ_i (y_{i+2m} - 2y_{i+m} + y_i) ]²
+ *   MDEV  M²  = 1/(2m⁴(M-3m+2))   Σ_j [ Σ_i Σ_k (y_{k+m} - y_k) ]²
+ *
+ * K cemu to je (proc tri, a ne jen ADEV):
+ *   MDEV rozlisi BILY a BLIKAVY fazovy sum, ktere maji v ADEV stejny sklon —
+ *        ADEV je od sebe neodlisi, MDEV ano (jiny sklon).
+ *   HDEV je imunni vuci LINEARNIMU DRIFTU (druhe diference), takze u OCXO se
+ *        stárnutím ukaze skutecny sum misto driftove rampy.
+ * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s. */
+#define ADEV_KIND_ADEV  0
+#define ADEV_KIND_MDEV  1
+#define ADEV_KIND_HDEV  2
+
+static float adev_stage_kind(int s, int m, int kind)
 {
     const adev_stage_t *sg = &s_adev[s];
-    int blocks = sg->count / m;
-    if (blocks < 2) return 0.0f;
-    float prev = 0; int have = 0; double acc = 0; int nd = 0;
-    for (int b = 0; b < blocks; b++) {
-        float bs = 0;
-        for (int j = 0; j < m; j++) bs += adev_rat(sg, b * m + j);
-        bs /= (float)m;
-        if (have) { float d = bs - prev; acc += (double)d * (double)d; nd++; }
-        prev = bs; have = 1;
+    int M = sg->count;
+    if (m < 1) m = 1;
+
+    double acc = 0.0;
+    int n = 0;
+
+    if (kind == ADEV_KIND_HDEV) {
+        if (M < 3 * m + 1) return 0.0f;
+        for (int j = 0; j + 3 * m <= M - 1; j++) {
+            double inner = 0.0;
+            for (int i = j; i < j + m; i++)
+                inner += (double)adev_rat(sg, i + 2 * m)
+                       - 2.0 * (double)adev_rat(sg, i + m)
+                       + (double)adev_rat(sg, i);
+            acc += inner * inner; n++;
+        }
+        if (n == 0) return 0.0f;
+        return sqrtf((float)(acc / (6.0 * (double)m * (double)m * (double)n)));
     }
-    return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
+
+    if (kind == ADEV_KIND_MDEV) {
+        if (M < 3 * m + 1) return 0.0f;
+        for (int j = 0; j + 3 * m - 1 <= M - 1; j++) {
+            double inner = 0.0;
+            for (int i = j; i < j + m; i++)
+                for (int k = i; k < i + m; k++)
+                    inner += (double)adev_rat(sg, k + m) - (double)adev_rat(sg, k);
+            acc += inner * inner; n++;
+        }
+        if (n == 0) return 0.0f;
+        double m4 = (double)m * (double)m * (double)m * (double)m;
+        return sqrtf((float)(acc / (2.0 * m4 * (double)n)));
+    }
+
+    /* ADEV (overlapping) */
+    if (M < 2 * m + 1) return 0.0f;
+    for (int j = 0; j + 2 * m <= M - 1; j++) {
+        double inner = 0.0;
+        for (int i = j; i < j + m; i++)
+            inner += (double)adev_rat(sg, i + m) - (double)adev_rat(sg, i);
+        acc += inner * inner; n++;
+    }
+    if (n == 0) return 0.0f;
+    return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
+
+static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
  * (mono_14/16 maji plny charset vc. ⁰..⁹⁻⁺). with_sign: + pro kladne. */
@@ -870,20 +1016,30 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
  * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
-/* ns (nepovinne, NULL-safe): pocet ADEV paru na kazdy tau bod (= blocks-1) —
- * slouzi ke konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+/* ns (nepovinne, NULL-safe): pocet clenu sumy na kazdy tau bod — slouzi ke
+ * konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
 static int adev_points(float *taus, float *adevs, int *ns, int max)
 {
     static const int SM[] = {1, 2, 5};
+    int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
         for (int mi = 0; mi < 3; mi++) {
             if (np >= max) return np;
-            float a = adev_stage(s, SM[mi]);
+            int m = SM[mi];
+            float a = adev_stage_kind(s, m, kind);
             if (a <= 0.0f) continue;
-            taus[np] = dec * (float)SM[mi]; adevs[np] = a;
-            if (ns) { int blocks = s_adev[s].count / SM[mi]; ns[np] = (blocks > 1) ? blocks - 1 : 1; }
+            taus[np] = dec * (float)m; adevs[np] = a;
+            /* Pocet clenu sumy = sirka konfidencniho pasu (~1/sqrt(2n)).
+             * U OVERLAPPING variant je jich radove vic nez u puvodnich
+             * non-overlapping bloku — pas je proto uzsi, a to opravnene. */
+            if (ns) {
+                int M = s_adev[s].count;
+                int n = (kind == ADEV_KIND_ADEV) ? (M - 2 * m) : (M - 3 * m + 1);
+                ns[np] = (n > 1) ? n : 1;
+            }
             np++;
         }
     }
@@ -896,22 +1052,41 @@ static int adev_points(float *taus, float *adevs, int *ns, int max)
 #define ALLAN_Y_MIN  (-10)
 #define ALLAN_Y_DEC  4
 
-/* ── Metrika Allan okna: 0=ADEV(σy), 1=TDEV, 2=MTIE (prepina segmented control
- * v okne ALLAN). TDEV/MTIE jsou ODVOZENE z ADEV: TDEV(τ)=τ·ADEV/√3 (platí pro
- * MDEV≈ADEV), MTIE(τ)~√3·τ·ADEV je jen ODHAD obalky — presny MTIE by chtel
- * ulozenou fazi (time error), kterou nemame. Popisky to priznavaji ("z ADEV"/
- * "odhad"). Metrika meni jen KRIVKU + Y osu; σy(τ) tabulka zustava ADEV referenci. */
+/* ── Metrika Allan okna (segmented v okne ALLAN) ─────────────────────────────
+ *   0 = ADEV  σy(τ)         — overlapping
+ *   1 = MDEV  Mod σy(τ)     — rozlisi bily vs blikavy fazovy sum (ADEV ne)
+ *   2 = HDEV  Hσy(τ)        — imunni vuci linearnimu driftu (druhe diference)
+ *   3 = TDEV  σx(τ)         — od 2026-08-18 EXAKTNI: TDEV = τ·MDEV/√3 je DEFINICE.
+ *                             Driv se pocital z ADEV, coz plati jen pri MDEV≈ADEV
+ *                             (tedy ne u fazoveho sumu, kde se prave lisi).
+ *   4 = MTIE                — porad jen ODHAD (√3·τ·ADEV): presny MTIE potrebuje
+ *                             ULOZENOU FAZI (time error), kterou bez 1PPS TIC
+ *                             (#36) nemame. Popisek to priznava.
+ * Metrika meni jen KRIVKU + Y osu; σy(τ) tabulka zustava ADEV referenci. */
+#define ALLAN_METRIC_N 5
 static int s_allan_metric = 0;
-void screen_main_set_allan_metric(int m) { s_allan_metric = (m < 0) ? 0 : (m > 2 ? 2 : m); }
+void screen_main_set_allan_metric(int m)
+{ s_allan_metric = (m < 0) ? 0 : (m >= ALLAN_METRIC_N ? ALLAN_METRIC_N - 1 : m); }
 int  screen_main_allan_metric(void)      { return s_allan_metric; }
 
-/* Hodnota zobrazene metriky z ADEV a tau. */
-static float allan_metric_value(float tau, float adev)
+/* Ktery estimator se ma pro aktualni metriku pocitat nad ringem stage. */
+static int allan_metric_kind(void)
 {
     switch (s_allan_metric) {
-    case 1:  return tau * adev * 0.5773503f;   /* TDEV = τ·ADEV/√3 */
-    case 2:  return tau * adev * 1.7320508f;   /* MTIE ~ √3·τ·ADEV (odhad) */
-    default: return adev;                      /* ADEV = σy(τ) */
+    case 1:  return ADEV_KIND_MDEV;
+    case 2:  return ADEV_KIND_HDEV;
+    case 3:  return ADEV_KIND_MDEV;   /* TDEV se odvozuje z MDEV (definice) */
+    default: return ADEV_KIND_ADEV;   /* 0 = ADEV, 4 = MTIE (odhad z ADEV) */
+    }
+}
+
+/* Hodnota zobrazene metriky ze spocteneho estimatoru a tau. */
+static float allan_metric_value(float tau, float base)
+{
+    switch (s_allan_metric) {
+    case 3:  return tau * base * 0.5773503f;   /* TDEV = τ·MDEV/√3 (exaktni) */
+    case 4:  return tau * base * 1.7320508f;   /* MTIE ~ √3·τ·ADEV (ODHAD) */
+    default: return base;                      /* ADEV / MDEV / HDEV primo */
     }
 }
 
@@ -1107,15 +1282,15 @@ static void render_card_allan(prim_rect_t rect)
 /* Jedna mala karta: header label + hodnota. Hodnota mono_18 (2026-07-19, bylo
  * mono_16 — karty se roztahly na 1/3 sirky, takze je misto; mono_18 MA horni
  * indexy ⁰..⁹⁻ pro fmt_frac). Baseline in.y+15: glyf 18px zacina AZ POD
- * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32).
- * ⚠️ DOCASNY dispatch na s_layout_old (mono_16+11, puvodni pred 4,3" audit) —
- * soucast A/B srovnavaci vetve, viz komentar u screen_main_toggle_layout. */
+ * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32). */
 static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
 {
     ui_card_t card = {.rect = r, .header_label = label};
     ui_card_render_chrome(&card);
     prim_rect_t in = ui_card_inner_rect(&card);
-    if (s_layout_old)
+    /* Klasicke rozlozeni ma uzsi karty -> mensi font a jina baseline (viz
+     * komentar u `screen_main_set_layout_classic`). */
+    if (s_layout_classic)
         prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + 11)}, val,
                        &ui_font_mono_16, c, PRIM_ALIGN_LEFT);
     else
@@ -1123,12 +1298,12 @@ static void draw_stat_card(prim_rect_t r, const char *label, const char *val, pr
                        &ui_font_mono_18, c, PRIM_ALIGN_LEFT);
 }
 
-/* ── Eased Offset/σ/Drift (item 2, jen v2 layout) ────────────────────────────
+/* ── Eased Offset/σ/Drift (item 2) ───────────────────────────────────────────
  * Karty se plne prekresluji 1x/s (screen_main_redraw_stats). Misto okamziteho
  * skoku na novou hodnotu drzi 3 anim_t (raw float, PRED formatovanim fmt_frac)
  * — 20Hz tik (screen_main_tick_stats_anim) je plynule dojede a mezitim
  * prekresluje JEN hodnotu (box clear + text), ne cely chrome karty.
- * `stats_anim_resync()` se vola PRED plnym screen renderem (render_body_grid_v2)
+ * `stats_anim_resync()` se vola PRED plnym screen renderem (render_body_grid)
  * -> pri navratu na hlavni obrazovku po case v podnabidce se cislo NEukaze
  * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
 static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
@@ -1143,9 +1318,8 @@ static void stats_anim_resync(void)
 }
 
 /* TRI uzke karty ze statistiky: Offset (klouzavy prumer y), σy@1s (ADEV tau=1s),
- * Drift (df/dt — rychlost ujizdeni kmitoctu). v2: hodnoty jsou EASED (s_anim_*.cur,
- * anim_set tady jen nastavi novy cil — krok dela 20Hz tik); v1 (zamrzla vetev,
- * viz screen_main_toggle_layout) zustava beze zmeny, presny puvodni raw vypocet. */
+ * Drift (df/dt — rychlost ujizdeni kmitoctu). Hodnoty jsou EASED (s_anim_*.cur,
+ * anim_set tady jen nastavi novy cil — krok dela 20Hz tik). */
 static void draw_offset_sigma(prim_rect_t rect)
 {
     s_small_rect = rect;                          /* pro zive prekresleni */
@@ -1156,7 +1330,9 @@ static void draw_offset_sigma(prim_rect_t rect)
     s_stat_card_rect[2] = (prim_rect_t){(int16_t)(rect.x + 2 * (w + gap)), rect.y, w, rect.h};
 
     char off[24], s1[24], dr[24];
-    if (s_layout_old) {
+    if (s_layout_classic) {
+        /* Zamrzla vetev: presny puvodni RAW vypocet, bez easingu (a tedy i bez
+         * `s_stat_cache`, ktery plni jen 20Hz tik hybridniho rozlozeni). */
         fmt_frac(off, sizeof(off), stats_mean(8), 1);
         fmt_frac(s1,  sizeof(s1),  stats_adev(1), 0);   /* σy@1s (τ=1s, 1/s) */
         fmt_frac(dr,  sizeof(dr),  stats_drift(), 1);   /* df/dt [1/s] */
@@ -1165,8 +1341,8 @@ static void draw_offset_sigma(prim_rect_t rect)
         anim_set(&s_anim_sig,   stats_adev(1));
         anim_set(&s_anim_drift, stats_drift());
         fmt_frac(off, sizeof(off), s_anim_off.cur,   1);
-        fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);
-        fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);
+        fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
+        fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
         strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
     }
     draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
@@ -1192,7 +1368,7 @@ static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
  * bezi (STOP zamrzne stats jako jinde). Vraci 1 pokud neco prekreslil. */
 int screen_main_tick_stats_anim(void)
 {
-    if (s_layout_old) return 0;
+    if (s_layout_classic) return 0;   /* zamrzla vetev — bez easingu (viz set_layout_classic) */
     if (!screen_main_is_running()) return 0;
     if (s_stat_card_rect[0].w == 0) return 0;
 
@@ -1227,13 +1403,13 @@ static void blit_bg_region(prim_rect_t r);
 #define SPARK_N 21
 static int16_t s_spark[SPARK_N];
 
-/* ── Eased trend sparkline (item 4, jen v2 layout) ───────────────────────────
+/* ── Eased trend sparkline (item 4) ──────────────────────────────────────────
  * Misto okamziteho skoku krivky na novou sadu bodu kazdou sekundu (screen_main
  * _redraw_stats) drzime `s_spark_prev` (naposledy VYKRESLENA sada) a plynule
  * (20Hz tik) interpolujeme k nove `s_spark` (cil) pres TREND_ANIM_STEPS kroku
  * (~1s). Sigma band + header p-p NEjsou eased (tise se prebarvi az pri
  * dalsim 1Hz redrawu — subtilni podbarveni, na rozdil od krivky nerusi).
- * `trend_anim_resync()` (volano PRED render_card_trend z render_body_grid_v2,
+ * `trend_anim_resync()` (volano PRED render_card_trend z render_body_grid,
  * stejny vzor jako stats_anim_resync) zajisti, ze FULL render (otevreni okna /
  * navrat z podnabidky) ukaze cil OKAMZITE, ne zastarale nedojete misto. */
 #define TREND_ANIM_STEPS 20
@@ -1286,7 +1462,7 @@ static void trend_plot_draw(prim_rect_t inner, const int16_t *arr, int n,
  * chrome karty. Konci sam (vraci 0), kdyz uz je fazi na cili. */
 int screen_main_tick_trend_anim(void)
 {
-    if (s_layout_old) return 0;
+    if (s_layout_classic) return 0;   /* zamrzla vetev — bez easingu (viz set_layout_classic) */
     if (!screen_main_is_running()) return 0;
     if (s_trend_n == 0 || s_trend_phase >= TREND_ANIM_STEPS) return 0;
 
@@ -1348,7 +1524,7 @@ static void render_card_trend(prim_rect_t rect)
                    "↗", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_rect_t inner = ui_card_inner_rect(&card);
 
-    if (s_layout_old) {                            /* zamrzla v1 vetev — beze zmeny, bez easingu */
+    if (s_layout_classic) {          /* zamrzla vetev — beze zmeny, bez easingu */
         trend_plot_draw(inner, s_spark, n, sig_lo, sig_hi);
         return;
     }
@@ -1413,13 +1589,12 @@ static void render_card_signal(prim_rect_t rect)
  *          "bargraf jen v prave casti").
  * Pozn.: horni hrana mrizky MUSI zustat na SCR_MAIN_GRID_Y (166) — clear
  * oblast velkeho cisla (redraw_freq, s_num_top+88) konci presne na ni. */
-/* ── DOCASNA V1 (stary layout, pred 4,3" audit — presna rekonstrukce z HEAD
- * pred touto revizi): Allan 53 % sirky, pravy sloupec stacked offset(h54,
- * mono_16)/trend/signal(h43), vsechny gapy SCR_MAIN_CARD_SECTION_GAP(11).
- * Soucast A/B srovnavaci vetve — SMAZAT spolu s ostatnimi *_v1/s_layout_old
- * kusy az bude vybrano, viz TODO. Pomer 53 je HARDCODED literal (ne macro,
- * ktery uz slouzi novemu layoutu s hodnotou 47). */
-static void render_right_column_v1(prim_rect_t rect)
+/* ── KLASICKE rozlozeni (rekonstrukce puvodniho stavu pred auditem pro 4,3") ──
+ * Allan 53 % sirky, pravy sloupec stohovany offset(v.54, mono_16) / trend /
+ * signal(v.43), vsechny mezery `SCR_MAIN_CARD_SECTION_GAP`.
+ * ⚠️ Pomer 53 je HARDCODED literal (ne makro — `SCR_MAIN_GRID_LEFT_RATIO` uz
+ * slouzi hybridnimu rozlozeni s hodnotou 47). */
+static void render_right_column_classic(prim_rect_t rect)
 {
     int16_t gap = SCR_MAIN_CARD_SECTION_GAP;
     int16_t small_h = 54;
@@ -1433,7 +1608,7 @@ static void render_right_column_v1(prim_rect_t rect)
     render_card_signal((prim_rect_t){rect.x, y, rect.w, signal_h});
 }
 
-static void render_body_grid_v1(void)
+static void render_body_grid_classic(void)
 {
     int16_t right_margin = SCR_MAIN_GRID_MARGIN;
     int16_t allan_left = right_margin;
@@ -1445,13 +1620,10 @@ static void render_body_grid_v1(void)
     int16_t left_x = allan_left;
     int16_t right_x = (int16_t)(left_x + left_w + SCR_MAIN_GRID_GAP);
     render_card_allan((prim_rect_t){left_x, grid_y, left_w, grid_h});
-    render_right_column_v1((prim_rect_t){right_x, grid_y, right_w, grid_h});
+    render_right_column_classic((prim_rect_t){right_x, grid_y, right_w, grid_h});
 }
 
-/* Aktualni (4,3"-laděny) layout — viz komentar u vrcholu funkce v predchozi
- * revizi (hybridni mrizka: Allan 47 % pres celou vysku, pravy sloupec
- * offset/trend/signal). */
-static void render_body_grid_v2(void)
+static void render_body_grid_hybrid(void)
 {
     int16_t m       = SCR_MAIN_GRID_MARGIN;   /* vnejsi okraj (obe strany) */
     int16_t gap     = 12;                     /* svisla mezera */
@@ -1480,11 +1652,11 @@ static void render_body_grid_v2(void)
                                      right_w, signal_h});
 }
 
-/* Dispatch A/B — viz screen_main_toggle_layout. */
+/* Vyber rozlozeni — viz `screen_main_set_layout_classic`. */
 static void render_body_grid(void)
 {
-    if (s_layout_old) render_body_grid_v1();
-    else              render_body_grid_v2();
+    if (s_layout_classic) render_body_grid_classic();
+    else                  render_body_grid_hybrid();
 }
 
 /* Label/value/variant of footer button i, derived from the UI state. */
@@ -1493,13 +1665,9 @@ static void footer_button_def(int i, const char **label, const char **value,
 {
     *value = 0;
     switch (i) {
-    /* ⚠️ DOCASNE (A/B srovnani): slot 0 normalne prepina PERIOD/FREQ mod —
-     * dokud probiha vyhodnoceni layoutu, je prekryty "Main SW" prepinacem
-     * (viz screen_main_toggle_layout + touch handler v app_gpsdo.c, b==0).
-     * Puvodni radek `case 0: *label = MODE_NAME[st.mode ? 0 : 1]; ...` az po
-     * odstraneni teto vetve vratit. */
-    case 0: *label = "Main SW"; *value = screen_main_layout_is_old() ? "OLD" : "NEW";
-            *var = UI_BUTTON_NORMAL; break;
+    /* Slot 0 = PERIOD/FREQ toggle. Label = AKCE (co se stiskem zapne), ne stav:
+     * v rezimu FREQUENCY nabizi "PERIOD" a naopak (MODE_NAME[st.mode ? 0 : 1]). */
+    case 0: *label = MODE_NAME[st.mode ? 0 : 1]; *var = UI_BUTTON_NORMAL; break;
     /* Label = AKCE, ne stav (2026-07-20): bezi-li mereni, tlacitko nabizi "STOP"
      * (cervene), pri zastavenem nabizi "RUN" (zelene). Drive to bylo obracene
      * (label = stav) — matouci, protoze zelene "RUN" svitilo prave kdyz uz bezi.

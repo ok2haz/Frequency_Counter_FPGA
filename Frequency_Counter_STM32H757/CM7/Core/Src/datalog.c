@@ -71,8 +71,26 @@ static uint32_t get_u32(const uint8_t *p)
 static uint64_t get_u64(const uint8_t *p) { return (uint64_t)get_u32(p) | ((uint64_t)get_u32(p + 4) << 32); }
 
 /* Rozvrzeni 32B zaznamu: 0 seq, 4 t_unix, 8 freq, 16 t_ocxo, 18 t_board,
- * 20 vc_mv, 22 rf_dbm10, 24 flags, 25 sats, 26 hdop10, 27 spare,
- * 28 CRC16 (bajty 0..27), 30 rezerva. */
+ * 20 vc_mv, 22 rf_mv, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
+ * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 rezerva.
+ * ⚠️ Bajt 27 byl do 2026-08-17 `spare` (vzdy 0) a je UVNITR CRC. Diky tomu, ze
+ * je 0 vyhrazena jako "nezaznamenano", se stare zaznamy ctou dal spravne a
+ * format zustava 32 B — zadna migrace ani verze zaznamu netreba. */
+static uint8_t vbat_encode(int16_t mv)
+{
+    if (mv == DATALOG_INVALID16) return DATALOG_VBAT_NONE;
+    int32_t code = ((int32_t)mv - DATALOG_VBAT_BASE_MV) / DATALOG_VBAT_STEP_MV;
+    if (code < 1)   code = 1;     /* pod 2008 mV je CR2032 stejne mrtva; 0 = sentinel */
+    if (code > 255) code = 255;
+    return (uint8_t)code;
+}
+
+static int16_t vbat_decode(uint8_t code)
+{
+    if (code == DATALOG_VBAT_NONE) return DATALOG_INVALID16;
+    return (int16_t)(DATALOG_VBAT_BASE_MV + (int32_t)code * DATALOG_VBAT_STEP_MV);
+}
+
 static void pack_rec(uint8_t *b, const datalog_rec_t *r)
 {
     memset(b, 0, DATALOG_REC_SIZE);
@@ -82,10 +100,11 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     put_u16(b + 16, (uint16_t)r->t_ocxo_c100);
     put_u16(b + 18, (uint16_t)r->t_board_c100);
     put_u16(b + 20, (uint16_t)r->ocxo_vc_mv);
-    put_u16(b + 22, (uint16_t)r->rf_dbm10);
+    put_u16(b + 22, (uint16_t)r->rf_mv);
     b[24] = r->flags;
     b[25] = r->sats;
     b[26] = r->hdop10;
+    b[27] = vbat_encode(r->vbat_mv);
     put_u16(b + 28, crc16(b, 28));
 }
 
@@ -100,10 +119,11 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->t_ocxo_c100   = (int16_t)get_u16(b + 16);
     r->t_board_c100  = (int16_t)get_u16(b + 18);
     r->ocxo_vc_mv    = (int16_t)get_u16(b + 20);
-    r->rf_dbm10      = (int16_t)get_u16(b + 22);
+    r->rf_mv      = (int16_t)get_u16(b + 22);
     r->flags         = b[24];
     r->sats          = b[25];
     r->hdop10        = b[26];
+    r->vbat_mv       = vbat_decode(b[27]);   /* stare zaznamy: 0 -> DATALOG_INVALID16 */
     return true;
 }
 
@@ -145,6 +165,15 @@ static uint32_t datalog_text_to_unix(const char *s)
     return days_from_civil(Y, M, D) * 86400u + (uint32_t)(h * 3600 + mi * 60 + sec);
 }
 
+/* Verejny prevod aktualniho RTC (UTC) na unix — stejne pravidlo jako v zaznamu
+ * (0 = RTC nesynchronizovano z GPS). Cte `g_rtc_text`/`g_rtc_synced`, ktere pise
+ * defaultTask; volat VYHRADNE z defaultTasku (ipc_publish), jinak retez neni
+ * konzistentni. Slouzi hlavne k naplneni `rtc_unix` v IPC snapshotu (web/SCPI). */
+uint32_t datalog_now_unix(void)
+{
+    return g_rtc_synced ? datalog_text_to_unix((const char *)g_rtc_text) : 0u;
+}
+
 /* ── W25Q backend ─────────────────────────────────────────────────────────── */
 
 /* Probe = plny w25q_init(), NE jen JEDEC: bez initu neni zapnute 4-byte
@@ -174,7 +203,10 @@ const datalog_backend_t datalog_backend_w25q = {
 /* ── Hledani pozice zapisu po bootu ───────────────────────────────────────────
  * Blok, ktery ma v PRVNIM zaznamu nejvyssi seq, je nejnovejsi (seq roste
  * monotonne pres cely region). V nem se pak linearne najde prvni volny slot.
- * Cte jen 4 B na blok -> pri 16352 blocich ~65 kB, ~15 ms @ 4,6 MB/s.
+ * Cte CELY 32B zaznam na blok a overuje jeho CRC (2026-08-16; drive jen 4 B se
+ * seq, coz propustilo garbage — viz komentar ve skenu). Pri 5445 blocich
+ * (1/3 DATA regionu) je to ~174 kB, ~38 ms @ 4,6 MB/s. Zbytecne to neroste:
+ * QSPI cteni je stropovane pollingem FIFO, ne velikosti bloku.
  * ⚠️ Pro SD backend (erase_size == 0) je "blok" cely region a vnitrni scan by
  * byl linearni pres miliony zaznamu -> az bude SD ziva, nahradit BINARNIM
  * hledanim hranice seq (log je monotonni, takze binarni scan je primocary). */
@@ -185,12 +217,21 @@ static void find_head(void)
     if (rpb == 0) rpb = s_be->capacity / DATALOG_REC_SIZE;   /* SD: jeden "blok" = cely region */
 
     uint32_t best_blk = 0, best_seq = 0;
+    uint32_t blk_with_data = 0;         /* kolik bloku ma platny prvni zaznam (viz wrap nize) */
     bool found = false;
     for (uint32_t i = 0; i < nblk; i++) {
-        uint8_t b[4];
-        if (!s_be->read(i * s_be->erase_size, b, 4)) continue;
-        uint32_t seq = get_u32(b);
-        if (seq == DATALOG_SEQ_EMPTY || seq == 0) continue;
+        /* ⚠️ Cte se CELY 32B zaznam a overuje se CRC (`unpack_rec`), ne jen 4 bajty
+         * seq jako driv. Bez te kontroly prosel jako platny i GARBAGE z flash —
+         * a protoze se bere blok s NEJVYSSIM seq, staci jediny poskozeny bajt,
+         * aby si datalog myslel, ze hlava je uplne jinde. Presne to nastalo po
+         * zmene kapacity regionu 2026-08-15: `seq` vyslo 3823341906 (~1,2 mld let
+         * pri 10 s/zaznam) a stav logu byl cely mimo. */
+        uint8_t b[DATALOG_REC_SIZE];
+        datalog_rec_t probe;
+        if (!s_be->read(i * s_be->erase_size, b, DATALOG_REC_SIZE)) continue;
+        if (!unpack_rec(b, &probe)) continue;    /* prazdny NEBO poskozeny -> preskoc */
+        uint32_t seq = probe.seq;
+        blk_with_data++;
         if (!found || seq > best_seq) { found = true; best_seq = seq; best_blk = i; }
         /* ⚠️ Sken je 16352 QSPI transakci (cely DATA region po 4 KB blocich) a
          * `w25q_read` uvnitr POLLUJE FIFO bez yieldu. Bez tohoto ustoupeni by
@@ -206,25 +247,50 @@ static void find_head(void)
         return;
     }
 
-    /* Prvni volny slot v nejnovejsim bloku. */
+    /* Prvni volny slot v nejnovejsim bloku.
+     * ⚠️ Stejna CRC kontrola jako vyse (unpack_rec), NE jen syrovy `seq` — bez ni
+     * tenhle vnitrni scan verí garbage stejne, jako to do 2026-08-16 delal vnejsi
+     * (viz komentar u nej). Overeno na HW pres sondu 2026-08-17 PO fixu vnejsiho
+     * scanu: `s_count` uz vyslo spravne (47043), ale `s_seq` byl 3823345955 —
+     * temer identicka hodnota jako historicka garbage 3823341906 zminovana vyse
+     * (stary obsah flash zpred zmenseni regionu 2026-08-15, ktery neni cisty 0xFF,
+     * ale ani platny zaznam). Poskozeny/neplatny slot se ted bere jako HRANICE
+     * hlavy stejne jako prazdny — dalsi realny zapis ho proste prepise spravnymi
+     * daty (samo-opravne), takze zadne zvlastni osetreni netreba. */
     uint32_t base = best_blk * s_be->erase_size;
     uint32_t used = rpb;                /* default: blok je plny */
     uint32_t last = best_seq;
     for (uint32_t k = 0; k < rpb; k++) {
         uint8_t b[DATALOG_REC_SIZE];
+        datalog_rec_t probe;
         if (!s_be->read(base + k * DATALOG_REC_SIZE, b, DATALOG_REC_SIZE)) { used = k; break; }
-        uint32_t seq = get_u32(b);
-        if (seq == DATALOG_SEQ_EMPTY) { used = k; break; }
-        last = seq;
+        if (!unpack_rec(b, &probe)) { used = k; break; }   /* prazdny NEBO poskozeny -> hranice */
+        last = probe.seq;
     }
     s_seq  = last;
     s_head = base + used * DATALOG_REC_SIZE;
     if (s_head >= s_be->capacity) s_head = 0;
 
-    /* Kruh uz obehl, kdyz je zaznamu vic nez se do regionu vejde. */
+    /* ⚠️ Kolik zaznamu v logu JE, se pozna ze STAVU FLASH — ne z absolutni hodnoty
+     * `seq`. Driv tu stalo `s_wrapped = (s_seq > cap_rec)`, coz mlcky predpoklada,
+     * ze log zacal na seq=1 a od te doby se nezmenila kapacita ani se nic nesmazalo.
+     * Po zmensení regionu na 1/3 (2026-08-15) to hlasilo PLNY log (696960 zaznamu),
+     * zatimco realne jich bylo 42989 — export pak zbytecne prosel 653k prazdnych
+     * slotu. `seq` navic po dostatecne dlouhem behu pretece, takze na nem pocet
+     * zaznamu stavet nelze vubec.
+     *
+     * Pocitame z toho, kolik BLOKU ma platna data: bloky se plni sekvencne, takze
+     * (pocet plnych bloku - 1) * rpb + zaznamy v bloku s hlavou. Kruh povazujeme
+     * za obehnuty, kdyz maji data uz vsechny bloky krome jednoho — pri wrapu se
+     * totiz nejstarsi blok prave smazal, takze prazdny zustava. */
     uint32_t cap_rec = s_be->capacity / DATALOG_REC_SIZE;
-    s_wrapped = (s_seq > cap_rec);
-    s_count   = s_wrapped ? cap_rec : s_seq;
+    s_wrapped = (nblk > 1u) && (blk_with_data >= nblk - 1u);
+    if (s_wrapped) {
+        s_count = cap_rec;
+    } else {
+        uint32_t c = (blk_with_data ? (blk_with_data - 1u) * rpb : 0u) + used;
+        s_count = (c > cap_rec) ? cap_rec : c;
+    }
 }
 
 void datalog_init(void)
@@ -286,7 +352,8 @@ static void sample(datalog_rec_t *r)
     r->ocxo_vc_mv   = sens_mv(SENS_ADS0);     /* ladici napeti */
     /* RF: ADS AIN1 je mV z AD8307; prevod na dBm dela UI (kalibrace g_calib).
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
-    r->rf_dbm10     = sens_mv(SENS_ADS1);
+    r->rf_mv     = sens_mv(SENS_ADS1);
+    r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
 
     gps_data_t g;
     gps_get(&g);
@@ -297,6 +364,7 @@ static void sample(datalog_rec_t *r)
     if (g_freq_stale)                           f |= DATALOG_F_SIGNAL_LOST;
     if (use16)                                  f |= DATALOG_F_DIV16;
     if (!g.valid && g.fixes > 0)                f |= DATALOG_F_HOLDOVER;
+    if (fpga_sim_active())                      f |= DATALOG_F_SIM;   /* emulovany kmitocet */
     r->flags  = f;
     r->sats   = g.num_sat;
     r->hdop10 = (g.hdop > 0.0f && g.hdop < 25.0f) ? (uint8_t)(g.hdop * 10.0f + 0.5f) : 255u;
@@ -394,6 +462,24 @@ bool datalog_erase_all(void)
     return ok;
 }
 
+volatile uint8_t g_datalog_erase_req  = 0;
+volatile uint8_t g_datalog_erase_busy = 0;
+
+void datalog_erase_service(void)
+{
+    if (!g_datalog_erase_req) return;
+    /* ⚠️ `g_datalog_erase_req` se NULUJE AZ PO dokonceni (ne pred zacatkem).
+     * Erase celeho regionu trva az minuty a UI po tu dobu vidi priznak porad
+     * nastaveny -> jeho `if (!g_datalog_erase_req)` guard funguje jako dedup a
+     * druhe projiti potvrzovaci sekvenci uz dalsi (zbytecny) erase nezaradi.
+     * Kdyby se priznak shodil hned, slo by behem jednoho mazani zaradit dalsi. */
+    g_datalog_erase_busy = 1;    /* UI to ukaze v radku Stav — jinak vypada zaseknute */
+    printf("DATALOG: mazu cely log (z UI), cekej...\n");
+    printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+    g_datalog_erase_busy = 0;
+    g_datalog_erase_req  = 0;
+}
+
 /* ── Selftest (pure logic, bez HW — soucast UART "selftest") ───────────────── */
 bool datalog_selftest(void)
 {
@@ -402,8 +488,9 @@ bool datalog_selftest(void)
         .seq = 0x01020304u, .t_unix = 1782000000u,
         .freq_x100000 = 1000000012345ull,
         .t_ocxo_c100 = -1234, .t_board_c100 = 4567,
-        .ocxo_vc_mv = 2500, .rf_dbm10 = -455,
+        .ocxo_vc_mv = 2500, .rf_mv = -455,
         .flags = DATALOG_F_GPS_VALID | DATALOG_F_DIV16, .sats = 9, .hdop10 = 12,
+        .vbat_mv = 2920,
     };
     uint8_t b[DATALOG_REC_SIZE];
     datalog_rec_t r;
@@ -411,8 +498,31 @@ bool datalog_selftest(void)
     if (!unpack_rec(b, &r)) return false;
     if (r.seq != a.seq || r.t_unix != a.t_unix || r.freq_x100000 != a.freq_x100000) return false;
     if (r.t_ocxo_c100 != a.t_ocxo_c100 || r.t_board_c100 != a.t_board_c100) return false;
-    if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_dbm10 != a.rf_dbm10) return false;
+    if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_mv != a.rf_mv) return false;
     if (r.flags != a.flags || r.sats != a.sats || r.hdop10 != a.hdop10) return false;
+    /* VBAT je kvantovany na 8 mV, takze round-trip NENI presny — 2920 sedne
+     * na 2920 (2920-2000=920, 920/8=115 -> 2000+115*8), ale obecne se testuje
+     * jen to, ze se hodnota vejde do kroku. */
+    if (r.vbat_mv < a.vbat_mv - DATALOG_VBAT_STEP_MV ||
+        r.vbat_mv > a.vbat_mv + DATALOG_VBAT_STEP_MV) return false;
+    /* ⚠️ Zpetna kompatibilita: STARY zaznam ma bajt 27 = 0 a MUSI se precist jako
+     * "nezaznamenano", ne jako mrtva baterie 2,00 V. Sestavime takovy zaznam
+     * rucne (vcetne prepocteneho CRC) a overime. */
+    {   uint8_t old[DATALOG_REC_SIZE];
+        datalog_rec_t o;
+        pack_rec(old, &a);
+        old[27] = 0u;                       /* jako by ho zapsal firmware pred 2026-08-17 */
+        put_u16(old + 28, crc16(old, 28));  /* CRC bajt 27 pokryva -> prepocitat */
+        if (!unpack_rec(old, &o)) return false;
+        if (o.vbat_mv != DATALOG_INVALID16) return false;
+    }
+    /* Neplatne cteni senzoru se ulozi jako "nezaznamenano". */
+    {   datalog_rec_t n = a; n.vbat_mv = DATALOG_INVALID16;
+        uint8_t nb[DATALOG_REC_SIZE]; datalog_rec_t nr;
+        pack_rec(nb, &n);
+        if (nb[27] != DATALOG_VBAT_NONE) return false;
+        if (!unpack_rec(nb, &nr) || nr.vbat_mv != DATALOG_INVALID16) return false;
+    }
 
     /* 2) poskozeny bajt musi CRC odhalit */
     b[10] ^= 0xFFu;

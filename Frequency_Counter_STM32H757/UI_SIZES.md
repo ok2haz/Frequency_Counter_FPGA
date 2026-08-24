@@ -14,7 +14,7 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | Cap height textu | ≈ 0,72 × `ascent` fontu |
 | Čitelnost | cap ≥ 1,9 mm (16′ na 40 cm) pohodlná; 1,35 mm čitelné z ~30–35 cm |
 
-## Dotykové cíle (stav 2026-08-15)
+## Dotykové cíle (stav 2026-08-17)
 
 | Prvek | px (š×v) | mm (výška) | Ideál | Stav |
 |---|---|---|---|---|
@@ -40,6 +40,22 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | **DISPLEJ** — auto-dim ZAP/VYP | 140×64 | 7,5 | 7 mm | ✓ |
 | **DISPLEJ** — auto-dim prodleva ± | 64×64 | 7,5 | 7 mm | ✓ (2026-08-15 zvětšeno ze **56 px / 6,6 mm** — byl to jediný cíl pod minimem; místo se vzalo z 74 px prázdna mezi tlačítky) |
 | **DISPLEJ** — Vzhled (téma) | 200×64 | 7,5 | 7 mm | ✓ |
+| **SENZORY** — RESET MIN/MAX (footer) | 300×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **DATALOG** — SMAZAT LOG (footer, dvojí potvrzení) | 220×61 | 7,1 | 7 mm | ✓ (2026-08-17; vedle ZAPNOUT/VYPNOUT 220×61. Nahradilo mrtvé „EXPORT NA SD", které sedělo na **identickém rectu** jako ZAPNOUT/VYPNOUT a nemělo touch handler) |
+| **ALARMY** — RESET STATISTIK (footer) | **200**×61 | 7,1 | 7 mm | ✓ (2026-08-17; šířka 200, ne 300 jako u Senzorů — `MUTE_RECT` {230,354,148,64} sahá spodní hranou na y=418, tedy 1 px do řádku footeru) |
+| **ALARMY** — PRAHY > (footer) | 180×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **GPS** — KVALITA > (footer) | 190×61 | 7,1 | 7 mm | ✓ (2026-08-17; mezi levým okrajem a SURVEY na x=532) |
+| **KALIBRACE** — PRŮVODCE > (footer) | 158×61 | 7,1 | 7 mm | ✓ (2026-08-17; volné místo mezi AUTO-CAL a ZPĚT) |
+| **KVALITA GPS** — preset −/+ | 90×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+| **PRAHY** — ZAP/VYP řádku | 120×**64** | 7,5 | 7 mm | ✓ (2026-08-17; rozteč řádků 66 = stejná jako Kalibrace) |
+| **PRAHY** — hodnota −/+ | 84×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — výběr větve | 200×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — hodnota −/+ | 96×**64** | 7,5 | 7 mm | ✓ (2026-08-17) |
+| **PRŮVODCE KALIBRACÍ** — POUŽÍT / ULOŽIT (footer) | 200×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
+
+> ⚠️ Nové ovladače v oknech PRAHY a PRŮVODCE byly původně navrženy **56 px (6,6 mm)**
+> a při kontrole proti tomuto souboru zvětšeny na 64. Je to přesně ten případ, který
+> už řešil auto-dim 2026-08-15 — 56 px je pod projektovým minimem.
 
 ## Typografie (kde se co používá)
 
@@ -151,6 +167,7 @@ baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = **`rect.y + 25`**, text tedy sah
   - **Bug fix okno Čas**: tlačítko AUTO CET/CEST po přepnutí varianty (NORMAL↔ACTIVE) nechávalo v rozích "duchy" (čtverečky ze starší barvy) — `prim_fill_rect_rounded` kreslí zaoblené rohy přes `aa_corner`→`prim_internal_blend_px`, který zapisuje přímo do framebufferu a **obchází `mark_dirty`** (ten volá jen DMA2D `d2d_fill`/`d2d_blit_ex`). Rohy se tedy nikdy neoznačí jako "dirty" a při triple bufferingu (copy-forward jen označených oblastí) se nezkopírují dopředu — projeví se to JEN u tlačítek, která mění variantu/barvu při partial redrawu bez předchozího `blit_bg_region`/clear (jediné takové v appce = `cas_upd_mode`; footer tlačítka mají `blit_bg_region` už zabudované, ostatní partial-redraw tlačítka drží stále stejnou variantu). Oprava: `prim_fill_rect(TZ_AUTO_RECT, BG_CARD, REPLACE)` před `ui_button_render` — REPLACE jde DMA2D cestou, která `mark_dirty` volá, takže následný AA blend rohů spadá do už označené oblasti.
   - **Pilulky v headeru**: label font mono_14→**mono_16** (sjednoceno s hodnotou — labely "HDOP"/"CAL"/"HOLD" byly nejmenší text v celém UI). Aby se 6 pilulek pořád vešlo před hodiny i v nejhorším reálném stavu ("GNSS FIX" + "SYS ERR" současně), `UI_DIM_PILL_GAP` 5→4 a `UI_DIM_PILL_INNER_GAP` 6→5 (ověřeno součtem šířek z tabulek fontů: řada končí na x=660, hodiny začínají na x=668 → 8 px rezerva).
 - **2026-07-19 (dočasné, k odstranění)** — pro vizuální A/B srovnání starého (pre-4,3") a nového layoutu hlavní mřížky na HW: footer tlačítko slotu 0 (normálně PERIOD/FREQ) je dočasně **"Main SW"** a přepíná `render_body_grid_v1` (53% Allan, offset karty mono_16, signal 43 px) vs. `render_body_grid_v2` (aktuální, popsáno níže). Viz `screen_main_toggle_layout()` v `screen_main.c` + STATUS.md TODO #14 (postup odstranění).
+  - **✅ VYŘEŠENO 2026-08-19 (STATUS.md #14):** vybrán **NEW/v2**, celá A/B větev odstraněna — `s_layout_old` + `screen_main_toggle_layout`/`_layout_is_old` + `render_body_grid_v1`/`render_right_column_v1` smazány, `render_body_grid_v2` → `render_body_grid`, footer slot 0 vrácen na PERIOD/FREQ. **Předchozí odstavce o „Main SW"/„main-old" jsou tím historické.**
 - **2026-07-19 (TODO #11(1b) HOTOVO)** — vizuální zvětšení ovladačů na ≥7 mm:
   - **Nastavení**: MUTE/BR±/AUTODIM±/THEME/LANG 56→**64 px** (7,5 mm); karty Jas a Auto-dim narostly o 8 px (108/110, bylo 100/102, Auto-dim posunut 266→274) — čerpáno ze 42 px volného prostoru před patičkou. Track/procenta jasu a hodnota auto-dim prodlevy re-centrovány o +4 px na nový střed tlačítek.
   - **Čas**: TZ_AUTO/TZ_MINUS/TZ_PLUS 56→**64 px**; hodnota zóny re-centrována +4 px.

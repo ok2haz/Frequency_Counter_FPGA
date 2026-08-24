@@ -33,6 +33,11 @@ extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NM
 /* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
 extern volatile uint8_t g_screen_req;
 
+/* ── Požadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
+ * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
+ * jen UiTask (kreslí ho, není thread-safe). Servisuje `StartUiTask`. ─────── */
+extern volatile uint8_t g_stats_reset_req;
+
 /* ── Kmitočet z FPGA (FpgaTask -> UiTask) ──────────────────────────────── */
 extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];
@@ -107,7 +112,7 @@ extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
 extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, preset 15..600) */
-extern volatile uint8_t g_theme_light;   /* 0 = tmave schema (default), 1 = svetle (BKP_DR6) */
+extern volatile uint8_t g_theme_idx;     /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*, BKP_DR6 bit0+bity9:10) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
 /* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
@@ -143,9 +148,10 @@ extern volatile uint8_t  g_selftest_res;
  * [5]=kalendar/DST (rtc_selftest), [6]=datalog zaznam+CRC+cas (datalog_selftest),
  * [7]=Math/limity (meas_math #43/#44), [8]=setup sanitizace (#54),
  * [9]=autocal verdikt (#68), [10]=prezentace mereni (meas_present #67),
- * [11]=SCPI parser (scpi_selftest #25), [12]=IPC seqlock+ring (ipc_selftest #19/#20).
+ * [11]=SCPI parser (scpi_selftest #25), [12]=IPC seqlock+ring (ipc_selftest #19/#20),
+ * [13]=vzory + pocitani chybnych bitu (membench_selftest, okno PAMETI).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 13
+#define SELFTEST_N 14
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane
@@ -157,6 +163,13 @@ extern volatile uint8_t  g_cm4_absent;
  * bez beziciho CM4 zustava 0. (CM4 od 2026-08-14 na HW BEZI — driv se myslelo,
  * ze nebootuje, ale maskoval ho pripojeny debugger; viz CLAUDE.md Dvoujadro.) */
 extern volatile uint8_t  g_cm4_alive;
+extern volatile uint8_t  g_cm4_net_up;   /* 1 = ETH link UP (z CM4, IPC v5, F1); Health "NET:" */
+extern volatile uint8_t  g_cm4_eth_ok;   /* 1 = HAL_ETH_Init na CM4 proslo (IPC v6, F3) */
+extern volatile uint32_t g_cm4_phy_id;   /* PHY ID z CM4 pres MDIO; 0x0007C131 = LAN8742A */
+extern volatile uint8_t  g_cm4_ipc_ver;
+extern volatile uint8_t  g_web_ctrl_en;  /* 1 = vzdalene OVLADANI povoleno (cteni je vzdy) */
+extern volatile char     g_web_user[16]; /* prihlasovaci jmeno pro SCPI/TCP + web */
+extern volatile char     g_web_pass[20]; /* heslo (generovane pristrojem); "" = nevygenerovano */  /* IPC_VERSION obrazu CM4; != IPC_VERSION => nesoulad bank */
 /* g_cm4_stall_count = kolikrat CM4 prestal odpovidat PO tom, co uz jednou zil
  * (hrana alive->dead, defaultTask). Rozlisuje "nikdy nenabehl" (g_cm4_absent) od
  * "bezel a zasekl se" — druhe je pro CM4 vlastni IWDG2 (self-reset), CM7 to jen

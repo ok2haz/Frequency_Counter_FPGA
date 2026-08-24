@@ -184,11 +184,15 @@ void sd_export_unmount(void)
 #endif
 }
 
-#ifdef SD_EXPORT_FATFS
 /* Jeden CSV řádek. ⚠️ Bez `%f` a bez `%llu` (nano.specs): kmitočet se rozloží na
  * celé Hz + 5 desetinných míst, obojí se vejde do uint32 (1,4 GHz × 1e5 by uint32
- * přeteklo, proto se dělí ještě v uint64). Sentinel DATALOG_INVALID16 → prázdná buňka. */
-static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
+ * přeteklo, proto se dělí ještě v uint64). Sentinel DATALOG_INVALID16 → prázdná buňka.
+ * ⚠️ ZÁMĚRNĚ mimo `#ifdef SD_EXPORT_FATFS` a nestatické: tentýž formát používá
+ * i UART `datalog csv` (export do konzole pro běh bez karty). Dokud měl každý
+ * svůj vlastní formátovač, lišily se — konzole psala kmitočet přes displejový
+ * `fpga_freq_format_val` (tisícové tečky + „Hz" uvnitř číselné buňky), teploty
+ * v setinách pod hlavičkou `_C` a `-32768` místo prázdné buňky. */
+int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
 {
     uint32_t hz  = (uint32_t)(r->freq_x100000 / 100000u);
     uint32_t frc = (uint32_t)(r->freq_x100000 % 100000u);
@@ -197,18 +201,35 @@ static int fmt_row(char *b, size_t n, const datalog_rec_t *r)
         snprintf(toc, sizeof toc, "%d.%02u", r->t_ocxo_c100 / 100, (unsigned)(abs(r->t_ocxo_c100) % 100));
     if (r->t_board_c100 != DATALOG_INVALID16)
         snprintf(tbo, sizeof tbo, "%d.%02u", r->t_board_c100 / 100, (unsigned)(abs(r->t_board_c100) % 100));
-    if (r->rf_dbm10     != DATALOG_INVALID16)
-        snprintf(rf,  sizeof rf,  "%d.%01u", r->rf_dbm10 / 10, (unsigned)(abs(r->rf_dbm10) % 10));
+    /* ⚠️ `rf_mv` jsou SYROVE mV z AD8307, ne dBm x10. Do 2026-08-18 se tu delilo
+     * deseti a do sloupce nazvaneho `rf_dBm` slo "57.1" misto -61,2 dBm.
+     * Do CSV jde ted SYROVA hodnota pod spravnym nazvem (`rf_mV`) — je to
+     * bezztratove a odpovida to filozofii datalogu (kalibrace se muze zmenit,
+     * syrova hodnota ne); dBm si uzivatel dopocita konstantami z okna Kalibrace. */
+    if (r->rf_mv     != DATALOG_INVALID16)
+        snprintf(rf,  sizeof rf,  "%d", (int)r->rf_mv);
+
+    /* VBAT: prazdna bunka pro zaznamy porizene pred 2026-08-17 (nezaznamenano). */
+    char vb[12] = "";
+    if (r->vbat_mv != DATALOG_INVALID16) snprintf(vb, sizeof vb, "%d", (int)r->vbat_mv);
 
     return snprintf(b, n,
         "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%lu.%05lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
-        SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u\r\n",
+        SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u"
+        SD_CSV_SEP "%s\r\n",
         (unsigned long)r->seq, (unsigned long)r->t_unix,
         (unsigned long)hz, (unsigned long)frc,
         toc, tbo, (int)r->ocxo_vc_mv, rf,
-        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10);
+        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
 }
-#endif
+
+int sd_export_csv_header(char *b, size_t n)
+{
+    return snprintf(b, n,
+        "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
+        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_mV" SD_CSV_SEP
+        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
+}
 
 /* ── Diagnostika SD (UART `sd diag`) ─────────────────────────────────────────
  * Smysl: rozlišit, KDE to stojí. `sd mount` sám o sobě řekne jen „FAIL", ale
@@ -431,7 +452,10 @@ static void sd_apply_init_config(void)
     hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
     hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
-    hsd1.Init.ClockDiv            = 2;                 /* 64MHz/(2*2)=16 MHz, jako Franta */
+    /* SDMMC_CK = 64 MHz / (2 x ClockDiv). 1 -> 32 MHz (2026-08-16, po HW uprave:
+     * R60 = pull-up na CK odstranen, bulk kondik na SD VDD 10 uF). Drive 2 = 16 MHz.
+     * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad SD HS limitem 50 MHz. */
+    hsd1.Init.ClockDiv            = 1;
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
 }
 
@@ -580,12 +604,32 @@ uint8_t BSP_SD_Init(void)
  * Dokonceni si hlasime sami — `sd_diskio.c` pak najde zpravu uz ve fronte
  * a jeho `osMessageQueueGet` se vrati okamzite. */
 #ifdef SD_EXPORT_FATFS
+/* ⚠️⚠️ ÚKLID PO NEÚSPĚCHU (převzato z `H757_SDcard_01`, 2026-08-15).
+ * `HAL_SD_ReadBlocks` při timeoutu sice vrátí `hsd->State` na READY, ale
+ * **datový automat (DPSM) a karta v tom přenosu můžou pokračovat** — karta
+ * zůstane ve stavu "sending data" a KAŽDÝ další příkaz pak selže, dokud se
+ * nevypne napájení. `HAL_SD_Abort()` pošle CMD12 (STOP_TRANSMISSION) a uklidí
+ * periferii, takže jedna neúspěšná operace neshodí SD až do restartu.
+ * Bez tohohle byl každý timeout fakticky trvalý. */
+static uint8_t sd_xfer_fail(void)
+{
+    (void)HAL_SD_Abort(&hsd1);
+    /* Dej kartě chvíli na návrat do TRANSFER; ohraničeně (200 ms) a s yieldem,
+     * ať to nezdrží volajícího víc, než je nutné. */
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
+        if ((HAL_GetTick() - t0) > 200u) break;
+        if (osKernelGetState() == osKernelRunning) osDelay(1);
+    }
+    return MSD_ERROR;
+}
+
 uint8_t BSP_SD_ReadBlocks_DMA(uint32_t *pData, uint32_t ReadAddr, uint32_t NumOfBlocks)
 {
     /* Timeout skaluje s poctem bloku; 1 s zakladu bohate staci i pomale karte. */
     uint32_t to = 1000u + NumOfBlocks * 100u;
     if (HAL_SD_ReadBlocks(&hsd1, (uint8_t *)pData, ReadAddr, NumOfBlocks, to) != HAL_OK)
-        return MSD_ERROR;
+        return sd_xfer_fail();
     BSP_SD_ReadCpltCallback();     /* posle READ_CPLT_MSG do SDQueueID */
     return MSD_OK;
 }
@@ -594,7 +638,7 @@ uint8_t BSP_SD_WriteBlocks_DMA(uint32_t *pData, uint32_t WriteAddr, uint32_t Num
 {
     uint32_t to = 1000u + NumOfBlocks * 100u;
     if (HAL_SD_WriteBlocks(&hsd1, (uint8_t *)pData, WriteAddr, NumOfBlocks, to) != HAL_OK)
-        return MSD_ERROR;
+        return sd_xfer_fail();
     BSP_SD_WriteCpltCallback();    /* posle WRITE_CPLT_MSG do SDQueueID */
     return MSD_OK;
 }
@@ -884,6 +928,21 @@ void sd_export_diag(void)
             uint32_t free_mb = (uint32_t)(((uint64_t)fre_clust * fs->csize * 512u) >> 20);
             printf("  volne      : %lu MB\n", (unsigned long)free_mb);
         }
+        /* ⚠️ SKUTECNA sirka sbernice a takt z CLKCR, ne z toho, co jsme CHTELI
+         * nastavit: `BSP_SD_Init` prepina na 4-bit s fallbackem na 1-bit, takze
+         * bez tohohle vypisu nejde poznat, ze fallback nastal (a proc je prenos
+         * pomalejsi). Prevzato z pristupu `H757_SDcard_01`, ktery sirku hlasi taky.
+         * SDMMC_CK = kernel_clk / (2 x CLKDIV); kernel je 64 MHz z PLL1Q. */
+        {
+            uint32_t clkcr  = SDMMC1->CLKCR;
+            uint32_t div    = clkcr & 0x3FFu;
+            uint32_t widbus = (clkcr >> 14) & 3u;          /* 0=1-bit, 1=4-bit, 2=8-bit */
+            uint32_t khz    = div ? (64000u / (2u * div)) : 64000u;
+            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz%s\n",
+                   (widbus == 1u) ? "4-bit" : (widbus == 2u) ? "8-bit" : "1-bit",
+                   (unsigned long)(khz / 1000u), (unsigned long)(khz % 1000u),
+                   (widbus == 0u) ? "   <-- FALLBACK na 1-bit (4-bit se nepodaril)" : "");
+        }
         printf("  => SD FUNGUJE, lze exportovat (`sd export`)\n");
         return;
     }
@@ -1147,19 +1206,20 @@ static int32_t export_body(uint32_t max_rec)
 
     char line[160];
     UINT bw;
-    int n = snprintf(line, sizeof line,
-        "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
-        "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_dBm" SD_CSV_SEP
-        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10\r\n");
+    int n = sd_export_csv_header(line, sizeof line);
     f_write(&f, line, (UINT)n, &bw);
 
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,
      * takže jdeme od konce. Pro log v souboru je vzestupný čas přirozenější. */
     int32_t written = 0;
+    /* Prubeh pro UI: UiTask ho cte 2x/s ze snapshotu. Zapis dvou uint32 je levny,
+     * takze se aktualizuje kazdy zaznam bez throttlingu. */
+    s_ui.prog_done = 0; s_ui.prog_total = total;
     for (uint32_t i = total; i-- > 0; ) {
+        s_ui.prog_done = total - i;
         datalog_rec_t r;
         if (!datalog_read_back(i, &r)) continue;   /* poškozený CRC / prázdný slot → přeskoč */
-        n = fmt_row(line, sizeof line, &r);
+        n = sd_export_csv_row(line, sizeof line, &r);
         if (n <= 0) continue;
         if (f_write(&f, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
             /* Nejčastější příčina: karta vytažená za běhu exportu. */
@@ -1184,6 +1244,7 @@ int32_t sd_export_run(uint32_t max_rec)
     s_busy = true;                 /* drzi auto-unmount po dobu zapisu */
     int32_t r = sd_export_mount() ? export_body(max_rec) : -1;
     s_busy = false;                /* jedina cesta ven -> nelze zapomenout */
+    s_ui.prog_total = 0;           /* 0 = zadny export nebezi (UI schova radek prubehu) */
     return r;
 #endif
 }

@@ -8,6 +8,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
+#include "flightrec.h"   /* flightrec_dump — kontext pred resetem (#18) */
 #include "freertos_shared.h"
 
 /* === Run-time stats casova baze: DWT cycle counter (480 MHz) ===
@@ -59,6 +60,7 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
     g_overflow_task[i] = pcTaskName[i];
   }
   crash_blackbox(1u, pcTaskName);
+  flightrec_dump("stack");   /* co se delo pred pretecenim (#18) */
   __disable_irq();
   /* spin: bez heartbeatu IWDG resetne do ~4 s -> boot ohlasi crash z BKP */
   for (;;) { /* breakpoint zde: g_overflow_task = jméno tasku co přetekl stack */ }
@@ -68,6 +70,7 @@ void vApplicationMallocFailedHook(void)
 {
   g_malloc_failed++;
   crash_blackbox(2u, "");
+  flightrec_dump("mall");    /* co se delo pred vycerpanim heapu */
   __disable_irq();
   for (;;) { /* breakpoint zde: došel FreeRTOS heap (configTOTAL_HEAP_SIZE) */ }
 }

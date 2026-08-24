@@ -6,10 +6,13 @@
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
-#include "freertos_shared.h"   /* g_brightness, g_theme_light, g_tz_*, g_ui_cfg, qspiMutexHandle */
+#include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, qspiMutexHandle */
 #include "datalog.h"
 #include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
+#include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
+#include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
+#include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
@@ -24,9 +27,16 @@
  * fx_en -> "SCF4" -> "SCF5". 2026-07-25 ODEBRAN digit_anim_en (zvyrazneni cislic
  * zruseno) -> "SCF5" -> "SCF6". 2026-08-01 pribyla persistence Math/limity
  * (g_meas_cfg, #43/#44) -> "SCF6" -> "SCF7", pak vysledek self-survey (poloha)
- * -> "SCF7" -> "SCF8". Dusledek: prvni boot po teto zmene najde neznamy magic,
- * nastaveni se vrati na vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434641u   /* "SCFA" (2026-08-13: + sd_det_force) */
+ * -> "SCF7" -> "SCF8". 2026-08-17 pribyl prahovy monitor (mon_cfg: VBAT/OCXO/ADEV)
+ * -> "SCFA" -> "SCFB". 2026-08-22 sit + okno MERENI -> "SCFB" -> "SCFC" -> "SCFD"
+ * (vzdaleny pristup: web_ctrl_en/web_user/web_pass). 2026-08-23 rozlozeni hlavni
+ * obrazovky (layout_classic) -> "SCFD" -> "SCFE". 2026-08-24 zmena VYCHOZIHO
+ * prahu VBAT 2,6 -> 2,8 V (CR2032 s 3,3 V nominalem) -> "SCFE" -> **"SCFF"**
+ * (bump nutny, aby se novy vychozi prah projevil i na uz nakonfigurovanem kusu —
+ * jinak by se z flash nacetl stary 2,6 V; lze i rucne v okne PRAHY bez bumpu).
+ * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
+ * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
+#define SYSCFG_BLOB_MAGIC   0x53434646u   /* "SCFF" (2026-08-24: VBAT prah 2,6->2,8 V pro CR2032 3,3 V nominal) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -40,7 +50,7 @@ typedef struct {
     uint8_t  sound_muted;
     uint8_t  autodim_en;
     uint16_t autodim_sec;
-    uint8_t  theme_light;
+    uint8_t  theme_idx;     /* 0..4 = UI_THEME_* (drive "theme_light" 0/1 — stejny bajt/offset, kompat.) */
     uint8_t  lang_en;
     int8_t   tz_offset_h;
     uint8_t  tz_auto;
@@ -74,6 +84,25 @@ typedef struct {
      * Persist proto, ze jinak by se `sd force on` muselo psat po kazdem bootu
      * a auto-mount i tlacitko EXPORT by byly k nicemu. */
     uint8_t  sd_det_force;
+    /* Prahovy monitor realnych velicin (okno PRAHY, s_view=39). NENI v BKP ->
+     * flash je jediny zdroj, takze se aplikuje VZDY (jako fx/meas/survey). */
+    uint8_t  mon_vbat_en, mon_ocxo_en, mon_adev_en;
+    float    mon_vbat_lo_mv;
+    float    mon_ocxo_lo_c, mon_ocxo_hi_c;
+    float    mon_adev_max;
+    /* Okno MERENI (#67): rezim/jednotka/nominal zabalene v jednom bajtu.
+     * Vlastnikem stavu je app vrstva, sem se jen zrcadli (app_gpsdo_meas_ui_*). */
+    uint8_t  meas_ui;
+    /* ── Vzdaleny pristup (okno PRISTUP, s_view=42; WEB_UI_PLAN W0) ──────────
+     * Autentizace pro SCPI/TCP i web. ⚠️ `web_ctrl_en` je HLAVNI VYPINAC ovladani:
+     * cteni je neskodne, ale zapis (RUN/STOP, brana) muze zkazit bezici mereni,
+     * takze musi jit vypnout bez ohledu na heslo. Vychozi = VYPNUTO. */
+    uint8_t  web_ctrl_en;
+    char     web_user[16];
+    char     web_pass[20];
+    /* Rozlozeni hlavni obrazovky (0 = hybridni/vychozi, 1 = klasicke). Neni v BKP
+     * -> flash je jediny zdroj a aplikuje se VZDY (jako fx_en/anim_en). */
+    uint8_t  layout_classic;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -91,7 +120,7 @@ static void pack(syscfg_blob_t *b)
     b->sound_muted  = g_sound_muted;
     b->autodim_en   = g_autodim_en;
     b->autodim_sec  = g_autodim_sec;
-    b->theme_light  = g_theme_light;
+    b->theme_idx    = g_theme_idx;
     b->lang_en      = g_lang_en;
     b->tz_offset_h  = g_tz_offset_h;
     b->tz_auto      = g_tz_auto;
@@ -119,10 +148,30 @@ static void pack(syscfg_blob_t *b)
     b->net_mask      = g_net_mask;
     b->net_gw        = g_net_gw;
     b->sd_det_force  = datalog_sd_det_forced() ? 1u : 0u;
+    b->mon_vbat_en    = g_mon_cfg.vbat_en ? 1u : 0u;
+    b->mon_ocxo_en    = g_mon_cfg.ocxo_en ? 1u : 0u;
+    b->mon_adev_en    = g_mon_cfg.adev_en ? 1u : 0u;
+    b->mon_vbat_lo_mv = g_mon_cfg.vbat_lo_mv;
+    b->mon_ocxo_lo_c  = g_mon_cfg.ocxo_lo_c;
+    b->mon_ocxo_hi_c  = g_mon_cfg.ocxo_hi_c;
+    b->mon_adev_max   = g_mon_cfg.adev_max;
+    b->meas_ui        = app_gpsdo_meas_ui_get();
+    b->web_ctrl_en    = g_web_ctrl_en ? 1u : 0u;
+    /* Blob je cely vynulovany memsetem vyse, takze staci zkopirovat s rezervou
+     * na terminator (pojistka proti nezakoncenemu retezci v globalu). */
+    strncpy(b->web_user, (const char *)g_web_user, sizeof b->web_user - 1);
+    strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
+    b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
 }
 
 void syscfg_load(void)
 {
+    /* Vychozi prahy JAKO PRVNI — `g_mon_cfg` je prosty globál (vynulovany), takze
+     * bez tohohle by pri prazdne flash / starem magicu / neuspesnem zamku platily
+     * nuly: `vbat_lo_mv = 0` = nikdy nealarmuje, `ocxo_hi_c = 0` = alarmuje vzdy.
+     * Nastavit je MUSIME i na chybovych cestach, proto pred zamkem. */
+    mon_cfg_defaults(&g_mon_cfg);
+
     /* Cely init+cteni pod jednim zamkem — mezi w25q_init (SW reset cipu) a ctenim
      * nesmi vlezt jiny kontext, jinak by cetl z prave resetovaneho cipu. */
     if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_LOAD_MS) != osOK) return;
@@ -160,6 +209,39 @@ void syscfg_load(void)
     g_survey_lon    = b.survey_lon;
     g_survey_alt    = b.survey_alt;
     g_survey_spread = b.survey_spread;
+    /* Prahovy monitor: NENI v BKP -> aplikuj VZDY (jako fx/meas/survey).
+     * Sanitizace: nesmyslny rozsah by monitor zablokoval (nikdy nealarmuje) nebo
+     * naopak rozdrncal (alarmuje porad) — pri nesmyslu zustavaji defaulty. */
+    g_mon_cfg.vbat_en = b.mon_vbat_en ? 1 : 0;
+    g_mon_cfg.ocxo_en = b.mon_ocxo_en ? 1 : 0;
+    g_mon_cfg.adev_en = b.mon_adev_en ? 1 : 0;
+    if (b.mon_vbat_lo_mv > 1000.0f && b.mon_vbat_lo_mv < 3600.0f)
+        g_mon_cfg.vbat_lo_mv = b.mon_vbat_lo_mv;
+    if (b.mon_ocxo_lo_c < b.mon_ocxo_hi_c &&
+        b.mon_ocxo_lo_c > -40.0f && b.mon_ocxo_hi_c < 125.0f) {
+        g_mon_cfg.ocxo_lo_c = b.mon_ocxo_lo_c;
+        g_mon_cfg.ocxo_hi_c = b.mon_ocxo_hi_c;
+    }
+    if (b.mon_adev_max > 0.0f) g_mon_cfg.adev_max = b.mon_adev_max;
+
+    /* Okno MERENI: NENI v BKP -> aplikuj VZDY (jako fx/meas/survey/monitor).
+     * Sanitizaci rozsahu resi `app_gpsdo_meas_ui_set`. */
+    app_gpsdo_meas_ui_set(b.meas_ui);
+    /* Vzdaleny pristup (W0). ⚠️ Vypinac ovladani se NEDEDI z niceho jineho — pri
+     * neznamem magicu (prvni boot po teto zmene) zustane 0 = ovladani VYPNUTE,
+     * coz je spravny vychozi stav: radeji nedostupne nez nechranene. */
+    g_web_ctrl_en = b.web_ctrl_en ? 1u : 0u;
+    /* Kopiruj s vynucenym terminatorem — blob prisel z flash a muze byt poskozeny
+     * (CRC sice sedi, ale format je starsi/cizi), takze retezci nedaveruj. */
+    memcpy((void *)g_web_user, b.web_user, sizeof b.web_user);
+    memcpy((void *)g_web_pass, b.web_pass, sizeof b.web_pass);
+    g_web_user[sizeof b.web_user - 1] = '\0';
+    g_web_pass[sizeof b.web_pass - 1] = '\0';
+    /* Rozlozeni hlavni obrazovky — jako fx/anim se aplikuje VZDY (neni v BKP).
+     * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
+     * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
+    screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
+
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;
     g_net_mask      = b.net_mask;
@@ -174,7 +256,7 @@ void syscfg_load(void)
     g_sound_muted = b.sound_muted ? 1 : 0;
     g_autodim_en  = b.autodim_en ? 1 : 0;
     g_autodim_sec = (b.autodim_sec >= 15 && b.autodim_sec <= 600) ? b.autodim_sec : 300;   /* default 5 min */
-    g_theme_light = b.theme_light ? 1 : 0;
+    g_theme_idx   = (uint8_t)(b.theme_idx & 0x07u);   /* 0..4 (UI_THEME_*); stary blob mel 0/1, sedi */
     g_lang_en     = b.lang_en ? 1 : 0;
     g_tz_offset_h = (b.tz_offset_h < -12) ? -12 : (b.tz_offset_h > 14 ? 14 : b.tz_offset_h);
     g_tz_auto     = b.tz_auto ? 1 : 0;

@@ -32,6 +32,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>    /* size_t — CSV formatovace nize */
+#include "datalog.h"   /* datalog_rec_t — sdileny CSV format (sd_export_csv_row) */
 
 typedef enum {
     SD_EXP_NO_FATFS = 0,  /* FatFs neni v buildu (CubeMX) */
@@ -75,6 +77,10 @@ typedef struct {
     char     msg[40];      /* vysledek posledni operace pro uzivatele */
     uint32_t test_w_kbs;   /* rychlost zapisu z posledniho TESTu [KB/s], 0 = nezmereno */
     uint32_t test_r_kbs;   /* rychlost cteni  z posledniho TESTu [KB/s], 0 = nezmereno */
+    /* Prubeh exportu (UartTask je prubezne prepisuje, UiTask cte a kresli).
+     * `prog_total` = 0 -> zadny export nebezi. Export stovek tisic zaznamu trva
+     * desitky sekund a bez tohohle to vypada, ze se nic nedeje. */
+    uint32_t prog_done, prog_total;
 } sd_ui_info_t;
 
 /** @return snapshot pro UI. Bezpecne z UiTasku — jen cteni, nic neblokuje. */
@@ -125,5 +131,14 @@ void sd_export_unmount(void);
  *  @param max_rec  0 = vse, jinak jen N nejnovejsich zaznamu
  *  @return pocet zapsanych zaznamu, nebo -1 pri chybe. */
 int32_t sd_export_run(uint32_t max_rec);
+
+/** CSV formát datalogu — JEDEN zdroj pravdy pro kartu i pro konzoli.
+ *  Používá to `sd export` (soubor na SD) i UART `datalog csv` (výpis do konzole),
+ *  aby se oba exporty nerozešly. Dostupné i v buildu bez FatFs.
+ *  Konvence: oddělovač `;`, desetinná tečka, neplatná hodnota = prázdná buňka,
+ *  kmitočet jako celé Hz + 5 desetin (bez tisícových oddělovačů a bez jednotky).
+ *  @return délka jako `snprintf` (bez NUL). */
+int sd_export_csv_header(char *b, size_t n);
+int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r);
 
 #endif /* INC_SD_EXPORT_H_ */

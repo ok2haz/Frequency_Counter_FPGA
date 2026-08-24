@@ -24,6 +24,24 @@
 /* USER CODE BEGIN 0 */
 #include "bootled.h"
 static FMC_SDRAM_CommandTypeDef Command;
+/* ⚠️⚠️ PODEZRELA HODNOTA — NEOVERENO, NEMENIT BEZ MERENI (2026-08-23).
+ * 1835 je prevzata z ST prikladu pro jinou desku. Prepocet pro TUHLE:
+ *   PLL2 VCO 200 MHz / R=2 -> FMC kernel 100 MHz, SDClockPeriod_2 -> SDCLK 50 MHz.
+ *   REFRESH_COUNT = tREF * SDCLK / pocet_radku - 20.
+ *   Pro 8192 radku (RowBitsNumber = 13, viz nize) a bezne tREF = 64 ms vychazi
+ *   **371**, nikoli 1835. S 1835 se cela matice obnovi az za ~304 ms, tj.
+ *   **4,7x pomaleji nez 64 ms**, coz je mimo spec bezne SDRAM.
+ * Proc to zatim NEJDE poznat: framebuffery se prepisuji kazdy snimek a LTDC je
+ * navic porad cte (cteni radek taky obnovi), takze displej funguje. Projevit by
+ * se to melo az na datech, ktera lezi dlouho nedotcena — presne to meri retencni
+ * test v `membench.c` (UART `membench`, radek „retence po 1 s").
+ * ⚠️ ZMERENO 2026-08-23: retence po 1 s = **0 chybnych bitu**, takze obsah se
+ * nerozpada a tahle hodnota (at uz je „spravna" jakkoli) NENI pricinou chyb, ktere
+ * benchmark nasel — ty jsou z prekryvu adres (viz CLAUDE.md, podezreni na FMC_A9).
+ * Necham tedy 1835 beze zmeny; prepocet vyse zustava jako otevrena otazka k overeni
+ * proti datasheetu osazene SDRAM, ne jako znamy bug.
+ * ⚠️ 1835 by naopak zhruba sedelo pro 4096 radku — pokud je osazeny cip 4096-radkovy,
+ * je spatne `RowBitsNumber`, ne tohle. Rozhodne to az datasheet osazene SDRAM. */
 #define REFRESH_COUNT        1835
 
 #define SDRAM_TIMEOUT                            ((uint32_t)0xFFFF)

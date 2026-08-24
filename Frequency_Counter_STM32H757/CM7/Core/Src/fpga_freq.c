@@ -246,6 +246,153 @@ void fpga_freq_init(void)
 }
 
 /* Naparsuje DATA payload (absolutni offsety, payload zacina na FR_PAYLOAD=12). */
+/* ══════════════ Emulator FPGA ramcu (viz fpga_freq.h) ══════════════════════
+ * Sklada syntetický DATA ramec VCETNE spravneho CRC, takze projde uplne stejnou
+ * cestou jako ramec z draru. Zadny zvlastni rezim v `parse_data` ani nize — to
+ * je smysl celeho cviceni. */
+#define SIM_FAULT_NONE   0
+#define SIM_FAULT_LOST   1
+#define SIM_FAULT_CRC    2
+#define SIM_FAULT_DIV16  3
+#define SIM_FAULT_PHASE  4
+
+static uint8_t  s_sim_on     = 0;
+static double   s_sim_hz     = 0.0;
+static float    s_sim_noise  = 0.0f;     /* bila slozka +-ppb */
+static float    s_sim_drift  = 0.0f;     /* ppb/hodinu */
+static uint8_t  s_sim_fault  = SIM_FAULT_NONE;
+static uint32_t s_sim_seq    = 0;
+static uint32_t s_sim_next_ms = 0;       /* kdy vyrobit DALSI mereni */
+static uint64_t s_sim_ts     = 0;
+static uint32_t s_sim_t0     = 0;        /* start emulace (pro drift) */
+static uint32_t s_sim_rnd    = 0x12345678u;
+
+/* Pravdepodobne nejlevnejsi rozumny generator: 32bit xorshift. Nepotrebujeme
+ * kvalitni nahodnost, jen necosinusovy sum bez zavislosti na libc. */
+static uint32_t sim_rand(void)
+{
+    uint32_t x = s_sim_rnd;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    s_sim_rnd = x;
+    return x;
+}
+
+/* Vrati kmitocet aktualniho mereni [Hz] = nominal * (1 + (drift + sum) * 1e-9). */
+static double sim_freq_hz(void)
+{
+    float hours = (float)(HAL_GetTick() - s_sim_t0) / 3600000.0f;
+    float dev_ppb = s_sim_drift * hours;
+    if (s_sim_noise > 0.0f) {
+        /* uniformne v <-noise, +noise> */
+        float u = (float)(sim_rand() >> 8) / (float)(1u << 24);   /* 0..1 */
+        dev_ppb += (u * 2.0f - 1.0f) * s_sim_noise;
+    }
+    return s_sim_hz * (1.0 + (double)dev_ppb * 1e-9);
+}
+
+static void sim_put_le64(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+/* Naplni `f` (64 B) kompletnim DATA ramcem. `fresh` = jde o NOVE mereni. */
+static void sim_build_frame(uint8_t *f, int fresh)
+{
+    uint8_t pl[50];
+    memset(pl, 0, sizeof pl);
+    memset(f, 0, FR_LEN);
+
+    double hz = sim_freq_hz();
+    /* Kontrakt: hodnota uz zahrnuje delicku, STM nenasobi. Obe odbocky nesou
+     * TENTYZ kmitocet (na desce je to jeden citac, dve odbocky) — tim se testuje
+     * i to, ze `fpga_freq_select` prepina podle rozsahu, ne podle rozdilu hodnot. */
+    uint64_t fx = (uint64_t)(hz * 100000.0 + 0.5);
+    /* Gate ~250 ms s drobnym rozptylem, jako u realneho reciprokeho mereni. */
+    uint64_t gate_ns = 250000000ull + (sim_rand() % 200000u);
+    uint64_t edges   = (uint64_t)(hz * (double)gate_ns / 1e9);
+
+    sim_put_le64(pl + 0,  fx);                       /* frequency_x100000 (/4)  */
+    sim_put_le64(pl + 8,  edges);                    /* edge_count              */
+    sim_put_le64(pl + 16, gate_ns);                  /* gate_time_ns            */
+    sim_put_le64(pl + 24, s_sim_ts);                 /* timestamp_10MHz_ticks   */
+    pl[32] = 0;                                      /* channel_id              */
+    pl[33] = fresh ? 0x03u : 0x01u;                  /* measurement_status V+F  */
+    /* error_flags (u32 LE) na p+34, phase_status p+38, status2 p+39, freq16 p+40 */
+    if (s_sim_fault == SIM_FAULT_LOST) {
+        pl[34] = 0x02;                               /* bit1 SIGNAL_LOST        */
+        pl[33] = 0x00;                               /* uz ne VALID             */
+    }
+    pl[38] = (s_sim_fault == SIM_FAULT_PHASE) ? 0xEFu : 0xFFu;   /* dira ve fine_seen */
+    pl[39] = (s_sim_fault == SIM_FAULT_DIV16) ? 0x01u : 0x00u;   /* status2 bit0     */
+    sim_put_le64(pl + 40, fx);                       /* freq16_x100000 (/16)    */
+
+    f[0] = FR_MAGIC;
+    f[1] = FR_VERSION;
+    f[2] = TYPE_DATA;
+    /* FLAGS/STATUS: FPGA hlasi VALID/FRESH tady (parse bere rx[3]). Pri
+     * SIGNAL_LOST shazujeme VALID — stejne jako to dela skutecna FPGA. */
+    f[3] = (s_sim_fault == SIM_FAULT_LOST)
+             ? (uint8_t)ST_ACK_OK
+             : (uint8_t)(ST_DATA_VALID | (fresh ? ST_DATA_FRESH : 0u) | ST_ACK_OK);
+    f[4] = (uint8_t)(s_sim_seq);
+    f[5] = (uint8_t)(s_sim_seq >> 8);
+    f[6] = (uint8_t)(s_sim_seq >> 16);
+    f[7] = (uint8_t)(s_sim_seq >> 24);
+    f[8] = 50;                                       /* PAYLOAD_LEN */
+    memcpy(&f[FR_PAYLOAD], pl, sizeof pl);
+
+    uint16_t crc = crc16_ccitt(f, 62);
+    if (s_sim_fault == SIM_FAULT_CRC) crc ^= 0xFFFFu;   /* schvalne spatne */
+    f[62] = (uint8_t)(crc);
+    f[63] = (uint8_t)(crc >> 8);
+}
+
+/* Vyrobi ramec do rx[]. Nova SEQ jen ~4x/s (realna FPGA ma gate 0,25 s), i kdyz
+ * FpgaTask polluje 20x/s — jinak by emulace vyrabela 20 mereni/s a zkreslila by
+ * vse, co se opira o tempo mereni. */
+static void sim_produce(uint8_t *rx)
+{
+    uint32_t now = HAL_GetTick();
+    int fresh = 0;
+    if ((int32_t)(now - s_sim_next_ms) >= 0) {
+        s_sim_next_ms = now + 250u;
+        s_sim_seq++;
+        s_sim_ts += 2500000ull;      /* 0,25 s v tikach 10 MHz */
+        fresh = 1;
+    }
+    sim_build_frame(rx, fresh);
+}
+
+void fpga_sim_set(int on, double hz, float noise_ppb, float drift_ppb_h)
+{
+    s_sim_on    = on ? 1u : 0u;
+    if (!on) { s_sim_hz = 0.0; return; }
+    if (hz < 1.0) hz = 10000000.0;                  /* default 10 MHz */
+    s_sim_hz    = hz;
+    s_sim_noise = (noise_ppb < 0.0f) ? 0.0f : noise_ppb;
+    s_sim_drift = drift_ppb_h;
+    s_sim_t0    = HAL_GetTick();
+    s_sim_next_ms = s_sim_t0;
+    /* SEQ zamerne NEnulujeme: `g_last_seq` uz muze byt cokoli a shodne cislo by
+     * vypadalo jako "neni nove mereni". Skok kupredu je bezpecny (kontrakt
+     * porovnava jen nerovnost). */
+    s_sim_seq  += 1000u;
+}
+
+int    fpga_sim_active(void) { return s_sim_on ? 1 : 0; }
+double fpga_sim_hz(void)     { return s_sim_on ? s_sim_hz : 0.0; }
+
+int fpga_sim_fault(const char *what)
+{
+    if (what == NULL)                   return 0;
+    if (strcmp(what, "none")  == 0) { s_sim_fault = SIM_FAULT_NONE;  return 1; }
+    if (strcmp(what, "lost")  == 0) { s_sim_fault = SIM_FAULT_LOST;  return 1; }
+    if (strcmp(what, "crc")   == 0) { s_sim_fault = SIM_FAULT_CRC;   return 1; }
+    if (strcmp(what, "div16") == 0) { s_sim_fault = SIM_FAULT_DIV16; return 1; }
+    if (strcmp(what, "phase") == 0) { s_sim_fault = SIM_FAULT_PHASE; return 1; }
+    return 0;
+}
+
 static void parse_data(const uint8_t *rx, fpga_meas_t *m)
 {
     const uint8_t *p = &rx[FR_PAYLOAD];
@@ -269,10 +416,19 @@ bool fpga_freq_poll(fpga_meas_t *out)
 
     if (!g_init_ok) return false;   /* selftest neprosel -> neposilat nic (kontrakt 7.1) */
 
-    /* ACK posledni potvrzene seq (potvrdi predchozi + vyclockuje aktualni ramec) */
-    build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);
-    if (!xfer(tx, rx))     { g_xfer_ok = 0; s_link_ok = 0; return false; }
-    g_xfer_ok  = 1;
+    /* ⚠️ JEDINY rozdil emulace: odkud se vezme obsah `rx`. VSE nize (MAGIC, CRC,
+     * TYPE, parse_data, latch, VALID/FRESH/SEQ) bezi bez zmeny — prave proto je
+     * emulace uzitecna. Na SPI se pritom NESAHA, takze bezici emulace nemuze
+     * rozhodit pripadnou skutecnou FPGA na sbernici. */
+    if (s_sim_on) {
+        sim_produce(rx);
+        g_xfer_ok = 1;
+    } else {
+        /* ACK posledni potvrzene seq (potvrdi predchozi + vyclockuje aktualni ramec) */
+        build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);
+        if (!xfer(tx, rx)) { g_xfer_ok = 0; s_link_ok = 0; return false; }
+        g_xfer_ok = 1;
+    }
     g_last_rx0 = rx[0];                                /* diagnostika: co prislo na MISO */
 
     if (rx[0] != FR_MAGIC) { s_link_ok = 0; return false; }
@@ -445,7 +601,10 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
     else if (m->error_flags & FPGA_ERR_MEAS)        etag = " E/4";
     else if (m->status2     & FPGA_ST2_DIV16_ERR)   etag = " E/16";
 
-    snprintf(buf, buflen, "%s PH:%X/%X GATE:%sNS SEQ:%lu%s",
+    /* ⚠️ "SIM" JAKO PRVNI — info radek je videt na hlavni obrazovce i v diagnostice,
+     * takze emulovana data nesmi jit zamenit za merena ani letmym pohledem. */
+    snprintf(buf, buflen, "%s%s PH:%X/%X GATE:%sNS SEQ:%lu%s",
+             s_sim_on ? "SIM " : "",
              use16 ? "/16" : "/4", present, fine, g, (unsigned long)m->sequence, etag);
 }
 

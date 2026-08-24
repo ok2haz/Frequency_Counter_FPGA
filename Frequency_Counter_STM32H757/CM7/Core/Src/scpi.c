@@ -67,8 +67,10 @@ static void fmt_scpi_f2(float v, char *out, size_t n)
     int t = (int)(v * 100.0f + 0.5f);
     snprintf(out, n, "%s%d.%02d", neg ? "-" : "", t / 100, t % 100);
 }
-/* double Hz -> "±d.ddddd" (5 des. míst; CALC:DATA?/readbacky). */
-static void fmt_scpi_hz_d(double hz, char *out, size_t n)
+/* double Hz -> "±d.ddddd" (5 des. míst; CALC:DATA?/readbacky).
+ * ⚠️ Vystaveno (ne static) — sdílí ji `httpd_min.c` (W4) pro JSON čísla, aby
+ * přetečením ošetřená logika (viz komentář uvnitř) nebyla ve dvou kopiích. */
+void fmt_scpi_hz_d(double hz, char *out, size_t n)
 {
     /* ⚠️ Rozsahová pojistka. Vstup NENÍ jen měřený kmitočet — jde sem i `m`, `b`,
      * `lo`, `hi` a výsledek `m·x+b`, tedy hodnoty, které uživatel nastavuje
@@ -127,15 +129,17 @@ static int scpi_parse3(const char *s, int *a, int *b, int *cc)
 }
 
 /* Index brany 0..3 -> sekundy. Tabulka je ZDROJ PRAVDY pro SCPI i pro prevod
- * opacnym smerem (`scpi_gate_idx_from_s`); UI ma tytez hodnoty jako popisky. */
-static double scpi_gate_s(uint8_t idx)
+ * opacnym smerem (`scpi_gate_idx_from_s`); UI ma tytez hodnoty jako popisky.
+ * ⚠️ Vystaveno (ne static) — sdili ji JSON v `httpd_min.c`, aby web neukazoval
+ * branu z vlastni kopie tabulky (dve tabulky = dve pravdy, viz `fmt_scpi_hz_d`). */
+double scpi_gate_s(uint8_t idx)
 {
     static const double G[4] = {0.1, 1.0, 10.0, 100.0};
     return G[idx & 3];
 }
 /* Sekundy -> index brany. @return 0..3, nebo -1 kdyz hodnota neodpovida presetu.
  * Tolerance 1 % kryje zapis "0.1" i "1E-1". */
-static int scpi_gate_idx_from_s(double sec)
+int scpi_gate_idx_from_s(double sec)
 {
     for (int i = 0; i < 4; i++) {
         double g = scpi_gate_s((uint8_t)i), d = sec - g;
@@ -177,6 +181,7 @@ static const char *scpi_err_msg(int code)
         case -222: return "Data out of range";
         case -224: return "Illegal parameter value";
         case -230: return "Data corrupt or stale";
+        case -241: return "Hardware missing";
         case -350: return "Queue overflow";
         default:   return "Error";
     }
@@ -392,6 +397,7 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
      * ⚠️ Rucne nastaveny cas prezije jen do dalsiho GPS fixu: GPS je autoritativni
      * a `rtc_try_sync` ho prepise. Ma tedy smysl jen bez antény. */
     if (hdr_match(hdr, "SYSTem:DATE")) {
+#if defined(CORE_CM7)
         if (is_query) {
             /* `g_rtc_text` = "YYYY-MM-DD HH:MM:SS" (plni defaultTask). Cteme z nej
              * primo aritmetikou - zadne pomocne buffery ani terminatory. */
@@ -410,8 +416,15 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
             return 0;
         }
         scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+#else
+        /* ⚠️ RTC registry vlastni VYHRADNE CM7 defaultTask a IPC snapshot dnes cas
+         * nese jen jako hotovy `rtc_unix`, ne editovatelny — bez pridaneho okna
+         * v cmd ringu na CM4 nastavit nejde. Hardware missing, ne nase chyba. */
+        scpi_err_push(c, -241); snprintf(out, out_sz, "-241,\"Hardware missing\""); return strlen(out);
+#endif
     }
     if (hdr_match(hdr, "SYSTem:TIME")) {
+#if defined(CORE_CM7)
         if (is_query) {
             const volatile char *rt = g_rtc_text;
             int hh = (rt[11]-'0')*10 + (rt[12]-'0');
@@ -428,6 +441,9 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
             return 0;
         }
         scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+#else
+        scpi_err_push(c, -241); snprintf(out, out_sz, "-241,\"Hardware missing\""); return strlen(out);
+#endif
     }
     /* *OPT? — seznam osazenych voleb (IEEE 488.2). Prazdny retezec = zadne volby;
      * my hlasime, co pristroj realne umi, aby si ovladac nemusel hadat. */
@@ -443,6 +459,7 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
      * UiTask). ⚠️ Clamp na 25..255 jako v UI — uplna tma by displej "ztratila"
      * a uzivatel by nemel jak jas vratit zpet dotykem. */
     if (hdr_match(hdr, "DISPlay:BRIGhtness")) {
+#if defined(CORE_CM7)
         if (is_query) { snprintf(out, out_sz, "%u", (unsigned)((g_brightness * 100u + 127u) / 255u)); return strlen(out); }
         int ok = 0; double v = scpi_num(arg, &ok);
         if (ok && v >= 0.0 && v <= 100.0) {
@@ -453,6 +470,11 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
             return 0;
         }
         scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
+#else
+        /* Displej (a jeho jas) je fyzicky pripojeny jen na CM7; CM4 na nej nema
+         * IPC cestu ani duvod ji mit — vzhled neni "prístroj" (viz WEB_UI_PLAN.md 1.6). */
+        scpi_err_push(c, -241); snprintf(out, out_sz, "-241,\"Hardware missing\""); return strlen(out);
+#endif
     }
     /* SCPI-99 povinné. Bez něj VISA/IVI ovladače při inicializaci dostanou -113
      * a hned si zaplní chybovou frontu. */
@@ -638,15 +660,26 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (!src->read_log || !src->read_log(src, (uint32_t)nn, &r)) {
             scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
         }
-        char fq[24], to[12], tb[12], rf[12], hd[12];
+        char fq[24], to[12], tb[12], rf[12], hd[12], vb[12];
         fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
         if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
         if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
-        if (r.rf_dbm10 == DATALOG_INVALID16)     snprintf(rf, sizeof rf, "9.91E37"); else fmt_scpi_f2(r.rf_dbm10 / 10.0f, rf, sizeof rf);
+        /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10 — prevod stejnym vzorcem jako
+         * `MEAS:POW?` (AD8307 slope/intercept z kalibrace). Do 2026-08-18 se tu
+         * delilo deseti a 571 mV vyslo jako "57,1" v poli, ktere se tvari jako
+         * dBm (spravne -61,2). Guard na slope: 0 by delilo nulou. */
+        if (r.rf_mv == DATALOG_INVALID16) {
+            snprintf(rf, sizeof rf, "9.91E37");
+        } else {
+            float slope = src->ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.0f;
+            fmt_scpi_f2((float)r.rf_mv / slope + src->ad8307_intercept_dbm, rf, sizeof rf);
+        }
         if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
-        snprintf(out, out_sz, "%lu,%lu,%s,%s,%s,%d,%s,%u,%u,%s",
+        /* VBAT [V]; zaznamy z doby pred 2026-08-17 ho nemaji -> SCPI NaN. */
+        if (r.vbat_mv == DATALOG_INVALID16)      snprintf(vb, sizeof vb, "9.91E37"); else fmt_scpi_f2(r.vbat_mv / 1000.0f, vb, sizeof vb);
+        snprintf(out, out_sz, "%lu,%lu,%s,%s,%s,%d,%s,%u,%u,%s,%s",
                  (unsigned long)r.seq, (unsigned long)r.t_unix, fq, to, tb,
-                 (int)r.ocxo_vc_mv, rf, (unsigned)r.flags, (unsigned)r.sats, hd);
+                 (int)r.ocxo_vc_mv, rf, (unsigned)r.flags, (unsigned)r.sats, hd, vb);
         return strlen(out);
     }
 

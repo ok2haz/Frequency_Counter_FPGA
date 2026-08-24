@@ -26,12 +26,26 @@
 #include "sensor_stat.h"      /* g_sensors[] — teploty + napajeni + RF */
 #include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
 #include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
+#include "datalog.h"          /* datalog_set_enabled — IPC_CMD_LOG z CM4 (W1); v12 datalog_read_back/status */
+#include "alarm.h"            /* g_alarm_*, g_mon_*_bad — dashboard STAV karta (v12, #4) */
 #include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
+#include <stddef.h>           /* offsetof — kontrola layoutu ipc_sat_t vs gps_sat_t */
 #include "freertos_shared.h"  /* g_spi_ok, g_freq_stale, g_si5356_*, g_ui_cfg, g_uptime_s, ... */
 #include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomicky commit g_meas_cfg */
 #include "task.h"
 #include "cmsis_os2.h"        /* osKernelGetTickCount — throttle bez HAL zavislosti */
 #include <string.h>
+
+/* ── v12: `ipc_sat_t` (ipc_shared.h, bez gps.h) MUSI mit shodny layout s
+ * `gps_sat_t` (gps.h) — publikace druzic je proste `memcpy`. Kdyby se rozesly,
+ * web by kreslil sky plot ze smetĺ. Ty dva headery se jinak nepotkaji v jedne TU. */
+_Static_assert(IPC_GPS_MAX_SATS == GPS_MAX_SATS, "IPC/GPS pocet druzic se rozesel");
+_Static_assert(sizeof(ipc_sat_t) == sizeof(gps_sat_t), "ipc_sat_t != gps_sat_t velikost");
+_Static_assert(offsetof(ipc_sat_t, prn)     == offsetof(gps_sat_t, prn),     "sat.prn offset");
+_Static_assert(offsetof(ipc_sat_t, elev)    == offsetof(gps_sat_t, elev),    "sat.elev offset");
+_Static_assert(offsetof(ipc_sat_t, snr)     == offsetof(gps_sat_t, snr),     "sat.snr offset");
+_Static_assert(offsetof(ipc_sat_t, constel) == offsetof(gps_sat_t, constel), "sat.constel offset");
+_Static_assert(offsetof(ipc_sat_t, azim)    == offsetof(gps_sat_t, azim),    "sat.azim offset");
 
 /* ── Razitko: vynuluj celou sdilenou strukturu (seq=0 sude, ringy prazdne) a
  * orazitkuj snapshot (magic/verze/velikost). Pracuje nad DANOU instanci → sdili
@@ -123,7 +137,10 @@ void ipc_publish(void)
     g_ipc.snap.gps_valid    = g.valid;
     g_ipc.snap.gps_fix_mode = g.fix_mode;
     g_ipc.snap.gps_num_sat  = g.num_sat;
-    /* rtc_unix: zdroj UTC->unix zije v datalog/rtc vrstve; doplni se s MathTaskem. */
+    /* rtc_unix = aktualni UTC z RTC (0 = nesynchronizovano). Bez toho web/SCPI
+     * ukazoval CAS UTC "00:00:00" (pole zustavalo 0 z memsetu). ipc_publish bezi
+     * v defaultTasku, stejne jako pisatel g_rtc_text -> cteni je konzistentni. */
+    g_ipc.snap.rtc_unix     = datalog_now_unix();
 
     /* ⚠️ Hodnota + BIT PLATNOSTI musi vzniknout ZAROVEN a stejnym pravidlem jako
      * ve `scpi_src_load_cm7()`, jinak by tentyz pristroj rekl pres USB neco jineho
@@ -165,6 +182,11 @@ void ipc_publish(void)
     if (g.valid) sv |= IPC_V_GPS;
     g_ipc.snap.sens_valid = sv;
     g_ipc.snap.channel_id   = meas_ok ? m.channel_id : 0u;
+    /* v11: NASTAVENI mereni (brana/kanal/RUN). ⚠️ Zamerne `g_ui_cfg`, ne `g_ui_cfg_req`:
+     * publikuje se to, co UiTask uz APLIKOVAL, ne cekajici pozadavek — jinak by readback
+     * hlasil zmenu drive, nez se projevi na pristroji. Radek nad tim (`channel_id`) je
+     * neco jineho: kanal, ktery ohlasil FPGA ramec. */
+    g_ipc.snap.ui_cfg       = g_ui_cfg;
     g_ipc.snap.si5356_status = g_si5356_status;
     g_ipc.snap.si5356_ok    = g_si5356_ok;
     /* Kalibrace RF (aby CM4 spocital MEAS:POW? dBm z rf_mv) — g_calib je volatile float. */
@@ -182,7 +204,91 @@ void ipc_publish(void)
     g_ipc.snap.lim_lo   = mc.lo;  g_ipc.snap.lim_hi   = mc.hi;
     g_ipc.snap.math_en  = mc.math_en; g_ipc.snap.null_en = mc.null_en; g_ipc.snap.limit_en = mc.limit_en;
 
+    /* v8 (W3): hlavni vypinac vzdaleneho OVLADANI (okno PRISTUP) — TCP SCPI server na
+     * CM4 ho kontroluje pred pripojenim `set_cfg`. Cteni je vzdy povolene, bez ohledu
+     * na tenhle bit. */
+    g_ipc.snap.web_ctrl_en = g_web_ctrl_en;
+
+    /* v10 (W5): prihlasovaci udaje pro HTTP Basic Auth na CM4. `g_web_user/g_web_pass`
+     * i `g_ipc.snap.*` jsou volatile (`g_ipc` makro), ale `strncpy` bere `char *` —
+     * cast je bezpecny, protoze poradi zapisu vuci CM4 hlida VYHRADNE `IPC_DMB()`
+     * v `ipc_snap_publish_begin/end` (viz seqlock), ne `volatile` samotne. Vzdy
+     * 0-terminovano (rezerva -1 v cilove velikosti + explicitni zapis posl. bajtu). */
+    strncpy((char *)g_ipc.snap.web_user, (const char *)g_web_user, sizeof g_ipc.snap.web_user - 1);
+    ((char *)g_ipc.snap.web_user)[sizeof g_ipc.snap.web_user - 1] = '\0';
+    strncpy((char *)g_ipc.snap.web_pass, (const char *)g_web_pass, sizeof g_ipc.snap.web_pass - 1);
+    ((char *)g_ipc.snap.web_pass)[sizeof g_ipc.snap.web_pass - 1] = '\0';
+
+    /* v12 (#4): alarmy/prahy/selftest pro dashboard. Pocitadla saturuj na 0xFFFF. */
+    #define IPC_SAT16(x) ((uint16_t)((x) > 0xFFFFu ? 0xFFFFu : (x)))
+    g_ipc.snap.alarm_fpga_lost  = IPC_SAT16(g_alarm_fpga_lost);
+    g_ipc.snap.alarm_gps_lost   = IPC_SAT16(g_alarm_gps_lost);
+    g_ipc.snap.alarm_limit_fail = IPC_SAT16(g_alarm_limit_fail);
+    g_ipc.snap.alarm_vbat       = IPC_SAT16(g_alarm_vbat);
+    g_ipc.snap.alarm_ocxo       = IPC_SAT16(g_alarm_ocxo);
+    g_ipc.snap.alarm_adev       = IPC_SAT16(g_alarm_adev);
+    #undef IPC_SAT16
+    g_ipc.snap.mon_vbat_bad = g_mon_vbat_bad;
+    g_ipc.snap.mon_ocxo_bad = g_mon_ocxo_bad;
+    g_ipc.snap.mon_adev_bad = g_mon_adev_bad;
+    g_ipc.snap.selftest_res = g_selftest_res;
+
+    /* v12 (#5): GPS druzice pro sky plot. Layout ipc_sat_t == gps_sat_t (assert
+     * vyse) -> proste memcpy platnych polozek. */
+    {
+        uint8_t nsat = (g.sat_count > IPC_GPS_MAX_SATS) ? IPC_GPS_MAX_SATS : g.sat_count;
+        g_ipc.snap.gps_sat_count = nsat;
+        memcpy((void *)g_ipc.snap.gps_sats, g.sats, (size_t)nsat * sizeof(ipc_sat_t));
+    }
+
     ipc_snap_publish_end();
+}
+
+/* ── v12 (#6): obsluha datalog transfer kanalu (CM4 -> CM7 -> CM4). ────────────
+ * CM4 zapise pozadavek (req_from/count/step) a zvedne `req_gen`; my precteme az
+ * IPC_LOG_CHUNK zaznamu z W25Q datalogu (s decimaci `req_step`) a nastavime
+ * `resp_gen = req_gen`. Datalog cte JEN CM7 (flash je fyzicky tady) — proto tudy.
+ * ⚠️ BLOKUJICI (W25Q cteni pod qspiMutexHandle) -> vola VYHRADNE defaultTask, jako
+ * datalog_tick. Jedno cteni chunku (<= 96 zaznamu) je radove ms; probiha jen kdyz
+ * uzivatel na webu vyzada dlouhou historii, ne periodicky. `datalog_read_back` ma
+ * kratky mutex timeout a pri obsazene flash zaznam vynecha (nezdrzi watchdog). */
+void ipc_datalog_service(void)
+{
+    uint32_t req = g_ipc.log.req_gen;
+    if (req == g_ipc.log.resp_gen) return;          /* zadny novy pozadavek */
+
+    datalog_status_t st;
+    datalog_get_status(&st);
+    g_ipc.log.resp_total = st.records;
+
+    uint16_t want = g_ipc.log.req_count;
+    if (want > IPC_LOG_CHUNK) want = IPC_LOG_CHUNK;
+    uint16_t step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
+    uint32_t from = g_ipc.log.req_from;             /* 0 = nejnovejsi */
+
+    uint16_t got = 0;
+    for (uint16_t i = 0; i < want; i++) {
+        datalog_rec_t r;
+        uint32_t idx = from + (uint32_t)i * step;
+        if (idx >= st.records) break;
+        if (!datalog_read_back(idx, &r)) break;     /* mimo rozsah / flash obsazena */
+        ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[got];
+        o->t_unix       = r.t_unix;
+        o->freq_x100000 = r.freq_x100000;
+        o->t_ocxo_c100  = r.t_ocxo_c100;
+        o->t_board_c100 = r.t_board_c100;
+        o->ocxo_vc_mv   = (uint16_t)r.ocxo_vc_mv;
+        o->rf_mv        = (uint16_t)r.rf_mv;
+        o->vbat_mv      = (uint16_t)r.vbat_mv;
+        o->flags        = r.flags;
+        o->sats         = r.sats;
+        o->hdop10       = r.hdop10;
+        o->_pad         = 0u;
+        got++;
+    }
+    g_ipc.log.resp_count = got;
+    IPC_DMB();
+    g_ipc.log.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
 }
 
 /* Posledni REALNY kmitocet /4 [Hz] (pro NULL_ACQ). @return 1 = platne. */
@@ -243,6 +349,47 @@ _Static_assert((int)SCPI_V_VREF    == (int)IPC_V_VREF,    "SCPI/IPC bit VREF se 
 _Static_assert((int)SCPI_V_VBAT    == (int)IPC_V_VBAT,    "SCPI/IPC bit VBAT se rozesel");
 _Static_assert((int)SCPI_V_GPS     == (int)IPC_V_GPS,     "SCPI/IPC bit GPS se rozesel");
 
+/* ── W1 (2026-08-22): stav MERENI (brana/kanal/RUN) z CM4 ────────────────────
+ * ⚠️ Tohle NEPATRI do `ipc_cfg_apply` (to je cista funkce nad `meas_cfg_t`, kterou
+ * pousti i selftest nad lokalni kopii) — stav mereni vlastni UiTask, ne `g_meas_cfg`.
+ * `ipc_service` bezi v defaultTasku, takze se sem zapisuje jen POZADAVEK a UiTask ho
+ * aplikuje (`screen_main_apply_cfg_req`) vcetne prekresleni footeru a persistence.
+ *
+ * Je to ZAMERNE tentyz most, jaky uz pouziva SCPI pres USB (`scpi_src_set_cfg_cm7`) —
+ * ne druha cesta, ktera by se casem rozesla. Skladame na AKTUALNI hodnotu, aby dva
+ * SETy za sebou nesmazaly jeden druhy.
+ * ⚠️ Funkce je NECISTA (globaly) → nesmi se volat z `ipc_selftest`.
+ * ⚠️ Do W1 tyhle klice spadaly do `default: return 0`, takze z CM4 NESLO RUN/STOP,
+ * branu ani kanal — dokumentace tvrdila opak (viz WEB_UI_PLAN.md, nalez 1.1).
+ * @return 1 = prijato. */
+static int ipc_ui_cfg_apply(uint8_t key, uint32_t arg)
+{
+    uint8_t cur = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
+    switch (key) {
+        case IPC_CFG_GATE:                              /* arg = index presetu 0..3 */
+            if (arg > 3u) return 0;
+            cur = (uint8_t)((cur & ~(3u << 2)) | ((arg & 3u) << 2));
+            break;
+        case IPC_CFG_CHAN:                              /* mame jen kanal 0/1 */
+            if (arg > 1u) return 0;
+            cur = (uint8_t)((cur & ~(1u << 1)) | ((arg & 1u) << 1));
+            break;
+        case IPC_CFG_RUN:
+            /* ⚠️ Na rozdil od GATE/CHAN se validace pridava az ted (2026-08-23, HW test
+             * odhalil): `arg` != 0/1 se drive tise bralo jako "bez", stejny (existujici)
+             * vzor jako CM7 SCPI backend `scpi_src_set_cfg_cm7`. Tady se ale utahuje,
+             * protoze `ipccmd run <cislo>` je primy vstup z UART bez SCPI bool parseru
+             * (ON/OFF/1/0) pred sebou — bez teto kontroly `run 9` tise projde jako "run". */
+            if (arg > 1u) return 0;
+            cur = (uint8_t)((cur & ~(1u << 4)) | ((arg ? 1u : 0u) << 4));
+            break;
+        default: return 0;
+    }
+    g_ui_cfg_req = cur;
+    g_ui_cfg_req_pend = 1;      /* az teprve ted -> UiTask cte hotovou hodnotu */
+    return 1;
+}
+
 static int ipc_cfg_apply(meas_cfg_t *c, uint8_t key, uint32_t arg, double argd, double freq_hz)
 {
     switch (key) {
@@ -270,8 +417,22 @@ static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_rin
         ipc_resp_t r = { .id = c.id, .status = 0u, ._pad = 0, .value = c.arg };
         switch (c.type) {
             case IPC_CMD_NOP:      break;                       /* zdravi ringu — echo OK */
-            case IPC_CMD_CFG_SET:  if (!ipc_cfg_apply(cfg, c.key, c.arg, c.argd, freq_hz)) r.status = 1u; break;
-            default:               r.status = 1u; break;        /* GATE/RUN/CHAN/LOG dozraje s CM4 */
+            case IPC_CMD_CFG_SET:
+                /* Klice stavu mereni jdou mostem do UiTasku, Math/limity na predanou cfg.
+                 * ⚠️ Rozdeleni je nutne: `ipc_cfg_apply` je cista funkce nad `meas_cfg_t`
+                 * (bezi i v selftestu nad lokalni kopii), kdezto GATE/CHAN/RUN sahaji na globaly. */
+                if (c.key == IPC_CFG_GATE || c.key == IPC_CFG_CHAN || c.key == IPC_CFG_RUN) {
+                    if (!ipc_ui_cfg_apply(c.key, c.arg)) r.status = 1u;
+                } else if (!ipc_cfg_apply(cfg, c.key, c.arg, c.argd, freq_hz)) {
+                    r.status = 1u;
+                }
+                break;
+            /* Starsi „prikazove" varianty tehoz (CM4 muze poslat obojí). */
+            case IPC_CMD_GATE:     if (!ipc_ui_cfg_apply(IPC_CFG_GATE, c.arg)) r.status = 1u; break;
+            case IPC_CMD_CHAN:     if (!ipc_ui_cfg_apply(IPC_CFG_CHAN, c.arg)) r.status = 1u; break;
+            case IPC_CMD_RUNSTOP:  if (!ipc_ui_cfg_apply(IPC_CFG_RUN,  c.arg)) r.status = 1u; break;
+            case IPC_CMD_LOG:      datalog_set_enabled(c.arg ? 1 : 0); break;
+            default:               r.status = 1u; break;
         }
         ipc_ring_resp_push(resp, &r);   /* pri plnem resp ringu se odpoved zahodi (CM4 si vyzada znovu) */
         handled++;
@@ -321,6 +482,63 @@ uint32_t ipc_cm4_cpu_pct(void)
     if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
     uint32_t p = g_ipc.cm4.cm4_cpu_pct;
     return (p > 100u) ? 100u : p;
+}
+
+/* ── Stav ETH linky z CM4 (v5, F1). @return 1 = link UP. Vyplni volitelne
+ * speed [Mbps], duplex (0=half/1=full) a IP (oktety a.b.c.d v uint32). Bez zapsaneho
+ * CM4 magicu vraci 0 a nuluje vystupy (degradovane "NET: down"). */
+int ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (speed_mbps) *speed_mbps = 0;
+        if (duplex)     *duplex     = 0;
+        if (ip)         *ip         = 0;
+        return 0;
+    }
+    if (speed_mbps) *speed_mbps = g_ipc.cm4.net_speed_mbps;
+    if (duplex)     *duplex     = g_ipc.cm4.net_duplex;
+    if (ip)         *ip         = g_ipc.cm4.net_ip;
+    return g_ipc.cm4.net_link ? 1 : 0;
+}
+
+/* ── Vysledek ETH bring-upu na CM4 (v6, F3). @return 1 = HAL_ETH_Init proslo.
+ * `phy_id` = PHYID1<<16|PHYID2 (LAN8742A 0x0007C131), 0 = neprecteno.
+ * Stejna degradace jako ipc_cm4_net: bez CM4 magicu 0 + vynulovany vystup.
+ * ⚠️ init_ok == 0 znamena "CM4 se k MDIO nedostala" (typicky stoji RMII REF_CLK),
+ * NE "PHY mlci" — PHY ID se cte az po uspesnem initu (nastaveny MDIO CSR clock). */
+int ipc_cm4_eth(uint32_t *phy_id)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (phy_id) *phy_id = 0;
+        return 0;
+    }
+    if (phy_id) *phy_id = g_ipc.cm4.eth_phy_id;
+    return g_ipc.cm4.eth_init_ok ? 1 : 0;
+}
+
+/* ── IPC_VERSION obrazu CM4 (v6). 0 = CM4 nezapsala magic, nebo bezi starsi obraz,
+ * ktery verzi nehlasi. Existuje proto, ze nesoulad bank byl do ted TICHY: CM4 pri
+ * neshode jen prestane cist snapshot, ale heartbeat publikuje dal -> `ipc_cm4_alive()`
+ * hlasi ZIVOU CM4 a v headeru svití "4:xx%", takze to vypada v poradku. */
+uint8_t ipc_cm4_ipc_version(void)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
+    return g_ipc.cm4.cm4_ipc_version;
+}
+
+/* ── Vysledek `scpi_selftest()` na CM4 (v7, W2). Bez ziveho CM4 vraci 0 (stejna
+ * degradace jako ostatni ipc_cm4_* gettery). */
+uint8_t ipc_cm4_scpi_selftest(void)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
+    return g_ipc.cm4.scpi_selftest_ok;
+}
+
+/* ── Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejna degradace. */
+uint8_t ipc_cm4_httpd_selftest(void)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
+    return g_ipc.cm4.httpd_selftest_ok;
 }
 
 /* ── Pure-logic selftest: seqlock parita + cteni-retry + cmd/resp ring
@@ -412,3 +630,34 @@ int ipc_selftest(void)
 
     return ok;
 }
+
+/* ══════════════ SCPI nad IPC snapshotem (priprava CM4 backendu, #25) ═════════
+ * Naplni `scpi_src_t` VYHRADNE ze snapshotu — presne to, co bude delat CM4.
+ * Viz komentar u deklarace v ipc_shared.h.
+ *
+ * ⚠️ Bity platnosti se prenaseji PRIMYM prirazenim (`valid = sens_valid`), ne
+ * prekladem — SCPI_V_* a IPC_V_* maji ZAMERNE shodne pozice a hlidaji to
+ * staticke asserty nize. Kdyby se rozesly, preklad by neprosel.
+ *
+ * ⚠️ Co snapshot NEMA, zustava nulove/neplatne — a to je spravne: lepe "nevim"
+ * nez vymysleny udaj. Konkretne datalog (MMEM:*) a `selftest_pass` snapshot
+ * dnes nenese, takze CM4 na ne odpovi prazdno; az to bude potreba, doplni se do
+ * snapshotu s bumpem IPC_VERSION (dnes by to byla mrtva vaha). */
+_Static_assert((int)SCPI_V_FREQ    == (int)IPC_V_FREQ,    "SCPI/IPC bit FREQ se rozesel");
+_Static_assert((int)SCPI_V_DIV16   == (int)IPC_V_DIV16,   "SCPI/IPC bit DIV16 se rozesel");
+_Static_assert((int)SCPI_V_FRAME   == (int)IPC_V_FRAME,   "SCPI/IPC bit FRAME se rozesel");
+_Static_assert((int)SCPI_V_T_OCXO  == (int)IPC_V_T_OCXO,  "SCPI/IPC bit T_OCXO se rozesel");
+_Static_assert((int)SCPI_V_T_BOARD == (int)IPC_V_T_BOARD, "SCPI/IPC bit T_BOARD se rozesel");
+_Static_assert((int)SCPI_V_T_MCU   == (int)IPC_V_T_MCU,   "SCPI/IPC bit T_MCU se rozesel");
+_Static_assert((int)SCPI_V_T_FPGA  == (int)IPC_V_T_FPGA,  "SCPI/IPC bit T_FPGA se rozesel");
+_Static_assert((int)SCPI_V_VC      == (int)IPC_V_VC,      "SCPI/IPC bit VC se rozesel");
+_Static_assert((int)SCPI_V_RF      == (int)IPC_V_RF,      "SCPI/IPC bit RF se rozesel");
+_Static_assert((int)SCPI_V_V12     == (int)IPC_V_V12,     "SCPI/IPC bit V12 se rozesel");
+_Static_assert((int)SCPI_V_V5      == (int)IPC_V_V5,      "SCPI/IPC bit V5 se rozesel");
+_Static_assert((int)SCPI_V_VREF    == (int)IPC_V_VREF,    "SCPI/IPC bit VREF se rozesel");
+_Static_assert((int)SCPI_V_VBAT    == (int)IPC_V_VBAT,    "SCPI/IPC bit VBAT se rozesel");
+_Static_assert((int)SCPI_V_GPS     == (int)IPC_V_GPS,     "SCPI/IPC bit GPS se rozesel");
+
+/* ⚠️ `ipc_scpi_src_from_snap` se PRESTEHOVALA do `ipc_scpi.c` — je to cista funkce
+ * (snapshot -> scpi_src_t) a linkuje se do OBOU jader, aby CM4 i testovaci cesta
+ * `scpi ipc` na CM7 pouzivaly doslova tentyz kod a nemohly se rozejit. */

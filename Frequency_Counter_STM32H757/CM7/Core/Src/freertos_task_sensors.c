@@ -121,6 +121,28 @@ void sensor_fail(sensor_id_t id)
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
 }
 
+void sensor_stat_reset_all(void)
+{
+    for (int i = 0; i < SENS_COUNT; i++) {
+        sensor_stat_t *s = &g_sensors[i];
+        /* ⚠️ `samples` se NESMI vynulovat (chyba z prvni verze, 2026-08-17).
+         * Neni to jen citac vzorku statistiky — cely zbytek kodu ho cte jako
+         * "ma tenhle senzor VUBEC nejakou hodnotu?" na 13 mistech, mj.:
+         *   datalog.c sens_c100/sens_mv -> DATALOG_INVALID16 (do logu by se
+         *     na jeden tick zapsaly sentinely misto teplot/Vc/RF!),
+         *   app_gpsdo.c draw_sensors_values -> "---" v ZIVE hodnote (tj. cela
+         *     obrazovka Senzory, na ktere to tlacitko je, problikne prazdnotou),
+         *   System Health "Power supplies" -> "Unkn", hbar_value -> "--",
+         *   GRAFY bargrafy -> seda/nula, autocal -> AC_NA.
+         * Misto toho restartujeme akumulaci OD AKTUALNI HODNOTY: min=max=mean=last
+         * a samples=1. To je presne to, co dela lazy-init v sensor_update() pri
+         * prvnim vzorku, takze navazujici running mean pocita spravne. */
+        if (s->samples == 0) continue;         /* jeste nikdy nic neprecetl -> neni co resetovat */
+        s->min = s->max = s->mean = s->last;
+        s->samples = 1;
+    }
+}
+
 /* ── I2C1 recovery (robustnost: vypadek 1 senzoru nesmi shodit zbytek sbernice) ──
  * Pokud nejaky cip drzi SDA / bus se zasekne, dalsi cteni na I2C1 timeoutuji a
  * kaskadou padaji vsechny (vc. ADS). Recovery: 9 SCL pulzu uvolni slave drzici

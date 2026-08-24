@@ -38,4 +38,25 @@
  * Pozn.: plny region by byl ~242 dni (NE „600", jak driv chybne uvadela dokumentace). */
 #define W25Q_DATALOG_SIZE    (((W25Q_DATA_SIZE / 3u) / W25Q_SECTOR_SIZE) * W25Q_SECTOR_SIZE)
 
+/* ── FLIGHT RECORDER (kontext pred resetem, STATUS.md #18) ───────────────────
+ * Hned ZA datalogem, tedy ve volnych 2/3 DATA regionu. 64 sektoru = 256 kB;
+ * z toho se v jednu chvili pouziva JEDEN (ostatni jsou rezerva pro rotaci kvuli
+ * zivotnosti flash — dump se deje jen pri poruse, takze i pri jednom dumpu
+ * denne to vydrzi radove stovky let). */
+#define W25Q_FLIGHTREC_BASE     (W25Q_DATA_BASE + W25Q_DATALOG_SIZE)
+#define W25Q_FLIGHTREC_SECTORS  64u
+#define W25Q_FLIGHTREC_SIZE     (W25Q_FLIGHTREC_SECTORS * W25Q_SECTOR_SIZE)
+
+/* ── BENCHMARK scratch (okno PAMETI, membench.c) ─────────────────────────────
+ * ⚠️ DESTRUKTIVNI oblast: benchmark ji maze a prepisuje. Lezi za flight recorderem,
+ * tedy porad ve VOLNYCH 2/3 DATA regionu — zadny modul sem nesaha, takze se test
+ * nemuze potkat s datalogem ani s crash dumpem. Zamerne MALA (8 sektoru = 32 kB):
+ * kazdy beh benchmarku stoji tolik erase cyklu, kolik je vzoru, a jeden sektor
+ * mazani trva 50-400 ms -> vetsi oblast by test protahla na desitky sekund.
+ * Zivotnost: 2 vzory/beh, endurance W25Q 100k cyklu -> i pri 10 spustenich denne
+ * to vydrzi radove tisice let. */
+#define W25Q_BENCH_BASE     (W25Q_FLIGHTREC_BASE + W25Q_FLIGHTREC_SIZE)
+#define W25Q_BENCH_SECTORS  8u
+#define W25Q_BENCH_SIZE     (W25Q_BENCH_SECTORS * W25Q_SECTOR_SIZE)
+
 #endif /* INC_W25Q_MAP_H_ */

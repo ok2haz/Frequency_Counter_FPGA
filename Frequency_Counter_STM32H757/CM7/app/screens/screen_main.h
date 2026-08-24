@@ -32,8 +32,7 @@
  * stranach byl cisty nevyuzity pruh — Allan zleva i pravy sloupec (trend/drift)
  * zprava do nej jen "koukaly". 4 px staci, aby se zaobleny roh karty
  * (UI_DIM_CARD_RADIUS 16) neslepil s hranou panelu. Zisk 16 px sirky se dle
- * SCR_MAIN_GRID_LEFT_RATIO deli mezi Allan (+8) a pravy sloupec (+8).
- * Plati pro OBA layouty (v1 i v2). */
+ * SCR_MAIN_GRID_LEFT_RATIO deli mezi Allan (+8) a pravy sloupec (+8). */
 #define SCR_MAIN_GRID_MARGIN       4
 /* 47 % (372 px pri okraji 4) Allan vlevo | 406 px pravy sloupec (2026-07-19;
  * bylo 53 % — zuzeno, aby karty statistik (1/3 z praveho sloupce) unesly hodnoty
@@ -43,7 +42,7 @@
 
 #define SCR_MAIN_CARD_SECTION_GAP  11
 /* (SCR_MAIN_SMALL_CARD_H odstranen 2026-07-19 — mrtva konstanta, vysku
- * stat karet urcuje render_body_grid_v1/v2 lokalne.) */
+ * stat karet urcuje render_body_grid lokalne.) */
 
 #define SCR_MAIN_BG_CACHE_W        UI_DIM_SCREEN_W
 #define SCR_MAIN_BG_CACHE_H        UI_DIM_SCREEN_H
@@ -54,6 +53,14 @@ void screen_main_render(void);      /* full render into current target */
 void screen_main_invalidate(void);  /* force cache rebuild */
 const prim_pixel_t *screen_main_bg(void);    /* shared background cache (RGB565) */
 int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 */
+/* ── Rozlozeni hlavni obrazovky (prepinac v okne DISPLEJ, persist v syscfg) ──
+ * 0 = HYBRIDNI (vychozi, ladene pro 4,3": Allan 47 % pres celou vysku, cisla
+ *     statistik mono_18, RF bargraf v.54),
+ * 1 = KLASICKE (puvodni pred auditem: Allan 53 %, statistiky mono_16, RF v.43).
+ * ⚠️ Po zmene je nutny plny re-render (`screen_main_render`) — meni se cela
+ * geometrie mrizky, partial redraw by nechal na obrazovce kusy stareho. */
+void screen_main_set_layout_classic(int on);
+int  screen_main_layout_is_classic(void);
 void screen_main_button_action(int idx);            /* apply toggle/cycle for button idx */
 /* ── Dalkove ovladani (SCPI). Stav mereni vlastni UiTask — SCPI jen zapise
  * `g_ui_cfg_req` a UiTask ho aplikuje timhle. @return 1 = zmenilo se. */
@@ -77,6 +84,8 @@ int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd O
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
+/** Delka zvoleneho hradla [s] (0,1/1/10/100) — rozpocet nejistoty. */
+double screen_main_gate_seconds(void);
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
@@ -97,13 +106,16 @@ void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka
 bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */
 void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
+void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
+float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
+/* Vlozi vzorek z DATALOGU (kadence 10 s) do ADEV pyramidy od stage 1.
+ * ⚠️ NE od stage 0: stage 1 ma tau = 10 s = presne kadenci logu, takze prevod je
+ * exaktni. Sypat log do stage 0 (tau0 = 1 s) by dalo sigma_y(tau) spatne o rad
+ * a pritom verohodne vypadajici. Detaily u implementace. */
+void  screen_main_adev_seed_10s(float y);
+/** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
+double screen_main_freq_nominal(void);
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
-
-/* ── DOCASNA A/B srovnavaci vetev hlavni mrizky (2026-07-19, k odstraneni
- * po vyhodnoceni — viz STATUS.md TODO a komentar u screen_main_toggle_layout
- * v screen_main.c). Prepina footer tlacitko slotu 0 (docasne "Main SW"). ── */
-void screen_main_toggle_layout(void);                   /* prepni stary/novy layout hlavni mrizky */
-bool screen_main_layout_is_old(void);                   /* 1 = aktivni stary (pred 4,3" audit) layout */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */

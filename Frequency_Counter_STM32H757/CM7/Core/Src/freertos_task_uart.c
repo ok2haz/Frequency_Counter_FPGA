@@ -29,6 +29,7 @@
 #include "freertos_shared.h"
 #include "alarm.h"          /* alarm_test — UART "beep" */
 #include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
+#include "membench.h"       /* membench_service — benchmark pameti (okno PAMETI) */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
 #include "sd_export.h"      /* UART "sd mount/unmount/export" — SD jako export (#28) */
@@ -36,6 +37,9 @@
 #include "screenshot.h"     /* UART "screenshot" — export obrazovky do BMP */
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
+#include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
+#include "flightrec.h"      /* UART "flightrec" — kontext pred resetem (#18) */
+#include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
 #define RX_BUF_SIZE       32
@@ -173,12 +177,14 @@ static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
 	eth_smi_write_bits(0x2u, 2);                      /* OP = 10 (read) */
 	eth_smi_write_bits(phyad & 0x1Fu, 5);
 	eth_smi_write_bits(reg   & 0x1Fu, 5);
-	eth_mdio_dir(0);                                  /* turnaround: linku pousti host */
-	(void)eth_mdc_clock();                            /* TA bit 1 (Z) */
-	(void)eth_mdc_clock();                            /* TA bit 2 (PHY vystavi 0) */
+	eth_mdio_dir(0);                                  /* turnaround: host pousti linku */
+	/* TA = JEDEN takt. LAN8742A na teto desce vystavuje MSB dat uz behem 2. TA
+	 * bitu, takze 2 TA takty cetly o 1 bit POZDE: ID 0x0007C131 vyslo jako
+	 * 0x000F8263 (= hodnota << 1 s pretecenim MSB), a stejne posunute i BMCR/BMSR.
+	 * 1 TA takt to srovna (empiricky overeno na HW 2026-08-22). */
+	(void)eth_mdc_clock();                            /* TA (PHY vzapeti vystavi MSB) */
 	uint16_t v = 0;
 	for (int i = 0; i < 16; i++) v = (uint16_t)((v << 1) | eth_mdc_clock());
-	(void)eth_mdc_clock();                            /* idle */
 	return v;
 }
 
@@ -291,7 +297,14 @@ void UartTask_run(void *argument)
 			  RxBuffer[RxIndex] = '\0';							// na konec zpravy da 0, aby fungovalo porovnavani funkci strcmp
 			  RxIndex = 0;
 
-			  if (strcmp(RxBuffer, "led on") == 0) {
+			  /* ⚠️ PRAZDNY radek se IGNORUJE (2026-08-18). Terminaly bezne posilaji
+			   * Enter jako CRLF; tahle vetev bere '\r' i '\n' jako konec radku, takze
+			   * po kazdem prikazu prisel jeste jeden PRAZDNY -> "ERR unknown command".
+			   * Navenek to vypadalo, ze deska kazdy prikaz odmitne (overeno na HW
+			   * pres COM8: s CRLF chyba po kazdem prikazu, s holym CR ne). Prazdny
+			   * vstup neni chyba — uzivatel jen zmackl Enter. */
+			  if (RxBuffer[0] == '\0') { /* nic */ }
+			  else if (strcmp(RxBuffer, "led on") == 0) {
 				  HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_RESET);
 				  printf("LED ON - OK \n");
 			  }
@@ -330,6 +343,10 @@ void UartTask_run(void *argument)
 				  char v[16];
 				  fmt_f2(v, sizeof(v), s->last);
 				  printf("TEPLOTA: %s C%s\n", v, s->valid ? "" : " (STALE - chyba cteni)");
+			  }
+			  else if (strcmp(RxBuffer, "sensors reset") == 0) {
+				  sensor_stat_reset_all();
+				  printf("SENZORY: min/max/mean vynulovany (last/valid/chyby zustavaji)\n");
 			  }
 			  else if (strcmp(RxBuffer, "sensors") == 0) {
 				  printf("=== SENZORY: last/min/max/avg [unit] stav  chyby ===\n");
@@ -555,16 +572,15 @@ void UartTask_run(void *argument)
 
 					  if (found < 0) {
 						  printf("  => ZADNY PHY NEODPOVIDA na SMI.\r\n");
-						  printf("  ⚠️ ZNAMA PRICINA NA TETO DESCE (potvrzeno 2026-08-13):\r\n");
-						  printf("     PHY dostava 10 MHz misto 25 MHz. X1 je 10 MHz (spolecny s HSE\r\n");
-						  printf("     procesoru) a jde pres R6 do site OSC_25M = XTAL1/CLKIN LAN8742A,\r\n");
-						  printf("     ktery vyzaduje 25 MHz -> nenabehne a neodpovi ani na MDIO.\r\n");
-						  printf("     Reseni: odpojit R6 a privest samostatnych 25 MHz (R5 = HSE nechat!).\r\n");
-						  printf("     Dokud to plati, nema smysl hledat chybu jinde.\r\n");
-						  printf("     ⚠️ Pozor na zamenu dvou RUZNYCH hodin: SMI je clockovane MDC, takze\r\n");
-						  printf("     na 50 MHz REF_CLK (strap nINTSEL) opravdu NEzavisi — PHY ale\r\n");
-						  printf("     potrebuje svuj 25 MHz VSTUPNI takt, a ten mu chybi.\r\n");
-						  printf("     Az bude clock spraveny: napajeni PHY, ETH_RES (PG14), MDC/MDIO.\r\n");
+						  printf("  Piny CPU<->PHY overeny proti schematu 4/7+2/7 (vsech 11 sedi).\r\n");
+						  printf("  Hodiny 25 MHz CMOS OK, VDD OK, PG14 reset OK, REF_CLK=0 -> vnitrni\r\n");
+						  printf("  PLL PHY nebezi. Nejcastejsi pricina 'mrtveho' LAN8742A pri OK\r\n");
+						  printf("  hodinach/napajeni (v poradi):\r\n");
+						  printf("     1) RBIAS (pin 24) MUSI mit 12,1k 1%% do GND -> bez toho zadny bias,\r\n");
+						  printf("        zadna PLL, zadna odpoved. ZKONTROLUJ PRVNI.\r\n");
+						  printf("     2) VDDCR (pin 6) = vystup 1,2V regul. -> jen blokovaci C, NESMI byt\r\n");
+						  printf("        externe napajen (schema flaguje 'KONTROLA napajeni-pin6').\r\n");
+						  printf("     3) nRST(pin15)/MDC(13)/MDIO(12) spojitost PRIMO na pinech PHY.\r\n");
 					  } else {
 						  uint16_t bmcr = eth_phy_read((uint8_t)found, 0);
 						  uint16_t bmsr = eth_phy_read((uint8_t)found, 1);
@@ -605,12 +621,140 @@ void UartTask_run(void *argument)
 					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors | temperature | beep [on|off|test] | selftest | scpi <cmd> | datalog [on|off|erase|dump] | screenshot [sd] | autocal | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | stacktest | eth [clk] | enc\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
 				   * behu. Bezi i automaticky pri bootu (defaultTask); vysledek v Health. */
 				  run_selftests();
+			  }
+			  else if (strcmp(RxBuffer, "membench") == 0) {
+				  /* ⚠️ DESTRUKTIVNI pro vyhrazene scratch oblasti (SDRAM @0xC0400000
+				   * a W25Q @W25Q_BENCH_BASE) — nikoli pro data pristroje, viz membench.h.
+				   * Bezi primo tady (UartTask = jediny task bez watchdogu), takze na
+				   * rozdil od UI cesty netreba `g_membench_req`. */
+				  printf("MEMBENCH: bezi, jednotky sekund...\n");
+				  membench_run();
+				  const membench_state_t *m = membench_state();
+				  /* ⚠️ „testovano" = blok, „celkem" = kapacita cipu. U SDRAM se lisi
+				   * radove (4 MB z 32 MB) — zbytek drzi framebuffery a sekce .sdram. */
+				  printf("%-12s %9s %9s %10s %10s  %s\n",
+				         "pamet", "testovano", "celkem", "zapis", "cteni", "vysledek");
+				  for (unsigned i = 0; i < m->n; i++) {
+					  const membench_result_t *r = &m->r[i];
+					  char w[12], rd[12], ts[12], tt[12];
+					  if (r->writable && r->write_kbs) snprintf(w, sizeof w, "%lu kB/s", (unsigned long)r->write_kbs);
+					  else                             snprintf(w, sizeof w, "-");
+					  if (r->read_kbs)                 snprintf(rd, sizeof rd, "%lu kB/s", (unsigned long)r->read_kbs);
+					  else                             snprintf(rd, sizeof rd, "-");
+					  snprintf(ts, sizeof ts, "%lu kB", (unsigned long)(r->size_b / 1024u));
+					  snprintf(tt, sizeof tt, "%lu kB", (unsigned long)(r->total_b / 1024u));
+					  printf("%-12s %9s %9s %10s %10s  %s\n", r->name, ts, tt, w, rd, r->msg);
+					  /* ── Rozlisovaci radky. Souhrn „N chybnych bitu" rekne ZE je
+					   * neco spatne; tohle rekne CO. Vypisuje se jen pri chybe. */
+					  if (r->alias_off == MEMBENCH_ALIAS_UNKNOWN)
+						  printf("      PREKRYV/CIZI ZAPIS do kontrolni bunky — vzdalenost nelze urcit!\n");
+					  else if (r->alias_off)
+						  printf("      ADRESY SE OPAKUJI po %lu kB — dve ruzne adresy = tataz bunka!\n",
+						         (unsigned long)(r->alias_off / 1024u));
+					  /* Nejdrazsi dusledek prekryvu: sdileji pamet framebuffery? */
+					  if (r->fb_alias & 1u)
+						  printf("      !! FB0 (0xC0000000) a FB2 (0xC0200000) SDILEJI PAMET -> triple buffering je fakticky double\n");
+					  if (r->fb_alias & 2u)
+						  printf("      !! FB1 (0xC0100000) a canvas pool (0xC0300000) SDILEJI PAMET\n");
+					  else if (r->alias_off && !r->fb_alias)
+						  printf("      (framebuffery se ale navzajem NEprekryvaji — zobrazeni tim netrpi)\n");
+					  if (r->bit_errors && r->err_bitmask) {
+						  printf("      maska bitu 0x%08lX, prvni chyba @0x%08lX: cekano 0x%08lX, precteno 0x%08lX\n",
+						         (unsigned long)r->err_bitmask, (unsigned long)r->first_err_addr,
+						         (unsigned long)r->first_err_want, (unsigned long)r->first_err_got);
+						  osDelay(2);
+						  printf("      podle vzoru:");
+						  for (unsigned k = 0; k < MEMBENCH_PAT_N; k++)
+							  printf(" %s=%lu", membench_pat_name[k], (unsigned long)r->pat_err[k]);
+						  printf("\n");
+					  }
+					  /* Retence: nenulova = pamet NEUDRZI obsah -> prilis pomaly refresh
+					   * (u SRAM by nemela co selhat, proto se testuje jen SDRAM). */
+					  if (r->retain_done)
+						  printf("      retence po 1 s: %lu chybnych bitu%s\n",
+						         (unsigned long)r->retain_err,
+						         r->retain_err ? "  <- OBSAH SE ROZPADA (refresh?)" : "");
+					  osDelay(2);   /* UART TX je blokujici, dej ostatnim taskum dychat */
+				  }
+				  printf("MEMBENCH: %s (celkem %lu chybnych bitu)\n",
+				         m->total_bit_errors ? "NALEZENY CHYBY" : "OK",
+				         (unsigned long)m->total_bit_errors);
+			  }
+			  else if (strncmp(RxBuffer, "scpi ipc ", 9) == 0) {
+				  /* ── SCPI nad IPC SNAPSHOTEM (priprava CM4 backendu, #25) ──────
+				   * Spusti TENTYZ parser, ale se zdrojem dat naplnenym VYHRADNE
+				   * z IPC snapshotu — presne to, co bude delat CM4 pres TCP.
+				   * Vypise obe odpovedi vedle sebe, takze rozdil je videt hned.
+				   *
+				   * ⚠️ Smysl: nejvetsi riziko TCP poloviny #25 neni socket, ale
+				   * otazka "nese snapshot vsechno, co SCPI potrebuje?". Tohle je
+				   * runtime dukaz — bez ETH, bez flashe bank 2, hned na stole.
+				   * Rozdil znamena diru ve snapshotu, ne chybu parseru. */
+				  const char *arg = &RxBuffer[9];
+				  /* ⚠️ VSE staticke, nic na stack UartTasku. `scpi_src_t` ma ~200 B
+				   * a dva odpovedni buffery dalsich 320 — dohromady pres 500 B na
+				   * tasku, ktery mel pri mereni 1580 B volnych. Projekt uz jednou
+				   * na presne tohle doplatil (`FIL` na stacku, viz CLAUDE.md
+				   * sd_export) a `stacktest` incident byl z teze rodiny. Funkce
+				   * bezi vyhradne z UartTasku a neni vnorena -> staticke je bezpecne. */
+				  static scpi_src_t src_ipc;
+				  static scpi_ctx_t ctx_ipc;
+				  static char r_cm7[160], r_ipc[160];
+				  size_t n7 = scpi_process(arg, r_cm7, sizeof r_cm7);
+				  if (!ipc_scpi_src_from_snap(&src_ipc, (const void *)&g_ipc.snap)) {
+					  printf("SCPI/IPC: snapshot neni platny (magic/verze) — publikoval uz CM7?\n");
+				  } else {
+					  /* W2: zapisovaci pulka — presne to, co pouzije CM4 pres TCP.
+					   * Bez tohohle by SET (CALC:*, SENS:FREQ:GATE/CHAN, INIT/ABOR)
+					   * pres "scpi ipc" tise selhal (parser NULL callback hlida). */
+					  src_ipc.set_cfg = ipc_scpi_set_cfg;
+					  scpi_ctx_init(&ctx_ipc);
+					  size_t ni = scpi_process_ctx(&ctx_ipc, &src_ipc, arg, r_ipc, sizeof r_ipc);
+					  printf("  CM7 : %s\n", n7 ? r_cm7 : "(bez odpovedi)");
+					  printf("  IPC : %s\n", ni ? r_ipc : "(bez odpovedi)");
+					  printf("  => %s\n", (n7 == ni && strcmp(r_cm7, r_ipc) == 0)
+						                    ? "SHODA" : "!! ROZDIL — dira ve snapshotu");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "ipccmd ", 7) == 0) {
+				  /* ── KRITERIUM W1: posli prikaz PRESNE tou cestou, kterou pouzije CM4 ──
+				   * `ipccmd run 0|1 | gate 0..3 | chan 0|1 | log 0|1`
+				   * Zapise do cmd ringu (jako by to poslala CM4) a necha `ipc_service`
+				   * v defaultTasku, at ho vyridi. Umoznuje overit ovladaci cestu
+				   * CM4->CM7 **bez site, bez SCPI a bez webu** — kdyz tohle prepne
+				   * RUN/STOP na displeji, je hotova cela spodni vrstva (WEB_UI_PLAN W1).
+				   * ⚠️ Diagnostika, ne produkcni rozhrani (produkcne to posila CM4). */
+				  const char *a = &RxBuffer[7];
+				  uint8_t key = 0xFFu; uint32_t val = 0; int is_log = 0;
+				  if      (strncmp(a, "run ",  4) == 0) { key = IPC_CFG_RUN;  val = (uint32_t)atoi(a + 4); }
+				  else if (strncmp(a, "gate ", 5) == 0) { key = IPC_CFG_GATE; val = (uint32_t)atoi(a + 5); }
+				  else if (strncmp(a, "chan ", 5) == 0) { key = IPC_CFG_CHAN; val = (uint32_t)atoi(a + 5); }
+				  else if (strncmp(a, "log ",  4) == 0) { is_log = 1;         val = (uint32_t)atoi(a + 4); }
+
+				  if (key == 0xFFu && !is_log) {
+					  printf("pouziti: ipccmd run 0|1 | gate 0..3 | chan 0|1 | log 0|1\r\n");
+				  } else {
+					  static uint16_t s_id = 1000;
+					  ipc_cmd_t c = { .type = is_log ? (uint8_t)IPC_CMD_LOG : (uint8_t)IPC_CMD_CFG_SET,
+					                  .key = key, .id = ++s_id, .arg = val, .argd = 0.0 };
+					  if (!ipc_cmd_push(&c)) { printf("ERR cmd ring plny\r\n"); }
+					  else {
+						  /* `ipc_service` bezi ~100 Hz v defaultTasku -> odpoved je do par ms. */
+						  ipc_resp_t r; int got = 0;
+						  for (int i = 0; i < 50 && !got; i++) {
+							  if (ipc_resp_pop(&r) && r.id == s_id) got = 1; else osDelay(2);
+						  }
+						  if (!got)            printf("ERR bez odpovedi z ipc_service\r\n");
+						  else if (r.status)   printf("ERR prikaz odmitnut (status=%u)\r\n", (unsigned)r.status);
+						  else                 printf("OK (uplatni UiTask do ~0,2 s)\r\n");
+					  }
+				  }
 			  }
 			  else if (strncmp(RxBuffer, "scpi", 4) == 0 &&
 			           (RxBuffer[4] == ' ' || RxBuffer[4] == '\0')) {
@@ -735,6 +879,39 @@ void UartTask_run(void *argument)
 					   * mutex uvnitr; UartTask NENI hlidan watchdogem, takze smi cekat. */
 					  printf("DATALOG: mazu cely log, cekej...\n");
 					  printf("DATALOG: erase %s\n", datalog_erase_all() ? "OK" : "FAIL");
+				  } else if (strncmp(arg, "csv", 3) == 0) {
+					  /* Export CELEHO logu do konzole jako CSV (#46) — doplnek k SD
+					   * exportu pro beh BEZ karty. Volitelne `datalog csv <N>` =
+					   * jen poslednich N zaznamu.
+					   * ⚠️ Kazdy radek je jedno blokujici QSPI cteni; pri 48k
+					   * zaznamech to na 115200 Bd trva desitky minut, proto ten
+					   * limit. `osDelay(1)` mezi radky nechava dychat ostatni tasky
+					   * (UartTask sice neni pod watchdogem, ale UiTask ano). */
+					  uint32_t want = 0;
+					  { const char *p = arg + 3;
+					    while (*p == ' ') p++;
+					    while (*p >= '0' && *p <= '9') { want = want * 10u + (uint32_t)(*p - '0'); p++; } }
+					  datalog_status_t st; datalog_get_status(&st);
+					  uint32_t total = st.records;
+					  if (want && want < total) total = want;
+					  /* ⚠️ Formatuje se SDILENYM `sd_export_csv_*`, at je vypis do konzole
+					   * bajt za bajtem tentyz soubor jako `sd export`. Vlastni formatovani
+					   * se drive rozeslo: kmitocet sel pres displejovy `fpga_freq_format_val`
+					   * (tisicove tecky + "Hz" uvnitr ciselne bunky), teploty v setinach pod
+					   * hlavickou `_C` a neplatna hodnota jako -32768 misto prazdne bunky. */
+					  char line[160];
+					  sd_export_csv_header(line, sizeof line);
+					  printf("%s", line);
+					  uint32_t done = 0;
+					  for (uint32_t i = total; i-- > 0; ) {      /* chronologicky */
+						  datalog_rec_t r;
+						  if (!datalog_read_back(i, &r)) continue;
+						  sd_export_csv_row(line, sizeof line, &r);
+						  printf("%s", line);
+						  done++;
+						  osDelay(1);
+					  }
+					  printf("# hotovo: %lu zaznamu\n", (unsigned long)done);
 				  } else if (strcmp(arg, "dump") == 0) {
 					  /* Poslednich 10 zaznamu, nejnovejsi prvni (rychla kontrola obsahu). */
 					  datalog_rec_t r;
@@ -745,16 +922,19 @@ void UartTask_run(void *argument)
 						   * jinde v projektu: zadny float/64b format v konzoli). */
 						  char fb[32];
 						  fpga_freq_format_val(r.freq_x100000, fb, sizeof fb);
-						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d fl=0x%02X sat=%u\n",
+						  char vb[12];
+						  if (r.vbat_mv == DATALOG_INVALID16) snprintf(vb, sizeof vb, "--");
+						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s fl=0x%02X sat=%u\n",
 							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
-							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb,
 							     (unsigned)r.flags, (unsigned)r.sats);
 					  }
 				  } else {
 					  char db[80];
 					  datalog_format_status(db, sizeof db);
 					  printf("%s\n", db);
-					  printf("  (datalog on|off|erase|dump)\n");
+					  printf("  (datalog on|off|erase|dump|csv [N])\n");
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "stacktest yes") == 0) {
@@ -850,6 +1030,28 @@ void UartTask_run(void *argument)
 				  printf("  VREFBUF CSR=0x%08lX CCR=0x%08lX  ADC CCR=0x%08lX PCSEL=0x%08lX\n",
 						 (unsigned long)VREFBUF->CSR, (unsigned long)VREFBUF->CCR,
 						 (unsigned long)ADC3_COMMON->CCR, (unsigned long)ADC3->PCSEL);
+			  }
+			  else if (strncmp(RxBuffer, "rtc cal", 7) == 0) {
+				  /* Drift vlastniho LSE krystalu merený proti GPS (viz rtc.h). */
+				  if (strcmp(&RxBuffer[7], " reset") == 0) {
+					  rtc_lse_reset();
+					  printf("RTC CAL: statistika vynulovana, merim znovu\n");
+				  } else {
+					  uint32_t n = rtc_lse_windows();
+					  char a[16], l[16], c[16];
+					  fmt_f2(a, sizeof a, rtc_lse_ppm());
+					  fmt_f2(l, sizeof l, rtc_lse_ppm_last());
+					  fmt_f2(c, sizeof c, rtc_lse_calib_ppm());
+					  printf("RTC CAL: drift LSE %s ppm (prumer z %lu oken po 8 min)\n",
+						     n ? a : "--", (unsigned long)n);
+					  printf("  posledni okno: %s ppm   korekce v RTC_CALR: %s ppm\n",
+						     n ? l : "--", c);
+					  if (n == 0)
+						  printf("  (jeste zadne okno — potrebuje GPS fix a ~8 min behu)\n");
+					  else if (n < 12)
+						  printf("  ⚠️ prumer je zatim SUMOVY (jedno okno ~12 ppm); duveryhodny od ~12 oken (~2 h)\n");
+					  printf("  `rtc cal reset` zacne merit znovu\n");
+				  }
 			  }
 			  else if (strcmp(RxBuffer, "rtc") == 0) {
 				  char rbuf[24];
@@ -1012,6 +1214,70 @@ void UartTask_run(void *argument)
 					  osMutexRelease(qspiMutexHandle);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "flightrec", 9) == 0) {
+				  const char *a = (RxBuffer[9] == ' ') ? &RxBuffer[10] : "";
+				  if (strcmp(a, "test") == 0) {
+					  /* Overeni cele cesty bez cekani na skutecnou poruchu.
+					   * ⚠️ Hlas vysledek, ne zamer — `flightrec_dump` tise nedela nic,
+					   * kdyz neni pripravena flash nebo uz se za tohohle behu dumplo. */
+					  flightrec_dump("test");
+					  if (flightrec_have())
+						  printf("FLIGHTREC: testovaci dump zapsan, precti `flightrec`\n");
+					  else
+						  printf("FLIGHTREC: dump se NEPOVEDL (flash nepripravena, nebo uz se za tohohle behu dumplo)\n");
+				  } else if (!flightrec_report()) {
+					  printf("FLIGHTREC: zadny ulozeny zaznam\n");
+					  printf("  Dumpuje se pri detekovanem stallu / preteceni stacku / selhani malloc.\n");
+					  printf("  `flightrec test` vyrobi zaznam hned (overeni cesty).\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "fpgasim", 7) == 0) {
+				  /* Emulator FPGA ramcu — viz fpga_freq.h. Syntaxe:
+				   *   fpgasim                     stav
+				   *   fpgasim off
+				   *   fpgasim on [Hz] [noise_ppb] [drift_ppb/h]
+				   *   fpgasim fault none|lost|crc|div16|phase           */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strncmp(a, "on", 2) == 0) {
+					  /* Rucni parsovani (zadny sscanf — nano.specs). */
+					  const char *p = a + 2;
+					  double hz = 0; float noi = 0.f, dr = 0.f;
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { hz = hz * 10.0 + (*p - '0'); p++; }
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { noi = noi * 10.f + (float)(*p - '0'); p++; }
+					  while (*p == ' ') p++;
+					  while (*p >= '0' && *p <= '9') { dr = dr * 10.f + (float)(*p - '0'); p++; }
+					  if (hz < 1.0) hz = 10000000.0;
+					  fpga_sim_set(1, hz, noi, dr);
+					  char hb[32]; fpga_freq_format_val((uint64_t)(hz * 100000.0), hb, sizeof hb);
+					  printf("FPGASIM: ZAPNUTO %s  sum +-%d ppb  drift %d ppb/h\n",
+						     hb, (int)noi, (int)dr);
+					  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
+				  } else if (strncmp(a, "off", 3) == 0) {
+					  fpga_sim_set(0, 0, 0, 0);
+					  printf("FPGASIM: vypnuto (zpet na skutecne SPI)\n");
+				  } else if (strncmp(a, "fault", 5) == 0) {
+					  const char *w = (a[5] == ' ') ? &a[6] : "";
+					  if (fpga_sim_fault(w)) printf("FPGASIM: porucha = %s\n", w);
+					  else printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase)\n");
+				  } else {
+					  if (fpga_sim_active()) {
+						  char hb[32]; fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
+						  printf("FPGASIM: AKTIVNI, %s\n", hb);
+					  } else {
+						  printf("FPGASIM: vypnuto\n");
+					  }
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "meas reset") == 0) {
+				  /* Allan/Histogram/Trend akumulace zmeni jen UiTask (kresli je,
+				   * neni thread-safe) -> pozadavek, ne primy zapis (viz g_screen_req). */
+				  g_stats_reset_req = 1;
+				  alarm_reset_counters();   /* g_alarm_* jsou proste volatile globaly, bezzamkove */
+				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
+			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
 				  static TaskStatus_t ta[12], tb[12];
 				  uint32_t t0 = 0, t1 = 0;
@@ -1068,6 +1334,52 @@ void UartTask_run(void *argument)
 					     g_cm4_absent ? "ABSENT (nenabootoval - bank2/BCM4)" :
 					     (g_cm4_alive ? "alive (IPC heartbeat)" : "SILENT (D2 ready, IPC ticho)"),
 					     (unsigned long)g_cm4_stall_count);
+				  /* ETH bring-up NA CM4 (v6, F3) — odlisuj od UART `eth`, ktery je bit-bang
+				   * diagnostika z CM7. Tohle rika, jestli ethernet obsluhuje to spravne jadro.
+				   * init=no obvykle znamena, ze nebezi RMII REF_CLK (SW reset MAC timeoutne). */
+				  /* ⚠️ Nesoulad IPC verzi bank: CM4 zije a heartbeat bezi (takze "CM4: alive"
+				   * i "4:xx%" vypadaji zdrave), ale snapshot IGNORUJE -> zadna data z CM7
+				   * k ni netecou. Bez teto radky se to poznalo jen podle LED_2, ktera
+				   * nereaguje na GPS fix. Lecba = preflashnout OBE banky ze stejneho zdroje. */
+				  if (!g_cm4_absent && g_cm4_ipc_ver != (uint8_t)IPC_VERSION) {
+					  printf("  ⚠ IPC NESOULAD: CM4 obraz v%u, CM7 ceka v%u"
+					         " -> CM4 ignoruje snapshot, PREFLASHNI OBE BANKY\n",
+					         (unsigned)g_cm4_ipc_ver, (unsigned)IPC_VERSION);
+				  }
+				  if (!g_cm4_absent) {
+					  printf("  ETH(CM4): init %s, PHY ID 0x%08lX%s\n",
+						     g_cm4_eth_ok ? "OK" : "no",
+						     (unsigned long)g_cm4_phy_id,
+						     (g_cm4_phy_id == 0x0007C131UL) ? " (LAN8742A)" : "");
+					  /* SCPI jadro na CM4 (W2): dukaz, ze `scpi.c`+`ipc_scpi.c` tam skutecne
+					   * BEZI, ne jen se prelozi. 0 = jeste nedobehl (boot prave probiha). */
+					  {
+						  uint8_t so = ipc_cm4_scpi_selftest();
+						  printf("  SCPI(CM4): %s\n", so == 1 ? "selftest PASS"
+							     : so == 2 ? "selftest FAIL" : "jeste nedobehl");
+					  }
+					  /* HTTP server na CM4 (W4): stejny dukaz pro httpd_min.c. */
+					  {
+						  uint8_t ho = ipc_cm4_httpd_selftest();
+						  printf("  HTTP(CM4): %s\n", ho == 1 ? "selftest PASS"
+							     : ho == 2 ? "selftest FAIL" : "jeste nedobehl");
+					  }
+					  /* Stav linky + IP z lwIP na CM4 (F5). `net_ip` nese oktety a.b.c.d
+					   * v poradi bajtu, takze staci rozebrat po bajtech (zadny ntohl). */
+					  {
+						  uint8_t sp = 0, dx = 0; uint32_t ip = 0;
+						  int up = ipc_cm4_net(&sp, &dx, &ip);
+						  if (up) {
+							  printf("  NET: UP %u Mbit %s, IP %lu.%lu.%lu.%lu%s\n",
+								     (unsigned)sp, dx ? "full" : "half",
+								     (unsigned long)(ip & 0xFFu), (unsigned long)((ip >> 8) & 0xFFu),
+								     (unsigned long)((ip >> 16) & 0xFFu), (unsigned long)((ip >> 24) & 0xFFu),
+								     ip ? "" : "  (ceka na DHCP)");
+						  } else {
+							  printf("  NET: down%s\n", g_cm4_eth_ok ? " (kabel?)" : "");
+						  }
+					  }
+				  }
 				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
 				   * preteceni (a tim i na "stall"/HardFault). */
 				  static const struct { const char *n; osThreadId_t *h; } TL[] = {
@@ -1088,6 +1400,15 @@ void UartTask_run(void *argument)
 						     (unsigned long)fpga_freq_crc_last_age_s());
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni
+				   * misto, kam se sahne pri diagnostice. */
+				  if (fpga_sim_active()) {
+					  char hb[32];
+					  fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
+					  printf("  ⚠️ FPGASIM AKTIVNI (%s) — kmitocet NENI meren!\n", hb);
+				  }
+				  if (flightrec_have())
+					  printf("  flight recorder: je ulozeny zaznam -> `flightrec`\n");
 				  char db[80];
 				  datalog_format_status(db, sizeof db);
 				  printf("%s\n", db);
@@ -1107,6 +1428,11 @@ void UartTask_run(void *argument)
     /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
      * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
     sd_export_service();
+    /* Stejny duvod: smazani celeho datalogu (~5,4k sektoru) muze trvat minuty,
+     * o UI tlacitko jen pozada (viz datalog.h). */
+    datalog_erase_service();
+    /* A stejny duvod potreti: benchmark pameti bezi jednotky sekund (viz membench.h). */
+    membench_service();
     osDelay(1);
   }
 }
