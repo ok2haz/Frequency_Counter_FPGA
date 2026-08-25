@@ -30,6 +30,7 @@
 #include "cmsis_os2.h"          /* osThreadGetStackSpace (volny stack tasku) */
 #include "FreeRTOS.h"           /* taskENTER_CRITICAL — atomicka publikace g_survey_* (S2) */
 #include "task.h"
+#include "freertos_shared.h"    /* g_freq_valid/g_freq_seq — kadence vzorku statistiky (#1) */
 #include <prim/prim.h>
 #include <ui/ui.h>
 #include <stdio.h>
@@ -74,7 +75,7 @@ extern volatile char     g_reset_text[12];       /* pricina posledniho resetu (m
 extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene) */
 extern volatile char     g_crash_text[16];       /* crash black-box z BKP ("stack:UiTask") */
 extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 2=FAIL */
-extern volatile uint8_t  g_selftest_detail[13];  /* per-test vysledky (poradi viz freertos_shared.h; drz = SELFTEST_N=13) */
+/* g_selftest_detail[SELFTEST_N] + g_freq_stale nyni z freertos_shared.h (viz #include vyse) */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
 extern volatile uint8_t  g_cm4_alive;            /* 1 = CM4 heartbeat ziva (IPC) */
@@ -6191,6 +6192,17 @@ void app_gpsdo_tick_stats_sample(void)
      * do ni mezitim michaly ve spatnem poradi (novejsi pred starsimi). */
     if (stats_seed_tick()) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
+    /* #1 kadence: v REALNEM rezimu (g_freq_valid) vzorkuj jen na NOVE mereni —
+     * jinak by 1Hz tik zapocital drzenou hodnotu vickrat (σy nesmyslne nizka, jako
+     * u webu). V SIM fallbacku vzorkuj kazdy tik (τ0=1s). ⚠️ Pyramida predpoklada
+     * ~1s rozestup; pri mereni pomalejsim nez 1/s vzorkujeme rideji (bez double-countu),
+     * plne spravny τ0=skutecny rozestup je vec pozdejsiho MathTasku (#27). */
+    static uint32_t s_stat_seq = 0;
+    if (g_freq_valid) {
+        uint32_t sq = g_freq_seq;
+        if (sq == s_stat_seq) return;        /* zadne nove mereni od posledniho vzorku */
+        s_stat_seq = sq;
+    }
     screen_main_stats_sample();
     /* Statistika okna MERENI (#67, RESET nuluje). Casovou znacku min/max si
      * hlida app vrstva — `mp_stats_add` je ciste-logicke jadro bez pojmu casu,

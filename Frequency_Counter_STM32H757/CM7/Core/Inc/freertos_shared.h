@@ -43,6 +43,10 @@ extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];
 extern volatile uint8_t g_freq_dirty;
 extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí */
+/* Numericky vybrany zdroj pro headline + statistiky (#1) — plní FpgaTask, čte screen_main. */
+extern volatile uint64_t g_freq_x100000;   /* kmitočet × 1e5 (dělička /4 nebo /16 už zahrnuta) */
+extern volatile uint32_t g_freq_seq;       /* SEQUENCE posledního platného rámce (kadence vzorků) */
+extern volatile uint8_t  g_freq_valid;     /* 1 = platné měření (CRC+VALID+FRESH) */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
 extern volatile char    g_spi_text[64];

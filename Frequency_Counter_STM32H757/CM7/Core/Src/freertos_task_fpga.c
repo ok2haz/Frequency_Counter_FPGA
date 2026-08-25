@@ -46,6 +46,13 @@ void StartFpgaTask(void *argument)
       g_freq_text[sizeof(g_freq_text) - 1] = '\0';
       strncpy((char *)g_freq_info, ibuf, sizeof(g_freq_info) - 1);
       g_freq_info[sizeof(g_freq_info) - 1] = '\0';
+      /* Numericka hodnota pro headline + statistiky (#1): vybrany zdroj v (/4 nebo
+       * /16, x1e5) + SEQUENCE (kadence vzorku) + priznak platnosti. screen_main to
+       * cte misto simulace. Platne = poll vratil ramec, mereni VALID a bez SIGNAL_LOST. */
+      g_freq_x100000 = v;
+      g_freq_seq     = m.sequence;
+      g_freq_valid   = (m.measurement_status & 0x01u)
+                       && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
     } else if (!fpga_freq_link_ok()) {
@@ -65,6 +72,7 @@ void StartFpgaTask(void *argument)
       lost = l;
       taskENTER_CRITICAL();
       g_freq_stale = l;
+      if (l) g_freq_valid = 0;   /* ztrata signalu -> hodnota uz neni platna (headline -> SIM fallback / seda) */
       g_freq_dirty = 1;     /* prekreslit kmitocet v jine barve (ztlumeny / zluty) */
       taskEXIT_CRITICAL();
     }

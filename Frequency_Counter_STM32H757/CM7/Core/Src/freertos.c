@@ -120,6 +120,11 @@ volatile char    g_freq_text[48] = "----------,-----Hz";
 volatile char    g_freq_info[64] = "";                 /* vedlejsi udaje (gate/edges/ch) */
 volatile uint8_t g_freq_dirty = 1;
 volatile uint8_t g_freq_stale = 0;                     /* 1 = FPGA SIGNAL_LOST flag nebo mrtvy link -> UI ztlumi, alarm pipne */
+/* Numericky vybrany zdroj (/4 nebo /16) pro headline + statistiky (#1). FpgaTask
+ * plni vedle g_freq_text; screen_main je cte misto simulace freq_step(). */
+volatile uint64_t g_freq_x100000 = 0;                  /* kmitocet × 1e5 (delicka uz zahrnuta) */
+volatile uint32_t g_freq_seq = 0;                      /* SEQUENCE posledniho platneho ramce (kadence vzorku) */
+volatile uint8_t  g_freq_valid = 0;                    /* 1 = platne mereni (CRC+VALID+FRESH, ne SIGNAL_LOST) */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_spi_text[64] = "SPI WAIT";
