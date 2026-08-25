@@ -424,14 +424,12 @@ v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a 
   (~4 s, registrová sekvence, `HAL_IWDG` vypnutý). CM4 je bare-metal → **žádný heartbeat, prostý
   `iwdg2_kick()`** v každé iteraci hlavní smyčky; `iwdg2_init()` **až po beep melodii** (blokuje
   ~1,2 s), aby startup nespotřeboval timeout. Zaseknutá CM4 smyčka → IWDG2 reset CM4. DEBUG freeze =
-  `__HAL_DBGMCU_FREEZE2_IWDG2()` (APB4FZ2). **🔴 ZMĚŘENO 2026-08-13: reset scope IWDG2 je SYSTEM-WIDE, ne per-core → IWDG2 je VYPNUTÝ.**
-  Ověřeno přímo: dočasná CM4, která po 20 s přestala krmit watchdog, shodila **celý přístroj** —
-  uptime CM7 pak cykloval `3 → 13 → 22 → 8 → 17 s` (reset každých ~24 s); po vrácení roste
-  monotónně `51 → 63 → 75 → 87`. Předpoklad „CPU2/CM4-only" tedy **neplatil**. Zapnutý IWDG2 by
-  znamenal, že zaseknutá CM4 (dnes dělá téměř nic) shodí i displej a měření — výrazně horší než
-  zaseknutá CM4 samotná. **Zaseknutí se ale neztratí:** CM7 ho vidí přes heartbeat, loguje
-  `stall:CM4` a počítá `g_cm4_stall_count` (UART `status`). Až na CM4 poběží ETH/SCPI, dá se
-  přidat cílený restart CM4 z CM7 — to už je ale něco jiného než nezávislý watchdog. CM4 stall na CM7 pozoruje `stall:CM4` (viz sekce Dvoujádro).
+  `__HAL_DBGMCU_FREEZE2_IWDG2()` (APB4FZ2). **🔴 ZMĚŘENO 2026-08-13: reset scope IWDG2 je SYSTEM-WIDE,
+  ne per-core → IWDG2 je VYPNUTÝ.** Ověřeno: dočasná CM4, která přestala krmit watchdog, shodila
+  **celý přístroj** (uptime CM7 cykloval po ~24 s). Zapnutý IWDG2 by tedy nechal zaseknutou CM4 (dnes
+  dělá téměř nic) shodit i displej a měření — horší než CM4 samotná. **Zaseknutí se neztratí:** CM7 ho
+  vidí přes heartbeat, loguje `stall:CM4` + `g_cm4_stall_count` (UART `status`). Až na CM4 poběží
+  ETH/SCPI, dá se přidat cílený restart CM4 z CM7 (to už není nezávislý watchdog).
 
 ## Dvoujádro / IPC (CM7 ↔ CM4) — `ipc_shared.h`, `ipc.c`, `CM4/…/ipc_cm4.c`
 ✅ **CM4 BĚŽÍ A IPC ROUND-TRIP FUNGUJE — ověřeno na HW 2026-08-14** (`status` → `CM4: alive (IPC heartbeat), stall x0`;
@@ -439,12 +437,11 @@ header „4:xx%"). Obousměrný link je tím HW-ověřený: CM4 přijal snapshot
 **a** publikuje heartbeat zpět. Option bytes byly správně už z výroby (`BCM4=1`, `BOOT_CM4_ADD0=0x810`),
 bank2 flashnutá.
 - 🔴🔴 **PODMÍNKA: ŽÁDNÁ AKTIVNÍ LADICÍ SONDA. Testuj CM4 VÝHRADNĚ po čistém power-cyklu bez debug session.**
-  Celé měsíce se věřilo, že „CM4 nebootuje / bank2 není flashnutá" — **nebyla to pravda**. CM4 byl celou dobu
-  funkční; maskoval ho **připojený debugger**, který rozbíjí boot handshake CM7↔CM4 (HSEM/`D2CKRDY`) →
-  boot gate CM7 vyprší → `g_cm4_absent=1` → „4:off". Táž sonda navíc dělala **falešné HardFaulty**
-  (`HF@24000000`, `HFSR=0x80000000` = DEBUGEVT: leftover flash breakpoint přes FPB remapuje fetch do RAM).
-  **Postup po každém flashi: Terminate debug session → Remove All Breakpoints → úplný power-cycle** (ne NRST).
-  Teprve pak je `status` vypovídající. Platí i pro měření CPU (viz „CPU zátěž NEMĚŘ přes ladicí sondu").
+  Připojený debugger rozbíjí boot handshake CM7↔CM4 (HSEM/`D2CKRDY`) → boot gate CM7 vyprší →
+  `g_cm4_absent=1` → „4:off" (vypadá to jako „CM4 nebootuje", ale CM4 je v pořádku). Táž sonda dělá
+  **falešné HardFaulty** (`HF@24000000`, `HFSR=0x80000000` = DEBUGEVT: leftover flash breakpoint přes
+  FPB). **Postup po každém flashi: Terminate debug session → Remove All Breakpoints → úplný power-cycle**
+  (ne NRST). Teprve pak je `status` vypovídající. Platí i pro měření CPU (viz „CPU zátěž NEMĚŘ přes sondu").
 - Návrh + revize `NAVRH_ARCHITEKTURA_CM7_CM4.md` §11; bring-up postup `DUALCORE_BRINGUP_CHECKLIST.md`
   (SRAM4 clock, .ioc regen pozor). ⚠️ Ta část o „nutnosti nastavit option bytes" je pro tuhle desku
   **bezpředmětná** — jsou správně (ověřeno čtením přes CubeProgrammer CLI).
@@ -474,17 +471,14 @@ bank2 flashnutá.
   **⚠️ v12 MĚNÍ layout PŘED `cm4` blokem** (snapshot vzrostl) → gracefull detekce nesouladu bank
   (`cm4_ipc_version`) u tohoto bumpu NEFUNGUJE. **KÓD HOTOVÝ, NEOVĚŘENO NA HW.**).
   **⚠️⚠️ Při změně `IPC_VERSION` se MUSÍ přeflashnout OBĚ banky.**
-  - **⚠️ Nesoulad bank byl do v6 prakticky NEVIDITELNÝ — pozor, `4:--` to NENÍ.** CM4 při neshodě
-    jen přestane přijímat snapshot (`s_ready=0` v `ipc_cm4_check`), ale **`ipc_cm4_heartbeat()` volá
-    dál a bez podmínky**; `ipc_cm4_alive()` na CM7 testuje pouze `cm4.magic` + růst heartbeatu →
-    hlásí **živou CM4** a v headeru svítí `4:xx%`, jako by bylo vše v pořádku. Jediným příznakem
-    byla LED_2, která nereaguje na GPS fix. **Od v6 to hlásí `cm4_ipc_version`** (razítkuje se
-    v každém heartbeatu, aby to přežilo samostatný reset CM7 a jeho `memset` v `ipc_init`):
-    System Health **`CM4:IPCv5!=6` červeně** (má přednost před NET/PHY) a UART `status`
-    → `⚠ IPC NESOULAD: CM4 obraz v5, CM7 ceka v6`. Starý obraz pole nezapisuje → zůstane 0 po
-    memsetu, což je taky správná odpověď („nehlásí verzi").
-    ⚠️ Detekce funguje, dokud se nemění layout **před** `cm4` blokem (`snap`/`cmd`/`resp`) — pak
-    si obě strany přestanou rozumět už v adrese. Pro v5→v6 to platí (`ipc_snapshot_t` beze změny).
+  - **⚠️ Nesoulad bank je prakticky NEVIDITELNÝ — `4:--` to NENÍ.** CM4 při neshodě jen přestane
+    přijímat snapshot (`s_ready=0`), ale **heartbeat volá dál a bez podmínky** → `ipc_cm4_alive()`
+    (magic + růst heartbeatu) hlásí živou CM4 a header svítí `4:xx%`, jako by bylo vše v pořádku
+    (jediný příznak: LED_2 nereaguje na GPS fix). **`cm4_ipc_version`** (razítkováno v každém
+    heartbeatu, přežije samostatný reset CM7 + `memset` v `ipc_init`) to zviditelní: System Health
+    `CM4:IPCv<x>!=<y>` červeně + UART `status` → `⚠ IPC NESOULAD`. ⚠️ **Detekce funguje jen dokud se
+    nemění layout PŘED `cm4` blokem** (`snap`/`cmd`/`resp`) — pak si jádra přestanou rozumět už
+    v adrese (týká se to bumpů, kde snapshot roste, jako v12 → nutno flashnout obě banky naslepo).
   - **Předletová pojistka:** `scripts/build.sh` varuje, když je některý obraz **starší než
     `ipc_shared.h`** (typicky „přeložil jsem jen jedno jádro") — ověřeno, že varování skutečně padne.
   - **System Health řádek CM4 (v6):** do boxu 156 px se při mono_16 vejde **15 znaků**, takže
@@ -819,11 +813,10 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
 ### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
 **SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12), `ClockDiv=2`
 → **SDMMC_CK 16 MHz**. Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
-- 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE (v `.ioc` CHYBĚL — vyřešeno 2026-08-14).** Bez něj má
-  `CLKCR` bit17 `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → karta
-  až do `TRANSFER`) projdou, ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`,
-  `HAL_SD_ReadBlocks` SW timeout). Tohle blokovalo SD celé dny a vypadalo jako HW vada DAT0 — přitom byl
-  HW celou dobu v pořádku (potvrdil funkční referenční projekt `H757_SDcard_01/`, který HWFC zapnutý má).
+- 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE** (v `.ioc` chyběl). Bez něj má `CLKCR` bit17
+  `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → `TRANSFER`) projdou,
+  ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`, `HAL_SD_ReadBlocks` SW
+  timeout) — vypadá to jako HW vada DAT0, ale HW je v pořádku (ref. projekt `H757_SDcard_01/` HWFC má).
   **Fix regen-safe v `sd_export.c`:** `sd_apply_init_config()` nastaví `hsd1.Init.HardwareFlowControl`
   + `SDMMC_Init(SDMMC1, hsd1.Init)` po `HAL_SD_InitCard` **ručně zapíše CLKCR** — nutné, protože init
   skládáme sami a vynecháváme `HAL_SD_ConfigWideBusOperation` (ta má 49denní SCR smyčku → IWDG), kde by
