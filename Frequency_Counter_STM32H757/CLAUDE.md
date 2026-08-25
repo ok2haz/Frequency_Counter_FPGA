@@ -93,7 +93,7 @@ Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.
 - Volá `app_gpsdo` po každém vykreslení; UiTask LTDC adresu neřídí.
 - **⚠️ Cache koherence:** DMA2D obchází CPU D-cache → po každém fill/blit se zneplatní cílová oblast (`SCB_InvalidateDCache_by_Addr`); WT → bez dirty řádků. Bez toho AA hrany textu čtou stará data („px šum").
 - **⚠️ `testRED`/`test` UART příkazy** píšou natvrdo do FB0 — při page-flipu nemusí být vidět (bring-up reziduum).
-- **Historie:** buffer byl dočasně vypnut při hledání freezu — ten byl ale **printf v SensorsTasku** (malý stack), NE buffer; po opravě znovu zapnut. CPU dopad ~0 % (dirty-rect). Off-screen canvas API odstraněno (nepoužité).
+- ⚠️ **Freeze NEBYL bufferem** — byl to `printf` v SensorsTasku (malý stack); buffer má CPU dopad ~0 % (dirty-rect). Off-screen canvas API odstraněno (nepoužité).
 
 ### Akcelerace / linker
 - Grafiku dělá `libprim`/`libui` (viz `CM7/GPSDO_UI_README.md`); DMA2D backend je volitelný v libprim.
@@ -683,8 +683,7 @@ bank2 flashnutá.
     od čistého `ipc_cfg_apply` pro Math/limity) napojuje `IPC_CFG_GATE/CHAN/RUN` na **tentýž most**
     `g_ui_cfg_req`+`g_ui_cfg_req_pend` → `screen_main_apply_cfg_req()` v UiTasku, jaký používá SCPI
     přes USB — včetně identického bitového balení. RUN/STOP, brána i kanál z CM4 tedy fungují
-    (`IPC_CMD_LOG` → `datalog_set_enabled`). (Historie: do 2026-08-22 klíče existovaly jen v enumu
-    a padaly do `default:`.)
+    (`IPC_CMD_LOG` → `datalog_set_enabled`).
   - 🔴 **⚠️ PAST, na kterou se přišlo až HW testem přes web (2026-08-23) — SLEPÝ READBACK.**
     Zápis fungoval, ale **`SENS:FREQ:GATE?` / `CHAN?` přes TCP/HTTP vracely pořád `0.1` a `0`**,
     takže to navenek vypadalo jako „brána a vstup nejdou nastavit". Příčina: snapshot nesl jen
@@ -699,9 +698,8 @@ bank2 flashnutá.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`, vypisuje
   ho `run_selftests` při FAILu). Je to **101 kontrol slitých do jedné návratové hodnoty** a na hostiteli
   se test spustit NEDÁ (v tomhle prostředí není nativní C kompilátor, jen arm-none-eabi, ani WSL).
-  **Historie:** test dlouho padal proto, že po `CALC:NULL:ACQuire` čekal pořád neposunutou hodnotu —
-  jenže `meas_math_capture_null()` referenci nejen zachytí, ale rovnou **zapne relativní režim**
-  (`null_en = 1`), takže Y klesne na nulu. Chyba byla v očekávání testu, ne v parseru.
+  ⚠️ **`meas_math_capture_null()` referenci nejen zachytí, ale rovnou zapne relativní režim**
+  (`null_en = 1`), takže po `CALC:NULL:ACQuire` Y klesne na nulu (ne na neposunutou hodnotu).
 
 ## W25Q512JV — externí QSPI flash 64 MB (w25q.c/h, QUADSPI)
 Winbond **W25Q512JVFIQ** (512 Mbit = **64 MB**) na **QUADSPI Bank1**. Osazená na STM desce
