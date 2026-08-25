@@ -139,7 +139,8 @@ void ipc_publish(void)
     g_ipc.snap.gps_num_sat  = g.num_sat;
     /* rtc_unix = aktualni UTC z RTC (0 = nesynchronizovano). Bez toho web/SCPI
      * ukazoval CAS UTC "00:00:00" (pole zustavalo 0 z memsetu). ipc_publish bezi
-     * v defaultTasku, stejne jako pisatel g_rtc_text -> cteni je konzistentni. */
+     * v defaultTasku, stejne jako pisatel g_rtc_text -> cteni je konzistentni.
+     * ✅ Overeno na HW 2026-08-25 (cas na webu spravne). */
     g_ipc.snap.rtc_unix     = datalog_now_unix();
 
     /* ⚠️ Hodnota + BIT PLATNOSTI musi vzniknout ZAROVEN a stejnym pravidlem jako
