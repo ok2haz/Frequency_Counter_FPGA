@@ -870,28 +870,16 @@ bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BA
   mezijaderné spojení**; hnát do ní sekundy provozu je proti pravidlu modulu („testuje se
   výhradně paměť, kterou nikdo jiný nepoužívá") — argument „horní půlka je volná" platí
   o **adresách**, ne o sběrnici. Přínos 16 kB je proti riziku nulový.
-- 🔴🔴 **VYŘEŠENO 2026-08-23, ✅ POTVRZENO NA HW (po opravě už `membench` CM4 neshazuje) —
-  benchmark shazoval CM4, protože SRAM1 NEBYLA volná: halda lwIP ležela na pevné adrese
-  `0x30004000`.** `lwipopts.h` mělo `LWIP_RAM_HEAP_POINTER (0x30004000)`
-  převzaté z ST příkladu pro **jednojádrový** H7, kde je D2 SRAM1 volná. Na téhle desce ale SRAM1
-  podle rozdělení D2 patří **CM7** — takže halda lwIP seděla v cizí paměti. Benchmark ji přepsal
-  → **CM4 spadla a s vypnutým IWDG2 už nenaběhla** (konec ETH/SCPI/webu do resetu desky).
-  **Opraveno odstraněním toho define** → lwIP si `ram_heap` alokuje jako statické pole v `.bss`
-  CM4 (ověřeno: `ram_heap` je teď na `0x10022400` = SRAM2, `.bss` CM4 vzrostla o 14 kB na 65 kB
-  ze 128 kB). ⚠️ **Týž problém měl i UART `ram write`** (píše 80 kB od `0x30001000`) — jen se
-  nikdy nespustil za běhu ETH, takže se na to nepřišlo.
-  - ⚠️ **Past v přiřazení viníka, na kterou se šláplo dvakrát:** `g_cm4_alive` odvozuje defaultTask
-    z okna **~3 s**, takže smrt CM4 se v něm projeví o několik sekund později a spadne na cíl,
-    který zrovna běží — typicky ten poslední a nejdelší (W25Q s erase). Tak vzniklo **mylné
-    obvinění W25Q**; předtím stejně mylně padlo podezření na SRAM4/D3. Teprve čtení **syrového
-    čítače heartbeatu** (`g_ipc.cm4.heartbeat`, CM4 ho zvedá 5×/s) s označením **jen prvního**
-    postiženého cíle ukázalo na SRAM1.
-  - **Stopa, která to potvrdila:** chyby v SRAM1 se shlukly kolem `0x30004000` a byly
-    jednorázové (jiný vzor pokaždé, ostatní vzory na téže adrese prošly) — tedy ne vadná buňka,
-    ale **cizí zápis**. Byla to lwIP, jak si psala do vlastní haldy uprostřed testu.
-  - **Poučení:** „linker sem nic neumisťuje" **není** důkaz, že je paměť volná — pevně zadrátovaná
-    adresa v konfiguraci middlewaru se v mapfile neprojeví. Při přidávání dalšího cíle grepni
-    i **absolutní adresy ve zdrojích obou jader**, nejen linker skripty.
+- 🔴🔴 **SRAM1 „volná" NEBYLA — poučení pro přidání dalšího cíle (vyřešeno HW 2026-08-23).**
+  `membench` shazoval CM4, protože halda lwIP ležela na pevné adrese `0x30004000` (SRAM1 =
+  CM7 podle rozdělení D2), zděděné z `LWIP_RAM_HEAP_POINTER` v `lwipopts.h`. Benchmark ji
+  přepsal → CM4 spadla a s vypnutým IWDG2 už nenaběhla. Opraveno smazáním toho define
+  (lwIP `ram_heap` teď v `.bss` CM4 = SRAM2). **Pravidlo: „linker sem nic neumisťuje" NENÍ důkaz
+  volné paměti** — pevně zadrátovaná adresa v middlewaru se v mapfile neprojeví; při přidání cíle
+  grepni i **absolutní adresy ve zdrojích obou jader**. ⚠️ Týž problém má i UART `ram write`
+  (80 kB od `0x30001000`). ⚠️ **Přiřazení viníka:** `g_cm4_alive` má ~3 s okno → smrt CM4 spadne
+  na zrovna běžící (poslední/nejdelší) cíl → mylně obviní W25Q. Viníka určuj čtením **syrového
+  `g_ipc.cm4.heartbeat`** (5×/s) a označením **jen prvního** postiženého cíle.
 - **`__HAL_RCC_C1_D2SRAM1_CLK_ENABLE()`, ne společná varianta** — na dvoujádrovém H7 má každé
   jádro vlastní sadu povolovacích bitů (`RCC_C1->AHB2ENR` vs `RCC->AHB2ENR`) a nás zajímá jen
   přidělení pro CM7. Sahat na společný registr, když zároveň řešíme padání CM4, je zbytečné
@@ -930,37 +918,19 @@ bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BA
     teprve pak ověř. Běžný „zapiš a hned ověř" test příliš pomalý refresh **nikdy neodhalí**,
     protože data se rozpadají až po čase. Clean cache PŘED čekáním (jinak by se měřila retence
     cache) a invalidate až PO něm.
-- 🔴🔴 **NÁLEZ: ADRESY V SDRAM SE OPAKUJÍ PO 2 MB — reálné a INTERMITENTNÍ.** Zápis na
-  `0xC0400000 + 2 MB` skončí na `0xC0400000`, tedy dvě různé adresy jsou fyzicky **tatáž buňka**.
-  ⚠️ **Objevuje se a mizí mezi běhy** — a to je právě ta nejhorší kombinace.
-  - ⚠️ **Opravená úvaha (2026-08-23):** krátce to vypadalo, že jde o collateral od padající CM4
-    (alias se objevoval jen v bězích, kde CM4 umírala, a po opravě haldy lwIP jednou nevyskočil).
-    **To je vyvráceno:** v následujícím běhu byla CM4 **zdravá** (žádný `stall:CM4`, všechny cíle
-    OK) **a alias se přesto vrátil**. Rozpadlé jádro tedy vyloučené je. Intermitence + naprostá
-    systematičnost důkazů (viz níže) ukazuje na **marginální (studený) spoj**, který jednou vede
-    a jindy ne. **Prozvonit `PF15`.**
-  Důkazy z běhu se 4 MB blokem, pro pořádek:
-  - vzor „adresa" dal **přesně 524 288** chybných bitů = přesně tolik, kolik předpovídá překryv
-    po 2 MB (každé slovo v dolní půlce má právě 1 chybný bit, `0x80000`),
-  - první chyba: na `0xC0400000` čekáno `0x00000000`, **přečteno `0x00080000`** = hodnota
-    zapsaná na index 524 288, tj. o 2 MB dál,
-  - vzory `0x00`/`0xFF`/`55-AA` prošly **bez jediné chyby** — a to sedí: konstanty překryv
-    nerozliší a `55/AA` závisí jen na paritě indexu, která se posunem o sudých 2 MB nemění.
-  **Retence po 1 s = 0 chyb**, takže refresh je v pořádku a dřívější podezření na `REFRESH_COUNT`
-  padlo (poznámka u něj v `fmc.c` ale zůstává — hodnota 1835 pořád nesedí s výpočtem 371 a stojí
-  za ověření zvlášť).
-  - **Odpovídalo by to nefunkční adresní lince `FMC_A9` = `PF15`** (mapování: řádkový bit 9 ↔
-    `HADDR[21]` ↔ `FMC_A9`; při 16bit sběrnici je řádek `HADDR[24:12]`). Firmware je v pořádku —
-    `PF15` je v `.ioc` i v `HAL_GPIO_Init(GPIOF, …)` s `GPIO_PIN_15` — takže by podezření mířilo
-    na **HW (spoj/pájka `PF15` ↔ A9 na SDRAM)**. ⚠️ Neproměřeno; a protože se to přestalo
-    opakovat, není to potvrzená vada — jen doporučení prozvonit, když je deska stejně otevřená.
-  - 🔴 **Nejdražší důsledek — a `membench` ho od 2026-08-23 PŘÍMO TESTUJE.** `FB2` (`0xC0200000`)
-    se od `FB0` (`0xC0000000`) liší **právě jen v `HADDR[21]`**, tedy v tom bitu, který vypadá
-    jako nefunkční; totéž canvas pool (`0xC0300000`) vs `FB1`. Kdyby sdílely paměť, **triple
-    buffering by byl fakticky double** a projevovalo by se to blikáním/trháním, které by nikdo
-    nespojoval s pamětí. Kontrola běží jen když je alias detekován (`fb_alias`, reverzibilní
-    jednoslovná sonda) a hlásí buď `!! FB0 … a FB2 … SDILEJI PAMET`, nebo uklidňující
-    `(framebuffery se ale navzajem NEprekryvaji)`. **Než se sáhne na cokoli v zobrazovacím
+- 🔴🔴 **NEUZAVŘENÝ NÁLEZ: ADRESY V SDRAM SE MOHOU OPAKOVAT PO 2 MB — intermitentní.** Zápis na
+  `0xC0400000 + 2 MB` občas skončí na `0xC0400000` (dvě adresy = tatáž buňka). **Objevuje se a mizí
+  mezi běhy** (vyloučeno, že jde o collateral padající CM4 — vrátilo se i při zdravé CM4) → ukazuje
+  na **marginální/studený spoj**. Odpovídá nefunkční adresní lince **`FMC_A9` = `PF15`** (řádkový
+  bit 9 ↔ `HADDR[21]`); firmware je v pořádku (`PF15` v `.ioc` i `HAL_GPIO_Init`), takže podezření
+  míří na **HW (pájka `PF15`↔A9)**. **Prozvonit `PF15`**, až bude deska otevřená (neproměřeno,
+  nepotvrzeno). Retence po 1 s = 0 chyb → refresh OK (⚠️ `REFRESH_COUNT` 1835 vs výpočet 371 pořád
+  nesedí, `fmc.c`, ověřit zvlášť).
+  - 🔴 **Nejdražší důsledek — `membench` ho PŘÍMO TESTUJE.** `FB2` (`0xC0200000`) se od `FB0`
+    (`0xC0000000`) liší **právě jen v `HADDR[21]`** (ten podezřelý bit); totéž canvas pool vs `FB1`.
+    Kdyby sdílely paměť, triple buffering by byl fakticky double (blikání/trhání). `fb_alias`
+    (reverzibilní sonda, jen když je alias detekován) hlásí `!! FB0 … a FB2 … SDILEJI PAMET` nebo
+    uklidňující `(framebuffery se navzajem NEprekryvaji)`. **Než sáhneš na cokoli v zobrazovacím
     řetězci, přečti si tenhle řádek.**
 - 🔴 **Bezpečnostní pojistka (`sdram_safety_check`) — proto, že překryv existuje.** Když se adresy
   opakují, „testuju jen vyhrazenou oblast" **přestává platit** a zápis do scratche může skončit
@@ -996,25 +966,14 @@ bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BA
   přesně ve chvíli, kdy je UiTask kreslí; kdyby čtení trefilo okamžik mezi přepsáním starého
   terminátoru a zapsáním nového, holé `%s` by četlo za konec pole. Stejný důvod jako `strncpy`
   u `g_rtc_text`.
-- ⚠️ **Jak číst naměřené rychlosti — a co změřené NENÍ.**
-  - ✅ **Pořadí pamětí je po opravě SPRÁVNÉ** (změřeno 2026-08-24, Debug/`-O0`):
-    zápis DTCM **333** > AXI SRAM 330 > SRAM1 D2 326 MB/s, čtení DTCM **263** > AXI 227 >
-    SRAM1 214 MB/s. DTCM (zero-wait-state TCM bez arbitrace) je nejrychlejší, jak má být.
-    ⚠️ **Před rozbalením smyčky vycházely všechny tři shodně ~187 MB/s** a DTCM dokonce
-    pomaleji než AXI — to je fyzikálně nemožné a byla to známka, že se měřila **režie
-    smyčky, ne paměť**. Absolutní čísla jsou v `-O0` pořád nadhodnocená režií; pro
-    porovnání s katalogem stavěj `Release` (`-Os`).
-  - **Rozbalení smyčky po 8** (`SPEED_UNROLL`) zvedlo RAM čísla ~1,75×, protože předtím
-    dominovala režie smyčky kolem jediného `volatile` přístupu. ⚠️ Uvnitř **jeden součet na
-    čtveřici**, ne osm samostatných `acc +=`: v `-O0` žije `acc` na zásobníku a každý samostatný
-    příkaz je celý round-trip. **Změřeno** — samostatné příkazy srazily čtení DTCM 263→202 MB/s.
-    (Původní úvaha tvrdila pravý opak; měření ji vyvrátilo. Neměnit bez změření.)
-  - ⚠️ **SDRAM je bez `SPEED_PASSES` neopakovatelná:** sdílí FMC s LTDC, který z téže paměti
-    nepřetržitě čte framebuffer (~46 MB/s). Zápis vyšel ve dvou po sobě jdoucích bězích **38
-    a 25 MB/s při identické smyčce**. Proto se měří **nejlepší z 3 průchodů** — rušení může
-    měření jen zpomalit, takže minimum je blíž skutečné propustnosti než průměr.
-  - ✅ **Nezávislé potvrzení, že měření není nesmysl:** W25Q čtení vychází 4571 kB/s = **4,46 MB/s**,
-    což sedí na dokumentovaný strop pollovaného QSPI čtení ~4,6 MB/s (CPU čte FIFO bajt po bajtu).
+- ⚠️ **Jak číst naměřené rychlosti** (Debug/`-O0`; pro porovnání s katalogem stavěj Release `-Os`):
+  pořadí zápis DTCM > AXI > SRAM1 D2, čtení stejné pořadí (DTCM zero-wait-state = nejrychlejší).
+  Zápis > čtení je normální (store buffer je „fire-and-forget", load musí počkat). ⚠️ **Kdyby všechny
+  vyšly shodně nebo DTCM pomaleji než AXI, měří se režie smyčky, ne paměť** (to byl stav před
+  rozbalením). **`SPEED_UNROLL` (po 8) + jeden součet na čtveřici** (ne 8× samostatné `acc +=` — v
+  `-O0` je každý příkaz round-trip na stack; **neměnit bez změření**). ⚠️ **SDRAM měř nejlepší
+  z `SPEED_PASSES`=3** — sdílí FMC s LTDC (~46 MB/s), takže jednotlivý běh kolísá; rušení jen
+  zpomaluje → minimum je blíž pravdě. ✅ Sanity: W25Q čtení ~4,46 MB/s sedí na strop pollovaného QSPI.
 - **Rychlost se měří zvlášť od ověřování**: zápis + samostatný čtecí průchod (součet do
   `volatile`, jinak by GCC smyčku vyhodil jako mrtvý kód a „rychlost čtení" vyšla nesmyslně
   vysoká); porovnávání běží až potom, neměřené — jinak by číslo neslo rychlost porovnávací
@@ -1044,9 +1003,8 @@ bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BA
   `_USE_LFN=0` → jen 8.3 jména (`GPSDO.CSV` vyhovuje); `_FS_TINY=0` → `FIL` má vlastní 512B
   buffer → **`sd_export_run()` má 808 B rámec** (UartTask 4 kB, základ ~1,3 kB → ~1,8 kB rezerva).
 - 🔴🔴 **`sd_diskio.c`: `ENABLE_SD_DMA_CACHE_MAINTENANCE` = 0 a `ENABLE_SCRATCH_BUFFER` VYPNUTÝ**
-  (oba v USER CODE, přežijí regen). ⚠️ **Do 2026-08-13 tu stálo přesně opačné tvrzení** — stálo
-  na chybném předpokladu, že blokující `HAL_SD_ReadBlocks/WriteBlocks` na H7 používají IDMA.
-  **Nepoužívají** — přehazují data procesorem přes FIFO (`SDMMC_ReadFIFO()` ve smyčce). A protože
+  (oba v USER CODE, přežijí regen). Blokující `HAL_SD_ReadBlocks/WriteBlocks` na H7 **NEpoužívají
+  IDMA** — přehazují data procesorem přes FIFO (`SDMMC_ReadFIFO()` ve smyčce). A protože
   `BSP_SD_ReadBlocks_DMA`/`WriteBlocks_DMA` jsou **přepsané na tuhle blokující variantu**
   (`sd_export.c`, `__weak` v `bsp_driver_sd.c`), neteče přes IDMA vůbec nic.
   - **Cache maintenance je pak u čtení PŘÍMO ŠKODLIVÁ**: data píše CPU (dirty v D-cache),
@@ -1102,21 +1060,16 @@ bank1** `0x08000000` 256 kB z 1 MB **jen čtení**, **W25Q QSPI** `W25Q_BENCH_BA
   (= `bootled_fail()`, mrtvý přístroj), a `HAL_SD_Init` selže vždy bez vložené karty. Proto se
   v USER CODE **vyplní handle a hned `return`** — přeskočí se jen `HAL_SD_Init`, které pak dělá
   `BSP_SD_Init()` při mountu. Stejná filozofie jako `goto display_skip` u panelu a `g_cm4_absent` u CM4.
-  ⚠️⚠️ **Holý `return;` NESTAČÍ** (stálo půl dne, 2026-08-12): `HAL_SD_MspInit()` začíná
-  `if (sdHandle->Instance == SDMMC1)`, takže s `Instance == NULL` se **nezapnou hodiny SDMMC1
-  ani nenakonfigurují piny**. Ověřeno přes GDB: `hsd1.Init` nulové, registry `@0x52007000` samé nuly.
+  ⚠️⚠️ **Holý `return;` NESTAČÍ:** `HAL_SD_MspInit()` začíná `if (sdHandle->Instance == SDMMC1)`,
+  takže s `Instance == NULL` se **nezapnou hodiny SDMMC1 ani nenakonfigurují piny** (nutno vyplnit
+  handle před returnem).
 - **✅ SD hardware ověřen na HW (2026-08-12, přes GDB):** s obejitou detekcí vrátí `BSP_SD_Init()`
   `MSD_OK`, karta se ohlásí jako **SDHC 14,5 GB**, `CardState = TRANSFER`, `CLKCR = 0x4002`
   (4-bit, 16 MHz). **Tím padá podezření na STATUS #69** — SDMMC1 komunikuje spolehlivě.
-- **✅ Card-detect PE3 FUNGUJE (vyřešeno 2026-08-13 — mechanicky, ne softwarově).** Polarita je
-  **LOW = karta zasunuta**, jak předpokládal návrh i `SD_franta.md`.
-  ⚠️ **Poučení, které stálo dost času:** PE3 dlouho četl HIGH i „se zasunutou" kartou a my z toho
-  usoudili, že je detekce rozbitá (nezapojený DET pin, obrácená polarita…) a začali ji obcházet
-  přes `sd force on`. **Detekce měla celou dobu pravdu** — chyba byla v pouzdře/kontaktech slotu,
-  karta fyzicky nedosedala. Potvrdilo to až to, že `HAL_SD_Init` vrátil `CMD_RSP_TIMEOUT`
-  (= po lince nepřišlo nic), což s „prázdno" na PE3 **souhlasilo**. Uživatel kontakt opravil.
-  **Zásada: když dva nezávislé zdroje (detekce + odezva karty) říkají totéž, neobcházej je —
-  ověř hardware.** `sd force on` / `sd det invert on` zůstávají jen jako nouzový únik.
+- **✅ Card-detect PE3 FUNGUJE, polarita LOW = karta zasunuta** (vyřešeno mechanicky 2026-08-13 —
+  chyba byla v kontaktech slotu, ne v detekci). **Zásada: když dva nezávislé zdroje (detekce PE3 +
+  odezva karty `CMD_RSP_TIMEOUT`) říkají totéž, neobcházej je — ověř hardware.** `sd force on` /
+  `sd det invert on` zůstávají jen jako nouzový únik.
 - **UART příkazy SD:** `sd diag` (stavová diagnostika — rozliší selhání HW vrstvy vs. souborového
   systému), `sd test` (**zápis 8 kB + zpětné čtení a porovnání obsahu** → prověří multi-blokový
   přenos i cache maintenance), `sd det [invert on|off]`, `sd force [on|off]`, `sd mount`/`unmount`,
