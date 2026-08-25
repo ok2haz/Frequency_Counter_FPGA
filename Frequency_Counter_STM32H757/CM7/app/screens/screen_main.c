@@ -557,18 +557,26 @@ static int num_layout(int int_digits, int frac_digits)
     if (frac_digits < 0) frac_digits = 0;
     if (frac_digits > 5) frac_digits = 5;
 
-    /* Delky skupin: cela cast po 3 zprava (prvni = zbytek), pak 1 frac skupina. */
-    int glen[8]; int gn = 0;
+    /* Skladba segmentu (delka/uroven/podtrzeni). Cela cast = skupiny po 3 zprava.
+     * Frakcni cast = hlavni CERTAIN blok (podtrzeny) + posledni 1-2 cislice jako
+     * SIGMA/FLOOR (mensi, nizsi kontrast = nejiste) — jako puvodni SCR_MAIN_DIGITS.
+     * Realna nejistota (kolik cislic je nejistych) az #51; zatim kosmeticky 2. */
+    int glen[8]; uint8_t glvl[8]; uint8_t gund[8]; int gn = 0;
     int first = int_digits % 3; if (first == 0) first = 3;
     int rem = int_digits;
-    glen[gn++] = first; rem -= first;
-    while (rem > 0 && gn < 8) { glen[gn++] = 3; rem -= 3; }
-    int frac_seg = -1;
-    if (frac_digits > 0 && gn < 8) { frac_seg = gn; glen[gn++] = frac_digits; }
+    glen[gn] = first; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gn++; rem -= first;
+    while (rem > 0 && gn < 7) { glen[gn] = 3; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gn++; rem -= 3; }
 
-    /* Separatory: '.' mezi celymi skupinami, ',' tesne pred frac skupinou. */
+    int first_frac = (frac_digits > 0) ? gn : -1;   /* index 1. frac segmentu (comma pred nej) */
+    int n_unc = (frac_digits < 2) ? frac_digits : 2;
+    int frac_cert = frac_digits - n_unc;
+    if (frac_cert > 0 && gn < 8) { glen[gn] = frac_cert; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 1; gn++; }
+    if (n_unc == 2 && gn < 8)    { glen[gn] = 1;         glvl[gn] = UI_DIGIT_SIGMA;   gund[gn] = 0; gn++; }
+    if (n_unc >= 1 && gn < 8)    { glen[gn] = 1;         glvl[gn] = UI_DIGIT_FLOOR;   gund[gn] = 0; gn++; }
+
+    /* Separatory: '.' mezi skupinami, ',' tesne pred prvni frac skupinou. */
     for (int i = 0; i < gn - 1; i++)
-        s_seps[i] = (frac_seg >= 0 && i == frac_seg - 1) ? ',' : '.';
+        s_seps[i] = (first_frac > 0 && i == first_frac - 1) ? ',' : '.';
     s_seps[gn - 1] = '\0';
 
     s_freq_total = 0;
@@ -577,8 +585,8 @@ static int num_layout(int int_digits, int frac_digits)
         s_seg_len[i] = (uint8_t)L;
         memset(s_num_buf[i], '0', (size_t)L); s_num_buf[i][L] = '\0';
         s_num_seg[i].text           = s_num_buf[i];
-        s_num_seg[i].level          = UI_DIGIT_CERTAIN;   /* realna nejistota az #51 */
-        s_num_seg[i].with_underline = false;
+        s_num_seg[i].level          = glvl[i];
+        s_num_seg[i].with_underline = gund[i] ? true : false;
         s_freq_total += L;
     }
     s_freq_int  = int_digits;
