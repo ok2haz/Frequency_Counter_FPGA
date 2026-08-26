@@ -662,6 +662,30 @@ bank2 flashnutá.
       neukládá 12V/5V/VREF ani MCU/FPGA teploty → v dlouhých oknech ty řady chybí.
     ⚠️ **Rozsah snapshotu vzrostl** (alarmy + 144 B družic) → `HTTPD_BODYBUF_MAX` 1536→**4096**
     (JSON historie ~2,7 kB). Test: doplnit do `HW_OVERENI_PRUCHOD.md`.
+  - **Revize webu (2026-08-26)** — nalezené a opravené chyby + rozšíření:
+    - 🔴 **Dlouhá okna byla skoro prázdná, když log ještě nemá tolik historie.** Krok decimace
+      se počítal jen z požadovaného okna (30 dní / 48 bodů = každý 5400. záznam), takže při
+      dvoudenním logu se našly ~4 body. `ipc_datalog_service()` teď krok **zmenší** tak, aby
+      vytěžil celou dostupnou historii; SPA pak hlásí **skutečně pokrytý rozsah** z časových
+      značek (ne požadované okno — napsat „30 dní" na dvoudenní data by bylo lživé) a upozorní
+      „v logu zatím není celých X".
+    - 🔴 **Osa X v detailu grafu počítala stáří ve VZORCÍCH a značila je jako sekundy.** V režimu
+      datalogu je vzorek `step×10 s`, takže okno 24 h se popsalo jako „48 s". Teď se osa odvozuje
+      z časových značek (`DL.t`), v živém okně zůstává vzorek = 1 s.
+    - Prázdný datalog → místo chyby srozumitelné „zapni datalog"; `t_unix == 0` (RTC nesrovnané
+      z GPS) se hlásí zvlášť, ne jako nesmyslný rozsah.
+    - Popisky grafů byly v režimu datalogu **lživé** („Zdroj: poll 1 Hz") → teď rozlišují zdroj
+      a připomenou, které řady datalog neukládá (12 V/5 V/VREF, MCU/FPGA teploty).
+    - **Detail i pro GPS okno** (klik na kartu/sky plot): velký sky plot s elevačními kružnicemi
+      a popisky, souhrn (fix, použito/viděno, trackováno, průměr C/N0, HDOP, čas, poloha, výška)
+      a **tabulka družic** seřazená podle C/N0 (PRN + souhvezdí + elevace + azimut + bargraf).
+      ⚠️ `drawZoom` přepíná `viewBox`/`preserveAspectRatio` — sky plot potřebuje **čtvercový**
+      poměr, kdežto grafy jsou záměrně roztažené (`preserveAspectRatio='none'`).
+    - `/api/state` nově nese **polohu** (`lat`/`lon` z `gps_lat_e7` celočíselně, `alt_m`, `hdop`) →
+      GPS karta ukazuje polohu/výšku/HDOP. ⚠️ Formátuje se **z e7 celočíselně**, ne `%f`.
+    - ⚠️ **SPA vyrostla 29 → ~62 kB `.rodata`** (CM4 obraz ~195 kB z 1 MB) a `s_hconn` zabírá
+      ~25 kB RAM (5 spojení × 4 kB body buffer) → CM4 `.bss` ~83 kB ze 128 kB. Pořád rezerva,
+      ale při dalším růstu bufferů to hlídat.
 - **Rozšíření 2026-08-13 (jen nad poli, která `scpi_src_t` UŽ má → CM7 i budoucí CM4 se chovají
   IDENTICKY, bez bumpu `IPC_VERSION`):** `SYST:CAP?`, **`SYST:ERR:ALL?`** (vyprázdní celou frontu
   jedním dotazem; ⚠️ po výpisu chyb **nepřipojuje** koncovou `0,"No error"` — ta se vrací jen

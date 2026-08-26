@@ -265,6 +265,15 @@ void ipc_datalog_service(void)
     uint16_t want = g_ipc.log.req_count;
     if (want > IPC_LOG_CHUNK) want = IPC_LOG_CHUNK;
     uint16_t step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
+    /* ⚠️ Kdyz log jeste nema dost zaznamu na pozadovane okno (typicky „30 dni" po
+     * dvou dnech behu), pozadovany krok by nasbiral jen par bodu a graf by byl
+     * temer prazdny. Krok se proto zmensi tak, aby se vyuzila CELA dostupna
+     * historie; skutecne pokryty cas si klient odvodi z casovych znacek. */
+    if (want > 0u && st.records > 0u) {
+        uint32_t max_step = st.records / want;
+        if (max_step < 1u) max_step = 1u;
+        if ((uint32_t)step > max_step) step = (uint16_t)max_step;
+    }
     uint32_t from = g_ipc.log.req_from;             /* 0 = nejnovejsi */
 
     uint16_t got = 0;
