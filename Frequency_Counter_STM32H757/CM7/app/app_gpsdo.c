@@ -4673,8 +4673,12 @@ static void app_gpsdo_render_selftest(void)
     ui_button_render(&run);
     ui_card_t c = {.rect = DG_CARD_FULL_TALL, .header_label = "Pure-logic unit testy (bezi i pri bootu)"};
     ui_card_render_chrome(&c);
-    /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h). */
-    #define ST_N 13                 /* = SELFTEST_N (freertos_shared.h) */
+    /* Poradi MUSI sedet s run_selftests / g_selftest_detail (freertos_shared.h).
+     * ⚠️ ST_N se ODVOZUJE ze SELFTEST_N, uz NENI vlastni cislo: drive tu bylo
+     * natvrdo 13, zatimco testu bylo 14 -> okno tise vynechavalo POSLEDNI test
+     * (benchmark pameti), pritom UART hlasil 14/14. `_Static_assert` nize hlida,
+     * ze pribyl i popisek — pri dalsim testu uz to spadne pri prekladu. */
+    #define ST_N SELFTEST_N
     static const char *NAMES[ST_N] = {
         "CRC16 (SPI protokol)",     /* crc16("123456789") == 0x29B1 */
         "Hystereze /4 <-> /16",     /* fpga_freq_select_core na syntetickych ramcich */
@@ -4689,11 +4693,14 @@ static void app_gpsdo_render_selftest(void)
         "Prezentace mereni",        /* meas_present: perioda/nominal/jednotky/stat/TFOM (#67) */
         "SCPI parser",              /* scpi_selftest: case/kratka-dlouha forma/hierarchie (#25) */
         "IPC seqlock + ring",       /* ipc_selftest: seqlock parita + cmd/resp ring (#19/#20) */
+        "Vzory benchmarku",         /* membench_selftest: generatory vzoru + pocitani chybnych bitu */
     };
+    _Static_assert(sizeof(NAMES) / sizeof(NAMES[0]) == SELFTEST_N,
+                   "okno Selftest nema popisek pro kazdy test z run_selftests");
     /* ⚠️ LAYOUT PREPSAN 2026-08-15 (HW pruchod): puvodni JEDEN sloupec s rozteci
      * 18 px se PREKRYVAL — `ui_font_mono_18` ma `line_height` 23 (ascent 18 +
      * descent 5), takze roztec 18 nechala nula mezeru a descent zasahoval do
-     * dalsiho radku. Ted DVA SLOUPCE (7 + 6 testu) s rozteci 26 px: text se
+     * dalsiho radku. Ted DVA SLOUPCE (7 + zbytek, dnes 7+7) s rozteci 26 px: text se
      * neprekryva a karta je vyuzita po sirce (drive prazdna prava polovina).
      * Sirka labelu: nejdelsi je "Datalog zaznam + CRC" = 20 znaku x 11 px
      * (mono_18 advance) = 220 px -> vysledek na +240 se bezpecne vejde. */
@@ -4721,7 +4728,7 @@ static void app_gpsdo_render_selftest(void)
     prim_draw_text((prim_point_t){(int16_t)(ST_COL_A + ST_RES_DX), 312}, b, &ui_font_mono_18,
                    g_selftest_res == 0 ? UI_COLOR_INK_4 : (pass == ST_N ? UI_COLOR_OK : UI_COLOR_BAD),
                    PRIM_ALIGN_LEFT);
-    /* ⚠️ Indikace BEHU: vysledek je pokazde stejny (13/13), takze bez tohohle
+    /* ⚠️ Indikace BEHU: vysledek je pokazde stejny (napr. 14/14), takze bez tohohle
      * nebylo poznat, jestli SPUSTIT vubec neco udelalo — pusobilo to jako "znovu
      * se nespusti" (HW pruchod 2026-08-15). Cislo behu + uptime se meni vzdy. */
     if (s_selftest_runs) {

@@ -317,18 +317,30 @@ void ipc_datalog_service(void)
     uint16_t budget = IPC_LOG_SCAN_BUDGET;
     while (s_bucket < s_want && budget > 0u) {
         uint32_t idx = s_from + (uint32_t)s_bucket * s_step + (uint32_t)s_k * s_sub;
-        datalog_rec_t r;
-        int ok = (idx < s_records) && datalog_read_back(idx, &r);
-        if (ok) {
-            budget--; s_scanned++;
-            if (!s_have_first) { s_first = r; s_have_first = 1u; }
-            if (r.freq_x100000 != 0u) {              /* 0 = tehdy nebyl FPGA link */
-                if (s_min == 0u || r.freq_x100000 < s_min) s_min = r.freq_x100000;
-                if (r.freq_x100000 > s_max)                s_max = r.freq_x100000;
+        /* ⚠️ ROZLISUJ „log dosel" od „cteni se nepovedlo". `datalog_read_back` vraci
+         * false v obou pripadech, ale znamenaji neco jineho: mimo rozsah = konec
+         * dat, kdezto neuspech je typicky jen ZANEPRAZDNENA flash (kratky timeout
+         * QSPI mutexu, do ktereho obcas trefi datalog_tick nebo syscfg zapis).
+         * Drive se oboji brala jako konec -> jedina kolize uprostred skenu by
+         * uriznula zbytek grafu. U obalky se cte az 20 000 zaznamu, takze na to
+         * dojde skoro jiste; proto se neuspesny vzorek jen PRESKOCI. */
+        int endofdata = (idx >= s_records);
+        if (!endofdata) {
+            datalog_rec_t r;
+            budget--;                                /* i neuspesne cteni stoji cas */
+            if (datalog_read_back(idx, &r)) {
+                s_scanned++;
+                if (!s_have_first) { s_first = r; s_have_first = 1u; }
+                if (r.freq_x100000 != 0u) {          /* 0 = tehdy nebyl FPGA link */
+                    if (s_min == 0u || r.freq_x100000 < s_min) s_min = r.freq_x100000;
+                    if (r.freq_x100000 > s_max)                s_max = r.freq_x100000;
+                }
             }
+            s_k++;
         }
-        s_k++;
-        if (s_k >= s_per_bucket || !ok) {            /* bucket hotov (nebo dosel log) */
+        /* Na konci dat se rozpracovany bucket JESTE DOPISE (ma min vzorku, ale je
+         * platny) — jinak by posledni bod grafu zmizel. */
+        if (s_k >= s_per_bucket || endofdata) {      /* bucket hotov */
             if (s_have_first) {
                 const datalog_rec_t *r0 = &s_first;
                 ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[s_got];
@@ -349,7 +361,7 @@ void ipc_datalog_service(void)
             }
             s_bucket++; s_k = 0u;
             s_have_first = 0u; s_min = 0u; s_max = 0u;
-            if (!ok) break;                          /* log dosel -> koncime driv */
+            if (endofdata) { s_bucket = s_want; break; }   /* dal uz data nejsou */
         }
     }
     if (s_bucket < s_want) return;                   /* jeste nehotovo, pokracuj priste */

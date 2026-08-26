@@ -273,7 +273,7 @@ int run_selftests(void)
   g_selftest_res = ok ? 1 : 2;
   printf("SELFTEST: %d/%d %s\n", pass, SELFTEST_N, ok ? "PASS" : "FAIL");
   if (!ok) {
-    /* Bez tohohle je "12/13 FAIL" nedohledatelne — cislo indexu je mapa do
+    /* Bez tohohle je napr. "13/14 FAIL" nedohledatelne — cislo indexu je mapa do
      * komentaru u r[] vyse i do okna Selftest (g_selftest_detail). */
     printf("  FAIL:");
     for (int i = 0; i < SELFTEST_N; i++) if (r[i] != 1) printf(" #%d", i);
