@@ -21,18 +21,11 @@ const char *SCR_S_HOLD_V    = "2h 14m";
  *    screen_main.c; only the static right-hand annotation stays here). ── */
 const char *SCR_S_TITLE_RIGHT = "N 312 · Ω regrese";
 
-/* ── Main number: 99 999 999 999 88 5 6 Hz, 12 certain digits ── */
-const ui_digit_segment_t SCR_MAIN_DIGITS[] = {
-    {"99",  UI_DIGIT_CERTAIN, false},
-    {"999", UI_DIGIT_CERTAIN, false},
-    {"999", UI_DIGIT_CERTAIN, false},
-    {"999", UI_DIGIT_CERTAIN, false},
-    {"88",  UI_DIGIT_CERTAIN, true},
-    {"5",   UI_DIGIT_SIGMA,   false},
-    {"6",   UI_DIGIT_FLOOR,   false},
-};
-const int16_t SCR_MAIN_DIGIT_COUNT = 7;
-const char *SCR_MAIN_SEPS = "..,.";   /* 4 separators between 5 groups */
+/* ── Main number ─────────────────────────────────────────────────────────────
+ * ⚠️ Staticka predloha cislic (`SCR_MAIN_DIGITS`/`_DIGIT_COUNT`/`SCR_MAIN_SEPS`)
+ * byla ODSTRANENA (#1, 2026-08-25): format velkeho cisla se od napojeni realnych
+ * dat stavi ZA BEHU podle magnitudy mereni — viz `num_layout()`/`num_build_for()`
+ * v screen_main.c. Zustava jen jednotka, ktera na mereni nezavisi. */
 const char *SCR_S_UNIT_HZ = "Hz";
 
 /* ── Cards (jen LABELY; hodnoty offset/sigma/trend jsou POCITANE ze statistiky

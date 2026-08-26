@@ -73,9 +73,9 @@ int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati
 int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
 int  screen_main_redraw_cpu(int force);                /* blok vytizeni CPU (CM7/CM4) v headeru; vrati 1 pokud kreslil */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
-int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
-void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni (pri prepnuti RUN/STOP) */
-void screen_main_freq_sim_step(void);                  /* krok simulace BEZ kresleni (mimo main obrazovku) */
+int  screen_main_redraw_freq(void);                    /* mereny kmitocet (per-segment dirty); vrati 1 */
+void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni + SIM markeru */
+void screen_main_freq_sim_step(void);                  /* krok ZDROJE (mereni/SIM) BEZ kresleni — mimo main obrazovku */
 float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
 double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
@@ -122,9 +122,9 @@ bool screen_main_selftest(void);                        /* fmt_frac+hist_h vekto
 extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
 extern const char *SCR_S_HOLD_L, *SCR_S_HOLD_V;
 extern const char *SCR_S_TITLE_RIGHT;
-extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
-extern const int16_t SCR_MAIN_DIGIT_COUNT;
-extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
+/* ⚠️ `SCR_MAIN_DIGITS`/`_DIGIT_COUNT`/`SCR_MAIN_SEPS` odstraneny (#1) — format
+ * velkeho cisla se stavi za behu dle magnitudy mereni (`num_layout` v .c). */
+extern const char *SCR_S_UNIT_HZ;
 /* Offset/sigma/trend hodnoty jsou POCITANE ze statistiky (screen_main.c), jen labely zde. */
 extern const char *SCR_S_OFFSET_L;
 extern const char *SCR_S_TREND_L;
