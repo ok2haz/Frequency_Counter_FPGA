@@ -12,6 +12,11 @@
 #include <stdlib.h>   /* abs — desetinna cast zapornych teplot ve vypisu */
 #include <string.h>
 
+/* Handly nasich tasku — stejny seznam jako v UART `status`, aby se ty dva udaje
+ * o volnem stacku nemohly rozejit (viz vypocet `stack_min` nize). */
+extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
+                    UiTaskHandle, FpgaTaskHandle;
+
 /* Hlavicka dumpu (16 B, at je zarovnani stejne jako u vzorku). */
 #define FR_MAGIC        0x46523031u   /* "FR01" */
 #define FR_LOCK_MS      50u           /* QSPI mutex: dump se deje pri poruse, necekat dlouho */
@@ -212,17 +217,32 @@ void flightrec_tick(void)
     r.cpu_pct       = (uint8_t)(g_rtos_cpu_pct > 255u ? 255u : g_rtos_cpu_pct);
     r.heap_free_256 = (uint16_t)(g_rtos_heap_free / 256u);
 
-    /* Nejmensi volny stack ze vsech tasku — presne to, co u #18 zajima.
+    /* Nejmensi volny stack — presne to, co u #18 zajima.
+     * ⚠️ VYSLOVNE JEN NASICH 5 TASKU, ne `osThreadEnumerate`. Ten vraci i vnitrni
+     * vlakna FreeRTOS (IDLE, Tmr Svc), jejichz rezerva je mala a NEMENNA — minimum
+     * pak vzdy hlasilo jejich konstantu (na HW 416 B pres boot i 200 s behu),
+     * zatimco UART `status` nad nasimi tasky hlasil 736 B. Metrika tim byla
+     * MASKOVANA: kdyby defaultTask klesl ze 736 B na 100 B (presne scenar #18),
+     * recorder by dal ukazoval 416 a nikdo by si niceho nevsiml.
+     * Seznam je zamerne tentyz jako v `status`, aby se ty dva udaje uz nerozesly.
      * `osThreadGetStackSpace` je drahe (scan zasobniku), ale 1x/s pres 5 tasku
      * je zanedbatelne a bezi to v defaultTask. */
+    static const struct { const char *n; osThreadId_t *h; } TL[] = {
+        {"default", &defaultTaskHandle}, {"Uart", &UartTaskHandle},
+        {"I2C4",    &I2C4TaskHandle},    {"Ui",   &UiTaskHandle},
+        {"Fpga",    &FpgaTaskHandle},
+    };
     uint32_t smin = 0xFFFFFFFFu;
-    osThreadId_t th[8];
-    uint32_t nt = osThreadEnumerate(th, 8u);
-    for (uint32_t i = 0; i < nt; i++) {
-        uint32_t sp = osThreadGetStackSpace(th[i]);
-        if (sp && sp < smin) smin = sp;
+    uint16_t swho = 0xFFFFu;                      /* index nejtesnejsiho tasku */
+    for (unsigned i = 0; i < sizeof(TL) / sizeof(TL[0]); i++) {
+        if (*TL[i].h == NULL) continue;
+        uint32_t sp = osThreadGetStackSpace(*TL[i].h);
+        if (sp && sp < smin) { smin = sp; swho = (uint16_t)i; }
     }
     r.stack_min_8 = (uint16_t)((smin == 0xFFFFFFFFu) ? 0u : (smin / 8u));
+    /* Do ted nevyuzity `spare`: KTERY task byl nejtesnejsi. Bez toho rekne dump
+     * jen "nekomu doslo misto", ale ne komu — a to je u #18 ta podstatna cast. */
+    r.spare = swho;
 
     r.t_ocxo_c10  = (int16_t)(g_sensors[SENS_T49].last * 10.0f);
     r.t_board_c10 = (int16_t)(g_sensors[SENS_T48].last * 10.0f);
@@ -286,7 +306,7 @@ bool flightrec_report(void)
     if (n > FR_DEPTH) n = FR_DEPTH;
     printf("FLIGHT RECORDER: %u vzorku, dump v uptime %lus, duvod '%s'\n",
            (unsigned)n, (unsigned long)up, r2);
-    printf("  t[s]  CPU%%  heap    stack_min  OCXO  deska  I2Cerr  flags\n");
+    printf("  t[s]  CPU%%  heap    stack_min kdo      OCXO  deska  I2Cerr  flags\n");
     for (uint16_t i = 0; i < n; i++) {
         if (osMutexAcquire(qspiMutexHandle, 500u) != osOK) break;
         ok = w25q_read(s_read_off + FR_REC_SIZE + (uint32_t)i * FR_REC_SIZE, b, sizeof b);
@@ -297,10 +317,14 @@ bool flightrec_report(void)
          * neni co tisknout. */
         if (get32(b) == 0xFFFFFFFFu && get32(b + 4) == 0xFFFFFFFFu) break;
         fr_rec_t r; rec_unpack(b, &r);
-        printf("  %5u %4u  %6lu  %7lu   %3d.%u %3d.%u  %5u   %c%c%c\n",
+        /* `spare` = index nejtesnejsiho tasku (0xFFFF u starsich dumpu, kde se
+         * jeste neukladal — tam se vypise "?"). */
+        static const char *TN[] = { "default", "Uart", "I2C4", "Ui", "Fpga" };
+        const char *who = (r.spare < (sizeof TN / sizeof TN[0])) ? TN[r.spare] : "?";
+        printf("  %5u %4u  %6lu  %7lu %-7s  %3d.%u %3d.%u  %5u   %c%c%c\n",
                (unsigned)r.uptime_s, (unsigned)r.cpu_pct,
                (unsigned long)r.heap_free_256 * 256u,
-               (unsigned long)r.stack_min_8 * 8u,
+               (unsigned long)r.stack_min_8 * 8u, who,
                r.t_ocxo_c10 / 10, (unsigned)(abs(r.t_ocxo_c10) % 10),
                r.t_board_c10 / 10, (unsigned)(abs(r.t_board_c10) % 10),
                (unsigned)r.i2c_err,
