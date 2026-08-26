@@ -559,9 +559,14 @@ static uint64_t pow10_u64(int e)
  * period v ramci NEMA -> tam hi-res dopocet nejde, viz `g_freq_hires`). */
 #define FREQ_DIV_PIN28  4ull
 /* Kolik desetin ma smysl zobrazit: z reciproke dvojice (edges/gate) se da spocitat
- * libovolne mnoho, z zaokrouhleneho `x100000` jen 5. */
+ * libovolne mnoho, ze zaokrouhleneho `x100000` jen 5.
+ * `FREQ_FRAC_SIM` = zakladni (SIM) format: o jedno desetinne misto VELKYM fontem
+ * vic nez x1e5, takze pred dvema malymi nejistymi cislicemi jsou ctyri velke.
+ * Fabrikace to neni — SIM hodnotu si stejne generuje `freq_step()` a cislo je
+ * viditelne oznacene markerem "SIM". */
 #define FREQ_FRAC_HIRES 7
 #define FREQ_FRAC_X1E5  5
+#define FREQ_FRAC_SIM   6
 
 static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7 desetin) */
 
@@ -694,15 +699,16 @@ static int num_layout(int int_digits, int frac_digits)
 }
 
 /* Poskladej format pro dane mereni: urci pocet celych cislic a zvol NEJVIC desetin,
- * ktere (a) data unesou (`s_freq_hires` ? 7 : 5) a (b) vejdou se do FREQ_MAX_W.
- * Naplni pocatecni hodnotu a shadow. Volat pri INITu a pri zmene magnitudy/zdroje. */
-static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
+ * ktere (a) `max_frac` povoluje (kolik jich zdroj unese) a (b) vejdou se do
+ * FREQ_MAX_W. Naplni pocatecni hodnotu a shadow.
+ * Volat pri INITu a pri zmene magnitudy/zdroje. */
+static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int max_frac)
 {
     uint64_t whole = x100000 / 100000ull;
     int int_digits = 1;
     for (uint64_t t = whole; t >= 10ull; t /= 10ull) int_digits++;
 
-    for (int frac = s_freq_hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5; ; frac--) {
+    for (int frac = max_frac; ; frac--) {
         num_layout(int_digits, frac);
         if (s_num_w <= FREQ_MAX_W || frac == 0) break;
     }
@@ -720,10 +726,11 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     s_num_ready = 1;
 }
 
-/* Puvodni init: format pro 10 MHz (SIM fallback vychozi, bez hi-res dvojice). */
+/* Init: zakladni SIM format pro 10 MHz (bez hi-res dvojice), 6 desetin =
+ * 4 velke + 2 male nejiste. */
 static void num_build(void)
 {
-    num_build_for(10000000ull * 100000ull, 0u, 0u);   /* 10 MHz × 1e5 */
+    num_build_for(10000000ull * 100000ull, 0u, 0u, FREQ_FRAC_SIM);   /* 10 MHz × 1e5 */
 }
 
 /* SIM fallback: mean-revert random walk kolem `s_freq_center` (posledni znamy rad).
@@ -779,7 +786,8 @@ static void freq_advance(void)
              * srazit, jinak by se dokreslovaly nuly, ktere mereni nenese. */
             if (idg != s_freq_int || hires != s_freq_hires) {
                 s_freq_hires = hires;
-                num_build_for(x100000, edges, gate_ns);
+                num_build_for(x100000, edges, gate_ns,
+                              hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5);
                 s_freq_fmt_changed = 1;
                 screen_main_stats_reset();            /* jiny rad/zdroj -> nemichat s pyramidou */
             } else {
