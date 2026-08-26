@@ -513,6 +513,21 @@ void UartTask_run(void *argument)
 			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
 				  const char *sub = (RxBuffer[3] == ' ') ? &RxBuffer[4] : "";
 
+				  /* ⚠️⚠️ POJISTKA: tohle je BRING-UP reziduum z doby, kdy ETH jeste nikdo
+				   * nevlastnil. Bit-bang SMI si prenastavuje MDC (PC1) a MDIO (PA2) na
+				   * GPIO — jenze kdyz uz ETH obsluhuje CM4, cte pres tytez piny MDIO
+				   * kazdych 200 ms (`ethernet_link_check_state`). Vysledek: dva mastery
+				   * na jedne sbernici -> cteni vraci samé 0xFFFF (poznas to podle
+				   * ID2=0xFFFF misto 0xC131 a BMSR=0xFFFF) a hlavne se CM4 muze MDIO
+				   * ROZBIT az do restartu. Smerodatny je v takovem pripade `status`
+				   * (radek NET/ETH z CM4), ne tenhle vypis. */
+				  if (strcmp(sub, "force") != 0 && ipc_cm4_eth(NULL)) {
+					  printf("eth: ETH uz obsluhuje CM4 — bit-bang SMI z CM7 by kolidoval\r\n");
+					  printf("  (dva mastery na MDIO -> smeti 0xFFFF, riziko rozbiti linky do restartu)\r\n");
+					  printf("  Stav site najdes v `status` (radky ETH(CM4) a NET).\r\n");
+					  printf("  Vynuceni i tak: `eth force`\r\n");
+				  } else {
+
 				  if (strcmp(sub, "clk") == 0) {
 					  /* ETH_REF_CLK (PA1) pres TIM2_CH2 v rezimu externich hodin.
 					   * TIM2 je 32bit a v `.ioc` VOLNY. Pri 50 MHz / 100 ms = 5e6 kroku. */
@@ -597,6 +612,7 @@ void UartTask_run(void *argument)
 						  printf("  => PHY ZIJE. Zbyva overit hodiny: `eth clk`\r\n");
 					  }
 				  }
+				  }   /* konec pojistky proti kolizi s ETH na CM4 */
 			  }
 			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
 			  else if (strcmp(RxBuffer, "enc") == 0) {
