@@ -125,6 +125,11 @@ volatile uint8_t g_freq_stale = 0;                     /* 1 = FPGA SIGNAL_LOST f
 volatile uint64_t g_freq_x100000 = 0;                  /* kmitocet × 1e5 (delicka uz zahrnuta) */
 volatile uint32_t g_freq_seq = 0;                      /* SEQUENCE posledniho platneho ramce (kadence vzorku) */
 volatile uint8_t  g_freq_valid = 0;                    /* 1 = platne mereni (CRC+VALID+FRESH, ne SIGNAL_LOST) */
+/* Surova reciproka dvojice pro HI-RES dopocet headline (f = edges × 4 × 1e9 / gate_ns).
+ * Da vic desetin nez zaokrouhlene `x100000`; plati JEN pro vetev /4 (viz g_freq_hires). */
+volatile uint64_t g_freq_edges = 0;                    /* pocet period v okne (pin28 = /4) */
+volatile uint64_t g_freq_gate_ns = 0;                  /* skutecna delka okna [ns] */
+volatile uint8_t  g_freq_hires = 0;                    /* 1 = zobrazeny zdroj je /4 a edges/gate jsou pouzitelne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_spi_text[64] = "SPI WAIT";

@@ -551,14 +551,47 @@ static uint64_t pow10_u64(int e)
  * ⚠️ Drive 720 px zbytecne ubiralo desetinne misto uz kolem 1 GHz. */
 #define FREQ_MAX_W  780
 
-/* Prevod kmitoctu z FPGA ramce (Hz × 1e5) na vnitrni LSB (= 10^-`s_freq_frac` Hz).
- * ⚠️ DELENIM, ne nasobenim: `x100000 * 10^frac / 1e5` pri vysokych kmitoctech
- * PRETECE uint64 (4 GHz -> 4e14 × 1e5 = 4e19 > 1,8e19 strop). Protoze `s_freq_frac`
- * je vzdy <= 5 (clamp v `num_layout`), staci delit 10^(5-frac): exaktni, bez
- * preteceni a bez ztraty presnosti nad ramec zvoleneho poctu desetin. */
-static uint64_t freq_x100000_to_lsb(uint64_t x100000)
+/* Delicka vetve pin28, ze ktere pochazi `edge_count` (pin27 = /16 svuj pocet
+ * period v ramci NEMA -> tam hi-res dopocet nejde, viz `g_freq_hires`). */
+#define FREQ_DIV_PIN28  4ull
+/* Kolik desetin ma smysl zobrazit: z reciproke dvojice (edges/gate) se da spocitat
+ * libovolne mnoho, z zaokrouhleneho `x100000` jen 5. */
+#define FREQ_FRAC_HIRES 7
+#define FREQ_FRAC_X1E5  5
+
+static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7 desetin) */
+
+/* Prevod mereni z FPGA ramce na vnitrni LSB (= 10^-`s_freq_frac` Hz).
+ *
+ * HI-RES (`hires`): reciproky citac meri f = N / Δt, takze z `edge_count` (presny
+ * pocet period vetve /4) a `gate_time_ns` (skutecna delka okna) se da podil spocitat
+ * na VIC desetin, nez nese zaokrouhlene `frequency_x100000`. Ty cislice navic jsou
+ * SKUTECNE (podil realne zmerenych velicin) — nejsou to vymyslene nuly; jen lezi pod
+ * sumem (rozliseni TDC 2,5 ns / 0,25 s okno ~ 0,1 Hz pri 10 MHz), a prave proto je
+ * posledni mista kresli ztlumene (SIGMA/FLOOR).
+ * ⚠️ Pocita se DLOUHYM DELENIM (cela cast + cislice po jedne), NE `num × 10^frac / den`:
+ * to by pri 7 desetinach pretekl uint64 uz kolem 10 MHz (2,5e22 >> 1,8e19).
+ * ⚠️ `num = edges × 4 × 1e9` je bezpecne (nejhorsi pripad ~8,6e18 pri 21,5 s okne),
+ * presto se hlida stropem — pri prekroceni se degraduje na x1e5 misto tichého preteceni.
+ *
+ * FALLBACK (bez hi-res): 5 desetin z `x100000`. ⚠️ DELENIM `10^(5-frac)`, protoze
+ * `x100000 × 10^frac / 1e5` by pri ~4 GHz pretekl (4e19 > 1,8e19). */
+static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int hires)
 {
-    return x100000 / pow10_u64(5 - s_freq_frac);
+    int frac = s_freq_frac;
+    if (hires && gate_ns > 0u && edges > 0u && edges <= 4000000000ull) {
+        uint64_t num = edges * FREQ_DIV_PIN28 * 1000000000ull;
+        uint64_t v   = num / gate_ns;
+        uint64_t rem = num % gate_ns;
+        for (int i = 0; i < frac; i++) {          /* rem < gate_ns -> rem×10 nepretece */
+            rem *= 10u;
+            v    = v * 10u + rem / gate_ns;
+            rem %= gate_ns;
+        }
+        return v;
+    }
+    if (frac <= FREQ_FRAC_X1E5) return x100000 / pow10_u64(FREQ_FRAC_X1E5 - frac);
+    return x100000 * pow10_u64(frac - FREQ_FRAC_X1E5);   /* format chce vic, data nemaji */
 }
 
 /* ── #1: dynamicky format velkeho cisla ──────────────────────────────────────
@@ -571,7 +604,7 @@ static int num_layout(int int_digits, int frac_digits)
     if (int_digits < 1) int_digits = 1;
     if (int_digits > 12) int_digits = 12;
     if (frac_digits < 0) frac_digits = 0;
-    if (frac_digits > 5) frac_digits = 5;
+    if (frac_digits > FREQ_FRAC_HIRES) frac_digits = FREQ_FRAC_HIRES;
 
     /* Skladba segmentu (delka/uroven/podtrzeni). Cela cast = skupiny po 3 zprava.
      * Frakcni cast = hlavni CERTAIN blok (podtrzeny) + posledni 1-2 cislice jako
@@ -635,16 +668,16 @@ static int num_layout(int int_digits, int frac_digits)
     return gn;
 }
 
-/* Poskladej format pro dany kmitocet (Hz×1e5): urci pocet celych cislic a zvol
- * frac_digits (5 dolu), aby se cislo veslo do FREQ_MAX_W. Naplni pocatecni
- * hodnotu a shadow. Volat pri INITu a pri zmene magnitudy. */
-static void num_build_for(uint64_t x100000)
+/* Poskladej format pro dane mereni: urci pocet celych cislic a zvol NEJVIC desetin,
+ * ktere (a) data unesou (`s_freq_hires` ? 7 : 5) a (b) vejdou se do FREQ_MAX_W.
+ * Naplni pocatecni hodnotu a shadow. Volat pri INITu a pri zmene magnitudy/zdroje. */
+static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 {
     uint64_t whole = x100000 / 100000ull;
     int int_digits = 1;
     for (uint64_t t = whole; t >= 10ull; t /= 10ull) int_digits++;
 
-    for (int frac = 5; ; frac--) {
+    for (int frac = s_freq_hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5; ; frac--) {
         num_layout(int_digits, frac);
         if (s_num_w <= FREQ_MAX_W || frac == 0) break;
     }
@@ -653,7 +686,7 @@ static void num_build_for(uint64_t x100000)
      * mean-revertu SIM fallbacku. ⚠️ Pod 1 Hz (`whole == 0`) se bere PRIMO zmerena
      * hodnota — nulovy stred by SIM fallback stahoval k nule a `dev_unit` by proti
      * nemu porovnaval nesmysl. */
-    s_freq_n = x100000 ? freq_x100000_to_lsb(x100000) : 0u;
+    s_freq_n = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ns, s_freq_hires) : 0u;
     s_freq_nominal_hz = (double)whole;
     s_freq_center     = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
 
@@ -662,10 +695,10 @@ static void num_build_for(uint64_t x100000)
     s_num_ready = 1;
 }
 
-/* Puvodni init: format pro 10 MHz (SIM fallback vychozi). */
+/* Puvodni init: format pro 10 MHz (SIM fallback vychozi, bez hi-res dvojice). */
 static void num_build(void)
 {
-    num_build_for(10000000ull * 100000ull);   /* 10 MHz × 1e5 */
+    num_build_for(10000000ull * 100000ull, 0u, 0u);   /* 10 MHz × 1e5 */
 }
 
 /* SIM fallback: mean-revert random walk kolem `s_freq_center` (posledni znamy rad).
@@ -703,8 +736,9 @@ static void freq_advance(void)
 {
     if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
 
-    uint32_t seq; uint64_t x100000; uint8_t valid;
-    do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid; }
+    uint32_t seq; uint64_t x100000, edges, gate_ns; uint8_t valid, hires;
+    do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid;
+         edges = g_freq_edges; gate_ns = g_freq_gate_ns; hires = g_freq_hires; }
     while (seq != g_freq_seq);
 
     if (valid && x100000 > 0) {
@@ -715,12 +749,16 @@ static void freq_advance(void)
             uint64_t whole = x100000 / 100000ull;
             int idg = 1; for (uint64_t t = whole; t >= 10ull; t /= 10ull) idg++;
             if (idg > 12) idg = 12;
-            if (idg != s_freq_int) {                  /* zmena radu -> prestav format */
-                num_build_for(x100000);
+            /* Prestav format pri zmene RADU nebo pri prepnuti /4<->/16: s /16 zmizi
+             * `edge_count`, tedy i moznost hi-res dopoctu -> pocet desetin se MUSI
+             * srazit, jinak by se dokreslovaly nuly, ktere mereni nenese. */
+            if (idg != s_freq_int || hires != s_freq_hires) {
+                s_freq_hires = hires;
+                num_build_for(x100000, edges, gate_ns);
                 s_freq_fmt_changed = 1;
-                screen_main_stats_reset();            /* jiny rad -> nemichat s pyramidou */
+                screen_main_stats_reset();            /* jiny rad/zdroj -> nemichat s pyramidou */
             } else {
-                s_freq_n = freq_x100000_to_lsb(x100000);   /* stejny rad -> jen nova hodnota */
+                s_freq_n = freq_frame_to_lsb(x100000, edges, gate_ns, hires);
             }
         }
         /* stejny seq -> hodnota drzi (FPGA ~4/s, displej 20 Hz) */

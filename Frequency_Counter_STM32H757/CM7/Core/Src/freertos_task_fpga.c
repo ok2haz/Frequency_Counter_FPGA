@@ -53,6 +53,13 @@ void StartFpgaTask(void *argument)
       g_freq_seq     = m.sequence;
       g_freq_valid   = (m.measurement_status & 0x01u)
                        && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
+      /* Surova reciproka dvojice -> headline si z ni dopocita VIC DESETIN, nez nese
+       * zaokrouhlene `x100000` (f = edges × 4 × 1e9 / gate_ns).
+       * ⚠️ `edge_count` je pocet period POUZE pin28 (/4); pro /16 (pin27) ho ramec
+       * nema -> pri prepnuti na /16 se hi-res vypne a zobrazi se 5 desetin z x1e5. */
+      g_freq_edges   = m.edge_count;
+      g_freq_gate_ns = m.gate_time_ns;
+      g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_time_ns > 0u) ? 1u : 0u;
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
     } else if (!fpga_freq_link_ok()) {
