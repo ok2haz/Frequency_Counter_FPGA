@@ -474,8 +474,10 @@ static size_t build_log_json(char *out, size_t out_sz)
     jbuf_t j; jinit(&j, out, out_sz);
     unsigned n = g_ipc.log.resp_count;
     if (n > IPC_LOG_CHUNK) n = IPC_LOG_CHUNK;
-    jputf(&j, "{\"total\":%lu,\"n\":%u,\"p\":[",
-          (unsigned long)g_ipc.log.resp_total, n);
+    jputf(&j, "{\"total\":%lu,\"n\":%u,\"scanned\":%lu,\"full_env\":%s,\"p\":[",
+          (unsigned long)g_ipc.log.resp_total, n,
+          (unsigned long)g_ipc.log.resp_scanned,
+          g_ipc.log.resp_full_env ? "true" : "false");
     for (unsigned i = 0; i < n; i++) {
         const ipc_log_rec_t *r = (const ipc_log_rec_t *)&g_ipc.log.rec[i];
         char fb[24];
@@ -493,7 +495,15 @@ static size_t build_log_json(char *out, size_t out_sz)
         jputf(&j, "%u,", (unsigned)r->ocxo_vc_mv);
         if (r->vbat_mv != 0u && r->vbat_mv != 0x8000u) jputf(&j, "%u,", (unsigned)r->vbat_mv);
         else jputf(&j, "null,");
-        jputf(&j, "%u]", (unsigned)r->flags);
+        jputf(&j, "%u", (unsigned)r->flags);
+        /* v13: min/max obalka kmitoctu v bucketu (0 = nedostupna). */
+        if (r->freq_min_x100000 != 0u && r->freq_max_x100000 != 0u) {
+            char lo[24], hi[24];
+            fmt_scpi_hz_d((double)r->freq_min_x100000 / 100000.0, lo, sizeof lo);
+            fmt_scpi_hz_d((double)r->freq_max_x100000 / 100000.0, hi, sizeof hi);
+            jputf(&j, ",%s,%s", lo, hi);
+        }
+        jputf(&j, "]");
     }
     jputf(&j, "]}");
     return j.used;
@@ -600,6 +610,20 @@ static const char SPA_HTML[] =
 ".simtag[data-on]{display:inline-block}\n"
 ".hero[data-sim]{border-color:var(--warn)}\n"
 ".freq u{font-size:.34em;color:var(--ink2);margin-left:.3em;font-weight:400;text-decoration:none}\n"
+"/* Headline zrcadli DISPLEJ: posledni duveryhodna cislice modre podtrzena,\n"
+"   za ni nejista mista mensim pismem v odstinu sedi. */\n"
+".freq b.fc{font-weight:inherit;border-bottom:3px solid var(--acc);padding-bottom:1px}\n"
+".freq i.fu{font-style:normal;font-size:.68em;color:var(--dim)}\n"
+"/* Kratky zablesk pri NOVEM mereni — dashboard tim dava najevo, ze data zijou. */\n"
+"@keyframes hit{from{filter:brightness(1.55)}to{filter:brightness(1)}}\n"
+".freq[data-hit]{animation:hit .25s ease-out}\n"
+"/* Koncovy bod krivky (aktualni hodnota). HTML overlay, ne SVG: viewBox je\n"
+"   roztazeny (preserveAspectRatio none), takze SVG kruh by byl elipsa. */\n"
+".eod{position:absolute;width:7px;height:7px;margin:-4px 0 0 -4px;border-radius:50%;\n"
+"background:var(--c0);box-shadow:0 0 0 2px var(--pnl2);display:none;pointer-events:none}\n"
+".card{transition:border-color .15s}\n"
+".card:hover{border-color:var(--line2)}\n"
+"button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}\n"
 ".why{font-size:12px;color:var(--warn);min-height:1.3em}\n"
 ".hgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:1px;\n"
 "background:var(--line);border:1px solid var(--line);margin-top:13px}\n"
@@ -617,6 +641,7 @@ static const char SPA_HTML[] =
 ".g{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;stroke-dasharray:2 4}\n"
 ".ln{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;stroke-linejoin:round}\n"
 ".ar{stroke:none;opacity:.13}\n"
+".env{fill:var(--c0);opacity:.2;stroke:none}\n"
 ".fit{stroke-dasharray:5 4;stroke-width:1.2;opacity:.9}\n"
 ".s0{stroke:var(--c0)} .s1{stroke:var(--c1)} .s2{stroke:var(--c2)} .s3{stroke:var(--c3)}\n"
 ".f0{fill:var(--c0)} .f1{fill:var(--c1)}\n"
@@ -810,11 +835,13 @@ static const char SPA_HTML[] =
 "<svg viewBox='0 0 100 100' preserveAspectRatio='none'>\n"
 "<line class='g' x1='0' y1='25' x2='100' y2='25'/><line class='g' x1='0' y1='50' x2='100' y2='50'/>\n"
 "<line class='g' x1='0' y1='75' x2='100' y2='75'/>\n"
+"<polygon class='env' id='envFreq'/>\n"
 "<polygon class='ar f0' id='aFreq'/><polyline class='ln s0' id='lFreq'/>\n"
 "<polyline class='ln fit s1' id='lFit'/>\n"
 "</svg>\n"
 "<div class='yl'><b class='t' id='yFreqT'></b><b class='b' id='yFreqB'></b></div>\n"
 "<div class='nod' id='nFreq'>ceka na mereni...</div>\n"
+"<i class='eod' id='efreq'></i>\n"
 "</div>\n"
 "<div class='lg'><span><i class='k0'></i>odchylka od prumeru okna</span>\n"
 "<span><i class='k1'></i>linearni proklad (drift)</span></div>\n"
@@ -831,6 +858,7 @@ static const char SPA_HTML[] =
 "</svg>\n"
 "<div class='yl'><b class='t' id='yTempT'></b><b class='b' id='yTempB'></b></div>\n"
 "<div class='nod' id='nTemp'>ceka na data...</div>\n"
+"<i class='eod' id='etemp'></i>\n"
 "</div>\n"
 "<div class='lg'><span><i class='k0'></i>OCXO</span><span><i class='k1'></i>deska</span>\n"
 "<span><i class='k2'></i>MCU</span><span><i class='k3'></i>FPGA</span></div>\n"
@@ -846,6 +874,7 @@ static const char SPA_HTML[] =
 "</svg>\n"
 "<div class='yl'><b class='t' id='yVcT'></b><b class='b' id='yVcB'></b></div>\n"
 "<div class='nod' id='nVc'>ceka na data...</div>\n"
+"<i class='eod' id='evc'></i>\n"
 "</div>\n"
 "<div class='lg'><span><i class='k1'></i>ladici napeti - jak si smycka doladuje OCXO</span></div>\n"
 "</div>\n"
@@ -861,6 +890,7 @@ static const char SPA_HTML[] =
 "</svg>\n"
 "<div class='yl'><b class='t' id='yPwrT'></b><b class='b' id='yPwrB'></b></div>\n"
 "<div class='nod' id='nPwr'>ceka na data...</div>\n"
+"<i class='eod' id='epwr'></i>\n"
 "</div>\n"
 "<div class='lg'><span><i class='k0'></i>12 V</span><span><i class='k3'></i>5 V</span>\n"
 "<span><i class='k1'></i>VREF</span><span><i class='k2'></i>VBAT</span></div>\n"
@@ -1070,6 +1100,17 @@ static const char SPA_HTML[] =
 "  return p!=='';\n"
 "}\n"
 "function ylab(t,b,lo,hi,f){ $(t).textContent=f(hi); $(b).textContent=f(lo); }\n"
+"/* Pozice POSLEDNIHO platneho bodu v procentech plochy — pro koncovy bod krivky\n"
+" * (kresli se jako HTML overlay, aby ho roztazeny viewBox nezdeformoval na elipsu). */\n"
+"function lastXY(arr,lo,hi){\n"
+"  var n=arr.length,rng=hi-lo,i;\n"
+"  if(rng<=0) rng=1;\n"
+"  for(i=n-1;i>=0;i--) if(arr[i]!==null&&arr[i]!==undefined){\n"
+"    var y=100-(arr[i]-lo)*100/rng; if(y<0)y=0; if(y>100)y=100;\n"
+"    return [(n<2?0:i*100/(n-1)), y];\n"
+"  }\n"
+"  return null;\n"
+"}\n"
 "function fx(v,d){ return (v===null||v===undefined)?'--':v.toFixed(d===undefined?2:d); }\n"
 "function sci(v){ if(v===null||v===undefined||!isFinite(v)) return '--'; return v.toExponential(2); }\n"
 "function stats(a){\n"
@@ -1089,6 +1130,18 @@ static const char SPA_HTML[] =
 "    var dev=[]; for(i=0;i<fa.length;i++) dev.push((fa[i]===null||fa[i]===undefined)?null:fa[i]-m);\n"
 "    s.title='KMITOCET - odchylka od prumeru okna'; s.base=m;\n"
 "    s.series=[{n:'odchylka',c:0,a:dev}];\n"
+"    /* Obalka min-max v bucketu (jen dlouha historie): prosta decimace by vykyv\n"
+"     * MEZI vzorky neukazala. Nejsou to samostatne rady - kresli se jako pasmo. */\n"
+"    if(DL&&DL.lo){\n"
+"      var lo=[],hi=[],anyE=0;\n"
+"      for(i=0;i<DL.lo.length;i++){\n"
+"        var a1=DL.lo[i], b1=DL.hi[i];\n"
+"        lo.push((a1===null||a1===undefined)?null:a1-m);\n"
+"        hi.push((b1===null||b1===undefined)?null:b1-m);\n"
+"        if(a1!==null&&a1!==undefined) anyE=1;\n"
+"      }\n"
+"      if(anyE){ s.env={lo:lo,hi:hi}; }\n"
+"    }\n"
 "    s.fmt=function(v){ return (v>=0?'+':'')+v.toFixed(5)+' Hz'; };\n"
 "    s.note='Graf ukazuje ODCHYLKU od prumeru okna, ne absolutni hodnotu - v celych Hz by na 10 MHz nebylo videt nic. '\n"
 "      +(DL?'Zdroj: datalog z W25Q (decimovano).':'Zdroj: poll 1 Hz z prohlizece.');\n"
@@ -1117,8 +1170,23 @@ static const char SPA_HTML[] =
 "      +(DL?' V dlouhych oknech je jen VBAT: 12 V/5 V/VREF datalog neuklada.':'');\n"
 "  }\n"
 "  var arrs=[]; for(j=0;j<s.series.length;j++) arrs.push(s.series[j].a);\n"
+"  if(s.env){ arrs.push(s.env.lo); arrs.push(s.env.hi); }   /* pasmo musi byt v meritku */\n"
 "  s.span=span(arrs);\n"
 "  return s;\n"
+"}\n"
+"/* Pasmo min-max jako vyplneny polygon: hi zleva doprava, lo zpet. */\n"
+"function envPoints(e,lo,hi){\n"
+"  var n=e.hi.length,rng=hi-lo,i,up='',dn='',seen=0;\n"
+"  if(rng<=0) rng=1;\n"
+"  function yy(v){ var y=100-(v-lo)*100/rng; return y<0?0:(y>100?100:y); }\n"
+"  for(i=0;i<n;i++){\n"
+"    if(e.hi[i]===null||e.hi[i]===undefined||e.lo[i]===null||e.lo[i]===undefined) continue;\n"
+"    var x=(n<2?0:i*100/(n-1));\n"
+"    up+=x.toFixed(2)+','+yy(e.hi[i]).toFixed(2)+' ';\n"
+"    dn=x.toFixed(2)+','+yy(e.lo[i]).toFixed(2)+' '+dn;\n"
+"    seen++;\n"
+"  }\n"
+"  return seen>1?(up+dn):'';\n"
 "}\n"
 "\n"
 "/* -- detailni okno --------------------------------------------------------- */\n"
@@ -1331,6 +1399,19 @@ static const char SPA_HTML[] =
 "  var fs=String(fp); while(fs.length<5) fs='0'+fs;\n"
 "  return (neg?'-':'')+grp3(String(ip))+','+fs;\n"
 "}\n"
+"/* Headline jako na DISPLEJI: posledni duveryhodna cislice modre podtrzena,\n"
+" * za ni nejista mista mensim pismem v odstinu sedi. Web tak vypada stejne jako\n"
+" * pristroj. (Web dostava 5 desetin z x1e5; displej pri /4 dopocitava 7 z\n"
+" * edge_count/gate_ns - je to tataz hodnota, jen jinak zaokrouhlena.) */\n"
+"function fmtFreqHtml(v){\n"
+"  if(v===null||v===undefined) return null;\n"
+"  var neg=v<0; if(neg)v=-v;\n"
+"  var ip=Math.floor(v), fp=Math.round((v-ip)*100000);\n"
+"  if(fp>=100000){ip++;fp=0;}\n"
+"  var fs=String(fp); while(fs.length<5) fs='0'+fs;\n"
+"  return (neg?'-':'')+grp3(String(ip))+','+fs.substring(0,2)\n"
+"    +'<b class=fc>'+fs.charAt(2)+'</b><i class=fu>'+fs.substring(3)+'</i>';\n"
+"}\n"
 "function fmtPer(v){\n"
 "  if(!v) return null; var p=1/v;\n"
 "  if(p<1e-6) return (p*1e9).toFixed(4)+' ns';\n"
@@ -1434,9 +1515,14 @@ static const char SPA_HTML[] =
 "function render(s){\n"
 "  lastOk=Date.now(); LAST=s;\n"
 "\n"
-"  var f=fmtFreq(s.freq_hz), fe=$('freq');\n"
+"  var f=fmtFreqHtml(s.freq_hz), fe=$('freq');\n"
 "  if(f===null){ fe.textContent='--'; fe.setAttribute('data-na','1'); }\n"
 "  else { fe.innerHTML=f+'<u>Hz</u>'; fe.removeAttribute('data-na'); }\n"
+"  /* Zablesk pri NOVEM mereni (ne pri kazdem pollu) -> je videt, ze data tecou. */\n"
+"  if(s.seq_meas!==undefined&&s.seq_meas!==lastSeq&&f!==null){\n"
+"    fe.setAttribute('data-hit','1');\n"
+"    setTimeout(function(){ fe.removeAttribute('data-hit'); },260);\n"
+"  }\n"
 "\n"
 "  /* !! Emulace se MUSI poznat na prvni pohled - jinak by web vydaval data z\n"
 "   * fpgasim za mereni (displej, UART i datalog je oznacuji). */\n"
@@ -1557,11 +1643,21 @@ static const char SPA_HTML[] =
 "  var ST={freq:'stFreq',temp:'stTemp',vc:'stVc',pwr:'stPwr'};\n"
 "  for(k=0;k<KS.length;k++){\n"
 "    var key=KS[k], s=spec(key), ids=IDS[key], any=0;\n"
+"    /* Pasmo min-max (jen graf kmitoctu v rezimu datalogu). */\n"
+"    if(key==='freq') $('envFreq').setAttribute('points',\n"
+"      (s.env&&s.span)?envPoints(s.env,s.span[0],s.span[1]):'');\n"
 "    if(s.span){\n"
 "      for(j=0;j<ids.length;j++)\n"
 "        if(poly(ids[j],s.series[j].a,s.span[0],s.span[1],j===0?FILL[key]:null)) any=1;\n"
 "    } else for(j=0;j<ids.length;j++) poly(ids[j],[],0,1,j===0?FILL[key]:null);\n"
 "    $(NOD[key]).style.display=any?'none':'flex';\n"
+"    /* Koncovy bod = aktualni hodnota prvni rady (barva rady). */\n"
+"    var dot=$('e'+key), p=any?lastXY(s.series[0].a,s.span[0],s.span[1]):null;\n"
+"    if(dot){\n"
+"      if(p){ dot.style.display='block'; dot.style.left=p[0]+'%'; dot.style.top=p[1]+'%';\n"
+"             dot.style.background='var(--c'+s.series[0].c+')'; }\n"
+"      else dot.style.display='none';\n"
+"    }\n"
 "    if(any){\n"
 "      ylab(YT[key][0],YT[key][1],s.span[0],s.span[1],s.fmt);\n"
 "      var st=stats(s.series[0].a);\n"
@@ -1706,15 +1802,47 @@ static const char SPA_HTML[] =
 "function pollSats(){ fetch('/api/sats').then(function(r){return r.json();})\n"
 "  .then(function(d){ SAT=d; drawSky(d); if(zoom==='gps') drawZoom(); }).catch(function(){}); }\n"
 "\n"
-"/* v12 (#6): dlouha historie (24h/7d/30d) z W25Q datalogu pres /api/log. */\n"
+"/* v12/v13 (#6): dlouha historie (24h/7d/30d) z W25Q datalogu pres /api/log.\n"
+" * !! Jedna odpoved se vejde do ~48 bodu (strop `bodybuf` na CM4), takze pro delsi\n"
+" * radu se posklada z VICE DAVEK pomoci `from` (posun v zaznamech od nejnovejsiho).\n"
+" * Davky jdou po sobe, ne soubezne — datalog kanal je jen jeden (jinak 503). */\n"
+"var DLCHUNKS=4, DLN=48;\n"
 "function fetchLog(w){\n"
+"  var acc={t:[],f:[],o:[],b:[],vc:[],vbat:[],lo:[],hi:[]}, meta=null;\n"
 "  $('dlNote').textContent='nacitam historii z datalogu (W25Q)...';\n"
-"  fetch('/api/log?win='+w+'&n=48').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })\n"
-"  .then(function(d){ if(dlWin!==w) return;\n"
-"    var D={t:[],f:[],o:[],b:[],vc:[],vbat:[]}, P=d.p||[], i;\n"
-"    for(i=P.length-1;i>=0;i--){ var p=P[i];\n"
-"      D.t.push(p[0]); D.f.push(p[1]); D.o.push(p[2]); D.b.push(p[3]); D.vc.push(p[4]); D.vbat.push(p[5]); }\n"
-"    if(!P.length){ DL=null;\n"
+"  function chunk(k){\n"
+"    if(dlWin!==w) return;                        /* uzivatel mezitim prepnul okno */\n"
+"    var step=Math.max(1,Math.floor(w/(DLCHUNKS*DLN*10)));\n"
+"    fetch('/api/log?win='+w+'&n='+DLN+'&from='+(k*DLN*step))\n"
+"    .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })\n"
+"    .then(function(d){\n"
+"      if(dlWin!==w) return;\n"
+"      if(!meta) meta=d;\n"
+"      var P=d.p||[], i;\n"
+"      for(i=0;i<P.length;i++){ var p=P[i];\n"
+"        acc.t.push(p[0]); acc.f.push(p[1]); acc.o.push(p[2]); acc.b.push(p[3]);\n"
+"        acc.vc.push(p[4]); acc.vbat.push(p[5]);\n"
+"        acc.lo.push(p.length>7?p[7]:null); acc.hi.push(p.length>8?p[8]:null); }\n"
+"      $('dlNote').textContent='nacitam historii... '+acc.t.length+' bodu';\n"
+"      if(P.length>=DLN && k+1<DLCHUNKS) chunk(k+1); else done();\n"
+"    }).catch(function(e){\n"
+"      if(acc.t.length) done();                   /* co doslo, to zobraz */\n"
+"      else { $('dlNote').textContent='historie se nenacetla: '+e\n"
+"        +' - bezi datalog? (CM7 odpovida pres IPC)'; DL=null; }\n"
+"    });\n"
+"  }\n"
+"  function done(){ finishLog(w,acc,meta); }\n"
+"  chunk(0);\n"
+"}\n"
+"function finishLog(w,acc,d){\n"
+"  (function(){\n"
+"    var D={t:[],f:[],o:[],b:[],vc:[],vbat:[],lo:[],hi:[]}, P=acc.t.length, i;\n"
+"    /* Davky chodi od NEJNOVEJSIHO; graf chce nejstarsi vlevo -> otoc. */\n"
+"    for(i=P-1;i>=0;i--){\n"
+"      D.t.push(acc.t[i]); D.f.push(acc.f[i]); D.o.push(acc.o[i]); D.b.push(acc.b[i]);\n"
+"      D.vc.push(acc.vc[i]); D.vbat.push(acc.vbat[i]);\n"
+"      D.lo.push(acc.lo[i]); D.hi.push(acc.hi[i]); }\n"
+"    if(!P){ DL=null;\n"
 "      $('dlNote').textContent='Datalog je zatim prazdny - zapni ho (okno Datalog / UART datalog on) '\n"
 "        +'a nech pristroj bezet; zaznam se uklada kazdych 10 s.';\n"
 "      drawAll(); return; }\n"
@@ -1723,16 +1851,18 @@ static const char SPA_HTML[] =
 "     * kdyz log jeste nema tolik historie, CM7 zmensi krok a vrati vse, co ma -\n"
 "     * napsat sem '30 dni' by bylo lzive. t=0 => RTC tehdy nebyl srovnany z GPS. */\n"
 "    var span0=D.t[0], span1=D.t[D.t.length-1], msg;\n"
-"    if(span0>0&&span1>span0) msg='historie '+dur(span1-span0)+' ('+P.length+' bodu, krok '\n"
-"      +dur((span1-span0)/Math.max(1,P.length-1))+')';\n"
-"    else msg='historie: '+P.length+' bodu (bez casovych znacek - RTC nebyl srovnany z GPS)';\n"
-"    var reqS=dur(w);\n"
-"    if(span0>0&&span1-span0<w*0.9) msg+=' - v logu zatim neni celych '+reqS;\n"
-"    $('dlNote').textContent=msg+'. Z '+(d.total||0)+' zaznamu. Kmitocet null = tehdy nebyl FPGA link. '\n"
-"      +'(Napajeni 12/5/VREF a MCU/FPGA teploty datalog neuklada - ty rady zustanou prazdne.)';\n"
+"    if(span0>0&&span1>span0) msg='historie '+dur(span1-span0)+' ('+P+' bodu, krok '\n"
+"      +dur((span1-span0)/Math.max(1,P-1))+')';\n"
+"    else msg='historie: '+P+' bodu (bez casovych znacek - RTC nebyl srovnany z GPS)';\n"
+"    if(span0>0&&span1-span0<w*0.9) msg+=' - v logu zatim neni celych '+dur(w);\n"
+"    /* Obalka: pasmo min-max v bucketu. Kdyz se cetl jen PODVZOREK, MUSI to byt\n"
+"     * videt — obalka z casti zaznamu neni skutecne minimum a maximum. */\n"
+"    if(d&&d.scanned) msg+=' | obalka z '+d.scanned+' zaznamu'\n"
+"      +(d.full_env?' (uplna)':' (PODVZOREK - skutecne extremy mohou byt vetsi)');\n"
+"    $('dlNote').textContent=msg+'. Z '+((d&&d.total)||0)+' zaznamu. Kmitocet null = tehdy nebyl '\n"
+"      +'FPGA link. (Napajeni 12/5/VREF a MCU/FPGA teploty datalog neuklada.)';\n"
 "    drawAll(); if(zoom) drawZoom();\n"
-"  }).catch(function(e){ $('dlNote').textContent='historie se nenacetla: '+e\n"
-"      +' - bezi datalog? (CM7 odpovida pres IPC, timeout 2 s)'; DL=null; });\n"
+"  })();\n"
 "}\n"
 "\n"
 "/* v12 (#6): export zobrazenych dat do CSV (bez backslashe kvuli SPA literalu). */\n"
@@ -2048,12 +2178,19 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         if (win < 60) win = 60;
         long step = win / (np * 10);                     /* datalog perioda = 10 s */
         if (step < 1) step = 1;
-        g_ipc.log.req_from  = 0u;                        /* 0 = od nejnovejsiho */
+        /* `from` = odkud (v zaznamech od nejnovejsiho) — klient si tak vyzada dalsi
+         * davku a slozi delsi radu, nez se vejde do jednoho `bodybuf`. */
+        long from = qparam(r->path, "from", 0);
+        if (from < 0) from = 0;
+        g_ipc.log.req_from  = (uint32_t)from;
         g_ipc.log.req_count = (uint16_t)np;
         g_ipc.log.req_step  = (uint16_t)step;
+        g_ipc.log.req_env   = (qparam(r->path, "env", 1) != 0) ? 1u : 0u;
         IPC_DMB();
         g_ipc.log.req_gen   = ++s_log_gen;               /* az PO parametrech -> CM7 vidi konzistentne */
-        c->mode = HCONN_LOG; c->defer_gen = s_log_gen; c->defer_ms = HAL_GetTick() + 2000u;
+        /* ⚠️ Timeout 8 s (drive 2 s): s obalkou cte CM7 az IPC_LOG_SCAN_MAX zaznamu
+         * po davkach IPC_LOG_SCAN_BUDGET na tik (100 Hz), coz je radove sekundy. */
+        c->mode = HCONN_LOG; c->defer_gen = s_log_gen; c->defer_ms = HAL_GetTick() + 8000u;
         return;                                          /* odpoved dokonci httpd_min_poll */
     }
     queue_text(c, 404, "Not Found", "not found\n");

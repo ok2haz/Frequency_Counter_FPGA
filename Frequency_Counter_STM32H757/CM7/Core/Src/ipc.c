@@ -256,48 +256,107 @@ void ipc_publish(void)
  * kratky mutex timeout a pri obsazene flash zaznam vynecha (nezdrzi watchdog). */
 void ipc_datalog_service(void)
 {
+    /* Stav rozpracovaneho pozadavku — cteni se DAVKUJE pres vic volani (viz nize). */
+    static uint32_t s_gen;            /* generace, kterou prave obsluhujeme (0 = nic) */
+    static uint32_t s_records;        /* pocet zaznamu v logu (zjisteno na zacatku) */
+    static uint32_t s_from, s_scanned;
+    static uint16_t s_want, s_step, s_bucket, s_got, s_per_bucket, s_sub, s_k;
+    static uint8_t  s_env, s_full;
+    static uint64_t s_min, s_max;     /* akumulator obalky aktualniho bucketu */
+    static datalog_rec_t s_first;     /* reprezentant bucketu (prvni precteny) */
+    static uint8_t  s_have_first;
+
     uint32_t req = g_ipc.log.req_gen;
     if (req == g_ipc.log.resp_gen) return;          /* zadny novy pozadavek */
 
-    datalog_status_t st;
-    datalog_get_status(&st);
-    g_ipc.log.resp_total = st.records;
+    if (s_gen != req) {                              /* NOVY pozadavek -> priprav stav */
+        datalog_status_t st;
+        datalog_get_status(&st);
+        s_records = st.records;
+        g_ipc.log.resp_total = st.records;
 
-    uint16_t want = g_ipc.log.req_count;
-    if (want > IPC_LOG_CHUNK) want = IPC_LOG_CHUNK;
-    uint16_t step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
-    /* ⚠️ Kdyz log jeste nema dost zaznamu na pozadovane okno (typicky „30 dni" po
-     * dvou dnech behu), pozadovany krok by nasbiral jen par bodu a graf by byl
-     * temer prazdny. Krok se proto zmensi tak, aby se vyuzila CELA dostupna
-     * historie; skutecne pokryty cas si klient odvodi z casovych znacek. */
-    if (want > 0u && st.records > 0u) {
-        uint32_t max_step = st.records / want;
-        if (max_step < 1u) max_step = 1u;
-        if ((uint32_t)step > max_step) step = (uint16_t)max_step;
+        s_want = g_ipc.log.req_count;
+        if (s_want > IPC_LOG_CHUNK) s_want = IPC_LOG_CHUNK;
+        s_step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
+        /* ⚠️ Kdyz log jeste nema dost zaznamu na pozadovane okno (typicky „30 dni" po
+         * dvou dnech behu), pozadovany krok by nasbiral jen par bodu a graf by byl
+         * temer prazdny. Krok se proto zmensi tak, aby se vyuzila CELA dostupna
+         * historie; skutecne pokryty cas si klient odvodi z casovych znacek. */
+        if (s_want > 0u && s_records > 0u) {
+            uint32_t max_step = s_records / s_want;
+            if (max_step < 1u) max_step = 1u;
+            if ((uint32_t)s_step > max_step) s_step = (uint16_t)max_step;
+        }
+        s_from = g_ipc.log.req_from;
+        s_env  = g_ipc.log.req_env ? 1u : 0u;
+
+        /* Kolik zaznamu z KAZDEHO bucketu se opravdu precte. Bez obalky staci jeden
+         * (reprezentant). S obalkou ideealne vsechny, ale jen do stropu
+         * IPC_LOG_SCAN_MAX — nad nim se bucket VZORKUJE a `resp_full_env` to prizna. */
+        if (!s_env || s_step <= 1u) {
+            s_per_bucket = 1u; s_sub = 1u; s_full = (s_step <= 1u) ? 1u : 0u;
+        } else {
+            uint32_t total = (uint32_t)s_want * s_step;
+            if (total <= IPC_LOG_SCAN_MAX) { s_per_bucket = s_step; s_full = 1u; }
+            else {
+                uint32_t pb = IPC_LOG_SCAN_MAX / (s_want ? s_want : 1u);
+                if (pb < 1u) pb = 1u;
+                s_per_bucket = (uint16_t)pb; s_full = 0u;
+            }
+            s_sub = (uint16_t)(s_step / s_per_bucket);
+            if (s_sub < 1u) s_sub = 1u;
+        }
+        s_bucket = 0u; s_k = 0u; s_got = 0u; s_scanned = 0u;
+        s_have_first = 0u; s_min = 0u; s_max = 0u;
+        s_gen = req;
     }
-    uint32_t from = g_ipc.log.req_from;             /* 0 = nejnovejsi */
 
-    uint16_t got = 0;
-    for (uint16_t i = 0; i < want; i++) {
+    /* ⚠️ ROZPOCET NA JEDNO VOLANI: `datalog_read_back` je blokujici QSPI cteni a
+     * defaultTask nesmi spinovat dele nez ~10 ms (viz watchdog v CLAUDE.md).
+     * Zbytek se dobere v dalsich ticich; HTTP odpoved na CM4 na to ceka. */
+    uint16_t budget = IPC_LOG_SCAN_BUDGET;
+    while (s_bucket < s_want && budget > 0u) {
+        uint32_t idx = s_from + (uint32_t)s_bucket * s_step + (uint32_t)s_k * s_sub;
         datalog_rec_t r;
-        uint32_t idx = from + (uint32_t)i * step;
-        if (idx >= st.records) break;
-        if (!datalog_read_back(idx, &r)) break;     /* mimo rozsah / flash obsazena */
-        ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[got];
-        o->t_unix       = r.t_unix;
-        o->freq_x100000 = r.freq_x100000;
-        o->t_ocxo_c100  = r.t_ocxo_c100;
-        o->t_board_c100 = r.t_board_c100;
-        o->ocxo_vc_mv   = (uint16_t)r.ocxo_vc_mv;
-        o->rf_mv        = (uint16_t)r.rf_mv;
-        o->vbat_mv      = (uint16_t)r.vbat_mv;
-        o->flags        = r.flags;
-        o->sats         = r.sats;
-        o->hdop10       = r.hdop10;
-        o->_pad         = 0u;
-        got++;
+        int ok = (idx < s_records) && datalog_read_back(idx, &r);
+        if (ok) {
+            budget--; s_scanned++;
+            if (!s_have_first) { s_first = r; s_have_first = 1u; }
+            if (r.freq_x100000 != 0u) {              /* 0 = tehdy nebyl FPGA link */
+                if (s_min == 0u || r.freq_x100000 < s_min) s_min = r.freq_x100000;
+                if (r.freq_x100000 > s_max)                s_max = r.freq_x100000;
+            }
+        }
+        s_k++;
+        if (s_k >= s_per_bucket || !ok) {            /* bucket hotov (nebo dosel log) */
+            if (s_have_first) {
+                const datalog_rec_t *r0 = &s_first;
+                ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[s_got];
+                o->t_unix       = r0->t_unix;
+                o->freq_x100000 = r0->freq_x100000;
+                o->freq_min_x100000 = s_min;
+                o->freq_max_x100000 = s_max;
+                o->t_ocxo_c100  = r0->t_ocxo_c100;
+                o->t_board_c100 = r0->t_board_c100;
+                o->ocxo_vc_mv   = (uint16_t)r0->ocxo_vc_mv;
+                o->rf_mv        = (uint16_t)r0->rf_mv;
+                o->vbat_mv      = (uint16_t)r0->vbat_mv;
+                o->flags        = r0->flags;
+                o->sats         = r0->sats;
+                o->hdop10       = r0->hdop10;
+                o->_pad         = 0u;
+                s_got++;
+            }
+            s_bucket++; s_k = 0u;
+            s_have_first = 0u; s_min = 0u; s_max = 0u;
+            if (!ok) break;                          /* log dosel -> koncime driv */
+        }
     }
-    g_ipc.log.resp_count = got;
+    if (s_bucket < s_want) return;                   /* jeste nehotovo, pokracuj priste */
+
+    g_ipc.log.resp_count    = s_got;
+    g_ipc.log.resp_scanned  = s_scanned;
+    g_ipc.log.resp_full_env = s_full;
     IPC_DMB();
     g_ipc.log.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
 }

@@ -710,6 +710,26 @@ bank2 flashnutá.
       (aktuální, min, max, rozkmit, σ) z právě zobrazeného okna.
       ⚠️ Hlavičkový řádek se značí **`data-hd`**, ne druhou třídou — atributy z `innerHTML` jsou
       bez uvozovek, takže víchodnotová třída nejde zapsat (totéž pravidlo jako `data-st`).
+  - **Min/max OBÁLKA + delší řady (v13, 2026-08-26):**
+    - 🔴 **Prostá decimace výkyv MEZI vzorky neukáže.** U okna 24 h připadá na jeden bod ~30 min,
+      takže špička trvající sekundy zmizí. `ipc_log_rec_t` proto nese i **`freq_min/max_x100000`**
+      (min/max v rámci bucketu) a SPA je kreslí jako **pásmo** pod křivkou (`envPoints`, polygon
+      `hi` tam a `lo` zpět).
+    - ⚠️ **Poctivá obálka by musela přečíst VŠECHNY záznamy v okně** (24 h = 8 640, 7 dní = 60 480,
+      30 dní = 259 200). `datalog_read_back` je blokující QSPI čtení v defaultTasku, kde platí
+      „žádný spin > 10 ms" → čte se **dávkově**: `IPC_LOG_SCAN_BUDGET` (128) záznamů na tik,
+      `ipc_datalog_service` je **stavový automat** a `resp_gen` nastaví až po dokončení.
+    - ⚠️ **Nad `IPC_LOG_SCAN_MAX` (20 000 záznamů) se bucket VZORKUJE** a odpověď to **přizná**
+      (`resp_full_env` → `full_env` v JSON → SPA napíše „PODVZOREK – skutečné extrémy mohou být
+      větší"). Obálka z podvzorku se nesmí vydávat za úplnou. Strop odpovídá ~1,6 s čtení.
+    - **Delší řady sešitím dávek**: jedna odpověď se vejde do ~48 bodů (strop `bodybuf`), takže
+      SPA posílá až `DLCHUNKS`=4 požadavky s posunem `from` → **až 192 bodů**. Dávky jdou **po
+      sobě**, ne souběžně — datalog kanál je jen jeden (jinak 503). HTTP timeout zvednut 2 → **8 s**.
+  - **Grafika (2026-08-26):** headline **zrcadlí displej** (poslední důvěryhodná číslice modře
+    podtržená, za ní nejistá místa menším písmem v šedi — `fmtFreqHtml`); krátký **záblesk při
+    NOVÉM měření** (ne při každém pollu); **koncový bod křivky** = aktuální hodnota.
+    ⚠️ Koncový bod je **HTML overlay, ne SVG** — `viewBox` je roztažený (`preserveAspectRatio:
+    none`), takže SVG kruh by se zdeformoval na elipsu.
 - **Rozšíření 2026-08-13 (jen nad poli, která `scpi_src_t` UŽ má → CM7 i budoucí CM4 se chovají
   IDENTICKY, bez bumpu `IPC_VERSION`):** `SYST:CAP?`, **`SYST:ERR:ALL?`** (vyprázdní celou frontu
   jedním dotazem; ⚠️ po výpisu chyb **nepřipojuje** koncovou `0,"No error"` — ta se vrací jen
