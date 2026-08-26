@@ -686,6 +686,30 @@ bank2 flashnutá.
     - ⚠️ **SPA vyrostla 29 → ~62 kB `.rodata`** (CM4 obraz ~195 kB z 1 MB) a `s_hconn` zabírá
       ~25 kB RAM (5 spojení × 4 kB body buffer) → CM4 `.bss` ~83 kB ze 128 kB. Pořád rezerva,
       ale při dalším růstu bufferů to hlídat.
+  - **Vylepšení webu (2026-08-26, druhá vlna):**
+    - 🔴 **`IPC_F_SIM` — emulovaná data se na webu tvářila jako reálná.** `fpga_freq.h` slibuje
+      pojistky proti záměně emulace za měření (datalog `DATALOG_F_SIM`, info řádek `SIM `, UART
+      `status`), ale **snapshot žádný takový bit neměl** a **`DIAG:SIM?` v `scpi.c` vůbec
+      neexistovalo** (hlavička ho přitom uváděla). Web i SCPI přes TCP/HTTP tedy servírovaly
+      `fpgasim` data bez označení — přesně ty „dvě různé pravdy o tomtéž přístroji". Doplněno:
+      volný bit `IPC_F_SIM` ve `flags` (snapshot NEroste → `IPC_VERSION` beze změny), pole
+      `sim_active` v `scpi_src_t` (plní **oba** backendy), `DIAG:SIM?` v parseru, `"sim"` v JSON
+      a **výrazný badge „EMULACE" u headline** + zvýrazněný rámeček hero panelu.
+    - **Cache SPA (ETag + 304):** stránka má ~62 kB a tahala se při **každém** reloadu.
+      ⚠️ **ETag = čas překladu `httpd_min.c`** (`__DATE__ __TIME__`), ne verze firmwaru — SPA se
+      během vývoje mění bez bumpu verze a prohlížeč by držel starou stránku. `Cache-Control:
+      no-cache` (ne `no-store`): kopii mít smí, ale musí se zeptat → odpověď je levné 304.
+      Parser umí `If-None-Match` (kryje selftest vektor 2b).
+    - **Historie měření přeživá F5** (`localStorage`, ukládá se 15 s + na `beforeunload`).
+      ⚠️ **Obnoví se jen když je mezera od posledního vzorku < 30 s** — Allan potřebuje rovnoměrné
+      rozestupy, takže slepit vzorky přes díru (zavřený prohlížeč) by dalo nesmyslnou σy; stejný
+      důvod, proč se buffer zahazuje při změně brány.
+    - **Detail i pro karty TEPLOTY a NAPÁJENÍ** (klik) + **rozpad po jednotlivých řadách**
+      (`seriesTable`): souhrn nad grafem ukazoval min/max/průměr jen **první** řady, takže u čtyř
+      teplot nešlo poznat, který senzor se pohnul. Teď má každý senzor/větev vlastní řádek
+      (aktuální, min, max, rozkmit, σ) z právě zobrazeného okna.
+      ⚠️ Hlavičkový řádek se značí **`data-hd`**, ne druhou třídou — atributy z `innerHTML` jsou
+      bez uvozovek, takže víchodnotová třída nejde zapsat (totéž pravidlo jako `data-st`).
 - **Rozšíření 2026-08-13 (jen nad poli, která `scpi_src_t` UŽ má → CM7 i budoucí CM4 se chovají
   IDENTICKY, bez bumpu `IPC_VERSION`):** `SYST:CAP?`, **`SYST:ERR:ALL?`** (vyprázdní celou frontu
   jedním dotazem; ⚠️ po výpisu chyb **nepřipojuje** koncovou `0,"No error"` — ta se vrací jen

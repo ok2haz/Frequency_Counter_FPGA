@@ -131,6 +131,10 @@ struct scpi_src {
     uint8_t  set_chan;              /* 0/1 */
     uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
+    /* ⚠️ 1 = kmitocet je z EMULATORU (`fpgasim`), ne z FPGA. Musi byt v `scpi_src_t`,
+     * aby `DIAG:SIM?` odpovidalo STEJNE pres USB (CM7) i pres TCP/HTTP (CM4 ze
+     * snapshotu, bit IPC_F_SIM) — jinak by web servíroval emulaci jako mereni. */
+    uint8_t  sim_active;
     /* Teploty [0,01 °C]. */
     int16_t  t_ocxo_c100, t_board_c100, t_mcu_c100, t_fpga_c100;
     /* Napětí [mV] + RF kalibrace. */

@@ -111,6 +111,7 @@ void ipc_publish(void)
     if (!g.valid && g.fixes > 0)         flags |= IPC_F_HOLDOVER;   /* fix byl a ztratil se */
     if (g_si5356_ok && (g_si5356_status & (1u << 3))) flags |= IPC_F_SI5356_LOS;
     if (g_ui_cfg & (1u << 4))            flags |= IPC_F_RUNNING;    /* bit4 = RUN (BKP_DR1) */
+    if (fpga_sim_active())               flags |= IPC_F_SIM;        /* emulovana data, ne mereni */
 
     uint8_t sysl = ipc_sys_level(&g);
 

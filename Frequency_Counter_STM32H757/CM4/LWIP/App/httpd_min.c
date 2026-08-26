@@ -135,6 +135,13 @@ int httpd_parse_request(const char *buf, size_t len, http_req_t *out)
         if (llen > 15 && ci_eq_n(line, "Content-Length:", 15)) {
             long v = atol(line + 15);
             if (v >= 0) out->content_length = v;
+        } else if (llen > 14 && ci_eq_n(line, "If-None-Match:", 14)) {
+            const char *v = line + 14;
+            size_t vlen = llen - 14u;
+            while (vlen > 0 && *v == ' ') { v++; vlen--; }
+            while (vlen > 0 && (v[vlen-1] == '\r' || v[vlen-1] == ' ')) vlen--;
+            if (vlen >= sizeof out->inm) vlen = sizeof(out->inm) - 1u;
+            memcpy(out->inm, v, vlen); out->inm[vlen] = '\0';
         } else if (llen > 14 && ci_eq_n(line, "Authorization:", 14)) {
             const char *v = line + 14;
             size_t vlen = llen - 14u;
@@ -252,6 +259,13 @@ int httpd_min_selftest(void)
         ok &= (strcmp(r.path, "/api/scpi") == 0);
         ok &= (r.content_length == 11);
         ok &= (strcmp(r.auth_b64, "dXNlcjpwYXNz") == 0);
+    }
+    /* 2b) If-None-Match (cache SPA): hodnota se precte i s uvozovkami ETagu. */
+    {
+        static const char req[] =
+            "GET / HTTP/1.1\r\nIf-None-Match: \"abc123\"\r\n\r\n";
+        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
+        ok &= (strcmp(r.inm, "\"abc123\"") == 0);
     }
     /* 3) Neuplna hlavicka (zadny prazdny radek jeste) -> "potreba vic dat". */
     {
@@ -399,6 +413,9 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jputf(&j, "\"time\":\"%02u:%02u:%02u\"", (unsigned)s.gps_hour, (unsigned)s.gps_min, (unsigned)s.gps_sec);
     jputf(&j, "},");
     jbool(&j, "spi_ok", s.spi_ok);
+    /* ⚠️ Emulovana data (`fpgasim`) MUSI byt oznacena — jinak by web servíroval
+     * emulaci jako mereni, kdezto displej/UART/datalog ji oznacuji. */
+    jbool(&j, "sim", s.sim_active);
     jbool(&j, "signal_lost", s.freq_err);
     jbool(&j, "si5356_ok", s.si5356_ok);
     jputf(&j, "\"si5356_status\":%u,", (unsigned)s.si5356_status);
@@ -577,6 +594,11 @@ static const char SPA_HTML[] =
 "font-size:clamp(28px,7vw,58px);font-weight:600;line-height:1.06;color:var(--acc);\n"
 "margin:9px 0 4px;word-break:break-all}\n"
 ".freq[data-na]{color:var(--dim)}\n"
+"/* Emulace: vyrazny pruh u headline, aby se nedala zamenit za mereni. */\n"
+".simtag{display:none;margin-left:10px;padding:2px 8px;border-radius:3px;\n"
+"background:var(--warn);color:var(--bg);letter-spacing:.08em;font-weight:600}\n"
+".simtag[data-on]{display:inline-block}\n"
+".hero[data-sim]{border-color:var(--warn)}\n"
 ".freq u{font-size:.34em;color:var(--ink2);margin-left:.3em;font-weight:400;text-decoration:none}\n"
 ".why{font-size:12px;color:var(--warn);min-height:1.3em}\n"
 ".hgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:1px;\n"
@@ -710,6 +732,17 @@ static const char SPA_HTML[] =
 ".dst .k{font:9px/1.4 ui-monospace,Consolas,monospace;color:var(--dim);letter-spacing:.08em}\n"
 ".dst .v{font:15px ui-monospace,Consolas,monospace;margin-top:2px}\n"
 ".dnote{font:10px/1.6 ui-monospace,Consolas,monospace;color:var(--dim);margin-top:9px}\n"
+"/* ---- tabulka rad (detail teplot/napajeni/...) ---- */\n"
+".dtab{margin-top:10px;border:1px solid var(--line);overflow:auto}\n"
+".drow{display:grid;grid-template-columns:96px repeat(5,1fr);gap:8px;align-items:center;\n"
+"padding:5px 10px;border-bottom:1px solid var(--line);\n"
+"font:11px ui-monospace,Consolas,monospace}\n"
+".drow:last-child{border-bottom:0}\n"
+".drow[data-hd]{background:var(--hd);color:var(--dim);font-size:9px;letter-spacing:.1em}\n"
+".drow b{font-weight:400;display:flex;align-items:center;gap:6px}\n"
+".drow b em{width:10px;height:2px;font-style:normal;flex:none}\n"
+".drow span{text-align:right}\n"
+".drow span.hi{color:var(--ink)}\n"
 "/* ---- tabulka druzic (detail GPS) ---- */\n"
 ".sattab{margin-top:10px;border:1px solid var(--line);max-height:34vh;overflow:auto}\n"
 ".satrow{display:grid;grid-template-columns:52px 74px 62px 62px 1fr 62px;gap:9px;\n"
@@ -733,8 +766,8 @@ static const char SPA_HTML[] =
 "<button class='tbtn' id='bTheme'>VZHLED</button>\n"
 "</header>\n"
 "\n"
-"<div class='hero'>\n"
-"<div class='hlbl'>KMITOCET</div>\n"
+"<div class='hero' id='hero'>\n"
+"<div class='hlbl'>KMITOCET<span id='simTag' class='simtag'>EMULACE (fpgasim) - NENI MERENI</span></div>\n"
 "<div class='freq mono' id='freq' data-na='1'>--</div>\n"
 "<div class='why' id='why'></div>\n"
 "<div class='hgrid'>\n"
@@ -867,8 +900,10 @@ static const char SPA_HTML[] =
 "</div>\n"
 "\n"
 "<div class='cols'>\n"
-"<div class='card'><div class='ttl'>[ TEPLOTY ]</div><div id='gTemp'></div></div>\n"
-"<div class='card'><div class='ttl'>[ NAPAJENI ]</div><div id='gPwr'></div></div>\n"
+"<div class='card'><div class='ttl'>[ TEPLOTY ]<span class='zo'>klikni = detail</span></div>\n"
+"<div id='gTemp' class='zoomable' data-z='temp'></div></div>\n"
+"<div class='card'><div class='ttl'>[ NAPAJENI ]<span class='zo'>klikni = detail</span></div>\n"
+"<div id='gPwr' class='zoomable' data-z='pwr'></div></div>\n"
 "<div class='card'><div class='ttl'>[ GPS ]<span class='zo'>klikni = detail</span>\n"
 "<span class='r mono' id='gHdop'>--</span></div>\n"
 "<div class='gps zoomable' data-z='gps'>\n"
@@ -967,6 +1002,27 @@ static const char SPA_HTML[] =
 " * neplni, protoze jejich zdroj je zatim simulace headline (viz ipc.c). */\n"
 "var MAXM=2000, M={t:[],f:[]};\n"
 "var lastSeq=-1, lastGate=-1, nom=null, nomAuto=1, lastAdev=null;\n"
+"\n"
+"/* -- Prezitie historie mereni pres F5 (localStorage) ------------------------\n"
+" * Bez toho reload zahodil cely buffer a Allan/drift zacinaly od nuly.\n"
+" * !! Data se obnovi JEN kdyz je mezera od posledniho vzorku kratka. Allan\n"
+" * potrebuje ROVNOMERNE rozestupy, takze slepit vzorky pres nekolikaminutovou\n"
+" * diru (zavreny prohlizec) by dalo nesmyslne sigma_y — radeji zacit znovu.\n"
+" * Stejny duvod, proc se buffer zahazuje pri zmene brany. */\n"
+"var MGAP=30;   /* max. mezera [s], pres kterou se jeste smi navazat */\n"
+"function saveM(){\n"
+"  try{ localStorage.setItem('gm',JSON.stringify({t:M.t,f:M.f,g:lastGate,n:nom,na:nomAuto})); }catch(e){}\n"
+"}\n"
+"function loadM(){\n"
+"  try{\n"
+"    var o=JSON.parse(localStorage.getItem('gm')||'null');\n"
+"    if(!o||!o.t||!o.t.length) return;\n"
+"    var gap=Date.now()/1000-o.t[o.t.length-1];\n"
+"    if(gap<0||gap>MGAP) return;            /* prilis stara data -> zacni znovu */\n"
+"    M.t=o.t; M.f=o.f; lastGate=(o.g===undefined)?-1:o.g;\n"
+"    if(o.n){ nom=o.n; nomAuto=o.na?1:0; $('nom').value=String(nom); }\n"
+"  }catch(e){}\n"
+"}\n"
 "/* v12: DL = dlouha historie z datalogu (24h/7d/30d); null = zive okno z H[]. */\n"
 "var DL=null, dlWin=0, webCtl=0, mathEn=0, nullEn=0, limEn=0, streaming=0;\n"
 "var SAT=null, LAST=null;   /* posledni /api/sats a /api/state — pro detailni okna */\n"
@@ -1067,6 +1123,33 @@ static const char SPA_HTML[] =
 "\n"
 "/* -- detailni okno --------------------------------------------------------- */\n"
 "function mk(tag,cls){ var e=document.createElementNS(SVGNS,tag); if(cls) e.setAttribute('class',cls); return e; }\n"
+"\n"
+"/* Rozpad detailu po JEDNOTLIVYCH radach (teploty, napajeci vetve, ...).\n"
+" * Souhrn nad grafem ukazuje min/max/prumer jen PRVNI rady, takze u vice senzoru\n"
+" * se z nej nedalo poznat, ktery z nich se pohnul. Tady ma kazdy senzor svuj radek.\n"
+" * Statistika se pocita z prave zobrazeneho okna, ne za celou dobu behu. */\n"
+"function seriesTable(s){\n"
+"  /* !! Trida musi byt JEDNOHODNOTOVA (atributy z innerHTML jsou bez uvozovek),\n"
+"   * takze hlavickovy radek se znaci data-atributem, ne druhou tridou. */\n"
+"  var h='<div class=dtab><div class=drow data-hd=1><b>SENZOR</b><span>AKTUALNI</span>'\n"
+"    +'<span>MIN</span><span>MAX</span><span>ROZKMIT</span><span>SMER.ODCH.</span></div>';\n"
+"  var any=0,j;\n"
+"  for(j=0;j<s.series.length;j++){\n"
+"    var st=stats(s.series[j].a);\n"
+"    if(!st){\n"
+"      h+='<div class=drow><b><em style=background:var(--c'+s.series[j].c+')></em>'\n"
+"        +s.series[j].n+'</b><span>--</span><span>--</span><span>--</span>'\n"
+"        +'<span>--</span><span>--</span></div>';\n"
+"      continue; }\n"
+"    any=1;\n"
+"    h+='<div class=drow><b><em style=background:var(--c'+s.series[j].c+')></em>'\n"
+"      +s.series[j].n+'</b><span class=hi>'+s.fmt(st.last)+'</span><span>'+s.fmt(st.min)\n"
+"      +'</span><span>'+s.fmt(st.max)+'</span><span>'+s.fmt(st.max-st.min)\n"
+"      +'</span><span>'+s.fmt(st.sd)+'</span></div>';\n"
+"  }\n"
+"  h+='</div>';\n"
+"  return any?h:'';\n"
+"}\n"
 "function openZoom(k){ zoom=k; $('ovl').className='ovl on'; drawZoom(); }\n"
 "function closeZoom(){ zoom=null; $('ovl').className='ovl'; }\n"
 "\n"
@@ -1082,6 +1165,7 @@ static const char SPA_HTML[] =
 "  svg.setAttribute('viewBox','0 0 100 100');\n"
 "  svg.setAttribute('preserveAspectRatio','none');\n"
 "  $('dSat').innerHTML='';   /* tabulka druzic patri jen do GPS detailu */\n"
+"\n"
 "  if(zoom==='adev'){ drawZoomAdev(svg,ax); return; }\n"
 "\n"
 "  var s=spec(zoom);\n"
@@ -1128,6 +1212,7 @@ static const char SPA_HTML[] =
 "    h+='<div><div class=k>VZORKU</div><div class=v>'+s0.n+'</div></div>';\n"
 "  }\n"
 "  $('dSt').innerHTML=h;\n"
+"  $('dSat').innerHTML=seriesTable(s);   /* rozpad po jednotlivych senzorech/vetvich */\n"
 "}\n"
 "\n"
 "/* -- detail GPS: velky sky plot + prehled druzic ---------------------------- */\n"
@@ -1352,6 +1437,11 @@ static const char SPA_HTML[] =
 "  var f=fmtFreq(s.freq_hz), fe=$('freq');\n"
 "  if(f===null){ fe.textContent='--'; fe.setAttribute('data-na','1'); }\n"
 "  else { fe.innerHTML=f+'<u>Hz</u>'; fe.removeAttribute('data-na'); }\n"
+"\n"
+"  /* !! Emulace se MUSI poznat na prvni pohled - jinak by web vydaval data z\n"
+"   * fpgasim za mereni (displej, UART i datalog je oznacuji). */\n"
+"  if(s.sim){ $('simTag').setAttribute('data-on','1'); $('hero').setAttribute('data-sim','1'); }\n"
+"  else { $('simTag').removeAttribute('data-on'); $('hero').removeAttribute('data-sim'); }\n"
 "\n"
 "  var why='';\n"
 "  if(!s.running) why='Mereni je zastavene - stiskni RUN.';\n"
@@ -1726,6 +1816,9 @@ static const char SPA_HTML[] =
 "$('ip').textContent=location.host;\n"
 "$('u').value=localStorage.getItem('gu')||'admin';\n"
 "segset('segWin','data-w',win);\n"
+"loadM();                                   /* historie mereni pres F5 (kdyz je mezera mala) */\n"
+"setInterval(saveM,15000);                  /* periodicky, at prezije i pad zalozky */\n"
+"window.addEventListener('beforeunload',saveM);\n"
 "poll(); startStream(); pollSats(); setInterval(pollSats,3000);\n"
 "</script></body></html>\n";
 
@@ -1774,6 +1867,35 @@ static void queue_response(http_conn_t *c, int code, const char *code_str,
 static void queue_text(http_conn_t *c, int code, const char *code_str, const char *text)
 {
     queue_response(c, code, code_str, "text/plain", text, strlen(text));
+}
+
+/* ── Cache SPA: stranka ma ~62 kB a bez toho se tahla pri KAZDEM reloadu. ──────
+ * ETag = cas prekladu TOHOTO souboru: zmeni se prave tehdy, kdyz se zmenila SPA
+ * (jiny soubor se prelozi bez dopadu sem), takze po flashi prohlizec spolehlive
+ * natahne novou verzi a jinak dostane 304. Verze firmwaru by nestacila — behem
+ * vyvoje se SPA meni bez bumpu verze a prohlizec by drzel starou stranku. */
+static const char SPA_ETAG[] = "\"" __DATE__ __TIME__ "\"";
+
+static void queue_spa(http_conn_t *c, const http_req_t *r)
+{
+    if (r->inm[0] != '\0' && strcmp(r->inm, SPA_ETAG) == 0) {
+        int hn = snprintf(c->hdr, sizeof c->hdr,
+            "HTTP/1.1 304 Not Modified\r\nETag: %s\r\n"
+            "Cache-Control: no-cache\r\nConnection: close\r\n\r\n", SPA_ETAG);
+        c->hdr_len = (hn > 0) ? (size_t)hn : 0u; c->hdr_sent = 0;
+        c->body_ptr = NULL; c->body_len = 0; c->body_sent = 0;
+        pump_send(c);
+        return;
+    }
+    /* `no-cache` (ne `no-store`): prohlizec smi mit kopii, ale MUSI se zeptat —
+     * odpoved je pak levny 304 misto 62 kB. */
+    int hn = snprintf(c->hdr, sizeof c->hdr,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %u\r\n"
+        "ETag: %s\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        (unsigned)(sizeof(SPA_HTML) - 1u), SPA_ETAG);
+    c->hdr_len = (hn > 0) ? (size_t)hn : 0u; c->hdr_sent = 0;
+    c->body_ptr = SPA_HTML; c->body_len = sizeof(SPA_HTML) - 1u; c->body_sent = 0;
+    pump_send(c);
 }
 
 /* ── v12 (#3): SSE (Server-Sent Events) — drzene spojeni, push pri novem mereni ── */
@@ -1857,7 +1979,7 @@ void httpd_min_poll(void)
 static void dispatch(http_conn_t *c, const http_req_t *r)
 {
     if (strcmp(r->method, "GET") == 0 && strcmp(r->path, "/") == 0) {
-        queue_response(c, 200, "OK", "text/html", SPA_HTML, sizeof(SPA_HTML) - 1u);
+        queue_spa(c, r);   /* s ETag/304 — SPA ma ~62 kB, netahat ji pri kazdem reloadu */
         return;
     }
     if (strcmp(r->method, "GET") == 0 && strcmp(r->path, "/api/state") == 0) {

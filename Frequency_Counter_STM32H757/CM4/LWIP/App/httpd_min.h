@@ -31,6 +31,7 @@ typedef struct {
     long   content_length;   /* -1 = hlavicka chybi/nejde precist */
     size_t header_len;       /* bajtu az VCETNE prazdneho radku za hlavickami */
     char   auth_b64[64];     /* base64 z "Authorization: Basic <...>"; "" = chybi */
+    char   inm[40];          /* "If-None-Match: <etag>" — cache SPA (304 Not Modified); "" = chybi */
 } http_req_t;
 
 /** Rozparsuje request-line + hlavicky z bufferu prijateho DOSUD (muze byt

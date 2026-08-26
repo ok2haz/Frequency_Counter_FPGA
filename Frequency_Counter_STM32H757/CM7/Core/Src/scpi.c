@@ -591,6 +591,12 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         snprintf(out, out_sz, "%d", (!(src->valid & SCPI_V_FREQ) || src->freq_err) ? 1 : 0);
         return strlen(out);
     }
+    /* 1 = kmitocet pochazi z EMULATORU ramcu (`fpgasim`), NE z FPGA. Pojistka proti
+     * zamene emulace za mereni — stejna odpoved pres USB i pres TCP/HTTP. */
+    if (hdr_match(hdr, "DIAGnostic:SIMulation") && is_query) {
+        snprintf(out, out_sz, "%d", src->sim_active ? 1 : 0);
+        return strlen(out);
+    }
     /* Všechny napájecí větve jedním dotazem: 12V,5V,VC,VREF,VBAT. */
     if (hdr_match(hdr, "MEASure:VOLTage:ALL") && is_query) {
         char t[5][16];
@@ -885,6 +891,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
         if (fresh_ok)                                  src->valid |= SCPI_V_FREQ;
         if (fresh_ok && !(m.status2 & FPGA_ST2_DIV16_ERR)) src->valid |= SCPI_V_DIV16;
     }
+    src->sim_active = fpga_sim_active() ? 1u : 0u;   /* emulace, ne mereni (DIAG:SIM?) */
     if (g_sensors[SENS_T49].valid)    { src->t_ocxo_c100  = (int16_t)(g_sensors[SENS_T49].last  * 100.0f); src->valid |= SCPI_V_T_OCXO; }
     if (g_sensors[SENS_T48].valid)    { src->t_board_c100 = (int16_t)(g_sensors[SENS_T48].last  * 100.0f); src->valid |= SCPI_V_T_BOARD; }
     if (g_sensors[SENS_CORE_T].valid) { src->t_mcu_c100   = (int16_t)(g_sensors[SENS_CORE_T].last* 100.0f); src->valid |= SCPI_V_T_MCU; }

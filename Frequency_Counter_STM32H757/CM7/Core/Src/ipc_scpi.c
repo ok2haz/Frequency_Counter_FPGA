@@ -65,6 +65,7 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
     s->uptime_s      = sn->uptime_s;
     s->spi_ok        = (sn->flags & IPC_F_FPGA_LINK) ? 1u : 0u;
     s->freq_err      = (sn->flags & IPC_F_SIGNAL_LOST) ? 1u : 0u;
+    s->sim_active    = (sn->flags & IPC_F_SIM) ? 1u : 0u;   /* emulace, ne mereni (DIAG:SIM?) */
     /* ⚠️ NASTAVENI (brana/kanal/RUN) se cte z `ui_cfg` (v11), presne stejnym dekodem
      * jako CM7 backend `scpi_src_load_cm7` — jinak by tentyz dotaz vracel pres USB
      * neco jineho nez pres TCP/HTTP. Do v10 se `set_gate_idx` neplnilo VUBEC (zustalo

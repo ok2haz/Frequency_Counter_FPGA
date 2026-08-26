@@ -318,6 +318,11 @@ _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4
 #define IPC_F_SI5356_LOS   (1u << 5)   /* ztrata 10 MHz reference (bit3 reg218) */
 #define IPC_F_DATALOG_ON   (1u << 6)
 #define IPC_F_RUNNING      (1u << 7)   /* mereni bezi (RUN) */
+/* ⚠️ Kmitocet pochazi z EMULATORU ramcu (`fpgasim`), ne z FPGA. Bez tohoto bitu
+ * servirovaly web i SCPI pres TCP/HTTP emulovana data jako mereni — displej,
+ * UART `status` i datalog (`DATALOG_F_SIM`) je pritom oznacuji. Volny bit ve
+ * `flags`, takze snapshot NEroste a `IPC_VERSION` se kvuli nemu nezvedá. */
+#define IPC_F_SIM          (1u << 8)   /* data z emulatoru fpgasim (NE realne mereni) */
 
 /* ── Typy prikazu (CM4 -> CM7). */
 enum {
