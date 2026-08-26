@@ -555,9 +555,11 @@ static uint64_t pow10_u64(int e)
  * ⚠️ Drive 720 px zbytecne ubiralo desetinne misto uz kolem 1 GHz. */
 #define FREQ_MAX_W  780
 
-/* Delicka vetve pin28, ze ktere pochazi `edge_count` (pin27 = /16 svuj pocet
- * period v ramci NEMA -> tam hi-res dopocet nejde, viz `g_freq_hires`). */
-#define FREQ_DIV_PIN28  4ull
+/* ⚠️ Delicka mezi `edge_count` a skutecnym kmitoctem se NEPREDPOKLADA — overuje se
+ * proti `frequency_x100000` (viz `freq_frame_to_lsb`). Realna FPGA hlasi pocet
+ * period vetve /4, emulator neděleneho signalu; pevna konstanta by jednu z nich
+ * zobrazila 4x spatne. Pin27 (/16) svuj pocet period v ramci NEMA -> tam hi-res
+ * dopocet nejde vubec (viz `g_freq_hires`). */
 /* Kolik desetin ma smysl zobrazit: z reciproke dvojice (edges/gate) se da spocitat
  * libovolne mnoho, ze zaokrouhleneho `x100000` jen 5.
  * `FREQ_FRAC_SIM` = zakladni (SIM) format: o jedno desetinne misto VELKYM fontem
@@ -588,16 +590,32 @@ static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7
 static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int hires)
 {
     int frac = s_freq_frac;
-    if (hires && gate_ns > 0u && edges > 0u && edges <= 4000000000ull) {
-        uint64_t num = edges * FREQ_DIV_PIN28 * 1000000000ull;
-        uint64_t v   = num / gate_ns;
-        uint64_t rem = num % gate_ns;
-        for (int i = 0; i < frac; i++) {          /* rem < gate_ns -> rem×10 nepretece */
-            rem *= 10u;
-            v    = v * 10u + rem / gate_ns;
-            rem %= gate_ns;
+    if (hires && gate_ns > 0u && edges > 0u) {
+        /* ⚠️ NASOBITEL SE NEPREDPOKLADA, ALE OVERUJE. `edge_count` muze byt pocet
+         * period DELENE vetve (/4) NEBO neděleného signalu — emulator `fpgasim` ho
+         * pocita nedeleny, takze pevne „×4" ukazovalo pri `fpgasim on 10000000`
+         * kmitocet 40 MHz. Autoritativni je `frequency_x100000` z ramce; hi-res je
+         * jen JEMNEJSI ODECET TEHOZ, ne druhy nezavisly vypocet. Vybere se proto
+         * nasobitel, se kterym podil sedi s autoritativni hodnotou (do 0,1 %);
+         * kdyz nesedi zadny, hi-res se NEPOUZIJE — radeji 5 poctivych desetin
+         * nez 15 spatnych. */
+        uint64_t ref = x100000 / 100000ull;                  /* cele Hz, autoritativne */
+        static const uint64_t MUL[] = { 1ull, 4ull, 16ull };
+        for (unsigned mi = 0; ref > 0u && mi < sizeof MUL / sizeof MUL[0]; mi++) {
+            if (edges > 4000000000ull / MUL[mi]) continue;    /* pojistka proti preteceni */
+            uint64_t num = edges * MUL[mi] * 1000000000ull;
+            uint64_t v   = num / gate_ns;
+            uint64_t d   = (v > ref) ? (v - ref) : (ref - v);
+            if (d * 1000ull > ref) continue;                  /* neshoda > 0,1 % -> jiny nasobitel */
+            uint64_t rem = num % gate_ns;
+            for (int i = 0; i < frac; i++) {                  /* rem < gate_ns -> rem×10 nepretece */
+                rem *= 10u;
+                v    = v * 10u + rem / gate_ns;
+                rem %= gate_ns;
+            }
+            return v;
         }
-        return v;
+        /* zadny nasobitel nesedel -> spadni na x1e5 (nize) */
     }
     if (frac <= FREQ_FRAC_X1E5) return x100000 / pow10_u64(FREQ_FRAC_X1E5 - frac);
     return x100000 * pow10_u64(frac - FREQ_FRAC_X1E5);   /* format chce vic, data nemaji */

@@ -95,6 +95,33 @@ static void rec_unpack(const uint8_t *b, fr_rec_t *r)
 /* ── Flash: hlavicka dumpu (16 B) + FR_DEPTH vzorku po 16 B ─────────────────
  * seq roste s kazdym dumpem -> nejnovejsi = nejvyssi seq (stejny princip jako
  * datalog find_head, jen nad 64 sektory). */
+/* Duvod dumpu jako kod — plny nazev se do hlavicky nevejde, ale zkratka na dva
+ * znaky nerozlisi "stall" od "stack" (viz hdr_pack). */
+#define FR_REASON_TAG   0xA5u   /* b[13]: znacka, ze b[12] je KOD (ne pismeno) */
+#define FR_REASON_MAX   48u     /* buffer volajiciho pro rozepsany duvod */
+enum { FR_R_UNKNOWN = 0, FR_R_TEST, FR_R_STACK, FR_R_MALLOC, FR_R_STALL };
+
+static uint8_t fr_reason_code(const char *reason)
+{
+    if (reason == NULL) return FR_R_UNKNOWN;
+    if (strcmp(reason, "test")  == 0) return FR_R_TEST;
+    if (strcmp(reason, "stack") == 0) return FR_R_STACK;
+    if (strcmp(reason, "mall")  == 0) return FR_R_MALLOC;
+    if (strcmp(reason, "stall") == 0) return FR_R_STALL;
+    return FR_R_UNKNOWN;
+}
+
+static const char *fr_reason_name(uint8_t code)
+{
+    switch (code) {
+    case FR_R_TEST:   return "test (rucni `flightrec test`, NE porucha)";
+    case FR_R_STACK:  return "stack (pretekl zasobnik tasku)";
+    case FR_R_MALLOC: return "malloc (vycerpany heap)";
+    case FR_R_STALL:  return "stall (task prestal krmit watchdog)";
+    default:          return "neznamy";
+    }
+}
+
 static void hdr_pack(uint8_t *b, uint32_t seq, uint16_t n, uint32_t up, const char *reason)
 {
     memset(b, 0, FR_REC_SIZE);
@@ -103,10 +130,14 @@ static void hdr_pack(uint8_t *b, uint32_t seq, uint16_t n, uint32_t up, const ch
     put16(b + 8, n);
     /* uptime v okamziku dumpu (sekundy, orez na 16 bit) */
     put16(b + 10, (uint16_t)up);
-    /* duvod: 2 bajty jako zkratka (prvni dva znaky) — cely retezec by se sem nevesel
-     * a pro odliseni "stall"/"stack"/"test"/"mall" to staci. */
-    b[12] = (uint8_t)(reason && reason[0] ? reason[0] : '?');
-    b[13] = (uint8_t)(reason && reason[0] && reason[1] ? reason[1] : ' ');
+    /* ⚠️ Duvod se uklada jako KOD, ne jako prvni dva znaky. Puvodni zkratka byla
+     * k nicemu presne tam, kde na ni zalezi: "stall" i "stack" davaly shodne "st",
+     * takze z dumpu neslo poznat, jestli slo o zaseknuty task nebo pretekly stack —
+     * tedy prave ty dve pricinny, ktere se u #18 hledaji. (Komentar tu drive tvrdil,
+     * ze to na odliseni staci; nestacilo.)
+     * b[13] nese znacku noveho formatu, aby sel STARY dump precist dal (viz hdr_unpack). */
+    b[12] = (uint8_t)fr_reason_code(reason);
+    b[13] = FR_REASON_TAG;
     put16(b + 14, fr_crc16(b, 14));
 }
 
@@ -117,7 +148,17 @@ static bool hdr_unpack(const uint8_t *b, uint32_t *seq, uint16_t *n, uint32_t *u
     if (seq) *seq = get32(b + 4);
     if (n)   *n   = get16(b + 8);
     if (up)  *up  = get16(b + 10);
-    if (r2)  { r2[0] = (char)b[12]; r2[1] = (char)b[13]; r2[2] = '\0'; }
+    /* Duvod: novy format ma v b[13] znacku a v b[12] KOD; stary tam mel prvni dva
+     * znaky retezce. Stare dumpy tak zustanou citelne (jen dvouznakove). */
+    if (r2) {
+        if (b[13] == FR_REASON_TAG) {
+            const char *nm = fr_reason_name(b[12]);
+            size_t k = 0; while (nm[k] && k < FR_REASON_MAX - 1u) { r2[k] = nm[k]; k++; }
+            r2[k] = '\0';
+        } else {
+            r2[0] = (char)b[12]; r2[1] = (char)b[13]; r2[2] = '\0';   /* stary format */
+        }
+    }
     return true;
 }
 
@@ -235,7 +276,7 @@ bool flightrec_report(void)
 {
     if (!s_have_dump || !s_have_read) return false;
     uint8_t b[FR_REC_SIZE];
-    uint32_t seq, up; uint16_t n; char r2[4];
+    uint32_t seq, up; uint16_t n; char r2[FR_REASON_MAX];
 
     if (osMutexAcquire(qspiMutexHandle, 500u) != osOK) return false;
     bool ok = w25q_read(s_read_off, b, sizeof b) && hdr_unpack(b, &seq, &n, &up, r2);
