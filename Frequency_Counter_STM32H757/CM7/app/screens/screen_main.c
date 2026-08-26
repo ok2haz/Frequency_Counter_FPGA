@@ -498,17 +498,21 @@ static void render_body_title(void)
  * Prekresleni je PER-SEGMENT DIRTY (screen_main_redraw_freq): prekresli jen
  * skupiny cislic, ktere se zmenily (resp. ocas od nich) -> stabilni cela cast se
  * neprekresluje. Drzime zive + predchozi cislice (shadow) + deskriptor. */
-static ui_digit_segment_t s_num_seg[8];
-static char               s_num_buf[8][8];    /* aktualni cislice (zive) */
-static char               s_num_prev[8][8];   /* cislice z minuleho snimku (per-segment dirty) */
+/* ⚠️ Kapacita 12 segmentu (drive 8): dynamicky format je deli jemneji — cela cast
+ * az 4 skupiny + zlomek az 5 (trojice + osamocena posledni duveryhodna cislice
+ * kvuli podtrzeni + 2 nejiste). Nejhorsi pripad 9; 12 je rezerva. */
+#define NUM_SEG_MAX 12
+static ui_digit_segment_t s_num_seg[NUM_SEG_MAX];
+static char               s_num_buf[NUM_SEG_MAX][8];    /* aktualni cislice (zive) */
+static char               s_num_prev[NUM_SEG_MAX][8];   /* cislice z minuleho snimku (per-segment dirty) */
 static ui_big_number_t    s_num;
 static int                s_num_ready = 0;
 /* Cachovana geometrie cisla (monospace -> konstantni; spocte se v num_layout,
  * redraw_freq uz neprochazi prim_text_width kazdy snimek). ⚠️ Prepocitava se pri
  * KAZDE zmene formatu (jina magnituda mereni), ne jen jednou pri bootu. */
 static int16_t            s_num_w, s_num_left, s_num_top;
-static int16_t            s_seg_x[8];   /* x-pozice zacatku kazde skupiny cislic */
-static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (cache misto strlen v hot-path) */
+static int16_t            s_seg_x[NUM_SEG_MAX];   /* x-pozice zacatku kazde skupiny cislic */
+static uint8_t            s_seg_len[NUM_SEG_MAX]; /* delka textu kazde skupiny (cache misto strlen v hot-path) */
 
 /* Stav kmitoctu (integer matematika, bez float). N = vsechny cislice jako jedno
  * cele cislo v LSB = 10^-`s_freq_frac` Hz; desetinna carka je az v zobrazeni. */
@@ -521,7 +525,7 @@ static double   s_freq_nominal_hz = 0.0;
 static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka formatu) */
 static int      s_freq_frac   = 0;   /* pocet desetinnych mist (dynamicky dle magnitudy, #1) */
 static int      s_freq_int    = 0;   /* pocet celych cislic (rebuild formatu jen pri zmene) */
-static char     s_seps[8];           /* mutable separatory (num_layout je plni: '.'/',') */
+static char     s_seps[NUM_SEG_MAX]; /* mutable separatory (num_layout: '.'/','/' '/SEP_NONE) */
 
 /* ── #1: napojeni realnych/emulovanych dat FPGA na headline + statistiky ──────
  * s_freq_n (hinge, cte ho headline i vsechna statistika) je bud REALNY kmitocet
@@ -606,34 +610,57 @@ static int num_layout(int int_digits, int frac_digits)
     if (frac_digits < 0) frac_digits = 0;
     if (frac_digits > FREQ_FRAC_HIRES) frac_digits = FREQ_FRAC_HIRES;
 
-    /* Skladba segmentu (delka/uroven/podtrzeni). Cela cast = skupiny po 3 zprava.
-     * Frakcni cast = hlavni CERTAIN blok (podtrzeny) + posledni 1-2 cislice jako
-     * SIGMA/FLOOR = STEJNE VELKE, jen ztmavene (viz `fade_font = NULL` nize).
-     * ⚠️ Kolik cislic je NEJISTYCH se zatim NEPOCITA z rozliseni/σy — je to natvrdo
-     * 2 (kosmetika). Skutecny vypocet az #51 (rozpocet nejistoty). */
-    int glen[8]; uint8_t glvl[8]; uint8_t gund[8]; int gn = 0;
+    /* ── Skladba segmentu (delka / uroven / podtrzeni) + separator ZA kazdym ──
+     * CELA cast: skupiny po 3 zprava, oddelene TECKOU (ceske tisice).
+     * ZLOMEK: taky po trojicich, ale oddelene MEZEROU (SI styl) — po desetinne
+     *   carce se uz zadna tecka nekresli, aby nebylo pochyb, co je desetinny
+     *   oddelovac. `mono_25` ma prazdny glyf mezery (advance 15, zadny ink).
+     * ⚠️ Uvnitr trojice se skupina jeste deli tam, kde se meni VZHLED (posledni
+     *   duveryhodna cislice = modre podtrzeni, pak SIGMA a FLOOR mensim fontem);
+     *   takove predely dostanou `UI_BIGNUM_SEP_NONE`, takze cislice zustanou
+     *   slepene a trojice se opticky nerozpadne.
+     * ⚠️ Kolik cislic je NEJISTYCH se zatim NEPOCITA z rozliseni/σy — natvrdo 2
+     *   (kosmetika). Skutecny vypocet az #51 (rozpocet nejistoty). */
+    int glen[NUM_SEG_MAX]; uint8_t glvl[NUM_SEG_MAX]; uint8_t gund[NUM_SEG_MAX];
+    char gsep[NUM_SEG_MAX]; int gn = 0;
+
     int first = int_digits % 3; if (first == 0) first = 3;
     int rem = int_digits;
-    glen[gn] = first; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gn++; rem -= first;
-    while (rem > 0 && gn < 7) { glen[gn] = 3; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gn++; rem -= 3; }
+    glen[gn] = first; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gsep[gn] = '.'; gn++; rem -= first;
+    while (rem > 0 && gn < NUM_SEG_MAX - 1) {
+        glen[gn] = 3; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gsep[gn] = '.'; gn++; rem -= 3;
+    }
+    gsep[gn - 1] = (frac_digits > 0) ? ',' : UI_BIGNUM_SEP_NONE;   /* desetinna carka */
 
-    int first_frac = (frac_digits > 0) ? gn : -1;   /* index 1. frac segmentu (comma pred nej) */
-    int n_unc = (frac_digits < 2) ? frac_digits : 2;
-    int frac_cert = frac_digits - n_unc;
-    if (frac_cert > 0 && gn < 8) { glen[gn] = frac_cert; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 1; gn++; }
-    if (n_unc == 2 && gn < 8)    { glen[gn] = 1;         glvl[gn] = UI_DIGIT_SIGMA;   gund[gn] = 0; gn++; }
-    if (n_unc >= 1 && gn < 8)    { glen[gn] = 1;         glvl[gn] = UI_DIGIT_FLOOR;   gund[gn] = 0; gn++; }
+    /* Zlomek: `n_cert` duveryhodnych, pak SIGMA a FLOOR. Podtrzena je POSLEDNI
+     * duveryhodna cislice (samostatny segment), nejiste jdou mensim fontem. */
+    int n_unc  = (frac_digits < 2) ? frac_digits : 2;
+    int n_cert = frac_digits - n_unc;
+    int p = 1;
+    while (p <= frac_digits && gn < NUM_SEG_MAX) {
+        uint8_t lvl = (p <= n_cert) ? UI_DIGIT_CERTAIN
+                    : ((p == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR);
+        uint8_t und = (p == n_cert) ? 1u : 0u;
+        int len = 0;
+        while (p + len <= frac_digits) {                 /* rozsiruj, dokud se nic nemeni */
+            int q = p + len;
+            uint8_t qlvl = (q <= n_cert) ? UI_DIGIT_CERTAIN
+                         : ((q == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR);
+            uint8_t qund = (q == n_cert) ? 1u : 0u;
+            if (qlvl != lvl || qund != und) break;        /* zmena vzhledu -> novy segment */
+            if (len > 0 && ((q - 1) % 3) == 0) break;     /* hranice trojice */
+            len++;
+        }
+        int endpos = p + len - 1;
+        glen[gn] = len; glvl[gn] = lvl; gund[gn] = und;
+        /* Mezera jen na skutecne hranici trojice, jinak segmenty slepit. */
+        gsep[gn] = (endpos % 3 == 0 && endpos < frac_digits) ? ' ' : UI_BIGNUM_SEP_NONE;
+        gn++; p += len;
+    }
+    gsep[gn - 1] = UI_BIGNUM_SEP_NONE;                    /* za poslednim segmentem nic */
 
-    /* Separatory: '.' mezi skupinami CELE casti + JEDNA ',' pred zlomkem.
-     * ⚠️ UVNITR zlomku se separator NEPISE — retezec se za carkou ukonci a
-     * `sep_at()` (big_number.c) vraci pro vyssi indexy 0 = zadny separator.
-     * Mene vyznamna mista se odlisuji VYHRADNE ODSTINEM (UI_DIGIT_SIGMA/FLOOR),
-     * nikdy dalsi teckou — desetinna cast musi zustat souvisle cislo. */
-    int nsep = (first_frac > 0) ? first_frac : gn - 1;
-    if (nsep > (int)sizeof s_seps - 1) nsep = (int)sizeof s_seps - 1;
-    for (int i = 0; i < nsep; i++)
-        s_seps[i] = (first_frac > 0 && i == first_frac - 1) ? ',' : '.';
-    s_seps[nsep] = '\0';
+    for (int i = 0; i < gn - 1; i++) s_seps[i] = gsep[i];
+    s_seps[(gn > 0) ? gn - 1 : 0] = '\0';
 
     s_freq_total = 0;
     for (int i = 0; i < gn; i++) {
@@ -648,14 +675,12 @@ static int num_layout(int int_digits, int frac_digits)
     s_freq_int  = int_digits;
     s_freq_frac = frac_digits;
 
-    /* ⚠️ `fade_font = NULL` ZAMERNE: `seg_font()` (big_number.c) pak i pro
-     * SIGMA/FLOOR vraci `main_font`, takze VSECHNY cislice maji stejnou velikost
-     * a nejista mista se odlisuji JEN ODSTINEM (`ui_level_color`: INK -> INK_4 ->
-     * INK_5). Tak to dela i laboratorni citac — mensi pismo by budilo dojem jine
-     * veliciny, ne jine duveryhodnosti. */
+    /* Nejiste cislice: MENSI font (`fade_font`) + tmavsi odstin (`ui_level_color`:
+     * INK -> INK_4 -> INK_5). Posledni duveryhodna cislice ma modre podtrzeni
+     * (UI_COLOR_ACC v `ui_big_number_render_tail`). */
     s_num = (ui_big_number_t){
         .x_center = UI_DIM_SCREEN_W / 2, .y_baseline = SCR_MAIN_NUMBER_Y_BASELINE,
-        .main_font = &ui_font_mono_75, .fade_font = NULL,
+        .main_font = &ui_font_mono_75, .fade_font = &ui_font_mono_52,
         .sep_font = &ui_font_mono_25, .decimal_font = &ui_font_mono_30,
         .unit_font = &ui_font_sans_32, .segments = s_num_seg, .segment_count = (int16_t)gn,
         .separators = s_seps, .sep_color = UI_COLOR_INK_3,
@@ -2139,7 +2164,22 @@ int screen_main_redraw_freq(void)
 void screen_main_redraw_freq_area(void)
 {
     if (!s_num_ready) return;
-    blit_bg_region(freq_area());
+    /* ⚠️ Cisti se SJEDNOCENI s PREDCHOZI zonou: pri zmene formatu (jina magnituda /
+     * jiny pocet desetin) se sirka cisla zmeni a je vycentrovana, takze nove
+     * `freq_area()` je jinde. Kdyby se cistilo jen ono, zbyly by po stranach
+     * "duchove" starych cislic (typicky i stara jednotka Hz), protoze partial
+     * redraw uz do te oblasti nikdy nesahne. */
+    static prim_rect_t s_prev_area;
+    prim_rect_t cur = freq_area();
+    if (s_prev_area.w > 0) {
+        int16_t x0 = (cur.x < s_prev_area.x) ? cur.x : s_prev_area.x;
+        int16_t x1 = (int16_t)((cur.x + cur.w > s_prev_area.x + s_prev_area.w)
+                               ? cur.x + cur.w : s_prev_area.x + s_prev_area.w);
+        blit_bg_region((prim_rect_t){x0, cur.y, (int16_t)(x1 - x0), cur.h});
+    } else {
+        blit_bg_region(cur);
+    }
+    s_prev_area = cur;
     freq_tint_if_stopped();
     prim_set_glyph_accel(1);
     ui_big_number_render(&s_num);

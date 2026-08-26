@@ -8,6 +8,13 @@
 #include <ui/digit_group.h>
 #include <ui/api.h>
 
+/** Separator "ZADNY" — dve skupiny cislic se dotykaji bez mezery.
+ *  ⚠️ Nelze pouzit '\0': `separators` je C retezec, takze nula uprostred by ho
+ *  utnula a VSECHNY dalsi mezery by zustaly bez separatoru. Sentinel to umozni
+ *  stridat (napr. trojice oddelene mezerou, ale uvnitr trojice cislice slepene,
+ *  kdyz se u nich meni font/podtrzeni). */
+#define UI_BIGNUM_SEP_NONE  '~'
+
 typedef struct {
     int16_t x_center;
     int16_t y_baseline;
