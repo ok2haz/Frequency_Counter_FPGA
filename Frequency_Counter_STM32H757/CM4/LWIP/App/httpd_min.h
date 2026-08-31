@@ -41,6 +41,8 @@ int httpd_parse_request(const char *buf, size_t len, http_req_t *out);
 
 /** Pure-logic selftest (par vektoru na `httpd_parse_request`). @return 1 = PASS. */
 int httpd_min_selftest(void);
+/** Radek prvniho neuspesneho assertu v httpd_min_selftest (0 = zadny). */
+int httpd_min_selftest_fail_line(void);
 
 #ifdef __cplusplus
 }

@@ -162,6 +162,28 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
+    /* ── Region 3: datova cache mereni v SDRAM (`sdram_log.c`), 16 MB @0xC1000000
+     * Normal, WRITE-BACK WRITE-ALLOCATE (TEX=001, C=1, B=1) — stejne jako region 1.
+     * ⚠️ PROC cacheable: log se cte SEKVENCNE a opakovane (Allan pres dlouha tau,
+     * spektrogram, proklad). Bez MPU regionu by adresa spadla do DEFAULTNI mapy,
+     * kde je 0xA0000000-0xDFFFFFFF **Device pamet** — tam neni cache-line prefetch
+     * a sekvencni cteni je radove pomalejsi.
+     * ⚠️ DUSLEDEK: az bude log plnit SPI přes DMA (protokol v2 / STATUS #62), musi
+     * konzument pred ctenim invalidovat D-cache — DMA obchazi cache uplne stejne
+     * jako DMA2D u framebufferu. Dokud plni CPU, je to koherentni samo od sebe.
+     * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 16 MB @0xC1000000 sedi. */
+    MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
+    MPU_InitStruct.BaseAddress      = 0xC1000000;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_8MB;
+    MPU_InitStruct.SubRegionDisable = 0x00;
+    MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;
+    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+    MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+    MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+    MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+    MPU_InitStruct.IsBufferable     = MPU_ACCESS_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
     /* Zapnout MPU s default mapou pro nechraneny privilegovany pristup */
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }

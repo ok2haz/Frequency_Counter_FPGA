@@ -148,6 +148,13 @@ int httpd_parse_request(const char *buf, size_t len, http_req_t *out)
             while (vlen > 0 && *v == ' ') { v++; vlen--; }        /* preskoc mezery po ':' */
             if (vlen > 6 && ci_eq_n(v, "Basic ", 6)) {
                 v += 6; vlen -= 6;
+                /* ⚠️ Mezi schematem a tokenem smi byt VIC mezer (RFC 7235: `1*SP`),
+                 * takze se musi preskocit znovu — `ci_eq_n(v,"Basic ",6)` sezere
+                 * jen jednu. Bez toho zustala v `auth_b64` vedouci mezera, delka
+                 * prestala byt nasobkem 4 a `b64_decode` vratil -1 => 401 pro
+                 * kazdeho klienta s extra mezerou. Nalezeno HW pruchodem
+                 * 2026-08-30 (httpd_min_selftest FAIL, radek assertu 270). */
+                while (vlen > 0 && *v == ' ') { v++; vlen--; }
                 while (vlen > 0 && (v[vlen-1] == '\r' || v[vlen-1] == ' ')) vlen--;
                 if (vlen >= sizeof out->auth_b64) vlen = sizeof(out->auth_b64) - 1u;
                 memcpy(out->auth_b64, v, vlen); out->auth_b64[vlen] = '\0';
@@ -234,19 +241,28 @@ static int check_auth(const http_req_t *r, const ipc_snapshot_t *snap)
 }
 
 /* ── Selftest (bez site) — kriterium W4/W5 z WEB_UI_PLAN.md ──────────────────── */
+/* ⚠️ Radek PRVNIHO neuspesneho assertu (0 = zadny). Stejny idiom jako
+ * `scpi_selftest_fail_line()` — bez nej je vysledek jen "FAIL" a na cili
+ * (kde se test spousti) neni jak zjistit KTERY vektor spadl. Cte se
+ * ladici sondou z CM4 SRAM2, nebo pres IPC. */
+static int s_ht_fail_line;
+int httpd_min_selftest_fail_line(void) { return s_ht_fail_line; }
+#define HT_OK(cond) do { int c_ = (cond) ? 1 : 0; if (!c_ && !s_ht_fail_line) s_ht_fail_line = __LINE__; ok &= c_; } while (0)
+
 int httpd_min_selftest(void)
 {
     http_req_t r;
     int ok = 1;
+    s_ht_fail_line = 0;
 
     /* 1) Kompletni GET bez tela. */
     {
         static const char req[] = "GET /api/state HTTP/1.1\r\nHost: x\r\n\r\n";
-        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
-        ok &= (strcmp(r.method, "GET") == 0);
-        ok &= (strcmp(r.path, "/api/state") == 0);
-        ok &= (r.content_length == -1);
-        ok &= (r.auth_b64[0] == '\0');
+        HT_OK(httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
+        HT_OK(strcmp(r.method, "GET") == 0);
+        HT_OK(strcmp(r.path, "/api/state") == 0);
+        HT_OK(r.content_length == -1);
+        HT_OK(r.auth_b64[0] == '\0');
     }
     /* 2) Kompletni POST s Content-Length (case-insensitive nazev hlavicky) +
      *    Authorization Basic (case-insensitive "basic", extra mezery). */
@@ -254,28 +270,28 @@ int httpd_min_selftest(void)
         static const char req[] =
             "POST /api/scpi HTTP/1.1\r\ncontent-length: 11\r\n"
             "Authorization:  basic  dXNlcjpwYXNz  \r\n\r\nMEAS:FREQ?\n";
-        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
-        ok &= (strcmp(r.method, "POST") == 0);
-        ok &= (strcmp(r.path, "/api/scpi") == 0);
-        ok &= (r.content_length == 11);
-        ok &= (strcmp(r.auth_b64, "dXNlcjpwYXNz") == 0);
+        HT_OK(httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
+        HT_OK(strcmp(r.method, "POST") == 0);
+        HT_OK(strcmp(r.path, "/api/scpi") == 0);
+        HT_OK(r.content_length == 11);
+        HT_OK(strcmp(r.auth_b64, "dXNlcjpwYXNz") == 0);
     }
     /* 2b) If-None-Match (cache SPA): hodnota se precte i s uvozovkami ETagu. */
     {
         static const char req[] =
             "GET / HTTP/1.1\r\nIf-None-Match: \"abc123\"\r\n\r\n";
-        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
-        ok &= (strcmp(r.inm, "\"abc123\"") == 0);
+        HT_OK(httpd_parse_request(req, sizeof(req) - 1, &r) == 1);
+        HT_OK(strcmp(r.inm, "\"abc123\"") == 0);
     }
     /* 3) Neuplna hlavicka (zadny prazdny radek jeste) -> "potreba vic dat". */
     {
         static const char req[] = "GET /api/state HTTP/1.1\r\nHost: x";
-        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == 0);
+        HT_OK(httpd_parse_request(req, sizeof(req) - 1, &r) == 0);
     }
     /* 4) Spatny request-line (chybi mezera) -> malformed. */
     {
         static const char req[] = "GARBAGE\r\n\r\n";
-        ok &= (httpd_parse_request(req, sizeof(req) - 1, &r) == -1);
+        HT_OK(httpd_parse_request(req, sizeof(req) - 1, &r) == -1);
     }
     /* 5) Prilis dlouha cesta se orizne, neshodi parser. */
     {
@@ -283,8 +299,8 @@ int httpd_min_selftest(void)
         int n = snprintf(req, sizeof req, "GET /%.150s HTTP/1.1\r\n\r\n",
                           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        ok &= (httpd_parse_request(req, (size_t)n, &r) == 1);
-        ok &= (strlen(r.path) == sizeof(r.path) - 1u);
+        HT_OK(httpd_parse_request(req, (size_t)n, &r) == 1);
+        HT_OK(strlen(r.path) == sizeof(r.path) - 1u);
     }
     /* 6) Base64 + porovnani credentials — "dXNlcjpwYXNz" = "user:pass". */
     {
@@ -292,14 +308,15 @@ int httpd_min_selftest(void)
         strcpy(snap.web_user, "user"); strcpy(snap.web_pass, "pass");
         http_req_t rr; memset(&rr, 0, sizeof rr);
         strcpy(rr.auth_b64, "dXNlcjpwYXNz");
-        ok &= (check_auth(&rr, &snap) == 1);
+        HT_OK(check_auth(&rr, &snap) == 1);
         strcpy(snap.web_pass, "jinak");
-        ok &= (check_auth(&rr, &snap) == 0);           /* spatne heslo -> odmitnout */
+        HT_OK(check_auth(&rr, &snap) == 0);           /* spatne heslo -> odmitnout */
         rr.auth_b64[0] = '\0';
-        ok &= (check_auth(&rr, &snap) == 0);            /* zadna hlavicka -> odmitnout */
+        HT_OK(check_auth(&rr, &snap) == 0);            /* zadna hlavicka -> odmitnout */
     }
     return ok;
 }
+#undef HT_OK
 
 /* ── JSON writer: bezpecne orezavane pripojovani do pevneho bufferu ──────────── */
 typedef struct { char *p; size_t cap, used; } jbuf_t;

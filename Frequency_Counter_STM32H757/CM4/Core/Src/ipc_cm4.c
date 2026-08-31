@@ -6,14 +6,23 @@
  * ⚠️ Boot poradi: CM7 uvolni CM4 pres HSEM uz po SystemClock_Config (brzy), ale
  * `ipc_init` (razitko snapshotu) dela az v StartDefaultTask (po scheduleru). Takze
  * CM4 muze chvili cist snapshot bez magicu -> ipc_cm4_check vraci 0, CM4 zkousi
- * dal. Az CM7 orazitkuje, header sedne. (CM7 ipc_init navic JEDNOU vynuluje i
- * cm4 oblast -> CM4 heartbeat se hned dalsim tikem obnovi; benigni boot efekt.)
+ * dal. Az CM7 orazitkuje, header sedne.
+ * 🔴 CM7 `ipc_init` navic vynuluje i blok `cm4`, ktery vlastni CM4 — a to NENI
+ * benigni, jak tu stalo drive: opakovane publikovane hodnoty (heartbeat, net)
+ * se dalsim tikem obnovi, ale JEDNORAZOVE zapisy se tise ztrati navzdy. Proto
+ * se vsechny jednorazove hodnoty drzi lokalne a razitkuji znovu v heartbeatu
+ * (viz `s_scpi_ok`/`s_httpd_ok`), pripadne se publikuji opakovane ze smycky
+ * (ETH). Plne zduvodneni u bloku „JEDNORAZOVE hodnoty" nize.
  */
 #include "ipc_cm4.h"
 #include <stddef.h>   /* NULL */
 
 static uint8_t  s_ready;    /* 1 = snapshot header (magic/verze/size) overen */
 static uint32_t s_hb;       /* heartbeat citac (roste kazdym publikovanim) */
+/* Jednorazove hodnoty publikovane do bloku `cm4` — drzi se lokalne, aby se
+ * daly v heartbeatu razitkovat znovu (plne zduvodneni u bloku „JEDNORAZOVE
+ * hodnoty" nize). */
+static uint8_t  s_scpi_ok, s_httpd_ok;   /* 0 = jeste nebezelo */
 
 void ipc_cm4_init(void)
 {
@@ -84,6 +93,11 @@ void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
     g_ipc.cm4.cm4_ipc_version = (uint8_t)IPC_VERSION;
     g_ipc.cm4.cm4_cpu_pct  = cpu_pct;
     g_ipc.cm4.cm4_uptime_s = uptime_s;
+    /* Re-stamp JEDNORAZOVYCH hodnot (viz komentar u `s_scpi_ok` nize) — bez nej
+     * je `memset` z `ipc_init()` na CM7 natrvalo smaze. Nuly se nepisou, aby se
+     * nepretlacovalo "jeste nedobehl" pres pripadny pozdejsi zapis. */
+    if (s_scpi_ok)  g_ipc.cm4.scpi_selftest_ok  = s_scpi_ok;
+    if (s_httpd_ok) g_ipc.cm4.httpd_selftest_ok = s_httpd_ok;
     IPC_DMB();                                    /* data viditelna PRED inkrementem heartbeatu */
     g_ipc.cm4.heartbeat    = ++s_hb;              /* CM7 sleduje rust -> liveness */
 }
@@ -99,8 +113,26 @@ void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32
     g_ipc.cm4.net_link       = link_up ? 1u : 0u;   /* link naposled (CM7 na nej gate-uje) */
 }
 
-/* v6 (F3): vysledek ETH bring-upu. Stejny vzor jako set_net — hodnota napred,
- * priznak platnosti naposled (CM7 na `eth_init_ok` gate-uje zobrazeni PHY ID). */
+/* ── JEDNORAZOVE hodnoty (vysledky selftestu) ─────────────────────────────────
+ * 🔴 Drzi se LOKALNE a razitkuji se ZNOVU v kazdem heartbeatu — stejny duvod,
+ * jaky uz byl u `cm4_ipc_version` a u `ipc_cm4_set_eth` (ten se publikuje
+ * opakovane z hlavni smycky, viz main.c): CM7 dela v `ipc_init()` **`memset` CELE**
+ * sdilene struktury vcetne bloku `cm4`, ktery vlastni CM4. A dela to az ze
+ * `StartDefaultTask`, tedy po pomale inicializaci displeje (~sekundy), zatimco
+ * CM4 (bare-metal) publikuje uz ~1,3 s po bootu, hned po pipaci melodii.
+ * Kdo vyhraje, je zavisle na nabehu -> jednorazovy zapis se muze TISE ZTRATIT
+ * a uz se nikdy nevrati.
+ * ⚠️ Presne to se stalo pri HW pruchodu 2026-08-30 (studeny start): `memset`
+ * dopadl MEZI publikaci httpd a eth, takze `status` hlasil
+ * „SCPI(CM4): jeste nedobehl" + „HTTP(CM4): jeste nedobehl", ale
+ * „ETH(CM4): init OK" — presne v poradi, v jakem to CM4 zapisuje (viz main.c).
+ * ⚠️ **Kazda dalsi jednorazova hodnota v bloku `cm4` MUSI jit stejnou cestou**
+ * (lokalni kopie + re-stamp v `ipc_cm4_heartbeat`, nebo opakovana publikace
+ * ze smycky jako u ETH), jinak zdedi tenhle race. */
+
+/* v6 (F3): vysledek ETH bring-upu. Hodnota napred, priznak platnosti naposled
+ * (CM7 na `eth_init_ok` gate-uje zobrazeni PHY ID). Publikuje se OPAKOVANE
+ * z hlavni smycky CM4, takze vlastni re-stamp v heartbeatu nepotrebuje. */
 void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id)
 {
     g_ipc.cm4.eth_phy_id  = phy_id;
@@ -108,17 +140,16 @@ void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id)
     g_ipc.cm4.eth_init_ok = init_ok ? 1u : 0u;
 }
 
-/* v7 (W2): vysledek `scpi_selftest()`. Vola se jednou pri bootu (viz main.c) — na
- * rozdil od eth/net se sem nic pozdeji nevraci, takze se NEPUBLIKUJE opakovane
- * ve smycce; hodnota po zapisu uz je definitivni pro cely beh. */
+/* v7 (W2): vysledek `scpi_selftest()`. Vola se jednou pri bootu (viz main.c). */
 void ipc_cm4_set_scpi_selftest(uint8_t ok)
 {
-    g_ipc.cm4.scpi_selftest_ok = ok ? 1u : 2u;
+    s_scpi_ok = ok ? 1u : 2u;
+    g_ipc.cm4.scpi_selftest_ok = s_scpi_ok;
 }
 
-/* v9 (W4): vysledek `httpd_min_selftest()`. Stejny vzor jako scpi — jednorazovy
- * zapis pri bootu, nepublikuje se opakovane. */
+/* v9 (W4): vysledek `httpd_min_selftest()`. Stejny vzor jako scpi. */
 void ipc_cm4_set_httpd_selftest(uint8_t ok)
 {
-    g_ipc.cm4.httpd_selftest_ok = ok ? 1u : 2u;
+    s_httpd_ok = ok ? 1u : 2u;
+    g_ipc.cm4.httpd_selftest_ok = s_httpd_ok;
 }

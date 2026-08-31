@@ -508,6 +508,39 @@ int fpga_freq_select_core(int use16, const fpga_meas_t *m)
     return use16;
 }
 
+/* ── Overeni nasobitele reciproke dvojice (viz .h) ────────────────────────────
+ * 🔴 HISTORIE: hi-res dopocet nasobil `edge_count` NAPEVNO ctyrmi (predpoklad,
+ * ze je to pocet period vetve /4). Emulator `fpgasim` ale pocita periody
+ * NEDELENEHO signalu, takze `fpgasim on 10000000` ukazoval 40 MHz (opraveno
+ * commitem a6c0128). Tahle funkce je od te doby JEDINY zdroj pravdy o
+ * nasobiteli — kdo si ho odvodi sam, tu chybu si zopakuje. */
+uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
+{
+    if (gate_ns == 0u || edges == 0u) return 0u;
+    uint64_t ref = x100000 / 100000ull;                  /* cele Hz, autoritativne z ramce */
+    if (ref == 0u) return 0u;
+    static const uint32_t MUL[] = { 1u, 4u, 16u };
+    for (unsigned i = 0; i < sizeof MUL / sizeof MUL[0]; i++) {
+        if (edges > 4000000000ull / MUL[i]) continue;    /* pojistka proti preteceni */
+        uint64_t v = (edges * MUL[i] * 1000000000ull) / gate_ns;
+        uint64_t d = (v > ref) ? (v - ref) : (ref - v);
+        if (d * 1000ull <= ref) return MUL[i];           /* shoda do 0,1 % */
+    }
+    return 0u;                                           /* nesedi zadny -> hi-res nepouzivat */
+}
+
+uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
+{
+    uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
+    if (mul == 0u) return x100000 * 10ull;               /* fallback: x1e5 -> µHz je x10 */
+    /* Dlouhe deleni na 6 desetin (µHz). Nasobit napred (num × 1e6) NELZE —
+     * pri 10 MHz uz to je ~1e22 >> 1,8e19. */
+    uint64_t num = edges * mul * 1000000000ull;          /* <= 4e18, viz guard vyse */
+    uint64_t v = num / gate_ns, rem = num % gate_ns;
+    for (int i = 0; i < 6; i++) { rem *= 10u; v = v * 10u + rem / gate_ns; rem %= gate_ns; }
+    return v;
+}
+
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16)
 {
     /* /4 ma nejlepsi rozliseni; nad ~380 MHz je pin28 (/4 -> ~95 MHz) u stropu -> /16.

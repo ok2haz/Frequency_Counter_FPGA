@@ -1073,11 +1073,23 @@ int scpi_selftest(void)
     ok &= (strstr(b, "GPSDO") != NULL);
     scpi_process_ctx(&x, &src, "CONF?", b, sizeof b);
     ok &= (strncmp(b, "\"FREQ\"", 6) == 0);
+    /* ⚠️ DISP:BRIG je HW-vazane (displej visi jen na CM7). V obraze CM4 vraci
+     * handler ZAMERNE SCPI-99 `-241 "Hardware missing"` (viz `#else` vetev
+     * u handleru vyse). Test to musi vedet — jinak spadne na cizim jadre na
+     * spravnem chovani. Nalezeno HW pruchodem 2026-08-30: `status` hlasil
+     * „SCPI(CM4): selftest FAIL" a `s_st_fail_line` ukazal presne sem. */
+#if defined(CORE_CM7)
     scpi_process_ctx(&x, &src, "DISP:BRIG 50", b, sizeof b);
     scpi_process_ctx(&x, &src, "DISP:BRIG?", b, sizeof b);
     ok &= (b[0] == '5');                                  /* ~50 % zpet */
     scpi_process_ctx(&x, &src, "DISP:BRIG 150", b, sizeof b);
     ok &= (strncmp(b, "-222", 4) == 0);                   /* mimo rozsah -> chyba */
+#else
+    scpi_process_ctx(&x, &src, "DISP:BRIG?", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* CM4: Hardware missing */
+    scpi_process_ctx(&x, &src, "DISP:BRIG 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* i SET musi odmitnout */
+#endif
 
     /* ── SYST:DATE/TIME: parser tri cisel + odmitnuti nesmyslu (2026-08-15) ── */
     { int a1 = 0, a2 = 0, a3 = 0;
@@ -1086,10 +1098,18 @@ int scpi_selftest(void)
       ok &= (scpi_parse3("2026,8", &a1, &a2, &a3) == 0);        /* jen dve cisla */
       ok &= (scpi_parse3("2026,8,15,1", &a1, &a2, &a3) == 0);   /* ctyri cisla */
       ok &= (scpi_parse3("2026,x,15", &a1, &a2, &a3) == 0); }   /* nepovoleny znak */
+    /* ⚠️ Tytez duvody jako u DISP:BRIG vyse: RTC je jen na CM7, CM4 vraci -241.
+     * Parser `scpi_parse3` (nad timto blokem) je ciste logicky -> testuje se na obou. */
     scpi_process_ctx(&x, &src, "SYST:DATE 2026,13,1", b, sizeof b);
+#if defined(CORE_CM7)
     ok &= (strncmp(b, "-222", 4) == 0);                   /* mesic 13 -> chyba */
     scpi_process_ctx(&x, &src, "SYST:TIME 25,0,0", b, sizeof b);
     ok &= (strncmp(b, "-222", 4) == 0);                   /* hodina 25 -> chyba */
+#else
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* CM4: Hardware missing */
+    scpi_process_ctx(&x, &src, "SYST:TIME 25,0,0", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+#endif
     ok &= (scpi_process_ctx(&x, &src, "MMEM:CAT?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:DATA:COUN?", b, sizeof b) > 0);
 

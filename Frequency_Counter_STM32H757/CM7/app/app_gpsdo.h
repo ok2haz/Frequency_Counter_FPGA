@@ -71,6 +71,24 @@ void app_gpsdo_clear(void);
  */
 bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 
+/** Obsluha rotacniho encoderu (Faze A). Vola VYHRADNE UiTask, ~100 Hz.
+ *  @return 1 = neco se prekreslilo -> flipnout snimek. */
+int app_gpsdo_handle_encoder(void);
+
+/** Diagnostika registru zameritelnych tlacitek (UART `status`).
+ *  ⚠️ `overflow` = 1 znamena, ze v nekterem okne je tlacitek vic nez `cap`
+ *  a ta na konci NEJDOU zamerit encoderem — bez tohohle by to bylo tiche. */
+void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
+
+/** Kolikrat obsluha encoderu skutecne kreslila (diagnostika problikavani). */
+uint32_t app_gpsdo_encoder_draws(void);
+
+/** Citace kreslicich zdroju hlavni obrazovky (hledani problikavani).
+ *  Poradi: [0]=flip [1]=flash tlacitka [2]=stats anim [3]=trend anim
+ *          [4]=SYS xfade [5]=velke cislo [6]=encoder. Pole aspon 7 prvku.
+ *  ⚠️ Cist pres UART dvakrat a odecist — zadna sonda (halt cile zabiji I2C4). */
+void app_gpsdo_ui_counters(uint32_t *out7);
+
 /** Periodic tick (~2 Hz from UiTask): refreshes the diagnostics values. */
 void app_gpsdo_tick(void);
 
@@ -101,6 +119,11 @@ void app_gpsdo_tick_allan_draw(void);
  *        Vola UiTask na ~30 Hz gate (ticky uz neflipuji samy). Vrati 1 pri flipu.
  */
 int app_gpsdo_flush(void);
+
+/* Banner "DOTYK NEDOSTUPNY" pri trvale mrtve I2C4 (dead=1 kresli, dead=0 uklidi).
+ * Vola UiTask; firmware sbernici ozivit NEUMI (ATTINY je dostupny jen po ni),
+ * takze jde vylozene o to, aby uzivatel videl, ze pristroj nezamrzl. */
+void app_gpsdo_touch_dead(int dead);
 
 /** Naplanuje rekonstrukci ADEV pyramidy z datalogu — dlouha tau tak prezijou
  *  restart. Samotne cteni bezi PO DAVKACH z `app_gpsdo_tick_stats_sample`

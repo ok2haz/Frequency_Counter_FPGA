@@ -123,6 +123,16 @@ extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, p
 extern volatile uint8_t g_theme_idx;     /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*, BKP_DR6 bit0+bity9:10) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
+
+/* Stav linek I2C4 pro `status` (bit0 SCL, bit1 SDA, bit2 BUSY) — viz
+ * freertos_task_ui.c. Cte se primo z IDR/ISR, takze rekne pravdu i o zaseknute
+ * sbernici (dotyk + TMP117 0x48 + ATTINY podsviceni jsou vsichni na I2C4). */
+uint8_t i2c4_line_state(void);
+/* 1 = diagnosticky build bez runtime zapisu na ATTINY (experiment k mrtve I2C4). */
+int i2c4_diag_no_attiny_write(void);
+/* Pocitadla zapisu jasu na ATTINY + stav ztlumeni — bez nich nejde overit,
+ * jestli test zapisu vubec neco zapsal (pri sporici se zapis nekona). */
+void i2c4_bl_stats(uint32_t *ok, uint32_t *skip, uint8_t *dimmed);
 /* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
  * bitu + globalu v samostatnem bezzavislostnim headeru (sdili firmware i app). */
 #include "fx_flags.h"
@@ -159,7 +169,7 @@ extern volatile uint8_t  g_selftest_res;
  * [11]=SCPI parser (scpi_selftest #25), [12]=IPC seqlock+ring (ipc_selftest #19/#20),
  * [13]=vzory + pocitani chybnych bitu (membench_selftest, okno PAMETI).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 14
+#define SELFTEST_N 16
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane

@@ -46,6 +46,8 @@
 #include "autocal.h"          /* autocal_selftest — verdikt self-checku */
 #include "ipc_shared.h"       /* ipc_init/publish/service/selftest — IPC CM7<->CM4 (#19/#20) */
 #include "membench.h"         /* membench_selftest — vzory benchmarku pameti */
+#include "phase_noise.h"      /* pn_selftest — FFT fazovy sum L(f) (#45) */
+#include "sdram_log.h"        /* sdram_log_selftest — indexovani datove cache */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -267,6 +269,8 @@ int run_selftests(void)
   r[11] = scpi_selftest()            ? 1 : 2;   /* SCPI parser: case/kratka-dlouha forma/hierarchie (#25) */
   r[12] = ipc_selftest()             ? 1 : 2;   /* IPC seqlock parita + cmd/resp ring push/pop/wrap (#19/#20) */
   r[13] = membench_selftest()        ? 1 : 2;   /* generatory vzoru + pocitani chybnych bitu (okno PAMETI) */
+  r[14] = pn_selftest()              ? 1 : 2;   /* FFT korektnost + PSD normalizace + L(f) prevod (#45) */
+  r[15] = sdram_log_selftest()       ? 1 : 2;   /* indexovani ringu datove cache pred i po pretoceni */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);

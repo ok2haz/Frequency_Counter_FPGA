@@ -79,6 +79,22 @@ uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16);
  *  Vraci novy use16 pro predchozi stav + mereni. Unit-testovatelne. */
 int fpga_freq_select_core(int use16, const fpga_meas_t *m);
 
+/** Ktery nasobitel patri k `edge_count`, aby `edges*MUL*1e9/gate_ns` sedel
+ *  s autoritativnim `frequency_x100000` z ramce (do 0,1 %).
+ *
+ *  ⚠️ NASOBITEL SE NEPREDPOKLADA, ALE OVERUJE. `edge_count` muze byt pocet
+ *  period DELENE vetve (/4) NEBO neděleného signalu — emulator `fpgasim` ho
+ *  pocita nedeleny. Pevne "×4" ukazovalo pri `fpgasim on 10000000` kmitocet
+ *  40 MHz (chyba opravena commitem a6c0128, znovu zavlecena a znovu opravena
+ *  2026-08-30 pri psani datove cache). Kdo si nasobitel odvozuje sam, tu chybu
+ *  si zopakuje — proto je tahle funkce JEDINY zdroj pravdy.
+ *  @return 1, 4 nebo 16; 0 = nesedi zadny -> hi-res se NESMI pouzit. */
+uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+
+/** Kmitocet v µHz z reciproke dvojice s OVERENYM nasobitelem (viz vyse).
+ *  Kdyz zadny nasobitel nesedi, degraduje na `x100000` (tj. 5 desetin). */
+uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+
 /** Selftest hystereze volby zdroje na syntetickych ramcich (UART "selftest").
  *  Nemeni runtime stav. @return true = vsechny kroky OK. */
 bool fpga_freq_select_selftest(void);

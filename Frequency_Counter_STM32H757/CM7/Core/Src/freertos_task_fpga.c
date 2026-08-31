@@ -16,7 +16,9 @@
 
 #include "fpga_freq.h"
 #include "freertos_shared.h"
-#include "watchdog.h"     /* watchdog_kick_fpga — heartbeat */
+#include "watchdog.h"    /* watchdog_kick_fpga — heartbeat */
+#include "sdram_log.h"   /* datova cache mereni v SDRAM (dlouha presna historie) */
+#include <stdio.h>       /* printf — hlaseni vadneho SDRAM regionu pri initu */
 
 void StartFpgaTask(void *argument)
 {
@@ -26,6 +28,15 @@ void StartFpgaTask(void *argument)
   osDelay(250);
 
   fpga_freq_init();
+
+  /* Datova cache mereni v SDRAM. Init SAM OVERI pamet (vzory + adresni aliasing
+   * pres celych 16 MB) — `membench` testuje aliasing jen do 2 MB a tenhle region
+   * lezi az na 0xC1000000. Pri vadne pameti se log NEZAPNE, aby analyza radeji
+   * nemela data nez tise prepisovana. */
+  if (!sdram_log_init()) {
+    sdram_log_stat_t st; sdram_log_stat(&st);
+    printf("sdram_log: VYPNUT - %s\n", st.fail);
+  }
 
   fpga_meas_t m;
   uint32_t fails = 0;
@@ -62,6 +73,20 @@ void StartFpgaTask(void *argument)
       g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_time_ns > 0u) ? 1u : 0u;
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
+      /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
+       * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
+       * ⚠️ Nasobitel `edge_count` (1/4/16) NEODVOZUJEME sami: `fpga_freq_hires_uhz`
+       * ho overuje proti autoritativni hodnote z ramce. Pevny predpoklad "×4" uz
+       * jednou zpusobil, ze `fpgasim on 10000000` hlasil 40 MHz (a6c0128).
+       * ⚠️ Uklada se JEN nove mereni (poll vratil ramec), takze kadence logu =
+       * kadence FPGA (~4/s), ne 20 Hz pollu. */
+      uint32_t lf = SDRAM_LOG_F_A_VALID;   /* kanal B az s dvoukanalovou deskou */
+      if (m.error_flags & FPGA_ERR_SIGNAL_LOST) lf |= SDRAM_LOG_F_STALE;
+      sdram_log_put(m.sequence,
+                    fpga_freq_hires_uhz(v, m.edge_count, m.gate_time_ns),
+                    0u, lf,
+                    HAL_GetTick(), m.gate_time_ns,
+                    fpga_sim_active() ? 1u : 0u);
     } else if (!fpga_freq_link_ok()) {
       /* zadny platny ramec -> FPGA mozna bootl pozdeji / resetoval; po ~3 s znovu START
        * (20 Hz polling -> 60 iteraci = ~3 s) */

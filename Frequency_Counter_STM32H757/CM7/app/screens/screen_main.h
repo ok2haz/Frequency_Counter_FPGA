@@ -91,7 +91,13 @@ bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hla
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 int  screen_main_sys_poll(void);                       /* 1 = zmena SYS zdravi -> prekresli header */
 bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan nahledu -> ALLAN okno? */
-bool screen_main_hit_trend(int16_t x, int16_t y);      /* tap do trend karty -> fullscreen trend? */
+bool screen_main_hit_trend(int16_t x, int16_t y);
+
+/** Tap-cile hlavni obrazovky, ktere NEJSOU tlacitka (GNSS pilulka, SYS pilulka,
+ *  Allan nahled, trend karta) — pro registr fokusu encoderu.
+ *  ⚠️ Bez nich jsou GPS okno a fullscreen trend encoderem NEDOSTUPNE.
+ *  @return kolik rectu se zapsalo (prvky, ktere se prave nekresli, se vynechaji). */
+int screen_main_focus_rects(prim_rect_t *out, int max);      /* tap do trend karty -> fullscreen trend? */
 void screen_main_render_allan_big(prim_rect_t rect);   /* fullscreen Allan log-log graf (okno) */
 void screen_main_set_allan_metric(int m);              /* 0=ADEV,1=TDEV,2=MTIE (prepinac v okne ALLAN) */
 int  screen_main_allan_metric(void);                   /* aktualni metrika 0/1/2 */
@@ -115,6 +121,9 @@ float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste 
 void  screen_main_adev_seed_10s(float y);
 /** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
 double screen_main_freq_nominal(void);
+/** #45: L(f) [dBc/Hz] fazoveho sumu z ringu fluktuaci pro offset nejblizsi
+ *  `target_hz`. Vyplni `f_used`/`l_dbc`. @return 1=spocteno (>=64 s dat), 0=malo dat. */
+int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc);
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
