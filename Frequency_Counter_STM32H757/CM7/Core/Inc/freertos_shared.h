@@ -63,6 +63,16 @@ extern volatile uint8_t g_spi_dirty;
 /* ── Si5356 reference (zapisuje SensorsTask z I2C1, čte diagnostika) ────── */
 extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
 extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
+/* 🔴 STICKY stav reference (registr 247), LATCH V FIRMWARE.
+ * Registr 218 je ŽIVÝ, takže krátký výpadek 10 MHz mezi dvěma čteními (2×/s)
+ * byl dosud NEVIDITELNÝ — a u kmitočtového normálu to znamená, že měření
+ * pořízená mezitím jsou neplatná, aniž by to kdokoli poznal.
+ * ⚠️ Drží se i v firmware (ne jen na čipu), aby uživatelské vynulování mohlo
+ * proběhnout vědomě: `g_si5356_clr_req` → obslouží SensorsTask (vlastník I2C1).
+ * ⚠️ `SI5356_LOS_XTAL` se do latche NEPOUŠTÍ — krystal není osazen, bit je
+ * trvale 1 a zaplevelil by hlášení napořád. */
+extern volatile uint8_t g_si5356_sticky;   /* reg 247, kumulativně (bez LOS_XTAL) */
+extern volatile uint8_t g_si5356_clr_req;  /* 1 = vynulovat sticky (žádost pro SensorsTask) */
 
 /* ── RTC (zapisuje defaultTask přes rtc_app_tick, čte UART/UI) ───────────────
  * RTC běží z LSE (32.768 kHz), disciplinuje se z GPS UTC. Text "YYYY-MM-DD HH:MM:SS".

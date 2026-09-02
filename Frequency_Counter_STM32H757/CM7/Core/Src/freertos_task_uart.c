@@ -69,6 +69,95 @@ extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
                     UiTaskHandle, FpgaTaskHandle;
 
+/* ── Porovnani odpovedi CM7 vs IPC pro `scpi ipc` ──────────────────────────
+ * 🔴 PROC NE `strcmp`: obe odpovedi vznikaji ze ZIVYCH analogovych hodnot v RUZNY
+ * okamzik (snapshot se publikuje event-driven, CM7 cte `g_sensors` primo), takze
+ * se bezne lisi o POSLEDNI CIFRU. Zmereno 2026-09-02: `SYST:TEMP:ALL?` dalo
+ * `51.83,...` vs `51.82,...` a nastroj to ohlasil jako diru ve snapshotu —
+ * pritom slo o 0,01 °C zmenu teploty mezi dvema odecty.
+ *
+ * 🔴 PROC to vadi: jediny ucel toho nastroje je chytit CHYBEJICI POLE (null vs
+ * hodnota). Kdyz kricí nahodne, skutecna dira v nem zapadne — tatáz trida jako
+ * falesne `SBERNICE MRTVA` (#114) nebo sticky po bootu (#103).
+ *
+ * ⚠️ VSE CELOCISELNE, zadny `strtod`: ten pritahne newlib float scanner a obraz
+ * narostl o 8,6 kB (zmereno). Projekt se float knihovne vyhyba i u tisku
+ * (nano.specs bez `_printf_float`), takze diagnostika ji tahat nebude.
+ * ⚠️ Pole, ktere NEni prosty desetinny zapis (napr. SCPI NaN `9.91E37` nebo
+ * text), se porovnava PRESNE — u NaN je jakykoli rozdil skutecny rozdil.
+ *
+ * 🔴 CO SE HLASI JAKO CHYBA: jen STRUKTURALNI rozdil - jiny pocet poli, nebo
+ * pole, kde jedna strana ma cislo a druha ne (typicky SCPI NaN `9.91E37`).
+ * Presne to je "dira ve snapshotu", kvuli ktere nastroj existuje.
+ *
+ * ⚠️ CISELNY rozdil se NEHLASI jako chyba, a to ani velky. Obe strany ctou v JINY
+ * OKAMZIK (snapshot je event-driven, CM7 cte `g_sensors` primo), takze rychle se
+ * menici velicina se legitimne lisi o vic nez posledni cifru - zmereno 2026-09-02:
+ * teplota jadra `49.57` vs `49.54`, protoze prave stoupala o ~0,2 stupne za par
+ * sekund. Pevny prah by byl jen jina svevole; misto toho se vypise ZMERENY rozdil
+ * a uzivatel posoudi sam. Zastaraly snapshot se pozna tak, ze rozdil neklesa.
+ *
+ * @return 0 = shoda presna, 1 = jen ciselny rozdil (`*maxd` v jednotkach posledni
+ *         spolecne cifry, `*maxdec` = kolik jich je), -1 = strukturalni rozdil. */
+
+/* Rozlozi prosty desetinny zapis na znamenko, celou cast a desetiny.
+ * @return 1 = rozlozeno, 0 = neni to prosty desetinny zapis. */
+static int dec_parse(const char *t, int64_t *whole, int64_t *frac, int *ndec)
+{
+	int neg = 0;
+	if (*t == '+' || *t == '-') { neg = (*t == '-'); t++; }
+	if (*t < '0' || *t > '9') return 0;
+	int64_t w = 0;
+	while (*t >= '0' && *t <= '9') { if (w > 100000000000LL) return 0; w = w * 10 + (*t++ - '0'); }
+	int64_t f = 0; int nd = 0;
+	if (*t == '.') {
+		t++;
+		while (*t >= '0' && *t <= '9') { if (nd >= 9) return 0; f = f * 10 + (*t++ - '0'); nd++; }
+	}
+	if (*t != '\0') return 0;            /* zbyl exponent nebo text -> neni to cislo */
+	*whole = neg ? -w : w; *frac = f; *ndec = nd;
+	return 1;
+}
+
+/* Hodnota pole prevedena na celociselnou v `dec` desetinnych mistech. */
+static int64_t dec_scaled(int64_t whole, int64_t frac, int ndec, int dec)
+{
+	while (ndec > dec) { frac /= 10; ndec--; }
+	while (ndec < dec) { frac *= 10; ndec++; }
+	int64_t m = 1;
+	for (int k = 0; k < dec; k++) m *= 10;
+	return (whole < 0) ? (whole * m - frac) : (whole * m + frac);
+}
+
+static int scpi_cmp_fields(const char *a, const char *b, int64_t *maxd, int *maxdec)
+{
+	*maxd = 0; *maxdec = 0;
+	if (strcmp(a, b) == 0) return 0;
+	int soft = 0;
+	while (*a && *b) {
+		char fa[48], fb[48];
+		size_t la = 0, lb = 0;
+		while (*a && *a != ',' && la < sizeof fa - 1) fa[la++] = *a++;
+		while (*b && *b != ',' && lb < sizeof fb - 1) fb[lb++] = *b++;
+		fa[la] = 0; fb[lb] = 0;
+		if (strcmp(fa, fb) != 0) {
+			int64_t wa, ra, wb, rb; int da, db;
+			if (!dec_parse(fa, &wa, &ra, &da) || !dec_parse(fb, &wb, &rb, &db))
+				return -1;                  /* aspon jedno neni cislo -> strukturalni rozdil */
+			int dec = (da < db) ? da : db;   /* tolerance = jednotka kratsiho zapisu */
+			int64_t va = dec_scaled(wa, ra, da, dec);
+			int64_t vb = dec_scaled(wb, rb, db, dec);
+			int64_t d  = va - vb; if (d < 0) d = -d;
+			if (d > *maxd) { *maxd = d; *maxdec = dec; }
+			soft = 1;
+		}
+		if (*a == ',') a++;
+		if (*b == ',') b++;
+	}
+	if (*a || *b) return -1;               /* ruzny pocet poli */
+	return soft;
+}
+
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
 static void fmt_f2(char *b, size_t n, float v)
 {
@@ -785,8 +874,15 @@ void UartTask_run(void *argument)
 					  size_t ni = scpi_process_ctx(&ctx_ipc, &src_ipc, arg, r_ipc, sizeof r_ipc);
 					  printf("  CM7 : %s\n", n7 ? r_cm7 : "(bez odpovedi)");
 					  printf("  IPC : %s\n", ni ? r_ipc : "(bez odpovedi)");
-					  printf("  => %s\n", (n7 == ni && strcmp(r_cm7, r_ipc) == 0)
-						                    ? "SHODA" : "!! ROZDIL — dira ve snapshotu");
+					  /* ⚠️ Chybou je jen STRUKTURALNI rozdil — viz `scpi_cmp_fields`.
+					   * Ciselny rozdil zivych velicin se jen vypise, nehodnoti. */
+					  int64_t md = 0; int mdec = 0;
+					  int cmp = (n7 && ni) ? scpi_cmp_fields(r_cm7, r_ipc, &md, &mdec)
+					                       : ((n7 == ni) ? 0 : -1);
+					  if (cmp < 0)       printf("  => !! ROZDIL — dira ve snapshotu\n");
+					  else if (cmp == 0) printf("  => SHODA\n");
+					  else printf("  => SHODA struktury; hodnoty se lisi max o %ld v %d. des. miste"
+					              " (zive veliciny ctene v jiny okamzik)\n", (long)md, mdec);
 				  }
 			  }
 			  else if (strncmp(RxBuffer, "ipccmd ", 7) == 0) {
@@ -1207,6 +1303,13 @@ void UartTask_run(void *argument)
 				  g_brightness = (uint8_t)v; g_sys_cfg_dirty = 1;
 				  printf("BACKLIGHT: %d (aplikuje UiTask; pri aktivnim dimu az po probuzeni)\n", v);
 			  }
+			  else if (strcmp(RxBuffer, "si5356 clr") == 0) {
+			  	/* Vynuluje sticky registr 247. ⚠️ Zapis na I2C1 dela VYHRADNE SensorsTask
+			  	 *   (vlastnik sbernice) — tady se jen nastavi zadost, stejny vzor jako
+			  	 *   `g_ui_cfg_req` u SCPI. */
+			  	g_si5356_clr_req = 1;
+			  	printf("SI5356: sticky bude vynulovan (obslouzi SensorsTask do ~0,5 s)\n");
+			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */
 				  if (osMutexAcquire(i2c1MutexHandle, 300) == osOK) {
@@ -1516,9 +1619,15 @@ void UartTask_run(void *argument)
 				  /* ── Stav sbernice I2C4 (dotyk + TMP117 0x48 + ATTINY podsviceni) ──
 				   * ⚠️ Bez tohohle radku se „mrtvy dotyk" nedal odlisit od „zaseknuty
 				   * UiTask" jinak nez ladici sondou (HW nalez 2026-08-30). Zdrave =
-				   * `SCL=1 SDA=1` a nizka chybovost TMP117 0x48. `SCL=0` = nekdo drzi
-				   * hodiny (slave stretching nebo rozbita recovery), `SDA=0` = zaseknuty
-				   * slave — obojí znamena, ze dotyk NEBUDE fungovat az do power-cyclu. */
+				   * nizka chybovost TMP117 0x48; SCL/SDA jsou jen INFO.
+				   * 🔴 #114: znacka „SBERNICE MRTVA" NESMI viset na okamzitem odectu
+				   * linek. `i2c4_line_state()` cte IDR v jednom okamziku, ktery ZAVODI
+				   * s zivym provozem (TMP117 2x/s, dotyk ~15 Hz) — trefit se doprostred
+				   * transakce da legitimne `SCL=0 BUSY`, aniz je cokoli spatne (presne
+				   * ten falesny pozitiv tesne po flashi). Navic „odmlcene slave" (skutecna
+				   * porucha) ukaze linky VYSOKO, takze test na nizkou uroven ani
+				   * nechyti realny pripad. Jediny spolehlivy signal je SOUVISLA SERIE
+				   * selhanych cteni (`err_streak`) — realna smrt mela 8351 chyb v rade. */
 				  {
 					  uint8_t ls = i2c4_line_state();
 					  const sensor_stat_t *t48 = &g_sensors[SENS_T48];
@@ -1547,6 +1656,18 @@ void UartTask_run(void *argument)
 					  	                : (dst == BOOTLED_STEP_PANEL_POWERON) ? "panel power-on"
 					  	                : (dst == BOOTLED_STEP_DSI_START)     ? "HAL_DSI_Start"
 					  	                : (dst == BOOTLED_STEP_TC358762)      ? "TC358762 bridge" : "?";
+					  	/* 🔴 Sticky stav reference (reg 247). Zivy reg 218 je v radku vyse; tohle
+					  	 * rika, jestli reference nekdy VYPADLA od posledniho vynulovani — kratky
+					  	 * vypadek mezi dvema ctenimi ziveho registru je jinak NEVIDITELNY a mereni
+					  	 * porizena mezitim jsou pritom neplatna. */
+					  	{
+					  		uint8_t stk = g_si5356_sticky;
+					  		if (!stk) printf("REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)\n");
+					  		else printf("REFERENCE: *** VYPADEK OD VYNULOVANI ***%s%s%s  -> mereni z te doby je podezrele; `si5356 clr` vynuluje\n",
+					  		            (stk & SI5356_LOS_CLKIN) ? "  LOS_CLKIN" : "",
+					  		            (stk & SI5356_PLL_LOL)   ? "  PLL_LOL"   : "",
+					  		            (stk & SI5356_SYS_CAL)   ? "  SYS_CAL"   : "");
+					  	}
 					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
 					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
 					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);
@@ -1555,7 +1676,7 @@ void UartTask_run(void *argument)
 						     (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
 						     (ls & 4u) ? "BUSY" : "idle",
 						     (unsigned long)t48->err_total, (unsigned)t48->err_streak,
-						     ((ls & 3u) != 3u || t48->err_streak > 20u) ? "  <== SBERNICE MRTVA" : "");
+						     (t48->err_streak > 20u) ? "  <== SBERNICE MRTVA" : "");
 					  /* ⚠️ Kolik zapisu na ATTINY doopravdy probehlo + jestli je aktivni
 					   * ztlumeni. Pri sporici je `bl_target` = AUTODIM_LEVEL bez ohledu na
 					   * `g_brightness`, takze zmena jasu NEVYVOLA zapis — bez techto cisel

@@ -14,7 +14,7 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
-#include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
+#include "si5356.h"       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
@@ -357,6 +357,34 @@ void SensorsTask_run(void *argument)
 		uint8_t si_st;
 		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
 		else                                    { g_si5356_ok = 0; }
+		/* 🔴 STICKY (reg 247) vedle ziveho stavu: podrzi i mikrosekundovy vypadek
+		 * reference, ktery by mezi dvema cteními ziveho registru zmizel beze stopy.
+		 * Latchuje se do `g_si5356_sticky` a na cipu se NEMAZE — dokud uzivatel
+		 * nepozada, drzi cip i firmware tutez informaci ("stalo se to nekdy").
+		 * ⚠️ `SI5356_LOS_XTAL` se maskuje pryc: krystal neni osazen, bit je trvale
+		 * 1 a bez masky by hlaseni svitilo napord. */
+		{
+			/* Jednorazove armovani po startu — viz `SI5356_STICKY_ARM_MS`. */
+			static uint8_t s_si_armed = 0;
+			if (!s_si_armed && HAL_GetTick() > SI5356_STICKY_ARM_MS) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky = 0;
+					s_si_armed = 1;
+				}
+			}
+			uint8_t stk;
+			if (si5356_read_sticky(&hi2c1, &stk))
+				g_si5356_sticky |= (uint8_t)(stk & ~SI5356_LOS_XTAL);
+			/* Vynulovani na zadost (UI/UART). I2C1 vlastni tenhle task, takze
+			 * zapis smi udelat JEN on — stejny request/pend vzor jako jinde. */
+			if (g_si5356_clr_req) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky  = 0;
+					g_si5356_clr_req = 0;
+				}
+				/* Pri neuspechu zadost zustava a zkusi se priste. */
+			}
+		}
 		osMutexRelease(i2c1MutexHandle);
 	  } else {
 		sensor_fail(SENS_T49);

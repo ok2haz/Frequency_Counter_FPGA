@@ -141,6 +141,8 @@ volatile uint8_t g_spi_dirty = 1;
 /* Si5356 reference (SensorsTask zapise z I2C1, diagnostika cte) */
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
+volatile uint8_t g_si5356_sticky  = 0;   /* reg 247 latch (viz freertos_shared.h) */
+volatile uint8_t g_si5356_clr_req = 0;
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte).
  * ⚠️ UI ctenari (UiTask: screen_main/rtc_time_date, app_gpsdo diag/gps) ctou BEZ
