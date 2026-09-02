@@ -22,6 +22,7 @@
 
 void StartFpgaTask(void *argument)
 {
+  (void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
   /* Kontrakt bod 1/8: nebudit SPI piny, dokud FPGA nedokonci konfiguraci z flash
    * po power-on/resetu. CS uz drzime vysoko (idle); jeste pridame prodlevu, aby
    * GW1NR-9 stihl nabootovat drive, nez na nej zacneme clockovat. */

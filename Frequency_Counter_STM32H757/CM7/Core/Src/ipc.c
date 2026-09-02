@@ -145,7 +145,7 @@ void ipc_publish(void)
     g_ipc.snap.rtc_unix     = datalog_now_unix();
 
     /* ⚠️ Hodnota + BIT PLATNOSTI musi vzniknout ZAROVEN a stejnym pravidlem jako
-     * ve `scpi_src_load_cm7()`, jinak by tentyz pristroj rekl pres USB neco jineho
+     * ve `scpi_src_load_cm7_ex()`, jinak by tentyz pristroj rekl pres USB neco jineho
      * nez pres TCP. Dokud bit neni nastaven, obsah pole je nezavazny (drzime tam
      * posledni dobrou hodnotu — pro trendy se hodi, jako mereni se servirovat NESMI).
      * Do v3 se neplatna napeti publikovala jako 0 (nerozeznatelne od skutecne nuly)
@@ -168,11 +168,11 @@ void ipc_publish(void)
     #undef IPC_PUB_SENS
 
     /* Mereni + GPS do tehoz slova — CM4 pak jen priradi `src->valid = snap.sens_valid`.
-     * Podminky MUSI doslova odpovidat `scpi_src_load_cm7()` (scpi.c):
+     * Podminky MUSI doslova odpovidat `scpi_src_load_cm7_ex()` (scpi.c):
      *   FRAME  = `fpga_freq_get_last()` vratil ramec (zdejsi `have_meas`),
      *   FREQ   = k tomu measurement_status bit0 a zadny SIGNAL_LOST (`meas_ok`),
      *   DIV16  = k tomu bez FPGA_ST2_DIV16_ERR.
-     * ⚠️ FREQ zamerne NEvyzaduje novou SEQ — `scpi_src_load_cm7` ji taky nekontroluje
+     * ⚠️ FREQ zamerne NEvyzaduje novou SEQ — `scpi_src_load_cm7_ex` ji taky nekontroluje
      * (staleness hlasi zvlast `MEAS:FREQ:STAL?`). */
     if (have_meas) {
         sv |= IPC_V_FRAME;

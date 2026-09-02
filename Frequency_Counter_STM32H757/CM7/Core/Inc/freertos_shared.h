@@ -42,6 +42,9 @@ extern volatile uint8_t g_stats_reset_req;
 extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];
 extern volatile uint8_t g_freq_dirty;
+/* 1 = varovny pruh (zadani UI §12) prave lezi v pasu nejistoty pod velkym
+ * cislem -> `screen_main_redraw_uncert` tam NESMI kreslit σ+N. Vlastnika
+ * pixelu ma vzdy jen jeden; jinak se dve vrstvy prebijeji. */
 extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí */
 /* Numericky vybrany zdroj pro headline + statistiky (#1) — plní FpgaTask, čte screen_main. */
 extern volatile uint64_t g_freq_x100000;   /* kmitočet × 1e5 (dělička /4 nebo /16 už zahrnuta) */
@@ -116,6 +119,16 @@ extern volatile uint8_t g_ui_cfg_req_pend;  /* 1 = ceka na aplikaci UiTaskem */
  * (ztlumeni po necinnosti). UiTask (okno Nastaveni) meni + nastavi dirty;
  * defaultTask (rtc_save_syscfg_if_dirty) zapise do BKP. Nacteni z BKP dela
  * MX_RTC_Init pred schedulerem. */
+/* 🔴 Vysledek bring-upu displeje z `main.c`. 0 = OK, jinak `BOOTLED_STEP_*`
+ * kroku, ktery selhal.
+ * PROC to existuje: selhani bring-upu NENI fatalni — `main.c` udela
+ * `goto display_skip` a pristroj bezi DAL (dotyk, UART, mereni, CM4). Displej
+ * je pritom cerny a `[ERR] ...` hlasky z bring-upu se NIKAM nedostanou, protoze
+ * konzole jede po USB CDC, ktere v te chvili jeste neni vyctene. Bez tohohle
+ * priznaku nelze u cerneho displeje zjistit, jestli selhal panel, nebo se jen
+ * nic nekresli (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
+extern volatile uint8_t g_display_init_step;
+
 extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */

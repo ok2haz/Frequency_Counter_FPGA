@@ -29,6 +29,7 @@
 #include "rtc.h"
 #include "sdmmc.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -284,6 +285,7 @@ g_cm4_absent = 1;
   MX_QUADSPI_Init();
   MX_SDMMC1_SD_Init();
   MX_FATFS_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
@@ -354,19 +356,34 @@ g_cm4_absent = 1;
   /* === Inicializace Waveshare 43H-800480-IPS displeje === */
   printf("\n=== Display init start ===\n");
 
-  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on */
+  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on.
+   * 🔴 RETRY, ne jeden pokus (2026-09-01): ATTINY je bit-bang I2C slave a po
+   * STUDENEM startu nabiha vlastnim tempem. Jeden probe po 100 ms je hraniční —
+   * kdyz neACKne, cely bring-up se preskoci (`goto display_skip`) a pristroj
+   * bezi DAL s CERNYM displejem, zatimco dotyk, UART i mereni funguji.
+   * Presne tak se porucha projevila. 10 pokusu po 100 ms = az ~1 s;
+   * `watchdog_init()` bezi az za timhle blokem, takze IWDG to neohrozi. */
   HAL_Delay(100);
 
   /* 2) Probe MCU a precist FW ID */
-  if (!ws_panel_probe(&hi2c4)) {
-      printf("[ERR] Panel probe selhal - pokracuji bez displeje\n");
-      bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
-      goto display_skip;
+  {
+    int probe_ok = 0;
+    for (int i = 0; i < 10 && !probe_ok; i++) {
+        probe_ok = ws_panel_probe(&hi2c4) ? 1 : 0;
+        if (!probe_ok) HAL_Delay(100);
+    }
+    if (!probe_ok) {
+        printf("[ERR] Panel probe selhal (10 pokusu) - pokracuji bez displeje\n");
+        g_display_init_step = BOOTLED_STEP_PANEL_PROBE;
+        bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
+        goto display_skip;
+    }
   }
 
   /* 3) Power-on sekvence: napajeni LCD, uvolnit reset bridge, backlight enable */
   if (!ws_panel_power_on(&hi2c4)) {
       printf("[ERR] Panel power-on selhal\n");
+      g_display_init_step = BOOTLED_STEP_PANEL_POWERON;
       bootled_blink_once(BOOTLED_STEP_PANEL_POWERON);
       goto display_skip;
   }
@@ -374,6 +391,7 @@ g_cm4_absent = 1;
   /* 4) Spustit DSI signal - bridge ho potrebuje pred inicializaci */
   if (HAL_DSI_Start(&hdsi) != HAL_OK) {
       printf("[ERR] HAL_DSI_Start selhal\n");
+      g_display_init_step = BOOTLED_STEP_DSI_START;
       bootled_blink_once(BOOTLED_STEP_DSI_START);
       goto display_skip;
   }
@@ -382,6 +400,7 @@ g_cm4_absent = 1;
   /* 5) Inicializovat TC358762 bridge pres DSI generic write */
   if (!tc358762_init(&hdsi)) {
       printf("[ERR] TC358762 init selhal\n");
+      g_display_init_step = BOOTLED_STEP_TC358762;
       bootled_blink_once(BOOTLED_STEP_TC358762);
       goto display_skip;
   }

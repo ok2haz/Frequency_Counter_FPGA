@@ -89,6 +89,10 @@ uint32_t app_gpsdo_encoder_draws(void);
  *  ⚠️ Cist pres UART dvakrat a odecist — zadna sonda (halt cile zabiji I2C4). */
 void app_gpsdo_ui_counters(uint32_t *out7);
 
+/** Nejvyssi aktivni varovani (zadani UI §12); 0 = zadne. Nizsi cislo = zavaznejsi.
+ *  ⚠️ Slouzi k overeni logiky pres UART `status`, bez pohledu na displej. */
+uint8_t app_gpsdo_warn_active(const char **txt, int *count);
+
 /** Periodic tick (~2 Hz from UiTask): refreshes the diagnostics values. */
 void app_gpsdo_tick(void);
 

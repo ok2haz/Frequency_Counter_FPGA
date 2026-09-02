@@ -172,6 +172,7 @@ volatile uint8_t g_ui_cfg_dirty  = 0;
 
 /* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
 volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
+volatile uint8_t g_display_init_step = 0; /* 0 = bring-up displeje OK, jinak BOOTLED_STEP_* */
 /* Ulozeny vysledek self-survey (persist syscfg flash; viz freertos_shared.h). */
 volatile uint8_t  g_survey_valid  = 0;
 volatile uint32_t g_survey_n      = 0;
@@ -431,6 +432,8 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
+  (void)argument;   /* signaturu urcuje CMSIS-RTOS; MUSI byt uvnitr USER CODE bloku,
+                     * jinak by to CubeMX regen smazal a varovani se vratilo. */
   gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
   run_selftests();   /* boot selftest (pure-logic, ~ms); FAIL -> cerveny indikator v Health */
   /* Datalog az TADY (ne v main.c): potrebuje bezici scheduler kvuli qspiMutexHandle.

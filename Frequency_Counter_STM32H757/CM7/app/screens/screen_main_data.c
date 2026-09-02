@@ -19,7 +19,6 @@ const char *SCR_S_HOLD_V    = "2h 14m";
 
 /* ── Title row (mode/channel/gate now come from the live UI state in
  *    screen_main.c; only the static right-hand annotation stays here). ── */
-const char *SCR_S_TITLE_RIGHT = "N 312 · Ω regrese";
 
 /* ── Main number ─────────────────────────────────────────────────────────────
  * ⚠️ Staticka predloha cislic (`SCR_MAIN_DIGITS`/`_DIGIT_COUNT`/`SCR_MAIN_SEPS`)
@@ -30,7 +29,6 @@ const char *SCR_S_UNIT_HZ = "Hz";
 
 /* ── Cards (jen LABELY; hodnoty offset/sigma/trend jsou POCITANE ze statistiky
  *    simulovaneho kmitoctu — viz screen_main.c) ──────────────────────────── */
-const char *SCR_S_OFFSET_L = "Offset";   /* σy 1s/10s labely jsou literaly v screen_main.c */
 const char *SCR_S_TREND_L  = "Trend 60 s";
 const char *SCR_S_SIGNAL_L = "Signál vstupu";
 

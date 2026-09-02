@@ -82,7 +82,7 @@ typedef struct {
 /* ── Zdroj dat (abstrakce mezi CM7 globály a CM4 IPC snapshotem) ──────────────
  * Parser/handlery (`scpi.c`) jsou DATA-SOURCE nezávislé — čtou z `scpi_src_t`.
  * Backend ho naplní: CM7 z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`
- * (`scpi_src_load_cm7`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
+ * (`scpi_src_load_cm7_ex`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
  * říkají, co je platné — neplatné → dotaz vrátí SCPI NaN `9.91E37`. Akce (config
  * SET, čtení logu) jsou callbacky (na CM7 zápis `g_meas_cfg`/datalog, na CM4 cmd ring). */
 #define SCPI_V_FREQ    (1u << 0)   /* platné měření /4 */
@@ -188,7 +188,6 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
 
 #if defined(CORE_CM7)
 /** CM7 backend: naplní src z globálů + nastaví akce (g_meas_cfg / datalog). */
-void   scpi_src_load_cm7(scpi_src_t *src);
 /** USB konzole (CM7): načte CM7 zdroj + zpracuje nad SDÍLENÝM default kontextem.
  *  Signatura zachována kvůli volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);

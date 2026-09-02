@@ -59,6 +59,10 @@
                                           * FB0/FB1/FB2). Drive bylo 0x1C0000 = uvnitr
                                           * region 0 -> kolidovalo by s FB1/FB2. */
 
+#include "ws_panel.h"   /* ws_panel_probe/power_on/set_backlight (prikaz `panel`) */
+#include "tc358762.h"   /* tc358762_init (prikaz `panel`) */
+#include "bootled.h"   /* BOOTLED_STEP_* (stav bring-upu displeje) */
+extern LTDC_HandleTypeDef hltdc;  /* HAL_LTDC_Reload (prikaz `panel`) */
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 
 /* Task handles (definovane ve freertos.c) — volny stack v prikazu `status`. */
@@ -239,6 +243,7 @@ __attribute__((noinline)) static void stacktest_overflow(void)
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
 void UartTask_run(void *argument)
 {
+	(void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
 	uint8_t rxChar;
 
 
@@ -808,7 +813,11 @@ void UartTask_run(void *argument)
 					  if (!ipc_cmd_push(&c)) { printf("ERR cmd ring plny\r\n"); }
 					  else {
 						  /* `ipc_service` bezi ~100 Hz v defaultTasku -> odpoved je do par ms. */
-						  ipc_resp_t r; int got = 0;
+						  /* ⚠️ Inicializovat: `got` se nastavi jen kdyz `ipc_resp_pop`
+						   * vrati true (a tim `r` naplni), ale GCC to pres smycku
+						   * neprohledne (`-Wmaybe-uninitialized`). Nula navic znamena
+						   * "OK", takze pripadna neuplna odpoved neohlasi nahodnou chybu. */
+						  ipc_resp_t r = {0}; int got = 0;
 						  for (int i = 0; i < 50 && !got; i++) {
 							  if (ipc_resp_pop(&r) && r.id == s_id) got = 1; else osDelay(2);
 						  }
@@ -1136,6 +1145,56 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "beep off") == 0) {
 				  g_sound_muted = 1; g_sys_cfg_dirty = 1;
 				  printf("BEEP: zvuk VYPNUT (mute)\n");
+			  }
+			  else if (strcmp(RxBuffer, "panel") == 0) {
+			  	/* 🔴 Zopakuje CELY bring-up displeje za behu — diagnostika I NAPRAVA.
+			  	 * Pri cernem displeji je to jediny zpusob, jak zjistit, KTERY krok selhava:
+			  	 * `[ERR]` hlasky z `main.c` jdou do USB CDC drive, nez je vyctene.
+			  	 * ⚠️ Bezi z UartTasku (nehlidany watchdogem) — kroky blokuji az stovky ms,
+			  	 *   coz by v defaultTask/UiTask/FpgaTask porusilo pravidlo "zadny spin > 10 ms".
+			  	 * ⚠️ I2C kroky pod `i2c4MutexHandle` (sbernici sdili touch, TMP117 a jas);
+			  	 *   pred DSI kroky se mutex pousti, ty ho nepotrebuji. */
+			  	printf("PANEL: opakuji bring-up displeje...\n");
+			  	if (osMutexAcquire(i2c4MutexHandle, 500) != osOK) {
+			  		printf("PANEL: I2C4 mutex neziskan\n");
+			  	} else {
+			  		int ok = 0, step = 0;
+			  		for (int i = 0; i < 10 && !ok; i++) {
+			  			ok = ws_panel_probe(&hi2c4) ? 1 : 0;
+			  			if (!ok) osDelay(100);
+			  		}
+			  		printf("PANEL: 1) ATTINY probe .... %s\n", ok ? "OK" : "SELHAL");
+			  		if (!ok) step = BOOTLED_STEP_PANEL_PROBE;
+			  		if (ok) {
+			  			ok = ws_panel_power_on(&hi2c4) ? 1 : 0;
+			  			printf("PANEL: 2) power-on ....... %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_PANEL_POWERON;
+			  		}
+			  		osMutexRelease(i2c4MutexHandle);
+			  		if (ok) {
+			  			ok = (HAL_DSI_Start(&hdsi) == HAL_OK) ? 1 : 0;
+			  			printf("PANEL: 3) HAL_DSI_Start .. %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_DSI_START;
+			  		}
+			  		if (ok) {
+			  			osDelay(50);
+			  			ok = tc358762_init(&hdsi) ? 1 : 0;
+			  			printf("PANEL: 4) TC358762 ....... %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_TC358762;
+			  		}
+			  		if (ok) {
+			  			HAL_LTDC_Reload(&hltdc, LTDC_RELOAD_IMMEDIATE);
+			  			if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+			  				ws_panel_set_backlight(&hi2c4, g_brightness);
+			  				osMutexRelease(i2c4MutexHandle);
+			  			}
+			  			printf("PANEL: 5) LTDC reload + jas %u .. OK\n", (unsigned)g_brightness);
+			  		}
+			  		g_display_init_step = (uint8_t)step;
+			  		printf("PANEL: %s\n", step ? "NEUSPECH - viz krok vyse"
+			  		                            : "hotovo, displej by mel svitit");
+			  		g_screen_req = 3;              /* prekreslit hlavni obrazovku */
+			  	}
 			  }
 			  else if (strncmp(RxBuffer, "backlight ", 10) == 0) {
 				  /* Test jasu z konzole (diagnostika ATTINY runtime zapisu): nastavi
@@ -1466,6 +1525,9 @@ void UartTask_run(void *argument)
 					  { uint8_t bpk = 0, bov = 0, bcap = 0;
 					    app_gpsdo_btnreg_stats(&bpk, &bov, &bcap);
 					    { uint32_t uc[7]; app_gpsdo_ui_counters(uc);
+					      { const char *wt = NULL; int wc = 0; uint8_t wp = app_gpsdo_warn_active(&wt, &wc);
+					        if (wp) printf("VAROVANI: prio %u  %s  (celkem %d)\r\n", (unsigned)wp, wt ? wt : "?", wc);
+					        else    printf("VAROVANI: zadne\r\n"); }
 					      printf("UI kresleni: flip=%lu flash=%lu stats=%lu trend=%lu xfade=%lu cislo=%lu enc=%lu\r\n",
 					             (unsigned long)uc[0], (unsigned long)uc[1], (unsigned long)uc[2],
 					             (unsigned long)uc[3], (unsigned long)uc[4], (unsigned long)uc[5],
@@ -1473,6 +1535,22 @@ void UartTask_run(void *argument)
 					    printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
 					           (unsigned)encoder_div(), (unsigned)bpk, (unsigned)bcap,
 					           bov ? "  <== PRETECENO, konec okna nelze zamerit" : ""); }
+					  /* 🔴 Stav bring-upu displeje. Selhani NENI fatalni (main.c dela
+					   * `goto display_skip`), takze pristroj bezi s CERNYM displejem, zatimco
+					   * dotyk, UART i mereni funguji dal — bez tohohle radku to nelze odlisit
+					   * od "kresli se, ale nic nevidim". `[ERR]` hlasky z bring-upu se ven
+					   * NEDOSTANOU: konzole jede po USB CDC, ktere v te chvili jeste neni
+					   * vyctene (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
+					  {
+					  	uint8_t dst = g_display_init_step;
+					  	const char *dnm = (dst == BOOTLED_STEP_PANEL_PROBE)   ? "ATTINY probe (0x45)"
+					  	                : (dst == BOOTLED_STEP_PANEL_POWERON) ? "panel power-on"
+					  	                : (dst == BOOTLED_STEP_DSI_START)     ? "HAL_DSI_Start"
+					  	                : (dst == BOOTLED_STEP_TC358762)      ? "TC358762 bridge" : "?";
+					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
+					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
+					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);
+					  }
 					  printf("I2C4: SCL=%u SDA=%u %s | TMP117 0x48 err %lu (v rade %u)%s\n",
 						     (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
 						     (ls & 4u) ? "BUSY" : "idle",

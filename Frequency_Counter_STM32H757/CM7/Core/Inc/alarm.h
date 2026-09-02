@@ -50,8 +50,11 @@ typedef struct {
     uint8_t vbat_en;
     float   vbat_lo_mv;        /* pod = alarm */
 
-    /* OCXO teplota mimo pasmo = pec se rozladila. Pro kmitoctovy normal je to
-     * primo relevantni (teplota rizne kmitocet), a je to realne merene 0x49. */
+    /* OCXO teplota. ⚠️ TMP117 0x49 sedi na PLASTI OCXO, NE v peci — pec reguluje
+     * krystal na svuj vnitrni setpoint, ktery je zvenku neviditelny. Teplota
+     * plaste je smes tepla unikajiciho z pece a okoli, takze LEGITIMNE sleduje
+     * okoli. Absolutni pasmo je proto jen HRUBA POJISTKA proti prehrati/podchlazeni;
+     * skutecne "pec topi" resi ΔT kriterium nize. */
     uint8_t ocxo_en;
     float   ocxo_lo_c, ocxo_hi_c;
 
@@ -65,6 +68,22 @@ typedef struct {
 
 extern mon_cfg_t g_mon_cfg;
 
+/* ── ΔT kriterium "pec topi" ────────────────────────────────────────────────
+ * 🔴 PROC NE absolutni teplota: 0x49 meri PLAST, ktery sleduje okoli (viz vyse).
+ * Zmereno 2026-09-01: deska 31,1 -> 32,9 °C a plast 51,5 -> 55,1 °C, tedy
+ * ΔT 20,4 -> 22,2 °C. ΔT je RADOVE STABILNEJSI nez absolutni hodnota a pri mrtve
+ * peci jde k nule — je to tedy primy indikator "topi", temer imunni vuci okoli.
+ *
+ * ⚠️ Prah 10 °C ma 2x rezervu na obe strany (mereno ~21, mrtva pec ~0-2), takze
+ * NENI nastavitelny — knob s takovou rezervou by jen svadel k rozladeni.
+ * ⚠️ Kriterium se ARMUJE az kdyz ΔT jednou prekroci prah: po studenem startu
+ * ΔT stoupa od nuly a bez armovani by hlasilo "pec netopi" cely nabeh. */
+#define MON_OCXO_DT_MIN_C    10.0f
+#define MON_OCXO_DT_HYST_C    1.0f
+
+/** Aktualni ΔT [°C]. @return 1 = platne (oba senzory ctou), 0 = nezname. */
+int mon_ocxo_dt(float *dt_c);
+
 /** Vychozi prahy (volá syscfg pri neznamem/chybejicim zaznamu). */
 void mon_cfg_defaults(mon_cfg_t *c);
 
@@ -72,11 +91,14 @@ void mon_cfg_defaults(mon_cfg_t *c);
  * i okno Alarmy/PRAHY. Zapisuje vyhradne `alarm_tick` (defaultTask). */
 extern volatile uint8_t g_mon_vbat_bad;
 extern volatile uint8_t g_mon_ocxo_bad;
+/* ΔT = T(plast OCXO 0x49) − T(deska 0x48). 1 = pec NETOPI. */
+extern volatile uint8_t g_mon_ocxo_dt_bad;
 extern volatile uint8_t g_mon_adev_bad;
 
 /* Pocitadla prekroceni (nuluje `alarm_reset_counters`). */
 extern volatile unsigned int g_alarm_vbat;
 extern volatile unsigned int g_alarm_ocxo;
+extern volatile unsigned int g_alarm_ocxo_dt;
 extern volatile unsigned int g_alarm_adev;
 
 /** σy@1s pro prahove vyhodnoceni. Publikuje APP vrstva

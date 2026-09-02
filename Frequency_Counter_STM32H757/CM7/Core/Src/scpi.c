@@ -924,7 +924,6 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 }
 
 static scpi_ctx_t s_default_ctx;   /* USB CDC = jediná session */
-void scpi_src_load_cm7(scpi_src_t *src) { scpi_src_load_cm7_ex(src, 1); }
 
 size_t scpi_process(const char *line, char *out, size_t out_sz)
 {

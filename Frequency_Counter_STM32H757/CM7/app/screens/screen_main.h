@@ -26,7 +26,22 @@
 #define SCR_MAIN_TITLE_Y           (UI_DIM_BODY_Y + 20)
 /* Number + everything below position (tuned). */
 #define SCR_MAIN_NUMBER_Y_BASELINE (UI_DIM_BODY_Y + 94)
+/* 🔴 VRACENO na 110 (2026-09-01, na zadost uzivatele: „neposouvej nic pod ni").
+ * Mezitim tu byl vyhrazeny 34px pas NEJISTOTY, ktery mrizku posunul na 144 a
+ * Allan tim srazil z 242 na 208 px. Zadani UI Zasada 2 („odecet bez σ a poctu
+ * vzorku svadi k nezaslouzene duvere") plati dal — σ+N se ale prestehovalo do
+ * PRAVE casti titulniho radku, kde do te doby stalo napevno zadratovane
+ * „N 312 · Ω regrese", tedy VYMYSLENY pocet vzorku. Zasada je tim splnena
+ * a nestoji to ani pixel layoutu. */
 #define SCR_MAIN_GRID_Y            (UI_DIM_BODY_Y + 110)
+/* Prekryv varovani (`app_gpsdo.c warn_draw`) — kresli se PRES grafiku jako
+ * posledni pred flipem, NIC pod nim se neposouva. Lezi na hornim okraji mrizky. */
+#define SCR_MAIN_WARN_Y            (UI_DIM_BODY_Y + 112)
+#define SCR_MAIN_WARN_H            34
+/* Box σ+N v prave casti titulniho radku (partial redraw ~1x/s). Zacina daleko
+ * za nejdelsim titulkem („FREKVENCE A · GATE 100 s" ~350 px). */
+#define SCR_MAIN_UNC_X             430
+#define SCR_MAIN_UNC_W             (UI_DIM_SCREEN_W - SCR_MAIN_UNC_X - UI_DIM_PADDING_X)
 #define SCR_MAIN_GRID_GAP          14
 /* Vnejsi okraj mrizky vlevo i vpravo. 12 -> 4 (2026-07-20): 12 px po obou
  * stranach byl cisty nevyuzity pruh — Allan zleva i pravy sloupec (trend/drift)
@@ -84,8 +99,25 @@ int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd O
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
-/** Delka zvoleneho hradla [s] (0,1/1/10/100) — rozpocet nejistoty. */
-double screen_main_gate_seconds(void);
+/** Aktualni merici funkce (0 = FREKVENCE, 1 = PERIODA) — okno FUNKCE. */
+int  screen_main_mode(void);
+/** Prepne merici funkci; mimo rozsah nebo beze zmeny = no-op. */
+void screen_main_set_mode(int m);
+
+/** SKUTECNE zmerene hradlo z posledniho FPGA ramce [s]; 0 = nezname (SIM / bez linku).
+ *  ⚠️ Protejsek vracejici NASTAVENI z UI zamerne NEEXISTUJE — nastaveni se do FPGA
+ *  nedostane (STATUS #83), takze pro rozpocet nejistoty je tohle JEDINA spravna
+ *  cesta. (`screen_main_gate_seconds()` odstranena 2026-09-01 jako mrtva past.) */
+double screen_main_gate_actual_s(void);
+
+/** Krok TDC [ps] — jediny zdroj pravdy (drive konstanta na trech mistech). */
+double screen_main_tdc_ps(void);
+
+/** Prekresli pas nejistoty (σ + N) pod velkym cislem. @return 1 = kreslilo se. */
+int screen_main_redraw_uncert(int force);
+
+/** Preskrtne zonu velkeho cisla (varovani priority 1-2 = odecet neplatny). */
+void screen_main_strike_reading(void);
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
@@ -130,12 +162,10 @@ bool screen_main_selftest(void);                        /* fmt_frac+hist_h vekto
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
 extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
 extern const char *SCR_S_HOLD_L, *SCR_S_HOLD_V;
-extern const char *SCR_S_TITLE_RIGHT;
 /* ⚠️ `SCR_MAIN_DIGITS`/`_DIGIT_COUNT`/`SCR_MAIN_SEPS` odstraneny (#1) — format
  * velkeho cisla se stavi za behu dle magnitudy mereni (`num_layout` v .c). */
 extern const char *SCR_S_UNIT_HZ;
 /* Offset/sigma/trend hodnoty jsou POCITANE ze statistiky (screen_main.c), jen labely zde. */
-extern const char *SCR_S_OFFSET_L;
 extern const char *SCR_S_TREND_L;
 extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
 extern const char *SCR_S_BTN_RUN, *SCR_S_BTN_GATE_L,

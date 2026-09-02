@@ -86,10 +86,19 @@ _Static_assert((3u + ALIAS_PROBES) >= 21u,
  * ⚠️ Bezi soubezne s kreslenim UiTasku, takze kdyby prave do toho slova zapsal,
  * vratime o snimek stary pixel v levem hornim rohu. Jeden pixel, jednou pri
  * bootu — a kdyby alias existoval, je obraz rozbity uz tak jako tak. */
+/* ⚠️ Pohled na region po 32bitovych SLOVECH (test pameti + cache maintenance).
+ * `may_alias` tu NENI kosmetika: `s_buf` je pole `sdram_log_rec_t`, takze pristup
+ * pres `uint32_t*` je z pohledu normy poruseni strict-aliasing pravidel — hlasi to
+ * `-Wstrict-aliasing=2` z auditniho receptu (CLAUDE.md „Staticky audit"). U testu
+ * pameti je „syrova slova" prave ten zamer, takze se kompilatoru rekne pravda:
+ * tenhle ukazatel smi alias cokoli. Bez toho smi GCC povazovat zapis pres slovo za
+ * nesouvisejici se zaznamy — a prave na tom by test aliasu tise prestal fungovat. */
+typedef uint32_t __attribute__((may_alias)) sdram_word_t;
+
 static int aliases_framebuffer(void)
 {
     static const uint32_t FB[] = { 0xC0000000u, 0xC0100000u, 0xC0200000u };
-    volatile uint32_t *log0 = (volatile uint32_t *)(void *)s_buf;
+    volatile sdram_word_t *log0 = (volatile sdram_word_t *)(void *)s_buf;
     for (unsigned i = 0; i < sizeof FB / sizeof FB[0]; i++) {
         volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)FB[i];
         flush_word(fb);
@@ -111,7 +120,7 @@ static int aliases_framebuffer(void)
 
 static int region_selfcheck(void)
 {
-    volatile uint32_t *base = (volatile uint32_t *)(void *)s_buf;
+    volatile sdram_word_t *base = (volatile sdram_word_t *)(void *)s_buf;
     const uint32_t words = SDRAM_LOG_BYTES / 4u;
 
     if (aliases_framebuffer()) return 0;
@@ -263,7 +272,7 @@ void sdram_log_reset(void) { s_head = 0; }
 
 void sdram_log_invalidate(void)
 {
-    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s_buf, (int32_t)SDRAM_LOG_BYTES);
+    SCB_InvalidateDCache_by_Addr((sdram_word_t *)(void *)s_buf, (int32_t)SDRAM_LOG_BYTES);
 }
 
 /* ── Selftest indexovani (ciste logicky, bez SDRAM) ───────────────────────────

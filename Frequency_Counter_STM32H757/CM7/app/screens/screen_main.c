@@ -94,20 +94,50 @@ static char s_time_buf[16] = "14:32:07";
 static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
 
 /* Interactive UI state (iteration-1: drives labels/title, no live measurement). */
-static const char *MODE_NAME[2] = {"FREQUENCY", "PERIOD"};
-static const char *CHAN_NAME[2] = {"CH A", "CH B"};
+/* ⚠️ Nazvy funkci cesky a ve tvaru, ktery zada zadani UI §4 (`FREKVENCE A`).
+ * Kanal se pripojuje az v `render_body_title`, aby to byl JEDEN pojem, ne dva
+ * oddelene udaje — uzivatel mysli „frekvence A", ne „frekvence, kanal A". */
+static const char *MODE_NAME[2] = {"FREKVENCE", "PERIODA"};
+static const char *CHAN_NAME[2] = {"A", "B"};
 static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
-/* Tataz sada v sekundach — pro rozpocet nejistoty (rozliseni ~ tdc/gate).
- * ⚠️ Drzet SYNCHRONNI s GATE_VAL: popisek a hodnota musi rikat totez. */
-static const float GATE_SEC[4] = {0.1f, 1.0f, 10.0f, 100.0f};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
     st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
 static uint8_t s_disp_recalc = 0;   /* 1 = prepnul se FREQ/PERIOD -> vynut rebuild formatu velkeho cisla */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 
-/* RUN/STOP: ridi, zda bezi mereni (kmitocet, bargraf, statistika). */
-double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
+/* Aktualni merici funkce = `st.mode` (0 FREKVENCE / 1 PERIODA). Vystaveno pro
+ * okno FUNKCE (zadani UI §7), aby app vrstva nemusela sahat do `st`. */
+int  screen_main_mode(void) { return st.mode; }
+
+void screen_main_set_mode(int m)
+{
+    if (m < 0 || m > 1 || m == st.mode) return;
+    st.mode = (int8_t)m;
+    s_disp_recalc = 1;     /* FREQ<->PERIOD -> prepocet formatu velkeho cisla */
+    /* Persist stejne jako footer prepinac (`screen_main_button_action`).
+     * ⚠️ `st.mode` se uklada na JEDEN bit — az pribude treti dostupna funkce,
+     * musi se `g_ui_cfg` rozsirit, jinak se po resetu vrati spatna funkce. */
+    g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
+                         | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
+    g_ui_cfg_dirty = 1;
+}
+
+/* 🔴 SKUTECNE zmerene hradlo z posledniho ramce [s], 0 = nezname.
+ * ⚠️ Zamerne NEEXISTUJE protejsek vracejici NASTAVENI z UI: to se do FPGA vubec
+ * nedostane (audit STATUS #83) a okno ANALYZA z nej kdysi pocitalo rozliseni,
+ * takze pri brane 100 s hlasilo 400x lepsi nejistotu, nez jaka je. Drivejsi
+ * `screen_main_gate_seconds()` zbyla jen jako past — mela jediny obsah komentare
+ * „tuhle nepouzivej" a zadneho volajiciho, takze byla 2026-09-01 odstranena.
+ * Kdyz nominal opravdu potrebujes, vezmi si ho z popisku `GATE_VAL[st.gate]`.
+ * Headline uz poctivou hodnotu pouzival (`freq_uncertain_frac` bere `gate_ns`
+ * z ramce), takze se dve mista rozchazela. */
+double screen_main_gate_actual_s(void)
+{
+    uint64_t g = g_freq_gate_ns;
+    return g ? (double)g * 1e-9 : 0.0;
+}
+
 
 bool screen_main_is_running(void) { return st.running; }
 
@@ -487,19 +517,24 @@ static void render_header(void)
     screen_main_redraw_cpu(1);   /* blok vytizeni CPU mezi pilulkami a hodinami */
 }
 
+static void uncert_draw(void);   /* σ+N vpravo v titulku (definice nize) */
+
 static void render_body_title(void)
 {
     int16_t x = UI_DIM_PADDING_X + 4;
     int16_t y = SCR_MAIN_TITLE_Y;
+    /* „FREKVENCE A" jako JEDEN pojem (zadani UI §4), ne funkce a kanal zvlast. */
     x = draw_word(x, y, MODE_NAME[st.mode], &ui_font_mono_22, UI_COLOR_ACC);
-    x = draw_word(x, y, "  ·  ",            &ui_font_mono_22, UI_COLOR_INK_4);
-    x = draw_word(x, y, CHAN_NAME[st.chan], &ui_font_mono_22, UI_COLOR_INK_2);
+    x = draw_word(x, y, " ",                &ui_font_mono_22, UI_COLOR_ACC);
+    x = draw_word(x, y, CHAN_NAME[st.chan], &ui_font_mono_22, UI_COLOR_ACC);
     x = draw_word(x, y, "  ·  ",            &ui_font_mono_22, UI_COLOR_INK_4);
     x = draw_word(x, y, "GATE ",            &ui_font_mono_22, UI_COLOR_INK_2);
     x = draw_word(x, y, GATE_VAL[st.gate],  &ui_font_mono_22, UI_COLOR_INK_2);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W - UI_DIM_PADDING_X, y},
-                   SCR_S_TITLE_RIGHT, &ui_font_mono_18, UI_COLOR_INK_3,
-                   PRIM_ALIGN_RIGHT);
+    /* Prava cast titulku = σ + pocet vzorku (zadani UI Zasada 2). Kresli se TADY,
+     * aby mel plnou sirku titulniho radku JEDINEHO vlastnika: `screen_main_redraw_title`
+     * cisti 0..800, takze kdyby σ+N kreslil nekdo jiny, po kazdem redrawu titulku
+     * by zmizelo. Partial 1Hz update dela `screen_main_redraw_uncert` nad UZSIM boxem. */
+    uncert_draw();
 }
 
 /* Velke cislo kmitoctu: hodnota je REALNE mereni z FPGA (nebo emulatoru), pri
@@ -749,6 +784,12 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
  *   zbytecne tahlo float — staci nasobeni 0,1 v celociselne smycce).
  * Vraci pocet nejistych desetin; volajici (`num_layout`) ho jeste sanituje. */
 #define FREQ_TDC_PS  2500.0    /* Si5356 4 faze po 90° = 2,5 ns krok TDC (HW konstanta) */
+/* Jediny zdroj kroku TDC [ps]. Drive byla 2500.0 na TRECH mistech
+ * (`FREQ_TDC_PS`, literal v okne ANALYZA, testovaci vektory) — presne pripad
+ * pravidla „duplicitni fakta = riziko rozjeti". ⚠️ Nova deska ma carry chain
+ * ~50 ps bin (~22 ps single-shot), tedy o dva rady jinde. */
+double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
+
 static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ns, int frac)
 {
     if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
@@ -950,6 +991,20 @@ static prim_rect_t freq_area(void)
 {
     return (prim_rect_t){(int16_t)(s_num_left - 2), s_num_top,
                          (int16_t)(s_num_w + 10), 88};
+}
+
+/* MAXIMALNI zona, kterou cislo muze zabrat = vycentrovanych `FREQ_MAX_W` + rezerva
+ * na jednotku a podtrzeni. Pouziva ji `screen_main_redraw_freq_area` jako clear:
+ * cislo je vycentrovane, takze pri zmene formatu se hybe i jeho levy okraj a
+ * sledovat "predchozi" zonu je krehke (viz komentar tam).
+ * ⚠️ Vodorovne je v tomto pasu volna cela obrazovka (lezi mezi hlavickou a
+ * mrizkou), takze prekryv nehrozi. Svisle zona konci PRESNE na `SCR_MAIN_UNCERT_Y`
+ * (s_num_top = baseline-72 = BODY_Y+22, +88 = BODY_Y+110) -> pas σ+N se necisti. */
+static prim_rect_t freq_clear_area(void)
+{
+    int16_t w = (int16_t)(FREQ_MAX_W + 20);
+    if (w > UI_DIM_SCREEN_W) w = UI_DIM_SCREEN_W;
+    return (prim_rect_t){(int16_t)((UI_DIM_SCREEN_W - w) / 2), s_num_top, w, 88};
 }
 
 /* STOP -> lehke cervene podbarveni cele zony kmitoctu (mereni STOJI). Kresli se
@@ -1662,11 +1717,39 @@ static void render_card_allan(prim_rect_t rect)
  * mono_16 — karty se roztahly na 1/3 sirky, takze je misto; mono_18 MA horni
  * indexy ⁰..⁹⁻ pro fmt_frac). Baseline in.y+15: glyf 18px zacina AZ POD
  * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32). */
-static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
+/* Obdelniky tri statistickych karet — plni je `draw_offset_sigma`; deklarovano
+ * TADY, protoze na nem stoji `stat_inner()` nize (jediny zdroj geometrie). */
+static prim_rect_t s_stat_card_rect[3];
+
+/* 🔴 JEDEN ZDROJ PRAVDY pro popisky i vnitrni geometrii tri statistickych karet.
+ * Kresli je DVE cesty: `draw_stat_card` (plny redraw ~1x/s) a `draw_stat_card_value`
+ * (jen hodnota, 20x/s eased dojezd) — a do 2026-09-01 si kazda pocitala vnitrni
+ * obdelnik sama. Rozesly se: partial cesta stavela `ui_card_t` BEZ `header_label`,
+ * jenze `ui_card_inner_rect()` pricita `UI_CARD_HEADER_H` (26 px) POUZE kdyz je
+ * hlavicka nastavena. Partial redraw tedy mel `in.y` o 26 px vys, cistil pruh
+ * PRESNE pres popisek a hodnotu kreslil do hlavickoveho radku.
+ * Projev: „tri pole nad trendem neukazuji popis" (a hodnota sedela nahore).
+ * ⚠️ Komentar u partial cesty pritom tvrdil „Geometrie/baseline shodne s
+ * draw_stat_card" — nebyla. Proto obe cesty berou popisek i rect ODSUD.
+ *
+ * Popisky: vsechny tri veliciny jsou FRAKCNI (bezrozmerne y), takze se ctou jako
+ * rada y -> σy -> dy/dt. Drivejsi „Offset / σy 1s / Drift/s" neriklo, ceho offset
+ * ani v cem drift. ⚠️ sans_18 ma plny charset vc. reckeho rozsahu (σ = U+03C3),
+ * takze se tise nepreskoci — u subsetovanych fontu by to neplatilo. */
+static const char *const STAT_L[3] = { "Offset y", "σy(1 s)", "Drift y/s" };
+
+/* Vnitrni obdelnik karty `idx` — POVINNE pres tuhle funkci, at se cesty nerozejdou. */
+static prim_rect_t stat_inner(int idx)
 {
-    ui_card_t card = {.rect = r, .header_label = label};
+    ui_card_t c = {.rect = s_stat_card_rect[idx], .header_label = STAT_L[idx]};
+    return ui_card_inner_rect(&c);
+}
+
+static void draw_stat_card(int idx, const char *val, prim_color_t c)
+{
+    ui_card_t card = {.rect = s_stat_card_rect[idx], .header_label = STAT_L[idx]};
     ui_card_render_chrome(&card);
-    prim_rect_t in = ui_card_inner_rect(&card);
+    prim_rect_t in = stat_inner(idx);
     /* Klasicke rozlozeni ma uzsi karty -> mensi font a jina baseline (viz
      * komentar u `screen_main_set_layout_classic`). */
     if (s_layout_classic)
@@ -1686,7 +1769,6 @@ static void draw_stat_card(prim_rect_t r, const char *label, const char *val, pr
  * -> pri navratu na hlavni obrazovku po case v podnabidce se cislo NEukaze
  * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
 static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
-static prim_rect_t s_stat_card_rect[3];
 static char        s_stat_cache[3][24];   /* cache = velikost zdroje (off/s1/dr[24]), viz STATUS.md #13 */
 
 static void stats_anim_resync(void)
@@ -1724,18 +1806,20 @@ static void draw_offset_sigma(prim_rect_t rect)
         fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
         strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
     }
-    draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
-    draw_stat_card(s_stat_card_rect[1], "σy 1s", s1, UI_COLOR_VIOLET);
-    draw_stat_card(s_stat_card_rect[2], "Drift/s", dr, UI_COLOR_ACC);
+    draw_stat_card(0, off, UI_COLOR_OK);
+    draw_stat_card(1, s1,  UI_COLOR_VIOLET);
+    draw_stat_card(2, dr,  UI_COLOR_ACC);
 }
 
 /* Hodnota jedne stat karty bez chrome (jen box clear + text) — pro 20Hz partial
- * update mezi 1Hz plnymi redrawy vyse. Geometrie/baseline shodne s draw_stat_card. */
+ * update mezi 1Hz plnymi redrawy vyse.
+ * ⚠️ Vnitrni obdelnik MUSI prijit z `stat_inner()`, ne z lokalne slozene `ui_card_t`:
+ * `ui_card_inner_rect` pricita vysku hlavicky jen kdyz je `header_label` nastaveny,
+ * takze karta bez popisku dava obdelnik o 26 px vys — a clear pak smaze popisek
+ * (nalezeno 2026-09-01, viz komentar u `STAT_L`). */
 static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
 {
-    prim_rect_t r = s_stat_card_rect[idx];
-    ui_card_t card = {.rect = r};
-    prim_rect_t in = ui_card_inner_rect(&card);
+    prim_rect_t in = stat_inner(idx);
     int16_t base = (int16_t)(in.y + 15);            /* v2 only (viz tick nize) */
     prim_fill_rect((prim_rect_t){in.x, (int16_t)(base - 16), in.w, 22},
                    UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -2101,6 +2185,7 @@ static void render_body_grid_hybrid(void)
 /* Vyber rozlozeni — viz `screen_main_set_layout_classic`. */
 static void render_body_grid(void)
 {
+    screen_main_redraw_uncert(1);   /* pas σ + N nad mrizkou (Zasada 2) */
     if (s_layout_classic) render_body_grid_classic();
     else                  render_body_grid_hybrid();
 }
@@ -2150,6 +2235,62 @@ static void render_footer(void)
 }
 
 /* Restore a rectangle from the static background cache (partial-redraw clear). */
+/* ── Pas nejistoty pod odectem (zadani UI Zasada 2) ──────────────────────────
+ * „Odecet bez σ a poctu vzorku je v tomto pristroji NEPOUZITELNY, protoze
+ * rozliseni 12 cislic svadi k nezaslouzene duvere."
+ *
+ * ⚠️ Ukazuje σy (frakcni odchylka) @1s, ne σ v Hz jako maketa zadani — zadani
+ * samo rika, ze maketa je „rozvrzeni informaci, ne graficky navrh", a frakcni
+ * σy je u GPSDO standardni zapis, ktery uz pouziva i karta statistik.
+ * ⚠️ Zacina CLEAREM (blit pozadi) — pravidlo partial redrawu. */
+/* Preskrtne zonu velkeho cisla — zadani UI §12: pri prioritach 1-2 se mereni
+ * zastavi a „odecet zobraz preskrtnuty nebo sede".
+ * ⚠️ Kresli se AZ ZA cislem (prekryv), takze se vola z varovneho ticku po tom,
+ * co `tick_freq` cislo prekreslil. Cara jde pres `prim_fill_rect` (DMA2D cesta),
+ * takze `mark_dirty` NEobchazi — na rozdil od `prim_draw_line`, ktera by sla
+ * pres `prim_internal_blend_px` a v jednom ze tri bufferu by chybela. */
+void screen_main_strike_reading(void)
+{
+    prim_rect_t z = freq_area();
+    int16_t y = (int16_t)(z.y + z.h / 2);
+    prim_fill_rect((prim_rect_t){z.x, y, z.w, 4}, UI_COLOR_BAD, PRIM_BLEND_REPLACE);
+}
+
+/* Jeden zdroj textu σ+N (pouziva ho plny render titulku i partial 1Hz update). */
+static void uncert_text(char *out, size_t n)
+{
+    char sb[24];
+    float sy = stats_adev(1);
+    if (sy > 0.0f) fmt_frac(sb, sizeof sb, sy, 0);
+    else           snprintf(sb, sizeof sb, "--");
+    snprintf(out, n, "σy %s @1s  N=%lu", sb, (unsigned long)screen_main_stats_version());
+}
+
+/* Vykresli σ+N vpravo v titulnim radku. NEcisti — volajici uz clear udelal. */
+static void uncert_draw(void)
+{
+    char b[48];
+    uncert_text(b, sizeof b);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W - UI_DIM_PADDING_X, SCR_MAIN_TITLE_Y},
+                   b, &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+}
+
+int screen_main_redraw_uncert(int force)
+{
+    static char s_prev[48];
+    char b[48];
+    uncert_text(b, sizeof b);
+    if (!force && strncmp(s_prev, b, sizeof s_prev) == 0) return 0;
+    strncpy(s_prev, b, sizeof s_prev - 1); s_prev[sizeof s_prev - 1] = '\0';
+
+    /* ⚠️ Cisti se JEN pravy box, ne cely titulni radek — vlevo lezi titulek
+     * („FREKVENCE A · GATE …"), ktery tahle cesta nekresli. */
+    blit_bg_region((prim_rect_t){SCR_MAIN_UNC_X, (int16_t)(SCR_MAIN_TITLE_Y - 18),
+                                 SCR_MAIN_UNC_W, 28});
+    uncert_draw();
+    return 1;
+}
+
 static void blit_bg_region(prim_rect_t r)
 {
     const prim_pixel_t *src = bg_cache + (int)r.y * SCR_MAIN_BG_CACHE_W + r.x;
@@ -2404,22 +2545,27 @@ int screen_main_redraw_freq(void)
 void screen_main_redraw_freq_area(void)
 {
     if (!s_num_ready) return;
-    /* ⚠️ Cisti se SJEDNOCENI s PREDCHOZI zonou: pri zmene formatu (jina magnituda /
-     * jiny pocet desetin) se sirka cisla zmeni a je vycentrovana, takze nove
-     * `freq_area()` je jinde. Kdyby se cistilo jen ono, zbyly by po stranach
-     * "duchove" starych cislic (typicky i stara jednotka Hz), protoze partial
-     * redraw uz do te oblasti nikdy nesahne. */
-    static prim_rect_t s_prev_area;
-    prim_rect_t cur = freq_area();
-    if (s_prev_area.w > 0) {
-        int16_t x0 = (cur.x < s_prev_area.x) ? cur.x : s_prev_area.x;
-        int16_t x1 = (int16_t)((cur.x + cur.w > s_prev_area.x + s_prev_area.w)
-                               ? cur.x + cur.w : s_prev_area.x + s_prev_area.w);
-        blit_bg_region((prim_rect_t){x0, cur.y, (int16_t)(x1 - x0), cur.h});
-    } else {
-        blit_bg_region(cur);
-    }
-    s_prev_area = cur;
+    /* 🔴 Cisti se CELA MOZNA zona cisla (`freq_clear_area`), ne jen aktualni
+     * `freq_area()` a ne sjednoceni s "predchozi" zonou.
+     *
+     * PROC: cislo je VYCENTROVANE, takze pri zmene formatu (FREQ<->PERIOD, jina
+     * magnituda, /4<->/16) se meni i jeho LEVY okraj — stara sirsi hodnota po
+     * stranach precniva a partial redraw uz do te oblasti nikdy nesahne.
+     *
+     * ⚠️ Driv se to resilo sjednocenim s `static prim_rect_t s_prev_area`, jenze
+     * ten se aktualizoval VYHRADNE tady. Cislo ale kresli i PLNY render
+     * (`render_body_number` ze `screen_main_render`, tj. pri kazdem navratu na
+     * hlavni obrazovku, zmene tematu, rozlozeni...) a ten svou geometrii nikam
+     * nezapsal. Po bootu byl `s_prev_area` dokonce nulovy -> vetev `else`
+     * vycistila jen NOVOU (uzsi) zonu a po stranach zustaly duchove stare.
+     * Projev: „pri prepnuti FREQ/PERIODA nekde neco zbyde" — vzdy pri PRVNIM
+     * prepnuti po plnem renderu, pak uz ne (od druheho prepnuti sjednoceni
+     * nahodou vyslo). Nalezeno 2026-09-01.
+     *
+     * Sledovani „kdo naposled kreslil cislo" je zbytecne krehke: staci pevna
+     * zona sirsi nez nejsirsi mozne cislo. Stoji jeden blit ~68 kB, ale bezi jen
+     * pri ZMENE formatu / RUN-STOP, ne ve 20Hz smycce. */
+    blit_bg_region(freq_clear_area());
     freq_tint_if_stopped();
     prim_set_glyph_accel(1);
     ui_big_number_render(&s_num);
