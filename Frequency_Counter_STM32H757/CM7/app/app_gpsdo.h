@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "encoder.h"   /* encoder_ev_t — udalost predava volajici (UiTask) */
+
 /** One-time init: bind libprim to the framebuffer, build static caches. */
 void app_gpsdo_init(void);
 
@@ -71,9 +73,24 @@ void app_gpsdo_clear(void);
  */
 bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 
+/** #90 — po `app_gpsdo_handle_touch()` rika, jestli trefeny prvek byl opakovatelny
+ *  „−/+" ovladac. UiTask podle toho zapne auto-repeat s akceleraci pri drzeni. */
+bool app_gpsdo_touch_repeat_armed(void);
+
+/** #90 — dlouhy stisk (>=600 ms) na (x,y) = protejsek dlouheho stisku encoderu.
+ *  Dnes no-op mimo +/- (AUTO-TRIGGER ceka na vstupni modul #78); hook pro paritu.
+ *  @return true pokud se neco obslouzilo. */
+bool app_gpsdo_handle_touch_long(int16_t x, int16_t y);
+
 /** Obsluha rotacniho encoderu (Faze A). Vola VYHRADNE UiTask, ~100 Hz.
  *  @return 1 = neco se prekreslilo -> flipnout snimek. */
-int app_gpsdo_handle_encoder(void);
+/** Obsluzi UZ VYCTENOU udalost encoderu (fokus / navigace / aktivace).
+ *  @return 1 = neco se vykreslilo.
+ *
+ *  🔴 Udalost se PREDAVA, nepolluje se uvnitr: `encoder_poll()` je
+ *  JEDNOKONZUMENTOVE API (druhy konzument si udalosti krade) a UiTask ji
+ *  potrebuje videt DRIV — kvuli probuzeni z auto-dimu/sporice. */
+int app_gpsdo_handle_encoder(const encoder_ev_t *ev);
 
 /** Diagnostika registru zameritelnych tlacitek (UART `status`).
  *  ⚠️ `overflow` = 1 znamena, ze v nekterem okne je tlacitek vic nez `cap`

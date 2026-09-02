@@ -21,6 +21,7 @@
 #include "ipc_shared.h"         /* IPC_VERSION — detekce nesouladu bank v System Health (v6).
                                  * Cisty sdileny header (jen stdint, zadny HAL), stejny na obou jadrech. */
 #include "alarm.h"              /* g_alarm_* pocitadla — okno Alarmy */
+#include "si5356.h"      /* SI5356_* bitove masky — JEDINY zdroj */
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
 #include "calib.h"              /* g_calib, calib_load/save — okno Kalibrace */
 #include "meas_math.h"          /* g_meas_cfg + Math/limity (#43/#44) — okno MATH */
@@ -102,10 +103,8 @@ extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
  * TRVALE 1 a IGNORUJE se. bit3 = skutecny LOS_CLKIN. ⚠️ PLL_LOL se pri
  * fyzicke ztrate vstupu NEasertuje (AN565: LOL = rozdil >5000 ppm na PFD)
  * -> ztratu 10 MHz reference hlasi prave LOS_CLKIN (bit3) = cervena. */
-#define SI5356_SYS_CAL    (1u << 0)
-#define SI5356_LOS_XTAL   (1u << 2)   /* bez krystalu trvale 1 — nehodnotit */
-#define SI5356_LOS_CLKIN  (1u << 3)   /* ztrata 10 MHz na CLKIN (pin 4) */
-#define SI5356_PLL_LOL    (1u << 4)
+/* ⚠️ Bitove masky Si5356 uz se tu NEDEFINUJI — jediny zdroj je `si5356.h`
+ * (do 2026-09-02 byly dvakrat, viz komentar tam). */
 
 static prim_fb_t s_fb;
 static int s_inited = 0;
@@ -3590,10 +3589,14 @@ static void app_gpsdo_render_confirm_restart(void)
 }
 
 /* ── Reference (s_view=14): stav Si5356 + konfigurace 4×100 MHz vernier hodin. ── */
+/* VYNULOVAT sticky (footer, pred BACK_RECT x=650). ⚠️ Zapis na I2C1 dela
+ * VYHRADNE SensorsTask — tady se jen nastavi zadost. */
+static const prim_rect_t REF_CLR_RECT = {18, 417, 200, 61};
+
 static void app_gpsdo_render_reference(void)
 {
     int first = window_first(14);
-    static char c_lock[24];
+    static char c_lock[24], c_stk[40];
     if (first) {
         s_view = 14;
         window_chrome("REFERENCE  Si5356", WIN_TITLE_Y);
@@ -3606,8 +3609,14 @@ static void app_gpsdo_render_reference(void)
         prim_draw_text((prim_point_t){DG_LLBL, 184}, "Pouziti:",&ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 184}, "reciproky citac FPGA, jemny krok 2,5 ns", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 240}, "Stav (reg 218):", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 300}, "Presnost = ppm vstupnich 10 MHz (Si5356).", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        c_lock[0] = '\0';
+        /* 🔴 Sticky radek: registr 218 je ZIVY, takze kratky vypadek reference
+         * mezi dvema ctenimi (2x/s) by zmizel beze stopy — a mereni porizena
+         * mezitim jsou pritom neplatna. Reg 247 ho podrzi. */
+        prim_draw_text((prim_point_t){DG_LLBL, 276}, "Od vynulovani (247):", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_LLBL, 330}, "Presnost = ppm vstupnich 10 MHz (Si5356).", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        ui_button_t cb = {.rect = REF_CLR_RECT, .variant = UI_BUTTON_NORMAL, .label = "VYNULOVAT"};
+        ui_button_render(&cb);
+        c_lock[0] = c_stk[0] = '\0';
     }
     /* zivy lock status (LOS_CLKIN bit3 = ztrata reference = cervena; LOS_XTAL
      * bit2 ignorovan — bez krystalu trvale 1, viz SI5356_* definice) */
@@ -3617,8 +3626,28 @@ static void app_gpsdo_render_reference(void)
     else if (g_si5356_status & SI5356_PLL_LOL)    { st = "PLL UNLOCK!"; sc = UI_COLOR_BAD; }
     else if (g_si5356_status & SI5356_SYS_CAL)    { st = "CALIB...";    sc = UI_COLOR_VIOLET; }
     else                                          { st = "LOCK OK";     sc = UI_COLOR_OK; }
+    int drew = 0;
     if (first || dchg(c_lock, sizeof c_lock, st))
-        { dtext((int16_t)(DG_LLBL + 200), 240, 300, st, sc, &ui_font_mono_18); present_now(); }
+        { dtext((int16_t)(DG_LLBL + 200), 240, 300, st, sc, &ui_font_mono_18); drew = 1; }
+
+    /* Sticky: co se stalo OD POSLEDNIHO VYNULOVANI. ⚠️ Amber, ne cervena —
+     * cervena je vyhrazena stavu, ktery trva TED (zivy reg 218). Tohle je
+     * "stalo se to a mereni z te doby je podezrele". */
+    { char sb[sizeof c_stk];
+      uint8_t k = g_si5356_sticky;
+      if (!k) snprintf(sb, sizeof sb, "bez vypadku");
+      else {
+          sb[0] = '\0';
+          if (k & SI5356_LOS_CLKIN) strncat(sb, "LOS CLKIN ", sizeof sb - strlen(sb) - 1);
+          if (k & SI5356_PLL_LOL)   strncat(sb, "PLL LOL ",   sizeof sb - strlen(sb) - 1);
+          if (k & SI5356_SYS_CAL)   strncat(sb, "CALIB ",     sizeof sb - strlen(sb) - 1);
+      }
+      if (first || dchg(c_stk, sizeof c_stk, sb)) {
+          dtext((int16_t)(DG_LLBL + 240), 276, 260, sb,
+                k ? UI_COLOR_WARN : UI_COLOR_OK, &ui_font_mono_18);
+          drew = 1;
+      } }
+    if (drew) present_now();
 }
 
 /* ── Kalibrace (s_view=15): editovatelne konstanty AD8307 + ADS delice. ──────
@@ -7790,10 +7819,10 @@ static void enc_paint(const menu_list_t *L, int idx, int on)
     else    focus_ring_clear(s_btnreg[idx]);
 }
 
-int app_gpsdo_handle_encoder(void)
+int app_gpsdo_handle_encoder(const encoder_ev_t *evp)
 {
-    encoder_ev_t ev;
-    encoder_poll(&ev);
+    if (evp == NULL) return 0;
+    const encoder_ev_t ev = *evp;
     if (!ev.steps && !ev.short_press && !ev.long_press && !ev.double_click) return 0;
     /* 🔴 Kdyz tahle funkce neco nakresli, MUSI oznacit snimek za spinavy —
      * `app_gpsdo_flush()` jinak neflipne a fokus by se na statickem okne
@@ -7896,9 +7925,52 @@ static void btnreg_sync_focus(int16_t x, int16_t y)
     }
 }
 
+/* #90 — dotykova parita s encoderem: rika, jestli (x,y) v AKTUALNIM okne trefuje
+ * opakovatelny „−/+" ovladac. UiTask podle toho zapne auto-repeat s akceleraci
+ * (protejsek adaptivniho kroku encoderu). ⚠️ Keyed podle `s_view`, aby se stejna
+ * geometrie v jinem okne nevzala jako +/- -> RUN/STOP/MENU se NIKDY neopakuji.
+ * Konzultuje se az PO tom, co `handle_touch` vratil true, takze i pripadny
+ * nesoulad view↔rect je neskodny (bez akce = bez armovani). */
+static uint8_t touch_pm_control(int16_t x, int16_t y)
+{
+    switch (s_view) {
+        case 36: return (uint8_t)(in_rect(x, y, BR_MINUS)  || in_rect(x, y, BR_PLUS) ||
+                                  in_rect(x, y, DIM_MINUS) || in_rect(x, y, DIM_PLUS));
+        case 22: return (uint8_t)(in_rect(x, y, TZ_MINUS)   || in_rect(x, y, TZ_PLUS));
+        case 9:  return (uint8_t)(in_rect(x, y, TREND_MINUS)|| in_rect(x, y, TREND_PLUS));
+        case 29:
+        case 30: return (uint8_t)(in_rect(x, y, GRAPH_MINUS)|| in_rect(x, y, GRAPH_PLUS));
+        case 33: return (uint8_t)(in_rect(x, y, SET_SLOT_MINUS) || in_rect(x, y, SET_SLOT_PLUS));
+        case 38: return (uint8_t)(in_rect(x, y, GPSQ_MINUS)|| in_rect(x, y, GPSQ_PLUS));
+        case 40: return (uint8_t)(in_rect(x, y, WIZ_MINUS) || in_rect(x, y, WIZ_PLUS));
+        case 35: return (uint8_t)(in_rect(x, y, NET_MINUS_RECT) || in_rect(x, y, NET_PLUS_RECT));
+        case 39: {
+            for (int i = 0; i < THR_ROWS; i++)
+                if (in_rect(x, y, THR_ROW_MINUS[i]) || in_rect(x, y, THR_ROW_PLUS[i])) return 1u;
+            return 0u;
+        }
+        default: return 0u;
+    }
+}
+
+static uint8_t s_touch_rep;   /* posledni handle_touch trefil opakovatelny +/- ovladac */
+
+bool app_gpsdo_touch_repeat_armed(void) { return s_touch_rep != 0u; }
+
+/* #90 — protejsek dlouheho stisku encoderu (AUTO-TRIGGER / napoveda). Dnes no-op:
+ * cyklus prahu A/B, hystereze a hradlo potrebuji vstupni modul (#78) — stejne jako
+ * dlouhy stisk encoderu na hlavni obrazovce. Hook existuje kvuli dotykove parite
+ * (dve uplne ovladaci cesty), az #78 dorazi, napoji se sem cyklus parametru. */
+bool app_gpsdo_handle_touch_long(int16_t x, int16_t y)
+{
+    (void)x; (void)y;
+    return false;
+}
+
 bool app_gpsdo_handle_touch(int16_t x, int16_t y)
 {
     btnreg_sync_focus(x, y);
+    s_touch_rep = touch_pm_control(x, y);
 
     if (s_view == 0) {
         if (screen_main_hit_gnss(x, y)) { nav_push(0); app_gpsdo_render_gps(); return true; }   /* GNSS pill */
@@ -7969,6 +8041,11 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 app_gpsdo_render_dualch();  /* dopocita a prekresli radek vysledku */
                 return true;
             }
+        }
+        if (s_view == 14 && in_rect(x, y, REF_CLR_RECT)) {   /* Reference: vynuluj sticky */
+            g_si5356_clr_req = 1;
+            tap_flash(REF_CLR_RECT);
+            return true;
         }
         if (s_view == 47 && in_rect(x, y, DM_MUL_RECT)) {
             s_dm_mul_i = (s_dm_mul_i + 1) % (int)(sizeof DM_MUL / sizeof DM_MUL[0]);

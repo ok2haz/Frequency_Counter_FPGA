@@ -134,6 +134,14 @@ uint8_t i2c4_line_state(void)
     return s;
 }
 
+/* #90 — akcelerace auto-repeatu drzeneho +/- doteku: interval [ms] podle poctu uz
+ * vyvolanych opakovani (klesa 350->70). Protejsek adaptivniho kroku encoderu. */
+static uint32_t touch_rep_interval(uint8_t n)
+{
+  static const uint16_t iv[] = { 350u, 300u, 250u, 200u, 150u, 110u, 80u, 70u };
+  return (n < (sizeof iv / sizeof iv[0])) ? iv[n] : iv[(sizeof iv / sizeof iv[0]) - 1];
+}
+
 /* Runtime IDLE tasku + celkovy runtime (pro vypocet zatize CPU). configUSE_TRACE_
  * FACILITY + configGENERATE_RUN_TIME_STATS jsou zapnute (viz FreeRTOSConfig). */
 static uint32_t ui_idle_runtime(uint32_t *total_out)
@@ -211,6 +219,21 @@ void StartUiTask(void *argument)
     static uint32_t s_touch_ok_ms   = 0;   /* cas posledniho USPESNEHO cteni dotyku */
     static uint32_t s_banner_ms     = 0;   /* posledni vykresleni hlasky "dotyk nedostupny" */
     static uint8_t  s_touch_is_dead = 0;   /* 1 = hlaska je na displeji */
+    /* #90 — dotykova parita s encoderem: drzeni prstu -> dlouhy stisk + auto-repeat
+     * s akceleraci. Bez toho byl dotyk ciste hranovy (jen nastup) a chybel protejsek
+     * dlouheho stisku i adaptivniho kroku. ⚠️ Auto-repeat se zapne JEN kdyz app
+     * oznaci hit jako +/- (app_gpsdo_touch_repeat_armed) -> RUN/STOP/MENU se neopakuji.
+     * Repeat i long-press bezi jen pri STABILNIM prstu (pohyb <= TOL) a jsou tazene
+     * uspesnymi polly, takze pri I2C4 back-offu (2 Hz) se same zpomali. */
+    static uint32_t s_down_ms   = 0;       /* cas nastupni hrany doteku */
+    static int16_t  s_down_x    = 0, s_down_y = 0;
+    static uint8_t  s_long_fired = 0;      /* dlouhy stisk uz vyvolan (1x za drzeni) */
+    static uint8_t  s_rep_armed  = 0;      /* drzeny prvek je opakovatelny +/- */
+    static uint32_t s_rep_next   = 0;      /* kdy vyvolat dalsi opakovani */
+    static uint8_t  s_rep_n      = 0;      /* pocet uz vyvolanych opakovani (akcelerace) */
+    #define TOUCH_LONG_MS    600u          /* prah dlouheho stisku (>=600 kvuli 2 Hz back-offu, #90) */
+    #define TOUCH_REP_DELAY  500u          /* prodleva pred prvnim opakovanim */
+    #define TOUCH_MOVE_TOL   40            /* max posun prstu, aby to stale bylo „drzeni" [px] */
     /* ADAPTIVNI gate: 33 ms (30 Hz) BEHEM a ~1,5 s PO interakci (svizne tapy —
      * hlavne opakovane +/- v Nastaveni), jinak 66 ms (15 Hz) v klidu. Touch cteni
      * je 31 B ~3 ms @100 kHz -> 30 Hz = ~9 % CPU, 15 Hz = ~4,5 %. V typickem stavu
@@ -315,13 +338,50 @@ void StartUiTask(void *argument)
          * was_down) -> rezidualni/drzeny dotek se absorbuje. */
         if (!s_touch_primed) {
           if (!t.valid) s_touch_primed = 1;   /* prvni uvolneni -> od ted prijimame */
-        } else if (t.valid && !was_down) {
-          s_last_activity = HAL_GetTick();
-          if (s_dimmed) {                  /* probuzeni: prvni dotek jen rozsviti, nespusti akci */
-            s_dimmed = 0;
-            app_gpsdo_exit_screensaver();  /* zpet na okno, ktere bylo pred usnutim */
-          } else if (app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y))) {
-            alarm_click();                 /* zvukova odezva obslouzeneho tlacitka (mute-aware) */
+        } else {
+          uint32_t now = HAL_GetTick();
+          int16_t  tx  = (int16_t)(799 - t.x), ty = (int16_t)(479 - t.y);
+          if (t.valid && !was_down) {
+            /* ── nastupni hrana = tap ── */
+            s_last_activity = now;
+            if (s_dimmed) {                /* probuzeni: prvni dotek jen rozsviti, nespusti akci */
+              s_dimmed = 0;
+              app_gpsdo_exit_screensaver();/* zpet na okno, ktere bylo pred usnutim */
+              s_rep_armed = 0;
+            } else {
+              s_down_ms = now; s_down_x = tx; s_down_y = ty;
+              s_long_fired = 0; s_rep_n = 0;
+              if (app_gpsdo_handle_touch(tx, ty)) {
+                alarm_click();             /* zvukova odezva obslouzeneho tlacitka (mute-aware) */
+                /* auto-repeat jen na opakovatelnem +/- ovladaci (jinak by se drzeni
+                 * RUN/STOP/MENU spoustelo znovu a znovu). */
+                s_rep_armed = app_gpsdo_touch_repeat_armed() ? 1u : 0u;
+                s_rep_next  = now + TOUCH_REP_DELAY;
+              } else {
+                s_rep_armed = 0;
+              }
+            }
+          } else if (t.valid && was_down && !s_dimmed) {
+            /* ── drzeni: long-press + auto-repeat, jen kdyz prst STOJI ── */
+            s_last_activity = now;         /* drzeni je take cinnost -> nesmi usnout */
+            int dx = tx - s_down_x; if (dx < 0) dx = -dx;
+            int dy = ty - s_down_y; if (dy < 0) dy = -dy;
+            if (dx <= TOUCH_MOVE_TOL && dy <= TOUCH_MOVE_TOL) {
+              if (s_rep_armed && (int32_t)(now - s_rep_next) >= 0) {
+                (void)app_gpsdo_handle_touch(tx, ty);   /* dalsi krok, BEZ alarm_click */
+                if (!app_gpsdo_touch_repeat_armed()) {
+                  s_rep_armed = 0;                       /* uz to neni +/- (napr. dorazil na kraj) */
+                } else {
+                  if (s_rep_n < 255u) s_rep_n++;
+                  s_rep_next = now + touch_rep_interval(s_rep_n);
+                }
+              }
+              /* dlouhy stisk = protejsek encoderu; jen mimo opakovatelny +/-. */
+              if (!s_rep_armed && !s_long_fired && (now - s_down_ms) >= TOUCH_LONG_MS) {
+                s_long_fired = 1;
+                (void)app_gpsdo_handle_touch_long(tx, ty);
+              }
+            }
           }
         }
         was_down = (uint8_t)t.valid;
@@ -465,10 +525,34 @@ void StartUiTask(void *argument)
     /* Encoder (Faze A): gesta -> fokus / navigace. Levne (cteni TIM1 + jednoho
      * GPIO), proto kazdou iteraci ~100 Hz — dlouhy stisk 1 s a dvojklik 400 ms
      * potrebuji jemne vzorkovani. ⚠️ Kresli, takze smi bezet JEN tady v UiTasku.
-     * ⚠️ Bez tohohle volani se `app_gpsdo_handle_encoder` cely zahodi linkerem
-     * (`--gc-sections`) a encoder mlci, aniz by cokoli ohlasilo chybu —
-     * presne to se 2026-08-31 stalo. */
-    app_gpsdo_handle_encoder();
+     * ⚠️ Bez tohohle volani se obsluha cela zahodi linkerem (`--gc-sections`)
+     * a encoder mlci, aniz by cokoli ohlasilo chybu — presne to se 2026-08-31 stalo.
+     *
+     * 🔴 ENCODER PROBOUZI SYSTEM STEJNE JAKO DOTYK (2026-09-02). Do te doby na
+     * `s_last_activity` ani `s_dimmed` vubec nesahal, takze:
+     *   - otaceni knoflikem NEBRANILO usnuti (sporic naskocil uprostred prace),
+     *   - a ze sporice uz encoder systém NEPROBUDIL vubec — slo to jen dotykem.
+     * To porusovalo pravidlo DVOU UPLNYCH OVLADACICH CEST (kazda funkce musi jit
+     * encoderem SAMOTNYM i dotykem SAMOTNYM).
+     *
+     * ⚠️ `encoder_poll()` se vola PRAVE TADY a jen jednou — je to
+     * JEDNOKONZUMENTOVE API (druhy konzument si udalosti krade, zazito
+     * 2026-08-31 u prikazu `enc`). Obsluha proto udalost dostava parametrem.
+     * ⚠️ Prvni udalost po probuzeni se ZAHAZUJE, stejne jako prvni dotek —
+     * v tme by uzivatel naslepo prestavil hodnotu, kterou nevidi. */
+    {
+      encoder_ev_t eev;
+      encoder_poll(&eev);
+      if (eev.steps || eev.short_press || eev.long_press || eev.double_click) {
+        s_last_activity = HAL_GetTick();     /* jakykoli pohyb knoflikem = cinnost */
+        if (s_dimmed) {
+          s_dimmed = 0;
+          app_gpsdo_exit_screensaver();      /* zpet na okno pred usnutim */
+        } else {
+          app_gpsdo_handle_encoder(&eev);
+        }
+      }
+    }
 
     /* Present coalescing: ticky vyse jen renderuji (znaci dirty); jeden flip na
      * ~30 Hz gate slouci vsechny zmeny -> mene VBR flipu + sjednoceny copy-forward. */
