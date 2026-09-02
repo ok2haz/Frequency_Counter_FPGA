@@ -75,6 +75,28 @@ if os.path.isfile(ol):
               % (core, len(unlinked)))
         print("   " + ", ".join(unlinked[:6]) + (" ..." if len(unlinked) > 6 else ""))
         print("   => IDE pregenerovalo build soubory a zahodilo rucne pridane zdroje.")
+# ⚠️ TRETI kontrola (2026-09-01): predchozi dve chytaji jen zdroje, ktere jsou v
+# `.project` jako <link>, resp. uz jsou v subdir.mk. Soubor, ktery CubeMX NOVE
+# vytvori PRIMO v uz existujici zdrojove slozce (`Core/Src/tim.c` pri pridani
+# TIM1), neni ani jedno — a presto se neslinkuje, dokud IDE nenacte model.
+# Projevilo se to jako `undefined reference to MX_TIM1_Init`, ktere tenhle skript
+# NEPREDPOVEDEL. Proto se porovnava i to, co je SKUTECNE NA DISKU.
+disk = set()
+for sub in ('Core/Src', 'app', 'app/screens', 'app/hal/stm32',
+            'libui/src', 'libprim/src', 'libprim/src/internal'):
+    d = os.path.join(os.path.dirname(bdir), sub)
+    for f in glob.glob(os.path.join(d, '*.c')):
+        if 'ui_font_' in os.path.basename(f):   # generovane tabulky glyfu
+            continue
+        disk.add(os.path.basename(f))
+notbuilt = sorted(b for b in disk
+                  if not re.search(r'[/\s]' + re.escape(b) + r'(\s|$)', built, re.M))
+if notbuilt:
+    print("*** %s: %d zdrojaku je NA DISKU, ale NENI v generovanych makefilech:"
+          % (core, len(notbuilt)))
+    print("   " + ", ".join(notbuilt[:10]) + (" ..." if len(notbuilt) > 10 else ""))
+    print("   => typicky NOVY soubor od CubeMX. Close Project -> Open Project.")
+
 if missing:
     # ASCII zamerne: Python na Windows tiskne do konzole v cp1252 a na emoji spadne.
     print("*** %s: %d zdrojaku je v .project, ale NENI v generovanych makefilech:" % (core, len(missing)))
