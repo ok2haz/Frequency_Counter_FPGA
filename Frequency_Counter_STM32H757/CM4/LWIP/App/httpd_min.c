@@ -2159,6 +2159,10 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         /* W0+W5: zapis pusti jen kdyz je ovladani povolene A soucasne sedi
          * jmeno+heslo (viz komentar u check_auth — TCP 5025 ma jen prvni podminku). */
         src.set_cfg = (have && snap.web_ctrl_en && check_auth(r, &snap)) ? ipc_scpi_set_cfg : NULL;
+        /* ⚠️ Kdyz snapshot MAME, ale zapis je presto zakazany, je to OCHRANA, ne
+         * chybejici data -> parser vrati `-203 Command protected` misto -230.
+         * Bez toho hlaseni posilalo uzivatele hledat HW poruchu (STATUS #130). */
+        src.ctrl_locked = (have && src.set_cfg == NULL) ? 1u : 0u;
 
         static scpi_ctx_t ctx;              /* jednorazova zprava/spojeni -> staci sdilena */
         scpi_ctx_init(&ctx);

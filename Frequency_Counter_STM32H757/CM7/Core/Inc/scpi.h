@@ -157,6 +157,15 @@ struct scpi_src {
     /* Aplikuj CALC SET (SCPI_CFG_* klíč, bool vu / double vd). @return 1 = OK.
      * Aktualizuje i src->meas (aby compound SET→readback sedělo). */
     int (*set_cfg)(scpi_src_t *s, uint8_t key, uint32_t vu, double vd);
+    /* 🔴 1 = `set_cfg` je NULL ZAMERNE (ovladani zakazane), ne proto, ze chybi data.
+     * Bez tohohle rozliseni vraci parser na oba pripady `-230 "Data corrupt or
+     * stale"` — a to uzivateli LZE O PRICINE: posle ho hledat HW poruchu misto
+     * prepinace `web_ctrl_en`. SCPI-99 ma na ochranu presne `-203 "Command
+     * protected"` (*cannot be executed due to protection, e.g. password*).
+     * Nalezeno pri overovani site na HW 2026-09-02 (STATUS #130).
+     * ⚠️ NEJDE do IPC snapshotu — `scpi_src_t` se sklada lokalne na kazdem jadre
+     * (`ipc_scpi_src_from_snap`), takze pridani pole NEVYZADUJE bump IPC_VERSION. */
+    uint8_t ctrl_locked;
     /* Přečti n-tý datalog záznam od nejnovějšího (MMEM:DATA?). @return 1 = OK. */
     int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
 };

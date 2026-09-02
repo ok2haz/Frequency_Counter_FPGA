@@ -71,6 +71,10 @@ static void process_line(scpi_conn_t *c)
     }
     src.read_log = NULL;                                          /* #26, odlozeno */
     src.set_cfg  = (have && snap.web_ctrl_en) ? ipc_scpi_set_cfg : NULL;
+    /* ⚠️ Zakazane ovladani je OCHRANA, ne chybejici data -> `-203` misto -230.
+     * TCP 5025 nema Basic Auth (VISA raw socket nezna HTTP hlavicky), takze tu
+     * rozhoduje jen `web_ctrl_en` — viz CLAUDE.md. */
+    src.ctrl_locked = (have && src.set_cfg == NULL) ? 1u : 0u;   /* bez snapshotu je to -230, ne ochrana */
 
     static char txbuf[SCPI_TCP_TXBUF_MAX];
     size_t n = scpi_process_ctx(&c->ctx, &src, c->rxbuf, txbuf, sizeof(txbuf) - 2u);

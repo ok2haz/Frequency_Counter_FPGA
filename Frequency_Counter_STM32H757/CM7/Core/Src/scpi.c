@@ -179,6 +179,7 @@ static const char *scpi_err_msg(int code)
         case -100: return "Command error";
         case -113: return "Undefined header";
         case -222: return "Data out of range";
+        case -203: return "Command protected";
         case -224: return "Illegal parameter value";
         case -230: return "Data corrupt or stale";
         case -241: return "Hardware missing";
@@ -773,6 +774,15 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (scpi_calc_parse(hdr, arg, &key, &vu, &vd, &err)) {
             if (err) { scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out); }
             if (src->set_cfg && src->set_cfg(src, key, vu, vd)) return 0;   /* OK → ticho */
+            /* ⚠️ Rozlis PROC to neslo: `ctrl_locked` = ovladani je zakazane
+             * (`web_ctrl_en` vypnuty / chybi autorizace) -> `-203 Command
+             * protected`. Jinak je to skutecne chybejici/zastarala data -> -230.
+             * Do 2026-09-02 vracely oba pripady -230 a hlaseni tak lhalo o pricine. */
+            if (src->set_cfg == NULL && src->ctrl_locked) {
+                scpi_err_push(c, -203);
+                snprintf(out, out_sz, "-203,\"Command protected\"");
+                return strlen(out);
+            }
             scpi_err_push(c, -230); snprintf(out, out_sz, "-230,\"Data corrupt or stale\""); return strlen(out);
         }
     }
