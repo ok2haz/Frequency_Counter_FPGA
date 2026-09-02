@@ -342,7 +342,7 @@ zrychlení). ⚠️ Nikdy nezaveď akci dostupnou jen jednou cestou.
 - Výška řádku je parametr layoutu, ne konstanta (MENU 160 px, MĚŘENÍ 76, NÁSTROJE 96).
   **Žádný layout nesmí jít pod 60 px** (projektové minimum dotykového cíle, 7 mm).
 
-- 🔑 **Fokus mimo seznamy = REGISTR TLAČÍTEK, který se plní sám.** `ui_button_render` je
+- 🔑 **JEDEN SPOJENÝ PROSTOR FOKUSU = položky okna + REGISTR TLAČÍTEK** (sjednoceno 2026-09-01, STATUS #127). Předtím se vylučovaly: okno se seznamem mělo `n = L->n` a registr tlačítek se v něm **vůbec nepoužil**, takže v MENU nešlo zaměřit `RESTART`, `? NAPOVEDA` ani `ZPET`. Pořadí je teď **nejdřív položky okna, pak tlačítka** (`enc_items_n()` / `enc_paint()`). ⚠️ **Registr plní `ui_button_render` I `ui_segmented_render`** — segmentové přepínače do něj do 2026-09-01 nespadly, takže v okně ALLAN byly encoderem nedosažitelné obě záložky i přepínač metriky. **Registruje se každý SEGMENT zvlášť**, protože aktivace jde přes dotyk na střed obdélníku a `ui_segmented_hit` mapuje x na segment. 🔴 **Každý nový typ interaktivního prvku v libui musí dostat pozorovatele registru**, jinak bude dostupný jen dotykem — a to porušuje pravidlo dvou úplných ovládacích cest. `ui_button_render` je
   jediné hrdlo, kterým procházejí **všechna** tlačítka (88 volání v `app_gpsdo.c`, 2 v
   `screen_main.c`), takže libui dostalo pozorovatele (`ui_button_set_observer`) a app si
   z něj staví seznam zaměřitelných obdélníků. **Žádné z ~45 oken tedy svoje tlačítka
@@ -385,7 +385,7 @@ helpery (`gps_selftest`), fmt_frac+hist_h vektory (`screen_main_selftest`), Maid
 — žádný HW, žádný sdílený
 stav; destruktivní testy zvlášť: `qspitest`/`storetest`), **`enc`** (encoder #29: TIM1 v encoder mode na PA8/PA9 + tlačítko PC13, 10 s živého výpisu
 kroků a stisků; piny si nastavuje sám, **nic v `.ioc`**. ⚠️ Jen HW vrstva — model fokusu v UI
-neexistuje a je to návrhové rozhodnutí, ne kód), **`eth`/`eth clk`** (ETH bring-up F0: bit-bang SMI z CM7 — reset PHY, sken adres 0–31, ID/BMCR/BMSR LAN8742A; `clk` změří REF_CLK na PA1 přes TIM2. Piny si nastavuje sám, **nic v `.ioc`** — viz `ETH_BRINGUP_CHECKLIST.md` §2. Bring-up reziduum jako `fpgaraw`), **`ping`/`screen main`/`clear`/`version`/`help`**.
+neexistuje a je to návrhové rozhodnutí, ne kód), **`eth`/`eth clk`** (ETH bring-up F0: bit-bang SMI z CM7 — reset PHY, sken adres 0–31, ID/BMCR/BMSR LAN8742A; `clk` změří REF_CLK na PA1 přes TIM2. Piny si nastavuje sám, **nic v `.ioc`** — viz `ETH_BRINGUP_CHECKLIST.md` §2. Bring-up reziduum jako `fpgaraw`), **`panel`** (zopakuje cely bring-up displeje za behu: ATTINY probe s retry -> power-on -> `HAL_DSI_Start` -> `tc358762_init` -> `HAL_LTDC_Reload` + jas, s vypisem vysledku KAZDEHO kroku). 🔴 **Proc existuje:** selhani bring-upu **neni fatalni** — `main.c` udela `goto display_skip` a pristroj bezi dal s **cernym displejem**, zatimco dotyk, UART i mereni funguji; `[ERR]` hlasky z bring-upu se pritom **nikam nedostanou**, protoze konzole jede po USB CDC, ktere v te chvili jeste neni vyctene. Stav bring-upu je nove i v `status` (radek **`DISPLEJ:`**, globál `g_display_init_step`). ⚠️ Bezi z UartTasku (nehlidany watchdogem) — kroky blokuji stovky ms. **`ping`/`screen main`/`clear`/`version`/`help`**.
 `rtc` = RTC čas (`g_rtc_text`) + zda je synchronizovaný z GPS (viz „RTC").
 **`status`** = od 2026-07-20 plná diagnostika (dřív jen „RUNNING"): verze + uptime, **příčina resetu
 + crash black-box** (`stall:UiTask`, `stack:UartTask`, …), RSR, heap free/min, CPU %, **volný stack
@@ -1138,6 +1138,7 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
   2. **`ClockPrescaler` CubeMX vynechal** z `MX_ADC3_Init` (i když `.ioc` má DIV8) → ADC běžel na 25 MHz + špatný BOOST. SensorsTask init nastaví `ADC_CLOCK_ASYNC_DIV8` (→3,125 MHz) + `HAL_ADC_Init`.
   3. **Kalibrace jsou 16-bit** (ne 12-bit jak tvrdí HAL komentář; VREFINT_CAL=24291). LL makra `__LL_ADC_CALC_*` u VREFINT dělí 12-bit → špatně. Počítáme ručně 16-bit: **`vref(+) = VREFINT_CAL×3300/vref_data`** (reference-agnostické → vrací skutečné VREF+, tj. ~2500 z VREFBUF), `Temp = (ts×vref/3300 − TS_CAL1)×80/(TS_CAL2−TS_CAL1)+30` (**korekce `×vref/3300`** protože TS_CAL je @ 3,3 V ale VREF+ je 2,5 V), `VBAT = vbat×vref/65535×4` (vnitřní dělič /4). **„VDDA" senzor teď měří VREF+ (~2,5 V), label = „VREF".**
   4. **Single-channel režim** (ScanConvMode=DISABLE, NbrOf=1, čteno po jednom) — scan polling 3 kanálů byl nespolehlivý. VBAT = pin 8 = záložní CR2032 (BT1) → VBAT senzor monitoruje tu baterii.
+  🔴 **`SENS_CORE_T` je JEDINÝ senzor, který se FILTRUJE** (IIR α=1/8 @1 Hz, τ≈8 s, v SensorsTasku **před** `sensor_update` → filtruje i min/max/avg). Změřeno 2026-09-01: dva odečty pár sekund po sobě **52,17 a 48,9 °C**; křemíkové čidlo má nekalibrovanou přesnost v jednotkách °C a jde přes VREFINT (sčítá se šum obou převodů). Zobrazuje se na **jednu desetinu** (`temp_deci`), ostatní teploty na dvě (TMP117 má krok 0,0078 °C = dvě desetiny jsou skutečně nesená informace). ⚠️ **Filtrovat se smí JEN tady a jen proto, že na té hodnotě nic nevisí** — žádný alarm, práh ani warm-up kritérium ji nečte (warm-up jede z OCXO 0x49), je to indikátor „jak je horký křemík", ne měřicí vstup. **U analogových větví (ADS0–3, VREF, VBAT) by filtr byl NEPŘÍPUSTNÝ** — ty do měření mluví a zakryl by skutečný výpadek napájení. Nekopírovat ten vzor na jiné senzory.
   Vše regen-safe v `freertos_task_sensors.c` + `main.c` USER CODE 2 (ne v generovaném `adc.c`). Diagnostika: UART `adcraw` (raw + spočítané). Detail viz `CUBEMX_CHECKLIST.md`.
 - **Ošetření chyb senzorů:** při selhání I2C čtení (HAL chyba / mutex nezískán) → `sensor_fail`: `valid=0`, hodnota se NEpřepisuje (žádný sentinel, neotráví průměry). **Log** přes UART jen na PŘECHODU stavu (první chyba po OK / obnovení) — žádný 1 Hz spam. **Displej** (diagnostika): neplatná hodnota se kreslí ztlumeně (`UI_COLOR_INK_3`) + malý červený `!` vlevo. **I2C4 MÁ recovery** (`i2c4_recover` v `freertos_task_ui.c`, od 2026-07-12, commit 16df3f8): při ≥8 po sobě jdoucích HAL selháních čtení touch (FT5x06) udělá 9 SCL pulzů (PH11) + **re-init BEZ `MX_I2C4_Init`** (jen `HAL_I2C_Init` inline) — stejný bezpečný vzor jako `i2c1_recover` níže, takže se **NEvolá** ta nebezpečná cesta popsaná v incidentu výše (ta byla o špatné 400 kHz timing hodnotě v `MX_I2C4_Init`, ne o téhle recovery technice). Rate-limit max 1×/5 s, pod `i2c4MutexHandle`. Log `touch: I2C4 nereaguje (N chyb) -> bus recovery` = normální/očekávané chování při zaseknuté sběrnici (ATTINY drží SDA po nešťastné transakci), ne chyba.
   - 🔴🔴 **`i2c4_recover()` sběrnici ZABÍJELA místo aby ji zachránila (nalezeno + opraveno 2026-08-30).**
@@ -1463,6 +1464,16 @@ a počítadel zápisů na ATTINY), `stats`, `sensors`, `scanner`, `flightrec`, `
 na disku — audit jde pustit bez IDE. Flagy se berou **z generovaného makefile**, aby seděly
 s reálným buildem: `grep -m1 -oE '\-mcpu=cortex-m7.*-o "\$@"' CM7/Release/app/subdir.mk`
 (⚠️ `tr -d '"'` — quotované `-I` cesty jinak rozbije expanze shellu).
+🔴🔴 **Flagy ber ze `subdir.mk` TOHO adresáře, ale kompilátor spouštěj z `CM?/Release`.**
+Jeden společný flag set nestačí (`app/subdir.mk` nemá `-I../Core/Inc`, takže se Core/Src
+tiše nepřeloží) a spuštění z podadresáře taky ne (`-I../Core/Inc` je relativní
+k `CM?/Release`, odkud běží `make`). Obojí selže **tiše** a audit pak hlásí „0 varování“,
+aniž by cokoli zkontroloval — přesně se to stalo 2026-09-01 (57 z 81 souborů, STATUS #118).
+⚠️ **Vždy kontroluj počet ÚSPĚŠNÝCH překladů, ne jen počet varování.**
+✅ Hotový skript, který to dělá správně: **`python tools/audit.py`** (91 souborů obou jader,
+vypíše `prelozeno OK / SELHALO / souboru s varovanim` + log). Baseline k 2026-09-01 =
+**91 OK, 0 selhání, 2 soubory s varováním** — a ta 3 varování jsou v čistě generovaném
+CubeMX kódu (`fmc.c` 2× `sdramHandle`, `main.c` `assert_failed(file)`). Cokoli navíc je regrese.
 - **Přísná varování** (`-fsyntax-only` stačí): `-Wall -Wextra -Wshadow -Wcast-align
   -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wformat=2
   -Wstrict-aliasing=2 -Wmaybe-uninitialized`.

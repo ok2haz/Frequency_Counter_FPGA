@@ -92,6 +92,22 @@ kolik je bufferů**. Nespoléhej na copy-forward: kopíruje dirty z posledních 
 snímků, a když se kvůli přeskakování neflipuje, historie z dosahu vypadne.
 Obecněji: **cache/skip vždy počítej vůči počtu konzumentů**, ne vůči jednomu.
 
+## 6b. Překryv musí mít jednoho vlastníka pixelu — a kreslit se jako poslední
+
+**Důkaz (2026-09-01):** varovný pruh §12 jsem umístil pod hlavičku, kde má hlavní
+obrazovka titulní řádek, a kreslil ho z 2Hz tiku. Jenže titulek a velké číslo se
+kreslí 20×/s, takže se vrstvy přebíjely — pruh „překrýval kmitočet a nevykresloval
+se správně".
+
+**Jak to dělat:** u každého překryvu si odpověz na dvě otázky:
+1. **Kdo ještě kreslí do těch pixelů?** Když někdo, urči jediného vlastníka
+   (u nás globální příznak `g_warn_over_uncert` — buď σ+N, nebo varování, nikdy oba).
+2. **Kreslí se překryv jako poslední v snímku?** Když ne, vyhraje ten, kdo kreslí
+   častěji. Správné místo je těsně před flipem, ne v tiku.
+
+Bonus: kreslení před každým flipem zároveň zaručí, že překryv má **každý buffer**
+— tedy tentýž problém, který řeší §6.
+
 ## 7. Generované soubory, které nejsou v gitu, jsou past při každém novém zdrojáku
 
 `subdir.mk` **i** `objects.list` (response file linkeru) generuje IDE a ani jeden
@@ -130,6 +146,25 @@ je mrtvé**:
 **Jak to dělat:** u každého nálezu se zeptej **proč** zmizel, ne jen že zmizel.
 Smaž jen to, kde umíš ukázat, že to nikdo nevolá **a nemá volat**.
 
+## 7d. Kontrola, která neproběhla, hlásí nulu nálezů
+
+`-fanalyzer` je s `-fsyntax-only` tiše vypnutý — to už tu stálo. **Je to jen jeden
+případ obecnějšího jevu**, na který jsem 2026-09-01 naletěl znovu, jinou cestou:
+auditní průchod hlásil „81 souborů, 0 varování", ale **57 z nich se vůbec
+nepřeložilo** (`fatal error: adc.h`), protože jsem vzal flagy z jednoho
+`subdir.mk` pro všechny adresáře. Nula varování byla pravdivá a zároveň bezcenná.
+
+⚠️ Konkrétně u tohohle projektu: flagy ber ze `subdir.mk` **toho** adresáře, ale
+spouštěj z **`CM?/Release`** — `make` běží odtud a `-I../Core/Inc` je relativní
+k němu, ne k adresáři se `subdir.mk`.
+
+**Pravidlo:** u každého nástroje, který „nic nenašel", si nejdřív ověř, že vůbec
+běžel — počtem úspěšně zpracovaných vstupů, ne počtem nálezů. A drž pozitivní
+kontrolu (schválně vadný vstup, který nález vyvolat musí).
+
+Platí to i mimo kompilátor: prázdný výstup gerpu v souboru, který neexistuje,
+vypadá stejně jako čistý soubor.
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
@@ -148,6 +183,46 @@ Nakreslit to teď = šedé placeholdery, tedy **horší obrazovka než dnešní*
 **Jak to dělat:** u každého prvku zadání dohledej **zdroj dat**. Když chybí, patří
 to do fáze, ne do sprintu. A když se něco kreslí z parametru, který na měření nemá
 vliv, je to lež — ne kosmetika.
+
+## 6c. Dva renderery jednoho prvku se VŽDY rozejdou
+
+Dvakrát za jeden den, stejná třída:
+
+- **#113** — velké číslo kreslí plný render i partial redraw; „předchozí obdélník"
+  pro úklid si zapisoval jen ten druhý, takže po plném renderu zůstávali duchové.
+- **#117** — statistickou kartu kreslí plný redraw (s hlavičkou) a 20Hz update
+  hodnoty (bez ní). `ui_card_inner_rect()` přičítá výšku hlavičky **jen když je
+  `header_label` nastavený**, takže rychlá cesta počítala vnitřek o 26 px výš,
+  clearem smazala popisek a hodnotu nakreslila do hlavičkového řádku.
+
+V obou případech u té odchýlené cesty stál komentář tvrdící, že geometrie je
+shodná. Komentář sdílení nezajišťuje — **kód musí sdílet ten výpočet**.
+
+**Pravidlo:** jakmile prvek kreslí víc než jedna funkce, vyčleň *geometrii i
+popisky* do jednoho helperu, který obě volají. A pozor na API, které mění
+výsledek podle toho, co je vyplněné ve vstupní struktuře (`ui_card_inner_rect`) —
+takové rozhraní si o tuhle chybu říká.
+
+## 9b. Jedna veličina = jeden typografický jazyk
+
+Hlavní obrazovka měla pro kmitočet propracovaná pravidla (tisíce tečkou, poslední
+**důvěryhodná** číslice modře podtržená, číslice **pod rozlišením hradla** menším
+fontem a šedě). Okna měřicích funkcí kreslila tentýž údaj plochým fontem bez
+jakéhokoli rozlišení důvěryhodnosti — takže **jedno číslo mluvilo na dvou místech
+dvěma jazyky** a v oknech působilo všech 5 desetin stejně platně.
+
+To není kosmetika: ztlumené číslice jsou **nesená informace** („tohle už neměříme,
+to je šum"). Když ji jedno okno má a druhé ne, uživatel se z rozdílu naučí nesprávnou
+věc — nebo si přestane všímat obojího.
+
+**Pravidlo:** jakmile má veličina někde typografii nesoucí význam, vyčleň ji do
+**sdíleného helperu** a použij ji všude, kde se ta veličina objeví. Ne kopií —
+sdílením. Měřítko se smí lišit (`mono_75` vs `mono_30`), význam ne.
+
+⚠️ Odvozený parametr (kolik číslic je nejistých) se musí počítat **stejným
+kritériem**, ne odhadem. A pozor na transformace: u „odchylka ×N" se rozlišení
+násobí **stejným činitelem** jako hodnota — bez toho by při ×1M vypadalo
+důvěryhodně číslo, které je celé pod rozlišením hradla.
 
 ## 10. Ptej se tam, kde odpověď mění práci
 
