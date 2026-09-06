@@ -19,7 +19,14 @@
  * + HTTP, webový dashboard (W0–W5) + rozšíření v12 (ovládání, mDNS gpsdo.local, SSE,
  * alarmy, GPS sky plot, dlouhá historie 24h/7d/30d + CSV). VBAT prah na CR2032 3,3 V.
  * IPC v12. ⚠️ Kód webu v12 na CM4 čeká na reflash OBOU bank na v12. */
-/* v0.8.0 (2026-09-06) = DVĚ VADY DISPLEJE UZAVŘENY NA HW (viz STATUS „PROČ NEŠEL
+/* v0.8.1 (2026-09-06) = PG11 (ETH_TX_EN) ztracel alternativni funkci -> MAC
+ * odeslal, DMA deskriptor se dokoncil bez chyby, ale PHY nikdy nedostal
+ * povoleni vysilat -> deska nedostala IP z DHCP. Stejny podpis jako PG8:
+ * na GPIOG sahaji OBE JADRA neatomickym read-modify-write. Pridan hlidac
+ * `gpio_guard_tick()` (1 Hz z defaultTask), ktery PG8/PG11/PG13 kontroluje,
+ * opravuje a POCITA zasahy (`status` -> radek GPIO HLIDAC).
+ *
+ * v0.8.0 (2026-09-06) = DVĚ VADY DISPLEJE UZAVŘENY NA HW (viz STATUS „PROČ NEŠEL
  * DISPLEJ"): (1) `PG8`/`FMC_SDCLK` byl v ANALOGOVÉM režimu → SDRAM bez hodin
  * četla samé nuly → černý displej po power-resetu, `membench` 10,5 M chyb,
  * `sdramlog` sám vypnutý; `MX_FMC_Init` pin nově potvrzuje před inicializační
@@ -32,7 +39,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 8
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.8.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.8.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

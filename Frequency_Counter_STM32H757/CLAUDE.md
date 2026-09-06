@@ -145,6 +145,18 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 
 ## 🔴 DISPLEJ ZLOBÍ? ZMĚŘ NEJDŘÍV PAMĚŤ, NE KRESLICÍ KÓD
 
+🔴🔴 **GPIOG PÍŠOU OBĚ JÁDRA — KONFIGURACE PINŮ SE ZTRÁCÍ.** CM7 na něj sahá kvůli
+FMC (PG0,1,2,4,5,8,15), QUADSPI NCS (PG6) a LED_1; CM4 kvůli ETH (PG11,13), LED_2
+(PG7), `ETH_RES` (PG14), `ETH_INT` (PG12). `HAL_GPIO_Init` dělá nad `MODER`/`AFR`
+**neatomické read-modify-write**, takže ztracený zápis jednoho jádra tiše vrátí cizí
+pin. Změřeno dvakrát: **PG8** (`FMC_SDCLK`) přišel o `MODER` → černý displej,
+**PG11** (`ETH_TX_EN`) přišel o `AFR` → deska nedostala IP (TX deskriptor se přitom
+dokončil bez chyby!). Vždy se ztratí JEN JEDNA položka, soused z téhož volání přežije.
+⚠️ Brání tomu `gpio_guard_tick()` (1 Hz z defaultTask) — kontroluje, opravuje a
+**počítá** (`status` → `GPIO HLIDAC`). Je to obrana, ne oprava příčiny; správně
+by se konfigurace sdílených GPIO měla serializovat (HSEM). **Nenulové počítadlo
+= závod opravdu probíhá.** Nový pin na GPIOG → přidej ho do hlídače.
+
 🔴🔴 **A ÚPLNĚ NEJDŘÍV: DOSTÁVÁ SDRAM HODINY?** `PG8` = `FMC_SDCLK` musí být
 v **AF12**. Ověření sondou: `GPIOG->MODER` (0x58021800), bity [17:16] pro PG8
 musí být `10`, **ne `11` (analog)**. Bez hodin čip nepřijme jediný příkaz,

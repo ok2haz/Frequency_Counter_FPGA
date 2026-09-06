@@ -6,6 +6,7 @@
  * viz CLAUDE.md "UART příkazy".
  */
 
+#include "gpio_guard.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
@@ -1726,6 +1727,13 @@ void UartTask_run(void *argument)
 					  	  printf("LTDC: podteceni FIFO %lu / %lu flipu = %lu na 1000%s\n",
 					  	         (unsigned long)fu, (unsigned long)fl,
 					  	         (unsigned long)per1k, verd); }
+					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
+					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
+					  	if (g_gpio_guard_fix_total)
+					  		printf("GPIO HLIDAC: %lu oprav (SDCLK %lu, ETH TX %lu) <== zavod jader o GPIOG\r\n",
+					  		       (unsigned long)g_gpio_guard_fix_total,
+					  		       (unsigned long)g_gpio_guard_fix_sdclk,
+					  		       (unsigned long)g_gpio_guard_fix_txen);
 					  	/* Glow se pri prekroceni stropu masky NEKRESLI a mlci — citac
 					  	 * je jediny zpusob, jak to poznat (viz glow.c). */
 					  	if (g_prim_glow_skipped)

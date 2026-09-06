@@ -35,6 +35,7 @@
 #include "flightrec.h"        /* flightrec_init/tick — kontext pred resetem (TODO #18) */
 #include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
+#include "gpio_guard.h"       /* hlidac konfigurace GPIOG (PG8 SDCLK, PG11/13 ETH TX) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
 #include "screens/screen_main.h"   /* screen_main_selftest — run_selftests() */
@@ -223,6 +224,94 @@ volatile char     g_web_user[16] = "admin";
 volatile char     g_web_pass[20] = "";     /* prazdne = jeste nevygenerovano */  /* IPC_VERSION obrazu CM4; != IPC_VERSION => nesoulad bank */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
+
+/**
+  ******************************************************************************
+  * @file    gpio_guard.c
+  * @brief   Hlida a opravuje konfiguraci KRITICKYCH pinu na GPIOG.
+  *
+  * 🔴 PROC TOHLE EXISTUJE (2026-09-06, oboji zmereno na HW sondou):
+  *   - `PG8` = `FMC_SDCLK` mel `MODER` = 11 (ANALOG), zatimco `AFR` mel spravne
+  *     AF12 -> SDRAM nedostavala hodiny, cetla same nuly -> CERNY DISPLEJ,
+  *     `membench` 10,5 M chybnych bitu, `sdramlog` sam vypnuty (STATUS #196).
+  *   - `PG11` = `ETH_TX_EN` mel `MODER` = AF, ale `AFR` nibble = 0 misto AF11
+  *     -> MAC data odeslal, DMA deskriptor se dokoncil bez chyby, ale PHY nikdy
+  *     nedostal povoleni vysilat, takze na drat nesel ani jeden ramec ->
+  *     deska nedostala IP z DHCP (STATUS #205). Overeno: po obnoveni AF11
+  *     prisla adresa do 25 s a HTTP i ping zacaly odpovidat.
+  *
+  * 🔑 SPOLECNY JMENOVATEL: na `GPIOG` sahaji OBE JADRA
+  *      CM7 — FMC (PG0,1,2,4,5,8,15), QUADSPI NCS (PG6), LED_1
+  *      CM4 — ETH (PG11,13), LED_2 (PG7), ETH_RES (PG14), ETH_INT (PG12)
+  *    a `HAL_GPIO_Init` dela nad `MODER`/`AFR`/`OSPEEDR`/`PUPDR` NEATOMICKE
+  *    read-modify-write. Ztraceny zapis (jedno jadro precte registr, druhe ho
+  *    mezitim zmeni, prvni zapise svou zastaralou kopii) presne odpovida obema
+  *    nalezum: v obou pripadech se ztratila JEN JEDNA polozka (u PG8 `MODER`,
+  *    u PG11 `AFR`), zatimco sousedni pin ve stejnem volani prezil.
+  *
+  * ⚠️ Tohle je OBRANA, ne odstraneni priciny. Spravne reseni je serializovat
+  * konfiguraci sdilenych GPIO mezi jadry (HSEM), pripadne nedovolit druhemu
+  * jadru na tentyz port sahat. Dokud to nebude, hlidac to opravi a hlavne
+  * SPOCITA — `status` ukaze, kolikrat uz musel zasahnout, takze se pozna,
+  * jestli k tomu dochazi jen pri startu, nebo porad.
+  *
+  * ⚠️ Hlidac zapisuje jen kdyz je hodnota SPATNE (zadny zbytecny provoz na
+  * sbernici) a sam pouziva read-modify-write — muze tedy teoreticky prohrat
+  * tentyz zavod. Nevadi: pri dalsim tiku to opravi znovu.
+  ******************************************************************************
+  */
+/* Pocty zasahu — vystavene do `status`. */
+volatile uint32_t g_gpio_guard_fix_sdclk;   /* PG8  FMC_SDCLK */
+volatile uint32_t g_gpio_guard_fix_txen;    /* PG11 ETH_TX_EN */
+volatile uint32_t g_gpio_guard_fix_total;
+
+/* Kontrolovane piny. AF se overuje jen kdyz pin MA byt v AF rezimu. */
+#define PIN_SDCLK   8u
+#define PIN_TXEN    11u
+#define PIN_TXD0    13u
+
+#define GG_MODE_AF  2u   /* MODER: 10 = alternate function (vlastni jmeno, MODE_AF koliduje s HAL) */          /* MODER: 10 = alternate function */
+#define AF_FMC      12u
+#define AF_ETH      11u
+
+/* Vrati 1 kdyz musel opravit. */
+static int check_pin(uint32_t pin, uint32_t want_af)
+{
+    uint32_t mshift = pin * 2u;
+    uint32_t areg   = pin >> 3u;             /* 0 = piny 0-7, 1 = piny 8-15 */
+    uint32_t ashift = (pin & 7u) * 4u;
+
+    uint32_t moder = GPIOG->MODER;
+    uint32_t afr   = GPIOG->AFR[areg];
+    int bad = 0;
+
+    if (((moder >> mshift) & 3u) != GG_MODE_AF) bad = 1;
+    if (((afr   >> ashift) & 0xFu) != want_af) bad = 1;
+    if (!bad) return 0;
+
+    /* Poradi jako v `HAL_GPIO_Init`: nejdriv AF, pak teprve MODER — jinak by
+     * pin na okamzik jel v alternativni funkci s CHYBNYM mapovanim. */
+    afr &= ~(0xFu << ashift);
+    afr |=  (want_af << ashift);
+    GPIOG->AFR[areg] = afr;
+
+    moder &= ~(3u << mshift);
+    moder |=  (GG_MODE_AF << mshift);
+    GPIOG->MODER = moder;
+
+    return 1;
+}
+
+void gpio_guard_tick(void)
+{
+    /* ⚠️ `PG13` (ETH_TXD0) se ZAMERNE jen kontroluje spolu s TX_EN: pri obou
+     * pozorovanych vadach zustal v poradku, takze zatim neni duvod ho psat
+     * zvlast — kdyby se to zmenilo, pricti ho do stejneho pocitadla. */
+    if (check_pin(PIN_SDCLK, AF_FMC)) { g_gpio_guard_fix_sdclk++; g_gpio_guard_fix_total++; }
+    if (check_pin(PIN_TXEN,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
+    if (check_pin(PIN_TXD0,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
+}
+
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
 volatile uint32_t g_crash_bfar = 0;   /* SCB->BFAR = adresa, ktera fault zpusobila */
 volatile uint32_t g_crash_lr   = 0;   /* stacknute LR = odkud se skocilo (caller) */
@@ -466,6 +555,10 @@ void StartDefaultTask(void *argument)
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
+    /* Konfigurace GPIOG se za behu ZTRACELA (PG8 = FMC_SDCLK -> cerny displej,
+     * PG11 = ETH_TX_EN -> zadny odeslany ramec). Na port sahaji obe jadra
+     * neatomickym read-modify-write; hlidac to opravi a spocita. Viz gpio_guard.c. */
+    gpio_guard_tick();
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
     flightrec_tick();            /* flight recorder: 1x/s do RAM (do flash az pri poruse) */
     sd_export_tick();            /* SD: detekce karty + auto-unmount (LEVNY; mount/export = UartTask) */
