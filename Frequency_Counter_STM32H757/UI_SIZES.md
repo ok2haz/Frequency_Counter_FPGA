@@ -101,6 +101,34 @@ baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = **`rect.y + 25`**, text tedy sah
 
 ## Změnový log
 
+- **2026-08-29 (reorganizace rozcestníků — 4. iterace, 3 úrovně)**:
+  - **TOP MENU → 4 velké dlaždice** 346×160 (x=44/410, y=68/240): Nastavení > · System Health ·
+    Diagnostika > · Měření >.
+  - **MĚŘENÍ (s_view=44)** = nový podrozcestník 3×4 = 12 dlaždic (248×76, geometrie jako dřívější
+    top Menu): Čítač/Prezentace/Analýza/Math-Limity/Allan detail/Histogram/Holdover/Datalog/
+    Kvalita GPS/TI 1PPS/Dvojkanál/Odchylka ×N.
+  - **NÁSTROJE (s_view=48)** = z footeru Diagnostiky (`NASTROJE > · ZPĚT`), mřížka 3×2 = 6 (248×96,
+    y=92/214): Blok.schéma/Paměť/Selftest/Benchmark/SD karta/Reference. Footer Diagnostiky
+    DIAGRAM/PAMET/SELFTEST → 1 tlačítko NÁSTROJE.
+  - **3 nové měřicí funkce**: TI 1PPS (45, placeholder — HW), Dvojkanál (46, /4+/16 + RF bargraf
+    30 segm.), Odchylka ×N (47, df·N `x1..x1M` + ppb/ppm, footer `x N` cyklus + `NUL`).
+  - Screensaver-exit switch vrácen na konzervativní sadu (blbuvzdorné `render_view` zamrzlo touch).
+
+- **2026-08-29 (reorganizace rozcestníků — 3. iterace)**: MENU = nástroje/měření/monitoring,
+  NASTAVENÍ = jen konfigurace.
+  - **NASTAVENÍ 3×4 → 3×3** (9 dlaždic, 246×76 = 8,9 mm ✓, y=68/154/240): DISPLEJ · Jazyk ·
+    ALARMY · CAS · SIT · KALIBRACE · ANIMACE · SESTAVY · O PRISTROJI.
+  - **MENU zůstává 3×4** (12 dlaždic, všech 12 obsazených): ř1 huby (System Health/Diagnostika/
+    Nastavení), ř2 Čítač/Holdover/Datalog, ř3 Math-Limity/Měření/Kvalita GPS, ř4 **Benchmark/
+    SD karta/Reference** (přesunuty z Nastavení — jsou to nástroje). Pryč: 3× placeholder, Status ribbon.
+  - **System Health footer 4→2 tlačítka**: `SENZORY {18,417,200,61} · GRAFY {236,417,200,61} · ZPĚT`
+    (DIAGNOSTIKA + NASTAVENI odsud pryč — jsou dlaždice Menu). Diagnostika footer beze změny
+    (`DIAGRAM · PAMET · SELFTEST · ZPĚT`).
+  - **Status ribbon demo** → footer tlačítko `STATUS RIBBON > {18,417,300,61}` v okně EFEKTY.
+  - **Optimalizace:** `MENU_ITEMS` + `ACT_*` enum + `menu_activate()` switch (3 reprezentace
+    jedné tabulky) → `MENU_ITEMS` nese rovnou `void(*fn)(void)`. Enum i switch smazány (−~35 ř.).
+    Zbylé mrtvé `ACT_KALIB/ALARMS/CAS/ANIM/NET/RIBBON/FREE` odešly s tím.
+
 - **2026-08-15 (8. vlna — HW průchod + tři nová okna)**: první vlna ověřená **okem na displeji**
   (dosud se layout počítal z tabulek fontů). Průchod `HW_OVERENI_PRUCHOD.md` našel 10 chyb.
   - **Tři nová okna**: **DISPLEJ** (s_view=36 — jas + auto-dim + Vzhled, přesunuto z Nastavení),
@@ -163,6 +191,30 @@ baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = **`rect.y + 25`**, text tedy sah
   - **#11(2b) — globální bump mono_16→18/sans_16→18**: ~48 míst v `app_gpsdo.c` + `screen_main.c` (Diagnostika, GPS, Health, Senzory, Paměť, O přístroji, boot splash, Reference, Kalibrace, `kv_row` helper, Čítač, histogram/trend overlaye, komunikační diagram — uzly `cd_node` i OCXO/RF popisky `cd_label_x`). Každé místo ověřeno tabulkou fontů: **šířka** (`advance` součet vs. box) i **skutečná výška glyfu** (`oy` konkrétního znaku — NE nominální `ascent` fontu, který je worst-case pro celou znakovou sadu včetně diakritiky a zbytečně by zamítl bezpečné případy). Komunikační diagram měl box výšky přesně 22–24 px; přepočet přes reálné `oy` (14 u velkých písmen/číslic na mono_18/sans_18, ne nominálních 16/18) ukázal 2–6 px rezervu → bezpečně bumpnuto (OCXO popisek navíc rozšířen 116→124 px, měl jen 1 px vodorovné rezervy).
   - **6 míst vědomě NEbumpnuto** (komentář `TODO #11(2b)` u každého): GPS "Vet:/Fix:" čítače a Diagnostiky `g_freq_info` (SPI info řádek) — oba přetékají svůj box i při současném mono_16/sans_16 při extrémních hodnotách, bump by to jen zhoršil; GPS HDOP/PDOP řádek (mono_18 by přetekl i při jednociferných hodnotách — box bez clipu, přetečení by bylo vizuálně viditelné, ne tiché); Health "Reset:" řádek (dokumentovaný 34znakový worst-case sedí na mono_16 přesně, na mono_18 by přetekl); main-old větev `draw_stat_card` (zamrzlá referenční obrazovka, viz níže — na ní se záměrně nedělají žádné další úpravy).
   - **Main old/new**: `s_layout_old` default přepnut na `true` — **stará (pre-4,3") obrazovka je teď výchozí/zamrzlá referenční verze**, nové úpravy hlavní obrazovky cílí na `render_body_grid_v2`/`_v2` funkce (přepnutí na NEW = tlačítko "Main SW").
+- **2026-08-30 (audit + fonty + I2C4)**:
+  - **`ui_font_mono_20` ZRUŠEN** — sloučen do `mono_22` (plný charset 432 glyfů stál 39,5 KB
+    = 5 % obrazu, přitom jen 9 volání). Dopad na vzhled: **stavový řádek hlavní obrazovky**
+    („FREQUENCY · CH B · GATE 1 s") je o 10 % větší (advance 12→13 px, výška 15→17 px);
+    ověřeno výpočtem, že se vejde — končí na x=458, pravý text `N 312 · Ω regrese` začíná
+    na x=588. Týká se i 3 řádků v oknech SÍŤ/PŘÍSTUP.
+  - 🔴 **Neviditelné texty (15 nálezů) — subsetované fonty.** `prim_draw_text` chybějící glyf
+    TIŠE PŘESKOČÍ. Doplněno: `mono_25` +malá písmena+`()=?Δ` (11 nadpisů oken se kreslilo jen
+    z velké části, modal „Opravdu restartovat?" ukazoval jen „O"), `mono_75` +`DGOPS` (splash
+    logo „GPSDO" se nekreslilo VŮBEC), `mono_30` +`+-`, `sans_32` +`smunp` (jednotky periody).
+  - **Dvojkanál (s_view=46) přeskládán**: `CH A` / `CH B` **nad sebou**, dvě karty 764×178
+    (y=52 a y=236). V každé: kmitočet `mono_30` + jednotka `sans_18` zvlášť (mono_30 nemá
+    'H'/'z'), RF bargraf 720×40 s číselnou hodnotou, vlastní stavový řádek. Svislý rozpočet
+    je v komentáři u `DUALCH_CA_Y`.
+  - **Odchylka ×N (s_view=47)**: řádky posunuty 250/286/322/358 → **236/272/308/344** —
+    `kv_row_live` čistí box `baseline-22..+8`, takže řádek na 358 sahal 4 px ZA dolní hranu
+    karty a přemaloval její rámeček.
+  - **MĚŘENÍ (s_view=44)**: dlaždice „Čítač" nově vede na hlavní obrazovku (klasické zobrazení),
+    FPGA detail je „Čítač detail"; „Allan detail" zrušen jako dlaždice (otevírá se rozklikem
+    Allan náhledu na hl. obrazovce), na jeho místě „Math/Limity".
+  - **Banner „DOTYK NEDOSTUPNY"** přes patku (y=410..480) při trvale mrtvé I2C4.
+  - ⚠️ Kontrola geometrie je nově **mechanická**: checker nad skutečnými tabulkami fontů
+    ověřil 95 popisků tlačítek (0 přetečení) a překryvy rectů v každé render funkci (0).
+
 - **2026-07-19 (oprava + pilulky)**:
   - **Bug fix okno Čas**: tlačítko AUTO CET/CEST po přepnutí varianty (NORMAL↔ACTIVE) nechávalo v rozích "duchy" (čtverečky ze starší barvy) — `prim_fill_rect_rounded` kreslí zaoblené rohy přes `aa_corner`→`prim_internal_blend_px`, který zapisuje přímo do framebufferu a **obchází `mark_dirty`** (ten volá jen DMA2D `d2d_fill`/`d2d_blit_ex`). Rohy se tedy nikdy neoznačí jako "dirty" a při triple bufferingu (copy-forward jen označených oblastí) se nezkopírují dopředu — projeví se to JEN u tlačítek, která mění variantu/barvu při partial redrawu bez předchozího `blit_bg_region`/clear (jediné takové v appce = `cas_upd_mode`; footer tlačítka mají `blit_bg_region` už zabudované, ostatní partial-redraw tlačítka drží stále stejnou variantu). Oprava: `prim_fill_rect(TZ_AUTO_RECT, BG_CARD, REPLACE)` před `ui_button_render` — REPLACE jde DMA2D cestou, která `mark_dirty` volá, takže následný AA blend rohů spadá do už označené oblasti.
   - **Pilulky v headeru**: label font mono_14→**mono_16** (sjednoceno s hodnotou — labely "HDOP"/"CAL"/"HOLD" byly nejmenší text v celém UI). Aby se 6 pilulek pořád vešlo před hodiny i v nejhorším reálném stavu ("GNSS FIX" + "SYS ERR" současně), `UI_DIM_PILL_GAP` 5→4 a `UI_DIM_PILL_INNER_GAP` 6→5 (ověřeno součtem šířek z tabulek fontů: řada končí na x=660, hodiny začínají na x=668 → 8 px rezerva).

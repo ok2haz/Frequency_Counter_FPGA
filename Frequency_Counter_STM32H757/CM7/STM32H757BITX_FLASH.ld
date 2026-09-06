@@ -54,7 +54,29 @@ MEMORY
    * (viz CLAUDE.md SDRAM mapa: R0 2MB @C0000000, R1 4MB @C0400000). Slouzi pro
    * .sdram sekci (libprim glow + screen caches). Mimo MPU R0/R1 -> default mapa
    * = Device pamet (pristupne, DMA2D-koherentni). */
-  SDRAM (xrw)    : ORIGIN = 0xC0800000, LENGTH = 16M
+  SDRAM (xrw)    : ORIGIN = 0xC0800000, LENGTH = 4M
+  /* Datova cache mereni v SDRAM (`sdram_log.c`) — dlouha PRESNA historie pro
+   * analyzu (Allan na dlouhych tau, spektrogram, proklad), na rozdil od
+   * decimacni pyramidy v RAM.
+   * ⚠️ ORIGIN i LENGTH musi byt mocnina 2 a prirozene zarovnane — pokryva to
+   * MPU region 3 (Normal, WBWA cacheable) v main.c MPU_Config(). Bez toho by
+   * to spadlo do defaultni mapy = Device pamet, kde je sekvencni CPU cteni
+   * radove pomalejsi (zadny cache-line prefetch).
+   *
+   * ⚠️ ROZLOZENI 32MB SDRAM (revize 2026-08-30 — drz REZERVU, nemapuj vse):
+   *   0xC0000000  4M  MPU R0 WT     framebuffery FB0/1/2 (3 MB) + 1 MB volno
+   *   0xC0400000  4M  MPU R1 WBWA   scratch (membench, screenshot)
+   *   0xC0800000  4M  default/Device `.sdram` = glow + bg_cache + glyph atlas
+   *                                  (realne 1,79 MB -> 2,2 MB rezerva)
+   *   0xC0C00000  4M  ---           VOLNE
+   *   0xC1000000  8M  MPU R3 WBWA   `.measlog` datova cache mereni
+   *   0xC1800000  8M  ---           VOLNE
+   *   => obsazeno 20 MB, VOLNO 12 MB (37 %)
+   * ⚠️ `.sdram` MUSI zustat mimo cacheable MPU region — glyph atlas z nej cte
+   * primo DMA2D a Device pamet je koherentni bez udrzby cache.
+   * Kdyby bylo potreba delsi historie, log muze narust 8->16 MB (soused
+   * 0xC1800000 je volny a zarovnani sedi) = jeden radek zde + `SDRAM_LOG_BYTES`. */
+  SDRAM_LOG (xrw) : ORIGIN = 0xC1000000, LENGTH = 8M
 }
 
 /* Sections */
@@ -180,6 +202,22 @@ SECTIONS
     *(.sdram*)
     . = ALIGN(32);
   } >SDRAM
+
+  /* Datova cache mereni (NOLOAD — plni se za behu z FpgaTasku). Vlastni region,
+   * aby nemohla kolidovat s `.sdram`; hranice exportujeme jako symboly, takze
+   * `sdram_log.c` nemusi mit adresu natvrdo a linker hlida preteceni.
+   * ⚠️ Sekce se jmenuje `.measlog`, NE `.sdram_log`: sekce `.sdram` vyse ma
+   * hladovy wildcard `*(.sdram*)`, ktery by `.sdram_log` spolkl driv (prvni
+   * shoda vyhrava) a 16MB pole by skoncilo v 8MB regionu SDRAM. */
+  .measlog (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _smeaslog = .;
+    *(.measlog)
+    *(.measlog*)
+    . = ALIGN(32);
+    _emeaslog = .;
+  } >SDRAM_LOG
 
   /* IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB). NOLOAD
    * (plni se za behu, zadny load z FLASH). ⚠️ MUSI byt non-cacheable — zajistuje

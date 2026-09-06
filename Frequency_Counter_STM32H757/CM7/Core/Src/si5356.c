@@ -92,6 +92,23 @@ static bool wr_masked(I2C_HandleTypeDef *h, uint8_t reg, uint8_t val, uint8_t ma
     return wr(h, reg, cur);
 }
 
+bool si5356_read_sticky(I2C_HandleTypeDef *hi2c, uint8_t *sticky)
+{
+    /* ⚠️ Bez prepinani stranky — stejne jako `si5356_read_status`: cip zustava
+     * po `si5356_init` na page 0 a cteni 218 tak funguje prokazatelne (status
+     * `0x04` na desce). 247 je na teze strance, takze se drzi tehoz vzoru. */
+    return rd(hi2c, SI5356_REG_STICKY, sticky);
+}
+
+bool si5356_clear_sticky(I2C_HandleTypeDef *hi2c, uint8_t mask)
+{
+    uint8_t v;
+    if (!rd(hi2c, SI5356_REG_STICKY, &v)) return false;
+    /* AN565: sticky bit se maze ZAPISEM NULY. Bity mimo `mask` zapisujeme
+     * nezmenene (tedy 1, kdyz jsou nastavene), takze zustanou platne. */
+    return wr(hi2c, SI5356_REG_STICKY, (uint8_t)(v & (uint8_t)~mask));
+}
+
 bool si5356_read_status(I2C_HandleTypeDef *hi2c, uint8_t *status)
 {
     return rd(hi2c, REG_STATUS, status);

@@ -437,6 +437,62 @@ bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out)
     return ok && unpack_rec(b, out);
 }
 
+/* ── Bulk cteni (STATUS #142) ─────────────────────────────────────────────────
+ * `datalog_read_back` plati na KAZDY 32B zaznam vlastni mutex i vlastni QSPI
+ * prikaz (instrukce + 4B adresa + 8 dummy). Zmereno: ~173 us/zaznam, zatimco
+ * samotnych 32 B je pri 4,6 MB/s jen ~7 us -> **rezie je 25x vetsi nez prenos**,
+ * takze pruchod desitkami tisic zaznamu (okna GRAFY / KVALITA GPS / ANALYZA,
+ * `datalog csv`, rekonstrukce Allanovy pyramidy) trval jednotky az desitky sekund.
+ *
+ * 🔑 Zaznamy davky lezi v ringu SOUVISLE: `from_newest+1` je o 32 B NIZ nez
+ * `from_newest`, takze n zaznamu = jeden blok `n*32 B`. Staci ho precist najednou
+ * (pripadne ve dvou kusech, kdyz prelezl pres konec ringu) a rozbalit pozpatku.
+ *
+ * ⚠️ Scratch je `static` — 2 kB na stack malych tasku nepatri (viz CLAUDE.md).
+ * Proto je funkce chranena TIMTEZ mutexem jako cely prenos: dva soubezni ctenari
+ * by si scratch prepsali. */
+static uint8_t s_bulk[DATALOG_BULK_MAX * DATALOG_REC_SIZE];
+
+uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
+                           uint32_t max_n, uint32_t *consumed)
+{
+    if (consumed) *consumed = 0;
+    if (!s_ready || out == NULL || max_n == 0u || from_newest >= s_count) return 0;
+
+    uint32_t n = max_n;
+    if (n > s_count - from_newest) n = s_count - from_newest;   /* nekoukat za nejstarsi */
+    if (n > DATALOG_BULK_MAX)      n = DATALOG_BULK_MAX;
+    if (n == 0u) return 0;
+
+    const uint32_t cap = s_be->capacity;
+    const uint32_t len = n * DATALOG_REC_SIZE;
+    /* Zacatek bloku = pozice NEJSTARSIHO zaznamu davky (`from_newest + n - 1`),
+     * tedy o (from_newest + n) zaznamu zpet od hlavy. */
+    const uint32_t back  = (from_newest + n) * DATALOG_REC_SIZE;
+    const uint32_t start = (s_head + cap - (back % cap)) % cap;
+
+    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return 0;
+    bool ok;
+    if (start + len <= cap) {
+        ok = s_be->read(start, s_bulk, len);                    /* jeden kus */
+    } else {                                                    /* preteklo pres konec ringu */
+        uint32_t first = cap - start;
+        ok = s_be->read(start, s_bulk, first)
+          && s_be->read(0u, s_bulk + first, len - first);
+    }
+    osMutexRelease(qspiMutexHandle);
+    if (!ok) return 0;
+
+    /* V bufferu je nejstarsi zaznam PRVNI, volajici ceka nejnovejsi prvni. */
+    uint32_t got = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *p = &s_bulk[(n - 1u - i) * DATALOG_REC_SIZE];
+        if (unpack_rec(p, &out[got])) got++;   /* poskozeny/prazdny -> preskoc (jako `continue`) */
+    }
+    if (consumed) *consumed = n;               /* pokryte POZICE, vc. preskocenych */
+    return got;
+}
+
 void datalog_format_status(char *buf, int buflen)
 {
     if (buf == NULL || buflen <= 0) return;

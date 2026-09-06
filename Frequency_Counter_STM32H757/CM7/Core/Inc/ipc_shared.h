@@ -30,7 +30,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  12u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  13u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -57,7 +57,13 @@
                                        ⚠️⚠️ v12 MENI LAYOUT PRED `cm4` blokem (snapshot roste o alarmy+
                                        druzice) -> gracefull detekce nesouladu bank (cm4_ipc_version na
                                        znamem offsetu) TADY NEFUNGUJE. MUSI se preflashnout OBE banky;
-                                       jinak si jadra prestanou rozumet uz v adrese cm4 bloku. */
+                                       jinak si jadra prestanou rozumet uz v adrese cm4 bloku.
+                                       v13 (2026-08-26): `IPC_F_SIM` (jen bit ve `flags` — snapshot NEroste,
+                                       emulovana data uz nejdou zamenit za mereni na webu/SCPI) + min/max
+                                       OBALKA kmitoctu v `ipc_log_rec_t` a davkovane cteni datalogu
+                                       (`req_env`/`resp_scanned`/`resp_full_env`).
+                                       ⚠️ Roste jen `log`, ktery je AZ ZA `cm4` blokem -> detekce nesouladu
+                                       bank u v13 FUNGUJE (na rozdil od v12). Flashnout stejne obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -215,7 +221,11 @@ typedef struct {
  * ⚠️ Datalog cte JEN CM7 (W25Q je na CM7); CM4 na nej nema pristup -> tudy. */
 typedef struct {
     uint32_t t_unix;               /* UTC [s]; 0 = RTC nesynchronizovano */
-    uint64_t freq_x100000;         /* kmitocet × 1e5 (zvoleny zdroj) */
+    uint64_t freq_x100000;         /* kmitocet × 1e5 (zvoleny zdroj) — reprezentant bucketu */
+    /* v13: MIN/MAX kmitoctu v ramci bucketu (obalka). Prosta decimace („ber kazdy
+     * N-ty zaznam") vykyv MEZI vzorky NEUKAZE — u okna 24 h pripada na jeden bod
+     * ~30 min, takze by se ztratilo skoro vse. 0 = nedostupne (obalka nevyzadana). */
+    uint64_t freq_min_x100000, freq_max_x100000;
     int16_t  t_ocxo_c100;          /* OCXO [0,01 °C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;         /* STM deska [0,01 °C] */
     uint16_t ocxo_vc_mv;           /* ladici napeti [mV] */
@@ -227,14 +237,27 @@ typedef struct {
     uint8_t  _pad;
 } ipc_log_rec_t;
 
+/* ⚠️ Strop CTENI na JEDEN pozadavek (v13). Poctiva obalka by musela precist VSECHNY
+ * zaznamy v okne (24 h = 8640, 7 dni = 60 480, 30 dni = 259 200); pri ~128 ctenich
+ * na tik defaultTasku (100 Hz) by 30 dni trvalo pres 20 s. Nad timto stropem se
+ * proto bucket VZORKUJE (min/max z casti zaznamu) a odpoved to PRIZNA pres
+ * `resp_full_env` — obalka z podvzorku se nesmi vydavat za uplnou. */
+#define IPC_LOG_SCAN_MAX    20000u   /* max. prectenych zaznamu na pozadavek (~1,6 s) */
+#define IPC_LOG_SCAN_BUDGET   128u   /* max. cteni na JEDNO volani service (~5 ms, viz "zadny spin >10 ms") */
+
 typedef struct {
     volatile uint32_t req_gen;     /* CM4 zvedne pri NOVEM pozadavku (0 = zadny) */
     uint32_t req_from;             /* index nejnovejsiho zaznamu (0 = posledni zapsany) */
     uint16_t req_count;            /* kolik zaznamu (<= IPC_LOG_CHUNK) */
     uint16_t req_step;             /* decimace: ber kazdy `req_step`-ty (>=1) */
+    uint8_t  req_env;              /* v13: 1 = spocitej min/max obalku kmitoctu v bucketu */
+    uint8_t  _pad_rq[3];
     volatile uint32_t resp_gen;    /* CM7 nastavi = req_gen po naplneni `rec[]` */
     uint16_t resp_count;           /* kolik zaznamu SKUTECNE nacteno */
     uint16_t resp_total;           /* kolik zaznamu v logu vubec je (pro UI rozsah) */
+    uint32_t resp_scanned;         /* v13: kolik zaznamu se pro obalku opravdu precetlo */
+    uint8_t  resp_full_env;        /* v13: 1 = obalka z KAZDEHO zaznamu, 0 = z podvzorku */
+    uint8_t  _pad_rs[3];
     ipc_log_rec_t rec[IPC_LOG_CHUNK];
 } ipc_datalog_xfer_t;
 
@@ -318,6 +341,11 @@ _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4
 #define IPC_F_SI5356_LOS   (1u << 5)   /* ztrata 10 MHz reference (bit3 reg218) */
 #define IPC_F_DATALOG_ON   (1u << 6)
 #define IPC_F_RUNNING      (1u << 7)   /* mereni bezi (RUN) */
+/* ⚠️ Kmitocet pochazi z EMULATORU ramcu (`fpgasim`), ne z FPGA. Bez tohoto bitu
+ * servirovaly web i SCPI pres TCP/HTTP emulovana data jako mereni — displej,
+ * UART `status` i datalog (`DATALOG_F_SIM`) je pritom oznacuji. Volny bit ve
+ * `flags`, takze snapshot NEroste a `IPC_VERSION` se kvuli nemu nezvedá. */
+#define IPC_F_SIM          (1u << 8)   /* data z emulatoru fpgasim (NE realne mereni) */
 
 /* ── Typy prikazu (CM4 -> CM7). */
 enum {

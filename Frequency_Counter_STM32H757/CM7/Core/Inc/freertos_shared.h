@@ -42,7 +42,18 @@ extern volatile uint8_t g_stats_reset_req;
 extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];
 extern volatile uint8_t g_freq_dirty;
+/* 1 = varovny pruh (zadani UI §12) prave lezi v pasu nejistoty pod velkym
+ * cislem -> `screen_main_redraw_uncert` tam NESMI kreslit σ+N. Vlastnika
+ * pixelu ma vzdy jen jeden; jinak se dve vrstvy prebijeji. */
 extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí */
+/* Numericky vybrany zdroj pro headline + statistiky (#1) — plní FpgaTask, čte screen_main. */
+extern volatile uint64_t g_freq_x100000;   /* kmitočet × 1e5 (dělička /4 nebo /16 už zahrnuta) */
+extern volatile uint32_t g_freq_seq;       /* SEQUENCE posledního platného rámce (kadence vzorků) */
+extern volatile uint8_t  g_freq_valid;     /* 1 = platné měření (CRC+VALID+FRESH) */
+/* Surová reciproká dvojice pro HI-RES headline (víc desetin než zaokrouhlené `x100000`). */
+extern volatile uint64_t g_freq_edges;     /* počet period v okně (pin28 = /4) */
+extern volatile uint64_t g_freq_gate_ns;   /* skutečná délka okna [ns] */
+extern volatile uint8_t  g_freq_hires;     /* 1 = zdroj je /4 → lze dopočítat; 0 = /16 (edge_count chybí) */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
 extern volatile char    g_spi_text[64];
@@ -52,6 +63,16 @@ extern volatile uint8_t g_spi_dirty;
 /* ── Si5356 reference (zapisuje SensorsTask z I2C1, čte diagnostika) ────── */
 extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
 extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
+/* 🔴 STICKY stav reference (registr 247), LATCH V FIRMWARE.
+ * Registr 218 je ŽIVÝ, takže krátký výpadek 10 MHz mezi dvěma čteními (2×/s)
+ * byl dosud NEVIDITELNÝ — a u kmitočtového normálu to znamená, že měření
+ * pořízená mezitím jsou neplatná, aniž by to kdokoli poznal.
+ * ⚠️ Drží se i v firmware (ne jen na čipu), aby uživatelské vynulování mohlo
+ * proběhnout vědomě: `g_si5356_clr_req` → obslouží SensorsTask (vlastník I2C1).
+ * ⚠️ `SI5356_LOS_XTAL` se do latche NEPOUŠTÍ — krystal není osazen, bit je
+ * trvale 1 a zaplevelil by hlášení napořád. */
+extern volatile uint8_t g_si5356_sticky;   /* reg 247, kumulativně (bez LOS_XTAL) */
+extern volatile uint8_t g_si5356_clr_req;  /* 1 = vynulovat sticky (žádost pro SensorsTask) */
 
 /* ── RTC (zapisuje defaultTask přes rtc_app_tick, čte UART/UI) ───────────────
  * RTC běží z LSE (32.768 kHz), disciplinuje se z GPS UTC. Text "YYYY-MM-DD HH:MM:SS".
@@ -108,6 +129,28 @@ extern volatile uint8_t g_ui_cfg_req_pend;  /* 1 = ceka na aplikaci UiTaskem */
  * (ztlumeni po necinnosti). UiTask (okno Nastaveni) meni + nastavi dirty;
  * defaultTask (rtc_save_syscfg_if_dirty) zapise do BKP. Nacteni z BKP dela
  * MX_RTC_Init pred schedulerem. */
+/* 🔴 Vysledek bring-upu displeje z `main.c`. 0 = OK, jinak `BOOTLED_STEP_*`
+ * kroku, ktery selhal.
+ * PROC to existuje: selhani bring-upu NENI fatalni — `main.c` udela
+ * `goto display_skip` a pristroj bezi DAL (dotyk, UART, mereni, CM4). Displej
+ * je pritom cerny a `[ERR] ...` hlasky z bring-upu se NIKAM nedostanou, protoze
+ * konzole jede po USB CDC, ktere v te chvili jeste neni vyctene. Bez tohohle
+ * priznaku nelze u cerneho displeje zjistit, jestli selhal panel, nebo se jen
+ * nic nekresli (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
+extern volatile uint8_t g_display_init_step;
+/* Pocet podteceni FIFO LTDC (definovano v `app/hal/stm32/prim_stm32_hal.c`,
+ * cteno pri kazdem flipu). Nenulove = LTDC nestiha nacitat pixely z pameti ->
+ * POSKOZENE SNIMKY na panelu, tedy problem PROPUSTNOSTI, ne kreslicího kodu.
+ * Most pres globál, protoze Core vrstva nema `app/` na include ceste. */
+extern volatile uint32_t g_ltdc_underrun;
+/* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
+ * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
+extern volatile uint8_t  g_d2d_deadtime;
+void prim_stm32_set_deadtime(uint8_t dt);
+/* Kolikrat se glow nevykreslil, protoze oblast prekrocila strop masky
+ * (`glow.c`). ⚠️ MUSI zustat 0 — prekroceni je jinak TICHE. Vypisuje `status`. */
+extern uint32_t g_prim_glow_skipped;
+
 extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
@@ -115,6 +158,16 @@ extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, p
 extern volatile uint8_t g_theme_idx;     /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*, BKP_DR6 bit0+bity9:10) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
+
+/* Stav linek I2C4 pro `status` (bit0 SCL, bit1 SDA, bit2 BUSY) — viz
+ * freertos_task_ui.c. Cte se primo z IDR/ISR, takze rekne pravdu i o zaseknute
+ * sbernici (dotyk + TMP117 0x48 + ATTINY podsviceni jsou vsichni na I2C4). */
+uint8_t i2c4_line_state(void);
+/* 1 = diagnosticky build bez runtime zapisu na ATTINY (experiment k mrtve I2C4). */
+int i2c4_diag_no_attiny_write(void);
+/* Pocitadla zapisu jasu na ATTINY + stav ztlumeni — bez nich nejde overit,
+ * jestli test zapisu vubec neco zapsal (pri sporici se zapis nekona). */
+void i2c4_bl_stats(uint32_t *ok, uint32_t *skip, uint8_t *dimmed);
 /* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
  * bitu + globalu v samostatnem bezzavislostnim headeru (sdili firmware i app). */
 #include "fx_flags.h"
@@ -151,7 +204,7 @@ extern volatile uint8_t  g_selftest_res;
  * [11]=SCPI parser (scpi_selftest #25), [12]=IPC seqlock+ring (ipc_selftest #19/#20),
  * [13]=vzory + pocitani chybnych bitu (membench_selftest, okno PAMETI).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 14
+#define SELFTEST_N 16
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane

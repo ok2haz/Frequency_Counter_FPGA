@@ -12,6 +12,7 @@
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
+#include "encoder.h"          /* encoder_div/_set_div — persist delice kroku */
 #include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
@@ -36,7 +37,7 @@
  * jinak by se z flash nacetl stary 2,6 V; lze i rucne v okne PRAHY bez bumpu).
  * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
  * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434646u   /* "SCFF" (2026-08-24: VBAT prah 2,6->2,8 V pro CR2032 3,3 V nominal) */
+#define SYSCFG_BLOB_MAGIC   0x53434730u   /* "SCG0" (2026-08-31: pribyl enc_div — delic kroku encoderu) */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -103,6 +104,11 @@ typedef struct {
     /* Rozlozeni hlavni obrazovky (0 = hybridni/vychozi, 1 = klasicke). Neni v BKP
      * -> flash je jediny zdroj a aplikuje se VZDY (jako fx_en/anim_en). */
     uint8_t  layout_classic;
+    /* Delic kroku TIM1 na jednu ZAPADKU encoderu (1/2/4). Jedina HW-zavisla
+     * konstanta UI vrstvy — persistuje, aby se kvuli ni nemuselo preflashovat.
+     * ⚠️ 0 (stary blob) je neplatna hodnota a `encoder_set_div` ji ignoruje,
+     * takze zustane vychozi 4. */
+    uint8_t  enc_div;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -162,6 +168,7 @@ static void pack(syscfg_blob_t *b)
     strncpy(b->web_user, (const char *)g_web_user, sizeof b->web_user - 1);
     strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
     b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
+    b->enc_div        = encoder_div();
 }
 
 void syscfg_load(void)
@@ -241,6 +248,7 @@ void syscfg_load(void)
      * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
      * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
+    encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;

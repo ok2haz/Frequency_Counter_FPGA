@@ -16,6 +16,7 @@
 #include "ft5x06.h"
 #include "ws_panel.h"     /* ws_panel_set_backlight — jas displeje */
 #include "app_gpsdo.h"
+#include "encoder.h"    /* Faze A: rotacni encoder + gesta */
 #include "screens/screen_main.h"   /* screen_main_stats_reset — g_stats_reset_req */
 #include "freertos_shared.h"
 #include "watchdog.h"     /* watchdog_kick_ui — heartbeat */
@@ -23,6 +24,31 @@
 #include "beeper.h"       /* beeper_boot_melody — startovni jingle */
 
 /* (LTDC adresu ridi prim_stm32_present() v app/hal -> hltdc tu uz netreba.) */
+
+/* ── 🔬 Smi recovery SAHAT NA ATTINY? (experiment k mrtve I2C4, 2026-08-30) ────
+ * Recovery od `7a4e100` (13.8.) po uvolneni sbernice jeste ZAPISE do ATTINY
+ * `PORTC` (HW reset dotykoveho radice). Podezreni: prave tenhle zapis promeni
+ * PRECHODNY vypadek v TRVALOU smrt sbernice.
+ *
+ * ⚠️⚠️ STAV DUKAZU (necti to jako potvrzenou pricinu — NENI):
+ *   - Zapis na ATTINY SAM O SOBE sbernici NEZABIJI. Zmereno zatezovym testem
+ *     (`tools/attiny_stress.ps1`): **40 OVERENYCH zapisu jasu -> 0 chyb**.
+ *     Potvrzuje to i praxe — rucni zmena jasu sbernici nikdy neshodila.
+ *   - Objem provozu to taky NENI: pred 2.8. se pollovalo pevnych 30 Hz,
+ *     dnes 15 Hz v klidu (PULKA) a zlobilo to porad.
+ *   - Co PROKAZATELNE zabiji: **halt cile ladici sondou**. Ze zdrave sbernice
+ *     `STM32_Programmer_CLI -r32` -> 6 / 13 / 22 chyb a `scanner` uz nenajde nic
+ *     (`tools/probe_test.ps1`). Halt uprostred transakce nechá SCL v nule a
+ *     bit-bang slave to neprezije. ⚠️ Tim byla znacna cast merení 2026-08-30
+ *     KONTAMINOVANA — zavery delej jen z behu bez sondy.
+ *   - Recovery je porad podezrela jen tim, ze pise do ATTINY, kdyz uz sbernice
+ *     zlobi (8 chyb v rade) — tedy do cipu, ktery muze byt uprostred ztraty
+ *     synchronizace. NEOVERENO. Zaroven ten HW reset TP nikdy prokazatelne
+ *     nepomohl (`s_touch_resets` doslo na 6 i 18 a sbernice byla mrtva stejne).
+ *
+ * 0 = recovery dela JEN sbernicovou cast (pulzy SCL + re-init), na ATTINY nesaha.
+ * 1 = puvodni chovani (vcetne HW resetu TP pres ATTINY). */
+#define I2C4_RECOVERY_TOUCHES_ATTINY 0
 
 /* ── I2C4 bus recovery (zachranna sit pro zaseknutou sbernici) ──────────────
  * ATTINY (0x45, bit-bang slave) umi po nestastne transakci drzet SDA ->
@@ -34,6 +60,21 @@
 static void i2c4_recover(void)
 {
     GPIO_InitTypeDef g = {0};
+
+    /* 🔴🔴 ODR MUSI byt 1 JESTE PRED prepnutim pinu do OUTPUT_OD.
+     * `HAL_GPIO_Init` na ODR NESAHA, takze pri ODR=0 pin v okamziku prepnuti
+     * OKAMZITE STAHNE SCL k zemi. A protoze se dole pulzuje jen kdyz SDA drzi
+     * slave, staci aby byla SDA vysoko — telo smycky se NEPROVEDE,
+     * `WritePin(SET)` se nikdy nezavola a SCL zustane drzena dole NATRVALO.
+     * Recovery pak sbernici misto zachrany ZABIJI, a to pri kazdem dalsim
+     * pokusu znovu (rate-limit ji jen zpomali).
+     * ⚠️ HW nalez 2026-08-30 sondou: `GPIOH IDR` SCL(PH11)=0, SDA(PH12)=1,
+     * `GPIOH ODR`=0x0 (ODR11=0), MODER PH11=AF, `I2C4 ISR`=0x8001 (BUSY).
+     * Projev: I2C4 umrela ~7 s po bootu (TMP117 0x48 melo 14 platnych cteni
+     * a pak 8351 chyb v rade), dotyk mrtvy, `s_touch_resets`=18 bez efektu.
+     * Uzivatel to videl az u sporice — driv dotyk nepotreboval. */
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);   /* SCL uvolnena (OD: 1 = pull-up) */
+
     g.Pin = GPIO_PIN_11;                       /* SCL rucne (open-drain) */
     g.Mode = GPIO_MODE_OUTPUT_OD;
     g.Pull = GPIO_NOPULL;                      /* pull-upy jsou externi (panel) */
@@ -41,17 +82,64 @@ static void i2c4_recover(void)
     HAL_GPIO_Init(GPIOH, &g);
     g.Pin = GPIO_PIN_12; g.Mode = GPIO_MODE_INPUT;   /* SDA jen sledujeme */
     HAL_GPIO_Init(GPIOH, &g);
+
+    /* Pulzy jen kdyz SDA opravdu drzi slave (klasicke docvakani drzeneho bajtu). */
     for (int i = 0; i < 9 && HAL_GPIO_ReadPin(GPIOH, GPIO_PIN_12) == GPIO_PIN_RESET; i++) {
         HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET); osDelay(1);
         HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);   osDelay(1);
     }
+    /* ⚠️ SCL se uvolnuje BEZPODMINECNE — i kdyz smycka nebezela (viz vyse). */
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);
+
     g.Pin = GPIO_PIN_11 | GPIO_PIN_12;         /* zpet na AF4 (jako MSP init) */
     g.Mode = GPIO_MODE_AF_OD;
     g.Pull = GPIO_NOPULL;
     g.Alternate = GPIO_AF4_I2C4;
     HAL_GPIO_Init(GPIOH, &g);
-    __HAL_I2C_DISABLE(&hi2c4);
+    __HAL_I2C_DISABLE(&hi2c4);                 /* PE=0 resetuje stavovy automat a pusti linky */
     HAL_I2C_Init(&hi2c4);                      /* navratovou hodnotu zamerne neresime */
+}
+
+/* Stav linek I2C4 pro diagnostiku (`status`): bit0 SCL, bit1 SDA, bit2 I2C BUSY.
+ * Cte se primo z IDR/ISR, takze rekne PRAVDU i kdyz je sbernice zaseknuta —
+ * bez teto informace se „mrtvy dotyk" nedal odlisit od „zaseknuty UiTask". */
+/* 1 = recovery ma ZAKAZANO sahat na ATTINY (bezici experiment, viz
+ * I2C4_RECOVERY_TOUCHES_ATTINY). `status` to hlasi, aby bylo poznat, ze
+ * recovery nedela HW reset dotykoveho radice. Jas funguje normalne. */
+int i2c4_diag_no_attiny_write(void) { return !I2C4_RECOVERY_TOUCHES_ATTINY; }
+
+/* ── Pocitadla zapisu na ATTINY + stav ztlumeni (pro `status`) ────────────────
+ * ⚠️ Bez nich se NEDA overit, jestli test zapisu na ATTINY vubec neco zapsal:
+ * pri aktivnim sporici je `bl_target` = AUTODIM_LEVEL bez ohledu na
+ * `g_brightness`, takze zmena jasu (SCPI `DISP:BRIG`) NEVYVOLA zadny zapis.
+ * Presne na tohle jsem naletel pri prvnim mereni (50 "zapisu" -> 0 chyb, ale
+ * nejspis se nezapsalo nic). Merit se da jen to, co je videt. */
+static volatile uint32_t s_bl_writes_ok;   /* uspesnych zapisu jasu na ATTINY */
+static volatile uint32_t s_bl_writes_skip; /* preskoceno (ATTINY neodpovedela na probe) */
+static volatile uint8_t  s_bl_dimmed;      /* zrcadlo s_dimmed pro diagnostiku */
+
+void i2c4_bl_stats(uint32_t *ok, uint32_t *skip, uint8_t *dimmed)
+{
+    if (ok)     *ok     = s_bl_writes_ok;
+    if (skip)   *skip   = s_bl_writes_skip;
+    if (dimmed) *dimmed = s_bl_dimmed;
+}
+
+uint8_t i2c4_line_state(void)
+{
+    uint8_t s = 0;
+    if (HAL_GPIO_ReadPin(GPIOH, GPIO_PIN_11) == GPIO_PIN_SET) s |= 1u;   /* SCL */
+    if (HAL_GPIO_ReadPin(GPIOH, GPIO_PIN_12) == GPIO_PIN_SET) s |= 2u;   /* SDA */
+    if (hi2c4.Instance->ISR & I2C_ISR_BUSY)                   s |= 4u;
+    return s;
+}
+
+/* #90 — akcelerace auto-repeatu drzeneho +/- doteku: interval [ms] podle poctu uz
+ * vyvolanych opakovani (klesa 350->70). Protejsek adaptivniho kroku encoderu. */
+static uint32_t touch_rep_interval(uint8_t n)
+{
+  static const uint16_t iv[] = { 350u, 300u, 250u, 200u, 150u, 110u, 80u, 70u };
+  return (n < (sizeof iv / sizeof iv[0])) ? iv[n] : iv[(sizeof iv / sizeof iv[0]) - 1];
 }
 
 /* Runtime IDLE tasku + celkovy runtime (pro vypocet zatize CPU). configUSE_TRACE_
@@ -85,6 +173,10 @@ void StartUiTask(void *argument)
     app_gpsdo_boot_splash_tick();
     osDelay(100);
   }
+
+  /* Rotacni encoder (Faze A). Idempotentni, piny si nastavi sam — v `.ioc`
+   * neni nic z toho (regen-safe, stejny vzor jako CS ve `fpga_freq_init`). */
+  encoder_init();
 
   /* Pak rovnou do GPSDO obrazovky. */
   g_screen_req = 3;
@@ -122,6 +214,26 @@ void StartUiTask(void *argument)
     static uint8_t  s_i2c4_busy = 0;    /* mutex se nepodarilo vzit (drive tise ignorovano) */
     static uint32_t s_touch_grace = 0;  /* po HW resetu TP: ~400 ms nepocitat chyby */
     static uint32_t s_touch_resets = 0; /* kolikrat uz se TP resetoval (diagnostika) */
+    static uint32_t s_bl_settle = 0;    /* cas posledniho zapisu jasu do ATTINY — po nem
+                                         * ~150 ms NEcteme FT5x06 (viz auto-dim blok nize) */
+    static uint32_t s_touch_ok_ms   = 0;   /* cas posledniho USPESNEHO cteni dotyku */
+    static uint32_t s_banner_ms     = 0;   /* posledni vykresleni hlasky "dotyk nedostupny" */
+    static uint8_t  s_touch_is_dead = 0;   /* 1 = hlaska je na displeji */
+    /* #90 — dotykova parita s encoderem: drzeni prstu -> dlouhy stisk + auto-repeat
+     * s akceleraci. Bez toho byl dotyk ciste hranovy (jen nastup) a chybel protejsek
+     * dlouheho stisku i adaptivniho kroku. ⚠️ Auto-repeat se zapne JEN kdyz app
+     * oznaci hit jako +/- (app_gpsdo_touch_repeat_armed) -> RUN/STOP/MENU se neopakuji.
+     * Repeat i long-press bezi jen pri STABILNIM prstu (pohyb <= TOL) a jsou tazene
+     * uspesnymi polly, takze pri I2C4 back-offu (2 Hz) se same zpomali. */
+    static uint32_t s_down_ms   = 0;       /* cas nastupni hrany doteku */
+    static int16_t  s_down_x    = 0, s_down_y = 0;
+    static uint8_t  s_long_fired = 0;      /* dlouhy stisk uz vyvolan (1x za drzeni) */
+    static uint8_t  s_rep_armed  = 0;      /* drzeny prvek je opakovatelny +/- */
+    static uint32_t s_rep_next   = 0;      /* kdy vyvolat dalsi opakovani */
+    static uint8_t  s_rep_n      = 0;      /* pocet uz vyvolanych opakovani (akcelerace) */
+    #define TOUCH_LONG_MS    600u          /* prah dlouheho stisku (>=600 kvuli 2 Hz back-offu, #90) */
+    #define TOUCH_REP_DELAY  500u          /* prodleva pred prvnim opakovanim */
+    #define TOUCH_MOVE_TOL   40            /* max posun prstu, aby to stale bylo „drzeni" [px] */
     /* ADAPTIVNI gate: 33 ms (30 Hz) BEHEM a ~1,5 s PO interakci (svizne tapy —
      * hlavne opakovane +/- v Nastaveni), jinak 66 ms (15 Hz) v klidu. Touch cteni
      * je 31 B ~3 ms @100 kHz -> 30 Hz = ~9 % CPU, 15 Hz = ~4,5 %. V typickem stavu
@@ -129,7 +241,25 @@ void StartUiTask(void *argument)
      * dopad je latence PRVNIHO tapu po klidu az 66 ms (jednorazova, neznatelna).
      * Cteni je vzdy CELY ramec -> zadne riziko freeze (viz varovani vyse). */
     uint32_t touch_gate = (was_down || (HAL_GetTick() - s_last_activity) < 1500u) ? 33u : 66u;
-    if (HAL_GetTick() - last_touch >= touch_gate) {
+    /* 🔴 BACK-OFF PRI MRTVE SBERNICI (2026-08-30) — I2C1 tenhle idiom uz mel
+     * (`i2c1_backoff_ms` v SensorsTask), I2C4 NE, a stalo to desitky % CPU.
+     * ZMERENO na desce: zdrava I2C4 -> `stats` UiTask ~60 %; mrtva I2C4 ->
+     * **UiTask 91 %, IDLE 3 %**. Duvod: NEUSPESNE cteni dotyku neni zadarmo —
+     * `HAL_I2C_Mem_Read` ceka na priznaky (timeout az 100 ms) a je to CISTY SPIN,
+     * ktery neustupuje scheduleru. Pri 15-30 Hz to sezere skoro celou CPU
+     * ZBYTECNE: dotyk stejne nefunguje, dokud se sbernice nevzpamatuje.
+     * Prvni USPESNE cteni nuluje `s_i2c4_fail` -> kadence se okamzite vrati na
+     * 30/15 Hz, takze v beznem provozu se NIC nemeni (guard se zapne az po 8
+     * chybach v rade, tedy po ~0,5 s prokazatelne mrtve sbernice).
+     * ⚠️ Recovery bezi na vlastnim casovaci, tohle ji nezpomali. */
+    if (s_i2c4_fail >= 8u) touch_gate = 500u;   /* 2 Hz misto 15-30 Hz */
+    /* ⚠️ Po zapisu jasu do ATTINY drz I2C4 ~150 ms v klidu, nez na ni pustis
+     * dalsiho mastera (FT5x06). ATTINY je bit-bang I2C slave + PWM podsviceni;
+     * zapis jasu tesne nasledovany START-em touch cteni mu rozhodi slave automat
+     * -> drzi SDA -> mrtva I2C4 az do power-cyclu. Toto okno klidu je hlavni
+     * pojistka, ktera vraci ztlumeni podsviceni ve screensaveru bezpecne. */
+    if (HAL_GetTick() - last_touch >= touch_gate &&
+        (HAL_GetTick() - s_bl_settle) >= 150u) {
       last_touch = HAL_GetTick();
       ft5x06_touch_t t; int got = 0, attempted = 0;
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
@@ -140,7 +270,8 @@ void StartUiTask(void *argument)
       /* Detekce mrtve sbernice: pocitej JEN skutecna HAL selhani (mutex timeout
        * neni chyba busu — napr. bezici `scanner`). Po ~0,5 s souvislych chyb
        * zkus recovery (max 1x/5 s). */
-      if (attempted) { if (got) s_i2c4_fail = 0; else if (s_i2c4_fail < 250) s_i2c4_fail++; }
+      if (attempted) { if (got) { s_i2c4_fail = 0; s_touch_ok_ms = HAL_GetTick(); }
+                       else if (s_i2c4_fail < 250) s_i2c4_fail++; }
       else if (s_i2c4_busy < 250) s_i2c4_busy++;
       /* ⚠️ Nulovat i pri uspechu — jinak je to SOUCET OD STARTU, ktery se jen
        * nasytí na 250 a v logu pak strasi "250 x mutex busy" i kdyz je zrovna
@@ -173,6 +304,11 @@ void StartUiTask(void *argument)
                s_i2c4_fail, s_i2c4_busy, (unsigned long)s_touch_resets);
         if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
           i2c4_recover();          /* pasivni: pulzy SCL jen kdyz SDA drzi dole + re-init */
+#if !I2C4_RECOVERY_TOUCHES_ATTINY
+          /* 🔬 Experiment: recovery dela JEN sbernicovou cast (pulzy SCL + re-init).
+           * Na ATTINY nesaha — viz zduvodneni u I2C4_RECOVERY_TOUCHES_ATTINY. */
+          (void)0;
+#else
           /* Sahat na ATTINY jen kdyz opravdu odpovida, a jen prvnich par pokusu. */
           if (s_touch_resets <= 5u &&
               HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 20) == HAL_OK) {
@@ -186,6 +322,7 @@ void StartUiTask(void *argument)
             printf("touch: ATTINY neodpovida ani po 5 pokusech -> davam ruce pryc.\n"
                    "       I2C4 (touch + TMP117 0x48 + podsviceni) je mrtva az do power-cyclu.\n");
           }
+#endif
           osMutexRelease(i2c4MutexHandle);
         }
         s_i2c4_fail = 0;
@@ -201,17 +338,72 @@ void StartUiTask(void *argument)
          * was_down) -> rezidualni/drzeny dotek se absorbuje. */
         if (!s_touch_primed) {
           if (!t.valid) s_touch_primed = 1;   /* prvni uvolneni -> od ted prijimame */
-        } else if (t.valid && !was_down) {
-          s_last_activity = HAL_GetTick();
-          if (s_dimmed) {                  /* probuzeni: prvni dotek jen rozsviti, nespusti akci */
-            s_dimmed = 0;
-            app_gpsdo_exit_screensaver();  /* zpet na okno, ktere bylo pred usnutim */
-          } else if (app_gpsdo_handle_touch((int16_t)(799 - t.x), (int16_t)(479 - t.y))) {
-            alarm_click();                 /* zvukova odezva obslouzeneho tlacitka (mute-aware) */
+        } else {
+          uint32_t now = HAL_GetTick();
+          int16_t  tx  = (int16_t)(799 - t.x), ty = (int16_t)(479 - t.y);
+          if (t.valid && !was_down) {
+            /* ── nastupni hrana = tap ── */
+            s_last_activity = now;
+            if (s_dimmed) {                /* probuzeni: prvni dotek jen rozsviti, nespusti akci */
+              s_dimmed = 0;
+              app_gpsdo_exit_screensaver();/* zpet na okno, ktere bylo pred usnutim */
+              s_rep_armed = 0;
+            } else {
+              s_down_ms = now; s_down_x = tx; s_down_y = ty;
+              s_long_fired = 0; s_rep_n = 0;
+              if (app_gpsdo_handle_touch(tx, ty)) {
+                alarm_click();             /* zvukova odezva obslouzeneho tlacitka (mute-aware) */
+                /* auto-repeat jen na opakovatelnem +/- ovladaci (jinak by se drzeni
+                 * RUN/STOP/MENU spoustelo znovu a znovu). */
+                s_rep_armed = app_gpsdo_touch_repeat_armed() ? 1u : 0u;
+                s_rep_next  = now + TOUCH_REP_DELAY;
+              } else {
+                s_rep_armed = 0;
+              }
+            }
+          } else if (t.valid && was_down && !s_dimmed) {
+            /* ── drzeni: long-press + auto-repeat, jen kdyz prst STOJI ── */
+            s_last_activity = now;         /* drzeni je take cinnost -> nesmi usnout */
+            int dx = tx - s_down_x; if (dx < 0) dx = -dx;
+            int dy = ty - s_down_y; if (dy < 0) dy = -dy;
+            if (dx <= TOUCH_MOVE_TOL && dy <= TOUCH_MOVE_TOL) {
+              if (s_rep_armed && (int32_t)(now - s_rep_next) >= 0) {
+                (void)app_gpsdo_handle_touch(tx, ty);   /* dalsi krok, BEZ alarm_click */
+                if (!app_gpsdo_touch_repeat_armed()) {
+                  s_rep_armed = 0;                       /* uz to neni +/- (napr. dorazil na kraj) */
+                } else {
+                  if (s_rep_n < 255u) s_rep_n++;
+                  s_rep_next = now + touch_rep_interval(s_rep_n);
+                }
+              }
+              /* dlouhy stisk = protejsek encoderu; jen mimo opakovatelny +/-. */
+              if (!s_rep_armed && !s_long_fired && (now - s_down_ms) >= TOUCH_LONG_MS) {
+                s_long_fired = 1;
+                (void)app_gpsdo_handle_touch_long(tx, ty);
+              }
+            }
           }
         }
         was_down = (uint8_t)t.valid;
       }
+    }
+
+    /* ── Trvale mrtva I2C4 -> hlaska na displeji ───────────────────────────────
+     * Kriterium je CAS od posledniho USPESNEHO cteni, ne pocet chyb: prechodne
+     * vypadky se zotavi do ~1 s (zmereno 2026-08-30: err 2 / v rade 0, `scanner`
+     * vzapeti nasel vsechna 3 zarizeni), kdezto skutecna smrt uz nikdy neprestane.
+     * 30 s je proto bezpecne nad sumem a pod hranici, kdy by to uzivatele mateio.
+     * ⚠️ Banner se MUSI oplacet periodicky — okna se pod nim dal renderuji
+     * (tick/clock prekresli patku), takze jednorazove vykresleni by zmizelo. */
+    if (s_touch_ok_ms == 0u) s_touch_ok_ms = HAL_GetTick();   /* start = "zatim ok" */
+    uint8_t dead_now = ((HAL_GetTick() - s_touch_ok_ms) > 30000u) ? 1u : 0u;
+    if (dead_now != s_touch_is_dead) {
+      s_touch_is_dead = dead_now;
+      app_gpsdo_touch_dead((int)dead_now);          /* hrana: vykresli / uklid */
+      s_banner_ms = HAL_GetTick();
+    } else if (dead_now && (HAL_GetTick() - s_banner_ms) >= 2000u) {
+      app_gpsdo_touch_dead(1);                      /* obnov pres prekreslena okna */
+      s_banner_ms = HAL_GetTick();
     }
 
     /* Auto-dim + aplikace jasu: app (okno Nastaveni) meni jen g_brightness; HW zapis
@@ -230,18 +422,43 @@ void StartUiTask(void *argument)
       s_dimmed = 1;
       app_gpsdo_enter_screensaver();   /* ztlumeny displej ukazuje velke RTC hodiny */
     }
-    uint8_t bl_target = s_dimmed ? AUTODIM_LEVEL : g_brightness;
-    if ((uint8_t)s_bl != bl_target) {
+    /* ── Auto-dim podsviceni (ATTINY @ I2C4) — BEZPECNY zapis ─────────────────
+     * Screensaver ZASE ztlumuje podsviceni na AUTODIM_LEVEL (spotreba), ale zapis
+     * do ATTINY je zdokumentovany spousteci moment "mrtveho touche" (bit-bang
+     * I2C slave + PWM; rozhozeny automat drzi SDA -> mrtva I2C4 do power-cyclu).
+     * Tri pojistky:
+     *   1) `HAL_I2C_IsDeviceReady` probe — kdyz ATTINY neACKne, zapis by stejne
+     *      neprosel; jen zkusit znovu za 200 ms (ne bušit kazdych 10 ms).
+     *   2) klidove mezery osDelay(3) pred i po transakci (slave resync).
+     *   3) `s_bl_settle` -> touch poll ~150 ms po zapisu NEcte FT5x06 (aby ATTINY
+     *      po zapisu jasu neschytal hned START od jineho mastera na tomtez busu). */
+    uint8_t  bl_target = s_dimmed ? AUTODIM_LEVEL : g_brightness;
+    s_bl_dimmed = s_dimmed;                    /* zrcadlo pro `status` */
+    static uint32_t s_bl_try = 0;
+    if ((uint8_t)s_bl != bl_target && (HAL_GetTick() - s_bl_try) >= 200u) {
+      s_bl_try = HAL_GetTick();
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
-        /* ⚠️ ATTINY = softwarovy (bit-bang) I2C slave a soucasne generuje PWM
-         * podsviceni — runtime zapis potrebuje KLIDOVOU mezeru na sbernici
-         * pred i po transakci, jinak hrozi ztrata synchronizace slave
-         * automatu -> ATTINY drzi SDA -> mrtvy touch (stejna sbernice). */
-        osDelay(2);
-        ws_panel_set_backlight(&hi2c4, bl_target);
-        osDelay(2);
+        if (HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 10) == HAL_OK) {
+          osDelay(3);
+          /* ⚠️ Zapis na ATTINY BEZ MOZNOSTI PREEMPCE. `HAL_I2C_Master_Transmit`
+           * je pollovaci a UiTask ma prioritu BelowNormal — vyssi task ho muze
+           * preemptnout MEZI BAJTY, kdy periferie DRZI SCL V NULE. Bit-bang
+           * slave takove protazeni nemusi prezit; presne tenhle efekt ma i halt
+           * ladici sondou (zmereno: 1 cteni sondou = 6 chyb na I2C4).
+           * `vTaskSuspendAll` NEvypina preruseni, jen prepinani tasku — a
+           * `HAL_GetTick` jede z TIM6, takze timeouty uvnitr HAL dal funguji.
+           * Zapis jsou 2 bajty @100 kHz ≈ 200 us, tedy zanedbatelne zdrzeni. */
+          vTaskSuspendAll();
+          bool blok = ws_panel_set_backlight(&hi2c4, bl_target);
+          xTaskResumeAll();
+          osDelay(3);
+          if (blok) s_bl_writes_ok++; else s_bl_writes_skip++;
+          s_bl = bl_target;
+          s_bl_settle = HAL_GetTick();   /* drz touch poll ~150 ms dal od busu */
+        } else {
+          s_bl_writes_skip++;            /* ATTINY neodpovedela na probe */
+        }
         osMutexRelease(i2c4MutexHandle);
-        s_bl = bl_target;
       }
     }
 
@@ -303,6 +520,38 @@ void StartUiTask(void *argument)
     if (HAL_GetTick() - last_allan >= 1000) {
       last_allan = HAL_GetTick();
       app_gpsdo_tick_allan_draw();
+    }
+
+    /* Encoder (Faze A): gesta -> fokus / navigace. Levne (cteni TIM1 + jednoho
+     * GPIO), proto kazdou iteraci ~100 Hz — dlouhy stisk 1 s a dvojklik 400 ms
+     * potrebuji jemne vzorkovani. ⚠️ Kresli, takze smi bezet JEN tady v UiTasku.
+     * ⚠️ Bez tohohle volani se obsluha cela zahodi linkerem (`--gc-sections`)
+     * a encoder mlci, aniz by cokoli ohlasilo chybu — presne to se 2026-08-31 stalo.
+     *
+     * 🔴 ENCODER PROBOUZI SYSTEM STEJNE JAKO DOTYK (2026-09-02). Do te doby na
+     * `s_last_activity` ani `s_dimmed` vubec nesahal, takze:
+     *   - otaceni knoflikem NEBRANILO usnuti (sporic naskocil uprostred prace),
+     *   - a ze sporice uz encoder systém NEPROBUDIL vubec — slo to jen dotykem.
+     * To porusovalo pravidlo DVOU UPLNYCH OVLADACICH CEST (kazda funkce musi jit
+     * encoderem SAMOTNYM i dotykem SAMOTNYM).
+     *
+     * ⚠️ `encoder_poll()` se vola PRAVE TADY a jen jednou — je to
+     * JEDNOKONZUMENTOVE API (druhy konzument si udalosti krade, zazito
+     * 2026-08-31 u prikazu `enc`). Obsluha proto udalost dostava parametrem.
+     * ⚠️ Prvni udalost po probuzeni se ZAHAZUJE, stejne jako prvni dotek —
+     * v tme by uzivatel naslepo prestavil hodnotu, kterou nevidi. */
+    {
+      encoder_ev_t eev;
+      encoder_poll(&eev);
+      if (eev.steps || eev.short_press || eev.long_press || eev.double_click) {
+        s_last_activity = HAL_GetTick();     /* jakykoli pohyb knoflikem = cinnost */
+        if (s_dimmed) {
+          s_dimmed = 0;
+          app_gpsdo_exit_screensaver();      /* zpet na okno pred usnutim */
+        } else {
+          app_gpsdo_handle_encoder(&eev);
+        }
+      }
     }
 
     /* Present coalescing: ticky vyse jen renderuji (znaci dirty); jeden flip na

@@ -40,6 +40,33 @@ double mp_period_s(double hz)
     return (hz > 0.0) ? (1.0 / hz) : 0.0;
 }
 
+double mp_period_sample_s(uint64_t edges, uint64_t gate_ns, uint32_t mul,
+                          double hz_fallback)
+{
+    /* Přímá cesta: okno `gate_ns` nanosekund obsahovalo `edges·mul` period
+     * vstupního signálu, takže perioda = doba / počet. Žádný mezikrok přes
+     * kmitočet -> žádná ztráta na zaokrouhlení (viz meas_present.h). */
+    if (mul != 0u && edges != 0u && gate_ns != 0u) {
+        double n = (double)edges * (double)mul;
+        if (n > 0.0) return ((double)gate_ns * 1e-9) / n;
+    }
+    return mp_period_s(hz_fallback);
+}
+
+const char *mp_time_unit(double sec, double *scale)
+{
+    double a = fabs(sec), s;
+    const char *u;
+    if      (a >= 1.0)  { u = "s";  s = 1.0;   }
+    else if (a >= 1e-3) { u = "ms"; s = 1e-3;  }
+    else if (a >= 1e-6) { u = "us"; s = 1e-6;  }
+    else if (a >= 1e-9) { u = "ns"; s = 1e-9;  }
+    else if (a > 0.0)   { u = "ps"; s = 1e-12; }
+    else                { u = "s";  s = 1.0;   }
+    if (scale) *scale = s;
+    return u;
+}
+
 /* ── Automatický nominál (nejbližší kulatá reference) ────────────────────── */
 double mp_nominal_auto(double hz)
 {
@@ -228,6 +255,42 @@ int mp_selftest(void)
     /* Perioda. */
     ok &= (fabs(mp_period_s(10e6) - 1e-7) < 1e-15);
     ok &= (mp_period_s(0.0) == 0.0);
+
+    /* Perioda PŘÍMO z reciproké dvojice (#109). 1000 period v okně 100 µs =
+     * 100 ns; totéž musí vyjít, když je 250 hran s násobitelem 4. */
+    ok &= (fabs(mp_period_sample_s(1000u, 100000u, 1u, 0.0) - 1e-7) < 1e-18);
+    ok &= (fabs(mp_period_sample_s(250u,  100000u, 4u, 0.0) - 1e-7) < 1e-18);
+    /* Nepoužitelná dvojice -> degradace na 1/f (mul==0 = žádný násobitel nesedí). */
+    ok &= (fabs(mp_period_sample_s(250u, 100000u, 0u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(0u,   100000u, 4u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(250u, 0u,      4u, 10e6) - 1e-7) < 1e-15);
+    ok &= (mp_period_sample_s(0u, 0u, 0u, 0.0) == 0.0);
+
+    /* 🔑 Proč perioda potřebuje VLASTNÍ akumulátor a nestačí převést statistiku
+     * z Hz: průměr period NENÍ převrácený průměr kmitočtů (Jensen). Pro f = 1 a
+     * 3 Hz je mean(f) = 2 -> 1/mean = 0,5, ale mean(T) = (1 + 1/3)/2 = 2/3. */
+    {   mp_stats_t fs, ps; mp_stats_reset(&fs); mp_stats_reset(&ps);
+        double f2[2] = { 1.0, 3.0 };
+        for (int i = 0; i < 2; i++) {
+            mp_stats_add(&fs, f2[i]);
+            mp_stats_add(&ps, mp_period_s(f2[i]));
+        }
+        ok &= (fabs(ps.mean - (2.0 / 3.0)) < 1e-12);
+        ok &= (fabs(1.0 / fs.mean - 0.5)   < 1e-12);
+        ok &= (fabs(ps.mean - 1.0 / fs.mean) > 0.1);   /* liší se PROKAZATELNĚ */
+    }
+
+    /* Volba časové jednotky. */
+    {   double sc = 0.0;
+        ok &= (strcmp(mp_time_unit(5.0,    &sc), "s")  == 0 && sc == 1.0);
+        ok &= (strcmp(mp_time_unit(2e-3,   &sc), "ms") == 0 && sc == 1e-3);
+        ok &= (strcmp(mp_time_unit(4e-6,   &sc), "us") == 0 && sc == 1e-6);
+        ok &= (strcmp(mp_time_unit(1e-7,   &sc), "ns") == 0 && sc == 1e-9);
+        ok &= (strcmp(mp_time_unit(-1e-7,  &sc), "ns") == 0);   /* dle |sec| */
+        ok &= (strcmp(mp_time_unit(1e-13,  &sc), "ps") == 0 && sc == 1e-12);
+        ok &= (strcmp(mp_time_unit(0.0,    &sc), "s")  == 0);
+        ok &= (strcmp(mp_time_unit(1e-7, NULL), "ns") == 0);    /* scale smí být NULL */
+    }
 
     /* Automatický nominál (tolerantně — pow(10,e) nemusí být bit-přesné; snapy jsou MHz od sebe). */
     ok &= (fabs(mp_nominal_auto(9.9999e6) - 10e6) < 1.0);

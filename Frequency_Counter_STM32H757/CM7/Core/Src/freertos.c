@@ -35,6 +35,7 @@
 #include "flightrec.h"        /* flightrec_init/tick — kontext pred resetem (TODO #18) */
 #include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
+#include "gpio_guard.h"       /* hlidac konfigurace GPIOG (PG8 SDCLK, PG11/13 ETH TX) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
 #include "screens/screen_main.h"   /* screen_main_selftest — run_selftests() */
@@ -46,6 +47,8 @@
 #include "autocal.h"          /* autocal_selftest — verdikt self-checku */
 #include "ipc_shared.h"       /* ipc_init/publish/service/selftest — IPC CM7<->CM4 (#19/#20) */
 #include "membench.h"         /* membench_selftest — vzory benchmarku pameti */
+#include "phase_noise.h"      /* pn_selftest — FFT fazovy sum L(f) (#45) */
+#include "sdram_log.h"        /* sdram_log_selftest — indexovani datove cache */
 #include "usb_console.h"      /* usb_console_tx_pump — dopumpovani CDC TX ringu */
 /* USER CODE END Includes */
 
@@ -120,6 +123,16 @@ volatile char    g_freq_text[48] = "----------,-----Hz";
 volatile char    g_freq_info[64] = "";                 /* vedlejsi udaje (gate/edges/ch) */
 volatile uint8_t g_freq_dirty = 1;
 volatile uint8_t g_freq_stale = 0;                     /* 1 = FPGA SIGNAL_LOST flag nebo mrtvy link -> UI ztlumi, alarm pipne */
+/* Numericky vybrany zdroj (/4 nebo /16) pro headline + statistiky (#1). FpgaTask
+ * plni vedle g_freq_text; screen_main je cte misto simulace freq_step(). */
+volatile uint64_t g_freq_x100000 = 0;                  /* kmitocet × 1e5 (delicka uz zahrnuta) */
+volatile uint32_t g_freq_seq = 0;                      /* SEQUENCE posledniho platneho ramce (kadence vzorku) */
+volatile uint8_t  g_freq_valid = 0;                    /* 1 = platne mereni (CRC+VALID+FRESH, ne SIGNAL_LOST) */
+/* Surova reciproka dvojice pro HI-RES dopocet headline (f = edges × 4 × 1e9 / gate_ns).
+ * Da vic desetin nez zaokrouhlene `x100000`; plati JEN pro vetev /4 (viz g_freq_hires). */
+volatile uint64_t g_freq_edges = 0;                    /* pocet period v okne (pin28 = /4) */
+volatile uint64_t g_freq_gate_ns = 0;                  /* skutecna delka okna [ns] */
+volatile uint8_t  g_freq_hires = 0;                    /* 1 = zobrazeny zdroj je /4 a edges/gate jsou pouzitelne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_spi_text[64] = "SPI WAIT";
@@ -129,6 +142,8 @@ volatile uint8_t g_spi_dirty = 1;
 /* Si5356 reference (SensorsTask zapise z I2C1, diagnostika cte) */
 volatile uint8_t g_si5356_status = 0;
 volatile uint8_t g_si5356_ok     = 0;
+volatile uint8_t g_si5356_sticky  = 0;   /* reg 247 latch (viz freertos_shared.h) */
+volatile uint8_t g_si5356_clr_req = 0;
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick, UART/UI cte).
  * ⚠️ UI ctenari (UiTask: screen_main/rtc_time_date, app_gpsdo diag/gps) ctou BEZ
@@ -160,6 +175,7 @@ volatile uint8_t g_ui_cfg_dirty  = 0;
 
 /* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
 volatile uint8_t g_brightness    = 200;   /* backlight PWM (ATTINY) */
+volatile uint8_t g_display_init_step = 0; /* 0 = bring-up displeje OK, jinak BOOTLED_STEP_* */
 /* Ulozeny vysledek self-survey (persist syscfg flash; viz freertos_shared.h). */
 volatile uint8_t  g_survey_valid  = 0;
 volatile uint32_t g_survey_n      = 0;
@@ -208,6 +224,94 @@ volatile char     g_web_user[16] = "admin";
 volatile char     g_web_pass[20] = "";     /* prazdne = jeste nevygenerovano */  /* IPC_VERSION obrazu CM4; != IPC_VERSION => nesoulad bank */
 volatile uint32_t g_cm4_stall_count = 0;  /* pocet hran CM4 alive->dead (stall:CM4, defaultTask) */
 volatile char     g_crash_text[16] = "";
+
+/**
+  ******************************************************************************
+  * @file    gpio_guard.c
+  * @brief   Hlida a opravuje konfiguraci KRITICKYCH pinu na GPIOG.
+  *
+  * 🔴 PROC TOHLE EXISTUJE (2026-09-06, oboji zmereno na HW sondou):
+  *   - `PG8` = `FMC_SDCLK` mel `MODER` = 11 (ANALOG), zatimco `AFR` mel spravne
+  *     AF12 -> SDRAM nedostavala hodiny, cetla same nuly -> CERNY DISPLEJ,
+  *     `membench` 10,5 M chybnych bitu, `sdramlog` sam vypnuty (STATUS #196).
+  *   - `PG11` = `ETH_TX_EN` mel `MODER` = AF, ale `AFR` nibble = 0 misto AF11
+  *     -> MAC data odeslal, DMA deskriptor se dokoncil bez chyby, ale PHY nikdy
+  *     nedostal povoleni vysilat, takze na drat nesel ani jeden ramec ->
+  *     deska nedostala IP z DHCP (STATUS #205). Overeno: po obnoveni AF11
+  *     prisla adresa do 25 s a HTTP i ping zacaly odpovidat.
+  *
+  * 🔑 SPOLECNY JMENOVATEL: na `GPIOG` sahaji OBE JADRA
+  *      CM7 — FMC (PG0,1,2,4,5,8,15), QUADSPI NCS (PG6), LED_1
+  *      CM4 — ETH (PG11,13), LED_2 (PG7), ETH_RES (PG14), ETH_INT (PG12)
+  *    a `HAL_GPIO_Init` dela nad `MODER`/`AFR`/`OSPEEDR`/`PUPDR` NEATOMICKE
+  *    read-modify-write. Ztraceny zapis (jedno jadro precte registr, druhe ho
+  *    mezitim zmeni, prvni zapise svou zastaralou kopii) presne odpovida obema
+  *    nalezum: v obou pripadech se ztratila JEN JEDNA polozka (u PG8 `MODER`,
+  *    u PG11 `AFR`), zatimco sousedni pin ve stejnem volani prezil.
+  *
+  * ⚠️ Tohle je OBRANA, ne odstraneni priciny. Spravne reseni je serializovat
+  * konfiguraci sdilenych GPIO mezi jadry (HSEM), pripadne nedovolit druhemu
+  * jadru na tentyz port sahat. Dokud to nebude, hlidac to opravi a hlavne
+  * SPOCITA — `status` ukaze, kolikrat uz musel zasahnout, takze se pozna,
+  * jestli k tomu dochazi jen pri startu, nebo porad.
+  *
+  * ⚠️ Hlidac zapisuje jen kdyz je hodnota SPATNE (zadny zbytecny provoz na
+  * sbernici) a sam pouziva read-modify-write — muze tedy teoreticky prohrat
+  * tentyz zavod. Nevadi: pri dalsim tiku to opravi znovu.
+  ******************************************************************************
+  */
+/* Pocty zasahu — vystavene do `status`. */
+volatile uint32_t g_gpio_guard_fix_sdclk;   /* PG8  FMC_SDCLK */
+volatile uint32_t g_gpio_guard_fix_txen;    /* PG11 ETH_TX_EN */
+volatile uint32_t g_gpio_guard_fix_total;
+
+/* Kontrolovane piny. AF se overuje jen kdyz pin MA byt v AF rezimu. */
+#define PIN_SDCLK   8u
+#define PIN_TXEN    11u
+#define PIN_TXD0    13u
+
+#define GG_MODE_AF  2u   /* MODER: 10 = alternate function (vlastni jmeno, MODE_AF koliduje s HAL) */          /* MODER: 10 = alternate function */
+#define AF_FMC      12u
+#define AF_ETH      11u
+
+/* Vrati 1 kdyz musel opravit. */
+static int check_pin(uint32_t pin, uint32_t want_af)
+{
+    uint32_t mshift = pin * 2u;
+    uint32_t areg   = pin >> 3u;             /* 0 = piny 0-7, 1 = piny 8-15 */
+    uint32_t ashift = (pin & 7u) * 4u;
+
+    uint32_t moder = GPIOG->MODER;
+    uint32_t afr   = GPIOG->AFR[areg];
+    int bad = 0;
+
+    if (((moder >> mshift) & 3u) != GG_MODE_AF) bad = 1;
+    if (((afr   >> ashift) & 0xFu) != want_af) bad = 1;
+    if (!bad) return 0;
+
+    /* Poradi jako v `HAL_GPIO_Init`: nejdriv AF, pak teprve MODER — jinak by
+     * pin na okamzik jel v alternativni funkci s CHYBNYM mapovanim. */
+    afr &= ~(0xFu << ashift);
+    afr |=  (want_af << ashift);
+    GPIOG->AFR[areg] = afr;
+
+    moder &= ~(3u << mshift);
+    moder |=  (GG_MODE_AF << mshift);
+    GPIOG->MODER = moder;
+
+    return 1;
+}
+
+void gpio_guard_tick(void)
+{
+    /* ⚠️ `PG13` (ETH_TXD0) se ZAMERNE jen kontroluje spolu s TX_EN: pri obou
+     * pozorovanych vadach zustal v poradku, takze zatim neni duvod ho psat
+     * zvlast — kdyby se to zmenilo, pricti ho do stejneho pocitadla. */
+    if (check_pin(PIN_SDCLK, AF_FMC)) { g_gpio_guard_fix_sdclk++; g_gpio_guard_fix_total++; }
+    if (check_pin(PIN_TXEN,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
+    if (check_pin(PIN_TXD0,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
+}
+
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
 volatile uint32_t g_crash_bfar = 0;   /* SCB->BFAR = adresa, ktera fault zpusobila */
 volatile uint32_t g_crash_lr   = 0;   /* stacknute LR = odkud se skocilo (caller) */
@@ -257,13 +361,15 @@ int run_selftests(void)
   r[11] = scpi_selftest()            ? 1 : 2;   /* SCPI parser: case/kratka-dlouha forma/hierarchie (#25) */
   r[12] = ipc_selftest()             ? 1 : 2;   /* IPC seqlock parita + cmd/resp ring push/pop/wrap (#19/#20) */
   r[13] = membench_selftest()        ? 1 : 2;   /* generatory vzoru + pocitani chybnych bitu (okno PAMETI) */
+  r[14] = pn_selftest()              ? 1 : 2;   /* FFT korektnost + PSD normalizace + L(f) prevod (#45) */
+  r[15] = sdram_log_selftest()       ? 1 : 2;   /* indexovani ringu datove cache pred i po pretoceni */
   int pass = 0;
   for (int i = 0; i < SELFTEST_N; i++) { g_selftest_detail[i] = r[i]; if (r[i] == 1) pass++; }
   int ok = (pass == SELFTEST_N);
   g_selftest_res = ok ? 1 : 2;
   printf("SELFTEST: %d/%d %s\n", pass, SELFTEST_N, ok ? "PASS" : "FAIL");
   if (!ok) {
-    /* Bez tohohle je "12/13 FAIL" nedohledatelne — cislo indexu je mapa do
+    /* Bez tohohle je napr. "13/14 FAIL" nedohledatelne — cislo indexu je mapa do
      * komentaru u r[] vyse i do okna Selftest (g_selftest_detail). */
     printf("  FAIL:");
     for (int i = 0; i < SELFTEST_N; i++) if (r[i] != 1) printf(" #%d", i);
@@ -307,7 +413,16 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 640 * 4,
+  /* 🔴 640 -> 896 slov (2560 -> 3584 B), audit 2026-09-05. defaultTask mel
+   * NEJTESNEJSI rezervu ze vsech tasku (736 B volno = 29 %) a pritom v nem bezi
+   * `run_selftests()`, kde `pn_compute` sam zabira **1136 B = 44 % celeho
+   * stacku** (zmereno z `.su`). Presne timhle uz projekt jednou spadl do boot
+   * loopu (#45, pn_selftest) a opravilo se to jen zestatičtenim bufferu TESTU —
+   * ramec `pn_compute` zustal.
+   * ⚠️ Zhorsuje se to pri zapnuti SD backendu: `datalog_tick` bezi TADY a pres
+   * `sd_write` vola `blk_write` (**+552 B**), coz by rezervu srazilo na ~7 %.
+   * ⚠️ Zmenit i v `.ioc` (`FREERTOS_M7.Tasks01`), jinak to regen vrati. */
+  .stack_size = 896 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for UartTask */
@@ -417,6 +532,8 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
+  (void)argument;   /* signaturu urcuje CMSIS-RTOS; MUSI byt uvnitr USER CODE bloku,
+                     * jinak by to CubeMX regen smazal a varovani se vratilo. */
   gps_init();   /* USART1 -> 9600 8N1 + nahodi RX IT (NEO-7M) */
   run_selftests();   /* boot selftest (pure-logic, ~ms); FAIL -> cerveny indikator v Health */
   /* Datalog az TADY (ne v main.c): potrebuje bezici scheduler kvuli qspiMutexHandle.
@@ -438,6 +555,10 @@ void StartDefaultTask(void *argument)
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
     syscfg_flash_tick();         /* zrcadlo nastaveni do W25Q flash (debounced, prezije power-cycle) */
+    /* Konfigurace GPIOG se za behu ZTRACELA (PG8 = FMC_SDCLK -> cerny displej,
+     * PG11 = ETH_TX_EN -> zadny odeslany ramec). Na port sahaji obe jadra
+     * neatomickym read-modify-write; hlidac to opravi a spocita. Viz gpio_guard.c. */
+    gpio_guard_tick();
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
     flightrec_tick();            /* flight recorder: 1x/s do RAM (do flash az pri poruse) */
     sd_export_tick();            /* SD: detekce karty + auto-unmount (LEVNY; mount/export = UartTask) */

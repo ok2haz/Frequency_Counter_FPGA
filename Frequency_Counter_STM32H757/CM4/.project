@@ -35,6 +35,21 @@
 			<locationURI>PARENT-1-PROJECT_LOC/Common</locationURI>
 		</link>
 		<link>
+			<name>Core/Src/ipc_scpi.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/ipc_scpi.c</locationURI>
+		</link>
+		<link>
+			<name>Core/Src/meas_math.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/meas_math.c</locationURI>
+		</link>
+		<link>
+			<name>Core/Src/scpi.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/scpi.c</locationURI>
+		</link>
+		<link>
 			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal.c</locationURI>
@@ -134,7 +149,7 @@
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim_ex.c</locationURI>
 		</link>
-			<link>
+		<link>
 			<name>Middlewares/Third_Party/LwIP</name>
 			<type>2</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Middlewares/Third_Party/LwIP</locationURI>
@@ -144,20 +159,5 @@
 			<type>2</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/BSP/Components/lan8742</locationURI>
 		</link>
-		<link>
-			<name>Core/Src/scpi.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/scpi.c</locationURI>
-		</link>
-		<link>
-			<name>Core/Src/meas_math.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/meas_math.c</locationURI>
-		</link>
-		<link>
-			<name>Core/Src/ipc_scpi.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/CM7/Core/Src/ipc_scpi.c</locationURI>
-		</link>
-</linkedResources>
+	</linkedResources>
 </projectDescription>

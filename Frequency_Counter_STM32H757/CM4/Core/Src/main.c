@@ -267,6 +267,22 @@ int main(void)
 		  cm4_have = (ipc_cm4_ready() && ipc_cm4_cm7_alive(now) && ipc_cm4_read(&snap)) ? 1u : 0u;
 		  cm4_gps  = (cm4_have && (snap.flags & IPC_F_GPS_VALID)) ? 1u : 0u;
 		  ipc_cm4_heartbeat(cm4_pct, now / 1000u);   /* posledni zmerena vlastni zatez [%] */
+		  /* ⚠️ PHY ID se pri STUDENEM startu nemusi precist: LAN8742A jeste bezi
+		   * vlastni power-on reset, MDIO mlci a cteni vrati same jednicky
+		   * (0xFFFF FFFF). Pri HW pruchodu 2026-08-30 to tak dopadlo — link i DHCP
+		   * pak byly v poradku, jen `status` hlasil nesmyslne "PHY ID 0xFFFFFFFF".
+		   * Dokud hodnota nedava smysl, zkousi se docist (5x/s, zastavi se hned
+		   * po uspechu -> zadna trvala zatez MDIO). */
+		  if (g_eth_init_ok && (g_eth_phy_id == 0u || g_eth_phy_id == 0xFFFFFFFFu))
+		  {
+			  uint32_t id1 = 0u, id2 = 0u;
+			  if (HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 2u, &id1) == HAL_OK &&
+			      HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 3u, &id2) == HAL_OK)
+			  {
+				  uint32_t id = ((id1 & 0xFFFFu) << 16) | (id2 & 0xFFFFu);
+				  if (id != 0u && id != 0xFFFFFFFFu) g_eth_phy_id = id;
+			  }
+		  }
 		  /* ETH bring-up (v6, F3) se publikuje OPAKOVANE, ne jen jednou po initu:
 		   * samostatny reset CM7 dela v `ipc_init` memset cele sdilene struktury,
 		   * takze jednorazovy zapis by se ztratil a Health by hlasil "ETH:--". */

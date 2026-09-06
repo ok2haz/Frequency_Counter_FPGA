@@ -31,6 +31,7 @@ typedef struct {
     long   content_length;   /* -1 = hlavicka chybi/nejde precist */
     size_t header_len;       /* bajtu az VCETNE prazdneho radku za hlavickami */
     char   auth_b64[64];     /* base64 z "Authorization: Basic <...>"; "" = chybi */
+    char   inm[40];          /* "If-None-Match: <etag>" — cache SPA (304 Not Modified); "" = chybi */
 } http_req_t;
 
 /** Rozparsuje request-line + hlavicky z bufferu prijateho DOSUD (muze byt
@@ -40,6 +41,8 @@ int httpd_parse_request(const char *buf, size_t len, http_req_t *out);
 
 /** Pure-logic selftest (par vektoru na `httpd_parse_request`). @return 1 = PASS. */
 int httpd_min_selftest(void);
+/** Radek prvniho neuspesneho assertu v httpd_min_selftest (0 = zadny). */
+int httpd_min_selftest_fail_line(void);
 
 #ifdef __cplusplus
 }

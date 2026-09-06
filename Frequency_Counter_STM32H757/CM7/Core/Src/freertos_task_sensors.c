@@ -14,7 +14,7 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
-#include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
+#include "si5356.h"       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
@@ -237,6 +237,7 @@ static const ads1115_pga_t k_ads_pga[4] = {   /* stara deska: vse +-4.096V */
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
+  (void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
   uint8_t rawData[2];
   int16_t tempRaw;
 
@@ -356,6 +357,34 @@ void SensorsTask_run(void *argument)
 		uint8_t si_st;
 		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
 		else                                    { g_si5356_ok = 0; }
+		/* 🔴 STICKY (reg 247) vedle ziveho stavu: podrzi i mikrosekundovy vypadek
+		 * reference, ktery by mezi dvema cteními ziveho registru zmizel beze stopy.
+		 * Latchuje se do `g_si5356_sticky` a na cipu se NEMAZE — dokud uzivatel
+		 * nepozada, drzi cip i firmware tutez informaci ("stalo se to nekdy").
+		 * ⚠️ `SI5356_LOS_XTAL` se maskuje pryc: krystal neni osazen, bit je trvale
+		 * 1 a bez masky by hlaseni svitilo napord. */
+		{
+			/* Jednorazove armovani po startu — viz `SI5356_STICKY_ARM_MS`. */
+			static uint8_t s_si_armed = 0;
+			if (!s_si_armed && HAL_GetTick() > SI5356_STICKY_ARM_MS) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky = 0;
+					s_si_armed = 1;
+				}
+			}
+			uint8_t stk;
+			if (si5356_read_sticky(&hi2c1, &stk))
+				g_si5356_sticky |= (uint8_t)(stk & ~SI5356_LOS_XTAL);
+			/* Vynulovani na zadost (UI/UART). I2C1 vlastni tenhle task, takze
+			 * zapis smi udelat JEN on — stejny request/pend vzor jako jinde. */
+			if (g_si5356_clr_req) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky  = 0;
+					g_si5356_clr_req = 0;
+				}
+				/* Pri neuspechu zadost zustava a zkusi se priste. */
+			}
+		}
 		osMutexRelease(i2c1MutexHandle);
 	  } else {
 		sensor_fail(SENS_T49);
@@ -424,7 +453,29 @@ void SensorsTask_run(void *argument)
 		float ts   = (float)rt * (float)vref / (float)ADC_VREF_CHARAC;
 		int   span = (int)ADC_TS_CAL2 - (int)ADC_TS_CAL1;   /* 30..110 °C */
 		float tc   = span ? ((ts - (float)ADC_TS_CAL1) * 80.0f / (float)span + 30.0f) : 0.0f;
-		sensor_update(SENS_CORE_T, tc);
+		/* 🔴 JEDINA teplota, ktera se FILTRUJE — a je to zamer, ne nedbalost jinde.
+		 * Zmereno 2026-09-01: dva odecty par sekund po sobe daly 52,17 a 48,9 °C
+		 * (rozptyl 3,3 °C), zatimco TMP117 na desce drzel 0,5 °C za cely beh.
+		 * Neni to zavada: cidlo v kremiku ma nekalibrovanou presnost v jednotkach
+		 * °C a jde navic pres VREFINT, takze se scita sum OBOU prevodu. Bez filtru
+		 * to zaplevelilo min/max (41,8/52,2 proti 31,1/31,6 u ostatnich radku) a
+		 * na prehledu kanalu to vypadalo jako porucha, prestoze `err=0`.
+		 *
+		 * ⚠️ Filtrovat SE SMI PRAVE PROTO, ze na teto hodnote nic nevisi: je to
+		 * indikator „jak je horky kremik", ne merici vstup. Necte ji zadny alarm,
+		 * zadny prah ani warm-up kriterium (to jede z OCXO 0x49), takze zpozdeni
+		 * radu sekund nikomu nevadi. U ANALOGOVYCH vetvi (ADS, VREF, VBAT) by to
+		 * bylo NEPRIPUSTNE — ty do mereni mluvi a filtr by zakryl skutecny
+		 * vypadek napajeni. Nekopirovat to sem na jine senzory.
+		 *
+		 * IIR alfa = 1/8 pri 1 Hz -> casova konstanta ~8 s. To je hluboko pod
+		 * tepelnou setrvacnosti pouzdra, takze skutecny nabeh po startu
+		 * (~42 -> 52 °C behem minut) projde nezkresleny; potlaci se jen sum. */
+		static float s_core_flt = 0.0f;
+		static uint8_t s_core_seen = 0u;
+		if (!s_core_seen) { s_core_flt = tc; s_core_seen = 1u; }
+		else              { s_core_flt += (tc - s_core_flt) * 0.125f; }
+		sensor_update(SENS_CORE_T, s_core_flt);
 	  } else sensor_fail(SENS_CORE_T);
 	  if (a_b) {
 		uint32_t vbat = (uint32_t)((uint64_t)rb * vref / 65535u) * 4u;   /* vnitrni delic /4 */
