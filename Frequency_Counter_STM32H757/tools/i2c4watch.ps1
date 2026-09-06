@@ -4,7 +4,7 @@
   (CPU, heap, nejmensi stack, teploty, pocet I2C chyb).
 
   Duvod: smrt I2C4 je INTERMITENTNI (nekdy za 7 s, nekdy za 136 s, nekdy vubec),
-  takze rucne se ten okamzik netrefi. Detekce je pasivni — `temperature` cte
+  takze rucne se ten okamzik netrefi. Detekce je pasivni - `temperature` cte
   cache `g_sensors`, NEsaha na sbernici, takze mereni samo vysledek neovlivnuje.
 
   Pouziti:
@@ -40,7 +40,7 @@ try {
   $script:nextLog = 0
   Write-Host ("# hlidam I2C4 na {0}, max {1}s" -f $Port, $Seconds)
   while ((New-TimeSpan $t0 (Get-Date)).TotalSeconds -lt $Seconds) {
-    # ⚠️ Kriterium je SOUVISLA serie chyb, ne jedno selhane cteni. `temperature`
+    # !!  Kriterium je SOUVISLA serie chyb, ne jedno selhane cteni. `temperature`
     # se STALE reaguje uz na jediny vypadek, a ty jsou bezne PRECHODNE (mereno
     # 2026-08-30: err 2 / v rade 0, `scanner` vzapeti nasel vsechna 3 zarizeni).
     # Skutecna smrt = streak roste a uz neklesne, proto se cte `status`.

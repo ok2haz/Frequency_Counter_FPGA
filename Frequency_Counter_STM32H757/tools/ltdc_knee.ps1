@@ -3,10 +3,10 @@
   a zaroven zmeri, co to stoji na rychlosti kresleni.
 
   Proc dve veliciny: `d2ddt` vraci pasmo LTDC tim, ze zpomaluje DMA2D. Samotne
-  "podteceni = 0" je proto bezcenne, kdyz u toho kresleni znatelne zpomali —
+  "podteceni = 0" je proto bezcenne, kdyz u toho kresleni znatelne zpomali -
   meritkem musi byt OBOJI.
 
-  Merí se pri VYNUCENEM plnem prekresleni (`ui`), protoze prave to uzivatel
+  Meri se pri VYNUCENEM plnem prekresleni (`ui`), protoze prave to uzivatel
   vidi jako probliknuti; staticka obrazovka nic nevypovi.
 #>
 param(

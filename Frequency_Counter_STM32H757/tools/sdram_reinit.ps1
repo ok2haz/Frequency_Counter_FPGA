@@ -1,20 +1,20 @@
 <#
   sdram_reinit.ps1 - spusti SDRAM inicializacni sekvenci ZNOVU, za behu, sondou.
 
-  ROZHODUJICI EXPERIMENT pro symptom „po power resetu cerny displej, po soft
+  ROZHODUJICI EXPERIMENT pro symptom po power resetu cerny displej, po soft
   resetu citelny": kdyz pamet po druhem initu OZIJE, je vada ve STUDENE
   inicializaci (opravitelne firmwarem). Kdyz zustane mrtva, je to elektricka
   vada mezi MCU a cipem.
 
-  Zapisuje se primo do FMC_SDCMR (0x52004150). Kodovani (RM0399 §22.9.6):
+  Zapisuje se primo do FMC_SDCMR (0x52004150). Kodovani (RM0399 22.9.6):
     [2:0] MODE  1=clock enable, 2=PALL, 3=auto-refresh, 4=load mode
     [3]   CTB2, [4] CTB1        (cilova banka)
     [8:5] NRFS  (pocet auto-refresh - 1)
     [21:9] MRD  (obsah mode registru SDRAM)
 
-  ⚠️ Prodlevy mezi kroky zajistuje uz sama rezie sondy (kazde volani ~100 ms),
-  takze pozadavek „min. 100 us po clock enable" je splneny s velkou rezervou.
-  🔴 Halt cile rozbije I2C4 -> po testu POWER-CYKLUS.
+  !!  Prodlevy mezi kroky zajistuje uz sama rezie sondy (kazde volani ~100 ms),
+  takze pozadavek min. 100 us po clock enable" je splneny s velkou rezervou.
+  !!  Halt cile rozbije I2C4 -> po testu POWER-CYKLUS.
 #>
 param(
   [string]$Cli = "C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"

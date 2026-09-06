@@ -122,6 +122,23 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
   (Audit 2026-08-29 našel **15 takto neviditelných řetězců** — mj. celý splash nápis „GPSDO",
   text modalu „Opravdu restartovat?" a lowercase půlku 11 nadpisů oken.)
 
+**Nastroje a jejich pasti:**
+- 🔴 **`.ps1` PIS CISTE ASCII.** PowerShell 5.1 cte skript BEZ BOM jako **ANSI (cp1252)**,
+  takze vicebajtovy UTF-8 znak (`—`, `⚠️`, ceska diakritika) rozbije parser a chyba se
+  hlasi na uplne jinem radku (`The '<' operator is reserved`). Audit 2026-09-06 nasel
+  **121 ne-ASCII znaku ve 12 skriptech** v `tools/`. Kontrola:
+  `[Parser]::ParseFile('tools/x.ps1',[ref]$null,[ref]$e)`.
+- ⚠️ **Vystup `STM32_Programmer_CLI` obsahuje v banneru hexa retezce**, takze pri
+  parsovani `-r32` ber **POSLEDNI** shodu regexu, ne prvni (`gpio_drift.ps1`).
+- 🔴 **Novy `.c` soubor se do buildu NEDOSTANE bez `Close → Open Project`** — prelozi se,
+  ale linker hlasi `undefined reference`, protoze IDE ho nema v `Release/*/subdir.mk`.
+  Bez IDE to obejdes tim, ze implementaci das do souboru, ktery uz v buildu je
+  (USER CODE blok). **Hlavicky makefile nepotrebuji, `.c` ano.**
+- **`tools/gpio_drift.ps1`** — porovna konfiguraci VSECH GPIO proti drivejsimu snimku;
+  odhali tridu vady „pin tise ztratil konfiguraci" bez tabulky ocekavanych AF.
+  ⚠️ Cte sondou, takze **haltuje jadro a rozbiji I2C4** — levnejsi bezna cesta je
+  `status` -> radek `GPIO HLIDAC` (pocitadlo oprav primo z firmwaru).
+
 **Build / diagnostika:**
 - Stavěj **Release (`-Os`)**, ne Debug (`-O0`) — −22 % velikosti, jinak stejné defines. Po přepnutí ověř časování (DWT `delay_us`, bit-bang pípání, I2C recovery).
   - 🔴 **PROČ Release léta nešel přeložit (vyřešeno 2026-08-29).** Když se do projektu přidávaly

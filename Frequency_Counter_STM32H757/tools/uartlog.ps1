@@ -1,9 +1,9 @@
 <#
-  uartlog.ps1 - PASIVNE poslouchá UART a kazdy radek orazitkuje casem od startu
+  uartlog.ps1 - PASIVNE posloucha UART a kazdy radek orazitkuje casem od startu
   poslechu. Urceno pro zachyceni BOOT logu (spust, pak resetni desku sondou)
   nebo pro sledovani, KDY se objevi chybova hlaska.
 
-  Volitelne umi behem poslechu periodicky posilat prikaz (-Poll) — tim se da
+  Volitelne umi behem poslechu periodicky posilat prikaz (-Poll) - tim se da
   vzorkovat stav, ktery se sam netiskne (napr. `temperature` -> kdy zestale).
 
   Pouziti:
@@ -26,7 +26,7 @@ try {
   $t0 = Get-Date
   $lastPoll = $t0
   $buf = ""
-  Write-Host ("# poslouchám {0} po dobu {1}s (cas = s od startu poslechu)" -f $Port, $Seconds)
+  Write-Host ("# posloucham {0} po dobu {1}s (cas = s od startu poslechu)" -f $Port, $Seconds)
   while ((New-TimeSpan $t0 (Get-Date)).TotalSeconds -lt $Seconds) {
     Start-Sleep -Milliseconds 40
     $buf += $sp.ReadExisting()

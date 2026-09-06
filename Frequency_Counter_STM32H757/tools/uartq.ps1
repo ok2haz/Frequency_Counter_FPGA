@@ -12,8 +12,8 @@
     powershell -ExecutionPolicy Bypass -File tools\uartq.ps1 -Port COM8 -Idle 1500 status stats sensors
     powershell -ExecutionPolicy Bypass -File tools\uartq.ps1 -Port COM8 -Quiet freq
 
-  ⚠️ Port nesmi byt soucasne otevreny v PuTTY/Tera Term (exkluzivni pristup).
-  ⚠️ CPU cisla ze `stats` nemer, kdyz zaroven bezi cteni ladici sondou —
+  !!  Port nesmi byt soucasne otevreny v PuTTY/Tera Term (exkluzivni pristup).
+  !!  CPU cisla ze `stats` nemer, kdyz zaroven bezi cteni ladici sondou -
      halt cile nafoukne g_rtos_cpu_pct (viz CLAUDE.md).
 #>
 param(
@@ -22,7 +22,7 @@ param(
   [int]   $Idle = 900,      # ms ticha, po kterych povazujeme odpoved za dokoncenou
   [int]   $Max  = 15000,    # ms tvrdy strop na jeden prikaz
   [switch]$Quiet,
-  # ⚠️ Pri `powershell -File` se argumenty predavaji jako RETEZCE, takze pole
+  # !!  Pri `powershell -File` se argumenty predavaji jako RETEZCE, takze pole
   # `-Cmds a,b` prijde jako jediny string "a,b". Prikazy proto oddeluj
   # STREDNIKEM (mezery v prikazu tim zustanou zachovane): -Cmds "status;stats"
   [string]$Cmds = "ping"

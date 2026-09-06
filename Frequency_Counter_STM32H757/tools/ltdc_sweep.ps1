@@ -2,12 +2,12 @@
   ltdc_sweep.ps1 - zmeri, jak `d2ddt` (mrtvy cas DMA2D) ovlivnuje PODTECENI
   LTDC FIFO.
 
-  Proc: LTDC cte pixely ze SDRAM pres tutéž sbernici, po ktere DMA2D kresli.
+  Proc: LTDC cte pixely ze SDRAM pres tutez sbernici, po ktere DMA2D kresli.
   Kdyz DMA2D zabere prilis velky podil pasma, LTDC nestihne naplnit FIFO a
   snimek se poskodi. `d2ddt` vklada mezi prenosy DMA2D mrtvy cas, cimz pasmo
-  vraci LTDC — za cenu pomalejsiho kresleni.
+  vraci LTDC - za cenu pomalejsiho kresleni.
 
-  Merí se PODIL podteceni na snimek (ne absolutni pocet), aby vysledek
+  Meri se PODIL podteceni na snimek (ne absolutni pocet), aby vysledek
   nezavisel na tom, jak rychle se zrovna prekresluje.
 
   Pouziti:

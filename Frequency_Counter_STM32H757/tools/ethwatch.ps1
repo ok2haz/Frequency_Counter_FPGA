@@ -1,6 +1,6 @@
 <#
   ethwatch.ps1 - sleduje stav site desky po resetu a zaroven ji zkousi
-  dosahnout po siti. Odlisi „nikdy nenabehlo" od „nabehlo a pak umrelo".
+  dosahnout po siti. Odlisi nikdy nenabehlo" od nabehlo a pak umrelo".
 
   Vypisuje na jednom radku: uptime, co hlasi deska (link + IP) a jestli
   na ni v tu chvili odpovida HTTP z tohohle pocitace.

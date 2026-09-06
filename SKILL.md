@@ -432,6 +432,60 @@ rozlišení“. U každého čítače si napiš jeho **strop a jednotku** (co p�
 jeden tik znamená) dřív, než z něj vyvodíš závěr. Hodnota, která se rovná
 stropu, je signál o měřidle, ne o systému.
 
+## 6l. Když najdeš vadu, prohledej celou její TŘÍDU, ne jen ten jeden výskyt
+
+2026-09-06 jsem našel, že `PG8` (`FMC_SDCLK`) ztratil konfiguraci, opravil ho
+a šel dál. Původce jsem nenašel a zapsal to jako otevřené. **O kolo později se
+ukázalo, že úplně stejně přišel o konfiguraci `PG11` (`ETH_TX_EN`)** — jiný pin
+téhož portu, tatáž příčina, jiný projev (místo černého displeje deska nedostala
+IP). Kdybych po nálezu na PG8 prošel zbytek `GPIOG`, měl jsem obojí naráz
+a ušetřil celé kolo ladění.
+
+**Pravidlo:** po každém nálezu si polož otázku *„kde jinde přesně tohle mohlo
+nastat?“* a **projdi ty výskyty hned**, dokud máš čerstvý přístup k HW i hlavu
+v problému. Konkrétně:
+- stejný registr / stejný port / stejná periferie,
+- stejný vzor v kódu (`grep` na tutéž konstrukci),
+- stejná sdílená struktura mezi jádry/tasky.
+
+⚠️ Zvlášť to platí, když **neznáš původce**. Neznámá příčina znamená, že
+nemůžeš vyloučit další oběti — a „opravím ten, o kterém vím“ je pak jen
+odklad.
+
+## 6m. „Periferie hlásí úspěch“ pokrývá jen její vlastní úsek řetězu
+
+Při hledání vady Ethernetu jsem přečetl TX deskriptor DMA: `OWN=0`, `FD|LD`
+nastaveno, **žádný chybový bit**, délka 350 B (přesně DHCP DISCOVER). Uzavřel
+jsem z toho, že vysílání funguje. Nefungovalo: `ETH_TX_EN` (PG11) ztratil
+alternativní funkci, takže PHY nikdy nedostal povolení vysílat a na drát nešel
+ani jeden rámec. **DMA přitom hlásila úspěch naprosto po právu** — svůj úsek
+(přečíst buffer, předat MAC) zvládla.
+
+**Pravidlo:** úspěšné hlášení periferie je důkaz o **jejím** úseku, ne o celé
+cestě. U řetězu `CPU → DMA → MAC → PIN → PHY → drát` musíš mít důkaz z místa
+za tím podezřelým článkem — u sítě je to protistrana (ARP záznam, odpověď),
+ne vlastní deskriptor.
+
+Souvisí s §6k („kód běží“ ≠ „zápisy dorazily“); tohle je jeho hardwarová
+varianta: „DMA dokončila“ ≠ „signál opustil čip“.
+
+## 6n. Sdílený registr mezi dvěma jádry je nezámkový read-modify-write
+
+Obě zmíněné vady mají společnou příčinu: `GPIOG` konfigurují **obě jádra**
+(CM7 kvůli FMC a QUADSPI, CM4 kvůli ETH a LED), a `HAL_GPIO_Init` dělá nad
+`MODER`/`AFR` **čtení, úpravu a zápis bez zámku**. Ztracený zápis pak tiše
+vrátí cizí pin do původního stavu.
+
+Podpis je charakteristický a stojí za zapamatování: **ztratí se jen JEDNA
+položka** (u PG8 `MODER`, u PG11 `AFR`), zatímco druhý pin z téhož volání
+`HAL_GPIO_Init` přežije. Vada buňky ani rozbitá pájka takhle nevypadají.
+
+**Pravidlo:** u víceprocesorového čipu si u každé sdílené periferie napiš,
+**kdo všechno do ní zapisuje**. Když je jich víc než jeden a zápis není
+atomický, je to závod bez ohledu na to, jak nepravděpodobný se zdá — GPIO
+konfigurační registry, hodinové enable registry (`RCC_*ENR`) a NVIC jsou
+typické. Řešením je serializace (na STM32H7 `HSEM`), ne naděje.
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
@@ -524,6 +578,9 @@ nerozpadly literály.
 - [ ] Ověřil jsem to **měřením**, nebo jen usoudil? A co to měření samo mění?
 - [ ] Umí moje kontrola **selhat**? Zkusil jsem ji donutit?
 - [ ] Dostává ta součástka vůbec **hodiny a napájení**? (§6i — nejlevnější kontrola patří první, ne poslední.)
+- [ ] Prohledal jsem celou **třídu** nálezu, nebo jen ten jeden pin/soubor/výskyt? (§6l)
+- [ ] Mám důkaz **za** podezřelým článkem řetězu, ne jen hlášení periferie o sobě? (§6m)
+- [ ] Nepíše do toho registru **druhé jádro**? (§6n)
 - [ ] Znám **strop a jednotku** čítače, ze kterého vyvozuji závěr? (§7h)
 - [ ] **Ověřovací nástroj, který jsem napsal, jsem otestoval nastraženou chybou** (§7e) — a vím, *který krok* ji chytil.
 - [ ] Jak to vypadá, **když ta kontrola nic nedělá**?

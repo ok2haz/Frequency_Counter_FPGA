@@ -3,15 +3,15 @@
 
   Proc: uzivatel hlasi, ze dotyk umira PO AKTIVACI SPORICE. Spustenim sporice
   se provede prave jeden zapis jasu na ATTINY (auto-dim). Cekat 10 min na kazdy
-  pokus je nepouzitelne — `scpi DISP:BRIG <n>` meni `g_brightness`, takze
+  pokus je nepouzitelne - `scpi DISP:BRIG <n>` meni `g_brightness`, takze
   vyvola UPLNE STEJNY zapis (UiTask -> ws_panel_set_backlight) na pozadani.
 
   Podezreni na mechanismus: `HAL_I2C_Master_Transmit` je pollovaci a UiTask ma
   prioritu BelowNormal -> vyssi tasky ho muzou preemptnout MEZI BAJTY, kdy
-  periferie DRZI SCL V NULE. Bit-bang slave (ATTINY) to nemusi prezit — stejny
+  periferie DRZI SCL V NULE. Bit-bang slave (ATTINY) to nemusi prezit - stejny
   efekt jako halt ladici sondou (zmereno: 1 cteni sondou = 6 chyb).
 
-  Merí se pocet chyb I2C4 pred/po serii zapisu. Cteni stavu jde pres UART
+  Meri se pocet chyb I2C4 pred/po serii zapisu. Cteni stavu jde pres UART
   (`status`), takze mereni samo na sbernici nesaha.
 
   Pouziti:

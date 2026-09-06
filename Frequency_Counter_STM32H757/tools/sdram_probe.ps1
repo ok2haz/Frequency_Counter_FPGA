@@ -5,7 +5,7 @@
   atributy i kresleni UI, takze se meri VYHRADNE pamet. Refresh bezi dal
   (FMC je autonomni HW, halt jadra ho nezastavi).
 
-  🔴 CENA: halt cile rozhodi ATTINY na I2C4 -> dotyk a TMP117 0x48 zustanou
+  !!  CENA: halt cile rozhodi ATTINY na I2C4 -> dotyk a TMP117 0x48 zustanou
   mrtve az do POWER-CYKLU (viz CLAUDE.md). Pouzivej jen kdyz to stoji za to
   a pocitej s odpojenim napajeni po testu.
 

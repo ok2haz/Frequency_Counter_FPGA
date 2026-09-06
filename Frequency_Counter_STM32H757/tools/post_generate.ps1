@@ -1,23 +1,23 @@
-# post_generate.ps1 — automatická oprava po `Generate Code` z CubeMX
+# post_generate.ps1 - automaticka oprava po `Generate Code` z CubeMX
 #
-# ⚠️ POJISTKA, ne primární řešení. Od 2026-08-16 je HardFault vyřešený rovnou
-# v CubeMX: v NVIC je u `HardFault_IRQn` odškrtnuté **"Generate IRQ handler"**
-# (`.ioc` klíč `NVIC1.HardFault_IRQn` pole 6 = false — přesně jak to má FreeRTOS
-# u PendSV/SysTick), takže CubeMX handler negeneruje a náš `naked` může žít
-# v USER CODE 1, kam regen nesahá.
+# !!  POJISTKA, ne primarni reseni. Od 2026-08-16 je HardFault vyreseny rovnou
+# v CubeMX: v NVIC je u `HardFault_IRQn` odskrtnute **"Generate IRQ handler"**
+# (`.ioc` klic `NVIC1.HardFault_IRQn` pole 6 = false - presne jak to ma FreeRTOS
+# u PendSV/SysTick), takze CubeMX handler negeneruje a nas `naked` muze zit
+# v USER CODE 1, kam regen nesaha.
 #
-# Tenhle skript má smysl jen kdyby to políčko někdo zase zaškrtl (nebo se ztratilo
-# při upgradu CubeMX) — pak handler obnoví. Nastavit ho jde v CubeMX:
+# Tenhle skript ma smysl jen kdyby to policko nekdo zase zaskrtl (nebo se ztratilo
+# pri upgradu CubeMX) - pak handler obnovi. Nastavit ho jde v CubeMX:
 #   Project Manager -> Project -> "Script (after generation)"  ->  tools\post_generate.bat
-# (v `.ioc` se to projeví jako `ProjectManager.UAScriptAfterPath`).
+# (v `.ioc` se to projevi jako `ProjectManager.UAScriptAfterPath`).
 #
-# Skript je IDEMPOTENTNÍ: když je handler už naked, jen to oznámí a nic nemění.
-# Spustitelný i ručně:  powershell -ExecutionPolicy Bypass -File tools\post_generate.ps1
+# Skript je IDEMPOTENTNI: kdyz je handler uz naked, jen to oznami a nic nemeni.
+# Spustitelny i rucne:  powershell -ExecutionPolicy Bypass -File tools\post_generate.ps1
 
 $ErrorActionPreference = 'Stop'
 
-# Kořen projektu = rodič adresáře, kde leží tenhle skript (nezávislé na CWD,
-# protože CubeMX skript spouští z vlastního pracovního adresáře).
+# Koren projektu = rodic adresare, kde lezi tenhle skript (nezavisle na CWD,
+# protoze CubeMX skript spousti z vlastniho pracovniho adresare).
 $root = Split-Path -Parent $PSScriptRoot
 $itFile = Join-Path $root 'CM7\Core\Src\stm32h7xx_it.c'
 
@@ -33,7 +33,7 @@ if ($text -match '__attribute__\(\(naked\)\)\s*void\s+HardFault_Handler') {
     exit 0
 }
 
-# Přesně ta podoba, kterou generuje CubeMX (prázdný handler se dvěma USER CODE bloky).
+# Presne ta podoba, kterou generuje CubeMX (prazdny handler se dvema USER CODE bloky).
 $generated = @'
 void HardFault_Handler(void)
 {
@@ -50,7 +50,7 @@ void HardFault_Handler(void)
 
 $restored = @'
 /* !! REGEN-CLOBBER: tuhle naked verzi CubeMX pri Generate Code PREPISE zpet na
- * prazdny `while(1)` (je mimo USER CODE — cela definice funkce se do USER CODE
+ * prazdny `while(1)` (je mimo USER CODE - cela definice funkce se do USER CODE
  * bloku dat neda). Obnovuje ji `tools/post_generate.ps1`, ktery je nastaveny
  * jako "Script (after generation)" v Project Manageru. Helper
  * `hard_fault_capture` je v USER CODE 0 a regen prezije.
@@ -70,13 +70,13 @@ __attribute__((naked)) void HardFault_Handler(void)
 }
 '@
 
-# Normalizace konců řádků, ať shoda nezávisí na CRLF/LF.
+# Normalizace koncu radku, at shoda nezavisi na CRLF/LF.
 $needle = $generated -replace "`r`n", "`n"
 $hay    = $text      -replace "`r`n", "`n"
 
 if ($hay.Contains($needle)) {
     $hay = $hay.Replace($needle, ($restored -replace "`r`n", "`n"))
-    # Zpět na CRLF (soubor je v repu s CRLF jako zbytek generovaneho kodu).
+    # Zpet na CRLF (soubor je v repu s CRLF jako zbytek generovaneho kodu).
     $out = $hay -replace "`n", "`r`n"
     Set-Content -Path $itFile -Value $out -Encoding UTF8 -NoNewline
     Write-Host "post_generate: HardFault_Handler OBNOVEN (naked + crash black-box)." -ForegroundColor Green
