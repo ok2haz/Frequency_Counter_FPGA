@@ -486,6 +486,37 @@ atomický, je to závod bez ohledu na to, jak nepravděpodobný se zdá — GPIO
 konfigurační registry, hodinové enable registry (`RCC_*ENR`) a NVIC jsou
 typické. Řešením je serializace (na STM32H7 `HSEM`), ne naděje.
 
+## 6o. Test bez kontrolní větve neměří nic — hlavně když „vada" umí přijít sama
+
+2026-08-30 jsem chtěl vědět, jestli čtení ladicí sondou zabíjí I2C4. Napsal jsem
+test: ověř zdravou sběrnici → N čtení sondou → sleduj chyby. Vyšlo „po 1. čtení
+6 chyb, po 3. čtení sběrnice mrtvá". Zapsal jsem to do CLAUDE.md jako **změřený
+zákon** a na jeho základě si zakázal sondu úplně.
+
+**Ten test ale nikdy nezměřil kontrolní situaci: zdravou sběrnici ponechanou
+stejnou dobu O SAMOTĚ.** A přitom jsem **týž den** zapsal, že sběrnice umírá sama
+po 7 s, 136 s a ~2016 s. Celé pozorování trvalo ~15 s. Sběrnice hynoucí sama
+během minut vyrobí naměřená čísla i bez jediného haltu — **souběh je úplný**.
+Uživatel na to přišel prostou námitkou „dřív to šlo i se sondou“ a historie mu
+dala za pravdu.
+
+Cena: měsíc práce s uměle zakázaným nástrojem a **falešně uzavřená otázka** — protože
+„už víme, že to dělá sonda“ zastavilo hledání skutečné příčiny.
+
+**Pravidlo:** než z pokusu uděláš závěr „**A** způsobuje **B**“, zeptej se
+**„co dělá B, když A neudělám?“** a změř to. Zvlášť nesmlouvavě, když:
+- **B umí nastat samo** (intermitentní vada, degradace, závod),
+- pozorovací okno je **kratší** než typický interval mezi samovolnými výskyty,
+- **A a B se dějí ve stejném období** z jiného důvodu (u mě: auto-dim se spouští
+  po době **bez doteku** — tedy právě když ladím; korelace se sondou vznikne
+  sama od sebe).
+
+⚠️ A když takový nezajištěný závěr **zapíšeš jako pravidlo do dokumentace**,
+zafixuješ chybu pro všechny další relace. Do dokumentace patří i **jak** to bylo
+změřeno, aby to šlo přezkoumat — „naměřeno“ bez postupu je jen tvrzení.
+Souvisí s §6e (jedno čisté měření neruší výpočet) a §6j (nezávěruj z dat, o kterých
+sám píšeš, že jsou nedůvěryhodná).
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
@@ -579,6 +610,7 @@ nerozpadly literály.
 - [ ] Umí moje kontrola **selhat**? Zkusil jsem ji donutit?
 - [ ] Dostává ta součástka vůbec **hodiny a napájení**? (§6i — nejlevnější kontrola patří první, ne poslední.)
 - [ ] Prohledal jsem celou **třídu** nálezu, nebo jen ten jeden pin/soubor/výskyt? (§6l)
+- [ ] Změřil jsem i **kontrolní** variantu — co se stane, když zásah NEudělám? (§6o)
 - [ ] Mám důkaz **za** podezřelým článkem řetězu, ne jen hlášení periferie o sobě? (§6m)
 - [ ] Nepíše do toho registru **druhé jádro**? (§6n)
 - [ ] Znám **strop a jednotku** čítače, ze kterého vyvozuji závěr? (§7h)
