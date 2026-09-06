@@ -18,6 +18,7 @@
 #include "freertos_shared.h"  /* g_freq_x100000/seq/valid/stale — realny kmitocet z FpgaTasku (#1) */
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include "phase_noise.h"   /* pn_compute — L(f) fazovy sum z ringu s_y[] (#45) */
+#include "meas_present.h"  /* MP_TDC_PS — jediny zdroj kroku TDC (sdileny s CM4/webem) */
 #include "../hal/stm32/prim_stm32_hal.h"  /* prim_stm32_fb_count — guardy „nekresli, je to stejne" */
 #include "fpga_freq.h"     /* fpga_freq_hires_mul — overeni nasobitele reciproke dvojice */
 #include <prim/prim.h>
@@ -250,6 +251,8 @@ static int s_sys_level = -1;   /* posledni vykreslena uroven (pro poll zmeny) */
  * s_sys_mix 0 = barva urovne s_sys_from_level, 1 = barva s_sys_level (usazeno). */
 static int   s_sys_from_level = -1;
 static float s_sys_mix        = 1.0f;
+/* #88: do kolika bufferu uz dosla USAZENA podoba pilulky (viz gate_same). */
+static int8_t s_sys_reps;
 #define SYS_XFADE_STEP 0.14f   /* ~7 tiku @20 Hz -> ~0,35 s */
 
 /* Vrati 1 pokud se uroven SYS zdravi zmenila od posledniho render_header -> volajici
@@ -332,6 +335,34 @@ static void render_background_to_cache(void)
                    1, UI_COLOR_LINE);
 
     prim_set_target(prev);
+}
+
+/* ══ Guard „obsah je stejny -> nekresli" NAPRIC VSEMI BUFFERY (STATUS #88) ═════
+ * 🔴 Guard je JEDEN stav, ale framebuffery jsou TRI. Kdyz se po zmene nakresli
+ * jen jednou, ma novy obsah pouze ten buffer, do ktereho se zrovna kreslilo —
+ * a jakmile se page-flip dostane na ostatni, ukazou starsi obsah. To je presne
+ * to PROBLIKAVANI (#88). Copy-forward to nezachrani: kopiruje sjednoceni dirty
+ * z poslednich DVOU snimku, takze kdyz se kvuli preskoceni prestane flipovat,
+ * dirty rect toho jedineho kresleni z historie vypadne driv, nez ho ostatni
+ * buffery dostanou.
+ *
+ * Pravidlo: preskocit se smi az kdyz tentyz obsah dostal KAZDY buffer.
+ *
+ * Pouziti — VZDY tesne pred kreslenim:
+ *     int same = (…obsah se nezmenil…);
+ *     if (gate_same(&reps, same)) return 0;      // uz to maji vsechny -> skip
+ *     …kresli…                                   // pri !same jeste uloz novy obsah
+ *
+ * ⚠️ Guard NESMI byt schovany za dalsi podminkou, ktera po usazeni prestane
+ * platit (typicky „animace se hybe"): pak by se doplnujici kresby do zbylych
+ * bufferu nikdy neprovedly a chyba zustane. Volej ho na KAZDY tik.
+ * ⚠️ Pole guardu (per segment/karta) = jedno `reps` na prvek, ne jedno spolecne. */
+static int gate_same(int8_t *reps, int same)
+{
+    if (!same) { *reps = 1; return 0; }        /* novy obsah -> zatim v 1 bufferu */
+    if (*reps >= (int8_t)prim_stm32_fb_count()) return 1;   /* maji ho vsechny */
+    (*reps)++;                                 /* dokresli do dalsiho bufferu */
+    return 0;
 }
 
 static void trend_drawn_invalidate(void);   /* fwd — definice u trend animace nize */
@@ -783,11 +814,10 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
  * ⚠️ ZADNY `log10` (nano.specs bez float printf je jina vec, ale libm log10 by
  *   zbytecne tahlo float — staci nasobeni 0,1 v celociselne smycce).
  * Vraci pocet nejistych desetin; volajici (`num_layout`) ho jeste sanituje. */
-#define FREQ_TDC_PS  2500.0    /* Si5356 4 faze po 90° = 2,5 ns krok TDC (HW konstanta) */
-/* Jediny zdroj kroku TDC [ps]. Drive byla 2500.0 na TRECH mistech
- * (`FREQ_TDC_PS`, literal v okne ANALYZA, testovaci vektory) — presne pripad
- * pravidla „duplicitni fakta = riziko rozjeti". ⚠️ Nova deska ma carry chain
- * ~50 ps bin (~22 ps single-shot), tedy o dva rady jinde. */
+/* Krok TDC [ps] — hodnota bydli v `meas_present.h` jako `MP_TDC_PS`, protoze ji
+ * potrebuje i CM4 (web ji servíruje v `/api/state` pro rozpocet nejistoty).
+ * Zdejsi alias zustava jen kvuli citelnosti mistnich vzorcu. */
+#define FREQ_TDC_PS  MP_TDC_PS
 double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
 
 static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ns, int frac)
@@ -813,6 +843,33 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ns, int frac)
  * FREQ_MAX_W. Naplni pocatecni hodnotu a shadow.
  * Volat pri INITu a pri zmene magnitudy/zdroje. */
 static void disp_update(void);   /* fwd — prepocet s_disp_n z s_freq_n dle rezimu */
+
+/* Jednotka a pocet CELYCH cislic pro periodu 1/f (SI predpona tak, aby mantisa
+ * byla 1 <= m < 1000).
+ *
+ * 🔴 JEDEN ZDROJ PRAVDY pro dve mista, ktera se driv mohla rozejit:
+ *   - `num_build_for` podle toho STAVI format,
+ *   - `freq_advance` podle toho pozna, ze se format MUSI prestavet.
+ * Driv se prestavba spoustela jen pri zmene dekady FREKVENCE (`idg != s_freq_int`),
+ * jenze uvnitr jedne frekvencni dekady se perioda posune o dekadu take:
+ *   f = 9 999 999 Hz -> 100,0 ns (3 cele cislice)
+ *   f = 1 000 000 Hz ->   1,0 us (1 cela cislice)   <- tataz dekada f (7 cislic)!
+ * Format se neprestavel a `freq_fill_segments` plni od LSB nahoru, takze pri
+ * pretečeni **TISE ZAHODIL VEDOUCI CISLICI** (z 1000 ns bylo „000"). */
+static void period_fmt_of(double hz, const char **unit, double *unit_s, int *int_digits)
+{
+    double t_ns = (hz > 0.0) ? 1e9 / hz : 0.0;
+    double t_disp;
+    if      (t_ns >= 1e9) { t_disp = t_ns / 1e9;  *unit = "s";  *unit_s = 1.0;   }
+    else if (t_ns >= 1e6) { t_disp = t_ns / 1e6;  *unit = "ms"; *unit_s = 1e-3;  }
+    else if (t_ns >= 1e3) { t_disp = t_ns / 1e3;  *unit = "us"; *unit_s = 1e-6;  }
+    else if (t_ns >= 1.0) { t_disp = t_ns;        *unit = "ns"; *unit_s = 1e-9;  }
+    else                  { t_disp = t_ns * 1e3;  *unit = "ps"; *unit_s = 1e-12; }
+    uint64_t whole = (uint64_t)t_disp;
+    int n = 1;
+    for (uint64_t t = whole; t >= 10ull; t /= 10ull) n++;
+    *int_digits = n;
+}
 
 static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int max_frac)
 {
@@ -842,19 +899,9 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, in
         s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ns, s_freq_hires) : 0u;
         s_freq_center = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
     } else {
-        /* Perioda z 1/f (ne hi-res gate/edges — staci ~7 platnych cifer). */
-        double f    = (double)x100000 / 100000.0;
-        double t_ns = (f > 0.0) ? 1e9 / f : 0.0;
-        double t_disp;
-        /* SI predpony s / ms / us / ns / ps dle magnitudy periody (1 <= mantisa < 1000). */
-        if      (t_ns >= 1e9) { t_disp = t_ns / 1e9;  s_disp_unit = "s";  s_disp_unit_s = 1.0;   }
-        else if (t_ns >= 1e6) { t_disp = t_ns / 1e6;  s_disp_unit = "ms"; s_disp_unit_s = 1e-3;  }
-        else if (t_ns >= 1e3) { t_disp = t_ns / 1e3;  s_disp_unit = "us"; s_disp_unit_s = 1e-6;  }
-        else if (t_ns >= 1.0) { t_disp = t_ns;        s_disp_unit = "ns"; s_disp_unit_s = 1e-9;  }
-        else                  { t_disp = t_ns * 1e3;  s_disp_unit = "ps"; s_disp_unit_s = 1e-12; }
-        uint64_t p_whole = (uint64_t)t_disp;
-        int p_int = 1;
-        for (uint64_t t = p_whole; t >= 10ull; t /= 10ull) p_int++;
+        const char *u; double us; int p_int;
+        period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
+        s_disp_unit = u; s_disp_unit_s = us;
         for (int frac = FREQ_FRAC_HIRES; ; frac--) {
             num_layout(p_int, frac, 2);
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
@@ -949,7 +996,17 @@ static void freq_advance(void)
             /* Prestav format pri zmene RADU nebo pri prepnuti /4<->/16: s /16 zmizi
              * `edge_count`, tedy i moznost hi-res dopoctu -> pocet desetin se MUSI
              * srazit, jinak by se dokreslovaly nuly, ktere mereni nenese. */
-            if (idg != s_freq_int || hires != s_freq_hires) {
+            int need = (idg != s_freq_int || hires != s_freq_hires);
+            /* 🔴 V rezimu PERIODA hlidej JESTE format periody: ta se posune o dekadu
+             * i UVNITR jedne frekvencni dekady (9,99 MHz -> 100 ns / 1,00 MHz -> 1 us),
+             * takze samotne `idg` to nechytne a `freq_fill_segments` by tise zahodila
+             * vedouci cislici. Viz `period_fmt_of`. */
+            if (!need && s_disp_period) {
+                const char *u; double us; int p_int;
+                period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
+                if (p_int != s_disp_int || us != s_disp_unit_s) need = 1;
+            }
+            if (need) {
                 s_freq_hires = hires;
                 num_build_for(x100000, edges, gate_ns,
                               hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5);
@@ -1410,7 +1467,30 @@ bool screen_main_selftest(void)
     ok &= (hist_h(10.0f, 10, 100, false) == 100);
     ok &= (hist_h(10.0f, 10, 100, true) == 100);
     ok &= (hist_h(1.0f, 10, 100, true) > hist_h(1.0f, 10, 100, false));
-    printf("ui: fmt_frac+hist_h selftest %s\n", ok ? "OK" : "FAIL");
+
+    /* ── gate_same (#88) ──────────────────────────────────────────────────────
+     * Po ZMENE obsahu se musi kreslit presne `fb_count`-krat (jednou do kazdeho
+     * bufferu) a teprve pak smi guard preskakovat. Prave tenhle vzor drzi
+     * problikavani pod kontrolou, takze si zaslouzi test, ne jen komentar. */
+    {   int nfb = prim_stm32_fb_count();
+        int8_t reps = 0, draws = 0;
+        /* zmena -> pak uz porad "stejne" */
+        if (!gate_same(&reps, 0)) draws++;                 /* 1. vykresleni */
+        for (int i = 0; i < 10; i++) if (!gate_same(&reps, 1)) draws++;
+        ok &= (draws == nfb);            /* dohromady prave fb_count kreseb */
+        /* dalsi zmena musi ucetnictvi zacit znovu */
+        draws = 0;
+        if (!gate_same(&reps, 0)) draws++;
+        for (int i = 0; i < 10; i++) if (!gate_same(&reps, 1)) draws++;
+        ok &= (draws == nfb);
+        /* trvale se menici obsah = kresli se pokazde, nikdy se nepreskoci */
+        draws = 0;
+        for (int i = 0; i < 6; i++) if (!gate_same(&reps, 0)) draws++;
+        ok &= (draws == 6);
+        ok &= (nfb >= 2);                /* sanity: triple/double buffering */
+    }
+
+    printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 
@@ -1770,6 +1850,9 @@ static void draw_stat_card(int idx, const char *val, prim_color_t c)
  * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
 static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
 static char        s_stat_cache[3][24];   /* cache = velikost zdroje (off/s1/dr[24]), viz STATUS.md #13 */
+/* #88: kolikrat uz PRAVE TATO hodnota dosla do framebufferu. Jedno cislo na
+ * kartu — spolecne by dokreslovani jedne karty umlcelo zbyle dve. */
+static int8_t      s_stat_reps[3];
 
 static void stats_anim_resync(void)
 {
@@ -1805,6 +1888,10 @@ static void draw_offset_sigma(prim_rect_t rect)
         fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
         fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
         strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
+        /* #88: tenhle render je JEDNO vykresleni -> obsah zatim ma jen jeden
+         * buffer. `reps = 1` (ne 0 a ne fb_count) drzi ucetnictvi presne:
+         * 20Hz tik pak hodnotu dokresli do zbylych dvou a teprve pak preskoci. */
+        s_stat_reps[0] = s_stat_reps[1] = s_stat_reps[2] = 1;
     }
     draw_stat_card(0, off, UI_COLOR_OK);
     draw_stat_card(1, s1,  UI_COLOR_VIOLET);
@@ -1835,27 +1922,35 @@ int screen_main_tick_stats_anim(void)
     if (!screen_main_is_running()) return 0;
     if (s_stat_card_rect[0].w == 0) return 0;
 
-    int m0 = anim_step(&s_anim_off,   0.15f, 1e-13f);
-    int m1 = anim_step(&s_anim_sig,   0.15f, 1e-13f);
-    int m2 = anim_step(&s_anim_drift, 0.15f, 1e-13f);
+    /* Krok animace se musi provest VZDY (posouva easing), ale na rozhodnuti
+     * „kreslit?" se uz NEPOUZIVA — viz nize. */
+    anim_step(&s_anim_off,   0.15f, 1e-13f);
+    anim_step(&s_anim_sig,   0.15f, 1e-13f);
+    anim_step(&s_anim_drift, 0.15f, 1e-13f);
 
+    /* 🔴 #88: drive tu bylo `if (m0) { if (strcmp(...)) {kresli;} }`. Obe podminky
+     * dohromady zpusobily, ze se nova hodnota nakreslila PRESNE JEDNOU — do toho
+     * bufferu, ktery byl zrovna back. Jakmile easing dojel, `m0` uz nikdy nebylo
+     * 1, takze doplnujici kresby do zbylych dvou bufferu se NEPROVEDLY a ty
+     * v nich drzely starou hodnotu natrvalo -> pri kazdem flipu problikla.
+     * Ted se hodnota formatuje kazdy tik a o kresleni rozhoduje `gate_same`,
+     * ktery dokresli do vsech bufferu a teprve pak zacne preskakovat.
+     * (`fmt_frac` + `strcmp` 3x za tik je proti blitu karty zanedbatelne.) */
     int drew = 0;
     char buf[24];
-    if (m0) {
-        fmt_frac(buf, sizeof buf, s_anim_off.cur, 1);
-        if (strcmp(buf, s_stat_cache[0]) != 0) {
-            strcpy(s_stat_cache[0], buf); draw_stat_card_value(0, buf, UI_COLOR_OK); drew = 1; }
-    }
-    if (m1) {
-        fmt_frac(buf, sizeof buf, s_anim_sig.cur, 0);
-        if (strcmp(buf, s_stat_cache[1]) != 0) {
-            strcpy(s_stat_cache[1], buf); draw_stat_card_value(1, buf, UI_COLOR_VIOLET); drew = 1; }
-    }
-    if (m2) {
-        fmt_frac(buf, sizeof buf, s_anim_drift.cur, 1);
-        if (strcmp(buf, s_stat_cache[2]) != 0) {
-            strcpy(s_stat_cache[2], buf); draw_stat_card_value(2, buf, UI_COLOR_ACC); drew = 1; }
-    }
+
+    fmt_frac(buf, sizeof buf, s_anim_off.cur, 1);
+    if (!gate_same(&s_stat_reps[0], strcmp(buf, s_stat_cache[0]) == 0)) {
+        strcpy(s_stat_cache[0], buf); draw_stat_card_value(0, buf, UI_COLOR_OK); drew = 1; }
+
+    fmt_frac(buf, sizeof buf, s_anim_sig.cur, 0);
+    if (!gate_same(&s_stat_reps[1], strcmp(buf, s_stat_cache[1]) == 0)) {
+        strcpy(s_stat_cache[1], buf); draw_stat_card_value(1, buf, UI_COLOR_VIOLET); drew = 1; }
+
+    fmt_frac(buf, sizeof buf, s_anim_drift.cur, 1);
+    if (!gate_same(&s_stat_reps[2], strcmp(buf, s_stat_cache[2]) == 0)) {
+        strcpy(s_stat_cache[2], buf); draw_stat_card_value(2, buf, UI_COLOR_ACC); drew = 1; }
+
     return drew;
 }
 
@@ -1994,16 +2089,11 @@ int screen_main_tick_trend_anim(void)
      * jedineho kresleni z te historie vypadne driv, nez ho ostatni buffery
      * dostanou. (Prave tim jsem 2026-08-30 zpusobil problikavani trendu.) */
     int same = trend_drawn_same(disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
-    if (same && s_trend_reps >= prim_stm32_fb_count()) return 0;
+    if (gate_same(&s_trend_reps, same)) return 0;   /* uz to maji vsechny buffery */
 
     blit_bg_region(s_trend_inner);
     trend_plot_draw(s_trend_inner, disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
-    if (same) {
-        if (s_trend_reps < 127) s_trend_reps++;    /* tentyz obsah do dalsiho bufferu */
-    } else {
-        trend_drawn_store(disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
-        s_trend_reps = 1;                          /* novy obsah -> zatim v jednom bufferu */
-    }
+    if (!same) trend_drawn_store(disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
     return 1;
 }
 
@@ -2369,6 +2459,7 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
 static uint32_t s_cpu_shown = 999;
 static uint8_t  s_cm4_shown = 255;
 static uint8_t  s_cm4_pct_shown = 255;   /* posledni vykreslene CM4 % (change-detect) */
+static int8_t   s_cpu_reps;              /* #88: do kolika bufferu uz tenhle udaj dosel */
 /* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("CM4:--"), 1 = heartbeat
  * roste, CM4 mluvi pres IPC ("CM4:xx%"), 2 = nenabehl ("CM4:off"). */
 static uint8_t cm4_state(void)
@@ -2381,7 +2472,12 @@ int screen_main_redraw_cpu(int force)
     uint32_t c7 = g_rtos_cpu_pct; if (c7 > 99) c7 = 99;
     uint8_t  c4st = cm4_state();
     uint32_t c4p = g_cm4_cpu_pct; if (c4p > 99) c4p = 99;
-    if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown) return 0;
+    /* #88: pouhe „hodnota se nezmenila -> return 0" by novy udaj nechalo jen
+     * v tom bufferu, do ktereho se prave kreslilo. `force` (plny render) je
+     * take jedno vykresleni, takze i tam se pocitadlo nastavi na 1. */
+    int same = (c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown);
+    if (!force && gate_same(&s_cpu_reps, same)) return 0;
+    if (force) s_cpu_reps = 1;                 /* plny render = jedno vykresleni */
     s_cpu_shown = c7; s_cm4_shown = c4st; s_cm4_pct_shown = (uint8_t)c4p;
     blit_bg_region((prim_rect_t){582, 1, 61, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
     char l[12];
@@ -2419,10 +2515,18 @@ int screen_main_redraw_header(void)
  * pokud kreslil (flip odlozen na flush). */
 int screen_main_tick_sys_xfade(void)
 {
-    if (s_sys_mix >= 1.0f) return 0;               /* usazeno, neni co prolinat */
     if (s_sys_pill_rect.w == 0) { s_sys_mix = 1.0f; return 0; }  /* pilulka pretekla (neviditelna) */
-    s_sys_mix += SYS_XFADE_STEP;
-    if (s_sys_mix > 1.0f) s_sys_mix = 1.0f;
+    /* 🔴 #88: drive `if (s_sys_mix >= 1.0f) return 0;` HNED tady — posledni
+     * snimek prolnuti (mix == 1,0) se tim nakreslil PRESNE JEDNOU a ve zbylych
+     * dvou bufferech zustala mezilehla barva pilulky natrvalo -> pri kazdem
+     * flipu probliknuti. Usazeny stav se ted jeste dokresli do vsech bufferu
+     * a teprve pak se zacne preskakovat. */
+    int settled = (s_sys_mix >= 1.0f);
+    if (gate_same(&s_sys_reps, settled)) return 0;
+    if (!settled) {
+        s_sys_mix += SYS_XFADE_STEP;
+        if (s_sys_mix > 1.0f) s_sys_mix = 1.0f;
+    }
     blit_bg_region(s_sys_pill_rect);               /* podklad headeru pod pilulkou */
     ui_pill_t p; sys_pill_setup(&p, s_sys_pill_rect.y);
     p.x = s_sys_pill_rect.x;

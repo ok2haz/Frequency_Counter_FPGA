@@ -42,3 +42,8 @@ const void *prim_stm32_front_addr(void);
  * snimku, takze kdyz se mezitim neflipuje, dirty rect z toho jedineho kresleni
  * z historie vypadne. Konstanta se proto NEDUPLIKUJE do volajicich. */
 int prim_stm32_fb_count(void);
+
+/** Pocet podteceni FIFO LTDC od bootu (`FUIF`, cteno pri kazdem flipu).
+ *  Nenulove = LTDC nestiha z pameti nacitat pixely -> POSKOZENE SNIMKY na panelu
+ *  (typicky nedostatek propustnosti SDRAM, ne chyba kresleni). Vypisuje `status`. */
+extern volatile uint32_t g_ltdc_underrun;

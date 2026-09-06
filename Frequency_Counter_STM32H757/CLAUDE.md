@@ -71,9 +71,20 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
   **dvou** snímků, takže při přeskakování (a tedy bez flipu) dirty rect toho jediného vykreslení
   z historie vypadne. Vzor: počítadlo `reps`, reset při změně obsahu, přeskakovat od
   `reps >= prim_stm32_fb_count()`. **Konstantu 3 neduplikuj** — je vystavená funkcí.
-  (Takhle jsem 2026-08-30 rozbil trend; viz `s_trend_reps` v `screen_main.c` a STATUS #88.
-  Stejný vzor má `dchg()` a change-key skipy v ALLAN/HISTOGRAM — tam to zatím vychází, ale je to
-  tatáž latentní chyba.)
+  (Takhle jsem 2026-08-30 rozbil trend; viz STATUS #88.)
+  ✅ **Od 2026-09-04 je na to sdílená funkce `gate_same(&reps, same)`** (`screen_main.c`, krytá
+  `screen_main_selftest`). **Nový guard „obsah je stejný → nekresli" ji MUSÍ použít**, ne si vzor
+  opsat. Nasazená na trend, statistiky (3 karty = 3 počítadla), sys pilulku a CPU blok.
+  🔴 **Guard NESMÍ být schovaný za další podmínkou, která po usazení přestane platit**
+  (typicky „animace se hýbe" / „mix < 1.0"). Přesně tím se to rozbilo podruhé:
+  `tick_stats_anim` měl guard pod `if (m0)`, takže po dojetí easingu se už nikdy nekreslilo
+  a dva ze tří bufferů držely starou hodnotu **natrvalo**; `tick_sys_xfade` vracel 0 hned na
+  `s_sys_mix >= 1.0f`, takže usazená pilulka se nakreslila jedinkrát.
+  **Volej `gate_same` na KAŽDÝ tik.** Plný render nastaví `reps = 1` (je to taky jedno vykreslení).
+  ⚠️ **Na INKREMENTÁLNÍ překreslení to nestačí:** `screen_main_redraw_signal` kreslí jen
+  *změněné* segmenty, tedy předpokládá, že předchozí stav v cílovém bufferu už je — to je jiná
+  a hlubší třída (STATUS #137). Totéž platí pro `dchg()` (#97) a change-key skipy v ALLAN/HISTOGRAM
+  — zatím to tam vychází, ale je to tatáž latentní chyba.
 - Po přepnutí tématu: `screen_main_invalidate()` + `screen_main_init()` (bg_cache je v starých barvách).
 - `UI_COLOR_*` nelze ve file-scope `static const` (derefují runtime ukazatel `g_ui_theme`).
 
@@ -87,11 +98,20 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
   desce by naráz resetoval `MCP4728` (práh a hystereze komparátoru!), `TMP117` i `ADS1115`.
   Platí i dnes preventivně — žádný náš kód na adresu 0x00 sahat nemá.
 
-**Text na displeji — DVĚ tiché pasti (obě reálně kously, 2026-08-29):**
+**Text na displeji — TŘI tiché pasti (všechny reálně kously):**
 - 🔴 **`%f` v `printf`/`snprintf` NEVYTISKNE NIC.** Projekt linkuje **nano.specs bez float formátování** —
   ověřeno v mapfile: `_printf_float` ani `_dtoa_r` **nejsou slinkované**. Kontrola:
   `grep -c "_printf_float\|_dtoa_r" CM7/Debug/H757_LED_CM7.map` → musí být `0`, a tedy **žádné `%f`/`%e`/`%g`**.
-  Používej `fmt_fixed` (float, 1–3 desetiny), **`fmt_sdec`** (double, ±, 0–5 desetin) nebo `fmt_hz`.
+  Používej `fmt_fixed` (float, **JEN 1–3 desetiny**, viz past níže), **`fmt_sdec`** (double, ±, 0–5 desetin),
+  **`fmt_dec_u`** (= `fmt_sdec` bez vynuceného `+`) nebo `fmt_hz`.
+- 🔴 **`fmt_fixed(…, dec >= 4)` vytiskne POUZE CELOU ČÁST** (nalezeno 2026-09-04, STATUS #132).
+  Má `switch` jen pro `case 1/2/3`; cokoli vyššího spadne do `default:` = `"%ld"` — **bez varování,
+  bez ořezu, prostě bez desetin**. Reálně to znamenalo, že v okně MĚŘENÍ hlásilo `σ (n-1)` **vždy
+  „0 Hz"** (σ dobrého OCXO je hluboko pod 1 Hz) a v okně ANALÝZA se rozšířená nejistota `U (k=2)`
+  zobrazovala jako **„+-0 Hz"** — tedy právě to číslo, kvůli kterému to okno existuje.
+  **Pravidlo: `fmt_fixed` VÝHRADNĚ pro 1–3 desetiny, jinak `fmt_dec_u`/`fmt_sdec`.**
+  Kontrola: `grep -rn "fmt_fixed([^;]*, *[4-9])" CM7` musí být **prázdný**.
+  ⚠️ `default:` mlčí dál, takže past je pořád živá pro nové volající.
 - 🔴 **Většina velkých fontů je SUBSETOVANÁ a chybějící glyf se TIŠE PŘESKOČÍ** (`prim_draw_text`:
   `if (g == NULL) continue;` — žádný fallback, žádná šířka). Text prostě zmizí. Aktuální subsety:
   `mono_75`/`mono_52` = jen číslice, `mono_30` = `0123456789,.+-`, `sans_32` = `Hzsmunp`,
@@ -123,8 +143,71 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 - **CM4 testuj jen po čistém power-cyklu bez ladicí sondy** (sonda rozbíjí boot handshake + dělá falešné HardFaulty).
 - Verze: každé zvýšení = commit + `git tag vX.Y.Z` na tomtéž commitu.
 
+## 🔴 DISPLEJ ZLOBÍ? ZMĚŘ NEJDŘÍV PAMĚŤ, NE KRESLICÍ KÓD
+
+🔴🔴 **A ÚPLNĚ NEJDŘÍV: DOSTÁVÁ SDRAM HODINY?** `PG8` = `FMC_SDCLK` musí být
+v **AF12**. Ověření sondou: `GPIOG->MODER` (0x58021800), bity [17:16] pro PG8
+musí být `10`, **ne `11` (analog)**. Bez hodin čip nepřijme jediný příkaz,
+neobnovuje se a **čte samé nuly** — což vypadá jako „rozpad obsahu / vadný
+refresh / aliasing adres“, ale je to prostě mrtvý takt (STATUS #196).
+⚠️ `MX_FMC_Init` proto PG8 znovu potvrzuje **před** inicializační sekvencí;
+původce přepisu se nenašel (#197), takže tu obranu **neodstraňuj**.
+⚠️ Rychlá indicie bez sondy: `membench` hlásí u vzoru `0x00` **nula chyb** a
+u všech ostatních vzorů selhání — to je podpis „všechno čte nuly“, ne vady buněk.
+
+
+
+**Pořadí, které stálo tři kola ladění, než se zavedlo (audit 2026-09-05):**
+
+1. **`membench`** → řádek **„retence po 1 s" musí být 0** a celkem 0 chybných bitů.
+   Framebuffery i `bg_cache` leží v SDRAM; když se obsah rozpadá, vypadá to jako
+   chyba vykreslování — **černý displej** (obsah vyhasl k nule = černá v RGB565)
+   nebo **problikávání** (vyhasne jen část mezi překreslením).
+2. **`status`** → `DISPLEJ:` (selhal bring-up a v kterém kroku?) a `LTDC: podteceni FIFO`.
+3. **`panel`** → zopakuje bring-up za běhu s výpisem každého kroku.
+4. **`status` -> `LTDC: podteceni FIFO`.** Nenulove = KAZDY flip da poskozeny
+   snimek, tedy „problikne pri kazdem prekresleni, staticky obraz je OK".
+   Pricina: `copy-forward` bezi na DMA2D SOUBEZNE se skenovanim panelu z teze
+   SDRAM. Lek je **mrtvy cas DMA2D** (`d2ddt`, `DMA2D_AMTCR.DT`); zmereny zlom
+   na teto desce je ~208, vychozi hodnota je **240** (STATUS #200).
+   ⚠️ Meritko: `podteceni/flip` SMI prerust 1 — cistac se inkrementuje jednou za
+   `prim_stm32_present`, takze pri hodnote presne 1,000 je SATUROVANY a nic
+   nedokazuje (tim byl #194 rok neprukazny).
+5. **Teprve pak** kreslici kod (guardy, copy-forward, dirty rect).
+
+⚠️ **Verdikt o překryvu adres z `membench` je platný AŽ nad pamětí s čistou retencí** —
+vyhaslá kontrolní buňka vypadá jako „cizí zápis" a vyrobí falešné podezření na HW
+(přesně tak vzniklo #72, viz níže).
+
+🔑 **Proč se to hledalo tak dlouho** (SKILL.md §6d): vada byla v kódu **od prvního
+commitu**, ale byla **maskovaná** tím, že se framebuffery přepisují každý snímek a
+LTDC je nepřetržitě čte — obojí řádky implicitně obnovuje. Projevila se až
+2026-08-30, kdy přibyl guard „obsah je stejný → nekresli" a **ubylo přepisování**.
+Symptom se objevil hned po té změně, takže se tři kola hledalo ve vykreslování.
+**Optimalizace, které něco dělají méně často, samy nic nerozbijí — jen odkryjí,
+co bylo pod nimi.**
+
 **Neuzavřené HW podezření:**
+- ✅ **SDRAM `REFRESH_COUNT` byl 4,7× mimo spec — OPRAVENO 2026-09-04 (1835 → 371).**
+  🔴 **Bylo to tam od PRVNÍHO commitu** (`git log -S` na `fmc.c`), ne regrese.
+  1835 je z ST příkladu pro jinou desku a obnovilo celou matici za **304 ms** místo 64 ms.
+  Správně pro tuhle desku (SDCLK 50 MHz, **8192 řádků**): `64e-3·50e6/8192 − 20 = 371`.
+  Osazený čip je dle schématu **`MT48LC16M16A2TG`** (4 banky × 4M × 16 = 32 MB, 8192 řádků,
+  512 sloupců) → `RowBitsNumber=13` i `ColumnBitsNumber=9` v `fmc.c` jsou **správné**.
+  ⚠️ **Při změně SDCLK se REFRESH_COUNT MUSÍ přepočítat** (při 100 MHz vychází **761**).
+  🔴 **Proč se to nechalo tak dlouho:** hodnota byla v komentáři označená jako podezřelá,
+  se **spočítanou správnou hodnotou i návodem, čím to změřit** — a nechala se jen proto,
+  že **jedno** měření retence vrátilo 0. Po dvanácti dnech dal tentýž test 1 048 646
+  chybných bitů. **Jedno čisté měření neruší výpočet** (SKILL.md §6e).
+  Framebuffery vadu maskovaly, rozpadala se
+  **`bg_cache`** — zapsaná jednou v `screen_main_init` a pak už jen čtená → partial redraw
+  blitoval poškozené pozadí → problikávání celé plochy.
+  ⚠️ **Ověřuj retenci, ne jen „displej jede".** `membench` řádek **„retence po 1 s"** musí být **0**.
+  Hodnota se kdysi nechala právě proto, že jedno měření vrátilo 0 — a bylo to falešné uklidnění;
+  po power-cyklu dal tentýž test **1 048 646 chybných bitů**. **Jedno čisté měření nestačí.**
 - 🔴 **SDRAM adresy se můžou opakovat po 2 MB** (podezření pájka `FMC_A9`=`PF15`). Než saháš na zobrazovací řetězec, přečti `membench` řádek `fb_alias`. Viz „Benchmark pamětí".
+  ⚠️ **Verdikt o překryvu je NEDŮVĚRYHODNÝ, dokud retence není 0** — rozpadlé buňky vypadají
+  jako „cizí zápis do kontrolní buňky" (přesně to `membench` 2026-09-04 hlásil). Nejdřív refresh, pak alias.
 
 > **📐 Fyzická velikost panelu je pro UI KLÍČOVÁ: 4,3" @ 800×480 → 8,54 px/mm (217 DPI), aktivní plocha ≈ 93,7 × 56,2 mm.**
 > Při návrhu layoutu počítej v **milimetrech, ne pixelech**: dotykový cíl potřebuje **≥60 px (7 mm)**, pohodlně 77 px (9 mm);
@@ -773,8 +856,62 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
       `addEventListener`+`data-`, ne `onclick=`. ⚠️ **Barvy křivek = CSS proměnné `--c0..--c3` TŘÍDOU**
       (`class='ln s0'`), ne `stroke=` (jinak se při změně palety nepřebarví). **`spec(kind)` = jeden zdroj
       pravdy** grafu. 🔴 **tělo JSON/SCPI vždy v connection-owned `c->bodybuf`**, NE ve sdíleném scratchi.
+    - 🔴🔴 **POVINNÝ OVĚŘOVACÍ ŘETĚZEC PO KAŽDÉ EDITACI SPA — `python tools/spa/check.py --build`.**
+      SPA nemá build krok, takže *nic* z toho nechytne překladač sám. Jeden spouštěč existuje proto,
+      aby se řetězec nedal provést jen napůl. **Pořadí je věcné, ne libovolné:**
+      0. 🔑 **`extract_test.py` — funguje vůbec měřítko?** Extraktor je to, čím se posuzuje všechno
+         ostatní; když lže on, „ověřeno" nic neznamená. **Přesně tím SPA třikrát prošla jako v pořádku,
+         když v pořádku nebyla.** 🔴 **Nález 2026-09-05: původní extraktor (regex `"(...)"`) NEODSTRAŇOVAL
+         C komentáře** — uvozovka v `/* … */` *mimo* literál je pro překladač nic (komentář zmizí dřív,
+         než se parsují literály), ale regex ji vzal jako začátek řetězce a od té chvíle posunul páry.
+         Nahrazen **stavovým skenerem** (řetězec / blokový / řádkový komentář / escapy), který dělá
+         totéž co preprocesor. Ověřeno na 10 syntetických případech vč. `/*` a `//` *uvnitř* literálu
+         (CSS komentář, URL), které se komentáře splést nesmí.
+      1. `find_odd.py` — řádek s lichým počtem `"` = rozbitý literál.
+      2. `ascii_clean.py` — uklidí ne-ASCII **i escapované `\"`** uvnitř literálu.
+      3. `spa_size.py <c> dump <html>` — extrahuje HTML; **zapamatuj si počet bajtů**.
+      4. `node --check` nad `<script>` částí (`tools/node-v20.18.1-win-x64/node.exe`).
+      5. **`dom_check.py`** — JS sahající na **neexistující `id`**, duplicitní `id`, rozbité kotvy,
+         nevyvážené `<div>`. ⚠️ `$('neexistuje')` je v prohlížeči **TypeError a od té chvíle se
+         přestane kreslit VŠECHNO za tím** — `node --check` ani překlad C to neodhalí.
+      6. JS testy: `spa_test` `hov_test` `unc_test` `pwr_test` `mdev_test` `pn_test` `alarm_test`
+         `pref_test` `axis_test` (běží nad **vyextrahovaným** JS, ne nad kopií — vytahují si funkce
+         ze zdroje přes `grab()`, takže se nemůžou rozejít s tím, co se doopravdy servíruje).
+         🔴 **Když test spadne, podezřívej NEJDŘÍV test** — v této session bylo **pět** selhání a
+         **ani jedno nebyla chyba v kódu** (STATUS #156/#165). Dvě opakující se příčiny:
+         (a) harness nemá plný scope, a protože testovaná funkce je v `try/catch`, selže **tiše**;
+         (b) test měří jinou vlastnost, než si myslí (sklon místo rozptylu, mantisa přes `round`).
+      7. `./scripts/build.sh Release CM4`.
+      8. 🔑 **`arm-none-eabi-nm --print-size --radix=d CM4/Release/H757_LED_CM4.elf` u `SPA_HTML`
+         musí dát přesně číslo z kroku 3 + 1** (NUL). **Tohle je jediná kontrola, která utnutý literál
+         chytí definitivně**, protože měří, co se doopravdy slinkovalo — ne mezistav. (Utnutí se stalo
+         **třikrát**: STATUS #151/#153.) Referenční hodnota 2026-09-05: 114 770 → `nm` 114 771 ✓.
+      ⚠️ **Skripty piš do souborů, ne do heredocu tohohle shellu** — `\n` a UTF-8 se v heredocu rozpadnou
+      (rozbité literály 2×, `SyntaxError` na U+2014 1×).
     - ⚠️ **SVG:** `viewBox='0 0 100 100'` + `preserveAspectRatio='none'` (souřadnice = %), popisky os jako
-      HTML overlay (ne `<text>`).
+      HTML overlay (ne `<text>`). Roztažení kompenzuje `vector-effect:non-scaling-stroke` na `.g`/`.gv`/`.ln`
+      (tloušťka i čárkování v souřadnicích obrazovky); **cokoli s tvarem** (`<circle>`, značka bodu) by
+      se ale zdeformovalo na elipsu → koncový bod křivky je proto HTML overlay.
+    - 🔴 **Graf má RÁM: `.cw` = rámeček s okraji, `.pa` = kreslicí plocha.** Všechna procenta
+      (křivky, mřížka, koncový bod, křížek odečtu) jsou vztažená k **`.pa`**, popisky os leží
+      v okrajích **vedle ní** (osa Y `right:100%` vlevo, osa X `top:100%` dole). ⚠️ **`.pa` NESMÍ
+      mít `overflow:hidden`** — popisky z ní vystupují doleva; ořez dělá `.cw` a samo SVG.
+      ⚠️ **Odečet pod kurzorem musí měřit `.pa`, ne `.cw`** (`w.hpa`), jinak se posune o šířku
+      levého sloupce. Plná levá + spodní osní linka (`--line2`) je záměrně silnější než čárkovaná
+      mřížka. Nový graf tenhle rám dostane tím, že jeho obsah obalíš do `<div class='pa'>`.
+    - 🔴 **Osy se NEKRESLÍ ručně — jsou generované** (`niceStep`/`niceAxis`/`niceAxisLog` + `axY`/`axX`).
+      Meze zaokrouhluje **`span()`**, tedy tam, odkud je berou i `poly`, `lastXY` a odečet pod kurzorem
+      → jeden zdroj pravdy. Nový graf: dej mu `<g id='gyXxx'>` (mřížka), `<div class='yl' id='ylXxx'>`
+      a `<div class='xl' id='xlXxx'>` a zavolej `axY`/`axX`; **nepiš statické `<line class='g'>`**.
+      Když má graf jinou geometrii než 0..100 %, předej `ax.map`.
+      Kontrolu, že se id os nerozešla s markupem, dělá `tools/spa/dom_check.py`.
+      🔴 **Jednotka patří k ose JEDNOU** (`axY(..., unit)` → `<b class=yu>` nad sloupcem),
+      **nikdy ke každému dílku** — a není to jen estetika: levý sloupec má ~8 znaků
+      (56 px − 7 px odsazení, monospace 10 px ≈ 6 px/znak) a `.cw` má `overflow:hidden`,
+      takže širší popisek se **tiše ořízne zleva**. Číslo formátuje `axNum` podle **kroku**
+      osy (`axDec`), s přechodem na vědecký zápis pod 1e-6 a nad 1e6. Hlídá to `axis_test.js`
+      (nejširší popisek každého grafu proti limitu 8 znaků). **Nový graf s delším popiskem
+      → zvětši `--pl`.**
     - 🔴 **`rf_dbm`/ALLAN/DRIFT počítá klient z REÁLNÝCH měření; `sigma_tau`/`offset`/`drift` ze snapshotu
       se ZÁMĚRNĚ nepoužívají** (CM7 je neplní). Vzorky **podle `seq_meas`** (jinak σy nesmyslně nízká),
       buffer se **zahodí při změně brány**. ⚠️ **Rozdíl proti displeji:** displejový headline je simulace
@@ -807,6 +944,8 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   trvale 1), **`MEAS:PER?`**, `MEAS:FREQ:STAL?`, **`SYST:TEMP:ALL?`** + **`MEAS:VOLT:ALL?`** (agregáty =
   1 round-trip). ⚠️ **Perioda má 15 des. míst (femtosekundy):** zlomek se tiskne **po dvou 32b půlkách**
   (`%07lu%08lu`) — 15 cifer se do `unsigned long` nevejde a newlib-nano neumí `%llu`.
+- **`INPut[n]:` (vstupní cesta) — příkazy hotové, HW ne (2026-09-06):** `COUPling|IMPedance|ATTenuation|LEVel|HYSTeresis`, každý platný končí `-241 "Hardware missing"` (vstupní modul se teprve staví). Meze jsou ale **závazné už teď**: práh ±1,024 V (`MCP4728`), hystereze 1–60 mV, impedance jen 50 Ω / 1 MΩ, dělič jen 1 / 10. ⚠️ **Nic se neukládá** — uložená a neuplatněná hodnota by byla stejná past jako okno SÍŤ. ⚠️ Pořadí chyb: chyba příkazu **před** chybou provedení (`INP:LEV 99` → `-222`, ne `-241`). 🔴 **`INPut1:`/`INPut2:` musí fungovat** — `kw_match` číslici neumí, proto `inp_match()`; neexistující kanál = `-114`, ne `-113`.
+- **`SENSe:FREQuency:APERture` = alias `GATE`** (VISA/IVI hledají `APERture`). Drženo v JEDNÉ podmínce `||`, aby se obě cesty nemohly rozejít.
 - **SET příkazy** (SCPI už není read-only): `SENS:FREQ:GATE <s>` (presety 0,1/1/10/100 s), `SENS:FREQ:CHAN`,
   **`INIT`/`INIT:IMM`** (RUN), **`ABOR`** (STOP), **`READ?`**, `INIT:CONT?`. ⚠️ **Vláknový most:** stav
   měření vlastní UiTask, SCPI běží v UartTasku → SET zapíše jen **požadavek** (`g_ui_cfg_req` +
@@ -1470,10 +1609,19 @@ tiše nepřeloží) a spuštění z podadresáře taky ne (`-I../Core/Inc` je re
 k `CM?/Release`, odkud běží `make`). Obojí selže **tiše** a audit pak hlásí „0 varování“,
 aniž by cokoli zkontroloval — přesně se to stalo 2026-09-01 (57 z 81 souborů, STATUS #118).
 ⚠️ **Vždy kontroluj počet ÚSPĚŠNÝCH překladů, ne jen počet varování.**
-✅ Hotový skript, který to dělá správně: **`python tools/audit.py`** (91 souborů obou jader,
-vypíše `prelozeno OK / SELHALO / souboru s varovanim` + log). Baseline k 2026-09-01 =
-**91 OK, 0 selhání, 2 soubory s varováním** — a ta 3 varování jsou v čistě generovaném
-CubeMX kódu (`fmc.c` 2× `sdramHandle`, `main.c` `assert_failed(file)`). Cokoli navíc je regrese.
+✅ Hotový skript, který to dělá správně: **`python tools/audit.py`** (92 souborů obou jader,
+vypíše **použitou verzi gcc**, pak `prelozeno OK / SELHALO / souboru s varovanim` + log).
+Baseline k 2026-09-04 (**GCC 14.3**) = **92 OK, 0 selhání, 2 soubory s varováním** — a ta
+3 varování jsou v čistě generovaném CubeMX kódu (`fmc.c` 2× `sdramHandle`, `main.c`
+`assert_failed(file)`). Cokoli navíc je regrese.
+- 🔴🔴 **Audit MUSÍ běžet tímtéž kompilátorem jako build.** V IDE jsou nainstalované **dvě**
+  verze (`gnu-tools-for-stm32` **13.3** a **14.3**) a původní `glob(...)[0]` bral podle
+  abecedy tu **starší 13.3** — audit tak tiše kontroloval něco jiného než reálný překlad.
+  Změřeno 2026-09-04 na tomtéž souboru: **13.3 → 0 nálezů `-Wformat-truncation`, 14.3 → 1**
+  (`app_gpsdo.c`, změnový klíč okna MĚŘENÍ; chybu našel až IDE build, ne audit — STATUS #135).
+  Skript teď vybírá **nejnovější** toolchain (verze se parsuje **číslem**, ne abecedně) a
+  **verzi vypisuje**. ⚠️ Pravidlo: **nástroj, který si sám vybírá kompilátor, musí tu volbu
+  vypsat** — jinak je „audit čistý" tvrzení o neznámém kompilátoru.
 - **Přísná varování** (`-fsyntax-only` stačí): `-Wall -Wextra -Wshadow -Wcast-align
   -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wformat=2
   -Wstrict-aliasing=2 -Wmaybe-uninitialized`.

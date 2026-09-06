@@ -9,7 +9,24 @@ aniž by cokoli zkontroloval.)
 import glob, os, re, subprocess, sys
 
 R = r"C:\GitHub\Frequency_Counter_FPGA\Frequency_Counter_STM32H757"
-GCC = glob.glob(r"C:\ST\STM32CubeIDE_2.1.0\STM32CubeIDE\plugins\*gnu-tools*\tools\bin\arm-none-eabi-gcc.exe")[0]
+
+# 🔴 NEJNOVEJSI toolchain, ne `glob(...)[0]`. V IDE jsou nainstalovane DVA
+# (gnu-tools-for-stm32 13.3 a 14.3) a puvodni `[0]` bral podle abecedy ten
+# STARSI (13.3), zatimco firmware se stavi 14.3. Audit tim tise kontroloval
+# jinym kompilatorem nez realny build: 14.3 najde `-Wformat-truncation`
+# v `app_gpsdo.c`, kterou 13.3 NEVIDI (zmereno 2026-09-04, STATUS #135).
+# Verze se parsuje cislem — abecedni razeni by u 9.x vs 14.x selhalo.
+def _pick_gcc():
+    cands = glob.glob(r"C:\ST\STM32CubeIDE*\STM32CubeIDE\plugins"
+                      r"\*gnu-tools*\tools\bin\arm-none-eabi-gcc.exe")
+    if not cands:
+        sys.exit("arm-none-eabi-gcc nenalezen")
+    def ver(p):
+        m = re.search(r"gnu-tools-for-stm32\.(\d+)\.(\d+)", p)
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    return max(cands, key=ver)
+
+GCC = _pick_gcc()
 
 W = ("-Wall -Wextra -Wshadow -Wcast-align -Wnull-dereference -Wduplicated-cond "
      "-Wduplicated-branches -Wlogical-op -Wformat=2 -Wstrict-aliasing=2 "
@@ -32,6 +49,11 @@ def flags_of(subdir_mk, cpu):
     if not m:
         return None
     return [a for a in m.group(1).replace('"', '').split() if a]
+
+# Verzi VYPSAT — kdyby se v IDE objevil dalsi toolchain, at je hned videt,
+# cim se auditovalo (tise pouzity jiny kompilator byl prave ten problem).
+_v = subprocess.run([GCC, "-dumpversion"], capture_output=True, text=True).stdout.strip()
+print("gcc:", _v, "(" + os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(GCC)))) + ")")
 
 ok = bad = warn_files = 0
 log = []

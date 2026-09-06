@@ -714,7 +714,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1070,13 +1070,28 @@ void UartTask_run(void *argument)
 					  sd_export_csv_header(line, sizeof line);
 					  printf("%s", line);
 					  uint32_t done = 0;
-					  for (uint32_t i = total; i-- > 0; ) {      /* chronologicky */
-						  datalog_rec_t r;
-						  if (!datalog_read_back(i, &r)) continue;
-						  sd_export_csv_row(line, sizeof line, &r);
-						  printf("%s", line);
-						  done++;
-						  osDelay(1);
+					  /* #142: BULK cteni. Driv se na kazdy 32B zaznam platil vlastni
+					   * mutex + vlastni QSPI prikaz (~173 us/zaznam), takze export
+					   * desitek tisic radku trval jednotky minut jen ctenim.
+					   * Ted jeden prikaz na davku; poradi (chronologicke) zustava,
+					   * protoze davku prochazime pozpatku stejne jako driv. */
+					  static datalog_rec_t bulk[DATALOG_BULK_MAX];
+					  for (uint32_t i = total; i > 0; ) {
+						  /* ⚠️ NE `want` — to uz je vys parsovany limit `datalog csv <N>`
+						   * (odhalil `-Wshadow` v auditu). */
+						  uint32_t batch = (i < DATALOG_BULK_MAX) ? i : DATALOG_BULK_MAX;
+						  uint32_t first = i - batch;           /* nejnovejsi index davky */
+						  uint32_t used = 0;
+						  uint32_t got = datalog_read_bulk(first, bulk, batch, &used);
+						  if (used == 0u) break;                /* nic dal nejde precist */
+						  /* `bulk[0]` = nejnovejsi z davky -> chronologicky pozpatku. */
+						  for (uint32_t k = got; k-- > 0; ) {
+							  sd_export_csv_row(line, sizeof line, &bulk[k]);
+							  printf("%s", line);
+							  done++;
+						  }
+						  i -= used;
+						  osDelay(1);   /* UartTask neni pod watchdogem, ale UiTask ano */
 					  }
 					  printf("# hotovo: %lu zaznamu\n", (unsigned long)done);
 				  } else if (strcmp(arg, "dump") == 0) {
@@ -1495,6 +1510,26 @@ void UartTask_run(void *argument)
 					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
 				  }
 			  }
+			  /* Mrtvy cas DMA2D proti podteceni LTDC (#139). Ladi se ZA BEHU, aby
+			   * se spravna hodnota dala najit bez preflashovani: nastav, chvili
+			   * koukej na displej a porovnej `LTDC: podteceni FIFO` ve `status`.
+			   * Vyssi = DMA2D vic ustupuje LTDC, ale kresleni je pomalejsi. */
+			  else if (strncmp(RxBuffer, "d2ddt", 5) == 0) {
+				  const char *p = RxBuffer + 5;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  if (v > 255u) v = 255u;
+					  prim_stm32_set_deadtime((uint8_t)v);
+					  g_ltdc_underrun = 0;         /* at se meri az od teto zmeny */
+					  printf("DMA2D: mrtvy cas = %lu takt(u) AHB, pocitadlo podteceni vynulovano\n",
+					         (unsigned long)v);
+				  } else {
+					  printf("DMA2D: mrtvy cas = %u (pouziti: d2ddt <0..255>, 0 = vypnuto)\n",
+					         (unsigned)g_d2d_deadtime);
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "meas reset") == 0) {
 				  /* Allan/Histogram/Trend akumulace zmeni jen UiTask (kresli je,
 				   * neni thread-safe) -> pozadavek, ne primy zapis (viz g_screen_req). */
@@ -1671,6 +1706,31 @@ void UartTask_run(void *argument)
 					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
 					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
 					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);
+					  	/* Podteceni FIFO LTDC = poskozene snimky na panelu z NEDOSTATKU
+					  	 * PROPUSTNOSTI (LTDC nestihl nacist radek), ne z chyby kresleni.
+					  	 * Odlisuje to blikani zpusobene pameti/sbernici od blikani
+					  	 * zpusobeneho guardy v kreslicim kodu. */
+					  	/* ⚠️ Hodnoti se POMER na flip, ne holy pocet. Par podteceni pri
+					  	 * bring-upu panelu je normalni (LTDC startuje s prazdnym FIFO) a
+					  	 * varovat na kazde nenulove cislo znamena planý poplach po kazdem
+					  	 * bootu — presne takovy poplach me 2026-09-06 dvakrat svedl na
+					  	 * nespravnou stopu. Skutecna vada se pozna tim, ze pomer je radove
+					  	 * 1 na flip (probliknuti pri KAZDEM prekresleni), ne 1 za tisic. */
+					  	{ uint32_t fu = g_ltdc_underrun;
+					  	  uint32_t ucf[7]; app_gpsdo_ui_counters(ucf);
+					  	  uint32_t fl = ucf[0];            /* [0] = flip, viz `UI kresleni` vyse */
+					  	  uint32_t per1k = fl ? (uint32_t)(((uint64_t)fu * 1000u) / fl) : 0u;
+					  	  const char *verd = (per1k >= 10u)
+					  	      ? "  <== POSKOZENE SNIMKY (zvys `d2ddt`, viz STATUS #200)"
+					  	      : (fu ? "  (v poradku - jen naběh)" : "  (v poradku)");
+					  	  printf("LTDC: podteceni FIFO %lu / %lu flipu = %lu na 1000%s\n",
+					  	         (unsigned long)fu, (unsigned long)fl,
+					  	         (unsigned long)per1k, verd); }
+					  	/* Glow se pri prekroceni stropu masky NEKRESLI a mlci — citac
+					  	 * je jediny zpusob, jak to poznat (viz glow.c). */
+					  	if (g_prim_glow_skipped)
+					  		printf("GLOW: %lu x nevykresleno (oblast > strop masky) <== zvys PRIM_GLOW_MAX_H\n",
+					  		       (unsigned long)g_prim_glow_skipped);
 					  }
 					  printf("I2C4: SCL=%u SDA=%u %s | TMP117 0x48 err %lu (v rade %u)%s\n",
 						     (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),

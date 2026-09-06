@@ -2019,6 +2019,21 @@ static void fmt_sdec(char *out, size_t n, double v, int dec)
     }
 }
 
+/* `fmt_sdec` bez vynuceneho '+' (zaporna hodnota si '-' nechava).
+ * 🔴 POUZIVAT MISTO `fmt_fixed` VSUDE, KDE JE `dec >= 4`: `fmt_fixed` ma
+ * `switch` jen pro 1..3 desetiny a pro cokoli vyssiho TISE spadne do
+ * `default:`, ktery vytiskne POUZE CELOU CAST — bez jakehokoli varovani.
+ * Realne to znamenalo, ze σ v okne MERENI (5 desetin) hlasila vzdy „0 Hz"
+ * (σ dobreho OCXO je hluboko pod 1 Hz), perioda „100 ns" misto „100.0000 ns"
+ * a nejistota U v okne ANALYZA „+-0 Hz". Nalezeno pri #109 -> STATUS #132.
+ * `fmt_sdec` je navic double, ne float (min. 15 platnych cislic misto 7). */
+static void fmt_dec_u(char *b, size_t n, double v, int dec)
+{
+    char t[32];
+    fmt_sdec(t, sizeof t, v, dec);
+    snprintf(b, n, "%s", (t[0] == '+') ? t + 1 : t);
+}
+
 /* Dopocita UI preset indexy (M, pasmo) z g_meas_cfg — po nacteni z flash
  * (syscfg) drzi cfg hodnoty, ale indexy jsou app-lokalni. M je v cfg presne
  * (round-trip pres flash zachova bit-vzor), pasmo = (hi-lo)/2 s tolerance. */
@@ -4600,14 +4615,18 @@ static void app_gpsdo_render_analyza(void)
     mp_budget_t bd;
     /* Krok TDC ze sdileneho zdroje (drive literal 2500.0 = treti kopie konstanty).
      * Reference: GPSDO disciplinovany na GNSS -> radove 1 ppb systematicky. */
-    mp_budget(hz, gate, screen_main_tdc_ps(), (double)sigma, 1.0, &bd);
+    /* ⚠️ `MP_REF_PPB`, ne literal 1.0 — tutéž hodnotu servíruje web v `/api/state`
+     * pro svuj rozpocet nejistoty, takze musi mit JEDEN zdroj (viz meas_present.h). */
+    mp_budget(hz, gate, screen_main_tdc_ps(), (double)sigma, MP_REF_PPB, &bd);
 
     int drew = first;
     char b[64], v[24];
 
     /* Rozsirena nejistota U (k=2). ⚠️ `k` MUSI byt u cisla uvedene, jinak je
      * udaj nejednoznacny (u vs U se lisi dvojnasobne). */
-    fmt_fixed(v, sizeof v, (float)(bd.u_tot_hz * 2.0), 5);
+    /* ⚠️ `fmt_dec_u`, NE `fmt_fixed(,5)` — ten tiskne jen celou cast, takze
+     * sub-hertzova nejistota se zobrazovala jako „+-0 Hz" (viz fmt_dec_u). */
+    fmt_dec_u(v, sizeof v, bd.u_tot_hz * 2.0, 5);
     { char rel[20]; fmt_sci_ppb(bd.u_tot_rel * 2.0, rel, sizeof rel);
       snprintf(b, sizeof b, "+-%s Hz  (%s, k=2)", v, rel); }
     if (first || dchg(c_u, sizeof c_u, b)) { kv_row_live(104, "Nejistota U:", b, UI_COLOR_ACC, first); drew = 1; }
@@ -5237,7 +5256,19 @@ static void cnt_nibble(int16_t x, int16_t baseline, uint8_t nib, int seen)
  * (1/s, jen RUN). ⚠️ Nad screen_main_freq_hz() = DNES SIMULACE -> plny smysl po #2. */
 static uint8_t    s_meas_mode = 0;             /* 0 = FREKV, 1 = PERIODA */
 static mp_unit_t  s_meas_unit = MP_UNIT_PPB;
-static mp_stats_t s_meas_stats;                /* akumulace v tick_stats_sample */
+static mp_stats_t s_meas_stats;                /* akumulace v tick_stats_sample [Hz] */
+/* 🔑 #109: perioda ma VLASTNI akumulator [s], neprepocitava se z `s_meas_stats`.
+ * Duvody dva a oba podstatne:
+ *  1) prumer period NENI prevraceny prumer kmitoctu (Jensen) a σ_T != σ_f/f² —
+ *     prevod statistiky z Hz by tedy dal jina cisla nez skutecna statistika period
+ *     (kryje `mp_selftest`: f = 1 a 3 Hz -> 1/mean(f) = 0,5 vs mean(T) = 0,667);
+ *  2) reciprocni citac meri periodu PRIMO jako Δt/N, takze vzorek z dvojice
+ *     `gate_time_ns`/`edge_count` nese vic platnych cislic nez `1/f` pocitane
+ *     z uz zaokrouhleneho `frequency_x100000` (5 desetin).
+ * ⚠️ Allan ZUSTAVA frekvencni — σy(τ) je definovana na frakcni frekvenci a
+ * prevadet ji do periody by bylo zavadejici (viz STATUS #109). */
+static mp_stats_t s_meas_pstats;               /* statistika periody [s] */
+static uint32_t   s_meas_pmin_t = 0, s_meas_pmax_t = 0;  /* uptime [s] pri min/max periody */
 static const prim_rect_t CNT_MEAS_BTN  = {18,  417, 200, 61};   /* Citac -> MERENI */
 static const prim_rect_t MEAS_MODE_BTN = {18,  417, 140, 61};
 static const prim_rect_t MEAS_UNIT_BTN = {166, 417, 140, 61};
@@ -5377,11 +5408,31 @@ void app_gpsdo_meas_ui_set(uint8_t p)
     meas_filt_apply_idx();
 }
 
+/* Cas [s] -> citelny retezec ve vhodne jednotce ("123.4567 ns", "1.2345 ms").
+ * ⚠️ Bez `%f` (nano.specs nema float formatovani, viz CLAUDE.md) — hodnota se
+ * napred preskaluje do zvolene jednotky a tiskne pres `fmt_sdec`. */
+static void meas_fmt_time(char *b, size_t n, double sec, int dec)
+{
+    double sc = 1.0;
+    const char *u = mp_time_unit(sec, &sc);
+    char v[32];
+    fmt_dec_u(v, sizeof v, sec / sc, dec);
+    snprintf(b, n, "%s %s", v, u);
+}
+
 static void app_gpsdo_render_meas(void)
 {
     int first = window_first(34);
-    static char c_pri[96], c_nom[48], c_dev[48], c_off[48], c_tf[24],
-                c_n[24], c_mean[48], c_sd[32], c_pp[32], c_spread[48];
+    /* ⚠️ `dchg` invariant: zdrojovy buffer (`b`) musi byt >= cache, protoze
+     * `strncpy(cache, src, n-1)` cte az n-1 B. V rezimu PERIODA jsou retezce
+     * delsi ("123.4567 ns@12345s / ..."), proto c_sd/c_pp vetsi nez driv.
+     * ⚠️ `c_pri` MUSI pojmout cely zmenovy klic "<b> <unit> <unc> <tag>"
+     * (`key` je deklarovany jako `char key[sizeof c_pri]`): b(63) + unit(2)
+     * + unc(11) + tag(23) + 3 mezery + NUL = 103 B. Pri 96 to GCC hlasil jako
+     * `-Wformat-truncation` — utnuty klic by dvema RUZNYM hodnotam dal stejny
+     * prefix, `dchg` by je vyhodnotil jako "beze zmeny" a radek by ZAMRZL. */
+    static char c_pri[128], c_nom[48], c_dev[48], c_off[48], c_tf[24],
+                c_n[24], c_mean[48], c_sd[48], c_pp[64], c_spread[48];
     if (first) {
         s_view = 34;
         window_chrome("MERENI  prezentace", WIN_TITLE_Y);
@@ -5403,17 +5454,29 @@ static void app_gpsdo_render_meas(void)
     /* Index 0 = AUTO (dopocitat z mereni), jinak pevne zvolena reference. */
     double nom = (s_meas_nom_idx == 0) ? mp_nominal_auto(hz) : MEAS_NOM[s_meas_nom_idx].hz;
     int drew = first;
-    char b[48], db[32];
+    char b[64], db[32];
 
-    /* Primarni readout: FREKV (fmt_hz, double) nebo PERIODA v ns.
+    /* #109: v rezimu PERIODA jde CELA karta do casu — nominal, offset i
+     * statistika. Statistika ma VLASTNI akumulator (`s_meas_pstats`), neni to
+     * prepocet z Hz: prumer period neni prevraceny prumer kmitoctu a σ_T neni
+     * σ_f/f² (viz komentar u deklarace + `mp_selftest`). */
+    const int per = (s_meas_mode != 0);
+    const mp_stats_t *sst = per ? &s_meas_pstats : &s_meas_stats;
+    const double nom_t = mp_period_s(nom);        /* nominalni perioda [s] */
+
+    /* Primarni readout: FREKV (fpga_freq_format_val) nebo PERIODA v case.
      * Filtr (#5) se aplikuje JEN tady — statistika nize a vse ostatni pracuje se
      * syrovym `hz` (viz komentar u MEAS_PRI_RECT). */
     double shown = mp_filt_add(&s_meas_filt, hz);
     { const char *unit; int unc;
-      if (s_meas_mode) {                          /* PERIODA [ns] */
-          double ns = mp_period_s(shown) * 1e9;
-          fmt_fixed(b, sizeof b, (float)ns, 4);
-          unit = "ns"; unc = card_uncert_digits_m(ns, 4);
+      if (per) {                                  /* PERIODA — jednotka dle velikosti */
+          /* ⚠️ Drive natvrdo ns: pri nizkem kmitoctu (1 Hz = 1e9 ns) to bylo
+           * necitelne. `mp_time_unit` vybere s/ms/us/ns/ps. */
+          double t = mp_period_s(shown), sc = 1.0;
+          unit = mp_time_unit(t, &sc);
+          double v = t / sc;
+          fmt_dec_u(b, sizeof b, v, 4);      /* ⚠️ NE fmt_fixed — viz jeho komentar */
+          unc = card_uncert_digits_m(v, 4);
       } else {                                    /* FREKVENCE [Hz] */
           /* ⚠️ `fpga_freq_format_val`, NE `fmt_hz`: dava tisice teckou a desetinnou
            * CARKU stejne jako headline hlavni obrazovky a Dvojkanal. `fmt_hz` sazi
@@ -5433,30 +5496,51 @@ static void app_gpsdo_render_meas(void)
       snprintf(key, sizeof key, "%s %s %d %s", b, unit, unc, tag);
       if (first || dchg(c_pri, sizeof c_pri, key)) { meas_headline_draw(b, unit, unc, tag); drew = 1; } }
 
-    /* Pas rozptylu — vlastni zmenovy klic: poloha se hybe i kdyz se text nemeni. */
+    /* Pas rozptylu — vlastni zmenovy klic: poloha se hybe i kdyz se text nemeni.
+     * ⚠️ Klic se zaokrouhluje `lround`, takze hodnota MUSI byt v jednotce, kde
+     * ma cele cislo smysl. Perioda v sekundach je ~1e-7 -> vsechny tri hodnoty
+     * by zaokrouhlily na 0 a pas by NIKDY neprekreslil. Skalujeme proto do
+     * jednotky aktualni hodnoty (stejna hrubost jako u Hz). */
     { char sk[48];
-      snprintf(sk, sizeof sk, "%ld/%ld/%ld/%lu", lround_f((float)shown),
-               lround_f((float)s_meas_stats.min), lround_f((float)s_meas_stats.max),
-               (unsigned long)s_meas_stats.n);
+      double cur_v = per ? mp_period_s(shown) : shown;
+      double ks = 1.0;
+      if (per) { double sc = 1.0; (void)mp_time_unit(cur_v, &sc); ks = 1.0 / sc; }
+      snprintf(sk, sizeof sk, "%ld/%ld/%ld/%lu", lround_f((float)(cur_v * ks)),
+               lround_f((float)(sst->min * ks)), lround_f((float)(sst->max * ks)),
+               (unsigned long)sst->n);
       if (first || dchg(c_spread, sizeof c_spread, sk)) {
           if (first) prim_draw_text((prim_point_t){DG_LLBL, MEAS_ROW0}, "Rozptyl:",
                                     &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-          meas_spread_bar(shown, &s_meas_stats); drew = 1;
+          meas_spread_bar(cur_v, sst); drew = 1;
       } }
 
     /* Nominal — AUTO (nejblizsi kulata reference) nebo rucne zvoleny. Zdroj je
      * v zavorce, aby bylo poznat, jestli se cislo dopocitava z mereni. */
-    { char nb[32]; fmt_hz(nom, nb, sizeof nb);
+    { char nb[32];
+      if (per) meas_fmt_time(nb, sizeof nb, nom_t, 4);
+      else     fmt_hz(nom, nb, sizeof nb);
       snprintf(b, sizeof b, "%s  (%s)", nb, MEAS_NOM[s_meas_nom_idx].lab); }
     if (first || dchg(c_nom, sizeof c_nom, b)) { kv_row_live(MEAS_ROW(1), "Nominal:", b, UI_COLOR_INK_2, first); drew = 1; }
 
-    /* Odchylka ve zvolene jednotce. */
-    fmt_fixed(db, sizeof db, (float)mp_deviation(hz, nom, s_meas_unit), 4);
-    snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
+    /* Odchylka ve zvolene jednotce. V rezimu PERIODA se pocita Z PERIOD
+     * (T vs T_nom), ne z kmitoctu: relativni odchylka periody ma OPACNE
+     * znamenko nez frekvencni, takze prevzit frekvencni cislo by rovnou lhalo.
+     * ⚠️ MP_UNIT_HZ je absolutni rozdil — ten v case NENI v Hz, tiskne se casem. */
+    if (per) {
+        if (s_meas_unit == MP_UNIT_HZ) meas_fmt_time(b, sizeof b, mp_period_s(hz) - nom_t, 4);
+        else {
+            fmt_dec_u(db, sizeof db, mp_deviation(mp_period_s(hz), nom_t, s_meas_unit), 4);
+            snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
+        }
+    } else {
+        fmt_dec_u(db, sizeof db, mp_deviation(hz, nom, s_meas_unit), 4);
+        snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
+    }
     if (first || dchg(c_dev, sizeof c_dev, b)) { kv_row_live(MEAS_ROW(2), "Odchylka:", b, UI_COLOR_ACC, first); drew = 1; }
 
-    /* Offset od nominalu [Hz]. */
-    fmt_hz(hz - nom, b, sizeof b);
+    /* Offset od nominalu — [Hz], v rezimu PERIODA v case. */
+    if (per) meas_fmt_time(b, sizeof b, mp_period_s(hz) - nom_t, 4);
+    else     fmt_hz(hz - nom, b, sizeof b);
     if (first || dchg(c_off, sizeof c_off, b)) { kv_row_live(MEAS_ROW(3), "Offset:", b, UI_COLOR_INK_2, first); drew = 1; }
 
     /* TFOM (odhad z kvality GPS + holdover/warmup). */
@@ -5471,27 +5555,46 @@ static void app_gpsdo_render_meas(void)
       }
     }
 
-    /* Statistika N vzorku (Welford; akumuluje tick_stats_sample 1/s jen RUN, RESET nuluje). */
-    snprintf(b, sizeof b, "%lu", (unsigned long)s_meas_stats.n);
+    /* Statistika N vzorku (Welford; akumuluje tick_stats_sample 1/s jen RUN, RESET nuluje).
+     * `sst` je podle rezimu Hz nebo sekundovy akumulator — viz `s_meas_pstats`. */
+    snprintf(b, sizeof b, "%lu", (unsigned long)sst->n);
     if (first || dchg(c_n, sizeof c_n, b)) { kv_row_live(MEAS_ROW(5), "Vzorku (N):", b, UI_COLOR_INK_2, first); drew = 1; }
 
-    fmt_hz(s_meas_stats.mean, b, sizeof b);
+    if (per) meas_fmt_time(b, sizeof b, sst->mean, 4);
+    else     fmt_hz(sst->mean, b, sizeof b);
     if (first || dchg(c_mean, sizeof c_mean, b)) { kv_row_live(MEAS_ROW(6), "Prumer:", b, UI_COLOR_INK, first); drew = 1; }
 
-    fmt_fixed(db, sizeof db, (float)mp_stats_sd(&s_meas_stats), 5);
-    snprintf(b, sizeof b, "%s Hz", db);
+    if (per) meas_fmt_time(b, sizeof b, mp_stats_sd(sst), 4);
+    else {
+        /* 🔴 Drive `fmt_fixed(...,5)` = tise jen cela cast -> σ hlasila vzdy
+         * „0 Hz" (σ dobreho OCXO je hluboko pod 1 Hz). Viz fmt_dec_u. */
+        fmt_dec_u(db, sizeof db, mp_stats_sd(sst), 5);
+        snprintf(b, sizeof b, "%s Hz", db);
+    }
     if (first || dchg(c_sd, sizeof c_sd, b)) { kv_row_live(MEAS_ROW(7), "σ (n-1):", b, UI_COLOR_VIOLET, first); drew = 1; }
 
     /* Peak-peak NEBO min/max s casem, kdy nastaly (tap na radek prepina).
      * Casova znacka je to, co u dlouheho mereni zajima — "kdy to ujelo". */
-    if (s_meas_pp_minmax && s_meas_stats.n) {
-        char lo[20], hi[20];
-        fmt_fixed(lo, sizeof lo, (float)(s_meas_stats.min - nom), 3);
-        fmt_fixed(hi, sizeof hi, (float)(s_meas_stats.max - nom), 3);
-        snprintf(b, sizeof b, "%s@%lus / %s@%lus", lo, (unsigned long)s_meas_min_t,
-                 hi, (unsigned long)s_meas_max_t);
+    if (s_meas_pp_minmax && sst->n) {
+        char lo[24], hi[24];
+        if (per) {
+            /* Odchylka od NOMINALNI periody + kdy nastala (vlastni casove znacky
+             * periodoveho akumulatoru — min periody nastane pri max kmitoctu,
+             * takze frekvencni znacky by ukazovaly na jiny okamzik). */
+            meas_fmt_time(lo, sizeof lo, sst->min - nom_t, 3);
+            meas_fmt_time(hi, sizeof hi, sst->max - nom_t, 3);
+            snprintf(b, sizeof b, "%s@%lus / %s@%lus", lo, (unsigned long)s_meas_pmin_t,
+                     hi, (unsigned long)s_meas_pmax_t);
+        } else {
+            fmt_fixed(lo, sizeof lo, (float)(sst->min - nom), 3);
+            fmt_fixed(hi, sizeof hi, (float)(sst->max - nom), 3);
+            snprintf(b, sizeof b, "%s@%lus / %s@%lus", lo, (unsigned long)s_meas_min_t,
+                     hi, (unsigned long)s_meas_max_t);
+        }
+    } else if (per) {
+        meas_fmt_time(b, sizeof b, mp_stats_p2p(sst), 4);
     } else {
-        fmt_fixed(db, sizeof db, (float)mp_stats_p2p(&s_meas_stats), 5);
+        fmt_dec_u(db, sizeof db, mp_stats_p2p(sst), 5);
         snprintf(b, sizeof b, "%s Hz", db);
     }
     if (first || dchg(c_pp, sizeof c_pp, b)) {
@@ -7164,18 +7267,28 @@ static uint8_t warn_eval(const char **txt, int *count)
     static const char *T_WARM = "TEPLOTA NEUSTALENA  - kalibrace zamcena";
     static const char *T_BAT  = "ZALOZNI BATERIE SLABA  - hrozi ztrata casu a nastaveni";
 
-    warn_t w[8];
+    /* ⚠️ Kapacita MUSI pokryt kazde `if` nize. Do 2026-09-06 tu bylo `w[8]` pri
+     * osmi podminkach, tedy PRESNE na doraz — devate `if` by tise pretekalo
+     * pole na stacku a nic by na to neupozornilo (podminky se scitaji az za
+     * behu, takze `_Static_assert` to neuhlida). Rezerva je levnejsi nez pravidlo,
+     * na ktere si nekdo vzpomene. */
+    #define WARN_MAX 12
+    warn_t w[WARN_MAX];
     int n = 0;
+    #define WARN_ADD(p, t) do { if (n < WARN_MAX) { w[n].prio = (p); w[n].text = (t); n++; } } while (0)
     /* 1-2 = kriticke (mereni neplatne), 3+ = informativni. */
-    if (warn_rail_bad())                     { w[n].prio = 1; w[n].text = T_RAIL; n++; }
+    if (warn_rail_bad())                     WARN_ADD(1, T_RAIL);
     if (g_si5356_ok && (g_si5356_status & (SI5356_LOS_CLKIN | SI5356_PLL_LOL)))
-                                             { w[n].prio = 2; w[n].text = T_REF;  n++; }
-    if (g_selftest_res == 2)                 { w[n].prio = 3; w[n].text = T_ST;   n++; }
-    if (g_freq_stale)                        { w[n].prio = 4; w[n].text = T_SIG;  n++; }
-    if (warn_rf_dbm() > 0.0f)                { w[n].prio = 5; w[n].text = T_OVL;  n++; }
-    if (g_mon_ocxo_bad)                      { w[n].prio = 6; w[n].text = T_OCXO; n++; }
-    { float sl; if (!warmup_ready(&sl))      { w[n].prio = 7; w[n].text = T_WARM; n++; } }
-    if (g_mon_vbat_bad)                      { w[n].prio = 8; w[n].text = T_BAT;  n++; }
+                                             WARN_ADD(2, T_REF);
+    if (g_selftest_res == 2)                 WARN_ADD(3, T_ST);
+    if (g_freq_stale)                        WARN_ADD(4, T_SIG);
+    if (warn_rf_dbm() > 0.0f)                WARN_ADD(5, T_OVL);
+    if (g_mon_ocxo_bad)                      WARN_ADD(6, T_OCXO);
+    { float sl; if (!warmup_ready(&sl))      WARN_ADD(7, T_WARM); }
+    if (g_mon_vbat_bad)                      WARN_ADD(8, T_BAT);
+
+    #undef WARN_ADD
+    #undef WARN_MAX
 
     if (n == 0) { *txt = NULL; *count = 0; return 0; }
     int best = 0;
@@ -7644,11 +7757,32 @@ void app_gpsdo_tick_stats_sample(void)
     /* Statistika okna MERENI (#67, RESET nuluje). Casovou znacku min/max si
      * hlida app vrstva — `mp_stats_add` je ciste-logicke jadro bez pojmu casu,
      * takze se jen porovna, jestli se hranice prave posunula. */
+    double hz_now = screen_main_freq_hz();
     { double pmin = s_meas_stats.min, pmax = s_meas_stats.max;
       uint32_t pn = s_meas_stats.n;
-      mp_stats_add(&s_meas_stats, screen_main_freq_hz());
+      mp_stats_add(&s_meas_stats, hz_now);
       if (pn == 0 || s_meas_stats.min != pmin) s_meas_min_t = g_uptime_s;
       if (pn == 0 || s_meas_stats.max != pmax) s_meas_max_t = g_uptime_s; }
+    /* #109: vzorek PERIODY. Prednostne PRIMO z reciproke dvojice Δt/N (vic
+     * platnych cislic nez 1/f); jen kdyz bezi realne/emulovane mereni, protoze
+     * v SIM fallbacku je posledni ramec stary nebo zadny. Nasobitel urcuje
+     * VYHRADNE `fpga_freq_hires_mul` (jediny zdroj pravdy, viz fpga_freq.h). */
+    { double t_s;
+      fpga_meas_t fm;
+      if (g_freq_valid && fpga_freq_get_last(&fm)) {
+          uint32_t mul = fpga_freq_hires_mul(fm.frequency_x100000,
+                                             fm.edge_count, fm.gate_time_ns);
+          t_s = mp_period_sample_s(fm.edge_count, fm.gate_time_ns, mul, hz_now);
+      } else {
+          t_s = mp_period_s(hz_now);
+      }
+      if (t_s > 0.0) {
+          double qmin = s_meas_pstats.min, qmax = s_meas_pstats.max;
+          uint32_t qn = s_meas_pstats.n;
+          mp_stats_add(&s_meas_pstats, t_s);
+          if (qn == 0 || s_meas_pstats.min != qmin) s_meas_pmin_t = g_uptime_s;
+          if (qn == 0 || s_meas_pstats.max != qmax) s_meas_pmax_t = g_uptime_s;
+      } }
     /* σy@1s -> Core globál pro prahovy monitor v alarm.c. ⚠️ Stejny most jako
      * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
      * hodnota publikuje pres globál. */
@@ -8112,14 +8246,20 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 s_meas_mode ^= 1; s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_UNIT_BTN)) {                /* cyklus jednotky (meni label -> full render) */
-                /* Jen Hz/ppm/ppb/ppt (% MP_UNIT_REL=4) — REL (raw zlomek ~1e-9) by se
-                 * ve fmt_fixed(,4) zobrazil vzdy jako 0.0000; pouzivatel zada tyto 4. */
+                /* Jen Hz/ppm/ppb/ppt (% MP_UNIT_REL=4) — REL je syrovy zlomek
+                 * (~1e-9), takze i na 4-5 desetin vyjde vzdy 0; pouzivatel zada
+                 * tyto 4. (Puvodni zduvodneni odkazovalo na `fmt_fixed(,4)`,
+                 * ktery navic tiskl jen celou cast — viz `fmt_dec_u`.) */
                 s_meas_unit = (mp_unit_t)((s_meas_unit + 1) % MP_UNIT_REL);
                 s_view = 0xFF; app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_RST_BTN)) {                 /* reset statistiky */
+                /* Nuluj OBA akumulatory (Hz i periodu) — jinak by prepnuti
+                 * rezimu po RESETu ukazalo starou statistiku te druhe veliciny. */
                 mp_stats_reset(&s_meas_stats);
+                mp_stats_reset(&s_meas_pstats);
                 s_meas_min_t = s_meas_max_t = g_uptime_s;
+                s_meas_pmin_t = s_meas_pmax_t = g_uptime_s;
                 app_gpsdo_render_meas(); return true;
             }
             if (in_rect(x, y, MEAS_PRI_RECT)) {                /* tap: filtr VYP/PRUM/MED */

@@ -138,6 +138,18 @@ extern volatile uint8_t g_ui_cfg_req_pend;  /* 1 = ceka na aplikaci UiTaskem */
  * priznaku nelze u cerneho displeje zjistit, jestli selhal panel, nebo se jen
  * nic nekresli (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
 extern volatile uint8_t g_display_init_step;
+/* Pocet podteceni FIFO LTDC (definovano v `app/hal/stm32/prim_stm32_hal.c`,
+ * cteno pri kazdem flipu). Nenulove = LTDC nestiha nacitat pixely z pameti ->
+ * POSKOZENE SNIMKY na panelu, tedy problem PROPUSTNOSTI, ne kreslicího kodu.
+ * Most pres globál, protoze Core vrstva nema `app/` na include ceste. */
+extern volatile uint32_t g_ltdc_underrun;
+/* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
+ * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
+extern volatile uint8_t  g_d2d_deadtime;
+void prim_stm32_set_deadtime(uint8_t dt);
+/* Kolikrat se glow nevykreslil, protoze oblast prekrocila strop masky
+ * (`glow.c`). ⚠️ MUSI zustat 0 — prekroceni je jinak TICHE. Vypisuje `status`. */
+extern uint32_t g_prim_glow_skipped;
 
 extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */

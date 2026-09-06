@@ -70,7 +70,7 @@
 
 | Task | Priorita | Stack |
 |---|---|---|
-| defaultTask | Normal | 2560 B (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + ipc_publish/ipc_service + CM4 stall detekce + USB pump) |
+| defaultTask | Normal | **3584 B** (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + ipc_publish/ipc_service + CM4 stall detekce + USB pump) |
 | UartTask | Normal | 4096 B |
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |

@@ -83,14 +83,91 @@ napiš do obou, kde je to druhé.
 
 ## 6. „Je to stejné, nekresli" je pod vícenásobným bufferováním past
 
-**Důkaz:** optimalizace trendu (guard „pixelově identické → přeskoč") způsobila
-problikávání. Guard byl **jeden stav, ale framebuffery jsou tři** — obsah zůstal
-jen v tom, do kterého se zrovna kreslilo.
+**Důkaz:** guard trendu („pixelově identické → přeskoč") byl **jeden stav, ale
+framebuffery jsou tři** — obsah zůstal jen v tom, do kterého se zrovna kreslilo.
+⚠️ **OPRAVENO 2026-09-05:** dřív tu stálo, že tenhle guard problikávání
+**způsobil**. Nezpůsobil. Byla to skutečná chyba (a stejnou měly další tři
+guardy), ale **příčinou problikávání byl 4,7× pomalý refresh SDRAM** — guard jen
+sundal masku (viz §6d). Ta záměna stála tři kola ladění ve špatné vrstvě;
+nech ji tu zapsanou jako varování, ne jako fakt o příčině.
 
 **Jak to dělat:** každý skip-guard musí přeskakovat **až po tolika vykresleních,
 kolik je bufferů**. Nespoléhej na copy-forward: kopíruje dirty z posledních dvou
 snímků, a když se kvůli přeskakování neflipuje, historie z dosahu vypadne.
 Obecněji: **cache/skip vždy počítej vůči počtu konzumentů**, ne vůči jednomu.
+
+## 6d. Symptom po změně X neznamená, že X je příčina — X mohla jen sundat masku
+
+**Důkaz (celý případ „displej problikává", 2026-08-30 až 2026-09-05):**
+`REFRESH_COUNT = 1835` byl v `fmc.c` **od úplně prvního commitu** a znamenal, že
+se matice SDRAM obnoví za **304 ms místo 64 ms — 4,7× mimo spec**. Roky to
+nevadilo, protože **framebuffery se přepisují každý snímek a LTDC je nepřetržitě
+čte** — obojí řádky implicitně obnovuje. Když 2026-08-30 přibyl guard „obsah je
+stejný → nekresli", **ubylo přepisování** a vada se poprvé projevila.
+
+Symptom se objevil hned po té změně, takže se hledalo tam:
+- tři kola ladění šla do **vykreslovacího kódu** (#88, #107, přepracování guardů),
+- vznikla **HW hypotéza #72** (studený spoj na `PF15`/`FMC_A9`), která by vedla
+  k **přepracování desky**,
+- skutečná příčina ležela v jednom `#define`, který měl **v komentáři spočítanou
+  správnou hodnotu**.
+
+**Jak to dělat:** když se porucha objeví po změně X, ptej se nejen *„co X
+rozbilo"*, ale hlavně *„co X přestalo dělat"*. Optimalizace, které něco dělají
+**méně často** (skip, cache, lazy, dirty-rect), typicky **odkrývají latentní vady
+pod sebou** — samy nic nerozbijí. Konkrétně u displeje: **než sáhneš na kreslení,
+změř paměť** (`membench`, řádek retence).
+
+## 6e. Jedno čisté měření neruší výpočet
+
+**Důkaz:** u `REFRESH_COUNT` byl v komentáři **spočítaný správný výsledek (371)**,
+zdůvodnění i **návod, čím to změřit**. Hodnota se přesto nechala na 1835, protože
+**jedno** měření retence vrátilo „0 chybných bitů". O dvanáct dní později dal
+tentýž test **1 048 646 chybných bitů** a displej byl černý.
+
+**Jak to dělat:** když výpočet říká „je to řádově mimo spec" a jedno měření říká
+„ok", **vyhrává výpočet** — měření mohlo minout okno (retence závisí na čase,
+teplotě i na tom, co mezitím paměť přepisovalo). Buď měř opakovaně a za různých
+podmínek, nebo hodnotu rovnou oprav. **Rozpor mezi výpočtem a jedním vzorkem
+nezavírej ve prospěch vzorku.**
+
+## 6f. Diagnostika, která čte z rozbitého média, lže
+
+**Důkaz:** `membench` hlásil „PŘEKRYV/CIZÍ ZÁPIS do kontrolní buňky — vzdálenost
+nelze určit". Z toho vzniklo podezření **#72** na studený spoj adresní linky,
+které viselo otevřené týdny. Žádný překryv neexistoval — **kontrolní buňka jen
+vyhasla**, což vypadá stejně jako by ji někdo přepsal. Po opravě refreshe hlášení
+zmizelo úplně.
+
+**Jak to dělat:** verdikt, který stojí na tom, že si médium **pamatuje**, co jsi
+tam zapsal, je platný **jen nad médiem s ověřenou retencí**. Drž pořadí:
+**nejdřív retence, teprve pak alias/překryv**. Totéž platí obecně — diagnostika
+postavená nad vadnou vrstvou generuje falešné nálezy o vrstvě pod ní.
+
+## 6g. „Dřív to šlo" ⇒ bisect je PRVNÍ krok, ne poslední
+
+**Důkaz (2026-09-04):** uživatel řekl „v minulosti to bylo ok, ještě včera".
+Bisect jsem **nabídl dvakrát a neudělal**; místo toho jsem vyprodukoval tři chybné
+hypotézy (animace — vyvrátil uživatel; `.sdram` NOLOAD — vyvrátil jsem si sám;
+hladovění LTDC — nedoloženo). Když se bisect konečně udělal, dal odpověď **za
+jedno kolo**: „včerejší" stav byl **horší** (černý displej místo problikávání),
+takže o regresi vůbec nešlo a celá otázka byla položená špatně.
+
+**Jak to dělat:** `git stash` je levný a plně vratný. Jedno kolo flash+test dá
+**tvrdou** odpověď, kterou žádná hypotéza nedá. Udělej ho hned — a ber vážně
+i výsledek „starý stav je horší", ten otázku přeformuluje.
+
+## 6h. Korelace 1:1 není mechanismus
+
+**Důkaz:** naměřil jsem `flip +109` a `LTDC podtečení +109` za 5 s a prohlásil to
+za **důkaz**, že DMA2D hladoví LTDC. Přitom je to stejně dobře konzistentní s tím,
+že jedno podtečení je **běžný artefakt přehození `CFBAR`** při každém flipu. Z
+korelace jsem udělal příčinu a postavil na ní opravu, která problém nevyřešila.
+
+**Jak to dělat:** dokonalá korelace říká *„souvisí to s flipem"*, ne *„flip to
+způsobuje hladověním"*. Než z korelace uděláš mechanismus, měj **kontrolní
+experiment**, který jím hýbe (u téhle: změnit mrtvý čas DMA2D a sledovat, jestli
+počet klesá). Bez něj to piš jako hypotézu, ne jako zjištění.
 
 ## 6b. Překryv musí mít jednoho vlastníka pixelu — a kreslit se jako poslední
 
@@ -164,6 +241,196 @@ kontrolu (schválně vadný vstup, který nález vyvolat musí).
 
 Platí to i mimo kompilátor: prázdný výstup gerpu v souboru, který neexistuje,
 vypadá stejně jako čistý soubor.
+
+## 7e. Ověř nejdřív MĚŘÍTKO, teprve pak jím měř
+
+§7d říká „drž pozitivní kontrolu". 2026-09-05 jsem ji poprvé opravdu udělal — a
+okamžitě našla chybu **v samotném ověřovacím nástroji**.
+
+Skript, kterým jsem po každé editaci kontroloval webovou SPA, vytahoval
+servírované HTML z obřího C řetězcového literálu regexem `"(...)"`. Jenže
+uvozovka v `/* komentáři */` **mimo** literál je pro překladač nic (komentář
+zmizí dřív, než se parsují řetězce), zatímco regex ji vzal jako začátek řetězce
+a od té chvíle posunul páry. Nástroj tedy vracel **jiné HTML, než se doopravdy
+servíruje** — a právě jím jsem třikrát prohlásil, že je vše v pořádku.
+
+🔴 **To je horší třída chyby než ta původní.** Rozbitý kód je vidět. Rozbité
+měřítko *maskuje* rozbitý kód a přitom vypadá jako důkaz opaku — každé „ověřeno"
+udělané tím nástrojem je zpětně bezcenné, včetně těch, která tehdy prošla
+právem.
+
+**Postup, který to odhalil (a stojí těch pět minut vždycky):**
+1. Napiš kontrolu.
+2. **Nastraž do vstupu přesně tu chybu, kvůli které kontrola vzniká.**
+3. Ověř, že ji kontrola nahlásí — a **který krok** ji nahlásil.
+4. Vrať vstup do pořádku a teprve pak nástroji věř.
+
+Krok 3 má vlastní hodnotu: u mě past nechytila „rychlá cesta", ale až build.
+Tím jsem se dozvěděl, že rychlá cesta pokrývá jinou třídu chyb, než jsem
+myslel — což je informace, kterou by úspěšný běh nikdy nedal.
+
+**Zobecnění:** nástroj, který napodobuje chování něčeho jiného (preprocesoru,
+parseru, protistrany), musí být testovaný proti tomu vzoru, ne jen „vypadat, že
+funguje". A pokud existuje kontrola, která měří **skutečný výstup** místo
+mezistavu, je vždycky nadřazená — u SPA je to velikost symbolu ve slinkovaném
+`.elf` (`nm`) proti velikosti extrakce: jediná, která rozejití chytí definitivně,
+protože se ptá obrazu, ne mého skriptu.
+
+
+### 7e/2. Pět selhání testu, ani jedno chyba v kódu
+
+Doplněk k §7e z téhož dne. Během jedné session spadlo pět mnou psaných testů
+a **ani jeden nález nebyl skutečný**:
+
+| co test hlásil | skutečná příčina |
+|---|---|
+| MDEV/ADEV = 0,19 místo 0,707 | LCG generátor měl mřížkovou korelaci — „bílý" šum bílý nebyl |
+| `drawAlarm` má mrtvou větev na `.verdict` | kontrola matchovala **můj vlastní komentář**, který tam vysvětluje, proč větev chybí |
+| průměrování segmentů nesnižuje rozptyl ℒ(f) | měřil jsem rozptyl přes biny, ale ten nese i deterministický sklon −20 dB/dek — měřil jsem **sklon**, ne rozptyl |
+| `niceStep` dává mantisu 0,5 | mantisa počítaná přes `Math.round(log10)`; pro krok 5 vyjde `round(0,699)=1` → 0,5. Patří tam `floor` |
+| `saveUi` neukládá | harness neměl nové proměnné, a protože je funkce v `try/catch`, chyběla i výjimka — selhalo to **tiše** |
+
+Dvě opakující se příčiny stojí za zapamatování:
+
+1. **Test měří jinou vlastnost, než si myslí.** Typicky když veličina obsahuje
+   dvě složky (šum + trend, náhodu + determinismus) a já potlačím jen jednu.
+2. **Harness nemá úplný scope.** U kódu obaleného `try/catch` se to neprojeví
+   jako výjimka, ale jako tichý no-op — tedy přesně jako vada kódu.
+
+**Pravidlo:** když test „odhalí" chybu v učebnicové matematice, nebo v kódu,
+který se právě nezměnil, je pravděpodobnostně na vině test. Než sáhneš do kódu,
+nech si vypsat **konkrétní vstup a mezivýsledek** — u všech pěti to odpověď dalo
+na první pokus.
+
+**Dovětek 2026-09-06 — kontrola se dá umlčet právě tou vadou, kterou hledá.**
+Tři skripty hledaly konec kontrolovaného úseku jako „první řádek končící `;`".
+Rozbitý řádek přitom typicky vypadá `… ||w;` — končí středníkem a chybí mu
+závěrečná uvozovka. Sám si tedy **uřízl rozsah kontroly** a zbytek souboru
+(1600 řádků) se neprověřil: nástroj hlásil nula nálezů a měl pravdu o úseku,
+který si sám zmenšil. Horší polovina: extraktor při nenalezeném konci nechával
+`end = start` a **tiše vracel nula literálů**, takže rozbitá deklarace prošla
+jako v pořádku.
+
+Dvě pravidla z toho:
+
+1. **Hranice kontrolovaného úseku nesmí být odvozená ze vzorku, který může být
+   poškozený.** Když hledám konec, musí to být vzor, který vada nemůže omylem
+   vyrobit (tady `";`, ne `;`).
+2. **„Nenašel jsem, kde skončit" je CHYBA, ne prázdný výsledek.** Každý tichý
+   fallback na „nic jsem nenašel" je v ověřovacím nástroji lež.
+
+Obojí odhalila **pozitivní kontrola** — podruhé v řadě (poprvé neodstraněné
+komentáře v extraktoru). To už není náhoda: nastražit chybu je u vlastního
+nástroje jediný způsob, jak zjistit, co doopravdy kontroluje.
+
+
+⚠️ Neplyne z toho „testům nevěř". Plyne z toho, že **test je taky kód, který
+nikdo neotestoval** — a platí pro něj totéž, co §7d říká o nástrojích:
+ověř, že měří, co má, dřív než mu uvěříš verdikt.
+
+
+## 7f. Limit odvozený z „co posílá náš klient" neplatí pro cizího klienta
+
+Webový server v přístroji měl `HTTPD_RXBUF_MAX = 700` na celý blok HTTP
+hlaviček. To číslo dává smysl, když si člověk představí požadavek, jaký by
+napsal sám (`GET /api/state HTTP/1.1` + `Host:` + pár řádků). Jenže klientem
+je **cizí prohlížeč**, a ten k tomu přidá `User-Agent`, `Accept`, `sec-ch-ua*`,
+`Sec-Fetch-*`, `Accept-Language`, `Accept-Encoding` — dohromady 800–1000 B.
+Server by poctivě vrátil 431 a uživatel by viděl prázdné okno.
+
+Zákeřné je, že **to projde s `curl` i s Firefoxem** a spadne to na Chrome. Kdo
+testuje tím, čím vyvíjí, chybu nepotká.
+
+**Pravidlo:** u každého limitu si napiš, **kdo je na druhé straně** a jestli
+jeho velikost určuješ ty, nebo cizí software. Když cizí, dimenzuj podle
+nejukecanějšího známého klienta a přidej rezervu — je to `.bss`, ne peníze.
+
+Stejná otázka platí pro časy (timeout smí být krátký jen tam, kde tempo určuji
+já), pro počty spojení a pro délku vstupní řádky.
+
+## 7g. Komentář „ošetřeno" není důkaz — u vstupu ze sítě to přečti řádek po řádku
+
+SCPI server nad TCP měl u ošetření příliš dlouhé řádky komentář: *„zahoď a čekej
+na další LF/CR, ať se neprocesuje uříznutý příkaz."* Kód pod ním ale jen
+vynuloval `rxlen`, takže se okamžitě začalo plnit znovu a **ocas dlouhé řádky se
+provedl jako příkaz** — `<100 znaků smetí>SENS:FREQ:GATE 100
+` skutečně
+přestavil bránu. Komentář popisoval úmysl, ne chování.
+
+Pro tuhle třídu (parsování vstupu z venku) nestačí grep ani analyzátor:
+`-fanalyzer` tam nevidí chybu, protože přetečení pole se nekoná — mění se jen
+**význam** dat. A protože komentář tvrdil opak, přeskočila to i lidská kontrola.
+
+**Pravidlo:** kód, který přijímá data zvenčí (síť, sériová linka, soubor),
+se čte **řádek po řádku a proti komentáři se ověřuje**, ne skrz něj. Komentář
+u takového místa ber jako tvrzení k ověření, ne jako popis.
+
+## 6i. Než hledáš složitou příčinu, ověř, že součástka vůbec dostává hodiny
+
+2026-09-06 nešel displej: po power-resetu černý, po soft-resetu blikající.
+Než se našla příčina, prošlo se: časování FMC, `REFRESH_COUNT`, pořadí
+inicializace vůči PLL2, MPU atributy a cacheovatelnost, údržba D-cache
+v `membench`, konflikty pinů, geometrie SDRAM, LTDC porche, DMA2D arbitráž.
+Všechno bylo v pořádku.
+
+Příčina: **`PG8` = `FMC_SDCLK` byl v ANALOGOVÉM režimu.** SDRAM nedostávala
+hodiny, takže nepřijala jediný příkaz, neobnovovala se a četla samé nuly.
+Framebuffer plný nul = černá v RGB565 = černý displej.
+
+Nejlevnější a nejzákladnější kontrola přišla úplně poslední.
+
+**Pravidlo:** u paměti nebo periferie, která „nereaguje“, ověř v tomhle pořadí:
+napájení → **hodiny** → výběrový/povolovací signál → adresa/data → časování →
+software. Konfigurační registry řadiče můžou být dokonale správné a přitom
+k čipu nevede takt; řadič o tom neví a nic nehlásí.
+
+⚠️ Konkrétní podpis „chybí hodiny“ v `membench`: vzor `0x00` má **nula chyb**
+a všechny ostatní vzory selžou. To není vada buněk — to je „všechno čte nuly“.
+Vada buněk dá chyby rozeseté napříč vzory.
+
+## 6j. Nediagnostikuj z dat, o kterých tvá vlastní dokumentace říká, že jsou nedůvěryhodná
+
+CLAUDE.md u `membench` výslovně stojí: *„verdikt o překryvu je NEDŮVĚRYHODNÝ,
+dokud retence není 0“*. Retence nula nebyla — a já přesto z hlášky
+`PREKRYV/CIZI ZAPIS do kontrolni bunky` odvodil, které adresní linky jsou
+vadné (`PG2`, `PG5`), zapsal to do STATUS jako nález a poslal uživatele
+prozvánět piny, které byly v pořádku.
+
+Ta věta v dokumentaci tam byla právě proto, že se tou pastí už jednou prošlo.
+
+**Pravidlo:** než z diagnostického výstupu něco odvodíš, přečti si, za jakých
+podmínek ten výstup platí — a ověř, že platí. Nástroj, který hlásí i to, že
+jeho vlastní verdikt může být falešný, tím dává **podmínku, ne poznámku pod
+čarou**.
+
+## 6k. Z toho, že kód běží, neplyne, že jeho zápisy dorazily
+
+Během ladění jsem tvrdil, že framebuffery jsou v pořádku, protože „displej
+kreslí“ — čítač `flip` rostl a UiTask normálně běžel. Jenže displej byl
+černý: UiTask kreslil do paměti, která nic neukládala. Čítač dokazoval, že
+běží KÓD, ne že dorazila DATA.
+
+**Pravidlo:** živost úlohy (čítače, heartbeat, uptime) je důkaz o vykonávání,
+ne o účinku. Když jde o obsah paměti, ověř obsah — ideálně cestou, která
+obchází cache i tu úlohu (sonda, jiný master, zpětné čtení jinou periferií).
+
+## 7h. Neprůkazné měření není důkaz opaku
+
+Sweep `d2ddt` (mrtvý čas DMA2D) dal pro hodnoty 0, 8 i 32 shodně **1,000
+podtečení na snímek**. Málem jsem to zapsal jako „soupeření DMA2D o sběrnici
+vyloučeno“. Ve skutečnosti se čítač inkrementuje **nejvýš jednou za
+`prim_stm32_present`**, takže 1,000 znamenalo „na stropu“ — kdyby škrcení
+snížilo podtečení z tisíce na jedno, naměřím pořád 1,000.
+
+Když se pak měřilo v režimu, kde čítač nesaturuje, ukázalo se, že DMA2D je
+příčina **rozhodující**: zlom je u mrtvého času ~208 a nad ním je podtečení
+nulové. Kdybych ten první výsledek zapsal jako „vyloučeno“, hledám příčinu
+dodnes jinde.
+
+**Pravidlo:** rozlišuj „naměřil jsem, že vliv není“ od „měřidlo nemá
+rozlišení“. U každého čítače si napiš jeho **strop a jednotku** (co přesně
+jeden tik znamená) dřív, než z něj vyvodíš závěr. Hodnota, která se rovná
+stropu, je signál o měřidle, ne o systému.
 
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
@@ -254,13 +521,21 @@ nerozpadly literály.
 ---
 
 ## Rychlý kontrolní seznam před „hotovo"
-
 - [ ] Ověřil jsem to **měřením**, nebo jen usoudil? A co to měření samo mění?
 - [ ] Umí moje kontrola **selhat**? Zkusil jsem ji donutit?
+- [ ] Dostává ta součástka vůbec **hodiny a napájení**? (§6i — nejlevnější kontrola patří první, ne poslední.)
+- [ ] Znám **strop a jednotku** čítače, ze kterého vyvozuji závěr? (§7h)
+- [ ] **Ověřovací nástroj, který jsem napsal, jsem otestoval nastraženou chybou** (§7e) — a vím, *který krok* ji chytil.
 - [ ] Jak to vypadá, **když ta kontrola nic nedělá**?
 - [ ] Neodvozuji konstantu, kterou mi může někdo **deklarovat**?
 - [ ] Není ten fakt **na dvou místech**?
 - [ ] Přeskakuje můj guard až po **tolika vykresleních, kolik je bufferů**?
+- [ ] Objevila se porucha po změně X? Ptal jsem se, **co X přestalo dělat**, ne jen co rozbilo?
+- [ ] Řekl uživatel „**dřív to šlo**"? → udělal jsem **bisect**, nebo jen hádám?
+- [ ] Je můj „důkaz" jen **korelace**? Mám kontrolní experiment, který s ní hýbe?
+- [ ] Zavírám rozpor mezi **výpočtem a jedním měřením** ve prospěch měření?
+- [ ] Nestojí moje diagnostika nad **médiem, které neprošlo retencí**?
+- [ ] **Displej zlobí → `membench` DŘÍV než kreslicí kód.**
 - [ ] Je nový zdroják v `subdir.mk` **i** v `objects.list`?
 - [ ] Rozlišil jsem v hlášení **ověřené od hypotézy**?
 - [ ] Má každý nový prvek UI **zdroj dat**?

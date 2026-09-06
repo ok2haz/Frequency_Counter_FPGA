@@ -161,8 +161,34 @@ bool datalog_enabled(void);
 void datalog_get_status(datalog_status_t *out);
 
 /** Precte N-ty zaznam od NEJNOVEJSIHO (0 = posledni zapsany). false = neni.
- *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART. */
+ *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART.
+ *  ⚠️ Na PRUCHOD VICE ZAZNAMY pouzij `datalog_read_bulk` — tohle plati na kazdy
+ *  zaznam vlastni mutex i vlastni QSPI prikaz (zmereno ~173 us/zaznam, zatimco
+ *  32 B dat je jen ~7 us; rezie je 25x vetsi nez prenos). */
 bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out);
+
+/** Strop davky pro `datalog_read_bulk` (scratch buffer v `.bss`, 64*32 = 2 kB). */
+#define DATALOG_BULK_MAX   64u
+
+/** Precte az `max_n` zaznamu JEDNIM QSPI prikazem a pod JEDNIM mutexem.
+ *
+ *  Poradi je stejne jako u `datalog_read_back`: `out[0]` = `from_newest`
+ *  (nejnovejsi z davky), `out[1]` = `from_newest+1` (starsi), atd.
+ *
+ *  @param from_newest  index nejnovejsiho zaznamu davky (0 = posledni zapsany)
+ *  @param out          pole na aspon `max_n` zaznamu
+ *  @param max_n        kolik nejvys precist (orizne se na `DATALOG_BULK_MAX`)
+ *  @param consumed     smi byt NULL; kolik POZIC v ringu davka pokryla — o tolik
+ *                      posun `from_newest` pri dalsim volani. Lisi se od navratove
+ *                      hodnoty tehdy, kdyz je uprostred davky poskozeny zaznam.
+ *  @return pocet PLATNYCH zaznamu ulozenych do `out[]` (poskozene se preskoci,
+ *          zbytek se stlaci k zacatku — stejna politika jako `continue` u
+ *          `datalog_read_back`).
+ *
+ *  ⚠️ Rezie QSPI prikazu se rozlozi na celou davku, takze zisk roste s `max_n`.
+ *  Pri `max_n == 1` je to jen drazsi `datalog_read_back` — nepouzivat tak. */
+uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
+                           uint32_t max_n, uint32_t *consumed);
 
 /** Jednoradkovy stav: "DATALOG W25Q ON 1234/2043136 rec seq:1234 err:0". */
 void datalog_format_status(char *buf, int buflen);

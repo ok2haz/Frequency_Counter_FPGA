@@ -52,6 +52,36 @@ static int hdr_match(const char *hdr, const char *pattern)
     }
 }
 
+/* Shoda hlavičky `INPut[n]:<zbytek>` s ČÍSELNOU PŘÍPONOU kanálu.
+ *
+ * ⚠️ `kw_match` porovnává znak po znaku a číslici neumí, takže `INP1:LEV` by
+ * spadlo na `-113 "Undefined header"` — jenže u DVOUKANÁLOVÉHO přístroje je
+ * `INPut1:` / `INPut2:` přesně to, co klient pošle (a `INPut:` bez přípony
+ * podle SCPI-99 znamená kanál 1). Ohlásit „neznámý příkaz" na legitimní
+ * adresu kanálu by bylo horší než chybějící hardware.
+ *
+ * Vrací 1 při shodě; `*ch` = číslo kanálu, `*suffix_bad` = 1 když přípona je
+ * mimo 1..2 (volající pak hlásí -114, ne -113: příkaz známe, jen ten kanál ne).
+ */
+static int inp_match(const char *hdr, const char *tail, int *ch, int *suffix_bad)
+{
+    int hl = 0; while (hdr[hl] && hdr[hl] != ':') hl++;
+    if (hdr[hl] != ':') return 0;                 /* `INPut` samo o sobě nic neřídí */
+
+    int dl = hl;                                   /* délka bez číslic na konci */
+    while (dl > 0 && hdr[dl - 1] >= '0' && hdr[dl - 1] <= '9') dl--;
+    if (!kw_match(hdr, dl, "INPut", 5)) return 0;
+
+    int n = 1;                                     /* bez přípony = kanál 1 */
+    if (dl < hl) {
+        n = 0;
+        for (int i = dl; i < hl; i++) n = n * 10 + (hdr[i] - '0');
+    }
+    *ch = n;
+    *suffix_bad = (n < 1 || n > 2);
+    return hdr_match(hdr + hl + 1, tail);
+}
+
 /* ── Formátování bez float printf (nano newlib) ─────────────────────────────── */
 /* uint64 Hz*1e5 -> "12345678.90123" (Hz < 4.29e9 -> uint32). */
 static void fmt_scpi_hz(uint64_t x100000, char *out, size_t n)
@@ -178,6 +208,9 @@ static const char *scpi_err_msg(int code)
         case 0:    return "No error";
         case -100: return "Command error";
         case -113: return "Undefined header";
+        /* Cislo kanalu mimo 1..2 u `INPut<n>:` — prikaz ZNAME, jen ta adresa
+         * neexistuje. Rozdil proti -113 je pro klienta podstatny. */
+        case -114: return "Header suffix out of range";
         case -222: return "Data out of range";
         case -203: return "Command protected";
         case -224: return "Illegal parameter value";
@@ -288,7 +321,11 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
     if (hdr_match(hdr, "CALCulate:LIMit:UPPer")) { *key = SCPI_CFG_LIM_HI;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     /* ── Instrument SET (2026-08-15). Na rozdil od CALC nejdou do `meas_cfg_t`,
      * ale do stavu mereni — backend je obslouzi zvlast (viz `set_cfg`). ── */
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE"))    { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);            if (!ok) *err = 1; return 1; }
+    /* `APERture` = ALIAS `GATE` — v JEDNE podmince, aby se obe cesty nemohly
+     * rozejit v oseteni chyby (`*err`) ani v klici. Viz komentar u dotazu. */
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE") ||
+        hdr_match(hdr, "SENSe:FREQuency:APERture"))
+                                                   { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel")) { *key = SCPI_CFG_CHAN; *vu = (uint32_t)scpi_num(arg, &ok);  if (!ok) *err = 1; return 1; }
     /* INITiate[:IMMediate] = spustit mereni, ABORt = zastavit (oboji bez parametru). */
     if (hdr_match(hdr, "INITiate:IMMediate") || hdr_match(hdr, "INITiate")) { *key = SCPI_CFG_RUN; *vu = 1u; return 1; }
@@ -626,16 +663,74 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         return strlen(out);
     }
 
+    /* ── INPut: vstupní cesta (vazba, impedance, dělič, práh, hystereze) ──────
+     * 🔴 HARDWARE ZATÍM NEEXISTUJE. Vstupní modul (MCP4728 pro práh a hysterezi,
+     * relé přes MCP23017, ÷10 MC12080) se teprve staví, takže KAŽDÝ příkaz
+     * skončí SCPI-99 `-241 "Hardware missing"` — stejným idiomem, jakým `DISP:*`
+     * a `SYST:DATE` hlásí nepřítomnost displeje/RTC na CM4.
+     *
+     * Proč to tu tedy je, když to nic nespíná:
+     *   1. Parsování a MEZE jsou hotové a otestované už teď, dokud je smluvní
+     *      zadání čerstvé (práh ±1,024 V krok 0,5 mV; hystereze 1–60 mV).
+     *   2. Klient rozezná „příkaz neznám" (-113) od „umím ho, ale chybí HW"
+     *      (-241) — to je pro VISA/IVI ovladač zásadní rozdíl.
+     *   3. Až modul přijde, doplní se JEN provedení; kontrakt se nemění.
+     * ⚠️ Pořadí je SCPI-korektní: chyby PŘÍKAZU (rozsah, neplatný parametr) mají
+     * přednost před chybou PROVEDENÍ, takže `INP:LEV 99` vrátí -222, ne -241.
+     * ⚠️ Nic se NEUKLÁDÁ. Uložit hodnotu, kterou nelze uplatnit, by vyrobilo
+     * stejnou past jako okno SÍŤ (nastavení se uloží a tiše nic nedělá). */
+    {
+        int ich = 1, isuf = 0, hit = 0, bad = 0;
+        if      (inp_match(hdr, "COUPling",    &ich, &isuf)) hit = 1;
+        else if (inp_match(hdr, "IMPedance",   &ich, &isuf)) hit = 2;
+        else if (inp_match(hdr, "ATTenuation", &ich, &isuf)) hit = 3;
+        else if (inp_match(hdr, "LEVel",       &ich, &isuf)) hit = 4;
+        else if (inp_match(hdr, "HYSTeresis",  &ich, &isuf)) hit = 5;
+        if (hit) {
+            /* Přípona kanálu se kontroluje PRVNÍ: `INP3:LEV 0` je chyba adresy,
+             * ne chyba rozsahu — a rozhodně ne „neznámý příkaz". */
+            if (isuf) bad = -114;
+            else if (!is_query) {
+                int ok2 = 0; double v = 0.0;
+                if (hit == 1) {
+                    if (!(kw_match(arg, (int)strlen(arg), "AC", 2) ||
+                          kw_match(arg, (int)strlen(arg), "DC", 2))) bad = -224;
+                } else {
+                    v = scpi_num(arg, &ok2);
+                    if (!ok2) bad = -224;
+                    /* 50 Ω nebo 1 MΩ — nic mezi tím na desce není. */
+                    else if (hit == 2 && !(v > 49.0 && v < 51.0)
+                                      && !(v > 9.0e5 && v < 1.1e6))   bad = -222;
+                    /* 1 = přímá cesta (DC–200 MHz), 10 = předdělič MC12080. */
+                    else if (hit == 3 && !(v > 0.9 && v < 1.1)
+                                      && !(v > 9.5 && v < 10.5))      bad = -222;
+                    else if (hit == 4 && (v < -1.024 || v > 1.024))    bad = -222;
+                    else if (hit == 5 && (v < 0.001  || v > 0.060))    bad = -222;
+                }
+            }
+            if (!bad) bad = -241;              /* příkaz je v pořádku, chybí HW */
+            scpi_err_push(c, bad);
+            snprintf(out, out_sz, "%d,\"%s\"", bad, scpi_err_msg(bad));
+            return strlen(out);
+        }
+    }
+
     /* ── SENSe (parametry z posledního FPGA rámce) ─────────────────────────── */
     /* ⚠️ GATE?/CHAN? vraci NASTAVENOU hodnotu, ne udaj z posledniho FPGA ramce —
      * SCPI kontrakt je "co zapisu, to precte zpet" (`SENS:FREQ:GATE 1` -> `?` -> 1).
      * Skutecne zmerene okno (kolisa kolem nominalu) je na `SENS:FREQ:GATE:ACTual?`. */
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE:ACTual") && is_query) {
+    /* ⚠️ `APERture` je ALIAS `GATE`. SCPI-99 i beznа praxe citacu (Keysight
+     * 53230A, Pendulum) pouzivaji pro dobu hradla prave `[SENSe:]FREQuency:
+     * APERture` — VISA/IVI ovladace hledaji ten nazev a s `GATE` pristroj
+     * neobslouzi. `GATE` zustava, aby se nerozbilo, co uz je napsane. */
+    if ((hdr_match(hdr, "SENSe:FREQuency:GATE:ACTual") ||
+         hdr_match(hdr, "SENSe:FREQuency:APERture:ACTual")) && is_query) {
         if ((src->valid & SCPI_V_FRAME) && src->gate_ns) fmt_scpi_sec_ns(src->gate_ns, out, out_sz);
         else                                             snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE") && is_query) {
+    if ((hdr_match(hdr, "SENSe:FREQuency:GATE") ||
+         hdr_match(hdr, "SENSe:FREQuency:APERture")) && is_query) {
         fmt_scpi_f6(scpi_gate_s(src->set_gate_idx), out, out_sz); return strlen(out);
     }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel") && is_query) {
@@ -1293,6 +1388,82 @@ int scpi_selftest(void)
     scpi_process_ctx(&x, &src, "*ESE 24;*ESE?", b, sizeof b);  ok &= (strcmp(b, "24") == 0);
     scpi_process_ctx(&x, &src, "*ESE?;*ESE?",   b, sizeof b);  ok &= (strcmp(b, "24;24") == 0);
     scpi_process_ctx(&x, &src, "*ESE 8;*ESE?",  b, sizeof b);  ok &= (strcmp(b, "8") == 0);
+    /* ── APERture je alias GATE (2026-09-06) ──────────────────────────────────
+     * VISA/IVI ovladace citacu hledaji `APERture`; kdyby se alias rozesel s
+     * `GATE`, pristroj by pres ne nesel nastavit vubec. */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER 1", b, sizeof b);
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER?", b, sizeof b);
+    { char b2[48]; scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b2, sizeof b2);
+      ok &= (strcmp(b, b2) == 0); }                    /* alias vraci TOTEZ co GATE */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER:ACT?", b, sizeof b);
+    { char b2[48]; scpi_process_ctx(&x, &src, "SENS:FREQ:GATE:ACT?", b2, sizeof b2);
+      ok &= (strcmp(b, b2) == 0); }
+
+    /* ── INPut: HW neni, ale meze a poradi chyb musi platit uz ted ────────────
+     * SCPI-99: chyba PRIKAZU (rozsah/parametr) ma prednost pred chybou
+     * PROVEDENI, takze mimo rozsah = -222, teprve platny prikaz = -241. */
+    scpi_process_ctx(&x, &src, "INP:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* mimo +-1,024 V */
+    scpi_process_ctx(&x, &src, "INP:LEV -2", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* v rozsahu -> chybi HW */
+    scpi_process_ctx(&x, &src, "INP:LEV abc", b, sizeof b);
+    ok &= (strncmp(b, "-224", 4) == 0);                /* neni cislo */
+    scpi_process_ctx(&x, &src, "INP:HYST 0.030", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* 30 mV je v pasmu 1..60 */
+    scpi_process_ctx(&x, &src, "INP:HYST 0.2", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* 200 mV je mimo */
+    scpi_process_ctx(&x, &src, "INP:HYST 0", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 1E6", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 600", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* nic mezi 50 a 1M neexistuje */
+    scpi_process_ctx(&x, &src, "INP:ATT 1", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:ATT 10", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:ATT 3", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* jiny delic nez /10 neni */
+    scpi_process_ctx(&x, &src, "INP:COUP AC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:COUP DC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:COUP GND", b, sizeof b);
+    ok &= (strncmp(b, "-224", 4) == 0);                /* vazba GND na desce neni */
+    scpi_process_ctx(&x, &src, "INP:LEV?", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* dotaz taky nema co vratit */
+    /* 🔑 Klient MUSI rozeznat „neumim" od „umim, ale chybi HW". */
+    scpi_process_ctx(&x, &src, "INP:NESMYSL 1", b, sizeof b);
+    ok &= (strncmp(b, "-113", 4) == 0);
+
+    /* ── Ciselna pripona kanalu: `INPut1:` / `INPut2:` ────────────────────────
+     * Pristroj je DVOUKANALOVY, takze tohle klient posle bezne. `kw_match`
+     * cislici neumi, proto `inp_match`; bez nej by to bylo -113 (= „neznam"),
+     * coz je u legitimni adresy kanalu spatne. */
+    scpi_process_ctx(&x, &src, "INP1:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP2:COUP DC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INPut2:IMPedance 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);          /* i dlouhy tvar s priponou */
+    scpi_process_ctx(&x, &src, "INP1:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);          /* rozsah plati i s priponou */
+    /* Neexistujici kanal: prikaz ZNAME, adresa ne -> -114, NE -113 ani -241. */
+    scpi_process_ctx(&x, &src, "INP3:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP0:COUP AC", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    /* Pripona ma prednost pred rozsahem: spatny kanal I spatna hodnota -> -114. */
+    scpi_process_ctx(&x, &src, "INP9:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    /* `INPut` bez dvojtecky nic neridi a nesmi se chytit. */
+    scpi_process_ctx(&x, &src, "INP?", b, sizeof b);
+    ok &= (strncmp(b, "-113", 4) == 0);
+
     #undef ok
 
     /* Posledni assert uz zadny dalsi `scpi_st_chk` nenasleduje -> dovyhodnotit. */
