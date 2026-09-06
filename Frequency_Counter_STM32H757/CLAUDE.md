@@ -1341,6 +1341,27 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
       právě ta mrtvá sběrnice → **pomůže jen odpojení napájení desky i panelu.**
       **Trvalá náprava potřebuje HW zásah** — vyvést reset ATTINY na volný GPIO; teprve pak by
       šla obnova ze SW.
+    - 🔑🔑 **CO UŽ BYLO VYLOUČENO — přečti, NEŽ navrhneš stopu k mrtvé I2C4.**
+      Tenhle seznam existuje proto, že se tytéž vyvrácené hypotézy vracely znovu a znovu
+      (naposledy 2026-09-06, kdy jsem znovu navrhl auto-dim — důkaz proti němu přitom ležel
+      v komentáři ve zdrojáku a v commit message, **ne tady**). **Nová stopa musí nejdřív
+      vysvětlit, proč neplatí nic z tohohle:**
+
+      | hypotéza | stav | čím se to ví |
+      |---|---|---|
+      | **zápis jasu do ATTINY / auto-dim** | ❌ **vyvráceno** | `tools/attiny_stress.ps1` 2026-08-31: **40 ověřených zápisů → 0 chyb** (přes `scpi DISP:BRIG`, tedy tatáž cesta `UiTask → ws_panel_set_backlight`) |
+      | **HW reset TP přes ATTINY v recovery** | ❌ vyvráceno + **škodilo** | `s_touch_resets` došlo na 6 i 18 a sběrnice byla mrtvá stejně; recovery sama do ATTINY bušila (`7a4e100` → opraveno `b3296a1`), dnes vypnuto `I2C4_RECOVERY_TOUCHES_ATTINY 0` |
+      | **zaseknutá sběrnice (slave drží SDA)** | ❌ vyvráceno opakovaně | při poruše vždy `SCL=1 SDA=1`, `ISR` bez BUSY/BERR/ARLO → pulzy SCL nikdy neměly co léčit |
+      | **ztráta konfigurace pinů (třída PG8/PG11)** | ❌ vyvráceno | 2026-09-06 měřeno **za přítomné vady**: `MODER`=AF, `OTYPER=0x1800` (oba OD), `AFR1=0x00044000` (oba AF4), `PUPDR=0`, `I2C4 CR1=1` |
+      | **čtení ladicí sondou (halt jádra)** | ⚠️ **neprokázáno** | jediné měření bylo **bez kontrolní větve** a týž den sběrnice hynula sama (viz revidovaný blok „ČTENÍ LADICÍ SONDOU") |
+
+      **Co tedy zbývá:** při **elektricky zdravé sběrnici a zdravé periferii** přestanou
+      odpovídat **všechny tři** slave čipy naráz (0x38 touch, 0x45 ATTINY, 0x48 TMP117).
+      To ukazuje na **napájení / reset domény panelové desky**, ne na I2C protokol —
+      a firmware tam nemá jak sáhnout, protože jediná ovládací cesta k ATTINY vede
+      po té mrtvé sběrnici. **Náprava potřebuje HW zásah: vyvést reset ATTINY na volný GPIO.**
+      ⚠️ Dokud to nebude, každé „mám novou teorii" musí začít touhle tabulkou.
+
     - **Co firmware dělá místo toho (3 opatření, žádné neřeší příčinu):**
       1. **Nezhoršuje to** — oprava `ODR` výše (recovery už sběrnici nezabíjí).
       2. **Nepálí CPU** — back-off pollu dotyku na 2 Hz při ≥8 chybách v řadě.
@@ -1484,7 +1505,15 @@ Doplněno; nová okna 38/39/40 by tu chybu jinak zdědila.
   - **ALLAN okno** (`app_gpsdo_render_allan`, s_view=23, **tap na Allan náhled** na hlavní obrazovce — ztlumené „↗" za titulkem karty značí klikatelnost, `screen_main_hit_allan`): **velký log-log graf σy(τ)** (`screen_main_render_allan_big`: Y dekády 10⁻⁶..10⁻¹⁰ s popisky mono_16, X dynamické dekády τ 1 s..100k+ s, křivka z ADEV pyramidy + markery) + vpravo **σy(τ) tabulka** (sdílená `screen_main_render_stats_table`). **Karta na hlavní obrazovce (364×242, přes celou výšku mřížky) má plné osy v mono_14** + živou σy@1s v headeru; tohle okno je totéž ve větším (mono_16). Karta i okno sdílí `allan_plot(area, big)` → `adev_points()` + `allan_plot_curve()` (`ALLAN_Y_MIN/ALLAN_Y_DEC`).
   - **Histogram okno** (`app_gpsdo_render_histogram`, s_view=6, **tlačítko HISTOGRAM v okně ALLAN** — sesterská okna: v histogramu je zpět tlačítko ALLAN; **přepínání je BEZ `nav_push`**, takže ZPĚT z obou vede tam, odkud byla dvojice otevřena, ne k sobě navzájem): vlevo **histogram rozdělení y=(f−f₀)/f₀** (24 binů, auto-range, mean=zelená + medián=amber čára, **Gaussova referenční křivka** z (mean,σ), overlay N/x̄/s/med), vpravo **σy(τ) Allan tabulka** (τ=1/10/100/1k/10k s z ADEV pyramidy, `--` bez dat). Tlačítko **Y: LIN/LOG** (levý footer slot) přepíná osu (`screen_main_hist_logy/toggle`). **Change-key skip:** tick 2×/s překreslí JEN při změně `screen_main_stats_version()` (čítač vzorků, ~1×/s při RUN) nebo lin/log osy — jinak žádný sort/Gauss/ADEV/flip naprázdno (ALLAN okno má stejný mechanismus). **Vzorkování statistiky běží nezávisle na zobrazeném okně** (`app_gpsdo_tick_stats_sample` gatuje jen RUN/STOP; mimo main krokuje simulaci `screen_main_freq_sim_step` bez kreslení) → Allan/histogram rostou 24/7 i při screensaveru — dřívější vazba na main obrazovku zastavovala pyramidu na krátkých τ (bug „Allan nejde přes ~250 s"). Plot i tabulka si čistí svůj rect (`PRIM_BLEND_REPLACE`) → text MUSÍ mít baseline uvnitř rectu (ascent!), jinak AA hrany mimo clear oblast při refreshi tuhnou. Obě okna sdílí geometrii `HIST_PLOT_RECT`/`HIST_TABLE_RECT`.
 - **Auto-dim** (UiTask): po `g_autodim_sec` bez doteku ztlumí backlight na 20/255 (`AUTODIM_LEVEL`, nikdy tma); **první dotek jen probudí** (nespustí akci tlačítka). 🔴 **Stejně probouzí i ENCODER** (2026-09-02, STATUS #128): jakákoli událost (západka, krátký/dlouhý stisk, dvojklik) nuluje časovač nečinnosti a při ztlumení jen probudí — **první událost se zahazuje** stejně jako první dotek (v tmě by uživatel naslepo přestavil hodnotu, kterou nevidí). Předtím se nečinnost měřila VÝHRADNĚ od posledního doteku, takže otáčení knoflíkem nebránilo usnutí a ze spořiče encoder nepřebudil vůbec. ⚠️ Proto `app_gpsdo_handle_encoder()` událost **nepolluje**, dostává ji parametrem — `encoder_poll()` je jednokonzumentové API a UiTask ji musí vidět dřív. Aplikace jasu = výhradně UiTask (`ws_panel_set_backlight` @ I2C4 pod mutexem, jen při změně cíle); app vrstva mění jen `g_brightness`.
-  - **⚠️ Zápis jasu do ATTINY = zdroj „mrtvého touche" (2026-08-29).** ATTINY je bit-bang I2C slave + PWM podsvícení; runtime zápis jasu **těsně následovaný STARTem touch čtení** mu rozhodí slave automat → drží SDA → celá I2C4 (touch + TMP117 0x48) je mrtvá **až do power-cyklu** (recovery po sběrnici to neopraví). Screensaver ztlumení proto zapisuje jas **s trojí pojistkou**: (1) `HAL_I2C_IsDeviceReady` probe — když ATTINY neACKne, zkusit až za 200 ms (nebušit každých 10 ms); (2) `osDelay(3)` klidová mezera před i po transakci; (3) **`s_bl_settle`** — po zápisu jasu touch poll **~150 ms nečte FT5x06**, aby ATTINY po zápisu neschytal hned START od jiného mastera na témž busu. Vrátit „bez ztlumení podsvícení" = `bl_target = g_brightness` (bez `s_dimmed ? AUTODIM_LEVEL`).
+  - **⚠️ Zápis jasu do ATTINY — kdysi hlavní podezřelý, dnes VYVRÁCENÝ (viz „co už bylo vyloučeno").**
+    ATTINY je bit-bang I2C slave + PWM podsvícení, takže runtime zápis jasu **těsně následovaný
+    STARTem touch čtení** vypadal jako spouštěč „mrtvého touche" (2026-08-29). 🔴 **Zátěžový test to
+    ale vyvrátil** (`tools/attiny_stress.ps1`, 2026-08-31): **40 ověřených zápisů jasu → 0 chyb.**
+    Zápis jasu se proto **nesmí znovu navrhovat jako příčina** — je to uzavřená větev.
+    Trojí pojistka kolem zápisu **zůstává** (levná opatrnost, ne oprava příčiny): (1) `HAL_I2C_IsDeviceReady`
+    probe — když ATTINY neACKne, zkusit až za 200 ms; (2) `osDelay(3)` klidová mezera před i po transakci;
+    (3) **`s_bl_settle`** — po zápisu jasu touch poll ~150 ms nečte FT5x06. Vrátit „bez ztlumení
+    podsvícení" = `bl_target = g_brightness` (bez `s_dimmed ? AUTODIM_LEVEL`).
 - **Header hlavní obrazovky** (`screen_main_redraw_time`): čas HH:MM:SS + „UTC" popisek (RTC běží v UTC) + datum; vlevo **stavové mikro-ikony** — přeškrtnutý reproduktor (`ui_icon_speaker_muted`) při `g_sound_muted`, amber „H" při holdoveru (`!g.valid && g.fixes>0` = fix ztracen po tom, co už jednou byl). Změnový klíč zahrnuje i stav ikon → překreslí se i mimo tik sekundy.
 - **Trend fullscreen** (s_view=9, tap trend karty): celá historie ringu (až `STAT_N`=120 s vs. 60 s na kartě), auto-scale + min/max frac popisky, drift overlay; change-key jako histogram. **O přístroji** (s_view=10, tlačítko v Nastavení): FW `gpsdo-ui v0.1` + `__DATE__ __TIME__` build, autoři OK2HAZ & OK2JNJ, MCU, uptime, selftest verdikt, sériové č. (zatím nepřiděleno → CALIB store). **Boot splash** (s_view=11): logo „GPSDO" (mono_75) + build + živý řádek Selftest (PASS/FAIL z `g_selftest_res`); UiTask ho drží ~1,4 s před hlavní obrazovkou.
 - **NEPOVOLOVAT I2C1 v IOC** (init je ručně v USER CODE).

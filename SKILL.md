@@ -517,6 +517,33 @@ změřeno, aby to šlo přezkoumat — „naměřeno“ bez postupu je jen tvrze
 Souvisí s §6e (jedno čisté měření neruší výpočet) a §6j (nezávěruj z dat, o kterých
 sám píšeš, že jsou nedůvěryhodná).
 
+## 6p. Vyvrácenou hypotézu zapiš tam, kde se hledá — ne do commit message
+
+2026-09-06 jsem u mrtvé I2C4 navrhl jako hlavního podezřelého **zápis jasu do
+ATTINY při auto-dimu**. Uživatel odpověděl „auto-dim už jsme řešili“ — a měl
+pravdu: ta hypotéza byla **vyvrácena zátěžovým testem už 2026-08-31**
+(40 ověřených zápisů → 0 chyb).
+
+**Proč se vrátila:** důkaz proti ní ležel v **komentáři ve zdrojáku** a
+v **commit message**. V CLAUDE.md — tedy tam, kam se při hledání příčiny dívám —
+zůstalo **původní tvrzení, že zápis jasu tu poruchu způsobuje**. Přečetl jsem
+zastaralou verzi a poslušně zopakoval uzavřenou větev. **Horší než ztracený čas:
+navrhl jsem uživateli jako „nový hlavní podezřelý“ něco, co sám vyvrátil.**
+
+**Pravidla:**
+1. **Vyvrácení patří na místo tvrzení**, ne vedle něj. Když měření něco zabije,
+   **přepiš ten původní odstavec** — nestačí přidat poznámku jinam. Dvě verze
+   pravdy v jednom dokumentu znamenají, že se ta špatná dřív nebo později použije.
+2. U vady, která se řeší opakovaně, veď **jeden autoritativní seznam
+   „co už bylo vyloučeno a čím se to ví“** a měj pravidlo, že **nová hypotéza
+   musí nejdřív vysvětlit, proč neplatí nic z něj**.
+3. **Commit message a komentář ve zdrojáku nejsou dokumentace.** Jsou to archivy.
+   Co má ovlivnit příští rozhodnutí, musí být v souboru, který se čte na začátku.
+
+⚠️ Signál, že tohle děláš: uživatel ti řekne **„to už jsme řešili“**. To není
+netrpělivost — je to hlášení, že dokumentace neudržela závěr. Reakce není omluva,
+ale **oprava toho dokumentu**, aby se stopa nemohla vrátit potřetí.
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
@@ -611,6 +638,7 @@ nerozpadly literály.
 - [ ] Dostává ta součástka vůbec **hodiny a napájení**? (§6i — nejlevnější kontrola patří první, ne poslední.)
 - [ ] Prohledal jsem celou **třídu** nálezu, nebo jen ten jeden pin/soubor/výskyt? (§6l)
 - [ ] Změřil jsem i **kontrolní** variantu — co se stane, když zásah NEudělám? (§6o)
+- [ ] Není tahle hypotéza už **vyvrácená**? Prošel jsem seznam vyloučených příčin? (§6p)
 - [ ] Mám důkaz **za** podezřelým článkem řetězu, ne jen hlášení periferie o sobě? (§6m)
 - [ ] Nepíše do toho registru **druhé jádro**? (§6n)
 - [ ] Znám **strop a jednotku** čítače, ze kterého vyvozuji závěr? (§7h)
