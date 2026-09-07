@@ -213,6 +213,10 @@ void datalog_erase_service(void);
  *  ⚠️ Cte `g_rtc_text`/`g_rtc_synced` (pise defaultTask) -> volat jen z defaultTasku. */
 uint32_t datalog_now_unix(void);
 
+/* CRC-16/CCITT-FALSE (0x1021/0xFFFF) — vystavena, aby `errlog` nemusel delat
+ * ctvrtou kopii tehoz polynomu. */
+uint16_t datalog_crc16(const uint8_t *d, uint32_t n);
+
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).
  *  Bez HW a bez sdileneho stavu -> soucast UART "selftest". */
 bool datalog_selftest(void);

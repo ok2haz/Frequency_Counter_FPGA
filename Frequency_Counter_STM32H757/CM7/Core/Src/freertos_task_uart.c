@@ -42,7 +42,9 @@
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 #include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
-#include "flightrec.h"      /* UART "flightrec" — kontext pred resetem (#18) */
+#include "flightrec.h"
+#include "flightrec.h"   /* UART "flightrec" — kontext pred resetem (#18) */
+#include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
@@ -457,6 +459,47 @@ void UartTask_run(void *argument)
 						     (unsigned long)s->err_total, (unsigned)s->err_streak, le,
 						     (unsigned long)s->samples);
 					  osDelay(2);
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "errlog", 6) == 0) {
+				  const char *arg = RxBuffer + 6;
+				  while (*arg == ' ') arg++;
+				  if (strcmp(arg, "erase") == 0) {
+					  /* ⚠️ Destruktivni + blokujici (64 sektoru) — proto VYHRADNE
+					   * z UartTasku, ktery watchdog nehlida. */
+					  printf("errlog: mazu %lu sektoru...\n", (unsigned long)W25Q_ERRLOG_SECTORS);
+					  errlog_erase();
+					  printf("errlog: smazano\n");
+				  } else {
+					  uint32_t want = 10u;
+					  if (strncmp(arg, "dump", 4) == 0) {
+						  const char *p = arg + 4;
+						  while (*p == ' ') p++;
+						  uint32_t v = 0; int have = 0;
+						  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; have = 1; }
+						  if (have && v) want = (v > 200u) ? 200u : v;
+					  }
+					  uint32_t total = errlog_count();
+					  printf("=== ERRLOG (W25Q) ===\n");
+					  printf("  zaznamu %lu / %lu   ring zahodil %lu\n",
+							 (unsigned long)total,
+							 (unsigned long)(W25Q_ERRLOG_SECTORS * (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)),
+							 (unsigned long)errlog_dropped());
+					  if (total == 0u) {
+						  printf("  (zatim nic — to je dobre)\n");
+					  }
+					  for (uint32_t i = 0; i < want && i < total; i++) {
+						  errlog_rec_t r;
+						  if (!errlog_read_back(i, &r)) break;
+						  char tag[ERRLOG_TAG_LEN + 1];
+						  memcpy(tag, r.tag, ERRLOG_TAG_LEN); tag[ERRLOG_TAG_LEN] = '\0';
+						  printf("  #%lu up=%lus %s/%u a=%08lX b=%08lX x%u %s\n",
+								 (unsigned long)r.seq, (unsigned long)r.uptime_s,
+								 errlog_kind_name(r.kind), (unsigned)r.sub,
+								 (unsigned long)r.a, (unsigned long)r.b,
+								 (unsigned)(r.repeat + 1u), tag);
+						  osDelay(2);   /* aby se 115200 stihlo vypsat bez utinani */
+					  }
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "i2c4") == 0) {

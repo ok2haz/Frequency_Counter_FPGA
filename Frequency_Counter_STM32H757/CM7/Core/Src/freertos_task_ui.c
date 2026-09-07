@@ -19,6 +19,7 @@
 #include "encoder.h"    /* Faze A: rotacni encoder + gesta */
 #include "screens/screen_main.h"   /* screen_main_stats_reset — g_stats_reset_req */
 #include "freertos_shared.h"
+#include "errlog.h"           /* trvaly zaznamnik chyb ve W25Q */
 #include "watchdog.h"     /* watchdog_kick_ui — heartbeat */
 #include "alarm.h"        /* alarm_click — zvukova odezva doteku */
 #include "beeper.h"       /* beeper_boot_melody — startovni jingle */
@@ -324,6 +325,9 @@ void StartUiTask(void *argument)
       if (s_i2c4_fail >= 8 && (HAL_GetTick() - s_i2c4_rec_t) > rec_gap) {
         s_i2c4_rec_t = HAL_GetTick();
         s_touch_resets++;
+        /* Sbernice prokazatelne zlobi (serie HAL selhani). Do trvale historie,
+         * aby slo poznat, jestli se to deje casteji — `status` ukaze jen ted. */
+        (void)errlog_put(ERRLOG_K_I2C, 4u, s_i2c4_fail, s_touch_resets, "touch");
         printf("touch: I2C4 nereaguje (%u chyb, %u x mutex busy) -> recovery #%lu\n",
                s_i2c4_fail, s_i2c4_busy, (unsigned long)s_touch_resets);
         if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {

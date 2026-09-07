@@ -56,6 +56,10 @@ static uint16_t crc16(const uint8_t *d, uint32_t n)
     return c;
 }
 
+/* ⚠️ Sdilena i mimo datalog (`errlog` pouziva TENTYZ zaznamovy vzor vcetne CRC) —
+ * ctvrta kopie tehoz polynomu v projektu by se driv nebo pozdeji rozesla (SKILL 5). */
+uint16_t datalog_crc16(const uint8_t *d, uint32_t n) { return crc16(d, n); }
+
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put_u32(uint8_t *p, uint32_t v)
 {

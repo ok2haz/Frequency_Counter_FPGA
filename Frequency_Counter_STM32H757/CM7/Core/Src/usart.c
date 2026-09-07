@@ -19,10 +19,19 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "usart.h"
+#include "errlog.h"
 
 /* USER CODE BEGIN 0 */
 #include "cmsis_os2.h"     /* osMessageQueuePut do GpsRxQueue */
 #include "bootled.h"
+
+/* ⚠️ USART1 NENI konzole (ta jde po USB CDC) — je to GPS NMEA vstup. Kazde ORE
+ * tedy znamena ZTRACENY BAJT vety, tj. zahozeny fix/cas/druzici. Do 2026-09-07
+ * se tu chyby jen tise smazaly, takze se to nedalo nijak poznat; citace nize
+ * rozlisi tri ruzne veci: sum na lince (FE/NE), nestihajici obsluhu (ORE) a
+ * nestihajici parser (drop fronty v RxCplt). */
+volatile uint32_t g_uart1_ore, g_uart1_fe, g_uart1_ne, g_uart1_pe, g_gps_rx_drop;
+
 
 uint8_t RxByte;
 /* USER CODE END 0 */
@@ -176,7 +185,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-	osMessageQueuePut(GpsRxQueueHandle, &RxByte, 0, 0);
+	/* ⚠️ Timeout 0: kdyz je fronta plna (defaultTask nestiha drainovat), bajt
+	 * se ZAHODI. Do 2026-09-07 se navratova hodnota ignorovala, takze ztrata
+	 * NMEA dat byla neviditelna — stejna trida jako ORE vyse. */
+	if (osMessageQueuePut(GpsRxQueueHandle, &RxByte, 0, 0) != osOK) {
+		g_gps_rx_drop++;
+		(void)errlog_put(ERRLOG_K_UART, 0xFFu, g_gps_rx_drop, 0u, "GPSq");
+	}
     HAL_UART_Receive_IT(&huart1, &RxByte, 1);
   }
 }
@@ -188,6 +203,14 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
+    uint32_t ec = huart->ErrorCode;
+    if (ec & HAL_UART_ERROR_ORE) g_uart1_ore++;
+    if (ec & HAL_UART_ERROR_FE)  g_uart1_fe++;
+    if (ec & HAL_UART_ERROR_NE)  g_uart1_ne++;
+    if (ec & HAL_UART_ERROR_PE)  g_uart1_pe++;
+    /* ISR kontext -> `errlog_put` jen do RAM ringu, do flash to vyleje defaultTask. */
+    (void)errlog_put(ERRLOG_K_UART, (uint8_t)(ec & 0xFFu), g_uart1_ore,
+                     g_uart1_fe | (g_uart1_ne << 8) | (g_uart1_pe << 16), "GPS");
     __HAL_UART_CLEAR_OREFLAG(huart);
     __HAL_UART_CLEAR_FEFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);

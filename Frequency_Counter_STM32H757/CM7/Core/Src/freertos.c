@@ -33,6 +33,7 @@
 #include "syscfg.h"           /* syscfg_flash_tick — zrcadlo nastaveni do W25Q flash */
 #include "datalog.h"          /* datalog_init/tick — zaznam stability do W25Q DATA (TODO #6) */
 #include "flightrec.h"        /* flightrec_init/tick — kontext pred resetem (TODO #18) */
+#include "errlog.h"           /* trvaly zaznamnik chyb ve W25Q (historie, ne jen posledni) */
 #include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
 #include "gpio_guard.h"       /* hlidac konfigurace GPIOG (PG8 SDCLK, PG11/13 ETH TX) */
@@ -307,9 +308,16 @@ void gpio_guard_tick(void)
     /* ⚠️ `PG13` (ETH_TXD0) se ZAMERNE jen kontroluje spolu s TX_EN: pri obou
      * pozorovanych vadach zustal v poradku, takze zatim neni duvod ho psat
      * zvlast — kdyby se to zmenilo, pricti ho do stejneho pocitadla. */
+    uint32_t before = g_gpio_guard_fix_total;
     if (check_pin(PIN_SDCLK, AF_FMC)) { g_gpio_guard_fix_sdclk++; g_gpio_guard_fix_total++; }
     if (check_pin(PIN_TXEN,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
     if (check_pin(PIN_TXD0,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
+    /* Zavod jader o GPIOG (#208) do TRVALE historie — z jednoho behu se nepozna,
+     * jestli cetnost roste, a prave to je otazka, kterou #208 potrebuje. */
+    if (g_gpio_guard_fix_total != before) {
+        (void)errlog_put(ERRLOG_K_GPIO, 0u, g_gpio_guard_fix_sdclk,
+                         g_gpio_guard_fix_txen, "GPIOG");
+    }
 }
 
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */
@@ -541,6 +549,12 @@ void StartDefaultTask(void *argument)
    * priznak zap/vyp nastavuje syscfg_load pozdeji pres datalog_set_enabled. */
   datalog_init();
   flightrec_init();            /* kontext pred resetem (#18) — po w25q_init */
+  /* ⚠️ Poradi: `errlog_init` az po `w25q_init`, `errlog_boot_record` az po
+   * `MX_RTC_Init` (ta dekoduje crash black-box do `g_crash_text` a v BKP ho
+   * smaze) — jinak by se do trvale historie nedostala prave ta chyba, kvuli
+   * ktere log vznikl. */
+  errlog_init();
+  errlog_boot_record();
   ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
   /* Infinite loop */
   for(;;)
@@ -560,6 +574,7 @@ void StartDefaultTask(void *argument)
      * neatomickym read-modify-write; hlidac to opravi a spocita. Viz gpio_guard.c. */
     gpio_guard_tick();
     datalog_tick();              /* zaznam stability do W25Q DATA (throttle 10 s uvnitr) */
+    errlog_tick();               /* vyliti RAM ringu chyb do W25Q ERRLOG (kratky QSPI timeout) */
     flightrec_tick();            /* flight recorder: 1x/s do RAM (do flash az pri poruse) */
     sd_export_tick();            /* SD: detekce karty + auto-unmount (LEVNY; mount/export = UartTask) */
     alarm_tick();     /* zvukovy alarm: hrana OK->SIGNAL_LOST / ztrata GPS locku (respektuje mute) */

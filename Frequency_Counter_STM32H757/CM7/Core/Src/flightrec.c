@@ -335,3 +335,267 @@ bool flightrec_report(void)
     }
     return true;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ERRLOG — trvaly zaznamnik chyb (rozhrani v `errlog.h`)
+ *
+ * ⚠️ PROC ZROVNA TADY a ne ve vlastnim `errlog.c`: novy `.c` se do buildu
+ * NEDOSTANE bez `Close Project -> Open Project` v IDE (prelozi se, ale linker
+ * hlasi `undefined reference`, protoze chybi v `Release` -> `subdir.mk`).
+ * Hlavicky tenhle problem nemaji, takze API zustava v `errlog.h`.
+ * Domenove to sem patri — `flightrec` uz resi tytez veci: zapis do W25Q pri
+ * porse, predem smazany sektor a zakaz zapisu z exception kontextu.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+#include "errlog.h"
+#include "datalog.h"      /* datalog_crc16, datalog_now_unix */
+
+#define ERRLOG_RING_N       16u
+#define ERRLOG_COOLDOWN_MS  60000u     /* max 1 zaznam na druh a minutu */
+#define ERRLOG_PER_SECTOR   (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)   /* 128 */
+#define ERRLOG_CAPACITY     (W25Q_ERRLOG_SECTORS * ERRLOG_PER_SECTOR)
+#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_NET)
+
+static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
+static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
+static volatile uint32_t s_el_dropped;                  /* ring byl plny */
+static uint32_t          s_el_cool_next[ERRLOG_KIND_MAX + 1u];
+static uint16_t          s_el_pending[ERRLOG_KIND_MAX + 1u];
+
+static uint32_t s_el_write_off;    /* kam padne PRISTI zaznam */
+static uint32_t s_el_seq_next = 1u;
+static uint8_t  s_el_ready;
+
+static void el_put32(uint8_t *b, uint32_t v)
+{
+    b[0] = (uint8_t)v; b[1] = (uint8_t)(v >> 8);
+    b[2] = (uint8_t)(v >> 16); b[3] = (uint8_t)(v >> 24);
+}
+static uint32_t el_get32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+/* ⚠️ Rucni serializace (ne `memcpy` struktury) — format zaznamu ve flash pak
+ * nezavisi na zarovnani a poradi bajtu prekladace. Stejne jako `datalog`. */
+static void el_pack(const errlog_rec_t *r, uint8_t *b)
+{
+    memset(b, 0, ERRLOG_REC_SIZE);
+    el_put32(b + 0,  r->seq);
+    el_put32(b + 4,  r->t_unix);
+    el_put32(b + 8,  r->uptime_s);
+    el_put32(b + 12, r->a);
+    el_put32(b + 16, r->b);
+    b[20] = (uint8_t)r->repeat; b[21] = (uint8_t)(r->repeat >> 8);
+    b[22] = r->kind;
+    b[23] = r->sub;
+    memcpy(b + 24, r->tag, ERRLOG_TAG_LEN);
+    uint16_t c = datalog_crc16(b, 30);
+    b[30] = (uint8_t)c; b[31] = (uint8_t)(c >> 8);
+}
+
+static bool el_unpack(const uint8_t *b, errlog_rec_t *r)
+{
+    uint32_t seq = el_get32(b);
+    if (seq == 0xFFFFFFFFu) return false;                   /* volny (smazany) slot */
+    uint16_t want = (uint16_t)b[30] | (uint16_t)((uint16_t)b[31] << 8);
+    if (datalog_crc16(b, 30) != want) return false;         /* poskozeny zaznam */
+    r->seq      = seq;
+    r->t_unix   = el_get32(b + 4);
+    r->uptime_s = el_get32(b + 8);
+    r->a        = el_get32(b + 12);
+    r->b        = el_get32(b + 16);
+    r->repeat   = (uint16_t)b[20] | (uint16_t)((uint16_t)b[21] << 8);
+    r->kind     = b[22];
+    r->sub      = b[23];
+    memcpy(r->tag, b + 24, ERRLOG_TAG_LEN);
+    return true;
+}
+
+const char *errlog_kind_name(uint8_t kind)
+{
+    switch (kind) {
+    case ERRLOG_K_BOOT:    return "BOOT";
+    case ERRLOG_K_CRASH:   return "CRASH";
+    case ERRLOG_K_I2C:     return "I2C";
+    case ERRLOG_K_UART:    return "UART";
+    case ERRLOG_K_SENSOR:  return "SENZOR";
+    case ERRLOG_K_FPGA:    return "FPGA";
+    case ERRLOG_K_REF:     return "REF";
+    case ERRLOG_K_STORAGE: return "ULOZ";
+    case ERRLOG_K_GPIO:    return "GPIO";
+    case ERRLOG_K_NET:     return "SIT";
+    default:               return "?";
+    }
+}
+
+void errlog_init(void)
+{
+    s_el_ready = 0; s_el_head_i = 0; s_el_tail_i = 0;
+    s_el_seq_next = 1u; s_el_write_off = W25Q_ERRLOG_BASE;
+    if (osMutexAcquire(qspiMutexHandle, 500u) != osOK) return;
+
+    /* Nejnovejsi sektor pozna nejvyssi `seq` v jeho PRVNIM zaznamu; v nem se pak
+     * najde prvni volny slot. ⚠️ `seq` NESMI byt odvozena od uptime — to se po
+     * resetu vraci k nule (tatáz past, jakou ma v komentari `flightrec_init`). */
+    uint32_t best = 0; int best_i = -1;
+    for (uint32_t i = 0; i < W25Q_ERRLOG_SECTORS; i++) {
+        uint8_t h[ERRLOG_REC_SIZE];
+        errlog_rec_t r;
+        if (!w25q_read(W25Q_ERRLOG_BASE + i * W25Q_SECTOR_SIZE, h, sizeof h)) continue;
+        if (el_unpack(h, &r) && (best_i < 0 || r.seq > best)) { best = r.seq; best_i = (int)i; }
+    }
+
+    if (best_i < 0) {
+        /* Prazdny (nebo nikdy nepouzity) log — zacni na zacatku regionu. */
+        s_el_write_off = W25Q_ERRLOG_BASE;
+        if (w25q_erase_sector(s_el_write_off)) s_el_ready = 1;
+    } else {
+        uint32_t base = W25Q_ERRLOG_BASE + (uint32_t)best_i * W25Q_SECTOR_SIZE;
+        uint32_t slot = 0, maxseq = 0;
+        for (; slot < ERRLOG_PER_SECTOR; slot++) {
+            uint8_t h[ERRLOG_REC_SIZE];
+            errlog_rec_t r;
+            if (!w25q_read(base + slot * ERRLOG_REC_SIZE, h, sizeof h)) break;
+            if (!el_unpack(h, &r)) break;               /* prvni volny/vadny = hlava */
+            if (r.seq > maxseq) maxseq = r.seq;
+        }
+        s_el_seq_next = maxseq + 1u;
+        if (slot >= ERRLOG_PER_SECTOR) {
+            /* Sektor plny -> dalsi (s pretocenim) a predem ho smaz. */
+            uint32_t ni = ((uint32_t)best_i + 1u) % W25Q_ERRLOG_SECTORS;
+            s_el_write_off = W25Q_ERRLOG_BASE + ni * W25Q_SECTOR_SIZE;
+            if (w25q_erase_sector(s_el_write_off)) s_el_ready = 1;
+        } else {
+            s_el_write_off = base + slot * ERRLOG_REC_SIZE;
+            s_el_ready = 1;
+        }
+    }
+    osMutexRelease(qspiMutexHandle);
+}
+
+bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *tag)
+{
+    if (kind == 0u || kind > ERRLOG_KIND_MAX) return false;
+
+    uint32_t now = HAL_GetTick();
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();                       /* kratka sekce — smi bezet i z ISR */
+
+    bool emit = false;
+    if ((int32_t)(now - s_el_cool_next[kind]) >= 0) {
+        s_el_cool_next[kind] = now + ERRLOG_COOLDOWN_MS;
+        uint32_t nxt = (s_el_head_i + 1u) % ERRLOG_RING_N;
+        if (nxt == s_el_tail_i) {
+            s_el_dropped++;                /* ring plny — `tick` nestiha */
+        } else {
+            errlog_rec_t *r = &s_el_ring[s_el_head_i];
+            r->seq = 0u;                   /* doplni `tick` az pri zapisu */
+            r->t_unix = 0u;                /* dtto — parsovani casu nepatri do ISR */
+            r->uptime_s = g_uptime_s;
+            r->a = a; r->b = b;
+            r->repeat = s_el_pending[kind];
+            r->kind = kind; r->sub = sub;
+            memset(r->tag, 0, ERRLOG_TAG_LEN);
+            for (uint32_t i = 0; tag && tag[i] && i < ERRLOG_TAG_LEN; i++) r->tag[i] = tag[i];
+            s_el_pending[kind] = 0u;
+            s_el_head_i = nxt;
+            emit = true;
+        }
+    } else if (s_el_pending[kind] < 0xFFFFu) {
+        s_el_pending[kind]++;              /* opakovani se secte do PRISTIHO zaznamu */
+    }
+
+    __set_PRIMASK(pm);
+    return emit;
+}
+
+void errlog_tick(void)
+{
+    if (!s_el_ready || s_el_tail_i == s_el_head_i) return;
+
+    /* ⚠️ Kratky timeout: defaultTask krmi watchdog a NESMI cekat na obsazenou
+     * flash. Kdyz to nevyjde, zaznamy zustanou v ringu do dalsiho tiku. */
+    if (osMutexAcquire(qspiMutexHandle, 10u) != osOK) return;
+
+    uint32_t t_unix = datalog_now_unix();
+    while (s_el_tail_i != s_el_head_i) {
+        errlog_rec_t r = s_el_ring[s_el_tail_i];
+        r.seq = s_el_seq_next;
+        if (r.t_unix == 0u) r.t_unix = t_unix;
+
+        /* Zacatek noveho sektoru -> smaz ho (zahodi 128 nejstarsich zaznamu). */
+        if ((s_el_write_off % W25Q_SECTOR_SIZE) == 0u) {
+            if (!w25q_erase_sector(s_el_write_off)) break;
+        }
+        uint8_t b[ERRLOG_REC_SIZE];
+        el_pack(&r, b);
+        if (!w25q_write(s_el_write_off, b, sizeof b)) break;
+
+        s_el_seq_next++;
+        s_el_write_off += ERRLOG_REC_SIZE;
+        if (s_el_write_off >= W25Q_ERRLOG_BASE + W25Q_ERRLOG_SIZE) s_el_write_off = W25Q_ERRLOG_BASE;
+        s_el_tail_i = (s_el_tail_i + 1u) % ERRLOG_RING_N;
+    }
+    osMutexRelease(qspiMutexHandle);
+}
+
+uint32_t errlog_count(void)
+{
+    uint32_t written = (s_el_seq_next > 1u) ? (s_el_seq_next - 1u) : 0u;
+    return (written < (uint32_t)ERRLOG_CAPACITY) ? written : (uint32_t)ERRLOG_CAPACITY;
+}
+
+uint32_t errlog_dropped(void) { return s_el_dropped; }
+
+bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out)
+{
+    if (!out || idx_from_newest >= errlog_count()) return false;
+    uint32_t span = W25Q_ERRLOG_SIZE;
+    uint32_t back = ((idx_from_newest + 1u) * ERRLOG_REC_SIZE) % span;
+    uint32_t rel  = ((s_el_write_off - W25Q_ERRLOG_BASE) + span - back) % span;
+
+    uint8_t b[ERRLOG_REC_SIZE];
+    bool ok = false;
+    if (osMutexAcquire(qspiMutexHandle, 200u) == osOK) {
+        ok = w25q_read(W25Q_ERRLOG_BASE + rel, b, sizeof b) && el_unpack(b, out);
+        osMutexRelease(qspiMutexHandle);
+    }
+    return ok;
+}
+
+void errlog_erase(void)
+{
+    if (osMutexAcquire(qspiMutexHandle, 2000u) != osOK) return;
+    for (uint32_t i = 0; i < W25Q_ERRLOG_SECTORS; i++) {
+        (void)w25q_erase_sector(W25Q_ERRLOG_BASE + i * W25Q_SECTOR_SIZE);
+    }
+    s_el_seq_next = 1u;
+    s_el_write_off = W25Q_ERRLOG_BASE;
+    s_el_ready = 1;
+    osMutexRelease(qspiMutexHandle);
+}
+
+void errlog_boot_record(void)
+{
+    /* Duvod resetu + (kdyz byl) crash z BKP. ⚠️ Musi bezet AZ po `MX_RTC_Init`,
+     * ktera black-box dekoduje do `g_crash_text` a v BKP ho SMAZE — jinak by se
+     * historie ztratila prave u te chyby, kvuli ktere tenhle log vznikl. */
+    char tag[ERRLOG_TAG_LEN + 1];
+    uint32_t i = 0;
+    for (; i < ERRLOG_TAG_LEN && g_reset_text[i]; i++) tag[i] = (char)g_reset_text[i];
+    tag[i] = '\0';
+    /* Rate-limit se pri startu obchazi zamerne: boot je vzdy zajimavy. */
+    s_el_cool_next[ERRLOG_K_BOOT] = HAL_GetTick();
+    (void)errlog_put(ERRLOG_K_BOOT, g_display_init_step, RCC->RSR, 0u, tag);
+
+    if (g_crash_text[0]) {
+        char ct[ERRLOG_TAG_LEN + 1];
+        uint32_t k = 0;
+        for (; k < ERRLOG_TAG_LEN && g_crash_text[k]; k++) ct[k] = (char)g_crash_text[k];
+        ct[k] = '\0';
+        s_el_cool_next[ERRLOG_K_CRASH] = HAL_GetTick();
+        (void)errlog_put(ERRLOG_K_CRASH, 0u, g_crash_cfsr, g_crash_bfar, ct);
+    }
+}
