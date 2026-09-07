@@ -42,6 +42,56 @@ static uint32_t s_count;               /* pocet platnych zaznamu (strop = capaci
 static uint32_t s_errors;
 static bool     s_wrapped;
 static uint32_t s_next_ms;             /* HAL_GetTick kdy vzorkovat priste */
+static uint16_t s_period_s = DATALOG_PERIOD_S;   /* runtime perioda vzorkovani */
+static uint8_t  s_store_pref = DATALOG_STORE_AUTO;
+
+uint16_t datalog_period_s(void) { return s_period_s ? s_period_s : DATALOG_PERIOD_S; }
+
+void datalog_set_period_s(uint16_t sec)
+{
+    if (sec < 1u) sec = 1u;
+    if (sec > 3600u) sec = 3600u;
+    if (sec == s_period_s) return;
+    s_period_s = sec;
+    /* Prepocitat AZ TED, aby zmena platila od pristiho vzorku a ne az za starou
+     * periodou (pri 600 s by uzivatel cekal 10 minut, nez se to projevi). */
+    s_next_ms = HAL_GetTick() + (uint32_t)sec * 1000u;
+}
+
+uint8_t datalog_get_store(void) { return s_store_pref; }
+
+/* Prepne uloziste za behu. ⚠️ Musi znovu najit hlavu, protoze kazde medium ma
+ * vlastni `seq` i pocet zaznamu — bez re-initu by se zapisovalo na pozici
+ * platnou pro to druhe. Historie na opustenem mediu ZUSTAVA (jen ji `dump`
+ * neuvidi), coz je zamer: prepnuti nesmi nic smazat. */
+void datalog_set_store(uint8_t store)
+{
+    if (store > DATALOG_STORE_SD) store = DATALOG_STORE_AUTO;
+    if (store == s_store_pref) return;
+    s_store_pref = store;
+    datalog_init();
+}
+
+const char *datalog_store_name(uint8_t store)
+{
+    switch (store) {
+    case DATALOG_STORE_FLASH: return "FLASH";
+    case DATALOG_STORE_SD:    return "SD";
+    default:                  return "AUTO";
+    }
+}
+
+int datalog_adev_stage(void)
+{
+    /* tau stage s = 10^s s. Exaktne sedi jen mocnina deseti. */
+    uint32_t p = datalog_period_s();
+    int stage = 0;
+    while (p >= 10u) {
+        if (p % 10u) return -1;
+        p /= 10u; stage++;
+    }
+    return (p == 1u) ? stage : -1;
+}
 
 /* ── Serializace zaznamu (LE, bez zavislosti na paddingu struktury) ────────── */
 
@@ -302,16 +352,25 @@ void datalog_init(void)
     s_be = NULL; s_ready = false;
 
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return;
-    /* SD ma prednost (vetsi, vyjimatelna); dokud neni osazena, probe() = false. */
-    if (datalog_backend_sd.probe && datalog_backend_sd.probe())      s_be = &datalog_backend_sd;
-    else if (datalog_backend_w25q.probe())                           s_be = &datalog_backend_w25q;
+    /* Volba ulozistě. AUTO = puvodni chovani (SD ma prednost — je vetsi a
+     * vyjimatelna); FLASH/SD jsou vynucene. ⚠️ Pri vynucenem SD bez karty se
+     * ZAMERNE nespadne na flash: kdo si rekl o SD, nema dostat log potichu
+     * jinam, nez ceka — tise presmerovany log je horsi nez zadny. */
+    if (s_store_pref == DATALOG_STORE_FLASH) {
+        if (datalog_backend_w25q.probe()) s_be = &datalog_backend_w25q;
+    } else if (s_store_pref == DATALOG_STORE_SD) {
+        if (datalog_backend_sd.probe && datalog_backend_sd.probe()) s_be = &datalog_backend_sd;
+    } else {
+        if (datalog_backend_sd.probe && datalog_backend_sd.probe()) s_be = &datalog_backend_sd;
+        else if (datalog_backend_w25q.probe())                      s_be = &datalog_backend_w25q;
+    }
     /* Kapacita 0 by v write_rec/read_back znamenala deleni nulou -> backend s
      * nesmyslnou kapacitou radeji odmitnout (napr. nedokoncena SD implementace). */
     if (s_be != NULL && s_be->capacity < DATALOG_REC_SIZE) s_be = NULL;
     if (s_be != NULL) { find_head(); s_ready = true; }
     osMutexRelease(qspiMutexHandle);
 
-    s_next_ms = HAL_GetTick() + DATALOG_PERIOD_S * 1000u;
+    s_next_ms = HAL_GetTick() + (uint32_t)datalog_period_s() * 1000u;
     printf("datalog: %s %s (%lu zazn., seq %lu)\n",
            s_ready ? s_be->name : "--", s_ready ? "ready" : "NEDOSTUPNE",
            (unsigned long)s_count, (unsigned long)s_seq);
@@ -397,7 +456,7 @@ void datalog_tick(void)
 {
     if (!s_ready || !s_enabled) return;
     if ((int32_t)(HAL_GetTick() - s_next_ms) < 0) return;
-    s_next_ms += DATALOG_PERIOD_S * 1000u;
+    s_next_ms += (uint32_t)datalog_period_s() * 1000u;
 
     datalog_rec_t r;
     sample(&r);

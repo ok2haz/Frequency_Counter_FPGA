@@ -30,7 +30,35 @@
 #include <stdbool.h>
 
 #define DATALOG_REC_SIZE   32u    /* bajtu na zaznam (pevne, viz datalog_rec_t) */
-#define DATALOG_PERIOD_S   10u    /* perioda vzorkovani [s] */
+#define DATALOG_PERIOD_S   10u    /* VYCHOZI perioda vzorkovani [s] — za behu ji
+                                   * meni `datalog_set_period_s`, cti VZDY pres
+                                   * `datalog_period_s()`. Makro je jen default. */
+
+/* ── Volba ulozistě ────────────────────────────────────────────────────────
+ * ⚠️ Prepnuti ROZDELI historii mezi dve media: zaznamy uz zapsane na tom druhem
+ * zustanou, kde jsou, a `datalog dump` je neuvidi. Neni to vada — je to cena za
+ * to, ze kazde uloziste ma vlastni hlavu i `seq`. */
+typedef enum {
+    DATALOG_STORE_AUTO  = 0u,   /* SD kdyz je, jinak W25Q (puvodni chovani) */
+    DATALOG_STORE_FLASH = 1u,   /* vzdy W25Q — nezavisle na vlozene karte */
+    DATALOG_STORE_SD    = 2u,   /* jen SD; bez karty se NELOGUJE (zamerne) */
+} datalog_store_t;
+
+void        datalog_set_store(uint8_t store);   /* prepne + znovu najde hlavu */
+uint8_t     datalog_get_store(void);            /* co je NASTAVENO (vc. AUTO) */
+const char *datalog_store_name(uint8_t store);  /* "AUTO"/"FLASH"/"SD" */
+
+/* Perioda vzorkovani. ⚠️ Cti ji VZDY pres tuhle funkci, ne pres makro —
+ * na periode visi i rekonstrukce Allanovy pyramidy (viz `datalog_adev_stage`). */
+uint16_t datalog_period_s(void);
+void     datalog_set_period_s(uint16_t s);
+
+/* 🔴 Do KTERE stage ADEV pyramidy se smi log sypat.
+ * Pyramida decimuje x10, takze stage s ma tau = 10^s sekund. Prevod je EXAKTNI
+ * jen kdyz je perioda logu presne mocnina deseti. Pri jine periode vraci -1 a
+ * rekonstrukce se MUSI preskocit — jinak by sigma_y(tau) vysla mimo o cely rad,
+ * a pritom verohodne (tatáz past, kvuli ktere se sype od stage 1, ne 0). */
+int datalog_adev_stage(void);
 #define DATALOG_SEQ_EMPTY  0xFFFFFFFFu   /* smazana flash (0xFF) = volny slot */
 
 /* Jeden zaznam. Serializuje se RUCNE (little-endian, viz pack_rec/unpack_rec

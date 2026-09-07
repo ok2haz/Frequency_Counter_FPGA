@@ -26,6 +26,7 @@
 #include <stdio.h>   /* snprintf pro cas/datum */
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
+#include "datalog.h"   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick) — hodiny v headeru z RTC, ne
  * GPS-direct: tikaji plynule i pri ztrate fixu (RTC bezi z LSE). */
@@ -1222,7 +1223,20 @@ static void adev_feed(float v) { adev_feed_from(0, v); }
  * 10s kadence loguje na zadnou jeji stage nesedne a musela by se prevzorkovat —
  * tim by se zkreslila casova osa. Dlouha okna trendu maji misto toho cist
  * datalog primo, stejnym vzorem jako okno GRAFY. */
-void screen_main_adev_seed_10s(float y) { adev_feed_from(1, y); }
+/* 🔴 Stage se NEODVOZUJE od jmena funkce, ale od SKUTECNE periody logu.
+ * Do 2026-09-07 byla perioda pevnych 10 s a stage 1 sedela; od chvile, kdy je
+ * perioda nastavitelna, by natvrdo zapsana 1 znamenala sigma_y(tau) mimo
+ * o cely rad — a VEROHODNE, tedy nejhorsi druh chyby. `datalog_adev_stage()`
+ * vraci -1, kdyz perioda neni mocnina deseti; pak se vzorek ZAHODI, protoze
+ * nesedne na zadnou stage exaktne. */
+void screen_main_adev_seed_10s(float y)
+{
+    /* 'stg', ne 'st' — globalni UI stav se jmenuje `st` (viz komentar
+     * v `adev_feed_from`); -Wshadow to jinak hlasi. */
+    int stg = datalog_adev_stage();
+    if (stg < 0 || stg >= ADEV_STAGES) return;
+    adev_feed_from(stg, y);
+}
 
 /* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
  * Je to tentyz stred, jaky pouziva `stats_sample` (jen v Hz misto v LSB), takze

@@ -461,6 +461,46 @@ void UartTask_run(void *argument)
 					  osDelay(2);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "datalog store", 13) == 0) {
+				  const char *p = RxBuffer + 13;
+				  while (*p == ' ') p++;
+				  if (*p) {
+					  uint8_t v = DATALOG_STORE_AUTO;
+					  if      (strcmp(p, "flash") == 0) v = DATALOG_STORE_FLASH;
+					  else if (strcmp(p, "sd")    == 0) v = DATALOG_STORE_SD;
+					  else if (strcmp(p, "auto") != 0) { printf("pouziti: datalog store auto|flash|sd\n"); v = 0xFFu; }
+					  if (v != 0xFFu) {
+						  datalog_set_store(v);   /* dela re-init (najde hlavu na novem mediu) */
+						  g_sys_cfg_dirty = 1;
+					  }
+				  }
+				  datalog_status_t stbuf; datalog_get_status(&stbuf);
+				  const datalog_status_t *st = &stbuf;
+				  printf("datalog uloziste: nastaveno %s, bezi na %s\n",
+						 datalog_store_name(datalog_get_store()),
+						 (st && st->backend) ? st->backend : "--");
+				  if (datalog_get_store() == DATALOG_STORE_SD && (!st || !st->ready)) {
+					  printf("  ⚠ vynuceno SD, ale karta neodpovida -> NELOGUJE SE\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "datalog interval", 16) == 0) {
+				  const char *p = RxBuffer + 16;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  datalog_set_period_s((uint16_t)v);
+					  g_sys_cfg_dirty = 1;
+				  }
+				  uint16_t per = datalog_period_s();
+				  int st = datalog_adev_stage();
+				  printf("datalog interval: %u s  (~%lu zazn./den)\n",
+						 (unsigned)per, (unsigned long)(86400u / per));
+				  /* 🔴 Nejdulezitejsi radek: rekonstrukce Allanovy pyramidy z logu je
+				   * exaktni JEN pri periode = mocnina deseti (stage ma tau = 10^s). */
+				  if (st >= 0) printf("  Allan rekonstrukce: OK (stage %d, tau %u s)\n", st, (unsigned)per);
+				  else         printf("  ⚠ Allan rekonstrukce VYPNUTA (perioda neni mocnina 10)\n");
+			  }
 			  else if (strncmp(RxBuffer, "errlog", 6) == 0) {
 				  const char *arg = RxBuffer + 6;
 				  while (*arg == ' ') arg++;

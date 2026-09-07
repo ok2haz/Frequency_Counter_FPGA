@@ -1444,7 +1444,7 @@ static int graph_series_dlog(int field, int32_t win_s, float *out, int max_out,
 {
     datalog_status_t st; datalog_get_status(&st);
     if (!st.ready || st.records < 2) return 0;
-    int32_t nrec_win = win_s / (int32_t)DATALOG_PERIOD_S; if (nrec_win < 2) nrec_win = 2;
+    int32_t nrec_win = win_s / (int32_t)datalog_period_s(); if (nrec_win < 2) nrec_win = 2;
     int32_t nrec = (nrec_win < (int32_t)st.records) ? nrec_win : (int32_t)st.records;
     int npts = (int)nrec; if (npts > max_out) npts = max_out; if (npts < 2) return 0;
     int32_t stride = nrec / npts; if (stride < 1) stride = 1;
@@ -1468,7 +1468,7 @@ static int graph_series_dlog(int field, int32_t win_s, float *out, int max_out,
     }
     if (mn) *mn = mnv;
     if (mx) *mx = mxv;
-    if (span_s) *span_s = (int32_t)(npts - 1) * stride * (int32_t)DATALOG_PERIOD_S;
+    if (span_s) *span_s = (int32_t)(npts - 1) * stride * (int32_t)datalog_period_s();
     return npts;
 }
 
@@ -4318,7 +4318,7 @@ static void app_gpsdo_render_datalog(void)
     }
 
     if (first) {
-        unsigned long dni = (unsigned long)((uint64_t)st.capacity_rec * DATALOG_PERIOD_S / 86400u);
+        unsigned long dni = (unsigned long)((uint64_t)st.capacity_rec * datalog_period_s() / 86400u);
         snprintf(b, sizeof b, "%lu dni (%lu MB)", dni,
                  (unsigned long)(W25Q_DATA_SIZE / (1024u * 1024u)));
         kv_row(188, "Kapacita:", b, UI_COLOR_INK_2);
@@ -4740,7 +4740,7 @@ static int gpsq_series(int field, int32_t win_s, float *mn, float *mx, gpsq_sum_
 {
     datalog_status_t st; datalog_get_status(&st);
     if (!st.ready || st.records < 2) return 0;
-    int32_t nrec_win = win_s / (int32_t)DATALOG_PERIOD_S; if (nrec_win < 2) nrec_win = 2;
+    int32_t nrec_win = win_s / (int32_t)datalog_period_s(); if (nrec_win < 2) nrec_win = 2;
     int32_t nrec = (nrec_win < (int32_t)st.records) ? nrec_win : (int32_t)st.records;
     int npts = (int)nrec; if (npts > GRAPH_MAXPTS) npts = GRAPH_MAXPTS; if (npts < 2) return 0;
     int32_t stride = nrec / npts; if (stride < 1) stride = 1;
@@ -4764,7 +4764,7 @@ static int gpsq_series(int field, int32_t win_s, float *mn, float *mx, gpsq_sum_
     if (mx) *mx = mxv;
     if (sum) {
         sum->n         = npts;
-        sum->span_s    = (int32_t)(npts - 1) * stride * (int32_t)DATALOG_PERIOD_S;
+        sum->span_s    = (int32_t)(npts - 1) * stride * (int32_t)datalog_period_s();
         sum->fix3d_pct = (npts > 0) ? (nfix * 100 / npts) : 0;
         if (field == 0) { sum->sat_min = mnv; sum->sat_max = mxv;
                           sum->sat_avg = nacc ? acc / (float)nacc : 0.0f; }
