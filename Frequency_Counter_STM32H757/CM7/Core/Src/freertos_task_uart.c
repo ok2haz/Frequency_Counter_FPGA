@@ -103,6 +103,34 @@ extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
 
 /* Rozlozi prosty desetinny zapis na znamenko, celou cast a desetiny.
  * @return 1 = rozlozeno, 0 = neni to prosty desetinny zapis. */
+/* Oslovi vsechny tri znama zarizeni na I2C4 a vypise, ktera ACKla.
+ * Pouziva ho stupnovana diagnostika `i2c4` — po kazdem kroku obnovy se vola
+ * znovu, takze z vypisu je videt, CO presne sbernici vratilo k zivotu.
+ * ⚠️ Mutex se drzi jen na jeden probe (jako `scanner`), aby touch/TMP117
+ * mezi adresami dychaly. Vraci pocet zarizeni, ktera odpovedela. */
+static int uart_i2c4_probe(const char *tag)
+{
+	static const uint8_t A[3] = { 0x38u, 0x45u, 0x48u };
+	int ok = 0;
+	char line[64];
+	int n = snprintf(line, sizeof line, "  %s:", tag);
+	for (int i = 0; i < 3; i++) {
+		HAL_StatusTypeDef r = HAL_BUSY;
+		if (osMutexAcquire(i2c4MutexHandle, 200) == osOK) {
+			r = HAL_I2C_IsDeviceReady(&hi2c4, (uint16_t)(A[i] << 1), 2, 20);
+			osMutexRelease(i2c4MutexHandle);
+		}
+		if (r == HAL_OK) ok++;
+		if (n >= 0 && (size_t)n < sizeof line) {
+			n += snprintf(line + n, sizeof line - (size_t)n, " %02X:%s",
+						  (unsigned)A[i], (r == HAL_OK) ? "ACK" : "--");
+		}
+		osDelay(2);
+	}
+	printf("%s  (%d/3)\n", line, ok);
+	return ok;
+}
+
 static int dec_parse(const char *t, int64_t *whole, int64_t *frac, int *ndec)
 {
 	int neg = 0;
@@ -429,6 +457,69 @@ void UartTask_run(void *argument)
 						     (unsigned long)s->err_total, (unsigned)s->err_streak, le,
 						     (unsigned long)s->samples);
 					  osDelay(2);
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "i2c4") == 0) {
+				  /* ── Stupnovana diagnostika I2C4 (2026-09-07) ────────────────
+				   * Odpovida na otazku, kterou jsme rok nedokazali rozhodnout:
+				   * je pri "mrtve sbernici" vada na NASI strane (master), nebo
+				   * na strane slave cipu? Postupuje od nejmensiho zasahu k
+				   * nejvetsimu a po KAZDEM kroku znovu oslovi vsechny tri
+				   * adresy -> z vypisu je primo videt, CO to opravilo.
+				   * ⚠️ Bezi z UartTasku (nehlidany watchdogem) — kroky blokuji
+				   * desitky ms, coz by v UiTasku porusilo pravidlo spinu. */
+				  printf("=== I2C4 stupnovana diagnostika ===\n");
+				  uint8_t ls = i2c4_line_state();
+				  printf("  linky: SCL=%u SDA=%u %s\n",
+						 (unsigned)((ls & 1u) ? 1u : 0u), (unsigned)((ls & 2u) ? 1u : 0u),
+						 (ls & 4u) ? "BUSY" : "idle");
+				  printf("  I2C4 CR1=0x%08lX ISR=0x%08lX\n",
+						 (unsigned long)I2C4->CR1, (unsigned long)I2C4->ISR);
+				  printf("  GPIOH MODER=0x%08lX OTYPER=0x%08lX\n",
+						 (unsigned long)GPIOH->MODER, (unsigned long)GPIOH->OTYPER);
+				  printf("  GPIOH AFR1=0x%08lX IDR=0x%08lX\n",
+						 (unsigned long)GPIOH->AFR[1], (unsigned long)GPIOH->IDR);
+
+				  int ok = uart_i2c4_probe("vychozi stav ");
+				  if (ok == 3) {
+					  printf("VERDIKT: sbernice ZDRAVA, neni co obnovovat.\n");
+				  } else {
+					  /* [1] nejmensi zasah: PE=0/1 + re-init HAL handlu */
+					  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+						  __HAL_I2C_DISABLE(&hi2c4);
+						  HAL_I2C_Init(&hi2c4);
+						  osMutexRelease(i2c4MutexHandle);
+					  }
+					  ok = uart_i2c4_probe("[1] re-init PE ");
+
+					  /* [2] uvolneni SBERNICE: 9 taktu + STOP (bezpodminecne) */
+					  if (ok < 3) {
+						  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+							  i2c4_bus_clear();
+							  __HAL_I2C_DISABLE(&hi2c4);
+							  HAL_I2C_Init(&hi2c4);
+							  osMutexRelease(i2c4MutexHandle);
+						  }
+						  ok = uart_i2c4_probe("[2] 9 taktu+STOP");
+					  }
+
+					  /* [3] nejvetsi kladivo na nasi strane: RCC reset periferie */
+					  if (ok < 3) {
+						  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+							  i2c4_hw_reset();
+							  osMutexRelease(i2c4MutexHandle);
+						  }
+						  ok = uart_i2c4_probe("[3] RCC reset  ");
+					  }
+
+					  if (ok == 3) {
+						  printf("VERDIKT: OBNOVENO softwarem -> vada byla na NASI strane.\n");
+					  } else if (ok > 0) {
+						  printf("VERDIKT: cast cipu se vratila (%d/3) -> viz ktere.\n", ok);
+					  } else {
+						  printf("VERDIKT: nepomohlo NIC -> slave cipy jsou mimo dosah SW.\n");
+						  printf("  (linky vysoko + master zdravy = potreba HW reset ATTINY)\n");
+					  }
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "scanner") == 0) {

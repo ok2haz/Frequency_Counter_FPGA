@@ -50,55 +50,79 @@
  * 1 = puvodni chovani (vcetne HW resetu TP pres ATTINY). */
 #define I2C4_RECOVERY_TOUCHES_ATTINY 0
 
-/* ── I2C4 bus recovery (zachranna sit pro zaseknutou sbernici) ──────────────
- * ATTINY (0x45, bit-bang slave) umi po nestastne transakci drzet SDA ->
- * touch (0x38) i TMP117 (0x48) na TEZE sbernici umrou. 9 SCL pulzu na PH11
- * docvaka drzeny bajt, pak inline HAL_I2C_Init (⚠️ NIKDY MX_I2C4_Init —
- * ma Error_Handler trap; selhani ignorujeme, zkusi se priste). Stejny vzor
- * jako provereny i2c1_recover v freertos_task_sensors.c. Volat POD mutexem
- * a JEN pri prokazatelne mrtvem busu (touch HAL-fail streak). */
-static void i2c4_recover(void)
+/* ── BEZPODMINECNE uvolneni sbernice: 9 taktu + STOP ────────────────────────
+ * 🔴🔴 NALEZ 2026-09-07: dosavadni recovery byla v REALNE vade NO-OP.
+ * Pulzovala totiz jen `while (SDA == 0)`, jenze v pozorovane porse je
+ * **SDA VYSOKO** (zmereno opakovane: `SCL=1 SDA=1`, ISR bez BUSY/BERR/ARLO) —
+ * telo smycky se tedy NIKDY neprovedlo a neslo o zachranu, ale o samotny
+ * `HAL_I2C_Init`. Navic se NIKDY negeneroval **STOP**, takze slave, ktery
+ * uvizl uprostred bajtu, nemel jak transakci ukoncit.
+ * ⚠️ Tuhle diagnozu ma projekt zapsanou uz od 2026-08-13 (commit 7a4e100:
+ * *„pulzuje SCL JEN kdyz je SDA v nule, takze lecil stav, ktery nikdy
+ * nenastal"*) — tehdy se ale misto opravy podminky pridal HW reset TP pres
+ * ATTINY, ten se pak jako skodlivy odstranil, a recovery zustala prazdna.
+ *
+ * Ucebnicove uvolneni sbernice je BEZPODMINECNE:
+ *   9x takt na SCL (slave smi dotlacit svuj bit a pustit SDA)
+ *   + STOP (SDA nahoru pri SCL vysoko) = ukonceni rozdelane transakce.
+ * ⚠️ ODR obou pinu MUSI byt 1 uz PRED prepnutim do OUTPUT_OD — `HAL_GPIO_Init`
+ * na ODR nesaha, takze pri ODR=0 pin v okamziku prepnuti stahne linku k zemi.
+ * ⚠️ `osDelay(1)` (ne spin) -> ~500 Hz takt; I2C nema dolni mez kmitoctu a
+ * pomaly takt bit-bang slave (ATTINY) spis pomuze. Cely blok ~40 ms. */
+void i2c4_bus_clear(void)
 {
     GPIO_InitTypeDef g = {0};
 
-    /* 🔴🔴 ODR MUSI byt 1 JESTE PRED prepnutim pinu do OUTPUT_OD.
-     * `HAL_GPIO_Init` na ODR NESAHA, takze pri ODR=0 pin v okamziku prepnuti
-     * OKAMZITE STAHNE SCL k zemi. A protoze se dole pulzuje jen kdyz SDA drzi
-     * slave, staci aby byla SDA vysoko — telo smycky se NEPROVEDE,
-     * `WritePin(SET)` se nikdy nezavola a SCL zustane drzena dole NATRVALO.
-     * Recovery pak sbernici misto zachrany ZABIJI, a to pri kazdem dalsim
-     * pokusu znovu (rate-limit ji jen zpomali).
-     * ⚠️ HW nalez 2026-08-30 sondou: `GPIOH IDR` SCL(PH11)=0, SDA(PH12)=1,
-     * `GPIOH ODR`=0x0 (ODR11=0), MODER PH11=AF, `I2C4 ISR`=0x8001 (BUSY).
-     * Projev: I2C4 umrela ~7 s po bootu (TMP117 0x48 melo 14 platnych cteni
-     * a pak 8351 chyb v rade), dotyk mrtvy, `s_touch_resets`=18 bez efektu.
-     * Uzivatel to videl az u sporice — driv dotyk nepotreboval. */
-    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);   /* SCL uvolnena (OD: 1 = pull-up) */
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11 | GPIO_PIN_12, GPIO_PIN_SET);
 
-    g.Pin = GPIO_PIN_11;                       /* SCL rucne (open-drain) */
+    g.Pin = GPIO_PIN_11 | GPIO_PIN_12;
     g.Mode = GPIO_MODE_OUTPUT_OD;
     g.Pull = GPIO_NOPULL;                      /* pull-upy jsou externi (panel) */
     g.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOH, &g);
-    g.Pin = GPIO_PIN_12; g.Mode = GPIO_MODE_INPUT;   /* SDA jen sledujeme */
-    HAL_GPIO_Init(GPIOH, &g);
 
-    /* Pulzy jen kdyz SDA opravdu drzi slave (klasicke docvakani drzeneho bajtu). */
-    for (int i = 0; i < 9 && HAL_GPIO_ReadPin(GPIOH, GPIO_PIN_12) == GPIO_PIN_RESET; i++) {
+    for (int i = 0; i < 9; i++) {              /* 9 taktu BEZ podminky na SDA */
         HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET); osDelay(1);
         HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);   osDelay(1);
     }
-    /* ⚠️ SCL se uvolnuje BEZPODMINECNE — i kdyz smycka nebezela (viz vyse). */
-    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);
+
+    /* STOP = SDA dolu (SCL dole), SCL nahoru, teprve pak SDA nahoru. */
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET); osDelay(1);
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_12, GPIO_PIN_RESET); osDelay(1);
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_SET);   osDelay(1);
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_12, GPIO_PIN_SET);   osDelay(1);
 
     g.Pin = GPIO_PIN_11 | GPIO_PIN_12;         /* zpet na AF4 (jako MSP init) */
     g.Mode = GPIO_MODE_AF_OD;
     g.Pull = GPIO_NOPULL;
     g.Alternate = GPIO_AF4_I2C4;
     HAL_GPIO_Init(GPIOH, &g);
-    __HAL_I2C_DISABLE(&hi2c4);                 /* PE=0 resetuje stavovy automat a pusti linky */
+}
+
+/* ── Tvrdy reset PERIFERIE pres RCC ─────────────────────────────────────────
+ * `PE=0` resetuje stavovy automat, ale NE vsechny registry. `APB4RSTR` vrati
+ * I2C4 do stavu po zapnuti napajeni. Je to nejsilnejsi vec, kterou na master
+ * strane mame — kdyz nepomuze ani tohle, neni vada na nasi strane sbernice.
+ * ⚠️ `State = RESET` je nutny, aby `HAL_I2C_Init` znovu provedl MspInit. */
+void i2c4_hw_reset(void)
+{
+    __HAL_RCC_I2C4_FORCE_RESET();
+    osDelay(1);
+    __HAL_RCC_I2C4_RELEASE_RESET();
+    hi2c4.State = HAL_I2C_STATE_RESET;
     HAL_I2C_Init(&hi2c4);                      /* navratovou hodnotu zamerne neresime */
 }
+
+/* ── I2C4 bus recovery (zachranna sit pro zaseknutou sbernici) ──────────────
+ * Volat POD mutexem a JEN pri prokazatelne mrtvem busu (touch HAL-fail streak).
+ * ⚠️ NIKDY `MX_I2C4_Init` — ma Error_Handler trap; selhani ignorujeme. */
+static void i2c4_recover(void)
+{
+    i2c4_bus_clear();
+    __HAL_I2C_DISABLE(&hi2c4);                 /* PE=0 resetuje stavovy automat */
+    HAL_I2C_Init(&hi2c4);                      /* navratovou hodnotu zamerne neresime */
+}
+
 
 /* Stav linek I2C4 pro diagnostiku (`status`): bit0 SCL, bit1 SDA, bit2 I2C BUSY.
  * Cte se primo z IDR/ISR, takze rekne PRAVDU i kdyz je sbernice zaseknuta —

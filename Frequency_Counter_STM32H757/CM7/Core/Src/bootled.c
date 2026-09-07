@@ -107,6 +107,12 @@ void bootled_step(uint8_t step)
     s_step = step;
 }
 
+uint8_t bootled_step_get(void)
+{
+    return s_step;
+}
+
+
 void bootled_blink_once(uint8_t count)
 {
     led_gpio_init();

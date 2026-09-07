@@ -636,6 +636,13 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu (`bootled_fail` blika, ale v krabicce to nikdo nevidi
+   * a `status` o tom nevi nic). Kind 5 + cislo kroku -> `status` rekne
+   * `hal_err@krok N`. Poradi: data prvni, magic naposled. */
+  RTC->BKP4R = (uint32_t)bootled_step_get();
+  RTC->BKP5R = 0u;
+  RTC->BKP3R = 0xC7A50000u | 5u;   /* RTC_CRASH_MAGIC | kind 5 = Error_Handler */
   __disable_irq();
   bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
   /* USER CODE END Error_Handler_Debug */
