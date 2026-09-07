@@ -1901,6 +1901,23 @@ void UartTask_run(void *argument)
 					  	  printf("LTDC: podteceni FIFO %lu / %lu flipu = %lu na 1000%s\n",
 					  	         (unsigned long)fu, (unsigned long)fl,
 					  	         (unsigned long)per1k, verd); }
+					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
+					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
+					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich
+					  	 * obsah vyhasina. Bez tohohle radku se nedalo odlisit „konstanta ve
+					  	 * zdrojaku je spatne" od „spravna konstanta se do HW nedostala".
+					  	 * Spravne pro SDCLK 50 MHz a 8192 radku: 64e-3*50e6/8192 - 20 = 371.
+					  	 * ⚠️ Pri zmene SDCLK se to MUSI prepocitat (pri 100 MHz vychazi 761). */
+					  	{ uint32_t sdrtr = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+					  	  uint32_t fmck  = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FMC);
+					  	  uint32_t sdclk = fmck / 2u;      /* SDClockPeriod_2 */
+					  	  uint32_t want  = (sdclk / 8192u) * 64u / 1000u;
+					  	  if (want > 20u) want -= 20u;
+					  	  printf("SDRAM refresh: SDRTR=%lu (ocekavano ~%lu pri SDCLK %lu.%lu MHz)%s\n",
+					  	         (unsigned long)sdrtr, (unsigned long)want,
+					  	         (unsigned long)(sdclk / 1000000u),
+					  	         (unsigned long)((sdclk / 100000u) % 10u),
+					  	         (sdrtr < 100u || sdrtr > 2000u) ? "  <== MIMO ROZSAH" : ""); }
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total)
