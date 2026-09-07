@@ -160,6 +160,45 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 - **CM4 testuj jen po čistém power-cyklu bez ladicí sondy** (sonda rozbíjí boot handshake + dělá falešné HardFaulty).
 - Verze: každé zvýšení = commit + `git tag vX.Y.Z` na tomtéž commitu.
 
+## 🔴 NEZNÁŠ PŘÍČINU? NEJDŘÍV MĚŘ — pořadí nástrojů podle ceny
+
+**Metoda je v `../SKILL.md` §0** (proč hádání hypotéz nikam nevede). Tady je
+projektová část: **čím se v TOMHLE přístroji měří a v jakém pořadí.** Ber to
+odshora — každý další krok je dražší.
+
+| # | nástroj | cena | co odpoví |
+|---|---|---|---|
+| 1 | **`status`** | zdarma, bez haltu | reset + crash black-box, `DISPLEJ:`, `I2C4:` (vč. `err v rade`), `GPIO HLIDAC`, `LTDC podteceni`, `UI kresleni` (flip/číslo/stats/trend/enc), `REFERENCE:`, CM4 + síť, datalog |
+| 2 | **`stats`** | zdarma | CPU **po taskách** + volný stack (jediné důvěryhodné měření zátěže) |
+| 3 | **`sensors` / `adcraw` / `scanner` / `si5356`** | zdarma | stav senzorů a sběrnic, kdo na I2C odpovídá |
+| 4 | **`selftest`** | zdarma | 16 čistě logických testů (CRC, parsery, formátování, SCPI, IPC, FFT…) |
+| 5 | **`membench`** | ~s, destruktivní jen na scratch | rychlost **a hlavně chybné bity**: řádek **retence** a `fb_alias` |
+| 6 | **`flightrec`** | zdarma | 60 s před poruchou (CPU, heap, nejmenší stack, teploty, I2C) |
+| 7 | **nový čítač do `status`** | jeden build | ⚠️ **levnější než jedna špatná oprava** — a zůstane užitečný |
+| 8 | **`printf` po krocích** / **`bootled`** (LED + pípání) | jeden build | tam, kde konzole ještě nežije (bring-up **před** USB CDC — přesně past #126) |
+| 9 | **bisect** (`git stash` na známý dobrý commit) | flash + power-cyklus | ⚠️ **PRVNÍ krok, když uživatel řekne „dřív to šlo"** (§6g, #141) |
+| 10 | **kontrolovaný pokus** (klid stejné délky + zásah) | minuty | `tools/probe_test.ps1` — vzor, jak to udělat s kontrolní větví |
+| 11 | **ladicí sonda** | 🔴 **zabije I2C4 do power-cyklu** | až když nic výše nedosáhne; **jedním** připojením |
+
+⚠️ **`status` a `stats` cíl NEZASTAVUJÍ** — proto jsou první. Sonda zastavuje, a **jeden
+halt stačí** na mrtvou I2C4 (změřeno kontrolovaným pokusem, viz níže).
+
+### 🔴 HW OBVINĚN — A BYL NEVINNÝ (než pošleš uživatele k páječce, přečti si to)
+
+| symptom | co jsem navrhoval na HW | skutečná příčina |
+|---|---|---|
+| SD karta nepřenáší data (#69) | sériový odpor na `SDMMC1_CK`, bulk kondenzátor na SD VDD | **`HardwareFlowControl` chybějící v `.ioc`** (SW) |
+| ADC3 interní kanály railují na `0xFFFF` | vadná reference `VREF+` | **chybějící clock enable `RCC_APB4ENR.VREFEN`** (SW) |
+| SDRAM se rozpadá / „překryv adres" (#192) | prozvonit `PG2`/`PG5` (adresní linky) | **verdikt vyroben z nedůvěryhodných dat** (§6j); linky v pořádku |
+| černý displej po power-cyklu | vada panelu / SDRAM čipu | **`PG8` ztratil `MODER`** závodem jader o GPIOG (SW) |
+| deska nedostala IP | vadný PHY / kabeláž | **`PG11` ztratil `AFR`** týmž závodem (SW) |
+| problikávání displeje (#141) | — (hádal jsem 3 kola v SW) | **`REFRESH_COUNT` 4,7× mimo spec** — rozhodl **bisect**, ne hádání |
+
+🔑 **Vzor je pořád stejný: symptom vypadal na elektroniku, příčina byla jedna špatná
+hodnota v konfiguraci.** Prototyp opravdu může mít vadu, ale **v tomhle projektu
+zatím skoro vždy vyhrál software** — takže HW hypotéza patří na konec fronty, ne
+doprostřed, a musí přijít **s měřením, které ji potvrdí**.
+
 ## 🔴 DISPLEJ ZLOBÍ? ZMĚŘ NEJDŘÍV PAMĚŤ, NE KRESLICÍ KÓD
 
 🔴🔴 **GPIOG PÍŠOU OBĚ JÁDRA — KONFIGURACE PINŮ SE ZTRÁCÍ.** CM7 na něj sahá kvůli

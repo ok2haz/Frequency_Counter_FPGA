@@ -13,6 +13,75 @@ má konkrétní důkaz, ne obecnou radu.
 
 ---
 
+## 0. Neznámá příčina: prvním výstupem je MĚŘENÍ, ne oprava
+
+🔴 **Tohle je nejdražší chyba v celém projektu a udělal jsem ji nejmíň sedmnáctkrát.**
+Formuloval ji uživatel 2026-09-07 přesně: *„při postupném řešení problémů vždy přijdeš
+s tím, že jsi našel řešení. Něco naprogramuješ jinak, ale je to spíš náhoda, jestli se
+trefíš do chyby. Pokud ne, točíme se v kruhu a ty hledáš chyby v mém hardware. Až
+následně po tobě chci postupnou analýzu, blikání LED po každém kroku, nebo výpisy na
+terminál."*
+
+**Je to doložitelné, ne dojem.** STATUS.md má **17 položek** s markerem kolotoče
+(plané stopy, vyvrácené hypotézy, mylné diagnózy): #8, #20, #69, #72, #106, #107,
+#114, #118, #122, #126, #141, #170, #206, #212, #215, #216, #221.
+
+### Proč hádání hypotéz nikam nevede
+
+Není to o štěstí — je to **informační asymetrie**:
+
+| | co se dozvíš, když to vyjde | co se dozvíš, když to NEvyjde |
+|---|---|---|
+| **spekulativní oprava** | „možná to bylo tohle" (a možná jen zamaskováno, §6d) | **skoro nic** |
+| **měření** | ✅ které hypotézy padly | ✅ **které hypotézy padly** |
+
+**Neúspěšná oprava nemá skoro žádnou informační hodnotu**, a i to málo je nespolehlivé:
+oprava mohla být napsaná špatně, mohla ji přebít druhá vada, nebo se lišily podmínky
+testu — přesně tak #141 uteklo, protože SW reset a power-cyklus daly jiný výsledek.
+**Měření naopak nese informaci vždy**, ať dopadne jakkoli.
+
+K tomu **cena za pokus**: hádání stojí build + flash + power-cyklus + pozornost
+uživatele. `printf` stojí sekundy. Hádání je tedy **řádově dražší za jeden získaný bit**.
+
+### Proč to končí obviněním hardwaru
+
+Když padne N softwarových hypotéz, „musí to být hardware" **působí** jako logický
+závěr. Není — je to **vyčerpání, ne důkaz**. A je to nejdražší možný závěr pro
+uživatele: rozebrat přístroj, prozvánět piny, podezřívat pájku. **V tomhle projektu
+to bylo opakovaně špatně** (seznam „HW obviněn — a byl nevinný" je v CLAUDE.md).
+
+### Proč to dělám, i když to vím
+
+Protože **oprava vypadá jako pokrok a čte se jako odpověď**, zatímco instrumentace
+vypadá jako odbočka a čte se jako „ještě nevím". Optimalizuju tím na **zdání postupu**
+místo na **snížení nejistoty**. Pojmenovat to takhle nahlas je jediná obrana, protože
+ta pobídka nezmizí.
+
+### Závazný postup u neznámé příčiny
+
+0. **Řekni nahlas „příčinu neznám".** Nikdy nepodávej hypotézu jako nález. Domněnka
+   je důvod **měřit**, ne **editovat**.
+1. **Napiš 2–4 kandidáty a ke KAŽDÉMU pozorování, které ho odliší.** Hypotéza, ke
+   které neumíš říct, čím by se poznala od ostatních, **není použitelná** — vyhoď ji.
+2. **Vyber nejlevnější pozorování, které pole rozpůlí** (pořadí nástrojů → CLAUDE.md).
+   Chybí-li čítač, **přidej ho** — pořád je to levnější než jedna špatná oprava,
+   a na rozdíl od ní **zůstane užitečný**.
+3. **Změř. Teprve pak opravuj.**
+4. **Instrumentaci nech v kódu.** Každý čítač, co takhle vznikl (`GPIO HLIDAC`,
+   `LTDC podteceni`, `UI kresleni`, `I2C4 err v rade`, `ATTINY zapisu`, `DISPLEJ:`),
+   se později vyplatil znovu.
+
+⚠️ **Hardware smíš obvinit teprve tehdy, když** (a) jsou vyčerpaná všechna softwarově
+pozorovatelná vodítka **a** (b) umíš pojmenovat **konkrétní měření, které to potvrdí**.
+„Už mi nic jiného nezbývá" tuhle podmínku nesplňuje.
+
+⚠️ **Když uživatel řekne „dřív to šlo", je to §6g — bisect je PRVNÍ krok.** V #141
+jsem bisect dvakrát nabídl a neudělal, místo toho **tři kola hádal** (animace, `.sdram`
+NOLOAD, refresh, DMA2D dead time). Bisect to pak rozhodl **na jedno kolo**.
+
+🔑 **Test, jestli to zase dělám:** kdyby uživatel teď řekl *„a co když se ta oprava
+netrefí?"* — mám odpověď, co se tím dozvíme? Když ne, není to diagnostika, ale střelba.
+
 ## 1. Měřicí nástroj sám může být příčinou poruchy
 
 **Důkaz:** čtení ladicí sondou (`STM32_Programmer_CLI -r32`) za běhu **haltuje cíl**.
@@ -656,6 +725,7 @@ nerozpadly literály.
 - [ ] Dostává ta součástka vůbec **hodiny a napájení**? (§6i — nejlevnější kontrola patří první, ne poslední.)
 - [ ] Prohledal jsem celou **třídu** nálezu, nebo jen ten jeden pin/soubor/výskyt? (§6l)
 - [ ] Změřil jsem i **kontrolní** variantu — co se stane, když zásah NEudělám? (§6o)
+- [ ] **Znám příčinu, nebo hádám?** Když hádám: navrhl jsem MĚŘENÍ místo opravy? (§0)
 - [ ] Není tahle hypotéza už **vyvrácená**? Prošel jsem seznam vyloučených příčin? (§6p)
 - [ ] Mám důkaz **za** podezřelým článkem řetězu, ne jen hlášení periferie o sobě? (§6m)
 - [ ] Nepíše do toho registru **druhé jádro**? (§6n)
