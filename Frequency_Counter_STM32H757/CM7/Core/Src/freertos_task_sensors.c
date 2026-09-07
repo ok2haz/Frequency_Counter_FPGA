@@ -14,7 +14,8 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
-#include "si5356.h"       /* si5356_read_status (218) + _sticky (247) */
+#include "si5356.h"
+#include "errlog.h"   /* udalosti: ztrata reference, vypadek senzoru */       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
@@ -116,6 +117,12 @@ void sensor_fail(sensor_id_t id)
     sensor_stat_t *s = &g_sensors[id];
 
     s->err_total++;
+    /* ⚠️ Az od SERIE, ne od prvni chyby: jednotlive selhani cteni je bezne
+     * (sdilena sbernice, kolize s touchem) a samo se zotavi. Trvala serie uz
+     * znamena, ze senzor opravdu zmizel. Rate-limit errlogu resi zbytek. */
+    if (s->err_streak == 20u) {
+        (void)errlog_put(ERRLOG_K_SENSOR, (uint8_t)id, s->err_total, s->err_streak, "senzor");
+    }
     s->err_last_ms = HAL_GetTick();   /* cas posledni chyby -> "uptime od posledni" (UART sensors) */
     if (s->err_streak < 0xFFFF) s->err_streak++;
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
@@ -373,8 +380,18 @@ void SensorsTask_run(void *argument)
 				}
 			}
 			uint8_t stk;
-			if (si5356_read_sticky(&hi2c1, &stk))
+			/* ⚠️ Zavorky jsou POVINNE — puvodni `if` byl jednoradkovy a pridani
+			 * dalsiho prikazu bez nich by tise vypadlo z podminky. */
+			if (si5356_read_sticky(&hi2c1, &stk)) {
+				uint8_t prev_stk = g_si5356_sticky;
 				g_si5356_sticky |= (uint8_t)(stk & ~SI5356_LOS_XTAL);
+				/* 🔑 Nova ztrata reference = nejzavaznejsi udalost, jakou tenhle
+				 * pristroj zna: presnost citace JE presnost te reference, takze
+				 * mereni z te doby NEPLATI (v datalogu to znaci DATALOG_F_REF_LOSS). */
+				if (g_si5356_sticky != prev_stk) {
+					(void)errlog_put(ERRLOG_K_REF, g_si5356_sticky, stk, prev_stk, "Si5356");
+				}
+			}
 			/* Vynulovani na zadost (UI/UART). I2C1 vlastni tenhle task, takze
 			 * zapis smi udelat JEN on — stejny request/pend vzor jako jinde. */
 			if (g_si5356_clr_req) {

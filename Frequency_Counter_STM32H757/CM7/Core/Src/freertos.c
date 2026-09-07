@@ -607,6 +607,12 @@ void StartDefaultTask(void *argument)
         s_cm4_ever = 1;
       } else if (!g_cm4_alive && s_cm4_prev && s_cm4_ever) {   /* alive->dead = stall */
         g_cm4_stall_count++;
+        /* ⚠️ Tohle je JEDINA stopa po padu CM4, jakou dnes mame — CM4 ma
+         * `HardFault_Handler` jako tichy `while(1)` a IWDG2 je zamerne vypnuty
+         * (jeho reset scope je system-wide). Duvod padu se ztrati; do errlogu
+         * jde aspon to, ZE a KDY k nemu doslo. Plne reseni = #226 (PC/CFSR
+         * z CM4 pres IPC), coz chce bump IPC_VERSION. */
+        (void)errlog_put(ERRLOG_K_NET, 1u, g_cm4_stall_count, 0u, "CM4");
         printf("[CM4] stall:CM4 — heartbeat zamrzl (%lu.). IWDG2 je VYPNUTY -> CM4 zustane"
                " mrtva az do resetu desky (ETH/SCPI/web nejedou).\n",
                (unsigned long)g_cm4_stall_count);

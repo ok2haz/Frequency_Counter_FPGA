@@ -19,6 +19,8 @@
 #include "freertos_shared.h"   /* g_sensors, g_rtc_text, g_spi_ok, qspiMutexHandle */
 #include "fpga_freq.h"
 #include "gps.h"
+#include "si5356.h"   /* SI5356_LOS_CLKIN/PLL_LOL — priznak neplatne reference */
+#include "errlog.h"    /* udalosti: chyba zapisu, zmena nastaveni */
 #include "cmsis_os2.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
@@ -52,7 +54,9 @@ void datalog_set_period_s(uint16_t sec)
     if (sec < 1u) sec = 1u;
     if (sec > 3600u) sec = 3600u;
     if (sec == s_period_s) return;
+    uint16_t old_p = s_period_s;
     s_period_s = sec;
+    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGPER, sec, old_p, "logT");
     /* Prepocitat AZ TED, aby zmena platila od pristiho vzorku a ne az za starou
      * periodou (pri 600 s by uzivatel cekal 10 minut, nez se to projevi). */
     s_next_ms = HAL_GetTick() + (uint32_t)sec * 1000u;
@@ -68,7 +72,9 @@ void datalog_set_store(uint8_t store)
 {
     if (store > DATALOG_STORE_SD) store = DATALOG_STORE_AUTO;
     if (store == s_store_pref) return;
+    uint8_t old_st = s_store_pref;
     s_store_pref = store;
+    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGSTORE, store, old_st, "logKam");
     datalog_init();
 }
 
@@ -428,6 +434,11 @@ static void sample(datalog_rec_t *r)
     if (use16)                                  f |= DATALOG_F_DIV16;
     if (!g.valid && g.fixes > 0)                f |= DATALOG_F_HOLDOVER;
     if (fpga_sim_active())                      f |= DATALOG_F_SIM;   /* emulovany kmitocet */
+    /* 🔑 Reference vypadla behem tohohle vzorku -> mereni NEPLATI. Cte se ze
+     * STICKY registru 247, takze se chyti i glitch kratsi nez perioda logu.
+     * ⚠️ `LOS_XTAL` (bit2) se neuvazuje — krystal XA/XB neni osazen (trvale 1). */
+    if (g_si5356_sticky & (SI5356_LOS_CLKIN | SI5356_PLL_LOL))
+                                                f |= DATALOG_F_REF_LOSS;
     r->flags  = f;
     r->sats   = g.num_sat;
     r->hdop10 = (g.hdop > 0.0f && g.hdop < 25.0f) ? (uint8_t)(g.hdop * 10.0f + 0.5f) : 255u;
@@ -464,10 +475,17 @@ void datalog_tick(void)
 
     /* Kratky timeout: pri obsazene flash (calib_save / syscfg / UART qspitest)
      * vzorek zahodime a jedeme dal — defaultTask nesmi zdrzet watchdog. */
-    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_TICK_MS) != osOK) { s_errors++; return; }
+    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_TICK_MS) != osOK) {
+        s_errors++;
+        (void)errlog_put(ERRLOG_K_STORAGE, 1u, s_errors, 0u, "busy");
+        return;
+    }
     bool ok = write_rec(&r);
     osMutexRelease(qspiMutexHandle);
-    if (!ok) s_errors++;
+    if (!ok) {
+        s_errors++;
+        (void)errlog_put(ERRLOG_K_STORAGE, 2u, s_errors, s_seq, "zapis");
+    }
 }
 
 void datalog_set_enabled(bool en) { s_enabled = en; }

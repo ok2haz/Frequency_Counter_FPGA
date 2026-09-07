@@ -112,6 +112,16 @@ typedef struct {
  * merena — ani po exportu do CSV, ani za pul roku pri analyze. */
 #define DATALOG_F_SIM         (1u << 6)
 
+/* 🔑 Bit 7 (POSLEDNI volny): behem tohohle vzorku hlasila reference Si5356
+ * ztratu vstupu (`LOS_CLKIN`) nebo rozpad PLL (`PLL_LOL`) — cteno ze sticky
+ * registru 247, takze to zachyti i glitch kratsi nez perioda logu.
+ * ⚠️ PROC to v logu MUSI byt: presnost citace JE presnost te reference, takze
+ * vzorky z takove chvile NEPLATI. Bez priznaku by se tise dostaly do Allanovy
+ * statistiky a zkazily ji, aniz by slo zpetne poznat KTERE.
+ * ⚠️ `LOS_XTAL` (bit2) se ZAMERNE neuvazuje — krystal XA/XB neni osazen, takze
+ * ten bit je trvale 1 a priznak by byl nastaveny vzdy. */
+#define DATALOG_F_REF_LOSS    (1u << 7)
+
 /* ── Backend uloziste (W25Q / SD / ...) ────────────────────────────────────── */
 typedef struct {
     const char *name;                                        /* "W25Q" / "SD" */

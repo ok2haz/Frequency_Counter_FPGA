@@ -26,7 +26,8 @@
 #include <stdio.h>   /* snprintf pro cas/datum */
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
-#include "datalog.h"   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
+#include "datalog.h"
+#include "errlog.h"     /* udalosti zmeny nastaveni (soumeritelnost mereni) */   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick) — hodiny v headeru z RTC, ne
  * GPS-direct: tikaji plynule i pri ztrate fixu (RTC bezi z LSE). */
@@ -276,8 +277,21 @@ void screen_main_button_action(int idx)
     case 0: st.mode = (int8_t)(st.mode ? 0 : 1);          /* FREQ <-> PERIOD */
             s_disp_recalc = 1; break;                     /* prepocitej velke cislo (perioda 1/f) */
     case 1: st.running = !st.running;            break;   /* RUN <-> STOP */
-    case 2: st.gate = (int8_t)((st.gate + 1) % 4); break; /* cycle gate */
-    case 3: st.chan = (int8_t)(st.chan ? 0 : 1); break;   /* CH A <-> CH B */
+    case 2: {
+        /* 🔑 Zmena brany meni tau0 mereni, takze starsi zaznamy uz nejsou
+         * soumeritelne — a datalog `gate_time_ns` neuklada (nema volny bajt).
+         * Bez teto udalosti vypada skok v sigma_y jako HW jev. */
+        int8_t og = st.gate;
+        st.gate = (int8_t)((st.gate + 1) % 4);
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)st.gate, (uint32_t)og, "brana");
+        break;
+    }
+    case 3: {                                             /* CH A <-> CH B */
+        int8_t oc = st.chan;
+        st.chan = (int8_t)(st.chan ? 0 : 1);
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)st.chan, (uint32_t)oc, "kanal");
+        break;
+    }
     default: return;                                      /* 4 = MENU: nic k ulozeni */
     }
     /* Zapamatuj nastaveni -> defaultTask ho persistne do BKP (prezije warm reset). */
@@ -305,6 +319,10 @@ int screen_main_apply_cfg_req(void)
     if (mode == st.mode && chan == st.chan && gate == st.gate && run == st.running)
         return 0;                                  /* nic noveho -> zadny redraw */
     if (mode != st.mode) s_disp_recalc = 1;         /* FREQ<->PERIOD -> prepocet velkeho cisla */
+    if (st.gate != gate)
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)gate, (uint32_t)st.gate, "brana");
+    if (st.chan != chan)
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
     st.mode = mode; st.chan = chan; st.gate = gate; st.running = run;
     g_ui_cfg = c; g_ui_cfg_dirty = 1;              /* persist do BKP (jako z UI) */
     return 1;

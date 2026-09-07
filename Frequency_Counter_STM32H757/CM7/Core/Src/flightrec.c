@@ -354,7 +354,7 @@ bool flightrec_report(void)
 #define ERRLOG_COOLDOWN_MS  60000u     /* max 1 zaznam na druh a minutu */
 #define ERRLOG_PER_SECTOR   (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)   /* 128 */
 #define ERRLOG_CAPACITY     (W25Q_ERRLOG_SECTORS * ERRLOG_PER_SECTOR)
-#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_NET)
+#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_CFG)
 
 static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
@@ -426,6 +426,7 @@ const char *errlog_kind_name(uint8_t kind)
     case ERRLOG_K_STORAGE: return "ULOZ";
     case ERRLOG_K_GPIO:    return "GPIO";
     case ERRLOG_K_NET:     return "SIT";
+    case ERRLOG_K_CFG:     return "NASTAV";
     default:               return "?";
     }
 }

@@ -44,7 +44,21 @@ typedef enum {
     ERRLOG_K_STORAGE = 8u,   /* chyba zapisu SD / W25Q */
     ERRLOG_K_GPIO    = 9u,   /* hlidac opravil pin (zavod jader o GPIOG) */
     ERRLOG_K_NET     = 10u,  /* ETH / CM4 */
+    /* 🔑 Zmena nastaveni, ktera meni SOUMERITELNOST mereni (brana, kanal,
+     * perioda/uloziste logu, ulozena kalibrace). Bez toho vypada skok ve
+     * statistice jako HW udalost, ackoli to byl zasah uzivatele. Zvlast u brany:
+     * datalog `gate_time_ns` neuklada (nema volny bajt), takze starsi zaznamy
+     * po zmene uz nejsou soumeritelne a NIC jineho to nepripomene.
+     * `sub` = ERRLOG_CFG_*, `a` = nova hodnota, `b` = stara. */
+    ERRLOG_K_CFG     = 11u,
 } errlog_kind_t;
+
+/* Podtypy pro ERRLOG_K_CFG (pole `sub`). */
+#define ERRLOG_CFG_GATE     1u
+#define ERRLOG_CFG_CHAN     2u
+#define ERRLOG_CFG_LOGPER   3u
+#define ERRLOG_CFG_LOGSTORE 4u
+#define ERRLOG_CFG_CALIB    5u
 
 #define ERRLOG_TAG_LEN   6u
 #define ERRLOG_REC_SIZE  32u

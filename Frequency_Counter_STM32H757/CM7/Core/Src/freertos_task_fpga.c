@@ -19,6 +19,7 @@
 #include "watchdog.h"    /* watchdog_kick_fpga — heartbeat */
 #include "sdram_log.h"   /* datova cache mereni v SDRAM (dlouha presna historie) */
 #include <stdio.h>       /* printf — hlaseni vadneho SDRAM regionu pri initu */
+#include "errlog.h"   /* udalosti: ztrata linku / signalu FPGA */
 
 void StartFpgaTask(void *argument)
 {
@@ -91,7 +92,13 @@ void StartFpgaTask(void *argument)
     } else if (!fpga_freq_link_ok()) {
       /* zadny platny ramec -> FPGA mozna bootl pozdeji / resetoval; po ~3 s znovu START
        * (20 Hz polling -> 60 iteraci = ~3 s) */
-      if (++fails >= 60) { fpga_freq_restart(); fails = 0; }
+      if (++fails >= 60) {
+        /* ~3 s bez jedineho platneho ramce -> link je opravdu mrtvy (ne jen
+         * "zatim neni nove mereni"). Do trvale historie, at jde poznat, jestli
+         * FPGA vypadava opakovane. */
+        (void)errlog_put(ERRLOG_K_FPGA, 1u, fpga_freq_crc_count(), 0u, "link");
+        fpga_freq_restart(); fails = 0;
+      }
     } else {
       fails = 0;   /* link zije, jen zatim neni nove mereni */
     }
@@ -103,6 +110,7 @@ void StartFpgaTask(void *argument)
     uint8_t l = (!fpga_freq_link_ok() || fpga_freq_signal_lost()) ? 1 : 0;
     if (l != lost) {
       lost = l;
+      if (l) (void)errlog_put(ERRLOG_K_FPGA, 2u, fpga_freq_crc_count(), 0u, "signal");
       taskENTER_CRITICAL();
       g_freq_stale = l;
       if (l) g_freq_valid = 0;   /* ztrata signalu -> hodnota uz neni platna (headline -> SIM fallback / seda) */
