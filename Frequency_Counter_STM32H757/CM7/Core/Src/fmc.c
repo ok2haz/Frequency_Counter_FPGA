@@ -73,6 +73,9 @@ SDRAM_HandleTypeDef hsdram1;
  * refreshe ZAHAZOVALA, takze se pri studenem startu mohla sekvence tise
  * nedokoncit a pamet zustala napul inicializovana — presne profil "po teplem
  * resetu OK, po studenem ne". `status` to ted hlasi. */
+_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED,
+               "fmc.h REFRESH_COUNT_EXPECTED se rozeslo s REFRESH_COUNT v fmc.c");
+
 volatile uint8_t  g_fmc_init_fail;      /* 1..6 = cislo kroku, 0 = OK */
 volatile uint32_t g_fmc_init_runs;      /* kolikrat sekvence probehla (re-init pro pokus) */
 

@@ -1929,16 +1929,19 @@ void UartTask_run(void *argument)
 					  	if (g_fmc_init_fail)
 					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
 					  		       (unsigned)g_fmc_init_fail);
+					  	/* 🔴 Skutecna hodnota refreshe V HARDWARU proti konstante ze zdrojaku.
+					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
+					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM.
+					  	 * ⚠️ Drivejsi verze si SDCLK dopocitavala z
+					  	 * `HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FMC)`, jenze ta na teto
+					  	 * desce vraci 0 -> tisklo se „ocekavano ~0 pri SDCLK 0.0 MHz".
+					  	 * Porovnani proti `REFRESH_COUNT` je stejne to jedine, co ma smysl:
+					  	 * odlisi „konstanta se do HW nedostala" od „konstanta je spatne". */
 					  	{ uint32_t sdrtr = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
-					  	  uint32_t fmck  = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FMC);
-					  	  uint32_t sdclk = fmck / 2u;      /* SDClockPeriod_2 */
-					  	  uint32_t want  = (sdclk / 8192u) * 64u / 1000u;
-					  	  if (want > 20u) want -= 20u;
-					  	  printf("SDRAM refresh: SDRTR=%lu (ocekavano ~%lu pri SDCLK %lu.%lu MHz)%s\n",
-					  	         (unsigned long)sdrtr, (unsigned long)want,
-					  	         (unsigned long)(sdclk / 1000000u),
-					  	         (unsigned long)((sdclk / 100000u) % 10u),
-					  	         (sdrtr < 100u || sdrtr > 2000u) ? "  <== MIMO ROZSAH" : ""); }
+					  	  printf("SDRAM refresh: SDRTR=%lu, ve zdrojaku %u%s\n",
+					  	         (unsigned long)sdrtr, (unsigned)REFRESH_COUNT_EXPECTED,
+					  	         (sdrtr == (uint32_t)REFRESH_COUNT_EXPECTED)
+					  	             ? "" : "  <== NESOUHLASI, hodnota se do HW nedostala"); }
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total)
