@@ -45,6 +45,7 @@
 #include "flightrec.h"
 #include "flightrec.h"   /* UART "flightrec" — kontext pred resetem (#18) */
 #include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
+#include "fmc.h"         /* fmc_sdram_init_sequence, g_fmc_init_fail — diagnostika SDRAM */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
@@ -541,6 +542,23 @@ void UartTask_run(void *argument)
 						  osDelay(2);   /* aby se 115200 stihlo vypsat bez utinani */
 					  }
 				  }
+			  }
+			  else if (strcmp(RxBuffer, "sdraminit") == 0) {
+				  /* 🔬 POKUS, ktery rozhodne mezi dvema tridami priciny:
+				   *   - kdyz `membench` PO tomhle vyjde CISTE, byla vada v CASOVANI
+				   *     PRVNI inicializace (studeny start, rozbihajici se napajeni
+				   *     SDRAM) -> reseni je odlozit/zopakovat init pri bootu;
+				   *   - kdyz zustane spinava, init to neni a hleda se dal (HW,
+				   *     teplota, radky matice).
+				   * ⚠️ Displej muze kratce probliknout — LTDC cte tutez SDRAM.
+				   * ⚠️ Bezi z UartTasku (nehlidany watchdogem): sekvence ma HAL_Delay. */
+				  uint32_t before = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+				  uint8_t r = fmc_sdram_init_sequence();
+				  uint32_t after = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+				  printf("sdraminit: krok=%u (0=OK)  SDRTR %lu -> %lu  (beh c. %lu)\n",
+						 (unsigned)r, (unsigned long)before, (unsigned long)after,
+						 (unsigned long)g_fmc_init_runs);
+				  printf("  ted spust `membench` — kdyz uz je cisty, byla vada v casovani prvniho initu\n");
 			  }
 			  else if (strcmp(RxBuffer, "i2c4") == 0) {
 				  /* ── Stupnovana diagnostika I2C4 (2026-09-07) ────────────────
@@ -1908,6 +1926,9 @@ void UartTask_run(void *argument)
 					  	 * zdrojaku je spatne" od „spravna konstanta se do HW nedostala".
 					  	 * Spravne pro SDCLK 50 MHz a 8192 radku: 64e-3*50e6/8192 - 20 = 371.
 					  	 * ⚠️ Pri zmene SDCLK se to MUSI prepocitat (pri 100 MHz vychazi 761). */
+					  	if (g_fmc_init_fail)
+					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
+					  		       (unsigned)g_fmc_init_fail);
 					  	{ uint32_t sdrtr = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
 					  	  uint32_t fmck  = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FMC);
 					  	  uint32_t sdclk = fmck / 2u;      /* SDClockPeriod_2 */

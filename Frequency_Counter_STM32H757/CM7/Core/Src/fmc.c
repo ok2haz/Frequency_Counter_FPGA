@@ -23,7 +23,6 @@
 
 /* USER CODE BEGIN 0 */
 #include "bootled.h"
-static FMC_SDRAM_CommandTypeDef Command;
 /* 🔴 OPRAVENO 2026-09-04: 1835 -> 371. Puvodni hodnota byla prevzata z ST
  * prikladu pro JINOU desku a znamenala, ze se cela matice obnovi az za ~304 ms
  * misto 64 ms — tedy 4,7x pomaleji, nez SDRAM snese.
@@ -69,6 +68,62 @@ static FMC_SDRAM_CommandTypeDef Command;
 SDRAM_HandleTypeDef hsdram1;
 
 /* FMC initialization function */
+/* 🔴 KTERY krok inicializacni sekvence SDRAM selhal (0 = vsechny prosly).
+ * Do 2026-09-07 se navratova hodnota KAZDEHO z peti prikazu i nastaveni
+ * refreshe ZAHAZOVALA, takze se pri studenem startu mohla sekvence tise
+ * nedokoncit a pamet zustala napul inicializovana — presne profil "po teplem
+ * resetu OK, po studenem ne". `status` to ted hlasi. */
+volatile uint8_t  g_fmc_init_fail;      /* 1..6 = cislo kroku, 0 = OK */
+volatile uint32_t g_fmc_init_runs;      /* kolikrat sekvence probehla (re-init pro pokus) */
+
+/* Cela sekvence dle JEDEC; vraci 0 pri uspechu, jinak cislo kroku.
+ * ⚠️ Vyclenena, aby sla spustit ZNOVU za behu (`sdraminit`) — to je pokus,
+ * ktery rozhodne, jestli byl problem v CASOVANI prvni inicializace (studeny
+ * start, rozbihajici se napajeni), nebo nekde jinde. */
+uint8_t fmc_sdram_init_sequence(void)
+{
+  FMC_SDRAM_CommandTypeDef Command;
+  __IO uint32_t tmpmrd = 0;
+
+  g_fmc_init_runs++;
+
+  Command.CommandMode            = FMC_SDRAM_CMD_CLK_ENABLE;
+  Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 1u;
+
+  HAL_Delay(1);   /* JEDEC: >= 100 us po nabehu hodin */
+
+  Command.CommandMode            = FMC_SDRAM_CMD_PALL;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 2u;
+
+  Command.CommandMode            = FMC_SDRAM_CMD_AUTOREFRESH_MODE;
+  Command.AutoRefreshNumber      = 8;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 3u;
+
+  tmpmrd = (uint32_t)SDRAM_MODEREG_BURST_LENGTH_1 |
+           SDRAM_MODEREG_BURST_TYPE_SEQUENTIAL    |
+           SDRAM_MODEREG_CAS_LATENCY_3            |
+           SDRAM_MODEREG_OPERATING_MODE_STANDARD  |
+           SDRAM_MODEREG_WRITEBURST_MODE_SINGLE;
+  Command.CommandMode            = FMC_SDRAM_CMD_LOAD_MODE;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = tmpmrd;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 4u;
+
+  if (HAL_SDRAM_ProgramRefreshRate(&hsdram1, REFRESH_COUNT) != HAL_OK) return 5u;
+
+  /* Kontrola, ze hodnota v HW opravdu sedi — `ProgramRefreshRate` muze vratit
+   * OK a pritom se zapis neprojevi, kdyz je radic zaneprazdneny. */
+  if ((((FMC_Bank5_6_R->SDRTR) >> 1) & 0x1FFFu) != (uint32_t)REFRESH_COUNT) return 6u;
+
+  return 0u;
+}
+
 void MX_FMC_Init(void)
 {
   /* USER CODE BEGIN FMC_Init 0 */
@@ -141,57 +196,10 @@ void MX_FMC_Init(void)
     HAL_GPIO_Init(GPIOG, &sdclk);
   }
 
-  __IO uint32_t tmpmrd = 0;
-
-    /* Step 1: Configure a clock configuration enable command */
-    Command.CommandMode            = FMC_SDRAM_CMD_CLK_ENABLE;
-    Command.CommandTarget          =  FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = 0;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 2: Insert 100 us minimum delay */
-    /* Inserted delay is equal to 1 ms due to systick time base unit (ms) */
-    HAL_Delay(1);
-
-    /* Step 3: Configure a PALL (precharge all) command */
-    Command.CommandMode            = FMC_SDRAM_CMD_PALL;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = 0;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 4: Configure an Auto Refresh command */
-    Command.CommandMode            = FMC_SDRAM_CMD_AUTOREFRESH_MODE;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 8;
-    Command.ModeRegisterDefinition = 0;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 5: Program the external memory mode register */
-    tmpmrd = (uint32_t)SDRAM_MODEREG_BURST_LENGTH_1 | \
-             SDRAM_MODEREG_BURST_TYPE_SEQUENTIAL    | \
-             SDRAM_MODEREG_CAS_LATENCY_3            | \
-             SDRAM_MODEREG_OPERATING_MODE_STANDARD  | \
-             SDRAM_MODEREG_WRITEBURST_MODE_SINGLE;
-
-    Command.CommandMode            = FMC_SDRAM_CMD_LOAD_MODE;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = tmpmrd;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 6: Set the refresh rate counter */
-    /* Set the device refresh rate */
-    HAL_SDRAM_ProgramRefreshRate(&hsdram1, REFRESH_COUNT);
+  /* ⚠️ Sekvence je vyclenena do `fmc_sdram_init_sequence()`, aby (a) NEZAHAZOVALA
+   * navratove hodnoty a (b) sla spustit znovu za behu (UART `sdraminit`).
+   * Selhany krok se ulozi do `g_fmc_init_fail` a hlasi ho `status`. */
+  g_fmc_init_fail = fmc_sdram_init_sequence();
 
     //Deactivate speculative/cache access to first FMC Bank to save FMC bandwidth
 //   FMC_Bank1->BTCR[0] = 0x000030D2;
