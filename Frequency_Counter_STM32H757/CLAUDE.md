@@ -1353,7 +1353,7 @@ Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0
       | **HW reset TP přes ATTINY v recovery** | ❌ vyvráceno + **škodilo** | `s_touch_resets` došlo na 6 i 18 a sběrnice byla mrtvá stejně; recovery sama do ATTINY bušila (`7a4e100` → opraveno `b3296a1`), dnes vypnuto `I2C4_RECOVERY_TOUCHES_ATTINY 0` |
       | **zaseknutá sběrnice (slave drží SDA)** | ❌ vyvráceno opakovaně | při poruše vždy `SCL=1 SDA=1`, `ISR` bez BUSY/BERR/ARLO → pulzy SCL nikdy neměly co léčit |
       | **ztráta konfigurace pinů (třída PG8/PG11)** | ❌ vyvráceno | 2026-09-06 měřeno **za přítomné vady**: `MODER`=AF, `OTYPER=0x1800` (oba OD), `AFR1=0x00044000` (oba AF4), `PUPDR=0`, `I2C4 CR1=1` |
-      | **čtení ladicí sondou (halt jádra)** | ⚠️ **neprokázáno** | jediné měření bylo **bez kontrolní větve** a týž den sběrnice hynula sama (viz revidovaný blok „ČTENÍ LADICÍ SONDOU") |
+      | **čtení ladicí sondou (halt jádra)** | ✅ **POTVRZENO = příčina** | kontrolovaný pokus 2026-09-07: **300 s klidu → 0 chyb, pak 1 halt → 6 chyb** (`tools/probe_test.ps1`) |
 
       **Co tedy zbývá:** při **elektricky zdravé sběrnici a zdravé periferii** přestanou
       odpovídat **všechny tři** slave čipy naráz (0x38 touch, 0x45 ATTINY, 0x48 TMP117).
@@ -1629,50 +1629,40 @@ transakce na I2C4, **ATTINY (bit-bang slave, který musí sledovat KAŽDOU trans
 včetně cizích) uvidí přenos, co nikdy neskončí, ztratí synchronizaci a celá I2C4 umře natrvalo** —
 touch i TMP117 0x48 i podsvícení, až do power-cyklu.
 
-🔴🔴 **REVIDOVÁNO 2026-09-06: TOHLE NENÍ PROKÁZANÉ A NEJSPÍŠ TO NENÍ PRAVDA.**
-Uživatel upozornil, že „dřív to šlo i se sondou" — a historie mu dává za pravdu
-(měsíce rutinního čtení globálů sondou, viz `debug-bez-konzole`). Prošel jsem
-původní měření a **je bezcenné**:
+✅ **POTVRZENO KONTROLOVANÝM POKUSEM 2026-09-07 — a tentokrát pořádně.**
+Mezitím to prošlo obojím: 2026-09-06 jsem tvrzení **odvolal**, protože původní
+měření nemělo kontrolní větev a běželo v den, kdy sběrnice hynula i sama.
+To odvolání bylo **metodicky správné** (ten důkaz opravdu nedokazoval nic),
+ale závěr byl náhodou pravdivý. Přepsaný `tools/probe_test.ps1` to rozhodl:
 
-| naměřeno 2026-08-30 | `err` celkem | v řadě |
-|---|---|---|
-| před testem | 0 | 0 |
-| po 1. čtení sondou | 6 | 6 |
-| po 2. čtení | 13 | 13 |
-| po 3. čtení | 22 | 22 |
+| fáze | co se dělo | `err` | v řadě |
+|---|---|---|---|
+| baseline | uptime 256 s | 0 | 0 |
+| **kontrola** | **300 s BEZ jediného haltu**, vzorek à 60 s | **0** | **0** |
+| zásah | **1 (jeden) halt sondou** | **6** | **6** |
 
-**Chybí kontrolní větev.** `tools/probe_test.ps1` nikdy nezměřil, co udělá
-**zdravá sběrnice ponechaná stejnou dobu o samotě, bez sondy**. Celý test trvá
-~15 s pozorování — a **týž den** je v téhle poznámce zapsáno, že sběrnice umírala
-sama od sebe po **7 s, 136 s a ~2016 s**. Sběrnice, která hyne sama během minut,
-vyrobí přesně tenhle průběh čísel i kdyby se sondou nesáhlo. **Souběh je úplný,
-takže z toho měření nejde vyvodit vůbec nic.**
+**Pět minut naprostého klidu bez jediné chyby, pak JEDEN halt a sběrnice je
+okamžitě v sérii chyb.** Rozdíl mezi větvemi je jednoznačný.
 
-🔑 **Mnohem lépe podložený podezřelý: zápis jasu do ATTINY při auto-dimu.**
-Ten je v této poznámce zapsán jako **změřený** spouštěč přesně téhle poruchy
-(2026-08-29) a hlavně **sedí na časování**: auto-dim se spustí po `g_autodim_sec`
-**bez doteku displeje** (default **300 s**) — tedy právě během ladění sondou nebo
-přes UART, kdy se panelu nikdo nedotýká. To vysvětluje korelaci „umřelo to,
-když jsem sondoval", aniž by sonda byla příčinou. Úmrtí v 7 s odpovídá
-**bootovnímu** nastavení jasu, taktéž zápisu do ATTINY.
+**Mechanismus** (proč to sedí): `-r32` cíl **zastaví**. Když halt padne doprostřed
+transakce na I2C4, ATTINY — bit-bang slave, který musí sledovat **každou**
+transakci na sběrnici včetně cizích — uvidí přenos, co nikdy neskončí, ztratí
+synchronizaci, a odmlčí se **všechny** slave čipy (0x38, 0x45, 0x48).
+Sběrnice přitom zůstane elektricky čistá (`SCL=1 SDA=1`, žádné BERR/ARLO),
+takže to nevypadá jako porucha sběrnice — a taky není: je to porucha **slave automatu**.
 
-**Rozhodne levný test BEZ sondy** (dokud neproběhne, je příčina otevřená):
-1. auto-dim **VYPNOUT** → nechat běžet hodiny → přežije sběrnice?
-2. auto-dim na **15 s** → umře opakovaně a rychle?
-Když ano, příčina je firmwarová a tedy **dosažitelná** — na rozdíl od
-„slave čipy se odmlčely", což je zapsané jako neřešitelné bez HW resetu ATTINY.
-
-**Co z původního bloku platí dál:**
-- **UART je stejně první volba** — `status` (řádek `I2C4:`), `sensors`, `stats`,
-  `scanner`, `flightrec` pokryjí skoro vše a cíl nezastavují. Sonda je dražší
-  nástroj, ne zakázaný.
-- **Halt cíle je pro I2C4 pořád teoreticky nebezpečný** (ATTINY je bit-bang slave
-  a musí sledovat i cizí transakce) — jen to **není naměřené**. Ber to jako
-  riziko, ne jako zákon.
-- ⚠️ **Nesonduj v hustých dávkách.** `tools/gpio_drift.ps1` dělal 33 připojení za
-  sebou; už proto, že každé je halt, se čte **jedním** připojením.
-- Nástroj `tools/probe_test.ps1` je **použitelný až s kontrolní větví** — bez ní
-  měří jen to, že čas plyne.
+**Praktická pravidla:**
+- **Diagnostiku běžícího přístroje dělej přes UART.** `status` (vč. řádku `I2C4:`),
+  `stats`, `sensors`, `scanner`, `flightrec`, `selftest` pokryjí prakticky vše.
+- **Sonda je bezpečná na flash + reset** (po resetu je sběrnice zdravá), **ne na
+  čtení za běhu** — a nepomůže „číst jen málo": stačil **jeden** halt.
+- Když sondu přesto potřebuješ, počítej s tím, že **dotyk skončí až do power-cyklu**,
+  a udělej to **jedním připojením** (viz `tools/gpio_drift.ps1`).
+- ⚠️ **Závěry o příčině čehokoli jiného** dělej JEN z běhů, kde se sondou nesahalo —
+  jinak si vyrábíš poruchu, kterou pak vyšetřuješ.
+- 🔑 Nástroj `tools/probe_test.ps1` má nově **kontrolní fázi** (klid stejné délky
+  před zásahem) a **stupňované dávky** 1/3/10/33 haltů. Bez kontrolní větve
+  by měřil jen to, že čas plyne (SKILL §6o).
 
 
 ⚠️⚠️ **CPU zátěž NEMĚŘ přes ladicí sondu.** `STM32_Programmer_CLI -c mode=HOTPLUG -r32 …`
@@ -1683,7 +1673,7 @@ na opakované čtení 95–98 %, zatímco **`stats` (bez sondy) ukázal 60 % a I
 a to sedí s dlouhodobou zkušeností, že zátěž nešla přes 80 % ani po dnech běhu.
 **Jediné důvěryhodné měření CPU je UART `stats`** (per-task, DWT okno 1 s, bez debuggeru).
 ⚠️ **Tenhle odstavec o CPU platí** (změřeno 2026-08-13, opakovatelné).
-🔴 **Nepleť si ho s tvrzením o I2C4 výše, které jsem 2026-09-06 musel odvolat.**
+🔑 **Tvrzení o I2C4 výše je od 2026-09-07 POTVRZENÉ** kontrolovaným pokusem.
 Mezitím tu stálo „sonda se za běhu nepoužívá na NIC" — to bylo přehnané a odvozené
 z nekontrolovaného měření. Platí umírněná verze: **UART je první volba** (`status`
 vč. řádku `I2C4:`, `stats`, `sensors`, `scanner`, `flightrec`, `selftest` pokryjí

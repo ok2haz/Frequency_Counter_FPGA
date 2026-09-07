@@ -517,6 +517,24 @@ změřeno, aby to šlo přezkoumat — „naměřeno“ bez postupu je jen tvrze
 Souvisí s §6e (jedno čisté měření neruší výpočet) a §6j (nezávěruj z dat, o kterých
 sám píšeš, že jsou nedůvěryhodná).
 
+🔑 **DOHRA (2026-09-07) — a je to ta zajímavější půlka.** Doplnil jsem kontrolní
+větev a pokus zopakoval: **300 s klidu → 0 chyb, pak JEDEN halt → 6 chyb.**
+Tedy **původní tvrzení bylo pravdivé**. Znamená to, že odvolání byla chyba?
+**Ne.** Špatný důkaz pravdivého tvrzení je pořád špatný důkaz — z původního
+měření to **nešlo vědět** a stejné uvažování by jindy potvrdilo nesmysl.
+
+Ponaučení jsou dvě a obě stojí za víc než ten výsledek:
+- **„Mělo to pravdu" není obhajoba metody.** Kdybych se řídil tím, že závěr
+  nakonec vyšel, naučil bych se přesně to špatné.
+- **Slabý důkaz se neopravuje odvoláním, ale doměřením.** Odvolání je jen
+  mezikrok — správné vyústění je **doplnit chybějící větev a rozhodnout to**.
+  Mezi „nevíme" a „víme" je jeden pětiminutový test, ne další diskuse.
+
+⚠️ Zároveň to ukazuje cenu opačné chyby: měsíc jsem se řídil pravidlem, které
+bylo **správné**, ale zapsané tak, že se nedalo přezkoumat. Kdyby u něj od
+začátku stálo *jak* bylo změřeno, přišlo by se na chybějící kontrolu hned —
+a nemusel se ani odvolávat, ani znovu dokazovat.
+
 ## 6p. Vyvrácenou hypotézu zapiš tam, kde se hledá — ne do commit message
 
 2026-09-06 jsem u mrtvé I2C4 navrhl jako hlavního podezřelého **zápis jasu do
