@@ -46,6 +46,7 @@ static bool     s_wrapped;
 static uint32_t s_next_ms;             /* HAL_GetTick kdy vzorkovat priste */
 static uint16_t s_period_s = DATALOG_PERIOD_S;   /* runtime perioda vzorkovani */
 static uint8_t  s_store_pref = DATALOG_STORE_AUTO;
+static uint8_t  s_inited;              /* 1 = `datalog_init` uz probehl (viz set_store) */
 
 uint16_t datalog_period_s(void) { return s_period_s ? s_period_s : DATALOG_PERIOD_S; }
 
@@ -75,7 +76,19 @@ void datalog_set_store(uint8_t store)
     uint8_t old_st = s_store_pref;
     s_store_pref = store;
     (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGSTORE, store, old_st, "logKam");
-    datalog_init();
+
+    /* 🔴 RE-INIT JEN KDYZ UZ INIT PROBEHL. `syscfg_load` (UiTask) tuhle funkci
+     * vola pri STUDENEM startu — tehdy je autoritativni flash blob — a to je
+     * DRIV, nez defaultTask stihne `datalog_init()`. Bez teto podminky by init
+     * bezel ve DVOU uloha naraz nad sdilenymi staticky (`s_be`, `s_head`,
+     * `s_seq`), coz je zavod.
+     * ⚠️ Presne timhle jsem 2026-09-07 porusil invariant, ktery je zapsany
+     * v `freertos.c` u volani `datalog_init()`: „Na poradi vuci syscfg_load
+     * NEZALEZI". Ted zase plati — pri startu se jen zapamatuje volba a
+     * defaultTask si ji pri svem `datalog_init()` prevezme.
+     * ⚠️ Chyba se projevila JEN po power-cyklu, protoze po flashi (warm reset)
+     * ma prednost BKP a flash blob se neaplikuje. */
+    if (s_inited) datalog_init();
 }
 
 const char *datalog_store_name(uint8_t store)
@@ -355,9 +368,10 @@ static void find_head(void)
 
 void datalog_init(void)
 {
-    s_be = NULL; s_ready = false;
-
+    /* ⚠️ Nulovat AZ pod mutexem — jinak by soubezny ctenar (UI/UART) videl
+     * `s_be == NULL` uprostred re-initu a hlasil „NEDOSTUPNE". */
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return;
+    s_be = NULL; s_ready = false;
     /* Volba ulozistě. AUTO = puvodni chovani (SD ma prednost — je vetsi a
      * vyjimatelna); FLASH/SD jsou vynucene. ⚠️ Pri vynucenem SD bez karty se
      * ZAMERNE nespadne na flash: kdo si rekl o SD, nema dostat log potichu
@@ -376,6 +390,7 @@ void datalog_init(void)
     if (s_be != NULL) { find_head(); s_ready = true; }
     osMutexRelease(qspiMutexHandle);
 
+    s_inited = 1;
     s_next_ms = HAL_GetTick() + (uint32_t)datalog_period_s() * 1000u;
     printf("datalog: %s %s (%lu zazn., seq %lu)\n",
            s_ready ? s_be->name : "--", s_ready ? "ready" : "NEDOSTUPNE",
