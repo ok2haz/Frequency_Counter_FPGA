@@ -78,6 +78,7 @@ extern volatile uint8_t  g_reset_bad;            /* 1 = watchdog reset (cervene)
 extern volatile char     g_crash_text[16];       /* crash black-box z BKP ("stack:UiTask") */
 extern volatile uint8_t  g_selftest_res;         /* boot selftest: 0=--- 1=PASS 2=FAIL */
 /* g_selftest_detail[SELFTEST_N] + g_freq_stale nyni z freertos_shared.h (viz #include vyse) */
+#include "errlog.h"    /* okno CHYBY — trvaly zaznamnik ve W25Q */
 extern volatile uint8_t  g_freq_stale;           /* 1 = ztrata signalu / mrtvy link (okno Citac) */
 extern volatile uint8_t  g_cm4_absent;           /* 1 = CM4 (D2) nenabehl pri bootu */
 extern volatile uint8_t  g_cm4_alive;            /* 1 = CM4 heartbeat ziva (IPC) */
@@ -2834,6 +2835,7 @@ static void app_gpsdo_render_meas_menu(void);
 void app_gpsdo_render_func(void);          /* FUNKCE MERENI (s_view=49) */
 void app_gpsdo_render_help(void);          /* NAPOVEDA (s_view=50) */    /* MERENI rozcestnik (s_view=44) */
 static void app_gpsdo_render_tools(void);        /* NASTROJE pod Diagnostikou (s_view=48) */
+static void app_gpsdo_render_errlog(void);       /* CHYBY — trvaly log ve W25Q (s_view=51) */
 static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first); /* def niz */
 static void kv_margin_bar(int16_t base_y, int pct, prim_color_t c, const char *label); /* def niz */
 static void app_gpsdo_render_ti(void);           /* TI — 1PPS time-interval (s_view=45, placeholder) */
@@ -2902,7 +2904,7 @@ static void btnreg_observer(const prim_rect_t *r)
 }
 
 /* ── PAMET FOKUSU PER OKNO (zadani UI §7 „menu si pamatuje posledni volbu") ── */
-#define S_VIEW_MAX 51   /* 0..50; 49 = FUNKCE, 50 = NAPOVEDA */
+#define S_VIEW_MAX 52   /* 0..51; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY */
 static int8_t s_focus_of[S_VIEW_MAX];
 static int8_t s_focus;                        /* fokus AKTUALNIHO okna */
 
@@ -3012,7 +3014,7 @@ static const menu_list_t MEAS_LIST = {
     /*col_gap*/14, /*row_gap*/10
 };
 /* Podstranka NASTROJE (s_view=48) — z footeru Diagnostiky. 3×2 mrizka. */
-#define TOOLS_N 6
+#define TOOLS_N 7
 /* NASTROJE (s_view=48) — z footeru Diagnostiky. 3 sloupce x 2 radky, po sloupcich. */
 static const menu_item_t TOOLS_ITEMS[TOOLS_N] = {
     { "Blok. schema", app_gpsdo_render_commdiag },   /* s_view=21 */
@@ -3021,10 +3023,14 @@ static const menu_item_t TOOLS_ITEMS[TOOLS_N] = {
     { "Benchmark",    app_gpsdo_render_membench },   /* s_view=43 */
     { "SD karta",     app_gpsdo_render_sd       },   /* s_view=37 */
     { "Reference",    app_gpsdo_render_reference},   /* s_view=14 */
+    { "Chyby (log)",  app_gpsdo_render_errlog   },   /* s_view=51 */
 };
 static const menu_list_t TOOLS_LIST = {
-    TOOLS_ITEMS, TOOLS_N, 2, /*x0*/14, /*y0*/92, /*col_w*/248, /*row_h*/96,
-    /*col_gap*/14, /*row_gap*/26
+    /* ⚠️ 7 polozek se do 3x2 nevejde -> 3 radky. Vyska radku 96 -> 80, aby
+     * spodni radek koncil na y=364 a nezasahoval do footeru (y=417).
+     * 80 px = 9,4 mm, tedy porad nad minimem dotykoveho cile (60 px). */
+    TOOLS_ITEMS, TOOLS_N, 3, /*x0*/14, /*y0*/92, /*col_w*/248, /*row_h*/80,
+    /*col_gap*/14, /*row_gap*/16
 };
 /* Restart ve footeru (stejna urovan jako BACK_RECT {650,417}, vlevo od nej). */
 static const prim_rect_t MENU_RESTART_RECT = {460, 417, 170, 61};
@@ -3060,6 +3066,99 @@ void app_gpsdo_render_meas_menu(void)   /* s_view=44 — podrozcestnik meracich 
     window_chrome("MERENI", WIN_TITLE_Y);
     list_draw(&MEAS_LIST);
     present_now();
+}
+
+
+/* ── Okno CHYBY (s_view=51) — trvaly zaznamnik chyb z W25Q ───────────────────
+ * Bez tohohle okna byl `errlog` NEOBJEVITELNY: nevi o nem `status` a jedina
+ * cesta k nemu vedla pres UART. To zaroven porusovalo projektove pravidlo,
+ * ze kazda funkce musi byt dosazitelna dotykem I encoderem.
+ *
+ * 🔴 RENDERUJE SE JEN PRI VSTUPU (a po smazani), NE periodicky. Kazdy radek je
+ * jedno `errlog_read_back()`, tedy cteni z QSPI pod mutexem — a UiTask ma
+ * watchdog heartbeat, takze se v nem nesmi cekat dlouho. Stejny duvod, proc se
+ * neobnovuji okna GRAFY a KVALITA GPS. Chyby navic nepribyvaji tak rychle, aby
+ * to vadilo; pro zivy pohled je `status`.
+ */
+#define EL_ROWS      8
+#define EL_ROW0      100
+#define EL_ROW_H     34
+static const prim_rect_t EL_ERASE_RECT = {18, 417, 240, 61};
+static uint8_t s_el_erase_stage;      /* dvoji potvrzeni jako u SD FORMAT */
+static uint32_t s_el_erase_arm_s;
+
+static void app_gpsdo_render_errlog(void)
+{
+    int first = window_first(51);
+    if (first) {
+        s_view = 51;
+        s_el_erase_stage = 0;
+    }
+    window_chrome("CHYBY", WIN_TITLE_Y);
+
+    char hdr[64];
+    uint32_t total = errlog_count();
+    snprintf(hdr, sizeof hdr, "Trvaly zaznam (W25Q) — %lu zaznamu, ring zahodil %lu",
+             (unsigned long)total, (unsigned long)errlog_dropped());
+    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = hdr};
+    ui_card_render_chrome(&c);
+
+    if (total == 0u) {
+        prim_draw_text((prim_point_t){DG_LLBL, EL_ROW0 + 40},
+                       "Zatim zadna chyba — to je dobra zprava.",
+                       &ui_font_sans_18, UI_COLOR_OK, PRIM_ALIGN_LEFT);
+    }
+
+    for (uint32_t i = 0; i < EL_ROWS && i < total; i++) {
+        errlog_rec_t r;
+        if (!errlog_read_back(i, &r)) break;
+        int y = EL_ROW0 + (int)i * EL_ROW_H;
+
+        char tag[ERRLOG_TAG_LEN + 1];
+        memcpy(tag, r.tag, ERRLOG_TAG_LEN);
+        tag[ERRLOG_TAG_LEN] = '\0';
+
+        /* Cas behu je srozumitelnejsi nez unixove razitko — a funguje i kdyz
+         * RTC jeste nebylo srovnane z GPS (t_unix == 0). */
+        char left[28];
+        uint32_t up = r.uptime_s;
+        if (up >= 3600u) snprintf(left, sizeof left, "%luh%02lum",
+                                  (unsigned long)(up / 3600u), (unsigned long)((up / 60u) % 60u));
+        else if (up >= 60u) snprintf(left, sizeof left, "%lum%02lus",
+                                     (unsigned long)(up / 60u), (unsigned long)(up % 60u));
+        else snprintf(left, sizeof left, "%lus", (unsigned long)up);
+
+        char mid[40];
+        if (r.repeat) snprintf(mid, sizeof mid, "%s %s x%u",
+                               errlog_kind_name(r.kind), tag, (unsigned)(r.repeat + 1u));
+        else          snprintf(mid, sizeof mid, "%s %s", errlog_kind_name(r.kind), tag);
+
+        char right[32];
+        snprintf(right, sizeof right, "%lu/%lu",
+                 (unsigned long)r.a, (unsigned long)r.b);
+
+        /* Barva podle zavaznosti: CRASH cervene, BOOT a NASTAV ztlumene
+         * (nejsou to poruchy), zbytek amber. */
+        prim_color_t col = (r.kind == ERRLOG_K_CRASH) ? UI_COLOR_BAD
+                         : (r.kind == ERRLOG_K_BOOT || r.kind == ERRLOG_K_CFG) ? UI_COLOR_INK_3
+                         : UI_COLOR_WARN;
+
+        prim_draw_text((prim_point_t){DG_LLBL, y}, left, &ui_font_mono_16,
+                       UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DG_LLBL + 96, y}, mid, &ui_font_mono_16,
+                       col, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){760, y}, right, &ui_font_mono_16,
+                       UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    }
+
+    /* SMAZAT + dvoji potvrzeni (stejny vzor jako datalog / SD FORMAT). */
+    ui_button_t eb = {.rect = EL_ERASE_RECT,
+                      .variant = s_el_erase_stage ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                      .label = (s_el_erase_stage == 2) ? "SMAZAT! 2/2"
+                             : (s_el_erase_stage == 1) ? "POTVRDIT 1/2" : "SMAZAT LOG"};
+    ui_button_render(&eb);
+    ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
+    ui_button_render(&bb);
 }
 
 void app_gpsdo_render_tools(void)   /* s_view=48 — NASTROJE (z footeru Diagnostiky) */
@@ -4231,6 +4330,35 @@ static void app_gpsdo_render_setups(void)
  * (identicky rect), takze nebylo ani videt. Nalezeno 2026-08-17, odstraneno;
  * misto se vyuzilo pro skutecne funkcni SMAZAT LOG. Export na SD uz existuje
  * plnohodnotne v oknu SD KARTA (`SD_EXPORT_RECT`, s_view=37). */
+/* ── Ovladani ulozistě a cetnosti (2026-09-07) ──────────────────────────────
+ * Lezi UVNITR karty (posledni volny radek y=292..354; karta konci na 362), ne
+ * ve footeru — tam uz jsou VYPNOUT/SMAZAT/ZPET a ctvrte tlacitko by se neveslo.
+ * Vyska 62 px = 7,3 mm, tedy nad projektovym minimem dotykoveho cile (60 px).
+ * ⚠️ Registr zameritelnych tlacitek se plni sam pres `ui_button_render`, takze
+ * tyhle ovladace jsou automaticky dostupne i encoderem (pravidlo dvou cest). */
+static const prim_rect_t DL_STORE_RECT  = {28, 292, 236, 62};
+static const prim_rect_t DL_INT_DN_RECT = {420, 292, 66, 62};
+static const prim_rect_t DL_INT_UP_RECT = {686, 292, 66, 62};
+
+/* 🔑 Presety jsou ZAMERNE jen mocniny deseti. Rekonstrukce Allanovy pyramidy
+ * z logu je exaktni prave tehdy (stage ma tau = 10^s, viz `datalog_adev_stage`),
+ * takze z UI nejde vyrobit nastaveni, ktere ji tise vypne. Jina hodnota jde
+ * porad zadat pres UART `datalog interval <s>` — tam se rovnou vypise varovani. */
+static const uint16_t DL_INT_PRESETS[] = { 1u, 10u, 100u, 1000u };
+#define DL_INT_N ((int)(sizeof DL_INT_PRESETS / sizeof DL_INT_PRESETS[0]))
+
+static int dl_int_idx(void)
+{
+    uint16_t cur = datalog_period_s();
+    int best = 1, bd = 0x7FFFFFFF;
+    for (int i = 0; i < DL_INT_N; i++) {
+        int d = (int)cur - (int)DL_INT_PRESETS[i];
+        if (d < 0) d = -d;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
 static const prim_rect_t DL_TOGGLE_RECT = {18, 417, 220, 61};
 static const prim_rect_t DL_ERASE_RECT  = {250, 417, 220, 61};
 /* Dvoji potvrzeni SMAZANI (destruktivni, az minuty erase) — stejny vzor jako
@@ -4244,6 +4372,7 @@ static void app_gpsdo_render_datalog(void)
 {
     int first = window_first(17);
     static char c_stav[24], c_rec[40], c_seq[16], c_err[16];
+    static char c_dlctl[32];   /* uloziste+interval -> prekresli jen pri zmene */
     static uint8_t c_erase = 0xFF;
     if (first) {
         s_view = 17;
@@ -4265,6 +4394,37 @@ static void app_gpsdo_render_datalog(void)
 
     /* Tlacitko nabizi AKCI (stejny princip jako footer RUN/STOP na hlavni
      * obrazovce): kdyz log bezi, nabizi VYPNOUT (cervene). */
+    /* ── Uloziste + cetnost ────────────────────────────────────────────────
+     * Prekresluje se JEN pri zmene (dchg), jinak by kazdy 2Hz tik prepisoval
+     * tri tlacitka a blikalo by to. */
+    {
+        char ctl[32];
+        snprintf(ctl, sizeof ctl, "%s|%u", datalog_store_name(datalog_get_store()),
+                 (unsigned)datalog_period_s());
+        if (first || dchg(c_dlctl, sizeof c_dlctl, ctl)) {
+            char sb[24];
+            snprintf(sb, sizeof sb, "ULOZ: %s", datalog_store_name(datalog_get_store()));
+            prim_fill_rect(DL_STORE_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            ui_button_t stb = {.rect = DL_STORE_RECT, .variant = UI_BUTTON_NORMAL, .label = sb};
+            ui_button_render(&stb);
+
+            ui_button_t dn = {.rect = DL_INT_DN_RECT, .variant = UI_BUTTON_NORMAL, .label = "-"};
+            ui_button_t up = {.rect = DL_INT_UP_RECT, .variant = UI_BUTTON_NORMAL, .label = "+"};
+            ui_button_render(&dn);
+            ui_button_render(&up);
+
+            /* Hodnota mezi -/+. ⚠️ Clear MUSI predchazet, jinak po zkraceni
+             * textu (1000 -> 1) zustane ocas te delsi hodnoty. */
+            char ib[24];
+            snprintf(ib, sizeof ib, "%u s", (unsigned)datalog_period_s());
+            prim_fill_rect((prim_rect_t){496, 292, 182, 62}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            prim_draw_text((prim_point_t){587, 332}, ib, &ui_font_mono_25,
+                           UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+            prim_draw_text((prim_point_t){587, 306}, "interval", &ui_font_sans_14,
+                           UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+        }
+    }
+
     ui_button_t tg = {.rect = DL_TOGGLE_RECT,
                       .variant = st.enabled ? UI_BUTTON_STOP : UI_BUTTON_RUN,
                       .label = st.enabled ? "VYPNOUT" : "ZAPNOUT"};
@@ -6955,6 +7115,7 @@ static void render_view(uint8_t v)
     case 46: app_gpsdo_render_dualch();    break;
     case 47: app_gpsdo_render_devmult();   break;
     case 48: app_gpsdo_render_tools();     break;
+    case 51: app_gpsdo_render_errlog();    break;
     default: app_gpsdo_render_main();      break;
     }
 }
@@ -8653,6 +8814,52 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, TZ_MINUS)) { tz_step(-1); CAS_UPD(); return true; }
             if (in_rect(x, y, TZ_PLUS))  { tz_step(+1); CAS_UPD(); return true; }
             #undef CAS_UPD
+        }
+        if (s_view == 51 && in_rect(x, y, EL_ERASE_RECT)) {    /* CHYBY: SMAZAT, dvoji potvrzeni */
+            /* Auto-zruseni armovani po timeoutu resi az dalsi tap/render —
+             * kontroluje se tady, aby po 6 s klidu zacinalo znovu od 1/2. */
+            if (s_el_erase_stage && (g_uptime_s - s_el_erase_arm_s) >= DL_ERASE_TIMEOUT_S)
+                s_el_erase_stage = 0;
+            s_el_erase_arm_s = g_uptime_s;
+            if (s_el_erase_stage < 2u) {
+                s_el_erase_stage++;
+            } else {
+                /* ⚠️ 64 sektoru = az nekolik sekund. UiTask ma watchdog heartbeat,
+                 * ale `w25q wait_ready` ustupuje scheduleru (od 2026-07-20), takze
+                 * to neni spin — heartbeat bezi dal. */
+                errlog_erase();
+                s_el_erase_stage = 0;
+            }
+            prim_set_target(&s_fb); prim_reset_clip();
+            app_gpsdo_render_errlog();
+            present_now();
+            return true;
+        }
+        if (s_view == 17 && in_rect(x, y, DL_STORE_RECT)) {    /* Datalog: cyklus uloziste */
+            if (s_dl_erase_stage) s_dl_erase_stage = 0;
+            tap_flash(DL_STORE_RECT);
+            /* ⚠️ `datalog_set_store` dela RE-INIT (najde hlavu na novem mediu),
+             * takze to chvili trva — proto hned potom plny redraw okna. */
+            datalog_set_store((uint8_t)((datalog_get_store() + 1u) % 3u));
+            g_sys_cfg_dirty = 1;
+            prim_set_target(&s_fb); prim_reset_clip();
+            app_gpsdo_render_datalog();
+            present_now();
+            return true;
+        }
+        if (s_view == 17 && (in_rect(x, y, DL_INT_DN_RECT) || in_rect(x, y, DL_INT_UP_RECT))) {
+            int up = in_rect(x, y, DL_INT_UP_RECT);
+            if (s_dl_erase_stage) s_dl_erase_stage = 0;
+            tap_flash(up ? DL_INT_UP_RECT : DL_INT_DN_RECT);
+            int i = dl_int_idx() + (up ? 1 : -1);
+            if (i < 0) i = 0;
+            if (i >= DL_INT_N) i = DL_INT_N - 1;
+            datalog_set_period_s(DL_INT_PRESETS[i]);
+            g_sys_cfg_dirty = 1;
+            prim_set_target(&s_fb); prim_reset_clip();
+            app_gpsdo_render_datalog();   /* prepocita i radek Kapacita (dni) */
+            present_now();
+            return true;
         }
         if (s_view == 17 && in_rect(x, y, DL_TOGGLE_RECT)) {   /* Datalog: ZAPNOUT/VYPNOUT */
             if (s_dl_erase_stage) s_dl_erase_stage = 0;   /* jiny tap zrusi armovani smazani */

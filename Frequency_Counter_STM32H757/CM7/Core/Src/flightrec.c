@@ -559,7 +559,12 @@ bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out)
 
     uint8_t b[ERRLOG_REC_SIZE];
     bool ok = false;
-    if (osMutexAcquire(qspiMutexHandle, 200u) == osOK) {
+    /* ⚠️ KRATKY timeout (50 ms, ne 200): okno CHYBY vola tuhle funkci 8x za sebou
+     * z UiTasku, ktery ma watchdog heartbeat s limitem 2,5 s. Pri 200 ms by
+     * osm neuspesnych pokusu delalo 1,6 s cekani — zbytecne blizko limitu.
+     * Kdyz je flash obsazena, radek se proste nevykresli; to je u prohlizece
+     * prijatelne, zablokovany UiTask ne. */
+    if (osMutexAcquire(qspiMutexHandle, 50u) == osOK) {
         ok = w25q_read(W25Q_ERRLOG_BASE + rel, b, sizeof b) && el_unpack(b, out);
         osMutexRelease(qspiMutexHandle);
     }
