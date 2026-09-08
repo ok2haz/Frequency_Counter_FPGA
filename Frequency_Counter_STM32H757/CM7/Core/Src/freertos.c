@@ -650,6 +650,11 @@ void StartDefaultTask(void *argument)
    * ktere log vznikl. */
   errlog_init();
   errlog_boot_record();
+  /* 🔑 Start dobehl az sem, takze pripadny predchozi `Error_Handler` uz neni
+   * aktualni: vynuluj jeho priznak, aby pristi HAL chyba zase smela zkusit
+   * restart. Bez toho by se resetovalo jen JEDNOU ZA ZIVOT desky (BKP prezije
+   * reset) — nalez kritickeho auditu 2026-09-08. */
+  RTC->BKP10R = 0u;
   ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
   /* Infinite loop */
   for(;;)

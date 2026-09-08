@@ -515,7 +515,7 @@ void UartTask_run(void *argument)
 					  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
 					  printf("CM4: %s, stall x%lu\n", g_cm4_alive ? "alive" : "TICHO",
 							 (unsigned long)g_cm4_stall_count);
-					  if (fk) printf("  CRASH %u: PC=%08lX LR=%08lX CFSR=%08lX\n",
+					  if (fk) printf("  CRASH kind %u: PC=%08lX LR=%08lX CFSR=%08lX\n",
 									 (unsigned)fk, (unsigned long)fpc,
 									 (unsigned long)flr, (unsigned long)fcf);
 					  else    printf("  bez zaznamu o faultu\n");
@@ -1929,7 +1929,9 @@ void UartTask_run(void *argument)
 					             (unsigned long)uc[0], (unsigned long)uc[1], (unsigned long)uc[2],
 					             (unsigned long)uc[3], (unsigned long)uc[4], (unsigned long)uc[5],
 					             (unsigned long)uc[6]); }
-					    printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
+					    printf("UI: okno s_view=%u (zmen %lu)\n", (unsigned)g_ui_view,
+					  	       (unsigned long)g_ui_view_changes);
+					  	printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
 					           (unsigned)encoder_div(), (unsigned)bpk, (unsigned)bcap,
 					           bov ? "  <== PRETECENO, konec okna nelze zamerit" : ""); }
 					  /* 🔴 Stav bring-upu displeje. Selhani NENI fatalni (main.c dela
@@ -1991,8 +1993,16 @@ void UartTask_run(void *argument)
 					  	  uint32_t fpc = 0, flr = 0, fcf = 0;
 					  	  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
 					  	  if (fk) {
+					  		/* ⚠️ Drive tu stalo `(fk == 1) ? "HardFault" : "Error_Handler"`,
+					  		 * takze kindy 3-6 (NMI/MemMan/BusFlt/UsgFlt, ktere CM4 hlasi od
+					  		 * te doby, co uz nejsou neme) se vypisovaly jako "Error_Handler".
+					  		 * Chybne pojmenovana diagnostika je horsi nez zadna — posila
+					  		 * cloveka hledat jinam. */
+					  		static const char *const K[7] = { "?", "HardFault", "Error_Handler",
+					  		                                  "NMI", "MemManage", "BusFault",
+					  		                                  "UsageFault" };
 					  		printf("CM4 CRASH: %s PC=%08lX LR=%08lX CFSR=%08lX\n",
-					  		       (fk == 1u) ? "HardFault" : "Error_Handler",
+					  		       K[(fk < 7u) ? fk : 0u],
 					  		       (unsigned long)fpc, (unsigned long)flr, (unsigned long)fcf);
 					  		printf("  addr2line -e CM4/Release/H757_LED_CM4.elf %08lX\n",
 					  		       (unsigned long)fpc);

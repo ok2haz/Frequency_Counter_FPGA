@@ -114,6 +114,38 @@ začne ignorovat — a pak je horší než žádná, protože vytváří dojem p
 
 ---
 
+## Co ani rozšířený audit NEVIDÍ
+
+Doplněno 2026-09-08 po prvním kritickém průchodu. Automat hlásil **0 nálezů**
+a ruční čtení kódu přesto našlo **tři vady** — všechny v čerstvě přidaném kódu:
+
+| nález | proč to nástroj nechytil |
+|---|---|
+| CM4 hlásil kindy 3–6, CM7 uměl pojmenovat jen `1` → zbytek se vypsal jako „Error_Handler" | **konzistence dvou stran** protokolu se staticky neověří |
+| `BKP10R` se nikde nemazal → `Error_Handler` restartoval **jednou za život desky**, ne za pokus o start | **komentář tvrdil něco jiného než kód** |
+| `g_qspi_req_busy` se nastavoval, ale nikdo ho nečetl | kontrola mrtvého kódu umí **jen funkce, ne proměnné** |
+
+**Zbývající slepá místa, se kterými je nutné počítat:**
+
+1. **Nepoužité globální proměnné.** `nm` je nerozliší — proměnná je v obrazu,
+   i když ji nikdo nečte. Spolehlivá kontrola by musela počítat čtení proti
+   zápisům napříč moduly; naivní verze by šuměla, takže **zatím není**.
+2. **Konzistence obou stran rozhraní.** Že CM4 posílá kind 5 a CM7 ho umí
+   pojmenovat, nikdo neověří. Kde to jde, patří tam `_Static_assert`
+   (`sens_valid` masky to tak mají — 14 assertů); u výčtů to takhle nejde.
+3. **Komentář, který lže o chování.** Kontrola pozná jen odkaz na *neexistující*
+   symbol. Že komentář slibuje „jednou za power-cyklus" a kód dělá „jednou za
+   život", pozná **jen člověk při čtení**.
+4. **Souběhy a pořadí.** Že `datalog_set_store` z `syscfg_load` rozjede init ve
+   dvou úlohách, žádný statický nástroj neřekne.
+5. **Vhodnost reakce na chybu.** Že reset při *trvalé* příčině vyrobí smyčku,
+   je vlastnost návrhu, ne kódu.
+
+🔑 **Důsledek pro praxi: „audit = spustit `audit.py`" NESTAČÍ.** Nástroj zvládá
+mechanické třídy (1–4 z tabulky vrstev). Body 5 a 9 — čtení proti invariantu
+a kontrolovaný pokus — jsou pořád ruční práce, a právě ony chytají to nejdražší.
+Nástroj má **zúžit** prostor, ne nahradit přemýšlení.
+
 ## Kadence
 
 | kdy | co |

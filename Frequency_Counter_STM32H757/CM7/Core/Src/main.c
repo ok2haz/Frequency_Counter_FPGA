@@ -682,6 +682,9 @@ void Error_Handler(void)
    * je pro uzivatele horsi nez zamrznuti: nejde precist ani blikaci vzor.
    * Prvni pokus tedy resetuje (casta chyba je prechodna a restart pomuze),
    * druhy uz jen blika donekonecna — a duvod je v crash black-boxu. */
+  /* ⚠️ Priznak se MAZE po uspesnem startu (defaultTask), takze tohle je
+   * "jednou za POKUS O START", ne jednou za zivot desky. Bez toho mazani by
+   * po prvni HAL chybe uz pristroj NIKDY restart nezkusil — a komentar by lhal. */
   if ((RTC->BKP10R & 0xFFFF0000u) != 0xE7A50000u) {
     RTC->BKP10R = 0xE7A50000u | 1u;   /* priznak "uz jsem to jednou zkusil" */
     bootled_fail_n(5u);

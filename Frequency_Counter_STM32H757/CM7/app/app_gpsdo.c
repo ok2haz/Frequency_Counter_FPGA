@@ -166,10 +166,18 @@ static void window_prep(void)
     prim_set_target(&s_fb);
     prim_reset_clip();
 }
+/* Diagnostika oken: bez ni neslo z UART poznat, jestli se okno vubec
+ * OTEVRELO — "po stisku dlazdice se nic nestane" mohlo znamenat jak
+ * neprijaty dotyk, tak okno, ktere se otevre a hned zavre. */
+volatile uint8_t  g_ui_view = 0;
+volatile uint32_t g_ui_view_changes = 0;
+
 static int window_first(uint8_t view_id)
 {
     window_prep();
-    return (s_view != (int)view_id);
+    int f = (s_view != (int)view_id);
+    if (f) { g_ui_view = view_id; g_ui_view_changes++; }
+    return f;
 }
 
 /* Back button on the diagnostics screen. */
@@ -4455,7 +4463,12 @@ static void app_gpsdo_render_datalog(void)
 
     /* Behem mazani (az minuty, blokujici v UartTasku) to musi byt videt — jinak
      * pristroj vypada zaseknute a uzivatel zkousi mackat dal. */
-    if (g_datalog_erase_busy) snprintf(b, sizeof b, "MAZU LOG... (cekej)");
+    /* ⚠️ Pozadavek obsluhuje az UartTask, takze mezi stiskem a ucinkem je
+     * prodleva. Bez teto hlasky vypada tlacitko mrtve — a prave to byl puvodni
+     * symptom, kvuli kteremu se ta prace z UiTasku stehovala pryc. */
+    if (g_qspi_req_busy || g_datalog_store_req != 0xFFu || g_datalog_period_req)
+        snprintf(b, sizeof b, "PRACUJI... (cekej)");
+    else if (g_datalog_erase_busy) snprintf(b, sizeof b, "MAZU LOG... (cekej)");
     else snprintf(b, sizeof b, "%s (%s)", st.ready ? (st.enabled ? "BEZI" : "ZASTAVEN") : "NEDOSTUPNE",
                   st.backend);
     if (first || dchg(c_stav, sizeof c_stav, b))
