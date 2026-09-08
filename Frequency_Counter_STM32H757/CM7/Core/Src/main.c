@@ -287,6 +287,15 @@ g_cm4_absent = 1;
   MX_FATFS_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  /* 🔑 CSS (Clock Security System): pri vypadku krystalu HSE vyvola NMI.
+   * ⚠️ PROC to u tohohle pristroje neni kosmetika: cela casova zakladna stoji
+   * na HSE 25 MHz. Bez CSS by se pri jeho ztrate mlcky prepnulo na HSI a
+   * pristroj by MERIL DAL proti spatne referenci — nejtissi mozna porucha
+   * u kmitoctoveho normalu. S CSS to skonci v `NMI_Handler`, ktery od
+   * 2026-09-08 zapise crash black-box (kind 7) a resetuje, takze `status`
+   * po restartu rekne, co se stalo.
+   * ⚠️ Zapinat AZ po `SystemClock_Config()` — driv neni HSE jeste rozbehnuta. */
+  HAL_RCC_EnableCSS();
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
    * aby pristi boot videl cerstvou pricinu. IWDG1RSTF = watchdog zasahl (system
@@ -640,11 +649,25 @@ void Error_Handler(void)
    * obycejneho watchdogu (`bootled_fail` blika, ale v krabicce to nikdo nevidi
    * a `status` o tom nevi nic). Kind 5 + cislo kroku -> `status` rekne
    * `hal_err@krok N`. Poradi: data prvni, magic naposled. */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu. Kind 5 + cislo kroku -> `status` rekne `hal_err@krok N`.
+   * ⚠️ `bootled_step` pokryva jen BRING-UP; runtime volani z HAL driveru by
+   * ukazalo posledni bootovni krok, coz mate. Proto se do DR5 uklada i
+   * NAVRATOVA ADRESA volajiciho — `addr2line` z ni rekne, KDO Error_Handler
+   * zavolal (38 volajicich v CM7). */
+  PWR->CR1 |= PWR_CR1_DBP;
   RTC->BKP4R = (uint32_t)bootled_step_get();
-  RTC->BKP5R = 0u;
+  RTC->BKP5R = (uint32_t)__builtin_return_address(0);
   RTC->BKP3R = 0xC7A50000u | 5u;   /* RTC_CRASH_MAGIC | kind 5 = Error_Handler */
   __disable_irq();
-  bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
+  /* 🔴 DRIVE TU BYLO `bootled_fail()`, ktere blika DONEKONECNA. Jenze pri
+   * selhani BEHEM INITU jeste nebezi IWDG (`watchdog_init` je az pred
+   * schedulerem), takze pristroj tam uvizl NATRVALO a jedinou zpravou byla
+   * blikajici LED — v krabicce neviditelna. Ted se vzor zopakuje nekolikrat
+   * (aby sel precist) a pak se resetuje: crash black-box uz duvod nese, takze
+   * `status` po restartu rekne `hal_err@krok N` misto ticha. */
+  bootled_fail_n(5u);
+  NVIC_SystemReset();
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

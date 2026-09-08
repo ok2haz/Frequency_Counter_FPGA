@@ -47,6 +47,12 @@ uint8_t bootled_step_get(void);
  *  while(1){}. */
 void bootled_fail(void) __attribute__((noreturn));
 
+/* Jako `bootled_fail`, ale zopakuje vzor jen `repeats`x a VRATI SE.
+ * ⚠️ Vzniklo proto, ze `Error_Handler` blikal donekonecna, a kdyz selhal init
+ * PRED `watchdog_init()`, nemel pristroj jak z toho stavu ven. Volajici po
+ * navratu resetuje; duvod uz je v crash black-boxu. */
+void bootled_fail_n(uint8_t repeats);
+
 /** Jednorazove diagnosticke bliknuti bez zastaveni bootu — pro kroky s
  *  nefatalnim fallbackem (rozjezd displeje bez pripojeneho panelu smi
  *  pokracovat headless). */

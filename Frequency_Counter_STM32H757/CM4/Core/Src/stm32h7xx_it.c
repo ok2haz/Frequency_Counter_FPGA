@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32h7xx_it.h"
+#include "../../../CM7/Core/Inc/ipc_shared.h"   /* g_ipc — crash black-box CM4 (v14) */
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -81,7 +82,36 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-void HardFault_Handler(void)
+/* Zachyti stav faultu do sdilene pameti, aby ho CM7 mohl ohlasit (v14).
+ * ⚠️ CM4 na BKP registry nedosahne (nema povolene hodiny RTC), takze jedina
+ * cesta ven z faultu je IPC blok v SRAM4. */
+void cm4_fault_capture(uint32_t *frame);
+void cm4_fault_capture(uint32_t *frame)
+{
+  g_ipc.cm4.cm4_fault_pc   = frame[6];
+  g_ipc.cm4.cm4_fault_lr   = frame[5];
+  g_ipc.cm4.cm4_fault_cfsr = SCB->CFSR;
+  __DMB();
+  g_ipc.cm4.cm4_fault_kind = 1u;    /* magic naposled: necely zapis = neplatny */
+  __DMB();
+  /* ⚠️ ZAMERNE se NERESETUJE: `NVIC_SystemReset()` z CM4 shodi CELY pristroj
+   * (displej i mereni) — a prave proto je IWDG2 vypnuty. Zustane se stat, CM7
+   * to uvidi jako `stall:CM4` a ted uz i s duvodem. */
+  for (;;) { }
+}
+
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  __asm volatile (
+    "tst  lr, #4            \n"
+    "ite  eq                \n"
+    "mrseq r0, msp          \n"
+    "mrsne r0, psp          \n"
+    "b    cm4_fault_capture \n"
+  );
+}
+
+void HardFault_Handler_unused(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
 

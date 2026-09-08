@@ -30,7 +30,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  13u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  14u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -316,6 +316,24 @@ typedef struct {
      * stejny idiom jako `scpi_selftest_ok` (byval posledni volny `_eth_rsvd` bajt).
      * 0 = jeste nedobehl, 1 = PASS, 2 = FAIL. */
     uint8_t  httpd_selftest_ok;
+
+    /* ── Crash black-box CM4 (v14, 2026-09-08) ─────────────────────────────
+     * 🔴 PROC: `HardFault_Handler` na CM4 byl holy `while(1)` (2 B v obrazu)
+     * a IWDG2 je ZAMERNE vypnuty, protoze jeho reset scope je system-wide.
+     * CM4 tedy po faultu visel do power-cyklu a duvod se ztratil UPLNE —
+     * CM7 videl jen `stall:CM4`. Na BKP registry CM4 nedosahne (nema povolene
+     * hodiny RTC), takze jedina cesta ven je sdilena pamet.
+     * ⚠️ Zapisuje se z FAULT KONTEXTU: zadny HAL, zadne zamky, jen primy zapis
+     * do SRAM4 + `__DMB()`. Seqlock se zamerne nepouziva — v tu chvili uz na
+     * konzistenci s heartbeatem nezalezi a zamrznuty seqlock by byl horsi.
+     * ⚠️ `ipc_init()` na CM7 dela memset CELE struktury vcetne tohoto bloku
+     * (viz varovani u `ipc_cm4_heartbeat`), takze fault DRIV nez CM7 dobehne
+     * init by se ztratil. Prakticky nevadi: init je hotovy do par sekund. */
+    uint32_t cm4_fault_pc;      /* stacknute PC = kde to spadlo (addr2line) */
+    uint32_t cm4_fault_lr;      /* stacknute LR = odkud se skocilo */
+    uint32_t cm4_fault_cfsr;    /* SCB->CFSR */
+    uint8_t  cm4_fault_kind;    /* 0 = zadny, 1 = HardFault, 2 = Error_Handler */
+    uint8_t  cm4_fault_rsvd[3];
 } ipc_cm4_status_t;
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
@@ -456,6 +474,11 @@ uint8_t ipc_cm4_scpi_selftest(void);
 /* Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejny vyznam navratove hodnoty
  * jako `ipc_cm4_scpi_selftest`. */
 uint8_t ipc_cm4_httpd_selftest(void);
+
+/* Crash black-box CM4 (v14). Vraci druh (0 = zadny, 1 = HardFault,
+ * 2 = Error_Handler) a vyplni PC/LR/CFSR. ⚠️ CM4 se po faultu ZAMERNE
+ * neresetuje — `NVIC_SystemReset()` z nej shodi cely pristroj. */
+uint8_t ipc_cm4_fault(uint32_t *pc, uint32_t *lr, uint32_t *cfsr);
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
 
 /* ── CM4 -> CM7: publikace stavu ETH linky (v5, F1). Vola CM4 (dnes natvrdo down,

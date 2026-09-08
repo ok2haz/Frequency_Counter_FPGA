@@ -107,6 +107,16 @@ void bootled_step(uint8_t step)
     s_step = step;
 }
 
+void bootled_fail_n(uint8_t repeats)
+{
+    /* Stejny vzor jako `bootled_fail`, ale konecny pocet opakovani a NAVRAT.
+     * ⚠️ Bezi z `Error_Handler` s vypnutymi preruseními, takze casovani jde
+     * pres DWT (`blink_pattern`), ne pres `HAL_Delay`. */
+    for (uint8_t r = 0; r < repeats; r++) {
+        blink_pattern(s_step);
+    }
+}
+
 uint8_t bootled_step_get(void)
 {
     return s_step;

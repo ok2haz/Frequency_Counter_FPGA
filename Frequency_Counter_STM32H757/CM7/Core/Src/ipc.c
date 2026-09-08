@@ -617,6 +617,16 @@ uint8_t ipc_cm4_scpi_selftest(void)
 }
 
 /* ── Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejna degradace. */
+uint8_t ipc_cm4_fault(uint32_t *pc, uint32_t *lr, uint32_t *cfsr)
+{
+    uint8_t k = g_ipc.cm4.cm4_fault_kind;
+    if (k == 0u) return 0u;
+    if (pc)   *pc   = g_ipc.cm4.cm4_fault_pc;
+    if (lr)   *lr   = g_ipc.cm4.cm4_fault_lr;
+    if (cfsr) *cfsr = g_ipc.cm4.cm4_fault_cfsr;
+    return k;
+}
+
 uint8_t ipc_cm4_httpd_selftest(void)
 {
     if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;

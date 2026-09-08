@@ -485,6 +485,34 @@ void UartTask_run(void *argument)
 					  osDelay(2);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "cm4", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (strcmp(p, "restart") == 0) {
+					  /* 🔴 POZOR: tenhle HAL neumi `HAL_RCCEx_HoldCore/ReleaseCore`,
+					   * takze CM4 NELZE restartovat samostatne. Jedina dostupna cesta
+					   * je RESET CELEHO PRISTROJE — tedy i displeje a mereni.
+					   * Proto je to VYHRADNE rucni prikaz a nic to nedela automaticky:
+					   * pravé kvuli tomuhle je IWDG2 na CM4 zamerne vypnuty (jeho reset
+					   * scope je taky system-wide). */
+					  printf("cm4 restart: CM4 nelze restartovat samostatne (HAL nema\n");
+					  printf("  HoldCore/ReleaseCore) -> provedu RESET CELEHO PRISTROJE za 2 s.\n");
+					  printf("  Zrus odpojenim terminalu, jestli to nechces.\n");
+					  (void)errlog_put(ERRLOG_K_NET, 2u, 0u, 0u, "reboot");
+					  osDelay(2000);
+					  NVIC_SystemReset();
+				  } else {
+					  uint32_t fpc = 0, flr = 0, fcf = 0;
+					  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
+					  printf("CM4: %s, stall x%lu\n", g_cm4_alive ? "alive" : "TICHO",
+							 (unsigned long)g_cm4_stall_count);
+					  if (fk) printf("  CRASH %u: PC=%08lX LR=%08lX CFSR=%08lX\n",
+									 (unsigned)fk, (unsigned long)fpc,
+									 (unsigned long)flr, (unsigned long)fcf);
+					  else    printf("  bez zaznamu o faultu\n");
+					  printf("  `cm4 restart` = reset CELEHO pristroje (samostatny restart HAL neumi)\n");
+				  }
+			  }
 			  else if (strncmp(RxBuffer, "datalog store", 13) == 0) {
 				  const char *p = RxBuffer + 13;
 				  while (*p == ' ') p++;
@@ -1949,6 +1977,17 @@ void UartTask_run(void *argument)
 					  	 * zdrojaku je spatne" od „spravna konstanta se do HW nedostala".
 					  	 * Spravne pro SDCLK 50 MHz a 8192 radku: 64e-3*50e6/8192 - 20 = 371.
 					  	 * ⚠️ Pri zmene SDCLK se to MUSI prepocitat (pri 100 MHz vychazi 761). */
+					  	{ /* 🔴 Crash CM4: dosud se ztratil UPLNE (tichy `while(1)`, IWDG2
+					  	   * vypnuty), CM7 videl jen `stall:CM4`. Od v14 chodi pres IPC. */
+					  	  uint32_t fpc = 0, flr = 0, fcf = 0;
+					  	  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
+					  	  if (fk) {
+					  		printf("CM4 CRASH: %s PC=%08lX LR=%08lX CFSR=%08lX\n",
+					  		       (fk == 1u) ? "HardFault" : "Error_Handler",
+					  		       (unsigned long)fpc, (unsigned long)flr, (unsigned long)fcf);
+					  		printf("  addr2line -e CM4/Release/H757_LED_CM4.elf %08lX\n",
+					  		       (unsigned long)fpc);
+					  	  } }
 					  	if (g_fmc_init_fail)
 					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
 					  		       (unsigned)g_fmc_init_fail);
