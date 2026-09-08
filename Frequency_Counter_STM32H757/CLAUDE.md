@@ -918,6 +918,26 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   (jméno ne `lwip.c` kvůli budoucí CubeMX regeneraci). Detaily → `ETH_BRINGUP_CHECKLIST.md`.
   - 🔴🔴 **`LWIP_RAM_HEAP_POINTER` NEDEFINOVAT** (viz ZLATÁ PRAVIDLA). Kontrola: `nm ... | grep ram_heap`
     → musí být `1002xxxx`, ne `3000xxxx`. Cena: `.bss` CM4 +14 kB.
+  - 🔴🔴 **ADRESA PRO ETH DMA PLATÍ I NA TX BUFFERY, ne jen na deskriptory
+    (nalezeno 2026-09-08 — příčina „link UP, ale žádná IP z DHCP").**
+    ETH DMA je AHB master v D2 a tamní SRAM vidí **výhradně** na systémové
+    adrese `0x30xxxxxx`. Alias `0x10xxxxxx` je pohled **jádra CM4** přes jeho
+    vlastní port sběrnicové matice — žádný jiný master ho nezná.
+    Dosud se hlídaly jen `DscrTab` a `ram_heap`; **TX buffery ne**. A právě ty
+    jsou obyčejné lwIP pbufy z haldy, která **záměrně leží v CM4 aliasu**
+    (`LWIP_RAM_HEAP_POINTER` se nesmí definovat), takže `q->payload` je
+    `0x1002xxxx` a přesně to se zapisovalo do TX deskriptoru.
+    **Změřeno sondou:** TX deskriptor `DES0 = 0x1002845E`, `DES2 = 350 B`
+    (velikost DHCP DISCOVER), `DES3` s `OWN=0` — MAC ho tedy „odbavil", ale
+    `MMC TX_PACKET_COUNT = 0`, takže na drát nešlo **nic**. Link přitom hlásil
+    100 Mbit full, protože autonegociace běží mezi PHY a switchem a MAC do ní
+    nemluví. **Opraveno `eth_dma_addr()` v `low_level_output`.**
+    ⚠️ **RX tím netrpěl:** RX buffery jsou v poolu, který linker dává do
+    `.Rx_PoolSection` na `0x3004xxxx`, tedy už systémové. Proto chyba postihla
+    jen vysílání — a proto ji `ETH(CM4): init OK` ani `NET: UP` neodhalily.
+    ⚠️ **Kontrola nově patří i sem:** `nm CM4/Release/H757_LED_CM4.elf`
+    → `DscrTab` = `30040000`, `memp_memory_RX_POOL_base` = `3004xxxx`,
+    `ram_heap` = `1002xxxx` (ten v aliasu ZŮSTÁVÁ, TX cesta ho překládá).
   - ⚠️ **`ethernetif.c` NESMÍ duplikovat `eth.c`** (deskriptory/`EthHandle`/`HAL_ETH_MspInit` z ST příkladu
     odstraněné) → `eth.c` zůstane netknutý regenerací. MAC z **`heth.Init.MACAddr`**, ne `ETH_MAC_ADDR*`.
     **`ETH_RX_BUFFER_SIZE` = `heth.Init.RxBuffLen` (1536)** (ST příklad má 1000 → DMA za konec). Žádná

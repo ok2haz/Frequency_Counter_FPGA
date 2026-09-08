@@ -718,6 +718,29 @@ Uzavírej podle toho, **co ještě neplatí**, ne podle toho, co se zlepšilo.
 ⚠️ Kontrola: umím po opravě popsat stav jednou větou bez slova „ale"? Když ne,
 oprava je částečná a položka musí zůstat otevřená.
 
+## 6s. Sonda vidí víc než periferie — „přečetl jsem obě adresy" nedokazuje dosažitelnost
+
+2026-09-06 jsem podezíral, že ETH vysílá do **CM4 aliasu** `0x1002xxxx`, kam
+DMA nedosáhne. Ověřoval jsem to tak, že jsem sondou přečetl `0x1002845E`
+i `0x3002845E`, viděl **identický obsah** a stopu zavrhl.
+
+**Byl to falešný důkaz.** Shodný obsah dokazuje jen to, že oba aliasy míří na
+tutéž fyzickou RAM. Neříká **nic** o tom, jestli se tam dostane *jiný master*.
+Ladicí sonda přistupuje přes debug port s vlastním pohledem na sběrnicovou
+matici; ETH DMA je AHB master v doméně D2 a alias `0x10xxxxxx` (privátní pohled
+jádra CM4) **nezná**. O dva dny později se ukázalo, že to byla přesně ta příčina.
+
+**Pravidlo:** dosažitelnost adresy je vlastnost **konkrétního mastera**, ne
+paměti. Když ověřuješ, jestli na adresu dosáhne DMA/periferie:
+- čtení sondou ani CPU **nic nedokazuje** — oba mají jiný pohled,
+- ptej se **toho mastera**: nech ho tam zapsat a ověř výsledek, nebo přečti
+  jeho vlastní čítače (u ETH `MMC TX_PACKET_COUNT`),
+- a v dokumentaci si drž, **který master kterou adresu vidí**.
+
+⚠️ Podpis téhle třídy je zákeřný: periferie hlásí **úspěch**. Deskriptor
+se vrátil s `OWN=0`, tedy „odesláno" — jen to šlo z adresy, kde nebyla data.
+Souvisí s §6m („periferie hlásí úspěch" pokrývá jen její úsek řetězu).
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
