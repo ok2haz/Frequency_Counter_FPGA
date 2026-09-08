@@ -37,6 +37,10 @@ hotovo"; tenhle je **před začátkem a v průběhu**.
    diagnostika, ale střelba (§0).
 2. *„Kde jinde přesně tohle platí?"* — než změnu uzavřu (§6l).
 
+🔑 **Jak OVĚŘOVAT (ne hledat) je v `AUDIT.md`:** co která vrstva chytí a co
+ne, povinné minimum podle druhu změny a proč „build 0 varování + audit 92/0"
+neznamená funkční kód — šest vad v tomhle projektu tím prošlo.
+
 ⚠️ **Cesta k faktům o TOMHLE projektu** (ne k metodě) je `CLAUDE.md`:
 pořadí diagnostických nástrojů podle ceny, tabulka „HW obviněn a byl nevinný"
 a seznam „co už bylo vyloučeno" u mrtvé I2C4.

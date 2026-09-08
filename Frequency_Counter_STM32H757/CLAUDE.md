@@ -15,8 +15,11 @@ nečtu. Metoda (jak vyšetřovat) je v `../SKILL.md`, nahoře.
 3. 🔴 **Po každé změně: `./scripts/build.sh Release CM7` MUSÍ dát 0
    varování a `python tools/audit.py` 92 OK / 0 selhání / 2 soubory s
    varováním** (baseline = generovaný CubeMX kód). Cokoli navíc je regrese.
-4. ⚠️ **Ověř, že změna je v obrazu** — `--gc-sections` zahodí kód,
-   který nikdo nevolá, a build i audit přitom mlčí (§7b).
+4. 🔴 **Ověř, že změna JE V OBRAZU — porovnej velikost `.text` před a po.**
+   Když přidáš kód a obraz neroste, `--gc-sections` ho zahodil a build i audit
+   přitom mlčí. Stalo se **dvakrát** (#106 encoder, errlog +16 B). Postup a
+   zbytek ověřovacích vrstev je v `../AUDIT.md`.
+
 5. ⚠️ **Diagnostiku běžícího přístroje dělej přes UART.** Ladicí sonda
    cíl haltuje a **jeden halt stačí** na mrtvou I2C4 (změřeno kontrolovaným
    pokusem 2026-09-07).
