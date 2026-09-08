@@ -145,6 +145,18 @@ int main(void)
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
+  /* ── HSEM 1: nesahej na sdilena GPIO soucasne s CM7 (#208) ────────────────
+   * MX_GPIO_Init a MX_ETH_Init nize konfiguruji GPIOA/B/C/G, tedy tytez porty,
+   * na kterych si CM7 za behu nastavuje encoder (PA8/PA9, PC13) a FPGA CS
+   * (PB12, soused ETH_TXD1). `HAL_GPIO_Init` je neatomicky read-modify-write,
+   * takze soubeh tise vrati cizi pin — PG8, PG11 a nejspis PB13 uz to stalo
+   * tri kola ladeni. Zamek se drzi pres CELY blok generovanych initu a pousti
+   * se az v `USER CODE BEGIN 2`.
+   * ⚠️ Best-effort (omezene cekani): deadlock pri bootu by byl horsi nez zavod,
+   * ktery navic `gpio_guard_tick()` na CM7 zachyti a opravi. */
+  for (uint32_t hs = 0; hs < 50000u; hs++) {
+    if (HAL_HSEM_FastTake(1u) == HAL_OK) break;
+  }
   /* Otevri okno degradovaneho bring-upu — plati pro VSECHNA MX_*_Init nize
    * (uzavira se v USER CODE 2). Zamerne pro vsechny, ne jen pro ETH: zadna
    * periferie CM4 (pipak, LED, ETH) nestoji za to, aby kvuli ni umrelo cele
@@ -157,6 +169,7 @@ int main(void)
   MX_TIM12_Init();
   MX_ETH_Init();
   /* USER CODE BEGIN 2 */
+  HAL_HSEM_Release(1u, 0);   /* konec bloku chraneneho HSEM 1 (viz SysInit) */
   /* Bring-up dobehl -> `Error_Handler` je od ted zase skutecne fatalni. */
   g_init_nonfatal = 0;
 

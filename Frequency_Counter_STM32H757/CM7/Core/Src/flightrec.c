@@ -571,6 +571,28 @@ bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out)
     return ok;
 }
 
+uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out)
+{
+    if (!out || count == 0u) return 0u;
+    uint32_t total = errlog_count();
+    if (from >= total) return 0u;
+    if (count > total - from) count = total - from;
+
+    uint32_t got = 0;
+    if (osMutexAcquire(qspiMutexHandle, 200u) != osOK) return 0u;
+    for (uint32_t k = 0; k < count; k++) {
+        uint32_t span = W25Q_ERRLOG_SIZE;
+        uint32_t back = (((from + k) + 1u) * ERRLOG_REC_SIZE) % span;
+        uint32_t rel  = ((s_el_write_off - W25Q_ERRLOG_BASE) + span - back) % span;
+        uint8_t b[ERRLOG_REC_SIZE];
+        if (!w25q_read(W25Q_ERRLOG_BASE + rel, b, sizeof b)) break;
+        if (!el_unpack(b, &out[got])) break;
+        got++;
+    }
+    osMutexRelease(qspiMutexHandle);
+    return got;
+}
+
 void errlog_erase(void)
 {
     if (osMutexAcquire(qspiMutexHandle, 2000u) != osOK) return;

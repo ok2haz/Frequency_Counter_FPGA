@@ -92,6 +92,12 @@ void errlog_tick(void);
 /* Cteni od NEJNOVEJSIHO (idx 0 = posledni zapsany). Vraci false na konci. */
 bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out);
 
+/* Davkove cteni `count` zaznamu od `from` (0 = nejnovejsi) POD JEDNIM zamkem.
+ * Vraci pocet skutecne prectenych. ⚠️ Okno CHYBY volalo `errlog_read_back`
+ * osmkrat za sebou, tedy osm cyklu acquire/release na QSPI mutexu z UiTasku,
+ * ktery ma watchdog heartbeat — takhle je to jeden. */
+uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out);
+
 uint32_t errlog_count(void);          /* kolik zaznamu je v logu */
 uint32_t errlog_dropped(void);        /* kolik jich ring zahodil (byl plny) */
 void     errlog_erase(void);          /* ⚠️ destruktivni; jen z UartTasku */

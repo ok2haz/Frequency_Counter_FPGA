@@ -4,6 +4,7 @@
  */
 
 #include "encoder.h"
+#include "gpio_guard.h"   /* gpio_cfg_lock — PA8/PA9/PC13 lezi na portech, kam sahá i CM4 (ETH) */
 #include "main.h"
 #include <string.h>
 
@@ -49,11 +50,15 @@ void encoder_init(void)
     g.Pull      = GPIO_PULLUP;                  /* encoder spina na zem */
     g.Speed     = GPIO_SPEED_FREQ_LOW;
     g.Alternate = GPIO_AF1_TIM1;
+    gpio_cfg_lock();
     HAL_GPIO_Init(GPIOA, &g);
+    gpio_cfg_unlock();
 
     g.Pin = ENC_BTN_PIN; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;
     g.Alternate = 0;
+    gpio_cfg_lock();
     HAL_GPIO_Init(ENC_BTN_PORT, &g);
+    gpio_cfg_unlock();
 
     /* Encoder mode 3 = obe hrany obou kanalu. Filtr ICxF = 15 (max) —
      * mechanicke encodery zakmitavaji a bez filtru by pocitaly nesmysly. */

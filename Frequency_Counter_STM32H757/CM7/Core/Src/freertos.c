@@ -266,6 +266,23 @@ volatile uint32_t g_gpio_guard_fix_sdclk;   /* PG8  FMC_SDCLK */
 volatile uint32_t g_gpio_guard_fix_txen;    /* PG11 ETH_TX_EN */
 volatile uint32_t g_gpio_guard_fix_total;
 
+/* ── Pozadavky na BLOKUJICI operace nad QSPI (obsluhuje UartTask) ───────────
+ * 🔴 PROC: `datalog_init()` (sken hlavy pres desetitisice zaznamu) a
+ * `errlog_erase()` (64 sektoru = jednotky SEKUND) se puvodne volaly PRIMO
+ * z dotykove obsluhy, tedy v **UiTasku** — a ten kresli a ma watchdog
+ * heartbeat s limitem 2,5 s. Projev: tlacitko vypada mrtve („po stisku se nic
+ * nestane"), v horsim pripade IWDG reset.
+ * Reseni je projektovy vzor request/pend: dotyk jen nastavi pozadavek a praci
+ * udela **UartTask**, ktery watchdog nehlida (stejne jako `g_membench_req`
+ * nebo `g_sd_req`).
+ * ⚠️ `calib_save()` v teto tride ZUSTAVA zamerne: je to JEDEN sektor
+ * (50-400 ms, ne sekundy) a okno Kalibrace potrebuje jeho vysledek hned, aby
+ * mohlo ohlasit ULOZENO/CHYBA. Prevod na asynchronni by zmenil chovani UI. */
+volatile uint8_t g_datalog_store_req  = 0xFFu;   /* 0xFF = nic, jinak nove uloziste */
+volatile uint16_t g_datalog_period_req;          /* 0 = nic, jinak nova perioda [s] */
+volatile uint8_t g_errlog_erase_req;             /* 1 = smazat cely errlog */
+volatile uint8_t g_qspi_req_busy;                /* 1 = UartTask prave pracuje (pro UI) */
+
 /* Kontrolovane piny. AF se overuje jen kdyz pin MA byt v AF rezimu. */
 #define PIN_SDCLK   8u
 #define PIN_TXEN    11u
@@ -345,8 +362,37 @@ static int check_pin(GPIO_TypeDef *port, uint32_t pin, uint32_t want_af)
     return 1;
 }
 
+/* ── HSEM 1: serializace konfigurace SDILENYCH GPIO (#208) ──────────────────
+ * 🔴 PRICINA, kterou to resi: `HAL_GPIO_Init` dela nad `MODER`/`AFR`/`OTYPER`
+ * **neatomicke read-modify-write**. Kdyz stejny port konfiguruji obe jadra,
+ * ztraceny zapis tise vrati cizi pin — a stalo se to uz trikrat: PG8
+ * (cerny displej), PG11 (deska bez IP) a nejspis PB13 (link UP, ale DHCP nic).
+ * `gpio_guard_tick()` vadu jen OPRAVUJE; tenhle zamek ji ma nedopustit.
+ *
+ * ⚠️ BEST-EFFORT, ZAMERNE. Ceka se omezene a pri neuspechu se pokracuje BEZ
+ * zamku — deadlock pri bootu by byl horsi nez zavod, ktery navic hlidac
+ * zachyti. Zamek tedy okno zuzuje, negarantuje.
+ * ⚠️ HSEM 0 uz pouziva bootovaci gate CM7<->CM4, proto ID 1.
+ * ⚠️ Nepokryva to, co konfiguruji GENEROVANE `MX_*_Init` na CM7 (jsou mimo
+ * USER CODE, takze je nelze regen-safe obalit) — tam zustava hlidac. */
+#define GPIO_HSEM_ID 1u
+
+void gpio_cfg_lock(void)
+{
+    for (uint32_t i = 0; i < 50000u; i++) {          /* ~jednotky ms, bez blokovani */
+        if (HAL_HSEM_FastTake(GPIO_HSEM_ID) == HAL_OK) return;
+    }
+    /* nezdarilo se -> jedeme dal, hlidac je zachytna sit */
+}
+
+void gpio_cfg_unlock(void)
+{
+    HAL_HSEM_Release(GPIO_HSEM_ID, 0);
+}
+
 void gpio_guard_tick(void)
 {
+    gpio_cfg_lock();
     for (uint32_t i = 0; i < GG_PIN_N; i++) {
         if (!check_pin(GG_PINS[i].port, GG_PINS[i].pin, GG_PINS[i].af)) continue;
 
@@ -361,6 +407,7 @@ void gpio_guard_tick(void)
         (void)errlog_put(ERRLOG_K_GPIO, (uint8_t)i, g_gpio_guard_fix_total,
                          GG_PINS[i].pin, GG_PINS[i].name);
     }
+    gpio_cfg_unlock();
 }
 
 volatile uint32_t g_crash_cfsr = 0;   /* SCB->CFSR z posledniho HardFaultu */

@@ -134,6 +134,47 @@ bool w25q_init(void)
     return true;
 }
 
+/* ── Rychle vycteni datove faze QSPI ────────────────────────────────────────
+ * 🔑 PROC nepouzit `HAL_QSPI_Receive`: ta vybira FIFO **po jednom bajtu**
+ * (`*(__IO uint8_t *)&hqspi->Instance->DR`), takze cteni stoji ~215 ns/B
+ * a strop je ~4,5 MB/s — zmereno `membench` i `qspispeed`. Neni to limit
+ * sbernice: quad @60 MHz uzive ~30 MB/s, uzkym hrdlem je CPU.
+ * Tady se z FIFO bere **32 bitu naraz**, kdykoli je v nem aspon slovo; po
+ * bajtech se dobira jen ocas. Nase buffery jsou 32 B / 512 B / 4 kB, takze
+ * prakticky cely prenos jde po slovech.
+ * ⚠️ Ceka se na `FLEVEL >= 4`, ne na `FTF` — pri vychozim `FTHRES=0` je FTF
+ * nastaveny uz od jednoho bajtu a po slovech by se cetla neplatna data.
+ * ⚠️ Pouziva se JEN v datove ceste (`w25q_read`), ne pro registry (RDID/RDSR):
+ * tam jde o jednotky bajtu a HAL je tam naprosto dostacujici.
+ * ⚠️ Neni to nahrada DMA — to by CPU uvolnilo uplne. Tohle je levna varianta
+ * bez zasahu do `.ioc` (QUADSPI nema v CubeMX prirazeny DMA kanal). */
+static bool qspi_recv_fast(uint8_t *buf, uint32_t len, uint32_t tmo_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    uint32_t i = 0;
+    __IO uint32_t *dr = (__IO uint32_t *)&QUADSPI->DR;
+
+    while (i < len) {
+        uint32_t fl = (QUADSPI->SR & QUADSPI_SR_FLEVEL_Msk) >> QUADSPI_SR_FLEVEL_Pos;
+        if (fl >= 4u && (len - i) >= 4u) {
+            uint32_t w = *dr;
+            buf[i++] = (uint8_t)w;
+            buf[i++] = (uint8_t)(w >> 8);
+            buf[i++] = (uint8_t)(w >> 16);
+            buf[i++] = (uint8_t)(w >> 24);
+            continue;
+        }
+        if (fl >= 1u) { buf[i++] = *(__IO uint8_t *)dr; continue; }
+        if ((QUADSPI->SR & QUADSPI_SR_TCF) && fl == 0u) break;   /* prenos dobehl */
+        if ((HAL_GetTick() - t0) > tmo_ms) return false;
+    }
+    while (!(QUADSPI->SR & QUADSPI_SR_TCF)) {
+        if ((HAL_GetTick() - t0) > tmo_ms) return false;
+    }
+    QUADSPI->FCR = QUADSPI_FCR_CTCF;      /* potvrdit, jinak dalsi prikaz najde BUSY */
+    return (i == len);
+}
+
 bool w25q_read(uint32_t addr, uint8_t *buf, uint32_t len)
 {
     if (!s_ready || buf == NULL || len == 0) return false;
@@ -147,7 +188,11 @@ bool w25q_read(uint32_t addr, uint8_t *buf, uint32_t len)
     if (s_quad) { c.Instruction = CMD_QREAD4B;  c.DataMode = QSPI_DATA_4_LINES; }  /* 4-line */
     else        { c.Instruction = CMD_FASTRD4B; c.DataMode = QSPI_DATA_1_LINE;  }  /* fallback */
     if (HAL_QSPI_Command(&hqspi, &c, QSPI_TMO) != HAL_OK) return false;
-    return HAL_QSPI_Receive(&hqspi, buf, QSPI_TMO) == HAL_OK;
+    /* ⚠️ Po `HAL_QSPI_Command` je HAL ve stavu BUSY_INDIRECT_RX; datovou fazi
+     * si obslouzime sami, takze stav vratime na READY rucne. */
+    bool ok = qspi_recv_fast(buf, len, QSPI_TMO);
+    hqspi.State = HAL_QSPI_STATE_READY;
+    return ok;
 }
 
 /* Zapis do JEDNE stranky (<=256 B, bez preteceni pres hranici stranky). */

@@ -111,6 +111,29 @@ extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
  * znovu, takze z vypisu je videt, CO presne sbernici vratilo k zivotu.
  * ⚠️ Mutex se drzi jen na jeden probe (jako `scanner`), aby touch/TMP117
  * mezi adresami dychaly. Vraci pocet zarizeni, ktera odpovedela. */
+/* Provede blokujici QSPI operace vyzadane z UI. Bezi v UartTasku, ktery
+ * watchdog NEHLIDA — proto se tu smi cekat sekundy. */
+void qspi_req_service(void)
+{
+    if (g_datalog_store_req == 0xFFu && !g_datalog_period_req && !g_errlog_erase_req) return;
+
+    g_qspi_req_busy = 1;
+    if (g_datalog_period_req) {           /* poradi: perioda PRED ulozistem — */
+        datalog_set_period_s(g_datalog_period_req);   /* re-init si ji cte */
+        g_datalog_period_req = 0;
+    }
+    if (g_datalog_store_req != 0xFFu) {
+        datalog_set_store(g_datalog_store_req);       /* dela re-init = sken hlavy */
+        g_datalog_store_req = 0xFFu;
+    }
+    if (g_errlog_erase_req) {
+        errlog_erase();                   /* 64 sektoru = jednotky sekund */
+        g_errlog_erase_req = 0;
+    }
+    g_qspi_req_busy = 0;
+    g_sys_cfg_dirty = 1;
+}
+
 static int uart_i2c4_probe(const char *tag)
 {
 	static const uint8_t A[3] = { 0x38u, 0x45u, 0x48u };
@@ -2014,6 +2037,7 @@ void UartTask_run(void *argument)
     datalog_erase_service();
     /* A stejny duvod potreti: benchmark pameti bezi jednotky sekund (viz membench.h). */
     membench_service();
+    qspi_req_service();   /* blokujici QSPI operace vyzadane z UI (viz freertos_shared.h) */
     osDelay(1);
   }
 }

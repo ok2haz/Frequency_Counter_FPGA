@@ -241,6 +241,15 @@ extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */
 extern volatile uint32_t g_rtos_cpu_pct;   /* zátěž CPU [%] (100 - idle) */
 extern volatile uint32_t g_uptime_s;       /* doba běhu [s] */
 
+/* Pozadavky na blokujici QSPI operace — nastavuje UI (dotyk), provadi UartTask.
+ * ⚠️ Z UiTasku je NESMIS volat primo: kresli a ma watchdog heartbeat (2,5 s),
+ * zatimco `errlog_erase` trva jednotky sekund. Viz `qspi_req_service()`. */
+extern volatile uint8_t  g_datalog_store_req;
+extern volatile uint16_t g_datalog_period_req;
+extern volatile uint8_t  g_errlog_erase_req;
+extern volatile uint8_t  g_qspi_req_busy;
+void qspi_req_service(void);
+
 /* ── Task implementace ─────────────────────────────────────────────────── */
 /* CubeMX generuje StartUartTask/StartI2C4 stuby ve freertos.c; jejich USER CODE
  * tělo jen zavolá tyto implementace -> CubeMX regen build NErozbije (žádná

@@ -3,6 +3,7 @@
  * @brief   SPI2 master driver pro FPGA citac kmitoctu. Viz fpga_freq.h.
  */
 #include "fpga_freq.h"
+#include "gpio_guard.h"   /* gpio_cfg_lock — PB12 sousedi s PB13 = ETH_TXD1 */
 #include "stm32h7xx_hal.h"
 #include "cmsis_os2.h"   /* SPI2 mutex: FpgaTask poll vs UART fpgaraw/fpgaloop */
 #include <string.h>
@@ -208,7 +209,9 @@ void fpga_freq_init(void)
     gi.Mode  = GPIO_MODE_OUTPUT_PP;
     gi.Pull  = GPIO_NOPULL;
     gi.Speed = GPIO_SPEED_FREQ_HIGH;
+    gpio_cfg_lock();
     HAL_GPIO_Init(FPGA_CS_GPIO_Port, &gi);
+    gpio_cfg_unlock();
 
     cs_high();   /* CS idle (deasserted) */
 

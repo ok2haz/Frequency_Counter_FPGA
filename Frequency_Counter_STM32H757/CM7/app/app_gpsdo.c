@@ -3109,9 +3109,11 @@ static void app_gpsdo_render_errlog(void)
                        &ui_font_sans_18, UI_COLOR_OK, PRIM_ALIGN_LEFT);
     }
 
-    for (uint32_t i = 0; i < EL_ROWS && i < total; i++) {
-        errlog_rec_t r;
-        if (!errlog_read_back(i, &r)) break;
+    /* ⚠️ Jedno zamknuti QSPI na vsechny radky misto osmi (UiTask ma heartbeat). */
+    static errlog_rec_t s_el_rows[EL_ROWS];
+    uint32_t nrows = errlog_read_batch(0u, EL_ROWS, s_el_rows);
+    for (uint32_t i = 0; i < nrows; i++) {
+        errlog_rec_t r = s_el_rows[i];
         int y = EL_ROW0 + (int)i * EL_ROW_H;
 
         char tag[ERRLOG_TAG_LEN + 1];
@@ -8827,7 +8829,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 /* ⚠️ 64 sektoru = az nekolik sekund. UiTask ma watchdog heartbeat,
                  * ale `w25q wait_ready` ustupuje scheduleru (od 2026-07-20), takze
                  * to neni spin — heartbeat bezi dal. */
-                errlog_erase();
+                /* ⚠️ NE primo: 64 sektoru = jednotky sekund a UiTask ma
+                 * watchdog heartbeat. Praci udela UartTask. */
+                g_errlog_erase_req = 1;
                 s_el_erase_stage = 0;
             }
             prim_set_target(&s_fb); prim_reset_clip();
@@ -8840,8 +8844,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             tap_flash(DL_STORE_RECT);
             /* ⚠️ `datalog_set_store` dela RE-INIT (najde hlavu na novem mediu),
              * takze to chvili trva — proto hned potom plny redraw okna. */
-            datalog_set_store((uint8_t)((datalog_get_store() + 1u) % 3u));
-            g_sys_cfg_dirty = 1;
+            /* ⚠️ NE primo: `datalog_set_store` dela re-init se skenem hlavy
+             * pres desetitisice zaznamu — v UiTasku to vypadalo jako mrtve
+             * tlacitko. Praci udela UartTask (`qspi_req_service`). */
+            g_datalog_store_req = (uint8_t)((datalog_get_store() + 1u) % 3u);
             prim_set_target(&s_fb); prim_reset_clip();
             app_gpsdo_render_datalog();
             present_now();
@@ -8854,8 +8860,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             int i = dl_int_idx() + (up ? 1 : -1);
             if (i < 0) i = 0;
             if (i >= DL_INT_N) i = DL_INT_N - 1;
-            datalog_set_period_s(DL_INT_PRESETS[i]);
-            g_sys_cfg_dirty = 1;
+            g_datalog_period_req = DL_INT_PRESETS[i];   /* provede UartTask */
             prim_set_target(&s_fb); prim_reset_clip();
             app_gpsdo_render_datalog();   /* prepocita i radek Kapacita (dni) */
             present_now();
