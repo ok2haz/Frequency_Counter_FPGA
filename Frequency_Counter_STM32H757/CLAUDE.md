@@ -931,8 +931,15 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
     (`LWIP_RAM_HEAP_POINTER` se nesmí definovat), takže `q->payload` je
     `0x1002xxxx` a přesně to se zapisovalo do TX deskriptoru.
     **Změřeno sondou:** TX deskriptor `DES0 = 0x1002845E`, `DES2 = 350 B`
-    (velikost DHCP DISCOVER), `DES3` s `OWN=0` — MAC ho tedy „odbavil", ale
-    `MMC TX_PACKET_COUNT = 0`, takže na drát nešlo **nic**. Link přitom hlásil
+    (velikost DHCP DISCOVER), `DES3` s `OWN=0` — MAC ho tedy „odbavil", ale na
+    drát nešlo **nic**.
+    ⚠️ **Oprava vlastního důkazu (2026-09-08):** jako druhý argument jsem tehdy
+    použil `MMC TX_PACKET_COUNT = 0` na adrese `0x40028718`. **Ta adresa byla
+    špatně** — po opravě teče provoz prokazatelně (ping, 139 kB SPA přes HTTP,
+    SCPI/5025) a týž registr **pořád čte nulu**. Ten údaj tedy nikdy nic
+    nedokazoval; platný důkaz je **obsah TX deskriptoru** (`DES0` se změnilo
+    z `0x1002845E` na `0x3002845A`) a funkční DHCP. Poučení = SKILL §7e:
+    ověř nejdřív MĚŘÍTKO, teprve pak jím měř. Link přitom hlásil
     100 Mbit full, protože autonegociace běží mezi PHY a switchem a MAC do ní
     nemluví. **Opraveno `eth_dma_addr()` v `low_level_output`.**
     ⚠️ **RX tím netrpěl:** RX buffery jsou v poolu, který linker dává do
