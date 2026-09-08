@@ -2018,11 +2018,23 @@ void UartTask_run(void *argument)
 					  	             ? "" : "  <== NESOUHLASI, hodnota se do HW nedostala"); }
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
-					  	if (g_gpio_guard_fix_total)
-					  		printf("GPIO HLIDAC: %lu oprav (SDCLK %lu, ETH TX %lu) <== zavod jader o GPIOG\r\n",
-					  		       (unsigned long)g_gpio_guard_fix_total,
-					  		       (unsigned long)g_gpio_guard_fix_sdclk,
-					  		       (unsigned long)g_gpio_guard_fix_txen);
+					  	if (g_gpio_guard_fix_total) {
+					  		printf("GPIO HLIDAC: %lu oprav <== zavod jader o sdileny port\n",
+					  		       (unsigned long)g_gpio_guard_fix_total);
+					  		/* 🔑 Rozpad po pinech: az z nej je videt, jestli jde o JEDEN pin
+					  		 * (zavod dvou konkretnich driveru), nebo o cely port. */
+					  		for (uint32_t gi = 0; gi < gpio_guard_pin_count(); gi++) {
+					  			if (g_gpio_guard_fix_pin[gi])
+					  				printf("    %-7s %u x\n", gpio_guard_pin_name(gi),
+					  				       (unsigned)g_gpio_guard_fix_pin[gi]);
+					  		}
+					  	} else {
+					  		/* ⚠️ Vypisovat i NULU: ticho by znamenalo "nevim", tohle znamena
+					  		 * "zkontrolovano a cisto". Chybejici radek uz jednou zpusobil, ze
+					  		 * jsem povazoval hlidac za nefunkcni. */
+					  		printf("GPIO HLIDAC: 0 oprav (hlida %lu pinu na GPIOA/B/C/G)\n",
+					  		       (unsigned long)gpio_guard_pin_count());
+					  	}
 					  	/* Glow se pri prekroceni stropu masky NEKRESLI a mlci — citac
 					  	 * je jediny zpusob, jak to poznat (viz glow.c). */
 					  	if (g_prim_glow_skipped)
