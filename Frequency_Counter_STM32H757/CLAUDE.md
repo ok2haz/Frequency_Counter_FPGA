@@ -1,5 +1,34 @@
 # H757_LED — projektová poznámka
 
+## ⛔ MECHANICKÁ PRAVIDLA — porušuju je i po přečtení, proto jsou první
+
+Tenhle soubor má 230 kB. Následující pravidla se **nedají odvodit z kódu** a
+porušuju je *mechanicky*, tedy uprostřed jiné práce, kdy si dokument znovu
+nečtu. Metoda (jak vyšetřovat) je v `../SKILL.md`, nahoře.
+
+1. 🔴 **Skripty piš do SOUBORŮ, ne do heredocu tohohle shellu.** `\n`
+   uvnitř řetězce se rozpadne na skutečný konec řádku a UTF-8 se zláme.
+   (2026-09-07: třikrát za jeden den, pokaždé rozbitý C literál.)
+2. 🔴 **Nový `.c` se do buildu nedostane bez `Close → Open Project`.**
+   Implementaci proto dávej do souboru, který už v buildu je; **hlavičky** jde
+   přidávat volně.
+3. 🔴 **Po každé změně: `./scripts/build.sh Release CM7` MUSÍ dát 0
+   varování a `python tools/audit.py` 92 OK / 0 selhání / 2 soubory s
+   varováním** (baseline = generovaný CubeMX kód). Cokoli navíc je regrese.
+4. ⚠️ **Ověř, že změna je v obrazu** — `--gc-sections` zahodí kód,
+   který nikdo nevolá, a build i audit přitom mlčí (§7b).
+5. ⚠️ **Diagnostiku běžícího přístroje dělej přes UART.** Ladicí sonda
+   cíl haltuje a **jeden halt stačí** na mrtvou I2C4 (změřeno kontrolovaným
+   pokusem 2026-09-07).
+6. ⚠️ **`.ps1` piš čistě ASCII** (PowerShell 5.1 bez BOM čte ANSI).
+7. ⚠️ **`%f` v `printf` nevytiskne nic** (nano.specs bez float
+   formátování) a **`fmt_fixed` umí jen 1–3 desetiny**.
+
+🔑 Než začneš vyšetřovat vadu, přečti v tomhle souboru **„NEZNÁŠ
+PŘÍČINU? NEJDŘÍV MĚŘ"** (pořadí nástrojů podle ceny) a tabulku
+**„HW OBVINĚN — A BYL NEVINNÝ"**.
+
+
 ## 📍 MAPA DOKUMENTŮ — co je autorita a co ne (audit 2026-08-30)
 
 🔴 **Autoritativní je JEN tento soubor + `docs/HW_REFERENCE.md` + `../STATUS.md`.**

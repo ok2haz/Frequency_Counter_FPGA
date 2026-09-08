@@ -13,6 +13,43 @@ má konkrétní důkaz, ne obecnou radu.
 
 ---
 
+## ⛔ NEŽ SÁHNEŠ NA KÓD — a znovu během úprav
+
+🔴 **Tenhle blok existuje proto, že jsem pravidla níže porušoval i poté,
+co jsem si je sám zapsal.** Soubor má 35 sekcí v pořadí, které vzniklo přidáváním
+(§6d–6h stojí před §6b, §7f/§7g před §6i) — takže „přečti si SKILL" v praxi
+znamená přečíst 44 kB. Tohle je destilát: **jen ta pravidla, u kterých mám
+doložené OPAKOVANÉ porušení.** Kontrolní seznam na konci souboru je „před
+hotovo"; tenhle je **před začátkem a v průběhu**.
+
+| pravidlo | v čem chybuju | doloženo |
+|---|---|---|
+| **§0** | Neznám příčinu → prvním výstupem je **měření**, ne oprava. Hypotéza je důvod měřit, ne editovat. | 17 položek STATUS |
+| **§6l** | Našel jsem vadu → **prohledat celou TŘÍDU**, ne ten jeden výskyt. | 4× během 2026-09-07/08 |
+| **§6q** | Symptom zmizel ≠ příčina nalezena. N současných změn = **N kandidátů**. | 2× |
+| **§6g** | Uživatel řekne „dřív to šlo" → **bisect je PRVNÍ krok**, ne poslední. | 2× (#141: tři kola hádání) |
+| **§7b** | Build prošel ≠ kód je v obrazu (`--gc-sections` ho zahodí). Ověř **velikost / `nm`**. | 2× (#106, errlog +16 B) |
+| **§6e + §6r** | Jedno čisté měření neruší výpočet; **částečná oprava není oprava** a nesmí se zavřít. | 3× (#72, #138, sonda) |
+| **nástroje** | **Skripty piš do souborů, ne do heredocu tohohle shellu** — `\n` a UTF-8 se rozpadnou. | **3× jen 2026-09-07** |
+
+🔑 **Dvě otázky, které to všechno pokrývají:**
+1. *„Kdyby se moje oprava netrefila, co se tím dozvím?"* — když nic, není to
+   diagnostika, ale střelba (§0).
+2. *„Kde jinde přesně tohle platí?"* — než změnu uzavřu (§6l).
+
+⚠️ **Cesta k faktům o TOMHLE projektu** (ne k metodě) je `CLAUDE.md`:
+pořadí diagnostických nástrojů podle ceny, tabulka „HW obviněn a byl nevinný"
+a seznam „co už bylo vyloučeno" u mrtvé I2C4.
+
+### Rejstřík zbytku (pořadí v souboru je historické, ne logické)
+
+- **Metoda a důkazy:** §0, §2, §6e, §6g, §6h, §6j, §6q, §6r, §7h, §8, §10
+- **Tiché selhání / neplatná měření:** §1, §3, §6f, §6k, §6m, §7b, §7d, §7e
+- **Třídy vad a jejich rozsah:** §6l, §6n, §6d, §6i
+- **Duplicita a dokumentace:** §4, §5, §6p, §11, §12
+- **Vykreslování a UI:** §6, §6b, §6c, §9, §9b
+- **Build a nástroje:** §7, §7c, §7f, §7g
+
 ## 0. Neznámá příčina: prvním výstupem je MĚŘENÍ, ne oprava
 
 🔴 **Tohle je nejdražší chyba v celém projektu a udělal jsem ji nejmíň sedmnáctkrát.**
@@ -631,6 +668,56 @@ navrhl jsem uživateli jako „nový hlavní podezřelý“ něco, co sám vyvr�
 netrpělivost — je to hlášení, že dokumentace neudržela závěr. Reakce není omluva,
 ale **oprava toho dokumentu**, aby se stopa nemohla vrátit potřetí.
 
+## 6q. Zmizelý symptom není nalezená příčina
+
+2026-09-07 jsem poslal naráz **tři** změny do jednoho buildu (oprava závodu
+v datalogu, čtení `SDRTR` do `status`, kontrola návratových hodnot v inicializaci
+SDRAM). Uživatel po flashi napsal „teď už to jde" a zeptal se, **kde přesně byla
+chyba**. Správná odpověď zněla: **nevím a z tohohle běhu to zjistit nejde.**
+
+Tři současné změny znamenají **tři kandidáty, ne odpověď**. A dvě z nich byly
+navíc čistě diagnostické — jedna z nich (kontrola návratových hodnot) je při
+úspěšné sekvenci **funkčně no-op**: když žádný krok neselhal, chová se kód
+naprosto stejně jako předtím. Kdyby tedy `status` hlásil `SDRAM init: SELHAL
+KROK 0`, ta změna je tím pádem **vyloučená jako příčina zlepšení** — a přesto
+by byla nejlákavější k zapsání, protože v ní byla opravená skutečná vada.
+
+**Pravidlo:** než napíšeš „chyba byla X", musíš umět říct **mechanismus** —
+*jak přesně* X vyrábělo ten symptom — a ukázat, že mechanismus v tomhle běhu
+opravdu nastal. Když to neumíš:
+- zapiš to jako **„symptom zmizel, příčina neurčena"** a nech položku otevřenou,
+- pojmenuj **všechny** kandidáty,
+- a doplň **jedno měření**, které mezi nimi rozhodne.
+
+⚠️ Zvlášť u **intermitentních** vad: symptom mohl zmizet sám. „Po změně to
+funguje" je u jevu, který se občas neprojeví, slabší důkaz než u deterministické
+vady — a právě tady je pokušení uzavřít to nejsilnější.
+
+🔑 **Proč na tom záleží víc, než se zdá:** špatně určená příčina v dokumentaci
+je **horší než žádná**, protože zastaví hledání (§6p). Tenhle projekt to má
+zapsané dvakrát — „už víme, že to dělá sonda" a „auto-dim je vyvrácený" —
+a obojí stálo další kolo, až se to muselo odvolávat.
+
+## 6r. Částečná oprava, která změní PROJEV, se nesmí zapsat jako hotová
+
+2026-09-04 se opravil `REFRESH_COUNT` (4,7× mimo spec) a černý displej po
+power-cyklu se změnil na **problikávající**. Zapsalo se to jako *zlepšení* —
+což bylo — a položka se fakticky uzavřela. **Zbytek se ale nikdy nedořešil**,
+takže o tři dny později přišlo hlášení „displej zase bliká" a já ho vyšetřoval
+jako **novou regresi**: prohledal jsem vlastní čerstvé změny, našel v nich jinou
+(skutečnou, ale nesouvisející) vadu a teprve pak jsem si všiml, že přesně tenhle
+stav je v STATUS zapsaný z minula.
+
+**Pravidlo:** když oprava symptom **zmírní**, ale neodstraní, patří do zápisu
+**zbytek**, ne jen úspěch — a to na tomtéž místě a stejně viditelně:
+> „černá → problikávání; **problikávání zůstává nedořešené**, viz #139"
+
+Formulace „je to zlepšení, ne regrese" je pravdivá a zároveň **uspávací**.
+Uzavírej podle toho, **co ještě neplatí**, ne podle toho, co se zlepšilo.
+
+⚠️ Kontrola: umím po opravě popsat stav jednou větou bez slova „ale"? Když ne,
+oprava je částečná a položka musí zůstat otevřená.
+
 ## 8. Odděl, co je ověřené, od toho, co je hypotéza — a podle toho se chovej
 
 Problikávání trendu jsem opravil mechanismem, který jsem uměl odůvodnit, ale
@@ -727,6 +814,8 @@ nerozpadly literály.
 - [ ] Změřil jsem i **kontrolní** variantu — co se stane, když zásah NEudělám? (§6o)
 - [ ] **Znám příčinu, nebo hádám?** Když hádám: navrhl jsem MĚŘENÍ místo opravy? (§0)
 - [ ] Není tahle hypotéza už **vyvrácená**? Prošel jsem seznam vyloučených příčin? (§6p)
+- [ ] Symptom zmizel — umím říct **mechanismus**, nebo mám jen N současných změn? (§6q)
+- [ ] Je oprava **úplná**, nebo jen zmírnila projev a zbytek zůstává? (§6r)
 - [ ] Mám důkaz **za** podezřelým článkem řetězu, ne jen hlášení periferie o sobě? (§6m)
 - [ ] Nepíše do toho registru **druhé jádro**? (§6n)
 - [ ] Znám **strop a jednotku** čítače, ze kterého vyvozuji závěr? (§7h)
