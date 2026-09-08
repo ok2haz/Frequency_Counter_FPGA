@@ -90,6 +90,17 @@ extern TIM_HandleTypeDef htim6;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+  /* 🔴 POJISTKA, ne zivy kod. Tyhle ctyri vektory jsou dnes NEDOSAZITELNE:
+   * `SCB->SHCSR` se nikde nezapisuje (Mem/Bus/Usage tedy eskaluji do
+   * HardFaultu) a CSS neni zapnuty (NMI z vypadku HSE nemuze prijit).
+   * Overeno v obrazu: kazdy z nich mel presne 2 B = jedina instrukce `b .`,
+   * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
+   * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
+   * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
+  RTC->BKP4R = SCB->BFAR;
+  RTC->BKP5R = SCB->CFSR;
+  RTC->BKP3R = 0xC7A50000u | 7u;   /* RTC_CRASH_MAGIC | kind 7 = NMI */
+  NVIC_SystemReset();
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
@@ -105,6 +116,17 @@ void NMI_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  /* 🔴 POJISTKA, ne zivy kod. Tyhle ctyri vektory jsou dnes NEDOSAZITELNE:
+   * `SCB->SHCSR` se nikde nezapisuje (Mem/Bus/Usage tedy eskaluji do
+   * HardFaultu) a CSS neni zapnuty (NMI z vypadku HSE nemuze prijit).
+   * Overeno v obrazu: kazdy z nich mel presne 2 B = jedina instrukce `b .`,
+   * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
+   * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
+   * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
+  RTC->BKP4R = SCB->BFAR;
+  RTC->BKP5R = SCB->CFSR;
+  RTC->BKP3R = 0xC7A50000u | 8u;   /* RTC_CRASH_MAGIC | kind 8 = MemManage */
+  NVIC_SystemReset();
 
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
@@ -120,6 +142,17 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
+  /* 🔴 POJISTKA, ne zivy kod. Tyhle ctyri vektory jsou dnes NEDOSAZITELNE:
+   * `SCB->SHCSR` se nikde nezapisuje (Mem/Bus/Usage tedy eskaluji do
+   * HardFaultu) a CSS neni zapnuty (NMI z vypadku HSE nemuze prijit).
+   * Overeno v obrazu: kazdy z nich mel presne 2 B = jedina instrukce `b .`,
+   * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
+   * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
+   * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
+  RTC->BKP4R = SCB->BFAR;
+  RTC->BKP5R = SCB->CFSR;
+  RTC->BKP3R = 0xC7A50000u | 9u;   /* RTC_CRASH_MAGIC | kind 9 = BusFault */
+  NVIC_SystemReset();
 
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
@@ -135,6 +168,17 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
+  /* 🔴 POJISTKA, ne zivy kod. Tyhle ctyri vektory jsou dnes NEDOSAZITELNE:
+   * `SCB->SHCSR` se nikde nezapisuje (Mem/Bus/Usage tedy eskaluji do
+   * HardFaultu) a CSS neni zapnuty (NMI z vypadku HSE nemuze prijit).
+   * Overeno v obrazu: kazdy z nich mel presne 2 B = jedina instrukce `b .`,
+   * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
+   * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
+   * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
+  RTC->BKP4R = SCB->BFAR;
+  RTC->BKP5R = SCB->CFSR;
+  RTC->BKP3R = 0xC7A50000u | 10u;   /* RTC_CRASH_MAGIC | kind 10 = UsageFault */
+  NVIC_SystemReset();
 
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)

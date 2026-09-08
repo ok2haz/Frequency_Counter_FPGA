@@ -160,6 +160,13 @@ void MX_RTC_Init(void)
       /* configASSERT: DR4 = __LINE__ v tom souboru FreeRTOS, kde assert selhal. */
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "assert:L%lu",
                (unsigned long)(n0 & 0xFFFFu));  /* maskou drzim <= 5 cifer */
+    else if (kind >= 7u && kind <= 10u) {
+      /* Nedosazitelne fault vektory (viz `stm32h7xx_it.c`). Kdyz se tohle
+       * objevi, nekdo povolil `SHCSR` nebo CSS — a je to zajimave zjisteni. */
+      static const char *k7[4] = { "NMI", "MemMan", "BusFlt", "UsgFlt" };
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "%s@%08lX",
+               k7[kind - 7u], (unsigned long)n0);
+    }
     else if (kind == 2u)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
     else
