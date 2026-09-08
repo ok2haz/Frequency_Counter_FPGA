@@ -22,6 +22,7 @@
 #include "stm32h7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "freertos_shared.h"   /* g_css_fail — NMI z CSS jen zaznamena, neresetuje */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,10 +98,16 @@ void NMI_Handler(void)
    * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
    * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
    * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
-  RTC->BKP4R = SCB->BFAR;
-  RTC->BKP5R = SCB->CFSR;
-  RTC->BKP3R = 0xC7A50000u | 7u;   /* RTC_CRASH_MAGIC | kind 7 = NMI */
-  NVIC_SystemReset();
+  /* 🔴 NERESETOVAT. Jediny realny zdroj NMI je tu CSS = ztrata HSE, a ta je
+   * STAVOVA: kdyz trva, reset ji neodstrani a vznikne nekonecna smycka
+   * (presne to se stalo 2026-09-08). HW uz se sam prepnul na HSI, takze
+   * pristroj BEZI DAL — jen proti spatne casove zakladne.
+   * Spravna reakce u kmitoctoveho normalu je proto: prestat merit tise,
+   * zaznamenat to a hlasit nahlas. Priznak cte `status` i SYS pilulka. */
+  if (RCC->CIFR & RCC_CIFR_HSECSSF) {
+    RCC->CICR = RCC_CICR_HSECSSC;      /* potvrdit, jinak by NMI hned znovu */
+    if (g_css_fail < 0xFFFFu) g_css_fail++;
+  }
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */

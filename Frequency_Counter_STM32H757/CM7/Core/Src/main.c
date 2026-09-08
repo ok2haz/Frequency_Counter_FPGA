@@ -295,7 +295,18 @@ g_cm4_absent = 1;
    * 2026-09-08 zapise crash black-box (kind 7) a resetuje, takze `status`
    * po restartu rekne, co se stalo.
    * ⚠️ Zapinat AZ po `SystemClock_Config()` — driv neni HSE jeste rozbehnuta. */
-  HAL_RCC_EnableCSS();
+  /* 🔴 ZAPNUTI CSS ZDE ZPUSOBILO RESET SMYCKU (2026-09-08) — nezapinat.
+   * Zmereno sondou: `s_step` cykloval 0->1, `g_uptime_s` zustal 0 a `BKP3R`
+   * byl trvale 0. Sedelo to na poradi: `MX_RTC_Init()` (o 15 radku vys) crash
+   * black-box precte a SMAZE, hned nato se zapnul CSS, ten okamzite vyhodnotil
+   * vypadek, NMI zapsalo magic a resetovalo — a dokola.
+   * ⚠️ Podstatne: `RCC_CR` ukazuje **HSEBYP=1**, tedy HSE bezi z VNEJSICH
+   * hodin, ne z krystalu. Na teto desce CSS na takovy zdroj reaguje hned.
+   * ⚠️ A hlavne byla spatne i MOJE REAKCE: u kmitoctoveho normalu je reset pri
+   * ztrate casove zakladny nespravny — kdyz stav trva, vyrobi presne tuhle
+   * smycku. Spravne je bezet dal (HW se sam prepne na HSI) a NAHLAS to hlasit,
+   * viz `NMI_Handler`. Zapnout se da vedome pres UART `css on`. */
+  /* HAL_RCC_EnableCSS();  <- viz vyse */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
    * aby pristi boot videl cerstvou pricinu. IWDG1RSTF = watchdog zasahl (system
@@ -666,8 +677,17 @@ void Error_Handler(void)
    * blikajici LED — v krabicce neviditelna. Ted se vzor zopakuje nekolikrat
    * (aby sel precist) a pak se resetuje: crash black-box uz duvod nese, takze
    * `status` po restartu rekne `hal_err@krok N` misto ticha. */
-  bootled_fail_n(5u);
-  NVIC_SystemReset();
+  /* 🔴 RESET NEJVYS JEDNOU ZA POWER-CYKLUS. Puvodne se resetovalo vzdy — jenze
+   * kdyz je pricina TRVALA (vadny init), je z toho nekonecna smycka, ktera
+   * je pro uzivatele horsi nez zamrznuti: nejde precist ani blikaci vzor.
+   * Prvni pokus tedy resetuje (casta chyba je prechodna a restart pomuze),
+   * druhy uz jen blika donekonecna — a duvod je v crash black-boxu. */
+  if ((RTC->BKP10R & 0xFFFF0000u) != 0xE7A50000u) {
+    RTC->BKP10R = 0xE7A50000u | 1u;   /* priznak "uz jsem to jednou zkusil" */
+    bootled_fail_n(5u);
+    NVIC_SystemReset();
+  }
+  bootled_fail();   /* podruhe uz jen blikat: pocet bliknuti = bootled_step */
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

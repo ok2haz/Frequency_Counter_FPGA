@@ -266,6 +266,11 @@ volatile uint32_t g_gpio_guard_fix_sdclk;   /* PG8  FMC_SDCLK */
 volatile uint32_t g_gpio_guard_fix_txen;    /* PG11 ETH_TX_EN */
 volatile uint32_t g_gpio_guard_fix_total;
 
+/* Kolikrat CSS ohlasil ztratu HSE. Nenulove = casova zakladna NEPLATI a vsechna
+ * mereni od te chvile jsou bezcenna, i kdyz pristroj dal bezi (HW se prepnul na
+ * HSI). ⚠️ Zapisuje `NMI_Handler`, proto `volatile` a bez zamku. */
+volatile uint16_t g_css_fail;
+
 /* ── Pozadavky na BLOKUJICI operace nad QSPI (obsluhuje UartTask) ───────────
  * 🔴 PROC: `datalog_init()` (sken hlavy pres desetitisice zaznamu) a
  * `errlog_erase()` (64 sektoru = jednotky SEKUND) se puvodne volaly PRIMO

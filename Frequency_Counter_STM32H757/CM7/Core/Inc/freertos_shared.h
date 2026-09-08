@@ -240,6 +240,8 @@ extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */
 extern volatile uint32_t g_rtos_cpu_pct;   /* zátěž CPU [%] (100 - idle) */
 extern volatile uint32_t g_uptime_s;       /* doba běhu [s] */
+/* Pocet detekci vypadku HSE (CSS). Nenulove = casova zakladna neplati. */
+extern volatile uint16_t g_css_fail;
 
 /* Pozadavky na blokujici QSPI operace — nastavuje UI (dotyk), provadi UartTask.
  * ⚠️ Z UiTasku je NESMIS volat primo: kresli a ma watchdog heartbeat (2,5 s),

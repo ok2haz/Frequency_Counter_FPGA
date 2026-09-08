@@ -485,6 +485,15 @@ void UartTask_run(void *argument)
 					  osDelay(2);
 				  }
 			  }
+			  else if (strcmp(RxBuffer, "css on") == 0) {
+				  /* Vedome zapnuti hlidace HSE. ⚠️ Pri bootu se ZAMERNE nezapina:
+				   * na teto desce (HSEBYP=1, tedy vnejsi hodiny) se spustil hned
+				   * a delal reset smycku. Od 2026-09-08 uz NMI neresetuje, takze
+				   * nejhorsi pripad je hlaseni „CASOVA ZAKLADNA NEPLATI". */
+				  HAL_RCC_EnableCSS();
+				  printf("css: zapnuto (HSECSSON). Vypnout jde jen resetem.\n");
+				  printf("  pri vypadku HSE se objevi radek `HSE:` ve `status`.\n");
+			  }
 			  else if (strncmp(RxBuffer, "cm4", 3) == 0) {
 				  const char *p = RxBuffer + 3;
 				  while (*p == ' ') p++;
@@ -1988,6 +1997,9 @@ void UartTask_run(void *argument)
 					  		printf("  addr2line -e CM4/Release/H757_LED_CM4.elf %08lX\n",
 					  		       (unsigned long)fpc);
 					  	  } }
+					  	if (g_css_fail)
+					  		printf("HSE: CSS hlasil vypadek %ux <== CASOVA ZAKLADNA NEPLATI\n",
+					  		       (unsigned)g_css_fail);
 					  	if (g_fmc_init_fail)
 					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
 					  		       (unsigned)g_fmc_init_fail);
