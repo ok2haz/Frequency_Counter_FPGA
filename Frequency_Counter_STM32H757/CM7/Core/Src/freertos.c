@@ -276,14 +276,56 @@ volatile uint32_t g_gpio_guard_fix_total;
 #define AF_ETH      11u
 
 /* Vrati 1 kdyz musel opravit. */
-static int check_pin(uint32_t pin, uint32_t want_af)
+/* ── Hlidane piny ──────────────────────────────────────────────────────────
+ * 🔴 ROZSIRENO 2026-09-08 z GPIOG na VSECHNY ctyri porty, kde lezi ETH.
+ * Puvodni hlidac koukal jen na GPIOG (PG8 FMC_SDCLK, PG11 TX_EN, PG13 TXD0),
+ * protoze prave tam se dve vady nasly — a to bylo poruseni vlastniho pravidla
+ * „prohledej celou TRIDU" (SKILL §6l). RMII rozhrani je totiz rozprostrene
+ * pres GPIOA/B/C/G a na KAZDEM z tech portu si CM7 neco konfiguruje sam:
+ *   GPIOA: `encoder.c` bere PA8/PA9   -> ohrozeny PA1/PA2/PA7
+ *   GPIOB: `fpga_freq_init` bere PB12, I2C1 PB8/9, USART1 PB14
+ *          -> ohrozeny **PB13 (ETH_TXD1)**, ktery lezi presne mezi nimi
+ *   GPIOC: `encoder.c` bere PC13      -> ohrozeny PC1/PC4/PC5
+ * `HAL_GPIO_Init` dela nad MODER/AFR neatomicke read-modify-write, takze
+ * ztraceny zapis jednoho jadra tise vrati cizi pin (SKILL §6n).
+ * ⚠️ Ztrata AF na TXD1 je obzvlast zakerna: PHY vyjedna link (autonegotiace
+ * bezi mezi PHY a switchem, MAC do ni nemluvi), takze `status` hlasi
+ * „UP 100 Mbit full" a pritom neprojde ani jeden ramec -> „ceka na DHCP".
+ * ⚠️ Vsechny ETH piny jsou na H7 v AF11, FMC v AF12.
+ * ⚠️ Novy pin sdileneho portu patri SEM, ne do vlastni kontroly. */
+static const struct {
+    GPIO_TypeDef *port;
+    uint8_t       pin;
+    uint8_t       af;
+    const char   *name;
+} GG_PINS[] = {
+    { GPIOG,  8u, 12u, "SDCLK"  },
+    { GPIOG, 11u, 11u, "TX_EN"  },
+    { GPIOG, 13u, 11u, "TXD0"   },
+    { GPIOB, 13u, 11u, "TXD1"   },
+    { GPIOA,  1u, 11u, "REFCLK" },
+    { GPIOA,  2u, 11u, "MDIO"   },
+    { GPIOA,  7u, 11u, "CRSDV"  },
+    { GPIOC,  1u, 11u, "MDC"    },
+    { GPIOC,  4u, 11u, "RXD0"   },
+    { GPIOC,  5u, 11u, "RXD1"   },
+};
+#define GG_PIN_N ((uint32_t)(sizeof GG_PINS / sizeof GG_PINS[0]))
+
+/* Kolikrat se KTERY pin musel opravit — bez rozpadu po pinech by neslo poznat,
+ * jestli zavod postihuje jeden pin, nebo cely port. */
+volatile uint16_t g_gpio_guard_fix_pin[GG_PIN_N];
+uint32_t    gpio_guard_pin_count(void)        { return GG_PIN_N; }
+const char *gpio_guard_pin_name(uint32_t i)   { return (i < GG_PIN_N) ? GG_PINS[i].name : "?"; }
+
+static int check_pin(GPIO_TypeDef *port, uint32_t pin, uint32_t want_af)
 {
     uint32_t mshift = pin * 2u;
     uint32_t areg   = pin >> 3u;             /* 0 = piny 0-7, 1 = piny 8-15 */
     uint32_t ashift = (pin & 7u) * 4u;
 
-    uint32_t moder = GPIOG->MODER;
-    uint32_t afr   = GPIOG->AFR[areg];
+    uint32_t moder = port->MODER;
+    uint32_t afr   = port->AFR[areg];
     int bad = 0;
 
     if (((moder >> mshift) & 3u) != GG_MODE_AF) bad = 1;
@@ -294,29 +336,30 @@ static int check_pin(uint32_t pin, uint32_t want_af)
      * pin na okamzik jel v alternativni funkci s CHYBNYM mapovanim. */
     afr &= ~(0xFu << ashift);
     afr |=  (want_af << ashift);
-    GPIOG->AFR[areg] = afr;
+    port->AFR[areg] = afr;
 
     moder &= ~(3u << mshift);
     moder |=  (GG_MODE_AF << mshift);
-    GPIOG->MODER = moder;
+    port->MODER = moder;
 
     return 1;
 }
 
 void gpio_guard_tick(void)
 {
-    /* ⚠️ `PG13` (ETH_TXD0) se ZAMERNE jen kontroluje spolu s TX_EN: pri obou
-     * pozorovanych vadach zustal v poradku, takze zatim neni duvod ho psat
-     * zvlast — kdyby se to zmenilo, pricti ho do stejneho pocitadla. */
-    uint32_t before = g_gpio_guard_fix_total;
-    if (check_pin(PIN_SDCLK, AF_FMC)) { g_gpio_guard_fix_sdclk++; g_gpio_guard_fix_total++; }
-    if (check_pin(PIN_TXEN,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
-    if (check_pin(PIN_TXD0,  AF_ETH)) { g_gpio_guard_fix_txen++;  g_gpio_guard_fix_total++; }
-    /* Zavod jader o GPIOG (#208) do TRVALE historie — z jednoho behu se nepozna,
-     * jestli cetnost roste, a prave to je otazka, kterou #208 potrebuje. */
-    if (g_gpio_guard_fix_total != before) {
-        (void)errlog_put(ERRLOG_K_GPIO, 0u, g_gpio_guard_fix_sdclk,
-                         g_gpio_guard_fix_txen, "GPIOG");
+    for (uint32_t i = 0; i < GG_PIN_N; i++) {
+        if (!check_pin(GG_PINS[i].port, GG_PINS[i].pin, GG_PINS[i].af)) continue;
+
+        if (g_gpio_guard_fix_pin[i] < 0xFFFFu) g_gpio_guard_fix_pin[i]++;
+        g_gpio_guard_fix_total++;
+        /* Puvodni dve pocitadla zustavaji, aby se `status` a historie nerozesly. */
+        if (i == 0u) g_gpio_guard_fix_sdclk++;
+        else         g_gpio_guard_fix_txen++;
+
+        /* Do TRVALE historie — z jednoho behu se nepozna, jestli cetnost roste,
+         * a prave to je otazka, kterou #208 potrebuje. */
+        (void)errlog_put(ERRLOG_K_GPIO, (uint8_t)i, g_gpio_guard_fix_total,
+                         GG_PINS[i].pin, GG_PINS[i].name);
     }
 }
 
