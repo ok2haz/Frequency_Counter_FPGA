@@ -28,7 +28,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0004 | Žádná čekací smyčka bez timeoutu. | grep `while *(!*(.*&` |
 | L-0005 | Komentáře a logika nikdy v jednom commitu. | kontrola diffu před commitem |
 | L-0006 | U konstanty odvozené z hodin uveď zdroj hodin a jeho frekvenci; ověřuj přepočtem z `HAL_RCCEx_GetPeriphCLKFreq()`, ne z komentáře. | checklist G + přepočet při auditu modulu |
-| L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/check_lessons.sh` (cílená kontrola na `CM4/Core/Src/main.c`) |
+| L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/build.sh` — `nm` nad obrazem CM4 (tvrdé selhání) + `scripts/check_lessons.sh` |
 | L-0008 | Komentář o chování při poruše piš až po přečtení celého těla funkce včetně generovaného zbytku, ne jen svého `USER CODE` bloku. | `tools/audit.py` (velikosti fault handlerů) + checklist E |
 | L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
 
@@ -122,9 +122,18 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   Přidána kontrola do `scripts/check_lessons.sh` a bod do `CUBEMX_CHECKLIST.md`.
 - **Pravidlo:** Sdílené PLL a systémové hodiny konfiguruje **výhradně CM7**; CM4 nesmí volat
   `SystemClock_Config()` ani `PeriphCommonClock_Config()`. Po každé regeneraci to ověř.
-- **Detekce:** `scripts/check_lessons.sh` — cílená kontrola na `CM4/Core/Src/main.c`
-  (hledá volání `PeriphCommonClock_Config();`, definici `(void)` ani prototyp nechytá;
-  ověřeno pozitivní i negativní kontrolou vzoru).
+- **Detekce (dvě vrstvy, primární je ta druhá):**
+  1. `scripts/check_lessons.sh` — cílená kontrola zdrojáku `CM4/Core/Src/main.c`
+     (hledá volání `PeriphCommonClock_Config();`, definici `(void)` ani prototyp nechytá).
+     ⚠️ **Slabá vrstva:** skript nikdo nespouští automaticky (není v `build.sh`, `audit.py`
+     ani v git hooku), takže sama o sobě je to detekce jen pro toho, kdo si ji vyžádá.
+  2. **`scripts/build.sh` — `check_cm4_clock_owner()`, tvrdé selhání buildu.** Měří
+     **slinkovaný obraz** (`arm-none-eabi-nm` nad `CM4/<cfg>/H757_LED_CM4.elf`), ne text
+     zdrojáku: dokud funkci nikdo nevolá, linker ji přes `--gc-sections` zahodí a v obrazu
+     není; jakmile volání vznikne, symbol se objeví. Nedá se obejít přeformátováním volání.
+     Součástí je **pozitivní kontrola měřítka** — v obrazu CM7 ten symbol být musí, jinak
+     test hlásí, že už nic neměří. Obě poruchové větve ověřeny podstrčeným obrazem
+     (exit kód 1), běžný build prochází s 0.
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0005
 - **Stav:** aktivní
 

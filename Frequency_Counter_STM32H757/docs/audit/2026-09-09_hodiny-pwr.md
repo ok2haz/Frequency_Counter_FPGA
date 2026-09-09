@@ -229,9 +229,18 @@ dokumentovaná frekvence neodpovídá skutečnosti.
 - **Riziko opravy:** nízké — mění se nevolaný kód. Pozor jen na to, aby úprava nespadla mimo
   bloky `USER CODE` (jinak ji regen smaže a pojistka zmizí právě ve chvíli, kdy je potřeba).
 - **Vztah k lekcím:** `L-0007`.
-- **Stav:** opraveno 2026-09-09 pojistkou (firmware beze změny): kontrola v
-  `scripts/check_lessons.sh` + bod v `CUBEMX_CHECKLIST.md` sekce „RCC / Clock Configuration“.
-  Vzor ověřen pozitivní i negativní kontrolou (volání chytí, definici `(void)` ani prototyp ne).
+- **Stav:** opraveno 2026-09-09 pojistkou (firmware beze změny), ve **dvou vrstvách**:
+  1. `scripts/check_lessons.sh` — grep zdrojáku `CM4/Core/Src/main.c`. Vzor ověřen pozitivní
+     i negativní kontrolou (volání chytí, definici `(void)` ani prototyp ne).
+     ⚠️ Ukázalo se, že tahle vrstva je slabá: skript **nikdo nespouští automaticky** (není
+     v `build.sh`, `audit.py` ani v git hooku), takže by past sklapla tiše.
+  2. **`scripts/build.sh` → `check_cm4_clock_owner()` — tvrdé selhání buildu (exit 1).**
+     Měří **slinkovaný obraz** (`arm-none-eabi-nm` nad `CM4/<cfg>/H757_LED_CM4.elf`), ne text
+     zdrojáku: dokud funkci nikdo nevolá, linker ji přes `--gc-sections` zahodí a v obrazu
+     není. Nedá se obejít přeformátováním volání. Obsahuje **pozitivní kontrolu měřítka** —
+     v obrazu CM7 ten symbol být musí (dnes `0800cb68 T`), jinak test hlásí, že už nic neměří.
+     Ověřeno podstrčeným obrazem: obě poruchové větve vrací exit 1, běžný build 0.
+  + bod v `CUBEMX_CHECKLIST.md` sekce „RCC / Clock Configuration“.
 
 ---
 

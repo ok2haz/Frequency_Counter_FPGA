@@ -27,8 +27,11 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
   za běhu odstavil hodiny SDRAM (FMC z PLL2R) a LTDC (PLL3R) pod rukama CM7. Projev by vypadal
   jako „SDRAM čte samé nuly“ / rozpad obrazu, a hledalo by se to v kreslicím kódu.
   Dnes je funkce v `CM4/Core/Src/main.c` definovaná, ale **nevolaná** — a tak to má zůstat.
-  Kontrola: `scripts/check_lessons.sh` (hlásí `ZAKAZANO: CM4 volá PeriphCommonClock_Config()`),
-  nebo ručně `grep -nE 'PeriphCommonClock_Config *\( *\) *;' CM4/Core/Src/main.c` → musí být prázdné.
+  **Hlídá to `scripts/build.sh` sám** (`check_cm4_clock_owner`): po buildu ověří přes
+  `arm-none-eabi-nm`, že symbol `PeriphCommonClock_Config` **není v obrazu CM4** — dokud
+  ho nikdo nevolá, linker ho zahodí. Při nálezu build **selže** (exit 1). Doplňkově
+  `scripts/check_lessons.sh` (grep zdrojáku) nebo ručně
+  `grep -nE 'PeriphCommonClock_Config *\( *\) *;' CM4/Core/Src/main.c` → musí být prázdné.
 
 ## DSI Host  ⚠️
 - Number of lanes: **1**

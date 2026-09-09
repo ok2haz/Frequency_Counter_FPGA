@@ -120,6 +120,45 @@ build_core() {
     ( cd "$dir" && make "$TARGET" 2>&1 | grep -viE '^arm-none-eabi-gcc "|^Finished building|^ *$' ) || return 1
 }
 
+# Pojistka: sdilena PLL smi konfigurovat jen CM7 (audit F-0005, lekce L-0007).
+#
+# CubeMX generuje `PeriphCommonClock_Config()` do `main.c` OBOU jader a volani
+# vklada do `main()` hned za `SystemClock_Config()`. Na CM7 to tak byt ma; na CM4
+# by to za behu pres `__HAL_RCC_PLL2_DISABLE`/`PLL3_DISABLE` odstavilo hodiny SDRAM
+# (FMC z PLL2R) a LTDC (PLL3R) pod rukama bezicimu CM7. Projevilo by se to jako
+# "SDRAM cte same nuly" / rozpad obrazu a hledalo by se to v kreslicim kodu.
+#
+# ⚠️ PROC se to meri na OBRAZU a ne grepem zdrojaku: `nm` rekne, co se doopravdy
+# slinkovalo. Dokud funkci nikdo nevola, linker ji pres `--gc-sections` zahodi a
+# v obrazu NENI; jakmile volani vznikne, symbol se objevi. Grep zdrojaku proti tomu
+# zavisi na zapisu volani a da se minout preformatovanim.
+# ⚠️ Soucasti je POZITIVNI KONTROLA: v obrazu CM7 ten symbol BYT MUSI. Kdyby tam
+# nebyl, test uz nic nemeri a mlcel by — presne ta trida "zelena, ktera nic
+# neznamena", kterou projekt uz nekolikrat zaplatil.
+check_cm4_clock_owner() {
+    local nm="${GCC_BIN}/arm-none-eabi-nm"
+    local e4="${ROOT}/CM4/${CFG}/H757_LED_CM4.elf"
+    local e7="${ROOT}/CM7/${CFG}/H757_LED_CM7.elf"
+    local sym='PeriphCommonClock_Config'
+    [ -f "$e4" ] || return 0
+
+    if "$nm" "$e4" 2>/dev/null | grep -q "$sym"; then
+        echo ""
+        echo "*** CHYBA: obraz CM4 obsahuje ${sym} -> CM4 konfiguruje sdilena PLL!"
+        echo "    Odstavilo by to hodiny SDRAM a LTDC pod bezicim CM7 (lekce L-0007)."
+        echo "    Najdi volani:  grep -n '${sym} *( *) *;' CM4/Core/Src/main.c"
+        echo "    Na CM4 se ta funkce smi jen GENEROVAT, nikdy VOLAT."
+        return 1
+    fi
+    if [ -f "$e7" ] && ! "$nm" "$e7" 2>/dev/null | grep -q "$sym"; then
+        echo ""
+        echo "*** POZOR: ${sym} chybi i v obrazu CM7 -> tahle kontrola uz nic nemeri."
+        echo "    Overit rucne, jestli CM7 hodiny periferii vubec konfiguruje."
+        return 1
+    fi
+    return 0
+}
+
 rc=0
 case "$WHICH" in
     CM7)  build_core CM7 || rc=1 ;;
@@ -127,6 +166,10 @@ case "$WHICH" in
     BOTH) build_core CM7 || rc=1; build_core CM4 || rc=1 ;;
     *)    echo "CHYBA: druhy argument = CM7 | CM4 | BOTH" >&2; exit 1 ;;
 esac
+
+if [ "$TARGET" = "all" ]; then
+    check_cm4_clock_owner || rc=1
+fi
 
 if [ "$TARGET" = "all" ] && [ "$rc" -eq 0 ]; then
     echo ""
