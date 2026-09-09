@@ -396,7 +396,25 @@ Symptom se objevil hned po té změně, takže se tři kola hledalo ve vykreslov
 co bylo pod nimi.**
 
 **Neuzavřené HW podezření:**
-- ✅ **SDRAM `REFRESH_COUNT` byl 4,7× mimo spec — OPRAVENO 2026-09-04 (1835 → 371).**
+- 🔴 **SDRAM refresh: 1835 → 371 (2026-09-04) NESTAČILO → 175 (2026-09-09).**
+  Po opravě na 371 dal `membench` pořád **1 048 646 chybných bitů** retence (#238)
+  a problikávání trvalo. Důvod: **371 je přesně tREF = 64 ms, tedy datasheetové
+  MAXIMUM — nulová rezerva**, a člen „−20“ kryje jen jednu kolizi s probíhajícím
+  přístupem, ne trvalou zátěž sběrnice. Rezervu na téhle desce ujídá **teplota**
+  (64 ms platí u většiny SDRAM jen do 85 °C; OCXO 45–55 °C v uzavřené krabičce)
+  a **propustnost** (samotné LTDC čte ~44 MB/s ze 16bitové sběrnice na 50 MHz,
+  tedy ~45 % stropu, plus copy-forward DMA2D → žádost o refresh čeká ve frontě).
+  Nová hodnota = tREF 32 ms: `32e-3·50e6/8192 − 20 = 175`, dvojnásobná rezerva.
+  ⚠️ **Častější obnova je bezpečná z principu** (obnovovat se smí kdykoli častěji,
+  nikdy řidčeji); cena je ~1 procentní bod pásma SDRAM. Kdyby to pásmo chybělo
+  LTDC, projeví se to hned a měřitelně: `status` → `LTDC: podtečení FIFO` na flip.
+  ⚠️ **Ladí se za běhu přes UART `sdrtr <n>`** (vzor jako `d2ddt`) — správná
+  hodnota se hledá měřením, ne přeflashováním. Ověření: `bgcheck` = „BEZE ZMĚNY“
+  a `membench` retence 0. ⬜ **Neověřeno na HW.**
+  🔑 Konstanta má **jediný zdroj** `REFRESH_COUNT_EXPECTED` ve `fmc.h`; do
+  2026-09-09 byla ručně zdvojená ve `fmc.c` a `fmc.h` (přesně to, před čím
+  komentář u té druhé varoval).
+- ✅ **Historie: `REFRESH_COUNT` byl 4,7× mimo spec — opraveno 2026-09-04 (1835 → 371).**
   🔴 **Bylo to tam od PRVNÍHO commitu** (`git log -S` na `fmc.c`), ne regrese.
   1835 je z ST příkladu pro jinou desku a obnovilo celou matici za **304 ms** místo 64 ms.
   Správně pro tuhle desku (SDCLK 50 MHz, **8192 řádků**): `64e-3·50e6/8192 − 20 = 371`.

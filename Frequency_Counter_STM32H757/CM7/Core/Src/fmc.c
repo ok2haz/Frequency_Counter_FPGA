@@ -48,8 +48,36 @@
  * ⚠️ Kdyby je osazeny cip 4096-radkovy, byl by spatne `RowBitsNumber` a spravna
  * hodnota by byla 761 — ani tak ne 1835. Potvrdit datasheetem osazene SDRAM.
  * ⚠️ Po teto zmene ZNOVU zmerit `membench`: retence musi byt 0. Teprve pak ma
- * smysl verit verdiktu o prekryvu adres (#72) — rozpadle bunky ho matou. */
-#define REFRESH_COUNT        371
+ * smysl verit verdiktu o prekryvu adres (#72) — rozpadle bunky ho matou.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * 🔴 2026-09-09: 371 NESTACILO. Zvyseno na 32 ms (REFRESH_COUNT_EXPECTED=175).
+ *
+ * Oprava 1835 -> 371 z 2026-09-04 rozpad NEODSTRANILA: `membench` pak dal
+ * **1 048 646 chybnych bitu** retence (STATUS #238) a problikavani trva.
+ * 371 je totiz presne tREF = 64 ms, tedy MAXIMUM povolene datasheetem —
+ * nulova rezerva. Clen "-20" kryje jen JEDNU kolizi s probihajicim pristupem,
+ * ne trvalou zatez sbernice.
+ *
+ * Dve veci tu rezervu na teto desce ujidaji:
+ *   (a) TEPLOTA. 64 ms plati u vetsiny SDRAM jen do 85 °C; tenhle pristroj ma
+ *       v uzavrene krabicce OCXO na 45-55 °C a teploty desky se loguji.
+ *   (b) PROPUSTNOST. Samotne LTDC cte 800x480x2 pri ~58 Hz = ~44 MB/s ze
+ *       16bitove sbernice na 50 MHz (strop ~100 MB/s), tedy ~45 % — a k tomu
+ *       copy-forward DMA2D. Zadost o refresh ceka ve fronte za rozjetym
+ *       burstem, takze SKUTECNA perioda je delsi nez naprogramovana.
+ *
+ * Nova hodnota: tREF 32 ms -> 32e-3 * 50e6 / 8192 - 20 = 175. Dvojnasobna
+ * rezerva proti spec.
+ * ⚠️ CASTEJSI OBNOVA JE BEZPECNA Z PRINCIPU — obnovovat se smi kdykoli castej,
+ * nikdy ne rideji. Cena je pasmo: refresh zabere ~tRFC (~4 takty SDCLK), tedy
+ * 4/371 = 1,1 % -> 4/175 = 2,3 %. Pribyva ~1 procentni bod.
+ * ⚠️ Kdyby to pasmo chybelo LTDC, projevi se to HNED a MERITELNE:
+ * `status` -> `LTDC: podteceni FIFO` na flip. Tam se to hlida.
+ * ⚠️ Ladi se ZA BEHU pres UART `sdrtr <n>` (stejny vzor jako `d2ddt`), takze
+ * spravna hodnota se da najit bez preflashovani.
+ * ⚠️ OVERENI: `bgcheck` musi rict "BEZE ZMENY" a `membench` retence 0. */
+#define REFRESH_COUNT        REFRESH_COUNT_EXPECTED   /* jediny zdroj: fmc.h */
 
 #define SDRAM_TIMEOUT                            ((uint32_t)0xFFFF)
 #define SDRAM_MODEREG_BURST_LENGTH_1             ((uint16_t)0x0000)

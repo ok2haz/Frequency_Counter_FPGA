@@ -52,10 +52,13 @@ void HAL_SDRAM_MspDeInit(SDRAM_HandleTypeDef* hsdram);
  * ⚠️ Lze spustit ZNOVU za behu (UART `sdraminit`) — to je pokus, ktery odlisi
  * chybu v CASOVANI prvni inicializace od jine priciny. Bezi z UartTasku;
  * behem nej muze displej kratce probliknout (LTDC cte tutez SDRAM). */
-/* Ocekavana hodnota `SDRTR` (= `REFRESH_COUNT` z fmc.c). Vystavena, aby ji
- * `status` nemusel opisovat — druha kopie te konstanty by se drive nebo pozdeji
- * rozesla a diagnostika by tise porovnavala proti spatnemu cislu (SKILL §5). */
-#define REFRESH_COUNT_EXPECTED 371
+/* Ocekavana hodnota `SDRTR`. Vystavena, aby ji `status` nemusel opisovat —
+ * druha kopie te konstanty by se drive nebo pozdeji rozesla a diagnostika by
+ * tise porovnavala proti spatnemu cislu (SKILL §5).
+ * ⚠️ 2026-09-09: presne to uz nastalo — `fmc.c` mel VLASTNI `#define
+ * REFRESH_COUNT 371` a tohle byla jeho rucni kopie. Dve mista, jedna pravda.
+ * Od teto zmeny je zdrojem pravdy TENHLE radek a `fmc.c` z nej odvozuje. */
+#define REFRESH_COUNT_EXPECTED 175
 
 uint8_t fmc_sdram_init_sequence(void);
 extern volatile uint8_t  g_fmc_init_fail;   /* 0 = sekvence prosla cela */

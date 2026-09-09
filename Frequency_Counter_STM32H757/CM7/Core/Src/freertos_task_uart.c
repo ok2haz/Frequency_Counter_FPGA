@@ -973,7 +973,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | sdrtr [n]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1768,6 +1768,48 @@ void UartTask_run(void *argument)
 					  }
 					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
 				  }
+			  }
+			  /* 🔴 `sdrtr [n]` — cetnost obnovy SDRAM ZA BEHU (stejny vzor jako `d2ddt`).
+			   *
+			   * PROC runtime: spravna rezerva obnovy se hleda MERENIM, a preflashovat kvuli
+			   * kazde hodnote je drahe. Postup: `sdrtr <n>`, pak `bgcheck` (musi rict BEZE
+			   * ZMENY) a `status` -> `LTDC: podteceni FIFO` (nesmi narust — vic obnovy = min
+			   * pasma pro LTDC). Tak se najde nejvyssi hodnota, ktera jeste drzi.
+			   *
+			   * Vyssi cislo = RIDSI obnova (delsi perioda), nizsi = CASTEJSI.
+			   *   perioda_matice = (n + 20) * 8192 / SDCLK   [s]
+			   * Pri SDCLK 50 MHz: n=371 -> 64 ms (spec maximum), n=175 -> 32 ms (2x rezerva).
+			   * ⚠️ Obnovovat se smi vzdy CASTEJI, nikdy rideji — snizovani `n` je bezpecne
+			   * z principu, zvysovani nad 371 uz je mimo spec.
+			   * ⚠️ Nepersistuje se: po resetu plati `REFRESH_COUNT_EXPECTED` z `fmc.h`. */
+			  else if (strncmp(RxBuffer, "sdrtr", 5) == 0) {
+			  	const char *p = RxBuffer + 5;
+			  	while (*p == ' ') p++;
+			  	if (*p >= '0' && *p <= '9') {
+			  		uint32_t v = 0;
+			  		while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+			  		/* Dolni mez 41 je z RM0399 (nizsi hodnota neni platna), horni 0x1FFF
+			  		 * je sirka pole COUNT. Nad 371 se varuje — to uz je mimo tREF 64 ms. */
+			  		if (v < 41u) v = 41u;
+			  		if (v > 0x1FFFu) v = 0x1FFFu;
+			  		if (HAL_SDRAM_ProgramRefreshRate(&hsdram1, v) != HAL_OK) {
+			  			printf("sdrtr: HAL odmitl zapis\r\n");
+			  		} else {
+			  			uint32_t rd = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+			  			printf("sdrtr: %lu -> potvrzeno %lu  (perioda matice ~%lu ms)\r\n",
+			  			       (unsigned long)v, (unsigned long)rd,
+			  			       (unsigned long)(((rd + 20u) * 8192u) / 50000u));
+			  			if (rd > 371u)
+			  				printf("  ⚠️ nad 371 = perioda > 64 ms = MIMO SPEC, bunky se rozpadnou\r\n");
+			  			printf("  over: `bgcheck` (BEZE ZMENY) a `status` -> LTDC podteceni FIFO\r\n");
+			  		}
+			  	} else {
+			  		uint32_t rd = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+			  		printf("sdrtr: %lu (perioda matice ~%lu ms), ve zdrojaku %u\r\n",
+			  		       (unsigned long)rd, (unsigned long)(((rd + 20u) * 8192u) / 50000u),
+			  		       (unsigned)REFRESH_COUNT_EXPECTED);
+			  		printf("  pouziti: sdrtr <41..8191>, nizsi = CASTEJSI obnova\r\n");
+			  	}
 			  }
 			  #define BGCHK_BLOCKS 120u
 			  /* 🔴 `bgcheck` — RETENCNI TEST PRAVE TE PAMETI, KTERA PRI ROZPADU DELA
