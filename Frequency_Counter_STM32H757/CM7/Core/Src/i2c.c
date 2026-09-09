@@ -139,7 +139,8 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 /* USER CODE BEGIN 1 */
 /* I2C1 na FPGA desce: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71.
  * Piny PB8=SCL, PB9=SDA (AF4). Self-contained (GPIO+clock zde), aby to prezilo
- * CubeMX regeneraci. ~100 kHz (Timing jako I2C4, stejny kernel 120 MHz). */
+ * CubeMX regeneraci. Timing jako I2C4, stejny kernel 120 MHz -> ~50 kHz
+ * (NE 100 kHz, jak tu stalo do 2026-09-09; prepocet je v CLAUDE.md). */
 I2C_HandleTypeDef hi2c1;
 
 void MX_I2C1_Init(void)

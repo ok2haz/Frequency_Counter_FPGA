@@ -1,3 +1,85 @@
+# CLAUDE.md — kontext projektu (audit firmware STM32H757BIT6)
+
+> Tento soubor se načítá automaticky do každého sezení. **Drž ho krátký.**
+> Detaily patří do `docs/` a načítají se až podle potřeby.
+
+## 1. Projekt
+
+- **Název / účel:** GPSDO + dvoukanálový reciproční čítač kmitočtu (přístroj s displejem
+  4,3" 800×480, GPS disciplinací a web/SCPI rozhraním). Interní název projektu `H757_LED`.
+  CM7 = hlavní logika (FreeRTOS, displej přes DSI→TC358762, měření, senzory, úložiště),
+  CM4 = konektivita (ETH/lwIP/SCPI/web). Front-end měření je na samostatné FPGA desce
+  (Gowin GW1NR-9) připojené přes SPI2.
+- **MCU:** STM32H757BIT6 — dual-core Cortex-M7 (do 480 MHz) + Cortex-M4 (do 240 MHz),
+  2 MB Flash (2 banky), 1 MB SRAM v doménách D1/D2/D3, LQFP208/TFBGA
+- **Revize silikonu:** rev V — **ODVOZENO, HYPOTÉZA (NEMĚŘENO).** Firmware běží na
+  SYSCLK 480 MHz při VOS0, což rev Y (strop 400 MHz) neumožňuje → implikuje rev V nebo
+  novější. Ověření na HW: `HAL_GetREVID()` (0x1003 = rev Y, 0x2003 = rev V) nebo
+  DBGMCU_IDCODE `0x5C001000`, bity [31:16]. Boot kód aplikuje rev-Y AXI SRAM workaround
+  podmíněně: `Common/Src/system_stm32h7xx_dualcore_boot_cm4_cm7.c:258`.
+- **Napájení:** SMPS — `PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO` (`CM7/Core/Src/main.c:482`,
+  `.ioc RCC.SupplySource`), regulátor VOS0 = `PWR_REGULATOR_VOLTAGE_SCALE0`
+  (`main.c:486`, `.ioc:898`). Chybná konfigurace = zařízení nenaběhne po resetu.
+- **RTOS:** FreeRTOS V10.6.2 (kernel) + CMSIS-RTOS v2 wrapper (`osThreadNew`/`osDelay`).
+- **Generátor kódu:** CubeMX + `H757_LED.ioc` (regen přes „Generate Code").
+- **Toolchain:** arm-none-eabi-gcc **14.3** (STM32CubeIDE 2.1.0; na disku je i 13.3,
+  audit vybírá nejnovější). Build přes ST `make` + jejich gcc; toolchain NENÍ v PATH,
+  cesty se hledají globem.
+
+## 2. Příkazy
+
+```bash
+# build (makefily musí poprvé vyrobit CubeIDE; skript je pak negeneruje)
+./scripts/build.sh Release CM7        # též: Release BOTH | Release CM4 | Debug ...
+# statická analýza (92 souborů obou jader, GCC 14.3; baseline 92 OK / 0 selhání / 2 s varováním)
+python tools/audit.py
+# testy: běží NA CÍLI přes UART (nejsou host-side)
+#   UART příkaz `selftest`  ->  "SELFTEST: 16/16 PASS"
+#   web SPA (po každé editaci): python tools/spa/check.py --build
+```
+
+## 3. Závazná pravidla (platí bez výjimky)
+
+1. **Nejdřív čti `docs/LESSONS.md`.** Před každou opravou. Chyba, která už tam je,
+   se nesmí zavést znovu ani v jiné podobě.
+2. **Po každé opravě přidej záznam** do `docs/LESSONS.md` (šablona `docs/templates/LESSON.md`).
+3. **Logika a komentáře nikdy v jednom commitu.** Buď `fix:` (mění chování),
+   nebo `docs:` (mění jen komentáře). Nikdy oboje.
+4. **Fáze auditu ≠ fáze opravy.** Ve fázi auditu se kód *nemění*, jen se píší nálezy
+   do `docs/audit/`. Opravy až po odsouhlasení uživatelem.
+5. **Žádné tvrzení bez důkazu.** Každý nález musí mít odkaz `soubor.c:řádek`.
+   Co nelze dokázat ze kódu, se označí jako `HYPOTÉZA` a uvede se, jak ji ověřit na HW.
+6. **Nesahej na** `.ioc`, generované bloky mimo `/* USER CODE BEGIN … END */`,
+   linker skripty a startup soubory bez explicitního souhlasu.
+7. **Neodstraňuj** `volatile`, `__DMB()/__DSB()/__ISB()`, MPU a cache operace
+   (`SCB_CleanDCache_by_Addr`, …), HSEM zámky — i když se zdají zbytečné.
+   Pokud si myslíš, že jsou zbytečné, napiš nález, neupravuj.
+8. **Komentáře česky**, UTF-8, bez emoji, styl podle `docs/STYLE_CZ.md`.
+9. **Nikdy `git commit --amend`, `git push --force`, `git checkout .`** bez vyžádání.
+10. Rozsah jednoho sezení = **jeden modul**. Na konci aktualizuj `docs/AUDIT_STATUS.md`.
+
+## 4. Mapa dokumentace
+
+| Soubor | Kdy ho načíst |
+|---|---|
+| `docs/AUDIT_PLAYBOOK.md` | Vždy na začátku auditu — proces, fáze, severity, formát nálezu |
+| `docs/CHECKLIST_STM32H7.md` | Při auditu kteréhokoli modulu — HW-specifické pasti |
+| `docs/STYLE_CZ.md` | Před psaním/úpravou komentářů a kódu |
+| `docs/LESSONS.md` | Před opravou a po opravě (povinné) |
+| `docs/ARCHITECTURE.md` | Při orientaci v projektu; průběžně doplňuj doloženými fakty |
+| `docs/AUDIT_STATUS.md` | Na začátku a konci sezení — co je hotové, kde pokračovat |
+| `docs/audit/*.md` | Nálezy z jednotlivých běhů (výstup, ne vstup) |
+
+## 5. Jak pracovat (zkráceně)
+
+1. Načti `AUDIT_STATUS.md` → vyber první modul se stavem `nezačato`.
+2. Načti `AUDIT_PLAYBOOK.md` + `CHECKLIST_STM32H7.md` + `LESSONS.md`.
+3. Přečti modul celý (i hlavičky, i konfiguraci hodin/DMA/MPU, které se ho týkají).
+4. Zapiš nálezy do `docs/audit/RRRR-MM-DD_<modul>.md`. **Bez editace kódu.**
+5. Aktualizuj `AUDIT_STATUS.md` a shrň uživateli 5 nejzávažnějších nálezů.
+
+---
+
 # H757_LED — projektová poznámka
 
 ## ⛔ MECHANICKÁ PRAVIDLA — porušuju je i po přečtení, proto jsou první
@@ -80,7 +162,7 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 ## ⚡ ZLATÁ PRAVIDLA (poruš = rozbiješ desku / boot / měření)
 
 **HW konfigurace a regen (CubeMX „Generate Code"):**
-- **I2C4 i I2C1 Timing = `0x70303AEE`** (~100 kHz) — ručně NEPŘEPOČÍTÁVAT. Špatná 400 kHz hodnota → tmavý displej + zaseklá ATTINY na sběrnici (jen power-cycle desky i panelu pomůže).
+- **I2C4 i I2C1 Timing = `0x70303AEE`** (**~50 kHz**, ne 100 — přepočet níže) — ručně NEPŘEPOČÍTÁVAT. Špatná 400 kHz hodnota → tmavý displej + zaseklá ATTINY na sběrnici (jen power-cycle desky i panelu pomůže).
 - **DSI:** `VidCfg.Mode==DSI_VID_MODE_BURST` + `ColorCoding==DSI_RGB565`. Jinak per-řádek shear / rotace barev. Při regresi displeje sem koukej první.
 - **PB12 (FPGA CS) default Output Level = High** v `gpio.c` — jinak STM drží CS LOW během config loadu FPGA z flash → GW1NR-9 nenaběhne (`RX0:FF`).
 - **`HSE_VALUE` = 25000000** v obou `hal_conf.h`. FW **nenaběhne** na desce s 10 MHz HSE. `fpga_freq_init` z toho počítá SPI prescaler.
@@ -335,7 +417,19 @@ Displej funguje s **DSI BURST mode + RGB565**. Hard-won, jde to PROTI Linux rpi-
 
 Pokud displej regreduje (shear / špatné barvy), zkontroluj NEJDŘÍV `dsihost.c`: `VidCfg.Mode==DSI_VID_MODE_BURST` a `ColorCoding==DSI_RGB565`.
 
-**⚠️ I2C4 timing NEMĚNIT ručně.** Panel power + backlight jdou přes ATTINY @ 0x45 na I2C4. Ručně spočítaná 400 kHz hodnota (`0x10903163`) na HW nefungovala → probe panelu selhal → **úplně tmavý displej**, a navíc zasekla ATTINY na sběrnici (drží SDA) → nepomohl reflash, jen **úplný power-cycle desky i panelu**. Funkční hodnota = `0x70303AEE` (~100 kHz). Vyšší rychlost jen přes CubeMX Fast Mode + ověřit SCL osciloskopem.
+**⚠️ I2C4 timing NEMĚNIT ručně.** Panel power + backlight jdou přes ATTINY @ 0x45 na I2C4. Ručně spočítaná 400 kHz hodnota (`0x10903163`) na HW nefungovala → probe panelu selhal → **úplně tmavý displej**, a navíc zasekla ATTINY na sběrnici (drží SDA) → nepomohl reflash, jen **úplný power-cycle desky i panelu**. Funkční hodnota = `0x70303AEE`. Vyšší rychlost jen přes CubeMX Fast Mode + ověřit SCL osciloskopem.
+
+🔴 **Ta hodnota je ~50 kHz, ne ~100 kHz** (opraveno 2026-09-09, audit F-0004 — do té doby to
+tady i v `CUBEMX_CHECKLIST.md` stálo špatně). Přepočet: kernel obou sběrnic je **120 MHz**
+(I2C4 = `D3PCLK1`, I2C1 = `D2PCLK1`, obě APB děličky `/2` z HCLK 240 MHz). Rozklad
+`0x70303AEE`: PRESC=7, SCLDEL=3, SDADEL=0, SCLH=0x3A=58, SCLL=0xEE=238 →
+t(PRESC)=8/120 MHz=66,7 ns → t(SCLL)=239×66,7 ns=15,93 µs, t(SCLH)=59×66,7 ns=3,93 µs →
+perioda 19,87 µs = **50,3 kHz**. Pro 100 kHz by ta hodnota potřebovala kernel ~240 MHz, což je
+přesně HCLK — hodnota nejspíš vznikla zadáním HCLK místo PCLK do kalkulátoru.
+⚠️ **Důsledek, se kterým se musí počítat:** každá transakce trvá 2× dýl, než se dosud psalo —
+povinné čtení celého 31B rámce FT5x06 vyjde na ~6 ms, ne ~3 ms. To je těsně pod pravidlem
+„žádný spin > ~10 ms“ v hlídaných taskech. **Hodnotu registru přesto neměnit** — je funkční
+a incident výše platí; zrychlení je samostatné rozhodnutí, které začíná měřením na osciloskopu.
 
 ## Klíčové proměnné
 
@@ -1392,7 +1486,7 @@ Card-detect PE3, LOW = vloženo. Load-bearing:
 - **Plánované dál:** rekonstrukce Allanovy pyramidy z logu po bootu; export přes USB CDC; memory-mapped XIP.
 
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
-Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, ~100 kHz, Timing 0x70303AEE jako I2C4).
+Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, **~50 kHz**, Timing 0x70303AEE jako I2C4 — viz přepočet u „I2C4 timing NEMĚNIT ručně“).
 `MX_I2C1_Init` je **self-contained v i2c.c USER CODE 1** (GPIO+clock tam, regen-safe) — voláno v main.c USER CODE 2 před schedulerem. Mutex `i2c1MutexHandle`.
 - **TMP117** @ 0x49, 0x4A (čteno v SensorsTask 2×/s). **⚠️ 0x4A zatím není na sběrnici** → vrací NACK (rychlá chyba `sensor_fail`, červený `!` na diagu) — to je očekávané, NEodstraňovat. 0x49 osazený.
   - ✅ **Vyjasněno 2026-08-30:** 0x4A **je `TMP117` ve vstupním modulu** (`ADD0 → SDA`, smluvní I²C mapa nové desky) — objeví se, jakmile bude modul připojen. Dřívější „NENÍ osazený, ať se připojí až bude" byl správný odhad; teď je to zapsané. Labelovat ho jako **teplota modulu**, ne „FPGA board" (dnešní popisek v diagnostice).

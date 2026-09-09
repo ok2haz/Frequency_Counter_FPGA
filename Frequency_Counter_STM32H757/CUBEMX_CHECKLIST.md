@@ -49,12 +49,14 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - Piny: MOSI=**PB15**, SCK=**PI1**, MISO=**PI2**
 
 ## I2C4 (panel ATTINY 0x45, TMP117 0x48, FT5x06 0x38)
-- Speed: **100 kHz** (Timing 0x70303AEE) — funkční. 400 kHz jen přes CubeMX FM + ověřit scope!
+- Speed: Timing **0x70303AEE** — funkční, **NEPŘEPOČÍTÁVAT**. ⚠️ Skutečná rychlost je **~50 kHz**,
+  ne 100 kHz, jak tu stálo do 2026-09-09 (kernel `D3PCLK1` = 120 MHz; přepočet v CLAUDE.md, audit F-0004).
+  400 kHz jen přes CubeMX FM + ověřit scope!
 - 7-bit; piny SCL=**PH11**, SDA=**PH12**
 - **NEPOVOLOVAT I2C4 NVIC interrupt v IOC.** Dotek (FT5x06) i senzory se čtou **pollingem** pod `i2c4MutexHandle`. (Pozn.: dřívější IT infrastruktura pro touch byla odstraněna — IOC nech bez I2C4 NVIC, jinak vznikne mrtvý/duplicitní handler.)
 
 ## I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356 0x70) — MIMO IOC
-- **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (~100 kHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
+- **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (**~50 kHz**, kernel `D2PCLK1` = 120 MHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
 - ⚠️ **Rezervuj PB8/PB9 v IOC** (jako GPIO, Locked), ať je CubeMX nepřiřadí jinam při regeneraci → jinak tichý pin-konflikt. Mutex `i2c1MutexHandle`.
 
 ## USART1 (UART pro GPS; printf-konzole je na USB CDC, viz níže)
