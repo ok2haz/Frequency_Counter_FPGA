@@ -102,6 +102,20 @@ nečtu. Metoda (jak vyšetřovat) je v `../SKILL.md`, nahoře.
    přitom mlčí. Stalo se **dvakrát** (#106 encoder, errlog +16 B). Postup a
    zbytek ověřovacích vrstev je v `../AUDIT.md`.
 
+4b. 🔴 **Body 3 a 4 dokazují jen to, že se kód přeložil a je v obrazu — NE že funguje.**
+   Změna firmwaru je „hotová" až po běhu **na desce a po POWER-CYKLU**, ne po flashi.
+   Studený start je jiný stav: ATTINY nabíhá pomalu (probe má 10 pokusů po 100 ms),
+   SDRAM startuje s náhodným obsahem a **degradovanou retencí** (#238), jádra závodí
+   o sdílená GPIO (#219/#208), FPGA teprve načítá config. Do té doby piš
+   **`⬜ neověřeno na HW`**. (Zapsáno 2026-09-09: opravy z auditu hodiny/PWR se
+   prohlásily za ověřené na základě buildu, a hned poté přišlo hlášení o displeji
+   po power-cyklu — které se nakonec ukázalo jako známé #141/#237/#238.)
+
+4c. ⚠️ **Nesahej bezdůvodně na časování bootu.** `printf`, `HAL_Delay` nebo blokující
+   volání vložené do `main()` **před** bring-up displeje posouvá výše zmíněné závody.
+   Novou diagnostiku, která nemusí běžet brzy, dávej **až za `display_skip:`**
+   (tak je od 2026-09-09 umístěná `pwrclk_check()`).
+
 5. ⚠️ **Diagnostiku běžícího přístroje dělej přes UART.** Ladicí sonda
    cíl haltuje a **jeden halt stačí** na mrtvou I2C4 (změřeno kontrolovaným
    pokusem 2026-09-07).

@@ -31,6 +31,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/build.sh` — `nm` nad obrazem CM4 (tvrdé selhání) + `scripts/check_lessons.sh` |
 | L-0008 | Komentář o chování při poruše piš až po přečtení celého těla funkce včetně generovaného zbytku, ne jen svého `USER CODE` bloku. | `tools/audit.py` (velikosti fault handlerů) + checklist E |
 | L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
+| L-0010 | Změna firmwaru je hotová až po běhu na desce a po POWER-CYKLU; do té doby `⬜ neověřeno na HW`. Diagnostiku nedávej do bootu před bring-up displeje. | `AUDIT_STATUS.md` (stav ověření u každé opravy) + CLAUDE.md bod 4b/4c |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -187,7 +188,35 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0001
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0010, L-0011, … -->
+### L-0010 — „Přeloženo a v obrazu“ se vydávalo za „ověřeno“; ověření po flashi není ověření
+
+- **Datum:** 2026-09-09
+- **Oblast:** metoda ověřování / náběh
+- **Symptom:** Opravy z auditu modulu hodiny/PWR (F-0001, F-0002) byly prohlášené za ověřené
+  na základě řetězce „build 0 varování + `tools/audit.py` v baseline + povyrostlý `.text`“.
+  Hned po naflashování přišlo hlášení, že **po power-cyklu se rozbije zobrazení displeje**,
+  a nebylo čím rychle rozhodnout, jestli to je regrese.
+- **Příčina:** Ten řetězec dokazuje jen to, že se změna přeložila a dostala do obrazu.
+  O chování na desce neříká nic — a **studený start je jiný stav než reset po flashi**:
+  ATTINY nabíhá vlastním tempem, SDRAM startuje s náhodným obsahem a degradovanou retencí
+  (STATUS #238), obě jádra závodí o sdílená GPIO (#219/#208), FPGA teprve načítá config.
+  Druhá polovina příčiny: nová diagnostika (`pwrclk_check()` se dvěma `printf`) byla vložená
+  do `main()` **před** bring-up displeje, tedy přesně tam, kde se to časování nemá měnit.
+- **Oprava:** Volání přesunuto **za `display_skip:`**, takže bootovní cesta až včetně
+  bring-upu displeje je zase bajt za bajtem shodná se stavem před auditem (`git diff` proti
+  základu ukazuje v `main.c` **0 smazaných řádků** a žádný přidaný před bring-upem).
+  Do `.claude/commands/audit-modul.md` a `CLAUDE.md` doplněna povinnost ověřit power-cyklem.
+  ⚠️ Samotná vada displeje se tím **neopravuje** — je to zdokumentované, otevřené
+  #141 / #237 / #238 (retence SDRAM po studeném startu), ne regrese.
+- **Pravidlo:** Změna firmwaru je hotová až po běhu na desce **a po power-cyklu**; do té doby
+  se do `AUDIT_STATUS.md` píše `⬜ neověřeno na HW`. A diagnostiku, která nemusí běžet brzy,
+  nedávej do bootovní cesty před bring-up displeje.
+- **Detekce:** `AUDIT_STATUS.md` — každá oprava firmwaru musí mít explicitní stav ověření.
+  Bod 4b/4c v mechanických pravidlech `CLAUDE.md` + oddíl „fáze F5“ v `audit-modul.md`.
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřování“
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0011, L-0012, … -->
 
 ---
 

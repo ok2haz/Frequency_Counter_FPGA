@@ -317,6 +317,54 @@ dokumentovaná frekvence neodpovídá skutečnosti.
 
 ---
 
+## Incident při ověřování (2026-09-09, po naflashování oprav)
+
+Uživatel po naflashování nahlásil: **„po flashi to funguje, ale po power resetu se rozbije
+zobrazení displeje“** a zeptal se, jestli audit nerozhodil hodiny. Zápis sem patří proto,
+že odpověď má být dohledatelná i příště.
+
+**Hodiny rozhozené nejsou — doloženo, ne odhadnuto.** V celém diffu oprav
+(`git diff 8521130..HEAD -- '*.c' '*.h'`) jsou **jediné čtyři zápisy do registrů**, a všechny
+leží uvnitř větve `if (RCC->CIFR & RCC_CIFR_HSECSSF)` v `NMI_Handler` — tedy na cestě, která je
+bez `css on` nedosažitelná. Do `RCC`, `PWR->CR3/D3CR/CSR1`, `SYSCFG->PWRCR` ani `FLASH->ACR`
+se v opravách **jen čte** (`pwrclk_check()`). Nic nepřenastavuje PLL, děličky, VOS ani latenci.
+
+**Druhá vyloučená hypotéza:** růst `.bss` o 32 B (4 nové globály). RAM_D1 má 512 kB, `.bss`
+končí na `0x2402C408` a `_estack` je `0x24080000` → **~343 kB volných**. Kolize stacku s `.bss`
+tedy nehrozí ani řádově.
+
+**Symptom je známý a otevřený, ne nový.** Tentýž projev je v `STATUS.md` popsaný dvakrát,
+a to **před** tímto auditem:
+- **#141 (2026-09-04)** — proveden **bisect**: strom vrácen na `cfd8cf5`, uživatel flashnul,
+  výsledek *„po flashi OK, ale power-cyklus → ČERNÝ DISPLEJ“*. Závěr tehdy: **není to regrese.**
+- **#237 / #238 (2026-09-07)** — tentýž symptom po power-cyklu, s měřením: `membench` hlásí
+  **1 048 646 chybných bitů retence** po studeném startu; první chybný odečet
+  `@0xC040F7E0: čekáno FFFFFFFF, přečteno FFFBFFFB` → **degradace buněk SDRAM**, ne mrtvý takt.
+  Framebuffery i `bg_cache` leží v SDRAM, takže se to projeví právě takhle. #238 zároveň
+  vylučuje měřením: závod v datalogu (#236), ztrátu konfigurace PG8 (`GPIO HLIDAC` = 0),
+  bring-up panelu (`DISPLEJ: bring-up OK`) i podtečení LTDC.
+
+**Co se přesto změnilo (a proč):** `pwrclk_check()` byla původně volaná hned za výpisem příčiny
+resetu, tedy **před** bring-upem displeje. Sama nic nemění, ale dva `printf` posouvají časování
+bootu — a přesně tam má tahle deska dva zdokumentované závody (pomalu nabíhající ATTINY,
+závod jader o sdílená GPIO #219/#208). Volání je proto **přesunuto až za `display_skip:`**.
+Bootovní cesta až včetně bring-upu displeje je tím zase shodná se stavem před auditem
+(`git diff` proti základu ukazuje v `main.c` **0 smazaných řádků** a žádný přidaný před
+bring-upem). Diagnostická hodnota zůstává — `status` čte tytéž globály.
+
+⚠️ **Tímhle se vada displeje NEOPRAVUJE.** Je to #141/#237/#238 a patří do modulu
+„MPU / cache / linker“ resp. do samostatného šetření SDRAM. Rozhodne to jedno měření bez sondy:
+**`membench` → řádek „retence po 1 s“ musí být 0.** Nenulový = potvrzeno #238.
+Kdyby byl nulový, teprve pak má smysl podezřívat cokoli nového — a prvním krokem je podle
+SKILL §6g **bisect**, tedy flashnout `8521130` a power-cyklovat.
+
+**Metodická lekce z toho:** ověřovací řetězec, kterým se opravy prohlásily za hotové
+(build bez varování + `tools/audit.py` v baseline + povyrostlý `.text`), **neobsahoval běh
+na desce.** Doplněno do `.claude/commands/audit-modul.md` (oddíl „fáze F5“),
+mechanických pravidel `CLAUDE.md` (body 4b, 4c) a jako lekce **L-0010**.
+
+---
+
 ## Co bylo zkontrolováno a je v pořádku
 
 Tento seznam je pro reprodukovatelnost stejně důležitý jako nálezy — příště se tyhle body

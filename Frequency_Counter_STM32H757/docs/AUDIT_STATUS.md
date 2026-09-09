@@ -53,8 +53,17 @@ F-0004 (jen dokumentace: I2C je ~50 kHz, ne ~100), F-0005 (pojistka v `check_les
 - **S4 (nové, z opravy F-0002):** řádek `HSE: CSS hlasil vypadek Nx` ve `status` se nemůže
   nikdy vypsat — `g_css_fail` je v `.bss` a reset ji vynuluje. Patří modulu „přerušení a RTOS“.
 
-**Neověřeno na HW:** obě opravy firmwaru jsou zatím jen přeložené. Po naflashování zkontrolovat
-`status` → řádek `NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=<n>`.
+**Stav ověření obou oprav firmwaru: ⬜ NEOVĚŘENO NA HW po power-cyklu.**
+Po naflashování zkontrolovat `status` → řádek
+`NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=<n>` (to zároveň uzavře F-0006),
+a to **po power-cyklu**, ne jen po flashi (viz L-0010).
+
+⚠️ **Hlášení „po power-resetu se rozbije displej“ (2026-09-09) NENÍ nález tohoto modulu.**
+Je to otevřené **#141 / #237 / #238** — retence SDRAM po studeném startu, doložená měřením
+(1 048 646 chybných bitů) a už jednou vyloučená bisectem z 2026-09-04. Opravy z tohoto auditu
+do RCC/PWR/FLASH/SYSCFG **jen čtou**; jediné zápisy v celém diffu jsou v nedosažitelné CSS
+větvi `NMI_Handler`. Rozhodne `membench` → řádek „retence po 1 s“ (musí být 0).
+Podrobně v `audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřování“.
 
 ## Log sezení
 

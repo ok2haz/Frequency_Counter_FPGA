@@ -399,10 +399,6 @@ g_cm4_absent = 1;
            bad ? " (system zatuhl a byl auto-resetovan!)" : "");
   }
 
-  /* Napajeni + hodiny: overit DOSAZENY stav (audit F-0001). Az tady, protoze
-   * driv nebezi konzole; kontrola sama nic nemeni, takze na poradi nezalezi. */
-  pwrclk_check();
-
   /* CM4 (D2) boot handshake vyhodnoceny v Boot_Mode_Sequence_1/2 (pred UART).
    * Kdyz nenabehl, jedeme dal (displej je na CM7) — jen o tom nahlas rekni:
    * typicky priznak = naflashovana jen bank1, nebo BCM4=0 v option bytes. */
@@ -516,6 +512,17 @@ g_cm4_absent = 1;
   }
 display_skip:
   ;
+  /* Napajeni + hodiny: overit DOSAZENY stav (audit F-0001).
+   * 🔴 ZAMERNE AZ ZA BRING-UPEM DISPLEJE (presunuto 2026-09-09). Puvodne to bylo
+   * hned za vypisem priciny resetu, tedy PRED bring-upem — a to je presne misto,
+   * kde se na teto desce nesmi bezduvodne menit casovani: studeny start ma
+   * pomalu nabihajici ATTINY (probe ma proto 10 pokusu po 100 ms) a zavod obou
+   * jader o sdilena GPIO (STATUS #219/#208). Kontrola je jen cteni registru a
+   * dva printf, takze na jejim vysledku poradi nic nemeni — zato tim prestava
+   * byt podezrela z ovlivneni bootu displeje.
+   * ⚠️ Porad je PRED schedulerem, takze `status` ma hodnoty od prvniho dotazu. */
+  pwrclk_check();
+
   /* IWDG1 watchdog (~4 s) — az tesne pred schedulerem (min. hlidany cas pred
    * prvnim refreshem z defaultTasku; startup grace pokryje rozjezd tasku). */
   watchdog_init();
