@@ -185,9 +185,14 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
 - **Dopad:** Vysvětluje, proč se vada projevuje jako problikávání celé plochy, a ne jako šum
   v jednotlivých snímcích. Není to nová příčina — je to **expozice**, která z otevřeného
   #237/#238 dělá viditelnou poruchu displeje.
-- **Reprodukce:** `HYPOTÉZA — ověřit:` rozšířit `membench` o retenční test **přesně nad rozsahem
-  `bg_cache`** (`0xC0840000`, 768 000 B) místo dnešního obecného scratche na `0xC0400000`.
-  Jeden běh po power-cyklu rozhodne, jestli degradace zasahuje i tenhle rozsah.
+- **Reprodukce:** ✅ **Nástroj doplněn 2026-09-09 — UART `bgcheck`.** `membench` totiž tenhle
+  rozsah měřit **nemůže**: `membench.c:348` má `0xC0800000` v seznamu nedotknutelných, protože
+  se do `.sdram` nesmí psát. `bgcheck` to obejde bez zápisu — `bg_cache` se zapisuje jednou
+  a pak už se jen čte, takže se jeho obsah nesmí měnit; test ho po blocích sečte, počká 1 s
+  a sečte znovu. ⬜ Zbývá spustit na desce po power-cyklu.
+  🔑 **Tohle je hlavní výsledek modulu:** naměřených „1 048 646 chybných bitů retence“ (#238)
+  pochází z **jiné paměti** (`0xC0400000`, MPU region 1) než ta, na které problikávání
+  skutečně závisí. Rozsah, o který jde, nebyl dosud změřen nikdy.
 - **Návrh opravy:** Neopravovat v tomto modulu (příčina je v paměti, ne v MPU). Levná zmírnění
   k rozvaze při řešení #238: (a) periodicky `bg_cache` přepsat — obnoví buňky stejně jako
   framebuffery a stojí jeden blit za delší dobu; (b) při vstupu na hlavní obrazovku ji

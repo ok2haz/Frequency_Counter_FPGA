@@ -355,10 +355,22 @@ u všech ostatních vzorů selhání — to je podpis „všechno čte nuly“, 
 
 **Pořadí, které stálo tři kola ladění, než se zavedlo (audit 2026-09-05):**
 
+0. 🔴 **`bgcheck` — PRVNÍ, protože `membench` na tuhle paměť NEVIDÍ** (audit F-0013,
+   2026-09-09). Mechanismus problikávání je podle #138 ten, že partial redraw blituje
+   **poškozené pozadí z `bg_cache`**. Jenže `bg_cache` leží v sekci `.sdram` na
+   `0xC0840000` a `membench.c:348` má celý rozsah `0xC0800000` v seznamu
+   **nedotknutelných** (psát se do něj nesmí). `membench` proto měří retenci na
+   `0xC0400000`, tedy v **jiné paměti**, než která dělá viditelnou vadu — a přesně
+   proto se #237/#238 nedaří uzavřít. `bgcheck` to obejde bez zápisu: `bg_cache` se
+   zapíše **jednou** v `screen_main_init()` a pak už se jen čte, takže se jeho obsah
+   nesmí změnit; test ho po blocích sečte, počká 1 s a sečte znovu.
+   **`ZMĚNILO SE N/120 bloků` = potvrzená retence SDRAM; `BEZE ZMĚNY` = hledej dál.**
+   ⚠️ Během testu neměnit téma ani rozložení (`screen_main_init` bg_cache překreslí).
 1. **`membench`** → řádek **„retence po 1 s" musí být 0** a celkem 0 chybných bitů.
    Framebuffery i `bg_cache` leží v SDRAM; když se obsah rozpadá, vypadá to jako
    chyba vykreslování — **černý displej** (obsah vyhasl k nule = černá v RGB565)
    nebo **problikávání** (vyhasne jen část mezi překreslením).
+   ⚠️ **Pokrývá jen MPU region 1 (`0xC0400000`), ne `.sdram`** — viz krok 0.
 2. **`status`** → `DISPLEJ:` (selhal bring-up a v kterém kroku?) a `LTDC: podteceni FIFO`.
 3. **`panel`** → zopakuje bring-up za běhu s výpisem každého kroku.
 4. **`status` -> `LTDC: podteceni FIFO`.** Nenulove = KAZDY flip da poskozeny
