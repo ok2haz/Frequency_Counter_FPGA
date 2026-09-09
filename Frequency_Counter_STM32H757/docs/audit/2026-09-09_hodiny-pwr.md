@@ -64,8 +64,19 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   s degradovaným napájením je pořád lepší než přístroj bez jakéhokoli výstupu.
 - **Riziko opravy:** nízké — přidání testu nemění pořadí ani obsah zápisů do PWR. Riziko je jen
   v tom, jaká reakce se zvolí; reset zvolit nesmí.
-- **Vztah k lekcím:** `L-0003`.
-- **Stav:** otevřeno
+- **Vztah k lekcím:** `L-0003`, `L-0009`.
+- **Stav:** opraveno 2026-09-09, ale **jinak, než navrhoval tento nález**. Kontrola návratové
+  hodnoty přímo na `main.c:482` by musela do `SystemClock_Config()`, která **nemá žádný blok
+  `USER CODE`** — porušila by pravidlo 6 a první regenerace z CubeMX by ji smazala.
+  Místo toho přibyla v `USER CODE` funkce `pwrclk_check()` (`main.c`, volaná z `USER CODE 2`),
+  která ověřuje **dosažený stav registrů**: `PWR->CR3` (konfigurace napájení + `SMPSEXTRDY`),
+  `PWR->CSR1.ACTVOSRDY`, VOS0 jako `PWR->D3CR` scale 1 **plus** `SYSCFG->PWRCR.ODEN` **plus**
+  `VOSRDY`, `HAL_RCC_GetSysClockFreq()`, `HAL_RCC_GetHCLKFreq()` a `FLASH_ACR.LATENCY`.
+  Je to přísnější než původní návrh — odhalí i případ, kdy HAL vrátí `HAL_OK` a stav přesto
+  nesedí. Výstup: řádek v boot logu a v UART `status` (`NAPAJENI/HODINY:`), vypisuje se vždy.
+  Volání `HAL_PWREx_ConfigSupply()` zůstalo beze změny, nic se neresetuje ani nezastavuje.
+  Ověřeno: `.text` 594 536 → 595 384 (+848 B), oba nové řetězce dohledány přímo v `.elf`,
+  build 0 varování, `tools/audit.py` 92 OK / 0 selhání / 2 s varováním.
 
 ---
 
@@ -252,8 +263,14 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   slepý zápis do `FLASH_ACR` na běžícím zařízení je horší než dnešní stav.
 - **Riziko opravy:** samotné čtení nulové; zápis střední (ovlivňuje časování přístupů k Flash,
   ze které se běží).
-- **Vztah k lekcím:** nová lekce po opravě.
-- **Stav:** otevřeno
+- **Vztah k lekcím:** —
+- **Stav:** **částečně vyřešeno 2026-09-09 — zavedeno měření, zápis zůstává otevřený.**
+  Nález sám předepisoval „nejprve změřit, teprve pak případně zapisovat“. Měření je hotové:
+  `pwrclk_check()` odečítá `FLASH_ACR.WRHIGHFREQ` do `g_pwrclk_wrhighfreq` a UART `status`
+  ho vypisuje na řádku `NAPAJENI/HODINY:` (`WRHIGHFREQ=<n>`). **Zbývá:** po nejbližším
+  naflashování odečíst hodnotu z běžícího přístroje a porovnat ji s tabulkou RM0399 pro
+  VOS0 / AXI 240 MHz. Teprve pokud nesedí, řešit zápis — praktický dopad zůstává nízký,
+  protože do interní Flash se za běhu nezapisuje.
 
 ---
 

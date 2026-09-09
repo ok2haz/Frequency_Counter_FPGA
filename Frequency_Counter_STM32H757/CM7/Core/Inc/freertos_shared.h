@@ -242,6 +242,21 @@ extern volatile uint32_t g_rtos_cpu_pct;   /* zátěž CPU [%] (100 - idle) */
 extern volatile uint32_t g_uptime_s;       /* doba běhu [s] */
 /* Pocet detekci vypadku HSE (CSS). Nenulove = casova zakladna neplati. */
 extern volatile uint16_t g_css_fail;
+
+/* ── Kontrola napajeni a hodin z bootu (audit F-0001) ──────────────────────
+ * Plni `pwrclk_check()` v `main.c` (USER CODE), cte UART `status`.
+ * Overuje DOSAZENY stav registru, ne navratovou hodnotu HAL — viz freertos.c. */
+#define PWRCLK_BAD_SUPPLY    (1u << 0)  /* PWR_CR3 nenese ocekavanou konfiguraci napajeni */
+#define PWRCLK_BAD_SMPSEXT   (1u << 1)  /* SMPSEXTRDY = 0 (externi vetev SMPS nepripravena) */
+#define PWRCLK_BAD_ACTVOS    (1u << 2)  /* ACTVOSRDY = 0 (regulator neustalen) */
+#define PWRCLK_BAD_VOS0      (1u << 3)  /* VOS0 neni aktivni (VOS!=scale1+ODEN nebo VOSRDY=0) */
+#define PWRCLK_BAD_SYSCLK    (1u << 4)  /* SYSCLK != 480 MHz */
+#define PWRCLK_BAD_HCLK      (1u << 5)  /* HCLK (AXI) != 240 MHz */
+#define PWRCLK_BAD_LATENCY   (1u << 6)  /* FLASH latency != 4 WS */
+extern volatile uint8_t  g_pwrclk_bad;        /* 0 = vse sedi */
+extern volatile uint32_t g_pwrclk_sysclk_hz;
+extern volatile uint32_t g_pwrclk_hclk_hz;
+extern volatile uint8_t  g_pwrclk_wrhighfreq; /* FLASH_ACR.WRHIGHFREQ [5:4] (F-0006) */
 /* Ktere okno UI je prave otevrene + kolikrat se okno zmenilo. Slouzi
  * k odliseni "dotyk neprisel" od "okno se otevrelo a hned zavrelo". */
 extern volatile uint8_t  g_ui_view;

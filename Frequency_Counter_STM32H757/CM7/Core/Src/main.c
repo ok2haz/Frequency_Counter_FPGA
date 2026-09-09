@@ -189,6 +189,76 @@ static void MPU_Config(void)
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }
 
+/**
+  * @brief  Kontrola, ze napajeni a hodiny SKUTECNE sedly (audit F-0001).
+  *
+  * `SystemClock_Config()` vola `HAL_PWREx_ConfigSupply()` bez kontroly navratove
+  * hodnoty, pritom ta funkce umi po ~1 s vratit chybu (timeout ACTVOSRDY nebo
+  * SMPSEXTRDY). Bez kontroly kod tise pokracuje a nastavi VOS0 + 480 MHz nad
+  * napajenim, ktere na to nemusi byt pripravene — coz se projevi jako "obcas
+  * nenabehne" nebo nahodne HardFaulty, tedy nejhur hledatelna trida poruch.
+  *
+  * Zamerne se NEKONTROLUJE navratova hodnota, ale DOSAZENY STAV registru:
+  *   - rekne pravdu i tehdy, kdyz HAL vratil HAL_OK a VOS0 presto nesedlo,
+  *   - je to jen cteni, takze to nemuze rozbit bezici konfiguraci,
+  *   - a hlavne to zije v USER CODE, takze to PREZIJE regeneraci z CubeMX
+  *     (`SystemClock_Config` zadny USER CODE blok nema, uprava v ni by se
+  *     pri prvnim "Generate Code" ztratila).
+  *
+  * ⚠️ Nic to neopravuje ani nezastavuje — pri nesouladu jen zaznamena bitmasku
+  * pro UART `status` a vypise radek do boot logu. Reset by tu byl spatne:
+  * pri trvale vade napajeni by z toho byla smycka.
+  */
+static void pwrclk_check(void)
+{
+  uint8_t bad = 0u;
+
+  /* 1) Konfigurace napajeni v PWR_CR3 (SMPS 1,8 V napaji externi obvody + LDO,
+   *    LDO napaji Vcore). VOS0 je pripustne JEN kdyz Vcore jede z LDO. */
+  if ((PWR->CR3 & PWR_SUPPLY_CONFIG_MASK) != PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO)
+    bad |= PWRCLK_BAD_SUPPLY;
+  /* 2) Prave na tento priznak ceka `HAL_PWREx_ConfigSupply` a prave jeho timeout
+   *    je ta zahozena chyba. */
+  if ((PWR->CR3 & PWR_CR3_SMPSEXTRDY) == 0u)   bad |= PWRCLK_BAD_SMPSEXT;
+  if ((PWR->CSR1 & PWR_CSR1_ACTVOSRDY) == 0u)  bad |= PWRCLK_BAD_ACTVOS;
+
+  /* 3) VOS0 se na H74x/75x nedela zapisem "0" do VOS, ale kombinaci
+   *    VOS = scale 1 + SYSCFG_PWRCR.ODEN (viz makro __HAL_PWR_VOLTAGESCALING_CONFIG).
+   *    Kontroluji se proto oba kusy + VOSRDY. Bez ODEN by cip bezel 480 MHz na
+   *    VOS1, tedy mimo spec, a nic by to neohlasilo. */
+  if (((PWR->D3CR & PWR_D3CR_VOS) != PWR_REGULATOR_VOLTAGE_SCALE1) ||
+      ((SYSCFG->PWRCR & SYSCFG_PWRCR_ODEN) == 0u) ||
+      ((PWR->D3CR & PWR_D3CR_VOSRDY) == 0u))
+    bad |= PWRCLK_BAD_VOS0;
+
+  /* 4) Skutecne frekvence dopoctene z RCC registru (ne z komentaru). */
+  g_pwrclk_sysclk_hz = HAL_RCC_GetSysClockFreq();
+  g_pwrclk_hclk_hz   = HAL_RCC_GetHCLKFreq();
+  if (g_pwrclk_sysclk_hz != 480000000u) bad |= PWRCLK_BAD_SYSCLK;
+  if (g_pwrclk_hclk_hz   != 240000000u) bad |= PWRCLK_BAD_HCLK;
+
+  /* 5) Flash: latence musi byt 4 WS pro VOS0 @ AXI 240 MHz.
+   *    WRHIGHFREQ se jen ODECITA — nikde se neprogramuje (audit F-0006) a
+   *    nez se to zmeni, musi se vedet, jaka hodnota tam po resetu vlastne je.
+   *    Slepy zapis do FLASH_ACR na bezicim cipu, ze ktereho se vykonava kod,
+   *    by byl horsi nez dnesni stav. */
+  if ((FLASH->ACR & FLASH_ACR_LATENCY) != FLASH_LATENCY_4) bad |= PWRCLK_BAD_LATENCY;
+  g_pwrclk_wrhighfreq = (uint8_t)((FLASH->ACR & FLASH_ACR_WRHIGHFREQ) >> FLASH_ACR_WRHIGHFREQ_Pos);
+
+  g_pwrclk_bad = bad;
+
+  /* Bez `%f` (nano.specs) — MHz jako cele cislo. */
+  printf("[PWR/CLK] SYSCLK %lu MHz, HCLK %lu MHz, VOS0 %s, WRHIGHFREQ=%u -> %s\n",
+         (unsigned long)(g_pwrclk_sysclk_hz / 1000000u),
+         (unsigned long)(g_pwrclk_hclk_hz / 1000000u),
+         (bad & PWRCLK_BAD_VOS0) ? "NE" : "ano",
+         (unsigned)g_pwrclk_wrhighfreq,
+         bad ? "NESOULAD" : "OK");
+  if (bad)
+    printf("[PWR/CLK] bitmaska 0x%02X (bit0 napajeni, 1 SMPSEXT, 2 ACTVOS, "
+           "3 VOS0, 4 SYSCLK, 5 HCLK, 6 latence)\n", (unsigned)bad);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -328,6 +398,10 @@ g_cm4_absent = 1;
     printf("[RESET] pricina: %s%s\n", rc,
            bad ? " (system zatuhl a byl auto-resetovan!)" : "");
   }
+
+  /* Napajeni + hodiny: overit DOSAZENY stav (audit F-0001). Az tady, protoze
+   * driv nebezi konzole; kontrola sama nic nemeni, takze na poradi nezalezi. */
+  pwrclk_check();
 
   /* CM4 (D2) boot handshake vyhodnoceny v Boot_Mode_Sequence_1/2 (pred UART).
    * Kdyz nenabehl, jedeme dal (displej je na CM7) — jen o tom nahlas rekni:

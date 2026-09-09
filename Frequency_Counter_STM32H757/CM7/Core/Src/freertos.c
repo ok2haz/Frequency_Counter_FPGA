@@ -271,6 +271,20 @@ volatile uint32_t g_gpio_guard_fix_total;
  * HSI). ⚠️ Zapisuje `NMI_Handler`, proto `volatile` a bez zamku. */
 volatile uint16_t g_css_fail;
 
+/* Vysledek kontroly napajeni a hodin z bootu (`pwrclk_check()` v main.c).
+ * 🔴 PROC to existuje (audit F-0001): `HAL_PWREx_ConfigSupply()` v
+ * `SystemClock_Config()` se vola BEZ kontroly navratove hodnoty, pritom umi
+ * po ~1 s vratit chybu (timeout ACTVOSRDY nebo SMPSEXTRDY). Kod pak tise
+ * nastavi VOS0 a 480 MHz nad napajenim, ktere na to nemusi byt pripravene —
+ * a projevi se to jako "obcas nenabehne" nebo nahodny HardFault.
+ * Kontroluje se proto DOSAZENY STAV registru, ne navratova hodnota: rekne
+ * pravdu i tehdy, kdyz HAL vratil HAL_OK, ale VOS0 stejne nesedlo.
+ * ⚠️ Jen cteni registru, zadny zapis — na bezici konfiguraci nesaha. */
+volatile uint8_t  g_pwrclk_bad;        /* bitmaska PWRCLK_BAD_*, 0 = vse sedi */
+volatile uint32_t g_pwrclk_sysclk_hz;  /* skutecny SYSCLK dle RCC registru */
+volatile uint32_t g_pwrclk_hclk_hz;    /* skutecny HCLK (AXI) */
+volatile uint8_t  g_pwrclk_wrhighfreq; /* FLASH_ACR.WRHIGHFREQ [5:4] — mereni k F-0006 */
+
 /* ── Pozadavky na BLOKUJICI operace nad QSPI (obsluhuje UartTask) ───────────
  * 🔴 PROC: `datalog_init()` (sken hlavy pres desetitisice zaznamu) a
  * `errlog_erase()` (64 sektoru = jednotky SEKUND) se puvodne volaly PRIMO

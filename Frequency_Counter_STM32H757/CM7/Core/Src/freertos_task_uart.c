@@ -2016,6 +2016,24 @@ void UartTask_run(void *argument)
 					  	if (g_css_fail)
 					  		printf("HSE: CSS hlasil vypadek %ux <== CASOVA ZAKLADNA NEPLATI\n",
 					  		       (unsigned)g_css_fail);
+					  	/* Napajeni + hodiny zmerene pri bootu z registru (audit F-0001).
+					  	 * ⚠️ Vypisuje se VZDY, i kdyz je vse v poradku — cislo, ktere je
+					  	 * videt jen pri poruse, si nikdo neoveri predem. WRHIGHFREQ je
+					  	 * tu jako podklad k F-0006 (nikde se neprogramuje). */
+					  	printf("NAPAJENI/HODINY: %s SYSCLK %lu MHz HCLK %lu MHz WRHIGHFREQ=%u\n",
+					  	       g_pwrclk_bad ? "NESOULAD" : "OK",
+					  	       (unsigned long)(g_pwrclk_sysclk_hz / 1000000u),
+					  	       (unsigned long)(g_pwrclk_hclk_hz / 1000000u),
+					  	       (unsigned)g_pwrclk_wrhighfreq);
+					  	if (g_pwrclk_bad)
+					  		printf("  maska 0x%02X: %s%s%s%s%s%s%s\n", (unsigned)g_pwrclk_bad,
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SUPPLY)  ? "napajeni " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SMPSEXT) ? "SMPSEXTRDY " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_ACTVOS)  ? "ACTVOSRDY " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_VOS0)    ? "VOS0 " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SYSCLK)  ? "SYSCLK " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_HCLK)    ? "HCLK " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_LATENCY) ? "latence " : "");
 					  	if (g_fmc_init_fail)
 					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
 					  		       (unsigned)g_fmc_init_fail);

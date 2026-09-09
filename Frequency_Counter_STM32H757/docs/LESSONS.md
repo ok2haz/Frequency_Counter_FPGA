@@ -30,6 +30,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0006 | U konstanty odvozené z hodin uveď zdroj hodin a jeho frekvenci; ověřuj přepočtem z `HAL_RCCEx_GetPeriphCLKFreq()`, ne z komentáře. | checklist G + přepočet při auditu modulu |
 | L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/check_lessons.sh` (cílená kontrola na `CM4/Core/Src/main.c`) |
 | L-0008 | Komentář o chování při poruše piš až po přečtení celého těla funkce včetně generovaného zbytku, ne jen svého `USER CODE` bloku. | `tools/audit.py` (velikosti fault handlerů) + checklist E |
+| L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -152,7 +153,32 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0002
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0009, L-0010, … -->
+### L-0009 — Kritické volání v generovaném kódu se hlídá ověřením stavu, ne návratové hodnoty
+
+- **Datum:** 2026-09-09
+- **Oblast:** hodiny / napájení / regen-safe vzory
+- **Symptom:** `HAL_PWREx_ConfigSupply()` v `SystemClock_Config()` se volá bez kontroly
+  výsledku (`main.c:482`), přestože umí po ~1 s vrátit `HAL_ERROR` (timeout `ACTVOSRDY`
+  nebo `SMPSEXTRDY`). Při vadné napájecí větvi kód tiše pokračuje a nastaví VOS0 + 480 MHz
+  nad napájením, které na to nemusí být připravené — projev je „občas nenaběhne“
+  nebo náhodný HardFault, tedy nejhůř dohledatelná třída poruch.
+- **Příčina (proč se to neopravilo přímočaře):** `SystemClock_Config()` **nemá uvnitř žádný
+  blok `USER CODE`**. Přidání `if (... != HAL_OK)` přímo do ní by porušilo pravidlo 6
+  a první „Generate Code“ by tu kontrolu smazalo.
+- **Oprava:** Volání ponecháno beze změny. V `USER CODE` (`main.c`, funkce `pwrclk_check()`,
+  volaná z `USER CODE 2`) se místo toho ověřuje **dosažený stav registrů**: `PWR->CR3`
+  (konfigurace napájení + `SMPSEXTRDY`), `PWR->CSR1.ACTVOSRDY`, VOS0 = `PWR->D3CR` scale 1
+  **plus** `SYSCFG->PWRCR.ODEN` **plus** `VOSRDY`, `HAL_RCC_GetSysClockFreq()`,
+  `HAL_RCC_GetHCLKFreq()` a `FLASH_ACR.LATENCY`. Výsledek jde do boot logu a do UART `status`.
+- **Pravidlo:** Když kritické volání leží v generovaném kódu bez `USER CODE` bloku, nehlídej
+  ho návratovou hodnotou na místě — **ověř dosažený stav v `USER CODE`**. Je to regen-safe
+  a navíc to odhalí i případ, kdy HAL vrátí `HAL_OK` a stav přesto nesedí.
+- **Detekce:** UART `status` řádek `NAPAJENI/HODINY:` — musí být `OK`. Vypisuje se vždy,
+  i když je vše v pořádku (číslo, které je vidět jen při poruše, si nikdo neověří předem).
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0001
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0010, L-0011, … -->
 
 ---
 
