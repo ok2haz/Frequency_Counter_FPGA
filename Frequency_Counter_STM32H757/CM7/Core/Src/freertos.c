@@ -280,6 +280,13 @@ volatile uint16_t g_css_fail;
  * Kontroluje se proto DOSAZENY STAV registru, ne navratova hodnota: rekne
  * pravdu i tehdy, kdyz HAL vratil HAL_OK, ale VOS0 stejne nesedlo.
  * ⚠️ Jen cteni registru, zadny zapis — na bezici konfiguraci nesaha. */
+/* Kompenzacni cela I/O + CSI, ktery ji napaji (main.c USER CODE SysInit).
+ * 1 = nabehlo. Cte `status`. Cela dorovnava budici silu rychlych I/O (FMC)
+ * proti rozptylu VDD/procesu/teploty — bez ni se data na externi sbernici
+ * vzorkuji na hrane okna. */
+volatile uint8_t  g_csi_ready;
+volatile uint8_t  g_iocomp_ready;
+
 volatile uint8_t  g_pwrclk_bad;        /* bitmaska PWRCLK_BAD_*, 0 = vse sedi */
 volatile uint32_t g_pwrclk_sysclk_hz;  /* skutecny SYSCLK dle RCC registru */
 volatile uint32_t g_pwrclk_hclk_hz;    /* skutecny HCLK (AXI) */

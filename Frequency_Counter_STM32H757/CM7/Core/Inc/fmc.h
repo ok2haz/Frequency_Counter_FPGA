@@ -57,8 +57,16 @@ void HAL_SDRAM_MspDeInit(SDRAM_HandleTypeDef* hsdram);
  * tise porovnavala proti spatnemu cislu (SKILL §5).
  * ⚠️ 2026-09-09: presne to uz nastalo — `fmc.c` mel VLASTNI `#define
  * REFRESH_COUNT 371` a tohle byla jeho rucni kopie. Dve mista, jedna pravda.
- * Od teto zmeny je zdrojem pravdy TENHLE radek a `fmc.c` z nej odvozuje. */
-#define REFRESH_COUNT_EXPECTED 175
+ * Od teto zmeny je zdrojem pravdy TENHLE radek a `fmc.c` z nej odvozuje.
+ *
+ * 🔴 ZPET NA 371 (2026-09-09, druhe mereni). Docasne zvyseni na 175 (tREF 32 ms,
+ * dvojnasobna rezerva) melo overit hypotezu "chybi rezerva obnovy". MERENI JI
+ * VYVRATILO: pri SDRTR=175 hlasil `membench` porad 496 068 chybnych bitu retence
+ * a `bgcheck` 120/120 rozpadlych bloku. Kdyby slo o rezervu obnovy, dvojnasobek
+ * by to vyrazne zlepsil. Nezlepsil -> obnova to NENI a hleda se ve CTECI CESTE
+ * (viz `ReadPipeDelay` ve fmc.c). Vraceno na spec hodnotu, at castejsi obnova
+ * zbytecne nebere pasmo LTDC, ktere podteka. */
+#define REFRESH_COUNT_EXPECTED 371
 
 uint8_t fmc_sdram_init_sequence(void);
 extern volatile uint8_t  g_fmc_init_fail;   /* 0 = sekvence prosla cela */

@@ -253,6 +253,9 @@ extern volatile uint16_t g_css_fail;
 #define PWRCLK_BAD_SYSCLK    (1u << 4)  /* SYSCLK != 480 MHz */
 #define PWRCLK_BAD_HCLK      (1u << 5)  /* HCLK (AXI) != 240 MHz */
 #define PWRCLK_BAD_LATENCY   (1u << 6)  /* FLASH latency != 4 WS */
+/* Kompenzacni cela I/O (SYSCFG CCCSR) a CSI, ktery ji napaji. 1 = nabehlo. */
+extern volatile uint8_t  g_csi_ready;
+extern volatile uint8_t  g_iocomp_ready;
 extern volatile uint8_t  g_pwrclk_bad;        /* 0 = vse sedi */
 extern volatile uint32_t g_pwrclk_sysclk_hz;
 extern volatile uint32_t g_pwrclk_hclk_hz;

@@ -973,7 +973,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | sdrtr [n]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | sdrtr [n] | rpipe [0-2]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1769,6 +1769,39 @@ void UartTask_run(void *argument)
 					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
 				  }
 			  }
+			  /* 🔴 `rpipe [0|1|2]` — zpozdeni vzorkovani CTENYCH dat z SDRAM za CAS latenci,
+			   * v taktech HCLK (`FMC_SDCR1.RPIPE`). Ladi se ZA BEHU, aby slo v JEDNOM sezeni
+			   * overit, jestli za pripadne zlepseni muze prave tohle: `rpipe 0` vrati puvodni
+			   * (chybne) chovani, `rpipe 1` nove vychozi.
+			   *
+			   * PROC to je podezrely: `membench` hlasi chyby uz pri ZAPISU S OKAMZITYM
+			   * OVERENIM, a to i u vzoru `0x00` — zapsat nulu a precist nenulu neni rozpad
+			   * bunky (ta pada K nule), ale spatne PRECTENA data. Interni pameti jsou pritom
+			   * 100 % v poradku, takze vada je vyhradne na externi sbernici.
+			   *
+			   * ⚠️ Zapisuje se do `SDCR1` za behu. LTDC z teze SDRAM prave scanuje, takze
+			   * obraz muze kratce probliknout — stejne jako u `sdraminit`.
+			   * ⚠️ Nepersistuje se: po resetu plati hodnota z `MX_FMC_Init`.
+			   * ⚠️ Po zmene MER: `membench` (chybne bity) a `bgcheck` (BEZE ZMENY). */
+			  else if (strncmp(RxBuffer, "rpipe", 5) == 0) {
+			  	const char *p = RxBuffer + 5;
+			  	while (*p == ' ') p++;
+			  	if (*p >= '0' && *p <= '9') {
+			  		uint32_t v = (uint32_t)(*p - '0');
+			  		if (v > 2u) v = 2u;                     /* RPIPE je 2bitove, 3 je rezervovane */
+			  		uint32_t cr = FMC_Bank5_6_R->SDCR[0];
+			  		cr = (cr & ~FMC_SDCRx_RPIPE_Msk) | (v << FMC_SDCRx_RPIPE_Pos);
+			  		FMC_Bank5_6_R->SDCR[0] = cr;
+			  		uint32_t rd = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk) >> FMC_SDCRx_RPIPE_Pos;
+			  		printf("rpipe: %lu -> potvrzeno %lu takt(u) HCLK\r\n",
+			  		       (unsigned long)v, (unsigned long)rd);
+			  		printf("  over: `membench` (chybne bity) a `bgcheck` (BEZE ZMENY)\r\n");
+			  	} else {
+			  		uint32_t rd = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk) >> FMC_SDCRx_RPIPE_Pos;
+			  		printf("rpipe: %lu takt(u) HCLK (pouziti: rpipe <0|1|2>)\r\n", (unsigned long)rd);
+			  		printf("  0 = vzorkuj hned (puvodni), 1 = vychozi od 2026-09-09, 2 = max rezerva\r\n");
+			  	}
+			  }
 			  /* 🔴 `sdrtr [n]` — cetnost obnovy SDRAM ZA BEHU (stejny vzor jako `d2ddt`).
 			   *
 			   * PROC runtime: spravna rezerva obnovy se hleda MERENIM, a preflashovat kvuli
@@ -2148,6 +2181,16 @@ void UartTask_run(void *argument)
 					  	         (unsigned long)sdrtr, (unsigned)REFRESH_COUNT_EXPECTED,
 					  	         (sdrtr == (uint32_t)REFRESH_COUNT_EXPECTED)
 					  	             ? "" : "  <== NESOUHLASI, hodnota se do HW nedostala"); }
+					  	/* Cteci cesta FMC + kompenzacni cela I/O. Obojí ovlivnuje
+					  	 * INTEGRITU DAT na externi sbernici — a prave ta je podle
+					  	 * `membench` vadna (chyby uz pri zapisu s okamzitym overenim,
+					  	 * pri 100% zdravych internich pametech). */
+					  	{ uint32_t rp = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk)
+					  	                >> FMC_SDCRx_RPIPE_Pos;
+					  	  printf("SDRAM cteni: rpipe=%lu HCLK | I/O kompenzace %s (CSI %s)\n",
+					  	         (unsigned long)rp,
+					  	         g_iocomp_ready ? "READY" : "NENABEHLA",
+					  	         g_csi_ready ? "ok" : "NEBEZI"); }
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total) {

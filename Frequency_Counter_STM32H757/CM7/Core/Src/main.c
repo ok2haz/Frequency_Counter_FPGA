@@ -339,7 +339,36 @@ g_cm4_absent = 1;
 /* USER CODE END Boot_Mode_Sequence_2 */
 
   /* USER CODE BEGIN SysInit */
+  /* 🔴 KOMPENZACNI CELA I/O — chybejici bod checklistu A (doplneno 2026-09-09).
+   *
+   * PROC: cela dorovnava budici silu (slew rate) rychlych I/O proti rozptylu
+   * VDD, procesu a TEPLOTY. Vsechny piny FMC jsou na `GPIO_SPEED_FREQ_VERY_HIGH`
+   * a jedou 50 MHz ven z pouzdra do SDRAM — presne trida, pro kterou ST celu
+   * predepisuje. Bez ni jsou hrany nekompenzovane a data se vzorkuji na hrane
+   * okna, coz sedi na namerenych 3 338 207 chybnych bitu na EXTERNI sbernici
+   * pri 100% zdravych internich pametech.
+   *
+   * ⚠️ MUSI BYT PRED `MX_FMC_Init()` (o par radku niz) — jinak by inicializacni
+   * sekvence SDRAM probehla jeste nekompenzovanymi piny. Tohle je jediny duvod,
+   * proc se sahá na casovani bootu pred bring-upem displeje (viz mechanicke
+   * pravidlo 4c v CLAUDE.md); cekani je ohranicene a v radu mikrosekund.
+   *
+   * ⚠️ Cela potrebuje bezici CSI. Ten se zapina PRIMYM zapisem do `RCC->CR`,
+   * NE pres `HAL_RCC_OscConfig()` — ten by prekonfiguroval i PLL, ktere uz bezi.
+   * ⚠️ Obe cekaci smycky maji strop (L-0004): pri neuspechu se jen zaznamena
+   * priznak pro `status`, nic se nezastavuje. Cela je zlepseni, ne podminka behu. */
+  {
+    uint32_t guard = 100000u;
+    RCC->CR |= RCC_CR_CSION;
+    while (((RCC->CR & RCC_CR_CSIRDY) == 0u) && (--guard != 0u)) { }
+    g_csi_ready = (guard != 0u) ? 1u : 0u;
 
+    __HAL_RCC_SYSCFG_CLK_ENABLE();          /* idempotentni (uz zapnul HAL_MspInit) */
+    HAL_EnableCompensationCell();
+    guard = 100000u;
+    while (((SYSCFG->CCCSR & SYSCFG_CCCSR_READY) == 0u) && (--guard != 0u)) { }
+    g_iocomp_ready = (guard != 0u) ? 1u : 0u;
+  }
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
