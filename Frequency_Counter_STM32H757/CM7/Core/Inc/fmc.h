@@ -43,6 +43,24 @@ void HAL_SDRAM_MspDeInit(SDRAM_HandleTypeDef* hsdram);
 
 /* USER CODE BEGIN Prototypes */
 
+/* Inicializacni sekvence SDRAM dle JEDEC. Vraci 0 pri uspechu, jinak CISLO
+ * KROKU, ktery selhal (1 CLK_ENABLE, 2 PALL, 3 AUTOREFRESH, 4 LOAD_MODE,
+ * 5 ProgramRefreshRate, 6 SDRTR se nepotvrdil).
+ * ⚠️ Do 2026-09-07 se navratove hodnoty vsech kroku ZAHAZOVALY, takze se
+ * sekvence mohla tise nedokoncit — a presne to vypadalo jako "po teplem resetu
+ * OK, po studenem ne".
+ * ⚠️ Lze spustit ZNOVU za behu (UART `sdraminit`) — to je pokus, ktery odlisi
+ * chybu v CASOVANI prvni inicializace od jine priciny. Bezi z UartTasku;
+ * behem nej muze displej kratce probliknout (LTDC cte tutez SDRAM). */
+/* Ocekavana hodnota `SDRTR` (= `REFRESH_COUNT` z fmc.c). Vystavena, aby ji
+ * `status` nemusel opisovat — druha kopie te konstanty by se drive nebo pozdeji
+ * rozesla a diagnostika by tise porovnavala proti spatnemu cislu (SKILL §5). */
+#define REFRESH_COUNT_EXPECTED 371
+
+uint8_t fmc_sdram_init_sequence(void);
+extern volatile uint8_t  g_fmc_init_fail;   /* 0 = sekvence prosla cela */
+extern volatile uint32_t g_fmc_init_runs;
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

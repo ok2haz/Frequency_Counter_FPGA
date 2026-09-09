@@ -58,6 +58,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define SD_DET_Pin GPIO_PIN_3
 #define SD_DET_GPIO_Port GPIOE
+#define ENC_BTN_Pin GPIO_PIN_13
+#define ENC_BTN_GPIO_Port GPIOC
 #define QSPI_BK1_IO2_Pin GPIO_PIN_7
 #define QSPI_BK1_IO2_GPIO_Port GPIOF
 #define QSPI_CLK_Pin GPIO_PIN_10
@@ -74,6 +76,10 @@ void Error_Handler(void);
 #define LED_1_GPIO_Port GPIOG
 #define QSPI_BK1_NCS_Pin GPIO_PIN_6
 #define QSPI_BK1_NCS_GPIO_Port GPIOG
+#define ENC_A_Pin GPIO_PIN_8
+#define ENC_A_GPIO_Port GPIOA
+#define ENC_B_Pin GPIO_PIN_9
+#define ENC_B_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

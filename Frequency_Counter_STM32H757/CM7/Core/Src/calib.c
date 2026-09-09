@@ -8,6 +8,7 @@
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* qspiMutexHandle — W25Q sdili vic tasku */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release */
+#include "errlog.h"   /* udalost: ulozena kalibrace */
 
 /* Timeouty QSPI mutexu: boot (calib_load) i ULOZIT (calib_save) bezi v UiTask
  * na explicitni akci uzivatele, takze si muzou pockat i na bezici erase (~400 ms). */
@@ -64,6 +65,9 @@ void calib_load(void)
 
 bool calib_save(void)
 {
+    /* Zmena kalibrace posune VSECHNY nasledujici prepocty (RF dBm, 12V/5V) —
+     * bez zaznamu by skok v logu vypadal jako zmena mereneho signalu. */
+    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CALIB, 0u, 0u, "kalib");
     if (!s_store.ready) return false;   /* calib_load nevolan nebo flash nedostupna */
     calib_blob_t b = {
         CALIB_BLOB_MAGIC,

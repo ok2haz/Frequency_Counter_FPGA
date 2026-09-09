@@ -14,6 +14,10 @@ static int16_t seg_x(const ui_segmented_t *sc, int i)
     return (int16_t)(sc->rect.x + (int32_t)sc->rect.w * i / sc->n);
 }
 
+static ui_segmented_observer_t s_seg_obs;
+
+void ui_segmented_set_observer(ui_segmented_observer_t obs) { s_seg_obs = obs; }
+
 void ui_segmented_render(const ui_segmented_t *sc)
 {
     if (sc == NULL || sc->n < 2) return;
@@ -42,6 +46,11 @@ void ui_segmented_render(const ui_segmented_t *sc)
         }
         prim_draw_text((prim_point_t){cx, by}, sc->labels[i],
                        &ui_font_mono_16, ink, PRIM_ALIGN_CENTER);
+        /* Registrace segmentu pro fokus encoderu (viz `ui_segmented_set_observer`). */
+        if (s_seg_obs != NULL) {
+            prim_rect_t sr = {x0, sc->rect.y, (int16_t)(x1 - x0), sc->rect.h};
+            s_seg_obs(&sr);
+        }
     }
 
     prim_stroke_rect_rounded(sc->rect, rad, 1, UI_COLOR_LINE);   /* obrys tracku */

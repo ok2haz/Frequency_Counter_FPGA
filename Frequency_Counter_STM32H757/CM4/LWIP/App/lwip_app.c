@@ -274,12 +274,7 @@ void lwip_app_process(void)
     }
 }
 
-int lwip_app_has_ip(void)
-{
-    return (netif_is_up(&s_netif) && netif_ip4_addr(&s_netif)->addr != 0u) ? 1 : 0;
-}
-
-uint32_t lwip_app_ip(void)
-{
-    return netif_ip4_addr(&s_netif)->addr;
-}
+/* ⚠️ `lwip_app_has_ip()` / `lwip_app_ip()` ODSTRANENY (revize 2026-08-26): nikdo
+ * je nikdy nevolal. Stav linky i adresa se ven dostavaji `publish_state()` ->
+ * `ipc_cm4_set_net()` do IPC, odkud je cte CM7 (System Health, UART `status`)
+ * i web. Druha cesta ke stejnemu udaji by se jen mohla rozejit. */

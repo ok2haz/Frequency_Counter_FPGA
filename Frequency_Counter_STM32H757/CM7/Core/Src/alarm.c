@@ -28,12 +28,14 @@ volatile unsigned int g_alarm_gps_lost   = 0;  /* pocet ztrat GPS locku */
 volatile unsigned int g_alarm_limit_fail = 0;  /* pocet prechodu PASS->FAIL limitu (#44) */
 volatile unsigned int g_alarm_vbat       = 0;  /* pocet poklesu VBAT pod prah */
 volatile unsigned int g_alarm_ocxo       = 0;  /* pocet vybehnuti OCXO z pasma */
+volatile unsigned int g_alarm_ocxo_dt    = 0;  /* pocet detekci "pec netopi" (ΔT) */
 volatile unsigned int g_alarm_adev       = 0;  /* pocet prekroceni prahu σy@1s */
 
 /* Prahovy monitor — konfigurace, stav, vstup z app vrstvy. */
 mon_cfg_t g_mon_cfg;
 volatile uint8_t g_mon_vbat_bad = 0;
 volatile uint8_t g_mon_ocxo_bad = 0;
+volatile uint8_t g_mon_ocxo_dt_bad = 0;
 volatile uint8_t g_mon_adev_bad = 0;
 volatile float   g_adev_1s      = 0.0f;
 
@@ -46,12 +48,20 @@ void mon_cfg_defaults(mon_cfg_t *c)
      * (Drive 2,6 V pri predpokladu 3,0 V nominalu.) */
     c->vbat_en    = 1;
     c->vbat_lo_mv = 2800.0f;
-    /* OCXO: zmereno na teto desce 49,7–51,5 °C v ustalenem stavu, takze pasmo
-     * 45–55 °C nechava rezervu na jinou okolni teplotu a pritom chyti rozladenou
-     * pec. ZAPNUTO. */
+    /* OCXO absolutni pasmo = HRUBA POJISTKA proti prehrati, ne detekce rozladene
+     * pece (tu resi ΔT, viz `MON_OCXO_DT_MIN_C`).
+     * 🔴 Strop 55 -> 75 °C (2026-09-01): 55 bylo odvozene z JEDNOHO mereni
+     * (49,7–51,5 °C ustaleny stav) a ukazalo se jako moc tesne — pri pouhych
+     * 32,9 °C na desce uz plast dosahl 55,1 °C a varovani svitilo trvale.
+     * Plast sleduje okoli, takze v zavrene krabicce nebo v lete by to byl
+     * konstantni sum, ktery se prestane cist. 75 °C nechava rezervu ~20 °C
+     * nad nejtepleji zmerenym stavem a porad chyti skutecne prehrati.
+     * ⚠️ Spodni mez 45 °C ma TENTYZ nedostatek v opacnem smeru (v chladne
+     * mistnosti muze plast legitimne klesnout pod ni) — nechana zamerne,
+     * protoze uzivatel zadal zmenu jen stropu; viz STATUS. */
     c->ocxo_en    = 1;
     c->ocxo_lo_c  = 45.0f;
-    c->ocxo_hi_c  = 55.0f;
+    c->ocxo_hi_c  = 75.0f;
     /* ADEV: ⚠️ VYCHOZI VYPNUTO — σy@1s se dnes pocita ze SIMULACE headline
      * (~1e-8), takze jakykoli realisticky prah by pipal na sum. Zapnout az
      * po zprovozneni FPGA linku (#2). Hodnota 1e-9 = rozumny start pro OCXO. */
@@ -66,6 +76,7 @@ void alarm_reset_counters(void)
     g_alarm_limit_fail = 0;
     g_alarm_vbat = 0;
     g_alarm_ocxo = 0;
+    g_alarm_ocxo_dt = 0;
     g_alarm_adev = 0;
 }
 
@@ -130,6 +141,17 @@ void alarm_click(void) { s_click_req = 1; }
  * Jednostranne meze se zadavaji nesmyslne velkou protilehlou hodnotou. */
 #define MON_INF  1e30f
 
+/* Aktualni ΔT = plast OCXO (0x49) - deska (0x48). Vystaveno i pro UI/UART, aby
+ * se dalo overit bez sondy (viz `status`). */
+int mon_ocxo_dt(float *dt_c)
+{
+    const sensor_stat_t *t  = &g_sensors[SENS_T49];
+    const sensor_stat_t *tb = &g_sensors[SENS_T48];
+    if (!t->samples || !t->valid || !tb->samples || !tb->valid) return 0;
+    if (dt_c) *dt_c = t->last - tb->last;
+    return 1;
+}
+
 static uint8_t band_eval(uint8_t prev_bad, float v, float lo, float hi, float hyst)
 {
     if (prev_bad) return (v > lo + hyst && v < hi - hyst) ? 0u : 1u;
@@ -167,6 +189,9 @@ static void mon_edge(uint8_t bad, volatile uint8_t *state, uint8_t *ever,
 static void mon_eval(void)
 {
     static uint8_t s_vbat_ever = 0, s_ocxo_ever = 0, s_adev_ever = 0;
+    /* ΔT: `_ever` = guard prvniho dobreho stavu (mon_edge), `_armed` = pec uz
+     * jednou prokazatelne topila (viz komentar u vyhodnoceni nize). */
+    static uint8_t s_ocxo_dt_ever = 0, s_ocxo_dt_armed = 0;
 
     /* VBAT — jen pri platnem cteni; neplatny senzor NENI duvod k alarmu. */
     if (g_mon_cfg.vbat_en) {
@@ -178,15 +203,34 @@ static void mon_eval(void)
         }
     } else { g_mon_vbat_bad = 0; s_vbat_ever = 0; }
 
-    /* OCXO teplota v pasmu (0x49). */
+    /* OCXO — DVE nezavisla kriteria (viz `mon_ocxo_dt` a alarm.h):
+     *  (1) absolutni pasmo na plasti = hruba pojistka proti prehrati,
+     *  (2) ΔT proti desce = "pec opravdu topi".
+     * Drzi se ZVLAST, aby hlaseni rikalo pravdu: "mimo pasmo" a "pec netopi"
+     * jsou ruzne poruchy s ruznou zavaznosti. */
     if (g_mon_cfg.ocxo_en) {
-        const sensor_stat_t *t = &g_sensors[SENS_T49];
+        const sensor_stat_t *t  = &g_sensors[SENS_T49];
+        const sensor_stat_t *tb = &g_sensors[SENS_T48];
         if (t->samples && t->valid) {
             uint8_t bad = band_eval(g_mon_ocxo_bad, t->last,
                                     g_mon_cfg.ocxo_lo_c, g_mon_cfg.ocxo_hi_c, 0.5f);
             mon_edge(bad, &g_mon_ocxo_bad, &s_ocxo_ever, &g_alarm_ocxo);
         }
-    } else { g_mon_ocxo_bad = 0; s_ocxo_ever = 0; }
+        if (t->samples && t->valid && tb->samples && tb->valid) {
+            float dt = t->last - tb->last;
+            /* 🔴 ARMOVANI: po studenem startu ΔT stoupa od nuly, takze dokud pec
+             * jednou prokazatelne netopila, se NEVYHODNOCUJE. Bez toho by kazdy
+             * nabeh hlasil "pec netopi". Mrtva pec od zacatku se armuje nikdy —
+             * tam ji chyti absolutni pasmo (plast zustane u teploty desky). */
+            if (dt >= MON_OCXO_DT_MIN_C) s_ocxo_dt_armed = 1;
+            if (s_ocxo_dt_armed) {
+                uint8_t bad = band_eval(g_mon_ocxo_dt_bad, dt, MON_OCXO_DT_MIN_C,
+                                        MON_INF, MON_OCXO_DT_HYST_C);
+                mon_edge(bad, &g_mon_ocxo_dt_bad, &s_ocxo_dt_ever, &g_alarm_ocxo_dt);
+            }
+        }
+    } else { g_mon_ocxo_bad = 0; s_ocxo_ever = 0;
+             g_mon_ocxo_dt_bad = 0; s_ocxo_dt_ever = 0; s_ocxo_dt_armed = 0; }
 
     /* σy@1s (plni app vrstva do g_adev_1s). 0 = jeste neni dost vzorku ->
      * nevyhodnocovat, jinak by "0 < prah" vypadala jako perfektni stabilita. */

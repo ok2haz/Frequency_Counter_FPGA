@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32h7xx_it.h"
+#include "../../../CM7/Core/Inc/ipc_shared.h"   /* g_ipc — crash black-box CM4 (v14) */
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -66,8 +67,26 @@
 /**
   * @brief This function handles Non maskable interrupt.
   */
+/* 🔴 Na CM7 uz tyhle ctyri handlery zapisuji crash black-box; na CM4 zustaly
+ * neme (2 B v obrazu = jedina instrukce `b .`). Odhalil to rozsireny audit
+ * — a je to ukazkove poruseni §6l: opravil jsem tridu jen na jednom jadre.
+ * CM4 na BKP registry nedosahne (nema povolene hodiny RTC), takze se stav
+ * ulozi do IPC bloku, odkud ho CM7 vypise ve `status`.
+ * ⚠️ NERESETOVAT: `NVIC_SystemReset()` z CM4 shodi CELY pristroj, a presne
+ * proto je IWDG2 vypnuty. Zustane se stat, CM7 to uvidi jako `stall:CM4`. */
+static void cm4_fault_note(uint8_t kind)
+{
+  g_ipc.cm4.cm4_fault_pc   = 0u;
+  g_ipc.cm4.cm4_fault_lr   = 0u;
+  g_ipc.cm4.cm4_fault_cfsr = SCB->CFSR;
+  __DMB();
+  g_ipc.cm4.cm4_fault_kind = kind;   /* 3 NMI, 4 MemMan, 5 BusFlt, 6 UsgFlt */
+  __DMB();
+}
+
 void NMI_Handler(void)
 {
+  cm4_fault_note(3u);
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
@@ -81,23 +100,42 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-void HardFault_Handler(void)
+/* Zachyti stav faultu do sdilene pameti, aby ho CM7 mohl ohlasit (v14).
+ * ⚠️ CM4 na BKP registry nedosahne (nema povolene hodiny RTC), takze jedina
+ * cesta ven z faultu je IPC blok v SRAM4. */
+void cm4_fault_capture(uint32_t *frame);
+void cm4_fault_capture(uint32_t *frame)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  g_ipc.cm4.cm4_fault_pc   = frame[6];
+  g_ipc.cm4.cm4_fault_lr   = frame[5];
+  g_ipc.cm4.cm4_fault_cfsr = SCB->CFSR;
+  __DMB();
+  g_ipc.cm4.cm4_fault_kind = 1u;    /* magic naposled: necely zapis = neplatny */
+  __DMB();
+  /* ⚠️ ZAMERNE se NERESETUJE: `NVIC_SystemReset()` z CM4 shodi CELY pristroj
+   * (displej i mereni) — a prave proto je IWDG2 vypnuty. Zustane se stat, CM7
+   * to uvidi jako `stall:CM4` a ted uz i s duvodem. */
+  for (;;) { }
 }
+
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  __asm volatile (
+    "tst  lr, #4            \n"
+    "ite  eq                \n"
+    "mrseq r0, msp          \n"
+    "mrsne r0, psp          \n"
+    "b    cm4_fault_capture \n"
+  );
+}
+
 
 /**
   * @brief This function handles Memory management fault.
   */
 void MemManage_Handler(void)
 {
+  cm4_fault_note(4u);
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
 
   /* USER CODE END MemoryManagement_IRQn 0 */
@@ -113,6 +151,7 @@ void MemManage_Handler(void)
   */
 void BusFault_Handler(void)
 {
+  cm4_fault_note(5u);
   /* USER CODE BEGIN BusFault_IRQn 0 */
 
   /* USER CODE END BusFault_IRQn 0 */
@@ -128,6 +167,7 @@ void BusFault_Handler(void)
   */
 void UsageFault_Handler(void)
 {
+  cm4_fault_note(6u);
   /* USER CODE BEGIN UsageFault_IRQn 0 */
 
   /* USER CODE END UsageFault_IRQn 0 */

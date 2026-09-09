@@ -29,6 +29,7 @@
 #include "rtc.h"
 #include "sdmmc.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -162,6 +163,28 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
+    /* ── Region 3: datova cache mereni v SDRAM (`sdram_log.c`), 16 MB @0xC1000000
+     * Normal, WRITE-BACK WRITE-ALLOCATE (TEX=001, C=1, B=1) — stejne jako region 1.
+     * ⚠️ PROC cacheable: log se cte SEKVENCNE a opakovane (Allan pres dlouha tau,
+     * spektrogram, proklad). Bez MPU regionu by adresa spadla do DEFAULTNI mapy,
+     * kde je 0xA0000000-0xDFFFFFFF **Device pamet** — tam neni cache-line prefetch
+     * a sekvencni cteni je radove pomalejsi.
+     * ⚠️ DUSLEDEK: az bude log plnit SPI přes DMA (protokol v2 / STATUS #62), musi
+     * konzument pred ctenim invalidovat D-cache — DMA obchazi cache uplne stejne
+     * jako DMA2D u framebufferu. Dokud plni CPU, je to koherentni samo od sebe.
+     * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 16 MB @0xC1000000 sedi. */
+    MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
+    MPU_InitStruct.BaseAddress      = 0xC1000000;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_8MB;
+    MPU_InitStruct.SubRegionDisable = 0x00;
+    MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;
+    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+    MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+    MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+    MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+    MPU_InitStruct.IsBufferable     = MPU_ACCESS_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
     /* Zapnout MPU s default mapou pro nechraneny privilegovany pristup */
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }
@@ -262,7 +285,28 @@ g_cm4_absent = 1;
   MX_QUADSPI_Init();
   MX_SDMMC1_SD_Init();
   MX_FATFS_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  /* 🔑 CSS (Clock Security System): pri vypadku krystalu HSE vyvola NMI.
+   * ⚠️ PROC to u tohohle pristroje neni kosmetika: cela casova zakladna stoji
+   * na HSE 25 MHz. Bez CSS by se pri jeho ztrate mlcky prepnulo na HSI a
+   * pristroj by MERIL DAL proti spatne referenci — nejtissi mozna porucha
+   * u kmitoctoveho normalu. S CSS to skonci v `NMI_Handler`, ktery od
+   * 2026-09-08 zapise crash black-box (kind 7) a resetuje, takze `status`
+   * po restartu rekne, co se stalo.
+   * ⚠️ Zapinat AZ po `SystemClock_Config()` — driv neni HSE jeste rozbehnuta. */
+  /* 🔴 ZAPNUTI CSS ZDE ZPUSOBILO RESET SMYCKU (2026-09-08) — nezapinat.
+   * Zmereno sondou: `s_step` cykloval 0->1, `g_uptime_s` zustal 0 a `BKP3R`
+   * byl trvale 0. Sedelo to na poradi: `MX_RTC_Init()` (o 15 radku vys) crash
+   * black-box precte a SMAZE, hned nato se zapnul CSS, ten okamzite vyhodnotil
+   * vypadek, NMI zapsalo magic a resetovalo — a dokola.
+   * ⚠️ Podstatne: `RCC_CR` ukazuje **HSEBYP=1**, tedy HSE bezi z VNEJSICH
+   * hodin, ne z krystalu. Na teto desce CSS na takovy zdroj reaguje hned.
+   * ⚠️ A hlavne byla spatne i MOJE REAKCE: u kmitoctoveho normalu je reset pri
+   * ztrate casove zakladny nespravny — kdyz stav trva, vyrobi presne tuhle
+   * smycku. Spravne je bezet dal (HW se sam prepne na HSI) a NAHLAS to hlasit,
+   * viz `NMI_Handler`. Zapnout se da vedome pres UART `css on`. */
+  /* HAL_RCC_EnableCSS();  <- viz vyse */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
    * aby pristi boot videl cerstvou pricinu. IWDG1RSTF = watchdog zasahl (system
@@ -332,19 +376,34 @@ g_cm4_absent = 1;
   /* === Inicializace Waveshare 43H-800480-IPS displeje === */
   printf("\n=== Display init start ===\n");
 
-  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on */
+  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on.
+   * 🔴 RETRY, ne jeden pokus (2026-09-01): ATTINY je bit-bang I2C slave a po
+   * STUDENEM startu nabiha vlastnim tempem. Jeden probe po 100 ms je hraniční —
+   * kdyz neACKne, cely bring-up se preskoci (`goto display_skip`) a pristroj
+   * bezi DAL s CERNYM displejem, zatimco dotyk, UART i mereni funguji.
+   * Presne tak se porucha projevila. 10 pokusu po 100 ms = az ~1 s;
+   * `watchdog_init()` bezi az za timhle blokem, takze IWDG to neohrozi. */
   HAL_Delay(100);
 
   /* 2) Probe MCU a precist FW ID */
-  if (!ws_panel_probe(&hi2c4)) {
-      printf("[ERR] Panel probe selhal - pokracuji bez displeje\n");
-      bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
-      goto display_skip;
+  {
+    int probe_ok = 0;
+    for (int i = 0; i < 10 && !probe_ok; i++) {
+        probe_ok = ws_panel_probe(&hi2c4) ? 1 : 0;
+        if (!probe_ok) HAL_Delay(100);
+    }
+    if (!probe_ok) {
+        printf("[ERR] Panel probe selhal (10 pokusu) - pokracuji bez displeje\n");
+        g_display_init_step = BOOTLED_STEP_PANEL_PROBE;
+        bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
+        goto display_skip;
+    }
   }
 
   /* 3) Power-on sekvence: napajeni LCD, uvolnit reset bridge, backlight enable */
   if (!ws_panel_power_on(&hi2c4)) {
       printf("[ERR] Panel power-on selhal\n");
+      g_display_init_step = BOOTLED_STEP_PANEL_POWERON;
       bootled_blink_once(BOOTLED_STEP_PANEL_POWERON);
       goto display_skip;
   }
@@ -352,6 +411,7 @@ g_cm4_absent = 1;
   /* 4) Spustit DSI signal - bridge ho potrebuje pred inicializaci */
   if (HAL_DSI_Start(&hdsi) != HAL_OK) {
       printf("[ERR] HAL_DSI_Start selhal\n");
+      g_display_init_step = BOOTLED_STEP_DSI_START;
       bootled_blink_once(BOOTLED_STEP_DSI_START);
       goto display_skip;
   }
@@ -360,6 +420,7 @@ g_cm4_absent = 1;
   /* 5) Inicializovat TC358762 bridge pres DSI generic write */
   if (!tc358762_init(&hdsi)) {
       printf("[ERR] TC358762 init selhal\n");
+      g_display_init_step = BOOTLED_STEP_TC358762;
       bootled_blink_once(BOOTLED_STEP_TC358762);
       goto display_skip;
   }
@@ -595,8 +656,41 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu (`bootled_fail` blika, ale v krabicce to nikdo nevidi
+   * a `status` o tom nevi nic). Kind 5 + cislo kroku -> `status` rekne
+   * `hal_err@krok N`. Poradi: data prvni, magic naposled. */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu. Kind 5 + cislo kroku -> `status` rekne `hal_err@krok N`.
+   * ⚠️ `bootled_step` pokryva jen BRING-UP; runtime volani z HAL driveru by
+   * ukazalo posledni bootovni krok, coz mate. Proto se do DR5 uklada i
+   * NAVRATOVA ADRESA volajiciho — `addr2line` z ni rekne, KDO Error_Handler
+   * zavolal (38 volajicich v CM7). */
+  PWR->CR1 |= PWR_CR1_DBP;
+  RTC->BKP4R = (uint32_t)bootled_step_get();
+  RTC->BKP5R = (uint32_t)__builtin_return_address(0);
+  RTC->BKP3R = 0xC7A50000u | 5u;   /* RTC_CRASH_MAGIC | kind 5 = Error_Handler */
   __disable_irq();
-  bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
+  /* 🔴 DRIVE TU BYLO `bootled_fail()`, ktere blika DONEKONECNA. Jenze pri
+   * selhani BEHEM INITU jeste nebezi IWDG (`watchdog_init` je az pred
+   * schedulerem), takze pristroj tam uvizl NATRVALO a jedinou zpravou byla
+   * blikajici LED — v krabicce neviditelna. Ted se vzor zopakuje nekolikrat
+   * (aby sel precist) a pak se resetuje: crash black-box uz duvod nese, takze
+   * `status` po restartu rekne `hal_err@krok N` misto ticha. */
+  /* 🔴 RESET NEJVYS JEDNOU ZA POWER-CYKLUS. Puvodne se resetovalo vzdy — jenze
+   * kdyz je pricina TRVALA (vadny init), je z toho nekonecna smycka, ktera
+   * je pro uzivatele horsi nez zamrznuti: nejde precist ani blikaci vzor.
+   * Prvni pokus tedy resetuje (casta chyba je prechodna a restart pomuze),
+   * druhy uz jen blika donekonecna — a duvod je v crash black-boxu. */
+  /* ⚠️ Priznak se MAZE po uspesnem startu (defaultTask), takze tohle je
+   * "jednou za POKUS O START", ne jednou za zivot desky. Bez toho mazani by
+   * po prvni HAL chybe uz pristroj NIKDY restart nezkusil — a komentar by lhal. */
+  if ((RTC->BKP10R & 0xFFFF0000u) != 0xE7A50000u) {
+    RTC->BKP10R = 0xE7A50000u | 1u;   /* priznak "uz jsem to jednou zkusil" */
+    bootled_fail_n(5u);
+    NVIC_SystemReset();
+  }
+  bootled_fail();   /* podruhe uz jen blikat: pocet bliknuti = bootled_step */
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

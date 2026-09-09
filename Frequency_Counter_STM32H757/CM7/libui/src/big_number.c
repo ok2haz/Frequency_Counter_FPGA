@@ -18,12 +18,14 @@ static const prim_font_t *seg_font(const ui_big_number_t *n, ui_digit_level_t lv
     return (lv != UI_DIGIT_CERTAIN && n->fade_font) ? n->fade_font : n->main_font;
 }
 
-/* Separator char for segment index i, or 0 if none (bounds-checked). */
+/* Separator char for segment index i, or 0 if none (bounds-checked).
+ * `UI_BIGNUM_SEP_NONE` = explicitni "zadny separator" uprostred retezce. */
 static char sep_at(const ui_big_number_t *n, int16_t i)
 {
     if (!n->separators) return 0;
     if ((size_t)i >= strlen(n->separators)) return 0;
-    return n->separators[i];
+    char c = n->separators[i];
+    return (c == UI_BIGNUM_SEP_NONE) ? 0 : c;
 }
 
 /* Total advance width with separators and a trailing unit. */

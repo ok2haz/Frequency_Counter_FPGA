@@ -30,7 +30,35 @@
 #include <stdbool.h>
 
 #define DATALOG_REC_SIZE   32u    /* bajtu na zaznam (pevne, viz datalog_rec_t) */
-#define DATALOG_PERIOD_S   10u    /* perioda vzorkovani [s] */
+#define DATALOG_PERIOD_S   10u    /* VYCHOZI perioda vzorkovani [s] — za behu ji
+                                   * meni `datalog_set_period_s`, cti VZDY pres
+                                   * `datalog_period_s()`. Makro je jen default. */
+
+/* ── Volba ulozistě ────────────────────────────────────────────────────────
+ * ⚠️ Prepnuti ROZDELI historii mezi dve media: zaznamy uz zapsane na tom druhem
+ * zustanou, kde jsou, a `datalog dump` je neuvidi. Neni to vada — je to cena za
+ * to, ze kazde uloziste ma vlastni hlavu i `seq`. */
+typedef enum {
+    DATALOG_STORE_AUTO  = 0u,   /* SD kdyz je, jinak W25Q (puvodni chovani) */
+    DATALOG_STORE_FLASH = 1u,   /* vzdy W25Q — nezavisle na vlozene karte */
+    DATALOG_STORE_SD    = 2u,   /* jen SD; bez karty se NELOGUJE (zamerne) */
+} datalog_store_t;
+
+void        datalog_set_store(uint8_t store);   /* prepne + znovu najde hlavu */
+uint8_t     datalog_get_store(void);            /* co je NASTAVENO (vc. AUTO) */
+const char *datalog_store_name(uint8_t store);  /* "AUTO"/"FLASH"/"SD" */
+
+/* Perioda vzorkovani. ⚠️ Cti ji VZDY pres tuhle funkci, ne pres makro —
+ * na periode visi i rekonstrukce Allanovy pyramidy (viz `datalog_adev_stage`). */
+uint16_t datalog_period_s(void);
+void     datalog_set_period_s(uint16_t s);
+
+/* 🔴 Do KTERE stage ADEV pyramidy se smi log sypat.
+ * Pyramida decimuje x10, takze stage s ma tau = 10^s sekund. Prevod je EXAKTNI
+ * jen kdyz je perioda logu presne mocnina deseti. Pri jine periode vraci -1 a
+ * rekonstrukce se MUSI preskocit — jinak by sigma_y(tau) vysla mimo o cely rad,
+ * a pritom verohodne (tatáz past, kvuli ktere se sype od stage 1, ne 0). */
+int datalog_adev_stage(void);
 #define DATALOG_SEQ_EMPTY  0xFFFFFFFFu   /* smazana flash (0xFF) = volny slot */
 
 /* Jeden zaznam. Serializuje se RUCNE (little-endian, viz pack_rec/unpack_rec
@@ -83,6 +111,16 @@ typedef struct {
  * Priznak je v logu navzdy, takze se emulovana data uz nikdy nezamysli za
  * merena — ani po exportu do CSV, ani za pul roku pri analyze. */
 #define DATALOG_F_SIM         (1u << 6)
+
+/* 🔑 Bit 7 (POSLEDNI volny): behem tohohle vzorku hlasila reference Si5356
+ * ztratu vstupu (`LOS_CLKIN`) nebo rozpad PLL (`PLL_LOL`) — cteno ze sticky
+ * registru 247, takze to zachyti i glitch kratsi nez perioda logu.
+ * ⚠️ PROC to v logu MUSI byt: presnost citace JE presnost te reference, takze
+ * vzorky z takove chvile NEPLATI. Bez priznaku by se tise dostaly do Allanovy
+ * statistiky a zkazily ji, aniz by slo zpetne poznat KTERE.
+ * ⚠️ `LOS_XTAL` (bit2) se ZAMERNE neuvazuje — krystal XA/XB neni osazen, takze
+ * ten bit je trvale 1 a priznak by byl nastaveny vzdy. */
+#define DATALOG_F_REF_LOSS    (1u << 7)
 
 /* ── Backend uloziste (W25Q / SD / ...) ────────────────────────────────────── */
 typedef struct {
@@ -161,8 +199,34 @@ bool datalog_enabled(void);
 void datalog_get_status(datalog_status_t *out);
 
 /** Precte N-ty zaznam od NEJNOVEJSIHO (0 = posledni zapsany). false = neni.
- *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART. */
+ *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART.
+ *  ⚠️ Na PRUCHOD VICE ZAZNAMY pouzij `datalog_read_bulk` — tohle plati na kazdy
+ *  zaznam vlastni mutex i vlastni QSPI prikaz (zmereno ~173 us/zaznam, zatimco
+ *  32 B dat je jen ~7 us; rezie je 25x vetsi nez prenos). */
 bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out);
+
+/** Strop davky pro `datalog_read_bulk` (scratch buffer v `.bss`, 64*32 = 2 kB). */
+#define DATALOG_BULK_MAX   64u
+
+/** Precte az `max_n` zaznamu JEDNIM QSPI prikazem a pod JEDNIM mutexem.
+ *
+ *  Poradi je stejne jako u `datalog_read_back`: `out[0]` = `from_newest`
+ *  (nejnovejsi z davky), `out[1]` = `from_newest+1` (starsi), atd.
+ *
+ *  @param from_newest  index nejnovejsiho zaznamu davky (0 = posledni zapsany)
+ *  @param out          pole na aspon `max_n` zaznamu
+ *  @param max_n        kolik nejvys precist (orizne se na `DATALOG_BULK_MAX`)
+ *  @param consumed     smi byt NULL; kolik POZIC v ringu davka pokryla — o tolik
+ *                      posun `from_newest` pri dalsim volani. Lisi se od navratove
+ *                      hodnoty tehdy, kdyz je uprostred davky poskozeny zaznam.
+ *  @return pocet PLATNYCH zaznamu ulozenych do `out[]` (poskozene se preskoci,
+ *          zbytek se stlaci k zacatku — stejna politika jako `continue` u
+ *          `datalog_read_back`).
+ *
+ *  ⚠️ Rezie QSPI prikazu se rozlozi na celou davku, takze zisk roste s `max_n`.
+ *  Pri `max_n == 1` je to jen drazsi `datalog_read_back` — nepouzivat tak. */
+uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
+                           uint32_t max_n, uint32_t *consumed);
 
 /** Jednoradkovy stav: "DATALOG W25Q ON 1234/2043136 rec seq:1234 err:0". */
 void datalog_format_status(char *buf, int buflen);
@@ -186,6 +250,10 @@ void datalog_erase_service(void);
 /** Aktualni UTC cas z RTC jako unix [s]; 0 = RTC nesynchronizovano z GPS.
  *  ⚠️ Cte `g_rtc_text`/`g_rtc_synced` (pise defaultTask) -> volat jen z defaultTasku. */
 uint32_t datalog_now_unix(void);
+
+/* CRC-16/CCITT-FALSE (0x1021/0xFFFF) — vystavena, aby `errlog` nemusel delat
+ * ctvrtou kopii tehoz polynomu. */
+uint16_t datalog_crc16(const uint8_t *d, uint32_t n);
 
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).
  *  Bez HW a bez sdileneho stavu -> soucast UART "selftest". */

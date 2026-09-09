@@ -23,26 +23,33 @@
 
 /* USER CODE BEGIN 0 */
 #include "bootled.h"
-static FMC_SDRAM_CommandTypeDef Command;
-/* ⚠️⚠️ PODEZRELA HODNOTA — NEOVERENO, NEMENIT BEZ MERENI (2026-08-23).
- * 1835 je prevzata z ST prikladu pro jinou desku. Prepocet pro TUHLE:
+/* 🔴 OPRAVENO 2026-09-04: 1835 -> 371. Puvodni hodnota byla prevzata z ST
+ * prikladu pro JINOU desku a znamenala, ze se cela matice obnovi az za ~304 ms
+ * misto 64 ms — tedy 4,7x pomaleji, nez SDRAM snese.
+ *
+ * Prepocet pro TUHLE desku:
  *   PLL2 VCO 200 MHz / R=2 -> FMC kernel 100 MHz, SDClockPeriod_2 -> SDCLK 50 MHz.
- *   REFRESH_COUNT = tREF * SDCLK / pocet_radku - 20.
- *   Pro 8192 radku (RowBitsNumber = 13, viz nize) a bezne tREF = 64 ms vychazi
- *   **371**, nikoli 1835. S 1835 se cela matice obnovi az za ~304 ms, tj.
- *   **4,7x pomaleji nez 64 ms**, coz je mimo spec bezne SDRAM.
- * Proc to zatim NEJDE poznat: framebuffery se prepisuji kazdy snimek a LTDC je
- * navic porad cte (cteni radek taky obnovi), takze displej funguje. Projevit by
- * se to melo az na datech, ktera lezi dlouho nedotcena — presne to meri retencni
- * test v `membench.c` (UART `membench`, radek „retence po 1 s").
- * ⚠️ ZMERENO 2026-08-23: retence po 1 s = **0 chybnych bitu**, takze obsah se
- * nerozpada a tahle hodnota (at uz je „spravna" jakkoli) NENI pricinou chyb, ktere
- * benchmark nasel — ty jsou z prekryvu adres (viz CLAUDE.md, podezreni na FMC_A9).
- * Necham tedy 1835 beze zmeny; prepocet vyse zustava jako otevrena otazka k overeni
- * proti datasheetu osazene SDRAM, ne jako znamy bug.
- * ⚠️ 1835 by naopak zhruba sedelo pro 4096 radku — pokud je osazeny cip 4096-radkovy,
- * je spatne `RowBitsNumber`, ne tohle. Rozhodne to az datasheet osazene SDRAM. */
-#define REFRESH_COUNT        1835
+ *   REFRESH_COUNT = tREF * SDCLK / pocet_radku - 20
+ *                 = 64e-3 * 50e6 / 8192 - 20 = 371   (RowBitsNumber = 13 -> 8192 radku)
+ *
+ * ⚠️ PROC SE TO NEPOZNALO DRIV: framebuffery se prepisuji kazdy snimek a LTDC je
+ * navic porad cte (cteni radku ho zaroven obnovi), takze displej „fungoval".
+ * Rozpadaji se az data, ktera lezi dlouho nedotcena — a presne takove je
+ * `bg_cache` (zapsana JEDNOU v `screen_main_init`, pak uz se z ni jen cte pri
+ * kazdem partial redraw). Vyhasle bunky -> blituje se poskozene pozadi ->
+ * PROBLIKAVANI CELE PLOCHY (STATUS #88/#107, hlaseno opakovane od 2026-08-30).
+ *
+ * ⚠️ Mereni 2026-08-23 ukazalo „retence po 1 s = 0 chybnych bitu" a PRAVE KVULI
+ * TOMU se hodnota tehdy nechala. To mereni bylo bud stastne (blok jeste nestihl
+ * vyhasnout), nebo probehlo za jinych podminek — 2026-09-04 dalo tyz test
+ * **1 048 646 chybnych bitu** a `membench` hlasil `OBSAH SE ROZPADA (refresh?)`.
+ * Zaver: jedno ciste mereni nestaci na to prohlasit retenci za v poradku.
+ *
+ * ⚠️ Kdyby je osazeny cip 4096-radkovy, byl by spatne `RowBitsNumber` a spravna
+ * hodnota by byla 761 — ani tak ne 1835. Potvrdit datasheetem osazene SDRAM.
+ * ⚠️ Po teto zmene ZNOVU zmerit `membench`: retence musi byt 0. Teprve pak ma
+ * smysl verit verdiktu o prekryvu adres (#72) — rozpadle bunky ho matou. */
+#define REFRESH_COUNT        371
 
 #define SDRAM_TIMEOUT                            ((uint32_t)0xFFFF)
 #define SDRAM_MODEREG_BURST_LENGTH_1             ((uint16_t)0x0000)
@@ -61,6 +68,65 @@ static FMC_SDRAM_CommandTypeDef Command;
 SDRAM_HandleTypeDef hsdram1;
 
 /* FMC initialization function */
+/* 🔴 KTERY krok inicializacni sekvence SDRAM selhal (0 = vsechny prosly).
+ * Do 2026-09-07 se navratova hodnota KAZDEHO z peti prikazu i nastaveni
+ * refreshe ZAHAZOVALA, takze se pri studenem startu mohla sekvence tise
+ * nedokoncit a pamet zustala napul inicializovana — presne profil "po teplem
+ * resetu OK, po studenem ne". `status` to ted hlasi. */
+_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED,
+               "fmc.h REFRESH_COUNT_EXPECTED se rozeslo s REFRESH_COUNT v fmc.c");
+
+volatile uint8_t  g_fmc_init_fail;      /* 1..6 = cislo kroku, 0 = OK */
+volatile uint32_t g_fmc_init_runs;      /* kolikrat sekvence probehla (re-init pro pokus) */
+
+/* Cela sekvence dle JEDEC; vraci 0 pri uspechu, jinak cislo kroku.
+ * ⚠️ Vyclenena, aby sla spustit ZNOVU za behu (`sdraminit`) — to je pokus,
+ * ktery rozhodne, jestli byl problem v CASOVANI prvni inicializace (studeny
+ * start, rozbihajici se napajeni), nebo nekde jinde. */
+uint8_t fmc_sdram_init_sequence(void)
+{
+  FMC_SDRAM_CommandTypeDef Command;
+  __IO uint32_t tmpmrd = 0;
+
+  g_fmc_init_runs++;
+
+  Command.CommandMode            = FMC_SDRAM_CMD_CLK_ENABLE;
+  Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 1u;
+
+  HAL_Delay(1);   /* JEDEC: >= 100 us po nabehu hodin */
+
+  Command.CommandMode            = FMC_SDRAM_CMD_PALL;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 2u;
+
+  Command.CommandMode            = FMC_SDRAM_CMD_AUTOREFRESH_MODE;
+  Command.AutoRefreshNumber      = 8;
+  Command.ModeRegisterDefinition = 0;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 3u;
+
+  tmpmrd = (uint32_t)SDRAM_MODEREG_BURST_LENGTH_1 |
+           SDRAM_MODEREG_BURST_TYPE_SEQUENTIAL    |
+           SDRAM_MODEREG_CAS_LATENCY_3            |
+           SDRAM_MODEREG_OPERATING_MODE_STANDARD  |
+           SDRAM_MODEREG_WRITEBURST_MODE_SINGLE;
+  Command.CommandMode            = FMC_SDRAM_CMD_LOAD_MODE;
+  Command.AutoRefreshNumber      = 1;
+  Command.ModeRegisterDefinition = tmpmrd;
+  if (HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT) != HAL_OK) return 4u;
+
+  if (HAL_SDRAM_ProgramRefreshRate(&hsdram1, REFRESH_COUNT) != HAL_OK) return 5u;
+
+  /* Kontrola, ze hodnota v HW opravdu sedi — `ProgramRefreshRate` muze vratit
+   * OK a pritom se zapis neprojevi, kdyz je radic zaneprazdneny. */
+  if ((((FMC_Bank5_6_R->SDRTR) >> 1) & 0x1FFFu) != (uint32_t)REFRESH_COUNT) return 6u;
+
+  return 0u;
+}
+
 void MX_FMC_Init(void)
 {
   /* USER CODE BEGIN FMC_Init 0 */
@@ -102,57 +168,41 @@ void MX_FMC_Init(void)
   }
 
   /* USER CODE BEGIN FMC_Init 2 */
-  __IO uint32_t tmpmrd = 0;
 
-    /* Step 1: Configure a clock configuration enable command */
-    Command.CommandMode            = FMC_SDRAM_CMD_CLK_ENABLE;
-    Command.CommandTarget          =  FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = 0;
+  /* 🔴🔴 PG8 = FMC_SDCLK MUSI BYT V AF12 — jinak SDRAM nedostane HODINY a cely
+   * cip je mrtvy: nikdy neprijme prikaz, nikdy se neobnovi, cte same nuly.
+   * Projev na HW (mereno 2026-09-06 sondou): `GPIOG->MODER` melo pro PG8
+   * hodnotu 11 (ANALOG), zatimco `AFR[1]` melo spravne AF12 — tedy funkce
+   * nastavena, rezim ne. Dusledky, ktere to zpusobovalo:
+   *   - framebuffery cetly same nuly -> CERNY DISPLEJ po power-resetu
+   *   - `membench` hlasil 10 551 639 chybnych bitu a rozpad retence
+   *   - `sdramlog` se sam vypnul (`zapis/cteni selhalo @+0`)
+   * Overeno primym zasahem: po prepnuti PG8 do AF ozily framebuffery a chyby
+   * `membench` klesly na 1 375 771 (zbytek proto, ze sekvence nize probehla
+   * bez hodin — po teto oprave uz bezi spravne).
+   *
+   * ⚠️ KDO to prepisoval, se ve zdrojich NENASLO: zadne `GPIO_MODE_ANALOG` ani
+   * `HAL_GPIO_DeInit` na `GPIOG` pin 8 (mimo `HAL_FMC_MspDeInit`, ktery se
+   * nevola — ostatni piny te skupiny AF drzi). Stav byl analog uz ~200 ms po
+   * resetu, tedy PRED bootem CM4. Dokud se puvodce nenajde, je tohle
+   * OBRANA NA SPRAVNEM MISTE, ne zaslepka: pin se znovu potvrdi TESNE PRED
+   * inicializacni sekvenci nize, takze ta uz probehne s hodinami.
+   * ⚠️ Musi zustat PRED krokem 1 (CLK_ENABLE). */
+  {
+    GPIO_InitTypeDef sdclk = {0};
+    __HAL_RCC_GPIOG_CLK_ENABLE();
+    sdclk.Pin       = GPIO_PIN_8;
+    sdclk.Mode      = GPIO_MODE_AF_PP;
+    sdclk.Pull      = GPIO_NOPULL;
+    sdclk.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    sdclk.Alternate = GPIO_AF12_FMC;
+    HAL_GPIO_Init(GPIOG, &sdclk);
+  }
 
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 2: Insert 100 us minimum delay */
-    /* Inserted delay is equal to 1 ms due to systick time base unit (ms) */
-    HAL_Delay(1);
-
-    /* Step 3: Configure a PALL (precharge all) command */
-    Command.CommandMode            = FMC_SDRAM_CMD_PALL;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = 0;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 4: Configure an Auto Refresh command */
-    Command.CommandMode            = FMC_SDRAM_CMD_AUTOREFRESH_MODE;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 8;
-    Command.ModeRegisterDefinition = 0;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 5: Program the external memory mode register */
-    tmpmrd = (uint32_t)SDRAM_MODEREG_BURST_LENGTH_1 | \
-             SDRAM_MODEREG_BURST_TYPE_SEQUENTIAL    | \
-             SDRAM_MODEREG_CAS_LATENCY_3            | \
-             SDRAM_MODEREG_OPERATING_MODE_STANDARD  | \
-             SDRAM_MODEREG_WRITEBURST_MODE_SINGLE;
-
-    Command.CommandMode            = FMC_SDRAM_CMD_LOAD_MODE;
-    Command.CommandTarget          = FMC_SDRAM_CMD_TARGET_BANK1;
-    Command.AutoRefreshNumber      = 1;
-    Command.ModeRegisterDefinition = tmpmrd;
-
-    /* Send the command */
-    HAL_SDRAM_SendCommand(&hsdram1, &Command, SDRAM_TIMEOUT);
-
-    /* Step 6: Set the refresh rate counter */
-    /* Set the device refresh rate */
-    HAL_SDRAM_ProgramRefreshRate(&hsdram1, REFRESH_COUNT);
+  /* ⚠️ Sekvence je vyclenena do `fmc_sdram_init_sequence()`, aby (a) NEZAHAZOVALA
+   * navratove hodnoty a (b) sla spustit znovu za behu (UART `sdraminit`).
+   * Selhany krok se ulozi do `g_fmc_init_fail` a hlasi ho `status`. */
+  g_fmc_init_fail = fmc_sdram_init_sequence();
 
     //Deactivate speculative/cache access to first FMC Bank to save FMC bandwidth
 //   FMC_Bank1->BTCR[0] = 0x000030D2;

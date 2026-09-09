@@ -152,8 +152,28 @@ void MX_RTC_Init(void)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "HF@%08lX%c",
                (unsigned long)n0, t);
     }
-    else
+    else if (kind == 5u)
+      /* Error_Handler: DR4 = posledni `bootled_step()`, tj. ktery init spadl. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%lu",
+               (unsigned long)(n0 & 0xFFu));   /* krok je uint8_t -> max 3 cifry */
+    else if (kind == 6u)
+      /* configASSERT: DR4 = __LINE__ v tom souboru FreeRTOS, kde assert selhal. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "assert:L%lu",
+               (unsigned long)(n0 & 0xFFFFu));  /* maskou drzim <= 5 cifer */
+    else if (kind >= 7u && kind <= 10u) {
+      /* Nedosazitelne fault vektory (viz `stm32h7xx_it.c`). Kdyz se tohle
+       * objevi, nekdo povolil `SHCSR` nebo CSS — a je to zajimave zjisteni. */
+      static const char *k7[4] = { "NMI", "MemMan", "BusFlt", "UsgFlt" };
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "%s@%08lX",
+               k7[kind - 7u], (unsigned long)n0);
+    }
+    else if (kind == 2u)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
+    else
+      /* ⚠️ Drive sem spadl KAZDY neznamy kind a hlasil se jako „malloc fail" —
+       * novy druh crashe by se tise vydaval za jiny. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "crash? %lu",
+               (unsigned long)(kind & 0xFFu));
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);
   }
 
@@ -236,6 +256,19 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* Zapis selhaneho `configASSERT` do crash black-boxu (kind 6, DR4 = radek).
+ * ⚠️ Vola se z FreeRTOS makra `configASSERT`, tedy MUZE bezet z ISR i s
+ * vypnutymi preruseními — proto zadny HAL, jen prime zapisy do BKP registru
+ * (stejny idiom jako `watchdog.c` a `HardFault_Handler`). Magic AZ NAPOSLED,
+ * aby necely zapis nevypadal jako platny zaznam. */
+void rtc_crash_assert(unsigned long line)
+{
+  RTC->BKP4R = (uint32_t)line;
+  RTC->BKP5R = 0u;
+  RTC->BKP3R = RTC_CRASH_MAGIC | 6u;
+}
+
 
 /* Pocet dni v mesici (gregoriansky kalendar vc. prestupnych let). */
 static uint8_t rtc_month_days(uint16_t y, uint8_t m)

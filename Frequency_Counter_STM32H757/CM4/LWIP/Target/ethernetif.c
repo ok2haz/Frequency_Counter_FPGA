@@ -105,6 +105,11 @@ __attribute__((section(".Rx_PoolSection"))) extern u8_t memp_memory_RX_POOL_base
 /* Variable Definitions */
 static RxAllocStatusTypeDef RxAllocStatus;
 
+/* Pocitadla vyslani — cte je CM7 pres IPC (`status`). Bez nich neslo odlisit
+ * "nevysilame vubec" od "vysilame, ale nic se nevraci". */
+uint32_t g_eth_tx_ok;
+uint32_t g_eth_tx_err;
+
 /* Handle vlastni generovany `eth.c` (deklarace v eth.h). */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -193,6 +198,42 @@ static void low_level_init(struct netif *netif)
   *       to become available since the stack doesn't retry to send a packet
   *       dropped because of memory failure (except for the TCP timers).
   */
+/* ── Preklad adresy pro ETH DMA ────────────────────────────────────────────
+ * 🔴🔴 PRICINA "link UP, ale zadna IP z DHCP" (nalezeno sondou 2026-09-08).
+ * ETH DMA je AHB master v domene D2 a vidi tamni SRAM VYHRADNE na systemove
+ * adrese `0x30xxxxxx`. Alias `0x10xxxxxx` je jen pohled JADRA CM4 pres jeho
+ * vlastni port maticove sbernice — zadny jiny master ho nezna.
+ *
+ * lwIP ale alokuje TX pbufy ze sve haldy, a ta ZAMERNE lezi v CM4 aliasu
+ * (`LWIP_RAM_HEAP_POINTER` se nesmi definovat, jinak by halda spadla do SRAM1
+ * = pamet CM7 — viz CLAUDE.md). `q->payload` je proto `0x1002xxxx` a presne
+ * takova adresa se dosud zapisovala do TX deskriptoru.
+ *
+ * Zmereno: TX deskriptor mel `DES0 = 0x1002845E`, `DES2 = 350 B` (velikost
+ * DHCP DISCOVER) a `DES3` s `OWN=0`, tedy MAC ho "odbavil" — jenze
+ * `MMC TX_PACKET_COUNT = 0`, takze na drat neslo NIC. Link pritom vyjednal
+ * 100 Mbit full, protoze autonegotiace bezi mezi PHY a switchem a MAC do ni
+ * nemluvi.
+ *
+ * ⚠️ RX tim netrpi: RX buffery jsou v poolu, ktery linker umistuje do sekce
+ * `.Rx_PoolSection` na `0x3004xxxx`, tedy uz systemove. Proto RX deskriptory
+ * ukazovaly spravne adresy a chyba se projevila jen na vysilani.
+ * ⚠️ Jednou uz jsem tuhle stopu MYLNE vyvratil: precetl jsem sondou obe adresy,
+ * videl stejny obsah a uzavrel to. Jenze to dokazuje jen ze oba aliasy miri na
+ * tutez fyzickou RAM — NE ze tam DMA dosahne (SKILL §6j). */
+#define ETH_CM4_ALIAS_BASE   0x10000000u
+#define ETH_CM4_ALIAS_END    0x10050000u
+#define ETH_CM4_ALIAS_OFFSET 0x20000000u
+
+static void *eth_dma_addr(void *cpu_addr)
+{
+  uint32_t a = (uint32_t)cpu_addr;
+  if (a >= ETH_CM4_ALIAS_BASE && a < ETH_CM4_ALIAS_END) {
+    return (void *)(a + ETH_CM4_ALIAS_OFFSET);
+  }
+  return cpu_addr;   /* uz je systemova (napr. RX pool v SRAM3) */
+}
+
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
   uint32_t i = 0U;
@@ -214,7 +255,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     if(i >= ETH_TX_DESC_CNT)
       return ERR_IF;
 
-    Txbuffer[i].buffer = q->payload;
+    Txbuffer[i].buffer = eth_dma_addr(q->payload);   /* viz `eth_dma_addr` */
     Txbuffer[i].len = q->len;
 
     if(i>0)
@@ -234,7 +275,15 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   TxConfig.TxBuffer = Txbuffer;
   TxConfig.pData = p;
 
-  HAL_ETH_Transmit(&heth, &TxConfig, ETH_DMA_TRANSMIT_TIMEOUT);
+  /* ⚠️ Navratova hodnota se drive ZAHAZOVALA, takze neuspesne vyslani bylo
+   * neviditelne. Citac dovoli poznat "vysilame, ale nic nechodi zpet" od
+   * "vysilani samo selhava". */
+  if (HAL_ETH_Transmit(&heth, &TxConfig, ETH_DMA_TRANSMIT_TIMEOUT) != HAL_OK) {
+    g_eth_tx_err++;
+    errval = ERR_IF;
+  } else {
+    g_eth_tx_ok++;
+  }
 
   return errval;
 }

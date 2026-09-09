@@ -145,6 +145,18 @@ int main(void)
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
+  /* ── HSEM 1: nesahej na sdilena GPIO soucasne s CM7 (#208) ────────────────
+   * MX_GPIO_Init a MX_ETH_Init nize konfiguruji GPIOA/B/C/G, tedy tytez porty,
+   * na kterych si CM7 za behu nastavuje encoder (PA8/PA9, PC13) a FPGA CS
+   * (PB12, soused ETH_TXD1). `HAL_GPIO_Init` je neatomicky read-modify-write,
+   * takze soubeh tise vrati cizi pin — PG8, PG11 a nejspis PB13 uz to stalo
+   * tri kola ladeni. Zamek se drzi pres CELY blok generovanych initu a pousti
+   * se az v `USER CODE BEGIN 2`.
+   * ⚠️ Best-effort (omezene cekani): deadlock pri bootu by byl horsi nez zavod,
+   * ktery navic `gpio_guard_tick()` na CM7 zachyti a opravi. */
+  for (uint32_t hs = 0; hs < 50000u; hs++) {
+    if (HAL_HSEM_FastTake(1u) == HAL_OK) break;
+  }
   /* Otevri okno degradovaneho bring-upu — plati pro VSECHNA MX_*_Init nize
    * (uzavira se v USER CODE 2). Zamerne pro vsechny, ne jen pro ETH: zadna
    * periferie CM4 (pipak, LED, ETH) nestoji za to, aby kvuli ni umrelo cele
@@ -157,6 +169,7 @@ int main(void)
   MX_TIM12_Init();
   MX_ETH_Init();
   /* USER CODE BEGIN 2 */
+  HAL_HSEM_Release(1u, 0);   /* konec bloku chraneneho HSEM 1 (viz SysInit) */
   /* Bring-up dobehl -> `Error_Handler` je od ted zase skutecne fatalni. */
   g_init_nonfatal = 0;
 
@@ -267,6 +280,22 @@ int main(void)
 		  cm4_have = (ipc_cm4_ready() && ipc_cm4_cm7_alive(now) && ipc_cm4_read(&snap)) ? 1u : 0u;
 		  cm4_gps  = (cm4_have && (snap.flags & IPC_F_GPS_VALID)) ? 1u : 0u;
 		  ipc_cm4_heartbeat(cm4_pct, now / 1000u);   /* posledni zmerena vlastni zatez [%] */
+		  /* ⚠️ PHY ID se pri STUDENEM startu nemusi precist: LAN8742A jeste bezi
+		   * vlastni power-on reset, MDIO mlci a cteni vrati same jednicky
+		   * (0xFFFF FFFF). Pri HW pruchodu 2026-08-30 to tak dopadlo — link i DHCP
+		   * pak byly v poradku, jen `status` hlasil nesmyslne "PHY ID 0xFFFFFFFF".
+		   * Dokud hodnota nedava smysl, zkousi se docist (5x/s, zastavi se hned
+		   * po uspechu -> zadna trvala zatez MDIO). */
+		  if (g_eth_init_ok && (g_eth_phy_id == 0u || g_eth_phy_id == 0xFFFFFFFFu))
+		  {
+			  uint32_t id1 = 0u, id2 = 0u;
+			  if (HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 2u, &id1) == HAL_OK &&
+			      HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 3u, &id2) == HAL_OK)
+			  {
+				  uint32_t id = ((id1 & 0xFFFFu) << 16) | (id2 & 0xFFFFu);
+				  if (id != 0u && id != 0xFFFFFFFFu) g_eth_phy_id = id;
+			  }
+		  }
 		  /* ETH bring-up (v6, F3) se publikuje OPAKOVANE, ne jen jednou po initu:
 		   * samostatny reset CM7 dela v `ipc_init` memset cele sdilene struktury,
 		   * takze jednorazovy zapis by se ztratil a Health by hlasil "ETH:--". */

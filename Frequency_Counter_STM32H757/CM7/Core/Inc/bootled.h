@@ -37,10 +37,21 @@ enum {
  *  (USER CODE BEGIN <Peripheral>_Init 0 hook — prezije CubeMX regen). */
 void bootled_step(uint8_t step);
 
+/* Posledni zapsany krok — cte ho `Error_Handler`, aby se do crash black-boxu
+ * dostalo, KDE inicializace spadla (jinak je runtime HAL chyba po IWDG resetu
+ * k nerozeznani od obycejneho watchdogu). */
+uint8_t bootled_step_get(void);
+
 /** Nenavratova diagnostika: donekonecna blika `step` (posledni zaznamenany
  *  bootled_step) krat + pauza. Vola se z Error_Handler() misto ticheho
  *  while(1){}. */
 void bootled_fail(void) __attribute__((noreturn));
+
+/* Jako `bootled_fail`, ale zopakuje vzor jen `repeats`x a VRATI SE.
+ * ⚠️ Vzniklo proto, ze `Error_Handler` blikal donekonecna, a kdyz selhal init
+ * PRED `watchdog_init()`, nemel pristroj jak z toho stavu ven. Volajici po
+ * navratu resetuje; duvod uz je v crash black-boxu. */
+void bootled_fail_n(uint8_t repeats);
 
 /** Jednorazove diagnosticke bliknuti bez zastaveni bootu — pro kroky s
  *  nefatalnim fallbackem (rozjezd displeje bez pripojeneho panelu smi

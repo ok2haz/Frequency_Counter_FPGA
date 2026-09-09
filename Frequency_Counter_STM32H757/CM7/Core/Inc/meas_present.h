@@ -40,6 +40,24 @@ double mp_stats_p2p(const mp_stats_t *s);   /* peak-to-peak = max-min; 0 pro n==
 /* Perioda [s] z kmitočtu [Hz] (0 pro f<=0). */
 double mp_period_s(double hz);
 
+/* Perioda [s] PŘÍMO z reciproké dvojice. Reciproční čítač měří `T = Δt/N`, takže
+ * podíl `gate_ns / (edges·mul)` je to, co přístroj SKUTEČNĚ naměřil — kdežto
+ * `1/f` se počítá z kmitočtu, který už byl zaokrouhlen na 5 desetin
+ * (`frequency_x100000`), a ten převod tedy zbytečně ztrácí platné číslice.
+ * ⚠️ `mul` MUSÍ pocházet z `fpga_freq_hires_mul()` — `edge_count` může být počet
+ * period dělené větve i neděleného signálu a kdo si násobitel odvozuje sám,
+ * zopakuje chybu „×4" (viz fpga_freq.h). `mul==0` = žádný nesedí.
+ * Když dvojice není použitelná, degraduje na `1/hz_fallback`.
+ * @return perioda v sekundách; 0 když ji nelze určit. */
+double mp_period_sample_s(uint64_t edges, uint64_t gate_ns, uint32_t mul,
+                          double hz_fallback);
+
+/* Čitelná časová jednotka pro |sec|: vrací "s"/"ms"/"us"/"ns"/"ps" a do *scale
+ * uloží převod, takže `hodnota_v_jednotce = sec / *scale`. `scale` smí být NULL.
+ * Pro sec == 0 vrací "s". Používá okno MĚŘENÍ pro statistiku periody, aby se
+ * průměr i σ zobrazily každý ve své vlastní smysluplné dekádě. */
+const char *mp_time_unit(double sec, double *scale);
+
 /* Nejbližší „kulatý" nominál k f (mantisa snap na 1/2/2.5/5/10 × 10^n); 0 pro f<=0. */
 double mp_nominal_auto(double hz);
 
@@ -106,6 +124,16 @@ typedef struct {
  *  příspěvek se vynechá), `ref_ppb` = systematická nejistota reference. */
 void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
                double ref_ppb, mp_budget_t *out);
+
+/* 🔴 JEDINÝ ZDROJ obou konstant rozpočtu nejistoty. Dřív byl krok TDC na TŘECH
+ * místech (`FREQ_TDC_PS`, literál v okně ANALÝZA, testovací vektory) — přesně
+ * případ pravidla „duplicitní fakta = riziko rozjetí" (SKILL.md §5).
+ * ⚠️ Bydlí v `Core/Inc`, protože je vidí **i CM4** (`-I../../CM7/Core/Inc`) a
+ * web je servíruje v `/api/state` — jinak by vznikla čtvrtá kopie v `httpd_min.c`.
+ * ⚠️ Nová deska má carry chain ~50 ps bin (~22 ps single-shot), tedy o dva řády
+ * jinde — při přechodu změnit TADY a nikde jinde. */
+#define MP_TDC_PS      2500.0   /* Si5356 4 fáze po 90° = 2,5 ns krok TDC (HW konstanta) */
+#define MP_REF_PPB     1.0      /* systematická nejistota GPSDO reference vůči UTC */
 
 /* ══════════════ Lineární proklad (drift / aging / tempco) ═══════════════════
  * Jeden estimátor pro dvě různé úlohy (#3 drift v čase, #4 tempco vůči teplotě)

@@ -236,6 +236,95 @@ neplatné datum. V USER CODE bloku je proto implementace čtoucí **`g_rtc_text_
 defaultTasku (viz `CLAUDE.md` „RTC / Vlákno"). Proto se čte hotový řetězec, jako to dělá UI.
 - [ ] Když měníš v CubeMX konfiguraci SDMMC1, **srovnej hodnoty i v `sd_probe()`** (zrcadlí `Init` strukturu).
 
+## Encoder (TIM1 encoder mode PA8/PA9 + tlačítko PC13) — ⬜ NENÍ V IOC (stav 2026-09-01)
+
+**Dnešní stav:** `.ioc` o těchto třech pinech ani o TIM1 **neví**. Konfiguruje si je
+`encoder.c encoder_init()` sám a idempotentně (AF1_TIM1 + `GPIO_PULLUP` na PA8/PA9,
+`GPIO_MODE_INPUT` + `GPIO_PULLUP` na PC13; encoder mode 3 zápisem do registrů TIM1).
+Funguje to, ale **CubeMX ty piny nepovažuje za obsazené**.
+
+### ✅ Co říká SCHÉMA (`STM32H747BIT/CPU.kicad_sch`, list 2/7 „CPU")
+
+| signál ve schématu | pin MCU | poznámka |
+|---|---|---|
+| `ENCODER_CH1` | **PA8** (146) | → TIM1_CH1 |
+| `ENCODER_CH2` | **PA9** (147) | → TIM1_CH2 |
+| `ENCODER_CH3` | **PC13** | tlačítko |
+| konektor | **J2 „Encoder"**, `Conn_02x03` (2×3) | + 2× GND + Vcc |
+| napájení konektoru | **`JP1 „Volt_Set"`** = **+5 V / +3V3**, `C3 100n` | solder jumper |
+
+🔴 **OPRAVA dřívějšího tvrzení (2026-09-01):** dřív tu stálo, že hrozí konflikt
+**PA9 = `USB_OTG_FS_VBUS`**. **To je NEPRAVDA** a bylo to vyvrácené už v
+`ENCODER_J7_NAVRH.md` §1. USB je na téhle desce vyvedené **jen jako `PA11 = USB_OTG_FS_D-`
+a `PA12 = USB_OTG_FS_D+`; VBUS sense se nepoužívá.** PA9 je pro enkodér volný.
+
+Co z důvodů zbývá (a proč to do `.ioc` přesto patří):
+- `.ioc` je v tomhle projektu **evidence obsazení pinů**. Tři signály, které na desce
+  fyzicky existují a firmware je používá, v ní nejsou — v pinout view vypadají volně.
+- **PC13 opravdu sdílí funkci s `RTC_TAMP1` / `RTC_TS` / `WKUP`** a RTC je zapnuté;
+  zapnutí tamperu by pin sebralo. (Tenhle bod platí, na rozdíl od toho o PA9.)
+- **PA8 = `RCC_MCO1`** — kdyby se zapnul výstup hodin, totéž.
+
+### 🔴 HW nález ze schématu: NEJSOU tam externí pull-upy ani RC filtr
+Na listu 2/7 jsou u J2 jen `JP1 Volt_Set` a `C3 100n` (blokování napájení).
+**Žádný pull-up, žádný RC filtr na CH1/CH2/CH3.** Tím se uzavírá otevřený bod
+`ENCODER_J7_NAVRH.md` §1 („ověřit, jestli jsou A/B hardwarově odrušené") — **nejsou**.
+Důsledky:
+- **Interní pull-upy (~40 kΩ) v `encoder_init()` jsou JEDINÉ**, které tam jsou.
+  Nastavit je v `.ioc` je proto povinné, ne kosmetické.
+- **Není žádný HW debounce.** Nese to kvadraturní dekódování (zákmit na A při
+  stabilním B dá +1/−1 s nulovým součtem) + akumulátor zbytku `s_rem` v `encoder_poll`.
+  Filtr `IC1F=IC2F=15` při f_DTS = 240 MHz potlačí jen glitche < ~1,07 µs, tedy EMI,
+  **ne** zákmit kontaktu (0,1–5 ms). To je v pořádku, ale ať se to nepřehlédne.
+- ⚠️ **`JP1 Volt_Set` umí +5 V.** Holý mechanický enkodér (společný vývod na GND) Vcc
+  vůbec nepotřebuje — interní pull-up definuje úroveň 3,3 V. **Modul s vlastními
+  pull-upy nebo aktivním výstupem ale MUSÍ mít JP1 na +3V3**, jinak žene na PA8/PA9/PC13
+  5 V. U PC13 (backup doména) to ověř v datasheetu dřív, než jumper zavřeš na 5 V.
+
+⚠️ **Totéž platí pro `PB8`/`PB9` (I2C1) a `PH9` (beeper)** — ty jsou mimo `.ioc` **záměrně**
+(zlaté pravidlo „NEPOVOLOVAT v IOC: I2C1, TIM7"). Ale pozor na rozdíl: ten záměr se týká
+**generovaného init kódu**, ne **rezervace pinu**. To jsou dvě různé věci a CubeMX umí
+druhé bez prvního (pin jako `GPIO_Input` + label).
+
+### Postup (Cortex-M7 kontext!)
+1. **Timers → TIM1 → Combined Channels = `Encoder Mode`.** Přiřadit **Cortex-M7**
+   (dual-core; jinak spadne pod CM4). Tím se PA8 stane `TIM1_CH1` a PA9 `TIM1_CH2`.
+2. **TIM1 → Parameter Settings** — musí odpovídat `encoder.c`:
+   - Prescaler `0`, Counter Mode `Up`, Counter Period `65535`,
+     Internal Clock Division `No Division` (CKD=00), auto-reload preload `Disable`
+   - Encoder Mode **`TI1 and TI2`** (= SMS=011, obě hrany obou kanálů)
+   - Input Filter **IC1 = IC2 = `15`**, Polarity `Rising`, Prescaler `Div1`, mapping `Direct`
+3. **GPIO tab → PA8, PA9:** `GPIO Pull-up/Pull-down` = **`Pull-up`** (CubeMX dává default
+   „No pull-up and no pull-down"! Encoder spíná na zem, bez pull-upu nebude počítat),
+   Maximum output speed `Low`, User Label `ENC_A` / `ENC_B`.
+4. **PC13 → `GPIO_Input`**, GPIO tab: Pull-up, User Label `ENC_BTN`.
+5. **NVIC: všechny TIM1 vektory nechat VYPNUTÉ** (BRK/UP/TRG_COM/CC). Encoder se
+   **pollује** z UiTasku, přerušení nepotřebuje a zapnuté by jen braly čas.
+6. Volitelně zamknout piny (`Locked=true`, jako má `PA10`), ať je nejde omylem přetáhnout.
+
+### Po „Generate Code"
+- 🔴 **Vzniknou NOVÉ SOUBORY `CM7/Core/Src/tim.c` + `Inc/tim.h`** (dnes v projektu nejsou).
+  Tím padá do platnosti hlavní past tohohle projektu:
+  **`Close Project → Open Project` → ověřit → teprve pak Clean → Build.**
+  Clean před Close/Open je aktivně škodlivý (viz sekce „PO REGENERACI S NOVÝMI SOUBORY").
+- Ověř, že se model načetl: `grep -c tim.c CM7/Release/Core/Src/subdir.mk` musí být > 0
+  a `find CM7/Release -name subdir.mk | wc -l` se nesmí zmenšit.
+- `git diff H757_LED.ioc` bude **vypadat větší, než změna je** — CubeMX přečísluje
+  `Mcu.IPn` a `Mcu.PinN`. To je normální, ne poškození.
+
+### 🔴 `encoder_init()` v `encoder.c` ZŮSTÁVÁ — nemazat
+- `MX_TIM1_Init()` z CubeMX volá `HAL_TIM_Encoder_Init()`, ale **NEvolá
+  `HAL_TIM_Encoder_Start()`** ani nenastaví `CEN`. Bez `encoder_init()` by čítač stál.
+- `encoder_init()` běží z UiTasku, tedy **po** `MX_TIM1_Init()`, a jen přepíše totéž →
+  výsledný stav je shodný. Je idempotentní (`s_init`), takže dvojí konfigurace nevadí.
+- **Hodnota `.ioc` je tu REZERVACE PINU a dokumentace, ne inicializace.** Kdyby se
+  init přesunul do generovaného kódu, ztratila by se odolnost proti regeneraci.
+
+### Ověření po flashi (bez sondy)
+- UART **`enc`** → otočit o jednu západku: musí vypsat `kroku=1`. Když ne, je
+  `ENC_COUNTS_PER_DETENT` vedle — přepíná se za běhu `enc div 1|2|4` (STATUS #95).
+- Stisk musí dát `short_press`, dlouhý `long_press`.
+
 ## 🔴 PO REGENERACI S NOVÝMI SOUBORY: Close Project → Open Project (F5 NESTAČÍ!)
 Když CubeMX přidá **nové zdrojové soubory** (nová periferie, middleware), zapíše je do `.project`
 jako `<link>` entry. Eclipse ale `.project` parsuje **jen při otevření projektu** — z něj staví

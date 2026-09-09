@@ -26,6 +26,23 @@
 #define FB_W      800
 #define FB_H      480
 #define NUM_FB    3
+/* Vychozi mrtvy cas DMA2D (viz `prim_stm32_set_deadtime`). Zamerne NIZKY:
+ * kazdy takt navic zpomaluje kresleni a UiTask uz tak jede kolem 70 % CPU.
+ * Spravna hodnota se hleda na desce pres `d2ddt` proti `LTDC: podteceni FIFO`. */
+/* 🔴 ZMERENO NA DESCE 2026-09-06 (`tools/ltdc_knee.ps1`, vynucene plne
+ * prekresleni pres `ui`). Podteceni LTDC pri ruznem mrtvem case:
+ *      d2ddt   196   204   212   220   240   255
+ *      podt.    68    64     0     0     0     0
+ * Zlom je tedy kolem 208; od 212 vys je NULA. Overeno i zpetne (255 -> 0,
+ * 192 -> 64, 255 -> 0, 192 -> 70), takze to neni nahoda ani drift.
+ * ⚠️ Pocet flipu zustal 59-65 nad i pod zlomem -> propustnost kresleni tim
+ * NEKLESLA (DMA2D nebyl uzkym hrdlem; tim byla SDRAM).
+ * Voli se 240, ne 255: ~15 % rezerva nad zlomem a zbytek do maxima zustava
+ * jako DIAGNOSTICKY SIGNAL — kdyby podteceni znovu naskocilo, znamena to, ze
+ * se zmenilo neco jineho, ne ze staci pridat.
+ * ⚠️ Puvodnich 8 bylo jen odhadem a NIC neresilo (podteceni ~1 na snimek =
+ * probliknuti pri KAZDEM prekresleni, presne jak to hlasil uzivatel). */
+#define D2D_DEADTIME_DEFAULT  240u
 #define FB1_ADDR  0xC0100000u
 #define FB2_ADDR  0xC0200000u
 
@@ -38,6 +55,8 @@ static prim_pixel_t *fb_px(int i) { return (prim_pixel_t *)s_fb_addr[i]; }
 
 /* Adresa aktualne ZOBRAZENEHO (front) bufferu — pro screenshot export (RGB565). */
 const void *prim_stm32_front_addr(void) { return (const void *)s_fb_addr[s_front]; }
+
+int prim_stm32_fb_count(void) { return NUM_FB; }
 
 /* ── Dirty-rect (copy-forward jen zmenenych oblasti) ───────────────────────────
  * Triple buffer: novy back je 2 snimky stary -> kopiruje se sjednoceni dirty
@@ -261,8 +280,21 @@ static void copy_forward_dedup(void)
     for (int i = 0; i < nk; i++) copy_rect(&keep[i]);
 }
 
+/* Pocet podteceni FIFO LTDC (`FUIF`). Kdyz LTDC nestihne z pameti nacist pixely
+ * pro prave scanovany radek, vyleze na panel POSKOZENY SNIMEK — a je jedno, jak
+ * zdrava je jinak SDRAM. Priznak je STICKY (drzi, dokud se nesmaze pres `ICR`),
+ * takze staci cist pri kazdem flipu; nic se nezmeskа.
+ * ⚠️ Zamerne bez preruseni: NVIC pro LTDC neni v `.ioc` a zapinat ho jen kvuli
+ * diagnostice by bylo horsi nez tohle cteni jednoho registru. */
+volatile uint32_t g_ltdc_underrun;
+
 void prim_stm32_present(void)
 {
+    if (LTDC->ISR & LTDC_ISR_FUIF) {      /* FIFO podteklo od minula */
+        LTDC->ICR = LTDC_ICR_CFUIF;
+        g_ltdc_underrun++;
+    }
+
     /* NON-BLOCKING flip: cekej na PREDCHOZI flip (pri nizke kadenci OKAMZITE), ne
      * na aktualni. Diky 3. bufferu copy-forward nikdy nepise do scanovaneho bufferu. */
     uint32_t guard = 0;
@@ -296,9 +328,35 @@ void prim_stm32_present(void)
     prim_set_target(s_appfb);
 }
 
+/* Mrtvy cas DMA2D mezi dvema AXI pristupy (`DMA2D_AMTCR.DT`, jednotka = takty
+ * AHB). 0 = vypnuto. Runtime laditelne pres UART `d2ddt <n>`, aby se spravna
+ * hodnota dala najit BEZ preflashovani — meritkem je `LTDC: podteceni FIFO`
+ * ve `status`, ktere musi klesnout na nulu. */
+volatile uint8_t g_d2d_deadtime = D2D_DEADTIME_DEFAULT;
+
+void prim_stm32_set_deadtime(uint8_t dt)
+{
+    g_d2d_deadtime = dt;
+    /* AMTCR se smi prepsat kdykoli; DMA2D si ho cte pri kazdem prenosu. */
+    DMA2D->AMTCR = dt ? (((uint32_t)dt << DMA2D_AMTCR_DT_Pos) | DMA2D_AMTCR_EN) : 0u;
+}
+
 void prim_stm32_init(prim_fb_t *fb)
 {
     __HAL_RCC_DMA2D_CLK_ENABLE();
+
+    /* 🔴 DMA2D MUSI PUSTIT LTDC KE SLOVU (STATUS #139).
+     * `prim_stm32_present` spousti copy-forward hned po zadosti o prehozeni
+     * bufferu a ZAMERNE na nej neceka — jenze LTDC v te chvili scanuje panel
+     * z teze SDRAM. DMA2D je na AXI agresivni (dlouhe bursty), takze LTDC
+     * nestihne naplnit FIFO -> podteceni -> POSKOZENY SNIMEK.
+     * Zmereno na desce: `flip` +109 a `LTDC podteceni` +109 za 5 s, tedy
+     * PRESNE JEDNO podteceni na kazdy flip — deterministicke, ne nahodne
+     * vytizeni sbernice.
+     * `AMTCR` vklada mezi AXI pristupy DMA2D mrtvy cas, cimz se sbernice
+     * uvolni pro LTDC. Cena je pomalejsi DMA2D; proto je hodnota laditelna
+     * a vychozi drzena nizko. */
+    prim_stm32_set_deadtime(g_d2d_deadtime);
 
     /* Vycisti vsechny 3 buffery na cerno (boot: cisty start misto smeti v SDRAM). */
     for (int i = 0; i < NUM_FB; i++)

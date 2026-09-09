@@ -12,6 +12,7 @@
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
+#include "encoder.h"          /* encoder_div/_set_div — persist delice kroku */
 #include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
@@ -36,7 +37,9 @@
  * jinak by se z flash nacetl stary 2,6 V; lze i rucne v okne PRAHY bez bumpu).
  * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
  * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434646u   /* "SCFF" (2026-08-24: VBAT prah 2,6->2,8 V pro CR2032 3,3 V nominal) */
+/* 2026-09-07: pribylo `datalog_store` + `datalog_period_s` (volba uloziste a
+ * cetnosti dlouhodobeho logu) -> "SCG0" -> "SCG1". */
+#define SYSCFG_BLOB_MAGIC   0x53434731u   /* "SCG1" */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -56,6 +59,8 @@ typedef struct {
     uint8_t  tz_auto;
     uint8_t  ui_cfg;
     uint8_t  datalog_en;   /* 1 = zaznam stability bezi (okno Datalog) */
+    uint8_t  datalog_store;    /* datalog_store_t: 0 AUTO / 1 FLASH / 2 SD */
+    uint16_t datalog_period_s; /* perioda vzorkovani [s]; 0 = vychozi */
     uint8_t  anim_en;      /* 1 = animace zapnute (okno Animace) */
     uint16_t fx_en;        /* bitmaska grafickych efektu (FX_*), viz freertos_shared.h */
     /* Math/limity (#43/#44). Flash je jediny zdroj (nejsou v BKP) -> aplikuji se
@@ -103,6 +108,11 @@ typedef struct {
     /* Rozlozeni hlavni obrazovky (0 = hybridni/vychozi, 1 = klasicke). Neni v BKP
      * -> flash je jediny zdroj a aplikuje se VZDY (jako fx_en/anim_en). */
     uint8_t  layout_classic;
+    /* Delic kroku TIM1 na jednu ZAPADKU encoderu (1/2/4). Jedina HW-zavisla
+     * konstanta UI vrstvy — persistuje, aby se kvuli ni nemuselo preflashovat.
+     * ⚠️ 0 (stary blob) je neplatna hodnota a `encoder_set_div` ji ignoruje,
+     * takze zustane vychozi 4. */
+    uint8_t  enc_div;
 } syscfg_blob_t;
 
 static w25q_store_t s_store;
@@ -126,6 +136,8 @@ static void pack(syscfg_blob_t *b)
     b->tz_auto      = g_tz_auto;
     b->ui_cfg       = g_ui_cfg;
     b->datalog_en   = datalog_enabled() ? 1u : 0u;
+    b->datalog_store    = datalog_get_store();
+    b->datalog_period_s = datalog_period_s();
     b->anim_en      = g_anim_enabled ? 1u : 0u;
     b->fx_en        = (uint16_t)(g_fx_enabled & FX_ALL);
     b->meas_math_en  = g_meas_cfg.math_en ? 1u : 0u;
@@ -162,6 +174,7 @@ static void pack(syscfg_blob_t *b)
     strncpy(b->web_user, (const char *)g_web_user, sizeof b->web_user - 1);
     strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
     b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
+    b->enc_div        = encoder_div();
 }
 
 void syscfg_load(void)
@@ -241,6 +254,7 @@ void syscfg_load(void)
      * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
      * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
+    encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;
@@ -262,6 +276,10 @@ void syscfg_load(void)
     g_tz_auto     = b.tz_auto ? 1 : 0;
     g_ui_cfg      = b.ui_cfg;
     datalog_set_enabled(b.datalog_en != 0);
+    /* ⚠️ Poradi: perioda PRED ulozistem — `datalog_set_store` dela re-init,
+     * ktery si periodu cte pri planovani prvniho vzorku. */
+    if (b.datalog_period_s) datalog_set_period_s(b.datalog_period_s);
+    datalog_set_store(b.datalog_store);
     g_anim_enabled = b.anim_en ? 1 : 0;
 }
 

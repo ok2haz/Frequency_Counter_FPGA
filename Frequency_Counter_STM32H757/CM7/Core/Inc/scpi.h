@@ -82,7 +82,7 @@ typedef struct {
 /* ── Zdroj dat (abstrakce mezi CM7 globály a CM4 IPC snapshotem) ──────────────
  * Parser/handlery (`scpi.c`) jsou DATA-SOURCE nezávislé — čtou z `scpi_src_t`.
  * Backend ho naplní: CM7 z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`
- * (`scpi_src_load_cm7`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
+ * (`scpi_src_load_cm7_ex`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
  * říkají, co je platné — neplatné → dotaz vrátí SCPI NaN `9.91E37`. Akce (config
  * SET, čtení logu) jsou callbacky (na CM7 zápis `g_meas_cfg`/datalog, na CM4 cmd ring). */
 #define SCPI_V_FREQ    (1u << 0)   /* platné měření /4 */
@@ -131,6 +131,10 @@ struct scpi_src {
     uint8_t  set_chan;              /* 0/1 */
     uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
+    /* ⚠️ 1 = kmitocet je z EMULATORU (`fpgasim`), ne z FPGA. Musi byt v `scpi_src_t`,
+     * aby `DIAG:SIM?` odpovidalo STEJNE pres USB (CM7) i pres TCP/HTTP (CM4 ze
+     * snapshotu, bit IPC_F_SIM) — jinak by web servíroval emulaci jako mereni. */
+    uint8_t  sim_active;
     /* Teploty [0,01 °C]. */
     int16_t  t_ocxo_c100, t_board_c100, t_mcu_c100, t_fpga_c100;
     /* Napětí [mV] + RF kalibrace. */
@@ -153,6 +157,15 @@ struct scpi_src {
     /* Aplikuj CALC SET (SCPI_CFG_* klíč, bool vu / double vd). @return 1 = OK.
      * Aktualizuje i src->meas (aby compound SET→readback sedělo). */
     int (*set_cfg)(scpi_src_t *s, uint8_t key, uint32_t vu, double vd);
+    /* 🔴 1 = `set_cfg` je NULL ZAMERNE (ovladani zakazane), ne proto, ze chybi data.
+     * Bez tohohle rozliseni vraci parser na oba pripady `-230 "Data corrupt or
+     * stale"` — a to uzivateli LZE O PRICINE: posle ho hledat HW poruchu misto
+     * prepinace `web_ctrl_en`. SCPI-99 ma na ochranu presne `-203 "Command
+     * protected"` (*cannot be executed due to protection, e.g. password*).
+     * Nalezeno pri overovani site na HW 2026-09-02 (STATUS #130).
+     * ⚠️ NEJDE do IPC snapshotu — `scpi_src_t` se sklada lokalne na kazdem jadre
+     * (`ipc_scpi_src_from_snap`), takze pridani pole NEVYZADUJE bump IPC_VERSION. */
+    uint8_t ctrl_locked;
     /* Přečti n-tý datalog záznam od nejnovějšího (MMEM:DATA?). @return 1 = OK. */
     int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
 };
@@ -184,7 +197,6 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
 
 #if defined(CORE_CM7)
 /** CM7 backend: naplní src z globálů + nastaví akce (g_meas_cfg / datalog). */
-void   scpi_src_load_cm7(scpi_src_t *src);
 /** USB konzole (CM7): načte CM7 zdroj + zpracuje nad SDÍLENÝM default kontextem.
  *  Signatura zachována kvůli volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);
