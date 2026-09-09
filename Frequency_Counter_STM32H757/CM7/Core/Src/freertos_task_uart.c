@@ -973,7 +973,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1769,6 +1769,62 @@ void UartTask_run(void *argument)
 					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
 				  }
 			  }
+			  #define BGCHK_BLOCKS 120u
+			  /* 🔴 `bgcheck` — RETENCNI TEST PRAVE TE PAMETI, KTERA PRI ROZPADU DELA
+			   * PROBLIKAVANI (audit F-0013, 2026-09-09).
+			   *
+			   * PROC to nedokazal `membench`: ten testuje SDRAM na `0xC0400000` (MPU region
+			   * 1), zatimco rozsah `.sdram` na `0xC0800000` ma v seznamu NEDOTKNUTELNYCH
+			   * (`membench.c:348`) — psat se do nej nesmi. Jenze prave tam lezi `bg_cache`,
+			   * a mechanismus problikavani je podle #138 ten, ze partial redraw blituje
+			   * POSKOZENE pozadi. Merilo se tedy 1 048 646 chybnych bitu v JINE pameti, nez
+			   * ktera dela viditelnou vadu. (SKILL §7e: nejdriv over MERITKO, pak jim mer.)
+			   *
+			   * JAK to test obchazi: `bg_cache` se zapise JEDNOU v `screen_main_init()` a pak
+			   * uz se JEN CTE, takze se jeho obsah nesmi zmenit. Staci ho dvakrat po sobe
+			   * sesumovat — zadny zapis, tedy NENI to destruktivni a smi to bezet za plneho
+			   * provozu (na rozdil od `membench`, ktery tenhle rozsah proto vynechava).
+			   * ⚠️ Behem testu nemenit tema ani rozlozeni — `screen_main_init()` bg_cache
+			   * prekresli a test by hlasil falesnou zmenu.
+			   * ⚠️ Cte se po 32 bitech ze zarovnane adresy: `.sdram` je Device pamet, kde by
+			   * nezarovnany pristup byl UsageFault (audit F-0012).
+			   * ⚠️ Bezi v UartTasku, ktery watchdog nehlida — `osDelay(1000)` je tu bezpecny. */
+			  else if (strcmp(RxBuffer, "bgcheck") == 0) {
+			  	static uint32_t bgsum[BGCHK_BLOCKS];   /* .bss, ne stack (UartTask ma 4 kB) */
+			  	const uint32_t *bg = (const uint32_t *)(const void *)screen_main_bg();
+			  	uint32_t words = ((uint32_t)SCR_MAIN_BG_CACHE_W *
+			  	                  (uint32_t)SCR_MAIN_BG_CACHE_H * 2u) / 4u;
+			  	uint32_t per = words / BGCHK_BLOCKS;
+			  	if (bg == NULL || per == 0u) {
+			  		printf("bgcheck: bg_cache neni k dispozici\r\n");
+			  	} else {
+			  		for (uint32_t b = 0; b < BGCHK_BLOCKS; b++) {
+			  			uint32_t s = 2166136261u;                  /* FNV-1a */
+			  			const uint32_t *q = bg + (size_t)b * per;
+			  			for (uint32_t i = 0; i < per; i++) { s ^= q[i]; s *= 16777619u; }
+			  			bgsum[b] = s;
+			  		}
+			  		osDelay(1000);                                 /* >> 64 ms obnovy cele matice */
+			  		uint32_t bad = 0, first = 0xFFFFFFFFu;
+			  		for (uint32_t b = 0; b < BGCHK_BLOCKS; b++) {
+			  			uint32_t s = 2166136261u;
+			  			const uint32_t *q = bg + (size_t)b * per;
+			  			for (uint32_t i = 0; i < per; i++) { s ^= q[i]; s *= 16777619u; }
+			  			if (s != bgsum[b]) { bad++; if (first == 0xFFFFFFFFu) first = b; }
+			  		}
+			  		printf("bgcheck: bg_cache @%08lX, %lu kB, %lu blok(u) po %lu B\r\n",
+			  		       (unsigned long)(uintptr_t)bg,
+			  		       (unsigned long)(words * 4u / 1024u),
+			  		       (unsigned long)BGCHK_BLOCKS, (unsigned long)(per * 4u));
+			  		if (bad == 0u)
+			  			printf("  po 1 s BEZE ZMENY -> bg_cache drzi, problikavani hledej jinde\r\n");
+			  		else
+			  			printf("  ZMENILO SE %lu/%lu bloku, prvni @%08lX  <== bg_cache SE ROZPADA\r\n",
+			  			       (unsigned long)bad, (unsigned long)BGCHK_BLOCKS,
+			  			       (unsigned long)(uintptr_t)(bg + (size_t)first * per));
+			  	}
+			  }
+			  #undef BGCHK_BLOCKS
 			  /* Mrtvy cas DMA2D proti podteceni LTDC (#139). Ladi se ZA BEHU, aby
 			   * se spravna hodnota dala najit bez preflashovani: nastav, chvili
 			   * koukej na displej a porovnej `LTDC: podteceni FIFO` ve `status`.
