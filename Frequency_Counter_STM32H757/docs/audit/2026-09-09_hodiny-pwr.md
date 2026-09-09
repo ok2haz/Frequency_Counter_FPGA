@@ -201,8 +201,10 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   není volání `PeriphCommonClock_Config()`.
 - **Riziko opravy:** nízké — mění se nevolaný kód. Pozor jen na to, aby úprava nespadla mimo
   bloky `USER CODE` (jinak ji regen smaže a pojistka zmizí právě ve chvíli, kdy je potřeba).
-- **Vztah k lekcím:** nová lekce po opravě (detekce grepem, viz výše).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** `L-0007`.
+- **Stav:** opraveno 2026-09-09 pojistkou (firmware beze změny): kontrola v
+  `scripts/check_lessons.sh` + bod v `CUBEMX_CHECKLIST.md` sekce „RCC / Clock Configuration“.
+  Vzor ověřen pozitivní i negativní kontrolou (volání chytí, definici `(void)` ani prototyp ne).
 
 ---
 

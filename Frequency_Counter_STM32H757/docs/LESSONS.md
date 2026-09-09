@@ -28,6 +28,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0004 | Žádná čekací smyčka bez timeoutu. | grep `while *(!*(.*&` |
 | L-0005 | Komentáře a logika nikdy v jednom commitu. | kontrola diffu před commitem |
 | L-0006 | U konstanty odvozené z hodin uveď zdroj hodin a jeho frekvenci; ověřuj přepočtem z `HAL_RCCEx_GetPeriphCLKFreq()`, ne z komentáře. | checklist G + přepočet při auditu modulu |
+| L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/check_lessons.sh` (cílená kontrola na `CM4/Core/Src/main.c`) |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -103,7 +104,29 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0004
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0007, L-0008, … -->
+### L-0007 — Sdílené PLL smí konfigurovat jen jedno jádro
+
+- **Datum:** 2026-09-09
+- **Oblast:** hodiny / dvě jádra
+- **Symptom:** (zatím nenastalo — pojistka proti latentní pasti.) Projevilo by se jako náhlý
+  rozpad obsahu SDRAM nebo černý displej za běhu, tedy třída „SDRAM čte samé nuly“, kterou
+  by nikdo nehledal v hodinách druhého jádra.
+- **Příčina:** CubeMX generuje `PeriphCommonClock_Config()` do `main.c` **obou** jader a volání
+  vkládá do `main()` hned za `SystemClock_Config()`. Na CM4 je ta funkce dnes jen definovaná,
+  nevolaná. Kdyby se zavolala, `HAL_RCCEx_PeriphCLKConfig()` by PLL před přeprogramováním vypnul
+  (`stm32h7xx_hal_rcc_ex.c:3717` `__HAL_RCC_PLL2_DISABLE()`, `:3821` `__HAL_RCC_PLL3_DISABLE()`),
+  a CM7 přitom z týchž PLL bere FMC/SDRAM (PLL2R), LTDC a ADC (PLL3R) a SPI2 (PLL2P).
+- **Oprava:** Kód firmwaru **beze změny** (mrtvá funkce se nemaže, regen by ji stejně vrátil).
+  Přidána kontrola do `scripts/check_lessons.sh` a bod do `CUBEMX_CHECKLIST.md`.
+- **Pravidlo:** Sdílené PLL a systémové hodiny konfiguruje **výhradně CM7**; CM4 nesmí volat
+  `SystemClock_Config()` ani `PeriphCommonClock_Config()`. Po každé regeneraci to ověř.
+- **Detekce:** `scripts/check_lessons.sh` — cílená kontrola na `CM4/Core/Src/main.c`
+  (hledá volání `PeriphCommonClock_Config();`, definici `(void)` ani prototyp nechytá;
+  ověřeno pozitivní i negativní kontrolou vzoru).
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0005
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0008, L-0009, … -->
 
 ---
 

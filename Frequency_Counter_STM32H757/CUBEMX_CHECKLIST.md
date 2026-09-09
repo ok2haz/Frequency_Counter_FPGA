@@ -20,6 +20,15 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - I2C4 clock: **D3PCLK1** (PCLK4 = 120 MHz)
 - USART1 clock: **D2PCLK2** (PCLK2 = 120 MHz)
 - I-Cache **ON**, D-Cache **ON**
+- 🔴🔴 **PO REGENERACI ZKONTROLUJ, ŽE CM4 NEVOLÁ `PeriphCommonClock_Config()`** (audit F-0005,
+  2026-09-09). CubeMX tu funkci generuje **do obou** `main.c` a volání do `main()` vkládá hned
+  za `SystemClock_Config()`. Na CM7 to tak být má; **na CM4 to být nesmí** — `HAL_RCCEx_PeriphCLKConfig`
+  před přeprogramováním PLL vypíná (`__HAL_RCC_PLL2_DISABLE` / `PLL3_DISABLE`), takže by CM4
+  za běhu odstavil hodiny SDRAM (FMC z PLL2R) a LTDC (PLL3R) pod rukama CM7. Projev by vypadal
+  jako „SDRAM čte samé nuly“ / rozpad obrazu, a hledalo by se to v kreslicím kódu.
+  Dnes je funkce v `CM4/Core/Src/main.c` definovaná, ale **nevolaná** — a tak to má zůstat.
+  Kontrola: `scripts/check_lessons.sh` (hlásí `ZAKAZANO: CM4 volá PeriphCommonClock_Config()`),
+  nebo ručně `grep -nE 'PeriphCommonClock_Config *\( *\) *;' CM4/Core/Src/main.c` → musí být prázdné.
 
 ## DSI Host  ⚠️
 - Number of lanes: **1**
