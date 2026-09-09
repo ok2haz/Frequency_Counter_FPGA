@@ -431,7 +431,14 @@ co bylo pod nimi.**
   ⚠️ **Ověřuj retenci, ne jen „displej jede".** `membench` řádek **„retence po 1 s"** musí být **0**.
   Hodnota se kdysi nechala právě proto, že jedno měření vrátilo 0 — a bylo to falešné uklidnění;
   po power-cyklu dal tentýž test **1 048 646 chybných bitů**. **Jedno čisté měření nestačí.**
-- 🔴 **SDRAM adresy se můžou opakovat po 2 MB** (podezření pájka `FMC_A9`=`PF15`). Než saháš na zobrazovací řetězec, přečti `membench` řádek `fb_alias`. Viz „Benchmark pamětí".
+- ✅ **`FMC_A9` = `PF15` PROZVONĚN 2026-09-09 — v pořádku, podezření VYŘAZENO.**
+  Dřív tu stálo „SDRAM adresy se můžou opakovat po 2 MB (podezření pájka `FMC_A9`)".
+  Uživatel spoj prozvonil a je dobrý; tuhle stopu už neotvírat.
+  ⚠️ `membench` sice 2026-09-09 hlásil **překryv po 256 kB**, ale ten verdikt je
+  **nepoužitelný**, dokud nejsou čistá čtení — a ta čistá nejsou (chyby vznikají už
+  při zápisu s okamžitým ověřením). Rozpadlá/špatně přečtená buňka vypadá jako „cizí
+  zápis do kontrolní buňky" a vyrobí falešné podezření na HW; přesně tak vzniklo #72.
+  **Alias se smí posuzovat až po opravě čtecí cesty** (rpipe + kompenzace I/O).
   ⚠️ **Verdikt o překryvu je NEDŮVĚRYHODNÝ, dokud retence není 0** — rozpadlé buňky vypadají
   jako „cizí zápis do kontrolní buňky" (přesně to `membench` 2026-09-04 hlásil). Nejdřív refresh, pak alias.
 
