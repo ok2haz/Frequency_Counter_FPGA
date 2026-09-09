@@ -101,8 +101,17 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   kdyby do NMI někdy vedla i jiná (nepotvrzená) příčina, vznikla by smyčka NMI. Proto opravu
   spárovat s tím, že se návrat provede **jen** ve větvi `if (RCC->CIFR & RCC_CIFR_HSECSSF)`,
   a v ostatních případech chování ponechat.
-- **Vztah k lekcím:** nová lekce po opravě (třída „komentář popisuje chování, které kód nemá“).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** `L-0008`.
+- **Stav:** opraveno 2026-09-09, ale **jinak, než navrhoval tento nález**. Smazat `while (1)`
+  by nestačilo: CSS při výpadku HSE ten oscilátor vypne a přepne SYSCLK na HSI, takže
+  SYSCLK spadne 480 → 64 MHz (USART1 pak vysílá ~15 360 Bd místo 115 200 = nečitelná konzole)
+  a PLL1/2/3 přijdou o referenci, tedy FMC/SDRAM i LTDC zůstanou bez hodin. „Běžet dál a hlásit
+  nahlas“ na této desce **není proveditelné**. Zamrznutí proto zůstává (resetuje IWDG ~4 s),
+  ale výpadek se **zaznamená** do crash black-boxu: kind 7, `DR4 = RCC->CR` → po restartu
+  `status` ukáže `NMI@<RCC_CR>` (z bitů HSEON/HSERDY/HSION je vidět, jestli HSE opravdu zmizel).
+  Dekodér kind 7 už existoval (`rtc.c:163-168`), takže stačil zápis. Oba nepravdivé komentáře
+  opraveny. Ověřeno: `.text` 594 504 → 594 536 (+32 B), `NMI_Handler` 84 B (dřív ~52),
+  build 0 varování, `tools/audit.py` 92 OK / 0 selhání / 2 s varováním.
 
 ---
 

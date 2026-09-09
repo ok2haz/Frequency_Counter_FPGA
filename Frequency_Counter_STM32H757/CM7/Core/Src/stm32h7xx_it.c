@@ -98,19 +98,36 @@ void NMI_Handler(void)
    * tedy TICHE zamrznuti. Kdyby je nekdo v budoucnu povolil, byla by to
    * regrese, kterou by nic neohlasilo (SKILL §3 — tiche selhani).
    * Proto: zapsat do crash black-boxu a resetnout, stejne jako HardFault. */
-  /* 🔴 NERESETOVAT. Jediny realny zdroj NMI je tu CSS = ztrata HSE, a ta je
-   * STAVOVA: kdyz trva, reset ji neodstrani a vznikne nekonecna smycka
-   * (presne to se stalo 2026-09-08). HW uz se sam prepnul na HSI, takze
-   * pristroj BEZI DAL — jen proti spatne casove zakladne.
-   * Spravna reakce u kmitoctoveho normalu je proto: prestat merit tise,
-   * zaznamenat to a hlasit nahlas. Priznak cte `status` i SYS pilulka. */
+  /* Jediny realny zdroj NMI je tu CSS = ztrata HSE. Zapina se vedome pres UART
+   * `css on`, pri bootu je zamerne vypnuty. Vypadek se ZAZNAMENA a jadro se
+   * NECHA ZAMRZNOUT ve smycce nize; IWDG (~4 s) pak desku resetuje a po
+   * restartu `status` duvod precte z crash black-boxu.
+   * PROC se z NMI nevraci (opraveno 2026-09-09, audit F-0002): CSS pri vypadku
+   * HSE ten oscilator vypne a prepne SYSCLK na HSI, takze SYSCLK spadne
+   * 480 -> 64 MHz. Tim se rozjede baudrate USART1 (PCLK2 120 -> 16 MHz, konzole
+   * necitelna) a PLL1/2/3 prijdou o referenci, takze FMC (SDRAM = framebuffery)
+   * i LTDC zustanou bez hodin. "Bezet dal a hlasit nahlas" tedy na teto desce
+   * NENI mozne — nebylo by to cim vypsat ani kam nakreslit.
+   * Smycka resetu nehrozi: CSS se po resetu sam nezapina (neni persistentni).
+   * POZOR: do 2026-09-09 tu stalo, ze se pristroj nezastavi a stav ohlasi —
+   * kod to nikdy nedelal, `while (1)` nize je tu od zacatku. */
   if (RCC->CIFR & RCC_CIFR_HSECSSF) {
     RCC->CICR = RCC_CICR_HSECSSC;      /* potvrdit, jinak by NMI hned znovu */
     if (g_css_fail < 0xFFFFu) g_css_fail++;
+    /* Crash black-box, kind 7 -> po restartu `status` ukaze `NMI@<RCC_CR>`.
+     * Poradi data-pak-magic (jako watchdog.c i Error_Handler), aby reset
+     * uprostred zapisu nenechal platny magic nad starymi daty.
+     * DR4 = RCC->CR: z bitu HSEON/HSERDY/HSION se pozna, jestli HSE opravdu
+     * zmizel, nebo slo o jinou pricinu NMI. */
+    PWR->CR1 |= PWR_CR1_DBP;           /* povol zapis do backup domeny */
+    RTC->BKP4R = RCC->CR;
+    RTC->BKP5R = 0u;
+    RTC->BKP3R = 0xC7A50000u | 7u;     /* RTC_CRASH_MAGIC | kind 7 = NMI/CSS */
   }
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
+   /* Zamrznuti je ZAMERNE (duvod viz vyse) — resetuje az IWDG. */
    while (1)
   {
   }
