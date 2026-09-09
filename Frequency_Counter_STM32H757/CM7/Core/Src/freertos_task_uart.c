@@ -488,8 +488,14 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "css on") == 0) {
 				  /* Vedome zapnuti hlidace HSE. ⚠️ Pri bootu se ZAMERNE nezapina:
 				   * na teto desce (HSEBYP=1, tedy vnejsi hodiny) se spustil hned
-				   * a delal reset smycku. Od 2026-09-08 uz NMI neresetuje, takze
-				   * nejhorsi pripad je hlaseni „CASOVA ZAKLADNA NEPLATI". */
+				   * a delal reset smycku.
+				   * ⚠️ CO SE STANE PRI VYPADKU HSE (upresneno 2026-09-09, F-0002):
+				   * NMI vypadek zapise do crash black-boxu (kind 7) a jadro
+				   * ZAMRZNE — po ~4 s desku resetuje IWDG a `status` pak ukaze
+				   * `NMI@<RCC_CR>`. NENI to jen "hlaseni za behu", jak tu stalo
+				   * do 2026-09-09: CSS pri vypadku prepne SYSCLK na HSI, cimz
+				   * se rozjede baudrate konzole a SDRAM i LTDC prijdou o hodiny,
+				   * takze bezet dal se nema jak projevit. Viz `NMI_Handler`. */
 				  HAL_RCC_EnableCSS();
 				  printf("css: zapnuto (HSECSSON). Vypnout jde jen resetem.\n");
 				  printf("  pri vypadku HSE se objevi radek `HSE:` ve `status`.\n");

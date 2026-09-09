@@ -112,6 +112,13 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   Dekodér kind 7 už existoval (`rtc.c:163-168`), takže stačil zápis. Oba nepravdivé komentáře
   opraveny. Ověřeno: `.text` 594 504 → 594 536 (+32 B), `NMI_Handler` 84 B (dřív ~52),
   build 0 varování, `tools/audit.py` 92 OK / 0 selhání / 2 s varováním.
+- **Zjištění, které z opravy vypadlo (nové, neopravené):** řádek `HSE: CSS hlasil vypadek Nx`
+  ve `status` (`freertos_task_uart.c:2016-2018`) se **nemůže nikdy vypsat**. Čte `g_css_fail`,
+  což je obyčejná proměnná v `.bss` (`freertos.c:272`), a jediná cesta, jak se zvýší, končí
+  zamrznutím a resetem od IWDG — reset RAM vynuluje. Trvalý záznam po výpadku HSE nese jen
+  crash black-box (`NMI@<RCC_CR>`). Levná náprava, pokud se ta živá indikace má zachovat:
+  přesunout počítadlo do volného BKP registru. **Nechávám otevřené jako S4** — samo o sobě
+  to nic nerozbíjí a patří to k modulu „přerušení a RTOS“.
 
 ---
 
