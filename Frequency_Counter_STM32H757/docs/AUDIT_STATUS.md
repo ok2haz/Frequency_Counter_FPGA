@@ -3,13 +3,15 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-10 (4. sezení — F5 opravy)
+**Poslední aktualizace:** 2026-09-10 (5. sezení — modul 6)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–5 prošly F3 (jen nálezy).
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 F1 je přeskočená a je to rostoucí dluh (viz níže).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže), teprve pak modul 6
-„drivery: SPI2/FPGA, QSPI, SDMMC“.
+**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže), pak modul 7
+„drivery: SDMMC + FatFs“.
+⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
+jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
 
 **Otevřené po F5** (5× S3 + 1 částečně opravený S1). Čísla v tabulce výše se **odvozují
 z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola`:
@@ -43,8 +45,9 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
 | 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
-| 6 | drivery: SPI2/FPGA, QSPI, SDMMC | `fpga_freq.c`, `w25q*.c`, `sd_export.c` | CM7 | nezačato | — | – | – | – | – | — |
-| 7 | aplikační logika UI | `app_gpsdo.c`, `screens/*`, `libui` | CM7 | nezačato | — | – | – | – | – | — |
+| 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
+| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c` | CM7 | nezačato | — | – | – | – | – | — |
+| 8 | aplikační logika UI | `app_gpsdo.c`, `screens/*`, `libui` | CM7 | nezačato | — | – | – | – | – | — |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -57,8 +60,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 1 | 0 | 0 |
 | S2 | 0 | 3 | 0 |
-| S3 | 5 | 10 | 0 |
-| S4 | 0 | 3 | 0 |
+| S3 | 6 | 10 | 0 |
+| S4 | 1 | 3 | 0 |
 
 **Modul 1 — opraveno:** F-0001 (`pwrclk_check()` v USER CODE ověřuje dosažený stav napájení
 a hodin, výstup do `status`), F-0002 (NMI zapisuje výpadek HSE do black-boxu, kind 7),
@@ -103,3 +106,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-10 | přerušení a RTOS | F3 přezkum, 3 nálezy (1×S1, 1×S2, 1×S4), verdikt **podmíněně funkční**. Priority ISR, grouping, timebase i hooky v pořádku; stacky změřeny z běžícího přístroje (`stats`). Obě funkční vady jsou diagnostika, která selže právě při poruše. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | drivery I2C | F3 přezkum, 2 nálezy (2×S3), verdikt **funkční**. Modul s nejdelší historií incidentů je dnes dobře ošetřený; oba nálezy jsou o tom, že se dodržené pravidlo neuplatnilo všude. **Navíc doplněn `docs/ARCHITECTURE.md`** z auditů 1–5 → F1 uzavřena. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | F5 opravy (moduly 2–5) | Opraveno 10 nálezů ve 3 commitech: F-0008, F-0011, F-0015 (pojistky), F-0018 částečně, F-0019, F-0020, F-0021, F-0022 (tiché vady zviditelněny), F-0009, F-0010, F-0012 (dokumentace). Build 0 varování, audit.py baseline, `.text` 597 232 → 597 488. **⬜ neověřeno na HW.** Rozšířen `audit-modul` o fázi F5. | L-0012, L-0013 |
+| 2026-09-10 | drivery SPI2/FPGA + QSPI | F3 přezkum, 2 nálezy (1×S3, 1×S4), verdikt **funkční**. Oba drivery jsou blokující (grep na DMA/IT prázdný → sekce C odpadá). Klíčové zjištění: **`NOLINK` není přičitatelný ovladači na CM7** — CS boot level, AFCNTR, časování i CRC gate jsou v pořádku. Kód neměněn. | zatím žádná (F5 nebyla) |
