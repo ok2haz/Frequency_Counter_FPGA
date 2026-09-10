@@ -120,6 +120,12 @@ void NMI_Handler(void)
      * DR4 = RCC->CR: z bitu HSEON/HSERDY/HSION se pozna, jestli HSE opravdu
      * zmizel, nebo slo o jinou pricinu NMI. */
     PWR->CR1 |= PWR_CR1_DBP;           /* povol zapis do backup domeny */
+    /* 🔴 Citac vypadku i DO BKP (audit F-0019): `g_css_fail` je v `.bss`, kterou
+     * reset vynuluje — a reset tu PRIJDE, protoze se nize zamrzne a IWDG zasahne.
+     * Bez teto kopie by radek `HSE:` ve `status` byl nedosazitelny.
+     * ⚠️ MUSI byt AZ ZA povolenim `DBP` o radek vyse, jinak by zapis do zalohovane
+     * domeny propadl. (Pri prvnim pokusu jsem to mel obracene.) */
+    RTC->BKP11R = RTC->BKP11R + 1u;
     RTC->BKP4R = RCC->CR;
     RTC->BKP5R = 0u;
     RTC->BKP3R = 0xC7A50000u | 7u;     /* RTC_CRASH_MAGIC | kind 7 = NMI/CSS */

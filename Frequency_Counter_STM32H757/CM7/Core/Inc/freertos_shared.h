@@ -254,6 +254,8 @@ extern volatile uint16_t g_css_fail;
 #define PWRCLK_BAD_HCLK      (1u << 5)  /* HCLK (AXI) != 240 MHz */
 #define PWRCLK_BAD_LATENCY   (1u << 6)  /* FLASH latency != 4 WS */
 /* Kompenzacni cela I/O (SYSCFG CCCSR) a CSI, ktery ji napaji. 1 = nabehlo. */
+extern volatile uint16_t g_flightrec_lost;    /* zahozene dumpy (F-0018) */
+extern volatile uint16_t g_tmp117_cfg_fail;   /* nezdarena konfigurace TMP117 (F-0022) */
 extern volatile uint8_t  g_csi_ready;
 extern volatile uint8_t  g_iocomp_ready;
 extern volatile uint8_t  g_pwrclk_bad;        /* 0 = vse sedi */

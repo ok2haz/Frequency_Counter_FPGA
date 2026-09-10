@@ -284,6 +284,14 @@ volatile uint16_t g_css_fail;
  * 1 = nabehlo. Cte `status`. Cela dorovnava budici silu rychlych I/O (FMC)
  * proti rozptylu VDD/procesu/teploty — bez ni se data na externi sbernici
  * vzorkuji na hrane okna. */
+/* Kolikrat se nepodarilo nastavit TMP117 na 500ms cyklus (audit F-0022).
+ * Nenulove = cidlo meri jinou kadenci, nez se predpoklada. Cte `status`. */
+/* Kolikrat se `flightrec_dump` neprovedl, protoze nedostal QSPI mutex (F-0018).
+ * Z hooku pretečeni stacku je to VZDY (bezi v PendSV). Cte `status`. */
+volatile uint16_t g_flightrec_lost;
+
+volatile uint16_t g_tmp117_cfg_fail;
+
 volatile uint8_t  g_csi_ready;
 volatile uint8_t  g_iocomp_ready;
 

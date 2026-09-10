@@ -83,7 +83,14 @@ static int adc3_read_chan(uint32_t channel, uint32_t *out)
 static void tmp117_set_2hz(I2C_HandleTypeDef *hi2c, uint16_t addr8)
 {
     uint8_t cfg[2] = { (uint8_t)(TMP117_CFG_2HZ >> 8), (uint8_t)(TMP117_CFG_2HZ & 0xFF) };
-    HAL_I2C_Mem_Write(hi2c, addr8, TMP117_REG_CONFIG, I2C_MEMADD_SIZE_8BIT, cfg, 2, 100);
+    /* ⚠️ Navratovou hodnotu vyhodnocujeme (L-0003, audit F-0022). Selhani NENI
+     * fatalni — cidlo zustane ve vychozim prevodnim cyklu a MERI DAL, jen jinou
+     * kadenci. Prave proto se to musi dat poznat: tiche jine vzorkovani by menilo
+     * casovou konstantu teplotnich trendu, ze kterych se pocita warm-up OCXO. */
+    if (HAL_I2C_Mem_Write(hi2c, addr8, TMP117_REG_CONFIG,
+                          I2C_MEMADD_SIZE_8BIT, cfg, 2, 100) != HAL_OK) {
+        g_tmp117_cfg_fail++;
+    }
 }
 
 /* ── Statistika senzoru (zapis g_sensors[], viz sensor_stat.h) ──────────── */
@@ -165,10 +172,19 @@ static void i2c1_recover(void)
     GPIO_InitTypeDef g = {0};
     g.Pin = GPIO_PIN_9; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;        /* SDA vstup */
     HAL_GPIO_Init(GPIOB, &g);
+    /* 🔴 ODR MUSI byt 1 uz PRED prepnutim do OUTPUT_OD (audit F-0021, 2026-09-10).
+     * `HAL_GPIO_Init` na `ODR` NESAHA, takze pin prevezme starou hodnotu — a ta je
+     * po resetu 0, protoze do ni software nikdy nepsal (pin ridila periferie).
+     * Pri opacnem poradi tedy SCL na par instrukci stahne k zemi, coz je falesna
+     * hodinova hrana prave ve chvili, kdy je sbernice rozhozena.
+     * ⚠️ Totez pravidlo a tataz oprava je v `i2c4_recover` (freertos_task_ui.c) —
+     * tam to kdysi zpusobilo, ze SCL zustala dole NATRVALO. Sem se oprava
+     * neprenesla; drz obe kopie v souladu. */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
     g.Pin = GPIO_PIN_8; g.Mode = GPIO_MODE_OUTPUT_OD; g.Pull = GPIO_PULLUP;
     g.Speed = GPIO_SPEED_FREQ_LOW;                             /* SCL open-drain out */
     HAL_GPIO_Init(GPIOB, &g);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);        /* pojistka po Init */
     for (int i = 0; i < 9; i++) {                              /* 9 pulzu -> slave pusti SDA */
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); i2c1_delay();
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   i2c1_delay();

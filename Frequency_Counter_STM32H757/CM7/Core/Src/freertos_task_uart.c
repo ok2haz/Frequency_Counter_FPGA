@@ -145,6 +145,17 @@ static int uart_i2c4_probe(const char *tag)
 		if (osMutexAcquire(i2c4MutexHandle, 200) == osOK) {
 			r = HAL_I2C_IsDeviceReady(&hi2c4, (uint16_t)(A[i] << 1), 2, 20);
 			osMutexRelease(i2c4MutexHandle);
+			/* 🔴 USTUP SCHEDULERU (audit F-0020, 2026-09-10). UartTask ma prioritu
+			 * Normal, UiTask BelowNormal — bez tohohle by UiTask po celou dobu skenu
+			 * nedostal procesor, jeho heartbeat by zestarnul pres `WDG_STALL_MS`
+			 * (2500 ms) a IWDG by pristroj resetoval. Nejhur prave pri NEREAGUJICI
+			 * sbernici, kdy kazda adresa spotrebuje plny timeout (127 x 3 x 10 ms =
+			 * az 3,8 s) — tedy presne kdyz `scanner` clovek spousti.
+			 * ⚠️ Black-box by to navic svedl na `stall:UiTask`, prestoze UiTask neni
+			 * zaseknuty, jen vyhladoveny. Mutex to nezachrani: uspi ulohu jen kdyz je
+			 * obsazeny, a obsadit ho muze jen UiTask, ktery se vedle spinujiciho
+			 * UartTasku nema jak rozbehnout. Cena: 127 ms na cely sken. */
+			osDelay(1);
 		}
 		if (r == HAL_OK) ok++;
 		if (n >= 0 && (size_t)n < sizeof line) {
@@ -2144,9 +2155,14 @@ void UartTask_run(void *argument)
 					  		printf("  addr2line -e CM4/Release/H757_LED_CM4.elf %08lX\n",
 					  		       (unsigned long)fpc);
 					  	  } }
-					  	if (g_css_fail)
-					  		printf("HSE: CSS hlasil vypadek %ux <== CASOVA ZAKLADNA NEPLATI\n",
-					  		       (unsigned)g_css_fail);
+					  	/* 🔴 Cte se z BKP, ne z `.bss` (audit F-0019, 2026-09-10). NMI po zvyseni
+					  	 * citace zamrzne a IWDG pristroj resetuje, cimz se `.bss` vynuluje — ziva
+					  	 * promenna by se sem tedy NIKDY nedostala a radek byl nedosazitelny.
+					  	 * Zalohovanou domenu reset prezije. */
+					  	{ uint32_t css = RTC->BKP11R;
+					  	  if (css)
+					  		printf("HSE: CSS hlasil vypadek %lux <== CASOVA ZAKLADNA NEPLATI\n",
+					  		       (unsigned long)css); }
 					  	/* Napajeni + hodiny zmerene pri bootu z registru (audit F-0001).
 					  	 * ⚠️ Vypisuje se VZDY, i kdyz je vse v poradku — cislo, ktere je
 					  	 * videt jen pri poruse, si nikdo neoveri predem. WRHIGHFREQ je
@@ -2191,6 +2207,15 @@ void UartTask_run(void *argument)
 					  	         (unsigned long)rp,
 					  	         g_iocomp_ready ? "READY" : "NENABEHLA",
 					  	         g_csi_ready ? "ok" : "NEBEZI"); }
+					  	  /* Tiche vady, ktere by jinak nikdo nevidel (audit F-0018, F-0022).
+					  	   * Vypisuji se JEN kdyz nastaly — na rozdil od radku vyse, ktere maji byt
+					  	   * videt vzdy, tyhle znamenaji "neco se ztratilo", ne "takhle to stoji". */
+					  	  if (g_flightrec_lost)
+					  	  	printf("FLIGHTREC: %u dumpu zahozeno (nedostal QSPI mutex) <== viz F-0018\n",
+					  	  	       (unsigned)g_flightrec_lost);
+					  	  if (g_tmp117_cfg_fail)
+					  	  	printf("TMP117: %u x se nepodarilo nastavit 500ms cyklus (meri jinou kadenci)\n",
+					  	  	       (unsigned)g_tmp117_cfg_fail);
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total) {

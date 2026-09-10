@@ -267,7 +267,14 @@ void flightrec_dump(const char *reason)
 
     /* ⚠️ Kratky timeout: dumpuje se pri poruse a do IWDG resetu zbyva ~1,5 s.
      * Kdyz je QSPI zrovna obsazena, radeji nic nez zaseknout se tesne pred resetem. */
-    if (osMutexAcquire(qspiMutexHandle, FR_LOCK_MS) != osOK) return;
+    /* 🔴 NEUSPECH UZ NENI TICHY (audit F-0018, 2026-09-10). Z hooku pretečeni
+     * stacku bezi tahle funkce v kontextu vyjimky PendSV (`xPortPendSVHandler`
+     * -> `vTaskSwitchContext` -> `taskCHECK_FOR_STACK_OVERFLOW`), kde
+     * `osMutexAcquire` VZDY vrati `osErrorISR` — dump se tedy pro pretečeni
+     * stacku NIKDY neprovede. Nez se to prestavi na dvoufazovy zapis (jako ma
+     * `errlog`: RAM ring + vyliti z ulohy), at je aspon VIDET, ze se zaznam
+     * ztratil. Crash black-box v BKP funguje dal — zapisuje se driv. */
+    if (osMutexAcquire(qspiMutexHandle, FR_LOCK_MS) != osOK) { g_flightrec_lost++; return; }
 
     uint8_t buf[FR_REC_SIZE];
     hdr_pack(buf, s_seq_next, s_count, g_uptime_s, reason);
