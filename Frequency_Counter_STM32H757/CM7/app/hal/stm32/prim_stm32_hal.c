@@ -11,6 +11,17 @@
  * text), je dirty set = sjednoceni fill/blit obdelniku == vsechny zmeny. ⚠️ Kazdy
  * PARTIAL redraw proto MUSI zacit fill/blit (clear), jinak se nezkopiruje dopredu.
  *
+ * 🔴 UPRESNENI (audit F-0032, 2026-09-10) — veta vyse plati JEN pro NEPRUHLEDNY
+ * clear. `mark_dirty` se vola vyhradne z `d2d_fill`/`d2d_blit_ex`, tedy z DMA2D
+ * cesty; a `prim_fill_rect` do ni vstoupi jen kdyz je `blend == PRIM_BLEND_REPLACE`
+ * NEBO `PRIM_A(color) == 0xFF` (`libprim/src/fill.c:37`). S `PRIM_BLEND_OVER`
+ * a alfou < 255 spadne do `sw_fill`, ktery pise primo do framebufferu a dirty
+ * rect NEOZNACI. Poloprusvitny fill tedy invariant NESPLNUJE.
+ * Dnes to nikde nevadi (jedina poloprusvitna barva v projektu je `freq_stop_bg`
+ * a ma pred sebou nepruhledny `blit_bg_region`), ale je to latentni past.
+ * ⚠️ Totez plati pro `prim_internal_blend_px` (AA rohy, arc, glow) — ty
+ * `mark_dirty` obchazeji VZDY a spolehaji na predchozi clear.
+ *
  * DMA2D obchazi D-cache -> po fill/blit se invaliduje cilova oblast (CPU AA blend
  * pak cte cerstva data). Backend injektovan pres prim/accel.h (libprim zustava HW-indep).
  */

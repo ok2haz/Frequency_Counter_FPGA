@@ -37,7 +37,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
 | L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
 | L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
-| L-0016 | Příznak chyby nikdy nemaž, aniž bys ho přečetl; a hlídací mez, kterou lze splést s normálním provozem, není ochrana, ale generátor tichých chyb. | `status` → `DMA2D: chyb 0, timeout 0`; každý zápis do `*_IFCR` musí mít nad sebou čtení `*_ISR` |
+| L-0016 | Příznak chyby nikdy nemaž, aniž bys ho přečetl; hlídací mez, kterou lze splést s normálním provozem, není ochrana, ale generátor tichých chyb — a mez i měřidlo její rezervy se navrhují SPOLEČNĚ (můj odhad byl 5× vedle). | `status` → `DMA2D: chyb 0, timeout 0, max cekani << mez`; každý zápis do `*_IFCR` musí mít nad sebou čtení `*_ISR` |
 | L-0017 | Tichý přeskok je přípustný jen s počítadlem — co se rozhodneš nevykreslit, musí jít změřit. | `status` → `FONTY: preskocenych glyfu 0` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
@@ -378,6 +378,16 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   🔑 A druhá polovina: **hlídací mez, kterou lze splést s normálním provozem,
   není ochrana, ale generátor tichých chyb.** Mez se volí proti nejdelšímu
   LEGITIMNÍMU případu, ne odhadem.
+  🔴 **Třetí polovina, kterou jsem se naučil až při opravě:** i ten „nejdelší
+  legitimní případ" je potřeba ZMĚŘIT, ne odhadnout. V nálezu F-0036 jsem
+  spočítal, že celoobrazovkový přenos trvá ~12 ms, a podle toho zvolil mez
+  100 ms. Čítač `g_d2d_wait_max_cyc`, který jsem přidal jako součást téže
+  opravy, pak na desce ukázal **~61 ms** — byl jsem **5× vedle** a rezerva
+  by byla jen 1,6×. A protože nová verze při vypršení přenos **ruší**, byla
+  by ta oprava **horší než původní stav**. Po změření zvýšeno na 500 ms.
+  **Když do opravy vkládáš konstantu, přidej zároveň měřidlo, které ukáže
+  rezervu** — jinak se odhad nikdy nekonfrontuje s realitou. Mez a měřidlo
+  se navrhují společně, ne měřidlo až potom.
 - **Detekce:** `status` → řádek `DMA2D:` musí být `chyb 0, timeout 0 | flip timeout 0`.
   Při auditu periferie: každý zápis do `*_IFCR`/`*_ICR` musí mít nad sebou čtení
   odpovídajícího `*_ISR`.

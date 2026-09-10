@@ -98,7 +98,7 @@ napsaný jako absolutní, ale `prim_fill_rect` ho splní jen pro neprůhledné b
   počet kopírovaných obdélníků (strop `MAX_DIRTY` 48 → dřívější pád do `dfull`).
 - **Vztah k lekcím:** nová lekce po opravě — „pravidlo, které platí jen pro část
   vstupů, musí tu podmínku nést v názvu nebo ve své vlastní kontrole".
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 (dokumentací, ne kódem) — vědomě zvolena **varianta „opravit pravidlo“**, ne rozšíření backendu. Důvod: zařízení funguje, past je latentní (jediná poloprůhledná barva má před sebou neprůhledný blit) a 🔴 **oprava kódem by zhoršila F-0036** — víc dirty obdélníků znamená dřívější pád do `dfull`, tedy víc celoobrazovkových přenosů, a právě ty přetahovaly hlídací mez. Upřesněno na dvou místech: `CLAUDE.md` (ZLATÁ PRAVIDLA / Rendering) a hlavička `prim_stm32_hal.c`, obojí včetně toho, že `prim_internal_blend_px` (AA rohy, arc, glow) `mark_dirty` obchází **vždy**.
 
 ---
 
@@ -278,7 +278,17 @@ napsaný jako absolutní, ale `prim_fill_rect` ho splní jen pro neprůhledné b
 - **Vztah k lekcím:** `L-0004` (čekací smyčka) — mez existovala, ale byla zvolená
   bez vztahu k nejdelšímu legitimnímu přenosu; a nová lekce: **„hlídací mez, která
   se dá splést s normálním provozem, není ochrana, ale generátor tichých chyb"**.
-- **Stav:** otevřeno — **objeveno až opravou F-0033**, viz „Fáze oprav“ níže
+- **Stav:** opraveno 2026-09-10 (commit `d3a099e`), ⬜ neověřeno na HW po power-cyklu.
+  Opraveno **variantou 2** (mez v ms + zrušení přenosu + čítač nejdelšího čekání), ne
+  pouhým zvýšením konstanty. 🔑 **A měření hned vyvrátilo můj vlastní odhad:** čítač
+  `g_d2d_wait_max_cyc` ukázal, že nejdelší legitimní čekání je **~61 ms**, ne ~12 ms,
+  jak jsem v nálezu odhadoval — byl jsem 5× vedle. První verze opravy měla proto mez
+  100 ms (rezerva jen 1,6×) a byla by **horší než původní stav**, protože nově se při
+  vypršení přenos ruší. Po změření zvýšeno na **500 ms** = ~8× nad naměřeným maximem
+  a zároveň 5× pod 2,5 s, které má na heartbeat UiTask.
+  Na desce po opravě: `chyb 0, timeout 0 | flip timeout 0 | max cekani 56.305 ms
+  (mez 500)`, po třech vynucených plných redrawech 57.110 ms; před opravou `timeout 14`
+  a rostoucí.
 
 ---
 

@@ -192,6 +192,16 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 
 **Rendering:**
 - **Každý partial redraw MUSÍ začít clear** (fill/blit REPLACE) — jinak dirty-rect copy-forward přes 3 buffery problikává.
+  🔴 **A ten clear musí být `REPLACE` NEBO NEPRŮHLEDNÝ** (audit F-0032, 2026-09-10).
+  `prim_fill_rect` jde přes DMA2D — a tedy přes `mark_dirty` — jen když je
+  `blend == PRIM_BLEND_REPLACE` **nebo** `PRIM_A(color) == 0xFF` (`fill.c:37`).
+  S `PRIM_BLEND_OVER` a alfou < 255 spadne do `sw_fill`, který zapisuje přímo do
+  framebufferu a **dirty rect neoznačí vůbec**. Poloprůhledný fill tedy pravidlo
+  výše NESPLNÍ, i když to je „fill". Dnes to nikde nevadí (jediná poloprůhledná
+  barva v projektu je `freq_stop_bg` a má před sebou neprůhledný `blit_bg_region`),
+  ale nový partial redraw, který by začal alfa podbarvením, by problikával.
+  ⚠️ Totéž platí pro `prim_internal_blend_px` (AA rohy `prim_fill_rect_rounded`,
+  `prim_draw_arc`, glow) — ty `mark_dirty` obcházejí vždy.
 - 🔴 **Guard „obsah je stejný, nekresli" smí přeskočit až po `prim_stm32_fb_count()` vykresleních.**
   Takový guard je JEDEN stav, ale framebuffery jsou TŘI — po jednom nakreslení má obsah jen ten
   buffer, do kterého se zrovna kreslilo, a jakmile se cyklus dostane na ostatní, ukážou starší
