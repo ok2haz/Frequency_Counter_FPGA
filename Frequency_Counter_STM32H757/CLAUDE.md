@@ -513,6 +513,28 @@ povinné čtení celého 31B rámce FT5x06 vyjde na ~6 ms, ne ~3 ms. To je těsn
 „žádný spin > ~10 ms“ v hlídaných taskech. **Hodnotu registru přesto neměnit** — je funkční
 a incident výše platí; zrychlení je samostatné rozhodnutí, které začíná měřením na osciloskopu.
 
+🔑 **ZMĚŘENO 2026-09-10 — kde je mez a proč se PŘESTO nezvyšuje.** Proběhl sweep chybovosti
+na HW (60 000 transakcí, 10 taktů, `SCLDEL` držen na ~267 ns → jediná proměnná je takt;
+detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“):
+
+| takt | 0x38 dotyk | 0x45 ATTINY | 0x48 TMP117 |
+|---|---|---|---|
+| 22 / 50 / **75 kHz** | 0,00 % | **0,00 %** | 0,00 % |
+| **100 kHz** | 0,00 % | **2,30 %** | 0,00 % |
+| 125 kHz a výš | ≥99,9 % | ≥99,9 % | (kontaminováno) |
+
+- **Koleno je mezi 75 a 100 kHz a limitem je ATTINY** — dotyk se láme až mezi 100 a 125 kHz,
+  TMP117 zvládá i 400 kHz. Provozních 50 kHz má tedy rezervu do ~75 kHz, ne dál.
+- Při 100 kHz má ATTINY `ErrorCode=0x04` (**čistý NACK**), `SCL/SDA = 1/1`, žádný BERR/ARLO
+  → není to integrita signálu, ale slave, který nestíhá.
+- **Rozhodnutí: zůstává 50 kHz.** Úspora ~1,7 ms na rámci FT5x06 nevyváží riziko na sběrnici,
+  přes kterou jde napájení panelu a podsvícení. Kdyby se k tomu vracelo, hodnota pro 70,09 kHz
+  je `0x70302AAA` — a **měřit se musí znovu i I2C1**, ta tímhle pokrytá NENÍ (jiné čipy,
+  jiné pull-upy na FPGA desce), přestože sdílí tutéž konstantu.
+- 🔴 **Cena toho měření:** běh nad 125 kHz **rozhodil TMP117 na 0x48 tak, že ho spravil až
+  power-cycle** (firmware na to nedosáhne) a vyhladověl UiTask natolik, že watchdog zapsal
+  `stall:UiTask`. Kdo bude sweep opakovat, ať s tím počítá.
+
 ## Klíčové proměnné
 
 **Tabulky (hodiny/PLL, DSI VidCfg, LTDC, TC358762, framebuffer/MPU, SDRAM mapa) → `docs/HW_REFERENCE.md`.**
