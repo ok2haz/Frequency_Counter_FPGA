@@ -516,6 +516,15 @@ a incident výše platí; zrychlení je samostatné rozhodnutí, které začín�
 ## Klíčové proměnné
 
 **Tabulky (hodiny/PLL, DSI VidCfg, LTDC, TC358762, framebuffer/MPU, SDRAM mapa) → `docs/HW_REFERENCE.md`.**
+
+🔴 **Sekce `.sdram` (`0xC0800000`) je Device pamet — co do ni das, musi byt
+pristupovane ZAROVNANE** (audit F-0012). Lezi tam `bg_cache` (768 000 B), glyph atlas
+(256 kB) a `g_mask_a/b`. Je mimo vsechny MPU oblasti zamerne: DMA2D z ni cte primo a
+Device pamet je koherentni bez udrzby cache. ⚠️ Cena je, ze **nezarovnany pristup do
+Device pameti je na Cortex-M7 UsageFault bez ohledu na `CCR.UNALIGN_TRP`** — tedy i tam,
+kde by v Normal pameti proslo. Nic, co na ta data sahne 32bitove na adrese delitelne
+dvema a ne ctyrmi, tam nesmi. `SCB->SHCSR` se nikde nezapisuje, takze by to eskalovalo
+na HardFault a vypadalo jako nahodny pad pri kresleni.
 Load-bearing minimum: `HSE_VALUE=25000000` (viz ZLATÁ PRAVIDLA), DSI BURST+RGB565 (viz „Funkční
 konfigurace displeje" výše), FB0/FB1/FB2 na `0xC0000000`/`0xC0100000`/`0xC0200000`, MPU region 0
 = 4 MB Write-Through, SDRAM scratch `0xC0400000`, `.sdram` sekce `0xC0800000`.
@@ -1468,7 +1477,10 @@ báječně levná (O(1) na vzorek), ale je to **ztrátová komprese**. Na Allano
 τ, spektrogram a proklad je potřeba **surová řada**. 16 MB v SDRAM = **1 048 576 vzorků po 16 B**;
 při dnešní kadenci FPGA (~4 měření/s) to je **~3 dny** souvislé historie.
 
-- **Region `.measlog` @`0xC1000000`, 16 MB** = MPU region 3, **Normal WBWA cacheable**.
+- **Region `.measlog` @`0xC1000000`, 8 MB** = MPU region 3, **Normal WBWA cacheable**.
+  🔴 **Opraveno 2026-09-10 (audit F-0010): 8 MB, ne 16.** Linker `SDRAM_LOG` i
+  `SDRAM_LOG_BYTES` maji 8 MB; MPU oblast take. Nad logem je 8 MB volnych, takze
+  zdvojnasobeni je jeden radek v linkeru + `SDRAM_LOG_BYTES`.
   ⚠️ Cacheable ZÁMĚRNĚ: bez MPU regionu by adresa spadla do default mapy, kde je
   `0xA0000000`–`0xDFFFFFFF` **Device paměť** → žádný cache-line prefetch a sekvenční čtení
   (= přesně to, co analýza dělá) by bylo řádově pomalejší.
@@ -1479,7 +1491,12 @@ při dnešní kadenci FPGA (~4 měření/s) to je **~3 dny** souvislé historie.
   wildcard `*(.sdram*)` a spolkla by ji dřív (první shoda vyhrává). Stalo se; link to naštěstí
   odhalil (`region SDRAM overflowed by 10186752 bytes`). Kvůli místu se `SDRAM` zmenšila 16→8 MB
   (reálně obsazeno 1,79 MB).
-- **Záznam 16 B = `{seq, t_ms, f_uhz}`.** ⚠️ Velikost musí zůstat mocnina 2 — index se pak maskuje,
+- **Záznam 32 B = `{seq, t_ms, f_uhz, flags, reserved}`.**
+  🔴 **Opraveno 2026-09-10 (audit F-0010): 32 B, ne 16.** Struktura má pole `reserved`
+  „dorovnání na 32 B" (`sdram_log.h`), takže kapacita je **262 144 vzorků**, ne 1 048 576 —
+  při ~4 měřeních/s to je **~18 hodin**, ne ~3 dny. Rozdíl je 4× a je to premisa pro
+  Allanovu odchylku na dlouhých τ.
+  ⚠️ Velikost musí zůstat mocnina 2 — index se pak maskuje,
   ne dělí (`put` běží ve FpgaTasku).
 - 🔴🔴 **Ukládá se kmitočet v µHz, NE surová dvojice `edges`/`gate_ns`.** `edge_count` může být
   počet period dělené větve (/4) **nebo** neděleného signálu (emulátor) — sám o sobě je

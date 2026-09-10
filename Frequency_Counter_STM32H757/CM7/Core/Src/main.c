@@ -163,7 +163,7 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-    /* ── Region 3: datova cache mereni v SDRAM (`sdram_log.c`), 16 MB @0xC1000000
+    /* ── Region 3: datova cache mereni v SDRAM (`sdram_log.c`), 8 MB @0xC1000000
      * Normal, WRITE-BACK WRITE-ALLOCATE (TEX=001, C=1, B=1) — stejne jako region 1.
      * ⚠️ PROC cacheable: log se cte SEKVENCNE a opakovane (Allan pres dlouha tau,
      * spektrogram, proklad). Bez MPU regionu by adresa spadla do DEFAULTNI mapy,
@@ -172,7 +172,9 @@ static void MPU_Config(void)
      * ⚠️ DUSLEDEK: az bude log plnit SPI přes DMA (protokol v2 / STATUS #62), musi
      * konzument pred ctenim invalidovat D-cache — DMA obchazi cache uplne stejne
      * jako DMA2D u framebufferu. Dokud plni CPU, je to koherentni samo od sebe.
-     * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 16 MB @0xC1000000 sedi. */
+     * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 8 MB @0xC1000000 sedi.
+     * ⚠️ Do 2026-09-10 tu tri krat stalo 16 MB, zatimco kod i linker mely 8 MB
+     * (audit F-0009). Zdroj pravdy je `SDRAM_LOG` v STM32H757BITX_FLASH.ld. */
     /* 🔴 `Enable` se NESMI prebirat ze zbytku po oblasti 2 (audit F-0008): dnes to
      * vychazi, ale pri prehozeni poradi nebo vlozeni zakazane oblasti by se tahle
      * tise neaktivovala a `.measlog` by spadl do Device pameti — bez jakekoli hlasky. */

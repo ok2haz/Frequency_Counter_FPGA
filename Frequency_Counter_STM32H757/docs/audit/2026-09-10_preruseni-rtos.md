@@ -77,7 +77,7 @@ přesně v situaci, pro kterou byly napsané.
 - **Riziko opravy:** nízké u počítadla; střední u přestavby na dvoufázový zápis.
 - **Vztah k lekcím:** `L-0011` (nástroj hlásí, že něco dělá, a nedělá) — a nová lekce po opravě:
   „hook FreeRTOS není kontext úlohy“.
-- **Stav:** otevřeno
+- **Stav:** ČÁSTEČNĚ opraveno 2026-09-10 — přibyl čítač `g_flightrec_lost` + řádek ve `status`, takže ztráta přestala být tichá. **Není to celá oprava:** dvoufázový zápis (RAM ring + vylití z úlohy, vzor `errlog`) zbývá. Viz L-0013.
 
 ---
 
@@ -122,7 +122,7 @@ přesně v situaci, pro kterou byly napsané.
 - **Vztah k lekcím:** `L-0004` je příbuzná (čekání bez rozumné meze); nová lekce po opravě:
   „úloha s vyšší prioritou, která blokuje déle než práh watchdogu, resetuje přístroj
   jménem cizí úlohy“.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — `osDelay(1)` do smyčky skenu; cena 127 ms na sken.
 
 ---
 
@@ -147,7 +147,7 @@ přesně v situaci, pro kterou byly napsané.
   První je o kousek užitečnější, druhé levnější.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** `L-0008` (kód slibuje výstup, který nemá jak vzniknout).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — čítač se zapisuje i do `RTC->BKP11R` (za povolením `DBP`) a `status` ho čte odtud, takže řádek přestal být nedosažitelný.
 
 ---
 

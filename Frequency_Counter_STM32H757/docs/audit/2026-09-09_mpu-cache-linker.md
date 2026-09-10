@@ -59,7 +59,7 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** nová lekce po opravě (třída „nastavení převzaté ze zbytku po předchozím
   volání“ — týž vzor jako `hi2c1.ErrorCode` sticky u SD).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — doplněn `Enable = MPU_REGION_ENABLE`; funkčně no-op (oblast 2 tam tu hodnotu nechávala), odstraněna možnost tichého vypadnutí.
 
 ---
 
@@ -83,7 +83,7 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
   linkeru i poli.
 - **Riziko opravy:** nulové (komentář).
 - **Vztah k lekcím:** `L-0008` (komentář popisuje něco jiného než kód pod ním).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — komentář srovnán na 8 MB (`docs:` commit).
 
 ---
 
@@ -108,7 +108,7 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
   (`STM32H757BITX_FLASH.ld:77-78` to samo nabízí).
 - **Riziko opravy:** nulové (dokumentace).
 - **Vztah k lekcím:** `L-0006` (číslo v dokumentaci se musí odvodit z kódu, ne opsat).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — `CLAUDE.md` srovnána: 32 B/záznam, 8 MB, 262 144 vzorků, ~18 h (`docs:` commit).
 
 ---
 
@@ -135,7 +135,7 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
   zbytečný, ale neškodný, a odstraní celou třídu chyby).
 - **Riziko opravy:** nízké u (b); (a) je jen komentář.
 - **Vztah k lekcím:** `L-0002` (ke každé cache operaci patří ta správná polovina páru).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 — `SCB_CleanInvalidateDCache_by_Addr` místo samotné invalidace; clean je u CPU-plněného logu nutný a u DMA neškodný.
 
 ---
 
@@ -167,7 +167,7 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
   takže se nezarovnaný přístup nedozvíme přesně, jen jako HardFault).
 - **Riziko opravy:** nulové u dokumentace; zapnutí UsageFault je střední (mění chování při chybě).
 - **Vztah k lekcím:** nová lekce po opravě.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-10 **jen dokumentací** (`docs:`) — umístění se nemění (koherence s DMA2D), ale u sekce `.sdram` je nově napsané, že do Device paměti smí jen zarovnané přístupy a proč.
 
 ---
 

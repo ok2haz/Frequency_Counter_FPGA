@@ -3,14 +3,27 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-10 (3. sezení)
+**Poslední aktualizace:** 2026-09-10 (4. sezení — F5 opravy)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–5 prošly F3 (jen nálezy).
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 F1 je přeskočená a je to rostoucí dluh (viz níže).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** modul 6 „drivery: SPI2/FPGA, QSPI, SDMMC“.
-⚠️ Před dalším auditem stojí za zvážení **fáze F4 (triáž)** — otevřených nálezů je 15 a přibývají
-rychleji, než se opravují. Nejnaléhavější jsou F-0018 (S1) a F-0020 (S2) z modulu 4.
+**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže), teprve pak modul 6
+„drivery: SPI2/FPGA, QSPI, SDMMC“.
+
+**Otevřené po F5 (5 nálezů, žádný S1/S2):**
+- **F-0003** [S3] `VOSRDY` bez timeoutu — *odloženo*: leží v generovaném `SystemClock_Config()`
+  bez `USER CODE` (regen by opravu smazal) a špatná mez by pustila 480 MHz dřív, než se
+  ustálí regulátor. Vrátit se, až se objeví „deska občas nenaběhne“.
+- **F-0007** [S3] ztráta HSE = mrtvý přístroj — *čeká na rozhodnutí o politice*: zůstat mrtvý
+  ale rozlišitelně (levné), nebo nabootovat na HSI a měření označit za neplatné (drahé, mění
+  časování všech sběrnic).
+- **F-0014** [S3] `ipccmd` je druhý producent SPSC ringu — *odloženo*: IPC dnes prokazatelně
+  funguje (CM4 alive, ETH/web běží) a oprava sahá do živé mezijádrové cesty.
+- **F-0016** [S3] `.ipc_shared` je prázdná rezervace — *odloženo*: oprava znamená zásah do
+  **linker skriptů obou jader** (pravidlo 6 → jen s výslovným souhlasem).
+- **F-0017** [S3] `ipc_stamp()` maže i blok CM4 — *odloženo* ze stejného důvodu jako F-0014.
+- **F-0018** [S1] je opravený jen **částečně** (ztráta už není tichá); dvoufázový zápis zbývá.
 Dluh, který roste: `docs/ARCHITECTURE.md` je pořád prázdná šablona. Doložená čísla pro §4
 „Hodinový strom“ a §1 „Rozdělení jader“ jsou hotová v `audit/2026-09-09_hodiny-pwr.md`,
 pro §2 „Mapa paměti“ a §3 „Konfigurace MPU“ v `audit/2026-09-09_mpu-cache-linker.md` —
@@ -41,10 +54,10 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 1 | 0 | 0 |
-| S2 | 1 | 2 | 0 |
-| S3 | 10 | 5 | 0 |
-| S4 | 4 | 0 | 0 |
+| S1 | 0 | 1 | 0 |
+| S2 | 0 | 3 | 0 |
+| S3 | 4 | 11 | 0 |
+| S4 | 1 | 3 | 0 |
 
 **Modul 1 — opraveno:** F-0001 (`pwrclk_check()` v USER CODE ověřuje dosažený stav napájení
 a hodin, výstup do `status`), F-0002 (NMI zapisuje výpadek HSE do black-boxu, kind 7),
@@ -88,3 +101,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-10 | hodiny/PWR + SDRAM | ✅ **HW ověření po power-cyklu.** F-0001 a F-0006 uzavřeny ze `status`. Problikávání displeje vyřešeno: příčina byla čtecí cesta FMC (`rpipe=0` + vypnutá I/O kompenzace), ne obnova a ne vadná paměť — `membench` 0 chybných bitů, LTDC podtečení 0/1000. Uzavřeno STATUS #237/#238/#72. | L-0011 |
 | 2026-09-10 | přerušení a RTOS | F3 přezkum, 3 nálezy (1×S1, 1×S2, 1×S4), verdikt **podmíněně funkční**. Priority ISR, grouping, timebase i hooky v pořádku; stacky změřeny z běžícího přístroje (`stats`). Obě funkční vady jsou diagnostika, která selže právě při poruše. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | drivery I2C | F3 přezkum, 2 nálezy (2×S3), verdikt **funkční**. Modul s nejdelší historií incidentů je dnes dobře ošetřený; oba nálezy jsou o tom, že se dodržené pravidlo neuplatnilo všude. **Navíc doplněn `docs/ARCHITECTURE.md`** z auditů 1–5 → F1 uzavřena. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-10 | F5 opravy (moduly 2–5) | Opraveno 10 nálezů ve 3 commitech: F-0008, F-0011, F-0015 (pojistky), F-0018 částečně, F-0019, F-0020, F-0021, F-0022 (tiché vady zviditelněny), F-0009, F-0010, F-0012 (dokumentace). Build 0 varování, audit.py baseline, `.text` 597 232 → 597 488. **⬜ neověřeno na HW.** Rozšířen `audit-modul` o fázi F5. | L-0012, L-0013 |

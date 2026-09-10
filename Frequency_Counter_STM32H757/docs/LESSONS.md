@@ -33,6 +33,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
 | L-0010 | Změna firmwaru je hotová až po běhu na desce a po POWER-CYKLU; do té doby `⬜ neověřeno na HW`. Diagnostiku nedávej do bootu před bring-up displeje. | `AUDIT_STATUS.md` (stav ověření u každé opravy) + CLAUDE.md bod 4b/4c |
 | L-0011 | Hlášku diagnostiky ber jako pozorování, ne diagnózu — ověř ji proti ostatním číslům z téhož výpisu, než sáhneš do kódu. U paměti: chyby u vzoru `0x00` vylučují vyhasnutí, selhání zápisu s okamžitým ověřením vylučuje retenci. | rozlišovací tabulka v CLAUDE.md („DISPLEJ ZLOBÍ?“) |
+| L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. | při opravě grep na sesterskou funkci; poznámka u obou kopií |
+| L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -251,7 +253,51 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_mpu-cache-linker.md` (F-0013) a STATUS #237/#238/#72
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0012, L-0013, … -->
+### L-0012 — Oprava se neaplikovala na dvojče
+
+- **Datum:** 2026-09-10
+- **Oblast:** I2C / obecně symetrické instance
+- **Symptom:** `i2c1_recover()` přepínal PB8 do `OUTPUT_OD` dřív, než nastavil `ODR`, takže na
+  okamžik stáhl SCL k zemi. Je to **týž anti-vzor**, který na I2C4 kdysi nechal SCL dole
+  natrvalo a kvůli kterému se psala oprava v `i2c4_recover()`.
+- **Příčina:** Oprava se udělala jen v jedné ze dvou symetrických instancí. `CLAUDE.md` k ní
+  dokonce dostala větu „Totéž hlídej v `i2c1_recover` (PB8)“ — tedy poznámku *pro příště*
+  místo změny *teď*. Poznámka se pak nikdy neproměnila v kód.
+- **Oprava:** `HAL_GPIO_WritePin(..., GPIO_PIN_SET)` přesunut před `HAL_GPIO_Init`, s odkazem
+  na sesterskou funkci přímo v komentáři, aby se ty dvě kopie daly porovnat.
+- **Pravidlo:** Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4,
+  FB0/FB1/FB2, snap/cmd/resp), **v témže commitu dolož, že druhá je buď opravená, nebo se jí
+  to netýká.** Věta „hlídej to i tam“ není splnění, je to odklad.
+- **Detekce:** při opravě grepni jméno sesterské funkce; u obou kopií nech poznámku, že jsou
+  párové. V auditu: sekce „Co bylo zkontrolováno“ musí u symetrických driverů uvádět **obě** strany.
+- **Commit:** viz `docs/audit/2026-09-10_i2c.md`, nález F-0021
+- **Stav:** aktivní
+
+### L-0013 — Hook FreeRTOS není kontext úlohy
+
+- **Datum:** 2026-09-10
+- **Oblast:** RTOS / diagnostika
+- **Symptom:** `flightrec_dump("stack")` volaný z `vApplicationStackOverflowHook` neudělal
+  **nikdy nic** — a neohlásil to. Letový zapisovač tak pro přetečení zásobníku neuložil
+  ani jednou to, kvůli čemu existuje.
+- **Příčina:** Hook běží uvnitř **PendSV** (`xPortPendSVHandler` → `vTaskSwitchContext` →
+  `taskCHECK_FOR_STACK_OVERFLOW`), tedy v kontextu výjimky. `osMutexAcquire()` tam vrací
+  `osErrorISR` a funkce se na první řádce vrátí. Omezení bylo přitom známé — u letového
+  zapisovače stálo „nezapisuje se z HardFault handleru“ — jen se nedotáhlo na druhý
+  exception kontext.
+- **Oprava:** zatím **částečná**: neúspěch zvyšuje `g_flightrec_lost` a hlásí ho `status`,
+  aby ztráta přestala být tichá. Správně je dvoufázový zápis jako má `errlog`
+  (RAM ring + vylití z úlohy).
+- **Pravidlo:** **Hook FreeRTOS není kontext úlohy.** Ve `vApplicationStackOverflowHook`,
+  `vApplicationMallocFailedHook` ani v `configASSERT` nevolej nic, co potřebuje scheduler
+  (`osMutexAcquire`, `osDelay`, fronty) — mlčky to selže. Použij ISR-safe cestu:
+  zápis do RAM ringu nebo přímo do registru (BKP).
+- **Detekce:** v `freertos_hooks.c` nesmí být `osMutex*`, `osDelay`, `osMessageQueue*`;
+  co se z hooku volá dál, musí být v hlavičce označené **ISR-SAFE** (vzor: `errlog.h`).
+- **Commit:** viz `docs/audit/2026-09-10_preruseni-rtos.md`, nález F-0018
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0014, L-0015, … -->
 
 ---
 
