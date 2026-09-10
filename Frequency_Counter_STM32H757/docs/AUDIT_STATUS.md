@@ -3,11 +3,13 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-10
-**Fáze:** modul 1 prošel F5 (opravy, ⬜ neověřeno na HW), moduly 2 a 3 prošly F3 (jen nálezy).
+**Poslední aktualizace:** 2026-09-10 (2. sezení)
+**Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2, 3 a 4 prošly F3 (jen nálezy).
 F1 je přeskočená a je to rostoucí dluh (viz níže).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** modul 4 „přerušení a RTOS“ (`stm32h7xx_it.c`, `freertos*.c`).
+**Pokračovat zde:** doplnit `docs/ARCHITECTURE.md` (§1–§4 a §6 jdou vyplnit z hotových auditů,
+ne dohledávat znovu), pak zvolit další modul — nabízí se **drivery periferií** (I2C/SPI/QSPI/SDMMC)
+nebo **aplikační logika UI**. Moduly 1–4 jsou hotové.
 Dluh, který roste: `docs/ARCHITECTURE.md` je pořád prázdná šablona. Doložená čísla pro §4
 „Hodinový strom“ a §1 „Rozdělení jader“ jsou hotová v `audit/2026-09-09_hodiny-pwr.md`,
 pro §2 „Mapa paměti“ a §3 „Konfigurace MPU“ v `audit/2026-09-09_mpu-cache-linker.md` —
@@ -24,7 +26,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 1 | konfigurace hodin/PWR | `main.c`, `system_*.c` | CM7 | opraveno (2 otevřené) | 2026-09-09 | 0 | 2 | 5 | 0 | [7](audit/2026-09-09_hodiny-pwr.md) |
 | 2 | MPU / cache / linker | `main.c MPU_Config`, `*.ld` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 2 | [6](audit/2026-09-09_mpu-cache-linker.md) |
 | 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
-| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nezačato | — | – | – | – | – | — |
+| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -35,10 +37,10 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 0 | 0 | 0 |
-| S2 | 0 | 2 | 0 |
+| S1 | 1 | 0 | 0 |
+| S2 | 1 | 2 | 0 |
 | S3 | 8 | 5 | 0 |
-| S4 | 3 | 0 | 0 |
+| S4 | 4 | 0 | 0 |
 
 **Modul 1 — opraveno:** F-0001 (`pwrclk_check()` v USER CODE ověřuje dosažený stav napájení
 a hodin, výstup do `status`), F-0002 (NMI zapisuje výpadek HSE do black-boxu, kind 7),
@@ -53,8 +55,7 @@ F-0004 (jen dokumentace: I2C je ~50 kHz, ne ~100), F-0005 (pojistka v `check_les
   tedy nenulovou (ne reset default). Flash má zpoždění naprogramované, nález padá.
 - **F-0007** [S3] ztráta HSE = mrtvý přístroj bez rozlišitelné diagnózy — čeká na rozhodnutí
   o politice (zůstat mrtvý, ale rozlišitelně / nabootovat na HSI a měření označit za neplatné).
-- **S4 (nové, z opravy F-0002):** řádek `HSE: CSS hlasil vypadek Nx` ve `status` se nemůže
-  nikdy vypsat — `g_css_fail` je v `.bss` a reset ji vynuluje. Patří modulu „přerušení a RTOS“.
+- ~~S4 (z opravy F-0002): řádek `HSE: CSS…` ve `status`~~ → převzato modulem 4 jako **F-0019**.
 
 **Stav ověření: ✅ OVĚŘENO NA HW po power-cyklu (2026-09-10).**
 `status` po studeném startu hlásí `NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3`
@@ -81,3 +82,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-09 | MPU/cache/linker | F3 přezkum, 6 nálezů (4×S3, 2×S4), verdikt **funkční**. Mapa 32 MB SDRAM, 4 MPU oblasti a umístění objektů ověřeny proti obrazu (`nm`), ne proti zdrojáku. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-09 | IPC CM7↔CM4 | F3 přezkum, 4 nálezy (4×S3), verdikt **funkční**. Seqlock, SPSC ringy i čtenář na CM4 přečteny řádek po řádku — v jádru protokolu chyba není; nálezy jsou invarianty držené jen komentářem. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | hodiny/PWR + SDRAM | ✅ **HW ověření po power-cyklu.** F-0001 a F-0006 uzavřeny ze `status`. Problikávání displeje vyřešeno: příčina byla čtecí cesta FMC (`rpipe=0` + vypnutá I/O kompenzace), ne obnova a ne vadná paměť — `membench` 0 chybných bitů, LTDC podtečení 0/1000. Uzavřeno STATUS #237/#238/#72. | L-0011 |
+| 2026-09-10 | přerušení a RTOS | F3 přezkum, 3 nálezy (1×S1, 1×S2, 1×S4), verdikt **podmíněně funkční**. Priority ISR, grouping, timebase i hooky v pořádku; stacky změřeny z běžícího přístroje (`stats`). Obě funkční vady jsou diagnostika, která selže právě při poruše. Kód neměněn. | zatím žádná (F5 nebyla) |
