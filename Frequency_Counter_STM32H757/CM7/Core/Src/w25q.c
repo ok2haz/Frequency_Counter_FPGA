@@ -120,7 +120,18 @@ bool w25q_init(void)
     if (HAL_QSPI_Init(&hqspi) != HAL_OK) return false;
 
     /* SW reset (66h+99h) -> zname vychozi (napr. po warm resetu STM zustal chip
-     * v jinem modu). Po resetu tRST ~30 us -> 1 ms delay bohate staci. */
+     * v jinem modu). Po resetu tRST ~30 us -> 1 ms delay bohate staci.
+     *
+     * ⚠️ Navratova hodnota se ZAMERNE ignoruje (audit F-0024, 2026-09-10) — neni
+     * to opomenuti. Dva duvody:
+     *  1. `cmd_only` selze jen na strane HOSTA (`HAL_QSPI_Command` timeout);
+     *     QSPI nema ACK, takze o odpovedi cipu nevypovida nic. Kdyz je vadna
+     *     periferie hosta, selze stejne i `w25q_read_jedec()` hned pod tim.
+     *  2. Vysledek resetu se overuje NASLEDKEM, ne navratovou hodnotou: kdyz se
+     *     cip neresetoval do zname 1-line SPI podoby, JEDEC ID nevyjde a init
+     *     vraci false. Ta kontrola je prisnejsi nez test navratu `cmd_only`.
+     * Pridat sem `if (!cmd_only(...)) return false;` by tedy zadny novy stav
+     * neodhalilo — jen by duplikovalo branu, ktera uz o radek niz je. */
     cmd_only(CMD_RSTEN);
     cmd_only(CMD_RST);
     HAL_Delay(1);
