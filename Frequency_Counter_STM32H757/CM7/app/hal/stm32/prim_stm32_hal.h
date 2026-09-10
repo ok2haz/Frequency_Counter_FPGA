@@ -52,5 +52,11 @@ extern volatile uint32_t g_ltdc_underrun;
  *  by ji kdo cetl -> poskozeny obdelnik nezanechal stopu a vypadal jako vada
  *  pameti/panelu. Vsechna tri musi byt za normalniho provozu NULOVA. */
 extern volatile uint32_t g_d2d_errors;          /**< TEIF/CEIF na dokoncenem prenosu */
-extern volatile uint32_t g_d2d_timeouts;        /**< DMA2D nedobehl do meze hlidaci smycky */
+extern volatile uint32_t g_d2d_timeouts;        /**< DMA2D nedobehl do meze -> prenos ZRUSEN */
 extern volatile uint32_t g_ltdc_flip_timeouts;  /**< predchozi flip nedobehl do meze */
+
+/** Nejdelsi pozorovane cekani na DMA2D v TAKTECH jadra (audit F-0036).
+ *  Meritko rezervy: porovnej s mezi `D2D_WAIT_MS` (100 ms). Kdyz se priblizi,
+ *  zmenilo se neco v propustnosti (takt, rozliseni, `d2ddt`) — a pozna se to
+ *  TADY, ne az tichym vyprsenim meze. Prevod na us dela `status`. */
+extern volatile uint32_t g_d2d_wait_max_cyc;

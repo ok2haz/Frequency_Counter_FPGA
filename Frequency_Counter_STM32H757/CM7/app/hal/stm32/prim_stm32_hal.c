@@ -90,18 +90,79 @@ static void mark_dirty(const prim_pixel_t *dst, int16_t w, int16_t h)
  * A BYL NEVINNY"). Tyz idiom jako `g_ltdc_underrun` o kus niz: nic se nemeni
  * na chovani, jen prestane byt ticho. Vypisuje `status`. */
 volatile uint32_t g_d2d_errors;          /* TEIF/CEIF na dokoncenem prenosu */
-volatile uint32_t g_d2d_timeouts;        /* DMA2D nedobehl do meze hlidaci smycky */
+volatile uint32_t g_d2d_timeouts;        /* DMA2D nedobehl do meze -> prenos ZRUSEN */
 volatile uint32_t g_ltdc_flip_timeouts;  /* predchozi flip nedobehl do meze */
+volatile uint32_t g_d2d_wait_max_cyc;    /* nejdelsi pozorovane cekani (takty DWT) */
 
-#define D2D_WAIT_GUARD   2000000u
+/* ── Meze cekani na DMA2D (audit F-0036) ──────────────────────────────────────
+ * 🔴 Do 2026-09-10 tu byla JEDNA konstanta 2 000 000 iteraci spinu, ktera merila
+ * naraz dve uplne ruzne veci: „jak dlouho legitimne trva prenos" a „kdy je
+ * hardware zatuhly". Ty se lisi o rady, takze je jedna hodnota nutne splete —
+ * 2 M iteraci je pri 480 MHz ~12 ms, tedy radove tolik, co celoobrazovkovy
+ * prenos (768 kB) s mrtvym casem DMA2D 240. Mez proto vyprsela i ZA NORMALNIHO
+ * PROVOZU a volajici pak prepsal registry nad bezicim prenosem.
+ * ZMERENO poté, co F-0033 pridalo pocitadlo: 14 vyprseni za 25 s bezu, rostoucich
+ * s kreslenim (14 -> 23 -> 25 pres vynucene plne redrawy), pritom `chyb` 0
+ * a `LTDC podteceni` 0 — tedy ne chyba prenosu, prenos proste trval dyl nez mez.
+ *
+ * Ted jsou ty dve veci oddelene:
+ *  - `D2D_SPIN_FAST` = levny spin bez cteni casovace; pokryje bezny kratky prenos,
+ *    takze v horke ceste nepribyla zadna rezie navic,
+ *  - `D2D_WAIT_MS`   = SKUTECNA mez, v milisekundach (nezavisla na taktu CPU
+ *    i na mrtvem case DMA2D — presne to, co drive chybelo),
+ *  - `D2D_ABORT_SPIN`= backstop pro pripad, ze by stala casova zakladna
+ *    (`HAL_GetTick` by nerostl); NENI to mez delky prenosu.
+ * ⚠️ Rezerva neni odhad: `g_d2d_wait_max_cyc` (nejdelsi pozorovane cekani) je
+ * videt ve `status`, takze se da porovnat s `D2D_WAIT_MS`. Kdyz se nekdy zmeni
+ * takt, rozliseni panelu nebo `d2ddt`, pozna se to TAM — ne az tichym vyprsenim. */
+/* 🔑 `D2D_WAIT_MS` NENI ODHAD — vychazi z mereni na desce (2026-09-10).
+ * Nejdelsi pozorovane cekani (`g_d2d_wait_max_cyc` ve `status`) je pri dnesnim
+ * `d2ddt = 240` a rozliseni 800x480 **~61 ms** (celoobrazovkovy M2M prenos
+ * 768 kB; mrtvy cas mezi AXI pristupy je presne to, co ho tak prodluzuje).
+ * Muj puvodni odhad znel ~12 ms a byl 5x vedle — proto tu ta hodnota stoji
+ * s odkazem na meritko, ne na uvahu.
+ * 500 ms = ~8x nad namerenym maximem a zaroven 5x POD 2,5 s, ktere ma na
+ * heartbeat UiTask (`watchdog_supervise`), takze ani skutecne zatuhnuti
+ * neshodi desku driv, nez se prenos zrusi.
+ * ⚠️ Pri zmene `d2ddt`, rozliseni nebo taktu se `max cekani` posune — proto se
+ * pri `d2ddt <n>` pocitadla nuluji a hodnota se da premerit. */
+#define D2D_SPIN_FAST    20000u
+#define D2D_WAIT_MS      500u
+#define D2D_ABORT_SPIN   1000000u
 #define LTDC_FLIP_GUARD  4000000u
 
 static void d2d_wait(void)
 {
-    /* Guard: kdyby DMA2D nedoběhl, NEzaseknout UiTask navždy. */
-    uint32_t guard = 0;
-    while ((DMA2D->CR & DMA2D_CR_START) && ++guard < D2D_WAIT_GUARD) { /* busy */ }
-    if (guard >= D2D_WAIT_GUARD) g_d2d_timeouts++;
+    uint32_t t0 = DWT->CYCCNT;   /* DWT bezi kvuli runtime statum; kdyz ne, vyjde 0 */
+
+    /* Levny spin — bezny prenos skonci tady a zadny casovac se necte. */
+    uint32_t spin = 0;
+    while ((DMA2D->CR & DMA2D_CR_START) && ++spin < D2D_SPIN_FAST) { /* busy */ }
+
+    if (DMA2D->CR & DMA2D_CR_START) {
+        /* Dlouhy prenos (typicky celoobrazovkovy) -> mez v CASE, ne v iteracich. */
+        uint32_t tick0 = HAL_GetTick();
+        uint32_t hard  = 0;
+        while ((DMA2D->CR & DMA2D_CR_START) && ++hard < D2D_ABORT_SPIN) {
+            if ((HAL_GetTick() - tick0) > D2D_WAIT_MS) {
+                g_d2d_timeouts++;
+                /* 🔴 NEPREPROGRAMOVAVAT naslepo (to delal puvodni kod): prepis
+                 * konfiguracnich registru za behu prenosu neni definovana operace.
+                 * Prenos se zrusi a pocka se na potvrzeni, aby volajici zacinal
+                 * nad klidnou periferii. */
+                DMA2D->CR |= DMA2D_CR_ABORT;
+                uint32_t a = 0;
+                while ((DMA2D->CR & DMA2D_CR_START) && ++a < D2D_ABORT_SPIN) { /* rusi se */ }
+                break;
+            }
+        }
+    }
+
+    /* Nejdelsi pozorovane cekani. Drzi se v TAKTECH — prevod na us je delenim
+     * a to do horke cesty nepatri; `status` si ho prepocita pri vypisu. */
+    uint32_t dt = DWT->CYCCNT - t0;          /* pretece az za ~9 s pri 480 MHz */
+    if (dt > g_d2d_wait_max_cyc) g_d2d_wait_max_cyc = dt;
+
     /* ⚠️ ISR se cte JEDNOU (d2d_wait je v horke ceste — 2x na kazdy fill/blit). */
     uint32_t isr = DMA2D->ISR;
     if (isr & (DMA2D_ISR_TEIF | DMA2D_ISR_CEIF)) g_d2d_errors++;

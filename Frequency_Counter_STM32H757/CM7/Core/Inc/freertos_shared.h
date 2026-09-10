@@ -148,6 +148,7 @@ extern volatile uint32_t g_ltdc_underrun;
 extern volatile uint32_t g_d2d_errors;
 extern volatile uint32_t g_d2d_timeouts;
 extern volatile uint32_t g_ltdc_flip_timeouts;
+extern volatile uint32_t g_d2d_wait_max_cyc;   /* nejdelsi cekani, takty jadra */
 /* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
  * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
 extern volatile uint8_t  g_d2d_deadtime;

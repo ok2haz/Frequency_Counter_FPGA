@@ -1925,7 +1925,11 @@ void UartTask_run(void *argument)
 					  if (v > 255u) v = 255u;
 					  prim_stm32_set_deadtime((uint8_t)v);
 					  g_ltdc_underrun = 0;         /* at se meri az od teto zmeny */
-					  printf("DMA2D: mrtvy cas = %lu takt(u) AHB, pocitadlo podteceni vynulovano\n",
+					  /* Mrtvy cas primo urcuje, jak dlouho prenos trva, takze se musi
+					   * vynulovat i mereni cekani a jeho vyprseni (F-0036) — jinak by
+					   * `max cekani` drzelo hodnotu z PREDCHOZI hodnoty `d2ddt`. */
+					  g_d2d_wait_max_cyc = 0; g_d2d_timeouts = 0; g_d2d_errors = 0;
+					  printf("DMA2D: mrtvy cas = %lu takt(u) AHB, pocitadla vynulovana\n",
 					         (unsigned long)v);
 				  } else {
 					  printf("DMA2D: mrtvy cas = %u (pouziti: d2ddt <0..255>, 0 = vypnuto)\n",
@@ -2137,8 +2141,15 @@ void UartTask_run(void *argument)
 					  	 * `chyb` znamena, ze DMA2D odmitl prenos (spatna adresa/konfigurace),
 					  	 * nenulove `timeout` ze nedobehl v case a kreslilo se pres nej. */
 					  	{ uint32_t de = g_d2d_errors, dt = g_d2d_timeouts, ft = g_ltdc_flip_timeouts;
-					  	  printf("DMA2D: chyb %lu, timeout %lu | flip timeout %lu%s\n",
+					  	  /* Nejdelsi pozorovane cekani proti mezi (F-0036). ZMERENO 2026-09-10:
+					  	   * pri `d2ddt = 240` a 800x480 vychazi ~61 ms (celoobrazovkovy prenos
+					  	   * 768 kB), mez je 500 ms -> rezerva ~8x. Kdyz se `max` priblizi mezi,
+					  	   * zmenilo se neco v propustnosti (takt, rozliseni, `d2ddt`) a pozna
+					  	   * se to TADY, ne az tichym vyprsenim. `d2ddt <n>` pocitadla nuluje. */
+					  	  uint32_t mx_us = g_d2d_wait_max_cyc / (SystemCoreClock / 1000000u);
+					  	  printf("DMA2D: chyb %lu, timeout %lu | flip timeout %lu | max cekani %lu.%03lu ms (mez 500)%s\n",
 					  	         (unsigned long)de, (unsigned long)dt, (unsigned long)ft,
+					  	         (unsigned long)(mx_us / 1000u), (unsigned long)(mx_us % 1000u),
 					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY" : "  (v poradku)"); }
 					  	/* Chybejici glyfy (audit F-0034). Vetsina velkych fontu je subsetovana
 					  	 * a chybejici glyf se TISE preskoci -> text na displeji proste zmizi.
