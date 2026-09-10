@@ -35,6 +35,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0011 | Hlášku diagnostiky ber jako pozorování, ne diagnózu — ověř ji proti ostatním číslům z téhož výpisu, než sáhneš do kódu. U paměti: chyby u vzoru `0x00` vylučují vyhasnutí, selhání zápisu s okamžitým ověřením vylučuje retenci. | rozlišovací tabulka v CLAUDE.md („DISPLEJ ZLOBÍ?“) |
 | L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. | při opravě grep na sesterskou funkci; poznámka u obou kopií |
 | L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
+| L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -297,7 +298,29 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-10_preruseni-rtos.md`, nález F-0018
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0014, L-0015, … -->
+### L-0014 — Souhrn se rozešel se zdrojem pravdy během jednoho sezení
+
+- **Datum:** 2026-09-10
+- **Oblast:** vedení auditu
+- **Symptom:** Na otázku „jsou ostatní nálezy opravené?“ se ukázalo, že souhrnná tabulka
+  v `docs/AUDIT_STATUS.md` **nesouhlasí s nálezovými dokumenty**: F-0015 byl opravený v kódu
+  (commit `8525a10`), ale jeho `Stav:` zůstal „otevřeno“, a součty podle severity byly u S1,
+  S3 i S4 špatně. Rozešlo se to **v rámci jednoho dne**, ne za měsíce.
+- **Příčina:** Skript, kterým jsem hromadně přepisoval stavy po opravách, dostal seznam tří
+  souborů a `2026-09-09_ipc-cm7-cm4.md` v něm chybělo. Součty jsem pak dopočítal ručně
+  z paměti místo z dokumentů. Je to **táž třída jako L-0006** (duplikované číslo se rozejde),
+  jen o patro výš: souhrn je druhá kopie údaje, který žije v nálezech.
+- **Oprava:** Stavy srovnány (F-0015 → opraveno, F-0006 → uzavřeno měřením). Přidán
+  **`tools/audit_stav.py`**, který stavy i součty čte přímo z `docs/audit/*.md`;
+  s `--kontrola` porovná svůj výsledek se souhrnem a při rozporu skončí nenulovým kódem.
+- **Pravidlo:** **Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije.**
+  Když už druhá kopie musí existovat (protože se čte jinde), musí ji hlídat nástroj.
+- **Detekce:** `python tools/audit_stav.py --kontrola` — pustit na konci každého sezení
+  a po každé dávce oprav.
+- **Commit:** viz `docs/audit/2026-09-09_ipc-cm7-cm4.md`, nález F-0015
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0015, L-0016, … -->
 
 ---
 

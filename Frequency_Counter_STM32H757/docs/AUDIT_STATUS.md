@@ -11,7 +11,8 @@ F1 je přeskočená a je to rostoucí dluh (viz níže).
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže), teprve pak modul 6
 „drivery: SPI2/FPGA, QSPI, SDMMC“.
 
-**Otevřené po F5 (5 nálezů, žádný S1/S2):**
+**Otevřené po F5** (5× S3 + 1 částečně opravený S1). Čísla v tabulce výše se **odvozují
+z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola`:
 - **F-0003** [S3] `VOSRDY` bez timeoutu — *odloženo*: leží v generovaném `SystemClock_Config()`
   bez `USER CODE` (regen by opravu smazal) a špatná mez by pustila 480 MHz dřív, než se
   ustálí regulátor. Vrátit se, až se objeví „deska občas nenaběhne“.
@@ -54,10 +55,10 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 0 | 1 | 0 |
+| S1 | 1 | 0 | 0 |
 | S2 | 0 | 3 | 0 |
-| S3 | 4 | 11 | 0 |
-| S4 | 1 | 3 | 0 |
+| S3 | 5 | 10 | 0 |
+| S4 | 0 | 3 | 0 |
 
 **Modul 1 — opraveno:** F-0001 (`pwrclk_check()` v USER CODE ověřuje dosažený stav napájení
 a hodin, výstup do `status`), F-0002 (NMI zapisuje výpadek HSE do black-boxu, kind 7),

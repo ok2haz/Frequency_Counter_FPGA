@@ -273,13 +273,14 @@ dokumentovaná frekvence neodpovídá skutečnosti.
 - **Riziko opravy:** samotné čtení nulové; zápis střední (ovlivňuje časování přístupů k Flash,
   ze které se běží).
 - **Vztah k lekcím:** —
-- **Stav:** **částečně vyřešeno 2026-09-09 — zavedeno měření, zápis zůstává otevřený.**
-  Nález sám předepisoval „nejprve změřit, teprve pak případně zapisovat“. Měření je hotové:
-  `pwrclk_check()` odečítá `FLASH_ACR.WRHIGHFREQ` do `g_pwrclk_wrhighfreq` a UART `status`
-  ho vypisuje na řádku `NAPAJENI/HODINY:` (`WRHIGHFREQ=<n>`). **Zbývá:** po nejbližším
-  naflashování odečíst hodnotu z běžícího přístroje a porovnat ji s tabulkou RM0399 pro
-  VOS0 / AXI 240 MHz. Teprve pokud nesedí, řešit zápis — praktický dopad zůstává nízký,
-  protože do interní Flash se za běhu nezapisuje.
+- **Stav:** ✅ **uzavřeno 2026-09-10 měřením na desce.** `status` po power-cyklu hlásí
+  **`WRHIGHFREQ=3`**, tedy **nejvyšší** ze čtyř možných hodnot (pole je 2bitové) — Flash má
+  naprogramované maximální zpoždění signálů, což je vůči tabulce RM0399 pro VOS0 / 240 MHz
+  bezpečná strana (delší zpoždění je vždy přípustné, kratší ne). Nález stál na obavě, že
+  hodnota může být příliš nízká; měření ukázalo opak, takže **není co programovat**.
+  🔑 Vysvětluje to i to, proč se absence zápisu nikdy neprojevila: reset default je
+  konzervativní extrém. Praktický dopad byl navíc nulový — do interní Flash se za běhu
+  nezapisuje (ověřeno grepem v tomto auditu).
 
 ---
 
