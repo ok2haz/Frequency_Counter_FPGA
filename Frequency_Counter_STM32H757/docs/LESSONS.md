@@ -37,6 +37,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
 | L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
 | L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
+| L-0016 | Příznak chyby nikdy nemaž, aniž bys ho přečetl; a hlídací mez, kterou lze splést s normálním provozem, není ochrana, ale generátor tichých chyb. | `status` → `DMA2D: chyb 0, timeout 0`; každý zápis do `*_IFCR` musí mít nad sebou čtení `*_ISR` |
+| L-0017 | Tichý přeskok je přípustný jen s počítadlem — co se rozhodneš nevykreslit, musí jít změřit. | `status` → `FONTY: preskocenych glyfu 0` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -349,7 +351,67 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** `1f69ca9` (viz `docs/audit/2026-09-10_spi-qspi.md`, nález F-0023)
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0016, L-0017, … -->
+### L-0016 — Příznak chyby se mazal, aniž ho kdo přečetl — a schovával druhou vadu
+
+- **Datum:** 2026-09-10
+- **Oblast:** DMA2D / diagnostika periferií
+- **Symptom:** Žádný — a právě to byl problém. `d2d_wait()` po každém přenosu mazala
+  `DMA2D` příznak chyby přenosu (`TEIF`) bez jediného čtení, a vypršení hlídací
+  smyčky se nikam nezapisovalo. Poškozený obdélník tak nezanechal **žádnou stopu**
+  a při vyšetřování vypadal jako vada paměti nebo panelu — tedy směr, kterým už
+  tenhle projekt několikrát chybně šel (tabulka „HW OBVINĚN — A BYL NEVINNÝ").
+- **Příčina:** Mazání příznaků je nutné, aby se nehromadily; jenže „vymazat" se
+  napsalo místo „přečíst, započítat, vymazat". Bez čtení je to tichý filtr chyb.
+- **Oprava:** `d2d_wait()` teď `ISR` přečte (jednou — je to horká cesta) a při
+  `TEIF`/`CEIF` zvedne `g_d2d_errors`; vypršení obou hlídacích smyček zvedne
+  `g_d2d_timeouts`, resp. `g_ltdc_flip_timeouts`. Nový řádek `DMA2D:` ve `status`.
+  Do masky mazání doplněn `CCEIF`, který se dřív nemazal vůbec.
+- 🔑 **Co to okamžitě našlo:** do 25 s běhu **14 vypršení** hlídací meze, rostoucích
+  s kreslením (14 → 23 → 25 přes vynucené plné redrawy). Mez 2 000 000 iterací je
+  při 480 MHz ~12 ms, tedy **řádově tolik, co celoobrazovkový přenos** s mrtvým
+  časem DMA2D 240 — vyprší tedy i za normálního provozu a volající pak DMA2D
+  přeprogramuje uprostřed běžícího přenosu (nález F-0036).
+- **Pravidlo:** **Příznak chyby nikdy nemaž, aniž bys ho přečetl.** Když se maže
+  proto, aby se nehromadil, musí mezi čtením a mazáním být inkrement počítadla,
+  které je vidět v `status`. Totéž platí pro vypršení hlídací smyčky: timeout bez
+  záznamu je tichá chyba, ne ochrana.
+  🔑 A druhá polovina: **hlídací mez, kterou lze splést s normálním provozem,
+  není ochrana, ale generátor tichých chyb.** Mez se volí proti nejdelšímu
+  LEGITIMNÍMU případu, ne odhadem.
+- **Detekce:** `status` → řádek `DMA2D:` musí být `chyb 0, timeout 0 | flip timeout 0`.
+  Při auditu periferie: každý zápis do `*_IFCR`/`*_ICR` musí mít nad sebou čtení
+  odpovídajícího `*_ISR`.
+- **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nálezy F-0033 a F-0036
+- **Stav:** aktivní
+
+### L-0017 — Tichý přeskok místo chyby: chybějící glyf nešlo zjistit jinak než pohledem
+
+- **Datum:** 2026-09-10
+- **Oblast:** vykreslování textu / diagnostika
+- **Symptom:** `prim_draw_text` chybějící glyf **tiše přeskočí** (`if (g == NULL)
+  continue;`) — text na displeji prostě zmizí a nic to neohlásí. Není to teorie:
+  audit 2026-08-29 našel **15 takto neviditelných řetězců** (mj. splash „GPSDO"
+  a text modalu „Opravdu restartovat?"), protože většina velkých fontů je
+  subsetovaná (`mono_75`/`mono_52` jen číslice, `sans_32` jen `Hzsmunp`).
+- **Příčina:** Přeskok je sám o sobě správný (fallback glyf by kreslil nesmysl a
+  `prim_text_width` skáče stejně, takže se kresba a měření nerozejdou). Chybělo
+  ale **jakékoli hlášení**, takže vada prošla překladačem, `audit.py` i selftestem
+  a odhalil ji jen člověk, který si všiml prázdného místa.
+- **Oprava:** `s_missing_glyphs` v `libprim/src/text.c` + `prim_text_missing_glyphs()`
+  a řádek `FONTY:` ve `status`. ⚠️ Počítá se **jen** ve `prim_draw_text`, ne ve
+  `prim_text_width` — ta se při zarovnání CENTER/RIGHT volá na týž řetězec navíc
+  a chyby by se zdvojily.
+- **Pravidlo:** **Tichý přeskok je přípustný jen s počítadlem.** Když se kód
+  rozhodne něco nevykreslit / nezpracovat, musí to jít změřit — jinak se z toho
+  stane vada, kterou najde až uživatel. V tomhle projektu je to levné: nový čítač
+  do `status` stojí jeden build a zůstane užitečný.
+- **Detekce:** `status` → `FONTY: preskocenych glyfu 0`. Nahrazuje ruční
+  `grep glyph_count` po regeneraci fontů, o kterém `L-0007` říká, že takové
+  vrstvy nikdo nespouští.
+- **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nález F-0034
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0018, L-0019, … -->
 
 ---
 

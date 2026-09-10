@@ -3,17 +3,24 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-10 (6. sezení — modul 6 včetně F5)
+**Poslední aktualizace:** 2026-09-10 (7. sezení — modul 7, jen F3)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW** (nic z těch oprav neběželo po power-cyklu).
+**Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla.
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže), pak modul 7
-„drivery: SDMMC + FatFs“.
+**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
+modul 7 (nálezy F-0025…F-0031), nebo modul 8 „aplikační logika UI“.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
+⚠️ **Týmž způsobem se 2026-09-10 rozdělil modul 8** („aplikační logika UI“ = `app_gpsdo.c` +
+`screens/*` + `libui`, dohromady **14 375 řádků** bez fontů — 4× víc než modul 7). Nově:
+**8 = vykreslovací řetězec** (2 247 ř.), **9 = hlavní obrazovka** (3 272 ř.),
+**10 = aplikační okna, navigace, model fokusu** (9 188 ř.). Modul 10 je pořád velký a
+při jeho zahájení se má zvážit další dělení podle témat (navigace / model fokusu / okna).
 
-**Otevřené po F5** (5× S3 + 1 částečně opravený S1). Čísla v tabulce výše se **odvozují
+**Otevřené po F5** (5× S3 + 1 částečně opravený S1 z modulů 1–6; modul 7 přidal
+2× S2, 4× S3 a 1× S4, které F5 zatím neprošly). Čísla v tabulce výše se **odvozují
 z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola`:
 - **F-0003** [S3] `VOSRDY` bez timeoutu — *odloženo*: leží v generovaném `SystemClock_Config()`
   bez `USER CODE` (regen by opravu smazal) a špatná mez by pustila 480 MHz dřív, než se
@@ -44,8 +51,10 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
-| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c` | CM7 | nezačato | — | – | – | – | – | — |
-| 8 | aplikační logika UI | `app_gpsdo.c`, `screens/*`, `libui` | CM7 | nezačato | — | – | – | – | – | — |
+| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
+| 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | opraveno (2 otevřené, ⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
+| 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | nezačato | — | – | – | – | – | — |
+| 10 | aplikační okna, navigace, model fokusu | `app_gpsdo.c` | CM7 | nezačato | — | – | – | – | – | — |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -57,9 +66,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 0 | 0 |
-| S2 | 0 | 3 | 0 |
-| S3 | 5 | 11 | 0 |
-| S4 | 0 | 4 | 0 |
+| S2 | 3 | 3 | 0 |
+| S3 | 10 | 14 | 0 |
+| S4 | 1 | 4 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -117,4 +126,7 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-10 | drivery I2C | F3 přezkum, 2 nálezy (2×S3), verdikt **funkční**. Modul s nejdelší historií incidentů je dnes dobře ošetřený; oba nálezy jsou o tom, že se dodržené pravidlo neuplatnilo všude. **Navíc doplněn `docs/ARCHITECTURE.md`** z auditů 1–5 → F1 uzavřena. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | F5 opravy (moduly 2–5) | Opraveno 10 nálezů ve 3 commitech: F-0008, F-0011, F-0015 (pojistky), F-0018 částečně, F-0019, F-0020, F-0021, F-0022 (tiché vady zviditelněny), F-0009, F-0010, F-0012 (dokumentace). Build 0 varování, audit.py baseline, `.text` 597 232 → 597 488. **⬜ neověřeno na HW.** Rozšířen `audit-modul` o fázi F5. | L-0012, L-0013 |
 | 2026-09-10 | drivery SPI2/FPGA + QSPI | F3 přezkum, 2 nálezy (1×S3, 1×S4), verdikt **funkční**. Oba drivery jsou blokující (grep na DMA/IT prázdný → sekce C odpadá). Klíčové zjištění: **`NOLINK` není přičitatelný ovladači na CM7** — CS boot level, AFCNTR, časování i CRC gate jsou v pořádku. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-10 | F5 opravy (modul 8) | Skupina A: **F-0033** (chyby DMA2D se přestaly mazat naslepo + 3 počítadla a řádek `DMA2D:` ve `status`), **F-0034** (počítadlo přeskočených glyfů + řádek `FONTY:`), **F-0035** (`__DSB()` před startem DMA2D, ověřeno v disassembly). Build 0 varování, `audit.py` 92/0/2, `.text` 597 520 → 597 832. 🔑 **Oprava F-0033 hned odhalila nový nález F-0036** [S2]: hlídací mez v `d2d_wait()` vyprší i na legitimním celoobrazovkovém přenosu (14 vypršení za 25 s, roste s kreslením) a DMA2D se pak přeprogramuje za běhu. **F-0032 a F-0036 zůstávají otevřené.** ⬜ neověřeno na HW po power-cyklu. | L-0016, L-0017 |
+| 2026-09-10 | vykreslovací řetězec | F3 přezkum, 4 nálezy (4×S3), verdikt **funkční**. **Modul 8 nejdřív rozdělen** (14 375 ř. → 8/9/10, viz poznámka nahoře). Nic dnes nekreslí špatně; všechny nálezy jsou latentní pasti a chybějící diagnostika. Nejzávažnější F-0032: pravidlo „partial redraw musí začít clear“ platí jen pro neprůhledné barvy, `sw_fill` obchází `mark_dirty`. Ověřeno rozborem indexů, že copy-forward nikdy nepíše do scanovaného bufferu, a že `keep[96]` v dedupu sedí přesně na mez. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-10 | drivery SDMMC + FatFs | F3 přezkum, 7 nálezů (2×S2, 4×S3, 1×S4), verdikt **podmíněně funkční**. Blokující CPU/FIFO cesta místo IDMA je doložitelně správné rozhodnutí; ručně skládaný init obchází dvě vendor smyčky s timeoutem ~49 dní. Slabiny jsou v životním cyklu okolo mountu: **výměna karty za běhu je rozbitá deterministicky** (F-0025) a auto-unmount z defaultTasku umí smazat FatFs semafor drženy jiným taskem (F-0026). Umístění všech bufferů ověřeno `nm` nad `.elf`. Dvě falešné stopy prověřeny a zavrženy (BusFault přes `disk_status`, L-0007 přes `HAL_RCCEx_PeriphCLKConfig`). Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | F5 opravy (modul 6) | F-0023 mez proti kapacitě W25Q (`fix:` `1f69ca9`), F-0024 zdůvodnění ignorovaných návratů (`docs:` `d7dbd69`). Před zásahem ověřeno, že žádný volající na hranici neleží. Build 0 varování, `audit.py` 92/0/2, `.text` 597 488 → 597 520 a mez `cmp.w r0, #67108864` dohledána v disassembly. **Přeložen i CM4/Release** — obraz byl starší než `ipc_shared.h` (assert z F-0017), takže `build.sh` varoval na možný nesoulad bank. **⬜ neověřeno na HW.** | L-0015 |
