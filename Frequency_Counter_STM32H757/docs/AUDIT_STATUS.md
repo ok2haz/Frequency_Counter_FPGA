@@ -3,7 +3,7 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-09
+**Poslední aktualizace:** 2026-09-10
 **Fáze:** modul 1 prošel F5 (opravy, ⬜ neověřeno na HW), moduly 2 a 3 prošly F3 (jen nálezy).
 F1 je přeskočená a je to rostoucí dluh (viz níže).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
@@ -37,7 +37,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 0 | 0 | 0 |
 | S2 | 0 | 2 | 0 |
-| S3 | 10 | 3 | 0 |
+| S3 | 8 | 5 | 0 |
 | S4 | 3 | 0 | 0 |
 
 **Modul 1 — opraveno:** F-0001 (`pwrclk_check()` v USER CODE ověřuje dosažený stav napájení
@@ -49,24 +49,26 @@ F-0004 (jen dokumentace: I2C je ~50 kHz, ne ~100), F-0005 (pojistka v `check_les
   `SystemClock_Config()` (regen by opravu smazal) a špatně zvolená mez by pustila 480 MHz
   dřív, než se regulátor ustálí, tedy riziko rozbít fungující desku. Vrátit se k tomu,
   pokud se objeví „deska občas nenaběhne“.
-- **F-0006** [S3] `WRHIGHFREQ` — **měření zavedeno**, zbývá odečíst hodnotu z běžícího
-  přístroje (`status` → `WRHIGHFREQ=`) a porovnat s tabulkou RM0399 pro VOS0 / 240 MHz.
+- ~~**F-0006** [S3] `WRHIGHFREQ`~~ — ✅ **UZAVŘENO 2026-09-10**: `status` hlásí `WRHIGHFREQ=3`,
+  tedy nenulovou (ne reset default). Flash má zpoždění naprogramované, nález padá.
 - **F-0007** [S3] ztráta HSE = mrtvý přístroj bez rozlišitelné diagnózy — čeká na rozhodnutí
   o politice (zůstat mrtvý, ale rozlišitelně / nabootovat na HSI a měření označit za neplatné).
 - **S4 (nové, z opravy F-0002):** řádek `HSE: CSS hlasil vypadek Nx` ve `status` se nemůže
   nikdy vypsat — `g_css_fail` je v `.bss` a reset ji vynuluje. Patří modulu „přerušení a RTOS“.
 
-**Stav ověření obou oprav firmwaru: ⬜ NEOVĚŘENO NA HW po power-cyklu.**
-Po naflashování zkontrolovat `status` → řádek
-`NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=<n>` (to zároveň uzavře F-0006),
-a to **po power-cyklu**, ne jen po flashi (viz L-0010).
+**Stav ověření: ✅ OVĚŘENO NA HW po power-cyklu (2026-09-10).**
+`status` po studeném startu hlásí `NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3`
+→ **F-0001 i F-0006 uzavřeny** (kontrola napájení/hodin funguje; `WRHIGHFREQ=3` je nenulová,
+tedy ne reset default — Flash má naprogramované zpoždění a nález F-0006 tím padá).
+`SDRAM refresh: SDRTR=371, ve zdrojaku 371` a `SDRAM cteni: rpipe=1 HCLK | I/O kompenzace READY (CSI ok)`.
 
-⚠️ **Hlášení „po power-resetu se rozbije displej“ (2026-09-09) NENÍ nález tohoto modulu.**
-Je to otevřené **#141 / #237 / #238** — retence SDRAM po studeném startu, doložená měřením
-(1 048 646 chybných bitů) a už jednou vyloučená bisectem z 2026-09-04. Opravy z tohoto auditu
-do RCC/PWR/FLASH/SYSCFG **jen čtou**; jediné zápisy v celém diffu jsou v nedosažitelné CSS
-větvi `NMI_Handler`. Rozhodne `membench` → řádek „retence po 1 s“ (musí být 0).
-Podrobně v `audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřování“.
+✅ **Problikávání displeje (#237/#238/#72) VYŘEŠENO 2026-09-10 — příčina byla ČTECÍ CESTA FMC.**
+`ReadPipeDelay = 0` + nikdy nezapnutá I/O kompenzační cela. Naměřeno po opravě:
+`membench` **0 chybných bitů** (bylo 3 338 207), retence **0** (bylo 496 068), překryv adres
+zmizel, `LTDC podtečení` **0/1000** (bylo 1217/1000), displej po power-cyklu v pořádku.
+⚠️ Paměť ani `FMC_A9`/`PF15` vinné nebyly — nová položka v tabulce „HW obviněn a byl nevinný“.
+⚠️ Poučení z cesty k tomu je **L-0011** (převzal jsem hypotézu, kterou nabídl nástroj,
+místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vrácenou změnu.
 
 ## Log sezení
 
@@ -78,3 +80,4 @@ Podrobně v `audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřová
 | 2026-09-09 | hodiny/PWR | Reakce na hlášení „po power-resetu se rozbije displej“: doloženo, že opravy do hodin **nezapisují**, a symptom dohledán jako otevřené #141/#237/#238. `pwrclk_check()` přesto přesunuta až za bring-up displeje. Doplněn power-cyklus do ověřovacího řetězce. | L-0010 |
 | 2026-09-09 | MPU/cache/linker | F3 přezkum, 6 nálezů (4×S3, 2×S4), verdikt **funkční**. Mapa 32 MB SDRAM, 4 MPU oblasti a umístění objektů ověřeny proti obrazu (`nm`), ne proti zdrojáku. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-09 | IPC CM7↔CM4 | F3 přezkum, 4 nálezy (4×S3), verdikt **funkční**. Seqlock, SPSC ringy i čtenář na CM4 přečteny řádek po řádku — v jádru protokolu chyba není; nálezy jsou invarianty držené jen komentářem. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-10 | hodiny/PWR + SDRAM | ✅ **HW ověření po power-cyklu.** F-0001 a F-0006 uzavřeny ze `status`. Problikávání displeje vyřešeno: příčina byla čtecí cesta FMC (`rpipe=0` + vypnutá I/O kompenzace), ne obnova a ne vadná paměť — `membench` 0 chybných bitů, LTDC podtečení 0/1000. Uzavřeno STATUS #237/#238/#72. | L-0011 |

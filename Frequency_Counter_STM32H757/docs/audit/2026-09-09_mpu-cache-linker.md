@@ -200,7 +200,14 @@ jsou to latentní pasti a nesrovnalosti dokumentace.
 - **Riziko opravy:** střední — periodický přepis zasahuje do vykreslovací cesty, kde má projekt
   historii regresí (guard „obsah je stejný“).
 - **Vztah k lekcím:** —
-- **Stav:** otevřeno (patří k #237/#238, ne k tomuto modulu)
+- **Stav:** ✅ **uzavřeno 2026-09-10 — a hypotéza byla ŠPATNĚ.** `bg_cache` se nerozpadala;
+  špatně se **četla**. Příčina byla čtecí cesta FMC (`ReadPipeDelay = 0` + nikdy nezapnutá
+  I/O kompenzační cela), ne retence SDRAM. Po opravě `membench` **0 chybných bitů**,
+  `bgcheck` čistý, displej po power-cyklu v pořádku.
+  🔑 Nástroj `bgcheck` z tohoto nálezu byl přesto klíčový — ukázal, že se rozpadá i paměť,
+  na kterou `membench` nevidí, čímž vyloučil „je to jen scratch region“. **Ale jeho verdikt
+  neumí odlišit „paměť se změnila“ od „čtení je nespolehlivé“** — to je teď v `CLAUDE.md`
+  napsané u něj i u kroku 1. Viz L-0011.
 
 ---
 

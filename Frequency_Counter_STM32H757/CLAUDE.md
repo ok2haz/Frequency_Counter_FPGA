@@ -321,6 +321,7 @@ halt stačí** na mrtvou I2C4 (změřeno kontrolovaným pokusem, viz níže).
 | černý displej po power-cyklu | vada panelu / SDRAM čipu | **`PG8` ztratil `MODER`** závodem jader o GPIOG (SW) |
 | deska nedostala IP | vadný PHY / kabeláž | **`PG11` ztratil `AFR`** týmž závodem (SW) |
 | problikávání displeje (#141) | — (hádal jsem 3 kola v SW) | **`REFRESH_COUNT` 4,7× mimo spec** — rozhodl **bisect**, ne hádání |
+| SDRAM „se rozpadá“, 3,3 M chybných bitů, adresy se opakují po 256 kB (#237/#238/#72) | prozvonit `FMC_A9`/`PF15`, vadný SDRAM čip | **`ReadPipeDelay = 0` + nikdy nezapnutá I/O kompenzační cela** (SW). Po opravě `membench` **0 chybných bitů** a překryv adres zmizel — paměť byla celou dobu v pořádku. |
 
 🔑 **Vzor je pořád stejný: symptom vypadal na elektroniku, příčina byla jedna špatná
 hodnota v konfiguraci.** Prototyp opravdu může mít vadu, ale **v tomhle projektu
@@ -354,6 +355,19 @@ u všech ostatních vzorů selhání — to je podpis „všechno čte nuly“, 
 
 
 **Pořadí, které stálo tři kola ladění, než se zavedlo (audit 2026-09-05):**
+
+🔑🔑 **NEŽ ZAČNEŠ: „chybné bity v SDRAM“ NEZNAMENÁ „vadná paměť“.** Vyřešeno 2026-09-10
+(#237): 3 338 207 chybných bitů, „rozpad obsahu (refresh?)“ i „adresy se opakují po 256 kB“
+byly **artefakty špatně ČTENÝCH dat**, ne vady buněk. Rozlišíš to **z týchž čísel, bez další
+zkoušky** — a nejlevnější je vzor `0x00`:
+- **`0x00` má chyby** → čte se nenula tam, kde se zapsala nula. Buňka padá **k** nule, ne od ní,
+  takže to **není** vyhasnutí. Je to **čtecí cesta** (`rpipe`, I/O kompenzace, integrita signálu).
+- **`0x00` je čisté a ostatní vzory selhávají** → paměť vrací samé nuly = **mrtvý takt**
+  (`PG8`/`FMC_SDCLK`, viz níže).
+- **selhává až výdrž, ne zápis s okamžitým ověřením** → teprve tohle je skutečná **retence**.
+⚠️ A pozor na `bgcheck`: ten neumí odlišit *„paměť se změnila“* od *„čtení je nespolehlivé“* —
+obojí mu vyjde stejně. Jeho verdikt platí až ve chvíli, kdy `membench` hlásí 0 chybných bitů.
+⚠️ Verdikt „**adresy se opakují**“ je nepoužitelný, dokud nejsou čistá čtení (uzavřelo to #72).
 
 0. 🔴 **`bgcheck` — PRVNÍ, protože `membench` na tuhle paměť NEVIDÍ** (audit F-0013,
    2026-09-09). Mechanismus problikávání je podle #138 ten, že partial redraw blituje
@@ -396,7 +410,24 @@ Symptom se objevil hned po té změně, takže se tři kola hledalo ve vykreslov
 co bylo pod nimi.**
 
 **Neuzavřené HW podezření:**
-- 🔴 **SDRAM refresh: 1835 → 371 (2026-09-04) NESTAČILO → 175 (2026-09-09).**
+- ✅ **VYŘEŠENO 2026-09-10: příčina byla ČTECÍ CESTA FMC, ne obnova a ne paměť.**
+  Dvě věci naráz, obě v konfiguraci:
+  1. **`ReadPipeDelay = 0`** (`fmc.c`) — čtená data se vzorkovala hned po CAS latenci, bez
+     jakékoli rezervy na zpoždění desky. Nově **`FMC_SDRAM_RPIPE_DELAY_1`**; laditelné za běhu
+     přes UART **`rpipe <0|1|2>`**.
+  2. **I/O kompenzační cela (`SYSCFG_CCCSR`) nebyla NIKDY zapnutá** — chyběl bod sekce A
+     checklistu. Dorovnává budicí sílu rychlých I/O proti rozptylu VDD/procesu/**teploty**;
+     všechny piny FMC jedou `VERY_HIGH` na 50 MHz ven z pouzdra. Zapíná se v `main.c`
+     `USER CODE SysInit` **před `MX_FMC_Init`** (jinak by init SDRAM proběhl nekompenzovanými
+     piny) a potřebuje běžící **CSI** — ten se zapíná přímým zápisem do `RCC->CR`, ne přes
+     `HAL_RCC_OscConfig` (ten by přenastavil běžící PLL). Stav hlásí `status`.
+  **Naměřeno po opravě:** `membench` **0 chybných bitů** (bylo 3 338 207), retence **0**
+  (bylo 496 068), překryv adres zmizel, **`LTDC podtečení 0/1000`** (bylo 1217/1000),
+  displej po power-cyklu v pořádku.
+  ⚠️ **Podtečení LTDC nebylo samostatnou příčinou** — bylo to *důsledkem* téže vady; opravou
+  čtecí cesty zmizelo samo. (Tvrdil jsem opak, viz L-0011.)
+  ⚠️ **`REFRESH_COUNT` je a zůstává 371** — jediný zdroj `REFRESH_COUNT_EXPECTED` ve `fmc.h`.
+- 🔴 **Slepá ulička po cestě: SDRAM refresh 371 → 175 (2026-09-09) NEPOMOHLA.**
   Po opravě na 371 dal `membench` pořád **1 048 646 chybných bitů** retence (#238)
   a problikávání trvalo. Důvod: **371 je přesně tREF = 64 ms, tedy datasheetové
   MAXIMUM — nulová rezerva**, a člen „−20“ kryje jen jednu kolizi s probíhajícím

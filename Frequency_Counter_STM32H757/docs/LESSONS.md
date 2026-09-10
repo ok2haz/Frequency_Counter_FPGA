@@ -32,6 +32,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0008 | Komentář o chování při poruše piš až po přečtení celého těla funkce včetně generovaného zbytku, ne jen svého `USER CODE` bloku. | `tools/audit.py` (velikosti fault handlerů) + checklist E |
 | L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
 | L-0010 | Změna firmwaru je hotová až po běhu na desce a po POWER-CYKLU; do té doby `⬜ neověřeno na HW`. Diagnostiku nedávej do bootu před bring-up displeje. | `AUDIT_STATUS.md` (stav ověření u každé opravy) + CLAUDE.md bod 4b/4c |
+| L-0011 | Hlášku diagnostiky ber jako pozorování, ne diagnózu — ověř ji proti ostatním číslům z téhož výpisu, než sáhneš do kódu. U paměti: chyby u vzoru `0x00` vylučují vyhasnutí, selhání zápisu s okamžitým ověřením vylučuje retenci. | rozlišovací tabulka v CLAUDE.md („DISPLEJ ZLOBÍ?“) |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -216,7 +217,41 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřování“
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0011, L-0012, … -->
+### L-0011 — Převzal jsem hypotézu, kterou mi nabídl diagnostický nástroj, místo abych přečetl jeho čísla
+
+- **Datum:** 2026-09-10
+- **Oblast:** metoda diagnostiky / FMC-SDRAM
+- **Symptom:** Displej problikával po power-cyklu. `membench` k tomu vypsal
+  `retence po 1 s: 496 068 chybnych bitu  <- OBSAH SE ROZPADA (refresh?)`. Vzal jsem ten
+  závěr a zdvojnásobil obnovu (`REFRESH_COUNT` 371 → 175). **Nepomohlo to** — stálo to jeden
+  flash cyklus a jednu změnu, kterou jsem pak musel vrátit.
+- **Příčina (moje, ne kódu):** V tomtéž výpisu už byl důkaz, že o retenci nejde, a já ho
+  přečetl až napodruhé:
+  - vzor **`0x00` dal 103 982 chyb** — zapsat nulu a přečíst nenulu nejde vysvětlit vyhasnutím
+    buňky, ta padá **k** nule;
+  - selhával už **zápis s okamžitým ověřením** (3 338 207 bitů), ne teprve výdrž;
+  - první chyba `@0xC0400040: čekáno 0x00000000, přečteno 0x00000157` — nesmysl při čtení,
+    ne rozpadlá data;
+  - **DTCM, AXI SRAM i SRAM1 byly 100 % OK** → vada je nutně na externí sběrnici.
+  Skutečná příčina byla **čtecí cesta FMC**: `ReadPipeDelay = 0` a nikdy nezapnutá I/O
+  kompenzační cela. Po opravě `membench` **0 chybných bitů**, retence **0**, překryv adres
+  zmizel, `LTDC podtečení` **0/1000**, displej po power-cyklu OK.
+- **Oprava:** `fmc.c` `ReadPipeDelay` → `RPIPE_DELAY_1` (+ runtime `rpipe`), I/O kompenzační
+  cela v `main.c` před `MX_FMC_Init` (+ CSI), `REFRESH_COUNT` zpět na 371.
+- **Pravidlo:** **Hlášku nástroje ber jako pozorování, ne jako diagnózu.** Když výpis nabízí
+  příčinu (`(refresh?)`), ověř ji proti **ostatním číslům z téhož výpisu**, dřív než na ni
+  sáhneš do kódu. U paměti to rozhodne jeden řádek: **chyby u vzoru `0x00` vylučují vyhasnutí**
+  (buňka padá k nule) a **selhání zápisu s okamžitým ověřením vylučuje retenci** (ta se pozná
+  až z výdrže).
+- **Druhá polovina lekce:** neprohlašuj dva projevy za nezávislé bez důkazu. Tvrdil jsem, že
+  podtečení LTDC je „druhá, nezávislá věc“ — bylo to **totéž**; opravou čtecí cesty zmizelo samo.
+- **Detekce:** rozlišovací tabulka je nově přímo v `CLAUDE.md` na začátku oddílu
+  „DISPLEJ ZLOBÍ? ZMĚŘ NEJDŘÍV PAMĚŤ“ (vzor `0x00` / mrtvý takt / skutečná retence), takže
+  se příště rozhodne z prvního výpisu, ne až z druhého flashe.
+- **Commit:** viz `docs/audit/2026-09-09_mpu-cache-linker.md` (F-0013) a STATUS #237/#238/#72
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0012, L-0013, … -->
 
 ---
 
