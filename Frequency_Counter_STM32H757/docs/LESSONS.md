@@ -36,6 +36,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. | při opravě grep na sesterskou funkci; poznámka u obou kopií |
 | L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
 | L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
+| L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -320,7 +321,35 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-09_ipc-cm7-cm4.md`, nález F-0015
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0015, L-0016, … -->
+### L-0015 — Ovladač znal svůj limit, ale nevynucoval ho
+
+- **Datum:** 2026-09-10
+- **Oblast:** ovladače externích pamětí (QSPI/SPI/I2C EEPROM)
+- **Symptom:** Zatím žádný — je to **latentní** past, nalezená auditem (F-0023). `w25q.c`
+  má kapacitu čipu zapsanou v `W25Q_SIZE_BYTES` a používá ji k odvození celé region mapy,
+  ale `w25q_read` / `w25q_write` / `w25q_erase_sector` proti ní adresu **nekontrolovaly**.
+- **Příčina:** Sériové flash paměti adresu mimo rozsah **neohlásí** — čip vyšší adresní
+  bity prostě ignoruje, takže se přístup zabalí zpátky do kapacity a sáhne na jiné místo.
+  Chybí tedy jakákoli zpětná vazba: volající dostane „úspěch“, data jsou jinde.
+- **Oprava:** `range_ok(addr, len)` na začátku všech tří vstupních bodů, zapsané jako
+  `addr < SIZE && len <= SIZE - addr` — **záměrně bez součtu `addr + len`**, který by
+  přetekl právě tam, kde má kontrola chytat.
+- **Pravidlo:** **Když modul zná svou mez, musí ji na svém rozhraní vynutit, ne jen
+  odvozovat.** Platí dvojnásob tam, kde hardware chybu nehlásí — u paměti, která mlčky
+  zabaluje adresu, je jediná obrana v ovladači.
+  🔑 Při posuzování dopadu se dívej na **nejdestruktivnější** operaci, ne na nejčastější:
+  u čtení je následek špatná hodnota, u `erase` **tiše smazaná cizí oblast** — a když je
+  rozvržení husté (`w25q_map.h`: CONFIG, CALIB, SETUP, DATA), nesmaže se „nic“, ale
+  kalibrace. Projeví se to až po restartu jako „přístroj zapomněl konfiguraci“, tedy
+  hodně daleko od příčiny.
+  ⚠️ Než takovou mez přidáš, ověř, že na ní **žádný legitimní volající neleží** — jinak
+  z latentní pasti uděláš živou regresi.
+- **Detekce:** U každého ovladače paměti se zeptej, co udělá s adresou o jedničku za
+  koncem. Když odpověď zní „zabalí se“, chybí kontrola.
+- **Commit:** `1f69ca9` (viz `docs/audit/2026-09-10_spi-qspi.md`, nález F-0023)
+- **Stav:** aktivní
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0016, L-0017, … -->
 
 ---
 
