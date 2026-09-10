@@ -82,12 +82,32 @@ static void mark_dirty(const prim_pixel_t *dst, int16_t w, int16_t h)
 }
 
 /* ── DMA2D primitiva ───────────────────────────────────────────────────────── */
+
+/* Diagnostika DMA2D (audit F-0033). Do 2026-09-10 se priznak chyby prenosu
+ * (`TEIF`) MAZAL, aniz by ho kdokoli precetl, a vyprseni hlidaci smycky se
+ * nikam nezapsalo — poskozeny obdelnik tak nezanechal zadnou stopu a pri
+ * vysetrovani vypadal jako vada pameti nebo panelu (viz tabulka „HW OBVINEN —
+ * A BYL NEVINNY"). Tyz idiom jako `g_ltdc_underrun` o kus niz: nic se nemeni
+ * na chovani, jen prestane byt ticho. Vypisuje `status`. */
+volatile uint32_t g_d2d_errors;          /* TEIF/CEIF na dokoncenem prenosu */
+volatile uint32_t g_d2d_timeouts;        /* DMA2D nedobehl do meze hlidaci smycky */
+volatile uint32_t g_ltdc_flip_timeouts;  /* predchozi flip nedobehl do meze */
+
+#define D2D_WAIT_GUARD   2000000u
+#define LTDC_FLIP_GUARD  4000000u
+
 static void d2d_wait(void)
 {
     /* Guard: kdyby DMA2D nedoběhl, NEzaseknout UiTask navždy. */
     uint32_t guard = 0;
-    while ((DMA2D->CR & DMA2D_CR_START) && ++guard < 2000000u) { /* busy */ }
-    DMA2D->IFCR = DMA2D_IFCR_CTCIF | DMA2D_IFCR_CTEIF | DMA2D_IFCR_CCTCIF;
+    while ((DMA2D->CR & DMA2D_CR_START) && ++guard < D2D_WAIT_GUARD) { /* busy */ }
+    if (guard >= D2D_WAIT_GUARD) g_d2d_timeouts++;
+    /* ⚠️ ISR se cte JEDNOU (d2d_wait je v horke ceste — 2x na kazdy fill/blit). */
+    uint32_t isr = DMA2D->ISR;
+    if (isr & (DMA2D_ISR_TEIF | DMA2D_ISR_CEIF)) g_d2d_errors++;
+    /* `CCEIF` se driv nemazal vubec -> konfiguracni chyba zustala viset. */
+    DMA2D->IFCR = DMA2D_IFCR_CTCIF | DMA2D_IFCR_CTEIF | DMA2D_IFCR_CCTCIF |
+                  DMA2D_IFCR_CCEIF;
 }
 
 /* Po DMA2D zapisu zneplatni cilovou D-cache (DMA2D obchazi cache -> CPU by jinak
@@ -110,6 +130,14 @@ static void d2d_fill(prim_pixel_t *dst, int16_t stride_px, int16_t w, int16_t h,
     DMA2D->OMAR   = (uint32_t)dst;
     DMA2D->OOR    = (uint32_t)(stride_px - w);
     DMA2D->NLR    = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
+    /* 🔴 Bariera pred startem (audit F-0035). DMA2D cte pamet, do ktere mohl
+     * bezprostredne predtim zapisovat PROCESOR (CPU antialiasing textu, `sw_fill`,
+     * `prim_internal_blend_px`) — a u `d2d_draw_glyph` je framebuffer dokonce
+     * primo vstupem (`BGMAR`). Framebuffery jsou Normal/Write-Through, takze
+     * zapis JDE do pameti (nevznika dirty radek), ale poradi Normal zapisu vuci
+     * naslednemu Device zapisu do registru DMA2D neni na ARMv7-M bez `DSB`
+     * garantovane. Cena je jedna instrukce proti celemu prenosu. */
+    __DSB();
     DMA2D->CR    |= DMA2D_CR_START;
     d2d_wait();
     d2d_inval(dst, stride_px, w, h);
@@ -130,6 +158,7 @@ static void d2d_blit_ex(prim_pixel_t *dst, int16_t dst_stride, const prim_pixel_
     DMA2D->OMAR    = (uint32_t)dst;
     DMA2D->OOR     = (uint32_t)(dst_stride - w);
     DMA2D->NLR     = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
+    __DSB();                        /* viz `d2d_fill` — bariera pred startem (F-0035) */
     DMA2D->CR     |= DMA2D_CR_START;
     d2d_wait();
     if (do_inval) d2d_inval(dst, dst_stride, w, h);
@@ -210,6 +239,9 @@ static int d2d_draw_glyph(prim_pixel_t *dst, int16_t stride_px, const uint8_t *c
     DMA2D->OOR     = (uint32_t)(stride_px - w);
     DMA2D->OPFCCR  = DMA2D_PFC_RGB565;
     DMA2D->NLR     = ((uint32_t)w << DMA2D_NLR_PL_Pos) | (uint32_t)h;
+    /* viz `d2d_fill` (F-0035). Tady je bariera nejpodstatnejsi: `BGMAR` je primo
+     * framebuffer, do ktereho CPU kreslilo pozadi tesne predtim. */
+    __DSB();
     DMA2D->CR     |= DMA2D_CR_START;
     d2d_wait();
     d2d_inval(dst, stride_px, w, h);
@@ -298,7 +330,8 @@ void prim_stm32_present(void)
     /* NON-BLOCKING flip: cekej na PREDCHOZI flip (pri nizke kadenci OKAMZITE), ne
      * na aktualni. Diky 3. bufferu copy-forward nikdy nepise do scanovaneho bufferu. */
     uint32_t guard = 0;
-    while ((LTDC->SRCR & LTDC_SRCR_VBR) && ++guard < 4000000u) { /* posl. flip dobiha */ }
+    while ((LTDC->SRCR & LTDC_SRCR_VBR) && ++guard < LTDC_FLIP_GUARD) { /* posl. flip dobiha */ }
+    if (guard >= LTDC_FLIP_GUARD) g_ltdc_flip_timeouts++;   /* audit F-0033 */
 
     d2d_wait();                                   /* dokresli back */
 

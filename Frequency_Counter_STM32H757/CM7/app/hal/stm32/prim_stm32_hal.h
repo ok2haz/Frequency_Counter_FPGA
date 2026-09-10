@@ -47,3 +47,10 @@ int prim_stm32_fb_count(void);
  *  Nenulove = LTDC nestiha z pameti nacitat pixely -> POSKOZENE SNIMKY na panelu
  *  (typicky nedostatek propustnosti SDRAM, ne chyba kresleni). Vypisuje `status`. */
 extern volatile uint32_t g_ltdc_underrun;
+
+/** Diagnostika DMA2D (audit F-0033). Do 2026-09-10 se chyba prenosu mazala, aniz
+ *  by ji kdo cetl -> poskozeny obdelnik nezanechal stopu a vypadal jako vada
+ *  pameti/panelu. Vsechna tri musi byt za normalniho provozu NULOVA. */
+extern volatile uint32_t g_d2d_errors;          /**< TEIF/CEIF na dokoncenem prenosu */
+extern volatile uint32_t g_d2d_timeouts;        /**< DMA2D nedobehl do meze hlidaci smycky */
+extern volatile uint32_t g_ltdc_flip_timeouts;  /**< predchozi flip nedobehl do meze */

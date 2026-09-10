@@ -28,6 +28,7 @@
 #include "si5356.h"
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
+#include <prim/text.h>    /* prim_text_missing_glyphs — radek `FONTY:` ve `status` */
 #include "alarm.h"          /* alarm_test — UART "beep" */
 #include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
 #include "app_gpsdo.h"    /* app_gpsdo_btnreg_stats — diagnostika fokusu */
@@ -2129,6 +2130,23 @@ void UartTask_run(void *argument)
 					  	  printf("LTDC: podteceni FIFO %lu / %lu flipu = %lu na 1000%s\n",
 					  	         (unsigned long)fu, (unsigned long)fl,
 					  	         (unsigned long)per1k, verd); }
+					  	/* Diagnostika DMA2D (audit F-0033). Do 2026-09-10 se chyba prenosu
+					  	 * MAZALA, aniz by ji kdo precetl — poskozeny obdelnik tak nezanechal
+					  	 * zadnou stopu a pri vysetrovani vypadal jako vada pameti nebo panelu.
+					  	 * Vsechna tri cisla musi byt za normalniho provozu NULOVA; nenulove
+					  	 * `chyb` znamena, ze DMA2D odmitl prenos (spatna adresa/konfigurace),
+					  	 * nenulove `timeout` ze nedobehl v case a kreslilo se pres nej. */
+					  	{ uint32_t de = g_d2d_errors, dt = g_d2d_timeouts, ft = g_ltdc_flip_timeouts;
+					  	  printf("DMA2D: chyb %lu, timeout %lu | flip timeout %lu%s\n",
+					  	         (unsigned long)de, (unsigned long)dt, (unsigned long)ft,
+					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY" : "  (v poradku)"); }
+					  	/* Chybejici glyfy (audit F-0034). Vetsina velkych fontu je subsetovana
+					  	 * a chybejici glyf se TISE preskoci -> text na displeji proste zmizi.
+					  	 * Audit 2026-08-29 nasel 15 takto neviditelnych retezcu; dosud to slo
+					  	 * odhalit jen tim, ze si nekdo vsimne prazdneho mista. */
+					  	{ uint32_t mg = prim_text_missing_glyphs();
+					  	  printf("FONTY: preskocenych glyfu %lu%s\n", (unsigned long)mg,
+					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)"); }
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
 					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
 					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich

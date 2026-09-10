@@ -143,6 +143,11 @@ extern volatile uint8_t g_display_init_step;
  * POSKOZENE SNIMKY na panelu, tedy problem PROPUSTNOSTI, ne kreslicího kodu.
  * Most pres globál, protoze Core vrstva nema `app/` na include ceste. */
 extern volatile uint32_t g_ltdc_underrun;
+/* Diagnostika DMA2D (audit F-0033) — za normalniho provozu vse nulove.
+ * Definice v `CM7/app/hal/stm32/prim_stm32_hal.c`. */
+extern volatile uint32_t g_d2d_errors;
+extern volatile uint32_t g_d2d_timeouts;
+extern volatile uint32_t g_ltdc_flip_timeouts;
 /* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
  * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
 extern volatile uint8_t  g_d2d_deadtime;
