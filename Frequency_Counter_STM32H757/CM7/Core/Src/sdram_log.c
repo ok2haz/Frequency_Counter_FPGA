@@ -272,7 +272,12 @@ void sdram_log_reset(void) { s_head = 0; }
 
 void sdram_log_invalidate(void)
 {
-    SCB_InvalidateDCache_by_Addr((sdram_word_t *)(void *)s_buf, (int32_t)SDRAM_LOG_BYTES);
+    /* 🔴 CLEAN+INVALIDATE, ne samotna invalidace (audit F-0011). Oblast je MPU R3 =
+     * WBWA a dnes ji plni CPU (FpgaTask), takze cerstve zaznamy mohou byt jeste
+     * SPINAVE v D-cache. Samotna invalidace by je zahodila — konzument, ktery se
+     * ridi doporucenim v hlavicce, by tim prisel prave o ta nejnovejsi data.
+     * Clean navic nic nestoji, kdyz log plni DMA (zadne spinave radky nejsou). */
+    SCB_CleanInvalidateDCache_by_Addr((sdram_word_t *)(void *)s_buf, (int32_t)SDRAM_LOG_BYTES);
 }
 
 /* ── Selftest indexovani (ciste logicky, bez SDRAM) ───────────────────────────

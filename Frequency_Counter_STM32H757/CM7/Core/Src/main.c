@@ -173,6 +173,10 @@ static void MPU_Config(void)
      * konzument pred ctenim invalidovat D-cache — DMA obchazi cache uplne stejne
      * jako DMA2D u framebufferu. Dokud plni CPU, je to koherentni samo od sebe.
      * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 16 MB @0xC1000000 sedi. */
+    /* 🔴 `Enable` se NESMI prebirat ze zbytku po oblasti 2 (audit F-0008): dnes to
+     * vychazi, ale pri prehozeni poradi nebo vlozeni zakazane oblasti by se tahle
+     * tise neaktivovala a `.measlog` by spadl do Device pameti — bez jakekoli hlasky. */
+    MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
     MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
     MPU_InitStruct.BaseAddress      = 0xC1000000;
     MPU_InitStruct.Size             = MPU_REGION_SIZE_8MB;

@@ -92,6 +92,11 @@
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
+/* Vynuceno prekladacem, ne komentarem (audit F-0015): indexace ringu je
+ * `h & (IPC_RING_N - 1u)`, coz plati JEN pro mocninu dvou. Pri jine hodnote by
+ * se zapis a cteni rozesly a data mezi jadry by se tise michala. */
+_Static_assert((IPC_RING_N & (IPC_RING_N - 1u)) == 0u,
+               "IPC_RING_N musi byt mocnina 2 — ring se indexuje maskou");
 #define IPC_GPS_MAX_SATS 24        /* v12: druzice ve snapshotu (sky plot); == GPS_MAX_SATS (hlida _Static_assert v ipc.c) */
 #define IPC_LOG_CHUNK    96        /* v12: datalog zaznamu na jeden transfer round-trip (dlouha historie webu) */
 
