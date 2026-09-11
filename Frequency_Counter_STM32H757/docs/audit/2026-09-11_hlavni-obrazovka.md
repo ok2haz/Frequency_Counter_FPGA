@@ -116,7 +116,7 @@ souborů dál počítá správně a sype se do **téže** pyramidy.
 - **Vztah k lekcím:** **`L-0006`** (konstanta odvozená z jiného provozního
   režimu, než v jakém kód běží — přesně jako `TIMINGR` u I2C) a **`L-0012`**
   (dvě instance téhož výpočtu, opravená jen jedna).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW ve smyslu účinku** (blokuje
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW** — `STATISTIKA: sigma_y@1s = 6224849 e-15` (= 6,2e-9; dřív `0 e-15`), hodnota se mezi čteními hýbe. (blokuje
   to F-0039, viz níže). Opraveno **jinak, než nález navrhoval**: nález nabízel
   opravit vzorec na místě, místo toho vznikl **jeden zdroj pravdy**
   `screen_main_frac_dev(double hz)` a používají ho **obě** cesty —
@@ -227,7 +227,7 @@ souborů dál počítá správně a sype se do **téže** pyramidy.
   neplatí — tady kadence volajícího) a **`L-0016`** (rozpočet i měřidlo jeho
   rezervy se navrhují společně; kdyby se doba rekonstrukce od začátku někde
   vypisovala, nikdo by dvě hodiny nehledal).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Uživatel zvolil
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW** — `ADEV rekonstrukce: hotova, vlozeno 0 z 133763 zaznamu` už při uptime 33 s (dřív 1 h 47 min). Uživatel zvolil
   **variantu „bulk + brzký konec"**, tedy kombinaci, kterou původní tři návrhy
   neobsahovaly — vznikla až po přečtení `datalog.h`.
   🔑 **Klíčové zjištění při opravě:** bulk cesta už existuje a je prověřená

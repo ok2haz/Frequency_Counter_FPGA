@@ -400,7 +400,7 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   stejné chování vázané na tik. Ověřit, že auto-mount po startu pořád nastane.
 - **Vztah k lekcím:** nová lekce po opravě — „stav v `static` uvnitř dotazovací
   funkce se stane sdíleným, jakmile přibude druhý volající“ → **`L-0023`**.
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**: dotaz a aktualizace
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW** (detekce karty přes tik funguje: vytažení i vložení karty se projeví). Opraveno **podle návrhu**: dotaz a aktualizace
   oddělené — `datalog_sd_card_present()` už jen **čte** `s_det_stable` (smí se tedy
   ptát kdokoli odkudkoli) a stav posouvá nový `datalog_sd_det_tick()`, volaný
   **jediným místem**: `sd_export_tick()` v defaultTasku. Tím zmizel souběh i
