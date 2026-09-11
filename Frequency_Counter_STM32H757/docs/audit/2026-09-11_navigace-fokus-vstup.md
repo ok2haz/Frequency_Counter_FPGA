@@ -112,7 +112,14 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
   encoderem na desce (rámeček musí po tapu sedět na stisknutém prvku).
 - **Vztah k lekcím:** **`L-0008`** (komentář popisuje chování, které tělo ruší),
   **`L-0018`** (mapování `s_view → seznam` má mít jeden zdroj pravdy).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu, ale
+  i s tím háčkem, který nález předvídal**: samotné `+ ln` nešlo napsat, protože
+  `btnreg_sync_focus` neměla `L`. Vzniklo proto `cur_list()` jako **jediný zdroj**
+  mapování `s_view → seznam` (dosud lokální výraz v obsluze encoderu) a používají ho
+  obě místa. Ověřeno v obrazu: `app_gpsdo_handle_touch` má inlinovaný výběr seznamu
+  (`cmp #12 / #44 / #48`) následovaný `bl enc_items_n` → **`add r0, r2`** (= `ln + i`)
+  → `strb` do `s_focus`. Řešeno **v jednom commitu s F-0047 a F-0051**, protože všechny
+  tři sahají na totéž účetnictví.
 
 ---
 
@@ -164,7 +171,16 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Vztah k lekcím:** **`L-0011`** (nástroj, kterému se věří, se musí nejdřív sám ověřit —
   tady měřidlo nepokrývá většinu měřeného rozsahu) a **`L-0017`** (co se rozhodnu nezaznamenat,
   musí jít poznat; zde se to tváří jako platný údaj).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **doporučenou (širší)
+  variantou**: vzniklo `view_set(uint8_t)` a **všech 53 přiřazení `s_view = N;`** jím prošlo;
+  `window_first()` diagnostiku už neplní (jinak by se `g_ui_view_changes` počítalo dvakrát).
+  ⚠️ **Sentinely `s_view = 0xFF` / `-1`** (vynucení plného renderu po změně tématu/presetu)
+  zůstaly **nedotčené a je to záměr** — nejsou to přechody na jiné okno, jen zneplatnění,
+  po kterém stejně přijde skutečný `view_set()` z render funkce. Kdyby šly přes `view_set`,
+  vyrobily by falešný přechod v diagnostice.
+  Ověřeno v obrazu: `view_set` je skutečná funkce (76 B) s **53 volajícími** a její tělo
+  dělá přesně to, co má — `focus_store` → `str s_view` → `strb g_ui_view` → `++
+  g_ui_view_changes` → inlinovaný `focus_load` → `s_focus_shown = 0xFF`.
 
 ---
 
@@ -327,7 +343,14 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Riziko opravy:** nízké, ale **nedělat odděleně od F-0046/F-0047** — všechny tři sahají
   na totéž účetnictví a oddělené opravy by se pletly.
 - **Vztah k lekcím:** **`L-0018`** (jeden zdroj pravdy pro „kde jsem").
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **jinak, než nález
+  navrhoval**: nález chtěl volat `focus_load()` při vstupu do okna — to se stalo, ale
+  `s_shown_view` se **nezrušilo**, jen dostalo užší a poctivější roli. Je z něj
+  file-scope `s_focus_shown` = „okno, ve kterém je značka fokusu už vykreslená", které
+  nuluje `view_set()` (tedy i při navigaci prstem). Obsluha encoderu tak přestala
+  `focus_load()` volat úplně a řeší jen vykreslení. Důvod, proč proměnnou nezrušit:
+  pořád plní původní účel — *první* otočení knoflíkem musí značku zobrazit, i když se
+  index nezmění.
 
 ---
 

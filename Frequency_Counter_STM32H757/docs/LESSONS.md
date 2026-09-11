@@ -39,6 +39,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
 | L-0016 | Příznak chyby nikdy nemaž, aniž bys ho přečetl; hlídací mez, kterou lze splést s normálním provozem, není ochrana, ale generátor tichých chyb — a mez i měřidlo její rezervy se navrhují SPOLEČNĚ (můj odhad byl 5× vedle). | `status` → `DMA2D: chyb 0, timeout 0, max cekani << mez`; každý zápis do `*_IFCR` musí mít nad sebou čtení `*_ISR` |
 | L-0017 | Tichý přeskok je přípustný jen s počítadlem — co se rozhodneš nevykreslit, musí jít změřit. | `status` → `FONTY: preskocenych glyfu 0` |
+| L-0018 | Dvě místa, která počítají touž veličinu, nejsou duplicita kódu — jsou to dvě pravdy čekající, až se rozejdou. Slučuj, neopravuj obě. | při opravě grep na druhou instanci; `status` → `STATISTIKA: sigma_y@1s` |
+| L-0019 | Účetnictví, které se veze se stavem (diagnostika, paměť, invalidace), připoj ke ZMĚNĚ toho stavu, ne k některé z cest, které k ní vedou. | `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musí být prázdný |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -450,7 +452,37 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0037
 - **Stav:** aktivni
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0019, L-0020, … -->
+### L-0019 — Ucetnictvi bylo pripojene k CESTAM ke zmene stavu, ne ke zmene samotne
+
+- **Datum:** 2026-09-11
+- **Oblast:** navigace UI / diagnostika / model fokusu
+- **Symptom:** Dve nezavisle vady, ktere vypadaly nesouvisle, dokud se nenapsaly vedle sebe:
+  (a) `status` u **hlavni obrazovky a MENU** hlasil cizi okno, takze diagnostika „otevrelo
+  se okno?" **aktivne lhala** a potvrzovala zaver „dotyk se neprijal" (F-0047);
+  (b) pamet fokusu per okno (zadani UI §7) neplatila, kdyz se uzivatel do okna vratil bez
+  otoceni knoflikem (F-0051).
+- **Pricina:** Stav `s_view` se menil na **53 mistech**, ale dve navazna ucetnictvi byla
+  pripojena jinam — diagnostika do `window_first()` a nacteni fokusu az do obsluhy encoderu.
+  Obe ta mista jsou jen **jedna z cest** ke zmene stavu, ne ta zmena. `window_first()`
+  nevola 17 ze ~45 oken; obsluha encoderu nebezi, kdyz uzivatel navigoval prstem. Kazda
+  cesta, ktera to obesla, ucetnictvi tise vynechala.
+- **Oprava:** `view_set(uint8_t)` = **jedine misto, kde se `s_view` meni**, a nese s sebou
+  diagnostiku i fokus. Vsech 53 prirazeni jde tudy; `window_first()` diagnostiku uz neplni.
+  ⚠️ Sentinel `s_view = 0xFF` (vynuceni plneho renderu) zustal MIMO — neni to prechod na
+  jine okno a pres `view_set` by vyrobil falesny zaznam v diagnostice.
+- **Pravidlo:** **Ucetnictvi, ktere se veze se stavem — diagnostika, pamet, invalidace,
+  notifikace — pripoj ke ZMENE toho stavu, ne k nektere z cest, ktere k ni vedou.**
+  Kdyz se stav meni na N mistech, je to N prilezitosti zapomenout; kdyz na jednom, je to
+  nula. A nejhorsi varianta neni „nezaznamena se nic", ale **„zaznamena se predchozi
+  hodnota"** — to uz neni chybejici udaj, ale nespravny (viz `L-0011`).
+- **Detekce:** `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musi byt **prazdny**
+  (radek je i v `scripts/zakazane_vzory.txt`). Obecne: kdyz najdes stav, ktery se meni na
+  vic nez par mistech a neco se k nemu „pripocitava", zeptej se, jestli to pripocitavani
+  vidi VSECHNY zmeny.
+- **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0047 a F-0051
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0020, L-0021, … -->
 
 ---
 
