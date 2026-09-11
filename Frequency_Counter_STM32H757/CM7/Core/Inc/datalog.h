@@ -146,6 +146,14 @@ extern datalog_backend_t datalog_backend_sd;   /* probe()==false dokud neni SDMM
  *  volajiciho. Volat pravidelne (napr. 2 Hz z defaultTasku / pri prekresleni okna). */
 bool datalog_sd_card_present(void);
 
+/** Posune debounce detekce karty o jeden krok.
+ *  🔴 VOLAT VYHRADNE Z JEDNE ULOHY (dnes defaultTask pres `sd_export_tick`).
+ *  `datalog_sd_card_present()` uz stav NEMENI — jen ho cte, takze se na nej smi
+ *  ptat kdokoli a odkudkoli. Dokud aktualizoval kazdy dotaz, posouvaly ho tri
+ *  ulohy naraz a casova konstanta debounce byla nedefinovana (audit F-0030).
+ *  Preklopeni stavu trva `SD_DET_STABLE_N` (3) tiku. */
+void datalog_sd_det_tick(void);
+
 /** Syrova uroven card-detect pinu: 0 = LOW (= karta vlozena dle zapojeni J13),
  *  1 = HIGH (prazdny slot). Pro diagnostiku z konzole — UART `sd det`. */
 int  datalog_sd_det_raw(void);

@@ -107,12 +107,9 @@ void screenshot_emit_bmp(void)
  * ⚠️ BLOKUJE — jen z UartTasku (viz screenshot.h). */
 #define SS_SCRATCH ((uint16_t *)0xC0400000u)
 
-int screenshot_save_sd(char *name_out, unsigned name_sz)
+#ifdef SS_FATFS
+static int screenshot_save_sd_body(char *name_out, unsigned name_sz)
 {
-#ifndef SS_FATFS
-    (void)name_out; (void)name_sz;
-    return -1;                       /* FatFs není v buildu */
-#else
     const uint16_t *fb = (const uint16_t *)prim_stm32_front_addr();
     if (!fb) return -1;
     if (!sd_export_mount()) return -2;
@@ -154,5 +151,25 @@ int screenshot_save_sd(char *name_out, unsigned name_sz)
 
     if (name_out && name_sz) snprintf(name_out, name_sz, "%s", name);
     return 0;
+}
+#endif /* SS_FATFS */
+
+/* ⚠️ OBALKA, ne telo. `s_busy` v `sd_export.c` musi drzet po CELOU dobu zapisu
+ * vcetne vsech OSMI chybovych navratu — proto je telo vyclenene, presne jako u
+ * `sd_export_run()`/`_selftest()`. Bez toho defaultTask pri vytazeni karty
+ * odmountuje svazek a `ff_del_syncobj()` smaze semafor, ktery tenhle task prave
+ * drzi -> zapis do uvolnene haldy FreeRTOS (audit F-0026).
+ * ⚠️ `sd_export_busy_*` a `sd_blocking_*` se volaji OBOJE a resi ruzne veci —
+ * viz hlavicka `sd_export.h`. `sd_blocking_*` nastavuje volajici (UART prikaz). */
+int screenshot_save_sd(char *name_out, unsigned name_sz)
+{
+#ifndef SS_FATFS
+    (void)name_out; (void)name_sz;
+    return -1;                       /* FatFs není v buildu */
+#else
+    sd_export_busy_begin();
+    int r = screenshot_save_sd_body(name_out, name_sz);
+    sd_export_busy_end();
+    return r;
 #endif
 }

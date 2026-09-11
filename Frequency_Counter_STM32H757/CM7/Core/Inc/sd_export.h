@@ -104,6 +104,23 @@ void sd_export_service(void);
 void sd_blocking_begin(void);
 void sd_blocking_end(void);
 
+/** Drzi auto-unmount v `sd_export_tick()` po dobu dlouhe operace nad svazkem.
+ *
+ *  🔴 VOLA SE SPOLU se `sd_blocking_begin/end()`, ne misto nich — kazde resi neco
+ *  jineho: `sd_blocking_*` snizi prioritu UartTasku (aby dotyk a watchdog bezely),
+ *  `sd_export_busy_*` zabrani defaultTasku odmountovat svazek pod rukama.
+ *
+ *  ⚠️ PROC to musi mit KAZDY dlouhy zapisovatel: `f_mount(NULL,…)` **nebere zamek
+ *  svazku** — rovnou dela `clear_lock()` a `ff_del_syncobj()`, coz je
+ *  `osSemaphoreDelete` -> `vPortFree`. Kdyz uzivatel vytahne kartu uprostred
+ *  zapisu, defaultTask tim smaze semafor, ktery tenhle task PRAVE DRZI, a
+ *  nasledny `unlock_fs` pise do uvolnene haldy. To neni chybejici soubor, to je
+ *  poskozeni haldy FreeRTOS — projevi se pozdeji a jinde (audit F-0026).
+ *  ⚠️ Nastavuj VYHRADNE OBALKOU kolem vycleneneho tela (`begin(); r = body();
+ *  end();`), at se priznak neda zapomenout na nektere z chybovych cest. */
+void sd_export_busy_begin(void);
+void sd_export_busy_end(void);
+
 /** ⚠️ BLOKUJE (desitky az stovky ms) — jen z UartTasku. @return true = namountovano. */
 bool sd_export_mount(void);
 

@@ -21,6 +21,7 @@
 #include "bsp_driver_sd.h"   /* BSP_SD_Init — izolace HW vrstvy pri diagnostice */
 #include "sdmmc.h"           /* hsd1 */
 #include "ff_gen_drv.h"      /* Disk_drvTypeDef — reset is_initialized pri unmountu */
+#include "gpio_guard.h"      /* gpio_cfg_lock — GPIOC pisou obe jadra (audit F-0027) */
 #include "cmsis_os2.h"       /* osDelay — polite polling v BSP_SD_GetCardState */
 #endif
 
@@ -50,6 +51,11 @@ static bool  s_mounted;
  * svazku ne. Proto tenhle příznak: po dobu blokující operace se auto-unmount
  * přeskočí (karta stejně fyzicky zmizela, zápis doběhne s chybou a uklidí se). */
 static volatile bool s_busy;
+
+/* Verejna cesta k `s_busy` pro dalsi dlouhe zapisovatele mimo tenhle soubor
+ * (dnes `screenshot_save_sd`). Duvod a pravidla jsou v `sd_export.h`. */
+void sd_export_busy_begin(void) { s_busy = true;  }
+void sd_export_busy_end(void)   { s_busy = false; }
 
 /* Auto-mount se zada jen JEDNOU po vlozeni karty (viz `sd_export_tick`). */
 static uint8_t s_mount_tried;
@@ -101,13 +107,23 @@ void sd_export_tick(void)
 #ifndef SD_EXPORT_FATFS
     s_state = SD_EXP_NO_FATFS;
 #else
+    /* 🔴 JEDINE misto, kde se posouva debounce detekce karty (audit F-0030).
+     * Dotazy odjinud (UiTask, UartTask) uz stav nemeni, takze casova konstanta
+     * je dana kadenci tohohle tiku a nicim jinym. */
+    datalog_sd_det_tick();
     bool present = datalog_sd_card_present();
 
     if (!present) {
         /* ⚠️ Neodmountovávej pod rukama UartTasku, když zrovna běží export/test. */
         if (s_mounted && !s_busy) {
-            f_mount(NULL, "", 0);      /* rychlé — jen odpojí FS z ukazatele */
-            s_mounted = false;
+            /* 🔴 `sd_export_unmount()`, NE holy `f_mount(NULL,…)` (audit F-0025):
+             * ten neresetuje `disk.is_initialized[0]`, takze po opetovnem vlozeni
+             * karty `disk_initialize()` vrati RES_OK BEZ identifikace, prvni cteni
+             * ceka 30 s na kartu ve stavu IDLE a skonci `FR_DISK_ERR` — a stav
+             * ERROR se pak drzi az do dalsiho vytazeni. Rucni cesta to delala
+             * spravne, tahle kopie ne. Je to levne: `f_mount(NULL,…)` na medium
+             * nesaha a reset priznaku je zapis do RAM, takze to smi i defaultTask. */
+            sd_export_unmount();
         }
         s_mount_tried = 0;   /* pri pristim vlozeni se zkusi znovu */
         s_state = SD_EXP_ABSENT;
@@ -276,7 +292,7 @@ const sd_ui_info_t *sd_export_ui_info(void)
 
 /* Zjisti typ FS + kapacitu/volne misto. ⚠️ BLOKUJE (`f_getfree` u FAT16 nebo
  * neplatneho FSINFO projde celou FAT) -> jen z UartTasku, jen po zmene stavu. */
-static void ui_refresh_capacity(void)
+static void ui_refresh_capacity_body(void)
 {
 #ifdef SD_EXPORT_FATFS
     s_ui.total_mb = 0; s_ui.free_mb = 0; s_ui.fs[0] = '\0';
@@ -292,6 +308,18 @@ static void ui_refresh_capacity(void)
                   : (fs->fs_type == FS_FAT32) ? "FAT32" : "?";
     snprintf(s_ui.fs, sizeof s_ui.fs, "%s", n);
 #endif
+}
+
+/* ⚠️ OBALKA: `f_getfree()` u FAT16 nebo neplatneho FSINFO projde CELOU FAT (viz
+ * komentar u tela), takze je to treti dlouha operace nad svazkem — a jako takova
+ * musi drzet `s_busy`, jinak ji auto-unmount z defaultTasku smaze semafor pod
+ * rukama (audit F-0026). Telo je vyclenene, at se priznak neda zapomenout na
+ * nektere z jeho `return`. */
+static void ui_refresh_capacity(void)
+{
+    s_busy = true;
+    ui_refresh_capacity_body();
+    s_busy = false;
 }
 
 /* ⚠️⚠️ DESTRUKTIVNI: naformatuje CELOU kartu na FAT32 (f_mkfs) -> smaze vsechna
@@ -428,6 +456,14 @@ static void fs_show_vbr(const uint8_t *b, const char *what)
  * Idempotentni + regen-safe (nesaha na .ioc, jen prekonfiguruje piny po MspInit). */
 static void sd_dat_pullup_enable(void)
 {
+    /* 🔴 GPIOC pisou OBE jadra (CM4 tam ma ETH: PC1 MDC, PC4 RXD0, PC5 RXD1) a
+     * `HAL_GPIO_Init` dela nad MODER/AFR/PUPDR NEATOMICKY read-modify-write.
+     * `gpio_guard.h` proto zamek jmenovite predepisuje pro GPIOA/B/C/G — a tahle
+     * funkce bezi ZA BEHU (spousti ji mount, ne boot), takze do nej spada
+     * (audit F-0027). ⚠️ Smer ETH -> SD navic hlidac `GG_PINS` nekryje (PC8-PC12
+     * v nem nejsou), takze ztracena AF na datove lince by se neopravila ani
+     * nezapocitala. Zamek pri neziskani pokracuje (radeji zavod nez deadlock). */
+    gpio_cfg_lock();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     GPIO_InitTypeDef g = {0};
     g.Pin       = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11;   /* D0..D3, NE CK(PC12) */
@@ -436,6 +472,7 @@ static void sd_dat_pullup_enable(void)
     g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
     g.Alternate = GPIO_AF12_SDIO1;
     HAL_GPIO_Init(GPIOC, &g);
+    gpio_cfg_unlock();
 }
 
 /* ⚠️⚠️ KLIC K DATOVE CESTE (2026-08-14): naplni `hsd1.Init` PRESNE jako funkcni
@@ -1207,7 +1244,13 @@ static int32_t export_body(uint32_t max_rec)
     char line[160];
     UINT bw;
     int n = sd_export_csv_header(line, sizeof line);
-    f_write(&f, line, (UINT)n, &bw);
+    /* ⚠️ Kontrolovat stejne jako radky nize (audit F-0029): bez hlavicky je CSV
+     * na PC neprecitelne, a tise. */
+    if (f_write(&f, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
+        f_close(&f);
+        s_state = SD_EXP_ERROR;
+        return -1;
+    }
 
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,
      * takže jdeme od konce. Pro log v souboru je vzestupný čas přirozenější. */
@@ -1229,7 +1272,16 @@ static int32_t export_body(uint32_t max_rec)
         }
         written++;
     }
-    f_close(&f);      /* flush + aktualizace adresáře — bez toho je soubor prázdný */
+    /* 🔴 Navratovou hodnotu `f_close` KONTROLOVAT (audit F-0029). Prave tady se
+     * zapisuje adresarova polozka — kdyz to selze, `f_write` uz hlasilo OK a
+     * uzivatel dostane „exportovano N zaznamu", zatimco na karte soubor chybi
+     * nebo ma nulovou delku. Potvrzeni o datech, ktera nema, je horsi nez ciste
+     * selhani. Tentyz duvod je uz napsany u `selftest_body()` a `screenshot.c`;
+     * ze tri mist, ktera zaviraji soubor, to bylo jedine nekontrolovane. */
+    if (f_close(&f) != FR_OK) {
+        s_state = SD_EXP_ERROR;
+        return -1;
+    }
     return written;
 }
 #endif /* SD_EXPORT_FATFS */

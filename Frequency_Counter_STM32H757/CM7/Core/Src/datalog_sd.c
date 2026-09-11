@@ -143,16 +143,31 @@ int datalog_sd_detect_status(void)
     return s_det_invert ? raw : !raw;        /* výchozí: LOW = karta vložena */
 }
 
-/* Debounce: stav se překlopí až po SD_DET_STABLE_N shodných opačných čteních.
- * Časovou konstantu určuje kadence volajícího (mechanický spínač zakmitá ~ms). */
+/* ── Debounce detekce karty: DOTAZ a AKTUALIZACE jsou oddelene (audit F-0030) ──
+ * 🔴 Do 2026-09-11 aktualizoval stav KAZDY dotaz — a dotazuji se TRI ulohy:
+ * defaultTask (`sd_export_tick`), UiTask (`sd_export_ui_info`) a UartTask
+ * (`sd det`, `sd_export_mount/unmount`, `export_body`, `sd_export_format`).
+ * Melo to dva nasledky: (a) `cnt`/`stable` je neatomicky read-modify-write nad
+ * sdilenym stavem, (b) casova konstanta debounce byla NEDEFINOVANA — tri
+ * nezavisle kadence se scitaly, takze `SD_DET_STABLE_N = 3` neodpovidalo zadnemu
+ * skutecnemu casu, ackoli komentar tvrdil „casovou konstantu urcuje kadence
+ * volajiciho" (coz platilo, dokud byl volajici jeden).
+ * Ted stav posouva VYHRADNE `datalog_sd_det_tick()` z defaultTasku; dotaz uz jen
+ * cte. Kadence je tim jedna a znama: `sd_export_tick` -> preklopeni do 3 tiku. */
+static uint8_t s_det_stable, s_det_cnt;
+
+void datalog_sd_det_tick(void)
+{
+    if (s_det_force) { s_det_stable = 1u; s_det_cnt = 0u; return; }
+    uint8_t now = datalog_sd_detect_status() ? 1u : 0u;
+    if (now == s_det_stable)             s_det_cnt = 0;
+    else if (++s_det_cnt >= SD_DET_STABLE_N) { s_det_stable = now; s_det_cnt = 0; }
+}
+
 bool datalog_sd_card_present(void)
 {
-    static uint8_t stable, cnt;
     if (s_det_force) return true;
-    uint8_t now = datalog_sd_detect_status() ? 1u : 0u;
-    if (now == stable)               cnt = 0;
-    else if (++cnt >= SD_DET_STABLE_N) { stable = now; cnt = 0; }
-    return stable != 0u;
+    return s_det_stable != 0u;
 }
 
 /* ── 512B blokový read-modify-write layer (bod 3 výše) ───────────────────────
