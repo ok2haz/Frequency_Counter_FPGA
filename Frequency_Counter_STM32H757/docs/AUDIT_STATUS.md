@@ -172,11 +172,15 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   (+96); v obrazu `datalog_sd_det_tick` (68 B), `sd_export_busy_begin/end`,
   `gpio_cfg_lock` nově volán z `HAL_SD_MspInit` i `sd_dat_pullup_enable`,
   `screenshot_save_sd` obepíná tělo dvojicí busy.
-🔶 **F-0028 je ČÁSTEČNĚ opravený — na žádost uživatele se provozní takt vrátil na
-32 MHz (2026-09-11, po HW testu).** Pojistka „při selhání HS zůstaň na 16 MHz" tím padla;
-identifikace a CMD6 dál běží na 16 MHz (v mezích) a pokus o HS se dál dělá, ale
-**provozní takt je 32 MHz i když HS neprojde** — tedy jako `.ioc` (`SDMMC1.ClockDiv=1`).
-Na testované kartě HS neprošel, takže sběrnice jede **~28 % nad limitem Default Speed**.
+🔶 **F-0028 je ČÁSTEČNĚ opravený — takt je `SD_CLKDIV = 1` → 32 MHz, přesně jako `.ioc`
+(`SDMMC1.ClockDiv=1`), a přepínání do High Speed je ODSTRANĚNÉ** (2026-09-11, po HW testu
+a dvou zpřesněních od uživatele: *„karta dříve běžela spolehlivě na 32 MHz"*).
+HW test téhož dne ukázal, že **CMD6 na této kartě neprojde**, takže celý HS aparát by za
+cenu vendor volání s ~49denními smyčkami nepřinesl nic — odstraněním vypadl z obrazu
+i ten vendor kód (`nm` už `HAL_SD_ConfigSpeedBusOperation` ani `SD_SwitchSpeed` nenajde,
+`.text` −592 B), takže **zbytkové riziko zatuhnutí je pryč úplně**.
+Sběrnice jede **~28 % nad limitem Default Speed**; opora je empirická (dlouhodobě
+spolehlivý provoz po HW úpravě), ne odvozená ze specifikace.
 🔑 **Co z opravy zůstává a je to to podstatné: stav přestal být tichý.** `sd diag` hlásí
 takt, režim, platný limit **a značku `<-- NAD LIMITEM`**. Nález F-0028 vznikl právě
 proto, že se o provozu mimo specifikaci nikde nic nedozvíš — a to opravené je.

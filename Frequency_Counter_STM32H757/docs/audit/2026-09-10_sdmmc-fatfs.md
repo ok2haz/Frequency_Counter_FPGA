@@ -264,27 +264,30 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   uvádí mez z jiného provozního režimu, než v jakém zařízení běží. Po opravě
   **nová lekce `L-0024`**.
 - **Stav:** **ČÁSTEČNĚ opraveno 2026-09-11** — a je to vědomé rozhodnutí, ne nedodělek.
-  🔴 **Změna oproti prvnímu provedení (2026-09-11, po HW testu):** na žádost uživatele
-  je **provozní takt 32 MHz BEZ OHLEDU na to, jestli se HS přepnutí povedlo** —
-  tedy jako `.ioc` (`SDMMC1.ClockDiv=1`). Pojistka „při selhání zůstaň na 16 MHz"
-  tím **padla**.
-  **Co z nálezu opravené ZŮSTÁVÁ:**
-  - identifikace a CMD6 běží na `SD_CLKDIV_INIT` (16 MHz), tedy v mezích DS —
-    přepínací příkaz proběhne bezpečně i u karty, která HS neumí;
-  - pokus o HS se **dělá dál**: když projde, je 32 MHz uvnitř HS limitu (50 MHz);
-  - komentáře už citují **oba** limity správně (dřív jen 50 MHz z režimu, ve kterém
-    přístroj neběžel);
-  - 🔑 **stav přestal být tichý:** `sd diag` hlásí takt, režim, platný limit **a při
-    překročení značku `<-- NAD LIMITEM`**. To je to podstatné — nález F-0028 vznikl
-    proto, že se o provozu mimo specifikaci nikde nic nedozvíš.
-  **Co zůstává vědomě NEOPRAVENÉ:** na kartě, kde HS neprojde (a na té testované
-  2026-09-11 neprošel), jede sběrnice **~28 % nad limitem Default Speed**. Uživatel
-  to zvolil kvůli propustnosti exportu; přenos na této desce prokazatelně funguje po
-  HW úpravě (odstraněn R60 = pull-up na CK, bulk kondenzátor na SD VDD 10 µF).
+  🔴 **Konečná podoba (2026-09-11, po HW testu a dvou zpřesněních od uživatele):
+  takt je `SD_CLKDIV = 1` → 32 MHz, tedy PŘESNĚ hodnota z `.ioc`
+  (`SDMMC1.ClockDiv=1`), a přepínání do High Speed je ODSTRANĚNÉ.**
+  **Proč takhle** (uživatel, 2026-09-11): *„karta dříve běžela spolehlivě na 32 MHz"* —
+  a HW test toho dne ukázal, že **CMD6 na této kartě stejně neprojde**, takže celý
+  HS aparát by za cenu vendor volání s ~49denními smyčkami (`SD_SwitchSpeed`)
+  nepřinesl nic. Odstraněním vypadl z obrazu i ten vendor kód (ověřeno: `nm` už
+  `HAL_SD_ConfigSpeedBusOperation` ani `SD_SwitchSpeed` nenajde, `.text` −592 B),
+  takže **zbytkové riziko zatuhnutí popsané výše je pryč úplně**.
+  **Co z nálezu opravené ZŮSTÁVÁ — a je to jeho jádro:**
+  - komentář u konstanty už **necituje limit režimu, ve kterém přístroj neběží**.
+    Nově říká pravdu: je to Default Speed, limit 25 MHz, a 32 MHz je nad ním vědomě,
+    včetně důvodů a ceny;
+  - 🔑 **stav přestal být tichý:** `sd diag` hlásí takt, režim, platný limit **a
+    značku `<-- NAD LIMITEM`**. Přesně kvůli téhle neviditelnosti nález vznikl.
+  **Co zůstává vědomě NEOPRAVENÉ:** sběrnice jede **~28 % nad limitem Default Speed**.
+  Opora pro to rozhodnutí je empirická (dlouhodobě spolehlivý provoz po HW úpravě:
+  odstraněn R60 = pull-up na CK, bulk kondenzátor na SD VDD 10 µF), ne odvozená ze
+  specifikace — a je to tak zapsané, aby se to příště nepletlo.
   ⚠️ Cena: rezerva vybraná do nuly. Jiná karta, delší vodič nebo vyšší teplota se
   může projevit jako `DATA_CRC_FAIL` nebo přerušovaně poškozený export. **Až se to
   stane, začni řádkem `sbernice` v `sd diag`** — ta značka je tam přesně proto.
-  ⬜ Neověřeno na HW v této podobě (32MHz varianta; 16MHz fallback ověřen byl).
+  ⬜ Neověřeno na HW v této podobě (16MHz varianta ověřena byla: `sd diag` hlásil
+  `16.000 MHz, Default Speed`, `f_mount: 0 OK`, 30 GB karta).
 
   *(Původní provedení, platné jen mezi commity `79f6ea7` a dneškem: uživatel zvolil
   **variantu 3**

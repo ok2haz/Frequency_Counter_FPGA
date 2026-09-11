@@ -1434,18 +1434,19 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
 ### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
 **SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12).
 Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
-🔴 **Takt je dvoufázový** (audit F-0028, 2026-09-11): identifikace a CMD6 běží na
-`SD_CLKDIV_INIT` = **16 MHz** (v mezích Default Speed, limit 25 MHz), provozní takt je
-pak `SD_CLKDIV_RUN` = **32 MHz**, stejně jako `.ioc` (`SDMMC1.ClockDiv=1`).
-🔴 **Provozní 32 MHz se nastaví I KDYŽ přepnutí do High Speed neprojde — vědomé
-rozhodnutí (2026-09-11) kvůli propustnosti exportu.** Na testované kartě HS neprošel,
-takže sběrnice dnes jede **~28 % nad limitem Default Speed**. Přenos funguje po HW
-úpravě (odstraněn R60 = pull-up na CK, bulk kondenzátor na SD VDD 10 µF), ale **rezerva
-je vybraná do nuly**.
-⚠️ **Až karta začne hlásit `DATA_CRC_FAIL` nebo přerušovaně poškozený export, ZAČNI
-TÍMHLE, ne datovou cestou.** `sd diag` řádek `sbernice` vypíše z `CLKCR` takt, režim,
-platný limit a při překročení značku **`<-- NAD LIMITEM`** — hodnotu nikam neopisuj,
-tenhle řádek je jediný důvěryhodný zdroj.
+🔴 **Takt = `SD_CLKDIV` = 1 → SDMMC_CK 32 MHz, shodně s `.ioc` (`SDMMC1.ClockDiv=1`).**
+Do High Speed se karta **nepřepíná** (žádný CMD6), takže platí limit **Default Speed
+25 MHz** a sběrnice jede **~28 % nad ním**. Je to **vědomé rozhodnutí**, ne přehlédnutí
+(audit F-0028, 2026-09-11): karta na 32 MHz dlouhodobě běží spolehlivě po HW úpravě
+(odstraněn R60 = pull-up na CK, bulk kondenzátor na SD VDD 10 µF), a přepnutí do HS
+bylo vyzkoušeno — **na této kartě CMD6 neprojde**, takže by vendor volání
+`HAL_SD_ConfigSpeedBusOperation` (uvnitř ~49denní smyčky, viz `BSP_SD_Init`) nepřineslo
+nic. Proto v kódu není.
+⚠️ **Cena: rezerva je vybraná do nuly.** Jiná karta, delší vodič nebo vyšší teplota se
+může projevit jako `DATA_CRC_FAIL` nebo přerušovaně poškozený export.
+🔴 **Až se to stane, ZAČNI ŘÁDKEM `sbernice` v `sd diag`, ne datovou cestou.** Vypíše
+z `CLKCR` takt, režim, platný limit a značku **`<-- NAD LIMITEM`** — hodnotu nikam
+neopisuj, tenhle řádek je jediný důvěryhodný zdroj.
 - 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE** (v `.ioc` chyběl). Bez něj má `CLKCR` bit17
   `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → `TRANSFER`) projdou,
   ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`, `HAL_SD_ReadBlocks` SW

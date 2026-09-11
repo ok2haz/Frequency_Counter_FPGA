@@ -620,12 +620,16 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   ⚠️ Vlastni pojistka HAL to nechytne: porovnava `ClockDiv` proti
   `sdmmc_clk / (2 x SD_NORMAL_SPEED_FREQ)`, coz je celociselne `64e6/50e6 = 1` —
   takze `ClockDiv = 1` (32 MHz) projde, prestoze je nad 25 MHz.
-- **Oprava:** Identifikace a prepinaci prikaz bezi na **bezpecne** hodnote
-  (`SD_CLKDIV_INIT` = 16 MHz, v mezich DS); pokus o HS se udela a `sd diag` hlasi
-  takt, rezim, platny limit **a znacku `<-- NAD LIMITEM`**, kdyz je takt nad nim.
-  ⚠️ **Provozni takt je 32 MHz i kdyz HS neprojde — VEDOME rozhodnuti uzivatele
-  (2026-09-11) kvuli propustnosti exportu.** Lekce tedy NEtvrdi, ze kod pada na
-  bezpecnou hodnotu; tvrdi, ze ten stav je VIDET.
+- **Oprava:** ⚠️ **Takt ZUSTAL 32 MHz, tedy nad limitem Default Speed (25 MHz) —
+  vedome rozhodnuti uzivatele (2026-09-11), oprene o dlouhodobe spolehlivy provoz na
+  teto desce po HW uprave.** Prepinani do High Speed bylo zkouseno a **odstraneno**
+  (na teto karte CMD6 neprosel, takze vendor volani s ~49dennimi smyckami nic
+  neprinaselo).
+  Opravena je tedy **viditelnost, ne hodnota**: komentar u konstanty uz necituje
+  limit rezimu, ve kterem pristroj nebezi, a `sd diag` hlasi takt, rezim, platny
+  limit **a znacku `<-- NAD LIMITEM`**.
+  🔑 Lekce proto NEtvrdi, ze kod pada na bezpecnou hodnotu. Tvrdi, ze **kdyz se
+  limit vedome prekroci, musi to byt videt** — a ze duvod patri k tomu mistu.
 - **Pravidlo:** **Kdyz limit zavisi na REZIMU, smi se hodnota nastavit nad limit az po
   overeni rezimu — a kdyz se to vedome porusi, MUSI to byt videt.**
   Zakazane je tiche „nastav a doufej": vypadek prepnuti pak udela **nepoznatelny**
