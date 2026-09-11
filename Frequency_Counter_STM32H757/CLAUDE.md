@@ -1086,7 +1086,8 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   servírovat jako měření. Nese: teploty OCXO/deska/MCU/FPGA, napětí 12V/5V/VREF/VBAT/Vc, RF mV + AD8307
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`.
-- **`IPC_VERSION` = 13.** ⚠️⚠️ **Změna → přeflashnout OBĚ banky.**
+- **`IPC_VERSION` = 14** (ověřeno v `ipc_shared.h:33`; tady stálo 13 — doc drift).
+  ⚠️⚠️ **Změna → přeflashnout OBĚ banky.**
   - **⚠️ Nesoulad bank je NEVIDITELNÝ — `4:--` to NENÍ.** CM4 při neshodě přestane přijímat snapshot
     (`s_ready=0`), ale heartbeat volá dál → header svítí `4:xx%` jako by bylo vše OK (jediný příznak:
     LED_2 nereaguje na GPS fix). **`cm4_ipc_version`** (razítkuje se v heartbeatu, přežije reset CM7
@@ -1273,8 +1274,32 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
       se bucket VZORKUJE** a odpověď to přizná (`resp_full_env` → SPA „PODVZOREK"). SPA sešívá až
       `DLCHUNKS`=4 dávky (posun `from`) → ~192 bodů; HTTP timeout **8 s**.
     - **v13:** `ipc_log_rec_t` nese `freq_min/max_x100000` → SPA kreslí min/max **pásmo** (`envPoints`).
-    - **Paměťový rozpočet:** `HTTPD_BODYBUF_MAX`=4096, `HTTPD_MAX_CONN`=5, SPA ~62 kB `.rodata`,
-      CM4 obraz ~195 kB / 1 MB, CM4 `.bss` ~83 kB / 128 kB (`s_hconn` ~25 kB). Při dalším růstu hlídat.
+    - **Paměťový rozpočet CM4 — PŘEMĚŘENO 2026-09-11** (`size -A` + `nm` nad
+      `CM4/Release/H757_LED_CM4.elf`; předchozí čísla byla o dost mimo, SPA zdvojnásobila):
+      `HTTPD_MAX_CONN`=5, **`HTTPD_BODYBUF_MAX`=6144** (bylo 4096 — audit F-0056),
+      `HTTPD_RXBUF_MAX`=2048, `HTTPD_HDRBUF_MAX`=160.
+      `.text` **76,8 kB** + `.rodata` **154,4 kB** (z toho `SPA_HTML` **139,3 kB**),
+      `.bss` **87,0 kB** / 128 kB SRAM2, `.eth_dma` 12,7 kB / 32 kB SRAM3.
+      **`s_hconn` sám je 42,0 kB** = 48 % `.bss` CM4 → **jeden slot stojí 8 400 B**,
+      takže `HTTPD_MAX_CONN` se nezvyšuje bez přepočtu.
+      Zbývající zásobník = `_estack` − `_end` = **43,9 kB** (CM4 je bare-metal, jeden
+      stack); nejhlubší reálný řetěz `tcp_input → on_recv (992 B) → low_level_output`
+      je ~3 kB, tedy rezerva ~15×. ⚠️ `_Min_Stack_Size = 0x400` v linkeru je jen
+      minimální rezervace pro kontrolu linkeru, **ne** skutečná velikost.
+    - 🔴 **`/api/log` má rozpočet hlídaný `_Static_assert`em**
+      (`HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_BODYBUF_MAX`).
+      Vzniklo z F-0056: strop 48 bodů pocházel z v12 a v13 pak přidalo dvě další čísla
+      na bod, aniž se přepočítal → od 100 MHz odpověď přetekla a **tiše se ořízla**.
+      **Když přibude pole do `ipc_log_rec_t`, zvedni `HTTPD_LOG_PT_MAX`** — assert to
+      jinak zastaví při překladu (což je smysl). ⚠️ Strop **nesnižuj**: SPA sešívá další
+      dávku jen když dostane přesně `DLN` bodů, takže nižší strop zkrátí historii.
+    - 🔴 **SSE spojení má timeout `HTTPD_SSE_IDLE_MS` = 120 s** měřený od posledního
+      **potvrzeného** odeslání (`on_sent`), ne od pokusu o zápis (F-0059). Do `sndbuf`
+      se mrtvému klientovi ještě pár událostí zapíše, ale ACK už nepřijde.
+    - 🔴 **Zavření spojení = `conn_close`/`conn_abort`, nikdy holé `tcp_close`** (F-0057):
+      `tcp_close` pcb nezruší, nechá ho v `tcp_active_pcbs` i s `callback_arg` na slot,
+      který je mezitím přidělený jinému klientovi. **Nejdřív odregistruj všechny
+      callbacky, teprve pak zavírej** — a obsluha si ověří `c->pcb == pcb`.
     - ⚠️ **ETag SPA = čas překladu `httpd_min.c`** (`__DATE__ __TIME__`), ne verze FW. `Cache-Control: no-cache`.
     - ⚠️ **localStorage historie se obnoví jen když mezera < 30 s** (Allan chce rovnoměrné τ0).
     - **Headline na webu zrcadlí displej** (`fmtFreqHtml`); koncový bod křivky = **HTML overlay, ne SVG**

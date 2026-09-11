@@ -3,20 +3,27 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-11 (10. sezení — moduly 7/9/10/11 + **první HW ověření**)
+**Poslední aktualizace:** 2026-09-11 (11. sezení — **modul 12 = síťová vrstva CM4**;
+předtím moduly 7/9/10/11 + první HW ověření)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
 **Modul 8 nemá otevřený nález.**
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-**rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a pak **F5 pro
+**Pokračovat zde:** ⬜ **naflashovat BANKU 2 (CM4) a ověřit po POWER-CYKLU** —
+modul 12 prošel F5 (6 nálezů ze 7), ale nic z toho neběželo na desce.
+Pak **rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a **F5 pro
 modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické sekce,
 zatímco SCPI i IPC ji mají).
+⚠️ **Opravy modulu 12 míří do BANKY 2 (CM4)** — jiná cesta než všechno dosavadní.
+`IPC_VERSION` se žádným z nich nemění, takže přeflashování obou bank nutné není.
+🔑 **Co na desce ověřit** (z UART `status`, bez sondy — CM4 nemá konzoli):
+`HTTP(CM4)`/`SCPI(CM4)` selftest PASS a `NET:` s IP; pak z prohlížeče **SPA + dlouhá
+historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
+`expected_len` (F-0060). SSE timeout (F-0059) se ověří jen odpojením klienta od sítě.
 ⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
-🔴 **Všechny moduly 1–11 mají zapsané nálezy a jediný modul bez dokončené fáze oprav
-je 11.** Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
+🔴 **Všechny moduly 1–12 mají zapsané nálezy; bez dokončené fáze oprav je už jen 11.** Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -120,6 +127,13 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
 | 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány | 2026-09-11 | 0 | 1 | 1 | 1 | [3](audit/2026-09-11_aplikacni-okna.md) |
+| 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
+
+⚠️ **Modul 12 je první auditovaný modul na CM4** a jediná část projektu, která
+zpracovává **nedůvěryhodný vstup zvenčí**. Proto nešel v pořadí podle vrstev —
+byl vybrán podle rizika. ⚠️ **Blob `SPA_HTML` (2 937 ř. HTML/CSS/JS z 3 906 ř.
+souboru) auditovaný NENÍ** — je to klientský kód s vlastním ověřovacím řetězcem
+(`tools/spa/check.py`) a zaslouží si samostatný modul 13.
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -131,9 +145,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 1 | 0 |
-| S2 | 1 | 8 | 0 |
-| S3 | 7 | 21 | 0 |
-| S4 | 1 | 8 | 0 |
+| S2 | 1 | 10 | 0 |
+| S3 | 7 | 24 | 0 |
+| S4 | 2 | 9 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -376,3 +390,5 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-10 | vykreslovací řetězec | F3 přezkum, 4 nálezy (4×S3), verdikt **funkční**. **Modul 8 nejdřív rozdělen** (14 375 ř. → 8/9/10, viz poznámka nahoře). Nic dnes nekreslí špatně; všechny nálezy jsou latentní pasti a chybějící diagnostika. Nejzávažnější F-0032: pravidlo „partial redraw musí začít clear“ platí jen pro neprůhledné barvy, `sw_fill` obchází `mark_dirty`. Ověřeno rozborem indexů, že copy-forward nikdy nepíše do scanovaného bufferu, a že `keep[96]` v dedupu sedí přesně na mez. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | drivery SDMMC + FatFs | F3 přezkum, 7 nálezů (2×S2, 4×S3, 1×S4), verdikt **podmíněně funkční**. Blokující CPU/FIFO cesta místo IDMA je doložitelně správné rozhodnutí; ručně skládaný init obchází dvě vendor smyčky s timeoutem ~49 dní. Slabiny jsou v životním cyklu okolo mountu: **výměna karty za běhu je rozbitá deterministicky** (F-0025) a auto-unmount z defaultTasku umí smazat FatFs semafor drženy jiným taskem (F-0026). Umístění všech bufferů ověřeno `nm` nad `.elf`. Dvě falešné stopy prověřeny a zavrženy (BusFault přes `disk_status`, L-0007 přes `HAL_RCCEx_PeriphCLKConfig`). Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-10 | F5 opravy (modul 6) | F-0023 mez proti kapacitě W25Q (`fix:` `1f69ca9`), F-0024 zdůvodnění ignorovaných návratů (`docs:` `d7dbd69`). Před zásahem ověřeno, že žádný volající na hranici neleží. Build 0 varování, `audit.py` 92/0/2, `.text` 597 488 → 597 520 a mez `cmp.w r0, #67108864` dohledána v disassembly. **Přeložen i CM4/Release** — obraz byl starší než `ipc_shared.h` (assert z F-0017), takže `build.sh` varoval na možný nesoulad bank. **⬜ neověřeno na HW.** | L-0015 |
+| 2026-09-11 | **sit CM4 (HTTP + SCPI/TCP + mDNS)** | F3 prezkum, 7 nalezu (2xS2, 3xS3, 2xS4), verdikt **podminene funkcni**. **Prvni auditovany modul na CM4** a jedina cast projektu zpracovavajici neduveryhodny vstup zvenci. Parsery samotne jsou v poradku — zadne preteceni vstupniho bufferu jsem nenasel (`httpd_parse_request`, `b64_decode`, `mdns_match_name` i `scpi_tcp` kontroluji meze pred kazdym zapisem). Vady lezi ve **vystupni** ceste a ve **sprave zivotniho cyklu spojeni**: **F-0056** (odpoved `/api/log` se od 100 MHz nevejde do `bodybuf` a tise se orizne — strop 48 bodu je z v12 a v13 pak pridalo dve dalsi cisla na bod, aniz by se prepocital; projevi se to hlaskou obvinujici datalog a IPC, ktere jsou nevinne) a **F-0057** (`pump_send` zavre pcb, ale neodregistruje `tcp_arg`/`tcp_err`/`tcp_poll`, takze cizi callback sahne na mezitim znovupouzity slot — doloženo ctenim vendorovaneho lwIP `tcp.c:484` a `tcp_priv.h:223`). Umisteni vsech bufferu overeno `nm` nad obrazem CM4. 🔑 Hypoteza „zasobnik jako F-0055, jen na CM4" **merenim vyvracena**: dostupnych 54 168 B proti nejhlubsimu retezu ~2–3 kB (rezerva ~18x). Kod nemenen. | zatim zadna (F5 nebyla) |
+| 2026-09-11 | F5 opravy (modul 12) | **6 ze 7 nalezu uzavreno ve 3 commitech.** `d508139` zivotni cyklus spojeni (**F-0057** odregistrace callbacku pred uvolnenim slotu + test `c->pcb == pcb`; **F-0059** SSE dostalo timeout 120 s **a** vyhodnoceni `tcp_write`, ktere komentar uz tri mesice sliboval; **F-0062** mrtva vetev odpovida misto mlceni). `d2038cc` vystupni buffery (**F-0056** rozpocet `_Static_assert`em + `bodybuf` 4096->6144 B + konec ticheho orezu; **F-0058** `hdr_set()`). `3df104c` **F-0060** — `expected_len` pryc z `/api/state` i ze SPA. 🔑 **F-0056 se opravil JINAK, nez nalez navrhoval:** snizeni stropu na 40 bodu by uskodilo, protoze SPA sesiva dalsi davku jen kdyz dostane presne tolik bodu, kolik si vyzadala — rozpocet se musel ZVEDNOUT, ne oriznout. Build 0 varovani, `audit.py` 92/0/2, `.text` 76336 -> 76768 B, `.bss` +10240 B (vedome), SPA retezec `check.py --build` cely zeleny (krok 8: `nm` 139290 = extrakce +1). **F-0061** (mDNS konformita) vedome odlozen. ⬜ **neovereno na HW.** | L-0025, L-0026, L-0027, L-0028 |

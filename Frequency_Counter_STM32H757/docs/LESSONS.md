@@ -46,6 +46,10 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0022 | Obrana, která je opt-in, je neúplná, dokud není u NÍ vyjmenované, kdo ji musí zavolat — a proč nestačí ta druhá, která vypadá podobně. | u každého `s_busy`/`lock` v hlavičce seznam volajících + čím se liší od sousední obrany |
 | L-0023 | `static` uvnitř dotazovací funkce přestane být privátní ve chvíli, kdy přibude druhý volající. Dotaz odděl od aktualizace: číst smí kdokoli, posouvat stav jen jedna úloha. | funkce se `static` stavem a víc než jedním volajícím = nález |
 | L-0024 | Když limit závisí na REŽIMU, hodnota se smí nastavit nad limit jen po ověření režimu — a když se to vědomě poruší, musí to být VIDĚT. Tiché „nastav a doufej" je to, co se zakazuje; hlášený provoz nad limitem je rozhodnutí. | `sd diag` → řádek `sbernice` uvádí takt, režim, limit a značku `<-- NAD LIMITEM` |
+| L-0025 | Objekt předaný cizí knihovně přestaň vlastnit až ve chvíli, kdy ti přestane volat zpátky — `close` není `free`. Odregistruj VŠECHNY callbacky dřív, než uvolníš slot. | `tcp_close`/`*_close` bez předchozího `tcp_arg(pcb, NULL)` = nález; obsluha musí ověřit, že jí ten objekt pořád patří |
+| L-0026 | Když do záznamu přibude pole, přepočítej strop bufferu, do kterého se ten záznam skládá — a strop připoj k bufferu `_Static_assert`em, ne komentářem. | `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)` u každé pevné odpovědi |
+| L-0027 | Na neautentizovaném endpointu smí diagnostika vydat jen to, co odesílatel sám poslal. Délka odvozená z tajemství je taky únik. | u každé položky veřejné diagnostiky musí být napsané, PROČ je neškodná; „jen délky a booly" není zdůvodnění |
+| L-0028 | Věta v komentáři tvaru „hlídá to X" je TESTOVATELNÁ — najdi řádek, kde se X čte. Zahozená návratová hodnota je nejčastější podoba obrany, která neexistuje. | grep na `tcp_write(`/`f_write(`/`HAL_*` bez uložení návratu, křížem proti komentářům se slovy „hlída", „brani", „osetruje" |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -646,6 +650,128 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   pro ktery ten limit plati, je opravdu zapnuty.
 - **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0028
 - **Stav:** aktivni
+
+### L-0025 — `tcp_close` neni `free`: cizi knihovna volala zpatky na uvolneny slot
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`pump_send`), `CM4/LWIP/App/scpi_tcp.c`
+- **Co se stalo:** `pump_send()` po odeslani odpovedi zavolalo `tcp_recv(pcb, NULL)`,
+  `tcp_close(pcb)` a `c->pcb = NULL`. Jenze `tcp_close` pcb **NEZRUSI** — necha ho
+  v `tcp_active_pcbs` ve stavu FIN_WAIT_1/2 (az `TCP_FIN_WAIT_TIMEOUT` = 20 s, plus
+  retransmise `TCP_MAXRTX` = 12) **i s `callback_arg`**, ktery porad ukazuje na ten
+  slot. `c->pcb = NULL` ale uz znamena „slot volny", takze `conn_alloc` ho okamzite
+  pridelil dalsimu klientovi — a pozdni `on_err` (RST po zavreni posila prohlizec
+  bezne) nebo `on_poll` pak sahly na **cizi, zive spojeni** a zabily ho.
+- **Jak se to naslo:** cteni vendorovaneho lwIP, ne symptomu. `tcp.c:484` + doc
+  komentar `tcp.c:462-470` („put in a closing state … automatically freed in
+  `tcp_slowtmr()`") a `tcp_priv.h:223-228`, kde `TCP_EVENT_POLL` predava
+  `(pcb)->callback_arg`.
+  🔑 **Rozhodujici indicie byla ASYMETRIE ve vlastnim kodu:** `on_poll` v temze
+  souboru `tcp_arg(pcb, NULL)` pred `tcp_abort` delalo, `scpi_tcp.c` taky —
+  jen `pump_send` ne. Kdyz jedno misto dela navic krok, ktery ostatni nedelaji,
+  je to bud zbytecne, nebo tam jinde chybi; tretí moznost neni.
+- **Oprava:** spolecne `conn_detach/conn_close/conn_abort`, ktere odregistruji
+  `tcp_arg`/`tcp_recv`/`tcp_sent`/`tcp_err`/`tcp_poll` **pred** uvolnenim slotu,
+  a druha vrstva: kazda obsluha overi `c->pcb == pcb` a cizi callback zahodi.
+- **Pravidlo:** **Objekt predany cizi knihovne prestan vlastnit az ve chvili, kdy ti
+  prestane volat zpatky — `close` neni `free`.** Kdyz API rika „po zavreni uz pcb
+  nepouzivej", neznamena to „po zavreni uz te nikdo nezavola". Odregistruj VSECHNY
+  callbacky, ne jen ten, ktery te zrovna trapi.
+- **Detekce:** `tcp_close(`/`*_close(` bez predchoziho `tcp_arg(pcb, NULL)` v temze
+  bloku = nalez. Obsluha, ktera dostava `arg` i handle, musi overit, ze k sobe patri.
+- **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0057
+- **Stav:** aktivni
+
+---
+
+### L-0026 — nove pole v zaznamu prebilo strop bufferu, o kterem nikdo nevedel
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`build_log_json`, `HTTPD_BODYBUF_MAX`)
+- **Co se stalo:** strop „48 bodu na odpoved `/api/log`" vznikl ve v12 (`c802108`)
+  a pocital s bodem o sedmi polozkach. Ve v13 (`2bd7574`) pribyla **min/max obalka
+  kmitoctu**, tedy dve dalsi cisla na bod — a strop se **neprepocital**. Pri 10 MHz
+  to jeste vyslo (3997 B ze 4096, rezerva 2,4 %), od 100 MHz uz ne: `fmt_scpi_hz_d`
+  je o znak delsi a jsou tri na bod. Odpoved pretekla, zapisovac ji **tise oriznul**
+  a klient dostal JSON useknuty uprostred tokenu.
+- **Proc to bylo horsi nez „graf se nenacte":** SPA hlasila
+  `historie se nenacetla … bezi datalog? (CM7 odpovida pres IPC)` — tedy poslala
+  uzivatele ladit datalog a mezijaderny kanal, ktere byly v poradku.
+  **Tichy orez si vzdy najde nekoho nevinneho, koho obvinit.**
+- **Oprava:** rozpocet je VYPOCET hlidany `_Static_assert`
+  (`HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_BODYBUF_MAX`),
+  buffer 4096 -> 6144 B, a orez prestal byt tichy: `jbuf_t.ovf` -> `build_*_json`
+  vrati 0 -> volajici posle 503 misto neplatneho JSON.
+  ⚠️ Samotne snizeni stropu by nestacilo a jeste by uskodilo: SPA pokracuje
+  v sesivani davek jen kdyz dostane **presne** pozadovany pocet bodu, takze mensi
+  strop by zkratil historii. Rozpocet se musel zvednout, ne oriznout.
+- **Pravidlo:** **Kdyz do zaznamu pribude pole, prepocitej strop bufferu, do ktereho
+  se ten zaznam sklada — a strop pripoj k bufferu `_Static_assert`em, ne komentarem.**
+  Komentar „strop kvuli velikosti bufferu" nikoho pri pridavani pole nezastavi;
+  `_Static_assert` ano.
+- **Detekce:** kazda pevna odpoved skladana do pevneho bufferu musi mit
+  `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)`. Zapisovac do pevneho
+  bufferu musi umet ohlasit, ze se neco nevesolo (viz **L-0017**).
+- **Commit:** `d2038cc`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0056
+- **Stav:** aktivni
+
+---
+
+### L-0027 — „jen delky a booly" prozradilo delku hesla
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`s_auth_dbg`, `GET /api/state`)
+- **Co se stalo:** diagnostika posledniho pokusu o prihlaseni nesla
+  `expected_len = strlen(web_user) + 1 + strlen(web_pass)` a servirovala se
+  v `/api/state`, ktere je **zamerne otevrene** (cteni nevyzaduje autorizaci).
+  Komentar u struktury pritom vyslovne tvrdil, ze se „jen delky a bool vysledky"
+  exportuji proto, aby *„se pres `/api/state` neda vytahat platne heslo"*.
+  Heslo se opravdu vytahnout nedalo — **jeho delka ano**, cimz se zuzuje hruba sila,
+  a `expected_len == 1` navic znamena „obe pole prazdna". Dosazitelne jednim parem
+  pozadavku bez znalosti hesla: `POST /api/scpi` s libovolnou `Authorization`
+  hlavickou pole naplnilo **jeste pred** porovnanim, pak stacilo `GET /api/state`.
+- **Oprava:** pole odstraneno ze struktury i z JSON, SPA hlaska ukazuje uz jen delku
+  toho, co poslal klient sam. Komentare uvedeny na pravou miru.
+- **Pravidlo:** **Na neautentizovanem endpointu smi diagnostika vydat jen to, co
+  odesilatel sam poslal.** Delka odvozena z tajemstvi je taky unik — a „neni to cele
+  tajemstvi" neni argument. Kdyz u diagnostiky pises „nic tajneho neexportuje",
+  **vyjmenuj kazdou polozku a u kazde napis, proc je neskodna**; souhrnne tvrzeni
+  o cele strukture se pri pristim pridanem poli stane nepravdivym a nikdo si toho
+  nevsimne.
+- **Detekce:** u kazde polozky verejne diagnostiky se zeptej „vznikla z dat, ktera
+  mi poslal ten, kdo to cte?". Kdyz ne, ven nepatri.
+- **Commit:** `3df104c`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0060
+- **Stav:** aktivni
+
+---
+
+### L-0028 — komentar popisoval obranu, kterou kod nedelal (uz podruhe v temze souboru)
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`sse_push`, timeout drzenych spojeni)
+- **Co se stalo:** SSE spojeni bylo z timeoutu **vyjmute uplne**, s oduvodnenim
+  primo v komentari: *„misto toho ho hlida `tcp_write` chyba a `on_err`"*. Jenze
+  `sse_push` zahazoval navratove hodnoty **vsech tri** `tcp_write`. Ta obrana tedy
+  neexistovala a klient, ktery zmizel bez FIN/RST (uspany notebook, vypnuta Wi-Fi,
+  NAT zahodil stav), drzel jeden z peti slotu minuty.
+- 🔴 **Tatáz trida vady je v temze souboru zdokumentovana uz od 2026-09-06**
+  (`scpi_tcp.c:135-140`): *„Komentar pritom uz tehdy tvrdil, ze se tomu brani — kod
+  delal opak."* Tam slo o zahazovani prilis dlouheho radku, tady o navratovou
+  hodnotu — ale mechanismus je stejny a **za tri mesice se to nezmenilo**, protoze
+  z toho prvniho nalezu nevznikla lekce, jen komentar na miste.
+- **Oprava:** navratove hodnoty se kontroluji (`ERR_MEM` nemuze uprostred nastat —
+  misto ve `sndbuf` je overene pro vsechny tri kusy naraz), pri chybe se spojeni
+  zrusi, a SSE dostalo vlastni timeout `HTTPD_SSE_IDLE_MS` 120 s **mereny od
+  POTVRZENEHO odeslani** (`on_sent`), ne od posledniho pokusu o zapis. To je
+  podstatne: do `sndbuf` se mrtvemu klientovi jeste par udalosti zapise, ale ACK
+  uz neprijde.
+- **Pravidlo:** **Veta v komentari tvaru „hlida to X" je TESTOVATELNA — najdi radek,
+  kde se X cte.** Kdyz takovy radek neexistuje, neni to nepresny komentar, ale
+  **chybejici obrana**, a komentar ji navic maskuje: pristi ctenar uz hledat nebude.
+  Zahozena navratova hodnota je nejcastejsi podoba teto vady (srov. **L-0003**).
+- **Detekce:** grep na volani, jejichz navrat se nikam neuklada
+  (`tcp_write(`, `f_write(`, `HAL_*`), a krizem proti komentarum se slovy
+  „hlida", „brani", „osetruje", „pozna". Kazdy takovy par je kandidat na nalez.
+- **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0059
+- **Stav:** aktivni
+
+---
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
