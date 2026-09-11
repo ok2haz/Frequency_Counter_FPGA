@@ -89,6 +89,47 @@ if [ -f "$CM4_MAIN" ]; then
     fi
 fi
 
+# ── Dispatch podle `s_view` je rozvětvený do pěti tabulek (audit F-0049 / F-0050) ─
+# Okno, které existuje (`view_set(N)`), ale nemá `case N:` v `render_view()`, se při
+# obnově obrazovky (nav_back, úklid po mrtvé I2C4) vykreslí jako HLAVNÍ OBRAZOVKA —
+# a udělá to TIŠE. Přesně tak se ztratila okna 49 (FUNKCE) a 50 (NÁPOVĚDA).
+# Sjednotit všech pět tabulek je dražší než vada (a `render_view` vs. screensaver se
+# liší z doloženého důvodu), takže místo sjednocení hlídá rozdíl tenhle test.
+# Detaily: docs/audit/2026-09-11_navigace-fokus-vstup.md
+APPG="CM7/app/app_gpsdo.c"
+if [ -f "$APPG" ]; then
+    # `case N:` uvnitř těla render_view()
+    rv_cases() {
+        awk '/^static void render_view\(uint8_t v\)$/{f=1} f&&/^\}/{exit} f' "$APPG" \
+            | grep -oE 'case [0-9]+:' | grep -oE '[0-9]+'
+    }
+    # Okna, která nepatří do render_view a je to ZÁMĚR:
+    #   0  = default (hlavní obrazovka)
+    #   8  = screensaver — vlastní cesta obnovy (app_gpsdo_touch_dead / exit_screensaver)
+    #   11 = boot splash — běží jen při startu, obnovovat ho nedává smysl
+    rv_vyjimky() { printf '0\n8\n11\n'; }
+
+    CHYBI_RV="$( grep -oE 'view_set\([0-9]+\)' "$APPG" | grep -oE '[0-9]+' | sort -u \
+        | grep -vxF -f <( { rv_cases; rv_vyjimky; } | sort -u ) | tr '\n' ' ' )"
+    if [ -n "${CHYBI_RV// /}" ]; then
+        echo "[!] ZAKAZANO: okno má view_set(), ale chybí mu 'case' v render_view() — ZPĚT/obnova"
+        echo "    ho vykreslí jako hlavní obrazovku, a tiše (F-0049). Chybí: ${CHYBI_RV}"
+        echo
+        NALEZY=$((NALEZY + 1))
+    fi
+
+    # Živě překreslovaná okna (app_gpsdo_tick) musí jít i obnovit.
+    CHYBI_TICK="$( awk '/^void app_gpsdo_tick\(void\)$/{f=1} f&&/^\}/{exit} f' "$APPG" \
+        | grep -oE 's_view == [0-9]+' | grep -oE '[0-9]+' | sort -u \
+        | grep -vxF -f <( { rv_cases; rv_vyjimky; } | sort -u ) | tr '\n' ' ' )"
+    if [ -n "${CHYBI_TICK// /}" ]; then
+        echo "[!] REVIZE: okno se živě překresluje v app_gpsdo_tick(), ale render_view() ho nezná"
+        echo "    (po obnově se nevrátí). Chybí: ${CHYBI_TICK}"
+        echo
+        NALEZY=$((NALEZY + 1))
+    fi
+fi
+
 if [ "$NALEZY" -eq 0 ]; then
     echo "OK: žádný zakázaný vzor nenalezen."
     exit 0

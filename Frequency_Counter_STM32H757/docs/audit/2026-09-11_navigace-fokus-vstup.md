@@ -219,7 +219,17 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Vztah k lekcím:** **`L-0017`** (tichý přeskok je přípustný jen s počítadlem) a
   **`L-0015`** (modul, který zná svou mez, ji musí na rozhraní vynutit, ne jen odvozovat);
   **`L-0016`** (mez a měřidlo její rezervy se navrhují společně — tady je mez bez měřidla).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**:
+  `s_nav_peak` + `s_nav_ovf` a nový řádek v `status`
+  (`UI: navigace (ZPET) max N/6  <== PRETECENO, ZPET vede jinam`), tedy tentýž vzor,
+  jaký v témže souboru už měl registr tlačítek. Navíc `NAV_DEPTH` ze `sizeof`, aby
+  strop v `nav_push()` nemohl zůstat pozadu za velikostí pole (`L-0015`).
+  ⚠️ **Pole ZŮSTÁVÁ na 6** — a je to záměr, ne opomenutí: nález sám argumentuje, že
+  „samotné zvětšení není oprava, jen posune tichou hranici dál". Teď je rezerva
+  **měřitelná** (`max N/6`), takže zvětšení na 8 je jednořádkový následný krok ve
+  chvíli, kdy `max` doleze na 6 — ne dřív.
+  Ověřeno v obrazu: `app_gpsdo_nav_stats` (32 B) a oba nové řetězce.
+  🔎 Nová lekce nevzniká — je to instance **`L-0017`**, která už platí.
 
 ---
 
@@ -256,7 +266,17 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
   buď doplnit, nebo do `default` napsat, že modal se po obnově záměrně zavírá.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **`L-0012`** (symetrické instance) — je to přímý důsledek **F-0050**.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Doplněno `case 49` a `case 50`.
+  🔑 **U okna 13 padlo vědomé rozhodnutí, jak nález žádal: modal se NEOBNOVUJE** a
+  `case 13` vede do MENU. Rozhodl argument ze samotného kódu — tlačítko **NE**
+  (`CONFIRM_NO`) už dnes vede `app_gpsdo_render_menu()`, takže obě cesty zrušení
+  dialogu teď končí stejně; a potvrzení destruktivní akce se nemá samo vynořit po
+  události, kterou uživatel nevyvolal. Dřívější pád do `default` dělal totéž jen
+  náhodou, a to na jiné okno.
+  Okna **8** (screensaver) a **11** (splash) v dispatchi zůstávají záměrně a je to
+  teď u `default:` napsané. Ověřeno v obrazu: `render_view` nově skáče i na
+  `app_gpsdo_render_func`, `app_gpsdo_render_help` a `app_gpsdo_render_menu`.
+  🔎 Nová lekce nevzniká — hlídá to nově **`L-0020`** (viz F-0050).
 
 ---
 
@@ -301,7 +321,24 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
   nízké u kontrolní varianty.
 - **Vztah k lekcím:** **`L-0018`** (dvě místa počítající touž věc jsou dvě pravdy čekající,
   až se rozejdou) a **`L-0012`** (symetrické instance se musí opravovat společně).
-- **Stav:** otevřeno — **kandidát na skupinu C (odložit)**, viz triáž
+- **Stav:** opraveno 2026-09-11 **kontrolou, ne sjednocením** — tedy tou levnější z obou
+  variant, které nález nabízel. **Pět tabulek v kódu zůstává a je to rozhodnutí:** plošný
+  refaktor sahá na každé okno v kódu, který funguje, a `render_view` vs. screensaver se
+  liší z doloženého důvodu (`:2720-2725`). Odstraněna je **tichost**, ne duplicita.
+  `scripts/check_lessons.sh` nově hlásí:
+  1. okno, které má `view_set(N)`, ale **nemá `case N:`** v `render_view()` → přesně
+     třída, která vyrobila F-0049;
+  2. okno živě překreslované v `app_gpsdo_tick()`, které `render_view()` nezná.
+  Výjimky (0 = default, 8 = screensaver, 11 = splash) jsou v skriptu vyjmenované
+  **i se zdůvodněním**, aby se z nich nestal tichý seznam.
+  🔑 **Pozitivní kontrola provedena** (bez ní by „test prošel" nic neznamenalo — viz
+  past `-fanalyzer` v `CLAUDE.md`): nad kopií zdrojáku bez `case 49` a bez `case 26`
+  obě větve správně zazněly (`Chybí: 26 49` a `Chybí: 26`); nad skutečným zdrojákem
+  jsou obě čisté. Nová lekce **`L-0020`**.
+- ⚠️ **Co tím NENÍ vyřešeno:** `app_gpsdo_handle_touch()` (57 testů `s_view`),
+  `touch_pm_control()` a `exit_screensaver()` kontrola neporovnává — tam „chybějící
+  větev" neznamená tichý pád na hlavní obrazovku, ale jen to, že okno nereaguje na
+  dotyk / nemá auto-repeat, což je vidět hned. Rozšířit jde kdykoli.
 
 ---
 

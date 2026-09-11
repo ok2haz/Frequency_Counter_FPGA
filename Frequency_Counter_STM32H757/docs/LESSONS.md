@@ -41,6 +41,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0017 | Tichý přeskok je přípustný jen s počítadlem — co se rozhodneš nevykreslit, musí jít změřit. | `status` → `FONTY: preskocenych glyfu 0` |
 | L-0018 | Dvě místa, která počítají touž veličinu, nejsou duplicita kódu — jsou to dvě pravdy čekající, až se rozejdou. Slučuj, neopravuj obě. | při opravě grep na druhou instanci; `status` → `STATISTIKA: sigma_y@1s` |
 | L-0019 | Účetnictví, které se veze se stavem (diagnostika, paměť, invalidace), připoj ke ZMĚNĚ toho stavu, ne k některé z cest, které k ní vedou. | `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musí být prázdný |
+| L-0020 | Duplicitu, kterou je dražší odstranit než snést, převeď na KONTROLU rozdílu — a tu kontrolu vždy ověř pozitivní kontrolou, jinak jsi jen přidal zelené světlo. | `scripts/check_lessons.sh` sekce „dispatch podle `s_view`" |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -482,7 +483,37 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0047 a F-0051
 - **Stav:** aktivni
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0020, L-0021, … -->
+### L-0020 — Duplicitu, kterou je drazsi odstranit nez snest, prevedi na KONTROLU rozdilu
+
+- **Datum:** 2026-09-11
+- **Oblast:** vedeni oprav / struktura UI dispatch
+- **Symptom:** `s_view` je v `app_gpsdo.c` rozvetvene do **peti** nezavislych tabulek
+  (46 `case` + 32 vetvi + 10 + 10 + 57 testu). Okna 49 (FUNKCE) a 50 (NAPOVEDA) chybela
+  v `render_view()`, takze obnova obrazovky je vykreslila jako hlavni obrazovku — TISE
+  (F-0049). Projekt uz jednou tuhle tridu zazil: `goto_view` vs. `render_view` se rozesly
+  a symptom byl uplne stejny.
+- **Pricina:** Duplicita sama. Jenze sjednotit ji **nebylo spravne**: plosny refaktor sahá
+  na kazde okno v kodu, ktery funguje, a dve z tech tabulek se lisi ZAMERNE a s dolozenym
+  duvodem (`exit_screensaver` je zuzena kopie `render_view`, protoze plosna varianta
+  zamrzla dotykovou vrstvu).
+- **Oprava:** Misto sjednoceni **kontrola rozdilu** v `scripts/check_lessons.sh`: okno,
+  ktere ma `view_set(N)` ale nema `case N:` v `render_view()`, se nahlasi. Vyjimky
+  (default / screensaver / splash) jsou ve skriptu vyjmenovane **i se zduvodnenim**.
+- **Pravidlo:** **Kdyz je odstraneni duplicity drazsi nez vada, kterou pusobi, nenechavej
+  ji tichou — preved ji na kontrolu rozdilu.** Zaznamenej pritom i to, co se lisit MA,
+  a proc; jinak z vyjimek vznikne druhy tichy seznam.
+  🔴 **A kazdou takovou kontrolu overi POZITIVNI KONTROLA** — spust ji nad zdrojakem, do
+  ktereho jsi vadu schvalne vratil, a prekontroluj, ze zazni. Bez toho jsi nepridal
+  kontrolu, ale zelene svetlo. (Tady to bylo nutne: prvni verze se kotvila na
+  `/^static void render_view\(/`, coz chytilo DOPREDNOU DEKLARACI o 7 000 radku vys,
+  awk skoncil na prvni `}` a test „nenasel" nic — pritom hlasil vsech 52 oken jako
+  chybejici. Stejnou past uz projekt zna z `-fanalyzer` + `-fsyntax-only`.)
+- **Detekce:** `scripts/check_lessons.sh` — sekce „dispatch podle `s_view`". Musi byt
+  cista; kdyz zazni, pridalo se okno a nekdo zapomnel na `render_view`.
+- **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0049 a F-0050
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0021, L-0022, … -->
 
 ---
 

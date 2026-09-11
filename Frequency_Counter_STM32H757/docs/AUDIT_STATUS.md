@@ -11,8 +11,8 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-modul 7 (**F-0026 je S2 s poškozením haldy**), nebo dobrat skupinu A modulu 10 (**F-0048**,
-**F-0049** — obě malé), nebo F3 pro modul 11.
+modul 7 (**F-0026 je S2 s poškozením haldy**), nebo F3 pro modul 11 (~45 funkcí `render_*`,
+≈6 200 ř. — rozsah vymezuje sekce „Nezkontrolováno" v nálezovém dokumentu modulu 10).
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -63,7 +63,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno** (1 nový otevřený, ⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
-| 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **skupina B opravena** (3 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
+| 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
 | 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nezačato | — | – | – | – | – | — |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
@@ -77,8 +77,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
 | S2 | 3 | 5 | 0 |
-| S3 | 11 | 16 | 0 |
-| S4 | 2 | 6 | 0 |
+| S3 | 9 | 18 | 0 |
+| S4 | 1 | 7 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -102,7 +102,7 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   20 záznamů/s místo deklarovaných 400/s; při 128 719 záznamech to je 6 436 s.
   **Potřebuje rozhodnutí** (tři varianty v nálezu) — nesahat bez něj.
 
-**Modul 10 — nálezy zapsány 2026-09-11; skupina B opravena (⬜ neověřeno na HW):**
+**Modul 10 — opraveno vše 2026-09-11 (⬜ neověřeno na HW):**
 Verdikt **podmíněně funkční**. Nic tu neshodí přístroj: modul nemá jediné volání `HAL_*`,
 žádný DMA buffer (vše v AXI SRAM, ověřeno `nm`) ani čekací smyčku bez meze. Vada je
 soustředěná do **účetnictví fokusu a do diagnostiky** a má jednoho jmenovatele — `s_view` je
@@ -144,7 +144,28 @@ společnou opravu (jednotné `view_set()`); opravovat je odděleně by se pletlo
 - Ověřeno: build 0 varování, `audit.py` 92 OK/0/2 (gcc 14.3.1), `.text` 598 248 → **598 448 B**
   (+200), v obrazu `view_set` 76 B s **53 volajícími** a v `app_gpsdo_handle_touch`
   inlinovaný `bl enc_items_n` → **`add r0, r2`** (= `ln + i`). Detekce v `zakazane_vzory.txt`.
-- **Zbývá otevřené:** F-0048 a F-0049 (skupina A, obě malé) a F-0050 (skupina C, odložit).
+✅ **Skupina A opravena 2026-09-11:**
+- **F-0048** — `s_nav_peak` + `s_nav_ovf` + řádek `UI: navigace (ZPET) max N/6` v `status`
+  (tentýž vzor, jaký v témže souboru už měl registr tlačítek); `NAV_DEPTH` ze `sizeof`.
+  ⚠️ **Pole zůstává na 6 záměrně** — nález sám říká, že zvětšení není oprava; teď je
+  rezerva měřitelná, takže bump na 8 je následný krok, až `max` doleze na 6.
+- **F-0049** — doplněn `case 49` a `case 50`. 🔑 U okna **13 (modal restartu) padlo
+  rozhodnutí: neobnovovat** a vést do MENU — tlačítko NE už tam vede taky, takže obě cesty
+  zrušení dialogu končí stejně, a potvrzení destruktivní akce se nemá samo vynořit.
+  Okna 8 a 11 zůstávají mimo dispatch záměrně a je to u `default:` napsané.
+
+✅ **Skupina C (F-0050) vyřešena KONTROLOU, ne sjednocením** — lekce **L-0020**:
+`scripts/check_lessons.sh` nově hlásí okno s `view_set(N)` bez `case N:` v `render_view()`
+i okno živě tikané, které `render_view` nezná. **Pět tabulek v kódu zůstává** (plošný
+refaktor sahá na každé okno v kódu, který funguje); odstraněna je tichost, ne duplicita.
+🔑 Provedena **pozitivní kontrola**: nad kopií bez `case 49`/`case 26` obě větve zazněly.
+⚠️ První verze kontroly se kotvila na dopřednou deklaraci `render_view` a „nenašla" nic —
+přesně proto se pozitivní kontrola dělá (táž past jako `-fanalyzer` + `-fsyntax-only`).
+
+**Ověření skupin A+C:** build 0 varování, `audit.py` 92 OK/0/2, `.text` 598 448 → **598 656 B**
+(+208), v obrazu `app_gpsdo_nav_stats` (32 B), oba nové řetězce a skoky `render_view` →
+`app_gpsdo_render_func` / `_help` / `_menu`.
+⬜ **Modul 10 celý čeká na flash + POWER-CYKLUS.**
 
 **Modul 6 — opraveno 2026-09-10 (⬜ neověřeno na HW):**
 - **F-0023** [S3] `w25q.c` nekontroloval adresu proti kapacitě čipu → `range_ok()` na začátku
