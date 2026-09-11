@@ -477,23 +477,96 @@ static void sd_dat_pullup_enable(void)
 
 /* ⚠️⚠️ KLIC K DATOVE CESTE (2026-08-14): naplni `hsd1.Init` PRESNE jako funkcni
  * Frantuv projekt na TEMZE HW (`H757_SDcard_01/sdcard.c sd_apply_config`).
- * Nejdulezitejsi je `HardwareFlowControl = ENABLE` — nase `.ioc` ho NEMA
- * (`SDMMC1.IPParameters=ClockDiv` bez HWFC), takze CLKCR bit17 HWFC_EN=0
+ * Nejdulezitejsi je `HardwareFlowControl = ENABLE`. ✅ V `.ioc` uz JE
+ * (`SDMMC1.IPParameters=ClockDiv,HardwareFlowControl`, doplneno 2026) — tenhle
+ * kod ho presto nastavuje, protoze init skladame rucne a nesmi zaviset na tom,
+ * co zrovna vygeneroval CubeMX. Puvodne v `.ioc` CHYBEL a CLKCR bit17 HWFC_EN=0
  * (zmereno `CLKCR=0x51`). Na H7 SDMMC bez flow controlu datova cesta selhava:
  * blokovy prenos nedostane ani bajt, `DPSMACT` visi (prikazy pritom jedou) —
  * presne nas symptom. Franta ma HWFC zapnuty a cte/zapisuje. Nastavujeme cely
  * Init jako on. Regen-safe (runtime, nesaha na .ioc — spravne reseni je doplnit
  * HWFC i do .ioc pres CubeMX, viz CUBEMX_CHECKLIST). */
+/* ── Takt sbernice: SDMMC_CK = 64 MHz / (2 x ClockDiv) ───────────────────────
+ * 🔴 Strop ZAVISI NA REZIMU KARTY, ne na radici:
+ *     Default Speed (DS) = 25 MHz,  High Speed (HS) = 50 MHz.
+ * Do 2026-09-11 bylo natvrdo `ClockDiv = 1` (32 MHz) a komentar to obhajoval
+ * limitem 50 MHz — jenze do HS se karta NIKDY neprepinala (nikde nebyl CMD6),
+ * takze sbernice jela ~28 % nad specifikaci DS (audit F-0028). Rezerva vybrana
+ * do nuly: jina karta, delsi vodic nebo vyssi teplota se projevi jako
+ * `DATA_CRC_FAIL` nebo preruvane poskozeny export — a hledalo by se to v datove
+ * ceste, ne v taktu.
+ * Ted plati POJISTKA: identifikace i prepnuti bezi na DS taktu (v mezích) a na
+ * HS takt se jde AZ KDYZ se karta do High Speed opravdu prepnula. Kdyz ne,
+ * zustane DS — pristroj tedy neni mimo specifikaci v ZADNEM pripade.
+ * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad limitem obou rezimu. */
+#define SD_CLKDIV_DS  2u   /* 16 MHz — Default Speed (limit 25 MHz) */
+#define SD_CLKDIV_HS  1u   /* 32 MHz — jen po uspesnem CMD6 (limit 50 MHz) */
+
+/* 1 = karta je prepnuta do High Speed (diagnostika `sd diag`). */
+static uint8_t s_sd_hs;
+
 static void sd_apply_init_config(void)
 {
     hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
     hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
-    /* SDMMC_CK = 64 MHz / (2 x ClockDiv). 1 -> 32 MHz (2026-08-16, po HW uprave:
-     * R60 = pull-up na CK odstranen, bulk kondik na SD VDD 10 uF). Drive 2 = 16 MHz.
-     * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad SD HS limitem 50 MHz. */
-    hsd1.Init.ClockDiv            = 1;
+    hsd1.Init.ClockDiv            = SD_CLKDIV_DS;      /* HS az po uspesnem CMD6 */
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
+    s_sd_hs = 0;
+}
+
+/* Ohranicene cekani na TRANSFER. ⚠️ JEDEN zdroj pro obe mista, ktera ho potrebuji
+ * (po identifikaci a pred prepnutim do HS) — druha kopie by se rozesla.
+ * HAL ma na totez vlastni smycku s `SDMMC_SWDATATIMEOUT` = 0xFFFFFFFF ms (~49 dni),
+ * coz je presne to, co teto desce uz jednou zpusobilo zatuhnuti (commit `ec64939`).
+ * @return true = karta je v TRANSFER. */
+static bool sd_wait_transfer(uint32_t ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
+        if ((HAL_GetTick() - t0) > ms) return false;
+        if (osKernelGetState() == osKernelRunning) osDelay(1);
+    }
+    return true;
+}
+
+/* ── Prepnuti do High Speed (CMD6) + POJISTKA NA TAKT (audit F-0028) ─────────
+ * 🔴 TOHLE JE VEDOME POVOLENA VYJIMKA z pravidla „vendor cestam se u SD vyhybame".
+ * `HAL_SD_ConfigSpeedBusOperation` -> `SD_SwitchSpeed` obsahuje DVE smycky
+ * s timeoutem `SDMMC_SWDATATIMEOUT` = 0xFFFFFFFF ms (~49 dni) — tedy TUTEZ
+ * konstrukci, kvuli ktere se obchazi `HAL_SD_Init` i `HAL_SD_ConfigWideBusOperation`
+ * (viz `BSP_SD_Init` a commit `ec64939`, kde uz jednou shodila desku).
+ * Co proti tomu delame:
+ *   1. Datovou fazi CMD6 ohranicuje HARDWARE (DTIMER), takze ta se protahne
+ *      nejvys na jednotky minut, ne na 49 dni.
+ *   2. Druha smycka ceka na TRANSFER a je to TESNA PRIKAZOVA smycka bez yieldu —
+ *      proto se na TRANSFER ceka OHRANICENE UZ TADY. V normalnim pripade tak
+ *      vendor smycka skonci na prvni iteraci.
+ *   3. Volajici (`BSP_SD_Init` <- `f_mount` <- UartTask) bezi pod
+ *      `sd_blocking_begin()`, tedy na `osPriorityLow` — POD UiTaskem. I kdyby se
+ *      zaseklo, heartbeat bezi dal a IWDG desku neshodi; nejhorsi nasledek je
+ *      zatuhla konzole, ne restart.
+ * ⚠️ Zbytkove riziko: karta, ktera na CMD6 odpovi a PAK se nedostane do TRANSFER.
+ * Zvenci se to ohranicit neda (jsme uvnitr blokujiciho volani).
+ * ⚠️ HAL si HS neoveruje dotazem na kartu — v `SDMMC_SPEED_MODE_HIGH` mu staci
+ * `CardType == CARD_SDHC_SDXC`, protoze `CardSpeed` tenhle projekt nezjistuje
+ * (`HAL_SD_GetCardStatus` se preskakuje, viz `BSP_SD_Init`). Proto je ta pojistka
+ * na taktu podstatna: kdyz prepnuti selze, NEZVYSUJEME takt. */
+static void sd_try_high_speed(void)
+{
+    s_sd_hs = 0;
+    if (!sd_wait_transfer(1000u)) {
+        printf("SD: karta neni v TRANSFER -> High Speed se nezkousi, zustava %u MHz\r\n",
+               (unsigned)(64u / (2u * SD_CLKDIV_DS)));
+        return;                                  /* takt zustava DS = v mezích */
+    }
+    if (HAL_SD_ConfigSpeedBusOperation(&hsd1, SDMMC_SPEED_MODE_HIGH) == HAL_OK) {
+        s_sd_hs = 1;
+        hsd1.Init.ClockDiv = SD_CLKDIV_HS;       /* AZ TED smime nad 25 MHz */
+        (void)SDMMC_Init(SDMMC1, hsd1.Init);
+    }
+    /* else: ClockDiv zustava SD_CLKDIV_DS -> v mezích Default Speed.
+     * `ErrorCode` (HAL si tam da UNSUPPORTED_FEATURE) cisti volajici nize. */
 }
 
 /* Prepne kartu i host na 4-bit sbernici BEZ `HAL_SD_ConfigWideBusOperation`
@@ -578,16 +651,13 @@ uint8_t BSP_SD_Init(void)
 
     /* OHRANICENE cekani na TRANSFER (HAL by tu tocil ~49 dni). 1 s bohate staci —
      * karta po identifikaci prechazi do TRANSFER v jednotkach ms; kdyz ne, je
-     * zaseknuta a dalsi cekani uz nic nezmeni. */
-    uint32_t t0 = HAL_GetTick();
-    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
-        if ((HAL_GetTick() - t0) > 1000u) {
-            printf("SD: karta se po identifikaci nedostala do TRANSFER (zaseknuta)\r\n");
-            printf("  -> vyjmi a znovu zasun kartu; kdyz to trva, precti ji v PC\r\n");
-            hsd1.State = HAL_SD_STATE_READY;
-            return MSD_ERROR;
-        }
-        if (osKernelGetState() == osKernelRunning) osDelay(1);
+     * zaseknuta a dalsi cekani uz nic nezmeni. ⚠️ Sdilene s `sd_try_high_speed()`
+     * pres `sd_wait_transfer()` — druha kopie te smycky by se rozesla. */
+    if (!sd_wait_transfer(1000u)) {
+        printf("SD: karta se po identifikaci nedostala do TRANSFER (zaseknuta)\r\n");
+        printf("  -> vyjmi a znovu zasun kartu; kdyz to trva, precti ji v PC\r\n");
+        hsd1.State = HAL_SD_STATE_READY;
+        return MSD_ERROR;
     }
 
     /* ⚠️⚠️ KLIC (2026-08-14): aplikuj TRANSFER konfiguraci do CLKCR sami.
@@ -597,7 +667,9 @@ uint8_t BSP_SD_Init(void)
      * jsme vynechali kvuli SCR zaseknuti. Bez toho zustane HWFC_EN=0 a data nejdou
      * (zmereno: `CLKCR=0x51`). `SDMMC_Init` saha VYHRADNE na CLKCR (jen clock/HWFC/
      * WIDBUS), na stav karty ne -> bezpecne po identifikaci. Tim se zapne HWFC,
-     * transfer takt 16 MHz i WIDBUS=1B. */
+     * transfer takt (`SD_CLKDIV_DS`) i WIDBUS=1B. ⚠️ Hodnotu sem NEOPISUJ —
+     * odvozuje se z `hsd1.Init.ClockDiv`, jinak se ty dve kopie rozejdou
+     * (uz se to stalo: komentar tvrdil 16 MHz, kod nastavoval 32, audit F-0031). */
     (void)SDMMC_Init(SDMMC1, hsd1.Init);
 
     /* 4-bit sbernice (2026-08-14). ⚠️ NE `HAL_SD_ConfigWideBusOperation` — ta cte
@@ -610,6 +682,12 @@ uint8_t BSP_SD_Init(void)
         hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
         (void)SDMMC_Init(SDMMC1, hsd1.Init);
     }
+
+    /* ⚠️ AZ TADY, po 4-bit: CMD6 je datovy prenos, takze at jde uz sirokou
+     * sbernici, a hlavne az ted je karta prokazatelne v TRANSFER. Do teto chvile
+     * jede vse na DS taktu, tedy v mezích (audit F-0028). */
+    sd_try_high_speed();
+
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     hsd1.Context   = SD_CONTEXT_NONE;
     hsd1.State     = HAL_SD_STATE_READY;
@@ -790,7 +868,12 @@ void sd_export_init_steps(void)
 
     sd_dat_pullup_enable();     /* interni pull-up na DAT0..3 (pojistka pro nepatrny pull-up) */
     sd_apply_init_config();     /* HWFC ENABLE + Init jako funkcni Frantuv projekt */
-    printf("  [a2] Init: HWFC=ENABLE, ClockDiv=2, 1-bit (dle funkcniho H757_SDcard_01)\r\n");
+    /* ⚠️ ClockDiv se VYPISUJE, neopisuje: tenhle radek tvrdil „ClockDiv=2",
+     * zatimco `sd_apply_init_config()` o radek vys nastavila 1 — diagnosticky
+     * vypis, ktery lhal o hodnote, kterou prave nastavil (audit F-0031). */
+    printf("  [a2] Init: HWFC=ENABLE, ClockDiv=%lu (%lu MHz), 1-bit (dle H757_SDcard_01)\r\n",
+           (unsigned long)hsd1.Init.ClockDiv,
+           (unsigned long)(hsd1.Init.ClockDiv ? 64u / (2u * hsd1.Init.ClockDiv) : 64u));
 
     printf("  [b] HAL_SD_InitCard (CMD0/CMD8/ACMD41/CMD2/CMD3, 1-bit)...\r\n");
     HAL_StatusTypeDef r = HAL_SD_InitCard(&hsd1);
@@ -975,9 +1058,13 @@ void sd_export_diag(void)
             uint32_t div    = clkcr & 0x3FFu;
             uint32_t widbus = (clkcr >> 14) & 3u;          /* 0=1-bit, 1=4-bit, 2=8-bit */
             uint32_t khz    = div ? (64000u / (2u * div)) : 64000u;
-            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz%s\n",
+            /* ⚠️ Rezim se vypisuje spolu s taktem, protoze STROP zavisi na nem:
+             * DS 25 MHz / HS 50 MHz. Bez toho neslo z vypisu poznat, jestli je
+             * takt v mezích (audit F-0028). */
+            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz, %s (limit %u MHz)%s\n",
                    (widbus == 1u) ? "4-bit" : (widbus == 2u) ? "8-bit" : "1-bit",
                    (unsigned long)(khz / 1000u), (unsigned long)(khz % 1000u),
+                   s_sd_hs ? "High Speed" : "Default Speed", s_sd_hs ? 50u : 25u,
                    (widbus == 0u) ? "   <-- FALLBACK na 1-bit (4-bit se nepodaril)" : "");
         }
         printf("  => SD FUNGUJE, lze exportovat (`sd export`)\n");

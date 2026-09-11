@@ -1249,7 +1249,11 @@ void UartTask_run(void *argument)
 					  printf("SD: odmountovano (%s)\n", sd_export_state_str());
 				  } else if (strncmp(arg, "export", 6) == 0) {
 					  uint32_t n = (uint32_t)atoi(arg[6] == ' ' ? &arg[7] : "");   /* 0 = vse */
-					  printf("SD: exportuji %s do GPSDO.CSV, cekej...\n", n ? "cast logu" : "cely log");
+					  /* ⚠️ Jmeno se NEOPISUJE: `export_next_name()` tvori GPSDOnnn.CSV
+					   * (pevne jmeno bylo opusteno 2026-08-13, protoze prepisovalo
+					   * predchozi export). Skutecne jmeno vypise `export_body()` radkem
+					   * „SD: zapisuji <jmeno>" (audit F-0031). */
+					  printf("SD: exportuji %s do GPSDOnnn.CSV, cekej...\n", n ? "cast logu" : "cely log");
 					  int32_t w = sd_export_run(n);
 					  if (w < 0) printf("SD: export FAIL (%s)\n", sd_export_state_str());
 					  else       printf("SD: export OK, %ld zaznamu\n", (long)w);
