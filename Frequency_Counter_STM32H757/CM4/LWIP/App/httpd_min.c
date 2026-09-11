@@ -3538,6 +3538,47 @@ static const char SPA_HTML[] =
 
 /* ── Odesilaci fronta (hlavicka + telo po kouscich pres tcp_sent). ───────────── */
 
+/* 🔴 Uvolneni slotu: NEJDRIV odregistrovat callbacky, teprve pak zavrit
+ * (audit F-0057). `tcp_close` pcb NEZRUSI — necha ho v `tcp_active_pcbs` ve
+ * stavu FIN_WAIT_1/2 (az `TCP_FIN_WAIT_TIMEOUT` = 20 s, plus retransmise
+ * `TCP_MAXRTX` = 12) i s `callback_arg`, ktery porad ukazuje na TENHLE slot.
+ * Jenze `c->pcb = NULL` uz znamena „slot volny", takze `conn_alloc` ho hned
+ * prideli NOVEMU spojeni — a pozdni `on_err` (RST po zavreni je u prohlizecu
+ * bezny) nebo `on_poll` by pak zabily cizi, ziveho klienta.
+ * Vzor je prevzaty z `on_poll`, ktery to delal spravne uz drive.
+ * ⚠️ Navratovou hodnotu `tcp_close` zamerne nekontrolujeme: pri ERR_MEM si lwIP
+ * sam nastavi `TF_CLOSEPEND` a dozavre z `tcp_tmr` (tcp.c:449-457), takze uz
+ * neni co delat — a pcb na nas v tu chvili nemuze sahnout (arg je NULL). */
+static void conn_free(http_conn_t *c);
+
+static void conn_detach(struct tcp_pcb *pcb)
+{
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_sent(pcb, NULL);
+    tcp_err(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
+}
+
+static void conn_close(http_conn_t *c)
+{
+    struct tcp_pcb *pcb = c->pcb;
+    conn_free(c);                        /* slot je volny az PO odregistraci nize */
+    if (pcb == NULL) return;
+    conn_detach(pcb);
+    (void)tcp_close(pcb);
+}
+
+/* Tvrde zruseni (RST) — pouziva se tam, kde uz protejsek neodpovida. */
+static void conn_abort(http_conn_t *c)
+{
+    struct tcp_pcb *pcb = c->pcb;
+    conn_free(c);
+    if (pcb == NULL) return;
+    conn_detach(pcb);
+    tcp_abort(pcb);
+}
+
 static void pump_send(http_conn_t *c)
 {
     if (c->pcb == NULL) return;
@@ -3562,9 +3603,7 @@ static void pump_send(http_conn_t *c)
     }
     /* Vse zafronteovano (nemusi byt jeste ACKnuto) -> Connection: close muze
      * dobehnout, lwIP zbytek doruci pred FIN. */
-    tcp_recv(c->pcb, NULL);
-    tcp_close(c->pcb);
-    c->pcb = NULL;
+    conn_close(c);
 }
 
 static void queue_response(http_conn_t *c, int code, const char *code_str,
@@ -3648,9 +3687,15 @@ static void sse_push(http_conn_t *c, const char *json, size_t len)
 {
     if (c->pcb == NULL || c->hdr_sent < c->hdr_len) return;
     if (tcp_sndbuf(c->pcb) < (u16_t)(len + 8u)) return;
-    tcp_write(c->pcb, "data: ", 6, TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
-    tcp_write(c->pcb, json, (u16_t)len, TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
-    tcp_write(c->pcb, "\n\n", 2, TCP_WRITE_FLAG_COPY);
+    /* 🔴 Navratove hodnoty se KONTROLUJI (audit F-0059). Komentar u timeoutu nize
+     * tvrdil, ze mrtvy SSE klient se pozna prave chybou `tcp_write` — jenze se
+     * vsechny tri zahazovaly, takze ta obrana neexistovala.
+     * Misto ve `sndbuf` je overene vyse pro vsechny tri kusy naraz, takze ERR_MEM
+     * uprostred nemuze nastat; cokoli jineho nez ERR_OK znamena rozbite spojeni. */
+    err_t e = tcp_write(c->pcb, "data: ", 6, TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+    if (e == ERR_OK) e = tcp_write(c->pcb, json, (u16_t)len, TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+    if (e == ERR_OK) e = tcp_write(c->pcb, "\n\n", 2, TCP_WRITE_FLAG_COPY);
+    if (e != ERR_OK) { conn_abort(c); return; }
     tcp_output(c->pcb);
 }
 
@@ -3710,7 +3755,16 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
             return;
         }
         size_t avail = c->rxlen - r->header_len;
-        if (avail < (size_t)r->content_length) return;   /* telo jeste nedorazilo cele (recv dobehne pozdeji) */
+        if (avail < (size_t)r->content_length) {
+            /* ⚠️ Dnes NEDOSAZITELNE — `on_recv` na cele telo ceka uz PRED tim, nez
+             * nastavi `c->dispatched` (viz tamni kontrola `content_length`), a delsi
+             * telo nez `HTTPD_BODY_MAX` odchyti 411 vyse. Je to pojistka pro pripad,
+             * ze by se poradi v `on_recv` zmenilo (audit F-0062).
+             * 🔑 A MUSI odpovedet, ne mlcet: `dispatched` je uz nastaveno, takze dalsi
+             * data se zahodi a klient by jinak cekal az do 15s timeoutu. */
+            queue_text(c, 400, "Bad Request", "neuplne telo pozadavku\n");
+            return;
+        }
 
         char line[HTTPD_BODY_MAX + 1u];
         size_t n = (size_t)r->content_length;
@@ -3798,7 +3852,13 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     http_conn_t *c = (http_conn_t *)arg;
 
-    if (p == NULL) { tcp_arg(pcb, NULL); tcp_recv(pcb, NULL); tcp_close(pcb); conn_free(c); return ERR_OK; }
+    /* ⚠️ `arg`/slot se overuji stejne jako v `on_sent`/`on_poll` — tahle obsluha
+     * jako jedina v souboru kontrolu nemela (audit F-0062), a po F-0057 je navic
+     * potreba i test `c->pcb != pcb` (pozdni callback zavreneho pcb). */
+    if (c == NULL) { tcp_arg(pcb, NULL); tcp_abort(pcb); if (p != NULL) pbuf_free(p); return ERR_ABRT; }
+    if (c->pcb != pcb) { if (p != NULL) pbuf_free(p); tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }
+
+    if (p == NULL) { conn_close(c); return ERR_OK; }
     if (err != ERR_OK) { pbuf_free(p); return err; }
 
     tcp_recved(pcb, p->tot_len);
@@ -3838,9 +3898,12 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 
 static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
 {
-    (void)pcb; (void)len;
+    (void)len;
     http_conn_t *c = (http_conn_t *)arg;
     if (c == NULL) return ERR_OK;
+    if (c->pcb != pcb) return ERR_OK;     /* pozdni ACK uz zavreneho pcb (F-0057) */
+    /* 🔑 U SSE je tohle JEDINY zdroj `last_ms` — tedy potvrzeni, ze protejsek
+     * data opravdu prevzal. Na tom stoji timeout drzeneho streamu nize. */
     c->last_ms = HAL_GetTick();
     if (c->mode == HCONN_SSE) { sse_finish_hdr(c); return ERR_OK; }   /* SSE se NEzavira */
     pump_send(c);
@@ -3858,19 +3921,35 @@ static void on_err(void *arg, err_t err) { (void)err; if (arg != NULL) conn_free
  *
  * `tcp_poll` chodi ~2x/s (interval 4 = 4 x 250 ms). Pocita se od POSLEDNI
  * aktivity, ne od navazani.
- * ⚠️ SSE se NETIMEOUTUJE ZA TICHA — je z podstaty dlouhozije a data tecou jen
- * kdyz je co poslat; misto toho ho hlida `tcp_write` chyba a `on_err`. */
-#define HTTPD_IDLE_MS   15000u   /* necinne spojeni bez dokoncene odpovedi */
+ *
+ * 🔴 SSE melo do auditu F-0059 timeout VYNETY UPLNE, s oduvodnenim, ze ho „hlida
+ * `tcp_write` chyba a `on_err`" — jenze `sse_push` navratovou hodnotu zahazoval,
+ * takze ta obrana neexistovala a klient, ktery zmizel bez FIN/RST (uspany notebook,
+ * vypnuta Wi-Fi, NAT zahodil stav), drzel jeden z peti slotu minuty.
+ * Nove ma SSE VLASTNI, velkorysy timeout — a mericko je `on_sent`, tedy cas
+ * POSLEDNIHO POTVRZENEHO odeslani, ne posledniho pokusu. To je podstatne: do
+ * `sndbuf` se mrtvemu klientovi zapise jeste par udalosti, ale ACK uz neprijde.
+ * ⚠️ Legitimni ticho je kratke — `httpd_min_poll` posila udalost aspon 1x/s
+ * (heartbeat vetev `now - defer_ms >= 1000`), takze 120 s bez jedineho ACK uz
+ * znamena, ze protejsek neexistuje. Kdyz se stream presto zavre (napr. protoze
+ * dlouho nezije CM7), SPA to pozna a spadne na 1Hz poll — ma to osetrene. */
+#define HTTPD_IDLE_MS       15000u   /* necinne spojeni bez dokoncene odpovedi */
+#define HTTPD_SSE_IDLE_MS  120000u   /* drzeny SSE stream bez potvrzeneho odeslani */
 
 static err_t on_poll(void *arg, struct tcp_pcb *pcb)
 {
     http_conn_t *c = (http_conn_t *)arg;
     if (c == NULL) { tcp_abort(pcb); return ERR_ABRT; }
-    if (c->mode == HCONN_SSE) return ERR_OK;              /* drzeny stream, viz vyse */
-    if ((uint32_t)(HAL_GetTick() - c->last_ms) < HTTPD_IDLE_MS) return ERR_OK;
+    /* Pojistka k F-0057: pcb, ktere uz slot nevlastni, nesmi zabit spojeni,
+     * ktere ten slot mezitim dostalo. */
+    if (c->pcb != pcb) { tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }
+
+    uint32_t idle = (uint32_t)(HAL_GetTick() - c->last_ms);
+    uint32_t lim  = (c->mode == HCONN_SSE) ? HTTPD_SSE_IDLE_MS : HTTPD_IDLE_MS;
+    if (idle < lim) return ERR_OK;
     /* `tcp_abort` (ne `tcp_close`): protejsek uz stejne neodpovida a RST slot
      * uvolni okamzite, kdezto poradne zavirani by cekalo na FIN, ktery neprijde. */
-    tcp_arg(pcb, NULL); tcp_abort(pcb); conn_free(c);
+    conn_abort(c);
     return ERR_ABRT;
 }
 

@@ -59,6 +59,18 @@ static void conn_free(scpi_conn_t *c)
     c->drop = 0;
 }
 
+/* 🔴 Odregistrace VSECH callbacku pred uvolnenim slotu — tentyz duvod jako
+ * v `httpd_min.c` (audit F-0057): `tcp_close` pcb nezrusi, necha ho v aktivnim
+ * seznamu i s `callback_arg`, a slot uz je pritom volny pro dalsiho klienta.
+ * Tady se `tcp_arg`/`tcp_recv` odregistrovaly uz drive, `tcp_err`/`tcp_poll` ne. */
+static void conn_detach(struct tcp_pcb *pcb)
+{
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_err(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
+}
+
 /* Zpracuje jeden radek (uz bez LF/CR) a odesle odpoved. Cte snapshot ZNOVU pro
  * kazdy prikaz — viz komentar u souboru. */
 static void process_line(scpi_conn_t *c)
@@ -103,11 +115,15 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     scpi_conn_t *c = (scpi_conn_t *)arg;
 
+    /* ⚠️ Stejna kontrola jako v `on_poll` — tahle obsluha ji nemela (audit F-0062),
+     * a po F-0057 je potreba i test `c->pcb != pcb` (pozdni callback zavreneho pcb). */
+    if (c == NULL) { tcp_arg(pcb, NULL); tcp_abort(pcb); if (p != NULL) pbuf_free(p); return ERR_ABRT; }
+    if (c->pcb != pcb) { if (p != NULL) pbuf_free(p); tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }
+
     if (p == NULL) {                              /* protejsek zavrel spojeni */
-        tcp_arg(pcb, NULL);
-        tcp_recv(pcb, NULL);
-        tcp_close(pcb);
         conn_free(c);
+        conn_detach(pcb);
+        (void)tcp_close(pcb);                     /* ERR_MEM si lwIP dozavre sam */
         return ERR_OK;
     }
     if (err != ERR_OK) { pbuf_free(p); return err; }
@@ -164,8 +180,10 @@ static err_t on_poll(void *arg, struct tcp_pcb *pcb)
 {
     scpi_conn_t *c = (scpi_conn_t *)arg;
     if (c == NULL) { tcp_abort(pcb); return ERR_ABRT; }
+    if (c->pcb != pcb) { tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }   /* F-0057 */
     if ((uint32_t)(HAL_GetTick() - c->last_ms) < SCPI_TCP_IDLE_MS) return ERR_OK;
-    tcp_arg(pcb, NULL); tcp_abort(pcb); conn_free(c);
+    conn_free(c);
+    conn_detach(pcb); tcp_abort(pcb);
     return ERR_ABRT;
 }
 
