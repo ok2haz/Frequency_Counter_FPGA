@@ -224,16 +224,22 @@ static int b64_decode(const char *in, char *out, size_t out_cap)
 /* ── Diagnostika POSLEDNIHO pokusu o prihlaseni (W5 HW bring-up, 2026-08-23) ──
  * CM4 nema konzoli — bez tohohle nejde zvenci videt, KDE presne auth padla
  * (chybejici hlavicka / spatny base64 / nesedici delka / nesedici obsah).
- * ⚠️ ZAMERNE se nikam neexportuje SUROVY dekodovany retezec ani heslo ze
- * snapshotu — jen delky a bool vysledky, at se pres `/api/state` nedá vytahat
- * platne heslo. Az bude auth na HW overene, tohle se da odstranit (nebo nechat,
- * je to levne a nikdy neprozrazuje tajemstvi). */
+ * 🔴 `/api/state` je ZAMERNE otevrene (cteni nevyzaduje autorizaci), takze
+ * VSECHNO v tehle strukture je verejne. Ven proto smi jit jen to, co uz utocnik
+ * sam poslal — nic odvozeneho z ulozenych udaju.
+ * ⚠️ Do 2026-09-11 tu bylo i `expected_len` = `strlen(user) + 1 + strlen(pass)`
+ * a komentar tvrdil, ze „jen delky a bool" nic neprozradi. Prozradily: delka je
+ * odvozena z HESLA, zuzuje hrubou silu a `expected_len == 1` znamena „obe pole
+ * prazdna". A slo to vytahnout jednim parem pozadavku bez znalosti hesla —
+ * `POST /api/scpi` s libovolnou hlavickou pole naplnil JESTE PRED porovnanim
+ * (audit F-0060). Odstraneno.
+ * 🔑 Pravidlo, ktere z toho plyne: u diagnostiky, o ktere se napise „nic tajneho
+ * neexportuje", vyjmenuj KAZDOU polozku a u kazde napis, proc je neskodna. */
 static struct {
     uint8_t header_present;   /* 1 = prislo "Authorization: Basic ..." vubec */
     uint8_t decode_ok;        /* 1 = base64 se rozlouskl (spravny tvar) */
     uint8_t match;            /* 1 = dekodovane == ocekavane */
-    uint8_t decoded_len;      /* delka dekodovaneho "user:pass" (0 pri chybe) */
-    uint8_t expected_len;     /* delka ocekavaneho "user:pass" ze snapshotu */
+    uint8_t decoded_len;      /* delka toho, co poslal KLIENT (0 pri chybe) */
 } s_auth_dbg;
 
 /* Overi "Authorization: Basic base64(user:pass)" proti snapshotu.
@@ -247,7 +253,7 @@ static int check_auth(const http_req_t *r, const ipc_snapshot_t *snap)
 
     char want[40];
     int wn = snprintf(want, sizeof want, "%s:%s", snap->web_user, snap->web_pass);
-    if (wn > 0 && (size_t)wn < sizeof want) s_auth_dbg.expected_len = (uint8_t)wn;
+    /* ⚠️ `wn` se ZAMERNE nikam nepublikuje — je to delka odvozena z hesla (F-0060). */
 
     if (r->auth_b64[0] == '\0') return 0;
     s_auth_dbg.header_present = 1;
@@ -523,16 +529,17 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jputf(&j, "\"sys_level\":%u,", (unsigned)snap->sys_level);
     jputf(&j, "\"nsat\":%u,", (unsigned)snap->gps_sat_count);
     jputf(&j, "\"cm4\":{\"ipc_version\":%u},", (unsigned)IPC_VERSION);
-    /* ⚠️ Docasna diagnostika HW bring-up (W5) — vysledek POSLEDNIHO pokusu o
-     * prihlaseni pres /api/scpi. Zamerne jen delky a bool, nikdy surovy obsah
-     * (heslo se pres tohle nikdy nevyzradí). Az bude auth overene na HW, dá se
-     * klidne nechat — je to levne a nikdy neprozrazuje tajemstvi. */
+    /* ⚠️ Diagnostika prihlaseni (W5) — vysledek POSLEDNIHO pokusu pres /api/scpi.
+     * 🔴 Endpoint je BEZ autorizace, takze tohle cte kdokoli na siti. Ven jde uz
+     * jen to, co utocnik sam poslal: jestli hlavicka prisla, jestli byla platny
+     * base64, kolik bajtu dekodovala a jestli sedla. `expected_len` (delka
+     * ulozeneho `user:pass`) bylo odstraneno — viz F-0060 u `s_auth_dbg`. */
     jputf(&j, "\"auth_debug\":{\"header_present\":%s,\"decode_ok\":%s,\"match\":%s,"
-              "\"decoded_len\":%u,\"expected_len\":%u}",
+              "\"decoded_len\":%u}",
           s_auth_dbg.header_present ? "true" : "false",
           s_auth_dbg.decode_ok ? "true" : "false",
           s_auth_dbg.match ? "true" : "false",
-          (unsigned)s_auth_dbg.decoded_len, (unsigned)s_auth_dbg.expected_len);
+          (unsigned)s_auth_dbg.decoded_len);
     jputf(&j, "}");
     /* Orez by dal neplatny JSON -> radeji nic; volajici posle 503 (F-0056). */
     return j.ovf ? 0u : j.used;
@@ -2321,7 +2328,7 @@ static const char SPA_HTML[] =
 "    if(!s.web_ctrl_en) say('amsg','Ovladani je na pristroji ZAKAZANE - povol ho v okne PRISTUP.','err');\n"
 "    else if(d.match) say('amsg','Prihlaseno, ovladani povoleno.','ok');\n"
 "    else if(!d.header_present) say('amsg','Prohlizec neposlal prihlaseni - vypln jmeno i heslo.','err');\n"
-"    else say('amsg','Neplatne jmeno nebo heslo (ceka se '+d.expected_len+' B, prislo '+d.decoded_len+' B).','err');\n"
+"    else say('amsg','Neplatne jmeno nebo heslo (prislo '+d.decoded_len+' B).','err');\n"
 "    render(s);\n"
 "  }).catch(function(e){ say('amsg','chyba: '+e,'err'); });\n"
 "}\n"
