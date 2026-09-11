@@ -3,7 +3,7 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-11 (9. sezení — modul 9, jen F3)
+**Poslední aktualizace:** 2026-09-11 (10. sezení — modul 9 F5, pak modul 10 F3)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
@@ -11,15 +11,22 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-modul 7 (**F-0026 je S2 s poškozením haldy**), nebo F5 pro modul 9 (**F-0037 je S1 —
-chybné měřítko frakční odchylky**), nebo modul 10.
+modul 7 (**F-0026 je S2 s poškozením haldy**), nebo F5 pro modul 10 (**F-0046 je S2 — funkce,
+která má srovnat fokus po doteku, počítá v jiném indexovém prostoru**), nebo F3 pro modul 11.
+⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
 ⚠️ **Týmž způsobem se 2026-09-10 rozdělil modul 8** („aplikační logika UI“ = `app_gpsdo.c` +
 `screens/*` + `libui`, dohromady **14 375 řádků** bez fontů — 4× víc než modul 7). Nově:
 **8 = vykreslovací řetězec** (2 247 ř.), **9 = hlavní obrazovka** (3 272 ř.),
-**10 = aplikační okna, navigace, model fokusu** (9 188 ř.). Modul 10 je pořád velký a
-při jeho zahájení se má zvážit další dělení podle témat (navigace / model fokusu / okna).
+**10 = aplikační okna, navigace, model fokusu** (9 188 ř.).
+⚠️ **A modul 10 se 2026-09-11 rozdělil potřetí, přesně jak si ten řádek žádal.** `app_gpsdo.c`
+má **9 031 řádků a 310 funkcí** — 2,8× modul 9. Dělící čára vede podle **třídy rizika**, ne
+podle velikosti: **10 = strojovna** (navigace, model fokusu, registr tlačítek, vstup dotyk/
+encoder, tiky, screensaver, varovný pruh; ≈ 2 800 ř. — sdílený stav a cross-task API, tedy
+S1/S2) a **11 = jednotlivá okna** (~45 funkcí `render_*` + kreslicí helpery; ≈ 6 200 ř. —
+převážně kreslení, tedy očekávané S3/S4). Oba moduly jsou v témže souboru; nálezový dokument
+modulu 10 v sekci „Nezkontrolováno" přesně vymezuje, co zbývá na 11.
 
 **Otevřené po F5** (5× S3 + 1 částečně opravený S1 z modulů 1–6; modul 7 přidal
 2× S2, 4× S3 a 1× S4, které F5 zatím neprošly). Čísla v tabulce výše se **odvozují
@@ -56,7 +63,8 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno** (1 nový otevřený, ⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
-| 10 | aplikační okna, navigace, model fokusu | `app_gpsdo.c` | CM7 | nezačato | — | – | – | – | – | — |
+| 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | nálezy zapsány | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
+| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nezačato | — | – | – | – | – | — |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -68,9 +76,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
-| S2 | 3 | 4 | 0 |
-| S3 | 9 | 15 | 0 |
-| S4 | 1 | 5 | 0 |
+| S2 | 4 | 4 | 0 |
+| S3 | 12 | 15 | 0 |
+| S4 | 3 | 5 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -93,6 +101,37 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   proti tiku 20 Hz, ale skutečný volající (`freertos_task_ui.c:540`) běží **1 Hz** →
   20 záznamů/s místo deklarovaných 400/s; při 128 719 záznamech to je 6 436 s.
   **Potřebuje rozhodnutí** (tři varianty v nálezu) — nesahat bez něj.
+
+**Modul 10 — nálezy zapsány 2026-09-11 (F3; fáze oprav NEproběhla):**
+Verdikt **podmíněně funkční**. Nic tu neshodí přístroj: modul nemá jediné volání `HAL_*`,
+žádný DMA buffer (vše v AXI SRAM, ověřeno `nm`) ani čekací smyčku bez meze. Vada je
+soustředěná do **účetnictví fokusu a do diagnostiky** a má jednoho jmenovatele — `s_view` je
+rozvětvené **pěti** nezávislými tabulkami (46 `case` + 32 větví + 10 + 10 + 57 testů).
+- **F-0046** [S2] `btnreg_sync_focus()` ukládá do `s_focus` **surový index do registru
+  tlačítek**, zatímco zbytek modelu čte spojený prostor `ln + index` (`enc_paint` dělá
+  `idx -= ln`). V pěti oknech se seznamem (MENU, MĚŘENÍ, NÁSTROJE, FUNKCE, NÁPOVĚDA) tedy
+  ukazuje na jiný prvek — a přes `focus_store()` se ta špatná hodnota **trvale uloží**.
+  🔴 Komentář nad tou funkcí přitom říká, že existuje proto, aby se obě ovládací cesty
+  nerozešly (`L-0008`).
+- **F-0047** [S3] `g_ui_view`/`g_ui_view_changes` (diagnostika „otevřelo se okno?") nepokrývá
+  **17 ze ~45 oken** — včetně **hlavní obrazovky, MENU, MĚŘENÍ, NÁSTROJŮ, FUNKCÍ a NÁPOVĚDY** —
+  protože ta se kreslí přes `window_prep()`, ne `window_first()`. A protože si drží předchozí
+  hodnotu, **aktivně lže**: uživatel otevře MENU, `status` ukáže staré okno → vypadá to jako
+  nepřijatý dotyk, tedy přesně ten mylný závěr, kterému měla zabránit (`L-0011`).
+- **F-0048** [S3] `nav_push()` při plném zásobníku (6 míst, nejhlubší dnešní cesta 5) položku
+  **tiše zahodí** a `nav_back()` pak vede jinam. Registr tlačítek v témže souboru to dělá
+  správně (`s_btnreg_ovf` → `status`); tady chybí (`L-0017`).
+- **F-0049** [S3] `render_view()` nezná okna 49 (FUNKCE), 50 (NÁPOVĚDA) a 13 (modal) → po
+  obnově I2C4 (`app_gpsdo_touch_dead`) vyhodí uživatele na hlavní obrazovku. Přímý důsledek
+  F-0050. ✅ Ověřeno, že `nav_back()` je v pořádku: všech 13 `nav_push` cílů `case` má.
+- **F-0050** [S4] pět dispatch tabulek nad `s_view`. **Kandidát na odložení** — plošný refaktor
+  je dražší než vada a `render_view` vs. screensaver se liší z doloženého důvodu; levnější je
+  kontrola (odvozená tabulka + `_Static_assert`, nebo skript do `check_lessons.sh`).
+- **F-0051** [S4] paměť fokusu per okno (zadání UI §7) se přeskočí, když se uživatel do okna
+  vrátí **bez použití encoderu** — `focus_load()` má jediné volání, schované za
+  `s_shown_view != s_view`, a `s_shown_view` nuluje jen obsluha encoderu.
+⚠️ **F-0046, F-0047 a F-0051 sahají na totéž účetnictví** („kde jsem" + „kde je fokus") a mají
+společnou opravu (jednotné `view_set()`); opravovat je odděleně by se pletlo.
 
 **Modul 6 — opraveno 2026-09-10 (⬜ neověřeno na HW):**
 - **F-0023** [S3] `w25q.c` nekontroloval adresu proti kapacitě čipu → `range_ok()` na začátku
