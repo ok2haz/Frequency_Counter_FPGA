@@ -11,8 +11,9 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-modul 7 (**F-0026 je S2 s poškozením haldy**), nebo F3 pro modul 11 (~45 funkcí `render_*`,
-≈6 200 ř. — rozsah vymezuje sekce „Nezkontrolováno" v nálezovém dokumentu modulu 10).
+modul 7 (**F-0026 je S2 s poškozením haldy**) — to je poslední modul bez fáze oprav.
+Pak F5 pro modul 11 (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické sekce,
+zatímco SCPI i IPC ji mají).
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -64,7 +65,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
-| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nezačato | — | – | – | – | – | — |
+| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány | 2026-09-11 | 0 | 1 | 1 | 1 | [3](audit/2026-09-11_aplikacni-okna.md) |
 
 **Doporučené pořadí:** hodiny/PWR → mapa paměti/MPU/cache → IPC mezi jádry →
 přerušení a RTOS → jednotlivé drivery periferií → aplikační logika.
@@ -76,9 +77,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
-| S2 | 2 | 6 | 0 |
-| S3 | 9 | 18 | 0 |
-| S4 | 1 | 7 | 0 |
+| S2 | 3 | 6 | 0 |
+| S3 | 10 | 18 | 0 |
+| S4 | 2 | 7 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -112,6 +113,25 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   kterého byla doba běhu neviditelná.
   ⚠️ **Tím se odblokovalo ověření F-0037 na desce** — σy@1s už nebude po bootu držená
   na nule.
+
+**Modul 11 — nálezy zapsány 2026-09-11 (F3; fáze oprav NEproběhla):**
+Verdikt **podmíněně funkční**. Okna se chovají jako kreslicí kód — přesně jak modul 10
+předpovídal. ⚠️ **Nebyl to přezkum řádek po řádku** (≈6 200 ř. na jedno sezení nejde);
+proběhl **rizikově cílený průchod** podle tříd chyb, které projekt už prokazatelně vyrobil.
+Rozsah i to, co se nehledalo, vymezuje sekce „Rozsah a metoda" v nálezovém dokumentu.
+- **F-0052** [S2] okno MATH přepisuje `g_meas_cfg` (pět polí typu `double`) **bez kritické
+  sekce**, zatímco `scpi.c:953-955` i `ipc.c:539-543` kolem téhož globálu kritickou sekci
+  mají — a `ipc.c:526` dokonce v komentáři **výslovně počítá se souběžnými zápisy z UI**.
+  🔴 Rozhodující je, že **tatáž funkce `meas_math_capture_null()` má tři volající a dva
+  z nich pracují nad lokální kopií**; jen `app_gpsdo.c:8639` píše přímo do globálu.
+  V obrazu jsou `lo`/`hi` dvě samostatné instrukce `vstr`. Nejmenší pásmo je 0,001 Hz,
+  takže inverze `lo > hi` (→ falešný FAIL → 4 pípnutí) je dosažitelná. `L-0012`.
+- **F-0053** [S3] `fmt_fixed()` zná mez 1–3 desetiny, ale `default:` tiše zahodí desetinnou
+  část. Dnes na to nikdo nešlape (ověřeno), je to past pro příští volání — a **už jednou
+  kousla** (σ hlásila vždy „0 Hz", STATUS #132). `L-0015` + `L-0017`.
+- **F-0054** [S4] kontrola, kterou `CLAUDE.md` na tu past předepisuje, **nemůže být nikdy
+  zelená**: grep matchuje i komentáře varující před pastí a čte i `CM7/Debug/*.list`.
+  6 shod ve zdravém stromě → skutečné volání se v nich utopí. `L-0011` + `L-0020`.
 
 **Modul 10 — opraveno vše 2026-09-11 (⬜ neověřeno na HW):**
 Verdikt **podmíněně funkční**. Nic tu neshodí přístroj: modul nemá jediné volání `HAL_*`,
