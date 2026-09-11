@@ -489,18 +489,27 @@ static void sd_dat_pullup_enable(void)
 /* ── Takt sbernice: SDMMC_CK = 64 MHz / (2 x ClockDiv) ───────────────────────
  * 🔴 Strop ZAVISI NA REZIMU KARTY, ne na radici:
  *     Default Speed (DS) = 25 MHz,  High Speed (HS) = 50 MHz.
- * Do 2026-09-11 bylo natvrdo `ClockDiv = 1` (32 MHz) a komentar to obhajoval
- * limitem 50 MHz — jenze do HS se karta NIKDY neprepinala (nikde nebyl CMD6),
- * takze sbernice jela ~28 % nad specifikaci DS (audit F-0028). Rezerva vybrana
- * do nuly: jina karta, delsi vodic nebo vyssi teplota se projevi jako
- * `DATA_CRC_FAIL` nebo preruvane poskozeny export — a hledalo by se to v datove
- * ceste, ne v taktu.
- * Ted plati POJISTKA: identifikace i prepnuti bezi na DS taktu (v mezích) a na
- * HS takt se jde AZ KDYZ se karta do High Speed opravdu prepnula. Kdyz ne,
- * zustane DS — pristroj tedy neni mimo specifikaci v ZADNEM pripade.
+ *
+ * Dvoufazove (audit F-0028):
+ *   - identifikace a CMD6 bezi na `SD_CLKDIV_INIT` (16 MHz) — v mezích DS, tedy
+ *     i kdyz karta HS neumi, probehne prepinaci prikaz bezpecne;
+ *   - provozni takt je pak `SD_CLKDIV_RUN` (32 MHz), stejne jako `.ioc`
+ *     (`SDMMC1.ClockDiv=1`).
+ *
+ * 🔴 **ROZHODNUTI UZIVATELE 2026-09-11: provozni takt je 32 MHz BEZ OHLEDU na to,
+ * jestli se prepnuti do High Speed povedlo.** Kdyz se povede, je 32 MHz uvnitr HS
+ * limitu (50 MHz). Kdyz ne, jede sbernice **~28 % nad limitem Default Speed** —
+ * na teto karte to tak dnes je (HS prepnuti neprosolo, zmereno 2026-09-11) a
+ * prenos prokazatelne funguje po HW uprave (odstranen R60 = pull-up na CK,
+ * bulk kondik na SD VDD 10 uF).
+ * ⚠️ Cena toho rozhodnuti: rezerva je vybrana do nuly. Jina karta, delsi vodic
+ * nebo vyssi teplota se muze projevit jako `DATA_CRC_FAIL` nebo preruvane
+ * poskozeny export — a hledalo by se to v datove ceste, ne v taktu. **Proto to
+ * NENI tichy stav:** `sd diag` vypisuje takt, rezim, platny limit a pri prekroceni
+ * i znacku `<-- NAD LIMITEM`. Kdyz se ta znacka objevi a karta zlobi, zacni tim.
  * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad limitem obou rezimu. */
-#define SD_CLKDIV_DS  2u   /* 16 MHz — Default Speed (limit 25 MHz) */
-#define SD_CLKDIV_HS  1u   /* 32 MHz — jen po uspesnem CMD6 (limit 50 MHz) */
+#define SD_CLKDIV_INIT 2u   /* 16 MHz — identifikace + CMD6 (v mezích DS) */
+#define SD_CLKDIV_RUN  1u   /* 32 MHz — provozni takt (= .ioc), viz vyse */
 
 /* 1 = karta je prepnuta do High Speed (diagnostika `sd diag`). */
 static uint8_t s_sd_hs;
@@ -510,7 +519,7 @@ static void sd_apply_init_config(void)
     hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
     hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
-    hsd1.Init.ClockDiv            = SD_CLKDIV_DS;      /* HS az po uspesnem CMD6 */
+    hsd1.Init.ClockDiv            = SD_CLKDIV_INIT;    /* provozni takt az po CMD6 */
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
     s_sd_hs = 0;
 }
@@ -555,18 +564,20 @@ static bool sd_wait_transfer(uint32_t ms)
 static void sd_try_high_speed(void)
 {
     s_sd_hs = 0;
-    if (!sd_wait_transfer(1000u)) {
-        printf("SD: karta neni v TRANSFER -> High Speed se nezkousi, zustava %u MHz\r\n",
-               (unsigned)(64u / (2u * SD_CLKDIV_DS)));
-        return;                                  /* takt zustava DS = v mezích */
-    }
-    if (HAL_SD_ConfigSpeedBusOperation(&hsd1, SDMMC_SPEED_MODE_HIGH) == HAL_OK) {
+    /* Pokus o HS se DELA i kdyz na vysledku takt nezavisi: kdyz projde, je
+     * provoznich 32 MHz uvnitr specifikace (HS limit 50 MHz) misto nad ni.
+     * Stoji to jeden CMD6 pri mountu a `sd diag` pak rekne, ktery z tech dvou
+     * stavu nastal. */
+    if (sd_wait_transfer(1000u) &&
+        HAL_SD_ConfigSpeedBusOperation(&hsd1, SDMMC_SPEED_MODE_HIGH) == HAL_OK) {
         s_sd_hs = 1;
-        hsd1.Init.ClockDiv = SD_CLKDIV_HS;       /* AZ TED smime nad 25 MHz */
-        (void)SDMMC_Init(SDMMC1, hsd1.Init);
     }
-    /* else: ClockDiv zustava SD_CLKDIV_DS -> v mezích Default Speed.
-     * `ErrorCode` (HAL si tam da UNSUPPORTED_FEATURE) cisti volajici nize. */
+    /* 🔴 Provozni takt se nastavuje BEZ OHLEDU na vysledek (rozhodnuti uzivatele
+     * 2026-09-11, viz komentar u `SD_CLKDIV_RUN`). Pri neuspechu je to vedomy
+     * provoz nad limitem Default Speed — `sd diag` to hlasi znackou. */
+    hsd1.Init.ClockDiv = SD_CLKDIV_RUN;
+    (void)SDMMC_Init(SDMMC1, hsd1.Init);
+    /* `ErrorCode` (HAL si tam pri neuspechu da UNSUPPORTED_FEATURE) cisti volajici. */
 }
 
 /* Prepne kartu i host na 4-bit sbernici BEZ `HAL_SD_ConfigWideBusOperation`
@@ -667,7 +678,7 @@ uint8_t BSP_SD_Init(void)
      * jsme vynechali kvuli SCR zaseknuti. Bez toho zustane HWFC_EN=0 a data nejdou
      * (zmereno: `CLKCR=0x51`). `SDMMC_Init` saha VYHRADNE na CLKCR (jen clock/HWFC/
      * WIDBUS), na stav karty ne -> bezpecne po identifikaci. Tim se zapne HWFC,
-     * transfer takt (`SD_CLKDIV_DS`) i WIDBUS=1B. ⚠️ Hodnotu sem NEOPISUJ —
+     * transfer takt (`SD_CLKDIV_INIT`; provozni `SD_CLKDIV_RUN` se nastavi az po CMD6) i WIDBUS=1B. ⚠️ Hodnotu sem NEOPISUJ —
      * odvozuje se z `hsd1.Init.ClockDiv`, jinak se ty dve kopie rozejdou
      * (uz se to stalo: komentar tvrdil 16 MHz, kod nastavoval 32, audit F-0031). */
     (void)SDMMC_Init(SDMMC1, hsd1.Init);
@@ -1060,11 +1071,17 @@ void sd_export_diag(void)
             uint32_t khz    = div ? (64000u / (2u * div)) : 64000u;
             /* ⚠️ Rezim se vypisuje spolu s taktem, protoze STROP zavisi na nem:
              * DS 25 MHz / HS 50 MHz. Bez toho neslo z vypisu poznat, jestli je
-             * takt v mezích (audit F-0028). */
-            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz, %s (limit %u MHz)%s\n",
+             * takt v mezích (audit F-0028).
+             * 🔴 A protoze provozni takt je 32 MHz i kdyz HS neprojde (vedome
+             * rozhodnuti, viz `SD_CLKDIV_RUN`), MUSI se prekroceni limitu hlasit
+             * ZNACKOU — jinak by to byl presne ten tichy stav mimo specifikaci,
+             * kvuli kteremu nalez F-0028 vznikl. */
+            uint32_t lim_mhz = s_sd_hs ? 50u : 25u;
+            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz, %s (limit %lu MHz)%s%s\n",
                    (widbus == 1u) ? "4-bit" : (widbus == 2u) ? "8-bit" : "1-bit",
                    (unsigned long)(khz / 1000u), (unsigned long)(khz % 1000u),
-                   s_sd_hs ? "High Speed" : "Default Speed", s_sd_hs ? 50u : 25u,
+                   s_sd_hs ? "High Speed" : "Default Speed", (unsigned long)lim_mhz,
+                   (khz > lim_mhz * 1000u) ? "  <-- NAD LIMITEM (vedome, viz SD_CLKDIV_RUN)" : "",
                    (widbus == 0u) ? "   <-- FALLBACK na 1-bit (4-bit se nepodaril)" : "");
         }
         printf("  => SD FUNGUJE, lze exportovat (`sd export`)\n");
