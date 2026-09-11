@@ -68,10 +68,22 @@ požadavek `L-0010` (ověření až po power-cyklu) je splněný.
 | **F-0027** | nic se nerozbilo | `GPIO HLIDAC: 0 oprav` |
 | modul 8 | meze z F-0033/F-0036 drží | `DMA2D: chyb 0, timeout 0 | max cekani 62.371 ms (mez 500)`, `LTDC podteceni 0/247`, `FONTY: 0` |
 
-⬜ **Zbývá ověřit ručně na desce** (potřebuje prst / encoder / kartu):
+### Druhé kolo HW ověření 2026-09-11 (po návratu SD na `.ioc`, `Reset: power-on`)
+
+| nález | co se ověřilo | důkaz z desky |
+|---|---|---|
+| **F-0028** | takt dle `.ioc` **a stav není tichý** | `sbernice: 4-bit, SDMMC_CK 32.000 MHz, Default Speed (limit 25 MHz)  <-- NAD LIMITEM (vedome, viz SD_CLKDIV)` |
+| **F-0028** | 🔑 **na 32 MHz opravdu JDOU DATA**, ne jen mount | `sd test` → *„8 KB zapsano a precteno zpet bit po bitu shodne"*; **zápis 6,17 MB/s, čtení 9,25 MB/s** (1 MB soubor). Tím je doložená empirická opora pro rozhodnutí jet nad limitem DS. |
+| **F-0029** | kontroly `f_write`/`f_close` nedělají falešné selhání | `sd export 2000` → `SD: export OK, 2000 zaznamu` |
+| **F-0031** | jméno souboru už nelže | `SD: exportuji cast logu do GPSDOnnn.CSV` + `SD: zapisuji GPSDO004.CSV` |
+| **F-0025** | mechanismus remountu (částečně) | `sd unmount` → `sd mount` → `OK (namountovano)` a `sd diag` zase 32 MHz 4-bit. Protáhlo `sd_export_unmount()` (reset `is_initialized`) + celý `BSP_SD_Init`. ⚠️ **Cesta přes tik** (fyzické vytažení karty) tím ověřená NENÍ. |
+| F-0026, F-0027, F-0030 | nepřímo | mount, export i remount projdou; `GPIO HLIDAC: 0 oprav` |
+| F-0037, F-0039 | drží i na novém obrazu | `sigma_y@1s = 6681405 e-15`, `ADEV rekonstrukce: hotova` při uptime 32 s |
+
+⬜ **Zbývá ověřit ručně na desce** (potřebuje prst / encoder / fyzické vytažení karty):
 **F-0046** a **F-0051** (fokus po tapu v okně se seznamem — MENU → tap na RESTART →
-ZPĚT → znovu MENU → otočit encoderem), **F-0025** (vytáhnout a vložit kartu → mount
-musí projít), **F-0026/F-0029/F-0030** (operace s kartou).
+ZPĚT → znovu MENU → otočit encoderem) a **F-0025** v jeho skutečné podobě
+(vytáhnout kartu za běhu → vložit → mount musí projít; dřív 30 s a trvalý ERROR).
 
 🔴 **HW test odhalil nový nález — viz F-0055 níže.**
 

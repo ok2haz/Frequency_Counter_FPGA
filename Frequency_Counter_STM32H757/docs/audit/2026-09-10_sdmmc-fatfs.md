@@ -286,8 +286,12 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   ⚠️ Cena: rezerva vybraná do nuly. Jiná karta, delší vodič nebo vyšší teplota se
   může projevit jako `DATA_CRC_FAIL` nebo přerušovaně poškozený export. **Až se to
   stane, začni řádkem `sbernice` v `sd diag`** — ta značka je tam přesně proto.
-  ⬜ Neověřeno na HW v této podobě (16MHz varianta ověřena byla: `sd diag` hlásil
-  `16.000 MHz, Default Speed`, `f_mount: 0 OK`, 30 GB karta).
+  ✅ **Ověřeno na HW 2026-09-11** (po flashi, `Reset: power-on`):
+  `sbernice: 4-bit, SDMMC_CK 32.000 MHz, Default Speed (limit 25 MHz)  <-- NAD LIMITEM`,
+  a hlavně **datová cesta na 32 MHz prokazatelně jede**: `sd test` = *„8 KB zapsano a
+  precteno zpet bit po bitu shodne"*, **zápis 6,17 MB/s, čtení 9,25 MB/s** (1 MB soubor).
+  🔑 Tím je opora pro rozhodnutí jet nad limitem DS **změřená, ne jen tvrzená** — a to je
+  přesně ten rozdíl, který u „vědomého porušení limitu" dělá rozhodnutí z přehlédnutí.
 
   *(Původní provedení, platné jen mezi commity `79f6ea7` a dneškem: uživatel zvolil
   **variantu 3**
