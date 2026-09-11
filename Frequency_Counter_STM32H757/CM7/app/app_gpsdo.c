@@ -7943,16 +7943,35 @@ void app_gpsdo_tick_freq(void)
  * Kazdy restart dosud vynuloval statistiku, takze dlouha tau se nabirala znovu
  * od nuly. Log ale drzi kmitocet po 10 s klidne dny dozadu.
  *
- * ⚠️ BEZI PO DAVKACH. Jeden zaznam = jedno blokujici QSPI cteni; 48k zaznamu
- * najednou by UiTask zablokovalo na minuty a IWDG by desku shodil. Nacita se
- * proto ADEV_SEED_CHUNK zaznamu za tik (~20 Hz), tedy ~400/s — 48k zaznamu
- * zabere ~2 min na pozadi, behem kterych pristroj normalne funguje.
+ * 🔴 DOKUD REKONSTRUKCE BEZI, ZIVE VZORKOVANI STOJI (`app_gpsdo_tick_stats_sample`
+ * na ni ceka), takze doba jejiho behu NENI detail, ale funkcni parametr.
+ * Do 2026-09-11 se cetl KAZDY zaznam zvlast (`datalog_read_back`) — presne to,
+ * pred cim `datalog.h` u te funkce varuje: rezie QSPI prikazu je **~173 us na
+ * zaznam**, zatimco prenos 32 B je **~7 us** (25x vic rezie nez dat). Komentar
+ * k tomu sliboval „~20 Hz, tedy ~400/s, 48k zaznamu za ~2 min", jenze skutecny
+ * volajici (`freertos_task_ui.c`) bezi **1 Hz** -> realne **20 zaznamu/s**, a pri
+ * 128 719 zaznamech to delalo **1 h 47 min mrtve statistiky po KAZDEM bootu**
+ * (audit F-0039).
+ *
+ * Ted se cte `datalog_read_bulk` — DAVKA po `DATALOG_BULK_MAX` zaznamech je
+ * JEDEN QSPI prikaz pod JEDNIM mutexem, takze se rezie rozlozi:
+ *   davka 64 zaznamu ~ 173 us + 64 x 7 us ~ 620 us
+ *   ADEV_SEED_BATCHES (8) davek za tik ~ 5 ms  -> 512 zaznamu/s
+ *   128 719 zaznamu -> ~4 min misto 1 h 47 min
+ * ⚠️ Kadence zustava 1 Hz ZAMERNE. Zrychlit tik na 20 Hz by bylo blize puvodnimu
+ * komentari, ale strka blokujici QSPI do cesty, ktera kresli velke cislo a krmi
+ * heartbeat. 5 ms je polovina meze „zadny spin > ~10 ms" v hlidanem tasku.
  * ⚠️ Zaznamy s freq == 0 (doba bez FPGA linku) i s priznakem SIM se PRESKAKUJI:
  * nula neni mereni a emulovana data nepatri do statistiky stability. */
-#define ADEV_SEED_CHUNK   20u
+#define ADEV_SEED_BATCHES 8u   /* davek za tik; strop davky bere z DATALOG_BULK_MAX */
 static uint32_t s_seed_left  = 0;     /* kolik zaznamu jeste zbyva (0 = hotovo/nezacato) */
+static uint32_t s_seed_total = 0;     /* kolik jich bylo na zacatku (postup v `status`) */
 static uint32_t s_seed_done  = 0;     /* kolik uz vlozeno (diagnostika) */
-static uint8_t  s_seed_state = 0;     /* 0 = nezacato, 1 = bezi, 2 = hotovo */
+static uint8_t  s_seed_state = 0;     /* 0=nezacato 1=bezi 2=hotovo 3=ceka na sondu */
+/* ⚠️ `static`, NE na stack: 64 x 32 B = 2 kB, zatimco UiTask ma volneho stacku
+ * ~5 kB. Stejne pravidlo jako u selftestu (CLAUDE.md: pole > ~200 B = static).
+ * Bezpecne, protoze rekonstrukci vola VYHRADNE UiTask. */
+static datalog_rec_t s_seed_buf[DATALOG_BULK_MAX];
 
 void app_gpsdo_stats_seed_start(void)
 {
@@ -7962,29 +7981,67 @@ void app_gpsdo_stats_seed_start(void)
      * stejne prepise. Strop drzi dobu rekonstrukce v jednotkach minut. */
     uint32_t cap = 24u * 10000u;
     s_seed_left  = (st.records < cap) ? st.records : cap;
+    s_seed_total = s_seed_left;
     s_seed_done  = 0;
-    s_seed_state = 1;
+    /* ⚠️ Sonda (a tedy prvni QSPI cteni) az v tiku, ne tady — `app_gpsdo_init()`
+     * drzi prvni render obrazovky a blokujici cteni sem nepatri. */
+    s_seed_state = 3;
+}
+
+/* Ma rekonstrukce vubec co delat?
+ * 🔴 Dokud nenabehl SPI link (STATUS #2), jsou VSECHNY zaznamy `freq == 0` nebo
+ * SIM — pristroj by tedy cetl 128 tisic zaznamu, aby do pyramidy vlozil NIC, a
+ * po celou tu dobu by stalo zive vzorkovani. Sonda precte jednu davku
+ * NEJNOVEJSICH zaznamu: kdyz v ni neni ani jedno pouzitelne mereni, ve starsich
+ * uz tim spis nebude (log je chronologicky a mereni se bud dari, nebo ne).
+ * ⚠️ Je to heuristika, ne dukaz — zato stoji jeden QSPI prikaz misto statisic. */
+static int seed_worth_it(void)
+{
+    uint32_t got = datalog_read_bulk(0, s_seed_buf, DATALOG_BULK_MAX, NULL);
+    for (uint32_t i = 0; i < got; i++)
+        if (s_seed_buf[i].freq_x100000 != 0u && !(s_seed_buf[i].flags & DATALOG_F_SIM))
+            return 1;
+    return 0;
 }
 
 /* Vrati 1, dokud rekonstrukce bezi (volajici pak nemusi delat nic jineho). */
 static int stats_seed_tick(void)
 {
+    if (s_seed_state == 3) {                 /* sonda: vyplati se to vubec? */
+        if (!seed_worth_it()) {
+            s_seed_state = 2;
+            printf("ADEV: rekonstrukce preskocena — log nema platne mereni (SPI link?)\n");
+            return 0;                        /* zive vzorkovani muze hned bezet */
+        }
+        s_seed_state = 1;
+    }
     if (s_seed_state != 1) return 0;
-    for (uint32_t k = 0; k < ADEV_SEED_CHUNK && s_seed_left; k++) {
-        s_seed_left--;
-        datalog_rec_t r;
-        /* od NEJSTARSIHO k nejnovejsimu -> index od konce */
-        if (!datalog_read_back(s_seed_left, &r)) continue;
-        if (r.freq_x100000 == 0u) continue;                 /* bez FPGA linku */
-        if (r.flags & DATALOG_F_SIM) continue;              /* emulovana data */
-        double hz = (double)r.freq_x100000 * 1e-5;
-        /* ⚠️ Vzorec `(hz - f0) / f0` se tu driv pocital RUCNE — a ziva cesta
-         * (`stats_sample`) mela svuj vlastni, ktery se s nim rozesel (F-0037).
-         * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
-         * zdroj pravdy; `screen_main_frac_dev` vraci 0, dokud nominal nezname. */
-        if (screen_main_freq_nominal() <= 0.0) continue;   /* nominal jeste nezname */
-        screen_main_adev_seed_10s(screen_main_frac_dev(hz));
-        s_seed_done++;
+
+    for (uint32_t b = 0; b < ADEV_SEED_BATCHES && s_seed_left; b++) {
+        uint32_t n = (s_seed_left < DATALOG_BULK_MAX) ? s_seed_left : DATALOG_BULK_MAX;
+        uint32_t consumed = 0;
+        /* Jdeme od NEJSTARSIHO k nejnovejsimu, takze davka pokryva pozice
+         * [s_seed_left-n .. s_seed_left-1] (0 = nejnovejsi zaznam v logu). */
+        uint32_t got = datalog_read_bulk(s_seed_left - n, s_seed_buf, n, &consumed);
+        /* ⚠️ Bez tohohle by chyba cteni (consumed == 0) zacyklila tik navzdy —
+         * a protoze rekonstrukce blokuje zive vzorkovani, bylo by to trvale. */
+        if (consumed == 0u) consumed = n;
+        s_seed_left -= (consumed < s_seed_left) ? consumed : s_seed_left;
+        /* `out[0]` je NEJNOVEJSI davky -> zpetne, at pyramida dostane vzorky
+         * chronologicky (starsi driv). */
+        for (uint32_t i = got; i-- > 0; ) {
+            const datalog_rec_t *r = &s_seed_buf[i];
+            if (r->freq_x100000 == 0u) continue;             /* bez FPGA linku */
+            if (r->flags & DATALOG_F_SIM) continue;          /* emulovana data */
+            /* ⚠️ Vzorec `(hz - f0) / f0` se tu driv pocital RUCNE — a ziva cesta
+             * (`stats_sample`) mela svuj vlastni, ktery se s nim rozesel (F-0037).
+             * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
+             * zdroj pravdy; `screen_main_frac_dev` vraci 0, dokud nominal nezname. */
+            if (screen_main_freq_nominal() <= 0.0) continue; /* nominal jeste nezname */
+            screen_main_adev_seed_10s(
+                screen_main_frac_dev((double)r->freq_x100000 * 1e-5));
+            s_seed_done++;
+        }
     }
     if (s_seed_left == 0) {
         s_seed_state = 2;
@@ -7992,6 +8049,18 @@ static int stats_seed_tick(void)
                (unsigned long)s_seed_done);
     }
     return 1;
+}
+
+/* Postup rekonstrukce pro UART `status`. 🔑 Bez nej byla doba jejiho behu
+ * NEVIDITELNA — a prave proto se 1 h 47 min blokovane statistiky nikdo nevsiml
+ * (audit F-0039). Prace, ktera blokuje jinou praci, musi hlasit, jak dlouho
+ * jeste potrva. @return 1 = prave bezi. */
+int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total)
+{
+    if (done)  *done  = s_seed_done;
+    if (left)  *left  = s_seed_left;
+    if (total) *total = s_seed_total;
+    return (s_seed_state == 1 || s_seed_state == 3);
 }
 
 /* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~1x/s). */

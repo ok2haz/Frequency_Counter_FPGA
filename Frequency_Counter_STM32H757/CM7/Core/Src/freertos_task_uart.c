@@ -2091,7 +2091,18 @@ void UartTask_run(void *argument)
 					  	  app_gpsdo_nav_stats(&npk, &nov, &ncap);
 					  	  printf("UI: navigace (ZPET) max %u/%u%s\r\n",
 					  	         (unsigned)npk, (unsigned)ncap,
-					  	         nov ? "  <== PRETECENO, ZPET vede jinam" : ""); } }
+					  	         nov ? "  <== PRETECENO, ZPET vede jinam" : ""); }
+					  	/* Dokud rekonstrukce ADEV bezi, ZIVE vzorkovani statistiky stoji
+					  	 * (sigma_y@1s zustane 0) — proto se to vypisuje vzdy, ne jen pri chybe. */
+					  	{ uint32_t sd = 0, sl = 0, stt = 0;
+					  	  if (app_gpsdo_stats_seed_progress(&sd, &sl, &stt))
+					  	      printf("ADEV rekonstrukce: BEZI %lu/%lu zaznamu, vlozeno %lu"
+					  	             "  <== zive vzorkovani zatim stoji\r\n",
+					  	             (unsigned long)(stt - sl), (unsigned long)stt,
+					  	             (unsigned long)sd);
+					  	  else if (stt)
+					  	      printf("ADEV rekonstrukce: hotova, vlozeno %lu z %lu zaznamu\r\n",
+					  	             (unsigned long)sd, (unsigned long)stt); } }
 					  /* 🔴 Stav bring-upu displeje. Selhani NENI fatalni (main.c dela
 					   * `goto display_skip`), takze pristroj bezi s CERNYM displejem, zatimco
 					   * dotyk, UART i mereni funguji dal — bez tohohle radku to nelze odlisit

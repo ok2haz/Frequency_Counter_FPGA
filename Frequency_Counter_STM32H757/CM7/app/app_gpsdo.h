@@ -97,6 +97,13 @@ int app_gpsdo_handle_encoder(const encoder_ev_t *ev);
  *  a ta na konci NEJDOU zamerit encoderem — bez tohohle by to bylo tiche. */
 void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
 
+/** Postup rekonstrukce ADEV pyramidy z datalogu (UART `status`).
+ *  Dokud bezi, ZIVE vzorkovani statistiky STOJI — proto to musi byt videt.
+ *  Kterykoli ukazatel smi byt NULL. @return 1 = prave bezi.
+ *  ⚠️ Zdanlive vysoka hodnota `total` proti `done` je normalni: zaznamy bez
+ *  platneho mereni (freq==0 / SIM) se preskakuji, takze `done` roste pomaleji. */
+int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total);
+
 /** Hloubka navigacniho zasobniku (ZPET) pro UART `status`.
  *  @param peak     nejhlubsi dosazene zanoreni
  *  @param overflow 1 = zasobnik nekdy pretekl -> ZPET vedlo jinam, nez odkud se otevrelo
