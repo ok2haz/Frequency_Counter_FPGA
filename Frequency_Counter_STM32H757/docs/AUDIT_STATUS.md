@@ -80,10 +80,26 @@ požadavek `L-0010` (ověření až po power-cyklu) je splněný.
 | F-0026, F-0027, F-0030 | nepřímo | mount, export i remount projdou; `GPIO HLIDAC: 0 oprav` |
 | F-0037, F-0039 | drží i na novém obrazu | `sigma_y@1s = 6681405 e-15`, `ADEV rekonstrukce: hotova` při uptime 32 s |
 
-⬜ **Zbývá ověřit ručně na desce** (potřebuje prst / encoder / fyzické vytažení karty):
-**F-0046** a **F-0051** (fokus po tapu v okně se seznamem — MENU → tap na RESTART →
-ZPĚT → znovu MENU → otočit encoderem) a **F-0025** v jeho skutečné podobě
-(vytáhnout kartu za běhu → vložit → mount musí projít; dřív 30 s a trvalý ERROR).
+### ✅ Ruční doověření uživatelem 2026-09-11 (to, co z UARTu nešlo)
+
+- **F-0025 — HW test OK.** Fyzické vytažení karty za běhu a opětovné vložení: mount
+  projde. Tím je ověřená **skutečná podstata nálezu** (cesta přes `sd_export_tick`),
+  ne jen mechanismus `sd_export_unmount()`. Dřív to skončilo 30s čekáním a trvalým
+  stavem ERROR až do dalšího vytažení.
+- **F-0046 + F-0051 — OK.** Fokus po tapu v okně se seznamem sedí na stisknutém
+  prvku a paměť fokusu per okno drží i při návratu prstem. Tím je doložené obojí:
+  spojený indexový prostor (`ln + i`) i to, že `focus_load()` se volá při vstupu do
+  okna, ne až při první události encoderu.
+
+🔑 **Tím jsou VŠECHNY prakticky ověřitelné opravy z 2026-09-11 ověřené na HW.**
+Neověřené zůstávají už jen tři, a u každé je důvod strukturální, ne opomenutí:
+- **F-0038** (dvojí čtení RTC) — okno je mikrosekundové, pozorovat se nedá.
+- **F-0049** (`case 49/50/13` v `render_view`) — projeví se až při úklidu banneru po
+  mrtvé I2C4; vyvolat to jde jen haltem sondy, což zabije I2C4 do power-cyklu.
+  Nestojí to za to u nálezu téhle závažnosti.
+- **F-0026** (opt-in `s_busy` u třetího zapisovatele) — vyžaduje vytažení karty
+  **uprostřed** `screenshot sd` nebo `f_getfree`; nepřímo kryté tím, že mount,
+  export i remount procházejí.
 
 🔴 **HW test odhalil nový nález — viz F-0055 níže.**
 
