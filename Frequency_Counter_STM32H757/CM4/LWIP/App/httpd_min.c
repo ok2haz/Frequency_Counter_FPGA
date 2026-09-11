@@ -56,7 +56,21 @@
  * Chrome ne. Cena: 5 spojeni x 1348 B = ~6,6 kB `.bss` na CM4 (rezerva je). */
 #define HTTPD_RXBUF_MAX     2048u   /* cely blok hlavicek prohlizece + kratke telo */
 #define HTTPD_HDRBUF_MAX    160u    /* nase VYSTUPNI HTTP hlavicka (mala, pevna) */
-#define HTTPD_BODYBUF_MAX   4096u   /* JSON ze snapshotu / SCPI / v12 dlouha historie /api/log (48 bodu) */
+/* 🔴 Rozpocet `/api/log` (audit F-0056). Strop 48 bodu vznikl ve v12 a pocital
+ * s bodem o sedmi polozkach; v13 pak pridalo min/max OBALKU, tedy dve dalsi cisla
+ * na bod — a strop se NEPREPOCITAL. Pri 10 MHz to jeste vyslo (3997 B ze 4096,
+ * rezerva 2,4 %), od 100 MHz uz ne: kazde `fmt_scpi_hz_d` je o znak delsi a tri
+ * jsou na bod, takze odpoved pretekla a `jputf` ji TISE oriznul — klient dostal
+ * neplatny JSON a SPA hlasila „bezi datalog?", tedy obvinila nevinneho.
+ * Nove je rozpocet VYPOCET, ne odhad, a hlida ho `_Static_assert` nize. */
+#define HTTPD_LOG_MAX_PTS    48u    /* strop bodu v jedne odpovedi /api/log */
+#define HTTPD_LOG_PT_MAX    100u    /* nejdelsi bod: 3x fmt_scpi_hz_d(17 B) + t_unix(10)
+                                     * + 2x teplota(7) + vc(5) + vbat(5) + flags(3)
+                                     * + 10 oddelovacu a zavorek = 98 B, zaokrouhleno */
+#define HTTPD_LOG_HDR_MAX    80u    /* `{"total":...,"n":..,"scanned":...,"full_env":...,"p":[` + `]}` */
+#define HTTPD_BODYBUF_MAX   6144u   /* JSON ze snapshotu / SCPI / v12 dlouha historie /api/log */
+_Static_assert(HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_BODYBUF_MAX,
+               "/api/log se nevejde do bodybuf - sniz HTTPD_LOG_MAX_PTS nebo zvetsi HTTPD_BODYBUF_MAX");
 #define HTTPD_BODY_MAX       96u    /* max. PRIJATE telo POST /api/scpi (jeden radek SCPI) */
 #define HTTPD_AUTH_MAX       64u    /* base64("user:pass"), 16+1+20 B -> base64 ~50 znaku */
 
@@ -329,17 +343,27 @@ int httpd_min_selftest(void)
 #undef HT_OK
 
 /* ── JSON writer: bezpecne orezavane pripojovani do pevneho bufferu ──────────── */
-typedef struct { char *p; size_t cap, used; } jbuf_t;
+/* ⚠️ `ovf` = neco se NEVESLO. Bez nej byl orez TICHY: `build_*_json` vratilo
+ * zkracenou delku, ta se poslala jako `Content-Length` a klient dostal JSON
+ * useknuty uprostred tokenu — tedy chybu, ktera vypada jako porucha nekde jinde
+ * (audit F-0056). Buffer sam pretect nemuze; `used` zustava <= `cap - 1`. */
+typedef struct { char *p; size_t cap, used; uint8_t ovf; } jbuf_t;
 
-static void jinit(jbuf_t *j, char *buf, size_t cap) { j->p = buf; j->cap = cap; j->used = 0; buf[0] = '\0'; }
+static void jinit(jbuf_t *j, char *buf, size_t cap) { j->p = buf; j->cap = cap; j->used = 0; j->ovf = 0; buf[0] = '\0'; }
 
 static void jputf(jbuf_t *j, const char *fmt, ...)
 {
-    if (j->used >= j->cap) return;
+    if (j->used >= j->cap) { j->ovf = 1u; return; }
     va_list ap; va_start(ap, fmt);
     int n = vsnprintf(j->p + j->used, j->cap - j->used, fmt, ap);
     va_end(ap);
-    if (n > 0) j->used += ((size_t)n < j->cap - j->used) ? (size_t)n : (j->cap - j->used - 1u);
+    if (n < 0) { j->ovf = 1u; return; }
+    if ((size_t)n < j->cap - j->used) {
+        j->used += (size_t)n;
+    } else {                                  /* vsnprintf oriznul -> nevejde se */
+        j->used = j->cap - 1u;
+        j->ovf  = 1u;
+    }
 }
 
 /* Cislo nebo `null` podle bitu platnosti — jadro „zlateho pravidla" (viz
@@ -510,7 +534,8 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
           s_auth_dbg.match ? "true" : "false",
           (unsigned)s_auth_dbg.decoded_len, (unsigned)s_auth_dbg.expected_len);
     jputf(&j, "}");
-    return j.used;
+    /* Orez by dal neplatny JSON -> radeji nic; volajici posle 503 (F-0056). */
+    return j.ovf ? 0u : j.used;
 }
 
 /* ── v12 (#5): GPS druzice pro sky plot. `{"n":N,"s":[[prn,elev,azim,snr,constel],..]}` */
@@ -527,7 +552,7 @@ static size_t build_sats_json(char *out, size_t out_sz, const ipc_snapshot_t *sn
               (unsigned)st->snr, (unsigned)st->constel);
     }
     jputf(&j, "]}");
-    return j.used;
+    return j.ovf ? 0u : j.used;
 }
 
 /* ── v12 (#6): dlouha historie z datalogu (naplneny `g_ipc.log`). Per-bod pole
@@ -570,7 +595,7 @@ static size_t build_log_json(char *out, size_t out_sz)
         jputf(&j, "]");
     }
     jputf(&j, "]}");
-    return j.used;
+    return j.ovf ? 0u : j.used;
 }
 
 /* Precte cele cislo z query stringu: `?...&key=NNN...`. @return hodnota nebo `def`. */
@@ -3606,14 +3631,28 @@ static void pump_send(http_conn_t *c)
     conn_close(c);
 }
 
+/* 🔴 `snprintf` vraci delku, kterou by POTREBOVAL, ne kolik zapsal. Brat ji jako
+ * `hdr_len` bez orezu znamena, ze pri hlavicce delsi nez `HTTPD_HDRBUF_MAX` by
+ * `pump_send` cetl ZA konec `c->hdr` a odeslal klientovi obsah sousednich poli
+ * struktury — tedy `body_ptr` a kus predchoziho tela (audit F-0058).
+ * Dnes je nejdelsi hlavicka SPA 200 OK = 141 B ze 160, takze to NENI dosazitelne;
+ * je to pojistka pro pristi pridanou hlavicku, ktera by se do rezervy 19 B nevesla.
+ * ⚠️ Vsechna ctyri mista, kde hlavicka vznika, musi jit TUDY. */
+static void hdr_set(http_conn_t *c, int hn)
+{
+    size_t n = (hn > 0) ? (size_t)hn : 0u;
+    if (n >= sizeof c->hdr) n = sizeof(c->hdr) - 1u;    /* orez, ne cteni za koncem */
+    c->hdr_len  = n;
+    c->hdr_sent = 0;
+}
+
 static void queue_response(http_conn_t *c, int code, const char *code_str,
                             const char *content_type, const char *body, size_t body_len)
 {
     int hn = snprintf(c->hdr, sizeof c->hdr,
         "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
         code, code_str, content_type, (unsigned)body_len);
-    c->hdr_len = (hn > 0) ? (size_t)hn : 0u;
-    c->hdr_sent = 0;
+    hdr_set(c, hn);
     c->body_ptr = body; c->body_len = body_len; c->body_sent = 0;
     pump_send(c);
 }
@@ -3635,7 +3674,7 @@ static void queue_spa(http_conn_t *c, const http_req_t *r)
         int hn = snprintf(c->hdr, sizeof c->hdr,
             "HTTP/1.1 304 Not Modified\r\nETag: %s\r\n"
             "Cache-Control: no-cache\r\nConnection: close\r\n\r\n", SPA_ETAG);
-        c->hdr_len = (hn > 0) ? (size_t)hn : 0u; c->hdr_sent = 0;
+        hdr_set(c, hn);
         c->body_ptr = NULL; c->body_len = 0; c->body_sent = 0;
         pump_send(c);
         return;
@@ -3646,7 +3685,7 @@ static void queue_spa(http_conn_t *c, const http_req_t *r)
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %u\r\n"
         "ETag: %s\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
         (unsigned)(sizeof(SPA_HTML) - 1u), SPA_ETAG);
-    c->hdr_len = (hn > 0) ? (size_t)hn : 0u; c->hdr_sent = 0;
+    hdr_set(c, hn);
     c->body_ptr = SPA_HTML; c->body_len = sizeof(SPA_HTML) - 1u; c->body_sent = 0;
     pump_send(c);
 }
@@ -3675,7 +3714,7 @@ static void sse_start(http_conn_t *c)
     int hn = snprintf(c->hdr, sizeof c->hdr,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
         "Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n");
-    c->hdr_len = (hn > 0) ? (size_t)hn : 0u; c->hdr_sent = 0;
+    hdr_set(c, hn);
     c->body_ptr = NULL; c->body_len = 0; c->body_sent = 0;
     c->mode = HCONN_SSE; c->sse_seq = 0xFFFFFFFFu; c->defer_ms = HAL_GetTick();
     sse_finish_hdr(c);
@@ -3717,7 +3756,10 @@ void httpd_min_poll(void)
             if (g_ipc.log.resp_gen == c->defer_gen) {            /* CM7 naplnil data */
                 size_t n = build_log_json(c->bodybuf, sizeof c->bodybuf);
                 c->mode = HCONN_NORMAL;
-                queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
+                /* 🔑 n == 0 = odpoved se nevesla do `bodybuf`. Radeji cistá chyba nez
+                 * useknuty JSON — ten by klient hlasil jako poruchu datalogu (F-0056). */
+                if (n == 0) queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n");
+                else        queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
             } else if ((int32_t)(now - c->defer_ms) >= 0) {      /* timeout */
                 c->mode = HCONN_NORMAL;
                 queue_text(c, 504, "Gateway Timeout", "datalog (CM7) neodpovedel\n");
@@ -3798,6 +3840,7 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read(&snap);
         if (!have) { queue_text(c, 503, "Service Unavailable", "CM7 unreachable\n"); return; }
         size_t n = build_sats_json(c->bodybuf, sizeof c->bodybuf, &snap);
+        if (n == 0) { queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n"); return; }
         queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
         return;
     }
@@ -3814,9 +3857,9 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
                 queue_text(c, 503, "Service Unavailable", "datalog zaneprazdnen\n"); return;
             }
         long win = qparam(r->path, "win", 3600);
-        long np  = qparam(r->path, "n", 48);
+        long np  = qparam(r->path, "n", (long)HTTPD_LOG_MAX_PTS);
         if (np < 1) np = 1;
-        if (np > 48) np = 48;                            /* strop kvuli velikosti JSON (bodybuf) */
+        if (np > (long)HTTPD_LOG_MAX_PTS) np = (long)HTTPD_LOG_MAX_PTS;   /* rozpocet hlida _Static_assert */
         if (win < 60) win = 60;
         long step = win / (np * 10);                     /* datalog perioda = 10 s */
         if (step < 1) step = 1;
