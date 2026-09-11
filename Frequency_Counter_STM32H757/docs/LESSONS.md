@@ -45,6 +45,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0021 | Práce, která blokuje jinou práci, musí hlásit, jak dlouho ještě poběží — jinak je její doba trvání neviditelná a nikdo ji neodhalí. A než začneš optimalizovat, přečti hlavičku funkce, kterou voláš. | `status` → `ADEV rekonstrukce:` |
 | L-0022 | Obrana, která je opt-in, je neúplná, dokud není u NÍ vyjmenované, kdo ji musí zavolat — a proč nestačí ta druhá, která vypadá podobně. | u každého `s_busy`/`lock` v hlavičce seznam volajících + čím se liší od sousední obrany |
 | L-0023 | `static` uvnitř dotazovací funkce přestane být privátní ve chvíli, kdy přibude druhý volající. Dotaz odděl od aktualizace: číst smí kdokoli, posouvat stav jen jedna úloha. | funkce se `static` stavem a víc než jedním volajícím = nález |
+| L-0024 | Když limit závisí na REŽIMU, nastav hodnotu až PO ověření, že režim opravdu naskočil — a při selhání spadni na bezpečnou. Pořadí „nastav a doufej" dělá z výpadku tichý provoz mimo specifikaci. | `sd diag` → řádek `sbernice` musí uvádět takt **i režim i platný limit** |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -604,7 +605,38 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0030
 - **Stav:** aktivni
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0024, L-0025, … -->
+### L-0024 — Limit zavisi na REZIMU: nastav hodnotu az po overeni rezimu, pri selhani spadni na bezpecnou
+
+- **Datum:** 2026-09-11
+- **Oblast:** SDMMC / konstanty odvozene z provozniho rezimu
+- **Symptom:** `SDMMC_CK` bylo natvrdo 32 MHz a komentar to obhajoval limitem
+  **50 MHz**. Jenze 50 MHz plati az pro **High Speed**, do ktereho se karta NIKDY
+  neprepinala (nikde v projektu nebyl CMD6). V Default Speed je strop **25 MHz**,
+  takze sbernice jela ~28 % nad specifikaci — tise, roky, a na jedne konkretni
+  karte to fungovalo (audit F-0028).
+- **Pricina:** Hodnota byla nastavena podle limitu rezimu, ktery se nikdy nezapnul.
+  Nikdo neoveril, ze ten rezim opravdu naskocil, protoze **nebylo kde** — `sd diag`
+  vypisoval takt, ale ne rezim, takze z nej neslo poznat, ktery limit vlastne plati.
+  ⚠️ Vlastni pojistka HAL to nechytne: porovnava `ClockDiv` proti
+  `sdmmc_clk / (2 x SD_NORMAL_SPEED_FREQ)`, coz je celociselne `64e6/50e6 = 1` —
+  takze `ClockDiv = 1` (32 MHz) projde, prestoze je nad 25 MHz.
+- **Oprava:** Vychozi je **bezpecna** hodnota (`SD_CLKDIV_DS` = 16 MHz); prepnuti do
+  HS se zkusi a teprve pri `HAL_OK` se zvedne takt na `SD_CLKDIV_HS` (32 MHz).
+  Pri jakemkoli selhani zustava 16 MHz. `sd diag` hlasi takt **i rezim i platny limit**.
+- **Pravidlo:** **Kdyz limit zavisi na REZIMU, nastav hodnotu az PO overeni, ze rezim
+  opravdu naskocil — a pri selhani spadni na bezpecnou hodnotu, ne na tu vyssi.**
+  Poradi „nastav a doufej" dela z vypadku prepnuti **tichy provoz mimo specifikaci**;
+  poradi „over, pak zvedni" dela z tehoz vypadku jen pomalejsi, ale spravny provoz.
+  🔑 A druha polovina: **do diagnostiky patri i REZIM, ne jen hodnota.** Samotny takt
+  neni overitelny udaj, kdyz strop zavisi na necem, co vypis neukazuje.
+- **Detekce:** `sd diag` -> radek `sbernice` musi uvadet takt, rezim i limit; takt
+  nad limitem uvedeneho rezimu = nalez.
+  Obecne: u kazde konstanty, jejiz komentar cituje nejaky „limit", over, ze rezim,
+  pro ktery ten limit plati, je opravdu zapnuty.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0028
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
 ---
 

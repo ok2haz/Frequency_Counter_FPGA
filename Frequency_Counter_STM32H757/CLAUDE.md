@@ -1432,8 +1432,16 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
   read-modify-write částečných bloků). RMW je kryté `datalog_sd_selftest` (RAM fake blok, bez HW).
 
 ### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
-**SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12), `ClockDiv=2`
-→ **SDMMC_CK 16 MHz**. Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
+**SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12).
+Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
+🔴 **Takt se řídí REŽIMEM karty, ne `.ioc`** (audit F-0028, 2026-09-11): identifikace
+i CMD6 běží na `SD_CLKDIV_DS` = **16 MHz** (limit Default Speed je 25 MHz) a na
+`SD_CLKDIV_HS` = **32 MHz** se jde **až po úspěšném přepnutí do High Speed**
+(limit 50 MHz). Když se přepnutí nepovede, zůstane 16 MHz — přístroj tedy není mimo
+specifikaci v žádném případě. Do 2026-09-11 bylo natvrdo 32 MHz s komentářem citujícím
+limit 50 MHz, přestože do HS se karta nikdy nepřepínala (~28 % nad spec).
+⚠️ **Hodnotu neopisuj** — `sd diag` řádek `sbernice` ji vypíše z `CLKCR` **i s režimem
+a platným limitem**; to je jediný důvěryhodný zdroj.
 - 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE** (v `.ioc` chyběl). Bez něj má `CLKCR` bit17
   `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → `TRANSFER`) projdou,
   ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`, `HAL_SD_ReadBlocks` SW
@@ -1566,7 +1574,9 @@ při dnešní kadenci FPGA (~4 měření/s) to je **~3 dny** souvislé historie.
 ### SD export (`sd_export.c/h`) — mount/unmount + CSV
 
 **Plné původní znění (všechny 🔴🔴 detaily + postup Františka) → `docs/CLAUDE_ARCHIV.md` §10.**
-✅ **HW ověřen** (SDHC 14,5 GB, `CLKCR=0x4002` 4-bit 16 MHz — STATUS #69 tím padá). W25Q je
+✅ **HW ověřen** (SDHC 14,5 GB, `CLKCR=0x4002` 4-bit 16 MHz — STATUS #69 tím padá).
+⚠️ Ta ověřená hodnota je **Default Speed 16 MHz**; High Speed (32 MHz) přibyl 2026-09-11
+a ⬜ **na HW ověřený není** — po flashi zkontroluj `sd diag` řádek `sbernice`. W25Q je
 autoritativní úložiště, **SD je JEN EXPORT** (`GPSDO.CSV`, oddělovač `;`, unix sekundy, chronologicky).
 Card-detect PE3, LOW = vloženo. Load-bearing:
 

@@ -261,8 +261,41 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Riziko opravy:** varianta 2 nulové, varianta 1 nízké (jen jiná hodnota, ale
   mění propustnost exportu), varianta 3 střední až vysoké.
 - **Vztah k lekcím:** **`L-0006`** — konstanta odvozená z hodin, u níž komentář
-  uvádí mez z jiného provozního režimu, než v jakém zařízení běží.
-- **Stav:** otevřeno — **potřebuje rozhodnutí** (viz triáž skupina B)
+  uvádí mez z jiného provozního režimu, než v jakém zařízení běží. Po opravě
+  **nová lekce `L-0024`**.
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Uživatel zvolil **variantu 3**
+  (doplnit High Speed) — nález ji označuje za nejdražší a nejrizikovější, a po přečtení
+  HAL to platilo ještě víc, než nález tušil. **Implementováno proto s pojistkou, která
+  variantu 3 dělá bezpečnější než variantu 2.**
+  🔴 **Co se při opravě zjistilo (a nález to nevěděl):**
+  `HAL_SD_ConfigSpeedBusOperation` → `SD_SwitchSpeed` obsahuje **dvě** smyčky
+  s `SDMMC_SWDATATIMEOUT` = `0xFFFFFFFF` ms (~49 dní) — tedy **tutéž konstrukci**,
+  kvůli které se v tomto projektu obchází `HAL_SD_Init` i
+  `HAL_SD_ConfigWideBusOperation`. Doklad je přímo v git historii: commit `ec64939`
+  *„HAL_SD_Init umi tocit ~49 dni v tesne smycce -> obejit + srazit prioritu (#28)"*
+  a komentář v `BSP_SD_Init`: *„Když karta to ACMD13 neodbaví, `sd fs` zamrzne a IWDG
+  shodí desku. **Přesně to se stalo.**"*
+  ⚠️ Druhá věc: HAL si High Speed **neověřuje dotazem na kartu** — ve větvi
+  `SDMMC_SPEED_MODE_HIGH` mu stačí `CardType == CARD_SDHC_SDXC`, protože `CardSpeed`
+  tenhle projekt **nezjišťuje** (`HAL_SD_GetCardStatus` se záměrně přeskakuje, viz
+  tentýž komentář). Předpokládá tedy „SDHC ⇒ umí HS".
+  **Jak je to ošetřené:**
+  1. **Pojistka na takt** — `SD_CLKDIV_DS` (2 = 16 MHz) je výchozí; `SD_CLKDIV_HS`
+     (1 = 32 MHz) se nastaví **až po** návratu `HAL_OK`. Ověřeno v disassembly:
+     `cmp r0,#0 / bne` přeskočí zápis `ClockDiv=1` i `SDMMC_Init`, takže při
+     jakémkoli selhání zůstává 16 MHz. **Přístroj tedy není mimo specifikaci
+     v žádném výsledku** — což je víc, než uměla varianta 2.
+  2. **Ohraničené čekání na TRANSFER před** vendor voláním (`sd_wait_transfer(1000)`,
+     sdílené s `BSP_SD_Init`, aby nevznikla druhá kopie té smyčky). Druhá vendor
+     smyčka je **těsná příkazová bez yieldu**, takže tohle ji v normálním případě
+     ukončí na první iteraci.
+  3. Datovou fázi CMD6 ohraničuje **hardware** (DTIMER), tedy minuty, ne 49 dní.
+  4. Volající běží pod `sd_blocking_begin()` → `osPriorityLow`, tedy **pod UiTaskem**:
+     i při zaseknutí běží heartbeat a IWDG desku neshodí. Nejhorší následek je
+     zatuhlá konzole, ne restart — na rozdíl od incidentu z 2026-08-13.
+  ⚠️ **Zbytkové riziko zůstává** a nejde ho zvenčí ohraničit: karta, která na CMD6
+  odpoví a **pak** se nedostane do TRANSFER, nechá vendor smyčku točit.
+  `sd diag` nově hlásí režim i platný limit (`… , High Speed (limit 50 MHz)`).
 
 ---
 
@@ -383,7 +416,20 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Riziko opravy:** nulové u komentářů; u výpisu `[a2]` nízké (mění se jen text).
 - **Vztah k lekcím:** `L-0006` (duplikovaná hodnota odvozená z hodin se rozejde),
   `L-0014` (druhá kopie údaje se má odvozovat, ne udržovat ručně).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11 (`docs:` + dva odvozené výpisy), ⬜ neověřeno na HW.
+  Všech pět bodů:
+  1. Komentář o chybějícím HWFC v `.ioc` → opraveno, `.ioc` ho **má**; u kódu je
+     napsané, proč ho init přesto nastavuje (skládá se ručně a nesmí záviset na tom,
+     co zrovna vygeneroval CubeMX).
+  2. „transfer takt 16 MHz" → nahrazeno odkazem na `SD_CLKDIV_DS` + větou
+     **„hodnotu sem NEOPISUJ"**.
+  3. `[a2]` výpis **tiskne `hsd1.Init.ClockDiv`** a dopočtený takt místo literálu —
+     byl to diagnostický výpis, který lhal o hodnotě, kterou právě nastavil.
+  4. „do GPSDO.CSV" → `GPSDOnnn.CSV` + poznámka, že skutečné jméno vypíše
+     `export_body()`.
+  5. `CLAUDE.md` přepsán na nové chování (DS 16 MHz → HS 32 MHz po CMD6).
+  🔑 U bodů 2, 3 a 5 se hodnota **odvozuje**, ne opisuje — přesně jak nález žádal;
+  jinak by se rozešly potřetí.
 
 ---
 

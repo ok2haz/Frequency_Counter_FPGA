@@ -11,10 +11,10 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-**rozhodnout F-0028** (SDMMC_CK 32 MHz proti 25MHz limitu Default Speed — tři varianty)
-a pak dobrat F-0031 (`docs:`). Souběžně čeká F5 pro modul 11 (**F-0052 je S2** — dotyková
-cesta píše `g_meas_cfg` bez kritické sekce, zatímco SCPI i IPC ji mají).
-🔴 **Všechny moduly už mají zapsané nálezy** (1–11); zbývají jen fáze oprav a ověření na HW.
+**F5 pro modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické
+sekce, zatímco SCPI i IPC ji mají; F-0053 a F-0054 jsou drobné).
+🔴 **Všechny moduly 1–11 mají zapsané nálezy a jediný modul bez dokončené fáze oprav
+je 11.** Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -62,7 +62,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
-| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **skupina A opravena** (2 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
+| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
@@ -79,8 +79,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
 | S2 | 1 | 8 | 0 |
-| S3 | 7 | 21 | 0 |
-| S4 | 2 | 7 | 0 |
+| S3 | 6 | 22 | 0 |
+| S4 | 1 | 8 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -133,8 +133,23 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   (+96); v obrazu `datalog_sd_det_tick` (68 B), `sd_export_busy_begin/end`,
   `gpio_cfg_lock` nově volán z `HAL_SD_MspInit` i `sd_dat_pullup_enable`,
   `screenshot_save_sd` obepíná tělo dvojicí busy.
-- **Zbývá:** **F-0028** (potřebuje rozhodnutí — 32 MHz vs. 25MHz limit Default Speed)
-  a **F-0031** (`docs:`, ale body 2/3/5 se odvozují od hodnoty, kterou určí F-0028).
+✅ **F-0028 a F-0031 dobrány 2026-09-11** (rozhodnutí uživatele: doplnit High Speed):
+- **F-0028** [S3] identifikace i CMD6 běží na **16 MHz** (`SD_CLKDIV_DS`, v mezích DS)
+  a na **32 MHz** (`SD_CLKDIV_HS`) se jde **až po úspěšném** `HAL_SD_ConfigSpeedBusOperation`.
+  🔴 Při opravě se zjistilo, že ta vendor funkce obsahuje **tutéž ~49denní smyčku**
+  (`SDMMC_SWDATATIMEOUT`), kvůli které se obchází `HAL_SD_Init` — commit `ec64939`,
+  a komentář v `BSP_SD_Init` říká „**Přesně to se stalo**" (IWDG shodil desku).
+  Ošetřeno čtyřmi věcmi: pojistka na taktu (ověřeno v disassembly — `cmp/bne`
+  přeskočí zápis `ClockDiv=1`, takže selhání = 16 MHz), **ohraničené čekání na
+  TRANSFER před** vendor voláním (sdílené s `BSP_SD_Init`), HW DTIMER na datové fázi,
+  a `sd_blocking_begin()` → priorita pod UiTaskem (heartbeat běží → žádný IWDG).
+  ⚠️ **Zbytkové riziko zůstává**: karta, která na CMD6 odpoví a pak nedojde do
+  TRANSFER, nechá vendor smyčku točit — zvenčí se to ohraničit nedá. Nejhorší
+  následek je zatuhlá konzole, ne restart. Lekce **L-0024**.
+- **F-0031** [S4] všech pět zastaralých míst; u taktu, `[a2]` výpisu i `CLAUDE.md` se
+  hodnota nově **odvozuje**, ne opisuje. `sd diag` hlásí takt **i režim i limit**.
+- **Ověření A+B:** build 0 varování, `audit.py` 92 OK/0/2, `.text` 599 272 → **599 968 B**
+  (+696; přibyl `HAL_SD_ConfigSpeedBusOperation` 192 B + `SD_SwitchSpeed` 248 B).
 
 **Modul 11 — nálezy zapsány 2026-09-11 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. Okna se chovají jako kreslicí kód — přesně jak modul 10
