@@ -227,7 +227,36 @@ souborů dál počítá správně a sype se do **téže** pyramidy.
   neplatí — tady kadence volajícího) a **`L-0016`** (rozpočet i měřidlo jeho
   rezervy se navrhují společně; kdyby se doba rekonstrukce od začátku někde
   vypisovala, nikdo by dvě hodiny nehledal).
-- **Stav:** otevřeno — **potřebuje rozhodnutí** (viz tři varianty výše)
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Uživatel zvolil
+  **variantu „bulk + brzký konec"**, tedy kombinaci, kterou původní tři návrhy
+  neobsahovaly — vznikla až po přečtení `datalog.h`.
+  🔑 **Klíčové zjištění při opravě:** bulk cesta už existuje a je prověřená
+  (`datalog_read_bulk`, 64 záznamů jedním QSPI příkazem, používá ji web přes IPC),
+  a `datalog.h:203` u `datalog_read_back` **přímo varuje**: *„Na PRŮCHOD VÍCE
+  ZÁZNAMY použij `datalog_read_bulk` — tohle platí na každý záznam vlastní mutex
+  i vlastní QSPI příkaz (změřeno ~173 µs/záznam, zatímco 32 B dat je jen ~7 µs;
+  režie je 25× větší než přenos)."* Rekonstrukce dělala přesně to, před čím ta
+  hlavička varuje. Žádná z původních tří variant to nezohledňovala, protože jsem
+  při psaní nálezu nepřečetl hlavičku funkce, kterou nález cituje.
+  **Co se změnilo:**
+  1. `datalog_read_bulk`, `ADEV_SEED_BATCHES = 8` dávek za tik →
+     8 × (173 µs + 64 × 7 µs) ≈ **5 ms/tik** při **512 záznamech/s**.
+     128 719 záznamů → **~4 min** místo 1 h 47 min. **Kadence zůstává 1 Hz**,
+     takže žádná nová expozice watchdogu ani 20Hz kreslicí cesty.
+  2. **Sonda `seed_worth_it()`** — jedna dávka nejnovějších záznamů; když v ní není
+     ani jedno použitelné měření, rekonstrukce se **vůbec nespustí**. To je přesně
+     dnešní stav (SPI link nenaběhl → vše `freq == 0` / SIM), takže dnes je doba
+     blokování **nulová**. ⚠️ Je to heuristika, ne důkaz, a je to u ní napsané.
+  3. `app_gpsdo_stats_seed_progress()` → řádek v `status`
+     (`ADEV rekonstrukce: BEZI n/N zaznamu ... <== zive vzorkovani zatim stoji`).
+     Bez něj byla doba běhu neviditelná — a právě proto si 1 h 47 min nikdo
+     nevšiml. Nová lekce **`L-0021`**.
+  ⚠️ Komentář `:7861-7866` přepsán (tři nesprávná čísla nahrazena naměřenými).
+  ⚠️ Ošetřeno i zacyklení: `consumed == 0` (chyba čtení) by tik zacyklilo navždy,
+  a protože rekonstrukce blokuje živé vzorkování, bylo by to trvalé.
+  Ověřeno v obrazu: `app_gpsdo_stats_seed_progress` (56 B), `s_seed_buf` (2 048 B
+  v `.bss`, ne na stacku UiTasku), tři nové řetězce, 3× `bl datalog_read_bulk`
+  (dřív volal jen IPC).
 
 ---
 

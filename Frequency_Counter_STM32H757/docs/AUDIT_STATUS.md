@@ -62,7 +62,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
-| 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno** (1 nový otevřený, ⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
+| 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
 | 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nezačato | — | – | – | – | – | — |
 
@@ -76,7 +76,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
-| S2 | 3 | 5 | 0 |
+| S2 | 2 | 6 | 0 |
 | S3 | 9 | 18 | 0 |
 | S4 | 1 | 7 | 0 |
 
@@ -96,11 +96,22 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   na desce ověřit (σy byla čitelná jen z displeje).
 
 **Modul 9 — nově otevřené (nalezeno AŽ ve fázi oprav, jako F-0036 u modulu 8):**
-- **F-0039** [S2] rekonstrukce ADEV z datalogu blokuje **živé** vzorkování statistiky
-  ~1 h 47 min po každém bootu. Rozpočet dávky (`ADEV_SEED_CHUNK = 20`) je spočítaný
-  proti tiku 20 Hz, ale skutečný volající (`freertos_task_ui.c:540`) běží **1 Hz** →
-  20 záznamů/s místo deklarovaných 400/s; při 128 719 záznamech to je 6 436 s.
-  **Potřebuje rozhodnutí** (tři varianty v nálezu) — nesahat bez něj.
+- **F-0039** [S2] ✅ **opraveno 2026-09-11** (⬜ neověřeno na HW), lekce **L-0021**.
+  Rekonstrukce ADEV blokovala živé vzorkování ~1 h 47 min po každém bootu, protože
+  rozpočet dávky byl spočítaný proti tiku 20 Hz, zatímco volající běží 1 Hz.
+  🔑 Při opravě se ukázalo, že `datalog.h:203` u `datalog_read_back` **přímo varuje**
+  „na průchod více záznamy použij `datalog_read_bulk`" — **včetně naměřených čísel**
+  (~173 µs režie/záznam vs ~7 µs na data) — a bulk cesta už existovala a byla
+  prověřená (používá ji web přes IPC). Žádná ze tří variant v nálezu ji neobsahovala,
+  protože jsem hlavičku citované funkce nepřečetl.
+  Zvolena **varianta „bulk + brzký konec"**: 8 dávek po 64 záznamech za tik ≈ 5 ms/tik
+  → 512 zázn./s → **~4 min** místo 1 h 47 min, **kadence zůstává 1 Hz** (žádná nová
+  expozice watchdogu). Navíc sonda: když nejnovější dávka nemá ani jedno použitelné
+  měření, rekonstrukce se **vůbec nespustí** — což je dnešní stav (SPI link nenaběhl),
+  takže dnes je blokování **nulové**. A řádek `ADEV rekonstrukce:` v `status`, bez
+  kterého byla doba běhu neviditelná.
+  ⚠️ **Tím se odblokovalo ověření F-0037 na desce** — σy@1s už nebude po bootu držená
+  na nule.
 
 **Modul 10 — opraveno vše 2026-09-11 (⬜ neověřeno na HW):**
 Verdikt **podmíněně funkční**. Nic tu neshodí přístroj: modul nemá jediné volání `HAL_*`,

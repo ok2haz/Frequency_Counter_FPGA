@@ -42,6 +42,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0018 | Dvě místa, která počítají touž veličinu, nejsou duplicita kódu — jsou to dvě pravdy čekající, až se rozejdou. Slučuj, neopravuj obě. | při opravě grep na druhou instanci; `status` → `STATISTIKA: sigma_y@1s` |
 | L-0019 | Účetnictví, které se veze se stavem (diagnostika, paměť, invalidace), připoj ke ZMĚNĚ toho stavu, ne k některé z cest, které k ní vedou. | `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musí být prázdný |
 | L-0020 | Duplicitu, kterou je dražší odstranit než snést, převeď na KONTROLU rozdílu — a tu kontrolu vždy ověř pozitivní kontrolou, jinak jsi jen přidal zelené světlo. | `scripts/check_lessons.sh` sekce „dispatch podle `s_view`" |
+| L-0021 | Práce, která blokuje jinou práci, musí hlásit, jak dlouho ještě poběží — jinak je její doba trvání neviditelná a nikdo ji neodhalí. A než začneš optimalizovat, přečti hlavičku funkce, kterou voláš. | `status` → `ADEV rekonstrukce:` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -513,7 +514,41 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0049 a F-0050
 - **Stav:** aktivni
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0021, L-0022, … -->
+### L-0021 — Prace, ktera blokuje jinou praci, musi hlasit, jak dlouho jeste potrva
+
+- **Datum:** 2026-09-11
+- **Oblast:** statistika / datalog / diagnostika
+- **Symptom:** Rekonstrukce ADEV pyramidy z datalogu po bootu blokovala ZIVE
+  vzorkovani statistiky **1 h 47 min po kazdem zapnuti** (`sigma_y@1s` zustala 0).
+  Nikdo si toho mesice nevsiml a odhalilo to az pocitadlo pridane kvuli jine oprave
+  (F-0037). Komentar u kodu pritom sliboval „~2 min".
+- **Pricina:** Dve chyby, ktere se nascitaly:
+  1. **Rozpocet davky byl spocitany proti kadenci, ktera v kodu neexistuje** —
+     komentar predpokladal tik 20 Hz, skutecny volajici bezel 1 Hz (20 zaznamu/s
+     misto 400). Instance `L-0006`.
+  2. **Doba behu nebyla nikde videt.** Zadny citac, zadny radek v `status` —
+     takze „statistika po zapnuti dlouho nic neukazuje" vypadalo jako vlastnost,
+     ne jako vada s konkretnim koncem.
+- **Oprava:** `datalog_read_bulk` misto `datalog_read_back` (rezie QSPI prikazu se
+  rozlozi na 64 zaznamu misto na jeden), sonda „ma to vubec smysl?" pred startem,
+  a **radek postupu v `status`**.
+- **Pravidlo:** **Kdyz jedna prace blokuje druhou, jeji doba trvani je funkcni
+  parametr, ne detail — a musi byt MERITELNA za behu.** Bez toho se z docasneho
+  stavu stane neviditelny trvaly stav.
+  🔴 **A druha polovina teto lekce: NEZ zacnes neco optimalizovat, precti hlavicku
+  funkce, kterou volas.** `datalog.h` mel u `datalog_read_back` napsane „na pruchod
+  vice zaznamy pouzij `datalog_read_bulk`" **vcetne zmerenych cisel** (~173 us
+  rezie na zaznam vs ~7 us na data). Bulk cesta uz existovala a byla proverena
+  (pouziva ji web pres IPC). Puvodni tri navrhy oprav v nalezu ji NEOBSAHOVALY,
+  protoze jsem hlavicku funkce, kterou nalez cituje, necetl.
+- **Detekce:** `status` -> radek `ADEV rekonstrukce:`. Pri bootu musi bud zmizet
+  hned („preskocena"), nebo dojet do „hotova" v jednotkach minut.
+  Obecne: u kazde davkove operace, ktera neco blokuje, se zeptej, kde se da
+  precist, kolik jeste zbyva.
+- **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0039
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0022, L-0023, … -->
 
 ---
 
