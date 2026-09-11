@@ -112,7 +112,7 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
   encoderem na desce (rámeček musí po tapu sedět na stisknutém prvku).
 - **Vztah k lekcím:** **`L-0008`** (komentář popisuje chování, které tělo ruší),
   **`L-0018`** (mapování `s_view → seznam` má mít jeden zdroj pravdy).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu, ale
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW (fokus po tapu v okně se seznamem sedí na stisknutém prvku)**. Opraveno **podle návrhu, ale
   i s tím háčkem, který nález předvídal**: samotné `+ ln` nešlo napsat, protože
   `btnreg_sync_focus` neměla `L`. Vzniklo proto `cur_list()` jako **jediný zdroj**
   mapování `s_view → seznam` (dosud lokální výraz v obsluze encoderu) a používají ho
@@ -171,7 +171,7 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Vztah k lekcím:** **`L-0011`** (nástroj, kterému se věří, se musí nejdřív sám ověřit —
   tady měřidlo nepokrývá většinu měřeného rozsahu) a **`L-0017`** (co se rozhodnu nezaznamenat,
   musí jít poznat; zde se to tváří jako platný údaj).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **doporučenou (širší)
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW (`s_view=8` → po `ui` → `s_view=0`, `zmen` 3→4)**. Opraveno **doporučenou (širší)
   variantou**: vzniklo `view_set(uint8_t)` a **všech 53 přiřazení `s_view = N;`** jím prošlo;
   `window_first()` diagnostiku už neplní (jinak by se `g_ui_view_changes` počítalo dvakrát).
   ⚠️ **Sentinely `s_view = 0xFF` / `-1`** (vynucení plného renderu po změně tématu/presetu)
@@ -219,7 +219,7 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Vztah k lekcím:** **`L-0017`** (tichý přeskok je přípustný jen s počítadlem) a
   **`L-0015`** (modul, který zná svou mez, ji musí na rozhraní vynutit, ne jen odvozovat);
   **`L-0016`** (mez a měřidlo její rezervy se navrhují společně — tady je mez bez měřidla).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**:
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW (nový řádek `UI: navigace (ZPET) max 0/6`)**. Opraveno **podle návrhu**:
   `s_nav_peak` + `s_nav_ovf` a nový řádek v `status`
   (`UI: navigace (ZPET) max N/6  <== PRETECENO, ZPET vede jinam`), tedy tentýž vzor,
   jaký v témže souboru už měl registr tlačítek. Navíc `NAV_DEPTH` ze `sizeof`, aby
@@ -380,7 +380,7 @@ hlavní obrazovky a MENU, a protože si drží předchozí hodnotu, **aktivně l
 - **Riziko opravy:** nízké, ale **nedělat odděleně od F-0046/F-0047** — všechny tři sahají
   na totéž účetnictví a oddělené opravy by se pletly.
 - **Vztah k lekcím:** **`L-0018`** (jeden zdroj pravdy pro „kde jsem").
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **jinak, než nález
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW (paměť fokusu per okno drží i při návratu prstem)**. Opraveno **jinak, než nález
   navrhoval**: nález chtěl volat `focus_load()` při vstupu do okna — to se stalo, ale
   `s_shown_view` se **nezrušilo**, jen dostalo užší a poctivější roli. Je z něj
   file-scope `s_focus_shown` = „okno, ve kterém je značka fokusu už vykreslená", které

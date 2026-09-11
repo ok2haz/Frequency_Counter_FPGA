@@ -79,7 +79,7 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   o reset příznaku a přepočet `s_state`, obojí je v defaultTasku levné.
 - **Vztah k lekcím:** **`L-0012`** (oprava se neaplikovala na dvojče) — přesně ten
   vzor: správná cesta existuje, ale druhá kopie ji nepřevzala.
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**: tik volá
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW (fyzické vytažení karty za běhu → vložení → mount projde; dřív 30 s a trvalý ERROR)**. Opraveno **podle návrhu**: tik volá
   `sd_export_unmount()` místo holého `f_mount(NULL,…)`, takže druhá kopie zmizela
   úplně místo aby se udržovala. ⚠️ Upozornění z nálezu („přidá to do tiku další
   volání debouncovaného čítače") **padlo tím, že se F-0030 opravilo ve stejném
@@ -360,7 +360,7 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Riziko opravy:** nízké — mění se jen chování při už existující chybě.
 - **Vztah k lekcím:** **`L-0003`** (ignorovaná návratová hodnota) + `L-0012`
   (pravidlo aplikované na jednu ze tří kopií).
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu a ještě o kus dál**:
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW** (`sd export 2000` → `export OK, 2000 zaznamu` — kontroly nedělají falešné selhání). Opraveno **podle návrhu a ještě o kus dál**:
   kontroluje se `f_close()` **i hlavičkový `f_write()`** (nález ho zmiňoval jako
   druhou polovinu). Obojí nastaví `s_state = SD_EXP_ERROR` a vrátí `-1`, což už
   znamená „export selhal" — volající se tedy nemění.
