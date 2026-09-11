@@ -2086,7 +2086,12 @@ void UartTask_run(void *argument)
 					  	       (unsigned long)g_ui_view_changes);
 					  	printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
 					           (unsigned)encoder_div(), (unsigned)bpk, (unsigned)bcap,
-					           bov ? "  <== PRETECENO, konec okna nelze zamerit" : ""); }
+					           bov ? "  <== PRETECENO, konec okna nelze zamerit" : "");
+					  	{ uint8_t npk = 0, nov = 0, ncap = 0;
+					  	  app_gpsdo_nav_stats(&npk, &nov, &ncap);
+					  	  printf("UI: navigace (ZPET) max %u/%u%s\r\n",
+					  	         (unsigned)npk, (unsigned)ncap,
+					  	         nov ? "  <== PRETECENO, ZPET vede jinam" : ""); } }
 					  /* 🔴 Stav bring-upu displeje. Selhani NENI fatalni (main.c dela
 					   * `goto display_skip`), takze pristroj bezi s CERNYM displejem, zatimco
 					   * dotyk, UART i mereni funguji dal — bez tohohle radku to nelze odlisit

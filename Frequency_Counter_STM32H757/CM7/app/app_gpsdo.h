@@ -97,6 +97,13 @@ int app_gpsdo_handle_encoder(const encoder_ev_t *ev);
  *  a ta na konci NEJDOU zamerit encoderem — bez tohohle by to bylo tiche. */
 void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
 
+/** Hloubka navigacniho zasobniku (ZPET) pro UART `status`.
+ *  @param peak     nejhlubsi dosazene zanoreni
+ *  @param overflow 1 = zasobnik nekdy pretekl -> ZPET vedlo jinam, nez odkud se otevrelo
+ *  @param cap      kapacita zasobniku
+ *  Kterykoli ukazatel smi byt NULL. */
+void app_gpsdo_nav_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
+
 /** Kolikrat obsluha encoderu skutecne kreslila (diagnostika problikavani). */
 uint32_t app_gpsdo_encoder_draws(void);
 

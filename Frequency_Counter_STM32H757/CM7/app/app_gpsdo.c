@@ -311,7 +311,22 @@ static bool in_rect(int16_t x, int16_t y, prim_rect_t r)
  * (Menu->Nastaveni->O pristroji). app_gpsdo_render_main resetuje (koren). */
 static uint8_t s_nav_stack[6];
 static int     s_nav_sp = 0;
-static void nav_push(uint8_t from) { if (s_nav_sp < 6) s_nav_stack[s_nav_sp++] = from; }
+static uint8_t s_nav_peak;   /* nejhlubsi dosazene zanoreni (diagnostika `status`) */
+static uint8_t s_nav_ovf;    /* 1 = zasobnik nekdy pretekl -> ZPET vedlo jinam */
+/* ⚠️ Preteceni se do 2026-09-11 TISE ignorovalo (audit F-0048): podminka pole
+ * neprepsala, ale zahozena polozka znamena, ze `nav_back()` vede o uroven jinam,
+ * nez odkud se okno otevrelo — a hledalo by se to v `render_view`, protoze presne
+ * tenhle symptom uz jednou vyrobil rozjety dispatch (viz komentar nize). Nejhlubsi
+ * dnes dosazitelna cesta ma 5 urovni (hl. obrazovka -> MENU -> Nastaveni -> Animace
+ * -> Efekty -> Status ribbon), takze rezerva je JEDINA uroven.
+ * Strop se bere ze `sizeof`, ne z literalu — pri zvetseni pole se nema co rozejit. */
+#define NAV_DEPTH ((int)(sizeof s_nav_stack / sizeof s_nav_stack[0]))
+static void nav_push(uint8_t from)
+{
+    if (s_nav_sp >= NAV_DEPTH) { s_nav_ovf = 1; return; }
+    s_nav_stack[s_nav_sp++] = from;
+    if (s_nav_sp > (int)s_nav_peak) s_nav_peak = (uint8_t)s_nav_sp;
+}
 static void app_gpsdo_render_net(void);      /* Sit / ETH (s_view=35) */
 static void app_gpsdo_render_access(void);   /* Pristup: jmeno/heslo (s_view=42) */
 static void app_gpsdo_render_display(void);  /* Displej: jas + auto-dim (s_view=36) */
@@ -2904,6 +2919,15 @@ void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap)
     if (peak)     *peak     = s_btnreg_peak;
     if (overflow) *overflow = s_btnreg_ovf;
     if (cap)      *cap      = BTNREG_MAX;
+}
+
+/* Hloubka navigacniho zasobniku pro `status` — stejny vzor jako registr tlacitek
+ * vyse. Bez nej bylo preteceni tiche a projevilo by se jen jako „ZPET vede jinam". */
+void app_gpsdo_nav_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap)
+{
+    if (peak)     *peak     = s_nav_peak;
+    if (overflow) *overflow = s_nav_ovf;
+    if (cap)      *cap      = (uint8_t)NAV_DEPTH;
 }
 
 static void btnreg_observer(const prim_rect_t *r)
@@ -7179,7 +7203,18 @@ static void render_view(uint8_t v)
     case 46: app_gpsdo_render_dualch();    break;
     case 47: app_gpsdo_render_devmult();   break;
     case 48: app_gpsdo_render_tools();     break;
+    case 49: app_gpsdo_render_func();      break;
+    case 50: app_gpsdo_render_help();      break;
     case 51: app_gpsdo_render_errlog();    break;
+    /* Modal potvrzeni restartu se po obnove ZAMERNE NEOBNOVUJE: potvrzeni
+     * destruktivni akce se nema samo vynorit po udalosti, kterou uzivatel
+     * nevyvolal. Vraci se tam, kam vede i tlacitko NE (`CONFIRM_NO`), takze
+     * obe cesty zruseni dialogu konci stejne. */
+    case 13: app_gpsdo_render_menu();      break;
+    /* ⚠️ 8 (screensaver) a 11 (splash) tu chybi ZAMERNE: prvni ma vlastni cestu
+     * obnovy (`app_gpsdo_touch_dead`), druhy bezi jen pri bootu. Kdo pridava
+     * okno, at si overi `scripts/check_lessons.sh` — hlasi view_set() cile
+     * bez `case` (audit F-0049/F-0050). */
     default: app_gpsdo_render_main();      break;
     }
 }
