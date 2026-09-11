@@ -79,7 +79,16 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   o reset příznaku a přepočet `s_state`, obojí je v defaultTasku levné.
 - **Vztah k lekcím:** **`L-0012`** (oprava se neaplikovala na dvojče) — přesně ten
   vzor: správná cesta existuje, ale druhá kopie ji nepřevzala.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**: tik volá
+  `sd_export_unmount()` místo holého `f_mount(NULL,…)`, takže druhá kopie zmizela
+  úplně místo aby se udržovala. ⚠️ Upozornění z nálezu („přidá to do tiku další
+  volání debouncovaného čítače") **padlo tím, že se F-0030 opravilo ve stejném
+  commitu** — `datalog_sd_card_present()` už stav neposouvá, jen ho čte.
+  ⚠️ `sd_export_unmount()` leží pod hlavičkou „VÝHRADNĚ z UartTasku", ale platí to
+  o *ostatních* funkcích v té sekci: tahle na médium nesahá (`f_mount(NULL,…)`
+  jen zahodí ukazatel, reset `is_initialized` je zápis do RAM), takže ji defaultTask
+  volat smí. Je to u volání napsané.
+  Ověřeno v obrazu: `sd_export_tick` nově skáče na `sd_export_unmount`.
 
 ---
 
@@ -132,7 +141,22 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Vztah k lekcím:** `L-0012` (guard nasazený jen na část symetrických cest);
   po opravě **nová lekce** — „obrana, která je opt-in, musí být vyjmenovaná
   u všech volajících, jinak ji třetí volající nedostane“.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW** — **minimální variantou**, ne systémovou.
+  Vzniklo `sd_export_busy_begin/end()` v `sd_export.h` a používá ho
+  `screenshot_save_sd()` i `ui_refresh_capacity()`. **Obojí jako OBALKA nad
+  vyčleněným tělem** (`begin(); r = body(); end();`), protože `screenshot_save_sd`
+  má **osm** chybových návratů a na žádném se příznak nesmí ztratit — tentýž vzor,
+  jaký už měly `sd_export_run()`/`_selftest()`.
+  **Proč ne systémová varianta** (přesunout auto-unmount do UartTasku): nález sám
+  ji označuje za „není minimální" a za střední riziko, protože mění vlastnictví
+  a dotkne se chování při hot-removal. Zařízení funguje; §F5.0 v takovém případě
+  volí menší zásah. Zůstává jako možnost, kdyby se ukázalo, že opt-in příznak
+  nestačí.
+  🔑 V hlavičce je nově napsané, že `sd_export_busy_*` a `sd_blocking_*` se volají
+  **obojí** — každé řeší něco jiného (priorita × deregistrace svazku). Právě to,
+  že to nikde nestálo, způsobilo, že třetí volající dostal jen polovinu obrany.
+  Nová lekce **`L-0022`**. Ověřeno v obrazu: `screenshot_save_sd` obepíná tělo
+  dvojicí `sd_export_busy_begin`/`_end`.
 
 ---
 
@@ -177,7 +201,16 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   a to se nesmí stát v době, kdy je karta odmountovaná a piny mají být jinak.
 - **Vztah k lekcím:** `L-0012`; pravidlo samo je v `gpio_guard.h`, chybí jen
   jeho uplatnění.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Obě místa obalena `gpio_cfg_lock()/unlock()`:
+  `sd_dat_pullup_enable()` (vlastní soubor) a `HAL_SD_MspInit` přes **USER CODE**
+  bloky `SDMMC1_MspInit 0` / `1`, takže zámek drží přes **oba** generované
+  `HAL_GPIO_Init` (GPIOC i GPIOD) a regenerace z CubeMX to nesmaže.
+  ⚠️ **Doplnění PC8–PC12 do `GG_PINS` ZÁMĚRNĚ NEPROBĚHLO** — nález to sám označuje
+  za samostatnou změnu s pastí: hlídač by pak SD piny **opravoval**, a to se nesmí
+  stát v době, kdy je karta odmountovaná a piny mají být jinak. Zůstává otevřené
+  jako vědomé rozhodnutí, ne opomenutí.
+  Ověřeno v obrazu: `gpio_cfg_lock` je nově volán z `HAL_SD_MspInit`
+  a `sd_dat_pullup_enable` (vedle dosavadních `encoder_init` a `fpga_freq_init`).
 
 ---
 
@@ -261,7 +294,10 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Riziko opravy:** nízké — mění se jen chování při už existující chybě.
 - **Vztah k lekcím:** **`L-0003`** (ignorovaná návratová hodnota) + `L-0012`
   (pravidlo aplikované na jednu ze tří kopií).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu a ještě o kus dál**:
+  kontroluje se `f_close()` **i hlavičkový `f_write()`** (nález ho zmiňoval jako
+  druhou polovinu). Obojí nastaví `s_state = SD_EXP_ERROR` a vrátí `-1`, což už
+  znamená „export selhal" — volající se tedy nemění.
 
 ---
 
@@ -297,8 +333,19 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   s vloženou kartou vrátí `false` a `true` až po třech voláních; po změně bude
   stejné chování vázané na tik. Ověřit, že auto-mount po startu pořád nastane.
 - **Vztah k lekcím:** nová lekce po opravě — „stav v `static` uvnitř dotazovací
-  funkce se stane sdíleným, jakmile přibude druhý volající“.
-- **Stav:** otevřeno
+  funkce se stane sdíleným, jakmile přibude druhý volající“ → **`L-0023`**.
+- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Opraveno **podle návrhu**: dotaz a aktualizace
+  oddělené — `datalog_sd_card_present()` už jen **čte** `s_det_stable` (smí se tedy
+  ptát kdokoli odkudkoli) a stav posouvá nový `datalog_sd_det_tick()`, volaný
+  **jediným místem**: `sd_export_tick()` v defaultTasku. Tím zmizel souběh i
+  nedefinovaná časová konstanta.
+  ⚠️ **Pořadí při bootu prověřeno**, jak nález žádal: `datalog_sd_det_tick()` je
+  **první** řádek tiku, hned před dotazem, takže se překlopení do „karta je tam"
+  stane po `SD_DET_STABLE_N` (3) tikách stejně jako dřív a auto-mount po startu
+  nastane. Jediná změna je, že ostatní úlohy už čítač neposouvají — tedy méně
+  překlopení, ne víc.
+  ⚠️ `s_det_force` (override `sd force on`) nastaví `s_det_stable` rovnou, aby se
+  na override nečekaly tři tiky.
 
 ---
 

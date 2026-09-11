@@ -11,9 +11,10 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-modul 7 (**F-0026 je S2 s poškozením haldy**) — to je poslední modul bez fáze oprav.
-Pak F5 pro modul 11 (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické sekce,
-zatímco SCPI i IPC ji mají).
+**rozhodnout F-0028** (SDMMC_CK 32 MHz proti 25MHz limitu Default Speed — tři varianty)
+a pak dobrat F-0031 (`docs:`). Souběžně čeká F5 pro modul 11 (**F-0052 je S2** — dotyková
+cesta píše `g_meas_cfg` bez kritické sekce, zatímco SCPI i IPC ji mají).
+🔴 **Všechny moduly už mají zapsané nálezy** (1–11); zbývají jen fáze oprav a ověření na HW.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -61,7 +62,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
-| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
+| 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **skupina A opravena** (2 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
@@ -77,8 +78,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 1 | 0 |
-| S2 | 3 | 6 | 0 |
-| S3 | 10 | 18 | 0 |
+| S2 | 1 | 8 | 0 |
+| S3 | 7 | 21 | 0 |
 | S4 | 2 | 7 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
@@ -113,6 +114,27 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   kterého byla doba běhu neviditelná.
   ⚠️ **Tím se odblokovalo ověření F-0037 na desce** — σy@1s už nebude po bootu držená
   na nule.
+
+**Modul 7 — skupina A opravena 2026-09-11 (⬜ neověřeno na HW):**
+- **F-0025** [S2] tik volá `sd_export_unmount()` místo holého `f_mount(NULL,…)` → po
+  vytažení a vložení karty se SD zase namountuje (dřív 30 s čekání a trvalý stav ERROR).
+- **F-0026** [S2] `sd_export_busy_begin/end()` vystaveno v hlavičce; používá ho
+  `screenshot_save_sd()` (osm chybových návratů → **obalka nad vyčleněným tělem**)
+  i `ui_refresh_capacity()`. **Minimální varianta**, ne přesun vlastnictví unmountu —
+  nález sám tu druhou označuje za střední riziko. Lekce **L-0022**.
+- **F-0027** [S3] `gpio_cfg_lock()` kolem obou `HAL_GPIO_Init(GPIOC,…)` v SD cestě
+  (v `sdmmc.c` přes USER CODE bloky → regen-safe).
+  ⚠️ **PC8–PC12 se do `GG_PINS` ZÁMĚRNĚ nedoplnily** — hlídač by SD piny opravoval
+  i v době, kdy je karta odmountovaná a mají být jinak. Vědomé rozhodnutí.
+- **F-0029** [S3] `export_body()` kontroluje `f_close()` **i hlavičkový `f_write()`**.
+- **F-0030** [S3] debounce detekce karty: dotaz oddělen od aktualizace
+  (`datalog_sd_det_tick()` volá **jediná** úloha). Lekce **L-0023**.
+- **Ověření:** build 0 varování, `audit.py` 92 OK/0/2, `.text` 599 176 → **599 272 B**
+  (+96); v obrazu `datalog_sd_det_tick` (68 B), `sd_export_busy_begin/end`,
+  `gpio_cfg_lock` nově volán z `HAL_SD_MspInit` i `sd_dat_pullup_enable`,
+  `screenshot_save_sd` obepíná tělo dvojicí busy.
+- **Zbývá:** **F-0028** (potřebuje rozhodnutí — 32 MHz vs. 25MHz limit Default Speed)
+  a **F-0031** (`docs:`, ale body 2/3/5 se odvozují od hodnoty, kterou určí F-0028).
 
 **Modul 11 — nálezy zapsány 2026-09-11 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. Okna se chovají jako kreslicí kód — přesně jak modul 10

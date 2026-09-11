@@ -43,6 +43,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0019 | Účetnictví, které se veze se stavem (diagnostika, paměť, invalidace), připoj ke ZMĚNĚ toho stavu, ne k některé z cest, které k ní vedou. | `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musí být prázdný |
 | L-0020 | Duplicitu, kterou je dražší odstranit než snést, převeď na KONTROLU rozdílu — a tu kontrolu vždy ověř pozitivní kontrolou, jinak jsi jen přidal zelené světlo. | `scripts/check_lessons.sh` sekce „dispatch podle `s_view`" |
 | L-0021 | Práce, která blokuje jinou práci, musí hlásit, jak dlouho ještě poběží — jinak je její doba trvání neviditelná a nikdo ji neodhalí. A než začneš optimalizovat, přečti hlavičku funkce, kterou voláš. | `status` → `ADEV rekonstrukce:` |
+| L-0022 | Obrana, která je opt-in, je neúplná, dokud není u NÍ vyjmenované, kdo ji musí zavolat — a proč nestačí ta druhá, která vypadá podobně. | u každého `s_busy`/`lock` v hlavičce seznam volajících + čím se liší od sousední obrany |
+| L-0023 | `static` uvnitř dotazovací funkce přestane být privátní ve chvíli, kdy přibude druhý volající. Dotaz odděl od aktualizace: číst smí kdokoli, posouvat stav jen jedna úloha. | funkce se `static` stavem a víc než jedním volajícím = nález |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -548,7 +550,61 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0039
 - **Stav:** aktivni
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0022, L-0023, … -->
+### L-0022 — Obrana, ktera je opt-in, dojde jen na ty volajici, kteri o ni vedi
+
+- **Datum:** 2026-09-11
+- **Oblast:** FatFs / SD / sdilene zdroje mezi ulohami
+- **Symptom:** Projekt mel proti odmountovani svazku pod rukama jine ulohy obranu —
+  priznak `s_busy`, ktery na dobu dlouhe operace vypne auto-unmount. Byl ale nasazeny
+  jen na DVA ze CTYR dlouhych zapisovatelu. `screenshot sd` (1,15 MB) a `f_getfree()`
+  ho nenastavovaly, takze vytazeni karty behem nich znamenalo
+  `osSemaphoreDelete` -> `vPortFree` nad semaforem, ktery druha uloha PRAVE DRZI —
+  tedy zapis do uvolnene haldy FreeRTOS (audit F-0026).
+- **Pricina:** Obrana byla **opt-in a nikde nebylo napsane, kdo ji ma zapnout**.
+  Navic vedle ni zila druha, podobne vypadajici obrana (`sd_blocking_begin/end`,
+  ktera resi PRIORITU, ne svazek) — a `screenshot sd` volal prave tu. Vypadalo to
+  tedy jako osetreny pripad, i kdyz byl osetreny jen z poloviny.
+- **Oprava:** `sd_export_busy_begin/end()` vystaveno v hlavicce a u nich napsano
+  (a) **ze se volaji SPOLU** se `sd_blocking_*`, (b) **cim se lisi**, (c) ze se
+  nastavuji vyhradne obalkou nad vyclenenym telem.
+- **Pravidlo:** **Obrana, ktera je opt-in, je neuplna, dokud neni U NI vyjmenovane,
+  kdo ji musi zavolat — a proc nestaci ta druha, ktera vypada podobne.** Kdyz vedle
+  sebe zijou dve podobne pojmenovane obrany, je to samo o sobe duvod to napsat:
+  pristi volajici si vybere jednu a bude si myslet, ze ma hotovo.
+- **Detekce:** U kazdeho priznaku typu `s_busy`/`lock`, ktery neco vypina, si vypis
+  VSECHNY dlouhe operace nad tymz zdrojem a over, ze ho maji vsechny. Tady:
+  `grep -n "s_busy = " sd_export.c` proti seznamu volajicich `f_write`/`f_getfree`
+  nad svazkem.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0026
+- **Stav:** aktivni
+
+### L-0023 — `static` v dotazovaci funkci prestane byt privatni s druhym volajicim
+
+- **Datum:** 2026-09-11
+- **Oblast:** detekce SD karty / sdileny stav mezi ulohami
+- **Symptom:** `datalog_sd_card_present()` drzela `static uint8_t stable, cnt;` a
+  menila je pri KAZDEM dotazu. Volaly ji ale **tri ulohy** (defaultTask, UiTask,
+  UartTask) ruznou kadenci. Dusledky dva: neatomicky read-modify-write nad sdilenym
+  stavem, a hlavne — casova konstanta debounce byla **nedefinovana**, protoze tri
+  nezavisle kadence se scitaly (audit F-0030).
+- **Pricina:** Funkce byla napsana jako dotaz a chovala se jako tik. Komentar u ni
+  rikal „casovou konstantu urcuje kadence volajiciho" — coz byla pravda, dokud byl
+  volajici jeden. Nikdo tu vetu nezkontroloval, kdyz pribyli dalsi dva.
+- **Oprava:** Dotaz oddelen od aktualizace: `datalog_sd_card_present()` uz jen cte,
+  novy `datalog_sd_det_tick()` posouva stav a vola ho **jedina** uloha.
+- **Pravidlo:** **`static` uvnitr dotazovaci funkce prestane byt privatni ve chvili,
+  kdy pribude druhy volajici.** Kdyz funkce vypada jako dotaz (`*_present()`,
+  `*_get()`, `*_is_*()`), ale meni stav, oddel to: cist smi kdokoli, posouvat stav
+  jen jedna uloha.
+  ⚠️ A kdyz komentar mluvi o „kadenci volajiciho", je to signal, ze funkce ma
+  **jednoho** volajiciho — over, jestli to jeste plati.
+- **Detekce:** Funkce se `static` promennou, ktera se v ni **zapisuje**, a s vic nez
+  jednim volajicim napric ulohami = nalez. Hledat pres `grep -n "static.*;" ` uvnitr
+  funkci + spocitat volajici.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0030
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0024, L-0025, … -->
 
 ---
 
