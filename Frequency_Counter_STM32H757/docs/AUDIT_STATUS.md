@@ -3,7 +3,7 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-11 (10. sezení — modul 9 F5, pak modul 10 F3)
+**Poslední aktualizace:** 2026-09-11 (10. sezení — moduly 7/9/10/11 + **první HW ověření**)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
@@ -11,8 +11,10 @@
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
 **Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** (viz níže); pak buď F5 pro
-**F5 pro modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické
-sekce, zatímco SCPI i IPC ji mají; F-0053 a F-0054 jsou drobné).
+**rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a pak **F5 pro
+modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické sekce,
+zatímco SCPI i IPC ji mají).
+⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
 🔴 **Všechny moduly 1–11 mají zapsané nálezy a jediný modul bez dokončené fáze oprav
 je 11.** Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
@@ -50,6 +52,29 @@ Otevřené otázky na HW: crash black-box pro
 `Error_Handler()` volaný **před** `MX_RTC_Init()` (modul 1) a retenční test `membench`
 nad rozsahem `bg_cache` (modul 2, F-0013 — nástroj `bgcheck` už existuje).
 
+## ✅ HW OVĚŘENO 2026-09-11 (po flashi a POWER-ON resetu)
+
+První běh oprav z 2026-09-11 na desce. `status` hlásil `Reset: power-on`, takže
+požadavek `L-0010` (ověření až po power-cyklu) je splněný.
+
+| nález | co se ověřilo | důkaz z desky |
+|---|---|---|
+| **F-0037** | σy@1s už není nulová a má správný řád | `STATISTIKA: sigma_y@1s = 6224849 e-15` = **6,2e-9** (dřív `0 e-15`); mezi dvěma čteními se hýbe → živé vzorkování běží |
+| **F-0039** | rekonstrukce ADEV už neblokuje | `ADEV rekonstrukce: hotova, vlozeno 0 z 133763 zaznamu` už při **uptime 33 s** — sonda našla log bez platného měření a přeskočila ho (dřív 1 h 47 min) |
+| **F-0047** | diagnostika okna hlásí pravdu | `s_view=8` (spořič) → po `ui` → `s_view=0`, `zmen` 3→4. **Obě ta okna byla mezi 17, která se dřív do diagnostiky nikdy nezapsala.** |
+| **F-0048** | počítadlo hloubky navigace | nový řádek `UI: navigace (ZPET) max 0/6`, bez značky přetečení |
+| **F-0028** | 🔑 **pojistka na taktu se uplatnila** | `sbernice: 4-bit, SDMMC_CK 16.000 MHz, Default Speed (limit 25 MHz)` — HS přepnutí na téhle kartě **neprošlo**, takže takt zůstal v mezích a karta funguje (`f_mount: 0 OK`, 30 GB). Bez pojistky bychom jeli 32 MHz v DS. `sd diag` se vrátil okamžitě → zbytkové riziko zatuhnutí se neprojevilo. |
+| **F-0031** | odvozený výpis | `sd diag` nově uvádí **režim i platný limit**, ne jen takt |
+| **F-0027** | nic se nerozbilo | `GPIO HLIDAC: 0 oprav` |
+| modul 8 | meze z F-0033/F-0036 drží | `DMA2D: chyb 0, timeout 0 | max cekani 62.371 ms (mez 500)`, `LTDC podteceni 0/247`, `FONTY: 0` |
+
+⬜ **Zbývá ověřit ručně na desce** (potřebuje prst / encoder / kartu):
+**F-0046** a **F-0051** (fokus po tapu v okně se seznamem — MENU → tap na RESTART →
+ZPĚT → znovu MENU → otočit encoderem), **F-0025** (vytáhnout a vložit kartu → mount
+musí projít), **F-0026/F-0029/F-0030** (operace s kartou).
+
+🔴 **HW test odhalil nový nález — viz F-0055 níže.**
+
 ## Přehled modulů
 
 Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `komentáře hotové`
@@ -59,7 +84,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 1 | konfigurace hodin/PWR | `main.c`, `system_*.c` | CM7 | opraveno (2 otevřené) | 2026-09-09 | 0 | 2 | 5 | 0 | [7](audit/2026-09-09_hodiny-pwr.md) |
 | 2 | MPU / cache / linker | `main.c MPU_Config`, `*.ld` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 2 | [6](audit/2026-09-09_mpu-cache-linker.md) |
 | 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
-| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány | 2026-09-10 | 1 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
+| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány (+1 z HW) | 2026-09-11 | 2 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
@@ -77,7 +102,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 1 | 1 | 0 |
+| S1 | 2 | 1 | 0 |
 | S2 | 1 | 8 | 0 |
 | S3 | 6 | 22 | 0 |
 | S4 | 1 | 8 | 0 |
@@ -114,6 +139,20 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   kterého byla doba běhu neviditelná.
   ⚠️ **Tím se odblokovalo ověření F-0037 na desce** — σy@1s už nebude po bootu držená
   na nule.
+
+**Modul 4 — nový nález z HW 2026-09-11:**
+- **F-0055** [S1] **`selftest` z UART přeteče zásobník UartTasku a IWDG shodí desku.**
+  Reprodukováno 2×; po restartu `Reset: WATCHDOG!  stack:UartTask`. UartTask má 4096 B
+  a jen **976 B** volna (high-water), do kterých se musí vejít celý řetěz
+  `run_selftests()` — přitom `gps_selftest` má rámec 468 B, `mp_selftest` 428 B,
+  `scpi_selftest` 264 B → `scpi_exec_one` 260 B.
+  🔴 Audit zásobníků ve STATUS #146 měřil UartTask na 33 % volna a uzavřel „ostatní
+  tasky mají dost" — jenže **měřil běžný provoz**, ne stav se selftestem.
+  ⚠️ `CLAUDE.md` přitom `selftest` vede jako nástroj č. 4 „nejdřív měř" s cenou
+  **zdarma**, takže metodika doporučuje příkaz, který shodí desku.
+  ✅ **Není to regrese z dnešních oprav** — obě verze `freertos_task_uart.c` přeloženy
+  týmiž flagy dávají **shodný rámec 700 B**, a všechny těžké rámce leží v souborech,
+  kterých se opravy nedotkly. **Potřebuje rozhodnutí** (3 varianty v nálezu).
 
 **Modul 7 — skupina A opravena 2026-09-11 (⬜ neověřeno na HW):**
 - **F-0025** [S2] tik volá `sd_export_unmount()` místo holého `f_mount(NULL,…)` → po

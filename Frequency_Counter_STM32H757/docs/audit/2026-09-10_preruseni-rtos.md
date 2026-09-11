@@ -151,6 +151,75 @@ přesně v situaci, pro kterou byly napsané.
 
 ---
 
+### F-0055 [S1] `selftest` z UART přeteče zásobník UartTasku a shodí desku
+
+- **Místo:** `CM7/Core/Src/freertos_task_uart.c` (příkaz `selftest` → `run_selftests()`),
+  velikost zásobníku `CM7/Core/Src/freertos.c:564` (`UartTask_attributes.stack_size = 1024*4`)
+- **Popis:** UART příkaz `selftest` **deterministicky přeteče zásobník UartTasku**.
+  Hook to zachytí, zapíše do crash black-boxu a IWDG desku resetuje.
+- **Důkaz — změřeno na desce 2026-09-11, reprodukováno 2× za sebou:**
+  - Výstup se utne vždy na stejném místě (po pěti vypsaných testech, uprostřed
+    závěrečného řádku `SELFTE…`) a USB CDC konzole odpadne.
+  - Po restartu `status`:
+    ```
+    RUNNING gpsdo-ui v0.8.1  uptime 27s
+    Reset: WATCHDOG!  stack:UartTask
+      RSR=0x04460000  <-- WATCHDOG/CRASH
+    ```
+    Tedy přesně ten řetězec, kterým TODO #10 ověřovalo detekci přetečení
+    (`stacktest yes`) — jen ho tentokrát vyvolal běžný diagnostický příkaz.
+  - **Rozpočet:** `UartTask` má **4096 B**, změřený high-water `free` je **976 B**
+    (`status` → `stack Uart free 976 B`), tedy běžný vrchol ~3120 B. Do těch 976 B se
+    musí vejít celý řetěz `run_selftests()`. Změřené rámce (`objdump`, `sub sp,#N`):
+    `gps_selftest` **468 B**, `mp_selftest` **428 B**, `scpi_selftest` **264 B** →
+    `scpi_exec_one` **260 B**, `ipc_selftest` 228 B, `datalog_selftest` 196 B.
+    Už dvojice `scpi_selftest → scpi_exec_one` s uloženými registry přesahuje 600 B
+    a `scpi_process_ctx` mezi nimi se ještě přičítá.
+    ⚠️ Přesný nejhlubší řetěz **není určen** — `objdump` ukáže rámec funkce, ne
+    nejhlubší cestu; na to je potřeba `-fstack-usage` (metoda ze STATUS #146).
+  - 🔴 **Proč to dosavadní audit zásobníků nechytil:** STATUS #146 (2026-09-05) měřil
+    `-fstack-usage` proti `osThreadGetStackSpace`, vyšlo mu **UartTask 33 % volno** a
+    uzavřel to větou *„Ostatní tasky mají dost — neměnit naslepo."* Měřil ale **běžný
+    provoz**, ne stav, kdy z UartTasku poběží `run_selftests()`. Na běžný provoz je
+    33 % dost, na selftest ne.
+  - `CLAUDE.md` přitom `selftest` vede jako **nástroj č. 4 v pořadí „nejdřív měř"**
+    s cenou **„zdarma"**, a u `run_selftests` má zdokumentované **tři** volající včetně
+    „UartTask `selftest`". Metodika projektu tedy doporučuje příkaz, který shodí desku.
+- **Dopad:** Deterministický a **destruktivní**: reset přístroje (ztráta uptime,
+  přerušené měření, zahozená statistika). Navíc **falešná stopa při diagnostice** —
+  po resetu `status` hlásí `WATCHDOG! stack:UartTask`, což vypadá jako samovolný pád,
+  zatímco to způsobil právě ten příkaz, kterým se porucha měla vyšetřovat.
+  ⚠️ Boot-time selftest (z `defaultTask`, stack 3584 B, volno 1712 B) je v pořádku —
+  vada je **jen** na cestě z UartTasku.
+- **Reprodukce:** `selftest` na konzoli → výpis se utne → po ~4 s reset →
+  `status` ukáže `Reset: WATCHDOG!  stack:UartTask`. **Ověřeno 2×.**
+- 🔑 **NENÍ to regrese z oprav 2026-09-11** — doloženo dvěma nezávislými způsoby:
+  1. Obě verze `freertos_task_uart.c` (stav před `d3a099e` a po dnešních commitech)
+     přeloženy **týmiž** flagy z `CM7/Release/Core/Src/subdir.mk` → rámec
+     `UartTask_run` je **700 B v obou**.
+  2. Každý měřitelný rámec na cestě selftestu leží v souborech, kterých se dnešní
+     opravy nedotkly (`scpi.c`, `gps.c`, `meas_present.c`, `ipc.c`). Z měněných
+     souborů přispívá `screen_main_selftest` **36 B** a `app_gpsdo_selftest` **0 B**.
+- **Návrh opravy:** Tři cesty, liší se cenou — **rozhodnutí patří uživateli**:
+  1. **Zvětšit zásobník UartTasku** (4096 → 5120 B). Nejlevnější, ale ubírá ze společné
+     haldy (32768 B) a jen posouvá hranici. ⚠️ Změnit i v `.ioc`, jinak to regen vrátí
+     (stejně jako #146 u defaultTasku).
+  2. **Nespouštět `run_selftests()` z UartTasku** — příkaz jen nastaví požadavek a
+     vykoná ho úloha, která má rezervu (vzor `g_membench_req`/`g_sd_req`, v projektu
+     zavedený). Nejčistší, ale mění, kdo test vlastní.
+  3. **Zmenšit nejtěžší rámce** (`gps_selftest` 468 B, `mp_selftest` 428 B → statické
+     buffery, jako se to udělalo u `pn_selftest` v #45). Dlouhodobě nejlepší, protože
+     pomůže i ostatním volajícím, ale je to nejvíc práce.
+  ⚠️ **Než se sáhne na kterýkoli rámec, změř to `-fstack-usage`**, ne `objdump`.
+- **Riziko opravy:** varianta 1 nízké, varianta 2 střední (mění vlastnictví testu),
+  varianta 3 nízké na kus, ale dotkne se víc souborů.
+- **Vztah k lekcím:** **`L-0016`** (mez i měřidlo její rezervy se navrhují společně —
+  rezerva se tu měřila, ale ne ve stavu, ve kterém dochází) a **nová lekce po opravě**:
+  „rezervu zásobníku měř v NEJHORŠÍM dosažitelném stavu úlohy, ne v běžném".
+- **Stav:** otevřeno — **potřebuje rozhodnutí** (tři varianty výše)
+
+---
+
 ## Co bylo zkontrolováno a je v pořádku
 
 **D. Priority a souběh**
