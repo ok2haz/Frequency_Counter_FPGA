@@ -63,7 +63,7 @@ požadavek `L-0010` (ověření až po power-cyklu) je splněný.
 | **F-0039** | rekonstrukce ADEV už neblokuje | `ADEV rekonstrukce: hotova, vlozeno 0 z 133763 zaznamu` už při **uptime 33 s** — sonda našla log bez platného měření a přeskočila ho (dřív 1 h 47 min) |
 | **F-0047** | diagnostika okna hlásí pravdu | `s_view=8` (spořič) → po `ui` → `s_view=0`, `zmen` 3→4. **Obě ta okna byla mezi 17, která se dřív do diagnostiky nikdy nezapsala.** |
 | **F-0048** | počítadlo hloubky navigace | nový řádek `UI: navigace (ZPET) max 0/6`, bez značky přetečení |
-| **F-0028** | 🔑 **pojistka na taktu se uplatnila** | `sbernice: 4-bit, SDMMC_CK 16.000 MHz, Default Speed (limit 25 MHz)` — HS přepnutí na téhle kartě **neprošlo**, takže takt zůstal v mezích a karta funguje (`f_mount: 0 OK`, 30 GB). Bez pojistky bychom jeli 32 MHz v DS. `sd diag` se vrátil okamžitě → zbytkové riziko zatuhnutí se neprojevilo. |
+| **F-0028** | 🔑 **pojistka na taktu se uplatnila** | `sbernice: 4-bit, SDMMC_CK 16.000 MHz, Default Speed (limit 25 MHz)` — HS přepnutí na téhle kartě **neprošlo**, takže takt zůstal v mezích a karta funguje (`f_mount: 0 OK`, 30 GB). `sd diag` se vrátil okamžitě → zbytkové riziko zatuhnutí se neprojevilo. ⚠️ **Tohle měření platilo pro 16MHz variantu; na žádost uživatele je provozní takt od té doby 32 MHz — viz níže.** |
 | **F-0031** | odvozený výpis | `sd diag` nově uvádí **režim i platný limit**, ne jen takt |
 | **F-0027** | nic se nerozbilo | `GPIO HLIDAC: 0 oprav` |
 | modul 8 | meze z F-0033/F-0036 drží | `DMA2D: chyb 0, timeout 0 | max cekani 62.371 ms (mez 500)`, `LTDC podteceni 0/247`, `FONTY: 0` |
@@ -104,7 +104,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 1 | 0 |
 | S2 | 1 | 8 | 0 |
-| S3 | 6 | 22 | 0 |
+| S3 | 7 | 21 | 0 |
 | S4 | 1 | 8 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
@@ -172,6 +172,18 @@ zahrnuje i **částečně** opravené (dnes F-0018).
   (+96); v obrazu `datalog_sd_det_tick` (68 B), `sd_export_busy_begin/end`,
   `gpio_cfg_lock` nově volán z `HAL_SD_MspInit` i `sd_dat_pullup_enable`,
   `screenshot_save_sd` obepíná tělo dvojicí busy.
+🔶 **F-0028 je ČÁSTEČNĚ opravený — na žádost uživatele se provozní takt vrátil na
+32 MHz (2026-09-11, po HW testu).** Pojistka „při selhání HS zůstaň na 16 MHz" tím padla;
+identifikace a CMD6 dál běží na 16 MHz (v mezích) a pokus o HS se dál dělá, ale
+**provozní takt je 32 MHz i když HS neprojde** — tedy jako `.ioc` (`SDMMC1.ClockDiv=1`).
+Na testované kartě HS neprošel, takže sběrnice jede **~28 % nad limitem Default Speed**.
+🔑 **Co z opravy zůstává a je to to podstatné: stav přestal být tichý.** `sd diag` hlásí
+takt, režim, platný limit **a značku `<-- NAD LIMITEM`**. Nález F-0028 vznikl právě
+proto, že se o provozu mimo specifikaci nikde nic nedozvíš — a to opravené je.
+⚠️ Až karta začne hlásit `DATA_CRC_FAIL` nebo přerušovaně poškozený export, **začni
+řádkem `sbernice`**, ne datovou cestou. Lekce **L-0024** přepsána, aby netvrdila, že
+kód padá na bezpečnou hodnotu (netvrdí — tvrdí, že ten stav je vidět).
+
 ✅ **F-0028 a F-0031 dobrány 2026-09-11** (rozhodnutí uživatele: doplnit High Speed):
 - **F-0028** [S3] identifikace i CMD6 běží na **16 MHz** (`SD_CLKDIV_DS`, v mezích DS)
   a na **32 MHz** (`SD_CLKDIV_HS`) se jde **až po úspěšném** `HAL_SD_ConfigSpeedBusOperation`.

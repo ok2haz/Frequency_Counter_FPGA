@@ -1434,14 +1434,18 @@ region = ~242 dní; dřív tu chybně stálo „~600".)
 ### SD karta (`datalog_sd.c`, SDMMC1) — SW HOTOVÝ 2026-08-11 (#28), ale **záměrně VYPNUTÝ**
 **SDMMC1 je v `.ioc`** (4-bit, CM7): PC8–11 = D0–D3, PC12 = CK, PD2 = CMD (AF12).
 Detaily + past při regeneraci = `CUBEMX_CHECKLIST.md` sekce SDMMC1.
-🔴 **Takt se řídí REŽIMEM karty, ne `.ioc`** (audit F-0028, 2026-09-11): identifikace
-i CMD6 běží na `SD_CLKDIV_DS` = **16 MHz** (limit Default Speed je 25 MHz) a na
-`SD_CLKDIV_HS` = **32 MHz** se jde **až po úspěšném přepnutí do High Speed**
-(limit 50 MHz). Když se přepnutí nepovede, zůstane 16 MHz — přístroj tedy není mimo
-specifikaci v žádném případě. Do 2026-09-11 bylo natvrdo 32 MHz s komentářem citujícím
-limit 50 MHz, přestože do HS se karta nikdy nepřepínala (~28 % nad spec).
-⚠️ **Hodnotu neopisuj** — `sd diag` řádek `sbernice` ji vypíše z `CLKCR` **i s režimem
-a platným limitem**; to je jediný důvěryhodný zdroj.
+🔴 **Takt je dvoufázový** (audit F-0028, 2026-09-11): identifikace a CMD6 běží na
+`SD_CLKDIV_INIT` = **16 MHz** (v mezích Default Speed, limit 25 MHz), provozní takt je
+pak `SD_CLKDIV_RUN` = **32 MHz**, stejně jako `.ioc` (`SDMMC1.ClockDiv=1`).
+🔴 **Provozní 32 MHz se nastaví I KDYŽ přepnutí do High Speed neprojde — vědomé
+rozhodnutí (2026-09-11) kvůli propustnosti exportu.** Na testované kartě HS neprošel,
+takže sběrnice dnes jede **~28 % nad limitem Default Speed**. Přenos funguje po HW
+úpravě (odstraněn R60 = pull-up na CK, bulk kondenzátor na SD VDD 10 µF), ale **rezerva
+je vybraná do nuly**.
+⚠️ **Až karta začne hlásit `DATA_CRC_FAIL` nebo přerušovaně poškozený export, ZAČNI
+TÍMHLE, ne datovou cestou.** `sd diag` řádek `sbernice` vypíše z `CLKCR` takt, režim,
+platný limit a při překročení značku **`<-- NAD LIMITEM`** — hodnotu nikam neopisuj,
+tenhle řádek je jediný důvěryhodný zdroj.
 - 🔴🔴 **`HardwareFlowControl` MUSÍ být ENABLE** (v `.ioc` chyběl). Bez něj má `CLKCR` bit17
   `HWFC_EN=0` a na H7 SDMMC **datová cesta vůbec nejede**: příkazy (init/CID/CSD → `TRANSFER`) projdou,
   ale **blokový přenos nedostane ani bajt** (`DPSMACT` visí, `STA=0x1000`, `HAL_SD_ReadBlocks` SW

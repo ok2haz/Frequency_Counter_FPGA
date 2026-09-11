@@ -45,7 +45,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0021 | Práce, která blokuje jinou práci, musí hlásit, jak dlouho ještě poběží — jinak je její doba trvání neviditelná a nikdo ji neodhalí. A než začneš optimalizovat, přečti hlavičku funkce, kterou voláš. | `status` → `ADEV rekonstrukce:` |
 | L-0022 | Obrana, která je opt-in, je neúplná, dokud není u NÍ vyjmenované, kdo ji musí zavolat — a proč nestačí ta druhá, která vypadá podobně. | u každého `s_busy`/`lock` v hlavičce seznam volajících + čím se liší od sousední obrany |
 | L-0023 | `static` uvnitř dotazovací funkce přestane být privátní ve chvíli, kdy přibude druhý volající. Dotaz odděl od aktualizace: číst smí kdokoli, posouvat stav jen jedna úloha. | funkce se `static` stavem a víc než jedním volajícím = nález |
-| L-0024 | Když limit závisí na REŽIMU, nastav hodnotu až PO ověření, že režim opravdu naskočil — a při selhání spadni na bezpečnou. Pořadí „nastav a doufej" dělá z výpadku tichý provoz mimo specifikaci. | `sd diag` → řádek `sbernice` musí uvádět takt **i režim i platný limit** |
+| L-0024 | Když limit závisí na REŽIMU, hodnota se smí nastavit nad limit jen po ověření režimu — a když se to vědomě poruší, musí to být VIDĚT. Tiché „nastav a doufej" je to, co se zakazuje; hlášený provoz nad limitem je rozhodnutí. | `sd diag` → řádek `sbernice` uvádí takt, režim, limit a značku `<-- NAD LIMITEM` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -620,17 +620,24 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   ⚠️ Vlastni pojistka HAL to nechytne: porovnava `ClockDiv` proti
   `sdmmc_clk / (2 x SD_NORMAL_SPEED_FREQ)`, coz je celociselne `64e6/50e6 = 1` —
   takze `ClockDiv = 1` (32 MHz) projde, prestoze je nad 25 MHz.
-- **Oprava:** Vychozi je **bezpecna** hodnota (`SD_CLKDIV_DS` = 16 MHz); prepnuti do
-  HS se zkusi a teprve pri `HAL_OK` se zvedne takt na `SD_CLKDIV_HS` (32 MHz).
-  Pri jakemkoli selhani zustava 16 MHz. `sd diag` hlasi takt **i rezim i platny limit**.
-- **Pravidlo:** **Kdyz limit zavisi na REZIMU, nastav hodnotu az PO overeni, ze rezim
-  opravdu naskocil — a pri selhani spadni na bezpecnou hodnotu, ne na tu vyssi.**
-  Poradi „nastav a doufej" dela z vypadku prepnuti **tichy provoz mimo specifikaci**;
-  poradi „over, pak zvedni" dela z tehoz vypadku jen pomalejsi, ale spravny provoz.
-  🔑 A druha polovina: **do diagnostiky patri i REZIM, ne jen hodnota.** Samotny takt
-  neni overitelny udaj, kdyz strop zavisi na necem, co vypis neukazuje.
-- **Detekce:** `sd diag` -> radek `sbernice` musi uvadet takt, rezim i limit; takt
-  nad limitem uvedeneho rezimu = nalez.
+- **Oprava:** Identifikace a prepinaci prikaz bezi na **bezpecne** hodnote
+  (`SD_CLKDIV_INIT` = 16 MHz, v mezich DS); pokus o HS se udela a `sd diag` hlasi
+  takt, rezim, platny limit **a znacku `<-- NAD LIMITEM`**, kdyz je takt nad nim.
+  ⚠️ **Provozni takt je 32 MHz i kdyz HS neprojde — VEDOME rozhodnuti uzivatele
+  (2026-09-11) kvuli propustnosti exportu.** Lekce tedy NEtvrdi, ze kod pada na
+  bezpecnou hodnotu; tvrdi, ze ten stav je VIDET.
+- **Pravidlo:** **Kdyz limit zavisi na REZIMU, smi se hodnota nastavit nad limit az po
+  overeni rezimu — a kdyz se to vedome porusi, MUSI to byt videt.**
+  Zakazane je tiche „nastav a doufej": vypadek prepnuti pak udela **nepoznatelny**
+  provoz mimo specifikaci. Hlaseny provoz nad limitem je naopak legitimni rozhodnuti —
+  nekdo ho udelal, vi o nem a diagnostika ho pripomene, az zacne karta zlobit.
+  🔑 A druha polovina, ktera je tim DULEZITEJSI: **do diagnostiky patri i REZIM, ne
+  jen hodnota.** Samotny takt neni overitelny udaj, kdyz strop zavisi na necem, co
+  vypis neukazuje. Kdyz se rozhodne jet nad limitem, je ten radek jedina obrana.
+- **Detekce:** `sd diag` -> radek `sbernice` musi uvadet takt, rezim i limit.
+  Znacka `<-- NAD LIMITEM` neni sama o sobe nalez (dnes je to vedomy stav), ale je to
+  **prvni misto, kam se podivat**, kdyz karta zacne hlasit `DATA_CRC_FAIL` nebo
+  preruvane poskozeny export. Nalez by byl, kdyby ten radek rezim NEUVADEL.
   Obecne: u kazde konstanty, jejiz komentar cituje nejaky „limit", over, ze rezim,
   pro ktery ten limit plati, je opravdu zapnuty.
 - **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0028
