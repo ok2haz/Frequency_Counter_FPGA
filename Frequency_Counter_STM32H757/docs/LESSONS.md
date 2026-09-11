@@ -421,7 +421,36 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nález F-0034
 - **Stav:** aktivní
 
-<!-- Nové záznamy přidávej sem, ID pokračuje L-0018, L-0019, … -->
+### L-0018 — Dva vypocty teze veliciny: oprav obe, nebo vyrob jeden zdroj pravdy
+
+- **Datum:** 2026-09-11
+- **Oblast:** metrologie / hlavni obrazovka
+- **Symptom:** Frakcni odchylka `y = (f-f0)/f0` se pocitala **dvakrat**. V
+  `screen_main.c stats_sample()` pevnym meritkem `y = off_n * 1e-14f`, ktere plati
+  jen pro `frac == 7` a `f0 == 10 MHz`; v `app_gpsdo.c` (rekonstrukce z datalogu)
+  spravne jako `(hz - f0) / f0`. Obe cesty pritom sypou vzorky do **teze** ADEV
+  pyramidy, takze se v ni michala dve ruzna meritka. Pri dnesnim vychozim stavu
+  (SIM, `frac == 6`) byla vsechna zobrazena cisla **10x mensi**, nez odpovida signalu.
+- **Pricina:** Konstanta `1e-14` vznikla zkracenim `10^-frac / f0` za predpokladu,
+  ktery **prestal platit** ve chvili, kdy se `s_freq_frac` i `s_freq_nominal_hz`
+  staly dynamickymi (dynamicky format headline). Komentar u toho radku ty dva
+  predpoklady poctive vyjmenovaval — a presto se prehlizely, protoze se cetly
+  jako popis, ne jako podminka platnosti.
+- **Oprava:** `screen_main_frac_dev(double hz)` = **jediny** vypocet, ktery volaji
+  obe cesty. Oprava „na miste" (prepsat vzorec v `stats_sample`) by nechala dve
+  kopie vzorce, tedy presne stav, ktery tu vadu vyrobil.
+- **Pravidlo:** **Dve mista, ktera pocitaji touz velicinu, nejsou duplicita kodu —
+  jsou to dve ruzne pravdy cekajici, az se rozejdou.** Kdyz pri oprave najdes druhou
+  instanci, neopravuj ji zvlast: sluc je do jedne funkce a uved ji v nalezu.
+  (Zesileni `L-0012`, ktere zatim rikalo jen „opravit obe".)
+- **Detekce:** `status` -> radek `STATISTIKA: sigma_y@1s` (pridan touz opravou,
+  protoze sigma_y sla do te doby precist **jen z displeje** — opravu tedy neslo
+  na desce overit, jen ji verit). Hodnota musi odpovidat radu signalu; skok o
+  dekadu pri prechodu SIM<->REAL znamena, ze se meritka opet rozesla.
+- **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0037
+- **Stav:** aktivni
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0019, L-0020, … -->
 
 ---
 
