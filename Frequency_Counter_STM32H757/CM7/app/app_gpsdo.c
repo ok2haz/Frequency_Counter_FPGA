@@ -3242,6 +3242,17 @@ static void app_gpsdo_render_errlog(void)
     ui_button_render(&eb);
     ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
     ui_button_render(&bb);
+    /* 🔴 Okno MUSI flipnout SAMO. Vola se z tabulky `TOOLS_ITEMS` pres ukazatel
+     * (`TOOLS_ITEMS[i].fn()`) a volajici za nej flip nedodela: obsluha tapu jen
+     * vrati `true` a UiTask na to reaguje POUZE zvukovou odezvou `alarm_click()`.
+     * Bez tohohle radku se cele okno nakreslilo do ZADNIHO bufferu a nikdy se
+     * neukazalo — dlazdice „Chyby (log)" pusobila mrtve, prestoze `s_view` uz
+     * bylo 51. Navenek to vypadalo jako „tlacitko nic nedela, jen klikne";
+     * ten klik byl pritom dukaz, ze dotyk obslouzeny BYL.
+     * ⚠️ Vsech ostatnich 21 oken v `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` flip
+     * uvnitr ma — tohle bylo jedine, ktere ho nemelo. Hlida to nove
+     * `scripts/check_lessons.sh` (sekce „okna z dlazdicovych tabulek"). */
+    present_now();
 }
 
 void app_gpsdo_render_tools(void)   /* s_view=48 — NASTROJE (z footeru Diagnostiky) */
