@@ -7894,9 +7894,12 @@ static int stats_seed_tick(void)
         if (r.freq_x100000 == 0u) continue;                 /* bez FPGA linku */
         if (r.flags & DATALOG_F_SIM) continue;              /* emulovana data */
         double hz = (double)r.freq_x100000 * 1e-5;
-        double f0 = screen_main_freq_nominal();
-        if (f0 <= 0.0) continue;
-        screen_main_adev_seed_10s((float)((hz - f0) / f0));
+        /* ⚠️ Vzorec `(hz - f0) / f0` se tu driv pocital RUCNE — a ziva cesta
+         * (`stats_sample`) mela svuj vlastni, ktery se s nim rozesel (F-0037).
+         * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
+         * zdroj pravdy; `screen_main_frac_dev` vraci 0, dokud nominal nezname. */
+        if (screen_main_freq_nominal() <= 0.0) continue;   /* nominal jeste nezname */
+        screen_main_adev_seed_10s(screen_main_frac_dev(hz));
         s_seed_done++;
     }
     if (s_seed_left == 0) {

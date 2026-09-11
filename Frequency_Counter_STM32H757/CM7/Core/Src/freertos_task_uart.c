@@ -2158,6 +2158,16 @@ void UartTask_run(void *argument)
 					  	{ uint32_t mg = prim_text_missing_glyphs();
 					  	  printf("FONTY: preskocenych glyfu %lu%s\n", (unsigned long)mg,
 					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)"); }
+					  	/* σy@1s — do 2026-09-11 slo precist JEN z displeje, takze oprava
+					  	 * meritka frakcni odchylky (F-0037) nesla na desce overit, jen ji
+					  	 * verit. Tiskne se v jednotkach 1e-15 (celociselne — `%f` nano.specs
+					  	 * neumi). Radove ocekavani pro dnesni SIM (~0,05 Hz kolem 10 MHz):
+					  	 * jednotky az desitky 1e-9, tedy radove 1e6 v tehle jednotce.
+					  	 * ⚠️ Plni ho UiTask jen kdyz bezi hlavni obrazovka — v jinem okne
+					  	 * hodnota STOJI (neni to chyba mereni). */
+					  	{ float a = g_adev_1s;
+					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
+					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
 					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
 					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich

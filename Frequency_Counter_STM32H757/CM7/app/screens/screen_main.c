@@ -64,10 +64,26 @@ extern volatile uint8_t g_ui_cfg_req_pend;
  * ZVOLENE casove zone z Nastaveni; UTC kdyz je zona 0 — label zony k tomu dava
  * g_tz_label). Dokud nebyl RTC srovnan z GPS, vraci placeholdery
  * "--:--:--" / "no GPS". time8/date10 = char[16]. */
+/* ⚠️ `g_rtc_text_local` zapisuje defaultTask (`rtc_app_tick`, 1 Hz, `strncpy`,
+ * BEZ zamku), cteme ho z UiTasku -> cteni muze zastihnout pulku stare a pulku
+ * nove hodnoty. Nejhorsi realny dopad je jeden snimek s pomichanym casem, pres
+ * pulnoc i s datem.
+ * 🔴 PAROVE MISTO: `get_fattime()` v `CM7/FATFS/App/fatfs.c` cte TENTYZ retezec
+ * a ochranu uz mel — tady chybela (audit F-0038, trida `L-0012`). Pouzit je
+ * ZAMERNE tentyz vzor, at se ty dve kopie daji porovnat: precti dvakrat a
+ * shodni se; pisar tika 1x za sekundu, takze dve cteni tesne za sebou prakticky
+ * nemuzou padnout do dvou ruznych zapisu. Kdyz se lisi, bereme druhou kopii —
+ * ta uz je za zapisem.
+ * ⚠️ Sdilena funkce pro obe mista NENI mozna: `fatfs.c` je generovany a nema
+ * USER CODE blok pro include, proto si tam `extern` deklaruje rucne. */
 static void rtc_time_date(char *time8, char *date10)
 {
-    char rt[24];
-    strncpy(rt, (const char *)g_rtc_text_local, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+    char rt[24], again[24];
+    for (int attempt = 0; attempt < 3; attempt++) {
+        strncpy(rt,    (const char *)g_rtc_text_local, sizeof rt - 1);    rt[sizeof rt - 1] = '\0';
+        strncpy(again, (const char *)g_rtc_text_local, sizeof again - 1); again[sizeof again - 1] = '\0';
+        if (strcmp(rt, again) == 0) break;   /* dve po sobe jdouci cteni shodna -> stabilni */
+    }
     if (g_rtc_synced && strlen(rt) >= 19) {
         snprintf(time8,  16, "%.8s",  rt + 11);   /* "HH:MM:SS" */
         snprintf(date10, 16, "%.10s", rt);        /* "YYYY-MM-DD" */
@@ -1122,11 +1138,41 @@ static void trend_feed(float v);    /* fwd — decimacni pyramida (dlouhodoby tr
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
 
+/* ── JEDINY ZDROJ PRAVDY pro frakcni odchylku y = (f − f0) / f0 ───────────────
+ * f0 = `s_freq_nominal_hz` = rad prave merene veliciny; 0 = jeste nezname
+ * (pred prvnim merenim, nebo kmitocet < 1 Hz) -> vraci 0.
+ *
+ * 🔴 PROC TO JE FUNKCE, A NE VZOREC NA MISTE (audit F-0037): tenhle vypocet
+ * existoval DVAKRAT a obe kopie se rozesly. `stats_sample` pouzival pevne
+ * meritko `off_n * 1e-14`, ktere plati JEN pro `s_freq_frac == 7` a `f0 == 10 MHz` —
+ * jenze obojí je dynamicke (`frac` je 7 hi-res / 6 SIM / 5 pro vetev /16 a `f0`
+ * je cokoli od 32 kHz po 1,4 GHz). V dnesnim vychozim stavu (SIM, frac = 6)
+ * vychazela `y` **10x mensi**, pri vetvi /16 100x. Druha cesta
+ * (`stats_seed_tick` v app_gpsdo.c, rekonstrukce z datalogu) pocitala SPRAVNE —
+ * a obe konci ve STEJNE ADEV pyramide, takze se v ni michala dve meritka.
+ * Zive na tom visi Offset, σy@1s, Drift, trend, histogram, σy(τ) tabulka,
+ * Allanuv graf, ℒ(f) i prahovy monitor (`g_adev_1s`).
+ * ⚠️ Kdo bude potrebovat `y` na tretim miste, VOLA TOHLE — nepise vzorec znovu.
+ *
+ * ⚠️ Presnost: pracuje se s ABSOLUTNIM kmitoctem, ne s odchylkou v LSB. Pri
+ * 1,4 GHz a 7 desetinach je `s_freq_n` ~1,4e16, tedy nad presnym rozsahem
+ * double (2^53 ≈ 9e15) — zaokrouhleni je ale ~2 LSB = 2e-7 Hz, zatimco
+ * nejmensi odchylka, ktera nas zajima, je pri tom kmitoctu ~0,014 Hz
+ * (rozliseni TDC). Relativni chyba ~2e-5 je proti sumu mereni zanedbatelna
+ * a stoji za to mit JEDEN vzorec misto dvou. */
+float screen_main_frac_dev(double hz)
+{
+    double f0 = s_freq_nominal_hz;
+    if (f0 <= 0.0) return 0.0f;
+    return (float)((hz - f0) / f0);
+}
+
 static void stats_sample(void)
 {
-    /* off_n = odchylka v LSB (LSB=1e-7 Hz), f0=1e7 Hz -> y = off_n*1e-14 */
-    int64_t off_n = (int64_t)s_freq_n - (int64_t)s_freq_center;
-    float y = (float)off_n * 1e-14f;
+    /* `s_freq_n` je v LSB = 10^-`s_freq_frac` Hz -> na Hz a pak pres jediny
+     * zdroj pravdy vyse. (Drive tu bylo pevne `off_n * 1e-14` — viz F-0037.) */
+    double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
+    float  y = screen_main_frac_dev(f);
     s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;

@@ -153,6 +153,14 @@ float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste 
 void  screen_main_adev_seed_10s(float y);
 /** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
 double screen_main_freq_nominal(void);
+
+/** Frakcni odchylka y = (hz − f0) / f0 proti `screen_main_freq_nominal()`.
+ *  0 = nominal jeste nezname.
+ *  🔴 JEDINY ZDROJ PRAVDY — tenhle vypocet existoval dvakrat a obe kopie se
+ *  rozesly (audit F-0037): ziva cesta pouzivala pevne meritko platne jen pro
+ *  10 MHz a 7 desetin, rekonstrukce z datalogu pocitala spravne, a obe plnily
+ *  TUTEZ ADEV pyramidu. Kdo potrebuje `y`, vola tohle — nepise vzorec znovu. */
+float screen_main_frac_dev(double hz);
 /** #45: L(f) [dBc/Hz] fazoveho sumu z ringu fluktuaci pro offset nejblizsi
  *  `target_hz`. Vyplni `f_used`/`l_dbc`. @return 1=spocteno (>=64 s dat), 0=malo dat. */
 int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc);
