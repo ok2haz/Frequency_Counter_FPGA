@@ -37,7 +37,8 @@ fail = []
 
 
 def step(n, name):
-    print('\n== %d) %s %s' % (n, name, '=' * max(0, 58 - len(name))))
+    """`n` smi byt i retezec (`'5b'`) — krok pribyl mezi zabehla cisla."""
+    print('\n== %s) %s %s' % (n, name, '=' * max(0, 58 - len(name))))
 
 
 def run(cmd, must_pass=True, label=None):
@@ -105,6 +106,13 @@ def main():
 
     step(5, 'dom_check.py (chybejici/duplicitni id, kotvy, <div>)')
     run([sys.executable, os.path.join(HERE, 'dom_check.py'), HTML], label='dom_check')
+
+    # 5b, ne 6: cislovani zbytku je zabehle (CLAUDE.md na nej odkazuje) a poradi
+    # ma vecny duvod — meritko prvni, definitivni `nm` posledni. Tahle kontrola
+    # patri sem, mezi strukturu DOM a chovani JS: uz vi, ze stranka drzi pohromade,
+    # a jeste nezacala testovat vypocty.
+    step('5b', 'json_kontrakt.py (cte SPA pole, ktera server emituje?)')
+    run([sys.executable, os.path.join(HERE, 'json_kontrakt.py'), SRC], label='json_kontrakt')
 
     step(6, 'JS testy')
     if os.path.exists(NODE):
