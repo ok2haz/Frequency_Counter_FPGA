@@ -59,6 +59,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0035 | Rámec funkce je vlastnost CELÉ funkce, ne větve — GCC rezervuje lokály všech cest už při vstupu, takže velký lokál v jednom příkazu ubere zásobník i cestám, které ho nepoužijí. Měř rámec nad `.elf`, ne odhadem ze zdrojáku. | `scripts/check_lessons.sh` → rámec `UartTask_run` ≤ 1024 B; ručně `objdump -d` a `sub sp, #N` |
 | L-0036 | Kadence dat je vlastnost PŘENOSU, ne konstanta konzumenta. Když se transport změní (poll → push), přehodnoť každý výpočet, který si tempo odvozoval — „počet vzorků = sekundy“ přestane platit tiše a graf začne lhát o čase, ne o hodnotách. | u každé historie se ptej: kdo rozhoduje, KDY přibude vzorek? grep na `length` použitou jako čas |
 | L-0037 | Přesun tajemství do bezpečnějšího úložiště není hotový, dokud se nesmaže z toho starého — jinak oprava mine právě ty, kdo produkt už používali. | po změně úložiště přidej jednorázový úklid a ověř ho na profilu, kde stará hodnota leží |
+| L-0038 | Kontrakt mezi dvěma jazyky uvnitř JEDNOHO obrazu nehlídá nikdo — překladač vidí jen svou půlku. Producent a konzument dat se rozejdou stejně snadno jako dva projekty, jen tišeji: v JS je chybějící pole `undefined`, ne chyba. | `tools/spa/json_kontrakt.py` (krok 5b); obecně: u každé hranice jazyků se ptej, co ten rozpor ohlásí |
+| L-0039 | Pozitivní kontrola musí obsahovat KAŽDOU vadu, kvůli které kontrola vznikla — ne jednu zástupnou. Jinak projde a ta druhá zůstane neviditelná. | ke každé nové kontrole napiš tolik pozitivních případů, kolik nálezů ji vyvolalo, a spusť je všechny |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -1072,6 +1074,59 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 velicinu: warm-up si web odvozoval z `uptime_s`, pristroj z `warmup_ready()`).
 Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 **vysledek**, ne vstupy.
+
+---
+
+### L-0038 — kontrakt mezi dvema jazyky uvnitr jednoho obrazu nehlida nikdo
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` — `build_state_json()` (C) a `SPA_HTML` (JS)
+  v temze souboru; nalezy F-0078 a F-0079
+- **Co se stalo:** klient cetl `gps.valid` a `gps.nsat`. Ani jedno pole v odpovedi
+  neni: `valid` se neemituje vubec a `nsat` lezi o uroven vys (v bloku `gps` je
+  `num_sat`). Dusledek byl trvaly a tichy — karta HOLDOVER hlasila `NO LOCK`
+  i pri 3D fixu a karta KVALITA GPS zustala navzdy prazdna.
+- 🔑 **Nejsilnejsi na tom je, ze obe poloviny jsou v JEDNOM souboru, jednom commitu
+  a jednom obrazu.** Neni to rozjeta verze ani zapomenuty deploy: producent
+  i konzument se preloz(il)i spolu — jen kazdeho kontroluje neco jineho. C prekladac
+  vidi `jputf("\"num_sat\":%u")` jako obycejny retezec, JS zadny prekladac nema
+  a cteni neexistujiciho pole je v nem `undefined`, tedy platna hodnota.
+- **Oprava:** `valid` odvozen z `fix_mode >= 2` (tentyz zdroj, jaky pouziva pilulka
+  v hlavicce), `nsat` -> `num_sat`; a hlavne **kontrola** `tools/spa/json_kontrakt.py`
+  zapojena jako krok 5b overovaciho retezce.
+- **Pravidlo:** **Hranice mezi jazyky uvnitr jednoho obrazu je stejne krehka jako
+  hranice mezi dvema projekty — jen tissi.** U kazde takove hranice se zeptej,
+  CO ohlasi rozpor. Kdyz odpoved zni „nic", patri tam kontrola, ne opatrnost.
+  ⚠️ Tyz vzor plati pro C ↔ Python nastroje (jmena symbolu v `check_lessons.sh`),
+  C ↔ linker skript (jmena sekci) a firmware ↔ `.ioc`.
+- **Detekce:** `python tools/spa/json_kontrakt.py` (soucast `check.py`).
+- **Commit:** `4a6e4ba` (oprava), `2d5f35f` (kontrola), viz
+  `docs/audit/2026-09-12_spa-web.md`, F-0078 a F-0079
+- **Stav:** aktivni
+
+---
+
+### L-0039 — pozitivni kontrola musi obsahovat KAZDOU vadu, kvuli ktere vznikla
+
+- **Kde:** `tools/spa/json_kontrakt.py`, pri opravach F-0078 a F-0079
+- **Co se stalo:** nova kontrola hranice JSON mela pokryt oba nalezy. Pozitivni
+  kontrolu jsem udelal na obou — a vyplatilo se to: pripad (b) (`nsat` existuje,
+  ale jinde) **zakricel spravne**, zatimco pripad (a) (`gps.valid` neexistuje
+  vubec) **prosel TISE**. Kontrola tedy nenasla prave ten nalez, kvuli kteremu
+  primarne vznikla.
+- **Proc:** `drawTfom` dostava stav pres `var s=LAST;`, ne jako parametr; nastroj
+  umel jen parametr a `LAST.` primo, takze cele telo te funkce ignoroval.
+  🔴 Kdybych pozitivni kontrolu udelal jen na jednom (lehcim) pripadu, mel bych
+  zelenou kontrolu, ktera **prehlizi polovinu tridy vad** — a duveroval bych ji.
+- **Oprava:** doplnena lokalni kopie korene (`var s=LAST`) + komentar primo v kodu
+  kontroly, proc tam ten radek je.
+- **Pravidlo:** **Pozitivnich pripadu musi byt tolik, kolik nalezu kontrolu
+  vyvolalo** — jeden zastupny nestaci, protoze tridu vad obvykle tvori vic cest
+  a nastroj muze umet jen nektere. Doplnek k **L-0020**.
+  ⚠️ Stejne plati po kazdem rozsireni kontroly: novy pripad = novy pozitivni test.
+- **Detekce:** u kazde kontroly si vypsat nalezy, ktere ji vyvolaly, a overit, ze
+  na kazdem z nich skonci nenulovym kodem.
+- **Commit:** `2d5f35f`, viz `docs/audit/2026-09-12_spa-web.md`
+- **Stav:** aktivni
 
 ---
 

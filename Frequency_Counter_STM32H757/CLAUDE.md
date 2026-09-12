@@ -1223,6 +1223,12 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
       5. **`dom_check.py`** — JS sahající na **neexistující `id`**, duplicitní `id`, rozbité kotvy,
          nevyvážené `<div>`. ⚠️ `$('neexistuje')` je v prohlížeči **TypeError a od té chvíle se
          přestane kreslit VŠECHNO za tím** — `node --check` ani překlad C to neodhalí.
+      5b. **`json_kontrakt.py`** (2026-09-12, audit F-0078/F-0079) — **čte SPA pole, která
+         server opravdu emituje?** Producent (`build_*_json`, C) i konzument (JS) jsou v JEDNOM
+         souboru a jednom obrazu, přesto se rozešly: `drawTfom` četl `gps.valid` (neexistuje)
+         a `push('ns')` četl `gps.nsat` (leží o úroveň výš). 🔴 **V JS je chybějící pole
+         `undefined`, ne chyba**, takže se to projevilo jen jako trvale špatná karta a žádný
+         z ostatních kroků na to nedosáhl. Rozlišuje „neemituje vůbec" od „existuje, ale jinde".
       6. JS testy: `spa_test` `hov_test` `unc_test` `pwr_test` `mdev_test` `pn_test` `alarm_test`
          `pref_test` `axis_test` (běží nad **vyextrahovaným** JS, ne nad kopií — vytahují si funkce
          ze zdroje přes `grab()`, takže se nemůžou rozejít s tím, co se doopravdy servíruje).
