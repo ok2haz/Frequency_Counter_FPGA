@@ -939,8 +939,16 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
      * Rozpocet: nejdelsi hlavicka je `SENSe:FREQuency:APERture` (24 zn.) + mezera
      * + argument v exponencialnim tvaru (~20 zn.) => 96 B ma rezervu ~50 %. */
     size_t total = 0;
-    char sub[96];
-    char rb[64];
+    /* 🔴 `static`, ne na zasobniku (merení na desce 2026-09-12): UartTask ma 4096 B
+     * a pri `scpi` prikazu z konzole klesl volny stack na **168 B** — retez
+     * `UartTask_run (700) + scpi_process (492) + scpi_process_ctx + scpi_exec_one`
+     * je sam o sobe ~1,6 kB. Tyhle dva buffery (160 B) proto patri do `.bss`.
+     * ⚠️ Bezpecne, protoze `scpi_process_ctx` NENI reentrantni a bezi vzdy jen
+     * z jednoho kontextu: na CM7 z UartTasku, na CM4 z hlavni smycky (lwIP
+     * callbacky jsou tamtez). Stejny duvod a stejny vzor jako `static` buffery
+     * v `gps_selftest`/`scpi_selftest`/`pn_selftest`. */
+    static char sub[96];
+    static char rb[64];
     _Static_assert(sizeof(sub) > 48, "sub musi pojmout celou hlavicku hdr[48] i s argumentem");
     _Static_assert(sizeof(rb) >= 32, "rb musi pojmout nejdelsi chybovou odpoved (31 B)");
     while (*line) {
