@@ -156,6 +156,36 @@ if [ -f "$APPG" ]; then
     fi
 fi
 
+# ── Rámec `UartTask_run` nesmí utéct (audit F-0077) ──────────────────────────
+# `UartTask_run` je JEDNA funkce o ~2000 řádcích a GCC rezervuje rámec VŠECH
+# lokálů už při vstupu. Dnes je rámec ~700 B jen proto, že optimalizátor sloty
+# lokálů v disjunktních větvích sdílí — to ale není záruka: velký lokál přidaný
+# do libovolného nového příkazu zvedne rámec VŠEM cestám naráz.
+# Přesně tím projekt už jednou přetekl (3600 B `waste` jako lokál → rámec 4904 B
+# > 4096 B zásobník → HardFault při prvním USB znaku, STATUS #34).
+# ⚠️ Měří se nad OBRAZEM, takže to platí až po buildu; bez `.elf` se přeskakuje.
+# ⚠️ Mez je vědomě nízká: UartTask má 4096 B a podle F-0074 mu při `scpi` zbývá
+# ~168 B, takže rámec nad 1 kB je důvod se zastavit, ne čekat na přetečení.
+UART_FRAME_MAX=1024
+UART_ELF="CM7/Release/H757_LED_CM7.elf"
+if [ -f "$UART_ELF" ]; then
+    OBJD="$(ls -d /c/ST/STM32CubeIDE_*/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*.win32_*/tools/bin 2>/dev/null | sort | tail -1)"
+    if [ -n "$OBJD" ] && [ -x "$OBJD/arm-none-eabi-objdump.exe" ]; then
+        UART_FRAME="$( "$OBJD/arm-none-eabi-objdump.exe" -d "$UART_ELF" \
+            | awk '/^[0-9a-f]+ <UartTask_run>:/{f=1;next} f&&/^[0-9a-f]+ </{exit} \
+                   f&&match($0,/sub(\.w)?[ \t]+sp, (sp, )?#([0-9]+)/,m){if(m[3]+0>max)max=m[3]+0} \
+                   END{print max+0}' )"
+        if [ -n "$UART_FRAME" ] && [ "$UART_FRAME" -gt "$UART_FRAME_MAX" ]; then
+            echo "[!] ZAKÁZÁNO: rámec UartTask_run je ${UART_FRAME} B > ${UART_FRAME_MAX} B"
+            echo "    GCC rezervuje rámec všech lokálů při vstupu, takže velký lokál"
+            echo "    v JEDNOM příkazu ubere zásobník VŠEM cestám (viz F-0077/F-0074)."
+            echo "    Řešení: ten lokál udělat 'static' (vzor: bgcheck, stats, scpi ipc)."
+            echo
+            NALEZY=$((NALEZY + 1))
+        fi
+    fi
+fi
+
 if [ "$NALEZY" -eq 0 ]; then
     echo "OK: žádný zakázaný vzor nenalezen."
     exit 0
