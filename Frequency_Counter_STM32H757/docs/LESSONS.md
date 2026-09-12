@@ -54,6 +54,9 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0030 | Počet iterací nikdy nesmí záviset na vstupu zvenčí bez meze — a mez odvoď z rozsahu cílového typu, ne odhadem. Ochrana patří PŘED drahou operaci, ne za ni. | grep na `while (n-- > 0)` / `for` s hranicí z parsovaného vstupu; u SCPI vektor `1E999` → `*ok == 0` |
 | L-0031 | Datový typ je taky mez. Než začneš zlepšovat algoritmus, spočítej ULP typu, ve kterém hodnota přichází — a porovnej ho s přesností, kterou slibuješ. | u každé metriky konvergence/rozptylu uveď, jaké je rozlišení VSTUPU, ne jen akumulátoru |
 | L-0032 | Kontrola integrity podmíněná přítomností toho, co kontroluje, není kontrola. Chybí-li kontrolní součet, je to důvod data zahodit, ne je pustit dál. | grep na `if (checksum_je_pritomen) { kontroluj }` bez `else return` |
+| L-0033 | Odmítnutí vstupu patří do VĚTVENÍ, ne do řízení smyčky. `continue` v dlouhé smyčce přeskočí i všechno, co je za ním — u smyčky s obsluhami na konci to není odmítnutí příkazu, ale vypnutí funkcí. | u každého `continue`/`break`/`return` ve smyčce přečti tělo AŽ NA KONEC a vyjmenuj, co se přeskočí |
+| L-0034 | Mez ověř PŘED použitím hodnoty, ne po něm — konverze `double`→celé číslo mimo rozsah je UB (ne oříznutí) a odečet v `size_t` podteče na obrovské číslo (ne na zápor). Obojí selže tiše a překladač mlčí. | grep na `(uint64_t)`/`(uint32_t)` nad hodnotou z parseru a na `sizeof(x) - i` s neověřeným `i` |
+| L-0035 | Rámec funkce je vlastnost CELÉ funkce, ne větve — GCC rezervuje lokály všech cest už při vstupu, takže velký lokál v jednom příkazu ubere zásobník i cestám, které ho nepoužijí. Měř rámec nad `.elf`, ne odhadem ze zdrojáku. | `scripts/check_lessons.sh` → rámec `UartTask_run` ≤ 1024 B; ručně `objdump -d` a `sub sp, #N` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -899,6 +902,115 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Detekce:** grep na `if (<kontrolni_udaj_existuje>) { kontroluj }` bez
   `else return`. U parseru vstupu se na to ptej u KAZDE volitelne casti ramce.
 - **Commit:** `b483158`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0065
+- **Stav:** aktivni
+
+---
+
+### L-0033 — `continue` v dlouhe smycce neodmita prikaz, ale vypina funkce
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`UartTask_run`), oprava F-0073.
+  🔴 **Tohle je moje vlastni chyba, zachycena pred commitem** — zapisuje se proto,
+  ze byla naprosto neviditelna v diffu a vypadala jako spravne reseni.
+- **Co se stalo:** utnuty prikaz se mel NEPROVEST. Napsal jsem to takhle:
+  ```c
+  if (s_rx_trunc) { s_rx_trunc = 0; printf("ERR …"); continue; }
+  ```
+  Cetl jsem to jako „preskoc zpracovani prikazu". Jenze `UartTask_run` je jedna
+  `for (;;)` smycka o ~2000 radcich a **za** zpracovanim prikazu, uplne dole, jeste
+  bezi `sd_export_service()`, `datalog_erase_service()`, `membench_service()`,
+  `qspi_req_service()` a zaverecny `osDelay(1)`. `continue` tedy neodmitl prikaz —
+  **vypnul na tu iteraci export na SD, mazani datalogu, benchmark pameti i QSPI
+  pozadavky** a odebral smycce jedine misto, kde ustupuje scheduleru.
+- 🔑 **Proc to slo prehlednout:** odmitnuti prikazu a obsluhy pozadavku z UI jsou
+  dve nesouvisejici veci, ktere jen bydli v tomtez tele smycky. Diff mel tri radky
+  a zadny z nich se tech obsluh netykal — souvislost je **1800 radku daleko**.
+- **Oprava:** odmitnuti je prvni clen uz existujiciho `else if` retezu:
+  ```c
+  if (s_rx_trunc) { s_rx_trunc = 0; printf("ERR …"); }
+  else if (RxBuffer[0] == '\0') { /* nic */ }
+  else if (strcmp(RxBuffer, "led on") == 0) { … }
+  ```
+  Vetveni vyjadruje presne to, co jsem chtel (tenhle prikaz se neprovede), a nesaha
+  na beh smycky.
+- **Pravidlo:** **Odmitnuti vstupu patri do VETVENI, ne do rizeni smycky.**
+  U kazdeho `continue`/`break`/`return` uvnitr smycky precti telo **az na konec** a
+  vyjmenuj, co se preskoci. V dlouhe smycce s obsluhami na konci je `continue`
+  skoro vzdy chyba.
+  ⚠️ Plati i pro `return` v inicializacni funkci, za kterou jeste neco bezi.
+- **Detekce:** grep na `continue;` ve funkci delsi nez obrazovka; pak se zeptej,
+  co je mezi nim a `}` smycky. Nova veta v `docs/STYLE_CZ.md` to nezachyti — je to
+  otazka na telo funkce, ne na formu.
+- **Commit:** `b1aa262` (oprava uz v poradi; chybny mezistav se necommitoval),
+  viz `docs/audit/2026-09-12_uart-konzole.md`, F-0073
+- **Stav:** aktivni
+
+---
+
+### L-0034 — mez PRED pouzitim: konverze mimo rozsah a odecet v `size_t`
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` — `fpgasim on <Hz>` (F-0075)
+  a `fpgaraw` (F-0076)
+- **Co se stalo:** dve ruzne podoby teze chyby, obe v jednom souboru.
+  1. **`fpgasim on 99999999999999999999`** — parser cetl cislice do `double` bez
+     horni meze (kontroloval jen `hz < 1.0`), takze vysledek byl ~1e20. Nasledne
+     `(uint64_t)(hz * 100000.0)` je **nedefinovane chovani**, ne zabaleni: ARM to
+     provede jako `VCVT` se saturaci, ale spolehat se na to nelze a hodnota je
+     stejne nesmyslna.
+  2. **`fpgaraw`** — `p += snprintf(line + p, sizeof(line) - p, …)` bez kontroly
+     `p`. `sizeof` je `size_t`, takze pri `p > sizeof(line)` **podtece** na ~1,8e19
+     a `snprintf` dostane kapacitu, kterou nema. Dnes je to nedosazitelne
+     (16 bajtu x 3 znaky = 48 ze 64), ale rezerva je **16 B** — staci zmenit format.
+- 🔑 **Spolecny jmenovatel:** v obou pripadech se hodnota **nejdriv pouzila** a
+  teprve pak (nebo vubec) omezila. Prekladac na obojim mlci a `-fanalyzer` taky,
+  protoze mez zavisi na vstupu za behu.
+- **Oprava:** mez uvnitr akumulacni smycky (`if (hz < 1.0e12) hz = hz*10 + …`) plus
+  strop `4.0e9` shodny s `fmt_scpi_hz_d`; u `snprintf` podminka
+  `if (p >= 0 && (size_t)p < sizeof line)` pred pouzitim.
+  ⚠️ Mez **uvnitr** smycky je zamerne: cislice se dal ctou (parser zustane
+  synchronizovany), jen se uz nepricitaji.
+- **Pravidlo:** **Mez over PRED pouzitim hodnoty.** Konverze `double`→celociselny
+  typ mimo rozsah je UB, ne orez; odecet v bezznamenkovem typu podtece na obrovske
+  cislo, ne na zapor. Ani jedno neni „nepravdepodobne cislo", obojim jde projit.
+- **Detekce:** grep na `(uint64_t)`/`(uint32_t)` nad hodnotou z parseru a na
+  `sizeof(x) - i`, kde `i` neni tesne predtim overene.
+- **Commit:** `b1aa262`, viz `docs/audit/2026-09-12_uart-konzole.md`, F-0075/F-0076
+- **Stav:** aktivni
+
+---
+
+### L-0035 — ramec je vlastnost cele funkce, ne vetve (a meri se nad `.elf`)
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`UartTask_run`, 1 966 radku),
+  nalezy F-0077 a F-0074
+- **Co se stalo:** cela konzole je **jedna funkce**, ve ktere ma kazdy prikaz svou
+  vetev a sve lokaly. GCC ale rezervuje ramec **vsech** lokalu uz pri vstupu do
+  funkce, takze velke pole v obsluze jednoho prikazu ubere zasobnik i vsem ostatnim
+  cestam — vcetne tech, ktere se toho prikazu nikdy nedotknou.
+  Projekt uz tim jednou pretekl: docasny `waste[3600]` udelal ramec 4904 B proti
+  4096 B zasobniku → HardFault pri prvnim znaku z USB (STATUS #34).
+  Dnes je ramec **700 B** jen proto, ze optimalizator sloty disjunktnich vetvi
+  sdili — coz je vlastnost prekladu, ne zaruka.
+- 🔑 **Odhad ze zdrojaku tu nefunguje.** Soucet deklarovanych lokalu je o rad vetsi
+  nez skutecny ramec (sdilene sloty) a naopak volana funkce si pridava svuj
+  (`scpi_process` 492 B, `scpi_exec_one` 268 B). Jedine pouzitelne cislo je
+  `sub sp, sp, #N` v disassembly **slinkovaneho obrazu**.
+- **Opatreni:** do `scripts/check_lessons.sh` pribyla kontrola, ktera ramec
+  `UartTask_run` zmeri v `CM7/Release/H757_LED_CM7.elf` (objdump) a **kricí nad
+  1024 B**. Mez je zamerne nizko: UartTask ma 4096 B a na desce mu zbyva 168 B.
+  🔴 **Pozitivni kontrola je soucast tohohle opatreni, ne volitelny doplnek
+  (L-0020):** poprve kontrola vracela **0 B** — awk mel `match()` se tremi
+  skupinami a cetl `m[2]` misto `m[3]`, takze by mlcela nad jakkoli velkym ramcem.
+  Overeno snizenim meze na 256 B (musi zakricet: 700 > 256) a zamenou symbolu za
+  neexistujici (musi mlcet a nespadnout).
+- **Pravidlo:** **Ramec funkce je vlastnost cele funkce, ne vetve.** Velky lokal
+  patri do `static` (kdyz je funkce jednovlaknova) nebo do vlastni funkce —
+  a jestli to platit zustalo, se overuje **merenim nad obrazem**, ne cetbou.
+- **Detekce:** `scripts/check_lessons.sh`; rucne
+  `objdump -d … | awk '/<fn>:/{f=1} f&&/sub.*sp, #/{print}'`.
+- **Souvislost:** velikost samotneho zasobniku UartTasku resi **TODO #243**
+  (`.ioc`, rozhodnuti uzivatele) — tahle lekce je o tom, aby ramec nerostl znovu.
+- **Commit:** kontrola v `scripts/check_lessons.sh`, viz
+  `docs/audit/2026-09-12_uart-konzole.md`, F-0077
 - **Stav:** aktivni
 
 ---

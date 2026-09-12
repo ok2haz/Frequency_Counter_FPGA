@@ -38,6 +38,34 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
 
 ---
 
+## Fáze oprav (2026-09-12) — 3 nálezy opraveny, 1 částečně, 1 odložen do TODO
+
+| commit | nálezy | co se změnilo |
+|---|---|---|
+| `b1aa262` | F-0073, F-0075, F-0076 | `RX_BUF_SIZE` 32 → **96** a utnutý příkaz se **neprovede** (+ hláška a počítadlo v `status`); `fpgasim on` má meze už při akumulaci + strop 4 GHz; `fpgaraw` kontroluje `p` před `snprintf` |
+| `scripts/` | F-0077 (b) | kontrola rámce `UartTask_run` nad `.elf` v `check_lessons.sh`, mez 1024 B (dnes 700 B) |
+| TODO #243 | **F-0074**, F-0077 (a) | **odloženo rozhodnutím uživatele** — zásobník se nejdřív konzistentně zvětší v `.ioc`; statické lokály jsou konkurenční oprava téhož a nedělají se zároveň |
+
+**Ověřovací řetězec (§F5.2):** `./scripts/build.sh Release CM7` **0 varování**,
+`python tools/audit.py` **92 OK / 0 selhání / 2 s varováním** (baseline),
+CM7 `.text` 599 760 → **600 104 B** (+344 B), `.bss` +64 B.
+Symboly v obrazu: `nm` ukazuje `RxBuffer` **96 B** a `s_rx_trunc`/`s_rx_trunc_n`
+v `.bss`; všechny tři nové řetězce jsou v `.elf`.
+⬜ **NEOVĚŘENO NA HW** — čeká na flash a **power-cyklus**, spolu s F-0063 (okno
+CHYBY) a `21ac04e`. `IPC_VERSION` se nemění.
+
+🔴 **Vlastní chyba zachycená před commitem:** odmítnutí utnutého příkazu jsem
+nejdřív napsal jako `continue;` v `for(;;)` — to by přeskočilo `sd_export_service()`,
+`datalog_erase_service()`, `membench_service()`, `qspi_req_service()` i `osDelay(1)`
+na konci smyčky. Přepsáno na první člen `else if` řetězu, zapsáno jako **L-0033**.
+
+🔴 **Kontrola rámce napoprvé nefungovala** (vracela 0 B — awk četl `m[2]` místo
+`m[3]`). Odhalila to až **pozitivní kontrola**, která je podle **L-0020** součástí
+té lekce, ne volitelný doplněk. Ověřeno obojím směrem: mez 256 B zakřičí, neexistující
+symbol mlčí a nespadne.
+
+---
+
 ### F-0073 [S3] Příkaz delší než 31 znaků se tiše utne — a **provede** se zkrácený
 
 - **Místo:** `CM7/Core/Src/freertos_task_uart.c:53` (`RX_BUF_SIZE 32`),
@@ -95,8 +123,19 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
   (je, `:375`) — jako lokál v `UartTask_run` by +64 B šlo na zásobník, kterého
   je podle F-0074 nedostatek.
 - **Vztah k lekcím:** **`L-0026`** (rozpočet pevného bufferu a konec tichého
-  ořezu) — čtvrtý výskyt; **`L-0017`** (tichý přeskok jen s počítadlem).
-- **Stav:** otevřeno
+  ořezu) — čtvrtý výskyt; **`L-0017`** (tichý přeskok jen s počítadlem);
+  nově **`L-0033`** (odmítnutí patří do větvení, ne do řízení smyčky).
+- **Stav:** **opraveno 2026-09-12** (`b1aa262`) — `RX_BUF_SIZE` 32 → **96**
+  (slaďuje mez se `sub[96]` ve `scpi_process_ctx`), přetečení nastaví `s_rx_trunc`
+  a **řekne to** (`[prilis dlouhy prikaz - zbytek radku se ignoruje]`), Enter
+  takový řádek **odmítne** (`ERR prikaz delsi nez 95 znaku - NEPROVEDEN`) a počet
+  odmítnutí je v `status` (`KONZOLE: N prikazu odmitnuto`).
+  ⚠️ **Opraveno jinak, než nález navrhoval v jedné věci:** odmítnutí je **první
+  člen existujícího `else if` řetězu**, ne `continue` ve smyčce — `continue` by
+  přeskočil i `sd_export_service()`, `datalog_erase_service()`, `membench_service()`,
+  `qspi_req_service()` a `osDelay(1)` na konci `for(;;)`. Zachyceno před commitem,
+  zapsáno jako **L-0033**.
+  ⬜ **Neověřeno na HW** (čeká na flash + power-cyklus).
 
 ---
 
@@ -148,7 +187,17 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
 - **Vztah k lekcím:** **`L-0012`** (dvě symetrické instance — jedna poučená,
   druhá ne) a **`L-0022`** (u obrany musí být vyjmenované, kde platí; ten komentář
   u `scpi ipc` popisuje pravidlo, které se o dvě obsluhy vedle neuplatnilo).
-- **Stav:** otevřeno — **souvisí s rozhodnutím o F-0055**
+- **Stav:** **odloženo 2026-09-12 rozhodnutím uživatele → `../STATUS.md` TODO #243.**
+  Důvod odložení (ať se to neotevírá znovu): velikost zásobníku UartTasku vlastní
+  **`.ioc`** a uživatel ji chce upravit konzistentně tam, teprve pak se má sahat
+  na kód. Přesun `resp[128]`/`buf[512]` do `.bss` je **konkurenční oprava téhož** —
+  udělané obě naráz se nedá změřit, která pomohla.
+  🔑 **Co se přesto udělalo:** (a) nález je spojený s **F-0055** do jednoho úkolu
+  (je to tatáž věc ze dvou stran), (b) přibyla kontrola rámce `UartTask_run`
+  v `scripts/check_lessons.sh` (viz F-0077), takže **rezerva už nemůže tiše ubývat**,
+  (c) commit `21ac04e` vrátil zásobníku část toho, co mu vzal modul 13
+  (`sub[96]`/`rb[64]` ve `scpi.c` jsou nově `static`).
+  ⚠️ **Dokud to platí, `selftest` z konzole nespouštět** (F-0055).
 
 ---
 
@@ -186,8 +235,13 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
   jsou o deset řádů níž.
 - **Vztah k lekcím:** **`L-0030`** (mez odvoď z rozsahu cílového typu) —
   tohle je její druhý výskyt, tentokrát u `double → uint64_t` místo exponentu;
-  **`L-0012`** (`fmt_scpi_hz_d` pojistku má, `fpga_freq_format_val` ne).
-- **Stav:** otevřeno
+  **`L-0012`** (`fmt_scpi_hz_d` pojistku má, `fpga_freq_format_val` ne);
+  nově **`L-0034`** (mez ověř PŘED použitím hodnoty).
+- **Stav:** **opraveno 2026-09-12** (`b1aa262`) — mez je **uvnitř akumulační
+  smyčky** (`if (hz < 1.0e12)`, obdobně `noi`/`dr`), takže k přetečení nedojde už
+  při čtení číslic, plus strop `if (hz > 4.0e9) hz = 4.0e9;` shodný s
+  `fmt_scpi_hz_d` (scpi.c:112) a ležící nad stropem tvarovače 1,4 GHz — nic
+  platného tedy neodřízne. ⬜ **Neověřeno na HW.**
 
 ---
 
@@ -219,8 +273,9 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
   `p >= 0 && (size_t)p < sizeof line`.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **`L-0015`** (mez vynutit na rozhraní), **`L-0012`**
-  (v témže souboru je ošetřená i neošetřená instance).
-- **Stav:** otevřeno
+  (v témže souboru je ošetřená i neošetřená instance); nově **`L-0034`**.
+- **Stav:** **opraveno 2026-09-12** (`b1aa262`) — `if (p >= 0 && (size_t)p < sizeof line)`
+  před použitím, kapacita `sizeof(line) - (size_t)p`. ⬜ **Neověřeno na HW.**
 
 ---
 
@@ -257,8 +312,22 @@ funguje správně; obě hlavní vady se projeví až u delšího vstupu.
   překladu, ne až přetečením na desce.
 - **Riziko opravy:** nízké u (a) i (b).
 - **Vztah k lekcím:** **`L-0016`** (mez i měřidlo její rezervy se navrhují
-  společně — rámec se dnes neměří ničím).
-- **Stav:** otevřeno — **navrhuji odložit** rozdělení funkce, přijmout jen (a)+(b)
+  společně — rámec se dnes neměří ničím); nově **`L-0035`** (rámec je vlastnost
+  celé funkce) a **`L-0020`** (kontrola bez pozitivní kontroly je jen zelená).
+- **Stav:** **částečně opraveno 2026-09-12; rozdělení funkce odloženo.**
+  - ✅ **(b) měřidlo hotové:** `scripts/check_lessons.sh` měří rámec `UartTask_run`
+    přímo v `CM7/Release/H757_LED_CM7.elf` (`objdump -d` → `sub sp, sp, #N`) a
+    křičí nad **1024 B**. Dnešní hodnota **700 B** → ticho.
+    🔴 **Pozitivní kontrola odhalila, že kontrola nejdřív NEFUNGOVALA:** vracela
+    `0 B`, protože awk měl `match()` se třemi skupinami a četl `m[2]` (`"sp, "`)
+    místo `m[3]`. Ověřeno až dvěma běhy — mez snížená na 256 B **musí** zakřičet
+    (700 > 256) a neexistující symbol **musí** mlčet a nespadnout. Bez toho by to
+    byla trvale zelená kontrola (přesně L-0020).
+  - ⬜ **(a) statické lokály odloženy** — patří k **F-0074** a tedy do TODO #243;
+    nedělat je zároveň se zvětšením zásobníku, jinak se nedá změřit, co pomohlo.
+  - ⬜ **Rozdělení funkce odloženo** (důvod, ať se to neotevírá znovu): `UartTask_run`
+    je 1 966 řádků funkčního kódu bez testů na hostu; mechanický rozpad na desítky
+    funkcí je větší riziko než vada, kterou dnes hlídá měřidlo výše.
 
 ---
 
