@@ -61,6 +61,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0037 | Přesun tajemství do bezpečnějšího úložiště není hotový, dokud se nesmaže z toho starého — jinak oprava mine právě ty, kdo produkt už používali. | po změně úložiště přidej jednorázový úklid a ověř ho na profilu, kde stará hodnota leží |
 | L-0038 | Kontrakt mezi dvěma jazyky uvnitř JEDNOHO obrazu nehlídá nikdo — překladač vidí jen svou půlku. Producent a konzument dat se rozejdou stejně snadno jako dva projekty, jen tišeji: v JS je chybějící pole `undefined`, ne chyba. | `tools/spa/json_kontrakt.py` (krok 5b); obecně: u každé hranice jazyků se ptej, co ten rozpor ohlásí |
 | L-0039 | Pozitivní kontrola musí obsahovat KAŽDOU vadu, kvůli které kontrola vznikla — ne jednu zástupnou. Jinak projde a ta druhá zůstane neviditelná. | ke každé nové kontrole napiš tolik pozitivních případů, kolik nálezů ji vyvolalo, a spusť je všechny |
+| L-0040 | Ustupuj scheduleru podle ČASU, ne podle počtu iterací. Když jedna iterace může trvat 1 ms i 10 ms (timeout!), počet iterací neomezuje nic — a úloha s vyšší prioritou vyhladoví tu nižší i při „pravidelném“ yieldu. | u každé smyčky s I/O timeoutem: kolik trvá NEJHORŠÍ iterace × kolik jich je mezi yieldy? |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -1127,6 +1128,37 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   na kazdem z nich skonci nenulovym kodem.
 - **Commit:** `2d5f35f`, viz `docs/audit/2026-09-12_spa-web.md`
 - **Stav:** aktivni
+
+---
+
+### L-0040 — ustupuj podle casu, ne podle poctu iteraci
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`i2cspeed_run`), nalez z mereni
+  2026-09-12; TODO #244
+- **Co se stalo:** mereni chybovosti I2C4 pousti ostatni ulohy ke slovu **po 64
+  transakcich**. Pri 25-100 kHz je to v poradku (transakce trva ~1 ms, tedy
+  ~64 ms mezi ustupy). Pri 150 kHz ale kazda transakce skonci **plnym 10ms
+  timeoutem**, takze tentyz kod drzi CPU **~640 ms v kuse** — a UiTask
+  (BelowNormal) se nespusti vubec. Jeho heartbeat zestarne pres 2,5 s,
+  `watchdog_supervise` prestane krmit IWDG a deska se resetuje.
+  🔑 **Zmereno:** `N=25` krok dokoncil, `N=500` i `N=1000` restart. Rozhoduje
+  DOBA, ne frekvence.
+- 🔴 **Past je v tom, ze yield tam BYL a vypadal pravidelne.** Kdo cte kod, vidi
+  „kazdych 64 transakci se ustupuje" a ma pocit, ze je to osetrene. Jenze
+  „64 transakci" neni jednotka casu — a prave v poruchovem rezimu, kde na tom
+  zalezi, se hodnota te jednotky zmeni o rad.
+- **Pravidlo:** **Ustupuj podle CASU.** `if (HAL_GetTick() - last >= 20u) { osDelay(1); last = ...; }`
+  omezi drzeni CPU bez ohledu na to, jak dlouho trva jedna iterace. Pocet iteraci
+  se smi pouzit jen tam, kde je iterace prokazatelne kratka a NEMA timeout.
+  ⚠️ Druha polovina: u smycky, ktera bouchá do nefunkcniho HW, patri i **mez
+  neuspechu** — tisic marnych pokusu neprinese vic informace nez padesat.
+- **Detekce:** u kazde smycky s I/O timeoutem si spocitej `nejhorsi_iterace ×
+  pocet_mezi_yieldy`. Kdyz to prekroci ~100 ms, je to vada (projektove pravidlo
+  „zadny spin > ~10 ms" plati pro hlidane tasky; tady slo o nehlidany UartTask,
+  ktery ale muze vyhladovet hlidane).
+- **Stav:** aktivni — **oprava `i2cspeed` zatim NEPROVEDENA** (TODO #244),
+  uzivatel mereni uzavrel driv. Do te doby plati provozni opatreni: nad 100 kHz
+  jen male `N`.
 
 ---
 
