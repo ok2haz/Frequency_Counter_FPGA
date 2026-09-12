@@ -91,9 +91,15 @@
 #define SDRAM_MODEREG_OPERATING_MODE_STANDARD    ((uint16_t)0x0000)
 #define SDRAM_MODEREG_WRITEBURST_MODE_PROGRAMMED ((uint16_t)0x0000)
 #define SDRAM_MODEREG_WRITEBURST_MODE_SINGLE     ((uint16_t)0x0200)
-/* USER CODE END 0 */
+/* ── Zachraneno PRED regeneraci (2026-09-12) ────────────────────────────────
+ * Tenhle blok zil do 2026-09-12 MIMO `USER CODE` — mezi generovanym `hsdram1`
+ * a `MX_FMC_Init` — a regenerace CubeMX ho SMAZALA (vcetne volani, ktere v
+ * `USER CODE FMC_Init 2` zustalo -> nesestavitelny build). Ted je uvnitr bloku,
+ * takze uz je regen bezpecny.
+ * ⚠️ `hsdram1` deklaruje az generovany kod NIZE, proto `extern` — definice
+ * prijde ve stejne translation unit o par radku dal. */
+extern SDRAM_HandleTypeDef hsdram1;
 
-SDRAM_HandleTypeDef hsdram1;
 
 /* FMC initialization function */
 /* 🔴 KTERY krok inicializacni sekvence SDRAM selhal (0 = vsechny prosly).
@@ -154,7 +160,11 @@ uint8_t fmc_sdram_init_sequence(void)
 
   return 0u;
 }
+/* USER CODE END 0 */
 
+SDRAM_HandleTypeDef hsdram1;
+
+/* FMC initialization function */
 void MX_FMC_Init(void)
 {
   /* USER CODE BEGIN FMC_Init 0 */
@@ -180,19 +190,7 @@ void MX_FMC_Init(void)
   hsdram1.Init.WriteProtection = FMC_SDRAM_WRITE_PROTECTION_DISABLE;
   hsdram1.Init.SDClockPeriod = FMC_SDRAM_CLOCK_PERIOD_2;
   hsdram1.Init.ReadBurst = FMC_SDRAM_RBURST_ENABLE;
-  /* 🔴 RPIPE 0 -> 1 (2026-09-09). Zpozdeni vzorkovani ctenych dat za CAS latenci,
-   * v taktech HCLK. Duvod je MERENI, ne odhad: `membench` hlasi 3 338 207 chybnych
-   * bitu uz pri ZAPISU S OKAMZITYM OVERENIM, a to i u vzoru `0x00` (103 982 chyb) —
-   * zapsat nulu a precist nenulu nejde vysvetlit vyhasnutim bunky, ta pada K nule.
-   * Prvni chyba `@0xC0400040: cekano 0x00000000, precteno 0x00000157` je nesmysl
-   * pri CTENI, ne rozpadla data. Interni pameti (DTCM/AXI/SRAM1) jsou pritom
-   * 100 % v poradku -> vada je vyhradne na externi sbernici, ve cteci ceste.
-   * ⚠️ Nulove RPIPE vzorkuje data hned, bez rezervy na zpozdeni desky (delka spoju,
-   * zatez, teplota). Jeden takt HCLK (10 ns pri 100 MHz FMC ker) je standardni lek
-   * a stoji jen latenci prvniho slova bursty, ne propustnost.
-   * ⚠️ Ladi se ZA BEHU pres UART `rpipe <0|1|2>` — `rpipe 0` vrati puvodni chovani,
-   * takze se da v jednom sezeni overit, jestli za zlepseni muze prave tohle. */
-  hsdram1.Init.ReadPipeDelay = FMC_SDRAM_RPIPE_DELAY_1;
+  hsdram1.Init.ReadPipeDelay = FMC_SDRAM_RPIPE_DELAY_0;
   /* SdramTiming */
   SdramTiming.LoadToActiveDelay = 2;
   SdramTiming.ExitSelfRefreshDelay = 7;

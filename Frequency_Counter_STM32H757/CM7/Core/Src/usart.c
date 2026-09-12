@@ -19,11 +19,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "usart.h"
-#include "errlog.h"
 
 /* USER CODE BEGIN 0 */
 #include "cmsis_os2.h"     /* osMessageQueuePut do GpsRxQueue */
 #include "bootled.h"
+/* ⚠️ 2026-09-12 presunuto sem: do te doby stal tenhle include MIMO `USER CODE`
+ * (hned za `#include "usart.h"`) a regenerace CubeMX ho smazala. */
+#include "errlog.h"
 
 /* ⚠️ USART1 NENI konzole (ta jde po USB CDC) — je to GPS NMEA vstup. Kazde ORE
  * tedy znamena ZTRACENY BAJT vety, tj. zahozeny fix/cas/druzici. Do 2026-09-07
