@@ -3,17 +3,19 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-12 (12. sezení — **modul 13 = parsery SCPI + NMEA**;
-předtím modul 12 = síťová vrstva CM4 vč. fáze oprav)
+**Poslední aktualizace:** 2026-09-12 (13. sezení — **modul 14 = UART konzole**;
+týž den modul 13 = parsery SCPI + NMEA vč. fáze oprav a HW ověření)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
 **Modul 8 nemá otevřený nález.**
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** ⬜ **naflashovat OBĚ BANKY a ověřit po POWER-CYKLU.** Čeká na to
-modul 12 (6 oprav, jen CM4), modul 13 (9 oprav, **obě jádra**) a oprava okna CHYBY
-(F-0063, CM7). `IPC_VERSION` se nemění, takže banky jdou flashovat nezávisle.
+**Pokračovat zde:** **rozhodnout F-0055 + F-0074 SPOLEČNĚ** — jsou to dvě strany téže
+věci (zásobník UartTasku) a na desce už je změřeno, že volného zbývá **168 B**.
+Pak ⬜ **naflashovat a ověřit po POWER-CYKLU** zbytek: modul 14 (až projde F5),
+oprava okna CHYBY (F-0063) a `21ac04e` (buffery do `.bss`, dotýká se obou jader).
+`IPC_VERSION` se nemění, takže banky jdou flashovat nezávisle.
 🔑 **Co u modulu 13 ověřit:** `gps` a `gpsraw` přes UART (fix se musí chytit i s nově
 povinným checksumem, `OVF:` má zůstat 0), `scpi SYST:GPS:POS?` → 7 desetin,
 `scpi SYST:DATE?` bez antény → `9.91E37`, a **SURVEY nechat běžet ≥1 h** — rozptyl
@@ -34,7 +36,10 @@ než audit** — modul 11 fázi oprav ještě neprošel, takže tam takové vady
 historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
 `expected_len` (F-0060). SSE timeout (F-0059) se ověří jen odpojením klienta od sítě.
 ⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
-🔴 **Všechny moduly 1–13 mají zapsané nálezy; bez dokončené fáze oprav je už jen 11.** Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
+🔴 **Všechny moduly 1–14 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 14.**
+🔑 **Tím je auditovaný veškerý vlastní kód, který zpracovává vstup zvenčí.** Největší
+neauditovaná oblast je nově **blob `SPA_HTML`** (2 937 ř. HTML/CSS/JS v `httpd_min.c`)
+— klientský kód s vlastním ověřovacím řetězcem, zaslouží si modul 15. Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -163,8 +168,14 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
 | 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány (+1 z provozu, opraven) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
 | 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
-| 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
+| 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (✅ část ověřena na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
+| 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | nálezy zapsány | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
 
+🔑 **Modulem 14 je auditovaný VEŠKERÝ kód, který zpracovává vstup zvenčí**, a všechny
+tři moduly (12 síť, 13 parsery, 14 konzole) našly **tutéž třídu vady**: pevný buffer,
+který se při přetečení tiše ořízne a obsah se PŘESTO zpracuje. Celkem čtyři výskyty
+(F-0056, F-0058, F-0069, F-0073) — proto z toho vznikla **L-0026** a hledá se dál
+jako vzor, ne jako jednotlivost.
 ⚠️ **Modul 13 navazuje na 12 stejnou osou** (kód zpracovávající vstup zvenčí), ale
 posouvá ji dovnitř: `scpi.c` je **jeden parser pro tři transporty** (USB CDC, TCP 5025,
 HTTP `/api/scpi`) a běží na **obou jádrech**, takže jedna vada v něm je vada na všech
@@ -186,8 +197,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 1 | 0 |
 | S2 | 1 | 12 | 0 |
-| S3 | 7 | 30 | 0 |
-| S4 | 2 | 11 | 0 |
+| S3 | 10 | 30 | 0 |
+| S4 | 4 | 11 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -435,3 +446,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-11 | oprava z provozu (modul 11) | **F-0063 [S2]** — uzivatel nahlasil, ze dlazdice „Chyby (log)" nic nedela, „jen slysim klik". Ten klik byl **dukaz**: UiTask ho prehraje (`alarm_click()`) prave kdyz `handle_touch` vrati true, takze vstupni cesta byla vyloucena hned a slo jit rovnou na vykresleni. `app_gpsdo_render_errlog()` neflipovalo — okno se kreslilo do zadniho bufferu a nikdy se neukazalo, prestoze `s_view` uz bylo 51. 🔑 Neresilo se jen hlasene misto: vyctem OBOU dlazdicovych tabulek doloženo, ze ze **22 oken** bylo `render_errlog` JEDINE bez vlastniho flipu. Opraveno `1b21c82` (+8 B `.text`), doplnena trvala kontrola do `check_lessons.sh` a **overena pozitivni kontrolou na tri funkcich** (pricemz se znovu potvrdila L-0020: prvni verze testu se ukotvila na forward deklaraci a „nic nenasla"). Doloženo, ze to NENI regrese z oprav site — vada prisla s `0cc2d90`. ⬜ **neovereno na HW.** | L-0029 |
 | 2026-09-12 | parsery SCPI + NMEA | F3 prezkum, 9 nalezu (1xS2, 6xS3, 2xS4), verdikt **podminene funkcni**. Oba parsery jsou psane opatrne a **zadne preteceni bufferu jsem nenasel** — `tokenize`, `gsv_feed`, `nmea_coord`, `memcpy` ve slozene zprave i chybova fronta maji meze dopoctene a v poradku. Nalezy jsou o **chybejici validaci rozsahu**. Nejzavaznejsi **F-0064 [S2]**: `scpi_num` aplikuje exponent iterativne bez meze, takze `1E2147483647` da 2,1e9 iteraci — a protoze CM4 ma `-mfpu=fpv4-sp-d16` (double = softfloat), je to ~450 s zablokovane CM4. Dosazitelne **bez autorizace**, protoze argument se parsuje na `:869`, kdezto opravneni se testuje az na `:871`/`:876`. Dale: NMEA checksum je nepovinny (F-0065), po preteceni radku chybi zahazovani do konce radku — **tataz vada, jakou `scpi_tcp.c` opravil 2026-09-06** (F-0066, L-0012), `SYST:DATE?` pred prvnim fixem vraci `-3333,-33,-33` jako platne datum (F-0068) a souradnice ve `float` drzi self-survey na ~0,42 m at bezi jak chce dlouho (F-0070, spocitano z ULP). 🔑 Jeden kandidat na nalez **cilene provern a ZAMITNUT**: `fmt_scpi_f6` nema rozsahovou pojistku, ale jediny volajici mu dava tabulku `{0.1,1,10,100}` → UB neni dosazitelne. Kod nemenen. | zatim zadna (F5 nebyla) |
 | 2026-09-12 | F5 opravy (modul 13) | **Vsech 9 nalezu uzavreno ve 4 commitech** (A+B+C na pokyn uzivatele). `b483158` validace NMEA (**F-0065** checksum povinny, **F-0066** zahazovani do konce radku + pocitadlo `OVF:`, **F-0071** HDOP jen z GGA). `aaacaf5` SCPI (**F-0064** mez exponentu 308 + zabraneni preteceni `int`, **F-0068** `SYST:DATE?/TIME?` pres `g_rtc_synced` a pod kritickou sekci, **F-0069** utnuta jednotka se neprovede). `868ed6e` **F-0070 + F-0067** souradnice celociselne v 1e-7 stupne (7 souboru). `docs:` **F-0072** komentar u `d2`. 🔑 **Dve veci se pri oprave ukazaly jinak, nez nalez odhadoval:** (1) F-0070 melo podle nalezu 'vysoke riziko, mezijaderny kontrakt' — `ipc_shared.h:135` ale ma `gps_lat_e7` jako `int32_t` uz dnes, takze `IPC_VERSION` se nemeni a preflashovat obe banky neni nutne; (2) F-0067 se opravil **lepe nez navrh** — prechodem na e7 zmizel cely problematicky cast z floatu, misto aby se jen doplnila validace. ⚠️ Zisk F-0070 limituje format NMEA (`ddmm.mmmm` = 1,85 m, `ddmm.mmmmm` = 18,5 cm) — zapsano u pole, ne domysleno. Build BOTH 0 varovani, `audit.py` 92/0/2, CM7 `.text` 599392 -> 599760 B; **CM4 klesl 231944 -> 231880 B**, takze zmena dolozena SYMBOLEM (`%07lu` v obou obrazech, mez 308 v disassembly CM4). ⬜ **neovereno na HW.** | L-0030, L-0031, L-0032 |
+| 2026-09-12 | UART konzole | F3 prezkum `freertos_task_uart.c` (2365 r.), 5 nalezu (3xS3, 2xS4), verdikt **podminene funkcni**. 🔑 Soubor je psany nadprumerne opatrne — `stacktest_overflow` je vyclenena funkce S VYSVETLENIM proc, `bgcheck`/`stats`/`scpi ipc` maji buffery v `.bss`, skeny I2C ustupuji scheduleru (F-0020), SD blok je obaleny jako celek, `eth` ma pojistku proti kolizi s CM4. Nalezy jsou o dvou vecech: **F-0073** hlavni vstupni buffer ma 32 B a prikaz delsi nez 31 znaku se TISE utne a PROVEDE (`scpi SENSe:FREQuency:APERture 10` = 32 znaku -> nastavi hradlo 1 s misto 10 s) — **ctvrty vyskyt teze tridy** po F-0056/F-0058/F-0069; a **F-0074** pouceni o zasobniku se neuplatnilo vsude: `scpi ipc` ma vsechno staticke a komentar u nej to zduvodnuje, `scpi` o 70 radku niz ma `resp[128]` na zasobniku a vola `scpi_process` s ramcem 492 B. To je **podlozene merenim z desky** (`stack Uart free 168 B`) a spojuje se s otevrenym F-0055. Dale F-0075 (`fpgasim on` bez horni meze -> `(uint64_t)(hz*1e5)` je UB), F-0076 a F-0077. Jeden kandidat cilene provern a ZAMITNUT: `datalog interval 0` vypadalo na deleni nulou, ale `datalog_set_period_s` clampuje na 1..3600. Kod nemenen. | zatim zadna (F5 nebyla) |
