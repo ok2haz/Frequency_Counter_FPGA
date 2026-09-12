@@ -537,6 +537,13 @@ detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“
   TMP117 zvládá i 400 kHz. Provozních 50 kHz má tedy rezervu do ~75 kHz, ne dál.
 - Při 100 kHz má ATTINY `ErrorCode=0x04` (**čistý NACK**), `SCL/SDA = 1/1`, žádný BERR/ARLO
   → není to integrita signálu, ale slave, který nestíhá.
+- 🔬 **OPAKOVANÉ MĚŘENÍ PŘIPRAVENO (2026-09-12):** pull-upy na I2C4 se na desce
+  snižují na **2k2** a měření se pustí znovu příkazem **`i2cspeed`** (tentýž,
+  jen znovu zavedený — viz seznam UART příkazů). Metoda je **záměrně totožná**,
+  aby byla čísla porovnatelná; kroky nově 25/50/75/100/150/200/250/300/400/500 kHz.
+  ⚠️ **Dokud nejsou nová čísla na stole, platí všechno níže** — tabulka i rozhodnutí.
+  Hypotéza k ověření: jestli koleno mezi 75 a 100 kHz drží i s tvrdšími pull-upy,
+  není limitem integrita signálu, ale ATTINY sama (tomu odpovídá čistý NACK).
 - **Rozhodnutí: zůstává 50 kHz.** Úspora ~1,7 ms na rámci FT5x06 nevyváží riziko na sběrnici,
   přes kterou jde napájení panelu a podsvícení. Kdyby se k tomu vracelo, hodnota pro 70,09 kHz
   je `0x70302AAA` — a **měřit se musí znovu i I2C1**, ta tímhle pokrytá NENÍ (jiné čipy,
@@ -774,6 +781,12 @@ zrychlení). ⚠️ Nikdy nezaveď akci dostupnou jen jednou cestou.
 **`screenshot [sd]`** (export obrazovky do BMP; `screenshot.c`): **`screenshot sd`** = doporučená cesta — snímek se nejdřív zkopíruje do SDRAM scratche (anti-tearing, UiTask jinak během zápisu flipne) a FatFs zapíše celý `SHOTnnn.BMP` na kartu. Holé **`screenshot`** posílá 1,15 MB přes USB CDC (~sekundy, ⚠️ best-effort tok + snímá živý FB → u animované obrazovky pruhy ze dvou framů),
 **`autocal`** (self-check referencí/napájení VREF/12V/5V/VBAT → PASS/WARN/FAIL; staged kroky ADC/timebase/RF; `autocal.c`, ROZPRACOVÁNO),
 **`membench`** (benchmark všech pamětí — rychlost zápisu/čtení + hledání chybných bitů; ⚠️ destruktivní **jen** pro vyhrazený SDRAM a W25Q scratch, interní FLASH se jen čte — viz sekce „Benchmark pamětí"),
+**`i2cspeed [N]`** (chybovost I2C4 podle taktu — 10 kroků 25…500 kHz, N transakcí
+na zařízení a krok, výchozí 2000; **jen čtení**, do ATTINY se nezapíše ani bajt.
+Po dobu měření mlčí dotyk, jas i TMP117 0x48 (`g_i2c4_sweep`), takt se **vždy**
+obnoví a kdykoli jde přerušit klávesou. ⚠️ Nad ~125 kHz je sběrnice podle měření
+z 2026-09-10 nepoužitelná a TMP117 se z toho tehdy nevzpamatoval bez power-cyklu
+— po běhu zkontroluj `sensors`),
 **`sdramlog [dump N|reset]`** (datová cache měření v SDRAM — stav / N nejnovějších vzorků / vynulování; viz sekce „Datová cache měření"),
 **`datalog [on|off|erase|dump]`** (záznam stability, viz „Datalog"), **`stacktest yes`** (⚠️ záměrně
 přeteče stack UartTasku → IWDG reset; ověření řetězce detekce, viz TODO #10),
