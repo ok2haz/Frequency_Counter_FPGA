@@ -50,7 +50,15 @@
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
-#define RX_BUF_SIZE       32
+/* 🔴 96, ne 32 (audit F-0073). Do 32 B se veslo jen 31 znaku prikazu a delsi
+ * vstup se TISE utnul — vcetne echa — a Enter ho PRESTO provedl. Realne to
+ * menilo nastaveni: `scpi SENSe:FREQuency:APERture 10` ma presne 32 znaku, takze
+ * se provedlo `... APERture 1` a hradlo se nastavilo na 1 s misto 10 s.
+ * `APERture` je pritom povinny alias, ktery hledaji VISA/IVI ovladace.
+ * 96 B slaďuje mez se `sub[96]` v `scpi_process_ctx` (scpi.c), takze strop drzi
+ * na OBOU koncich teze cesty. `RxBuffer` je `static` -> jde to do `.bss`, ne na
+ * zasobnik UartTasku (ten je podle F-0074 na hrane). */
+#define RX_BUF_SIZE       96
 /* QSPI prikazy (qspiid/qspitest/storetest/qspispeed) sahaji na W25Q, kterou sdili
  * i syscfg auto-save (defaultTask) a calib_save (UiTask) -> cela operace pod
  * qspiMutexHandle. Timeout velkorysy: prikaz je manualni diagnostika a klidne
@@ -374,6 +382,13 @@ static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
 static char RxBuffer[RX_BUF_SIZE];
 static uint8_t RxIndex = 0;
+/* 🔴 Utnuty radek se NEPROVEDE (audit F-0073). Jakoukoli mez jde prekrocit;
+ * podstatne je, aby vysledkem nebylo provedeni NECEHO JINEHO, nez uzivatel
+ * napsal. `s_rx_trunc` drzi, ze se v tomhle radku uz neco zahodilo, a plati az
+ * do nejblizsiho konce radku — stejny vzor jako `s_drop` v `gps.c` (F-0066)
+ * a `c->drop` v `scpi_tcp.c`. */
+static uint8_t  s_rx_trunc = 0;
+static uint32_t s_rx_trunc_n = 0;   /* kolikrat se to stalo — do `status` (L-0017) */
 
 static uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
 static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
@@ -432,7 +447,14 @@ void UartTask_run(void *argument)
 			   * Navenek to vypadalo, ze deska kazdy prikaz odmitne (overeno na HW
 			   * pres COM8: s CRLF chyba po kazdem prikazu, s holym CR ne). Prazdny
 			   * vstup neni chyba — uzivatel jen zmackl Enter. */
-			  if (RxBuffer[0] == '\0') { /* nic */ }
+			  /* 🔴 Prikaz, ze ktereho se cokoli ztratilo, se NEVYKONA (F-0073).
+			   * ⚠️ Zamerne jako prvni clen TOHOTO retezu, ne `continue` vys: `continue`
+			   * v `for(;;)` preskoci i `sd_export_service()` a spol. na konci smycky. */
+			  if (s_rx_trunc) {
+				  s_rx_trunc = 0;
+				  printf("ERR prikaz delsi nez %d znaku - NEPROVEDEN\r\n", RX_BUF_SIZE - 1);
+			  }
+			  else if (RxBuffer[0] == '\0') { /* nic */ }
 			  else if (strcmp(RxBuffer, "led on") == 0) {
 				  HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_RESET);
 				  printf("LED ON - OK \n");
@@ -1625,10 +1647,16 @@ void UartTask_run(void *argument)
 				  uint8_t rx[64];
 				  bool ok = fpga_freq_raw_xfer(rx);
 				  printf("FPGA raw xfer HAL:%s\n", ok ? "OK" : "ERR");
+				  /* ⚠️ `p` se kontroluje PRED pouzitim (audit F-0076): `sizeof(line) - p`
+				   * je `size_t`, takze pri `p > sizeof(line)` podtece na obrovske cislo
+				   * a `snprintf` dostane nesmyslnou kapacitu. Dnes to nedosazitelne je
+				   * (16 bajtu x 3 znaky = 48 ze 64), ale rezerva je jen 16 B — staci
+				   * zmenit format na ctyri znaky. Tentyz vzor uz ma `uart_i2c4_probe`. */
 				  char line[64];
 				  int p = 0;
 				  for (int i = 0; i < 64; i++) {
-					  p += snprintf(line + p, sizeof(line) - p, "%02X ", rx[i]);
+					  if (p >= 0 && (size_t)p < sizeof line)
+						  p += snprintf(line + p, sizeof(line) - (size_t)p, "%02X ", rx[i]);
 					  if ((i & 0xF) == 0xF) { printf("[%02d] %s\n", i - 15, line); p = 0; }
 				  }
 			  }
@@ -1754,15 +1782,24 @@ void UartTask_run(void *argument)
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strncmp(a, "on", 2) == 0) {
 					  /* Rucni parsovani (zadny sscanf — nano.specs). */
+					  /* 🔴 Vsechny tri hodnoty maji HORNI mez (audit F-0075). Drive se
+					   * kontrolovala jen dolni, takze `fpgasim on 99999999999999999999`
+					   * dalo hz ~1e20 a `(uint64_t)(hz * 100000.0)` o sest radu preteklo
+					   * rozsah `uint64_t` — to NENI jen spatne cislo, ale nedefinovane
+					   * chovani. Mez 4e9 je tataz, jakou ma `fmt_scpi_hz_d` (scpi.c:112),
+					   * a lezi nad stropem tvarovace (1,4 GHz), takze nic platneho
+					   * neodrizne. `if (x < mez)` uvnitr smycky brani preteceni uz pri
+					   * akumulaci — cislice se dal ctou, jen se nepricitaji. */
 					  const char *p = a + 2;
 					  double hz = 0; float noi = 0.f, dr = 0.f;
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { hz = hz * 10.0 + (*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (hz < 1.0e12) hz = hz * 10.0 + (*p - '0'); p++; }
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { noi = noi * 10.f + (float)(*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (noi < 1.0e6f) noi = noi * 10.f + (float)(*p - '0'); p++; }
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { dr = dr * 10.f + (float)(*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (dr < 1.0e6f) dr = dr * 10.f + (float)(*p - '0'); p++; }
 					  if (hz < 1.0) hz = 10000000.0;
+					  if (hz > 4.0e9) hz = 4.0e9;
 					  fpga_sim_set(1, hz, noi, dr);
 					  char hb[32]; fpga_freq_format_val((uint64_t)(hz * 100000.0), hb, sizeof hb);
 					  printf("FPGASIM: ZAPNUTO %s  sum +-%d ppb  drift %d ppb/h\n",
@@ -2275,6 +2312,12 @@ void UartTask_run(void *argument)
 					  	  if (g_tmp117_cfg_fail)
 					  	  	printf("TMP117: %u x se nepodarilo nastavit 500ms cyklus (meri jinou kadenci)\n",
 					  	  	       (unsigned)g_tmp117_cfg_fail);
+					  	  /* Odmitnute (prilis dlouhe) prikazy konzole — tichy preskok se pocita,
+					  	   * viz L-0017. Nenulove obvykle znamena, ze klient posila delsi SCPI
+					  	   * tvary, nez se vejdou do RX_BUF_SIZE. */
+					  	  if (s_rx_trunc_n)
+					  	  	printf("KONZOLE: %lu prikazu odmitnuto (delsi nez %d znaku)\n",
+					  	  	       (unsigned long)s_rx_trunc_n, RX_BUF_SIZE - 1);
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total) {
@@ -2348,6 +2391,13 @@ void UartTask_run(void *argument)
 				  putchar(rxChar);
 				  fflush(stdout);									// Vynutíme zobrazení bez čekání na \n
 				  RxBuffer[RxIndex++] = rxChar;
+			  } else if (!s_rx_trunc) {
+				  /* 🔴 Prvni zahozeny znak radku: oznac a REKNI to (F-0073). Drive se
+				   * znak zahodil tise vcetne echa, takze jediny signal bylo, ze se
+				   * prestaly vypisovat znaky — a to se snadno prehledne. */
+				  s_rx_trunc = 1;
+				  if (s_rx_trunc_n < 0xFFFFFFFFu) s_rx_trunc_n++;
+				  printf("\r\n[prilis dlouhy prikaz - zbytek radku se ignoruje]\r\n");
 			  }
 		  }
 	  }
