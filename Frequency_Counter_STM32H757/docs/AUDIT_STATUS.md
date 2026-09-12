@@ -70,6 +70,30 @@ Otevřené otázky na HW: crash black-box pro
 `Error_Handler()` volaný **před** `MX_RTC_Init()` (modul 1) a retenční test `membench`
 nad rozsahem `bg_cache` (modul 2, F-0013 — nástroj `bgcheck` už existuje).
 
+## ✅ HW OVĚŘENO 2026-09-12 (moduly 12 + 13, `Reset: power-on`)
+
+Uživatel naflashoval obě banky a poslal výpisy. **`Reset: power-on`**, takže
+požadavek `L-0010` (ověření až po power-cyklu) je splněný.
+
+| nález | co se ověřilo | důkaz z desky |
+|---|---|---|
+| **F-0065 + F-0066** | povinný checksum nic nerozbil a rámce se nezahazují | `gpsraw` → `RAW:37558 SENT:551 **OVF:0**`, `gps` → `FIX:1 SAT:10` — fix se chytil i s nově povinným checksumem, a nové počítadlo přetečení je na nule |
+| **F-0070** | souřadnice mají **7 desetin** na obou cestách | `gps` → `50.2284400N 14.4838175E`; `scpi SYST:GPS:POS?` → `50.2284440,14.4838141`. 🔑 Sedm desetin je zároveň důkaz, že běží **nový** `fmt_scpi_deg7` — starý `fmt_scpi_deg6` tiskl `%06ld`, tedy šest |
+| **F-0068** | `SYST:DATE?` vrací platné datum, když čas znám | `scpi SYST:DATE?` → `2026,9,12`. ⚠️ Záporná větev (bez antény → `9.91E37`) ověřená **není** |
+| **modul 12 (CM4)** | opravy sítě běží a selftesty prošly | `SCPI(CM4): selftest PASS`, `HTTP(CM4): selftest PASS`, `NET: UP 100 Mbit full, IP 10.0.0.106`, `CM4: alive … stall x0` |
+| ostatní | nic se nerozbilo | `DISPLEJ: bring-up OK`, `LTDC podtečení 0/326`, `DMA2D chyb 0`, `GPIO HLIDAC: 0 oprav`, `I2C4 … err 0` |
+
+🔴 **A jedno zhoršení, které to měření odhalilo:** `stack Uart free` **168 B**
+(bylo 976 B). Změřeno, že z toho **48 B způsobily opravy modulu 13** a zbytek je
+tím, že se poprvé spustil `scpi` z konzole — ta cesta má ~1,6 kB rámců a F-0055
+ji neměřil. `21ac04e` to vrátil s úrokem (−140 B proti stavu před modulem 13),
+ale **F-0055 je tím naléhavější** — viz nový důkaz v jeho nálezu.
+
+⚠️ **Neověřeno zůstává:** F-0064 (chce `nc` na port 5025), F-0067 (chce vadnou
+NMEA větu), F-0069 (složená zpráva přes `;`), F-0063 (dlaždice „Chyby (log)"),
+a hlavně **F-0070 v tom, kvůli čemu vznikl** — SURVEY musí běžet ≥1 h, aby se dalo
+říct, jestli rozptyl klesl pod dřívější mez ~0,4 m.
+
 ## ✅ HW OVĚŘENO 2026-09-11 (po flashi a POWER-ON resetu)
 
 První běh oprav z 2026-09-11 na desce. `status` hlásil `Reset: power-on`, takže

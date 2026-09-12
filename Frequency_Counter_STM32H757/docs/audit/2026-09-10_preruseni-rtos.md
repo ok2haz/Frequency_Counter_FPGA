@@ -216,7 +216,23 @@ přesně v situaci, pro kterou byly napsané.
 - **Vztah k lekcím:** **`L-0016`** (mez i měřidlo její rezervy se navrhují společně —
   rezerva se tu měřila, ale ne ve stavu, ve kterém dochází) a **nová lekce po opravě**:
   „rezervu zásobníku měř v NEJHORŠÍM dosažitelném stavu úlohy, ne v běžném".
-- **Stav:** otevřeno — **potřebuje rozhodnutí** (tři varianty výše)
+- 🔴 **NOVÝ DŮKAZ Z DESKY 2026-09-12 — rezerva je horší, než tenhle nález měřil.**
+  Při běžném `scpi …` z konzole (tedy **bez** `selftest`) hlásil `status`
+  **`stack Uart free 168 B`** ze 4096 B, zatímco tenhle nález pracoval s 976 B.
+  Řetěz je `UartTask_run (700 B) + scpi_process (492 B) + scpi_process_ctx +
+  scpi_exec_one (268 B)` ≈ **1,6 kB jen v rámcích**; 976 B bylo změřeno v běhu,
+  kde se SCPI nepoužilo. **Vrchol tedy není 3120 B, ale 3928 B.**
+  Dílčí úleva: `21ac04e` přesunul `sub`/`rb` ve `scpi_process_ctx` do `.bss`
+  (−140 B proti stavu před modulem 13), ale **podstata nálezu tím nemizí** —
+  `scpi_process` drží `scpi_src_t src` na zásobníku (492 B) a `run_selftests`
+  přidává dalších ~1,2 kB.
+  🔑 Pro rozhodnutí mezi třemi variantami to znamená: **varianta 1 (zvětšit
+  zásobník) už nestačí na „posunutí hranice" — 4096 B je pod potřebou i bez
+  selftestu.** Varianta 2 (spouštět testy z úlohy, která má rezervu) řeší
+  selftest, ale ne SCPI cestu; tu by řešilo jedině zvětšení zásobníku
+  **nebo** přesun `scpi_src_t` mimo stack.
+- **Stav:** otevřeno — **potřebuje rozhodnutí** (tři varianty výše), a od
+  2026-09-12 je naléhavější (viz nový důkaz)
 
 ---
 
