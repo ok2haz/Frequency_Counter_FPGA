@@ -630,6 +630,8 @@ pět věcí naráz** a firmware přestal jít slinkovat. Pravidlo za tím je jed
 git diff --stat                       # co se vůbec hnulo
 grep -c "CM7/Core/Inc" CM4/.cproject  # MUSÍ být 4 (regen to maže VŽDY)
 grep -c "^__attribute__((naked))" CM4/Core/Src/stm32h7xx_it.c   # MUSÍ být 1 (viz níže)
+#   ⚠️ prostý `grep -c naked` dá 4 — počítá i komentáře. Ověřeno pozitivní
+#   kontrolou: kopie souboru bez toho řádku dá 0, ostrý soubor 1.
 grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
 ./scripts/build.sh Release BOTH       # 0 varování, 0 chyb
 ```
