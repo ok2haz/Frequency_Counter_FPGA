@@ -71,7 +71,7 @@
 | Task | Priorita | Stack |
 |---|---|---|
 | defaultTask | Normal | **3584 B** (GPS drain + rtc_app_tick snprintf + syscfg persist + alarm_tick + watchdog_supervise + ipc_publish/ipc_service + CM4 stall detekce + USB pump) |
-| UartTask | Normal | 4096 B |
+| UartTask | Normal | **8192 B** (2026-09-12: 1024 → 2048 slov, TODO #243 / F-0074 — na desce zbývalo `stack Uart free 168 B` a `selftest` zásobník přetekl) |
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
 | FpgaTask | Normal | 2048 B |
@@ -81,7 +81,17 @@
 ⚠️ **Tabulku drž synchronní se skutečnými `.stack_size` v `freertos.c`** (audit 2026-08-17
 odhalil rozjetí: dřív tu bylo 1536/2048 B, realita 2560/4096 B — defaultTask rostl kvůli
 `rtc_app_tick` snprintf, UartTask kvůli TODO #9 bumpu 512→1024 words). Součet stacků
-18 432 B ze 32 768 B heapu = 14 336 B rezerva na malloc/haldu.
+**23 552 B ze 32 768 B heapu = 9 216 B** rezerva na TCB, fronty, mutexy a malloc
+(2026-09-12; předtím tu stálo 18 432 B, což bylo zastaralé už o 1 024 B).
+🔴 **Tři z pěti tasků řídí `.ioc`** (`FREERTOS_M7.Tasks01` = defaultTask, UartTask,
+I2C4Task); UiTask a FpgaTask jsou v `USER CODE` blocích. Změna velikosti u prvních tří
+patří **do `.ioc`**, jinak ji regenerace vrátí — a ručně upravený `freertos.c` se
+s `.ioc` tiše rozejde.
+⚠️ **Proč defaultTask 896 slov** (komentář u toho řádku regen opakovaně maže, protože
+leží mimo `USER CODE`): audit 2026-09-05 — defaultTask měl nejtěsnější rezervu ze všech
+(736 B volno = 29 %) a běží v něm `run_selftests()`, kde sám `pn_compute` zabírá 1 136 B.
+Přesně tím projekt jednou spadl do boot loopu (#45). Zhorší se to zapnutím SD backendu
+(`datalog_tick` → `blk_write` +552 B).
 
 PRIO_BITS=4, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5.
 **Heap `configTOTAL_HEAP_SIZE` = 32768 B** (drženo i v .ioc klíčem

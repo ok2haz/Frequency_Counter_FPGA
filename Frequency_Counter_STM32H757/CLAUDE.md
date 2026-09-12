@@ -1510,7 +1510,7 @@ neopisuj, tenhle řádek je jediný důvěryhodný zdroj.
   + `SDMMC_Init(SDMMC1, hsd1.Init)` po `HAL_SD_InitCard` **ručně zapíše CLKCR** — nutné, protože init
   skládáme sami a vynecháváme `HAL_SD_ConfigWideBusOperation` (ta má 49denní SCR smyčku → IWDG), kde by
   HAL transfer takt+HWFC jinak aplikoval. `HAL_SD_InitCard` sám nechá CLKCR na init hodinách (400 kHz).
-  ⚠️ Doplnit HWFC i do `.ioc` přes CubeMX (viz CUBEMX_CHECKLIST). **`sd init` má krokovou diagnostiku
+  ✅ **HWFC už v `.ioc` JE** (`SDMMC1.HardwareFlowControl=SDMMC_HARDWARE_FLOW_CONTROL_ENABLE`, ověřeno 2026-09-12) — regenerace ho tedy nevrátí zpět. **`sd init` má krokovou diagnostiku
   `[a]..[e]`** (probe datové cesty přes CMDTRANS i DPSM_ENABLE) — první místo pro budoucí SD bring-up.
 - **4-bit sběrnice (2026-08-14):** po identifikaci `sd_try_4bit()` = **CMD55 + ACMD6** (bezdatové příkazy)
   řekne kartě 4-bit, pak `SDMMC_Init` nastaví host `WIDBUS=4B`. ⚠️ **NE `HAL_SD_ConfigWideBusOperation`**

@@ -615,3 +615,54 @@ regenerací zkontroluj, že zůstaly nenastavené:
   přepíše na `GPIO_PULLUP`. Důvod je vážný: bez kabelu RX plave → falešné start bity → bouře
   USART1 IRQ (prio 5 = `configMAX_SYSCALL`) → ISR preemptuje tasky → *„program nenaběhne"*.
   **Po regeneraci ověř, že ten USER CODE blok pořád je** — ne že něco chybí v `.ioc`.
+
+---
+
+## 🔴 Co `Generate Code` SEBERE (ověřeno měřením 2026-09-12)
+
+Tenhle seznam nevznikl úvahou, ale tím, že regenerace 2026-09-12 **opravdu smazala
+pět věcí naráz** a firmware přestal jít slinkovat. Pravidlo za tím je jediné:
+**co leží mimo `USER CODE BEGIN/END`, to regen přepíše.** Komentáře nechrání nic.
+
+### Po každé regeneraci zkontroluj (30 sekund)
+
+```bash
+git diff --stat                       # co se vůbec hnulo
+grep -c "CM7/Core/Inc" CM4/.cproject  # MUSÍ být 4 (regen to maže VŽDY)
+grep -c "^__attribute__((naked))" CM4/Core/Src/stm32h7xx_it.c   # MUSÍ být 1 (viz níže)
+grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
+./scripts/build.sh Release BOTH       # 0 varování, 0 chyb
+```
+
+### Co se 2026-09-12 ztratilo a proč
+
+| soubor | co zmizelo | stav dnes |
+|---|---|---|
+| `CM4/.cproject` | dvě include cesty `../../CM7/Core/Inc` | ⚠️ **mizí při KAŽDÉM regenu** — bez nich CM4 nenajde `ipc_shared.h`/`scpi.h`; vrátit `git checkout -- CM4/.cproject` |
+| `CM7/Core/Src/fmc.c` | `fmc_sdram_init_sequence()` + `g_fmc_init_fail/runs` | ✅ přesunuto do `USER CODE 0` (+ `extern SDRAM_HandleTypeDef hsdram1;`) |
+| `CM7/Core/Src/usart.c` | `#include "errlog.h"` | ✅ přesunuto do `USER CODE 0` |
+| `CM4/.../stm32h7xx_it.c` | include `ipc_shared.h`, `cm4_fault_note()`, `cm4_fault_capture()` | ✅ přesunuto do `USER CODE Includes` / `USER CODE 0` |
+| `CM4/.../stm32h7xx_it.c` | volání `cm4_fault_note(3u/4u/5u/6u)` v handlerech | ✅ přesunuta **dovnitř** `USER CODE BEGIN <IRQ> 0` |
+| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | 🔴 **regen-safe BÝT NEMŮŽE — vracet ručně** |
+
+### 🔴 Jediná věc, která se regen-safe udělat nedá
+
+`__attribute__((naked))` sedí na **hlavičce** funkce, a tu CubeMX vždy přepíše;
+uvnitř `USER CODE` bloku hlavičku změnit nejde. Poctivá náhrada neexistuje: bez
+`naked` posune prolog MSP, takže by se z rámce výjimky četlo PC/LR o pár bajtů
+vedle — tedy **věrohodně vypadající, ale špatné číslo**. Radši žádné PC než vymyšlené.
+Degradace při přehlédnutí je snesitelná: `cm4_fault_note()` v ostatních handlerech
+je regen-safe a zaznamená aspoň **druh** faultu.
+
+### Hodnoty, které MUSÍ být v `.ioc` (ne jen v generovaném řádku)
+
+Poučení z `FMC.ReadPipeDelay1`: hodnota žila jen v `fmc.c` (commit `48b9420` neměnil
+`.ioc`), takže ji první regenerace přepsala na `_DELAY_0` — a to je přesně stav před
+opravou #237 (3 338 207 chybných bitů, problikávání, černý displej po power-cyklu).
+**Když měníš generovaný řádek, zkontroluj, že odpovídající klíč je v `.ioc`.**
+Ověřeno 2026-09-12, že v `.ioc` **jsou**: `I2C4.Timing=0x70303AEE`, `QUADSPI.FlashSize=25`,
+`SDMMC1.HardwareFlowControl=ENABLE`, `SDMMC1.ClockDiv=1`, 4-bit přes `PC10/PC11.Mode`,
+`ADC3.ClockPrescalerADC3=DIV8`, `RCC.HSE_VALUE=25000000`, `DSIHOST.Mode=DSI_VID_MODE_BURST`,
+`PB12.PinState=GPIO_PIN_SET`, `FMC.ReadPipeDelay1=FMC_SDRAM_RPIPE_DELAY_1`.
+⚠️ `DSI ColorCoding` v `.ioc` **není** (odvozuje se nejspíš z `LTDC.PixelFormat_L0=RGB565`);
+po regeneraci ověř, že `dsihost.c` má pořád `DSI_RGB565`.
