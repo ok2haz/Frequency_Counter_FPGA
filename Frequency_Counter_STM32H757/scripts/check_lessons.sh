@@ -130,6 +130,32 @@ if [ -f "$APPG" ]; then
     fi
 fi
 
+# ── Okno volané z dlaždicové tabulky musí flipnout SAMO (audit 2026-09-11) ────
+# `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` se volají přes ukazatel
+# (`TOOLS_ITEMS[i].fn()`) a volající za ně flip nedodělá: obsluha tapu jen vrátí
+# `true` a UiTask na to reaguje POUZE zvukovou odezvou `alarm_click()`. Okno bez
+# `present_now()` se proto nakreslí do zadního bufferu a NIKDY se neukáže —
+# navenek „tlačítko nic nedělá, jen klikne". Přesně tak se choval `render_errlog`
+# (okno CHYBY) od chvíle, kdy vzniklo. Viz L-0029.
+if [ -f "$APPG" ]; then
+    TAB_FN="$( awk '/(MENU|MEAS|TOOLS)_ITEMS\[[A-Z_]*\] = \{/{f=1;next} f&&/^\};/{f=0} f' "$APPG" \
+        | grep -oE ',[[:space:]]*[a-z_][a-z_0-9]*[[:space:]]*\}' \
+        | grep -oE '[a-z_][a-z_0-9]{3,}' | sort -u )"
+    CHYBI_FLIP=""
+    for FN in $TAB_FN; do
+        BODY="$( awk -v fn="$FN" '$0 ~ "^(static )?void " fn "\\(void\\)[[:space:]]*$" {f=1} f{print} f&&/^\}/{exit}' "$APPG" )"
+        [ -z "$BODY" ] && continue          # deklarace jinde / jiná signatura
+        printf '%s\n' "$BODY" | grep -qE 'present_now|s_dirty = 1' \
+            || CHYBI_FLIP="$CHYBI_FLIP $FN"
+    done
+    if [ -n "${CHYBI_FLIP// /}" ]; then
+        echo "[!] ZAKÁZÁNO: okno z dlaždicové tabulky neflipne samo — nakreslí se do zadního"
+        echo "    bufferu a NIKDY se neukáže (uživatel slyší jen klik). Chybí:${CHYBI_FLIP}"
+        echo
+        NALEZY=$((NALEZY + 1))
+    fi
+fi
+
 if [ "$NALEZY" -eq 0 ]; then
     echo "OK: žádný zakázaný vzor nenalezen."
     exit 0

@@ -259,3 +259,47 @@ s rezervou. ✅ (Kontrolováno kvůli historii: projekt už dvakrát spadl na p�
 - **Okno CHYBY (`s_view=51`, errlog)** a **PRŮVODCE kalibrací (`s_view=40`)** dostaly jen
   průchod grepy, ne čtení — obě sahají na persistentní data, takže by si ruční čtení
   zasloužily.
+
+---
+
+### F-0063 [S2] Okno CHYBY (s_view=51) se po tapu na dlaždici nikdy nezobrazilo
+
+- **Místo:** `CM7/app/app_gpsdo.c:3171-3245` (`app_gpsdo_render_errlog`, konec funkce),
+  volající `:8502-8503` (`s_view == 48` → `TOOLS_ITEMS[i].fn()`),
+  `CM7/Core/Src/freertos_task_ui.c:382` (UiTask → `alarm_click()`)
+- **Popis:** `app_gpsdo_render_errlog()` na konci **neflipovalo**. Okna z tabulek
+  `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` se volají přes ukazatel a volající za ně
+  flip nedodělá — obsluha tapu jen vrátí `true`. Okno se tedy vykreslilo do zadního
+  bufferu a **nikdy se neukázalo**, přestože `s_view` už bylo 51.
+- **Důkaz:**
+  1. **Nahlásil uživatel z provozu** (2026-09-11): *„tlačítko log, když na něj
+     kliknu, nic to neudělá, jen slyším klik."*
+  2. 🔑 **Ten klik je důkaz, ne šum:** `freertos_task_ui.c:382` přehraje
+     `alarm_click()` **právě když `app_gpsdo_handle_touch()` vrátí `true`**, tedy
+     když byl dotyk obsloužen. Vstupní cesta je tím vyloučená.
+  3. **Systematický výčet obou tabulek:** ze **22 oken** volaných přes ukazatel má
+     21 ve svém těle `present_now()`/`s_dirty` a `render_errlog` jako **jediné** ne.
+  4. **Není to regrese z oprav 2026-09-11** — `git log -S` ukazuje, že funkce
+     vznikla commitem `0cc2d90` („ovladani logu dotykem/encoderem — okno CHYBY");
+     commity toho dne se `app_gpsdo.c` nedotkly.
+- **Dopad:** **Celé okno CHYBY bylo nedostupné oběma ovládacími cestami** (dotyk
+  i enkodér volají tutéž `fn()`), tedy i trvalý záznam poruch ve W25Q, kvůli kterému
+  okno vzniklo. ⚠️ Přístroj přitom v tom okně „byl" — další tap padl do obsluhy
+  `s_view == 51` a tlačítko SMAZAT (jehož větev `present_now()` má) by okno konečně
+  zobrazilo. Tedy stav, kdy displej ukazuje jiné okno, než jaké je aktivní.
+- **Reprodukce:** Diagnostika → `NASTROJE >` → dlaždice **Chyby (log)** (vpravo
+  nahoře). Před opravou se nic nezměnilo, jen zazněl klik.
+  🔑 **Ověřitelné bez sondy:** `status` po tom tapu hlásí okno **51**, přestože na
+  displeji jsou pořád NÁSTROJE — tedy přesně ta diagnostika, která vznikla
+  opravou F-0047.
+- **Návrh opravy:** `present_now()` na konec funkce.
+- **Riziko opravy:** nízké (8 B `.text`, jedna funkce).
+  ⚠️ Obsluha tapu na `EL_ERASE_RECT` (`:9013`) volá `render_errlog()` a hned po něm
+  `present_now()` — po opravě jsou tam tedy dva flipy za sebou. **Ponecháno
+  záměrně**: totéž má i okno DATALOG (`:9028`), takže se vzor nerozchází, a druhý
+  flip stojí nejvýš jedno čekání na vblank (~17 ms) v UiTasku, který má limit 2,5 s.
+- **Vztah k lekcím:** nová **`L-0029`**; při psaní její detekce se znovu potvrdila
+  **`L-0020`** (test se nejdřív ukotvil na forward deklaraci a „nic nenašel").
+- **Stav:** **opraveno 2026-09-11** (`1b21c82`), ⬜ **neověřeno na HW**.
+  Provedeno podle návrhu. Doplněna trvalá detekce do `scripts/check_lessons.sh`
+  a ověřena pozitivní kontrolou na třech funkcích.

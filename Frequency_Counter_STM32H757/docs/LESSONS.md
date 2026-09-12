@@ -50,6 +50,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0026 | Když do záznamu přibude pole, přepočítej strop bufferu, do kterého se ten záznam skládá — a strop připoj k bufferu `_Static_assert`em, ne komentářem. | `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)` u každé pevné odpovědi |
 | L-0027 | Na neautentizovaném endpointu smí diagnostika vydat jen to, co odesílatel sám poslal. Délka odvozená z tajemství je taky únik. | u každé položky veřejné diagnostiky musí být napsané, PROČ je neškodná; „jen délky a booly" není zdůvodnění |
 | L-0028 | Věta v komentáři tvaru „hlídá to X" je TESTOVATELNÁ — najdi řádek, kde se X čte. Zahozená návratová hodnota je nejčastější podoba obrany, která neexistuje. | grep na `tcp_write(`/`f_write(`/`HAL_*` bez uložení návratu, křížem proti komentářům se slovy „hlída", „brani", „osetruje" |
+| L-0029 | Funkce volaná přes ukazatel z tabulky musí být SOBĚSTAČNÁ — volající za ni nedodělá krok, který ostatní položky tabulky dělají samy. Přidáváš-li do tabulky položku, projdi, co dělají ostatní. | `scripts/check_lessons.sh` sekce „okno z dlaždicové tabulky neflipne samo" |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -769,6 +770,45 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   (`tcp_write(`, `f_write(`, `HAL_*`), a krizem proti komentarum se slovy
   „hlida", „brani", „osetruje", „pozna". Kazdy takovy par je kandidat na nalez.
 - **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0059
+- **Stav:** aktivni
+
+---
+
+### L-0029 — okno se kreslilo do zadniho bufferu a nikdy se neukazalo
+
+- **Kde:** `CM7/app/app_gpsdo.c` (`app_gpsdo_render_errlog`, okno CHYBY / s_view=51)
+- **Co se stalo:** dlazdice „Chyby (log)" v NASTROJICH pusobila mrtve — po tapu se
+  nestalo nic, jen bylo slyset klik. `app_gpsdo_render_errlog()` totiz na konci
+  **neflipovalo**. Okna z tabulek `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` se volaji
+  pres ukazatel (`TOOLS_ITEMS[i].fn()`) a **volajici za ne flip nedodela**: obsluha
+  tapu jen vrati `true` a UiTask na to reaguje POUZE zvukovou odezvou. Okno se tedy
+  vykreslilo do zadniho bufferu a nikdy se neukazalo — `s_view` uz pritom bylo 51,
+  takze pristroj v tom okne „byl", jen ho nebylo videt.
+- 🔑 **Ten klik byl DIAGNOSTIKA, ne zvuk navic.** `freertos_task_ui.c:382`:
+  `if (app_gpsdo_handle_touch(tx, ty)) { alarm_click(); … }` — klik zazni **prave
+  kdyz byl dotyk obslouzeny**. „Nic to nedela, ale klikne" tedy od zacatku rikalo
+  *„vstup je v poradku, problem je za nim"*. Kdyby neklikalo, hledalo by se
+  v souradnicich a v `list_hit`; takhle slo jit rovnou na vykresleni.
+- **Jak se to naslo:** ne hledanim v hlasenem miste, ale **vyctem vsech polozek
+  obou tabulek** — ze 22 oken bylo `render_errlog` JEDINE bez vlastniho flipu.
+  Kdyz jedna polozka homogenni tabulky dela neco jinak nez ostatnich 21, je to
+  bud zamer s oduvodnenim, nebo vada; treti moznost neni.
+- **Oprava:** `present_now()` na konec funkce + kontrola do `check_lessons.sh`.
+- **Pravidlo:** **Funkce volana pres ukazatel z tabulky musi byt SOBESTACNA.**
+  Volajici, ktery ji spousti pres `fn()`, za ni nemuze doplnit krok, ktery ostatni
+  polozky delaji samy — nevi, ktera to je. Kdyz do takove tabulky pridavas polozku,
+  **projdi, co dela sousedni**, a ne jen to, co potrebuje ta tvoje.
+- **Detekce:** `scripts/check_lessons.sh` — sekce „okno z dlazdicove tabulky
+  neflipne samo": vytahne jmena funkci z `MENU/MEAS/TOOLS_ITEMS`, najde jejich
+  telo a overi `present_now`/`s_dirty = 1`.
+  🔴 **Pozitivni kontrola je soucast teto lekce, ne volitelny doplnek** (L-0020).
+  Overeno odebranim flipu ze **tri ruznych** funkci (`render_errlog`, `render_mem`,
+  `render_sd`) — kontrola pokazde ohlasila spravne jmeno a po obnove zase mlcela.
+  ⚠️ A jeste jednou se pritom potvrdila L-0020: **prvni verze toho testu se
+  ukotvila na FORWARD DEKLARACI** (`static void f(void);`) misto na definici,
+  takze „nic nenasla" a vypadala jako dukaz, ze kontrola nefunguje. Kotvit se musi
+  na hlavicku nasledovanou `{`.
+- **Commit:** `1b21c82`, viz `docs/audit/2026-09-11_aplikacni-okna.md`, nalez F-0063
 - **Stav:** aktivni
 
 ---

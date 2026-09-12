@@ -18,6 +18,10 @@ modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritick
 zatímco SCPI i IPC ji mají).
 ⚠️ **Opravy modulu 12 míří do BANKY 2 (CM4)** — jiná cesta než všechno dosavadní.
 `IPC_VERSION` se žádným z nich nemění, takže přeflashování obou bank nutné není.
+⚠️ **F-0063 [S2] přišel z PROVOZU, ne z auditu** (2026-09-11): okno CHYBY se po tapu
+na dlaždici nikdy nezobrazilo, protože `render_errlog` neflipovalo. Opraveno (`1b21c82`),
+⬜ neověřeno na HW. Patří k modulu 11 a je to **jediný nález, který našel uživatel dřív
+než audit** — modul 11 fázi oprav ještě neprošel, takže tam takové vady ještě mohou být.
 🔑 **Co na desce ověřit** (z UART `status`, bez sondy — CM4 nemá konzoli):
 `HTTP(CM4)`/`SCPI(CM4)` selftest PASS a `NET:` s IP; pak z prohlížeče **SPA + dlouhá
 historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
@@ -126,7 +130,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
-| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány | 2026-09-11 | 0 | 1 | 1 | 1 | [3](audit/2026-09-11_aplikacni-okna.md) |
+| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány (+1 z provozu, opraven) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
 | 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
 
 ⚠️ **Modul 12 je první auditovaný modul na CM4** a jediná část projektu, která
@@ -145,7 +149,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 1 | 0 |
-| S2 | 1 | 10 | 0 |
+| S2 | 1 | 11 | 0 |
 | S3 | 7 | 24 | 0 |
 | S4 | 2 | 9 | 0 |
 
@@ -392,3 +396,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-10 | F5 opravy (modul 6) | F-0023 mez proti kapacitě W25Q (`fix:` `1f69ca9`), F-0024 zdůvodnění ignorovaných návratů (`docs:` `d7dbd69`). Před zásahem ověřeno, že žádný volající na hranici neleží. Build 0 varování, `audit.py` 92/0/2, `.text` 597 488 → 597 520 a mez `cmp.w r0, #67108864` dohledána v disassembly. **Přeložen i CM4/Release** — obraz byl starší než `ipc_shared.h` (assert z F-0017), takže `build.sh` varoval na možný nesoulad bank. **⬜ neověřeno na HW.** | L-0015 |
 | 2026-09-11 | **sit CM4 (HTTP + SCPI/TCP + mDNS)** | F3 prezkum, 7 nalezu (2xS2, 3xS3, 2xS4), verdikt **podminene funkcni**. **Prvni auditovany modul na CM4** a jedina cast projektu zpracovavajici neduveryhodny vstup zvenci. Parsery samotne jsou v poradku — zadne preteceni vstupniho bufferu jsem nenasel (`httpd_parse_request`, `b64_decode`, `mdns_match_name` i `scpi_tcp` kontroluji meze pred kazdym zapisem). Vady lezi ve **vystupni** ceste a ve **sprave zivotniho cyklu spojeni**: **F-0056** (odpoved `/api/log` se od 100 MHz nevejde do `bodybuf` a tise se orizne — strop 48 bodu je z v12 a v13 pak pridalo dve dalsi cisla na bod, aniz by se prepocital; projevi se to hlaskou obvinujici datalog a IPC, ktere jsou nevinne) a **F-0057** (`pump_send` zavre pcb, ale neodregistruje `tcp_arg`/`tcp_err`/`tcp_poll`, takze cizi callback sahne na mezitim znovupouzity slot — doloženo ctenim vendorovaneho lwIP `tcp.c:484` a `tcp_priv.h:223`). Umisteni vsech bufferu overeno `nm` nad obrazem CM4. 🔑 Hypoteza „zasobnik jako F-0055, jen na CM4" **merenim vyvracena**: dostupnych 54 168 B proti nejhlubsimu retezu ~2–3 kB (rezerva ~18x). Kod nemenen. | zatim zadna (F5 nebyla) |
 | 2026-09-11 | F5 opravy (modul 12) | **6 ze 7 nalezu uzavreno ve 3 commitech.** `d508139` zivotni cyklus spojeni (**F-0057** odregistrace callbacku pred uvolnenim slotu + test `c->pcb == pcb`; **F-0059** SSE dostalo timeout 120 s **a** vyhodnoceni `tcp_write`, ktere komentar uz tri mesice sliboval; **F-0062** mrtva vetev odpovida misto mlceni). `d2038cc` vystupni buffery (**F-0056** rozpocet `_Static_assert`em + `bodybuf` 4096->6144 B + konec ticheho orezu; **F-0058** `hdr_set()`). `3df104c` **F-0060** — `expected_len` pryc z `/api/state` i ze SPA. 🔑 **F-0056 se opravil JINAK, nez nalez navrhoval:** snizeni stropu na 40 bodu by uskodilo, protoze SPA sesiva dalsi davku jen kdyz dostane presne tolik bodu, kolik si vyzadala — rozpocet se musel ZVEDNOUT, ne oriznout. Build 0 varovani, `audit.py` 92/0/2, `.text` 76336 -> 76768 B, `.bss` +10240 B (vedome), SPA retezec `check.py --build` cely zeleny (krok 8: `nm` 139290 = extrakce +1). **F-0061** (mDNS konformita) vedome odlozen. ⬜ **neovereno na HW.** | L-0025, L-0026, L-0027, L-0028 |
+| 2026-09-11 | oprava z provozu (modul 11) | **F-0063 [S2]** — uzivatel nahlasil, ze dlazdice „Chyby (log)" nic nedela, „jen slysim klik". Ten klik byl **dukaz**: UiTask ho prehraje (`alarm_click()`) prave kdyz `handle_touch` vrati true, takze vstupni cesta byla vyloucena hned a slo jit rovnou na vykresleni. `app_gpsdo_render_errlog()` neflipovalo — okno se kreslilo do zadniho bufferu a nikdy se neukazalo, prestoze `s_view` uz bylo 51. 🔑 Neresilo se jen hlasene misto: vyctem OBOU dlazdicovych tabulek doloženo, ze ze **22 oken** bylo `render_errlog` JEDINE bez vlastniho flipu. Opraveno `1b21c82` (+8 B `.text`), doplnena trvala kontrola do `check_lessons.sh` a **overena pozitivni kontrolou na tri funkcich** (pricemz se znovu potvrdila L-0020: prvni verze testu se ukotvila na forward deklaraci a „nic nenasla"). Doloženo, ze to NENI regrese z oprav site — vada prisla s `0cc2d90`. ⬜ **neovereno na HW.** | L-0029 |
