@@ -45,8 +45,17 @@ typedef struct {
   uint8_t  hour, minute, second;   /* UTC cas */
   uint8_t  day, month;
   uint16_t year;        /* 4-mistny (2000+) */
-  float    lat_deg;     /* stupne, + sever / - jih */
-  float    lon_deg;     /* stupne, + vychod / - zapad */
+  /* 🔴 CELOCISELNE v 1e-7 stupne, NE float (audit F-0070). `float` ma pro
+   * hodnotu ~50 stupnu ULP 2^-18 = 3,81e-6 stupne, tedy **kvantizacni krok
+   * 0,42 m** — a self-survey (#53) z techto hodnot pocita horizontalni rozptyl,
+   * ktery ma byt meritkem konvergence. Pod tu mez se tedy nedostal, at bezel jak
+   * chtel dlouho, a vypadalo to jako vlastnost anteny.
+   * 1e-7 stupne = ~1,1 cm, tedy pod rozlisenim NMEA i pod tim, co GPS umi.
+   * ⚠️ Skutecny zisk limituje POCET DESETIN MINUT, ktere prijimac posila:
+   * `ddmm.mmmm` (4) = 1,85 m, `ddmm.mmmmm` (5) = 18,5 cm. Typ uz tedy prestal
+   * byt uzkym hrdlem, ale rozliseni zaznamu ano. */
+  int32_t  lat_e7;      /* stupne x 1e7, + sever / - jih */
+  int32_t  lon_e7;      /* stupne x 1e7, + vychod / - zapad */
   float    alt_m;       /* nadmorska vyska [m] (GGA) */
   float    speed_kn;    /* rychlost nad zemi [uzly] (RMC) */
   uint8_t  fix_mode;    /* GSA: 1 = no fix, 2 = 2D, 3 = 3D */

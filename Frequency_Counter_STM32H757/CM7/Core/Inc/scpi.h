@@ -142,7 +142,8 @@ struct scpi_src {
     float    ad8307_slope_mv_db, ad8307_intercept_dbm;
     /* GPS. */
     uint8_t  gps_fix_mode, gps_num_sat, gps_hour, gps_min, gps_sec;
-    float    gps_lat_deg, gps_lon_deg, gps_alt_m;
+    int32_t  gps_lat_e7, gps_lon_e7;   /* stupne x 1e7 (F-0070; drive float) */
+    float    gps_alt_m;
     /* Stav. */
     uint8_t  spi_ok, si5356_status, si5356_ok, selftest_pass;
     uint32_t uptime_s;

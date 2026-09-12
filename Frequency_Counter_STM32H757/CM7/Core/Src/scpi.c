@@ -193,12 +193,17 @@ static void fmt_scpi_sec_ns(uint64_t ns, char *out, size_t n)
     uint32_t us    = (uint32_t)((ns % 1000000000u) / 1000u);
     snprintf(out, n, "%lu.%06lu", (unsigned long)whole, (unsigned long)us);
 }
-/* stupně -> "±d.dddddd" (6 des. míst; SYST:GPS:POS?). */
-static void fmt_scpi_deg6(float v, char *out, size_t n)
+/* stupně × 1e7 -> "±d.ddddddd" (7 des. míst; SYST:GPS:POS?).
+ * 🔴 Bere uz CELOCISELNOU hodnotu (audit F-0067 + F-0070). Drive to byl `float`
+ * a `(int32_t)(v * 1e6f)`: pri poskozene souradnici (99999 stupnu) to davalo
+ * 9,99e11, tedy pretypovani mimo rozsah `int32_t` = **nedefinovane chovani**.
+ * Ted zadny cast z floatu neni a rozsah hlida uz `nmea_coord_e7`. */
+static void fmt_scpi_deg7(int32_t e7, char *out, size_t n)
 {
-    int neg = (v < 0.0f); if (neg) v = -v;
-    int32_t ud = (int32_t)(v * 1000000.0f + 0.5f);
-    snprintf(out, n, "%s%ld.%06ld", neg ? "-" : "", (long)(ud / 1000000), (long)(ud % 1000000));
+    int neg = (e7 < 0);
+    uint32_t a = (uint32_t)(neg ? -(int64_t)e7 : (int64_t)e7);
+    snprintf(out, n, "%s%lu.%07lu", neg ? "-" : "",
+             (unsigned long)(a / 10000000u), (unsigned long)(a % 10000000u));
 }
 
 /* ── Chybová fronta + status registry (PER-SESSION, scpi_ctx_t) ─────────────── */
@@ -614,8 +619,8 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:GPS:POSition") && is_query) {
         if (src->valid & SCPI_V_GPS) {
             char la[16], lo[16];
-            fmt_scpi_deg6(src->gps_lat_deg, la, sizeof la);
-            fmt_scpi_deg6(src->gps_lon_deg, lo, sizeof lo);
+            fmt_scpi_deg7(src->gps_lat_e7, la, sizeof la);
+            fmt_scpi_deg7(src->gps_lon_e7, lo, sizeof lo);
             snprintf(out, out_sz, "%s,%s,%d", la, lo, (int)src->gps_alt_m);
         } else snprintf(out, out_sz, "9.91E37");
         return strlen(out);
@@ -1060,7 +1065,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
     if (g.valid) {
         src->valid |= SCPI_V_GPS;
         src->gps_hour = g.hour; src->gps_min = g.minute; src->gps_sec = g.second;
-        src->gps_lat_deg = g.lat_deg; src->gps_lon_deg = g.lon_deg; src->gps_alt_m = g.alt_m;
+        src->gps_lat_e7 = g.lat_e7; src->gps_lon_e7 = g.lon_e7; src->gps_alt_m = g.alt_m;
     }
     src->spi_ok = g_spi_ok; src->si5356_status = g_si5356_status; src->si5356_ok = g_si5356_ok;
     /* (`selftest_pass` a `uptime_s` uz nastavila levna cast nahore.) */

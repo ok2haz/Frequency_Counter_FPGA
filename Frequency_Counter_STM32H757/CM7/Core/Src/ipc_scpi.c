@@ -50,8 +50,8 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->gps_fix_mode = sn->gps_fix_mode;
     s->gps_num_sat  = sn->gps_num_sat;
-    s->gps_lat_deg  = (float)sn->gps_lat_e7 * 1e-7f;
-    s->gps_lon_deg  = (float)sn->gps_lon_e7 * 1e-7f;
+    s->gps_lat_e7   = sn->gps_lat_e7;      /* e7 -> e7, bez mezikroku pres float (F-0070) */
+    s->gps_lon_e7   = sn->gps_lon_e7;
     s->gps_alt_m    = (float)sn->gps_alt_cm * 0.01f;
     /* Cas: snapshot nese unix, `scpi_src_t` hodiny/minuty/sekundy. Prevod je
      * ciste modularni — datum SCPI z tohohle pole necte (`SYST:GPS:TIME?`). */

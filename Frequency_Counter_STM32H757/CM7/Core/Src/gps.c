@@ -65,24 +65,61 @@ static uint8_t hexnib(char c)
   return 0;
 }
 
-/* "ddmm.mmmm" / "dddmm.mmmm" -> stupne (float), znamenko dle polokoule. */
-static float nmea_coord(const char *s, char hemi)
+/* "ddmm.mmmm" / "dddmm.mmmm" -> stupne x 1e7 (int32), znamenko dle polokoule.
+ * @param max_deg horni mez ve stupnich: 90 pro sirku, 180 pro delku.
+ * @return 0 pri jakemkoli neplatnem vstupu (stejna hodnota jako u vsech ostatnich
+ *         odmitnuti nize — volajici nema co rozlisovat).
+ *
+ * 🔴 Dve zmeny proti puvodni float verzi:
+ *  1. **Celociselne** (audit F-0070) — viz komentar u `lat_e7` v `gps.h`.
+ *  2. **Validuje ROZSAH** (audit F-0067). Drive se kontroloval jen TVAR, takze
+ *     `dlen <= 6` pripoustelo az 999999 stupnu; ta hodnota pak tekla do
+ *     `fmt_scpi_deg6`, kde `(int32_t)(v * 1e6f)` = 9,99e11 **preteklo int32,
+ *     coz je nedefinovane chovani**, ne jen spatne cislo. Zeměpisna sirka pritom
+ *     nikdy neprekroci 90 a delka 180, takze mez je jednoznacna — a resi se
+ *     U ZDROJE, cimz jsou kryti vsichni konzumenti (SCPI, UART, IPC, web) naraz.
+ * ⚠️ Cislice se overuji explicitne: `atoi_simple`/`atof_simple` nectinou vstup
+ *    tise prijmou (viz `d2()` a F-0072). */
+static int32_t nmea_coord_e7(const char *s, char hemi, int32_t max_deg)
 {
-  if (!s || !*s) return 0.0f;
+  if (!s || !*s) return 0;
   const char *dot = strchr(s, '.');
-  if (!dot) return 0.0f;
+  if (!dot) return 0;
   int intlen = (int)(dot - s);
-  if (intlen < 3) return 0.0f;
+  if (intlen < 3) return 0;
   int dlen = intlen - 2;            /* delka casti se stupni (2 cislice = minuty) */
-  if (dlen <= 0 || dlen > 6) return 0.0f;
-  char degbuf[8];
-  memcpy(degbuf, s, (size_t)dlen);
-  degbuf[dlen] = '\0';
-  float deg = (float)atoi_simple(degbuf);
-  float minutes = atof_simple(s + dlen);   /* "mm.mmmm" */
-  float val = deg + minutes / 60.0f;
-  if (hemi == 'S' || hemi == 'W') val = -val;
-  return val;
+  if (dlen <= 0 || dlen > 3) return 0;    /* stupne maji nejvys 3 cislice (180) */
+
+  int32_t deg = 0;
+  for (int i = 0; i < dlen; i++) {
+    if (s[i] < '0' || s[i] > '9') return 0;
+    deg = deg * 10 + (s[i] - '0');
+  }
+  if (deg > max_deg) return 0;
+
+  /* minuty "mm.mmmmm" -> x 1e5 (5 desetin = 1,85 cm, pod rozlisenim prijimace) */
+  const char *m = s + dlen;
+  int32_t min_x1e5 = 0;
+  for (int i = 0; i < 2; i++) {
+    if (m[i] < '0' || m[i] > '9') return 0;
+    min_x1e5 = min_x1e5 * 10 + (m[i] - '0');
+  }
+  m += 2;
+  if (*m != '.') return 0;
+  m++;
+  for (int i = 0; i < 5; i++) {            /* chybejici desetiny = doplnena nula */
+    int d = (*m >= '0' && *m <= '9') ? (*m++ - '0') : 0;
+    min_x1e5 = min_x1e5 * 10 + d;
+  }
+  if (min_x1e5 >= 60 * 100000) return 0;   /* minuty musi byt < 60 */
+
+  /* stupne x 1e7 = deg*1e7 + minuty/60 * 1e7; minuty = min_x1e5/1e5
+   * => prispevek = min_x1e5 * 1e7 / (60 * 1e5) = min_x1e5 * 1e7 / 6e6.
+   * Mezivypocet pres int64: nejhur 5999999 * 1e7 = 6e13. */
+  int32_t e7 = deg * 10000000 + (int32_t)(((int64_t)min_x1e5 * 10000000) / 6000000);
+  if (e7 > max_deg * 10000000) return 0;
+  if (hemi == 'S' || hemi == 'W') e7 = -e7;
+  return e7;
 }
 
 /* Rozdeli vetu (in-place) podle ',' na pole. Vraci pocet poli. */
@@ -105,15 +142,15 @@ static void parse_rmc(char **f, int nf)
   if (strlen(f[1]) >= 6) { hh = d2(f[1]); mm = d2(f[1] + 2); ss = d2(f[1] + 4); }
   uint8_t dd = 0, mo = 0; uint16_t yy = 0;
   if (strlen(f[9]) >= 6) { dd = d2(f[9]); mo = d2(f[9] + 2); yy = (uint16_t)(2000 + d2(f[9] + 4)); }
-  float lat = valid ? nmea_coord(f[3], f[4][0]) : 0.0f;
-  float lon = valid ? nmea_coord(f[5], f[6][0]) : 0.0f;
+  int32_t lat = valid ? nmea_coord_e7(f[3], f[4][0], 90)  : 0;
+  int32_t lon = valid ? nmea_coord_e7(f[5], f[6][0], 180) : 0;
   float spd = atof_simple(f[7]);
 
   taskENTER_CRITICAL();
   s_gps.valid = valid;
   s_gps.hour = hh; s_gps.minute = mm; s_gps.second = ss;
   if (dd) { s_gps.day = dd; s_gps.month = mo; s_gps.year = yy; }
-  if (valid) { s_gps.lat_deg = lat; s_gps.lon_deg = lon; s_gps.speed_kn = spd; s_gps.fixes++; }
+  if (valid) { s_gps.lat_e7 = lat; s_gps.lon_e7 = lon; s_gps.speed_kn = spd; s_gps.fixes++; }
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
@@ -429,12 +466,14 @@ void gps_get(gps_data_t *out)
   taskEXIT_CRITICAL();
 }
 
-static void fmt_coord(float v, char pos, char neg, char *out, int n)
+/* stupne x 1e7 -> "50.1285066N" (7 desetin, bez %f). Zadny float cast, takze
+ * ani zadne UB pri poskozene hodnote (audit F-0067). */
+static void fmt_coord(int32_t e7, char pos, char neg, char *out, int n)
 {
-  char h = (v >= 0.0f) ? pos : neg;
-  if (v < 0.0f) v = -v;
-  int32_t ud = (int32_t)(v * 1000000.0f + 0.5f);   /* mikro-stupne */
-  snprintf(out, (size_t)n, "%ld.%06ld%c", (long)(ud / 1000000), (long)(ud % 1000000), h);
+  char h = (e7 >= 0) ? pos : neg;
+  uint32_t a = (uint32_t)(e7 < 0 ? -(int64_t)e7 : (int64_t)e7);
+  snprintf(out, (size_t)n, "%lu.%07lu%c",
+           (unsigned long)(a / 10000000u), (unsigned long)(a % 10000000u), h);
 }
 
 void gps_format_status(char *buf, int n)
@@ -447,8 +486,8 @@ void gps_format_status(char *buf, int n)
     return;
   }
   char la[16], lo[16];
-  fmt_coord(g.lat_deg, 'N', 'S', la, sizeof la);
-  fmt_coord(g.lon_deg, 'E', 'W', lo, sizeof lo);
+  fmt_coord(g.lat_e7, 'N', 'S', la, sizeof la);
+  fmt_coord(g.lon_e7, 'E', 'W', lo, sizeof lo);
   snprintf(buf, (size_t)n, "FIX:%u SAT:%02u %04u-%02u-%02u %02u:%02u:%02u %s %s ALT:%dm",
            g.fix_quality, g.num_sat, g.year, g.month, g.day,
            g.hour, g.minute, g.second, la, lo, (int)g.alt_m);
@@ -460,11 +499,17 @@ void gps_format_status(char *buf, int n)
 bool gps_selftest(void)
 {
   int ok = 1;
-  float lat = nmea_coord("5007.7104", 'N');      /* 50° + 7.7104' = 50.128507° */
-  ok &= (lat > 50.1284f && lat < 50.1287f);
-  float lon = nmea_coord("01430.5000", 'W');     /* -(14° + 30.5') = -14.508333° */
-  ok &= (lon < -14.5082f && lon > -14.5085f);
-  ok &= (nmea_coord("123", 'N') == 0.0f);        /* bez tecky -> 0 (odmitnuto) */
+  int32_t lat = nmea_coord_e7("5007.7104", 'N', 90);   /* 50° + 7.7104' = 50.1285066° */
+  ok &= (lat > 501285050 && lat < 501285080);
+  int32_t lon = nmea_coord_e7("01430.5000", 'W', 180); /* -(14° + 30.5') = -14.5083333° */
+  ok &= (lon < -145083320 && lon > -145083350);
+  ok &= (nmea_coord_e7("123", 'N', 90) == 0);         /* bez tecky -> 0 (odmitnuto) */
+  /* Rozsah se VALIDUJE (F-0067): zemepisna sirka nad 90 se odmita, tataz hodnota
+   * jako delka projde. Bez toho pretekal `(int32_t)(v * 1e6f)` ve `fmt_scpi_deg6`. */
+  ok &= (nmea_coord_e7("9930.0000", 'N', 90) == 0);   /* 99° > 90 -> odmitnuto */
+  ok &= (nmea_coord_e7("09930.0000", 'E', 180) != 0); /* 99° < 180 -> platne */
+  ok &= (nmea_coord_e7("5099.0000", 'N', 90) == 0);   /* minuty >= 60 -> odmitnuto */
+  ok &= (nmea_coord_e7("50x7.7104", 'N', 90) == 0);   /* necislice -> odmitnuto */
   ok &= (atoi_simple("-123") == -123);
   ok &= (atoi_simple("047") == 47);
   float f = atof_simple("12.75");

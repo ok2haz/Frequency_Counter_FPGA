@@ -595,12 +595,15 @@ static void window_chrome(const char *title, int16_t title_y)
 }
 
 /* GPS souradnice -> "dd.ddddddH" (bez float v printf, integer extrakce). */
-static void fmt_ll(float v, char pos, char neg, char *out, size_t n)
+/* stupne x 1e7 -> "50.1285066N" (7 desetin). Bere celociselnou hodnotu z
+ * `gps_data_t` (F-0070) — zadny float cast, tedy ani zadne UB pri poskozenem
+ * vstupu (F-0067). */
+static void fmt_ll(int32_t e7, char pos, char neg, char *out, size_t n)
 {
-    char h = (v >= 0.0f) ? pos : neg;
-    if (v < 0.0f) v = -v;
-    long ud = (long)(v * 1000000.0f + 0.5f);
-    snprintf(out, n, "%ld.%06ld%c", ud / 1000000, ud % 1000000, h);
+    char h = (e7 >= 0) ? pos : neg;
+    uint32_t a = (uint32_t)(e7 < 0 ? -(int64_t)e7 : (int64_t)e7);
+    snprintf(out, n, "%lu.%07lu%c",
+             (unsigned long)(a / 10000000u), (unsigned long)(a % 10000000u), h);
 }
 
 /* float DOP/1-desetinne -> "1.7" (bez %f); "--" pro neplatne (<=0). Obracene
@@ -1024,11 +1027,11 @@ static int draw_gps_values(int force)
         dtext(GPS_RLBL, 126, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_sans_18); drew = 1; }
 
     /* poloha */
-    if (g.valid) fmt_ll(g.lat_deg, 'N', 'S', a, sizeof a); else snprintf(a, sizeof a, "--");
+    if (g.valid) fmt_ll(g.lat_e7, 'N', 'S', a, sizeof a); else snprintf(a, sizeof a, "--");
     snprintf(buf, sizeof buf, "Lat  %s", a);
     if (force || dchg(c_lat, sizeof c_lat, buf)) {
         dtext(GPS_RLBL, 190, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
-    if (g.valid) fmt_ll(g.lon_deg, 'E', 'W', a, sizeof a); else snprintf(a, sizeof a, "--");
+    if (g.valid) fmt_ll(g.lon_e7, 'E', 'W', a, sizeof a); else snprintf(a, sizeof a, "--");
     snprintf(buf, sizeof buf, "Lon  %s", a);
     if (force || dchg(c_lon, sizeof c_lon, buf)) {
         dtext(GPS_RLBL, 214, GPS_RW - 24, buf, UI_COLOR_INK_3, &ui_font_mono_18); drew = 1; }
@@ -1040,7 +1043,9 @@ static int draw_gps_values(int force)
     /* Lokator (Maidenhead grid) — karta bez nadpisu, jen "Locator <hodnota>"
      * (vetsim pismem, vycentrovano ve volne karte 252..320). */
     char loc[16];
-    if (g.valid) fmt_locator(g.lat_deg, g.lon_deg, loc, sizeof loc);
+    /* Lokator ma rozliseni ~stovky metru, takze `float` tu staci a signatura
+     * (vcetne selftestu s literaly) zustava beze zmeny. */
+    if (g.valid) fmt_locator((float)g.lat_e7 * 1e-7f, (float)g.lon_e7 * 1e-7f, loc, sizeof loc);
     else         snprintf(loc, sizeof loc, "----------");
     snprintf(buf, sizeof buf, "Locator %s", loc);
     if (force || dchg(c_loc, sizeof c_loc, buf)) {
@@ -4258,7 +4263,9 @@ static void survey_accumulate(void)
     gps_data_t g; gps_get(&g);
     if (!g.valid || g.fixes == s_survey.last_fixes) return;   /* jen NOVY fix (ne 2x tyz) */
     s_survey.last_fixes = g.fixes;
-    double lat = g.lat_deg, lon = g.lon_deg, alt = g.alt_m;
+    /* 🔑 Tohle je duvod cele zmeny na e7 (F-0070): Welford tu akumuluje v `double`,
+     * ale kvantizace byla uz ve VSTUPU, takze rozptyl nesel pod ~0,42 m. */
+    double lat = (double)g.lat_e7 * 1e-7, lon = (double)g.lon_e7 * 1e-7, alt = g.alt_m;
     s_survey.n++;
     double dlat = lat - s_survey.mlat; s_survey.mlat += dlat / (double)s_survey.n;
     s_survey.m2lat += dlat * (lat - s_survey.mlat);

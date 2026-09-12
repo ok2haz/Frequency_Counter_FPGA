@@ -131,8 +131,11 @@ void ipc_publish(void)
 
     /* ⚠️ sigma_tau/tau_s/offset/drift ZAMERNE neplnime (zdroj = simulace #2). */
 
-    g_ipc.snap.gps_lat_e7   = (int32_t)(g.lat_deg * 1e7f);
-    g_ipc.snap.gps_lon_e7   = (int32_t)(g.lon_deg * 1e7f);
+    /* ⚠️ Uz zadny prevod pres float — `gps_data_t` nese e7 primo (F-0070),
+     * takze snapshot dostane tutez hodnotu bez kvantizace. `IPC_VERSION` se
+     * NEMENI: pole tu bylo `int32_t` uz predtim. */
+    g_ipc.snap.gps_lat_e7   = g.lat_e7;
+    g_ipc.snap.gps_lon_e7   = g.lon_e7;
     g_ipc.snap.gps_alt_cm   = (int32_t)(g.alt_m * 100.0f);
     g_ipc.snap.gps_hdop     = g.hdop;
     g_ipc.snap.gps_valid    = g.valid;
