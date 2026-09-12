@@ -169,6 +169,11 @@ extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamz
  * freertos_task_ui.c. Cte se primo z IDR/ISR, takze rekne pravdu i o zaseknute
  * sbernici (dotyk + TMP117 0x48 + ATTINY podsviceni jsou vsichni na I2C4). */
 uint8_t i2c4_line_state(void);
+
+/** 1 = bezi `i2cspeed` (mereni chybovosti I2C4 podle taktu). Ostatni konzumenti
+ *  I2C4 (touch a jas v UiTask, TMP117 0x48 v SensorsTask) musi po tu dobu bus
+ *  nechat na pokoji — viz komentar u definice ve `freertos.c`. */
+extern volatile uint8_t g_i2c4_sweep;
 /* Bezpodminecne uvolneni sbernice (9 taktu + STOP) a tvrdy reset periferie
  * pres APB4RSTR. Obojí volat POD `i2c4MutexHandle`. Definice ve
  * `freertos_task_ui.c`, pouziva je i stupnovana diagnostika `i2c4` v UartTasku. */

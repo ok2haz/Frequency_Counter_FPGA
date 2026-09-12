@@ -412,6 +412,187 @@ __attribute__((noinline)) static void stacktest_overflow(void)
 }
 
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
+/* ══ `i2cspeed` — chybovost I2C4 podle taktu ════════════════════════════════
+ * Meri, kolik transakci na sbernici selze pri jednotlivych taktech. Nejde o
+ * benchmark: odpoved, kterou hleda, zni "jak rychle SMI tahle sbernice jet",
+ * a ta se neda precist z datasheetu — limitem je ATTINY, bit-bang I2C slave.
+ *
+ * 🔑 METODA JE ZAMERNE TOTOZNA s merenim z 2026-09-10 (`docs/audit/2026-09-10_i2c.md`),
+ * aby byla cisla PRIMO POROVNATELNA:
+ *   - jen CTENI registru s konstantnim obsahem, do ATTINY se nezapise ani bajt;
+ *   - referencni hodnoty se snimaji na 50 kHz, takze se nespoleha na datasheet;
+ *   - ve VSECH krocich je `SCLDEL` drzen na ~267 ns a `SDADEL` na 0, takze se
+ *     meni JEDINA promenna — takt. (Havarijni hodnota z r. 2026 `0x10903163`
+ *     menila frekvenci i casovani dat naraz, a proto z jejiho selhani neslo
+ *     usoudit, ze vinikem byla rychlost.)
+ *   - N = 2000 na zarizeni a krok.
+ * Osm z deseti konstant `TIMINGR` je doslova z tehdejsiho behu; 25 a 500 kHz
+ * jsou dopocitane stejnym vzorem (kernel 120 MHz, pomer SCLL:SCLH = 4:1).
+ *
+ * ⚠️ CO TO STALO MINULE (a co se s tim tentokrat dela):
+ *   1) Beh nad 125 kHz rozhodil TMP117 na 0x48 tak, ze pomohl az power-cycle.
+ *      -> SensorsTask nove po skonceni mereni TMP117 znovu nastavi (sestupna
+ *         hrana `g_i2c4_sweep`). Neni to zaruka, je to pokus, ktery nic nestoji.
+ *   2) Test vyhladovel UiTask (black-box zaznamenal `stall:UiTask`).
+ *      -> Po dobu mereni ostatni konzumenti I2C4 na bus vubec nesahaji
+ *         (`g_i2c4_sweep`), takze se na mutexu nikdo neblokuje, a mezi davkami
+ *         se ustupuje scheduleru.
+ * ⚠️ Navic: pred kazdym krokem se kontroluje, jestli nekdo nedrzi SDA dole, a
+ * pokud ano, provede se tvrdy reset periferie. Minule prave zavesena sbernice
+ * udelala z radku TMP117 nemonotonni nesmysl (0,00 -> 100 -> 0,05 %).
+ *
+ * ⚠️ Vsechny buffery jsou `static`: UartTask ma 4096 B zasobniku a podle F-0074
+ * mu pri `scpi` zbyva ~168 B. Funkce je vyclenena i proto, ze `UartTask_run` ma
+ * ramec hlidany na <= 1024 B (`scripts/check_lessons.sh`, F-0077).
+ *
+ * Pouziti:  `i2cspeed`        = 2000 transakci na zarizeni a krok
+ *           `i2cspeed 500`    = 500 (rychlejsi predbezny beh)
+ * Kdykoli behem mereni staci poslat jakykoli znak -> preruseni a obnoveni taktu.
+ */
+#define I2CSP_N_DEF    2000u
+#define I2CSP_CHUNK      64u    /* po kolika transakcich pustit ostatni tasky */
+
+typedef struct { uint16_t khz; uint32_t timingr; } i2csp_step_t;
+typedef struct { uint16_t a8; uint8_t reg; uint8_t len; const char *nm; } i2csp_dev_t;
+
+/* PRESC/SCLDEL drzi setup dat na ~267 ns: p=15 -> SCLDEL=1, p=7 -> 3, p=3 -> 7. */
+static const i2csp_step_t I2CSP_STEP[] = {
+    {  25u, 0xF0103BEFu }, {  50u, 0x70303AEEu }, {  75u, 0x7030279Fu },
+    { 100u, 0x70301D77u }, { 150u, 0x7030134Fu }, { 200u, 0x70300E3Bu },
+    { 250u, 0x70300B2Fu }, { 300u, 0x70300927u }, { 400u, 0x30700E3Bu },
+    { 500u, 0x30700B2Fu },
+};
+#define I2CSP_NSTEP  (sizeof I2CSP_STEP / sizeof I2CSP_STEP[0])
+
+/* Registr s KONSTANTNIM obsahem na kazde adrese (0x48 = Device_ID, 2 B). */
+static const i2csp_dev_t I2CSP_DEV[] = {
+    { (uint16_t)(0x38u << 1), 0xA8u, 1u, "0x38 FT5x06" },
+    { (uint16_t)(0x45u << 1), 0x80u, 1u, "0x45 ATTINY" },
+    { (uint16_t)(0x48u << 1), 0x0Fu, 2u, "0x48 TMP117" },
+};
+#define I2CSP_NDEV  (sizeof I2CSP_DEV / sizeof I2CSP_DEV[0])
+
+/* ⚠️ NIKDY `MX_I2C4_Init` — ta ma `Error_Handler()` trap. Tentyz bezpecny vzor
+ * jako `i2c4_recover()`: DeInit + zmena `Init.Timing` + `HAL_I2C_Init`. */
+static void i2csp_set_timing(uint32_t t)
+{
+    HAL_I2C_DeInit(&hi2c4);
+    hi2c4.Init.Timing = t;
+    hi2c4.State = HAL_I2C_STATE_RESET;
+    HAL_I2C_Init(&hi2c4);
+}
+
+/* Jakykoli znak z konzole = zadost o preruseni (mereni trva desitky sekund). */
+static int i2csp_abort(void)
+{
+    return osMessageQueueGetCount(UartRxQueueHandle) > 0u;
+}
+
+static void i2cspeed_run(uint32_t n)
+{
+    static uint8_t  ref[I2CSP_NDEV][2];
+    static uint8_t  refok[I2CSP_NDEV];
+    static uint8_t  buf[2];
+    static uint16_t pct[I2CSP_NSTEP][I2CSP_NDEV];   /* chybovost x100 */
+    static uint16_t sil[I2CSP_NSTEP][I2CSP_NDEV];   /* z toho tichych neshod */
+    uint32_t save = hi2c4.Init.Timing;
+    uint32_t i, d, k;
+    int aborted = 0;
+
+    printf("i2cspeed: %lu transakci na zarizeni a krok, %u kroku, jen CTENI\n",
+           (unsigned long)n, (unsigned)I2CSP_NSTEP);
+    printf("  po dobu mereni mlci touch, jas i TMP117 0x48; lze prerusit klavesou\n");
+
+    g_i2c4_sweep = 1;
+    osDelay(50);                      /* dobehnou rozpracovane transakce */
+
+    /* ── referencni hodnoty na PROVOZNICH 50 kHz ─────────────────────────── */
+    i2csp_set_timing(0x70303AEEu);
+    for (d = 0; d < I2CSP_NDEV; d++) {
+        refok[d] = 0;
+        for (k = 0; k < 3u && !refok[d]; k++) {
+            if (HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
+                                 I2C_MEMADD_SIZE_8BIT, ref[d], I2CSP_DEV[d].len, 20) == HAL_OK)
+                refok[d] = 1;
+            osDelay(2);
+        }
+        if (refok[d])
+            printf("  ref %s reg 0x%02X = 0x%02X%02X\n", I2CSP_DEV[d].nm,
+                   (unsigned)I2CSP_DEV[d].reg, (unsigned)ref[d][0],
+                   (unsigned)((I2CSP_DEV[d].len > 1u) ? ref[d][1] : 0u));
+        else
+            printf("  ref %s NEODPOVIDA -> pocitaji se jen HAL chyby, ne neshody\n",
+                   I2CSP_DEV[d].nm);
+    }
+
+    /* ── vlastni sweep ───────────────────────────────────────────────────── */
+    for (i = 0; i < I2CSP_NSTEP && !aborted; i++) {
+        uint8_t ls = i2c4_line_state();
+        if ((ls & 0x02u) == 0u) {        /* nekdo drzi SDA dole -> tvrdy reset */
+            printf("  [SDA drzena dole -> reset periferie pred krokem]\n");
+            i2c4_hw_reset();
+        }
+        i2csp_set_timing(I2CSP_STEP[i].timingr);
+        printf("[ %3u kHz  TIMINGR 0x%08lX ]\n", (unsigned)I2CSP_STEP[i].khz,
+               (unsigned long)I2CSP_STEP[i].timingr);
+
+        for (d = 0; d < I2CSP_NDEV && !aborted; d++) {
+            uint32_t err = 0, mis = 0;
+            uint32_t ec = 0;
+            for (k = 0; k < n; k++) {
+                HAL_StatusTypeDef st = HAL_ERROR;
+                if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+                    st = HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
+                                          I2C_MEMADD_SIZE_8BIT, buf, I2CSP_DEV[d].len, 10);
+                    osMutexRelease(i2c4MutexHandle);
+                }
+                if (st != HAL_OK) {
+                    err++; ec = hi2c4.ErrorCode;
+                } else if (refok[d] &&
+                           (buf[0] != ref[d][0] ||
+                            (I2CSP_DEV[d].len > 1u && buf[1] != ref[d][1]))) {
+                    mis++;               /* ACKnuto, ale jina data = TICHA neshoda */
+                }
+                if ((k % I2CSP_CHUNK) == (I2CSP_CHUNK - 1u)) {
+                    osDelay(1);          /* pustit defaultTask (watchdog) a UiTask */
+                    if (i2csp_abort()) { aborted = 1; break; }
+                }
+            }
+            {
+                uint32_t bad = err + mis;
+                uint32_t p100 = (n > 0u) ? ((bad * 10000u + n / 2u) / n) : 0u;
+                ls = i2c4_line_state();
+                pct[i][d] = (uint16_t)((p100 > 0xFFFFu) ? 0xFFFFu : p100);
+                sil[i][d] = (uint16_t)((mis > 0xFFFFu) ? 0xFFFFu : mis);
+                printf("  %s  %lu.%02lu %%  (%lu/%lu)  err=0x%02lX  SCL=%u SDA=%u%s\n",
+                       I2CSP_DEV[d].nm, (unsigned long)(p100 / 100u), (unsigned long)(p100 % 100u),
+                       (unsigned long)bad, (unsigned long)n, (unsigned long)ec,
+                       (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
+                       mis ? "  [TICHA NESHODA]" : "");
+            }
+        }
+    }
+
+    /* ── obnova: VZDY, i po preruseni ────────────────────────────────────── */
+    i2csp_set_timing(save);
+    g_i2c4_sweep = 0;
+    printf("obnoven takt 0x%08lX%s\n", (unsigned long)save,
+           aborted ? "  (PRERUSENO)" : "");
+
+    /* Souhrn ve tvaru tabulky z auditu — da se rovnou vlozit do dokumentu. */
+    printf("| f [kHz] | TIMINGR | %s | %s | %s |\n",
+           I2CSP_DEV[0].nm, I2CSP_DEV[1].nm, I2CSP_DEV[2].nm);
+    for (i = 0; i < I2CSP_NSTEP; i++) {
+        if (aborted && pct[i][0] == 0u && pct[i][1] == 0u && pct[i][2] == 0u && i > 0u) continue;
+        printf("| %u | 0x%08lX | %u,%02u %%%s | %u,%02u %%%s | %u,%02u %%%s |\n",
+               (unsigned)I2CSP_STEP[i].khz, (unsigned long)I2CSP_STEP[i].timingr,
+               (unsigned)(pct[i][0] / 100u), (unsigned)(pct[i][0] % 100u), sil[i][0] ? " !" : "",
+               (unsigned)(pct[i][1] / 100u), (unsigned)(pct[i][1] % 100u), sil[i][1] ? " !" : "",
+               (unsigned)(pct[i][2] / 100u), (unsigned)(pct[i][2] % 100u), sil[i][2] ? " !" : "");
+    }
+    printf("  (! = mezi chybami byla ticha neshoda: ACK, ale jina data)\n");
+}
+
 void UartTask_run(void *argument)
 {
 	(void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
@@ -752,6 +933,19 @@ void UartTask_run(void *argument)
 				  } else {
 					  printf("Skenovani dokonceno. Pocet zarizeni: %d\n", devices_found);
 				  }
+			  }
+			  else if (strncmp(RxBuffer, "i2cspeed", 8) == 0) {
+				  /* Volitelny pocet transakci: `i2cspeed 500`. Vychozi 2000 =
+				   * tataz hodnota jako pri mereni 2026-09-10 (porovnatelnost). */
+				  uint32_t n = I2CSP_N_DEF;
+				  const char *a = RxBuffer + 8;
+				  while (*a == ' ') a++;
+				  if (*a >= '0' && *a <= '9') {
+					  n = 0;
+					  while (*a >= '0' && *a <= '9') { if (n < 100000u) n = n * 10u + (uint32_t)(*a - '0'); a++; }
+					  if (n < 10u) n = 10u;
+				  }
+				  i2cspeed_run(n);
 			  }
 			  else if (strcmp(RxBuffer, "testDSI") == 0) {
 				  uint8_t id_bytes[3] = {0};

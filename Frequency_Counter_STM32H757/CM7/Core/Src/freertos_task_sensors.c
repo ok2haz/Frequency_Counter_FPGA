@@ -340,8 +340,26 @@ void SensorsTask_run(void *argument)
 	 * 100 ms se uplatnilo VYHRADNE pri poruse — a prave tam nejvic skodilo. */
 	static uint32_t i2c4_streak = 0;    /* po sobe jdouci selhani cteni 0x48 */
 	static uint32_t i2c4_skip   = 0;    /* kolik cyklu jeste preskocit */
+	/* ⚠️ Behem `i2cspeed` se na I2C4 nesaha (kontaminace mereni). Zamerne jako
+	 * PRVNI CLEN tohohle retezu, ne `return`/`continue`: za blokem 0x48 nasleduji
+	 * senzory na I2C1 a ADC3, ktere s merenim nemaji nic spolecneho (L-0033).
+	 * Statistika senzoru se tim NEspini — `sensor_fail` ani streak se nize
+	 * nezapocitavaji, takze `sensors` po mereni neukazuje falesne chyby. */
+	static uint8_t sweep_prev = 0;
+	if (sweep_prev && !g_i2c4_sweep) {
+	  /* Sestupna hrana: pokus o zotaveni TMP117. Mereni nad ~125 kHz mu
+	   * 2026-09-10 rozhodilo pointer/CONFIG tak, ze pomohl az power-cycle;
+	   * tohle uz bezi na obnovenem taktu a nic nestoji. */
+	  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	    tmp117_set_2hz(&hi2c4, TMP117_ADDR);
+	    osMutexRelease(i2c4MutexHandle);
+	  }
+	}
+	sweep_prev = g_i2c4_sweep;
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
-	if (i2c4_skip > 0) {
+	if (g_i2c4_sweep) {
+	  i2cStatus = HAL_BUSY;             /* bezi mereni -> na bus se nesaha */
+	} else if (i2c4_skip > 0) {
 	  i2c4_skip--;                      /* back-off: tenhle cyklus se na bus nesaha */
 	  i2cStatus = HAL_BUSY;             /* != HAL_OK -> sensor_fail nize (drzi posl. dobrou) */
 	} else if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
@@ -349,7 +367,7 @@ void SensorsTask_run(void *argument)
 	  osMutexRelease(i2c4MutexHandle);
 	}
 	if (i2cStatus == HAL_OK) { i2c4_streak = 0; }
-	else if (i2c4_skip == 0) {
+	else if (i2c4_skip == 0 && !g_i2c4_sweep) {
 	  if (i2c4_streak < 100) i2c4_streak++;
 	  /* Cyklus je 500 ms -> 3x normalne, pak 1 s, 2 s, nakonec 10 s (jako I2C1). */
 	  i2c4_skip = (i2c4_streak < 3) ? 0 : (i2c4_streak < 6) ? 1 : (i2c4_streak < 8) ? 3 : 19;
@@ -358,7 +376,7 @@ void SensorsTask_run(void *argument)
 	  // MSB v rawData[0], LSB v rawData[1]; 0.0078125 °C/LSB
 	  tempRaw = (int16_t)((rawData[0] << 8) | rawData[1]);
 	  sensor_update(SENS_T48, (float)tempRaw * TMP117_RESOLUTION);
-	} else {
+	} else if (!g_i2c4_sweep) {
 	  sensor_fail(SENS_T48);   /* drzi posledni dobrou hodnotu, valid=0, loguje */
 	}
 

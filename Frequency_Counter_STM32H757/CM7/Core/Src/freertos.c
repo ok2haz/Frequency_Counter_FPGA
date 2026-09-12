@@ -118,6 +118,13 @@ volatile uint8_t g_screen_req  = 0;
 /* Pozadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
  * UiTask, viz screen_main_stats_reset). Stejny duvod jako g_screen_req. */
 volatile uint8_t g_stats_reset_req = 0;
+/* 1 = bezi mereni chybovosti I2C4 podle taktu (UART `i2cspeed`). Po tu dobu se
+ * sbernice NESMI dotknout nikdo jiny: UiTask preskoci cteni dotyku i zapis jasu
+ * a SensorsTask cteni TMP117 0x48. Bez toho by (a) cizi transakce pri rozhozenem
+ * taktu kontaminovaly vysledek a (b) neuspesna cteni s plnym timeoutem POD mutexem
+ * vyhladovela UiTask — presne to se stalo 2026-09-10, kdy black-box zaznamenal
+ * `stall:UiTask`. */
+volatile uint8_t g_i2c4_sweep = 0;
 
 /* Naformatovany kmitocet z FPGA (FpgaTask zapise, UiTask vykresli) */
 volatile char    g_freq_text[48] = "----------,-----Hz";

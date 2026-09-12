@@ -283,7 +283,12 @@ void StartUiTask(void *argument)
      * zapis jasu tesne nasledovany START-em touch cteni mu rozhodi slave automat
      * -> drzi SDA -> mrtva I2C4 az do power-cyclu. Toto okno klidu je hlavni
      * pojistka, ktera vraci ztlumeni podsviceni ve screensaveru bezpecne. */
-    if (HAL_GetTick() - last_touch >= touch_gate &&
+    /* ⚠️ `g_i2c4_sweep`: behem `i2cspeed` se na bus nesaha vubec — jinak by cizi
+     * transakce kontaminovaly mereni a neuspesna cteni s plnym timeoutem POD
+     * mutexem by tenhle task vyhladovela (2026-09-10: `stall:UiTask`). Heartbeat
+     * watchdogu na zacatku smycky bezi dal, takze task zustava zivy. */
+    if (!g_i2c4_sweep &&
+        HAL_GetTick() - last_touch >= touch_gate &&
         (HAL_GetTick() - s_bl_settle) >= 150u) {
       last_touch = HAL_GetTick();
       ft5x06_touch_t t; int got = 0, attempted = 0;
@@ -463,7 +468,10 @@ void StartUiTask(void *argument)
     uint8_t  bl_target = s_dimmed ? AUTODIM_LEVEL : g_brightness;
     s_bl_dimmed = s_dimmed;                    /* zrcadlo pro `status` */
     static uint32_t s_bl_try = 0;
-    if ((uint8_t)s_bl != bl_target && (HAL_GetTick() - s_bl_try) >= 200u) {
+    /* ⚠️ Behem `i2cspeed` se jas nezapisuje (zapis do ATTINY je nejcitlivejsi
+     * transakce na sbernici). `s_bl` se nemeni, takze po mereni se zapis dozene. */
+    if (!g_i2c4_sweep &&
+        (uint8_t)s_bl != bl_target && (HAL_GetTick() - s_bl_try) >= 200u) {
       s_bl_try = HAL_GetTick();
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
         if (HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 10) == HAL_OK) {
