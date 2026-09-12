@@ -104,12 +104,10 @@ void cm4_fault_capture(uint32_t *frame)
 /**
   * @brief This function handles Non maskable interrupt.
   */
-
-
 void NMI_Handler(void)
 {
-  cm4_fault_note(3u);
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+  cm4_fault_note(3u);   /* NMI -> IPC blok; CM7 to hlasi ve `status` */
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
@@ -122,8 +120,19 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-
-
+/* 🔴 NAKED + asm: jediny zpusob, jak se dostat k RAMCI VYJIMKY nedotcenemu
+ * prologem funkce. `tst lr, #4` rozhodne, jestli se vyjimka vzala z MSP nebo
+ * PSP, a ukazatel na ramec se preda `cm4_fault_capture()` v r0.
+ * ⚠️⚠️ TOHLE NEPREZIJE `Generate Code` A PREZIT NEMUZE: `__attribute__((naked))`
+ * je na HLAVICCE funkce, kterou CubeMX vzdy prepisuje — uvnitr `USER CODE` bloku
+ * hlavicku zmenit nejde. Po KAZDEM regenu se to sem musi vratit rucne; hlida to
+ * polozka v `CUBEMX_CHECKLIST.md` (grep na `naked` v tomhle souboru).
+ * ⚠️ Poctiva nahrada uvnitr `USER CODE` NEEXISTUJE: bez `naked` uz prolog posune
+ * MSP, takze by se z ramce cetlo PC/LR o par bajtu vedle — tedy VEROHODNE
+ * VYPADAJICI, ale spatne cislo. Radeji zadne PC nez vymyslene.
+ * 🔑 Kdyz to nekdo pri regenu prehlidne, degradace je snesitelna: `cm4_fault_note()`
+ * ve `USER CODE` blocich ostatnich handleru dal zaznamena DRUH faultu (bez PC/LR),
+ * protoze ta volani uz regen-safe jsou. */
 __attribute__((naked)) void HardFault_Handler(void)
 {
   __asm volatile (
@@ -135,14 +144,13 @@ __attribute__((naked)) void HardFault_Handler(void)
   );
 }
 
-
 /**
   * @brief This function handles Memory management fault.
   */
 void MemManage_Handler(void)
 {
-  cm4_fault_note(4u);
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
+  cm4_fault_note(4u);   /* MemManage -> IPC blok; CM7 to hlasi ve `status` */
 
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
@@ -157,8 +165,8 @@ void MemManage_Handler(void)
   */
 void BusFault_Handler(void)
 {
-  cm4_fault_note(5u);
   /* USER CODE BEGIN BusFault_IRQn 0 */
+  cm4_fault_note(5u);   /* BusFault -> IPC blok; CM7 to hlasi ve `status` */
 
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
@@ -173,8 +181,8 @@ void BusFault_Handler(void)
   */
 void UsageFault_Handler(void)
 {
-  cm4_fault_note(6u);
   /* USER CODE BEGIN UsageFault_IRQn 0 */
+  cm4_fault_note(6u);   /* UsageFault -> IPC blok; CM7 to hlasi ve `status` */
 
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)

@@ -552,15 +552,6 @@ const osMessageQueueAttr_t GpsRxQueue_attributes = {
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  /* 🔴 640 -> 896 slov (2560 -> 3584 B), audit 2026-09-05. defaultTask mel
-   * NEJTESNEJSI rezervu ze vsech tasku (736 B volno = 29 %) a pritom v nem bezi
-   * `run_selftests()`, kde `pn_compute` sam zabira **1136 B = 44 % celeho
-   * stacku** (zmereno z `.su`). Presne timhle uz projekt jednou spadl do boot
-   * loopu (#45, pn_selftest) a opravilo se to jen zestatičtenim bufferu TESTU —
-   * ramec `pn_compute` zustal.
-   * ⚠️ Zhorsuje se to pri zapnuti SD backendu: `datalog_tick` bezi TADY a pres
-   * `sd_write` vola `blk_write` (**+552 B**), coz by rezervu srazilo na ~7 %.
-   * ⚠️ Zmenit i v `.ioc` (`FREERTOS_M7.Tasks01`), jinak to regen vrati. */
   .stack_size = 896 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -568,7 +559,7 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t UartTaskHandle;
 const osThreadAttr_t UartTask_attributes = {
   .name = "UartTask",
-  .stack_size = 1024 * 4,
+  .stack_size = 2048 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for I2C4Task */
