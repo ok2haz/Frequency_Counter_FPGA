@@ -1086,7 +1086,11 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   servírovat jako měření. Nese: teploty OCXO/deska/MCU/FPGA, napětí 12V/5V/VREF/VBAT/Vc, RF mV + AD8307
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`.
-- **`IPC_VERSION` = 14** (ověřeno v `ipc_shared.h:33`; tady stálo 13 — doc drift).
+- **`IPC_VERSION` = 15** (2026-09-12, audit F-0088: `warmup` ve snapshotu — web si ho
+  dosud odvozoval z `uptime_s < 300`, přístroj i z tepelného sklonu).
+  ⚠️ Velikost struktury se **nezměnila** (recyklovaný první bajt `_pad_h`; změřeno
+  sondou `sizeof`: 480 B / 5 568 B před i po) — bump je tu **kvůli detekci nesouladu
+  bank**, tedy flashovat se musí obě.
   ⚠️⚠️ **Změna → přeflashnout OBĚ banky.**
   - **⚠️ Nesoulad bank je NEVIDITELNÝ — `4:--` to NENÍ.** CM4 při neshodě přestane přijímat snapshot
     (`s_ready=0`), ale heartbeat volá dál → header svítí `4:xx%` jako by bylo vše OK (jediný příznak:

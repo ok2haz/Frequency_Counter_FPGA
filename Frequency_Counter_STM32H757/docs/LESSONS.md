@@ -57,6 +57,8 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0033 | Odmítnutí vstupu patří do VĚTVENÍ, ne do řízení smyčky. `continue` v dlouhé smyčce přeskočí i všechno, co je za ním — u smyčky s obsluhami na konci to není odmítnutí příkazu, ale vypnutí funkcí. | u každého `continue`/`break`/`return` ve smyčce přečti tělo AŽ NA KONEC a vyjmenuj, co se přeskočí |
 | L-0034 | Mez ověř PŘED použitím hodnoty, ne po něm — konverze `double`→celé číslo mimo rozsah je UB (ne oříznutí) a odečet v `size_t` podteče na obrovské číslo (ne na zápor). Obojí selže tiše a překladač mlčí. | grep na `(uint64_t)`/`(uint32_t)` nad hodnotou z parseru a na `sizeof(x) - i` s neověřeným `i` |
 | L-0035 | Rámec funkce je vlastnost CELÉ funkce, ne větve — GCC rezervuje lokály všech cest už při vstupu, takže velký lokál v jednom příkazu ubere zásobník i cestám, které ho nepoužijí. Měř rámec nad `.elf`, ne odhadem ze zdrojáku. | `scripts/check_lessons.sh` → rámec `UartTask_run` ≤ 1024 B; ručně `objdump -d` a `sub sp, #N` |
+| L-0036 | Kadence dat je vlastnost PŘENOSU, ne konstanta konzumenta. Když se transport změní (poll → push), přehodnoť každý výpočet, který si tempo odvozoval — „počet vzorků = sekundy“ přestane platit tiše a graf začne lhát o čase, ne o hodnotách. | u každé historie se ptej: kdo rozhoduje, KDY přibude vzorek? grep na `length` použitou jako čas |
+| L-0037 | Přesun tajemství do bezpečnějšího úložiště není hotový, dokud se nesmaže z toho starého — jinak oprava mine právě ty, kdo produkt už používali. | po změně úložiště přidej jednorázový úklid a ověř ho na profilu, kde stará hodnota leží |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -1012,6 +1014,64 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Commit:** kontrola v `scripts/check_lessons.sh`, viz
   `docs/audit/2026-09-12_uart-konzole.md`, F-0077
 - **Stav:** aktivni
+
+---
+
+### L-0036 — kadence dat je vlastnost prenosu, ne domnenka konzumenta
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c`, SPA (`render`, `xlab`, odecet pod kurzorem),
+  nalez F-0080
+- **Co se stalo:** graf ukladal jeden bod na kazdou prijatou zpravu a osa X pocitala
+  **body jako sekundy**. To platilo, dokud se data tahala pollem 1 Hz. Pak pribyl
+  SSE push, ktery server posila pri KAZDEM novem mereni (~4/s pri brane 0,25 s) —
+  a osa zacala tvrdit az 4x delsi cas, nez data pokryvala. Okno „1 h" (3600 bodu)
+  drzelo ctvrthodinu.
+- 🔑 **Nejzajimavejsi na tom je, ze autor tu past znal.** Buffer mereni `M` se plni
+  **jen na zmenu `seq_meas`** a komentar nad nim presne vysvetluje proc: *„poll bezi
+  1 Hz, ale mereni chodi jinym tempem … opakovane hodnoty vypadaji jako dokonala
+  stabilita -> sigma_y by vysla nesmyslne NIZKA"*. Tataz uvaha se ale nepromitla do
+  historie grafu `H[]`, ktera je o dvacet radku vedle. **Obrana byla spravna a uplna
+  — jen se neaplikovala na druhy buffer v temze souboru.**
+- **Oprava:** throttle `H[]` na 1 Hz (praha 0,95 s kvuli jitteru pollu). Druha
+  varianta (ukladat ke vzorku cas) byla zvazena a zamitnuta: je vetsi a nevyresila
+  by, ze 3600 bodu pri 4/s pokryje jen ctvrthodinu.
+- **Pravidlo:** **Kadence dat je vlastnost PRENOSU, ne konstanta konzumenta.**
+  Kdyz se zmeni transport (poll -> push, 1 Hz -> event-driven), projdi VSECHNY
+  vypocty, ktere si tempo odvozovaly. Chyba se neprojevi chybnymi hodnotami, ale
+  chybnym **casem** — a to se pri pohledu na graf pozna nejhur.
+- **Detekce:** u kazde historie se zeptej „kdo rozhoduje, KDY do ni pribude vzorek?"
+  a grep na `length` pouzitou jako cas (`n-1` sekund, `idx` jako stari).
+- **Commit:** `e0e542e`, viz `docs/audit/2026-09-12_spa-web.md`, F-0080
+- **Stav:** aktivni
+
+---
+
+### L-0037 — presun tajemstvi neuklidi to stare misto
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c`, SPA (`auth`/`login`/init), nalez F-0082
+- **Co se stalo:** heslo se ukladalo do `localStorage` v otevrene podobe a zustavalo
+  tam navzdy. Oprava ho presunula do `sessionStorage` (plati do zavreni zalozky).
+  🔴 **Samotny presun by ale minul prave ty, kdo web uz pouzivali:** jejich heslo
+  lezi v `localStorage` dal a nova verze uz se tam nedivá, takze by ho nikdo nikdy
+  nesmazal. Uzivatel by navic mel dojem, ze je problem vyresen.
+- **Oprava:** pri prvnim nacteni `localStorage.removeItem('gp')` + hlaska, ze se
+  heslo nove uklada jen do zavreni zalozky.
+- **Pravidlo:** **Zmena ulozisteho tajemstvi neni hotova, dokud se tajemstvi
+  nesmaze z toho stareho.** Plati stejne pro klic v souboru, heslo v BKP registru
+  i token v konfiguraci — nove misto je jen pulka prace.
+  ⚠️ Tyz vzor plati i pro ZMENSENI rozsahu (kratsi platnost, uzsi opravneni):
+  stare zaznamy si drzi stara pravidla, dokud je nekdo aktivne nezrusi.
+- **Detekce:** po kazde zmene ulozeni tajemstvi si polozit otazku „co je na starem
+  miste TED, na profilu, ktery uz produkt pouzival?" a napsat na to uklid.
+- **Commit:** `e0e542e`, viz `docs/audit/2026-09-12_spa-web.md`, F-0082
+- **Stav:** aktivni
+
+---
+
+⚠️ **F-0088 nova lekce NENI** — je to dalsi vyskyt **L-0018** (dve mista pocitaji touz
+velicinu: warm-up si web odvozoval z `uptime_s`, pristroj z `warmup_ready()`).
+Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
+**vysledek**, ne vstupy.
 
 ---
 
