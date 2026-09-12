@@ -55,6 +55,12 @@ static float atof_simple(const char *s)
   return v * sign;
 }
 
+/* Dve ASCII cislice -> cislo. ⚠️ NEOVERUJE, ze to cislice jsou (audit F-0072):
+ * `d2("0:")` da 10, tedy hodnotu, kterou zadna kontrola rozsahu neodmitne.
+ * 🔑 Validaci obsahu dela az `gps_time_sane()` v `rtc.c:42-48` (rok 2024-2099,
+ * hour <= 23, min <= 59, sec <= 60) a do RTC pusti jen to, co projde — proto to
+ * neni S3. **Novy volajici na jinem miste tu obranu ale NEMA** a musi si ji
+ * zaridit sam; `nmea_coord_e7` nize si cislice proto overuje explicitne. */
 static uint8_t d2(const char *s) { return (uint8_t)((s[0] - '0') * 10 + (s[1] - '0')); }
 
 static uint8_t hexnib(char c)

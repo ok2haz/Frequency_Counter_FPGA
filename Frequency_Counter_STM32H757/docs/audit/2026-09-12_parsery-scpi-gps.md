@@ -37,6 +37,24 @@ a `SYST:DATE?` před prvním GPS fixem vrací `-3333,-33,-33` jako platné datum
 klient posílá rozumné příkazy) běží obojí správně; všechny nálezy potřebují buď
 poškozený/nepřátelský vstup, nebo stav před prvním fixem.
 
+## Fáze oprav (2026-09-12) — všech 9 nálezů uzavřeno
+
+| commit | nálezy | co se změnilo |
+|---|---|---|
+| `b483158` | F-0065, F-0066, F-0071 | validace NMEA: checksum povinný, zahazování do konce řádku + počítadlo `OVF:`, HDOP jen z GGA |
+| `aaacaf5` | F-0064, F-0068, F-0069 | SCPI: mez exponentu 308, `SYST:DATE?/TIME?` přes `g_rtc_synced` + kritická sekce, utnutá jednotka se neprovede |
+| `868ed6e` | F-0067, F-0070 | souřadnice celočíselně v 1e-7 stupně (7 souborů) |
+| `docs:` | F-0072 | komentář u `d2()` pojmenovává obranu v `rtc.c` |
+
+**Ověřovací řetězec (§F5.2):** `./scripts/build.sh Release BOTH` **0 varování**,
+`python tools/audit.py` **92 OK / 0 selhání / 2 s varováním** (baseline),
+CM7 `.text` 599 392 → **599 760 B**, CM4 231 848 → **231 880 B**.
+⚠️ **CM4 mezitím klesl o 64 B** (zmizel převod přes float), takže „obraz musí
+povyrůst" tu neplatí — změna je proto doložena **symbolem**: formát `%07lu` je
+v obou obrazech a mez exponentu (308) v disassembly CM4.
+⬜ **NEOVĚŘENO NA HW.** Opravy jsou v **obou** obrazech (`scpi.c` se linkuje do CM4),
+ale `IPC_VERSION` se **nemění**, takže banky lze flashovat nezávisle.
+
 ---
 
 ### F-0064 [S2] `scpi_num()`: exponent bez meze — `1E2147483647` zablokuje CM4 na minuty, a to bez autorizace
@@ -98,10 +116,12 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   `:678-679` u `INPut`). Oprava patří do `scpi_num`, ne do dispatchu.
 - **Riziko opravy:** nízké. `scpi_num` je krytá selftestem (`:1303-1312`), takže
   regrese v konverzi se pozná hned. Doplnit vektor `1E999` → `*ok == 0`.
-- **Vztah k lekcím:** **`L-0015`** (modul zná svou mez — `double` má 308 dekád —
-  a musí ji vynutit na rozhraní, ne ji jen předpokládat) a **`L-0026`**
-  (rozpočet, který závisí na vstupu, musí být ohraničený).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0015`** a **`L-0026`**; po opravě nová **`L-0030`**.
+- **Stav:** **opraveno 2026-09-12** (`aaacaf5`), ⬜ **neověřeno na HW**.
+  Provedeno podle návrhu: mez 308 + `if (e < 10000)` proti přetečení `int`.
+  Pořadí parsování vs. oprávnění **zůstalo** — SCPI-99 chce chybu příkazu před
+  chybou provedení. 🔑 Ověřeno, že ochrana je **i v obrazu CM4** (mez dohledána
+  v jeho disassembly), tedy tam, kde byl dopad nejhorší.
 
 ---
 
@@ -136,9 +156,11 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
 - **Riziko opravy:** nízké, ale **patří k HW ověření**: kdyby některý přijímač
   posílal proprietární větu bez checksumu, přestala by se zpracovávat. Dnes se
   zpracovávají jen RMC/GGA/GSA/GSV, takže dopad by byl vidět hned (`gps` přes UART).
-- **Vztah k lekcím:** **`L-0028`** (obrana, která je napsaná, ale podmíněná tak, že
-  se u nepřátelského vstupu neprovede).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0028`**; po opravě nová **`L-0032`**.
+- **Stav:** **opraveno 2026-09-12** (`b483158`), ⬜ **neověřeno na HW**.
+  `if (star == NULL) return;` podle návrhu. ⚠️ Riziko z návrhu (přijímač posílající
+  větu bez checksumu) zůstává k ověření na HW — projeví se okamžitě tím, že
+  `gps` přes UART přestane hlásit fix.
 
 ---
 
@@ -175,9 +197,11 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   Dvě řádky kódu, chování u korektního vstupu se nemění.
 - **Riziko opravy:** nízké. ⚠️ Podle **L-0012** v témže commitu doložit, že
   `scpi_tcp.c` (sesterská instance) už opravená je — je, od 2026-09-06.
-- **Vztah k lekcím:** **`L-0012`** (symetrické instance) a **`L-0017`** (tichý
-  přeskok bez počítadla — dnes se neví, kolikrát se rámec zahodil).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0012`**, **`L-0017`**.
+- **Stav:** **opraveno 2026-09-12** (`b483158`), ⬜ **neověřeno na HW**.
+  Převzat vzor ze `scpi_tcp.c` (příznak `s_drop`) a podle **L-0017** doplněno
+  počítadlo `s_overflows` → `gpsraw` hlásí `OVF:<n>`, takže zahazování přestalo
+  být tiché.
 
 ---
 
@@ -216,9 +240,14 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   jedním zásahem.
 - **Riziko opravy:** nízké. Neplatná souřadnice se změní na 0, což je tatáž hodnota,
   jakou funkce vrací při všech ostatních neplatných vstupech (`:64`, `:66`, `:68`).
-- **Vztah k lekcím:** **`L-0012`** (dvě instance téhož formátování: `fmt_scpi_deg6`
-  a `fmt_coord`), **`L-0015`** (mez vynutit na rozhraní).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0012`**, **`L-0015`**.
+- **Stav:** **opraveno 2026-09-12** (`868ed6e`) spolu s F-0070, ⬜ **neověřeno na HW**.
+  🔑 **Opraveno lépe, než nález navrhoval.** Návrh chtěl validaci rozsahu
+  v `nmea_coord`; protože ale uživatel zvolil u F-0070 celočíselnou variantu,
+  zmizel **celý problematický cast z floatu** (`fmt_scpi_deg6` → `fmt_scpi_deg7`
+  bere `int32_t`) a validace rozsahu se přidala k němu. Obě instance z nálezu
+  (`fmt_scpi_deg6` i `fmt_coord`) jsou tím bez UB, a přibyly 4 selftest vektory
+  (99° jako šířka odmítnuto / jako délka platné, minuty ≥ 60, nečíslice).
 
 ---
 
@@ -261,10 +290,11 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
 - **Riziko opravy:** nízké; mění odpověď jen ve stavu, kdy je dnes prokazatelně
   nesmyslná. ⚠️ Ověřit, že SPA/web `SYST:DATE?` nepoužívá k něčemu, co by `9.91E37`
   rozbilo (grep před opravou).
-- **Vztah k lekcím:** **`L-0018`** (dvě místa počítající touž věc — čas se do SCPI
-  dostává přes textový buffer místo přes `scpi_src_t`, kde je validita řešená bitem)
-  a **`L-0011`** (hodnota z diagnostiky není totéž co měření).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0018`**, **`L-0011`**.
+- **Stav:** **opraveno 2026-09-12** (`aaacaf5`), ⬜ **neověřeno na HW**.
+  Obojí podle návrhu: test `g_rtc_synced` → `9.91E37` (stejný idiom jako
+  `SYST:GPS:TIME?`) **a** snímek pod kritickou sekcí, takže se vyřešila i ta
+  menší, zmíněná část o roztrženém čtení.
 
 ---
 
@@ -309,10 +339,13 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
 - **Riziko opravy:** nízké; `sub`/`rb` jsou na stacku volajícího — na CM4 je
   `process_line` frame 680 B proti ~44 kB volného zásobníku (změřeno v modulu 12),
   takže +80 B je bez dopadu.
-- **Vztah k lekcím:** **`L-0026`** (rozpočet pevného bufferu ohraničit `_Static_assert`em
-  a ořez nikdy nedělat tiše) — tohle je její třetí výskyt, takže lekce funguje jako
-  hledací vzor, ne jen jako záznam.
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0026`** — třetí výskyt, takže lekce funguje jako hledací
+  vzor, ne jen jako záznam.
+- **Stav:** **opraveno 2026-09-12** (`aaacaf5`), ⬜ **neověřeno na HW**.
+  Zvolena varianta „odmítnout + zvětšit + assert" (rozhodnutí uživatele): utnutá
+  jednotka se neprovede a vrátí `-100` do fronty i do odpovědi, `sub[]` 56 → 96 B
+  a dva `_Static_assert`y vážou rozpočet na `hdr[48]` a na nejdelší chybovou
+  odpověď (31 B).
 
 ---
 
@@ -355,9 +388,19 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   3. **`double` v `gps_data_t`** — jednodušší než (2), ale double na CM4 je
      softwarový (viz F-0064) a struktura se kopíruje v kritické sekci.
 - **Riziko opravy:** varianta 1 nulové, 2 vysoké (mezijádrový kontrakt), 3 střední.
-- **Vztah k lekcím:** **`L-0006`** (u konstanty/veličiny odvozené z něčeho uveď zdroj
-  a jeho rozlišení) — tady chybí, že rozlišení polohy je dané typem, ne přijímačem.
-- **Stav:** otevřeno — **čeká na rozhodnutí** (tři varianty výše)
+- **Vztah k lekcím:** **`L-0006`**; po opravě nová **`L-0031`**.
+- **Stav:** **opraveno 2026-09-12** (`868ed6e`), ⬜ **neověřeno na HW**.
+  Uživatel zvolil **variantu 2** (celočíselně 10⁻⁷ stupně).
+  🔑 **Riziko se ukázalo menší, než nález odhadoval:** `ipc_shared.h` má
+  `gps_lat_e7` jako `int32_t` **už dnes**, takže `IPC_VERSION` se nemění a
+  **přeflashovat obě banky není nutné** — zmizel jen převod přes float v `ipc.c`
+  a zpětný v `ipc_scpi.c`. Odhad „vysoké riziko / mezijádrový kontrakt" v návrhu
+  byl tedy přehnaný; ověřilo se to až čtením `ipc_shared.h:135`.
+  ⚠️ **Zisk je menší, než varianta slibuje, a je to zapsané u pole:** skutečnou
+  mez teď drží **formát NMEA záznamu** — `ddmm.mmmm` (4 desetiny minut) = 1,85 m,
+  `ddmm.mmmmm` (5) = 18,5 cm. Datový typ už úzkým hrdlem není, rozlišení
+  přijímače ano. Předpověď z nálezu (rozptyl se zastaví ~0,3–0,4 m) je proto
+  pořád tím, co se má na HW ověřit — jen se očekává posun o řád níž.
 
 ---
 
@@ -385,9 +428,11 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   **sentinel neplatnosti**, ne jako 0 — stejný idiom, jaký už datalog používá
   (`hdop10 == 255`). Nebo zavést `hdop_valid` bit vedle hodnoty.
 - **Riziko opravy:** nízké, ale dotkne se všech konzumentů HDOP → projít grepem.
-- **Vztah k lekcím:** **`L-0018`** (slučovat, ne opravovat obě instance),
-  **`L-0017`** (neplatnost musí být rozeznatelná, ne zamaskovaná nulou).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0018`**, **`L-0017`**.
+- **Stav:** **opraveno 2026-09-12** (`b483158`), ⬜ **neověřeno na HW**.
+  Uživatel zvolil **GGA jako jediný zdroj** (chodí 1× za cyklus a při fixu má
+  HDOP vždy vyplněnou); `parse_gsa` si nechal `fix_mode` a `pdop`. Tím zmizely
+  obě pravdy i „HDOP 0,00 bez fixu".
 
 ---
 
@@ -417,9 +462,14 @@ poškozený/nepřátelský vstup, nebo stav před prvním fixem.
   volající si ji musí zařídit sám**. Vzhledem k tomu, že jde o S4 a obrana existuje,
   je druhá varianta úměrnější.
 - **Riziko opravy:** nízké.
-- **Vztah k lekcím:** **`L-0022`** (u obrany musí být vyjmenované, kdo ji volá —
-  tady je obrana v jiném souboru a `d2` o ní mlčí).
-- **Stav:** otevřeno
+- **Vztah k lekcím:** **`L-0022`**.
+- **Stav:** **opraveno 2026-09-12** (`docs:` commit), ⬜ **neověřeno na HW**
+  (je to komentář — `.text` se nezměnil, 599 760 B před i po, což je zároveň
+  důkaz, že pravidlo 3 nebylo porušeno).
+  Zvolena **druhá, úměrnější varianta z návrhu**: komentář u `d2`, který
+  pojmenovává obranu v `rtc.c:42-48` a říká, že nový volající si ji musí zařídit
+  sám. Přibyl i odkaz na `nmea_coord_e7`, která si číslice ověřuje explicitně —
+  tedy vzor, jak to má vypadat.
 
 ---
 

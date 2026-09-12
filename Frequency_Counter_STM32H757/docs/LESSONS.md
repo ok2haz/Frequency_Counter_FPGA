@@ -51,6 +51,9 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0027 | Na neautentizovaném endpointu smí diagnostika vydat jen to, co odesílatel sám poslal. Délka odvozená z tajemství je taky únik. | u každé položky veřejné diagnostiky musí být napsané, PROČ je neškodná; „jen délky a booly" není zdůvodnění |
 | L-0028 | Věta v komentáři tvaru „hlídá to X" je TESTOVATELNÁ — najdi řádek, kde se X čte. Zahozená návratová hodnota je nejčastější podoba obrany, která neexistuje. | grep na `tcp_write(`/`f_write(`/`HAL_*` bez uložení návratu, křížem proti komentářům se slovy „hlída", „brani", „osetruje" |
 | L-0029 | Funkce volaná přes ukazatel z tabulky musí být SOBĚSTAČNÁ — volající za ni nedodělá krok, který ostatní položky tabulky dělají samy. Přidáváš-li do tabulky položku, projdi, co dělají ostatní. | `scripts/check_lessons.sh` sekce „okno z dlaždicové tabulky neflipne samo" |
+| L-0030 | Počet iterací nikdy nesmí záviset na vstupu zvenčí bez meze — a mez odvoď z rozsahu cílového typu, ne odhadem. Ochrana patří PŘED drahou operaci, ne za ni. | grep na `while (n-- > 0)` / `for` s hranicí z parsovaného vstupu; u SCPI vektor `1E999` → `*ok == 0` |
+| L-0031 | Datový typ je taky mez. Než začneš zlepšovat algoritmus, spočítej ULP typu, ve kterém hodnota přichází — a porovnej ho s přesností, kterou slibuješ. | u každé metriky konvergence/rozptylu uveď, jaké je rozlišení VSTUPU, ne jen akumulátoru |
+| L-0032 | Kontrola integrity podmíněná přítomností toho, co kontroluje, není kontrola. Chybí-li kontrolní součet, je to důvod data zahodit, ne je pustit dál. | grep na `if (checksum_je_pritomen) { kontroluj }` bez `else return` |
 
 *(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
 Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
@@ -809,6 +812,93 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   takze „nic nenasla" a vypadala jako dukaz, ze kontrola nefunguje. Kotvit se musi
   na hlavicku nasledovanou `{`.
 - **Commit:** `1b21c82`, viz `docs/audit/2026-09-11_aplikacni-okna.md`, nalez F-0063
+- **Stav:** aktivni
+
+---
+
+### L-0030 — exponent bez meze: dve miliardy iteraci z jednoho retezce
+
+- **Kde:** `CM7/Core/Src/scpi.c` (`scpi_num`), dopad na **CM4**
+- **Co se stalo:** `scpi_num` cetl exponent do `int` bez omezeni a aplikoval ho
+  **iterativne** (`while (e-- > 0) v *= 10.0`). Pocet iteraci byl tim plne
+  v rukou odesilatele: `1E2147483647` = 2,1 miliardy nasobeni.
+  Nejhorsi to bylo na CM4, kde `-mfpu=fpv4-sp-d16` znamena **single precision**,
+  takze kazde `v * 10.0` (double) jde pres softwarovy `__aeabi_dmul` (~50 cyklu)
+  → **~450 s zablokovaneho jadra**, ktere zaroven publikuje IPC heartbeat
+  (CM7 by hlasil `stall:CM4`) a jehoz IWDG2 je zamerne vypnuty.
+- 🔴 **A bylo to dosazitelne BEZ autorizace**, protoze argument se parsuje pri
+  rozpoznavani hlavicky (`:869`), kdezto opravneni se testuje az za tim
+  (`:871`/`:876`). Ochrana tedy byla **az za** drahou operaci.
+- **Oprava:** mez `e > 308` (rozsah `double`) → `*ok = 0` → uz existujici `-224`;
+  `if (e < 10000)` navic brani preteceni `int` (signed overflow = UB).
+  Poradi parsovani vs. opravneni se ZAMERNE nemenilo — SCPI-99 chce chybu
+  prikazu hlasit pred chybou provedeni.
+- **Pravidlo:** **Pocet iteraci nikdy nesmi zaviset na vstupu zvenci bez meze —
+  a mez odvod z ROZSAHU CILOVEHO TYPU, ne odhadem.** `double` ma 308 dekad, takze
+  vyssi exponent neni "velke cislo", ale neplatny vstup.
+  🔑 Druha polovina: **ochrana patri PRED drahou operaci.** Kontrola opravneni,
+  ktera se provede az po zpracovani argumentu, chrani stav, ale ne cas.
+- **Detekce:** grep na `while (n-- > 0)` / cyklus, jehoz hranice pochazi
+  z parsovaneho vstupu. U SCPI konkretne vektor `1E999` → `*ok == 0`.
+- **Commit:** `aaacaf5`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0064
+- **Stav:** aktivni
+
+---
+
+### L-0031 — datovy typ byl mez, o ktere nikdo nevedel (self-survey stal na 0,42 m)
+
+- **Kde:** `CM7/Core/Inc/gps.h` (`lat_deg`/`lon_deg` byly `float`),
+  konzument `CM7/app/app_gpsdo.c` (`survey_accumulate`)
+- **Co se stalo:** self-survey (#53) pocita Welfordem horizontalni rozptyl polohy
+  a ten rozptyl je **meritko konvergence** — ma klesat s poctem vzorku. Neklesal
+  pod ~0,4 m a vypadalo to jako vlastnost anteny nebo prijimace.
+  Pricina byla v **datovem typu**: `float` ma pro hodnotu ~50 stupnu
+  ULP 2⁻¹⁸ = 3,81·10⁻⁶ stupne, coz je **0,42 m**. Akumulator pritom `double` byl —
+  jenze kvantizace byla uz ve VSTUPU a lepsim akumulatorem se nevrati.
+- 🔑 **Jak se to naslo:** ne merenim, ale **vypoctem ULP** pri cteni parseru.
+  Predpoved byla ciselna (0,42 m v sirce, 0,27 m v delce na 50°), takze se da
+  na HW potvrdit i vyvratit — to je rozdil proti "mozna je to presnosti".
+- **Oprava:** souradnice cele celociselne v 1e-7 stupne (`int32_t lat_e7`),
+  parsovani bez floatu. ⚠️ **Zisk limituje format zaznamu**: `ddmm.mmmm` (4
+  desetiny minut) = 1,85 m, `ddmm.mmmmm` (5) = 18,5 cm. Typ uz uzkym hrdlem neni,
+  rozliseni NMEA ano — a to je ted zapsane u pole, ne domyslene.
+- **Pravidlo:** **Datovy typ je taky mez.** Nez zacnes zlepsovat algoritmus nebo
+  hledat vadu v hardwaru, spocitej **ULP typu, ve kterem hodnota prichazi**, a
+  porovnej ho s presnosti, kterou slibujes. U metriky konvergence (rozptyl,
+  smerodatna odchylka, residuum) uved, jake je rozliseni VSTUPU — ne jen
+  akumulatoru.
+- **Detekce:** u kazde veliciny, ktera se ma "zlepsovat s poctem vzorku", musi byt
+  napsana spodni mez daná typem a formatem zdroje.
+- **Commit:** `868ed6e`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0070
+- **Stav:** aktivni
+
+---
+
+### L-0032 — kontrola integrity byla podminena tim, ze integrita dorazila
+
+- **Kde:** `CM7/Core/Src/gps.c` (`parse_line`, NMEA checksum)
+- **Co se stalo:** cela kontrola checksumu byla uvnitr `if (star)`:
+  ```c
+  char *star = strchr(l, '*');
+  if (star) { … if (cs != given) return; }
+  /* else: nic — pokracuje se na parsovani */
+  ```
+  Veta **bez** `*HH` tedy prosla, jako by byla overena. Pritom prave to je pripad,
+  kdy se ma zahodit: NMEA 0183 checksum u `$`-vet vyzaduje a u-blox ho vzdy posila,
+  takze jeho absence znamena poskozeny nebo cizi ramec.
+- 🔴 **Ve dvojici s chybejicim „zahazuj do konce radku" (F-0066) to byla uplna
+  injekcni cesta**: vstup delsi nez buffer, jehoz ocas zacina `$GPRMC,…` bez
+  checksumu, se prijal jako platna veta. Zadna z tech dvou vad nebyla sama o sobe
+  vic nez „tolerance k sumu".
+- **Oprava:** `if (star == NULL) return;`
+- **Pravidlo:** **Kontrola integrity podminena pritomnosti toho, co kontroluje,
+  neni kontrola.** Chybi-li kontrolni soucet (CRC, checksum, podpis, delka), je to
+  duvod data ZAHODIT, ne je pustit dal s tim, ze „nemame cim overit".
+  🔑 Obecneji: `if (mame_cim_overit) { over }` je vzdy podezrele — spravne je
+  `if (!mame_cim_overit) return;`.
+- **Detekce:** grep na `if (<kontrolni_udaj_existuje>) { kontroluj }` bez
+  `else return`. U parseru vstupu se na to ptej u KAZDE volitelne casti ramce.
+- **Commit:** `b483158`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0065
 - **Stav:** aktivni
 
 ---
