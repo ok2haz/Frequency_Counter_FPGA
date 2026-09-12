@@ -258,7 +258,21 @@ static double scpi_num(const char *s, int *ok)
     if (*s == 'e' || *s == 'E') {
         s++; int es = 1;
         if (*s == '-') { es = -1; s++; } else if (*s == '+') s++;
-        int e = 0; while (*s >= '0' && *s <= '9') { e = e * 10 + (*s - '0'); s++; }
+        /* 🔴 Exponent MUSI mit mez (audit F-0064). Do 2026-09-12 se cetl do `int`
+         * bez omezeni a aplikoval se ITERATIVNE, takze pocet iteraci byl plne
+         * v rukou odesilatele: `1E2147483647` = 2,1 miliardy nasobeni.
+         * Na CM4 to je nejhorsi — `-mfpu=fpv4-sp-d16` je single precision, takze
+         * kazde `v * 10.0` jde pres softwarovy `__aeabi_dmul` (~50 cyklu) =>
+         * ~450 s ZABLOKOVANEHO jadra. A bylo to dosazitelne BEZ autorizace:
+         * argument se parsuje driv, nez se testuje `set_cfg`/`ctrl_locked`
+         * (viz `:869` vs `:871`), plus TCP 5025 autorizaci nema vubec.
+         * ⚠️ `if (e < 10000)` navic brani preteceni `int` (signed overflow = UB)
+         * u dlouheho exponentu — cislice se dal ctou, jen se neakumuluji.
+         * Mez 308 je rozsah `double`, takze zadnou platnou hodnotu neodrizne;
+         * `*ok = 0` vede na uz existujici `-224`, tedy zadna nova chybova cesta. */
+        int e = 0;
+        while (*s >= '0' && *s <= '9') { if (e < 10000) e = e * 10 + (*s - '0'); s++; }
+        if (e > 308) { if (ok) *ok = 0; return 0.0; }
         while (e-- > 0) v = (es > 0) ? v * 10.0 : v * 0.1;
     }
     while (*s == ' ' || *s == '\t') s++;
@@ -437,9 +451,20 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:DATE")) {
 #if defined(CORE_CM7)
         if (is_query) {
-            /* `g_rtc_text` = "YYYY-MM-DD HH:MM:SS" (plni defaultTask). Cteme z nej
-             * primo aritmetikou - zadne pomocne buffery ani terminatory. */
-            const volatile char *rt = g_rtc_text;
+            /* 🔴 Bez synchronizovaneho casu vrat SCPI NaN, ne cislo (audit F-0068).
+             * `g_rtc_text` je inicializovany na "---------- --:--:--"
+             * (`freertos.c:155`), takze aritmetika nad pomlckami davala
+             * `('-'-'0') == -3` a dotaz vracel **"-3333,-33,-33" jako platne
+             * datum**. Bylo to jedine misto v souboru, ktere pri neplatnych datech
+             * nevraci `9.91E37` — vsechny ostatni (`SYST:GPS:TIME?`, `SYST:TEMP?`,
+             * `MEAS:VOLT?`) testuji bit platnosti. */
+            if (!g_rtc_synced) { snprintf(out, out_sz, "9.91E37"); return strlen(out); }
+            /* ⚠️ Kopie pod kritickou sekci: zapis v `rtc.c:576` ji ma, cteni ne,
+             * takze snimek sel roztrhnout pres hranici sekundy. */
+            char rt[sizeof g_rtc_text];
+            taskENTER_CRITICAL();
+            memcpy(rt, (const void *)g_rtc_text, sizeof rt);
+            taskEXIT_CRITICAL();
             int yy = (rt[0]-'0')*1000 + (rt[1]-'0')*100 + (rt[2]-'0')*10 + (rt[3]-'0');
             int mo = (rt[5]-'0')*10 + (rt[6]-'0');
             int dd = (rt[8]-'0')*10 + (rt[9]-'0');
@@ -464,7 +489,11 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:TIME")) {
 #if defined(CORE_CM7)
         if (is_query) {
-            const volatile char *rt = g_rtc_text;
+            if (!g_rtc_synced) { snprintf(out, out_sz, "9.91E37"); return strlen(out); }   /* F-0068 */
+            char rt[sizeof g_rtc_text];
+            taskENTER_CRITICAL();
+            memcpy(rt, (const void *)g_rtc_text, sizeof rt);
+            taskEXIT_CRITICAL();
             int hh = (rt[11]-'0')*10 + (rt[12]-'0');
             int mm = (rt[14]-'0')*10 + (rt[15]-'0');
             int ss = (rt[17]-'0')*10 + (rt[18]-'0');
@@ -896,19 +925,36 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
     scpi_status_latch(ctx, src);
     if (strchr(line, ';') == NULL) return scpi_exec_one(ctx, src, line, out, out_sz);
 
-    /* Složená zpráva (IEEE 488.2): jednotky ';', odpovědi dotazů spojené ';'. */
+    /* Složená zpráva (IEEE 488.2): jednotky ';', odpovědi dotazů spojené ';'.
+     * 🔴 Utnuta jednotka se NEPROVEDE (audit F-0069). Do 2026-09-12 se delsi
+     * jednotka orizla na 55 znaku a **provedla** — vcetne argumentu, takze
+     * `CALC:MATH:M 1234…;*IDN?` nastavilo ZKRACENOU hodnotu a klient dostal
+     * odpoved na `*IDN?`, tedy potvrzeni, ze vse probehlo. Tise se tak vykonalo
+     * neco jineho, nez klient poslal.
+     * Rozpocet: nejdelsi hlavicka je `SENSe:FREQuency:APERture` (24 zn.) + mezera
+     * + argument v exponencialnim tvaru (~20 zn.) => 96 B ma rezervu ~50 %. */
     size_t total = 0;
-    char sub[56];
+    char sub[96];
+    char rb[64];
+    _Static_assert(sizeof(sub) > 48, "sub musi pojmout celou hlavicku hdr[48] i s argumentem");
+    _Static_assert(sizeof(rb) >= 32, "rb musi pojmout nejdelsi chybovou odpoved (31 B)");
     while (*line) {
         int k = 0;
         while (*line && *line != ';' && k < (int)sizeof(sub) - 1) sub[k++] = *line++;
         sub[k] = '\0';
+        /* Zastavili jsme se na MEZI (ne na ';' ani na konci) => jednotka je utnuta. */
+        int truncated = (*line != '\0' && *line != ';');
         while (*line && *line != ';') line++;
         if (*line == ';') line++;
         const char *t = sub; while (*t == ' ' || *t == '\t') t++;
         if (*t == '\0') continue;
-        char rb[64];
-        size_t rn = scpi_exec_one(ctx, src, sub, rb, sizeof rb);
+        size_t rn;
+        if (truncated) {
+            scpi_err_push(ctx, -100);
+            rn = (size_t)snprintf(rb, sizeof rb, "-100,\"%s\"", scpi_err_msg(-100));
+        } else {
+            rn = scpi_exec_one(ctx, src, sub, rb, sizeof rb);
+        }
         if (rn == 0) continue;
         if (total && total + 1 < out_sz) out[total++] = ';';
         size_t room = (total + 1 < out_sz) ? out_sz - total - 1 : 0;
