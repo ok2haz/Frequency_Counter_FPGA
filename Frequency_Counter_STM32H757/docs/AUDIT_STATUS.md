@@ -3,15 +3,20 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-12 (13. sezení — **modul 14 = UART konzole**;
-týž den modul 13 = parsery SCPI + NMEA vč. fáze oprav a HW ověření)
+**Poslední aktualizace:** 2026-09-12 (14. sezení — **modul 15 = webová SPA**;
+týž den moduly 13 a 14 vč. fází oprav)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
 **Modul 8 nemá otevřený nález.**
 **F1 je hotová** — `docs/ARCHITECTURE.md` doplněn 2026-09-10 z auditů 1–5 (dluh uzavřen).
 **Branch:** `audit/2026-09-09-hodiny-pwr` (vychází z `feat/web-dashboard-v12`, commit `8521130`)
-**Pokračovat zde:** ⬜ **naflashovat a ověřit po POWER-CYKLU** — čeká na to modul 14
+**Pokračovat zde:** **rozhodnout F5 pro modul 15** (11 nálezů, z toho 2× S1 — dvě
+GPS karty dashboardu jsou trvale nefunkční kvůli polím, která API neposílá).
+⚠️ Opravy modulu 15 míří do **blobu `SPA_HTML`**, takže po nich MUSÍ projít
+`python tools/spa/check.py --build` celý (8 kroků) — zvlášť krok 8 (`nm` nad
+`SPA_HTML` = počet bajtů + 1), který jediný definitivně chytí utnutý literál.
+Pak ⬜ **naflashovat a ověřit po POWER-CYKLU** — čeká na to modul 14
 (`b1aa262`), oprava okna CHYBY (F-0063) a `21ac04e` (buffery do `.bss`, dotýká se
 obou jader). `IPC_VERSION` se nemění, takže banky jdou flashovat nezávisle.
 🔑 **F-0055 + F-0074 jsou rozhodnuté a odložené do `../STATUS.md` TODO #243:**
@@ -44,10 +49,10 @@ než audit** — modul 11 fázi oprav ještě neprošel, takže tam takové vady
 historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
 `expected_len` (F-0060). SSE timeout (F-0059) se ověří jen odpojením klienta od sítě.
 ⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
-🔴 **Všechny moduly 1–14 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 14.**
-🔑 **Tím je auditovaný veškerý vlastní kód, který zpracovává vstup zvenčí.** Největší
-neauditovaná oblast je nově **blob `SPA_HTML`** (2 937 ř. HTML/CSS/JS v `httpd_min.c`)
-— klientský kód s vlastním ověřovacím řetězcem, zaslouží si modul 15. Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
+🔴 **Všechny moduly 1–15 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 15.**
+🔑 **Tím je auditovaný veškerý vlastní kód projektu** — firmware obou jader
+i klientský dashboard. Neauditovaný zůstává už jen **vendor kód** (HAL, FatFs, lwIP,
+CMSIS), generovaný CubeMX kód mimo `USER CODE` bloky a **fonty** (generovaná data). Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -178,7 +183,16 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
 | 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (✅ část ověřena na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
 | 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | **opraveny 3, 1 částečně, F-0074 → TODO #243** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
+| 15 | webová SPA (klientský dashboard) | `httpd_min.c:636-3569` = blob `SPA_HTML` (2 934 ř., 125 funkcí JS) | **prohlížeč** (obraz CM4) | nálezy zapsány | 2026-09-12 | 2 | 1 | 3 | 5 | [11](audit/2026-09-12_spa-web.md) |
 
+🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
+jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
+se hlídá firmware (překladač, `tools/audit.py`, `check_lessons.sh`). Hlídá ho vlastní
+řetězec `tools/spa/check.py`, který dělá svou práci dobře (literál celý, žádná
+uvozovka, DOM konzistentní) — ale **nekontroluje hranici JSON**, a přesně tam leží
+oba nálezy S1: `drawTfom` čte `gps.valid` a `drawGq` čte `gps.nsat`, což jsou pole,
+která `/api/state` neposílá. Obě karty jsou proto trvale nefunkční, aniž by cokoli
+zakřičelo. **Návrh je udělat z toho kontrolu** (prototyp z auditu obě vady najde).
 🔑 **Modulem 14 je auditovaný VEŠKERÝ kód, který zpracovává vstup zvenčí**, a všechny
 tři moduly (12 síť, 13 parsery, 14 konzole) našly **tutéž třídu vady**: pevný buffer,
 který se při přetečení tiše ořízne a obsah se PŘESTO zpracuje. Celkem čtyři výskyty
@@ -203,10 +217,10 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 2 | 1 | 0 |
-| S2 | 1 | 12 | 0 |
-| S3 | 8 | 32 | 0 |
-| S4 | 3 | 12 | 0 |
+| S1 | 4 | 1 | 0 |
+| S2 | 2 | 12 | 0 |
+| S3 | 11 | 32 | 0 |
+| S4 | 8 | 12 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -456,3 +470,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-12 | parsery SCPI + NMEA | F3 prezkum, 9 nalezu (1xS2, 6xS3, 2xS4), verdikt **podminene funkcni**. Oba parsery jsou psane opatrne a **zadne preteceni bufferu jsem nenasel** — `tokenize`, `gsv_feed`, `nmea_coord`, `memcpy` ve slozene zprave i chybova fronta maji meze dopoctene a v poradku. Nalezy jsou o **chybejici validaci rozsahu**. Nejzavaznejsi **F-0064 [S2]**: `scpi_num` aplikuje exponent iterativne bez meze, takze `1E2147483647` da 2,1e9 iteraci — a protoze CM4 ma `-mfpu=fpv4-sp-d16` (double = softfloat), je to ~450 s zablokovane CM4. Dosazitelne **bez autorizace**, protoze argument se parsuje na `:869`, kdezto opravneni se testuje az na `:871`/`:876`. Dale: NMEA checksum je nepovinny (F-0065), po preteceni radku chybi zahazovani do konce radku — **tataz vada, jakou `scpi_tcp.c` opravil 2026-09-06** (F-0066, L-0012), `SYST:DATE?` pred prvnim fixem vraci `-3333,-33,-33` jako platne datum (F-0068) a souradnice ve `float` drzi self-survey na ~0,42 m at bezi jak chce dlouho (F-0070, spocitano z ULP). 🔑 Jeden kandidat na nalez **cilene provern a ZAMITNUT**: `fmt_scpi_f6` nema rozsahovou pojistku, ale jediny volajici mu dava tabulku `{0.1,1,10,100}` → UB neni dosazitelne. Kod nemenen. | zatim zadna (F5 nebyla) |
 | 2026-09-12 | F5 opravy (modul 13) | **Vsech 9 nalezu uzavreno ve 4 commitech** (A+B+C na pokyn uzivatele). `b483158` validace NMEA (**F-0065** checksum povinny, **F-0066** zahazovani do konce radku + pocitadlo `OVF:`, **F-0071** HDOP jen z GGA). `aaacaf5` SCPI (**F-0064** mez exponentu 308 + zabraneni preteceni `int`, **F-0068** `SYST:DATE?/TIME?` pres `g_rtc_synced` a pod kritickou sekci, **F-0069** utnuta jednotka se neprovede). `868ed6e` **F-0070 + F-0067** souradnice celociselne v 1e-7 stupne (7 souboru). `docs:` **F-0072** komentar u `d2`. 🔑 **Dve veci se pri oprave ukazaly jinak, nez nalez odhadoval:** (1) F-0070 melo podle nalezu 'vysoke riziko, mezijaderny kontrakt' — `ipc_shared.h:135` ale ma `gps_lat_e7` jako `int32_t` uz dnes, takze `IPC_VERSION` se nemeni a preflashovat obe banky neni nutne; (2) F-0067 se opravil **lepe nez navrh** — prechodem na e7 zmizel cely problematicky cast z floatu, misto aby se jen doplnila validace. ⚠️ Zisk F-0070 limituje format NMEA (`ddmm.mmmm` = 1,85 m, `ddmm.mmmmm` = 18,5 cm) — zapsano u pole, ne domysleno. Build BOTH 0 varovani, `audit.py` 92/0/2, CM7 `.text` 599392 -> 599760 B; **CM4 klesl 231944 -> 231880 B**, takze zmena dolozena SYMBOLEM (`%07lu` v obou obrazech, mez 308 v disassembly CM4). ⬜ **neovereno na HW.** | L-0030, L-0031, L-0032 |
 | 2026-09-12 | UART konzole | F3 prezkum `freertos_task_uart.c` (2365 r.), 5 nalezu (3xS3, 2xS4), verdikt **podminene funkcni**. 🔑 Soubor je psany nadprumerne opatrne — `stacktest_overflow` je vyclenena funkce S VYSVETLENIM proc, `bgcheck`/`stats`/`scpi ipc` maji buffery v `.bss`, skeny I2C ustupuji scheduleru (F-0020), SD blok je obaleny jako celek, `eth` ma pojistku proti kolizi s CM4. Nalezy jsou o dvou vecech: **F-0073** hlavni vstupni buffer ma 32 B a prikaz delsi nez 31 znaku se TISE utne a PROVEDE (`scpi SENSe:FREQuency:APERture 10` = 32 znaku -> nastavi hradlo 1 s misto 10 s) — **ctvrty vyskyt teze tridy** po F-0056/F-0058/F-0069; a **F-0074** pouceni o zasobniku se neuplatnilo vsude: `scpi ipc` ma vsechno staticke a komentar u nej to zduvodnuje, `scpi` o 70 radku niz ma `resp[128]` na zasobniku a vola `scpi_process` s ramcem 492 B. To je **podlozene merenim z desky** (`stack Uart free 168 B`) a spojuje se s otevrenym F-0055. Dale F-0075 (`fpgasim on` bez horni meze -> `(uint64_t)(hz*1e5)` je UB), F-0076 a F-0077. Jeden kandidat cilene provern a ZAMITNUT: `datalog interval 0` vypadalo na deleni nulou, ale `datalog_set_period_s` clampuje na 1..3600. Kod nemenen. | Kod nemenen. | `b1aa262` (F-0073/F-0075/F-0076) + kontrola ramce v `check_lessons.sh` (F-0077b); **F-0074 a F-0077a odlozeny do `../STATUS.md` TODO #243** na zadost uzivatele (nejdriv konzistentne zvetsit zasobnik v `.ioc`). Lekce **L-0033** (`continue` v dlouhe smycce vypina obsluhy na jejim konci — moje vlastni chyba, zachycena pred commitem), **L-0034** (mez PRED pouzitim: konverze mimo rozsah i odecet v `size_t`), **L-0035** (ramec je vlastnost cele funkce; meri se nad `.elf`). 🔴 Kontrola ramce napoprve nefungovala (vracela 0 B, awk cetl `m[2]` misto `m[3]`) — odhalila to az pozitivni kontrola podle **L-0020**. |
+| 2026-09-12 | webova SPA (`SPA_HTML`) | F3 prezkum blobu 2 934 r. (CSS 354 / markup 421 / JS 2 003 r., 125 funkci), 11 nalezu (2xS1, 1xS2, 3xS3, 5xS4), verdikt **podminene funkcni**. 🔑 Overovaci retezec `tools/spa/check.py` je dobry v tom, co meri (literal cely: `nm` 139 290 = 139 289 + NUL; 0 uvozovek; 0 ne-ASCII; DOM bez visicich id), ale **nekontroluje hranici JSON** — a prave tam jsou oba S1: **F-0078** `drawTfom` cte `gps.valid`, ktere `/api/state` neemituje, takze vetve `2D FIX` i `LOCK` jsou nedosazitelne a karta hlasi `NO LOCK` i pri 3D fixu (vedle hlavicky, ktera z tehoz JSON pise `GPS 3D`); **F-0079** `push('ns')` cte `gps.nsat`, jenze `nsat` je v JSON o uroven vys a v bloku `gps` je `num_sat` -> karta KVALITA GPS je trvale prazdna. **F-0080** [S2]: casova osa zivych grafu predpoklada 1 vzorek = 1 s, ale vychozi cesta je SSE, kde server tlaci pri KAZDEM novem mereni (~4/s) — okno '1 h' tak ukaze ~15 minut popsanych jako hodina. Autor tuhle past zna a u Allanovy odchylky se ji brani (buffer `M` plnen jen na zmenu `seq_meas`), na historii grafu `H[]` se uvaha nepromitla. Dale F-0081 (vyjimka v `render()` se spolkne nebo se ohlasi jako chyba site), F-0082 (heslo v `localStorage` otevrene), F-0083 (stavove barvy jako identita rady -> OCXO ma trvale cerveny bar), F-0084..F-0088. Overeno a v poradku: zadna cesta pro vlozeni HTML (vsechny hodnoty ze serveru jsou cisla/booly, volny text jde pres `textContent`), `mathY`/`limitVerdict` sedi na `meas_math.c`, `resetInfo` ma totez poradi priorit jako `main.c`, TDEV se pocita z MDEV. | zatim zadna (F5 nebyla) |
