@@ -17,6 +17,13 @@ static gps_data_t s_gps;
 /* ── Skladani prijate vety ─────────────────────────────────────────────── */
 static char    s_line[96];
 static uint8_t s_len;
+/* 🔴 1 = radek pretekl -> zahazuj AZ DO konce radku (audit F-0066). Bez tohohle
+ * se `s_len` jen vynulovalo a OCAS prilis dlouheho ramce se zacal skladat jako
+ * samostatna "veta" — spolu s nepovinnym checksumem (F-0065) to byla injekcni
+ * cesta. **Tataz vada, jakou `CM4/LWIP/App/scpi_tcp.c:132-143` opravil uz
+ * 2026-09-06**; sem se oprava tehdy nepreneslа (L-0012). */
+static uint8_t s_drop;
+static uint32_t s_overflows;         /* kolikrat se ramec zahodil — tichy preskok se pocita (L-0017) */
 
 /* ── Diagnostika linky STM<->GPS ───────────────────────────────────────── */
 static volatile uint32_t s_raw_bytes;   /* vsechny prijate bajty (i smeti) */
@@ -129,17 +136,23 @@ static void parse_gga(char **f, int nf)
   taskEXIT_CRITICAL();
 }
 
-/* $xxGSA: 2=fixMode(1/2/3) ... 15=PDOP 16=HDOP 17=VDOP */
+/* $xxGSA: 2=fixMode(1/2/3) ... 15=PDOP 16=HDOP 17=VDOP
+ * ⚠️ HDOP se odsud ZAMERNE NEBERE (audit F-0071). Plnil ji i `parse_gga` a byly
+ * z toho dve pravdy o jedne velicine (L-0018): ktera vyhrala, zaviselo na poradi
+ * vet v davce, a u multi-GNSS prijimace chodi GSA vickrat za cyklus (per
+ * souhvezdi), takze prepisovala opakovane. Horsi bylo, ze BEZ FIXU je DOP pole
+ * v GSA prazdne a `atof_simple("")` vraci 0.0 -> HDOP 0,00 vypada jako VYBORNA
+ * presnost, ne jako "neznamo".
+ * Jediny zdroj HDOP je tedy `parse_gga` (chodi 1x za cyklus a pri fixu ji ma
+ * vzdy vyplnenou); GSA si nechava `fix_mode` a `pdop`. */
 static void parse_gsa(char **f, int nf)
 {
   if (nf < 18) return;
   uint8_t mode = (uint8_t)atoi_simple(f[2]);
   float pdop = atof_simple(f[15]);
-  float hdop = atof_simple(f[16]);
   taskENTER_CRITICAL();
   s_gps.fix_mode = mode;
   s_gps.pdop = pdop;
-  s_gps.hdop = hdop;
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
@@ -246,10 +259,18 @@ static void parse_line(char *l)
 {
   if (l[0] != '$') return;
 
-  /* checksum *HH (XOR mezi '$' a '*') */
+  /* checksum *HH (XOR mezi '$' a '*')
+   * 🔴 POVINNY (audit F-0065). Do 2026-09-12 byla cela kontrola uvnitr `if (star)`,
+   * takze veta BEZ `*HH` prosla bez jakekoli kontroly integrity — a prave to je
+   * pripad, kdy se zahodit MA: NMEA 0183 checksum u `$`-vet vyzaduje a u-blox ho
+   * vzdy posila, takze jeho absence znamena poskozeny nebo cizi ramec (typicky po
+   * ztrate bajtu pri ORE na USART1, kterou `usart.c` resi AbortReceive + re-arm).
+   * ⚠️ UBX ramce nezacinaji '$', takze se sem nedostanou a tahle prisnost je
+   * netrapí. */
   char *star = strchr(l, '*');
-  if (star) {
-    if (star[1] == '\0' || star[2] == '\0') return;   /* useknuty checksum -> zahodit (i guard proti cteni za '\0') */
+  if (star == NULL) return;           /* bez checksumu -> neoverena veta -> zahodit */
+  if (star[1] == '\0' || star[2] == '\0') return;   /* useknuty checksum (i guard proti cteni za '\0') */
+  {
     uint8_t cs = 0;
     for (char *p = l + 1; p < star; p++) cs ^= (uint8_t)*p;
     uint8_t given = (uint8_t)((hexnib(star[1]) << 4) | hexnib(star[2]));
@@ -381,6 +402,7 @@ void gps_feed_char(char c)
 {
   s_raw_bytes++;                       /* dukaz, ze z GPS vubec neco chodi */
   if (c == '\r' || c == '\n') {
+    if (s_drop) { s_drop = 0; s_len = 0; return; }   /* konec zahazovaneho ramce */
     if (s_len > 0) {
       s_line[s_len] = '\0';
       /* zachyt syrovy radek PRED parsem (parse_line meni s_line in-place) */
@@ -393,8 +415,11 @@ void gps_feed_char(char c)
     }
     return;
   }
-  if (s_len < sizeof(s_line) - 1) s_line[s_len++] = c;
-  else s_len = 0;                     /* preteceni -> reset (vadny ramec) */
+  if (s_drop) return;                 /* uvnitr prilis dlouheho ramce — zahazuj */
+  if (s_len < sizeof(s_line) - 1) { s_line[s_len++] = c; return; }
+  s_drop = 1;                         /* preteceni -> zahazuj az do konce radku */
+  s_len  = 0;
+  if (s_overflows < 0xFFFFFFFFu) s_overflows++;
 }
 
 void gps_get(gps_data_t *out)
@@ -506,6 +531,7 @@ void gps_format_raw(char *buf, int n)
   raw  = s_raw_bytes;
   sent = s_gps.sentences;
   taskEXIT_CRITICAL();
-  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu last=[%s]",
-           (unsigned long)raw, (unsigned long)sent, last[0] ? last : "(zatim nic)");
+  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu last=[%s]",
+           (unsigned long)raw, (unsigned long)sent, (unsigned long)s_overflows,
+           last[0] ? last : "(zatim nic)");
 }
