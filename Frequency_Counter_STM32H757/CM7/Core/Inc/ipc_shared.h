@@ -30,7 +30,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  14u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  15u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -63,7 +63,14 @@
                                        OBALKA kmitoctu v `ipc_log_rec_t` a davkovane cteni datalogu
                                        (`req_env`/`resp_scanned`/`resp_full_env`).
                                        ⚠️ Roste jen `log`, ktery je AZ ZA `cm4` blokem -> detekce nesouladu
-                                       bank u v13 FUNGUJE (na rozdil od v12). Flashnout stejne obe banky. */
+                                       bank u v13 FUNGUJE (na rozdil od v12). Flashnout stejne obe banky.
+                                       v15 (2026-09-12, audit F-0088): `warmup` (byval prvni bajt `_pad_h`
+                                       -> velikost struktury BEZE ZMENY, bumpnuto kvuli detekci nesouladu
+                                       bank, stejne jako v8/v9/v11). Web dosud odvozoval warm-up jen
+                                       z `uptime_s < 300`, kdezto pristroj k tomu vyzaduje i ustalenou
+                                       teplotu (`warmup_ready`: |dT/dt| < 0,08 °C/min) -> po studenem
+                                       startu hlasil displej WARMUP a web uz LOCK. Kriterium je nove
+                                       na JEDNOM miste a do snapshotu jde hotovy vysledek. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -175,7 +182,10 @@ typedef struct {
     uint32_t flags;                /* IPC_F_* */
     uint8_t  sys_level;            /* 0=OK 1=warn 2=err (agregace do SYS pilulky) */
     uint8_t  alarm_active;
-    uint16_t _pad_h;
+    uint8_t  warmup;               /* 1 = OCXO se jeste zahriva (v15). Plni APP vrstva
+                                    * pres `g_warmup` — je to `warmup_ready()`, tedy uptime
+                                    * >= 300 s A |dT/dt| < 0,08 °C/min, ne jen uptime. */
+    uint8_t  _pad_h;
     uint32_t uptime_s;
     uint32_t cm7_cpu_pct;
     uint32_t reset_cause;          /* RCC->RSR (raw) */

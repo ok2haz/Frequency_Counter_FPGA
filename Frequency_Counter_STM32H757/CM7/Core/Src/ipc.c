@@ -237,6 +237,7 @@ void ipc_publish(void)
     g_ipc.snap.mon_ocxo_bad = g_mon_ocxo_bad;
     g_ipc.snap.mon_adev_bad = g_mon_adev_bad;
     g_ipc.snap.selftest_res = g_selftest_res;
+    g_ipc.snap.warmup       = g_warmup;   /* v15, F-0088 */
 
     /* v12 (#5): GPS druzice pro sky plot. Layout ipc_sat_t == gps_sat_t (assert
      * vyse) -> proste memcpy platnych polozek. */

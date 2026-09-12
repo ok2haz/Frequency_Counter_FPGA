@@ -8137,6 +8137,11 @@ void app_gpsdo_tick_stats_sample(void)
      * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
      * hodnota publikuje pres globál. */
     g_adev_1s = screen_main_adev_1s();
+    /* Warm-up OCXO -> Core globál pro snapshot (audit F-0088). Web si ho dosud
+     * odvozoval sam z `uptime_s < 300`, takze po studenem startu hlasil LOCK,
+     * zatimco displej jeste WARMUP. Kriterium je `warmup_ready()` a od teto
+     * zmeny existuje na JEDNOM miste. Levne: 16 vzorku z RAM historie. */
+    g_warmup = (uint8_t)(warmup_ready(NULL) ? 0 : 1);
     /* #44: prubezne vyhodnoceni limitu (nezavisle na oknu -> alarm hlida i mimo
      * okno MATH). Verdikt cte alarm.c (edge PASS->FAIL). Levne (1x/s). */
     g_meas_verdict = (uint8_t)meas_limit_eval(&g_meas_cfg,

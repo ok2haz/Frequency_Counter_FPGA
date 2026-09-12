@@ -107,4 +107,12 @@ extern volatile unsigned int g_alarm_adev;
  *  takze se hodnota preda pres globál. 0 = jeste neni dost vzorku. */
 extern volatile float g_adev_1s;
 
+/** 1 = OCXO se jeste zahriva (`warmup_ready()` v app vrstve: uptime >= 300 s
+ *  A |dT/dt| < 0,08 °C/min). Publikuje `app_gpsdo_tick_stats_sample`, cte
+ *  `ipc_publish` do snapshotu -> odtud web (audit F-0088).
+ *  ⚠️ Tentyz most jako `g_adev_1s` a `g_meas_verdict` — Core vrstva nesmi
+ *  volat do `app/screens/`. Vychozi 1 = „zahriva se": dokud app vrstva
+ *  nedobehne prvni tik, je poctivejsi tvrdit warm-up nez lock. */
+extern volatile uint8_t g_warmup;
+
 #endif /* ALARM_H */
