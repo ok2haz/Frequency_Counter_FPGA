@@ -539,11 +539,17 @@ g_cm4_absent = 1;
   printf("=== Display init dokoncen ===\n");
 
   /* 8) Probe touch controlleru (po panel power-on, kdy uz neni v resetu).
-   * I2C4 se prepina na 200 kHz — FT5x06 je skutecna I2C periferie, ne
-   * bit-bang jako ATTINY (viz i2c4_speed_select v i2c.c). Scheduler jeste
-   * nebezi, takze mutex neni potreba. */
+   * I2C4 se prepina na 75 kHz — FT5x06 je skutecna I2C periferie, ne
+   * bit-bang jako ATTINY (viz i2c4_speed_select v i2c.c).
+   * ⚠️ Klidova mezera PRED prepnutim rychlosti — stejny duvod jako
+   * `s_bl_settle` v `freertos_task_ui.c` (150 ms po zapisu jasu, nez
+   * na sbernici pusti dalsiho mastera). Tady zadna mezera nebyla (2026-09-13
+   * podezreni na "po power-cyklu nejde dotyk"); i kdyz `i2c4_speed_select`
+   * uz nedela DeInit/Init (viz i2c.c), mezera zustava jako levna pojistka —
+   * scheduler jeste nebezi, takze mutex neni potreba. */
+  HAL_Delay(150);
   printf("=== Touch init start ===\n");
-  i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);
+  i2c4_speed_select(I2C4_TIMING_TOUCH_75KHZ);
   if (!ft5x06_probe(&hi2c4)) {
       printf("ft5x06: probe FAILED - touch nebude k dispozici\n");
   } else {

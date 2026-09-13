@@ -43,11 +43,11 @@ void MX_I2C4_Init(void);
 /* USER CODE BEGIN Prototypes */
 void MX_I2C1_Init(void);
 
-/* Dve provozni rychlosti I2C4 — zdůvodnění v i2c.c u definice.
- * 50 kHz pro ATTINY (bit-bang slave, CPU 1 MHz), 200 kHz pro FT5x06+TMP117
- * (skutecne I2C periferie). Volat VZDY pod i2c4MutexHandle. */
-#define I2C4_TIMING_ATTINY_50KHZ   0x70303AEEu
-#define I2C4_TIMING_FAST_200KHZ    0x70300E3Bu
+/* TRI provozni rychlosti I2C4, jedna per zarizeni — zdůvodnění v i2c.c
+ * u definice. Volat VZDY pod i2c4MutexHandle. */
+#define I2C4_TIMING_ATTINY_50KHZ     0x70303AEEu   /* 0x45 ATTINY  — bit-bang, CPU 1 MHz */
+#define I2C4_TIMING_TOUCH_75KHZ      0x7030279Fu   /* 0x38 FT5x06  — periferie */
+#define I2C4_TIMING_TMP117_400KHZ    0x30700E3Bu   /* 0x48 TMP117  — periferie */
 void i2c4_speed_select(uint32_t timing);
 /* USER CODE END Prototypes */
 

@@ -294,7 +294,7 @@ void StartUiTask(void *argument)
       ft5x06_touch_t t; int got = 0, attempted = 0;
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
         attempted = 1;
-        i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);   /* FT5x06 = periferie, ne bit-bang */
+        i2c4_speed_select(I2C4_TIMING_TOUCH_75KHZ);   /* FT5x06 = periferie, ne bit-bang */
         got = ft5x06_read_touch(&hi2c4, &t);
         osMutexRelease(i2c4MutexHandle);
       }
