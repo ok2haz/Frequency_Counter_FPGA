@@ -1164,6 +1164,50 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0044 — Ne každou fragilní `-I` cestu se má odstranit stejným trikem
+
+- **Datum:** 2026-09-13
+- **Oblast:** build (CubeMX regen, `CM7/.cproject`, libui/libprim architektura)
+- **Symptom:** `CM7/.cproject` má čtyři `-I` cesty (`app`, `libui/include`,
+  `libprim/include`, `libprim/src`), které byly jednou (2026-08-29) fragilní
+  a vyžádaly manuální opravu. Po opravě L-0042/L-0043 (odstranění závislosti
+  na `-I` u `scpi.h` v CM4) padla otázka, jestli udělat totéž i tady.
+- **Příčina zjištěná při zkoumání:** rozšířený scan (`find_fragile_includes.py`
+  varianta pro CM7) zprvu ukázal jen 12 fragilních řádků — ale to bylo
+  neúplné, protože skript hledal jen **uvozovkové** `#include "x.h"`.
+  `libui/src` a `libprim/src` (73 souborů, 169 řádků) uvnitř sebe používají
+  **úhlové** `#include <ui/button.h>`, `#include <prim/fb.h>` — záměrný
+  návrhový vzor (obě knihovny se includují, jako by byly externí/instalované,
+  přesně jak to popisuje `CLAUDE.md`: „libprim nezná ui/*", „libui nezná
+  app/*"). Úhlový include **nemá fallback** na „hledej nejdřív ve složce
+  including souboru" (na rozdíl od uvozovkového) — je to čistě `-I`
+  závislost, a je to 169 míst, ne 12.
+- **Rozhodnutí (ne oprava):** relativní `#include` trik z L-0042 se sem
+  **nepřenesl**. Přepsat 169 úhlových includů na relativní uvozovkové by
+  bořilo záměrnou architekturu (dvě knihovny jako samostatné moduly) za
+  problém, který se od jednorázového incidentu 2026-08-29 (šlo o mezeru
+  v Release configu při prvním zavedení složek, ne o „regen to maže
+  pořád") **neopakoval přes čtyři další regeny** (2026-09-01/06/12/13).
+  Riziko refaktoru > riziko problému.
+- **Oprava, která místo toho proběhla:** `check_regen()` v `scripts/build.sh`
+  rozšířena o kontrolu přítomnosti všech čtyř `-I` cest v `CM7/.cproject`
+  (`libprim/include`, `libui/include`, `${ProjName}/app`) — **detekce**, ne
+  odstranění závislosti. Když se to příště přece jen ztratí, `build.sh` to
+  nahlásí PŘED buildem, ne až jako záhadný `fatal error: ui/button.h`.
+- **Pravidlo:** **Cena odstranění `-I` závislosti (relativní `#include`)
+  škáluje s počtem míst, která na ní závisí, a úhlové includy tuhle cenu
+  zvyšují — nemají fallback, takže je nejde postupně/částečně opravit.**
+  Než se rozhodne mezi „odstranit závislost" (L-0042 vzor) a „jen ji
+  hlídat" (`check_regen()`), spočítej **reálný** počet závislých míst
+  (včetně `<...>` includů, ne jen `"..."`) A frekvenci opakování problému.
+  Malý počet + opakující se incident → odstranit. Velký počet + jeden
+  historický incident → hlídat, nepřepisovat záměrnou architekturu.
+- **Detekce:** `check_regen()` (3 nové kontroly, ověřené kontrolovaným
+  pokusem — zdravý strom mlčí, každá ze tří cest jednotlivě odstraněná
+  z `.cproject` hlásí).
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
 ### L-0043 — "Generate IRQ handler" vypnuto NESTAČÍ, když je handler mimo USER CODE
 
 - **Datum:** 2026-09-13

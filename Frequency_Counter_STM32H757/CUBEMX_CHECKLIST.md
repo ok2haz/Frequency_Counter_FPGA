@@ -637,8 +637,20 @@ grep -c "^__attribute__((naked))" CM4/Core/Src/stm32h7xx_it.c   # MUSÍ být 1 (
 #   ⚠️ prostý `grep -c naked` dá 4 — počítá i komentáře. Ověřeno pozitivní
 #   kontrolou: kopie souboru bez toho řádku dá 0, ostrý soubor 1.
 grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
-./scripts/build.sh Release BOTH       # 0 varování, 0 chyb (check_regen() hlida naked)
+./scripts/build.sh Release BOTH       # 0 varování, 0 chyb (check_regen() hlida naked + CM7/.cproject)
 ```
+
+### ⚠️ `CM7/.cproject`: `app`/`libui/include`/`libprim/include`/`libprim/src` (hlídané, NE odstraněné)
+
+Na rozdíl od `CM4/.cproject`/`CM7/Core/Inc` (viz L-0042) se tahle `-I` závislost
+**neodstraňovala** — `libui/src` a `libprim/src` uvnitř sebe includují **úhlově**
+(`#include <ui/button.h>`, `#include <prim/fb.h>`, 73 souborů/169 řádků — záměrný
+vzor „knihovna se includuje jako externí"), a úhlový include nemá fallback na
+„zkus nejdřív složku including souboru" jako uvozovkový. Přepsat 169 míst by
+bořilo architekturu za problém, který se od jednorázového incidentu 2026-08-29
+(mezera v Release configu, ne opakované mazání regenem) neopakoval. `check_regen()`
+proto tyhle 4 cesty jen **hlídá** — když zmizí, hlásí PŘED buildem, ne až jako
+záhadný `fatal error: ui/button.h: No such file`. Detaily → `docs/LESSONS.md` L-0044.
 
 ### Co se 2026-09-12 ztratilo a proč
 
