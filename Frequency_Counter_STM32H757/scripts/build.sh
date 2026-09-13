@@ -106,6 +106,47 @@ if missing:
 PY
 }
 
+# ── CTVRTA kontrola (2026-09-12): co regenerace CubeMX TISE sebere ──────────
+# Regen 2026-09-12 smazal peti mistech vlastni kod (viz CUBEMX_CHECKLIST, oddil
+# „Co Generate Code SEBERE"). Vetsina se opravila presunem do `USER CODE`, ale
+# dve veci se tam presunout NEDAJI, a proto se hlidaji tady:
+#   1) include cesty na CM7 hlavicky v `CM4/.cproject` — bez nich CM4 nenajde
+#      `ipc_shared.h`/`scpi.h`. CubeMX je maze pri KAZDE regeneraci.
+#   2) `naked` HardFault na CM4 — regen ho prepise stockovym telem, takze crash
+#      black-box CM4 tise prijde o PC/LR. (Na CM7 je to vyresene tim, ze `.ioc`
+#      ma u HardFault vypnute „generovat obsluhu"; CM4 to zatim nema.)
+# ⚠️ Kontrola jen HLASI, neopravuje: automaticka oprava cizich souboru by byla
+# horsi nez hlaska — clovek ma videt, ze regen neco vzal.
+# ⚠️ Pocet shod ber VYHRADNE pres `cnt` — `grep -c` pri nula shodach vypise `0`
+# a SOUCASNE skonci s kodem 1 (chybejici soubor = kod 2 a prazdny vystup). Naivni
+# `$(grep -c … || echo 0)` proto slozi retezec "0\n0", `[ … -lt … ]` spadne na
+# „integer expected" a kontrola TISE neprobehne. Presne tak se 2026-09-12 obe
+# pozitivni kontroly tvarily, ze je vse v poradku.
+cnt() {
+    local n
+    n="$(grep -c "$1" "$2" 2>/dev/null || true)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s' "$n"
+}
+
+check_regen() {
+    local bad=0
+    local n
+    n="$(cnt 'CM7/Core/Inc' "${ROOT}/CM4/.cproject")"
+    if [ "$n" -lt 2 ]; then
+        echo "*** CM4/.cproject PRISEL O include cesty na CM7/Core/Inc (${n} nalezeno)."
+        echo "    => regenerace CubeMX; oprav: git checkout -- CM4/.cproject"
+        bad=1
+    fi
+    n="$(cnt '^__attribute__((naked))' "${ROOT}/CM4/Core/Src/stm32h7xx_it.c")"
+    if [ "$n" -lt 1 ]; then
+        echo "*** CM4: chybi 'naked' HardFault_Handler -> crash black-box CM4 ztratil PC/LR."
+        echo "    => regenerace CubeMX; viz CUBEMX_CHECKLIST.md, oddil 'Co Generate Code SEBERE'."
+        bad=1
+    fi
+    [ "$bad" -eq 0 ] || echo "    (build pokracuje, ale tohle oprav driv, nez budes flashovat)"
+}
+
 build_core() {
     # ⚠️ Dve `local` prikazy zamerne: `local a="$1" b="...$a..."` deklaruje OBE jmena
     # jako lokalni driv, nez expanduje, takze `$a` je pod `set -u` jeste neznama.
@@ -158,6 +199,8 @@ check_cm4_clock_owner() {
     fi
     return 0
 }
+
+check_regen
 
 rc=0
 case "$WHICH" in
