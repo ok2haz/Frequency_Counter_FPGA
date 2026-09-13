@@ -152,6 +152,11 @@ static int uart_i2c4_probe(const char *tag)
 	for (int i = 0; i < 3; i++) {
 		HAL_StatusTypeDef r = HAL_BUSY;
 		if (osMutexAcquire(i2c4MutexHandle, 200) == osOK) {
+			/* 🔴 2026-09-13: MUSI byt uvnitr TETO kriticke sekce, ne jednou pred
+			 * smyckou — mezi jednotlivymi adresami se mutex pousti (viz nize),
+			 * takze mezitim mohl touch/TMP117 prepnout rychlost zpet na 200 kHz.
+			 * `i2c4_speed_select` je levna, kdyz uz na te rychlosti je (no-op). */
+			i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
 			r = HAL_I2C_IsDeviceReady(&hi2c4, (uint16_t)(A[i] << 1), 2, 20);
 			osMutexRelease(i2c4MutexHandle);
 			/* 🔴 USTUP SCHEDULERU (audit F-0020, 2026-09-10). UartTask ma prioritu
@@ -910,6 +915,9 @@ void UartTask_run(void *argument)
 				  printf("  GPIOH AFR1=0x%08lX IDR=0x%08lX\n",
 						 (unsigned long)GPIOH->AFR[1], (unsigned long)GPIOH->IDR);
 
+				  /* 🔴 2026-09-13: `uart_i2c4_probe` uz sama prepina na 50 kHz pred
+				   * kazdym oslovenim (nutne, protoze mezi adresami pousti mutex —
+				   * viz komentar uvnitr), takze tady zvlast nic prepinat neni potreba. */
 				  int ok = uart_i2c4_probe("vychozi stav ");
 				  if (ok == 3) {
 					  printf("VERDIKT: sbernice ZDRAVA, neni co obnovovat.\n");
@@ -958,9 +966,15 @@ void UartTask_run(void *argument)
 
 				  /* ⚠️ Per-adresa POD i2c4Mutex (audit 2026-07-10: drive bez mutexu ->
 				   * kolize s touch pollem UiTasku na temze HAL handle). Mutex se drzi
-				   * jen na jeden probe, mezi adresami se pousti (touch/TMP117 dychaji). */
+				   * jen na jeden probe, mezi adresami se pousti (touch/TMP117 dychaji).
+				   * 🔴 2026-09-13: prave PROTOZE se mutex mezi adresami pousti, muze
+				   * touch/TMP117 mezitim prepnout rychlost na 200 kHz — `i2c4_speed_select`
+				   * proto MUSI byt uvnitr KAZDE iterace (50 kHz je bezpecna rychlost pro
+				   * vsechna tri zname zarizeni; bez tohohle by sken na 0x45 = ATTINY,
+				   * bit-bang, CPU 1 MHz, tise FALESNE hlasil "nic nedela"). */
 				  for (uint16_t i = 1; i < 128; i++) {
 					  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+						  i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
 						  result = HAL_I2C_IsDeviceReady( &hi2c4, (uint16_t)(i << 1), 3, 10);
 						  osMutexRelease(i2c4MutexHandle);
 					  } else {
@@ -1828,6 +1842,12 @@ void UartTask_run(void *argument)
 			  	if (osMutexAcquire(i2c4MutexHandle, 500) != osOK) {
 			  		printf("PANEL: I2C4 mutex neziskan\n");
 			  	} else {
+			  		/* 🔴 2026-09-13: ATTINY (0x45) bezi VZDY na 50 kHz, ne na "zbytkove"
+			  		 * rychlosti z bezneho provozu (typicky 200 kHz, viz `i2c4_speed_select`
+			  		 * v i2c.c) — bez tohohle by probe i power-on na 200 kHz tise SELHAL,
+			  		 * presne to, co tenhle prikaz diagnostikuje. Mutex se odsud drzi
+			  		 * nepreruseně az po power-on, takze staci jednou. */
+			  		i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
 			  		int ok = 0, step = 0;
 			  		for (int i = 0; i < 10 && !ok; i++) {
 			  			ok = ws_panel_probe(&hi2c4) ? 1 : 0;
@@ -1855,6 +1875,9 @@ void UartTask_run(void *argument)
 			  		if (ok) {
 			  			HAL_LTDC_Reload(&hltdc, LTDC_RELOAD_IMMEDIATE);
 			  			if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+			  				/* Novy mutex acquire (po DSI krocich bez I2C) — rychlost
+			  				 * si mezitim mohl prevzit touch/TMP117, znovu na 50 kHz. */
+			  				i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
 			  				ws_panel_set_backlight(&hi2c4, g_brightness);
 			  				osMutexRelease(i2c4MutexHandle);
 			  			}
