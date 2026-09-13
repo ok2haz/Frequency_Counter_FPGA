@@ -812,14 +812,23 @@ zrychlení). ⚠️ Nikdy nezaveď akci dostupnou jen jednou cestou.
 **`screenshot [sd]`** (export obrazovky do BMP; `screenshot.c`): **`screenshot sd`** = doporučená cesta — snímek se nejdřív zkopíruje do SDRAM scratche (anti-tearing, UiTask jinak během zápisu flipne) a FatFs zapíše celý `SHOTnnn.BMP` na kartu. Holé **`screenshot`** posílá 1,15 MB přes USB CDC (~sekundy, ⚠️ best-effort tok + snímá živý FB → u animované obrazovky pruhy ze dvou framů),
 **`autocal`** (self-check referencí/napájení VREF/12V/5V/VBAT → PASS/WARN/FAIL; staged kroky ADC/timebase/RF; `autocal.c`, ROZPRACOVÁNO),
 **`membench`** (benchmark všech pamětí — rychlost zápisu/čtení + hledání chybných bitů; ⚠️ destruktivní **jen** pro vyhrazený SDRAM a W25Q scratch, interní FLASH se jen čte — viz sekce „Benchmark pamětí"),
-**`i2cspeed [N]`** (chybovost I2C4 podle taktu — 10 kroků 25…500 kHz, N transakcí
+**`i2cspeed [N] [adresa]`** (chybovost I2C4 podle taktu — 10 kroků 25…500 kHz, N transakcí
 na zařízení a krok, výchozí 2000; **jen čtení**, do ATTINY se nezapíše ani bajt.
-Po dobu měření mlčí dotyk, jas i TMP117 0x48 (`g_i2c4_sweep`), takt se **vždy**
-obnoví a kdykoli jde přerušit klávesou. 🔴 **S velkým `N` a kroky nad 100 kHz RESETUJE DESKU** (změřeno
+**Volitelná `adresa`** (hex, `0x` nepovinné — `38`/`0x38`, `45`, `48`) omezí
+sweep na JEDNO zařízení, jinak běží všechna tři. **Tři adresy na I2C4:**
+`0x38` = FT5x06 (dotyk, skutečná I2C periferie), `0x45` = ATTINY (napájení
+panelu + podsvícení + reset bridge/dotyku — **bit-bang slave, CPU CLK 1 MHz**,
+jediný důvod, proč celá sběrnice historicky nesla víc než ~75 kHz; provozně
+běží vždy na 50 kHz přes `i2c4_speed_select`), `0x48` = TMP117 (teplota,
+skutečná I2C periferie). Po dobu měření mlčí dotyk, jas i TMP117 0x48
+(`g_i2c4_sweep`), takt se **vždy** obnoví a kdykoli jde přerušit klávesou.
+🔴 **S velkým `N` a kroky nad 100 kHz RESETUJE DESKU** (změřeno
 2026-09-12: `N=500` i `N=1000` restart při 150 kHz, `N=25` prošlo). Příčina je
 v příkazu samotném — ustupuje ostatním úlohám po 64 transakcích, a když každá
 skončí 10ms timeoutem, drží CPU ~640 ms v kuse a vyhladoví UiTask. **Oprava je
-TODO #244**; do té doby pouštět nad 100 kHz jen s malým `N`. Pásmo 25–100 kHz
+TODO #244**; do té doby pouštět nad 100 kHz jen s malým `N`. **Výběr jedné
+adresy tenhle problém NEŘEŠÍ** (jen zkrátí celkovou dobu na 1/3) — mez pro `N`
+platí i s vyfiltrovanou adresou. Pásmo 25–100 kHz
 je bezpečné. ⚠️ Nad ~125 kHz je sběrnice tak jako tak nepoužitelná a TMP117 se
 z toho 2026-09-10 nevzpamatoval bez power-cyklu — po běhu zkontroluj `sensors`),
 **`sdramlog [dump N|reset]`** (datová cache měření v SDRAM — stav / N nejnovějších vzorků / vynulování; viz sekce „Datová cache měření"),
