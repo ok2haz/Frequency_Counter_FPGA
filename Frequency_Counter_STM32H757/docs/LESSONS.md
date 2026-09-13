@@ -1164,6 +1164,47 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0049 — Rozlušti binární `a`/`b` do věty JEDNOU, na zdroji, ne u každého konzumenta
+
+- **Datum:** 2026-09-13
+- **Oblast:** `errlog.h`/`flightrec.c` (trvalý zaznamník chyb), IPC protokol, web SPA
+- **Symptom:** uživatel nahlásil okno CHYBY jako "neprehledne". Skutečná vada
+  nebyla v layoutu — byla v OBSAHU: okno tisklo `a`/`b` (dvě `uint32_t` z
+  `errlog_put`) jako holá čísla `"12345/6789"` bez popisku. Význam těch dvou
+  čísel se přitom **liší podle `kind`** (u `ERRLOG_K_UART` je to ORE/(FE|NE<<8|
+  PE<<16), u `ERRLOG_K_CFG` je to nová/stará hodnota nastavení, u `ERRLOG_K_REF`
+  sticky bity Si5356…) — čitelný byl jen tomu, kdo šel číst zdrojový kód
+  volajícího `errlog_put`.
+- **Příčina/nález:** dekódovací znalost ("co `a`/`b` u tohoto `kind` znamenají")
+  neměla ŽÁDNÉ centrální místo — byla rozptýlená po jedenácti call-sitech
+  `errlog_put` v šesti různých souborech. Když přišel druhý konzument (web,
+  na žádost "muzes ho pridat i do webu?"), měl dvě možnosti: duplikovat tu
+  znalost podruhé v JS (a časem se s displejem rozejít — přesně to varuje
+  `sens_valid`/`IPC_CFG_*` sekce v CLAUDE.md), nebo poslat surová čísla a nechat
+  prohlížeč hádat totéž, co uhodnout nešlo ani na displeji.
+- **Řešení:** `errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)`
+  (`flightrec.c`, deklarace `errlog.h`) je JEDINÉ místo, které zná mapování
+  `kind`→význam `a`/`b`/`sub`. Displej (`app_gpsdo_render_errlog`) i nový IPC
+  kanál `ipc_errlog_xfer_t` (`ipc_errlog_service`, v17) volají tutéž funkci;
+  web (`build_errlog_json`, SPA) dostane už HOTOVOU větu (`"sbernice I2C4, chyb=
+  12, resetu touche=3"`) a nemusí znát nic o `kind` kromě toho, jakou barvu si
+  k němu domyslet (CRASH=červená, BOOT/CFG=ztlumené, jinak amber — tahle
+  trojice je jediná věc, která se v SPA zopakovala, protože je to jen barva,
+  ne sémantika).
+- **Proč to nebylo vidět dřív:** okno CHYBY existovalo přes rok bez stížnosti —
+  vývojář, který ho psal, zdrojový kód `errlog_put` zná zpaměti, takže mu
+  "12345/6789" dávalo smysl. Teprve pohled uživatele, který zdrojový kód nečte,
+  odhalil, že displej mluvil jazykem implementace, ne jazykem události.
+- **Pravidlo:** Když se strukturovaná binární data (kód důvodu, bitová maska,
+  pár čísel s významem závislým na typu záznamu) zobrazují na VÍCE než jednom
+  místě (displej, log, web, UART výpis…), dekódovací funkce patří K DATŮM
+  (headeru/implementaci, co je vytváří), ne ke každému zobrazovači zvlášť.
+  Nový konzument tím dostane čitelnost zdarma a nemůže se se starým rozejít.
+- **Detekce:** žádná automatická — nález vznikl při plnění uživatelského
+  požadavku ("log se vypisuje neprehledne"), ne z auditu.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
 ### L-0048 — Malé `N` odhalilo reálnou "mrtvou zónu" na 150–200 kHz (ne jen artefakt testu)
 
 - **Datum:** 2026-09-13

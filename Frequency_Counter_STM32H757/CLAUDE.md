@@ -1184,14 +1184,20 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   ⚠️ **sigma/offset/drift ZÁMĚRNĚ neplněné** dokud headline = simulace (#2) — na CM4/webu se nesmí
   servírovat jako měření. Nese: teploty OCXO/deska/MCU/FPGA, napětí 12V/5V/VREF/VBAT/Vc, RF mV + AD8307
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
-  ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`.
-- **`IPC_VERSION` = 16** (2026-09-13: `cm4_flash_bytes`/`cm4_ram_bytes` v bloku `cm4`
-  — pro okno PAMET na CM7, aby ukazovalo obě jádra, ne jen CM7; předtím v15 2026-09-12,
-  audit F-0088: `warmup` ve snapshotu — web si ho dosud odvozoval z `uptime_s < 300`,
-  přístroj i z tepelného sklonu).
-  ⚠️ v16 skutečně **rozšiřuje** `ipc_cm4_status_t` o 8 B (nový blok na konci, ne
-  recyklovaný padding jako v15) — bump je tu jak kvůli reálnému růstu, tak kvůli
-  detekci nesouladu bank.
+  ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`,
+  errlog transfer kanál `ipc_errlog_xfer_t` (v17).
+- **`IPC_VERSION` = 17** (2026-09-13: nový kanál `errlog` na konci celé struktury — trvalý
+  zaznamník chyb (W25Q, `errlog.h`) dostupný webu přes `GET /api/errlog?n=&from=`, stejný
+  request/response handshake jako `log`. Displejové okno CHYBY bylo do té doby jedinou cestou,
+  jak historii chyb vidět; uživatel se zeptal, jestli to jde i na webu. **Web NEZNÁ význam
+  `a`/`b`/`sub`** pro jednotlivé druhy událostí — CM7 pošle už HOTOVOU větu
+  (`errlog_fmt_detail()`, sdílená se zobrazením na displeji, JEDEN zdroj pravdy). Předtím
+  v16 2026-09-13: `cm4_flash_bytes`/`cm4_ram_bytes` v bloku `cm4` — pro okno PAMET na CM7,
+  aby ukazovalo obě jádra, ne jen CM7; předtím v15 2026-09-12, audit F-0088: `warmup` ve
+  snapshotu — web si ho dosud odvozoval z `uptime_s < 300`, přístroj i z tepelného sklonu).
+  ⚠️ v17 skutečně **rozšiřuje** strukturu (nový kanál za `log`, ne recyklovaný padding) —
+  bump je tu jak kvůli reálnému růstu, tak kvůli detekci nesouladu bank (`errlog` leží AŽ ZA
+  `cm4` blokem, takže `cm4_ipc_version` detekci nekazí, stejně jako u v13).
   ⚠️⚠️ **Změna → přeflashnout OBĚ banky.**
   - **⚠️ Nesoulad bank je NEVIDITELNÝ — `4:--` to NENÍ.** CM4 při neshodě přestane přijímat snapshot
     (`s_ready=0`), ale heartbeat volá dál → header svítí `4:xx%` jako by bylo vše OK (jediný příznak:
