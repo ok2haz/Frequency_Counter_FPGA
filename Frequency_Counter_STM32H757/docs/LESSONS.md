@@ -1164,6 +1164,46 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0046 — Per-target rychlost sběrnice: kdo ji nenastaví, zdědí cizí
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), regrese vlastní úpravou
+- **Symptom:** po zavedení `i2c4_speed_select()` (L-0045 — 50 kHz ATtiny,
+  200 kHz FT5x06/TMP117) přestaly tři diagnostické UART příkazy (`panel`,
+  `scanner`, `i2c4`) spolehlivě fungovat s ATtiny — všechny tři osloví 0x45
+  přímo nebo v rámci širšího skenu, ale žádný z nich `i2c4_speed_select`
+  nevolal. V provozu konverguje "zbytková" rychlost sběrnice k 200 kHz
+  (touch poll ~15 Hz + TMP117 poll 2 Hz běží mnohem častěji než zápis do
+  ATtiny), takže tyhle příkazy by na 200 kHz spuštěné za běhu tiše falešně
+  hlásily "ATtiny neodpovídá", i když žije.
+- **Příčina:** zavedením per-target přepínání rychlosti se rychlost sběrnice
+  změnila z **globální konstanty** (jedna hodnota, platí vždy) na **sdílený
+  proměnlivý stav** (platí, dokud ji někdo jiný nezmění) — a při hledání
+  všech míst, která na I2C4 sahají, se prohledaly jen "produkční" spotřebitele
+  (`main.c`, oba FreeRTOS tasky), ne diagnostické UART příkazy ve stejném
+  souboru o pár set řádků dál.
+- **Oprava:** `i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ)` doplněno do
+  všech tří příkazů. 🔑 **U `scanner`/`i2c4` (přes sdílenou `uart_i2c4_probe`)
+  to musí být UVNITŘ per-adresa smyčky, ne jednou před ní** — mutex se mezi
+  adresami pouští (aby touch/TMP117 „dýchaly"), takže by jiný task mohl
+  rychlost mezitím vrátit na 200 kHz. `panel` mutex mezi probe/power-on
+  nepouští, takže mu stačí nastavit jednou na začátku KAŽDÉHO mutex-bloku
+  (má dva, oddělené DSI kroky mezi nimi).
+- **Pravidlo:** **Když sdílený stav periferie (rychlost, konfigurace, adresa…)
+  přestane být konstantní a stane se závislým na tom, kdo tam sáhl
+  posledně, promysli VŠECHNY konzumenty — ne jen ty, které jsi měnil.**
+  Konkrétně: (1) vyhledej *všechny* volající té periferie v celém projektu,
+  ne jen v souborech, které jsi právě upravoval; (2) u každého, co drží
+  mutex/zámek PŘES víc transakcí najednou, stačí nastavit stav jednou; (3) u
+  každého, co zámek MEZI transakcemi pouští, musí být nastavení stavu
+  UVNITŘ každé transakce (jinak ho někdo jiný mezitím změní).
+- **Detekce:** žádná automatická (build i audit prošly čistě — jde o
+  logickou/funkční vadu, ne syntaktickou). Odhaleno až při psaní přehledové
+  tabulky konzumentů pro dokumentaci — **sepsání kompletního přehledu "kdo
+  sahá na X" je samo o sobě metoda pro odhalení chybějících míst.**
+- **Commit:** `65773b7`
+- **Stav:** aktivní
+
 ### L-0045 — Kmitočtový limit bit-bang I2C slave = jeho vlastní CPU takt
 
 - **Datum:** 2026-09-13
