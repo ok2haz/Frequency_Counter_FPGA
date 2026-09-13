@@ -30,7 +30,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  15u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  16u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -70,7 +70,14 @@
                                        z `uptime_s < 300`, kdezto pristroj k tomu vyzaduje i ustalenou
                                        teplotu (`warmup_ready`: |dT/dt| < 0,08 °C/min) -> po studenem
                                        startu hlasil displej WARMUP a web uz LOCK. Kriterium je nove
-                                       na JEDNOM miste a do snapshotu jde hotovy vysledek. */
+                                       na JEDNOM miste a do snapshotu jde hotovy vysledek.
+                                       v16 (2026-09-13): `cm4_flash_bytes`/`cm4_ram_bytes` — velikost
+                                       OBRAZU CM4 z jeho vlastnich linker symbolu, razitkovano v kazdem
+                                       heartbeatu (stejny duvod jako `cm4_ipc_version`: memset v ipc_init()
+                                       by jednorazovy zapis smazal). Pro okno PAMET na CM7, ktere do ted
+                                       ukazovalo jen CM7 - uzivatel se ptal, proc chybi CM4. SKUTECNY
+                                       rust snapshotu o 8 B (novy blok na konci ipc_cm4_status_t, ne
+                                       recyklovany padding), takze OBE banky se MUSI preflashnout. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -349,6 +356,16 @@ typedef struct {
     uint32_t cm4_fault_cfsr;    /* SCB->CFSR */
     uint8_t  cm4_fault_kind;    /* 0 = zadny, 1 = HardFault, 2 = Error_Handler */
     uint8_t  cm4_fault_rsvd[3];
+
+    /* ── Velikost obrazu CM4 (v16, 2026-09-13) ────────────────────────────
+     * Z VLASTNICH linker symbolu CM4 (`_sidata`/`_edata`/`_sdata`/`_ebss`/
+     * `_sbss`), stejny vzorec jako uz CM7 pouziva ve svem okne PAMET
+     * (`app_gpsdo.c`). Konstantni po celou dobu behu (staticka velikost
+     * obrazu), ale razitkuje se OPAKOVANE v kazdem heartbeatu — stejny
+     * duvod jako `cm4_ipc_version`: `memset` v `ipc_init()` na CM7 by
+     * jednorazovy zapis smazal. */
+    uint32_t cm4_flash_bytes;  /* velikost obrazu ve FLASH bank2 (max 1024 KB) */
+    uint32_t cm4_ram_bytes;    /* .data+.bss v RAM (SRAM2, max 128 KB) */
 } ipc_cm4_status_t;
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
@@ -475,6 +492,9 @@ int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prik
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
+/* Velikost obrazu CM4 (FLASH/RAM, v16). @return 1 = platne (CM4 zapsala magic),
+ * 0 = bez CM4 (oba vystupy vynulovany). Pro okno PAMET (CM7), viz app_gpsdo.c. */
+int ipc_cm4_mem(uint32_t *flash_bytes, uint32_t *ram_bytes);
 int  ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip); /* 1=link UP, ETH stav z CM4 (v5,F1) */
 /* ETH bring-up stav z CM4 (v6, F3). @return 1 = HAL_ETH_Init na CM4 proslo.
  * `phy_id` (nepovinne) = PHYID1<<16|PHYID2, 0 = neprecteno. Bez ziveho CM4 vraci 0. */

@@ -17,6 +17,11 @@
 #include "ipc_cm4.h"
 #include <stddef.h>   /* NULL */
 
+/* Linker symboly vlastniho obrazu CM4 (STM32H757BITX_FLASH.ld) — stejny
+ * vzorec, jaky uz CM7 pouziva ve svem okne PAMET (`app_gpsdo.c`). Zustava to
+ * "pure" (jen adresy, zadny HAL) jako zbytek souboru. */
+extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+
 static uint8_t  s_ready;    /* 1 = snapshot header (magic/verze/size) overen */
 static uint32_t s_hb;       /* heartbeat citac (roste kazdym publikovanim) */
 /* Jednorazove hodnoty publikovane do bloku `cm4` — drzi se lokalne, aby se
@@ -98,6 +103,15 @@ void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
      * nepretlacovalo "jeste nedobehl" pres pripadny pozdejsi zapis. */
     if (s_scpi_ok)  g_ipc.cm4.scpi_selftest_ok  = s_scpi_ok;
     if (s_httpd_ok) g_ipc.cm4.httpd_selftest_ok = s_httpd_ok;
+    /* v16: velikost obrazu — staticka po celou dobu behu, ale razitkuje se
+     * znovu pri kazdem heartbeatu ze stejneho duvodu jako `cm4_ipc_version`
+     * vyse (memset v ipc_init() na CM7 by jednorazovy zapis smazal). Vzorec
+     * shodny s CM7 oknem PAMET: image = _sidata + (.data velikost) - baze
+     * flash banky; RAM = (.data + .bss). */
+    g_ipc.cm4.cm4_flash_bytes = ((uint32_t)&_sidata + ((uint32_t)&_edata - (uint32_t)&_sdata))
+                              - 0x08100000u;   /* CM4 flash bank2 */
+    g_ipc.cm4.cm4_ram_bytes   = ((uint32_t)&_edata - (uint32_t)&_sdata)
+                              + ((uint32_t)&_ebss  - (uint32_t)&_sbss);
     IPC_DMB();                                    /* data viditelna PRED inkrementem heartbeatu */
     g_ipc.cm4.heartbeat    = ++s_hb;              /* CM7 sleduje rust -> liveness */
 }

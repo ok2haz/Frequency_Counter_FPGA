@@ -2305,6 +2305,8 @@ void app_gpsdo_render_mem(void)
         dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "FLASH (CM7)");
         dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "RAM D1");
         dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "RTOS heap");
+        dlabel(DG_LLBL, SENS_R0 + 3 * SENS_DY, "FLASH (CM4)");
+        dlabel(DG_LLBL, SENS_R0 + 4 * SENS_DY, "RAM (CM4)");
         dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "SDRAM (FMC)");
         dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "QSPI W25Q");
         dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "  JEDEC");
@@ -2318,6 +2320,17 @@ void app_gpsdo_render_mem(void)
         uint32_t rm = ((uint32_t)&_edata - (uint32_t)&_sdata) + ((uint32_t)&_ebss - (uint32_t)&_sbss);
         snprintf(b, sizeof b, "%lu/512 KB", (unsigned long)(rm / 1024u));
         dval(DG_LVAL, SENS_R0 + 1 * SENS_DY, 175, b, 1);
+        /* CM4 (v16, IPC) — staticka velikost obrazu, ale zavisi na CM4 zijici
+         * (magic zapsan). Bez CM4 (jeste nenabootovala / neni k dispozici)
+         * ukaze "--", ne 0/1024 KB, aby to nevypadalo jako prazdny obraz. */
+        uint32_t cm4_fl = 0, cm4_rm = 0;
+        int cm4_ok = ipc_cm4_mem(&cm4_fl, &cm4_rm);
+        if (cm4_ok) snprintf(b, sizeof b, "%lu/1024 KB", (unsigned long)(cm4_fl / 1024u));
+        else        snprintf(b, sizeof b, "--/1024 KB");
+        dval(DG_LVAL, SENS_R0 + 3 * SENS_DY, 175, b, cm4_ok);
+        if (cm4_ok) snprintf(b, sizeof b, "%lu/128 KB", (unsigned long)(cm4_rm / 1024u));
+        else        snprintf(b, sizeof b, "--/128 KB");
+        dval(DG_LVAL, SENS_R0 + 4 * SENS_DY, 175, b, cm4_ok);
         /* externi (staticke velikosti) */
         dval(DG_RVAL, SENS_R0 + 0 * SENS_DY, 175, "32 MB", 1);   /* SDRAM FMC */
         dval(DG_RVAL, SENS_R0 + 1 * SENS_DY, 175, "64 MB", 1);   /* W25Q */

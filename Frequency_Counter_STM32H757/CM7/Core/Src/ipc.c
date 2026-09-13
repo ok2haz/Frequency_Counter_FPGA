@@ -570,6 +570,20 @@ uint32_t ipc_cm4_cpu_pct(void)
     return (p > 100u) ? 100u : p;
 }
 
+/* ── Velikost obrazu CM4 (v16) — pro okno PAMET, viz app_gpsdo.c. Bez CM4
+ * (magic nezapsan) vraci 0 a vynuluje oba vystupy (degradovane "--"). */
+int ipc_cm4_mem(uint32_t *flash_bytes, uint32_t *ram_bytes)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (flash_bytes) *flash_bytes = 0u;
+        if (ram_bytes)   *ram_bytes   = 0u;
+        return 0;
+    }
+    if (flash_bytes) *flash_bytes = g_ipc.cm4.cm4_flash_bytes;
+    if (ram_bytes)   *ram_bytes   = g_ipc.cm4.cm4_ram_bytes;
+    return 1;
+}
+
 /* ── Stav ETH linky z CM4 (v5, F1). @return 1 = link UP. Vyplni volitelne
  * speed [Mbps], duplex (0=half/1=full) a IP (oktety a.b.c.d v uint32). Bez zapsaneho
  * CM4 magicu vraci 0 a nuluje vystupy (degradovane "NET: down"). */
