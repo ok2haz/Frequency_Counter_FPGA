@@ -1164,6 +1164,48 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0045 — Kmitočtový limit bit-bang I2C slave = jeho vlastní CPU takt
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), metodika měření
+- **Symptom:** dva samostatné sweepy chybovosti (2026-09-10, 2026-09-12 se
+  třikrát tvrdšími pull-upy) shodně naměřily koleno mezi 75 a 100 kHz, kde
+  začíná NACKovat jen ATtiny na 0x45 — dotyk (FT5x06, 0x38) a teploměr
+  (TMP117, 0x48) na téže sběrnici zůstávaly čisté až do 100 kHz. Oba
+  dokumenty explicitně nechaly otevřenou otázku **proč** koleno leží zrovna
+  tam — jestli je to firmware slave, nebo náběžná hrana (pull-up × kapacita).
+- **Příčina:** ATtiny na desce má **CPU CLK 1 MHz**. Je to bit-bang I2C
+  slave — SCL/SDA časování dělá firmware na ATtiny polling smyčkou/přerušením,
+  ne hardwarový I2C blok — a při 1 MHz jádrovém taktu nestíhá obsloužit hrany
+  nad ~75 kHz. FT5x06 a TMP117 mají oba hardwarový I2C blok, takže tenhle
+  limit na ně neplatí a mohly by běžet rychleji, aniž by to ATtiny ohrozilo.
+- **Oprava:** I2C4 dostala dvě provozní rychlosti (`i2c4_speed_select()` v
+  `i2c.c`) — 50 kHz pro ATtiny (beze změny, bezpečná rezerva do ~75 kHz),
+  200 kHz pro FT5x06+TMP117. Přepíná se podle cílového zařízení PŘED každou
+  transakcí, pod `i2c4MutexHandle`.
+- **Pravidlo:** **Když bit-bang slave omezuje rychlost celé I2C sběrnice,
+  zjisti jeho CPU takt DŘÍV, než začneš měřit sweep chybovosti napříč
+  všemi zařízeními na sběrnici najednou.** Pevná (fyzikální) mez daná
+  hodinovým kmitočtem firmwaru slave je jiná třída limitu než integrita
+  signálu (pull-up/kapacita/náběžná hrana) — první se nedá obejít NIČÍM na
+  master straně ani na desce (silnější pull-up nepomůže, protože slave stejně
+  nestihne zpracovat data), druhá ano. Škrtit VŠECHNA zařízení na sběrnici na
+  rychlost nejpomalejšího slave je zbytečné, pokud ten slave je jediný
+  bit-bang mezi hardwarovými I2C periferiemi — per-target `TIMINGR` přepínání
+  (bezpečný vzor: `DeInit` → změna `Init.Timing` → `Init`, nikdy
+  `MX_I2C4_Init` s jeho `Error_Handler()` trapem) škáluje sběrnici na
+  rychlost KAŽDÉHO zařízení zvlášť.
+- **Detekce:** žádná automatická — šlo o doménovou znalost HW (datasheet
+  ATtiny), kterou žádný sweep ani analyzátor nemůže odvodit ze samotné
+  chybovosti. ⚠️ **200 kHz pro FT5x06/TMP117 samotné (bez souběžné zátěže
+  ATtiny) zůstává ⬜ neověřeno na HW** — obě existující měření mají čistá data
+  jen do 100 kHz, vše nad 125 kHz je v obou dokumentech označeno jako
+  kontaminované zavěšenou sběrnicí (viz oprava bodu 3 v
+  `docs/audit/2026-09-10_i2c.md` — i to tvrzení dřív citovalo nedůvěryhodná
+  data). Ověřit `i2cspeed` s malým `N`, jen `0x38`/`0x48`.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
 ### L-0044 — Ne každou fragilní `-I` cestu se má odstranit stejným trikem
 
 - **Datum:** 2026-09-13

@@ -541,16 +541,44 @@ detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“
   slave, nebo náběžná hrana?" je tím **rozhodnutá**: při 75 kHz pořád čistá nula,
   při 100 kHz pořád NACKuje ATTINY (`ErrorCode=0x04`, `SCL=1 SDA=1`), a to
   s třikrát tvrdšími pull-upy. Chybovost dokonce mírně vyšší (4,4–8,0 % proti
-  2,30 %). TMP117 přitom na 400 i 500 kHz hlásí 0,00 %, takže sběrnice sama je
-  v pořádku. **Limitem je ATTINY, ne integrita signálu → silnější pull-up jako
+  2,30 %). **Limitem je ATTINY, ne integrita signálu → silnější pull-up jako
   cesta k vyššímu taktu je vyloučený a osciloskop na SCL už nemá co rozhodnout.**
+  ⚠️ Věta „TMP117 na 400 i 500 kHz hlásí 0,00 %" zde dřív stála jako důkaz —
+  **byla to citace ⚠️-označených řádků z prvního měření, které ta samá tabulka
+  o pár řádků výš popisuje jako kontaminované zavěšenou sběrnicí** (viz „Řádky
+  označené ⚠️ nejsou důvěryhodné" v `docs/audit/2026-09-10_i2c.md`). Čistá,
+  nekontaminovaná data sahají jen do 100 kHz.
   Plná tabulka a průběh → `docs/audit/2026-09-10_i2c.md`, oddíl „Opakované měření".
-- **Rozhodnutí: zůstává 50 kHz — od 2026-09-12 DEFINITIVNĚ** (potvrzeno uživatelem
-  po opakovaném měření; jediná hypotéza, která mohla vyšší takt ospravedlnit, padla).
-  Úspora ~1,7 ms na rámci FT5x06 nevyváží riziko na sběrnici,
-  přes kterou jde napájení panelu a podsvícení. Kdyby se k tomu vracelo, hodnota pro 70,09 kHz
-  je `0x70302AAA` — a **měřit se musí znovu i I2C1**, ta tímhle pokrytá NENÍ (jiné čipy,
-  jiné pull-upy na FPGA desce), přestože sdílí tutéž konstantu.
+- 🔑 **PŘÍČINA (2026-09-13, potvrzeno uživatelem): ATtiny na desce má CPU CLK 1 MHz.**
+  Je to bit-bang I2C slave — časování bitu dělá firmware na ATtiny, ne hardwarový
+  I2C blok — a při 1 MHz jádrovém taktu nestíhá obsloužit SCL hrany nad ~75 kHz.
+  Tím se přesně vysvětluje, PROČ koleno leží zrovna mezi 75 a 100 kHz (otázka,
+  kterou obě měření výše nechala otevřenou jako „proč mez leží zrovna tam") —
+  není to náběžná hrana ani integrita signálu (to už měření vyloučilo), je to
+  přímo hodinový kmitočet firmwaru slave. **50 kHz = bezpečná rezerva** (koleno
+  je při 75-100 kHz, tedy ~33-50% marže).
+- ✅ **ŘEŠENÍ 2026-09-13: I2C4 běží na DVOU rychlostech, ne jedné.** Protože limit
+  je vlastností KONKRÉTNÍHO slave (ATtiny), ne sběrnice, není důvod škrtit i
+  FT5x06 (dotyk, 0x38) a TMP117 (teplota, 0x48) — to jsou skutečné I2C periferie
+  s hardwarovým I2C blokem, ne bit-bang, takže ATtiny limit na ně neplatí.
+  `i2c4_speed_select()` (`i2c.c`, USER CODE 1) přepne `TIMINGR` PŘED každou
+  transakcí podle cíle: **`I2C4_TIMING_ATTINY_50KHZ`** (`0x70303AEE`, beze
+  změny) pro ATtiny, **`I2C4_TIMING_FAST_200KHZ`** (`0x70300E3B`) pro FT5x06 a
+  TMP117. Volá se ze všech tří míst, kde na I2C4 něco sahá: `main.c` (bring-up
+  před schedulerem), `freertos_task_ui.c` (touch poll + ATtiny backlight/reset),
+  `freertos_task_sensors.c` (TMP117 init + 2Hz poll) — vždy **pod
+  `i2c4MutexHandle`**. Funkce si pamatuje aktuální rychlost a přepíná jen při
+  reálné změně (v provozu se to skoro nikdy nestane — touch a TMP117 chtějí
+  stejnou rychlost, přepnutí platí jen kolem zápisu do ATtiny), takže cena
+  DeInit+Init se platí jen zřídka.
+  ⚠️⚠️ **200 kHz je HYPOTÉZA, NE změřené číslo.** Čistá tabulka v obou měřeních
+  sahá jen do 100 kHz; vše nad 125 kHz je v dokumentu explicitně označeno jako
+  kontaminované zavěšenou sběrnicí (vada měřicího nástroje `i2cspeed`/TODO #244,
+  ne čipu) — žádné z obou měření tedy 200 kHz pro FT5x06/TMP117 samotné
+  (bez souběžné zátěže ATtiny) neprokazuje ani nevyvrací. **⬜ Neověřeno na HW.**
+  Ověření: `i2cspeed` s **malým `N` (~25)**, krok 200 kHz — a číst jen `0x38` a
+  `0x48`, protože `0x45` na 200 kHz úmyslně nikdy nepoběží (viz TODO #244 pro
+  omezení `i2cspeed` nad 100 kHz s velkým `N`).
 - 🔴 **Cena toho měření:** běh nad 125 kHz **rozhodil TMP117 na 0x48 tak, že ho spravil až
   power-cycle** (firmware na to nedosáhne) a vyhladověl UiTask natolik, že watchdog zapsal
   `stall:UiTask`. Kdo bude sweep opakovat, ať s tím počítá.
