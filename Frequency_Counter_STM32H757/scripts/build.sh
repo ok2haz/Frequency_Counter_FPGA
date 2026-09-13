@@ -108,13 +108,23 @@ PY
 
 # ── CTVRTA kontrola (2026-09-12): co regenerace CubeMX TISE sebere ──────────
 # Regen 2026-09-12 smazal peti mistech vlastni kod (viz CUBEMX_CHECKLIST, oddil
-# „Co Generate Code SEBERE"). Vetsina se opravila presunem do `USER CODE`, ale
-# dve veci se tam presunout NEDAJI, a proto se hlidaji tady:
-#   1) include cesty na CM7 hlavicky v `CM4/.cproject` — bez nich CM4 nenajde
-#      `ipc_shared.h`/`scpi.h`. CubeMX je maze pri KAZDE regeneraci.
-#   2) `naked` HardFault na CM4 — regen ho prepise stockovym telem, takze crash
-#      black-box CM4 tise prijde o PC/LR. (Na CM7 je to vyresene tim, ze `.ioc`
-#      ma u HardFault vypnute „generovat obsluhu"; CM4 to zatim nema.)
+# „Co Generate Code SEBERE"). Vetsina se opravila presunem do `USER CODE`.
+# Include cesty `CM7/Core/Inc` v `CM4/.cproject` (jedna z tech peti veci) uz
+# 2026-09-13 NEHLIDAME: regen tu -I cestu dal maze (je to XML mimo USER CODE,
+# nezmenitelne), ale zadny #include na ni uz nezavisi — scpi.h/meas_math.h/
+# ipc_shared.h/version.h/meas_present.h se includuji RELATIVNI cestou k fyzicke
+# poloze souboru (`#include "../Inc/scpi.h"` v CM7/Core/Src, `"../../../CM7/Core/Inc/scpi.h"`
+# v CM4 souborech) — stejny vzor, jaky uz driv mel `ipc_cm4.h` pro `ipc_shared.h`.
+# GCC quote-include hleda nejdriv ve slozce souboru se #include (podle jeho
+# skutecne cesty, ne podle -I ani CWD), takze cesta neplati jen „obvykle", ale
+# VZDY. Overeno kompilatorem se zamerne vyriznutou -I../../CM7/Core/Inc primo
+# v CM4/Release/*/subdir.mk (presny artefakt, ktery regen prepisuje) — build
+# dal 0 varovani a byte-presne stejny .elf.
+#
+# Zbyva jedina fragilni vec, kterou regen-safe udelat NEJDE:
+#   `naked` HardFault na CM4 — regen ho prepise stockovym telem, takze crash
+#   black-box CM4 tise prijde o PC/LR. (Na CM7 je to vyresene tim, ze `.ioc`
+#   ma u HardFault vypnute „generovat obsluhu"; CM4 to zatim nema.)
 # ⚠️ Kontrola jen HLASI, neopravuje: automaticka oprava cizich souboru by byla
 # horsi nez hlaska — clovek ma videt, ze regen neco vzal.
 # ⚠️ Pocet shod ber VYHRADNE pres `cnt` — `grep -c` pri nula shodach vypise `0`
@@ -132,12 +142,6 @@ cnt() {
 check_regen() {
     local bad=0
     local n
-    n="$(cnt 'CM7/Core/Inc' "${ROOT}/CM4/.cproject")"
-    if [ "$n" -lt 2 ]; then
-        echo "*** CM4/.cproject PRISEL O include cesty na CM7/Core/Inc (${n} nalezeno)."
-        echo "    => regenerace CubeMX; oprav: git checkout -- CM4/.cproject"
-        bad=1
-    fi
     n="$(cnt '^__attribute__((naked))' "${ROOT}/CM4/Core/Src/stm32h7xx_it.c")"
     if [ "$n" -lt 1 ]; then
         echo "*** CM4: chybi 'naked' HardFault_Handler -> crash black-box CM4 ztratil PC/LR."

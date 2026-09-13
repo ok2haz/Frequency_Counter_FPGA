@@ -23,7 +23,9 @@
 #include "lwip/tcp.h"
 #include <string.h>
 
-#include "scpi.h"
+/* Relativni cesta - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
+ * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); nezavisi na te -I ceste. */
+#include "../../../CM7/Core/Inc/scpi.h"
 #include "ipc_cm4.h"
 #include "main.h"          /* HAL_GetTick */
 

@@ -27,7 +27,11 @@
 #include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
 #include "iwdg2.h"     /* nezavisly watchdog CM4 (~4 s); zaseknuta smycka -> reset CM4 */
 #include "lwip_app.h"  /* lwIP NO_SYS=1: DHCP klient + ping (F5) */
-#include "scpi.h"      /* scpi_selftest — dukaz, ze SCPI jadro na CM4 skutecne BEZI (W2) */
+/* Relativni cesta - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
+ * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); GCC quote-include hleda
+ * nejdriv ve slozce souboru se #include, takze cesta funguje bez ohledu
+ * na tu -I. */
+#include "../../../CM7/Core/Inc/scpi.h"      /* scpi_selftest — dukaz, ze SCPI jadro na CM4 skutecne BEZI (W2) */
 #include "httpd_min.h" /* httpd_min_selftest — dukaz pro HTTP parser (W4) */
 /* USER CODE END Includes */
 

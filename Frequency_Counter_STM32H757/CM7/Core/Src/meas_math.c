@@ -2,7 +2,9 @@
  * @file    meas_math.c
  * @brief   Math (Mx+B, NULL) + limitní pass/fail — viz meas_math.h.
  */
-#include "meas_math.h"
+/* Relativni cesta - viz komentar u stejneho vzoru v scpi.c (linked resource
+ * v CM4 projektu, regen CM4/.cproject bere -I../../CM7/Core/Inc). */
+#include "../Inc/meas_math.h"
 
 /* Živý stav (čte/píše UiTask; alarm.c čte g_meas_verdict + g_meas_cfg.alarm_en). */
 meas_cfg_t       g_meas_cfg      = { .m = 1.0, .b = 0.0 };   /* zbytek 0 = vypnuto */

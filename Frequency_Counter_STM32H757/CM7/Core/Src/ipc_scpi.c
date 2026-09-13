@@ -15,8 +15,10 @@
  *   ZAPIS  — `ipc_scpi_set_cfg()`: SCPI SET -> `IPC_CMD_CFG_SET` do cmd ringu,
  *            CM7 ho vyridi v `ipc_service` (viz W1 v WEB_UI_PLAN.md).
  */
-#include "ipc_shared.h"
-#include "scpi.h"
+/* Relativni cesty - viz komentar u stejneho vzoru v scpi.c (soubor je taky
+ * linked resource v CM4 projektu, regen CM4/.cproject bere -I../../CM7/Core/Inc). */
+#include "../Inc/ipc_shared.h"
+#include "../Inc/scpi.h"
 #include <string.h>
 
 int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)

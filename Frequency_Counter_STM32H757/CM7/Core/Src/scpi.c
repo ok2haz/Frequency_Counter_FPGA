@@ -4,8 +4,15 @@
  *          handlery čtou z `scpi_src_t` (viz scpi.h). Backend (CM7 globály / CM4
  *          IPC snapshot) ho naplní. Zde je jádro + CM7 backend (`#if CORE_CM7`).
  */
-#include "scpi.h"              /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
-#include "version.h"          /* FW_VERSION_FULL — *IDN? */
+/* Relativni cesty (misto pouheho "scpi.h") - tento soubor je LINKED RESOURCE
+ * i v CM4 projektu (viz CM4/.project) a CubeMX regenerace CM4/.cproject
+ * spolehlive mazala -I../../CM7/Core/Inc. GCC quote-include hleda nejdriv
+ * ve slozce SOUBORU se #include (podle jeho skutecne cesty na disku, ne
+ * podle -I ani CWD), takze relativni cesta funguje identicky pri prekladu
+ * z CM7 i z CM4 - zavislost na te -I ceste tim mizi (overeno kompilatorem
+ * se zamerne vynechanou -I../../CM7/Core/Inc, viz commit). */
+#include "../Inc/scpi.h"       /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
+#include "../Inc/version.h"   /* FW_VERSION_FULL — *IDN? */
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>

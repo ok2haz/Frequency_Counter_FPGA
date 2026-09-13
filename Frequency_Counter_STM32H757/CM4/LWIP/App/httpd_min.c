@@ -39,8 +39,10 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
-#include "scpi.h"
-#include "meas_present.h"   /* MP_TDC_PS / MP_REF_PPB — servírují se v /api/state */
+/* Relativni cesty - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
+ * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); nezavisi na te -I ceste. */
+#include "../../../CM7/Core/Inc/scpi.h"
+#include "../../../CM7/Core/Inc/meas_present.h"   /* MP_TDC_PS / MP_REF_PPB — servírují se v /api/state */
 #include "ipc_cm4.h"
 #include "main.h"          /* HAL_GetTick */
 
