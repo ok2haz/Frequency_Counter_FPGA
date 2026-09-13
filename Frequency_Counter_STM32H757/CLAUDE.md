@@ -557,54 +557,62 @@ detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“
   není to náběžná hrana ani integrita signálu (to už měření vyloučilo), je to
   přímo hodinový kmitočet firmwaru slave. **50 kHz = bezpečná rezerva** (koleno
   je při 75-100 kHz, tedy ~33-50% marže).
-- ✅ **ŘEŠENÍ 2026-09-13: I2C4 běží na DVOU rychlostech, ne jedné.** Protože limit
-  je vlastností KONKRÉTNÍHO slave (ATtiny), ne sběrnice, není důvod škrtit i
-  FT5x06 (dotyk, 0x38) a TMP117 (teplota, 0x48) — to jsou skutečné I2C periferie
-  s hardwarovým I2C blokem, ne bit-bang, takže ATtiny limit na ně neplatí.
+- ✅ **ŘEŠENÍ 2026-09-13: I2C4 běží na TŘECH rychlostech, jedna per zařízení.**
+  Protože limit je vlastností KONKRÉTNÍHO slave (ATtiny), ne sběrnice, není
+  důvod škrtit i FT5x06 (dotyk, 0x38) a TMP117 (teplota, 0x48) — to jsou
+  skutečné I2C periferie s hardwarovým I2C blokem, ne bit-bang, takže ATtiny
+  limit na ně neplatí a KAŽDÁ může běžet na SVÉ vlastní rychlosti.
   `i2c4_speed_select()` (`i2c.c`, USER CODE 1) přepne `TIMINGR` PŘED každou
   transakcí podle cíle: **`I2C4_TIMING_ATTINY_50KHZ`** (`0x70303AEE`, beze
-  změny) pro ATtiny, **`I2C4_TIMING_FAST_200KHZ`** (`0x70300E3B`) pro FT5x06 a
-  TMP117. Volá se ze všech tří míst, kde na I2C4 něco sahá: `main.c` (bring-up
-  před schedulerem), `freertos_task_ui.c` (touch poll + ATtiny backlight/reset),
-  `freertos_task_sensors.c` (TMP117 init + 2Hz poll) — vždy **pod
-  `i2c4MutexHandle`**. Funkce si pamatuje aktuální rychlost a přepíná jen při
-  reálné změně (v provozu se to skoro nikdy nestane — touch a TMP117 chtějí
-  stejnou rychlost, přepnutí platí jen kolem zápisu do ATtiny), takže cena
-  DeInit+Init se platí jen zřídka.
-  ⚠️⚠️ **200 kHz je HYPOTÉZA, NE změřené číslo.** Čistá tabulka v obou měřeních
-  sahá jen do 100 kHz; vše nad 125 kHz je v dokumentu explicitně označeno jako
-  kontaminované zavěšenou sběrnicí (vada měřicího nástroje `i2cspeed`/TODO #244,
-  ne čipu) — žádné z obou měření tedy 200 kHz pro FT5x06/TMP117 samotné
-  (bez souběžné zátěže ATtiny) neprokazuje ani nevyvrací. **⬜ Neověřeno na HW.**
-  Ověření: `i2cspeed` s **malým `N` (~25)**, krok 200 kHz — a číst jen `0x38` a
-  `0x48`, protože `0x45` na 200 kHz úmyslně nikdy nepoběží (viz TODO #244 pro
-  omezení `i2cspeed` nad 100 kHz s velkým `N`).
+  změny) pro ATtiny, **`I2C4_TIMING_TOUCH_75KHZ`** (`0x7030279F`) pro FT5x06,
+  **`I2C4_TIMING_TMP117_400KHZ`** (`0x30700E3B`) pro TMP117 — hodnoty rovnou
+  z tabulky `I2CSP_STEP` (`freertos_task_uart.c`), aby byly shodné s tím, co
+  `i2cspeed` už ověřuje. Volá se ze všech míst, kde na I2C4 něco sahá:
+  `main.c` (bring-up před schedulerem), `freertos_task_ui.c` (touch poll +
+  ATtiny backlight/reset), `freertos_task_sensors.c` (TMP117 init + 2Hz
+  poll), plus diagnostické UART příkazy (`panel`/`scanner`/`i2c4` — tam vždy
+  `ATTINY_50KHZ`, protože osloví víc zařízení najednou a 50 kHz je jediná
+  rychlost bezpečná pro všechna tři) — vždy **pod `i2c4MutexHandle`**. Funkce
+  si pamatuje aktuální rychlost a přepíná jen při reálné změně.
+  - **`I2C4_TIMING_TOUCH_75KHZ` NENÍ hypotéza** — 75 kHz leží plně v pásmu
+    čistých, důvěryhodných dat (FT5x06 má 0,00 % chyb i při 100 kHz v obou
+    měřeních), je to přímo změřený bod.
+  - ⚠️⚠️ **`I2C4_TIMING_TMP117_400KHZ` JE HYPOTÉZA, NE změřené číslo.** Čistá
+    tabulka v obou měřeních sahá jen do 100 kHz; vše nad 125 kHz je v obou
+    dokumentech explicitně označeno jako kontaminované zavěšenou sběrnicí
+    (vada měřicího nástroje `i2cspeed`/TODO #244, ne čipu) — žádné měření
+    tedy 400 kHz pro TMP117 samotné (bez souběžné zátěže ATtiny) neprokazuje
+    ani nevyvrací. **⬜ Neověřeno na HW.** Ověření: `i2cspeed` s **malým `N`
+    (~25)**, krok 400 kHz, jen `0x48` (`i2cspeed 25 0x48`) — `0x45` na
+    400 kHz úmyslně nikdy nepoběží (viz TODO #244 pro omezení `i2cspeed`
+    nad 100 kHz s velkým `N`).
 
   **Kompletní přehled, KDO na I2C4 sahá, jakou rychlostí a proč** (2026-09-13):
 
   | Zdroj | Adresa/cíl | Rychlost | Kdy / jak často | Kde v kódu |
   |---|---|---|---|---|
   | `main.c` bring-up (před schedulerem) | 0x45 ATtiny (probe, power-on, backlight) | 50 kHz (výchozí z `MX_I2C4_Init`, nepřepnuto) | jednou při bootu | `main.c` kroky 1–3, 7 |
-  | `main.c` bring-up | 0x38 FT5x06 (probe) | 200 kHz (přepnuto před probe) | jednou při bootu, po ATtiny | `main.c` krok 8 |
-  | UiTask — touch poll | 0x38 FT5x06 (`ft5x06_read_touch`) | 200 kHz | ~15–30 Hz (2 Hz při back-off) | `freertos_task_ui.c:~297` |
+  | `main.c` bring-up | 0x38 FT5x06 (probe) | 75 kHz (přepnuto před probe) | jednou při bootu, po ATtiny | `main.c` krok 8 |
+  | UiTask — touch poll | 0x38 FT5x06 (`ft5x06_read_touch`) | 75 kHz | ~15–30 Hz (2 Hz při back-off) | `freertos_task_ui.c:~297` |
   | UiTask — backlight zápis | 0x45 ATtiny (`ws_panel_set_backlight`) | 50 kHz | při změně cíle jasu (auto-dim/uživatel), max 1×/200 ms | `freertos_task_ui.c:~479` |
   | UiTask — touch-reset (recovery) | 0x45 ATtiny (`ws_panel_set_portc`) | 50 kHz | **dead code** — jen když `I2C4_RECOVERY_TOUCHES_ATTINY` (dnes 0) | `freertos_task_ui.c:~347` |
   | UiTask — `i2c4_recover()` | sběrnice obecně (GPIO pulzy + re-init) | nezávislé — re-init použije AKTUÁLNÍ `Init.Timing`, nemění ho | při ≥8 chybách touch v řadě, se zpomalováním 5s→30s→5min | `freertos_task_ui.c:~120,340` |
-  | SensorsTask — TMP117 config | 0x48 TMP117 (`tmp117_set_2hz`) | 200 kHz | jednou při startu + po `i2cspeed` sweepu | `freertos_task_sensors.c:~281,355` |
-  | SensorsTask — TMP117 poll | 0x48 TMP117 (`HAL_I2C_Mem_Read`) | 200 kHz | 2 Hz | `freertos_task_sensors.c:~368` |
+  | SensorsTask — TMP117 config | 0x48 TMP117 (`tmp117_set_2hz`) | 400 kHz | jednou při startu + po `i2cspeed` sweepu | `freertos_task_sensors.c:~281,355` |
+  | SensorsTask — TMP117 poll | 0x48 TMP117 (`HAL_I2C_Mem_Read`) | 400 kHz | 2 Hz | `freertos_task_sensors.c:~368` |
   | UART `panel` | 0x45 ATtiny (celý bring-up znovu) | 50 kHz (přepnuto 2×, na obou mutex-blocích) | na vyžádání z konzole | `freertos_task_uart.c` |
   | UART `scanner` | 0x01–0x7F obecně (vč. 0x45) | 50 kHz (přepíná se **v každé iteraci** — mutex se mezi adresami pouští) | na vyžádání | `freertos_task_uart.c` |
   | UART `i2c4` (stupňovaná diagnostika) | 0x38+0x45+0x48 najednou (`uart_i2c4_probe`) | 50 kHz (přepíná se v každé iteraci, stejný důvod) | na vyžádání | `freertos_task_uart.c` |
-  | UART `touch`/`touchloop` | 0x38 FT5x06 | **nepřepíná** — běží na aktuální rychlosti (50 nebo 200 kHz, oboje pro FT5x06 funguje) | na vyžádání | `freertos_task_uart.c` |
+  | UART `touch`/`touchloop` | 0x38 FT5x06 | **nepřepíná** — běží na aktuální rychlosti (50 nebo 75 kHz, oboje pro FT5x06 funguje) | na vyžádání | `freertos_task_uart.c` |
   | UART `i2cspeed [N] [adresa]` | 0x38/0x45/0x48 (výběr adresou) nebo všechna tři | **explicitní sweep 25…500 kHz**, dočasně přebíjí vše, na konci obnoví předchozí rychlost | na vyžádání, diagnostika/měření | `freertos_task_uart.c` |
 
   ⚠️ **Proč `scanner`/`i2c4` přepínají rychlost v KAŽDÉ iteraci, ne jednou na
   začátku:** mutex se mezi jednotlivými adresami pouští (aby touch/TMP117
   „dýchaly"), takže mezitím jiný task mohl rychlost přepnout zpátky na
-  200 kHz — bez tohoto by tyhle diagnostiky tiše falešně hlásily „ATtiny
-  neodpovídá". `panel` mutex nepouští mezi probe/power-on, takže mu stačí
-  přepnout jednou na začátku každého mutex-bloku. Zjištěno a opraveno
-  2026-09-13 jako regrese vlastní úpravou (viz `docs/LESSONS.md`).
+  svou vlastní hodnotu (75 nebo 400 kHz) — bez tohoto by tyhle diagnostiky
+  tiše falešně hlásily „ATtiny neodpovídá". `panel` mutex nepouští mezi
+  probe/power-on, takže mu stačí přepnout jednou na začátku každého
+  mutex-bloku. Zjištěno a opraveno 2026-09-13 jako regrese vlastní úpravou
+  (viz `docs/LESSONS.md`, L-0046).
 - 🔴 **Cena toho měření:** běh nad 125 kHz **rozhodil TMP117 na 0x48 tak, že ho spravil až
   power-cycle** (firmware na to nedosáhne) a vyhladověl UiTask natolik, že watchdog zapsal
   `stall:UiTask`. Kdo bude sweep opakovat, ať s tím počítá.
@@ -842,11 +850,12 @@ zrychlení). ⚠️ Nikdy nezaveď akci dostupnou jen jednou cestou.
 na zařízení a krok, výchozí 2000; **jen čtení**, do ATTINY se nezapíše ani bajt.
 **Volitelná `adresa`** (hex, `0x` nepovinné — `38`/`0x38`, `45`, `48`) omezí
 sweep na JEDNO zařízení, jinak běží všechna tři. **Tři adresy na I2C4:**
-`0x38` = FT5x06 (dotyk, skutečná I2C periferie), `0x45` = ATTINY (napájení
-panelu + podsvícení + reset bridge/dotyku — **bit-bang slave, CPU CLK 1 MHz**,
-jediný důvod, proč celá sběrnice historicky nesla víc než ~75 kHz; provozně
-běží vždy na 50 kHz přes `i2c4_speed_select`), `0x48` = TMP117 (teplota,
-skutečná I2C periferie). Po dobu měření mlčí dotyk, jas i TMP117 0x48
+`0x38` = FT5x06 (dotyk, skutečná I2C periferie, provozně 75 kHz), `0x45` =
+ATTINY (napájení panelu + podsvícení + reset bridge/dotyku — **bit-bang
+slave, CPU CLK 1 MHz**, jediný důvod, proč celá sběrnice historicky nesla
+víc než ~75 kHz; provozně běží vždy na 50 kHz), `0x48` = TMP117 (teplota,
+skutečná I2C periferie, provozně 400 kHz — ⚠️ hypotéza, viz oddíl I2C4
+výše). Všechny tři rychlosti přepíná `i2c4_speed_select` (`i2c.c`). Po dobu měření mlčí dotyk, jas i TMP117 0x48
 (`g_i2c4_sweep`), takt se **vždy** obnoví a kdykoli jde přerušit klávesou.
 🔴 **S velkým `N` a kroky nad 100 kHz RESETUJE DESKU** (změřeno
 2026-09-12: `N=500` i `N=1000` restart při 150 kHz, `N=25` prošlo). Příčina je

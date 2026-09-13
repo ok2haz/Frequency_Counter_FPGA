@@ -1164,6 +1164,47 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0047 — Přepnutí I2C rychlosti není "levná" operace, když je na sběrnici bit-bang slave
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), regrese vlastní úpravou, HW nález za běhu
+- **Symptom:** po naflashování a power-cyklu s `i2c4_speed_select()`
+  (L-0045/L-0046) dotyk vůbec nefungoval, boot splash se neukázal, displej
+  byl ~7 s černý a hlavní obrazovka se ukázala pozdě, screensaver se
+  aktivoval ~11,5 s po zapnutí — reálný HW test, ne odhad.
+- **Příčina (silně podložená hypotéza, ⬜ neověřená druhým HW testem v době
+  zápisu):** `i2c4_speed_select()` do té doby dělal `HAL_I2C_DeInit()` +
+  `HAL_I2C_Init()` (stejný vzor jako starší `i2c4_recover()`/
+  `i2csp_set_timing`). DeInit/Init ale přes `MspDeInit`/`MspInit`
+  **překonfiguruje GPIO SCL/SDA** (AF → jiný mode → AF) — a to je přesně
+  ta třída hranového přechodu na sběrnici, před kterou kód u
+  `s_bl_settle` (`freertos_task_ui.c`) roky varuje: „zápis jasu tesně
+  následovaný START-em touch čtení mu rozhodí slave automat → drží SDA →
+  mrtvá I2C4 až do power-cyklu". Boot bring-up (`main.c`) dělal přesně
+  tuhle sekvenci **bez jakékoli klidové mezery**: zápis jasu do ATtiny
+  (50 kHz) → `i2c4_speed_select` (dřívější DeInit/Init) → `ft5x06_probe` —
+  runtime cesta má aspoň 150 ms `s_bl_settle`, boot cesta žádnou.
+- **Oprava:** `i2c4_speed_select()` přepsán na **minimální RM0399 postup**:
+  `PE=0` (jen bit v `CR1`, nesahá na GPIO) → přímý zápis `TIMINGR` → `PE=1`.
+  Žádný `HAL_I2C_DeInit`/`Init`, žádné `MspInit`, žádná GPIO hrana. Navíc
+  doplněna 150ms klidová mezera do boot sekvence (`main.c`, mezi zápisem
+  jasu a přepnutím rychlosti) jako levná pojistka navíc, i když už by
+  nemusela být nutná.
+- **Pravidlo:** **Když na sběrnici sedí bit-bang slave (firmware, ne
+  hardwarový blok, dělá časování), NEPOUŽÍVEJ k přeladění rychlosti nic
+  těžšího, než co periferie/registr doopravdy vyžaduje.** `HAL_I2C_DeInit`/
+  `Init` je "bezpečný vzor" jen ve smyslu "nespustí `Error_Handler()`" — o
+  GPIO vedlejších účincích nic neříká. Než se sáhne po hotovém vzoru
+  z jiného místa v kódu (`i2c4_recover`), ověř, že ten vzor běžel v STEJNÉM
+  kontextu (frekvence volání, blízkost k zápisu do citlivého slave) — vzor
+  bezpečný v diagnostickém nástroji (`i2cspeed`, izolované přepnutí jednou
+  za krok, mimo produkční provoz) nemusí být bezpečný v produkční cestě
+  (přepnutí na KAŽDÉM touch pollu, těsně po zápisu jasu).
+- **Detekce:** žádná automatická — build i audit prošly čistě, je to
+  funkční/HW vada. Odhaleno jen reálným power-cyklem na desce.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní, ⬜ čeká na potvrzení druhým HW testem
+
 ### L-0046 — Per-target rychlost sběrnice: kdo ji nenastaví, zdědí cizí
 
 - **Datum:** 2026-09-13
