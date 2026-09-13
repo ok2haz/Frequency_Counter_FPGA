@@ -178,5 +178,41 @@ void MX_I2C1_Init(void)
   HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE);
   HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0);
 }
+
+/* ── I2C4: dve provozni rychlosti podle ciloveho zarizeni (2026-09-13) ──────
+ * ATTINY na desce ma CPU 1 MHz a jako bit-bang I2C slave nestiha nad ~75 kHz
+ * (zmereno 2026-09-10/12, docs/audit/2026-09-10_i2c.md — cista tabulka az do
+ * 100 kHz, koleno mezi 75 a 100 kHz, ATTINY tam NACKuje 2,3-8 %; FT5x06 a
+ * TMP117 na 100 kHz cista nula). Bezpecna rezerva = 50 kHz (I2C4.Timing v
+ * .ioc, generovano vyse v MX_I2C4_Init — TAM se to nemeni).
+ * FT5x06 (dotyk) a TMP117 (teplota) jsou skutecne I2C periferie, ne bit-bang
+ * slave — ATTINY limit na ne neplati, bezi na vyssim takte.
+ * ⚠️ 200 kHz je HYPOTEZA, NE zmerene cislo: cista tabulka v auditu sahaji jen
+ * do 100 kHz, vse >=125 kHz je oznaceno jako kontaminovane zavesenou
+ * sbernici (vada MERICIHO NASTROJE `i2cspeed`/TODO #244, ne cipu — viz
+ * "Co tim porad neni zodpovezeno" v audit dokumentu). Overit pred plnou
+ * duverou: `i2cspeed` s MALYM N (~25) na krok 200 kHz, cistene na FT5x06 a
+ * TMP117 samotne (bez soucasne aktivni ATTINY zateze). ⬜ neovereno na HW.
+ * Konstanty `I2C4_TIMING_*` jsou v i2c.h (verejne, potrebuje main.c i oba
+ * tasky); `I2C4_TIMING_FAST_200KHZ` = hodnota z tabulky I2CSP_STEP pro
+ * 200 kHz (freertos_task_uart.c). */
+
+/* Prepne TIMINGR I2C4 na pozadovanou rychlost — ale JEN kdyz uz na ni neni
+ * (touch i TMP117 chteji tutez rychlost, takze v provozu se skoro nikdy
+ * neprepina; cenu DeInit+Init platime jen pri zapisu do ATTINY). Bezpecny
+ * vzor jako `i2c4_recover()`/`i2csp_set_timing` (freertos_task_uart.c):
+ * NIKDY `MX_I2C4_Init` (ma `Error_Handler()` trap), jen DeInit + zmena
+ * `Init.Timing` + Init. ⚠️ Volat VZDY pod `i2c4MutexHandle` — `hi2c4` neni
+ * thread-safe a dve jadra/tasky by si TIMINGR mohly prepsat pod rukama. */
+void i2c4_speed_select(uint32_t timing)
+{
+    if (hi2c4.Init.Timing == timing) {
+        return;
+    }
+    HAL_I2C_DeInit(&hi2c4);
+    hi2c4.Init.Timing = timing;
+    hi2c4.State = HAL_I2C_STATE_RESET;
+    HAL_I2C_Init(&hi2c4);
+}
 /* USER CODE END 1 */
 

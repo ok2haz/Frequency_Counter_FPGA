@@ -294,6 +294,7 @@ void StartUiTask(void *argument)
       ft5x06_touch_t t; int got = 0, attempted = 0;
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
         attempted = 1;
+        i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);   /* FT5x06 = periferie, ne bit-bang */
         got = ft5x06_read_touch(&hi2c4, &t);
         osMutexRelease(i2c4MutexHandle);
       }
@@ -343,6 +344,7 @@ void StartUiTask(void *argument)
           (void)0;
 #else
           /* Sahat na ATTINY jen kdyz opravdu odpovida, a jen prvnich par pokusu. */
+          i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
           if (s_touch_resets <= 5u &&
               HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 20) == HAL_OK) {
             osDelay(2);
@@ -474,6 +476,7 @@ void StartUiTask(void *argument)
         (uint8_t)s_bl != bl_target && (HAL_GetTick() - s_bl_try) >= 200u) {
       s_bl_try = HAL_GetTick();
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
+        i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);   /* ATTINY = bit-bang, CPU 1 MHz */
         if (HAL_I2C_IsDeviceReady(&hi2c4, WS_PANEL_I2C_ADDR, 2, 10) == HAL_OK) {
           osDelay(3);
           /* ⚠️ Zapis na ATTINY BEZ MOZNOSTI PREEMPCE. `HAL_I2C_Master_Transmit`
@@ -483,7 +486,8 @@ void StartUiTask(void *argument)
            * ladici sondou (zmereno: 1 cteni sondou = 6 chyb na I2C4).
            * `vTaskSuspendAll` NEvypina preruseni, jen prepinani tasku — a
            * `HAL_GetTick` jede z TIM6, takze timeouty uvnitr HAL dal funguji.
-           * Zapis jsou 2 bajty @100 kHz ≈ 200 us, tedy zanedbatelne zdrzeni. */
+           * Zapis jsou 2 bajty @50 kHz (ATTINY rychlost) ≈ 400 us, tedy
+           * zanedbatelne zdrzeni. */
           vTaskSuspendAll();
           bool blok = ws_panel_set_backlight(&hi2c4, bl_target);
           xTaskResumeAll();

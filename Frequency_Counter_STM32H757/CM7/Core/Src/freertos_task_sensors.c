@@ -278,6 +278,7 @@ void SensorsTask_run(void *argument)
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
+    i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);   // TMP117 = periferie, ne bit-bang
     tmp117_set_2hz(&hi2c4, TMP117_ADDR);          // 0x48 (I2C4)
     osMutexRelease(i2c4MutexHandle);
   }
@@ -351,6 +352,7 @@ void SensorsTask_run(void *argument)
 	   * 2026-09-10 rozhodilo pointer/CONFIG tak, ze pomohl az power-cycle;
 	   * tohle uz bezi na obnovenem taktu a nic nestoji. */
 	  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	    i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);
 	    tmp117_set_2hz(&hi2c4, TMP117_ADDR);
 	    osMutexRelease(i2c4MutexHandle);
 	  }
@@ -363,6 +365,7 @@ void SensorsTask_run(void *argument)
 	  i2c4_skip--;                      /* back-off: tenhle cyklus se na bus nesaha */
 	  i2cStatus = HAL_BUSY;             /* != HAL_OK -> sensor_fail nize (drzi posl. dobrou) */
 	} else if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	  i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);
 	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 20);
 	  osMutexRelease(i2c4MutexHandle);
 	}

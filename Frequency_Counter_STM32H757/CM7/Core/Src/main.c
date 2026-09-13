@@ -538,8 +538,12 @@ g_cm4_absent = 1;
 
   printf("=== Display init dokoncen ===\n");
 
-  /* 8) Probe touch controlleru (po panel power-on, kdy uz neni v resetu) */
+  /* 8) Probe touch controlleru (po panel power-on, kdy uz neni v resetu).
+   * I2C4 se prepina na 200 kHz — FT5x06 je skutecna I2C periferie, ne
+   * bit-bang jako ATTINY (viz i2c4_speed_select v i2c.c). Scheduler jeste
+   * nebezi, takze mutex neni potreba. */
   printf("=== Touch init start ===\n");
+  i2c4_speed_select(I2C4_TIMING_FAST_200KHZ);
   if (!ft5x06_probe(&hi2c4)) {
       printf("ft5x06: probe FAILED - touch nebude k dispozici\n");
   } else {
