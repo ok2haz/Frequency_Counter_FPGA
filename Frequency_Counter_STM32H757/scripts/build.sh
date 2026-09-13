@@ -154,6 +154,27 @@ check_regen() {
         echo "    => regenerace CubeMX; viz CUBEMX_CHECKLIST.md, oddil 'Co Generate Code SEBERE'."
         bad=1
     fi
+    # ── PATA kontrola (2026-09-13): CM7/.cproject - app/libui/libprim -I ──────
+    # Zámerne DETEKCE, ne odstraneni zavislosti jako u CM4/scpi.h. Duvod: libui
+    # a libprim pouzivaji UVNITR SEBE uhlove #include <ui/...>/<prim/...>
+    # (73 souboru, 169 radku) - je to zamerny navrhovy vzor (obe knihovny se
+    # includuji jako by byly externi), ne prehlednuti. Uhlovy include NEMA
+    # fallback na "stejna slozka jako including soubor" (na rozdil od quote
+    # includu) - kdyby tahle -I cesta zmizela, vsech 169 radku by prestalo
+    # resit najednou. Presunout to na relativni cesty by znamenalo prepsat
+    # architekturu dvou knihoven navrzenych jako samostatne moduly - vetsi
+    # riziko nez problem, ktery se od jednorazoveho incidentu 2026-08-29
+    # (chybely jen v Release configu, ne "regen je mazal") ani jednou
+    # nezopakoval pres 4 dalsi regeny (2026-09-01/06/12/13).
+    for pat in 'libprim/include' 'libui/include' '\${ProjName}/app'; do
+        n="$(cnt "$pat" "${ROOT}/CM7/.cproject")"
+        if [ "$n" -lt 2 ]; then
+            echo "*** CM7/.cproject: chybi/oslabena -I cesta '$pat' (${n}x, cekano >=2)."
+            echo "    => bez ni libui/libprim/app prestanou resit vlastni hlavicky."
+            echo "    => regenerace CubeMX; oprav: git checkout -- CM7/.cproject, pak Close/Open Project."
+            bad=1
+        fi
+    done
     [ "$bad" -eq 0 ] || echo "    (build pokracuje, ale tohle oprav driv, nez budes flashovat)"
 }
 
