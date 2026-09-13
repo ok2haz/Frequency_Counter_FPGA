@@ -1164,6 +1164,86 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0041 — `grep -c … || echo 0` v shellu dá "0\n0", ne "0"
+
+- **Datum:** 2026-09-12
+- **Oblast:** build / styl (shell skriptování)
+- **Symptom:** `check_regen()` v `scripts/build.sh` měla dvě pozitivní kontroly
+  (chybějící include cesty, chybějící `naked` handler) a OBĚ mlčely i na
+  uměle rozbitém stromu — vypadalo to jako „kontrola je hotová a funguje",
+  přitom nikdy nic nehlásila.
+- **Příčina:** `grep -c PATTERN file` při **nulové shodě** vypíše `0` **a
+  současně** skončí s návratovým kódem 1 (grep signalizuje "nic nenalezeno"
+  přes exit code, ne přes prázdný výstup). `n="$(grep -c … || echo 0)"` proto
+  při nulové shodě spustí OBĚ větve `||` — `grep` vypíše `0` na stdout, exit
+  kód 1 spustí `echo 0`, a `$(...)` posbírá výstup obojího → `n` je řetězec
+  `"0\n0"`. `[ "$n" -lt 2 ]` na takovém vstupu spadne na
+  `integer expected`, `set -e` (respektive nezachycená chyba testu) kontrolu
+  potichu přeskočí.
+- **Oprava:** sdílená funkce `cnt()` (`scripts/build.sh`) — `grep -c … || true`
+  (ne `|| echo 0`, aby se druhá větev nikdy nevypsala) + `case "$n" in
+  ''|*[!0-9]*) n=0 ;; esac`, která cokoli, co není čistě číslo, převede na `0`.
+- **Pravidlo:** **Nikdy `$(prikaz || echo NAHRADA)` u příkazu, který sám umí
+  vypsat výstup i při neúspěchu** (`grep -c`, `wc -l` na neexistující soubor
+  přes pipe apod.) — `||` nahradí až prázdný/chybějící výstup, ne výstup,
+  který přišel spolu s nenulovým exit kódem. Bezpečný vzor: zachytit syrový
+  výstup (`|| true`, aby `$(...)` neskončilo na chybě), pak ho **validovat**
+  (regex na číslo), ne slepě věřit, že je to jedna hodnota.
+- **Detekce:** kontrolovaný pokus s třemi větvemi (zdravý strom → ticho;
+  odstraněný `naked` → hlásí; odstraněné include cesty → hlásí) —
+  `scripts/build.sh` sám o sobě nemá jednotkové testy, takže jde o manuální
+  ověření při každé úpravě `check_regen()`/`cnt()`. Obecný test na tuto třídu
+  chyby: `n="$(grep -c nic /dev/null || echo 0)"; [ "$n" = "0" ]` musí projít
+  (dřívější kód by na `/dev/null` dal `"0\n0"` a test by spadl).
+- **Commit:** `1e9e211`
+- **Stav:** aktivní
+
+### L-0042 — Fragilní `-I` v `.cproject` šlo obejít, ne jen hlídat
+
+- **Datum:** 2026-09-13
+- **Oblast:** build / dvoujádro (CM7↔CM4 sdílené soubory)
+- **Symptom:** `CM4/.cproject` má dvě `-I../../CM7/Core/Inc` položky (Debug+
+  Release × C/C++ compiler), které CubeMX regenerace maže při KAŽDÉM běhu
+  (je to XML mimo `USER CODE`, nezměnitelné). `check_regen()` (viz L-0041)
+  to jen hlásila — oprava byla „`git checkout -- CM4/.cproject`" po každém
+  regenu, navěky.
+- **Příčina:** šest `#include "X.h"` řádků (`scpi.c`, `meas_math.c`,
+  `ipc_scpi.c` v `CM7/Core/Src` — fyzicky sdílené soubory, linkované i do
+  CM4 přes `CM4/.project`; a `main.c`, `httpd_min.c`, `scpi_tcp.c` v CM4
+  samotném) psalo bare jméno hlavičky (`scpi.h`, `version.h`, `meas_math.h`,
+  `ipc_shared.h`, `meas_present.h`) místo cesty — tím se řešení jména
+  headeru odevzdalo kompilátorovému `-I` seznamu, tedy `.cproject`.
+  Zbytek headerů, které tyto soubory potřebují (`meas_math.h`/`datalog.h`
+  ze `scpi.h`), leží ve STEJNÉ složce jako `scpi.h` (`CM7/Core/Inc`) — ty se
+  řeší samy, protože GCC quote-include vždy nejdřív zkusí složku
+  *includujícího souboru*, a to bylo od začátku regen-safe.
+- **Oprava:** těch šest `#include` se přepsalo na cestu relativní k
+  **fyzickému umístění souboru na disku** (`#include "../Inc/scpi.h"` v
+  `CM7/Core/Src/scpi.c`, `#include "../../../CM7/Core/Inc/scpi.h"` v
+  `CM4/Core/Src/main.c` a `CM4/LWIP/App/*.c`) — přesně vzor, který `ipc_cm4.h`
+  používal pro `ipc_shared.h` už dřív. GCC řeší quote-include vůči adresáři
+  souboru, který `#include` napsal, ne vůči CWD ani `-I` — a ten adresář je
+  pevný bez ohledu na to, které jádro soubor zrovna kompiluje (fyzická cesta
+  na disku je jen jedna). `.cproject` se **nemusel měnit** — jeho `-I` cesta
+  zůstala (harmless), ale žádný `#include` na ní už nezávisí.
+- **Pravidlo:** **Sdílený/cross-adresářový header nikdy neincluduj bare
+  jménem, jen relativní cestou k jeho fyzickému umístění** — tím se
+  rozpoznávání souboru přestane opírat o build-systémový `-I` seznam, který
+  generátor (CubeMX, ale stejně tak CMake/IDE reimport) může kdykoli
+  přepsat. Bare `#include "x.h"` je bezpečné jen pro header ve STEJNÉ složce
+  jako soubor, který ho includuje.
+- **Detekce:** `tools/find_fragile_includes.py`-styl skript (scratchpad této
+  session) — projde všechny soubory jednoho jádra, pro každý bare
+  `#include "X.h"` zkontroluje, jestli `X.h` leží ve stejné složce jako
+  including soubor; pokud ne a cesta není `../`-relativní, je to fragilní
+  závislost na `-I`. Ověřeno i přímým kompilátorem: `arm-none-eabi-gcc
+  -fsyntax-only` se **záměrně vyříznutou** `-I../../CM7/Core/Inc` (přímo v
+  `CM4/Release/*/subdir.mk`, tedy artefaktu, který regen skutečně přepisuje)
+  — po opravě prošlo všech šest souborů, `./scripts/build.sh Release BOTH`
+  dal byte-přesně stejný `.elf` jako s tou `-I` cestou.
+- **Commit:** (viz git log — commit bezprostředně po L-0041)
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

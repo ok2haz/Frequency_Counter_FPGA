@@ -422,6 +422,11 @@ Debug+Release, oba nástroje assembler+compiler) — jinak to při příštím b
 - [x] Oprava: `CM7/Core/Inc` přidáno do `CM4/.cproject` (4× — Debug/Release × assembler/compiler),
       `Core/Src/subdir.mk` + `makefile` + `objects.list` dorovnány ručně pro okamžitou funkčnost.
 - [x] Po Close/Open (2026-08-23) `.cproject` změna vydržela a build z IDE proběhl čistě.
+- [x] ⚠️ **Ta `-I` cesta v `.cproject` sama o sobě NEBYLA regen-safe** — regenerace 2026-09-12
+      ji stejně smazala (viz oddíl „Co Generate Code SEBERE" níže). **2026-09-13 vyřešeno jinak:**
+      místo udržování `-I` v `.cproject` proti CubeMX se `#include "scpi.h"` v `main.c`/
+      `httpd_min.c`/`scpi_tcp.c`/`scpi.c`/`meas_math.c`/`ipc_scpi.c` přepsalo na relativní cestu
+      k fyzickému umístění headeru — ta se nestará, jestli `-I` v `.cproject` existuje.
 
 **✅ DOTAŽENO — druhé poučení, silnější než první:** i tak `.project` **chybělo úplně** — `scpi.c`/
 `meas_math.c`/`ipc_scpi.c` jsem napřed zapsal jen do ručního `Debug/SCPI/subdir.mk`, bez `<link>`
@@ -628,24 +633,23 @@ pět věcí naráz** a firmware přestal jít slinkovat. Pravidlo za tím je jed
 
 ```bash
 git diff --stat                       # co se vůbec hnulo
-grep -c "CM7/Core/Inc" CM4/.cproject  # MUSÍ být 4 (regen to maže VŽDY)
 grep -c "^__attribute__((naked))" CM4/Core/Src/stm32h7xx_it.c   # MUSÍ být 1 (viz níže)
 #   ⚠️ prostý `grep -c naked` dá 4 — počítá i komentáře. Ověřeno pozitivní
 #   kontrolou: kopie souboru bez toho řádku dá 0, ostrý soubor 1.
 grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
-./scripts/build.sh Release BOTH       # 0 varování, 0 chyb
+./scripts/build.sh Release BOTH       # 0 varování, 0 chyb (check_regen() hlida naked)
 ```
 
 ### Co se 2026-09-12 ztratilo a proč
 
 | soubor | co zmizelo | stav dnes |
 |---|---|---|
-| `CM4/.cproject` | dvě include cesty `../../CM7/Core/Inc` | ⚠️ **mizí při KAŽDÉM regenu** — bez nich CM4 nenajde `ipc_shared.h`/`scpi.h`; vrátit `git checkout -- CM4/.cproject` |
+| `CM4/.cproject` | dvě include cesty `../../CM7/Core/Inc` | ✅ **VYŘEŠENO 2026-09-13 — ODSTRANĚNÍM ZÁVISLOSTI, ne opravou `.cproject`.** Regen tu cestu maže dál (nezměnitelné, je to XML mimo USER CODE), ale od 2026-09-13 na ní nic nezávisí: `scpi.h`/`meas_math.h`/`ipc_shared.h`/`version.h`/`meas_present.h` se v `scpi.c`/`meas_math.c`/`ipc_scpi.c`/`main.c`/`httpd_min.c`/`scpi_tcp.c` includují **relativní cestou k fyzickému umístění souboru** (`#include "../Inc/scpi.h"` v CM7/Core/Src, `#include "../../../CM7/Core/Inc/scpi.h"` v CM4 souborech) — stejný vzor, jaký `ipc_cm4.h` používal pro `ipc_shared.h` už dřív. GCC quote-include hledá nejdřív ve složce souboru se `#include` (podle jeho skutečné cesty, ne podle `-I` ani CWD), takže cesta platí bez ohledu na to, jestli `-I../../CM7/Core/Inc` v `.cproject` existuje. **Ověřeno kompilátorem se zámerně vyříznutou `-I` cestou** (přímo v `CM4/Release/*/subdir.mk`, tedy přesně artefaktu, který regen přepisuje) — plný `./scripts/build.sh Release CM4` proběhl 0 varování a dal bajt-přesně stejný `.elf` jako s tou cestou. `check_regen()` proto tuhle položku už nehlídá — nemá co hlásit. |
 | `CM7/Core/Src/fmc.c` | `fmc_sdram_init_sequence()` + `g_fmc_init_fail/runs` | ✅ přesunuto do `USER CODE 0` (+ `extern SDRAM_HandleTypeDef hsdram1;`) |
 | `CM7/Core/Src/usart.c` | `#include "errlog.h"` | ✅ přesunuto do `USER CODE 0` |
 | `CM4/.../stm32h7xx_it.c` | include `ipc_shared.h`, `cm4_fault_note()`, `cm4_fault_capture()` | ✅ přesunuto do `USER CODE Includes` / `USER CODE 0` |
 | `CM4/.../stm32h7xx_it.c` | volání `cm4_fault_note(3u/4u/5u/6u)` v handlerech | ✅ přesunuta **dovnitř** `USER CODE BEGIN <IRQ> 0` |
-| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | 🔴 **regen-safe BÝT NEMŮŽE — vracet ručně** |
+| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | 🔴 **regen-safe BÝT NEMŮŽE — vracet ručně** (jediná zbylá fragilní věc, hlídá `check_regen()`) |
 
 ### 🔴 Jediná věc, která se regen-safe udělat nedá
 
