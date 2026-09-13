@@ -3186,6 +3186,14 @@ static const prim_rect_t EL_ERASE_RECT = {18, 417, 240, 61};
 static uint8_t s_el_erase_stage;      /* dvoji potvrzeni jako u SD FORMAT */
 static uint32_t s_el_erase_arm_s;
 
+/* Sloupce radku — sirsi DETAIL nahradil drivejsi holy dump `a/b` (viz
+ * `errlog_fmt_detail` v errlog.h/flightrec.c: JEDEN zdroj pravdy pro to, co
+ * ta dve cisla u ktereho druhu udalosti znamenaji). */
+#define EL_COL_TIME  DG_LLBL
+#define EL_COL_KIND  (DG_LLBL + 78)
+#define EL_COL_DET   (DG_LLBL + 172)
+#define EL_COL_RIGHT 780
+
 static void app_gpsdo_render_errlog(void)
 {
     int first = window_first(51);
@@ -3206,6 +3214,17 @@ static void app_gpsdo_render_errlog(void)
         prim_draw_text((prim_point_t){DG_LLBL, EL_ROW0 + 40},
                        "Zatim zadna chyba — to je dobra zprava.",
                        &ui_font_sans_18, UI_COLOR_OK, PRIM_ALIGN_LEFT);
+    } else {
+        /* Zahlavi sloupcu + delici cara — bez nich pusobil vypis jako neoznaceny
+         * sloupec cisel (puvodni stiznost "neprehledne"). */
+        prim_draw_text((prim_point_t){EL_COL_TIME, EL_ROW0 - 22}, "BEH",
+                       &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){EL_COL_KIND, EL_ROW0 - 22}, "DRUH",
+                       &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){EL_COL_DET, EL_ROW0 - 22}, "DETAIL",
+                       &ui_font_sans_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        prim_fill_rect((prim_rect_t){DG_LLBL, (int16_t)(EL_ROW0 - 6), 750, 1},
+                       UI_COLOR_LINE, PRIM_BLEND_REPLACE);
     }
 
     /* ⚠️ Jedno zamknuti QSPI na vsechny radky misto osmi (UiTask ma heartbeat). */
@@ -3214,10 +3233,6 @@ static void app_gpsdo_render_errlog(void)
     for (uint32_t i = 0; i < nrows; i++) {
         errlog_rec_t r = s_el_rows[i];
         int y = EL_ROW0 + (int)i * EL_ROW_H;
-
-        char tag[ERRLOG_TAG_LEN + 1];
-        memcpy(tag, r.tag, ERRLOG_TAG_LEN);
-        tag[ERRLOG_TAG_LEN] = '\0';
 
         /* Cas behu je srozumitelnejsi nez unixove razitko — a funguje i kdyz
          * RTC jeste nebylo srovnane z GPS (t_unix == 0). */
@@ -3229,14 +3244,8 @@ static void app_gpsdo_render_errlog(void)
                                      (unsigned long)(up / 60u), (unsigned long)(up % 60u));
         else snprintf(left, sizeof left, "%lus", (unsigned long)up);
 
-        char mid[40];
-        if (r.repeat) snprintf(mid, sizeof mid, "%s %s x%u",
-                               errlog_kind_name(r.kind), tag, (unsigned)(r.repeat + 1u));
-        else          snprintf(mid, sizeof mid, "%s %s", errlog_kind_name(r.kind), tag);
-
-        char right[32];
-        snprintf(right, sizeof right, "%lu/%lu",
-                 (unsigned long)r.a, (unsigned long)r.b);
+        char detail[ERRLOG_DETAIL_LEN];
+        errlog_fmt_detail(&r, detail, sizeof detail);
 
         /* Barva podle zavaznosti: CRASH cervene, BOOT a NASTAV ztlumene
          * (nejsou to poruchy), zbytek amber. */
@@ -3244,12 +3253,24 @@ static void app_gpsdo_render_errlog(void)
                          : (r.kind == ERRLOG_K_BOOT || r.kind == ERRLOG_K_CFG) ? UI_COLOR_INK_3
                          : UI_COLOR_WARN;
 
-        prim_draw_text((prim_point_t){DG_LLBL, y}, left, &ui_font_mono_16,
+        prim_draw_text((prim_point_t){EL_COL_TIME, y}, left, &ui_font_mono_16,
                        UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL + 96, y}, mid, &ui_font_mono_16,
-                       col, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){760, y}, right, &ui_font_mono_16,
-                       UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+        prim_draw_text((prim_point_t){EL_COL_KIND, y}, errlog_kind_name(r.kind),
+                       &ui_font_mono_16, col, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){EL_COL_DET, y}, detail, &ui_font_mono_16,
+                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        if (r.repeat) {
+            char rep[12];
+            snprintf(rep, sizeof rep, "x%u", (unsigned)(r.repeat + 1u));
+            prim_draw_text((prim_point_t){EL_COL_RIGHT, y}, rep, &ui_font_mono_16,
+                           UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+        }
+        /* Radkova delici cara — pri hustem vypisu drzi oko na spravnem radku
+         * i kdyz DETAIL sloupec u sousedu vyjde delsi/kratsi. */
+        if (i + 1u < nrows) {
+            prim_fill_rect((prim_rect_t){DG_LLBL, (int16_t)(y + 22), 750, 1},
+                           UI_COLOR_LINE, PRIM_BLEND_REPLACE);
+        }
     }
 
     /* SMAZAT + dvoji potvrzeni (stejny vzor jako datalog / SD FORMAT). */

@@ -11,6 +11,15 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.9.0 (2026-09-13) = tři nezávislé rychlosti I2C4 podle zařízení (ATtiny
+ * 50 kHz — bit-bang slave, CPU 1 MHz je limit; FT5x06 75 kHz; TMP117 400 kHz;
+ * `i2c4_speed_select()`), okno PAMĚŤ ukazuje FLASH/RAM OBOU jader (IPC v16),
+ * a okno CHYBY (errlog) přehlednější — sloupec DETAIL s čitelnou větou
+ * (`errlog_fmt_detail()`) nahradil holá čísla `a/b`, přidáno záhlaví sloupců.
+ * Errlog nově dostupný i na webu: nový IPC kanál `ipc_errlog_xfer_t` +
+ * `GET /api/errlog?n=&from=` + karta [ CHYBY / LOG ] v SPA (stránkování
+ * NOVEJSI/STARSI). Web nezná význam `a`/`b`/`sub` — CM7 posílá hotovou
+ * větu, jeden zdroj pravdy pro displej i web. IPC v17. */
 /* ⚠️ v0.6.0 (2026-08-22) = přechod HSE 10 → 25 MHz (X1/TCXO). PLL1/2/3 přepočteny
  * (VCO identická, mění se jen vstupní dělič M + DSI NDIV), výstupy beze změny.
  * TENTO A VYŠŠÍ FW NENABĚHNE NA DESCE S 10 MHz HSE (PLL se nezamkne). + 5 barevných
@@ -38,8 +47,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 8
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.8.1"
+#define FW_VERSION_MINOR 9
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.9.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

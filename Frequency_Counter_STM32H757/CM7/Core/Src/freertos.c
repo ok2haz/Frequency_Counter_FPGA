@@ -708,6 +708,7 @@ void StartDefaultTask(void *argument)
     ipc_publish();    /* CM7 -> CM4 snapshot do SRAM4 (seqlock, event-driven uvnitr) (#19/#20) */
     ipc_service();    /* zpracuj pripadne prikazy z CM4 (cmd ring) */
     ipc_datalog_service();  /* v12: obsluz pripadny pozadavek CM4 na dlouhou historii z W25Q (#6) */
+    ipc_errlog_service();   /* v17: obsluz pripadny pozadavek CM4 na trvaly zaznamnik chyb z W25Q */
     g_cm4_alive = (uint8_t)ipc_cm4_alive();   /* CM4 heartbeat liveness -> CPU blok "4:OK/--/off" */
     g_cm4_cpu_pct = g_cm4_alive ? (uint8_t)ipc_cm4_cpu_pct() : 0u;   /* -> header "CM4:xx%" */
     g_cm4_net_up  = g_cm4_alive ? (uint8_t)ipc_cm4_net(NULL, NULL, NULL) : 0u;  /* ETH link -> Health "NET:" (v5, F1) */

@@ -634,3 +634,108 @@ void errlog_boot_record(void)
         (void)errlog_put(ERRLOG_K_CRASH, 0u, g_crash_cfsr, g_crash_bfar, ct);
     }
 }
+
+/* ── errlog_fmt_detail — JEDEN zdroj pravdy pro vyznam `a`/`b`/`sub` ──────────
+ * PROC vznikla: okno CHYBY do 2026-09-13 tiskla `a`/`b` jako holá čísla ("12345/
+ * 6789") bez popisku — vyznam se pritom U KAZDEHO druhu LISI (viz tabulka v
+ * errlog.h) a citelny byl jen ze zdrojaku volajiciho `errlog_put`. Funkce tu
+ * znalost soustredi na JEDNO misto, aby ji nemusel znat kazdy dalsi konzument
+ * zvlast (displej, a nyni i IPC kanal pro web — viz `ipc_errlog_service`). */
+static const char *el_gate_name(uint8_t idx)
+{
+    switch (idx & 3u) {
+    case 0:  return "0,1s";
+    case 1:  return "1s";
+    case 2:  return "10s";
+    default: return "100s";
+    }
+}
+
+void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
+{
+    if (!buf || n == 0u) return;
+    buf[0] = '\0';
+    if (!r) return;
+
+    /* Tag nemusi byt 0-terminovany (viz errlog.h) — kopie pro %s pouziti. */
+    char tag[ERRLOG_TAG_LEN + 1];
+    memcpy(tag, r->tag, ERRLOG_TAG_LEN);
+    tag[ERRLOG_TAG_LEN] = '\0';
+
+    switch (r->kind) {
+    case ERRLOG_K_BOOT:
+        snprintf(buf, n, "duvod=%s, bring-up krok %u", tag, (unsigned)r->sub);
+        break;
+    case ERRLOG_K_CRASH:
+        snprintf(buf, n, "CFSR=0x%08lX BFAR=0x%08lX", (unsigned long)r->a, (unsigned long)r->b);
+        break;
+    case ERRLOG_K_I2C:
+        snprintf(buf, n, "sbernice I2C%u, chyb=%lu, resetu touche=%lu",
+                 (unsigned)r->sub, (unsigned long)r->a, (unsigned long)r->b);
+        break;
+    case ERRLOG_K_UART:
+        if (r->sub == 0xFFu)
+            snprintf(buf, n, "fronta GPS plna, zahozeno bajtu=%lu", (unsigned long)r->a);
+        else
+            snprintf(buf, n, "ORE=%lu FE=%lu NE=%lu PE=%lu", (unsigned long)r->a,
+                     (unsigned long)(r->b & 0xFFu), (unsigned long)((r->b >> 8) & 0xFFu),
+                     (unsigned long)((r->b >> 16) & 0xFFu));
+        break;
+    case ERRLOG_K_SENSOR: {
+        const char *name = (r->sub < SENS_COUNT) ? g_sensor_desc[r->sub].label : "?";
+        snprintf(buf, n, "%s neodpovida, chyb celkem=%lu, v rade=%lu",
+                 name, (unsigned long)r->a, (unsigned long)r->b);
+        break;
+    }
+    case ERRLOG_K_FPGA:
+        snprintf(buf, n, "%s, CRC chyb celkem=%lu",
+                 (r->sub == 2u) ? "ztrata signalu" : "ztrata linku", (unsigned long)r->a);
+        break;
+    case ERRLOG_K_REF: {
+        uint8_t newbits = (uint8_t)(r->sub & (uint8_t)~r->b);
+        if (newbits & 0x08u)      snprintf(buf, n, "ztrata 10MHz reference (LOS_CLKIN)");
+        else if (newbits & 0x10u) snprintf(buf, n, "PLL nezamknuty (PLL_LOL)");
+        else                      snprintf(buf, n, "sticky=0x%02X (bylo 0x%02lX)",
+                                            (unsigned)r->sub, (unsigned long)r->b);
+        break;
+    }
+    case ERRLOG_K_STORAGE:
+        if (r->sub == 1u) snprintf(buf, n, "flash zaneprazdnena, chyb=%lu", (unsigned long)r->a);
+        else              snprintf(buf, n, "zapis selhal, chyb=%lu, seq=%lu",
+                                    (unsigned long)r->a, (unsigned long)r->b);
+        break;
+    case ERRLOG_K_GPIO:
+        snprintf(buf, n, "pin %s ztratil konfiguraci, celkem oprav=%lu", tag, (unsigned long)r->a);
+        break;
+    case ERRLOG_K_NET:
+        if (r->sub == 1u) snprintf(buf, n, "CM4 zaseklo, pocet=%lu", (unsigned long)r->a);
+        else              snprintf(buf, n, "restart CM4 vyzadan");
+        break;
+    case ERRLOG_K_CFG:
+        switch (r->sub) {
+        case ERRLOG_CFG_GATE:
+            snprintf(buf, n, "brana %s -> %s", el_gate_name((uint8_t)r->b), el_gate_name((uint8_t)r->a));
+            break;
+        case ERRLOG_CFG_CHAN:
+            snprintf(buf, n, "kanal %s -> %s", r->b ? "B" : "A", r->a ? "B" : "A");
+            break;
+        case ERRLOG_CFG_LOGPER:
+            snprintf(buf, n, "interval logu %lus -> %lus", (unsigned long)r->b, (unsigned long)r->a);
+            break;
+        case ERRLOG_CFG_LOGSTORE:
+            snprintf(buf, n, "uloziste logu: %s -> %s",
+                     datalog_store_name((uint8_t)r->b), datalog_store_name((uint8_t)r->a));
+            break;
+        case ERRLOG_CFG_CALIB:
+            snprintf(buf, n, "ulozena kalibrace napeti");
+            break;
+        default:
+            snprintf(buf, n, "%lu -> %lu", (unsigned long)r->a, (unsigned long)r->b);
+            break;
+        }
+        break;
+    default:
+        snprintf(buf, n, "a=%lu b=%lu", (unsigned long)r->a, (unsigned long)r->b);
+        break;
+    }
+}

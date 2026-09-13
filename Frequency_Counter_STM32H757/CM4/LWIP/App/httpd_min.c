@@ -73,6 +73,16 @@
 #define HTTPD_BODYBUF_MAX   6144u   /* JSON ze snapshotu / SCPI / v12 dlouha historie /api/log */
 _Static_assert(HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_BODYBUF_MAX,
                "/api/log se nevejde do bodybuf - sniz HTTPD_LOG_MAX_PTS nebo zvetsi HTTPD_BODYBUF_MAX");
+/* v17: rozpocet `/api/errlog` — POCITANO, ne odhadnuto (F-0056 uz jednou ukazala,
+ * ze odhad tise orizne odpoved). Nejdelsi zaznam:
+ *   {"u":4294967295,"t":4294967295,"k":11,"g":"XXXXXX","x":"<71 znaku>","r":65535},
+ * = 16+15+7+13+78+11 = 140 B, zaokrouhleno na 144. Hlavicka
+ * `{"total":...,"dropped":...,"n":...,"e":[` + `]}` <= 80 B. */
+#define HTTPD_ERRLOG_REC_MAX  144u
+#define HTTPD_ERRLOG_HDR_MAX   80u
+#define HTTPD_ERRLOG_MAX_PTS   32u   /* strop zaznamu v jedne odpovedi /api/errlog */
+_Static_assert(HTTPD_ERRLOG_MAX_PTS * HTTPD_ERRLOG_REC_MAX + HTTPD_ERRLOG_HDR_MAX < HTTPD_BODYBUF_MAX,
+               "/api/errlog se nevejde do bodybuf - sniz HTTPD_ERRLOG_MAX_PTS nebo zvetsi HTTPD_BODYBUF_MAX");
 #define HTTPD_BODY_MAX       96u    /* max. PRIJATE telo POST /api/scpi (jeden radek SCPI) */
 #define HTTPD_AUTH_MAX       64u    /* base64("user:pass"), 16+1+20 B -> base64 ~50 znaku */
 
@@ -80,6 +90,7 @@ _Static_assert(HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_
 #define HCONN_NORMAL   0u   /* jednorazova odpoved (SPA/state/scpi/sats) */
 #define HCONN_LOG      1u   /* ceka na data z CM7 (IPC datalog kanal) -> pak odpovi a zavre */
 #define HCONN_SSE      2u   /* drzene SSE spojeni (/api/stream) — posila udalosti dokud zije */
+#define HCONN_ERRLOG   3u   /* v17: ceka na data z CM7 (IPC errlog kanal) -> pak odpovi a zavre */
 
 typedef struct {
     struct tcp_pcb *pcb;    /* NULL = slot volny */
@@ -612,6 +623,34 @@ static size_t build_log_json(char *out, size_t out_sz)
     return j.ovf ? 0u : j.used;
 }
 
+/* ── v17: trvaly zaznamnik chyb (okno CHYBY na displeji, `g_ipc.errlog`).
+ * Kazdy zaznam uz nese HOTOVOU vetu z CM7 (`errlog_fmt_detail`) — web NEZNA
+ * vyznam `a`/`b`/`sub` pro jednotlive druhy udalosti (viz komentar u
+ * `ipc_errlog_rec_t`, ipc_shared.h), jen ji zobrazi. `k` = ERRLOG_K_* (errlog.h)
+ * — barvu si SPA domysli sama (2=CRASH cervene, 1/11=BOOT/CFG ztlumene, jinak amber),
+ * stejna trojice jako pouziva displej. */
+static size_t build_errlog_json(char *out, size_t out_sz)
+{
+    jbuf_t j; jinit(&j, out, out_sz);
+    unsigned n = g_ipc.errlog.resp_count;
+    if (n > IPC_ERRLOG_CHUNK)     n = IPC_ERRLOG_CHUNK;
+    if (n > HTTPD_ERRLOG_MAX_PTS) n = HTTPD_ERRLOG_MAX_PTS;
+    jputf(&j, "{\"total\":%u,\"dropped\":%u,\"n\":%u,\"e\":[",
+          (unsigned)g_ipc.errlog.resp_total, (unsigned)g_ipc.errlog.resp_dropped, n);
+    for (unsigned i = 0; i < n; i++) {
+        const ipc_errlog_rec_t *r = (const ipc_errlog_rec_t *)&g_ipc.errlog.rec[i];
+        /* `tag` nemusi byt 0-terminovany (viz errlog.h) — kopie pro %s. */
+        char tag[IPC_ERRLOG_TAG_LEN + 1];
+        memcpy(tag, r->tag, IPC_ERRLOG_TAG_LEN);
+        tag[IPC_ERRLOG_TAG_LEN] = '\0';
+        jputf(&j, "%s{\"u\":%lu,\"t\":%lu,\"k\":%u,\"g\":\"%s\",\"x\":\"%s\",\"r\":%u}",
+              i ? "," : "", (unsigned long)r->uptime_s, (unsigned long)r->t_unix,
+              (unsigned)r->kind, tag, r->text, (unsigned)r->repeat);
+    }
+    jputf(&j, "]}");
+    return j.ovf ? 0u : j.used;
+}
+
 /* Precte cele cislo z query stringu: `?...&key=NNN...`. @return hodnota nebo `def`. */
 static long qparam(const char *path, const char *key, long def)
 {
@@ -1128,6 +1167,19 @@ static const char SPA_HTML[] =
 ".satrow em{text-align:right;font-style:normal;color:var(--ink)}\n"
 ".satbar{height:7px;background:var(--track);border:1px solid var(--line);overflow:hidden}\n"
 ".satbar span{display:block;height:100%}\n"
+/* ---- tabulka trvaleho zaznamniku chyb (okno CHYBY, /api/errlog) ---- */
+".etab{margin-top:10px;border:1px solid var(--line);max-height:34vh;overflow:auto}\n"
+".erow{display:grid;grid-template-columns:64px 70px 1fr 34px;gap:9px;align-items:start;\n"
+"padding:5px 10px;border-bottom:1px solid var(--line);\n"
+"font:11px ui-monospace,Consolas,monospace}\n"
+".erow:last-child{border-bottom:0}\n"
+".erow[data-hd]{background:var(--hd);color:var(--dim);font-size:9px;letter-spacing:.1em}\n"
+".erow u{color:var(--ink2);text-decoration:none}\n"
+".erow b{font-weight:600}\n"
+".erow b[data-k=bad]{color:var(--bad)}\n"
+".erow b[data-k=dim]{color:var(--dim)}\n"
+".erow b[data-k=warn]{color:var(--warn)}\n"
+".erow em{font-style:normal;color:var(--ink2);text-align:right}\n"
 "</style></head><body><div class='wrap'>\n"
 "\n"
 /* Sdilene SVG prechody. Jeden skryty <svg> na zacatku dokumentu; ostatni grafy
@@ -1533,6 +1585,16 @@ static const char SPA_HTML[] =
 "<div class='grp'><span>&nbsp;</span><button class='btn' id='bClr'>VYCISTIT</button></div>\n"
 "</div>\n"
 "<div class='log' id='log'></div>\n"
+"</div>\n"
+"\n"
+"<div class='card' id='cErr'>\n"
+"<div class='ttl'>[ CHYBY / LOG ]<span class='r mono' id='stErr'>--</span></div>\n"
+"<div class='etab' id='errBody'></div>\n"
+"<div class='ctl' style='margin-top:9px'>\n"
+"<div class='grp'><span>&nbsp;</span><button class='btn' id='bErrNewer'>NOVEJSI</button></div>\n"
+"<div class='grp'><span>&nbsp;</span><button class='btn' id='bErrOlder'>STARSI</button></div>\n"
+"</div>\n"
+"<div class='nrow' id='errNote'>Nejnovejsi udalosti nahore. NOVEJSI/STARSI strankuji po 20.</div>\n"
 "</div>\n"
 "\n"
 "<div class='card'>\n"
@@ -3582,6 +3644,42 @@ static const char SPA_HTML[] =
 "  document.body.removeChild(a); setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);\n"
 "}\n"
 "\n"
+/* v17: trvaly zaznamnik chyb (okno CHYBY na displeji), pres /api/errlog.
+ * !! Kazdy zaznam uz nese HOTOVOU vetu z CM7 (errlog_fmt_detail) - web NEZNA
+ * vyznam cisel pro jednotlive druhy udalosti (byl by to duplikat znalosti,
+ * ktera uz jednou zije na CM7, a casem by se rozesla). Barva se domysli jen
+ * z druhu udalosti (k), stejna trojice jako pouziva displej: CRASH cervene,
+ * BOOT/NASTAV ztlumene, jinak amber. */
+"var errFrom=0, ERRN=20;\n"
+"var EKNAME={1:'BOOT',2:'CRASH',3:'I2C',4:'UART',5:'SENZOR',6:'FPGA',7:'REF',8:'ULOZ',9:'GPIO',10:'SIT',11:'NASTAV'};\n"
+"function ekName(k){ return EKNAME[k]||'?'; }\n"
+"function ekClass(k){ return k===2?'bad':((k===1||k===11)?'dim':'warn'); }\n"
+"function durBeh(s){\n"
+"  s=Math.floor(s); var h=Math.floor(s/3600), m=Math.floor(s/60)%60, ss=s%60;\n"
+"  if(h>0) return h+'h'+(m<10?'0':'')+m+'m';\n"
+"  if(m>0) return m+'m'+(ss<10?'0':'')+ss+'s';\n"
+"  return s+'s';\n"
+"}\n"
+"function renderErrlog(d){\n"
+"  var e=d.e||[], i, h='<div class=erow data-hd=1><u>BEH</u><u>DRUH</u><u>DETAIL</u><u></u></div>';\n"
+"  for(i=0;i<e.length;i++){\n"
+"    var r=e[i];\n"
+"    h+='<div class=erow><u>'+durBeh(r.u)+'</u><b data-k='+ekClass(r.k)+'>'+ekName(r.k)+'</b>'\n"
+"      +'<span>'+r.x+'</span><em>'+(r.r?('x'+(r.r+1)):'')+'</em></div>';\n"
+"  }\n"
+"  $('errBody').innerHTML=e.length?h:'<div class=erow>Zatim zadna chyba - to je dobra zprava.</div>';\n"
+"  $('stErr').textContent=d.total+' zaznamu'+(d.dropped?(', ring zahodil '+d.dropped):'');\n"
+"  $('errNote').textContent='Zobrazeno '+e.length+' z '+d.total+' zaznamu, od pozice '+errFrom+'.'\n"
+"    +(d.dropped?(' Ring zahodil '+d.dropped+' (log byl plny).'):'');\n"
+"}\n"
+"function fetchErrlog(from){\n"
+"  errFrom=from<0?0:from;\n"
+"  fetch('/api/errlog?n='+ERRN+'&from='+errFrom)\n"
+"  .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })\n"
+"  .then(renderErrlog)\n"
+"  .catch(function(e){ $('errNote').textContent='zaznamnik chyb se nenacetl: '+e; });\n"
+"}\n"
+"\n"
 "/* v12 (#3): SSE push s automatickym fallbackem na 1 Hz poll. */\n"
 "function startStream(){\n"
 "  var es=null, fell=0;\n"
@@ -3608,6 +3706,8 @@ static const char SPA_HTML[] =
 "  if(d) scon('SYST:DATE '+d); if(t) scon('SYST:TIME '+t);\n"
 "  say('rmsg','cas odeslan (uplatni se jen bez GPS fixu)','ok'); });\n"
 "$('bCsv').addEventListener('click',exportCsv);\n"
+"$('bErrNewer').addEventListener('click',function(){ fetchErrlog(Math.max(0,errFrom-ERRN)); });\n"
+"$('bErrOlder').addEventListener('click',function(){ fetchErrlog(errFrom+ERRN); });\n"
 "$('bFreeze').addEventListener('click',freezeToggle);\n"
 "wire('segTheme','data-t',function(v){ theme=v; themeApply(); saveUi(); });\n"
 "\n"
@@ -3679,7 +3779,7 @@ static const char SPA_HTML[] =
 "loadM();                                   /* historie mereni pres F5 (kdyz je mezera mala) */\n"
 "setInterval(saveM,15000);                  /* periodicky, at prezije i pad zalozky */\n"
 "window.addEventListener('beforeunload',saveM);\n"
-"poll(); startStream(); pollSats(); setInterval(pollSats,3000);\n"
+"poll(); startStream(); pollSats(); setInterval(pollSats,3000); fetchErrlog(0);\n"
 "</script></body></html>\n";
 
 /* ── Odesilaci fronta (hlavicka + telo po kouscich pres tcp_sent). ───────────── */
@@ -3813,6 +3913,7 @@ static void queue_spa(http_conn_t *c, const http_req_t *r)
 
 /* ── v12 (#3): SSE (Server-Sent Events) — drzene spojeni, push pri novem mereni ── */
 static uint32_t s_log_gen;   /* generace pozadavku na datalog (handshake s CM7) */
+static uint32_t s_errlog_gen; /* v17: generace pozadavku na errlog (handshake s CM7) */
 
 /* Dosle nedoposlanou SSE hlavicku (mala, obvykle projde napoprve). */
 static void sse_finish_hdr(http_conn_t *c)
@@ -3884,6 +3985,16 @@ void httpd_min_poll(void)
             } else if ((int32_t)(now - c->defer_ms) >= 0) {      /* timeout */
                 c->mode = HCONN_NORMAL;
                 queue_text(c, 504, "Gateway Timeout", "datalog (CM7) neodpovedel\n");
+            }
+        } else if (c->mode == HCONN_ERRLOG) {
+            if (g_ipc.errlog.resp_gen == c->defer_gen) {          /* CM7 naplnil data */
+                size_t n = build_errlog_json(c->bodybuf, sizeof c->bodybuf);
+                c->mode = HCONN_NORMAL;
+                if (n == 0) queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n");
+                else        queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
+            } else if ((int32_t)(now - c->defer_ms) >= 0) {      /* timeout */
+                c->mode = HCONN_NORMAL;
+                queue_text(c, 504, "Gateway Timeout", "errlog (CM7) neodpovedel\n");
             }
         } else if (c->mode == HCONN_SSE) {
             sse_finish_hdr(c);
@@ -3997,6 +4108,27 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         /* ⚠️ Timeout 8 s (drive 2 s): s obalkou cte CM7 az IPC_LOG_SCAN_MAX zaznamu
          * po davkach IPC_LOG_SCAN_BUDGET na tik (100 Hz), coz je radove sekundy. */
         c->mode = HCONN_LOG; c->defer_gen = s_log_gen; c->defer_ms = HAL_GetTick() + 8000u;
+        return;                                          /* odpoved dokonci httpd_min_poll */
+    }
+    /* v17: trvaly zaznamnik chyb (okno CHYBY na displeji) — stejny odlozeny
+     * vzor jako /api/log, ale bez decimace/obalky (errlog je male strankovani,
+     * ne dlouha historie), takze staci kratky timeout. */
+    if (strcmp(r->method, "GET") == 0 && path_is(r->path, "/api/errlog")) {
+        for (unsigned i = 0; i < HTTPD_MAX_CONN; i++)   /* jen jeden transfer soubezne (sdileny kanal) */
+            if (s_hconn[i].mode == HCONN_ERRLOG && &s_hconn[i] != c) {
+                queue_text(c, 503, "Service Unavailable", "errlog zaneprazdnen\n"); return;
+            }
+        long np = qparam(r->path, "n", (long)HTTPD_ERRLOG_MAX_PTS);
+        if (np < 1) np = 1;
+        if (np > (long)HTTPD_ERRLOG_MAX_PTS) np = (long)HTTPD_ERRLOG_MAX_PTS;   /* rozpocet hlida _Static_assert */
+        /* `from` = odkud (v zaznamech od nejnovejsiho) — strankovani „starsi"/"novejsi". */
+        long from = qparam(r->path, "from", 0);
+        if (from < 0) from = 0;
+        g_ipc.errlog.req_from  = (uint32_t)from;
+        g_ipc.errlog.req_count = (uint16_t)np;
+        IPC_DMB();
+        g_ipc.errlog.req_gen   = ++s_errlog_gen;          /* az PO parametrech -> CM7 vidi konzistentne */
+        c->mode = HCONN_ERRLOG; c->defer_gen = s_errlog_gen; c->defer_ms = HAL_GetTick() + 1500u;
         return;                                          /* odpoved dokonci httpd_min_poll */
     }
     queue_text(c, 404, "Not Found", "not found\n");

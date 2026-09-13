@@ -30,7 +30,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  16u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  17u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -77,7 +77,14 @@
                                        by jednorazovy zapis smazal). Pro okno PAMET na CM7, ktere do ted
                                        ukazovalo jen CM7 - uzivatel se ptal, proc chybi CM4. SKUTECNY
                                        rust snapshotu o 8 B (novy blok na konci ipc_cm4_status_t, ne
-                                       recyklovany padding), takze OBE banky se MUSI preflashnout. */
+                                       recyklovany padding), takze OBE banky se MUSI preflashnout.
+                                       v17 (2026-09-13): novy kanal `errlog` — trvaly zaznamnik chyb
+                                       (W25Q, viz errlog.h) na vyzadani pro web, stejny handshake jako
+                                       `log` (req_gen/resp_gen). Okno CHYBY na displeji bylo do ted
+                                       jedinou cestou, jak historii chyb videt; uzivatel se zeptal, jestli
+                                       to jde i na webu. ⚠️ `errlog` je AZ ZA `log`, tedy na konci cele
+                                       struktury -> detekce nesouladu bank (cm4_ipc_version) funguje
+                                       stejne jako u v13. Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -283,6 +290,40 @@ typedef struct {
     ipc_log_rec_t rec[IPC_LOG_CHUNK];
 } ipc_datalog_xfer_t;
 
+/* ── v17: trvaly zaznamnik chyb (CM7 W25Q ERRLOG region -> web) ─────────────
+ * Stejny handshake jako `ipc_datalog_xfer_t` (req_gen/resp_gen), ale JEDNODUSSI:
+ * errlog nema decimaci ani obalku — jde jen o strankovani `errlog_read_batch`.
+ * `text` je uz HOTOVA veta z `errlog_fmt_detail()` (viz errlog.h) — CM4/web
+ * NEZNA vyznam `a`/`b`/`sub` pro jednotlive druhy udalosti, jen ho zobrazi;
+ * jinak by musel duplikovat tutez znalost jako displej (a casem se rozejit). */
+#define IPC_ERRLOG_TAG_LEN    6u    /* == ERRLOG_TAG_LEN (errlog.h), hlida _Static_assert v ipc.c */
+#define IPC_ERRLOG_DETAIL_LEN 72u   /* == ERRLOG_DETAIL_LEN (errlog.h), hlida _Static_assert v ipc.c */
+#define IPC_ERRLOG_CHUNK      64u   /* zaznamu na jeden transfer round-trip */
+
+typedef struct {
+    uint32_t seq;
+    uint32_t t_unix;               /* UTC [s]; 0 = RTC nesynchronizovano */
+    uint32_t uptime_s;              /* uptime v okamziku udalosti */
+    uint16_t repeat;                /* kolikrat se to od minuleho zapisu opakovalo */
+    uint8_t  kind;                  /* ERRLOG_K_* (errlog.h) — web si k nemu domysli barvu */
+    uint8_t  _pad;
+    char     tag[IPC_ERRLOG_TAG_LEN];
+    char     text[IPC_ERRLOG_DETAIL_LEN];  /* hotova veta z errlog_fmt_detail(), 0-terminovano */
+} ipc_errlog_rec_t;
+
+typedef struct {
+    volatile uint32_t req_gen;     /* CM4 zvedne pri NOVEM pozadavku (0 = zadny) */
+    uint32_t req_from;             /* index nejnovejsiho zaznamu (0 = posledni zapsany) */
+    uint16_t req_count;            /* kolik zaznamu (<= IPC_ERRLOG_CHUNK) */
+    uint8_t  _pad_rq[2];
+    volatile uint32_t resp_gen;    /* CM7 nastavi = req_gen po naplneni `rec[]` */
+    uint16_t resp_count;           /* kolik zaznamu SKUTECNE nacteno */
+    uint16_t resp_total;           /* kolik zaznamu v logu vubec je (pro strankovani) */
+    uint16_t resp_dropped;         /* errlog_dropped() — ring zahodil (byl plny) */
+    uint8_t  _pad_rs[2];
+    ipc_errlog_rec_t rec[IPC_ERRLOG_CHUNK];
+} ipc_errlog_xfer_t;
+
 /* ── Prikaz CM4 -> CM7 + odpoved CM7 -> CM4. */
 typedef struct {
     uint8_t  type;                 /* IPC_CMD_* */
@@ -375,6 +416,7 @@ typedef struct {
     ipc_resp_ring_t  resp;         /* CM7 -> CM4 */
     ipc_cm4_status_t cm4;          /* CM4 -> CM7 */
     ipc_datalog_xfer_t log;        /* CM4 <-> CM7 (v12, bulk historie na vyzadani) */
+    ipc_errlog_xfer_t errlog;      /* CM4 <-> CM7 (v17, trvaly zaznamnik chyb na vyzadani) */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -490,6 +532,7 @@ void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu,
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
+void ipc_errlog_service(void); /* v17: obsluz errlog transfer (req_gen != resp_gen) -> naplni errlog.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
 /* Velikost obrazu CM4 (FLASH/RAM, v16). @return 1 = platne (CM4 zapsala magic),

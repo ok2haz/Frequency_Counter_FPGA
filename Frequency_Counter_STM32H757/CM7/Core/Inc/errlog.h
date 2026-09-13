@@ -31,6 +31,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>   /* size_t (errlog_fmt_detail) */
 
 /* Druh udalosti. ⚠️ Cisla jsou v zapsanych datech — NEPRECISLOVAT, jen pridavat. */
 typedef enum {
@@ -102,5 +103,12 @@ uint32_t errlog_count(void);          /* kolik zaznamu je v logu */
 uint32_t errlog_dropped(void);        /* kolik jich ring zahodil (byl plny) */
 void     errlog_erase(void);          /* ⚠️ destruktivni; jen z UartTasku */
 const char *errlog_kind_name(uint8_t kind);
+
+/* Rozlusti `a`/`b`/`sub`/`tag` DANEHO zaznamu do ČLOVEKEM čitelne vety (BEZ kind
+ * jmena a casu — ty uz nese `errlog_kind_name`/`uptime_s`). JEDEN zdroj pravdy:
+ * pouziva ho displej (okno CHYBY) i IPC kanal pro web, aby obe strany rikaly
+ * totez o tomtez zaznamu. Vzdy 0-terminovano; nikdy nezapise vic nez `n`. */
+#define ERRLOG_DETAIL_LEN 72u
+void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n);
 
 #endif /* INC_ERRLOG_H_ */

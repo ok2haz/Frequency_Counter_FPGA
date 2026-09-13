@@ -27,6 +27,7 @@
 #include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
 #include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
 #include "datalog.h"          /* datalog_set_enabled — IPC_CMD_LOG z CM4 (W1); v12 datalog_read_back/status */
+#include "errlog.h"           /* v17: errlog_count/read_batch/fmt_detail — trvaly zaznamnik chyb na web */
 #include "alarm.h"            /* g_alarm_*, g_mon_*_bad — dashboard STAV karta (v12, #4) */
 #include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
 #include <stddef.h>           /* offsetof — kontrola layoutu ipc_sat_t vs gps_sat_t */
@@ -39,6 +40,12 @@
 /* ── v12: `ipc_sat_t` (ipc_shared.h, bez gps.h) MUSI mit shodny layout s
  * `gps_sat_t` (gps.h) — publikace druzic je proste `memcpy`. Kdyby se rozesly,
  * web by kreslil sky plot ze smetĺ. Ty dva headery se jinak nepotkaji v jedne TU. */
+/* ── v17: `ipc_errlog_rec_t` rozmery MUSI sedet s `errlog_rec_t` (errlog.h) —
+ * jinak `tag`/`text` v odpovedi weburi neco jineho, nez co `errlog_fmt_detail`
+ * doopravdy naplnila (a ticho oriznute). */
+_Static_assert(IPC_ERRLOG_TAG_LEN == ERRLOG_TAG_LEN, "IPC/errlog tag delka se rozesla");
+_Static_assert(IPC_ERRLOG_DETAIL_LEN == ERRLOG_DETAIL_LEN, "IPC/errlog detail delka se rozesla");
+
 _Static_assert(IPC_GPS_MAX_SATS == GPS_MAX_SATS, "IPC/GPS pocet druzic se rozesel");
 _Static_assert(sizeof(ipc_sat_t) == sizeof(gps_sat_t), "ipc_sat_t != gps_sat_t velikost");
 _Static_assert(offsetof(ipc_sat_t, prn)     == offsetof(gps_sat_t, prn),     "sat.prn offset");
@@ -375,6 +382,48 @@ void ipc_datalog_service(void)
     g_ipc.log.resp_full_env = s_full;
     IPC_DMB();
     g_ipc.log.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
+}
+
+/* ── v17: obsluha errlog transfer kanalu (CM4 -> CM7 -> CM4). ────────────────
+ * Podstatne jednodussi nez `ipc_datalog_service`: `errlog_read_batch` uz sama
+ * davkuje pod JEDNIM zamknutim QSPI (viz flightrec.c), takze na rozdil od
+ * datalogu (ktery muze skenovat az 20 000 zaznamu kvuli obalce) tu neni co
+ * rozkladat pres vic ticku defaultTasku — jeden pozadavek (<= IPC_ERRLOG_CHUNK
+ * zaznamu, typicky desitky) se vyridi v JEDNOM volani. */
+void ipc_errlog_service(void)
+{
+    uint32_t req = g_ipc.errlog.req_gen;
+    if (req == g_ipc.errlog.resp_gen) return;          /* zadny novy pozadavek */
+
+    /* Docasny buffer NA STACKU by prekrocil rozpocet defaultTasku
+     * (IPC_ERRLOG_CHUNK × sizeof(errlog_rec_t) = 64×32 B = 2048 B proti
+     * stacku 384 slov = 1536 B) — proto `static`, stejny duvod jako u
+     * ostatnich velkych bufferu selftestu (viz CLAUDE.md). Bezpecne: volani
+     * jen z defaultTasku, jednovlaknove. */
+    static errlog_rec_t s_tmp[IPC_ERRLOG_CHUNK];
+
+    uint16_t want = g_ipc.errlog.req_count;
+    if (want > IPC_ERRLOG_CHUNK) want = IPC_ERRLOG_CHUNK;
+    uint32_t got = errlog_read_batch(g_ipc.errlog.req_from, want, s_tmp);
+
+    for (uint32_t i = 0; i < got; i++) {
+        volatile ipc_errlog_rec_t *o = &g_ipc.errlog.rec[i];
+        o->seq      = s_tmp[i].seq;
+        o->t_unix   = s_tmp[i].t_unix;
+        o->uptime_s = s_tmp[i].uptime_s;
+        o->repeat   = s_tmp[i].repeat;
+        o->kind     = s_tmp[i].kind;
+        for (uint32_t k = 0; k < IPC_ERRLOG_TAG_LEN; k++) o->tag[k] = s_tmp[i].tag[k];
+        char det[ERRLOG_DETAIL_LEN];
+        errlog_fmt_detail(&s_tmp[i], det, sizeof det);
+        for (uint32_t k = 0; k < IPC_ERRLOG_DETAIL_LEN; k++) o->text[k] = det[k];
+    }
+
+    g_ipc.errlog.resp_count   = (uint16_t)got;
+    g_ipc.errlog.resp_total   = (uint16_t)(errlog_count()   > 0xFFFFu ? 0xFFFFu : errlog_count());
+    g_ipc.errlog.resp_dropped = (uint16_t)(errlog_dropped() > 0xFFFFu ? 0xFFFFu : errlog_dropped());
+    IPC_DMB();
+    g_ipc.errlog.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
 }
 
 /* Posledni REALNY kmitocet /4 [Hz] (pro NULL_ACQ). @return 1 = platne. */
