@@ -649,16 +649,33 @@ grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
 | `CM7/Core/Src/usart.c` | `#include "errlog.h"` | ✅ přesunuto do `USER CODE 0` |
 | `CM4/.../stm32h7xx_it.c` | include `ipc_shared.h`, `cm4_fault_note()`, `cm4_fault_capture()` | ✅ přesunuto do `USER CODE Includes` / `USER CODE 0` |
 | `CM4/.../stm32h7xx_it.c` | volání `cm4_fault_note(3u/4u/5u/6u)` v handlerech | ✅ přesunuta **dovnitř** `USER CODE BEGIN <IRQ> 0` |
-| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | 🔴 **regen-safe BÝT NEMŮŽE — vracet ručně** (jediná zbylá fragilní věc, hlídá `check_regen()`) |
+| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | ✅ **VYŘEŠENO TRVALE 2026-09-13** — viz níže; první pokus (jen `.ioc` flag) nestačil, druhý (flag + `USER CODE`) ověřen reálným regenem |
 
-### 🔴 Jediná věc, která se regen-safe udělat nedá
+### ✅ `naked` handler regen-safe JDE — potřebuje DVĚ pojistky najednou (ne jednu)
 
-`__attribute__((naked))` sedí na **hlavičce** funkce, a tu CubeMX vždy přepíše;
-uvnitř `USER CODE` bloku hlavičku změnit nejde. Poctivá náhrada neexistuje: bez
-`naked` posune prolog MSP, takže by se z rámce výjimky četlo PC/LR o pár bajtů
-vedle — tedy **věrohodně vypadající, ale špatné číslo**. Radši žádné PC než vymyšlené.
-Degradace při přehlédnutí je snesitelná: `cm4_fault_note()` v ostatních handlerech
-je regen-safe a zaznamená aspoň **druh** faultu.
+Tvrzení „regen-safe BÝT NEMŮŽE" (drželo se tu do 2026-09-13) bylo **vyvrácené vlastním
+CM7 vzorem** — jeho `naked HardFault_Handler` přežil minimálně tři regeny (2026-08-16,
+2026-08-29, 2026-09-01, 2026-09-12). Rozdíl proti CM4 nebyl v `naked`, ale v TOM, KDE ten
+kód leží. Postup, ověřený na CM4 2026-09-13 reálným "Generate Code" v IDE (`docs/LESSONS.md`
+L-0043):
+
+1. **`.ioc`**: u `HardFault_IRQn` odškrtnout **"Generate IRQ handler"** (v NVIC panelu,
+   záložka **"Code generation"**; ukládá se jako 6. pole `NVIC<n>.HardFault_IRQn=…`).
+   ⚠️ **Samo o sobě NESTAČÍ** — jen řekne CubeMX "nepiš přes tohle svůj stub", ale
+   regen dál skenuje soubor a svůj DŘÍVĚJŠÍ generovaný blok (podle doxygen komentáře
+   `@brief This function handles Hard fault interrupt.` + jména funkce) **aktivně
+   odstraní**, když ho přestane potřebovat. Přesně to se stalo 2026-09-13 při prvním
+   pokusu — flag byl vypnutý a CubeMX HardFault_Handler přesto smazal celý.
+2. **Tělo funkce do `USER CODE BEGIN 1` / `END 1`** (soubor-scope blok v `stm32h7xx_it.c`,
+   NE per-IRQ `USER CODE BEGIN HardFault_IRQn 0/1` — ten CubeMX bez zapnutého generování
+   handleru vůbec nevytváří). Do USER CODE regen nikdy nesahá, bez ohledu na obsah.
+3. **Prototyp do `USER CODE BEGIN EFP` / `END EFP`** v `stm32h7xx_it.h` — regen zahodí
+   i tohle (bez zapnutého generování handleru netuší, že prototyp má zůstat), takže by
+   bez ruční obnovy hlásil `-Wmissing-prototypes`.
+
+⚠️ **`naked` sám o sobě zůstává nezbytný** (sedí na hlavičce, kterou by normální regen
+přepsal) — ale díky bodu 2 se hlavička už s regenem nikdy nesetká, protože regen do
+`USER CODE` bloku nevidí a nezasahuje.
 
 ### Hodnoty, které MUSÍ být v `.ioc` (ne jen v generovaném řádku)
 

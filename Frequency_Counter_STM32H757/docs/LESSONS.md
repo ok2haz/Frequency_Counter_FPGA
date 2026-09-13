@@ -1164,6 +1164,45 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0043 — "Generate IRQ handler" vypnuto NESTAČÍ, když je handler mimo USER CODE
+
+- **Datum:** 2026-09-13
+- **Oblast:** build / dvoujádro (CubeMX regen, CM4 crash black-box)
+- **Symptom:** V `.ioc` se u `NVIC2.HardFault_IRQn` (CM4) odškrtlo "Generate IRQ
+  handler" (6. pole `false`) — stejná hodnota, jakou má CM7 už od 2026-08-16 a
+  jejíž `naked` handler přežil minimálně tři dřívější regeny. Po reálném
+  "Generate Code" v IDE ale CubeMX **celou funkci `HardFault_Handler` na CM4
+  smazal** (i doxygen komentář nad ní) — přesně ta vada, které měl flag
+  zabránit.
+- **Příčina:** vypnutý "Generate IRQ handler" řekne CubeMX jen "nepiš přes
+  tohle svůj stub" — NEŘÍKÁ "nesahej na obsah". Regen dál skenuje soubor,
+  pozná svůj vlastní generovaný blok (doxygen `@brief This function handles
+  Hard fault interrupt.` + jméno funkce) a když handler přestane být
+  "potřebný" (flag vypnutý), blok **aktivně odstraní** jako už nepoužívaný —
+  bez ohledu na to, že v něm mezitím byl náš `naked` kód. CM7ho handler tuhle
+  osudu unikl ze zcela jiného důvodu: leží **uvnitř** `/* USER CODE BEGIN 1 */
+  ... END 1 */` a nemá CubeMX doxygen komentář — regen do USER CODE obsahu
+  nikdy nesahá, takže ho ani nerozpoznal jako "svůj" blok k úklidu.
+- **Oprava:** `HardFault_Handler` na CM4 přesunut do stejného slotu jako na
+  CM7 — definice do `USER CODE BEGIN 1`/`END 1` v `stm32h7xx_it.c`, prototyp
+  do `USER CODE BEGIN EFP`/`END EFP` v `stm32h7xx_it.h` (regen smazal i
+  prototyp, ne jen tělo). Ověřeno reálným "Generate Code" v IDE (ne
+  syntetickým testem) + `./scripts/build.sh Release BOTH` (0 varování) +
+  `nm` (`HardFault_Handler` je `T`, definovaný silný symbol, ne weak default).
+- **Pravidlo:** **Regen-safe vlastní handler potřebuje OBĚ pojistky najednou:**
+  (1) v `.ioc` vypnuté "Generate IRQ handler" (jinak regen přepíše obsah
+  svým stubem) **a** (2) umístění celého kódu (tělo i prototyp) uvnitř
+  `USER CODE` bloků (jinak regen i s vypnutým flagem svůj rozpoznaný blok
+  odstraní). Jedna bez druhé nestačí — a chybu neodhalí nic než skutečný
+  regen, protože obě chybové cesty (přepsání stubem / smazání) vypadají
+  na první pohled jinak, ale obě mají stejný symptom: zmizelý kód.
+- **Detekce:** `check_regen()` v `scripts/build.sh` (`grep -c naked` v
+  `stm32h7xx_it.c`) — hlásí zmizení bez ohledu na to, KTERÝ z obou
+  mechanismů selhal. Nově navíc kryté i tím, že kód leží v `USER CODE`
+  (self-evidentní ochrana, ne jen kontrola po škodě).
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
 ### L-0041 — `grep -c … || echo 0` v shellu dá "0\n0", ne "0"
 
 - **Datum:** 2026-09-12
