@@ -118,33 +118,6 @@ void NMI_Handler(void)
 }
 
 /**
-  * @brief This function handles Hard fault interrupt.
-  */
-/* 🔴 NAKED + asm: jediny zpusob, jak se dostat k RAMCI VYJIMKY nedotcenemu
- * prologem funkce. `tst lr, #4` rozhodne, jestli se vyjimka vzala z MSP nebo
- * PSP, a ukazatel na ramec se preda `cm4_fault_capture()` v r0.
- * ⚠️⚠️ TOHLE NEPREZIJE `Generate Code` A PREZIT NEMUZE: `__attribute__((naked))`
- * je na HLAVICCE funkce, kterou CubeMX vzdy prepisuje — uvnitr `USER CODE` bloku
- * hlavicku zmenit nejde. Po KAZDEM regenu se to sem musi vratit rucne; hlida to
- * polozka v `CUBEMX_CHECKLIST.md` (grep na `naked` v tomhle souboru).
- * ⚠️ Poctiva nahrada uvnitr `USER CODE` NEEXISTUJE: bez `naked` uz prolog posune
- * MSP, takze by se z ramce cetlo PC/LR o par bajtu vedle — tedy VEROHODNE
- * VYPADAJICI, ale spatne cislo. Radeji zadne PC nez vymyslene.
- * 🔑 Kdyz to nekdo pri regenu prehlidne, degradace je snesitelna: `cm4_fault_note()`
- * ve `USER CODE` blocich ostatnich handleru dal zaznamena DRUH faultu (bez PC/LR),
- * protoze ta volani uz regen-safe jsou. */
-__attribute__((naked)) void HardFault_Handler(void)
-{
-  __asm volatile (
-    "tst  lr, #4            \n"
-    "ite  eq                \n"
-    "mrseq r0, msp          \n"
-    "mrsne r0, psp          \n"
-    "b    cm4_fault_capture \n"
-  );
-}
-
-/**
   * @brief This function handles Memory management fault.
   */
 void MemManage_Handler(void)
@@ -260,5 +233,31 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+
+/* HardFault: crash black-box CM4 (PC/LR/CFSR -> IPC blok cm4, viz cm4_fault_capture
+ * v USER CODE 0). Handler je ZAMERNE TADY, v USER CODE 1, a v `.ioc` je u HardFault
+ * (Context1/CM4, NVIC2.HardFault_IRQn) odskrtnute "Generate IRQ handler" (pole 6 =
+ * false, stejne jako uz drive na CM7 u NVIC1.HardFault_IRQn). Diky tomu CubeMX
+ * tuhle funkci NEGENERUJE a regen ji uz nemuze prepsat.
+ * ⚠️⚠️ ANI JEDNA POJISTKA SAMA O SOBE NESTACI (zjisteno 2026-09-13 realnym regenem):
+ * kdyz je handler MIMO USER CODE, i s vypnutym "Generate handler" ho CubeMX pri
+ * regenu celý SMAZAL (rozpoznal svuj puvodni doxygen komentar + jmeno funkce a
+ * uklidil "nepouzivany" handler) — presne to se stalo pred timto zapisem. Musi
+ * platit OBOJI naraz: vypnuty flag v .ioc (jinak by CubeMX psal svuj stub PRES
+ * tohle) A umisteni v USER CODE (jinak to CubeMX i s vypnutym flagem odstrani).
+ *
+ * MUSI byt `naked`: prolog bezne C funkce posune MSP, takze `frame[6]` uz necte
+ * exception frame, ale prolog (vracelo by to VEROHODNE VYPADAJICI, ale spatne
+ * PC/LR). EXC_RETURN bit2 (`tst lr, #4`) rozlisuje, ktery zasobnik se pouzil. */
+__attribute__((naked)) void HardFault_Handler(void)
+{
+  __asm volatile (
+    "tst  lr, #4            \n"
+    "ite  eq                \n"
+    "mrseq r0, msp          \n"
+    "mrsne r0, psp          \n"
+    "b    cm4_fault_capture \n"
+  );
+}
 
 /* USER CODE END 1 */

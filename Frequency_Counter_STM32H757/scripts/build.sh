@@ -121,10 +121,16 @@ PY
 # v CM4/Release/*/subdir.mk (presny artefakt, ktery regen prepisuje) — build
 # dal 0 varovani a byte-presne stejny .elf.
 #
-# Zbyva jedina fragilni vec, kterou regen-safe udelat NEJDE:
-#   `naked` HardFault na CM4 — regen ho prepise stockovym telem, takze crash
-#   black-box CM4 tise prijde o PC/LR. (Na CM7 je to vyresene tim, ze `.ioc`
-#   ma u HardFault vypnute „generovat obsluhu"; CM4 to zatim nema.)
+# Poslednich z tech peti veci — `naked` HardFault na CM4 — se 2026-09-13
+# vyresilo TRVALE (ne jen hlida): v `.ioc` NVIC2.HardFault_IRQn ma vypnute
+# „Generate IRQ handler" (jako CM7 uz od 2026-08-16) A telo+prototyp jsou
+# v USER CODE (`stm32h7xx_it.c` USER CODE 1, `stm32h7xx_it.h` USER CODE EFP).
+# ⚠️ Prvni pokus (jen ten .ioc flag, handler MIMO USER CODE) NESTACIL — realny
+# regen 2026-09-13 handler i s vypnutym flagem cely SMAZAL (rozpoznal svuj
+# puvodni doxygen komentar a „uklidil" nepouzivany blok). Teprve kombinace
+# obojiho je regen-safe; overeno druhym realnym regenem. Viz L-0043 v
+# docs/LESSONS.md. Kontrola nize ZUSTAVA jako pojistka proti rucnimu
+# prehlednuti, ne protoze by regen byl stale hrozbou.
 # ⚠️ Kontrola jen HLASI, neopravuje: automaticka oprava cizich souboru by byla
 # horsi nez hlaska — clovek ma videt, ze regen neco vzal.
 # ⚠️ Pocet shod ber VYHRADNE pres `cnt` — `grep -c` pri nula shodach vypise `0`
