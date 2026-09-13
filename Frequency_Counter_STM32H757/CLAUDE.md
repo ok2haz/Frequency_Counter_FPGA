@@ -574,6 +574,12 @@ detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“
   `ATTINY_50KHZ`, protože osloví víc zařízení najednou a 50 kHz je jediná
   rychlost bezpečná pro všechna tři) — vždy **pod `i2c4MutexHandle`**. Funkce
   si pamatuje aktuální rychlost a přepíná jen při reálné změně.
+  ✅ **Ověřeno na HW po power-cyklu (2026-09-13):** dotyk funguje, boot
+  splash se ukazuje a čas do hlavní obrazovky je v pořádku — potvrzeno
+  uživatelem po opravě `i2c4_speed_select` na PE-only přepnutí (žádný
+  `HAL_I2C_DeInit`/`Init`, viz `docs/LESSONS.md` L-0047). Tahle oprava
+  byla nutná KVŮLI třem rychlostem (přepínání se najednou stalo časté),
+  ne kvůli konkrétní hodnotě 75/400 kHz.
   - **`I2C4_TIMING_TOUCH_75KHZ` NENÍ hypotéza** — 75 kHz leží plně v pásmu
     čistých, důvěryhodných dat (FT5x06 má 0,00 % chyb i při 100 kHz v obou
     měřeních), je to přímo změřený bod.

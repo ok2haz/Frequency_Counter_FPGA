@@ -1172,8 +1172,8 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   (L-0045/L-0046) dotyk vůbec nefungoval, boot splash se neukázal, displej
   byl ~7 s černý a hlavní obrazovka se ukázala pozdě, screensaver se
   aktivoval ~11,5 s po zapnutí — reálný HW test, ne odhad.
-- **Příčina (silně podložená hypotéza, ⬜ neověřená druhým HW testem v době
-  zápisu):** `i2c4_speed_select()` do té doby dělal `HAL_I2C_DeInit()` +
+- **Příčina (✅ POTVRZENO druhým HW testem — oprava fungovala):**
+  `i2c4_speed_select()` do té doby dělal `HAL_I2C_DeInit()` +
   `HAL_I2C_Init()` (stejný vzor jako starší `i2c4_recover()`/
   `i2csp_set_timing`). DeInit/Init ale přes `MspDeInit`/`MspInit`
   **překonfiguruje GPIO SCL/SDA** (AF → jiný mode → AF) — a to je přesně
@@ -1202,8 +1202,10 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   (přepnutí na KAŽDÉM touch pollu, těsně po zápisu jasu).
 - **Detekce:** žádná automatická — build i audit prošly čistě, je to
   funkční/HW vada. Odhaleno jen reálným power-cyklem na desce.
-- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
-- **Stav:** aktivní, ⬜ čeká na potvrzení druhým HW testem
+- **Commit:** `7a1cecb`
+- **Stav:** ✅ aktivní, potvrzeno na HW — dotyk, boot splash i čas do
+  hlavní obrazovky po power-cyklu s opravou v pořádku (uživatel 2026-09-13:
+  „ok funguje").
 
 ### L-0046 — Per-target rychlost sběrnice: kdo ji nenastaví, zdědí cizí
 
