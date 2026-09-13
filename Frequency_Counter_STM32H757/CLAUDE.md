@@ -583,15 +583,16 @@ detaily a plná tabulka v `docs/audit/2026-09-10_i2c.md`, oddíl „Měření“
   - **`I2C4_TIMING_TOUCH_75KHZ` NENÍ hypotéza** — 75 kHz leží plně v pásmu
     čistých, důvěryhodných dat (FT5x06 má 0,00 % chyb i při 100 kHz v obou
     měřeních), je to přímo změřený bod.
-  - ⚠️⚠️ **`I2C4_TIMING_TMP117_400KHZ` JE HYPOTÉZA, NE změřené číslo.** Čistá
-    tabulka v obou měřeních sahá jen do 100 kHz; vše nad 125 kHz je v obou
-    dokumentech explicitně označeno jako kontaminované zavěšenou sběrnicí
-    (vada měřicího nástroje `i2cspeed`/TODO #244, ne čipu) — žádné měření
-    tedy 400 kHz pro TMP117 samotné (bez souběžné zátěže ATtiny) neprokazuje
-    ani nevyvrací. **⬜ Neověřeno na HW.** Ověření: `i2cspeed` s **malým `N`
-    (~25)**, krok 400 kHz, jen `0x48` (`i2cspeed 25 0x48`) — `0x45` na
-    400 kHz úmyslně nikdy nepoběží (viz TODO #244 pro omezení `i2cspeed`
-    nad 100 kHz s velkým `N`).
+  - ✅ **`I2C4_TIMING_TMP117_400KHZ` POTVRZENO měřením (2026-09-13, `i2cspeed
+    25`, celý rozsah 25–500 kHz, bez resetu desky).** TMP117 dává **0,00 %**
+    chyb na 250/300/400/**i 500** kHz, `SCL=1 SDA=1`, žádná kontaminace —
+    definitivně změřený bod, ne hypotéza. Plná tabulka a nový nález (mrtvá
+    zóna přesně na 150–200 kHz, kde se sběrnice skutečně zavěsí na VŠECH
+    třech zařízeních, ale která pro provozní rychlosti nehrozí) →
+    `docs/audit/2026-09-10_i2c.md`, oddíl „Třetí měření". Po testu `sensors`
+    → `TMP117 0x48 err=0 strk=0` — na rozdíl od incidentu 2026-09-10
+    (velké `N`) se TMP117 tentokrát ani nerozhodil; malé `N` (TODO #244
+    mitigace) funguje i v praxi, ne jen teoreticky.
 
   **Kompletní přehled, KDO na I2C4 sahá, jakou rychlostí a proč** (2026-09-13):
 

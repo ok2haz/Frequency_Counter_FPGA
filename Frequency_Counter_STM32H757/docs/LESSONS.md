@@ -1164,6 +1164,44 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0048 — Malé `N` odhalilo reálnou "mrtvou zónu" na 150–200 kHz (ne jen artefakt testu)
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), metodika měření
+- **Symptom:** kompletní sweep I2C4 (25–500 kHz, `N=25`, všechna tři
+  zařízení, bez resetu desky) ukázal, že 150 a 200 kHz dávají **100 %
+  chyb na VŠECH třech zařízeních najednou** s `SDA` drženou dole
+  (skutečně zavěšená sběrnice) — ale 250 kHz a výš (250/300/400/500)
+  TMP117 dává znovu čistou nulu a FT5x06/ATtiny čistý NACK (`SDA=1`,
+  žádné zavěšení).
+- **Příčina/nález:** předchozí dvě měření (velké `N`) měla nad ~125 kHz
+  jen kontaminovaná data, protože velké `N` samo způsobovalo reset desky
+  (TODO #244) — takže se nedalo rozlišit „je to vlastnost sběrnice" od
+  „je to artefakt vlastního testu". S `N=25` (žádný reset) se ukázalo,
+  že **mrtvá zóna na 150–200 kHz je reálná, opakovatelná vlastnost**,
+  ne testovací artefakt — a je úzká: hned o 50 kHz výš (250 kHz) TMP117
+  běží čistě. Mechanismus neznámý (možná rezonance/odraz na vedení
+  přesně v tom pásmu kombinace SCLH/SCLL, možná interakce s kapacitou
+  sběrnice) — nezkoumáno dál, protože provozní rychlosti (50/75/400 kHz)
+  tu zónu neprotínají.
+- **Proč to nebylo vidět dřív:** dvě předchozí měření odvodila
+  „nad 125 kHz vše kontaminováno" ze SPRÁVNÉHO pozorování (velké `N`
+  resetovalo desku), ale tenhle správný závěr **zakryl jiný, skutečný
+  jev** v datech, která byla technicky nedůvěryhodná ze zcela jiného
+  důvodu. Oprava metodiky (malé `N`) neprokázala jen "400 kHz je OK" —
+  odhalila i něco, co se předtím nedalo vidět vůbec.
+- **Pravidlo:** **Když je měření kontaminované JEDNÍM konkrétním
+  mechanismem (tady: reset desky od velkého `N`), neuzavírej celé
+  frekvenční/parametrické pásmo jako „nedůvěryhodné" navždy — oprav
+  ten jeden mechanismus a změř to pásmo znovu.** „Kontaminováno" a
+  „nemá to zajímavé vlastnosti" jsou dvě různá tvrzení; první nedokazuje
+  druhé. Prázdné místo v datech je díra k zalátání, ne důvod ho navěky
+  ignorovat.
+- **Detekce:** žádná automatická — čistě HW nález z opakovaného měření
+  s opravenou metodikou.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
 ### L-0047 — Přepnutí I2C rychlosti není "levná" operace, když je na sběrnici bit-bang slave
 
 - **Datum:** 2026-09-13
