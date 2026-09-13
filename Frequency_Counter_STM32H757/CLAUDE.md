@@ -2045,6 +2045,20 @@ flashnout obě banky**. Vzniklo proto, že po CubeMX regeneraci **IDE přestáv�
 `Release` je v `.cproject` už nachystaná s **`-Os`** a od Debugu se **neliší ničím jiným**
 (stejné defines včetně `DEBUG`, takže `__HAL_DBGMCU_FREEZE_IWDG1` a spol. se chovají stejně).
 V IDE: *Project → Build Configurations → Set Active → Release*.
+🔴 **PAST (2026-09-13): "Set Active → Release" NESTAČÍ na flash.** Mění jen to, co dělá
+tlačítko **Build** (kladivo). Tlačítko **Run/Debug** flashuje podle **samostatné Run/Debug
+Configuration**, která si pamatuje KONKRÉTNÍ cestu k `.elf` (typicky `Debug\H757_LED_CM7.elf`)
+nezávisle na aktivním configu projektu — při každém stisku ho tiše přebuilduje a naflashuje
+**podle sebe**, ne podle právě aktivního configu. Důkaz z časových razítek: uživatel postavil
+Release v 15:10 (`.text` 603 008 B), o 3 minuty později v 15:13 se PŘEBUILDOVAL a naflashoval
+Debug (`.text` 810 300 B) — stiskem Run/Debug, beze změny aktivního configu.
+**Oprava:** *Run → Run Configurations…* (nebo *Debug Configurations…*) → najít konfiguraci
+projektu → záložka **Main** → pole **C/C++ Application** přepsat z `Debug\H757_LED_CM7.elf`
+na `Release\H757_LED_CM7.elf` (a pokud tam je i volba **Build Configuration** napevno na
+Debug, přepnout na Release nebo na "Use Active"). Nejjednodušší alternativa: smazat starou
+Run/Debug konfiguraci a spustit *Run As → STM32 C/C++ Application* znovu — CubeIDE ji založí
+nově podle aktivního configu. **Ověření po flashi: okno PAMĚŤ** (`s_view=5`) — FLASH (CM7)
+má ukázat ~589 KB, ne ~792 (to je Debug, viz past výše).
 ✅ **AKTIVNÍ OD 2026-08-30 — obě jádra běží Release, změřeno a naflashováno:**
 | jádro | Debug `-O0` | Release `-Os` | úspora |
 |---|---|---|---|
