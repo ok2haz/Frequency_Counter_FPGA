@@ -445,9 +445,22 @@ __attribute__((noinline)) static void stacktest_overflow(void)
  * mu pri `scpi` zbyva ~168 B. Funkce je vyclenena i proto, ze `UartTask_run` ma
  * ramec hlidany na <= 1024 B (`scripts/check_lessons.sh`, F-0077).
  *
- * Pouziti:  `i2cspeed`        = 2000 transakci na zarizeni a krok
- *           `i2cspeed 500`    = 500 (rychlejsi predbezny beh)
+ * Pouziti:  `i2cspeed`          = 2000 transakci na zarizeni a krok, vsechna 3
+ *           `i2cspeed 500`      = 500 transakci, vsechna 3 (rychlejsi beh)
+ *           `i2cspeed 25 0x38`  = jen FT5x06 (dotyk), 25 transakci/krok
+ *           `i2cspeed 25 45`    = jen ATTINY   ("0x" je nepovinne)
+ *           `i2cspeed 500 48`   = jen TMP117
+ * Adresy na I2C4 a co jsou (viz i CLAUDE.md, oddil I2C4):
+ *   0x38 = FT5x06 (dotykovy radic panelu) — skutecna I2C periferie.
+ *   0x45 = ATTINY (napajeni panelu + podsviceni + reset bridge/dotyku) —
+ *          BIT-BANG slave, CPU CLK 1 MHz -> nestiha nad ~75 kHz. Provozne
+ *          bezi VZDY na 50 kHz (`i2c4_speed_select`, i2c.c) a je JEDINYM
+ *          duvodem, proc cela sbernice historicky nesla vys.
+ *   0x48 = TMP117 (teplota panelu) — skutecna I2C periferie.
  * Kdykoli behem mereni staci poslat jakykoli znak -> preruseni a obnoveni taktu.
+ * ⚠️ Vyber jedne adresy NEOPRAVUJE TODO #244 (yield podle poctu iteraci, ne
+ * podle casu) — jen zkrati celkovou dobu (1 zarizeni misto 3). Nad ~100 kHz
+ * s velkym N muze desku restartovat i s vyfiltrovanou jednou adresou.
  */
 #define I2CSP_N_DEF    2000u
 #define I2CSP_CHUNK      64u    /* po kolika transakcich pustit ostatni tasky */
@@ -488,7 +501,28 @@ static int i2csp_abort(void)
     return osMessageQueueGetCount(UartRxQueueHandle) > 0u;
 }
 
-static void i2cspeed_run(uint32_t n)
+/* Najde index zarizeni v I2CSP_DEV podle 7bit adresy zapsane HEXADECIMALNE
+ * (`38`, `0x38`, `0X38` - vse stejne, "0x" nepovinne). Nechyta jmena, jen
+ * cislo — adresy jsou v CLAUDE.md i tady vzdy psane hex, takze "38"/"45"/"48"
+ * je jednoznacne a bez rizika, ze si nekdo splete hex se desitkovym cislem.
+ * Vraci -1, kdyz to neni hex cislo NEBO kdyz zadne zarizeni na te adrese neni. */
+static int i2csp_find_dev(const char *tok)
+{
+    const char *p = tok;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    if (*p == '\0') return -1;
+    char *end = NULL;
+    uint32_t addr = (uint32_t)strtoul(p, &end, 16);
+    if (end == p || *end != '\0') return -1;   /* nebylo to cele hex cislo */
+    for (uint32_t d = 0; d < I2CSP_NDEV; d++) {
+        if ((I2CSP_DEV[d].a8 >> 1) == addr) return (int)d;
+    }
+    return -1;
+}
+
+/* `dev_sel` = -1 (vsechna 3 zarizeni, puvodni chovani) nebo index do
+ * I2CSP_DEV (jen jedno zarizeni — viz `i2csp_find_dev`). */
+static void i2cspeed_run(uint32_t n, int dev_sel)
 {
     static uint8_t  ref[I2CSP_NDEV][2];
     static uint8_t  refok[I2CSP_NDEV];
@@ -498,9 +532,16 @@ static void i2cspeed_run(uint32_t n)
     uint32_t save = hi2c4.Init.Timing;
     uint32_t i, d, k;
     int aborted = 0;
+    /* Vyber rozsahu zarizeni: [d0, d1) — bud vsechna tri, nebo jen jedno. */
+    const uint32_t d0 = (dev_sel >= 0) ? (uint32_t)dev_sel : 0u;
+    const uint32_t d1 = (dev_sel >= 0) ? (uint32_t)dev_sel + 1u : I2CSP_NDEV;
 
     printf("i2cspeed: %lu transakci na zarizeni a krok, %u kroku, jen CTENI\n",
            (unsigned long)n, (unsigned)I2CSP_NSTEP);
+    if (dev_sel >= 0) {
+        printf("  jen zarizeni %s (ostatni dve se behem mereni nectou)\n",
+               I2CSP_DEV[dev_sel].nm);
+    }
     printf("  po dobu mereni mlci touch, jas i TMP117 0x48; lze prerusit klavesou\n");
 
     g_i2c4_sweep = 1;
@@ -508,7 +549,7 @@ static void i2cspeed_run(uint32_t n)
 
     /* ── referencni hodnoty na PROVOZNICH 50 kHz ─────────────────────────── */
     i2csp_set_timing(0x70303AEEu);
-    for (d = 0; d < I2CSP_NDEV; d++) {
+    for (d = d0; d < d1; d++) {
         refok[d] = 0;
         for (k = 0; k < 3u && !refok[d]; k++) {
             if (HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
@@ -536,7 +577,7 @@ static void i2cspeed_run(uint32_t n)
         printf("[ %3u kHz  TIMINGR 0x%08lX ]\n", (unsigned)I2CSP_STEP[i].khz,
                (unsigned long)I2CSP_STEP[i].timingr);
 
-        for (d = 0; d < I2CSP_NDEV && !aborted; d++) {
+        for (d = d0; d < d1 && !aborted; d++) {
             uint32_t err = 0, mis = 0;
             uint32_t ec = 0;
             for (k = 0; k < n; k++) {
@@ -579,16 +620,23 @@ static void i2cspeed_run(uint32_t n)
     printf("obnoven takt 0x%08lX%s\n", (unsigned long)save,
            aborted ? "  (PRERUSENO)" : "");
 
-    /* Souhrn ve tvaru tabulky z auditu — da se rovnou vlozit do dokumentu. */
-    printf("| f [kHz] | TIMINGR | %s | %s | %s |\n",
-           I2CSP_DEV[0].nm, I2CSP_DEV[1].nm, I2CSP_DEV[2].nm);
+    /* Souhrn ve tvaru tabulky z auditu — da se rovnou vlozit do dokumentu.
+     * Pocet sloupcu je dynamicky (d0..d1) — u vyberu jednoho zarizeni jde
+     * o jediny sloupec, jinak vsechny tri jako drive. */
+    printf("| f [kHz] | TIMINGR |");
+    for (d = d0; d < d1; d++) printf(" %s |", I2CSP_DEV[d].nm);
+    printf("\n");
     for (i = 0; i < I2CSP_NSTEP; i++) {
-        if (aborted && pct[i][0] == 0u && pct[i][1] == 0u && pct[i][2] == 0u && i > 0u) continue;
-        printf("| %u | 0x%08lX | %u,%02u %%%s | %u,%02u %%%s | %u,%02u %%%s |\n",
-               (unsigned)I2CSP_STEP[i].khz, (unsigned long)I2CSP_STEP[i].timingr,
-               (unsigned)(pct[i][0] / 100u), (unsigned)(pct[i][0] % 100u), sil[i][0] ? " !" : "",
-               (unsigned)(pct[i][1] / 100u), (unsigned)(pct[i][1] % 100u), sil[i][1] ? " !" : "",
-               (unsigned)(pct[i][2] / 100u), (unsigned)(pct[i][2] % 100u), sil[i][2] ? " !" : "");
+        int all_zero = 1;
+        for (d = d0; d < d1; d++) if (pct[i][d] != 0u) all_zero = 0;
+        if (aborted && all_zero && i > 0u) continue;
+        printf("| %u | 0x%08lX |", (unsigned)I2CSP_STEP[i].khz,
+               (unsigned long)I2CSP_STEP[i].timingr);
+        for (d = d0; d < d1; d++) {
+            printf(" %u,%02u %%%s |", (unsigned)(pct[i][d] / 100u),
+                   (unsigned)(pct[i][d] % 100u), sil[i][d] ? " !" : "");
+        }
+        printf("\n");
     }
     printf("  (! = mezi chybami byla ticha neshoda: ACK, ale jina data)\n");
 }
@@ -935,8 +983,12 @@ void UartTask_run(void *argument)
 				  }
 			  }
 			  else if (strncmp(RxBuffer, "i2cspeed", 8) == 0) {
-				  /* Volitelny pocet transakci: `i2cspeed 500`. Vychozi 2000 =
-				   * tataz hodnota jako pri mereni 2026-09-10 (porovnatelnost). */
+				  /* Volitelny pocet transakci + volitelna adresa:
+				   * `i2cspeed 500 0x38` = jen FT5x06. Vychozi N=2000 = tataz
+				   * hodnota jako pri mereni 2026-09-10 (porovnatelnost).
+				   * Adresa (hex, "0x" nepovinne) omezi sweep na JEDNO zarizeni
+				   * — viz i2csp_find_dev/I2CSP_DEV. Bez adresy bezi vsechna tri
+				   * jako drive. */
 				  uint32_t n = I2CSP_N_DEF;
 				  const char *a = RxBuffer + 8;
 				  while (*a == ' ') a++;
@@ -945,7 +997,23 @@ void UartTask_run(void *argument)
 					  while (*a >= '0' && *a <= '9') { if (n < 100000u) n = n * 10u + (uint32_t)(*a - '0'); a++; }
 					  if (n < 10u) n = 10u;
 				  }
-				  i2cspeed_run(n);
+				  while (*a == ' ') a++;
+				  int dev_sel = -1;
+				  int bad_addr = 0;
+				  if (*a != '\0' && *a != '\r' && *a != '\n') {
+					  char tok[16]; size_t ti = 0;
+					  while (*a && *a != ' ' && *a != '\r' && *a != '\n' && ti < sizeof(tok) - 1u) {
+						  tok[ti++] = *a++;
+					  }
+					  tok[ti] = '\0';
+					  dev_sel = i2csp_find_dev(tok);
+					  if (dev_sel < 0) bad_addr = 1;
+				  }
+				  if (bad_addr) {
+					  printf("ERR neznama adresa (zkus 38 / 45 / 48, hex, '0x' nepovinne)\n");
+				  } else {
+					  i2cspeed_run(n, dev_sel);
+				  }
 			  }
 			  else if (strcmp(RxBuffer, "testDSI") == 0) {
 				  uint8_t id_bytes[3] = {0};
