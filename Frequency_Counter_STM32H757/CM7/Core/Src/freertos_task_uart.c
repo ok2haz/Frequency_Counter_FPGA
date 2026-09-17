@@ -30,6 +30,8 @@
 #include "freertos_shared.h"
 #include <prim/text.h>    /* prim_text_missing_glyphs — radek `FONTY:` ve `status` */
 #include "alarm.h"          /* alarm_test — UART "beep" */
+#include "watchdog.h"       /* watchdog_cfg_* — radek `WATCHDOG:` ve `status` (F-0104) */
+#include "beeper.h"         /* beeper_ready — tamtez (F-0111) */
 #include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
 #include "app_gpsdo.h"    /* app_gpsdo_btnreg_stats — diagnostika fokusu */
 #include "encoder.h"        /* enc — diagnostika rotacniho encoderu */
@@ -2607,6 +2609,20 @@ void UartTask_run(void *argument)
 					  	  if (s_rx_trunc_n)
 					  	  	printf("KONZOLE: %lu prikazu odmitnuto (delsi nez %d znaku)\n",
 					  	  	       (unsigned long)s_rx_trunc_n, RX_BUF_SIZE - 1);
+					  	/* Dosazena konfigurace IWDG + stav pipaku. Obojí je „tiche
+					  	 * selhani, o kterem se jinak nedozvis" (audit F-0104/F-0111):
+					  	 * neprosla propagace PR/RLR znamena watchdog 0,5 s misto 4 s,
+					  	 * nenabehly TIM7 znamena TRVALE NEMY pristroj vcetne alarmu
+					  	 * na ztratu reference. Vypisuje se i kdyz je vse v poradku —
+					  	 * ticho by znamenalo „nevim", tohle znamena „zkontrolovano". */
+					  	printf("WATCHDOG: PR=%u RLR=%u -> %lu ms%s | pipak %s\n",
+					  	       (unsigned)watchdog_cfg_pr(), (unsigned)watchdog_cfg_rlr(),
+					  	       (unsigned long)watchdog_timeout_ms(),
+					  	       watchdog_cfg_ok() ? "" : "  <== NESEDI (ceka se 4000 ms)",
+					  	       beeper_ready() ? "ok" : "NENABEHL");
+					  	if (watchdog_stall_recovered())
+					  		printf("    zotavenych stallu: %u (detekovan, ale nezpusobil reset)\n",
+					  		       (unsigned)watchdog_stall_recovered());
 					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
 					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
 					  	if (g_gpio_guard_fix_total) {
