@@ -63,12 +63,23 @@ void hard_fault_capture(uint32_t *frame)
 {
   uint32_t cfsr = SCB->CFSR;
   PWR->CR1 |= PWR_CR1_DBP;          /* povol zapis do backup domeny */
-  RTC->BKP3R = 0xC7A50000u | 4u;    /* RTC_CRASH_MAGIC | kind 4 = HardFault */
+  /* 🔴 PORADI: DATA PRVNI, MAGIC NAPOSLED (audit F-0106). Do 2026-09-17 se tu
+   * magic psal jako PRVNI — jako jediny z devíti zapisovatelu black-boxu; vsichni
+   * ostatni (`watchdog.c`, `freertos_hooks.c`, `main.c` Error_Handler, NMI nize
+   * i Mem/Bus/Usage) to maji obracene A PISOU U TOHO PROC.
+   * Duvod neni teoreticky a je zrovna tady nejsilnejsi: `frame[6]` a `frame[5]`
+   * se ctou Z EXCEPTION RAMCE, tedy z pameti, kam ukazoval zasobnik v okamziku
+   * padu. Kdyz HardFault zpusobil rozbity nebo pretečeny ukazatel zasobniku —
+   * jedna z hlavnich pricin HardFaultu — muze to cteni faultovat ZNOVU a skoncit
+   * lockupem + resetem od IWDG. Pri starem poradi by v BKP zustal PLATNY magic
+   * „HardFault" nad daty PREDCHOZI udalosti a `status` by ohlasil cizi PC,
+   * takze by `addr2line` poslal hledani na nesouvisejici radek. */
   RTC->BKP4R = frame[6];            /* stacknute PC = kde to spadlo (addr2line) */
   RTC->BKP5R = cfsr;
   RTC->BKP7R = (cfsr & (1u << 15)) ? SCB->BFAR : 0u;   /* BFARVALID -> adresa */
   RTC->BKP8R = frame[5];            /* stacknute LR = ODKUD se skocilo (caller!) */
   RTC->BKP9R = SCB->HFSR;           /* HFSR: bit1 VECTTBL, bit30 FORCED, bit31 DEBUGEVT */
+  RTC->BKP3R = 0xC7A50000u | 4u;    /* RTC_CRASH_MAGIC | kind 4 = HardFault (AZ TED) */
   NVIC_SystemReset();
 }
 /* USER CODE END 0 */
