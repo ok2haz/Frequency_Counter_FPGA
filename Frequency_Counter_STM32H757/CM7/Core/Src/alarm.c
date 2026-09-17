@@ -280,7 +280,13 @@ void alarm_tick(void)
         if (!g_sound_muted) pattern_start(2, 100, 100);
     }
 
-    /* Vyhodnoceni stavu (hrany) jen 5x/s — gps_get kopiruje ~200B v kriticke sekci. */
+    /* Vyhodnoceni stavu (hrany) jen 5x/s — rychleji to NEMA SMYSL: vstupni data
+     * se rychleji nemeni (GPS 1 Hz, senzory 2 Hz).
+     * ⚠️ Do 2026-09-17 tu jako duvod stalo „gps_get kopiruje ~200B v kriticke
+     * sekci". To je sice pravda, ale jako duvod ke skrceni to NEOBSTOJI a
+     * odporovalo si to s `rtc.c`, ktery tutez funkci vola ~100x/s: kopie ~200 B
+     * pri 480 MHz stoji radove 0,2 us, tedy 100x/s = ~20 us/s = 0,002 % CPU.
+     * Cena je zanedbatelna; rozhoduje kadence dat (audit F-0112). */
     static unsigned int last_eval;
     unsigned int now = HAL_GetTick();
     if ((now - last_eval) < 200u) return;

@@ -1143,7 +1143,18 @@ v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a 
   FpgaTask; `watchdog_supervise()` (defaultTask ~100 Hz) obnoví IWDG **jen když oba heartbeaty
   < 2,5 s staré** → zatuhnutí jednoho tasku (ne jen celého scheduleru) = HW reset. Startup
   grace 8 s. **UartTask se nemonitoruje** (legitimně blokuje: `scanner` ~2,5 s, `fpgaloop` ~3 s).
-- V DEBUG buildu `__HAL_DBGMCU_FREEZE_IWDG1()` (breakpoint neresetuje). Release bez freeze.
+- `__HAL_DBGMCU_FREEZE_IWDG1()` je pod `#ifdef DEBUG` (breakpoint neresetuje).
+  🔴 **A je aktivní i v Release** — `CM7/Release` **definuje `-DDEBUG`** (ověřeno
+  v `CM7/Release/Core/Src/subdir.mk`, audit F-0109). Do 2026-09-17 tu stálo
+  „Release bez freeze", což byla nepravda: halt sondou IWDG v ostrém buildu
+  **nezresetuje**. Je to žádoucí chování, jen ho popisuj správně.
+  ⚠️ Na CM4 to neplatí — `CM4/Release` `DEBUG` nedefinuje (viz sekce Build).
+- 🔑 **`status` → řádek `WATCHDOG: PR=4 RLR=2000 -> 4000 ms | pipak ok`**
+  (přidáno 2026-09-17, audit F-0104/F-0111). Hodnoty se **čtou z registrů po
+  propagaci**, ne z konstant: kdyby se `PVU`/`RVU` nepropagovaly, platily by
+  reset defaulty `PR=0`/`RLR=0xFFF` = timeout **~0,5 s místo 4 s**, a tiše.
+  Značka `<== NESEDI` to ohlásí. `pipak NENABEHL` = TIM7 selhal → přístroj je
+  **trvale němý včetně alarmu na ztrátu reference**.
 - **⚠️ Diagnostika „kdo se zasekl" (2026-07-20):** `watchdog_supervise` při odmítnutí refreshe zapíše
   do crash black-boxu (BKP_DR3..5, **kind 3**) jméno tasku se starým heartbeatem → po restartu
   `g_crash_text` = **`stall:UiTask` / `stall:FpgaTask` / `stall:BOTH`**. Bez toho byl prostý IWDG reset

@@ -513,7 +513,10 @@ void rtc_app_tick(void)
 {
   /* ⚠️ ZAMERNE PRED throttlem: vzorkovac driftu musi bezet tempem defaultTasku
    * (~100 Hz), aby hranu GPS sekundy zachytil co nejdriv. Pri 1 Hz by se s 1 Hz
-   * GPS aktualizaci aliasovalo a latence detekce by kolisala o celou sekundu. */
+   * GPS aktualizaci aliasovalo a latence detekce by kolisala o celou sekundu.
+   * ⚠️ A stoji to zanedbatelne: `gps_get` je kopie ~200 B v kriticke sekci,
+   * tedy ~0,2 us pri 480 MHz -> 100x/s = ~20 us/s = 0,002 % CPU. (Zapsano
+   * proto, ze `alarm.c` z teze kopie driv odvozoval opak — audit F-0112.) */
   rtc_lse_sample();
 
   uint32_t now = HAL_GetTick();

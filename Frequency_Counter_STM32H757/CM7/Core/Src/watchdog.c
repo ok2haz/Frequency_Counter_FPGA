@@ -69,6 +69,11 @@ static void stall_blackbox(const char *name)
 
 void watchdog_init(void)
 {
+    /* ⚠️ POZOR: `CM7/Release` **taky definuje `-DDEBUG`** (overeno v generovanem
+     * `CM7/Release/Core/Src/subdir.mk`), takze tahle vetev je aktivni i v ostrem
+     * buildu — IWDG se pri haltu ladici sondou NEPOCITA a desku nezresetuje.
+     * Je to zadouci chovani, jen se o nem driv psalo, ze v Release neplati
+     * (audit F-0109). Na CM4 je to jinak: `CM4/Release` `DEBUG` nedefinuje. */
 #ifdef DEBUG
     __HAL_DBGMCU_FREEZE_IWDG1();       /* na breakpointu neresetuj */
 #endif
