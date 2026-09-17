@@ -723,6 +723,20 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)`. Zapisovac do pevneho
   bufferu musi umet ohlasit, ze se neco nevesolo (viz **L-0017**).
 - **Commit:** `d2038cc`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0056
+- 🔁 **Opakovalo se 2026-09-16 (F-0097, modul 16).** Blob store nad W25Q ma strop
+  `W25Q_STORE_MAX_BLOB` = 4080 B a **ani jeden ze tri blobu** (`syscfg_blob_t`,
+  `setup_book_t`, `calib_blob_t`) ho nemel hlidany prekladem — mez se kontroluje
+  az za behu a `w25q_store_write` vrati `false` **tise**. `syscfg_save` by pak
+  vracel `false` navzdy, `syscfg_flash_tick` by to zkousel 100x/s a nastaveni by
+  se prestalo ukladat, aniz by `status` rekl cokoli; projevilo by se to jako
+  „nastaveni neprezije power-cyklus", tedy symptom hledany uplne jinde.
+  Syscfg blob pritom vyrostl uz nejmene dvanactkrat (historie magicu
+  `"SCFG"` -> `"SCG1"`). Doplneny tri `_Static_assert` (commit `e583432`),
+  kazdy overeny pozitivni kontrolou (docasne nafouknuti struktury o 4096 B ->
+  preklad skutecne spadne).
+  🔑 **Poucen z toho je i dosah lekce:** puvodne byla o JEDNE odpovedi v `httpd_min.c`;
+  pravidlo ale plati pro **kazdy pevny strop, ktery se kontroluje az za behu** —
+  a ten se hleda tak, ze se u kazdeho `MAX`/`CAP` makra zepta, kdo ho vynucuje.
 - **Stav:** aktivni
 
 ---
@@ -1163,6 +1177,142 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 ---
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
+
+### L-0053 — Záznam o provedené akci vydávej až podle jejího VÝSLEDKU, ne na jejím začátku
+
+- **Datum:** 2026-09-17
+- **Oblast:** trvalý záznamník chyb / perzistence
+- **Symptom:** Dvě nezávislá místa tvrdila, že se něco povedlo, aniž by to věděla:
+  (a) `calib_save()` mělo `errlog_put(… ERRLOG_CFG_CALIB …)` jako **první příkaz
+  funkce** — tedy před kontrolou `s_store.ready`, před získáním mutexu i před
+  zápisem. Na všech třech chybových cestách zůstala v trvalé historii věta
+  *„uložena kalibrace napětí"* o změně, která se neprovedla.
+  (b) `errlog_erase()` zahazovala výsledek všech 64 `w25q_erase_sector` přes
+  `(void)`, bezpodmínečně nastavila `s_el_ready = 1` a oba volající hlásili
+  *„smazáno"*.
+- **Proč na tom záleží:** (a) podle záznamu o změně kalibrace se později vysvětluje
+  skok v naměřených datech — falešný záznam pošle analýzu hledat příčinu jinam.
+  (b) po nedokončeném mazání se hlava vrátí na začátek regionu, zatímco ve zbytku
+  zůstanou **starší záznamy s vyšším `seq`**, které příští `errlog_init()` najde
+  jako „nejnovější" a ustaví hlavu na špatném místě.
+- 🔑 **Obojí mělo v témže projektu hotovou předlohu, jen o pár souborů dál.**
+  `datalog_erase_all()` návratové hodnoty kontroluje a stav posouvá jen při `ok`;
+  UART `flightrec test` má v komentáři přímo *„Hlas vysledek, ne zamer"*. Je to
+  `L-0012` v čisté podobě: dvě symetrické instance, z nichž jedna zaostala.
+- **Oprava:** `errlog_put` v `calib_save` až za zápis a podmíněné úspěchem;
+  `errlog_erase()` vrací `bool`, při chybě přeruší smyčku a stav **neposouvá**,
+  oba volající hlásí výsledek (`"smazáno"` / `"SELHALO (log zůstává)"`).
+  ⚠️ Neúspěšný zápis patří pod `ERRLOG_K_STORAGE`, ne pod „nastavení se změnilo".
+- **Pravidlo:** **Záznam o akci patří ZA akci a pod její návratovou hodnotu.**
+  Když se hlásí na začátku, není to záznam o tom, co se stalo, ale o tom, co se
+  zamýšlelo — a to je horší než mlčet, protože to zní stejně důvěryhodně.
+  Totéž platí pro hlášku volajícímu: hlas výsledek, ne záměr.
+- **Detekce:** `grep -n "errlog_put\|(void)w25q_\|(void)f_" CM7/Core/Src/*.c` — u
+  každého výskytu ověř, že je ZA operací, o které mluví, a že je na ní podmíněný.
+  Obecně: první příkaz funkce, který něco zaznamenává, je vždy podezřelý.
+- **Commit:** `15aa8d3` (F-0094), `a9af9de` (F-0099), viz
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md`
+- **Stav:** aktivní
+
+### L-0052 — Obnova uloženého stavu není změna stavu: setter s vedlejším účinkem potřebuje tichou variantu
+
+- **Datum:** 2026-09-17
+- **Oblast:** perzistence / trvalý záznamník chyb
+- **Symptom:** Po **každém studeném startu** se do trvalé historie chyb zapsala věta
+  `NASTAV  interval logu 10s -> 60s`, ačkoli uživatel nic nezměnil. Navíc se tím
+  zkreslilo počítadlo `repeat` u příští **skutečné** změny (druhé volání padlo do
+  rate-limitu, který je na DRUH, ne na podtyp, a jen inkrementovalo `s_el_pending`).
+- **Příčina:** `datalog_set_period_s()` / `datalog_set_store()` logovaly **každou**
+  změnu hodnoty. `syscfg_load()` je při bootu volá, aby obnovil uložené nastavení —
+  a protože statiky startují na výchozích hodnotách (10 s / AUTO), setter to
+  vyhodnotil jako změnu. Účel `ERRLOG_K_CFG` je přitom v `errlog.h` výslovně
+  **odlišit zásah uživatele od HW události**, aby skok ve statistice nevypadal
+  jako porucha — falešný záznam dělá přesně opak.
+- 🔑 **Proč to není jen kosmetika:** je to trvalá historie, podle které se později
+  rozhoduje, čím byl způsobený skok v měření. Záznam, který lže o tom, že zásah
+  proběhl, pošle analýzu stejně špatným směrem jako chybějící záznam — jen
+  sebejistěji (tatáž třída jako `L-0026`: „tichý ořez si vždy najde někoho
+  nevinného, koho obvinit").
+- **Oprava:** `datalog_cfg_quiet(bool)` potlačí záznam po dobu obnovy; uživatelské
+  cesty (UART `datalog`, okno Datalog přes `qspi_req_service`) zůstávají hlasité.
+- **Pravidlo:** **Když setter kromě nastavení hodnoty něco HLÁSÍ (log, alarm,
+  notifikace), ptej se, kdo ho ještě volá — obnova uloženého stavu při bootu
+  není zásah uživatele a hlásit se nesmí.** Buď dej setteru tichou variantu, nebo
+  obnovu veď mimo něj; „nastav" a „nastav a oznam" jsou dvě různé operace.
+- **Detekce:** u každého setteru, který volá `errlog_put`/`alarm_*`/`printf`,
+  vyjmenuj v komentáři volající a u každého uveď, jestli má být hlasitý.
+  Křížem: `grep -n "errlog_put" CM7/Core/Src/*.c` a u každého výskytu ověřit,
+  že se na tu cestu nedá dostat z `syscfg_load()`.
+- **Commit:** `6d1b6e5` (spolu s L-0050), viz `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nález F-0093
+- **Stav:** aktivní
+
+### L-0051 — Když platnost ukazatele hlídá samostatný příznak, pořadí zápisu je invariant
+
+- **Datum:** 2026-09-17
+- **Oblast:** souběh mezi úlohami / perzistence
+- **Symptom:** `datalog_init()` (re-init při přepnutí úložiště, běží v UartTasku)
+  nuloval `s_be = NULL; s_ready = false;` **v tomto pořadí**. Mezi těmi dvěma
+  příkazy platilo `s_ready == 1 && s_be == NULL`, takže souběžný čtenář
+  (`datalog_get_status` z UiTasku, 2×/s) dereferencoval NULL → HardFault.
+- 🔴 **Komentář nad tím tvrdil, že je čtenáři chrání mutex** — jenže **žádný ze
+  čtyř čtenářů QSPI mutex nebere** (a záměrně: drží ho i minuty trvající
+  `datalog_erase_all`). Popsaná ochrana neexistovala, a skutečný následek nebyl
+  „hlásil NEDOSTUPNE", jak komentář předpokládal, ale pád. Už potřetí v projektu
+  komentář popisoval obranu, kterou kód nedělá (`L-0028`).
+- 🔑 **Reachability byla těsnější, než jak to vypadá:** tlačítko na přepnutí
+  úložiště **je v okně Datalog** a totéž okno volá `datalog_get_status()` v každém
+  tiku — ty dvě úlohy tedy běží současně právě kvůli tomu jednomu stisku.
+  „Okno je jen dvě instrukce" není argument, když ho obě strany otevírají naráz.
+- **Oprava:** (1) pořadí obráceno a obě hranice oddělené `__DMB()` (díky `"memory"`
+  clobberu je to bariéra i pro překladač); na konci initu opačné pořadí —
+  `s_be` a hlava hotové **dřív**, než `s_ready` pustí čtenáře dovnitř.
+  (2) Čtenáři si ukazatel čtou **jednou do lokálu** a testují ho vedle příznaku;
+  zastaralý ukazatel je bezpečný (backendy mají statickou dobu života), NULL nebyl.
+- **Pravidlo:** **Dvojice „ukazatel + příznak platnosti" se zapisuje v opačném
+  pořadí při zapnutí a při vypnutí — příznak se shazuje PRVNÍ a zvedá POSLEDNÍ —
+  a mezi ně patří bariéra.** Čtenář, který ukazatel dereferencuje, si ho musí
+  přečíst jednou do lokálu; opakovaný dotaz uprostřed funkce už může vidět jiný stav.
+- **Detekce:** najdi každou dvojici `X = NULL` / `X_ready = false` v jednom bloku
+  a ověř pořadí. Obecně: u každého „guard flag + pointer" se ptej, co vidí čtenář
+  MEZI těmi dvěma zápisy.
+- **Commit:** `a80caed`, viz `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nález F-0090
+- **Stav:** aktivní
+
+### L-0050 — Nové pole v perzistované struktuře patří do TÉ poloviny obnovy, kde jeho hodnota ještě žije
+
+- **Datum:** 2026-09-17
+- **Oblast:** perzistence nastavení / chování po resetu
+- **Symptom:** Nastavení datalogu (zap/vyp, úložiště, perioda) **nepřežilo teplý
+  reset**. Po reflashi, po Menu → Restart, po watchdogu i po NRST se vrátilo na
+  výchozí `ON` / `AUTO` / `10 s`. Uživatel, který záznam vypnul, ho měl po
+  restartu zase zapnutý a psalo se do flash.
+  🔴 **Přes power-cyklus to fungovalo**, takže to vypadalo jako náhoda — a právě
+  proto to zůstalo deset dní neviditelné.
+- **Příčina:** `syscfg_load()` je rozdělená na dvě poloviny. Nad `return` patří
+  pole, která **nejsou v BKP** a flash je jejich jediný zdroj; pod `return` pole,
+  která BKP drží a při teplém resetu z ní přijdou novější. Tři pole datalogu,
+  přidaná 2026-09-07 (magic `"SCG0"` → `"SCG1"`), skončila **pod** `return` —
+  přestože v BKP nejsou. Zařadila se prostě tam, kam se dopsala nejsnáz.
+- 🔑 **Soubor to pravidlo měl napsané a stejně se porušilo.** Komentář nad tou
+  polovinou říká *„Čteme VŽDY (i warm reset): `g_fx_enabled` NENÍ v BKP, flash je
+  jeho jediný zdroj"* — jenže je to pravidlo o **kategorii**, ne o konkrétním poli,
+  takže ho při přidávání nikdo nemusel spojit s tím, co zrovna píše.
+- **Oprava:** tři řádky přesunuty nad `return`, k ostatním polím, která BKP nedrží
+  (fx, meas, survey, monitor, layout, enc_div). Pořadí perioda → úložiště zachováno.
+  ⚠️ **Muselo se opravovat spolu s `L-0052`** — bez toho by se falešné záznamy
+  o „změně nastavení" rozšířily ze studeného startu na každý reset.
+- **Pravidlo:** **Když je obnova stavu rozdělená podle toho, kde ta hodnota ještě
+  žije (záložní doména / flash / nikde), zařaď nové pole VÝČTEM toho druhého
+  zdroje, ne dojmem.** U perzistence vždy ověř obě cesty resetu zvlášť: studený
+  start a teplý reset jsou dva různé stavy a feature může fungovat jen v jednom.
+- **Detekce:** `scripts/check_lessons.sh` — sekce „pod `if (g_syscfg_bkp_valid)
+  return;`". Kontrola je **rozdílová**: seznam „co drží BKP" se nevypisuje ručně,
+  odvozuje se z toho, co `rtc.c` z BKP doopravdy obnovuje. Hlásí jak volání funkce
+  pod returnem, tak globál, který `rtc.c` nezná. Ověřeno pozitivní kontrolou na
+  obou podobách vady (`L-0039`).
+- **Commit:** `6d1b6e5` + `165023c` (kontrola), viz
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nálezy F-0089 a F-0093
+- **Stav:** aktivní
 
 ### L-0049 — Rozlušti binární `a`/`b` do věty JEDNOU, na zdroji, ne u každého konzumenta
 

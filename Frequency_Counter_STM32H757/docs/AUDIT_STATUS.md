@@ -3,8 +3,9 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-12 (14. sezení — **modul 15 = webová SPA**;
-týž den moduly 13 a 14 vč. fází oprav)
+**Poslední aktualizace:** 2026-09-17 (15. sezení — **modul 16 = perzistence
+a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
+týž den fáze oprav, skupina A)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
@@ -17,8 +18,24 @@ a projeví se to tím, že CM4 přestane přijímat snapshot, **aniž by header 
 svítit `4:xx%`** (viz „Nesoulad bank je NEVIDITELNÝ" v `CLAUDE.md`).
 🔑 **Modul 15 je hotový celý** (11 z 11), včetně nové kontroly hranice JSON
 (`tools/spa/json_kontrakt.py`, krok **5b** řetězce `check.py`).
-Dál: **F5 pro modul 11** (F-0052 je S2 — dotyková cesta píše `g_meas_cfg` bez
-kritické sekce) a **rozhodnout F-0039** (blokuje ověření F-0037 na desce).
+🔴 **NOVÉ 2026-09-16 — modul 16 (perzistence a záznamníky), 14 nálezů.**
+✅ **Skupina A opravena 2026-09-17 (6 nálezů, 5 commitů + 1 pojistka), ⬜ neověřeno na HW.**
+Nejzávažnější byl **F-0089 [S1]**: tři nastavení datalogu (zap/vyp, úložiště,
+perioda) se z flash obnovovala **jen při studeném startu**, přestože nejsou v BKP —
+po každém teplém resetu (reflash, Menu→Restart, watchdog) se tiše vrátila na výchozí
+hodnoty. Opraveno spolu s **F-0093** (falešné `ERRLOG_K_CFG` při obnově), dál
+**F-0090** [S2] (okno pro dereferenci NULL při re-initu), **F-0094**, **F-0097**,
+**F-0099**. Lekce **L-0050**…**L-0053** + rozšíření **L-0026**.
+🔑 **Co ověřit na desce jako první:** `datalog off` → počkat >2 s → Menu→Restart →
+`status` musí pořád hlásit `DATALOG W25Q OFF` (před opravou se vrátilo na `ON`).
+Zbytek kontrolního seznamu je na konci sekce „Fáze oprav" v nálezovém dokumentu.
+⚠️ **Otevřeno zůstává 8 nálezů modulu 16** — skupina B (F-0091 mazání nejnovějšího
+dumpu, F-0092 crash bez jména tasku, F-0095 čtení po záznamech, F-0098 tichý init)
+čeká na **rozhodnutí o variantě**; **F-0096 patří k otevřenému F-0052** (třetí cesta,
+která píše `g_meas_cfg` bez kritické sekce) — opravovat jedním zásahem, ne zvlášť;
+F-0100…F-0102 jsou kosmetika pro F6.
+Dál: **skupina B modulu 16**, **F5 pro modul 11** (F-0052 je S2) a **rozhodnout
+F-0039** (blokuje ověření F-0037 na desce).
 ⚠️ Opravy modulu 15 míří do **blobu `SPA_HTML`**, takže po nich MUSÍ projít
 `python tools/spa/check.py --build` celý (8 kroků) — zvlášť krok 8 (`nm` nad
 `SPA_HTML` = počet bajtů + 1), který jediný definitivně chytí utnutý literál.
@@ -55,10 +72,18 @@ než audit** — modul 11 fázi oprav ještě neprošel, takže tam takové vady
 historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
 `expected_len` (F-0060). SSE timeout (F-0059) se ověří jen odpojením klienta od sítě.
 ⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
-🔴 **Všechny moduly 1–15 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 15.**
-🔑 **Tím je auditovaný veškerý vlastní kód projektu** — firmware obou jader
-i klientský dashboard. Neauditovaný zůstává už jen **vendor kód** (HAL, FatFs, lwIP,
-CMSIS), generovaný CubeMX kód mimo `USER CODE` bloky a **fonty** (generovaná data). Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
+🔴 **Všechny moduly 1–16 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 16.**
+🔴 **OPRAVA TVRZENÍ (2026-09-16):** do té doby tu stálo *„tím je auditovaný veškerý
+vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
+vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
+IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
+**Pořád neauditované zůstává** (~2 400 ř.): `membench.c` (722), `rtc.c` (616),
+`meas_present.c` (404), `alarm.c` (332), `sdram_log.c` (307), `screenshot.c` (175),
+`si5356.c`, `encoder.c`, `watchdog.c`, `beeper.c`, `bootled.c`, `autocal.c`,
+`phase_noise.c`, `sensor_hist.c`, `meas_math.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`
+— plus **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
+`USER CODE` bloky a **fonty** (generovaná data).
+Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
 jedno sezení. **SDMMC proto dostalo vlastní řádek (modul 7)**, aby se neauditovalo povrchně.
@@ -190,6 +215,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (✅ část ověřena na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
 | 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | **opraveny 3, 1 částečně, F-0074 → TODO #243** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
 | 15 | webová SPA (klientský dashboard) | `httpd_min.c` = blob `SPA_HTML` (~3 060 ř., 125 funkcí JS) | **prohlížeč** (obraz CM4) | **opraveno vše** (11 z 11, ⬜ neověřeno na HW) | 2026-09-12 | 2 | 1 | 3 | 5 | [11](audit/2026-09-12_spa-web.md) |
+| 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **skupina A opravena** (6 ze 14, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -223,15 +249,63 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 2 | 3 | 0 |
-| S2 | 1 | 13 | 0 |
-| S3 | 8 | 35 | 0 |
-| S4 | 3 | 17 | 0 |
+| S1 | 2 | 4 | 0 |
+| S2 | 1 | 14 | 0 |
+| S3 | 13 | 38 | 0 |
+| S4 | 6 | 18 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
 zahrnuje i **částečně** opravené (dnes **F-0018** [S1] letový zapisovač z hooku,
 **F-0028** [S3] SDMMC takt nad limitem, **F-0077** [S4] rámec `UartTask_run`).
+
+**Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
+Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument
+[audit/2026-09-16_perzistence-zaznamniky.md](audit/2026-09-16_perzistence-zaznamniky.md).
+- **F-0089** [S1] `syscfg_load()` obnovuje `datalog_en`/`datalog_store`/
+  `datalog_period_s` **jen při studeném startu** — ty tři řádky skončily pod
+  `if (g_syscfg_bkp_valid) return;` (`syscfg.c:266`), přestože v BKP nejsou
+  (doloženo výčtem DR1/DR2/DR6 z `rtc.c:89-120`). Po každém teplém resetu se
+  vrátí výchozí `ON`/`AUTO`/`10 s`. Reprodukce z konzole: `datalog off` →
+  2 s → Menu→Restart → `status` ukáže zase `ON`.
+- **F-0090** [S2] `datalog_init()` nuluje `s_be` **před** `s_ready`
+  (`datalog.c:374`), zatímco čtyři čtenáři (`get_status`, `read_back`,
+  `read_bulk`, `format_status`) dereferencují `s_be` guardované jen `s_ready`
+  a QSPI mutex **neberou vůbec** — komentář `:371-372` přitom tvrdí, že je
+  mutex chrání. Reachability je těsná: tlačítko na přepnutí úložiště je
+  v okně Datalog a totéž okno volá `datalog_get_status()` v každém tiku.
+- **F-0091** [S3] `flightrec_init()` při plném regionu maže natvrdo sektor 0
+  místo sektoru za nejnovějším → **od 66. dumpu si log ničí vlastní nejnovější
+  záznam při každém bootu**; `status` pak hlásí „je uložený záznam" a
+  `flightrec` říká „žádný". Sesterský `errlog_init()` v témže souboru
+  (`:473-477`) to dělá správně.
+- **F-0092** [S3] `ERRLOG_TAG_LEN` = 6 utne `g_crash_text` přesně na dvojtečce
+  (`"stall:"`, `"stack:"`) a `errlog_fmt_detail` u `K_CRASH` tag netiskne vůbec →
+  okno CHYBY i web ukážou u přetečení zásobníku jen `CFSR=0x00000000
+  BFAR=0x00000000`. **Ve spojení s otevřeným F-0018** jsou pro scénář #18 oba
+  trvalé záznamy slepé.
+- **F-0093** [S3] obnova uloženého nastavení při bootu zapíše do `errlog`
+  falešnou „změnu nastavení uživatelem" (`datalog_set_period_s/_store` logují
+  bezpodmínečně). 🔴 **Opravit spolu s F-0089** — jinak se to po přesunu řádků
+  rozšíří ze studeného startu na každý reset.
+- **F-0094** [S3] `calib_save()` zapíše errlog záznam jako **první příkaz**
+  funkce, tedy před kontrolou `s_store.ready` i před zápisem.
+- **F-0095** [S3] `errlog_read_batch()` čte záznam po záznamu (jeden QSPI příkaz
+  na 32 B) — vzor, který `datalog.h:211-213` popisuje jako 25× režii a kvůli
+  kterému vznikl `datalog_read_bulk` (F-0039/L-0021). Mez 64 v
+  `ipc_errlog_service` dává ~11 ms spinu v defaultTasku pod mutexem.
+- **F-0096** [S3] `setup_load()` je **třetí** cesta, která píše `g_meas_cfg` bez
+  kritické sekce, a `slot_sanitize()` neověřuje `lo <= hi`. ⚠️ **Opravit jedním
+  zásahem s otevřeným F-0052**, ne zvlášť.
+- **F-0097** [S3] strop 4080 B na blob (`W25Q_STORE_MAX_BLOB`) není nikde
+  vynucený `_Static_assert`em — přetečení by znamenalo, že se nastavení přestane
+  ukládat a `syscfg_flash_tick` to bude 100×/s zkoušet bez jakéhokoli hlášení.
+  Přímá **L-0026**; vzor už v projektu je (`httpd_min.c:84-85`).
+- **F-0098** [S3] neúspěšná inicializace úložiště je trvalá a tichá (pět míst).
+- **F-0099**…**F-0102** [S4] ignorované návraty v `errlog_erase()`; UART
+  `errlog dump` obchází `errlog_fmt_detail` (**L-0049** nedodržena třetím
+  konzumentem); `errlog_count()` po přetočení nadhodnocuje; `datalog_tick`
+  dohání zameškané vzorky.
 
 **Modul 9 — opraveno 2026-09-11 (⬜ neověřeno na HW):**
 - **F-0037** [S1] frakční odchylka `y` počítaná pevným měřítkem `1e-14` → nový **jediný
@@ -479,3 +553,5 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-12 | webova SPA (`SPA_HTML`) | F3 prezkum blobu 2 934 r. (CSS 354 / markup 421 / JS 2 003 r., 125 funkci), 11 nalezu (2xS1, 1xS2, 3xS3, 5xS4), verdikt **podminene funkcni**. 🔑 Overovaci retezec `tools/spa/check.py` je dobry v tom, co meri (literal cely: `nm` 139 290 = 139 289 + NUL; 0 uvozovek; 0 ne-ASCII; DOM bez visicich id), ale **nekontroluje hranici JSON** — a prave tam jsou oba S1: **F-0078** `drawTfom` cte `gps.valid`, ktere `/api/state` neemituje, takze vetve `2D FIX` i `LOCK` jsou nedosazitelne a karta hlasi `NO LOCK` i pri 3D fixu (vedle hlavicky, ktera z tehoz JSON pise `GPS 3D`); **F-0079** `push('ns')` cte `gps.nsat`, jenze `nsat` je v JSON o uroven vys a v bloku `gps` je `num_sat` -> karta KVALITA GPS je trvale prazdna. **F-0080** [S2]: casova osa zivych grafu predpoklada 1 vzorek = 1 s, ale vychozi cesta je SSE, kde server tlaci pri KAZDEM novem mereni (~4/s) — okno '1 h' tak ukaze ~15 minut popsanych jako hodina. Autor tuhle past zna a u Allanovy odchylky se ji brani (buffer `M` plnen jen na zmenu `seq_meas`), na historii grafu `H[]` se uvaha nepromitla. Dale F-0081 (vyjimka v `render()` se spolkne nebo se ohlasi jako chyba site), F-0082 (heslo v `localStorage` otevrene), F-0083 (stavove barvy jako identita rady -> OCXO ma trvale cerveny bar), F-0084..F-0088. Overeno a v poradku: zadna cesta pro vlozeni HTML (vsechny hodnoty ze serveru jsou cisla/booly, volny text jde pres `textContent`), `mathY`/`limitVerdict` sedi na `meas_math.c`, `resetInfo` ma totez poradi priorit jako `main.c`, TDEV se pocita z MDEV. | zatim zadna (F5 nebyla) |
 | 2026-09-12 | F5 modul 15, skupina B | Tri nalezy, ktere vyzadovaly rozhodnuti uzivatele. **F-0082** heslo z `localStorage` do `sessionStorage` — a opraveno o jednu vec vic, nez nalez navrhoval: presun sam by minul ty, kdo web uz pouzivali (heslo by jim v `localStorage` zustalo navzdy), takze pribyl jednorazovy uklid + hlaska => **L-0037**. **F-0080** historie grafu throttlovana na 1 Hz (prah 0,95 s kvuli jitteru pollu); autor tu past znal a u bufferu `M` se ji branil, do `H[]` se uvaha nepromitla => **L-0036**. **F-0088** warm-up nove ze snapshotu (`g_warmup`, most app->Core jako `g_adev_1s`), **IPC v14 -> v15**; nova lekce z toho NENI, je to dalsi vyskyt L-0018. 🔑 Velikost sdilene struktury ZMERENA sondou `sizeof` nad starou i novou hlavickou: 480 B / 5 568 B pred i po -> v15 recykluje `_pad_h`; PRESTO se flashuji obe banky (bump je kvuli detekci nesouladu). Overeni: build BOTH 0 varovani, audit.py 92/0/2, `tools/spa/check.py --build` vsech 8 kroku OK (nm 141 769 + NUL = 141 770), .text CM7 600104->600136, CM4 231888->234392. | `e0e542e` |
 | 2026-09-12 | F5 modul 15, skupina A | Osm nalezu. Oba **S1** byly tataz vada: klient cetl pole, ktere server neemituje — `gps.valid` (neexistuje) a `gps.nsat` (lezi o uroven vys, v bloku `gps` je `num_sat`). Karta HOLDOVER proto hlasila NO LOCK i pri 3D fixu a karta KVALITA GPS zustala navzdy prazdna; v JS je chybejici pole `undefined`, ne chyba, takze nic nezakricelo => **L-0038**. Dale F-0081 (`lastOk` az po praci + pocitadlo `renderErr` misto prazdneho `catch`), F-0083 (stavove barvy uz nejsou identita rady — OCXO se ridi `mon.ocxo`), F-0084 (jeden zdroj pravdy pro vzhled, `setTheme`/`THO`/klic `gt` zrusene), F-0085 (`okNums` validuje obnovena mereni), F-0086 (zastaraly rozpocet 4096 B -> 6144 B + `_Static_assert`), F-0087 (karta DVOJKANAL popisuje osazenou desku). 🔴 K obema S1 pribyla **kontrola** `tools/spa/json_kontrakt.py` jako krok **5b** retezce. Pozitivni kontrola odhalila, ze prvni verze nastroje prehlizela prave F-0078 (`drawTfom` bere stav pres `var s=LAST`) => **L-0039**: pozitivnich pripadu musi byt tolik, kolik nalezu kontrolu vyvolalo. Overeni: `check.py --build` vsech 9 kroku OK (nm 146 454 + NUL = 146 455), .text CM4 234392 -> 239080. | `4a6e4ba`, `001f3c3`, `2d5f35f` |
+| 2026-09-16 | perzistence a záznamníky | F3 průchod řádek po řádku přes `datalog.c` + `flightrec.c` (vč. celého nového `errlog`) + `syscfg.c` + `setup.c` + `calib.c` (**2 456 ř.**), 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), verdikt **podmíněně funkční**. 🔴 **Modul vznikl z opravy nepravdivého tvrzení v tomto souboru** — „auditovaný veškerý vlastní kód" neplatilo a `errlog` (2026-09-13, FW v0.9.0) audit nikdy neviděl. Jádro modulu je psané dobře (ruční serializace, CRC u každého záznamu, power-safe pořadí zápisu, dvoustupňový zápis errlogu ISR→ring→flash). Nálezy mají dva jmenovatele: **(1) co má přežít reset, ho nepřežije** — **F-0089 [S1]** tři nastavení datalogu se obnovují jen při studeném startu, ačkoli v BKP nejsou (doloženo výčtem DR1/DR2/DR6 z `rtc.c:89-120`); **F-0091** `flightrec` si po 64 dumpech maže vlastní nejnovější záznam při každém bootu; **F-0092** záznam o pádu ztratí jméno tasku, protože 6B `tag` utne `g_crash_text` přesně na dvojtečce. **(2) komentář popisuje ochranu, kterou kód nedělá** (potřetí v projektu, L-0028) — **F-0090 [S2]** `datalog_init` nuluje `s_be` před `s_ready` a čtenáři mutex nikdy neberou → okno pro dereferenci NULL; **F-0094** `calib_save` zapíše „uložena kalibrace" dřív, než zjistí, jestli se uložila. Mapa regionů W25Q přepočtena numericky (žádný překryv, vše zarovnané), umístění **všech** bufferů ověřeno `nm` nad `.elf` (všechny v AXI SRAM), rámce všech funkcí změřeny `objdump`em (L-0035). Šest kandidátů cíleně prověřeno a **zamítnuto** (mj. neescapovaný `%s` v JSON, kopie neinicializovaného ocasu do IPC, dělení nulou v `read_bulk`). `tools/audit.py` 92 OK / 0 selhání / 2 s varováním (gcc 14.3.1), **žádné varování v tomto modulu**. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-17 | F5 opravy (modul 16, skupina A) | **6 nálezů uzavřeno v 5 commitech + 1 pojistka.** `6d1b6e5` **F-0089 [S1] + F-0093** (musely spolu): obnova datalogu přesunuta nad `if (g_syscfg_bkp_valid) return;` — tři pole, která nejsou v BKP, se do té chvíle po KAŽDÉM teplém resetu tiše vracela na výchozí ON/AUTO/10 s; nový `datalog_cfg_quiet(bool)` potlačí falešné `ERRLOG_K_CFG` po dobu obnovy. `a80caed` **F-0090 [S2]**: `s_ready` se shazuje první a zvedá poslední (obě hranice `__DMB()`), čtyři čtenáři čtou `s_be` jednou do lokálu. `15aa8d3` **F-0094**, `e583432` **F-0097** (3× `_Static_assert`), `a9af9de` **F-0099**. `165023c` = rozdílová kontrola v `check_lessons.sh`, která F-0089 příště zachytí. 🔑 **Pět pozitivních kontrol** (L-0020/L-0039): každý ze tří assertů ověřen nafouknutím struktury o 4096 B, nová sekce check_lessons ověřena na OBOU podobách vady. 🔑 **Dvě věci dopadly jinak, než nález navrhoval:** F-0090 dostal OBĚ varianty (pořadí i lokální kopie ukazatele), ne jen minimální; F-0099 hlásí výsledek i v `qspi_req_service`, který dosud mlčel úplně — požadavek z okna CHYBY konzoli nevidí, takže to byla jediná chybějící stopa. Build Release BOTH 0 varování, audit.py 92/0/2, CM7 `.text` 604560 → **604752 B** (+192), CM4 beze změny. Dokázáno v obrazu (ne jen přeloženo): pořadí volání v `syscfg_load` před testem `g_syscfg_bkp_valid`, oba `dmb sy` v `datalog_init`, podmíněný `bl errlog_put` v `calib_save`. `IPC_VERSION` se nemění. ⬜ **neověřeno na HW.** | L-0050, L-0051, L-0052, L-0053 + rozšíření L-0026 |
