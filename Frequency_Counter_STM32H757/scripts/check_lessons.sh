@@ -186,6 +186,40 @@ if [ -f "$UART_ELF" ]; then
     fi
 fi
 
+# ── Obnova nastavení: co NENÍ v BKP, musí se aplikovat NAD `return` (F-0089) ──
+# `syscfg_load()` je rozdělená na dvě poloviny. Pod `if (g_syscfg_bkp_valid) return;`
+# smí být JEN pole, která drží zálohovaná doména — ta se po teplém resetu obnoví
+# z BKP a flash by je jen přepsala starší hodnotou. Cokoli jiného se tam ale
+# po teplém resetu (reflash, Menu->Restart, watchdog, NRST) **tiše vrátí na
+# výchozí hodnotu z obrazu**, protože statiky start přežijí jen v BKP.
+# Přesně tak deset dní mizelo nastavení datalogu (zap/vyp, úložiště, perioda) —
+# a protože přes power-cyklus to fungovalo, vypadalo to jako náhoda.
+# Kontrola je rozdílová (L-0020): seznam „co drží BKP" se nevypisuje ručně,
+# odvozuje se z toho, co `rtc.c` z BKP doopravdy obnovuje.
+SYSCFG_SRC="CM7/Core/Src/syscfg.c"
+RTC_SRC="CM7/Core/Src/rtc.c"
+if [ -f "$SYSCFG_SRC" ] && [ -f "$RTC_SRC" ]; then
+    BLOK="$(awk '/if \(g_syscfg_bkp_valid\) return;/{f=1;next} f&&/^\}/{exit} f{print}' "$SYSCFG_SRC")"
+    PODEZRELE=""
+    # (a) volání funkce pod returnem = nastavuje stav, který v BKP skoro jistě není
+    for fn in $(printf '%s\n' "$BLOK" | grep -oE '^[[:space:]]*[a-z_][a-z0-9_]*\(' | tr -d ' (' | sort -u); do
+        PODEZRELE="$PODEZRELE ${fn}()"
+    done
+    # (b) globál, který `rtc.c` z BKP neobnovuje
+    for g in $(printf '%s\n' "$BLOK" | grep -oE '^[[:space:]]*g_[A-Za-z0-9_]+[[:space:]]*=' | tr -d ' =' | sort -u); do
+        grep -qE "(^|[^A-Za-z0-9_])${g}[[:space:]]*=" "$RTC_SRC" || PODEZRELE="$PODEZRELE $g"
+    done
+    if [ -n "${PODEZRELE// /}" ]; then
+        echo "[!] ZAKÁZÁNO: pod 'if (g_syscfg_bkp_valid) return;' v syscfg_load() smí být"
+        echo "    JEN pole, která rtc.c obnovuje z BKP_DR1/DR2/DR6. Tohle tam nepatří"
+        echo "    a po TEPLÉM resetu se to tiše vrátí na výchozí hodnotu (audit F-0089):"
+        echo "   ${PODEZRELE}"
+        echo "    Řešení: přesuň to NAD ten return, k fx/meas/survey/monitor/layout."
+        echo
+        NALEZY=$((NALEZY + 1))
+    fi
+fi
+
 if [ "$NALEZY" -eq 0 ]; then
     echo "OK: žádný zakázaný vzor nenalezen."
     exit 0
