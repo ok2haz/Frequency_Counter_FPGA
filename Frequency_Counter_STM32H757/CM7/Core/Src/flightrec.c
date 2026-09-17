@@ -600,16 +600,29 @@ uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out)
     return got;
 }
 
-void errlog_erase(void)
+/* ⚠️ Vraci `false`, kdyz se nektery sektor nepodarilo smazat (audit F-0099).
+ * Do 2026-09-17 se vysledek vsech 64 volani zahazoval `(void)` a stav se
+ * bezpodminecne prohlasil za „smazano". Pri nedokoncenem mazani by se hlava
+ * vratila na zacatek regionu, zatimco ve zbytku by zustaly STARE zaznamy
+ * s VYSSIM `seq` — a pristi `errlog_init()` by je nasel jako „nejnovejsi"
+ * a ustavil hlavu na spatnem miste. Sesterska `datalog_erase_all()`
+ * (`datalog.c`) navratove hodnoty kontroluje uz dnes; tohle je L-0012. */
+bool errlog_erase(void)
 {
-    if (osMutexAcquire(qspiMutexHandle, 2000u) != osOK) return;
+    if (osMutexAcquire(qspiMutexHandle, 2000u) != osOK) return false;
+    bool ok = true;
     for (uint32_t i = 0; i < W25Q_ERRLOG_SECTORS; i++) {
-        (void)w25q_erase_sector(W25Q_ERRLOG_BASE + i * W25Q_SECTOR_SIZE);
+        if (!w25q_erase_sector(W25Q_ERRLOG_BASE + i * W25Q_SECTOR_SIZE)) { ok = false; break; }
     }
-    s_el_seq_next = 1u;
-    s_el_write_off = W25Q_ERRLOG_BASE;
-    s_el_ready = 1;
+    /* Stav se posouva JEN pri uplnem uspechu — jinak zustava puvodni hlava,
+     * kterou uz `errlog_init()` jednou spravne nasel. */
+    if (ok) {
+        s_el_seq_next  = 1u;
+        s_el_write_off = W25Q_ERRLOG_BASE;
+        s_el_ready     = 1;
+    }
     osMutexRelease(qspiMutexHandle);
+    return ok;
 }
 
 void errlog_boot_record(void)

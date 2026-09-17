@@ -136,7 +136,9 @@ void qspi_req_service(void)
         g_datalog_store_req = 0xFFu;
     }
     if (g_errlog_erase_req) {
-        errlog_erase();                   /* 64 sektoru = jednotky sekund */
+        /* Hlas vysledek, ne zamer (F-0099) — pozadavek prisel z dotyku v okne
+         * CHYBY, ktere na konzoli nevidi, takze je tohle jedina stopa. */
+        printf("errlog: mazani (z UI) %s\n", errlog_erase() ? "OK" : "SELHALO");
         g_errlog_erase_req = 0;
     }
     g_qspi_req_busy = 0;
@@ -843,8 +845,10 @@ void UartTask_run(void *argument)
 					  /* ⚠️ Destruktivni + blokujici (64 sektoru) — proto VYHRADNE
 					   * z UartTasku, ktery watchdog nehlida. */
 					  printf("errlog: mazu %lu sektoru...\n", (unsigned long)W25Q_ERRLOG_SECTORS);
-					  errlog_erase();
-					  printf("errlog: smazano\n");
+					  bool el_ok = errlog_erase();
+					  /* Hlas vysledek, ne zamer (F-0099): pri selhani zustava hlava
+					   * tam, kde byla, takze log NENI prazdny. */
+					  printf("errlog: %s\n", el_ok ? "smazano" : "SELHALO (log zustava)");
 				  } else {
 					  uint32_t want = 10u;
 					  if (strncmp(arg, "dump", 4) == 0) {
