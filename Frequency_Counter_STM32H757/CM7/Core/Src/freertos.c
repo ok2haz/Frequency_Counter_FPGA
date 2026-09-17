@@ -680,7 +680,13 @@ void StartDefaultTask(void *argument)
   /* 🔑 Start dobehl az sem, takze pripadny predchozi `Error_Handler` uz neni
    * aktualni: vynuluj jeho priznak, aby pristi HAL chyba zase smela zkusit
    * restart. Bez toho by se resetovalo jen JEDNOU ZA ZIVOT desky (BKP prezije
-   * reset) — nalez kritickeho auditu 2026-09-08. */
+   * reset) — nalez kritickeho auditu 2026-09-08.
+   * ⚠️ `DBP` nejdriv (audit F-0107): kdyby byla zalohovana domena zamcena,
+   * tenhle zapis by TISE propadl a logika „Error_Handler resetuje nejvys jednou
+   * za pokus o start" by se zvrhla v „uz nikdy" — presne to, pred cim varuje
+   * komentar vyse. Dnes `DBP` drzi odemcene `SystemClock_Config`, ale to je
+   * generovany kod bez `USER CODE`, takze se na nej nespolehame. */
+  PWR->CR1 |= PWR_CR1_DBP;
   RTC->BKP10R = 0u;
   ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
   /* Infinite loop */

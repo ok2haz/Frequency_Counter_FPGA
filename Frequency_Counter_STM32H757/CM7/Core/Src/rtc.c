@@ -264,6 +264,17 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
  * aby necely zapis nevypadal jako platny zaznam. */
 void rtc_crash_assert(unsigned long line)
 {
+  /* ⚠️ DBP nejdriv (audit F-0107). Zapis do zalohovane domeny vyzaduje odemcene
+   * `PWR->CR1.DBP`; dnes ho drzi odemcene `HAL_PWR_EnableBkUpAccess()` volane
+   * ze `SystemClock_Config()` a nic ho nezamyka zpet — jenze to je generovany
+   * kod BEZ `USER CODE` bloku, takze se ta zavislost da regeneraci posunout.
+   * Kdyby k tomu doslo, selhal by prave zaznam o selhanem `configASSERT`, tedy
+   * diagnostika chyby. Ostatnich pet primych zapisovatelu (`watchdog.c`,
+   * `freertos_hooks.c`, `main.c` Error_Handler, NMI a HardFault v
+   * `stm32h7xx_it.c`) si `DBP` odemyka samo — tohle byla posledni dosazitelna
+   * vyjimka. (Zbyle tri v Mem/Bus/UsageFault lezi v dokumentovane
+   * NEDOSAZITELNYCH vektorech, viz `stm32h7xx_it.c` — zamerne se nemeni.) */
+  PWR->CR1 |= PWR_CR1_DBP;
   RTC->BKP4R = (uint32_t)line;
   RTC->BKP5R = 0u;
   RTC->BKP3R = RTC_CRASH_MAGIC | 6u;
