@@ -115,6 +115,16 @@ typedef struct {
     uint8_t  enc_div;
 } syscfg_blob_t;
 
+/* 🔴 Strop blobu je vlastnost UKLADACE, ne komentare (audit F-0097, lekce L-0026).
+ * `w25q_store_write` vrati `false`, kdyz payload nepretece jeden sektor — jenze
+ * tise: `syscfg_save` by zacal vracet `false` navzdy a `syscfg_flash_tick` by to
+ * zkousel 100x/s, nastaveni by se prestalo ukladat a `status` by nerekl nic.
+ * Projevilo by se to jako „nastaveni neprezije power-cyklus", tedy symptom, ktery
+ * se hleda uplne jinde. Blob uz vyrostl nejmene dvanactkrat (viz historie magicu
+ * vyse), takze to neni teoreticka mez. Dnes 184 B ze 4080. */
+_Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
+               "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+
 static w25q_store_t s_store;
 
 /* Naplni blob z aktualnich g_* globalu. */

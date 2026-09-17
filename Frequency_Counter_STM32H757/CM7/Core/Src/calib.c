@@ -39,6 +39,13 @@ typedef struct {
     float    gain_5v;
 } calib_blob_t;
 
+/* Viz stejný `_Static_assert` v `syscfg.c` (audit F-0097, lekce L-0026). Dnes 20 B
+ * ze 4080 — rezerva je obrovská, ale kalibrační MATICE nové desky (koeficient na
+ * každou kombinaci cesty, útlumu a amplitudy, viz CLAUDE.md) se do jednoho sektoru
+ * vejít NEMUSÍ, a tohle je místo, kde se to pozná při překladu. */
+_Static_assert(sizeof(calib_blob_t) <= W25Q_STORE_MAX_BLOB,
+               "kalibracni blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+
 static w25q_store_t s_store;
 
 void calib_load(void)

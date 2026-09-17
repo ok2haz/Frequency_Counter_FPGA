@@ -32,6 +32,12 @@ typedef struct {
     setup_slot_t slots[SETUP_N];
 } setup_book_t;
 
+/* Viz stejný `_Static_assert` v `syscfg.c` (audit F-0097, lekce L-0026) — všech
+ * SETUP_N slotů je JEDEN blob, takže strop hlídá i přibývání slotů, nejen polí
+ * ve slotu. Dnes 520 B ze 4080. */
+_Static_assert(sizeof(setup_book_t) <= W25Q_STORE_MAX_BLOB,
+               "kniha sestav se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+
 static w25q_store_t s_store;
 static setup_book_t s_book;      /* RAM kopie (načtená při initu) */
 
