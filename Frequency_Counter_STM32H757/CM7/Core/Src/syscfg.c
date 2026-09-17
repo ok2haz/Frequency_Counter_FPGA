@@ -262,6 +262,26 @@ void syscfg_load(void)
     g_net_gw        = b.net_gw;
     datalog_sd_det_force(b.sd_det_force ? 1 : 0);
 
+    /* Datalog (zap/vyp, uloziste, perioda): NENI v BKP -> flash je jediny zdroj,
+     * takze se aplikuje VZDY (jako fx/meas/survey/monitor/layout).
+     * 🔴 Do 2026-09-17 tyhle tri radky lezely POD `return` nize, tedy ve skupine
+     * poli, ktera drzi BKP — jenze zadne z nich v BKP neni (DR1/DR2/DR6 nesou jen
+     * jas, mute, auto-dim, schema, jazyk, zonu, animace a `g_ui_cfg`; viz
+     * `rtc.c` USER CODE Check_RTC_BKUP). Po KAZDEM teplem resetu — tedy po
+     * reflashi, po Menu->Restart i po watchdogu — se proto nastaveni tise vracelo
+     * na vychozi ON / AUTO / 10 s. Pres power-cyklus to fungovalo, takze to
+     * vypadalo jako nahoda. Audit F-0089.
+     * ⚠️ Poradi: perioda PRED ulozistem — `datalog_set_store` dela re-init,
+     * ktery si periodu cte pri planovani prvniho vzorku.
+     * ⚠️ `datalog_cfg_quiet` MUSI obalit obe volani: bez nej by kazdy reset zapsal
+     * do trvale historie falesnou „zmenu nastaveni uzivatelem" (F-0093) — a po
+     * tomhle presunu uz ne jen pri studenem startu, ale pokazde. */
+    datalog_cfg_quiet(true);
+    datalog_set_enabled(b.datalog_en != 0);
+    if (b.datalog_period_s) datalog_set_period_s(b.datalog_period_s);
+    datalog_set_store(b.datalog_store);
+    datalog_cfg_quiet(false);
+
     /* Ostatni pole: pri WARM resetu ma prednost BKP (uz drzi nejnovejsi) -> nechat. */
     if (g_syscfg_bkp_valid) return;
 
@@ -275,11 +295,7 @@ void syscfg_load(void)
     g_tz_offset_h = (b.tz_offset_h < -12) ? -12 : (b.tz_offset_h > 14 ? 14 : b.tz_offset_h);
     g_tz_auto     = b.tz_auto ? 1 : 0;
     g_ui_cfg      = b.ui_cfg;
-    datalog_set_enabled(b.datalog_en != 0);
-    /* ⚠️ Poradi: perioda PRED ulozistem — `datalog_set_store` dela re-init,
-     * ktery si periodu cte pri planovani prvniho vzorku. */
-    if (b.datalog_period_s) datalog_set_period_s(b.datalog_period_s);
-    datalog_set_store(b.datalog_store);
+    /* ⚠️ Datalog uz je obnoveny VYSE (nad `return`) — v BKP neni, viz F-0089. */
     g_anim_enabled = b.anim_en ? 1 : 0;
 }
 

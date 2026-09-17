@@ -47,6 +47,9 @@ static uint32_t s_next_ms;             /* HAL_GetTick kdy vzorkovat priste */
 static uint16_t s_period_s = DATALOG_PERIOD_S;   /* runtime perioda vzorkovani */
 static uint8_t  s_store_pref = DATALOG_STORE_AUTO;
 static uint8_t  s_inited;              /* 1 = `datalog_init` uz probehl (viz set_store) */
+static uint8_t  s_cfg_quiet;           /* 1 = obnova ulozeneho nastaveni, ne zasah uzivatele */
+
+void datalog_cfg_quiet(bool on) { s_cfg_quiet = on ? 1u : 0u; }
 
 uint16_t datalog_period_s(void) { return s_period_s ? s_period_s : DATALOG_PERIOD_S; }
 
@@ -57,7 +60,8 @@ void datalog_set_period_s(uint16_t sec)
     if (sec == s_period_s) return;
     uint16_t old_p = s_period_s;
     s_period_s = sec;
-    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGPER, sec, old_p, "logT");
+    /* Pri obnove z syscfg se NEloguje — neni to zasah uzivatele (F-0093). */
+    if (!s_cfg_quiet) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGPER, sec, old_p, "logT");
     /* Prepocitat AZ TED, aby zmena platila od pristiho vzorku a ne az za starou
      * periodou (pri 600 s by uzivatel cekal 10 minut, nez se to projevi). */
     s_next_ms = HAL_GetTick() + (uint32_t)sec * 1000u;
@@ -75,7 +79,8 @@ void datalog_set_store(uint8_t store)
     if (store == s_store_pref) return;
     uint8_t old_st = s_store_pref;
     s_store_pref = store;
-    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGSTORE, store, old_st, "logKam");
+    /* Pri obnove z syscfg se NEloguje — neni to zasah uzivatele (F-0093). */
+    if (!s_cfg_quiet) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGSTORE, store, old_st, "logKam");
 
     /* 🔴 RE-INIT JEN KDYZ UZ INIT PROBEHL. `syscfg_load` (UiTask) tuhle funkci
      * vola pri STUDENEM startu — tehdy je autoritativni flash blob — a to je

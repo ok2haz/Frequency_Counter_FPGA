@@ -53,6 +53,19 @@ const char *datalog_store_name(uint8_t store);  /* "AUTO"/"FLASH"/"SD" */
 uint16_t datalog_period_s(void);
 void     datalog_set_period_s(uint16_t s);
 
+/** Potlaci/povoli zapis udalosti `ERRLOG_K_CFG` v `datalog_set_period_s` a
+ *  `datalog_set_store`.
+ *
+ *  🔴 PROC: obnova ULOZENEHO nastaveni pri bootu NENI zasah uzivatele. Oba
+ *  settery ale logovaly kazdou zmenu hodnoty, a protoze statiky startuji na
+ *  vychozich hodnotach (10 s / AUTO), zapsal kazdy boot do TRVALE historie
+ *  falesnou vetu „interval logu 10s -> 60s". Presne to ma pritom `errlog`
+ *  odlisovat od HW udalosti (viz `errlog.h`, `ERRLOG_K_CFG`). Audit F-0093.
+ *  ⚠️ Vola VYHRADNE `syscfg_load()` a vzdy v paru (on -> obnova -> off).
+ *  Uzivatelske cesty (UART `datalog`, okno Datalog pres `qspi_req_service`)
+ *  zustavaji hlasite — tam je zaznam zadouci. */
+void     datalog_cfg_quiet(bool on);
+
 /* 🔴 Do KTERE stage ADEV pyramidy se smi log sypat.
  * Pyramida decimuje x10, takze stage s ma tau = 10^s sekund. Prevod je EXAKTNI
  * jen kdyz je perioda logu presne mocnina deseti. Pri jine periode vraci -1 a
