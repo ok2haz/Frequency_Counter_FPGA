@@ -65,9 +65,6 @@ void calib_load(void)
 
 bool calib_save(void)
 {
-    /* Zmena kalibrace posune VSECHNY nasledujici prepocty (RF dBm, 12V/5V) —
-     * bez zaznamu by skok v logu vypadal jako zmena mereneho signalu. */
-    (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CALIB, 0u, 0u, "kalib");
     if (!s_store.ready) return false;   /* calib_load nevolan nebo flash nedostupna */
     calib_blob_t b = {
         CALIB_BLOB_MAGIC,
@@ -79,5 +76,16 @@ bool calib_save(void)
     if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return false;
     bool ok = w25q_store_write(&s_store, &b, sizeof b);
     osMutexRelease(qspiMutexHandle);
+
+    /* Zmena kalibrace posune VSECHNY nasledujici prepocty (RF dBm, 12V/5V) —
+     * bez zaznamu by skok v logu vypadal jako zmena mereneho signalu.
+     * 🔴 AZ TEDY, a jen pri uspechu (audit F-0094). Do 2026-09-17 bylo tohle
+     * volani PRVNIM prikazem funkce, tedy pred kontrolou `s_store.ready`, pred
+     * zamkem i pred zapisem — na vsech trech chybovych cestach pak v TRVALE
+     * historii zustala veta „ulozena kalibrace napeti" o zmene, ktera se
+     * neprovedla. Analyza pozdejsiho skoku v datech by pak hledala pricinu na
+     * nespravnem miste. Neuspesny zapis patri pod ERRLOG_K_STORAGE (tam uz
+     * hlasi `datalog_tick`), ne pod „nastaveni se zmenilo". */
+    if (ok) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CALIB, 0u, 0u, "kalib");
     return ok;
 }
