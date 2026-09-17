@@ -472,8 +472,10 @@ g_cm4_absent = 1;
    * Pred schedulerem -> bez mutexu (zadna I2C1 konkurence). */
   si5356_init(&hi2c1);
 
-  /* Beeper na PH9 (800 Hz pres TIM7) */
-  beeper_init();
+  /* Beeper na PH9 (800 Hz pres TIM7). Vysledek se NEIGNORUJE, ale ani neshazuje
+   * pristroj — nemy pipak je vada diagnostiky, ne mereni; stav hlasi `status`
+   * pres `beeper_ready()` (audit F-0111). */
+  (void)beeper_init();
 
   /* DMA2D (Chrom-ART) si inicializuje primitives HAL (prim_stm32_init)
    * pri prvnim renderu obrazovky. */
