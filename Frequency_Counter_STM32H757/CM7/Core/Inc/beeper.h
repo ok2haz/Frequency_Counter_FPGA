@@ -30,8 +30,14 @@ void beeper_set(bool on);
 #define BEEPER_FREQ_MAX_HZ   20000u
 void beeper_tone(uint16_t freq_hz);
 
-/** Kratka vzestupna boot melodie (blokujici osDelay; volat 1x z tasku pri startu). */
+/** Kratka vzestupna boot melodie (blokujici osDelay; volat 1x z tasku pri startu).
+ *  ⚠️ Po dobu behu nastavuje `beeper_melody_busy()` — `alarm_tick` se pipaku
+ *  nedotkne, takze mimo tohle okno je defaultTask JEDINY zapisovatel stavu
+ *  pipaku (audit F-0103). */
 void beeper_boot_melody(void);
+
+/** 1 = prave hraje boot melodie z jine ulohy; nesahej na pipak. */
+bool beeper_melody_busy(void);
 
 /** @return true pokud ton hraje. */
 bool beeper_is_on(void);

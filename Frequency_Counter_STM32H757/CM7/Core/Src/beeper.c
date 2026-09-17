@@ -16,10 +16,19 @@ TIM_HandleTypeDef htim7;
 #define BEEP_PORT   GPIOH
 #define BEEP_PIN    GPIO_PIN_9
 
-static bool s_on = false;
+/* ⚠️ `volatile`: stav cte i `alarm_tick` z defaultTasku, zatimco boot melodie
+ * bezi v UiTasku (audit F-0103). */
+static volatile bool s_on = false;
 static bool s_ready = false;   /* TIM7 se podarilo nastavit (audit F-0111) */
 
-bool beeper_ready(void) { return s_ready; }
+/* 1 = prave hraje blokujici boot melodie z UiTasku. `alarm_tick` (defaultTask)
+ * se po tu dobu pipaku NEDOTKNE, takze mimo tohle okno je defaultTask JEDINY
+ * volajici `beeper_set`/`beeper_tone` — a `s_on` uz nema dva zapisovatele
+ * (audit F-0103). */
+static volatile uint8_t s_melody_busy = 0;
+
+bool beeper_ready(void)       { return s_ready; }
+bool beeper_melody_busy(void) { return s_melody_busy != 0u; }
 
 bool beeper_init(void)
 {
@@ -99,12 +108,26 @@ void beeper_boot_melody(void)
     static const struct { uint16_t f, ms; } NOTES[] = {
         { 784, 95 }, { 1047, 95 }, { 1319, 95 }, { 1568, 190 },   /* G5 C6 E6 G6 */
     };
+    /* 🔴 Vzajemne vylouceni s `alarm_tick` (audit F-0103). Melodie bezi
+     * v UiTasku a je blokujici; `alarm_tick` bezi v defaultTasku 100x/s a taky
+     * vola `beeper_set`. Bez tohohle priznaku mely `s_on` i stav TIM7 DVA
+     * zapisovatele, a ztraceny zapis do `s_on` by je rozesel se skutecnym stavem
+     * periferie — nejhur tak, ze TIM7 bezi, ale `s_on == false`, takze
+     * `beeper_set(false)` se vrati na prvni radce a PIPAK TROUBI SOUVISLE.
+     * Dosazitelne to bylo pres `s_click_req` (dotek behem bootu) a pres mute
+     * vetev `alarm_tick`.
+     * ⚠️ Neni to zamek: kdyz je defaultTask uz UVNITR `pattern_service`, jeden
+     * ton se muze uriznout. Cena plneho zamku (mutex kolem pipaku) je vyssi nez
+     * ta vada; presun melodie do defaultTasku by zase sahal na casovani startu
+     * (CLAUDE.md 4c). */
+    s_melody_busy = 1;
     for (unsigned i = 0; i < sizeof(NOTES) / sizeof(NOTES[0]); i++) {
         beeper_tone(NOTES[i].f);
         osDelay(NOTES[i].ms);
         beeper_set(false);
         osDelay(14);                 /* kratka pauza mezi tony (artikulace) */
     }
+    s_melody_busy = 0;
 }
 
 bool beeper_is_on(void)

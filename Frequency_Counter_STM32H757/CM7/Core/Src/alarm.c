@@ -81,11 +81,15 @@ void alarm_reset_counters(void)
     g_alarm_adev = 0;
 }
 
-/* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ── */
-static unsigned char  s_pulses_left;   /* zbyva ON pulzu */
-static unsigned short s_on_ms, s_off_ms;
-static unsigned char  s_phase;         /* 0 idle, 1 ON, 2 OFF */
-static unsigned int   s_phase_until;   /* HAL_GetTick() konce faze */
+/* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ──────────────────
+ * 🔴 Stav patternu smi menit VYHRADNE defaultTask (`alarm_tick`). Kdo chce
+ * pipnout z jine ulohy, nastavi POZADAVEK — `alarm_click()` (UiTask) a
+ * `alarm_test()` (UartTask). `volatile` je tu proto, ze pozadavky prichazi
+ * z jinych uloh (audit F-0103). */
+static volatile unsigned char  s_pulses_left;   /* zbyva ON pulzu */
+static volatile unsigned short s_on_ms, s_off_ms;
+static volatile unsigned char  s_phase;         /* 0 idle, 1 ON, 2 OFF */
+static volatile unsigned int   s_phase_until;   /* HAL_GetTick() konce faze */
 
 static void pattern_start(unsigned char pulses, unsigned short on_ms, unsigned short off_ms)
 {
@@ -130,9 +134,14 @@ static unsigned char s_gps_ever = 0;         /* uz nekdy byl lock (jinak neresim
 static unsigned char s_meas_fail_prev = 0;   /* limit FAIL v predchozim vyhodnoceni */
 static unsigned char s_meas_ever = 0;        /* uz nekdy byl PASS (jinak: zapnuti limitu na spatne hodnote nepipne) */
 
-/* Touch click: UiTask jen nastavi flag, prehraje ho alarm_tick (jeden vlastnik
- * pattern stavu = defaultTask -> zadny cross-task zapis do s_phase). */
+/* Pozadavky z JINYCH uloh: volajici jen nastavi flag, prehraje ho alarm_tick
+ * (jeden vlastnik pattern stavu = defaultTask -> zadny cross-task zapis do
+ * s_phase). Touch click prichazi z UiTasku, test z UartTasku.
+ * ⚠️ `alarm_test()` to do 2026-09-17 PORUSOVAL — volal `pattern_start()` primo
+ * z UartTasku, tedy presne ten cross-task zapis, ktery tenhle komentar zakazuje
+ * (audit F-0103). */
 static volatile unsigned char s_click_req;
+static volatile unsigned char s_test_req;
 void alarm_click(void) { s_click_req = 1; }
 
 /* ── Prahovy monitor (VBAT / OCXO pasmo / σy@1s) ─────────────────────────────
@@ -247,6 +256,12 @@ static void mon_eval(void)
 
 void alarm_tick(void)
 {
+    /* 🔴 Po dobu blokujici boot melodie (UiTask) se pipaku NEDOTYKAME — jinak
+     * by `s_on` v `beeper.c` mel dva zapisovatele a ztraceny zapis by ho rozesel
+     * se skutecnym stavem TIM7 (audit F-0103). Pozadavky zustanou ve flagu
+     * a obslouzi se hned v dalsim tiku. */
+    if (beeper_melody_busy()) return;
+
     /* Mute: umlci okamzite (i rozehrany pattern). */
     if (g_sound_muted && (s_phase != 0 || beeper_is_on())) pattern_stop();
     /* Presne casovani pipnuti — kazdy tik (~100 Hz), jen kdyz neni mute. */
@@ -256,6 +271,13 @@ void alarm_tick(void)
     if (s_click_req) {
         s_click_req = 0;
         if (!g_sound_muted && s_phase == 0) pattern_start(1, 12, 0);
+    }
+    /* Testovaci pipnuti z konzole (UART `beep test`). Na rozdil od kliku ma
+     * PREDNOST pred bezicim patternem — uzivatel si o nej rekl vedome a ceka
+     * odezvu; mute ho ale umlci stejne jako vsechno ostatni. */
+    if (s_test_req) {
+        s_test_req = 0;
+        if (!g_sound_muted) pattern_start(2, 100, 100);
     }
 
     /* Vyhodnoceni stavu (hrany) jen 5x/s — gps_get kopiruje ~200B v kriticke sekci. */
@@ -328,5 +350,8 @@ void alarm_tick(void)
 
 void alarm_test(void)
 {
-    pattern_start(2, 100, 100);
+    /* ⚠️ JEN POZADAVEK, zadny primy zapis do stavu patternu — volajici je
+     * UartTask, vlastnikem stavu je defaultTask (audit F-0103). Do 2026-09-17
+     * se tu volal `pattern_start()` primo. */
+    s_test_req = 1;
 }
