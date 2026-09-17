@@ -373,10 +373,22 @@ static void find_head(void)
 
 void datalog_init(void)
 {
-    /* ⚠️ Nulovat AZ pod mutexem — jinak by soubezny ctenar (UI/UART) videl
-     * `s_be == NULL` uprostred re-initu a hlasil „NEDOSTUPNE". */
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return;
-    s_be = NULL; s_ready = false;
+    /* 🔴 PORADI: NEJDRIV `s_ready`, teprve pak `s_be` (audit F-0090).
+     * Komentar tu drive tvrdil, ze „nulovat az pod mutexem" chrani soubezneho
+     * ctenare — NECHRANI: ctenari (`datalog_get_status`, `_read_back`,
+     * `_read_bulk`, `_format_status`) QSPI mutex NEBEROU vubec, testuji jen
+     * `s_ready` a pak dereferencuji `s_be`. Pri opacnem poradi je mezi temi
+     * dvema prikazy okno, ve kterem plati `s_ready == 1 && s_be == NULL`,
+     * tedy dereference NULL -> HardFault. Okno je uzke (dve instrukce), ale
+     * dosazitelne: re-init pousti UartTask (`qspi_req_service` -> prepnuti
+     * uloziste) a `datalog_get_status` vola prave okno Datalog z UiTasku
+     * v kazdem tiku — obe ulohy tedy bezi soucasne kvuli temuz stisku.
+     * `__DMB()` je i barierou pro prekladac („memory" clobber), takze se ty
+     * dva zapisy nesmi prohodit ani pri optimalizaci. */
+    s_ready = false;
+    __DMB();
+    s_be = NULL;
     /* Volba ulozistě. AUTO = puvodni chovani (SD ma prednost — je vetsi a
      * vyjimatelna); FLASH/SD jsou vynucene. ⚠️ Pri vynucenem SD bez karty se
      * ZAMERNE nespadne na flash: kdo si rekl o SD, nema dostat log potichu
@@ -392,7 +404,9 @@ void datalog_init(void)
     /* Kapacita 0 by v write_rec/read_back znamenala deleni nulou -> backend s
      * nesmyslnou kapacitou radeji odmitnout (napr. nedokoncena SD implementace). */
     if (s_be != NULL && s_be->capacity < DATALOG_REC_SIZE) s_be = NULL;
-    if (s_be != NULL) { find_head(); s_ready = true; }
+    /* Opacne poradi nez pri nulovani vyse: `s_be` (a hlava) MUSI byt hotove
+     * driv, nez `s_ready` pusti ctenare dovnitr. */
+    if (s_be != NULL) { find_head(); __DMB(); s_ready = true; }
     osMutexRelease(qspiMutexHandle);
 
     s_inited = 1;
@@ -511,14 +525,21 @@ void datalog_tick(void)
 void datalog_set_enabled(bool en) { s_enabled = en; }
 bool datalog_enabled(void)         { return s_enabled; }
 
+/* ⚠️ Ctenari nize NEBEROU QSPI mutex (vola je UiTask 2x/s, UartTask i defaultTask
+ * a mutex drzi i minuty trvajici `datalog_erase_all`). Proto si `s_be` prectou
+ * JEDNOU do lokalu a testuji ho vedle `s_ready` — re-init z jine ulohy uprostred
+ * funkce pak nemuze zpusobit dereferenci NULL (audit F-0090). Zastaraly ukazatel
+ * je bezpecny: oba backendy jsou objekty se statickou dobou zivota. */
 void datalog_get_status(datalog_status_t *out)
 {
     if (out == NULL) return;
-    out->backend      = s_ready ? s_be->name : "--";
-    out->ready        = s_ready;
+    const datalog_backend_t *be = s_be;
+    bool rdy = s_ready && (be != NULL);
+    out->backend      = rdy ? be->name : "--";
+    out->ready        = rdy;
     out->enabled      = s_enabled;
     out->records      = s_count;
-    out->capacity_rec = s_ready ? s_be->capacity / DATALOG_REC_SIZE : 0u;
+    out->capacity_rec = rdy ? be->capacity / DATALOG_REC_SIZE : 0u;
     out->last_seq     = s_seq;
     out->write_errors = s_errors;
     out->wrapped      = s_wrapped;
@@ -526,14 +547,15 @@ void datalog_get_status(datalog_status_t *out)
 
 bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out)
 {
-    if (!s_ready || out == NULL || from_newest >= s_count) return false;
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL || out == NULL || from_newest >= s_count) return false;
     /* s_head ukazuje ZA posledni zapsany -> zpet o (from_newest+1) zaznamu. */
     uint32_t back = (from_newest + 1u) * DATALOG_REC_SIZE;
-    uint32_t off  = (s_head + s_be->capacity - (back % s_be->capacity)) % s_be->capacity;
+    uint32_t off  = (s_head + be->capacity - (back % be->capacity)) % be->capacity;
 
     uint8_t b[DATALOG_REC_SIZE];
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return false;
-    bool ok = s_be->read(off, b, DATALOG_REC_SIZE);
+    bool ok = be->read(off, b, DATALOG_REC_SIZE);
     osMutexRelease(qspiMutexHandle);
     return ok && unpack_rec(b, out);
 }
@@ -558,14 +580,15 @@ uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
                            uint32_t max_n, uint32_t *consumed)
 {
     if (consumed) *consumed = 0;
-    if (!s_ready || out == NULL || max_n == 0u || from_newest >= s_count) return 0;
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL || out == NULL || max_n == 0u || from_newest >= s_count) return 0;
 
     uint32_t n = max_n;
     if (n > s_count - from_newest) n = s_count - from_newest;   /* nekoukat za nejstarsi */
     if (n > DATALOG_BULK_MAX)      n = DATALOG_BULK_MAX;
     if (n == 0u) return 0;
 
-    const uint32_t cap = s_be->capacity;
+    const uint32_t cap = be->capacity;
     const uint32_t len = n * DATALOG_REC_SIZE;
     /* Zacatek bloku = pozice NEJSTARSIHO zaznamu davky (`from_newest + n - 1`),
      * tedy o (from_newest + n) zaznamu zpet od hlavy. */
@@ -575,11 +598,11 @@ uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return 0;
     bool ok;
     if (start + len <= cap) {
-        ok = s_be->read(start, s_bulk, len);                    /* jeden kus */
+        ok = be->read(start, s_bulk, len);                      /* jeden kus */
     } else {                                                    /* preteklo pres konec ringu */
         uint32_t first = cap - start;
-        ok = s_be->read(start, s_bulk, first)
-          && s_be->read(0u, s_bulk + first, len - first);
+        ok = be->read(start, s_bulk, first)
+          && be->read(0u, s_bulk + first, len - first);
     }
     osMutexRelease(qspiMutexHandle);
     if (!ok) return 0;
@@ -597,10 +620,11 @@ uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
 void datalog_format_status(char *buf, int buflen)
 {
     if (buf == NULL || buflen <= 0) return;
-    if (!s_ready) { snprintf(buf, (size_t)buflen, "DATALOG NEDOSTUPNE (uloziste)"); return; }
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL) { snprintf(buf, (size_t)buflen, "DATALOG NEDOSTUPNE (uloziste)"); return; }
     snprintf(buf, (size_t)buflen, "DATALOG %s %s %lu/%lu rec seq:%lu err:%lu%s",
-             s_be->name, s_enabled ? "ON" : "OFF",
-             (unsigned long)s_count, (unsigned long)(s_be->capacity / DATALOG_REC_SIZE),
+             be->name, s_enabled ? "ON" : "OFF",
+             (unsigned long)s_count, (unsigned long)(be->capacity / DATALOG_REC_SIZE),
              (unsigned long)s_seq, (unsigned long)s_errors, s_wrapped ? " WRAP" : "");
 }
 
