@@ -3,7 +3,8 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-17 (15. sezení — **modul 16 = perzistence
+**Poslední aktualizace:** 2026-09-17 (16. sezení — **modul 17 = čas, alarmy,
+watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
 týž den fáze oprav, skupina A)
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
@@ -34,8 +35,29 @@ dumpu, F-0092 crash bez jména tasku, F-0095 čtení po záznamech, F-0098 tich�
 čeká na **rozhodnutí o variantě**; **F-0096 patří k otevřenému F-0052** (třetí cesta,
 která píše `g_meas_cfg` bez kritické sekce) — opravovat jedním zásahem, ne zvlášť;
 F-0100…F-0102 jsou kosmetika pro F6.
-Dál: **skupina B modulu 16**, **F5 pro modul 11** (F-0052 je S2) a **rozhodnout
-F-0039** (blokuje ověření F-0037 na desce).
+🔴 **NOVÉ 2026-09-17 — modul 17 (čas, alarmy, watchdog), 10 nálezů.**
+✅ **Skupiny A+B opraveny 2026-09-17 (9 z 10, v 6 commitech), ⬜ neověřeno na HW.**
+Verdikt **podmíněně funkční**. Nejzávažnější **F-0103 [S2]**: stav zvukového
+patternu a `beeper` píšou TŘI úlohy (defaultTask, UartTask přes `alarm_test`,
+UiTask přes `beeper_boot_melody`), ačkoli `alarm.c:133` deklaruje jediného
+vlastníka — ztracený zápis do `s_on` může nechat pípák trvale troubit.
+Dál **F-0104** (selhání propagace `PR`/`RLR` zkrátí watchdog 4 s → 0,5 s a nikdo
+se to nedozví), **F-0105** (zotavený stall se ohlásí u příštího nesouvisejícího
+resetu), **F-0106** (HardFault jako jediný píše magic první → může ohlásit cizí PC),
+**F-0107** (`rtc_crash_assert` bez `DBP`), **F-0108** (nenaběhlý LSE zabije celý
+přístroj — **čeká na rozhodnutí o politice**, souvisí s otevřeným F-0007).
+🔑 **Premisa opravy F-0089 tím OVĚŘENA:** výčet v `MX_RTC_Init` obsahuje právě
+těch deset globálů, takže kontrola v `check_lessons.sh` odvozuje správnou množinu.
+⚠️ **Otevřen zůstává jediný nález modulu 17 — F-0108** (nenaběhlý LSE zabije
+celý přístroj): leží v generovaném `SystemClock_Config()` **bez `USER CODE`**
+a patří k otevřenému **F-0007** jako JEDNA politika „co dělat při výpadku
+oscilátoru". Neotevírat samostatně.
+🔑 **Co ověřit na desce jako první:** `status` → nový řádek
+`WATCHDOG: PR=4 RLR=2000 -> 4000 ms | pipak ok`; cokoli jiného u `PR`/`RLR`
+(zvlášť `<== NESEDI`) je nález sám o sobě. Pak `beep test` během běžícího
+alarmu — pípák nesmí zůstat troubit.
+Dál: **skupina B modulu 16**, **F5 pro modul 11** (F-0052 je S2) a
+**rozhodnout F-0039** (blokuje ověření F-0037 na desce).
 ⚠️ Opravy modulu 15 míří do **blobu `SPA_HTML`**, takže po nich MUSÍ projít
 `python tools/spa/check.py --build` celý (8 kroků) — zvlášť krok 8 (`nm` nad
 `SPA_HTML` = počet bajtů + 1), který jediný definitivně chytí utnutý literál.
@@ -77,10 +99,10 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-**Pořád neauditované zůstává** (~2 400 ř.): `membench.c` (722), `rtc.c` (616),
-`meas_present.c` (404), `alarm.c` (332), `sdram_log.c` (307), `screenshot.c` (175),
-`si5356.c`, `encoder.c`, `watchdog.c`, `beeper.c`, `bootled.c`, `autocal.c`,
-`phase_noise.c`, `sensor_hist.c`, `meas_math.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`
+**Pořád neauditované zůstává** (~1 100 ř., po modulu 17): `membench.c` (722),
+`meas_present.c` (404), `sdram_log.c` (307), `screenshot.c` (175), `si5356.c`,
+`encoder.c`, `autocal.c`, `phase_noise.c`, `sensor_hist.c`, `meas_math.c`,
+`ads1115.c`, `ws_panel.c`, `ft5x06.c`
 — plus **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
 `USER CODE` bloky a **fonty** (generovaná data).
 Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
@@ -216,6 +238,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | **opraveny 3, 1 částečně, F-0074 → TODO #243** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
 | 15 | webová SPA (klientský dashboard) | `httpd_min.c` = blob `SPA_HTML` (~3 060 ř., 125 funkcí JS) | **prohlížeč** (obraz CM4) | **opraveno vše** (11 z 11, ⬜ neověřeno na HW) | 2026-09-12 | 2 | 1 | 3 | 5 | [11](audit/2026-09-12_spa-web.md) |
 | 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **skupina A opravena** (6 ze 14, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
+| 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -250,9 +273,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
-| S2 | 1 | 14 | 0 |
-| S3 | 13 | 38 | 0 |
-| S4 | 6 | 18 | 0 |
+| S2 | 1 | 15 | 0 |
+| S3 | 14 | 42 | 0 |
+| S4 | 6 | 22 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -555,3 +578,5 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-09-12 | F5 modul 15, skupina A | Osm nalezu. Oba **S1** byly tataz vada: klient cetl pole, ktere server neemituje — `gps.valid` (neexistuje) a `gps.nsat` (lezi o uroven vys, v bloku `gps` je `num_sat`). Karta HOLDOVER proto hlasila NO LOCK i pri 3D fixu a karta KVALITA GPS zustala navzdy prazdna; v JS je chybejici pole `undefined`, ne chyba, takze nic nezakricelo => **L-0038**. Dale F-0081 (`lastOk` az po praci + pocitadlo `renderErr` misto prazdneho `catch`), F-0083 (stavove barvy uz nejsou identita rady — OCXO se ridi `mon.ocxo`), F-0084 (jeden zdroj pravdy pro vzhled, `setTheme`/`THO`/klic `gt` zrusene), F-0085 (`okNums` validuje obnovena mereni), F-0086 (zastaraly rozpocet 4096 B -> 6144 B + `_Static_assert`), F-0087 (karta DVOJKANAL popisuje osazenou desku). 🔴 K obema S1 pribyla **kontrola** `tools/spa/json_kontrakt.py` jako krok **5b** retezce. Pozitivni kontrola odhalila, ze prvni verze nastroje prehlizela prave F-0078 (`drawTfom` bere stav pres `var s=LAST`) => **L-0039**: pozitivnich pripadu musi byt tolik, kolik nalezu kontrolu vyvolalo. Overeni: `check.py --build` vsech 9 kroku OK (nm 146 454 + NUL = 146 455), .text CM4 234392 -> 239080. | `4a6e4ba`, `001f3c3`, `2d5f35f` |
 | 2026-09-16 | perzistence a záznamníky | F3 průchod řádek po řádku přes `datalog.c` + `flightrec.c` (vč. celého nového `errlog`) + `syscfg.c` + `setup.c` + `calib.c` (**2 456 ř.**), 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), verdikt **podmíněně funkční**. 🔴 **Modul vznikl z opravy nepravdivého tvrzení v tomto souboru** — „auditovaný veškerý vlastní kód" neplatilo a `errlog` (2026-09-13, FW v0.9.0) audit nikdy neviděl. Jádro modulu je psané dobře (ruční serializace, CRC u každého záznamu, power-safe pořadí zápisu, dvoustupňový zápis errlogu ISR→ring→flash). Nálezy mají dva jmenovatele: **(1) co má přežít reset, ho nepřežije** — **F-0089 [S1]** tři nastavení datalogu se obnovují jen při studeném startu, ačkoli v BKP nejsou (doloženo výčtem DR1/DR2/DR6 z `rtc.c:89-120`); **F-0091** `flightrec` si po 64 dumpech maže vlastní nejnovější záznam při každém bootu; **F-0092** záznam o pádu ztratí jméno tasku, protože 6B `tag` utne `g_crash_text` přesně na dvojtečce. **(2) komentář popisuje ochranu, kterou kód nedělá** (potřetí v projektu, L-0028) — **F-0090 [S2]** `datalog_init` nuluje `s_be` před `s_ready` a čtenáři mutex nikdy neberou → okno pro dereferenci NULL; **F-0094** `calib_save` zapíše „uložena kalibrace" dřív, než zjistí, jestli se uložila. Mapa regionů W25Q přepočtena numericky (žádný překryv, vše zarovnané), umístění **všech** bufferů ověřeno `nm` nad `.elf` (všechny v AXI SRAM), rámce všech funkcí změřeny `objdump`em (L-0035). Šest kandidátů cíleně prověřeno a **zamítnuto** (mj. neescapovaný `%s` v JSON, kopie neinicializovaného ocasu do IPC, dělení nulou v `read_bulk`). `tools/audit.py` 92 OK / 0 selhání / 2 s varováním (gcc 14.3.1), **žádné varování v tomto modulu**. Kód neměněn. | zatím žádná (F5 nebyla) |
 | 2026-09-17 | F5 opravy (modul 16, skupina A) | **6 nálezů uzavřeno v 5 commitech + 1 pojistka.** `6d1b6e5` **F-0089 [S1] + F-0093** (musely spolu): obnova datalogu přesunuta nad `if (g_syscfg_bkp_valid) return;` — tři pole, která nejsou v BKP, se do té chvíle po KAŽDÉM teplém resetu tiše vracela na výchozí ON/AUTO/10 s; nový `datalog_cfg_quiet(bool)` potlačí falešné `ERRLOG_K_CFG` po dobu obnovy. `a80caed` **F-0090 [S2]**: `s_ready` se shazuje první a zvedá poslední (obě hranice `__DMB()`), čtyři čtenáři čtou `s_be` jednou do lokálu. `15aa8d3` **F-0094**, `e583432` **F-0097** (3× `_Static_assert`), `a9af9de` **F-0099**. `165023c` = rozdílová kontrola v `check_lessons.sh`, která F-0089 příště zachytí. 🔑 **Pět pozitivních kontrol** (L-0020/L-0039): každý ze tří assertů ověřen nafouknutím struktury o 4096 B, nová sekce check_lessons ověřena na OBOU podobách vady. 🔑 **Dvě věci dopadly jinak, než nález navrhoval:** F-0090 dostal OBĚ varianty (pořadí i lokální kopie ukazatele), ne jen minimální; F-0099 hlásí výsledek i v `qspi_req_service`, který dosud mlčel úplně — požadavek z okna CHYBY konzoli nevidí, takže to byla jediná chybějící stopa. Build Release BOTH 0 varování, audit.py 92/0/2, CM7 `.text` 604560 → **604752 B** (+192), CM4 beze změny. Dokázáno v obrazu (ne jen přeloženo): pořadí volání v `syscfg_load` před testem `g_syscfg_bkp_valid`, oba `dmb sy` v `datalog_init`, podmíněný `bl errlog_put` v `calib_save`. `IPC_VERSION` se nemění. ⬜ **neověřeno na HW.** | L-0050, L-0051, L-0052, L-0053 + rozšíření L-0026 |
+| 2026-09-17 | čas, alarmy, watchdog | F3 průchod řádek po řádku přes `rtc.c` + `alarm.c` + `watchdog.c` + `beeper.c` + `bootled.c` (~1 290 ř.), 10 nálezů (1×S2, 5×S3, 4×S4), verdikt **podmíněně funkční**. 🔑 **Modul zvolen i proto, že oprava F-0089 na něm stojí** — a premisa se potvrdila: výčet v `MX_RTC_Init` obsahuje právě těch deset globálů, které BKP drží, takže nová kontrola v `check_lessons.sh` odvozuje správnou množinu; kódování všech tří bitových polí ověřeno round-tripem zápis↔čtení. Jádro modulu je kvalitní (kanonická sekvence IWDG dle RM0399, `rtc_lse_apply_calib` se **předem** vyhýbá tísňové smyčce s timeoutem 1 s uvnitř HAL, `mon_edge` guardy podložené naměřeným startovním transientem VBAT). Nálezy mají dva jmenovatele: **(1) diagnostika může přiřadit událost ke špatnému resetu** — F-0105 (stall se píše při DETEKCI, ne při resetu, a `s_stall_logged` se nikdy nenuluje; BKP je zálohovaná CR2032, takže záznam přežije dny), F-0106 (HardFault je jediný z devíti zapisovatelů, který píše magic PRVNÍ → při pádu z rozbitého zásobníku může ohlásit cizí PC), F-0104 (výsledek čekání na `PVU`/`RVU` se zahodí → watchdog tiše 0,5 s místo 4 s, přepočteno z LSI); **(2) jediný vlastník, který není jediný** — **F-0103 [S2]**, `alarm.c:133` deklaruje jediného vlastníka stavu patternu a `alarm_test()` (UartTask) i `beeper_boot_melody()` (UiTask) to porušují. Dále F-0107 (`rtc_crash_assert` bez `DBP`, 5 z 9 zapisovatelů ho má), F-0108 (nenaběhlý LSE → `Error_Handler` → mrtvý přístroj, ačkoli měření jede z HSE — politika, souvisí s F-0007). 🔑 **Tři kandidáti cíleně prověřeni a ZAMÍTNUTI**, mj. moje vlastní hypotéza, že halt sondou vyrobí falešný `stall` — `uwTick` jede z TIM6 ISR, která se během haltu nevykoná, takže heartbeaty nezestárnou (L-0011). Umístění všech statik ověřeno `nm` (vše v AXI SRAM, modul nemá DMA), rámce změřeny `objdump`em, časování TIM7/IWDG/LSE přepočteno z hodinového stromu. `audit.py` 92 OK / 0 / 2, žádné varování v modulu. Kód neměněn. | zatím žádná (F5 nebyla) |
+| 2026-09-17 | F5 opravy (modul 17, A+B) | **9 z 10 nálezů uzavřeno v 6 commitech; F-0108 vědomě odložen.** `3ccddb4` **F-0106** (HardFault píše data první, magic naposled — byl jediný z devíti, kdo to měl obráceně), `887d9f4` **F-0107** (poslední dva zapisovatelé do BKP si odemykají `DBP`), `389690c` **F-0110 + F-0111** (clamp kmitočtu před výpočtem; `beeper_init()` vrací `bool`), `76bf1f6` **F-0104 + F-0105** (odečtené `PR`/`RLR` + řádek `WATCHDOG:` ve `status`; zotavený stall zneplatní záznam, aby se nepřipsal cizímu resetu), `68ae8c8` **F-0103 [S2]** (`alarm_test()` přes flag, boot melodie vzájemně vyloučena — stav pípáku má zase jednoho vlastníka), `0b0e5b6` **F-0109 + F-0112** (`docs:`). 🔑 **Rozhodnutí u skupiny B a jejich cena:** melodie se NEPŘESOUVÁ do defaultTasku (sahalo by to na časování startu, CLAUDE.md 4c) — zbytková vada je pojmenovaná v kódu; u F-0104 se vědomě NEDĚLÁ retry ani `Error_Handler` (IWDG už běží, START je neodvolatelný), jen se zveřejní dosažený stav (L-0009); u F-0105 se zvolilo zneplatnění záznamu místo zápisu do `errlog`, protože ten závisí na neschváleném F-0092. ⚠️ **Upřesnění proti nálezu:** `HAL_GPIO_Init` je v HAL `void`, takže u F-0111 jsou vyhodnotitelná čtyři volání z pěti. Build Release BOTH 0 varování, audit.py 92/0/2, CM7 `.text` 604752 → **605344 B** (+592), `.bss` +16 B, CM4 beze změny. Dokázáno v obrazu: nové pořadí zápisů do BKP u HardFaultu, `orr #256` (DBP) v `rtc_crash_assert`, `alarm_test` zkrácený na čtyři instrukce bez `bl pattern_start`, `alarm_tick` začínající `bl beeper_melody_busy`. `IPC_VERSION` se nemění → stačí flashnout bank1. ⬜ **neověřeno na HW.** | L-0054, L-0055, L-0056 |

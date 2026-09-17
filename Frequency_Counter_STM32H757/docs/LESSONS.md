@@ -1178,6 +1178,105 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0056 — Diagnostiku poruchy zapisuj podle NÁSLEDKU, ne podle detekce
+
+- **Datum:** 2026-09-17
+- **Oblast:** watchdog / crash black-box
+- **Symptom:** `watchdog_supervise()` psal do crash black-boxu `stall:UiTask`
+  ve chvíli, kdy **odmítl obnovit IWDG** — tedy při *detekci*. Když se úloha
+  do ~1,5 s vzpamatovala, reset **nepřišel**, ale záznam v BKP zůstal ležet
+  a smazal ho až `MX_RTC_Init` při příštím bootu. `status` ho pak připsal
+  resetu, který s ním neměl nic společného — klidně `power-on` za dva dny,
+  protože doména je zálohovaná z CR2032.
+- **Příčina:** Zápis se pověsil na **rozhodnutí** („nekrmím watchdog"), ne na
+  **následek** („watchdog mě skutečně resetoval"). Mezi tím je okno ~1,5 s,
+  ve kterém se stav může vrátit do normálu. Navíc `s_stall_logged` se nikdy
+  nenulovalo, takže druhý — a možná skutečně fatální — stall **jiné** úlohy se
+  už nezapsal a po resetu se hlásil ten první.
+- 🔑 **Proč to nejde „prostě psát až při resetu":** v okamžiku resetu už kód
+  neběží. Záznam **musí** vzniknout dopředu. Řešení tedy není přesunout zápis,
+  ale **umět ho vzít zpět**, když následek nenastal.
+- **Oprava:** při návratu obou heartbeatů se záznam **zneplatní** (`RTC->BKP3R = 0`)
+  a modul se znovu armuje. ⚠️ Zneplatňuje se **jen když je pořád náš**
+  (magic + `kind == 3`) — mezitím ho mohl přepsat HardFault nebo `configASSERT`
+  a ten patří někomu jinému (táž disciplína jako **L-0025**). Ztracený údaj se
+  nezahazuje tiše: `watchdog_stall_recovered()` ho počítá a hlásí `status`.
+- **Pravidlo:** **Když musíš diagnostiku zapsat dřív, než víš, jestli k následku
+  dojde, doplň k ní cestu, jak ji vzít zpět — a ověř, že rušíš vlastní záznam,
+  ne cizí.** Jinak se z „co se stalo" stane „co se skoro stalo", přiřazené
+  k náhodné pozdější události. A stav, který jsi zrušil, musí zůstat měřitelný.
+- **Detekce:** u každého zápisu do trvalého úložiště, který předchází očekávané
+  poruše, se ptej: *co když k té poruše nedojde?* `status` →
+  `WATCHDOG: … ` a řádek `zotavenych stallu`.
+- **Commit:** `76bf1f6`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0105
+- **Stav:** aktivní
+
+### L-0055 — Hodnotu, kterou HW nemusí přijmout, po zápisu PŘEČTI zpátky a zveřejni
+
+- **Datum:** 2026-09-17
+- **Oblast:** watchdog / inicializace periferií
+- **Symptom:** `watchdog_init()` čekal na propagaci `PR`/`RLR` **ohraničenou**
+  smyčkou (což je správně), ale její výsledek zahodil a nastavil `s_ready = 1`
+  bezpodmínečně. Kdyby se `SR` nevyprázdnil, zůstaly by v platnosti reset
+  defaulty `PR = 0` (/4) a `RLR = 0xFFF` → timeout **~0,51 s místo 4,0 s**,
+  tedy osmkrát kratší — a tiše.
+- **Proč to není teoretické:** defaultTask smí v jedné iteraci dělat
+  `syscfg_save()` → `w25q_store_write()` → **erase sektoru 50–400 ms**.
+  Projev by byl „náhodný reset při ukládání nastavení", tedy symptom, který se
+  hledá kdekoli jinde než v inicializaci watchdogu.
+- **Oprava:** `PR`/`RLR` se po propagaci **odečtou z registrů** a `status` je
+  vypisuje i s odvozeným timeoutem a značkou `<== NESEDI`. Drží se **naměřený**
+  stav, ne zamýšlený.
+  ⚠️ **Vědomě se NEOPRAVUJE retry ani `Error_Handler`em:** IWDG už běží (START
+  je neodvolatelný), takže spadnout kvůli tomu do `Error_Handler` by
+  z nepohodlí udělalo nefunkčnost. Zveřejnit stav stačí.
+- **Pravidlo:** **Ohraničená čekací smyčka je jen polovina práce — druhá je
+  přečíst, co v registru doopravdy zůstalo, a vystavit to.** Platí všude, kde
+  HW zápis potvrzuje vlastním příznakem (`PVU`/`RVU`, `VOSRDY`, `RECALPF`,
+  `DBP`): mez chrání před zatuhnutím, ale sama o sobě nezaručuje, že se hodnota
+  uplatnila.
+- **Detekce:** ke každé smyčce `while/for (… && REG & FLAG)` dopiš, co se stane
+  při vypršení — a když je odpovědí „degraduje se tiše", patří dosažený stav
+  do `status`. Rozšíření **L-0009** z generovaného kódu i na vlastní.
+- **Commit:** `76bf1f6`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0104
+- **Stav:** aktivní
+
+### L-0054 — „Jeden vlastník" je tvrzení o VŠECH volajících, ne o tom hlavním
+
+- **Datum:** 2026-09-17
+- **Oblast:** souběh mezi úlohami / zvuková cesta
+- **Symptom:** `alarm.c` mělo v komentáři napsaný návrh *„jeden vlastník pattern
+  stavu = defaultTask → žádný cross-task zápis do `s_phase`"*. `alarm_click()`
+  (UiTask) ho poslušně dodržoval přes flag — a přitom **dva jiní zapisovatelé
+  ho porušovali**: `alarm_test()` volal `pattern_start()` přímo z UartTasku
+  a `beeper_boot_melody()` psala `s_on`, `TIM7->ARR` i `CNT` z UiTasku.
+  Žádná z proměnných stavu nebyla `volatile`.
+- **Příčina:** Pravidlo se zapsalo **u té cesty, která ho dodržuje**, místo aby
+  se ověřilo u všech. Komentář tak popisoval *záměr*, ne skutečnost — a působil
+  jako důkaz, že je věc vyřešená. Kdo četl `alarm_click`, viděl vzorovou
+  implementaci a neměl důvod hledat dál.
+- 🔑 **Proč je zrovna u „stavové proměnné periferie" následek nepříjemný:**
+  `beeper_set()` začíná `if (on == s_on) return;`. Ztracený zápis do `s_on` ho
+  rozejde se skutečným stavem TIM7, a ta horší polovina je tichá: TIM7 běží,
+  ale `s_on == false` → `beeper_set(false)` se vrátí na první řádce a **pípák
+  troubí souvisle**.
+- **Oprava:** `alarm_test()` nastavuje jen požadavek (stejný vzor jako
+  `alarm_click`); boot melodie je s `alarm_tick` **vzájemně vyloučená**
+  (`beeper_melody_busy()`). Mimo to okno je defaultTask jediný zapisovatel.
+  ⚠️ **Není to zámek** a je to u toho napsané: když je defaultTask už uvnitř
+  `pattern_service`, jeden tón se může uříznout. Přesun melodie do defaultTasku
+  by okno uzavřel úplně, ale sahal by na časování startu (CLAUDE.md 4c).
+- **Pravidlo:** **Větu „stav vlastní úloha X" ověř VÝČTEM volajících, ne
+  u jedné cesty.** `grep` na každou funkci, která ten stav mění, a u každého
+  volajícího urči úlohu. Dokud ten výčet není v hlavičce, je „jeden vlastník"
+  jen přání.
+- **Detekce:** u každého `static` stavu s komentářem o vlastnictví musí být
+  seznam volajících a jejich úloh (rozšíření **L-0022** a **L-0023**).
+  Konkrétně: `grep -n "pattern_start\|beeper_set\|beeper_tone" CM7 -r` a ověřit,
+  že mimo `alarm_tick`/`beeper_boot_melody` nikdo jiný nevolá.
+- **Commit:** `68ae8c8`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0103
+- **Stav:** aktivní
+
 ### L-0053 — Záznam o provedené akci vydávej až podle jejího VÝSLEDKU, ne na jejím začátku
 
 - **Datum:** 2026-09-17
