@@ -127,14 +127,17 @@ bool si5356_init(I2C_HandleTypeDef *hi2c)
     for (unsigned i = 0; i < REGMAP_N; i++)
         if (!wr_masked(hi2c, REGMAP[i].addr, REGMAP[i].val, REGMAP[i].mask)) ok = false;
 
-    /* 2) Apply procedura (SiLabs / CBPro): vystupy off -> pulse -> soft reset -> on */
-    wr_masked(hi2c, REG_OEB_ALL, 0x10, 0x10);   /* OEB_ALL = 1 (vystupy OFF) */
-    wr_masked(hi2c, REG_E2,      0x04, 0x04);
-    wr_masked(hi2c, REG_E2,      0x00, 0x04);
-    wr_masked(hi2c, REG_SOFTRST, 0x02, 0x02);   /* SOFT_RESET pulse */
-    wr_masked(hi2c, REG_SOFTRST, 0x00, 0x02);
+    /* 2) Apply procedura (SiLabs / CBPro): vystupy off -> pulse -> soft reset -> on.
+     * Navrat KAZDEHO kroku se scita do `ok` — hlavne posledni "OEB_ALL = 0" zapina
+     * 4x 100 MHz vystupy; kdyby NACKnul, zustanou OFF, FPGA by nemel casovou zakladnu
+     * a bez teto kontroly by init presto vratil OK (audit F-0113). */
+    ok &= wr_masked(hi2c, REG_OEB_ALL, 0x10, 0x10);   /* OEB_ALL = 1 (vystupy OFF) */
+    ok &= wr_masked(hi2c, REG_E2,      0x04, 0x04);
+    ok &= wr_masked(hi2c, REG_E2,      0x00, 0x04);
+    ok &= wr_masked(hi2c, REG_SOFTRST, 0x02, 0x02);   /* SOFT_RESET pulse */
+    ok &= wr_masked(hi2c, REG_SOFTRST, 0x00, 0x02);
     HAL_Delay(25);                               /* cas na re-lock PLL po resetu */
-    wr_masked(hi2c, REG_OEB_ALL, 0x00, 0x10);   /* OEB_ALL = 0 (vystupy ON) */
+    ok &= wr_masked(hi2c, REG_OEB_ALL, 0x00, 0x10);   /* OEB_ALL = 0 (vystupy ON) */
 
     uint8_t st = 0;
     rd(hi2c, REG_STATUS, &st);
