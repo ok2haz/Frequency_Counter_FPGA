@@ -2084,13 +2084,15 @@ static void math_sync_idx(void)
     }
 }
 
-/* Pri zapnutych limitech nastavi meze = aktualni Y ± pasmo (bench "null then band"). */
-static void math_recenter_limits(void)
+/* Pri zapnutych limitech nastavi meze = aktualni Y ± pasmo (bench "null then band").
+ * Pracuje nad PREDANOU kopii `c`, ne primo nad `g_meas_cfg` — volajici commituje
+ * celou kopii atomicky (F-0052), takze dvojice lo/hi nikdy neunikne roztrzena. */
+static void math_recenter_limits(meas_cfg_t *c)
 {
-    double y = meas_math_apply(&g_meas_cfg, screen_main_freq_hz());
+    double y = meas_math_apply(c, screen_main_freq_hz());
     double band = MATH_BAND_PRESETS[s_math_band_idx];
-    g_meas_cfg.lo = y - band;
-    g_meas_cfg.hi = y + band;
+    c->lo = y - band;
+    c->hi = y + band;
 }
 
 /* Verdikt badge (zive — barva dle stavu). */
@@ -8677,39 +8679,48 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
         }
         if (s_view == 31) {                                 /* okno MATH / LIMITY: ovladace */
+            /* Vsechny zmeny nad LOKALNI kopii `c`; do g_meas_cfg se commitne
+             * atomicky az na konci (F-0052). Bez toho preempce mezi zapisy dvou
+             * poli (lo/hi, null_ref/null_en) vyda nekonzistentni dvojici cteci
+             * uloze (SCPI v UartTasku, IPC/syscfg v defaultTasku). Vzor je shodny
+             * se scpi.c a ipc.c; drahe vypocty (meas_math_apply, screen_main_freq_hz)
+             * bezi na `c` MIMO kritickou sekci. */
             int hit = 1;
+            meas_cfg_t c;
+            taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();
             if (in_rect(x, y, MATH_BTN_MATH)) {
-                g_meas_cfg.math_en = g_meas_cfg.math_en ? 0 : 1;
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                c.math_en = c.math_en ? 0 : 1;
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_M)) {
                 s_math_m_idx = (s_math_m_idx + 1) % MATH_M_N;
-                g_meas_cfg.m = MATH_M_PRESETS[s_math_m_idx];
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                c.m = MATH_M_PRESETS[s_math_m_idx];
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_BM)) {
-                g_meas_cfg.b -= MATH_B_STEP;
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                c.b -= MATH_B_STEP;
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_BP)) {
-                g_meas_cfg.b += MATH_B_STEP;
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                c.b += MATH_B_STEP;
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_NULL)) {
-                if (g_meas_cfg.null_en) g_meas_cfg.null_en = 0;
-                else                    meas_math_capture_null(&g_meas_cfg, screen_main_freq_hz());
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                if (c.null_en) c.null_en = 0;
+                else           meas_math_capture_null(&c, screen_main_freq_hz());
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_LIM)) {
-                g_meas_cfg.limit_en = g_meas_cfg.limit_en ? 0 : 1;
-                if (g_meas_cfg.limit_en) math_recenter_limits();
+                c.limit_en = c.limit_en ? 0 : 1;
+                if (c.limit_en) math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_BANDM)) {
                 if (s_math_band_idx > 0) s_math_band_idx--;
-                math_recenter_limits();
+                math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_BANDP)) {
                 if (s_math_band_idx < MATH_BAND_N - 1) s_math_band_idx++;
-                math_recenter_limits();
+                math_recenter_limits(&c);
             } else if (in_rect(x, y, MATH_BTN_ALRM)) {
-                g_meas_cfg.alarm_en = g_meas_cfg.alarm_en ? 0 : 1;
+                c.alarm_en = c.alarm_en ? 0 : 1;
             } else {
                 hit = 0;
             }
             if (hit) {
+                taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();
                 prim_set_target(&s_fb); prim_reset_clip();
                 math_render_controls();
                 math_render_live(1);

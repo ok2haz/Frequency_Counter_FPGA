@@ -225,6 +225,9 @@ void syscfg_load(void)
     g_meas_cfg.null_ref = b.meas_null_ref;
     g_meas_cfg.lo       = b.meas_lo;
     g_meas_cfg.hi       = b.meas_hi;
+    if (g_meas_cfg.lo > g_meas_cfg.hi) {   /* invertovane pasmo (stary/poskozeny blob) -> prohodit (F-0096) */
+        double t = g_meas_cfg.lo; g_meas_cfg.lo = g_meas_cfg.hi; g_meas_cfg.hi = t;
+    }
     /* Self-survey poloha: NENI v BKP -> aplikuj VZDY (jako fx/meas). */
     g_survey_valid  = b.survey_valid ? 1 : 0;
     g_survey_n      = b.survey_n;

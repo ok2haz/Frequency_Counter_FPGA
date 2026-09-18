@@ -9,6 +9,8 @@
 #include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, g_sys_cfg_dirty, qspiMutexHandle */
 #include "meas_math.h"         /* g_meas_cfg */
 #include "cmsis_os2.h"
+#include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0096) */
+#include "task.h"
 #include <string.h>
 
 #define SETUP_BOOK_MAGIC   0x53545031u   /* "STP1" */
@@ -50,6 +52,11 @@ static void slot_sanitize(setup_slot_t *s)
     if (s->tz_offset_h < -12) s->tz_offset_h = -12;
     else if (s->tz_offset_h > 14) s->tz_offset_h = 14;
     if (s->meas_m == 0.0) s->meas_m = 1.0;   /* 0 by byl mrtvý scale */
+    /* lo > hi (poškozený nebo starším FW uložený slot) by dal trvalý FAIL a
+     * 4 pípnutí (alarm.c). Prohodit, ať se nikdy nenačte invertované pásmo (F-0096). */
+    if (s->meas_lo > s->meas_hi) {
+        double t = s->meas_lo; s->meas_lo = s->meas_hi; s->meas_hi = t;
+    }
 }
 
 void setup_init(void)
@@ -128,15 +135,21 @@ bool setup_load(int slot)
     g_ui_cfg      = s.ui_cfg;
     g_anim_enabled = s.anim_en ? 1 : 0;
     g_fx_enabled  = (uint16_t)(s.fx_en & FX_ALL);
-    g_meas_cfg.math_en  = s.meas_math_en ? 1 : 0;
-    g_meas_cfg.null_en  = s.meas_null_en ? 1 : 0;
-    g_meas_cfg.limit_en = s.meas_limit_en ? 1 : 0;
-    g_meas_cfg.alarm_en = s.meas_alarm_en ? 1 : 0;
-    g_meas_cfg.m        = s.meas_m;
-    g_meas_cfg.b        = s.meas_b;
-    g_meas_cfg.null_ref = s.meas_null_ref;
-    g_meas_cfg.lo       = s.meas_lo;
-    g_meas_cfg.hi       = s.meas_hi;
+    /* g_meas_cfg (5 double) commitovat ATOMICKY — je sdilene s SCPI (UartTask)
+     * a IPC/syscfg (defaultTask); primy zapis pole po poli by vydal roztrzenou
+     * dvojici lo/hi. Vzor shodny se scpi.c/ipc.c a s oknem MATH (F-0096, F-0052). */
+    meas_cfg_t c;
+    taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();
+    c.math_en  = s.meas_math_en ? 1 : 0;
+    c.null_en  = s.meas_null_en ? 1 : 0;
+    c.limit_en = s.meas_limit_en ? 1 : 0;
+    c.alarm_en = s.meas_alarm_en ? 1 : 0;
+    c.m        = s.meas_m;
+    c.b        = s.meas_b;
+    c.null_ref = s.meas_null_ref;
+    c.lo       = s.meas_lo;      /* slot_sanitize uz zajistil lo <= hi */
+    c.hi       = s.meas_hi;
+    taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();
     g_sys_cfg_dirty = 1;   /* načtené hodnoty se stanou i „aktuální" (auto-persist syscfg) */
     return true;
 }
@@ -164,5 +177,14 @@ int setup_selftest(void)
     s.brightness = 128; s.autodim_sec = 60; s.tz_offset_h = 2; s.meas_m = 2.0;
     slot_sanitize(&s);
     if (s.brightness != 128 || s.autodim_sec != 60 || s.tz_offset_h != 2 || s.meas_m != 2.0) return 0;
+    /* lo > hi -> prohodit (F-0096); zaroven pozitivni kontrola te opravy (L-0039). */
+    memset(&s, 0, sizeof s);
+    s.meas_lo = 5.0; s.meas_hi = 1.0;
+    slot_sanitize(&s);
+    if (!(s.meas_lo == 1.0 && s.meas_hi == 5.0)) return 0;
+    /* lo <= hi zustane beze zmeny. */
+    s.meas_lo = -2.0; s.meas_hi = 3.0;
+    slot_sanitize(&s);
+    if (!(s.meas_lo == -2.0 && s.meas_hi == 3.0)) return 0;
     return 1;
 }
