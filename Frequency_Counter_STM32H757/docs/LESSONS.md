@@ -112,6 +112,16 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   zdůvodni jednořádkovým komentářem.
 - **Detekce:** clang-tidy `bugprone-unused-return-value`, případně grep.
 - **Commit:** —
+- 🔁 **První konkrétní incident 2026-09-18 (F-0113, modul 18).** `si5356_init`
+  sledoval úspěch jen u hromadného zápisu register mapy, ale **apply proceduru**
+  (OEB off → E2 pulse → SOFT_RESET → OEB on) volal bez kontroly návratu. Zvlášť
+  poslední zápis „OEB_ALL = 0" zapíná 4× 100 MHz výstupy — jeho NACK by nechal
+  hodiny vypnuté, FPGA bez časové základny, a init by přesto vrátil `OK`, protože
+  status reg 218 (LOS_CLKIN/PLL_LOL) hlásí stav **vstupu a PLL**, ne výstupních
+  bufferů. Opraveno akumulací návratu každého kroku do `ok` (`ok &= wr_masked(...)`).
+  🔑 Vzor: **když návratová hodnota končí v `zapisy=OK`, musí ji plnit VŠECHNY
+  kritické kroky, ne jen ten první čitelný.**
+- **Commit:** `f128b59`, viz `docs/audit/2026-09-18_senzory-drivery.md`
 - **Stav:** aktivní
 
 ### L-0006 — Konstanta časování spočítaná pro jiný zdroj hodin
@@ -795,7 +805,18 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   (`tcp_write(`, `f_write(`, `HAL_*`), a krizem proti komentarum se slovy
   „hlida", „brani", „osetruje", „pozna". Kazdy takovy par je kandidat na nalez.
 - **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0059
-- **Stav:** aktivni
+- 🔁 **Opakovalo se 2026-09-18 (F-0114, modul 18).** `ws_panel_set_backlight`
+  i `ws_panel_set_portc` měly v komentáři slib „ŽÁDNÝ printf zde — volá to hlídaný
+  UiTask", ale oba volaly sdílený `ws_write_reg`, který na chybové cestě `printf`
+  dělá. Slib byl tedy nepravdivý přesně jako v původním nálezu — jen naopak
+  (komentář tvrdil, že se něco NEDĚJE, a ono se to dělo). Při selhání zápisu jasu
+  na umírající I2C4 by z UiTasku běžel printf, a na místě volání navíc pod
+  `vTaskSuspendAll` (systémový stall na USART cestě). Opraveno sjednocením do
+  `ws_write_reg_ex(…, log)` — jeden zdroj pravdy pro přenos, settery volají
+  s `log = false` (L-0018). Komentáře uvedeny na pravdu.
+  🔑 Pravidlo platí **oběma směry**: slib „hlídá to X" i slib „X se tu neděje" je
+  testovatelný — najdi řádek (ne)dělající X. Sdílený helper může slib tiše porušit.
+  Commit `662e049`, viz `docs/audit/2026-09-18_senzory-drivery.md`, F-0114.
 
 ---
 

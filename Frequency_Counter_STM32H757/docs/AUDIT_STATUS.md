@@ -3,7 +3,10 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-17 (16. sezení — **modul 17 = čas, alarmy,
+**Poslední aktualizace:** 2026-09-18 (18. sezení — **modul 18 = senzory / drivery
+periferií**: `si5356`, `ads1115`, `ws_panel`, `ft5x06`, `sensor_hist`; F3 i F5
+skupina A týž den, 2 nálezy S3 opraveny, ⬜ neověřeno na HW).
+Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
 týž den fáze oprav, skupina A)
@@ -99,12 +102,24 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-**Pořád neauditované zůstává** (~1 100 ř., po modulu 17): `membench.c` (722),
-`meas_present.c` (404), `sdram_log.c` (307), `screenshot.c` (175), `si5356.c`,
-`encoder.c`, `autocal.c`, `phase_noise.c`, `sensor_hist.c`, `meas_math.c`,
-`ads1115.c`, `ws_panel.c`, `ft5x06.c`
+**Pořád neauditované zůstává** (~640 ř., po modulu 18): `membench.c` (722),
+`meas_present.c` (404), `sdram_log.c` (307), `screenshot.c` (175),
+`encoder.c`, `autocal.c`, `phase_noise.c`, `meas_math.c`
 — plus **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
 `USER CODE` bloky a **fonty** (generovaná data).
+🔴 **NOVÉ 2026-09-18 — modul 18 (senzory / drivery), 2 nálezy (2× S3).** Verdikt
+**funkční**. ✅ **Oba opraveny 2026-09-18 (skupina A, 2 `fix:` commity), ⬜ neověřeno
+na HW.** **F-0113** (`f128b59`): `si5356_init` nekontroloval návraty apply-sekvence —
+selhání zápisu „výstupy ON" nechalo 4× 100 MHz vypnuté, FPGA bez časové základny,
+ale init hlásil OK; nově se návrat každého kroku sčítá do `ok` (výskyt L-0003).
+**F-0114** (`662e049`): sdílený `ws_write_reg` tiskl `printf` i pro dva runtime
+settery (backlight/portc), kteří v komentáři slibovali opak (hlídaný UiTask) —
+sjednoceno do `ws_write_reg_ex(…, log)`, settery `log=false` (výskyt L-0028, L-0018).
+Oba nálezy ležely v chybových cestách; normální provoz byl správný.
+🔑 **Co ověřit na desce jako první:** UART `si5356` → řádek stavu (LOCK/hodiny)
+při běžícím FPGA linku; a při umělém výpadku jasu (I2C4) nesmí z UiTasku vzniknout
+printf. Build Release CM7 0 varování, `audit.py` 92/0/2, `.text` 605344 → **605376 B**
+(+32). `IPC_VERSION` beze změny → stačí flashnout bank1.
 Zbytek čeká na **flash + POWER-CYKLUS** — nic z 2026-09-11 neběželo na desce.
 ⚠️ **F-0039 čeká na rozhodnutí uživatele** (tři varianty) a blokuje ověření F-0037 na desce.
 ⚠️ Modul 6 byl v tabulce původně zapsaný jako „SPI2/FPGA, QSPI, SDMMC“ — přes 3000 řádků na
@@ -239,6 +254,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 15 | webová SPA (klientský dashboard) | `httpd_min.c` = blob `SPA_HTML` (~3 060 ř., 125 funkcí JS) | **prohlížeč** (obraz CM4) | **opraveno vše** (11 z 11, ⬜ neověřeno na HW) | 2026-09-12 | 2 | 1 | 3 | 5 | [11](audit/2026-09-12_spa-web.md) |
 | 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **skupina A opravena** (6 ze 14, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
+| 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -274,7 +290,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 1 | 15 | 0 |
-| S3 | 14 | 42 | 0 |
+| S3 | 14 | 44 | 0 |
 | S4 | 6 | 22 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
