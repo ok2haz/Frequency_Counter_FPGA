@@ -76,7 +76,13 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
   test přeskočí; nemůže způsobit falešnou chybu.
 - **Vztah k lekcím:** **`L-0026`** zobecněně (přibude-li položka, přepočítej/doplň to,
   co ji má hlídat), **`L-0012`** (symetrická instance → viz **F-0117**, kde chybí opačný směr).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `caa08b4` (společně s F-0117), ⬜ **neověřeno na HW**.
+  Provedeno **poctivější variantou z návrhu**: adresa se nebere natvrdo, ale z linker
+  symbolu `_smeaslog` — seznam se tak nemůže rozejít s mapou paměti potřetí. Doloženo
+  v obrazu: pole `SDRAM_PROTECTED` v `.rodata` má **šest** položek a šestá je
+  `000000c1` = `0xC1000000`, přičemž `nm` potvrzuje `_smeaslog = c1000000`.
+  ⚠️ `.sdram` zůstává natvrdo — ta sekce v linkeru **neexportuje symboly** a přidat je
+  by znamenalo sáhnout na `.ld` (pravidlo 6, bez souhlasu ne).
 
 ---
 
@@ -159,7 +165,12 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
   volání (start FpgaTasku) navíc ještě nekreslí.
 - **Vztah k lekcím:** **`L-0012`** (symetrická instance — `membench` má opačnou mezeru,
   viz **F-0115**; obě se mají opravit spolu), **`L-0011`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `caa08b4` (společně s F-0115), ⬜ **neověřeno na HW**.
+  Doplněn `canvas` (`0xC0300000`) i `.sdram` (`0xC0800000`); seznam je nově tabulka
+  `{adresa, jméno}`, takže hláška uvádí **jméno oblasti**, ne index. Funkce
+  přejmenována `aliases_framebuffer` → `aliases_reserved_sdram` (staré jméno by po
+  rozšíření lhalo). Doloženo v obrazu: řetězcový pool `FB0\0FB1\0FB2\0canvas\0.sdram`
+  a starý formát `"ALIAS na FB%u"` je pryč (0 výskytů), nový `"ALIAS na %s"` přítomen.
 
 ---
 
@@ -224,7 +235,11 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
 - **Riziko opravy:** žádné (jen komentáře).
 - **Vztah k lekcím:** **`L-0014`** (souhrn/duplicitní číslo se rozejde se zdrojem pravdy),
   **`L-0039`** (oprava musí pokrýt *každý* výskyt, kvůli kterému vznikla).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `339c596` (`docs:`), ⬜ **neověřeno na HW** (nelze —
+  jsou to komentáře). Srovnána **všechna tři** místa a navíc u čísla nově stojí, že
+  **zdroj pravdy je `SDRAM_LOG_CAP`**, ne komentář — aby se to nerozešlo potřetí.
+  Doplněn i odhad pokrytí (~18 h při ~4 měřeních/s). `.text` 605936 B před i po
+  (binárně ověřeno, že jde opravdu jen o komentáře).
 
 ---
 
@@ -258,7 +273,18 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **`L-0011`** (číslo, které vypadá jako měření, ale mísí jednotky),
   **`L-0017`**.
-- **Stav:** otevřeno
+- **Stav:** **ČÁSTEČNĚ opraveno 2026-09-18** v `caa08b4` + `339c596`, ⬜ **neověřeno na HW**.
+  Opraveny **obsažené části**: při chybě QSPI přenosu se částečně nasbírané `bit_errors`
+  /`err_bitmask`/`pat_err` vynulují (už nic neměří) a `total_bit_errors` se sčítá **jen
+  přes cíle s `tested`** — souhrn teď jde sečíst z řádků tabulky.
+  🔴 **Sentinel `bit_errors = 1` u interní FLASH ZŮSTÁVÁ — vědomé rozhodnutí.**
+  Samostatný příznak `unstable` by znamenal zásah do **čtyř souborů přes dva moduly**
+  (`membench.h`, `membench.c`, UART výpis `freertos_task_uart.c:1354`, okno PAMĚTI
+  `app_gpsdo.c:6540` a `:6557`) kvůli nálezu S4 — a kdyby se **jedno** z těch míst
+  minulo, vznikl by **zelený řádek / zelený souhrn s hláškou „CTENI NESTABILNI!"**,
+  tedy vada horší než původní. Podle §F5.0 („když je oprava větší než vada, odlož
+  s odůvodněním") je místo toho **zdokumentovaná sémantika u pole** v `membench.h`,
+  aby příští čtenář nebyl uveden v omyl.
 
 ---
 
@@ -282,9 +308,35 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
   komentář u `#define` (jedna hodnota, jedno místo).
 - **Riziko opravy:** žádné.
 - **Vztah k lekcím:** **`L-0014`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `339c596` (`docs:`). Komentář nově uvádí 32 kB
+  a výslovně říká, že **platná hodnota je u `#define`** (jedna hodnota, jedno místo).
 
 ---
+
+## Fáze oprav — skupina A (2026-09-18)
+
+| commit | nálezy | co se změnilo |
+|---|---|---|
+| `caa08b4` | **F-0115** + **F-0117** + F-0120 (část) | chráněné oblasti SDRAM na **obou** stranách; `.measlog` z linker symbolu, `.sdram`+canvas do `sdram_log`; neplatné částečné výsledky QSPI se nulují a souhrn sčítá jen proběhlé cíle |
+| `339c596` | **F-0119** + **F-0121** + F-0120 (dokumentace) | zastaralá čísla (16 MB/16 B/1 048 576 → 8 MB/32 B/262 144 na třech místech; 64 kB → 32 kB) a zdůvodnění ponechaného sentinelu u `bit_errors` |
+
+**Otevřené zůstávají F-0116 a F-0118 (skupina B)** — obě vyžadují **rozhodnutí
+o variantě**, ne kód:
+- **F-0116:** měřit `fb_alias` bezpodmínečně (4 sondy navíc při každém běhu), nebo
+  zavést třetí stav `fb_alias_checked` a uklidňující větu tisknout jen po měření.
+- **F-0118:** oprava přes příznak (vzor `g_membench_req`) **mění pozorovatelné
+  chování** — `sdramlog reset` by se projevil až s příštím vzorkem, tedy při mrtvém
+  linku „nezabere".
+
+**Ověřovací řetězec:** `build.sh Release CM7` 0 varování; `audit.py` 92 OK / 0 selhání
+/ 2 s varováním; `.text` 605848 → **605936** (+88) u `fix:`, a **605936 → 605936**
+u `docs:` (binární důkaz, že šlo opravdu jen o komentáře).
+
+🔑 **Co ověřit na desce** (⬜ zatím neproběhlo): `membench` musí doběhnout jako dřív
+(řádek SDRAM `OK`, retence 0) — nové položky v chráněném seznamu smí test nejvýš
+**přeskočit**, ne nahlásit chybu; `sdramlog` po bootu musí hlásit `ready` (kdyby nová
+kontrola `.sdram`/canvas falešně zahlásila alias, log by se **nezapnul** a `fail[]` by
+to řekl). Pak `membench` a hned `sdramlog` — počet záznamů a `seq` nesmí mít díru.
 
 ## Co bylo zkontrolováno a je v pořádku
 

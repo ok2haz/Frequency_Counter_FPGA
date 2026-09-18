@@ -308,6 +308,20 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Detekce:** při opravě grepni jméno sesterské funkce; u obou kopií nech poznámku, že jsou
   párové. V auditu: sekce „Co bylo zkontrolováno“ musí u symetrických driverů uvádět **obě** strany.
 - **Commit:** viz `docs/audit/2026-09-10_i2c.md`, nález F-0021
+- 🔁 **Opakovalo se 2026-09-18 (F-0115 + F-0117, modul 19) — a v nové podobě.**
+  Dvě části firmwaru se mají navzájem vyhýbat v SDRAM, a **každá měla vlastní seznam
+  toho, co je cizí**: `membench` (`SDRAM_PROTECTED[]`) nevěděl o `.measlog`, který
+  přibyl 2026-08-30, a `sdram_log` (`aliases_framebuffer`) nevěděl o `.sdram`
+  (`bg_cache`). Ani jeden seznam nebyl „kopie" toho druhého — proto to nevypadalo
+  jako duplicita a grep na sesterskou funkci by nepomohl.
+  🔑 **Nová věta k pravidlu: u VZÁJEMNÉHO vyloučení jsou strany DVĚ a bývají
+  v různých souborech.** Když A nesmí sáhnout na B, zeptej se rovnou, jestli B nesmí
+  sáhnout na A — a jestli to ví. Symetrie tu není v kódu, ale v *požadavku*.
+  🔑 **A druhá polovina: seznam „co je cizí" je duplikát mapy paměti, takže driftuje.**
+  Kde linker exportuje symboly, ber adresu z nich (`_smeaslog`), ne natvrdo — pak se
+  seznam nemůže rozejít potřetí. (`.sdram` symboly nemá, tam zůstala konstanta;
+  doplnit je by znamenalo sáhnout na `.ld`, tedy pravidlo 6.)
+- **Commit:** `caa08b4`, viz `docs/audit/2026-09-18_diagnostika-pameti.md`
 - **Stav:** aktivní
 
 ### L-0013 — Hook FreeRTOS není kontext úlohy

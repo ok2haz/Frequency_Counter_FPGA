@@ -25,6 +25,18 @@ F-0120, F-0121.
 obrazů + linker + grep na absolutní adresy) — včetně toho, že `_estack` je v RAM_D1,
 ne v DTCM, a že `#pragma location = 0x30000100` v CM4 je pod `__ICCARM__`, tedy pro
 GCC neaktivní.
+✅ **Skupina A opravena 2026-09-18 (5 ze 7, ve 2 commitech), ⬜ neověřeno na HW.**
+`caa08b4` **F-0115 + F-0117** (chráněné oblasti SDRAM na **obou** stranách — `.measlog`
+se nově bere z linker symbolu `_smeaslog`, `sdram_log` hlídá i `.sdram`/canvas)
++ část F-0120; `339c596` **F-0119 + F-0121** (`docs:` — zastaralá čísla kapacity,
+`.text` binárně nezměněn). Lekce: výskyt **L-0012** s novou větou o **vzájemném**
+vyloučení (strany jsou dvě a bývají v různých souborech).
+⚠️ **Otevřené zůstávají F-0116 a F-0118 — skupina B, čekají na rozhodnutí o variantě:**
+F-0116 (měřit `fb_alias` vždy × zavést `fb_alias_checked`), F-0118 (reset přes příznak
+**mění pozorovatelné chování** — při mrtvém linku by `sdramlog reset` nezabral).
+🔑 **Co ověřit na desce:** `membench` doběhne jako dřív (SDRAM `OK`, retence 0) — nové
+položky smí test nejvýš **přeskočit**, ne hlásit chybu; `sdramlog` po bootu musí být
+`ready` (falešný alias by log **nezapnul** a napsal důvod do `fail[]`).
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -280,7 +292,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **opraveno 7 ze 14** (A + F-0096, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
-| 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | nálezy zapsány | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
+| 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -316,8 +328,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 16 | 0 |
-| S3 | 17 | 45 | 0 |
-| S4 | 9 | 22 | 0 |
+| S3 | 15 | 47 | 0 |
+| S4 | 7 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
