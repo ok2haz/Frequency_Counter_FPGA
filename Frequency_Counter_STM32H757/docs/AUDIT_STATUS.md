@@ -10,6 +10,21 @@ skupina A týž den, 2 nálezy S3 opraveny, ⬜ neověřeno na HW).
 `g_meas_cfg` se ze všech UI cest (okno MATH, `setup_load`, `syscfg_load`) zapisuje
 atomicky (lokální kopie + kritická sekce, vzor scpi/ipc) a `lo>hi` se sanitizuje.
 **S2 fronta je tím prázdná.** Zbývají v modulu 11 jen F-0053 [S3] a F-0054 [S4].
+🔴 **NOVÉ 2026-09-18 — modul 19 (diagnostika paměti = MĚŘIDLO), 7 nálezů
+(4× S3, 3× S4), F3 zapsána, fáze oprav NEproběhla.** Verdikt **podmíněně funkční**.
+Nejzávažnější jsou dvě vady třídy „nástroj tvrdí, co neměřil" (**L-0011**):
+**F-0116** — `membench` umí vypsat *„framebuffery se navzájem NEpřekrývají"*, aniž tu
+kontrolu provedl (měří se jen `if (span)`, ale `alias_off` plní i druhá sonda s jiným
+rozsahem); **F-0115** — `SDRAM_PROTECTED[]` neobsahuje `.measlog` (8 MB @`0xC1000000`),
+přidaný 2026-08-30, takže bezpečnostní sonda na měřicí log nesáhne.
+**F-0117** je zrcadlo F-0115 na druhé straně (`sdram_log` nekontroluje alias na
+`bg_cache`) — **opravit spolu**. Dál **F-0118** (druhý zapisovatel `s_head`),
+**F-0119** (hlavička pořád tvrdí 16 MB / 16 B / 1 048 576 — zbytek po F-0010),
+F-0120, F-0121.
+🔑 **Všechny cíle `membench` jsem doložil jako skutečně volné** (`.map` + `nm` obou
+obrazů + linker + grep na absolutní adresy) — včetně toho, že `_estack` je v RAM_D1,
+ne v DTCM, a že `#pragma location = 0x30000100` v CM4 je pod `__ICCARM__`, tedy pro
+GCC neaktivní.
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -106,11 +121,17 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-**Pořád neauditované zůstává** (~640 ř., po modulu 18): `membench.c` (722),
-`meas_present.c` (404), `sdram_log.c` (307), `screenshot.c` (175),
-`encoder.c`, `autocal.c`, `phase_noise.c`, `meas_math.c`
+**Pořád neauditované zůstává 1 449 ř. vč. hlaviček** (po modulu 19):
+`meas_present` (566), `encoder` (214), `screenshot` (203), `phase_noise` (191),
+`autocal` (139), `meas_math` (136)
 — plus **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
 `USER CODE` bloky a **fonty** (generovaná data).
+🔴 **OPRAVA ČÍSLA (2026-09-18):** do teď tu stálo „~1 100 ř." a pak „~640 ř." —
+**obojí bylo špatně** a druhé číslo jsem odvodil odečtem od toho prvního, aniž bych
+ho ověřil. Už samotné čtyři vyjmenované soubory dávaly 1 608 ř., tedy víc než
+deklarovaný součet. Skutečnost před modulem 19 byla **2 718 ř.** Výskyt **L-0014**
+(ruční souhrn se rozešel se zdrojem pravdy); čísla výše jsou nově spočítaná
+z `wc -l` nad skutečnými soubory.
 🔴 **NOVÉ 2026-09-18 — modul 18 (senzory / drivery), 2 nálezy (2× S3).** Verdikt
 **funkční**. ✅ **Oba opraveny 2026-09-18 (skupina A, 2 `fix:` commity), ⬜ neověřeno
 na HW.** **F-0113** (`f128b59`): `si5356_init` nekontroloval návraty apply-sekvence —
@@ -259,6 +280,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **opraveno 7 ze 14** (A + F-0096, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
+| 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | nálezy zapsány | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -294,8 +316,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 16 | 0 |
-| S3 | 13 | 45 | 0 |
-| S4 | 6 | 22 | 0 |
+| S3 | 17 | 45 | 0 |
+| S4 | 9 | 22 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
