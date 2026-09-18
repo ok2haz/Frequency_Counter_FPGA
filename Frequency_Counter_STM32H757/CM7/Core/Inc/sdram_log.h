@@ -8,7 +8,11 @@
  * PROC: dnesni statistika drzi jen decimacni pyramidu v RAM (`s_tr[]`/ADEV
  * stages) — ta je uzasne levna, ale je to ZTRATOVA komprese. Na Allanovu
  * odchylku pri dlouhych tau, spektrogram nebo proklad je potreba SUROVA rada
- * vzorku. 16 MB v SDRAM staci na **1 048 576 zaznamu** po 16 B.
+ * vzorku. Region ma **8 MB** (linker `SDRAM_LOG`), zaznam 32 B -> kapacita je
+ * `SDRAM_LOG_CAP`, dnes **262 144 zaznamu** = pri ~4 mereních/s zhruba **18 h**.
+ * ⚠️ Cislo tady je jen orientace — ZDROJ PRAVDY je `SDRAM_LOG_CAP` v .c; do
+ * 2026-09-18 tu stalo „16 MB / 1 048 576 zaznamu po 16 B", tedy 4x vic, nez
+ * region unese (audit F-0119, zbytek po F-0010).
  *
  * CO SE UKLADA: kmitocet v **µHz**, dopocteny z reciproke dvojice
  * `edges`/`gate_ns` (hi-res, ~7 platnych desetin — vic, nez nese zaokrouhlene
@@ -87,7 +91,7 @@ typedef struct {
  *  @return 1 = pamet OK a log bezi, 0 = region vadny -> log VYPNUTY (viz `fail`). */
 int  sdram_log_init(void);
 
-/** Ulozi jeden vzorek (vola VYHRADNE producent = FpgaTask). Levne: zapis 16 B.
+/** Ulozi jeden vzorek (vola VYHRADNE producent = FpgaTask). Levne: zapis 32 B.
  *
  *  Prevod ramce na `f_uhz` udela volajici pres `fpga_freq_hires_uhz()` — jediny
  *  zdroj pravdy o nasobiteli (viz fpga_freq.h).

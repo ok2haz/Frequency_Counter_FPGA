@@ -48,7 +48,16 @@ typedef struct {
     uint32_t total_b;
     uint32_t write_kbs;              /* 0 = necteno (read-only cil) */
     uint32_t read_kbs;
-    uint32_t bit_errors;             /* pocet chybnych BITU pres vsechny vzory */
+    /* Pocet chybnych BITU pres vsechny vzory.
+     * ⚠️ JEDNA VYJIMKA: u cile jen pro cteni (interni FLASH) neni s cim
+     * porovnavat po bitech, takze `bench_iflash` sem dava **1 jako PRIZNAK**
+     * „cteni nestabilni" (vysvetleni je v `msg`). Diky tomu se souhrn i barva
+     * radku spravne zcervenaji. Samostatny priznak `unstable` byl pri auditu
+     * zvazen a ZAMITNUT: rozlozil by opravu S4 do ctyr souboru pres dva moduly
+     * (membench.h/.c, UART vypis, okno PAMETI) a kdyby se jedno z nich minulo,
+     * vznikl by zeleny radek s poplasnou hlaskou — vetsi riziko nez vada
+     * samotna (audit F-0120). */
+    uint32_t bit_errors;
     uint32_t err_bitmask;            /* ktere bitove pozice selhaly (0 = zadna) */
     uint32_t first_err_addr;         /* adresa prvni neshody (jen kdyz bit_errors>0) */
     /* ── Rozlisovaci diagnostika (pridano 2026-08-23) ────────────────────────

@@ -218,7 +218,9 @@ static void cache_invalidate(const void *p, uint32_t n)
 /* Blok, po kterem se ustupuje scheduleru pri dlouhych (netimovanych) pruchodech.
  * ⚠️ Bez toho drzel 4 MB pruchod UartTask (Normal) stovky ms v kuse a vyhladovel
  * UiTask (BelowNormal) -> po benchmarku padalo `touch: I2C4 nereaguje ... recovery`
- * (nahlaseno pri HW testu 2026-08-23). 64 kB je kompromis: ~0,5 ms prace na blok. */
+ * (nahlaseno pri HW testu 2026-08-23). Puvodne 64 kB (~0,5 ms prace na blok),
+ * zmenseno na polovinu kvuli pasmu pro LTDC — platna hodnota je u `#define` nize
+ * (do 2026-09-18 tu stalo 64 kB, tedy dvojnasobek skutecnosti; audit F-0121). */
 #define YIELD_WORDS  (8u * 1024u)       /* 32 kB — jemneji kvuli pasmu pro LTDC */
 
 /* Blok pro MERENI RYCHLOSTI. Zamerne PEVNY (nezavisi na velikosti cile): musi
