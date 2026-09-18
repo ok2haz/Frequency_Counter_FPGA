@@ -6,6 +6,10 @@
 **Poslední aktualizace:** 2026-09-18 (18. sezení — **modul 18 = senzory / drivery
 periferií**: `si5356`, `ads1115`, `ws_panel`, `ft5x06`, `sensor_hist`; F3 i F5
 skupina A týž den, 2 nálezy S3 opraveny, ⬜ neověřeno na HW).
+✅ **Týž den F5 pro modul 11: F-0052 [S2] + F-0096 [S3] opraveny naráz** (`2253ac4`) —
+`g_meas_cfg` se ze všech UI cest (okno MATH, `setup_load`, `syscfg_load`) zapisuje
+atomicky (lokální kopie + kritická sekce, vzor scpi/ipc) a `lo>hi` se sanitizuje.
+**S2 fronta je tím prázdná.** Zbývají v modulu 11 jen F-0053 [S3] a F-0054 [S4].
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -59,8 +63,9 @@ oscilátoru". Neotevírat samostatně.
 `WATCHDOG: PR=4 RLR=2000 -> 4000 ms | pipak ok`; cokoli jiného u `PR`/`RLR`
 (zvlášť `<== NESEDI`) je nález sám o sobě. Pak `beep test` během běžícího
 alarmu — pípák nesmí zůstat troubit.
-Dál: **skupina B modulu 16**, **F5 pro modul 11** (F-0052 je S2) a
-**rozhodnout F-0039** (blokuje ověření F-0037 na desce).
+Dál: **skupina B modulu 16** (F-0091/F-0092/F-0095/F-0098 — rozhodnout variantu),
+**F-0053/F-0054 modulu 11** (S3/S4, drobné) a **politika oscilátoru F-0007+F-0108**.
+✅ **F-0052 [S2] modulu 11 hotový** (`2253ac4`, viz nahoře).
 ⚠️ Opravy modulu 15 míří do **blobu `SPA_HTML`**, takže po nich MUSÍ projít
 `python tools/spa/check.py --build` celý (8 kroků) — zvlášť krok 8 (`nm` nad
 `SPA_HTML` = počet bajtů + 1), který jediný definitivně chytí utnutý literál.
@@ -81,11 +86,10 @@ a `fpgaraw` má vypsat 64 bajtů beze změny.
 povinným checksumem, `OVF:` má zůstat 0), `scpi SYST:GPS:POS?` → 7 desetin,
 `scpi SYST:DATE?` bez antény → `9.91E37`, a **SURVEY nechat běžet ≥1 h** — rozptyl
 by nově měl klesnout pod dřívější mez ~0,4 m (F-0070).
-Pak **F5 pro modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez
-kritické sekce, zatímco SCPI i IPC ji mají).
-Pak **rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a **F5 pro
-modul 11** (**F-0052 je S2** — dotyková cesta píše `g_meas_cfg` bez kritické sekce,
-zatímco SCPI i IPC ji mají).
+✅ **F5 pro modul 11 hotová u S2:** F-0052 opraven (`2253ac4`, 2026-09-18).
+Pak **rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a zbytek
+modulu 11 (F-0053 [S3] `fmt_fixed` default tiše zahodí desetiny, F-0054 [S4]
+rozbitá `grep` kontrola v `CLAUDE.md` — obojí drobné, žádné S1/S2).
 ⚠️ **Opravy modulu 12 míří do BANKY 2 (CM4)** — jiná cesta než všechno dosavadní.
 `IPC_VERSION` se žádným z nich nemění, takže přeflashování obou bank nutné není.
 ⚠️ **F-0063 [S2] přišel z PROVOZU, ne z auditu** (2026-09-11): okno CHYBY se po tapu
@@ -247,12 +251,12 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
-| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | nálezy zapsány (+1 z provozu, opraven) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
+| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | **opraveno 3 ze 4** (F-0053/F-0054 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
 | 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
 | 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (✅ část ověřena na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
 | 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | **opraveny 3, 1 částečně, F-0074 → TODO #243** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
 | 15 | webová SPA (klientský dashboard) | `httpd_min.c` = blob `SPA_HTML` (~3 060 ř., 125 funkcí JS) | **prohlížeč** (obraz CM4) | **opraveno vše** (11 z 11, ⬜ neověřeno na HW) | 2026-09-12 | 2 | 1 | 3 | 5 | [11](audit/2026-09-12_spa-web.md) |
-| 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **skupina A opravena** (6 ze 14, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
+| 16 | perzistence a záznamníky | `datalog.c`, `flightrec.c` (+ **errlog**), `syscfg.c`, `setup.c`, `calib.c` (2 456 ř. vč. hlaviček) | CM7 (kanál `errlog` i na CM4) | **opraveno 7 ze 14** (A + F-0096, ⬜ neověřeno na HW) | 2026-09-17 | 1 | 1 | 8 | 4 | [14](audit/2026-09-16_perzistence-zaznamniky.md) |
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 
@@ -289,8 +293,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
-| S2 | 1 | 15 | 0 |
-| S3 | 14 | 44 | 0 |
+| S2 | 0 | 16 | 0 |
+| S3 | 13 | 45 | 0 |
 | S4 | 6 | 22 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových

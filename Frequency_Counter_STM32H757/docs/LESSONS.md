@@ -481,6 +481,19 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   na desce overit, jen ji verit). Hodnota musi odpovidat radu signalu; skok o
   dekadu pri prechodu SIM<->REAL znamena, ze se meritka opet rozesla.
 - **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0037
+- 🔁 **Opakovalo se 2026-09-18 (F-0052 + F-0096, moduly 11/16).** Zapis do
+  `g_meas_cfg` byl na CTYRECH mistech: scpi.c a ipc.c ho commitovaly atomicky
+  (lokalni kopie + kriticka sekce), okno MATH a `setup_load` psaly pole po poli
+  bez ochrany -> roztrzena dvojice lo/hi = trvaly FAIL + alarm. Opraveno tak, ze
+  vsechny UI cesty pouzivaji **identicky inline vzor** jako scpi/ipc.
+  🔑 **Nuance k pravidlu „sluc do jedne funkce":** tady to NESLO — `g_meas_cfg`
+  bydli v `meas_math.c`, ktery se linkuje i do CM4 obrazu, a CM4 je bare-metal
+  **bez FreeRTOS**, takze sdileny helper s `taskENTER_CRITICAL` tam nemuze
+  existovat. Kdyz hranice jazyku/jader brani jedne funkci, disciplina se meni na:
+  **identicky inline vzor VSUDE + poznamka, proc se nesjednotilo.** Ne ctyri ruzne
+  varianty, ale jeden vzor rozepsany, protoze ho nelze zabalit. Commit `2253ac4`,
+  viz `docs/audit/2026-09-11_aplikacni-okna.md` (F-0052) a
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md` (F-0096).
 - **Stav:** aktivni
 
 ### L-0019 — Ucetnictvi bylo pripojene k CESTAM ke zmene stavu, ne ke zmene samotne

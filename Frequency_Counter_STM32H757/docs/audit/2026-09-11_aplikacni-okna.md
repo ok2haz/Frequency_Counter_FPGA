@@ -115,7 +115,13 @@ sebe a dvě z nich to dělají správně.
   Kritická sekce kolem kopie 56B struktury je řádově desítky cyklů.
 - **Vztah k lekcím:** **`L-0012`** (symetrické instance — tady dokonce tři volající téže
   funkce) a **`L-0018`** (jeden vzor přístupu ke sdílenému stavu, ne čtyři).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `2253ac4` (společně s F-0096), ⬜ **neověřeno na HW**.
+  Provedeno podle návrhu: obsluha okna MATH pracuje nad lokální kopií `c` a commituje
+  `g_meas_cfg` atomicky až na konci; `math_recenter_limits()` bere `meas_cfg_t *`.
+  ⚠️ **Nesjednoceno do jedné funkce pro všechny čtyři cesty** (jak F-0096 navrhoval):
+  `scpi.c`/`ipc.c` mají vzor inline a fungují, a `meas_math.c` (kde `g_meas_cfg` bydlí)
+  se linkuje do CM4 **bez FreeRTOS**, takže sdílený `taskENTER_CRITICAL` helper tam
+  nemůže žít. Všechny UI cesty teď používají **identický** inline vzor jako scpi/ipc.
 
 ---
 

@@ -535,7 +535,13 @@ nezměnil vůbec.
   vznikly dvě konkurenční opravy téhož (§F5.0).
 - **Vztah k lekcím:** **L-0012** (opravuješ-li jednu ze dvou symetrických
   instancí, dolož druhou — tady je instance **třetí**), **L-0018**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-18** v `2253ac4` (společně s F-0052), ⬜ **neověřeno na HW**.
+  `setup_load()` zapisuje `g_meas_cfg` přes lokální kopii + atomický commit;
+  `slot_sanitize()` prohodí `lo > hi` (+ pozitivní kontrola v `setup_selftest`,
+  L-0039); táž `lo <= hi` pojistka doplněna i do `syscfg_load()` (`syscfg.c`).
+  ⚠️ Nesjednoceno do jedné `meas_cfg_apply()` pro všechny cesty (jak návrh zmiňoval) —
+  důvod je v F-0052: `meas_math.c` se linkuje do CM4 bez FreeRTOS, takže sdílený
+  helper s kritickou sekcí tam nemůže být; místo toho identický inline vzor.
 
 ---
 
