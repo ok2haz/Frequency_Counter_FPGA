@@ -95,23 +95,35 @@ _Static_assert((3u + ALIAS_PROBES) >= 21u,
  * nesouvisejici se zaznamy — a prave na tom by test aliasu tise prestal fungovat. */
 typedef uint32_t __attribute__((may_alias)) sdram_word_t;
 
-static int aliases_framebuffer(void)
+/* ⚠️ NEJEN framebuffery (audit F-0117): `.sdram` (bg_cache, glyph atlas) lezi
+ * od logu presne 8 MB, tedy JEDEN adresni bit (HADDR[23]) — a poskozeny
+ * bg_cache se projevi jako problikavani cele plochy, protoze se zapisuje
+ * jednou v `screen_main_init()` a pak uz jen cte. Presne ten symptom se
+ * v tomhle projektu hledal tri kola ve vykreslovacim kodu (STATUS #138/#141),
+ * takze vynechat ho z teto kontroly by bylo to nejdrazsi mozne opomenuti. */
+static int aliases_reserved_sdram(void)
 {
-    static const uint32_t FB[] = { 0xC0000000u, 0xC0100000u, 0xC0200000u };
+    static const struct { uint32_t addr; const char *name; } REG[] = {
+        { 0xC0000000u, "FB0"    },
+        { 0xC0100000u, "FB1"    },
+        { 0xC0200000u, "FB2"    },
+        { 0xC0300000u, "canvas" },
+        { 0xC0800000u, ".sdram" },   /* bg_cache, glyph atlas, g_mask_a/b */
+    };
     volatile sdram_word_t *log0 = (volatile sdram_word_t *)(void *)s_buf;
-    for (unsigned i = 0; i < sizeof FB / sizeof FB[0]; i++) {
-        volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)FB[i];
+    for (unsigned i = 0; i < sizeof REG / sizeof REG[0]; i++) {
+        volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)REG[i].addr;
         flush_word(fb);
         uint32_t save = *fb;
-        *log0 = ~save;                      /* zarucene jina hodnota nez v FB */
+        *log0 = ~save;                      /* zarucene jina hodnota nez v cili */
         flush_word(log0);
         flush_word(fb);
         int hit = (*fb != save);
         *fb = save;                         /* vratit VZDY, i pri nalezu */
         flush_word(fb);
         if (hit) {
-            snprintf(s_fail, sizeof s_fail, "ALIAS na FB%u (0x%08lX)!",
-                     i, (unsigned long)FB[i]);
+            snprintf(s_fail, sizeof s_fail, "ALIAS na %s (0x%08lX)!",
+                     REG[i].name, (unsigned long)REG[i].addr);
             return 1;
         }
     }
@@ -123,7 +135,7 @@ static int region_selfcheck(void)
     volatile sdram_word_t *base = (volatile sdram_word_t *)(void *)s_buf;
     const uint32_t words = SDRAM_LOG_BYTES / 4u;
 
-    if (aliases_framebuffer()) return 0;
+    if (aliases_reserved_sdram()) return 0;
 
     /* 1) ADRESNI ALIASING pres cely region: na kazdou mocninu 2 jina hodnota,
      * pak se VSECHNY zkontroluji. Kdyby dve adresy byly tataz bunka, pozdejsi

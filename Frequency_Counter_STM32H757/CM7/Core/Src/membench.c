@@ -338,14 +338,23 @@ static int cells_alias(volatile uint32_t *a, volatile uint32_t *b)
     return alias;
 }
 
+/* Zacatek datove cache mereni (`sdram_log.c`, sekce `.measlog`) — bere se
+ * z LINKERU, ne natvrdo. Duvod je primo tenhle seznam: `.measlog` pribyla do
+ * SDRAM 2026-08-30 a doplnit se ji sem zapomnelo, takze bezpecnostni sonda na
+ * merici log vubec nesahala (audit F-0115). */
+extern uint32_t _smeaslog;
+
 /* Oblasti SDRAM, ktere se NESMI dotknout — kdyz se s nimi testovaci blok
- * prekryva, test se PRESKOCI. Adresy podle mapy SDRAM v CLAUDE.md. */
+ * prekryva, test se PRESKOCI. Adresy podle mapy SDRAM v CLAUDE.md.
+ * ⚠️ Kdyz do SDRAM pribude NOVY UZIVATEL, patri jeho zacatek sem. Hlavicka
+ * modulu zada doložit volnost noveho CILE; tohle je opacny smer a chybel. */
 static const uint32_t SDRAM_PROTECTED[] = {
     0xC0000000u,   /* FB0 — framebuffer, ze ktereho prave scanuje LTDC */
     0xC0100000u,   /* FB1 */
     0xC0200000u,   /* FB2 */
     0xC0300000u,   /* off-screen canvas pool */
     0xC0800000u,   /* linker sekce .sdram — bg_cache (predrenderovane pozadi), glow */
+    (uint32_t)(uintptr_t)&_smeaslog,   /* .measlog — datova cache mereni, 8 MB */
 };
 
 /* Zmeri, po jake vzdalenosti se adresy opakuji. Skenuje jen UVNITR region 1
@@ -562,7 +571,15 @@ static void bench_w25q(membench_result_t *r)
     }
     osMutexRelease(qspiMutexHandle);
 
-    if (fail) { r->skipped = 1; snprintf(r->msg, sizeof r->msg, "chyba SPI prenosu"); return; }
+    if (fail) {
+        /* Castecne nasbirane chyby uz nic nemeri — prenos se rozpadl uprostred
+         * vzoru, takze rozdily nejsou vadou pameti. Vynulovat, at se nedostanou
+         * do souctu a nevypadaji jako nalez u cile, ktery se hlasi jako
+         * PRESKOCENY (audit F-0120). */
+        r->bit_errors = 0; r->err_bitmask = 0;
+        memset(r->pat_err, 0, sizeof r->pat_err);
+        r->skipped = 1; snprintf(r->msg, sizeof r->msg, "chyba SPI prenosu"); return;
+    }
     r->write_kbs = kbs_from_ms(w_bytes, w_ms);
     r->read_kbs  = kbs_from_ms(r_bytes, r_ms);
     r->tested = 1;
@@ -654,7 +671,10 @@ void membench_run(void)
             else snprintf(r[i].msg, sizeof r[i].msg, "%lu chybnych bitu",
                           (unsigned long)r[i].bit_errors);
         }
-        s_st.total_bit_errors += r[i].bit_errors;
+        /* JEN cile, ktere skutecne probehly: u preskocenych je `bit_errors` bud
+         * nula, nebo zbytek po nedokoncenem prenosu — souhrn pak nesel secist
+         * zpatky z radku tabulky (audit F-0120). */
+        if (r[i].tested) s_st.total_bit_errors += r[i].bit_errors;
         osDelay(1);
     }
 
