@@ -37,6 +37,17 @@ F-0116 (měřit `fb_alias` vždy × zavést `fb_alias_checked`), F-0118 (reset p
 🔑 **Co ověřit na desce:** `membench` doběhne jako dřív (SDRAM `OK`, retence 0) — nové
 položky smí test nejvýš **přeskočit**, ne hlásit chybu; `sdramlog` po bootu musí být
 `ready` (falešný alias by log **nezapnul** a napsal důvod do `fail[]`).
+🔴 **NOVÉ 2026-09-18 — modul 20 (metrologie, encoder, export), 5 nálezů (1× S3,
+4× S4), F3 zapsána, fáze oprav NEproběhla.** Verdikt **funkční** — žádný S1/S2 a kód
+je z velké části čistá logika napsaná velmi dobře (Welford, guardy na každé dělení,
+`NaN` se korektně chytí, velké buffery `static`). Jediný S3 **F-0122**: `encoder.h`
+slibuje, že v `.ioc` není nic z encoderu — TIM1 i PA8/PA9 tam jsou, `MX_TIM1_Init()`
+se volá z `main.c:393` a jeho konfigurace se **nikdy neuplatní**, protože
+`encoder_init()` tytéž registry přepíše později z UiTasku. **Skupina B** (varianta
+(a) opravit dokumentaci × (b) přejít na CubeMX cestu = zásah do `.ioc`).
+Dál **F-0123** (`bmp_header` „sdílí obě cesty" — USB ji nevolá), **F-0124** (výčet
+uživatelů scratche vynechává `membench`), **F-0125** (`encoder_set_div` píše stav
+UiTasku), **F-0126** (`g_autocal` píšou dvě úlohy).
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -133,17 +144,30 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-**Pořád neauditované zůstává 1 449 ř. vč. hlaviček** (po modulu 19):
-`meas_present` (566), `encoder` (214), `screenshot` (203), `phase_noise` (191),
-`autocal` (139), `meas_math` (136)
-— plus **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
-`USER CODE` bloky a **fonty** (generovaná data).
+🔴 **NEAUDITOVÁNO ZŮSTÁVÁ 366 ř. — a NENÍ to seznam, který se tu vedl.**
+Modul 20 vyčerpal seznam „zbývá", jenže ten seznam byl **neúplný**. Křížová kontrola
+**všech** `.c` v `CM7/Core/Src` + `CM7/app` proti souborovým seznamům všech 20 modulů
+(2026-09-18) našla tři soubory, které **nikdy nebyly předmětem auditu**:
+
+| soubor | ř. | stav |
+|---|---|---|
+| `tc358762.c` | 137 | 🔴 **v žádném nálezovém dokumentu ani zmíněný** (DSI→DPI bridge, init panelu) |
+| `ipc_scpi.c` | 147 | citovaný v dokumentech modulů 3 a 13, ale v jejich **souborovém seznamu není** |
+| `usb_console.c` | 82 | citovaný v dokumentu modulu 14, v jeho **souborovém seznamu není** |
+
+⚠️ **Proto se tu NEPÍŠE „tím je auditovaný veškerý vlastní kód".** Přesně to tu už
+jednou stálo (do 2026-09-16) a bylo to nepravdivé; tohle je druhý výskyt téže chyby,
+jen menší. `tc358762.c` je navíc citlivý kus — je to bring-up bridge, na kterém závisí,
+jestli displej vůbec naběhne.
+Mimo to **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
+`USER CODE` bloky a **fonty** (generovaná data) — ty mimo rozsah zůstávají záměrně.
+
 🔴 **OPRAVA ČÍSLA (2026-09-18):** do teď tu stálo „~1 100 ř." a pak „~640 ř." —
 **obojí bylo špatně** a druhé číslo jsem odvodil odečtem od toho prvního, aniž bych
-ho ověřil. Už samotné čtyři vyjmenované soubory dávaly 1 608 ř., tedy víc než
-deklarovaný součet. Skutečnost před modulem 19 byla **2 718 ř.** Výskyt **L-0014**
-(ruční souhrn se rozešel se zdrojem pravdy); čísla výše jsou nově spočítaná
-z `wc -l` nad skutečnými soubory.
+ho ověřil. Už samotné čtyři vyjmenované soubory dávaly 1 608 ř. Skutečnost před
+modulem 19 byla **2 718 ř.** Dvojí výskyt **L-0014** (ruční souhrn se rozešel se
+zdrojem pravdy — jednou v počtu řádků, podruhé v tom, co všechno do seznamu patří);
+čísla výše jsou spočítaná z `wc -l` a z `ls` nad skutečnými soubory.
 🔴 **NOVÉ 2026-09-18 — modul 18 (senzory / drivery), 2 nálezy (2× S3).** Verdikt
 **funkční**. ✅ **Oba opraveny 2026-09-18 (skupina A, 2 `fix:` commity), ⬜ neověřeno
 na HW.** **F-0113** (`f128b59`): `si5356_init` nekontroloval návraty apply-sekvence —
@@ -293,6 +317,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
+| 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -328,8 +353,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 16 | 0 |
-| S3 | 15 | 47 | 0 |
-| S4 | 7 | 24 | 0 |
+| S3 | 16 | 47 | 0 |
+| S4 | 11 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
