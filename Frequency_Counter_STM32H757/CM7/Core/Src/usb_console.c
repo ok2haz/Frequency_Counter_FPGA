@@ -20,7 +20,17 @@ extern osMessageQueueId_t UartRxQueueHandle;   /* freertos.c — fronta konzole 
 #define TXRING_MASK (TXRING_SZ - 1u)
 static uint8_t s_tx[TXRING_SZ];
 static volatile uint16_t s_head;     /* zapis (_write) */
-static volatile uint16_t s_tail;     /* odeslano do CDC */
+static volatile uint16_t s_tail;     /* POTVRZENE odeslane (uvolnene) */
+/* 🔴 Bajtu od `s_tail`, ktere CDC uz PRIJALO, ale JESTE VYSILA (audit F-0127).
+ * Cesta CDC je zero-copy: `USBD_CDC_SetTxBuffer` si jen ulozi ukazatel,
+ * `USBD_CDC_TransmitPacket` vrati `USBD_OK` pred prenosem a pri
+ * `dma_enable = DISABLE` plni FIFO az obsluha preruseni USB — primo z `s_tx`.
+ * Slot se proto NESMI uvolnit pri prijeti, ale az kdyz je prenos dokonceny. */
+static volatile uint16_t s_pending;
+/* Zahozene bajty. Tichá ztráta bez počítadla je vada sama o sobě (L-0017);
+ * hlásí je `status` (řádek KONZOLE). */
+static volatile uint32_t s_tx_dropped;
+static volatile uint32_t s_rx_dropped;
 
 void usb_console_tx_pump(void)
 {
@@ -32,18 +42,34 @@ void usb_console_tx_pump(void)
    * naprogramuje endpoint / vrati USBD_BUSY) -> maskovani IRQ na par us je OK. */
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
-  uint16_t used = (uint16_t)(s_head - s_tail);
-  if (used) {
-    /* CDC bere souvisly buffer -> posli blok od tail do konce ringu (max do wrapu). */
-    uint16_t t     = (uint16_t)(s_tail & TXRING_MASK);
+  /* `s_pending` bajtu od `s_tail` jeste LETI v CDC -> poslat jde teprve to za nimi.
+   * Invariant `s_pending <= used` drzi sam: `chunk` se vybira z `avail`. */
+  uint16_t used  = (uint16_t)(s_head - s_tail);
+  uint16_t avail = (uint16_t)(used - s_pending);
+  if (avail) {
+    /* CDC bere souvisly buffer -> posli blok od konce letici casti do konce ringu. */
+    uint16_t t     = (uint16_t)((s_tail + s_pending) & TXRING_MASK);
     uint16_t chunk = (uint16_t)(TXRING_SZ - t);
-    if (chunk > used) chunk = used;
-    if (CDC_Transmit_FS(&s_tx[t], chunk) == USBD_OK)
-      s_tail = (uint16_t)(s_tail + chunk);
+    if (chunk > avail) chunk = avail;
+    if (CDC_Transmit_FS(&s_tx[t], chunk) == USBD_OK) {
+      /* 🔴 `USBD_OK` znamena, ze `TxState` bylo 0 — tedy ze PREDCHOZI prenos
+       * DOKONCIL. Teprve TED je jeho blok volny (audit F-0127).
+       * 🔑 Proc takhle a ne v `CDC_TransmitCplt_FS`: tahle varianta se HOJI SAMA.
+       * Kdyz se host odpoji uprostred prenosu, callback nikdy neprijde — uvolneni
+       * navazane na nej by nechalo `s_pending` drzeny navzdy a konzole by se
+       * jevila trvale plna. Tady staci, ze dalsi `CDC_Transmit_FS` projde.
+       * ⚠️ Cena: posledni blok zustane rezervovany, dokud neprijde dalsi zapis
+       * do konzole (ring je o nej docasne mensi). */
+      s_tail    = (uint16_t)(s_tail + s_pending);
+      s_pending = chunk;
+    }
     /* USBD_BUSY -> data zustanou v ringu, zkusi se pri dalsim pump(). */
   }
   __set_PRIMASK(primask);
 }
+
+uint32_t usb_console_tx_dropped(void) { return s_tx_dropped; }
+uint32_t usb_console_rx_dropped(void) { return s_rx_dropped; }
 
 void usb_console_tx(const uint8_t *data, uint16_t len)
 {
@@ -51,10 +77,16 @@ void usb_console_tx(const uint8_t *data, uint16_t len)
     if ((uint16_t)(s_head - s_tail) >= TXRING_MASK) {   /* plny ring */
       usb_console_tx_pump();
       if ((uint16_t)(s_head - s_tail) >= TXRING_MASK) {
-        uint32_t primask = __get_PRIMASK();
-        __disable_irq();
-        s_tail++;                                       /* drop nejstarsi (console) — atomicky vuci pump() */
-        __set_PRIMASK(primask);
+        /* 🔴 Zahazuje se NOVY bajt, ne nejstarsi (audit F-0127 + F-0128).
+         * Driv se posouval `s_tail` ("drop nejstarsi"), jenze letici blok zacina
+         * PRESNE na `s_tail` — posunutim by se zahodila data, ktera CDC prave
+         * vysila. Nejstarsi se tedy zahodit NESMI; zahodi se prichazejici.
+         * Ztrata se POCITA, aby nebyla ticha (L-0017) — viz `status`.
+         * ⚠️ `continue` preskoci jen zapis tohohle bajtu; zaverecny
+         * `usb_console_tx_pump()` je AZ ZA smyckou, takze o nej neprijdeme
+         * (L-0033 — u `continue` je potreba precist telo az na konec). */
+        s_tx_dropped++;
+        continue;
       }
     }
     /* volatile store bajtu -> kompilator ho nesmi presunout az ZA s_head++
@@ -69,7 +101,10 @@ void usb_console_on_rx(const uint8_t *data, uint32_t len)
 {
   for (uint32_t i = 0; i < len; i++) {
     uint8_t b = data[i];
-    osMessageQueuePut(UartRxQueueHandle, &b, 0u, 0u);   /* ISR-safe (timeout 0) */
+    /* ISR-safe (timeout 0). ⚠️ Navrat se VYHODNOCUJE: pri plne fronte se znak
+     * prikazu tise ztratil a prikaz se rozpadl, aniz by to kdokoli poznal
+     * (audit F-0128). Pocitadlo hlasi `status`. */
+    if (osMessageQueuePut(UartRxQueueHandle, &b, 0u, 0u) != osOK) s_rx_dropped++;
   }
 }
 
@@ -78,5 +113,7 @@ void usb_console_on_rx(const uint8_t *data, uint32_t len)
 void usb_console_tx(const uint8_t *data, uint16_t len) { (void)data; (void)len; }
 void usb_console_tx_pump(void) { }
 void usb_console_on_rx(const uint8_t *data, uint32_t len) { (void)data; (void)len; }
+uint32_t usb_console_tx_dropped(void) { return 0u; }
+uint32_t usb_console_rx_dropped(void) { return 0u; }
 
 #endif

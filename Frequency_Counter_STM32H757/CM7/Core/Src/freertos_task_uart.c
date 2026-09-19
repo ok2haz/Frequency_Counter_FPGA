@@ -76,6 +76,7 @@
 
 #include "ws_panel.h"   /* ws_panel_probe/power_on/set_backlight (prikaz `panel`) */
 #include "tc358762.h"   /* tc358762_init (prikaz `panel`) */
+#include "usb_console.h"   /* usb_console_tx/rx_dropped — radek KONZOLE ve `status` */
 #include "bootled.h"   /* BOOTLED_STEP_* (stav bring-upu displeje) */
 extern LTDC_HandleTypeDef hltdc;  /* HAL_LTDC_Reload (prikaz `panel`) */
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
@@ -1441,9 +1442,14 @@ void UartTask_run(void *argument)
 				  if (!ipc_scpi_src_from_snap(&src_ipc, (const void *)&g_ipc.snap)) {
 					  printf("SCPI/IPC: snapshot neni platny (magic/verze) — publikoval uz CM7?\n");
 				  } else {
-					  /* W2: zapisovaci pulka — presne to, co pouzije CM4 pres TCP.
+					  /* W2: zapisovaci pulka — tataz funkce, kterou pouzije CM4 pres TCP.
 					   * Bez tohohle by SET (CALC:*, SENS:FREQ:GATE/CHAN, INIT/ABOR)
-					   * pres "scpi ipc" tise selhal (parser NULL callback hlida). */
+					   * pres "scpi ipc" tise selhal (parser NULL callback hlida).
+					   * ⚠️ Na CM7 aplikuje SET jen na LOKALNI zrcadlo `src_ipc` a do
+					   * cmd ringu NESAHA (audit F-0129: producentem je CM4, push
+					   * odtud rozbiji SPSC). `scpi ipc <SET>` tedy pristroj
+					   * NEPRESTAVI — na to je `scpi <SET>`; tady jde o SROVNANI
+					   * odpovedi, vcetne compound "SET;READBACK?". */
 					  src_ipc.set_cfg = ipc_scpi_set_cfg;
 					  scpi_ctx_init(&ctx_ipc);
 					  size_t ni = scpi_process_ctx(&ctx_ipc, &src_ipc, arg, r_ipc, sizeof r_ipc);
@@ -2609,6 +2615,13 @@ void UartTask_run(void *argument)
 					  	  if (s_rx_trunc_n)
 					  	  	printf("KONZOLE: %lu prikazu odmitnuto (delsi nez %d znaku)\n",
 					  	  	       (unsigned long)s_rx_trunc_n, RX_BUF_SIZE - 1);
+					  	  /* Zahozene bajty konzole (audit F-0128). TX = host neodebiral a
+					  	   * ring se naplnil; RX = plna UartRxQueue, tedy rozpadly prikaz.
+					  	   * Nenulove TX u `screenshot` pres USB znamena poskozeny BMP. */
+					  	  { uint32_t txd = usb_console_tx_dropped(), rxd = usb_console_rx_dropped();
+					  	    if (txd || rxd)
+					  	  	  printf("KONZOLE: zahozeno TX %lu B / RX %lu B\n",
+					  	  	         (unsigned long)txd, (unsigned long)rxd); }
 					  	/* Dosazena konfigurace IWDG + stav pipaku. Obojí je „tiche
 					  	 * selhani, o kterem se jinak nedozvis" (audit F-0104/F-0111):
 					  	 * neprosla propagace PR/RLR znamena watchdog 0,5 s misto 4 s,
