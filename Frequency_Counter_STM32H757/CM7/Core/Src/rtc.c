@@ -152,10 +152,21 @@ void MX_RTC_Init(void)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "HF@%08lX%c",
                (unsigned long)n0, t);
     }
-    else if (kind == 5u)
-      /* Error_Handler: DR4 = posledni `bootled_step()`, tj. ktery init spadl. */
-      snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%lu",
-               (unsigned long)(n0 & 0xFFu));   /* krok je uint8_t -> max 3 cifry */
+    else if (kind == 5u) {
+      /* Error_Handler: DR4 = posledni `bootled_step()`, tj. ktery init spadl.
+       * ⚠️ Kroky 15..17 NEJSOU init periferie, ale selhani JESTE PRED prvnim
+       * sledovanym initem — typicky `SystemClock_Config` (audit F-0007/F-0108).
+       * Tam `hal_err@15` nikomu nic nerekne, zato „hal_err@HSE" rovnou ukazuje,
+       * kterym smerem merit. Stav oscilatoru nese DR12 (razitko 0x05CE). */
+      const uint32_t step = n0 & 0xFFu;
+      if (step >= 15u && step <= 17u) {
+        const char *osc = (step == 15u) ? "HSE" : (step == 16u) ? "LSE" : "early";
+        snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%s", osc);
+      } else {
+        snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%lu",
+                 (unsigned long)step);         /* krok je uint8_t -> max 3 cifry */
+      }
+    }
     else if (kind == 6u)
       /* configASSERT: DR4 = __LINE__ v tom souboru FreeRTOS, kde assert selhal. */
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "assert:L%lu",

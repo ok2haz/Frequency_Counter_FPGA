@@ -794,7 +794,40 @@ void Error_Handler(void)
    * ukazalo posledni bootovni krok, coz mate. Proto se do DR5 uklada i
    * NAVRATOVA ADRESA volajiciho — `addr2line` z ni rekne, KDO Error_Handler
    * zavolal (38 volajicich v CM7). */
+  /* ── POLITIKA PRI VYPADKU OSCILATORU: „zustat mrtvy, ale ROZLISITELNE" ──────
+   * (rozhodnuto uzivatelem 2026-09-19; nalezy F-0007 + F-0108, varianta (a).)
+   * U kmitoctoveho normalu je beh proti spatne casove zaklade HORSI nez neběh,
+   * takze odmitnout start je spravne. Co spravne NEBYLO: ta smrt byla
+   * NEROZLISITELNA a navic UPLNE TICHA.
+   *   - `SystemClock_Config()` je generovany kod BEZ `USER CODE` bloku, takze
+   *     tam `bootled_step()` pridat nejde (pravidlo 6 + L-0009). `s_step` proto
+   *     zustal 0 a `blink_pattern(0)` neudela NIC — zadne bliknuti, zadne
+   *     pipnuti. Deska byla temna a nema.
+   *   - HSE i LSE se konfiguruji v JEDNOM `HAL_RCC_OscConfig()`, takze navratova
+   *     adresa v black-boxu je pro oba stejna a nerozlisi je.
+   * Resi se to TADY, tedy v `USER CODE`: stav oscilatoru se ODVODI z registru
+   * (dosazeny stav, ne navratova hodnota na miste) — presne vzor L-0009.
+   * ⚠️ Cist RCC se musi JAKO PRVNI, driv nez cokoli jineho stav zmeni.
+   * ⚠️ Pri selhani HSE bezi CPU dal na HSI (default po resetu), takze se tenhle
+   *    kod SKUTECNE provede; jen `SystemCoreClock` je jiny, tedy delky bliknuti
+   *    a vyska tonu budou mimo — vzor zustava citelny (uz to tak plati pro kazde
+   *    selhani pred `SystemClock_Config`). */
+  const uint32_t eh_rcc_cr   = RCC->CR;
+  const uint32_t eh_rcc_bdcr = RCC->BDCR;
+  if (bootled_step_get() == 0u) {
+    uint8_t osc_step = BOOTLED_STEP_EARLY;
+    if (!(eh_rcc_cr & RCC_CR_HSERDY))         osc_step = BOOTLED_STEP_HSE;
+    else if (!(eh_rcc_bdcr & RCC_BDCR_LSERDY)) osc_step = BOOTLED_STEP_LSE;
+    bootled_step(osc_step);   /* aby vzor NEBYL nulovy = aby vubec byl videt */
+  }
+
   PWR->CR1 |= PWR_CR1_DBP;
+  /* Stav oscilatoru do black-boxu (BKP12 je volny; 3..5 crash, 7..9 HardFault,
+   * 10 priznak "uz jsem zkusil reset", 11 pocitadlo CSS). Cte to `rtc.c` a
+   * `status` z toho misto `hal_err@krok 15` rekne `hal_err@HSE`. */
+  RTC->BKP12R = ((eh_rcc_bdcr & RCC_BDCR_LSERDY) ? 2u : 0u)
+              | ((eh_rcc_cr   & RCC_CR_HSERDY)   ? 1u : 0u)
+              | 0x05CE0000u;   /* razitko "OSC" — 0 by znamenalo "nezapsano" */
   RTC->BKP4R = (uint32_t)bootled_step_get();
   RTC->BKP5R = (uint32_t)__builtin_return_address(0);
   RTC->BKP3R = 0xC7A50000u | 5u;   /* RTC_CRASH_MAGIC | kind 5 = Error_Handler */

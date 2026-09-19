@@ -1122,6 +1122,26 @@ Pasivní beeper na **PH9** (pin95). Tón **800 Hz** generuje **TIM7** přerušen
 Každý sledovaný init při startu si zapíše pořadové číslo (`bootled_step`); při zaseknutí
 v `Error_Handler()` (nebo při selhání bring-upu panelu) **LED_1 blikne N× a SOUČASNĚ N× pípne**
 (800 Hz, 150 ms svit+tón / 150 ms tma+ticho). Happy path = jen zápis do proměnné, žádné zdržení.
+🔑 **Tabulka čísel je JEN v enumu v `bootled.h`** — tady se záměrně neduplikuje (číslo je
+zároveň hodnota v crash black-boxu, takže přečíslování by zneplatnilo dřívější záznamy).
+
+🔴 **≥ 15 bliknutí = HODINY, ne periferie** (politika „zůstat mrtvý, ale rozlišitelně",
+rozhodnuto 2026-09-19, nálezy F-0007 + F-0108). U kmitočtového normálu je běh proti špatné
+časové základně horší než neběh, takže **výpadek HSE nebo LSE přístroj záměrně nespustí**.
+Do 2026-09-19 to ale byla smrt **naprosto tichá a temná**: `SystemClock_Config()` je
+generovaný kód bez `USER CODE`, takže si žádný krok nezapíše, `bootled_step` zůstal **0**
+a `blink_pattern(0)` neudělá **nic**. Teď to `Error_Handler` odvodí z registrů
+(`RCC_CR.HSERDY`, `RCC_BDCR.LSERDY`) a nastaví krok **15 = HSE**, **16 = LSE**,
+**17 = jinak před prvním initem**.
+⚠️ **Poctivě: 15 vs 16 bliknutí se počítá špatně.** Rozhodující informace je „bliknutí je
+**víc než 14**" → měř **25 MHz na HSE pinu jako první**. Přesnou příčinu řekne
+`status` → **`hal_err@HSE` / `hal_err@LSE`** z crash black-boxu (stav oscilátorů je i
+v `BKP12R`, razítko `0x05CE`), ale jen pokud se přístroj někdy rozjede — při trvalé vadě
+se ke konzoli nedostaneš vůbec.
+⚠️ **LSE napájí VÝHRADNĚ RTC**, takže jeho smrt je fatální *bez technické nutnosti* (F-0108).
+Zůstává to tak vědomě; kdyby se to mělo změnit, znamená to vyjmout LSE z hlavního
+`OscInitStruct` a konfigurovat ho samostatně v `USER CODE` — tedy zásah do hodinové
+inicializace, před kterým varuje bod 4c.
 - **⚠️ Pípání NEPOUŽÍVÁ `beeper.c`.** Ten generuje tón přes **TIM7 IRQ**, jenže `bootled_fail()` běží
   z `Error_Handler()`, kde jsou **přerušení vypnutá** (přesně proto tenhle modul používá i **DWT**
   místo `HAL_Delay`) → TIM7 by nikdy netikl. Tón se proto **bit-banguje přímo na PH9** stejným DWT

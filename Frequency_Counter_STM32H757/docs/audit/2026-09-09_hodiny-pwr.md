@@ -313,8 +313,30 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   podstatně větší zásah a nesmí dovolit, aby se cokoli naměřeného tvářilo jako platné.
 - **Riziko opravy:** (a) nízké; (b) vysoké — mění se frekvence všech sběrnic a s nimi časování
   I2C, SPI, DSI/LTDC i DWT prodlev.
-- **Vztah k lekcím:** nová lekce po opravě.
-- **Stav:** otevřeno
+- **Vztah k lekcím:** z opravy vznikla **`L-0063`**; použitý vzor je **`L-0009`**.
+- **Stav:** **opraveno 2026-09-19** — politika **(a) „zůstat mrtvý, ale rozlišitelně"**,
+  rozhodnutá uživatelem, a to **společně s F-0108** (varianta (c) toho nálezu).
+  - 🔴 **Při opravě se ukázalo, že vada byla HORŠÍ, než nález popisoval.** Nález psal
+    „jen blikající LED_1 v krabičce". Skutečnost: `bootled_step` startuje na **0**,
+    `SystemClock_Config()` žádný krok nezapíše (generovaný kód bez `USER CODE`), a
+    `blink_pattern(0)` **neudělá nic** — ani bliknutí, ani pípnutí. Deska byla
+    **naprosto tichá a temná**, tedy bez jakéhokoli výstupu.
+  - Řešeno **v `USER CODE` bloku `Error_Handler`** (vzor **L-0009**: ověřit dosažený
+    stav z registrů, ne sahat do generovaného kódu): když je `bootled_step_get() == 0`,
+    odvodí se příčina z `RCC_CR.HSERDY` / `RCC_BDCR.LSERDY` a nastaví se krok
+    **15 = HSE**, **16 = LSE**, **17 = jinak před prvním initem**. Tím vzor přestane
+    být nulový a přístroj **aspoň něco řekne**.
+  - Stav oscilátorů jde i do **`BKP12R`** (razítko `0x05CE`) a `status` místo
+    `hal_err@krok 15` hlásí **`hal_err@HSE` / `hal_err@LSE`**.
+  - ⚠️ **Přiznaná mez:** 15 vs 16 bliknutí se počítá nespolehlivě. Rozhodující
+    informace je „víc než 14 bliknutí = hodiny" → měřit 25 MHz na HSE pinu.
+    Přesnou příčinu dá black-box, ale jen když se přístroj někdy rozjede; při trvalé
+    vadě se ke konzoli nedostaneš. Lepší by byl odlišný *tvar* vzoru (dlouhá vs krátká
+    bliknutí), což by znamenalo novou funkci v `bootled.c` — vědomě neuděláno.
+  - ⚠️ Při selhání HSE běží CPU dál na HSI (default po resetu), takže se tenhle kód
+    skutečně provede; jen délky bliknutí a výška tónu budou mimo (`SystemCoreClock`
+    je jiný) — to platilo už dřív pro každé selhání před `SystemClock_Config`.
+  - ⬜ **neověřeno na HW** (vyžadovalo by odpojit 25 MHz vstup, resp. LSE krystal).
 
 ---
 

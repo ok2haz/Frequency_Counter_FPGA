@@ -432,8 +432,24 @@ nemění, CM4 obraz se nezměnil vůbec → stačí flashnout bank1.
 - **Riziko opravy:** (a) žádné; (b) **vysoké** — zásah do hodinové inicializace;
   (c) střední.
 - **Vztah k lekcím:** **L-0009** (ověřit dosažený stav v `USER CODE`, ne sahat
-  do generovaného kódu), vztah k **F-0003** a **F-0007**.
-- **Stav:** otevřeno
+  do generovaného kódu), vztah k **F-0003** a **F-0007**; z opravy vznikla **`L-0063`**.
+- **Stav:** **opraveno 2026-09-19** — varianta **(c)**, tedy vyřešeno **společně
+  s F-0007 jako jedna politika**: „zůstat mrtvý, ale rozlišitelně" (rozhodl uživatel).
+  - Přístroj při nenaběhlém LSE **záměrně dál nenaběhne** — varianta (b) (vyjmout LSE
+    z hlavního `OscInitStruct` a konfigurovat ho samostatně) by znamenala zásah do
+    hodinové inicializace, přesně to, před čím varuje CLAUDE.md 4c. To se nedělá.
+  - Co se změnilo: ta smrt **přestala být nerozlišitelná a tichá**. `Error_Handler`
+    v `USER CODE` odvodí z `RCC_BDCR.LSERDY`, že chybí právě LSE, a nastaví
+    `BOOTLED_STEP_LSE` (16 bliknutí + pípnutí); `status` po případném pozdějším
+    úspěšném startu hlásí `hal_err@LSE`. Detail včetně přiznané meze (15 vs 16
+    bliknutí se počítá špatně) je u **F-0007**.
+  - 🔴 **Nález správně tvrdil, že HSE a LSE nejde odlišit z návratové adresy** (jsou
+    v jednom `HAL_RCC_OscConfig`). Právě proto se rozlišuje **z registrů**, ne z místa
+    selhání — to je ta podstata opravy.
+  - ⚠️ **Nerovnováha zůstává vědomá:** LSE napájí výhradně RTC, takže jeho výpadek je
+    fatální bez technické nutnosti. Zapsáno do CLAUDE.md, aby se to příště neotevíralo
+    znovu jako nový nález.
+  - ⬜ **neověřeno na HW.**
 
 ---
 

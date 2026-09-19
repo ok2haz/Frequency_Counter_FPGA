@@ -31,6 +31,24 @@ enum {
     BOOTLED_STEP_PANEL_POWERON, /* ws_panel_power_on */
     BOOTLED_STEP_DSI_START,     /* HAL_DSI_Start */
     BOOTLED_STEP_TC358762,      /* tc358762_init */
+    /* ── Selhani JESTE PRED prvnim sledovanym initem (audit F-0007 + F-0108) ──
+     * 🔴 PROC to tu je: `s_step` startuje na 0 a `SystemClock_Config()` zadny
+     * `bootled_step()` nevola (nemuze — je to generovany kod bez `USER CODE`).
+     * Kdyz tedy nenabehne HSE nebo LSE, `blink_pattern(0)` neudela NIC: zadne
+     * bliknuti, zadne pipnuti. Pristroj byl UPLNE TICHY A TEMNY a nebylo jak
+     * zjistit, ze je to oscilator. Prikaz `status` po restartu taky nepomuze —
+     * pri trvale vade se pristroj nikdy nerozjede tak, aby konzole zila.
+     * ⚠️ Cisla se PRIPOJUJI NA KONEC a nikdy se nepreciseluji: cislo = pocet
+     * bliknuti A ZAROVEN hodnota ulozena do crash black-boxu (BKP4). Precislovani
+     * by tedy zneplatnilo kazdy dosud zapsany zaznam. Tenhle enum je JEDINY zdroj
+     * te tabulky — nikde jinde v projektu ta cisla vypsana nejsou.
+     * ⚠️ Poctive: 15 vs 16 bliknuti se pocita spatne. Rozhodujici informace je
+     * proto „bliknuti je VIC NEZ 14" = hodiny/oscilator; ktery presne, rekne
+     * crash black-box (`status` -> `hal_err@HSE` / `hal_err@LSE`), pokud se
+     * pristroj nekdy rozjede. Pri trvale vade zmer 25 MHz na HSE pinu jako prvni. */
+    BOOTLED_STEP_HSE = 15,      /* HSE 25 MHz nenabehl -> mereni nema zaklad */
+    BOOTLED_STEP_LSE,           /* LSE 32,768 kHz nenabehl (jen RTC, presto fatalni) */
+    BOOTLED_STEP_EARLY,         /* selhani pred prvnim initem, ale oscilatory bezi */
 };
 
 /** Zaznamena aktualni krok. Volat na zacatku kazdeho sledovaneho initu

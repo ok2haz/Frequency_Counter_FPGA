@@ -2119,6 +2119,47 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0063 — „Odmítnout start" je legitimní politika, ale musí jít poznat od vypnuté desky
+
+- **Datum:** 2026-09-19
+- **Oblast:** hodiny / politika při poruše, boot diagnostika
+- **Symptom:** Když nenaběhne HSE (25 MHz) nebo LSE (32,768 kHz), `SystemClock_Config()`
+  selže a spadne do `Error_Handler()`. Přístroj z pohledu uživatele **neudělal
+  vůbec nic**: žádný displej, žádná konzole, **a ani bliknutí nebo pípnutí**.
+  Od nefunkčního napájení to nebylo k rozeznání.
+- **Příčina:** Dvě věci se sešly. (1) U kmitočtového normálu je odmítnutí startu
+  **správná** politika — běh proti špatné časové základně je horší než neběh — jen
+  nebyla nikde vyslovená. (2) Diagnostika ji nedokázala ohlásit: `bootled_step`
+  startuje na **0**, `SystemClock_Config()` je generovaný kód **bez `USER CODE`
+  bloku**, takže si tam krok zapsat nelze, a `blink_pattern(0)` proběhne
+  **prázdnou smyčkou**. Nula jako „nezačalo se" tedy dala vzor „nic". Navíc HSE
+  a LSE se konfigurují v **jednom** `HAL_RCC_OscConfig()`, takže ani návratová
+  adresa v crash black-boxu je neodliší.
+- **Oprava:** Politika vyslovena a zapsána (CLAUDE.md), a rozlišení se odvodí
+  **z registrů v `USER CODE`** (`RCC_CR.HSERDY`, `RCC_BDCR.LSERDY`) — ne úpravou
+  generovaného kódu. `Error_Handler` tím nastaví nenulový krok (15 = HSE,
+  16 = LSE, 17 = jinak před prvním initem), takže vzor je vidět i slyšet, a stav
+  oscilátorů uloží do black-boxu → `status` hlásí `hal_err@HSE` / `hal_err@LSE`.
+- **Pravidlo:** **Když se firmware rozhodne nenaběhnout, musí to říct jiným kanálem
+  než tím, který zároveň nefunguje.** A u každé diagnostiky, jejíž intenzita je
+  číslo (počet bliknutí, délka, počet pípnutí), se zeptej, **co dělá nula** — když
+  nula znamená „nic se nestane", je to tichá cesta právě pro ten nejranější a
+  nejhorší případ. Výchozí hodnota takového čítače nesmí být neodlišitelná od
+  „všechno v pořádku".
+- **Detekce:** U každého vzoru řízeného počtem projdi cestu s hodnotou 0 a 1.
+  Konkrétně: `bootled_step` = 0 nastane pro **každé** selhání před prvním
+  `bootled_step()` — tedy `HAL_Init`, `SystemClock_Config`, MPU, `MX_GPIO_Init`.
+  Obecněji: u fáze bootu, která nemá `USER CODE` hook, se stav ověřuje **až za ní**
+  z registrů (**L-0009**), a diagnostika pro ni musí mít vlastní kód, ne výchozí nulu.
+  ⚠️ Přiznaná mez téhle konkrétní opravy: 15 vs 16 bliknutí se počítá nespolehlivě,
+  takže rozlišitelné je „hodiny vs periferie", ne „HSE vs LSE" — to řekne až
+  black-box. Když má být čitelný i ten rozdíl, musí se změnit **tvar** vzoru, ne
+  jeho počet.
+- **Commit:** viz git log — `fix(hodiny)` s F-0007 + F-0108
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
