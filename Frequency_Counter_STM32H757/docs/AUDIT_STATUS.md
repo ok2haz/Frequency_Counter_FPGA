@@ -22,6 +22,30 @@
   registrů, takže přechod na HAL cestu není změna chování; `.ioc` se dokonce **nemusel
   měnit vůbec** (jeho hodnoty už odpovídaly), nekonzistentní byl kód a hlavička.
 
+🔴 **Druhá dávka téhož dne — skupina B dorozhodnuta, 4 další nálezy uzavřeny.**
+⬜ **Vše neověřeno na HW.**
+
+| nález | rozhodnutí | commit | co ověřit na HW |
+|---|---|---|---|
+| **F-0053** [S3] | clamp 0..3 **+** hlídání přetečení int32 **+** počítadlo | `689621c` | `status` → `FORMAT: omezenych desetin 0` |
+| **F-0017** [S3] | každé jádro nuluje **svůj** blok sdílené paměti | `689621c` | po **studeném** startu `SCPI(CM4)`/`HTTP(CM4): selftest PASS` |
+| **F-0016** [S3] | `.ipc_shared` rezervuje 64 K, a to v **obou** linkerech | `eae40a4` | jen regresně: `CM4: alive`, IPC funguje jako dřív |
+| **F-0098** [S3] | `ULOZISTE:` v `status` + řádek v okně PAMĚŤ + amber SYS + retry | `b546aa1` | `ULOZISTE` 5× OK, okno PAMĚŤ `5/5 OK`, SYS zelená |
+
+🔑 **Tři věci, kde byl nález sám nepřesný — a oprava se proto od návrhu liší:**
+- **F-0053:** rozsah je **0–3, ne 1–3**. `default:` **není** chybová větev, ale
+  legitimní implementace nuly a spoléhají na ni **čtyři skuteční volající**;
+  navržené „ořízni na 3" by je rozbilo. A byla tam **druhá mez na HODNOTĚ**
+  (`|v| · 10^dec < 2,15e9`), o které nemluvil nikdo.
+- **F-0007/F-0108** (první dávka): nešlo o „blikající LED", ale o **tichou a temnou
+  desku** — `blink_pattern(0)` proběhne prázdnou smyčkou.
+- **F-0098:** retry **nesmí znovu načíst blob** — v RAM může být novější nastavení
+  a přečtení staré verze by ho přetlačilo. Obnovuje se **přístup**, ne obsah.
+
+🔑 **F-0016 má negativní test** (`L-0039`): do RAM_D3 se dočasně přidala sekce o 4 B
+a link **selhal** (`region 'RAM_D3' overflowed by 4 bytes`). Bez toho by „build prošel"
+nedokazovalo, že rezervace vůbec funguje.
+
 **Předchozí:** 2026-09-18 (18. sezení — **modul 18 = senzory / drivery
 periferií**: `si5356`, `ads1115`, `ws_panel`, `ft5x06`, `sensor_hist`; F3 i F5
 skupina A týž den, 2 nálezy S3 opraveny, ⬜ neověřeno na HW).
@@ -482,7 +506,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 10 | 61 | 0 |
+| S3 | 6 | 65 | 0 |
 | S4 | 13 | 25 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
