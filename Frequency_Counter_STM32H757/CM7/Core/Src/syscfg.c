@@ -7,8 +7,10 @@
 #include "w25q_store.h"
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, qspiMutexHandle */
-#include "datalog.h"
-#include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
+#include "datalog.h"   /* datalog_enabled/set_enabled — persist zap/vyp logovani;
+                        * datalog_sd_det_force/forced — persist override PE3.
+                        * (Do 2026-09-19 tu byl DVAKRAT a druhy radek nesl dva
+                        *  komentare, z nichz jeden patril k prvnimu — audit F-0102.) */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */

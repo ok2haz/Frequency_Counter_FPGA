@@ -44,6 +44,9 @@ static uint32_t s_count;               /* pocet platnych zaznamu (strop = capaci
 static uint32_t s_errors;
 static bool     s_wrapped;
 static uint32_t s_next_ms;             /* HAL_GetTick kdy vzorkovat priste */
+/* Kolikrat se plan musel posunout od teda, protoze tik nebezel vic nez periodu
+ * (audit F-0102). Nenulove = log ma diru; tise dohnane duplikaty by byly horsi. */
+static uint32_t s_skipped;
 static uint16_t s_period_s = DATALOG_PERIOD_S;   /* runtime perioda vzorkovani */
 static uint8_t  s_store_pref = DATALOG_STORE_AUTO;
 static uint8_t  s_inited;              /* 1 = `datalog_init` uz probehl (viz set_store) */
@@ -501,7 +504,23 @@ void datalog_tick(void)
 {
     if (!s_ready || !s_enabled) return;
     if ((int32_t)(HAL_GetTick() - s_next_ms) < 0) return;
-    s_next_ms += (uint32_t)datalog_period_s() * 1000u;
+    /* >> PLAN SE PRI VELKEM ZPOZDENI RESETUJE, NEDOHANI SE (audit F-0102).
+     * `s_next_ms += perioda` je spravne pro male zpozdeni — drzi to kadenci bez
+     * driftu. Kdyz ale tik nebezel dlouho (blokujici operace z UartTasku: `membench`,
+     * `sd_export`, erase QSPI), zustane `s_next_ms` daleko v minulosti a nasledujici
+     * tiky by zapsaly nekolik zaznamu HNED ZA SEBOU — a to se STEJNYM obsahem
+     * i `t_unix`, protoze `sample()` cte ZIVE globaly, ne historii. Vznikly by tedy
+     * duplikaty predstirajici mereni v case, kdy se nemerilo, a Allan rekonstruovany
+     * z logu by je vzal jako plnohodnotne vzorky s tau0 = 10 s.
+     * Proto: kdyz uz jsme vic nez jednu periodu pozadu, plan se posune od TEDA. */
+    {
+        const uint32_t per = (uint32_t)datalog_period_s() * 1000u;
+        s_next_ms += per;
+        if ((int32_t)(HAL_GetTick() - s_next_ms) >= 0) {
+            s_next_ms = HAL_GetTick() + per;   /* zameskane vzorky se NEDOHANI */
+            s_skipped++;
+        }
+    }
 
     datalog_rec_t r;
     sample(&r);
@@ -622,10 +641,16 @@ void datalog_format_status(char *buf, int buflen)
     if (buf == NULL || buflen <= 0) return;
     const datalog_backend_t *be = s_be;
     if (!s_ready || be == NULL) { snprintf(buf, (size_t)buflen, "DATALOG NEDOSTUPNE (uloziste)"); return; }
-    snprintf(buf, (size_t)buflen, "DATALOG %s %s %lu/%lu rec seq:%lu err:%lu%s",
+    /* `skip:` = kolikrat se plan posunul od teda, protoze tik nebezel vic nez
+     * periodu (audit F-0102). Nenulove znamena DIRU v logu — a je to zamer:
+     * tise dohnane duplikaty se stejnym `t_unix` by byly horsi, protoze Allan
+     * rekonstruovany z logu by je vzal jako plnohodnotne vzorky. Tise prehlednuty
+     * posun by ale byl taky spatne (L-0017), proto je tady. */
+    snprintf(buf, (size_t)buflen, "DATALOG %s %s %lu/%lu rec seq:%lu err:%lu skip:%lu%s",
              be->name, s_enabled ? "ON" : "OFF",
              (unsigned long)s_count, (unsigned long)(be->capacity / DATALOG_REC_SIZE),
-             (unsigned long)s_seq, (unsigned long)s_errors, s_wrapped ? " WRAP" : "");
+             (unsigned long)s_seq, (unsigned long)s_errors, (unsigned long)s_skipped,
+             s_wrapped ? " WRAP" : "");
 }
 
 bool datalog_erase_all(void)
