@@ -105,8 +105,13 @@ __attribute__((section(".Rx_PoolSection"))) extern u8_t memp_memory_RX_POOL_base
 /* Variable Definitions */
 static RxAllocStatusTypeDef RxAllocStatus;
 
-/* Pocitadla vyslani — cte je CM7 pres IPC (`status`). Bez nich neslo odlisit
- * "nevysilame vubec" od "vysilame, ale nic se nevraci". */
+/* Pocitadla vyslani. Meli odlisit "nevysilame vubec" od "vysilame, ale nic se
+ * nevraci".
+ * 🔴 JENZE JE NIKDO NECTE (audit F-0138). Driv tu stalo "cte je CM7 pres IPC
+ * (`status`)" — to NEPLATI: ve snapshotu pro ne neni pole a v `CM7/` na ne nikdo
+ * nesaha. Dokud se nepublikuji, jsou citelne jen sondou (`nm` + `-r32`), a sonda
+ * za behu zabiji I2C4 do power-cyklu. Viditelnost potrebuje pole v IPC, tedy
+ * rozhodnuti o sdilene strukture — proto je to samostatny nalez, ne tichy zasah. */
 uint32_t g_eth_tx_ok;
 uint32_t g_eth_tx_err;
 

@@ -284,7 +284,14 @@ int main(void)
 	  uint32_t now  = HAL_GetTick();
 
 	  /* ── RYCHLA CAST: kazdou iteraci ──────────────────────────────────────── */
-	  iwdg2_kick();       /* obnov watchdog CM4 (iterace ~1 ms << 4 s timeout) */
+	  /* ⚠️ ZAMERNY NO-OP (audit F-0136): IWDG2 NENI spusteny — `iwdg2_init()` je
+	   * vedome zakomentovana (reset scope je system-wide, zmereno 2026-08-13, viz
+	   * blok vyse), takze se nikdy nezapise startovaci klic 0xCCCC a tenhle zapis
+	   * 0xAAAA do nebezijiciho watchdogu nic nedela. Volani se ponechava, aby bylo
+	   * zapnuti IWDG2 jednorazove vratitelne — stejny duvod jako `(void)iwdg2_init;`.
+	   * Zaseknuti CM4 dnes hlida CM7 pres heartbeat (`stall:CM4`).
+	   * 🔴 Driv tu stalo "obnov watchdog CM4", coz tvrdilo obranu, ktera neexistuje. */
+	  iwdg2_kick();
 	  lwip_app_process(); /* prijate ramce + lwIP timery (DHCP/ARP/TCP) + stav linky */
 	  httpd_min_poll();   /* v12: dokonci odlozene /api/log + push SSE (throttle ~20 Hz uvnitr) */
 
