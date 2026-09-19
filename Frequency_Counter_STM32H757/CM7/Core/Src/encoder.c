@@ -6,6 +6,7 @@
 #include "encoder.h"
 #include "gpio_guard.h"   /* gpio_cfg_lock — PA8/PA9/PC13 lezi na portech, kam sahá i CM4 (ETH) */
 #include "main.h"
+#include "tim.h"          /* htim1 — TIM1 konfiguruje `.ioc`/MX_TIM1_Init, viz encoder_init */
 #include <string.h>
 
 #define ENC_BTN_PORT   GPIOC
@@ -44,6 +45,17 @@ void encoder_init(void)
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_TIM1_CLK_ENABLE();
 
+    /* ── GPIO se nastavuje ZNOVU, a je to ZAMER, ne zbytek po F-0122 ───────────
+     * `HAL_TIM_Encoder_MspInit()` v generovanem `tim.c` konfiguruje PA8/PA9 uplne
+     * stejne (AF_PP, PULLUP, LOW, AF1_TIM1) — ale BEZ `gpio_cfg_lock()`.
+     * A `GPIOA` je sdileny port: CM4 na nem ma ETH (PA1 REF_CLK, PA2 MDIO,
+     * PA7 CRS_DV). `HAL_GPIO_Init` dela nad `MODER`/`AFR` NEATOMICKY
+     * read-modify-write, takze ztraceny zapis jednoho jadra tise vrati cizi pin —
+     * presne trida vady, ktera na `GPIOG` shodila displej (PG8) i sit (PG11).
+     * Tohle opakovane nastaveni je tedy jedina verze, ktera je proti tomu zavodu
+     * chranena, a je idempotentni, takze bezi klidne po MspInitu.
+     * ⚠️ NEODSTRANUJ to jako duplikaci. Duplikace je tu jen v hodnotach; jediny
+     * vlastnik ZAPISU pod zamkem je tenhle modul. */
     GPIO_InitTypeDef g = {0};
     g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;      /* CH1 / CH2 */
     g.Mode      = GPIO_MODE_AF_PP;
@@ -60,17 +72,38 @@ void encoder_init(void)
     HAL_GPIO_Init(ENC_BTN_PORT, &g);
     gpio_cfg_unlock();
 
-    /* Encoder mode 3 = obe hrany obou kanalu. Filtr ICxF = 15 (max) —
-     * mechanicke encodery zakmitavaji a bez filtru by pocitaly nesmysly. */
-    TIM1->CR1   = 0;
-    TIM1->PSC   = 0;
-    TIM1->ARR   = 0xFFFFu;                      /* 16bit wrap; sleduje se ROZDIL */
-    TIM1->CCMR1 = (0x1u << 0) | (0x1u << 8)     /* CC1S=01 (TI1), CC2S=01 (TI2) */
-                | (0xFu << 4) | (0xFu << 12);   /* IC1F = IC2F = 15 */
-    TIM1->CCER  = 0;
-    TIM1->SMCR  = 0x3u;                         /* SMS=011: encoder mode 3 */
-    TIM1->CNT   = 0;
-    TIM1->CR1  |= TIM_CR1_CEN;
+    /* ── TIM1 uz JE nakonfigurovany — z `.ioc` pres `MX_TIM1_Init()` ───────────
+     * 🔴 Do 2026-09-19 tady byl blok SYROVYCH zapisu do `CR1`/`PSC`/`ARR`/`CCMR1`/
+     * `CCER`/`SMCR`/`CNT`, ktery konfiguraci z `.ioc` prepsal — a protoze
+     * `encoder_init()` bezi az z UiTasku, tedy PO `MX_TIM1_Init()` v `main()`,
+     * rucni verze vzdy vyhrala. Byly to DVE konfigurace teze periferie, z nichz
+     * jedna nikdy nenabyla ucinku (audit F-0122): kdo zmenil filtr nebo encoder
+     * mod v CubeMX, nezmenil NIC a hledal proc. Existuje i commit `2f5c3db`,
+     * ktery `.ioc` hodnoty "opravoval" v domneni, ze na nich zalezi.
+     *
+     * ✅ ZMERENO, ze jsou to tytez registry, takze prechod na HAL cestu neni zmena
+     * chovani: `.ioc` dava `Prescaler=0` -> `PSC=0`, `Period=65535` -> `ARR=0xFFFF`,
+     * `ENCODERMODE_TI12` -> `SMS=011` (mod 3, obe hrany obou kanalu),
+     * `IC1Filter=IC2Filter=15` -> `IC1F=IC2F=15`, `ICSELECTION_DIRECTTI` ->
+     * `CC1S=CC2S=01`. Jediny rozdil: `HAL_TIM_Encoder_Start` navic nastavi
+     * `CC1E/CC2E`, ktere tu byly nulove. Pocitani to nemeni — encoder mod bere
+     * `TI1FP1`/`TI2FP2` pres slave-mode controller a `CCxE` jen hradluje zapis do
+     * `CCRx`, ktery necteme. ⚠️ Je to ale jediny rozdil, ktery se ma na HW overit
+     * (UART `enc`: jedna zapadka = `kroku=1`).
+     *
+     * ⚠️ Filtr `ICxF = 15` (max) NENI kosmetika: mechanicke encodery zakmitavaji
+     * a bez filtru by TIM pocital nesmysly. Ted ho drzi `.ioc` — pri praci
+     * v CubeMX ho tam nechej. */
+    if (htim1.Instance != TIM1) {
+        /* L-0009: nespolehat na to, ze generovany kod probehl — overit dosazeny
+         * stav. Kdyby regen vyhodil TIM1 z `.ioc`, `MX_TIM1_Init()` zmizi a tady
+         * bychom startovali nenakonfigurovany timer. Radeji encoder NEZAPNOUT:
+         * `s_init` zustane 0, `encoder_poll` hned vraci a UART `enc` neukaze ani
+         * jeden krok — to je detekovatelne. Tichy pulfunkcni encoder by nebyl. */
+        return;
+    }
+    __HAL_TIM_SET_COUNTER(&htim1, 0);
+    if (HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL) != HAL_OK) return;  /* L-0003 */
 
     s_last_cnt = (uint16_t)TIM1->CNT;
     s_btn_t    = HAL_GetTick();

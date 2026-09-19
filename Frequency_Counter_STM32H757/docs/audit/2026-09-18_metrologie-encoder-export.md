@@ -73,8 +73,31 @@ připouští — všechno s malým nebo nulovým dopadem.
   inicializace fungující HW cesty a `.ioc`.
 - **Vztah k lekcím:** **`L-0028`** (věta v komentáři je testovatelná — tahle neplatí),
   **`L-0018`** (dvě místa konfigurující touž věc), **`L-0038`** (kontrakt firmware ↔ `.ioc`
-  nehlídá nikdo).
-- **Stav:** otevřeno — **skupina B** (varianta (a)/(b) je rozhodnutí, ne kód)
+  nehlídá nikdo). Z opravy vznikla **`L-0062`**.
+- **Stav:** **opraveno 2026-09-19** — varianta **(b)**, rozhodnutá uživatelem
+  („opravit ioc aby bylo konzistentní"). `.ioc` je jediný vlastník parametrů TIM1.
+  - 🔑 **Měřením se ukázalo, že riziko je nižší, než nález odhadoval.** `MX_TIM1_Init()`
+    vyrábí **bit za bit tentýž stav registrů** jako ruční zápisy: `Prescaler=0` → `PSC=0`,
+    `Period=65535` → `ARR=0xFFFF`, `ENCODERMODE_TI12` → `SMS=011`,
+    `IC1Filter=IC2Filter=15` → `IC1F=IC2F=15`, `ICSELECTION_DIRECTTI` → `CC1S=CC2S=01`.
+    Přechod tedy **není změna chování**, ne „střední riziko" jak nález psal.
+  - **Jediný rozdíl:** `HAL_TIM_Encoder_Start` navíc nastaví `CC1E/CC2E`, které byly
+    nulové. Počítání to nemění (encoder mód bere `TI1FP1`/`TI2FP2` přes slave-mode
+    controller, `CCxE` jen hradluje zápis do `CCRx`, který nečteme), ale je to **jediná
+    věc, kterou je nutné ověřit na HW**: UART `enc`, jedna západka = `kroku=1`.
+  - ⚠️ **`.ioc` se nakonec měnit NEMUSELO** — jeho hodnoty už odpovídaly. Nekonzistentní
+    byl kód (dvě konfigurace) a hlavička. Uživatel dal souhlas se zásahem do `.ioc`
+    (pravidlo 6), ale nebyl potřeba, takže se `.ioc` nedotklo nic.
+  - **Konfigurace pinů v `encoder_init()` ZŮSTÁVÁ**, a je to ta podstatná část opravy:
+    generovaný `HAL_TIM_Encoder_MspInit()` nastaví PA8/PA9 stejně, ale **bez
+    `gpio_cfg_lock()`** — a `GPIOA` sdílí CM4 (ETH: PA1/PA2/PA7). Naivní odstranění
+    duplikátu by zrušilo jediný zápis chráněný proti závodu jader, tedy přesně třídu
+    vady, která shodila displej (PG8) i síť (PG11).
+  - **Přidán guard `htim1.Instance != TIM1`** (vzor **L-0009**): kdyby regen vyhodil TIM1
+    z `.ioc`, encoder se nezapne místo startu nenakonfigurovaného timeru.
+  - Opraveno i `encoder.h:9-10` (nepravdivá věta) a celá sekce Encoder
+    v `CUBEMX_CHECKLIST.md`, jejíž nadpis tvrdil „⬜ NENÍ V IOC".
+  - ⬜ **neověřeno na HW** — viz kritérium `CC1E/CC2E` výše.
 
 ---
 

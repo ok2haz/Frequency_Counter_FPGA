@@ -6,8 +6,28 @@
  * @brief   Rotacni encoder s tlacitkem — HW vrstva + udalosti (Faze A prechodu na encoder).
  *
  * HW: TIM1 v encoder modu, CH1=PA8, CH2=PA9, tlacitko=PC13 (pull-up, spina na zem).
- * ⚠️ Piny si modul konfiguruje SAM (idempotentne) — v `.ioc` NENI nic z toho,
- * stejny regen-safe vzor jako CS pin ve `fpga_freq_init`.
+ *
+ * 🔴 **TIM1 I VSECHNY TRI PINY JSOU V `.ioc`** a `.ioc` je jejich JEDINY vlastnik.
+ * Do 2026-09-19 tu stalo "piny si modul konfiguruje SAM — v `.ioc` NENI nic z toho,
+ * stejny regen-safe vzor jako CS pin ve `fpga_freq_init`". To bylo nepravdive ve
+ * vsech bodech (audit F-0122): `.ioc` ma `TIM1.EncoderMode`/`IC1Filter`/`IC2Filter`,
+ * `PA8.Signal=S_TIM1_CH1`, `PA9.Signal=S_TIM1_CH2` i `PC13.Signal=GPIO_Input`
+ * (vcetne `Locked=true`), CubeMX generuje `MX_TIM1_Init()` a `main()` ho vola.
+ * Vedle toho modul timer prepisoval syrovymi zapisy, takze konfigurace z `.ioc`
+ * nikdy nenabyla ucinku — dve pravdy o jedne periferii.
+ *
+ * Dnesni delba je:
+ *  - **parametry TIM1** (mod, filtr, PSC, ARR) = `.ioc` -> `MX_TIM1_Init()`.
+ *    Menit je **v CubeMX**; `encoder.c` uz je neprepisuje, jen timer nastartuje
+ *    (`HAL_TIM_Encoder_Start`). ⚠️ Filtr `ICxF = 15` tam nech, mechanicky encoder
+ *    bez nej pocita zakmity.
+ *  - **konfigurace pinu** = `encoder_init()`, idempotentne a **pod `gpio_cfg_lock()`**.
+ *    Generovany `HAL_TIM_Encoder_MspInit()` dela totez, ale BEZ toho zamku, a
+ *    `GPIOA` sdili CM4 (ETH: PA1/PA2/PA7). Opakovane nastaveni je proto zamer, ne
+ *    zbytek — viz komentar v `encoder_init()`.
+ *  - ⚠️ Kdyby regen TIM1 z `.ioc` vyhodil, `encoder_init()` to POZNA
+ *    (`htim1.Instance != TIM1`) a encoder se NEZAPNE — misto aby startoval
+ *    nenakonfigurovany timer. Projevi se to tak, ze UART `enc` neukaze zadny krok.
  *
  * ⚠️ VLAKNA: `encoder_poll()` vola VYHRADNE UiTask (~100 Hz smycka). Modul nema
  * zadny zamek — jeden ctenar staci a UI stejne kresli jen UiTask.

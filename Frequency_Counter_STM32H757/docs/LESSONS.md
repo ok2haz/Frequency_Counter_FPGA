@@ -2077,6 +2077,48 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0062 — Než odstraníš duplikát, zjisti, jestli jedna z kopií nedělá něco navíc
+
+- **Datum:** 2026-09-19
+- **Oblast:** `.ioc` vs. ruční inicializace, sdílená GPIO mezi jádry
+- **Symptom:** TIM1 (encoder) měl **dvě konfigurace**: jednu z `.ioc` přes
+  `MX_TIM1_Init()` a jednu jako surové zápisy do registrů v `encoder_init()`.
+  Protože `encoder_init()` běží z UiTasku, tedy po `main()`, ruční verze vždy
+  vyhrála a ta z `.ioc` **nikdy nenabyla účinku**. Kdo změnil filtr v CubeMX,
+  nezměnil nic — a existuje commit, který ty hodnoty „opravoval" v domnění, že
+  na nich záleží.
+- **Příčina:** Zjevná náprava je „zruš duplikát a nech jednu pravdu". Jenže ty dvě
+  kopie **nebyly rovnocenné**: modul kromě timeru konfiguroval i piny PA8/PA9,
+  a to **pod `gpio_cfg_lock()`** (HSEM). Generovaný `HAL_TIM_Encoder_MspInit()`
+  nastaví tytéž piny stejnými hodnotami, ale **bez toho zámku** — a `GPIOA` sdílí
+  CM4 (ETH: PA1 REF_CLK, PA2 MDIO, PA7 CRS_DV). `HAL_GPIO_Init` dělá nad
+  `MODER`/`AFR` neatomický read-modify-write, takže ztracený zápis jednoho jádra
+  tiše vrátí cizí pin. Naivní „smaž duplikát" by tedy odstranilo **jediný zápis
+  chráněný proti závodu** a vyrobilo přesně tu třídu vady, která v tomhle projektu
+  shodila displej (PG8) i síť (PG11).
+- **Oprava:** Rozdělit vlastnictví podle toho, co která kopie umí: **parametry
+  timeru** = `.ioc`/`MX_TIM1_Init` (jediná pravda, surové zápisy zrušeny),
+  **konfigurace pinů** = modul, pod zámkem, idempotentně, s komentářem „nemazat
+  jako duplikaci — duplikace je jen v hodnotách, jediný vlastník zápisu pod zámkem
+  je tenhle modul". Navíc guard `htim1.Instance != TIM1` (**L-0009**), aby regen,
+  který by TIM1 z `.ioc` vyhodil, encoder rovnou vypnul místo startu
+  nenakonfigurovaného timeru.
+- **Pravidlo:** **U každé duplikované inicializace porovnej kopie řádek po řádku,
+  ne jen výsledné hodnoty — a ptej se, co navíc dělá kontext** (zámek, bariéra,
+  pořadí, cache operace, kontrola návratu). Když jedna kopie má něco, co druhá
+  nemá, není to duplikát ke smazání, ale dvě různé odpovědnosti ke **rozdělení**;
+  a to „něco navíc" patří do komentáře, jinak to smaže příští čtenář.
+- **Detekce:** Před odstraněním duplikátu: `git grep` na obě místa a diff jejich
+  *okolí*, ne jen těla. Konkrétně u GPIO: každý `HAL_GPIO_Init` nad **sdíleným
+  portem** (GPIOA, GPIOG na této desce) musí být obklopen `gpio_cfg_lock()` /
+  `_unlock()`; generovaný kód to nikdy nemá, takže „spolehnu se na MspInit" je
+  u sdíleného portu vždy zhoršení. Souvisí s **L-0018** (dvě místa konfigurující
+  touž věc) — tahle lekce říká, jak to rozpletnout, aniž se přitom něco ztratí.
+- **Commit:** viz git log — `fix(encoder)` s F-0122
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

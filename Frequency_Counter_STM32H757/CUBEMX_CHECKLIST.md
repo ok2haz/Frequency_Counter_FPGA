@@ -250,12 +250,33 @@ neplatné datum. V USER CODE bloku je proto implementace čtoucí **`g_rtc_text_
 defaultTasku (viz `CLAUDE.md` „RTC / Vlákno"). Proto se čte hotový řetězec, jako to dělá UI.
 - [ ] Když měníš v CubeMX konfiguraci SDMMC1, **srovnej hodnoty i v `sd_probe()`** (zrcadlí `Init` strukturu).
 
-## Encoder (TIM1 encoder mode PA8/PA9 + tlačítko PC13) — ⬜ NENÍ V IOC (stav 2026-09-01)
+## Encoder (TIM1 encoder mode PA8/PA9 + tlačítko PC13) — ✅ V IOC (stav 2026-09-19)
 
-**Dnešní stav:** `.ioc` o těchto třech pinech ani o TIM1 **neví**. Konfiguruje si je
-`encoder.c encoder_init()` sám a idempotentně (AF1_TIM1 + `GPIO_PULLUP` na PA8/PA9,
-`GPIO_MODE_INPUT` + `GPIO_PULLUP` na PC13; encoder mode 3 zápisem do registrů TIM1).
-Funguje to, ale **CubeMX ty piny nepovažuje za obsazené**.
+🔴 **Tenhle nadpis do 2026-09-19 tvrdil „NENÍ V IOC" a byla to nepravda** (audit F-0122).
+`.ioc` má `TIM1.EncoderMode`, `TIM1.IC1Filter`, `TIM1.IC2Filter`, `PA8.Signal=S_TIM1_CH1`,
+`PA9.Signal=S_TIM1_CH2` i `PC13.Signal=GPIO_Input` (s `Locked=true`), `TIM1` je
+v `CortexM7.IPs` a `main()` volá `MX_TIM1_Init()`. Zároveň `encoder.c` timer přepisoval
+syrovými zápisy do registrů, takže **konfigurace z `.ioc` nikdy nenabyla účinku** — dvě
+pravdy o jedné periferii. (Existuje i commit `2f5c3db`, který `.ioc` hodnoty „opravoval"
+v domnění, že na nich záleží. Nezáleželo.)
+
+**Dnešní dělba vlastnictví:**
+
+| co | vlastník | kde se to mění |
+|---|---|---|
+| parametry TIM1 (encoder mód, `ICxF`, PSC, ARR) | **`.ioc` → `MX_TIM1_Init()`** | v CubeMX |
+| start čítače (`CEN`) | `encoder_init()` → `HAL_TIM_Encoder_Start` | `encoder.c` |
+| konfigurace PA8/PA9/PC13 **pod `gpio_cfg_lock()`** | `encoder_init()` | `encoder.c` |
+
+⚠️ **Filtr `ICxF = 15` (max) v `.ioc` nech být** — mechanický encoder bez něj počítá
+zákmity. Teď se hodnota z `.ioc` opravdu uplatní, takže její změna má důsledek.
+
+⚠️ **PA8/PA9 se konfigurují DVAKRÁT a je to záměr.** Generovaný
+`HAL_TIM_Encoder_MspInit()` je nastaví stejně, ale **bez `gpio_cfg_lock()`**, a `GPIOA`
+sdílí CM4 (ETH: PA1 REF_CLK, PA2 MDIO, PA7 CRS_DV). `HAL_GPIO_Init` dělá neatomický
+read-modify-write nad `MODER`/`AFR`, takže ztracený zápis tiše vrátí cizí pin — třída
+vady, která shodila displej (PG8) i síť (PG11). Opakované nastavení v `encoder_init()`
+je tedy jediná verze chráněná proti tomu závodu. **Nemazat jako duplikaci.**
 
 ### ✅ Co říká SCHÉMA (`STM32H747BIT/CPU.kicad_sch`, list 2/7 „CPU")
 
@@ -329,10 +350,14 @@ druhé bez prvního (pin jako `GPIO_Input` + label).
 ### 🔴 `encoder_init()` v `encoder.c` ZŮSTÁVÁ — nemazat
 - `MX_TIM1_Init()` z CubeMX volá `HAL_TIM_Encoder_Init()`, ale **NEvolá
   `HAL_TIM_Encoder_Start()`** ani nenastaví `CEN`. Bez `encoder_init()` by čítač stál.
-- `encoder_init()` běží z UiTasku, tedy **po** `MX_TIM1_Init()`, a jen přepíše totéž →
-  výsledný stav je shodný. Je idempotentní (`s_init`), takže dvojí konfigurace nevadí.
-- **Hodnota `.ioc` je tu REZERVACE PINU a dokumentace, ne inicializace.** Kdyby se
-  init přesunul do generovaného kódu, ztratila by se odolnost proti regeneraci.
+- `encoder_init()` běží z UiTasku, tedy **po** `MX_TIM1_Init()`. Od opravy F-0122 už
+  parametry timeru **nepřepisuje** — jen ho nastartuje a nastaví piny pod zámkem.
+- 🔴 **Ověřuje si, že generovaný init vůbec proběhl** (`htim1.Instance != TIM1` →
+  `return`, tedy encoder se nezapne). Je to vzor **L-0009**: kdyby regen vyhodil TIM1
+  z `.ioc`, nestartoval by se nenakonfigurovaný timer, ale nic — a UART `enc` by
+  neukázal žádný krok, což je detekovatelné.
+- ⚠️ Dřív tu stálo, že `.ioc` je „REZERVACE PINU a dokumentace, ne inicializace".
+  **Od 2026-09-19 to neplatí** — `.ioc` je inicializace a jediný vlastník parametrů.
 
 ### Ověření po flashi (bez sondy)
 - UART **`enc`** → otočit o jednu západku: musí vypsat `kroku=1`. Když ne, je
