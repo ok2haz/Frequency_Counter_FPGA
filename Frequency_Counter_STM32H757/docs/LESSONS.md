@@ -33,7 +33,7 @@ místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z n
 | L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
 | L-0010 | Změna firmwaru je hotová až po běhu na desce a po POWER-CYKLU; do té doby `⬜ neověřeno na HW`. Diagnostiku nedávej do bootu před bring-up displeje. | `AUDIT_STATUS.md` (stav ověření u každé opravy) + CLAUDE.md bod 4b/4c |
 | L-0011 | Hlášku diagnostiky ber jako pozorování, ne diagnózu — ověř ji proti ostatním číslům z téhož výpisu, než sáhneš do kódu. U paměti: chyby u vzoru `0x00` vylučují vyhasnutí, selhání zápisu s okamžitým ověřením vylučuje retenci. | rozlišovací tabulka v CLAUDE.md („DISPLEJ ZLOBÍ?“) |
-| L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. | při opravě grep na sesterskou funkci; poznámka u obou kopií |
+| L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. ⚠️ Sourozenec může být i **v témže souboru** (F-0091: `flightrec_init` mazala sektor 0, zatímco `errlog_init` o 300 řádků dál brala správně `(best_i+1) % N`) nebo **na druhém jádře** (F-0137: oprava F-0104 se nepřenesla z `watchdog.c` do `iwdg2.c`). | při opravě grep na sesterskou funkci; poznámka u obou kopií |
 | L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
 | L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
 | L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
@@ -2303,6 +2303,99 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   nějakou dobu běží. Souvisí s **L-0017** (tichý přeskok jen s počítadlem) a
   **L-0016** (obrana, kterou nikdo nečte, není obrana).
 - **Commit:** viz git log — `fix(uloziste)` s F-0098
+- **Stav:** aktivní
+
+---
+
+### L-0068 — Pevně dlouhé textové pole není místo na prefix; strukturu ukládej strukturovaně
+
+- **Datum:** 2026-09-19
+- **Oblast:** trvalý záznamník chyb (`errlog`), návrh formátu záznamu
+- **Symptom:** Crash black-box dekóduje příčinu do `g_crash_text` jako
+  `"stall:UiTask"` / `"stack:UartTask"`. Do trvalé historie se z toho kopírovalo
+  prvních `ERRLOG_TAG_LEN` = **6 znaků**, tedy přesně `"stall:"` a `"stack:"` —
+  jméno tasku zmizelo. Zmizelo přitom právě to, kvůli čemu se black-box kdysi
+  rozšiřoval („prostý IWDG reset byl němý — RSR řekl jen watchdog, ne který task").
+- **Příčina:** Text nesl **dvě informace najednou**: druh pádu (prefix) a co spadlo
+  (za dvojtečkou). Pole má pevnou délku, takže prefix — informace, která má jen šest
+  možných hodnot a už existuje pro ni číselné pole `sub` — spolykal celou kapacitu.
+  Zrádné je, že `errlog.h` `sub` jako „kind" **dokumentoval**, ale jediný zapisovatel
+  do něj posílal nulu; formát byl navržený správně a nepoužíval se.
+- **Oprava:** Rozdělit: druh pádu → `sub` (jedna hodnota), rozlišující část za
+  oddělovačem → `tag`. Formát záznamu se nezměnil, jen se přestal plýtvat. Výpis pak
+  prefix **rekonstruuje** z `sub` přes tabulku jmen, která leží hned u dekódování.
+- **Pravidlo:** **Když do pevně dlouhého textového pole ukládáš řetězec, který má
+  strukturu, ulož strukturu do strukturovaných polí a do textu jen to, co se jinam
+  nevejde.** A než takové pole zkrátíš, napiš si skutečné hodnoty, které do něj
+  poletí, a ořež je na papíře — u šesti znaků je rozdíl mezi `"stall:"` a `"UiTask"`
+  rozdíl mezi žádnou a celou informací.
+- **Detekce:** U každého `for (i = 0; i < LEN && src[i]; i++)` kopírování do pevného
+  pole dohledej **všechny** formáty, které do `src` mohou přijít (tady `rtc.c`), a ořež
+  je. Když po ořezu vznikne u dvou různých příčin **tentýž** výsledek, je to nález.
+  Doplňkově: každé dokumentované pole, které nikdo neplní, je taky nález — grep na
+  zapisovatele (souvisí s **L-0028**: věta v komentáři je testovatelná).
+- **Commit:** viz git log — `fix(errlog,flightrec)` s F-0092
+- **Stav:** aktivní
+
+---
+
+### L-0069 — Periodický plán `next += period` musí mít ošetřené velké zpoždění, jinak dohání
+
+- **Datum:** 2026-09-19
+- **Oblast:** periodické vzorkování (`datalog_tick`), plánování v tikové úloze
+- **Symptom:** `datalog_tick` posouvá plán `s_next_ms += perioda`. Když tik dlouho
+  neběžel (blokující `membench`, `sd_export` nebo erase QSPI z UartTasku), zůstal
+  `s_next_ms` daleko v minulosti a následující tiky by zapsaly **několik záznamů
+  hned za sebou** — a to se stejným obsahem i `t_unix`, protože `sample()` čte živé
+  globály, ne historii.
+- **Příčina:** `next += period` je správný vzor: drží kadenci **bez driftu**, protože
+  nezávisí na tom, kdy se tik zrovna probudil. Má ale tichý předpoklad, že zpoždění
+  je menší než perioda. Když není, změní se z „udržuj kadenci" na „doháněj", a u
+  vzorkování to vyrobí **duplikáty předstírající měření v čase, kdy se neměřilo**.
+  Allan rekonstruovaný z logu je pak vezme jako plnohodnotné vzorky s τ₀ = 10 s.
+- **Oprava:** `next += period` zůstává, ale když je plán i po přičtení stále
+  v minulosti, posune se **od teď** a zvedne se počítadlo zmeškaných period, které
+  se vypisuje (`skip:N` ve `status`). Díra v logu je správná odpověď — tiše dohnané
+  duplikáty jsou horší než přiznaná mezera.
+- **Pravidlo:** **U každého plánu `next += period` odpověz, co se stane při zpoždění
+  větším než perioda.** Buď se má dohánět (vzácné — typicky u počítání událostí), nebo
+  se plán resetuje od teď a mezera se **spočítá a ohlásí**. „Dohánět" nikdy nevol
+  mlčky u dat, která nesou časovou značku odvozenou od okamžiku zápisu.
+- **Detekce:** Grep na `+= ` u plánovacích proměnných (`*_next_ms`, `*_next_tick`)
+  a u každé se ptej: (1) kdo v téže úloze může blokovat déle než periodu, (2) co
+  zapíše několik iterací hned po sobě. U vzorkovacích tiků platí i obráceně: když
+  `sample()` čte živý stav, **nesmí** se volat víckrát pro jeden časový bod.
+- **Commit:** viz git log — `fix(datalog)` s F-0102
+- **Stav:** aktivní
+
+---
+
+### L-0070 — Kontrola, která hlásí nálezy i ve zdravém stromě, přestává být kontrolou
+
+- **Datum:** 2026-09-19
+- **Oblast:** předepsané kontroly v dokumentaci, detekce pastí
+- **Symptom:** `CLAUDE.md` u pasti `fmt_fixed` předepisovalo: *„Kontrola:
+  `grep -rn "fmt_fixed([^;]*, *[4-9])" CM7` musí být prázdný."* Ten grep vracel
+  **6 shod a žádná z nich nebyla vada**: tři komentáře, které před tou pastí varují,
+  a kopie v `Debug/`/`Release/`.
+- **Příčina:** Kontrola se psala „odshora" jako regulární výraz nad zdrojem, ale
+  neprošla si vlastním výstupem na zdravém stromě. Šum ji tím znehodnotil dvakrát:
+  kdo ji spustí, **musí ručně probírat výsledky**, a jakmile to udělá dvakrát, přestane
+  ji spouštět. Navíc ta konkrétní past má i druhou podobu (přetečení `int32` podle
+  **hodnoty**, ne argumentu), kterou grep nad zdrojem najít vůbec nemůže.
+- **Oprava:** Kontrola přesunuta do **běžícího přístroje**: funkce si mez vynucuje
+  sama a každé omezení **počítá** (`status` → `FORMAT: omezenych desetin 0`). Číslo je
+  buď nula, nebo je něco špatně — žádné probírání výsledků.
+- **Pravidlo:** **Každou předepsanou kontrolu spusť na zdravém stromě a ověř, že je
+  zelená.** Když není, není to kontrola, ale seznam ke čtení. A kdykoli jde místo grepu
+  nad zdrojem použít **počítadlo v běžícím zařízení**, je to lepší: pokrývá i případy,
+  které ze zdroje nejsou vidět (**L-0017**).
+- **Detekce:** Projdi kontroly předepsané v `CLAUDE.md`/`docs/` a spusť je. Každá,
+  která na čistém stromě vrátí nenulový výstup, je nález. U grepů nad zdrojem navíc
+  vždy vyluč `Debug/` a `Release/` — jinak se každý nález počítá třikrát. Souvisí
+  s **L-0039** (pozitivní kontrola musí obsahovat vadu, kvůli které vznikla)
+  a **L-0016** (obrana, kterou nikdo nečte, není obrana).
+- **Commit:** viz git log — `docs:` s F-0054
 - **Stav:** aktivní
 
 ---

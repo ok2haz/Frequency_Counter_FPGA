@@ -240,16 +240,29 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 - 🔴 **`%f` v `printf`/`snprintf` NEVYTISKNE NIC.** Projekt linkuje **nano.specs bez float formátování** —
   ověřeno v mapfile: `_printf_float` ani `_dtoa_r` **nejsou slinkované**. Kontrola:
   `grep -c "_printf_float\|_dtoa_r" CM7/Debug/H757_LED_CM7.map` → musí být `0`, a tedy **žádné `%f`/`%e`/`%g`**.
-  Používej `fmt_fixed` (float, **JEN 1–3 desetiny**, viz past níže), **`fmt_sdec`** (double, ±, 0–5 desetin),
+  Používej `fmt_fixed` (float, **0–3 desetiny**, viz past níže), **`fmt_sdec`** (double, ±, 0–5 desetin),
   **`fmt_dec_u`** (= `fmt_sdec` bez vynuceného `+`) nebo `fmt_hz`.
-- 🔴 **`fmt_fixed(…, dec >= 4)` vytiskne POUZE CELOU ČÁST** (nalezeno 2026-09-04, STATUS #132).
-  Má `switch` jen pro `case 1/2/3`; cokoli vyššího spadne do `default:` = `"%ld"` — **bez varování,
-  bez ořezu, prostě bez desetin**. Reálně to znamenalo, že v okně MĚŘENÍ hlásilo `σ (n-1)` **vždy
-  „0 Hz"** (σ dobrého OCXO je hluboko pod 1 Hz) a v okně ANALÝZA se rozšířená nejistota `U (k=2)`
-  zobrazovala jako **„+-0 Hz"** — tedy právě to číslo, kvůli kterému to okno existuje.
-  **Pravidlo: `fmt_fixed` VÝHRADNĚ pro 1–3 desetiny, jinak `fmt_dec_u`/`fmt_sdec`.**
-  Kontrola: `grep -rn "fmt_fixed([^;]*, *[4-9])" CM7` musí být **prázdný**.
-  ⚠️ `default:` mlčí dál, takže past je pořád živá pro nové volající.
+- ✅ **`fmt_fixed` si svou mez od 2026-09-19 VYNUCUJE SAMA** (audit F-0053) — dřív
+  `fmt_fixed(…, dec >= 4)` vytiskla **pouze celou část**, bez varování a bez ořezu.
+  Reálně to znamenalo, že v okně MĚŘENÍ hlásilo `σ (n-1)` **vždy „0 Hz"** (σ dobrého OCXO
+  je hluboko pod 1 Hz) a v okně ANALÝZA se rozšířená nejistota `U (k=2)` zobrazovala jako
+  **„+-0 Hz"** — tedy právě to číslo, kvůli kterému to okno existuje (STATUS #132).
+  **Podporovaný rozsah je 0–3 desetiny, ne 1–3** — `default:` je totiž zároveň legitimní
+  implementace **nuly** (`fixed_split(v,0,…)` dá scale 1, frac 0) a spoléhají na ni čtyři
+  skuteční volající: min/max v seznamu senzorů a teplotní pásmo OCXO v okně PRAHY.
+  Do 2026-09-19 tady i v nálezu F-0053 stálo „1–3"; byla to nepravda a naivní oprava
+  „`default:` ořízne na 3" by ty čtyři volající rozbila („45" → „45.000").
+  🔴 **Druhá mez je na HODNOTĚ, ne na argumentu:** `fixed_split` počítá
+  `t = (int32_t)(v · 10^dec + 0.5)`, takže platí `|v| · 10^dec < 2,15e9` — při
+  3 desetinách `|v| < ~2,15e6`. Nad tím to přeteče a je to stejně tichá chyba, jen ji
+  spouští hodnota, takže ji **žádný grep nenajde**.
+  ⚠️ **Kontrola už není grep.** Dřív tu stálo *„`grep -rn "fmt_fixed([^;]*, *[4-9])" CM7`
+  musí být prázdný"*, ale ten grep vracel **6 shod a žádná nebyla vada** (komentáře,
+  které před pastí varují, a `Debug/`/`Release/` kopie) — kontrola, která hlásí nálezy
+  i ve zdravém stromě, přestává být kontrolou (audit F-0054).
+  **Dnešní kontrola: `status` → `FORMAT: omezenych desetin 0`.** Funkce si `dec` ořízne
+  na 0..3, dopočítá i mez na hodnotu a každé omezení **spočítá** — takže se to pozná
+  z běžícího přístroje, ne grepem nad zdrojem (lekce **L-0017**).
 - 🔴 **Většina velkých fontů je SUBSETOVANÁ a chybějící glyf se TIŠE PŘESKOČÍ** (`prim_draw_text`:
   `if (g == NULL) continue;` — žádný fallback, žádná šířka). Text prostě zmizí. Aktuální subsety:
   `mono_75`/`mono_52` = jen číslice, `mono_30` = `0123456789,.+-`, `sans_32` = `Hzsmunp`,

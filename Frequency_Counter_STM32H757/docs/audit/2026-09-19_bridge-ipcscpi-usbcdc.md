@@ -240,7 +240,14 @@ bez jediného počítadla (**F-0128**) a druhá instance otevřeného F-0014 (**
   napsat **to** — „nevíme, přejato z RPi“ je lepší údaj než mlčení.
 - **Riziko opravy:** žádné (komentář).
 - **Vztah k lekcím:** **`L-0006`** (u konstanty uveď, odkud je), checklist E (magické konstanty).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** (`docs:`). U `TC_SYSCTRL, 0x040F` je nove
+  napsane, ze hodnota je **prejata z referencniho driveru** (odkaz uz je v hlavicce
+  souboru: raspberrypi/linux rpi-6.6.y `tc358762.c`), ze z datasheetu je znamy jen vyznam
+  nizkych bitu (LCDC enable + vyber hodin) a ze **rozklad zbytku dohledatelny nebyl**.
+  🔑 Zamerne se tam pise i to, co NEVIME: „nevime, prejato z RPi" je lepsi udaj nez mlceni,
+  protoze pristi ctenar tak vi, ze tady neni co odvozovat, a nebude hodnotu menit podle
+  vlastni domnenky. V temze souboru je pritom `LCDCTRL` rozebrany bit po bitu a LCD timing
+  dolozeny aritmetikou modeline — tohle byla jedina nerozebrana konstanta.
 
 ---
 

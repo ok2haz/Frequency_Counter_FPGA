@@ -214,7 +214,15 @@ sebe a dvě z nich to dělají správně.
 - **Riziko opravy:** žádné pro firmware (mění se jen nástroje a dokumentace).
 - **Vztah k lekcím:** **`L-0011`** (nástroj, kterému se věří, se musí sám ověřit) a
   **`L-0020`** (kontrola bez pozitivní kontroly je zelené světlo).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** (`docs:` v CLAUDE.md).
+  Predepsany `grep -rn "fmt_fixed([^;]*, *[4-9])" CM7` vracel **6 shod a zadna nebyla vada**
+  (komentare varujici pred pasti + kopie v `Debug/`/`Release/`), takze kontrola hlasila
+  nalezy i ve zdravem strome — a tim prestala byt kontrolou.
+  🔑 Nahrazena kontrolou nad **bezicim pristrojem**: `status` -> `FORMAT: omezenych desetin 0`.
+  Ma to i vecny duvod: po oprave **F-0053** uz `fmt_fixed` mez vynucuje sama a kazde
+  omezeni POCITA, vcetne druhe meze na HODNOTE (`|v|*10^dec < 2,15e9`), kterou grep nad
+  zdrojem najit NEMUZE. Zaroven srovnan rozsah na **0-3** (ne 1-3, viz F-0053).
+  Z opravy vznikla **`L-0070`**.
 
 ---
 

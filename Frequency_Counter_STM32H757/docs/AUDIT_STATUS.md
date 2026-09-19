@@ -506,8 +506,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 6 | 65 | 0 |
-| S4 | 13 | 25 | 0 |
+| S3 | 3 | 68 | 0 |
+| S4 | 3 | 35 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
