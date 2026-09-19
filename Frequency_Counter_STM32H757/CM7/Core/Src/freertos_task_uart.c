@@ -1475,14 +1475,34 @@ void UartTask_run(void *argument)
 				   * RUN/STOP na displeji, je hotova cela spodni vrstva (WEB_UI_PLAN W1).
 				   * ⚠️ Diagnostika, ne produkcni rozhrani (produkcne to posila CM4). */
 				  const char *a = &RxBuffer[7];
+				  /* ⚠️⚠️ POJISTKA: `cmd` je bezzamkovy SPSC ring a jeho JEDINYM producentem
+				   * je CM4 (audit F-0014). Push z CM7 je bezpecny jen tehdy, kdyz CM4
+				   * zapisovat NEMUZE — jinak oba producenti precetli tyz `head`, zapisou
+				   * do TEHOZ slotu a oba ho zvednou: jeden prikaz se TISE ztrati a druhy
+				   * se prenese poskozeny (ringy ztratu nedetekuji).
+				   * 🔑 Ucel prikazu se tim ZACHOVA: `ipccmd` ma otestovat ovladaci cestu
+				   * CM4->CM7 **bez site, bez SCPI a bez webu** (kriterium W1) — a presne
+				   * v tom stavu (vzdalene ovladani vypnute, nebo CM4 mrtva) guard
+				   * nezasahuje. Odmitat se tedy da bez ztraty funkce; proto se nesahlo
+				   * na ring ani se prikaz neprevedl na lokalni zapis, ktery by ho zrusil.
+				   * ⚠️ Predikat je zamerne UZKY: bez `g_web_ctrl_en` dostane SCPI na CM4
+				   * `set_cfg = NULL` (`scpi_tcp.c`, `httpd_min.c` gatuji na `web_ctrl_en`),
+				   * takze druhy producent vubec nevznikne.
+				   * Vzor odmitnuti je shodny s prikazem `eth` vyse (dva masteri na MDIO). */
+				  int forced = 0;
+				  if (strncmp(a, "force ", 6) == 0) { forced = 1; a += 6; }
 				  uint8_t key = 0xFFu; uint32_t val = 0; int is_log = 0;
 				  if      (strncmp(a, "run ",  4) == 0) { key = IPC_CFG_RUN;  val = (uint32_t)atoi(a + 4); }
 				  else if (strncmp(a, "gate ", 5) == 0) { key = IPC_CFG_GATE; val = (uint32_t)atoi(a + 5); }
 				  else if (strncmp(a, "chan ", 5) == 0) { key = IPC_CFG_CHAN; val = (uint32_t)atoi(a + 5); }
 				  else if (strncmp(a, "log ",  4) == 0) { is_log = 1;         val = (uint32_t)atoi(a + 4); }
 
-				  if (key == 0xFFu && !is_log) {
-					  printf("pouziti: ipccmd run 0|1 | gate 0..3 | chan 0|1 | log 0|1\r\n");
+				  if (!forced && ipc_cm4_alive() && g_web_ctrl_en) {
+					  printf("ipccmd: CM4 zije a vzdalene ovladani je POVOLENE — push z CM7 by kolidoval\r\n");
+					  printf("  (cmd ring je SPSC s producentem CM4; dva producenti = tise ztraceny prikaz)\r\n");
+					  printf("  Vypni vzdalene ovladani (okno SIT), nebo: `ipccmd force <podprikaz>`\r\n");
+				  } else if (key == 0xFFu && !is_log) {
+					  printf("pouziti: ipccmd [force] run 0|1 | gate 0..3 | chan 0|1 | log 0|1\r\n");
 				  } else {
 					  static uint16_t s_id = 1000;
 					  ipc_cmd_t c = { .type = is_log ? (uint8_t)IPC_CMD_LOG : (uint8_t)IPC_CMD_CFG_SET,
