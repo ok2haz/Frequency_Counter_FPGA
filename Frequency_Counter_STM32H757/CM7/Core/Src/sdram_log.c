@@ -33,6 +33,10 @@ _Static_assert(sizeof(sdram_log_rec_t) == 32u, "zaznam musi zustat 32 B (oba kan
 
 static volatile uint32_t s_head;      /* kolik zaznamu CELKEM proslo (nikdy neklesa) */
 static volatile uint32_t s_dropped;   /* zahozeno, protoze log nebyl ready */
+/* Pozadavek na vynulovani z CIZI ulohy. Zapisuje ho kdokoli, konzumuje VYHRADNE
+ * producent v `sdram_log_put` — tim zustane `s_head` v rukach jedine ulohy
+ * (audit F-0118, vzor `g_membench_req`). */
+static volatile uint8_t  s_reset_req;
 static uint8_t  s_ready;
 static uint8_t  s_sim;       /* 1 = obsah je z emulatoru `fpgasim` (viz sdram_log_put) */
 static uint64_t s_gate_ns;   /* brana teto epochy = tau0; zmena vynuluje ring */
@@ -207,6 +211,10 @@ void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flag
                    uint32_t t_ms, uint64_t gate_ns, uint8_t sim)
 {
     if (!s_ready) { s_dropped++; return; }
+    /* Pozadavek na reset z cizi ulohy — konzumuje ho VYHRADNE producent, aby
+     * `s_head` nemel dva zapisovatele (audit F-0118). Musi to byt PRED `h = s_head`
+     * nize, jinak by prave vznikl ten race, ktery to ma odstranit. */
+    if (s_reset_req) { s_reset_req = 0u; s_head = 0; }
     /* Zmena epochy (REAL<->SIM nebo jina brana) zahodi obsah: nesouměřitelné
      * vzorky se nesmi michat — jinak by Allan pocital pres dve ruzna tau0 a
      * vysledek by vypadal duveryhodne a byl spatne. Tataz politika jako
@@ -280,7 +288,30 @@ void sdram_log_stat(sdram_log_stat_t *out)
     snprintf(out->fail, sizeof out->fail, "%s", s_fail);
 }
 
-void sdram_log_reset(void) { s_head = 0; }
+/* ── Reset obsahu: POZADAVEK, ne zapis (audit F-0118) ─────────────────────────
+ * 🔴 Driv to byl holy `s_head = 0` volany z UartTasku — tedy DRUHY zapisovatel
+ * `s_head`, presto ze kontrakt v hlavicce deklaruje JEDINEHO producenta a cela
+ * bezzamkovost na tom stoji. Producent dela `h = s_head; … s_head = h + 1u;`,
+ * tedy read-modify-write s bodem preempce uprostred: kdyby reset padl mezi ty
+ * dva kroky, producent by hodnotu OBNOVIL a reset by se ticho ztratil.
+ * Poskozeni dat to nezpusobovalo (zaznam mel platny slot a ctenari maji kontrolu
+ * `s_head - abs > CAP`), ale deklarovany invariant neplatil — a pristi uprava se
+ * o nej muze opret. Vzor je tentyz, jaky uz pouziva `membench` (`g_membench_req`).
+ *
+ * ⚠️ `s_head` tim zustava ve vlastnictvi JEDINE ulohy (FpgaTask). Cena je, ze
+ * reset se projevi az s pristim vzorkem — pri mrtvem linku by tedy „nezabral",
+ * proto ma volajici k dispozici `sdram_log_reset_done()` a jako posledni instanci
+ * `sdram_log_reset_force()`. Rozhodovani o timeoutu patri volajicimu, ktery ma
+ * pristup k RTOS; tenhle modul zustava bez zavislosti na scheduleru. */
+void sdram_log_reset_request(void) { s_reset_req = 1u; }
+
+int sdram_log_reset_done(void) { return s_reset_req ? 0 : 1; }
+
+/* Fallback pro pripad, ze producent NEBEZI (mrtvy SPI link, zastavene mereni).
+ * ⚠️ Tady se invariant „jeden zapisovatel" VEDOME porusuje — smi se to jen kdyz
+ * je dolozeno, ze producent neprisel (viz timeout u volajiciho), a volajici to
+ * MUSI uzivateli rict, aby „vynulovano" neznamenalo dvakrat neco jineho. */
+void sdram_log_reset_force(void) { s_reset_req = 0u; s_head = 0; }
 
 void sdram_log_invalidate(void)
 {

@@ -114,8 +114,24 @@ uint32_t sdram_log_read_back(uint32_t i, sdram_log_rec_t *out, uint32_t n);
 /** Aktualni stav (kapacita, pocet, chyby). */
 void sdram_log_stat(sdram_log_stat_t *out);
 
-/** Zahodi obsah (index na nulu). Data se nemazou, jen prestanou byt viditelna. */
-void sdram_log_reset(void);
+/** Pozada o zahozeni obsahu (index na nulu). Data se nemazou, jen prestanou byt
+ *  viditelna. NEBLOKUJE a NENULUJE hned: pozadavek zkonzumuje AZ PRODUCENT
+ *  (`sdram_log_put`) s pristim vzorkem — tim `head` zustava ve vlastnictvi jedine
+ *  ulohy, jak tvrdi kontrakt VLAKNA vyse (audit F-0118).
+ *  ⚠️ Kdyz producent nebezi (mrtvy SPI link, zastavene mereni), reset se NEPROVEDE
+ *  nikdy — volajici to pozna pres `sdram_log_reset_done()`. */
+void sdram_log_reset_request(void);
+
+/** @return 1 = pozadavek na reset uz producent zkonzumoval (nebo zadny nebyl),
+ *          0 = jeste ceka. Pro timeout u volajiciho. */
+int  sdram_log_reset_done(void);
+
+/** Posledni instance: vynuluje index PRIMO z volajiciho.
+ *  🔴 VEDOME porusuje invariant „jeden zapisovatel `head`", takze se smi pouzit
+ *  jen kdyz je DOLOZENO, ze producent nedobehl (timeout po
+ *  `sdram_log_reset_request`) — a volajici to MUSI ohlasit uzivateli, aby
+ *  „vynulovano" neznamenalo dvakrat neco jineho. */
+void sdram_log_reset_force(void);
 
 /** Zneplatni D-cache nad celym logem. ⚠️ Nutne JEN kdyz log plni DMA
  *  (protokol v2) — pri plneni z CPU je to zbytecne. */

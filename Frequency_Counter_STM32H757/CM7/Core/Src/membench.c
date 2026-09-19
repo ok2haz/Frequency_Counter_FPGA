@@ -375,6 +375,36 @@ static int sdram_safety_check(membench_result_t *r, uint32_t *out_size)
 {
     volatile uint32_t *base = (volatile uint32_t *)SDRAM_TEST_ADDR;
 
+    /* ── Krizova kontrola CHRANENYCH oblasti MEZI SEBOU ──────────────────────
+     * ⚠️ Kdyz se adresy opakuji, nejde jen o to, jestli je bezpecne testovat —
+     * dulezitejsi otazka je, jestli si tim uz dnes NELEZOU FRAMEBUFFERY navzajem.
+     * `FB0` (0xC0000000) a `FB2` (0xC0200000) se lisi PRAVE JEN v HADDR[21], tedy
+     * v bitu, ktery pri prekryvu po 2 MB vypada jako nefunkcni. Kdyby sdilely
+     * pamet, triple buffering by byl fakticky double a projevovalo by se to
+     * blikanim/trhanim, ktere by nikdo nespojoval s pameti.
+     * Sonda je reverzibilni (jedno slovo, obsah se vraci) — stejna jako nize.
+     *
+     * 🔴 MERI SE BEZPODMINECNE A JAKO PRVNI (audit F-0116). Driv to bylo pod
+     * `if (span)`, tedy jen kdyz `sdram_alias_span()` nasel prekryv — ale
+     * `alias_off` se plni i DRUHOU cestou, z `addr_lines_test()` v `bench_ram`,
+     * a ty dve sondy pokryvaji JINE rozsahy: `sdram_alias_span` jde od 64 kB,
+     * `addr_lines_test` uz od 4 B. Perioda prekryvu POD 64 kB (vadny nizky adresni
+     * bit, napr. HADDR[10] = 4 kB) byla proto pro prvni sondu neviditelna a pro
+     * druhou viditelna — a v te kombinaci UART tisknul uklidnujici vetu
+     * „framebuffery se navzajem NEprekryvaji" o mereni, ktere NEPROBEHLO.
+     * ⚠️ Umistene PRED kontrolou chranenych oblasti zamerne: kdyz se test preskoci,
+     * odpoved na tuhle (drazsi) otazku ma byt k dispozici tak jako tak. Sonda se
+     * chranenych oblasti dotyka tak i tak — o tom je cela tahle funkce. */
+    {
+        volatile uint32_t *fb0 = (volatile uint32_t *)0xC0000000u;
+        volatile uint32_t *fb1 = (volatile uint32_t *)0xC0100000u;
+        volatile uint32_t *fb2 = (volatile uint32_t *)0xC0200000u;
+        volatile uint32_t *can = (volatile uint32_t *)0xC0300000u;
+        r->fb_alias = (uint8_t)((cells_alias(fb0, fb2) ? 1u : 0u)
+                              | (cells_alias(fb1, can) ? 2u : 0u));
+        r->fb_alias_checked = 1;    /* teprve tohle dava vypisu pravo tvrdit vysledek */
+    }
+
     for (unsigned i = 0; i < sizeof SDRAM_PROTECTED / sizeof SDRAM_PROTECTED[0]; i++) {
         if (cells_alias(base, (volatile uint32_t *)SDRAM_PROTECTED[i])) {
             snprintf(r->msg, sizeof r->msg, "kolize s 0x%08lX!",
@@ -390,22 +420,8 @@ static int sdram_safety_check(membench_result_t *r, uint32_t *out_size)
     r->alias_off = span;            /* v bajtech; 0 = do 2 MB se nic neopakuje */
     if (span && *out_size > span) *out_size = span;
 
-    /* ── Krizova kontrola CHRANENYCH oblasti MEZI SEBOU ──────────────────────
-     * ⚠️ Kdyz se adresy opakuji, nejde jen o to, jestli je bezpecne testovat —
-     * dulezitejsi otazka je, jestli si tim uz dnes NELEZOU FRAMEBUFFERY navzajem.
-     * `FB0` (0xC0000000) a `FB2` (0xC0200000) se lisi PRAVE JEN v HADDR[21], tedy
-     * v bitu, ktery pri prekryvu po 2 MB vypada jako nefunkcni. Kdyby sdilely
-     * pamet, triple buffering by byl fakticky double a projevovalo by se to
-     * blikanim/trhanim, ktere by nikdo nespojoval s pameti.
-     * Sonda je stejne reverzibilni jako vyse (jedno slovo, obsah se vraci). */
-    if (span) {
-        volatile uint32_t *fb0 = (volatile uint32_t *)0xC0000000u;
-        volatile uint32_t *fb2 = (volatile uint32_t *)0xC0200000u;
-        volatile uint32_t *fb1 = (volatile uint32_t *)0xC0100000u;
-        volatile uint32_t *can = (volatile uint32_t *)0xC0300000u;
-        r->fb_alias = (uint8_t)((cells_alias(fb0, fb2) ? 1u : 0u)
-                              | (cells_alias(fb1, can) ? 2u : 0u));
-    }
+    /* (Krizova kontrola framebufferu se provedla uz na zacatku funkce —
+     *  bezpodminecne, viz F-0116.) */
     return 1;
 }
 

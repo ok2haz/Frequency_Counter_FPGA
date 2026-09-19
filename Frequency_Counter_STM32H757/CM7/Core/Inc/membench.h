@@ -81,11 +81,20 @@ typedef struct {
     /* 1 = behem TOHOTO cile prestala odpovidat CM4. ⚠️ Samotne „stall:CM4" v logu
      * nerekne, ktery cil to zpusobil — a dohledavat to znamena dalsi kolo na HW. */
     uint8_t  killed_cm4;
-    /* Bitmaska prekryvu MEZI framebuffery (jen SDRAM, jen kdyz `alias_off != 0`):
+    /* Bitmaska prekryvu MEZI framebuffery (jen SDRAM):
      * bit0 = FB0 sdili pamet s FB2, bit1 = FB1 s off-screen canvas poolem.
      * ⚠️ Tohle je ta opravdu drahá otázka — kdyby to platilo, triple buffering je
      * fakticky double a projevuje se to blikanim, ktere nikdo nespojuje s pameti. */
     uint8_t  fb_alias;
+    /* 🔴 1 = `fb_alias` se SKUTECNE MERILO; 0 = nemerilo se, takze jeho nula
+     * NIC NEZNAMENA (audit F-0116). Do 2026-09-19 se merilo jen kdyz
+     * `sdram_alias_span()` nasel prekryv, kdezto `alias_off` se plni i druhou
+     * cestou (`addr_lines_test`, ktera vidi i periody pod 64 kB) — v te kombinaci
+     * vypis tvrdil „framebuffery se navzajem NEprekryvaji" o mereni, ktere
+     * neprobehlo. Presne ten druh falesneho uklidneni, na kterem uz projekt stal
+     * (viz „HW OBVINEN — A BYL NEVINNY" a L-0011).
+     * ⚠️ Uklidnujici vetu smi vypis tisknout VYHRADNE kdyz je tady 1. */
+    uint8_t  fb_alias_checked;
     uint8_t  tested;                 /* 1 = probehlo (i kdyz s chybami) */
     uint8_t  writable;               /* 0 = jen cteni -> write_kbs/bit_errors nemaji smysl */
     uint8_t  skipped;                /* 1 = preskoceno, duvod v `msg` */

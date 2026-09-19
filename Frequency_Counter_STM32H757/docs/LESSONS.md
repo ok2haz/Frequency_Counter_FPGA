@@ -2000,6 +2000,83 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0060 — Nula podmíněně měřené hodnoty znamená dvě věci; bez třetího stavu z ní diagnostika udělá tvrzení
+
+- **Datum:** 2026-09-19
+- **Oblast:** diagnostika (`membench`), interpretace výsledků
+- **Symptom:** `membench` umí v jednom výpisu napsat *„ADRESY SE OPAKUJI po 4 kB —
+  dve ruzne adresy = tataz bunka!"* a **hned pod tím** *„framebuffery se ale
+  navzajem NEprekryvaji — zobrazeni tim netrpi"*. To druhé je přitom tvrzení
+  o měření, které **vůbec neproběhlo**.
+- **Příčina:** `fb_alias` se měřil jen pod `if (span)`, tedy když překryv našla
+  sonda `sdram_alias_span()` (skenuje od 64 kB). `alias_off` se ale plní i
+  **druhou cestou** — z `addr_lines_test()`, která jde už od 4 B. Perioda
+  překryvu **pod 64 kB** (vadný nízký adresní bit, např. `HADDR[10]` = 4 kB) je
+  proto pro první sondu neviditelná a pro druhou viditelná. V té kombinaci
+  zůstal `fb_alias` na nule z `memset` — a výpis nulu přečetl jako „neexistuje",
+  ačkoli znamenala „nezměřeno". U nejdražší otázky modulu (kdyby FB0 a FB2
+  sdílely paměť, triple buffering je fakticky double) to je **aktivní falešné
+  uklidnění**, a vada nízkého adresního bitu se navíc projeví *uvnitř* každého
+  framebufferu, takže ta věta nebyla jen nedoložená, ale nejspíš i nepravdivá.
+- **Oprava:** Dvě věci naráz, protože každá řeší jinou polovinu: (1) `fb_alias`
+  se měří **bezpodmínečně** a jako první věc, ještě před kontrolou chráněných
+  oblastí — takže odpověď existuje i když se celý test přeskočí; (2) přibyl
+  **třetí stav `fb_alias_checked`** a uklidňující věta se tiskne výhradně při
+  něm, jinak se vypíše „překryv MEZI framebuffery se NEMĚŘIL".
+- **Pravidlo:** **Když je hodnota měřená podmíněně, její nula znamená dvě různé
+  věci — „neexistuje" a „neměřilo se" — a diagnostika mezi nimi MUSÍ umět
+  rozlišit.** Buď měř bezpodmínečně, nebo zaveď příznak „změřeno"; tvrzení
+  o nepřítomnosti vady se nikdy neopírá o nulu, u které se nedá dokázat, že
+  vznikla měřením. (Souvisí s **L-0011**: hláška diagnostiky je pozorování, ne
+  diagnóza — tady dokonce ani to pozorování neexistovalo.)
+- **Detekce:** U každé uklidňující věty ve výpisu („…NEpřekrývají", „…je v
+  pořádku", „bez chyb") najdi řádek, který tu hodnotu **zapsal**, a ověř, že se
+  provede na každé cestě, po které se ta věta může vytisknout. Když je zápis pod
+  `if`, musí být pod stejným `if` i ta věta — nebo musí existovat příznak.
+  Doplňkově: pozor na zřetězení `if (A) … else if (B)`, kde `else` neúmyslně visí
+  u posledního testu (přesně to tu bylo a fungovalo jen shodou okolností).
+- **Commit:** viz git log — `fix(membench,sdramlog)` s F-0116
+- **Stav:** aktivní
+
+---
+
+### L-0061 — Převod akce na „požadavek pro cizí úlohu" je hotový až s odpovědí na to, co když ta úloha nepřijde
+
+- **Datum:** 2026-09-19
+- **Oblast:** mezivláknové mosty (`*_req` příznaky), vlastnictví stavu
+- **Symptom:** `sdram_log_reset()` nulovala `s_head` přímo z UartTasku, přestože
+  hlavička deklaruje **jediného producenta** (FpgaTask) a celá bezzámkovost ringu
+  na tom stojí. Producent dělá `h = s_head; … s_head = h + 1u;`, takže reset
+  padnoucí mezi ty dva kroky se **tiše ztratil** — uživatel viděl, že
+  `sdramlog reset` „nic neudělal".
+- **Příčina:** Zjevná oprava je vzor, který projekt už používá desetkrát
+  (`g_membench_req`, `g_screen_req`, `g_ui_cfg_req`, `g_sd_req`,
+  `g_si5356_clr_req`): cizí úloha nastaví příznak, **vlastník** ho zkonzumuje.
+  Jenže tím se akce stane **závislou na tom, že vlastník běží** — a tady vlastník
+  běží jen dokud přicházejí vzorky. Při mrtvém SPI linku by `sdramlog reset`
+  přestal fungovat úplně. Čistý invariant by tedy rozbil funkci.
+- **Oprava:** Požadavek **plus** ohraničené čekání u volajícího (300 ms = ~6
+  příležitostí při 20 Hz pollu) **plus** `_force()` jako poslední instance, která
+  invariant vědomě poruší — a výpis to **přizná jinou větou** („vynulovano PRIMO
+  — producent se za 300 ms neozval"). Čekání s `osDelay` je u volajícího, aby
+  modul zůstal bez závislosti na scheduleru.
+- **Pravidlo:** **Když měníš přímou akci na požadavek konzumovaný jinou úlohou,
+  napiš v témže commitu, co se stane, když ta úloha nepřijde.** Odpověď smí být
+  i „nic se nestane, je to v pořádku" — ale musí být vyslovená a ověřená, protože
+  „vlastník to zkonzumuje" je předpoklad o běhu, ne vlastnost kódu. Když
+  existuje fallback, který invariant poruší, MUSÍ se navenek hlásit **jinak** než
+  normální cesta; jinak jedno slovo znamená dvě různé věci.
+- **Detekce:** U každého `*_req` příznaku najdi úlohu, která ho konzumuje, a zeptej
+  se: (1) za jakých okolností ta úloha neběží nebo nepolluje, (2) co v takovém
+  případě uvidí uživatel. Když odpověď na (2) je „nic, a bude si myslet, že to
+  proběhlo", je to nález. Souvisí s **L-0054** („jeden vlastník" je tvrzení
+  o VŠECH volajících) — tahle lekce je jeho druhá polovina: o tom, co ta
+  jednovlastnická disciplína stojí.
+- **Commit:** viz git log — `fix(membench,sdramlog)` s F-0118
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

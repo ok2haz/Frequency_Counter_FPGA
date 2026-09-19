@@ -126,6 +126,22 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
   `sdram_safety_check`, takže měření musí být buď vždy, nebo až na konci `bench_ram`.
 - **Riziko opravy:** nízké. Sonda `cells_alias` je reverzibilní a už se dnes spouští
   5× (chráněné oblasti) při každém běhu, takže čtyři další nejsou nový druh rizika.
+- **Stav:** **opraveno 2026-09-19** — obě varianty zároveň (**1 + 2**), jak rozhodl
+  uživatel, protože každá řeší jinou polovinu problému:
+  - **měří se bezpodmínečně** a **jako první věc** v `sdram_safety_check()`, tedy
+    ještě před kontrolou chráněných oblastí. Díky tomu je odpověď k dispozici
+    i tehdy, když se celý test SDRAM přeskočí (`skipped`) — což je přesně stav,
+    kdy je podezření na alias nejsilnější. Podmínka `if (span)` zmizela;
+  - přibyl **třetí stav `fb_alias_checked`**, takže `fb_alias == 0` se už nedá
+    přečíst jako „neměřilo se". Uklidňující větu smí výpis vytisknout **výhradně**
+    když je příznak 1; jinak napíše *„překryv MEZI framebuffery se NEMĚŘIL — o
+    zobrazení tenhle běh neříká nic"*.
+  ⚠️ Zároveň se rozpletlo fragilní zřetězení `if (bit1) … else if (…)` ve výpisu —
+  uklidňující větev visela v `else` u testu bitu 1, takže správně fungovala jen
+  shodou okolností. Teď je to samostatné `if`.
+  Z opravy vznikla **`L-0060`**. ⬜ **neověřeno na HW** (kritérium je v HW checklistu
+  u modulu 19: na zdravé desce musí přijít `fb_alias` = 0 **a** `checked` = 1, tedy
+  žádná z obou nových vět se neobjeví).
 - **Vztah k lekcím:** **`L-0011`** (hlášku nástroje ber jako pozorování, ne diagnózu —
   tady nástroj vydává diagnózu, kterou neměřil), **`L-0017`** (tiché přeskočení bez
   příznaku), **`L-0028`** (věta, která tvrdí vlastnost, již kód neověřuje).
@@ -204,7 +220,22 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
   proto to není čistě mechanická oprava.
 - **Vztah k lekcím:** **`L-0054`** („jeden vlastník" je tvrzení o VŠECH volajících, ne
   o tom hlavním), **`L-0023`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** — varianta **(b)**, kterou rozhodl uživatel:
+  požadavek + fallback po timeoutu. (Nález navrhoval jen (a); (b) je (a) plus to,
+  co (a) rozbíjelo.)
+  - `sdram_log_reset()` je nahrazená trojicí `sdram_log_reset_request()` /
+    `_done()` / `_force()`. Příznak `s_reset_req` konzumuje **výhradně producent**
+    na začátku `sdram_log_put`, **před** `h = s_head` — tím `s_head` zůstává ve
+    vlastnictví jediné úlohy a deklarovaný invariant zase platí.
+  - ⚠️ Čistá varianta (a) měla vadu, kterou nález sám pojmenoval: při mrtvém SPI
+    linku producent nepřijde a reset **by nezabral nikdy**. UART proto po
+    `_request()` čeká do 300 ms (producent polluje 20 Hz = ~6 příležitostí) a když
+    se neozve, zavolá `_force()` a **vypíše to jinak**: „vynulovano PRIMO —
+    producent se za 300 ms neozval (mereni nebezi?)". Tím se pozorovatelné chování
+    nezhoršilo a slovo „vynulováno" neznamená dvakrát něco jiného.
+  - ⚠️ Čekání s `osDelay` je u **volajícího**, ne v modulu — `sdram_log.c` zůstává
+    bez závislosti na scheduleru. Běží to v UartTasku, který watchdog nehlídá.
+  - ⬜ **neověřeno na HW.**
 
 ---
 

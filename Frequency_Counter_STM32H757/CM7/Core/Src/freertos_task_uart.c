@@ -1326,13 +1326,21 @@ void UartTask_run(void *argument)
 					  else if (r->alias_off)
 						  printf("      ADRESY SE OPAKUJI po %lu kB — dve ruzne adresy = tataz bunka!\n",
 						         (unsigned long)(r->alias_off / 1024u));
-					  /* Nejdrazsi dusledek prekryvu: sdileji pamet framebuffery? */
+					  /* Nejdrazsi dusledek prekryvu: sdileji pamet framebuffery?
+					   * 🔴 Uklidnujici veta se tiskne VYHRADNE kdyz se to skutecne
+					   * merilo (`fb_alias_checked`) — audit F-0116. Driv se tisknula
+					   * i kdyz mereni neprobehlo, tedy jako tvrzeni bez dukazu, a to
+					   * u nejdrazsi otazky celeho modulu. */
 					  if (r->fb_alias & 1u)
 						  printf("      !! FB0 (0xC0000000) a FB2 (0xC0200000) SDILEJI PAMET -> triple buffering je fakticky double\n");
 					  if (r->fb_alias & 2u)
 						  printf("      !! FB1 (0xC0100000) a canvas pool (0xC0300000) SDILEJI PAMET\n");
-					  else if (r->alias_off && !r->fb_alias)
-						  printf("      (framebuffery se ale navzajem NEprekryvaji — zobrazeni tim netrpi)\n");
+					  if (r->alias_off && r->fb_alias == 0u) {
+						  if (r->fb_alias_checked)
+							  printf("      (framebuffery se ale navzajem NEprekryvaji — zobrazeni tim netrpi)\n");
+						  else
+							  printf("      (prekryv MEZI framebuffery se NEMERIL — o zobrazeni tenhle beh nerika nic)\n");
+					  }
 					  if (r->bit_errors && r->err_bitmask) {
 						  printf("      maska bitu 0x%08lX, prvni chyba @0x%08lX: cekano 0x%08lX, precteno 0x%08lX\n",
 						         (unsigned long)r->err_bitmask, (unsigned long)r->first_err_addr,
@@ -1369,8 +1377,24 @@ void UartTask_run(void *argument)
 				  sdram_log_stat_t st;
 				  sdram_log_stat(&st);
 				  if (strcmp(arg, "reset") == 0) {
-					  sdram_log_reset();
-					  printf("sdramlog: vynulovano\n");
+					  /* Reset jde PRES POZADAVEK, ktery zkonzumuje producent
+					   * (FpgaTask) — jinak by tu byl druhy zapisovatel `head`
+					   * a ztracene resety (audit F-0118). Producent polluje
+					   * 20 Hz, takze 300 ms je ~6 prilezitosti.
+					   * ⚠️ Kdyz mereni nebezi (mrtvy SPI link), pozadavek by
+					   * necekal navzdy — po timeoutu se nuluje primo a vypis to
+					   * PRIZNA, aby „vynulovano" neznamenalo dvakrat neco jineho. */
+					  sdram_log_reset_request();
+					  uint32_t t0 = HAL_GetTick();
+					  while (!sdram_log_reset_done() && HAL_GetTick() - t0 < 300u)
+						  osDelay(10);
+					  if (sdram_log_reset_done()) {
+						  printf("sdramlog: vynulovano (producentem)\n");
+					  } else {
+						  sdram_log_reset_force();
+						  printf("sdramlog: vynulovano PRIMO — producent se za 300 ms neozval"
+						         " (mereni nebezi?)\n");
+					  }
 				  }
 				  else if (strncmp(arg, "dump", 4) == 0) {
 					  if (!st.ready) { printf("sdramlog: VYPNUT (%s)\n", st.fail); }
