@@ -89,6 +89,11 @@ Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
 týž den fáze oprav, skupina A)
+🔑 **HW PRŮCHOD JE PŘIPRAVENÝ: [`docs/HW_OVERENI_AUDIT_2026-09-19.md`](HW_OVERENI_AUDIT_2026-09-19.md)**
+— konsolidovaný kontrolní seznam pro **jedno sezení** (29 neověřených `fix:` commitů
+z modulů 1–21, seřazeno na **dva restarty**). Obsahuje i past „Set Active → Release
+nestačí" a test, který může **zavřít otevřený S1 F-0055** (`selftest` z konzole —
+blokátor padl s `4b935c9`).
 **Fáze:** modul 1 prošel F5 a je ✅ ověřený na HW; moduly 2–6 a 8 prošly F3 **i F5**, ale
 ⬜ **neověřeně na HW po power-cyklu** (nic z těch oprav studený start neviděl).
 **Modul 7 má jen zapsané nálezy** — F5 zatím neproběhla (F-0025…F-0031, z toho 2× S2).
