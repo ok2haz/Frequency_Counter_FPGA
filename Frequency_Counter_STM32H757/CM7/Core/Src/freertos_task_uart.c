@@ -871,17 +871,32 @@ void UartTask_run(void *argument)
 					  if (total == 0u) {
 						  printf("  (zatim nic — to je dobre)\n");
 					  }
-					  for (uint32_t i = 0; i < want && i < total; i++) {
-						  errlog_rec_t r;
-						  if (!errlog_read_back(i, &r)) break;
-						  char tag[ERRLOG_TAG_LEN + 1];
-						  memcpy(tag, r.tag, ERRLOG_TAG_LEN); tag[ERRLOG_TAG_LEN] = '\0';
-						  printf("  #%lu up=%lus %s/%u a=%08lX b=%08lX x%u %s\n",
-								 (unsigned long)r.seq, (unsigned long)r.uptime_s,
-								 errlog_kind_name(r.kind), (unsigned)r.sub,
-								 (unsigned long)r.a, (unsigned long)r.b,
-								 (unsigned)(r.repeat + 1u), tag);
-						  osDelay(2);   /* aby se 115200 stihlo vypsat bez utinani */
+					  /* 🔴 TRETI KONZUMENT, KTERY SI `a`/`b`/`sub` VYKLADAL PO SVEM
+					   * (audit F-0100). Displejove okno CHYBY i web uz od 2026-09-13
+					   * pouzivaji `errlog_fmt_detail()` prave proto, aby existoval JEDEN
+					   * zdroj pravdy (lekce L-0049) — jenze `errlog dump` tisknul dal
+					   * `a=%08lX b=%08lX` jako hola cisla. Vysledek: tri vystupy rekly
+					   * o TEMTEZ zaznamu tri rozdilne veci, a to pri hledani priciny.
+					   * ⚠️ Zaroven se cetlo `errlog_read_back()` v cyklu, tedy jeden mutex
+					   * a jeden QSPI prikaz na zaznam, ackoli `errlog_read_batch()` existuje
+					   * presne proti tomu (F-0095, lekce L-0021). Ted se cte po davkach. */
+					  {
+						  static errlog_rec_t rb[ERRLOG_DUMP_BATCH];
+						  uint32_t done = 0;
+						  while (done < want && done < total) {
+							  uint32_t n = errlog_read_batch(done, ERRLOG_DUMP_BATCH, rb);
+							  if (n == 0u) break;
+							  for (uint32_t i = 0; i < n && done + i < want; i++) {
+								  char det[80];
+								  errlog_fmt_detail(&rb[i], det, sizeof det);
+								  printf("  #%lu up=%lus %-7s x%u  %s\n",
+										 (unsigned long)rb[i].seq, (unsigned long)rb[i].uptime_s,
+										 errlog_kind_name(rb[i].kind),
+										 (unsigned)(rb[i].repeat + 1u), det);
+								  osDelay(2);   /* aby se 115200 stihlo vypsat bez utinani */
+							  }
+							  done += n;
+						  }
 					  }
 				  }
 			  }

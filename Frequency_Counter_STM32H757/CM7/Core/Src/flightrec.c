@@ -175,13 +175,16 @@ void flightrec_init(void)
 
     /* Najdi sektor s nejvyssim seq (= posledni dump) a prvni VOLNY (smazany). */
     uint32_t best_seq = 0; int have_best = 0; int free_idx = -1;
+    int best_i = -1;            /* index sektoru s nejvyssim seq — potreba pro F-0091 */
     for (uint32_t i = 0; i < W25Q_FLIGHTREC_SECTORS; i++) {
         uint8_t h[FR_REC_SIZE];
         uint32_t off = W25Q_FLIGHTREC_BASE + i * W25Q_SECTOR_SIZE;
         if (!w25q_read(off, h, sizeof h)) continue;
         uint32_t seq;
         if (hdr_unpack(h, &seq, NULL, NULL, NULL)) {
-            if (!have_best || seq > best_seq) { have_best = 1; best_seq = seq; s_read_off = off; }
+            if (!have_best || seq > best_seq) {
+                have_best = 1; best_seq = seq; s_read_off = off; best_i = (int)i;
+            }
         } else if (free_idx < 0 && get32(h) == 0xFFFFFFFFu) {
             free_idx = (int)i;                      /* smazany -> pouzitelny hned */
         }
@@ -193,13 +196,29 @@ void flightrec_init(void)
     s_have_read = s_have_dump;
     if (have_best) s_seq_next = best_seq + 1u;
 
-    /* Cilovy sektor pro PRISTI dump. Kdyz zadny smazany neni, smaz nejstarsi
-     * (nejnizsi index za poslednim) — deje se to jen jednou za 64 dumpu. */
+    /* Cilovy sektor pro PRISTI dump. Kdyz zadny smazany neni, smaz NEJSTARSI —
+     * a ten lezi na indexu ZA nejnovejsim, protoze se pise po rade.
+     * 🔴 Do 2026-09-19 se v teto vetvi mazal natvrdo sektor 0 (audit F-0091), a to
+     * bez ohledu na to, kde nejstarsi a nejnovejsi dump lezi. Komentar spravne
+     * pravidlo dokonce v zavorce POPISOVAL („index za poslednim"), ale kod ho
+     * neprovadel. Dusledek: boot 65 smazal sektor 0 spravne (byl nejstarsi), ale
+     * od bootu 66 uz sektor 0 drzel NEJNOVEJSI dump — a init ho pokazde zahodil.
+     * Od te chvile se pouzival vyhradne sektor 0 a kazdy dump se smazal pri
+     * nasledujicim startu. Navenek to pusobilo jako rozpor dvou vypisu: `status`
+     * hlasil „je ulozeny zaznam", `flightrec` rekl „zadny ulozeny zaznam" — presne
+     * v okamziku, kdy se hleda pricina poruchy.
+     * ✅ Sesterska `errlog_init()` v tomto souboru to uz delala spravne
+     * (`ni = (best_i + 1) % SECTORS`) — tohle je tedy jen dorovnani dvojcete
+     * (lekce L-0012). */
     if (free_idx >= 0) {
         s_write_off = W25Q_FLIGHTREC_BASE + (uint32_t)free_idx * W25Q_SECTOR_SIZE;
         s_ready = 1;
     } else {
-        s_write_off = W25Q_FLIGHTREC_BASE;
+        /* `best_i < 0` = ani jeden platny zaznam a pritom zadny smazany sektor
+         * (same smeti) -> zacni od nuly, jinak sektor za nejnovejsim. */
+        uint32_t ni = (best_i >= 0)
+                    ? (((uint32_t)best_i + 1u) % W25Q_FLIGHTREC_SECTORS) : 0u;
+        s_write_off = W25Q_FLIGHTREC_BASE + ni * W25Q_SECTOR_SIZE;
         if (w25q_erase_sector(s_write_off)) s_ready = 1;
     }
     osMutexRelease(qspiMutexHandle);
@@ -585,7 +604,17 @@ void errlog_tick(void)
 uint32_t errlog_count(void)
 {
     uint32_t written = (s_el_seq_next > 1u) ? (s_el_seq_next - 1u) : 0u;
-    return (written < (uint32_t)ERRLOG_CAPACITY) ? written : (uint32_t)ERRLOG_CAPACITY;
+    /* 🔴 Strop NENI cela kapacita (audit F-0101). Sektor, do ktereho se prave
+     * zapisuje, byl pri vstupu do nej CELY smazan, takze slotu ZA hlavou je az
+     * `ERRLOG_PER_SECTOR - 1` prazdnych — a pri pretoceni kruhu se cteni dostane
+     * presne tam. Driv se vracelo plnych 8192, takze `errlog dump 200` u naplneneho
+     * logu skoncil driv, nez slibil, a okno CHYBY ukazovalo prazdne radky.
+     * Ztrata dat to nebyla, jen nekonzistentni hlaseni — ale je to tatáz trida jako
+     * F-0116: cislo, ktere tvrdi vic, nez je k dispozici. */
+    uint32_t rel  = (s_el_write_off - W25Q_ERRLOG_BASE) % W25Q_ERRLOG_SIZE;
+    uint32_t slot = (rel % W25Q_SECTOR_SIZE) / ERRLOG_REC_SIZE;   /* kolikaty slot v sektoru */
+    uint32_t cap  = (uint32_t)ERRLOG_CAPACITY - (ERRLOG_PER_SECTOR - slot);
+    return (written < cap) ? written : cap;
 }
 
 uint32_t errlog_dropped(void) { return s_el_dropped; }
@@ -611,6 +640,12 @@ bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out)
     return ok;
 }
 
+/* Kolik zaznamu se cte JEDNIM QSPI prikazem (16 x 32 B = 512 B). Buffer je
+ * `static` zamerne: volajici je `ipc_errlog_service` z defaultTasku (zasobnik
+ * 2560 B), takze 512 B na stacku by byla zbytecna ctvrtina — a `errlog_read_batch`
+ * uz stejne neni reentrantni (drzi QSPI mutex). */
+#define EL_BULK_RECS  16u
+
 uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out)
 {
     if (!out || count == 0u) return 0u;
@@ -618,16 +653,42 @@ uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out)
     if (from >= total) return 0u;
     if (count > total - from) count = total - from;
 
+    /* 🔴 JEDEN QSPI PRIKAZ NA SKUPINU, ne na zaznam (audit F-0095). Funkce se
+     * jmenuje „batch" a drzi jeden mutex, ale uvnitr vydavala `w25q_read` pro
+     * KAZDY 32B zaznam. Rezie takoveho cteni je v projektu ZMERENA:
+     * `datalog.h` uvadi ~173 us/zaznam proti ~7 us na samotna data, tedy 25x vic
+     * rezie nez prenosu. Davka 64 zaznamu tak delala ~11 ms nepreruseneho pollingu
+     * v defaultTasku (krmi watchdog) pod drzenym QSPI mutexem. Presne vzor, kvuli
+     * kteremu vznikl `datalog_read_bulk()` (F-0039, lekce L-0021) — a znovu se
+     * na nej zapomnelo.
+     * ⚠️ Zaznamy jdou od hlavy DOZADU, takze index `from+k` roste s klesajici
+     * adresou. Skupina se proto cte od adresy NEJSTARSIHO clena a ve vystupu se
+     * obraci. Pri prelomu konce regionu se skupina zkrati (zadny wrap uvnitr
+     * jednoho cteni). */
+    static uint8_t buf[EL_BULK_RECS * ERRLOG_REC_SIZE];
+    const uint32_t span = W25Q_ERRLOG_SIZE;
+    const uint32_t head = (s_el_write_off - W25Q_ERRLOG_BASE) % span;
+
     uint32_t got = 0;
     if (osMutexAcquire(qspiMutexHandle, 200u) != osOK) return 0u;
-    for (uint32_t k = 0; k < count; k++) {
-        uint32_t span = W25Q_ERRLOG_SIZE;
-        uint32_t back = (((from + k) + 1u) * ERRLOG_REC_SIZE) % span;
-        uint32_t rel  = ((s_el_write_off - W25Q_ERRLOG_BASE) + span - back) % span;
-        uint8_t b[ERRLOG_REC_SIZE];
-        if (!w25q_read(W25Q_ERRLOG_BASE + rel, b, sizeof b)) break;
-        if (!el_unpack(b, &out[got])) break;
-        got++;
+    while (got < count) {
+        const uint32_t j = from + got;                 /* nejnovejsi clen skupiny */
+        const uint32_t back  = ((j + 1u) * ERRLOG_REC_SIZE) % span;
+        const uint32_t rel_j = (head + span - back) % span;   /* adresa zaznamu `j` */
+        uint32_t n = count - got;
+        if (n > EL_BULK_RECS) n = EL_BULK_RECS;
+        /* Skupina lezi POD `rel_j` (starsi = nizsi adresa), takze se musi vejit. */
+        const uint32_t maxn = rel_j / ERRLOG_REC_SIZE + 1u;
+        if (n > maxn) n = maxn;
+        const uint32_t start = rel_j - (n - 1u) * ERRLOG_REC_SIZE;
+        if (!w25q_read(W25Q_ERRLOG_BASE + start, buf, n * ERRLOG_REC_SIZE)) break;
+        uint32_t k = 0;
+        for (; k < n; k++) {
+            /* `buf` je vzestupne (od nejstarsiho), vystup chceme od nejnovejsiho. */
+            if (!el_unpack(&buf[(n - 1u - k) * ERRLOG_REC_SIZE], &out[got + k])) break;
+        }
+        got += k;
+        if (k < n) break;      /* prvni vadny/prazdny slot = konec citelne historie */
     }
     osMutexRelease(qspiMutexHandle);
     return got;
@@ -658,6 +719,46 @@ bool errlog_erase(void)
     return ok;
 }
 
+/* Rozlozi `g_crash_text` na (druh padu, rozlisujici cast za oddelovacem).
+ * Formaty vyrabi `rtc.c` z crash black-boxu: "stack:<task>", "stall:<task>",
+ * "HF@<pc><typ>", "hal_err@<krok|HSE|LSE>", "assert:L<radek>", "malloc fail"
+ * a "crash? <n>" pro neznamy druh.
+ * @return `sub` pro zaznam (viz `ERRLOG_CRASH_*`), 0 = nerozpoznano.
+ * >> Cisla MUSI odpovidat `kind` v crash black-boxu (`rtc.c`), aby se dve
+ * cislovani nerozesla — proto je tabulka jmen hned vedle. */
+#define ERRLOG_CRASH_STACK   1u
+#define ERRLOG_CRASH_MALLOC  2u
+#define ERRLOG_CRASH_STALL   3u
+#define ERRLOG_CRASH_HF      4u
+#define ERRLOG_CRASH_HAL     5u
+#define ERRLOG_CRASH_ASSERT  6u
+
+static const char *const EL_CRASH_NAME[7] = {
+    "?", "stack", "malloc", "stall", "HardFault", "hal_err", "assert"
+};
+
+static uint8_t crash_split(const char *t, const char **rest)
+{
+    static const struct { const char *pfx; uint8_t sub; } P[] = {
+        { "stack:",   ERRLOG_CRASH_STACK  },
+        { "stall:",   ERRLOG_CRASH_STALL  },
+        { "assert:",  ERRLOG_CRASH_ASSERT },
+        { "hal_err@", ERRLOG_CRASH_HAL    },
+        { "HF@",      ERRLOG_CRASH_HF     },
+        { "malloc",   ERRLOG_CRASH_MALLOC },
+    };
+    for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
+        size_t l = strlen(P[i].pfx);
+        if (strncmp(t, P[i].pfx, l) == 0) {
+            /* U "malloc fail" neni co rozlisovat — cely vyznam nese uz `sub`. */
+            *rest = (P[i].sub == ERRLOG_CRASH_MALLOC) ? "" : (t + l);
+            return P[i].sub;
+        }
+    }
+    *rest = t;            /* nerozpoznano -> at se aspon ulozi, co tam bylo */
+    return 0u;
+}
+
 void errlog_boot_record(void)
 {
     /* Duvod resetu + (kdyz byl) crash z BKP. ⚠️ Musi bezet AZ po `MX_RTC_Init`,
@@ -674,10 +775,22 @@ void errlog_boot_record(void)
     if (g_crash_text[0]) {
         char ct[ERRLOG_TAG_LEN + 1];
         uint32_t k = 0;
-        for (; k < ERRLOG_TAG_LEN && g_crash_text[k]; k++) ct[k] = (char)g_crash_text[k];
+        /* >> DO 2026-09-19 SE TU KOPIROVALO PRVNICH 6 ZNAKU `g_crash_text`, tedy
+         * PRESNE PREFIX S DVOJTECKOU (audit F-0092): ze "stall:UiTask" zbylo
+         * "stall:" a ze "stack:UartTask" zbylo "stack:". Zmizelo tedy JMENO TASKU,
+         * tedy presne to, kvuli cemu se crash black-box kdysi rozsiroval ("prosty
+         * IWDG reset byl nemy — RSR rekl jen watchdog, ne ktery task").
+         * Tag ma jen `ERRLOG_TAG_LEN` = 6 znaku a format zaznamu se menit nema,
+         * takze se resi DELBA: druh padu jde do `sub` (jedna hodnota misto sesti
+         * znaku prefixu) a do tagu se ulozi az ROZLISUJICI cast za oddelovacem.
+         * `sub` bylo navic v `errlog.h` dokumentovane jako "kind", ale jediny
+         * zapisovatel do nej posilal nulu — dokumentovane pole se nikdy neplnilo. */
+        const char *rest = "";
+        uint8_t     ckind = crash_split((const char *)g_crash_text, &rest);
+        for (; k < ERRLOG_TAG_LEN && rest[k]; k++) ct[k] = rest[k];
         ct[k] = '\0';
         s_el_cool_next[ERRLOG_K_CRASH] = HAL_GetTick();
-        (void)errlog_put(ERRLOG_K_CRASH, 0u, g_crash_cfsr, g_crash_bfar, ct);
+        (void)errlog_put(ERRLOG_K_CRASH, ckind, g_crash_cfsr, g_crash_bfar, ct);
     }
 }
 
@@ -712,9 +825,22 @@ void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
     case ERRLOG_K_BOOT:
         snprintf(buf, n, "duvod=%s, bring-up krok %u", tag, (unsigned)r->sub);
         break;
-    case ERRLOG_K_CRASH:
-        snprintf(buf, n, "CFSR=0x%08lX BFAR=0x%08lX", (unsigned long)r->a, (unsigned long)r->b);
-        break;
+    case ERRLOG_K_CRASH: {
+        /* >> Driv se tisknulo VYHRADNE `CFSR`/`BFAR` (audit F-0092) — a ty jsou
+         * nenulove JEN u HardFaultu; `rtc.c` je pro stack/stall/assert/hal_err
+         * neplni. U nejcastejsich druhu padu tedy okno CHYBY i web ukazovaly
+         * doslova "CRASH  CFSR=0x00000000 BFAR=0x00000000", tedy ZE se pad stal,
+         * ale ne CO spadlo. */
+        const char *kn = (r->sub < (sizeof EL_CRASH_NAME / sizeof EL_CRASH_NAME[0]))
+                       ? EL_CRASH_NAME[r->sub] : "?";
+        if (r->a || r->b)
+            snprintf(buf, n, "%s %s, CFSR=0x%08lX BFAR=0x%08lX", kn, tag,
+                     (unsigned long)r->a, (unsigned long)r->b);
+        else if (tag[0])
+            snprintf(buf, n, "%s %s", kn, tag);
+        else
+            snprintf(buf, n, "%s", kn);
+        break; }
     case ERRLOG_K_I2C:
         snprintf(buf, n, "sbernice I2C%u, chyb=%lu, resetu touche=%lu",
                  (unsigned)r->sub, (unsigned long)r->a, (unsigned long)r->b);

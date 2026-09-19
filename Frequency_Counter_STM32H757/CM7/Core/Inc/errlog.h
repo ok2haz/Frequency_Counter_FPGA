@@ -125,4 +125,9 @@ int errlog_ready(void);
  *  (50-400 ms v defaultTasku), takze nekonecne opakovani by bylo horsi nez vada. */
 uint32_t errlog_init_retries(void);
 
+/* Kolik zaznamu si UART `errlog dump` bere na jednu davku (audit F-0100/F-0095).
+ * 8 x 32 B = 256 B; buffer je u volajiciho `static`, protoze UartTask ma sice
+ * velky zasobnik, ale vypis uz nese `det[80]` a printf retez. */
+#define ERRLOG_DUMP_BATCH  8u
+
 #endif /* INC_ERRLOG_H_ */

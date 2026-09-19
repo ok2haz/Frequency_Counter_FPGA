@@ -299,7 +299,16 @@ nezměnil vůbec.
 - **Vztah k lekcím:** **L-0028** (komentář slibuje jiné chování než kód),
   **L-0012** (dvě symetrické instance v jednom souboru; `errlog` opravený,
   `flightrec` ne).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19.** Cilovy sektor pri plnem regionu je nove
+  **ten ZA nejnovejsim** (`(best_i + 1) % SECTORS`), ne natvrdo sektor 0 — presne to
+  pravidlo, ktere komentar uz drive v zavorce POPISOVAL („index za poslednim"), ale kod
+  neprovadel. Pridana promenna `best_i` drzi index sektoru s nejvyssim `seq`.
+  🔑 **Sesterska `errlog_init()` v temze souboru to delala spravne od zacatku** — tohle
+  je tedy dorovnani dvojcete (**L-0012**), ne novy navrh.
+  ⚠️ Puvodni chovani znicilo zapisovac az po ~64 dumpech, kdy uz sektor 0 nebyl nejstarsi
+  ale NEJNOVEJSI; od te chvile se pouzival jen on a kazdy dump se smazal pri dalsim startu.
+  Navenek to byl rozpor dvou vypisu (`status` „je ulozeny zaznam" vs `flightrec` „zadny
+  ulozeny zaznam") — a to zrovna pri hledani priciny poruchy. ⬜ **neovereno na HW.**
 
 ---
 
@@ -356,7 +365,17 @@ nezměnil vůbec.
 - **Vztah k lekcím:** **L-0049** (rozlušti `a`/`b`/`sub` do věty **na zdroji** —
   věta tu vzniká, ale vynechá jediné pole, které něco nese), **L-0017**
   (co se rozhodneš nezobrazit, musí jít změřit), **L-0028**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** delbou mezi `sub` a `tag`.
+  Druh padu jde do **`sub`** (jedna hodnota misto sesti znaku prefixu, nove funkce
+  `crash_split()` + tabulka `EL_CRASH_NAME`), do tagu se uklada az **rozlisujici cast za
+  oddelovacem** — takze ze „stall:UiTask" se ulozi `sub=3` + `"UiTask"` misto pouheho
+  `"stall:"`. Format zaznamu (`ERRLOG_TAG_LEN` = 6) se **nemenil**.
+  `errlog_fmt_detail()` u `K_CRASH` nove tiskne **druh i tag** a `CFSR`/`BFAR` jen kdyz
+  jsou nenulove — driv tisknula vyhradne je, takze u stack/stall/assert/hal_err (kde je
+  `rtc.c` neplni) ukazovala doslova `CRASH  CFSR=0x00000000 BFAR=0x00000000`.
+  🔑 Tim se zaroven zaclo plnit pole `sub`, ktere `errlog.h` uz dokumentoval jako „kind",
+  ale jediny zapisovatel do nej posilal nulu. ⬜ **neovereno na HW** (kriterium:
+  `stacktest yes` -> po restartu `errlog dump` -> radek `CRASH stack UartTa`).
 
 ---
 
@@ -491,7 +510,16 @@ nezměnil vůbec.
 - **Vztah k lekcím:** **L-0021** (přečti hlavičku funkce, kterou voláš — varování
   i s naměřenými čísly je v `datalog.h:211-213`), **L-0040** (ustupuj podle času,
   ne podle počtu iterací).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** — davkove cteni po `EL_BULK_RECS` = 16
+  zaznamech (512 B) jednim `w25q_read` misto jednoho prikazu na 32B zaznam.
+  Zaznamy jdou od hlavy dozadu, takze se skupina cte od adresy nejstarsiho clena
+  a ve vystupu se obraci; pri prelomu konce regionu se skupina zkrati (zadny wrap
+  uvnitr jednoho cteni). Buffer je `static` — volajici je `ipc_errlog_service`
+  z defaultTasku se zasobnikem 2560 B.
+  🔑 Rezie je v projektu ZMERENA (`datalog.h`: ~173 us/zaznam proti ~7 us na data), takze
+  davka 64 znamenala ~11 ms nepreruseneho pollingu v uloze, ktera krmi watchdog, pod
+  drzenym QSPI mutexem. **Tatáz trida jako F-0039 / lekce L-0021** — `datalog_read_bulk()`
+  vznikl presne proti tomu a tady se na to znovu zapomnelo. ⬜ **neovereno na HW.**
 
 ---
 
@@ -733,7 +761,13 @@ nezměnil vůbec.
   na `errlog_read_batch` po dávkách (spolu s F-0095).
 - **Riziko opravy:** nízké; **pozor na zásobník UartTasku** (F-0055).
 - **Vztah k lekcím:** **L-0049**, **L-0021**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19.** UART `errlog dump` nove sklada radek
+  pres **`errlog_fmt_detail()`**, tedy tentyz zdroj pravdy, ktery uz pouziva displejove
+  okno CHYBY i web (**L-0049**) — driv tisknul `a=%08lX b=%08lX` jako hola cisla, takze
+  tri vystupy rekly o TEMTEZ zaznamu tri rozdilne veci, a to pri hledani priciny.
+  Zaroven se prestalo cist `errlog_read_back()` v cyklu (jeden mutex a jeden QSPI prikaz
+  na zaznam) a pouziva se `errlog_read_batch()` po `ERRLOG_DUMP_BATCH` = 8 zaznamech,
+  tedy oprava F-0095 i tady. ⬜ **neovereno na HW.**
 
 ---
 
@@ -775,7 +809,12 @@ nezměnil vůbec.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **L-0011** (čísla z diagnostiky musí sedět s tím, co jde
   doopravdy přečíst), **L-0031** (datový typ / kapacita je taky mez).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19.** Strop uz neni cela kapacita: odecita se
+  prazdna cast **prave zapisovaneho sektoru** (`ERRLOG_PER_SECTOR - slot`), protoze ten byl
+  pri vstupu do nej CELY smazan. Driv se vracelo plnych 8192, takze `errlog dump 200`
+  u naplneneho logu skoncil driv, nez slibil, a okno CHYBY ukazovalo prazdne radky.
+  🔑 **Tatáz trida jako F-0116**: cislo, ktere tvrdi vic, nez je k dispozici (**L-0060**).
+  ⬜ **neovereno na HW** (projevi se az po 8192 zaznamech).
 
 ---
 
@@ -816,7 +855,18 @@ nezměnil vůbec.
   (patří do `docs:` commitu, ne do `fix:`).
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **L-0018** (dvě místa, která dělají totéž jinak).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19**, obe casti.
+  (a) `datalog_tick` uz zameskane vzorky **NEDOHANI**: `s_next_ms += perioda` zustava pro
+  male zpozdeni (drzi kadenci bez driftu), ale kdyz je plan uz vic nez periodu v minulosti
+  (blokujici `membench`/`sd_export`/erase z UartTasku), posune se **od teda** a zvedne se
+  `s_skipped`. Bez toho by nasledujici tiky zapsaly nekolik zaznamu hned za sebou se
+  **stejnym obsahem i `t_unix`** (`sample()` cte zive globaly, ne historii) — tedy
+  duplikaty predstirajici mereni v case, kdy se nemerilo, a Allan rekonstruovany z logu
+  by je vzal jako plnohodnotne vzorky s tau0 = 10 s.
+  ⚠️ `s_skipped` se **tiskne** v `datalog_format_status` jako `skip:N` — tise prehlednuty
+  posun by byl stejna vada jako tise dohnane duplikaty (**L-0017**).
+  (b) duplicitni `#include "datalog.h"` v `syscfg.c` slouceny, komentare srovnany.
+  ⬜ **neovereno na HW.**
 
 ---
 
