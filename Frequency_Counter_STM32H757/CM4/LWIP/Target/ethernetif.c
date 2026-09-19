@@ -153,6 +153,21 @@ static void low_level_init(struct netif *netif)
     return;                 /* degradovane: ETH nejede, zbytek CM4 bezi dal */
   }
 
+  /* 🔴 VYNUCENA vazba na generovany `eth.c` (audit F-0133). ETH DMA plni RX
+   * buffery podle `heth.Init.RxBuffLen`, ale velikost bufferu v poolu se odvozuje
+   * z `ETH_RX_BUFFER_SIZE` (viz `RxBuff_t`). Kdyz se ty dve hodnoty rozejdou —
+   * staci regen s jinym "Rx Buffer Length" v `.ioc` — zapisuje DMA ZA konec pbufu
+   * v SRAM3, tedy do `pbuf_custom` hlavicky souseda, coz jsou UKAZATELE.
+   * Dosud to drzel jen komentar u `#define`; `_Static_assert` tu nejde, protoze
+   * `RxBuffLen` je runtime pole struktury. Radeji rozhrani NEZAPNOUT nez
+   * prepisovat pamet — projevi se to jako `NET: DOWN`, ne jako nahodny pad. */
+  if (heth.Init.RxBuffLen != ETH_RX_BUFFER_SIZE)
+  {
+    netif_set_link_down(netif);
+    netif_set_down(netif);
+    return;
+  }
+
 #if LWIP_ARP || LWIP_ETHERNET
   netif->hwaddr_len = ETH_HWADDR_LEN;
   /* ⚠️ MAC se bere Z `heth`, NE z maker ETH_MAC_ADDR*: hardwarovy filtr uz naprogramoval
@@ -253,7 +268,15 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   for(q = p; q != NULL; q = q->next)
   {
     if(i >= ETH_TX_DESC_CNT)
+    {
+      /* Retez pbufu delsi nez pocet TX deskriptoru -> paket se ZAHODI. Dosud
+       * bez jakehokoli zaznamu, takze `g_eth_tx_err` zustavalo 0 a diagnostika
+       * tvrdila "vysilani je bez chyb" (audit F-0132). Cesta JE dosazitelna:
+       * `LWIP_NETIF_TX_SINGLE_PBUF` v `lwipopts.h` neni definovane, takze lwIP
+       * smi predat zretezeny TX pbuf. */
+      g_eth_tx_err++;
       return ERR_IF;
+    }
 
     Txbuffer[i].buffer = eth_dma_addr(q->payload);   /* viz `eth_dma_addr` */
     Txbuffer[i].len = q->len;
@@ -541,14 +564,32 @@ void ethernet_link_check_state(struct netif *netif)
 
     if(linkchanged)
     {
-      /* Get MAC Config MAC */
-      HAL_ETH_GetMACConfig(&heth, &MACConf);
-      MACConf.DuplexMode = duplex;
-      MACConf.Speed = speed;
-      HAL_ETH_SetMACConfig(&heth, &MACConf);
-      HAL_ETH_Start(&heth);
-      netif_set_up(netif);
-      netif_set_link_up(netif);
+      /* 🔴 Navratove hodnoty se VYHODNOCUJI (audit F-0131). Driv se volalo
+       * `HAL_ETH_Start` a hned za nim bezpodminecne `netif_set_up`, takze kdyz
+       * se MAC nerozbehl, lwIP i `status` presto hlasily UP — tedy "link UP,
+       * ale nic netece". To je NEJDRAZSI symptom tohoto projektu: autonegociace
+       * bezi mezi PHY a switchem a MAC do ni nemluvi, takze hlaseny link sam
+       * nedokazuje NIC (stalo to sezeni se sondou, viz `eth_dma_addr` nize).
+       * ⚠️ Pri chybe zustava netif DOWN, takze dalsi poll (~200 ms) to zkusi
+       * znovu — zadne zacykleni: `linkchanged` se pokazde odvodi z aktualniho
+       * stavu PHY. A selhani je VIDET bez noveho pocitadla, protoze `net_link`
+       * se uz publikuje pres IPC (`status` -> `NET: DOWN`). */
+      HAL_StatusTypeDef st = HAL_ETH_GetMACConfig(&heth, &MACConf);
+      if (st == HAL_OK)
+      {
+        MACConf.DuplexMode = duplex;
+        MACConf.Speed = speed;
+        st = HAL_ETH_SetMACConfig(&heth, &MACConf);
+      }
+      if (st == HAL_OK)
+      {
+        st = HAL_ETH_Start(&heth);
+      }
+      if (st == HAL_OK)
+      {
+        netif_set_up(netif);
+        netif_set_link_up(netif);
+      }
     }
   }
 

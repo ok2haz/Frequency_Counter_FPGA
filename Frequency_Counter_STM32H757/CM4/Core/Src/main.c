@@ -79,6 +79,11 @@ volatile uint8_t  g_init_nonfatal = 0;   /* 1 = bezi bring-up, selhani se toleru
 volatile uint8_t  g_init_faults   = 0;   /* kolik MX_*_Init v tom okne selhalo */
 volatile uint8_t  g_eth_init_ok   = 0;   /* 1 = HAL_ETH_Init proslo (bezi RMII REF_CLK) */
 volatile uint32_t g_eth_phy_id    = 0;   /* PHYID1<<16|PHYID2; LAN8742A = 0x0007C131, 0 = neprecteno */
+/* 1 = HSEM 1 se pri bootu NEPODARILO vzit, takze MX_*_Init konfigurovaly sdilena
+ * GPIO bez zamku (audit F-0135). ⚠️ Zatim jen lokalni priznak — do IPC se
+ * nepublikuje, protoze by to znamenalo sahnout na sdilenou strukturu; viz
+ * F-0138 (pocitadla, ktera nikdo necte). Ke cteni sondou: `nm` + -r32. */
+volatile uint8_t  g_hsem_gpio_unlocked = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -158,9 +163,17 @@ int main(void)
    * se az v `USER CODE BEGIN 2`.
    * ⚠️ Best-effort (omezene cekani): deadlock pri bootu by byl horsi nez zavod,
    * ktery navic `gpio_guard_tick()` na CM7 zachyti a opravi. */
+  /* ⚠️ Vysledek se DRZI (audit F-0135): pri vycerpani meze se inity provedou
+   * BEZ zamku, a to je presne stav, za ktereho vznika trida PG8/PG11 (ztracena
+   * konfigurace pinu -> cerny displej / deska bez IP). Bez priznaku by se
+   * nepoznalo, jestli nenulovy `GPIO HLIDAC` na CM7 pochazi z tohohle bootu,
+   * nebo z bezneho zavodu za behu. Navic se tim `HAL_HSEM_Release` nize zavola
+   * jen kdyz zamek opravdu drzime. */
+  uint8_t hsem_locked = 0;
   for (uint32_t hs = 0; hs < 50000u; hs++) {
-    if (HAL_HSEM_FastTake(1u) == HAL_OK) break;
+    if (HAL_HSEM_FastTake(1u) == HAL_OK) { hsem_locked = 1u; break; }
   }
+  g_hsem_gpio_unlocked = hsem_locked ? 0u : 1u;
   /* Otevri okno degradovaneho bring-upu — plati pro VSECHNA MX_*_Init nize
    * (uzavira se v USER CODE 2). Zamerne pro vsechny, ne jen pro ETH: zadna
    * periferie CM4 (pipak, LED, ETH) nestoji za to, aby kvuli ni umrelo cele
@@ -173,7 +186,10 @@ int main(void)
   MX_TIM12_Init();
   MX_ETH_Init();
   /* USER CODE BEGIN 2 */
-  HAL_HSEM_Release(1u, 0);   /* konec bloku chraneneho HSEM 1 (viz SysInit) */
+  /* Uvolnit JEN kdyz jsme zamek opravdu vzali (audit F-0135). Uvolneni
+   * nevlastneneho semaforu HW ignoruje, takze to driv nic neposkodilo — ale
+   * takhle je z kodu videt, ze se o tu moznost vi. */
+  if (hsem_locked) HAL_HSEM_Release(1u, 0);   /* konec bloku chraneneho HSEM 1 (viz SysInit) */
   /* Bring-up dobehl -> `Error_Handler` je od ted zase skutecne fatalni. */
   g_init_nonfatal = 0;
 
