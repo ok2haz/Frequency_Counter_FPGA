@@ -54,7 +54,10 @@ z fáze 6 tyhle hodnoty přepíšou nebo vynulují.
 - [ ] `FONTY: preskocenych glyfu 0`
 - [ ] `CM4: alive (IPC heartbeat)`, **`SCPI(CM4): selftest PASS`**, **`HTTP(CM4): selftest PASS`**
       — a **žádné `⚠ IPC NESOULAD`** (to by znamenalo, že se naflashovala jen jedna banka)
-- [ ] `NET: UP …, IP …` (modul 12)
+- [ ] 🔴 **`NET: UP …, IP …`** (modul 12) — a je to zároveň **nejdůležitější regresní
+      kontrola modulu 22**: `F-0131` nově vyhodnocuje návrat `HAL_ETH_Start`, takže kdyby
+      se v té podmínce spletl, linka **nenaskočí vůbec**. `NET: DOWN` po povedeném bootu
+      s připojeným kabelem = regrese, ne nález. Viz fáze 3d.
 - [ ] `ADEV rekonstrukce: …` — dojede do „hotova" v jednotkách minut, ne hodin (F-0039)
 - [ ] `STATISTIKA: sigma_y@1s` — nenulová a v řádu signálu (F-0037)
 - [ ] `DATALOG …` — zapiš si stav, budeš ho potřebovat ve fázi 6
@@ -122,6 +125,33 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
       přístroj nepřestaví. ⚠️ Zároveň nesmí hlásit `ROZDIL` (aplikuje se lokální zrcadlo).
 
 ---
+
+### 3d. Modul 22 — CM4: ETH/lwIP (`356fe02`)
+
+⚠️ **Doplněno po prvním sepsání checklistu** — modul 22 vznikl až po něm.
+🔑 Tyhle opravy jsou celé v **CM4**, takže je uvidíš jen s naflashovanou **bankou 2**.
+
+- [ ] **F-0131 (nejdůležitější):** `status` → `NET: UP <rychlost> <duplex>, IP <adresa>`
+      s připojeným kabelem. Nově se vyhodnocuje návrat `HAL_ETH_GetMACConfig` /
+      `SetMACConfig` / `Start`, takže **chyba v té podmínce by linku zablokovala úplně**.
+      `NET: DOWN` při zapojeném kabelu = **regrese této dávky**.
+- [ ] vytáhnout a zapojit kabel → linka musí spadnout na DOWN a **znovu naskočit**
+      (ověří, že se při chybě nezacyklí a že se `linkchanged` pokaždé odvodí znovu)
+- [ ] **F-0133:** `status` → `ETH(CM4): init OK` a `NET:` s IP. Kdyby nová runtime
+      kontrola `heth.Init.RxBuffLen != ETH_RX_BUFFER_SIZE` falešně zahlásila rozpor,
+      rozhraní by se **vůbec nezapnulo** (`netif` down) — takže funkční síť tu kontrolu
+      zároveň ověřuje. Dnes je 1536 = 1536.
+- [ ] **F-0132 (TX cesta):** z prohlížeče stáhnout **celou SPA** (~139 kB) a projít
+      dashboard; pak `/api/state` a `POST /api/scpi`. Ověří dlouhé TX přenosy, tedy právě
+      cestu, kde se skládají zřetězené pbufy.
+      ⚠️ **Počítadlo `g_eth_tx_err` z UARTu NEPŘEČTEŠ** — to je otevřený **F-0138**
+      (nikdo je nepublikuje). Kritérium je tedy „SPA se načte celá a dashboard kreslí",
+      ne číslo.
+- [ ] **F-0135:** `GPIO HLIDAC: 0 oprav` ve `status` (jako dřív). Příznak
+      `g_hsem_gpio_unlocked` se **záměrně nepublikuje** (viz F-0138), takže z UARTu ho
+      nevyčteš; tady jde jen o to, že se zámek chová jako dřív.
+- [ ] `SCPI(CM4): selftest PASS`, `HTTP(CM4): selftest PASS`, `CM4: alive … stall x0`
+      — nic z modulu 22 se jich netýká, jsou to kontrolní hodnoty proti regresi.
 
 ## 4. Modul 19 — `membench` (destruktivní jen pro scratch)
 
