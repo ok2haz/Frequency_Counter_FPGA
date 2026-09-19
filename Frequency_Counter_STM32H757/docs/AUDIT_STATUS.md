@@ -3,7 +3,26 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-18 (18. sezení — **modul 18 = senzory / drivery
+**Poslední aktualizace:** 2026-09-19 — **dávka oprav ze skupiny B: 6 nálezů uzavřeno**
+(uživatel rozhodl politiky, které F5.0 odkládala). ⬜ **Vše neověřeno na HW.**
+
+| nález | rozhodnutí | commit | co je potřeba ověřit na HW |
+|---|---|---|---|
+| **F-0134** [S3] | smazat past `HAL_ETH_TxFreeCallback` | `ac5a369` | nic — odstraněný kód se nikdy nevykonával; jen že síť dál jede |
+| **F-0138** [S3] | recyklovat rezervu, **`IPC_VERSION` 17→18** | `ac5a369` | `status` → `TX(CM4): odeslano N` musí růst; **flashnout OBĚ banky** |
+| **F-0116** [S3] | měřit `fb_alias` vždy **+** příznak `checked` | `61a76f1` | `membench` → žádná z obou nových vět (tedy `fb_alias` 0 a změřeno) |
+| **F-0118** [S3] | požadavek + fallback po 300 ms | `61a76f1` | `sdramlog reset` → „vynulovano (producentem)" při běžícím měření |
+| **F-0122** [S3] | `.ioc` je jediný vlastník TIM1 | `e9c89a4` | 🔴 `enc` → jedna západka = `kroku=1` (kvůli novým `CC1E/CC2E`) |
+| **F-0007 + F-0108** [S3] | „zůstat mrtvý, ale **rozlišitelně**" | `6b1dc19` | nejde bez odpojení HSE/LSE; regresně jen že normální boot funguje |
+
+🔴 **Dvě věci z té dávky, které nálezy popisovaly MÍRNĚJI, než jaká byla skutečnost:**
+- **F-0007/F-0108:** nešlo o „blikající LED v krabičce", ale o **naprosto tichou a temnou
+  desku** — `bootled_step` startuje na 0 a `blink_pattern(0)` proběhne prázdnou smyčkou.
+- **F-0122:** riziko nebylo „střední". `MX_TIM1_Init()` vyrábí **bit za bit tentýž** stav
+  registrů, takže přechod na HAL cestu není změna chování; `.ioc` se dokonce **nemusel
+  měnit vůbec** (jeho hodnoty už odpovídaly), nekonzistentní byl kód a hlavička.
+
+**Předchozí:** 2026-09-18 (18. sezení — **modul 18 = senzory / drivery
 periferií**: `si5356`, `ads1115`, `ws_panel`, `ft5x06`, `sensor_hist`; F3 i F5
 skupina A týž den, 2 nálezy S3 opraveny, ⬜ neověřeno na HW).
 ✅ **Týž den F5 pro modul 11: F-0052 [S2] + F-0096 [S3] opraveny naráz** (`2253ac4`) —
@@ -463,7 +482,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 17 | 54 | 0 |
+| S3 | 10 | 61 | 0 |
 | S4 | 13 | 25 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
