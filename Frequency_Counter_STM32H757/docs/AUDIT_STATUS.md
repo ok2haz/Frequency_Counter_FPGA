@@ -48,6 +48,21 @@ se volá z `main.c:393` a jeho konfigurace se **nikdy neuplatní**, protože
 Dál **F-0123** (`bmp_header` „sdílí obě cesty" — USB ji nevolá), **F-0124** (výčet
 uživatelů scratche vynechává `membench`), **F-0125** (`encoder_set_div` píše stav
 UiTasku), **F-0126** (`g_autocal` píšou dvě úlohy).
+🔴 **NOVÉ 2026-09-19 — modul 21 (DSI bridge, sdílený SCPI backend, USB CDC),
+4 nálezy (1× S2, 2× S3, 1× S4), F3 zapsána, fáze oprav NEproběhla.** Verdikt
+**podmíněně funkční**. Modul vznikl jako **mezera nalezená křížovou kontrolou**, ne
+podle plánu — a vyplatilo se: je v něm **jediný S2 za poslední čtyři moduly**.
+🔴 **F-0127 [S2]:** `usb_console_tx_pump()` uvolní slot kruhového bufferu ve chvíli, kdy
+USB stack přenos **přijal**, ne kdy ho **dokončil**. Cesta CDC je prokazatelně
+**zero-copy** (`USBD_CDC_SetTxBuffer` ukládá ukazatel, `TransmitPacket` vrací `USBD_OK`
+před přenosem, `HAL_PCD_EP_Transmit` jen `xfer_buff = pBuf`, `dma_enable = DISABLE`
+→ FIFO plní **USB ISR**), takže producent může přepsat data, která se právě vysílají.
+Projev: poškozený výpis konzole a poškozený BMP u `screenshot` přes USB — což se dosud
+připisovalo tearingu. Oprava (a) se vejde celá do `usb_console.c`.
+Dál **F-0128** (konzole zahazuje v obou směrech bez počítadla — TX drop-oldest i
+ignorovaný návrat `osMessageQueuePut`; projekt má vzor `OVF:`/`FONTY:`),
+**F-0129** (`ipc_scpi_set_cfg` je napojený i na CM7 → **druhá instance F-0014**,
+rozhodnout společně), **F-0130** (`SYSCTRL 0x040F` bez rozkladu).
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -144,21 +159,24 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-🔴 **NEAUDITOVÁNO ZŮSTÁVÁ 366 ř. — a NENÍ to seznam, který se tu vedl.**
-Modul 20 vyčerpal seznam „zbývá", jenže ten seznam byl **neúplný**. Křížová kontrola
-**všech** `.c` v `CM7/Core/Src` + `CM7/app` proti souborovým seznamům všech 20 modulů
-(2026-09-18) našla tři soubory, které **nikdy nebyly předmětem auditu**:
+🔴 **NEAUDITOVÁNO ZŮSTÁVÁ ~1 080 ř. — a je to CM4, ne CM7.**
+Modul 21 uzavřel mezeru na CM7, kterou našla křížová kontrola při modulu 20.
+**Táž kontrola pro CM4 (2026-09-19) našla další tři soubory** mimo souborové seznamy
+všech 21 modulů:
 
 | soubor | ř. | stav |
 |---|---|---|
-| `tc358762.c` | 137 | 🔴 **v žádném nálezovém dokumentu ani zmíněný** (DSI→DPI bridge, init panelu) |
-| `ipc_scpi.c` | 147 | citovaný v dokumentech modulů 3 a 13, ale v jejich **souborovém seznamu není** |
-| `usb_console.c` | 82 | citovaný v dokumentu modulu 14, v jeho **souborovém seznamu není** |
+| `CM4/LWIP/Target/ethernetif.c` | 618 | citovaný v dokumentech modulu 12, ale **v jeho souborovém seznamu není**. 🔴 **Nejcitlivější zbylý kus:** je to lwIP glue včetně ETH DMA cesty — tedy soubor, ve kterém žila past „TX buffery musí mít systémovou adresu `0x30xxxxxx`" (nalezená 2026-09-08 **měřením, ne auditem**). |
+| `CM4/Core/Src/main.c` | 431 | boot a hlavní smyčka CM4 (rychlá/pomalá část, `iwdg2_kick`, IPC heartbeat). Moduly 1 a 2 auditovaly `main.c` **CM7**, ne tenhle. |
+| `CM4/Core/Src/iwdg2.c` | 31 | 🔴 v žádném dokumentu ani zmíněný. ⚠️ Prakticky **mrtvý** — `iwdg2_init()` je v `CM4/main.c` zakomentovaná (IWDG2 má system-wide reset scope, viz CLAUDE.md), takže priorita je nízká. |
 
-⚠️ **Proto se tu NEPÍŠE „tím je auditovaný veškerý vlastní kód".** Přesně to tu už
-jednou stálo (do 2026-09-16) a bylo to nepravdivé; tohle je druhý výskyt téže chyby,
-jen menší. `tc358762.c` je navíc citlivý kus — je to bring-up bridge, na kterém závisí,
-jestli displej vůbec naběhne.
+⚠️ **Proto se tu NEPÍŠE „tím je auditovaný veškerý vlastní kód".** Ta věta tu už jednou
+stála (do 2026-09-16) a byla nepravdivá; tohle je **třetí kolo téže chyby** —
+pokaždé proto, že se seznam „co zbývá" vedl ručně místo odvození z `ls`.
+🔑 **Metoda, která to konečně chytila:** porovnat **všechny** `.c` v `CM7/Core/Src`,
+`CM7/app`, `CM4/Core/Src`, `CM4/LWIP` proti souborovým seznamům v tabulce modulů —
+a brát „soubor je někde citovaný" **jako nepokrytý**, dokud není v souborovém seznamu
+nějakého modulu. Tohle je potřeba zopakovat, než kdokoli prohlásí audit za hotový.
 Mimo to **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
 `USER CODE` bloky a **fonty** (generovaná data) — ty mimo rozsah zůstávají záměrně.
 
@@ -208,6 +226,10 @@ z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola
   časování všech sběrnic).
 - **F-0014** [S3] `ipccmd` je druhý producent SPSC ringu — *odloženo*: IPC dnes prokazatelně
   funguje (CM4 alive, ETH/web běží) a oprava sahá do živé mezijádrové cesty.
+  🔴 **DOPLNĚNO 2026-09-19: má DRUHOU INSTANCI — `F-0129`.** `ipc_scpi_set_cfg` je
+  napojená i na CM7 (`freertos_task_uart.c:1447`, příkaz `scpi ipc <SET>`), takže
+  druhým producentem `cmd` ringu není jen `ipccmd`. **Rozhodovat a opravovat obojí
+  jedním zásahem** (`L-0012`) — dosavadní odůvodnění odložení o téhle cestě nevědělo.
 - **F-0016** [S3] `.ipc_shared` je prázdná rezervace — *odloženo*: oprava znamená zásah do
   **linker skriptů obou jader** (pravidlo 6 → jen s výslovným souhlasem).
 - **F-0017** [S3] `ipc_stamp()` maže i blok CM4 — *odloženo* ze stejného důvodu jako F-0014.
@@ -318,6 +340,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
+| 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | nálezy zapsány | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -352,9 +375,9 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
-| S2 | 0 | 16 | 0 |
-| S3 | 16 | 47 | 0 |
-| S4 | 11 | 24 | 0 |
+| S2 | 1 | 16 | 0 |
+| S3 | 18 | 47 | 0 |
+| S4 | 12 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
