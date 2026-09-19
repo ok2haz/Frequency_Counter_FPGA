@@ -89,6 +89,32 @@ Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
 týž den fáze oprav, skupina A)
+🔴 **NOVÉ 2026-09-19 — modul 22 (CM4: ETH/lwIP glue, boot, IWDG2), 7 nálezů
+(5× S3, 2× S4), F3 zapsána, fáze oprav NEproběhla.** Verdikt **podmíněně funkční**;
+dvoujádrová část je výborná (per-core RCC, HSEM 1 kolem GPIO initů, degradovaný
+bring-up, kde selhání periferie nezabije IPC — a to vše regen-safe).
+🔑 **Pět S3 míří do jednoho místa, které tenhle projekt zná nejlépe: „link UP, ale nic
+neteče".** **F-0131**: `ethernet_link_check_state` prohlásí `netif_set_up` +
+`netif_set_link_up`, **aniž zkontroluje návrat `HAL_ETH_Start`** — a `heth.ErrorCode`
+se nečte nikde, ETH IRQ není zapojený vůbec. **F-0132**: počítadlo `g_eth_tx_err`
+míjí cestu „pbuf chain > 4 segmenty", která **je dosažitelná**
+(`LWIP_NETIF_TX_SINGLE_PBUF` v `lwipopts.h` není definované). **F-0133**: vazba
+`ETH_RX_BUFFER_SIZE` ↔ `heth.Init.RxBuffLen` je **jen v komentáři**, přitom rozpor =
+zápis DMA za konec pbufu (dnes 1536 = 1536 ✅). **F-0134**: `HAL_ETH_TxFreeCallback`
+je **nabitá zbraň** — dnes nestřílí (`HAL_ETH_ReleaseTxPacket` nevolá nikdo a
+`HAL_ETH_Transmit` ji nevolá) a `pbuf_ref` chybí, takže účet je vyrovnaný; přepnutí TX
+na `Transmit_IT` z toho udělá **dvojí `pbuf_free`**. **F-0135**: když se nepodaří vzít
+HSEM 1, CM4 konfiguruje sdílená GPIO **bez zámku a bez záznamu** — právě ta podmínka,
+za které vzniká třída PG8/PG11.
+Dál **F-0136** (`iwdg2_kick()` 1000×/s tvrdí, že obnovuje watchdog, který nikdy
+nestartoval) a **F-0137** (`iwdg2_init()` má tutéž vadu, kterou F-0104 opravil na CM7 —
+**oprava se nepřenesla na dvojče**, L-0012; dormantní).
+🔑 **Umístění bufferů doloženo z `.map`:** `.eth_dma` @`0x30040000` 12 740 B/32 kB,
+deskriptory i RX pool na **systémových** adresách, `ram_heap` @`0x1002ac90` v **CM4
+aliasu** — což potvrzuje, proč `eth_dma_addr()` existuje a proč RX nikdy netrpěl.
+⚠️ **Modul 22 do HW průchodu níže ZAPRACOVANÝ NENÍ** (vznikl po něm) — jeho nálezy jsou
+neopravené, takže tam zatím není co ověřovat.
+
 🔑 **HW PRŮCHOD JE PŘIPRAVENÝ: [`docs/HW_OVERENI_AUDIT_2026-09-19.md`](HW_OVERENI_AUDIT_2026-09-19.md)**
 — konsolidovaný kontrolní seznam pro **jedno sezení** (29 neověřených `fix:` commitů
 z modulů 1–21, seřazeno na **dva restarty**). Obsahuje i past „Set Active → Release
@@ -186,10 +212,34 @@ historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` be
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
 vlastního kódu a 2026-09-13 k nim přibyl celý nový podsystém **`errlog`** (FW v0.9.0,
 IPC v17). Modul 16 z toho pokryl 2 456 ř. (perzistence a záznamníky).
-🔴 **NEAUDITOVÁNO ZŮSTÁVÁ ~1 080 ř. — a je to CM4, ne CM7.**
+## ✅ Pokrytí: každý vlastní `.c` je v souborovém seznamu nějakého modulu (2026-09-19)
+
+Modulem 22 se uzavřela poslední mezera. **Doloženo měřením, ne dojmem:** výčet všech
+`.c` v `CM7/Core/Src`, `CM7/app` (+`screens`, `hal`), `CM7/libui/src`, `CM7/libprim/src`,
+`CM4/Core/Src`, `CM4/LWIP` = **72 souborů**; po odečtení generovaného CubeMX kódu
+(`adc`, `dsihost`, `fmc`, `gpio`, `i2c`, `ltdc`, `quadspi`, `rtc`, `sdmmc`, `spi`, `tim`,
+`usart`, `eth`, `*_hal_msp`, `*_timebase_tim`, `syscalls`, `sysmem`) je **každý zbylý
+soubor v souborovém seznamu některého z 22 modulů** — jmenovitě, nebo zástupným zápisem
+(`libui/*`, `libprim/*`, `freertos*.c`, `screens/…`).
+
+🔴 **Ale „je v seznamu" NENÍ „přečteno řádek po řádku"**, a tuhle větu tu nechávám
+schválně: právě přehnané tvrzení o kompletnosti se tu ukázalo jako nepravdivé **třikrát**
+(2026-09-16, -18, -19). Hloubka se mezi moduly liší a dva to samy přiznávají:
+- **modul 11** (aplikační okna, ≈6 200 ř.) — *rizikově cílený* průchod, ne řádek po
+  řádku; geometrie a korektnost obsahu jednotlivých oken se nekontrolovaly;
+- **modul 8** (`libui/*`, `libprim/*`, 2 247 ř.) — pokrytý zástupným zápisem, tedy
+  s nejmenší dohledatelností jednotlivých souborů.
+
+🔑 **Metoda, kterou se to ověřuje** (zopakovat, než kdokoli prohlásí audit za hotový):
+porovnat `ls` všech vlastních `.c` proti souborovým seznamům tabulky a brát „soubor je
+někde citovaný" **jako nepokrytý**, dokud v seznamu není. Ruční seznam „co zbývá"
+selhal třikrát, `ls` ani jednou.
+
+### Historie mezery (proč je ta věta výše tak opatrná)
+
 Modul 21 uzavřel mezeru na CM7, kterou našla křížová kontrola při modulu 20.
 **Táž kontrola pro CM4 (2026-09-19) našla další tři soubory** mimo souborové seznamy
-všech 21 modulů:
+tehdejších 21 modulů — a z nich vznikl **modul 22**:
 
 | soubor | ř. | stav |
 |---|---|---|
@@ -197,15 +247,8 @@ všech 21 modulů:
 | `CM4/Core/Src/main.c` | 431 | boot a hlavní smyčka CM4 (rychlá/pomalá část, `iwdg2_kick`, IPC heartbeat). Moduly 1 a 2 auditovaly `main.c` **CM7**, ne tenhle. |
 | `CM4/Core/Src/iwdg2.c` | 31 | 🔴 v žádném dokumentu ani zmíněný. ⚠️ Prakticky **mrtvý** — `iwdg2_init()` je v `CM4/main.c` zakomentovaná (IWDG2 má system-wide reset scope, viz CLAUDE.md), takže priorita je nízká. |
 
-⚠️ **Proto se tu NEPÍŠE „tím je auditovaný veškerý vlastní kód".** Ta věta tu už jednou
-stála (do 2026-09-16) a byla nepravdivá; tohle je **třetí kolo téže chyby** —
-pokaždé proto, že se seznam „co zbývá" vedl ručně místo odvození z `ls`.
-🔑 **Metoda, která to konečně chytila:** porovnat **všechny** `.c` v `CM7/Core/Src`,
-`CM7/app`, `CM4/Core/Src`, `CM4/LWIP` proti souborovým seznamům v tabulce modulů —
-a brát „soubor je někde citovaný" **jako nepokrytý**, dokud není v souborovém seznamu
-nějakého modulu. Tohle je potřeba zopakovat, než kdokoli prohlásí audit za hotový.
-Mimo to **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný CubeMX kód mimo
-`USER CODE` bloky a **fonty** (generovaná data) — ty mimo rozsah zůstávají záměrně.
+Mimo rozsah zůstává záměrně: **vendor kód** (HAL, FatFs, lwIP, CMSIS), generovaný
+CubeMX kód mimo `USER CODE` bloky a **fonty** (generovaná data).
 
 🔴 **OPRAVA ČÍSLA (2026-09-18):** do teď tu stálo „~1 100 ř." a pak „~640 ř." —
 **obojí bylo špatně** a druhé číslo jsem odvodil odečtem od toho prvního, aniž bych
@@ -368,6 +411,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
+| 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | nálezy zapsány | 2026-09-19 | 0 | 0 | 5 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -403,8 +447,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 15 | 50 | 0 |
-| S4 | 12 | 24 | 0 |
+| S3 | 20 | 50 | 0 |
+| S4 | 14 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
