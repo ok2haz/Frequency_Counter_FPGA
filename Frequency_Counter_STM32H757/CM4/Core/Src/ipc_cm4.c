@@ -7,12 +7,18 @@
  * `ipc_init` (razitko snapshotu) dela az v StartDefaultTask (po scheduleru). Takze
  * CM4 muze chvili cist snapshot bez magicu -> ipc_cm4_check vraci 0, CM4 zkousi
  * dal. Az CM7 orazitkuje, header sedne.
- * 🔴 CM7 `ipc_init` navic vynuluje i blok `cm4`, ktery vlastni CM4 — a to NENI
- * benigni, jak tu stalo drive: opakovane publikovane hodnoty (heartbeat, net)
- * se dalsim tikem obnovi, ale JEDNORAZOVE zapisy se tise ztrati navzdy. Proto
- * se vsechny jednorazove hodnoty drzi lokalne a razitkuji znovu v heartbeatu
- * (viz `s_scpi_ok`/`s_httpd_ok`), pripadne se publikuji opakovane ze smycky
- * (ETH). Plne zduvodneni u bloku „JEDNORAZOVE hodnoty" nize.
+ * ✅ Od 2026-09-19 (audit F-0017) plati: **kazde jadro nuluje svuj blok.** CM7
+ * `ipc_init()` uz na blok `cm4` NESAHA (nuluje jen `snap`/`cmd`/`resp`/`log`/
+ * `errlog`); `cm4` si nuluje CM4 tady v `ipc_cm4_init()`, kde je jedinym
+ * zapisovatelem a jeste nepublikovala — tedy bez race.
+ * Do te doby delal CM7 `memset` pres CELOU strukturu ze `StartDefaultTask`, tedy
+ * sekundy po bootu, zatimco CM4 publikuje uz ~1,3 s po bootu: jednorazovy zapis
+ * se mohl TISE ztratit navzdy (doloženo na HW 2026-08-30 — memset dopadl mezi
+ * publikaci httpd a eth). Jedina vyjimka dnes: kdyz vyprsi boot gate a CM4 tedy
+ * prokazatelne nenabehla, vycisti blok CM7 (`ipc_clear_cm4_block`).
+ * ⚠️ Razitkovani jednorazovych hodnot v heartbeatu (`s_scpi_ok`/`s_httpd_ok`)
+ * tim prestalo byt NUTNE, ale zustava jako pojistka — viz blok „JEDNORAZOVE
+ * hodnoty" nize.
  */
 #include "ipc_cm4.h"
 #include <stddef.h>   /* NULL */
@@ -25,14 +31,35 @@ extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
 static uint8_t  s_ready;    /* 1 = snapshot header (magic/verze/size) overen */
 static uint32_t s_hb;       /* heartbeat citac (roste kazdym publikovanim) */
 /* Jednorazove hodnoty publikovane do bloku `cm4` — drzi se lokalne, aby se
- * daly v heartbeatu razitkovat znovu (plne zduvodneni u bloku „JEDNORAZOVE
- * hodnoty" nize). */
+ * daly v heartbeatu razitkovat znovu. ⚠️ Od F-0017 uz to NENI nutne (CM7 blok
+ * `cm4` nemaze), ale zustava to jako pojistka — viz blok „JEDNORAZOVE hodnoty". */
 static uint8_t  s_scpi_ok, s_httpd_ok;   /* 0 = jeste nebezelo */
 
 void ipc_cm4_init(void)
 {
     s_ready = 0;
     s_hb    = 0;
+    /* 🔴 CM4 nuluje SVUJ blok SAMA (audit F-0017). Do 2026-09-19 to za ni delal
+     * `ipc_stamp()` na CM7 — memsetem pres CELOU sdilenou strukturu, a ten bezi
+     * ze `StartDefaultTask`, tedy SEKUNDY po bootu (az za bring-upem displeje),
+     * zatimco CM4 publikuje uz ~1,3 s po bootu. Memset tedy mohl dopadnout
+     * DOPROSTRED publikovani a jednorazovy zapis tise smazat navzdy.
+     * Ze to neni teorie: pri HW pruchodu 2026-08-30 dopadl MEZI publikaci httpd
+     * a eth, takze `status` hlasil „SCPI(CM4): jeste nedobehl", prestoze
+     * selftest probehl a PROSEL.
+     *
+     * ⚠️ Nulovat se to MUSI: pri STUDENEM startu je SRAM4 nahodna, takze bez
+     * tohohle by tu bylo smeti a `magic` by mohlo nahodou sednout. Tady je to
+     * bezpecne, protoze CM4 je jediny zapisovatel tohohle bloku a jeste
+     * nepublikovala — zadny race.
+     * ⚠️ `magic` se nastavuje AZ v heartbeatu, po datech; dokud je nula, CM7
+     * blok ignoruje (vsechny `ipc_cm4_*` accessory gate-uji na magicu).
+     * ⚠️ Crash black-box CM4 (`cm4_fault_*`) se tim maze taky — a je to spravne:
+     * novy beh CM4 nema vydavat fault z predchoziho za svuj. Naopak PRI
+     * SAMOSTATNEM RESETU CM7 uz ho nikdo nesmaze, takze zaznam prezije. */
+    for (uint32_t i = 0; i < sizeof g_ipc.cm4; i++)
+        ((volatile uint8_t *)&g_ipc.cm4)[i] = 0u;
+    IPC_DMB();
 }
 
 int ipc_cm4_check(void)
@@ -93,19 +120,20 @@ void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)
 {
     g_ipc.cm4.magic        = IPC_MAGIC;           /* potvrdi CM7, ze CM4 opravdu zapisuje */
     /* Verze, se kterou je prelozen TENTO obraz CM4 -> CM7 pozna nesoulad bank.
-     * Razitkuje se v kazdem heartbeatu (ne jen jednou), aby to prezilo samostatny
-     * reset CM7 — ten pri `ipc_init` dela memset cele sdilene struktury. */
+     * Razitkuje se v kazdem heartbeatu (ne jen jednou). ⚠️ Puvodni duvod (memset
+     * cele struktury v `ipc_init` na CM7) od F-0017 UZ NEPLATI — CM7 blok `cm4`
+     * nemaze. Razitkovani zustava jako pojistka a stoji jeden zapis za sekundu. */
     g_ipc.cm4.cm4_ipc_version = (uint8_t)IPC_VERSION;
     g_ipc.cm4.cm4_cpu_pct  = cpu_pct;
     g_ipc.cm4.cm4_uptime_s = uptime_s;
-    /* Re-stamp JEDNORAZOVYCH hodnot (viz komentar u `s_scpi_ok` nize) — bez nej
-     * je `memset` z `ipc_init()` na CM7 natrvalo smaze. Nuly se nepisou, aby se
-     * nepretlacovalo "jeste nedobehl" pres pripadny pozdejsi zapis. */
+    /* Re-stamp JEDNORAZOVYCH hodnot (viz komentar u `s_scpi_ok` nize). ⚠️ Od F-0017
+     * uz to NENI nutne (CM7 blok `cm4` nemaze), zustava jako pojistka. Nuly se
+     * nepisou, aby se nepretlacovalo "jeste nedobehl" pres pozdejsi zapis. */
     if (s_scpi_ok)  g_ipc.cm4.scpi_selftest_ok  = s_scpi_ok;
     if (s_httpd_ok) g_ipc.cm4.httpd_selftest_ok = s_httpd_ok;
     /* v16: velikost obrazu — staticka po celou dobu behu, ale razitkuje se
      * znovu pri kazdem heartbeatu ze stejneho duvodu jako `cm4_ipc_version`
-     * vyse (memset v ipc_init() na CM7 by jednorazovy zapis smazal). Vzorec
+     * vyse (pojistka; puvodni memset v ipc_init() uz sem nesaha — F-0017). Vzorec
      * shodny s CM7 oknem PAMET: image = _sidata + (.data velikost) - baze
      * flash banky; RAM = (.data + .bss). */
     g_ipc.cm4.cm4_flash_bytes = ((uint32_t)&_sidata + ((uint32_t)&_edata - (uint32_t)&_sdata))
@@ -128,21 +156,24 @@ void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32
 }
 
 /* ── JEDNORAZOVE hodnoty (vysledky selftestu) ─────────────────────────────────
- * 🔴 Drzi se LOKALNE a razitkuji se ZNOVU v kazdem heartbeatu — stejny duvod,
- * jaky uz byl u `cm4_ipc_version` a u `ipc_cm4_set_eth` (ten se publikuje
- * opakovane z hlavni smycky, viz main.c): CM7 dela v `ipc_init()` **`memset` CELE**
- * sdilene struktury vcetne bloku `cm4`, ktery vlastni CM4. A dela to az ze
- * `StartDefaultTask`, tedy po pomale inicializaci displeje (~sekundy), zatimco
- * CM4 (bare-metal) publikuje uz ~1,3 s po bootu, hned po pipaci melodii.
- * Kdo vyhraje, je zavisle na nabehu -> jednorazovy zapis se muze TISE ZTRATIT
- * a uz se nikdy nevrati.
- * ⚠️ Presne to se stalo pri HW pruchodu 2026-08-30 (studeny start): `memset`
- * dopadl MEZI publikaci httpd a eth, takze `status` hlasil
- * „SCPI(CM4): jeste nedobehl" + „HTTP(CM4): jeste nedobehl", ale
+ * Drzi se LOKALNE a razitkuji se ZNOVU v kazdem heartbeatu.
+ *
+ * ⚠️ PUVODNI DUVOD OD 2026-09-19 UZ NEPLATI (audit F-0017). Do te doby delal CM7
+ * v `ipc_init()` **`memset` CELE** sdilene struktury vcetne bloku `cm4`, ktery
+ * vlastni CM4 — a to az ze `StartDefaultTask`, tedy po pomale inicializaci
+ * displeje (~sekundy), zatimco CM4 (bare-metal) publikuje uz ~1,3 s po bootu,
+ * hned po pipaci melodii. Kdo vyhral, zaviselo na nabehu -> jednorazovy zapis se
+ * mohl TISE ZTRATIT a uz nikdy se nevratit. Presne to se stalo pri HW pruchodu
+ * 2026-08-30 (studeny start): `memset` dopadl MEZI publikaci httpd a eth, takze
+ * `status` hlasil „SCPI(CM4): jeste nedobehl" + „HTTP(CM4): jeste nedobehl", ale
  * „ETH(CM4): init OK" — presne v poradi, v jakem to CM4 zapisuje (viz main.c).
- * ⚠️ **Kazda dalsi jednorazova hodnota v bloku `cm4` MUSI jit stejnou cestou**
- * (lokalni kopie + re-stamp v `ipc_cm4_heartbeat`, nebo opakovana publikace
- * ze smycky jako u ETH), jinak zdedi tenhle race. */
+ * Dnes CM7 na blok `cm4` nesaha a nuluje si ho CM4 sama v `ipc_cm4_init()`.
+ *
+ * 🔑 Razitkovani proto zustava jako POJISTKA, ne jako podminka spravnosti — stoji
+ * par zapisu za sekundu a chrani proti tomu, kdyby na `cm4` zacal sahat nekdo jiny.
+ * ⚠️ Nova jednorazova hodnota v bloku `cm4` uz tedy NEMUSI jit touhle cestou, ale
+ * je to porad ta bezpecnejsi varianta — a kdyby se `ipc_stamp()` na CM7 kdy vratilo
+ * k plnemu memsetu, je to jedina vec, ktera to prezije. */
 
 /* v6 (F3): vysledek ETH bring-upu. Hodnota napred, priznak platnosti naposled
  * (CM7 na `eth_init_ok` gate-uje zobrazeni PHY ID). Publikuje se OPAKOVANE

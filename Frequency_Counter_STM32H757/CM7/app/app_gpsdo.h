@@ -172,3 +172,10 @@ void app_gpsdo_stats_seed_start(void);
  * bity1:3 = jednotka odchylky, bity4:6 = index nominalu. */
 uint8_t app_gpsdo_meas_ui_get(void);
 void    app_gpsdo_meas_ui_set(uint8_t packed);
+
+/** Kolikrat se `fmt_fixed()` musela omezit — bud dostala pocet desetin mimo
+ *  podporovany rozsah 0..3, nebo by `v * 10^desetin` pretekl int32 (audit F-0053).
+ *  🔴 Nenulove cislo znamena, ze se NEKDE na displeji ukazuje ZAOKROUHLENA hodnota
+ *  misto pozadovane — a driv se to stavalo TISE (σ hlasila „0 Hz", STATUS #132).
+ *  Cte to UART `status`; vzor je `FONTY: preskocenych glyfu` (lekce L-0017). */
+uint32_t app_gpsdo_fmt_clamped(void);

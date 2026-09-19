@@ -408,15 +408,63 @@ static void fixed_split(float v, int decimals, int32_t *whole, int32_t *frac)
  * predpony by "-0.5" vyslo jako "0.5" (ZTRATA ZNAMENKA; pre-existujici chyba
  * vsech ctyr puvodnich fmt_* kopii, nalezena revizi 2026-07-19 — realne
  * zasahne zaporne teploty -0.99..-0.01 °C). */
+/* Kolikrat se `fmt_fixed` musela omezit (mimo rozsah desetin, nebo by pretekl
+ * int32). Cte to UART `status` — tichy preskok je pripustny JEN s pocitadlem
+ * (L-0017), a tady je to o to dulezitejsi, ze spatny vysledek vypada verohodne. */
+static uint32_t s_fmt_clamped;
+
+uint32_t app_gpsdo_fmt_clamped(void) { return s_fmt_clamped; }
+
+/* 🔴 DVE tiche pasti, obe vynucene na rozhrani (audit F-0053, lekce L-0015).
+ *
+ * 1) ROZSAH DESETIN JE 0..3, ne 1..3. `default:` NENI chybova vetev — je to
+ *    legitimni implementace NULY (`fixed_split(v,0,…)` da scale 1, frac 0, takze
+ *    `%ld` je spravne) a spolehaji na ni ctyri skutecni volajici: min/max
+ *    v seznamu senzoru a teplotni pasmo OCXO v okne PRAHY. ⚠️ Proto se `decimals`
+ *    NESMI orezavat na 3 bezpodminecne — z „45" by se stalo „45.000". Komentar
+ *    u teto funkce i nalez tvrdily 1..3; byla to nepravda.
+ *    Nad 3 se ale driv tise vytisknula JEN CELA CAST. Realne to uz koslo
+ *    (STATUS #132): σ (n-1) v okne MERENI hlasila vzdy „0 Hz" a rozsirena
+ *    nejistota U (k=2) v okne ANALYZA „+-0 Hz" — tedy prave to cislo, kvuli
+ *    kteremu to okno existuje.
+ *
+ * 2) MEZ NENI JEN NA DESETINACH, ALE I NA HODNOTE. `fixed_split` pocita
+ *    `t = (int32_t)(v * 10^decimals + 0.5)`, takze skutecne omezeni je
+ *    |v| * 10^decimals < 2,15e9 — pri 3 desetinach tedy |v| < ~2,15e6. Nad tim
+ *    int32 PRETECE a vysledek je nesmysl, ktery se zase nijak neohlasi. Tuhle
+ *    cestu spousti HODNOTA, ne argument, takze by ji nikdo nenasel grepem.
+ *
+ * ⚠️ Riziko neni hypoteticke: ctyri volani nemaji `decimals` jako literal
+ * (promenna `deci`, `HBAR[].deci`, `KALIB_ROWS[].decimals` a spocitane
+ * `(v<10)?2:1`) — novy radek v tabulce se ctyrkou je presne ta cesta zpatky.
+ * ⚠️ ZADNY `configASSERT` — spadlo by to uprostred kresleni a IWDG by desku
+ * shodil kvuli formatovaci drobnosti. */
 static void fmt_fixed(char *buf, size_t n, float v, int decimals)
 {
+    /* (1) rozsah desetin */
+    int d = decimals;
+    if (d < 0) d = 0;
+    if (d > 3) d = 3;
+    /* (2) aby `v * 10^d` vlezlo do int32: zmensuj `d`, dokud se to nevejde.
+     * Pouziva se `float` porovnani proti bezpecne mezi (2e9 < INT32_MAX), aby
+     * se samo porovnani nepocitalo v pretecenem int. */
+    float av = (v < 0.0f) ? -v : v;
+    while (d > 0) {
+        float scale = 1.0f;
+        for (int i = 0; i < d; i++) scale *= 10.0f;
+        if (av * scale < 2.0e9f) break;
+        d--;
+    }
+    if (d != decimals) s_fmt_clamped++;
+
     int32_t w, f;
-    fixed_split(v, decimals, &w, &f);
+    fixed_split(v, d, &w, &f);
     const char *sgn = (v < 0.0f && w == 0 && f != 0) ? "-" : "";
-    switch (decimals) {
+    switch (d) {
     case 1: snprintf(buf, n, "%s%ld.%01ld", sgn, (long)w, (long)f); break;
     case 2: snprintf(buf, n, "%s%ld.%02ld", sgn, (long)w, (long)f); break;
     case 3: snprintf(buf, n, "%s%ld.%03ld", sgn, (long)w, (long)f); break;
+    /* `d == 0` (vcetne omezeneho pripadu) — cela cast je tu SPRAVNA odpoved. */
     default: snprintf(buf, n, "%ld", (long)w); break;
     }
 }

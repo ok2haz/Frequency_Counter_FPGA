@@ -159,8 +159,32 @@ sebe a dvě z nich to dělají správně.
   kvůli formátovací drobnosti.
 - **Riziko opravy:** nízké; `default:` dnes nikdo netrefí, takže změna chování je bezpečná.
 - **Vztah k lekcím:** **`L-0015`** (modul, který zná svou mez, ji musí na rozhraní vynutit,
-  ne jen odvozovat) a **`L-0017`** (tichý přeskok je přípustný jen s počítadlem).
-- **Stav:** otevřeno
+  ne jen odvozovat) a **`L-0017`** (tichý přeskok je přípustný jen s počítadlem);
+  z opravy vznikla **`L-0064`**.
+- **Stav:** **opraveno 2026-09-19** — clamp **+ hlídání přetečení int32 + počítadlo**.
+  🔴 **Dvě věci v tomhle nálezu byly ale ŠPATNĚ a oprava se od návrhu proto liší:**
+  1. **Rozsah je 0–3, ne 1–3.** `default:` **není** chybová větev — je to legitimní
+     implementace nuly (`fixed_split(v,0,…)` dá scale 1, frac 0, takže `"%ld"` je
+     správně) a spoléhají na ni **čtyři skuteční volající**: `app_gpsdo.c:1622`
+     a `:1624` (min/max v seznamu senzorů) a `:5219`, `:5221` (teplotní pásmo OCXO
+     v okně PRAHY). **Oprava, kterou nález navrhoval („`default:` ořízne na 3"),
+     by je rozbila** — z „45" by se stalo „45.000". Komentář u funkce tvrdil totéž
+     co nález; opraven taky.
+  2. **Mez není jen na desetinách, ale i na HODNOTĚ.** `fixed_split` počítá
+     `t = (int32_t)(v · 10^decimals + 0.5)`, takže skutečné omezení je
+     `|v| · 10^decimals < 2,15e9` — při 3 desetinách `|v| < ~2,15e6`. Nad tím int32
+     **přeteče** a výsledek je nesmysl, který se zase nijak neohlásí. Tuhle cestu
+     spouští **hodnota**, ne argument, takže by ji žádný grep nenašel.
+  - Implementace: `decimals` se ořízne na 0..3 **a pak se ještě snižuje**, dokud
+    `|v| · 10^d` nevleze do int32. Každé omezení zvedne počítadlo, které UART
+    `status` tiskne jako **`FORMAT: omezenych desetin N`** se značkou
+    `<== NEKDE SE UKAZUJE ZAOKROUHLENA HODNOTA` (vzor `FONTY: preskocenych glyfu`).
+  - ⚠️ **Žádný `configASSERT`**, jak nález správně žádal — spadlo by to uprostřed
+    kreslení a IWDG by desku shodil kvůli formátovací drobnosti.
+  - 🔑 Riziko nebylo hypotetické: **čtyři volání nemají `decimals` jako literál**
+    (proměnná `deci`, `HBAR[].deci`, `KALIB_ROWS[].decimals`, spočítané
+    `(v<10)?2:1`) — nový řádek v tabulce se čtyřkou je přesně ta cesta zpátky.
+  - ⬜ **neověřeno na HW** (kritérium: `status` → `FORMAT: omezenych desetin 0`).
 
 ---
 

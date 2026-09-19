@@ -689,6 +689,12 @@ void StartDefaultTask(void *argument)
   PWR->CR1 |= PWR_CR1_DBP;
   RTC->BKP10R = 0u;
   ipc_init();   /* orazitkuj IPC snapshot v SRAM4 (magic/verze) — CM4 ho po bootu overi (#19/#20) */
+  /* Blok `cm4` vlastni CM4 a nuluje si ho SAMA (`ipc_cm4_init`) — `ipc_init` uz na
+   * nej nesaha, jinak by jednorazovy zapis CM4 tise smazal (audit F-0017).
+   * Vyjimka je jediny pripad, kdy je DOLOZENE, ze CM4 publikovat nebude: vyprsel
+   * boot gate. Teprve tehdy smi CM7 blok vycistit — pri studenem startu bez CM4 by
+   * v nem jinak zustalo nahodne smeti ze SRAM4. */
+  if (g_cm4_absent) ipc_clear_cm4_block();
   /* Infinite loop */
   for(;;)
   {

@@ -2570,6 +2570,13 @@ void UartTask_run(void *argument)
 					  	{ uint32_t mg = prim_text_missing_glyphs();
 					  	  printf("FONTY: preskocenych glyfu %lu%s\n", (unsigned long)mg,
 					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)"); }
+					  	/* Tataz trida jako radek vyse: formatovani, ktere tise dava JINE cislo,
+					  	 * nez volajici chtel. `fmt_fixed` podporuje 0..3 desetiny a navic
+					  	 * |v|*10^desetin musi vlezt do int32; driv oboji tise spadlo na celou
+					  	 * cast, takze σ v okne MERENI hlasila vzdy „0 Hz" (STATUS #132, F-0053). */
+					  	{ uint32_t fc = app_gpsdo_fmt_clamped();
+					  	  printf("FORMAT: omezenych desetin %lu%s\n", (unsigned long)fc,
+					  	         fc ? "  <== NEKDE SE UKAZUJE ZAOKROUHLENA HODNOTA" : "  (v poradku)"); }
 					  	/* σy@1s — do 2026-09-11 slo precist JEN z displeje, takze oprava
 					  	 * meritka frakcni odchylky (F-0037) nesla na desce overit, jen ji
 					  	 * verit. Tiskne se v jednotkach 1e-15 (celociselne — `%f` nano.specs

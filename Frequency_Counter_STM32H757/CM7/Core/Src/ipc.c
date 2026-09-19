@@ -57,12 +57,47 @@ _Static_assert(offsetof(ipc_sat_t, azim)    == offsetof(gps_sat_t, azim),    "sa
 /* ── Razitko: vynuluj celou sdilenou strukturu (seq=0 sude, ringy prazdne) a
  * orazitkuj snapshot (magic/verze/velikost). Pracuje nad DANOU instanci → sdili
  * ho ipc_init (g_ipc) i selftest (lokalni kopie), zadny duplikat. */
+/* 🔴 NULUJE JEN TO, CO VLASTNI CM7 — blok `cm4` se ZAMERNE nechava (audit F-0017).
+ * Driv to byl `memset` pres CELOU strukturu, a protoze `ipc_init()` bezi ze
+ * `StartDefaultTask` (tedy SEKUNDY po bootu, az za bring-upem displeje), zatimco
+ * CM4 je bare-metal a publikuje uz ~1,3 s po bootu, mohl dopadnout DOPROSTRED
+ * publikovani a jednorazovy zapis do `cm4` tise smazat NAVZDY. Doloženo na HW
+ * 2026-08-30: dopadl mezi publikaci httpd a eth, takze `status` hlasil
+ * „SCPI(CM4): jeste nedobehl", prestoze selftest probehl a prosel.
+ *
+ * Nove plati jednoducha delba: **kazde jadro nuluje svuj blok.** `cm4` si nuluje
+ * CM4 v `ipc_cm4_init()` (tam je jedinym zapisovatelem a jeste nepublikovala, tedy
+ * bez race). Tim padá i to, ze pravidlo „publikuj opakovane" bylo jedinou obranou
+ * — drzela ho jen disciplina a nic nebranilo napsat dalsi jednorazovy zapis.
+ *
+ * ⚠️ `cmd`, `log` a `errlog` se nuluji, prestoze do nich CM4 taky pise: `cmd` je
+ * ring (vynulovany = prazdny, CM4 posle znovu) a `log`/`errlog` jsou HANDSHAKY
+ * (`req_gen`/`resp_gen`) — vynulovane znamena „zadny pozadavek nebezi" a web si
+ * o nej rekne pri dalsim HTTP dotazu. Obojí se tedy samo zhoji. Blok `cm4` je
+ * jediny, kde ztrata NEVRATNA — proto jen on.
+ * ⚠️ `snap` se nuluje CELY (nejen header) — CM7 je jeho jediny zapisovatel.
+ * ⚠️ Layout se nemeni, takze `IPC_VERSION` se tim NEZVEDA. */
 static void ipc_stamp(volatile ipc_shared_t *p)
 {
-    memset((void *)p, 0, sizeof *p);
+    memset((void *)&p->snap,   0, sizeof p->snap);
+    memset((void *)&p->cmd,    0, sizeof p->cmd);
+    memset((void *)&p->resp,   0, sizeof p->resp);
+    memset((void *)&p->log,    0, sizeof p->log);
+    memset((void *)&p->errlog, 0, sizeof p->errlog);
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
+    IPC_DMB();
+}
+
+/* Vynuluje blok, ktery vlastni CM4. Volat VYHRADNE kdyz je DOLOZENE, ze CM4
+ * publikovat nebude — tedy po vyprseni boot gate (`g_cm4_absent`). Bez toho by
+ * pri studenem startu bez CM4 zustalo v `cm4` nahodne smeti ze SRAM4 a `magic`
+ * by mohlo nahodou sednout (1 : 4 miliardam, ale je to argument pravdepodobnosti,
+ * ne dukaz — a tady ho mit nemusime). */
+void ipc_clear_cm4_block(void)
+{
+    memset((void *)&g_ipc.cm4, 0, sizeof g_ipc.cm4);
     IPC_DMB();
 }
 

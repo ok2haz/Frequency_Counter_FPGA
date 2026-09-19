@@ -611,6 +611,12 @@ uint8_t ipc_cm4_httpd_selftest(void);
  * neresetuje — `NVIC_SystemReset()` z nej shodi cely pristroj. */
 uint8_t ipc_cm4_fault(uint32_t *pc, uint32_t *lr, uint32_t *cfsr);
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
+/* Vynuluje blok, ktery vlastni CM4 (audit F-0017). 🔴 Volat VYHRADNE kdyz je
+ * DOLOZENE, ze CM4 publikovat nebude — tedy po vyprseni boot gate
+ * (`g_cm4_absent`). Za normalniho behu si `cm4` nuluje CM4 sama v
+ * `ipc_cm4_init()`; kdyby na nej sahl CM7, mohl by tise smazat jednorazovy
+ * zapis (doloženo na HW 2026-08-30 u `scpi_selftest_ok`). */
+void ipc_clear_cm4_block(void);
 
 /* ── CM4 -> CM7: publikace stavu ETH linky (v5, F1). Vola CM4 (dnes natvrdo down,
  * po lwIP realne). speed_mbps=10/100/0, duplex 0=half/1=full, ip=oktety a.b.c.d. */

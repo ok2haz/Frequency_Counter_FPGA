@@ -1237,19 +1237,30 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
     ⚠️ Detekce funguje **jen dokud se nemění layout PŘED `cm4` blokem** (`snap`/`cmd`/`resp`).
   - **Předletová pojistka:** `scripts/build.sh` varuje, když je obraz starší než `ipc_shared.h`
     (= „přeložil jsem jen jedno jádro").
-  - 🔴🔴 **`ipc_init()` na CM7 dělá `memset` CELÉ sdílené struktury — VČETNĚ bloku `cm4`, který
-    vlastní CM4. To NENÍ benigní** (komentář v `ipc_cm4.c` to tak dřív tvrdil). Volá se až ze
-    `StartDefaultTask`, tedy po pomalé inicializaci displeje (~sekundy), zatímco CM4 (bare-metal)
-    publikuje už ~1,3 s po bootu (hned po pípací melodii). Kdo vyhraje, závisí na náběhu →
-    **jednorázový zápis do bloku `cm4` se může TIŠE ZTRATIT a už se nikdy nevrátí.**
+  - ✅ **KAŽDÉ JÁDRO NULUJE SVŮJ BLOK** (opraveno 2026-09-19, audit F-0017).
+    `ipc_stamp()` na CM7 nuluje **jen `snap`/`cmd`/`resp`/`log`/`errlog`**; blok **`cm4` si
+    nuluje CM4 sama** v `ipc_cm4_init()`, kde je jeho jediným zapisovatelem a ještě
+    nepublikovala — tedy **bez jakéhokoli závodu**. Jediná výjimka: když vypršel boot gate
+    (`g_cm4_absent`), tedy je **doloženo**, že CM4 publikovat nebude, vyčistí blok CM7
+    (`ipc_clear_cm4_block()`) — kvůli náhodnému smetí v SRAM4 po studeném startu.
+    🔴 **Do té doby dělal `ipc_init()` `memset` CELÉ struktury včetně `cm4`**, a to až ze
+    `StartDefaultTask` (~sekundy po bootu, za bring-upem displeje), zatímco CM4 je bare-metal
+    a publikuje už ~1,3 s po bootu → **jednorázový zápis do `cm4` se mohl TIŠE ZTRATIT navždy.**
     ⚠️ Přesně to se stalo při HW průchodu 2026-08-30 (studený start): `memset` dopadl **mezi**
     publikaci httpd a eth, takže `status` hlásil `SCPI(CM4): jeste nedobehl` +
     `HTTP(CM4): jeste nedobehl`, ale `ETH(CM4): init OK` — v pořadí, v jakém to CM4 zapisuje.
-    Vypadá to jako „selftest se nespustil", přitom proběhl a prošel.
-    **Pravidlo: každá hodnota v bloku `cm4` musí být buď publikovaná OPAKOVANĚ ze smyčky
-    (jako `ipc_cm4_set_eth`/`_set_net`), nebo držená lokálně a razítkovaná znovu v
-    `ipc_cm4_heartbeat` (jako `cm4_ipc_version`, `s_scpi_ok`, `s_httpd_ok`).**
-    Jednorázový zápis do `g_ipc.cm4.*` je vždy chyba.
+    Vypadalo to jako „selftest se nespustil", přitom proběhl a prošel.
+    ⚠️ **`cmd`, `log` a `errlog` se nulují dál, přestože do nich CM4 taky píše** — `cmd` je ring
+    (vynulovaný = prázdný, CM4 pošle znovu) a `log`/`errlog` jsou **handshaky** (`req_gen`/
+    `resp_gen`), takže vynulované znamená „žádný požadavek neběží" a web si o něj řekne při
+    dalším HTTP dotazu. Obojí se **samo zhojí**; `cm4` byl jediný blok, kde je ztráta nevratná.
+    🔑 **Pravidlo „publikuj opakovaně" tím přestalo být podmínkou správnosti** a zůstává jen
+    jako pojistka (`cm4_ipc_version`, `s_scpi_ok`, `s_httpd_ok`, `ipc_cm4_set_eth`/`_set_net`).
+    Jednorázový zápis do `g_ipc.cm4.*` už tedy chyba **není** — ale opakovaná publikace je
+    pořád bezpečnější a je to jediné, co by přežilo návrat k plnému memsetu.
+    ⚠️ Vedlejší efekt opravy: **crash black-box CM4 (`cm4_fault_*`) přežije samostatný reset
+    CM7** (dřív ho memset mohl setřít), zatímco nový běh CM4 si ho správně vynuluje.
+    ⚠️ Layout se nezměnil → `IPC_VERSION` se tím **nezvedá**.
 - **`sens_valid`:** maska platnosti ve snapshotu, **bitové pozice = `SCPI_V_*`** → CM4 backend
   `src->valid = snap.sens_valid`, bit za bit jako CM7 na USB. Hlídá **14 `_Static_assert`** v `ipc.c`
   (+ 8 pro `SCPI_CFG_*` vs `IPC_CFG_*`). ⚠️ Neplatná hodnota se **publikuje vždy** (poslední dobrá pro

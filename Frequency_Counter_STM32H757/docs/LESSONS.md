@@ -2160,6 +2160,76 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0064 — Než vynutíš mez, zjisti, kdo ji dnes legitimně používá — a jestli není druhá mez na hodnotě
+
+- **Datum:** 2026-09-19
+- **Oblast:** formátování bez `%f` (nano.specs), vynucení mezí na rozhraní
+- **Symptom:** `fmt_fixed()` má `case 1/2/3` a `default:`, které vytiskne jen celou
+  část. Komentář u funkce i nález tvrdily „podporuje 1–3 desetiny", takže se
+  nabízelo `default:` změnit na „ořízni na 3".
+- **Příčina:** Obojí bylo **nepravda ve prospěch horší opravy**. `default:` je
+  zároveň **legitimní implementace nuly** (`fixed_split(v,0,…)` dá scale 1 a
+  frac 0, takže `"%ld"` je správný výstup) a spoléhají na ni **čtyři skuteční
+  volající** — min/max v seznamu senzorů a teplotní pásmo OCXO. Navržená oprava
+  by z „45" udělala „45.000". Skutečný rozsah je **0–3**.
+  A byla tam **druhá, ostřejší mez, o které nemluvil nikdo**: `fixed_split`
+  počítá `t = (int32_t)(v · 10^decimals + 0.5)`, takže platí i
+  `|v| · 10^decimals < 2,15e9` — při 3 desetinách `|v| < ~2,15e6`. Nad tím int32
+  přeteče. Tuhle cestu spouští **hodnota**, ne argument, takže ji žádný grep
+  nenajde a nikdo by ji nehledal.
+- **Oprava:** Clamp na 0..3, pak `d` snižovat, dokud `|v| · 10^d` nevleze do
+  int32, a každé omezení počítat do `status` (`FORMAT: omezenych desetin N`).
+  Bez `configASSERT` — pád uprostřed kreslení by shodil desku kvůli formátování.
+- **Pravidlo:** **Než vynutíš mez, vypiš si všechny volající a zjisti, které
+  hodnoty dnes používají** — `default:`/`else` bývá živá větev, ne jen chybová.
+  A u každé meze se ptej, jestli není **druhá mez na hodnotě**, ne na argumentu:
+  kdekoli se vstup násobí nebo škáluje do celého čísla, existuje rozsah, ve kterém
+  argument projde a přesto to přeteče.
+- **Detekce:** `grep` na volání funkce a rozdělit je podle **literál vs. proměnná**.
+  Literály zkontroluješ očima; proměnné (`HBAR[].deci`, `KALIB_ROWS[].decimals`,
+  spočítané výrazy) jsou skutečná riziková plocha a ty potřebují runtime clamp
+  s počítadlem. U škálování do `intN` dopočítej mez na vstupní hodnotu a napiš ji
+  do komentáře v jednotkách, ve kterých volající myslí.
+- **Commit:** viz git log — `fix(format,ipc)` s F-0053
+- **Stav:** aktivní
+
+---
+
+### L-0065 — Sdílenou paměť nulujte po vlastnictví, ne po adresním rozsahu
+
+- **Datum:** 2026-09-19
+- **Oblast:** IPC CM7 ↔ CM4, inicializace sdílené paměti
+- **Symptom:** `ipc_init()` na CM7 dělal `memset` přes **celou** sdílenou strukturu
+  včetně bloku `cm4`, do kterého zapisuje výhradně druhé jádro. Protože se volá
+  ze `StartDefaultTask` (~sekundy po bootu, za bring-upem displeje), zatímco CM4
+  je bare-metal a publikuje už ~1,3 s po bootu, mohl memset dopadnout **doprostřed
+  publikování**. Doloženo na HW 2026-08-30: dopadl mezi publikaci httpd a eth,
+  takže `status` hlásil „SCPI(CM4): jeste nedobehl", přestože selftest prošel.
+- **Příčina:** `memset(p, 0, sizeof *p)` je operace nad **adresním rozsahem**, ale
+  sdílená struktura je rozdělená podle **vlastnictví**. Jedno `sizeof` je pohodlné
+  a vypadá jako „uveď do známého stavu" — jenže tím CM7 přepisuje data, která mu
+  nepatří. Obrana pak visela jen na disciplíně („každou hodnotu publikuj
+  opakovaně"), tedy na pravidlu v komentáři, ne na kódu.
+- **Oprava:** Každé jádro nuluje svůj blok: CM7 `snap`/`cmd`/`resp`/`log`/`errlog`,
+  CM4 svůj `cm4` ve vlastním initu (tam je jediným zapisovatelem a ještě
+  nepublikoval → bez závodu). CM7 na `cm4` sáhne jen když je **doloženo**, že CM4
+  nenaběhla (vypršelý boot gate) — tím se uzavře i studený start s náhodným
+  obsahem SRAM. Layout se nemění, `IPC_VERSION` se nezvedá.
+- **Pravidlo:** **Sdílenou paměť inicializuj po blocích podle vlastníka, nikdy
+  jedním `memset` přes `sizeof` celé struktury.** Když potřebuješ vyčistit i cizí
+  blok, smí to být jen ve stavu, kdy je **dokázáno**, že vlastník nezapisuje —
+  a ten důkaz napiš do kódu jako podmínku, ne do komentáře jako předpoklad.
+- **Detekce:** U každého `memset`/`memcpy` nad sdílenou strukturou vypiš, které
+  její členy píše které jádro (nebo úloha), a porovnej s rozsahem operace.
+  Doplňkově se ptej, jestli je ztráta v daném bloku **vratná**: ring nebo handshake
+  se sám zhojí (prázdný ring = pošli znovu), jednorázově zapsaný stav ne — a právě
+  ten blok se nulovat nesmí. Souvisí s **L-0054** („jeden vlastník" je tvrzení
+  o všech volajících) a **L-0061** (požadavek konzumovaný cizí úlohou).
+- **Commit:** viz git log — `fix(format,ipc)` s F-0017
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
