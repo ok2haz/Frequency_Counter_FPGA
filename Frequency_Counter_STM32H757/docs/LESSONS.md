@@ -466,6 +466,25 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   `grep glyph_count` po regeneraci fontů, o kterém `L-0007` říká, že takové
   vrstvy nikdo nespouští.
 - **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nález F-0034
+- 🔁 **Doplněno 2026-09-19 (F-0132 + F-0138, modul 22) — a je to podstatné zpřísnění:**
+  🔴 **Počítadlo, které nikdo nečte, tichý přeskok NEVYŘEŠÍ.** Opravoval jsem F-0132
+  (zahozený TX paket bez záznamu) doplněním `g_eth_tx_err++` — a teprve při tom zjistil,
+  že **`g_eth_tx_ok`/`g_eth_tx_err` nečte nikdo**, přestože komentář u nich tvrdil
+  *„cte je CM7 pres IPC (`status`)"*. Ve snapshotu pro ně není pole a v `CM7/` na ně
+  nikdo nesahá. Inkrement do neviditelného počítadla je tedy **poloviční oprava**, která
+  navíc *vypadá* hotově.
+  🔑 **Pravidlo se tím rozšiřuje na dvě části, obě povinné:**
+  (1) tichý přeskok se **započítá**, a (2) to počítadlo je **dosažitelné bez ladicí
+  sondy** — na tomhle projektu tedy přes `status`, IPC nebo web. Sonda se nepočítá:
+  jeden halt zabije I2C4 do power-cyklu, takže „lze to přečíst sondou" znamená
+  v praxi „nepřečte to nikdo".
+  ⚠️ Druhá polovina se ověřuje stejně testovatelně jako L-0028: **najdi řádek, kde se
+  to počítadlo ČTE.** Když neexistuje, není to diagnostika, ale mrtvá proměnná.
+  (U F-0131 to naopak vyšlo dobře **bez** nového počítadla — selhání se projeví jako
+  `NET: DOWN` místo falešného `NET: UP`, a `net_link` se publikuje už dnes. Nejlepší
+  počítadlo je to, které není potřeba.)
+  Commity `356fe02` (F-0132), `dd8ef75` (komentář F-0138); viditelnost počítadel
+  zůstává otevřená jako **F-0138**, protože vyžaduje rozhodnutí o sdílené struktuře.
 - **Stav:** aktivní
 
 ### L-0018 — Dva vypocty teze veliciny: oprav obe, nebo vyrob jeden zdroj pravdy

@@ -112,8 +112,24 @@ nestartoval) a **F-0137** (`iwdg2_init()` má tutéž vadu, kterou F-0104 opravi
 🔑 **Umístění bufferů doloženo z `.map`:** `.eth_dma` @`0x30040000` 12 740 B/32 kB,
 deskriptory i RX pool na **systémových** adresách, `ram_heap` @`0x1002ac90` v **CM4
 aliasu** — což potvrzuje, proč `eth_dma_addr()` existuje a proč RX nikdy netrpěl.
-⚠️ **Modul 22 do HW průchodu níže ZAPRACOVANÝ NENÍ** (vznikl po něm) — jeho nálezy jsou
-neopravené, takže tam zatím není co ověřovat.
+✅ **Skupina A opravena 2026-09-19 (5 z 8, ve 2 commitech), ⬜ neověřeno na HW.**
+`356fe02` **F-0131 + F-0132 + F-0133 + F-0135**, `dd8ef75` **F-0136 + komentář F-0138**
+(`docs:`). CM4 `.text` 242 504 → **242 552** (+48 B), **CM7 bajt za bajtem shodný** —
+žádný soubor CM7 se nedotkl, takže pro CM7 stačí banka, která je už postavená.
+🔑 **U F-0131 nebylo potřeba nové počítadlo:** selhání se projeví jako `NET: DOWN`
+místo falešného `NET: UP`, a `net_link` se přes IPC publikuje už dnes.
+🔴 **NOVÝ NÁLEZ Z FÁZE OPRAV — F-0138 [S3]:** při opravě F-0132 se ukázalo, že
+`g_eth_tx_ok`/`g_eth_tx_err` **nečte nikdo**, přestože komentář tvrdil *„cte je CM7
+pres IPC (`status`)"*. Inkrement do neviditelného počítadla je poloviční oprava —
+z toho vzniklo **zpřísnění L-0017**: počítadlo musí být (1) zapsané a (2) **dosažitelné
+bez ladicí sondy**. Komentář uveden na pravdu; **viditelnost je skupina B a NE před
+HW průchodem** (znamenala by zásah do sdílené struktury).
+⚠️ **Otevřené zůstávají F-0134** (skupina B: smazat `HAL_ETH_TxFreeCallback` × dopárovat
+`pbuf_ref`, což dnes = únik paměti), **F-0137** (skupina C: mrtvý kód, navrženo místo
+opravy připsat odkaz na F-0104/L-0055) a **F-0138**.
+🔑 **Co ověřit na desce:** `status` → `NET: UP …, IP …` musí pořád naskočit — to je
+nejdůležitější regresní kontrola této dávky (F-0131 nesmí falešně blokovat UP). Pak
+stáhnout SPA z prohlížeče (ověří TX cestu včetně F-0132/F-0133).
 
 🔑 **HW PRŮCHOD JE PŘIPRAVENÝ: [`docs/HW_OVERENI_AUDIT_2026-09-19.md`](HW_OVERENI_AUDIT_2026-09-19.md)**
 — konsolidovaný kontrolní seznam pro **jedno sezení** (29 neověřených `fix:` commitů
@@ -411,7 +427,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
-| 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | nálezy zapsány | 2026-09-19 | 0 | 0 | 5 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
+| 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -447,8 +463,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 20 | 50 | 0 |
-| S4 | 14 | 24 | 0 |
+| S3 | 17 | 54 | 0 |
+| S4 | 13 | 25 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
