@@ -519,9 +519,42 @@ bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *t
     return emit;
 }
 
+/* F-0098: pripravenost obou zaznamniku. Bez toho se neuspesny init nikde
+ * neprojevil — u flightrecu vubec, u errlogu az tim, ze se RAM ring (16 polozek)
+ * naplni a zacne pocitat `errlog_dropped()`. */
+int flightrec_ready(void) { return s_ready ? 1 : 0; }
+int errlog_ready(void)    { return s_el_ready ? 1 : 0; }
+
+/* Kolikrat se `errlog_tick` pokusil init zopakovat (F-0098). */
+static uint32_t s_el_retries;
+uint32_t errlog_init_retries(void) { return s_el_retries; }
+
+/* Nejvys tolik pokusu a nejmene takhle daleko od sebe. 🔴 Strop je tu ZAMERNE:
+ * `errlog_init()` dela sken vsech sektoru a muze skoncit `w25q_erase_sector`,
+ * coz je 50-400 ms v defaultTasku (ten krmi watchdog). Nekonecne opakovani mrtve
+ * flash by tedy bylo horsi nez sama vada — a kdyz to nevyjde po peti pokusech
+ * v prubehu minuty, neni to prechodna kolize o mutex, ale skutecna porucha,
+ * kterou uz jen hlasime. */
+#define ERRLOG_RETRY_MAX  5u
+#define ERRLOG_RETRY_MS   10000u
+
 void errlog_tick(void)
 {
-    if (!s_el_ready || s_el_tail_i == s_el_head_i) return;
+    /* 🔴 ZACHRANA NEPOVEDENEHO INITU (audit F-0098). `errlog_init()` pri bootu
+     * odchazi na `osMutexAcquire(...) != osOK`, takze jedna nestastna sekunda
+     * (obsazena flash) znamenala, ze se do TRVALE historie chyb uz nikdy nic
+     * nezapise — bez retry, bez pocitadla, bez radku v `status`. */
+    if (!s_el_ready) {
+        static uint32_t s_last_try;
+        if (s_el_retries >= ERRLOG_RETRY_MAX) return;
+        uint32_t now = HAL_GetTick();
+        if (s_last_try != 0u && (now - s_last_try) < ERRLOG_RETRY_MS) return;
+        s_last_try = now ? now : 1u;
+        s_el_retries++;
+        errlog_init();   /* nastavi `s_el_ready`, kdyz to vyjde */
+        return;          /* vylevani ringu az pristi tik, tenhle uz byl drahy */
+    }
+    if (s_el_tail_i == s_el_head_i) return;
 
     /* ⚠️ Kratky timeout: defaultTask krmi watchdog a NESMI cekat na obsazenou
      * flash. Kdyz to nevyjde, zaznamy zustanou v ringu do dalsiho tiku. */

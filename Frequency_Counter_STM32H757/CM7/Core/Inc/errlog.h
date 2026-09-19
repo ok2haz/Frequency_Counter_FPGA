@@ -115,4 +115,14 @@ const char *errlog_kind_name(uint8_t kind);
 #define ERRLOG_DETAIL_LEN 72u
 void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n);
 
+/** 1 = trvaly zaznamnik chyb ma pripravenou flash. 0 = `errlog_init()` selhal ->
+ *  zaznamy zustavaji v RAM ringu (16 polozek) a po jeho naplneni se pocitaji do
+ *  `errlog_dropped()`, tedy se ZTRACEJI (audit F-0098). */
+int errlog_ready(void);
+
+/** Kolikrat `errlog_tick()` zkusil neuspesny init zopakovat (audit F-0098).
+ *  Strop je 5 pokusu po 10 s — `errlog_init()` muze skoncit erase sektoru
+ *  (50-400 ms v defaultTasku), takze nekonecne opakovani by bylo horsi nez vada. */
+uint32_t errlog_init_retries(void);
+
 #endif /* INC_ERRLOG_H_ */

@@ -2268,6 +2268,45 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0067 — Zachraňující retry smí obnovit PŘÍSTUP, ne data — jinak přepíše to, co mezitím vzniklo
+
+- **Datum:** 2026-09-19
+- **Oblast:** perzistence (W25Q blob store), zotavení z neúspěšné inicializace
+- **Symptom:** Pět inicializací úložiště (`syscfg_load`, `setup_init`, `calib_load`,
+  `flightrec_init`, `errlog_init`) mělo tvar *„nedostal jsem mutex → `return`"*.
+  Příznak připravenosti pak zůstal `false` **po celý zbytek běhu**: nastavení se
+  nikdy neuložilo, kalibrace zůstala na datasheetových výchozích a tlačítka v okně
+  SESTAVY tiše nedělala nic. Uživatel to poznal teprve tím, že se mu po restartu
+  ztratilo nastavení — a bez jakékoli stopy proč.
+- **Příčina:** Dvě věci. Za prvé selhání nemělo **žádný** výstup (na rozdíl od
+  `datalog_init`, který ho vypisuje — takže bylo vidět, že to jde). Za druhé, když
+  se dopisoval **retry**, nabízelo se prostě zavolat `syscfg_load()` znovu. To by
+  ale bylo špatně: `syscfg_load()` **čte blob z flash do RAM**, a v RAM už může být
+  novější nastavení, které uživatel mezitím změnil. Zachrana by tedy přepsala živý
+  stav starou verzí z disku — vada *horší* než ta, kterou léčí, a projevila by se
+  jako „nastavení se samo vrátilo".
+- **Oprava:** Retry volá **jen `w25q_init()` + `w25q_store_init()`** — to naskenuje
+  sektory a nastaví `ready`/`seq`, ale payload nikam nekopíruje. Obnoví se tedy
+  **přístup k úložišti**, ne jeho obsah. Retry je navíc **ohraničený** (5 pokusů,
+  ≥10 s od sebe), protože `errlog_init()` může skončit `w25q_erase_sector`, tj.
+  50–400 ms v úloze, která krmí watchdog. A stav je vidět třemi cestami: `status`,
+  okno PAMĚŤ a **amber SYS pilulka**.
+- **Pravidlo:** **Když dopisuješ zotavení z neúspěšné inicializace, rozděl ji na
+  „obnov přístup" a „načti data" a zopakuj JEN tu první část.** Opakované volání
+  celého `*_load()` přepíše stav, který mezitím vznikl v RAM. A každý retry, který
+  může sáhnout na pomalou periferii, musí mít **strop počtu i minimální rozestup** —
+  nekonečné opakování mrtvého hardwaru je horší než přiznaná porucha.
+- **Detekce:** U každého `if (…) return;` v inicializaci se ptej: *„co zůstane
+  rozbité do konce běhu a jak se to pozná?"* Když odpověď na druhou část je „nijak",
+  je to nález i bez retry. U navrhovaného retry pak projdi, co všechno ta funkce
+  **zapisuje do RAM** — a jestli je bezpečné to přepsat v okamžiku, kdy zařízení už
+  nějakou dobu běží. Souvisí s **L-0017** (tichý přeskok jen s počítadlem) a
+  **L-0016** (obrana, kterou nikdo nečte, není obrana).
+- **Commit:** viz git log — `fix(uloziste)` s F-0098
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

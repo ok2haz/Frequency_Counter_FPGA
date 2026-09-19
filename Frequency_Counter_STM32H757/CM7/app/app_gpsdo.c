@@ -2360,6 +2360,12 @@ void app_gpsdo_render_mem(void)
         dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "SDRAM (FMC)");
         dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "QSPI W25Q");
         dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "  JEDEC");
+        /* F-0098: pripravenost peti blob storu, ktere v te W25Q ZIJI (nastaveni,
+         * kalibrace, sestavy, letovy zapisovac, zaznamnik chyb). Patri to sem,
+         * protoze je to stav TOHO cipu o dva radky vys — a byla to do teto opravy
+         * TICHA vada: neuspesny init byl trvaly a nikde se neprojevil.
+         * ⚠️ Rady 3 a 4 praveho sloupce byly volne, takze zadna zmena rozlozeni. */
+        dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "  uloziste");
 
         char b[24];
         /* interni FLASH (CM7 bank 1024 KB): image = _sidata + velikost .data - 0x08000000 */
@@ -2370,6 +2376,14 @@ void app_gpsdo_render_mem(void)
         uint32_t rm = ((uint32_t)&_edata - (uint32_t)&_sdata) + ((uint32_t)&_ebss - (uint32_t)&_sbss);
         snprintf(b, sizeof b, "%lu/512 KB", (unsigned long)(rm / 1024u));
         dval(DG_LVAL, SENS_R0 + 1 * SENS_DY, 175, b, 1);
+        /* F-0098: kolik z peti blob storu ve W25Q je pripravenych. Kratky tvar
+         * (do boxu se cela veta nevejde) — detail je v UART `status` na radku
+         * `ULOZISTE:`. ⚠️ Cislo bere z `syscfg_storage_ready_count()`, tedy z TEHOZ
+         * zdroje jako ten radek, aby se ty dva udaje nemohly rozejit (F-0100). */
+        { int nrdy = syscfg_storage_ready_count();
+          snprintf(b, sizeof b, "%d/5 %s", nrdy, (nrdy == 5) ? "OK" : "CHYBI");
+          dval(DG_RVAL, SENS_R0 + 3 * SENS_DY, 175, b, nrdy == 5); }
+
         /* CM4 (v16, IPC) — staticka velikost obrazu, ale zavisi na CM4 zijici
          * (magic zapsan). Bez CM4 (jeste nenabootovala / neni k dispozici)
          * ukaze "--", ne 0/1024 KB, aby to nevypadalo jako prazdny obraz. */

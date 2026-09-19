@@ -14,6 +14,11 @@
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
 #include "encoder.h"          /* encoder_div/_set_div — persist delice kroku */
 #include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
+#include "setup.h"             /* setup_store_ready — souhrn uloziste (F-0098) */
+#include "calib.h"             /* calib_store_ready — souhrn uloziste (F-0098) */
+#include "flightrec.h"         /* flightrec_ready — souhrn uloziste (F-0098) */
+#include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
+#include <stdio.h>             /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
@@ -325,9 +330,59 @@ bool syscfg_save(void)
     return ok;
 }
 
+int syscfg_store_ready(void) { return s_store.ready ? 1 : 0; }
+
+static uint32_t s_store_retries;
+uint32_t syscfg_store_retries(void) { return s_store_retries; }
+
+/* Nejvys tolik pokusu a nejmene takhle daleko od sebe — stejne zduvodneni jako
+ * u `errlog_tick` (F-0098): `w25q_init()` resetuje cip a `w25q_store_init` skenuje
+ * sektory, takze v defaultTasku (krmi watchdog) se to nesmi opakovat bez stropu. */
+#define SYSCFG_RETRY_MAX  5u
+#define SYSCFG_RETRY_MS   10000u
+
+/* 🔑 JEDINY zdroj faktu o pripravenosti uloziste. Oba konzumenty (UART `status`,
+ * displej) ho pouzivaji pres tuhle funkci nebo pres `syscfg_storage_text` — nikdo
+ * si tu petici necte sam. Tim se nemuze zopakovat F-0100 (treti konzument, ktery
+ * si vyklada tytez udaje po svem). */
+int syscfg_storage_ready_count(void)
+{
+    return syscfg_store_ready() + calib_store_ready() + setup_store_ready()
+         + flightrec_ready()    + errlog_ready();
+}
+
+int syscfg_storage_text(char *buf, size_t n)
+{
+    snprintf(buf, n, "syscfg %s | calib %s | sestavy %s | flightrec %s | errlog %s",
+             syscfg_store_ready() ? "OK" : "--", calib_store_ready() ? "OK" : "--",
+             setup_store_ready()  ? "OK" : "--", flightrec_ready()   ? "OK" : "--",
+             errlog_ready()       ? "OK" : "--");
+    return syscfg_storage_ready_count();
+}
+
 void syscfg_flash_tick(void)
 {
-    if (!s_store.ready) return;
+    /* 🔴 ZACHRANA NEPOVEDENEHO INITU (audit F-0098). `syscfg_load()` pri bootu
+     * odchazi na `osMutexAcquire(...) != osOK`, takze jedna nestastna sekunda
+     * znamenala, ze se nastaveni uz NIKDY neulozi — `syscfg_save()` vraci false
+     * navzdy a uzivatel to pozna teprve tim, ze se mu po restartu ztratilo
+     * nastaveni. Bez retry, bez pocitadla, bez radku v `status`.
+     * ⚠️ Znovu se pripravuje POUZE ULOZISTE, blob se ZNOVU NECTE — v RAM uz muze
+     * byt novejsi nastaveni od uzivatele a precteni stare verze by ho pretlacilo.
+     * `w25q_store_init` jen naskenuje sektory a nastavi `ready`/`seq`; payload
+     * nikam nekopiruje, takze je to presne to, co je potreba. */
+    if (!s_store.ready) {
+        static uint32_t s_last_try;
+        if (s_store_retries >= SYSCFG_RETRY_MAX) return;
+        uint32_t now = HAL_GetTick();
+        if (s_last_try != 0u && (now - s_last_try) < SYSCFG_RETRY_MS) return;
+        s_last_try = now ? now : 1u;
+        s_store_retries++;
+        if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_SAVE_MS) != osOK) return;
+        if (w25q_init()) (void)w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS);
+        osMutexRelease(qspiMutexHandle);
+        return;
+    }
 
     static syscfg_blob_t snap;
     static uint8_t  have_snap = 0;

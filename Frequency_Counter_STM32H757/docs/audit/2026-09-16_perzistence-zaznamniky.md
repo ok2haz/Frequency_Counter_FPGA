@@ -631,8 +631,40 @@ nezměnil vůbec.
   novou souběžnou cestu — **tu nedoporučuji bez zadání**.
 - **Riziko opravy:** nízké u výpisu; střední u retry (nová cesta souběhu).
 - **Vztah k lekcím:** **L-0017** (tichý přeskok je přípustný jen s počítadlem),
-  **L-0016** (obrana, kterou nikdo nečte, není obrana).
-- **Stav:** otevřeno
+  **L-0016** (obrana, kterou nikdo nečte, není obrana); z opravy vznikla **`L-0067`**.
+- **Stav:** **opraveno 2026-09-19** — uživatel vybral **všechny tři části**: řádek
+  v `status`, viditelnost na displeji **a** retry (jen syscfg + errlog).
+  - **Pět příznaků zpřístupněno**: `syscfg_store_ready()`, `calib_store_ready()`,
+    `setup_store_ready()`, `flightrec_ready()`, `errlog_ready()`. `setup` a `calib`
+    přitom žádný příznak neměly — používají `w25q_store_t.ready`, takže to bylo
+    dostupné, jen nevystavené.
+  - 🔑 **Jeden zdroj faktů pro všechny konzumenty**: `syscfg_storage_ready_count()`
+    (0..5) a `syscfg_storage_text()`. Žádný konzument si tu pětici nesčítá sám —
+    přesně tím se rozešel `errlog dump` s oknem CHYBY (**F-0100**, `L-0049`).
+  - **UART `status`** → `ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK |
+    errlog OK` se značkou `<== NEKTERE NEPRIPRAVENE`, a při nenulových pokusech
+    i řádek `pokusy o zachranu: syscfg N, errlog M (strop 5)`.
+  - **Displej**: **SYS pilulka jde AMBER** (přístroj měří dál, jen si nic
+    nepamatuje — degradace, ne kritická vada) **a okno PAMĚŤ** má nový řádek
+    `uloziste  5/5 OK`. ⚠️ Umístěno do okna PAMĚŤ záměrně: je to stav **toho čipu**,
+    který je o dva řádky výš, a **řady 3 a 4 pravého sloupce byly volné**, takže
+    žádná změna rozložení. System Health místo nemá — jeho karta System má řádky
+    328/350/372/394 a 417 už patří patce.
+  - **Retry** v `syscfg_flash_tick()` a `errlog_tick()` (oba běží z defaultTasku):
+    **nejvýš 5 pokusů, nejméně 10 s od sebe**. ⚠️ Strop je tam záměrně —
+    `errlog_init()` skenuje sektory a může skončit `w25q_erase_sector` (50–400 ms
+    v úloze, která krmí watchdog), takže nekonečné opakování mrtvé flash by bylo
+    horší než sama vada. Po pěti pokusech se to už jen hlásí.
+  - 🔴 **Past, kterou nález nezmínil a která byla na opravě to nejzrádnější:**
+    zachraňující retry **nesmí znovu načíst blob**. V RAM už může být novější
+    nastavení od uživatele a přečtení staré verze z flash by ho přetlačilo — retry
+    proto volá **jen `w25q_init()` + `w25q_store_init()`**, které naskenují sektory
+    a nastaví `ready`/`seq`, ale payload nikam nekopírují.
+  - **`calib` a `setup` retry ZÁMĚRNĚ nedostaly**, jak nález doporučoval: volají se
+    jednou z UiTasku a retry z tiku by vyrobil novou souběžnou cestu. Jejich stav
+    je ale nově vidět, takže ztráta přestala být tichá.
+  - ⬜ **neověřeno na HW** (kritérium: `status` → `ULOZISTE: … 5× OK` bez značky,
+    okno PAMĚŤ `5/5 OK`, SYS pilulka zelená).
 
 ---
 

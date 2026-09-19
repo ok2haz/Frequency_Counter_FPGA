@@ -15,6 +15,7 @@
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
 #include "alarm.h"         /* g_mon_*_bad — prahovy monitor v SYS pilulce */
+#include "syscfg.h"        /* syscfg_storage_ready_count — nepripravene uloziste v SYS pilulce (F-0098) */
 #include "freertos_shared.h"  /* g_freq_x100000/seq/valid/stale — realny kmitocet z FpgaTasku (#1) */
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include "phase_noise.h"   /* pn_compute — L(f) fazovy sum z ringu s_y[] (#45) */
@@ -256,6 +257,16 @@ static int compute_sys_level(void)
      * RED zustava vyhrazena ztrate reference a selftest FAILu, tedy stavum, kdy
      * pristroj bud nemeri, nebo mere spatne a nevi o tom. */
     if (g_mon_vbat_bad || g_mon_ocxo_bad || g_mon_adev_bad) lvl = 1;
+    /* Nepripravene ulozistě ve W25Q (audit F-0098). AMBER, protoze pristroj MERI
+     * dal — jen si nic nepamatuje: nastaveni se neulozi, kalibrace zustane na
+     * datasheetovych vychozich (tedy RF v dBm a vetve 12 V/5 V nekalibrovane)
+     * a tlacitka v okne SESTAVY tise nedelaji nic.
+     * 🔴 Bez tohohle byla ta vada UPLNE TICHA a uzivatel ji poznal teprve tim, ze
+     * se mu po restartu ztratilo nastaveni — bez jakekoli stopy proc. Detail je
+     * v okne PAMET (radek `uloziste`) a v UART `status` (radek `ULOZISTE:`).
+     * ⚠️ Cislo se bere z `syscfg_storage_ready_count()`, tedy z tehoz zdroje jako
+     * oba vypisy — zadne vlastni scitani tady (F-0100). */
+    if (syscfg_storage_ready_count() != 5) lvl = 1;
     /* RED: kriticke (prebiji). LOS_CLKIN (bit3) = ztrata 10 MHz reference — LOL se
      * pri fyzicke ztrate vstupu NEasertuje (viz komentar u SI_* vyse), takze LOS je
      * tady nutny. SI_LOS_XTAL (bit2) se zamerne NEhodnoti (bez krystalu trvale 1). */

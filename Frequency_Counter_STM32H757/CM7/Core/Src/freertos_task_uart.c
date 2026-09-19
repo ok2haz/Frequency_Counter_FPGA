@@ -45,8 +45,9 @@
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 #include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
-#include "flightrec.h"
 #include "flightrec.h"   /* UART "flightrec" — kontext pred resetem (#18) */
+#include "syscfg.h"      /* syscfg_storage_text/_store_retries — radek ULOZISTE (F-0098) */
+#include "errlog.h"      /* errlog_init_retries — tentyz radek */
 #include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
 #include "fmc.h"         /* fmc_sdram_init_sequence, g_fmc_init_fail — diagnostika SDRAM */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
@@ -2577,6 +2578,21 @@ void UartTask_run(void *argument)
 					  	{ uint32_t fc = app_gpsdo_fmt_clamped();
 					  	  printf("FORMAT: omezenych desetin %lu%s\n", (unsigned long)fc,
 					  	         fc ? "  <== NEKDE SE UKAZUJE ZAOKROUHLENA HODNOTA" : "  (v poradku)"); }
+					  	/* Pripravenost peti blob storu ve W25Q (audit F-0098). Do teto opravy
+					  	 * byla neuspesna inicializace TRVALA A TICHA: jedna nestastna sekunda
+					  	 * pri bootu (obsazena flash) znamenala, ze se nastaveni uz nikdy
+					  	 * neulozi, kalibrace zustane na datasheetovych vychozich a tlacitka
+					  	 * v okne SESTAVY tise nedelaji nic. Uzivatel to poznal teprve tim, ze
+					  	 * se mu po restartu ztratilo nastaveni — a bez jakekoli stopy proc.
+					  	 * ⚠️ Text sklada `syscfg_storage_text()`, tedy TENTYZ zdroj, ze ktereho
+					  	 * cte i displej — aby se ty dva vypisy nemohly rozejit (F-0100). */
+					  	{ char sb[96];
+					  	  int nready = syscfg_storage_text(sb, sizeof sb);
+					  	  uint32_t sr = syscfg_store_retries(), er = errlog_init_retries();
+					  	  printf("ULOZISTE: %s%s\n", sb, (nready == 5) ? "" : "  <== NEKTERE NEPRIPRAVENE");
+					  	  if (sr || er)
+					  	      printf("          pokusy o zachranu: syscfg %lu, errlog %lu (strop 5)\n",
+					  	             (unsigned long)sr, (unsigned long)er); }
 					  	/* σy@1s — do 2026-09-11 slo precist JEN z displeje, takze oprava
 					  	 * meritka frakcni odchylky (F-0037) nesla na desce overit, jen ji
 					  	 * verit. Tiskne se v jednotkach 1e-15 (celociselne — `%f` nano.specs

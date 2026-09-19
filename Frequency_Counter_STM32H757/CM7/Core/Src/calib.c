@@ -48,6 +48,11 @@ _Static_assert(sizeof(calib_blob_t) <= W25Q_STORE_MAX_BLOB,
 
 static w25q_store_t s_store;
 
+/* F-0098: bez tohohle nebylo jak poznat, ze CALIB store nenabehl — `g_calib` pak
+ * zustane na datasheetovych vychozich a RF v dBm i vetve 12 V/5 V jsou
+ * NEKALIBROVANE, aniz by to cokoli ohlasilo. */
+int calib_store_ready(void) { return s_store.ready ? 1 : 0; }
+
 void calib_load(void)
 {
     /* Init + cteni pod jednim zamkem (w25q_init resetuje cip — mezi tim a ctenim

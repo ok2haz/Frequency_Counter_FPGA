@@ -34,4 +34,9 @@ void calib_load(void);
  *  periodicky (opotrebeni flash). @return true = zapis OK. */
 bool calib_save(void);
 
+/** 1 = CALIB store ve W25Q je pouzitelny. 0 = `calib_load()` ho nepripravil ->
+ *  `g_calib` drzi datasheetove vychozi hodnoty a mereni RF/napeti je nekalibrovane,
+ *  bez jakekoli stopy (audit F-0098). */
+int calib_store_ready(void);
+
 #endif /* CALIB_H */

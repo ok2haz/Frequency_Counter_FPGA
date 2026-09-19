@@ -72,6 +72,10 @@ void setup_init(void)
     osMutexRelease(qspiMutexHandle);
 }
 
+/* F-0098: bez tohohle nebylo jak poznat, ze se SETUP store nepripravil — tlacitka
+ * ULOZIT/SMAZAT v okne SESTAVY pak tise nedelala nic. */
+int setup_store_ready(void) { return s_store.ready ? 1 : 0; }
+
 uint8_t setup_used_mask(void)
 {
     uint8_t m = 0;
