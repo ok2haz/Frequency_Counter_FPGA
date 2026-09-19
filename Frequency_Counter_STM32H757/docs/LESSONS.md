@@ -1249,6 +1249,54 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 <!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
 
+### L-0057 — Diagnostika, která porušuje invariant produkčního kódu, se nemusí rušit — stačí ji ODMÍTNOUT tam, kde by kolidovala
+
+- **Datum:** 2026-09-19
+- **Oblast:** mezijádrové IPC / diagnostické příkazy konzole
+- **Symptom:** `cmd` a `resp` jsou bezzámkové **SPSC** ringy — jejich správnost stojí
+  na tom, že `cmd` má jediného producenta (CM4) a `resp` jediného konzumenta (CM4).
+  Dva diagnostické příkazy na CM7 to porušovaly: `ipccmd` do `cmd` pushoval a z `resp`
+  popoval (F-0014), a totéž dělala `ipc_scpi_set_cfg` napojená na `scpi ipc` (F-0129).
+  Při souběhu se zápisem z webu by oba producenti přečetli tentýž `head`, zapsali do
+  **téhož slotu** a oba ho zvedli → jeden příkaz se **tiše ztratí**, druhý přenese
+  poškozený. Ringy ztrátu nedetekují.
+- **Příčina:** Nález F-0014 navrhoval opravu *„na CM7 má příkaz volat rovnou
+  `ipc_cfg_apply()`, protože je na tomtéž jádře a ring nepotřebuje"*. U `scpi ipc` to
+  platilo, ale **u `ipccmd` by to příkaz zrušilo**: jeho účel je v kódu napsaný —
+  *„pošli příkaz PŘESNĚ tou cestou, kterou použije CM4 … ověřit ovládací cestu
+  CM4→CM7 bez sítě, bez SCPI a bez webu"* (kritérium W1). Oprava podle návrhu by
+  odstranila právě to, kvůli čemu nástroj existuje.
+- **Oprava — tři různé zásahy pro tři různé situace, ne jeden vzor na všechno:**
+  1. **`scpi ipc` (F-0129):** ring **není potřeba** — nástroj srovnává *odpovědi*.
+     Soubor `ipc_scpi.c` se kompiluje **dvakrát** (jednou per jádro), takže stačila
+     jádrová podmínka `#if defined(CORE_CM4)`. Zůstala **jedna** funkce, validace se
+     neduplikovala (`L-0018`). Doloženo velikostí: `ipc_scpi_set_cfg` má na CM7 128 B,
+     na CM4 548 B, a **CM4 `.text` je bajt za bajtem shodný**.
+  2. **`ipccmd` (F-0014):** ring **je potřeba** (to je celý účel) → příkaz se
+     **ODMÍTNE**, když může existovat druhý producent: `ipc_cm4_alive() && g_web_ctrl_en`.
+     Únikový východ `ipccmd force <…>`.
+  3. Predikát je **záměrně úzký**: bez `g_web_ctrl_en` dostane SCPI na CM4
+     `set_cfg = NULL`, takže druhý producent vůbec nevznikne a guard nezasahuje —
+     tedy přesně ve stavu, pro který `ipccmd` vznikl (bez sítě, bez webu).
+- **Pravidlo:** **Když diagnostický nástroj porušuje invariant, na kterém stojí
+  produkční kód, nejdřív se zeptej, JESTLI ten invariant potřebuje porušovat.**
+  - Nepotřebuje → nech ho pracovat nad lokální kopií a produkční cestu nechte být.
+  - Potřebuje (porušení JE ten test) → **neruš nástroj, odmítni jeho spuštění ve
+    stavu, kdy by kolidoval** — a nech únikový východ (`force`) pro toho, kdo ví,
+    že kolize nehrozí.
+  🔑 **Odmítnutí je plnohodnotná oprava.** „Nástroj to musí umět, takže tu vadu
+  musíme snést" je falešné dilema: většina diagnostik se používá v řízeném stavu,
+  ve kterém kolize nehrozí — stačí ten stav vynutit.
+  ⚠️ A ověř účel nástroje **z kódu, ne z názvu**: návrh opravy v F-0014 byl napsaný,
+  aniž by se citoval komentář, který u `ipccmd` ten účel vysvětluje.
+- **Detekce:** Projekt už tenhle vzor jednou použil — příkaz `eth` odmítne bit-bang
+  SMI, když ETH obsluhuje CM4 (*„dva masteři na MDIO"*). Hledej to takhle: u každého
+  diagnostického příkazu, který sahá na zdroj vlastněný druhým jádrem nebo jinou
+  úlohou, musí být buď odmítnutí, nebo napsané, proč kolize nehrozí.
+- **Commit:** `7cd8613` (F-0129) a tento (F-0014), viz
+  `docs/audit/2026-09-19_bridge-ipcscpi-usbcdc.md` a `docs/audit/2026-09-09_ipc-cm7-cm4.md`
+- **Stav:** aktivní
+
 ### L-0056 — Diagnostiku poruchy zapisuj podle NÁSLEDKU, ne podle detekce
 
 - **Datum:** 2026-09-17

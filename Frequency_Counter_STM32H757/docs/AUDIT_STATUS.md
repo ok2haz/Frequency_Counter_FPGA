@@ -79,10 +79,12 @@ práce hotova“ + „uvolnění navázané na cizí notifikaci musí přežít,
 **špatný**. Kód u něj má napsaný účel *„pošli příkaz PŘESNĚ tou cestou, kterou
 použije CM4 … ověřit ovládací cestu CM4→CM7 bez sítě, bez SCPI a bez webu“*
 (kritérium W1), takže „volat `ipc_cfg_apply()` přímo“ by ten příkaz zrušil.
-🔑 **Nabízí se třetí cesta, kterou má projekt už zavedenou v témže souboru:**
-příkaz `eth` **odmítne běžet**, když ETH obsluhuje CM4 (*„dva masteři na MDIO“*).
-Totéž by šlo u `ipccmd` — odmítnout, když je CM4 živá a může zapisovat z webu.
-Zachová účel i odstraní souběh. **Čeká na rozhodnutí.**
+✅ **VYŘEŠENO 2026-09-19 rozhodnutím uživatele:** zvolena právě ta třetí cesta —
+`ipccmd` **odmítne běžet**, když `ipc_cm4_alive() && g_web_ctrl_en` (vzor příkazu
+`eth`: *„dva masteři na MDIO“*), s únikem `ipccmd force <podpříkaz>`. Účel příkazu
+(kritérium W1 — ověřit cestu CM4→CM7 **bez sítě a bez webu**) tím zůstal zachovaný,
+protože právě v tom stavu guard nezasahuje. **F-0014 je tím uzavřený**, vznikla
+**L-0057**.
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -244,12 +246,12 @@ z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola
 - **F-0007** [S3] ztráta HSE = mrtvý přístroj — *čeká na rozhodnutí o politice*: zůstat mrtvý
   ale rozlišitelně (levné), nebo nabootovat na HSI a měření označit za neplatné (drahé, mění
   časování všech sběrnic).
-- **F-0014** [S3] `ipccmd` je druhý producent SPSC ringu — *odloženo*: IPC dnes prokazatelně
-  funguje (CM4 alive, ETH/web běží) a oprava sahá do živé mezijádrové cesty.
-  🔴 **DOPLNĚNO 2026-09-19: má DRUHOU INSTANCI — `F-0129`.** `ipc_scpi_set_cfg` je
-  napojená i na CM7 (`freertos_task_uart.c:1447`, příkaz `scpi ipc <SET>`), takže
-  druhým producentem `cmd` ringu není jen `ipccmd`. **Rozhodovat a opravovat obojí
-  jedním zásahem** (`L-0012`) — dosavadní odůvodnění odložení o téhle cestě nevědělo.
+- ✅ **F-0014** [S3] `ipccmd` je druhý producent SPSC ringu — **opraveno 2026-09-19**
+  (⬜ neověřeno na HW), spolu s druhou instancí **F-0129**. Každá **jinak**, protože
+  návrh opravy v nálezu byl pro `ipccmd` špatný: `scpi ipc` ring nepotřebuje (jádrová
+  podmínka), `ipccmd` ho potřebuje (to JE ten test), takže se místo zrušení **odmítne
+  spustit**, když je `ipc_cm4_alive() && g_web_ctrl_en` (únik: `ipccmd force`).
+  Vznikla z toho **`L-0057`** („odmítnutí je plnohodnotná oprava").
 - **F-0016** [S3] `.ipc_shared` je prázdná rezervace — *odloženo*: oprava znamená zásah do
   **linker skriptů obou jader** (pravidlo 6 → jen s výslovným souhlasem).
 - **F-0017** [S3] `ipc_stamp()` maže i blok CM4 — *odloženo* ze stejného důvodu jako F-0014.
@@ -396,7 +398,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 16 | 49 | 0 |
+| S3 | 15 | 50 | 0 |
 | S4 | 12 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
