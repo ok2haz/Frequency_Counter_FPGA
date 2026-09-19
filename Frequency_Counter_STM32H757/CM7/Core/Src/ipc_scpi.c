@@ -138,10 +138,30 @@ int ipc_scpi_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
             break;
     }
 
+#if defined(CORE_CM4)
     if (!ipc_cmd_push(&c)) return 0;              /* ring plny -> SCPI ohlasi chybu */
 
     /* Vysyp odpovedi, at resp ring nepretece — na vysledek necekame (viz vyse). */
     ipc_resp_t r;
     while (ipc_resp_pop(&r)) { /* zahazujeme */ }
+#else
+    /* 🔴 NA CM7 SE DO RINGU NESAHA (audit F-0129, spolu s F-0014).
+     * `cmd` je bezzamkovy SPSC ring, jehoz JEDINYM producentem je CM4, a `resp`
+     * ma jedineho konzumenta taky na CM4. Push/pop odtud invariant rozbiji: dva
+     * producenti precetli tyz `head`, zapsali do TEHOZ slotu a oba zvedli head
+     * -> jeden prikaz se ztrati a druhy se prenese poskozeny, bez jakekoli hlasky.
+     *
+     * CM7 tuhle funkci pouziva VYHRADNE v diagnostice `scpi ipc <cmd>`, ktera
+     * SROVNAVA ODPOVEDI backendu CM4 s backendem CM7. K tomu staci lokalni
+     * zrcadlo (`s->meas`, `s->set_*`) naplnene ve `switch` vyse — proto se vraci
+     * uspech: jinak by compound "SET;READBACK?" vysel jako ROZDIL a nastroj by
+     * hlasil diru ve snapshotu, ktera tam neni.
+     * ⚠️ Dusledek, se kterym se musi pocitat: `scpi ipc <SET>` na CM7 pristroj
+     * NEPRESTAVI (to dela `scpi <SET>` pres backend CM7 nebo UI). Mezijadrovy
+     * zapisovy transport overuje web/TCP cesta, kde tenhle kod bezi na CM4.
+     * Tentyz vzor uz v projektu je: `scpi_test_set_cfg` v `scpi.c` taky aplikuje
+     * SET jen na `src.meas`. */
+    (void)c;
+#endif
     return 1;
 }
