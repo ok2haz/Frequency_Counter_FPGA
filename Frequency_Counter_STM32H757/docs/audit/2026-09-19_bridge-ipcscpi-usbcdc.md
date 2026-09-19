@@ -97,7 +97,20 @@ bez jediného počítadla (**F-0128**) a druhá instance otevřeného F-0014 (**
 - **Vztah k lekcím:** **`L-0025`** („`close` není `free`“ — objekt předaný cizí knihovně
   přestaň vlastnit až ve chvíli, kdy ti přestane volat zpátky; tady je to buffer předaný
   USB stacku), **`L-0028`** (návratová hodnota se čte jako silnější tvrzení, než jaké dává).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** v `f4f4ebf` **variantou (a)** (rozhodl uživatel),
+  ⬜ **neověřeno na HW**. Přidán `s_pending` = bajty letící v CDC; uvolní se teprve až
+  další `CDC_Transmit_FS` vrátí `USBD_OK`, což dokazuje, že `TxState` bylo 0, tedy že
+  předchozí přenos **dokončil**.
+  🔑 **Proč ne (b) přes `CDC_TransmitCplt_FS`, i když je „přesnější“:** callback po
+  odpojení hosta uprostřed přenosu **nepřijde**, takže uvolnění navázané na něj by
+  nechalo `s_pending` držený navždy a konzole by se jevila trvale plná — **horší než
+  původní vada**. Varianta (a) se hojí sama. (Ověřeno, že (b) je technicky proveditelná:
+  `CDC_TransmitCplt_FS` je registrovaná v `USBD_Interface_fops_FS:144` a má
+  `USER CODE BEGIN 13` — argument „sahá na generovaný soubor“, kterým jsem ji nejdřív
+  odmítal, **byl špatný**; rozhodlo až to samohojení.)
+  ⚠️ **Vynutilo si to změnu politiky zahazování → viz F-0128**, která proto nebyla volitelná.
+  ⚠️ `.text` se **zmenšil** o 24 B (ubyla PRIMASK sekce „drop nejstarší“), takže důkaz
+  přítomnosti je symbolový: `s_pending` @`0x2401e3b4`, `.bss` +8 B, nový řetězec v `.elf`.
 
 ---
 
@@ -135,7 +148,15 @@ bez jediného počítadla (**F-0128**) a druhá instance otevřeného F-0014 (**
 - **Riziko opravy:** nízké; čistě aditivní, nemění chování při zahození.
 - **Vztah k lekcím:** **`L-0017`** (tichý přeskok je přípustný jen s počítadlem),
   **`L-0003`** / **`L-0028`** (zahozená návratová hodnota u RX).
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** v `f4f4ebf` (spolu s F-0127), ⬜ **neověřeno na HW**.
+  🔑 **Nebylo to volitelné.** Oprava F-0127 si vynutila změnu politiky: „zahoď nejstarší“
+  (`s_tail++`) by zahazovala **právě letící** blok, protože in-flight oblast začíná
+  přesně na `s_tail`. Zahazuje se tedy **příchozí** bajt — a protože tím zahazování
+  zhoustne, počítadlo přestalo být kosmetika. Přidána `s_tx_dropped` i `s_rx_dropped`
+  (RX: vyhodnocuje se návrat `osMessageQueuePut`) a řádek **`KONZOLE: zahozeno TX n B /
+  RX m B`** ve `status`. ⚠️ Nenulové TX u `screenshot` přes USB = poškozený BMP.
+  ⚠️ `continue` v zahazovací cestě bylo zkontrolováno proti **L-0033**: závěrečný
+  `usb_console_tx_pump()` je **až za** smyčkou, takže se nepřeskočí.
 
 ---
 
@@ -176,7 +197,22 @@ bez jediného počítadla (**F-0128**) a druhá instance otevřeného F-0014 (**
 - **Riziko opravy:** středně vysoké (živá mezijádrová cesta) — proto odložení, ne oprava.
 - **Vztah k lekcím:** **`L-0012`** (druhá instance téže vady se musí doložit ve stejném
   rozhodnutí), **`L-0054`**.
-- **Stav:** otevřeno — **skupina B**, rozhodnout **společně s F-0014**
+- **Stav:** **opraveno 2026-09-19** v `7cd8613`, ⬜ **neověřeno na HW**.
+  Provedeno **jinak (lépe), než návrh F-0014 předpokládal:** soubor se kompiluje
+  **dvakrát**, jednou per jádro, takže stačila **jádrová podmínka** `#if defined(CORE_CM4)`
+  kolem operací s ringem. Tím zůstala **jedna** funkce a validace (brána/kanál/math) se
+  **neduplikovala** — návrh „volat `ipc_cfg_apply()` přímo“ by vyrobil druhou kopii
+  validace, tedy přesně **L-0018**.
+  🔑 **Důkaz v obrazu, který zároveň ukazuje, že produkční cesta je nedotčená:**
+  `ipc_scpi_set_cfg` má na **CM7 128 B**, na **CM4 548 B** (tam zůstal inlinovaný
+  `ipc_cmd_push` + drain smyčka), a **CM4 `.text` je bajt za bajtem shodný** (242 504 B
+  před i po).
+  🔴 **F-0014 (instance `ipccmd`) ZŮSTÁVÁ OTEVŘENÝ — a jeho vlastní návrh opravy je pro
+  něj špatný.** `ipccmd` má v kódu napsaný účel *„pošli příkaz PŘESNĚ tou cestou, kterou
+  použije CM4 … umožňuje ověřit ovládací cestu CM4→CM7 **bez sítě, bez SCPI a bez webu**“*
+  (kritérium W1). Návrh „na CM7 volat `ipc_cfg_apply()` přímo“ by ten příkaz **zrušil** —
+  přestal by testovat to, kvůli čemu existuje. Řeší se samostatně, viz otázka
+  v `AUDIT_STATUS.md`.
 
 ---
 

@@ -728,6 +728,29 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
 - **Detekce:** `tcp_close(`/`*_close(` bez predchoziho `tcp_arg(pcb, NULL)` v temze
   bloku = nalez. Obsluha, ktera dostava `arg` i handle, musi overit, ze k sobe patri.
 - **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0057
+- 🔁 **Opakovalo se 2026-09-19 (F-0127, modul 21) — s jinou cizi knihovnou.**
+  `usb_console_tx_pump()` uvolnil slot kruhoveho bufferu ve chvili, kdy
+  `CDC_Transmit_FS` vratil `USBD_OK`. Jenze cela cesta CDC je **zero-copy**:
+  `USBD_CDC_SetTxBuffer` si ulozi jen ukazatel, `USBD_CDC_TransmitPacket` vrati
+  `USBD_OK` **pred prenosem** a pri `dma_enable = DISABLE` plni FIFO az obsluha
+  preruseni USB — primo z naseho bufferu. „Prijato k odeslani" tedy neznamena
+  „uz to nepotrebuju"; producent prepisoval vysilana data.
+  🔑 **Zobecneni teto lekce: navratova hodnota „OK" od cizi knihovny rika, ze
+  ZADANI bylo prijato, ne ze PRACE skoncila.** Vlastnictvi bufferu se vraci az
+  dokoncenim — a to je jiny okamzik.
+  🔴 **A druha polovina, ktera je proti intuici:** uvolneni navazane na
+  **dokoncovaci callback** (`CDC_TransmitCplt_FS`) je „presnejsi", ale samo o
+  sobe **horsi** — kdyz se host odpoji uprostred prenosu, callback nikdy
+  neprijde, drzeny blok se neuvolni a konzole se jevi trvale plna, tedy vada
+  **zavaznejsi nez ta puvodni**. Zvolena varianta uvolnuje az pri PRISTIM
+  uspesnem zadani (`USBD_OK` dokazuje, ze predchozi dojelo) a tim **se hoji
+  sama**. **Kdyz stavis uvolneni na cizi notifikaci, zeptej se, co kdyz
+  neprijde** — a preferuj konstrukci, ktera se zotavi bez ni.
+  ⚠️ Vedlejsi dusledek, se kterym je nutne pocitat: politika „pri plnem bufferu
+  zahod nejstarsi" **prestane byt pouzitelna**, protoze nejstarsi je prave to
+  letici. Zahazuje se prichozi — a tim zahazovani zhoustne, takze pocitadlo
+  (L-0017) uz neni kosmetika. Commit `f4f4ebf`, viz
+  `docs/audit/2026-09-19_bridge-ipcscpi-usbcdc.md`, F-0127 + F-0128.
 - **Stav:** aktivni
 
 ---

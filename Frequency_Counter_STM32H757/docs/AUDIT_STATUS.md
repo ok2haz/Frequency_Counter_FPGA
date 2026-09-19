@@ -61,8 +61,28 @@ Projev: poškozený výpis konzole a poškozený BMP u `screenshot` přes USB �
 připisovalo tearingu. Oprava (a) se vejde celá do `usb_console.c`.
 Dál **F-0128** (konzole zahazuje v obou směrech bez počítadla — TX drop-oldest i
 ignorovaný návrat `osMessageQueuePut`; projekt má vzor `OVF:`/`FONTY:`),
-**F-0129** (`ipc_scpi_set_cfg` je napojený i na CM7 → **druhá instance F-0014**,
-rozhodnout společně), **F-0130** (`SYSCTRL 0x040F` bez rozkladu).
+**F-0129** (`ipc_scpi_set_cfg` je napojený i na CM7 → **druhá instance F-0014**),
+**F-0130** (`SYSCTRL 0x040F` bez rozkladu).
+✅ **Skupina B rozhodnuta a opravena 2026-09-19 (3 ze 4), ⬜ neověřeno na HW.**
+`f4f4ebf` **F-0127 + F-0128** (`s_pending` — slot se uvolní až po dokončení přenosu;
+uživatel zvolil variantu (a), protože se **hojí sama**: uvolnění navázané na
+`CDC_TransmitCplt_FS` by po odpojení hosta nechalo blok držený navždy a konzole by
+se jevila trvale plná. Vynutilo si to změnu politiky zahazování → počítadla TX/RX
+a řádek `KONZOLE: zahozeno TX n B / RX m B`).
+`7cd8613` **F-0129** — provedeno **lépe než návrh F-0014**: soubor se kompiluje
+dvakrát, takže stačila jádrová podmínka `#if defined(CORE_CM4)` a validace se
+**neduplikovala**. Důkaz: `ipc_scpi_set_cfg` má na CM7 **128 B**, na CM4 **548 B**,
+a CM4 `.text` je **bajt za bajtem shodný** → produkční cesta nedotčená.
+Lekce: výskyt **L-0025** s novou větou („OK od cizí knihovny = zadání přijato, ne
+práce hotova“ + „uvolnění navázané na cizí notifikaci musí přežít, že nepřijde“).
+🔴 **OTEVŘENÁ OTÁZKA — `ipccmd` (F-0014):** jeho vlastní návrh opravy je pro něj
+**špatný**. Kód u něj má napsaný účel *„pošli příkaz PŘESNĚ tou cestou, kterou
+použije CM4 … ověřit ovládací cestu CM4→CM7 bez sítě, bez SCPI a bez webu“*
+(kritérium W1), takže „volat `ipc_cfg_apply()` přímo“ by ten příkaz zrušil.
+🔑 **Nabízí se třetí cesta, kterou má projekt už zavedenou v témže souboru:**
+příkaz `eth` **odmítne běžet**, když ETH obsluhuje CM4 (*„dva masteři na MDIO“*).
+Totéž by šlo u `ipccmd` — odmítnout, když je CM4 živá a může zapisovat z webu.
+Zachová účel i odstraní souběh. **Čeká na rozhodnutí.**
 Předtím 2026-09-17 (16.–17. sezení — **modul 17 = čas, alarmy,
 watchdog**; týž den modul 16 = perzistence
 a záznamníky**: `datalog`, `flightrec` + nový `errlog`, `syscfg`, `setup`, `calib`;
@@ -340,7 +360,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
-| 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | nálezy zapsány | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
+| 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -375,8 +395,8 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 2 | 4 | 0 |
-| S2 | 1 | 16 | 0 |
-| S3 | 18 | 47 | 0 |
+| S2 | 0 | 17 | 0 |
+| S3 | 16 | 49 | 0 |
 | S4 | 12 | 24 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
