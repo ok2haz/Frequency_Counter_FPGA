@@ -2230,6 +2230,44 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0066 — Prázdná sekce nic nerezervuje; ochrana paměti musí umět selhat při linkování
+
+- **Datum:** 2026-09-19
+- **Oblast:** linker skripty, sdílená paměť mezi jádry
+- **Symptom:** CM7 linker měl sekci `.ipc_shared (NOLOAD) … >RAM_D3` s komentářem
+  „IPC sdílená paměť CM7↔CM4, 64 KB" a vypadalo to jako ochrana. Ve skutečnosti
+  měla sekce **délku 0** (`_sipc_shared == _eipc_shared == 0x38000000`), protože
+  `g_ipc` je **makro nad pevnou adresou**, ne objekt — do té sekce tedy nikdy nic
+  nespadlo. CM4 linker `RAM_D3` neznal vůbec.
+- **Příčina:** Sekce s `KEEP(*(.ipc_shared))` rezervuje jen to, co do ní někdo
+  umístí. Když se k paměti sahá přes přetypovanou konstantu (což je u sdílené
+  paměti mezi jádry běžné, protože obě strany musí vidět **tutéž** adresu), je
+  vstupní seznam prázdný a sekce je nulová. Ochrana tedy existovala jen proto, že
+  do RAM_D3 zatím nikdo nic nedal — ne proto, že by tomu něco bránilo. První další
+  sekce s `>RAM_D3` by začala přesně na `0x38000000`, tedy na hlavičce IPC, a
+  projevilo by se to jako „IPC občas nenaběhne" nebo poškozený snapshot.
+- **Oprava:** Rezervovat **explicitně** (`. = _sipc_shared + 64K;` — absolutně, ne
+  `. = . + 64K`, to by se přičítalo za případné umístěné objekty), a to v linkeru
+  **obou** jader; plus `ASSERT(_sipc_shared == <IPC_BASE>)`, protože adresa je
+  zdvojená mezi hlavičkou a linkerem a tenhle assert je jediné místo, kde se ty dvě
+  pravdy potkají.
+- **Pravidlo:** **Region, na který se sahá přes pevnou adresu, musí být v linkeru
+  rezervovaný explicitní velikostí, ne jen značkami.** A ochrana paměti má hodnotu
+  jen tehdy, když umí **selhat při linkování** — komentář, značka ani prázdná sekce
+  nejsou ochrana. Platí to pro **každý** obraz, který tu paměť vidí, ne jen pro ten,
+  kde je definovaná.
+- **Detekce:** `nm <elf> | grep _s<sekce>` a porovnej se značkou konce — stejná
+  adresa = sekce nic nerezervuje. **A udělej negativní test:** dočasně přidej do
+  toho regionu sekci o pár bajtů a ověř, že link **selže** (`region … overflowed`).
+  Bez toho testu nevíš, jestli rezervace funguje — přesně to je **L-0039**
+  (pozitivní kontrola musí obsahovat vadu, kvůli které kontrola vznikla).
+  ⚠️ `NOLOAD` rezervace nic nepřidá do `.text`, ale `size` ji vykáže v `bss` —
+  nenech se tím zmást při porovnávání velikostí před/po.
+- **Commit:** viz git log — `fix(linker)` s F-0016
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

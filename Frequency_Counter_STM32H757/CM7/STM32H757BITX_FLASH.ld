@@ -231,9 +231,25 @@ SECTIONS
     _sipc_shared = .;
     KEEP(*(.ipc_shared))
     KEEP(*(.ipc_shared*))
-    . = ALIGN(32);
+    /* 🔴 REZERVACE CELEHO REGIONU, ne jen znacky (audit F-0016). Do 2026-09-19 tu
+     * bylo jen `ALIGN(32)`, takze sekce mela DELKU 0 (`_sipc_shared ==
+     * _eipc_shared == 0x38000000`) — `g_ipc` je totiz makro nad pevnou adresou
+     * (`ipc_shared.h`), ne objekt, takze do teto sekce nikdy nic nespadlo.
+     * Sekce tedy NECHRANILA NIC: prvni dalsi sekce s `>RAM_D3` by zacala presne
+     * na `0x38000000`, tedy na hlavicce IPC (magic/verze/size), a projevilo by se
+     * to jako „IPC obcas nenabehne" nebo poskozeny snapshot.
+     * Ted region zabira cely, takze **kazde dalsi umisteni do RAM_D3 ho PRETECE
+     * a link SELZE** — nejdrivejsi a nejlevnejsi mozna detekce.
+     * ⚠️ `. = _sipc_shared + 64K` (absolutne), NE `. = . + 64K` — jinak by se 64 K
+     * pricitalo ZA pripadne umistene objekty a rezervace by presahla region. */
+    . = _sipc_shared + 64K;
     _eipc_shared = .;
   } >RAM_D3
+
+  /* Adresa je zdvojena: v `ipc_shared.h` jako `IPC_BASE` a tady jako `RAM_D3`.
+   * Tenhle ASSERT je jedine misto, kde se ty dve pravdy potkaji — bez nej by se
+   * mohly rozejit a nic by to neohlasilo (trida L-0018). */
+  ASSERT(_sipc_shared == 0x38000000, "IPC: .ipc_shared nezacina na IPC_BASE (0x38000000) — srovnej linker a ipc_shared.h")
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :

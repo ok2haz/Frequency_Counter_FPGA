@@ -46,6 +46,12 @@ MEMORY
 FLASH (rx)     : ORIGIN = 0x08100000, LENGTH = 1024K
 RAM (xrw)      : ORIGIN = 0x10020000, LENGTH = 128K  /* D2 SPLIT: CM4 = SRAM2 (128K) pres CM4 alias. SRAM1 (0x10000000, 128K) patri CM7 (viz CM7 linker RAM_D2 + NAVRH §11.5). Drive 0x10000000/288K = kolidovalo s CM7 diagnostikou D2.
                                                         ⚠️ ZKRACENO 160K -> 128K (2026-08-22, ETH F3): SRAM3 se vyclenila do ETH_D2 nize. Kdyby RAM dal sahala pres SRAM3, linker by tam umistil .bss/.data a TICHE by to prepsalo ETH DMA deskriptory (stejna fyzicka pamet, jen jina adresa). CM4 dnes zabira ~4 KB, 128K je s velkou rezervou dost. */
+/* SRAM4 / domena D3 — sdilena pamet IPC CM7<->CM4. ⚠️ MUSI mit shodnou adresu
+   i velikost jako v CM7 linkeru (checklist B) a shodnou s `IPC_BASE`
+   v `ipc_shared.h`. Do 2026-09-19 tu tenhle region CHYBEL, takze na strane CM4
+   nechranilo IPC nic (audit F-0016). Cely ho rezervuje sekce `.ipc_shared` nize —
+   tim kazde dalsi umisteni do RAM_D3 region pretece a link selze. */
+RAM_D3 (xrw)   : ORIGIN = 0x38000000, LENGTH = 64K
 ETH_D2 (xrw)   : ORIGIN = 0x30040000, LENGTH = 32K   /* SRAM3 — ⚠️ SYSTEMOVA (AHB) adresa, NE CM4 alias 0x10040000!
                                                         ETH DMA je AHB master a vidi D2 SRAM na 0x300xxxxx; ukazatel z CM4 aliasu by DMA nerozlouskla.
                                                         CM4 CPU na tuhle adresu dosahne taky (systemova mapa je spolecna), takze staci jedna adresa pro obe strany.
@@ -189,6 +195,32 @@ SECTIONS
     . = ALIGN(4);
     _eeth_dma = .;
   } >ETH_D2
+
+  /* IPC sdilena pamet CM7<->CM4 (SRAM4 / domena D3, 0x38000000, 64 KB) — ZRCADLO
+   * teze sekce v CM7 linkeru (audit F-0016).
+   * 🔴 PROC to tady musi byt: `g_ipc` je makro nad PEVNOU ADRESOU
+   * (`ipc_shared.h: IPC_BASE`), takze linker o te pameti nevi. Do 2026-09-19
+   * CM4 linker `RAM_D3` neznal VUBEC, takze na strane CM4 nechranilo IPC nic —
+   * checklist B pritom zada „shodna adresa i velikost v OBOU linker skriptech".
+   * Rezervace zabira cely region, takze kazde dalsi umisteni do RAM_D3 ho PRETECE
+   * a link SELZE. Bez toho by prvni takovy objekt pristal na `0x38000000`, tedy
+   * na hlavicce IPC, a projevilo by se to jako „IPC obcas nenabehne".
+   * ⚠️ NOLOAD — obsah se plni za behu, nic se odsud nenacita z FLASH.
+   * ⚠️ Nesmi se do ni nic umistovat: obe jadra na tu pamet sahaji pres `g_ipc`,
+   * tedy pres pevnou adresu. Sekce je tu VYHRADNE jako rezervace. */
+  .ipc_shared (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sipc_shared = .;
+    KEEP(*(.ipc_shared))
+    KEEP(*(.ipc_shared*))
+    . = _sipc_shared + 64K;   /* absolutne, viz komentar v CM7 linkeru */
+    _eipc_shared = .;
+  } >RAM_D3
+
+  /* Adresa je zdvojena (`IPC_BASE` v hlavicce vs. `RAM_D3` tady) — tenhle ASSERT
+   * je jedine misto, kde se ty dve pravdy potkaji (trida L-0018). */
+  ASSERT(_sipc_shared == 0x38000000, "IPC: .ipc_shared nezacina na IPC_BASE (0x38000000) — srovnej linker a ipc_shared.h")
 
   /* Remove information from the standard libraries */
   /DISCARD/ :
