@@ -69,18 +69,14 @@ void screenshot_emit_bmp(void)
     if (!fb) return;
     uint32_t rowbytes = SS_W * 3u;             /* 2400 (násobek 4 -> bez paddingu) */
     uint32_t imgsize  = rowbytes * SS_H;
-    uint32_t filesize = 54u + imgsize;
 
-    uint8_t hdr[54]; memset(hdr, 0, sizeof hdr);
-    hdr[0] = 'B'; hdr[1] = 'M';
-    le32(hdr + 2, filesize);                   /* velikost souboru */
-    le32(hdr + 10, 54);                        /* offset pixelů */
-    le32(hdr + 14, 40);                        /* BITMAPINFOHEADER */
-    le32(hdr + 18, SS_W);
-    le32(hdr + 22, SS_H);                      /* kladná výška = bottom-up */
-    hdr[26] = 1;                               /* planes */
-    hdr[28] = 24;                              /* bpp */
-    le32(hdr + 34, imgsize);
+    /* >> JEDNA IMPLEMENTACE PRO OBE CESTY (audit F-0123). Do 2026-09-19 si tady
+     * USB cesta tech deset radku opisovala ZNOVU, prestoze komentar nad
+     * `bmp_header()` tvrdil, ze ji pouzivaji obe cesty „aby se format nemohl
+     * rozejit". Tvrzeni bylo nepravdive a duplicita zivá — presne to, co `L-0018`
+     * zada slucovat, ne dokumentovat dvakrat. */
+    uint8_t hdr[54];
+    bmp_header(hdr, imgsize);
     emit(hdr, 54);
 
     for (int y = SS_H - 1; y >= 0; y--) {      /* BMP jde zdola nahoru */
@@ -99,10 +95,17 @@ void screenshot_emit_bmp(void)
  * mezitím klidně několikrát flipne (triple buffering) — bez kopie by snímek nesl
  * pruhy ze dvou i tří framů. Kopie 750 kB v SDRAM je proti tomu jednotky ms.
  *
- * Scratch = SDRAM region 1 (`0xC0400000`, 4 MB WBWA cached). Sdílí ho jen UART
- * příkaz `sdram write/read` (ruční diagnostika), takže ke kolizi může dojít jen
- * tím, že si uživatel oba příkazy pustí zároveň z jedné konzole — což nejde,
- * UartTask je zpracovává sériově.
+ * Scratch = SDRAM region 1 (`0xC0400000`, 4 MB WBWA cached).
+ * >> KDO JESTE TU PAMET POUZIVA (audit F-0124 — `membench` tu chybel, a je to
+ * zrovna ten nejdulezitejsi):
+ *   - UART `membench` — blok `0xC0400000` (512 kB) DESTRUKTIVNE prepisuje peti
+ *     vzory a retencnim testem. Kdyz ho pustis behem ukladani snimku, snimek bude
+ *     poskozeny (a naopak `membench` nahlasi chybne bity, ktere zpusobil screenshot).
+ *   - UART `sdram write/read` — rucni diagnostika, jednotlive slova.
+ * >> Ke kolizi tedy muze dojit jen tim, ze si uzivatel dva prikazy pusti zaroven
+ * z jedne konzole — a to nejde, UartTask je zpracovava SERIOVE. Prave proto tu
+ * zadny zamek neni; kdyby se ale kterakoli z tech cest presunula do jine ulohy,
+ * tenhle predpoklad PADA.
  *
  * ⚠️ BLOKUJE — jen z UartTasku (viz screenshot.h). */
 #define SS_SCRATCH ((uint16_t *)0xC0400000u)

@@ -129,7 +129,14 @@ připouští — všechno s malým nebo nulovým dopadem.
   sjednocení nemění výstup. ⚠️ Ověřit, že `imgsize` vs. `filesize` se nepoplete —
   `bmp_header` si `54 +` přičítá **sama**.
 - **Vztah k lekcím:** **`L-0028`** (třetí výskyt v projektu), **`L-0018`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** — varianta „sloucit", jak nalez doporucoval
+  (`L-0018` zada slucovat, ne dokumentovat dve kopie). `screenshot_emit_bmp()` nove vola
+  `bmp_header(hdr, imgsize)` a inline verze (~10 radku) je zrusena, takze komentar nad
+  `bmp_header()` je konecne pravdivy. Zrusena i nepouzita `filesize`.
+  ⚠️ **`.text` se NEZMENIL a je to spravne:** `bmp_header` je `static` a gcc ji inlinuje do
+  OBOU volajicich, takze slouceni je zmena ZDROJE, ne velikosti kodu. Dolozeno tim, ze
+  `bmp_header` neni samostatny symbol v `screenshot.o` a ten se prelozil znovu.
+  ⬜ **neovereno na HW** (kriterium: `screenshot` i `screenshot sd` daji platny BMP).
 
 ---
 
@@ -160,7 +167,12 @@ připouští — všechno s malým nebo nulovým dopadem.
 - **Riziko opravy:** žádné.
 - **Vztah k lekcím:** **`L-0022`** (u sdíleného zdroje vyjmenuj **všechny**, kdo ho
   používají — a čím se liší). Týž vzor jako F-0115 v modulu 19.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** (`docs:`). Vycet uzivatelu SDRAM scratche
+  `0xC0400000` nove uvadi **`membench` na prvnim miste** — a vyslovne to, ze ten blok
+  DESTRUKTIVNE prepisuje peti vzory a retencnim testem, takze soubezny beh poskodi snimek
+  (a naopak `membench` nahlasi chybne bity, ktere zpusobil screenshot). Doplneno i to, ze
+  predpoklad „ke kolizi nemuze dojit" stoji VYHRADNE na tom, ze UartTask zpracovava
+  prikazy seriove — a pada, jakmile by se kterakoli cesta presunula do jine ulohy.
 
 ---
 
@@ -195,7 +207,13 @@ připouští — všechno s malým nebo nulovým dopadem.
 - **Riziko opravy:** (a) žádné, (b) nízké.
 - **Vztah k lekcím:** **`L-0054`** („jeden vlastník" je tvrzení o VŠECH volajících),
   **`L-0023`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19** vzorem pozadavku (**L-0061**), stejne jako
+  F-0118. `encoder_set_div()` nove jen nastavi `s_div_req`; zmenu provede **vlastnik stavu**,
+  tedy `encoder_poll()` v UiTasku, kde se zaroven nuluje `s_rem` (zbytek kroku).
+  ⚠️ `syscfg_load()` bezi PRED schedulerem, takze tam se pozadavek zkonzumuje driv, nez
+  `encoder_poll` vubec poprve bezi — zadne zpozdeni pri bootu.
+  Dopad byl maly (nejhur jedna miscountovana zapadka pri rucni zmene delice), ale
+  invariant z hlavicky ted plati doslova. ⬜ **neovereno na HW** (`enc div 2` -> `enc`).
 
 ---
 
@@ -229,7 +247,12 @@ připouští — všechno s malým nebo nulovým dopadem.
   **spouští měření**, ne jen formátuje. Kód měnit není potřeba.
 - **Riziko opravy:** žádné.
 - **Vztah k lekcím:** **`L-0023`** (dotaz, který mění stav), **`L-0054`**.
-- **Stav:** otevřeno
+- **Stav:** **opraveno 2026-09-19.** `autocal_format_full()` uz **nespousti
+  mereni** — pri `!ran` vrati vetu „jeste nebezel, spust tlacitkem AUTO-CAL nebo prikazem
+  `autocal`". Dotaz tedy prestal mutovat globalni stav, ktery cte i druha uloha.
+  ⚠️ **Zadna zmena chovani:** oba volajici (`app_gpsdo.c:9306` UiTask, `freertos_task_uart.c:1597`
+  UartTask) uz `autocal_run()` volaji sami PRED formatovanim — doloženo grepem — takze nova
+  vetev je guard, ne nova cesta. ⬜ **neovereno na HW.**
 
 ---
 

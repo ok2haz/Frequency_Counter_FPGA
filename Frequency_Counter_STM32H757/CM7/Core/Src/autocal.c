@@ -52,9 +52,21 @@ static const char *rs(ac_result_t r)
                  case AC_FAIL: return "FAIL"; default: return "--"; }
 }
 
+/* >> DOTAZ, KTERY MUTOVAL (audit F-0126). `autocal_format_full` pri `!ran`
+ * spoustela cele mereni, takze formatovaci funkce menila globalni stav — a volaji
+ * ji DVE ulohy: UiTask (okno Kalibrace) a UartTask (`autocal`). Dopad je maly, oba
+ * behy ctou tentyz `g_sensors[]` a nic se neuklada ani nerid, ale „getter, ktery
+ * zapisuje" je presne ta vec, kterou pristi ctenar neocekava.
+ * Ted se mereni nespousti odsud: kdyz jeste nebezelo, funkce to REKNE. Spustit ho
+ * ma volajici (tlacitko AUTO-CAL, UART `autocal`), tedy tam, kde je to zamer. */
 void autocal_format_full(char *buf, int n)
 {
-    if (!g_autocal.ran) autocal_run();
+    if (!g_autocal.ran) {
+        snprintf(buf, (size_t)n,
+                 "AUTO-CAL (self-check):\r\n"
+                 "  jeste nebezel — spust tlacitkem AUTO-CAL nebo prikazem `autocal`\r\n");
+        return;
+    }
     snprintf(buf, (size_t)n,
              "AUTO-CAL (self-check):\r\n"
              "  VREF 2V5 : %s\r\n"

@@ -18,6 +18,9 @@
  * pracuje uz jen se zapadkami. Overeni: UART `enc` vypisuje SUROVE kroky. */
 #define ENC_DIV_DEFAULT   4
 static uint8_t s_div = ENC_DIV_DEFAULT;
+/* Pozadavek na zmenu delice z cizi ulohy; konzumuje ho `encoder_poll` (F-0125).
+ * 0 = nic nezada. */
+static volatile uint8_t s_div_req;
 
 #define ENC_LONG_MS          1000u   /* zadani UI §5: „Dlouhy stisk (1 s)" */
 #define ENC_DOUBLE_MS         400u
@@ -117,6 +120,14 @@ void encoder_poll(encoder_ev_t *ev)
     memset(ev, 0, sizeof *ev);
     if (!s_init) return;
 
+    /* Pozadavek na zmenu delice od cizi ulohy (`enc div N`, `syscfg_load`) —
+     * konzumuje ho VLASTNIK stavu, tedy tato funkce v UiTasku (audit F-0125). */
+    if (s_div_req) {
+        s_div = s_div_req;
+        s_div_req = 0u;
+        s_rem = 0;                  /* zbytek ze stareho delice zahodit */
+    }
+
     const uint32_t now = HAL_GetTick();
 
     /* ── Otaceni ──────────────────────────────────────────────────────────
@@ -172,11 +183,21 @@ void encoder_poll(encoder_ev_t *ev)
     if (ev->steps || ev->short_press || ev->long_press || ev->double_click) s_ev_count++;
 }
 
+/* >> `s_div`/`s_rem` vlastni podle kontraktu v hlavicce UiTask (`encoder_poll`),
+ * ale tuhle funkci volaji UartTask (`enc div N`) i `syscfg_load()` (audit F-0125).
+ * Dopad je maly — nejhur jedna miscountovana zapadka v okamziku, kdy uzivatel rucne
+ * meni delic, tedy pred kalibracnim otacenim — ale invariant je invariant, a pristi
+ * uprava se o nej muze opret (tatáz trida jako F-0118).
+ * Resi se POZADAVKEM, ktery zkonzumuje vlastnik: `s_div` se meni az na zacatku
+ * `encoder_poll`, tedy v UiTasku. Zapis `uint8_t` je na M7 atomicky, takze tady
+ * zadny zamek netreba — jde o to, aby `s_rem` (zbytek kroku) nemenil nikdo jiny
+ * nez ten, kdo ho pouziva.
+ * >> `syscfg_load()` bezi PRED schedulerem, takze tam se pozadavek stejne
+ * zkonzumuje driv, nez `encoder_poll` vubec poprve bezi. */
 void encoder_set_div(uint8_t d)
 {
     if (d != 1u && d != 2u && d != 4u) return;   /* jina hodnota nedava smysl */
-    s_div = d;
-    s_rem = 0;                                    /* zbytek ze stareho delice zahodit */
+    s_div_req = d;
 }
 uint8_t encoder_div(void) { return s_div; }
 
