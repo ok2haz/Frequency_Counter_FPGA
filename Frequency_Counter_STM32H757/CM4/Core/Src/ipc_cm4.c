@@ -154,6 +154,18 @@ void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id)
     g_ipc.cm4.eth_init_ok = init_ok ? 1u : 0u;
 }
 
+/* v18 (audit F-0138): pocitadla vyslani. SATURUJI — volne bezici citac by po
+ * pretoceni ukazal 0, tedy presne tu hodnotu, ktera znamena „nevyslal jsem nic".
+ * Saturace znamena „aspon tolik" a nulu drzi vyhradne pro „nikdy", cimz zustane
+ * zachovana ta jedina odpoved, pro kterou pole existuje.
+ * ⚠️ Vola se OPAKOVANE ze smycky (stejne jako `ipc_cm4_set_eth`) — jednorazovy
+ * zapis by smazal `memset` v `ipc_init()` na CM7. */
+void ipc_cm4_set_eth_tx(uint32_t tx_ok, uint32_t tx_err)
+{
+    g_ipc.cm4.eth_tx_ok  = (tx_ok  > 65535u) ? 65535u : (uint16_t)tx_ok;
+    g_ipc.cm4.eth_tx_err = (tx_err > 255u)   ? 255u   : (uint8_t)tx_err;
+}
+
 /* v7 (W2): vysledek `scpi_selftest()`. Vola se jednou pri bootu (viz main.c). */
 void ipc_cm4_set_scpi_selftest(uint8_t ok)
 {

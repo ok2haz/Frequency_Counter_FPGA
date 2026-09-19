@@ -27,10 +27,11 @@
  * Migrace: krok M4 zebriku (STATUS.md) je timto splneny.
  */
 #include <stdint.h>
+#include <stddef.h>   /* offsetof — hlida, ze recyklovana vycpavka nezvetsila strukturu */
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  17u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  18u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -84,7 +85,20 @@
                                        jedinou cestou, jak historii chyb videt; uzivatel se zeptal, jestli
                                        to jde i na webu. ⚠️ `errlog` je AZ ZA `log`, tedy na konci cele
                                        struktury -> detekce nesouladu bank (cm4_ipc_version) funguje
-                                       stejne jako u v13. Flashnout obe banky. */
+                                       stejne jako u v13. Flashnout obe banky.
+                                       v18 (2026-09-19, audit F-0138): `eth_tx_ok`/`eth_tx_err` — pocitadla
+                                       vyslani na CM4, ktera do ted NIKDO NECETL (byla citelna jen sondou,
+                                       a ta za behu zabiji I2C4 do power-cyklu). Odlisi „nevysilame vubec"
+                                       od „vysilame, ale nic se nevraci" — presne tu otazku, ktera stala za
+                                       nejdelsim ladenim v projektu (TX adresa, 2026-09-08).
+                                       ⚠️ VELIKOST STRUKTURY SE NEZMENILA: obe pole leží v byvalem
+                                       `cm4_fault_rsvd[3]` (offsety 45..47 uvnitr `ipc_cm4_status_t`).
+                                       Zmereno pred i po: sizeof(ipc_shared_t) = 11744 B,
+                                       sizeof(ipc_cm4_status_t) = 56 B, offsetof(cm4_flash_bytes) = 48.
+                                       Hlida to `_Static_assert` u te struktury, ne jen tento komentar.
+                                       ⚠️ Bumpnuto PRESTO, stejne jako v8/v9/v11/v15 — recyklace vycpavky
+                                       sice nemuze rozhodit adresy, ale bump je jediny zpusob, jak udelat
+                                       nesoulad bank VIDITELNYM. Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -396,7 +410,27 @@ typedef struct {
     uint32_t cm4_fault_lr;      /* stacknute LR = odkud se skocilo */
     uint32_t cm4_fault_cfsr;    /* SCB->CFSR */
     uint8_t  cm4_fault_kind;    /* 0 = zadny, 1 = HardFault, 2 = Error_Handler */
-    uint8_t  cm4_fault_rsvd[3];
+
+    /* ── Pocitadla vyslani ETH (v18, 2026-09-19, audit F-0138) ────────────
+     * 🔴 PROC: `g_eth_tx_ok`/`g_eth_tx_err` v `ethernetif.c` se inkrementovaly,
+     * ale NIKDO je necetl — byly dosazitelne jen ladici sondou, a ta za behu
+     * zabiji I2C4 do power-cyklu. Odlisit „nevysilame vubec" od „vysilame, ale
+     * nic se nevraci" pritom byla ta nejdrazsi otazka celeho ladeni TX adresy
+     * (2026-09-08), kde `NET: UP` i `ETH(CM4): init OK` tvrdily, ze je vse dobre.
+     *
+     * ⚠️ OBE POLE SE VESLA DO BYVALE VYCPAVKY `cm4_fault_rsvd[3]` (offsety 45..47),
+     * takze struktura NEROSTE — hlida to `_Static_assert` pod definici.
+     *
+     * ⚠️ SATURUJI, nepretacaji se. Volne bezici citac by po pretoceni ukazal 0,
+     * coz je presne ta hodnota, ktera znamena „nevyslal jsem nic" — tedy nejhorsi
+     * mozna zamena. Saturace znamena „aspon tolik" a nulu drzi vyhradne pro
+     * „nikdy". Publikuje se OPAKOVANE ze smycky CM4 (`ipc_cm4_set_eth_tx`), ne
+     * jednorazove — jinak by to smazal `memset` v `ipc_init()` na CM7.
+     *
+     * ⚠️ Cteni na CM7: 0/0 znamena bud „CM4 nehlasi" (starsi obraz), nebo
+     * „jeste nic neposlala". Rozlisi to `cm4_ipc_version`. */
+    uint8_t  eth_tx_err;        /* zahozene TX pakety, saturuje na 255; 0 = zadny */
+    uint16_t eth_tx_ok;         /* uspesne TX pakety, saturuje na 65535; 0 = zadny/nehlasi */
 
     /* ── Velikost obrazu CM4 (v16, 2026-09-13) ────────────────────────────
      * Z VLASTNICH linker symbolu CM4 (`_sidata`/`_edata`/`_sdata`/`_ebss`/
@@ -408,6 +442,19 @@ typedef struct {
     uint32_t cm4_flash_bytes;  /* velikost obrazu ve FLASH bank2 (max 1024 KB) */
     uint32_t cm4_ram_bytes;    /* .data+.bss v RAM (SRAM2, max 128 KB) */
 } ipc_cm4_status_t;
+
+/* 🔴 Dukaz, ze v18 (`eth_tx_err`/`eth_tx_ok`) recyklovalo VYCPAVKU a strukturu
+ * nezvetsilo: `cm4_fault_kind` + ta dve pole musi presne vyplnit 4 B, po kterych
+ * zacina `cm4_flash_bytes`. Kdyby kdokoli pridal dalsi pole nebo zmenil jejich
+ * typ, offset se posune a preklad SKONCI — misto aby snapshot tise narostl a
+ * nesoulad bank se projevil az jako podivne chovani webu.
+ * ⚠️ Zamerne se NEasertuje `sizeof(ipc_shared_t)` jako celek: ta smi legitimne
+ * rust (v13, v16, v17 rostly). Invariant je lokalni — „tohle jsou recyklovane
+ * bajty", ne „struktura nikdy neporoste". */
+_Static_assert(offsetof(ipc_cm4_status_t, cm4_flash_bytes)
+               == offsetof(ipc_cm4_status_t, cm4_fault_kind) + 4u,
+               "v18: eth_tx_err/eth_tx_ok maji byt UVNITR byvale vycpavky cm4_fault_rsvd[3] "
+               "-- posunuty offset znamena, ze snapshot nabehl navic, coz vyzaduje bump IPC_VERSION");
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
@@ -542,6 +589,12 @@ int  ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip); /* 1=link 
 /* ETH bring-up stav z CM4 (v6, F3). @return 1 = HAL_ETH_Init na CM4 proslo.
  * `phy_id` (nepovinne) = PHYID1<<16|PHYID2, 0 = neprecteno. Bez ziveho CM4 vraci 0. */
 int  ipc_cm4_eth(uint32_t *phy_id);
+/* Pocitadla vyslani ETH z CM4 (v18, audit F-0138). @return 1 = CM4 zapsala magic
+ * (hodnoty maji smysl), 0 = bez CM4 (oba vystupy vynulovany).
+ * ⚠️ `ok == 0` pri zive CM4 znamena „za celou dobu neodeslala ANI JEDEN paket" —
+ * tedy presne ten stav, ktery pri ladeni TX adresy (2026-09-08) `NET: UP` zamlcelo.
+ * ⚠️ Hodnoty SATURUJI (ok na 65535, err na 255), takze znamenaji „aspon tolik". */
+int  ipc_cm4_eth_tx(uint16_t *ok, uint8_t *err);
 /* IPC_VERSION, se kterou byl prelozen obraz CM4. 0 = CM4 nezapsala magic, nebo je to
  * starsi obraz, ktery verzi nehlasi. ⚠️ Kdyz != IPC_VERSION, CM4 IGNORUJE snapshot
  * (heartbeat ale bezi dal, takze "4:xx%" klame) -> je potreba preflashnout obe banky. */
@@ -565,6 +618,13 @@ void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32
 
 /* ── CM4 -> CM7: vysledek ETH bring-upu (v6, F3). Vola CM4 jednou po MX_ETH_Init. */
 void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id);
+
+/* ── CM4 -> CM7: pocitadla vyslani (v18, audit F-0138). Bere volne bezici uint32
+ * citace z `ethernetif.c` a ulozi je SATUROVANE do snapshotu.
+ * ⚠️ MUSI se volat OPAKOVANE ze smycky CM4 (jako `ipc_cm4_set_eth`), ne jednou —
+ * `ipc_init()` na CM7 dela memset cele sdilene struktury, takze jednorazovy zapis
+ * se muze tise ztratit a uz nikdy nevratit. */
+void ipc_cm4_set_eth_tx(uint32_t tx_ok, uint32_t tx_err);
 
 /* ── CM4 -> CM7: vysledek `scpi_selftest()` na CM4 (v7, W2). ok: 1=PASS, 0=FAIL. */
 void ipc_cm4_set_scpi_selftest(uint8_t ok);

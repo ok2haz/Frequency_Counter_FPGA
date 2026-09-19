@@ -105,13 +105,15 @@ __attribute__((section(".Rx_PoolSection"))) extern u8_t memp_memory_RX_POOL_base
 /* Variable Definitions */
 static RxAllocStatusTypeDef RxAllocStatus;
 
-/* Pocitadla vyslani. Meli odlisit "nevysilame vubec" od "vysilame, ale nic se
- * nevraci".
- * 🔴 JENZE JE NIKDO NECTE (audit F-0138). Driv tu stalo "cte je CM7 pres IPC
- * (`status`)" — to NEPLATI: ve snapshotu pro ne neni pole a v `CM7/` na ne nikdo
- * nesaha. Dokud se nepublikuji, jsou citelne jen sondou (`nm` + `-r32`), a sonda
- * za behu zabiji I2C4 do power-cyklu. Viditelnost potrebuje pole v IPC, tedy
- * rozhodnuti o sdilene strukture — proto je to samostatny nalez, ne tichy zasah. */
+/* Pocitadla vyslani — odlisi "nevysilame vubec" od "vysilame, ale nic se nevraci".
+ * ✅ Od v18 (2026-09-19, audit F-0138) je CM7 SKUTECNE CTE: `ipc_cm4_set_eth_tx()`
+ * je saturovane uklada do bloku `cm4` sdilene struktury (recyklovana vycpavka
+ * `cm4_fault_rsvd`, velikost snapshotu se nezmenila) a UART `status` je tiskne.
+ * Do te doby byly citelne VYHRADNE ladici sondou, a ta za behu zabiji I2C4 do
+ * power-cyklu — takze diagnoza, ktera stala za nejdelsim ladenim v projektu
+ * (TX adresa, 2026-09-08), byla fakticky nedosazitelna.
+ * ⚠️ Tady zustavaji volne bezici uint32; saturaci dela AZ publikace, aby se
+ * "0 = nevyslal jsem nic" nedalo zamenit s pretocenim citace. */
 uint32_t g_eth_tx_ok;
 uint32_t g_eth_tx_err;
 
@@ -656,9 +658,19 @@ void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd, uint8_t *buff, uint16_t 
   (void)buff; (void)Length;
 }
 
-void HAL_ETH_TxFreeCallback(uint32_t * buff)
-{
-  pbuf_free((struct pbuf *)buff);
-}
+/* 🔴 `HAL_ETH_TxFreeCallback` tu ZAMERNE NENI (audit F-0134). Verze ze prikladu ST
+ * delala `pbuf_free((struct pbuf *)buff)` — tedy uvolnovala pbuf, ktery si
+ * `low_level_output` v zero-copy navrhu ST predtim privlastnil pres `pbuf_ref()`.
+ * My `pbuf_ref()` NEVOLAME (pbufy uvolnuje lwIP sam), takze ten callback byl
+ * nabita zbran: dnes nestrilel jen proto, ze ho nikdo nevola — `HAL_ETH_Transmit`
+ * (blokujici varianta, kterou pouzivame) ho nevola a `HAL_ETH_ReleaseTxPacket`
+ * nevola v celem projektu nikdo. Prvni krok ke zvyseni propustnosti by ho probudil
+ * a zpusobil DVOJI uvolneni pbufu = poskozena lwIP halda, projevujici se nahodne
+ * a daleko od priciny. HAL ma `__weak` variantu, takze odstranenim se nic nerozbije.
+ *
+ * ⚠️ AZ PREJDES NA `HAL_ETH_Transmit_IT` (nebo zacnes volat `HAL_ETH_ReleaseTxPacket`),
+ * musis udelat OBOJI NARAZ: vratit tento callback A pridat `pbuf_ref(p)` do
+ * `low_level_output` pred vyslanim. Jedno bez druheho je bud dvoji uvolneni
+ * (callback bez `pbuf_ref`), nebo unik pameti (`pbuf_ref` bez callbacku). */
 
 

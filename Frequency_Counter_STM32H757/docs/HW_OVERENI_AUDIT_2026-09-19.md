@@ -144,12 +144,22 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
 - [ ] **F-0132 (TX cesta):** z prohlížeče stáhnout **celou SPA** (~139 kB) a projít
       dashboard; pak `/api/state` a `POST /api/scpi`. Ověří dlouhé TX přenosy, tedy právě
       cestu, kde se skládají zřetězené pbufy.
-      ⚠️ **Počítadlo `g_eth_tx_err` z UARTu NEPŘEČTEŠ** — to je otevřený **F-0138**
-      (nikdo je nepublikuje). Kritérium je tedy „SPA se načte celá a dashboard kreslí",
-      ne číslo.
+- [ ] **F-0138 (nově měřitelné):** `status` → řádek **`TX(CM4): odeslano N, zahozeno M`**.
+      Dokud byl F-0138 otevřený, tohle číslo z UARTu přečíst nešlo a kritériem bylo jen
+      „SPA se načte celá". Teď platí obojí:
+      - `odeslano` musí **růst** při načítání SPA (saturuje na 65535, pak se tiskne `65535+`),
+      - `zahozeno` má být **0** — nenulové znamená zřetězený pbuf delší než `ETH_TX_DESC_CNT`,
+      - 🔴 **`odeslano 0` s `NET: UP` = přesně ta vada z 2026-09-08** (linka hlásí
+        100 Mbit full, na drát nejde nic). Výpis to sám označí `<== NEODESLALA ANI JEDEN PAKET`.
+      ⚠️ Vyžaduje **obě banky s `IPC_VERSION` 18** — při nesouladu `status` napřed vypíše
+      `⚠ IPC NESOULAD`, a ten řádek má přednost před jakoukoli interpretací TX počítadel.
 - [ ] **F-0135:** `GPIO HLIDAC: 0 oprav` ve `status` (jako dřív). Příznak
-      `g_hsem_gpio_unlocked` se **záměrně nepublikuje** (viz F-0138), takže z UARTu ho
-      nevyčteš; tady jde jen o to, že se zámek chová jako dřív.
+      `g_hsem_gpio_unlocked` se **záměrně nepublikuje** — je to stav jednoho okamžiku
+      při bootu, ne počítadlo, takže z UARTu ho nevyčteš; tady jde jen o to, že se
+      zámek chová jako dřív.
+      ⚠️ Tahle položka **nemá** společnou příčinu s F-0138, i když to dřív v checklistu
+      takhle stálo: F-0138 byl chybějící *čtenář* existujících počítadel (opraveno),
+      tady chybí *publikace* jednorázového příznaku — což je vědomé rozhodnutí.
 - [ ] `SCPI(CM4): selftest PASS`, `HTTP(CM4): selftest PASS`, `CM4: alive … stall x0`
       — nic z modulu 22 se jich netýká, jsou to kontrolní hodnoty proti regresi.
 

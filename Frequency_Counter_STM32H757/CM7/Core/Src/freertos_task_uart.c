@@ -2402,6 +2402,20 @@ void UartTask_run(void *argument)
 							  printf("  NET: down%s\n", g_cm4_eth_ok ? " (kabel?)" : "");
 						  }
 					  }
+					  /* Pocitadla vyslani (v18, audit F-0138). 🔑 Odlisi "nevysilame
+					   * vubec" od "vysilame, ale nic se nevraci" — presne tu otazku,
+					   * kterou `NET: UP` zamlcelo pri ladeni TX adresy 2026-09-08,
+					   * kdy linka hlasila 100 Mbit full a na drat nesel ani bajt.
+					   * `TX 0` pri UP lince je tedy SILNY signal, ne detail. */
+					  {
+						  uint16_t txok = 0; uint8_t txerr = 0;
+						  if (ipc_cm4_eth_tx(&txok, &txerr)) {
+							  printf("  TX(CM4): odeslano %u%s, zahozeno %u%s%s\n",
+								     (unsigned)txok, (txok == 65535u) ? "+" : "",
+								     (unsigned)txerr, (txerr == 255u) ? "+" : "",
+								     (txok == 0u) ? "  <== NEODESLALA ANI JEDEN PAKET" : "");
+						  }
+					  }
 				  }
 				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
 				   * preteceni (a tim i na "stall"/HardFault). */

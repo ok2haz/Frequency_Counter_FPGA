@@ -27,6 +27,7 @@
 #include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
 #include "iwdg2.h"     /* nezavisly watchdog CM4 (~4 s); zaseknuta smycka -> reset CM4 */
 #include "lwip_app.h"  /* lwIP NO_SYS=1: DHCP klient + ping (F5) */
+#include "ethernetif.h" /* g_eth_tx_ok/_err — pocitadla vyslani publikovana pres IPC (F-0138) */
 /* Relativni cesta - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
  * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); GCC quote-include hleda
  * nejdriv ve slozce souboru se #include, takze cesta funguje bez ohledu
@@ -327,6 +328,9 @@ int main(void)
 		   * samostatny reset CM7 dela v `ipc_init` memset cele sdilene struktury,
 		   * takze jednorazovy zapis by se ztratil a Health by hlasil "ETH:--". */
 		  ipc_cm4_set_eth(g_eth_init_ok, g_eth_phy_id);
+		  /* Pocitadla vyslani (v18, audit F-0138) — ze stejneho duvodu taky
+		   * OPAKOVANE. Do teto opravy se inkrementovala, ale necetl je nikdo. */
+		  ipc_cm4_set_eth_tx(g_eth_tx_ok, g_eth_tx_err);
 	  }
 
 	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze

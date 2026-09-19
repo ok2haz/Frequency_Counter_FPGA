@@ -483,8 +483,15 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   (U F-0131 to naopak vyšlo dobře **bez** nového počítadla — selhání se projeví jako
   `NET: DOWN` místo falešného `NET: UP`, a `net_link` se publikuje už dnes. Nejlepší
   počítadlo je to, které není potřeba.)
-  Commity `356fe02` (F-0132), `dd8ef75` (komentář F-0138); viditelnost počítadel
-  zůstává otevřená jako **F-0138**, protože vyžaduje rozhodnutí o sdílené struktuře.
+  Commity `356fe02` (F-0132), `dd8ef75` (komentář F-0138).
+  ✅ **Druhá část pravidla uzavřena 2026-09-19 (F-0138):** počítadla `g_eth_tx_ok`/
+  `g_eth_tx_err` se publikují do IPC (`eth_tx_ok`/`eth_tx_err` v bloku `cm4`,
+  recyklovaná vycpávka, `IPC_VERSION` 18) a UART `status` je tiskne na řádku
+  `TX(CM4):`. Do té chvíle to byl **doložený případ přesně toho selhání, které
+  tahle lekce popisuje**: inkrement existoval, čtenář ne, takže hodnota byla
+  dosažitelná jen ladicí sondou — a ta za běhu zabíjí I2C4 do power-cyklu, tedy
+  fakticky nedosažitelná. Navazuje **L-0059** (nula toho počítadla nese diagnózu,
+  proto musí saturovat, ne přetékat).
 - **Stav:** aktivní
 
 ### L-0018 — Dva vypocty teze veliciny: oprav obe, nebo vyrob jeden zdroj pravdy
@@ -1916,6 +1923,79 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   — po opravě prošlo všech šest souborů, `./scripts/build.sh Release BOTH`
   dal byte-přesně stejný `.elf` jako s tou `-I` cestou.
 - **Commit:** (viz git log — commit bezprostředně po L-0041)
+- **Stav:** aktivní
+
+---
+
+### L-0058 — Nedosažitelný kód, který by při dosažení byl vadný, není mrtvý kód, ale past
+
+- **Datum:** 2026-09-19
+- **Oblast:** CM4 / lwIP glue, vlastnictví objektů předaných knihovně
+- **Symptom:** Žádný — a právě to je na tom to nebezpečné. `HAL_ETH_TxFreeCallback`
+  v `CM4/LWIP/Target/ethernetif.c` dělala `pbuf_free((struct pbuf *)buff)`, tedy
+  uvolňovala pbuf, který si v zero-copy návrhu ST `low_level_output` předtím
+  přivlastnil přes `pbuf_ref()`. My `pbuf_ref()` nevoláme vůbec, takže ten účet
+  nebyl vyrovnaný. Nespadlo to jen proto, že **callback nikdo nevolá**:
+  `HAL_ETH_Transmit` (blokující varianta, kterou používáme) ho nevolá,
+  `HAL_ETH_ReleaseTxPacket` nevolá v celém projektu nikdo a ETH přerušení se
+  neobsluhuje.
+- **Příčina:** Callback se převzal z příkladu ST, ale bez druhé půlky páru.
+  Zrádné je, že **vypadá jako součást funkčního páru** — čtenář nemá důvod
+  hledat chybějící `pbuf_ref`. Odjistila by ho první přirozená další změna:
+  přechod na `HAL_ETH_Transmit_IT` kvůli propustnosti, nebo zavolání
+  `HAL_ETH_ReleaseTxPacket`, což návod ST doporučuje. Následek by bylo dvojí
+  uvolnění v lwIP haldě na CM4 — tedy poškození haldy, které se projeví
+  **náhodně a daleko od příčiny** (zatuhlé spojení, podivný obsah odpovědí,
+  pád CM4).
+- **Oprava:** Callback odstraněn (HAL má `__weak` variantu, takže se nic
+  nerozbilo — `--gc-sections` symbol z obrazu zahodil úplně). Na jeho místě
+  zůstal komentář, který příští úpravě říká, že při přechodu na `Transmit_IT`
+  se musí udělat **obojí naráz**: vrátit callback **a** přidat `pbuf_ref(p)`.
+  Jedno bez druhého je buď dvojí uvolnění, nebo únik paměti.
+- **Pravidlo:** **Kód, který dnes nikdo nevolá, není neškodný.** Když by po
+  dosažení byl vadný, je to nabitá zbraň — buď ho odstraň, nebo dopáruj; a když
+  ho odstraníš, napiš do komentáře, co musí příští úprava udělat SPOLEČNĚ, aby
+  ho směla vrátit. „Nevolá se, tak to nevadí" je popis dnešního stavu, ne
+  vlastnost kódu.
+- **Detekce:** U každého callbacku nebo funkce, která **uvolňuje či zavírá cizí
+  objekt**, najdi řádek, kde se ten objekt přivlastňuje (`*_ref`, `*_alloc`,
+  `*_take`). Když takový řádek neexistuje, je to jedno z dvojice: past (uvolňuje
+  se nepřivlastněné), nebo únik (přivlastňuje se bez uvolnění). Obojí je nález.
+  Souvisí s **L-0025** (`close` není `free`), tam ale obráceně: tam se
+  neuvolňovalo, tady se uvolňuje něco, co nám nepatří.
+- **Commit:** viz git log — `fix(cm4-eth)` s F-0134
+- **Stav:** aktivní
+
+---
+
+### L-0059 — Čítač, jehož NULA nese diagnózu, nesmí přetékat — saturuj ho
+
+- **Datum:** 2026-09-19
+- **Oblast:** IPC / diagnostika napříč jádry
+- **Symptom:** `g_eth_tx_ok` na CM4 je volně běžící `uint32_t`. Při publikaci do
+  sdílené struktury (kde bylo místo jen na `uint16_t` v recyklované vycpávce) by
+  se prostým přetypováním po 65 536 paketech vrátil na **0**.
+- **Příčina:** U tohohle čítače nula **není počáteční stav, ale diagnóza**:
+  „CM4 neodeslala ani jeden paket". Přesně to byla nejcennější odpověď při
+  nejdelším ladění v projektu (TX adresa, 2026-09-08), kdy `NET: UP 100 Mbit
+  full` i `ETH(CM4): init OK` tvrdily, že je vše v pořádku, a na drát přitom
+  nešel ani bajt. Přetečení by tu diagnózu **nerozlišitelně zfalšovalo** —
+  a to v okamžiku, kdy vysílání funguje nejlépe.
+- **Oprava:** Saturace při **publikaci**, ne v inkrementu (`ipc_cm4_set_eth_tx`):
+  `ok` saturuje na 65535, `err` na 255. Semantika je dokumentovaná jako „aspoň
+  tolik" a v `status` se saturovaná hodnota tiskne s `+`. Nula tak zůstává
+  vyhrazená výhradně pro „nikdy" a výpis ji rovnou označí
+  (`<== NEODESLALA ANI JEDEN PAKET`).
+- **Pravidlo:** **Než zúžíš nebo publikuješ čítač, zeptej se, co znamená jeho
+  nula.** Když nese význam („nikdy", „nespustilo se", „chybí"), musí čítač
+  saturovat. Volně běžící čítač smí přetékat jen tam, kde se sleduje POUZE růst
+  (`heartbeat`, `SEQUENCE`) — tam je rozdíl dvou hodnot, ne hodnota sama.
+- **Detekce:** U každého čítače, který se někam publikuje nebo zužuje, projdi
+  obě otázky: (1) co znamená 0, (2) co se stane při přetečení. Když odpověď na
+  (1) je diagnóza a na (2) „vrátí 0", je to nález. Doplňkově: saturující pole
+  musí být poznatelné i ve výpisu (značka `+`), jinak čtenář nepozná „přesně
+  tolik" od „aspoň tolik".
+- **Commit:** viz git log — `fix(ipc)` s F-0138
 - **Stav:** aktivní
 
 ---

@@ -665,6 +665,23 @@ int ipc_cm4_eth(uint32_t *phy_id)
     return g_ipc.cm4.eth_init_ok ? 1 : 0;
 }
 
+/* ── Pocitadla vyslani z CM4 (v18, audit F-0138). Do teto opravy se
+ * `g_eth_tx_ok`/`g_eth_tx_err` inkrementovaly na CM4, ale nikdo je necetl —
+ * byly dosazitelne jen ladici sondou, ktera za behu zabiji I2C4 do power-cyklu.
+ * ⚠️ Navratova hodnota rika jen „CM4 zapsala magic", NE ze vysilani funguje:
+ * `ok == 0` pri zive CM4 je prave ta diagnoza „neodeslala ani jeden paket". */
+int ipc_cm4_eth_tx(uint16_t *ok, uint8_t *err)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (ok)  *ok  = 0u;
+        if (err) *err = 0u;
+        return 0;
+    }
+    if (ok)  *ok  = g_ipc.cm4.eth_tx_ok;
+    if (err) *err = g_ipc.cm4.eth_tx_err;
+    return 1;
+}
+
 /* ── IPC_VERSION obrazu CM4 (v6). 0 = CM4 nezapsala magic, nebo bezi starsi obraz,
  * ktery verzi nehlasi. Existuje proto, ze nesoulad bank byl do ted TICHY: CM4 pri
  * neshode jen prestane cist snapshot, ale heartbeat publikuje dal -> `ipc_cm4_alive()`
