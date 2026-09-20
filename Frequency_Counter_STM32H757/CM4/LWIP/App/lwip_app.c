@@ -114,6 +114,29 @@ static void mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     if (after == NULL || after + 4 > end) return;
     uint16_t qtype = (uint16_t)((after[0] << 8) | after[1]);
     if (qtype != 1 && qtype != 255) return;                 /* jen A nebo ANY */
+    /* >> QCLASS SE CTE (audit F-0061). Driv se overoval jen QTYPE, prestoze
+     * `after + 4 > end` uz misto na QCLASS vyhradilo — odpovidalo se tedy i na dotaz
+     * s jinou tridou nez IN. Nejvyssi bit je QU (unicast-response request, RFC 6762
+     * §5.4), takze se maskuje. */
+    uint16_t qclass = (uint16_t)(((after[2] << 8) | after[3]) & 0x7FFFu);
+    if (qclass != 1u && qclass != 255u) return;             /* jen IN nebo ANY */
+
+    /* >> OMEZENI TEMPA (audit F-0061). Bez nej mohl kdokoli na LAN dotazy na 5353
+     * rozesilat odpovedi do multicast skupiny (zesileni ~2x). Reflexni utok na treti
+     * stranu z toho nesel — odpovida se na MULTICAST, ne na odesilatele — ale zatezovat
+     * sit vlastnimi pakety v tempu cizich dotazu je zbytecne.
+     * ⚠️ 250 ms je kompromis: prohlizec pri hledani `gpsdo.local` posle 2-3 dotazy
+     * rychle za sebou a na prvni se odpovi hned, takze se to na pouzitelnosti neprojevi.
+     * ⚠️ Plna konformita s RFC 6762 (probing, detekce konfliktu jmena, nahodny rozptyl)
+     * je vlastni projekt a vedome se nedela — modul je v hlavicce oznaceny jako
+     * best-effort. */
+    {
+        static uint32_t s_mdns_next_ms;
+        uint32_t now = HAL_GetTick();
+        if (s_mdns_next_ms != 0u && (int32_t)(now - s_mdns_next_ms) < 0) return;
+        s_mdns_next_ms = now + 250u;
+        if (s_mdns_next_ms == 0u) s_mdns_next_ms = 1u;       /* 0 znamena "jeste nikdy" */
+    }
 
     uint32_t ip = netif_ip4_addr(&s_netif)->addr;           /* sitove poradi bajtu */
     if (ip == 0u) return;                                   /* jeste nemame IP */
