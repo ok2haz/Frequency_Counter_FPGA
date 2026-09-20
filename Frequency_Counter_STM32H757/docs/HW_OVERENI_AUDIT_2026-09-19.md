@@ -1,9 +1,18 @@
-# Ověření oprav z auditu na HW — jeden průchod (2026-09-19)
+# Ověření oprav z auditu na HW — jeden průchod (2026-09-19, doplněno 2026-09-20)
 
-> **Účel:** odbavit ověřovací dluh auditu. Modulů 1–21 se dotklo **29 `fix:` commitů**,
+> **Účel:** odbavit ověřovací dluh auditu. Nasčítalo se **přes 40 `fix:` commitů**,
 > které **nikdy neběžely na desce**, a podle `L-0010` žádný z nich není hotový.
-> Pořadí je zvolené tak, aby se přístroj **restartoval jen dvakrát** a aby se odečty,
+> Pořadí je zvolené tak, aby se přístroj **restartoval co nejméně** a aby se odečty,
 > které platí jen po studeném startu, nepřepsaly něčím, co se spustí později.
+>
+> ⚠️ **Dokument vznikl 2026-09-19 a pak se k němu přidaly další tři dávky oprav.**
+> Fáze **3e** (skupina B a A+A′) a **9** (dnešní UI/diagnostika) jsou doplněné
+> 2026-09-20 — bez nich by se průchod musel dělat třikrát.
+>
+> 🔴🔴 **`IPC_VERSION` se ZMĚNILA 17 → 18** (F-0138). Dokud nejsou naflashované **obě
+> banky**, CM4 snapshot ignoruje a **polovinu tohohle checklistu nejde vyhodnotit** —
+> a zrádné je, že to navenek vypadá dobře: header dál svítí `4:xx%`. Jediný příznak
+> je řádek `⚠ IPC NESOULAD` ve `status`.
 >
 > Legenda: ✅ funguje · ⚠️ funguje s výhradou · ❌ nefunguje · ⬜ nezkoušeno
 >
@@ -17,7 +26,9 @@
 ## 0. Flash — než cokoli odečteš
 
 🔴 **Flashni OBĚ banky.** Mezi neověřenými jsou opravy CM4 (`2f2aa53`, `b6cc88e`) a dnešní
-`ipc_scpi.c` se linkuje do obou obrazů. `IPC_VERSION` se nemění (17), ale nesoulad bank
+`ipc_scpi.c` se linkuje do obou obrazů.
+🔴 **`IPC_VERSION` se ZMĚNILA 17 → 18** (F-0138 přidal TX počítadla do bloku `cm4`),
+takže flash obou bank **není volitelný**. Nesoulad bank
 je **neviditelný** — header dál svítí `4:xx%`.
 
 🔴🔴 **PAST: „Set Active → Release" NESTAČÍ.** Mění jen tlačítko **Build**. Tlačítko
@@ -62,6 +73,20 @@ z fáze 6 tyhle hodnoty přepíšou nebo vynulují.
 - [ ] `STATISTIKA: sigma_y@1s` — nenulová a v řádu signálu (F-0037)
 - [ ] `DATALOG …` — zapiš si stav, budeš ho potřebovat ve fázi 6
 - [ ] `REFERENCE:` — sticky bity Si5356 (po bootu je armování 5 s, takže čisté)
+- [ ] 🔑 **`FORMAT: omezenych desetin 0`** — *nový řádek (F-0053)*. Nenulové znamená, že
+      se někde na displeji ukazuje **zaokrouhlená** hodnota místo požadované; dřív se to
+      dělo tiše (σ hlásila „0 Hz", STATUS #132). Hlídá i druhou mez — přetečení `int32`
+      podle **hodnoty**, kterou grep nad zdrojem najít neumí.
+- [ ] 🔑 **`ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK`** —
+      *nový řádek (F-0098)*. Všech pět musí být `OK`. Cokoli s `--` znamená, že se ta část
+      W25Q nepřipravila a **do konce běhu nepřipraví** (nastavení se neuloží, kalibrace
+      zůstane na datasheetových výchozích). Pod ním se při nenulových pokusech objeví
+      `pokusy o zachranu: syscfg N, errlog M (strop 5)` — nenulové = jednorázová smůla
+      při bootu, kterou retry řešil.
+- [ ] `Reset:` **nesmí** hlásit `hal_err@HSE` ani `hal_err@LSE` (F-0007 + F-0108).
+      Kdyby ano, nenaběhl oscilátor — ale to bys nejspíš nečetl, protože přístroj by
+      v tom případě vůbec nenastartoval. **Nový je vzor blikání:** ≥ 15 bliknutí LED_1
+      + pípnutí = hodiny. Do 2026-09-19 byla ta smrt **úplně tichá a temná**.
 
 ### 1b. `sdramlog` — musí naběhnout (modul 19, F-0117)
 
@@ -84,11 +109,47 @@ z fáze 6 tyhle hodnoty přepíšou nebo vynulují.
 **1024 → 2048 slov**. Premisa nálezu se tím změnila a rozhodne se **měřením**, ne debatou.
 Dělej to **po fázi 1** (aby se neztratily odečty) a **před** vším ostatním.
 
+🔴 **POZOR PŘI VYHODNOCENÍ: jsou v obrazu DVĚ konkurenční opravy téhož, ne jedna.**
+Kromě zvětšení zásobníku přibyl 2026-09-20 i přesun velkých lokálů do `.bss`
+(`resp[128]` u `scpi`, `buf[512]` u `qspispeed` — F-0074 + F-0077a). TODO #243 zadávalo
+dělat je **odděleně**, aby se poznalo, která pomohla; uživatel se rozhodl udělat obě.
+**Když to teď projde, znamená to „už to nepadá", NE „víme čím."** Zapiš tedy i `stats`
+→ volný stack UartTasku, ať je aspoň číslo, ze kterého se to dá příště dopočítat.
+
 - [ ] `selftest` → **`SELFTEST: 16/16 PASS`** a **deska se neresetuje**
       - ✅ prošlo → **F-0055 jde zavřít** a provozní omezení „`selftest` z konzole
         nespouštět" padá
       - ❌ reset → F-0055 **platí dál**; zapiš `status` → `Reset:` a crash black-box
         (`stack:UartTask`?) a omezení zůstává
+
+---
+
+## 2b. F-0018 [S1] — `stacktest yes` (⚠️ ZÁMĚRNĚ SHODÍ DESKU)
+
+🔑 **Co se ověřuje:** letový zapisovač volaný z hooku přetečení zásobníku
+**deterministicky nezapsal nic** — hook běží v PendSV, kde `osMutexAcquire` vždy vrátí
+`osErrorISR`. Od 2026-09-20 se dump nejdřív složí do `.sdram` a do flash ho vylije až
+`flightrec_init()` **po restartu**. Tohle je jediný způsob, jak to ověřit.
+
+⚠️ **Dělej to až po fázích 1 a 2** — příkaz přetečení vyvolá schválně, takže následuje
+IWDG reset a všechny odečty „jen po bootu" jsou pryč. Po restartu bude crash black-box
+hlásit `stack:UartTask`, což je **očekávané**, ne nález.
+
+- [ ] `stacktest yes` → deska se restartuje (to je záměr)
+- [ ] po restartu `status`:
+      - [ ] `Reset:` hlásí `WATCHDOG` + crash black-box **`stack:UartTask`**
+      - [ ] 🔑 **`FLIGHTREC: N dumpu zachranenych po restartu (SDRAM staging)`** —
+            *nový řádek*. **Tohle je ten důkaz.** Když chybí, dvoufázový zápis nefunguje
+            a F-0018 platí dál.
+      - [ ] `FLIGHTREC: … zahozeno` **nesmí** přibýt (to je jiná cesta — nedostaný mutex
+            mimo kontext výjimky)
+- [ ] `flightrec` → vypíše **60 s historie před pádem** (CPU, heap, nejmenší stack,
+      teploty, I2C). Prázdný výpis při nenulovém „zachráněno" = vylilo se, ale obsah
+      je vadný → samostatný nález.
+- [ ] `errlog dump` → nejnovější řádek **`CRASH  stack UartTa`** (F-0092)
+      🔑 Do 2026-09-20 tam stálo jen `CRASH  CFSR=0x00000000 BFAR=0x00000000`, tedy
+      *že* se pád stal, ale ne *co* spadlo. Jméno tasku je useknuté na 6 znaků
+      (`UartTa`) — to je správně, tag má pevnou délku.
 
 ---
 
@@ -163,6 +224,60 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
 - [ ] `SCPI(CM4): selftest PASS`, `HTTP(CM4): selftest PASS`, `CM4: alive … stall x0`
       — nic z modulu 22 se jich netýká, jsou to kontrolní hodnoty proti regresi.
 
+## 3e. Dávky z 2026-09-19 (skupina B) a 2026-09-20 (skupina A + A′)
+
+### Váže se na studený start z fáze 1
+
+- [ ] **F-0017** — ✅ **už se ověřilo ve fázi 1a**, nedělej kvůli tomu další restart:
+      řádky `SCPI(CM4): selftest PASS` a `HTTP(CM4): selftest PASS` odečtené hned po
+      power-cyklu z fáze 0 JSOU ten důkaz. Sem to patří jen proto, aby se vědělo,
+      že tahle položka není „nezkontrolovaná".
+      🔑 **Proč zrovna studený start:** `ipc_init()` na CM7 dělal `memset` přes celou
+      sdílenou strukturu včetně bloku `cm4` a běží až ze `StartDefaultTask`, tedy
+      sekundy po bootu — zatímco CM4 publikuje už ~1,3 s po bootu. Při HW průchodu
+      2026-08-30 memset dopadl **mezi** publikaci httpd a eth a `status` hlásil
+      „jeste nedobehl", přestože selftest prošel. Nově blok `cm4` nuluje CM4 sama.
+      **„Jeste nedobehl" po studeném startu = oprava nefunguje.**
+- [ ] **F-0016** — jen regresně: IPC funguje jako dřív (`CM4: alive`, snapshot se čte).
+      Oprava je čistě linkerová rezervace 64 kB v RAM_D3 na obou jádrech; kdyby byla
+      špatně, **neslinkovalo by se to** (ověřeno negativním testem při opravě).
+
+### Encoder (F-0122, F-0125) — 🔴 tady je jediná skutečná změna chování
+
+- [ ] **`enc`** → otočit o **jednu západku** → musí vypsat **`kroku=1`**
+      🔴 **Tohle je nejdůležitější položka celé dávky.** TIM1 se nově konfiguruje
+      z `.ioc` přes `MX_TIM1_Init()` a `encoder.c` ho jen startuje
+      (`HAL_TIM_Encoder_Start`). Registry vycházejí bit za bitem stejně **až na
+      `CC1E/CC2E`**, které byly dřív nulové — počítání to měnit nemá (slave-mode
+      controller bere `TI1FP1/TI2FP2`), ale je to **jediný neověřený rozdíl**.
+- [ ] **`enc div 2`** → `enc` → jedna západka dá `kroku=1` při poloviční citlivosti,
+      a po `enc div 4` se chování vrátí (F-0125: změnu dělá až vlastník stavu v UiTasku)
+- [ ] stisk → `short_press`, držení 1 s → `long_press`
+
+### Trvalá historie a letový zapisovač (F-0091, F-0095, F-0100, F-0101)
+
+- [ ] `errlog dump 20` → řádky mají **čitelný DETAIL**, ne holá čísla `a=…  b=…`
+      (F-0100: třetí konzument teď používá tentýž `errlog_fmt_detail` jako displej a web)
+- [ ] `errlog dump 200` u naplněného logu → **nekončí dřív, než slíbil** (F-0101)
+- [ ] `flightrec test` **2×** s restartem mezi tím → druhý dump **nepřepíše** ten první
+      (F-0091: maže se sektor **za nejnovějším**, ne natvrdo sektor 0)
+      ⚠️ Plný projev původní vady nastával až po ~64 dumpech; tenhle test ověří aspoň
+      to, že se cíl posouvá.
+
+### Datalog (F-0102)
+
+- [ ] `datalog` → řádek obsahuje **`skip:0`** za normálního provozu
+- [ ] po `membench` (blokuje sekundy) smí `skip` narůst o 1 — ale `seq` **nesmí**
+      poskočit o víc než o jedna a v logu nesmí být dva záznamy se stejným `t_unix`
+      (F-0102: zmeškané vzorky se **nedohánějí**, díra je správná odpověď)
+
+### CM4 / mDNS (F-0061)
+
+- [ ] `gpsdo.local` se z prohlížeče pořád resolvuje (přidané čtení QCLASS a omezení
+      tempa na 1 odpověď / 250 ms nesmí resolvování rozbít)
+
+---
+
 ## 4. Modul 19 — `membench` (destruktivní jen pro scratch)
 
 - [ ] `membench` doběhne; řádek **SDRAM**: `OK`, **retence po 1 s: 0 chybnych bitu**,
@@ -172,6 +287,17 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
       **nikdy nesmí hlásit chybu**. Přeskočení by znamenalo skutečný alias a bylo by to
       samostatné zjištění.
 - [ ] `sdramlog` **hned po** `membench` → `count`/`total` **bez díry** proti fázi 1b
+- [ ] 🔑 **F-0116** — ve výpisu se **NESMÍ objevit ANI JEDNA** z těchto dvou vět:
+      `(framebuffery se ale navzajem NEprekryvaji …)` ani
+      `(prekryv MEZI framebuffery se NEMERIL …)`.
+      Obě se tisknou jen při nenulovém `alias_off`, takže na zdravé desce nemá být ani
+      jedna. **Kdyby se objevila ta druhá**, znamená to, že se `fb_alias` neměřil —
+      a to je po opravě chyba sama o sobě (nově se měří bezpodmínečně).
+- [ ] 🔑 **F-0120** — řádek **interní FLASH** hlásí `cteni stabilni` a souhrn
+      `MEMBENCH: OK (celkem 0 chybnych bitu)` **bez přípony**.
+      Kdyby se objevilo `+ NESTABILNI CTENI FLASH`, je to skutečný nález (dvě po sobě
+      jdoucí čtení téhož bloku se lišila) — a nově se to **nepřičítá k počtu bitů**,
+      protože u paměti jen pro čtení „chybný bit" nedává smysl.
       🔑 Tohle je vlastní pointa F-0115: kdyby benchmark do měřicího logu sáhl, projeví
       se to tady.
 - [ ] `sd diag` → řádek `sbernice: 4-bit, SDMMC_CK 32.000 MHz, Default Speed (limit 25 MHz)
@@ -233,6 +359,39 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
 
 ---
 
+## 9. Dnešní UI a diagnostika (2026-09-20) — přívětivost
+
+⚠️ Tohle nejsou opravy nálezů, ale změny chování, které se taky nedají ověřit jinak
+než na desce.
+
+- [ ] **`stats`** → na konci blok **`--- UiTask po fazich (posledni 1s okno, N pruchodu)`**
+      🔑 **Kvůli tomuhle to celé vzniklo:** doteď šlo změřit, že UiTask bere ~58 % CPU,
+      ale ne **čím**. Zapiš si ta čísla — je to vstup pro rozhodnutí, jestli rozšiřovat
+      DMA2D glyph accel, a bez nich by se to dělalo naslepo.
+      - [ ] `N pruchodu` má být ~100 (smyčka je 100 Hz) — výrazně méně znamená, že
+            něco ve smyčce blokuje
+      - [ ] `CELKEM` musí být **menší** než 1 000 000 µs; rozdíl proti součtu fází je
+            `osDelay` + režie smyčky, ne chyba měření
+- [ ] **`status`** → kratší než dřív; **`status full`** → vypíše i řádky `UI kresleni:`,
+      `UI: okno`, `GLOW:`, `SDRAM refresh:`, `SDRAM cteni:`, `STATISTIKA:`,
+      `ATTINY zapisu jasu:`
+      ⚠️ Krátká verze **musí** pořád ukázat cokoli, co není v pořádku — když se něco
+      pokazí a `status` o tom mlčí, zatímco `status full` to hlásí, je to **nález**.
+- [ ] **Encoder na hlavní obrazovce** (bez dotyku):
+      - [ ] otáčením zaměř **GATE** → další otočení **přepíná preset hradla**
+            (ne přejíždí fokus dál)
+      - [ ] totéž pro **CHAN**
+      - [ ] u **RUN/STOP**, **PERIOD/FREQ** a **MENU** otáčení dál **přejíždí fokus**
+            (záměrně — RUN je destruktivní, MENU naviguje)
+      - [ ] tytéž změny jdou pořád i **dotykem** (obě cesty musí zůstat úplné)
+- [ ] **Dlouhý stisk encoderu na hlavní obrazovce** → amber pruh přes patku
+      „AUTO-TRIGGER zatim nejde / prah a hystereze vyzaduji vstupni modul", který
+      **sám zmizí do ~2,5 s** a patka se vrátí.
+      ⚠️ Když nezmizí, úklid v `app_gpsdo_tick_clock` nefunguje a patka zůstane
+      překrytá — to je nález.
+
+---
+
 ## Co z UART ověřit NELZE (ať se to neprohlásí za ověřené)
 
 | nález | proč ne |
@@ -243,7 +402,11 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
 | **F-0026** (opt-in `s_busy` u třetího zapisovatele) | chce vytažení karty **uprostřed** `screenshot sd` |
 | **F-0059** (SSE timeout 120 s) | chce odpojit klienta od sítě a čekat |
 | **F-0070** v plném rozsahu | **SURVEY ≥ 1 h** — rozptyl má klesnout pod dřívější mez ~0,4 m |
-| **F-0116, F-0118, F-0130** | **otevřené** (skupina B / S4), neopravené — není co ověřovat |
+| **F-0003** | **neopravený** — čekání na `VOSRDY` leží v generovaném kódu bez `USER CODE`; oprava je připravená v `CUBEMX_CHECKLIST.md` na příští regeneraci |
+| **F-0137** (`iwdg2_config_ok`) | IWDG2 je **záměrně vypnutý**, takže `iwdg2_init()` se nevolá a `--gc-sections` ji z obrazu zahodí — ověřit to nejde, dokud se IWDG2 nezapne |
+| **F-0007 + F-0108** v plném rozsahu | chtělo by to **odpojit HSE, resp. LSE krystal**. Ověřitelné je jen to, že normální boot funguje (fáze 1a) |
+| **F-0061** v plném rozsahu | konflikt jména a probing dle RFC 6762 se **záměrně nedělá**; ověřuje se jen to, že `gpsdo.local` pořád funguje |
+| **F-0091** v plném rozsahu | plný projev nastával až po **~64 dumpech**; fáze 3e ověří jen posun cíle |
 
 ---
 
