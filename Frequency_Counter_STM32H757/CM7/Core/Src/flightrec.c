@@ -697,26 +697,12 @@ uint32_t errlog_count(void)
 
 uint32_t errlog_dropped(void) { return s_el_dropped; }
 
-bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out)
-{
-    if (!out || idx_from_newest >= errlog_count()) return false;
-    uint32_t span = W25Q_ERRLOG_SIZE;
-    uint32_t back = ((idx_from_newest + 1u) * ERRLOG_REC_SIZE) % span;
-    uint32_t rel  = ((s_el_write_off - W25Q_ERRLOG_BASE) + span - back) % span;
-
-    uint8_t b[ERRLOG_REC_SIZE];
-    bool ok = false;
-    /* ⚠️ KRATKY timeout (50 ms, ne 200): okno CHYBY vola tuhle funkci 8x za sebou
-     * z UiTasku, ktery ma watchdog heartbeat s limitem 2,5 s. Pri 200 ms by
-     * osm neuspesnych pokusu delalo 1,6 s cekani — zbytecne blizko limitu.
-     * Kdyz je flash obsazena, radek se proste nevykresli; to je u prohlizece
-     * prijatelne, zablokovany UiTask ne. */
-    if (osMutexAcquire(qspiMutexHandle, 50u) == osOK) {
-        ok = w25q_read(W25Q_ERRLOG_BASE + rel, b, sizeof b) && el_unpack(b, out);
-        osMutexRelease(qspiMutexHandle);
-    }
-    return ok;
-}
+/* Funkce `errlog_read_back` (cteni JEDNOHO zaznamu) byla odstranena 2026-09-20: po
+ * oprave F-0100 uz nemelo zadneho volajiciho — UART `errlog dump` i okno CHYBY
+ * ctou davkove pres `errlog_read_batch()`. Ponechat ji by znamenalo nechat
+ * v API pomalou cestu (jeden mutex a jeden QSPI prikaz na zaznam), tedy presne
+ * to, co F-0095 a F-0100 opravovaly. Kdo potrebuje jeden zaznam, at zavola
+ * `errlog_read_batch(i, 1, &rec)`. */
 
 /* Kolik zaznamu se cte JEDNIM QSPI prikazem (16 x 32 B = 512 B). Buffer je
  * `static` zamerne: volajici je `ipc_errlog_service` z defaultTasku (zasobnik

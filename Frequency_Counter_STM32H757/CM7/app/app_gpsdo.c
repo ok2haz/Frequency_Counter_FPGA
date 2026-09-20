@@ -7349,6 +7349,31 @@ static void render_view(uint8_t v)
  * sahnout. Banner prekryva PATKU, protoze tlacitka jsou pri mrtvem dotyku
  * stejne k nicemu -> nic pouzitelneho neskryva.
  * Kresli VYHRADNE UiTask (jako vse ostatni v teto vrstve). */
+/* ── Kratka hlaska pres patku hlavni obrazovky ───────────────────────────────
+ * PROC: dlouhy stisk encoderu byl na hlavni obrazovce NO-OP. Uzivatel drzi tlacitko
+ * 1 s a nestane se nic — to pusobi jako porucha encoderu, ne jako „tahle funkce
+ * jeste neni". Zadani UI §5 pro nej pocita s AUTO-TRIGGEREM, jenze prah a hystereze
+ * potrebuji vstupni modul (STATUS #78), takze jedine poctive chovani je to RICT.
+ * ⚠️ Prekryva patku, tedy RUN/GATE/CHAN — proto jen na ~2,5 s a jen po VEDOMEM
+ * dlouhem stisku. Uklid dela `app_gpsdo_tick_clock` prekreslenim okna.
+ * ⚠️ AMBER (`UI_COLOR_WARN`), ne cervena: neni to porucha, jen nedostupna funkce. */
+static uint32_t s_toast_until;      /* HAL_GetTick, do kdy hlaska visi; 0 = nic */
+
+static void main_toast(const char *l1, const char *l2)
+{
+    prim_set_target(&s_fb);
+    prim_reset_clip();
+    prim_rect_t r = {0, 410, UI_DIM_SCREEN_W, (int16_t)(UI_DIM_SCREEN_H - 410)};
+    prim_fill_rect(r, UI_COLOR_WARN, PRIM_BLEND_REPLACE);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 442}, l1,
+                   &ui_font_mono_22, UI_COLOR_BG_0, PRIM_ALIGN_CENTER);
+    if (l2)
+        prim_draw_text((prim_point_t){UI_DIM_SCREEN_W / 2, 468}, l2,
+                       &ui_font_sans_18, UI_COLOR_BG_0, PRIM_ALIGN_CENTER);
+    s_toast_until = HAL_GetTick() + 2500u;
+    present_now();
+}
+
 void app_gpsdo_touch_dead(int dead)
 {
     static int s_banner = 0;
@@ -7790,6 +7815,13 @@ void app_gpsdo_tick(void)
  * a (pri zmene sat/fix) horni listu (GNSS lock + pocet druzic). */
 void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 {
+    /* Uklid kratke hlasky z `main_toast` (dlouhy stisk encoderu). Prekresli okno,
+     * takze se vrati i patka, kterou hlaska prekryvala. */
+    if (s_toast_until != 0u && (int32_t)(ms_since_boot - s_toast_until) >= 0) {
+        s_toast_until = 0u;
+        render_view(s_view);
+    }
+
     /* ⚠️ Dalkovy SET (SCPI `SENS:FREQ:GATE/CHAN`, `INIT`/`ABOR`) se aplikuje TADY,
      * protoze stav mereni vlastni UiTask (SCPI bezi v UartTasku a smi zapsat jen
      * pozadavek). Musi to byt PRED `s_view` guardem: prikaz smi prijit i kdyz je
@@ -8442,7 +8474,16 @@ int app_gpsdo_handle_encoder(const encoder_ev_t *evp)
     }
 
     if (ev.long_press) {
-        if (s_view == 0) { if (drew) { s_dirty = 1; s_enc_draws++; } return drew; }   /* hl. obrazovka: AUTO-TRIGGER ⬅ vstupni modul */
+        if (s_view == 0) {
+            /* Driv tady bylo prazdne `return` — uzivatel drzel tlacitko a NIC se
+             * nestalo, coz pusobi jako vadny encoder. Zadani UI §5 tu chce
+             * AUTO-TRIGGER, ale prah a hystereze potrebuji vstupni modul
+             * (STATUS #78), takze to aspon REKNEME. */
+            main_toast("AUTO-TRIGGER zatim nejde",
+                       "prah a hystereze vyzaduji vstupni modul");
+            if (drew) { s_dirty = 1; s_enc_draws++; }
+            return 1;
+        }
         /* V detailu napovedy vede „zpet" nejdriv na seznam temat, teprve pak z okna. */
         if (s_view == 50 && s_help_topic >= 0) { s_help_topic = -1; app_gpsdo_render_help(); return 1; }
         focus_store((uint8_t)s_view);
@@ -8457,6 +8498,32 @@ int app_gpsdo_handle_encoder(const encoder_ev_t *evp)
     }
 
     if (n <= 0) { if (drew) { s_dirty = 1; s_enc_draws++; } return drew; }
+
+    /* ── Zamerene GATE/CHAN na hlavni obrazovce: otaceni MENI HODNOTU ────────
+     * Zadani UI §4 chce, aby encoder na hlavni obrazovce ladil aktivni parametr.
+     * Do ted umel jen prejizdet fokus po tlacitkach patky a „kliknout" — tedy byl
+     * jen dalsim zpusobem, jak zmacknout tlacitko.
+     * 🔑 Provadi se TOUTEZ funkci, jakou vola dotyk (`screen_main_button_action`),
+     * takze se obe ovladaci cesty nemohou rozejit — stejny princip jako u aktivace
+     * pres `app_gpsdo_handle_touch()` na stred tlacitka.
+     * ⚠️ Zamerne JEN pro GATE (2) a CHAN (3): RUN/STOP je destruktivni prepnuti
+     * mereni (nechceme ho omylem otocit), PERIOD/FREQ meni format cisla a MENU
+     * naviguje — u tech tri je „stisk" spravna a jedina akce.
+     * ⚠️ Kazdy krok = jedno procyklovani, takze otoceni o 3 zapadky posune preset
+     * o 3. Presetu je 4 (GATE) resp. 2 (CHAN), takze se to prirozene zacykli. */
+    if (ev.steps && s_view == 0 && s_focus >= 0) {
+        if (s_focus >= ln) {          /* `ln` je uz spocitane vyse (spolecny rozsah) */
+            prim_rect_t r = s_btnreg[s_focus - ln];
+            int bi = screen_main_hit_button((int16_t)(r.x + r.w / 2),
+                                            (int16_t)(r.y + r.h / 2));
+            if (bi == 2 || bi == 3) {           /* 2 = GATE, 3 = CHAN */
+                int k = (ev.steps < 0) ? -ev.steps : ev.steps;
+                for (int i = 0; i < k; i++) screen_main_button_action(bi);
+                s_dirty = 1; s_enc_draws++;
+                return 1;
+            }
+        }
+    }
 
     if (ev.steps) {
         int old = s_focus, nf = s_focus + ev.steps;

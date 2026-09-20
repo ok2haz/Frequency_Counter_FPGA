@@ -270,6 +270,17 @@ extern volatile uint16_t g_flightrec_lost;    /* zahozene dumpy (F-0018) */
  * Nenulove = predchozi beh skoncil pretečenim zasobniku nebo vycerpanim heapu
  * a zaznam se zachranil dvoufazovym zapisem. */
 extern volatile uint16_t g_flightrec_staged;
+
+/* ── Profil UiTasku po fazich (implementace v `freertos_task_ui.c`) ───────────
+ * `stats` umi rict, ze UiTask bere ~58 % CPU, ale ne CIM. Tohle to rozpadne na
+ * faze, aby se optimalizovalo podle mereni a ne podle dohadu (SKILL §0).
+ * Hodnoty jsou z POSLEDNIHO DOKONCENEHO 1s okna, v mikrosekundach.
+ * ⚠️ Soucet fazi NENI cely cas UiTasku — chybi `osDelay(10)` na konci smycky
+ * (tam uloha nebezi) a rezie smycky samotne. */
+uint32_t    uiprof_phase_count(void);
+const char *uiprof_phase_name(uint32_t i);
+uint32_t    uiprof_phase_us(uint32_t i);
+uint32_t    uiprof_loops(void);        /* pruchodu smyckou za posledni okno */
 extern volatile uint16_t g_tmp117_cfg_fail;   /* nezdarena konfigurace TMP117 (F-0022) */
 extern volatile uint8_t  g_csi_ready;
 extern volatile uint8_t  g_iocomp_ready;

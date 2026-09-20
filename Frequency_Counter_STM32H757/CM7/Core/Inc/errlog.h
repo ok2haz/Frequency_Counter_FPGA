@@ -91,7 +91,8 @@ bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *t
 void errlog_tick(void);
 
 /* Cteni od NEJNOVEJSIHO (idx 0 = posledni zapsany). Vraci false na konci. */
-bool errlog_read_back(uint32_t idx_from_newest, errlog_rec_t *out);
+/* (`errlog_read_back` odstraneno 2026-09-20 — bez volajiciho; pouzij
+ *  `errlog_read_batch(i, 1, &rec)`. Duvod u definice ve flightrec.c.) */
 
 /* Davkove cteni `count` zaznamu od `from` (0 = nejnovejsi) POD JEDNIM zamkem.
  * Vraci pocet skutecne prectenych. ⚠️ Okno CHYBY volalo `errlog_read_back`

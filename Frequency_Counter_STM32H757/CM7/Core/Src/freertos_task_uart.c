@@ -877,7 +877,7 @@ void UartTask_run(void *argument)
 					   * zdroj pravdy (lekce L-0049) — jenze `errlog dump` tisknul dal
 					   * `a=%08lX b=%08lX` jako hola cisla. Vysledek: tri vystupy rekly
 					   * o TEMTEZ zaznamu tri rozdilne veci, a to pri hledani priciny.
-					   * ⚠️ Zaroven se cetlo `errlog_read_back()` v cyklu, tedy jeden mutex
+					   * ⚠️ Zaroven se cetlo po JEDNOM zaznamu (tehdejsi `errlog_read_back`, mezitim zrusena), tedy jeden mutex
 					   * a jeden QSPI prikaz na zaznam, ackoli `errlog_read_batch()` existuje
 					   * presne proti tomu (F-0095, lekce L-0021). Ted se cte po davkach. */
 					  {
@@ -2387,8 +2387,40 @@ void UartTask_run(void *argument)
 						 (unsigned long)xPortGetFreeHeapSize(),
 						 (unsigned long)xPortGetMinimumEverFreeHeapSize());
 				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
+				  /* ── Rozpad casu UiTasku po fazich ──────────────────────────────
+				   * 🔑 Radek „UiTask xx%" vyse rekne, ZE je UiTask nejdrazsi uloha,
+				   * ale ne CIM. Bez toho se kazda optimalizace kresleni dela podle
+				   * dohadu — presne to, pred cim varuje SKILL §0 („nejdriv mer").
+				   * ⚠️ Soucet fazi NENI cely cas UiTasku: chybi `osDelay(10)` na konci
+				   * smycky (tam uloha nebezi) a rezie smycky. Proto se tiskne i soucet,
+				   * aby bylo videt, kolik zustalo nepokryto. */
+				  {
+					  uint32_t n = uiprof_phase_count(), sum = 0;
+					  printf("--- UiTask po fazich (posledni 1s okno, %lu pruchodu) ---\n",
+						     (unsigned long)uiprof_loops());
+					  for (uint32_t i = 0; i < n; i++) {
+						  uint32_t us = uiprof_phase_us(i);
+						  sum += us;
+						  if (us == 0u) continue;          /* faze, ktera v tomhle okne nebezela */
+						  printf("  %-11s %6lu us  %2lu.%lu%%\n", uiprof_phase_name(i),
+							     (unsigned long)us, (unsigned long)(us / 10000u),
+							     (unsigned long)((us / 1000u) % 10u));
+						  osDelay(2);
+					  }
+					  printf("  %-11s %6lu us  %2lu.%lu%%  (zbytek = osDelay + rezie smycky)\n",
+						     "CELKEM", (unsigned long)sum, (unsigned long)(sum / 10000u),
+						     (unsigned long)((sum / 1000u) % 10u));
+				  }
 			  }
-			  else if (strcmp(RxBuffer, "status") == 0)  {
+			  else if (strcmp(RxBuffer, "status") == 0 || strcmp(RxBuffer, "status full") == 0)  {
+				  /* ── `status` je kratky, `status full` vypise vse ────────────────
+				   * 🔑 PROC: vypis narostl na ~63 radku a je to nastroj c. 1 v tabulce
+				   * „cim merit podle ceny" — stena textu pri 115200 baud dela z nej
+				   * neco, co se cte az v logu. Kratka verze proto ukaze JEN to, co
+				   * neni v poradku, plus par zivych radku, ktere se ctou vzdy.
+				   * ⚠️ Prah je „tisknu, kdyz hodnota NENI v poradku", ne pevny seznam —
+				   * jinak by kratka verze mlcela prave o tom novem, co se pokazilo. */
+				  const int full = (RxBuffer[6] == ' ');
 				  /* Diagnostika restartu + zdravi tasku. Drive to vypisovalo jen
 				   * "RUNNING" (nepouzitelne pri honu na nahodny watchdog reset) —
 				   * pricina resetu byla dostupna JEN v okne System Health. */
@@ -2505,10 +2537,12 @@ void UartTask_run(void *argument)
 					      { const char *wt = NULL; int wc = 0; uint8_t wp = app_gpsdo_warn_active(&wt, &wc);
 					        if (wp) printf("VAROVANI: prio %u  %s  (celkem %d)\r\n", (unsigned)wp, wt ? wt : "?", wc);
 					        else    printf("VAROVANI: zadne\r\n"); }
+					      if (full)   /* jen `status full`: UI kresleni: flip/flash/stats/trend — provozni pocitadla UI */
 					      printf("UI kresleni: flip=%lu flash=%lu stats=%lu trend=%lu xfade=%lu cislo=%lu enc=%lu\r\n",
 					             (unsigned long)uc[0], (unsigned long)uc[1], (unsigned long)uc[2],
 					             (unsigned long)uc[3], (unsigned long)uc[4], (unsigned long)uc[5],
 					             (unsigned long)uc[6]); }
+					    if (full)   /* jen `status full`: UI: okno / encoder / navigace — provozni pocitadla UI */
 					    printf("UI: okno s_view=%u (zmen %lu)\n", (unsigned)g_ui_view,
 					  	       (unsigned long)g_ui_view_changes);
 					  	printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
@@ -2631,6 +2665,7 @@ void UartTask_run(void *argument)
 					  	 * ⚠️ Plni ho UiTask jen kdyz bezi hlavni obrazovka — v jinem okne
 					  	 * hodnota STOJI (neni to chyba mereni). */
 					  	{ float a = g_adev_1s;
+					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
 					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
 					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
@@ -2697,6 +2732,7 @@ void UartTask_run(void *argument)
 					  	 * Porovnani proti `REFRESH_COUNT` je stejne to jedine, co ma smysl:
 					  	 * odlisi „konstanta se do HW nedostala" od „konstanta je spatne". */
 					  	{ uint32_t sdrtr = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+					  	  if (full)   /* jen `status full`: SDRAM refresh SDRTR — konfigurace, meni se zridka */
 					  	  printf("SDRAM refresh: SDRTR=%lu, ve zdrojaku %u%s\n",
 					  	         (unsigned long)sdrtr, (unsigned)REFRESH_COUNT_EXPECTED,
 					  	         (sdrtr == (uint32_t)REFRESH_COUNT_EXPECTED)
@@ -2707,6 +2743,7 @@ void UartTask_run(void *argument)
 					  	 * pri 100% zdravych internich pametech). */
 					  	{ uint32_t rp = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk)
 					  	                >> FMC_SDCRx_RPIPE_Pos;
+					  	  if (full)   /* jen `status full`: SDRAM cteni rpipe / I/O kompenzace — konfigurace, meni se zridka */
 					  	  printf("SDRAM cteni: rpipe=%lu HCLK | I/O kompenzace %s (CSI %s)\n",
 					  	         (unsigned long)rp,
 					  	         g_iocomp_ready ? "READY" : "NENABEHLA",
@@ -2776,6 +2813,7 @@ void UartTask_run(void *argument)
 					  	/* Glow se pri prekroceni stropu masky NEKRESLI a mlci — citac
 					  	 * je jediny zpusob, jak to poznat (viz glow.c). */
 					  	if (g_prim_glow_skipped)
+					  		if (full)   /* jen `status full`: GLOW — pocet nevykreslenych oblasti; pri 0 nic nerika */
 					  		printf("GLOW: %lu x nevykresleno (oblast > strop masky) <== zvys PRIM_GLOW_MAX_H\n",
 					  		       (unsigned long)g_prim_glow_skipped);
 					  }
@@ -2790,6 +2828,7 @@ void UartTask_run(void *argument)
 					   * nejde odlisit „zapisy sbernici nezabily" od „zadne se nekonaly". */
 					  uint32_t blok = 0, blskip = 0; uint8_t bldim = 0;
 					  i2c4_bl_stats(&blok, &blskip, &bldim);
+					  if (full)   /* jen `status full`: ATTINY zapisu jasu / EXPERIMENT — provozni statistika, ne porucha */
 					  printf("  ATTINY zapisu jasu: %lu ok, %lu preskoceno | ztlumeno: %u\n",
 						     (unsigned long)blok, (unsigned long)blskip, (unsigned)bldim);
 				  }
