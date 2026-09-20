@@ -8499,36 +8499,24 @@ int app_gpsdo_handle_encoder(const encoder_ev_t *evp)
 
     if (n <= 0) { if (drew) { s_dirty = 1; s_enc_draws++; } return drew; }
 
-    /* ── Zamerene GATE/CHAN na hlavni obrazovce: otaceni MENI HODNOTU ────────
-     * Zadani UI §4 chce, aby encoder na hlavni obrazovce ladil aktivni parametr.
-     * Do ted umel jen prejizdet fokus po tlacitkach patky a „kliknout" — tedy byl
-     * jen dalsim zpusobem, jak zmacknout tlacitko.
-     * 🔑 Provadi se TOUTEZ funkci, jakou vola dotyk (`screen_main_button_action`),
-     * takze se obe ovladaci cesty nemohou rozejit — stejny princip jako u aktivace
-     * pres `app_gpsdo_handle_touch()` na stred tlacitka.
-     * ⚠️ Zamerne JEN pro GATE (2) a CHAN (3): RUN/STOP je destruktivni prepnuti
-     * mereni (nechceme ho omylem otocit), PERIOD/FREQ meni format cisla a MENU
-     * naviguje — u tech tri je „stisk" spravna a jedina akce.
-     * ⚠️ Kazdy krok = jedno procyklovani, takze otoceni o 3 zapadky posune preset
-     * o 3. Presetu je 4 (GATE) resp. 2 (CHAN), takze se to prirozene zacykli. */
-    if (ev.steps && s_view == 0 && s_focus >= 0) {
-        if (s_focus >= ln) {          /* `ln` je uz spocitane vyse (spolecny rozsah) */
-            prim_rect_t r = s_btnreg[s_focus - ln];
-            int bi = screen_main_hit_button((int16_t)(r.x + r.w / 2),
-                                            (int16_t)(r.y + r.h / 2));
-            if (bi == 2 || bi == 3) {           /* 2 = GATE, 3 = CHAN */
-                int k = (ev.steps < 0) ? -ev.steps : ev.steps;
-                for (int i = 0; i < k; i++) screen_main_button_action(bi);
-                s_dirty = 1; s_enc_draws++;
-                return 1;
-            }
-        }
-    }
+    /* 🔴 ROZHODNUTO 2026-09-20 (uzivatel, po vyzkouseni na desce): rotace na
+     * hlavni obrazovce VZDY jen LISTUJE fokus mezi tlacitky patky — GATE a
+     * CHAN v tom nejsou vyjimka. Zmena HODNOTY otacenim patri jen dovnitr
+     * konkretnich ciselnych poli (IP oktety, jas, casova zona apod.), ne na
+     * tlacitka hlavniho panelu. Puvodni zamer („otaceni na GATE/CHAN meni
+     * hodnotu primo") z tohoto duvodu odstranen — kratky stisk (nize) ho
+     * aktivuje uplne stejne jako kterekoli jine tlacitko patky, pres
+     * `app_gpsdo_handle_touch()`, ktera uz redraw i flash resi sama. */
 
     if (ev.steps) {
-        int old = s_focus, nf = s_focus + ev.steps;
-        if (nf < 0)  nf = 0;
-        if (nf >= n) nf = n - 1;
+        /* Zacyklene, ne zarazene na kraji (2026-09-20, uzivatelske hlaseni
+         * „v hlavni nabidce jde blbe encoder"). `n` je uz overene > 0 vyse.
+         * Predtim se na poslednim/prvnim prvku otaceni proste zastavilo —
+         * u kratkeho seznamu (MENU ma 4 dlazdice + 3 tlacitka patky) to
+         * pusobi jako mrtvy smer, ktery se musi dohanet zpet. Modulo
+         * pokryje i vicenasobny skok (rychle otoceni o vic zapadek). */
+        int old = s_focus, nf = (s_focus + ev.steps) % n;
+        if (nf < 0) nf += n;
         if (nf != old) {
             enc_paint(L, old, 0);
             s_focus = (int8_t)nf;
