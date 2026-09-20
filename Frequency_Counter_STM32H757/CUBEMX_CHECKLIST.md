@@ -364,6 +364,34 @@ druhé bez prvního (pin jako `GPIO_Input` + label).
   `ENC_COUNTS_PER_DETENT` vedle — přepíná se za běhu `enc div 1|2|4` (STATUS #95).
 - Stisk musí dát `short_press`, dlouhý `long_press`.
 
+## 🔴 PŘI PŘÍŠTÍ REGENERACI DOPLNIT: timeout na `VOSRDY` (F-0003)
+
+`SystemClock_Config()` obsahuje **nekonečné** čekání bez úniku:
+
+```c
+while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}    /* main.c, za VOLTAGESCALING_CONFIG */
+```
+
+Když regulátor připravenost nikdy neohlásí (typicky závada napájení), přístroj se
+zastaví **natrvalo**: černý displej, žádný výstup, žádné blikání — a `watchdog_init()`
+se volá až mnohem později, takže ani reset. Z pohledu uživatele „deska je mrtvá".
+
+🔴 **Je to generovaný kód BEZ `USER CODE` bloku**, proto se to neopravilo hned (regen
+by úpravu smazal). Precedens pro ruční úpravu generovaného souboru v projektu existuje
+(`gpio.c` PB12 default High, `fmc.c` potvrzení PG8) — **tohle je to místo, kde se
+provede**, protože při regeneraci se ten kód beztak přepisuje a kontroluje.
+
+Připravená podoba (rozhodnuto 2026-09-20):
+- ohraničit **POČÍTADLEM**, ne `HAL_GetTick()` — timebase je v tom místě ještě na HSI
+  a vzápětí se mění, takže čas tu není spolehlivý;
+- při vypršení ohlásit `bootled_fail_n()`, tedy **jediný výstup, který v té fázi
+  funguje** (LED_1 + pípání na PH9, oboje přes DWT, bez přerušení);
+- ⚠️ mez **nesmí** být tak krátká, aby propadla dřív, než regulátor stihne ustálit —
+  proto počítadlo s velkou rezervou, ne těsný odhad.
+
+⚠️ Po doplnění to zapsat do `docs/audit/2026-09-09_hodiny-pwr.md` u **F-0003** a sem
+poznamenat, že je hotovo.
+
 ## 🔴 PO REGENERACI S NOVÝMI SOUBORY: Close Project → Open Project (F5 NESTAČÍ!)
 Když CubeMX přidá **nové zdrojové soubory** (nová periferie, middleware), zapíše je do `.project`
 jako `<link>` entry. Eclipse ale `.project` parsuje **jen při otevření projektu** — z něj staví

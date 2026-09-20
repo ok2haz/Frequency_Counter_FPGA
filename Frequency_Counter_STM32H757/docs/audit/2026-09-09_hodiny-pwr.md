@@ -155,7 +155,22 @@ dokumentovaná frekvence neodpovídá skutečnosti.
   přestane být nekonečné). Nesmí se zkrátit natolik, aby propadlo dřív, než regulátor stihne
   ustálit — tady je počítadlo bezpečnější než čas.
 - **Vztah k lekcím:** `L-0004`.
-- **Stav:** otevřeno
+- **Stav:** **odlozeno 2026-09-20 rozhodnutim uzivatele — pripraveno na
+  pristi regeneraci.** Vada je realna, ale radek `main.c:616` lezi v generovanem
+  `SystemClock_Config()` **bez `USER CODE` bloku** (mezi CubeMX komentari
+  „Configure the main internal regulator output voltage" a „Configure LSE Drive
+  Capability"), takze by ji regen smazal.
+  Rozhodnuta varianta: **neupravovat ted**, ale mit hotovy pokyn v
+  `CUBEMX_CHECKLIST.md`, aby se uprava provedla **pri nejblizsi regeneraci**, kdy se
+  generovany kod beztak prepisuje a kontroluje. Do te doby vada trva — a nastane jen
+  pri zavade napajeni, tedy v situaci, kdy je deska nepouzitelna tak jako tak.
+  ⚠️ Pripravena podoba opravy (v checklistu): ohranicit **pocitadlem**, ne
+  `HAL_GetTick()` — timebase je v tom miste jeste na HSI a vzapeti se meni — a pri
+  vyprseni ohlasit `bootled_fail_n()`, tedy jediny vystup, ktery v te fazi funguje.
+  Mez se nesmi zkratit natolik, aby propadla driv, nez regulator stihne ustalit.
+  🔑 Precedens pro rucni upravu generovaneho kodu v projektu **existuje a je
+  zdokumentovany** (`gpio.c` PB12 default High, `fmc.c` potvrzeni PG8) — tohle je tedy
+  legitimni cesta, jen se ma udelat ve spravnou chvili.
 
 ---
 

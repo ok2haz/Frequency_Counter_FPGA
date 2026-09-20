@@ -91,6 +91,12 @@ nečtu. Metoda (jak vyšetřovat) je v `../SKILL.md`, nahoře.
 1. 🔴 **Skripty piš do SOUBORŮ, ne do heredocu tohohle shellu.** `\n`
    uvnitř řetězce se rozpadne na skutečný konec řádku a UTF-8 se zláme.
    (2026-09-07: třikrát za jeden den, pokaždé rozbitý C literál.)
+   🔴 **Platí i pro `<<'EOF'` (uvozený delimiter) a i pro Pythonní skripty.**
+   Doloženo 2026-09-20, znovu **třikrát za sezení**: `'\\0'` v Pythonním řetězci
+   dorazilo jako **skutečný NUL bajt** (`'\x00'`), takže porovnání s C zdrojem
+   *tiše* nesedlo — `assert` spadl a nebylo vidět proč. Totéž `'\\n'` ve dvou
+   dalších případech. **Příznak je vždy „kotva se nenašla, přitom text v souboru
+   vypadá stejně" — v tu chvíli NEHLEDEJ chybu v kotvě, přepiš to do souboru.**
 2. 🔴 **Nový `.c` se do buildu nedostane bez `Close → Open Project`.**
    Implementaci proto dávej do souboru, který už v buildu je; **hlavičky** jde
    přidávat volně.

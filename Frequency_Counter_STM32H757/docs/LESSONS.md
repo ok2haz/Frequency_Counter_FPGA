@@ -2400,6 +2400,70 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0071 — Z kontextu výjimky se nezapisuje; ukládej přes paměť, která přežije reset
+
+- **Datum:** 2026-09-20
+- **Oblast:** hooky FreeRTOS, letový zapisovač, co přežije reset
+- **Symptom:** `flightrec_dump()` volaný z `vApplicationStackOverflowHook`
+  **deterministicky nezapsal nic**. Hook běží v kontextu výjimky PendSV
+  (`xPortPendSVHandler` → `vTaskSwitchContext` → `taskCHECK_FOR_STACK_OVERFLOW`),
+  kde `osMutexAcquire` vždy vrátí `osErrorISR` — funkce se na téže řádce vrátila.
+  Letový zapisovač byl tedy slepý přesně pro ten scénář, kvůli kterému vznikl.
+- **Příčina:** Sáhnout na flash z výjimky **nejde ani bez mutexu**: `w25q wait_ready()`
+  uvnitř volá `osDelay(1)`, který v PendSV taky neprojde, takže by z toho byl spin
+  až do IWDG resetu. Zapisovací cesta prostě **není z výjimky dosažitelná**, a žádné
+  obcházení zámků to nezmění.
+- **Oprava:** Dvoufázově — hook složí data do paměti (jen bajtové zápisy, žádný zámek,
+  žádný `osDelay`) a do flash je vylije **po restartu** ta úloha, která na to má
+  prostředí. 🔴 Klíčový detail: **`.bss` maže `Reset_Handler`**, takže staging v obyčejné
+  RAM by se při resetu ztratil. Musí to být paměť, které se startup nedotkne — tady
+  sekce `.sdram` (NOLOAD), jejíž obsah reset přežije (tentýž důvod, proč boot musí
+  framebuffer memsetovat na černo).
+- **Pravidlo:** **Kód volaný z hooku nebo ISR nesmí obsahovat nic, co ustupuje
+  scheduleru nebo bere zámek** — a když má něco uložit, rozděl to na „slož do paměti"
+  a „zapiš na médium", přičemž druhá část patří do úlohy. Paměť pro to předání musí být
+  doložitelně **mimo `.bss`**, jinak ji smaže startup.
+- **Detekce:** U každé funkce volané z hooku/ISR projdi její **celý** řetěz volání
+  a hledej `osMutexAcquire`, `osDelay`, `osMessageQueue*`, `HAL_Delay` — stačí jeden
+  a cesta je mrtvá. U staging paměti ověř v linkeru, do které sekce patří, a jestli ji
+  startup nuluje. Doplňkově: výsledek předání musí být **vidět** (počítadlo „zachráněno
+  po restartu"), jinak se nepozná rozdíl mezi „nestalo se nic" a „ztratilo se to"
+  (**L-0017**). Souvisí s **L-0013** (hook běží v kontextu výjimky, RTOS API tam mlčky
+  selže).
+- **Commit:** viz git log — `fix(flightrec)` s F-0018
+- **Stav:** aktivní
+
+---
+
+### L-0072 — Hromadnou úpravu dokumentů nedělej multiline regexem a vždy zkontroluj diffstat
+
+- **Datum:** 2026-09-20
+- **Oblast:** vlastní nástroje, dávkové úpravy `docs/`
+- **Symptom:** Skript na hromadnou změnu řádků `- **Stav:**` v nálezových dokumentech
+  použil `re.search` se vzorem `(### ID.*?)\n- \*\*Stav:\*\*[^\n]*(?:\n(?!###|---).*)*`.
+  U prvního nálezu prošel, u druhého **smazal 631 řádků** souboru — kvantifikátor
+  `(?:…)*` se rozjel přes celý zbytek dokumentu.
+- **Příčina:** Multiline regex nad strukturovaným textem je **nekontrolovatelný**:
+  „dokud nenarazíš na další nadpis" se v `re` píše snadno a chová se jinak, než člověk
+  čte. Nic to nehlásí — regex „uspěje" a zahodí, co nemá.
+  ⚠️ Druhá polovina problému: skript **nekontroloval, co udělal**. Kdybych po zápisu
+  porovnal počet nadpisů nebo diffstat, poznal bych to okamžitě místo o krok později.
+- **Oprava:** Přepsáno **po řádcích**: najdi index nadpisu, dopředu hledej první
+  `- **Stav:**` a **zastav se na dalším `### `**, pak spotřebuj jen odsazené
+  pokračovací řádky. Soubor se obnovil z gitu (byl committnutý, nic se neztratilo).
+- **Pravidlo:** **Dávkovou úpravu strukturovaného textu piš po řádcích s explicitní
+  hranicí sekce, ne multiline regexem** — a po každém zápisu ověř invariant, který
+  změna zachovat má (počet sekcí, `git diff --stat`, počet řádků). Když skript umí
+  smazat víc, než měl, musí to sám poznat.
+- **Detekce:** Grep na `re.search`/`re.sub` s `re.S`/`(?s)` nebo `.*` přes řádky
+  v nástrojích nad `docs/`. Před spuštěním takového skriptu nad víc soubory ho pusť
+  na **jeden** a podívej se na `git diff --stat`; u dávkových úprav si nech vypsat
+  počet změněných řádků na soubor.
+- **Commit:** viz git log — `fix(flightrec)` s F-0018 (skript vznikl při té dávce)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

@@ -504,10 +504,10 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 2 | 4 | 0 |
+| S1 | 1 | 5 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 3 | 68 | 0 |
-| S4 | 3 | 35 | 0 |
+| S3 | 1 | 70 | 0 |
+| S4 | 1 | 37 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
