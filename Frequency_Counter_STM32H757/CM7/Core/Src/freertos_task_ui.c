@@ -183,66 +183,6 @@ static uint32_t ui_idle_runtime(uint32_t *total_out)
   return idle;
 }
 
-
-/* ── PROFIL UiTASKU PO FAZICH ────────────────────────────────────────────────
- * 🔑 PROC: `stats` umi rict, ze UiTask bere ~58 % CPU, ale ne CIM. Bez toho by se
- * kazda optimalizace delala podle dohadu — a na tom uz projekt nekolikrat stal
- * (SKILL §0: nejdriv mer, pak hadej). Tohle je nejlevnejsi mozne meridlo: jeden
- * odecet `DWT->CYCCNT` na zacatku a na konci kazde faze.
- *
- * ⚠️ Cena mereni: ~11 fazi x 2 odecty x 100 Hz = ~2200 cteni registru za sekundu,
- * tedy radove desitky mikrosekund — pod rozlisovaci schopnosti toho, co meri.
- * ⚠️ DWT CYCCNT uz bezi (pouziva ho `delay_us` i runtime staty FreeRTOS), takze se
- * nic nezapina.
- * ⚠️ Okno je 1 s: behem nej se akumuluje, na hranici se publikuje a nuluje. Cte se
- * tedy VZDY dokoncene okno, ne rozepsane — jinak by `stats` behem ctení dostal
- * cast soucтu.
- * ⚠️ Faze se NEPREKRYVAJI, ale jejich soucet NENI cely cas UiTasku: chybi v nem
- * `osDelay(10)` na konci smycky (tam uloha nebezi) a rezie samotne smycky. Proto
- * se vedle nich tiskne i `celkem`, aby bylo videt, kolik je nepokryto. */
-#define UIP_WINDOW_MS  1000u
-
-typedef enum {
-    UIP_RENDER = 0,   /* app_gpsdo_render_* na pozadavek (prekresleni cele obrazovky) */
-    UIP_TOUCH,        /* cteni FT5x06 po I2C4 + obsluha doteku */
-    UIP_TICK,         /* app_gpsdo_tick (2 Hz obsah oken) */
-    UIP_CLOCK,        /* app_gpsdo_tick_clock (hodiny, SYS pilulka, cfg pozadavky) */
-    UIP_SIGNAL,       /* app_gpsdo_tick_signal (RF bargraf) */
-    UIP_FREQ,         /* app_gpsdo_tick_freq (velke cislo, 20 Hz) */
-    UIP_ANIM,         /* app_gpsdo_tick_anim (~20 Hz easing) */
-    UIP_STATS,        /* app_gpsdo_tick_stats_sample (vzorkovani statistiky) */
-    UIP_STATSDRAW,    /* app_gpsdo_tick_stats_draw (karty Offset/sigma/Drift) */
-    UIP_ALLAN,        /* app_gpsdo_tick_allan_draw */
-    UIP_ENC,          /* encoder_poll + obsluha udalosti */
-    UIP_FLUSH,        /* app_gpsdo_flush = present/flip + copy-forward (~30 Hz) */
-    UIP_N
-} uiprof_t;
-
-static const char *const UIP_NAME[UIP_N] = {
-    "render", "dotyk", "tick", "hodiny", "signal", "kmitocet",
-    "animace", "statistika", "karty", "allan", "encoder", "flip"
-};
-
-static uint32_t s_uip_acc[UIP_N];   /* cykly v PROBIHAJICIM okne */
-static uint32_t s_uip_pub[UIP_N];   /* posledni DOKONCENE okno (to se cte) */
-static uint32_t s_uip_t0;           /* zacatek okna [ms] */
-static uint32_t s_uip_loops;        /* pocet pruchodu smyckou v dokoncenem okne */
-static uint32_t s_uip_loops_acc;
-
-#define UIP_BEGIN()   uint32_t uip_t = DWT->CYCCNT
-#define UIP_END(ph)   do { s_uip_acc[ph] += DWT->CYCCNT - uip_t; } while (0)
-
-uint32_t    uiprof_phase_count(void)        { return (uint32_t)UIP_N; }
-const char *uiprof_phase_name(uint32_t i)   { return (i < UIP_N) ? UIP_NAME[i] : "?"; }
-uint32_t    uiprof_loops(void)              { return s_uip_loops; }
-
-uint32_t uiprof_phase_us(uint32_t i)
-{
-    if (i >= UIP_N) return 0u;
-    uint32_t per_us = SystemCoreClock / 1000000u;   /* 480 pri 480 MHz */
-    return per_us ? (s_uip_pub[i] / per_us) : 0u;
-}
-
 void StartUiTask(void *argument)
 {
   (void)argument;
@@ -274,10 +214,8 @@ void StartUiTask(void *argument)
     if (req) {
       g_screen_req = 0;
       /* LTDC scan-out adresu ridi prim_stm32_present() (page-flip pri vblanku). */
-      { UIP_BEGIN();
-        if (req == 4) app_gpsdo_clear();
-        else          app_gpsdo_render_main();
-        UIP_END(UIP_RENDER); }
+      if (req == 4) app_gpsdo_clear();
+      else          app_gpsdo_render_main();
     }
     /* UART "meas reset" nastavi g_stats_reset_req; screen_main.c stav smi menit
      * jen UiTask (viz g_screen_req vyse). Alarm citace resetuje primo volajici
@@ -357,7 +295,7 @@ void StartUiTask(void *argument)
       if (osMutexAcquire(i2c4MutexHandle, 20) == osOK) {
         attempted = 1;
         i2c4_speed_select(I2C4_TIMING_TOUCH_75KHZ);   /* FT5x06 = periferie, ne bit-bang */
-        { UIP_BEGIN(); got = ft5x06_read_touch(&hi2c4, &t); UIP_END(UIP_TOUCH); }
+        got = ft5x06_read_touch(&hi2c4, &t);
         osMutexRelease(i2c4MutexHandle);
       }
       /* Detekce mrtve sbernice: pocitej JEN skutecna HAL selhani (mutex timeout
@@ -577,35 +515,35 @@ void StartUiTask(void *argument)
       uint32_t dt = total - prev_total, di = idle - prev_idle;
       prev_total = total; prev_idle = idle;
       if (dt) g_rtos_cpu_pct = (di < dt) ? (uint32_t)(100u - (uint64_t)di * 100u / dt) : 0u;
-      { UIP_BEGIN(); app_gpsdo_tick(); UIP_END(UIP_TICK); }
+      app_gpsdo_tick();
     }
 
     /* Cas na hlavni obrazovce: kontrola ~kazdych 100 ms, prekresli jen pri zmene sekundy. */
     static uint32_t last_clock = 0;
     if (HAL_GetTick() - last_clock >= 100) {
       last_clock = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_clock(HAL_GetTick()); UIP_END(UIP_CLOCK); }
+      app_gpsdo_tick_clock(HAL_GetTick());
     }
 
     /* Animace simulovaneho signal bargrafu 10x/s (dBm krok po jednotkach). */
     static uint32_t last_sig = 0;
     if (HAL_GetTick() - last_sig >= 100) {
       last_sig = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_signal(); UIP_END(UIP_SIGNAL); }
+      app_gpsdo_tick_signal();
     }
 
     /* Simulace kmitoctu 20x/s (spojita zmena, per-segment dirty redraw). */
     static uint32_t last_freq = 0;
     if (HAL_GetTick() - last_freq >= 50) {
       last_freq = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_freq(); UIP_END(UIP_FREQ); }
+      app_gpsdo_tick_freq();
     }
 
     /* Animace/demo okno 20x/s (ease-out krok bargrafu; no-op mimo s_view=24). */
     static uint32_t last_anim = 0;
     if (HAL_GetTick() - last_anim >= 50) {
       last_anim = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_anim(); UIP_END(UIP_ANIM); }
+      app_gpsdo_tick_anim();
     }
 
     /* GPSDO statistika: vzorkovani frakcni odchylky 1x/s (τ0=1s -> dekadova osa);
@@ -613,15 +551,15 @@ void StartUiTask(void *argument)
     static uint32_t last_stat_s = 0, last_stat_d = 0, last_allan = 0;
     if (HAL_GetTick() - last_stat_s >= 1000) {       /* vzorkovani 1/s (τ0=1s, dekady) */
       last_stat_s = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_stats_sample(); UIP_END(UIP_STATS); }
+      app_gpsdo_tick_stats_sample();
     }
     if (HAL_GetTick() - last_stat_d >= 1000) {       /* trend/offset/σy/drift 1/s */
       last_stat_d = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_stats_draw(); UIP_END(UIP_STATSDRAW); }
+      app_gpsdo_tick_stats_draw();
     }
     if (HAL_GetTick() - last_allan >= 1000) {
       last_allan = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_tick_allan_draw(); UIP_END(UIP_ALLAN); }
+      app_gpsdo_tick_allan_draw();
     }
 
     /* Encoder (Faze A): gesta -> fokus / navigace. Levne (cteni TIM1 + jednoho
@@ -644,7 +582,7 @@ void StartUiTask(void *argument)
      * v tme by uzivatel naslepo prestavil hodnotu, kterou nevidi. */
     {
       encoder_ev_t eev;
-      { UIP_BEGIN(); encoder_poll(&eev); UIP_END(UIP_ENC); }
+      encoder_poll(&eev);
       if (eev.steps || eev.short_press || eev.long_press || eev.double_click) {
         s_last_activity = HAL_GetTick();     /* jakykoli pohyb knoflikem = cinnost */
         if (s_dimmed) {
@@ -661,24 +599,7 @@ void StartUiTask(void *argument)
     static uint32_t last_present = 0;
     if (HAL_GetTick() - last_present >= 33) {
       last_present = HAL_GetTick();
-      { UIP_BEGIN(); app_gpsdo_flush(); UIP_END(UIP_FLUSH); }
-    }
-
-    /* Uzavri okno profilu (viz hlavicka „PROFIL UiTASKU"). Publikuje se AZ na
-     * hranici, takze `stats` vzdy cte dokoncene okno, ne rozepsany soucet. */
-    s_uip_loops_acc++;
-    {
-        uint32_t now_ms = HAL_GetTick();
-        if (s_uip_t0 == 0u) s_uip_t0 = now_ms;
-        else if (now_ms - s_uip_t0 >= UIP_WINDOW_MS) {
-            for (uint32_t i = 0; i < (uint32_t)UIP_N; i++) {
-                s_uip_pub[i] = s_uip_acc[i];
-                s_uip_acc[i] = 0u;
-            }
-            s_uip_loops     = s_uip_loops_acc;
-            s_uip_loops_acc = 0u;
-            s_uip_t0        = now_ms;
-        }
+      app_gpsdo_flush();
     }
 
     osDelay(10);   /* smycka ~100 Hz (jemne gate): freq 20x/s, bargraf 10x/s, touch 15x/s */

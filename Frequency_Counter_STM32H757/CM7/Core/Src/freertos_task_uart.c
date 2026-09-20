@@ -2387,30 +2387,6 @@ void UartTask_run(void *argument)
 						 (unsigned long)xPortGetFreeHeapSize(),
 						 (unsigned long)xPortGetMinimumEverFreeHeapSize());
 				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
-				  /* ── Rozpad casu UiTasku po fazich ──────────────────────────────
-				   * 🔑 Radek „UiTask xx%" vyse rekne, ZE je UiTask nejdrazsi uloha,
-				   * ale ne CIM. Bez toho se kazda optimalizace kresleni dela podle
-				   * dohadu — presne to, pred cim varuje SKILL §0 („nejdriv mer").
-				   * ⚠️ Soucet fazi NENI cely cas UiTasku: chybi `osDelay(10)` na konci
-				   * smycky (tam uloha nebezi) a rezie smycky. Proto se tiskne i soucet,
-				   * aby bylo videt, kolik zustalo nepokryto. */
-				  {
-					  uint32_t n = uiprof_phase_count(), sum = 0;
-					  printf("--- UiTask po fazich (posledni 1s okno, %lu pruchodu) ---\n",
-						     (unsigned long)uiprof_loops());
-					  for (uint32_t i = 0; i < n; i++) {
-						  uint32_t us = uiprof_phase_us(i);
-						  sum += us;
-						  if (us == 0u) continue;          /* faze, ktera v tomhle okne nebezela */
-						  printf("  %-11s %6lu us  %2lu.%lu%%\n", uiprof_phase_name(i),
-							     (unsigned long)us, (unsigned long)(us / 10000u),
-							     (unsigned long)((us / 1000u) % 10u));
-						  osDelay(2);
-					  }
-					  printf("  %-11s %6lu us  %2lu.%lu%%  (zbytek = osDelay + rezie smycky)\n",
-						     "CELKEM", (unsigned long)sum, (unsigned long)(sum / 10000u),
-						     (unsigned long)((sum / 1000u) % 10u));
-				  }
 			  }
 			  else if (strcmp(RxBuffer, "status") == 0 || strcmp(RxBuffer, "status full") == 0)  {
 				  /* ── `status` je kratky, `status full` vypise vse ────────────────
