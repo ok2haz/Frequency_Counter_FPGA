@@ -531,8 +531,11 @@ static void bench_iflash(membench_result_t *r)
     uint32_t b = flash_sum(p, words);
 
     r->tested = 1;
+    /* >> `unstable`, NE `bit_errors = 1` (audit F-0120). Interni FLASH se jen cte,
+     * takze „chybny bit" tu nema smysl — mereni je, ze se dve po sobe jdouci cteni
+     * TEHOZ bloku lisila. Sentinel v poctu bitu michal jednotky a kazil souhrn. */
     if (a == b) snprintf(r->msg, sizeof r->msg, "cteni stabilni");
-    else      { snprintf(r->msg, sizeof r->msg, "CTENI NESTABILNI!"); r->bit_errors = 1; }
+    else      { snprintf(r->msg, sizeof r->msg, "CTENI NESTABILNI!"); r->unstable = 1; }
 }
 
 /* ── W25Q (externi QSPI) ─────────────────────────────────────────────────────
@@ -685,6 +688,7 @@ void membench_run(void)
 
         if (r[i].msg[0] == '\0') {
             if (r[i].killed_cm4)       snprintf(r[i].msg, sizeof r[i].msg, "SHODIL CM4!");
+            else if (r[i].unstable)    snprintf(r[i].msg, sizeof r[i].msg, "CTENI NESTABILNI!");
             else if (r[i].bit_errors == 0u) snprintf(r[i].msg, sizeof r[i].msg, "OK");
             else snprintf(r[i].msg, sizeof r[i].msg, "%lu chybnych bitu",
                           (unsigned long)r[i].bit_errors);
@@ -693,6 +697,10 @@ void membench_run(void)
          * nula, nebo zbytek po nedokoncenem prenosu — souhrn pak nesel secist
          * zpatky z radku tabulky (audit F-0120). */
         if (r[i].tested) s_st.total_bit_errors += r[i].bit_errors;
+        /* Souhrn je v BITECH, takze `unstable` se do nej pricitat NESMI (to byla
+         * puvodni vada). Aby ale celkovy verdikt nehlasil „OK" pri nestabilnim
+         * cteni FLASH, nese to samostatny priznak (audit F-0120). */
+        if (r[i].tested && r[i].unstable) s_st.any_unstable = 1;
         osDelay(1);
     }
 

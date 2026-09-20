@@ -6599,7 +6599,10 @@ static void memb_upd_values(int first)
         prim_color_t col = UI_COLOR_INK_3;
         const char *res = "cekam";
         if (r->skipped)          { col = UI_COLOR_WARN; res = ms; }
-        else if (r->bit_errors)  { col = UI_COLOR_BAD;  res = ms; }
+        /* `unstable` (jen interni FLASH) je taky vada, jen se nemeri v bitech —
+         * driv ji nesl sentinel `bit_errors = 1` (audit F-0120). Bez teto vetve by
+         * po jeho zruseni zustal radek ZELENY s hlaskou „CTENI NESTABILNI!". */
+        else if (r->bit_errors || r->unstable) { col = UI_COLOR_BAD;  res = ms; }
         else if (r->tested)      { col = UI_COLOR_OK;   res = ms; }
         dtext(MEMB_X_RES, y, 226, res, col, &ui_font_mono_16);
     }

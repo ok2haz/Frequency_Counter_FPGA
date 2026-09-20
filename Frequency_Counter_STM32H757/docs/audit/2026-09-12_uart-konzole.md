@@ -187,17 +187,23 @@ symbol mlčí a nespadne.
 - **Vztah k lekcím:** **`L-0012`** (dvě symetrické instance — jedna poučená,
   druhá ne) a **`L-0022`** (u obrany musí být vyjmenované, kde platí; ten komentář
   u `scpi ipc` popisuje pravidlo, které se o dvě obsluhy vedle neuplatnilo).
-- **Stav:** **odloženo 2026-09-12 rozhodnutím uživatele → `../STATUS.md` TODO #243.**
-  Důvod odložení (ať se to neotevírá znovu): velikost zásobníku UartTasku vlastní
-  **`.ioc`** a uživatel ji chce upravit konzistentně tam, teprve pak se má sahat
-  na kód. Přesun `resp[128]`/`buf[512]` do `.bss` je **konkurenční oprava téhož** —
-  udělané obě naráz se nedá změřit, která pomohla.
-  🔑 **Co se přesto udělalo:** (a) nález je spojený s **F-0055** do jednoho úkolu
-  (je to tatáž věc ze dvou stran), (b) přibyla kontrola rámce `UartTask_run`
-  v `scripts/check_lessons.sh` (viz F-0077), takže **rezerva už nemůže tiše ubývat**,
-  (c) commit `21ac04e` vrátil zásobníku část toho, co mu vzal modul 13
-  (`sub[96]`/`rb[64]` ve `scpi.c` jsou nově `static`).
-  ⚠️ **Dokud to platí, `selftest` z konzole nespouštět** (F-0055).
+- **Stav:** **opraveno 2026-09-20** na vyslovne zadani uzivatele.
+  `resp[128]` (obsluha `scpi`) a `buf[512]` (`qspispeed`) jsou nove `static`, tedy
+  v `.bss` — presne jak to uz dela obsluha `scpi ipc` o par set radku vys, vcetne
+  zduvodneni v komentari. Dolozeno v obrazu: `resp.14` 128 B a `buf.1`/`buf.11` 512 B
+  v `.bss`.
+  🔑 Duvod je **merіtelny, ne kosmeticky**: `UartTask_run` je JEDNA funkce o ~2000
+  radcich, takze GCC rezervuje ramec pri vstupu a lokal KTERÉKOLI vetve zvedne ramec
+  VSEM cestam (**L-0035**). Tim se zaroven dorovnava cast (a) nalezu **F-0077**.
+  ⚠️ **Prijate riziko, ktere je potreba znat pri HW pruchodu:** TODO #243 pred timhle
+  varovalo — je to **druha konkurencni oprava tehož problemu** jako zvetseni
+  zasobniku UartTasku v `.ioc` (1024 -> 2048 slov, tedy 8192 B), a to jeste NEBYLO
+  overeno na HW. Kdyz `selftest` z konzole ted projde, **nepozna se, ktera z tech dvou
+  zmen pomohla**. Uzivatel tu meritelnost vedome obetoval. Do `STATUS.md` #243 to je
+  zapsane, aby se to pri vyhodnoceni nezapomnelo.
+  ⬜ **neovereno na HW** (kriterium: `selftest` z konzole dobehne „16/16 PASS" bez
+  resetu a `status` -> `Reset:` nehlasi `stack:UartTask`; `stats` -> volny stack
+  UartTasku).
 
 ---
 
@@ -314,20 +320,18 @@ symbol mlčí a nespadne.
 - **Vztah k lekcím:** **`L-0016`** (mez i měřidlo její rezervy se navrhují
   společně — rámec se dnes neměří ničím); nově **`L-0035`** (rámec je vlastnost
   celé funkce) a **`L-0020`** (kontrola bez pozitivní kontroly je jen zelená).
-- **Stav:** **částečně opraveno 2026-09-12; rozdělení funkce odloženo.**
-  - ✅ **(b) měřidlo hotové:** `scripts/check_lessons.sh` měří rámec `UartTask_run`
-    přímo v `CM7/Release/H757_LED_CM7.elf` (`objdump -d` → `sub sp, sp, #N`) a
-    křičí nad **1024 B**. Dnešní hodnota **700 B** → ticho.
-    🔴 **Pozitivní kontrola odhalila, že kontrola nejdřív NEFUNGOVALA:** vracela
-    `0 B`, protože awk měl `match()` se třemi skupinami a četl `m[2]` (`"sp, "`)
-    místo `m[3]`. Ověřeno až dvěma běhy — mez snížená na 256 B **musí** zakřičet
-    (700 > 256) a neexistující symbol **musí** mlčet a nespadnout. Bez toho by to
-    byla trvale zelená kontrola (přesně L-0020).
-  - ⬜ **(a) statické lokály odloženy** — patří k **F-0074** a tedy do TODO #243;
-    nedělat je zároveň se zvětšením zásobníku, jinak se nedá změřit, co pomohlo.
-  - ⬜ **Rozdělení funkce odloženo** (důvod, ať se to neotevírá znovu): `UartTask_run`
-    je 1 966 řádků funkčního kódu bez testů na hostu; mechanický rozpad na desítky
-    funkcí je větší riziko než vada, kterou dnes hlídá měřidlo výše.
+- **Stav:** **opraveno 2026-09-20** (cast (a) dokoncena; rozdeleni funkce
+  zustava zamerne NEUDELANE).
+  - ✅ **(b) meridlo** bylo hotove uz 2026-09-12: `scripts/check_lessons.sh` meri ramec
+    `UartTask_run` primo v `.elf` a krici nad 1024 B.
+  - ✅ **(a) velke lokaly do `.bss`** hotovo nyni spolu s **F-0074**: `resp[128]`
+    a `buf[512]`. Ramec tim prestal zaviset na tom, jak se optimalizator rozhodne
+    lokaly prekryt.
+  - 🔴 **Rozdeleni `UartTask_run` (1 966 radku) se NEDELA a je to vedome rozhodnuti**,
+    jak nalez sam doporucoval: velky refaktor bez funkcniho prinosu, proti pravidlu
+    „zarizeni, ktere funguje, je hodnota". Meridlo z (b) navic posun ramce ohlasi pri
+    prekladu, takze riziko je pokryte jinak.
+  ⬜ **neovereno na HW** (stejne kriterium jako F-0074).
 
 ---
 

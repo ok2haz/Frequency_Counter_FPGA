@@ -304,18 +304,23 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **`L-0011`** (číslo, které vypadá jako měření, ale mísí jednotky),
   **`L-0017`**.
-- **Stav:** **ČÁSTEČNĚ opraveno 2026-09-18** v `caa08b4` + `339c596`, ⬜ **neověřeno na HW**.
-  Opraveny **obsažené části**: při chybě QSPI přenosu se částečně nasbírané `bit_errors`
-  /`err_bitmask`/`pat_err` vynulují (už nic neměří) a `total_bit_errors` se sčítá **jen
-  přes cíle s `tested`** — souhrn teď jde sečíst z řádků tabulky.
-  🔴 **Sentinel `bit_errors = 1` u interní FLASH ZŮSTÁVÁ — vědomé rozhodnutí.**
-  Samostatný příznak `unstable` by znamenal zásah do **čtyř souborů přes dva moduly**
-  (`membench.h`, `membench.c`, UART výpis `freertos_task_uart.c:1354`, okno PAMĚTI
-  `app_gpsdo.c:6540` a `:6557`) kvůli nálezu S4 — a kdyby se **jedno** z těch míst
-  minulo, vznikl by **zelený řádek / zelený souhrn s hláškou „CTENI NESTABILNI!"**,
-  tedy vada horší než původní. Podle §F5.0 („když je oprava větší než vada, odlož
-  s odůvodněním") je místo toho **zdokumentovaná sémantika u pole** v `membench.h`,
-  aby příští čtenář nebyl uveden v omyl.
+- **Stav:** **opraveno 2026-09-20 — v plnem rozsahu** (predchozi davka resila jen obsazene casti).
+  Sentinel `bit_errors = 1` u interni FLASH je zruseny a nahrazeny samostatnym
+  priznakem **`unstable`**. `bit_errors` tim nese uz VYHRADNE pocet bitu.
+  ⚠️ **Oprava se zamerne delala naraz ve vsech CTYRECH mistech**, protoze kdyby se
+  jedno minulo, vznikl by **zeleny radek s poplasnou hlaskou** — tedy prave to riziko,
+  kvuli kteremu byla predtim vedome odlozena:
+  1. `membench.h` — nove pole `unstable` + `any_unstable` ve stavu; prepsan komentar
+     u `bit_errors`, ktery do te doby rikal, ze `unstable` bylo ZAMITNUTO;
+  2. `membench.c` — `bench_iflash` nastavi `unstable`, souhrn pres cile plni
+     `any_unstable` (do souctu bitu se NEpricita, to byla puvodni vada) a `msg` ma
+     vetev „CTENI NESTABILNI!" i bez nenuloveho `bit_errors`;
+  3. UART verdikt — `NALEZENY CHYBY` i pri `any_unstable`, s pripojenym
+     „+ NESTABILNI CTENI FLASH";
+  4. okno PAMETI — radek zcervena i pri `unstable` (bez teto vetve by po zruseni
+     sentinelu zustal ZELENY s hlaskou o nestabilnim cteni).
+  ⬜ **neovereno na HW** (kriterium: `membench` -> radek interni FLASH „cteni stabilni"
+  a souhrn „OK" bez pripony).
 
 ---
 

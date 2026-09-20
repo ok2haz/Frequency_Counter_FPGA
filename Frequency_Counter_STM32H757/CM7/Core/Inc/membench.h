@@ -48,15 +48,16 @@ typedef struct {
     uint32_t total_b;
     uint32_t write_kbs;              /* 0 = necteno (read-only cil) */
     uint32_t read_kbs;
-    /* Pocet chybnych BITU pres vsechny vzory.
-     * ⚠️ JEDNA VYJIMKA: u cile jen pro cteni (interni FLASH) neni s cim
-     * porovnavat po bitech, takze `bench_iflash` sem dava **1 jako PRIZNAK**
-     * „cteni nestabilni" (vysvetleni je v `msg`). Diky tomu se souhrn i barva
-     * radku spravne zcervenaji. Samostatny priznak `unstable` byl pri auditu
-     * zvazen a ZAMITNUT: rozlozil by opravu S4 do ctyr souboru pres dva moduly
-     * (membench.h/.c, UART vypis, okno PAMETI) a kdyby se jedno z nich minulo,
-     * vznikl by zeleny radek s poplasnou hlaskou — vetsi riziko nez vada
-     * samotna (audit F-0120). */
+    /* Pocet chybnych BITU pres vsechny vzory — a od 2026-09-20 uz VYHRADNE to
+     * (audit F-0120 dokoncen). Driv sem `bench_iflash` davalo **1 jako SENTINEL**
+     * pro „cteni nestabilni", protoze u cile jen pro cteni neni s cim porovnavat
+     * po bitech — pole dokumentovane jako pocet bitu tedy mistami neslo pocet, ale
+     * priznak, souhrn michal jednotky a `err_bitmask` u te polozky nesel vylozit.
+     * Nove je na to `unstable` nize.
+     * ⚠️ Oprava se **zamerne delala naraz ve vsech ctyrech mistech** (tahle hlavicka,
+     * `bench_iflash`, UART vypis, okno PAMETI). Kdyby se jedno minulo, vznikl by
+     * zeleny radek s poplasnou hlaskou — tedy prave to riziko, kvuli kteremu byla
+     * oprava do te doby vedome odlozena. */
     uint32_t bit_errors;
     uint32_t err_bitmask;            /* ktere bitove pozice selhaly (0 = zadna) */
     uint32_t first_err_addr;         /* adresa prvni neshody (jen kdyz bit_errors>0) */
@@ -95,6 +96,13 @@ typedef struct {
      * (viz „HW OBVINEN — A BYL NEVINNY" a L-0011).
      * ⚠️ Uklidnujici vetu smi vypis tisknout VYHRADNE kdyz je tady 1. */
     uint8_t  fb_alias_checked;
+    /* 🔴 1 = dve po sobe jdouci cteni TEHOZ bloku se LISILA (jen interni FLASH,
+     * ktera se nezapisuje — proto se u ni hleda NESTABILNI CTENI, ne chybne bity).
+     * Do 2026-09-20 se na to pouzival SENTINEL `bit_errors = 1`, takze pole
+     * dokumentovane jako „pocet chybnych BITU" mistami neslo pocet bitu, ale
+     * priznak (audit F-0120). Souhrn pres cile pak michal jednotky a `err_bitmask`
+     * u te polozky nesel vylozit vubec. */
+    uint8_t  unstable;
     uint8_t  tested;                 /* 1 = probehlo (i kdyz s chybami) */
     uint8_t  writable;               /* 0 = jen cteni -> write_kbs/bit_errors nemaji smysl */
     uint8_t  skipped;                /* 1 = preskoceno, duvod v `msg` */
@@ -106,7 +114,11 @@ typedef struct {
     uint8_t  n;                      /* pocet cilu = MEMBENCH_TARGETS */
     uint8_t  done_once;              /* 1 = uz aspon jednou probehlo (jinak jsou vysledky prazdne) */
     uint32_t prog_pct;               /* 0..100 */
-    uint32_t total_bit_errors;       /* soucet pres vsechny cile */
+    uint32_t total_bit_errors;       /* soucet pres vsechny cile (JEN bity) */
+    /* 1 = aspon jeden cil hlasi `unstable`. Drzi se zvlast, protoze do souctu
+     * bitu to nepatri — a bez toho by celkovy verdikt rekl „OK" i pri nestabilnim
+     * cteni interni FLASH (audit F-0120). */
+    uint8_t  any_unstable;
     char     phase[28];              /* „SDRAM: vzor 55/AA" — pro UI i UART */
     membench_result_t r[MEMBENCH_TARGETS];
 } membench_state_t;
