@@ -167,6 +167,10 @@ static bool hdr_unpack(const uint8_t *b, uint32_t *seq, uint16_t *n, uint32_t *u
     return true;
 }
 
+/* Vyliti dumpu, ktery predchozi beh zanechal v SDRAM (audit F-0018). Definice je
+ * u `flightrec_dump`, kde je i cele zduvodneni dvoufazoveho zapisu. */
+static void fr_flush_pending(void);
+
 void flightrec_init(void)
 {
     s_ready = 0; s_have_dump = 0; s_head = 0; s_count = 0; s_dumped = 0;
@@ -221,6 +225,10 @@ void flightrec_init(void)
         s_write_off = W25Q_FLIGHTREC_BASE + ni * W25Q_SECTOR_SIZE;
         if (w25q_erase_sector(s_write_off)) s_ready = 1;
     }
+    /* Fáze 2 dvoufazoveho zapisu (audit F-0018): kdyz predchozi beh skoncil
+     * pretečenim zasobniku, dump ceka v SDRAM — tady uz mutex drzime a flash je
+     * pripravena, takze se vylije. Az TEDDY ma letovy zapisovac pro ten scenar smysl. */
+    if (s_ready) fr_flush_pending();
     osMutexRelease(qspiMutexHandle);
 }
 
@@ -279,6 +287,68 @@ void flightrec_tick(void)
     if (s_count < FR_DEPTH) s_count++;
 }
 
+/* ── PREDANI DUMPU Z KONTEXTU VYJIMKY (audit F-0018) ─────────────────────────
+ * 🔴 PROC: `flightrec_dump()` se vola i z `vApplicationStackOverflowHook`, ktery bezi
+ * v kontextu vyjimky PendSV (`xPortPendSVHandler` -> `vTaskSwitchContext` ->
+ * `taskCHECK_FOR_STACK_OVERFLOW`). Tam `osMutexAcquire` VZDY vrati `osErrorISR`,
+ * takze se dump pro pretečeni zasobniku NIKDY neprovedl — a to je zrovna scenar,
+ * kvuli kteremu letovy zapisovac vznikl (STATUS #18: „co se delo pred pretečenim").
+ * Zapisovat z hooku bez mutexu NEJDE: `w25q wait_ready()` uvnitr vola `osDelay(1)`,
+ * ktery v PendSV take neprojde, takze by z toho byl spin az do IWDG resetu.
+ *
+ * RESENI = dvoufazovy zapis, tedy tentyz vzor, jaky uz ma `errlog`:
+ *   1. hook slozi dump do SDRAM (jen bajtove zapisy, zadny mutex, zadny osDelay),
+ *   2. po restartu ho `flightrec_init()` vylije do flash — tam uz mutex drzime.
+ *
+ * ⚠️ PROC SDRAM a ne RAM: `.bss` maze `Reset_Handler` pri kazdem startu, takze by se
+ * staging pri resetu ztratil. Sekce `.sdram` je NOLOAD, startup na ni nesaha a obsah
+ * SDRAM prezije reset (tentyz duvod, proc boot musi framebuffer memsetovat na cerno).
+ * ⚠️ `.sdram` je DEVICE pamet -> nezarovnany 32bitovy pristup je UsageFault bez ohledu
+ * na `CCR.UNALIGN_TRP` (past F-0012). Bezpecne to je proto, ze `hdr_pack`/`rec_pack`
+ * plni buffer VYHRADNE pres `put16`/`put32`, a ty zapisuji PO BAJTECH.
+ * ⚠️ Po POWER-CYKLU je SDRAM nahodna -> platnost se overuje magicem (shoda naslepo
+ * 1 : 4 miliardam) a delkou v rozsahu. Pro pretečeni zasobniku to staci: po nem
+ * nasleduje IWDG reset, ne odpojeni napajeni. */
+#define FR_PEND_MAGIC  0x46525031u   /* "FRP1" */
+
+static struct {
+    uint32_t magic;
+    uint32_t bytes;                                   /* kolik `data` je platnych */
+    uint8_t  data[(FR_DEPTH + 1u) * FR_REC_SIZE];     /* hlavicka + vzorky, layout FLASH */
+} s_pend __attribute__((section(".sdram"), aligned(32)));
+
+/* Slozi dump do SDRAM. Bezpecne z kontextu vyjimky: jen bajtove zapisy. */
+static void fr_stage_pending(const char *reason)
+{
+    s_pend.magic = 0u;               /* naplo az na konci, at se necte rozepsany */
+    hdr_pack(s_pend.data, s_seq_next, s_count, g_uptime_s, reason);
+    uint16_t start = (uint16_t)((s_head + FR_DEPTH - s_count) % FR_DEPTH);
+    for (uint16_t i = 0; i < s_count; i++)
+        rec_pack(s_pend.data + (uint32_t)(i + 1u) * FR_REC_SIZE,
+                 &s_ring[(start + i) % FR_DEPTH]);
+    s_pend.bytes = (uint32_t)(s_count + 1u) * FR_REC_SIZE;
+    __DMB();
+    s_pend.magic = FR_PEND_MAGIC;
+}
+
+/* Vylije staged dump do flash. Ocekava DRZENY mutex (vola se z `flightrec_init`). */
+static void fr_flush_pending(void)
+{
+    if (s_pend.magic != FR_PEND_MAGIC) return;
+    if (s_pend.bytes < FR_REC_SIZE || s_pend.bytes > sizeof s_pend.data) {
+        s_pend.magic = 0u;           /* nesmyslna delka -> zahodit, ne zapsat smeti */
+        return;
+    }
+    for (uint32_t off = 0; off < s_pend.bytes; off += FR_REC_SIZE)
+        if (!w25q_write(s_write_off + off, s_pend.data + off, FR_REC_SIZE)) return;
+    s_read_off  = s_write_off;
+    s_have_read = 1;
+    s_have_dump = 1;
+    s_seq_next++;
+    s_pend.magic = 0u;               /* ulozeno */
+    g_flightrec_staged++;            /* aby bylo videt, ze to slo touhle cestou */
+}
+
 void flightrec_dump(const char *reason)
 {
     if (!s_ready || s_dumped) return;   /* jen jednou za beh — sektor je jeden */
@@ -293,6 +363,13 @@ void flightrec_dump(const char *reason)
      * stacku NIKDY neprovede. Nez se to prestavi na dvoufazovy zapis (jako ma
      * `errlog`: RAM ring + vyliti z ulohy), at je aspon VIDET, ze se zaznam
      * ztratil. Crash black-box v BKP funguje dal — zapisuje se driv. */
+    /* Fáze 1: VZDY nejdriv do SDRAM. Kdyz se flash nepovede (nebo tu vubec nesmime
+     * na mutex sahnout), zustane dump staged a vylije se po restartu. */
+    fr_stage_pending(reason);
+    /* Kontext vyjimky (hook pretečeni zasobniku / malloc): na mutex se ani nesaha,
+     * `osMutexAcquire` by vratil `osErrorISR` a `w25q wait_ready` by spinoval
+     * do IWDG. Staged dump uz je v SDRAM — vylije ho `flightrec_init` po restartu. */
+    if (__get_IPSR() != 0u) return;
     if (osMutexAcquire(qspiMutexHandle, FR_LOCK_MS) != osOK) { g_flightrec_lost++; return; }
 
     uint8_t buf[FR_REC_SIZE];
@@ -312,6 +389,7 @@ void flightrec_dump(const char *reason)
         s_have_read = 1;
         s_have_dump = 1;
         s_seq_next++;
+        s_pend.magic = 0u;      /* zapsano hned, staging uz neni potreba */
     }
     osMutexRelease(qspiMutexHandle);
 }

@@ -296,6 +296,7 @@ volatile uint16_t g_css_fail;
 /* Kolikrat se `flightrec_dump` neprovedl, protoze nedostal QSPI mutex (F-0018).
  * Z hooku pretečeni stacku je to VZDY (bezi v PendSV). Cte `status`. */
 volatile uint16_t g_flightrec_lost;
+volatile uint16_t g_flightrec_staged;
 
 volatile uint16_t g_tmp117_cfg_fail;
 

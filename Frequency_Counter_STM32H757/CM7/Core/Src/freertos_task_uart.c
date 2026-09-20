@@ -1375,9 +1375,14 @@ void UartTask_run(void *argument)
 						         r->retain_err ? "  <- OBSAH SE ROZPADA (refresh?)" : "");
 					  osDelay(2);   /* UART TX je blokujici, dej ostatnim taskum dychat */
 				  }
-				  printf("MEMBENCH: %s (celkem %lu chybnych bitu)\n",
-				         m->total_bit_errors ? "NALEZENY CHYBY" : "OK",
-				         (unsigned long)m->total_bit_errors);
+				  /* `any_unstable` je zvlast, protoze se NEMERI v bitech (interni FLASH
+				   * se jen cte) — driv to nesl sentinel `bit_errors = 1` a souhrn tim
+				   * michal jednotky (audit F-0120). Bez teto vetve by verdikt hlasil
+				   * "OK" i pri nestabilnim cteni FLASH. */
+				  printf("MEMBENCH: %s (celkem %lu chybnych bitu%s)\n",
+				         (m->total_bit_errors || m->any_unstable) ? "NALEZENY CHYBY" : "OK",
+				         (unsigned long)m->total_bit_errors,
+				         m->any_unstable ? " + NESTABILNI CTENI FLASH" : "");
 			  }
 			  else if (strncmp(RxBuffer, "sdramlog", 8) == 0) {
 				  /* ── Datova cache mereni v SDRAM (8 MB @0xC1000000) ────────────
@@ -1571,7 +1576,15 @@ void UartTask_run(void *argument)
 				   * "version" apod.); dedikovany TCP 5025 na CM4 bude volat scpi_process
 				   * primo bez prefixu. Napr.: scpi *IDN?  |  scpi MEAS:FREQ? */
 				  const char *arg = (RxBuffer[4] == ' ') ? &RxBuffer[5] : "";
-				  char resp[128];
+				  /* >> `static`, ne na zasobniku (audit F-0074 + F-0077a). Obsluha
+				   * `scpi ipc` o par set radku vys uz to takhle ma a komentar u ni to
+				   * zduvodnuje: `UartTask_run` je JEDNA funkce o ~2000 radcich, takze
+				   * GCC rezervuje ramec pri vstupu a lokal KTERÉKOLI vetve zvedne ramec
+				   * VSEM cestam (L-0035). Na desce zbyvalo 168 B ze 4096 B, nez se
+				   * zasobnik v `.ioc` zvetsil na 8192 B.
+				   * >> UartTask je jediny volajici a je jen jeden, takze `static` je
+				   * bezpecny (zadna reentrance). */
+				  static char resp[128];
 				  size_t rn = scpi_process(arg, resp, sizeof resp);
 				  if (rn) printf("%s\r\n", resp);   /* dotaz -> odpoved; akce (*RST) -> ticho */
 				  else    printf("\r\n");
@@ -2092,7 +2105,9 @@ void UartTask_run(void *argument)
 					  printf("QSPI speed: init FAIL\n");
 					  osMutexRelease(qspiMutexHandle);
 				  } else {
-					  uint8_t buf[512];
+					  /* `static` ze stejneho duvodu jako `resp` u prikazu `scpi`
+					   * (F-0074 + F-0077a) — 512 B v ramci VSECH cest `UartTask_run`. */
+					  static uint8_t buf[512];
 					  uint32_t base = W25Q_DATA_BASE, total = 64u * 1024u;
 					  for (uint32_t a = 0; a < total; a += W25Q_SECTOR_SIZE) w25q_erase_sector(base + a);
 					  for (uint32_t off = 0; off < total; off += sizeof(buf)) {
@@ -2700,8 +2715,15 @@ void UartTask_run(void *argument)
 					  	   * Vypisuji se JEN kdyz nastaly — na rozdil od radku vyse, ktere maji byt
 					  	   * videt vzdy, tyhle znamenaji "neco se ztratilo", ne "takhle to stoji". */
 					  	  if (g_flightrec_lost)
-					  	  	printf("FLIGHTREC: %u dumpu zahozeno (nedostal QSPI mutex) <== viz F-0018\n",
+					  	  	printf("FLIGHTREC: %u dumpu zahozeno (nedostal QSPI mutex)\n",
 					  	  	       (unsigned)g_flightrec_lost);
+					  	  /* Dump, ktery se do flash dostal AZ PO RESTARTU pres SDRAM staging
+					  	   * (F-0018). Nenulove = predchozi beh skoncil pretecenim zasobniku
+					  	   * nebo vycerpanim heapu a zaznam se ZACHRANIL — presne to, co se
+					  	   * do 2026-09-20 deterministicky ztracelo. */
+					  	  if (g_flightrec_staged)
+					  	  	printf("FLIGHTREC: %u dumpu zachranenych po restartu (SDRAM staging) -> `flightrec`\n",
+					  	  	       (unsigned)g_flightrec_staged);
 					  	  if (g_tmp117_cfg_fail)
 					  	  	printf("TMP117: %u x se nepodarilo nastavit 500ms cyklus (meri jinou kadenci)\n",
 					  	  	       (unsigned)g_tmp117_cfg_fail);

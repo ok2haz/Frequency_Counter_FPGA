@@ -77,7 +77,31 @@ přesně v situaci, pro kterou byly napsané.
 - **Riziko opravy:** nízké u počítadla; střední u přestavby na dvoufázový zápis.
 - **Vztah k lekcím:** `L-0011` (nástroj hlásí, že něco dělá, a nedělá) — a nová lekce po opravě:
   „hook FreeRTOS není kontext úlohy“.
-- **Stav:** ČÁSTEČNĚ opraveno 2026-09-10 — přibyl čítač `g_flightrec_lost` + řádek ve `status`, takže ztráta přestala být tichá. **Není to celá oprava:** dvoufázový zápis (RAM ring + vylití z úlohy, vzor `errlog`) zbývá. Viz L-0013.
+- **Stav:** **opraveno 2026-09-20** — dvoufazovy zapis pres SDRAM, tedy
+  presne to, co nalez doporucoval (a co uz dela `errlog`).
+  - `flightrec_dump()` nove **VZDY nejdriv** slozi dump do sekce `.sdram`
+    (`fr_stage_pending`) — jen bajtove zapisy, zadny mutex, zadny `osDelay`, takze je
+    to bezpecne i z PendSV.
+  - Z kontextu vyjimky (`__get_IPSR() != 0`) se na mutex uz **vubec nesaha** a funkce
+    se vraci; dump ceka v SDRAM.
+  - Po restartu ho vylije `flightrec_init()` (`fr_flush_pending`), kde uz mutex drzime
+    a flash je pripravena. Az tim ma zapisovac pro scenar STATUS #18 vubec smysl.
+  - ⚠️ **Proc SDRAM a ne RAM:** `.bss` maze `Reset_Handler`, takze staging v RAM by se
+    pri resetu ztratil. `.sdram` je NOLOAD, startup na ni nesaha a obsah SDRAM prezije
+    reset — tentyz duvod, proc boot musi framebuffer memsetovat na cerno.
+  - ⚠️ **Device pamet:** buffer je v `.sdram`, kde je nezarovnany 32bitovy pristup
+    UsageFault (past F-0012). Bezpecne to je proto, ze `hdr_pack`/`rec_pack` plni
+    buffer VYHRADNE pres `put16`/`put32`, a ty zapisuji **po bajtech** (overeno
+    v `flightrec.c:55-57`). Buffer je navic `aligned(32)`.
+  - ⚠️ Po **power-cyklu** je SDRAM nahodna -> platnost se overuje magicem `"FRP1"`
+    a delkou v rozsahu. Pro pretečeni zasobniku to staci: po nem nasleduje IWDG reset,
+    ne odpojeni napajeni.
+  - Viditelnost: nove pocitadlo `g_flightrec_staged` a radek v `status`
+    („N dumpu zachranenych po restartu"). `g_flightrec_lost` zustava pro skutecnou
+    ztratu (nedostal mutex mimo kontext vyjimky).
+  - Z opravy vznikla **`L-0071`**. ⬜ **neovereno na HW** (kriterium: `stacktest yes`
+    -> po restartu `status` hlasi `zachranenych po restartu 1` a `flightrec` vypise
+    60 s pred padem).
 
 ---
 
@@ -231,8 +255,24 @@ přesně v situaci, pro kterou byly napsané.
   selftestu.** Varianta 2 (spouštět testy z úlohy, která má rezervu) řeší
   selftest, ale ne SCPI cestu; tu by řešilo jedině zvětšení zásobníku
   **nebo** přesun `scpi_src_t` mimo stack.
-- **Stav:** otevřeno — **potřebuje rozhodnutí** (tři varianty výše), a od
-  2026-09-12 je naléhavější (viz nový důkaz)
+- **Stav:** **vse pripravene, ceka VYHRADNE na HW overeni (2026-09-20).**
+  Oba kroky, ktere nalez pozadoval, jsou hotove:
+  1. ✅ **zasobnik UartTasku zvetsen** — `.ioc` ma `UartTask, 24, 2048` (slov) a
+     `freertos.c` `stack_size = 2048 * 4` = **8192 B** (bylo 4096 B). Udelal uzivatel.
+  2. ✅ **velke lokaly prikazu do `.bss`** — `resp[128]` a `buf[512]`, viz **F-0074**
+     a **F-0077**. Dolozeno v obrazu (`resp.14` 128 B, `buf` 512 B v `.bss`).
+  🔴 **PORAD JE TO OTEVRENE, protoze zadny z tech kroku nebezel na desce** — a presne
+  na tohle upozornuje pravidlo „prelozeno neni provereno". Puvodni vada byla
+  DETERMINISTICKA a zmerena 2x (`Reset: WATCHDOG! stack:UartTask`), takze dukaz o oprave
+  musi byt taky z desky.
+  ⚠️ **Dve konkurencni opravy naraz — merіtelnost je obetovana vedome.** TODO #243
+  zadavalo delat je ODDELENE prave proto, aby se poznalo, ktera pomohla; uzivatel se
+  2026-09-20 rozhodl udelat obe. Kdyz `selftest` projde, bude to znamenat „uz to
+  nepadá", ne „vime cim".
+  **Kriterium:** `selftest` z konzole dobehne **„SELFTEST: 16/16 PASS" bez resetu**,
+  `status` -> `Reset:` nehlasi `stack:UartTask`, a `stats` ukaze volny stack UartTasku
+  (ocekavany rad: ~4 kB vic nez drive).
+  ⬜ **neovereno na HW.**
 
 ---
 
