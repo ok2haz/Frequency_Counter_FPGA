@@ -45,7 +45,16 @@
 /** Udalosti z jednoho pollu. Muze prijit vic naraz (otoceni i stisk). */
 typedef struct {
     int16_t  steps;         /* +/- zapadkove kroky od posledniho pollu (0 = nic) */
-    uint16_t steps_per_s;   /* rychlost otaceni -> adaptivni krok (zadani UI §5) */
+    /* Rychlost otaceni [zapadek/s] pro adaptivni krok (zadani UI §5).
+     * ⚠️ DNES JI NIKDO NEPOUZIVA — a je to zamer, ne opomenuti.
+     * 🔴 PRAVIDLO (rozhodl uzivatel 2026-09-20): **zrychleni pri rychlem otaceni smi
+     * platit VYHRADNE v polich, kde ma vyznam — tedy tam, kde se meni CISLO
+     * (jas, casova zona, meze Math, kalibracni koeficienty, presety trendu).
+     * V MENU a v seznamech NIKDY.** V kratkem seznamu by skok o vic polozek
+     * znamenal jen prestreleni a uzivatel by se musel vracet.
+     * Dokud otaceni jen prejizdi fokus (Faze A), neni tedy kam to zapojit; smysl
+     * dostane az s Fazi B, kde otaceni edituje hodnotu zamereneho ovladace. */
+    uint16_t steps_per_s;
     uint8_t  short_press;   /* 1 = kratky stisk (pri uvolneni) */
     uint8_t  long_press;    /* 1 = drzeno >= 1 s; hlasi se JEDNOU, uvolneni uz nedela short */
     uint8_t  double_click;  /* 1 = druhy kratky stisk do 400 ms (spolu se short_press) */
@@ -74,8 +83,14 @@ int32_t  encoder_step_total(void);
  *  hrany obou kanalu). ⚠️ Je to jedina HW-zavisla konstanta modulu a u jineho
  *  encoderu muze byt 1 nebo 2 — proto je nastavitelna ZA BEHU (`enc div N`)
  *  a persistuje v syscfg, aby se kvuli ni nemuselo preflashovat.
- *  Platne hodnoty 1/2/4; jina se ignoruje. */
-void encoder_set_div(uint8_t d);
+ *  Platne hodnoty 1/2/4; jina se ignoruje.
+ *  @return 1 = hodnota prijata a POZADAVEK zafronotovan (aplikuje ho az
+ *  `encoder_poll()` v UiTasku, viz komentar u definice — NENI to synchronni),
+ *  0 = `d` mimo {1,2,4}, pozadavek se zahodil beze zmeny.
+ *  🔴 Volajici, kterym zalezi na TOM, jestli byla hodnota platna (typicky
+ *  UART zpetna vazba), MUSI cist tenhle navrat — ne volat `encoder_div()`
+ *  hned pote (to porovna proti hodnote PRED aplikaci pozadavku, viz F-0139). */
+int encoder_set_div(uint8_t d);
 uint8_t encoder_div(void);
 
 #endif /* INC_ENCODER_H_ */

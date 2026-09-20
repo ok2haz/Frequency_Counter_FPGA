@@ -193,11 +193,21 @@ void encoder_poll(encoder_ev_t *ev)
  * zadny zamek netreba — jde o to, aby `s_rem` (zbytek kroku) nemenil nikdo jiny
  * nez ten, kdo ho pouziva.
  * >> `syscfg_load()` bezi PRED schedulerem, takze tam se pozadavek stejne
- * zkonzumuje driv, nez `encoder_poll` vubec poprve bezi. */
-void encoder_set_div(uint8_t d)
+ * zkonzumuje driv, nez `encoder_poll` vubec poprve bezi.
+ *
+ * 🔴 F-0139 (2026-09-20, nalezeno na HW pri overovani F-0125): volajici
+ * `freertos_task_uart.c` po tomhle volani delal `if (d == encoder_div())`,
+ * aby poznal, jestli hodnotu prijal. Jenze `encoder_div()` cte `s_div`, ktery
+ * se zmeni az UiTaskem o poll pozdeji — porovnani tedy VZDY videlo STAROU
+ * hodnotu a hlasilo „neplatny delic" i pro 1/2/4. Zmereno: `enc div 2` na
+ * desce ohlasil chybu, ale nasledny `enc` ukazal `delic=2` — pozadavek se
+ * potichu aplikoval, jen zprava lhala. Fix: funkce ted VRACI, jestli `d` bylo
+ * v {1,2,4}, takze volajici nemusi hadat ze zpozdene asynchronni hodnoty. */
+int encoder_set_div(uint8_t d)
 {
-    if (d != 1u && d != 2u && d != 4u) return;   /* jina hodnota nedava smysl */
+    if (d != 1u && d != 2u && d != 4u) return 0;   /* jina hodnota nedava smysl */
     s_div_req = d;
+    return 1;
 }
 uint8_t encoder_div(void) { return s_div; }
 

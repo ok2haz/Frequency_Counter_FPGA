@@ -1274,11 +1274,15 @@ void UartTask_run(void *argument)
 				   * vrstvy — nastavitelna za behu, aby se kvuli ni nemuselo preflashovat.
 				   * Persistuje v syscfg (magic "SCG0"). */
 				  int d = atoi(RxBuffer + 8);
-				  encoder_set_div((uint8_t)d);
-				  if ((uint8_t)d == encoder_div()) {
+				  /* 🔴 F-0139: NEporovnavat s `encoder_div()` hned potom — ten cte
+				   * `s_div`, ktery aplikuje az UiTask o poll pozdeji, takze by tu
+				   * byla porad STARA hodnota a zprava by lhala i pro platne 1/2/4
+				   * (zmereno na HW). `encoder_set_div()` proto rovnou VRACI, jestli
+				   * `d` prijala. */
+				  if (encoder_set_div((uint8_t)d)) {
 					  g_sys_cfg_dirty = 1;
 					  printf("ENC: delic = %u (jedna zapadka = %u kroku TIM1), ulozeno\r\n",
-							 (unsigned)encoder_div(), (unsigned)encoder_div());
+							 (unsigned)d, (unsigned)d);
 				  } else {
 					  printf("ENC: neplatny delic (povoleno 1, 2, 4); zustava %u\r\n",
 							 (unsigned)encoder_div());
