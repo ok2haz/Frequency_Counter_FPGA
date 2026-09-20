@@ -21,11 +21,14 @@ i neinicializovaný stav filtru a Jensenovu nerovnost (proč perioda potřebuje 
 akumulátor); `phase_noise.c` má velké buffery správně `static` s poznámkou o boot-loopu,
 který je k tomu donutil; `meas_math.c` je triviální a plně pokrytý testem.
 
-**Verdikt: funkční.** Žádný S1 ani S2. Jediný S3 není porucha běhu, ale **rozpor mezi
-dokumentací a skutečností u TIM1** (`encoder.h` slibuje regen-safety, kterou projekt
-už nemá — a konfigurace z `.ioc` se přitom nikdy neuplatní). Zbytek jsou S4: dvě
-věty v komentářích, které neplatí, a dvě místa, kde stav píše víc úloh, než hlavička
-připouští — všechno s malým nebo nulovým dopadem.
+**Verdikt: funkční.** Žádný S1 ani S2. Původně jediný S3 (F-0122) není porucha běhu,
+ale **rozpor mezi dokumentací a skutečností u TIM1** (`encoder.h` slibuje
+regen-safety, kterou projekt už nemá). Zbytek jsou S4: dvě věty v komentářích,
+které neplatí, a dvě místa, kde stav píše víc úloh, než hlavička připouští —
+všechno s malým nebo nulovým dopadem. **Dodatečně 2026-09-20 přibyl druhý S3
+(F-0139)** — skutečná uživatelsky viditelná regrese objevená při HW verifikaci
+F-0125 (viz níže), opravená a ověřená týž den. **Aktuální stav: 6 nálezů
+(2×S3, 4×S4), všechny opravené**, 5 z 6 ⬜ neověřeno na HW, F-0139 ✅ ověřeno na HW.
 
 ---
 
@@ -97,7 +100,12 @@ připouští — všechno s malým nebo nulovým dopadem.
     z `.ioc`, encoder se nezapne místo startu nenakonfigurovaného timeru.
   - Opraveno i `encoder.h:9-10` (nepravdivá věta) a celá sekce Encoder
     v `CUBEMX_CHECKLIST.md`, jejíž nadpis tvrdil „⬜ NENÍ V IOC".
-  - ⬜ **neověřeno na HW** — viz kritérium `CC1E/CC2E` výše.
+  - ✅ **ověřeno na HW 2026-09-20** — přesně kritérium `CC1E/CC2E` výše.
+    Kontrolovaný test `enc` (uživatel otáčel přesně 1 západku/s, pořád stejným
+    směrem): dva běhy, `udalosti == zapadek == kresleni` v každém řádku, čistá
+    schodovitá řada `+1` na krok, žádné zákmity, `delic=4` beze změny. Jedna
+    západka = přesně `kroku=1` — `CC1E/CC2E` (jediný registrový rozdíl proti
+    ruční konfiguraci) počítání nezměnilo.
 
 ---
 
@@ -253,6 +261,66 @@ připouští — všechno s malým nebo nulovým dopadem.
   ⚠️ **Zadna zmena chovani:** oba volajici (`app_gpsdo.c:9306` UiTask, `freertos_task_uart.c:1597`
   UartTask) uz `autocal_run()` volaji sami PRED formatovanim — doloženo grepem — takze nova
   vetev je guard, ne nova cesta. ⬜ **neovereno na HW.**
+
+---
+
+---
+
+### F-0139 [S3] `enc div N` porovnával novou hodnotu proti STARÉ — UART lhal o výsledku vlastní žádosti, i persistence se nikdy neuplatnila
+
+*(Dodatečně nalezeno a opraveno 2026-09-20 při F5 verifikaci F-0125 na reálné
+desce — F-0125 sám je oprava korektní, tenhle nález je regrese v místě, kam
+F-0125 zasáhla, ale samo najít nemohlo, protože UART handler v tomto souboru
+nebyl auditovaný jako součást modulu 20, jen jako volající.)*
+
+- **Místo:** `CM7/Core/Src/freertos_task_uart.c:1272-1286` (`enc div ` handler),
+  `CM7/Core/Src/encoder.c:197-210` (`encoder_set_div`), `CM7/Core/Inc/encoder.h:82-93`
+- **Popis:** Po opravě F-0125 (`encoder_set_div()` už jen zafrontuje `s_div_req`,
+  skutečné `s_div` mění `encoder_poll()` v UiTasku) UART handler dál dělal
+  `if ((uint8_t)d == encoder_div())` HNED PO volání `encoder_set_div(d)` — a
+  `encoder_div()` čte `s_div`, tedy STAROU hodnotu, protože UiTask ji ještě
+  neaplikoval. Porovnání proto skoro vždy selhalo, i pro platné 1/2/4, a hlásilo
+  `ENC: neplatny delic` — navíc `g_sys_cfg_dirty = 1` (persistence do syscfg
+  flash) leželo v TÉŽE (nikdy nedosažené) větvi, takže se **nová hodnota nikdy
+  neuložila**, i když se ve skutečnosti aplikovala.
+- **Důkaz — změřeno přímo na desce (COM8):**
+  ```
+  > enc div 2
+  ENC: neplatny delic (povoleno 1, 2, 4); zustava 4
+  > enc div 4
+  ENC: neplatny delic (povoleno 1, 2, 4); zustava 2      <- „zustava 2" dokazuje,
+                                                             ze prvni pozadavek 2
+                                                             SE ve skutecnosti uplatnil
+  > enc
+  ENC: delic=4, ...                                       <- a druhy taky
+  ```
+  Obě volání byla technicky úspěšná (`encoder_set_div()` interně validuje
+  `d != 1 && d != 2 && d != 4` a jinak vždy přijme — `encoder.c:199` před
+  opravou), jen zpětná vazba i persistence byly rozbité.
+- **Dopad:** Uživatelsky viditelné selhání dokumentované, persistované funkce
+  (`CLAUDE.md`: „dělič RUNTIME nastavitelný … persist v syscfg") — každá SKUTEČNÁ
+  změna děliče přes UART se runtime uplatnila, ale **nikdy se neuložila do
+  flash**, takže po restartu zmizela beze stopy a bez chybové hlášky (naopak
+  s falešnou chybovou hláškou v okamžiku změny). Nešlo o okrajový případ —
+  postihovalo to KAŽDÉ použití příkazu, které mění hodnotu (tedy typické použití;
+  jediná cesta, kde by hlášení vyšlo správně, je nastavit hodnotu, která už je
+  aktuální).
+- **Reprodukce:** Doložena měřením výše, opakovatelná (`enc div 2` na desce
+  s výchozím `delic=4`).
+- **Návrh opravy:** `encoder_set_div()` vrací `int` (1 = přijato a zafrontováno,
+  0 = neplatná hodnota) místo `void`. Volající v `freertos_task_uart.c` čte
+  návrat, ne `encoder_div()`. Druhý volající (`syscfg_load()`) návrat ignoruje
+  (nepotřebuje ho, spoléhá na interní no-op).
+- **Riziko opravy:** nízké — čistě signatura + přesun podmínky, `encoder_set_div`
+  samo o sobě nezměnilo chování (pořád stejná interní validace, pořád stejné
+  `s_div_req`).
+- **Vztah k lekcím:** nová **L-0075** (ověřování požadavku po odeslání musí číst
+  návrat, ne stav vlastníka hned potom), příbuzné **L-0061** (request pattern
+  hotový až s odpovědí na to, co když se nepřečte správně).
+- **Stav:** **opraveno a ověřeno na HW 2026-09-20** — `enc div 2`/`enc div 4`
+  teď hlásí `ENC: delic = N …, ulozeno` (viditelně přijato), `enc div 9`
+  správně `neplatny delic … zustava 4` (aktuální hodnota, ne stará shodou
+  okolností správná). Build 0 varování, `audit.py` 92/0/2 nezměněno.
 
 ---
 

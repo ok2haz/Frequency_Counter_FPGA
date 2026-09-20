@@ -2464,6 +2464,109 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0073 — Fokus na kraji seznamu se zastavoval, místo aby se zacyklil
+
+- **Datum:** 2026-09-20
+- **Oblast:** UI, encoder (`app_gpsdo_handle_encoder`)
+- **Symptom:** Uživatel nahlásil „v hlavní nabídce jde blbě encoder". Nejdřív jsem
+  podezíral HW vrstvu (zákmity, chybný dělič) — opakované měření `enc` (přesně
+  1 západka/s) ale ukázalo čistou schodovitou řadu +1/krok, žádné zákmity,
+  `delic=4` správně. Chyba tedy nebyla v počítání kroků.
+- **Příčina:** `app_gpsdo.c:8529-8531` počítal nový index fokusu `s_focus + ev.steps`
+  a **ořezával** ho na `[0, n-1]` (`if (nf < 0) nf = 0; if (nf >= n) nf = n - 1;`).
+  Na krátkém seznamu (MENU = 4 dlaždice + 3 tlačítka patky = 7 prvků) to znamená, že
+  otočení za poslední/první prvek se prostě zastaví — uživatel musí otočit zpátky
+  celou cestu, což se subjektivně jeví jako „mrtvý směr" nebo vadný encoder.
+- **Oprava:** Ořez nahrazen modulem: `nf = (s_focus + ev.steps) % n; if (nf < 0) nf += n;`
+  (`app_gpsdo.c:8528-8535`). `n > 0` je už zaručeno guardem o pár řádků výš.
+- **Pravidlo:** **Fokus v cyklickém seznamu (menu, karusel) se má ZACYKLIT, ne
+  zarazit na kraji** — ořezávací clamp na indexu, který reprezentuje pozici
+  v uzavřeném seznamu položek, je skoro vždy špatné chování; správně patří modulo.
+  Než se HW podezírá ze zákmitů/chybného děliče, ověř kontrolovaným měřením
+  (SKILL §0), že vada skutečně leží tam — v tomto případě neležela.
+- **Detekce:** Grep `if (nf < 0)` / `if (.*< 0.*=.*0.*>=.*n.*=.*n *- *1` v souborech
+  s `s_focus`/`menu_list_t` — kandidát na clamp místo wrapu v cyklickém seznamu.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
+### L-0074 — Volání, které jen MĚNÍ STAV, ale nikdy neKRESLÍ, vypadá jako mrtvý vstup
+
+- **Datum:** 2026-09-20
+- **Oblast:** UI, encoder (`app_gpsdo_handle_encoder`), obecně partial-redraw architektura
+- **Symptom:** Zkoušel jsem opravit hlášení „zaseknul se na channel a nehýbe se pomocí
+  encoderu" přidáním speciální větve, kde otáčení na GATE/CHAN volalo
+  `screen_main_button_action(bi)` opakovaně. Uživatel hned nato hlásil: „jde tlačítko,
+  ale otáčení nereaguje" — tedy hodnota v `st.gate`/`st.chan` se měnila (ověřitelné
+  jinudy), ale na displeji se nic neukázalo.
+- **Příčina:** `screen_main_button_action()` je **čistá state-mutace** — nastaví
+  `st.gate`/`st.chan`/`g_ui_cfg_dirty` a nic víc. Dotyková cesta
+  (`app_gpsdo_handle_touch`) po ní VŽDY volá i `prim_set_target`+`prim_reset_clip`+
+  `screen_main_redraw_button`+`screen_main_button_flash_start`+`screen_main_redraw_title`+
+  `present_now()` — tenhle redraw balík je oddělený od samotné akce a nikde
+  vynucený signaturou ani komentářem. Nová volající vrstva (encoder) zavolala jen
+  akci, ne redraw, a nic ji na to neupozornilo — ani build, ani audit (žádná z těch
+  funkcí nevrací chybu, když se nezavolá).
+- **Oprava:** Zrcadlit CELOU dotykovou redraw sekvenci (ne jen samotnou akci) na
+  nové volací cestě. V tomto konkrétním případě šla vlastnost `otáčení mění hodnotu
+  GATE/CHAN přímo` nakonec **celá pryč** (uživatel po vyzkoušení na HW rozhodl, že
+  rotace na hlavní obrazovce má vždy jen listovat fokusem, ne měnit hodnotu —
+  zmena hodnoty otáčením patří jen do vyhrazených číselných polí typu IP oktet).
+  Missing-redraw bug tím zmizel spolu s celou větví, ale vzorek zůstává platný
+  pro příští podobné volání.
+- **Pravidlo:** **Když se v kódu objeví `<akce>()` bez doprovodného volání redraw
+  funkce, kterou VŠECHNY OSTATNÍ cesty k téže akci volají, je to podezřelé — najdi
+  všechny volající téže state-mutující funkce a porovnej, co dělají navíc.**
+  Funkce, která jen mění stav a nikdy nekreslí, by měla mít v komentáři u definice
+  jasně napsáno „NEKRESLÍ, volající musí redraw udělat sám" (`screen_main_button_action`
+  ho nemělo).
+- **Detekce:** Grep na `screen_main_button_action(` (nebo obdobné `*_action`/`*_apply`
+  state-mutátory) — u KAŽDÉHO volání zkontroluj, že v okolí je i redraw. Obecněji:
+  když nová volací cesta k existující funkci vznikne, diffni ji proti VŠEM
+  ostatním volajícím téže funkce, ne jen proti nejbližšímu příkladu.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
+### L-0075 — Ověřování požadavku PO ODESLÁNÍ musí číst návrat, ne stav vlastníka hned potom
+
+- **Datum:** 2026-09-20
+- **Oblast:** cross-task request/apply vzor (`encoder_set_div`), obecně F5 fix-phase
+  verifikace na HW
+- **Symptom:** Při verifikaci F-0125 (fix z 2026-09-19, přechod `encoder_set_div()`
+  na request-pattern) na reálné desce: `enc div 2` odpověděl `ENC: neplatny delic
+  (povoleno 1, 2, 4); zustava 4` — přestože 2 je platná hodnota. Následný `enc div 4`
+  odpověděl `... zustava 2` (napovědělo, že se `2` mezitím přece jen uplatnilo).
+  `enc` pak ukázal `delic=4` — obě volání ve skutečnosti PROŠLA, jen o tom UART
+  lhal pokaždé, když se hodnota doopravdy měnila.
+- **Příčina:** `freertos_task_uart.c` po `encoder_set_div(d)` okamžitě porovnával
+  `d == encoder_div()`. `encoder_set_div()` ale od F-0125 jen ZAFRONTUJE `s_div_req`;
+  skutečné `s_div` (co čte `encoder_div()`) mění až `encoder_poll()` v UiTasku o poll
+  později. Srovnání tedy vždy vidělo STAROU hodnotu — funkční je jen náhodou, když
+  se nová hodnota rovná staré (typicky nikdy, protože proč by uživatel nastavoval
+  to, co už je nastavené).
+- **Oprava:** `encoder_set_div()` teď VRACÍ, jestli `d` bylo platné (`int`, 1/0),
+  místo aby volající hádal ze zpožděné asynchronní hodnoty. Volající (`enc div`)
+  čte návrat, ne `encoder_div()`. Druhý volající (`syscfg_load()`) návrat ignoruje
+  (nepotřebuje ho — spoléhá na tichý no-op interní validace, jak už dřív dělal).
+- **Pravidlo:** **Když se synchronní mutace převede na frontový požadavek pro
+  cizí úlohu (L-0061), KAŽDÝ volající, který si po volání ověřoval výsledek čtením
+  stavu vlastníka, se MUSÍ přepnout na návratovou hodnotu funkce (nebo jiný
+  synchronní signál) — čtení stavu vlastníka hned po zafrontování čte starou
+  hodnotu skoro jistě.** Tahle třída chyby je neviditelná v recenzi kódu (obě
+  volání vypadají rozumně samostatně) a build/audit ji nechytí (typy sedí) —
+  odhalí ji jen skutečné vyvolání na HW se sledováním výsledku.
+- **Detekce:** Po každém převodu funkce na request-pattern (F5.3: „vzor
+  `g_membench_req`") vypsat VŠECHNY volající PŮVODNÍ (synchronní) verze a u
+  každého zkontrolovat, jestli si po volání čte stav zpět OKAMŽITĚ. Grep:
+  volání `X_set_*` následované do pár řádků čtením `X_get_*`/gettru stejného pole.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

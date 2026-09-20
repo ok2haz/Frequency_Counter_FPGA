@@ -12,11 +12,12 @@
   (Gowin GW1NR-9) připojené přes SPI2.
 - **MCU:** STM32H757BIT6 — dual-core Cortex-M7 (do 480 MHz) + Cortex-M4 (do 240 MHz),
   2 MB Flash (2 banky), 1 MB SRAM v doménách D1/D2/D3, LQFP208/TFBGA
-- **Revize silikonu:** rev V — **ODVOZENO, HYPOTÉZA (NEMĚŘENO).** Firmware běží na
-  SYSCLK 480 MHz při VOS0, což rev Y (strop 400 MHz) neumožňuje → implikuje rev V nebo
-  novější. Ověření na HW: `HAL_GetREVID()` (0x1003 = rev Y, 0x2003 = rev V) nebo
-  DBGMCU_IDCODE `0x5C001000`, bity [31:16]. Boot kód aplikuje rev-Y AXI SRAM workaround
-  podmíněně: `Common/Src/system_stm32h7xx_dualcore_boot_cm4_cm7.c:258`.
+- **Revize silikonu:** rev V — **OVĚŘENO NA HW 2026-09-20.** `STM32_Programmer_CLI -c
+  port=SWD` (bez `-r32`, tedy bez haltu cíle) hlásí `Device ID: 0x450` + `Revision ID:
+  Rev V` přímo z DBGMCU_IDCODE — přesně ta hodnota, na kterou tenhle záznam dřív jen
+  usuzoval z toho, že SYSCLK 480 MHz při VOS0 na rev Y (strop 400 MHz) neběží. Boot kód
+  aplikuje rev-Y AXI SRAM workaround podmíněně: `Common/Src/system_stm32h7xx_dualcore_boot_cm4_cm7.c:258`
+  (na této desce se tedy nikdy neprovede).
 - **Napájení:** SMPS — `PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO` (`CM7/Core/Src/main.c:482`,
   `.ioc RCC.SupplySource`), regulátor VOS0 = `PWR_REGULATOR_VOLTAGE_SCALE0`
   (`main.c:486`, `.ioc:898`). Chybná konfigurace = zařízení nenaběhne po resetu.

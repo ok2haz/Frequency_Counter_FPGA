@@ -3,7 +3,42 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-19 — **dávka oprav ze skupiny B: 6 nálezů uzavřeno**
+**Poslední aktualizace:** 2026-09-20 (pokračování) — **F5 modulu 20 dokončena.**
+Všech 5 dřívějších nálezů (F-0122…F-0126, zapsané 2026-09-18) bylo při kontrole
+zdrojáku potvrzeno jako **skutečně opravené** (žádná z nich nebyla jen popsaná
+v dokumentu — všech pět je ověřitelně v `encoder.c/.h`, `screenshot.c`, `autocal.c`).
+Při HW verifikaci F-0125 (`enc div N`) se navíc našla a rovnou opravila **nová
+regrese F-0139 [S3]**: UART handler po zafrontování požadavku porovnával proti
+STARÉ hodnotě (čtenou dřív, než ji UiTask stihl aplikovat) → `enc div 2`/`enc div 4`
+hlásily „neplatny delic" pro platné hodnoty a **persistence do syscfg se nikdy
+neuplatnila** (ticho selhávající, dokumentovaná funkce). Opraveno (`encoder_set_div()`
+teď vrací, jestli hodnotu přijala, místo aby volající hádal ze zpožděné async
+hodnoty), **ověřeno přímo na desce** (`enc div 2`→`ulozeno`, `enc div 9`→správně
+odmítnuto). Nová **L-0075**. Modul 20 je tím **kompletně opravený** (6/6 nálezů);
+F-0122 (encoder HW počítání) a F-0139 (tahle oprava) jsou navíc ✅ **ověřené na HW**,
+zbylé 4 (F-0123 screenshot BMP, F-0126 autocal) čekají na HW test, který dnes
+neproběhl (mimo rozsah tohoto sezení).
+⚠️ **Ověření je po SW resetu přes sondu, ne po plném power-cyklu** — viz L-0010/pravidlo 4b.
+
+**Předchozí, týž den:** cílený audit encoderové logiky (NE celý modul 20), viz
+[`audit/2026-09-20_encoder-fokus-session.md`](audit/2026-09-20_encoder-fokus-session.md).
+Přehled dnešního sezení: (1) odstraněno dočasné profilovací
+vybavení UiTasku (`UIP_*`, viz `freertos_task_ui.c`) po zodpovězení otázky
+„čím je UiTask vytížený" — DMA2D glyph accel rozšiřovat nemá smysl (cíl by
+pokryl jen ~4 %); (2) **L-0073** — fokus v cyklických seznamech se ZACYKLÍ
+(modulo), ne zarazí na kraji; (3) **L-0074** — po dvou špatných odhadech
+designu (rotace mění GATE/CHAN hodnotu → chybějící redraw bug → uživatel
+rozhodl celou tu vlastnost zrušit) je finální stav: rotace na hlavní obrazovce
+VŽDY jen listuje fokus, žádná výjimka pro GATE/CHAN. **Vše tři body ověřeno
+na desce** (flash + SW reset přes sondu, ne plný power-cyklus — viz „Nezkontrolováno"
+v nálezovém dokumentu). Cílený audit finálního stavu: **0 nových nálezů**,
+jedna hypotéza (kolize `s_focus_shown` napříč okny) vyvrácena čtením `view_set()`.
+Také ověřeno na HW a zapsáno do `CLAUDE.md`: **revize silikonu = rev V** (dřív
+HYPOTÉZA, teď přímý odečet `STM32_Programmer_CLI` `Revision ID: Rev V`).
+⚠️ **Nic z dnešního sezení není zatím komitnuté** (`git status` — `app_gpsdo.c`,
+`CLAUDE.md`, `docs/LESSONS.md`, `docs/HW_OVERENI_AUDIT_2026-09-19.md` čekají).
+
+**Předchozí:** 2026-09-19 — **dávka oprav ze skupiny B: 6 nálezů uzavřeno**
 (uživatel rozhodl politiky, které F5.0 odkládala). ⬜ **Vše neověřeno na HW.**
 
 | nález | rozhodnutí | commit | co je potřeba ověřit na HW |
@@ -468,7 +503,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 17 | čas, alarmy, watchdog | `rtc.c`, `alarm.c`, `watchdog.c`, `beeper.c`, `bootled.c` (~1 290 ř. + hlavičky) | CM7 | **A+B opraveno** (9 z 10, 1 odložen, ⬜ neověřeno na HW) | 2026-09-17 | 0 | 1 | 5 | 4 | [10](audit/2026-09-17_cas-alarmy-watchdog.md) |
 | 18 | senzory / drivery periferií | `si5356.c`, `ads1115.c`, `ws_panel.c`, `ft5x06.c`, `sensor_hist.c` (1 004 ř. vč. hlaviček) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 2 | 0 | [2](audit/2026-09-18_senzory-drivery.md) |
 | 19 | diagnostika paměti (**měřidlo**) | `membench.c`, `sdram_log.c` (1 269 ř. vč. hlaviček) | CM7 | **skupina A opravena** (5 ze 7, 2 čekají na rozhodnutí, ⬜ neověřeno na HW) | 2026-09-18 | 0 | 0 | 4 | 3 | [7](audit/2026-09-18_diagnostika-pameti.md) |
-| 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | nálezy zapsány | 2026-09-18 | 0 | 0 | 1 | 4 | [5](audit/2026-09-18_metrologie-encoder-export.md) |
+| 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | **opraveno vše** (6 z 6, F-0122+F-0139 ✅ na HW, 4 zbylé ⬜) | 2026-09-20 | 0 | 0 | 2 | 4 | [6](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 
@@ -506,7 +541,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 |---|---|---|---|
 | S1 | 1 | 5 | 0 |
 | S2 | 0 | 17 | 0 |
-| S3 | 1 | 70 | 0 |
+| S3 | 1 | 71 | 0 |
 | S4 | 1 | 37 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových

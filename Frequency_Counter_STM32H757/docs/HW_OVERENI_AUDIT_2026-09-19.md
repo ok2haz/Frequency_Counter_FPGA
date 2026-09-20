@@ -364,14 +364,14 @@ Tím se vyloučí tearing, takže jakékoli poškození snímku je ta vada v rin
 ⚠️ Tohle nejsou opravy nálezů, ale změny chování, které se taky nedají ověřit jinak
 než na desce.
 
-- [ ] **`stats`** → na konci blok **`--- UiTask po fazich (posledni 1s okno, N pruchodu)`**
-      🔑 **Kvůli tomuhle to celé vzniklo:** doteď šlo změřit, že UiTask bere ~58 % CPU,
-      ale ne **čím**. Zapiš si ta čísla — je to vstup pro rozhodnutí, jestli rozšiřovat
-      DMA2D glyph accel, a bez nich by se to dělalo naslepo.
-      - [ ] `N pruchodu` má být ~100 (smyčka je 100 Hz) — výrazně méně znamená, že
-            něco ve smyčce blokuje
-      - [ ] `CELKEM` musí být **menší** než 1 000 000 µs; rozdíl proti součtu fází je
-            `osDelay` + režie smyčky, ne chyba měření
+- [x] ~~`stats` → blok „UiTask po fazich"~~ **ODSTRANĚNO 2026-09-20**, ne jen neověřeno.
+      Diagnostika (`UIP_BEGIN/UIP_END` v `freertos_task_ui.c`, `uiprof_*` v
+      `freertos_shared.h`, výpis v `stats`) svůj účel splnila (rozklad naměřen:
+      `flip` 28,2 % + `animace` 25,4 % + `kmitocet` 18,2 % = 71 z 83 pp) a rozhodla
+      otázku „rozšiřovat DMA2D glyph accel?" → ne (cíl by pokryl jen ~4 %). Ponechaný
+      profilovací kód by teď byl jen trvalá režie navíc (DWT čtení ~2200×/s v UiTasku)
+      bez dalšího přínosu — uživatel 2026-09-20 požádal o vrácení, viz `git log`.
+      **Tahle položka checklistu je tím uzavřená, ne otevřená k ověření.**
 - [ ] **`status`** → kratší než dřív; **`status full`** → vypíše i řádky `UI kresleni:`,
       `UI: okno`, `GLOW:`, `SDRAM refresh:`, `SDRAM cteni:`, `STATISTIKA:`,
       `ATTINY zapisu jasu:`
