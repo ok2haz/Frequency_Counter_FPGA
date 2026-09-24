@@ -2745,6 +2745,39 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0080 — Vypnutí funkce, která drží otevřený soubor, musí soubor i ZAVŘÍT, ne jen nastavit příznak
+
+- **Datum:** 2026-09-24
+- **Oblast:** SD karta / FatFs, datalog zrcadlo
+- **Symptom:** Při opravě F-0142 (čtení posledního řádku souboru při znovuotevření
+  na téže kartě) se přidal `FA_READ` k dosavadnímu `FA_WRITE` v `f_open()`. Hned
+  při prvním ověřovacím testu na HW (`datalog mirror off` → `on`) začalo
+  opětovné otevření selhávat (`"otevreni souboru selhalo"`), přestože stejná
+  sekvence předtím v této session opakovaně fungovala.
+- **Příčina:** `datalog_mirror_set_enabled(false)` (`datalog_sd.c`) od svého
+  vzniku jen nastavovala `s_mirror_open = false`, **nikdy nevolala `f_close()`**
+  na `s_mirror_fil`. FatFs tak dál vedla soubor jako otevřený týmž objektem;
+  dokud se znovu otevíral jen s `FA_WRITE`, kolize se neprojevila. Přidání
+  `FA_READ` (kombinovaný režim čtení+zápis) narazilo na zámek, který ten
+  zapomenutý, nikdy nezavřený objekt pořád držel — a `f_open()` na stejné
+  jméno selhal.
+- **Oprava:** `datalog_mirror_set_enabled(false)` teď při `s_mirror_open`
+  zavolá `f_close(&s_mirror_fil)` (obaleno `sd_blocking_begin/end` +
+  `sd_export_busy_begin/end` — volající je UartTask, blokování je v pořádku).
+  `datalog_sd.c:477-495` (F-0146).
+- **Pravidlo:** **Přepínač "vypnuto/zapnuto" nad zdrojem, který drží HANDLE
+  (soubor, socket, periferie), musí handle při vypnutí uvolnit — samotné
+  shození příznaku nestačí, i když se to chvíli nemusí projevit.** Chyba může
+  zůstat skrytá, dokud se nezmění NĚCO JINÉHO (tady: přidaný `FA_READ`), co
+  na existenci uniklého handle najednou narazí — testuj vypnutí/zapnutí
+  vždy PO každé změně otvíracích příznaků, ne jen při prvním napsání kódu.
+- **Detekce:** Žádná automatická — projeví se jen funkčním testem sekvence
+  zapnuto→vypnuto→zapnuto na reálném FatFs svazku.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

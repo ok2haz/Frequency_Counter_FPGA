@@ -3,7 +3,40 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-22 — ✅ **F-0140 VYŘEŠENO: problikávání při
+**Poslední aktualizace:** 2026-09-24 — 🔴 **Cílený audit posledních úprav
+(6 commitů `837d2d6`…`2fdd202` + 1 nekomitovaná oprava), NE číslovaný modul —
+na žádost uživatele "projdi poslední úpravy".** Rozsah: SD dvouton (+ oprava
+L-0079), automatické CSV zrcadlo datalogu na SD, ikona SD karty v headeru
+(+ odebrání HDOP pilulky), F-0140 dokončeno (lineární copy-forward +
+`fbdiff`/`tap`/`screenshot all`), sjednocení textů/stylu tlačítek, a živě
+nalezený + opravený **výkonnostní nález mimo audit**: `d2d_wait()` busy-spin
+v pomalé větvi (F-0140 zvětšil typický přenos, takže do ní začaly padat i
+běžné redraw, ne jen celoobrazovkové) zvedal UiTask CPU% z ~65 na 80-93 %
+beze změny skutečné práce — opraveno yieldem (`osDelay(1)` mezi kontrolami),
+ověřeno na HW (UiTask 26-44 %, `LTDC podtečení` pořád 0).
+Nálezy → `docs/audit/2026-09-24_sezeni-2026-09-23-24.md`: **F-0142 [S2]**
+(vodotisk SD zrcadla v syscfg může při dlouhém dohánění zálohy zaostat za
+obsahem souboru → duplicitní řádky po výpadku napájení) — **✅ opraveno**
+(čte poslední řádek souboru při "same_card" otevření, `max()` s persistovaným
+vodotiskem), **F-0143 [S3]** (`datalog erase` neresetuje vodotisk zrcadla →
+tiše "zamrzne" jako hotové, L-0011 vzor) — **✅ opraveno** (detekce poklesu
+`ds.last_seq` → reset vodotisku + nový soubor), a bonusový **F-0146 [S2]**
+nalezený PŘI ověřování F-0142 (vypnutí zrcadla nezavíralo FatFs handle →
+opětovné zapnutí selhávalo, jakmile F-0142 přidalo `FA_READ`) — **✅
+opraveno** (`f_close()` v `datalog_mirror_set_enabled(false)`), viz
+`docs/LESSONS.md` **L-0080**. **F-0144/F-0145 [S4]** zůstávají otevřené,
+odložené do skupiny C (jen `docs:` dluh, cena opravy > přínos).
+**Verdikt: podmíněně funkční → po opravách F-0142/F-0143/F-0146 funkční.**
+⬜ **Opravy ověřeny jen SW toggly přes UART, NE skutečným power-cyklem
+v přesném okamžiku poruchy** (výpadek při dohánění / erase za běhu) —
+pravidlo 4b platí dál, nutné ověřit na HW po power-cyklu.
+🔑 **Pokračovat zde:** (1) commitnout `d2d_wait()` yield fix + F-0142/
+F-0143/F-0146 opravy (2 samostatné `fix:` commity — d2d_wait je jiné téma
+než SD zrcadlo) + `docs:` commit pro audit dokumenty a LESSONS.md L-0080,
+(2) až bude čas, ověřit F-0142/F-0143 scénář skutečným power-cyklem/erase
+na desce, (3) F-0144/F-0145 zůstávají jako `docs:` TODO.
+
+**Předchozí, 2026-09-22:** ✅ **F-0140 VYŘEŠENO: problikávání při
 RUN/STOP byl STRIDED copy-forward, ne propustnost sběrnice.** `copy_forward_dedup()`
 kopíroval jednotlivé dirty obdélníky (`FGOR`/`OOR` ≠ 0 = strided přístup do SDRAM,
 každý řádek jiná řada) → LTDC přišlo o propustnost, FIFO podteklo, na panel šel
