@@ -152,6 +152,14 @@ extern const datalog_backend_t datalog_backend_w25q;
  * `const datalog_backend_t`, takze se pro ne nic nemeni. */
 extern datalog_backend_t datalog_backend_sd;   /* probe()==false dokud neni SDMMC1, viz datalog_sd.c */
 
+/** Kolik po sobe jdoucich odlisnych cteni prekopi debouncovany stav card-detect
+ *  (`datalog_sd_det_tick`). JEDEN zdroj hodnoty — `sd_export.c` na ni stavi
+ *  vlastni zaruku, ze `datalog_sd_card_present()` po bootu uz je ustalena
+ *  (jinak falesne pipnuti "vlozeni" pri kazdem startu s kartou uvnitr, viz
+ *  komentar u ni). Duplicitni `#define` v ruznych souborech uz jednou
+ *  rozesel hodnotu s komentarem, co ji popisoval (audit F-0030-adjacent). */
+#define SD_DET_STABLE_N  3u
+
 /** Je v slotu vlozena SD karta? (card-detect PE3, debounced.)
  *  Nezavisi na tom, jestli je SD backend aktivni — je to ciste GPIO, takze UI
  *  muze hlasit pritomnost karty i pri `DATALOG_SD_RAW_OK == 0`.

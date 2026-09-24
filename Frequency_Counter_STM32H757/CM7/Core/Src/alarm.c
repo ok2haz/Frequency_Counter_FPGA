@@ -91,8 +91,17 @@ static volatile unsigned short s_on_ms, s_off_ms;
 static volatile unsigned char  s_phase;         /* 0 idle, 1 ON, 2 OFF */
 static volatile unsigned int   s_phase_until;   /* HAL_GetTick() konce faze */
 
+/* SD karta (viz `alarm_sd_card` nize) deklarovana uz tady, aby na ni mohl
+ * sahnout `pattern_start()` — dvouton a bezny pattern sdileji jeden pipak,
+ * takze start jednoho musi zrusit rozehrany druhy. */
+static volatile unsigned char s_sd_req;    /* 0 nic, 1 vlozeni, 2 vyjmuti */
+static unsigned char  s_sd_phase;          /* 0 idle, 1 prvni ton, 2 druhy ton */
+static unsigned int   s_sd_until;
+static unsigned short s_sd_f2;             /* kmitocet druhe faze */
+
 static void pattern_start(unsigned char pulses, unsigned short on_ms, unsigned short off_ms)
 {
+    s_sd_phase = 0;   /* prerusi pripadny bezici SD dvouton (viz vyse) */
     s_pulses_left = pulses;
     s_on_ms = on_ms;
     s_off_ms = off_ms;
@@ -123,6 +132,47 @@ static void pattern_service(void)
         beeper_set(true);
         s_phase = 1;
         s_phase_until = now + s_on_ms;
+    }
+}
+
+/* ── SD karta: nezavisly dvouton pri vlozeni/vyjmuti (uzivatelsky pozadavek
+ * 2026-09-23) ────────────────────────────────────────────────────────────
+ * Ostatni alarmy jsou vzdy 800 Hz (`pattern_start` pres `beeper_set`) — tenhle
+ * potrebuje DVA RUZNE kmitocty, proto vlastni maly nekolizujici prehravac.
+ * Porad vyhradne z defaultTasku (`alarm_tick`), stejne vlastnictvi pipaku
+ * jako `pattern_service`. Vlozeni = stoupajici ton (nizky->vysoky), vyjmuti
+ * = klesajici (vysoky->nizky) — zrcadlove, rozeznatelne na sluch bez pocitani
+ * pipnuti. Volajici (sd_export_tick, tentyz task) jen nastavi pozadavek —
+ * viz zduvodneni u `alarm_click`. */
+#define SD_TONE_LO_HZ   440u    /* A4 */
+#define SD_TONE_HI_HZ  1175u    /* D6 — vic nez oktava nad LO, jasne odlisitelne */
+#define SD_TONE_MS       90u
+
+/** Pozadavek na dvouton pri zasunuti/vytazeni SD karty. Thread-safe: jen
+ *  nastavi flag, prehraje ho `alarm_tick` (defaultTask). Ma prednost pred
+ *  bezicim alarm patternem (je to vzdy vedomy fyzicky zasah uzivatele). */
+void alarm_sd_card(bool inserted)
+{
+    s_sd_req = inserted ? 1u : 2u;
+}
+
+static void sd_tone_stop(void)
+{
+    s_sd_phase = 0;
+    beeper_set(false);
+}
+
+static void sd_tone_service(void)
+{
+    if (s_sd_phase == 0) return;
+    unsigned int now = HAL_GetTick();
+    if ((int)(now - s_sd_until) < 0) return;
+    if (s_sd_phase == 1) {
+        beeper_tone(s_sd_f2);
+        s_sd_phase = 2;
+        s_sd_until = now + SD_TONE_MS;
+    } else {
+        sd_tone_stop();
     }
 }
 
@@ -262,10 +312,16 @@ void alarm_tick(void)
      * a obslouzi se hned v dalsim tiku. */
     if (beeper_melody_busy()) return;
 
-    /* Mute: umlci okamzite (i rozehrany pattern). */
-    if (g_sound_muted && (s_phase != 0 || beeper_is_on())) pattern_stop();
+    /* Mute: umlci okamzite (i rozehrany pattern nebo SD dvouton). */
+    if (g_sound_muted && (s_phase != 0 || s_sd_phase != 0 || beeper_is_on())) {
+        pattern_stop();
+        sd_tone_stop();
+    }
     /* Presne casovani pipnuti — kazdy tik (~100 Hz), jen kdyz neni mute. */
-    if (!g_sound_muted) pattern_service();
+    if (!g_sound_muted) {
+        pattern_service();
+        sd_tone_service();
+    }
 
     /* Touch click (~12 ms tick @800 Hz): jen kdyz nehraje alarm pattern. */
     if (s_click_req) {
@@ -278,6 +334,19 @@ void alarm_tick(void)
     if (s_test_req) {
         s_test_req = 0;
         if (!g_sound_muted) pattern_start(2, 100, 100);
+    }
+    /* SD karta: vlozeni/vyjmuti (pozadavek ze sd_export_tick, tentyz task). */
+    if (s_sd_req) {
+        unsigned char req = s_sd_req;
+        s_sd_req = 0;
+        if (!g_sound_muted) {
+            pattern_stop();     /* SD udalost ma prednost pred bezicim alarmem */
+            unsigned short f1 = (req == 1u) ? SD_TONE_LO_HZ : SD_TONE_HI_HZ;
+            s_sd_f2            = (req == 1u) ? SD_TONE_HI_HZ : SD_TONE_LO_HZ;
+            beeper_tone(f1);
+            s_sd_phase = 1;
+            s_sd_until = HAL_GetTick() + SD_TONE_MS;
+        }
     }
 
     /* Vyhodnoceni stavu (hrany) jen 5x/s — rychleji to NEMA SMYSL: vstupni data

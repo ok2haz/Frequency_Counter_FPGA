@@ -89,7 +89,9 @@
 #  define SD_DET_PORT    GPIOE
 #  define SD_DET_PIN     GPIO_PIN_3
 #endif
-#define SD_DET_STABLE_N  3u    /* kolik po sobě jdoucích odlišných čtení překlopí stav */
+/* SD_DET_STABLE_N — viz datalog.h (sdileno se sd_export.c, ktery na ni stavi
+ * vlastni zaruku proti falesnemu pipnuti pri bootu; jeden zdroj hodnoty,
+ * ne dve nezavisle "3"). */
 
 static void sd_det_init(void)
 {

@@ -25,6 +25,12 @@ void alarm_test(void);
  *  Mute plati; bezici alarm pattern ma prednost (click se zahodi). */
 void alarm_click(void);
 
+/** Pozadavek na dvouton pri vlozeni/vyjmuti SD karty (true = vlozeni, false =
+ *  vyjmuti). Thread-safe: jen nastavi flag, prehraje ho alarm_tick
+ *  (defaultTask). Vlozeni = stoupajici ton, vyjmuti = klesajici — zrcadlove.
+ *  Ma prednost pred bezicim alarm patternem; mute plati stejne jako jinde. */
+void alarm_sd_card(bool inserted);
+
 /* Pocitadla alarmovych udalosti (okno Alarmy). */
 extern volatile unsigned int g_alarm_fpga_lost;   /* pocet ztrat FPGA signalu */
 extern volatile unsigned int g_alarm_gps_lost;    /* pocet ztrat GPS locku */

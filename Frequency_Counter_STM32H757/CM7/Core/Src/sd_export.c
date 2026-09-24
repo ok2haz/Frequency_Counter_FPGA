@@ -4,6 +4,7 @@
  */
 #include "sd_export.h"
 #include "datalog.h"          /* datalog_read_back / datalog_get_status / card-detect */
+#include "alarm.h"            /* alarm_sd_card — dvouton pri vlozeni/vyjmuti */
 #include <stdio.h>            /* snprintf (bez %f — nano.specs) */
 #include <stdlib.h>           /* abs() — desetinná část záporných teplot */
 #include <string.h>
@@ -112,6 +113,31 @@ void sd_export_tick(void)
      * je dana kadenci tohohle tiku a nicim jinym. */
     datalog_sd_det_tick();
     bool present = datalog_sd_card_present();
+
+    /* Zvukova udalost pri vlozeni/vyjmuti (uzivatelsky pozadavek 2026-09-23).
+     * Hrana se hlida tady (jednou za tento tik), samotne pipnuti hraje
+     * alarm_tick — jediny vlastnik pipaku, viz alarm_sd_card.
+     * 🔴 NESTACI vzit baseline na PRVNIM tiku (puvodni chyba, nalezeno na HW
+     * 2026-09-23 — power reset porad pipl "vlozeni" i s kartou uz zasunutou).
+     * `datalog_sd_card_present()` je SAMA debouncovana (`SD_DET_STABLE_N`=3
+     * tiky) a po bootu VZDY zacina na "nepritomna" (`s_det_stable`=0 v BSS),
+     * i kdyz je karta fyzicky uvnitr — ustali se teprve za 3 tiky tohohle
+     * volani. Baseline vzata na 1. tiku tedy vzdy zachyti "nepritomna", a kdyz
+     * se pak debounce za par tiku dorovna na skutecnou "pritomna", vypada to
+     * jako hrana -> falesne pipnuti pri KAZDEM bootu s vlozenou kartou.
+     * Oprava: prvnich `SD_DET_STABLE_N+1` tiku (s rezervou) se hrana vubec
+     * nevyhodnocuje, jen se `s_snd_prev` prubezne aktualizuje — tim je po
+     * uplynuti teto zaruky jiz debounce jiste ustaleny a `s_snd_prev` drzi
+     * SPRAVNOU tichou baseline, at uz je karta pritomna, nebo ne. */
+    static bool    s_snd_prev;
+    static uint8_t s_snd_grace = SD_DET_STABLE_N + 1u;
+    if (s_snd_grace) {
+        s_snd_grace--;
+        s_snd_prev = present;
+    } else if (present != s_snd_prev) {
+        alarm_sd_card(present);
+        s_snd_prev = present;
+    }
 
     if (!present) {
         /* ⚠️ Neodmountovávej pod rukama UartTasku, když zrovna běží export/test. */
