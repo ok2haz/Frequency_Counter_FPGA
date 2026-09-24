@@ -2736,6 +2736,11 @@ void UartTask_run(void *argument)
 					  	         (unsigned long)de, (unsigned long)dt, (unsigned long)ft,
 					  	         (unsigned long)(mx_us / 1000u), (unsigned long)(mx_us % 1000u),
 					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY" : "  (v poradku)"); }
+					  	/* Kolikrat cekani na DMA2D padlo do pomale (tick-ridici, scheduler-yielding)
+					  	 * vetve — zavedeno 2026-09-24 spolu s yieldem v ni (viz d2d_wait). Nenulove
+					  	 * a rostouci je OCEKAVANE od F-0140 (vetsi copy-forward pruhy), NE chyba. */
+					  	printf("DMA2D: pomala vetev cekani (yield) %lu x\n",
+					  	       (unsigned long)g_d2d_slow_entries);
 					  	/* Chybejici glyfy (audit F-0034). Vetsina velkych fontu je subsetovana
 					  	 * a chybejici glyf se TISE preskoci -> text na displeji proste zmizi.
 					  	 * Audit 2026-08-29 nasel 15 takto neviditelnych retezcu; dosud to slo

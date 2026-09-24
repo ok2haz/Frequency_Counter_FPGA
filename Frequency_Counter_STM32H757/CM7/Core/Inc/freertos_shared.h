@@ -155,6 +155,14 @@ extern volatile uint32_t g_d2d_errors;
 extern volatile uint32_t g_d2d_timeouts;
 extern volatile uint32_t g_ltdc_flip_timeouts;
 extern volatile uint32_t g_d2d_wait_max_cyc;   /* nejdelsi cekani, takty jadra */
+/* Kolikrat cekani na DMA2D preteklo `D2D_SPIN_FAST` (levny spin bez cteni
+ * casovace) a padlo do POMALE, casove ridene vetve `d2d_wait()`. Od F-0140
+ * (copy-forward kopiruje plnosirkove pruhy, vic dat) tam padaji i bezne
+ * partial redrawy, ne jen celoobrazovkove — proto tahle vetev od 2026-09-24
+ * mezi kontrolami pousti scheduler (`osDelay(1)`), aby se cekani na HW
+ * prestalo pocitat jako "UiTask zanepraznen" (zmereno: CPU% ~65 -> 80-93 %
+ * po F-0140, beze zmeny skutecne prace — cistý dusledek delsiho busy-spinu). */
+extern volatile uint32_t g_d2d_slow_entries;
 /* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
  * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
 extern volatile uint8_t  g_d2d_deadtime;

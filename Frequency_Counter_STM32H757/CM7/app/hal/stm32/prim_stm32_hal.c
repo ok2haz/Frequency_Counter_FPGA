@@ -30,6 +30,7 @@
 #include "main.h"                       /* HAL + CMSIS (DMA2D, LTDC, RCC) */
 #include <prim/accel.h>                 /* public DMA2D backend injection */
 #include <string.h>                     /* memcpy */
+#include "cmsis_os2.h"                  /* osDelay/osKernelGetState — pomala vetev d2d_wait() */
 
 #define DMA2D_PFC_RGB565 0x2u
 
@@ -115,6 +116,7 @@ volatile uint32_t g_d2d_errors;          /* TEIF/CEIF na dokoncenem prenosu */
 volatile uint32_t g_d2d_timeouts;        /* DMA2D nedobehl do meze -> prenos ZRUSEN */
 volatile uint32_t g_ltdc_flip_timeouts;  /* predchozi flip nedobehl do meze */
 volatile uint32_t g_d2d_wait_max_cyc;    /* nejdelsi pozorovane cekani (takty DWT) */
+volatile uint32_t g_d2d_slow_entries;    /* kolikrat cekani padlo do pomale (tick) vetve, viz d2d_wait */
 
 /* ── Meze cekani na DMA2D (audit F-0036) ──────────────────────────────────────
  * 🔴 Do 2026-09-10 tu byla JEDNA konstanta 2 000 000 iteraci spinu, ktera merila
@@ -162,9 +164,23 @@ static void d2d_wait(void)
     while ((DMA2D->CR & DMA2D_CR_START) && ++spin < D2D_SPIN_FAST) { /* busy */ }
 
     if (DMA2D->CR & DMA2D_CR_START) {
-        /* Dlouhy prenos (typicky celoobrazovkovy) -> mez v CASE, ne v iteracich. */
+        /* Dlouhy prenos (typicky celoobrazovkovy, od F-0140 i bezny plnosirkovy
+         * copy-forward pruh) -> mez v CASE, ne v iteracich.
+         * ⚠️ ZMERENO 2026-09-24: F-0140 zvetsil typicky objem copy-forwardu
+         * (linearni pruhy misto strided obdelniku), takze i BEZNE partial
+         * redrawy zacaly padat sem — a tahle vetev do te doby byla cisty
+         * busy-spin. Vysledek: UiTask CPU% vyskocil z ~65 na 80-93 %, beze
+         * zmeny skutecne prace (jen delsi cekani na HW se pocitalo jako
+         * "zaneprazdnen"). Mezi kontrolami se ted pousti scheduler —
+         * `D2D_WAIT_MS` mez v REALNEM case zustava STEJNA (`osDelay(1)` jen
+         * meni ZPUSOB cekani, ne kdy se prenos zrusi), takze se na korektnosti
+         * F-0140 (LTDC uz nehladovi) nic nemeni. Pred schedulerem (`prim_stm32_init`
+         * cisti 3 framebuffery pri bootu) `osKernelGetState()` neni RUNNING ->
+         * spadne zpet na cisty spin, stejny vzor jako `sd_wait_ready`/
+         * `w25q.c wait_ready`. */
         uint32_t tick0 = HAL_GetTick();
         uint32_t hard  = 0;
+        g_d2d_slow_entries++;
         while ((DMA2D->CR & DMA2D_CR_START) && ++hard < D2D_ABORT_SPIN) {
             if ((HAL_GetTick() - tick0) > D2D_WAIT_MS) {
                 g_d2d_timeouts++;
@@ -177,6 +193,7 @@ static void d2d_wait(void)
                 while ((DMA2D->CR & DMA2D_CR_START) && ++a < D2D_ABORT_SPIN) { /* rusi se */ }
                 break;
             }
+            if (osKernelGetState() == osKernelRunning) osDelay(1);
         }
     }
 
