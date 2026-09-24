@@ -379,7 +379,8 @@ obou jader). `IPC_VERSION` se nemění, takže banky jdou flashovat nezávisle.
 🔑 **F-0055 + F-0074 jsou rozhodnuté a odložené do `../STATUS.md` TODO #243:**
 zásobník UartTasku se nejdřív konzistentně zvětší v `.ioc` (uživatel), teprve pak
 se sáhne na kód — přesun bufferů do `.bss` je konkurenční oprava téhož.
-⚠️ **Do té doby `selftest` z konzole nespouštět** (F-0055 desku deterministicky resetuje).
+✅ **2026-09-24: `selftest` z konzole je zase bezpečný** — F-0055 ověřen na HW
+(viz „Souhrn nálezů" výše), `SELFTEST: 16/16 PASS` bez resetu.
 🔒 Rezervu hlídá `scripts/check_lessons.sh` (rámec `UartTask_run` ≤ 1024 B, dnes 700 B).
 🔑 **Co u modulu 14 ověřit na desce:** příkaz delší než 95 znaků musí skončit
 `ERR prikaz delsi nez 95 znaku - NEPROVEDEN` (a `status` → `KONZOLE: N prikazu odmitnuto`),
@@ -390,10 +391,10 @@ a `fpgaraw` má vypsat 64 bajtů beze změny.
 povinným checksumem, `OVF:` má zůstat 0), `scpi SYST:GPS:POS?` → 7 desetin,
 `scpi SYST:DATE?` bez antény → `9.91E37`, a **SURVEY nechat běžet ≥1 h** — rozptyl
 by nově měl klesnout pod dřívější mez ~0,4 m (F-0070).
-✅ **F5 pro modul 11 hotová u S2:** F-0052 opraven (`2253ac4`, 2026-09-18).
-Pak **rozhodnout F-0055** (`selftest` z UART shodí desku — tři varianty) a zbytek
-modulu 11 (F-0053 [S3] `fmt_fixed` default tiše zahodí desetiny, F-0054 [S4]
-rozbitá `grep` kontrola v `CLAUDE.md` — obojí drobné, žádné S1/S2).
+✅ **F5 pro modul 11 hotová, vše opraveno:** F-0052 (`2253ac4`, 2026-09-18),
+F-0053 [S3] `fmt_fixed` default tiše zahodilo desetiny a F-0054 [S4] rozbitá
+`grep` kontrola v `CLAUDE.md` (obě 2026-09-19), F-0055 [S1] ověřen na HW
+2026-09-24 (viz „Souhrn nálezů").
 ⚠️ **Opravy modulu 12 míří do BANKY 2 (CM4)** — jiná cesta než všechno dosavadní.
 `IPC_VERSION` se žádným z nich nemění, takže přeflashování obou bank nutné není.
 ⚠️ **F-0063 [S2] přišel z PROVOZU, ne z auditu** (2026-09-11): okno CHYBY se po tapu
@@ -404,7 +405,7 @@ než audit** — modul 11 fázi oprav ještě neprošel, takže tam takové vady
 `HTTP(CM4)`/`SCPI(CM4)` selftest PASS a `NET:` s IP; pak z prohlížeče **SPA + dlouhá
 historie** (F-0056), **opakované requesty v řadě** (F-0057) a `/api/state` bez
 `expected_len` (F-0060). SSE timeout (F-0059) se ověří jen odpojením klienta od sítě.
-⚠️ **`selftest` z konzole zatím NESPOUŠTĚT** — deterministicky resetuje desku (F-0055).
+✅ **`selftest` z konzole je od 2026-09-24 bezpečný** — F-0055 ověřen na HW.
 🔴 **Všechny moduly 1–16 mají zapsané nálezy; bez dokončené fáze oprav jsou 11 a 16.**
 🔴 **OPRAVA TVRZENÍ (2026-09-16):** do té doby tu stálo *„tím je auditovaný veškerý
 vlastní kód projektu"* — **neplatilo to.** Mimo moduly 1–15 leželo ~4 500 ř.
@@ -602,7 +603,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 1 | konfigurace hodin/PWR | `main.c`, `system_*.c` | CM7 | **opraveno vše krom F-0003** (odloženo na regen, ⬜ neověřeno na HW) | 2026-09-09 | 0 | 2 | 5 | 0 | [7](audit/2026-09-09_hodiny-pwr.md) |
 | 2 | MPU / cache / linker | `main.c MPU_Config`, `*.ld` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-09 | 0 | 0 | 4 | 2 | [6](audit/2026-09-09_mpu-cache-linker.md) |
 | 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
-| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 2 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
+| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | **opraveno vše** (F-0055 ✅ ověřeno HW 2026-09-24, zbytek ⬜) | 2026-09-11 | 2 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
@@ -659,7 +660,7 @@ sám hlásil rozpor proti nálezovým dokumentům. Čísla níže jsou jeho výs
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
-| S1 | 1 | 5 | 0 |
+| S1 | 0 | 6 | 0 |
 | S2 | 0 | 20 | 0 |
 | S3 | 1 | 72 | 0 |
 | S4 | 3 | 37 | 0 |
@@ -668,13 +669,13 @@ sám hlásil rozpor proti nálezovým dokumentům. Čísla níže jsou jeho výs
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
 zahrnuje i **částečně** opravené — dnes jediná: **F-0061** [S4] mDNS responder (4 drobné
 odchylky od RFC 6762, žádná paměťově nebezpečná).
-🔑 **S1 „Otevřené" = F-0055** — UART `selftest` **deterministicky** přetéká zásobník
-UartTasku a shazuje desku (změřeno 2×, `WATCHDOG! stack:UartTask`). Oba navržené kroky
-(zásobník UartTask 4096→8192 B, velké lokály do `.bss`) jsou v kódu hotové, ale nález
-zůstává otevřený, protože **žádný z nich neběžel na desce** — a původní vada byla
-deterministická, takže důkaz opravy musí být taky z desky (kritérium: `selftest` z
-konzole doběhne „SELFTEST: 16/16 PASS" bez resetu). **Je to nejdůležitější věc k
-vyzkoušení při příštím power-cyklu** — S1 = nefunkčnost/destrukce, ne kosmetika.
+✅ **S1 nově BEZ otevřených (aktualizováno 2026-09-24) — F-0055 ověřen na HW.**
+UART `selftest` deterministicky přetékal zásobník UartTasku a shazoval desku
+(změřeno 2×, `WATCHDOG! stack:UartTask`). Po flashi aktuálního HEAD + SW resetu
+(`STM32_Programmer_CLI -rst`) `selftest` doběhl **„SELFTEST: 16/16 PASS" bez
+resetu**, `status`/`stats` ukázaly `stack Uart free 6360 B` (bylo 168 B), ověřeno
+2× (uptime 46 s a znovu 88 s). ⬜ Zbývá jen fyzický power-cyklus (formalita —
+vada byla vlastností běžícího programu, ne cold-boot závodu).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen).
 **S4 „Otevřené" = F-0144 + F-0145** (tato session, skupina C, jen `docs:` dluh).
 

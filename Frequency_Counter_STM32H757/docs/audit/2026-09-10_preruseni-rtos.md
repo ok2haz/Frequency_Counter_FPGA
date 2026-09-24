@@ -255,16 +255,17 @@ přesně v situaci, pro kterou byly napsané.
   selftestu.** Varianta 2 (spouštět testy z úlohy, která má rezervu) řeší
   selftest, ale ne SCPI cestu; tu by řešilo jedině zvětšení zásobníku
   **nebo** přesun `scpi_src_t` mimo stack.
-- **Stav:** **vse pripravene, ceka VYHRADNE na HW overeni (2026-09-20).**
-  Oba kroky, ktere nalez pozadoval, jsou hotove:
+- **Stav:** **opraveno, OVERENO NA HW 2026-09-24** (do 2026-09-20 tu stalo
+  „vse pripravene, ceka VYHRADNE na HW overeni" — kriterium testu nize je
+  od 2026-09-24 splnene). Oba kroky, ktere nalez pozadoval, jsou hotove:
   1. ✅ **zasobnik UartTasku zvetsen** — `.ioc` ma `UartTask, 24, 2048` (slov) a
      `freertos.c` `stack_size = 2048 * 4` = **8192 B** (bylo 4096 B). Udelal uzivatel.
   2. ✅ **velke lokaly prikazu do `.bss`** — `resp[128]` a `buf[512]`, viz **F-0074**
      a **F-0077**. Dolozeno v obrazu (`resp.14` 128 B, `buf` 512 B v `.bss`).
-  🔴 **PORAD JE TO OTEVRENE, protoze zadny z tech kroku nebezel na desce** — a presne
-  na tohle upozornuje pravidlo „prelozeno neni provereno". Puvodni vada byla
+  🔴 **Do 2026-09-24 to bylo OTEVRENE, protoze zadny z tech kroku nebezel na desce** —
+  presne to upozorňuje pravidlo „prelozeno neni provereno". Puvodni vada byla
   DETERMINISTICKA a zmerena 2x (`Reset: WATCHDOG! stack:UartTask`), takze dukaz o oprave
-  musi byt taky z desky.
+  musel byt taky z desky — a od 2026-09-24 je (viz nize).
   ⚠️ **Dve konkurencni opravy naraz — merіtelnost je obetovana vedome.** TODO #243
   zadavalo delat je ODDELENE prave proto, aby se poznalo, ktera pomohla; uzivatel se
   2026-09-20 rozhodl udelat obe. Kdyz `selftest` projde, bude to znamenat „uz to
@@ -272,7 +273,19 @@ přesně v situaci, pro kterou byly napsané.
   **Kriterium:** `selftest` z konzole dobehne **„SELFTEST: 16/16 PASS" bez resetu**,
   `status` -> `Reset:` nehlasi `stack:UartTask`, a `stats` ukaze volny stack UartTasku
   (ocekavany rad: ~4 kB vic nez drive).
-  ⬜ **neovereno na HW.**
+  ✅ **OVERENO NA HW 2026-09-24** (po flashi + SW resetu `STM32_Programmer_CLI -rst`,
+  ⚠️ ne fyzicky power-cyklus — viz poznamka nize proc to pro tento nalez staci).
+  `selftest` -> `SELFTEST: 16/16 PASS`, uptime pokracovalo 46 s -> 48 s bez skoku
+  zpet na 0 (= zadny reset), `Reset:` zustalo na puvodni pricine (`SW reset`,
+  ne novy `WATCHDOG!`), `status`/`stats` -> `stack Uart free 6360 B` (bylo 168 B
+  pred opravou pri SCPI zateze) — presne rad navic, jaky nalez ocekaval.
+  Opakovano 2× (druhe `status` o 40 s pozdeji, pořád `stack Uart free 6360 B`,
+  uptime 88 s) — stabilni, ne jen jednorazova shoda.
+  ⚠️ **Proc SW reset staci i pres pravidlo 4b:** puvodni vada je vlastnost
+  BEZICIHO programu (hloubka zasobniku pri konkretnim volani), ne zavod pri
+  studenem startu (GPIO, SDRAM retence, ATTINY probe) — ty ovlivnuje jen
+  power-cyklus, tohle ne. Presto zustava formalne ⬜ **neovereno fyzickym
+  power-cyklem**, protoze to je obecne pravidlo projektu bez vyjimky.
 
 ---
 
