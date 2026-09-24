@@ -73,6 +73,10 @@ void app_gpsdo_clear(void);
  */
 bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 
+/** Vykresli + flipne okno `v` (interni `render_view()`) — pro export vsech
+ *  oken na SD (UART `screenshot all`). Volat VYHRADNE z UiTasku. */
+void app_gpsdo_render_view_for_shot(int v);
+
 /** #90 — po `app_gpsdo_handle_touch()` rika, jestli trefeny prvek byl opakovatelny
  *  „−/+" ovladac. UiTask podle toho zapne auto-repeat s akceleraci pri drzeni. */
 bool app_gpsdo_touch_repeat_armed(void);

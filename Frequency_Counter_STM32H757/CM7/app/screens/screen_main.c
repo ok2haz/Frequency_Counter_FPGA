@@ -299,6 +299,19 @@ int screen_main_hit_button(int16_t x, int16_t y)
     return -1;
 }
 
+/* Stred tlacitka patky — pro injektor doteku (`tap <idx>`, diagnostika F-0140)
+ * a pro aktivaci encoderem. @return 0 = index mimo rozsah nebo jeste nezname
+ * rozlozeni (patka se kresli az pri prvnim renderu). */
+int screen_main_button_center(int idx, int16_t *cx, int16_t *cy)
+{
+    if (idx < 0 || idx >= SCR_BTN_COUNT) return 0;
+    prim_rect_t r = s_btn_rect[idx];
+    if (r.w <= 0 || r.h <= 0) return 0;
+    if (cx) *cx = (int16_t)(r.x + r.w / 2);
+    if (cy) *cy = (int16_t)(r.y + r.h / 2);
+    return 1;
+}
+
 void screen_main_button_action(int idx)
 {
     switch (idx) {
@@ -2737,13 +2750,32 @@ int screen_main_redraw_freq(void)
     return 1;
 }
 
-/* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,
- * STOP = lehce cervene). Vola se pri PREPNUTI RUN/STOP — tam se meni podklad,
- * ne cislice, takze per-segment dirty cesta (screen_main_redraw_freq) by nic
- * neprekreslila (a pri STOP uz stejne nebezi). */
-void screen_main_redraw_freq_area(void)
+/* Spolecne jadro plneho prekresleni zony kmitoctu: cisti PODANOU oblast,
+ * kresli podbarveni STOP, pak cislo (HW glyfy jen kdyz `glyph_accel`).
+ * `area` musi pokryt VESKERY aktualne zobrazovany obsah (stary i novy) —
+ * volajici za to odpovida (viz komentare u obou volajicich nize). */
+static void redraw_freq_area_ex(prim_rect_t area, int glyph_accel)
 {
     if (!s_num_ready) return;
+    blit_bg_region(area);
+    freq_tint_if_stopped();
+    if (glyph_accel) prim_set_glyph_accel(1);
+    ui_big_number_render(&s_num);
+    if (glyph_accel) prim_set_glyph_accel(0);
+    /* #1: SIM marker — headline žene simulace (žádné platné měření z FPGA/emulátoru).
+     * Emulovaná data (fpgasim) jdou reálnou cestou (g_freq_valid=1) -> BEZ markeru. */
+    if (s_freq_is_sim) {
+        prim_rect_t fa = freq_area();
+        prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 14)},
+                       "SIM", &ui_font_mono_16, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+    }
+}
+
+/* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,
+ * STOP = lehce cervene). Vola se PRI ZMENE FORMATU/MAGNITUDY (FREQ<->PERIOD,
+ * jina magnituda, /4<->/16) — tam se meni podklad i sirka cisla. */
+void screen_main_redraw_freq_area(void)
+{
     /* 🔴 Cisti se CELA MOZNA zona cisla (`freq_clear_area`), ne jen aktualni
      * `freq_area()` a ne sjednoceni s "predchozi" zonou.
      *
@@ -2764,18 +2796,22 @@ void screen_main_redraw_freq_area(void)
      * Sledovani „kdo naposled kreslil cislo" je zbytecne krehke: staci pevna
      * zona sirsi nez nejsirsi mozne cislo. Stoji jeden blit ~68 kB, ale bezi jen
      * pri ZMENE formatu / RUN-STOP, ne ve 20Hz smycce. */
-    blit_bg_region(freq_clear_area());
-    freq_tint_if_stopped();
-    prim_set_glyph_accel(1);
-    ui_big_number_render(&s_num);
-    prim_set_glyph_accel(0);
-    /* #1: SIM marker — headline žene simulace (žádné platné měření z FPGA/emulátoru).
-     * Emulovaná data (fpgasim) jdou reálnou cestou (g_freq_valid=1) -> BEZ markeru. */
-    if (s_freq_is_sim) {
-        prim_rect_t fa = freq_area();
-        prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 14)},
-                       "SIM", &ui_font_mono_16, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
-    }
+    redraw_freq_area_ex(freq_clear_area(), 1);
+}
+
+/* Uzsi varianta pro CISTY RUN/STOP toggle (audit F-0140, 2026-09-21): geometrie
+ * cisla se NEMENI (zadna zmena formatu/magnitudy, jen podbarveni), takze staci
+ * PRESNA aktualni zona `freq_area()` misto "maximalni mozne" `freq_clear_area()`
+ * — nehrozi "duchove" po stranach, protoze se sirka mezi starym a novym stavem
+ * nemeni. DMA2D burst navic bezi bez HW glyph akcelerace (CPU rasterizace se
+ * na sbernici rozprostre do vic mensich transakci misto jednoho velkeho
+ * prenosu) — obe zmeny spolu meritelne snizuji podteceni FIFO LTDC pri
+ * opakovanem RUN/STOP (zmereno: 52/1000 -> viz F-0140 pro presna cisla).
+ * ⚠️ NIKDY nepouzivat tam, kde se muze zmenit sirka cisla — pak plati jen
+ * `screen_main_redraw_freq_area()` s `freq_clear_area()`. */
+void screen_main_redraw_freq_tint(void)
+{
+    redraw_freq_area_ex(freq_area(), 0);
 }
 
 /* FX_HEAD_GLOW (bloom za kmitoctem pri cerstvem mereni) ODSTRANEN 2026-07-26 na

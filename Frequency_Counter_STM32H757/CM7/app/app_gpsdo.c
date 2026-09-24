@@ -7338,6 +7338,11 @@ static void render_view(uint8_t v)
     }
 }
 
+/* Verejny obal nad `render_view()` (jinak static) — pro export vsech oken
+ * (UART `screenshot all`, obsluha `g_shot_view_req` ve `freertos_task_ui.c`).
+ * Nedela nic navic: `render_view` uz sam vola `window_prep()`/`present_now()`. */
+void app_gpsdo_render_view_for_shot(int v) { render_view((uint8_t)v); }
+
 /* ── Banner „DOTYK NEDOSTUPNY" pri trvale mrtve I2C4 ──────────────────────────
  * 🔴 Kdyz na I2C4 prestanou odpovidat slave cipy, firmware s tim NEMA CO DELAT:
  * ATTINY — a pres nej napajeni LCD, podsviceni i reset dotyku a bridge — se
@@ -7831,7 +7836,7 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
         prim_set_target(&s_fb);
         prim_reset_clip();
         for (int b = 0; b < 4; b++) screen_main_redraw_button(b);   /* RUN/GATE/CHAN/mode */
-        screen_main_redraw_freq_area();     /* RUN/STOP meni podbarveni zony cisla */
+        screen_main_redraw_freq_tint();     /* RUN/STOP meni podbarveni zony cisla (uzsi DMA2D burst, F-0140) */
         s_dirty = 1;
     }
     if (s_view != 0) return;
@@ -7842,15 +7847,18 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 
     /* Horni lista (GNSS lock + druzice + HDOP) jen pri ZMENE GPS stavu — sat/fix/HDOP
      * se meni pomalu (~1 Hz z GGA), takze redraw headeru bezi vzacne (ne kazdy tik). */
-    static int last_sat = -1, last_fixq = -1, last_hdop10 = -1;
+    static int last_sat = -1, last_fixq = -1, last_hdop10 = -1, last_sd = -1;
     gps_data_t g;
     gps_get(&g);
     int hdop10 = (int)(g.hdop * 10.0f + 0.5f);   /* HDOP na 1 des. misto -> change-detect */
+    int sd_now = (int)sd_export_ui_info()->present;   /* mikro-ikona SD v headeru */
     if ((int)g.num_sat != last_sat || (int)g.fix_quality != last_fixq || hdop10 != last_hdop10
+        || sd_now != last_sd
         || screen_main_sys_poll()) {   /* + zmena agregovaneho SYS zdravi -> prebarvi pilulku */
         last_sat = (int)g.num_sat;
         last_fixq = (int)g.fix_quality;
         last_hdop10 = hdop10;
+        last_sd = sd_now;
         if (screen_main_redraw_header()) s_dirty = 1;
     }
 }

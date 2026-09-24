@@ -78,6 +78,17 @@ static prim_rect_t d_cur[MAX_DIRTY];  static int nd_cur;  static int dfull_cur;
 static prim_rect_t d_prev[MAX_DIRTY]; static int nd_prev; static int dfull_prev;
 static int s_in_present = 0;             /* potlaci marking behem copy-forwardu */
 
+/* ── Diagnostika rotace bufferu (F-0140, UART `fbdiff`) ──────────────────────
+ * `g_fb_back_count[i]` = kolikrat uz byl buffer `i` CILEM copy-forwardu. Kdyby
+ * nektery zustal na nule, vypadl by z rotace a drzel by natrvalo stary obsah —
+ * tedy „problikne" pokazde, kdyz na nej pri flipu prijde rada, a `LTDC:
+ * podteceni FIFO` by u toho ukazovalo nulu (jde o obsah pameti, ne o scan-out).
+ * `g_fb_last_copy_rects` = kolik obdelniku se naposledy kopirovalo
+ * (0 = NIC, 0xFFFFFFFF = plna kopie snimku). */
+uint32_t g_fb_back_count[NUM_FB];
+uint32_t g_fb_last_copy_rects;
+uint32_t g_fb_full_copies;
+
 static void mark_dirty(const prim_pixel_t *dst, int16_t w, int16_t h)
 {
     if (s_in_present || dfull_cur) return;
@@ -334,54 +345,74 @@ void prim_stm32_use_dma2d(int enable)
 
 /* ── Page-flip + dirty copy-forward ────────────────────────────────────────── */
 
-/* Zkopiruje jeden obdelnik z front -> back (s_in_present potlaci re-marking).
- * BEZ inval: copy-forward cilove pixely CPU nikdy necte ve stale stavu — bud je
- * cte LTDC/DMA2D primo ze SDRAM, nebo je pristi snimek prepise; a CPU AA text
- * vzdy kresli pres CERSTVY clear teho snimku (ne pres copy-forward). Usetri
- * ~860 cache-line invalidaci/rect (number-tail) × ~60×/s. */
-static void copy_rect(const prim_rect_t *r)
-{
-    int off = (int)r->y * FB_W + r->x;
-    d2d_blit_ex(fb_px(s_back) + off, FB_W, fb_px(s_front) + off, FB_W, r->w, r->h, 0);
-}
-
-/* `a` plne obsahuje `b` (vc. shody). Int aritmetika (int16 souradnice). */
-static int rect_covers(const prim_rect_t *a, const prim_rect_t *b)
-{
-    return b->x >= a->x && b->y >= a->y &&
-           (int)b->x + b->w <= (int)a->x + a->w &&
-           (int)b->y + b->h <= (int)a->y + a->h;
-}
-
-/* Copy-forward dirty prev+cur s DEDUP. prev a cur se casto prekryvaji nebo shoduji
- * (napr. freq rect / stat karta se prekresluji kazdy snimek -> jsou v prev I cur)
- * -> bez dedup se STEJNA oblast kopiruje vICEkrat (DMA2D blit + wait navic/rect).
- * Vyhodime SHODNE a plne OBSAZENE obdelniky. ⚠️ Kopirovana mnozina = PRESNE
- * sjednoceni vstupu (keep drzi jen puvodni obdelniky, nikdy vetsi): rect se prida
- * jen kdyz ho zadny drzeny nekryje, a ty ktere on kryje se odeberou -> pokryti se
- * NIKDY nezmensi ani nezvetsi mimo dirty => zadne riziko problikavani/duchu.
- * ZADNY bbox-merge (ten by kopiroval mimo dirty). O(n^2), n<=2*MAX_DIRTY, 1x/present. */
+/* Copy-forward dirty oblasti (prev+cur) z front -> novy back, jako PLNOSIRKOVE
+ * PASY slite podle osy Y.
+ *
+ * 🔴 PROC PLNA SIRKA A NE PRESNE DIRTY OBDELNIKY (audit F-0140, zmereno 2026-09-22):
+ * `d2d_blit_ex` na uzsi obdelnik nastavi `FGOR`/`OOR` = `800 - w`, tedy STRIDED
+ * pristup: kazdy radek zacina jinde a SDRAM musi otevrit jinou radu. LTDC pritom
+ * cte snimek na panel sekvencne a na otevrenych radach zavisi — strided kopie mu
+ * je pod rukama zavira, FIFO podtece a na panel vyleze POSKOZENY SNIMEK.
+ * Merena data (injektor `tap 1`, 20 stisku RUN/STOP, `fbdiff` rozklad po fazich):
+ *   - podteceni po fazich: kresleni 0 | cekani 0 | flip 0 | COPY-FORWARD 38
+ *     -> VSECHNA podteceni vznikala tady, ani jedno pri kresleni aplikace;
+ *   - plny render (`ui`) pritom kopiroval 768 kB (VIC dat) a mel podteceni NULA,
+ *     protoze jde jednim LINEARNIM prenosem (`FGOR`=`OOR`=0).
+ * Vic bajtu linearne je tedy levnejsi nez min bajtu skakave. Pas na plnou sirku
+ * ma `FGOR`=`OOR`=0 stejne jako plna kopie.
+ *
+ * ⚠️ Kopirovat VIC nez dirty je bezpecne: `front` je nejnovejsi hotovy snimek a
+ * `back` je o dva snimky starsi VSUDE, takze kazdy zkopirovany pixel navic muze
+ * back jen priblizit k front, nikdy naopak. (Drivejsi komentar zakazoval
+ * "bbox-merge" — ten ale spojoval i pres osu Y, takze mohl kopirovat temer cely
+ * snimek i kvuli dvema malym obdelnikum na opacnych koncich; slevani JEN po Y
+ * intervalech tuhle past nema.)
+ *
+ * ⚠️ BEZ inval: copy-forward cilove pixely CPU nikdy necte ve stale stavu — bud
+ * je cte LTDC/DMA2D primo ze SDRAM, nebo je pristi snimek prepise; a CPU AA text
+ * vzdy kresli pres CERSTVY clear teho snimku (ne pres copy-forward). */
 static void copy_forward_dedup(void)
 {
-    static prim_rect_t keep[2 * MAX_DIRTY];
-    int nk = 0;
+    /* y-intervaly vsech dirty obdelniku (konec je EXKLUZIVNI) */
+    static struct { int16_t y0, y1; } band[2 * MAX_DIRTY];
+    int nb = 0;
     for (int pass = 0; pass < 2; pass++) {
         const prim_rect_t *src = pass ? d_cur : d_prev;
         int n = pass ? nd_cur : nd_prev;
         for (int i = 0; i < n; i++) {
-            prim_rect_t r = src[i];
-            int skip = 0;
-            for (int j = 0; j < nk; j++)
-                if (rect_covers(&keep[j], &r)) { skip = 1; break; }   /* uz pokryto */
-            if (skip) continue;
-            int w = 0;                                                /* odeber pokryte novym r */
-            for (int j = 0; j < nk; j++)
-                if (!rect_covers(&r, &keep[j])) keep[w++] = keep[j];
-            nk = w;
-            keep[nk++] = r;
+            int16_t y0 = src[i].y;
+            int16_t y1 = (int16_t)(src[i].y + src[i].h);
+            if (y0 < 0) y0 = 0;
+            if (y1 > FB_H) y1 = FB_H;
+            if (y1 <= y0) continue;
+            band[nb].y0 = y0; band[nb].y1 = y1; nb++;
         }
     }
-    for (int i = 0; i < nk; i++) copy_rect(&keep[i]);
+    if (nb == 0) { g_fb_last_copy_rects = 0u; return; }
+
+    /* serad podle y0 (insertion sort, nb <= 2*MAX_DIRTY = 96) */
+    for (int i = 1; i < nb; i++) {
+        int16_t a0 = band[i].y0, a1 = band[i].y1;
+        int j = i - 1;
+        while (j >= 0 && band[j].y0 > a0) { band[j + 1] = band[j]; j--; }
+        band[j + 1].y0 = a0; band[j + 1].y1 = a1;
+    }
+    /* sluc prekryvajici se i navazujici intervaly */
+    int nm = 0;
+    for (int i = 0; i < nb; i++) {
+        if (nm > 0 && band[i].y0 <= band[nm - 1].y1) {
+            if (band[i].y1 > band[nm - 1].y1) band[nm - 1].y1 = band[i].y1;
+        } else {
+            band[nm].y0 = band[i].y0; band[nm].y1 = band[i].y1; nm++;
+        }
+    }
+
+    g_fb_last_copy_rects = (uint32_t)nm;            /* diagnostika F-0140 (`fbdiff`) */
+    for (int i = 0; i < nm; i++) {
+        int16_t h = (int16_t)(band[i].y1 - band[i].y0);
+        int off = (int)band[i].y0 * FB_W;
+        d2d_blit_ex(fb_px(s_back) + off, FB_W, fb_px(s_front) + off, FB_W, FB_W, h, 0);
+    }
 }
 
 /* Pocet podteceni FIFO LTDC (`FUIF`). Kdyz LTDC nestihne z pameti nacist pixely
@@ -392,12 +423,27 @@ static void copy_forward_dedup(void)
  * diagnostice by bylo horsi nez tohle cteni jednoho registru. */
 volatile uint32_t g_ltdc_underrun;
 
+/* Precte a SMAZE priznak podteceni FIFO; 1 = od posledniho cteni podteklo.
+ * Slouzi k rozkladu podteceni na FAZE `present()` (F-0140) — dokud se cetlo jen
+ * jednou za flip, neslo rozlisit, jestli LTDC vyhladovelo KRESLENI aplikace,
+ * nebo az copy-forward uvnitr `present()`. To je rozdil mezi „prekresluj min"
+ * a „kopiruj jinak". */
+static uint32_t ltdc_fuif_take(void)
+{
+    if (LTDC->ISR & LTDC_ISR_FUIF) { LTDC->ICR = LTDC_ICR_CFUIF; return 1u; }
+    return 0u;
+}
+
+/* [0] pred flipem (= behem kresleni aplikace a necinnosti od minuleho present)
+ * [1] behem cekani na dokonceni kresleni (`d2d_wait`)
+ * [2] mezi zadosti o flip a startem copy-forwardu
+ * [3] BEHEM copy-forwardu */
+uint32_t g_ur_phase[4];
+
 void prim_stm32_present(void)
 {
-    if (LTDC->ISR & LTDC_ISR_FUIF) {      /* FIFO podteklo od minula */
-        LTDC->ICR = LTDC_ICR_CFUIF;
-        g_ltdc_underrun++;
-    }
+    uint32_t u = ltdc_fuif_take();        /* FIFO podteklo od minula */
+    if (u) { g_ltdc_underrun++; g_ur_phase[0]++; }
 
     /* NON-BLOCKING flip: cekej na PREDCHOZI flip (pri nizke kadenci OKAMZITE), ne
      * na aktualni. Diky 3. bufferu copy-forward nikdy nepise do scanovaneho bufferu. */
@@ -406,6 +452,7 @@ void prim_stm32_present(void)
     if (guard >= LTDC_FLIP_GUARD) g_ltdc_flip_timeouts++;   /* audit F-0033 */
 
     d2d_wait();                                   /* dokresli back */
+    if (ltdc_fuif_take()) { g_ltdc_underrun++; g_ur_phase[1]++; }
 
     /* Flip na back pri pristim vblanku (tearing-free), bez cekani. */
     LTDC_Layer1->CFBAR = s_fb_addr[s_back];
@@ -413,16 +460,21 @@ void prim_stm32_present(void)
 
     s_front = s_back;
     s_back  = (s_front + 1) % NUM_FB;
+    if (ltdc_fuif_take()) { g_ltdc_underrun++; g_ur_phase[2]++; }
 
     /* Copy-forward JEN dirty oblasti (sjednoceni prev+cur) z front -> novy back.
      * Pri full priznaku nebo prilis mnoha obdelnicich kopiruj cely snimek. */
     s_in_present = 1;
+    g_fb_back_count[s_back]++;                     /* diagnostika F-0140 (`fbdiff`) */
     if (dfull_prev || dfull_cur) {
         d2d_blit_ex(fb_px(s_back), FB_W, fb_px(s_front), FB_W, FB_W, FB_H, 0);  /* copy-forward: bez inval */
+        g_fb_last_copy_rects = 0xFFFFFFFFu;        /* = plna kopie */
+        g_fb_full_copies++;
     } else {
         copy_forward_dedup();          /* sjednoceni prev+cur bez redundantnich blitu */
     }
     s_in_present = 0;
+    if (ltdc_fuif_take()) { g_ltdc_underrun++; g_ur_phase[3]++; }
 
     /* Posun historie: prev <- cur, cur <- prazdne. */
     memcpy(d_prev, d_cur, (size_t)nd_cur * sizeof(prim_rect_t));
@@ -444,6 +496,82 @@ void prim_stm32_set_deadtime(uint8_t dt)
     g_d2d_deadtime = dt;
     /* AMTCR se smi prepsat kdykoli; DMA2D si ho cte pri kazdem prenosu. */
     DMA2D->AMTCR = dt ? (((uint32_t)dt << DMA2D_AMTCR_DT_Pos) | DMA2D_AMTCR_EN) : 0u;
+}
+
+/* Ceka, dokud LTDC aktivne skenuje panel (`LTDC_CDSR.VDES`==1), tedy dokud
+ * NEzacne vertikalni zatemneni (F-0140). Timing tohoto panelu (docs/HW_REFERENCE.md):
+ * 25 MHz pixel clock, 850x510 -> perioda snimku ~17,3 ms, z toho blanking jen
+ * ~1,0 ms (30 radku). DMA2D burst spousteny NAHODNE vuci fazi snimku ma tedy
+ * ~94% sanci startovat uprostred aktivniho skenovani (nejhorsi pripad); pockani
+ * na zacatek zatemneni dá kazdemu burstu STEJNOU, nejlepsi moznou fazi mista
+ * nahodne.
+ * ⚠️ VYJIMKA z pravidla "zadny spin > 10 ms" (ZLATA PRAVIDLA / Vlakna): tahle
+ * cekaci smycka smi trvat az ~1 periodu snimku (~17 ms), protoze (a) bezi jen
+ * JEDNOU za uzivatelsky dotek, ne v pravidelnem tiku, (b) alternativa je
+ * viditelne poskozeny snimek na panelu (F-0140), (c) 17 ms je hluboko pod
+ * 2,5s rozpoctem heartbeatu UiTasku. `timeout_ms` je bezpecnostni strop pro
+ * pripad, ze by LTDC z nejakeho duvodu neblikalo (radeji pokracovat beze
+ * synchronizace nez zamrznout). */
+int prim_stm32_wait_vblank(uint32_t timeout_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while (LTDC->CDSR & LTDC_CDSR_VDES) {
+        if ((HAL_GetTick() - t0) >= timeout_ms) return 0;
+    }
+    return 1;
+}
+
+int prim_stm32_front_index(void) { return s_front; }
+int prim_stm32_back_index(void)  { return s_back; }
+uint32_t prim_stm32_fb_back_count(int i)
+{
+    return (i >= 0 && i < NUM_FB) ? g_fb_back_count[i] : 0u;
+}
+uint32_t prim_stm32_fb_last_copy_rects(void) { return g_fb_last_copy_rects; }
+uint32_t prim_stm32_fb_full_copies(void)     { return g_fb_full_copies; }
+uint32_t prim_stm32_ur_phase(int i)          { return (i >= 0 && i < 4) ? g_ur_phase[i] : 0u; }
+
+/* Porovna dva framebuffery (diagnostika F-0140, popis u deklarace ve
+ * `freertos_shared.h`). ⚠️ Pred ctenim MUSI prijit invalidace D-cache: do
+ * framebufferu pise DMA2D mimo cache, takze CPU by jinak porovnaval stara
+ * data a hlasil shodu i tam, kde zadna neni. */
+uint32_t prim_stm32_fb_compare(int a, int b, int16_t *bx, int16_t *by,
+                               int16_t *bw, int16_t *bh)
+{
+    if (bx) *bx = 0;
+    if (by) *by = 0;
+    if (bw) *bw = 0;
+    if (bh) *bh = 0;
+    if (a < 0 || a >= NUM_FB || b < 0 || b >= NUM_FB) return 0xFFFFFFFFu;
+
+    const prim_pixel_t *pa = fb_px(a);
+    const prim_pixel_t *pb = fb_px(b);
+    const uint32_t bytes = (uint32_t)FB_W * FB_H * sizeof(prim_pixel_t);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)pa, (int32_t)bytes);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)pb, (int32_t)bytes);
+
+    uint32_t n = 0;
+    int x0 = FB_W, y0 = FB_H, x1 = -1, y1 = -1;
+    for (int y = 0; y < FB_H; y++) {
+        const prim_pixel_t *ra = pa + (size_t)y * FB_W;
+        const prim_pixel_t *rb = pb + (size_t)y * FB_W;
+        for (int x = 0; x < FB_W; x++) {
+            if (ra[x] != rb[x]) {
+                n++;
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+    }
+    if (x1 >= 0) {
+        if (bx) *bx = (int16_t)x0;
+        if (by) *by = (int16_t)y0;
+        if (bw) *bw = (int16_t)(x1 - x0 + 1);
+        if (bh) *bh = (int16_t)(y1 - y0 + 1);
+    }
+    return n;
 }
 
 void prim_stm32_init(prim_fb_t *fb)

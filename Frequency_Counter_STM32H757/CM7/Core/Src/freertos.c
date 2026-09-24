@@ -118,6 +118,24 @@ volatile uint8_t g_screen_req  = 0;
 /* Pozadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
  * UiTask, viz screen_main_stats_reset). Stejny duvod jako g_screen_req. */
 volatile uint8_t g_stats_reset_req = 0;
+
+/* INJEKTOR DOTEKU (diagnostika F-0140): UART `tap <idx>` zada stisk tlacitka
+ * patky, UiTask ho provede PRESNE tou cestou, kterou jde skutecny prst —
+ * stejny task, stejne misto smycky, stejne `app_gpsdo_handle_touch()`, jen bez
+ * cteni FT5x06. Vzniklo proto, ze problikavani pri RUN/STOP se reprodukovalo
+ * VYHRADNE fyzickym dotekem (dalkovy SCPI ekvivalent ho nedela), takze kazde
+ * mereni doted vyzadovalo uzivatele u desky. -1 = nic nezada. */
+volatile int8_t g_tap_btn_req = -1;
+
+/* Export VSECH oken na SD (UART "screenshot all"): UartTask zada cislo okna,
+ * UiTask ho vykresli+flipne (kreslit smi jen UiTask) a potvrdi -done-, teprve
+ * pak UartTask snimek ulozi na kartu. Stejny vzor jako `g_tap_btn_req`.
+ * -1 = nic nezada. `g_shot_view_done` je pocitadlo (ne priznak), aby UartTask
+ * poznal DOKONCENI konkretniho pozadavku i kdyby dve po sobe jdouci cisla
+ * okna vysla se stejnym `s_view` (coz se u ~50 ruznych cisel nestane, ale
+ * pocitadlo je zadarmo a je to odolnejsi nez 0/1 priznak). */
+volatile int16_t g_shot_view_req  = -1;
+volatile uint32_t g_shot_view_done = 0;
 /* 1 = bezi mereni chybovosti I2C4 podle taktu (UART `i2cspeed`). Po tu dobu se
  * sbernice NESMI dotknout nikdo jiny: UiTask preskoci cteni dotyku i zapis jasu
  * a SensorsTask cteni TMP117 0x48. Bez toho by (a) cizi transakce pri rozhozenem

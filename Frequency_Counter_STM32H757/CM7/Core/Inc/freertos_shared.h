@@ -32,6 +32,12 @@ extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NM
 
 /* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
 extern volatile uint8_t g_screen_req;
+/* Injektor doteku pro diagnostiku (UART `tap <idx>`) — viz definice ve
+ * `freertos.c`. Zapisuje UartTask, cte a nuluje VYHRADNE UiTask. */
+extern volatile int8_t  g_tap_btn_req;
+/* Export vsech oken na SD (UART `screenshot all`) — viz definice ve `freertos.c`. */
+extern volatile int16_t  g_shot_view_req;
+extern volatile uint32_t g_shot_view_done;
 
 /* ── Požadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
  * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
@@ -153,6 +159,24 @@ extern volatile uint32_t g_d2d_wait_max_cyc;   /* nejdelsi cekani, takty jadra *
  * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
 extern volatile uint8_t  g_d2d_deadtime;
 void prim_stm32_set_deadtime(uint8_t dt);
+/* Diagnostika F-0140: porovna DVA framebuffery pixel po pixelu a vrati pocet
+ * odlisnych pixelu + obalovy obdelnik odlisnosti. Odlisuje dve vady, ktere
+ * vypadaji stejne ("problikne"): POSKOZENY SNIMEK pri scan-outu (buffery se
+ * shoduji, vada vznikla az cestou na panel) vs. NESOULAD BUFFERU (jeden drzi
+ * stary obsah -> problikne pokazde, kdyz na nej prijde rada). ⚠️ Cte ~1,5 MB
+ * SDRAM a invaliduje cache — volat JEN z UartTasku (neni hlidany watchdogem). */
+uint32_t prim_stm32_fb_compare(int a, int b, int16_t *bx, int16_t *by,
+                               int16_t *bw, int16_t *bh);
+int prim_stm32_front_index(void);
+int prim_stm32_back_index(void);
+uint32_t prim_stm32_fb_back_count(int i);       /* kolikrat byl buffer cilem copy-forwardu */
+uint32_t prim_stm32_fb_last_copy_rects(void);   /* 0 = nic, 0xFFFFFFFF = plna kopie */
+uint32_t prim_stm32_fb_full_copies(void);
+/* Rozklad podteceni FIFO na faze `prim_stm32_present()` (F-0140):
+ * 0 = pri kresleni aplikace, 1 = pri cekani na dokresleni, 2 = kolem flipu,
+ * 3 = BEHEM copy-forwardu. Rozlisuje „aplikace kresli moc" od „copy-forward
+ * zabira sbernici" — tedy dve UPLNE jine opravy. */
+uint32_t prim_stm32_ur_phase(int i);
 /* Kolikrat se glow nevykreslil, protoze oblast prekrocila strop masky
  * (`glow.c`). ⚠️ MUSI zustat 0 — prekroceni je jinak TICHE. Vypisuje `status`. */
 extern uint32_t g_prim_glow_skipped;

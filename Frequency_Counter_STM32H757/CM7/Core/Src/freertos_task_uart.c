@@ -1322,7 +1322,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | sdrtr [n] | rpipe [0-2]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -1621,6 +1621,69 @@ void UartTask_run(void *argument)
 				   * a tok je best-effort, takze u animovane obrazovky muze mit pruhy
 				   * ze dvou framu. Spolehlivejsi je `screenshot sd`. */
 				  screenshot_emit_bmp();
+			  }
+			  else if (strncmp(RxBuffer, "screenshot all", 14) == 0) {
+				  /* Export VSECH oken na SD, kazde jako V<nn>.BMP (mapa cisel ->
+				   * nazvy oken: docs/HW_REFERENCE.md „Okna UI"). Jen ZAKLADNI stav
+				   * kazdeho okna (prvni vstup) — ne dvoufazova potvrzeni typu
+				   * "POTVRDIT 1/2" ani modalni mezistavy. Vynechana 8 (sporic —
+				   * ma vlastni cestu obnovy), 11 (boot splash — bezi jen pri startu)
+				   * a 13 (potvrzeni restartu — render_view() ho stejne kresli jako
+				   * 12/MENU, byla by to duplicita). Seznam = presne to, co pouziva
+				   * `render_view()` (app_gpsdo.c) — zdroj pravdy je kod, ne tenhle
+				   * komentar; pribude-li okno, pridej cislo i sem.
+				   * ⚠️ Volitelne `screenshot all <N>` omezi na prvnich N oken —
+				   * pro bezpecne oteveni na malem vzorku pred plnym behem. */
+				  static const uint8_t SHOT_VIEWS[] = {
+					  0,1,2,3,4,5,6,7,9,10,12,
+					  14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,
+					  30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,
+					  46,47,48,49,50,51,
+				  };
+				  unsigned n = (unsigned)(sizeof SHOT_VIEWS / sizeof SHOT_VIEWS[0]);
+				  const char *p = RxBuffer + 14;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  unsigned lim = 0;
+					  while (*p >= '0' && *p <= '9') { lim = lim * 10u + (unsigned)(*p - '0'); p++; }
+					  if (lim > 0 && lim < n) n = lim;
+				  }
+				  printf("SCREENSHOT ALL: exportuji %u oken na SD, jmena V<cislo>.BMP...\n", n);
+				  unsigned ok = 0, fail = 0;
+				  for (unsigned i = 0; i < n; i++) {
+					  uint8_t v = SHOT_VIEWS[i];
+					  /* Pozadej UiTask o vykresleni + flip (kreslit smi jen UiTask,
+					   * stejny vzor jako injektor doteku `tap`, F-0140). Bounded
+					   * cekani — kdyby UiTask nestihl (nemel by), po 2 s se vzda
+					   * tohohle okna a jede dal, misto aby zamrzl cely export.
+					   * ⚠️ BEZ `sd_blocking_begin()` — ten na dobu drzeni SNIZI
+					   * PRIORITU volajiciho (UartTask). Drzet ho kolem CELE
+					   * smycky (vc. cekani na UiTask pres desitky oken) zpusobilo
+					   * na desce viceminutove zaseknuti (2026-09-23); obaluje se
+					   * proto uz jen SAMOTNY zapis nize, presne jako u `screenshot
+					   * sd` (jednorazoveho). */
+					  uint32_t before = g_shot_view_done;
+					  g_shot_view_req = (int16_t)v;
+					  uint32_t t0 = HAL_GetTick();
+					  while (g_shot_view_done == before && (HAL_GetTick() - t0) < 2000u) osDelay(5);
+					  if (g_shot_view_done == before) {
+						  printf("  V%u: UiTask nestihl (preskoceno)\n", (unsigned)v);
+						  fail++;
+						  continue;
+					  }
+					  char name[16];
+					  snprintf(name, sizeof name, "V%u.BMP", (unsigned)v);
+					  sd_blocking_begin();
+					  int sr = screenshot_save_sd_named(name);
+					  sd_blocking_end();
+					  if (sr == 0) { ok++; printf("  V%u: OK\n", (unsigned)v); }
+					  else { printf("  V%u: chyba %d (%s)\n", (unsigned)v, sr, sd_export_state_str()); fail++; }
+				  }
+				  printf("SCREENSHOT ALL: hotovo, %u OK, %u chyb\n", ok, fail);
+				  /* Po behu vrat displej na hlavni obrazovku — export prochazel
+				   * postupne VSECHNA okna a posledni z nich by jinak zustalo
+				   * viset na panelu, coz by mohlo pusobit jako zamrzly pristroj. */
+				  g_screen_req = 3;
 			  }
 			  else if (strcmp(RxBuffer, "autocal") == 0) {
 				  autocal_run();
@@ -2363,6 +2426,59 @@ void UartTask_run(void *argument)
 				  } else {
 					  printf("DMA2D: mrtvy cas = %u (pouziti: d2ddt <0..255>, 0 = vypnuto)\n",
 					         (unsigned)g_d2d_deadtime);
+				  }
+			  }
+			  /* tap <idx> — injektor doteku pro diagnostiku (F-0140). Zada stisk
+			   * tlacitka patky hlavni obrazovky (0=PERIOD/FREQ, 1=RUN/STOP, 2=GATE,
+			   * 3=CHAN, 4=MENU); UiTask ho provede PRESNE cestou skutecneho prstu.
+			   * ⚠️ Kresli se az v UiTasku (pozadavek, ne primy zapis — libui neni
+			   * thread-safe), stejny vzor jako `g_screen_req`. */
+			  else if (strncmp(RxBuffer, "tap", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+				  	int idx = *p - '0';
+				  	g_tap_btn_req = (int8_t)idx;
+				  	printf("TAP: zadano tlacitko %d (provede UiTask)\n", idx);
+				  } else {
+				  	printf("TAP: pouziti `tap <0..4>` (0=PERIOD/FREQ 1=RUN/STOP 2=GATE 3=CHAN 4=MENU)\n");
+				  }
+			  }
+			  /* fbdiff — porovna vsechny tri framebuffery mezi sebou (F-0140).
+			   * PROC: „problikne" muze mit dve UPLNE ruzne priciny, ktere vypadaji
+			   * stejne. (a) POSKOZENY SNIMEK pri scan-outu (podteceni FIFO) — buffery
+			   * se SHODUJI, vada vznikla az cestou na panel. (b) NESOULAD BUFFERU —
+			   * nektery drzi STARY obsah, takze problikne pokazde, kdyz na nej prijde
+			   * rada pri flipu; tohle `LTDC: podteceni FIFO` NEVIDI.
+			   * ⚠️ Na zastavenem mereni (STOP) je zona cisla zmrazena (`tick_freq` se
+			   * hned vraci), takze pripadny nesoulad tam zustane NATRVALO — proto se
+			   * to pozna i nekolik sekund po stisku, ne jen v okamziku vady. */
+			  else if (strcmp(RxBuffer, "fbdiff") == 0) {
+				  printf("FBDIFF: front = FB%d, back = FB%d | cil copy-forwardu: "
+				         "FB0 %lux FB1 %lux FB2 %lux | posl. kopie %ld rectu, plnych %lu\n",
+				         prim_stm32_front_index(), prim_stm32_back_index(),
+				         (unsigned long)prim_stm32_fb_back_count(0),
+				         (unsigned long)prim_stm32_fb_back_count(1),
+				         (unsigned long)prim_stm32_fb_back_count(2),
+				         (long)(int32_t)prim_stm32_fb_last_copy_rects(),
+				         (unsigned long)prim_stm32_fb_full_copies());
+				  printf("  podteceni po fazich: kresleni %lu | cekani %lu | flip %lu | COPY-FORWARD %lu\n",
+				         (unsigned long)prim_stm32_ur_phase(0), (unsigned long)prim_stm32_ur_phase(1),
+				         (unsigned long)prim_stm32_ur_phase(2), (unsigned long)prim_stm32_ur_phase(3));
+				  static const uint8_t PAIRS[3][2] = { {0,1}, {0,2}, {1,2} };
+				  for (int i = 0; i < 3; i++) {
+				  	int16_t bx = 0, by = 0, bw = 0, bh = 0;
+				  	uint32_t n = prim_stm32_fb_compare(PAIRS[i][0], PAIRS[i][1],
+				  	                                  &bx, &by, &bw, &bh);
+				  	if (n == 0u) {
+				  		printf("  FB%u vs FB%u: shoda\n",
+				  		       (unsigned)PAIRS[i][0], (unsigned)PAIRS[i][1]);
+				  	} else {
+				  		printf("  FB%u vs FB%u: %lu odlisnych px, oblast x=%d y=%d %dx%d\n",
+				  		       (unsigned)PAIRS[i][0], (unsigned)PAIRS[i][1],
+				  		       (unsigned long)n, (int)bx, (int)by, (int)bw, (int)bh);
+				  	}
+				  	osDelay(2);   /* UartTask neni hlidany, presto nedrz CPU v kuse */
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "meas reset") == 0) {

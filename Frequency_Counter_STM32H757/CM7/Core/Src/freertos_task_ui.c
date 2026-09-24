@@ -423,6 +423,41 @@ void StartUiTask(void *argument)
       }
     }
 
+    /* ── Injektor doteku (diagnostika F-0140, UART `tap <idx>`) ────────────────
+     * Provede stisk tlacitka patky PRESNE toutez cestou jako skutecny prst:
+     * stejny task, stejne misto smycky (hned za obsluhou doteku), stejne
+     * `app_gpsdo_handle_touch()` vcetne synchronniho `present_now()`. Jediny
+     * rozdil je, ze se necte FT5x06.
+     * 🔑 PROC: problikavani pri RUN/STOP se reprodukovalo VYHRADNE fyzickym
+     * dotekem — dalkove SCPI `INIT`/`ABOR` dela tyz redraw, ale flip necha na
+     * ~30Hz koalescujicim gate, takze vadu nevyrobi. Bez tohohle injektoru
+     * vyzadovalo KAZDE mereni uzivatele u desky (a tim i nekolik hodin
+     * hledani). ⚠️ Necha `s_last_activity`/`s_dimmed` na pokoji jinak nez
+     * skutecny dotek jen v tom, ze se NEspotrebuje na probuzeni ze sporice —
+     * diagnostika ma vzdy provest akci, ne ji spolknout. */
+    if (g_tap_btn_req >= 0) {
+      int idx = g_tap_btn_req;
+      g_tap_btn_req = -1;
+      int16_t cx = 0, cy = 0;
+      if (screen_main_button_center(idx, &cx, &cy)) {
+        s_last_activity = HAL_GetTick();
+        s_dimmed = 0;
+        (void)app_gpsdo_handle_touch(cx, cy);
+      }
+    }
+
+    /* Export vsech oken (UART `screenshot all`): vykresli POZADOVANE okno a
+     * potvrd hotovo — UartTask az PAK snimek ulozi (kreslit smi jen UiTask,
+     * viz `g_tap_btn_req` vyse, stejny vzor). Render funkce se flipnou SAMY
+     * (present_now na konci), takze po navratu je snimek jiz na panelu/ve
+     * front bufferu, odkud ho `screenshot_save_sd_named` precte. */
+    if (g_shot_view_req >= 0) {
+      int v = g_shot_view_req;
+      g_shot_view_req = -1;
+      app_gpsdo_render_view_for_shot(v);
+      g_shot_view_done++;
+    }
+
     /* ── Trvale mrtva I2C4 -> hlaska na displeji ───────────────────────────────
      * Kriterium je CAS od posledniho USPESNEHO cteni, ne pocet chyb: prechodne
      * vypadky se zotavi do ~1 s (zmereno 2026-08-30: err 2 / v rade 0, `scanner`

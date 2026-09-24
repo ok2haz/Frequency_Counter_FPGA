@@ -111,7 +111,11 @@ void screenshot_emit_bmp(void)
 #define SS_SCRATCH ((uint16_t *)0xC0400000u)
 
 #ifdef SS_FATFS
-static int screenshot_save_sd_body(char *name_out, unsigned name_sz)
+/* `forced_name` != NULL: pouzij PRESNE tenhle nazev (prepise, kdyz uz existuje —
+ * pouziva to `screenshot_save_all_sd()`, kde je nazev odvozeny od cisla okna a
+ * opakovany beh ma umet stary snimek nahradit). `forced_name` == NULL: puvodni
+ * chovani, najdi prvni volne SHOTnnn.BMP (8.3 — `_USE_LFN` je 0). */
+static int screenshot_save_sd_body(const char *forced_name, char *name_out, unsigned name_sz)
 {
     const uint16_t *fb = (const uint16_t *)prim_stm32_front_addr();
     if (!fb) return -1;
@@ -121,20 +125,26 @@ static int screenshot_save_sd_body(char *name_out, unsigned name_sz)
     uint16_t *snap = SS_SCRATCH;
     memcpy(snap, fb, (size_t)SS_W * SS_H * sizeof(uint16_t));
 
-    /* 2) Najdi volné jméno SHOTnnn.BMP (8.3 — `_USE_LFN` je 0). */
     char name[16];
-    int found = 0;
-    for (unsigned i = 1; i <= 999u; i++) {
-        FILINFO fno;
-        snprintf(name, sizeof name, "SHOT%03u.BMP", i);
-        if (f_stat(name, &fno) == FR_NO_FILE) { found = 1; break; }
+    if (forced_name) {
+        snprintf(name, sizeof name, "%s", forced_name);
+    } else {
+        /* Najdi volné jméno SHOTnnn.BMP. */
+        int found = 0;
+        for (unsigned i = 1; i <= 999u; i++) {
+            FILINFO fno;
+            snprintf(name, sizeof name, "SHOT%03u.BMP", i);
+            if (f_stat(name, &fno) == FR_NO_FILE) { found = 1; break; }
+        }
+        if (!found) return -3;       /* 999 snímků na kartě — ať si uživatel uklidí */
     }
-    if (!found) return -3;           /* 999 snímků na kartě — ať si uživatel uklidí */
 
     /* 3) Zapiš. `FIL` staticky (nese 512B sektorový buffer — na stack UartTasku
-     *    nepatří, viz stejné pravidlo v sd_export.c). */
+     *    nepatří, viz stejné pravidlo v sd_export.c).
+     * ⚠️ `FA_CREATE_ALWAYS`, ne `FA_CREATE_NEW`: `forced_name` (export vsech
+     * oken) se pri opakovanem behu MA prepsat, ne selhat na "uz existuje". */
     static FIL f;
-    if (f_open(&f, name, FA_CREATE_NEW | FA_WRITE) != FR_OK) return -4;
+    if (f_open(&f, name, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return -4;
 
     uint32_t rowbytes = SS_W * 3u;                 /* 2400 = násobek 4 -> BMP bez paddingu */
     uint8_t  hdr[54];
@@ -171,7 +181,23 @@ int screenshot_save_sd(char *name_out, unsigned name_sz)
     return -1;                       /* FatFs není v buildu */
 #else
     sd_export_busy_begin();
-    int r = screenshot_save_sd_body(name_out, name_sz);
+    int r = screenshot_save_sd_body(NULL, name_out, name_sz);
+    sd_export_busy_end();
+    return r;
+#endif
+}
+
+/* Jako `screenshot_save_sd()`, ale pod PRESNYM jmenem (pouziva `screenshot all`
+ * — export vsech oken, kazde pod jmenem odvozenym od cisla okna). Existujici
+ * soubor se PREPISE (viz komentar u `FA_CREATE_ALWAYS` v tele). */
+int screenshot_save_sd_named(const char *name)
+{
+#ifndef SS_FATFS
+    (void)name;
+    return -1;                       /* FatFs není v buildu */
+#else
+    sd_export_busy_begin();
+    int r = screenshot_save_sd_body(name, NULL, 0);
     sd_export_busy_end();
     return r;
 #endif

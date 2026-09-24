@@ -68,6 +68,7 @@ void screen_main_render(void);      /* full render into current target */
 void screen_main_invalidate(void);  /* force cache rebuild */
 const prim_pixel_t *screen_main_bg(void);    /* shared background cache (RGB565) */
 int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 */
+int  screen_main_button_center(int idx, int16_t *cx, int16_t *cy);  /* stred tlacitka patky; 0 = nezname */
 /* ── Rozlozeni hlavni obrazovky (prepinac v okne DISPLEJ, persist v syscfg) ──
  * 0 = HYBRIDNI (vychozi, ladene pro 4,3": Allan 47 % pres celou vysku, cisla
  *     statistik mono_18, RF bargraf v.54),
@@ -89,7 +90,8 @@ int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock
 int  screen_main_redraw_cpu(int force);                /* blok vytizeni CPU (CM7/CM4) v headeru; vrati 1 pokud kreslil */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
 int  screen_main_redraw_freq(void);                    /* mereny kmitocet (per-segment dirty); vrati 1 */
-void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni + SIM markeru */
+void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni + SIM markeru — POUZE kdyz se meni format/magnituda (siri clear) */
+void screen_main_redraw_freq_tint(void);               /* totez, ale UZSI zonou pro cisty RUN/STOP toggle (audit F-0140) — geometrie se NESMI menit */
 void screen_main_freq_sim_step(void);                  /* krok ZDROJE (mereni/SIM) BEZ kresleni — mimo main obrazovku */
 float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
 double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */

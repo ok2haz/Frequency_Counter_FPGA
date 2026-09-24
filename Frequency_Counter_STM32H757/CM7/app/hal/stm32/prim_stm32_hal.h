@@ -26,6 +26,13 @@ void prim_stm32_init(prim_fb_t *fb);
  *  Volat po každém snímku — ideálně jen když se něco překreslilo. */
 void prim_stm32_present(void);
 
+/** Počká, dokud LTDC aktivně skenuje panel (F-0140) — dá následujícímu DMA2D
+ *  burstu nejlepší možnou fázi vůči snímku, ne náhodnou. Smí trvat až ~1
+ *  periodu snímku (~17 ms na tomto panelu); volat jen před TĚŽKÝM,
+ *  jednorázovým redrawem (ne v pravidelném tiku). @return 1 = dosaženo
+ *  zatemnění, 0 = timeout (volající pokračuje beztak). */
+int prim_stm32_wait_vblank(uint32_t timeout_ms);
+
 /** Enable (default) or disable the register-level DMA2D backend at runtime. */
 void prim_stm32_use_dma2d(int enable);
 
