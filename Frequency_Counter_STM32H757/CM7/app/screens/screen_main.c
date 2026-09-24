@@ -28,6 +28,7 @@
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 #include "datalog.h"
+#include "sd_export.h"  /* sd_export_ui_info()->present — mikro-ikona SD karty v headeru */
 #include "errlog.h"     /* udalosti zmeny nastaveni (soumeritelnost mereni) */   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick) — hodiny v headeru z RTC, ne
@@ -514,22 +515,13 @@ static void render_header(void)
     /* Zive GPS: GNSS lock pill + pocet druzic (SAT pill) + datum z GPS. */
     gps_data_t g;
     gps_get(&g);
-    char sat_v[8], date_v[16], hdop_v[8];
+    char sat_v[8], date_v[16];
     const char *gnss_s; ui_pill_variant_t gnss_var;
     if      (g.valid && g.fix_mode == 3) { gnss_s = "GNSS 3D";  gnss_var = UI_PILL_OK; }
     else if (g.fix_quality > 0)          { gnss_s = "GNSS FIX"; gnss_var = UI_PILL_OK; }
     else if (g.sats_in_view > 0)         { gnss_s = "ACQUIRE";  gnss_var = UI_PILL_WARN; }
     else                                 { gnss_s = "NO GNSS";  gnss_var = UI_PILL_BAD; }
     snprintf(sat_v, sizeof sat_v, "%u", g.num_sat);
-    /* HDOP z GPS (GGA/GSA): 1 des. misto, ceska carka. Bez fixu "--".
-     * Cap 99,9 (vyssi HDOP = nesmyslny fix; zaroven omezi rozsah pro snprintf). */
-    if (g.fix_quality > 0 && g.hdop > 0.0f) {
-        int h10 = (int)(g.hdop * 10.0f + 0.5f);
-        if (h10 < 0) h10 = 0; else if (h10 > 999) h10 = 999;   /* bound [0,999] -> snprintf bezpecne */
-        snprintf(hdop_v, sizeof hdop_v, "%d,%d", h10 / 10, h10 % 10);
-    } else {
-        snprintf(hdop_v, sizeof hdop_v, "--");
-    }
     /* GNSS/SAT pilulky zustavaji z GPS (odrazi fix); datum bere RTC (tika i bez fixu). */
     { char tdummy[16]; rtc_time_date(tdummy, date_v); }   /* header chce jen datum */
 
@@ -565,9 +557,11 @@ static void render_header(void)
                     .icon_color = UI_COLOR_OK_SOFT};
     hdr_pill_fit(&p, &x);
 
-    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
-                    .label = SCR_S_HDOP_L, .value = hdop_v};   /* reálné HDOP z GPS */
-    hdr_pill_fit(&p, &x);
+    /* HDOP pilulka ODSTRANENA z headeru (2026-09-23, na prani uzivatele) —
+     * udelala misto pro SD ikonu nize. HDOP zustava dostupne v okne GPS/GNSS
+     * (s_view=2, karta Poloha), tady jen prestalo byt kriticke pro prehled
+     * na prvni pohled. `SCR_S_HDOP_L` je tim mrtvy string — ponechano v
+     * screen_main_data.c pro pripad, ze by se HDOP pilulka nekdy vratila. */
 
     /* HOLD pilulka: AMBER pri holdoveru (fix ztracen pote, co uz nekdy byl) —
      * nahrazuje drivejsi zvlastni "H" u casu. HOLD je PRED CAL (dulezitejsi: nese
@@ -583,6 +577,18 @@ static void render_header(void)
      * pretlaku ho fit-check vynecha (posledni = nejmene dulezity, HOLD zustane). */
     p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL, .value = "CAL", .has_led = true};
     hdr_pill_fit(&p, &x);
+
+    /* SD karta: JEN ikona (bez labelu/hodnoty), nejnizsi priorita ze vsech —
+     * za CAL, takze pri pretlaku vypadne jako prvni. Zobrazuje SUROVY
+     * card-detect (PE3), ne stav mountu — kdyz karta neni vlozena, `hdr_pill_fit`
+     * se proste nezavola a nezustane po ni zadna mezera (uzivatelsky pozadavek:
+     * "pokud karta neni vlozena ikona se nezobrazi vubec"). */
+    if (sd_export_ui_info()->present) {
+        p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
+                        .icon_render = ui_icon_sdcard, .icon_size = 18,
+                        .icon_color = UI_COLOR_ACC};
+        hdr_pill_fit(&p, &x);
+    }
 
     int16_t time_x = UI_DIM_SCREEN_W - SCR_MAIN_CLOCK_MARGIN;
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
