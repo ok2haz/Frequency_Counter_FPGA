@@ -30,11 +30,30 @@ odložené do skupiny C (jen `docs:` dluh, cena opravy > přínos).
 ⬜ **Opravy ověřeny jen SW toggly přes UART, NE skutečným power-cyklem
 v přesném okamžiku poruchy** (výpadek při dohánění / erase za běhu) —
 pravidlo 4b platí dál, nutné ověřit na HW po power-cyklu.
-🔑 **Pokračovat zde:** (1) commitnout `d2d_wait()` yield fix + F-0142/
-F-0143/F-0146 opravy (2 samostatné `fix:` commity — d2d_wait je jiné téma
-než SD zrcadlo) + `docs:` commit pro audit dokumenty a LESSONS.md L-0080,
-(2) až bude čas, ověřit F-0142/F-0143 scénář skutečným power-cyklem/erase
-na desce, (3) F-0144/F-0145 zůstávají jako `docs:` TODO.
+✅ **Zakomitováno** (3 commity: `1d18c28` d2d_wait yield, `caa5f70` SD
+zrcadlo F-0142/F-0143/F-0146, `a1f4722` docs).
+🔑 **Pokračovat zde:** (1) flashnout CM7 Release + skutečný power-cyklus,
+ověřit F-0142/F-0143/F-0146 + d2d_wait na desce, (2) F-0144/F-0145
+zůstávají jako `docs:` TODO (skupina C, cena opravy > přínos).
+
+**Dodatek 2026-09-24 (stejné sezení): srovnání zastaralého stavu v tomto
+souboru.** Tabulka „Přehled modulů" a sekce „Otevřené po F5" **lhaly** —
+psaly se před koly oprav 2026-09-19/20 a od té doby se needitovaly, i když
+nálezové dokumenty samy ukazovaly opravu. Zjištěno cíleným `grep` přes
+všechny `Stav:` řádky v `docs/audit/*.md` (jediný spolehlivý zdroj).
+Opraveno: moduly 1–5 v tabulce byly `nálezy zapsány`, přitom KAŽDÝ nález
+v nich je `opraveno` (moduly 2/3/4/5 → `opraveno vše`; modul 1 → jen
+F-0003 zůstává vědomě odložené na příští CubeMX regen). „Otevřené po F5"
+tvrdilo, že F-0007/F-0014/F-0016/F-0017/F-0018 čekají na rozhodnutí/opravu
+— všech pět je opraveno (F-0007 a F-0014 19.9., F-0016/F-0017 19.9.,
+F-0018 v PLNÉM rozsahu 20.9., ne jen částečně jak tu dřív stálo). Navíc
+oprava dokumentační chyby v `docs/audit/2026-09-18_diagnostika-pameti.md`
+(F-0116 mělo dvě `Stav:` řádky — druhá, duchovská `otevřeno`, zůstala
+po dřívější editaci a moje vlastní grep-kontrola na ni naletěla).
+**Poučení pro příště:** tenhle typ zastarání se nehlídá sám — `python
+tools/audit_stav.py --kontrola` (zmíněný v textu výše) buď neexistuje,
+nebo se nespouští pravidelně; bez něj je jediná záruka manuální průchod
+`grep -rn "Stav:" docs/audit/*.md` před každým shrnutím „co chybí".
 
 **Předchozí, 2026-09-22:** ✅ **F-0140 VYŘEŠENO: problikávání při
 RUN/STOP byl STRIDED copy-forward, ne propustnost sběrnice.** `copy_forward_dedup()`
@@ -464,25 +483,36 @@ S1/S2) a **11 = jednotlivá okna** (~45 funkcí `render_*` + kreslicí helpery; 
 převážně kreslení, tedy očekávané S3/S4). Oba moduly jsou v témže souboru; nálezový dokument
 modulu 10 v sekci „Nezkontrolováno" přesně vymezuje, co zbývá na 11.
 
-**Otevřené po F5** (5× S3 + 1 částečně opravený S1 z modulů 1–6; modul 7 přidal
-2× S2, 4× S3 a 1× S4, které F5 zatím neprošly). Čísla v tabulce výše se **odvozují
-z nálezových dokumentů** — ověř je `python tools/audit_stav.py --kontrola`:
-- **F-0003** [S3] `VOSRDY` bez timeoutu — *odloženo*: leží v generovaném `SystemClock_Config()`
-  bez `USER CODE` (regen by opravu smazal) a špatná mez by pustila 480 MHz dřív, než se
-  ustálí regulátor. Vrátit se, až se objeví „deska občas nenaběhne“.
-- **F-0007** [S3] ztráta HSE = mrtvý přístroj — *čeká na rozhodnutí o politice*: zůstat mrtvý
-  ale rozlišitelně (levné), nebo nabootovat na HSI a měření označit za neplatné (drahé, mění
-  časování všech sběrnic).
+**Otevřené po F5** — 🔴 **přepsáno 2026-09-24, předchozí verze byla zastaralá**
+(psána před koly oprav 2026-09-19/20, nikdy neaktualizovaná — F-0007/F-0014/
+F-0016/F-0017/F-0018 mezitím dostaly opravu, kterou tenhle seznam pořád
+popisoval jako neprovedenou). Zdroj pravdy jsou vždy **`Stav:`** řádky
+v jednotlivých `docs/audit/*.md`, ne tenhle souhrn — ověř `python
+tools/audit_stav.py --kontrola`, pokud existuje. Skutečně otevřené zbývá
+už jen jedno:
+- **F-0003** [S3] `VOSRDY` bez timeoutu — *odloženo 2026-09-20, vědomé rozhodnutí*:
+  řádek leží v generovaném `SystemClock_Config()` bez `USER CODE` bloku (regen by
+  opravu smazal); oprava (čítač, ne `HAL_GetTick()` — timebase v tom místě ještě
+  běží na HSI) je **připravená v `CUBEMX_CHECKLIST.md`** a provede se při nejbližší
+  regeneraci, kdy se generovaný kód beztak přepisuje a kontroluje. Do té doby vada
+  nastane jen při závadě napájení (deska by byla nepoužitelná tak jako tak).
+- **F-0007** [S3] ztráta HSE = mrtvý přístroj — **opraveno 2026-09-19**, politika
+  „zůstat mrtvý, ale rozlišitelně" (`bootled.c`, ≥15 bliknutí = hodiny, ne periferie;
+  zapsáno i v `CLAUDE.md`). ⬜ neověřeno skutečným výpadkem HSE na HW.
 - ✅ **F-0014** [S3] `ipccmd` je druhý producent SPSC ringu — **opraveno 2026-09-19**
   (⬜ neověřeno na HW), spolu s druhou instancí **F-0129**. Každá **jinak**, protože
   návrh opravy v nálezu byl pro `ipccmd` špatný: `scpi ipc` ring nepotřebuje (jádrová
   podmínka), `ipccmd` ho potřebuje (to JE ten test), takže se místo zrušení **odmítne
   spustit**, když je `ipc_cm4_alive() && g_web_ctrl_en` (únik: `ipccmd force`).
   Vznikla z toho **`L-0057`** („odmítnutí je plnohodnotná oprava").
-- **F-0016** [S3] `.ipc_shared` je prázdná rezervace — *odloženo*: oprava znamená zásah do
-  **linker skriptů obou jader** (pravidlo 6 → jen s výslovným souhlasem).
-- **F-0017** [S3] `ipc_stamp()` maže i blok CM4 — *odloženo* ze stejného důvodu jako F-0014.
-- **F-0018** [S1] je opravený jen **částečně** (ztráta už není tichá); dvoufázový zápis zbývá.
+- **F-0016** [S3] `.ipc_shared` je prázdná rezervace — **opraveno 2026-09-19**,
+  varianta (b) dle rozhodnutí uživatele. ⬜ neověřeno na HW.
+- **F-0017** [S3] `ipc_stamp()` maže i blok CM4 — **opraveno 2026-09-19**, varianta
+  „každé jádro nuluje svůj blok". ⬜ neověřeno na HW.
+- **F-0018** [S1] — **opraveno 2026-09-20 v plném rozsahu** (dvoufázový zápis přes
+  SDRAM staging, přesně jak nález navrhoval); dřívější poznámka „jen částečně" už
+  neplatí. ⬜ neověřeno na HW (kritérium: `stacktest yes` → po restartu `status`
+  hlásí „zachráněných po restartu 1").
 
 Otevřené otázky na HW: crash black-box pro
 `Error_Handler()` volaný **před** `MX_RTC_Init()` (modul 1) a retenční test `membench`
@@ -569,11 +599,11 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 
 | # | Modul | Soubory | Jádro | Stav | Datum | S1 | S2 | S3 | S4 | Nálezy |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | konfigurace hodin/PWR | `main.c`, `system_*.c` | CM7 | opraveno (2 otevřené) | 2026-09-09 | 0 | 2 | 5 | 0 | [7](audit/2026-09-09_hodiny-pwr.md) |
-| 2 | MPU / cache / linker | `main.c MPU_Config`, `*.ld` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 2 | [6](audit/2026-09-09_mpu-cache-linker.md) |
-| 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | nálezy zapsány | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
-| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | nálezy zapsány (+1 z HW) | 2026-09-11 | 2 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
-| 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
+| 1 | konfigurace hodin/PWR | `main.c`, `system_*.c` | CM7 | **opraveno vše krom F-0003** (odloženo na regen, ⬜ neověřeno na HW) | 2026-09-09 | 0 | 2 | 5 | 0 | [7](audit/2026-09-09_hodiny-pwr.md) |
+| 2 | MPU / cache / linker | `main.c MPU_Config`, `*.ld` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-09 | 0 | 0 | 4 | 2 | [6](audit/2026-09-09_mpu-cache-linker.md) |
+| 3 | IPC CM7↔CM4 (HSEM) | `ipc.c`, `ipc_shared.h`, `ipc_cm4.c` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-09 | 0 | 0 | 4 | 0 | [4](audit/2026-09-09_ipc-cm7-cm4.md) |
+| 4 | přerušení a RTOS | `stm32h7xx_it.c`, `freertos*.c` | oba | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 2 | 1 | 0 | 1 | [3](audit/2026-09-10_preruseni-rtos.md) |
+| 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (F-0140 ✅ změřeno 38→0, ⬜ vizuálně nepotvrzeno) | 2026-09-22 | 0 | 2 | 4 | 0 | [6](audit/2026-09-10_vykreslovaci-retezec.md) |
@@ -622,17 +652,31 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 ## Souhrn nálezů
 
+🔴 **Srovnáno 2026-09-24** — tabulka i poznámka pod ní byly zastaralé (psané
+před koly oprav 2026-09-17..20), skript `tools/audit_stav.py --kontrola`
+sám hlásil rozpor proti nálezovým dokumentům. Čísla níže jsou jeho výstup
+(139 nálezů celkem, `celkem` řádek):
+
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 1 | 5 | 0 |
-| S2 | 0 | 17 | 0 |
-| S3 | 1 | 71 | 0 |
-| S4 | 1 | 37 | 0 |
+| S2 | 0 | 20 | 0 |
+| S3 | 1 | 72 | 0 |
+| S4 | 3 | 37 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
-zahrnuje i **částečně** opravené (dnes **F-0018** [S1] letový zapisovač z hooku,
-**F-0028** [S3] SDMMC takt nad limitem, **F-0077** [S4] rámec `UartTask_run`).
+zahrnuje i **částečně** opravené — dnes jediná: **F-0061** [S4] mDNS responder (4 drobné
+odchylky od RFC 6762, žádná paměťově nebezpečná).
+🔑 **S1 „Otevřené" = F-0055** — UART `selftest` **deterministicky** přetéká zásobník
+UartTasku a shazuje desku (změřeno 2×, `WATCHDOG! stack:UartTask`). Oba navržené kroky
+(zásobník UartTask 4096→8192 B, velké lokály do `.bss`) jsou v kódu hotové, ale nález
+zůstává otevřený, protože **žádný z nich neběžel na desce** — a původní vada byla
+deterministická, takže důkaz opravy musí být taky z desky (kritérium: `selftest` z
+konzole doběhne „SELFTEST: 16/16 PASS" bez resetu). **Je to nejdůležitější věc k
+vyzkoušení při příštím power-cyklu** — S1 = nefunkčnost/destrukce, ne kosmetika.
+**S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen).
+**S4 „Otevřené" = F-0144 + F-0145** (tato session, skupina C, jen `docs:` dluh).
 
 **Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument

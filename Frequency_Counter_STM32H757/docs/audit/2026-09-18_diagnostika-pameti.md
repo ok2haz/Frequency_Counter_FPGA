@@ -145,7 +145,6 @@ bezpečnostní seznam chráněných oblastí **neobsahuje měřicí log** přida
 - **Vztah k lekcím:** **`L-0011`** (hlášku nástroje ber jako pozorování, ne diagnózu —
   tady nástroj vydává diagnózu, kterou neměřil), **`L-0017`** (tiché přeskočení bez
   příznaku), **`L-0028`** (věta, která tvrdí vlastnost, již kód neověřuje).
-- **Stav:** otevřeno
 
 ---
 
