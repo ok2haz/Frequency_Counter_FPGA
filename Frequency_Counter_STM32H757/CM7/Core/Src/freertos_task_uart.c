@@ -842,6 +842,18 @@ void UartTask_run(void *argument)
 				  if (st >= 0) printf("  Allan rekonstrukce: OK (stage %d, tau %u s)\n", st, (unsigned)per);
 				  else         printf("  ⚠ Allan rekonstrukce VYPNUTA (perioda neni mocnina 10)\n");
 			  }
+			  else if (strncmp(RxBuffer, "datalog mirror", 14) == 0) {
+				  const char *p = RxBuffer + 14;
+				  while (*p == ' ') p++;
+				  if (strcmp(p, "on") == 0)  { datalog_mirror_set_enabled(true);  g_sys_cfg_dirty = 1; }
+				  else if (strcmp(p, "off") == 0) { datalog_mirror_set_enabled(false); g_sys_cfg_dirty = 1; }
+				  else if (*p) printf("pouziti: datalog mirror on|off\n");
+				  const datalog_mirror_status_t *m = datalog_mirror_status();
+				  printf("datalog zrcadlo SD: %s, %s, seq %lu, ceka %lu zaznamu -> %s\n",
+						 datalog_mirror_enabled() ? "ZAPNUTO" : "vypnuto",
+						 m->active ? "aktivni" : "neaktivni",
+						 (unsigned long)m->exported_seq, (unsigned long)m->pending, m->msg);
+			  }
 			  else if (strncmp(RxBuffer, "errlog", 6) == 0) {
 				  const char *arg = RxBuffer + 6;
 				  while (*arg == ' ') arg++;
@@ -2859,6 +2871,9 @@ void UartTask_run(void *argument)
     /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
      * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
     sd_export_service();
+    /* Automaticke CSV zrcadlo datalogu na SD kartu — stejny duvod (FatFs zapis
+     * blokuje), viz datalog.h "Automaticky rostouci CSV zrcadlo". */
+    datalog_mirror_service();
     /* Stejny duvod: smazani celeho datalogu (~5,4k sektoru) muze trvat minuty,
      * o UI tlacitko jen pozada (viz datalog.h). */
     datalog_erase_service();

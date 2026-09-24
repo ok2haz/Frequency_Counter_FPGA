@@ -66,6 +66,7 @@
 #include "main.h"            /* SD_DET_Pin/_GPIO_Port (z .ioc) + stm32h7xx_hal.h */
 #include <stddef.h>   /* NULL (erase = NULL, SD mazani nepotrebuje) */
 #include <string.h>   /* memcpy/memset — 512B RMW layer + selftest */
+#include <stdio.h>    /* snprintf/printf — CSV zrcadlo nize (bez %f — nano.specs) */
 
 /* ── Card-detect (přítomnost karty + hot-plug) ───────────────────────────────
  * Socket J13 `Micro_SD_DM3AT` (schéma list 7/7): mechanický spínač mezi
@@ -418,3 +419,251 @@ datalog_backend_t datalog_backend_sd = {
     .name = "SD", .probe = sd_probe, .read = sd_read, .write = sd_write,
     .erase = NULL, .erase_size = 0u, .capacity = 0u,
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Automaticky rostouci CSV zrcadlo na SD kartu (2026-09-23)
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PROC takhle, ne "SD jako primarni uloziste": viz `sd_export.h` "ARCHITEKTURA"
+ * (2026-08-11) — W25Q zustava JEDINY autoritativni zdroj (kontinuita `seq`,
+ * zadna ztrata dat pri vytazeni karty). Tohle zrcadlo jen PRUBEZNE DOPISUJE
+ * nove W25Q zaznamy do rostouciho CSV souboru na karte, kdyz je pripravena —
+ * vytazeni karty export jen pozastavi, W25Q log bezi dal beze zmeny.
+ *
+ * ⚠️ Bezi VYHRADNE z UartTasku (`datalog_mirror_service()`, volana vedle
+ * `sd_export_service()`) — FatFs zapis blokuje (`f_write`/`f_sync` az stovky
+ * ms), defaultTask/UiTask NESMI (viz sd_export.h "VLAKNA").
+ *
+ * Identita karty: HW seriove cislo z CID (`HAL_SD_GetCardCID`), NE FAT volume
+ * serial — `_USE_LABEL` je v tomhle projektu vypnuty (ffconf.h), a i kdyby
+ * nebyl, volume serial se zmeni pri kazdem `f_mkfs`, zatimco CID je vypalene
+ * v cipu karty. Diky tomu prezije i preformatovani TEZE karty (spravne se
+ * zacne znovu od nuly — stary soubor uz neexistuje).
+ *
+ * Vodotisk (posledni exportovany `seq`) + identita karty se persistuji v
+ * syscfg (`datalog_mirror_restore`/`_seq`/`_vsn`), takze export po
+ * power-cyklu pokracuje presne tam, kde skoncil.
+ */
+#ifdef HAL_SD_MODULE_ENABLED
+#if defined(__has_include)
+#  if __has_include("ff.h")
+#    define DATALOG_MIRROR_FATFS 1
+#  endif
+#endif
+#endif
+
+#ifdef DATALOG_MIRROR_FATFS
+#include "ff.h"
+#include "sd_export.h"   /* sd_export_csv_header/_row (JEDEN zdroj CSV formatu),
+                           * sd_export_ui_info (stav mountu), sd_blocking_*,
+                           * sd_export_busy_* — viz jejich vlastni hlavicky */
+
+#define DL_MIRROR_FILE          "GPSDOLOG.CSV"
+#define DL_MIRROR_TICK_MS       2000u   /* jak casto kontrolovat nove zaznamy */
+#define DL_MIRROR_FREE_CHECK_MS (10u * 60u * 1000u)  /* prehodnoceni volneho mista */
+#define DL_MIRROR_FREE_MIN_MB   20u     /* pod touto hranici se export pozastavi */
+#define DL_MIRROR_BATCH_MAX     64u     /* zaznamu za jeden tik (~11 ms QSPI) */
+
+static bool     s_mirror_en;         /* zapnuto uzivatelem (persist syscfg) */
+static bool     s_mirror_open;       /* soubor na AKTUALNI karte je otevreny */
+static uint32_t s_mirror_seq;        /* vodotisk: posledni seq v souboru (persist) */
+static uint32_t s_mirror_vsn;        /* CID karty, ke ktere `s_mirror_seq` patri (persist) */
+static uint32_t s_mirror_next_ms;    /* HAL_GetTick() dalsi kontroly */
+static uint32_t s_mirror_free_ms;    /* HAL_GetTick() dalsi kontroly volneho mista */
+static bool     s_mirror_low_space;
+static char     s_mirror_msg[40] = "vypnuto";
+static FIL      s_mirror_fil;        /* staticky — viz pravidlo "FIL nikdy na stacku" */
+
+void datalog_mirror_set_enabled(bool on)
+{
+    s_mirror_en = on;
+    if (!on) {
+        s_mirror_open = false;   /* dalsi zapnuti zacne cistym otevrenim */
+        snprintf(s_mirror_msg, sizeof s_mirror_msg, "vypnuto");
+    }
+}
+bool datalog_mirror_enabled(void) { return s_mirror_en; }
+
+uint32_t datalog_mirror_seq(void) { return s_mirror_seq; }
+uint32_t datalog_mirror_vsn(void) { return s_mirror_vsn; }
+void datalog_mirror_restore(bool en, uint32_t seq, uint32_t vsn)
+{
+    s_mirror_en  = en;
+    s_mirror_seq = seq;
+    s_mirror_vsn = vsn;
+}
+
+const datalog_mirror_status_t *datalog_mirror_status(void)
+{
+    static datalog_mirror_status_t st;
+    st.active = (s_mirror_en && s_mirror_open) ? 1u : 0u;
+    st.exported_seq = s_mirror_seq;
+    datalog_status_t ds; datalog_get_status(&ds);
+    st.pending = (ds.last_seq > s_mirror_seq) ? (ds.last_seq - s_mirror_seq) : 0u;
+    snprintf(st.msg, sizeof st.msg, "%s", s_mirror_msg);
+    return &st;
+}
+
+/* HW identita karty (CID product serial) — viz zduvodneni v hlavicce bloku.
+ * @return true = precteno. */
+static bool mirror_card_vsn(uint32_t *vsn)
+{
+    HAL_SD_CardCIDTypeDef cid;
+    if (HAL_SD_GetCardCID(&hsd1, &cid) != HAL_OK) return false;
+    *vsn = cid.ProdSN;
+    return true;
+}
+
+/* Otevre/vytvori soubor na AKTUALNI karte. Pri jine karte nez naposledy
+ * (jina CID) zacina cistym souborem — stary vodotisk na ni neplati.
+ * ⚠️ BLOKUJE — volat jen obaleno sd_blocking_begin/end + sd_export_busy_*. */
+static bool mirror_open(void)
+{
+    uint32_t vsn;
+    if (!mirror_card_vsn(&vsn)) {
+        snprintf(s_mirror_msg, sizeof s_mirror_msg, "CID se nepodarilo precist");
+        return false;
+    }
+    /* `s_mirror_vsn == 0` = jeste nikdy neidentifikovana karta (cerstvy blob) ->
+     * vzdy zacit cistym souborem, i kdyby aktualni `vsn` nahodou taky vysel 0. */
+    bool same_card = (s_mirror_vsn != 0u) && (vsn == s_mirror_vsn);
+
+    if (same_card) {
+        if (f_open(&s_mirror_fil, DL_MIRROR_FILE, FA_OPEN_ALWAYS | FA_WRITE) != FR_OK) {
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "otevreni souboru selhalo");
+            return false;
+        }
+        if (f_lseek(&s_mirror_fil, f_size(&s_mirror_fil)) != FR_OK) {
+            f_close(&s_mirror_fil);
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "seek na konec selhal");
+            return false;
+        }
+    } else {
+        if (f_open(&s_mirror_fil, DL_MIRROR_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "vytvoreni souboru selhalo");
+            return false;
+        }
+        char line[160];
+        int n = sd_export_csv_header(line, sizeof line);
+        UINT bw;
+        if (f_write(&s_mirror_fil, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
+            f_close(&s_mirror_fil);
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "zapis hlavicky selhal");
+            return false;
+        }
+        s_mirror_vsn = vsn;
+        s_mirror_seq = 0u;   /* nova karta -> nova historie, i kdyby stary vodotisk neco tvrdil */
+    }
+    s_mirror_open = true;
+    return true;
+}
+
+/* Dopise davku novych zaznamu (nejstarsi-nejdriv, jako `export_body`).
+ * @return true = zapsano (i 0 novych je uspech), false = chyba (volajici
+ * zavre soubor a zkusi znovu pristi tik). */
+static bool mirror_write_batch(void)
+{
+    datalog_status_t ds; datalog_get_status(&ds);
+    if (!ds.ready || ds.last_seq <= s_mirror_seq) return true;   /* nic noveho */
+
+    /* Kdyz kruh W25Q uz prepsal to, co jsme jeste nestihli exportovat, chybejici
+     * useky nejdou dohnat — posun vodotisk na nejstarsi DOSTUPNY zaznam a jednou
+     * to rekni (ne spamovat kazdy tik). */
+    uint32_t oldest_avail = (ds.records > 0u) ? (ds.last_seq - ds.records + 1u) : ds.last_seq + 1u;
+    if (s_mirror_seq + 1u < oldest_avail) {
+        printf("datalog mirror: mezera v exportu (seq %lu..%lu jiz prepsano ve W25Q)\n",
+               (unsigned long)(s_mirror_seq + 1u), (unsigned long)(oldest_avail - 1u));
+        s_mirror_seq = oldest_avail - 1u;
+    }
+
+    uint32_t pending = ds.last_seq - s_mirror_seq;
+    uint32_t batch_n = (pending > DL_MIRROR_BATCH_MAX) ? DL_MIRROR_BATCH_MAX : pending;
+
+    for (uint32_t k = pending; k-- > pending - batch_n; ) {
+        datalog_rec_t r;
+        if (!datalog_read_back(k, &r)) continue;   /* poskozeny slot -> preskoc */
+        char line[160];
+        int n = sd_export_csv_row(line, sizeof line, &r);
+        UINT bw;
+        if (f_write(&s_mirror_fil, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "zapis zaznamu selhal (seq %lu)",
+                     (unsigned long)r.seq);
+            return false;
+        }
+        s_mirror_seq = r.seq;
+    }
+    if (f_sync(&s_mirror_fil) != FR_OK) {
+        snprintf(s_mirror_msg, sizeof s_mirror_msg, "f_sync selhal");
+        return false;
+    }
+    snprintf(s_mirror_msg, sizeof s_mirror_msg, "OK, seq %lu", (unsigned long)s_mirror_seq);
+    return true;
+}
+
+/* Prubezna kontrola volneho mista — VLASTNI, protoze `sd_export_ui_info()`
+ * drzi hodnotu jen z posledniho mountu/operace, ne zivou (viz sd_export.c
+ * `ui_refresh_capacity_body`). Vola se zridka (viz DL_MIRROR_FREE_CHECK_MS) —
+ * `f_getfree` muze byt pomaly (cely sken FAT u FAT16/vadneho FSINFO). */
+static void mirror_check_freespace(void)
+{
+    FATFS *fs; DWORD fre_clust;
+    if (f_getfree("", &fre_clust, &fs) != FR_OK) return;   /* nech puvodni stav */
+    uint32_t free_mb = (uint32_t)(((uint64_t)fre_clust * fs->csize * 512u) >> 20);
+    s_mirror_low_space = (free_mb < DL_MIRROR_FREE_MIN_MB);
+    if (s_mirror_low_space)
+        snprintf(s_mirror_msg, sizeof s_mirror_msg, "malo mista (%lu MB)", (unsigned long)free_mb);
+}
+
+void datalog_mirror_service(void)
+{
+    if (!s_mirror_en) return;
+
+    const sd_ui_info_t *sd = sd_export_ui_info();
+    if (sd->busy || sd->state != SD_EXP_MOUNTED) {
+        /* Karta pryc / neni namountovana / bezi jiny SD ukol -> pockej.
+         * Handle na predchozi kartu je uz neplatny (f_mount(NULL,..) ho
+         * zneplatnil pri odmountovani), takze se na nej dal nesaha. */
+        s_mirror_open = false;
+        return;
+    }
+
+    uint32_t now = HAL_GetTick();
+    if ((int32_t)(now - s_mirror_next_ms) < 0) return;
+    s_mirror_next_ms = now + DL_MIRROR_TICK_MS;
+
+    sd_blocking_begin();
+    sd_export_busy_begin();
+
+    bool ok = true;
+    if (!s_mirror_open) ok = mirror_open();
+    if (ok && (int32_t)(now - s_mirror_free_ms) >= 0) {
+        s_mirror_free_ms = now + DL_MIRROR_FREE_CHECK_MS;
+        mirror_check_freespace();
+    }
+    if (ok && !s_mirror_low_space) ok = mirror_write_batch();
+
+    if (!ok) {
+        f_close(&s_mirror_fil);   /* handle uz je nedoveryhodny -> zavri, zkus znova pristi tik */
+        s_mirror_open = false;
+    }
+
+    sd_export_busy_end();
+    sd_blocking_end();
+}
+
+#else  /* !DATALOG_MIRROR_FATFS — bez FatFs/SDMMC1 zrcadlo nic nedela */
+
+void datalog_mirror_set_enabled(bool on) { (void)on; }
+bool datalog_mirror_enabled(void)        { return false; }
+void datalog_mirror_service(void)        { }
+uint32_t datalog_mirror_seq(void)        { return 0u; }
+uint32_t datalog_mirror_vsn(void)        { return 0u; }
+void datalog_mirror_restore(bool en, uint32_t seq, uint32_t vsn) { (void)en; (void)seq; (void)vsn; }
+const datalog_mirror_status_t *datalog_mirror_status(void)
+{
+    static datalog_mirror_status_t st;
+    memset(&st, 0, sizeof st);
+    snprintf(st.msg, sizeof st.msg, "bez FatFs");
+    return &st;
+}
+
+#endif /* DATALOG_MIRROR_FATFS */

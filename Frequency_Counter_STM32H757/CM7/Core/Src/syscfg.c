@@ -45,8 +45,9 @@
  * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
  * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
 /* 2026-09-07: pribylo `datalog_store` + `datalog_period_s` (volba uloziste a
- * cetnosti dlouhodobeho logu) -> "SCG0" -> "SCG1". */
-#define SYSCFG_BLOB_MAGIC   0x53434731u   /* "SCG1" */
+ * cetnosti dlouhodobeho logu) -> "SCG0" -> "SCG1". 2026-09-23: pribylo
+ * automaticke CSV zrcadlo na SD (mirror_en/_seq/_vsn) -> "SCG1" -> "SCG2". */
+#define SYSCFG_BLOB_MAGIC   0x53434732u   /* "SCG2" */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -120,6 +121,13 @@ typedef struct {
      * ⚠️ 0 (stary blob) je neplatna hodnota a `encoder_set_div` ji ignoruje,
      * takze zustane vychozi 4. */
     uint8_t  enc_div;
+    /* Automaticke CSV zrcadlo datalogu na SD (viz datalog.h). NENI v BKP ->
+     * flash je jediny zdroj, aplikuje se VZDY (jako fx/meas/survey/monitor).
+     * `mirror_seq`/`mirror_vsn` = vodotisk + HW identita karty, ke ktere patri
+     * (viz `datalog_mirror_vsn` proc CID, ne FAT volume serial). */
+    uint8_t  mirror_en;
+    uint32_t mirror_seq;
+    uint32_t mirror_vsn;
 } syscfg_blob_t;
 
 /* 🔴 Strop blobu je vlastnost UKLADACE, ne komentare (audit F-0097, lekce L-0026).
@@ -192,6 +200,9 @@ static void pack(syscfg_blob_t *b)
     strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
     b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
     b->enc_div        = encoder_div();
+    b->mirror_en      = datalog_mirror_enabled() ? 1u : 0u;
+    b->mirror_seq     = datalog_mirror_seq();
+    b->mirror_vsn     = datalog_mirror_vsn();
 }
 
 void syscfg_load(void)
@@ -301,6 +312,11 @@ void syscfg_load(void)
     if (b.datalog_period_s) datalog_set_period_s(b.datalog_period_s);
     datalog_set_store(b.datalog_store);
     datalog_cfg_quiet(false);
+
+    /* Zrcadlo na SD: NENI v BKP -> aplikuj VZDY (jako datalog vyse). Jen
+     * obnovi stav (vodotisk + identita karty) — samotne otevreni/dopsani
+     * souboru dela az `datalog_mirror_service()` z UartTasku. */
+    datalog_mirror_restore(b.mirror_en != 0, b.mirror_seq, b.mirror_vsn);
 
     /* Ostatni pole: pri WARM resetu ma prednost BKP (uz drzi nejnovejsi) -> nechat. */
     if (g_syscfg_bkp_valid) return;

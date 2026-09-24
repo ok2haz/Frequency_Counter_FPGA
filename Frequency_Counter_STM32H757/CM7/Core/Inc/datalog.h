@@ -200,6 +200,38 @@ int  datalog_sd_detect_status(void);
  * Volá ho datalog_selftest → součást UART "selftest". @return true = OK. */
 bool datalog_sd_selftest(void);
 
+/* ── Automaticky rostouci CSV zrcadlo na SD kartu (2026-09-23) ───────────────
+ * ROZHODNUTO s uzivatelem: W25Q zustava JEDINY autoritativni zdroj datalogu
+ * (viz `sd_export.h` "ARCHITEKTURA", 2026-08-11 — kontinuita `seq`, zadna
+ * ztrata dat pri vytazeni karty). Tohle zrcadlo NIC ve W25Q nemeni, jen
+ * PRUBEZNE DOPISUJE nove zaznamy do rostouciho CSV souboru na karte, kdyz je
+ * pripravena. Vytazeni karty export jen pozastavi; po vraceni (i jine karty)
+ * pokracuje spravne dal (viz identitu karty u `datalog_mirror_vsn`).
+ * ⚠️ Bezi VYHRADNE z UartTasku (`datalog_mirror_service()`, vedle
+ * `sd_export_service()`) — FatFs zapis blokuje, defaultTask/UiTask NESMI. */
+void datalog_mirror_set_enabled(bool on);
+bool datalog_mirror_enabled(void);
+/** Obslouzi cekajici praci (otevreni souboru, dopsani novych zaznamu).
+ *  Volat z UartTask smycky vedle `sd_export_service()`. Levne, kdyz neni
+ *  co delat (throttlovano interne). */
+void datalog_mirror_service(void);
+
+typedef struct {
+    uint8_t  active;        /* 1 = zapnuto A soubor na karte je otevreny */
+    uint32_t exported_seq;  /* posledni seq dopsany do souboru na karte */
+    uint32_t pending;       /* kolik zaznamu jeste ceka na dopsani (odhad) */
+    char     msg[40];
+} datalog_mirror_status_t;
+/** Snapshot pro UI/UART. Bezpecne odkudkoli — jen cteni. */
+const datalog_mirror_status_t *datalog_mirror_status(void);
+
+/* Perzistence (vola VYHRADNE syscfg.c): vodotisk + HW identita karty (CID
+ * product serial, NE FAT volume serial — to druhe zmeni kazdy f_mkfs), ke
+ * ktere `_seq` patri. Jina karta pri pristim otevreni = zacne se od nuly. */
+uint32_t datalog_mirror_seq(void);
+uint32_t datalog_mirror_vsn(void);
+void     datalog_mirror_restore(bool en, uint32_t seq, uint32_t vsn);
+
 /* ── Stav pro UI/UART ──────────────────────────────────────────────────────── */
 typedef struct {
     const char *backend;      /* jmeno aktivniho backendu; "--" = zadny */
