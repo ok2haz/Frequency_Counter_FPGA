@@ -198,6 +198,20 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 - Cross-task komunikace = sdílené globály + request/pend, ne přímé volání HAL z cizího tasku.
 
 **Rendering:**
+- 🔴 **Co běží na DMA2D SOUBĚŽNĚ se scan-outem, musí kopírovat LINEÁRNĚ (plná šířka, `FGOR`=`OOR`=0).**
+  Úzký obdélník = `FGOR`/`OOR` = `800 − w` = **strided** přístup: každý řádek začíná v jiné
+  SDRAM řadě, přepínání řad sebere propustnost LTDC, FIFO podteče a **na panel jde poškozený
+  snímek**. Platí pro `copy_forward_dedup` (proto kopíruje **pásy na plnou šířku slité po ose Y**)
+  a pro každý nový kód, který by v horké cestě volal `d2d_blit_ex` s `w < FB_W`.
+  🔑 **Víc bajtů lineárně je LEVNĚJŠÍ než míň bajtů skákavě** — plný render (768 kB jedním
+  přenosem) měl podtečení **0**, zatímco mnohem menší strided překreslení podtékalo **vždy**.
+  ⚠️ Kopírovat víc než dirty je bezpečné: `front` je nejnovější hotový snímek a `back` je o dva
+  snímky starší **všude**. Slévat ale **jen po ose Y** — slévání i přes X (bbox-merge) by kvůli
+  dvěma malým obdélníkům na opačných koncích kopírovalo skoro celý snímek.
+  🔴 **Diagnostický heuristik: když VĚTŠÍ operace neproblikává a MENŠÍ ano, přestaň hledat
+  v objemu a podívej se na stride.** (Audit F-0140, 2026-09-22: 38 → 0 podtečení na 20 stisků
+  RUN/STOP. Než se tohle našlo, prošly a selhaly čtyři „objemové" teorie — `d2ddt` až na strop,
+  zúžení zóny, vypnutí glyph akcelerace, `sdrtr`, plus synchronizace na vblank. Lekce L-0077.)
 - **Každý partial redraw MUSÍ začít clear** (fill/blit REPLACE) — jinak dirty-rect copy-forward přes 3 buffery problikává.
   🔴 **A ten clear musí být `REPLACE` NEBO NEPRŮHLEDNÝ** (audit F-0032, 2026-09-10).
   `prim_fill_rect` jde přes DMA2D — a tedy přes `mark_dirty` — jen když je
@@ -330,6 +344,7 @@ odshora — každý další krok je dražší.
 | 2 | **`stats`** | zdarma | CPU **po taskách** + volný stack (jediné důvěryhodné měření zátěže) |
 | 3 | **`sensors` / `adcraw` / `scanner` / `si5356`** | zdarma | stav senzorů a sběrnic, kdo na I2C odpovídá |
 | 4 | **`selftest`** | zdarma | 16 čistě logických testů (CRC, parsery, formátování, SCPI, IPC, FFT…) |
+| 4b | **`fbdiff`** + **`tap <0-4>`** | zdarma, bez haltu | 🔴 **PRVNÍ krok u problikávání.** `fbdiff` porovná všechny **tři framebuffery** (odliší *poškozený snímek při scan-outu* od *nesouladu bufferů* — to druhé `LTDC podtečení` NEVIDÍ) a hlavně dá **rozklad podtečení po fázích `present()`**: `kresleni / cekani / flip / copy-forward`. Součtové počítadlo neřekne, KDE vada vzniká; tenhle rozklad rozhodl F-0140 po hodinách slepých teorií. `tap <idx>` = injektor doteku (stisk tlačítka patky toutéž cestou jako prst) → **vada, která jde jen fyzickým dotekem, se dá měřit bez uživatele u desky** |
 | 5 | **`membench`** | ~s, destruktivní jen na scratch | rychlost **a hlavně chybné bity**: řádek **retence** a `fb_alias` |
 | 6 | **`flightrec`** | zdarma | 60 s před poruchou (CPU, heap, nejmenší stack, teploty, I2C) |
 | 7 | **nový čítač do `status`** | jeden build | ⚠️ **levnější než jedna špatná oprava** — a zůstane užitečný |
@@ -425,6 +440,19 @@ obojí mu vyjde stejně. Jeho verdikt platí až ve chvíli, kdy `membench` hlá
    ⚠️ Meritko: `podteceni/flip` SMI prerust 1 — cistac se inkrementuje jednou za
    `prim_stm32_present`, takze pri hodnote presne 1,000 je SATUROVANY a nic
    nedokazuje (tim byl #194 rok neprukazny).
+4b. 🔴 **`fbdiff` — ROZLOŽÍ PODTEČENÍ NA FÁZE, což krok 4 neumí.** Řádek
+   `podteceni po fazich: kresleni | cekani | flip | COPY-FORWARD` řekne, jestli
+   LTDC hladoví kvůli **kreslení aplikace** (→ překresluj míň) nebo kvůli
+   **copy-forwardu** (→ kopíruj jinak, viz pravidlo o lineárním přístupu).
+   To jsou dvě úplně jiné opravy a bez tohohle rozkladu se neodliší — F-0140
+   se kvůli tomu hledalo hodiny a padly na to čtyři teorie po sobě.
+   Druhý výstup: porovnání **tří framebufferů** mezi sebou. Nesoulad bufferů
+   (jeden drží starý obsah → problikne pokaždé, když na něj přijde řada) je
+   úplně jiná vada než poškozený snímek a `LTDC podtečení` ji **nevidí**.
+   ⚠️ Reprodukce bez prstu: **`tap <0-4>`** (injektor doteku). Vada šla vyvolat
+   JEN fyzickým dotekem — vzdálené SCPI `INIT`/`ABOR` dělá tentýž redraw, ale
+   flip nechává na ~30Hz koalescujícím gate, takže ji nevyrobí.
+
 5. **Teprve pak** kreslici kod (guardy, copy-forward, dirty rect).
 
 ⚠️ **Verdikt o překryvu adres z `membench` je platný AŽ nad pamětí s čistou retencí** —
@@ -663,7 +691,10 @@ konfigurace displeje" výše), FB0/FB1/FB2 na `0xC0000000`/`0xC0100000`/`0xC0200
 
 ### Triple buffering / tearing-free (prim_stm32_hal.c) — AKTIVNÍ
 - **3 framebuffery** (FB0 `0xC0000000` / FB1 `0xC0100000` / FB2 `0xC0200000`) v MPU region 0 (4 MB WT). Render cílí VŽDY skrytý **back**; `prim_stm32_present()` flipne LTDC na back **při vblanku** (`LTDC->SRCR=LTDC_SRCR_VBR`, NE `HAL_LTDC_SetAddress`=immediate → tearing). **Non-blocking:** čeká na PŘEDCHOZÍ flip, ne na aktuální → při nízké kadenci žádný ~17 ms spin (3. buffer garantuje, že copy-forward nepíše do scanovaného bufferu).
-- **Dirty-rect copy-forward:** po flipu se do nového back zkopírují **jen změněné oblasti** (ne 768 KB) — levné. Sledování v DMA2D backendu: každý fill/blit zaznamená svůj obdélník (`mark_dirty`). ⚠️ **Každý partial redraw MUSÍ začít fill/blit (clear)**, jinak se ta oblast nezkopíruje dopředu (problikávání). Triple → nový back je 2 snímky starý → kopíruje se sjednocení dirty z posledních 2 snímků. **Dedup (`copy_forward_dedup`, 2026-08-06):** prev+cur se často shodují/překrývají (freq rect a stat karty jsou v obou seznamech) → před kopírováním se vyhodí **shodné a plně obsažené** obdélníky (`rect_covers`) → žádný redundantní DMA2D blit. ⚠️ Kopírovaná množina zůstává **přesně sjednocením** (keep drží jen původní obdélníky, nikdy větší) → žádné riziko problikávání; **žádný bbox-merge** (ten by kopíroval mimo dirty).
+- **Dirty-rect copy-forward:** po flipu se do nového back zkopírují **jen změněné oblasti** (ne celý snímek) — levné. Sledování v DMA2D backendu: každý fill/blit zaznamená svůj obdélník (`mark_dirty`). ⚠️ **Každý partial redraw MUSÍ začít fill/blit (clear)**, jinak se ta oblast nezkopíruje dopředu (problikávání). Triple → nový back je 2 snímky starý → kopíruje se sjednocení dirty z posledních 2 snímků.
+  - 🔴 **Kopíruje se po PLNOŠÍŘKOVÝCH PÁSECH slitých po ose Y, ne po jednotlivých obdélnících** (audit F-0140, změřeno 2026-09-22). Úzký obdélník znamená v `d2d_blit_ex` `FGOR`/`OOR` = `800 − w`, tedy **strided** přístup: každý řádek kopie začíná v jiné SDRAM řadě. Přepínání řad sebere propustnost LTDC (které čte snímek na panel sekvenčně), FIFO podteče a **na panel jde poškozený snímek**. Pás na plnou šířku má `FGOR`=`OOR`=0 → lineární přístup. **Víc bajtů lineárně je levnější než míň bajtů skákavě**: 20× RUN/STOP dávalo **38** podtečení, po změně **0**; plný render (768 kB jedním lineárním přenosem) byl přitom čistý vždycky.
+  - ⚠️ **Kopírovat víc než dirty je bezpečné** — `front` je nejnovější hotový snímek a `back` je o dva snímky starší **všude**, takže pixel navíc může `back` jen přiblížit k `front`. Slévá se **jen po ose Y**; dřívější zákaz „žádný bbox-merge" mířil na slévání i přes Y, které by kvůli dvěma malým obdélníkům na opačných koncích kopírovalo skoro celý snímek. (Dedup přes `rect_covers` tím odpadl — slévání intervalů ho zahrnuje.)
+  - 🔑 **Diagnostika:** UART **`fbdiff`** porovná všechny tři framebuffery (odliší *poškozený snímek při scan-outu* od *nesouladu bufferů*, což `LTDC: podtečení FIFO` nevidí) a vypíše **rozklad podtečení po fázích** `present()` — `kresleni | cekani | flip | copy-forward`. Součtové počítadlo neřekne, kde vada vzniká; tenhle rozklad rozhodl F-0140 po hodinách slepých teorií. UART **`tap <0-4>`** = injektor doteku (stisk tlačítka patky toutéž cestou jako prst) — vada šla reprodukovat **jen fyzickým dotekem**, vzdálené SCPI `INIT`/`ABOR` ji nedělá.
   - **⚠️ `mark_dirty` se volá JEN z `d2d_fill`/`d2d_blit_ex`** (DMA2D cesta) — cokoli kreslené přes `prim_internal_blend_px` (per-pixel alpha blend: `aa_corner` u zaoblených rohů `prim_fill_rect_rounded`, `prim_draw_arc`, `glow`, AA hrany tvarů) **zapisuje přímo do framebufferu a `mark_dirty` OBCHÁZÍ**. Funguje to jen proto, že takový obsah je vždy uvnitř dřívějšího REPLACE clear/blit (jeho dirty rect ho „poveze s sebou" — stejný princip jako u textu, viz DMA2D glyph blend výše). **Past:** tlačítko/pilulka, které mění VARIANTU (a tedy barvu) při partial redrawu **bez** předchozího `blit_bg_region`/`fill_rect(..., REPLACE)`, nechá v rozích (mimo poloměr zaoblení) 2 snímky staré „duchy" — objevené 2026-07-19 u `cas_upd_mode` (okno Čas, tlačítko AUTO CET/CEST, jediné místo v appce měnící variantu bez clearu; opraveno přidáním `prim_fill_rect(rect, BG_CARD, REPLACE)` před `ui_button_render`). Ostatní partial-redraw tlačítka (MUTE/AUTODIM/LANG) mají stejnou mezeru, ale je neviditelná, protože drží stále stejnou variantu → identická barva „ducha" a aktuálního stavu.
 - **`present` jen při změně:** `draw_diag_values`/`screen_main_redraw_time` vracejí, zda kreslily; volající flipne jen pak (jinak zbytečný flip).
 - Volá `app_gpsdo` po každém vykreslení; UiTask LTDC adresu neřídí.

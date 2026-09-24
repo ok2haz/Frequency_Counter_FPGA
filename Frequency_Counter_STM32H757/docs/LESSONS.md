@@ -2567,6 +2567,184 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0077 — U sdílené SDRAM rozhoduje VZOR přístupu, ne objem dat (strided kopie hladoví LTDC)
+
+- **Datum:** 2026-09-22
+- **Oblast:** DMA2D/LTDC, SDRAM, rendering
+- **Symptom:** Hlavní obrazovka **pokaždé** problikla poškozeným snímkem při
+  stisku RUN/STOP. Plný render celé obrazovky (`ui`) byl přitom vždy **čistý**
+  (0 podtečení), i když přenáší 768 kB — tedy podstatně víc dat než to malé
+  překreslení, které problikávalo. Ladění `d2ddt` (mrtvý čas DMA2D) na strop
+  255 ani zúžení překreslované zóny to neodstranilo.
+- **Příčina:** `copy_forward_dedup()` kopíroval jednotlivé dirty obdélníky, tedy
+  `d2d_blit_ex` se šířkou < šířky framebufferu → `FGOR`/`OOR` ≠ 0 =
+  **strided přístup**: každý řádek kopie začíná v jiné SDRAM řadě. Přepínání řad
+  sebere propustnost LTDC, které čte snímek na panel sekvenčně, jeho FIFO
+  podteče a na panel jde poškozený snímek. Plná kopie má `FGOR`=`OOR`=0, jede
+  **lineárně** a je proto levnější navzdory většímu objemu.
+- **Oprava:** copy-forward kopíruje **plnošířkové pásy slité po ose Y**
+  (`prim_stm32_hal.c`, `copy_forward_dedup`). Naměřeno **38 → 0** podtečení na
+  20 stisků RUN/STOP.
+- **Pravidlo:** **U sdíleného paměťového rozhraní posuzuj VZOR přístupu, ne jen
+  objem přenesených dat.** Víc bajtů lineárně bývá levnější než míň bajtů
+  skákavě — a proto „zmenši, co překresluješ" nemusí pomoct vůbec, kdežto
+  „kopíruj to samé lineárně" pomůže úplně. Platí i obráceně jako diagnostický
+  test: **když VĚTŠÍ operace neproblikává a MENŠÍ ano, přestaň hledat v objemu
+  a podívej se na stride.**
+- **Detekce:** `fbdiff` → řádek `podteceni po fazich` musí mít u
+  `COPY-FORWARD` nulu. Reprodukce bez prstu: `tap 1` (injektor doteku).
+  ⚠️ Nové místo, které volá `d2d_blit_ex` s šířkou < `FB_W` v horké cestě
+  souběžně se scan-outem, si tuhle vadu přinese znovu.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0076 — Neměř zátěžovým burstem to, co uživatel dělá jednotlivě; a měř FÁZE, ne jen součet
+
+- ⚠️ **REVIDOVÁNO 2026-09-22.** Původní znění (níže) vzniklo, když jsem si
+  myslel, že jde o fyzický strop propustnosti sběrnice, protože žádná ze
+  softwarových pák nedávala nulu. **Byl to špatný závěr** — příčina byla
+  strided vzor přístupu v copy-forwardu (viz **L-0077**) a nula šla dosáhnout.
+  Platná část lekce je metodická, ne technická:
+  🔑 **Součtové počítadlo („kolik podtečení celkem") neřekne, KDE vada vzniká.**
+  Dokud se podtečení četlo jen jednou za flip, každá teorie (velikost burstu,
+  glyph akcelerace, mrtvý čas, obnova SDRAM, fáze vůči vblanku) se dala
+  obhájit i vyvrátit. Rozhodl až **rozklad na fáze** (`kresleni | cekani |
+  flip | copy-forward`), který ukázal `0 | 0 | 0 | 38` a všechny předchozí
+  hypotézy naráz smetl.
+  🔑 **A druhá: co nejde reprodukovat bez uživatele, se ladí strašně draho.**
+  Vada šla jen fyzickým dotekem (vzdálené SCPI ji nedělá), takže každé měření
+  stálo jedno kolo konverzace — dokud nevznikl injektor `tap <idx>`, který
+  volá tutéž cestu ze stejného místa smyčky. Ten měl vzniknout **hned**, ne
+  po hodinách.
+
+**Původní (mylné) znění:** Ladicí konstanta i „šíř clear region" mají STROP daný sdílenou SDRAM sběrnicí, ne kódem
+
+- **Datum:** 2026-09-21
+- **Oblast:** DMA2D/LTDC, rendering, ladicí konstanty
+- **Symptom:** Uživatel hlásil problikávání hlavní obrazovky při RUN/STOP.
+  Naměřeno (F-0140): burst RUN/STOP toggle korelovaně zvedal
+  `status` → `LTDC: podtečení FIFO` (52/1000 při d2ddt=240). Zúžení DMA2D
+  přenosu (přesná `freq_area()` místo "maximální možné" `freq_clear_area()`
+  + vypnutí HW glyph akcelerace pro tenhle konkrétní redraw) snížilo poměr na
+  27/1000 (d2ddt=240) resp. 17/1000 (d2ddt=255, strop registru) — **reálné,
+  změřené zlepšení, ale ne nula**. Izolovaný JEDEN toggle (skutečné použití,
+  ne umělý burst) byl **čistý i PŘED touto opravou** (0–2 podtečení na
+  tisíce flipů).
+- **Příčina:** Podtečení FIFO LTDC je **sdílené pásmo SDRAM sběrnice**
+  (DMA2D burst soutěží s nepřetržitým čtením scanline LTDC) — je to fyzikální
+  strop desky, ne chyba v kódu. Zúžení přenosu (méně bajtů) i mrtvý čas
+  DMA2D (`d2ddt`, max 255 = strop 8bitového registru `AMTCR.DT`) ho jen
+  **posouvají**, nikdy neodstraní: i kombinace obou u tohohle konkrétního
+  redrawu zůstala na ~17/1000 pod umělým burstem.
+- **Oprava:** `screen_main_redraw_freq_tint()` — nová, užší varianta pro
+  RUN/STOP toggle (geometrie čísla se nemění) vedle `screen_main_redraw_freq_area()`
+  (`CM7/app/screens/screen_main.c:2694-2790`, volající `app_gpsdo.c:7834,8642`).
+  Zlepšení je **skutečné a bezrizikové** (menší přenos, žádná logická změna
+  chování), ale **není to "úplná" oprava** — zbytkové riziko pod extrémním
+  burstem zůstává, protože strop je fyzikální. Reálné jednotlivé použití
+  (fyzický dotek) bylo čisté už PŘED opravou u SCPI ekvivalentu — otevřená
+  otázka, jestli LTDC podtečení vůbec vysvětluje to, co uživatel vidí na
+  fyzickém doteku (nebylo možné ověřit bez skutečného doteku displeje).
+- **Pravidlo:** **Když je nález korelovaný s fyzikálním sdíleným prostředkem
+  (sběrnice, hodiny, napájení), žádná kombinace SW pák nemusí dát nulu —
+  změř VŽDY nejlevnější/nejrealističtější scénář (jeden dotek, ne umělý
+  burst) PŘED tím, než umělý stresový test prohlásíš za reprezentativní pro
+  hlášený symptom.** Umělý burst je nástroj na ODHALENÍ jevu, ne na potvrzení,
+  že vysvětluje TOTO konkrétní hlášení uživatele.
+- **Detekce:** Žádná automatická — vyžaduje reálné měření na HW (`status` →
+  `LTDC: podtečení FIFO`) v obou scénářích (jeden dotek vs. burst) při každém
+  budoucím podezření na "problikávání" korelované s DMA2D/LTDC.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0078 — `sd_blocking_begin()` snižuje PRIORITU volajícího tasku; obalovat jen JEDEN zápis, ne smyčku s cross-task čekáním
+
+- **Datum:** 2026-09-23
+- **Oblast:** RTOS, SD karta, cross-task komunikace
+- **Symptom:** Nový UART příkaz `screenshot all` (export všech ~50 oken UI na SD,
+  každé jako vlastní BMP) na desce **zaseklo přístroj na 6+ minut** — neodpovídal
+  ani na `ping` (triviální, bez SD/kreslení). Zotavilo se to až po **reflashi +
+  softwarovém resetu**; halt sondou k diagnostice nebyl použit (viz pravidlo
+  o mrtvé I2C4 — zbytečně riskantní pro tenhle případ).
+- **Příčina:** `sd_blocking_begin()` (`sd_export.c`) není jen příznak — **sníží
+  prioritu VOLAJÍCÍHO tasku na `osPriorityLow`** po dobu držení (obrana proti
+  zaseknutému SD HAL, aby zaseknutí nezabralo displej/dotyk/watchdog). Existující
+  volání (`screenshot sd` aj.) ho drží jen kolem JEDNOHO blokujícího zápisu
+  (~1-3 s) — bezpečné. Nový kód ho ale držel kolem **CELÉ smyčky 49 oken**,
+  včetně fáze, kdy UartTask čeká (`osDelay(5)` polling) na to, až UiTask
+  vykreslí požadované okno přes `g_shot_view_req`/`g_shot_view_done` handshake.
+  UartTask tak strávil několik minut na sníženou prioritu, zatímco na něm
+  ZÁROVEŇ záviselo dokončení cross-task predávání — přesně ten typ kombinace,
+  co RTOS scheduler nemá důvod řešit rychle.
+- **Oprava:** `sd_blocking_begin()/end()` obaluje **jen samotné volání
+  `screenshot_save_sd_named()`** (per soubor), ne čekání na UiTask ani celou
+  smyčku — stejný rozsah jako u všech ostatních volajících v projektu.
+  Ověřeno na desce: 3 okna OK, 40 oken OK (vč. SD KARTA/DATALOG/SESTAVY/
+  BENCHMARK — podezřelá kvůli vlastnímu sahání na SD/QSPI), **49/49 OK**,
+  žádné zaseknutí.
+- **Pravidlo:** **Funkce, která mění vlastnosti VOLAJÍCÍHO tasku (prioritu,
+  masku přerušení…) kvůli JEDNÉ krátké operaci, se nesmí obalit kolem širší
+  smyčky — a obzvlášť ne kolem smyčky, která sama čeká na JINÝ task.** Než
+  se `_begin()/_end()` pár použije v novém kontextu, ověřit, co přesně dělá
+  (grep tělo, ne jen jméno) — jméno `sd_blocking_begin` naznačuje "necham
+  bezet SD blokujici operaci", ne "snizim si prioritu na minuty".
+- **Detekce:** Žádná automatická — realisticky jen **testovat přírůstkově**
+  (malý vzorek → střední → plný rozsah), přesně jak se to nakonec udělalo
+  (a mělo se to udělat rovnou, ne až po jednom zaseknutí).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0079 — Baseline pro "první pozorování není hrana" musí čekat, až se ustálí DEBOUNCE, ne jen na první tik volajícího
+
+- **Datum:** 2026-09-23
+- **Oblast:** SD karta (card-detect), zvukový alarm, boot
+- **Symptom:** Nový dvouton při vložení/vyjmutí SD karty (`alarm_sd_card`) pípal
+  "vložení" i po **power resetu s kartou už zasunutou** — přesně to, co měl
+  guard "první pozorování po bootu není hrana" zabránit, a podle kódu (i podle
+  prvního testu přes SW reset debuggeru) vypadal jako funkční.
+- **Příčina:** Guard bral baseline (`s_snd_prev = present`) na **prvním volání
+  `sd_export_tick()`** — jenže `present` (`datalog_sd_card_present()`) je sám
+  o sobě **debouncovaný** (`SD_DET_STABLE_N`=3 tiky) a po bootu vždy začíná na
+  "nepřítomna" (`s_det_stable`=0 v BSS), bez ohledu na to, jestli je karta
+  fyzicky uvnitř. Debounce se na skutečnou "přítomna" dorovná až za 3 tiky
+  tohoto volání (~1,5 s). Baseline vzatá na 1. tiku tedy VŽDY zachytí
+  "nepřítomna", a jakmile debounce o pár tiků později dožene realitu, guard to
+  vidí jako hranu nepřítomna→přítomna a pípne — při KAŽDÉM bootu s vloženou
+  kartou, nezávisle na typu resetu.
+  ⚠️ Testování přes SW reset (`STM32_Programmer_CLI -rst`) tuhle chybu
+  neprokázalo ani nevyvrátilo — bez sluchu na desce jsem si "ticho" jen
+  domyslel z toho, že `status`/`datalog mirror` pár sekund po resetu vypadaly
+  v pořádku. Až skutečný power-cyklus (uživatel) odhalil, že pípnutí je pořád
+  tam.
+- **Oprava:** Guard teď má vlastní **zpožďovací okno `SD_DET_STABLE_N+1` tiků**
+  (`s_snd_grace`), po které se hrana vůbec nevyhodnocuje — jen se `s_snd_prev`
+  každý tik přepisuje aktuální hodnotou. Tím je po uplynutí okna debounce jistě
+  ustálený a `s_snd_prev` drží SPRÁVNOU tichou baseline (ať je karta přítomná,
+  nebo ne). `SD_DET_STABLE_N` přitom bylo doteď `#define`ováno jen uvnitř
+  `datalog_sd.c` — přesunuto do `datalog.h` jako jeden sdílený zdroj, aby
+  `sd_export.c` nezavedl druhou nezávislou "3" (viz i L-0070 duch téhož problému
+  jinde).
+- **Pravidlo:** **"Nehodnoť hranu na prvním pozorování" nestačí, když je
+  sledovaná hodnota SAMA odvozená z debounce/filtru s vlastním zpožděním.**
+  Baseline se smí vzít až PO tom, co uplyne alespoň tolik tiků, kolik ten
+  filtr potřebuje k ustálení — jinak baseline zachytí přechodný stav filtru,
+  ne skutečnost. Platí obecně, ne jen pro tenhle guard.
+- **Detekce:** Žádná automatická — filtr/debounce vypadá zdravě i v jednotkovém
+  testu nad ustáleným vstupem; potřeba je test PŘES BOOT se vstupem, který je
+  od začátku "true" (karta vložená před zapnutím), a to nejlépe skutečným
+  power-cyklem, ne SW resetem (viz L-0078 sekce o SW vs. power reset jinde
+  v projektu).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

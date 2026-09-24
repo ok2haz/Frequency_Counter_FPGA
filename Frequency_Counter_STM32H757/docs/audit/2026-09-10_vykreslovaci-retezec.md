@@ -292,6 +292,209 @@ napsaný jako absolutní, ale `prim_fill_rect` ho splní jen pro neprůhledné b
 
 ---
 
+## Dodatek (2026-09-21) — nález mimo původní audit
+
+Uživatel nahlásil problikávání hlavní obrazovky při RUN/STOP, při přechodu do
+menu a zpět a při přepínání FREQ/PERIODA. Než jsem nález zapsal formálně, proběhlo
+v konverzaci pět pokusů o opravu (buffer-„settling" teorie nad `screen_main_redraw_freq()`)
+— všechny odloženy do `git stash` **beze změny kódu ve stromu**, protože žádný z nich
+vadu neodstranil a teorie, na které stály, byla po přečtení `prim_stm32_present()`
+vyvrácena (historie `prev`/`cur` dirty rectů se posouvá jen při skutečném flipu, ne
+podle času — viz „Co bylo zkontrolováno" výše, `:328-332`). Uživatel pak sám
+požádal o bisect (`git checkout 9edb7dc -- .`, build 2026-09-06): vada je přítomna
+i tam, tedy **není regrese posledních ~15 dnů vývoje**. Následuje řádný nález podle
+tohoto formátu, ne další pokus o opravu.
+
+> 🔑 **ROZŘEŠENO 2026-09-22 — příčina byla jinde, než celý nález níže hádal.**
+> Není to velikost překreslení ani propustnost sběrnice: **všechna podtečení
+> vznikala uvnitř `copy_forward_dedup()`, protože kopíroval ÚZKÉ obdélníky
+> STRIDED přístupem** (`FGOR`/`OOR` = `800 − w`), což v SDRAM přepíná řádky a
+> bere LTDC propustnost, na které stojí plnění FIFO. Plný render (`ui`) byl
+> přitom vždy čistý, protože kopíruje **lineárně** jedním přenosem — a to i
+> když přenáší 768 kB, tedy podstatně VÍC dat. Oprava = kopírovat
+> **plnošířkové pásy slité po ose Y** (`FGOR`=`OOR`=0). Naměřeno: **38 → 0**
+> podtečení na 20 stisků RUN/STOP. Text nálezu níže je ponechán tak, jak
+> vznikal, včetně dvou mylných stop (velikost burstu, fáze vůči vblanku) —
+> záznam o tom, kudy cesta nevedla, viz L-0076.
+
+### F-0140 [S2] `copy_forward_dedup()` kopíruje dirty obdélníky STRIDED přístupem a bere LTDC propustnost → poškozený snímek při každém RUN/STOP
+
+- **Místo:** `CM7/app/screens/screen_main.c:2738-2773` (`screen_main_redraw_freq_area`),
+  volající z `CM7/app/app_gpsdo.c:8642` (fyzický dotek RUN/STOP → `present_now()` hned),
+  `CM7/app/app_gpsdo.c:7830-7836` (vzdálený SCPI `INIT`/`ABOR` → `s_dirty=1`, flip
+  odložen do `app_gpsdo_flush()` — viz „present coalescing", `app_gpsdo.c:114-119`).
+- **Popis:** `screen_main_redraw_freq_area()` je jediné místo, které při RUN/STOP
+  (a při změně formátu FREQ/PERIODA nebo magnitudy) vykreslí zónu velkého čísla
+  celou najednou: jeden neprůhledný `blit_bg_region(freq_clear_area())`
+  (`freq_clear_area()` vrací až `FREQ_MAX_W+20` × 88 px = **800×88 px** ořezaných na
+  šířku panelu, `screen_main.c:1106-1111`, v kódu komentované jako „~68 kB" jeden
+  přenos) následovaný `ui_big_number_render(&s_num)` s `prim_set_glyph_accel(1)` —
+  tedy až `NUM_SEG_MAX`=12 dalších DMA2D přenosů (HW glyph blend) v tomtéž tiku
+  (`screen_main.c:2761-2765`). To je jednoznačně nejtěžší jednorázová DMA2D zátěž
+  v celém redraw řetězci hlavní obrazovky mimo plný render.
+  Naměřeno dnes (SCPI `INIT`/`ABOR` opakovaně, čteno přes `status` →
+  `LTDC: podtečení FIFO N / M flipů`, `freertos_task_uart.c:2584-2591`): burst
+  toggle dal **52 podtečení na 1000 flipů** na aktuálním HEAD i na bisectnutém
+  buildu z 2026-09-06. Zvýšení `d2ddt` na maximum (255, UART `d2ddt 255`) snížilo
+  poměr na **15/1000** — pokles, ne nula. Vypnutí glyph accelu jen pro tuhle
+  funkci (dočasná úprava, viz níže) snížilo na **43/1000** — taky pokles, ne nula.
+  Jednotlivé izolované přepnutí (jeden `INIT` nebo jeden `ABOR`, ne burst) dalo
+  0–1 podtečení na test.
+- **Důkaz:** čísla výše jsou z dnešního měření v této konverzaci (UART `status` po
+  sérii SCPI příkazů), ne odvozená ze zdrojáku — ale **nejsou zapsaná do souboru
+  s daty ani do skriptu**, takže je momentálně nelze znovu vytáhnout jinak než
+  opakováním postupu níže. To je slabina tohoto nálezu a je uvedená v
+  „Nezkontrolováno". Mechanismus podtečení (LTDC čte scanline v reálném čase,
+  DMA2D soutěží o tutéž SDRAM sběrnici) je zdokumentovaný projektově (`CLAUDE.md`
+  „LTDC podtečení FIFO... příčina: `copy-forward` běží na DMA2D SOUBĚŽNĚ se
+  skenováním panelu z téže SDRAM") a `g_ltdc_underrun` čte skutečný `LTDC->ISR`
+  bit `FUIF` (`prim_stm32_hal.c:397-399`), ne odhad.
+  🔴 **Existující `D2D_DEADTIME_DEFAULT=240` (`prim_stm32_hal.c:43-56`) byl
+  změřen `tools/ltdc_knee.ps1` PROTI JINÉMU vzoru zátěže** — komentář u konstanty
+  říká výslovně „vynucené plné překreslení přes `ui`" (celoobrazovkový blit,
+  768 000 B). Tenhle nález ukazuje, že hodnota, která u plného redrawu dává **0**
+  podtečení už od `d2ddt=212`, **NEDÁVÁ nulu** u `screen_main_redraw_freq_area()`
+  ani na stropu 255 — ačkoli ten přenáší méně bajtů (~140 KB vs. 768 KB). To je
+  paradox, který tenhle nález **nevysvětluje** (viz Nezkontrolováno) — pravděpodobný
+  rozdíl je v tom, že jde o **~13 diskrétních DMA2D transakcí v jednom tiku**
+  (1 blit + až 12 glyfů) místo jednoho souvislého přenosu, ale to je `HYPOTÉZA`,
+  ne změřený fakt.
+- **Dopad:** Podtečení FIFO LTDC znamená podle vlastní dokumentace projektu
+  **poškozený snímek na panelu** — přesně ten vizuální jev, který uživatel
+  popisuje jako „problikne". Korelace (stejná operace, stejný měřitelný
+  vedlejší efekt, mizí se sníženou zátěží DMA2D) je silná, ale **není to důkaz
+  jediné příčiny**: nebyl proveden přímý test „podtečení nastalo PRÁVĚ v tom
+  snímku, který uživatel označil jako problikující" (na to by bylo potřeba
+  časové razítko podtečení vs. okamžik doteku, což `g_ltdc_underrun` dnes nenese).
+  ⚠️ Nejde o ztrátu dat ani o nefunkčnost měření — jde o vizuální artefakt, který
+  se dle popisu uživatele objevuje opakovaně, ne trvale (odtud S2 „nestabilita",
+  ne S1).
+- **Reprodukce:** `status` → přečti `LTDC: podtečení FIFO` (nebo napřed `d2ddt 0`
+  reset čítače), přepni RUN/STOP (dotykem nebo `scpi INIT`/`scpi ABOR`) N-krát,
+  `status` znovu → poměr naroste. `HYPOTÉZA — ověřit`: totéž se stejnou metodikou
+  jako `tools/ltdc_knee.ps1`, ale vynucující konkrétně `screen_main_redraw_freq_area()`
+  (ne `ui`), aby šel dohledat skutečný zlom pro tenhle vzor zátěže — dnešní `255`
+  je jen horní mez rozsahu, ne nalezený zlom.
+- **Nevyřešená otázka (HYPOTÉZA, neměřeno):** uživatel hlásí problikávání při
+  **jednotlivém** fyzickém doteku jako „porad" (vždy), zatímco jednotlivé SCPI
+  přepnutí dalo 0–1 podtečení na test. Cesty se liší architektonicky:
+  fyzický dotek volá `present_now()` **synchronně hned** (`app_gpsdo.c:8645`),
+  vzdálený SCPI příkaz jen nastaví `s_dirty=1` a flip odloží do
+  `app_gpsdo_flush()` na ~30Hz bráně („present coalescing", `app_gpsdo.c:114-119`) —
+  což může bez dalšího měření znamenat jak víc, tak míň kumulované DMA2D zátěže
+  před flipem, podle toho, co se do stejné brány stihne přimíchat. Nebylo změřeno,
+  jestli fyzický dotek dává vyšší poměr podtečení než SCPI — to je klíčová chybějící
+  data pro rozhodnutí, jestli je tenhle nález celou příčinou, nebo jen její částí.
+- **Návrh opravy (proveden, viz Stav):** Zúžit DMA2D přenos pro RUN/STOP toggle
+  na SKUTEČNOU aktuální zónu čísla (`freq_area()`) místo pevné „maximální možné"
+  (`freq_clear_area()`) — bezpečné JEN pro tenhle konkrétní volající, protože
+  RUN/STOP nemění formát/magnitudu čísla (na rozdíl od FREQ/PERIODA a change-of-
+  -magnitude případů, kde `freq_clear_area()` zůstává nutná kvůli „duchům" po
+  stranách, viz `screen_main.c:2741-2760` — past se tedy neotevřela, protože
+  se nová úzká varianta nikdy nevolá tam, kde geometrie hrozí měnit). Kombinováno
+  s vypnutím `prim_set_glyph_accel` jen pro tenhle redraw (CPU rasterizace
+  rozprostírá bus provoz do víc menších transakcí místo jednoho DMA2D burstu).
+- **Riziko opravy:** nízké. Nová funkce `screen_main_redraw_freq_tint()` je čistě
+  aditivní (žádná změna chování `screen_main_redraw_freq_area()`, která zůstává
+  pro format-change případ beze změny), volá se jen ze dvou míst, kde geometrie
+  prokazatelně nemůže spadnout mimo `freq_area()`.
+- **Vztah k lekcím:** `L-0004`/STATUS #200 (mrtvý čas DMA2D jako obrana proti
+  podtečení) — tenhle nález ukazuje, že hodnota obhájená pro jeden vzor zátěže
+  (`ui`) se nesmí bez opětovného měření považovat za platnou pro jiný vzor.
+  **Nová L-0076**: sdílený fyzický prostředek (SDRAM sběrnice) má strop, který
+  žádná kombinace SW pák nepřekročí na nulu — umělý burst test je nástroj na
+  odhalení jevu, ne automaticky důkaz, že vysvětluje konkrétní hlášení uživatele.
+- **Stav:** ✅ **OPRAVENO 2026-09-22 — příčina nalezena měřením, ne úvahou.**
+
+  **Skutečná příčina:** `copy_forward_dedup()` kopíroval jednotlivé dirty
+  obdélníky, tedy `d2d_blit_ex` se šířkou < 800 px → `FGOR`/`OOR` = `800 − w`
+  = **strided přístup do SDRAM**. Každý řádek kopie začíná v jiné SDRAM řadě,
+  takže se řady neustále přepínají; LTDC, které čte snímek na panel sekvenčně,
+  o tu propustnost přijde, FIFO podteče a na panel jde **poškozený snímek**.
+  Proto to bylo deterministické (každý stisk) a proto na to `d2ddt` ani
+  zúžení překreslení nestačilo — obojí mění objem dat, ne vzor přístupu.
+
+  **Oprava:** copy-forward kopíruje **plnošířkové pásy slité po ose Y**
+  (`prim_stm32_hal.c`, `copy_forward_dedup`). Pás na plnou šířku má
+  `FGOR`=`OOR`=0, tedy **lineární** přístup — přesně jako plná kopie, která
+  byla vždy čistá. Kopíruje se tím víc bajtů, ale mnohem levnějším vzorem.
+  ⚠️ Kopírovat víc než dirty je bezpečné: `front` je nejnovější hotový snímek
+  a `back` je o dva snímky starší **všude**, takže pixel navíc může `back` jen
+  přiblížit k `front`. Slévá se **jen po ose Y**, takže nehrozí past, před
+  kterou varoval původní zákaz „žádný bbox-merge" (ten spojoval i přes Y, a
+  kvůli dvěma malým obdélníkům na opačných koncích by kopíroval skoro celý
+  snímek).
+
+  **Naměřeno na desce** (injektor `tap 1`, viz níže; `d2ddt` na výchozích 240):
+
+  | test | před opravou | po opravě |
+  |---|---|---|
+  | 20× RUN/STOP | **38** podtečení (93/1000 flipů) | **0** |
+  | 40× RUN/STOP + 30× plný render | — | **0 / 902 flipů** |
+  | STOP + 4 s klidu, `fbdiff` | FB0 mimo o 12 538 px | **shoda** |
+  | CPU UiTask / celkem | — | 25 % / 33 % |
+
+  🔑 **Rozhodlo to měření, které do té doby neexistovalo** — rozklad podtečení
+  na fáze `present()`: `kresleni 0 | cekani 0 | flip 0 | COPY-FORWARD 38`.
+  Do té chvíle se podtečení četlo jen jednou za flip, takže nešlo odlišit
+  „aplikace kreslí moc" od „copy-forward bere sběrnici" — tedy dvě úplně jiné
+  opravy. Druhý klíčový údaj byl paradox, který každou předchozí teorii
+  vyvracel: **plný render (`ui`) kopíruje 768 kB a má podtečení NULA**, zatímco
+  mnohem menší RUN/STOP překreslení podtékalo vždy.
+
+  **Ověřovací řetězec F5.2:** build 0 varování, `audit.py` 92 OK / 0 / 2
+  (GCC 14.3), `.text` 609 456 → 610 952 B, symboly dohledány v `.elf`.
+  ✅ **POTVRZENO UŽIVATELEM NA DISPLEJI 2026-09-22** — problikávání při RUN/STOP
+  je pryč. ⚠️ Ověřeno po flashi + SW resetu, **ne po plném power-cyklu**
+  (pravidlo 4b / L-0010): studený start je jiný stav, takže při nejbližším
+  odpojení napájení se to hodí zkontrolovat znovu.
+
+  **Trvale přidaná diagnostika** (zůstává, je to levnější než další špatná oprava):
+  - `fbdiff` — porovná všechny tři framebuffery + rozklad podtečení po fázích
+    + počítadla, kolikrát byl který buffer cílem copy-forwardu. Odliší
+    **poškozený snímek při scan-outu** od **nesouladu bufferů**.
+  - `tap <0-4>` — injektor doteku: provede stisk tlačítka patky přesně toutéž
+    cestou jako prst (stejný task, stejné místo smyčky). Bez něj vyžadovalo
+    každé měření uživatele u desky, protože vzdálené SCPI `INIT`/`ABOR` vadu
+    nereprodukuje (flip nechává na ~30Hz koalescujícím gate).
+
+  **Předchozí stav (2026-09-21, ponecháno jako záznam slepých uliček):**
+  ⬜ neověřeno uživatelem na skutečném fyzickém doteku (jen přes SCPI/UART). `screen_main_redraw_freq_tint()`
+  (`screen_main.c`, deklarace `screen_main.h`) nahradila `screen_main_redraw_freq_area()`
+  na obou voláních RUN/STOP (`app_gpsdo.c:7834` SCPI, `app_gpsdo.c:8642` fyzický
+  dotek); `screen_main_redraw_freq_area()` beze změny pro format-change případ.
+  Ověřovací řetězec F5.2: build 0 varování, `audit.py` 92 OK/0/2 (baseline),
+  `.text` 609456→609520 B (+64 B), symbol `screen_main_redraw_freq_tint`
+  dohledán v `.elf` (`nm`, adresa `0803ee58`, odlišná od `screen_main_redraw_freq_area`
+  na `0803ed34` — nesplynuly inlinem). Naflashováno + SW reset, ověřeno `status`
+  na běžící desce.
+  **Naměřeno PO opravě** (tentýž burst postup jako výše, `d2ddt` resetuje čítače):
+  | scénář | `d2ddt` | podtečení/1000 flipů | pro srovnání PŘED opravou |
+  |---|---|---|---|
+  | burst 20× RUN/STOP | 240 (výchozí) | **27** | 52 |
+  | burst 20× RUN/STOP | 255 (strop registru) | **17** | 15 (d2ddt=255 samotné, bez zúžení) |
+  | **1× izolovaný RUN nebo STOP** | 240 | **0** (0–2 z tisíců flipů) | stejné i PŘED opravou |
+  🔑 **Oprava je reálná a bezriziková (burst ~poloviční), ale NENÍ „ideální" ve
+  smyslu nuly pod umělým burstem** — kombinace obou pák (užší zóna + bez glyph
+  akcelerace) u `d2ddt=255` dala prakticky totéž jako `d2ddt=255` samotné (17 vs.
+  15/1000), což ukazuje na **fyzický strop sdílené SDRAM sběrnice**, ne na
+  zbývající rezervu v SW pákách — viz L-0076.
+  ⚠️ **Klíčové zjištění, které mění rámec celého nálezu:** jediné izolované
+  přepnutí (skutečné použití, ne umělý burst 20× za sebou) bylo **čisté (0
+  podtečení) PŘES SCPI cestu JIŽ PŘED touto opravou** — tedy pro reálné, jednotlivé
+  zmáčknutí tlačítka LTDC podtečení neukazuje žádný problém, opravený ani
+  neopravený kód. **Fyzický dotek jsem nemohl otestovat** (žádný UART hook, který
+  by vyvolal `app_gpsdo_handle_touch()` přímo — jen skutečný prst na displeji).
+  **Zbývá tedy ověřit uživatelem na desce**: je hlášené problikávání po
+  naflashování téhle opravy pryč? Pokud ANO, oprava (spolu s tím, že šlo o
+  burst-scénář, ne o single-tap) věc uzavírá. Pokud PŘETRVÁVÁ i po jediném
+  klepnutí, LTDC podtečení podle dnešních dat **není** vysvětlením a hledání
+  musí pokračovat jinam (fyzický dotek má jiné časování než SCPI — `present_now()`
+  hned místo ~30Hz koalescence, viz `app_gpsdo.c:114-119` a `:8645` — což se
+  bez skutečného doteku nedalo ověřit).
+
+---
+
 ## Fáze oprav (F5) — 2026-09-10
 
 Uživatel schválil **skupinu A**. Opraveny **F-0033**, **F-0034**, **F-0035**;
@@ -380,5 +583,10 @@ horní mez, takže UiTask nemůže viset navždy — chybí jen reakce na vyprš
   stejně jen `HYPOTÉZA`.
 - **Nic z toho neběželo na HW jako důsledek tohoto auditu** — kód nebyl měněn
   (`git status` na `*.c`/`*.h` prázdný).
+- **Dodatek 2026-09-21 (F-0140):** čísla podtečení jsou z ruční relace v
+  konverzaci, ne z uloženého skriptu/logu — nejde je bez opakování postupu
+  znovu vytáhnout. Chybí měření na fyzickém doteku (jen SCPI). Nebylo
+  prošetřeno, jestli stejná příčina vysvětluje i hlášené problikávání při
+  MENU navigaci a FREQ/PERIODA toggle (jiné volající, dnes neměřeno).
 - **Neposuzována vizuální stránka** (rozměry, čitelnost, layout) — to je `UI_SIZES.md`
   a zadání UI, ne vykreslovací řetězec.

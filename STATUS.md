@@ -128,6 +128,25 @@ flipů**, CPU dokonce lehce nižší (UiTask 59 → 55 %).
 začal brát ~1 % pásma místo ~0,2 % a tenkou rezervu LTDC to přetrhlo. Není to
 důvod 1835 vracet — byla mimo spec.
 
+#### 2b) Dohra 2026-09-22: `d2ddt` nestačil, zbytek dělal STRIDED copy-forward
+
+Tatáž vada se vrátila v užší podobě — **problikávalo při každém stisku RUN/STOP**,
+zatímco plný render (`ui`) byl čistý. Příčina byla jinde než u bodu 2: ne objem
+dat, ale **vzor přístupu**. `copy_forward_dedup()` kopíroval jednotlivé dirty
+obdélníky, takže `d2d_blit_ex` dostal `FGOR`/`OOR` = `800 − w` = **strided**
+přístup; každý řádek kopie začíná v jiné SDRAM řadě a přepínání řad sebere
+propustnost LTDC. **Oprava:** kopírovat **plnošířkové pásy slité po ose Y**
+(`FGOR`=`OOR`=0, lineární). Naměřeno **38 → 0** podtečení na 20 stisků.
+
+🔑 **Co to rozhodlo (a co u bodu 2 chybělo):** rozklad podtečení na **fáze**
+`present()` — `kresleni 0 | cekani 0 | flip 0 | COPY-FORWARD 38`. Dokud se četl
+jen součet za flip, daly se obhájit i vyvrátit všechny teorie; postupně selhaly
+`d2ddt` až na strop 255, zúžení překreslované zóny, vypnutí DMA2D glyph
+akcelerace, `sdrtr 175` (**zhoršilo** to) i synchronizace na vblank.
+Nové nástroje (trvale v kódu): **`fbdiff`** (porovná 3 framebuffery + rozklad
+fází) a **`tap <0-4>`** (injektor doteku — vada šla vyvolat jen fyzickým dotekem,
+SCPI ekvivalent ne). Detaily: audit **F-0140**, lekce **L-0077**.
+
 ### Čeho se příště vyvarovat
 
 | chyba | co se stalo | pravidlo |
@@ -136,6 +155,9 @@ důvod 1835 vracet — byla mimo spec.
 | Diagnóza z dat, která dokumentace označuje za nedůvěryhodná | Z `PREKRYV/CIZI ZAPIS` jsem odvodil vadné linky PG2/PG5 a poslal na prozvánění zdravé piny, ačkoli CLAUDE.md říká, že ten verdikt neplatí, dokud retence není 0 | SKILL §6j |
 | „Kód běží“ ≠ „zápisy dorazily“ | Z rostoucího čítače `flip` jsem usoudil, že framebuffery jsou v pořádku — přitom byl displej černý | SKILL §6k |
 | Závěr ze saturovaného čítače | Sweep `d2ddt` dal 1,000 pro všechny hodnoty; málem jsem uzavřel „DMA2D vyloučeno“, přitom byl příčinou | SKILL §7h |
+| Ladění konstanty místo pochopení vzoru | U 2b jsem postupně zkusil `d2ddt` na strop, zúžení zóny, vypnutí glyph akcelerace, `sdrtr` (zhoršilo) a vblank sync — **všechno měnilo objem dat, nic vzor přístupu**. Příčinou byl stride. Nápověda ležela na stole celou dobu: VĚTŠÍ operace (plný render) neproblikávala, MENŠÍ ano | L-0077 |
+| Součtové počítadlo tam, kde je potřeba rozklad | `LTDC podtečení` se četlo jen jednou za flip, takže neodlišilo „kreslí aplikace“ od „kopíruje copy-forward“ — dvě úplně jiné opravy. Rozhodl až rozklad na fáze `present()` | L-0076 |
+| Vada reprodukovatelná jen uživatelem u desky | Problikávání šlo vyvolat **jen fyzickým dotekem** (SCPI ekvivalent ne), takže každé měření stálo jedno kolo konverzace. Injektor `tap <idx>` měl vzniknout hned, ne po hodinách | L-0076 |
 | Uzavření na jednom čistém měření | #72 jsem uzavřel po jednom čistém `membench` — tutéž chybu jsem tentýž den sepsal do SKILL §6e | SKILL §6e |
 
 

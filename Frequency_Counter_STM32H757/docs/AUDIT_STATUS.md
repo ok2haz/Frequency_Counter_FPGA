@@ -3,7 +3,59 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-20 (pokračování) — **F5 modulu 20 dokončena.**
+**Poslední aktualizace:** 2026-09-22 — ✅ **F-0140 VYŘEŠENO: problikávání při
+RUN/STOP byl STRIDED copy-forward, ne propustnost sběrnice.** `copy_forward_dedup()`
+kopíroval jednotlivé dirty obdélníky (`FGOR`/`OOR` ≠ 0 = strided přístup do SDRAM,
+každý řádek jiná řada) → LTDC přišlo o propustnost, FIFO podteklo, na panel šel
+poškozený snímek. Opraveno na **plnošířkové pásy slité po ose Y** (lineární
+přístup, `FGOR`=`OOR`=0). **Naměřeno: 38 → 0 podtečení na 20 stisků**; 40 stisků
++ 30 plných renderů = 0/902 flipů; buffery se v STOP srovnají (`fbdiff` shoda);
+UiTask 25 % CPU. Build 0 varování, `audit.py` 92/0/2, `.text` 609 456 → 610 952 B.
+⬜ **Zbývá vizuální potvrzení uživatelem na displeji** (pravidlo 4b).
+🔑 **Rozhodl to rozklad podtečení po FÁZÍCH `present()`** (`kresleni 0 | cekani 0 |
+flip 0 | COPY-FORWARD 38`) — dokud se četl jen součet za flip, daly se obhájit
+i vyvrátit všechny teorie (velikost burstu, glyph accel, `d2ddt`, `sdrtr`, fáze
+vůči vblanku) a žádná nebyla správně. Druhý klíč byl paradox „plný render 768 kB
+= 0 podtečení, malé překreslení = podteče vždy" → ne objem, ale **vzor přístupu**.
+Nově trvale v kódu: UART **`fbdiff`** (porovná 3 framebuffery + rozklad fází) a
+**`tap <0-4>`** (injektor doteku — vada šla reprodukovat jen fyzickým dotekem,
+SCPI ekvivalent ne, takže do té doby každé měření stálo kolo s uživatelem).
+Nová **L-0077**, revidovaná **L-0076** (původní závěr „fyzický strop sběrnice"
+byl mylný). Nekomitováno.
+
+**Předchozí, 2026-09-21:** cílený audit + první (částečná) oprava hlášeného
+problikávání hlavní obrazovky při RUN/STOP. Uživatel nejdřív nahlásil jev,
+proběhlo v konverzaci **pět neúspěšných pokusů o opravu** (buffer-„settling"
+teorie nad `screen_main_redraw_freq()`), všechny odloženy do `git stash` beze
+změny stromu — teorie byla po přečtení `prim_stm32_present()` vyvrácena. Na
+uživatelův pokyn proveden **bisect** (build z 2026-09-06 přes `git checkout
+<hash> -- .`): vada je přítomná i tam → **není regrese posledních ~15 dnů**.
+Zapsán řádný nález **F-0140 [S2]** do `audit/2026-09-10_vykreslovaci-retezec.md`
+(modul 8, dodatek): `screen_main_redraw_freq_area()` (RUN/STOP, format toggle)
+je nejtěžší jednorázová DMA2D zátěž redraw řetězce hlavní obrazovky a **koreluje**
+s měřeným podtečením LTDC FIFO (`status` → `LTDC: podtečení FIFO`, 52/1000 při
+burst SCPI RUN/STOP toggle). Uživatel schválil opravu („oprav to úplně a
+ideálně") → **F-0140 opraveno částečně**: nová `screen_main_redraw_freq_tint()`
+(`screen_main.c`/`.h`, volající `app_gpsdo.c:7834,8642`) používá pro RUN/STOP
+UZŠÍ DMA2D zónu (`freq_area()` místo `freq_clear_area()`) + bez HW glyph akcelerace
+— bezpečné, protože RUN/STOP nemění geometrii čísla (na rozdíl od format-change
+volání, které si `screen_main_redraw_freq_area()` ponechává beze změny).
+Ověřovací řetězec F5.2 hotový (build 0 varování, `audit.py` 92/0/2, `.text`
++64 B, symbol v `.elf`), naflashováno a **změřeno na běžící desce**:
+burst 20× toggle 52→**27**/1000 (d2ddt=240) resp. →**17**/1000 (d2ddt=255).
+🔑 **Kombinace obou pák u d2ddt=255 dala prakticky totéž jako d2ddt=255 samotné
+(17 vs. 15/1000) — ukazuje to na fyzický strop sdílené SDRAM sběrnice, ne na
+chybu v SW** (nová **L-0076**). ⚠️ **Zásadní zjištění:** jediné izolované
+přepnutí (reálné použití, ne umělý burst) bylo **čisté (0 podtečení) i PŘED
+touto opravou** — LTDC podtečení tedy pro single-tap scénář nic nevysvětlovalo,
+opravený ani neopravený kód. **Fyzický dotek nebylo možné otestovat** (žádný
+UART hook na `app_gpsdo_handle_touch()`) — **zbývá ověřit uživatelem na desce**,
+jestli hlášené problikávání po flashi zmizelo; pokud přetrvává i po JEDNOM
+klepnutí, LTDC podtečení není vysvětlením a hledání musí pokračovat jinam.
+Detaily, přesná čísla a otevřené otázky v `audit/2026-09-10_vykreslovaci-retezec.md`
+(F-0140) a `docs/LESSONS.md` (L-0076). Nekomitováno.
+
+**Předchozí:** 2026-09-20 (pokračování) — **F5 modulu 20 dokončena.**
 Všech 5 dřívějších nálezů (F-0122…F-0126, zapsané 2026-09-18) bylo při kontrole
 zdrojáku potvrzeno jako **skutečně opravené** (žádná z nich nebyla jen popsaná
 v dokumentu — všech pět je ověřitelně v `encoder.c/.h`, `screenshot.c`, `autocal.c`).
@@ -491,7 +543,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 5 | drivery: I2C1 + I2C4 | `i2c.c`, `*_sensors.c`, `*_ui.c`, `ft5x06.c`, `ws_panel.c` | CM7 | nálezy zapsány | 2026-09-10 | 0 | 0 | 2 | 0 | [2](audit/2026-09-10_i2c.md) |
 | 6 | drivery: SPI2/FPGA + QSPI/W25Q | `fpga_freq.c`, `w25q.c`, `w25q_store.c` | CM7 | opraveno (⬜ neověřeno na HW) | 2026-09-10 | 0 | 0 | 1 | 1 | [2](audit/2026-09-10_spi-qspi.md) |
 | 7 | drivery: SDMMC + FatFs | `sd_export.c`, `datalog_sd.c`, `sd_diskio.c`, `sdmmc.c`, `fatfs.c`, `bsp_driver_sd.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 4 | 1 | [7](audit/2026-09-10_sdmmc-fatfs.md) |
-| 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-10 | 0 | 1 | 4 | 0 | [5](audit/2026-09-10_vykreslovaci-retezec.md) |
+| 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (F-0140 ✅ změřeno 38→0, ⬜ vizuálně nepotvrzeno) | 2026-09-22 | 0 | 2 | 4 | 0 | [6](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
 | 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | **opraveno 3 ze 4** (F-0053/F-0054 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
