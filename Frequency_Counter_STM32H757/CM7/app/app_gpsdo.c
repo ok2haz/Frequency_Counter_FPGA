@@ -2245,7 +2245,7 @@ static void math_render_controls(void)
                      bt, &ui_font_mono_16, UI_COLOR_INK, PRIM_ALIGN_CENTER); }
     ui_button_t bN = {.rect = MATH_BTN_NULL,
                       .variant = g_meas_cfg.null_en ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
-                      .label = g_meas_cfg.null_en ? "NULL ZAP" : "NULL"};
+                      .label = g_meas_cfg.null_en ? "NULL ZAP" : "NULL VYP"};
     ui_button_render(&bN);
 
     /* Karta B: Lo/Hi + pasmo text. */
@@ -2663,7 +2663,7 @@ static void settings_tick_jas(void)
 static void settings_upd_dim(void)
 {
     ui_button_t adb = {.rect = ADEN_RECT, .variant = UI_BUTTON_NORMAL,
-                       .label = g_autodim_en ? "ZAPNUTO" : "VYPNUTO"};
+                       .label = g_autodim_en ? "VYPNOUT" : "ZAPNOUT"};   /* label=AKCE (F-0141) */
     ui_button_render(&adb);
     prim_fill_rect((prim_rect_t){248, 238, 60, 60}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     char tb[12]; snprintf(tb, sizeof tb, "%u s", (unsigned)g_autodim_sec);
@@ -3085,27 +3085,34 @@ static prim_rect_t list_rect(const menu_list_t *L, int i)
                           L->col_w, L->row_h };
 }
 
-/* Jeden radek seznamu. `focused` = 1 -> vypln BG_1 + accent ramecek 3 px.
- * ⚠️ Fokus se ZAMERNE lisi od obou veci, ktere uz existuji: `UI_BUTTON_ACTIVE`
- * meni jen vypln (a znaci STAV, ne zamereni), `tap_flash` kresli 2px accent
- * obrys BEZ zmeny vyplne a trva ~150 ms. Fokus meni oboji a je trvaly. */
+/* Jeden radek seznamu. Vizualne stejny jazyk jako normalni tlacitka v cele
+ * appce (`UI_BUTTON_NORMAL`: plna vypln + tenky ramecek + centrovany popisek)
+ * — drive mela dlazdice vlastni „seznamovy" styl (karta-barva, text vlevo,
+ * sipka vpravo), ktery vypadal jako jiny druh ovladaciho prvku (nahlaseno
+ * uzivatelem 2026-09-23). ">" v popisku odpovida existujicimu vzoru
+ * navigacnich tlacitek jinde v appce (napr. "PRISTUP >").
+ * ⚠️ NEjde pres `ui_button_render()` primo — ta by dlazdici sama
+ * zaregistrovala do `s_btnreg` (pozorovatel `ui_button_set_observer`), cimz
+ * by se zdvojila s vlastnim enkoderovym fokusem tohohle seznamu (`s_focus`),
+ * ktery uz polozky seznamu do spolecneho prostoru fokusu pocita zvlast (viz
+ * komentar u `cur_list()`). Barvy jsou proto opsane rucne, stejne jako
+ * `style_of(UI_BUTTON_NORMAL)` v `libui/src/button.c`.
+ * `focused` (kurzor enkoderu) je ZAMERNE odlisny koncept od stavu tlacitka
+ * (`UI_BUTTON_ACTIVE`) i od `tap_flash` (docasny obrys pri stisku) — je
+ * trvaly a kresli se jako accent ramecek PRES uz hotovou dlazdici, stejnym
+ * principem jako `tap_flash`. */
 static void list_item_draw(const menu_list_t *L, int i, int focused)
 {
     prim_rect_t r = list_rect(L, i);
     /* ⚠️ Clear (REPLACE) PRED vsim ostatnim — pravidlo partial redrawu; bez nej
      * by dirty-rect copy-forward pres 3 buffery problikaval. */
-    prim_fill_rect_rounded(r, UI_DIM_BUTTON_RADIUS,
-                           focused ? UI_COLOR_BG_1 : UI_COLOR_BG_CARD,
-                           PRIM_BLEND_REPLACE);
-    prim_stroke_rect_rounded(r, UI_DIM_BUTTON_RADIUS, focused ? 3 : 1,
-                             focused ? UI_COLOR_ACC : UI_COLOR_LINE);
-    /* Text vlevo (seznam), sipka vpravo — ne vycentrovany popisek jako u tlacitka. */
-    int16_t ty = (int16_t)(r.y + r.h / 2 + 6);
-    prim_draw_text((prim_point_t){(int16_t)(r.x + 20), ty}, L->items[i].label,
-                   &ui_font_sans_18, focused ? UI_COLOR_ACC : UI_COLOR_INK,
-                   PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(r.x + r.w - 20), ty}, ">",
-                   &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    prim_fill_rect_rounded(r, UI_DIM_BUTTON_RADIUS, UI_COLOR_BTN_NORM_TOP, PRIM_BLEND_REPLACE);
+    prim_stroke_rect_rounded(r, UI_DIM_BUTTON_RADIUS, 1, UI_COLOR_BTN_NORM_BORDER);
+    char lbl[28];
+    snprintf(lbl, sizeof lbl, "%s >", L->items[i].label);
+    prim_draw_text((prim_point_t){(int16_t)(r.x + r.w / 2), (int16_t)(r.y + r.h / 2 + 8)},
+                   lbl, &ui_font_mono_22, UI_COLOR_INK_2, PRIM_ALIGN_CENTER);
+    if (focused) prim_stroke_rect_rounded(r, UI_DIM_BUTTON_RADIUS, 3, UI_COLOR_ACC);
 }
 
 static void list_draw(const menu_list_t *L)
@@ -3126,10 +3133,10 @@ static int list_hit(const menu_list_t *L, int16_t x, int16_t y)
 
 #define MENU_N 4
 static const menu_item_t MENU_ITEMS[MENU_N] = {
-    { "Nastaveni",     app_gpsdo_render_settings  },
-    { "Diagnostika",   app_gpsdo_render_diag      },
-    { "System Health", app_gpsdo_render_health    },
-    { "Mereni",        app_gpsdo_render_meas_menu },
+    { "NASTAVENI",     app_gpsdo_render_settings  },
+    { "DIAGNOSTIKA",   app_gpsdo_render_diag      },
+    { "SYSTEM HEALTH", app_gpsdo_render_health    },
+    { "MERENI",        app_gpsdo_render_meas_menu },
 };
 /* 2 sloupce x 2 radky, vysoke radky (160 px = 18,7 mm) — telo 56..416 se vyplni.
  * Poradi PO SLOUPCICH: Nastaveni, Diagnostika | System Health, Mereni. */
@@ -3145,20 +3152,20 @@ static const menu_list_t MENU_LIST = {
 static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     /* „Funkce" nahradila „Citac": vyber funkce podle zadani §4 IMPLIKUJE
      * navrat na hlavni obrazovku, takze zvlastni polozka „Citac" byla nadbytecna. */
-    { "Funkce",       app_gpsdo_render_func     },   /* s_view=49 */
-    { "Citac detail", app_gpsdo_render_counter  },   /* s_view=19 (FPGA reciproke) */
-    { "Prezentace",   app_gpsdo_render_meas     },   /* s_view=34 (#67) */
-    { "Dvojkanal",    app_gpsdo_render_dualch   },   /* s_view=46 */
+    { "FUNKCE",       app_gpsdo_render_func     },   /* s_view=49 */
+    { "CITAC DETAIL", app_gpsdo_render_counter  },   /* s_view=19 (FPGA reciproke) */
+    { "PREZENTACE",   app_gpsdo_render_meas     },   /* s_view=34 (#67) */
+    { "DVOJKANAL",    app_gpsdo_render_dualch   },   /* s_view=46 */
 
-    { "Analyza",      app_gpsdo_render_analyza  },   /* s_view=41 */
-    { "Histogram",    app_gpsdo_render_histogram},   /* s_view=6 */
-    { "Datalog",      app_gpsdo_render_datalog  },   /* s_view=17 */
-    { "Kvalita GPS",  app_gpsdo_render_gpsq     },   /* s_view=38 */
+    { "ANALYZA",      app_gpsdo_render_analyza  },   /* s_view=41 */
+    { "HISTOGRAM",    app_gpsdo_render_histogram},   /* s_view=6 */
+    { "DATALOG",      app_gpsdo_render_datalog  },   /* s_view=17 */
+    { "KVALITA GPS",  app_gpsdo_render_gpsq     },   /* s_view=38 */
 
-    { "Math/Limity",  app_gpsdo_render_math     },   /* s_view=31 */
-    { "Holdover",     app_gpsdo_render_holdover },   /* s_view=16 */
+    { "MATH/LIMITY",  app_gpsdo_render_math     },   /* s_view=31 */
+    { "HOLDOVER",     app_gpsdo_render_holdover },   /* s_view=16 */
     { "TI 1PPS",      app_gpsdo_render_ti       },   /* s_view=45 */
-    { "Odchylka xN",  app_gpsdo_render_devmult  },   /* s_view=47 */
+    { "ODCHYLKA XN",  app_gpsdo_render_devmult  },   /* s_view=47 */
 };
 static const menu_list_t MEAS_LIST = {
     MEAS_ITEMS, MEAS_N, 4, /*x0*/14, /*y0*/68, /*col_w*/248, /*row_h*/76,
@@ -3168,13 +3175,13 @@ static const menu_list_t MEAS_LIST = {
 #define TOOLS_N 7
 /* NASTROJE (s_view=48) — z footeru Diagnostiky. 3 sloupce x 2 radky, po sloupcich. */
 static const menu_item_t TOOLS_ITEMS[TOOLS_N] = {
-    { "Blok. schema", app_gpsdo_render_commdiag },   /* s_view=21 */
-    { "Pamet",        app_gpsdo_render_mem      },   /* s_view=5  */
-    { "Selftest",     app_gpsdo_render_selftest },   /* s_view=20 */
-    { "Benchmark",    app_gpsdo_render_membench },   /* s_view=43 */
-    { "SD karta",     app_gpsdo_render_sd       },   /* s_view=37 */
-    { "Reference",    app_gpsdo_render_reference},   /* s_view=14 */
-    { "Chyby (log)",  app_gpsdo_render_errlog   },   /* s_view=51 */
+    { "BLOK. SCHEMA", app_gpsdo_render_commdiag },   /* s_view=21 */
+    { "PAMET",        app_gpsdo_render_mem      },   /* s_view=5  */
+    { "SELFTEST",     app_gpsdo_render_selftest },   /* s_view=20 */
+    { "BENCHMARK",    app_gpsdo_render_membench },   /* s_view=43 */
+    { "SD KARTA",     app_gpsdo_render_sd       },   /* s_view=37 */
+    { "REFERENCE",    app_gpsdo_render_reference},   /* s_view=14 */
+    { "CHYBY",        app_gpsdo_render_errlog   },   /* s_view=51 */
 };
 static const menu_list_t TOOLS_LIST = {
     /* ⚠️ 7 polozek se do 3x2 nevejde -> 3 radky. Vyska radku 96 -> 80, aby
@@ -3343,13 +3350,14 @@ static void app_gpsdo_render_errlog(void)
                       .label = (s_el_erase_stage == 2) ? "SMAZAT! 2/2"
                              : (s_el_erase_stage == 1) ? "POTVRDIT 1/2" : "SMAZAT LOG"};
     ui_button_render(&eb);
-    ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-    ui_button_render(&bb);
+    /* ZPET kresli window_chrome() (F-0141: driv se tu kreslilo znovu, jinym
+     * textem "ZPET" bez sipky, misto spravneho "< ZPET" — zbytecne dvoji
+     * kresleni stejneho tlacitka). */
     /* 🔴 Okno MUSI flipnout SAMO. Vola se z tabulky `TOOLS_ITEMS` pres ukazatel
      * (`TOOLS_ITEMS[i].fn()`) a volajici za nej flip nedodela: obsluha tapu jen
      * vrati `true` a UiTask na to reaguje POUZE zvukovou odezvou `alarm_click()`.
      * Bez tohohle radku se cele okno nakreslilo do ZADNIHO bufferu a nikdy se
-     * neukazalo — dlazdice „Chyby (log)" pusobila mrtve, prestoze `s_view` uz
+     * neukazalo — dlazdice „Chyby" pusobila mrtve, prestoze `s_view` uz
      * bylo 51. Navenek to vypadalo jako „tlacitko nic nedela, jen klikne";
      * ten klik byl pritom dukaz, ze dotyk obslouzeny BYL.
      * ⚠️ Vsech ostatnich 21 oken v `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` flip
@@ -4428,7 +4436,7 @@ static void app_gpsdo_render_survey(void)
     }
     ui_button_t tg = {.rect = SURVEY_BTN,
                       .variant = s_survey.active ? UI_BUTTON_STOP : UI_BUTTON_RUN,
-                      .label = s_survey.active ? "STOP" : "START"};
+                      .label = s_survey.active ? "STOP" : "SPUSTIT"};   /* label=AKCE (F-0141) */
     if (first) ui_button_render(&tg);
     char b[44];
     snprintf(b, sizeof b, "%s", s_survey.active ? "BEZI" : (s_survey.n ? "HOTOVO" : "necinny"));
@@ -4456,6 +4464,16 @@ static void app_gpsdo_render_survey(void)
  * tap). NACIST aplikuje i tema/jas (jako prepinac schematu). */
 static int s_setup_slot = 0;   /* 0-based, UI 1-based */
 static int s_setup_msg  = 0;   /* 0=nic 1=ulozeno 2=nacteno 3=smazano 4=chyba zapisu 5=prazdny slot */
+
+/* Dvoji potvrzeni SMAZANI — stejny vzor jako DATALOG/SD FORMAT
+ * (DL_ERASE_RECT/s_dl_erase_stage). 0=idle, 1=1. potvrzeni, 2=2. potvrzeni ->
+ * dalsi stisk provede. Auto-zrus po timeoutu (kontroluje se pri kazdem
+ * dalsim tapu — okno je "staticke", netika) nebo jinym tapem v okne.
+ * F-0141: driv mazalo OKAMZITE na jediny tap — jedina destruktivni akce
+ * v cele appce bez potvrzeni (LOG/DATALOG/SD FORMAT ho maji vsechny). */
+#define SETUP_ERASE_TIMEOUT_S 6u
+static uint8_t  s_setup_erase_stage = 0;
+static uint32_t s_setup_erase_arm_s = 0;
 
 /* Prekresli dynamicky obsah (cislo slotu + stav + prehled obsazenych + hlaska akce). */
 static void setups_render_dynamic(void)
@@ -4494,6 +4512,27 @@ static void setups_render_dynamic(void)
         }
         prim_draw_text((prim_point_t){40, 300}, m, &ui_font_sans_18, col, PRIM_ALIGN_LEFT);
     }
+
+    /* SMAZAT + dvoji potvrzeni (viz komentar u s_setup_erase_stage). Auto-zrus
+     * po timeoutu — okno netika, takze se to kontroluje az pri PRISTIM tapu
+     * (stejny princip jako "jiny tap zrusi armovani" u DATALOG/SD FORMAT). */
+    if (s_setup_erase_stage && (g_uptime_s - s_setup_erase_arm_s) >= SETUP_ERASE_TIMEOUT_S)
+        s_setup_erase_stage = 0;
+    ui_button_t ber = {.rect = SETUP_ERASE_RECT,
+                       .variant = s_setup_erase_stage ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                       .label = (s_setup_erase_stage == 2) ? "SMAZAT! 2/2"
+                              : (s_setup_erase_stage == 1) ? "POTVRDIT 1/2" : "SMAZAT"};
+    prim_fill_rect(SETUP_ERASE_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    ui_button_render(&ber);
+    /* Varovny radek MEZI kartou (konci na 362) a patkou (zacina na 417) —
+     * presne geometrie jako DATALOG (y=366/386), stejna karta DG_CARD_FULL_B. */
+    prim_fill_rect((prim_rect_t){DG_LLBL, 366, 620, 28}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    if (s_setup_erase_stage)
+        prim_draw_text((prim_point_t){DG_LLBL, 386},
+                       (s_setup_erase_stage == 2)
+                           ? "!!! DALSI STISK NEVRATNE SMAZE TENTO SLOT !!!"
+                           : "Smaze cely slot. Potvrd 2x (jinak se po 6 s zrusi).",
+                       &ui_font_sans_18, UI_COLOR_BAD, PRIM_ALIGN_LEFT);
 }
 
 static void app_gpsdo_render_setups(void)
@@ -4502,6 +4541,7 @@ static void app_gpsdo_render_setups(void)
     if (first) {
         view_set(33);
         window_chrome("SESTAVY", WIN_TITLE_Y);
+        s_setup_erase_stage = 0;           /* pri vstupu do okna vzdy neaktivni */
         ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Ulozene profily nastaveni (slot 1-8)"};
         ui_card_render_chrome(&c);
         ui_button_t sm = {.rect = SET_SLOT_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
@@ -4510,8 +4550,8 @@ static void app_gpsdo_render_setups(void)
         prim_draw_text((prim_point_t){40, 236}, "Slot:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         ui_button_t bsv = {.rect = SETUP_SAVE_RECT,  .variant = UI_BUTTON_NORMAL, .label = "ULOZIT"};
         ui_button_t bld = {.rect = SETUP_LOAD_RECT,  .variant = UI_BUTTON_NORMAL, .label = "NACIST"};
-        ui_button_t ber = {.rect = SETUP_ERASE_RECT, .variant = UI_BUTTON_NORMAL, .label = "SMAZAT"};
-        ui_button_render(&bsv); ui_button_render(&bld); ui_button_render(&ber);
+        ui_button_render(&bsv); ui_button_render(&bld);
+        /* SETUP_ERASE_RECT kresli setups_render_dynamic() (2x potvrzeni, F-0141). */
         prim_draw_text((prim_point_t){40, 344},
                        "Profil = jas/tema/jazyk/zvuk/zona/efekty/Math+limity. Ulozeno ve W25Q.",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -4776,9 +4816,8 @@ static void app_gpsdo_render_wizard(void)
         ui_button_t pb = {.rect = WIZ_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
         ui_button_t ab = {.rect = WIZ_APPLY_RECT, .variant = UI_BUTTON_NORMAL, .label = "POUZIT"};
         ui_button_t sb = {.rect = WIZ_SAVE_RECT,  .variant = UI_BUTTON_NORMAL, .label = "ULOZIT"};
-        ui_button_t bb = {.rect = BACK_RECT,      .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
         ui_button_render(&mb); ui_button_render(&pb);
-        ui_button_render(&ab); ui_button_render(&sb); ui_button_render(&bb);
+        ui_button_render(&ab); ui_button_render(&sb);
         prim_draw_text((prim_point_t){DG_LLBL, 388},
                        "POUZIT zmeni gain hned (zkontroluj radek Pristroj); ULOZIT ho zapise do W25Q.",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -5151,8 +5190,7 @@ static void app_gpsdo_render_gpsq(void)
         ui_card_render_chrome(&ch);
         ui_button_t mb = {.rect = GPSQ_MINUS, .variant = UI_BUTTON_NORMAL, .label = "-"};
         ui_button_t pb = {.rect = GPSQ_PLUS,  .variant = UI_BUTTON_NORMAL, .label = "+"};
-        ui_button_t bb = {.rect = BACK_RECT,  .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&mb); ui_button_render(&pb); ui_button_render(&bb);
+        ui_button_render(&mb); ui_button_render(&pb);
         c_idx = -1;
     }
     if (!first && c_idx == s_gpsq_idx) { present_now(); return; }   /* zadna zmena -> zadne QSPI cteni */
@@ -5339,8 +5377,6 @@ static void app_gpsdo_render_prahy(void)
         prim_draw_text((prim_point_t){DG_LLBL, 388},
                        "sigma@1s se dnes pocita ze SIMULACE — zapinat az po zprovozneni FPGA.",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&bb);
     }
 
     for (int i = 0; i < THR_ROWS; i++) {
@@ -5348,8 +5384,8 @@ static void app_gpsdo_render_prahy(void)
         if (first || en != c_en[i]) {
             c_en[i] = en;
             ui_button_t eb = {.rect = THR_ROW_EN[i],
-                              .variant = en ? UI_BUTTON_RUN : UI_BUTTON_STOP,
-                              .label = en ? "ZAP" : "VYP"};
+                              .variant = en ? UI_BUTTON_STOP : UI_BUTTON_RUN,   /* barva=AKCE, viz RUN/STOP */
+                              .label = en ? "VYPNOUT" : "ZAPNOUT"};   /* label=AKCE (F-0141) */
             prim_fill_rect(THR_ROW_EN[i], UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);  /* meni barvu i label */
             ui_button_render(&eb);
         }
@@ -5480,7 +5516,7 @@ static int16_t anim_target_pct(int *is_demo)
 static void anim_toggle_redraw(void)
 {
     ui_button_t tb = {.rect = ANIM_TOGGLE_RECT, .variant = UI_BUTTON_NORMAL,
-                      .label = g_anim_enabled ? "ANIMACE: ZAPNUTO" : "ANIMACE: VYPNUTO"};
+                      .label = g_anim_enabled ? "ANIMACE: VYPNOUT" : "ANIMACE: ZAPNOUT"};   /* label=AKCE (F-0141) */
     ui_button_render(&tb);
 }
 
@@ -6285,8 +6321,8 @@ static void net_upd_values(void)
     static const char *const FLD[3] = { "IP", "MASKA", "BRANA" };
     char b[24];
     ui_button_t db = {.rect = NET_DHCP_RECT,
-                      .variant = g_net_dhcp ? UI_BUTTON_RUN : UI_BUTTON_STOP,
-                      .label = g_net_dhcp ? "DHCP: ZAP" : "DHCP: VYP"};
+                      .variant = g_net_dhcp ? UI_BUTTON_STOP : UI_BUTTON_RUN,   /* barva=AKCE, viz RUN/STOP */
+                      .label = g_net_dhcp ? "DHCP: VYPNOUT" : "DHCP: ZAPNOUT"};   /* label=AKCE (F-0141) */
     ui_button_render(&db);
     ui_button_t fb = {.rect = NET_FIELD_RECT, .variant = UI_BUTTON_NORMAL, .label = FLD[s_net_field]};
     ui_button_render(&fb);
@@ -6357,8 +6393,6 @@ static void app_gpsdo_render_display(void)
     prim_draw_text((prim_point_t){(int16_t)(DG_LX + 14), 394},
                    "Prvni dotek jen probudi, nespusti akci tlacitka.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-    ui_button_render(&bb);
     present_now();
 }
 
@@ -6417,8 +6451,7 @@ static void app_gpsdo_render_sd(void)
     if (first) {
         ui_button_t tb = {.rect = SD_TEST_RECT,   .variant = UI_BUTTON_NORMAL, .label = "TEST"};
         ui_button_t eb = {.rect = SD_EXPORT_RECT, .variant = UI_BUTTON_NORMAL, .label = "EXPORT CSV"};
-        ui_button_t bb = {.rect = BACK_RECT,      .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&tb); ui_button_render(&eb); ui_button_render(&bb);
+        ui_button_render(&tb); ui_button_render(&eb);
     }
 
     /* Tlacitko FORMAT + dvoji potvrzeni. Prekresli se pri zmene stupne (i timeout). */
@@ -6643,10 +6676,8 @@ static void app_gpsdo_render_membench(void)
         dlabel(MEMB_X_WR,   MEMB_HDR_Y, "zapis");
         dlabel(MEMB_X_RD,   MEMB_HDR_Y, "cteni");
         dlabel(MEMB_X_RES,  MEMB_HDR_Y, "vysledek");
-        ui_button_t rb = {.rect = MEMB_RUN_RECT, .variant = UI_BUTTON_RUN, .label = "BENCHMARK"};
+        ui_button_t rb = {.rect = MEMB_RUN_RECT, .variant = UI_BUTTON_RUN, .label = "SPUSTIT"};
         ui_button_render(&rb);
-        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&bb);
         prim_draw_text((prim_point_t){DG_LLBL, 384},
                        "Testuje jen VYHRAZENE oblasti; data pristroje se nemeni. Interni FLASH se jen cte.",
                        &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
@@ -6659,8 +6690,8 @@ static void app_gpsdo_render_membench(void)
 static void acc_upd_values(void)
 {
     ui_button_t tb = {.rect = ACC_TOGGLE_RECT,
-                      .variant = g_web_ctrl_en ? UI_BUTTON_RUN : UI_BUTTON_STOP,
-                      .label = g_web_ctrl_en ? "POVOLENO" : "ZAKAZANO"};
+                      .variant = g_web_ctrl_en ? UI_BUTTON_STOP : UI_BUTTON_RUN,   /* barva=AKCE, viz RUN/STOP */
+                      .label = g_web_ctrl_en ? "ZAKAZAT" : "POVOLIT"};   /* label=AKCE (F-0141) */
     /* Varianta se meni -> vycisti podklad, jinak by v rozich zustali "duchove"
      * (viz CLAUDE.md, past u cas_upd_mode). */
     prim_fill_rect(ACC_TOGGLE_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -6730,8 +6761,6 @@ static void app_gpsdo_render_access(void)
                        &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         ui_button_t nb = {.rect = ACC_NEWPASS_RECT, .variant = UI_BUTTON_NORMAL, .label = "NOVE HESLO"};
         ui_button_render(&nb);
-        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&bb);
         acc_upd_values();
     }
     present_now();
@@ -6768,8 +6797,6 @@ static void app_gpsdo_render_net(void)
         ui_button_t ab = {.rect = NET_ACCESS_RECT, .variant = UI_BUTTON_NORMAL,
                           .label = "PRISTUP >"};
         ui_button_render(&ab);
-        ui_button_t bb = {.rect = BACK_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPET"};
-        ui_button_render(&bb);
     }
 
     /* ── Zivy stav z lwIP na CM4 (F5). Publikuje ho `lwip_app_process()` pres IPC,
@@ -8640,6 +8667,21 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (b == 4) { nav_push(0); app_gpsdo_render_menu(); return true; }   /* MENU -> rozcestnik */
         if (b >= 0) {                                /* PERIOD/FREQ (slot 0), RUN/GATE/CHAN */
             screen_main_button_action(b);
+            /* F-0140: RUN/STOP dela nejtezsi jednorazovy DMA2D burst na hlavni
+             * obrazovce (cele podbarveni + cislice) a JE JEDINA cesta, ktera
+             * vola present_now() synchronne primo ze smycky, ktera dotek
+             * detekuje (pevny ~10 ms takt UiTasku) — na rozdil od SCPI/dalkoveho
+             * RUN/STOP, kde flip ceka na nahodne casovany ~30Hz koalescujici
+             * gate (`app_gpsdo_flush`). Zmereno na desce 2026-09-21/22: SCPI
+             * simulace stejneho prepnuti davala radove nizsi podteceni FIFO
+             * LTDC (`status`) nez skutecny fyzicky dotek — nejpravdepodobnejsi
+             * vysvetleni je, ze dotek dopada OPAKOVANE do stejne (nahodou
+             * nevyhodne) faze snimku, kdezto async prichod SCPI je vuci fazi
+             * rozhazeny. `prim_stm32_wait_vblank()` da burstu VZDY tu
+             * nejlepsi moznou fazi (start zatemneni) misto nahodne — viz
+             * komentar u definice (vyjimka z "zadny spin > 10 ms", zduvodnena
+             * tim, ze bezi jen jednou za dotek, ne v pravidelnem tiku). */
+            if (b == 1) prim_stm32_wait_vblank(20);
             prim_set_target(&s_fb);
             prim_reset_clip();
             screen_main_redraw_button(b);            /* only the pressed button */
@@ -8647,7 +8689,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             /* RUN/STOP nemeni titulek, zato meni PODBARVENI kmitoctu (STOP =
              * lehce cervene). Pri STOP uz 20Hz tick_freq nebezi, takze podklad
              * musime prekreslit tady — jinak by zustal ve stare barve. */
-            if (b == 1) screen_main_redraw_freq_area();
+            if (b == 1) screen_main_redraw_freq_tint();   /* F-0140: uzsi DMA2D burst, geometrie se nemeni */
             else        screen_main_redraw_title();
             if (b == 0) screen_main_redraw_freq();   /* FREQ<->PERIOD: hned prepocitej velke cislo */
             present_now();
@@ -8913,12 +8955,23 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         }
         if (s_view == 33) {                                 /* okno SESTAVY: slot -/+, uloz/nacti/smaz */
             int redraw = 0, reload = 0;
-            if (in_rect(x, y, SET_SLOT_MINUS) && s_setup_slot > 0)            { s_setup_slot--; s_setup_msg = 0; redraw = 1; }
-            else if (in_rect(x, y, SET_SLOT_PLUS) && s_setup_slot < SETUP_N-1){ s_setup_slot++; s_setup_msg = 0; redraw = 1; }
-            else if (in_rect(x, y, SETUP_SAVE_RECT))  { s_setup_msg = setup_save(s_setup_slot)  ? 1 : 4; redraw = 1; }
-            else if (in_rect(x, y, SETUP_ERASE_RECT)) { s_setup_msg = setup_erase(s_setup_slot) ? 3 : 4; redraw = 1; }
+            if (in_rect(x, y, SET_SLOT_MINUS) && s_setup_slot > 0)
+                { s_setup_slot--; s_setup_msg = 0; s_setup_erase_stage = 0; redraw = 1; }
+            else if (in_rect(x, y, SET_SLOT_PLUS) && s_setup_slot < SETUP_N-1)
+                { s_setup_slot++; s_setup_msg = 0; s_setup_erase_stage = 0; redraw = 1; }
+            else if (in_rect(x, y, SETUP_SAVE_RECT))
+                { s_setup_msg = setup_save(s_setup_slot) ? 1 : 4; s_setup_erase_stage = 0; redraw = 1; }
+            else if (in_rect(x, y, SETUP_ERASE_RECT)) {
+                /* SMAZAT = DVOJI potvrzeni (F-0141), stejny vzor jako SD FORMAT:
+                 * kazdy stisk posune stupen, teprve ze stupne 2 se opravdu smaze. */
+                if      (s_setup_erase_stage == 0) { s_setup_erase_stage = 1; s_setup_erase_arm_s = g_uptime_s; }
+                else if (s_setup_erase_stage == 1) { s_setup_erase_stage = 2; s_setup_erase_arm_s = g_uptime_s; }
+                else { s_setup_msg = setup_erase(s_setup_slot) ? 3 : 4; s_setup_erase_stage = 0; }
+                redraw = 1;
+            }
             else if (in_rect(x, y, SETUP_LOAD_RECT))  { reload = setup_load(s_setup_slot) ? 1 : 0;
-                                                        s_setup_msg = reload ? 2 : 5; redraw = 1; }
+                                                        s_setup_msg = reload ? 2 : 5;
+                                                        s_setup_erase_stage = 0; redraw = 1; }
             if (reload) {   /* nactena sestava muze zmenit tema/jas -> plny refresh jako prepinac schematu */
                 ui_theme_select(g_theme_idx);
                 screen_main_invalidate();
@@ -8965,7 +9018,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             prim_set_target(&s_fb); prim_reset_clip();
             ui_button_t tg = {.rect = SURVEY_BTN,
                               .variant = s_survey.active ? UI_BUTTON_STOP : UI_BUTTON_RUN,
-                              .label = s_survey.active ? "STOP" : "START"};
+                              .label = s_survey.active ? "STOP" : "SPUSTIT"};   /* label=AKCE (F-0141) */
             ui_button_render(&tg);
             present_now();
             return true;
