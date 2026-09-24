@@ -462,6 +462,7 @@ datalog_backend_t datalog_backend_sd = {
 #define DL_MIRROR_FREE_CHECK_MS (10u * 60u * 1000u)  /* prehodnoceni volneho mista */
 #define DL_MIRROR_FREE_MIN_MB   20u     /* pod touto hranici se export pozastavi */
 #define DL_MIRROR_BATCH_MAX     64u     /* zaznamu za jeden tik (~11 ms QSPI) */
+#define DL_MIRROR_TAIL_BUF     640u     /* > 4x nejdelsi radek (~155 B) — F-0142 */
 
 static bool     s_mirror_en;         /* zapnuto uzivatelem (persist syscfg) */
 static bool     s_mirror_open;       /* soubor na AKTUALNI karte je otevreny */
@@ -477,6 +478,22 @@ void datalog_mirror_set_enabled(bool on)
 {
     s_mirror_en = on;
     if (!on) {
+        /* 🔴 F-0146: predtim se tu jen nastavilo `s_mirror_open=false` BEZ
+         * `f_close()` — `s_mirror_fil` tak zustal v FatFs vedeny jako otevreny
+         * objekt. Pristi `mirror_open()` (po znovu-zapnuti) pak `f_open()` se
+         * STEJNYM jmenem selhal (nalezeno na HW 2026-09-24 po pridani FA_READ
+         * pro F-0142 — kombinovany rezim ctení+zapis narazil na zamek uz
+         * drzeny tim starym, nikdy nezavrenym objektem). `f_close()` na
+         * nikdy neotevrenem/uz zavrenem `FIL` je bezpecny (FatFs vrati chybu,
+         * kterou tu zamerne ignorujeme — neni co delat jinak). Volajici
+         * (UART `datalog mirror off`) bezi z UartTasku, kde je blokovani OK. */
+        if (s_mirror_open) {
+            sd_blocking_begin();
+            sd_export_busy_begin();
+            f_close(&s_mirror_fil);
+            sd_export_busy_end();
+            sd_blocking_end();
+        }
         s_mirror_open = false;   /* dalsi zapnuti zacne cistym otevrenim */
         snprintf(s_mirror_msg, sizeof s_mirror_msg, "vypnuto");
     }
@@ -513,6 +530,64 @@ static bool mirror_card_vsn(uint32_t *vsn)
     return true;
 }
 
+/* F-0142: vodotisk `s_mirror_seq` v syscfg je debouncovany (`syscfg_flash_tick`
+ * ceka 1,5 s klidu) a je SOUCASTI stejneho blobu, ktery se meni pri KAZDE
+ * uspesne davce — pri dlouhem dohaneni zalohy (kazdy tik `datalog_mirror_service`
+ * ~2 s) blob tedy nikdy neztichne a debounced zapis nenabehne, dokud dohaneni
+ * neskonci. Vypadek napajeni v tom okne by pak s ulozenym (starym) vodotiskem
+ * znovu zapsal radky, ktere uz v souboru JSOU (duplicity).
+ * Reseni: pri kazdem otevreni na STEJNE karte precist POSLEDNI KOMPLETNI radek
+ * souboru (obsah, ne ulozeny pointer — stejny princip jako `find_head()` ve
+ * W25Q) a pouzit vyssi z dvojice (ulozeny vodotisk, precteny seq).
+ * ⚠️ Kdyz posledni radek NENI zakonceny "\r\n" (utrzeny zapis pri predchozim
+ * vypadku napajeni uprostred `f_write`), orizne se (`f_truncate`) — jinak by
+ * soubor navzdy drzel polovicni radek uprostred (na konci) souboru.
+ * @return true = precteno (i kdyz vyslo 0 — prazdny/jen-hlavickovy soubor). */
+static bool mirror_recover_seq_from_file(uint32_t *out_seq)
+{
+    *out_seq = 0;
+    FSIZE_t sz = f_size(&s_mirror_fil);
+    if (sz == 0) return true;   /* prazdny soubor -> 0 je spravne */
+
+    FSIZE_t start = (sz > DL_MIRROR_TAIL_BUF) ? (sz - DL_MIRROR_TAIL_BUF) : 0;
+    if (f_lseek(&s_mirror_fil, start) != FR_OK) return false;
+    static char buf[DL_MIRROR_TAIL_BUF + 1];   /* staticky — ne na stack UartTasku */
+    UINT br = 0;
+    if (f_read(&s_mirror_fil, buf, (UINT)(sz - start), &br) != FR_OK || br == 0u)
+        return false;
+
+    /* Dopredny pruchod oknem: najdi konec POSLEDNIHO a PREDPOSLEDNIHO
+     * kompletniho radku ("\r\n"). Predposledni = zacatek posledniho radku. */
+    UINT prev_end = 0, last_end = 0, n_lines = 0;
+    for (UINT i = 1; i < br; i++) {
+        if (buf[i - 1] == '\r' && buf[i] == '\n') {
+            prev_end = last_end;
+            last_end = i + 1u;
+            n_lines++;
+        }
+    }
+    if (n_lines == 0u) return false;   /* zadny kompletni radek v okne -> vzdat to */
+
+    if (last_end < br) {
+        /* Za poslednim kompletnim radkem jsou jeste bajty = utrzeny zapis. */
+        if (f_lseek(&s_mirror_fil, start + (FSIZE_t)last_end) != FR_OK) return false;
+        if (f_truncate(&s_mirror_fil) != FR_OK) return false;
+        printf("datalog mirror: utrzeny radek na konci souboru orinut (%u B, F-0142)\n",
+               (unsigned)(br - last_end));
+    }
+
+    UINT line_start = (n_lines >= 2u) ? prev_end : 0u;
+    uint32_t v = 0; bool any = false;
+    for (UINT i = line_start; i < last_end && buf[i] != ';'; i++) {
+        if (buf[i] < '0' || buf[i] > '9') { any = false; break; }
+        v = v * 10u + (uint32_t)(buf[i] - '0');
+        any = true;
+    }
+    if (!any) return false;   /* hlavicka "seq;..." nebo poskozeny radek -> nepouzitelne */
+    *out_seq = v;
+    return true;
+}
+
 /* Otevre/vytvori soubor na AKTUALNI karte. Pri jine karte nez naposledy
  * (jina CID) zacina cistym souborem — stary vodotisk na ni neplati.
  * ⚠️ BLOKUJE — volat jen obaleno sd_blocking_begin/end + sd_export_busy_*. */
@@ -528,9 +603,18 @@ static bool mirror_open(void)
     bool same_card = (s_mirror_vsn != 0u) && (vsn == s_mirror_vsn);
 
     if (same_card) {
-        if (f_open(&s_mirror_fil, DL_MIRROR_FILE, FA_OPEN_ALWAYS | FA_WRITE) != FR_OK) {
+        if (f_open(&s_mirror_fil, DL_MIRROR_FILE, FA_OPEN_ALWAYS | FA_READ | FA_WRITE) != FR_OK) {
             snprintf(s_mirror_msg, sizeof s_mirror_msg, "otevreni souboru selhalo");
             return false;
+        }
+        /* F-0142: verit OBSAHU souboru, ne jen ulozenemu vodotisku (viz
+         * zduvodneni u `mirror_recover_seq_from_file`). */
+        uint32_t file_seq = 0;
+        if (mirror_recover_seq_from_file(&file_seq) && file_seq > s_mirror_seq) {
+            printf("datalog mirror: soubor ma novejsi seq (%lu) nez ulozeny vodotisk (%lu)"
+                   " -> obnoveno ze souboru (F-0142)\n",
+                   (unsigned long)file_seq, (unsigned long)s_mirror_seq);
+            s_mirror_seq = file_seq;
         }
         if (f_lseek(&s_mirror_fil, f_size(&s_mirror_fil)) != FR_OK) {
             f_close(&s_mirror_fil);
@@ -629,6 +713,23 @@ void datalog_mirror_service(void)
     uint32_t now = HAL_GetTick();
     if ((int32_t)(now - s_mirror_next_ms) < 0) return;
     s_mirror_next_ms = now + DL_MIRROR_TICK_MS;
+
+    /* F-0143: W25Q log byl mezitim smazan (`datalog erase`) -> `seq` tam zacina
+     * znovu od 1, tedy KLESLO pod stary vodotisk. Bez tohohle by `pending`
+     * zustalo 0 (vypadalo by to jako "hotovo") a zrcadlo by tise cekalo tydny
+     * az mesice, nez novy `seq` znovu doroste na starou hodnotu (L-0011 vzor —
+     * status nesmi tvrdit "hotovo", co ve skutecnosti neprobehlo). Novy soubor,
+     * protoze stara seq cisla se budou OPAKOVAT (nejednoznacnost v historii).
+     * `s_mirror_vsn = 0` vynuti vetev FA_CREATE_ALWAYS v `mirror_open()` —
+     * stejny mechanismus, jaky uz existuje pro "jina karta". */
+    datalog_status_t ds0; datalog_get_status(&ds0);
+    if (ds0.ready && s_mirror_seq > 0u && ds0.last_seq < s_mirror_seq) {
+        printf("datalog mirror: W25Q log byl smazan (seq %lu -> %lu), zacina se novym souborem (F-0143)\n",
+               (unsigned long)s_mirror_seq, (unsigned long)ds0.last_seq);
+        s_mirror_seq = 0u;
+        s_mirror_vsn = 0u;
+        s_mirror_open = false;
+    }
 
     sd_blocking_begin();
     sd_export_busy_begin();
