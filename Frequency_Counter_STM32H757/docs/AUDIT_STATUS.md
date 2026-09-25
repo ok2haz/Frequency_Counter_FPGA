@@ -190,6 +190,37 @@ kód **přeložil a vykonal**, ne že jeho **výstup dává smysl**. Odhalilo to
 přečtení **konzumenta** (`errlog_fmt_detail`) a **mechanismu** (`errlog_put`)
 — tedy kódu, který se vůbec neměnil.
 
+✅ **FÁZE OPRAV PROBĚHLA TÝŽ DEN — skupina A schválena („oprav"), všechny
+3 nálezy uzavřeny ve 2 commitech.** ⬜ **Neověřeno na HW.**
+
+| nález | commit | jak |
+|---|---|---|
+| **F-0155 + F-0156** [S3] | `dc6ff88` | **jeden zásah na obě**: nový druh `ERRLOG_K_UARTFATAL` = 12 na KONEC výčtu, vlastní větev ve `errlog_fmt_detail`, jméno `GPS!`, posunutý `ERRLOG_KIND_MAX` |
+| **F-0157** [S4] | *(docs)* | explicitní odkaz `viz fmc.c:207/:212` u obou maker + věta, že vynutit to nelze |
+
+🔑 **Past nalezená AŽ při opravě:** `ERRLOG_KIND_MAX` byl navázaný na
+**konkrétní** položku (`ERRLOG_K_CFG`), ne na poslední — bez jeho posunutí by
+`errlog_put` nový druh **tiše odmítl** (`kind > MAX → return false`) a oprava
+by nefungovala, aniž by to cokoli ohlásilo. Varování připsáno na obě místa.
+
+✅ **Oddělení kbelíků prodlevy ověřeno ve slinkovaném obrazu, ne úvahou:**
+`s_el_cool_next` má **52 B = 13 × uint32**, `s_el_pending` **26 B = 13 × uint16**
+(`nm --print-size --radix=d`) ⇒ druh 12 indexuje vlastní slot nezávisle na
+druhu 4. Věta hlásí **následek** (L-0056):
+`GPS prijem MRTVY az do resetu (re-arm selhal, pokusu=N)`.
+
+**Ověření (F5.2):** build **0 varování**, `audit.py` **92/0/2**, `.text`
+615 112 → **615 184 B** (+72), nový řetězec doložen v `.elf`.
+
+🔴 **Na HW ověřit NELZE a je to strop, ne opomenutí:** spouštěcí porucha dosud
+nikdy nenastala (`g_uart1_rearm_fail = 0`, změřeno na desce) a **injektor
+errlog záznamu v konzoli neexistuje**, takže novou větev dekodéru není čím
+vyvolat. Ověření je proto statické + v obrazu.
+
+**Nová lekce L-0085** (nová varianta pod existujícím druhem zdědí cizí
+prodlevu i cizí dekodér; dvě hlášení v jednom průchodu ISR si můžou sdílený
+rate-limit vyčerpat navzájem).
+
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
 kontroly, která F-0148 samo odhalila (viz L-0081): rozšíření

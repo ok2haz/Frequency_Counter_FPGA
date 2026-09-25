@@ -2950,6 +2950,57 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0085 — Nová varianta pod existujícím druhem zdědí CIZÍ prodlevu a CIZÍ dekodér; a událost se dala potlačit sama sebou v jednom průchodu ISR
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, přezkum vlastních oprav, F-0155 + F-0156)
+- **Oblast:** `usart.c` (F-0153), záznamník chyb `errlog`
+- **Symptom:** Oprava F-0153 měla udělat tichou poruchu (selhání re-armu GPS
+  příjmu = trvalá smrt RX) **viditelnou**. Zalogovala ji pod existující druh
+  `ERRLOG_K_UART` s novým `sub = 0xFE`. Výsledek byl horší než nic:
+  1. **Dekodér ten `sub` neznal.** `errlog_fmt_detail` rozlišoval jen
+     `sub == 0xFF`; všechno ostatní padalo do větve
+     `"ORE=%lu FE=%lu NE=%lu PE=%lu"`. Trvalá smrt příjmu se tedy vypsala jako
+     **falešné `ORE=<počet>`** — záznamník tvrdil chybu, která se nestala.
+  2. **Prodleva `errlog_put` je per DRUH, ne per `sub`** (`ERRLOG_COOLDOWN_MS`
+     = 60 s). `HAL_UART_ErrorCallback` loguje **dvakrát v jednom průchodu**:
+     nejdřív chybu linky, pak — o pár instrukcí dál — selhání re-armu. Druhé
+     volání narazilo na prodlevu, **kterou si první právě nastavilo**, takže
+     se v hlavní cestě záznam neemitoval **nikdy**. A protože je porucha
+     terminální (další callback nepřijde), nevyvezl ho ani žádný příští záznam.
+- **Příčina:** „Přidám to pod existující druh, je to přece taky UART" vypadá
+  jako úspora. Jenže druh v tomhle záznamníku nese **dvě implicitní politiky** —
+  jak se událost **rozluští** a jak často se **smí emitovat** — a nový `sub`
+  zdědí obě, aniž by o něm kterákoli z nich věděla.
+- **Oprava:** vlastní druh `ERRLOG_K_UARTFATAL` (na KONEC výčtu — čísla jsou
+  v zapsaných datech), vlastní větev ve `errlog_fmt_detail`, vlastní jméno
+  v `errlog_kind_name`, a posunutý `ERRLOG_KIND_MAX`.
+  ✅ **Ověřeno ve slinkovaném obrazu, ne předpokladem:** `s_el_cool_next` má
+  nově **52 B = 13 × uint32** a `s_el_pending` **26 B = 13 × uint16**, tedy
+  nový druh má prokazatelně **vlastní kbelík prodlevy**.
+- **Pravidlo:** **Než přidáš novou variantu pod existující druh/kategorii,
+  vyjmenuj, co ta kategorie implicitně určuje** — typicky rate-limit, dekodér,
+  jméno, filtr v UI — **a ověř, že to nová varianta smí zdědit.** Když se liší
+  v ŽIVOTNOSTI (přechodná × trvalá) nebo ve VÝZNAMU, patří jí vlastní druh.
+  🔴 A zvlášť: **dvě diagnostická hlášení v jednom průchodu ISR si můžou
+  navzájem vyčerpat sdílený rate-limit.** To se nepozná čtením ani jednoho
+  z nich zvlášť — jen přečtením obou v pořadí, v jakém běží.
+- **🔑 Meta-poučení (tohle je na té lekci nejcennější):** F-0153 prošlo
+  **buildem (0 varování), `audit.py` v baseline, kontrolou symbolu v `.elf`
+  i HW testem na desce** — a přesto nedělalo, co mělo. Žádná z těch kontrol na
+  tuhle třídu nedosáhne, protože **všechny ověřují, že se kód přeložil
+  a vykonal, ne že jeho VÝSTUP dává smysl.** Odhalilo to až přečtení
+  **konzumenta** (`errlog_fmt_detail`) a **mechanismu** (`errlog_put`) — tedy
+  kódu, který se vůbec neměnil. Ke každé opravě, která něco *hlásí*, patří
+  otázka: **kdo to čte a co z toho udělá?**
+- **Detekce:** u každého `errlog_put`/loggeru ověř, že (a) dekodér zná použitý
+  `sub`/`kind` — jinak vypíše cizí větev, (b) v témže průchodu se neloguje
+  víckrát pod stejný druh. Mechanicky: vypsat všechna volání jako
+  `kind + sub` a porovnat s větvemi ve formátovači.
+- **Commit:** `fix(F-0155/F-0156)`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

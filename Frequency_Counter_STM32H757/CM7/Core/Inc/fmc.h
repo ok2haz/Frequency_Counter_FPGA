@@ -86,8 +86,15 @@ void HAL_SDRAM_MspDeInit(SDRAM_HandleTypeDef* hsdram);
  * ⚠️ Kdyz zmenis delicku FMC nebo `SDClockPeriod`, uprav `FMC_SDCLK_MHZ`.
  * Pri ZVYSENI taktu assert projde (stara hodnota = castejsi obnova = bezpecne),
  * pri SNIZENI build spadne — a to je prave ten smer, ktery dela skodu. */
-#define FMC_SDCLK_MHZ           50u     /* PLL2R 100 MHz / SDClockPeriod_2 */
-#define SDRAM_ROWS            8192u     /* RowBitsNumber = 13 -> 2^13 radku */
+/* ⚠️ F-0157: obe hodnoty nize jsou DRUHYM vyjadrenim toho, co uz stoji
+ * v konfiguraci radice — `fmc.c:207` (`RowBitsNumber = ..._ROW_BITS_NUM_13`)
+ * a `fmc.c:212` (`SDClockPeriod = ..._CLOCK_PERIOD_2`). Vynutit tu vazbu NELZE:
+ * jsou to runtime prirazeni v GENEROVANEM kodu mimo `USER CODE`, kam
+ * `_Static_assert` nedosahne a kde by regen upravu smazal. Kdyz tam nekdo sahne,
+ * MUSI to prenest sem — jinak assert nize projde, ale bude pocitat s jinou
+ * geometrii, nez jakou ma radic (L-0018). */
+#define FMC_SDCLK_MHZ           50u     /* PLL2R 100 MHz / SDClockPeriod_2, viz fmc.c:212 */
+#define SDRAM_ROWS            8192u     /* RowBitsNumber = 13 -> 2^13 radku, viz fmc.c:207 */
 #define SDRAM_TREF_US        64000u     /* tREF cele matice, MT48LC16M16A2 do 85 C */
 #define REFRESH_COUNT_SPEC_MAX \
     ((SDRAM_TREF_US * FMC_SDCLK_MHZ / SDRAM_ROWS) - 20u)

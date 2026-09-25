@@ -86,7 +86,17 @@ souvislost. Ověřeno v `CM7/Release/H757_LED_CM7.map`, ne odhadem.
 - **Vztah k lekcím:** **L-0049** (rozluštit `a`/`b` do věty JEDNOU, na zdroji),
   **L-0011** (diagnostika tvrdí, co neměřila), **L-0017** (tichý přeskok jen
   s počítadlem — tady je počítadlo, ale jeho popisek lže), **L-0056**.
-- **Stav:** otevřeno.
+  **Nová lekce L-0085.**
+- **Stav:** **opraveno 2026-09-25** (`dc6ff88`), ⬜ **neověřeno na HW**.
+  Opraveno **variantou (1) z návrhu — tedy společně s F-0156**, protože jeden
+  zásah řeší obě vady: nový druh `ERRLOG_K_UARTFATAL` má vlastní větev ve
+  `errlog_fmt_detail`, takže nemůže spadnout do cizí. Věta hlásí **následek**
+  (L-0056): `GPS prijem MRTVY az do resetu (re-arm selhal, pokusu=N)`.
+  **Ověřeno v `.elf`:** nový řetězec je v obrazu (`grep -ac` = 1).
+  🔴 **Na HW ověřit nelze** — spouštěcí porucha dosud nikdy nenastala
+  (`g_uart1_rearm_fail = 0`, změřeno) a **injektor errlog záznamu v konzoli
+  neexistuje**, takže novou větev dekodéru není čím vyvolat. Ověření je proto
+  jen statické + v obrazu; to je poctivý strop, ne opomenutí.
 
 ---
 
@@ -146,9 +156,23 @@ souvislost. Ověřeno v `CM7/Release/H757_LED_CM7.map`, ne odhadem.
   (`errlog_fmt_detail`), takže web novou hodnotu nemusí znát.
 - **Vztah k lekcím:** **L-0017** (počítadlo musí být dosažitelné bez sondy),
   **L-0016** (porucha, kterou nelze odlišit od normálního provozu), **L-0059**
-  (čítač, jehož nula nese diagnózu). Nová třída: *„událost a její vlastní
-  potlačení vznikly v jednom průchodu"*.
-- **Stav:** otevřeno.
+  (čítač, jehož nula nese diagnózu). **Nová lekce L-0085** — třída *„událost
+  a její vlastní potlačení vznikly v jednom průchodu ISR"*.
+- **Stav:** **opraveno 2026-09-25** (`dc6ff88`), ⬜ **neověřeno na HW**.
+  Zvolena **varianta (1)** = vlastní druh `ERRLOG_K_UARTFATAL`, tedy ta
+  doporučená: řeší F-0155 i F-0156 jedním zásahem a navíc poctivě odlišuje
+  **trvalou** poruchu od přechodných chyb linky.
+  Přidán na **KONEC** výčtu (čísla jsou v zapsaných datech), doplněno jméno
+  `GPS!` v `errlog_kind_name` a posunut `ERRLOG_KIND_MAX`.
+  🔑 **Past nalezená při opravě:** `ERRLOG_KIND_MAX` byl navázaný na
+  **konkrétní** položku (`ERRLOG_K_CFG`), ne na poslední — bez jeho posunutí
+  by `errlog_put` nový druh **tiše odmítl** (`kind > MAX → return false`).
+  Varování připsáno na obě místa (definice i výčet).
+  ✅ **Oddělení kbelíků prodlevy ověřeno ve slinkovaném obrazu, ne úvahou:**
+  `s_el_cool_next` má **52 B = 13 × uint32** a `s_el_pending` **26 B =
+  13 × uint16** (`nm --print-size --radix=d`), takže druh 12 indexuje vlastní
+  slot nezávisle na druhu 4.
+  🔴 **Na HW ověřit nelze** — viz F-0155.
 
 ---
 
@@ -183,7 +207,17 @@ souvislost. Ověřeno v `CM7/Release/H757_LED_CM7.map`, ne odhadem.
 - **Vztah k lekcím:** **L-0018** (dvě místa počítající touž veličinu),
   **L-0020** (duplicitu, kterou je dražší odstranit než snést, převeď na
   kontrolu rozdílu — tady kontrola nedosáhne, takže zbývá odkaz).
-- **Stav:** otevřeno.
+- **Stav:** **opraveno 2026-09-25** (`docs:`), ✅ **binárně ověřeno**. Opraveno
+  **podle návrhu**: u obou maker ve `fmc.h` je nově explicitní odkaz
+  (`viz fmc.c:212` / `viz fmc.c:207`) plus věta, že vazbu **vynutit nelze** —
+  jsou to runtime přiřazení v generovaném kódu mimo `USER CODE`, kam
+  `_Static_assert` nedosáhne a kde by regen úpravu smazal — takže kdo tam
+  sáhne, musí hodnotu přenést sem. Vlastní hodnoty ponechány.
+  **Ověřeno diffem:** jediné dotčené kódové řádky jsou ty dva `#define`
+  a jejich **hodnoty jsou bajt za bajtem identické** (`50u`, `8192u`) —
+  změnil se výhradně koncový komentář.
+  ⚠️ Poznámka k metodě: `.text` tady jako důkaz **použít nelze**, protože build
+  proběhl až po opravě F-0155/F-0156 naráz, takže by se efekty nedaly oddělit.
 
 ---
 
