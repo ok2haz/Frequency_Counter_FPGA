@@ -278,7 +278,13 @@ napsaný jako absolutní, ale `prim_fill_rect` ho splní jen pro neprůhledné b
 - **Vztah k lekcím:** `L-0004` (čekací smyčka) — mez existovala, ale byla zvolená
   bez vztahu k nejdelšímu legitimnímu přenosu; a nová lekce: **„hlídací mez, která
   se dá splést s normálním provozem, není ochrana, ale generátor tichých chyb"**.
-- **Stav:** opraveno 2026-09-10 (commit `d3a099e`), ⬜ neověřeno na HW po power-cyklu.
+- **Stav:** opraveno 2026-09-10 (commit `d3a099e`), ✅ **OVĚŘENO NA HW 2026-09-25**.
+  `status` → `DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 74.766 ms
+  (mez 500)` — a to **po síťové zátěži** (SPA 149 kB + 30 spojení), kdy je
+  sběrnice SDRAM nejvíc vytížená. Nejdelší skutečné čekání je tedy **~6,7× pod
+  mezí** a na legitimním přenosu nevypršela ani jednou.
+  🔑 Tím je změřená i **rezerva** meze, ne jen to, že počítadlo hlásí nulu —
+  přesně to žádá **L-0016** (mez a měřidlo její rezervy se navrhují společně).
   Opraveno **variantou 2** (mez v ms + zrušení přenosu + čítač nejdelšího čekání), ne
   pouhým zvýšením konstanty. 🔑 **A měření hned vyvrátilo můj vlastní odhad:** čítač
   `g_d2d_wait_max_cyc` ukázal, že nejdelší legitimní čekání je **~61 ms**, ne ~12 ms,

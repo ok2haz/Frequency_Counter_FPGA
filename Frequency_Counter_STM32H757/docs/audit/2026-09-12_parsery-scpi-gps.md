@@ -117,7 +117,11 @@ ale `IPC_VERSION` se **nemění**, takže banky lze flashovat nezávisle.
 - **Riziko opravy:** nízké. `scpi_num` je krytá selftestem (`:1303-1312`), takže
   regrese v konverzi se pozná hned. Doplnit vektor `1E999` → `*ok == 0`.
 - **Vztah k lekcím:** **`L-0015`** a **`L-0026`**; po opravě nová **`L-0030`**.
-- **Stav:** **opraveno 2026-09-12** (`aaacaf5`), ⬜ **neověřeno na HW**.
+- **Stav:** **opraveno 2026-09-12** (`aaacaf5`), ✅ **OVĚŘENO NA HW 2026-09-25**.
+  Do běžícího přístroje poslán přímo ten vektor, který dává název nálezu:
+  `scpi SENS:FREQ:GATE 1E2147483647` → **okamžitě `-224,"Illegal parameter value"`**,
+  žádné zdržení, konzole ani CM4 se nezakously. Bez opravy by neomezený exponent
+  roztocil ~2 miliardy iterací.
   Provedeno podle návrhu: mez 308 + `if (e < 10000)` proti přetečení `int`.
   Pořadí parsování vs. oprávnění **zůstalo** — SCPI-99 chce chybu příkazu před
   chybou provedení. 🔑 Ověřeno, že ochrana je **i v obrazu CM4** (mez dohledána
