@@ -148,7 +148,14 @@ bez jediného počítadla (**F-0128**) a druhá instance otevřeného F-0014 (**
 - **Riziko opravy:** nízké; čistě aditivní, nemění chování při zahození.
 - **Vztah k lekcím:** **`L-0017`** (tichý přeskok je přípustný jen s počítadlem),
   **`L-0003`** / **`L-0028`** (zahozená návratová hodnota u RX).
-- **Stav:** **opraveno 2026-09-19** v `f4f4ebf` (spolu s F-0127), ⬜ **neověřeno na HW**.
+- **Stav:** **opraveno 2026-09-19** v `f4f4ebf` (spolu s F-0127), ✅ **OVĚŘENO
+  NA HW 2026-09-25** v rozsahu „počítadla existují a jsou dosažitelná bez
+  sondy": `status` → **`KONZOLE: zahozeno TX 192 B / RX 0 B`**. Hodnota TX je
+  nenulová po každém bootu (výpis bring-upu, než si host otevře port) a
+  **během celé session už nevyrostla** ani při dlouhých výpisech
+  (`membench`, `selftest`, `errlog`) — tedy ring za provozu nepřetéká.
+  ⚠️ **Co ověřené NENÍ:** RX počítadlo je trvale 0, takže zahazovací cesta
+  ve směru RX se nikdy neprovedla a její správnost tím doložená není.
   🔑 **Nebylo to volitelné.** Oprava F-0127 si vynutila změnu politiky: „zahoď nejstarší“
   (`s_tail++`) by zahazovala **právě letící** blok, protože in-flight oblast začíná
   přesně na `s_tail`. Zahazuje se tedy **příchozí** bajt — a protože tím zahazování
