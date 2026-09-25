@@ -15,10 +15,36 @@ komentáře"). Čistě `docs:` — žádná změna chování, `.text` beze změn
 - **F-0145** — komentář u `s_snd_grace` (`sd_export.c:131`) doplněn o vedlejší
   efekt L-0079 (skutečné vložení v prvních ~2 s po bootu se taky nepípne).
 
-🔑 **Audit backlog je tím ÚPLNĚ vyčerpaný** — všech 22 číslovaných modulů
-auditováno a opraveno, ad-hoc běhy nad posledními úpravami taky, žádný
-S1/S2/S3/S4 otevřený. Jediná zbylá položka je vědomě odložená S3 **F-0003**
+🔑 **Backlog NÁLEZŮ je vyčerpaný** — všech 22 číslovaných modulů auditováno
+a opraveno, ad-hoc běhy nad posledními úpravami taky. Ověřeno tvrdě:
+**142 `Stav:` řádků v `docs/audit/*.md`, všech 142 opraveno/uzavřeno/odloženo**
+(žádný S1/S2/S3/S4 otevřený). Vědomě odložená zůstává jen S3 **F-0003**
 (čeká na příští CubeMX regen).
+
+🔴 **NOVÉ 2026-09-25 — ALE POKRYTÍ NENÍ ÚPLNÉ: `MODUL 23` (generované init
+soubory periferií) CHYBÍ.** Zjištěno křížovou kontrolou souborového pokrytí
+(seznam všech `.c` proti souborovým seznamům 22 modulů), ne dalším auditem.
+Tabulka modulů **nikdy nevzala za předmět CubeMX-generované `MX_*_Init`
+soubory**. Nejsou v žádném souborovém seznamu; zástupné položky (`libprim/*`,
+`libui/*`, `freertos*.c`) je nepokrývají.
+
+| soubor | celkem | ruční `USER CODE` | obsah |
+|---|---|---|---|
+| **`fmc.c`** | 477 ř. | **180 ř.** | celá `fmc_sdram_init_sequence()` — mode registr, CAS latency, `REFRESH_COUNT`, timing |
+| **`usart.c`** | 229 ř. | **88 ř.** | `HAL_UART_RxCpltCallback` + `HAL_UART_ErrorCallback` |
+| `adc/dsihost/ltdc/quadspi/spi/tim/eth.c` | 122–199 ř. | 17–19 ř. | boilerplate, nízká priorita |
+
+🔑 **Proč to má prioritu, i když je to „generovaný kód":** `fmc.c` je přesně
+ten soubor, kde žily **`ReadPipeDelay = 0`** a **`REFRESH_COUNT = 1835`** —
+3 338 207 chybných bitů, černý displej, měsíce falešného podezření na pájku
+a na vadný SDRAM čip. Obě byly v kódu **od prvního commitu** a našlo je
+**měření, ne audit** (viz `CLAUDE.md`, „HW OBVINĚN — A BYL NEVINNÝ").
+V `usart.c` sedí past „bez `AbortReceive` zůstane RX navždy `BUSY`" = mrtvá
+konzole. ⚠️ Nuance: `fmc.c` **statickou analýzou prochází** — je to jeden ze
+dvou souborů baseline `audit.py` 92/0/**2**. „Neauditováno" tedy znamená
+*nebyl předmětem modulového auditu*, ne *nikdo se na něj nepodíval*.
+⚠️ Past při opravách v těchto souborech: veškerá logika musí zůstat
+v `USER CODE` blocích (pravidlo 6), jinak ji příští regen smaže.
 
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
@@ -671,6 +697,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | **opraveno vše** (6 z 6, F-0122+F-0139 ✅ na HW, 4 zbylé ⬜) | 2026-09-20 | 0 | 0 | 2 | 4 | [6](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
+| **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | 🔴 **nezačato** — mezera v pokrytí nalezená 2026-09-25 křížovou kontrolou souborů | — | — | — | — | — | — |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
