@@ -3,7 +3,21 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-25 (čtvrtý běh) — ✅ **Tři odložené S4
+**Poslední aktualizace:** 2026-09-25 (konec sezení) — 🟡 **HW PRŮCHOD OPRAV
+PŘERUŠEN na žádost uživatele, pokračování = `../STATUS.md` TODO #254.**
+Seznam **negenerovat** z `HW_OVERENI_AUDIT_2026-09-19.md` (zastaralý, 11 ze 46),
+ale **`python tools/hw_neovereno.py`** (nový nástroj; čte celé `Stav:` bloky
+a zachytí i částečně ověřené `~`). Stav: **37 (S2=4, S3=26, S4=7)**, na
+začátku průchodu 46. Uzavřeno na desce 9 nálezů (F-0036, F-0056, F-0057,
+F-0064, F-0060, F-0131, F-0132, F-0128, F-0027), F-0026 jen částečně
+(závod — vytažení karty během zápisu — čeká na souhlas uživatele).
+Deska: CM7 = HEAD (`dc6ff88`+), ethernet nově zapojený (`IP 10.0.0.106`),
+SD karta 30 GB ve slotu.
+🔑 **Pokračovat zde:** `STATUS.md #254` — rozdělené na „vyžaduje uživatele
+u desky", „jde bez uživatele", „důkaz už posbíraný, jen zapsat" a „ověřit
+nelze vůbec".
+
+**Předchozí, 2026-09-25 (čtvrtý běh):** ✅ **Tři odložené S4
 komentářové nálezy skupiny C opraveny** (uživatel schválil "opravit S4
 komentáře"). Čistě `docs:` — žádná změna chování, `.text` beze změny
 (615096 B), build 0 varování, `audit.py` 92/0/2:
