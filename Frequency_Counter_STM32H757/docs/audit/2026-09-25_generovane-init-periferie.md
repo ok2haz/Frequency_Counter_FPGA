@@ -102,7 +102,13 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
   druhá ne; tady doslova: CM4 zamyká, CM7 ne), **L-0022** (obrana, která je
   opt-in, dojde jen na ty volající, kteří o ní vědí), **L-0011** (závěr
   „to nebyl CM4" převzatý bez opory v datech). **Nová lekce L-0082.**
-- **Stav:** **opraveno 2026-09-25**, ⬜ **neověřeno na HW**. Opraveno **podle
+- **Stav:** **opraveno 2026-09-25**, ✅ **regresně ověřeno na HW po STUDENÉM
+  STARTU** (dva power-cykly): `g_cm4_absent = 0` (zámek boot nezadrhl),
+  `DISPLEJ: bring-up OK`, `GPIO HLIDAC: 0 oprav`, I2C4 `SCL=1 SDA=1 idle`,
+  `CM4: alive`. 🔴 **ÚČINEK ověřit NELZE:** `GPIO HLIDAC` bylo 0 **před
+  opravou i po ní**, takže se závod na téhle desce právě neprojevuje. Je to
+  preventivní oprava — „bez regrese" je doloženo, „funguje" ne, a tvrdit to
+  druhé by bylo nepoctivé. Opraveno **podle
   návrhu**: blok obalen `gpio_cfg_lock()`/`gpio_cfg_unlock()`, přidán
   `#include "gpio_guard.h"` (obojí uvnitř `USER CODE`, tedy regen-safe).
   **Navíc oproti návrhu** uvedena na pravdu chybná premisa v komentáři
@@ -351,7 +357,16 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
   nejčastější podoba obrany, která neexistuje), **L-0017** (tichý přeskok je
   přípustný jen s počítadlem), **L-0016** (mez/porucha, kterou nelze odlišit
   od normálního provozu, je generátor tichých chyb).
-- **Stav:** **opraveno 2026-09-25**, ⬜ **neověřeno na HW**. Opraveno **jinak,
+- **Stav:** **opraveno 2026-09-25**, ✅ **regresně ověřeno na HW** (GPS i UART
+  fungují, `g_uart1_rearm_fail = 0` a `g_gps_rx_drop = 0` stabilně přes 6 s ⇒
+  přidaný kód nic nespouští a ISR bouři nedělá). 🔴 **Vlastní chybová cesta
+  ověřená NENÍ** — spouštěcí porucha nikdy nenastala a injektor neexistuje.
+  ⚠️ **Tato oprava byla 2026-09-25 PŘEPRACOVÁNA** nálezy **F-0155 + F-0156**
+  (`dc6ff88`): logovalo se pod `ERRLOG_K_UART` se `sub = 0xFE`, což se
+  vypisovalo jako falešné `ORE=<n>` a v hlavní cestě se navíc vůbec
+  neemitovalo. Dnes jde o vlastní druh `ERRLOG_K_UARTFATAL`.
+  **Ta úprava je ⬜ neověřená na HW** — viz `2026-09-25_fixreview-modul23.md`.
+  Opraveno **jinak,
   než nález navrhoval, a v menším rozsahu — po ověření, které návrh neudělal.**
   Návrh chtěl nové počítadlo **plus řádek ve `status`**, protože předpokládal,
   že stávající `g_uart1_*` nikdo nečte. **Ověření to vyvrátilo:** `grep` sice
