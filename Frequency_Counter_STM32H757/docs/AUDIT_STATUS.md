@@ -144,6 +144,52 @@ regen-safe obalit nejde; samostatné rozhodnutí.
 se neví. Kdyby to někdo chtěl dořešit, začíná to zúžením zdržení (200 → 100 →
 50 ms) s power-cyklem po každém kroku, ne úvahou.
 
+---
+
+🔴 **NOVÉ 2026-09-25 (čtvrtý běh) — PŘEZKUM VLASTNÍCH OPRAV modulu 23:
+3 nálezy (2× S3, 1× S4), F3 zapsána, fáze oprav NEproběhla.** Verdikt
+**podmíněně funkční**. Zápis →
+[`audit/2026-09-25_fixreview-modul23.md`](audit/2026-09-25_fixreview-modul23.md).
+`/audit-modul` přišel **bez jména modulu** a žádný modul se stavem `nezačato`
+nezbyl, takže cíl vybrán podle precedensu posledních dvou sezení (přezkum
+hotových oprav — právě ten našel F-0148 a L-0081).
+
+🔴 **Obě S3 míří na TUTÉŽ opravu (F-0153) a obě znamenají, že nedoručuje,
+co slibuje** — tedy že „převádí tichou poruchu na viditelnou":
+- **F-0155 [S3]** — `errlog_put(ERRLOG_K_UART, **0xFE**, …)` jde do pole `sub`,
+  jenže `errlog_fmt_detail` (`flightrec.c:912-919`) zná jen `sub == 0xFF`.
+  Selhání re-armu se proto vypíše jako **falešné `ORE=<počet> FE=0 NE=0 PE=0`**
+  — záznamník tvrdí chybu, která se nestala, a zamlčuje tu, která se stala.
+- **F-0156 [S3]** — `errlog_put` má prodlevu **per DRUH** (`ERRLOG_COOLDOWN_MS`
+  = **60 s**). `HAL_UART_ErrorCallback` ale loguje **dvakrát v jednom průchodu**:
+  nejdřív chybu linky, pak (přes `uart1_rearm_rx()`) selhání re-armu. Druhé
+  volání narazí na prodlevu, kterou si první právě nastavilo → **v hlavní cestě
+  se záznam neemituje NIKDY**. A protože je selhání re-armu terminální (příjem
+  je mrtvý, další callback nepřijde), nevyveze ho ani žádný příští záznam.
+  Zbude jen `g_uart1_rearm_fail`, čitelné **pouze sondou** — což zpřísněná
+  **L-0017** za dostatečné nepovažuje.
+  🔑 Doporučená oprava (vlastní `kind` pro terminální poruchu) řeší **obě**
+  S3 jedním zásahem.
+- **F-0157 [S4]** — oprava F-0151 zavedla `SDRAM_ROWS`/`FMC_SDCLK_MHZ` jako
+  druhé vyjádření faktů z `fmc.c:207`/`:212` (generovaný kód mimo `USER CODE`,
+  takže vynutit to nejde) — čistá bilance F-0151 zůstává kladná, ale je to
+  menší výskyt téže třídy, kterou odstraňovala (L-0018).
+
+✅ **Zkontrolováno a v pořádku:** `uart1_rearm_rx()` jako jediný zdroj pravdy
+pro obě obsluhy; **`errlog_put` doložen jako skutečně ISR-safe** (krátká sekce
+`__disable_irq()`, zápis jen do RAM ringu, čas se dopočítává až v `tick`) —
+tvrzení z mého komentáře tedy platí (L-0028); sentinel `0xFE` nekoliduje
+s `ec & 0xFF` (max `0x3F`); F-0149 je celý v `USER CODE` a HSEM hodiny jsou
+zapnuté před použitím; F-0144/145/147/150 obsahují **výhradně komentáře**
+(doloženo i `.text` beze změny).
+
+🔑 **Poučení, které tenhle běh potvrdil potřetí:** F-0153 prošlo buildem,
+`audit.py`, kontrolou symbolu v `.elf` **i HW testem** — a přesto nefunguje,
+jak má. Žádná z těch kontrol na tuhle třídu nedosáhne: všechny ověřují, že se
+kód **přeložil a vykonal**, ne že jeho **výstup dává smysl**. Odhalilo to až
+přečtení **konzumenta** (`errlog_fmt_detail`) a **mechanismu** (`errlog_put`)
+— tedy kódu, který se vůbec neměnil.
+
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
 kontroly, která F-0148 samo odhalila (viz L-0081): rozšíření
