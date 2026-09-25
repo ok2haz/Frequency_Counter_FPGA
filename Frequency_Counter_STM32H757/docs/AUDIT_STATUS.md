@@ -3,7 +3,32 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-24 — 🔴 **Cílený audit posledních úprav
+**Poslední aktualizace:** 2026-09-25 — ✅ **F-0148 [S2] opraveno** (schváleno
+uživatelem "a" = skupina A z triáže). Přezkum VLASTNÍCH OPRAV `1d18c28`
+(d2d_wait yield) a `caa5f70` (SD zrcadlo F-0142/F-0143/F-0146) 2026-09-24
+našel novou regresi: oprava F-0143 v `datalog_mirror_service()` znovu
+zaváděla přesně tu chybu (`s_mirror_open=false` bez `f_close()`), kterou
+F-0146 opravilo o 20 řádků výš **ve stejném commitu** (nová lekce **L-0081**).
+Oprava: `f_close()` guard analogický F-0146, `sd_blocking_begin/end` scope
+rozšířen tak, aby zahrnul i erase-detekci (`datalog_sd.c:717-747`).
+Build 0 varování, `audit.py` 92/0/2. `.text` beze změny (615096 B) — ověřeno
+přímo v `.elf`: `f_close` volání uvnitř `datalog_mirror_service` (po
+inlinování `mirror_open`, `static` s jediným volajícím) vzrostla 3→4.
+⬜ **Neověřeno na HW** — flash selhal, deska byla v okamžiku pokusu zjevně
+vypnutá/odpojená (`STM32_Programmer_CLI`: "Voltage: 0.00V", COM8 zmizel ze
+seznamu portů) — čeká se, až bude deska znovu dostupná. A i po flashi
+zbývá **destruktivní** scénář (`datalog erase` nad aktivním zrcadlem) —
+neprovedeno bez výslovného souhlasu uživatele. Druhý nález **F-0147 [S4]**
+(nepřesný komentář u `d2d_wait()`) zůstává odložený (skupina C, `docs:` dluh,
+neschváleno k opravě).
+Zápis → `docs/audit/2026-09-24_fixreview-d2dwait-sdmirror.md`,
+`docs/LESSONS.md` L-0081.
+🔑 **Pokračovat zde:** naflashovat CM7 Release (aktuální build hotový,
+jen čeká na dostupnou desku), ověřit `status`/`datalog mirror` normální
+provoz (regresní kontrola), případně F-0147 komentář (skupina C, jen na
+vyžádání).
+
+**Předchozí, 2026-09-24 (první běh):** 🔴 **Cílený audit posledních úprav
 (6 commitů `837d2d6`…`2fdd202` + 1 nekomitovaná oprava), NE číslovaný modul —
 na žádost uživatele "projdi poslední úpravy".** Rozsah: SD dvouton (+ oprava
 L-0079), automatické CSV zrcadlo datalogu na SD, ikona SD karty v headeru
@@ -661,9 +686,9 @@ sám hlásil rozpor proti nálezovým dokumentům. Čísla níže jsou jeho výs
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
-| S2 | 0 | 20 | 0 |
+| S2 | 0 | 21 | 0 |
 | S3 | 1 | 72 | 0 |
-| S4 | 3 | 37 | 0 |
+| S4 | 4 | 37 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -676,8 +701,12 @@ UART `selftest` deterministicky přetékal zásobník UartTasku a shazoval desku
 resetu**, `status`/`stats` ukázaly `stack Uart free 6360 B` (bylo 168 B), ověřeno
 2× (uptime 46 s a znovu 88 s). ⬜ Zbývá jen fyzický power-cyklus (formalita —
 vada byla vlastností běžícího programu, ne cold-boot závodu).
+✅ **S2 nově BEZ otevřených — F-0148 opraveno 2026-09-25** (⬜ jen neověřeno
+na HW, deska momentálně nedostupná).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen).
-**S4 „Otevřené" = F-0144 + F-0145** (tato session, skupina C, jen `docs:` dluh).
+**S4 „Otevřené" = F-0144 + F-0145 + F-0147** (F-0144/F-0145 tato session,
+skupina C; F-0147 nepřesný komentář u `d2d_wait()`, taky skupina C —
+všechny tři jen `docs:` dluh).
 
 **Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument

@@ -2778,6 +2778,47 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0081 — Oprava napsaná hned vedle právě opraveného anti-vzoru ho dokázala zopakovat o pár řádků níž
+
+- **Datum:** 2026-09-24 (nalezeno), 2026-09-25 (opraveno)
+- **Oblast:** SD karta / FatFs, datalog zrcadlo — přímé pokračování L-0080
+- **Symptom:** V TÉŽE session, v TOMTÉŽ commitu (`caa5f70`), který opravil
+  F-0146 (`datalog_mirror_set_enabled(false)` nezavíralo `s_mirror_fil`),
+  vznikla NOVÁ funkce (`datalog_mirror_service()`, blok F-0143 — detekce
+  smazání W25Q logu), která **stejný anti-vzor zopakovala** — nastavila
+  `s_mirror_open = false` bez `f_close()`, o pár desítek řádků výš ve
+  stejném souboru, než kde byl ten samý vzor právě opraven.
+- **Příčina:** Oprava F-0146 se soustředila na MÍSTO, kde se bug projevil
+  (disable větev), ne na VZOR samotný. Nová funkce (F-0143) vznikla
+  paralelně, ve stejném pracovním kroku, ale nebyla proti tomu vzoru
+  zkontrolována — přesně to, před čím varuje `/audit-modul` §F5.3
+  ("zkontroluj vlastní zásah na tutéž třídu vady, kterou opravuješ"),
+  jenže tady nešlo o zásah do STEJNÉ funkce, ale o SOUBĚŽNĚ psanou jinou
+  funkci v tomtéž souboru a commitu — širší dosah, než na jaký F5.3 svým
+  doslovným zněním míří.
+  Odhaleno až následným, nezávislým průchodem `/audit-modul` nad HOTOVÝMI
+  opravami (ne nad původní vadou) — teprve čtení kódu s otázkou "kde jinde
+  se ten samý vzor mohl zopakovat" ho našlo; funkční UART test (off/on
+  toggle) na to nedosáhl, protože triggerem je jiná akce (`datalog erase`).
+- **Oprava:** Stejný vzor jako F-0146 — `f_close(&s_mirror_fil)` (uvnitř
+  `if (s_mirror_open)`) před resetem příznaků, `sd_blocking_begin/end`
+  scope rozšířen tak, aby ho zahrnul. `datalog_sd.c:717-747`.
+- **Pravidlo:** **Když opravíš anti-vzor na jednom místě, PROHLEDEJ CELÝ
+  SOUBOR (ne jen okolí opravy) na stejný vzor — zvlášť pokud v TÉŽE úpravě
+  vzniká NOVÝ kód nad STEJNÝM sdíleným stavem** (tady: `s_mirror_open`/
+  `s_mirror_fil`). `grep` jménem proměnné, co se do ní zapisuje `false`
+  bez sousedního `f_close`, je levná, mechanická kontrola, která by tohle
+  chytla přímo při psaní — ne až při druhém, samostatném auditu o den
+  později.
+- **Detekce:** `grep -n "s_mirror_open = false"` a u KAŽDÉHO výskytu ověřit,
+  že mu bezprostředně předchází `f_close()` NEBO je vedle komentář
+  zdůvodňující, proč je to bezpečné bez něj (přesně tenhle kontrast —
+  3 ze 4 míst mělo jedno nebo druhé, jedno nemělo nic — odhalil nález).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
