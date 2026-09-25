@@ -14,19 +14,18 @@ rozšířen tak, aby zahrnul i erase-detekci (`datalog_sd.c:717-747`).
 Build 0 varování, `audit.py` 92/0/2. `.text` beze změny (615096 B) — ověřeno
 přímo v `.elf`: `f_close` volání uvnitř `datalog_mirror_service` (po
 inlinování `mirror_open`, `static` s jediným volajícím) vzrostla 3→4.
-⬜ **Neověřeno na HW** — flash selhal, deska byla v okamžiku pokusu zjevně
-vypnutá/odpojená (`STM32_Programmer_CLI`: "Voltage: 0.00V", COM8 zmizel ze
-seznamu portů) — čeká se, až bude deska znovu dostupná. A i po flashi
-zbývá **destruktivní** scénář (`datalog erase` nad aktivním zrcadlem) —
-neprovedeno bez výslovného souhlasu uživatele. Druhý nález **F-0147 [S4]**
-(nepřesný komentář u `d2d_wait()`) zůstává odložený (skupina C, `docs:` dluh,
-neschváleno k opravě).
+✅ **Naflashováno a regresně ověřeno na HW 2026-09-25** (deska byla
+2026-09-24 dočasně bez napájení, o pár minut později zase dostupná):
+`selftest` → 16/16 PASS, `status` zdravý, 4× `datalog mirror off/on`
+cyklus bez chyby. 🔴 **Cílový scénář (`datalog erase` nad aktivním
+zrcadlem) zůstává neověřený** — destruktivní nad živými daty, neprovedeno
+bez výslovného souhlasu. Druhý nález **F-0147 [S4]** (nepřesný komentář
+u `d2d_wait()`) zůstává odložený (skupina C, `docs:` dluh, neschváleno
+k opravě).
 Zápis → `docs/audit/2026-09-24_fixreview-d2dwait-sdmirror.md`,
 `docs/LESSONS.md` L-0081.
-🔑 **Pokračovat zde:** naflashovat CM7 Release (aktuální build hotový,
-jen čeká na dostupnou desku), ověřit `status`/`datalog mirror` normální
-provoz (regresní kontrola), případně F-0147 komentář (skupina C, jen na
-vyžádání).
+🔑 **Pokračovat zde:** F-0147 komentář jen na vyžádání; jinak audit
+backlogu momentálně nezbývá nic S1/S2 otevřeného.
 
 **Předchozí, 2026-09-24 (první běh):** 🔴 **Cílený audit posledních úprav
 (6 commitů `837d2d6`…`2fdd202` + 1 nekomitovaná oprava), NE číslovaný modul —

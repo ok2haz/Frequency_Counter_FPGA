@@ -130,12 +130,17 @@ opětovné vytvoření souboru — a na rozdíl od F-0146 tentokrát **ani
   --start-address=0x08003118 --stop-address=0x08003488 | grep -c "bl.*f_close"`)
   — nová podmíněná volání je v obraze prokazatelně přítomné, i když se
   celkový `.text` shodou okolností nezměnil o jediný bajt.
-  ⬜ **Neověřeno na HW** — flash selhal (`STM32_Programmer_CLI`: "Voltage:
-  0.00V, No STM32 target found", COM8 mezitím zmizel ze seznamu portů) —
-  deska je v tuto chvíli zjevně vypnutá/odpojená, ne chyba nástroje.
-  A i po úspěšném flashi zbývá **destruktivní** scénář (`datalog erase`
-  nad aktivním zrcadlem) — neprovedeno bez výslovného souhlasu uživatele,
-  stejná výhrada jako u F-0142/F-0143 samotných.
+  ✅ **Naflashováno a regresně ověřeno na HW 2026-09-25** (první pokus
+  2026-09-24 selhal — deska byla dočasně bez napájení/odpojená,
+  `STM32_Programmer_CLI`: "Voltage: 0.00V"; o pár minut později znovu
+  dostupná). Po flashi + SW resetu: `selftest` → `SELFTEST: 16/16 PASS`,
+  `status` zdravý (LTDC podtečení 0/532, DMA2D chyb 0, GPIO hlídač
+  0 oprav), **4× opakovaný `datalog mirror off/on` cyklus bez chyby**
+  (watermark stabilní na seq 160483, žádná regrese normální cesty).
+  🔴 **Původní CÍLOVÝ scénář (`datalog erase` nad aktivním zrcadlem)
+  zůstává neověřený** — destruktivní operace nad živými daty (160 000+
+  záznamů), neprovedeno bez výslovného souhlasu uživatele, stejná
+  výhrada jako u F-0142/F-0143 samotných.
 
 ---
 
