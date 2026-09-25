@@ -34,6 +34,16 @@
  * nestihajici parser (drop fronty v RxCplt). */
 volatile uint32_t g_uart1_ore, g_uart1_fe, g_uart1_ne, g_uart1_pe, g_gps_rx_drop;
 
+/* 🔴 F-0153 (2026-09-25): selhani RE-ARMU prijmu. Do teto zmeny se navratova
+ * hodnota `HAL_UART_Receive_IT()` v OBOU callbacich zahazovala — a byla to
+ * jedina porucha v tomhle souboru bez pocitadla, pritom jako JEDINA znamena
+ * KONEC prijmu natrvalo (ostatni se zotavi samy). USART1 je GPS NMEA vstup,
+ * takze projev je "GPS prestala fungovat" bez jedine stopy.
+ * ⚠️ Pocitadlo poruchu NESPRAVI (RX zustane mrtvy) — prevadi ji z tiche na
+ * viditelnou (L-0017). Skutecne zotaveni = re-init USART1, coz je vetsi zasah
+ * a samostatne rozhodnuti. */
+volatile uint32_t g_uart1_rearm_fail;
+
 
 uint8_t RxByte;
 /* USER CODE END 0 */
@@ -183,6 +193,18 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
  * Proto se tu zamerne nerouti podle USE_USB_CDC_CONSOLE. */
 extern osMessageQueueId_t GpsRxQueueHandle;
 
+/* Re-arm prijmu se spocitanym selhanim (F-0153). Jediny zdroj pravdy pro obe
+ * obsluhy — kdyby si to kazda delala sama, rozejdou se (L-0012, L-0018).
+ * ⚠️ Bezi z ISR: `errlog_put` zapisuje jen do RAM ringu, vylitim do flash se
+ * zabyva defaultTask (L-0071). */
+static void uart1_rearm_rx(void)
+{
+    if (HAL_UART_Receive_IT(&huart1, &RxByte, 1) != HAL_OK) {
+        g_uart1_rearm_fail++;
+        (void)errlog_put(ERRLOG_K_UART, 0xFEu, g_uart1_rearm_fail, 0u, "REARM");
+    }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
@@ -194,7 +216,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		g_gps_rx_drop++;
 		(void)errlog_put(ERRLOG_K_UART, 0xFFu, g_gps_rx_drop, 0u, "GPSq");
 	}
-    HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+    uart1_rearm_rx();
   }
 }
 
@@ -221,7 +243,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
      * HAL_UART_Receive_IT vrati HAL_BUSY -> RX uz nikdy nenabehne (mrtva konzole). */
     HAL_UART_AbortReceive(huart);
     huart->ErrorCode = HAL_UART_ERROR_NONE;
-    HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+    uart1_rearm_rx();
   }
 }
 
