@@ -150,7 +150,13 @@ static void pattern_service(void)
 
 /** Pozadavek na dvouton pri zasunuti/vytazeni SD karty. Thread-safe: jen
  *  nastavi flag, prehraje ho `alarm_tick` (defaultTask). Ma prednost pred
- *  bezicim alarm patternem (je to vzdy vedomy fyzicky zasah uzivatele). */
+ *  bezicim alarm patternem (je to vzdy vedomy fyzicky zasah uzivatele) —
+ *  spusteni SD tonu predchazi `pattern_stop()` v `alarm_tick`.
+ *  POZOR, OPACNE to NEPLATI (F-0144): kazde volani `pattern_start()` (klik,
+ *  `beep test`, hrana prahoveho monitoru VBAT/OCXO/ADEV, FPGA/GPS/limit hrana)
+ *  nuluje `s_sd_phase` uz prvnim radkem, takze utne rozehrany SD dvouton.
+ *  Vedome ponechano: uzke casove okno, kosmeticky slyshitelny jev bez dopadu
+ *  na funkci. */
 void alarm_sd_card(bool inserted)
 {
     s_sd_req = inserted ? 1u : 2u;

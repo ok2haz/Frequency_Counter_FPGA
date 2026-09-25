@@ -187,7 +187,11 @@ opětovné vytvoření souboru — a na rozdíl od F-0146 tentokrát **ani
   nedoloženými tvrzeními o volací cestě; blízké obecnému duchu `L-0011`
   (nevěřit tvrzení, které samo sebe neověřuje) — nezakládat novou lekci,
   jde o kosmetiku bez dopadu na chování.
-- **Stav:** otevřeno (skupina C dle F5.0 — oprava komentáře, ne kódu).
+- **Stav:** opraveno 2026-09-25 (`docs:` — komentář v `prim_stm32_hal.c:177-180`
+  nahrazen přesným zněním: guard `osKernelGetState()` je defenzivní pojistka pro
+  hypotetickou budoucí early-boot cestu, ne popis existujícího stavu; větev
+  "not running" se v současném call-graphu nikdy nevykoná). Build 0 varování,
+  `audit.py` 92/0/2, `.text` beze změny (615096 B). Bez lekce (kosmetika).
 
 ---
 

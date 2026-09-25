@@ -3,18 +3,30 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-25 (třetí `/audit-modul` běh) — ✅
+**Poslední aktualizace:** 2026-09-25 (čtvrtý běh) — ✅ **Tři odložené S4
+komentářové nálezy skupiny C opraveny** (uživatel schválil "opravit S4
+komentáře"). Čistě `docs:` — žádná změna chování, `.text` beze změny
+(615096 B), build 0 varování, `audit.py` 92/0/2:
+- **F-0147** — komentář u `d2d_wait()` (`prim_stm32_hal.c:177-180`) tvrdil
+  scénář "před schedulerem", který v současném call-graphu nenastává;
+  přepsán na "defenzivní pojistka pro hypotetickou budoucí early-boot cestu".
+- **F-0144** — komentář u `alarm_sd_card()` (`alarm.c:151`) doplněn o
+  oboustrannost (každé `pattern_start()` utne rozehraný SD dvouton).
+- **F-0145** — komentář u `s_snd_grace` (`sd_export.c:131`) doplněn o vedlejší
+  efekt L-0079 (skutečné vložení v prvních ~2 s po bootu se taky nepípne).
+
+🔑 **Audit backlog je tím ÚPLNĚ vyčerpaný** — všech 22 číslovaných modulů
+auditováno a opraveno, ad-hoc běhy nad posledními úpravami taky, žádný
+S1/S2/S3/S4 otevřený. Jediná zbylá položka je vědomě odložená S3 **F-0003**
+(čeká na příští CubeMX regen).
+
+**Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
 kontroly, která F-0148 samo odhalila (viz L-0081): rozšíření
 `sd_blocking_begin/end` scope neporušuje L-0078 (žádná smyčka/cross-task
 čekání, jen o pár řádků delší neblokující úsek), žádný double-close,
 žádné další nezdůvodněné `s_mirror_open=false` bez `f_close()`. Zápis →
-`docs/audit/2026-09-25_fixreview-f0148.md`. **Audit backlog je momentálně
-vyčerpaný** — všech 22 číslovaných modulů auditováno a opraveno, tenhle
-i předchozí dva ad-hoc běhy nad posledními úpravami taky, žádný S1/S2
-neotevřen. Jediné zbylé položky jsou tři S4 (F-0144/F-0145/F-0147,
-kosmetika) a jedna vědomě odložená S3 (F-0003, čeká na CubeMX regen) —
-všechny ve skupině C, nikdo je neschválil k opravě.
+`docs/audit/2026-09-25_fixreview-f0148.md`.
 
 **Předchozí, 2026-09-25 (druhý běh):** ✅ **F-0148 [S2] opraveno** (schváleno
 uživatelem "a" = skupina A z triáže). Přezkum VLASTNÍCH OPRAV `1d18c28`

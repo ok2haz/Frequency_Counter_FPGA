@@ -174,10 +174,13 @@ static void d2d_wait(void)
          * "zaneprazdnen"). Mezi kontrolami se ted pousti scheduler —
          * `D2D_WAIT_MS` mez v REALNEM case zustava STEJNA (`osDelay(1)` jen
          * meni ZPUSOB cekani, ne kdy se prenos zrusi), takze se na korektnosti
-         * F-0140 (LTDC uz nehladovi) nic nemeni. Pred schedulerem (`prim_stm32_init`
-         * cisti 3 framebuffery pri bootu) `osKernelGetState()` neni RUNNING ->
-         * spadne zpet na cisty spin, stejny vzor jako `sd_wait_ready`/
-         * `w25q.c wait_ready`. */
+         * F-0140 (LTDC uz nehladovi) nic nemeni. Guard `osKernelGetState()` je
+         * DEFENZIVNI pojistka, ne popis dneska (F-0147): jediny volajici se do
+         * d2d_wait dostane vyhradne z UiTasku, tedy az za bezicim schedulerem,
+         * takze vetev "not running" v soucasnem call-graphu NIKDY neprobehne.
+         * Drzi se pro hypotetickou budouci early-boot volaci cestu — jakou
+         * `sd_wait_ready`/`w25q.c wait_ready` opravdu maji z `main.c` USER CODE 2
+         * pred schedulerem; tam by `osDelay` nesel a spadlo by se na cisty spin. */
         uint32_t tick0 = HAL_GetTick();
         uint32_t hard  = 0;
         g_d2d_slow_entries++;

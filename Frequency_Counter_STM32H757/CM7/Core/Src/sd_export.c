@@ -128,7 +128,12 @@ void sd_export_tick(void)
      * Oprava: prvnich `SD_DET_STABLE_N+1` tiku (s rezervou) se hrana vubec
      * nevyhodnocuje, jen se `s_snd_prev` prubezne aktualizuje — tim je po
      * uplynuti teto zaruky jiz debounce jiste ustaleny a `s_snd_prev` drzi
-     * SPRAVNOU tichou baseline, at uz je karta pritomna, nebo ne. */
+     * SPRAVNOU tichou baseline, at uz je karta pritomna, nebo ne.
+     * VEDLEJSI EFEKT (F-0145, doplnuje L-0079): behem grace okna se
+     * nevyhodnocuje ZADNA hrana, takze i SKUTECNE vlozeni karty presne v
+     * prvnich ~2 s po bootu se nepipne (ikona v headeru na grace okno vazana
+     * neni a objevi se). Vedome ponechano — cena opravy > prinos pro 2s okno
+     * hned po startu, kdy uzivatel sleduje boot splash, ne zvuk. */
     static bool    s_snd_prev;
     static uint8_t s_snd_grace = SD_DET_STABLE_N + 1u;
     if (s_snd_grace) {
