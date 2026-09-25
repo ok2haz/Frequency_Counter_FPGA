@@ -141,7 +141,23 @@ Zbytek jsou robustnostní a dokumentační nálezy.
 - **Vztah k lekcím:** `L-0012` (guard nasazený jen na část symetrických cest);
   po opravě **nová lekce** — „obrana, která je opt-in, musí být vyjmenovaná
   u všech volajících, jinak ji třetí volající nedostane“.
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW** — **minimální variantou**, ne systémovou.
+- **Stav:** opraveno 2026-09-11, 🟡 **ČÁSTEČNĚ OVĚŘENO NA HW 2026-09-25** —
+  **minimální variantou**, ne systémovou.
+  **Co ověřeno (karta ve slotu, 30 GB):** `sd diag` → `PE3 LOW -> KARTA`,
+  `f_mount: 0 OK`, `sbernice: 4-bit, SDMMC_CK 32.000 MHz`. Pak spuštěn
+  **`screenshot sd`** — tedy přesně ten dlouhý zapisovatel (1,15 MB, ~12 s),
+  kterému příznak `s_busy` chyběl: **`SCREENSHOT: ulozeno jako SHOT001.BMP`**,
+  a **halda je bajt za bajtem stejná před i po** (`free 6960 B, min-ever
+  6960 B`) ⇒ zápis proběhl celý a auto-unmount do něj nezasáhl.
+  🔴 **Co ověřeno NENÍ — a je to jádro nálezu:** samotný **závod**, tedy
+  vytažení karty **během** zápisu. Bez něj vada nenastane (přiznává to i
+  „Dopad" výše), takže tohle měření dokazuje jen **absenci regrese**, ne že
+  je poškození haldy skutečně odvrácené.
+  **Jak to doměřit:** spustit `screenshot sd` a v průběhu těch ~12 s kartu
+  vytáhnout; pak `status` → `Heap free/min-ever` (nesmí klesnout) a po
+  restartu crash black-box (nesmí být HardFault v cizím tasku).
+  ⚠️ Je to test, který při NEúplné opravě haldu poškodí — proto neproveden
+  bez výslovného souhlasu uživatele.
   Vzniklo `sd_export_busy_begin/end()` v `sd_export.h` a používá ho
   `screenshot_save_sd()` i `ui_refresh_capacity()`. **Obojí jako OBALKA nad
   vyčleněným tělem** (`begin(); r = body(); end();`), protože `screenshot_save_sd`
@@ -201,7 +217,14 @@ Zbytek jsou robustnostní a dokumentační nálezy.
   a to se nesmí stát v době, kdy je karta odmountovaná a piny mají být jinak.
 - **Vztah k lekcím:** `L-0012`; pravidlo samo je v `gpio_guard.h`, chybí jen
   jeho uplatnění.
-- **Stav:** opraveno 2026-09-11, ⬜ **neověřeno na HW**. Obě místa obalena `gpio_cfg_lock()/unlock()`:
+- **Stav:** opraveno 2026-09-11, ✅ **OVĚŘENO NA HW 2026-09-25** v rozsahu
+  „bez regrese": s kartou ve slotu proběhl `f_mount` (**0 OK**), čtení
+  kapacity (30 436 MB / volno 30 359 MB) i zápis 1,15 MB (`screenshot sd`),
+  tedy obě obalená místa se skutečně provedla — a `GPIO HLIDAC` zůstal
+  **0 oprav**, takže zámek nic nerozbil ani nevyvolal opravu hlídačem.
+  ⚠️ Stejně jako u F-0149: **účinek** proti závodu doložit nelze, protože se
+  závod na GPIOC na téhle desce neprojevuje (hlídač hlásí 0 i bez zátěže).
+  Obě místa obalena `gpio_cfg_lock()/unlock()`:
   `sd_dat_pullup_enable()` (vlastní soubor) a `HAL_SD_MspInit` přes **USER CODE**
   bloky `SDMMC1_MspInit 0` / `1`, takže zámek drží přes **oba** generované
   `HAL_GPIO_Init` (GPIOC i GPIOD) a regenerace z CubeMX to nesmaže.
