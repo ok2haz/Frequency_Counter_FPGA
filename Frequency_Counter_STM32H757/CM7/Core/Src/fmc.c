@@ -91,6 +91,12 @@
  * ⚠️ OVERENI: `bgcheck` musi rict "BEZE ZMENY" a `membench` retence 0. */
 #define REFRESH_COUNT        REFRESH_COUNT_EXPECTED   /* jediny zdroj: fmc.h */
 
+/* Ustaleni po inicializacni sekvenci SDRAM. NOSNE pro studeny start — bez nej
+ * neodpovi USB CDC konzole (zmereno 2026-09-25, viz zduvodneni u volani nize).
+ * Pojmenovane zamerne: puvodne to bylo anonymni `HAL_Delay(200)` s blikanim
+ * LED, takze to vypadalo jako pozustatek a audit ho navrhl smazat. */
+#define FMC_POST_INIT_SETTLE_MS                  200u
+
 #define SDRAM_TIMEOUT                            ((uint32_t)0xFFFF)
 #define SDRAM_MODEREG_BURST_LENGTH_1             ((uint16_t)0x0000)
 #define SDRAM_MODEREG_BURST_LENGTH_2             ((uint16_t)0x0001)
@@ -279,23 +285,34 @@ void MX_FMC_Init(void)
    * Selhany krok se ulozi do `g_fmc_init_fail` a hlasi ho `status`. */
   g_fmc_init_fail = fmc_sdram_init_sequence();
 
-  /* 🔴 ODSTRANENO 2026-09-25 (F-0152): tady stalo bezpodminecne
-   *   HAL_GPIO_WritePin(LED_1, RESET); HAL_Delay(200); HAL_GPIO_WritePin(LED_1, SET);
-   * plus dva radky zakomentovaneho `FMC_Bank1->BTCR[0]`. Nic z toho nemelo
-   * zduvodneni — byl to pozustatek z bring-upu.
-   * PROC to vadilo: 200 ms BLOKUJICIHO zdrzeni lezelo v boot ceste PRED
-   * bring-upem displeje (ten zacina az kolem `main.c:489`), takze posouvalo
-   * prave ty zavody, na ktere je tahle deska citliva — ATTINY nabiha vlastnim
-   * tempem (probe ma 10 pokusu po 100 ms), obe jadra zavodi o GPIOG (#219/#208,
-   * viz F-0149 vyse), FPGA teprve cte konfiguraci z flash. `CLAUDE.md` pravidlo
-   * 4c to zakazuje jmenovite. Druhotne: LED_1 je vystup `bootled` pro hlaseni
-   * poruch, takze jeji blikani uprostred initu slo splest se vzorem poruchy.
-   * ⚠️ NELZE VYLOUCIT, ze bylo zdrzeni omylem NOSNE (lezi hned za inicializacni
-   * sekvenci SDRAM a pri studenem startu mohlo krit cas, ktery cip potrebuje
-   * na rozbeh napajeni). Proto to MUSI projit STUDENYM STARTEM s `membench`
-   * (retence 0, 0 chybnych bitu) a `bgcheck` ("BEZE ZMENY") — ne jen resetem
-   * po flashi. Kdyby se ukazalo jako nosne, vratit ho POJMENOVANE a se
-   * zduvodnenim, ne jako anonymni pozustatek s blikanim LED. */
+  /* 🔴🔴 NOSNE ZDRZENI — NEODSTRANOVAT. Zmereno na HW 2026-09-25 (F-0152).
+   *
+   * Historie: tady stalo bezpodminecne `HAL_GPIO_WritePin(LED_1, RESET);
+   * HAL_Delay(200); HAL_GPIO_WritePin(LED_1, SET);` plus zakomentovany
+   * `FMC_Bank1->BTCR[0]`, vsechno bez zduvodneni. Vypadalo to jako pozustatek
+   * z bring-upu a `CLAUDE.md` pravidlo 4c blokujici zdrzeni v boot ceste pred
+   * bring-upem displeje zakazuje, takze audit navrhl vsechno smazat.
+   *
+   * 🔴 MERENI TEN NAVRH VYVRATILO. Po smazani a STUDENEM STARTU:
+   *   - SDRAM, displej i CM4 byly v poradku (`g_fmc_init_fail`=0,
+   *     `g_display_init_step`=0, `g_cm4_absent`=0, `membench` 0 chybnych bitu,
+   *     `bgcheck` BEZE ZMENY, `GPIO HLIDAC` 0) — jadro pristroje bezelo,
+   *   - ale **USB CDC KONZOLE prestala odpovidat** (zarizeni se vyenumerovalo
+   *     se spravnym VID/PID 0483:5740, data ale netekla pri zadne kombinaci
+   *     DTR/RTS). Po SW resetu se konzole VZDY vratila -> rozdil je vylucne
+   *     ve studenem startu, ne v obrazu.
+   * Vylouceni druheho kandidata: `g_uart1_rearm_fail` i `g_gps_rx_drop` byly
+   * 0 a nerostly, takze to NENI bourka chybovych ISR z F-0153.
+   *
+   * 🔑 Zdrzeni tedy nechtene serializuje neco v ranem bootu, na cem USB CDC
+   * zavisi (nejspis rozbeh napajeni / enumeracni okno vuci hostu). Presny
+   * mechanismus NENI znamy — je to HYPOTEZA; jista je jen ta zavislost.
+   * ⚠️ Konzole je u tohohle pristroje HLAVNI diagnosticky kanal (UART `status`,
+   * `membench`, `selftest`), takze jeji ztrata po kazdem power-cyklu je horsi
+   * nez 200 ms delsi boot.
+   * ⚠️ Blikani LED_1 vraceno NENI — na casovani nema vliv (dva zapisy do GPIO)
+   * a LED_1 je vystup `bootled` pro hlaseni poruch, takze slo splest vzor. */
+  HAL_Delay(FMC_POST_INIT_SETTLE_MS);
   /* USER CODE END FMC_Init 2 */
 }
 
