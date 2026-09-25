@@ -101,8 +101,20 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
 - **Vztah k lekcím:** **L-0012** (symetrické instance — jedna strana opravená,
   druhá ne; tady doslova: CM4 zamyká, CM7 ne), **L-0022** (obrana, která je
   opt-in, dojde jen na ty volající, kteří o ní vědí), **L-0011** (závěr
-  „to nebyl CM4" převzatý bez opory v datech).
-- **Stav:** otevřeno.
+  „to nebyl CM4" převzatý bez opory v datech). **Nová lekce L-0082.**
+- **Stav:** **opraveno 2026-09-25**, ⬜ **neověřeno na HW**. Opraveno **podle
+  návrhu**: blok obalen `gpio_cfg_lock()`/`gpio_cfg_unlock()`, přidán
+  `#include "gpio_guard.h"` (obojí uvnitř `USER CODE`, tedy regen-safe).
+  **Navíc oproti návrhu** uvedena na pravdu chybná premisa v komentáři
+  (`fmc.c:222-227`), která vylučovala CM4 — je to komentář popisující právě
+  měněné řádky, takže patří do `fix:` (F5.1).
+  **Ověřeno ve slinkovaném obrazu:** `objdump -d` nad `MX_FMC_Init` vypisuje
+  `bl <gpio_cfg_lock>` i `bl <gpio_cfg_unlock>`.
+  🔑 **Co ověřit na desce:** `status` → `GPIO HLIDAC` (počítadlo oprav PG8) by
+  po power-cyklech mělo být **nižší nebo nulové**; `errlog` (`ERRLOG_K_GPIO`)
+  drží historii přes resety, takže jde porovnat četnost před/po. Displej musí
+  po **studeném startu** naběhnout (ne jen po resetu — viz F-0152 níže, obojí
+  je ve stejné funkci).
 
 ---
 
@@ -135,7 +147,15 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
 - **Riziko opravy:** nulové (komentář).
 - **Vztah k lekcím:** **L-0008** (komentář slibuje něco, co kód nedělá),
   **L-0018** (dvě místa o téže veličině se rozejdou — tady `fmc.c` vs `fmc.h`).
-- **Stav:** otevřeno.
+- **Stav:** **opraveno 2026-09-25** (`docs:`), ✅ **binárně ověřeno**. Opraveno
+  **podle návrhu**: blok přepsán tak, aby popisoval dnešní stav — hodnota
+  **371**, pokus o 175 označen jako **uzavřená slepá ulička zamítnutá měřením**
+  (při 175 pořád 496 068 chybných bitů retence, tedy dvojnásobná rezerva
+  nepomohla ⇒ obnova to není), a doplněna **skutečná příčina** nalezená
+  2026-09-10 ve čtecí cestě FMC (`ReadPipeDelay` + I/O kompenzační cela).
+  Historie ponechána — je poučná —, ale je z ní teď poznat, že je uzavřená.
+  **Ověřeno:** `.text` **615112 B beze změny** před i po, build 0 varování ⇒
+  změna je prokazatelně jen komentář.
 
 ---
 
@@ -175,8 +195,26 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
 - **Vztah k lekcím:** **L-0070** („kontrola, která hlásí nálezy i ve zdravém
   stromě, přestává být kontrolou" — tady zrcadlově: kontrola, která **nikdy**
   nic nenahlásí, taky), **L-0020** (duplicitu převeď na kontrolu rozdílu — tady
-  duplicita zmizela a kontrola po ní zůstala prázdná).
-- **Stav:** otevřeno.
+  duplicita zmizela a kontrola po ní zůstala prázdná), **L-0039** (pozitivní
+  kontrola musí obsahovat každou vadu, kvůli které vznikla). **Nová lekce L-0083.**
+- **Stav:** **opraveno 2026-09-25**, ✅ **ověřeno pozitivní kontrolou** (na HW
+  se ověřit nedá — je to kontrola překladu). Zvolena **varianta (b)**, tedy ta
+  dražší: tautologie nahrazena mezí, která selhat **může**.
+  `fmc.h` nově definuje `FMC_SDCLK_MHZ` / `SDRAM_ROWS` / `SDRAM_TREF_US` a z nich
+  `REFRESH_COUNT_SPEC_MAX`; assert hlídá `REFRESH_COUNT_EXPECTED <= MAX + 1`.
+  **Mez je jednostranná záměrně** — obnovovat se smí častěji, nikdy řidčeji;
+  `+1` je zaokrouhlení (přesný vzorec dá 370,625, hodnota 371 je jeho
+  zaokrouhlení nahoru), bez té tolerance by kontrola padala na správné hodnotě.
+  🔑 **Pozitivní kontrola (`scratchpad/poz_kontrola_f0151.sh`) proběhla na OBOU
+  vadách, kvůli kterým assert vznikl** — a to je to podstatné, protože nahradit
+  tautologii další tautologií je přesně vzor L-0081:
+  | případ | výsledek |
+  |---|---|
+  | nedotčený strom | **prošel** ✅ |
+  | historická hodnota `1835` | **build spadl** ✅ |
+  | SDCLK 50 → 25 MHz při hodnotě 371 | **build spadl** ✅ |
+  | po obnovení | **prošel** ✅ |
+  ⚠️ Assert by tedy **původní vadu z prvního commitu zachytil při překladu**.
 
 ---
 
@@ -222,7 +260,21 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
   tenhle přístroj citlivý.
 - **Vztah k lekcím:** **L-0010** (ověření až po power-cyklu, ne po flashi),
   `CLAUDE.md` pravidlo 4c.
-- **Stav:** otevřeno.
+- **Stav:** **opraveno 2026-09-25**, 🔴 **NEOVĚŘENO NA HW — a tady to platí
+  dvojnásob.** Odstraněno podle návrhu (obě `HAL_GPIO_WritePin`, `HAL_Delay(200)`
+  i zakomentovaný `FMC_Bank1->BTCR[0]`); na jejich místě zůstal komentář
+  vysvětlující, co tam bylo a proč to zmizelo.
+  **Ověřeno ve slinkovaném obrazu:** `objdump -d` nad `MX_FMC_Init` už
+  neobsahuje `bl <HAL_Delay>` ani `bl <HAL_GPIO_WritePin>` (zbyly jen
+  `bootled_step`, `gpio_cfg_lock/unlock`, `HAL_GPIO_Init`, `HAL_SDRAM_Init`,
+  `fmc_sdram_init_sequence`, `Error_Handler`).
+  🔴 **Povinné ověření před prohlášením za hotové — STUDENÝM STARTEM, ne resetem
+  po flashi** (L-0010, pravidlo 4b): `membench` → retence **0** a 0 chybných
+  bitů; `bgcheck` → **„BEZE ZMĚNY"**; displej naběhne. Důvod je v nálezu:
+  zdržení leželo hned za inicializační sekvencí SDRAM a **nelze vyloučit, že
+  omylem krylo čas, který čip potřebuje na rozběh napájení**. Kdyby se to
+  potvrdilo, zdržení vrátit **pojmenované a se zdůvodněním**, ne jako anonymní
+  pozůstatek s blikáním LED.
 
 ---
 
@@ -265,7 +317,25 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
   nejčastější podoba obrany, která neexistuje), **L-0017** (tichý přeskok je
   přípustný jen s počítadlem), **L-0016** (mez/porucha, kterou nelze odlišit
   od normálního provozu, je generátor tichých chyb).
-- **Stav:** otevřeno.
+- **Stav:** **opraveno 2026-09-25**, ⬜ **neověřeno na HW**. Opraveno **jinak,
+  než nález navrhoval, a v menším rozsahu — po ověření, které návrh neudělal.**
+  Návrh chtěl nové počítadlo **plus řádek ve `status`**, protože předpokládal,
+  že stávající `g_uart1_*` nikdo nečte. **Ověření to vyvrátilo:** `grep` sice
+  ukázal, že mimo `usart.c` se na ně nikdo neodkazuje, ale **`errlog_put()` je
+  publikuje do trvalého záznamníku chyb při každé události** — a ten je čitelný
+  přes UART `errlog` i přes web (`GET /api/errlog`). Počítadla tedy dosažitelná
+  jsou a podmínka L-0017 (2) je splněná.
+  Oprava proto jde **stejnou cestou jako její sousedé**: `g_uart1_rearm_fail`
+  + `errlog_put(ERRLOG_K_UART, 0xFE, …, "REARM")`. Žádný zásah do `status`,
+  žádný druhý soubor — **jeden soubor, jeden vzor**.
+  🔑 Re-arm je vyčleněn do `uart1_rearm_rx()` (jediný zdroj pravdy pro obě
+  obsluhy; dvě kopie téhož by se rozešly — L-0012/L-0018).
+  ⚠️ **Počítadlo poruchu nespraví** — RX zůstane mrtvý. Převádí ji z tiché na
+  viditelnou. Skutečné zotavení (re-init USART1) je samostatné rozhodnutí.
+  **Ověřeno ve slinkovaném obrazu:** řetězec `REARM` je v `.elf` přítomen
+  (`grep -ac` = 1), takže `--gc-sections` novou cestu nezahodil.
+  🔑 **Co ověřit na desce:** `errlog` po opakovaném hot-plugu UART kabelu —
+  musí přibývat záznamy `ERRLOG_K_UART` a GPS se musí vrátit k fixu.
 
 ---
 

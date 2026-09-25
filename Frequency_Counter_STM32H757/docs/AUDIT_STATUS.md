@@ -74,9 +74,42 @@ v `USER CODE` **výhradně** `bootled_step()` — žádný nález, ověřeno ext
 **zpětné čtení `SDRTR` z HW** = L-0055, konzistence CAS latency na obou místech)
 napsaný **lépe než průměr projektu**. Riziko nebylo v tom, že jde o generovaný
 kód, ale v tom, že se na něj kvůli nálepce „generovaný" nikdo nepodíval.
-🔑 **Pokračovat zde:** triáž F5.0 nabídnuta uživateli — A: F-0149, F-0150,
-F-0151(a), F-0153; B: F-0151(b) a F-0152 (mění časování bootu / potřebují
-rozhodnutí); C: F-0154 a generovaný `HAL_FMC_MspInit` (mimo `USER CODE`).
+✅ **FÁZE OPRAV PROBĚHLA TÝŽ DEN — skupiny A i B schváleny uživatelem („a+b"),
+5 z 6 nálezů opraveno ve 3 commitech.** ⬜ **Neověřeno na HW.**
+
+| nález | commit | jak | co ověřit na desce |
+|---|---|---|---|
+| **F-0149** [S2] | `9eeb0c0` | `gpio_cfg_lock()` kolem PG8 bloku + premisa v komentáři uvedena na pravdu | `status` → `GPIO HLIDAC` nižší/nulový; `errlog` (`ERRLOG_K_GPIO`) na porovnání četnosti |
+| **F-0151** [S4] | `9eeb0c0` | varianta **(b)** — tautologie nahrazena mezí na takt SDCLK (`fmc.h`) | nic (kontrola překladu), ale ✅ **pozitivní kontrola hotová** |
+| **F-0152** [S3] | `9eeb0c0` | odstraněno 200 ms `HAL_Delay` + blikání LED_1 + mrtvý kód | 🔴 **STUDENÝ START** + `membench` (retence 0) + `bgcheck` („BEZE ZMĚNY") |
+| **F-0153** [S3] | `6296e75` | `g_uart1_rearm_fail` + `errlog_put`, re-arm vyčleněn do `uart1_rearm_rx()` | `errlog` po hot-plugu UART kabelu; GPS se musí vrátit k fixu |
+| **F-0150** [S4] | *(docs)* | komentář `REFRESH_COUNT` uveden na pravdu (371, pokus o 175 = uzavřená slepá ulička) | nic — `.text` beze změny |
+
+**Ověření (F5.2):** build Release CM7 **0 varování**, `audit.py` **92 OK /
+0 selhání / 2 s varováním** (baseline, GCC 14.3), `.text` 615 096 → **615 112 B**
+(+16). Protože se kód zároveň přidával i odebíral, velikost sama nestačí —
+změny doloženy **přímo v `.elf`**: `objdump -d` nad `MX_FMC_Init` nově vypisuje
+`bl <gpio_cfg_lock>` i `bl <gpio_cfg_unlock>` a **už neobsahuje** `bl <HAL_Delay>`
+ani `bl <HAL_GPIO_WritePin>`; řetězec `REARM` je v obrazu přítomen.
+
+🔑 **Nejcennější krok celé opravy byla POZITIVNÍ KONTROLA u F-0151** — nahradit
+tautologii další tautologií je přesně vzor **L-0081**, takže nestačilo, že se
+nový assert přeložil. Dočasnou úpravou `fmc.h` se ověřilo, že **selhat umí**,
+a to na **obou** vadách, kvůli kterým vznikl (L-0039): historická hodnota
+`1835` → build spadl, SDCLK 50 → 25 MHz → build spadl, nedotčený strom →
+prošel. **Assert by tedy původní vadu z prvního commitu zachytil při překladu.**
+
+**Nové lekce:** **L-0082** (zámek, který bere jen jedna strana, nevylučuje nic
+— a premisa vylučující podezřelého se musí ověřit proti pořadí bootu),
+**L-0083** (po sjednocení zdroje pravdy se kontrola rozchodu stane tautologií).
+
+🔑 **Pokračovat zde:** (1) 🔴 **F-0152 vyžaduje STUDENÝ START, ne reset po
+flashi** — nelze vyloučit, že odstraněné zdržení omylem krylo rozběh napájení
+SDRAM; kdyby `membench`/`bgcheck` po studeném startu zlobily, vrátit ho
+**pojmenované a se zdůvodněním**. (2) F-0154 [S4] zůstává otevřený (skupina C —
+`SDRAM_TIMEOUT` 65,5 s; měnit až spolu s jiným zásahem do `fmc.c`).
+(3) Generovaný `HAL_FMC_MspInit` zůstává bez zámku — mimo `USER CODE`,
+regen-safe obalit nejde; samostatné rozhodnutí.
 
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
@@ -729,7 +762,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | **opraveno vše** (6 z 6, F-0122+F-0139 ✅ na HW, 4 zbylé ⬜) | 2026-09-20 | 0 | 0 | 2 | 4 | [6](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
-| **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | 🔴 **nálezy zapsány (F3)** — fáze oprav NEproběhla | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
+| **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 5 z 6** (A+B; F-0154 odložen do C) — ⬜ neověřeno na HW, 🔴 **F-0152 nutný STUDENÝ start** | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím

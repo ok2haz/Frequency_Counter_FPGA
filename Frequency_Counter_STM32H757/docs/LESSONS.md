@@ -2819,6 +2819,83 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0082 — Zámek, který bere jen jedna strana, nevylučuje nic — a premisa, která vyloučila podezřelého, se musí ověřit proti pořadí bootu
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, audit modulu 23, F-0149)
+- **Oblast:** sdílená GPIO mezi CM7 a CM4, `fmc.c` obranné potvrzení PG8
+- **Symptom:** Nevysvětlený přepis `PG8` (`FMC_SDCLK`) do režimu ANALOG →
+  SDRAM bez hodin → černý displej po power-cyklu a `membench` 10 551 639
+  chybných bitů. Obrana proti tomu existovala (ruční potvrzení pinu ve
+  `MX_FMC_Init`), ale příčina se roky nenašla.
+- **Příčina — dvě vrstvy, obě v téže dvacítce řádků:**
+  1. **Jednostranný zámek.** CM4 kolem všech svých `MX_*_Init` (a ty
+     konfigurují `GPIOG`: PG7, PG11, PG13, PG14) poctivě drží HSEM 1
+     (`CM4/main.c:175-193`). CM7 ve FMC cestě ho nebral vůbec. `HAL_GPIO_Init`
+     přitom dělá nad `MODER`/`AFR` **neatomický read-modify-write**, takže
+     vzájemné vyloučení, které drží jen jedna strana, je **žádné vzájemné
+     vyloučení**. Obrana proti ztrátě PG8 tu ztrátu sama umožňovala — a v
+     opačném směru mohla sebrat `AFR` pinu PG11 (`ETH_TX_EN`, deska bez IP).
+  2. **Vyloučení podezřelého na premise, kterou kód popírá.** Komentář
+     u té obrany vyloučil CM4 větou *„Stav byl analog uz ~200 ms po resetu,
+     tedy PRED bootem CM4"*. Jenže CM4 se budí uvolněním HSEM 0 v
+     `Boot_Mode_Sequence_2` (`main.c:333-335`), zatímco `MX_FMC_Init()` běží
+     až z `main.c:382` — **CM4 startuje dřív, ne později.** Nejpravděpodobnější
+     kandidát byl tím vyškrtnut a pátrání se zastavilo u obrany místo příčiny.
+- **Oprava:** `gpio_cfg_lock()` / `gpio_cfg_unlock()` kolem bloku
+  (`fmc.c`, `USER CODE FMC_Init 2`) + premisa v komentáři uvedena na pravdu.
+  🔑 **Stojící výmluva u `gpio_cfg_lock` neplatila:** komentář tam říká, že
+  generované `MX_*_Init` nelze regen-safe obalit — to platí pro
+  `HAL_FMC_MspInit`, **ne** pro ruční blok, který leží v `USER CODE`.
+- **Pravidlo:** **U každého zámku nad sdíleným prostředkem vyjmenuj VŠECHNY,
+  kdo ho musí brát, a ověř, že ho berou — zámek držený jednou stranou je
+  horší než žádný, protože vypadá jako ochrana.** A **každou větu, která
+  vylučuje podezřelého z časových důvodů („to bylo dřív/později než X"),
+  ověř proti skutečnému pořadí volání, ne proti dojmu** — u dvoujádrového
+  bootu je pořadí neintuitivní a dá se přečíst ze zdrojáku za minutu.
+- **Detekce:** pro každý port, na který sahají obě jádra, `grep` na
+  `HAL_GPIO_Init(GPIO<X>` napříč **oběma** projekty a u každého výskytu
+  ověřit `gpio_cfg_lock()` v okolí (nebo zdůvodnění, proč tam být nemůže).
+  Nenulový `GPIO HLIDAC` ve `status` = závod opravdu probíhá.
+- **Commit:** viz `fix(F-0149)`
+- **Stav:** aktivní
+
+---
+
+### L-0083 — Když sjednotíš zdroj pravdy, kontrola, která hlídala rozchod, se stane tautologií — a nikdo si toho nevšimne
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, audit modulu 23, F-0151)
+- **Oblast:** `fmc.c` / `fmc.h`, `REFRESH_COUNT`
+- **Symptom:** `_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED,
+  "fmc.h se rozeslo s fmc.c")` vypadal jako pojistka na nejnebezpečnější
+  konstantě v projektu. Po preprocesoru z něj ale bylo `371 == 371`:
+  **nemohl selhat nikdy.**
+- **Příčina:** Assert vznikl správně — v době, kdy byla hodnota **ručně
+  zdvojená** ve `fmc.c` i `fmc.h`, a tehdy rozchod skutečně hlídal. Pak přišla
+  správná oprava (sjednocení na jediný zdroj, `#define REFRESH_COUNT
+  REFRESH_COUNT_EXPECTED`) — a tím **zmizela vada, kterou assert hlídal**,
+  zatímco assert zůstal i s hláškou, která tvrdí, že ji hlídá dál.
+  Je to zrcadlo L-0070: tam kontrola hlásila nález i ve zdravém stromě,
+  tady nehlásí nikdy nic. Obojí přestává být kontrolou.
+- **Oprava:** Assert nahrazen mezí, která **selhat může** a hlídá vadu, jež
+  reálně hrozí — rozchod hodnoty s **taktem SDCLK** (`REFRESH_COUNT_SPEC_MAX`
+  ve `fmc.h`). Mez je jednostranná záměrně: obnovovat se smí častěji, nikdy
+  řidčeji. Pozitivní kontrola (L-0039) proběhla na **obou** vadách, kvůli
+  kterým vznikla: historická hodnota `1835` → build spadl, SDCLK 50 → 25 MHz
+  → build spadl, nedotčený strom → prošel.
+- **Pravidlo:** **Když odstraníš duplicitu, projdi kontroly, které ten rozchod
+  hlídaly — buď je smaž, nebo je přesměruj na vadu, která po té změně ještě
+  existuje.** Kontrola, jejíž obě strany se staly týmž symbolem, je mrtvá.
+  🔑 A obecněji: **u každého `_Static_assert` si polož otázku „jaká konkrétní
+  změna ho shodí?" — když na ni neumíš odpovědět příkladem, není to pojistka,
+  ale dekorace.** Odpověď patří do komentáře u něj.
+- **Detekce:** u `_Static_assert(A == B)` ověřit, že `A` a `B` mají **různé
+  zdroje**; pokud je jedno `#define`ované druhým, je to tautologie. Obecně:
+  ke každé nové pojistce spustit pozitivní kontrolu a její výsledek zapsat.
+- **Commit:** viz `fix(F-0151)`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

@@ -52,31 +52,42 @@
  * smysl verit verdiktu o prekryvu adres (#72) — rozpadle bunky ho matou.
  *
  * ─────────────────────────────────────────────────────────────────────────
- * 🔴 2026-09-09: 371 NESTACILO. Zvyseno na 32 ms (REFRESH_COUNT_EXPECTED=175).
+ * 🔴 UZAVRENA SLEPA ULICKA (2026-09-09): pokus 371 -> 175 byl ZAMITNUT MERENIM.
  *
- * Oprava 1835 -> 371 z 2026-09-04 rozpad NEODSTRANILA: `membench` pak dal
- * **1 048 646 chybnych bitu** retence (STATUS #238) a problikavani trva.
- * 371 je totiz presne tREF = 64 ms, tedy MAXIMUM povolene datasheetem —
- * nulova rezerva. Clen "-20" kryje jen JEDNU kolizi s probihajicim pristupem,
- * ne trvalou zatez sbernice.
+ * ⚠️ POZOR, co tu stalo do 2026-09-25 (F-0150): tenhle blok na 25 radcich
+ * tvrdil, ze "371 NESTACILO" a ze hodnota BYLA zvysena na 175. Nebyla —
+ * a duvod pro ni byl vyvracen. Kdo sem prijde hledat spravnou hodnotu,
+ * musi odejit s 371, ne se 175.
  *
- * Dve veci tu rezervu na teto desce ujidaji:
- *   (a) TEPLOTA. 64 ms plati u vetsiny SDRAM jen do 85 °C; tenhle pristroj ma
- *       v uzavrene krabicce OCXO na 45-55 °C a teploty desky se loguji.
- *   (b) PROPUSTNOST. Samotne LTDC cte 800x480x2 pri ~58 Hz = ~44 MB/s ze
- *       16bitove sbernice na 50 MHz (strop ~100 MB/s), tedy ~45 % — a k tomu
- *       copy-forward DMA2D. Zadost o refresh ceka ve fronte za rozjetym
- *       burstem, takze SKUTECNA perioda je delsi nez naprogramovana.
+ * Jak to probehlo: po oprave 1835 -> 371 dal `membench` porad ~1 048 646
+ * chybnych bitu retence (STATUS #238), takze vznikla hypoteza "371 je presne
+ * tREF = 64 ms, tedy datasheetove MAXIMUM s nulovou rezervou; ujida ji teplota
+ * (OCXO 45-55 °C v uzavrene krabicce) a propustnost (LTDC samo cte ~44 MB/s
+ * ze 16bitove sbernice na 50 MHz)". Hodnota se docasne snizila na 175
+ * (tREF 32 ms, dvojnasobna rezerva).
  *
- * Nova hodnota: tREF 32 ms -> 32e-3 * 50e6 / 8192 - 20 = 175. Dvojnasobna
- * rezerva proti spec.
- * ⚠️ CASTEJSI OBNOVA JE BEZPECNA Z PRINCIPU — obnovovat se smi kdykoli castej,
- * nikdy ne rideji. Cena je pasmo: refresh zabere ~tRFC (~4 takty SDCLK), tedy
- * 4/371 = 1,1 % -> 4/175 = 2,3 %. Pribyva ~1 procentni bod.
+ * 🔑 MERENI TU HYPOTEZU VYVRATILO: pri SDRTR=175 hlasil `membench` porad
+ * 496 068 chybnych bitu retence a `bgcheck` 120/120 rozpadlych bloku. Kdyby
+ * slo o rezervu obnovy, dvojnasobek by to vyrazne zlepsil. Nezlepsil ->
+ * OBNOVA TO NENI. Hodnota vracena na spec 371, at castejsi obnova zbytecne
+ * nebere pasmo LTDC, ktere podtekalo.
+ *
+ * ✅ SKUTECNA PRICINA se nasla 2026-09-10 ve CTECI CESTE FMC, ne v obnove:
+ * `ReadPipeDelay = 0` (nize v tomto souboru, dnes `FMC_SDRAM_RPIPE_DELAY_1`)
+ * + nikdy nezapnuta I/O kompenzacni cela (`SYSCFG_CCCSR`, zapina se v `main.c`
+ * pred `MX_FMC_Init`). Po te oprave: `membench` 0 chybnych bitu (bylo 3 338 207),
+ * retence 0, `LTDC podteceni` 0/1000. Pamet byla celou dobu v poradku.
+ *
+ * ⚠️ Platna hodnota je a zustava **371** a jejim jedinym zdrojem je
+ * `REFRESH_COUNT_EXPECTED` ve `fmc.h`. Tam je od 2026-09-25 i mez
+ * `REFRESH_COUNT_SPEC_MAX`, ktera vazbu na takt SDCLK hlida pri PREKLADU
+ * (F-0151) — driv to mel hlidat `_Static_assert` zde, jenze byl tautologicky.
+ * ⚠️ CASTEJSI OBNOVA JE BEZPECNA Z PRINCIPU — obnovovat se smi kdykoli casteji,
+ * nikdy rideji. Cena je pasmo: refresh zabere ~tRFC (~4 takty SDCLK).
  * ⚠️ Kdyby to pasmo chybelo LTDC, projevi se to HNED a MERITELNE:
  * `status` -> `LTDC: podteceni FIFO` na flip. Tam se to hlida.
  * ⚠️ Ladi se ZA BEHU pres UART `sdrtr <n>` (stejny vzor jako `d2ddt`), takze
- * spravna hodnota se da najit bez preflashovani.
+ * spravna hodnota se da hledat bez preflashovani.
  * ⚠️ OVERENI: `bgcheck` musi rict "BEZE ZMENY" a `membench` retence 0. */
 #define REFRESH_COUNT        REFRESH_COUNT_EXPECTED   /* jediny zdroj: fmc.h */
 
