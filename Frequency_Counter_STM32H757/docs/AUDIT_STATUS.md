@@ -46,6 +46,38 @@ dvou souborů baseline `audit.py` 92/0/**2**. „Neauditováno" tedy znamená
 ⚠️ Past při opravách v těchto souborech: veškerá logika musí zůstat
 v `USER CODE` blocích (pravidlo 6), jinak ji příští regen smaže.
 
+✅ **F3 modulu 23 PROVEDENA týž den — 6 nálezů (1× S2, 2× S3, 3× S4),
+fáze oprav NEproběhla.** Verdikt **podmíněně funkční**. Zápis →
+[`audit/2026-09-25_generovane-init-periferie.md`](audit/2026-09-25_generovane-init-periferie.md).
+🔴 **F-0149 [S2]** — obranné potvrzení PG8 ve `fmc.c:229-238` volá
+`HAL_GPIO_Init(GPIOG,…)` **bez `gpio_cfg_lock()`**, zatímco CM4 kolem všech
+svých GPIOG initů HSEM 1 drží (`CM4/main.c:175-193`). Zámek, který bere jen
+jedna strana, nevylučuje nic. **Souběh doložen pořadím bootu staticky:** CM4 se
+budí uvolněním HSEM 0 na `main.c:333-335`, `MX_FMC_Init()` běží až na `main.c:382`.
+🔑 **Tím padá stojící výmluva** u `gpio_cfg_lock` (*„generované `MX_*_Init` nelze
+regen-safe obalit"*) — tenhle blok **v `USER CODE` je**, obalit ho lze.
+🔴 **A hlavně:** komentář `fmc.c:222-227` vyloučil CM4 jako původce přepisu
+PG8 → ANALOG větou *„tedy PRED bootem CM4"* — **pořadí bootu tu premisu popírá**.
+Uzavřelo to pátrání po příčině černého displeje a 10 551 639 chybných bitů.
+Dál **F-0150** (komentář `fmc.c:53-79` tvrdí `REFRESH_COUNT=175`; skutečnost je
+**371** a experiment se 175 byl měřením zamítnut), **F-0151**
+(`_Static_assert` u `REFRESH_COUNT` je po sjednocení zdroje **tautologie** —
+nemůže selhat, ale tváří se jako pojistka), **F-0152 [S3]** (200 ms blokující
+`HAL_Delay` + blikání LED_1 v `fmc.c:245-249`, v boot cestě **před** bring-upem
+displeje → pravidlo 4c), **F-0153 [S3]** (návrat `HAL_UART_Receive_IT()` se
+zahazuje v obou callbacích `usart.c:197,224` — jediné selhání, které GPS příjem
+zabije natrvalo, je jako jediné nepočítané), **F-0154 [S4]** (`SDRAM_TIMEOUT`
+= 65,5 s, a to v době, kdy neběží watchdog).
+✅ **Nízkoprioritních 7 souborů** (`adc/dsihost/ltdc/quadspi/spi/tim/eth.c`) má
+v `USER CODE` **výhradně** `bootled_step()` — žádný nález, ověřeno extrakcí.
+🔑 **Zároveň poctivě:** `fmc.c` je v podstatných věcech (vyhodnocení návratů,
+**zpětné čtení `SDRTR` z HW** = L-0055, konzistence CAS latency na obou místech)
+napsaný **lépe než průměr projektu**. Riziko nebylo v tom, že jde o generovaný
+kód, ale v tom, že se na něj kvůli nálepce „generovaný" nikdo nepodíval.
+🔑 **Pokračovat zde:** triáž F5.0 nabídnuta uživateli — A: F-0149, F-0150,
+F-0151(a), F-0153; B: F-0151(b) a F-0152 (mění časování bootu / potřebují
+rozhodnutí); C: F-0154 a generovaný `HAL_FMC_MspInit` (mimo `USER CODE`).
+
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
 kontroly, která F-0148 samo odhalila (viz L-0081): rozšíření
@@ -697,7 +729,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 20 | metrologie, encoder, export | `meas_present.c`, `encoder.c`, `screenshot.c`, `phase_noise.c`, `autocal.c`, `meas_math.c` (1 449 ř. vč. hlaviček) | CM7 (+`meas_math` i CM4) | **opraveno vše** (6 z 6, F-0122+F-0139 ✅ na HW, 4 zbylé ⬜) | 2026-09-20 | 0 | 0 | 2 | 4 | [6](audit/2026-09-18_metrologie-encoder-export.md) |
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
-| **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | 🔴 **nezačato** — mezera v pokrytí nalezená 2026-09-25 křížovou kontrolou souborů | — | — | — | — | — | — |
+| **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | 🔴 **nálezy zapsány (F3)** — fáze oprav NEproběhla | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
