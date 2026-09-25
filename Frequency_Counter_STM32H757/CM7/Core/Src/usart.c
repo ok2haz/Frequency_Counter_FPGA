@@ -195,13 +195,23 @@ extern osMessageQueueId_t GpsRxQueueHandle;
 
 /* Re-arm prijmu se spocitanym selhanim (F-0153). Jediny zdroj pravdy pro obe
  * obsluhy — kdyby si to kazda delala sama, rozejdou se (L-0012, L-0018).
- * ⚠️ Bezi z ISR: `errlog_put` zapisuje jen do RAM ringu, vylitim do flash se
- * zabyva defaultTask (L-0071). */
+ * ⚠️ Bezi z ISR: `errlog_put` zapisuje jen do RAM ringu (krátká sekce pod
+ * `__disable_irq`, cas se dopocita az v `tick`), vylitim do flash se zabyva
+ * defaultTask (L-0071). Overeno ctenim `errlog_put`, ne predpokladem.
+ * 🔴 Druh je `ERRLOG_K_UARTFATAL`, NE `ERRLOG_K_UART` (audit F-0155 + F-0156).
+ * Puvodne to slo pod `ERRLOG_K_UART` se `sub = 0xFE` a melo to DVE vady naraz:
+ *  (a) `errlog_fmt_detail` zna jen `sub == 0xFF`, takze se zaznam vypisoval
+ *      jako FALESNE `ORE=<pocet>` — tvrdil chybu, ktera se nestala;
+ *  (b) prodleva `errlog_put` je per DRUH (60 s) a `HAL_UART_ErrorCallback`
+ *      loguje chybu linky o par instrukci driv, takze si ji sam vycerpal
+ *      a tenhle zaznam se v hlavni ceste NEEMITOVAL NIKDY.
+ * Vlastni druh resi obe — a navic poctive odlisuje TRVALOU poruchu od
+ * prechodnych chyb linky, ze kterych se prijem zotavi sam. */
 static void uart1_rearm_rx(void)
 {
     if (HAL_UART_Receive_IT(&huart1, &RxByte, 1) != HAL_OK) {
         g_uart1_rearm_fail++;
-        (void)errlog_put(ERRLOG_K_UART, 0xFEu, g_uart1_rearm_fail, 0u, "REARM");
+        (void)errlog_put(ERRLOG_K_UARTFATAL, 0u, g_uart1_rearm_fail, 0u, "REARM");
     }
 }
 

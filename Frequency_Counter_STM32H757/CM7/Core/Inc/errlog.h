@@ -52,6 +52,20 @@ typedef enum {
      * po zmene uz nejsou soumeritelne a NIC jineho to nepripomene.
      * `sub` = ERRLOG_CFG_*, `a` = nova hodnota, `b` = stara. */
     ERRLOG_K_CFG     = 11u,
+    /* 🔴 TERMINALNI porucha prijmu GPS: `HAL_UART_Receive_IT` se uz nepodarilo
+     * znovu nahodit, takze USART1 RX je mrtvy AZ DO RESETU. `a` = pocet pokusu.
+     *
+     * Proc VLASTNI druh a ne `sub` pod `ERRLOG_K_UART` (audit F-0155 + F-0156):
+     *  (a) `errlog_put` ma prodlevu **per DRUH** (`ERRLOG_COOLDOWN_MS` = 60 s).
+     *      `HAL_UART_ErrorCallback` loguje DVAKRAT v jednom pruchodu — nejdriv
+     *      chybu linky, pak selhani re-armu — takze druhe volani naraze na
+     *      prodlevu, kterou si prvni prave nastavilo, a zaznam se NEEMITUJE
+     *      NIKDY. Vlastni druh = vlastni kbelik prodlevy.
+     *  (b) Je to jina TRIDA udalosti: `ERRLOG_K_UART` jsou PRECHODNE chyby
+     *      linky, ze kterych se prijem zotavi sam. Tahle se nezotavi.
+     * ⚠️ Pri pridani dalsiho druhu nezapomen na `ERRLOG_KIND_MAX` ve
+     * `flightrec.c` — je navazany na KONKRETNI polozku, ne na posledni. */
+    ERRLOG_K_UARTFATAL = 12u,
 } errlog_kind_t;
 
 /* Podtypy pro ERRLOG_K_CFG (pole `sub`). */

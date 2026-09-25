@@ -458,7 +458,10 @@ bool flightrec_report(void)
 #define ERRLOG_COOLDOWN_MS  60000u     /* max 1 zaznam na druh a minutu */
 #define ERRLOG_PER_SECTOR   (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)   /* 128 */
 #define ERRLOG_CAPACITY     (W25Q_ERRLOG_SECTORS * ERRLOG_PER_SECTOR)
-#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_CFG)
+/* ⚠️ Musi ukazovat na POSLEDNI polozku `errlog_kind_t` — `errlog_put` podle
+ * toho odmita neznamy druh a obe pole nize se tim dimenzuji. Pri pridani
+ * druhu to sem nezapomen prenest (2026-09-25: F-0156 pridal UARTFATAL). */
+#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_UARTFATAL)
 
 static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
@@ -531,6 +534,7 @@ const char *errlog_kind_name(uint8_t kind)
     case ERRLOG_K_GPIO:    return "GPIO";
     case ERRLOG_K_NET:     return "SIT";
     case ERRLOG_K_CFG:     return "NASTAV";
+    case ERRLOG_K_UARTFATAL: return "GPS!";
     default:               return "?";
     }
 }
@@ -916,6 +920,12 @@ void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
             snprintf(buf, n, "ORE=%lu FE=%lu NE=%lu PE=%lu", (unsigned long)r->a,
                      (unsigned long)(r->b & 0xFFu), (unsigned long)((r->b >> 8) & 0xFFu),
                      (unsigned long)((r->b >> 16) & 0xFFu));
+        break;
+    /* Veta rika NASLEDEK, ne detekci (L-0056): pro ctenare je podstatne, ze
+     * GPS uz nic neposle, ne ze selhalo konkretni HAL volani. */
+    case ERRLOG_K_UARTFATAL:
+        snprintf(buf, n, "GPS prijem MRTVY az do resetu (re-arm selhal, pokusu=%lu)",
+                 (unsigned long)r->a);
         break;
     case ERRLOG_K_SENSOR: {
         const char *name = (r->sub < SENS_COUNT) ? g_sensor_desc[r->sub].label : "?";
