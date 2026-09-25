@@ -23,6 +23,7 @@
 
 /* USER CODE BEGIN 0 */
 #include "bootled.h"
+#include "gpio_guard.h"   /* gpio_cfg_lock — PG8 sdili GPIOG s CM4 (ETH/LED_2), audit F-0149 */
 /* 🔴 OPRAVENO 2026-09-04: 1835 -> 371. Puvodni hodnota byla prevzata z ST
  * prikladu pro JINOU desku a znamenala, ze se cela matice obnovi az za ~304 ms
  * misto 64 ms — tedy 4,7x pomaleji, nez SDRAM snese.
@@ -107,8 +108,11 @@ extern SDRAM_HandleTypeDef hsdram1;
  * refreshe ZAHAZOVALA, takze se pri studenem startu mohla sekvence tise
  * nedokoncit a pamet zustala napul inicializovana — presne profil "po teplem
  * resetu OK, po studenem ne". `status` to ted hlasi. */
-_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED,
-               "fmc.h REFRESH_COUNT_EXPECTED se rozeslo s REFRESH_COUNT v fmc.c");
+/* ⚠️ Zdejsi `_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED)` byl
+ * ODSTRANEN 2026-09-25 (F-0151): po sjednoceni zdroje (radek `#define
+ * REFRESH_COUNT REFRESH_COUNT_EXPECTED` vyse) porovnaval tentyz symbol sam se
+ * sebou, tedy tautologii, ktera nemohla selhat. Kontrola, ktera SELHAT MUZE
+ * — mez proti taktu SDCLK — je nove ve `fmc.h` u `REFRESH_COUNT_SPEC_MAX`. */
 
 volatile uint8_t  g_fmc_init_fail;      /* 1..6 = cislo kroku, 0 = OK */
 volatile uint32_t g_fmc_init_runs;      /* kolikrat sekvence probehla (re-init pro pokus) */
@@ -221,11 +225,32 @@ void MX_FMC_Init(void)
    *
    * ⚠️ KDO to prepisoval, se ve zdrojich NENASLO: zadne `GPIO_MODE_ANALOG` ani
    * `HAL_GPIO_DeInit` na `GPIOG` pin 8 (mimo `HAL_FMC_MspDeInit`, ktery se
-   * nevola — ostatni piny te skupiny AF drzi). Stav byl analog uz ~200 ms po
-   * resetu, tedy PRED bootem CM4. Dokud se puvodce nenajde, je tohle
-   * OBRANA NA SPRAVNEM MISTE, ne zaslepka: pin se znovu potvrdi TESNE PRED
-   * inicializacni sekvenci nize, takze ta uz probehne s hodinami.
-   * ⚠️ Musi zustat PRED krokem 1 (CLK_ENABLE). */
+   * nevola — ostatni piny te skupiny AF drzi). Dokud se puvodce nenajde, je
+   * tohle OBRANA NA SPRAVNEM MISTE, ne zaslepka: pin se znovu potvrdi TESNE
+   * PRED inicializacni sekvenci nize, takze ta uz probehne s hodinami.
+   * ⚠️ Musi zustat PRED krokem 1 (CLK_ENABLE).
+   *
+   * 🔴 OPRAVENO 2026-09-25 (F-0149) — DVE veci naraz:
+   * (1) Do teto zmeny tu stalo, ze stav byl analog uz ~200 ms po resetu,
+   *     "tedy PRED bootem CM4", a tim se CM4 vyloucil jako puvodce. TA PREMISA
+   *     NEPLATI: CM4 se budi uvolnenim HSEM 0 v `Boot_Mode_Sequence_2`
+   *     (`main.c:333-335`), zatimco `MX_FMC_Init()` bezi az z `main.c:382`.
+   *     CM4 tedy bezi DRIV, nez CM7 vubec sahne na FMC, a jeho `MX_GPIO_Init`
+   *     (`CM4/gpio.c:56`, PG7/PG14) i `MX_ETH_Init` (`CM4/eth.c:150`, PG11/PG13)
+   *     pisou do TEHOZ portu. CM4 je tedy kandidat, ne vyloucena moznost.
+   * (2) Tenhle blok sam delal `HAL_GPIO_Init` = neatomicky read-modify-write
+   *     nad `GPIOG->MODER`/`AFR` BEZ zamku, zatimco CM4 kolem vsech svych initu
+   *     HSEM 1 poctive drzi (`CM4/main.c:175-193`). Zamek, ktery bere jen jedna
+   *     strana, NEVYLUCUJE NIC — a byla to zrovna obrana proti ztrate PG8,
+   *     napsana tak, ze tu ztratu sama umoznovala (i v opacnem smeru: mohla
+   *     sebrat `AFR` pinu PG11 = `ETH_TX_EN` a nechat desku bez IP).
+   * ⚠️ `gpio_cfg_lock()` je best-effort (omezene cekani, pri neuspechu
+   *    pokracuje) — okno zuzuje, negarantuje. Zachytnou siti zustava
+   *    `gpio_guard_tick()`, ktery ale bezi az 1x/s z defaultTasku.
+   * ⚠️ Generovany `HAL_FMC_MspInit()` nize (radek s `HAL_GPIO_Init(GPIOG, …)`)
+   *    chraneny NENI — lezi mimo `USER CODE`, takze ho regen-safe obalit nejde.
+   *    Tenhle blok obalit LZE prave proto, ze v `USER CODE` je. */
+  gpio_cfg_lock();
   {
     GPIO_InitTypeDef sdclk = {0};
     __HAL_RCC_GPIOG_CLK_ENABLE();
@@ -236,17 +261,30 @@ void MX_FMC_Init(void)
     sdclk.Alternate = GPIO_AF12_FMC;
     HAL_GPIO_Init(GPIOG, &sdclk);
   }
+  gpio_cfg_unlock();
 
   /* ⚠️ Sekvence je vyclenena do `fmc_sdram_init_sequence()`, aby (a) NEZAHAZOVALA
    * navratove hodnoty a (b) sla spustit znovu za behu (UART `sdraminit`).
    * Selhany krok se ulozi do `g_fmc_init_fail` a hlasi ho `status`. */
   g_fmc_init_fail = fmc_sdram_init_sequence();
 
-    //Deactivate speculative/cache access to first FMC Bank to save FMC bandwidth
-//   FMC_Bank1->BTCR[0] = 0x000030D2;
-    HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_RESET);
-    HAL_Delay(200);
-    HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_SET);
+  /* 🔴 ODSTRANENO 2026-09-25 (F-0152): tady stalo bezpodminecne
+   *   HAL_GPIO_WritePin(LED_1, RESET); HAL_Delay(200); HAL_GPIO_WritePin(LED_1, SET);
+   * plus dva radky zakomentovaneho `FMC_Bank1->BTCR[0]`. Nic z toho nemelo
+   * zduvodneni — byl to pozustatek z bring-upu.
+   * PROC to vadilo: 200 ms BLOKUJICIHO zdrzeni lezelo v boot ceste PRED
+   * bring-upem displeje (ten zacina az kolem `main.c:489`), takze posouvalo
+   * prave ty zavody, na ktere je tahle deska citliva — ATTINY nabiha vlastnim
+   * tempem (probe ma 10 pokusu po 100 ms), obe jadra zavodi o GPIOG (#219/#208,
+   * viz F-0149 vyse), FPGA teprve cte konfiguraci z flash. `CLAUDE.md` pravidlo
+   * 4c to zakazuje jmenovite. Druhotne: LED_1 je vystup `bootled` pro hlaseni
+   * poruch, takze jeji blikani uprostred initu slo splest se vzorem poruchy.
+   * ⚠️ NELZE VYLOUCIT, ze bylo zdrzeni omylem NOSNE (lezi hned za inicializacni
+   * sekvenci SDRAM a pri studenem startu mohlo krit cas, ktery cip potrebuje
+   * na rozbeh napajeni). Proto to MUSI projit STUDENYM STARTEM s `membench`
+   * (retence 0, 0 chybnych bitu) a `bgcheck` ("BEZE ZMENY") — ne jen resetem
+   * po flashi. Kdyby se ukazalo jako nosne, vratit ho POJMENOVANE a se
+   * zduvodnenim, ne jako anonymni pozustatek s blikanim LED. */
   /* USER CODE END FMC_Init 2 */
 }
 

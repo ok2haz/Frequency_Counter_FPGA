@@ -68,6 +68,33 @@ void HAL_SDRAM_MspDeInit(SDRAM_HandleTypeDef* hsdram);
  * zbytecne nebere pasmo LTDC, ktere podteka. */
 #define REFRESH_COUNT_EXPECTED 371
 
+/* 🔑 F-0151 (2026-09-25): hodnota vyse NENI volne cislo, ale vysledek vzorce —
+ * a ted to hlida prekladac. Do teto zmeny stal ve `fmc.c` `_Static_assert`,
+ * ktery po sjednoceni zdroje porovnaval `REFRESH_COUNT_EXPECTED` SAM SE SEBOU:
+ * TAUTOLOGIE, ktera nemohla selhat nikdy, ale tvarila se jako pojistka.
+ *
+ * Skutecna vada, ktera hrozi, je jina: rozchod hodnoty s TAKTEM SDCLK. Presne
+ * ta tu byla od prvniho commitu (1835 prevzatych z ST prikladu pro jinou desku
+ * = obnova matice za 304 ms misto 64 ms, 3 338 207 chybnych bitu).
+ *
+ * Mez je JEDNOSTRANNA zamerne: obnovovat se smi kdykoli CASTEJI, nikdy RIDEJI.
+ * Prilis nizka hodnota jen ubira pasmo (meritelne na `LTDC: podteceni FIFO`),
+ * prilis vysoka data ZTRACI. Assert proto hlida jen horni stranu.
+ * ⚠️ `+1` je zaokrouhleni: presny vzorec da 370,625 a 371 je jeho zaokrouhleni
+ * nahoru, tedy tREF prekrocen o 0,1 % — v praxi neskodne, ale bez te tolerance
+ * by kontrola padala na spravne hodnote.
+ * ⚠️ Kdyz zmenis delicku FMC nebo `SDClockPeriod`, uprav `FMC_SDCLK_MHZ`.
+ * Pri ZVYSENI taktu assert projde (stara hodnota = castejsi obnova = bezpecne),
+ * pri SNIZENI build spadne — a to je prave ten smer, ktery dela skodu. */
+#define FMC_SDCLK_MHZ           50u     /* PLL2R 100 MHz / SDClockPeriod_2 */
+#define SDRAM_ROWS            8192u     /* RowBitsNumber = 13 -> 2^13 radku */
+#define SDRAM_TREF_US        64000u     /* tREF cele matice, MT48LC16M16A2 do 85 C */
+#define REFRESH_COUNT_SPEC_MAX \
+    ((SDRAM_TREF_US * FMC_SDCLK_MHZ / SDRAM_ROWS) - 20u)
+_Static_assert(REFRESH_COUNT_EXPECTED <= REFRESH_COUNT_SPEC_MAX + 1u,
+               "REFRESH_COUNT_EXPECTED obnovuje SDRAM RIDEJI nez tREF pri danem "
+               "FMC_SDCLK_MHZ — data se rozpadnou (viz historie 1835)");
+
 uint8_t fmc_sdram_init_sequence(void);
 extern volatile uint8_t  g_fmc_init_fail;   /* 0 = sekvence prosla cela */
 extern volatile uint32_t g_fmc_init_runs;
