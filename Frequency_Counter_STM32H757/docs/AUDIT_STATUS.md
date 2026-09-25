@@ -3,7 +3,20 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-25 — ✅ **F-0148 [S2] opraveno** (schváleno
+**Poslední aktualizace:** 2026-09-25 (třetí `/audit-modul` běh) — ✅
+**Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída
+kontroly, která F-0148 samo odhalila (viz L-0081): rozšíření
+`sd_blocking_begin/end` scope neporušuje L-0078 (žádná smyčka/cross-task
+čekání, jen o pár řádků delší neblokující úsek), žádný double-close,
+žádné další nezdůvodněné `s_mirror_open=false` bez `f_close()`. Zápis →
+`docs/audit/2026-09-25_fixreview-f0148.md`. **Audit backlog je momentálně
+vyčerpaný** — všech 22 číslovaných modulů auditováno a opraveno, tenhle
+i předchozí dva ad-hoc běhy nad posledními úpravami taky, žádný S1/S2
+neotevřen. Jediné zbylé položky jsou tři S4 (F-0144/F-0145/F-0147,
+kosmetika) a jedna vědomě odložená S3 (F-0003, čeká na CubeMX regen) —
+všechny ve skupině C, nikdo je neschválil k opravě.
+
+**Předchozí, 2026-09-25 (druhý běh):** ✅ **F-0148 [S2] opraveno** (schváleno
 uživatelem "a" = skupina A z triáže). Přezkum VLASTNÍCH OPRAV `1d18c28`
 (d2d_wait yield) a `caa5f70` (SD zrcadlo F-0142/F-0143/F-0146) 2026-09-24
 našel novou regresi: oprava F-0143 v `datalog_mirror_service()` znovu
