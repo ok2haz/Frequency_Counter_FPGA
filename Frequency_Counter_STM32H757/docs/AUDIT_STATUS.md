@@ -81,7 +81,7 @@ kód, ale v tom, že se na něj kvůli nálepce „generovaný" nikdo nepodíval
 |---|---|---|---|
 | **F-0149** [S2] | `9eeb0c0` | `gpio_cfg_lock()` kolem PG8 bloku + premisa v komentáři uvedena na pravdu | `status` → `GPIO HLIDAC` nižší/nulový; `errlog` (`ERRLOG_K_GPIO`) na porovnání četnosti |
 | **F-0151** [S4] | `9eeb0c0` | varianta **(b)** — tautologie nahrazena mezí na takt SDCLK (`fmc.h`) | nic (kontrola překladu), ale ✅ **pozitivní kontrola hotová** |
-| **F-0152** [S3] | `9eeb0c0` | odstraněno 200 ms `HAL_Delay` + blikání LED_1 + mrtvý kód | 🔴 **STUDENÝ START** + `membench` (retence 0) + `bgcheck` („BEZE ZMĚNY") |
+| **F-0152** [S3] | `9eeb0c0` → 🔴 **vráceno** `830ea2c` | odstranění **ZAMÍTNUTO MĚŘENÍM** — zdržení je NOSNÉ pro USB CDC konzoli; vráceno jako `FMC_POST_INIT_SETTLE_MS` | ✅ **ověřeno na HW po studeném startu** |
 | **F-0153** [S3] | `6296e75` | `g_uart1_rearm_fail` + `errlog_put`, re-arm vyčleněn do `uart1_rearm_rx()` | `errlog` po hot-plugu UART kabelu; GPS se musí vrátit k fixu |
 | **F-0150** [S4] | *(docs)* | komentář `REFRESH_COUNT` uveden na pravdu (371, pokus o 175 = uzavřená slepá ulička) | nic — `.text` beze změny |
 
@@ -103,13 +103,46 @@ prošel. **Assert by tedy původní vadu z prvního commitu zachytil při překl
 — a premisa vylučující podezřelého se musí ověřit proti pořadí bootu),
 **L-0083** (po sjednocení zdroje pravdy se kontrola rozchodu stane tautologií).
 
-🔑 **Pokračovat zde:** (1) 🔴 **F-0152 vyžaduje STUDENÝ START, ne reset po
-flashi** — nelze vyloučit, že odstraněné zdržení omylem krylo rozběh napájení
-SDRAM; kdyby `membench`/`bgcheck` po studeném startu zlobily, vrátit ho
-**pojmenované a se zdůvodněním**. (2) F-0154 [S4] zůstává otevřený (skupina C —
+🔴🔴 **HW PRŮCHOD 2026-09-25 — F-0152 ZAMÍTNUTO MĚŘENÍM, zbytek ✅ OVĚŘEN.**
+Naflashováno (CM7 Release, bank1) a proběhly **dva power-cykly**.
+
+🔴 **Odstranění zdržení ve `fmc.c` bylo ŠPATNĚ a měření to ukázalo.** Po
+studeném startu bez něj prošlo **všechno, co tenhle nález i checklist modulu
+předepisoval** — `g_fmc_init_fail`=0, `g_display_init_step`=0,
+`g_cm4_absent`=0, `membench` 0 chybných bitů, retence 0, `bgcheck` BEZE ZMĚNY,
+`GPIO HLIDAC` 0, `uptime` rostl — **ale přestala odpovídat USB CDC konzole**
+(zařízení vyenumerované, `VID/PID 0483:5740`, data netekla při žádné kombinaci
+DTR/RTS; po SW resetu se vždy vrátila). Rozbil se subsystém, který
+s auditovaným modulem nesouvisí — **a zrovna ten, kterým se všechno ostatní
+měří.** Druhý kandidát (bouře ISR z F-0153) vyloučen měřením:
+`g_uart1_rearm_fail`=0, `g_gps_rx_drop`=0, nerostly.
+Zdržení **vráceno** jako `FMC_POST_INIT_SETTLE_MS` se zdůvodněním (`830ea2c`);
+blikání LED_1 vráceno nebylo. **Nová lekce L-0084.**
+
+✅ **Stav po vrácení, ověřeno po STUDENÉM STARTU** (`Reset: power-on`):
+`ping`→`pong`, `selftest` **16/16 PASS**, `bgcheck` BEZE ZMĚNY, `membench`
+**0 chybných bitů** / retence 0, `DISPLEJ: bring-up OK`, `LTDC` 0/285,
+`GPIO HLIDAC` 0 oprav, I2C4 `SCL=1 SDA=1 idle` (`scanner` našel 0x38+0x45+0x48,
+TMP117 err=0), `CM4: alive` + SCPI/HTTP selftest PASS, `ULOZISTE`/`WATCHDOG`/
+`FORMAT`/`FONTY` OK, napájení 12,03 V / 5,01 V.
+⇒ **F-0149, F-0150, F-0151, F-0153 jsou ✅ ověřené na HW po power-cyklu** (bez
+regrese); **F-0152 uzavřeno jako zamítnuté**.
+
+⚠️ **Co ověřit NELZE a nebylo:** účinek **F-0149** — `GPIO HLIDAC` bylo 0 před
+i po, takže se závod na téhle desce právě neprojevuje a oprava je preventivní
+bez pozorovatelného účinku (tvrdit „ověřeno účinkem" by bylo nepoctivé; ověřeno
+je jen „bez regrese"). **F-0153** by chtěl opakovaný hot-plug GPS kabelu.
+⚠️ **Past pro příště:** `status` umí ukázat `I2C4: SCL=0 SDA=1 BUSY`, což je
+podpis mrtvé sběrnice — ale je to jen okamžik zachycený uprostřed přenosu.
+Rozhodne `scanner` + `err v rade`.
+
+🔑 **Pokračovat zde:** (1) F-0154 [S4] zůstává otevřený (skupina C —
 `SDRAM_TIMEOUT` 65,5 s; měnit až spolu s jiným zásahem do `fmc.c`).
-(3) Generovaný `HAL_FMC_MspInit` zůstává bez zámku — mimo `USER CODE`,
+(2) Generovaný `HAL_FMC_MspInit` zůstává bez zámku — mimo `USER CODE`,
 regen-safe obalit nejde; samostatné rozhodnutí.
+(3) 🔑 **Otevřená otázka z L-0084:** proč 200 ms ve `fmc.c` rozhoduje o USB CDC,
+se neví. Kdyby to někdo chtěl dořešit, začíná to zúžením zdržení (200 → 100 →
+50 ms) s power-cyklem po každém kroku, ne úvahou.
 
 **Předchozí, 2026-09-25 (třetí `/audit-modul` běh):** ✅
 **Přezkum opravy `bb0d7a7` (F-0148) — 0 nových nálezů.** Stejná třída

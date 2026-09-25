@@ -2896,6 +2896,60 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0084 — Anonymní zdržení v bootu drželo při životě ÚPLNĚ JINÝ subsystém, než u kterého stálo; modulový audit ho ověřit nemohl
+
+- **Datum:** 2026-09-25 (nalezeno, opraveno, vráceno — audit modulu 23, F-0152)
+- **Oblast:** `fmc.c` `USER CODE FMC_Init 2`, boot časování, USB CDC konzole
+- **Symptom:** Po odstranění bezpodmínečného `HAL_Delay(200)` (plus blikání
+  LED_1) z `MX_FMC_Init` **přestala po STUDENÉM STARTU odpovídat USB CDC
+  konzole**. Zařízení se vyenumerovalo se správným `VID/PID 0483:5740`, ale
+  data netekla při žádné kombinaci DTR/RTS. Po SW resetu se konzole **vždy**
+  vrátila → rozdíl byl výlučně ve studeném startu.
+- **Proč to audit ani ověření nechytily — tohle je jádro lekce:** návrh smazat
+  to byl **dobře odůvodněný**. Zdržení nemělo v kódu žádné vysvětlení, vypadalo
+  jako pozůstatek z bring-upu a `CLAUDE.md` pravidlo 4c blokující zdržení v boot
+  cestě před bring-upem displeje zakazuje jmenovitě. Nález navíc **předem
+  označil riziko** („nelze vyloučit, že je omylem nosné") a předepsal ověření
+  studeným startem. **A to ověření prošlo** — všechno, co modulový audit
+  kontroluje, bylo v pořádku:
+  `g_fmc_init_fail=0`, `g_display_init_step=0`, `g_cm4_absent=0`,
+  `membench` 0 chybných bitů a retence 0, `bgcheck` BEZE ZMĚNY,
+  `GPIO HLIDAC` 0, `uptime` normálně rostl.
+  **Rozbil se subsystém, který s auditovaným modulem nemá nic společného** —
+  a proto se na něj v kontrolním seznamu nikdo nedíval.
+  🔑 A rozbil se **zrovna ten, kterým se všechno ostatní měří.** Kdyby mě
+  nenapadlo sáhnout po sondě, vypadalo by to jako „deska po power-cyklu
+  nenaběhla" — přitom běžela úplně normálně.
+- **Příčina:** neznámá; komentář u konstanty to **přiznává jako HYPOTÉZU**
+  (rozběh napájení? enumerační okno vůči hostu?). Jistá je jen ta závislost,
+  doložená kontrolovaným pokusem s jedinou změněnou proměnnou:
+  bez zdržení + power-on → konzole mlčí (opakovaně); se zdržením + power-on →
+  `Reset: power-on`, `uptime 22s`, `ping` → `pong`.
+  Druhý kandidát (bouře chybových ISR z F-0153) **vyloučen měřením, ne úvahou**:
+  `g_uart1_rearm_fail` i `g_gps_rx_drop` byly 0 a nerostly.
+- **Oprava:** zdržení vráceno jako pojmenovaná konstanta
+  `FMC_POST_INIT_SETTLE_MS` se zdůvodněním a s výsledky měření. Blikání LED_1
+  vráceno **nebylo** — na časování nemá vliv a LED_1 je výstup `bootled` pro
+  hlášení poruch, takže se pletlo se vzorem poruchy.
+- **Pravidlo:** **Absence zdůvodnění u zdržení NENÍ důkaz, že je zbytečné.**
+  Anonymní `HAL_Delay` v bootu je podezřelý, ale podezření se uzavírá
+  **měřením, ne úsudkem o čistotě kódu**.
+  🔴 A hlavně: **když měníš časování bootu, ověření se NESMÍ omezit na
+  auditovaný modul — musí pokrýt CELÝ přístroj, a jako první ten kanál,
+  kterým diagnostikuješ** (tady USB CDC konzole). Kontrolní seznam
+  „SDRAM + displej + CM4" je pro změnu boot časování **nedostatečný**;
+  patří do něj `ping` po studeném startu.
+  ⚠️ Platí i obráceně: dokud konzole odpovídá, „deska nenaběhla" je tvrzení,
+  které si musíš ověřit sondou (`g_uptime_s`), ne odvodit z ticha na portu.
+- **Detekce:** po KAŽDÉ změně, která sahá na boot časování (`HAL_Delay`,
+  `printf`, blokující volání v `main()` nebo v `MX_*_Init`), povinně:
+  power-cyklus → `ping` → `status` s `Reset: power-on` → `selftest` →
+  `membench`/`bgcheck`. Samotný SW reset **tuhle třídu vady neodhalí vůbec**.
+- **Commit:** `fix(F-0152)` (odstranění), `fix(F-0152)` (vrácení, `830ea2c`)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

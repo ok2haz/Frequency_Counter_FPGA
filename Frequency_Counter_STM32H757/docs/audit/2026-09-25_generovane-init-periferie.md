@@ -260,21 +260,55 @@ bootu, Boot_Mode_Sequence_1/2), `CM7/Core/Src/freertos.c` (`gpio_cfg_lock`,
   tenhle přístroj citlivý.
 - **Vztah k lekcím:** **L-0010** (ověření až po power-cyklu, ne po flashi),
   `CLAUDE.md` pravidlo 4c.
-- **Stav:** **opraveno 2026-09-25**, 🔴 **NEOVĚŘENO NA HW — a tady to platí
-  dvojnásob.** Odstraněno podle návrhu (obě `HAL_GPIO_WritePin`, `HAL_Delay(200)`
-  i zakomentovaný `FMC_Bank1->BTCR[0]`); na jejich místě zůstal komentář
-  vysvětlující, co tam bylo a proč to zmizelo.
-  **Ověřeno ve slinkovaném obrazu:** `objdump -d` nad `MX_FMC_Init` už
-  neobsahuje `bl <HAL_Delay>` ani `bl <HAL_GPIO_WritePin>` (zbyly jen
-  `bootled_step`, `gpio_cfg_lock/unlock`, `HAL_GPIO_Init`, `HAL_SDRAM_Init`,
-  `fmc_sdram_init_sequence`, `Error_Handler`).
-  🔴 **Povinné ověření před prohlášením za hotové — STUDENÝM STARTEM, ne resetem
-  po flashi** (L-0010, pravidlo 4b): `membench` → retence **0** a 0 chybných
-  bitů; `bgcheck` → **„BEZE ZMĚNY"**; displej naběhne. Důvod je v nálezu:
-  zdržení leželo hned za inicializační sekvencí SDRAM a **nelze vyloučit, že
-  omylem krylo čas, který čip potřebuje na rozběh napájení**. Kdyby se to
-  potvrdilo, zdržení vrátit **pojmenované a se zdůvodněním**, ne jako anonymní
-  pozůstatek s blikáním LED.
+- **Stav:** 🔴 **ZAMÍTNUTO MĚŘENÍM NA HW 2026-09-25 — návrh byl ŠPATNÝ,
+  zdržení je NOSNÉ.** Odstranění proběhlo (`fix`), studený start ho vyvrátil
+  a zdržení bylo **vráceno** jako pojmenovaná konstanta
+  `FMC_POST_INIT_SETTLE_MS` (commit `830ea2c`). Vznikla **lekce L-0084**.
+
+  **Co se naměřilo po odstranění a STUDENÉM STARTU:** jádro přístroje bylo
+  v naprostém pořádku — prošlo *všechno*, co předepisoval tenhle nález
+  i kontrolní seznam modulu:
+
+  | kontrola | výsledek |
+  |---|---|
+  | `g_fmc_init_fail` | **0** (sekvence SDRAM prošla všech 6 kroků) |
+  | `g_display_init_step` | **0** (displej naběhl) |
+  | `g_cm4_absent` | **0** (CM4 naběhl, zámek z F-0149 boot nezadrhl) |
+  | `membench` | **0 chybných bitů**, retence **0** |
+  | `bgcheck` | **BEZE ZMĚNY** |
+  | `GPIO HLIDAC` | **0 oprav**, `uptime` normálně rostl |
+
+  🔴 **A přesto přestala odpovídat USB CDC KONZOLE.** Zařízení se vyenumerovalo
+  se správným `VID/PID 0483:5740`, ale data netekla při žádné kombinaci
+  DTR/RTS. Po SW resetu se konzole **vždy** vrátila → rozdíl je výlučně
+  ve studeném startu, ne v obrazu.
+  🔑 **Rozbil se subsystém, který s auditovaným modulem nemá nic společného —
+  a zrovna ten, kterým se všechno ostatní měří.** Bez sondy (`g_uptime_s`
+  rostlo) by to vypadalo jako „deska po power-cyklu nenaběhla", přitom běžela
+  normálně. Tohle je obsah L-0084 a důvod, proč byl ověřovací seznam v tomhle
+  nálezu **nedostatečný**, i když byl splněn do puntíku.
+
+  **Druhý kandidát vyloučen měřením, ne úvahou:** F-0153 přidává `errlog_put`
+  do chybové ISR cesty USART1, což by při bouři chyb mohlo vyhladovět USB.
+  `g_uart1_rearm_fail` i `g_gps_rx_drop` byly **0** a nerostly ⇒ žádná bouře.
+
+  **Kontrolovaný pokus (jediná změněná proměnná = to zdržení):**
+  | varianta | studený start |
+  |---|---|
+  | **bez** zdržení | konzole **mlčí** (opakovaně, ~5 min pokusů, obojí DTR/RTS) |
+  | **se** zdržením | `Reset: power-on`, `uptime 22s`, `ping` → **`pong`** ✅ |
+
+  **Po vrácení ověřeno po studeném startu:** `selftest` **16/16 PASS**,
+  `bgcheck` BEZE ZMĚNY, `membench` 0 chybných bitů, displej OK,
+  `LTDC` 0/285, `GPIO HLIDAC` 0, I2C4 `SCL=1 SDA=1 idle`, CM4 alive.
+
+  ⚠️ **Mechanismus NENÍ znám** a komentár u konstanty to přiznává jako
+  HYPOTÉZU (rozběh napájení? enumerační okno vůči hostu?). Jistá je jen ta
+  závislost. ⚠️ Blikání LED_1 vráceno **nebylo** — na časování nemá vliv a
+  LED_1 je výstup `bootled`, takže se pletlo se vzorem poruchy.
+  ⚠️ **Poctivá výhrada:** je to n=1 proti n=1, byť s jedinou změněnou
+  proměnnou. Kdo by na to zdržení sahal znovu, musí opakovat kontrolovaný
+  pokus, ne se spolehnout na tenhle záznam.
 
 ---
 
