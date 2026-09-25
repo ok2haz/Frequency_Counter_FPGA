@@ -714,6 +714,9 @@ void datalog_mirror_service(void)
     if ((int32_t)(now - s_mirror_next_ms) < 0) return;
     s_mirror_next_ms = now + DL_MIRROR_TICK_MS;
 
+    sd_blocking_begin();
+    sd_export_busy_begin();
+
     /* F-0143: W25Q log byl mezitim smazan (`datalog erase`) -> `seq` tam zacina
      * znovu od 1, tedy KLESLO pod stary vodotisk. Bez tohohle by `pending`
      * zustalo 0 (vypadalo by to jako "hotovo") a zrcadlo by tise cekalo tydny
@@ -721,18 +724,27 @@ void datalog_mirror_service(void)
      * status nesmi tvrdit "hotovo", co ve skutecnosti neprobehlo). Novy soubor,
      * protoze stara seq cisla se budou OPAKOVAT (nejednoznacnost v historii).
      * `s_mirror_vsn = 0` vynuti vetev FA_CREATE_ALWAYS v `mirror_open()` —
-     * stejny mechanismus, jaky uz existuje pro "jina karta". */
+     * stejny mechanismus, jaky uz existuje pro "jina karta".
+     * 🔴 F-0148 (audit 2026-09-24, nalezeno pri prezkumu VLASTNI opravy
+     * F-0143): puvodni verze tohohle bloku nastavovala `s_mirror_open=false`
+     * BEZ `f_close()` — presne ta chyba, kterou F-0146 o par radku vys v
+     * TOMTEZ souboru opravilo. `s_mirror_fil` by zustal v FatFs `_FS_LOCK`
+     * tabulce (zapnuta, `ffconf.h` FS_LOCK=2) veden jako otevreny, a nasledny
+     * `mirror_open()` (FA_CREATE_ALWAYS na stejne jmeno) by pravdepodobne
+     * selhal na FR_LOCKED — natrvalo, protoze `datalog_mirror_set_enabled(false)`
+     * `f_close()` vola jen `if (s_mirror_open)`, ktere uz by bylo false.
+     * Blok se proto presunul POD `sd_blocking_begin/sd_export_busy_begin`
+     * (byvaly nekolik radku niz), aby mohl bezpecne zavrit soubor stejnym
+     * zpusobem jako F-0146. */
     datalog_status_t ds0; datalog_get_status(&ds0);
     if (ds0.ready && s_mirror_seq > 0u && ds0.last_seq < s_mirror_seq) {
         printf("datalog mirror: W25Q log byl smazan (seq %lu -> %lu), zacina se novym souborem (F-0143)\n",
                (unsigned long)s_mirror_seq, (unsigned long)ds0.last_seq);
+        if (s_mirror_open) f_close(&s_mirror_fil);
         s_mirror_seq = 0u;
         s_mirror_vsn = 0u;
         s_mirror_open = false;
     }
-
-    sd_blocking_begin();
-    sd_export_busy_begin();
 
     bool ok = true;
     if (!s_mirror_open) ok = mirror_open();
