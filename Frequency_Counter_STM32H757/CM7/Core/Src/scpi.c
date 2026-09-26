@@ -13,6 +13,7 @@
  * se zamerne vynechanou -I../../CM7/Core/Inc, viz commit). */
 #include "../Inc/scpi.h"       /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
 #include "../Inc/version.h"   /* FW_VERSION_FULL — *IDN? */
+#include "../Inc/meas_present.h"  /* mp_ad8307_dbm — jediny prevod mV->dBm (F-0165), i na CM4 */
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -698,8 +699,10 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         return strlen(out);
     }
     if (hdr_match(hdr, "MEASure:POWer") && is_query) {       /* RF [dBm] přes AD8307 kalibraci */
-        if ((src->valid & SCPI_V_RF) && src->ad8307_slope_mv_db > 1.0f)
-            fmt_scpi_f2(src->rf_mv / src->ad8307_slope_mv_db + src->ad8307_intercept_dbm, out, out_sz);
+        float dbm;   /* F-0165: jediny prevod; neplatna strmost -> SCPI NaN */
+        if ((src->valid & SCPI_V_RF) &&
+            mp_ad8307_dbm(src->rf_mv, src->ad8307_slope_mv_db, src->ad8307_intercept_dbm, &dbm))
+            fmt_scpi_f2(dbm, out, out_sz);
         else snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
@@ -811,11 +814,16 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
          * `MEAS:POW?` (AD8307 slope/intercept z kalibrace). Do 2026-08-18 se tu
          * delilo deseti a 571 mV vyslo jako "57,1" v poli, ktere se tvari jako
          * dBm (spravne -61,2). Guard na slope: 0 by delilo nulou. */
-        if (r.rf_mv == DATALOG_INVALID16) {
+        /* 🔴 F-0165: drive se pri neplatne strmosti TISE DOSADILO 25 mV/dB, takze
+         * export datalogu vyrobil verohodne dBm, zatimco `MEAS:POW?` o par set
+         * radku vys poctive hlasil „nevim". Ted tataz politika jako tam. */
+        float dbm;
+        if (r.rf_mv == DATALOG_INVALID16 ||
+            !mp_ad8307_dbm((float)r.rf_mv, src->ad8307_slope_mv_db,
+                           src->ad8307_intercept_dbm, &dbm)) {
             snprintf(rf, sizeof rf, "9.91E37");
         } else {
-            float slope = src->ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.0f;
-            fmt_scpi_f2((float)r.rf_mv / slope + src->ad8307_intercept_dbm, rf, sizeof rf);
+            fmt_scpi_f2(dbm, rf, sizeof rf);
         }
         if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
         /* VBAT [V]; zaznamy z doby pred 2026-08-17 ho nemaji -> SCPI NaN. */

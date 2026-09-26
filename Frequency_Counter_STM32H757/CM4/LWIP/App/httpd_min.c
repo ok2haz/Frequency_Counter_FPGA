@@ -457,13 +457,15 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jnum_c100(&j, "temp_fpga_c",  s.valid & SCPI_V_T_FPGA,  s.t_fpga_c100);
     jnum_u(&j, "vc_mv",   s.valid & SCPI_V_VC,   s.ocxo_vc_mv);
     jnum_u(&j, "rf_mv",   s.valid & SCPI_V_RF,   s.rf_mv);
-    /* RF v dBm — ⚠️ TOTOZNY vzorec i podminka jako `MEAS:POWer?` v scpi.c (kalibrace
-     * AD8307 ze snapshotu), aby web neukazoval jinou hodnotu nez SCPI. Bez platneho
-     * slope by slo o deleni necim blizkym nule -> pak radeji `null`. */
-    if ((s.valid & SCPI_V_RF) && s.ad8307_slope_mv_db > 1.0f) {
+    /* RF v dBm — tataz funkce `mp_ad8307_dbm` (meas_present.h) jako `MEAS:POWer?`
+     * a vsechna okna UI, takze web nemuze ukazat jinou hodnotu nez SCPI. Driv se
+     * to drzelo komentarem nad dvema kopiemi z osmi (F-0165). Neplatna strmost
+     * -> `null`, nikdy dosazena vychozi. */
+    float dbm;
+    if ((s.valid & SCPI_V_RF) &&
+        mp_ad8307_dbm(s.rf_mv, s.ad8307_slope_mv_db, s.ad8307_intercept_dbm, &dbm)) {
         char db[24];
-        fmt_scpi_hz_d((double)s.rf_mv / (double)s.ad8307_slope_mv_db
-                      + (double)s.ad8307_intercept_dbm, db, sizeof db);
+        fmt_scpi_hz_d((double)dbm, db, sizeof db);
         jputf(&j, "\"rf_dbm\":%s,", db);
     } else {
         jputf(&j, "\"rf_dbm\":null,");

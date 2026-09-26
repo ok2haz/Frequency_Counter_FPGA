@@ -9,6 +9,7 @@
 #include "freertos_shared.h"   /* qspiMutexHandle — W25Q sdili vic tasku */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release */
 #include "errlog.h"   /* udalost: ulozena kalibrace */
+#include "meas_present.h"   /* mp_ad8307_slope_ok — kontrola rozsahu pri nacteni (F-0165) */
 
 /* Timeouty QSPI mutexu: boot (calib_load) i ULOZIT (calib_save) bezi v UiTask
  * na explicitni akci uzivatele, takze si muzou pockat i na bezici erase (~400 ms). */
@@ -67,8 +68,15 @@ void calib_load(void)
     osMutexRelease(qspiMutexHandle);
 
     if (n == sizeof(b) && b.magic == CALIB_BLOB_MAGIC) {
-        g_calib.ad8307_slope_mv_db   = b.ad8307_slope_mv_db;
-        g_calib.ad8307_intercept_dbm = b.ad8307_intercept_dbm;
+        /* F-0165: magic + CRC uloziste potvrzuji jen to, ze blob patri kalibraci,
+         * ne ze dava smysl. Strmost mimo rozsah (nebo NaN prusecik) by vsechny
+         * prevody RF shodila na „nevim" — radeji datasheetovy par, ktery aspon
+         * meri. Strmost a prusecik jsou dvojice, proto se odmitaji spolecne. */
+        if (mp_ad8307_slope_ok(b.ad8307_slope_mv_db) &&
+            b.ad8307_intercept_dbm == b.ad8307_intercept_dbm) {
+            g_calib.ad8307_slope_mv_db   = b.ad8307_slope_mv_db;
+            g_calib.ad8307_intercept_dbm = b.ad8307_intercept_dbm;
+        }
         g_calib.gain_12v             = b.gain_12v;
         g_calib.gain_5v              = b.gain_5v;
     }

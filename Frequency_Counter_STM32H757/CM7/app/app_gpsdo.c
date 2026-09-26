@@ -1878,9 +1878,12 @@ static int16_t hbar_cy(int r)
 /* Prepocet SYROVE hodnoty senzoru (s->last/min/max) na zobrazovanou jednotku. */
 static float hbar_disp(int r, float raw)
 {
-    if (HBAR[r].rf) {   /* AD8307: dBm = mV/slope + intercept */
-        float slope = g_calib.ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.f;
-        return raw / slope + g_calib.ad8307_intercept_dbm;
+    if (HBAR[r].rf) {   /* AD8307 — jediny prevod `mp_ad8307_dbm` (F-0165) */
+        float d;
+        /* Neplatna strmost -> NaN = „nevim": text vyjde „--" (`fmt_fixed`),
+         * bar prazdny (`hbar_pct_disp`). Drive se tise dosadilo 25 mV/dB. */
+        return mp_ad8307_dbm(raw, g_calib.ad8307_slope_mv_db,
+                             g_calib.ad8307_intercept_dbm, &d) ? d : NAN;
     }
     return raw * HBAR[r].scale;
 }
@@ -1888,7 +1891,9 @@ static float hbar_disp(int r, float raw)
 static int16_t hbar_pct_disp(int r, float disp)
 {
     float bar = (disp - HBAR[r].lo) / (HBAR[r].hi - HBAR[r].lo);
-    if (bar < 0.f) bar = 0.f; else if (bar > 1.f) bar = 1.f;
+    /* `!(bar >= 0)` chyti i NaN (F-0165: „nevim" z `hbar_disp`) — jinak by
+     * `(int16_t)(NaN*100)` bylo UB. */
+    if (!(bar >= 0.f)) bar = 0.f; else if (bar > 1.f) bar = 1.f;
     return (int16_t)(bar * 100.f + 0.5f);
 }
 /* Obdelnik segmentu i uvnitr stopy tr (vyska = stopa bez 1px okraje). */
@@ -3579,8 +3584,9 @@ static void app_gpsdo_render_ti(void)
  * formatovani (viz fmt_sdec). */
 static void dualch_bar(int16_t y, float dbm)
 {
-    /* pasmo -80..+10 dBm (= RF_DBM_MIN/MAX, definovane az niz v souboru -> literaly). */
-    int p = (int)((dbm + 80.f) * 100.f / 90.f);
+    /* pasmo -80..+10 dBm (= RF_DBM_MIN/MAX, definovane az niz v souboru -> literaly).
+     * NaN = „nevim" (F-0165) -> prazdny bar; `(int)NaN` by bylo UB. */
+    int p = (dbm == dbm) ? (int)((dbm + 80.f) * 100.f / 90.f) : 0;
     if (p < 0)   p = 0;
     if (p > 100) p = 100;
     char num[12], vt[20];
@@ -3727,9 +3733,13 @@ static void app_gpsdo_render_dualch(void)
     }
 
     /* RF uroven — spolecna (jeden AD8307), bar v obou kartach. */
-    float mv = g_sensors[SENS_ADS1].valid ? g_sensors[SENS_ADS1].last : 0.f;
-    float slope = g_calib.ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.f;
-    float dbm = mv / slope + g_calib.ad8307_intercept_dbm;
+    /* F-0165: jediny prevod + politika „nevim". Drive se pri NEPLATNEM senzoru
+     * dosadilo `mv = 0`, takze se zobrazil samotny intercept (-84 dBm), jako by
+     * byl zmereny — stejna trida jako tise dosazena strmost. Ted NaN -> „--". */
+    float dbm = NAN;
+    if (g_sensors[SENS_ADS1].valid)
+        (void)mp_ad8307_dbm(g_sensors[SENS_ADS1].last, g_calib.ad8307_slope_mv_db,
+                            g_calib.ad8307_intercept_dbm, &dbm);
     /* ⚠️ Zdrojovy buffer MUSI byt >= cache: `dchg` dela `strncpy(cache, now, n-1)`,
      * takze z `now` smi cist az `sizeof(cache)-1` B. Vazba pres `sizeof c_rf`
      * drzi invariant sama (nalezeno auditem 2026-08-30, GCC -fanalyzer). */
@@ -5542,10 +5552,13 @@ static char     s_anim_c_tgt[12], s_anim_c_cur[12];   /* dchg cache cil/aktualni
 static int16_t anim_target_pct(int *is_demo)
 {
     const sensor_stat_t *rf = &g_sensors[SENS_ADS1];
-    if (rf->samples != 0) {
+    float mv = rf->last; if (mv < 0.0f) mv = 0.0f;
+    float dbm;
+    /* F-0165: jediny prevod; neplatna strmost -> ukaz demo sekvenci jako bez
+     * vzorku (drive tu pojistka chybela uplne -> deleni nulou). */
+    if (rf->samples != 0 && mp_ad8307_dbm(mv, g_calib.ad8307_slope_mv_db,
+                                          g_calib.ad8307_intercept_dbm, &dbm)) {
         *is_demo = 0;
-        float mv = rf->last; if (mv < 0.0f) mv = 0.0f;
-        float dbm = mv / g_calib.ad8307_slope_mv_db + g_calib.ad8307_intercept_dbm;
         int16_t p = (int16_t)((dbm - (float)RF_DBM_MIN) * 100.0f / (float)(RF_DBM_MAX - RF_DBM_MIN));
         if (p < 0) p = 0; else if (p > 100) p = 100;
         return p;
@@ -7724,8 +7737,11 @@ typedef struct { uint8_t prio; const char *text; } warn_t;
 static float warn_rf_dbm(void)
 {
     if (!g_sensors[SENS_ADS1].valid) return -99.0f;
-    float slope = g_calib.ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.0f;
-    return g_sensors[SENS_ADS1].last / slope + g_calib.ad8307_intercept_dbm;
+    float dbm;
+    /* F-0165: jediny prevod; „nevim" = -99 stejne jako neplatny senzor (zadne
+     * varovani o pretizeni), ne tise dosazenych 25 mV/dB. */
+    return mp_ad8307_dbm(g_sensors[SENS_ADS1].last, g_calib.ad8307_slope_mv_db,
+                         g_calib.ad8307_intercept_dbm, &dbm) ? dbm : -99.0f;
 }
 
 /* Napajeci vetve mimo +-10 % (12V na AIN2, 5V na AIN3 — obe uz prepoctene). */
@@ -7950,7 +7966,12 @@ void app_gpsdo_tick_signal(void)
     const sensor_stat_t *rf = &g_sensors[SENS_ADS1];
     if (rf->samples == 0) return;        /* jeste zadne mereni */
     float mv = rf->last; if (mv < 0.0f) mv = 0.0f;
-    float dbm = mv / g_calib.ad8307_slope_mv_db + g_calib.ad8307_intercept_dbm;
+    float dbm;
+    /* F-0165: jediny prevod; neplatna strmost = „nevim" -> nekreslit, stejne
+     * jako bez vzorku (drive tu pojistka chybela -> deleni nulou a `lround`
+     * z Inf/NaN). */
+    if (!mp_ad8307_dbm(mv, g_calib.ad8307_slope_mv_db,
+                       g_calib.ad8307_intercept_dbm, &dbm)) return;
     int32_t dbm10 = (int32_t)lround_f(dbm * 10.0f);
     int16_t pct = (int16_t)((dbm - (float)RF_DBM_MIN) * 100.0f / (float)(RF_DBM_MAX - RF_DBM_MIN));
     if (pct < 0) pct = 0; else if (pct > 100) pct = 100;

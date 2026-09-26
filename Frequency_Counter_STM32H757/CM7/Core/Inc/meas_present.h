@@ -143,6 +143,35 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
 #define MP_TDC_PS      2500.0   /* Si5356 4 fáze po 90° = 2,5 ns krok TDC (HW konstanta) */
 #define MP_REF_PPB     1.0      /* systematická nejistota GPSDO reference vůči UTC */
 
+/* ══════════════ AD8307: mV → dBm — JEDINÝ zdroj převodu (F-0165) ═══════════
+ * 🔴 Do 2026-09-26 byl vzorec `dBm = mV / slope + intercept` v projektu 8×
+ * (5× app_gpsdo.c, 2× scpi.c, 1× httpd_min.c) a pro neplatnou strmost měly
+ * kopie TŘI politiky: „nevím" (web, `MEAS:POW?`), tiše dosadit 25 mV/dB
+ * (`MMEM:DATA?`, tři kopie v UI) a žádnou pojistku (dvě kopie) — plus dva různé
+ * prahy (`> 1.0` vs `< 1e-3`). Export datalogu tak při rozbité kalibraci vyrobil
+ * věrohodné dBm, zatímco `MEAS:POW?` poctivě řekl „nevím".
+ * Politika je teď JEDNA: neplatná strmost → „nevím" (rozhodnutí uživatele).
+ * ⚠️ `static inline` v hlavičce, NE funkce v `.c`: hlavičku vidí i CM4
+ * (`-I../../CM7/Core/Inc`), kde se `meas_present.c` nepřekládá.
+ * ⚠️ Forma `!(slope > MIN && slope < MAX)` chytí i NaN. */
+#define MP_AD8307_SLOPE_MIN   1.0f      /* mV/dB — pod tím kalibrace neplatí */
+#define MP_AD8307_SLOPE_MAX   1000.0f   /* typicky 25 mV/dB; nad tím nesmysl */
+
+static inline int mp_ad8307_slope_ok(float slope)
+{
+    return (slope > MP_AD8307_SLOPE_MIN && slope < MP_AD8307_SLOPE_MAX) ? 1 : 0;
+}
+
+/** Převod syrového napětí AD8307 [mV] na úroveň [dBm].
+ *  @return 1 = platné (`*dbm` zapsáno), 0 = strmost neplatná → volající MUSÍ
+ *          zobrazit „nevím" (`--` / `null` / SCPI `9.91E37`), ne náhradní číslo. */
+static inline int mp_ad8307_dbm(float mv, float slope, float intercept, float *dbm)
+{
+    if (!mp_ad8307_slope_ok(slope)) return 0;
+    if (dbm) *dbm = mv / slope + intercept;
+    return 1;
+}
+
 /* ══════════════ Lineární proklad (drift / aging / tempco) ═══════════════════
  * Jeden estimátor pro dvě různé úlohy (#3 drift v čase, #4 tempco vůči teplotě)
  * — je to táž matematika, jen jiná osa X. Obyčejná least-squares přímka
