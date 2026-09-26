@@ -242,10 +242,13 @@ int mp_fit_solve(mp_fit_t *f)
     double n = (double)f->n;
     double dx = n * f->sxx - f->sx * f->sx;      /* n·Sxx - Sx² */
     /* Nulovy rozptyl X (vsechny vzorky ve stejnem case/teplote) -> smernice
-     * neni definovana. Radeji "nevim" nez deleni skoro nulou. */
-    if (dx <= 0.0 || dx < 1e-30) return 0;
+     * neni definovana. Radeji "nevim" nez deleni skoro nulou. Negovana forma
+     * chyti i NaN v X (F-0170, L-0087) — puvodni `dx <= 0 || dx < 1e-30` ho
+     * propustila. */
+    if (!(dx >= 1e-30)) return 0;
 
     f->b = (n * f->sxy - f->sx * f->sy) / dx;
+    if (f->b != f->b) return 0;                  /* NaN v Y -> „nevim", ne NaN smernice */
     /* Průsečík je v centrovaných souřadnicích -> posunout zpět do původních
      * (y = a' + b·(x − x0) + y0  =>  a = a' + y0 − b·x0). */
     f->a = (f->sy - f->b * f->sx) / n + f->y0 - f->b * f->x0;
@@ -277,8 +280,13 @@ int mp_fit_significant(const mp_fit_t *f)
     if (f == NULL || f->n < 3u) return 0;
     uint32_t df = f->n - 2u;
     double tc = (df <= 30u) ? (double)T95_2S[df - 1u] : 2.042;
+    /* 🔴 F-0170: NaN MUSÍ padnout do „neprůkazné" (L-0087). Do 2026-09-26 tu
+     * stálo jen `if (!(r2 < 1.0)) return 1;` s poznámkou „i NaN-safe" — bez UB
+     * to bylo, ale NaN tou větví prošel jako PRŮKAZNÝ. Webové dvojče `fitSig`
+     * vrací pro NaN false a obě se musí shodovat (hlídá `tools/spa/stat_test.js`). */
+    if (f->r != f->r) return 0;
     double r2 = f->r * f->r;
-    if (!(r2 < 1.0)) return 1;                   /* dokonalá přímka (i NaN-safe) */
+    if (!(r2 < 1.0)) return 1;                   /* dokonalá přímka */
     double t = fabs(f->r) * sqrt((double)df / (1.0 - r2));
     return (t >= tc) ? 1 : 0;
 }
@@ -456,7 +464,17 @@ int mp_selftest(void)
             fs.r = 0.4; fs.n = 200u; ok &= (mp_fit_significant(&fs) == 1);
             fs.n = 5u;               ok &= (mp_fit_significant(&fs) == 0);
             fs.r = 0.99; fs.n = 5u;  ok &= (mp_fit_significant(&fs) == 1);   /* t=12 > 3,18 */
+            /* F-0170: NaN -> neprukazne (starý kód vracel 1), shodne s webem. */
+            fs.r = (double)NAN; fs.n = 100u; ok &= (mp_fit_significant(&fs) == 0);
         }
+
+        /* F-0170: NaN v datech -> proklad „nevim" (0), ne NaN smernice. */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, (double)i, (i == 2) ? (double)NAN : (double)i);
+        ok &= (mp_fit_solve(&ft) == 0);
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, (i == 2) ? (double)NAN : (double)i, (double)i);
+        ok &= (mp_fit_solve(&ft) == 0);
     }
 
     /* ── Rozpocet nejistoty: priznak platnosti (F-0159) ─────────────────────── */
