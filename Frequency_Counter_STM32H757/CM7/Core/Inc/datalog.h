@@ -81,6 +81,15 @@ typedef struct {
     uint32_t seq;              /* monotonni poradove cislo (od 1) */
     uint32_t t_unix;           /* UTC z RTC [s od 1970]; 0 = RTC nesynchronizovano */
     uint64_t freq_x100000;     /* kmitocet x 1e5 (zvoleny zdroj /4 nebo /16) */
+    /* 1 = `freq_x100000` je PRUMER vsech mereni za periodu logu (F-0172);
+     * 0 = stary zaznam (do 2026-09-26) nebo perioda bez noveho mereni —
+     * okamzity vzorek jednoho hradla 0,25 s. Na flash se veze v bitu 63 pole
+     * kmitoctu (uvnitr CRC; kmitocet x1e5 nepresahne 2^47), takze format
+     * zaznamu zustava 32 B a stare zaznamy se ctou s `freq_avg = 0`.
+     * ⚠️ Rekonstrukce Allanovy pyramidy smi brat JEN zaznamy s `freq_avg = 1`
+     * — okamzity vzorek neni 10s prumer (σy by vysla ~3x vys, simulace
+     * `docs/audit/sim/2026-09-26_mrtva_doba.js`). */
+    uint8_t  freq_avg;
     int16_t  t_ocxo_c100;      /* teplota OCXO [0,01 C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;     /* teplota STM desky [0,01 C] */
     int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0) */
@@ -103,6 +112,7 @@ typedef struct {
 } datalog_rec_t;
 
 #define DATALOG_INVALID16   ((int16_t)0x8000)   /* sentinel neplatne hodnoty */
+#define DATALOG_FREQ_AVG_BIT  (1ull << 63)      /* `freq_avg` na flash (viz vyse) */
 
 /* ── Kodovani VBAT do 1 bajtu (offset 27) ────────────────────────────────────
  * kod = (mV - 2000) / 8, tedy 1..255 -> 2008..4040 mV pri rozliseni 8 mV.

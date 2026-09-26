@@ -95,6 +95,31 @@ uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
  *  Kdyz zadny nasobitel nesedi, degraduje na `x100000` (tj. 5 desetin). */
 uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
 
+/* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
+ * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog
+ * 1× za periodu. Do 2026-09-26 si oba brali jen POSLEDNÍ měření a zbylá
+ * zahodili — mrtvá doba 75 % (statistika) a ~97 % (datalog 10 s). Allanova
+ * odchylka pak vycházela 2× (bílý FM) až 23× (bílý PM) vysoko a šum přístroje
+ * dostal sklon bílého FM (simulace `docs/audit/sim/2026-09-26_mrtva_doba.js`).
+ * Teď FpgaTask sčítá cykly a hradla VŠECH platných měření do akumulátoru
+ * každého konzumenta a ten si při odběru vezme reciproký průměr
+ * `Σcykly / Σhradla` — přesný kmitočet sjednocení oken.
+ * ⚠️ Mrtvá doba zmizí úplně jen tehdy, když FPGA dává NAVAZUJÍCÍ okna
+ * (HYPOTÉZA pro novou desku — ověřit ve firmwaru FPGA); jinak aspoň klesne.
+ * ⚠️ Každý konzument má VLASTNÍ akumulátor a odebírá ho sám — sdílený by si
+ * navzájem vyjídali okna. */
+#define FPGA_ACC_STATS    0   /* statistika stability (UiTask, 1×/s) */
+#define FPGA_ACC_DATALOG  1   /* datalog (defaultTask, 1× za periodu) */
+#define FPGA_ACC_N        2
+
+/** Přičte jedno platné měření do všech akumulátorů. Volá VÝHRADNĚ FpgaTask. */
+void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+
+/** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
+ *  průměr za okno od minulého odběru. @return počet měření v okně; 0 = žádné
+ *  nové měření (pak `*hz` = 0). */
+uint32_t fpga_acc_take(int which, double *hz);
+
 /** Selftest hystereze volby zdroje na syntetickych ramcich (UART "selftest").
  *  Nemeni runtime stav. @return true = vsechny kroky OK. */
 bool fpga_freq_select_selftest(void);

@@ -1197,18 +1197,24 @@ float screen_main_frac_dev(double hz)
     return (float)((hz - f0) / f0);
 }
 
-static void stats_sample(void)
+/* Jediné místo, kudy vzorek vstupuje do statistiky (ring, Allan, trend). */
+static void stats_push(float y)
 {
-    /* `s_freq_n` je v LSB = 10^-`s_freq_frac` Hz -> na Hz a pak pres jediny
-     * zdroj pravdy vyse. (Drive tu bylo pevne `off_n * 1e-14` — viz F-0037.) */
-    double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
-    float  y = screen_main_frac_dev(f);
     s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
     adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
+}
+
+/* SIM fallback: vzorek = aktualni hodnota headline. */
+static void stats_sample(void)
+{
+    /* `s_freq_n` je v LSB = 10^-`s_freq_frac` Hz -> na Hz a pak pres jediny
+     * zdroj pravdy vyse. (Drive tu bylo pevne `off_n * 1e-14` — viz F-0037.) */
+    double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
+    stats_push(screen_main_frac_dev(f));
 }
 
 /* Verze statistickych dat — histogram okno se prekresli jen kdyz se zmeni
@@ -1308,7 +1314,11 @@ static void adev_feed(float v) { adev_feed_from(0, v); }
  *
  * ⚠️ KLICOVE: vzorek z logu se vklada od STAGE 1, ne od stage 0. Stage 1 ma
  * tau = 10 s, coz je PRESNE kadence datalogu, takze prevod je exaktni — zadne
- * prevzorkovani, zadna zmena tau0. Kdyby se log sypal do stage 0 (tau0 = 1 s),
+ * prevzorkovani, zadna zmena tau0. 🔴 Ale JEN pro zaznamy s `freq_avg = 1`
+ * (prumer vsech mereni za periodu, F-0172): do 2026-09-26 datalog ukladal
+ * okamzity vzorek jednoho hradla 0,25 s, ktery 10s prumer NENI — rozestup
+ * sedel, okno prumerovani ne, a σy z historie vychazela ~3x nad zivymi
+ * vzorky. Filtr je u volajiciho (`stats_seed_tick`). Kdyby se log sypal do stage 0 (tau0 = 1 s),
  * vysla by sigma_y(tau) systematicky SPATNE o cely rad a pritom by vypadala
  * verohodne. Stage 0 zustava prazdna, dokud ji nenaplni zive vzorky — a to je
  * spravne: log zadna 1s data nema.
@@ -2853,6 +2863,13 @@ void screen_main_redraw_freq_tint(void)
 void screen_main_stats_sample(void)
 {
     stats_sample();
+}
+
+/* F-0171: realne mereni — vzorek je PRUMER vsech mereni za posledni sekundu
+ * (`fpga_acc_take`), ne jedno 0,25s mereni. */
+void screen_main_stats_sample_hz(double hz)
+{
+    stats_push(screen_main_frac_dev(hz));
 }
 
 /* Zive prekresleni trend + offset/sigma (lehke; volat ~1x/s). Vrati 1. */

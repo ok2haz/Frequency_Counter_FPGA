@@ -177,7 +177,8 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     memset(b, 0, DATALOG_REC_SIZE);
     put_u32(b + 0, r->seq);
     put_u32(b + 4, r->t_unix);
-    put_u64(b + 8, r->freq_x100000);
+    put_u64(b + 8, (r->freq_x100000 & ~DATALOG_FREQ_AVG_BIT)
+                   | (r->freq_avg ? DATALOG_FREQ_AVG_BIT : 0u));
     put_u16(b + 16, (uint16_t)r->t_ocxo_c100);
     put_u16(b + 18, (uint16_t)r->t_board_c100);
     put_u16(b + 20, (uint16_t)r->ocxo_vc_mv);
@@ -196,7 +197,9 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     if (crc16(b, 28) != get_u16(b + 28)) return false;         /* poskozeny zaznam */
     r->seq           = seq;
     r->t_unix        = get_u32(b + 4);
-    r->freq_x100000  = get_u64(b + 8);
+    {   uint64_t fq = get_u64(b + 8);
+        r->freq_x100000 = fq & ~DATALOG_FREQ_AVG_BIT;
+        r->freq_avg     = (fq & DATALOG_FREQ_AVG_BIT) ? 1u : 0u; }
     r->t_ocxo_c100   = (int16_t)get_u16(b + 16);
     r->t_board_c100  = (int16_t)get_u16(b + 18);
     r->ocxo_vc_mv    = (int16_t)get_u16(b + 20);
@@ -451,6 +454,16 @@ static void sample(datalog_rec_t *r)
         use16 = (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
         r->freq_x100000 = use16 ? m.freq16_x100000 : m.frequency_x100000;
     }
+    /* 🔴 F-0172: kmitocet za periodu = PRUMER vsech mereni od minuleho zaznamu
+     * (`fpga_acc_take`), ne posledni jednotlive mereni 0,25 s. Kdyz v periode
+     * zadne nove mereni nebylo (ztrata signalu), zustava okamzity vzorek vyse
+     * a zaznam se oznaci `freq_avg = 0` — rekonstrukce ho pak nepouzije. */
+    {   double hz = 0.0;
+        if (fpga_acc_take(FPGA_ACC_DATALOG, &hz) != 0u && hz > 0.0) {
+            r->freq_x100000 = (uint64_t)(hz * 1e5 + 0.5);
+            r->freq_avg     = 1u;
+        }
+    }
 
     r->t_unix       = g_rtc_synced ? datalog_text_to_unix((const char *)g_rtc_text) : 0u;
     r->t_ocxo_c100  = sens_c100(SENS_T49);    /* OCXO */
@@ -502,7 +515,9 @@ static bool write_rec(const datalog_rec_t *r)
 
 void datalog_tick(void)
 {
-    if (!s_ready || !s_enabled) return;
+    /* F-0172: vypnuty log svuj akumulator mereni prubezne VYPRAZDNUJE — jinak by
+     * prvni zaznam po zapnuti zprumeroval celou dobu vypnuti. */
+    if (!s_ready || !s_enabled) { (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL); return; }
     if ((int32_t)(HAL_GetTick() - s_next_ms) < 0) return;
     /* >> PLAN SE PRI VELKEM ZPOZDENI RESETUJE, NEDOHANI SE (audit F-0102).
      * `s_next_ms += perioda` je spravne pro male zpozdeni — drzi to kadenci bez
@@ -519,6 +534,9 @@ void datalog_tick(void)
         if ((int32_t)(HAL_GetTick() - s_next_ms) >= 0) {
             s_next_ms = HAL_GetTick() + per;   /* zameskane vzorky se NEDOHANI */
             s_skipped++;
+            /* F-0172: prumer by pokryl vic nez jednu periodu -> zahodit; zaznam
+             * pak nese okamzity vzorek s `freq_avg = 0` a rekonstrukce ho vynecha. */
+            (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL);
         }
     }
 
@@ -721,6 +739,15 @@ bool datalog_selftest(void)
         put_u16(old + 28, crc16(old, 28));  /* CRC bajt 27 pokryva -> prepocitat */
         if (!unpack_rec(old, &o)) return false;
         if (o.vbat_mv != DATALOG_INVALID16) return false;
+    }
+    /* F-0172: priznak prumeru jde tam i zpet v bitu 63 a NEMENI kmitocet;
+     * stary zaznam (bit 63 = 0) se cte jako okamzity vzorek. */
+    {   datalog_rec_t v = a; v.freq_avg = 1u;
+        uint8_t vb[DATALOG_REC_SIZE]; datalog_rec_t vr;
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_avg != 1u
+            || vr.freq_x100000 != a.freq_x100000) return false;
+        if (r.freq_avg != 0u) return false;     /* `a` byl bez priznaku */
     }
     /* Neplatne cteni senzoru se ulozi jako "nezaznamenano". */
     {   datalog_rec_t n = a; n.vbat_mv = DATALOG_INVALID16;

@@ -75,6 +75,11 @@ void StartFpgaTask(void *argument)
       g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_time_ns > 0u) ? 1u : 0u;
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
+      /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
+       * ti si pak vezmou prumer za sve okno misto posledniho vzorku (mrtva doba).
+       * Kriterium platnosti je tytez jako u `g_freq_valid` vyse. */
+      if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST))
+        fpga_acc_add(v, m.edge_count, m.gate_time_ns);
       /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
        * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
        * ⚠️ Nasobitel `edge_count` (1/4/16) NEODVOZUJEME sami: `fpga_freq_hires_uhz`

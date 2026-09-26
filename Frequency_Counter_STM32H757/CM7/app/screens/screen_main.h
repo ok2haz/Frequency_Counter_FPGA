@@ -95,7 +95,8 @@ void screen_main_redraw_freq_tint(void);               /* totez, ale UZSI zonou 
 void screen_main_freq_sim_step(void);                  /* krok ZDROJE (mereni/SIM) BEZ kresleni — mimo main obrazovku */
 float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
 double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */
-void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
+void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s), SIM */
+void screen_main_stats_sample_hz(double hz);           /* vzorek z prumeru mereni za 1 s (F-0171) */
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
 int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd Offset/σ/Drift (item 2, jen v2) */
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */

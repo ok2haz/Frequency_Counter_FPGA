@@ -8260,7 +8260,8 @@ static int seed_worth_it(void)
 {
     uint32_t got = datalog_read_bulk(0, s_seed_buf, DATALOG_BULK_MAX, NULL);
     for (uint32_t i = 0; i < got; i++)
-        if (s_seed_buf[i].freq_x100000 != 0u && !(s_seed_buf[i].flags & DATALOG_F_SIM))
+        if (s_seed_buf[i].freq_x100000 != 0u && s_seed_buf[i].freq_avg
+            && !(s_seed_buf[i].flags & DATALOG_F_SIM))
             return 1;
     return 0;
 }
@@ -8294,6 +8295,10 @@ static int stats_seed_tick(void)
             const datalog_rec_t *r = &s_seed_buf[i];
             if (r->freq_x100000 == 0u) continue;             /* bez FPGA linku */
             if (r->flags & DATALOG_F_SIM) continue;          /* emulovana data */
+            /* 🔴 F-0172: jen PRUMER za periodu sedi na stage pyramidy. Okamzity
+             * vzorek 0,25 s (stare zaznamy, perioda bez mereni) by dal σy ~3x
+             * vys nez zive vzorky a v jedne pyramide by se michaly. */
+            if (!r->freq_avg) continue;
             /* ⚠️ Vzorec `(hz - f0) / f0` se tu driv pocital RUCNE — a ziva cesta
              * (`stats_sample`) mela svuj vlastni, ktery se s nim rozesel (F-0037).
              * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
@@ -8333,20 +8338,26 @@ void app_gpsdo_tick_stats_sample(void)
     /* Rekonstrukce z datalogu ma prednost pred zivym vzorkovanim: dokud bezi,
      * plni pyramidu historii (po davkach, ~2 min na pozadi). Zive vzorky by se
      * do ni mezitim michaly ve spatnem poradi (novejsi pred starsimi). */
+    /* 🔴 F-0171: vzorek realneho mereni = PRUMER VSECH mereni od minuleho tiku
+     * (`fpga_acc_take`), ne posledni jednotlive mereni. FPGA dava ~4 mereni/s po
+     * 0,25 s; brat jen posledni znamenalo mrtvou dobu 75 % a σy 2x (bily FM) az
+     * 23x (bily PM) vysoko. Akumulator se ODEBIRA VZDY, i pri STOP a behem
+     * rekonstrukce — jinak by prvni vzorek po RUN zprumeroval celou pauzu.
+     * ⚠️ Kdyz tik nebezel dele nez 1 s (blokujici render), vzorek pokryje delsi
+     * okno; pri mereni pomalejsim nez 1/s zustava vzorku mene (τ0 = skutecny
+     * rozestup je vec MathTasku, #27). */
+    double hz_acc = 0.0;
+    uint32_t n_acc = fpga_acc_take(FPGA_ACC_STATS, &hz_acc);
     if (stats_seed_tick()) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
-    /* #1 kadence: v REALNEM rezimu (g_freq_valid) vzorkuj jen na NOVE mereni —
-     * jinak by 1Hz tik zapocital drzenou hodnotu vickrat (σy nesmyslne nizka, jako
-     * u webu). V SIM fallbacku vzorkuj kazdy tik (τ0=1s). ⚠️ Pyramida predpoklada
-     * ~1s rozestup; pri mereni pomalejsim nez 1/s vzorkujeme rideji (bez double-countu),
-     * plne spravny τ0=skutecny rozestup je vec pozdejsiho MathTasku (#27). */
-    static uint32_t s_stat_seq = 0;
     if (g_freq_valid) {
-        uint32_t sq = g_freq_seq;
-        if (sq == s_stat_seq) return;        /* zadne nove mereni od posledniho vzorku */
-        s_stat_seq = sq;
+        /* Zadne nove mereni od minuleho vzorku -> nic nepridavat (drzena hodnota
+         * zapocitana vickrat by σy uměle snizila). */
+        if (n_acc == 0u || !(hz_acc > 0.0)) return;
+        screen_main_stats_sample_hz(hz_acc);
+    } else {
+        screen_main_stats_sample();          /* SIM fallback: kazdy tik (τ0 = 1 s) */
     }
-    screen_main_stats_sample();
     /* Statistika okna MERENI (#67, RESET nuluje). Casovou znacku min/max si
      * hlida app vrstva — `mp_stats_add` je ciste-logicke jadro bez pojmu casu,
      * takze se jen porovna, jestli se hranice prave posunula. */

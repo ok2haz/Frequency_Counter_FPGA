@@ -544,6 +544,58 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     return v;
 }
 
+/* ── Akumulátor měření (F-0171/F-0172, viz fpga_freq.h) ──────────────────────
+ * Cykly se drží v jednotkách 1e-5 cyklu (`cyc_e5`), aby se do jednoho celého
+ * čísla vešla přesná cesta (`edges·mul`, celé periody) i záložní cesta z
+ * `x100000` (kmitočet ×1e5 · hradlo). Rozsah: 1,4 GHz = 1,4e14 jednotek/s,
+ * perioda datalogu nejvýš 3600 s → 5e17, tedy hluboko pod mezí 2^62 níže. */
+typedef struct { uint64_t cyc_e5; uint64_t gate_ns; uint32_t n; } fpga_acc_t;
+static fpga_acc_t s_acc[FPGA_ACC_N];
+
+void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
+{
+    if (gate_ns == 0u || x100000 == 0u) return;
+    uint64_t cyc_e5;
+    uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
+    if (mul != 0u) {
+        cyc_e5 = edges * mul * 100000ull;              /* přesně: celé periody */
+    } else {
+        /* Násobitel neověřen (větev /16, starý rámec) → cykly z x1e5 a hradla.
+         * V double: 1,4e14 · 2,5e8 = 3,5e22 se do uint64 nevejde. */
+        double c = (double)x100000 * (double)gate_ns * 1e-9;
+        cyc_e5 = (uint64_t)(c + 0.5);
+    }
+    /* Krátký IRQ-off místo FreeRTOS API — tentýž idiom jako `fpga_freq_get_last`
+     * (driver zůstává nezávislý na RTOS). Konzumenti (UiTask, defaultTask) čtou
+     * víceslovní strukturu, takže bez vyloučení by viděli roztržený stav. */
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    for (int i = 0; i < FPGA_ACC_N; i++) {
+        /* Konzument, který dlouho neodebírá (zastavený datalog), nesmí přetéct
+         * uint64 — nad 2^62 (~9 h při 1,4 GHz) se jeho okno zahodí. */
+        if (s_acc[i].cyc_e5 > (1ull << 62)) memset(&s_acc[i], 0, sizeof s_acc[i]);
+        s_acc[i].cyc_e5  += cyc_e5;
+        s_acc[i].gate_ns += gate_ns;
+        s_acc[i].n++;
+    }
+    __set_PRIMASK(pm);
+}
+
+uint32_t fpga_acc_take(int which, double *hz)
+{
+    if (hz) *hz = 0.0;
+    if (which < 0 || which >= FPGA_ACC_N) return 0u;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    fpga_acc_t a = s_acc[which];
+    memset(&s_acc[which], 0, sizeof s_acc[which]);
+    __set_PRIMASK(pm);
+    /* f = (cyc_e5 · 1e-5) / (gate_ns · 1e-9) = cyc_e5 · 1e4 / gate_ns */
+    if (hz && a.n != 0u && a.gate_ns != 0u)
+        *hz = (double)a.cyc_e5 * 1e4 / (double)a.gate_ns;
+    return a.n;
+}
+
 uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16)
 {
     /* /4 ma nejlepsi rozliseni; nad ~380 MHz je pin28 (/4 -> ~95 MHz) u stropu -> /16.
