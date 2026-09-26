@@ -3234,6 +3234,31 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0094 — Přesnost typu se posuzuje vůči VARIACI, ne vůči hodnotě: „Float OK" platilo pro 10 MHz a nikde jinde
+
+- **Datum:** 2026-09-26 (modul 24, F-0179)
+- **Oblast:** `screen_main.c` — ring a pyramidy statistiky stability
+- **Symptom:** žádný viditelný; při 10 MHz výsledky sedí. Simulace pro nízké
+  kmitočty: ADEV 3–4× vysoko (1 MHz, 100 kHz) a při 10 kHz / 1 kHz **nula** —
+  body grafu tiše zmizely.
+- **Příčina:** `y` nese offset až 1/f (nominál je celé Hz) a `float` má relativní
+  krok 6·10⁻⁸ vůči HODNOTĚ, ne vůči variaci. Pro statistiku stability rozhoduje
+  poměr variace/hodnota — a ten je u stabilního zdroje s offsetem 10⁻⁴ jen 10⁻⁸.
+  Komentář „Float OK (cold path)" posoudil rychlost, ne přesnost. Je to tatáž
+  třída jako **L-0031** (typ jako nepoznaná mez), jen na jiném místě.
+- **Oprava:** úložiště a mezisoučty v `double`; `float` jen při kreslení, vždy
+  relativně k referenci (`5c019b1`).
+- **Pravidlo:** **Když ukládáš veličinu, ze které se počítají ROZDÍLY nebo
+  rozptyl, porovnej krok typu s nejmenší VARIACÍ, kterou chceš rozlišit — při
+  NEJVĚTŠÍM možném offsetu.** Nevyhovuje-li, ukládej v širším typu nebo
+  odchylky od reference. Komentář „typ X stačí" musí říct, pro jaký rozsah.
+- **Detekce:** u každého `float` akumulátoru statistiky spočítej `ulp(max|hodnota|) /
+  min(variace)`; simulace `docs/audit/sim/2026-09-26_float_podlaha.js` jako vzor.
+- **Commit:** `5c019b1`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

@@ -764,6 +764,12 @@ MDEV ≈ ADEV, tedy právě ne u fázového šumu. ⚠️ **MTIE zůstává odha
 přiznává: přesný MTIE potřebuje uloženou fázi (⬅ #36). Přepínač v okně ALLAN má
 5 segmentů = 60 px = **přesně projektové minimum** dotykového cíle, šestý se
 už nevejde.
+🔴 **Statistika stability počítá a ukládá v `double`** (F-0179): nominál je celé Hz,
+takže |y| < 1/f, a `float` při 10 kHz smazal šum (ADEV vyšla vysoko nebo 0).
+`float` smí být jen při kreslení a vždy RELATIVNĚ k referenci.
+**Podlaha čítače** (čerchovaná čára v grafu, displej i web): kvantizace TDC = bílý PM,
+σx = tdc/√12 → ADEV tdc/(2τ), HDEV 0,527·tdc/τ, MDEV tdc/(2τ√m); kreslí se jen při
+reálném měření, platí pro signál asynchronní k referenci (`adev_floor_base` / `floorOf`).
 
 **Okno ANALÝZA (s_view=41).** Kam se to vešlo: nikam — footer MĚŘENÍ je plný
 a karta má 9 řádků. Řešení: **třetí sourozenec v existující rotaci**

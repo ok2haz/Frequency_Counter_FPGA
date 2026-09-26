@@ -3,7 +3,22 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24, DRUHÝ
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — doplněk
+„co dál s matematikou": F-0179 [S3] + podlaha čítače v grafu.** Rozhodnutí
+uživatele „2 a 3, tvoje doporučení".
+`5c019b1` **F-0179** — statistika stability ve `float`: nominál je celé Hz, |y| < 1/f,
+a kvantizace smazala šum (simulace: ADEV 3–4× vysoko při 1 MHz/100 kHz, **0** při
+10 kHz/1 kHz). Nově ring, obě pyramidy a součty v `double`, `float` jen relativně
+při kreslení (+5,9 kB RAM). Lekce **L-0094** (přesnost typu vůči VARIACI, ne hodnotě).
+`422fde5` **podlaha čítače** — čerchovaná čára v grafu stability (displej i web):
+kvantizace TDC = bílý PM, pro tentýž estimátor jako křivka (ADEV tdc/(2τ), HDEV
+0,527·tdc/τ, MDEV tdc/(2τ√m)); vzorce ověřeny simulací estimátorů do 0,6 %.
+Ověření: build CM7+CM4 0 varování, `audit.py` 92/0/2, `check.py --build` vše OK
+(SPA_HTML 153 488 B), CM7 `.text` 619 592 B, CM4 246 952 B. ⬜ Neověřeno na HW.
+🔑 **Pokračovat zde:** HW průchod (viz níže); další matematika z nabídky: určení
+typu šumu + EDF podle něj, přesné MTIE/TIE z `sdram_log`, τ0 = skutečný rozestup.
+
+**Předchozí, 2026-09-26 (konec F5 druhého průchodu):** 🟡 **Modul 24, DRUHÝ
 PRŮCHOD — F5 hotová: opraveno 7 z 8 (skupiny A+B), F-0176 do C.** Rozhodnutí
 uživatele „a+b, u B tvoje doporučení". Commity: `ace2939` (F-0171/F-0172 —
 akumulátor Σcyklů/Σhradel pro statistiku i datalog, příznak `freq_avg` v bitu 63),
@@ -977,7 +992,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 7 z 8** (F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW) | 2026-09-26 | 0 | 2 | 10 | 9 | [13](audit/2026-09-26_matematika-mereni.md) + [8](audit/2026-09-26_matematika-mereni-2.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW) | 2026-09-26 | 0 | 2 | 11 | 9 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -1010,7 +1025,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 ## Souhrn nálezů
 
 🔴 **Srovnáno 2026-09-26** (po F5 modulu 24) — čísla níže jsou výstup
-`tools/audit_stav.py` (171 nálezů celkem). Tabulka byla rozjetá už před tímto
+`tools/audit_stav.py` (172 nálezů celkem). Tabulka byla rozjetá už před tímto
 sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147
 (mezitím opraveny `docs:`) se do ní nepropsaly.
 
@@ -1018,7 +1033,7 @@ sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 23 | 0 |
-| S3 | 2 | 85 | 0 |
+| S3 | 2 | 86 | 0 |
 | S4 | 4 | 50 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových

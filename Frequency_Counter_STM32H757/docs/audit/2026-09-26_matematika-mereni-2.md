@@ -280,6 +280,42 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
 
 ---
 
+### F-0179 [S3] Statistika stability ukládala `y` a mezisoučty ve `float` — při nízkých kmitočtech kvantizace smazala šum a ADEV vyšla vysoko nebo NULA
+
+> Doplněno 2026-09-26 po opravách druhého průchodu, na otázku uživatele „co dál
+> s matematikou" (podezření → simulace → oprava, uživatel odsouhlasil).
+
+- **Místo:** `CM7/app/screens/screen_main.c` — `screen_main_frac_dev` (vracela
+  `float`), `s_y[]`, `adev_stage_t` a `tr_stage_t` (ring i `acc` ve `float`),
+  komentář *„Float OK (cold path…)"* u sekce statistiky.
+- **Popis:** Nominál je CELÉ Hz, takže |y| < 1/f. `float` má relativní krok
+  6·10⁻⁸: při 10 kHz je krok na `y` ~7·10⁻¹² a dekadový součet (`acc` ~10⁻³)
+  se zaokrouhluje na ~10⁻¹¹ — víc než šum dobrého zdroje.
+- **Důkaz (simulace `sim/2026-09-26_float_podlaha.js`, přepis 1:1, stabilní
+  zdroj ADEV(1 s) = 10⁻¹²), poměr ADEV float/double:**
+
+  | vstup | τ = 1 s | 10 s | 100 s | 1000 s |
+  |---|---|---|---|---|
+  | 10 MHz | 1,00 | 1,00 | 1,00 | 1,00 |
+  | 1 MHz | 1,00 | 1,02 | 1,35 | 3,24 |
+  | 100 kHz | 1,03 | 1,67 | 4,36 | 4,62 |
+  | 10 kHz | 3,01 | 4,51 | **0** | **0** |
+  | 1 kHz | **0** | **0** | **0** | **0** |
+
+  „0" = šum zmizel v kvantizaci, `adev_points` bod zahodí (`a <= 0`) a graf
+  vypadá jako „málo dat".
+- **Dopad:** latentní do běhu FPGA; s TDC nové desky (~22 ps) by float podlaha
+  (~10⁻¹¹ při 10 kHz) převýšila podlahu čítače o řády.
+- **Stav:** opraveno 2026-09-26 (`5c019b1`) — `screen_main_frac_dev` vrací
+  `double`, ring, obě pyramidy a akumulátory v `double`; `float` jen při kreslení
+  a vždy relativně (vstup `pn_compute` po odečtu průměru, histogram k průměru,
+  velký trend k nejnovějšímu bodu, popisky přičítají referenci). RAM +5,9 kB.
+  Webové dvojče počítá v JS `double` — netýká se. ⬜ neověřeno na HW.
+- **Vztah k lekcím:** **L-0031** (datový typ je taky mez — tatáž třída, jiné
+  místo), L-0028 (komentář „Float OK" byl testovatelný tvrzením).
+
+---
+
 ## Komentářový dluh (F6, bez vlivu na chování)
 
 - `CM7/app/app_gpsdo.c:5094-5096` — *„`mp_budget` při neznámém hradle tiše
@@ -302,7 +338,7 @@ Bod byl opraven poznámkou odkazující sem.
 **Verdikt: podmíněně funkční** (beze změny; nové vady jsou latentní do běhu
 FPGA, s výjimkou F-0173, které platí už dnes nad datalogem Vc/teploty).
 
-8 nálezů: **1× S2, 3× S3, 4× S4**.
+8 nálezů: **1× S2, 3× S3, 4× S4** (+ F-0179 [S3] doplněný po opravách — float podlaha).
 
 1. **Vzorkování** (F-0171, F-0172) — vzorce jsou správně, ale dostávají
    vzorky jiné vzorkovací funkce, než předpokládají; jeden akumulátor
