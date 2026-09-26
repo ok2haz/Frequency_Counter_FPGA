@@ -3,7 +3,16 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — bod 4: typ šumu
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — bod 6: skutečné τ0
+vzorku (`a5ddf9d`).** Levná varianta: τ0 = součet oken měření za tik se MĚŘÍ, okno ALLAN
+varuje (τ0 mimo ±2 % / kolísání > 5 %), UART `status full` ho vypíše. Osa τ se nepřepočítává
+(poctivě = vzorkovat po počtu měření, TODO #27). Při rozboru se ukázalo, že 1Hz tik UiTasku
+(~1,01 s) občas pobere 5 měření — nad ~1 kHz zanedbatelné, na desce to změří `status full`.
+Build CM7 0 varování, `audit.py` 92/0/2, `.text` 622 584 B. ⬜ Neověřeno na HW.
+🔑 **Pokračovat zde:** HW průchod (sonda); z matematiky zbývá bod 5 (MTIE/TIE ze
+`sdram_log`) a poctivý přepočet τ0 (#27) — oba až s běžícím FPGA.
+
+**Předchozí, 2026-09-26:** 🟡 **Modul 24 — bod 4: typ šumu
 a EDF pásu podle něj (`06cbfd8`).** EDF podle lokálního typu šumu (5 typů, Howe–Allan–
 Barnes), vzorce ověřené Monte Carlem (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`, shoda
 do ~12 %; simulace chytila můj chybně zapamatovaný vzorec pro blikavý FM → dodatek
