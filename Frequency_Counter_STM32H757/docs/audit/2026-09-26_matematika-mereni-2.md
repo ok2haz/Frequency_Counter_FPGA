@@ -83,7 +83,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
 - **Vztah k lekcím:** L-0036 (kadence je vlastnost přenosu), L-0088
   (ověřovat nezávislou referencí), L-0011 (můj první průchod převzal
   „τ0 = 1 s" bez ověření okna).
-- **Stav:** opraveno 2026-09-26 (`ace2939`) — podle návrhu: akumulátor na konzumenta ve `fpga_freq.c` (`fpga_acc_add` ve FpgaTasku, `fpga_acc_take` ve statistice), vzorek = reciproký průměr Σcyklů/Σhradel za tik; akumulátor se odebírá i při STOP a během rekonstrukce. Cykly přesně z `edges·mul` (ověřený násobitel), jinak z `x1e5·hradlo`; vyloučení přes PRIMASK (konvence ovladače). Aritmetika ověřena nezávislým přepisem (`sim/2026-09-26_akumulator_check.js`). ⚠️ HYPOTÉZA trvá: mrtvá doba zmizí úplně jen při navazujících oknech FPGA. ⬜ neověřeno na HW (FPGA neběží).
+- **Stav:** opraveno 2026-09-26 (`ace2939`) — podle návrhu: akumulátor na konzumenta ve `fpga_freq.c` (`fpga_acc_add` ve FpgaTasku, `fpga_acc_take` ve statistice), vzorek = reciproký průměr Σcyklů/Σhradel za tik; akumulátor se odebírá i při STOP a během rekonstrukce. Cykly přesně z `edges·mul` (ověřený násobitel), jinak z `x1e5·hradlo`; vyloučení přes PRIMASK (konvence ovladače). Aritmetika ověřena nezávislým přepisem (`sim/2026-09-26_akumulator_check.js`). ⚠️ HYPOTÉZA trvá: mrtvá doba zmizí úplně jen při navazujících oknech FPGA. **Doplněk `d0a02e5`:** vzorky se neskládají podle 1s tiku UiTasku (ten se opožďuje o latenci smyčky a občas pobral měření navíc), ale PODLE POČTU měření ve FpgaTasku (fronta hotových vzorků) — rozptyl délky vzorků 3,5 % → 0,00 % při 10 MHz, 9,8 % → 1,4 % při 40 Hz (`sim/2026-09-26_tau0_cas_vs_pocet.js`). ⬜ neověřeno na HW (FPGA neběží).
 
 ---
 

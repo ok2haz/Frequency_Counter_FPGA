@@ -3,7 +3,14 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — bod 6: skutečné τ0
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — #27 část 1 (`d0a02e5`):
+vzorky statistiky se skládají PODLE POČTU měření** ve FpgaTasku (fronta hotových vzorků),
+ne podle 1s tiku UiTasku (ten se opožďoval o latenci smyčky). Rozptyl délky vzorků
+3,5 % → 0,00 % při 10 MHz, 9,8 % → 1,4 % při 40 Hz (simulace v `docs/audit/sim/`).
+Doplněk k F-0171 a k L-0092. Build CM7 0 varování, `audit.py` 92/0/2, `.text` 622 984 B.
+⬜ Neověřeno na HW. Zbývá #27 část 2 (osa τ podle změřeného τ0 při nízkých f) a bod 5.
+
+**Předchozí, 2026-09-26:** 🟡 **Modul 24 — bod 6: skutečné τ0
 vzorku (`a5ddf9d`).** Levná varianta: τ0 = součet oken měření za tik se MĚŘÍ, okno ALLAN
 varuje (τ0 mimo ±2 % / kolísání > 5 %), UART `status full` ho vypíše. Osa τ se nepřepočítává
 (poctivě = vzorkovat po počtu měření, TODO #27). Při rozboru se ukázalo, že 1Hz tik UiTasku

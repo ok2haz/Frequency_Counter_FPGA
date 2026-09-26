@@ -3206,7 +3206,12 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Detekce:** u každé statistiky se ptej: *kolik měření za τ0 dává zdroj a kolik
   jich konzument použije?* Když méně než všechna, je tam mrtvá doba. Simulace
   `docs/audit/sim/2026-09-26_mrtva_doba.js` jako vzor.
-- **Commit:** `ace2939`
+- **Další výskyt (týž den, v MÉ opravě):** i po F-0171 se vzorek skládal podle
+  1s tiku `HAL_GetTick() - last >= 1000; last = now` — ten se opožďuje o latenci
+  smyčky (~1,01 s), takže občas pobral měření navíc, a při nízkém kmitočtu se délky
+  vzorků střídaly (±20 % při hradle 0,4 s). **Vzorek z proudu událostí skládej podle
+  POČTU událostí, ne podle vlastních hodin konzumenta** (`d0a02e5`).
+- **Commit:** `ace2939`, `d0a02e5`
 - **Stav:** aktivní
 
 ---
