@@ -1189,16 +1189,21 @@ static void render_body_number(void)
  * `app_gpsdo_tick_stats_sample`. Pyramida ale porad predpoklada ~1 s rozestup
  * (τ0=1s); presny τ0 = skutecny rozestup az s MathTaskem (#27). Do (a) plocheho ring bufferu
  * (kratkodobe: trend 60s, offset, drift, σy@1s) a (b) decimacni pyramidy
- * (dlouhodoby Allan, tau 1..100000+ s, viz adev_feed). Prekresleni 1x/s. Float OK
- * (cold path; mimo no-float pravidlo pro protokol kmitoctu). */
+ * (dlouhodoby Allan, tau 1..100000+ s, viz adev_feed). Prekresleni 1x/s.
+ * 🔴 F-0179: ulozeni a mezisoucty v DOUBLE, ne float. Drive tu stalo „Float OK"
+ * — jenze f0 je CELE Hz, takze |y| < 1/f, a float ma relativni krok 6e-8: pri
+ * 10 kHz je kvantizace y ~7e-12 a dekadove soucty (acc ~1e-3) ~1e-11. Simulace
+ * (`docs/audit/sim/2026-09-26_float_podlaha.js`, stabilni zdroj 1e-12): ADEV
+ * 3,2x vys pri 1 MHz a tau 1000 s, 4,4x pri 100 kHz, a pri 10 kHz / 1 kHz
+ * vysla NULA (sum zmizel v kvantizaci, body z grafu tise vypadly). */
 /* Plochy ring = jen kratkodobe (trend 60s, offset, drift, σy@1s). DLOUHODOBY Allan
  * (tau az 100000 s / 100+ dni) resi decimacni pyramida nize. Vzorkuje se 1/s. */
 #define STAT_N    120               /* 1/s -> 120 s (trend 60s + drift baseline) */
 #define TREND_WIN 60                /* trend sparkline = posledni okno 60 s (1/s) */
-static float s_y[STAT_N];
+static double s_y[STAT_N];                 /* F-0179: double, viz vyse */
 static int   s_y_head = 0, s_y_count = 0;
-static void adev_feed(float v);     /* fwd — decimacni pyramida (dlouhodoby Allan) */
-static void trend_feed(float v);    /* fwd — decimacni pyramida (dlouhodoby trend) */
+static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
+static void trend_feed(double v);   /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
 
@@ -1224,15 +1229,15 @@ static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (
  * nejmensi odchylka, ktera nas zajima, je pri tom kmitoctu ~0,014 Hz
  * (rozliseni TDC). Relativni chyba ~2e-5 je proti sumu mereni zanedbatelna
  * a stoji za to mit JEDEN vzorec misto dvou. */
-float screen_main_frac_dev(double hz)
+double screen_main_frac_dev(double hz)
 {
     double f0 = s_freq_nominal_hz;
-    if (f0 <= 0.0) return 0.0f;
-    return (float)((hz - f0) / f0);
+    if (f0 <= 0.0) return 0.0;
+    return (hz - f0) / f0;       /* F-0179: double — float zde smazal sum pri nizkem f */
 }
 
 /* Jediné místo, kudy vzorek vstupuje do statistiky (ring, Allan, trend). */
-static void stats_push(float y)
+static void stats_push(double y)
 {
     s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
@@ -1261,7 +1266,7 @@ uint32_t screen_main_stats_version(void) { return s_stats_ver; }
 static float stats_adev(int m);
 float screen_main_adev_1s(void) { return stats_adev(1); }
 
-static float stat_at(int age)   /* age 0 = nejnovejsi */
+static double stat_at(int age)  /* age 0 = nejnovejsi */
 {
     int idx = (s_y_head - 1 - age + 2 * STAT_N) % STAT_N;
     return s_y[idx];
@@ -1271,17 +1276,17 @@ static float stats_mean(int n)
 {
     if (n > s_y_count) n = s_y_count;
     if (n <= 0) return 0.0f;
-    float s = 0; for (int i = 0; i < n; i++) s += stat_at(i);
-    return s / (float)n;
+    double s = 0; for (int i = 0; i < n; i++) s += stat_at(i);
+    return (float)(s / (double)n);
 }
 
 static float stats_pp(int n)
 {
     if (n > s_y_count) n = s_y_count;
     if (n <= 0) return 0.0f;
-    float mn = stat_at(0), mx = mn;
-    for (int i = 1; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
-    return mx - mn;
+    double mn = stat_at(0), mx = mn;
+    for (int i = 1; i < n; i++) { double v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    return (float)(mx - mn);
 }
 
 /* Non-overlapping ADEV plocheho ringu pro tau = m vzorku (tau0=1 s, 1/s). Pouziva
@@ -1290,12 +1295,12 @@ static float stats_adev(int m)
 {
     int blocks = s_y_count / m;
     if (blocks < 2) return 0.0f;
-    float prev = 0; int have = 0; double acc = 0; int nd = 0;
+    double prev = 0; int have = 0; double acc = 0; int nd = 0;
     for (int b = 0; b < blocks; b++) {
-        float bs = 0;
+        double bs = 0;
         for (int j = 0; j < m; j++) bs += stat_at(b * m + j);
-        bs /= (float)m;
-        if (have) { float d = bs - prev; acc += (double)d * (double)d; nd++; }
+        bs /= (double)m;
+        if (have) { double d = bs - prev; acc += d * d; nd++; }
         prev = bs; have = 1;
     }
     return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
@@ -1307,11 +1312,11 @@ static float stats_drift(void)
 {
     int h = s_y_count / 2;
     if (h < 1) return 0.0f;
-    float nm = 0, om = 0;
+    double nm = 0, om = 0;
     for (int i = 0; i < h; i++) { nm += stat_at(i); om += stat_at(s_y_count - 1 - i); }
-    nm /= (float)h; om /= (float)h;
-    float dt = (float)h;                  /* odstup centroidu pulek [s] (vzorky × 1 s) */
-    return (dt > 0.0f) ? (nm - om) / dt : 0.0f;
+    nm /= (double)h; om /= (double)h;
+    double dt = (double)h;                /* odstup centroidu pulek [s] (vzorky × 1 s) */
+    return (dt > 0.0) ? (float)((nm - om) / dt) : 0.0f;
 }
 
 /* ── Decimacni pyramida pro DLOUHODOBY Allan (tau 1..100000 s, ohranicena pamet) ──
@@ -1320,13 +1325,13 @@ static float stats_drift(void)
  * (plochy buffer by chtel desitky MB). */
 #define ADEV_STAGES 6                 /* tau = 1, 10, 100, 1k, 10k, 100k s */
 #define ADEV_RING   24                /* prumeru na stage (na ADEV vypocet) */
-typedef struct { float ring[ADEV_RING]; int16_t head, count; float acc; int16_t acc_n; } adev_stage_t;
+typedef struct { double ring[ADEV_RING]; int16_t head, count; double acc; int16_t acc_n; } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
  * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
  * ma kadenci PRESNE 10 s = tau stage 1. */
-static void adev_feed_from(int s0, float v)
+static void adev_feed_from(int s0, double v)
 {
     for (int s = s0; s < ADEV_STAGES; s++) {
         adev_stage_t *sg = &s_adev[s];    /* 'sg', ne 'st' — nekolidovat s globalnim UI stavem */
@@ -1335,11 +1340,11 @@ static void adev_feed_from(int s0, float v)
         if (sg->count < ADEV_RING) sg->count++;
         sg->acc += v;
         if (++sg->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
-        v = sg->acc / 10.0f; sg->acc = 0; sg->acc_n = 0;   /* dekadovy prumer -> dal */
+        v = sg->acc / 10.0; sg->acc = 0; sg->acc_n = 0;    /* dekadovy prumer -> dal */
     }
 }
 
-static void adev_feed(float v) { adev_feed_from(0, v); }
+static void adev_feed(double v) { adev_feed_from(0, v); }
 
 /* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
  * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
@@ -1367,7 +1372,7 @@ static void adev_feed(float v) { adev_feed_from(0, v); }
  * o cely rad — a VEROHODNE, tedy nejhorsi druh chyby. `datalog_adev_stage()`
  * vraci -1, kdyz perioda neni mocnina deseti; pak se vzorek ZAHODI, protoze
  * nesedne na zadnou stage exaktne. */
-void screen_main_adev_seed_10s(float y)
+void screen_main_adev_seed_10s(double y)
 {
     /* 'stg', ne 'st' — globalni UI stav se jmenuje `st` (viz komentar
      * v `adev_feed_from`); -Wshadow to jinak hlasi. */
@@ -1396,7 +1401,13 @@ int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc)
     static float      chron[STAT_N];        /* chronologicky (nejstarsi first) */
     static pn_point_t pts[PN_NBINS];
     int n = s_y_count;
-    for (int i = 0; i < n; i++) chron[i] = stat_at(n - 1 - i);
+    /* F-0179: `pn_compute` bere float — absolutni y by kvantizace pri nizkem f
+     * smazala, proto se prumer odecte uz tady v double (pn_compute ho odecita
+     * znovu per segment, coz je pak neskodne). */
+    double ym = 0.0;
+    for (int i = 0; i < n; i++) ym += stat_at(i);
+    ym /= (double)n;
+    for (int i = 0; i < n; i++) chron[i] = (float)(stat_at(n - 1 - i) - ym);
     double f0 = (s_freq_nominal_hz > 0.0) ? s_freq_nominal_hz : 1e7;
     int np = pn_compute(chron, n, f0, 1.0, pts, PN_NBINS);
     if (np <= 0) return 0;
@@ -1410,7 +1421,7 @@ int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc)
     return 1;
 }
 
-static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prvek */
+static double adev_rat(const adev_stage_t *sg, int i)      /* i-ty nejstarsi prvek */
 {
     int idx = (sg->head - sg->count + i + 2 * ADEV_RING) % ADEV_RING;
     return sg->ring[idx];
@@ -1430,10 +1441,10 @@ static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prv
 #define TR_STAGES 9
 #define TR_RING   128
 #define TR_DECIM  4
-typedef struct { float ring[TR_RING]; int16_t head, count; float acc; int16_t acc_n; } tr_stage_t;
+typedef struct { double ring[TR_RING]; int16_t head, count; double acc; int16_t acc_n; } tr_stage_t;
 static tr_stage_t s_tr[TR_STAGES];
 
-static void trend_feed(float v)
+static void trend_feed(double v)
 {
     for (int s = 0; s < TR_STAGES; s++) {
         tr_stage_t *sg = &s_tr[s];
@@ -1442,7 +1453,7 @@ static void trend_feed(float v)
         if (sg->count < TR_RING) sg->count++;
         sg->acc += v;
         if (++sg->acc_n < TR_DECIM) return;            /* vyssi stage jeste nema co krmit */
-        v = sg->acc / (float)TR_DECIM; sg->acc = 0; sg->acc_n = 0;
+        v = sg->acc / (double)TR_DECIM; sg->acc = 0; sg->acc_n = 0;
     }
 }
 
@@ -1459,7 +1470,7 @@ static int tr_pick(int32_t win_s)
     return TR_STAGES - 1;
 }
 
-static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
+static double tr_at(int s, int age)     /* age 0 = nejnovejsi */
 {
     const tr_stage_t *sg = &s_tr[s];
     int idx = (sg->head - 1 - age + 2 * TR_RING) % TR_RING;
@@ -2971,8 +2982,13 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* Jedna kopie ringu do lokalniho pole (stat_at dela modulo — dal uz jen
      * linearni pristupy); poradi je pro min/max/mean/biny/median nepodstatne. */
+    /* F-0179: hodnoty RELATIVNE k prumeru (double) — absolutni y ve float by pri
+     * nizkem f splynulo do par binu. Popisky pricitaji `ref` zpet. */
+    double ref = 0.0;
+    for (int i = 0; i < n; i++) ref += stat_at(i);
+    ref /= (double)n;
     float srt[STAT_N];
-    for (int i = 0; i < n; i++) srt[i] = stat_at(i);
+    for (int i = 0; i < n; i++) srt[i] = (float)(stat_at(i) - ref);
 
     float mn = srt[0], mx = mn, sum = 0.0f;
     for (int i = 0; i < n; i++) { float v = srt[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
@@ -3052,8 +3068,8 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* X popisky: min (vlevo) / max (vpravo) ve frac notaci */
     char lb[24], rb[24];
-    fmt_frac(lb, sizeof lb, mn, 1);
-    fmt_frac(rb, sizeof rb, mx, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mn + ref), 1);
+    fmt_frac(rb, sizeof rb, (float)((double)mx + ref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_draw_text((prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h + 16)}, rb,
@@ -3061,12 +3077,12 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* overlay: N/mean/sigma (radek 1, vpravo nahore) + median (radek 2, amber) */
     char ov[80], mb[24], sb[24];
-    fmt_frac(mb, sizeof mb, mean, 1);
+    fmt_frac(mb, sizeof mb, (float)((double)mean + ref), 1);
     fmt_frac(sb, sizeof sb, sd, 0);
     snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
                    &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
-    char db[28]; fmt_frac(mb, sizeof mb, median, 1);
+    char db[28]; fmt_frac(mb, sizeof mb, (float)((double)median + ref), 1);
     snprintf(db, sizeof db, "med=%s", mb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 36)}, db,
                    &ui_font_mono_14, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
@@ -3141,8 +3157,11 @@ void screen_main_render_trend_big(prim_rect_t rect)
                        "Waiting for data...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
-    float mn = tr_at(ts, 0), mx = mn;
-    for (int i = 1; i < n; i++) { float v = tr_at(ts, i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    /* F-0179: krivka RELATIVNE k nejnovejsimu bodu (double), popisky pricitaji
+     * `tref` zpet — absolutni y ve float by pri nizkem f splynulo. */
+    double tref = tr_at(ts, 0);
+    float mn = 0.0f, mx = 0.0f;
+    for (int i = 1; i < n; i++) { float v = (float)(tr_at(ts, i) - tref); if (v < mn) mn = v; if (v > mx) mx = v; }
     float span = mx - mn;
     if (span < 1e-18f) span = 1e-18f;
 
@@ -3157,7 +3176,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     /* krivka: nejstarsi vlevo -> nejnovejsi vpravo */
     int16_t px_prev = 0, py_prev = 0;
     for (int i = 0; i < n; i++) {
-        float v = tr_at(ts, n - 1 - i);
+        float v = (float)(tr_at(ts, n - 1 - i) - tref);
         int16_t px = (int16_t)(in.x + (int32_t)i * in.w / (n - 1));
         int16_t py = (int16_t)(in.y + in.h - (int16_t)((v - mn) / span * (float)in.h));
         if (i) prim_draw_line((prim_point_t){px_prev, py_prev}, (prim_point_t){px, py},
@@ -3169,10 +3188,10 @@ void screen_main_render_trend_big(prim_rect_t rect)
 
     /* Y popisky: max nahore / min dole (frac notace) */
     char lb[24];
-    fmt_frac(lb, sizeof lb, mx, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mx + tref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y - 6)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    fmt_frac(lb, sizeof lb, mn, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mn + tref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     /* overlay: okno + skutecne pokryty cas + krok decimace (vpravo nahore).

@@ -153,7 +153,7 @@ float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste 
  * ⚠️ NE od stage 0: stage 1 ma tau = 10 s = presne kadenci logu, takze prevod je
  * exaktni. Sypat log do stage 0 (tau0 = 1 s) by dalo sigma_y(tau) spatne o rad
  * a pritom verohodne vypadajici. Detaily u implementace. */
-void  screen_main_adev_seed_10s(float y);
+void  screen_main_adev_seed_10s(double y);
 /** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
 double screen_main_freq_nominal(void);
 
@@ -163,7 +163,7 @@ double screen_main_freq_nominal(void);
  *  rozesly (audit F-0037): ziva cesta pouzivala pevne meritko platne jen pro
  *  10 MHz a 7 desetin, rekonstrukce z datalogu pocitala spravne, a obe plnily
  *  TUTEZ ADEV pyramidu. Kdo potrebuje `y`, vola tohle — nepise vzorec znovu. */
-float screen_main_frac_dev(double hz);
+double screen_main_frac_dev(double hz);
 /** #45: L(f) [dBc/Hz] fazoveho sumu z ringu fluktuaci pro offset nejblizsi
  *  `target_hz`. Vyplni `f_used`/`l_dbc`. @return 1=spocteno (>=64 s dat), 0=malo dat. */
 int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc);
