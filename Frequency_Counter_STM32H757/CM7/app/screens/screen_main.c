@@ -792,37 +792,65 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
      * ⚠️ #51: kolik cislic je NEJISTYCH uz NENI natvrdo 2 — `n_unc` odvozuje
      *   volajici (`num_build_for` -> `freq_uncertain_frac`) z ROZLISENI hradla
      *   reciprocniho citace (√2·tdc/gate, deterministicke — NE simulace). SIM
-     *   fallback dava 2 (nezmeneny vzhled). Tady se hodnota jen sanituje na
-     *   [1, frac-1]: aspon 1 duveryhodna desetina (nese modre podtrzeni) a aspon
-     *   1 nejista (hi-res posledni misto lezi vzdy pod sumem). */
+     *   fallback dava 2 (nezmeneny vzhled).
+     * 🔴 F-0177: `n_unc` = pocet NEJISTYCH cislic OD KONCE a smi zasahnout i do
+     *   CELE casti. Do 2026-09-26 se sanitoval na [1, frac-1], tedy aspon jedna
+     *   desetina byla vzdy „duveryhodna" a nesla modre podtrzeni — i kdyz
+     *   rozliseni bylo horsi nez 0,1 Hz (nad ~7 MHz pri 0,25 s a TDC 2,5 ns;
+     *   pri 100 MHz 1,4 Hz, pri 1,4 GHz ~20 Hz). Ted se sanituje na
+     *   [1, celkem-1]: aspon 1 nejista (hi-res posledni misto lezi vzdy pod
+     *   sumem) a aspon 1 duveryhodna (vedouci cislice). Podtrzeni tak skonci
+     *   na posledni SKUTECNE duveryhodne cislici, klidne na desitkach Hz.
+     *   Dokud je rozliseni pod 0,1 Hz, vychazi rozlozeni stejne jako drive.
+     *   Pri 0/1 desetine zustava puvodni chovani (desetiny nejiste, bez podtrzeni). */
     int glen[NUM_SEG_MAX]; uint8_t glvl[NUM_SEG_MAX]; uint8_t gund[NUM_SEG_MAX];
     char gsep[NUM_SEG_MAX]; int gn = 0;
 
-    int first = int_digits % 3; if (first == 0) first = 3;
-    int rem = int_digits;
-    glen[gn] = first; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gsep[gn] = '.'; gn++; rem -= first;
-    while (rem > 0 && gn < NUM_SEG_MAX - 1) {
-        glen[gn] = 3; glvl[gn] = UI_DIGIT_CERTAIN; gund[gn] = 0; gsep[gn] = '.'; gn++; rem -= 3;
+    int total = int_digits + frac_digits;
+    int n_cert;                                    /* pocet duveryhodnych cislic ZLEVA */
+    int no_und = 0;
+    if (frac_digits < 2) {                         /* 0/1 desetina -> vse nejiste, bez podtrzeni */
+        n_cert = int_digits; no_und = 1;
+    } else {
+        if (n_unc < 1) n_unc = 1;
+        if (n_unc > total - 1) n_unc = total - 1;
+        n_cert = total - n_unc;
     }
-    gsep[gn - 1] = (frac_digits > 0) ? ',' : UI_BIGNUM_SEP_NONE;   /* desetinna carka */
+    /* Vzhled cislice d (1 = nejlevejsi): duveryhodna / podtrzena / SIGMA / FLOOR. */
+    #define DG_LVL(d) ((uint8_t)(((d) <= n_cert) ? UI_DIGIT_CERTAIN \
+                      : (((d) == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR)))
+    #define DG_UND(d) ((uint8_t)((!no_und && (d) == n_cert) ? 1u : 0u))
 
-    /* Zlomek: `n_cert` duveryhodnych, pak SIGMA a FLOOR. Podtrzena je POSLEDNI
-     * duveryhodna cislice (samostatny segment), nejiste jdou mensim fontem. */
-    if (frac_digits < 2) n_unc = frac_digits;      /* 0/1 desetina -> vse nejiste */
-    else { if (n_unc < 1) n_unc = 1; if (n_unc > frac_digits - 1) n_unc = frac_digits - 1; }
-    int n_cert = frac_digits - n_unc;
+    /* CELA cast: trojice zprava (konec trojice = (int_digits - q) % 3 == 0),
+     * uvnitr trojice se deli jen pri zmene vzhledu (SEP_NONE = slepene). */
     int p = 1;
+    while (p <= int_digits && gn < NUM_SEG_MAX) {
+        uint8_t lvl = DG_LVL(p), und = DG_UND(p);
+        int len = 1;
+        while (p + len <= int_digits) {
+            int q = p + len;
+            if (((int_digits - (q - 1)) % 3) == 0) break;          /* q-1 uzavrela trojici */
+            if (DG_LVL(q) != lvl || DG_UND(q) != und) break;       /* zmena vzhledu */
+            len++;
+        }
+        int endpos = p + len - 1;
+        glen[gn] = len; glvl[gn] = lvl; gund[gn] = und;
+        if (endpos == int_digits)
+            gsep[gn] = (frac_digits > 0) ? ',' : UI_BIGNUM_SEP_NONE;   /* desetinna carka */
+        else
+            gsep[gn] = (((int_digits - endpos) % 3) == 0) ? '.' : UI_BIGNUM_SEP_NONE;
+        gn++; p += len;
+    }
+
+    /* ZLOMEK: trojice zleva oddelene mezerou, deleni pri zmene vzhledu. */
+    p = 1;
     while (p <= frac_digits && gn < NUM_SEG_MAX) {
-        uint8_t lvl = (p <= n_cert) ? UI_DIGIT_CERTAIN
-                    : ((p == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR);
-        uint8_t und = (p == n_cert) ? 1u : 0u;
+        int d = int_digits + p;
+        uint8_t lvl = DG_LVL(d), und = DG_UND(d);
         int len = 0;
         while (p + len <= frac_digits) {                 /* rozsiruj, dokud se nic nemeni */
             int q = p + len;
-            uint8_t qlvl = (q <= n_cert) ? UI_DIGIT_CERTAIN
-                         : ((q == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR);
-            uint8_t qund = (q == n_cert) ? 1u : 0u;
-            if (qlvl != lvl || qund != und) break;        /* zmena vzhledu -> novy segment */
+            if (DG_LVL(int_digits + q) != lvl || DG_UND(int_digits + q) != und) break;
             if (len > 0 && ((q - 1) % 3) == 0) break;     /* hranice trojice */
             len++;
         }
@@ -833,6 +861,8 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
         gn++; p += len;
     }
     gsep[gn - 1] = UI_BIGNUM_SEP_NONE;                    /* za poslednim segmentem nic */
+    #undef DG_LVL
+    #undef DG_UND
 
     for (int i = 0; i < gn - 1; i++) s_seps[i] = gsep[i];
     s_seps[(gn > 0) ? gn - 1 : 0] = '\0';
@@ -868,7 +898,8 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
     return gn;
 }
 
-/* ── #51: kolik trailing desetin je NEJISTYCH (kresli se fade fontem) ──────────
+/* ── #51: kolik trailing cislic je NEJISTYCH (kresli se fade fontem) ───────────
+ * (Od F-0177 se pocitaji i cislice CELE casti — viz telo a `num_layout`.)
  * Reciprocni citac s TDC krokem 2,5 ns a hradlem `gate_ns` ma kvantizacni
  * ROZLISENI ~√2·tdc/gate (relativne) = deterministicka fyzika, NEZAVISLA na
  * simulaci headline. Prepocet na Hz -> pocet duveryhodnych desetin = kolik
@@ -894,13 +925,16 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ns, int frac)
     double gate_s   = (double)gate_ns * 1e-9;
     double u_res    = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;   /* relativni */
     double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
-    /* Duveryhodne desetiny = ta, jejichz mistni hodnota (0,1 / 0,01 / …) je jeste
-     * >= rozliseni. */
-    int    nc = 0; double pv = 0.1;
-    for (int p = 1; p <= frac; p++) { if (pv >= res_hz) { nc = p; pv *= 0.1; } else break; }
-    if (nc < 1)          nc = 1;         /* aspon 1 duveryhodna (nese podtrzeni) */
-    if (nc > frac - 1)   nc = frac - 1;  /* aspon 1 nejista (hi-res posledni misto pod sumem) */
-    return frac - nc;
+    /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
+     * 🔴 F-0177: pocita se i do CELE casti (vysledek smi byt > frac) — driv se
+     * tu vynucovala aspon jedna „duveryhodna" desetina, takze nad ~7 MHz
+     * podtrzeni tvrdilo 0,1 Hz pri skutecnem rozliseni 1,4 Hz (100 MHz) ci
+     * ~20 Hz (1,4 GHz). Mez [1, celkem-1] vynucuje `num_layout`. */
+    double pv = 1.0;
+    for (int i = 0; i < frac; i++) pv *= 0.1;           /* mistni hodnota posledni cislice */
+    int n_unc = 0;
+    while (pv < res_hz && n_unc < frac + 12) { n_unc++; pv *= 10.0; }
+    return n_unc;
 }
 
 /* Poskladej format pro dane mereni: urci pocet celych cislic a zvol NEJVIC desetin,
