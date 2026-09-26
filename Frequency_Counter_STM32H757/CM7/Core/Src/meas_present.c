@@ -452,10 +452,10 @@ int mp_selftest(void)
 
         /* F-0169 (2): prukaznost zavisi na n, ne na pevnem |r|. Stejne r ~0,4:
          * pri n = 200 prukazne, pri n = 5 ne. Syntetizovano primo pres r, n. */
-        {   mp_fit_t s = {0};
-            s.r = 0.4; s.n = 200u; ok &= (mp_fit_significant(&s) == 1);
-            s.n = 5u;              ok &= (mp_fit_significant(&s) == 0);
-            s.r = 0.99; s.n = 5u;  ok &= (mp_fit_significant(&s) == 1);   /* t=12 > 3,18 */
+        {   mp_fit_t fs = {0};
+            fs.r = 0.4; fs.n = 200u; ok &= (mp_fit_significant(&fs) == 1);
+            fs.n = 5u;               ok &= (mp_fit_significant(&fs) == 0);
+            fs.r = 0.99; fs.n = 5u;  ok &= (mp_fit_significant(&fs) == 1);   /* t=12 > 3,18 */
         }
     }
 
