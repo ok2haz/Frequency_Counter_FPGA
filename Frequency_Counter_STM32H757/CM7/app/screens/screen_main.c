@@ -1209,6 +1209,37 @@ static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (
 static float    s_tau0_mean = 0.0f, s_tau0_dev = 0.0f;   /* bod 6: skutecne τ0 vzorku */
 static uint32_t s_tau0_n = 0;
 
+/* #27 cast 2: meritko osy τ = zmerene τ0 vzorku. Vzorky se od `d0a02e5` skladaji
+ * podle POCTU mereni, takze jsou stejne dlouhe a stage s ma skutecne τ =
+ * 10^s·m·τ0 — staci tedy osu a popisky vynasobit prumernym τ0 (pri nizkem
+ * kmitoctu 1,02-1,05 s i vic; pod ~1 Hz > 1 s). Jen pri REALNEM mereni a od
+ * 8 vzorku; jinak 1 s (SIM vzorkuje 1x/s, prvni vzorky jeste nejsou prumer). */
+static float tau0_scale(void)
+{
+    if (s_tau0_n >= 8u && s_tau0_mean > 0.0f && screen_main_gate_actual_s() > 0.0)
+        return s_tau0_mean;
+    return 1.0f;
+}
+
+/* Popisek τ na 3 platne cislice ("1,05 s", "10,5 s", "105 s", "1,05 ks"). */
+static void fmt_tau_lbl(char *b, size_t n, float tau)
+{
+    const char *u = "s";
+    if (tau >= 1000.0f) { tau /= 1000.0f; u = "ks"; }
+    /* Modulo omezuje cifry i pro kompilator (-Wformat-truncation): nejdelsi
+     * vystup je "99999 ks" = 8 znaku. */
+    if (!(tau >= 0.0f)) tau = 0.0f;
+    if (tau < 10.0f) {
+        unsigned c = (unsigned)(tau * 100.0f + 0.5f) % 1000u;
+        snprintf(b, n, "%u,%02u %s", c / 100u, c % 100u, u);
+    } else if (tau < 100.0f) {
+        unsigned c = (unsigned)(tau * 10.0f + 0.5f) % 1000u;
+        snprintf(b, n, "%u,%u %s", c / 10u, c % 10u, u);
+    } else {
+        snprintf(b, n, "%u %s", (unsigned)(tau + 0.5f) % 100000u, u);
+    }
+}
+
 /* ── JEDINY ZDROJ PRAVDY pro frakcni odchylku y = (f − f0) / f0 ───────────────
  * f0 = `s_freq_nominal_hz` = rad prave merene veliciny; 0 = jeste nezname
  * (pred prvnim merenim, nebo kmitocet < 1 Hz) -> vraci 0.
@@ -1838,7 +1869,7 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
                 a = adev_stage_kind(s, m, kind);
             }
             if (a <= 0.0f) continue;
-            taus[np] = dec * (float)m; adevs[np] = a;
+            taus[np] = dec * (float)m * tau0_scale(); adevs[np] = a;   /* #27: skutecne τ */
             pM[np] = (int16_t)m_edf; pm[np] = (int8_t)m;
             /* Typ sumu se urcuje VZDY z ADEV (+MDEV), ne ze zobrazene metriky —
              * stejne jako web: sklony TDEV/MTIE jsou posunute o τ. */
@@ -2137,18 +2168,23 @@ static void allan_plot(prim_rect_t area, int big)
     }
 
     allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, 3, ymin, dec);
-    /* Bod 6: skutecne τ0 vzorku (Σ hradel) se od 1 s lisi -> osa τ i tabulka
-     * pocitaji s necim, co neplati. Prahy: prumer mimo ±2 %, kolisani nad 5 %;
-     * aspon 8 vzorku, at nevaruje prvni sekunda po startu. */
+    /* Bod 6 / #27: skutecne τ0 vzorku (Σ hradel). Od #27 casti 2 je osa τ
+     * prepoctena (`tau0_scale`), takze pri stabilnim τ0 staci INFORMACE; VAROVANI
+     * zustava pro kolisani nad 5 % (nestejne dlouhe vzorky — to prepocet nespravi).
+     * Aspon 8 vzorku, at nevaruje prvni sekunda po startu. */
     {   float t0m, t0s;
         if (big && show_floor && screen_main_tau0(&t0m, &t0s) >= 8u
-            && (fabsf(t0m - 1.0f) > 0.02f || t0s > 0.05f)) {
+            && (fabsf(t0m - 1.0f) > 0.005f || t0s > 0.05f)) {
             int c = (int)(t0m * 100.0f + 0.5f), pc = (int)(t0s * 100.0f + 0.5f);
             char wb[64];
-            snprintf(wb, sizeof wb, "! τ0 %d,%02d s (kolisa %d %%) - osa τ pocita s 1 s",
-                     c / 100, c % 100, pc);
+            if (t0s > 0.05f)
+                snprintf(wb, sizeof wb, "! τ0 %d,%02d s kolisa %d %% - osa τ neni presna",
+                         c / 100, c % 100, pc);
+            else
+                snprintf(wb, sizeof wb, "τ0 = %d,%02d s (osa τ prepoctena)", c / 100, c % 100);
             prim_draw_text((prim_point_t){(int16_t)(in.x + 4), (int16_t)(in.y + 14)}, wb,
-                           &ui_font_sans_14, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+                           &ui_font_sans_14, (t0s > 0.05f) ? UI_COLOR_WARN : UI_COLOR_INK_3,
+                           PRIM_ALIGN_LEFT);
         }
     }
     if (show_floor && big)                           /* legenda jen ve velkem okne */
@@ -3323,7 +3359,13 @@ void screen_main_render_stats_table(prim_rect_t rect)
         if (a > 0.0f) fmt_frac(vb, sizeof vb, a, 0);
         else { vb[0] = vb[1] = '-'; vb[2] = '\0'; }
         int16_t ty = (int16_t)(ry + i * 30);
-        prim_draw_text((prim_point_t){rect.x, ty}, TL[i],
+        /* #27: pri τ0 != 1 s popisek se skutecnym τ = 10^i·τ0 (hodnota je z tehoz
+         * radku pyramidy, jen popisek ji rika pravdive). */
+        char tl[16];
+        float t0 = tau0_scale();
+        if (fabsf(t0 - 1.0f) > 0.005f) fmt_tau_lbl(tl, sizeof tl, t0 * powf(10.0f, (float)i));
+        else snprintf(tl, sizeof tl, "%s", TL[i]);
+        prim_draw_text((prim_point_t){rect.x, ty}, tl,
                        &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ty}, vb,
                        &ui_font_mono_14, (a > 0.0f) ? UI_COLOR_INK_2 : UI_COLOR_INK_4,
