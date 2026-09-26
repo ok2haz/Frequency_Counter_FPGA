@@ -1729,12 +1729,23 @@ static int adev_points(float *taus, float *adevs, float *edf, int max)
         for (int mi = 0; mi < 3; mi++) {
             if (np >= max) return np;
             int m = SM[mi];
-            float a = adev_stage_kind(s, m, kind);
+            float a;
+            int   m_edf = s_adev[s].count;
+            if (s == 0 && m == 1 && kind == ADEV_KIND_ADEV) {
+                /* 🔴 F-0178: σy(1 s) z TEHOZ zdroje jako tabulka vedle grafu, karta
+                 * σ@1s a prahovy monitor (`stats_adev(1)`, plochy ring 120 vzorku).
+                 * Drive bod grafu bral ring stage 0 (24 vzorku) a okno ALLAN tak
+                 * ukazovalo pro tutez velicinu dve ruzna cisla (L-0018). Pri m = 1
+                 * je overlapping a non-overlapping odhad totez, EDF plati beze zmeny. */
+                a = stats_adev(1); m_edf = s_y_count;
+            } else {
+                a = adev_stage_kind(s, m, kind);
+            }
             if (a <= 0.0f) continue;
             taus[np] = dec * (float)m; adevs[np] = a;
             /* Sirka konfidencniho pasu z EDF (viz `adev_edf_wfm`), ne z poctu
              * clenu — overlapping cleny jsou korelovane (F-0167). */
-            if (edf) edf[np] = adev_edf_wfm(s_adev[s].count, m);
+            if (edf) edf[np] = adev_edf_wfm(m_edf, m);
             np++;
         }
     }
