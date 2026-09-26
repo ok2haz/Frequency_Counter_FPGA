@@ -3084,7 +3084,12 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Detekce:** u každého estimátoru dosaď do meze smyčky konkrétní `M`, `m`
   a spočítej členy ručně; nový selftest musí na STARÉM kódu selhat
   (přepis 1:1 na hostu včetně zaokrouhlení na `float`).
-- **Commit:** `35d3453`, `32efe36`
+- **Další výskyt (2026-09-26, bod 4 — EDF podle typu šumu):** vzorec EDF pro
+  blikavý FM při m = 1 jsem zapsal z paměti jako `2(N−2)/(2,3N−4,9)`; Monte Carlo
+  (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`) dalo empirickou EDF ~19 proti 0,9
+  ze vzorce — správně je `2(N−2)²/…`. **Vzorec z literatury/paměti se do měřidla
+  nepouští bez simulace, která ho změří** (ostatní čtyři typy seděly do ~12 %).
+- **Commit:** `35d3453`, `32efe36` (+ `06cbfd8` pro další výskyt)
 - **Stav:** aktivní
 
 ---

@@ -767,6 +767,10 @@ už nevejde.
 🔴 **Statistika stability počítá a ukládá v `double`** (F-0179): nominál je celé Hz,
 takže |y| < 1/f, a `float` při 10 kHz smazal šum (ADEV vyšla vysoko nebo 0).
 `float` smí být jen při kreslení a vždy RELATIVNĚ k referenci.
+**Typ šumu + EDF podle něj** (bod 4, `06cbfd8`): pás nejistoty Allanova grafu bere EDF podle
+LOKÁLNÍHO typu šumu (sklon ADEV, bílý/blikavý PM ze sklonu MDEV; aproximace Howe–Allan–Barnes,
+ověřené Monte Carlem do ~12 %), `nz_alpha` = tytéž prahy jako web `noiseName`; okno ALLAN
+ukazuje pod tabulkou převládající typ šumu a sklon.
 **Podlaha čítače** (čerchovaná čára v grafu, displej i web): kvantizace TDC = bílý PM,
 σx = tdc/√12 → ADEV tdc/(2τ), HDEV 0,527·tdc/τ, MDEV tdc/(2τ√m); kreslí se jen při
 reálném měření, platí pro signál asynchronní k referenci (`adev_floor_base` / `floorOf`).

@@ -3,7 +3,16 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — doplněk
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — bod 4: typ šumu
+a EDF pásu podle něj (`06cbfd8`).** EDF podle lokálního typu šumu (5 typů, Howe–Allan–
+Barnes), vzorce ověřené Monte Carlem (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`, shoda
+do ~12 %; simulace chytila můj chybně zapamatovaný vzorec pro blikavý FM → dodatek
+k L-0088). Klasifikace shodná s webem (ověřeno na hostu). Okno ALLAN ukazuje typ šumu
+a sklon. Build CM7 0 varování, `audit.py` 92/0/2, `.text` 621 912 B. ⬜ Neověřeno na HW.
+🔑 **Pokračovat zde:** zbývá bod 5 (přesné MTIE/TIE z `sdram_log`) a 6 (τ0 = skutečný
+rozestup) — oba potřebují k ověření běžící FPGA; jinak HW průchod.
+
+**Předchozí, 2026-09-26:** 🟡 **Modul 24 — doplněk
 „co dál s matematikou": F-0179 [S3] + podlaha čítače v grafu.** Rozhodnutí
 uživatele „2 a 3, tvoje doporučení".
 `5c019b1` **F-0179** — statistika stability ve `float`: nominál je celé Hz, |y| < 1/f,
