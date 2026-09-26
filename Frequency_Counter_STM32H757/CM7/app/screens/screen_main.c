@@ -1477,7 +1477,14 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
  *        ADEV je od sebe neodlisi, MDEV ano (jiny sklon).
  *   HDEV je imunni vuci LINEARNIMU DRIFTU (druhe diference), takze u OCXO se
  *        stárnutím ukaze skutecny sum misto driftove rampy.
- * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s. */
+ * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s.
+ *
+ * ⚠️ F-0166 (2026-09-26): meze smycek odpovidaji poctum clenu ve vzorcich vyse
+ * (0-indexovano posledni platne j = M-2m / M-3m / M-3m+1). Do te doby vsechny
+ * tri smycky koncily o jedna driv a zahazovaly posledni platny clen — odhady
+ * byly nezkreslene (deli se skutecnym `n`), ale na dlouhych tau prisly o 7-10 %
+ * clenu, tedy prave tam, kde je dat nejmene. Vstupni meze (M >= 2m+1 / 3m+1)
+ * zustaly, aby se pri rozbehu neobjevil novy bod z jedineho clenu. */
 #define ADEV_KIND_ADEV  0
 #define ADEV_KIND_MDEV  1
 #define ADEV_KIND_HDEV  2
@@ -1493,7 +1500,7 @@ static float adev_stage_kind(int s, int m, int kind)
 
     if (kind == ADEV_KIND_HDEV) {
         if (M < 3 * m + 1) return 0.0f;
-        for (int j = 0; j + 3 * m <= M - 1; j++) {
+        for (int j = 0; j <= M - 3 * m; j++) {            /* M-3m+1 clenu (SP1065) */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
                 inner += (double)adev_rat(sg, i + 2 * m)
@@ -1507,7 +1514,7 @@ static float adev_stage_kind(int s, int m, int kind)
 
     if (kind == ADEV_KIND_MDEV) {
         if (M < 3 * m + 1) return 0.0f;
-        for (int j = 0; j + 3 * m - 1 <= M - 1; j++) {
+        for (int j = 0; j <= M - 3 * m + 1; j++) {        /* M-3m+2 clenu (SP1065) */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
                 for (int k = i; k < i + m; k++)
@@ -1521,7 +1528,7 @@ static float adev_stage_kind(int s, int m, int kind)
 
     /* ADEV (overlapping) */
     if (M < 2 * m + 1) return 0.0f;
-    for (int j = 0; j + 2 * m <= M - 1; j++) {
+    for (int j = 0; j <= M - 2 * m; j++) {                /* M-2m+1 clenu (SP1065) */
         double inner = 0.0;
         for (int i = j; i < j + m; i++)
             inner += (double)adev_rat(sg, i + m) - (double)adev_rat(sg, i);
@@ -1645,10 +1652,30 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
  * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
-/* ns (nepovinne, NULL-safe): pocet clenu sumy na kazdy tau bod — slouzi ke
- * konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
+/* edf (nepovinne, NULL-safe): EKVIVALENTNI POCET STUPNU VOLNOSTI na kazdy tau
+ * bod — slouzi ke konfidencnimu pasu (rel. 1σ nejistota ~ 1/sqrt(2·edf)).
+ *
+ * 🔴 F-0167 (2026-09-26): driv se sem posilal POCET CLENU sumy, spocitany
+ * ZNOVU vlastnim vzorcem vedle estimatoru (L-0018) — u HDEV uz nesedel (+1).
+ * A hlavne: u OVERLAPPING odhadu jsou cleny KORELOVANE, takze jejich pocet neni
+ * pocet nezavislych vzorku. Pas pak vysel na dlouhych tau ~1,5x uzsi, nez
+ * odpovida datum (M=24, m=5: 0,21 misto 0,31). Tvrzeni „pas je proto uzsi,
+ * a to opravnene" bylo pravda jen napul.
+ * EDF pro overlapping ADEV, bily FM sum (NIST SP1065), N = M+1 fazovych bodu:
+ *     edf = [ 3(N-1)/(2m) - 2(N-2)/N ] · 4m² / (4m² + 5)
+ * ⚠️ Pro MDEV a HDEV ma SP1065 vlastni (jine) vzorce; tady se pouziva tentyz
+ * jako APROXIMACE prvniho radu — pro ADEV presna, pro MDEV/HDEV priblizna.
+ * Stejne tak predpoklad BILEHO FM je volba: pro jine typy sumu je EDF jina. */
+static float adev_edf_wfm(int M, int m)
+{
+    float N = (float)M + 1.0f, mf = (float)m;
+    float e = (3.0f * (N - 1.0f) / (2.0f * mf) - 2.0f * (N - 2.0f) / N)
+            * (4.0f * mf * mf) / (4.0f * mf * mf + 5.0f);
+    return (e < 1.0f) ? 1.0f : e;
+}
+
 static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
-static int adev_points(float *taus, float *adevs, int *ns, int max)
+static int adev_points(float *taus, float *adevs, float *edf, int max)
 {
     static const int SM[] = {1, 2, 5};
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
@@ -1661,14 +1688,9 @@ static int adev_points(float *taus, float *adevs, int *ns, int max)
             float a = adev_stage_kind(s, m, kind);
             if (a <= 0.0f) continue;
             taus[np] = dec * (float)m; adevs[np] = a;
-            /* Pocet clenu sumy = sirka konfidencniho pasu (~1/sqrt(2n)).
-             * U OVERLAPPING variant je jich radove vic nez u puvodnich
-             * non-overlapping bloku — pas je proto uzsi, a to opravnene. */
-            if (ns) {
-                int M = s_adev[s].count;
-                int n = (kind == ADEV_KIND_ADEV) ? (M - 2 * m) : (M - 3 * m + 1);
-                ns[np] = (n > 1) ? n : 1;
-            }
+            /* Sirka konfidencniho pasu z EDF (viz `adev_edf_wfm`), ne z poctu
+             * clenu — overlapping cleny jsou korelovane (F-0167). */
+            if (edf) edf[np] = adev_edf_wfm(s_adev[s].count, m);
             np++;
         }
     }
@@ -1787,7 +1809,7 @@ static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
 }
 
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
-                             const float *vals, const int *ns, int np,
+                             const float *vals, const float *edf, int np,
                              int16_t marker_r, int ymin, int dec)
 {
     float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
@@ -1801,14 +1823,16 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
         pts[i].x = (int16_t)(inner.x + fx * inner.w);
         pts[i].y = allan_y(inner, log10f(vals[i]), ymin, dec);
-        /* Konfidencni mez: rel. pulsirka ~ 0,8/sqrt(paru) (1. rad, white FM);
-         * pro TDEV/MTIE stejna relativni nejistota (jsou τ·ADEV nasobky). */
+        /* Konfidencni mez: rel. 1σ ~ 1/sqrt(2·edf) (1. rad; EDF bily FM, viz
+         * `adev_edf_wfm`). Pro TDEV/MTIE stejna relativni nejistota (jsou
+         * τ·ADEV nasobky). ⚠️ Drive tu stalo „0,8/sqrt(paru)" a o par radku vys
+         * „1/sqrt(2*ns)" — dva ruzne vzorce pro totez; plati tenhle (F-0167). */
         float f = 0.0f;
-        if (ns) { int nd = ns[i] < 1 ? 1 : ns[i]; f = 0.8f / sqrtf((float)nd); if (f > 0.9f) f = 0.9f; }
+        if (edf) { float e = edf[i] < 1.0f ? 1.0f : edf[i]; f = 1.0f / sqrtf(2.0f * e); if (f > 0.9f) f = 0.9f; }
         yup[i] = allan_y(inner, log10f(vals[i] * (1.0f + f)), ymin, dec);
         ylo[i] = allan_y(inner, log10f(vals[i] * (1.0f - f)), ymin, dec);
     }
-    if (ns && (g_fx_enabled & FX_ALLAN_CONF))        /* pas POD krivku */
+    if (edf && (g_fx_enabled & FX_ALLAN_CONF))       /* pas POD krivku */
         allan_band_fill(pts, yup, ylo, np);
     for (int i = 1; i < np; i++)
         prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
@@ -1835,8 +1859,8 @@ static void allan_plot(prim_rect_t area, int big)
                       (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
 
     float taus[20], adevs[20];
-    int ns[20];
-    int np = adev_points(taus, adevs, ns, 20);
+    float edf[20];
+    int np = adev_points(taus, adevs, edf, 20);
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
                                       (int16_t)(in.y + in.h / 2 + 5)},
@@ -1877,7 +1901,7 @@ static void allan_plot(prim_rect_t area, int big)
                        dl, lf, lc, PRIM_ALIGN_CENTER);
     }
 
-    allan_plot_curve(in, taus, vals, ns, np, 3, ymin, dec);
+    allan_plot_curve(in, taus, vals, edf, np, 3, ymin, dec);
 }
 
 /* Allan karta na hlavni obrazovce: vlevo pres vysku statistik+trendu (364×176,
