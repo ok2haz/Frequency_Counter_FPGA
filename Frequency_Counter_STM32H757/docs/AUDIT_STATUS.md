@@ -10,6 +10,7 @@ ne podle 1s tiku UiTasku (ten se opožďoval o latenci smyčky). Rozptyl délky 
 Doplněk k F-0171 a k L-0092. Build CM7 0 varování, `audit.py` 92/0/2, `.text` 622 984 B.
 ⬜ Neověřeno na HW. **#27 část 2 hotová** (osa τ a popisky tabulky podle změřeného τ0).
 Zbývá bod 5 (přesné MTIE/TIE ze `sdram_log`) — až s běžícím FPGA.
+🔑 **HW test všech změn modulu 24 = `../STATUS.md` TODO #255** (10 kroků, flash obou bank + power-cyklus).
 
 **Předchozí, 2026-09-26:** 🟡 **Modul 24 — bod 6: skutečné τ0
 vzorku (`a5ddf9d`).** Levná varianta: τ0 = součet oken měření za tik se MĚŘÍ, okno ALLAN
