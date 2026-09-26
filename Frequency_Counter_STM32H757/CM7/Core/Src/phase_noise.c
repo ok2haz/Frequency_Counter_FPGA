@@ -49,14 +49,39 @@ int pn_compute(const float *y, int n, double f0_hz, double fs_hz,
     if (n < PN_NFFT || f0_hz <= 0.0 || fs_hz <= 0.0) return 0;
 
     double re[PN_NFFT], im[PN_NFFT];
+    int off = n - PN_NFFT;
+
+    /* 🔴 F-0161: ODECET STREDNI HODNOTY pred oknem.
+     * `y = (f - f0)/f0`, kde f0 je JMENOVITY kmitocet, takze `y` nese
+     * stejnosmernou slozku = kmitoctovy offset oscilatoru. Ta neni fazovy sum —
+     * a pres okno prosakne do nizkych binu. Do 2026-09-26 se neodecitala:
+     * u symetrickeho Hanna vychazel unik DC do binu 6 (0,094 Hz, ten co ukazuje
+     * okno ANALYZA) -66,7 dB, do binu 1 -5,8 dB. Dnes to maskuje rozliseni TDC
+     * 2,5 ns; s novou deskou (~22 ps) by L(f) vysel o 10-30 dB horsi a meril by
+     * offset, ne sum.
+     * ⚠️ ZAMERNE JEN PRUMER, NE LINEARNI TREND. Zkouseno a zamitnuto pozitivni
+     * kontrolou: ton s celym poctem period ma nenulovou projekci na rampu
+     * (Σ(i-i_c)·cos = -N/2), takze proklad primkou z tonu kus "ukousne" a
+     * vyrobi vlastni artefakt — v testu bin 1 jen -14,9 dB pod spickou tonu.
+     * A skutecny drift je v 64s okne zanedbatelny: starnuti OCXO ~1e-10/den dava
+     * ~7e-14 na okno. Kdyby se nekdy merilo neco s rychlou rampou, patri to do
+     * samostatneho, zdokumentovaneho kroku, ne sem potichu. */
+    double ym = 0.0;
+    for (int i = 0; i < PN_NFFT; i++) ym += (double)y[off + i];
+    ym /= (double)PN_NFFT;
+
     /* Hannovo okno na POSLEDNICH PN_NFFT vzorcich (potlaci leakage; bez nej by
      * jedna spicka rozmazala cely spektralni odhad). Σw² = vykon okna pro
-     * spravnou normalizaci PSD. */
+     * spravnou normalizaci PSD.
+     * ⚠️ PERIODICKY Hann (`2πi/N`), NE symetricky (`2πi/(N-1)`): symetricky je
+     * na navrh filtru, pro spektralni odhad ma DFT s unikem i daleko od DC
+     * (F-0161). Periodicky ma jen 3 nenulove DFT koeficienty, takze za binem 1
+     * je unik presne nulovy. */
     double wpow = 0.0;
-    int off = n - PN_NFFT;
     for (int i = 0; i < PN_NFFT; i++) {
-        double w = 0.5 * (1.0 - cos(2.0 * M_PI * (double)i / (double)(PN_NFFT - 1)));
-        re[i] = w * (double)y[off + i];
+        double w = 0.5 * (1.0 - cos(2.0 * M_PI * (double)i / (double)PN_NFFT));
+        double d = (double)y[off + i] - ym;
+        re[i] = w * d;
         im[i] = 0.0;
         wpow += w * w;
     }
@@ -93,8 +118,10 @@ int pn_selftest(void)
      * gps_selftest / scpi_selftest / ipc_selftest. */
     static pn_point_t pts[PN_NBINS];
     static pn_point_t pts2[PN_NBINS];
+    static pn_point_t pts3[PN_NBINS];
     static float few[PN_NFFT - 1];
     static float y[PN_NFFT];
+    static float yo[PN_NFFT];
 
     /* (1) malo dat */
     for (int i = 0; i < PN_NFFT - 1; i++) few[i] = 0.0f;
@@ -127,6 +154,20 @@ int pn_selftest(void)
     if (np2 != np) return 0;
     double d = pts2[imax].l_dbc - pts[imax].l_dbc;
     if (fabs(d - 20.0 * log10(2.0)) > 0.1) return 0;
+
+    /* (5) F-0161: tentyz ton + VELKY kmitoctovy offset. Offset 1e-7 je 50x nad
+     * amplitudou tonu — pomer nedisciplinovaneho OCXO proti jemnemu TDC. Puvodni
+     * kod (bez odectu prumeru, symetricky Hann) daval bin k=1 +54 dB NAD
+     * spickou tonu (overeno 1:1 prepisem na hostu). Po oprave: (a) spicka tonu
+     * se nezmeni, (b) nejnizsi bin zustane hluboko pod ni.
+     * ⚠️ Puvodni selftest tohle chytit NEMOHL — mel jen ton s nulovym prumerem
+     * (L-0039: kontrola musi obsahovat vadu, kvuli ktere vznikla). */
+    for (int i = 0; i < PN_NFFT; i++)
+        yo[i] = y[i] + 1e-7f;
+    int np3 = pn_compute(yo, PN_NFFT, 1e7, 1.0, pts3, PN_NBINS);
+    if (np3 != np) return 0;
+    if (fabs(pts3[k0 - 1].l_dbc - pts[k0 - 1].l_dbc) > 0.1) return 0;   /* (a) */
+    if (pts3[0].l_dbc > pts3[k0 - 1].l_dbc - 20.0) return 0;            /* (b) */
 
     return 1;
 }
