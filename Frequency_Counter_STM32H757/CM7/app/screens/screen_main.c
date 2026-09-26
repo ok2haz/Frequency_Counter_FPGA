@@ -1730,7 +1730,31 @@ static float adev_edf_wfm(int M, int m)
 }
 
 static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
-static int adev_points(float *taus, float *adevs, float *edf, int max)
+/* ── Podlaha citace v grafu stability (bod 3, 2026-09-26) ─────────────────────
+ * Kvantizace casovych znacek TDC je BILY FAZOVY SUM: kazda znacka ma chybu
+ * rovnomerne v kroku `tdc`, tedy σx = tdc/√12, a sousedni vzorky sdileji
+ * hranicni znacku (navazujici okna, F-0171). Pro tentyz ESTIMATOR, jakym se
+ * pocita krivka, z toho plyne jeho podlaha (dosazeno do vzorcu SP1065):
+ *   ADEV  σ² = 6σx²/(2τ²)         -> σ = √3·σx/τ      = tdc/(2τ)
+ *   HDEV  H² = 20σx²/(6τ²)        -> H = √(10/3)·σx/τ = 0,527·tdc/τ
+ *   MDEV  M² = 6σx²/(2·m·τ²)      -> M = tdc/(2τ·√m), m = nasobek τ0 TE stage
+ *         (pyramida pocita MDEV nad prumery stage, proto m a ne τ/1 s)
+ * TDEV a MTIE se z podlahy odvodi tymz `allan_metric_value` jako krivka.
+ * Pod touto carou krivka neukazuje oscilator, ale citac. ⚠️ Plati pro signal
+ * ASYNCHRONNI k referenci citace; merite-li samotnou referenci (koherentni
+ * vzorkovani), kvantizacni chyba neni nahodna a krivka muze byt i pod ni. */
+static float adev_floor_base(int kind, float tau, int m)
+{
+    double tdc = FREQ_TDC_PS * 1e-12;               /* krok TDC [s] */
+    double t   = (double)tau;
+    switch (kind) {
+    case ADEV_KIND_HDEV: return (float)(0.52704628 * tdc / t);            /* √(10/3)/√12 */
+    case ADEV_KIND_MDEV: return (float)(tdc / (2.0 * t * sqrt((double)m)));
+    default:             return (float)(tdc / (2.0 * t));
+    }
+}
+
+static int adev_points(float *taus, float *adevs, float *edf, float *flr, int max)
 {
     static const int SM[] = {1, 2, 5};
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
@@ -1757,6 +1781,7 @@ static int adev_points(float *taus, float *adevs, float *edf, int max)
             /* Sirka konfidencniho pasu z EDF (viz `adev_edf_wfm`), ne z poctu
              * clenu — overlapping cleny jsou korelovane (F-0167). */
             if (edf) edf[np] = adev_edf_wfm(m_edf, m);
+            if (flr) flr[np] = adev_floor_base(kind, taus[np], m);
             np++;
         }
     }
@@ -1875,7 +1900,8 @@ static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
 }
 
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
-                             const float *vals, const float *edf, int np,
+                             const float *vals, const float *edf,
+                             const float *flr, int np,
                              int16_t marker_r, int ymin, int dec)
 {
     float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
@@ -1900,6 +1926,25 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
     }
     if (edf && (g_fx_enabled & FX_ALLAN_CONF))       /* pas POD krivku */
         allan_band_fill(pts, yup, ylo, np);
+    /* Podlaha citace (viz `adev_floor_base`) — cerkovane, POD krivku. Usek, ktery
+     * cely lezi pod rozsahem osy, se vynecha; castecny se orizne na spodni hranu
+     * (jinak by `allan_y` podlahu prilepil ke dnu a vypadala by jako data). */
+    if (flr) {
+        for (int i = 1; i < np; i++) {
+            float l0 = log10f(flr[i - 1]), l1 = log10f(flr[i]);
+            if (!(l0 >= (float)ymin) && !(l1 >= (float)ymin)) continue;
+            prim_point_t a = {pts[i - 1].x, allan_y(inner, l0, ymin, dec)};
+            prim_point_t b = {pts[i].x,     allan_y(inner, l1, ymin, dec)};
+            if (!(l1 >= (float)ymin)) {                 /* pravy konec pod osou */
+                float t = (l0 - (float)ymin) / (l0 - l1);
+                b.x = (int16_t)(a.x + t * (float)(b.x - a.x));
+            } else if (!(l0 >= (float)ymin)) {          /* levy konec pod osou */
+                float t = ((float)ymin - l0) / (l1 - l0);
+                a.x = (int16_t)(a.x + t * (float)(b.x - a.x));
+            }
+            prim_draw_line_dashed(a, b, 1, UI_COLOR_INK_3, 5, 4);
+        }
+    }
     for (int i = 1; i < np; i++)
         prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
     for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
@@ -1925,8 +1970,10 @@ static void allan_plot(prim_rect_t area, int big)
                       (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
 
     float taus[20], adevs[20];
-    float edf[20];
-    int np = adev_points(taus, adevs, edf, 20);
+    float edf[20], flr[20];
+    int np = adev_points(taus, adevs, edf, flr, 20);
+    /* Podlaha citace jen pri REALNEM mereni — SIM krivku citac nemeril. */
+    int show_floor = (screen_main_gate_actual_s() > 0.0);
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
                                       (int16_t)(in.y + in.h / 2 + 5)},
@@ -1939,6 +1986,7 @@ static void allan_plot(prim_rect_t area, int big)
      * auto-range dle hodnot). Y mrizka + dekadove popisky (allan_ylabel). */
     float vals[20];
     for (int i = 0; i < np; i++) vals[i] = allan_metric_value(taus[i], adevs[i]);
+    for (int i = 0; i < np; i++) flr[i]  = allan_metric_value(taus[i], flr[i]);
     int ymin, dec; allan_metric_yrange(vals, np, &ymin, &dec);
     for (int j = 0; j <= dec; j++) {
         int16_t y = (int16_t)(in.y + (int32_t)j * in.h / dec);
@@ -1967,7 +2015,11 @@ static void allan_plot(prim_rect_t area, int big)
                        dl, lf, lc, PRIM_ALIGN_CENTER);
     }
 
-    allan_plot_curve(in, taus, vals, edf, np, 3, ymin, dec);
+    allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, 3, ymin, dec);
+    if (show_floor && big)                           /* legenda jen ve velkem okne */
+        prim_draw_text((prim_point_t){(int16_t)(in.x + in.w - 4), (int16_t)(in.y + 14)},
+                       "- - podlaha citace (TDC)", &ui_font_sans_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_RIGHT);
 }
 
 /* Allan karta na hlavni obrazovce: vlevo pres vysku statistik+trendu (364×176,

@@ -40,7 +40,7 @@ function grabVar(name) {                       /* `var NAME=[...];` na jednom ra
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 
-const parts = ['adev', 'mdev', 'fit', 'effN', 'fitSig'].map(n => [n, grab(n)]);
+const parts = ['adev', 'mdev', 'fit', 'effN', 'fitSig', 'floorOf'].map(n => [n, grab(n)]);
 for (const [n, body] of parts) check(body !== null, 'funkce ' + n + '() je v SPA');
 const body = grabVar('T95') + parts.filter(p => p[1]).map(p => p[1]).join('\n');
 const api = new Function(body + '\nreturn {'
@@ -146,5 +146,17 @@ if (api.fit) {
   check(F && F.n === 50, 'fit() vraci pocet bodu n (potrebuje ho t-test)');
 }
 
+/* Podlaha citace: web `floorOf` = firmware `adev_floor_base` (+ transformace
+ * metriky). Hodnoty vzorcu overuje simulace docs/audit/sim/2026-09-26_podlaha_tdc.js. */
+console.log('--- podlaha citace (floorOf = adev_floor_base) ---');
+if (api.floorOf) {
+  const T = 2.5e-9, F = api.floorOf;
+  const near = (a, b) => Math.abs(a / b - 1) < 1e-9;
+  check(near(F('adev', 1, 1, T), T / 2),                 'ADEV tau=1 s: tdc/2');
+  check(near(F('adev', 100, 1, T), T / 200),             'ADEV tau=100 s: tdc/200');
+  check(near(F('tdev', 4, 1, T), T / (2 * Math.sqrt(12))), 'TDEV m=4: tdc/(2 sqrt(3m))');
+  check(near(F('mtie', 10, 1, T), Math.sqrt(3) * T / 2), 'MTIE: sqrt3*tau*tdc/(2 tau)');
+  check(near(F('tdev', 2, 0.25, T), T / (2 * Math.sqrt(24))), 'TDEV s tau0 0,25 s: m = tau/tau0');
+}
 console.log(bad ? ('\nCHYBA: ' + bad + ' kontrol selhalo') : '\nvse OK');
 process.exitCode = bad ? 1 : 0;
