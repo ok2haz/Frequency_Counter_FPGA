@@ -551,6 +551,12 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
  * perioda datalogu nejvýš 3600 s → 5e17, tedy hluboko pod mezí 2^62 níže. */
 typedef struct { uint64_t cyc_e5; uint64_t gate_ns; uint32_t n; } fpga_acc_t;
 static fpga_acc_t s_acc[FPGA_ACC_N];
+/* #27: fronta hotovych vzorku statistiky (producent FpgaTask, konzument UiTask),
+ * indexy pod PRIMASK. */
+#define FPGA_STAT_RING 16u
+static fpga_acc_t s_stat_ring[FPGA_STAT_RING];
+static uint8_t    s_stat_w = 0u, s_stat_r = 0u;
+static uint32_t   s_stat_drop = 0u;
 
 void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 {
@@ -578,8 +584,45 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
         s_acc[i].gate_ns += gate_ns;
         s_acc[i].n++;
     }
+    /* #27: vzorek statistiky je hotovy, jakmile Σhradel >= 1 s - hradlo/2, tedy
+     * `2·Σ + g >= 2 s` (bez odcitani — pri hradle > 2 s by 2e9 - g podteklo).
+     * Pri 0,25 s to jsou vzdy prave 4 mereni. */
+    fpga_acc_t *st = &s_acc[FPGA_ACC_STATS];
+    if (2ull * st->gate_ns + gate_ns >= 2000000000ull) {
+        uint8_t nw = (uint8_t)((s_stat_w + 1u) % FPGA_STAT_RING);
+        if (nw == s_stat_r) {                            /* plno -> zahodit nejstarsi */
+            s_stat_r = (uint8_t)((s_stat_r + 1u) % FPGA_STAT_RING);
+            s_stat_drop++;
+        }
+        s_stat_ring[s_stat_w] = *st;
+        s_stat_w = nw;
+        memset(st, 0, sizeof *st);
+    }
     __set_PRIMASK(pm);
 }
+
+int fpga_stat_pop(double *hz, double *tau_s)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    if (s_stat_r == s_stat_w) { __set_PRIMASK(pm); return 0; }
+    fpga_acc_t a = s_stat_ring[s_stat_r];
+    s_stat_r = (uint8_t)((s_stat_r + 1u) % FPGA_STAT_RING);
+    __set_PRIMASK(pm);
+    if (hz)    *hz    = (a.gate_ns != 0u) ? (double)a.cyc_e5 * 1e4 / (double)a.gate_ns : 0.0;
+    if (tau_s) *tau_s = (double)a.gate_ns * 1e-9;
+    return 1;
+}
+
+void fpga_stat_break(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    memset(&s_acc[FPGA_ACC_STATS], 0, sizeof s_acc[FPGA_ACC_STATS]);
+    __set_PRIMASK(pm);
+}
+
+uint32_t fpga_stat_drops(void) { return s_stat_drop; }
 
 uint32_t fpga_acc_take(int which, double *hz, double *gate_s)
 {

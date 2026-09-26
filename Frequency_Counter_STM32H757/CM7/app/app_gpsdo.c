@@ -8343,23 +8343,30 @@ void app_gpsdo_tick_stats_sample(void)
     /* Rekonstrukce z datalogu ma prednost pred zivym vzorkovanim: dokud bezi,
      * plni pyramidu historii (po davkach, ~2 min na pozadi). Zive vzorky by se
      * do ni mezitim michaly ve spatnem poradi (novejsi pred starsimi). */
-    /* 🔴 F-0171: vzorek realneho mereni = PRUMER VSECH mereni od minuleho tiku
-     * (`fpga_acc_take`), ne posledni jednotlive mereni. FPGA dava ~4 mereni/s po
-     * 0,25 s; brat jen posledni znamenalo mrtvou dobu 75 % a σy 2x (bily FM) az
-     * 23x (bily PM) vysoko. Akumulator se ODEBIRA VZDY, i pri STOP a behem
-     * rekonstrukce — jinak by prvni vzorek po RUN zprumeroval celou pauzu.
-     * ⚠️ Kdyz tik nebezel dele nez 1 s (blokujici render), vzorek pokryje delsi
-     * okno; pri mereni pomalejsim nez 1/s zustava vzorku mene (τ0 = skutecny
-     * rozestup je vec MathTasku, #27). */
-    double hz_acc = 0.0, tau_acc = 0.0;
-    uint32_t n_acc = fpga_acc_take(FPGA_ACC_STATS, &hz_acc, &tau_acc);
-    if (stats_seed_tick()) return;
+    /* 🔴 F-0171: vzorek realneho mereni = PRUMER VSECH mereni jeho okna, ne
+     * posledni jednotlive mereni. FPGA dava ~4 mereni/s po 0,25 s; brat jen
+     * posledni znamenalo mrtvou dobu 75 % a σy 2x (bily FM) az 23x (bily PM)
+     * vysoko. Fronta se ODEBIRA VZDY, i pri STOP a behem rekonstrukce — jinak by
+     * se po RUN zpracovaly vzorky z pauzy.
+     * ⚠️ Pri mereni pomalejsim nez 1/s je vzorek jedno mereni delsi nez 1 s; osa τ
+     * s tim nepocita (varuje okno ALLAN, bod 6). */
+    /* #27: vzorky skladá FpgaTask PODLE POCTU mereni (`fpga_stat_pop`), ne tenhle
+     * casovy tik — ten se opozduje o latenci smycky a obcas by pobral mereni
+     * navic. Tady se jen odeberou vsechny hotove (0, 1, vyjimecne 2); pri STOP,
+     * rekonstrukci nebo SIM se odeberou a zahodi. */
+    int seeding = stats_seed_tick();
+    int take = !seeding && screen_main_is_running() && g_freq_valid;
+    int got = 0;
+    double hz_s, tau_s;
+    while (fpga_stat_pop(&hz_s, &tau_s)) {
+        if (take && hz_s > 0.0) { screen_main_stats_sample_hz(hz_s, tau_s); got++; }
+    }
+    if (seeding) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     if (g_freq_valid) {
-        /* Zadne nove mereni od minuleho vzorku -> nic nepridavat (drzena hodnota
-         * zapocitana vickrat by σy uměle snizila). */
-        if (n_acc == 0u || !(hz_acc > 0.0)) return;
-        screen_main_stats_sample_hz(hz_acc, tau_acc);
+        /* Zadny hotovy vzorek -> nic nepridavat (drzena hodnota zapocitana
+         * vickrat by σy umele snizila). */
+        if (got == 0) return;
     } else {
         screen_main_stats_sample();          /* SIM fallback: kazdy tik (τ0 = 1 s) */
     }

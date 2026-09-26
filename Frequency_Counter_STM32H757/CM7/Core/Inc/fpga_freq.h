@@ -108,7 +108,7 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
  * (HYPOTÉZA pro novou desku — ověřit ve firmwaru FPGA); jinak aspoň klesne.
  * ⚠️ Každý konzument má VLASTNÍ akumulátor a odebírá ho sám — sdílený by si
  * navzájem vyjídali okna. */
-#define FPGA_ACC_STATS    0   /* statistika stability (UiTask, 1×/s) */
+#define FPGA_ACC_STATS    0   /* statistika stability — ODEBIRA SE pres `fpga_stat_pop` */
 #define FPGA_ACC_DATALOG  1   /* datalog (defaultTask, 1× za periodu) */
 #define FPGA_ACC_N        2
 
@@ -120,6 +120,24 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
  *  sečtených oken [s] — skutečné τ0 vzorku (bod 6). @return počet měření v okně;
  *  0 = žádné nové měření (pak `*hz` = `*gate_s` = 0). */
 uint32_t fpga_acc_take(int which, double *hz, double *gate_s);
+
+/* ── Hotove vzorky statistiky PODLE POCTU mereni (#27, 2026-09-26) ─────────
+ * Statistika nebere svuj akumulator podle 1s tiku, ale FpgaTask ho UZAVRE, jakmile
+ * soucet oken dosahne 1 s (presneji: Σhradel >= 1 s - posledni hradlo/2), a hotovy
+ * vzorek da do fronty. Vsechny vzorky tak maji STEJNY pocet mereni. Casovy tik
+ * UiTasku (~1,01 s, latence smycky) obcas pobral o mereni vic a pri nizkem
+ * kmitoctu se delky vzorku stridaly: simulace (`docs/audit/sim/2026-09-26_tau0_
+ * cas_vs_pocet.js`) rozptyl delky 3,5 % -> 0,00 % pri 10 MHz, 9,8 % -> 1,4 % pri
+ * 40 Hz, 21 % -> 14 % pri 2,5 Hz. Fronta 16 vzorku; pri preteceni se zahodi
+ * nejstarsi a pocita se (`fpga_stat_drops`). */
+
+/** Odebere nejstarsi hotovy vzorek. @return 1 = `*hz` [Hz] a `*tau_s` (delka
+ *  jeho oken) vyplneny, 0 = fronta prazdna. Vola VYHRADNE UiTask. */
+int fpga_stat_pop(double *hz, double *tau_s);
+/** Rozpracovany vzorek zahodit (neplatne mereni = okna uz nenavazuji). FpgaTask. */
+void fpga_stat_break(void);
+/** Kolik hotovych vzorku se ztratilo preplnenim fronty (UiTask neodebiral). */
+uint32_t fpga_stat_drops(void);
 
 /** Selftest hystereze volby zdroje na syntetickych ramcich (UART "selftest").
  *  Nemeni runtime stav. @return true = vsechny kroky OK. */

@@ -80,6 +80,8 @@ void StartFpgaTask(void *argument)
        * Kriterium platnosti je tytez jako u `g_freq_valid` vyse. */
       if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST))
         fpga_acc_add(v, m.edge_count, m.gate_time_ns);
+      else
+        fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
       /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
        * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
        * ⚠️ Nasobitel `edge_count` (1/4/16) NEODVOZUJEME sami: `fpga_freq_hires_uhz`

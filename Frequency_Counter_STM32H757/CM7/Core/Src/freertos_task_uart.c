@@ -2789,9 +2789,9 @@ void UartTask_run(void *argument)
 					  	  float tm = 0.0f, ts = 0.0f;
 					  	  uint32_t tn = screen_main_tau0(&tm, &ts);
 					  	  if (tn)
-					  	    printf("STATISTIKA: tau0 = %ld ms, kolisa %ld %% (%lu vzorku)\n",
+					  	    printf("STATISTIKA: tau0 = %ld ms, kolisa %ld %% (%lu vzorku, ztraceno %lu)\n",
 					  	           (long)(tm * 1000.0f + 0.5f), (long)(ts * 100.0f + 0.5f),
-					  	           (unsigned long)tn);
+					  	           (unsigned long)tn, (unsigned long)fpga_stat_drops());
 					  	  else
 					  	    printf("STATISTIKA: tau0 = -- (zadny realny vzorek)\n");
 					  	}
