@@ -83,7 +83,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
 - **Vztah k lekcím:** L-0036 (kadence je vlastnost přenosu), L-0088
   (ověřovat nezávislou referencí), L-0011 (můj první průchod převzal
   „τ0 = 1 s" bez ověření okna).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`ace2939`) — podle návrhu: akumulátor na konzumenta ve `fpga_freq.c` (`fpga_acc_add` ve FpgaTasku, `fpga_acc_take` ve statistice), vzorek = reciproký průměr Σcyklů/Σhradel za tik; akumulátor se odebírá i při STOP a během rekonstrukce. Cykly přesně z `edges·mul` (ověřený násobitel), jinak z `x1e5·hradlo`; vyloučení přes PRIMASK (konvence ovladače). Aritmetika ověřena nezávislým přepisem (`sim/2026-09-26_akumulator_check.js`). ⚠️ HYPOTÉZA trvá: mrtvá doba zmizí úplně jen při navazujících oknech FPGA. ⬜ neověřeno na HW (FPGA neběží).
 
 ---
 
@@ -115,7 +115,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   (nejde je odlišit — zvážit bit ve `flags`).
 - **Vztah k lekcím:** L-0028 (tvrzení v komentáři je testovatelné),
   L-0018, L-0036.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`ace2939`) — datalog zapisuje průměr za periodu ze stejného akumulátoru; příznak `freq_avg` v bitu 63 pole kmitočtu (uvnitř CRC, formát 32 B beze změny, staré záznamy čtou 0); vypnutý log a vynechaná perioda akumulátor vyprázdní; rekonstrukce bere jen `freq_avg = 1`; komentář „převod je exaktní" upřesněn; `datalog_selftest` rozšířen. ⬜ neověřeno na HW.
 
 ---
 
@@ -159,7 +159,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
 - **Riziko opravy:** nízké (zobrazovaný verdikt).
 - **Vztah k lekcím:** L-0088 (vylepšení až po pozitivní kontrole — tu jsem
   u F-0169 udělal jen pro nezávislá data), L-0089, L-0018 (web + displej).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`472ece6`) — n_eff = n(1−ρ)/(1+ρ) z lag-1 autokorelace reziduí (Santer 2000), firmware jedním průchodem ze součtů sousedních dvojic, web přímo z reziduí; záporná ρ se neuplatňuje. Jednoprůchodový vzorec ověřen proti dvouprůchodové referenci v Node (shoda 1e-9); `mp_selftest` + `stat_test.js` mají tytéž vektory; stará SPA v nich selhala. Popisek „neprůkazné" beze změny, v hlavičce `mp_fit_significant` je řečeno, že „průkazné" neznamená prokázaný lineární drift (náhodná procházka zůstává ~28 %). ⬜ neověřeno na HW.
 
 ---
 
@@ -183,7 +183,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
 - **Riziko opravy:** nízké (SPA, `check.py --build`).
 - **Vztah k lekcím:** L-0012 (sourozenec na druhém jádře — potřetí v tomto
   modulu), L-0018, L-0038.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`937b5d6`) — web bere `gate_ns` z rámce, neznámé hradlo → „--"; `unc_test.js` nově vynucuje (stará SPA 3 CHYBA). Definice `u_sta` (σ při τ = hradlo na webu × σy(1 s) na displeji) zůstává rozdílná — patří k F-0168. ⬜ neověřeno na HW.
 
 ---
 
@@ -211,7 +211,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   a zobrazit na celé dB; komentář o „bin po binu" opravit.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0012, L-0018, L-0088.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`937b5d6`) — web: periodický Hann, odečet průměru každého segmentu, Welch 50 % místo Bartletta, komentář o binech opraven; firmware: Welch 50 % (2 segmenty při 120 vzorcích), mezisoučet v `out[]` (bez dalšího zásobníku), ANALÝZA na celé dB. `pn_selftest` (6) a `pn_test.js` (9) mají tytéž případy; stará SPA v nich selhala (bin 1 o 52 dB nad špičkou). ⬜ neověřeno na HW.
 
 ---
 
@@ -236,7 +236,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   s F-0168** (metrologická definice rozpočtu) — proto skupina C.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0089 (číslo se vydává za něco, čím není).
-- **Stav:** otevřeno.
+- **Stav:** otevřeno — skupina C, rozhoduje se spolu s F-0168 (metrologická definice rozpočtu nejistoty).
 
 ---
 
@@ -257,7 +257,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   vyžaduje zásah do `num_layout` — rozhodnutí o vzhledu.
 - **Riziko opravy:** střední (layout velkého čísla).
 - **Vztah k lekcím:** L-0089.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`50b3124`) — varianta z návrhu rozšířená: podtržení na poslední SKUTEČNĚ důvěryhodné číslici i v celé části (plán po číslicích v `num_layout`, mez [1, celkem−1]). Přepisem do Node ověřeno, že v původním rozsahu je segmentace shodná (348 kombinací, `sim/2026-09-26_layout_check.js`). ⚠️ Důsledek: při 10 MHz s TDC 2,5 ns jsou všechny desetiny nejisté a podtržené jednotky Hz. ⬜ neověřeno na HW (vzhled: `fpgasim on 100000000`).
 
 ---
 
@@ -276,7 +276,7 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   s grafem), nebo naopak graf z plochého ringu; jeden zdroj.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0018.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`2a39f44`) — bod grafu ADEV τ = 1 s z `stats_adev(1)` (tentýž zdroj jako tabulka, karta a monitor), EDF z `s_y_count`. ⬜ neověřeno na HW.
 
 ---
 

@@ -3179,6 +3179,61 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0092 — Rozestup vzorků sedí, okno průměrování ne: okamžitý vzorek není průměr za τ0
+
+- **Datum:** 2026-09-26 (druhý průchod modulu 24, F-0171 / F-0172)
+- **Oblast:** statistika stability (`app_gpsdo_tick_stats_sample`, `stats_sample`),
+  datalog (`datalog.c sample`), rekonstrukce Allanovy pyramidy
+- **Symptom:** žádný viditelný — Allanova křivka vypadala věrohodně. Simulace
+  ukázala, že je 2× (bílý FM) až 23× (bílý PM) vysoko a že šum přístroje dostal
+  sklon bílého FM. První průchod auditu stejný kód prohlásil za „τ0 = 1 s
+  správně".
+- **Příčina:** FPGA dává ~4 měření/s po 0,25 s. Statistika brala 1×/s **poslední**
+  měření, datalog 1× za 10 s taky. Rozestup vzorků (1 s, 10 s) byl správně, ale
+  vzorek pokrýval jen 0,25 s — mrtvá doba 75 % a 97 %. ADEV/MDEV i rekonstrukce
+  předpokládají, že vzorek je **průměr za celé τ0**.
+- **Oprava:** FpgaTask sčítá cykly a hradla všech měření do akumulátoru každého
+  konzumenta; ten si vezme reciproký průměr `Σcykly/Σhradla` (`ace2939`).
+- **Pravidlo:** **U každého estimátoru s „τ0" ověř DVĚ věci: rozestup vzorků
+  a okno, přes které vzorek průměruje.** Vzorkování „vezmi poslední hodnotu"
+  z rychlejšího zdroje není průměr; mezi dvěma konzumenty téhož proudu dat
+  (1 s a 10 s) má každý dostat vlastní průměr, ne sdílený snímek.
+- **Detekce:** u každé statistiky se ptej: *kolik měření za τ0 dává zdroj a kolik
+  jich konzument použije?* Když méně než všechna, je tam mrtvá doba. Simulace
+  `docs/audit/sim/2026-09-26_mrtva_doba.js` jako vzor.
+- **Commit:** `ace2939`
+- **Stav:** aktivní
+
+---
+
+### L-0093 — Statistický test ověřený na nezávislých datech selže na datech, která doopravdy dostane
+
+- **Datum:** 2026-09-26 (druhý průchod modulu 24, F-0173)
+- **Oblast:** `mp_fit_significant` (t-test průkaznosti prokladu) + web `fitSig`
+- **Symptom:** oprava F-0169 (t-test místo pevného |r| ≥ 0,5) prošla pozitivní
+  kontrolou — na **bílém šumu** dávala správných 5 % falešných poplachů. Na
+  datech, která okno ANALÝZA skutečně prokládá (Vc a teplota z datalogu, pomalu
+  putující), ale hlásila falešný „průkazný drift" v 63–91 % případů, tedy hůř
+  než pravidlo, které nahradila.
+- **Příčina:** t-test předpokládá **nezávislá rezidua**. Autokorelovaná data nesou
+  méně nezávislé informace, než kolik mají bodů, takže df = n − 2 je přemrštěné.
+  Pozitivní kontrola byla postavená na datech, pro která test platí, ne na
+  datech, která dostane.
+- **Oprava:** df z efektivního počtu bodů n(1−ρ)/(1+ρ) podle lag-1 autokorelace
+  reziduí (`472ece6`); simulace: 7 % (AR) a 28 % (náhodná procházka) falešných,
+  skutečný drift dál detekovaný.
+- **Pravidlo:** **Pozitivní kontrolu statistické metody postav i na DATECH, KTERÁ
+  METODA V PŘÍSTROJI SKUTEČNĚ DOSTANE** (autokorelace, drift, mrtvá doba,
+  kvantizace), ne jen na ideálním bílém šumu. Předpoklady testu (nezávislost,
+  normalita, stacionarita) vypiš a u každého ověř, jestli ho vstup splňuje.
+- **Detekce:** simulace falešných poplachů pro bílý šum, AR(1) a náhodnou
+  procházku (`docs/audit/sim/2026-09-26_ttest_autokorelace.js`) — metoda smí
+  u šumu bez driftu hlásit „průkazné" jen blízko své hladiny.
+- **Commit:** `472ece6`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

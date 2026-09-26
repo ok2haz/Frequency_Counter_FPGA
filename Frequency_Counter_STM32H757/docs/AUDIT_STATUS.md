@@ -3,8 +3,26 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 — 🔴 **Modul 24, DRUHÝ PRŮCHOD (F3) —
-8 nových nálezů (1× S2, 3× S3, 4× S4), oprava NEproběhla.** Zápis →
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24, DRUHÝ
+PRŮCHOD — F5 hotová: opraveno 7 z 8 (skupiny A+B), F-0176 do C.** Rozhodnutí
+uživatele „a+b, u B tvoje doporučení". Commity: `ace2939` (F-0171/F-0172 —
+akumulátor Σcyklů/Σhradel pro statistiku i datalog, příznak `freq_avg` v bitu 63),
+`472ece6` (F-0173 — n_eff z autokorelace reziduí, firmware jedním průchodem +
+web), `50b3124` (F-0177 — podtržení i v celé části), `2a39f44` (F-0178),
+`937b5d6` (F-0174 web gate_ns, F-0175 Welch + periodický Hann na obou stranách).
+Každá oprava má pozitivní kontrolu (stará SPA / přepis 1:1 v Node selhal, nová
+prošla); simulace a kontroly v `docs/audit/sim/`. Ověření: build CM7+CM4 0
+varování, `audit.py` 92/0/2 (chytil 1× `-Wshadow` ještě před commitem),
+`check.py --build` vše OK (SPA_HTML 152 101 B), CM7 `.text` 618 856 B, CM4
+245 564 B. Lekce **L-0092** (rozestup × okno průměrování), **L-0093** (test
+ověřený na nezávislých datech). ⬜ **Neověřeno na HW** — sonda nepřipojená;
+F-0171/F-0172 se ukážou až s během FPGA (HYPOTÉZA: navazující okna FPGA).
+🔑 **Pokračovat zde:** HW průchod (TODO #254 + modul 24): flash OBOU bank,
+`selftest` 16/16, web DRIFT/NEJISTOTA/ℒ(f), `fpgasim on 100000000` → podtržení
+na desítkách Hz; F-0168 + F-0176 s reálnými daty z FPGA.
+
+**Předchozí, 2026-09-26 (druhý průchod F3):** 🔴 **Modul 24, DRUHÝ PRŮCHOD (F3) —
+8 nových nálezů (1× S2, 3× S3, 4× S4).** Zápis →
 [`audit/2026-09-26_matematika-mereni-2.md`](audit/2026-09-26_matematika-mereni-2.md),
 simulace v `docs/audit/sim/`. Tentokrát se ověřovaly PŘEDPOKLADY vzorců:
 🔴 **F-0171 [S2]** statistika displeje bere 1 měření 0,25 s za sekundu (mrtvá doba
@@ -16,8 +34,7 @@ rezidua — u autokorelovaných dat hlásí falešný drift v 63–91 % (moje do
 to zhoršilo; korekce n_eff → 7–28 %). **F-0174** web počítá nejistotu z nastavené
 brány (dvojče STATUS #83). S4: web ℒ(f) bez F-0161, GUM u rozlišení, vynucené
 podtržení desetin nad 7 MHz, σy(1 s) dvakrát v okně ALLAN.
-🔑 **Pokračovat zde:** triáž F5.0 nabídnuta uživateli (A: F-0174/0175/0178;
-B: F-0171+0172, F-0173, F-0177; C: F-0176 s F-0168).
+*(Triáž F5.0 proběhla týž den — viz záznam výše.)*
 
 **Předchozí, 2026-09-26 (konec F5/F6):** 🟡 **Modul 24 — F5
 hotová: opraveno 11 z 12 (skupiny A+B), F-0168 odložen do C.** Rozhodnutí
@@ -960,7 +977,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). 🔴 **2. průchod: 8 nových nálezů F-0171..F-0178, oprava NEproběhla** | 2026-09-26 | 0 | 2 | 10 | 9 | [13](audit/2026-09-26_matematika-mereni.md) + [8](audit/2026-09-26_matematika-mereni-2.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 7 z 8** (F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW) | 2026-09-26 | 0 | 2 | 10 | 9 | [13](audit/2026-09-26_matematika-mereni.md) + [8](audit/2026-09-26_matematika-mereni-2.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -1000,9 +1017,9 @@ sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
-| S2 | 2 | 22 | 0 |
-| S3 | 5 | 82 | 0 |
-| S4 | 7 | 47 | 0 |
+| S2 | 1 | 23 | 0 |
+| S3 | 2 | 85 | 0 |
+| S4 | 4 | 50 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -1023,8 +1040,9 @@ F-0158 (disciplinace LSE) opraveno 2026-09-26, obojí ⬜ neověřeno na HW.
 zůstává otevřený jako záznam, ne jako dluh).
 **S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168** (F-0154 a F-0168 skupina C;
 F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty z FPGA).
-**+ druhý průchod modulu 24 (2026-09-26, F3):** S2 **F-0171**, S3 **F-0172, F-0173,
-F-0174**, S4 **F-0175..F-0178** — viz [audit/2026-09-26_matematika-mereni-2.md](audit/2026-09-26_matematika-mereni-2.md).
+**+ F-0176** (druhý průchod modulu 24: GUM u rozlišení v rozpočtu nejistoty — skupina C,
+rozhoduje se spolu s F-0168). Ostatní nálezy druhého průchodu (F-0171..F-0175, F-0177,
+F-0178) opraveny 2026-09-26, ⬜ neověřeno na HW.
 
 **Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument

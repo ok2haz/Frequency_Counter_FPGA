@@ -777,6 +777,9 @@ bez toho by uživatel četl proklad šumu jako měření. Od 2026-09-26 rozhoduj
 **t-test korelace na 5 %** (`mp_fit_significant`), ne pevné |r| < 0,5 — práh
 závisí na počtu bodů (F-0169). Proklad akumuluje **centrovaně**: naivní součty
 u driftu kmitočtu v unix čase (x ~1,8e9, y ~1e7) dávaly r = 0 u dokonalé přímky.
+🔴 **df = ⌊n_eff⌋ − 2, n_eff = n(1−ρ)/(1+ρ)** z lag-1 autokorelace reziduí (F-0173):
+Vc a teplota putují pomalu a s df = n − 2 test hlásil falešný drift v 63–91 %.
+„Průkazné" = neodpovídá bílému ani slabě korelovanému šumu, NE prokázaný lineární drift.
 ⚠️ **Tempco funguje už dnes, bez FPGA** — teplota OCXO i Vc se logují od začátku.
 Datalog se čte **jedním průchodem pro obě osy** + decimace na ~200 bodů (0,2 s
 místo 9 s) a **jen při vstupu do okna**. Poslední řádek okna = **ℒ(f) fázový šum**
@@ -785,7 +788,9 @@ místo 9 s) a **jen při vstupu do okna**. Poslední řádek okna = **ℒ(f) fá
 **Fázový šum ℒ(f) (#45, `phase_noise.c/h`).** Pure-logic modul (Core): radix-2 FFT
 (64 bodů) + **odečet střední hodnoty + periodický Hann** nad ringem frakčních fluktuací
 `s_y[]` (1/s, tentýž, co plní Allan; bez odečtu prosakoval kmitočtový offset do nízkých
-binů, F-0161 — lineární trend se záměrně neodečítá, viz `pn_compute`) → jednostranné PSD `Sy(f)` → `Sφ(f)=(f0/f)²·Sy` → **`ℒ(f)=10·log10(Sφ/2)` [dBc/Hz]**.
+binů, F-0161 — lineární trend se záměrně neodečítá, viz `pn_compute`), **Welch 50 %**
+(2 segmenty při 120 vzorcích, F-0175; jeden periodogram má rozptyl ±5,6 dB, proto ANALÝZA
+ukazuje ℒ na celé dB) → jednostranné PSD `Sy(f)` → `Sφ(f)=(f0/f)²·Sy` → **`ℒ(f)=10·log10(Sφ/2)` [dBc/Hz]**.
 `screen_main_phase_noise(target_hz,…)` vrací ℒ na binu nejbližším offsetu (okno ANALÝZA
 ukazuje ~0,1 Hz). ⚠️ **fs≈1 Hz → Nyquist 0,5 Hz → jen NÍZKO-offsetové ℒ(f)** (f≈0,016..0,5 Hz);
 vyšší offsety (kHz–MHz) až s gap-free timestampingem z FPGA (#62) — tohle je základ, na kterém
@@ -833,7 +838,8 @@ kontextu by zatuhlo).
 
 **Rekonstrukce dlouhých τ ADEV z datalogu.** Restart dosud vynuloval pyramidu. ⚠️ Vzorek z logu
 se vkládá od **stage 1**, ne 0: stage 1 má τ = 10 s = přesně kadenci logu, takže převod je
-exaktní. Sypat log do stage 0 (τ0 = 1 s) by dalo σy(τ) špatně **o celý řád** a přitom věrohodně.
+exaktní — 🔴 **ale jen pro záznamy s `freq_avg = 1`** (průměr za periodu, F-0172); okamžitý
+vzorek 0,25 s (starší záznamy) by dal σy ~3× výš a rekonstrukce ho přeskakuje. Sypat log do stage 0 (τ0 = 1 s) by dalo σy(τ) špatně **o celý řád** a přitom věrohodně.
 ⚠️ **Trend pyramida se záměrně nerekonstruuje** (decimuje po 4, 10 s na žádnou stage nesedne).
 Běží po dávkách 20 záznamů/tik (~2 min na pozadí); přeskakuje `freq == 0` a `DATALOG_F_SIM`.
 
@@ -996,7 +1002,7 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   - ⚠️ **Převod `freq_x100000_to_lsb()` DĚLÍ, nenásobí**: `x100000 × 10^frac / 1e5` při ~4 GHz **přeteče uint64** (4e19 > 1,8e19). Dělení `10^(5−frac)` je exaktní a bez přetečení.
   - ⚠️ **Amplituda SIM fallbacku se počítá z `s_freq_frac`** (~0,05 Hz), ne pevně v LSB — jinak by při 5 desetinách (dřív 7) kmitala ±5 Hz a rozhýbala i celou část.
 
-  **Kadence statistiky = seq-driven** (`app_gpsdo_tick_stats_sample` vzorkuje jen na nové `g_freq_seq`; jinak by 1Hz tik nafoukl σy — jako web); **přechod REAL↔SIM i změna magnitudy resetují Allan/trend pyramidu** (nemíchat nekompatibilní vzorky). ⚠️ Plný redraw zóny (změna formátu / REAL↔SIM) **musí nejdřív naplnit číslice i shadow** — jinak se o snímek déle drží stará hodnota. 🔴 **`screen_main_redraw_freq_area()` čistí SJEDNOCENÍ s předchozí zónou** — číslo je vycentrované, takže při změně formátu se mění i jeho levý okraj; bez toho by po stranách zůstali „duchové" starých číslic (typicky i stará jednotka `Hz`), protože partial redraw už do té oblasti nikdy nesáhne. **Jednotka `Hz` se kreslí vždy** (`ui_big_number_render_tail` ji přidává na konec každého partial redrawu). ⚠️ **`s_freq_center`/`s_freq_nominal_hz` už NEjsou fixně 10 MHz** — `screen_main_freq_hz()` = `s_freq_n / 10^frac` (nezávislé na centru); pod 1 Hz je centrum rovno naměřené hodnotě (nulové by SIM stahovalo k nule). ⚠️ **Kolik číslic je nejistých už NENÍ natvrdo 2 (#51, 2026-08-28):** `freq_uncertain_frac()` odvozuje počet ztlumených desetin z **rozlišení hradla reciprokého čítače** (√2·tdc/gate, `FREQ_TDC_PS`=2500 — deterministické, NE simulace) → delší hradlo = víc důvěryhodných cifer. **SIM fallback (`gate_ns`==0) dává 2** (nezměněný vzhled), REAL/emulátor počítá z `gate_ns` rámce; sanitace na [1, frac−1] (aspoň 1 s modrým podtržením + aspoň 1 nejistá). Fade fontem se kreslí víc/míň desetin podle skutečné rozlišovací meze. ⚠️ **τ0 pyramidy pořád předpokládá ~1 s** (plně správný τ0=skutečný rozestup = MathTask #27). Test: `fpgasim on <hz>` → headline; `fpgasim on 32768`/`1400000000` → přeformátování; `fpgasim fault lost` → šedá; `fpgasim off` → SIM marker.
+  **Kadence statistiky = průměr všech měření za tik** (🔴 F-0171: `fpga_acc_take(FPGA_ACC_STATS)` — FpgaTask sčítá cykly a hradla každého měření; dřív se brala jen POSLEDNÍ 0,25s hodnota za sekundu = mrtvá doba 75 %, σy 2× až 23× vysoko; bez nového měření se nevzorkuje, jinak by držená hodnota σy snížila); **přechod REAL↔SIM i změna magnitudy resetují Allan/trend pyramidu** (nemíchat nekompatibilní vzorky). ⚠️ Plný redraw zóny (změna formátu / REAL↔SIM) **musí nejdřív naplnit číslice i shadow** — jinak se o snímek déle drží stará hodnota. 🔴 **`screen_main_redraw_freq_area()` čistí SJEDNOCENÍ s předchozí zónou** — číslo je vycentrované, takže při změně formátu se mění i jeho levý okraj; bez toho by po stranách zůstali „duchové" starých číslic (typicky i stará jednotka `Hz`), protože partial redraw už do té oblasti nikdy nesáhne. **Jednotka `Hz` se kreslí vždy** (`ui_big_number_render_tail` ji přidává na konec každého partial redrawu). ⚠️ **`s_freq_center`/`s_freq_nominal_hz` už NEjsou fixně 10 MHz** — `screen_main_freq_hz()` = `s_freq_n / 10^frac` (nezávislé na centru); pod 1 Hz je centrum rovno naměřené hodnotě (nulové by SIM stahovalo k nule). ⚠️ **Kolik číslic je nejistých už NENÍ natvrdo 2 (#51, 2026-08-28):** `freq_uncertain_frac()` odvozuje počet ztlumených desetin z **rozlišení hradla reciprokého čítače** (√2·tdc/gate, `FREQ_TDC_PS`=2500 — deterministické, NE simulace) → delší hradlo = víc důvěryhodných cifer. **SIM fallback (`gate_ns`==0) dává 2** (nezměněný vzhled), REAL/emulátor počítá z `gate_ns` rámce; sanitace na [1, celkem−1] — 🔴 od F-0177 smí nejistota zasáhnout i **celou část** a podtržení skončí na poslední skutečně důvěryhodné číslici (dřív byla vždy aspoň jedna desetina „důvěryhodná", i při rozlišení 1,4 Hz na 100 MHz). Fade fontem se kreslí víc/míň desetin podle skutečné rozlišovací meze. ⚠️ **τ0 pyramidy pořád předpokládá ~1 s** (plně správný τ0=skutečný rozestup = MathTask #27). Test: `fpgasim on <hz>` → headline; `fpgasim on 32768`/`1400000000` → přeformátování; `fpgasim fault lost` → šedá; `fpgasim off` → SIM marker.
 - **Signal bargraf = REÁLNÝ** (už ne simulace): RF vstupní výkon z **AD8307** log-detektoru přes ADS1115 **AIN1** (SensorsTask fast-path ~10 Hz). `app_gpsdo_tick_signal` převádí mV→dBm (`dBm = mV/AD8307_SLOPE_MV_DB + AD8307_INTERCEPT_DBM`, typ. 25 mV/dB, intercept −84 dBm), bargraf mapuje pásmo `RF_DBM_MIN..MAX` (−80..+10 dBm), text „−45.5 dBm". ⚠️ slope/intercept jsou datasheet-typické → přesná **kalibrace do CALIB store** (viz [[w25q-flash]]).
 
 ## 🟢 NOVÁ REVIZE DESKY (zadání 2026-08-30) — co se změní a co tím padá
@@ -1639,7 +1645,7 @@ se jednou založí znovu), vše zarovnané na 64 KB, deska je generická.
 DATA regionu zůstávají volné pro další bulk použití (fonty XIP, rekonstrukce Allan pyramidy). (Plný
 region = ~242 dní; dřív tu chybně stálo „~600".)
 - **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
-  `seq(0)`, `t_unix(4)`, `freq_x100000(8)`, `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
+  `seq(0)`, `t_unix(4)`, `freq_x100000(8)` (🔴 bit 63 = `freq_avg`: průměr všech měření za periodu, F-0172; staré záznamy 0 = okamžitý vzorek 0,25 s), `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
   `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
   - ⚠️ **`rf_mv(22)` jsou SYROVÉ mV, ne dBm** (přejmenováno z `rf_dbm10` 2026-08-18). Uložení
     v mV je záměr — kalibrace `g_calib.ad8307_*` se může změnit, syrová hodnota ne. Jenže staré
