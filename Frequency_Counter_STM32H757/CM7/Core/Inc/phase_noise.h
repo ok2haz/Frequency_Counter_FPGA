@@ -6,6 +6,12 @@
  * Vstup = casova rada frakcni odchylky y(t) = (f - f0)/f0 (to, co uz sbira
  * `screen_main` do sveho ringu, 1 vzorek/s). Postup (klasicke IEEE 1139 vztahy):
  *
+ *   0) odecet stredni hodnoty poslednich PN_NFFT vzorku a PERIODICKY Hann
+ *      w[i] = 0,5·(1 − cos(2πi/N)). y nese stejnosmernou slozku = kmitoctovy
+ *      offset oscilatoru vuci jmenovitemu f0; bez odectu a se symetrickym
+ *      Hannem (2πi/(N−1)) prosakovala do nizkych binu a L(f) meril offset,
+ *      ne sum (F-0161). Linearni trend se zamerne NEodecita — duvod je
+ *      v `pn_compute`.
  *   1) jednostranne PSD frakcni frekvence:  Sy(f_k) = 2·|Y_k|² / (fs·Σw²)
  *      (Y_k = DFT okenkovaneho y; Σw² = vykon okna; faktor 2 = jednostranne,
  *       mimo DC a Nyquist)
@@ -39,8 +45,8 @@ typedef struct {
 
 /**
  * Spocita L(f) pro biny k=1..N/2-1 z poslednich PN_NFFT vzorku `y`.
- * @param y       frakcni fluktuace y=(f-f0)/f0 (chronologicky; PSD je na poradi
- *                invariantni, ale okno se aplikuje na poslednich PN_NFFT)
+ * @param y       frakcni fluktuace y=(f-f0)/f0, CHRONOLOGICKY — na poradi zalezi
+ *                (permutace vzorku spektrum zmeni); pouzije se poslednich PN_NFFT
  * @param n       kolik vzorku v `y` je platnych
  * @param f0_hz   nosna [Hz] (>0)
  * @param fs_hz   vzorkovaci frekvence [Hz] (>0)
@@ -51,7 +57,8 @@ typedef struct {
 int pn_compute(const float *y, int n, double f0_hz, double fs_hz,
                pn_point_t *out, int max_pts);
 
-/* Pure-logic unit test (FFT korektnost + PSD normalizace + L(f) prevod). 1=PASS. */
+/* Pure-logic unit test (FFT korektnost + PSD normalizace + L(f) prevod + ton
+ * s velkym kmitoctovym offsetem, ktery nesmi prosaknout do nizkych binu). 1=PASS. */
 int pn_selftest(void);
 
 #ifdef __cplusplus

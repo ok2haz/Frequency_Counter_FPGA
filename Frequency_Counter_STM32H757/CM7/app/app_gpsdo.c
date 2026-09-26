@@ -4930,8 +4930,9 @@ static void app_gpsdo_render_wizard(void)
  *     obe veliciny se loguji od zacatku.
  *
  * ⚠️ U prokladu se vedle smernice VZDY ukazuje korelace r. Bez ni nepoznas,
- * jestli spoctena smernice neco znamena, nebo je to proklad sumu; |r| < 0,5
- * proto vypis oznaci jako neprukazny misto aby tiskl vabive cislo. */
+ * jestli spoctena smernice neco znamena, nebo je to proklad sumu; neprukazny
+ * proklad (t-test korelace na 5 %, `mp_fit_significant` — prah zavisi na poctu
+ * bodu) vypis oznaci misto aby tiskl vabive cislo. */
 static const prim_rect_t ANA_MEAS_BTN = {452, 417, 190, 61};   /* ANALYZA -> CITAC */
 
 /* Relativni hodnota -> citelna jednotka. Prispevky nejistoty se pohybuji pres
