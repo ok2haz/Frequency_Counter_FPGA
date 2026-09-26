@@ -3,7 +3,34 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-25 (konec sezení) — 🟡 **HW PRŮCHOD OPRAV
+**Poslední aktualizace:** 2026-09-26 — 🔴 **Modul 24 (matematické funkce měření,
+průřezový) — F3 zapsána, 12 nálezů (1× S2, 7× S3, 4× S4), fáze oprav
+NEproběhla.** Verdikt **podmíněně funkční**. Zápis →
+[`audit/2026-09-26_matematika-mereni.md`](audit/2026-09-26_matematika-mereni.md).
+Na žádost uživatele (audit + kontrola + optimalizace + komentáře); podle
+pravidel 3/4 nejdřív jen F3, opravy (F5) a komentáře (F6) až po triáži.
+🔴 **F-0158 [S2]** — disciplinace LSE **nekonverguje**: běžící průměr driftu se
+po zápisu korekce nenuluje (`rtc_lse_reset` volá jen UART), takže míchá okna
+z různých kalibrací. **Simulace přesně podle kódu:** zbytek osciluje −10…+6 ppm
+a neustálí se ani po 4 dnech; s nulováním průměru hned +0,46 ppm (kvantizační
+mez). Dopad v holdoveru; `RTC_CALR` přežije reset.
+Dál: **F-0159** ANALÝZA počítá U a počet číslic z hradla, které `mp_budget`
+tiše dosadí (1 s) — **živě, dokud neběží FPGA**; **F-0160** limitní tester
+propustí NaN jako PASS a NaN jde vyrobit třemi SCPI příkazy (SCPI formátovač
+je proti NaN ošetřený, UI dvojče ne — L-0012); **F-0161** ℒ(f) bez odečtu
+průměru a se symetrickým Hannem (únik DC do binu 6: −66,7 dB, periodický: 0;
+dnes maskováno TDC 2,5 ns, aktivní s novou deskou); **F-0162** survey hlásí
+rozptyl fixů jako „konvergenci"; **F-0163** díra v opravě F-0053 (`fmt_fixed`
+nehlídá `d = 0`, NaN, Inf); **F-0164** `fmt_frac` smyčka bez meze → +Inf
+zasekne UiTask; **F-0165** převod mV→dBm 8×, tři politiky. S4: off-by-one
+v overlapping estimátorech, přeceněný konfidenční pás, σy(1 s) vs hradlo
+v rozpočtu (HYPOTÉZA), naivní proklad.
+✅ Ověřeno a v pořádku: kadence 1 Hz (τ0 i `fs = 1.0` správně), mez přetečení
+hi-res dělení, vzorce SP1065, TDEV exaktní, Welford, datalog bez času se do
+prokladu nedostane.
+🔑 **Pokračovat zde:** triáž F5.0 nabídnuta uživateli.
+
+**Předchozí, 2026-09-25 (konec sezení):** 🟡 **HW PRŮCHOD OPRAV
 PŘERUŠEN na žádost uživatele, pokračování = `../STATUS.md` TODO #254.**
 Seznam **negenerovat** z `HW_OVERENI_AUDIT_2026-09-19.md` (zastaralý, 11 ze 46),
 ale **`python tools/hw_neovereno.py`** (nový nástroj; čte celé `Stav:` bloky
@@ -887,6 +914,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | 🔴 **nálezy zapsány (F3)** — fáze oprav NEproběhla | 2026-09-26 | 0 | 1 | 7 | 4 | [12](audit/2026-09-26_matematika-mereni.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
