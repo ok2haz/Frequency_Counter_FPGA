@@ -2781,6 +2781,20 @@ void UartTask_run(void *argument)
 					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
 					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
 					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
+					  	/* Bod 6: skutecne τ0 vzorku statistiky (Σ hradel za tik). Osa τ
+					  	 * i tabulky pocitaji s 1 s; tady je videt, o kolik se lisi.
+					  	 * Cte staticke floaty UiTasku bez zamku — roztrzene cteni je jen
+					  	 * kosmeticka chyba jednoho vypisu. */
+					  	if (full) {
+					  	  float tm = 0.0f, ts = 0.0f;
+					  	  uint32_t tn = screen_main_tau0(&tm, &ts);
+					  	  if (tn)
+					  	    printf("STATISTIKA: tau0 = %ld ms, kolisa %ld %% (%lu vzorku)\n",
+					  	           (long)(tm * 1000.0f + 0.5f), (long)(ts * 100.0f + 0.5f),
+					  	           (unsigned long)tn);
+					  	  else
+					  	    printf("STATISTIKA: tau0 = -- (zadny realny vzorek)\n");
+					  	}
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
 					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
 					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich

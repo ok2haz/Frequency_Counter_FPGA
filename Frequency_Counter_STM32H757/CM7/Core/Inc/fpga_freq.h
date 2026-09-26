@@ -116,9 +116,10 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
 
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
- *  průměr za okno od minulého odběru. @return počet měření v okně; 0 = žádné
- *  nové měření (pak `*hz` = 0). */
-uint32_t fpga_acc_take(int which, double *hz);
+ *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka
+ *  sečtených oken [s] — skutečné τ0 vzorku (bod 6). @return počet měření v okně;
+ *  0 = žádné nové měření (pak `*hz` = `*gate_s` = 0). */
+uint32_t fpga_acc_take(int which, double *hz, double *gate_s);
 
 /** Selftest hystereze volby zdroje na syntetickych ramcich (UART "selftest").
  *  Nemeni runtime stav. @return true = vsechny kroky OK. */

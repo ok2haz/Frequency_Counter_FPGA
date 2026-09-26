@@ -8351,15 +8351,15 @@ void app_gpsdo_tick_stats_sample(void)
      * ⚠️ Kdyz tik nebezel dele nez 1 s (blokujici render), vzorek pokryje delsi
      * okno; pri mereni pomalejsim nez 1/s zustava vzorku mene (τ0 = skutecny
      * rozestup je vec MathTasku, #27). */
-    double hz_acc = 0.0;
-    uint32_t n_acc = fpga_acc_take(FPGA_ACC_STATS, &hz_acc);
+    double hz_acc = 0.0, tau_acc = 0.0;
+    uint32_t n_acc = fpga_acc_take(FPGA_ACC_STATS, &hz_acc, &tau_acc);
     if (stats_seed_tick()) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
     if (g_freq_valid) {
         /* Zadne nove mereni od minuleho vzorku -> nic nepridavat (drzena hodnota
          * zapocitana vickrat by σy uměle snizila). */
         if (n_acc == 0u || !(hz_acc > 0.0)) return;
-        screen_main_stats_sample_hz(hz_acc);
+        screen_main_stats_sample_hz(hz_acc, tau_acc);
     } else {
         screen_main_stats_sample();          /* SIM fallback: kazdy tik (τ0 = 1 s) */
     }

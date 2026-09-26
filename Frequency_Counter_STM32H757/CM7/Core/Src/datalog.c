@@ -459,7 +459,7 @@ static void sample(datalog_rec_t *r)
      * zadne nove mereni nebylo (ztrata signalu), zustava okamzity vzorek vyse
      * a zaznam se oznaci `freq_avg = 0` — rekonstrukce ho pak nepouzije. */
     {   double hz = 0.0;
-        if (fpga_acc_take(FPGA_ACC_DATALOG, &hz) != 0u && hz > 0.0) {
+        if (fpga_acc_take(FPGA_ACC_DATALOG, &hz, NULL) != 0u && hz > 0.0) {
             r->freq_x100000 = (uint64_t)(hz * 1e5 + 0.5);
             r->freq_avg     = 1u;
         }
@@ -517,7 +517,7 @@ void datalog_tick(void)
 {
     /* F-0172: vypnuty log svuj akumulator mereni prubezne VYPRAZDNUJE — jinak by
      * prvni zaznam po zapnuti zprumeroval celou dobu vypnuti. */
-    if (!s_ready || !s_enabled) { (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL); return; }
+    if (!s_ready || !s_enabled) { (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL, NULL); return; }
     if ((int32_t)(HAL_GetTick() - s_next_ms) < 0) return;
     /* >> PLAN SE PRI VELKEM ZPOZDENI RESETUJE, NEDOHANI SE (audit F-0102).
      * `s_next_ms += perioda` je spravne pro male zpozdeni — drzi to kadenci bez
@@ -536,7 +536,7 @@ void datalog_tick(void)
             s_skipped++;
             /* F-0172: prumer by pokryl vic nez jednu periodu -> zahodit; zaznam
              * pak nese okamzity vzorek s `freq_avg = 0` a rekonstrukce ho vynecha. */
-            (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL);
+            (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL, NULL);
         }
     }
 

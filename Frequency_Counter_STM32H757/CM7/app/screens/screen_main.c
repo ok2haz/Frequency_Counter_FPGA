@@ -1206,6 +1206,8 @@ static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Al
 static void trend_feed(double v);   /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
+static float    s_tau0_mean = 0.0f, s_tau0_dev = 0.0f;   /* bod 6: skutecne τ0 vzorku */
+static uint32_t s_tau0_n = 0;
 
 /* ── JEDINY ZDROJ PRAVDY pro frakcni odchylku y = (f − f0) / f0 ───────────────
  * f0 = `s_freq_nominal_hz` = rad prave merene veliciny; 0 = jeste nezname
@@ -1499,6 +1501,7 @@ void screen_main_stats_reset(void)
     s_y_head = 0; s_y_count = 0;
     memset(s_adev, 0, sizeof s_adev);
     memset(s_tr, 0, sizeof s_tr);
+    s_tau0_mean = s_tau0_dev = 0.0f; s_tau0_n = 0;   /* bod 6 */
     s_stats_ver++;
     stats_anim_resync();
     trend_anim_resync();
@@ -2134,6 +2137,20 @@ static void allan_plot(prim_rect_t area, int big)
     }
 
     allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, 3, ymin, dec);
+    /* Bod 6: skutecne τ0 vzorku (Σ hradel) se od 1 s lisi -> osa τ i tabulka
+     * pocitaji s necim, co neplati. Prahy: prumer mimo ±2 %, kolisani nad 5 %;
+     * aspon 8 vzorku, at nevaruje prvni sekunda po startu. */
+    {   float t0m, t0s;
+        if (big && show_floor && screen_main_tau0(&t0m, &t0s) >= 8u
+            && (fabsf(t0m - 1.0f) > 0.02f || t0s > 0.05f)) {
+            int c = (int)(t0m * 100.0f + 0.5f), pc = (int)(t0s * 100.0f + 0.5f);
+            char wb[64];
+            snprintf(wb, sizeof wb, "! τ0 %d,%02d s (kolisa %d %%) - osa τ pocita s 1 s",
+                     c / 100, c % 100, pc);
+            prim_draw_text((prim_point_t){(int16_t)(in.x + 4), (int16_t)(in.y + 14)}, wb,
+                           &ui_font_sans_14, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+        }
+    }
     if (show_floor && big)                           /* legenda jen ve velkem okne */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w - 4), (int16_t)(in.y + 14)},
                        "- - podlaha citace (TDC)", &ui_font_sans_14, UI_COLOR_INK_3,
@@ -3091,11 +3108,38 @@ void screen_main_stats_sample(void)
     stats_sample();
 }
 
-/* F-0171: realne mereni — vzorek je PRUMER vsech mereni za posledni sekundu
- * (`fpga_acc_take`), ne jedno 0,25s mereni. */
-void screen_main_stats_sample_hz(double hz)
+/* ── τ0 ze skutecne delky oken (bod 6, 2026-09-26) ─────────────────────────────
+ * Pyramida i vsechny popisky τ predpokladaji τ0 = 1 s. Vzorek je ale soucet oken
+ * mereni za tik (F-0171) a jeho delka se da ZMERIT (Σ hradel). Normalne 4 × 0,25 s
+ * = 1,000 s. Odchylky: (a) pod ~100 Hz se okno kazdeho mereni protahuje az o
+ * periodu signalu, pod ~1 Hz je delsi nez 1 s; (b) 1Hz tik se opozduje o latenci
+ * smycky UiTasku, takze obcas pobere o mereni vic (1,25 s). Tady se to jen MERI
+ * a hlasi (okno ALLAN, UART `status full`) — osa τ se neprepocitava; poctivy
+ * prepocet by chtel vzorkovat po POCTU mereni, ne po case (TODO #27).
+ * Prumer a relativni kolisani = EMA (α = 1/16) delky a |odchylky| vzorku. */
+/* (s_tau0_* jsou definovane u s_stats_ver — potrebuje je i reset) */
+
+uint32_t screen_main_tau0(float *mean_s, float *spread)
+{
+    if (mean_s) *mean_s = s_tau0_mean;
+    if (spread) *spread = s_tau0_dev;
+    return s_tau0_n;
+}
+
+/* F-0171: realne mereni — vzorek je PRUMER vsech mereni za posledni tik
+ * (`fpga_acc_take`), ne jedno 0,25s mereni. `tau_s` = soucet jejich oken. */
+void screen_main_stats_sample_hz(double hz, double tau_s)
 {
     stats_push(screen_main_frac_dev(hz));
+    if (tau_s > 0.0) {
+        float t = (float)tau_s;
+        if (s_tau0_n == 0u) { s_tau0_mean = t; s_tau0_dev = 0.0f; }
+        else {
+            s_tau0_mean += (t - s_tau0_mean) / 16.0f;
+            s_tau0_dev  += (fabsf(t - s_tau0_mean) / s_tau0_mean - s_tau0_dev) / 16.0f;
+        }
+        s_tau0_n++;
+    }
 }
 
 /* Zive prekresleni trend + offset/sigma (lehke; volat ~1x/s). Vrati 1. */

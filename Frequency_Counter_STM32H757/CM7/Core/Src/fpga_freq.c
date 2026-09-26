@@ -581,9 +581,10 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     __set_PRIMASK(pm);
 }
 
-uint32_t fpga_acc_take(int which, double *hz)
+uint32_t fpga_acc_take(int which, double *hz, double *gate_s)
 {
     if (hz) *hz = 0.0;
+    if (gate_s) *gate_s = 0.0;
     if (which < 0 || which >= FPGA_ACC_N) return 0u;
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
@@ -593,6 +594,7 @@ uint32_t fpga_acc_take(int which, double *hz)
     /* f = (cyc_e5 · 1e-5) / (gate_ns · 1e-9) = cyc_e5 · 1e4 / gate_ns */
     if (hz && a.n != 0u && a.gate_ns != 0u)
         *hz = (double)a.cyc_e5 * 1e4 / (double)a.gate_ns;
+    if (gate_s) *gate_s = (double)a.gate_ns * 1e-9;
     return a.n;
 }
 
