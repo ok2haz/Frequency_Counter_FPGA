@@ -1539,10 +1539,17 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
 {
     static const char *const SUP[10] = {"⁰","¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"};
     float a = fabsf(v);
+    /* 🔴 F-0164: +Inf by horni normalizacni smycku NIKDY neukoncil
+     * (`Inf / 10 = Inf`) — UiTask by se zasekl uprostred kresleni a watchdog by
+     * desku resetoval (`stall:UiTask`). NaN by smycky preskocil a skoncil
+     * `(int)NaN` = UB. Forma `!(a < FLT_MAX)` chyti obe. Dnes je `y` vzdy
+     * konecne (`screen_main_frac_dev` hlida f0 > 0), takze jde o pojistku
+     * proti budoucimu zdroji vzorku, ne o zivou vadu. */
+    if (!(a < 3.0e38f)) { snprintf(buf, len, "--"); return; }
     if (a < 1e-15f) { snprintf(buf, len, "0"); return; }
     int e = 0;
     while (a < 1.0f && e < 30) { a *= 10.0f; e++; }   /* hodnoty <1 -> e>0 (10⁻e) */
-    while (a >= 10.0f) { a /= 10.0f; e--; }
+    while (a >= 10.0f && e > -40) { a /= 10.0f; e--; } /* mez jako dolni smycka (L-0030) */
     int M = (int)a;
     int m = (int)((a - (float)M) * 10.0f + 0.5f);
     if (m >= 10) { m = 0; M++; }

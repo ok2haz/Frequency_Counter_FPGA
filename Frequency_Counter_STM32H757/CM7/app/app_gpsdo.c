@@ -449,6 +449,23 @@ static void fmt_fixed(char *buf, size_t n, float v, int decimals)
      * Pouziva se `float` porovnani proti bezpecne mezi (2e9 < INT32_MAX), aby
      * se samo porovnani nepocitalo v pretecenem int. */
     float av = (v < 0.0f) ? -v : v;
+    /* 🔴 F-0163: smycka nize bezi `while (d > 0)`, takze pripad `d = 0` NIKDY
+     * neotestovala — pro |v| >= 2,15e9 skoncila na d = 0 a `fixed_split`
+     * udelal `(int32_t)(v + 0.5)` = PRETECENI (UB). NaN a Inf prosly taky
+     * (`NaN * scale < 2e9f` je nepravda -> d kleslo na 0). A kdyz byl `decimals`
+     * od zacatku 0, `s_fmt_clamped` se nezvedl — presne ta ticha vada, kvuli
+     * ktere pocitadlo vzniklo (L-0017, oprava F-0053 vynucovala mez jen napul).
+     * Forma `!(av < 2e9f)` chyti NaN, +-Inf i prilis velke konecne cislo. */
+    if (!(av < 2.0e9f)) {
+        s_fmt_clamped++;
+        snprintf(buf, n, "--");
+        return;
+    }
+    /* ⚠️ Mez 2e9 hlida jen PRETECENI int32, ne PRESNOST. Vstup je `float`
+     * (24bitova mantisa), takze nad `|v| · 10^d ≈ 2^24 = 1,68e7` ma `v * scale`
+     * krok vetsi nez 1 a posledni vytistene cislice uz v datech nejsou. Dnesni
+     * volajici (teploty, napeti v mV, dBm, ppm) jsou hluboko pod tim; kdo sem
+     * posle vetsi hodnotu s desetinami, musi pouzit `fmt_sdec` (double). */
     while (d > 0) {
         float scale = 1.0f;
         for (int i = 0; i < d; i++) scale *= 10.0f;
@@ -2064,9 +2081,15 @@ static const prim_rect_t MATH_BTN_ALRM = {460, 346, 200, 64};
  * 5 desetin jako headline). Zaporne (po NULL) se znamenkem. */
 static void fmt_hz(double v, char *out, size_t n)
 {
+    /* 🔴 F-0160: NaN projde `a >= 4.2e9` (porovnani s NaN je vzdy nepravda)
+     * a `(uint32_t)NaN` je UB — na Cortex-M7 `VCVT` da 0, takze se tiskla
+     * VEROHODNA „0.00000 Hz". NaN je dosazitelne pres SCPI (viz
+     * `meas_limit_eval`). SCPI dvojce `fmt_scpi_hz_d` to melo osetrene
+     * odjakziva; tahle kopie ne (L-0012). */
+    if (v != v) { snprintf(out, n, "-- Hz"); return; }
     const char *sgn = (v < 0.0) ? "-" : "";
     double a = (v < 0.0) ? -v : v;
-    if (a >= 4.2e9) { snprintf(out, n, "%s>4G Hz", sgn); return; }   /* uint32 strop */
+    if (a >= 4.2e9) { snprintf(out, n, "%s>4G Hz", sgn); return; }   /* uint32 strop (i +-Inf) */
     uint32_t whole = (uint32_t)a;
     uint32_t frac  = (uint32_t)((a - (double)whole) * 100000.0 + 0.5);
     if (frac >= 100000u) { whole++; frac -= 100000u; }
@@ -2082,6 +2105,9 @@ static void fmt_hz(double v, char *out, size_t n)
  * `dec` se sanituje na 0..5, |v| nad 4,2e9 (strop unsigned long) se zkrati. */
 static void fmt_sdec(char *out, size_t n, double v, int dec)
 {
+    /* F-0160: NaN by proslo mezi `a >= 4.2e9` a skoncilo `(unsigned long)NaN` = UB
+     * (viz `fmt_hz` o par radku vyse — stejna vada, stejna oprava). */
+    if (v != v) { snprintf(out, n, "--"); return; }
     const char *sgn = (v < 0.0) ? "-" : "+";
     double a = (v < 0.0) ? -v : v;
     if (dec < 0) dec = 0;
