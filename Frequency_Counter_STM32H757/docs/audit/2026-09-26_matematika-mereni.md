@@ -502,6 +502,10 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   hodnotu jen při nové `g_freq_seq`. Při FPGA ~4 měření/s je tedy **τ0 = 1 s
   správně** a `fs = 1.0` v `screen_main_phase_noise` taky. Neplatí jen pro
   měření pomalejší než 1/s — to kód i `CLAUDE.md` poctivě přiznávají (TODO #27).
+  🔴 **OPRAVA (druhý průchod, týž den): tenhle závěr je CHYBNÝ.** Rozestup 1 s
+  sedí, ale vzorek je jediné měření s hradlem 0,25 s — mrtvá doba 75 %, σy
+  2× až 23× vysoko. Viz **F-0171** v
+  [`2026-09-26_matematika-mereni-2.md`](2026-09-26_matematika-mereni-2.md).
 - **Hi-res dlouhé dělení** (`screen_main.c:742-769`): mez přetečení
   `edges × mul × 1e9` **existuje** v `fpga_freq_hires_mul` (`fpga_freq.c:527`,
   `edges > 4e9 / MUL` → přeskočit) a škáluje se s násobitelem, takže přežije
