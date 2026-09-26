@@ -8,7 +8,8 @@ vzorky statistiky se skládají PODLE POČTU měření** ve FpgaTasku (fronta ho
 ne podle 1s tiku UiTasku (ten se opožďoval o latenci smyčky). Rozptyl délky vzorků
 3,5 % → 0,00 % při 10 MHz, 9,8 % → 1,4 % při 40 Hz (simulace v `docs/audit/sim/`).
 Doplněk k F-0171 a k L-0092. Build CM7 0 varování, `audit.py` 92/0/2, `.text` 622 984 B.
-⬜ Neověřeno na HW. Zbývá #27 část 2 (osa τ podle změřeného τ0 při nízkých f) a bod 5.
+⬜ Neověřeno na HW. **#27 část 2 hotová** (osa τ a popisky tabulky podle změřeného τ0).
+Zbývá bod 5 (přesné MTIE/TIE ze `sdram_log`) — až s běžícím FPGA.
 
 **Předchozí, 2026-09-26:** 🟡 **Modul 24 — bod 6: skutečné τ0
 vzorku (`a5ddf9d`).** Levná varianta: τ0 = součet oken měření za tik se MĚŘÍ, okno ALLAN

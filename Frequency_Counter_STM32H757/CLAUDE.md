@@ -769,8 +769,9 @@ takže |y| < 1/f, a `float` při 10 kHz smazal šum (ADEV vyšla vysoko nebo 0).
 `float` smí být jen při kreslení a vždy RELATIVNĚ k referenci.
 **Skutečné τ0 vzorku** (bod 6, `a5ddf9d`; od `d0a02e5` se vzorky skládají podle počtu měření,
 takže kolísání z latence tiku zmizelo): vzorek statistiky = součet oken jeho měření,
-jeho délka se měří (`fpga_acc_take` → `gate_s`). Osa τ se NEpřepočítává (počítá s 1 s),
-ale okno ALLAN varuje při τ0 mimo ±2 % nebo kolísání > 5 % a UART `status full` vypíše
+jeho délka se měří (`fpga_stat_pop` → `tau_s`). Od #27 části 2 se osa τ i popisky tabulky
+PŘEPOČÍTÁVAJÍ podle průměrného τ0 (`tau0_scale`, jen reálné měření); okno ALLAN pak jen
+informuje, VARUJE při kolísání > 5 % a UART `status full` vypíše
 `STATISTIKA: tau0 = … ms, kolisa … %`. Odchylky: pod ~100 Hz protažená okna, pod ~1 Hz
 okno > 1 s, a 1Hz tik UiTasku (~1,01 s) občas pobere 5 měření místo 4. Poctivý přepočet
 = vzorkovat po POČTU měření (TODO #27).
