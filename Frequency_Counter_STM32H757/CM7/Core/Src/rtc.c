@@ -382,7 +382,14 @@ static uint32_t s_lse_ref_tick;          /* HAL_GetTick reference */
 static float    s_lse_ppm_last = 0.0f;
 static float    s_lse_ppm_avg  = 0.0f;
 static uint32_t s_lse_n        = 0;
-static float    s_lse_cal_ppm  = 0.0f;   /* co je zapsane v RTC_CALR */
+/* Co je zapsane v RTC_CALR [ppm]. 🔴 F-0158: `RTC_CALR` zije v backup domene
+ * a PREZIJE reset, tahle promenna v RAM ne — do 2026-09-26 startovala na 0,
+ * takze prvni korekce po kazdem resetu pocitala `avg - 0`, i kdyz uz v registru
+ * nejaka korekce byla. U spravne zkalibrovaneho krystalu (prumer ≈ 0) tim
+ * SPRAVNOU kalibraci odstranila. Proto se pri prvnim vzorku nacte z registru
+ * (`s_lse_cal_loaded`, viz `rtc_lse_cal_from_reg`). */
+static float    s_lse_cal_ppm  = 0.0f;
+static uint8_t  s_lse_cal_loaded = 0;
 static uint32_t s_lse_cal_ms   = 0;      /* kdy se naposled psalo */
 
 float    rtc_lse_ppm(void)       { return s_lse_ppm_avg; }
@@ -445,13 +452,44 @@ static void rtc_lse_apply_calib(float drift_ppm)
         s_lse_cal_ppm = ((calp == RTC_SMOOTHCALIB_PLUSPULSES_SET ? 512.0f : 0.0f)
                          - (float)units) * 0.95367432f;
         s_lse_cal_ms  = HAL_GetTick();
+        /* 🔴 F-0158: s novou korekci ZACINA NOVA EPOCHA MERENI. Do 2026-09-26 se
+         * tady prumer nenuloval, takze pak michal okna namerena pod starou
+         * kalibraci (merila `D + C_old`) s okny pod novou (`D + C_new`), a vzorec
+         * `avg - s_lse_cal_ppm` v `rtc_lse_sample` odecetl jen tu NOVOU. Simulace
+         * presne podle kodu (drift +10 ppm): zbytek osciloval -10..+6 ppm a
+         * neustalil se ani po 4 dnech; s nulovanim hned +0,46 ppm = kvantizacni
+         * mez kroku 0,9537 ppm. Stejny princip jako u ADEV/trend pyramidy: nemichat
+         * vzorky z nesoumeritelnych rezimu.
+         * ⚠️ Nuluje se i fazova reference: novy `RTC_CALR` se uplatni az od
+         * dalsiho 32s cyklu, takze prvni okno po zapisu obsahuje nejvys 32 s
+         * stare kalibrace (<= 7 % 480s okna) — prijatelne, drift je pomala
+         * velicina. Dalsi korekce prijde nejdriv za LSE_TRUST_WINDOWS oken. */
+        s_lse_n = 0;
+        s_lse_ppm_avg = 0.0f;
+        s_lse_have_ref = 0;
     }
+}
+
+/* Nacte skutecnou hodnotu `RTC_CALR` do `s_lse_cal_ppm` (F-0158). Vola se jednou,
+ * z `rtc_lse_sample` (defaultTask — jediny task, ktery smi sahat na RTC). Bere
+ * jen 32s periodu (CALW8/CALW16 = 0), kterou tenhle modul zapisuje; jine
+ * nastaveni by spocital spatne, proto ho nechava na 0. */
+static void rtc_lse_cal_from_reg(void)
+{
+    uint32_t calr = RTC->CALR;
+    if ((calr & (RTC_CALR_CALW8 | RTC_CALR_CALW16)) == 0u) {
+        float calp = (calr & RTC_CALR_CALP) ? 512.0f : 0.0f;
+        float calm = (float)(calr & RTC_CALR_CALM);
+        s_lse_cal_ppm = (calp - calm) * 0.95367432f;
+    }
+    s_lse_cal_loaded = 1;
 }
 
 /* Vzorkovac driftu — vola se na KAZDEM pruchodu rtc_app_tick (tj. tempem
  * defaultTasku, ne 1x/s), aby se hrana GPS sekundy zachytila co nejdriv. */
 static void rtc_lse_sample(void)
 {
+    if (!s_lse_cal_loaded) rtc_lse_cal_from_reg();   /* F-0158: CALR prezil reset */
     gps_data_t g;
     gps_get(&g);
     if (!gps_time_sane(&g)) { s_lse_sec_prev = 0xFFu; return; }
@@ -483,7 +521,11 @@ static void rtc_lse_sample(void)
      * casty prepis CALR by menil takt pod rukama prave beziciho mereni. */
     if (s_lse_n >= LSE_TRUST_WINDOWS &&
         (s_lse_cal_ms == 0 || (now - s_lse_cal_ms) >= LSE_CALIB_MIN_MS)) {
-        /* Korekce se SKLADA: CALR uz nejakou drzi a prumer meri drift PO ni. */
+        /* Korekce se SKLADA: CALR uz nejakou drzi a prumer meri drift PO ni.
+         * ⚠️ Plati to jen diky dvema vecem z F-0158: prumer se po kazdem zapisu
+         * nuluje (obsahuje tedy jen okna pod AKTUALNI kalibraci) a `s_lse_cal_ppm`
+         * se po resetu nacte z registru (jinak by po kazdem resetu platilo
+         * `avg - 0`). Bez obou by vzorec michal epochy. */
         rtc_lse_apply_calib(s_lse_ppm_avg - s_lse_cal_ppm);
     }
 }
