@@ -37,6 +37,7 @@ extern "C" {
  * fs/N ≈ 0,0156 Hz. Vic (128) by chtelo delsi naplneny ring (STAT_N=120). */
 #define PN_NFFT   64
 #define PN_NBINS  (PN_NFFT / 2 - 1)   /* pouzitelne biny k=1..N/2-1 (bez DC a Nyquistu) */
+#define PN_MAX_SEG 8                  /* F-0175: strop segmentu Welchova prumeru (50% prekryv) */
 
 typedef struct {
     double f_hz;     /* offset od nosne [Hz] */
@@ -46,7 +47,9 @@ typedef struct {
 /**
  * Spocita L(f) pro biny k=1..N/2-1 z poslednich PN_NFFT vzorku `y`.
  * @param y       frakcni fluktuace y=(f-f0)/f0, CHRONOLOGICKY — na poradi zalezi
- *                (permutace vzorku spektrum zmeni); pouzije se poslednich PN_NFFT
+ *                (permutace vzorku spektrum zmeni). Welch: prumer periodogramu
+ *                segmentu po PN_NFFT s 50% prekryvem od nejnovejsiho dozadu
+ *                (nejvys PN_MAX_SEG; F-0175), kazdy s vlastnim odectem prumeru
  * @param n       kolik vzorku v `y` je platnych
  * @param f0_hz   nosna [Hz] (>0)
  * @param fs_hz   vzorkovaci frekvence [Hz] (>0)

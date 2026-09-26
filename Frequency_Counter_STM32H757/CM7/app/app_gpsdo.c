@@ -5157,7 +5157,9 @@ static void app_gpsdo_render_analyza(void)
     { double lf, ff;
       if (screen_main_phase_noise(0.1, &ff, &lf)) {
           char lb[16], fb[12];
-          fmt_fixed(lb, sizeof lb, (float)lf, 1);
+          /* F-0175: na CELE dB — i Welchuv prumer 2 segmentu ma rozptyl
+           * odhadu jednotky dB, desetina by predstirala presnost. */
+          fmt_fixed(lb, sizeof lb, (float)lf, 0);
           fmt_fixed(fb, sizeof fb, (float)ff, 2);
           snprintf(b, sizeof b, "%s dBc/Hz @ %s Hz", lb, fb);
       } else snprintf(b, sizeof b, "-- (potrebuje ~64 s dat)");

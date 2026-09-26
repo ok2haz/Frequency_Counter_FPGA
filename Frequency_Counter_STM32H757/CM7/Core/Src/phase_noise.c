@@ -49,50 +49,63 @@ int pn_compute(const float *y, int n, double f0_hz, double fs_hz,
     if (n < PN_NFFT || f0_hz <= 0.0 || fs_hz <= 0.0) return 0;
 
     double re[PN_NFFT], im[PN_NFFT];
-    int off = n - PN_NFFT;
 
-    /* 🔴 F-0161: ODECET STREDNI HODNOTY pred oknem.
-     * `y = (f - f0)/f0`, kde f0 je JMENOVITY kmitocet, takze `y` nese
-     * stejnosmernou slozku = kmitoctovy offset oscilatoru. Ta neni fazovy sum —
-     * a pres okno prosakne do nizkych binu. Do 2026-09-26 se neodecitala:
-     * u symetrickeho Hanna vychazel unik DC do binu 6 (0,094 Hz, ten co ukazuje
-     * okno ANALYZA) -66,7 dB, do binu 1 -5,8 dB. Dnes to maskuje rozliseni TDC
-     * 2,5 ns; s novou deskou (~22 ps) by L(f) vysel o 10-30 dB horsi a meril by
-     * offset, ne sum.
-     * ⚠️ ZAMERNE JEN PRUMER, NE LINEARNI TREND. Zkouseno a zamitnuto pozitivni
-     * kontrolou: ton s celym poctem period ma nenulovou projekci na rampu
-     * (Σ(i-i_c)·cos = -N/2), takze proklad primkou z tonu kus "ukousne" a
-     * vyrobi vlastni artefakt — v testu bin 1 jen -14,9 dB pod spickou tonu.
-     * A skutecny drift je v 64s okne zanedbatelny: starnuti OCXO ~1e-10/den dava
-     * ~7e-14 na okno. Kdyby se nekdy merilo neco s rychlou rampou, patri to do
-     * samostatneho, zdokumentovaneho kroku, ne sem potichu. */
-    double ym = 0.0;
-    for (int i = 0; i < PN_NFFT; i++) ym += (double)y[off + i];
-    ym /= (double)PN_NFFT;
-
-    /* Hannovo okno na POSLEDNICH PN_NFFT vzorcich (potlaci leakage; bez nej by
-     * jedna spicka rozmazala cely spektralni odhad). Σw² = vykon okna pro
-     * spravnou normalizaci PSD.
-     * ⚠️ PERIODICKY Hann (`2πi/N`), NE symetricky (`2πi/(N-1)`): symetricky je
-     * na navrh filtru, pro spektralni odhad ma DFT s unikem i daleko od DC
-     * (F-0161). Periodicky ma jen 3 nenulove DFT koeficienty, takze za binem 1
-     * je unik presne nulovy. */
+    /* F-0175: WELCH — prumer periodogramu segmentu po PN_NFFT s 50% prekryvem,
+     * od nejnovejsiho dozadu. Do 2026-09-26 se bral JEDINY periodogram poslednich
+     * 64 vzorku: jeho odhad ma chi^2 se 2 stupni volnosti, tedy rozptyl ~+-5,6 dB,
+     * a okno ANALYZA ho tisklo na 0,1 dB. Web prumeroval segmenty -> dve cisla.
+     * Pri STAT_N = 120 vzorcich vyjdou 2 segmenty (offset n-64 a n-96).
+     * Mezisoucet vykonu se drzi primo v `out[].l_dbc` (zadny dalsi zasobnik —
+     * pn_selftest bezi i na defaultTasku se 2560 B). */
+    int nb = PN_NFFT / 2 - 1;
+    if (nb > max_pts) nb = max_pts;
+    for (int k = 0; k < nb; k++) out[k].l_dbc = 0.0;
+    int nseg = 0;
     double wpow = 0.0;
-    for (int i = 0; i < PN_NFFT; i++) {
-        double w = 0.5 * (1.0 - cos(2.0 * M_PI * (double)i / (double)PN_NFFT));
-        double d = (double)y[off + i] - ym;
-        re[i] = w * d;
-        im[i] = 0.0;
-        wpow += w * w;
+    for (int off = n - PN_NFFT; off >= 0 && nseg < PN_MAX_SEG; off -= PN_NFFT / 2) {
+        /* 🔴 F-0161: ODECET STREDNI HODNOTY pred oknem.
+         * `y = (f - f0)/f0`, kde f0 je JMENOVITY kmitocet, takze `y` nese
+         * stejnosmernou slozku = kmitoctovy offset oscilatoru. Ta neni fazovy sum —
+         * a pres okno prosakne do nizkych binu. Do 2026-09-26 se neodecitala:
+         * u symetrickeho Hanna vychazel unik DC do binu 6 (0,094 Hz, ten co ukazuje
+         * okno ANALYZA) -66,7 dB, do binu 1 -5,8 dB. Dnes to maskuje rozliseni TDC
+         * 2,5 ns; s novou deskou (~22 ps) by L(f) vysel o 10-30 dB horsi a meril by
+         * offset, ne sum.
+         * ⚠️ ZAMERNE JEN PRUMER, NE LINEARNI TREND. Zkouseno a zamitnuto pozitivni
+         * kontrolou: ton s celym poctem period ma nenulovou projekci na rampu
+         * (Σ(i-i_c)·cos = -N/2), takze proklad primkou z tonu kus "ukousne" a
+         * vyrobi vlastni artefakt — v testu bin 1 jen -14,9 dB pod spickou tonu.
+         * A skutecny drift je v 64s okne zanedbatelny: starnuti OCXO ~1e-10/den dava
+         * ~7e-14 na okno. Kdyby se nekdy merilo neco s rychlou rampou, patri to do
+         * samostatneho, zdokumentovaneho kroku, ne sem potichu. */
+        double ym = 0.0;
+        for (int i = 0; i < PN_NFFT; i++) ym += (double)y[off + i];
+        ym /= (double)PN_NFFT;
+
+        /* Hannovo okno na kazdem segmentu (potlaci leakage; bez nej by
+         * jedna spicka rozmazala cely spektralni odhad). Σw² = vykon okna pro
+         * spravnou normalizaci PSD.
+         * ⚠️ PERIODICKY Hann (`2πi/N`), NE symetricky (`2πi/(N-1)`): symetricky je
+         * na navrh filtru, pro spektralni odhad ma DFT s unikem i daleko od DC
+         * (F-0161). Periodicky ma jen 3 nenulove DFT koeficienty, takze za binem 1
+         * je unik presne nulovy. */
+        wpow = 0.0;
+        for (int i = 0; i < PN_NFFT; i++) {
+            double w = 0.5 * (1.0 - cos(2.0 * M_PI * (double)i / (double)PN_NFFT));
+            re[i] = w * ((double)y[off + i] - ym);
+            im[i] = 0.0;
+            wpow += w * w;
+        }
+        pn_fft(re, im, PN_NFFT);
+        for (int k = 1; k <= nb; k++) out[k - 1].l_dbc += re[k] * re[k] + im[k] * im[k];
+        nseg++;
     }
 
-    pn_fft(re, im, PN_NFFT);
-
-    /* Jednostranne PSD frakcni frekvence a prevod na L(f). */
-    double norm = 2.0 / (fs_hz * wpow);          /* jednostranne (mimo DC/Nyquist) */
+    /* Jednostranne PSD frakcni frekvence (prumer pres segmenty) a prevod na L(f). */
+    double norm = 2.0 / (fs_hz * wpow * (double)nseg);   /* jednostranne (mimo DC/Nyquist) */
     int m = 0;
-    for (int k = 1; k < PN_NFFT / 2 && m < max_pts; k++) {
-        double p    = re[k] * re[k] + im[k] * im[k];
+    for (int k = 1; k <= nb; k++) {
+        double p    = out[k - 1].l_dbc;          /* soucet vykonu pres segmenty */
         double sy   = norm * p;                  /* Sy(f_k) [1/Hz] */
         double fk   = (double)k * fs_hz / (double)PN_NFFT;
         double sphi = (f0_hz / fk) * (f0_hz / fk) * sy;   /* Sφ = (f0/f)²·Sy */
@@ -168,6 +181,18 @@ int pn_selftest(void)
     if (np3 != np) return 0;
     if (fabs(pts3[k0 - 1].l_dbc - pts[k0 - 1].l_dbc) > 0.1) return 0;   /* (a) */
     if (pts3[0].l_dbc > pts3[k0 - 1].l_dbc - 20.0) return 0;            /* (b) */
+
+    /* (6) F-0175: Welch opravdu prumeruje i STARSI segment. 96 vzorku, ton jen
+     * v prvnich 32 (patri pouze do segmentu na offsetu 0), zbytek nuly. Stary
+     * kod bral jen poslednich 64 (same nuly) -> -400 dB vsude; novy zapocte oba
+     * segmenty (offset 32 a 0) -> na binu tonu nenulovy vykon. */
+    {   static float y6[PN_NFFT + PN_NFFT / 2];
+        for (int i = 0; i < PN_NFFT + PN_NFFT / 2; i++)
+            y6[i] = (i < PN_NFFT / 2) ? y[i] : 0.0f;
+        int np6 = pn_compute(y6, PN_NFFT + PN_NFFT / 2, 1e7, 1.0, pts3, PN_NBINS);
+        if (np6 != np) return 0;
+        if (!(pts3[k0 - 1].l_dbc > -300.0)) return 0;
+    }
 
     return 1;
 }

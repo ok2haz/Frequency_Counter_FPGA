@@ -37,7 +37,11 @@ function ref(hz, gate, tdc_ps, sigma, ref_ppb) {
 }
 
 const TDC = 2500, PPB = 1.0;               /* MP_TDC_PS / MP_REF_PPB */
-const state = { freq_hz: 10e6, set_gate_s: 1, tdc_ps: TDC, ref_ppb_x10: PPB * 10 };
+/* F-0174: rozpocet bere SKUTECNE hradlo `gate_ns`; `set_gate_s` = 100 je tu
+ * schvalne, aby test ukazal, ze se NASTAVENI ignoruje (STATUS #83). */
+const state = { freq_hz: 10e6, gate_ns: 1e9, set_gate_s: 100, tdc_ps: TDC, ref_ppb_x10: PPB * 10 };
+let bad = 0;
+function check(c, m) { console.log((c ? '   ok     ' : '   CHYBA  ') + m); if (!c) bad++; }
 
 console.log('--- sigmaAtTau: vybira nejblizsi tau v LOG mire ---');
 api.setAdev([{ tau: 1, sig: 1e-11 }, { tau: 10, sig: 4e-12 }, { tau: 100, sig: 2e-12 }]);
@@ -54,11 +58,12 @@ console.log('   uHead   =', el('uHead').textContent, ' ocekavano', r.hz_U.toExpo
 console.log('   stUnc   =', el('stUnc').textContent, ' ocekavano', r.U.toExponential(2) + ' rel');
 const txt = el('tUnc').innerHTML.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 console.log('   tabulka =', txt.slice(0, 150));
-console.log('   shoda U :', el('stUnc').textContent === r.U.toExponential(2) + ' rel');
+check(el('stUnc').textContent === r.U.toExponential(2) + ' rel',
+      'U z gate_ns = 1 s (set_gate_s = 100 se ignoruje)');
 
 console.log('\n--- delsi hradlo musi nejistotu SNIZIT (u_res ~ 1/gate) ---');
 for (const g of [0.1, 1, 10, 100]) {
-  api.setState(Object.assign({}, state, { set_gate_s: g }));
+  api.setState(Object.assign({}, state, { gate_ns: g * 1e9 }));
   api.draw();
   console.log('   gate=%-5s U=%s  (%s)', g, el('stUnc').textContent, el('uWarn').textContent.slice(0, 46));
 }
@@ -67,5 +72,10 @@ console.log('\n--- degradace ---');
 api.setState(null);            api.draw(); console.log('   bez dat        -> uHead=', el('uHead').textContent);
 api.setState({ freq_hz: null, tdc_ps: TDC }); api.draw(); console.log('   freq null      -> uHead=', el('uHead').textContent);
 api.setState({ freq_hz: 10e6 });              api.draw(); console.log('   chybi tdc_ps   -> uHead=', el('uHead').textContent);
+api.setState(Object.assign({}, state, { gate_ns: null })); api.draw();
+check(el('uHead').textContent === '--', 'nezname hradlo -> "--", ne dosazena 1 s (F-0174)');
+api.setState(Object.assign({}, state, { gate_ns: 0 })); api.draw();
+check(el('uHead').textContent === '--', 'gate_ns = 0 -> "--"');
 api.setAdev(null); api.setState(state);       api.draw();
 console.log('   bez ADEV       -> U=', el('stUnc').textContent, '|', el('uWarn').textContent.slice(-42));
+console.log(bad ? ('CHYBA: ' + bad) : 'vse OK'); process.exitCode = bad ? 1 : 0;

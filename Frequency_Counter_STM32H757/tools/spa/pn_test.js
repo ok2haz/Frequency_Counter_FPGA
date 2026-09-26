@@ -92,11 +92,11 @@ console.log('  Sy zmerene = ' + syAvg.toExponential(3)
             + '  teorie 2*sigma^2/fs = ' + syWant.toExponential(3));
 ok('normalizace do 10 %', relN < 0.10, 'odchylka ' + (relN * 100).toFixed(1) + ' %');
 
-/* --- (6) Bartlett: vic segmentu = TYZ grid, mensi rozptyl ---------------- */
-console.log('\n--- Bartlett (prumerovani segmentu) ---');
+/* --- (6) Welch (F-0175, 50% prekryv): vic segmentu = TYZ grid, mensi rozptyl */
+console.log('\n--- Welch (prumerovani segmentu, 50% prekryv) ---');
 const r1 = api.comp(w.slice(w.length - api.N), F0, FS);
 const rK = api.comp(w, F0, FS);
-ok('segmentu = floor(n/N)', rK.segs === 32, rK.segs);
+ok('segmentu = min(32, (n-N)/(N/2)+1)', rK.segs === 32, rK.segs);
 let sameGrid = r1.pts.length === rK.pts.length;
 for (let i = 0; i < r1.pts.length && sameGrid; i++)
   if (r1.pts[i].f !== rK.pts[i].f) sameGrid = false;
@@ -127,6 +127,24 @@ ok('segmentu shora omezeno na 32', api.comp(huge, F0, FS).segs === 32);
 const z = api.comp(new Array(api.N).fill(0), F0, FS);
 ok('nulovy vstup -> -400 dB, zadne NaN',
    z.pts.length > 0 && z.pts.every(p => p.l === -400));
+
+/* --- (9) F-0175: tytez pripady jako pn_selftest (5) a (6) v phase_noise.c --
+ * (5) ton + VELKY kmitoctovy offset (50x nad tonem): spicka se nezmeni a
+ *     nejnizsi bin zustane hluboko pod ni — stary web (symetricky Hann, bez
+ *     odectu prumeru segmentu) daval bin 1 NAD spickou.
+ * (6) 96 vzorku, ton jen v prvnich 32: Welch musi zapocitat i starsi segment
+ *     (offset 0); stary Bartlett vzal jen poslednich 64 = same nuly. */
+console.log('\n--- F-0175: offset a starsi segment (= pn_selftest 5, 6) ---');
+const yo = y.map(v => v + 1e-7);
+const ro = api.comp(yo, 1e7, 1);
+ok('offset: spicka tonu beze zmeny (0,1 dB)', Math.abs(ro.pts[k0 - 1].l - r.pts[k0 - 1].l) < 0.1,
+   (ro.pts[k0 - 1].l - r.pts[k0 - 1].l).toFixed(3) + ' dB');
+ok('offset: bin 1 aspon 20 dB pod spickou', ro.pts[0].l <= ro.pts[k0 - 1].l - 20,
+   (ro.pts[0].l - ro.pts[k0 - 1].l).toFixed(1) + ' dB');
+const y6 = []; for (let i = 0; i < api.N + api.N / 2; i++) y6.push(i < api.N / 2 ? y[i] : 0);
+const r6 = api.comp(y6, 1e7, 1);
+ok('Welch zapocte i starsi segment (2 segmenty)', r6.segs === 2 && r6.pts[k0 - 1].l > -300,
+   'segs=' + r6.segs + ' L=' + (r6.pts.length ? r6.pts[k0 - 1].l.toFixed(1) : '-'));
 
 console.log('\n' + (fail ? 'SELHALO kontrol: ' + fail : 'vse OK'));
 process.exit(fail ? 1 : 0);
