@@ -93,7 +93,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   (komentář „průměr měří drift PO ní" popisuje obranu, kterou kód nedělá),
   **L-0069** (periodický plán — příbuzné: stav akumulátoru musí odpovídat
   režimu, ve kterém vznikl).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`c387409`) — po úspěšném zápisu `RTC_CALR` se nuluje `s_lse_n`, `s_lse_ppm_avg` i fázová reference. **Navíc sourozenec nalezený při opravě:** `s_lse_cal_ppm` startoval po resetu na 0, přestože `RTC_CALR` žije v backup doméně a reset přežije → první korekce po každém resetu odstranila správnou kalibraci; `rtc_lse_cal_from_reg()` ji teď načte z registru při prvním vzorku. **Odchylka od návrhu:** na další 32s cyklus po zápisu se nečeká — první okno může ≤ 32 s běžet pod starou hodnotou (≤ 7 % okna 480 s) a chyba se rozpustí v běžícím průměru. ⬜ neověřeno na HW (smyčka se ustaluje hodiny).
 
 ---
 
@@ -130,7 +130,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Vztah k lekcím:** **L-0012** (oprava řádku rozlišení se nepřenesla na dva
   sousední řádky téhož okna), **L-0028** (komentář slibuje, že to rozpočet
   přizná), **L-0018** (tentýž údaj ve dvou formátech).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`8c79ced`) — čistší varianta z návrhu: `mp_budget_t.valid`; řádky Nejistota U, Platných cifer, Rozlišení i podílové proužky se řídí tímtéž příznakem; hradlo v řádku cifer na 3 desetiny; zastaralý komentář opraven. ⬜ neověřeno na HW.
 
 ---
 
@@ -170,7 +170,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Vztah k lekcím:** **L-0012** (NaN ošetření v SCPI formátovači se
   nepřeneslo na UI dvojče), **L-0034** (konverze `double`→int mimo rozsah je
   UB, ne oříznutí), **L-0016**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`479d7d1`) — (a) a (b) podle návrhu; NaN dává `MEAS_LO`, ne nový verdikt (konzumenti berou selhání jako `LO || HI` a jediný zapomenutý by NaN propustil); `meas_math_selftest` případ 6 vyrobí NaN přesně cestou zvenku. **(c) odmítání nekonečných hodnot na vstupu NEPROVEDENO** — fail-safe vyhodnocení a formátovače to pokrývají; zůstává jako možné zpřísnění. ⬜ neověřeno na HW.
 
 ---
 
@@ -211,7 +211,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   o rozdíl ENBW obou oken (~0,07 dB).
 - **Vztah k lekcím:** **L-0039** (pozitivní kontrola musí obsahovat vadu, kvůli
   které vznikla — selftest DC nemá), **L-0011**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`35d3453`) — odečet střední hodnoty + periodický Hann + selftest případ 5 (tón + offset 50× nad tónem). **Odchylka od návrhu:** odečet lineárního trendu zkoušen a ZAMÍTNUT pozitivní kontrolou — tón s celým počtem period má nenulovou projekci na rampu (Σ(i−ī)·cos = −N/2), proklad z něj ukousne a vyrobí vlastní artefakt (bin 1 jen −14,9 dB pod špičkou); drift OCXO je v 64s okně zanedbatelný. ⬜ neověřeno na HW.
 
 ---
 
@@ -240,7 +240,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Riziko opravy:** nízké (zobrazení), ale mění význam uložené hodnoty.
 - **Vztah k lekcím:** **L-0031** (tatáž funkce už jednou tvrdila přesnost,
   kterou vstup nenesl), **L-0028**, **L-0011**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`038288c`) — varianta (b), rozhodnutí uživatele: popisek „Rozptyl fixu:“ neutrální barvou, vysvětlivka „s N neklesá“, z hlavičky karty pryč „konvergence 1PPS“, komentáře opraveny. `σ/√N_eff` se nezobrazuje (autokorelace fixů v minutách až hodinách). Uložená hodnota v syscfg je tatáž, jen s pravdivým významem. ⬜ neověřeno na HW.
 
 ---
 
@@ -275,7 +275,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Vztah k lekcím:** **L-0064** (právě „druhá mez na hodnotě" — tady
   vynucená jen napůl), **L-0034** (UB konverze), **L-0017** (tichý přeskok
   bez počítadla), **L-0031** (datový typ je taky mez).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`479d7d1`) — podle návrhu (`!(av < 2e9f)` → „--“ a počítadlo i pro `d = 0`); mez přesnosti 2²⁴ jen zdokumentovaná, ne vynucená. ⬜ neověřeno na HW.
 
 ---
 
@@ -300,7 +300,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Riziko opravy:** nulové pro konečné vstupy.
 - **Vztah k lekcím:** **L-0030** (počet iterací nesmí záviset na vstupu bez
   meze), **L-0004**, **L-0034**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`479d7d1`) — `!(a < 3e38f)` → „--“ (chytí NaN i +Inf bez `isfinite`) a mez `e > −40` jako u dolní smyčky. ⬜ neověřeno na HW.
 
 ---
 
@@ -337,7 +337,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   layout IPC se nemění).
 - **Vztah k lekcím:** **L-0018** (dvě pravdy čekající, až se rozejdou — tady
   osm, už rozejité), **L-0020**, **L-0012**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`2f9c015`) — jedna funkce `mp_ad8307_dbm()` (`static inline` v `meas_present.h`, aby ji viděla i CM4, kde se `meas_present.c` nepřekládá), politika „nevím“ (rozhodnutí uživatele), všech 8 míst na obou jádrech. `MMEM:DATA?` při neplatné strmosti nově `9.91E37` místo dosazených 25 mV/dB. `calib_load` odmítne pár strmost/průsečík mimo 1..1000 mV/dB nebo s NaN a nechá datasheetové výchozí. ⬜ neověřeno na HW.
 
 ---
 
@@ -365,7 +365,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Riziko opravy:** nízké — zobrazené σ se změní jen v rámci statistické
   nejistoty.
 - **Vztah k lekcím:** **L-0028** (komentář s vzorcem vs kód).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`32efe36`) — meze smyček podle vzorců; ověřeno proti nezávislé referenci SP1065 z fázových dat (shoda na 7 číslic i v počtu členů pro m = 1/2/5). **Odchylka od návrhu:** vstupní meze ponechány na `M ≥ 2m+1` / `3m+1` (ne `2m`/`3m`), aby se při rozběhu neobjevil bod z jediného členu. ⬜ neověřeno na HW.
 
 ---
 
@@ -394,7 +394,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   rozumný konzervativní výchozí bod, ale typ šumu je volba.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **L-0018**, **L-0011**, **L-0028**.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`32efe36`) — (B) EDF pro overlapping ADEV, bílý FM (SP1065), rozhodnutí uživatele; pro MDEV/HDEV aproximace, řečeno v komentáři. **(A) vyřešeno jinak:** estimátor počet členů nevrací — pás se z počtu členů nepočítá vůbec (EDF jen z M a m), takže druhý výpočet zmizel úplně. ⬜ neověřeno na HW.
 
 ---
 
@@ -419,7 +419,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Riziko opravy:** —
 - **Vztah k lekcím:** **L-0036** (veličiny musí mít souměřitelnou časovou
   základnu), **L-0011**.
-- **Stav:** otevřeno.
+- **Stav:** odloženo 2026-09-26 (skupina C) — metrologickou definici rozpočtu (nejistota odečtu vs. nestabilita měřeného) nemá smysl rozhodovat, dokud headline žene simulace a FPGA neběží (STATUS #2). Okno ANALÝZA zobrazuje **rozklad** složek, takže čtenář vidí, z čeho se U skládá. Otevřít spolu s reálnými daty z FPGA.
 
 ---
 
@@ -445,7 +445,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
   `r·√(n−2)/√(1−r²)`) — skupina B.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** **L-0031** (datový typ a numerika jako mez).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`8c79ced`, `7f29799`) — (1) centrovaná akumulace podle návrhu, (2) t-test `mp_fit_significant` (rozhodnutí uživatele). `7f29799` opravuje `-Wshadow` v novém selftestu — chytil ho až `tools/audit.py`, ne build. ⬜ neověřeno na HW.
 
 ---
 

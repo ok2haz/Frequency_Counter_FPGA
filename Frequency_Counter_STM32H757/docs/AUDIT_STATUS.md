@@ -3,9 +3,31 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-26 — 🔴 **Modul 24 (matematické funkce měření,
-průřezový) — F3 zapsána, 12 nálezů (1× S2, 7× S3, 4× S4), fáze oprav
-NEproběhla.** Verdikt **podmíněně funkční**. Zápis →
+**Poslední aktualizace:** 2026-09-26 (konec sezení) — 🟡 **Modul 24 — F5
+hotová: opraveno 11 z 12 (skupiny A+B), F-0168 odložen do C.** Rozhodnutí
+uživatele „a+b, u B tvoje doporučení": F-0162 varianta (b), F-0165 politika
+„nevím", F-0167 EDF bílý FM (SP1065), F-0169 t-test.
+Commity: `c387409` (F-0158 + sourozenec: `RTC_CALR` se po resetu nečetl),
+`35d3453` (F-0161; odečet trendu **zamítnut pozitivní kontrolou**),
+`479d7d1` (F-0160/0163/0164), `32efe36` (F-0166/0167), `8c79ced` (F-0159/0169),
+`2f9c015` (F-0165, 8 míst na obou jádrech + kontrola v `calib_load`),
+`038288c` (F-0162), `7f29799` (`-Wshadow` z vlastní opravy F-0169 — chytil ho
+až `audit.py`, L-0090).
+Ověření: build CM7+CM4 0 varování, `audit.py` **92 / 0 / 2**, CM7 `.text`
+615 184 → 616 272 B, CM4 242 692 → 242 700 B; `audit_stav.py --kontrola` OK.
+Lekce **L-0086 až L-0090**.
+⬜ **Neověřeno na HW** — ladicí sonda nebyla připojená (`No debug probe
+detected`), takže ani flash, ani `selftest` na desce. Až bude: flashnout
+**obě banky** (mění se i CM4 — `httpd_min.c`), `selftest` → 16/16 PASS
+(nové případy v `pn_selftest`, `meas_math_selftest`, `mp_selftest`), okno
+ANALÝZA bez FPGA musí ukazovat „-- (bez mereni)", SELF-SURVEY „Rozptyl fixu:"
+neutrálně. Disciplinace LSE se ověřuje **hodiny** (12 oken po 10 min).
+🔑 **Pokračovat zde:** F6 (komentáře) pro modul 24 — zbývá revize hlavičky
+`phase_noise.h` a popisu survey/fázového šumu v `CLAUDE.md`; pak HW průchod
+(TODO #254 + tento modul).
+
+**Předchozí, 2026-09-26 (F3):** 🔴 **Modul 24 (matematické funkce měření,
+průřezový) — F3 zapsána, 12 nálezů (1× S2, 7× S3, 4× S4).** Verdikt **podmíněně funkční**. Zápis →
 [`audit/2026-09-26_matematika-mereni.md`](audit/2026-09-26_matematika-mereni.md).
 Na žádost uživatele (audit + kontrola + optimalizace + komentáře); podle
 pravidel 3/4 nejdřív jen F3, opravy (F5) a komentáře (F6) až po triáži.
@@ -28,7 +50,7 @@ v rozpočtu (HYPOTÉZA), naivní proklad.
 ✅ Ověřeno a v pořádku: kadence 1 Hz (τ0 i `fs = 1.0` správně), mez přetečení
 hi-res dělení, vzorce SP1065, TDEV exaktní, Welford, datalog bez času se do
 prokladu nedostane.
-🔑 **Pokračovat zde:** triáž F5.0 nabídnuta uživateli.
+*(Triáž F5.0 proběhla týž den — viz záznam výše.)*
 
 **Předchozí, 2026-09-25 (konec sezení):** 🟡 **HW PRŮCHOD OPRAV
 PŘERUŠEN na žádost uživatele, pokračování = `../STATUS.md` TODO #254.**
@@ -914,7 +936,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | 🔴 **nálezy zapsány (F3)** — fáze oprav NEproběhla | 2026-09-26 | 0 | 1 | 7 | 4 | [12](audit/2026-09-26_matematika-mereni.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **opraveno 11 z 12** (A+B, F-0168 [S4] odložen do C; ⬜ neověřeno na HW, deska bez sondy) | 2026-09-26 | 0 | 1 | 7 | 4 | [12](audit/2026-09-26_matematika-mereni.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -946,22 +968,23 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 ## Souhrn nálezů
 
-🔴 **Srovnáno 2026-09-24** — tabulka i poznámka pod ní byly zastaralé (psané
-před koly oprav 2026-09-17..20), skript `tools/audit_stav.py --kontrola`
-sám hlásil rozpor proti nálezovým dokumentům. Čísla níže jsou jeho výstup
-(139 nálezů celkem, `celkem` řádek):
+🔴 **Srovnáno 2026-09-26** (po F5 modulu 24) — čísla níže jsou výstup
+`tools/audit_stav.py` (162 nálezů celkem). Tabulka byla rozjetá už před tímto
+sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147
+(mezitím opraveny `docs:`) se do ní nepropsaly.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
-| S2 | 0 | 21 | 0 |
-| S3 | 1 | 72 | 0 |
-| S4 | 4 | 37 | 0 |
+| S2 | 1 | 22 | 0 |
+| S3 | 2 | 82 | 0 |
+| S4 | 3 | 46 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
-zahrnuje i **částečně** opravené — dnes jediná: **F-0061** [S4] mDNS responder (4 drobné
-odchylky od RFC 6762, žádná paměťově nebezpečná).
+zahrnuje i **částečně** opravené — dnes dvě: **F-0026** [S2] (závod vytažení karty
+během zápisu čeká na souhlas uživatele s HW testem, `../STATUS.md` TODO #254) a
+**F-0061** [S4] mDNS responder (4 drobné odchylky od RFC 6762, žádná paměťově nebezpečná).
 ✅ **S1 nově BEZ otevřených (aktualizováno 2026-09-24) — F-0055 ověřen na HW.**
 UART `selftest` deterministicky přetékal zásobník UartTasku a shazoval desku
 (změřeno 2×, `WATCHDOG! stack:UartTask`). Po flashi aktuálního HEAD + SW resetu
@@ -969,12 +992,13 @@ UART `selftest` deterministicky přetékal zásobník UartTasku a shazoval desku
 resetu**, `status`/`stats` ukázaly `stack Uart free 6360 B` (bylo 168 B), ověřeno
 2× (uptime 46 s a znovu 88 s). ⬜ Zbývá jen fyzický power-cyklus (formalita —
 vada byla vlastností běžícího programu, ne cold-boot závodu).
-✅ **S2 nově BEZ otevřených — F-0148 opraveno 2026-09-25** (⬜ jen neověřeno
-na HW, deska momentálně nedostupná).
-**S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen).
-**S4 „Otevřené" = F-0144 + F-0145 + F-0147** (F-0144/F-0145 tato session,
-skupina C; F-0147 nepřesný komentář u `d2d_wait()`, taky skupina C —
-všechny tři jen `docs:` dluh).
+**S2 „Otevřené" = jen F-0026 (částečně)** — F-0148 opraveno 2026-09-25,
+F-0158 (disciplinace LSE) opraveno 2026-09-26, obojí ⬜ neověřeno na HW.
+**S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
+**+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
+zůstává otevřený jako záznam, ne jako dluh).
+**S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168** (F-0154 a F-0168 skupina C;
+F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty z FPGA).
 
 **Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument

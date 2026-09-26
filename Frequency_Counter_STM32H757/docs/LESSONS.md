@@ -3001,6 +3001,151 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0086 — Běžící průměr regulační smyčky přežil vlastní akční zásah; a stav z backup domény se po resetu předpokládal nulový
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0158)
+- **Oblast:** `rtc.c` — disciplinace LSE podle GPS (`rtc_lse_*`, `RTC_CALR`)
+- **Symptom:** žádný viditelný — smyčka „běžela“, korekce se zapisovaly. Teprve
+  simulace přesně podle aritmetiky kódu ukázala, že při driftu +10 ppm zbytek
+  osciluje −10..+6 ppm a **neustálí se ani po 4 dnech**.
+- **Příčina:** (1) běžící průměr driftu se po zápisu korekce **nenuloval**, takže
+  míchal okna naměřená pod starou kalibrací s okny pod novou, a vzorec
+  `avg − cal` odečetl jen tu novou. (2) Sourozenec: `s_lse_cal_ppm` startoval po
+  resetu na 0 s komentářem „co je zapsané v `RTC_CALR`“ — jenže `RTC_CALR` žije
+  v backup doméně a reset přežije. První korekce po každém resetu tak u správně
+  zkalibrovaného krystalu **správnou kalibraci odstranila**.
+- **Oprava:** po úspěšném `HAL_RTCEx_SetSmoothCalib` nulovat průměr, počet
+  i fázovou referenci; `rtc_lse_cal_from_reg()` načte `RTC_CALR` při prvním
+  vzorku (`rtc.c`, `USER CODE BEGIN 1`).
+- **Pravidlo:** **Estimátor, jehož vstup mění vlastní korekce, začíná po každé
+  korekci novou epochu.** A **stav, který v HW přežije reset (backup doména,
+  option bytes, externí čip), se po resetu čte zpět z HW** — nikdy se
+  nepředpokládá výchozí hodnota proměnné v RAM.
+- **Detekce:** u každé smyčky s akumulátorem se ptej: *nuluje ho akční zásah?*
+  U každé proměnné, jejíž komentář odkazuje na registr, najdi řádek, kde se ten
+  registr **čte** (L-0028). Chování smyčky ověř simulací její aritmetiky, ne
+  čtením — zde by čtení vadu nenašlo.
+- **Commit:** `c387409`
+- **Stav:** aktivní
+
+---
+
+### L-0087 — Porovnání s mezí je pro NaN vždy nepravdivé, takže mez NaN propustí; ošetření existovalo, jen u dvojčete
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0160 / F-0163 / F-0164)
+- **Oblast:** `meas_math.c` (limitní tester), formátovače `fmt_hz`/`fmt_sdec`/
+  `fmt_fixed` (`app_gpsdo.c`), `fmt_frac` (`screen_main.c`)
+- **Symptom:** limitní tester vyhodnotil NaN jako **PASS** — a NaN je dosažitelné
+  třemi SCPI příkazy (`CALC:MATH:M 1E308` → `+Inf`, `CALC:NULL:ACQ` → `Inf − Inf`).
+  Formátovače tiskly pro NaN věrohodnou nulu (`(uint32_t)NaN` je UB, M7 `VCVT`
+  dá 0) a `fmt_frac` se pro `+Inf` zasekl v normalizační smyčce → IWDG.
+- **Příčina:** `if (y < lo) FAIL; if (y > hi) FAIL; PASS` — pro NaN jsou obě
+  porovnání nepravdivá, takže tok spadne do „dobré“ větve. Tatáž mez u formátovače
+  (`if (a >= 4.2e9) …`) NaN nechytí a přetypování za ní je UB. SCPI dvojče
+  `fmt_scpi_hz_d` to přitom mělo vzorově ošetřené (L-0012).
+- **Oprava:** negovaná porovnání `if (!(y >= lo)) …` (pro NaN pravdivá) a meze
+  formátovačů ve tvaru `if (!(a < MEZ)) → "--"`; horní normalizační smyčka dostala
+  mez iterací (L-0030).
+- **Pravidlo:** **Každá mez, za kterou následuje verdikt nebo přetypování, se píše
+  tak, aby NaN padlo do BEZPEČNÉ větve** — tedy `!(x >= lo)` / `!(x < MEZ)`, ne
+  `x < lo` / `x >= MEZ`. „Chybí-li hodnota, projde“ je u testeru i formátovače
+  nejhorší možný výsledek. ⚠️ Platí jen bez `-ffast-math` (ověřeno: projekt ho
+  nemá); s ním smí překladač NaN porovnání vyoptimalizovat.
+- **Detekce:** selftest, který NaN vyrobí **cestou zvenku** (ne dosazením), a pro
+  každou mez před `(int)`/`(uint32_t)` nad `float`/`double` otázka „co udělá NaN?“.
+- **Commit:** `479d7d1`
+- **Stav:** aktivní
+
+---
+
+### L-0088 — Estimátor se ověřuje nezávislou referencí, ne komentářem u téže smyčky; a „vylepšení“ se přijímá až po pozitivní kontrole
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0161 / F-0166 / F-0167)
+- **Oblast:** `screen_main.c` (overlapping ADEV/HDEV/MDEV, konfidenční pás),
+  `phase_noise.c` (ℒ(f))
+- **Symptom:** všechny tři overlapping estimátory končily smyčku o člen dřív, než
+  povoluje vzorec NIST SP1065 **uvedený v komentáři přímo nad smyčkou**; odhady
+  byly nezkreslené, jen na dlouhých τ bez 7–10 % členů. Konfidenční pás počítal
+  počet členů **druhým vzorcem** vedle estimátoru (u HDEV už nesouhlasil o +1)
+  a overlapping členy bral jako nezávislé → pás ~1,5× užší. ℒ(f) měřil kmitočtový
+  offset místo šumu (symetrický Hann bez odečtu střední hodnoty).
+- **Příčina:** vzorec v komentáři a smyčka pod ním vypadají jako shoda, dokud se
+  nedosadí konkrétní indexy — a nikdo je nedosadil. A oprava ℒ(f) podle návrhu
+  (odečíst i lineární trend) by **vyrobila vlastní artefakt**: tón s celým počtem
+  period má nenulovou projekci na rampu, takže proklad z něj ukousne (bin 1 jen
+  −14,9 dB pod špičkou). Chytila to až pozitivní kontrola na hostu.
+- **Oprava:** meze smyček podle vzorců; pás z EDF (bílý FM, SP1065) místo počtu
+  členů; ℒ(f) jen odečet střední hodnoty + periodický Hann; detrend zamítnut.
+- **Pravidlo:** **Statistický estimátor ověř proti NEZÁVISLÉ implementaci** (jiný
+  algoritmus — tady SP1065 z fázových dat — na hostu, shoda na počet členů i na
+  číslice), ne proti komentáři u téže smyčky. **Každé „vylepšení“ numerické metody
+  prožeň pozitivní kontrolou dřív, než ho zapíšeš** — i když ho navrhl nález:
+  návrh je hypotéza, ne specifikace.
+- **Detekce:** u každého estimátoru dosaď do meze smyčky konkrétní `M`, `m`
+  a spočítej členy ručně; nový selftest musí na STARÉM kódu selhat
+  (přepis 1:1 na hostu včetně zaokrouhlení na `float`).
+- **Commit:** `35d3453`, `32efe36`
+- **Stav:** aktivní
+
+---
+
+### L-0089 — Popisek a barva tvrdily vlastnost, kterou veličina nemá
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0159 / F-0162)
+- **Oblast:** `app_gpsdo.c` — okno ANALÝZA (rozpočet nejistoty), okno SELF-SURVEY
+- **Symptom:** okno ANALÝZA ukazovalo „Nejistotu U“ a „Platných cifer“ spočítané
+  z hradla, které si `mp_budget` při neznámém hradle **dosadil (1 s)** — živě, na
+  dnešní desce bez FPGA; řádek rozlišení vedle přitom poctivě ukazoval „--“.
+  SELF-SURVEY barvil „Rozptyl H“ zeleně pod 2 m s popisem „klesá s N“ — jenže
+  šlo o směrodatnou odchylku jednotlivých fixů, která s N **neklesá**. Barva
+  závisela na místě, ne na délce průzkumu.
+- **Příčina:** výpočet byl správný, **nesprávné bylo to, co o něm říkalo UI**.
+  Dosazená hodnota nenesla žádný příznak, takže volající nemohl poznat, že čte
+  vymyšlený vstup; a popisek „konvergence“ převzal význam, který by měla chyba
+  průměru `σ/√N`, ne rozptyl fixů.
+- **Oprava:** příznak `mp_budget_t.valid` cestuje **s výsledkem** a řídí všechny
+  tři řádky; survey ukazuje „Rozptyl fixu“ neutrální barvou s vysvětlivkou.
+- **Pravidlo:** **Než hodnotu obarvíš jako OK nebo ji nazveš přesností
+  či konvergencí, ověř, že má tu vlastnost, kterou popisek tvrdí** (klesá s N?
+  platí pro skutečné hradlo?). **Náhradní hodnotu dosazenou za neznámý vstup
+  nesmí výsledek nést bez příznaku** — příznak patří do struktury výsledku, ne do
+  podmínky u každého volajícího (tu jeden zapomene, L-0012).
+- **Detekce:** u každé barvy/verdiktu v UI najdi, z čeho se počítá, a zeptej se
+  „co by ta hodnota udělala, kdybych měřil 10× déle?“. U funkcí, které dosazují
+  výchozí vstup, grep na volající, kteří nečtou příznak platnosti.
+- **Commit:** `8c79ced`, `038288c`
+- **Stav:** aktivní
+
+---
+
+### L-0090 — Nezměněná velikost `.text` není důkaz, že změna chybí; a ověřovací řetězec patří za KAŽDOU opravu, ne za dávku
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0160 na CM4, F-0169)
+- **Oblast:** ověřovací metoda (CLAUDE.md mechanická pravidla 3 a 4)
+- **Symptom:** (1) Po opravě `meas_limit_eval` zůstala `.text` CM4 **bajt za bajt
+  stejná** (242 692 B), ačkoli pravidlo 4 říká „když obraz neroste, změna vypadla“.
+  (2) Oprava F-0169 prošla buildem s 0 varováními, ale zavedla `-Wshadow`
+  v selftestu; `tools/audit.py` ho chytil až **o tři commity později**, protože
+  běžel jen na konci dávky.
+- **Příčina:** (1) CM4 má FPU jen single precision, `double` porovnání dělá
+  `__aeabi_dcmp*`, a záměna `dcmplt`/`dcmpgt` za `dcmpge`/`dcmple` má stejný
+  počet instrukcí — změna v obrazu **je**, jen je stejně velká. (2) Build
+  (`-Wall`) a audit (`-Wshadow` a spol.) mají **různé sady varování**; build
+  sám baseline auditu nehlídá.
+- **Oprava:** (1) změna doložena disassembly (`meas_limit_eval` volá
+  `__aeabi_dcmpge`/`__aeabi_dcmple`); (2) přejmenování v `7f29799`.
+- **Pravidlo:** **Pravidlo 4 je jednosměrné: RŮST `.text` dokazuje, že změna je
+  v obrazu; NERŮST nedokazuje opak** — u záměny operátoru, konstanty nebo
+  podmínky ověř změnu v disassembly dotčené funkce. A **`tools/audit.py` pouštěj
+  po každé opravě, ne po dávce** — build ho nenahrazuje.
+- **Detekce:** když `.text` po opravě nezměnila velikost, `objdump -d` nad
+  funkcí a hledat nový opkód/konstantu; `audit.py` v každém `fix:` commitu
+  (baseline 92 / 0 / 2).
+- **Commit:** `479d7d1`, `7f29799`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
