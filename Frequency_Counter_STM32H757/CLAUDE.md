@@ -1434,8 +1434,12 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
          `undefined`, ne chyba**, takže se to projevilo jen jako trvale špatná karta a žádný
          z ostatních kroků na to nedosáhl. Rozlišuje „neemituje vůbec" od „existuje, ale jinde".
       6. JS testy: `spa_test` `hov_test` `unc_test` `pwr_test` `mdev_test` `pn_test` `alarm_test`
-         `pref_test` `axis_test` (běží nad **vyextrahovaným** JS, ne nad kopií — vytahují si funkce
+         `pref_test` `axis_test` `sys_test` `stat_test` (běží nad **vyextrahovaným** JS, ne nad kopií — vytahují si funkce
          ze zdroje přes `grab()`, takže se nemůžou rozejít s tím, co se doopravdy servíruje).
+         🔑 **`stat_test`** (F-0170) výsledky **vynucuje** (ne jen vypisuje jako `mdev_test`):
+         ADEV/MDEV proti nezávislé SP1065 z fází, t-test průkaznosti a tabulka T95
+         **shodné s firmwarem** (`mp_fit_significant`) — web a displej musí pro tatáž
+         data říct totéž.
          🔴 **Když test spadne, podezřívej NEJDŘÍV test** — v této session bylo **pět** selhání a
          **ani jedno nebyla chyba v kódu** (STATUS #156/#165). Dvě opakující se příčiny:
          (a) harness nemá plný scope, a protože testovaná funkce je v `try/catch`, selže **tiše**;

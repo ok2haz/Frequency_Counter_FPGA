@@ -491,7 +491,7 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 - **Riziko opravy:** nízké; mění jen JS v blobu CM4 (bez IPC).
 - **Vztah k lekcím:** **L-0012** (sourozenec na druhém jádře — přesně to, co
   lekce popisuje), **L-0018**, **L-0038** (hranice jazyků uvnitř jednoho obrazu).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-26 (`e99ccbb` web, `a8089d2` firmware) — (a) a (b) podle návrhu: `mdev()` s mezí `j+3m <= N+1`, `fitSig(r,n)` = tatáž tabulka i logika jako `mp_fit_significant`, `fit()` vrací i `n`. Nový vynucující test `tools/spa/stat_test.js` (v `check.py`): ADEV/MDEV proti nezávislé SP1065 z fází, 10 případů t-testu, shoda tabulky T95 JS ↔ firmware; nad starou SPA selhal v 18 kontrolách. **Navíc sourozenec nalezený při opravě — v MÉ opravě F-0169:** `mp_fit_significant` vracela pro `r = NaN` „průkazné“ (komentář „i NaN-safe“ znamenal jen „bez UB“) a `mp_fit_solve` propustila NaN v X; opraveno v `a8089d2` + 3 případy v `mp_selftest` (L-0091). Poznámka (3) o „párech“ ponechána — není to vada. ⬜ neověřeno na HW.
 
 ---
 

@@ -3146,6 +3146,39 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0091 — „NaN-safe“ v komentáři znamenalo „bez UB“, ne „správný verdikt“; vadu v originálu odhalilo až psaní jeho dvojčete
+
+- **Datum:** 2026-09-26 (oprava F-0170)
+- **Oblast:** `meas_present.c` (`mp_fit_significant`, `mp_fit_solve`) ↔ SPA `fitSig`
+- **Symptom:** žádný viditelný. Při přenosu t-testu z firmwaru do webu (F-0170)
+  jsem pro JS nejdřív sepsal chování **na okrajích** jako testovací tabulku
+  (n < 3, r = ±1, NaN). Firmwarová funkce, kterou jsem týž den sám napsal
+  (F-0169) a opatřil poznámkou *„dokonalá přímka (i NaN-safe)“*, vracela pro
+  `r = NaN` **1 = průkazné**. Tentýž den jsem přitom zapsal L-0087 („NaN do
+  bezpečné větve“) — a vlastní nový kód ji porušoval.
+- **Příčina:** `if (!(r2 < 1.0)) return 1;` je negovaná forma, takže **nezpůsobí
+  UB** a to jsem nazval „NaN-safe“. Jenže negace posílá NaN do větve, kterou
+  zrovna ta podmínka označuje — a tady to byla větev **„dokonalá přímka“**.
+  Negovaná forma není bezpečná sama o sobě; bezpečná je jen tehdy, když
+  větev, do které NaN padne, je ta opatrná. `mp_fit_solve` měla totéž z druhé
+  strany: `dx <= 0 || dx < 1e-30` NaN v X propustila.
+- **Oprava:** explicitní `if (f->r != f->r) return 0;`, v `mp_fit_solve`
+  `!(dx >= 1e-30)` a kontrola NaN směrnice; tři nové případy v `mp_selftest`
+  a tentýž případ v `tools/spa/stat_test.js` pro web (`a8089d2`, `e99ccbb`).
+- **Pravidlo:** **U každé meze rozhodni, KAM má padnout NaN, a napiš to do
+  komentáře slovy („NaN → neprůkazné“), ne nálepkou „NaN-safe“.** Negovaná
+  forma `!(x < mez)` pošle NaN do větve *za* podmínkou — ověř, že je to ta
+  opatrná. A **když přenášíš funkci do dvojčete, sepiš nejdřív tabulku jejího
+  chování na okrajích a pusť ji proti ORIGINÁLU** — dvojče napsané podle
+  úmyslu odhalí, kde se od úmyslu odchýlil originál.
+- **Detekce:** grep na komentáře „NaN-safe“/„NaN safe“ a u každého ověřit,
+  který verdikt NaN dostane; u dvojčat (C ↔ JS, CM7 ↔ CM4) sdílená tabulka
+  okrajových případů v obou testech (`mp_selftest` + `stat_test.js`).
+- **Commit:** `a8089d2`, `e99ccbb`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
