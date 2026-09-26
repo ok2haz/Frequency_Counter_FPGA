@@ -449,6 +449,52 @@ dosazené do NIST SP1065). Výsledky jsou citované u nálezů.
 
 ---
 
+### F-0170 [S4] Webové (JS) dvojče estimátorů v SPA se s opravami F-0166 a F-0169 nesrovnalo — MDEV bez posledního členu, průkaznost driftu pevné |r| ≥ 0,5
+
+> Doplněno 2026-09-26 **po fázi oprav** (při revizi komentářů F6), ne v F3.
+> Vadu jsem měl chytit v commitu F-0169 podle L-0012 („sourozenec na druhém
+> jádře") — neudělal jsem to; tenhle zápis je náprava.
+
+- **Místo:** `CM4/LWIP/App/httpd_min.c` — blob `SPA_HTML`: `mdev()` řádek 2307,
+  drift `ok=Math.abs(F.r)>=0.5` řádky 2744 a 2747; pro srovnání `adev()` 2290
+  a `fit()` 2382–2389.
+- **Popis:** Webový dashboard počítá ADEV/MDEV/TDEV a drift **vlastním JS**
+  z bufferu reálných měření (na displeji to dělá `screen_main.c`/`meas_present.c`).
+  Opravy modulu 24 se týkaly jen firmwaru:
+  1. **MDEV** — smyčka `for(j=0;j+3*m<=N;j++)`, kde `N = y.length` (kmitočtové
+     vzorky) a fází je `N+1`. Nejvyšší použitý index je `x[j+3m−1]`, takže
+     `x[N]` se nepoužije nikdy a vznikne `N−3m+1` členů místo `N−3m+2`
+     (SP1065, `N_x−3m+1` s `N_x = N+1`). Tatáž třída jako F-0166; odhad je
+     nezkreslený (dělí se skutečným `cnt`), jen bez jednoho členu.
+     **`adev()` je správně** (`i+2*m < x.length` → `N−2m+1` členů).
+  2. **Průkaznost driftu** — `ok = |r| >= 0.5` bez ohledu na počet bodů. Na
+     začátku, kdy je v bufferu málo vzorků, prohlásí za průkazný i proklad
+     šumu (při n = 5 je kritické |r| = 0,878) a podle `ok` se **kreslí čára
+     driftu**; při stovkách bodů naopak označí za neprůkazný skutečný drift.
+     Firmware od `8c79ced` používá t-test (`mp_fit_significant`).
+  3. *(poznámka, ne vada)* tabulka ADEV píše „N párů" a varuje až pod 10 —
+     overlapping členy ale nejsou nezávislé (F-0167), takže informace je
+     menší, než počet naznačuje.
+- **Důkaz:** indexy výše; `fit()` je numericky v pořádku (čas od nuly, `y`
+  centrované na průměr), takže F-0169 (1) se webu netýká.
+- **Dopad:** web a displej ukazují pro tatáž data **jiný verdikt průkaznosti
+  driftu** (L-0018 — dvě pravdy) a web v rozběhu kreslí čáru driftu nad šumem.
+  MDEV/TDEV na webu nepatrně horší konfidence na dlouhých τ.
+- **Reprodukce:** staticky; na HW: web s málo body (brzy po RUN) — čára driftu
+  se objeví i u šumu.
+- **Návrh opravy:** (a) MDEV mez `j+3*m<=N+1` (tj. `j <= N−3m+1`);
+  (b) t-test v JS se **stejnou tabulkou** jako `mp_fit_significant` (df 1..30,
+  nad tím 2,042) — politika už je rozhodnutá uživatelem u F-0169, takže jde
+  o skupinu A. Po editaci povinně `python tools/spa/check.py --build`
+  (+ kontrola velikosti `SPA_HTML` v `.elf`) a doplnit JS test (např. do
+  `mdev_test`) s počtem členů proti referenci.
+- **Riziko opravy:** nízké; mění jen JS v blobu CM4 (bez IPC).
+- **Vztah k lekcím:** **L-0012** (sourozenec na druhém jádře — přesně to, co
+  lekce popisuje), **L-0018**, **L-0038** (hranice jazyků uvnitř jednoho obrazu).
+- **Stav:** otevřeno.
+
+---
+
 ## Co bylo zkontrolováno a je v pořádku
 
 - **Kadence vzorkování (L-0036):** `app_gpsdo_tick_stats_sample` běží **1×/s**
@@ -501,7 +547,7 @@ posunu času zpět během synchronizovaného běhu.
 
 **Verdikt: podmíněně funkční.**
 
-12 nálezů: **1× S2, 7× S3, 4× S4**. Vzorce jsou až na výjimky správně a
+12 nálezů: **1× S2, 7× S3, 4× S4** (+ F-0170 [S4] doplněný po fázi oprav). Vzorce jsou až na výjimky správně a
 napsané s neobvyklou péčí (NIST SP1065, exaktní TDEV, poctivě označený MTIE,
 ošetřené přetečení u hi-res dělení). Vady jsou jinde:
 

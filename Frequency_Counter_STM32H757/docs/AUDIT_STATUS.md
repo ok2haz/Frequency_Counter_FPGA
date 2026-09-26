@@ -22,9 +22,12 @@ detected`), takže ani flash, ani `selftest` na desce. Až bude: flashnout
 (nové případy v `pn_selftest`, `meas_math_selftest`, `mp_selftest`), okno
 ANALÝZA bez FPGA musí ukazovat „-- (bez mereni)", SELF-SURVEY „Rozptyl fixu:"
 neutrálně. Disciplinace LSE se ověřuje **hodiny** (12 oken po 10 min).
-🔑 **Pokračovat zde:** F6 (komentáře) pro modul 24 — zbývá revize hlavičky
-`phase_noise.h` a popisu survey/fázového šumu v `CLAUDE.md`; pak HW průchod
-(TODO #254 + tento modul).
+F6 (komentáře) hotová v `4ca647d` (`phase_noise.h`, hlavička okna ANALÝZA,
+`CLAUDE.md`). Při ní nalezen **F-0170 [S4]**: webové JS dvojče estimátorů
+(`httpd_min.c` SPA) se s F-0166/F-0169 nesrovnalo (L-0012 — měl jsem ho chytit
+v commitu F-0169).
+🔑 **Pokračovat zde:** F-0170 (oprava SPA + `tools/spa/check.py --build`) po
+souhlasu uživatele; pak HW průchod (TODO #254 + tento modul).
 
 **Předchozí, 2026-09-26 (F3):** 🔴 **Modul 24 (matematické funkce měření,
 průřezový) — F3 zapsána, 12 nálezů (1× S2, 7× S3, 4× S4).** Verdikt **podmíněně funkční**. Zápis →
@@ -936,7 +939,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **opraveno 11 z 12** (A+B, F-0168 [S4] odložen do C; ⬜ neověřeno na HW, deska bez sondy) | 2026-09-26 | 0 | 1 | 7 | 4 | [12](audit/2026-09-26_matematika-mereni.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **opraveno 11 z 13** (A+B, F-0168 [S4] odložen do C, **F-0170 [S4] otevřen** — JS dvojče v SPA, doplněno po F5; ⬜ neověřeno na HW, deska bez sondy) | 2026-09-26 | 0 | 1 | 7 | 5 | [13](audit/2026-09-26_matematika-mereni.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -969,7 +972,7 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 ## Souhrn nálezů
 
 🔴 **Srovnáno 2026-09-26** (po F5 modulu 24) — čísla níže jsou výstup
-`tools/audit_stav.py` (162 nálezů celkem). Tabulka byla rozjetá už před tímto
+`tools/audit_stav.py` (163 nálezů celkem). Tabulka byla rozjetá už před tímto
 sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147
 (mezitím opraveny `docs:`) se do ní nepropsaly.
 
@@ -978,7 +981,7 @@ sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 22 | 0 |
 | S3 | 2 | 82 | 0 |
-| S4 | 3 | 46 | 0 |
+| S4 | 4 | 46 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -997,8 +1000,10 @@ F-0158 (disciplinace LSE) opraveno 2026-09-26, obojí ⬜ neověřeno na HW.
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
 **+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
 zůstává otevřený jako záznam, ne jako dluh).
-**S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168** (F-0154 a F-0168 skupina C;
-F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty z FPGA).
+**S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168 + F-0170** (F-0154 a F-0168
+skupina C; F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty
+z FPGA; **F-0170** = webové JS dvojče estimátorů — MDEV bez posledního členu a průkaznost
+driftu pevné |r| ≥ 0,5, skupina A, čeká na souhlas s opravou SPA).
 
 **Modul 16 — nálezy zapsány 2026-09-16 (F3; fáze oprav NEproběhla):**
 Verdikt **podmíněně funkční**. 14 nálezů (1×S1, 1×S2, 8×S3, 4×S4), dokument
