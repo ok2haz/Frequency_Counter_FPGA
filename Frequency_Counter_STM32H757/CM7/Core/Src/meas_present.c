@@ -184,7 +184,11 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
 {
     if (o == NULL) return;
     memset(o, 0, sizeof *o);
-    if (gate_s <= 0.0) gate_s = 1.0;
+    /* F-0159: neznámé hradlo se DÁL nahrazuje 1 s, ale jen kvůli numerické
+     * bezpečnosti (dělení) — výsledek se označí jako neplatný a volající ho
+     * nesmí zobrazit. `!(gate_s > 0)` chytí i NaN. */
+    o->valid = (gate_s > 0.0) ? 1 : 0;
+    if (!(gate_s > 0.0)) gate_s = 1.0;
 
     /* Rozliseni: kvantizace na obou hranach hradla -> sqrt(2)·tdc/gate. */
     o->u_res_rel = 1.41421356 * (tdc_ps * 1e-12) / gate_s;
@@ -219,12 +223,17 @@ void mp_fit_reset(mp_fit_t *f)
 void mp_fit_add(mp_fit_t *f, double x, double y)
 {
     if (f == NULL) return;
+    /* F-0169: akumuluje se RELATIVNĚ k prvnímu bodu. Směrnice i r jsou vůči
+     * posunu invariantní, takže výsledek se nemění — mění se jen to, že se
+     * v `n·Σxx − (Σx)²` neodečítají dvě obří skoro stejná čísla. */
+    if (f->n == 0u) { f->x0 = x; f->y0 = y; }
     f->n++;
-    f->sx  += x;
-    f->sy  += y;
-    f->sxx += x * x;
-    f->syy += y * y;
-    f->sxy += x * y;
+    double dx = x - f->x0, dy = y - f->y0;
+    f->sx  += dx;
+    f->sy  += dy;
+    f->sxx += dx * dx;
+    f->syy += dy * dy;
+    f->sxy += dx * dy;
 }
 
 int mp_fit_solve(mp_fit_t *f)
@@ -237,7 +246,9 @@ int mp_fit_solve(mp_fit_t *f)
     if (dx <= 0.0 || dx < 1e-30) return 0;
 
     f->b = (n * f->sxy - f->sx * f->sy) / dx;
-    f->a = (f->sy - f->b * f->sx) / n;
+    /* Průsečík je v centrovaných souřadnicích -> posunout zpět do původních
+     * (y = a' + b·(x − x0) + y0  =>  a = a' + y0 − b·x0). */
+    f->a = (f->sy - f->b * f->sx) / n + f->y0 - f->b * f->x0;
 
     double dy = n * f->syy - f->sy * f->sy;
     /* Konstantni Y (dokonaly, ale nulovy signal) -> korelace nedefinovana; b je
@@ -246,6 +257,30 @@ int mp_fit_solve(mp_fit_t *f)
     if (f->r >  1.0) f->r =  1.0;                /* zaokrouhlovaci prestrel */
     if (f->r < -1.0) f->r = -1.0;
     return 1;
+}
+
+/* Kritické hodnoty Studentova t, dvoustranně 5 %, df = 1..30 (standardní
+ * tabulka). Nad 30 se bere 2,042 (hodnota pro df = 30) — konzervativně: pro
+ * velká df je skutečná mez jen nepatrně nižší (df = 200: 1,972). */
+static const float T95_2S[30] = {
+    12.706f, 4.303f, 3.182f, 2.776f, 2.571f, 2.447f, 2.365f, 2.306f, 2.262f, 2.228f,
+     2.201f, 2.179f, 2.160f, 2.145f, 2.131f, 2.120f, 2.110f, 2.101f, 2.093f, 2.086f,
+     2.080f, 2.074f, 2.069f, 2.064f, 2.060f, 2.056f, 2.052f, 2.048f, 2.045f, 2.042f
+};
+
+/* F-0169: průkaznost směrnice t-testem korelace, místo dřívějšího pevného prahu
+ * |r| < 0,5 v okně ANALÝZA. Ten nebral ohled na počet bodů: při n ≈ 200
+ * (decimace v `ana_recompute`) je r = 0,3 průkazné na p < 1e-4 a hlásilo se
+ * „neprůkazné", při n = 4 není průkazné ani r = 0,9 a hlásilo se jako platné. */
+int mp_fit_significant(const mp_fit_t *f)
+{
+    if (f == NULL || f->n < 3u) return 0;
+    uint32_t df = f->n - 2u;
+    double tc = (df <= 30u) ? (double)T95_2S[df - 1u] : 2.042;
+    double r2 = f->r * f->r;
+    if (!(r2 < 1.0)) return 1;                   /* dokonalá přímka (i NaN-safe) */
+    double t = fabs(f->r) * sqrt((double)df / (1.0 - r2));
+    return (t >= tc) ? 1 : 0;
 }
 
 int mp_selftest(void)
@@ -398,6 +433,36 @@ int mp_selftest(void)
         mp_fit_reset(&ft);
         for (int i = 0; i < 5; i++) mp_fit_add(&ft, (double)i, 3.0);
         ok &= (mp_fit_solve(&ft) == 1 && ft.b > -1e-9 && ft.b < 1e-9);
+        ok &= (mp_fit_significant(&ft) == 0);          /* r = 0 -> neprukazne */
+
+        /* F-0169 (1): NUMERICKA STABILITA. Drift kmitoctu v unix case: x ~1,76e9 s,
+         * y ~1e7 Hz, 1 mHz za hodinu, 200 bodu. Puvodni necentrovany vzorec tu dal
+         * rozptyl y <= 0 -> r = 0 („dokonala primka je neprukazna"); overeno na
+         * hostu v IEEE double. ⚠️ Na cili muze GCC stahnout nasobeni a scitani do
+         * FMA, takze presna podoba chyby stareho vzorce se muze lisit — tenhle
+         * test proto overuje, ze NOVY vypocet je spravne, ne ze stary selze. */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 200; i++)
+            mp_fit_add(&ft, 1.76e9 + 3600.0 * (double)i, 1e7 + 1e-3 * (double)i);
+        ok &= (mp_fit_solve(&ft) == 1);
+        ok &= (fabs(ft.b - 1e-3 / 3600.0) < 1e-12);    /* smernice [Hz/s] */
+        ok &= (ft.r > 0.999);
+        ok &= (fabs((ft.a + ft.b * 1.76e9) - 1e7) < 1e-3);   /* a posunute zpet */
+        ok &= (mp_fit_significant(&ft) == 1);
+
+        /* F-0169 (2): prukaznost zavisi na n, ne na pevnem |r|. Stejne r ~0,4:
+         * pri n = 200 prukazne, pri n = 5 ne. Syntetizovano primo pres r, n. */
+        {   mp_fit_t s = {0};
+            s.r = 0.4; s.n = 200u; ok &= (mp_fit_significant(&s) == 1);
+            s.n = 5u;              ok &= (mp_fit_significant(&s) == 0);
+            s.r = 0.99; s.n = 5u;  ok &= (mp_fit_significant(&s) == 1);   /* t=12 > 3,18 */
+        }
+    }
+
+    /* ── Rozpocet nejistoty: priznak platnosti (F-0159) ─────────────────────── */
+    {   mp_budget_t bv;
+        mp_budget(1e7, 0.0, 2500.0, 0.0, 1.0, &bv);   ok &= (bv.valid == 0);
+        mp_budget(1e7, 0.25, 2500.0, 0.0, 1.0, &bv);  ok &= (bv.valid == 1);
     }
 
     return ok;

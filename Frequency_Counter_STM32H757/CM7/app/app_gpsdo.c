@@ -4984,10 +4984,14 @@ static void ana_fit_text(const mp_fit_t *f, int ok, const char *unit, char *b, s
     char sb[16], rb[16];
     fmt_fixed(sb, sizeof sb, (float)f->b, 3);
     fmt_fixed(rb, sizeof rb, (float)f->r, 2);
-    double ar = (f->r < 0) ? -f->r : f->r;
     /* ⚠️ Slaba korelace = smernice je proklad sumu. Rict to rovnou je poctivejsi
-     * nez vytisknout vabive cislo a nechat uzivatele, at si domysli. */
-    snprintf(b, n, "%s %s  (r=%s%s)", sb, unit, rb, (ar < 0.5) ? ", neprukazne" : "");
+     * nez vytisknout vabive cislo a nechat uzivatele, at si domysli.
+     * 🔴 F-0169: o prukaznosti rozhoduje t-test (`mp_fit_significant`), ne pevny
+     * prah |r| < 0,5. Ten nezavisel na poctu bodu: pri ~200 bodech (decimace
+     * v `ana_recompute`) je r = 0,3 prukazne na p < 1e-4 a hlasilo se
+     * „neprukazne", pri 4 bodech neni prukazne ani r = 0,9. */
+    snprintf(b, n, "%s %s  (r=%s%s)", sb, unit, rb,
+             mp_fit_significant(f) ? "" : ", neprukazne");
 }
 
 /* ── Podil slozky na celkove nejistote (okno ANALYZA) ───────────────────────
@@ -5038,7 +5042,11 @@ static void app_gpsdo_render_analyza(void)
     /* 🔴 SKUTECNE hradlo z ramce, NE nastaveni z UI (audit STATUS #83): nastavena
      * brana se do FPGA vubec nedostane, takze pri 100 s hlasilo tohle okno 400x
      * lepsi nejistotu, nez jaka byla. Kdyz mereni nebezi (SIM / bez linku), neni
-     * z ceho rozliseni pocitat -> `gate = 0` a rozpocet to prizna. */
+     * z ceho rozliseni pocitat -> `gate = 0` a `mp_budget` vrati `bd.valid = 0`.
+     * 🔴 F-0159: do 2026-09-26 tu stalo „a rozpocet to prizna" — priznal to ale
+     * jen radek rozliseni; „Nejistota U" a „Platnych cifer" se dal pocitaly
+     * z hradla 1 s, ktere si `mp_budget` tise dosadil. Ted se VSECHNY tri radky
+     * ridi JEDNIM priznakem `bd.valid`, ne kazdy vlastni podminkou. */
     double gate  = screen_main_gate_actual_s();
     double sigma = screen_main_adev_1s();
     mp_budget_t bd;
@@ -5055,16 +5063,20 @@ static void app_gpsdo_render_analyza(void)
      * udaj nejednoznacny (u vs U se lisi dvojnasobne). */
     /* ⚠️ `fmt_dec_u`, NE `fmt_fixed(,5)` — ten tiskne jen celou cast, takze
      * sub-hertzova nejistota se zobrazovala jako „+-0 Hz" (viz fmt_dec_u). */
-    fmt_dec_u(v, sizeof v, bd.u_tot_hz * 2.0, 5);
-    { char rel[20]; fmt_sci_ppb(bd.u_tot_rel * 2.0, rel, sizeof rel);
-      snprintf(b, sizeof b, "+-%s Hz  (%s, k=2)", v, rel); }
+    if (bd.valid) {
+        fmt_dec_u(v, sizeof v, bd.u_tot_hz * 2.0, 5);
+        char rel[20]; fmt_sci_ppb(bd.u_tot_rel * 2.0, rel, sizeof rel);
+        snprintf(b, sizeof b, "+-%s Hz  (%s, k=2)", v, rel);
+    } else {
+        snprintf(b, sizeof b, "-- (bez mereni)");
+    }
     if (first || dchg(c_u, sizeof c_u, b)) { kv_row_live(104, "Nejistota U:", b, UI_COLOR_ACC, first); drew = 1; }
 
     /* Rozklad na prispevky — bez nej neni poznat, CO nejistotu zeneka. */
     /* ⚠️ Rozliseni MUSI rict, z JAKE brany se pocita — `mp_budget` pri neznamem
      * hradle tise dosadi 1 s a cislo by pak vypadalo stejne duveryhodne jako
      * zmerene. Kdyz mereni nebezi, radek to prizna. */
-    if (gate > 0.0) {
+    if (bd.valid) {
         char gb[16];
         fmt_fixed(gb, sizeof gb, (float)gate, 3);
         char rb[32];
@@ -5075,27 +5087,35 @@ static void app_gpsdo_render_analyza(void)
     }
     if (first || dchg(c_res, sizeof c_res, b)) {
         kv_row_live(140, "  rozliseni:", b, UI_COLOR_INK_2, first);
-        ana_share_bar(140, bd.u_res_rel, bd.u_tot_rel, UI_COLOR_ACC, gate > 0.0);
+        ana_share_bar(140, bd.u_res_rel, bd.u_tot_rel, UI_COLOR_ACC, bd.valid);
         drew = 1;
     }
     fmt_sci_ppb(bd.u_sta_rel, b, sizeof b);
     if (first || dchg(c_sta, sizeof c_sta, b)) {
         kv_row_live(174, "  stabilita:", b, UI_COLOR_INK_2, first);
-        ana_share_bar(174, bd.u_sta_rel, bd.u_tot_rel, UI_COLOR_VIOLET, gate > 0.0);
+        ana_share_bar(174, bd.u_sta_rel, bd.u_tot_rel, UI_COLOR_VIOLET, bd.valid);
         drew = 1;
     }
     fmt_sci_ppb(bd.u_ref_rel, b, sizeof b);
     if (first || dchg(c_ref, sizeof c_ref, b)) {
         kv_row_live(208, "  reference:", b, UI_COLOR_INK_2, first);
-        ana_share_bar(208, bd.u_ref_rel, bd.u_tot_rel, UI_COLOR_WARN, gate > 0.0);
+        ana_share_bar(208, bd.u_ref_rel, bd.u_tot_rel, UI_COLOR_WARN, bd.valid);
         drew = 1;
     }
 
     /* ⚠️ ZADNE `%f` — projekt linkuje nano.specs bez float formatovani (tise by
-     * to vytisklo nesmysl). Hradlo je z pevne sady 0,1/1/10/100 s, takze staci
-     * jedno desetinne misto pres `fmt_fixed` (integer extrakce). */
-    { char gs[12]; fmt_fixed(gs, sizeof gs, (float)gate, 1);
-      snprintf(b, sizeof b, "%d  (hradlo %s s)", bd.digits, gs); }
+     * to vytisklo nesmysl).
+     * 🔴 F-0159: hradlo se formatuje na 3 desetiny STEJNE jako radek rozliseni.
+     * Drive tu byla 1 desetina s komentarem „hradlo je z pevne sady
+     * 0,1/1/10/100 s" — to platilo, dokud se bralo nastaveni z UI; od #83 jde
+     * o SKUTECNE hradlo z ramce (~0,25 s), takze v jednom okne stalo jednou
+     * „0,250 s" a jednou „0,3 s". A bez hradla se cifry nezobrazuji vubec. */
+    if (bd.valid) {
+        char gs[16]; fmt_fixed(gs, sizeof gs, (float)gate, 3);
+        snprintf(b, sizeof b, "%d  (hradlo %s s)", bd.digits, gs);
+    } else {
+        snprintf(b, sizeof b, "-- (bez mereni)");
+    }
     if (first || dchg(c_dig, sizeof c_dig, b)) { kv_row_live(242, "Platnych cifer:", b, UI_COLOR_OK, first); drew = 1; }
 
     /* Drift + tempco (z datalogu, prepocitane pri vstupu). */

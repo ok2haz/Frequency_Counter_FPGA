@@ -118,10 +118,18 @@ typedef struct {
     double u_tot_rel;    /* kvadratický součet [relativně] */
     double u_tot_hz;     /* totéž v Hz při daném kmitočtu */
     int    digits;       /* kolik číslic výsledku je smysluplných */
+    /* 🔴 F-0159: 0 = hradlo neznámé (`gate_s <= 0`, měření neběží). Pak jsou
+     * `u_res_rel`, `u_tot_*` i `digits` spočtené z NÁHRADNÍHO hradla 1 s jen
+     * kvůli numerické bezpečnosti a volající je NESMÍ zobrazit jako výsledek.
+     * Do 2026-09-26 příznak neexistoval a okno ANALÝZA ukazovalo „Nejistotu U"
+     * i „Platných cifer" z tohoto vymyšleného hradla. Příznak cestuje S VÝSLEDKEM,
+     * aby na něj volající nemohl zapomenout tak, jako zapomněl dva ze tří řádků. */
+    int    valid;
 } mp_budget_t;
 
 /** Spočítá rozpočet nejistoty. `sigma_y` = σy(τ) pro τ ≈ `gate_s` (0 = neznámá,
- *  příspěvek se vynechá), `ref_ppb` = systematická nejistota reference. */
+ *  příspěvek se vynechá), `ref_ppb` = systematická nejistota reference.
+ *  Při `gate_s <= 0` nastaví `valid = 0` — viz `mp_budget_t.valid`. */
 void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
                double ref_ppb, mp_budget_t *out);
 
@@ -140,18 +148,30 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
  * — je to táž matematika, jen jiná osa X. Obyčejná least-squares přímka
  * y = a + b·x + Pearsonův korelační koeficient r.
  * ⚠️ `r` je tu důležitější než `b`: bez něj nepoznáš, jestli spočtená směrnice
- * něco znamená, nebo je to proklad šumu. |r| < ~0,5 → směrnici neinterpretovat. */
+ * něco znamená, nebo je to proklad šumu. O průkaznosti rozhoduje
+ * `mp_fit_significant` (t-test) — NE pevný práh na |r|, protože stejné r je při
+ * 200 bodech vysoce průkazné a při 4 bodech vůbec (F-0169).
+ * ⚠️ Akumulátory jsou CENTROVANÉ na první bod (x0, y0). Bez toho je vzorec
+ * `n·Σxx − (Σx)²` numericky nestabilní: pro drift kmitočtu (x = unix čas
+ * ~1,76e9 s, y ≈ 1e7 Hz) se rozptyl y odečtením dvou obřích čísel propadl na
+ * ≤ 0 a dokonalá přímka vyšla jako r = 0 „neprůkazné" (F-0169, ověřeno na hostu). */
 typedef struct {
     uint32_t n;
     double   a, b;                 /* výsledek: y = a + b·x (platný po mp_fit_solve) */
     double   r;                    /* Pearson, -1..+1 */
-    double   sx, sy, sxx, syy, sxy;/* akumulátory — paměť O(1) i pro tisíce vzorků */
+    double   x0, y0;               /* střed akumulace = první bod (F-0169) */
+    double   sx, sy, sxx, syy, sxy;/* akumulátory (x-x0, y-y0) — paměť O(1) */
 } mp_fit_t;
 
 void mp_fit_reset(mp_fit_t *f);
 void mp_fit_add(mp_fit_t *f, double x, double y);
 /** Dopočítá a/b/r z akumulátorů. @return 1 = použitelné (n>=3 a rozptyl X > 0). */
 int  mp_fit_solve(mp_fit_t *f);
+/** Je směrnice statisticky průkazná? Dvoustranný t-test korelace na hladině 5 %:
+ *  t = |r|·√(n−2)/√(1−r²) proti kritické hodnotě pro df = n−2 (tabulka do 30,
+ *  nad tím konzervativně 2,042). Volat až po úspěšném `mp_fit_solve`.
+ *  @return 1 = průkazná, 0 = neprůkazná (nebo málo bodů). */
+int  mp_fit_significant(const mp_fit_t *f);
 
 /* Pure-logic unit test (perioda/nominál/jednotky/statistika/TFOM/filtr/
  * rozpočet nejistoty/proklad) — 1 = PASS. */
