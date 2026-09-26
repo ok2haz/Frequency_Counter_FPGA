@@ -234,6 +234,13 @@ void mp_fit_add(mp_fit_t *f, double x, double y)
     f->sxx += dx * dx;
     f->syy += dy * dy;
     f->sxy += dx * dy;
+    if (f->n >= 2u) {                             /* F-0173: součty sousedních dvojic */
+        f->l_yy += dy * f->py;  f->l_xx += dx * f->px;
+        f->l_xy += dx * f->py;  f->l_yx += dy * f->px;
+        f->l_ylead += dy; f->l_ylag += f->py;
+        f->l_xlead += dx; f->l_xlag += f->px;
+    }
+    f->px = dx; f->py = dy;
 }
 
 int mp_fit_solve(mp_fit_t *f)
@@ -259,6 +266,30 @@ int mp_fit_solve(mp_fit_t *f)
     f->r = (dy > 0.0) ? ((n * f->sxy - f->sx * f->sy) / sqrt(dx * dy)) : 0.0;
     if (f->r >  1.0) f->r =  1.0;                /* zaokrouhlovaci prestrel */
     if (f->r < -1.0) f->r = -1.0;
+
+    /* F-0173: lag-1 autokorelace reziduí e = Y − ac − b·X (centrované souřadnice,
+     * ac = centrovaný průsečík). Obojí se rozepíše na už nasbírané součty:
+     *   Σe²       = Syy − 2ac·Sy − 2b·Sxy + n·ac² + 2ac·b·Sx + b²·Sxx
+     *   Σe_i·e_i-1 = Lyy − ac(Ly⁺ + Ly⁻) − b(Lyx + Lxy) + (n−1)ac²
+     *               + ac·b(Lx⁺ + Lx⁻) + b²·Lxx
+     * Když jsou rezidua proti rozptylu Y zanedbatelná (dokonalá přímka), je ρ
+     * z odečtu šumem zaokrouhlení — pak 0 (o průkaznosti rozhodne r). */
+    {
+        double ac  = (f->sy - f->b * f->sx) / n;
+        double b   = f->b;
+        double see = f->syy - 2.0 * ac * f->sy - 2.0 * b * f->sxy + n * ac * ac
+                   + 2.0 * ac * b * f->sx + b * b * f->sxx;
+        double se1 = f->l_yy - ac * (f->l_ylead + f->l_ylag) - b * (f->l_yx + f->l_xy)
+                   + (n - 1.0) * ac * ac + ac * b * (f->l_xlag + f->l_xlead)
+                   + b * b * f->l_xx;
+        double yv  = f->syy - f->sy * f->sy / n;       /* Σ(Y − Ȳ)² */
+        f->rho = 0.0;
+        if (see > 1e-9 * yv && see > 0.0) {
+            f->rho = se1 / see;
+            if (!(f->rho <= 1.0))  f->rho = (f->rho > 1.0) ? 1.0 : 0.0;   /* i NaN -> 0 */
+            if (f->rho < -1.0)     f->rho = -1.0;
+        }
+    }
     return 1;
 }
 
@@ -278,7 +309,12 @@ static const float T95_2S[30] = {
 int mp_fit_significant(const mp_fit_t *f)
 {
     if (f == NULL || f->n < 3u) return 0;
-    uint32_t df = f->n - 2u;
+    /* F-0173: efektivní počet bodů podle autokorelace reziduí (viz hlavička).
+     * Záporná ρ se NEuplatňuje — zvýšit n_eff nad n by bylo neopatrné. */
+    double ne = (double)f->n;
+    if (f->rho > 0.0) ne = ne * (1.0 - f->rho) / (1.0 + f->rho);
+    if (!(ne >= 3.0)) return 0;
+    uint32_t df = (uint32_t)(ne - 2.0);                /* ⌊n_eff⌋ − 2, >= 1 */
     double tc = (df <= 30u) ? (double)T95_2S[df - 1u] : 2.042;
     /* 🔴 F-0170: NaN MUSÍ padnout do „neprůkazné" (L-0087). Do 2026-09-26 tu
      * stálo jen `if (!(r2 < 1.0)) return 1;` s poznámkou „i NaN-safe" — bez UB
@@ -466,7 +502,41 @@ int mp_selftest(void)
             fs.r = 0.99; fs.n = 5u;  ok &= (mp_fit_significant(&fs) == 1);   /* t=12 > 3,18 */
             /* F-0170: NaN -> neprukazne (starý kód vracel 1), shodne s webem. */
             fs.r = (double)NAN; fs.n = 100u; ok &= (mp_fit_significant(&fs) == 0);
+            /* F-0173: autokorelace snizi n_eff. n = 200, r = 0,4, rho = 0,9 ->
+             * n_eff 10,5 -> df 8 -> t = 1,23 < 2,31 -> neprukazne (bez korekce
+             * t = 6,1 -> prukazne; stary kod tenhle pripad NESPLNI). Zaporna rho
+             * se neuplatnuje. Tytez vektory ma webove `fitSig` (stat_test.js). */
+            fs.r = 0.4; fs.n = 200u; fs.rho = 0.9;  ok &= (mp_fit_significant(&fs) == 0);
+            fs.rho = -0.5;                          ok &= (mp_fit_significant(&fs) == 1);
+            fs.rho = 0.0;                           ok &= (mp_fit_significant(&fs) == 1);
         }
+
+        /* F-0173: rho z JEDNOHO pruchodu musi sedet s dvouprochodovou referenci
+         * (primo z reziduí) — i pri velkem posunu X/Y (unix cas, 1e6 offset). */
+        {   static double rxs[64], rys[64];
+            mp_fit_reset(&ft);
+            for (int i = 0; i < 64; i++) {
+                rxs[i] = 1.76e9 + 10.0 * (double)i;
+                rys[i] = 1e6 + 0.3 * (double)i + 2.0 * sin(2.0 * M_PI * (double)i / 16.0);
+                mp_fit_add(&ft, rxs[i], rys[i]);
+            }
+            ok &= (mp_fit_solve(&ft) == 1);
+            double mx = 0, my = 0;
+            for (int i = 0; i < 64; i++) { mx += rxs[i]; my += rys[i]; }
+            mx /= 64.0; my /= 64.0;
+            double sxx = 0, sxy = 0;
+            for (int i = 0; i < 64; i++) { sxx += (rxs[i]-mx)*(rxs[i]-mx); sxy += (rxs[i]-mx)*(rys[i]-my); }
+            double bb = sxy / sxx, aa = my - bb * mx, e0 = 0, e1 = 0, ep = 0;
+            for (int i = 0; i < 64; i++) {
+                double e = rys[i] - aa - bb * rxs[i];
+                e0 += e * e; if (i) e1 += e * ep; ep = e;
+            }
+            ok &= (fabs(ft.rho - e1 / e0) < 1e-6);
+        }
+        /* strida +1/-1 -> rho ~ -1 (a neuplatni se) */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 100; i++) mp_fit_add(&ft, (double)i, (i & 1) ? 1.0 : -1.0);
+        ok &= (mp_fit_solve(&ft) == 1 && ft.rho < -0.9);
 
         /* F-0170: NaN v datech -> proklad „nevim" (0), ne NaN smernice. */
         mp_fit_reset(&ft);

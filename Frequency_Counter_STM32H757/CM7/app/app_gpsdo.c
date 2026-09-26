@@ -5007,7 +5007,10 @@ static void ana_fit_text(const mp_fit_t *f, int ok, const char *unit, char *b, s
      * 🔴 F-0169: o prukaznosti rozhoduje t-test (`mp_fit_significant`), ne pevny
      * prah |r| < 0,5. Ten nezavisel na poctu bodu: pri ~200 bodech (decimace
      * v `ana_recompute`) je r = 0,3 prukazne na p < 1e-4 a hlasilo se
-     * „neprukazne", pri 4 bodech neni prukazne ani r = 0,9. */
+     * „neprukazne", pri 4 bodech neni prukazne ani r = 0,9.
+     * 🔴 F-0173: ... ale jen u NEZAVISLYCH reziduí. Vc a teplota z logu putuji
+     * pomalu, takze test pocita s efektivnim poctem bodu z autokorelace reziduí
+     * (`mp_fit_t.rho`); bez toho hlasil falesny drift v 63–91 % pripadu. */
     snprintf(b, n, "%s %s  (r=%s%s)", sb, unit, rb,
              mp_fit_significant(f) ? "" : ", neprukazne");
 }

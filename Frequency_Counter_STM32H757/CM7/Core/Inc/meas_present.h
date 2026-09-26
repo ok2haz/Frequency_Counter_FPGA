@@ -190,6 +190,14 @@ typedef struct {
     double   r;                    /* Pearson, -1..+1 */
     double   x0, y0;               /* střed akumulace = první bod (F-0169) */
     double   sx, sy, sxx, syy, sxy;/* akumulátory (x-x0, y-y0) — paměť O(1) */
+    /* F-0173: lag-1 autokorelace reziduí, v POŘADÍ PŘIDÁVÁNÍ bodů (= čas).
+     * Počítá se jedním průchodem ze součtů sousedních dvojic (reziduum je
+     * lineární v X, Y, takže Σe_i·e_{i-1} jde rozepsat na tyto součty) —
+     * ANALÝZA čte body z logu jen jednou (blokující QSPI). */
+    double   px, py;               /* předchozí bod (centrovaný) */
+    double   l_yy, l_xx, l_xy, l_yx;       /* ΣY_i·Y_{i-1}, ΣX_i·X_{i-1}, ΣX_i·Y_{i-1}, ΣY_i·X_{i-1} */
+    double   l_ylead, l_ylag, l_xlead, l_xlag;  /* ΣY_i, ΣY_{i-1}, ΣX_i, ΣX_{i-1} (i >= 1) */
+    double   rho;                  /* výsledek: lag-1 autokorelace reziduí (po mp_fit_solve) */
 } mp_fit_t;
 
 void mp_fit_reset(mp_fit_t *f);
@@ -197,9 +205,18 @@ void mp_fit_add(mp_fit_t *f, double x, double y);
 /** Dopočítá a/b/r z akumulátorů. @return 1 = použitelné (n>=3 a rozptyl X > 0). */
 int  mp_fit_solve(mp_fit_t *f);
 /** Je směrnice statisticky průkazná? Dvoustranný t-test korelace na hladině 5 %:
- *  t = |r|·√(n−2)/√(1−r²) proti kritické hodnotě pro df = n−2 (tabulka do 30,
- *  nad tím konzervativně 2,042). Volat až po úspěšném `mp_fit_solve`.
- *  @return 1 = průkazná, 0 = neprůkazná (nebo málo bodů). */
+ *  t = |r|·√df/√(1−r²) proti kritické hodnotě pro df (tabulka do 30, nad tím
+ *  konzervativně 2,042). Volat až po úspěšném `mp_fit_solve`.
+ *  🔴 F-0173: df = ⌊n_eff⌋ − 2, kde n_eff = n·(1−ρ)/(1+ρ) pro ρ > 0 (lag-1
+ *  autokorelace reziduí; Santer et al. 2000). S df = n − 2 test předpokládal
+ *  NEZÁVISLÁ rezidua — Vc a teplota z datalogu ale putují pomalu, a simulace
+ *  (`docs/audit/sim/2026-09-26_ttest_autokorelace.js`) ukázala při 200 bodech
+ *  bez driftu falešný „průkazný drift" v 63 % (AR(1) ρ = 0,9) a 91 % (náhodná
+ *  procházka); s n_eff 7 % a 28 %. ⚠️ Náhodnou procházku přímka principiálně
+ *  od driftu neodliší — „průkazné" tedy znamená „neodpovídá bílému ani slabě
+ *  korelovanému šumu", ne „prokázaný lineární drift".
+ *  Webové dvojče `fitSig` (SPA) musí dávat totéž (`tools/spa/stat_test.js`).
+ *  @return 1 = průkazná, 0 = neprůkazná (nebo málo bodů / NaN). */
 int  mp_fit_significant(const mp_fit_t *f);
 
 /* Pure-logic unit test (perioda/nominál/jednotky/statistika/TFOM/filtr/

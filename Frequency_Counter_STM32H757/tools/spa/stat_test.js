@@ -40,7 +40,7 @@ function grabVar(name) {                       /* `var NAME=[...];` na jednom ra
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 
-const parts = ['adev', 'mdev', 'fit', 'fitSig'].map(n => [n, grab(n)]);
+const parts = ['adev', 'mdev', 'fit', 'effN', 'fitSig'].map(n => [n, grab(n)]);
 for (const [n, body] of parts) check(body !== null, 'funkce ' + n + '() je v SPA');
 const body = grabVar('T95') + parts.filter(p => p[1]).map(p => p[1]).join('\n');
 const api = new Function(body + '\nreturn {'
@@ -122,6 +122,23 @@ if (api.fitSig) {
   check(S(1, 3) === true,      'dokonala primka n=3 -> prukazne');
   check(S(0.99, 2) === false,  'n<3 -> neprukazne');
   check(S(NaN, 100) === false, 'NaN -> neprukazne (L-0087: NaN do bezpecne vetve)');
+  /* F-0173: tytez vektory jako mp_selftest — autokorelace snizi n_eff. */
+  check(S(0.4, 200, 0.9) === false, 'r=0,4 n=200 rho=0,9 -> neprukazne (n_eff 10,5, df 8)');
+  check(S(0.4, 200, -0.5) === true, 'zaporna rho se neuplatni');
+  check(S(0.4, 200, 0) === true,    'rho=0 -> jako bez korekce');
+}
+if (api.fit) {
+  /* F-0173: rho z fit() = lag-1 autokorelace reziduí (nezavisla reference). */
+  let s = 0; const y = [];
+  for (let i = 0; i < 200; i++) { s = 0.9 * s + rnd(); y.push(1e-12 * i + 1e-11 * s); }
+  const F = api.fit(y, 1.0);
+  let mx = 0, my = 0; for (let i = 0; i < 200; i++) { mx += i; my += y[i]; } mx /= 200; my /= 200;
+  let sxx = 0, sxy = 0; for (let i = 0; i < 200; i++) { sxx += (i - mx) ** 2; sxy += (i - mx) * (y[i] - my); }
+  const b = sxy / sxx, a = my - b * mx; let e0 = 0, e1 = 0, ep = 0;
+  for (let i = 0; i < 200; i++) { const e = y[i] - a - b * i; e0 += e * e; if (i) e1 += e * ep; ep = e; }
+  const ok = !!F && typeof F.rho === 'number' && Math.abs(F.rho - e1 / e0) < 1e-9;
+  check(ok, 'fit().rho = autokorelace reziduí (' + (ok ? F.rho.toFixed(4) : 'chybi/nesedi')
+        + ', ref ' + (e1 / e0).toFixed(4) + ')');
 }
 if (api.fit) {
   const y = []; for (let i = 0; i < 50; i++) y.push(1e-12 * i + rnd() * 1e-13);
