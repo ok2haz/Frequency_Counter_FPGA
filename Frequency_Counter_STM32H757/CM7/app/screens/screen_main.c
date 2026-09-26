@@ -1632,6 +1632,8 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
  * + hist_h invarianty (peak=plna vyska, log zveda slabe biny). Zadny sdileny
  * stav -> bezpecne z UartTasku za behu. Soucast UART "selftest". */
 static int16_t hist_h(float count, int peak, int16_t H, bool logy);   /* fwd */
+static int   nz_alpha(float mu, float mu_m, int have_m);                  /* fwd — typ sumu (bod 4) */
+static float adev_edf_alpha(int alpha, int M, int m);                  /* fwd — EDF podle typu sumu */
 bool screen_main_selftest(void)
 {
     char b[24]; int ok = 1;
@@ -1667,6 +1669,23 @@ bool screen_main_selftest(void)
         ok &= (nfb >= 2);                /* sanity: triple/double buffering */
     }
 
+    /* Bod 4: typ sumu (prahy jako web noiseName) a EDF podle typu (hodnoty
+     * spocitane ze vzorcu SP1065, overenych Monte Carlem). */
+    ok &= (nz_alpha(-1.0f, -1.5f, 1) == 2);          /* bily PM */
+    ok &= (nz_alpha(-1.0f, -1.0f, 1) == 1);          /* blikavy PM */
+    ok &= (nz_alpha(-0.9f,  0.0f, 0) == 2);          /* PM bez MDEV -> bily */
+    ok &= (nz_alpha(-0.5f,  0.0f, 0) == 0);          /* bily FM */
+    ok &= (nz_alpha( 0.05f, 0.0f, 0) == -1);         /* blikavy FM */
+    ok &= (nz_alpha( 0.5f,  0.0f, 0) == -2);         /* RW FM */
+    ok &= (nz_alpha( 1.0f,  0.0f, 0) == -2);         /* drift -> RW FM pro EDF */
+    {   static const struct { int al, M, m; float e; } EV[] = {
+            { 2, 24, 1, 12.4583f}, { 1, 24, 1, 14.585f}, { 0, 24, 1, 15.182f},
+            {-1, 24, 1, 20.114f},  {-2, 24, 1, 24.140f}, { 0, 24, 5, 5.105f} };
+        for (unsigned i = 0; i < sizeof EV / sizeof EV[0]; i++) {
+            float e = adev_edf_alpha(EV[i].al, EV[i].M, EV[i].m);
+            ok &= (fabsf(e / EV[i].e - 1.0f) < 2e-3f);
+        }
+    }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
@@ -1716,17 +1735,53 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
  * pocet nezavislych vzorku. Pas pak vysel na dlouhych tau ~1,5x uzsi, nez
  * odpovida datum (M=24, m=5: 0,21 misto 0,31). Tvrzeni „pas je proto uzsi,
  * a to opravnene" bylo pravda jen napul.
- * EDF pro overlapping ADEV, bily FM sum (NIST SP1065), N = M+1 fazovych bodu:
- *     edf = [ 3(N-1)/(2m) - 2(N-2)/N ] · 4m² / (4m² + 5)
- * ⚠️ Pro MDEV a HDEV ma SP1065 vlastni (jine) vzorce; tady se pouziva tentyz
- * jako APROXIMACE prvniho radu — pro ADEV presna, pro MDEV/HDEV priblizna.
- * Stejne tak predpoklad BILEHO FM je volba: pro jine typy sumu je EDF jina. */
-static float adev_edf_wfm(int M, int m)
+ * Od 2026-09-26 (bod 4) EDF PODLE TYPU SUMU v danem bode (dosud vzdy bily FM).
+ * Jednoduche aproximace Howe-Allan-Barnes (NIST SP1065) pro overlapping ADEV,
+ * N = M+1 fazovych bodu:
+ *   bily PM    (α= 2)  (N+1)(N-2m) / (2(N-m))
+ *   blikavy PM (α= 1)  exp( √( ln((N-1)/(2m)) · ln((2m+1)(N-1)/4) ) )
+ *   bily FM    (α= 0)  [3(N-1)/(2m) - 2(N-2)/N] · 4m²/(4m²+5)
+ *   blikavy FM (α=-1)  m=1: 2(N-2)²/(2,3N-4,9);  m>=2: 5N²/(4m(N+3m))
+ *   RW FM      (α=-2)  (N-2)/m · ((N-1)² - 3m(N-1) + 4m²) / (N-3)²
+ * Overeno Monte Carlem (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`): shoda
+ * s empirickou EDF do ~12 % pro M = 24 i 120 a m = 1, 2, 5. 🔑 Simulace chytila
+ * chybu v prvnim zapisu vzorce pro blikavy FM (chybel ctverec (N-2)² -> EDF 0,9
+ * misto ~19) — vzorec z pameti se bez overeni neprebira (L-0088).
+ * ⚠️ Pro MDEV/HDEV/TDEV se pouzivaji tytez (ADEV) vzorce jako aproximace. */
+static float adev_edf_alpha(int alpha, int M, int m)
 {
-    float N = (float)M + 1.0f, mf = (float)m;
-    float e = (3.0f * (N - 1.0f) / (2.0f * mf) - 2.0f * (N - 2.0f) / N)
-            * (4.0f * mf * mf) / (4.0f * mf * mf + 5.0f);
-    return (e < 1.0f) ? 1.0f : e;
+    double N = (double)M + 1.0, mm = (double)m, e;
+    switch (alpha) {
+    case 2:  e = (N + 1.0) * (N - 2.0 * mm) / (2.0 * (N - mm)); break;
+    case 1:  e = exp(sqrt(log((N - 1.0) / (2.0 * mm)) * log((2.0 * mm + 1.0) * (N - 1.0) / 4.0)));
+             break;
+    case -1: e = (m == 1) ? 2.0 * (N - 2.0) * (N - 2.0) / (2.3 * N - 4.9)
+                          : 5.0 * N * N / (4.0 * mm * (N + 3.0 * mm));
+             break;
+    case -2: e = (N - 2.0) / mm * ((N - 1.0) * (N - 1.0) - 3.0 * mm * (N - 1.0) + 4.0 * mm * mm)
+               / ((N - 3.0) * (N - 3.0));
+             break;
+    default: e = (3.0 * (N - 1.0) / (2.0 * mm) - 2.0 * (N - 2.0) / N)
+               * 4.0 * mm * mm / (4.0 * mm * mm + 5.0);
+    }
+    return (e >= 1.0) ? (float)e : 1.0f;     /* i NaN (blikavy PM mimo platnost) -> 1 */
+}
+
+/* Typ sumu α ze sklonu μ log-log ADEV; u fazoveho sumu bily/blikavy ze sklonu
+ * MDEV — TYTEZ prahy jako web `noiseName` (nejblizsi z μ = -1, -1/2, 0, +1/2,
+ * +1; PM: sklon MDEV < -1,25 -> bily). Drift (μ = +1) se pro EDF bere jako
+ * RW FM. Bez sklonu MDEV zustava PM bily (web v tom pripade rika jen „PM"). */
+static int nz_alpha(float mu, float mu_m, int have_m)
+{
+    static const float MU[5] = {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f};
+    int b = 0;
+    for (int i = 1; i < 5; i++) if (fabsf(mu - MU[i]) < fabsf(mu - MU[b])) b = i;
+    switch (b) {
+    case 0:  return (have_m && !(mu_m < -1.25f)) ? 1 : 2;   /* PM */
+    case 1:  return 0;
+    case 2:  return -1;
+    default: return -2;                                       /* RW FM a drift */
+    }
 }
 
 static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
@@ -1759,6 +1814,9 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
     static const int SM[] = {1, 2, 5};
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
+    if (max > 20) max = 20;
+    int16_t pM[20]; int8_t pm[20];     /* M a m kazdeho bodu (EDF) */
+    float   ad[20], md[20];            /* ADEV a MDEV v tomze bode (typ sumu) */
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
         for (int mi = 0; mi < 3; mi++) {
@@ -1778,14 +1836,74 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
             }
             if (a <= 0.0f) continue;
             taus[np] = dec * (float)m; adevs[np] = a;
-            /* Sirka konfidencniho pasu z EDF (viz `adev_edf_wfm`), ne z poctu
-             * clenu — overlapping cleny jsou korelovane (F-0167). */
-            if (edf) edf[np] = adev_edf_wfm(m_edf, m);
+            pM[np] = (int16_t)m_edf; pm[np] = (int8_t)m;
+            /* Typ sumu se urcuje VZDY z ADEV (+MDEV), ne ze zobrazene metriky —
+             * stejne jako web: sklony TDEV/MTIE jsou posunute o τ. */
+            ad[np] = (kind == ADEV_KIND_ADEV) ? a
+                   : ((s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV));
+            md[np] = (kind == ADEV_KIND_MDEV) ? a : adev_stage_kind(s, m, ADEV_KIND_MDEV);
             if (flr) flr[np] = adev_floor_base(kind, taus[np], m);
             np++;
         }
     }
+    /* Sirka konfidencniho pasu z EDF (ne z poctu clenu — overlapping cleny jsou
+     * korelovane, F-0167), EDF podle LOKALNIHO typu sumu: sklon z obou sousedu
+     * (na okrajich jednostranne). */
+    if (edf) {
+        for (int i = 0; i < np; i++) {
+            int i0 = (i > 0) ? i - 1 : i, i1 = (i < np - 1) ? i + 1 : i;
+            float mu = -0.5f, mum = 0.0f; int hm = 0;
+            float lt = (i1 > i0) ? log10f(taus[i1] / taus[i0]) : 0.0f;
+            if (lt > 0.0f && ad[i0] > 0.0f && ad[i1] > 0.0f) mu = log10f(ad[i1] / ad[i0]) / lt;
+            if (lt > 0.0f && md[i0] > 0.0f && md[i1] > 0.0f) { mum = log10f(md[i1] / md[i0]) / lt; hm = 1; }
+            edf[i] = adev_edf_alpha(nz_alpha(mu, mum, hm), pM[i], pm[i]);
+        }
+    }
     return np;
+}
+
+/* Sklon log-log nejmensimi ctverci — zrcadlo webove `logSlope`. */
+static int nz_slope(const float *t, const float *v, int n, float *out)
+{
+    double sx = 0, sy = 0, sxx = 0, sxy = 0; int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (!(v[i] > 0.0f) || !(t[i] > 0.0f)) continue;
+        double X = log10((double)t[i]), Y = log10((double)v[i]);
+        sx += X; sy += Y; sxx += X * X; sxy += X * Y; k++;
+    }
+    if (k < 2) return 0;
+    double d = k * sxx - sx * sx;
+    if (!(fabs(d) > 1e-15)) return 0;
+    *out = (float)((k * sxy - sx * sy) / d);
+    return 1;
+}
+
+/* Prevladajici typ sumu pro okno ALLAN (bod 4) — jako web `noiseDesc`: sklon
+ * pres VSECHNY body ADEV, fazovy sum rozlisi sklon MDEV. Nezavisle na zobrazene
+ * metrice. @return 1 = popis vyplnen (aspon 3 body), 0 = malo dat. */
+static int noise_desc(char *name, size_t nn, char *slope, size_t ns)
+{
+    static const int SM[] = {1, 2, 5};
+    float t[20], ad[20], md[20]; int n = 0;
+    for (int s = 0; s < ADEV_STAGES && n < 20; s++)
+        for (int mi = 0; mi < 3 && n < 20; mi++) {
+            int m = SM[mi];
+            float a = (s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV);
+            if (!(a > 0.0f)) continue;
+            t[n] = powf(10.0f, (float)s) * (float)m; ad[n] = a;
+            md[n] = adev_stage_kind(s, m, ADEV_KIND_MDEV);
+            n++;
+        }
+    float mu = 0.0f, mum = 0.0f;
+    if (n < 3 || !nz_slope(t, ad, n, &mu)) return 0;
+    int hm = nz_slope(t, md, n, &mum);
+    static const char *const NM[5] = {"RW FM / drift", "blikavy FM", "bily FM", "blikavy PM", "bily PM"};
+    int al = nz_alpha(mu, mum, hm);
+    snprintf(name, nn, "%s", NM[al + 2]);
+    int c = (int)(mu * 100.0f + (mu >= 0.0f ? 0.5f : -0.5f));
+    int ac = (c < 0) ? -c : c;
+    snprintf(slope, ns, "τ^%c%d,%02d", (c < 0) ? '-' : '+', ac / 100, ac % 100);
+    return 1;
 }
 
 /* Spolecne log-log mapovani ADEV krivky do 'inner' (+ markery). Y pevne dekady
@@ -1915,8 +2033,8 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
         pts[i].x = (int16_t)(inner.x + fx * inner.w);
         pts[i].y = allan_y(inner, log10f(vals[i]), ymin, dec);
-        /* Konfidencni mez: rel. 1σ ~ 1/sqrt(2·edf) (1. rad; EDF bily FM, viz
-         * `adev_edf_wfm`). Pro TDEV/MTIE stejna relativni nejistota (jsou
+        /* Konfidencni mez: rel. 1σ ~ 1/sqrt(2·edf) (1. rad; EDF podle typu sumu
+         * v bode, viz `adev_edf_alpha`). Pro TDEV/MTIE stejna relativni nejistota (jsou
          * τ·ADEV nasobky). ⚠️ Drive tu stalo „0,8/sqrt(paru)" a o par radku vys
          * „1/sqrt(2*ns)" — dva ruzne vzorce pro totez; plati tenhle (F-0167). */
         float f = 0.0f;
@@ -3166,6 +3284,18 @@ void screen_main_render_stats_table(prim_rect_t rect)
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ty}, vb,
                        &ui_font_mono_14, (a > 0.0f) ? UI_COLOR_INK_2 : UI_COLOR_INK_4,
                        PRIM_ALIGN_RIGHT);
+    }
+    /* Bod 4: prevladajici typ sumu (tytez prahy jako web). Jen kdyz se vejde
+     * do vysky rectu (tabulka ma 5 radku po 30 px od rect.y + 46). */
+    int16_t ny = (int16_t)(ry + 5 * 30 + 4);
+    char nb[20], sb[16];
+    if (ny + 26 <= rect.y + rect.h && noise_desc(nb, sizeof nb, sb, sizeof sb)) {
+        prim_draw_text((prim_point_t){rect.x, ny}, "sum", &ui_font_mono_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ny}, nb, &ui_font_mono_14,
+                       UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(ny + 22)}, sb,
+                       &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
     }
 }
 
