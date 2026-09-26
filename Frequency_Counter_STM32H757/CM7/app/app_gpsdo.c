@@ -4384,9 +4384,16 @@ static void app_gpsdo_render_holdover(void)
 }
 
 /* ── Self-survey (s_view=32): firmwarove prumerovani polohy (Welford) ─────────
- * Prumeruje lat/lon/alt z platnych fixu; horizontalni rozptyl [m] = konvergence
- * (klesa s N). START posle i UBX-CFG-TMODE2 (survey-in, best-effort — timing RX).
- * Akumulace bezi na pozadi (app_gpsdo_tick) i mimo okno. */
+ * Prumeruje lat/lon/alt z platnych fixu. START posle i UBX-CFG-TMODE2 (survey-in,
+ * best-effort — timing RX). Akumulace bezi na pozadi (app_gpsdo_tick) i mimo okno.
+ * 🔴 `spread_m` je smerodatna odchylka JEDNOTLIVYCH fixu (F-0162), NE chyba
+ * prumeru: s N neklesa, konverguje k rozptylu fixu daneho mista. Do 2026-09-26
+ * se tu tvrdilo „konvergence (klesa s N)" a okno ji barvilo zelene pod 2 m,
+ * takze barva zavisela na miste, ne na delce pruzkumu. Chyba prumeru by byla
+ * sigma/sqrt(N_eff), jenze fixy GPS jsou autokorelovane v minutach az hodinach
+ * a N_eff z poctu fixu poctive odhadnout nejde — proto se nezobrazuje vubec.
+ * `SURVEY_ACC_MM` je mez pro UBX `svinAccLimit` (ta se tyka prumeru), ne prah
+ * pro tuto hodnotu. */
 #define SURVEY_MIN_DUR_S   3600u    /* UBX svinMinDur */
 #define SURVEY_ACC_MM      2500u    /* UBX svinAccLimit (2,5 m) */
 static struct {
@@ -4396,7 +4403,7 @@ static struct {
     uint32_t last_fixes;           /* posl. videny g.fixes -> pocitej jen NOVE fixy */
     double   mlat, mlon, malt;      /* running mean (deg / m) */
     double   m2lat, m2lon;          /* Welford M2 (horizontalni rozptyl) */
-    float    spread_m;              /* horizontalni std [m] */
+    float    spread_m;              /* horiz. sigma jednotlivych fixu [m] (NE chyba prumeru) */
 } s_survey;
 
 static void survey_accumulate(void)
@@ -4458,10 +4465,10 @@ static void app_gpsdo_render_survey(void)
     if (first) {
         view_set(32);
         window_chrome("SELF-SURVEY", WIN_TITLE_Y);
-        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Prumerovani polohy (konvergence 1PPS)"};
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Prumerovani polohy"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 344},
-                       "Prumeruje platne fixy; rozptyl klesa s N. UBX-CFG-TMODE2 = best-effort (timing RX).",
+                       "Rozptyl = sigma jednotlivych fixu (s N neklesa). TMODE2 = best-effort (timing RX).",
                        &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         c_st[0] = c_n[0] = c_sp[0] = c_pos[0] = '\0';
         /* Neni-li zivy survey a mame ulozeny vysledek (syscfg), zobraz ho (HOTOVO). */
@@ -4485,7 +4492,7 @@ static void app_gpsdo_render_survey(void)
                            snprintf(b, sizeof b, "%d.%03d m", mm / 1000, mm % 1000); }
     else                 snprintf(b, sizeof b, "--");
     if (first || dchg(c_sp, sizeof c_sp, b))
-        kv_row_live(188, "Rozptyl H:", b, (s_survey.n >= 2 && s_survey.spread_m < 2.0f) ? UI_COLOR_OK : UI_COLOR_WARN, first);
+        kv_row_live(188, "Rozptyl fixu:", b, UI_COLOR_INK_2, first);   /* neutralne: neni to verdikt (F-0162) */
     if (s_survey.n) { char la[16], lo[16];
                       fmt_ll((float)s_survey.mlat, 'N', 'S', la, sizeof la);
                       fmt_ll((float)s_survey.mlon, 'E', 'W', lo, sizeof lo);
