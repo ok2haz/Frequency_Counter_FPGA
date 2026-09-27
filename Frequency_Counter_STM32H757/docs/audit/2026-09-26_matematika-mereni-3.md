@@ -193,7 +193,10 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
   `scpi SENS:FREQ:GATE?` → `0.100000`; `scpi ipc SENS:FREQ:GATE?` → `10.000000`.
 - **Návrh (skupina A):** přesunout blok za `memset`; do `scpi_selftest` nelze
   (test nejde přes loader), ověřit `scpi` vs `scpi ipc` na HW.
-- **Stav:** otevřeno — čeká na odsouhlasení (mimo schválený rozsah).
+- **Stav:** opraveno 2026-09-27 (`f81e25a`) podle návrhu — blok přesunut za
+  `memset`, plní se i v levné variantě. `.text` vzrostl o 32 B: dřív překladač
+  zápisy před `memset` zahodil jako mrtvé, což je samo o sobě důkaz, že se nikdy
+  neprovedly. ⬜ neověřeno na HW (TODO #255 krok 15).
 
 ---
 
@@ -220,7 +223,8 @@ tím, co přístroj změří, a tím, co z něj dostane uživatel mimo displej.
 **Po opravách (2026-09-27):** nálezy celkem 6 — přibyly **F-0184 [S2]**
 (nalezen pozitivní kontrolou opravy F-0183) a **F-0185 [S3]** (mimo modul,
 při úpravě SCPI loaderu). Opraveno F-0180, F-0182, F-0183, F-0184; F-0181
-odloženo (C); F-0185 čeká na odsouhlasení. Všechny opravy ⬜ neověřeno na HW.
+odloženo (C); F-0185 opraveno tentýž den na žádost uživatele. Všechny opravy
+⬜ neověřeno na HW.
 
 ## Návrh triáže
 

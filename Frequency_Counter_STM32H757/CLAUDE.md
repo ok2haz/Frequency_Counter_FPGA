@@ -779,6 +779,17 @@ okno > 1 s, a 1Hz tik UiTasku (~1,01 s) občas pobere 5 měření místo 4. Poct
 LOKÁLNÍHO typu šumu (sklon ADEV, bílý/blikavý PM ze sklonu MDEV; aproximace Howe–Allan–Barnes,
 ověřené Monte Carlem do ~12 %), `nz_alpha` = tytéž prahy jako web `noiseName`; okno ALLAN
 ukazuje pod tabulkou převládající typ šumu a sklon.
+**Hustota bodů Allanova grafu** (2026-09-27, `6835bd5`/`708c120`): **3 / 5 / 9 bodů na dekádu**
+(mantisy `DENS_M` = 1-2-5 / 1-2-3-5-7 / 1..9 × 10ⁿ), displej volba v **Nastavení → DISPLEJ**
+(syscfg bajt `allan_dens` ve vycpávce — velikost blobu 192 B beze změny, magic se nezvedal),
+web přepínač **BODY/DEK** v kartě ALLAN (localStorage `gpref.ad`, `mGrid` = táž mřížka).
+🔴 Hustší graf **nepřináší novou informaci** (body jedné dekády jsou z téže stage, silně
+korelované), jen hladší křivku a přesnější sklon. Proto **ring stage 24 → 60** (`ADEV_RING`;
+m = 9 potřebuje pro MDEV/HDEV M ≥ 28), estimátor bez modula v nejvnitřnější smyčce
+(`adev_at`, bit za bit stejný výsledek), EDF z lokálního sklonu se sousedy ≥ 0,29 dekády
+(při 1-2-5 přesně původní sousedé) a ⚠️ **typ šumu se určuje VŽDY z mřížky 1-2-5** a tabulky
+zůstávají beze změny (displej dekády, web body 1-2-5) bez ohledu na zvolenou hustotu — je to
+vlastnost dat, ne zobrazení.
 **Podlaha čítače** (čerchovaná čára v grafu, displej i web): kvantizace TDC = bílý PM,
 σx = tdc/√12 → ADEV tdc/(2τ), HDEV 0,527·tdc/τ, MDEV tdc/(2τ√m); kreslí se jen při
 reálném měření, platí pro signál asynchronní k referenci (`adev_floor_base` / `floorOf`).
@@ -1583,10 +1594,12 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   rámec** (nula při mrtvém linku), ne **NASTAVENÍ** (`g_ui_cfg`). Opraveno v **IPC v11** (snapshot má
   `ui_cfg`, bývalý `_pad_s` → velikost beze změny). **Poučení: readback musí číst NASTAVENÍ, ne poslední
   naměřenou hodnotu** — jinak se chyba projeví teprve když měření neběží a vypadá jako porucha zápisu.
-  🔴 **F-0185 (2026-09-27, OTEVŘENO): USB cesta má slepý readback TAKY** — tvrzení „USB cesta
-  byla správně" neplatí: `scpi_src_load_cm7_ex` plní `set_*` a hned za tím dělá `memset`,
-  takže přes USB `GATE?`/`CHAN?`/`INIT:CONT?` vrací vždy výchozí hodnotu (od `6e43eb2`).
-  Ověření: `scpi SENS:FREQ:GATE?` proti `scpi ipc SENS:FREQ:GATE?` po `GATE 10`.
+  🔴 **F-0185 (opraveno 2026-09-27, `f81e25a`): USB cesta měla slepý readback TAKY** —
+  tvrzení „USB cesta byla správně" neplatilo: `scpi_src_load_cm7_ex` plnil `set_*` a hned
+  za tím dělal `memset`, takže přes USB `GATE?`/`CHAN?`/`INIT:CONT?` vracely vždy výchozí
+  hodnotu (od `6e43eb2`; překladač zápisy zahodil jako mrtvé). **`memset` patří na začátek
+  loaderu, plnění až za něj** (L-0098). Ověření na HW: `scpi SENS:FREQ:GATE?` proti
+  `scpi ipc SENS:FREQ:GATE?` po `GATE 10` → SHODA. ⬜ neověřeno na HW.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`) — je to 101
   kontrol v jedné návratové hodnotě a na hostu se spustit **nedá** (jen arm-none-eabi, žádný nativní C).
   **Totéž má od 2026-08-30 i `httpd_min_selftest`** (`httpd_min_selftest_fail_line()`, makro `HT_OK`).
@@ -2077,7 +2090,9 @@ ne z počtu členů, F-0167; `allan_band_fill`), **`FX_HOLD_CONE`** (holdover dr
   - **Z Nastavení PRYČ do Menu** (jsou to nástroje, ne nastavení): **Reference Si5356**, **Benchmark
     pamětí**, **SD karta**.
   - `⚠️ Eased jas bar tiká v `s_view==36`, ne v 7. Okno DISPLEJ nese i přepínač rozložení
-    (HYBRIDNÍ ↔ KLASICKÉ, `LAYOUT_RECT`).
+    (HYBRIDNÍ ↔ KLASICKÉ, `LAYOUT_RECT`) a od 2026-09-27 **hustotu Allanova grafu**
+    (`ALLAN_DENS_RECT`, levá spodní karta, cyklus 1-2-5 → 1-2-3-5-7 → 1 AŽ 9; poznámka
+    o auto-dimu se přesunula do pravé spodní karty).
   - *(Předchozí „1. iterace" (2×5 mřížka vpravo) a „2. iterace" (3×4) jsou v `docs/CLAUDE_ARCHIV.md`.)*
 
 - **Okno SÍŤ (`s_view=35`)** — DHCP ZAP/VYP + statická IP/maska/brána (výběr pole a oktetu,

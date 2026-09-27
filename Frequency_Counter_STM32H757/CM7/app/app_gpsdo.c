@@ -8273,8 +8273,10 @@ void app_gpsdo_stats_seed_start(void)
 {
     datalog_status_t st; datalog_get_status(&st);
     if (!st.ready || st.records < 4u) { s_seed_state = 2; return; }
-    /* Vic nez ADEV_RING(24) x 10^4 vzorku uz nema co pridat — nejvyssi stage se
-     * stejne prepise. Strop drzi dobu rekonstrukce v jednotkach minut. */
+    /* Strop drzi dobu rekonstrukce v jednotkach minut. Vznikl jako ADEV_RING x 10^4
+     * (pri ringu 24 uz vic vzorku nemelo co pridat); od 2026-09-27 je ring 60,
+     * takze nejvyssi stage z logu uz neni plna — zaplni se zive. Strop se zamerne
+     * nezvedal: 2,5x delsi rekonstrukce za par bodu na nejdelsich τ nestoji. */
     uint32_t cap = 24u * 10000u;
     s_seed_left  = (st.records < cap) ? st.records : cap;
     s_seed_total = s_seed_left;

@@ -3350,6 +3350,31 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0098 — Nulování struktury PO jejím naplnění: překladač zápisy tiše zahodil, dvojče měřítko mělo
+
+- **Datum:** 2026-09-27 (F-0185, nalezeno při úpravě téže funkce pro F-0180)
+- **Oblast:** `scpi.c` — `scpi_src_load_cm7_ex` (USB SCPI)
+- **Symptom:** přes USB vracely `SENS:FREQ:GATE?`, `CHAN?` a `INIT:CONT?` vždy
+  výchozí hodnotu; přes TCP/HTTP správnou. Od `6e43eb2` (přidání readbacku), tedy
+  týdny, a CLAUDE.md přitom tvrdil, že „USB cesta byla správně".
+- **Příčina:** blok plnící `set_*` byl přidán NAD existující `memset(src, 0, …)`.
+  Překladač zápisy před memsetem odstranil jako mrtvé (`.text` po opravě +32 B)
+  — bez varování, GCC na mrtvé zápisy neupozorňuje. Selftest SCPI jde přes vlastní
+  `scpi_src_t`, ne přes loader, takže to neviděl.
+- **Oprava:** blok za `memset` (`f81e25a`).
+- **Pravidlo:** **Ve funkci, která strukturu nuluje, patří nulování na ÚPLNÝ
+  začátek a každé plnění až za něj — a při přidávání pole do takové funkce se
+  podívej, kde memset leží.** Když existuje dvojče (tady USB loader a IPC loader
+  téže `scpi_src_t`), rozdíl mezi nimi je nejlevnější test: `scpi X` proti
+  `scpi ipc X` hlásí SHODA/ROZDIL.
+- **Detekce:** grep `memset(` ve funkcích typu `*_load*`/`*_fill*` a kontrola, že
+  nad ním nejsou přiřazení do téže struktury; na HW porovnání `scpi` vs `scpi ipc`
+  pro každý readback.
+- **Commit:** `f81e25a`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

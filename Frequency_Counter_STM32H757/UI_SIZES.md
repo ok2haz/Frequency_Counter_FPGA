@@ -40,6 +40,7 @@ velikosti prvků hodnotí ve fyzických jednotkách — pixely na 4,3" panelu kl
 | **DISPLEJ** — auto-dim ZAP/VYP | 140×64 | 7,5 | 7 mm | ✓ |
 | **DISPLEJ** — auto-dim prodleva ± | 64×64 | 7,5 | 7 mm | ✓ (2026-08-15 zvětšeno ze **56 px / 6,6 mm** — byl to jediný cíl pod minimem; místo se vzalo z 74 px prázdna mezi tlačítky) |
 | **DISPLEJ** — Vzhled (téma) | 200×64 | 7,5 | 7 mm | ✓ |
+| **DISPLEJ** — Allan: bodů na dekádu (1-2-5 / 1-2-3-5-7 / 1 AŽ 9) | 150×60 | 7,0 | 7 mm | ✓ (2026-09-27; přesně na minimu — výšku drží karta 96 px s hlavičkou, text ≤ 117 px změřen z tabulky fontu) |
 | **SENZORY** — RESET MIN/MAX (footer) | 300×61 | 7,1 | 7 mm | ✓ (2026-08-17) |
 | **DATALOG** — SMAZAT LOG (footer, dvojí potvrzení) | 220×61 | 7,1 | 7 mm | ✓ (2026-08-17; vedle ZAPNOUT/VYPNOUT 220×61. Nahradilo mrtvé „EXPORT NA SD", které sedělo na **identickém rectu** jako ZAPNOUT/VYPNOUT a nemělo touch handler) |
 | **ALARMY** — RESET STATISTIK (footer) | **200**×61 | 7,1 | 7 mm | ✓ (2026-08-17; šířka 200, ne 300 jako u Senzorů — `MUTE_RECT` {230,354,148,64} sahá spodní hranou na y=418, tedy 1 px do řádku footeru) |
