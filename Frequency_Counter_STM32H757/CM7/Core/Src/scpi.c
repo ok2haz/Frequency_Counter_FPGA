@@ -1080,17 +1080,21 @@ static int scpi_src_read_log_cm7(scpi_src_t *s, uint32_t from_newest, datalog_re
  * zamku, tedy rove tak drahe jako ta podminka navic. */
 static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 {
+    memset(src, 0, sizeof *src);
     /* Nastaveny stav mereni (SET/readback). Cte se z `g_ui_cfg` = tentyz zdroj,
      * ktery pouziva UI i persistence do BKP; kodovani: bit0 mode, bit1 chan,
      * bity2:3 gate, bit4 run. Kdyz ceka nas vlastni SET, uz ma prednost (aby
-     * `SET;readback` v JEDNE zprave vratilo novou hodnotu, ne tu predchozi). */
+     * `SET;readback` v JEDNE zprave vratilo novou hodnotu, ne tu predchozi).
+     * 🔴 F-0185: MUSI byt AZ ZA `memset` — do 2026-09-27 stal blok pred nim,
+     * memset ho hned smazal a pres USB vracely `GATE?`/`CHAN?`/`INIT:CONT?` vzdy
+     * vychozi hodnotu (TCP/HTTP pres `ipc_scpi.c` byly spravne = dve pravdy).
+     * Plni se i v levne variante (`full == 0`) — je to jen cteni globalu. */
     {
         uint8_t c = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
         src->set_chan     = (uint8_t)((c >> 1) & 1u);
         src->set_gate_idx = (uint8_t)((c >> 2) & 3u);
         src->set_running  = (uint8_t)((c >> 4) & 1u);
     }
-    memset(src, 0, sizeof *src);
     src->selftest_pass = (g_selftest_res == 1);
     src->uptime_s      = g_uptime_s;
     if (!full) return;
