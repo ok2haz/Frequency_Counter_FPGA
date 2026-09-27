@@ -285,6 +285,10 @@ static const prim_rect_t THEME_RECT   = {420, 112, 200, 64};   /* Vzhled (y 190-
 /* Rozlozeni hlavni obrazovky — pravy sloupec okna DISPLEJ, symetricky pod
  * kartou Vzhled (stejne y jako Auto-dim vlevo). */
 static const prim_rect_t LAYOUT_RECT  = {420, 230, 240, 64};
+/* Hustota bodu Allanova grafu — leva spodni karta okna DISPLEJ (2026-09-27).
+ * Header karty ma baseline rect.y+25 = 339, tlacitko zacina az na 346 a konci
+ * 406 < 410 (spodek karty); vyska 60 px = projektove minimum dotyku (7 mm). */
+static const prim_rect_t ALLAN_DENS_RECT = {30, 346, 150, 60};
 /* Okno Cas (s_view=22, dlazdice v Menu): rezim AUTO CET/CEST vs rucni posun.
  * TODO #11(1b) HOTOVO: 56->64 px, vsude dost rezervy (viz komentare u volajicich). */
 static const prim_rect_t TZ_AUTO_RECT = {30, 236, 200, 64};   /* AUTO <-> RUCNI */
@@ -2723,6 +2727,28 @@ static void settings_upd_layout(void)
                       .label = screen_main_layout_is_classic() ? "KLASICKE" : "HYBRIDNI"};
     prim_fill_rect(LAYOUT_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);  /* meni se label */
     ui_button_render(&lb);
+}
+/* Hustota Allanova grafu. Label nese STAV (mantisy τ v dekade) jako Vzhled /
+ * Rozlozeni; vedle pocet bodu. Sirky zmerene z tabulek fontu: nejdelsi label
+ * "1-2-3-5-7" mono_22 = 117 px (tlacitko 150), radky sans_16 <= 186 px od x=192
+ * (karta konci na 394). Pred kreslenim clear — meni se label i text. */
+static const char *const ALLAN_DENS_LABELS[3] = { "1-2-5", "1-2-3-5-7", "1 AZ 9" };
+static const char *const ALLAN_DENS_TEXT[3]   = { "3 body na dekadu", "5 bodu na dekadu",
+                                                  "9 bodu na dekadu" };
+static void settings_upd_allan(void)
+{
+    int d = screen_main_allan_density();
+    if (d < 0 || d > 2) d = 0;
+    prim_fill_rect(ALLAN_DENS_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_fill_rect((prim_rect_t){190, 350, 200, 52}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    ui_button_t b = {.rect = ALLAN_DENS_RECT, .variant = UI_BUTTON_NORMAL,
+                     .label = ALLAN_DENS_LABELS[d]};
+    ui_button_render(&b);
+    prim_draw_text((prim_point_t){192, 370}, ALLAN_DENS_TEXT[d],
+                   &ui_font_sans_16, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){192, 394},
+                   d ? "hustsi krivka, stejna data" : "vychozi",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
 }
 static void settings_upd_lang(void)
 {
@@ -6454,16 +6480,20 @@ static void app_gpsdo_render_display(void)
     ui_card_render_chrome(&c5);
     settings_upd_layout();
 
-    /* Poznamka DOLE PRES CELOU SIRKU (764 px) -> text se vejde na 2 radky misto 3
-     * natesno. Header label karty ma baseline rect.y+25 (=339), proto prvni radek
-     * az na 368; karta konci 410, footer zacina 417. */
-    ui_card_t c4 = {.rect = {DG_LX, 314, 764, 96}, .header_label = "Pozn."};
+    /* Spodni rada (2026-09-27): vlevo hustota Allanova grafu, vpravo poznamka.
+     * Poznamka byla do te doby pres celou sirku; zkracene radky sans_16 maji
+     * zmerene 323 a 268 px pri dostupnych 348 (376 - 2x14). Header label karty
+     * ma baseline rect.y+25 (=339), text az od 368; karta konci 410, footer 417. */
+    ui_card_t c6 = {.rect = {DG_LX, 314, DG_COLW, 96}, .header_label = "Allan: bodu na dekadu"};
+    ui_card_render_chrome(&c6);
+    settings_upd_allan();
+    ui_card_t c4 = {.rect = {DG_RX, 314, DG_COLW, 96}, .header_label = "Pozn."};
     ui_card_render_chrome(&c4);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LX + 14), 368},
-                   "Auto-dim po necinnosti ztlumi podsviceni a zobrazi velke hodiny.",
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 368},
+                   "Auto-dim ztlumi podsviceni, ukaze hodiny.",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LX + 14), 394},
-                   "Prvni dotek jen probudi, nespusti akci tlacitka.",
+    prim_draw_text((prim_point_t){(int16_t)(DG_RX + 14), 394},
+                   "Prvni dotek jen probudi (bez akce).",
                    &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     present_now();
 }
@@ -9269,6 +9299,14 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 screen_main_init();
                 tap_flash(LAYOUT_RECT);
                 DISP_UPD(settings_upd_layout);
+                return true;
+            }
+            if (in_rect(x, y, ALLAN_DENS_RECT)) {           /* 3 -> 5 -> 9 bodu na dekadu */
+                screen_main_set_allan_density((screen_main_allan_density() + 1) % 3);
+                g_sys_cfg_dirty = 1;                        /* persist do W25Q (debounced) */
+                /* Graf se prekresli sam: hlavni obrazovka pri navratu plnym renderem,
+                 * okno ALLAN pri otevreni. */
+                DISP_UPD(settings_upd_allan);
                 return true;
             }
             #undef DISP_UPD

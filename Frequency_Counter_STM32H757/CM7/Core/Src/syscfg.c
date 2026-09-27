@@ -24,6 +24,7 @@
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
+#include <stddef.h>            /* offsetof — hlidani layoutu blobu (allan_dens ve vycpavce) */
 
 /* Verzovany blob (magic se zmeni pri nekompatibilni zmene layoutu; store sam
  * overuje CRC16 -> magic jen potvrzuje ze bajty patri syscfg). Pole zabalena
@@ -126,6 +127,12 @@ typedef struct {
      * `mirror_seq`/`mirror_vsn` = vodotisk + HW identita karty, ke ktere patri
      * (viz `datalog_mirror_vsn` proc CID, ne FAT volume serial). */
     uint8_t  mirror_en;
+    /* Hustota bodu Allanova grafu (0 = 3, 1 = 5, 2 = 9 na dekadu; 2026-09-27).
+     * ⚠️ Lezi ve BYVALE VYCPAVCE za `mirror_en` — velikost blobu (192 B) ani
+     * offset `mirror_seq` (184) se nezmenily (hlida _Static_assert nize), takze
+     * magic se NEZVEDA a uzivatel neprijde o nastaveni. Stary blob ma na tom
+     * miste nulu (`pack` nuluje vcetne vycpavky od #43) = vychozi 3 na dekadu. */
+    uint8_t  allan_dens;
     uint32_t mirror_seq;
     uint32_t mirror_vsn;
 } syscfg_blob_t;
@@ -136,9 +143,13 @@ typedef struct {
  * zkousel 100x/s, nastaveni by se prestalo ukladat a `status` by nerekl nic.
  * Projevilo by se to jako „nastaveni neprezije power-cyklus", tedy symptom, ktery
  * se hleda uplne jinde. Blob uz vyrostl nejmene dvanactkrat (viz historie magicu
- * vyse), takze to neni teoreticka mez. Dnes 184 B ze 4080. */
+ * vyse), takze to neni teoreticka mez. Dnes 192 B ze 4080. */
 _Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
                "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+/* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
+   by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
+_Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u,
+               "syscfg blob zmenil layout -- to vyzaduje novy magic (SYSCFG_BLOB_MAGIC)");
 
 static w25q_store_t s_store;
 
@@ -201,6 +212,7 @@ static void pack(syscfg_blob_t *b)
     b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
     b->enc_div        = encoder_div();
     b->mirror_en      = datalog_mirror_enabled() ? 1u : 0u;
+    b->allan_dens     = (uint8_t)screen_main_allan_density();
     b->mirror_seq     = datalog_mirror_seq();
     b->mirror_vsn     = datalog_mirror_vsn();
 }
@@ -285,6 +297,7 @@ void syscfg_load(void)
      * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
      * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
+    screen_main_set_allan_density(b.allan_dens);   /* mimo 0..2 -> 0 (vychozi) */
     encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;

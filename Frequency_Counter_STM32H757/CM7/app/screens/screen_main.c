@@ -1388,10 +1388,15 @@ static float stats_drift(void)
 
 /* ── Decimacni pyramida pro DLOUHODOBY Allan (tau 1..100000 s, ohranicena pamet) ──
  * Vzorek y (1/s) jde do stage 0; po 10 vzorcich se jejich prumer posune do dalsi
- * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~640 B
+ * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~2,9 kB
  * (plochy buffer by chtel desitky MB). */
 #define ADEV_STAGES 6                 /* tau = 1, 10, 100, 1k, 10k, 100k s */
-#define ADEV_RING   24                /* prumeru na stage (na ADEV vypocet) */
+/* Prumeru na stage. 60 (drive 24) kvuli hustsimu Allanovu grafu (2026-09-27):
+ * body τ = m·10^s s s mantisou m az 9 (viz `DENS_M`) potrebuji pro MDEV/HDEV
+ * M >= 3m+1 = 28 prumeru, a s 24 by se nespocitaly vubec. Pri m = 9 zbyva ADEV
+ * 43 clenu, MDEV 35 a HDEV 34. Vedlejsi efekt i u vychozich 1-2-5: vic clenu
+ * (uzsi pas nejistoty), za cenu delsi pameti stage (60·10^s s misto 24·10^s s). */
+#define ADEV_RING   60
 typedef struct { double ring[ADEV_RING]; int16_t head, count; double acc; int16_t acc_n; } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
@@ -1488,10 +1493,19 @@ int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc)
     return 1;
 }
 
-static double adev_rat(const adev_stage_t *sg, int i)      /* i-ty nejstarsi prvek */
+/* Index nejstarsiho prvku ringu — pocita se JEDNOU na estimator. Drive se modulo
+ * delalo v nejvnitrnejsi smycce (az dvakrat na clen); s ringem 60 a m az 9
+ * (hustsi Allan) by to stalo radove vic nez samotna aritmetika. Soucet se
+ * sklada ze TYCHZ clenu ve STEJNEM poradi, vysledek je tedy bit za bit stejny. */
+static int adev_base(const adev_stage_t *sg)
 {
-    int idx = (sg->head - sg->count + i + 2 * ADEV_RING) % ADEV_RING;
-    return sg->ring[idx];
+    return (sg->head - sg->count + ADEV_RING) % ADEV_RING;
+}
+static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstarsi */
+{
+    int k = base + i;                   /* base < RING, i < RING -> k < 2·RING */
+    if (k >= ADEV_RING) k -= ADEV_RING;
+    return sg->ring[k];
 }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
@@ -1584,7 +1598,7 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 
 /* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
 /* ── Estimatory stability nad ringem jedne stage (τ0 = 10^s s) ───────────────
- * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_rat`).
+ * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_at`).
  * Vsechny tri jsou OVERLAPPING (Riley, NIST SP1065) — z TYCHZ dat davaji vyrazne
  * lepsi konfidenci nez non-overlapping varianta, ktera tu byla do 2026-08-18:
  * ta pri tau = m·τ0 zahodila vetsinu moznych dvojic (pouzila jen M/m bloku misto
@@ -1600,7 +1614,8 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
  *        ADEV je od sebe neodlisi, MDEV ano (jiny sklon).
  *   HDEV je imunni vuci LINEARNIMU DRIFTU (druhe diference), takze u OCXO se
  *        stárnutím ukaze skutecny sum misto driftove rampy.
- * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s.
+ * Slozitost O(M·m²) pri M<=60 a m<=9 -> nejhure ~5 tisic scitani na bod (MDEV),
+ * bez modula v nejvnitrnejsi smycce (`adev_at`), bezi 1x/s.
  *
  * ⚠️ F-0166 (2026-09-26): meze smycek odpovidaji poctum clenu ve vzorcich vyse
  * (0-indexovano posledni platne j = M-2m / M-3m / M-3m+1). Do te doby vsechny
@@ -1612,10 +1627,10 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 #define ADEV_KIND_MDEV  1
 #define ADEV_KIND_HDEV  2
 
-static float adev_stage_kind(int s, int m, int kind)
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind)
 {
-    const adev_stage_t *sg = &s_adev[s];
     int M = sg->count;
+    int b = adev_base(sg);
     if (m < 1) m = 1;
 
     double acc = 0.0;
@@ -1626,9 +1641,9 @@ static float adev_stage_kind(int s, int m, int kind)
         for (int j = 0; j <= M - 3 * m; j++) {            /* M-3m+1 clenu (SP1065) */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
-                inner += (double)adev_rat(sg, i + 2 * m)
-                       - 2.0 * (double)adev_rat(sg, i + m)
-                       + (double)adev_rat(sg, i);
+                inner += (double)adev_at(sg, b, i + 2 * m)
+                       - 2.0 * (double)adev_at(sg, b, i + m)
+                       + (double)adev_at(sg, b, i);
             acc += inner * inner; n++;
         }
         if (n == 0) return 0.0f;
@@ -1641,7 +1656,7 @@ static float adev_stage_kind(int s, int m, int kind)
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
                 for (int k = i; k < i + m; k++)
-                    inner += (double)adev_rat(sg, k + m) - (double)adev_rat(sg, k);
+                    inner += (double)adev_at(sg, b, k + m) - (double)adev_at(sg, b, k);
             acc += inner * inner; n++;
         }
         if (n == 0) return 0.0f;
@@ -1654,13 +1669,14 @@ static float adev_stage_kind(int s, int m, int kind)
     for (int j = 0; j <= M - 2 * m; j++) {                /* M-2m+1 clenu (SP1065) */
         double inner = 0.0;
         for (int i = j; i < j + m; i++)
-            inner += (double)adev_rat(sg, i + m) - (double)adev_rat(sg, i);
+            inner += (double)adev_at(sg, b, i + m) - (double)adev_at(sg, b, i);
         acc += inner * inner; n++;
     }
     if (n == 0) return 0.0f;
     return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
 
+static float adev_stage_kind(int s, int m, int kind) { return adev_ring_kind(&s_adev[s], m, kind); }
 static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
@@ -1702,6 +1718,29 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
 static int16_t hist_h(float count, int peak, int16_t H, bool logy);   /* fwd */
 static int   nz_alpha(float mu, float mu_m, int have_m);                  /* fwd — typ sumu (bod 4) */
 static float adev_edf_alpha(int alpha, int M, int m);                  /* fwd — EDF podle typu sumu */
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind);  /* fwd — estimator stage */
+/* Nezavisla reference pro selftest: vzorce SP1065 primo nad chronologickym polem
+ * (index pres puvodni modulo `(head - count + i + 2R) % R`, ne pres `adev_at`),
+ * takze kontroluje i pretoceni ringu. */
+static double adev_ref(const double *y, int M, int m, int kind)
+{
+    double acc = 0.0; int n = 0;
+    int last = (kind == ADEV_KIND_ADEV) ? M - 2 * m : (kind == ADEV_KIND_HDEV ? M - 3 * m : M - 3 * m + 1);
+    for (int j = 0; j <= last; j++) {
+        double in = 0.0;
+        if (kind == ADEV_KIND_MDEV) {
+            for (int i = j; i < j + m; i++) for (int k = i; k < i + m; k++) in += y[k + m] - y[k];
+        } else {
+            for (int i = j; i < j + m; i++)
+                in += (kind == ADEV_KIND_HDEV) ? y[i + 2 * m] - 2.0 * y[i + m] + y[i] : y[i + m] - y[i];
+        }
+        acc += in * in; n++;
+    }
+    double mm = (double)m;
+    double den = (kind == ADEV_KIND_MDEV) ? 2.0 * mm * mm * mm * mm
+               : (kind == ADEV_KIND_HDEV ? 6.0 * mm * mm : 2.0 * mm * mm);
+    return sqrt(acc / (den * (double)n));
+}
 bool screen_main_selftest(void)
 {
     char b[24]; int ok = 1;
@@ -1754,6 +1793,31 @@ bool screen_main_selftest(void)
             ok &= (fabsf(e / EV[i].e - 1.0f) < 2e-3f);
         }
     }
+    /* Hustsi Allan (2026-09-27): estimator s indexem `adev_at` (bez modula) nad
+     * PRETOCENYM ringem = reference nad chronologickym polem, pro m az 9 a vsechny
+     * tri estimatory. `static` — pole > 200 B nepatri na zasobnik (CLAUDE.md). */
+    {   static adev_stage_t tst;
+        static double chron[ADEV_RING];
+        uint32_t r = 12345u;
+        memset(&tst, 0, sizeof tst);
+        tst.head = 17; tst.count = ADEV_RING;          /* plny ring, nejstarsi na 17 */
+        for (int i = 0; i < ADEV_RING; i++) {
+            r = r * 1103515245u + 12345u;
+            tst.ring[i] = 1e-4 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5);  /* offset + sum */
+        }
+        for (int i = 0; i < ADEV_RING; i++)
+            chron[i] = tst.ring[(tst.head - tst.count + i + 2 * ADEV_RING) % ADEV_RING];
+        static const int KM[3] = {1, 5, 9};
+        for (int kind = 0; kind < 3; kind++)
+            for (int t = 0; t < 3; t++) {
+                double ref = adev_ref(chron, ADEV_RING, KM[t], kind);
+                float  got = adev_ring_kind(&tst, KM[t], kind);
+                ok &= (ref > 0.0) && (fabs((double)got / ref - 1.0) < 1e-5);
+            }
+        tst.count = 20;                                  /* M < 3·9+1 -> m=9 MDEV/HDEV nejde */
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_MDEV) == 0.0f);
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_ADEV) > 0.0f);   /* M >= 2·9+1 */
+    }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
@@ -1790,8 +1854,9 @@ bool screen_main_hit_trend(int16_t x, int16_t y)
     return s_trend_rect.w != 0 && pt_in(x, y, s_trend_rect);
 }
 
-/* ADEV body z decimacni pyramidy: per stage tau = {1,2,5}×10^s s (log spacing
- * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
+/* ADEV body z decimacni pyramidy: per stage tau = m×10^s s, mantisy m podle
+ * zvolene HUSTOTY (`DENS_M`, vychozi 1,2,5 -> 1,2,5,10,20,50,...). Delsi tau
+ * nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
 /* edf (nepovinne, NULL-safe): EKVIVALENTNI POCET STUPNU VOLNOSTI na kazdy tau
@@ -1877,17 +1942,40 @@ static float adev_floor_base(int kind, float tau, int m)
     }
 }
 
+/* ── Hustota bodu Allanova grafu (2026-09-27, na prani uzivatele) ─────────────
+ * Body na dekadu τ: 0 = 3 (1-2-5, vychozi), 1 = 5 (1-2-3-5-7), 2 = 9 (1..9).
+ * Vsechny body jedne dekady se pocitaji z TEZE stage pyramidy (τ = m·10^s),
+ * tedy ze stejnych dat — hustsi graf NEPRINASI novou informaci (sousedni body
+ * jsou silne korelovane) a pas nejistoty v bode se nemeni; dava hladsi krivku
+ * a presnejsi sklon. Nastavuje se v okne DISPLEJ, persist v syscfg.
+ * ⚠️ Klasifikace typu sumu (`noise_desc`) hustotu ZAMERNE nesleduje — je to
+ * vlastnost dat, ne zobrazeni, a nesmi se menit s volbou v Nastaveni. */
+#define ALLAN_DENS_N 3
+#define ALLAN_DENS_MAXK 9
+static const uint8_t DENS_M[ALLAN_DENS_N][ALLAN_DENS_MAXK] = {
+    {1, 2, 5}, {1, 2, 3, 5, 7}, {1, 2, 3, 4, 5, 6, 7, 8, 9} };
+static const uint8_t DENS_K[ALLAN_DENS_N] = {3, 5, 9};
+_Static_assert(ADEV_RING >= 3 * ALLAN_DENS_MAXK + 1,
+               "ring stage nestaci na MDEV/HDEV pri nejvetsi mantise");
+#define ADEV_PTS_MAX (ADEV_STAGES * ALLAN_DENS_MAXK)
+static int s_allan_dens = 0;
+void screen_main_set_allan_density(int d) { s_allan_dens = (d < 0 || d >= ALLAN_DENS_N) ? 0 : d; }
+int  screen_main_allan_density(void)      { return s_allan_dens; }
+
+/* ⚠️ Pole bodu jsou `static` (az 54 bodu x 6 poli = ~1,3 kB) — volaji to
+ * VYHRADNE UiTask pri kresleni (`allan_plot`), zasobnik UiTasku ma volnych ~5 kB. */
 static int adev_points(float *taus, float *adevs, float *edf, float *flr, int max)
 {
-    static const int SM[] = {1, 2, 5};
+    const uint8_t *SM = DENS_M[s_allan_dens];
+    int nk = DENS_K[s_allan_dens];
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
-    if (max > 20) max = 20;
-    int16_t pM[20]; int8_t pm[20];     /* M a m kazdeho bodu (EDF) */
-    float   ad[20], md[20];            /* ADEV a MDEV v tomze bode (typ sumu) */
+    if (max > ADEV_PTS_MAX) max = ADEV_PTS_MAX;
+    static int16_t pM[ADEV_PTS_MAX]; static int8_t pm[ADEV_PTS_MAX];  /* M a m bodu (EDF) */
+    static float   ad[ADEV_PTS_MAX], md[ADEV_PTS_MAX];  /* ADEV a MDEV v bode (typ sumu) */
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
-        for (int mi = 0; mi < 3; mi++) {
+        for (int mi = 0; mi < nk; mi++) {
             if (np >= max) return np;
             int m = SM[mi];
             float a;
@@ -1916,10 +2004,15 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
     }
     /* Sirka konfidencniho pasu z EDF (ne z poctu clenu — overlapping cleny jsou
      * korelovane, F-0167), EDF podle LOKALNIHO typu sumu: sklon z obou sousedu
-     * (na okrajich jednostranne). */
+     * (na okrajich jednostranne). Soused = nejblizsi bod aspon 0,29 dekady
+     * daleko: pri 1-2-5 jsou to presne sousedni body (log 2 = 0,301), takze
+     * vychozi chovani je beze zmeny; pri 9/dek by sklon ze sousedu 0,05 dekady
+     * daleko byl jen sum a typ sumu (tedy EDF) by skakal bod od bodu. */
     if (edf) {
         for (int i = 0; i < np; i++) {
-            int i0 = (i > 0) ? i - 1 : i, i1 = (i < np - 1) ? i + 1 : i;
+            int i0 = i, i1 = i;
+            while (i0 > 0 && log10f(taus[i] / taus[i0]) < 0.29f) i0--;
+            while (i1 < np - 1 && log10f(taus[i1] / taus[i]) < 0.29f) i1++;
             float mu = -0.5f, mum = 0.0f; int hm = 0;
             float lt = (i1 > i0) ? log10f(taus[i1] / taus[i0]) : 0.0f;
             if (lt > 0.0f && ad[i0] > 0.0f && ad[i1] > 0.0f) mu = log10f(ad[i1] / ad[i0]) / lt;
@@ -2066,7 +2159,7 @@ static int16_t allan_y(prim_rect_t inner, float log_val, int ymin, int dec)
 
 /* Konfidencni pas (efekt FX_ALLAN_CONF): meke accent podbarveni mezi horni
  * (yup) a dolni (ylo) mezi ADEV odhadu. Per-sloupec svisla vypln mezi
- * interpolovanymi mezemi (np<=20 bodu -> levne). Kresli se POD krivku. */
+ * interpolovanymi mezemi (cena ~ sirka grafu v px, ne pocet bodu). Kresli se POD krivku. */
 static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
                             const int16_t *ylo, int np)
 {
@@ -2094,9 +2187,9 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
     float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
     float xspan = lmax - lmin;
     if (xspan < 1e-6f) xspan = 1.0f;
-    prim_point_t pts[20];
-    int16_t yup[20], ylo[20];
-    if (np > 20) np = 20;
+    static prim_point_t pts[ADEV_PTS_MAX];          /* static: jen UiTask, viz adev_points */
+    static int16_t yup[ADEV_PTS_MAX], ylo[ADEV_PTS_MAX];
+    if (np > ADEV_PTS_MAX) np = ADEV_PTS_MAX;
     for (int i = 0; i < np; i++) {
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
         pts[i].x = (int16_t)(inner.x + fx * inner.w);
@@ -2155,9 +2248,9 @@ static void allan_plot(prim_rect_t area, int big)
     prim_rect_t in = {(int16_t)(area.x + resl), (int16_t)(area.y + rest),
                       (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
 
-    float taus[20], adevs[20];
-    float edf[20], flr[20];
-    int np = adev_points(taus, adevs, edf, flr, 20);
+    static float taus[ADEV_PTS_MAX], adevs[ADEV_PTS_MAX];   /* static: jen UiTask */
+    static float edf[ADEV_PTS_MAX], flr[ADEV_PTS_MAX];
+    int np = adev_points(taus, adevs, edf, flr, ADEV_PTS_MAX);
     /* Podlaha citace jen pri REALNEM mereni — SIM krivku citac nemeril. */
     int show_floor = (screen_main_gate_actual_s() > 0.0);
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
@@ -2170,7 +2263,7 @@ static void allan_plot(prim_rect_t area, int big)
 
     /* Transformuj na zvolenou metriku (ADEV/TDEV/MTIE) + urci Y rozsah (TDEV/MTIE
      * auto-range dle hodnot). Y mrizka + dekadove popisky (allan_ylabel). */
-    float vals[20];
+    static float vals[ADEV_PTS_MAX];
     for (int i = 0; i < np; i++) vals[i] = allan_metric_value(taus[i], adevs[i]);
     for (int i = 0; i < np; i++) flr[i]  = allan_metric_value(taus[i], flr[i]);
     int ymin, dec; allan_metric_yrange(vals, np, &ymin, &dec);
@@ -2201,7 +2294,10 @@ static void allan_plot(prim_rect_t area, int big)
                        dl, lf, lc, PRIM_ALIGN_CENTER);
     }
 
-    allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, 3, ymin, dec);
+    /* Marker mensi s hustotou: pri 9 bodech na dekadu jsou body v karte ~3 px
+     * od sebe a markery r=3 by slily v tlustou caru. */
+    int16_t mr = (s_allan_dens == 0) ? 3 : (s_allan_dens == 1 ? 2 : 1);
+    allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, mr, ymin, dec);
     /* Bod 6 / #27: skutecne τ0 vzorku (Σ hradel). Od #27 casti 2 je osa τ
      * prepoctena (`tau0_scale`), takze pri stabilnim τ0 staci INFORMACE; VAROVANI
      * zustava pro kolisani nad 5 % (nestejne dlouhe vzorky — to prepocet nespravi).
