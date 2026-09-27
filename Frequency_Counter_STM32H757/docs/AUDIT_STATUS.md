@@ -35,11 +35,11 @@
   Během testu spontánní výpadek desky (USB+síť+SWD najednou, vyřešen power-cyklem) —
   podezření na `cm4 restart` **vyvráceno** (`errlog` neobsahuje `NET reboot`, příkaz se
   k firmwaru vůbec nedostal), skutečná příčina neznámá, `cm4 restart` netestován.
-  Nalezeno: regrese F-0189 ve `status` (opravena `a83bf1d`, L-0105) a **F-0194 [S3]**
-  (`*TST?` přes TCP/HTTP vždy FAIL, TODO #258, oprava čeká na souhlas).
-- 🔑 **Pokračovat zde:** rozhodnout o opravě F-0194 (TODO #258); vizuální ověření
-  (F-0177 podtržení, F-0191 pás) potřebuje buď fyzický pohled na displej, nebo vyjmout
-  SD kartu po `screenshot sd`/`screenshot all`.
+  Nalezeno a opraveno: regrese F-0189 ve `status` (`a83bf1d`, L-0105) a **F-0194 [S3]**
+  (`*TST?` přes TCP/HTTP vždy FAIL, `72bf839`, L-0106) — obojí ⬜ neověřeno na HW.
+- 🔑 **Pokračovat zde:** ověřit F-0194 na HW (`scpi *TST?` vs `scpi ipc *TST?` → SHODA);
+  vizuální ověření (F-0177 podtržení, F-0191 pás) potřebuje buď fyzický pohled na
+  displej, nebo vyjmout SD kartu po `screenshot sd`/`screenshot all`.
 
 **Předchozí, 2026-09-27:** 🟡 **Modul 24, TŘETÍ PRŮCHOD — F5 hotová
 (skupiny A+B), ⬜ vše neověřeno na HW.**
@@ -1129,7 +1129,7 @@ sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 25 | 0 |
-| S3 | 3 | 92 | 0 |
+| S3 | 2 | 93 | 0 |
 | S4 | 5 | 55 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
@@ -1152,8 +1152,7 @@ nalezený **F-0193 [S4]** (díry v `SEQUENCE`, `7f65f4a`).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
 **+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
 zůstává otevřený jako záznam, ne jako dluh)
-**+ F-0194** (nalezen HW testem 2026-09-27: `*TST?` přes TCP/HTTP vždy FAIL, CM4
-nenaplní `selftest_pass`; oprava čeká na souhlas, TODO #258).
+**+ F-0194** — opraveno 2026-09-27 (`72bf839`, L-0106), ⬜ neověřeno na HW.
 **+ třetí průchod modulu 24:** F-0180, F-0182, F-0183 a nově nalezený **F-0184 [S2]**
 opraveny 2026-09-27 (⬜ neověřeno na HW); **F-0181** [S4] skupina C (až s konzumentem
 `sdram_log`); **F-0185 [S3]** (USB SCPI readback nastavení, mimo modul) opraven

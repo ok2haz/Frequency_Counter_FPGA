@@ -3547,6 +3547,32 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0106 — `scpi_src_t` má dva loadery a chybějící pole v jednom z nich je neviditelné, dokud se ten transport nezeptá
+
+- **Datum:** 2026-09-27 (F-0194, nalezeno při HW testu modulu 24)
+- **Oblast:** `ipc_scpi.c` — `ipc_scpi_src_from_snap` (TCP 5025 + `POST /api/scpi`, oba CM4)
+- **Symptom:** `*TST?` přes síť hlásilo FAIL (`1`) i po prošlém selftestu, přestože
+  `/api/state` ze stejného snapshotu ukazovalo `"selftest":1` a USB `*TST?` hlásilo 0.
+- **Příčina:** `ipc_scpi_src_from_snap` (druhý přehrávač téhož `scpi_src_t` vedle USB
+  loaderu `scpi_src_load_cm7_ex`) pole `selftest_pass` prostě nikdy nepřiřadila —
+  ani mrtvý zápis, ani špatné pořadí, jen chybějící řádek. Snapshot přitom hodnotu
+  (`selftest_res`) nesl od začátku; nikdo si jen nevšiml, že se nikam nekopíruje.
+- **Oprava:** `s->selftest_pass = (sn->selftest_res == 1);` + test v `ipc_selftest`
+  (nastaví `g_selftest_res` na 1 i 2, ověří `ipc_scpi_src_from_snap` obojí).
+- **Pravidlo:** **Když má jedna instrument-state struktura víc než jeden loader,
+  NEOPRAVUJ nalezené pole jednotlivě — vypiš si VŠECHNA pole struktury a projdi
+  je proti KAŽDÉMU loaderu najednou.** Tohle je třetí nález stejné třídy u
+  `scpi_src_t` (IPC v11 slepý readback nastavení, F-0185 USB `memset` nad
+  plněním, teď F-0194) — se třetím výskytem přestává být náhoda a je čas na
+  systematickou kontrolu všech polí, ne další jednotlivou opravu.
+- **Detekce:** pro každé pole `scpi_src_t` (`scpi.h`) porovnej, jestli ho nastavují
+  VŠECHNY loadery (`grep -n "src->\|s->" scpi.c ipc_scpi.c` a diff seznamů polí);
+  na HW `scpi X` vs `scpi ipc X` pro každý readback (stejný test jako L-0098).
+- **Commit:** `72bf839`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

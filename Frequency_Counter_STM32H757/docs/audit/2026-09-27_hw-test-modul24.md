@@ -93,5 +93,8 @@ samotný kvůli mrtvé konzoli vidět nebyl). Lekce L-0105.
   (layout beze změny, bez bumpu `IPC_VERSION`) + opravit komentář v `ipc.c`; do selftestu
   `ipc_selftest`/`scpi` porovnání `*TST?` nad snapshotem s PASS.
   Ověření na HW: `scpi *TST?` proti `scpi ipc *TST?` → SHODA, web `*TST?` → `0`.
-- **Vztah k lekcím:** L-0098 (loader neplní pole), L-0018 (dvojčata musí říct totéž).
-- **Stav:** otevřeno (TODO #258 v `../STATUS.md`).
+- **Vztah k lekcím:** L-0098 (loader neplní pole), L-0018 (dvojčata musí říct totéž),
+  L-0106 (nový, třetí výskyt téže třídy u `scpi_src_t`).
+- **Stav:** opraveno 2026-09-27 (`72bf839`), podle návrhu — jeden řádek
+  (`s->selftest_pass = (sn->selftest_res == 1)`), bez bumpu `IPC_VERSION`, plus
+  test v `ipc_selftest` (obě hodnoty PASS/FAIL). ⬜ neověřeno na HW.
