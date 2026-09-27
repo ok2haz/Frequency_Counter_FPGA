@@ -1070,6 +1070,17 @@ static void freq_step(void)
  * zadne). Slouzi k poznani, ze se zmenil MERENY SIGNAL i v ramci teze dekady. */
 static double s_freq_ref_hz = 0.0;
 
+/* F-0188/F-0189: patri kmitocet k PRAVE merenemu signalu? Tentyz prah 1e-4 proti
+ * tez referenci jako detekce zmeny signalu, takze vzorek, ktery by statistiku
+ * vynuloval, se do ni nesmi dostat ani jinou cestou (fronta, rekonstrukce z logu).
+ * Bez reference (SIM, start) = 1. */
+int screen_main_signal_match(double hz)
+{
+    if (s_freq_ref_hz <= 0.0) return 1;
+    return (hz > 0.0) && fabs(hz / s_freq_ref_hz - 1.0) <= 1e-4;
+}
+double screen_main_signal_ref_hz(void) { return s_freq_ref_hz; }
+
 static void freq_advance(void)
 {
     if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
@@ -1123,7 +1134,12 @@ static void freq_advance(void)
              * prepisem v `docs/audit/sim/2026-09-26_f0183_detekce.js`. */
             int fmt_need   = (idg != s_freq_int || hires != s_freq_hires);
             int sig_change = (hires != s_freq_hires);
-            double hz_now = (double)x100000 / 100000.0;
+            /* 🔴 F-0192: kmitocet pro detekci z PRESNYCH ticku (hi-res), `x100000`
+             * jen kdyz nasobitel nesedi. LSB `x100000` (1e-5 Hz) je pod ~0,1 Hz vetsi
+             * nez prah 1e-4, takze by se nulovalo pri kazdem preklopeni zaokrouhleni
+             * (dnes f_min ~0,19 Hz s rezervou 2x; nova deska meri bez predelicky). */
+            double hz_now = hires ? fpga_freq_hires_hz(x100000, edges, gate_ns) : 0.0;
+            if (!(hz_now > 0.0)) hz_now = (double)x100000 / 100000.0;
             if (s_freq_ref_hz <= 0.0) sig_change = 1;          /* prvni realne mereni */
             else if (fabs(hz_now / s_freq_ref_hz - 1.0) > 1e-4) sig_change = 1;
             /* 🔴 V rezimu PERIODA hlidej JESTE format periody: ta se posune o dekadu
@@ -1143,6 +1159,11 @@ static void freq_advance(void)
                 s_freq_fmt_changed = 1;
                 if (sig_change) {                     /* jiny signal/zdroj -> nemichat s pyramidou */
                     screen_main_stats_reset();
+                    /* 🔴 F-0188: zahodit i vzorky, ktere FpgaTask uz slozil (fronta)
+                     * nebo sklada (akumulator) — jsou ze starého nebo smiseneho
+                     * signalu a prosly by do cerstve pyramidy (y ~ Δf/f, dozivani
+                     * az tydny na dlouhych τ). Zbytek hlida `screen_main_signal_match`. */
+                    fpga_stat_flush();
                     s_freq_ref_hz = hz_now;
                 } else {
                     s_freq_nominal_hz = keep_nom;     /* F-0184: jen format, reference y zustava */

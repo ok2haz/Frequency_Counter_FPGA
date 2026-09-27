@@ -657,6 +657,15 @@ void fpga_stat_break(void)
     __set_PRIMASK(pm);
 }
 
+void fpga_stat_flush(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    memset(&s_acc[FPGA_ACC_STATS], 0, sizeof s_acc[FPGA_ACC_STATS]);
+    s_stat_r = s_stat_w;                              /* fronta prazdna */
+    __set_PRIMASK(pm);
+}
+
 uint32_t fpga_stat_drops(void) { return s_stat_drop; }
 
 uint32_t fpga_acc_take(int which, double *hz, double *gate_s)

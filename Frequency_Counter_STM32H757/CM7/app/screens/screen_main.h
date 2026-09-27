@@ -142,6 +142,10 @@ int  screen_main_allan_metric(void);                   /* aktualni metrika 0/1/2
 /* Hustota bodu Allanova grafu: 0 = 3 na dekadu (1-2-5, vychozi), 1 = 5 (1-2-3-5-7),
  * 2 = 9 (1..9). Nastavuje okno DISPLEJ, persist syscfg; mimo rozsah -> 0. */
 void screen_main_set_allan_density(int d);
+/* Reference mereneho signalu (F-0183, presny kmitocet pri poslednim nulovani
+ * statistiky; 0 = neni, SIM/start) a test, zda kmitocet patri k nemu (1e-4). */
+double screen_main_signal_ref_hz(void);
+int    screen_main_signal_match(double hz);
 int  screen_main_allan_density(void);
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */

@@ -160,6 +160,11 @@ uint32_t fpga_acc_take(int which, double *hz, double *gate_s);
 int fpga_stat_pop(double *hz, double *tau_s);
 /** Rozpracovany vzorek zahodit (neplatne mereni = okna uz nenavazuji). FpgaTask. */
 void fpga_stat_break(void);
+/** F-0188: rozpracovany vzorek I celou frontu zahodit — pri nulovani statistiky
+ *  kvuli zmene signalu. Jinak by prvni 1-2 vzorky nove pyramidy byly ze STAREHO
+ *  nebo smiseneho signalu (sim/2026-09-27_reset_fronta.js: 99,6 % prepnuti).
+ *  Pod PRIMASK, smi ji volat UiTask. */
+void fpga_stat_flush(void);
 /** Kolik hotovych vzorku se ztratilo preplnenim fronty (UiTask neodebiral). */
 uint32_t fpga_stat_drops(void);
 

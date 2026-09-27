@@ -8391,7 +8391,11 @@ void app_gpsdo_tick_stats_sample(void)
     int got = 0;
     double hz_s, tau_s;
     while (fpga_stat_pop(&hz_s, &tau_s)) {
-        if (take && hz_s > 0.0) { screen_main_stats_sample_hz(hz_s, tau_s); got++; }
+        /* F-0188: vzorek jineho signalu (slozeny pred nulovanim nebo pres jeho
+         * hranici) se zahodi — tentyz prah jako detekce zmeny signalu. */
+        if (take && hz_s > 0.0 && screen_main_signal_match(hz_s)) {
+            screen_main_stats_sample_hz(hz_s, tau_s); got++;
+        }
     }
     if (seeding) return;
     if (!screen_main_is_running()) return;   /* STOP -> trend/Allan zamrznou */
