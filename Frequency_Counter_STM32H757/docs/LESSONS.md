@@ -3375,6 +3375,130 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0099 — Emulátor, který nevyrábí data jako skutečný zdroj, vadu nemůže ukázat: kvantizaci zdroje modeluj bit za bit
+
+- **Datum:** 2026-09-27 (modul 24, F-0186)
+- **Oblast:** `fpga_freq.c` — hi-res kmitočet, `fpgasim`
+- **Symptom:** hi-res kmitočet (7 desetin na displeji, 15 platných číslic ven) nesl
+  u asynchronního signálu systematickou chybu 0 až +2·10⁻⁹ (10 MHz: až 20 mHz) —
+  horší než obyčejné `x100000`. Žádný test ani ověřovací běh ji neviděl.
+- **Příčina:** FPGA posílá `gate_time_ns` jako **floor** z Δt v ticích 2,5 ns
+  (`spi_app.v:507`), STM ho bralo jako přesné Δt. Pravidlo rekonstrukce ticků bylo
+  sepsané v návrhu protokolu v2, jen neimplementované. Emulátor `fpgasim` vyráběl
+  hradlo jako libovolné celé ns a hrany `floor(hz·gate)` — tedy **jinak než FPGA**,
+  takže vadu nemohl ukázat a navíc přidal vlastní šum až 4·10⁻⁷, který by ji zakryl.
+- **Oprava:** `fpga_freq_dt_ticks()` = round(gate_ns/2,5 ns), dělí se přesnými ticky
+  ve všech pěti místech; emulátor skládá rámec jako FPGA (celé periody, Δt v ticích,
+  `gate_time_ns` floor) (`98c4394`).
+- **Pravidlo:** **Emulátor nebo testovací zdroj musí vyrábět data TÍMŽ algoritmem
+  a TOUŽ kvantizací jako skutečný zdroj — čti jeho zdroj (RTL), ne dokumentaci.**
+  Pole, které zdroj zaokrouhluje, se bere jako zaokrouhlené; když vedle něj
+  existuje přesnější veličina (tady ticky), rekonstruuj ji.
+- **Detekce:** u každého pole z FPGA dohledat v `spi_app.v`, jak vzniká (floor /
+  round / přesné); selftest s vektorem, kde se floor a přesná hodnota liší
+  (`fpga_freq_select_selftest`, 9 999 999,900000001 Hz);
+  `sim/2026-09-27_gate_floor.js`, `sim/2026-09-27_f0186_emulator.js`.
+- **Commit:** `98c4394`
+- **Stav:** aktivní
+
+---
+
+### L-0100 — Estimátor nad podvzorkovanými daty není týž estimátor: MDEV z pyramidy průměrů kmitočtu
+
+- **Datum:** 2026-09-27 (modul 24, F-0187)
+- **Oblast:** `screen_main.c` — decimační pyramida ADEV/MDEV/HDEV
+- **Symptom:** MDEV/TDEV nad 10 s u bílého PM 3,2× (stage 1) až 10× (stage 2)
+  vysoko, bílý PM se klasifikoval jako blikavý; web (plná data) ukazoval jiné MDEV
+  než displej.
+- **Příčina:** stage s drží průměry kmitočtu po 10ˢ s = fázi podvzorkovanou po 10ˢ s.
+  ADEV a HDEV potřebují jen průměry kmitočtu přes τ, takže jim to nevadí; MDEV
+  průměruje FÁZI přes n = τ/τ0 bodů a z podvzorkované fáze průměroval jen m bodů.
+  Komentář to věděl (podlaha „m, ne τ/1 s"), ale nikdo z toho neodvodil, že výsledek
+  není MDEV.
+- **Oprava:** fázová pyramida — každá položka nese průměr fáze bloku relativně
+  k jeho začátku, decimace ho skládá přesně, MDEV nad stage ≥ 1 je pak standardní
+  (`35ca1ff`).
+- **Pravidlo:** **Než spočítáš estimátor nad komprimovanými daty (decimace,
+  průměry, histogram), napiš, co přesně komprese zachovává, a ověř, že estimátor
+  nepotřebuje nic dalšího.** ADEV z průměrů kmitočtu ano, MDEV/TDEV ne (potřebují
+  průměr fáze), MTIE ne (potřebuje extrémy fáze).
+- **Detekce:** porovnání pyramidy s přímým výpočtem z plných dat pro každý typ
+  šumu a každou stage (`sim/2026-09-27_mdev_pyramida.js`); selftest proti přímé
+  definici nad průměry fáze bloků (`screen_main_selftest`).
+- **Commit:** `35ca1ff`
+- **Stav:** aktivní
+
+---
+
+### L-0101 — Nulování stavu musí vyprázdnit i všechno, co je k němu „na cestě"
+
+- **Datum:** 2026-09-27 (modul 24, F-0188)
+- **Oblast:** `screen_main.c` / `fpga_freq.c` — statistika při změně signálu
+- **Symptom:** po přepnutí měřeného zdroje prošly do vynulované pyramidy v 99,6 %
+  případů 1–2 vzorky starého nebo smíšeného signálu (|y| až 0,17) a decimací
+  dožívaly na dlouhých τ hodiny až dny.
+- **Příčina:** `screen_main_stats_reset()` vynulovala pyramidy, ale ne frontu hotových
+  vzorků (FpgaTask → UiTask) ani rozpracovaný akumulátor. Nulování a producent běží
+  v různých taskách, takže v okamžiku nulování vždy něco „letí".
+- **Oprava:** `fpga_stat_flush()` při nulování + filtr `screen_main_signal_match()`
+  při odběru (`b619ea8`).
+- **Pravidlo:** **Když nuluješ stav, který plní jiný task přes frontu nebo
+  akumulátor, vyprázdni i je — a konzument ať navíc ověří, že vzorek k novému stavu
+  patří (stejnou podmínkou, jakou se změna detekovala).** Samotné vyprázdnění
+  nestačí, když může vzniknout vzorek složený přes hranici.
+- **Detekce:** u každé funkce `*_reset`/`*_clear` vypsat, kdo daný stav plní
+  a přes jaké mezičlánky; simulace přepnutí v náhodné fázi
+  (`sim/2026-09-27_reset_fronta.js`).
+- **Commit:** `b619ea8`
+- **Stav:** aktivní
+
+---
+
+### L-0102 — Historie se smí navázat na živá data jen přes SOUVISLÝ úsek téhož zdroje
+
+- **Datum:** 2026-09-27 (modul 24, F-0189)
+- **Oblast:** `app_gpsdo.c` — rekonstrukce Allanovy pyramidy z datalogu
+- **Symptom:** dlouhé τ (10³–10⁵ s) po restartu nesly náběhy OCXO a skoky předchozích
+  sezení, mezery dnů i data jiného zdroje — věrohodně vypadající „drift".
+- **Příčina:** rekonstrukce sypala záznamy za sebe a kontrolovala jen jejich vlastnosti
+  (průměr, SIM), ne **vztah k sousedům** (čas, stejný signál). Živá cesta přitom při
+  výpadku pyramidu nuluje — obnova z logu se chovala jinak než měření, které nahrazuje.
+- **Oprava:** jen poslední souvislý úsek téhož signálu (řez při mezeře > perioda
+  + 120 s nebo nepoužitelném záznamu), start až po prvním reálném měření, po zapnutí
+  napájení vůbec (`4eee405`).
+- **Pravidlo:** **Obnova stavu z uložené historie musí dodržet TÁŽ pravidla, podle
+  kterých živý běh stav nuluje — co by živě vyvolalo reset, musí v historii vyvolat
+  řez.** Kontroluj vztah záznamu k předchozímu (čas, zdroj), ne jen záznam sám.
+- **Detekce:** syntetický log s mezerou, jiným signálem a výpadkem
+  (`sim/2026-09-27_f0189_rekonstrukce.js`); na HW `status` po warm resetu → hláška
+  „… vzorku posledniho souvisleho useku (… rezu)".
+- **Commit:** `4eee405`
+- **Stav:** aktivní
+
+---
+
+### L-0103 — „Nové" není „navazující": u počítadla kontroluj souvislost, ne jen změnu
+
+- **Datum:** 2026-09-27 (modul 24, F-0190)
+- **Oblast:** SPA (`httpd_min.c`) — buffer měření pro Allan/drift/ℒ(f) na webu
+- **Symptom:** v záložním 1 Hz pollu (bez SSE) počítal web Allanovu odchylku z každého
+  ~4. měření: mrtvá doba 75 %, ADEV 2× až 23× vysoko se sklonem bílého FM —
+  tatáž vada, kterou displej měl do F-0171 a opravil jen u sebe.
+- **Příčina:** vzorek se přidal při jakékoli ZMĚNĚ `seq_meas`; že mezi dvěma vzorky
+  chybí měření, SPA nepoznala, přestože počítadlo tu informaci nese.
+- **Oprava:** `ingestM` počítá chybějící měření (`seq − last − 1`, uint32), toleruje
+  je do 1 % řady a τ0 je zahrnuje; víc = řada začne znovu a `aWarn` řekne proč
+  (`d448b57`).
+- **Pravidlo:** **Když zdroj čísluje data, kontroluj `q == last + 1`, ne `q != last` —
+  a rozhodni, kolik děr je přípustné, podle toho, jak moc zkreslí výsledek, ne
+  nulovou tolerancí, která zruší i legitimní případy (reload, ojedinělá ztráta).**
+- **Detekce:** grep `!==lastSeq` / `!= s_last_seq` v kódu, který z dat počítá
+  statistiku; `tools/spa/stat_test.js` oddíl F-0190 (poll = každé 4. měření).
+- **Commit:** `d448b57`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

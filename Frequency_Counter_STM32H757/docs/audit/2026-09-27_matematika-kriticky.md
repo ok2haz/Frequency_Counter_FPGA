@@ -67,7 +67,13 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   jinak test vadu zase neuvidí. ⚠️ Nová deska (carry chain) má jiný tick → protokol v2
   musí nést Δt v ticích nebo ps, ne floor v ns.
 - **Vztah k lekcím:** L-0012 (dvojčata), L-0018, L-0094 (přesnost vůči variaci).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`98c4394`), ⬜ neověřeno na HW. Podle návrhu, jen sdílená
+  funkce vrací ticky, ne ps: `fpga_freq_dt_ticks()` + `FPGA_TICK_PS`/`FPGA_TICKS_PER_S`
+  (`fpga_freq.h`). Na ticky převedeno všech pět míst; akumulátor měření sčítá `gate_ps`.
+  `fpgasim` skládá rámec jako FPGA (celé periody, Δt v ticích od náhodné fáze, `x100000`
+  z přesného Δt, `gate_time_ns` jako floor) — dřívější emulátor měl navíc hi-res šum až
+  4·10⁻⁷ z `edges = floor(hz·gate)`. Selftest #1 nese vektor, který z floor hradla vyjde
+  o 2·10⁻⁹ výš. Ověření: `sim/2026-09-27_f0186_emulator.js`. Lekce L-0099.
 
 ---
 
@@ -104,7 +110,16 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   určovat ze stage 0 + ADEV; (c) nechat, ale přejmenovat a nepoužívat pro klasifikaci.
   Doporučuji (a) — MDEV je jediný rozlišovač bílého a blikavého PM.
 - **Vztah k lekcím:** L-0088 (estimátor ověřovat nezávislou referencí), L-0018.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`35ca1ff`), ⬜ neověřeno na HW. Varianta (a): každá
+  položka stage nese navíc `E` = (průměr fáze bloku − fáze na jeho začátku)/délka bloku;
+  decimace ×10 skládá `E = Σ(C_j + E_j)/100`, `C_j` = součet průměrů kmitočtu dřívějších
+  podbloků. MDEV nad stage ≥ 1 přičítá `E[l+2m] − 2E[l+m] + E[l]`, poslední start
+  M − 3m → přesně standardní MDEV (τ0 = 1 s), jen se starty po 10ˢ s. Rekonstrukce
+  z datalogu fázi nezná (10s průměry) → nad ní se MDEV nepočítá (`e_n`), ADEV ano.
+  Podlaha MDEV bere n = τ/τ0, EDF počet položek s platným `E`. RAM +2,9 kB.
+  Ověření: `sim/2026-09-27_mdev_pyramida.js` (fázová pyramida / přesně = 1,00 pro bílý
+  i blikavý PM a bílý FM), `sim/2026-09-27_f0187_selftest.js` (věrný přepis selftestu,
+  pozitivní kontrola bez `E` selže). Lekce L-0100.
 
 ---
 
@@ -131,7 +146,13 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   i smíšené vzorky a nezávisí na časování tasků. Alternativa: `fpga_stat_break` +
   vyprázdnění fronty přes požadavek z UiTasku do FpgaTasku.
 - **Vztah k lekcím:** L-0095 (důsledek sdílí podmínku s příčinou), L-0092.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`b619ea8`, společně s F-0192), ⬜ neověřeno na HW.
+  **Obojí** z návrhu, ne jen filtr: `fpga_stat_flush()` při nulování zahodí frontu
+  i rozpracovaný akumulátor (PRIMASK — volá ji UiTask, plní FpgaTask), a
+  `screen_main_signal_match()` (týž práh 10⁻⁴ proti referenci) zahodí při odběru každý
+  vzorek, který k signálu nepatří — pojistka pro vzorek složený přes hranici změny.
+  Ověření: `sim/2026-09-27_reset_fronta.js` (staré 1–2 cizí vzorky v 1993 z 2000
+  přepnutí, nové 0). Lekce L-0101.
 
 ---
 
@@ -149,6 +170,10 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   smaže, nebo naopak rekonstrukce proběhne proti nominálu jiného signálu.
   Drobnost: během rekonstrukce (~minuty) přibývají nové záznamy a index „od nejnovějšího"
   se posouvá → každý nový záznam způsobí jeden zdvojený (≈ 50 z 240 000).
+  🔴 **Oprava popisu (2026-09-27, při opravě):** posun indexu záznamy **přeskakuje**,
+  nezdvojuje — rekonstrukce jde od nejstaršího k nejnovějšímu a nový záznam posune
+  „stáří" dosud nepřečtených o jedno dál, takže jeden z nich se vynechá. Dopad je tentýž
+  řádově zanedbatelný (jednovzorková mezera), ale mechanismus byl popsaný obráceně.
   Živá cesta přitom při výpadku signálu pyramidu **nuluje** (REAL→SIM) — rekonstrukce
   se tedy chová jinak než živé měření.
 - **Důkaz:** statický (smyčka čte jen `freq`, `flags`, `freq_avg`, nominál; `t_unix` ani
@@ -160,7 +185,17 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   je od něj do teď krátká mezera (warm reset); spustit až po prvním reálném měření
   (reference známá). Politika (jak dlouhá mezera je ještě „souvislá") je rozhodnutí.
 - **Vztah k lekcím:** L-0092 (okno průměrování/rozestup), L-0095.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`4eee405`), ⬜ neověřeno na HW. Politika (doporučení
+  schválené uživatelem): do pyramidy jde jen **poslední souvislý úsek téhož signálu**,
+  jedním průchodem od nejstaršího — řez (vynulování a pokračování) při nepoužitelném
+  záznamu (bez průměru, SIM, bez času, jiný signál proti referenci s prahem 10⁻⁴) nebo
+  při mezeře v čase > perioda logu + 120 s. Start až po prvním reálném měření (reference
+  známá). Po **zapnutí napájení** (RSR POR/BOR) se nerekonstruuje vůbec — mezera je
+  neznámá a OCXO nabíhá; odchylka od návrhu („jen když je od úseku do teď krátká
+  mezera"): čas „teď" z RTC smí číst jen defaultTask, takže kritériem je druh resetu.
+  Pojistka proti zdvojení podle `seq`. Ověření: `sim/2026-09-27_f0189_rekonstrukce.js`
+  (vloží 1350 záznamů posledního úseku, 2 řezy; stará logika 9750 včetně 12 MHz).
+  Lekce L-0102.
 
 ---
 
@@ -178,7 +213,15 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
 - **Návrh (A):** při `seq_meas !== lastSeq + 1` buffer `M` zahodit (stejně jako při změně
   brány) a v poll režimu Allan/drift/ℒ(f) nepočítat, s důvodem v `aWarn`.
 - **Vztah k lekcím:** L-0092, L-0012 (oprava displeje, dvojče web ne).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`d448b57`), ⬜ neověřeno na HW. **Jinak než návrh:**
+  díra v `seq_meas` se toleruje, dokud chybějící měření tvoří ≤ 1 % měření, která řada
+  pokrývá (zkreslení ADEV řádu toho podílu, pod nejistotou); jinak řada začne znovu.
+  Zahodit buffer při **každé** díře by vyřadilo obnovu po F5 (během reloadu pár měření
+  vždy chybí) a jedna SSE událost zahozená při plném `sndbuf` (`sse_push`) by smazala až
+  500 s dat. Poll (chybí ~75 %) řadu restartuje při každém vzorku a `aWarn` řekne proč.
+  `M.k[i]` = chybějící před vzorkem, τ0 (`mTau0`) dělí rozpětí počtem rozestupů včetně
+  chybějících; localStorage nese i `seq` posledního vzorku. Test: `stat_test.js` oddíl
+  F-0190 (pozitivní kontrola nad SPA z HEAD selže). Lekce L-0103.
 
 ---
 
@@ -190,7 +233,10 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   (α 0x22) se tam nanese dvakrát, u bodů na stejném pixelu třikrát. Při 18 bodech to byly
   nenápadné čárky, při 54 (hustota 9) je v kartě každý třetí sloupec pásu tmavší.
 - **Návrh (A):** v úsecích i ≥ 2 začínat od `c = 1`, bod na stejném pixelu přeskočit.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`378569b`), ⬜ neověřeno na HW. Obecněji než návrh:
+  pamatuje se poslední vyplněný sloupec (x je neklesající) a sloupec ≤ němu se přeskočí —
+  pokryje kraje úseků i body na stejném pixelu jednou podmínkou. Ověření:
+  `sim/2026-09-27_f0191_pas.js` (stará logika 44 sloupců dvakrát, nová každý jednou).
 
 ---
 
@@ -202,7 +248,35 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   (f_min ≈ 0,047 Hz, LSB 2,1·10⁻⁴) → každé překlopení zaokrouhlení by statistiku nulovalo.
 - **Návrh (A/C):** porovnávat `fpga_freq_hires_hz()` (po F-0186 z ticků), s `x100000`
   jen jako zálohou; do té doby latentní.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`b619ea8`, společně s F-0188), ⬜ neověřeno na HW. Podle
+  návrhu: detekce i reference signálu z `fpga_freq_hires_hz()`, `x100000` jen když
+  násobitel nesedí (hi-res vrátí 0).
+
+---
+
+### F-0193 [S4] Displej: FpgaTask pozná nové měření jen podle ZMĚNY `SEQUENCE`, zmeškané měření se nikde nepočítá (týž vzor jako F-0190)
+
+- **Nalezeno:** 2026-09-27 při opravě F-0190, kontrolou zbytku projektu na týž vzor
+  (šablona lekce, pravidlo 5; L-0103).
+- **Místo:** `CM7/Core/Src/fpga_freq.c:476` (`if (s_last.sequence == g_last_seq) return false;`),
+  akumulátor vzorků statistiky (`fpga_acc_add`), FPGA `spi_app.v:191` (`seq <= seq + 1`
+  při každém měření, latch **přepíše** nepotvrzené).
+- **Popis:** Když FpgaTask nestihne rámec do dalšího měření (hradlo 0,25 s, polling 20 Hz),
+  FPGA nepotvrzené měření přepíše a `SEQUENCE` poskočí o 2 a víc. Driver to vezme jako
+  „nové" a díru nikde nespočítá; akumulátor pak uzavře vzorek s Σhradel ≈ 1 s, který
+  ale v čase pokrývá víc — uvnitř vzorku je mrtvá doba. `fpga_stat_drops()` („ztraceno"
+  v `status`) počítá jen přetečení fronty vzorků, ne díry v `SEQUENCE`.
+- **Důkaz:** statický. Kdy nastane: FpgaTask blokovaný > ~250 ms — typicky UART
+  `fpgaraw`/`fpgaloop`, které drží SPI mutex (`fpgaloop` ~3 s). Za běžného provozu
+  (20 Hz) HYPOTÉZA, že se to neděje; ověřit na HW čítačem děr (viz návrh).
+- **Dopad:** vzácné vzorky s mrtvou dobou → σy na τ0 lehce vychýlená; hlavně to **není
+  vidět**, takže se o tom nedá rozhodnout.
+- **Návrh (A):** spočítat díru `seq − last − 1` do nového čítače v `status` (řádek
+  STATISTIKA) a rozpracovaný vzorek, do kterého díra padla, zahodit — `fpga_stat_break()`
+  už existuje a FpgaTask ji volá u neplatného měření (`freertos_task_fpga.c:84`), stačí ji
+  zavolat i při díře. Nejdřív čítač (levný, rozhodne o zbytku).
+- **Vztah k lekcím:** L-0103, L-0017 (tichý přeskok musí být spočítaný).
+- **Stav:** otevřeno (TODO #257 v `../STATUS.md`).
 
 ---
 
@@ -215,6 +289,9 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
 - **Nejistota na webu nezávisí na hustotě bodů:** `sigmaAtTau(gate)` se ptá na τ = hradlo,
   což je první bod mřížky v každé hustotě.
 - **SSE doručí každé měření:** `httpd_min_poll` ~20 Hz, měření po 250 ms.
+  ⚠️ Upřesněno při opravě F-0190: **kromě** plného `sndbuf` — `sse_push` pak událost
+  zahodí a `sse_seq` se přesto posune, takže ojedinělá díra v `seq_meas` je i v SSE
+  režimu možná (proto tolerance 1 %, ne řez při každé díře).
 - **`fmt_scpi_hz_sig`**: ≤ 8,4·10⁻¹⁵ na 0,5 Hz…3,9 GHz (`sim/2026-09-27_fmt_hz_sig.js`).
 - **ℒ(f) z průměrů kmitočtu:** odezva průměrujícího čítače (sinc²) dává na 0,1 Hz
   −0,14 dB, kde čte okno ANALÝZA; u Nyquista −3,9 dB. Je to vlastnost čítače, ne chyba
@@ -241,3 +318,13 @@ a #27 zůstaly otevřené.
 | **A — opravit hned** | F-0186 (Δt z ticků + věrný emulátor), F-0188 (filtr vzorků po nulování), F-0190 (web: souvislost `seq_meas`), F-0191 (pás), F-0192 (hi-res v detekci) | lokální, jednoznačné |
 | **B — rozhodnout** | F-0187 (MDEV: fázová pyramida / jen stage 0 / přejmenovat), F-0189 (politika souvislosti rekonstrukce) | návrh výpočtu a politika |
 | **C — odložit** | — | |
+
+## Stav po opravách (2026-09-27)
+
+Uživatel schválil A + B s doporučenými variantami. **Všech 7 nálezů opraveno**
+(`98c4394`, `b619ea8`, `35ca1ff`, `4eee405`, `d448b57`, `378569b`), každá oprava
+se simulací a pozitivní kontrolou; ⬜ **nic z toho neběželo na desce** — HW kroky jsou
+v `../STATUS.md` TODO #255. Jinak než návrh: F-0190 (tolerance 1 % místo řezu při každé
+díře), F-0189 (kritérium „krátká mezera" = druh resetu, ne čas z RTC), F-0188 (filtr
+i vyprázdnění fronty). Kontrolou téhož vzoru přibyl **F-0193 [S4]** (displej nepočítá
+díry v `SEQUENCE`) — otevřený, TODO #257.

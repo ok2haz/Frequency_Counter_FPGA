@@ -764,6 +764,16 @@ MDEV ≈ ADEV, tedy právě ne u fázového šumu. ⚠️ **MTIE zůstává odha
 přiznává: přesný MTIE potřebuje uloženou fázi (⬅ #36). Přepínač v okně ALLAN má
 5 segmentů = 60 px = **přesně projektové minimum** dotykového cíle, šestý se
 už nevejde.
+🔴 **MDEV/TDEV nad 10 s stojí na FÁZOVÉ PYRAMIDĚ** (F-0187, `35ca1ff`). Stage s drží
+průměry kmitočtu po 10ˢ s = fázi podvzorkovanou po 10ˢ s; ADEV/HDEV to nevadí, MDEV ano
+(průměruje fázi přes n = τ/τ0 bodů — z podvzorkované fáze vycházel bílý PM 3×/10× vysoko
+a klasifikoval se jako blikavý). Každá položka stage proto nese navíc **`E` = průměr fáze
+bloku relativně k jeho začátku / délka bloku**, decimace ho skládá přesně
+(`E = Σ(C_j + E_j)/100`), MDEV nad stage ≥ 1 přičítá `E[l+2m] − 2E[l+m] + E[l]`.
+⚠️ **Vzorky bez fáze** (rekonstrukce z datalogu = 10s průměry) MDEV nad sebou nepočítají
+(`e_n` = počet položek s platným `E`); ADEV z nich ano. Kryje `screen_main_selftest`
+(přímá definice nad průměry fáze bloků). Lekce L-0100: **estimátor nad komprimovanými
+daty = napiš, co komprese zachovává.**
 🔴 **Statistika stability počítá a ukládá v `double`** (F-0179): nominál je celé Hz,
 takže |y| < 1/f, a `float` při 10 kHz smazal šum (ADEV vyšla vysoko nebo 0).
 `float` smí být jen při kreslení a vždy RELATIVNĚ k referenci.
@@ -846,6 +856,12 @@ SIGNAL_LOST, skok přes práh 380 MHz, poškozené CRC, díru v `phase_status`.
 nepersistuje se, `DATALOG_F_SIM` (bit 6) zůstane v logu navždy, info řádek začíná `SIM `,
 `status` to hlásí. Tempo: nová SEQ jen ~4×/s (reálná FPGA má gate 0,25 s), i když FpgaTask
 polluje 20×/s — jinak by emulace vyráběla 20 měření/s a zkreslila vše, co se opírá o tempo.
+🔴 **Rámec se skládá TAK, JAK HO SKLÁDÁ FPGA** (F-0186, `98c4394`): celé periody
+(`edges`), Δt v ticích 2,5 ns od náhodné fáze, `x100000` z přesného Δt a `gate_time_ns`
+jako **floor** (`(ticks·5)>>1`, `spi_app.v:507`). Dřív emulátor posílal libovolné celé ns
+a `edges = floor(hz·gate)` — floor hradla tedy nemodeloval (vadu F-0186 nemohl ukázat)
+a přidával vlastní hi-res šum až 4·10⁻⁷. **Při každé změně kontraktu FPGA uprav i emulátor
+podle RTL** (L-0099).
 
 **Disciplinace LSE podle GPS (`rtc_lse_*`, UART `rtc cal`).** `rtc_try_sync()` každých 10 min
 přepsal čas a odchylku **zahodil** — přitom právě ona je měření driftu vlastního krystalu.
@@ -870,7 +886,17 @@ se vkládá od **stage 1**, ne 0: stage 1 má τ = 10 s = přesně kadenci logu,
 exaktní — 🔴 **ale jen pro záznamy s `freq_avg = 1`** (průměr za periodu, F-0172); okamžitý
 vzorek 0,25 s (starší záznamy) by dal σy ~3× výš a rekonstrukce ho přeskakuje. Sypat log do stage 0 (τ0 = 1 s) by dalo σy(τ) špatně **o celý řád** a přitom věrohodně.
 ⚠️ **Trend pyramida se záměrně nerekonstruuje** (decimuje po 4, 10 s na žádnou stage nesedne).
-Běží po dávkách 20 záznamů/tik (~2 min na pozadí); přeskakuje `freq == 0` a `DATALOG_F_SIM`.
+Běží po dávkách 20 záznamů/tik (~2 min na pozadí).
+🔴 **Jen POSLEDNÍ SOUVISLÝ ÚSEK TÉHOŽ SIGNÁLU** (F-0189, `4eee405`) — tatáž pravidla, podle
+kterých živý běh pyramidu nuluje (L-0102): **řez** (vynulovat a pokračovat) při
+nepoužitelném záznamu (`freq == 0`, bez `freq_avg`, `DATALOG_F_SIM`, `t_unix == 0`, jiný
+signál proti referenci s prahem 10⁻⁴ — `screen_main_signal_match`) nebo při mezeře
+v čase > perioda logu + 120 s (`SEED_GAP_EXTRA_S`). Start **až po prvním reálném měření**
+(bez reference nelze poznat, které záznamy k signálu patří — bez `fpgasim`/FPGA tedy
+rekonstrukce čeká). **Po zapnutí napájení (RSR POR/BOR) se nerekonstruuje vůbec** — mezera
+je neznámá a OCXO nabíhá; čas „teď" z RTC by šel číst jen z defaultTasku, proto kritériem
+je druh resetu. Hlášení: `… N vzorku posledniho souvisleho useku (tau0=10 s, K rezu)`.
+⚠️ Nad rekonstruovanými vzorky se **nepočítá MDEV/TDEV** (nemají fázi, viz fázová pyramida).
 
 **SCPI nad IPC snapshotem (`ipc_scpi_src_from_snap`, UART `scpi ipc <cmd>`).** Největší riziko
 TCP poloviny #25 není socket, ale jestli snapshot nese vše, co SCPI potřebuje. `scpi ipc X`
@@ -1021,6 +1047,7 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - **⚠️ HEADLINE = REÁLNÁ DATA (#1, 2026-08-25, KÓD HOTOVÝ, NEOVĚŘENO NA HW).** Velké číslo + **všechny statistiky** (Allan, drift, offset, Math, spektrogram, trend) čtou jediný hinge `s_freq_n` v `screen_main.c`, který nově žene **reálný/emulovaný kmitočet z FpgaTasku** (`g_freq_x100000`/`g_freq_seq`/`g_freq_valid`, plní je FpgaTask vedle `g_freq_text`). `freq_advance()` volí zdroj: platné měření → REAL; bez měření (mrtvý link, `fpgasim` off) → **SIM fallback** `freq_step()` s viditelným **„SIM" markerem** u čísla. **Emulovaná data (`fpgasim`) jdou reálnou cestou driveru** → berou se jako REAL (bez markeru) — proto se celý řetězec dá testovat bez FPGA desky. **Dynamický formát Hz–GHz**: `num_build_for()`/`num_layout()` staví segmenty/separátory/geometrii podle magnitudy měření (rebuild jen při změně počtu celých číslic). Statická předloha `SCR_MAIN_DIGITS`/`_SEPS` **odstraněna**.
   - **⚠️ FREQ ↔ PERIOD toggle (footer slot 0, 2026-08-29):** `s_freq_n` = **VŽDY frekvence** (v LSB=10^-`s_freq_frac` Hz) — čte ho statistika, SIM walk (`freq_step`), `screen_main_freq_hz()`, Math. Zobrazované číslo je **`s_disp_n`** (`freq_fill_segments` čte jeho): v FREQ režimu `= s_freq_n`, v PERIOD `= 1/f` přepočtená do **s / ms / us / ns / ps** (`disp_update()`, jednotka `s_disp_unit` + převodní `s_disp_unit_s` dle magnitudy, `s_num.unit`). `num_build_for` je dvouprůchodový: (1) frekvenční stav, (2) `num_layout` pro FREQ nebo PERIOD digits. Toggle nastaví `s_disp_recalc=1` → `freq_advance` vynutí rebuild z poslední známé frekvence + `s_freq_fmt_changed` (plný redraw). **Perioda je JEN displej** — nemá hi-res dopočet (1/f, ~7 platných cifer), statistika/Allan zůstávají frekvenční. **⚠️ Jednotka se kreslí přes `s_num.unit_font` = `ui_font_sans_32`, což je SUBSETOVANÝ font** — dřív obsahoval jen `"Hz"`, takže „ns"/„us"/… se vykreslily jako NIC. Charset rozšířen na `Hzsmunp` (`CM7/libui/tools/font_gen/gen_fonts.js` ř. 47) + `ui_font_sans_32.c` přegenerován; **při další regeneraci fontů ten charset nesmí spadnout zpět na `'Hz'`** (kontrola: `grep glyph_count ui_font_sans_32.c` musí být 7, ne 2).
   - 🔴 **Počet číslic: headline se NEPOČÍTÁ ze zaokrouhleného `frequency_x100000`** (to nese jen 5 desetin), ale **z reciproké dvojice `edge_count`/`gate_time_ns`** (`freq_frame_to_lsb`, „hi-res"): reciproký čítač měří `f = N/Δt`, takže se podíl dá spočítat na **7 desetin** a ty číslice navíc jsou **SKUTEČNÉ** — ověřeno: posun hradla o 123 ns změní `10000000,0000000` → `9999995,0800024`. (Leží pod šumem — rozlišení TDC 2,5 ns / 0,25 s okno ≈ 0,1 Hz — a **právě proto se poslední místa kreslí ztlumeně**.) Při 10 MHz to dělá **15 číslic** (8+7), stejně jako původní statická předloha.
+    - 🔴 **`gate_time_ns` NENÍ přesné Δt — FPGA ho posílá jako FLOOR** z ticků 2,5 ns (`spi_app.v:507`, `(dt·5)>>1`), zatímco `x100000` počítá z přesného Δt (F-0186, `98c4394`). Dělit `gate_ns` přímo dávalo u asynchronního signálu systematickou chybu **0 až +2·10⁻⁹** (10 MHz: až 20 mHz). **Vždy dělit přesnými ticky:** `fpga_freq_dt_ticks(gate_ns)` = round(gate_ns / 2,5 ns), `FPGA_TICK_PS`/`FPGA_TICKS_PER_S` (`fpga_freq.h`) — používá je hi-res (`fpga_freq_hires_hz`/`_uhz`), akumulátor vzorků statistiky a datalogu (`gate_ps`), velké číslo i perioda. ⚠️ **Nová deska (carry chain) má jiný tick** → protokol v2 musí nést Δt v ticích nebo ps, ne floor v ns.
     - ⚠️ **`edge_count` má rámec JEN pro pin28 (/4)** — u větve /16 (nad ~380 MHz) hi-res dopočet **nejde** a formát se poctivě srazí na 5 desetin z `x1e5` (`g_freq_hires` = 0). Přepnutí /4↔/16 proto **přestavuje formát** (jinak by se dokreslovaly nuly, které měření nenese).
     - ⚠️ **Počítá se DLOUHÝM DĚLENÍM** (celá část + číslice po jedné), NE `num × 10^frac / den` — to by při 7 desetinách přeteklo uint64 už kolem 10 MHz (2,5e22 ≫ 1,8e19). `num = edges × 4 × 1e9` je bezpečné (nejhůř ~8,6e18 při 21,5 s okně), přesto hlídané stropem.
     - **Kolik desetin podle zdroje** (`max_frac` v `num_build_for`): **hi-res /4 = 7**, **`x1e5` /16 = 5**, **SIM základ = 6** (`FREQ_FRAC_SIM` — o jedno velké desetinné místo víc než x1e5, takže před dvěma malými nejistými jsou **čtyři velké**; fabrikace to není, SIM hodnotu generuje `freq_step()` a číslo nese marker „SIM"). Základ 10 MHz v SIM: `10.000.000,000 0̲sf` = 14 číslic, 715 px.
@@ -1031,7 +1058,7 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   - ⚠️ **Převod `freq_x100000_to_lsb()` DĚLÍ, nenásobí**: `x100000 × 10^frac / 1e5` při ~4 GHz **přeteče uint64** (4e19 > 1,8e19). Dělení `10^(5−frac)` je exaktní a bez přetečení.
   - ⚠️ **Amplituda SIM fallbacku se počítá z `s_freq_frac`** (~0,05 Hz), ne pevně v LSB — jinak by při 5 desetinách (dřív 7) kmitala ±5 Hz a rozhýbala i celou část.
 
-  **Kadence statistiky = průměr měření za vzorek složený PODLE POČTU měření** (🔴 F-0171 + `d0a02e5`: FpgaTask sčítá cykly a hradla každého měření a vzorek uzavře při Σhradel ≥ 1 s − hradlo/2, UiTask je bere `fpga_stat_pop` z fronty 16 vzorků — ne podle 1s tiku, který se opožďuje o latenci smyčky; dřív se brala jen POSLEDNÍ 0,25s hodnota za sekundu = mrtvá doba 75 %, σy 2× až 23× vysoko; bez nového měření se nevzorkuje, jinak by držená hodnota σy snížila); **přechod REAL↔SIM i změna magnitudy resetují Allan/trend pyramidu** (nemíchat nekompatibilní vzorky). ⚠️ Plný redraw zóny (změna formátu / REAL↔SIM) **musí nejdřív naplnit číslice i shadow** — jinak se o snímek déle drží stará hodnota. 🔴 **`screen_main_redraw_freq_area()` čistí SJEDNOCENÍ s předchozí zónou** — číslo je vycentrované, takže při změně formátu se mění i jeho levý okraj; bez toho by po stranách zůstali „duchové" starých číslic (typicky i stará jednotka `Hz`), protože partial redraw už do té oblasti nikdy nesáhne. **Jednotka `Hz` se kreslí vždy** (`ui_big_number_render_tail` ji přidává na konec každého partial redrawu). ⚠️ **`s_freq_center`/`s_freq_nominal_hz` už NEjsou fixně 10 MHz** — `screen_main_freq_hz()` = `s_freq_n / 10^frac` (nezávislé na centru); pod 1 Hz je centrum rovno naměřené hodnotě (nulové by SIM stahovalo k nule). ⚠️ **Kolik číslic je nejistých už NENÍ natvrdo 2 (#51, 2026-08-28):** `freq_uncertain_frac()` odvozuje počet ztlumených desetin z **rozlišení hradla reciprokého čítače** (√2·tdc/gate, `FREQ_TDC_PS`=2500 — deterministické, NE simulace) → delší hradlo = víc důvěryhodných cifer. **SIM fallback (`gate_ns`==0) dává 2** (nezměněný vzhled), REAL/emulátor počítá z `gate_ns` rámce; sanitace na [1, celkem−1] — 🔴 od F-0177 smí nejistota zasáhnout i **celou část** a podtržení skončí na poslední skutečně důvěryhodné číslici (dřív byla vždy aspoň jedna desetina „důvěryhodná", i při rozlišení 1,4 Hz na 100 MHz). Fade fontem se kreslí víc/míň desetin podle skutečné rozlišovací meze. ⚠️ **τ0 pyramidy pořád předpokládá ~1 s** (plně správný τ0=skutečný rozestup = MathTask #27). Test: `fpgasim on <hz>` → headline; `fpgasim on 32768`/`1400000000` → přeformátování; `fpgasim fault lost` → šedá; `fpgasim off` → SIM marker.
+  **Kadence statistiky = průměr měření za vzorek složený PODLE POČTU měření** (🔴 F-0171 + `d0a02e5`: FpgaTask sčítá cykly a hradla každého měření a vzorek uzavře při Σhradel ≥ 1 s − hradlo/2, UiTask je bere `fpga_stat_pop` z fronty 16 vzorků — ne podle 1s tiku, který se opožďuje o latenci smyčky; dřív se brala jen POSLEDNÍ 0,25s hodnota za sekundu = mrtvá doba 75 %, σy 2× až 23× vysoko; bez nového měření se nevzorkuje, jinak by držená hodnota σy snížila); **přechod REAL↔SIM i změna SIGNÁLU (relativně > 10⁻⁴ proti referenci, z hi-res kmitočtu — F-0183/F-0192) resetují Allan/trend pyramidu** (nemíchat nekompatibilní vzorky). 🔴 **Nulování vyprázdní i to, co je „na cestě"** (F-0188, `b619ea8`): `fpga_stat_flush()` zahodí frontu hotových vzorků i rozpracovaný akumulátor a `app_gpsdo_tick_stats_sample` navíc zahodí každý vzorek, který neprojde `screen_main_signal_match()` (vzorek složený přes hranici změny) — dřív prošly 1–2 cizí vzorky v 99,6 % přepnutí a dožívaly na dlouhých τ dny (L-0101). ⚠️ Plný redraw zóny (změna formátu / REAL↔SIM) **musí nejdřív naplnit číslice i shadow** — jinak se o snímek déle drží stará hodnota. 🔴 **`screen_main_redraw_freq_area()` čistí SJEDNOCENÍ s předchozí zónou** — číslo je vycentrované, takže při změně formátu se mění i jeho levý okraj; bez toho by po stranách zůstali „duchové" starých číslic (typicky i stará jednotka `Hz`), protože partial redraw už do té oblasti nikdy nesáhne. **Jednotka `Hz` se kreslí vždy** (`ui_big_number_render_tail` ji přidává na konec každého partial redrawu). ⚠️ **`s_freq_center`/`s_freq_nominal_hz` už NEjsou fixně 10 MHz** — `screen_main_freq_hz()` = `s_freq_n / 10^frac` (nezávislé na centru); pod 1 Hz je centrum rovno naměřené hodnotě (nulové by SIM stahovalo k nule). ⚠️ **Kolik číslic je nejistých už NENÍ natvrdo 2 (#51, 2026-08-28):** `freq_uncertain_frac()` odvozuje počet ztlumených desetin z **rozlišení hradla reciprokého čítače** (√2·tdc/gate, `FREQ_TDC_PS`=2500 — deterministické, NE simulace) → delší hradlo = víc důvěryhodných cifer. **SIM fallback (`gate_ns`==0) dává 2** (nezměněný vzhled), REAL/emulátor počítá z `gate_ns` rámce; sanitace na [1, celkem−1] — 🔴 od F-0177 smí nejistota zasáhnout i **celou část** a podtržení skončí na poslední skutečně důvěryhodné číslici (dřív byla vždy aspoň jedna desetina „důvěryhodná", i při rozlišení 1,4 Hz na 100 MHz). Fade fontem se kreslí víc/míň desetin podle skutečné rozlišovací meze. ⚠️ **τ0 pyramidy pořád předpokládá ~1 s** (plně správný τ0=skutečný rozestup = MathTask #27). Test: `fpgasim on <hz>` → headline; `fpgasim on 32768`/`1400000000` → přeformátování; `fpgasim fault lost` → šedá; `fpgasim off` → SIM marker.
 - **Signal bargraf = REÁLNÝ** (už ne simulace): RF vstupní výkon z **AD8307** log-detektoru přes ADS1115 **AIN1** (SensorsTask fast-path ~10 Hz). `app_gpsdo_tick_signal` převádí mV→dBm (`dBm = mV/AD8307_SLOPE_MV_DB + AD8307_INTERCEPT_DBM`, typ. 25 mV/dB, intercept −84 dBm), bargraf mapuje pásmo `RF_DBM_MIN..MAX` (−80..+10 dBm), text „−45.5 dBm". ⚠️ slope/intercept jsou datasheet-typické → přesná **kalibrace do CALIB store** (viz [[w25q-flash]]).
 
 ## 🟢 NOVÁ REVIZE DESKY (zadání 2026-08-30) — co se změní a co tím padá
@@ -1517,7 +1544,14 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
       → zvětši `--pl`.**
     - 🔴 **`rf_dbm`/ALLAN/DRIFT počítá klient z REÁLNÝCH měření; `sigma_tau`/`offset`/`drift` ze snapshotu
       se ZÁMĚRNĚ nepoužívají** (CM7 je neplní). Vzorky **podle `seq_meas`** (jinak σy nesmyslně nízká),
-      buffer se **zahodí při změně brány**. ⚠️ **Rozdíl proti displeji:** displejový headline je simulace
+      buffer se **zahodí při změně brány**. 🔴 **A řada musí být SOUVISLÁ** (F-0190, `d448b57`):
+      `ingestM` počítá chybějící měření (`seq − last − 1`, uint32) a toleruje je jen do
+      **1 % řady** (`MMISS`; ADEV se tím zkreslí řádově o ten podíl, pod nejistotou), jinak
+      řada začne znovu a `aWarn` řekne proč. Bez SSE (záložní 1 Hz poll) chodí jen každé
+      ~4. měření = mrtvá doba 75 % → řada se restartuje při každém vzorku a Allan/drift/ℒ(f)
+      se nepočítají. τ0 (`mTau0`) dělí rozpětí časů počtem rozestupů **včetně** chybějících.
+      ⚠️ Nulová tolerance by byla chyba: díru udělá i F5 (reload) a SSE událost, kterou
+      `sse_push` zahodí při plném `sndbuf` — obojí by smazalo až 500 s dat (L-0103). ⚠️ **Rozdíl proti displeji:** displejový headline je simulace
       (#2), web servíruje reálná FPGA data → bez desky displej ukazuje kmitočet a **web správně `null`**
       (SPA vypíše důvod: STOP / SPI DOWN / ztráta signálu).
   - **Web rozšíření v12/v13 + revize (2026-08-24..26) — KÓD HOTOVÝ, NEOVĚŘENO NA HW.**
@@ -1559,7 +1593,9 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
       který je mezitím přidělený jinému klientovi. **Nejdřív odregistruj všechny
       callbacky, teprve pak zavírej** — a obsluha si ověří `c->pcb == pcb`.
     - ⚠️ **ETag SPA = čas překladu `httpd_min.c`** (`__DATE__ __TIME__`), ne verze FW. `Cache-Control: no-cache`.
-    - ⚠️ **localStorage historie se obnoví jen když mezera < 30 s** (Allan chce rovnoměrné τ0).
+    - ⚠️ **localStorage historie se obnoví jen když mezera < 30 s** (Allan chce rovnoměrné τ0)
+      **a když nese `seq_meas` posledního vzorku** (`q`, od F-0190) — měření zmeškaná během
+      reloadu se pak spočítají stejnou tolerancí 1 %; starý formát bez `q` se neobnoví.
     - **Headline na webu zrcadlí displej** (`fmtFreqHtml`); koncový bod křivky = **HTML overlay, ne SVG**
       (roztažený `viewBox` → SVG kruh by byl elipsa).
     - ⚠️ Detail karet (klik) rozpadá řady po senzorech (`seriesTable`); hlavička = `data-hd`, ne třída
