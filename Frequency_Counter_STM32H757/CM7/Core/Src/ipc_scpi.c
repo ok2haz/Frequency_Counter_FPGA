@@ -65,6 +65,12 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->si5356_status = sn->si5356_status;
     s->si5356_ok     = sn->si5356_ok;
+    /* F-0194: snapshot NESE `selftest_res` (ipc_shared.h, plni ipc.c), jen se tu
+     * necetl -> `*TST?` pres TCP/HTTP vracelo vzdy FAIL (0 z memsetu), zatimco
+     * USB (scpi.c:1098) i `/api/state` (`snap->selftest_res`) hlasily PASS —
+     * dve pravdy o jednom pristroji. Stejny vzor jako slepy readback (IPC v11)
+     * a F-0185 (L-0098): pole existuje, loader ho neplnil. */
+    s->selftest_pass = (sn->selftest_res == 1);
     s->uptime_s      = sn->uptime_s;
     s->spi_ok        = (sn->flags & IPC_F_FPGA_LINK) ? 1u : 0u;
     s->freq_err      = (sn->flags & IPC_F_SIGNAL_LOST) ? 1u : 0u;

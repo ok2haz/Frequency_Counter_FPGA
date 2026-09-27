@@ -843,6 +843,19 @@ int ipc_selftest(void)
         ok &= (ipc_cfg_apply(&c2, IPC_CFG_NULL_ACQ, 0, 0, 1e7) == 1 && c2.null_en == 1);  /* s freq */
     }
 
+    /* F-0194: `selftest_pass` musi ze snapshotu vyjit STEJNE jako `g_selftest_res`,
+     * ktere ho plni (`ipc_stamp` nize) — jinak `*TST?` pres TCP/HTTP rika neco
+     * jineho nez USB/`/api/state`. Obe hodnoty (PASS i FAIL), pres cisty
+     * `ipc_scpi_src_from_snap` nad lokalni `t`, ne nad `g_ipc`. */
+    {
+        scpi_src_t ss; uint8_t save = g_selftest_res;
+        g_selftest_res = 1; ipc_stamp(&t);
+        ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 1);
+        g_selftest_res = 2; ipc_stamp(&t);
+        ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 0);
+        g_selftest_res = save; ipc_stamp(&t);
+    }
+
     return ok;
 }
 
@@ -855,9 +868,14 @@ int ipc_selftest(void)
  * staticke asserty nize. Kdyby se rozesly, preklad by neprosel.
  *
  * ⚠️ Co snapshot NEMA, zustava nulove/neplatne — a to je spravne: lepe "nevim"
- * nez vymysleny udaj. Konkretne datalog (MMEM:*) a `selftest_pass` snapshot
- * dnes nenese, takze CM4 na ne odpovi prazdno; az to bude potreba, doplni se do
- * snapshotu s bumpem IPC_VERSION (dnes by to byla mrtva vaha). */
+ * nez vymysleny udaj. Konkretne datalog (MMEM:*) snapshot nenese, takze CM4 na
+ * ne odpovi prazdno; az to bude potreba, doplni se do snapshotu s bumpem
+ * IPC_VERSION (dnes by to byla mrtva vaha).
+ * 🔴 `selftest_pass` TADY DO 2026-09-27 CHYBNE STALO jako dalsi priklad —
+ * nepravda: snapshot ho nese uz od zacatku (`selftest_res` nize, viz F-0088
+ * a okolni pole), jen ho `ipc_scpi_src_from_snap` do F-0194 necetla (oprava
+ * `ipc_scpi.c`). Tenhle komentar sam byl zdrojem omylu, ne jen jeho popisem —
+ * priste overuj proti kodu, ne proti okolnimu textu (L-0018). */
 _Static_assert((int)SCPI_V_FREQ    == (int)IPC_V_FREQ,    "SCPI/IPC bit FREQ se rozesel");
 _Static_assert((int)SCPI_V_DIV16   == (int)IPC_V_DIV16,   "SCPI/IPC bit DIV16 se rozesel");
 _Static_assert((int)SCPI_V_FRAME   == (int)IPC_V_FRAME,   "SCPI/IPC bit FRAME se rozesel");
