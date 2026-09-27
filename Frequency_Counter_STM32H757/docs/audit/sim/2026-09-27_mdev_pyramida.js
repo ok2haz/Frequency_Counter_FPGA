@@ -44,6 +44,32 @@ function adevY(y, m) { const M = y.length; let acc = 0, n = 0;
 function hdevY(y, m) { const M = y.length; let acc = 0, n = 0;
   for (let j = 0; j <= M - 3 * m; j++) { let in_ = 0; for (let i = j; i < j + m; i++) in_ += y[i + 2 * m] - 2 * y[i + m] + y[i]; acc += in_ * in_; n++; }
   return Math.sqrt(acc / (6 * m * m * n)); }
+/* OPRAVA F-0187: fazova pyramida. Kazda stage nese vedle prumeru kmitoctu Ybar
+ * i E = (prumer faze bloku - faze na jeho zacatku) / delka bloku (τ0 = 1).
+ * Decimace x10: Ybar = Σ Ybar_j / 10, E = Σ (C_j + E_j) / 100, C_j = Σ_{q<j} Ybar_q.
+ * MDEV: inner = ΣΣ(Ybar[k+m]-Ybar[k]) + Σ_l (E[l+2m] - 2E[l+m] + E[l]),
+ * j <= M-3m (nad stage 0 chybi faze za poslednim blokem), /(2 m^4 n). */
+function decimE(Y, E) {
+  const Yo = [], Eo = [];
+  for (let i = 0; i + 10 <= Y.length; i += 10) {
+    let a = 0, ae = 0;
+    for (let j = 0; j < 10; j++) { ae += a + E[i + j]; a += Y[i + j]; }
+    Yo.push(a / 10); Eo.push(ae / 100);
+  }
+  return [Yo, Eo];
+}
+function mdevYE(Y, E, m, pb) {
+  const M = Y.length; if (M < 3 * m + 1) return NaN;
+  const last = pb ? M - 3 * m : M - 3 * m + 1;
+  let acc = 0, n = 0;
+  for (let j = 0; j <= last; j++) {
+    let in_ = 0;
+    for (let i = j; i < j + m; i++) for (let k = i; k < i + m; k++) in_ += Y[k + m] - Y[k];
+    if (pb) for (let l = j; l < j + m; l++) in_ += E[l + 2 * m] - 2 * E[l + m] + E[l];
+    acc += in_ * in_; n++;
+  }
+  return Math.sqrt(acc / (2 * m ** 4 * n));
+}
 function decim(y, f) { const o = []; for (let i = 0; i + f <= y.length; i += f) { let s = 0; for (let k = 0; k < f; k++) s += y[i + k]; o.push(s / f); } return o; }
 function series(type, N) {
   if (type === 'bily PM') { const x = new Float64Array(N + 1); for (let i = 0; i <= N; i++) x[i] = gauss();
@@ -79,6 +105,20 @@ for (const type of ['bily PM', 'blikavy PM', 'bily FM']) {
       la += ' τ=' + tau + ' A ' + (adevY(ys, m) / adevY(y, tau)).toFixed(2) + ' H ' + (hdevY(ys, m) / hdevY(y, tau)).toFixed(2);
     }
     console.log(la); }
+  /* OPRAVA: fazova pyramida (jen s <= 2, M = cela rada — stredni hodnota) */
+  { const vF = [], tF = [];
+    let Y = y.slice(), E = new Array(y.length).fill(0), line = '  OPRAVA fazova pyramida (pomer):';
+    for (let s = 0; s <= 2; s++) {
+      if (s) { [Y, E] = decimE(Y, E); }
+      for (const m of [1, 2, 3, 5, 7, 9]) {
+        const tau = m * 10 ** s, p = mdevYE(Y, E, m, s > 0), e = mdevY(y, tau);
+        if (m === 1 || m === 9) line += ' τ=' + tau + ' ' + (p / e).toFixed(2);
+        if ([1, 2, 5].includes(m)) { tF.push(tau); vF.push(p); }
+      }
+    }
+    const muF = slope(tF, vF);
+    console.log(line + '   sklon ' + muF.toFixed(2) + ' -> ' + (muF < -1.25 ? 'bily PM' : 'blikavy PM'));
+  }
   const muP = slope(tT, vP), muE = slope(tT, vE);
   const cls = mu => (mu < -1.25 ? 'bily PM' : 'blikavy PM');
   console.log('  sklon MDEV (body 1-2-5, τ 1..500 s): pyramida ' + muP.toFixed(2) + ' -> ' + cls(muP)

@@ -1421,26 +1421,56 @@ static float stats_drift(void)
  * 43 clenu, MDEV 35 a HDEV 34. Vedlejsi efekt i u vychozich 1-2-5: vic clenu
  * (uzsi pas nejistoty), za cenu delsi pameti stage (60·10^s s misto 24·10^s s). */
 #define ADEV_RING   60
-typedef struct { double ring[ADEV_RING]; int16_t head, count; double acc; int16_t acc_n; } adev_stage_t;
+/* 🔴 F-0187: stage nese vedle prumeru kmitoctu Ybar i FAZI uvnitr bloku:
+ *   E = (prumer faze bloku - faze na jeho zacatku) / delka bloku   (τ0 = 1).
+ * Bez ni je stage jen faze PODVZORKOVANA po 10^s τ0 — ADEV a HDEV tomu staci
+ * (potrebuji jen prumery kmitoctu pres τ), ale MDEV ne: prumeroval by m bodu
+ * faze misto n = m·10^s a u bileho PM vychazel 3,2x (stage 1) az 10x (stage 2)
+ * vysoko a bily PM se hlasil jako blikavy (sim/2026-09-27_mdev_pyramida.js).
+ * S E je MDEV nad stage PRESNE standardni MDEV (τ0 = 1), jen se starty po 10^s.
+ * Decimace x10: Ybar = Σ Ybar_j / 10,  E = Σ (C_j + E_j) / 100,
+ * C_j = Σ Ybar predchozich podbloku. Stage 0 (blok = 1 vzorek) ma E = 0.
+ * `e_n` = kolik NEJNOVEJSICH polozek ma E platne: rekonstrukce z datalogu
+ * (10s prumery) fazi uvnitr bloku nezna, takze MDEV se nad ni nepocita. */
+typedef struct {
+    double  ring[ADEV_RING];      /* prumery kmitoctu Ybar */
+    double  eph[ADEV_RING];       /* E (viz vyse) */
+    int16_t head, count;
+    int16_t e_n;                  /* pocet nejnovejsich polozek s platnym E */
+    double  acc;                  /* decimace: Σ Ybar podbloku (= C_j pro dalsi) */
+    double  acc_e;                /* decimace: Σ (C_j + E_j) */
+    int16_t acc_n;
+    uint8_t acc_e_ok;             /* vsechny podbloky mely platne E */
+} adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
  * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
  * ma kadenci PRESNE 10 s = tau stage 1. */
-static void adev_feed_from(int s0, double v)
+/* `e`/`e_ok` = faze uvnitr bloku vkladaneho vzorku (F-0187); nad pyramidou `pyr`
+ * s `nst` stagemi (selftest si stavi vlastni, zivou nesmi menit). */
+static void adev_feed_into(adev_stage_t *pyr, int nst, int s0, double v, double e, int e_ok)
 {
-    for (int s = s0; s < ADEV_STAGES; s++) {
-        adev_stage_t *sg = &s_adev[s];    /* 'sg', ne 'st' — nekolidovat s globalnim UI stavem */
+    for (int s = s0; s < nst; s++) {
+        adev_stage_t *sg = &pyr[s];       /* 'sg'/'pyr', ne 'st' — nekolidovat s globalnim UI stavem */
         sg->ring[sg->head] = v;
+        sg->eph[sg->head]  = e;
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
         if (sg->count < ADEV_RING) sg->count++;
-        sg->acc += v;
+        sg->e_n = e_ok ? (int16_t)((sg->e_n < ADEV_RING) ? sg->e_n + 1 : ADEV_RING) : 0;
+        if (sg->acc_n == 0) sg->acc_e_ok = 1u;
+        sg->acc_e += sg->acc + e;                 /* C_j + E_j, C_j = Σ Ybar predchozich */
+        sg->acc   += v;
+        if (!e_ok) sg->acc_e_ok = 0u;
         if (++sg->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
-        v = sg->acc / 10.0; sg->acc = 0; sg->acc_n = 0;    /* dekadovy prumer -> dal */
+        v    = sg->acc / 10.0;                    /* dekadovy prumer -> dal */
+        e    = sg->acc_e / 100.0;
+        e_ok = sg->acc_e_ok;
+        sg->acc = 0.0; sg->acc_e = 0.0; sg->acc_n = 0;
     }
 }
 
-static void adev_feed(double v) { adev_feed_from(0, v); }
+static void adev_feed(double v) { adev_feed_into(s_adev, ADEV_STAGES, 0, v, 0.0, 1); }
 
 /* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
  * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
@@ -1474,7 +1504,9 @@ void screen_main_adev_seed_10s(double y)
      * v `adev_feed_from`); -Wshadow to jinak hlasi. */
     int stg = datalog_adev_stage();
     if (stg < 0 || stg >= ADEV_STAGES) return;
-    adev_feed_from(stg, y);
+    /* F-0187: 10s prumer z logu fazi uvnitr bloku nenese -> E neplatne (MDEV nad
+     * rekonstrukci se nepocita); jen stage 0 (blok = 1 vzorek) ho ma trivialne 0. */
+    adev_feed_into(s_adev, ADEV_STAGES, stg, y, 0.0, stg == 0);
 }
 
 /* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
@@ -1521,9 +1553,16 @@ int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc)
  * delalo v nejvnitrnejsi smycce (az dvakrat na clen); s ringem 60 a m az 9
  * (hustsi Allan) by to stalo radove vic nez samotna aritmetika. Soucet se
  * sklada ze TYCHZ clenu ve STEJNEM poradi, vysledek je tedy bit za bit stejny. */
-static int adev_base(const adev_stage_t *sg)
+static int adev_base_n(const adev_stage_t *sg, int n)  /* index nejstarsi z n nejnovejsich */
 {
-    return (sg->head - sg->count + ADEV_RING) % ADEV_RING;
+    return (sg->head - n + ADEV_RING) % ADEV_RING;
+}
+static int adev_base(const adev_stage_t *sg) { return adev_base_n(sg, sg->count); }
+static double adev_e_at(const adev_stage_t *sg, int base, int i)   /* E i-teho (F-0187) */
+{
+    int k = base + i;
+    if (k >= ADEV_RING) k -= ADEV_RING;
+    return sg->eph[k];
 }
 static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstarsi */
 {
@@ -1651,7 +1690,8 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 #define ADEV_KIND_MDEV  1
 #define ADEV_KIND_HDEV  2
 
-static float adev_ring_kind(const adev_stage_t *sg, int m, int kind)
+/* `pb` = stage s bloky delsimi nez 1 vzorek (s >= 1): MDEV pak pouzije fazi E. */
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb)
 {
     int M = sg->count;
     int b = adev_base(sg);
@@ -1675,12 +1715,23 @@ static float adev_ring_kind(const adev_stage_t *sg, int m, int kind)
     }
 
     if (kind == ADEV_KIND_MDEV) {
-        if (M < 3 * m + 1) return 0.0f;
-        for (int j = 0; j <= M - 3 * m + 1; j++) {        /* M-3m+2 clenu (SP1065) */
+        /* 🔴 F-0187: nad stage >= 1 jen NEJNOVEJSI polozky s platnou fazi E, clen
+         * Σ(E[l+2m] - 2E[l+m] + E[l]) doplni prumer faze uvnitr bloku, a posledni
+         * start j = M-3m (faze za poslednim blokem neni). Na stage 0 je E = 0
+         * a posledni start M-3m+1 (faze na konci posledniho vzorku znama). */
+        int Mm = pb ? sg->e_n : M;
+        if (Mm < 3 * m + 1) return 0.0f;
+        int bm   = pb ? adev_base_n(sg, Mm) : b;
+        int last = pb ? Mm - 3 * m : Mm - 3 * m + 1;
+        for (int j = 0; j <= last; j++) {                 /* M-3m+2 / M-3m+1 clenu */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
                 for (int k = i; k < i + m; k++)
-                    inner += (double)adev_at(sg, b, k + m) - (double)adev_at(sg, b, k);
+                    inner += (double)adev_at(sg, bm, k + m) - (double)adev_at(sg, bm, k);
+            if (pb)
+                for (int l = j; l < j + m; l++)
+                    inner += adev_e_at(sg, bm, l + 2 * m) - 2.0 * adev_e_at(sg, bm, l + m)
+                           + adev_e_at(sg, bm, l);
             acc += inner * inner; n++;
         }
         if (n == 0) return 0.0f;
@@ -1700,7 +1751,7 @@ static float adev_ring_kind(const adev_stage_t *sg, int m, int kind)
     return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
 
-static float adev_stage_kind(int s, int m, int kind) { return adev_ring_kind(&s_adev[s], m, kind); }
+static float adev_stage_kind(int s, int m, int kind) { return adev_ring_kind(&s_adev[s], m, kind, s > 0); }
 static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
@@ -1742,7 +1793,7 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
 static int16_t hist_h(float count, int peak, int16_t H, bool logy);   /* fwd */
 static int   nz_alpha(float mu, float mu_m, int have_m);                  /* fwd — typ sumu (bod 4) */
 static float adev_edf_alpha(int alpha, int M, int m);                  /* fwd — EDF podle typu sumu */
-static float adev_ring_kind(const adev_stage_t *sg, int m, int kind);  /* fwd — estimator stage */
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb);  /* fwd — estimator stage */
 /* Nezavisla reference pro selftest: vzorce SP1065 primo nad chronologickym polem
  * (index pres puvodni modulo `(head - count + i + 2R) % R`, ne pres `adev_at`),
  * takze kontroluje i pretoceni ringu. */
@@ -1835,12 +1886,44 @@ bool screen_main_selftest(void)
         for (int kind = 0; kind < 3; kind++)
             for (int t = 0; t < 3; t++) {
                 double ref = adev_ref(chron, ADEV_RING, KM[t], kind);
-                float  got = adev_ring_kind(&tst, KM[t], kind);
+                float  got = adev_ring_kind(&tst, KM[t], kind, 0);
                 ok &= (ref > 0.0) && (fabs((double)got / ref - 1.0) < 1e-5);
             }
         tst.count = 20;                                  /* M < 3·9+1 -> m=9 MDEV/HDEV nejde */
-        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_MDEV) == 0.0f);
-        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_ADEV) > 0.0f);   /* M >= 2·9+1 */
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_MDEV, 0) == 0.0f);
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_ADEV, 0) > 0.0f);   /* M >= 2·9+1 */
+    }
+    /* F-0187: MDEV ze stage 1 FAZOVE pyramidy = PRIMA definice nad temiz daty
+     * (prumery faze po blocich 10 vzorku, starty zarovnane na blok), m = 1/3/9;
+     * pak vzorek bez faze (rekonstrukce z logu) MDEV nad stage 1 vypne, ADEV ne. */
+    {   static adev_stage_t tp[2];
+        static double xb[40];                            /* prumery faze bloku */
+        memset(tp, 0, sizeof tp);
+        uint32_t r = 777u; double x = 0.0, sx = 0.0; int nb = 0;
+        for (int i = 0; i < 400; i++) {
+            r = r * 1103515245u + 12345u;
+            double y = 3e-5 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5);  /* offset + sum */
+            if (i % 10 == 0) sx = 0.0;
+            sx += x;                                     /* faze na ZACATKU vzorku i */
+            x  += y;                                     /* τ0 = 1 */
+            if (i % 10 == 9) xb[nb++] = sx / 10.0;
+            adev_feed_into(tp, 2, 0, y, 0.0, 1);
+        }
+        static const int PM[3] = {1, 3, 9};
+        for (int t = 0; t < 3; t++) {
+            int m = PM[t]; double a2 = 0.0; int n2 = 0;
+            for (int k = 0; k + 3 * m <= nb; k++) {
+                double a = 0.0;
+                for (int l = k; l < k + m; l++) a += xb[l + 2 * m] - 2.0 * xb[l + m] + xb[l];
+                a /= (double)m; a2 += a * a; n2++;
+            }
+            double ref = sqrt(a2 / (2.0 * (10.0 * m) * (10.0 * m) * (double)n2));
+            float  got = adev_ring_kind(&tp[1], m, ADEV_KIND_MDEV, 1);
+            ok &= (ref > 0.0) && (fabs((double)got / ref - 1.0) < 1e-5);
+        }
+        adev_feed_into(tp, 2, 1, 3e-5, 0.0, 0);         /* vzorek z logu: bez faze */
+        ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_MDEV, 1) == 0.0f);
+        ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_ADEV, 1) > 0.0f);
     }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
@@ -1949,8 +2032,10 @@ static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky ni
  * pocita krivka, z toho plyne jeho podlaha (dosazeno do vzorcu SP1065):
  *   ADEV  σ² = 6σx²/(2τ²)         -> σ = √3·σx/τ      = tdc/(2τ)
  *   HDEV  H² = 20σx²/(6τ²)        -> H = √(10/3)·σx/τ = 0,527·tdc/τ
- *   MDEV  M² = 6σx²/(2·m·τ²)      -> M = tdc/(2τ·√m), m = nasobek τ0 TE stage
- *         (pyramida pocita MDEV nad prumery stage, proto m a ne τ/1 s)
+ *   MDEV  M² = 6σx²/(2·n·τ²)      -> M = tdc/(2τ·√n), n = τ/τ0 (pocet bodu faze
+ *         v prumeru). Do F-0187 tu stalo m = nasobek TE stage, protoze pyramida
+ *         pocitala MDEV nad podvzorkovanou fazi — nestandardne; s fazi E v kazde
+ *         stage je MDEV standardni a podlaha tedy s n = m·10^s.
  * TDEV a MTIE se z podlahy odvodi tymz `allan_metric_value` jako krivka.
  * Pod touto carou krivka neukazuje oscilator, ale citac. ⚠️ Plati pro signal
  * ASYNCHRONNI k referenci citace; merite-li samotnou referenci (koherentni
@@ -2004,6 +2089,8 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
             int m = SM[mi];
             float a;
             int   m_edf = s_adev[s].count;
+            /* F-0187: MDEV nad stage >= 1 bere jen polozky s fazi (e_n). */
+            if (kind == ADEV_KIND_MDEV && s > 0) m_edf = s_adev[s].e_n;
             if (s == 0 && m == 1 && kind == ADEV_KIND_ADEV) {
                 /* 🔴 F-0178: σy(1 s) z TEHOZ zdroje jako tabulka vedle grafu, karta
                  * σ@1s a prahovy monitor (`stats_adev(1)`, plochy ring 120 vzorku).
@@ -2022,7 +2109,11 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
             ad[np] = (kind == ADEV_KIND_ADEV) ? a
                    : ((s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV));
             md[np] = (kind == ADEV_KIND_MDEV) ? a : adev_stage_kind(s, m, ADEV_KIND_MDEV);
-            if (flr) flr[np] = adev_floor_base(kind, taus[np], m);
+            if (flr) {                              /* F-0187: MDEV podlaha s n = τ/τ0 */
+                int nfl = m;
+                for (int q = 0; q < s; q++) nfl *= 10;
+                flr[np] = adev_floor_base(kind, taus[np], nfl);
+            }
             np++;
         }
     }
