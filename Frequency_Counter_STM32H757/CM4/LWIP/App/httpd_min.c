@@ -387,11 +387,15 @@ static void jputf(jbuf_t *j, const char *fmt, ...)
 
 /* Cislo nebo `null` podle bitu platnosti — jadro „zlateho pravidla" (viz
  * WEB_UI_PLAN.md 1.7): neplatna hodnota se NIKDY neservíruje jako mereni. */
-static void jnum_hz(jbuf_t *j, const char *key, uint32_t valid_bit, uint64_t x100000)
+/* F-0180: `hires` > 0 = presny kmitocet (15 platnych cislic) — z nej pocita web
+ * ADEV/MDEV/drift a ℒ(f), takze 5 desetin (10 µHz) by pri nizsich kmitoctech
+ * pretlucilo podlahu citace. 0 = jen x1e5, pak poctivych 5 desetin. */
+static void jnum_hz(jbuf_t *j, const char *key, uint32_t valid_bit, uint64_t x100000, double hires)
 {
     if (!valid_bit) { jputf(j, "\"%s\":null,", key); return; }
     char b[24];
-    fmt_scpi_hz_d((double)x100000 / 100000.0, b, sizeof b);
+    if (hires > 0.0) fmt_scpi_hz_sig(hires, b, sizeof b);
+    else             fmt_scpi_hz_d((double)x100000 / 100000.0, b, sizeof b);
     jputf(j, "\"%s\":%s,", key, b);
 }
 static void jnum_c100(jbuf_t *j, const char *key, uint32_t valid_bit, int16_t c100)
@@ -426,8 +430,8 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
 
     jbuf_t j; jinit(&j, out, out_sz);
     jputf(&j, "{");
-    jnum_hz(&j, "freq_hz",   s.valid & SCPI_V_FREQ,  s.freq4_x100000);
-    jnum_hz(&j, "freq16_hz", s.valid & SCPI_V_DIV16, s.freq16_x100000);
+    jnum_hz(&j, "freq_hz",   s.valid & SCPI_V_FREQ,  s.freq4_x100000, s.freq4_hz);
+    jnum_hz(&j, "freq16_hz", s.valid & SCPI_V_DIV16, s.freq16_x100000, 0.0);
     jnum_u (&j, "gate_ns",   s.valid & SCPI_V_FRAME, s.gate_ns);
     /* ⚠️ `channel`/`gate_ns` = co hlasi FPGA RAMEC (pri mrtvem linku nic), kdezto
      * `set_*` = co je na pristroji NAVOLENE (v11 `ui_cfg`). Web ukazuje nastaveni

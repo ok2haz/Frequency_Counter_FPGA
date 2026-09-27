@@ -544,6 +544,15 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     return v;
 }
 
+double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
+{
+    uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
+    if (mul == 0u) return 0.0;
+    /* `edges·mul` <= 4e9 (guard ve `fpga_freq_hires_mul`) i `gate_ns` jsou v double
+     * presne; zaokrouhluje jen nasobeni 1e9 a deleni, tedy ~2e-16 relativne. */
+    return (double)(edges * mul) * 1e9 / (double)gate_ns;
+}
+
 /* ── Akumulátor měření (F-0171/F-0172, viz fpga_freq.h) ──────────────────────
  * Cykly se drží v jednotkách 1e-5 cyklu (`cyc_e5`), aby se do jednoho celého
  * čísla vešla přesná cesta (`edges·mul`, celé periody) i záložní cesta z

@@ -5,6 +5,7 @@
 #include "sd_export.h"
 #include "datalog.h"          /* datalog_read_back / datalog_get_status / card-detect */
 #include "alarm.h"            /* alarm_sd_card — dvouton pri vlozeni/vyjmuti */
+#include "scpi.h"             /* fmt_scpi_hz_sig — presny kmitocet (F-0180) */
 #include <stdio.h>            /* snprintf (bez %f — nano.specs) */
 #include <stdlib.h>           /* abs() — desetinná část záporných teplot */
 #include <string.h>
@@ -241,8 +242,12 @@ void sd_export_unmount(void)
  * v setinách pod hlavičkou `_C` a `-32768` místo prázdné buňky. */
 int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
 {
-    uint32_t hz  = (uint32_t)(r->freq_x100000 / 100000u);
-    uint32_t frc = (uint32_t)(r->freq_x100000 % 100000u);
+    /* F-0180: novy zaznam nese presny kmitocet (15 platnych cislic), stary
+     * jen x1e5 (5 desetin) — vic cislic, nez zaznam nese, se nepredstira. */
+    char fq[24];
+    if (r->freq_exact) fmt_scpi_hz_sig(r->freq_hz, fq, sizeof fq);
+    else snprintf(fq, sizeof fq, "%lu.%05lu", (unsigned long)(r->freq_x100000 / 100000u),
+                  (unsigned long)(r->freq_x100000 % 100000u));
     char toc[12] = "", tbo[12] = "", rf[12] = "";
     if (r->t_ocxo_c100  != DATALOG_INVALID16)
         snprintf(toc, sizeof toc, "%d.%02u", r->t_ocxo_c100 / 100, (unsigned)(abs(r->t_ocxo_c100) % 100));
@@ -261,11 +266,11 @@ int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
     if (r->vbat_mv != DATALOG_INVALID16) snprintf(vb, sizeof vb, "%d", (int)r->vbat_mv);
 
     return snprintf(b, n,
-        "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%lu.%05lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
+        "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
         SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u"
         SD_CSV_SEP "%s\r\n",
         (unsigned long)r->seq, (unsigned long)r->t_unix,
-        (unsigned long)hz, (unsigned long)frc,
+        fq,
         toc, tbo, (int)r->ocxo_vc_mv, rf,
         (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
 }

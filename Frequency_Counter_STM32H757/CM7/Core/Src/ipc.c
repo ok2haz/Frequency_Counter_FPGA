@@ -16,7 +16,7 @@
  * CHAN/LOG) dozraje se SCPI/webem na CM4 — tam vznikne producent prikazu.
  *
  * ⚠️ ZLATE PRAVIDLO (STATUS.md): do snapshotu se plni JEN realna data. Statistika
- * (sigma_tau/offset/drift) se ZATIM NEPUBLIKUJE — jejich zdroj je dnes simulace
+ * (sigma_tau) se ZATIM NEPUBLIKUJE — jejich zdroj je dnes simulace
  * headline (#2). Doplni se, az je bude pocitat MathTask z realnych dat FPGA (#27).
  * Pole zustavaji vynulovana (init), aby CM4 nikdy neservoval simulaci jako pravdu.
  */
@@ -166,12 +166,16 @@ void ipc_publish(void)
         g_ipc.snap.freq_x100000   = m.frequency_x100000;   /* zvoleny zdroj = /4 (vyber /16 je app vrstva) */
         g_ipc.snap.gate_ns        = (uint32_t)m.gate_time_ns;
         g_ipc.snap.seq_meas       = m.sequence;
+        /* F-0180: presna hodnota ze TEHOZ ramce (0 = nasobitel neoveren). */
+        g_ipc.snap.freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000,
+                                                       m.edge_count, m.gate_time_ns);
     } else {
         g_ipc.snap.freq4_x100000 = g_ipc.snap.freq16_x100000 = g_ipc.snap.freq_x100000 = 0u;
         g_ipc.snap.gate_ns = 0u;
+        g_ipc.snap.freq4_hz = 0.0;
     }
 
-    /* ⚠️ sigma_tau/tau_s/offset/drift ZAMERNE neplnime (zdroj = simulace #2). */
+    /* ⚠️ sigma_tau/tau_s ZAMERNE neplnime (zdroj = simulace #2). */
 
     /* ⚠️ Uz zadny prevod pres float — `gps_data_t` nese e7 primo (F-0070),
      * takze snapshot dostane tutez hodnotu bez kvantizace. `IPC_VERSION` se

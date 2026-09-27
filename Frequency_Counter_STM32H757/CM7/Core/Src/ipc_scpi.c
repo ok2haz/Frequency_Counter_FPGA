@@ -33,6 +33,7 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->freq4_x100000  = sn->freq4_x100000;
     s->freq16_x100000 = sn->freq16_x100000;
+    s->freq4_hz       = sn->freq4_hz;       /* v19 (F-0180): presna hodnota, 0 = neni */
     s->gate_ns        = sn->gate_ns;
     s->channel_id     = sn->channel_id;
 

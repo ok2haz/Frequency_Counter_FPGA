@@ -95,6 +95,13 @@ uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
  *  Kdyz zadny nasobitel nesedi, degraduje na `x100000` (tj. 5 desetin). */
 uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
 
+/** Kmitocet [Hz] z reciproke dvojice s OVERENYM nasobitelem, v `double` (F-0180).
+ *  Presnost ~1e-16 relativne na libovolnem kmitoctu — tim se lisi od `x100000`
+ *  (krok 10 µHz = 1e-8 pri 1 kHz, vic nez podlaha citace) i od µHz vyse.
+ *  @return 0.0 = nasobitel neoveren (vetev /16, stary ramec) -> volajici pouzije
+ *  `x100000` a NEPREDSTIRA vic cislic, nez mereni nese. */
+double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog
  * 1× za periodu. Do 2026-09-26 si oba brali jen POSLEDNÍ měření a zbylá

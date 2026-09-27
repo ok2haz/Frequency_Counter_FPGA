@@ -81,6 +81,13 @@ typedef struct {
     uint32_t seq;              /* monotonni poradove cislo (od 1) */
     uint32_t t_unix;           /* UTC z RTC [s od 1970]; 0 = RTC nesynchronizovano */
     uint64_t freq_x100000;     /* kmitocet x 1e5 (zvoleny zdroj /4 nebo /16) */
+    /* F-0180: kmitocet [Hz] v PLNE presnosti. Novy zaznam ho na flash nese jako
+     * IEEE-754 double (`freq_exact = 1`); u stareho je to jen `freq_x100000 / 1e5`
+     * (`freq_exact = 0`). `freq_x100000` se u noveho dopocita zaokrouhlenim, takze
+     * ctenari, kterym 10 µHz staci (graf, UART dump, web obalka), zustavaji beze
+     * zmeny. Presnou hodnotu ctou rekonstrukce pyramidy, CSV a `MMEM:DATA?`. */
+    double   freq_hz;
+    uint8_t  freq_exact;
     /* 1 = `freq_x100000` je PRUMER vsech mereni za periodu logu (F-0172);
      * 0 = stary zaznam (do 2026-09-26) nebo perioda bez noveho mereni —
      * okamzity vzorek jednoho hradla 0,25 s. Na flash se veze v bitu 63 pole
@@ -113,6 +120,16 @@ typedef struct {
 
 #define DATALOG_INVALID16   ((int16_t)0x8000)   /* sentinel neplatne hodnoty */
 #define DATALOG_FREQ_AVG_BIT  (1ull << 63)      /* `freq_avg` na flash (viz vyse) */
+/* 🔴 F-0180: format pole kmitoctu na flash (bity 62..0; bit 63 = `freq_avg`):
+ *   exponent (bity 62..52) != 0 -> IEEE-754 double kladneho kmitoctu [Hz] (novy),
+ *   exponent == 0              -> kmitocet x 1e5 (stary; x1e5 < 2^47, exponent tedy 0).
+ * Rozliseni je jednoznacne: kladny double >= 2^-1022 ma exponent nenulovy a zadny
+ * realny kmitocet x1e5 nedosahne 2^52 (= 45 GHz). Nula se zapisuje jako 0 (stary
+ * format) a cte se zase jako 0. Proc ne nHz (navrh v nalezu): pri 10 Hz by krok
+ * 1 nHz byl 1e-10 relativne, coz na nove desce (TDC 22 ps, prumer 10 s ~2e-12)
+ * prevazi podlahu citace; double ma ~1e-16 na libovolnem kmitoctu. Zaznam
+ * zustava 32 B, stare zaznamy se ctou beze zmeny. */
+#define DATALOG_FREQ_EXP_MASK 0x7FF0000000000000ull
 
 /* ── Kodovani VBAT do 1 bajtu (offset 27) ────────────────────────────────────
  * kod = (mV - 2000) / 8, tedy 1..255 -> 2008..4040 mV pri rozliseni 8 mV.

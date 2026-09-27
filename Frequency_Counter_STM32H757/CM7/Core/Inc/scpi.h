@@ -123,6 +123,10 @@ struct scpi_src {
     uint32_t valid;                 /* SCPI_V_* */
     /* Kmitočet (×1e5, dělička už zahrnuta). */
     uint64_t freq4_x100000, freq16_x100000;
+    /* F-0180: PRESNY kmitocet /4 [Hz] z dvojice hrany/hradlo; 0.0 = neni (plati
+     * `freq4_x100000`). Kmitoctove odpovedi ho tisknou s 15 platnymi cislicemi,
+     * bez nej poctivych 5 desetin — vic cislic, nez mereni nese, se nepredstira. */
+    double   freq4_hz;
     uint32_t gate_ns;               /* SKUTECNE zmerene okno z ramce (SENS:FREQ:GATE:ACTual?) */
     uint8_t  channel_id;            /* kanal hlaseny ramcem */
     /* NASTAVENY stav mereni (SET/readback: `SENS:FREQ:GATE?/CHAN?`, `INIT:CONT?`).
@@ -183,6 +187,12 @@ double scpi_gate_s(uint8_t idx);
  *  mimo ±4e9 (viz implementace) — vrací `"9.91E37"` (platné i jako JSON číslo).
  *  Sdíleno mezi `CALC:*?` readbacky a `httpd_min.c` (`GET /api/state`). */
 void fmt_scpi_hz_d(double hz, char *out, size_t n);
+
+/** double Hz -> 15 PLATNYCH cislic v pevne radove carce ("10000000.0123457",
+ *  "10.0000000001234"), stejna rozsahova pojistka a NaN jako `fmt_scpi_hz_d`.
+ *  Pro presny kmitocet (F-0180): relativni krok ~1e-15 na libovolnem kmitoctu.
+ *  Sdileno se `httpd_min.c` (JSON) a CSV exportem datalogu. */
+void fmt_scpi_hz_sig(double hz, char *out, size_t n);
 
 /** Aplikuje CALC/Math SET (`key`=SCPI_CFG_MATH/NULL/LIM_*) na `meas_cfg_t`. Cista
  *  funkce (zadne globaly) — sdili ji CM7 backend i IPC most na CM4 (ipc_scpi.c).

@@ -31,7 +31,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  18u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  19u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -98,7 +98,18 @@
                                        Hlida to `_Static_assert` u te struktury, ne jen tento komentar.
                                        ⚠️ Bumpnuto PRESTO, stejne jako v8/v9/v11/v15 — recyklace vycpavky
                                        sice nemuze rozhodit adresy, ale bump je jediny zpusob, jak udelat
-                                       nesoulad bank VIDITELNYM. Flashnout obe banky. */
+                                       nesoulad bank VIDITELNYM. Flashnout obe banky.
+                                       v19 (2026-09-27, audit F-0180): `freq4_hz` — PRESNY kmitocet /4 [Hz]
+                                       v double z dvojice hrany/hradlo (`fpga_freq_hires_hz`). Web a TCP
+                                       SCPI dostavaly jen `freq4_x100000` (krok 10 µHz = 1e-8 relativne
+                                       pri 1 kHz, vic nez podlaha citace), zatimco displej pocita z plne
+                                       presnosti -> web a displej ukazovaly pro tatáz data ruzna σy.
+                                       ⚠️ VELIKOST ANI OFFSETY SE NEZMENILY: double lezi presne v byvalych
+                                       `offset`+`drift` (2× float na offsetu 144, zarovnanem na 8), ktere
+                                       nikdo nepsal ani necetl. Zmereno pred i po: sizeof(ipc_snapshot_t)
+                                       = 480 B, sizeof(ipc_shared_t) = 11744 B, gps_lat_e7 na 152.
+                                       Hlida `_Static_assert` pod `ipc_snapshot_t`. Bumpnuto kvuli
+                                       detekci nesouladu bank. Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -163,8 +174,11 @@ typedef struct {
     /* Statistika (float — CM4 jen zobrazuje/serviruje, POCITA CM7 (double FPU)). */
     float    sigma_tau[IPC_ADEV_PTS]; /* ADEV σy(τ) body */
     float    tau_s[IPC_ADEV_PTS];     /* odpovidajici τ [s] */
-    float    offset;                  /* frakcni offset (f-f0)/f0 */
-    float    drift;                   /* drift / den */
+    /* v19 (F-0180): PRESNY kmitocet /4 [Hz] z dvojice hrany/hradlo (`fpga_freq_hires_hz`).
+     * 0.0 = nasobitel neoveren -> plati `freq4_x100000` (5 desetin). Plati se stejnym
+     * bitem `IPC_V_FREQ` a patri k temuz `seq_meas` (plni se v tetez publikaci).
+     * ⚠️ Byvaly `offset`+`drift` (2× float, nikdy neplnene) -> velikost beze zmeny. */
+    double   freq4_hz;
 
     /* GPS. */
     int32_t  gps_lat_e7;            /* stupne × 1e7 */
@@ -255,6 +269,13 @@ typedef struct {
     uint8_t  _pad_sk[3];
     ipc_sat_t gps_sats[IPC_GPS_MAX_SATS];
 } ipc_snapshot_t;
+/* v19: `freq4_hz` musel sednout PRESNE na byvale `offset`+`drift` — kdyby se double
+   posunul (zarovnani), posunulo by se vse za nim a nesoulad bank by prestal byt
+   detekovatelny (layout pred `cm4` blokem, viz v12). */
+_Static_assert(offsetof(ipc_snapshot_t, freq4_hz) == 144u,
+               "freq4_hz se posunul -- recyklace offset+drift nesedi");
+_Static_assert(offsetof(ipc_snapshot_t, gps_lat_e7) == 152u && sizeof(ipc_snapshot_t) == 480u,
+               "snapshot zmenil layout -- to vyzaduje vedome rozhodnuti (viz v12), ne vedlejsi efekt");
 
 /* ── v12 #6: datalog transfer kanal (CM7 W25Q -> web) ───────────────────────
  * Zvlast od snapshotu (seqlock), protoze prenos je NA VYZADANI a bulk.

@@ -8309,8 +8309,8 @@ static int stats_seed_tick(void)
              * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
              * zdroj pravdy; `screen_main_frac_dev` vraci 0, dokud nominal nezname. */
             if (screen_main_freq_nominal() <= 0.0) continue; /* nominal jeste nezname */
-            screen_main_adev_seed_10s(
-                screen_main_frac_dev((double)r->freq_x100000 * 1e-5));
+            /* F-0180: `freq_hz` = plna presnost u novych zaznamu (x1e5 u starych). */
+            screen_main_adev_seed_10s(screen_main_frac_dev(r->freq_hz));
             s_seed_done++;
         }
     }

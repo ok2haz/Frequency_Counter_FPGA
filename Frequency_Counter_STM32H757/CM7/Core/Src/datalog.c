@@ -177,8 +177,13 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     memset(b, 0, DATALOG_REC_SIZE);
     put_u32(b + 0, r->seq);
     put_u32(b + 4, r->t_unix);
-    put_u64(b + 8, (r->freq_x100000 & ~DATALOG_FREQ_AVG_BIT)
-                   | (r->freq_avg ? DATALOG_FREQ_AVG_BIT : 0u));
+    {   /* F-0180: presny kmitocet jako double (format viz DATALOG_FREQ_EXP_MASK).
+         * Bez presne hodnoty (0) se zapise x1e5 ve STAREM formatu — nic se nepredstira. */
+        uint64_t fq = 0u;
+        if (r->freq_hz > 1e-6 && r->freq_hz < 1e10) memcpy(&fq, &r->freq_hz, sizeof fq);
+        else if (r->freq_x100000 < (1ull << 52))    fq = r->freq_x100000;   /* jen x1e5 -> stary format */
+        put_u64(b + 8, (fq & ~DATALOG_FREQ_AVG_BIT)
+                       | (r->freq_avg ? DATALOG_FREQ_AVG_BIT : 0u)); }
     put_u16(b + 16, (uint16_t)r->t_ocxo_c100);
     put_u16(b + 18, (uint16_t)r->t_board_c100);
     put_u16(b + 20, (uint16_t)r->ocxo_vc_mv);
@@ -198,8 +203,19 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->seq           = seq;
     r->t_unix        = get_u32(b + 4);
     {   uint64_t fq = get_u64(b + 8);
-        r->freq_x100000 = fq & ~DATALOG_FREQ_AVG_BIT;
-        r->freq_avg     = (fq & DATALOG_FREQ_AVG_BIT) ? 1u : 0u; }
+        r->freq_avg     = (fq & DATALOG_FREQ_AVG_BIT) ? 1u : 0u;
+        fq &= ~DATALOG_FREQ_AVG_BIT;
+        if (fq & DATALOG_FREQ_EXP_MASK) {         /* novy zaznam: double [Hz] */
+            memcpy(&r->freq_hz, &fq, sizeof fq);
+            r->freq_exact   = 1u;
+            r->freq_x100000 = (r->freq_hz > 0.0 && r->freq_hz < 1e10)
+                              ? (uint64_t)(r->freq_hz * 1e5 + 0.5) : 0u;
+        } else {                                  /* stary zaznam: x1e5 */
+            r->freq_x100000 = fq;
+            r->freq_hz      = (double)fq / 1e5;
+            r->freq_exact   = 0u;
+        }
+    }
     r->t_ocxo_c100   = (int16_t)get_u16(b + 16);
     r->t_board_c100  = (int16_t)get_u16(b + 18);
     r->ocxo_vc_mv    = (int16_t)get_u16(b + 20);
@@ -453,6 +469,9 @@ static void sample(datalog_rec_t *r)
          * tady jen precteme, ktera odbocka ma platna data (bez hystereze). */
         use16 = (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
         r->freq_x100000 = use16 ? m.freq16_x100000 : m.frequency_x100000;
+        /* F-0180: presne jen z overene dvojice /4; jinak 0 -> ulozi se x1e5. */
+        if (!use16) r->freq_hz = fpga_freq_hires_hz(m.frequency_x100000,
+                                                    m.edge_count, m.gate_time_ns);
     }
     /* 🔴 F-0172: kmitocet za periodu = PRUMER vsech mereni od minuleho zaznamu
      * (`fpga_acc_take`), ne posledni jednotlive mereni 0,25 s. Kdyz v periode
@@ -461,6 +480,7 @@ static void sample(datalog_rec_t *r)
     {   double hz = 0.0;
         if (fpga_acc_take(FPGA_ACC_DATALOG, &hz, NULL) != 0u && hz > 0.0) {
             r->freq_x100000 = (uint64_t)(hz * 1e5 + 0.5);
+            r->freq_hz      = hz;               /* F-0180: na flash v plne presnosti */
             r->freq_avg     = 1u;
         }
     }
@@ -748,6 +768,32 @@ bool datalog_selftest(void)
         if (!unpack_rec(vb, &vr) || vr.freq_avg != 1u
             || vr.freq_x100000 != a.freq_x100000) return false;
         if (r.freq_avg != 0u) return false;     /* `a` byl bez priznaku */
+    }
+    /* F-0180: presny kmitocet jde tam i zpet BIT PRO BIT (double), `freq_x100000`
+     * se z nej dopocita, priznak prumeru v bitu 63 se nemicha s exponentem. */
+    {   datalog_rec_t v = a; v.freq_hz = 10000000.012345678; v.freq_avg = 1u;
+        uint8_t vb[DATALOG_REC_SIZE]; datalog_rec_t vr;
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || !vr.freq_exact || vr.freq_avg != 1u) return false;
+        if (memcmp(&vr.freq_hz, &v.freq_hz, sizeof v.freq_hz) != 0) return false;
+        if (vr.freq_x100000 != 1000000001235ull) return false;
+        v.freq_hz = 10.0000000000123;           /* nizky kmitocet: nHz by tu nestacily */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || memcmp(&vr.freq_hz, &v.freq_hz, sizeof v.freq_hz) != 0) return false;
+        v.freq_hz = 0.0;                        /* jen x1e5 -> stary format, nepresny */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_exact || vr.freq_x100000 != a.freq_x100000) return false;
+        v.freq_x100000 = 0u;                    /* bez kmitoctu vubec -> 0 */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_exact || vr.freq_x100000 != 0u || vr.freq_hz != 0.0) return false;
+    }
+    /* Stary zaznam (x1e5, exponent 0) se cte jako drive a oznaci se jako nepresny. */
+    {   uint8_t old[DATALOG_REC_SIZE]; datalog_rec_t o;
+        pack_rec(old, &a);
+        put_u64(old + 8, a.freq_x100000 | DATALOG_FREQ_AVG_BIT);
+        put_u16(old + 28, crc16(old, 28));
+        if (!unpack_rec(old, &o) || o.freq_exact || o.freq_avg != 1u
+            || o.freq_x100000 != a.freq_x100000 || o.freq_hz != (double)a.freq_x100000 / 1e5) return false;
     }
     /* Neplatne cteni senzoru se ulozi jako "nezaznamenano". */
     {   datalog_rec_t n = a; n.vbat_mv = DATALOG_INVALID16;

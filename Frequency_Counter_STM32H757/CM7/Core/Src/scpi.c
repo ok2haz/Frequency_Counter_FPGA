@@ -124,6 +124,28 @@ void fmt_scpi_hz_d(double hz, char *out, size_t n)
     uint32_t frac  = (uint32_t)(x % 100000u);
     snprintf(out, n, "%s%lu.%05lu", neg ? "-" : "", (unsigned long)whole, (unsigned long)frac);
 }
+/* double Hz -> 15 platnych cislic (F-0180). Proc 15: je to DBL_DIG, tedy kazda
+ * vytistena cislice je v double skutecne ulozena, a relativni krok ~1e-15 je
+ * o rady pod podlahou citace na JAKEMKOLI kmitoctu. Pevny pocet desetin by to
+ * nesplnil: 9 desetin (nHz) je pri 10 Hz jen 1e-10 relativne, coz nova deska
+ * (TDC 22 ps) uz presahne. Pocet desetin = 15 - pocet celych cislic:
+ * 5 (GHz) .. 14 (pod 10 Hz). Celociselna extrakce, zadne `%f` (nano.specs). */
+void fmt_scpi_hz_sig(double hz, char *out, size_t n)
+{
+    if (!(hz > -4.0e9 && hz < 4.0e9)) { snprintf(out, n, "9.91E37"); return; }
+    int neg = (hz < 0.0); if (neg) hz = -hz;
+    int k = 1;
+    for (uint32_t t = (uint32_t)hz; t >= 10u; t /= 10u) k++;
+    int dec = 15 - k;                                   /* 5..14 */
+    uint64_t p = 1u;
+    for (int i = 0; i < dec; i++) p *= 10u;
+    uint64_t x = (uint64_t)(hz * (double)p + 0.5);      /* < 4e14 < 2^53 -> presne */
+    uint64_t frac = x % p;
+    char fd[16];
+    for (int i = dec - 1; i >= 0; i--) { fd[i] = (char)('0' + (int)(frac % 10u)); frac /= 10u; }
+    fd[dec] = '\0';
+    snprintf(out, n, "%s%lu.%s", neg ? "-" : "", (unsigned long)(x / p), fd);
+}
 /* Perioda [s] z kmitočtu — 15 des. míst (femtosekundové rozlišení).
  * Proč tolik: při 1,4 GHz (strop tvarovače) je perioda 714 ps, takže i
  * pikosekundový krok by byl 0,14 % — pro čítač nepoužitelné. Formátuje se
@@ -393,10 +415,19 @@ static void scpi_status_latch(scpi_ctx_t *c, const scpi_src_t *src)
     c->oper_prev = o; c->ques_prev = q;
 }
 
-/* Kmitočet /4 [Hz] ze zdroje (0 = neplatné). */
+/* Kmitočet /4 [Hz] ze zdroje (0 = neplatné). F-0180: přesná hodnota, když ji
+ * zdroj má — tatáž, ze které počítá displej. */
 static double src_freq_hz(const scpi_src_t *s)
 {
-    return (s->valid & SCPI_V_FREQ) ? (double)s->freq4_x100000 / 100000.0 : 0.0;
+    if (!(s->valid & SCPI_V_FREQ)) return 0.0;
+    return (s->freq4_hz > 0.0) ? s->freq4_hz : (double)s->freq4_x100000 / 100000.0;
+}
+/* Kmitočet /4 jako odpověď (bez kontroly platnosti — tu dělá volající). S přesnou
+ * hodnotou 15 platných číslic, bez ní poctivých 5 desetin z x1e5. */
+static void fmt_src_freq(const scpi_src_t *s, char *out, size_t n)
+{
+    if (s->freq4_hz > 0.0) fmt_scpi_hz_sig(s->freq4_hz, out, n);
+    else                   fmt_scpi_hz(s->freq4_x100000, out, n);
 }
 
 /* Zpracuje JEDNU programovou jednotku (bez ';'). Stav v `c`, data ve `src`. */
@@ -637,7 +668,7 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* ── MEASure / FETCh (reálný FPGA kmitočet, ne sim) ─────────────────────── */
     if (hdr_match(hdr, "MEASure:FREQuency:ALL") && is_query) {
         char f4[24], f16[24];
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, f4, sizeof f4); else snprintf(f4, sizeof f4, "9.91E37");
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, f4, sizeof f4); else snprintf(f4, sizeof f4, "9.91E37");
         if (src->valid & SCPI_V_DIV16) fmt_scpi_hz(src->freq16_x100000, f16, sizeof f16); else snprintf(f16, sizeof f16, "9.91E37");
         snprintf(out, out_sz, "%s,%s", f4, f16); return strlen(out);
     }
@@ -651,12 +682,12 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
      * Ovladace (VISA/IVI) tenhle jednoradkovy tvar cekaji jako zakladni zpusob mereni. */
     if (hdr_match(hdr, "READ") && is_query) {
         if (!src->set_running && src->set_cfg) (void)src->set_cfg(src, SCPI_CFG_RUN, 1u, 0.0);
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
     if ((hdr_match(hdr, "MEASure:FREQuency") || hdr_match(hdr, "FETCh:FREQuency")) && is_query) {
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
@@ -807,7 +838,9 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
             scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
         }
         char fq[24], to[12], tb[12], rf[12], hd[12], vb[12];
-        fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
+        /* F-0180: novy zaznam nese presny kmitocet (double), stary jen x1e5. */
+        if (r.freq_exact) fmt_scpi_hz_sig(r.freq_hz, fq, sizeof fq);
+        else              fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
         if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
         if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
         /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10 — prevod stejnym vzorcem jako
@@ -837,8 +870,11 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* ── CALCulate (Math Mx+B/NULL + limity nad zdrojovou cfg) ─────────────── */
     if (hdr_match(hdr, "CALCulate:DATA") && is_query) {
         double hz = src_freq_hz(src);
-        if (hz > 0.0) fmt_scpi_hz_d(meas_math_apply(&src->meas, hz), out, out_sz);
-        else          snprintf(out, out_sz, "9.91E37");
+        /* F-0180: s presnym X i vysledek na 15 platnych cislic — v rezimu NULL je
+         * Y male a 5 desetin by z nej nechalo jen par cislic. */
+        if (hz <= 0.0)               snprintf(out, out_sz, "9.91E37");
+        else if (src->freq4_hz > 0.0) fmt_scpi_hz_sig(meas_math_apply(&src->meas, hz), out, out_sz);
+        else                         fmt_scpi_hz_d(meas_math_apply(&src->meas, hz), out, out_sz);
         return strlen(out);
     }
     if (hdr_match(hdr, "CALCulate:LIMit:FAIL") && is_query) {
@@ -1065,6 +1101,8 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
         src->channel_id     = m.channel_id;
         src->freq4_x100000  = m.frequency_x100000;
         src->freq16_x100000 = m.freq16_x100000;
+        /* F-0180: tataz presna hodnota jako v IPC snapshotu (`ipc_publish`). */
+        src->freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000, m.edge_count, m.gate_time_ns);
         if (m.error_flags & (FPGA_ERR_SIGNAL_LOST | FPGA_ERR_MEAS)) src->freq_err = 1;
         int fresh_ok = (m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
         if (fresh_ok)                                  src->valid |= SCPI_V_FREQ;
@@ -1334,6 +1372,24 @@ int scpi_selftest(void)
         scpi_process_ctx(&x, &sv, "CALC:MATH:M?", b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
         scpi_process_ctx(&x, &sv, "CALC:DATA?",   b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
         meas_math_defaults(&sv.meas);            /* uklid pro pripadne dalsi pouziti */
+
+        /* F-0180: presny kmitocet jde ven s 15 platnymi cislicemi (MEAS/READ/ALL
+         * i CALC:DATA?), bez nej zustava 5 desetin z x1e5 (vyse). Vektory jsou
+         * spocitane rucne i s dvojkovou reprezentaci double. */
+        sv.freq_err = 0; sv.freq4_hz = 10000000.0123456789;
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "READ?",      b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "CALC:DATA?", b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ:ALL?", b, sizeof b);
+        ok &= (strcmp(b, "10000000.0123457,9.91E37") == 0);
+        sv.freq4_hz = 10.0000000001234;         /* nizky kmitocet: 13 desetin */
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10.0000000001234") == 0);
+        sv.freq4_hz = 0.0;                      /* bez presne hodnoty: 5 desetin */
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10000000.00000") == 0);
+        fmt_scpi_hz_sig(1400000000.123456, b, sizeof b);        ok &= (strcmp(b, "1400000000.12346") == 0);
+        fmt_scpi_hz_sig(-0.5, b, sizeof b);                     ok &= (strcmp(b, "-0.50000000000000") == 0);
+        { volatile double z = 0.0;              /* NaN za behu, ne konstanta */
+          fmt_scpi_hz_sig(z / z, b, sizeof b);                  ok &= (strcmp(b, "9.91E37") == 0); }
     }
 
     /* Nove SCPI-99 povinne prikazy + SENSe konstanty. */
