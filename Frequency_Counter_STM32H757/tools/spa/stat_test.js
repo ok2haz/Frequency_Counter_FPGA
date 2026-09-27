@@ -91,6 +91,34 @@ for (const N of [24, 64, 257]) {
   }
 }
 
+/* F-0182: mdev() pocita vnitrni soucet klouzavym oknem. Musi zustat presna i tam,
+ * kde by prefixove soucty FAZE ztratily cislice (drift, necentrovane y), a musi
+ * byt skutecne rychlejsi nez naivni O(N*m) - jinak oprava nic neudelala.
+ * Pozitivni kontrola: prefixova varianta z nalezu dava u offsetu 1e-6 chybu 4e-5
+ * (docs/audit/sim/2026-09-27_mdev_presnost.js), takze prah 1e-9 ji zachyti. */
+if (api.mdev) {
+  console.log('--- mdev: presnost pri driftu/offsetu a rychlost (F-0182) ---');
+  const N = 2000;
+  const gens = [['drift 1e-9 + sum 1e-13', i => 1e-9 * (i / N - 0.5) + 1e-13 * rnd()],
+                ['offset 1e-6 + sum 1e-13', i => 1e-6 + 1e-13 * rnd()]];
+  for (const [lbl, g] of gens) {
+    const y = []; for (let i = 0; i < N; i++) y.push(g(i));
+    let worst = 0, nok = true;
+    for (const p of api.mdev(y, 0.25)) {
+      const r = refMdev(y, 0.25, Math.round(p.tau / 0.25));
+      if (p.n !== r.n) nok = false;
+      worst = Math.max(worst, Math.abs(p.sig / r.sig - 1));
+    }
+    check(nok && worst < 1e-9, 'mdev ' + lbl + ': rel ' + worst.toExponential(1));
+  }
+  const y = []; for (let i = 0; i < N; i++) y.push(1e-9 * rnd());
+  const T = (f, n) => { const t0 = process.hrtime.bigint(); for (let k = 0; k < n; k++) f();
+    return Number(process.hrtime.bigint() - t0) / n; };
+  const tRef = T(() => { for (let m = 1; 3 * m <= N; m *= 2) refMdev(y, 0.25, m); }, 10);
+  const tSpa = T(() => api.mdev(y, 0.25), 100);
+  check(tRef / tSpa > 4, 'mdev N=2000 rychlejsi nez naivni O(N*m): ' + (tRef / tSpa).toFixed(0) + 'x (chci > 4x)');
+}
+
 console.log('--- prukaznost prokladu = mp_fit_significant (firmware) ---');
 /* Tabulka kritickych t je ve DVOU kopiich (JS v SPA a `T95_2S` v meas_present.c).
  * Sloucit je nejde (dva jazyky, dve jadra), takze se hlida ROZDIL (L-0020). */
