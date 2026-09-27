@@ -3,8 +3,9 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-27 (noc) — 🟡 **Modul 24, KRITICKÝ PRŮCHOD — F5 hotová
-(A + B s doporučenými variantami), všech 7 opraveno, ⬜ vše neověřeno na HW.** Zápis →
+**Poslední aktualizace:** 2026-09-27 (noc) — 🟢 **Modul 24, KRITICKÝ PRŮCHOD — F5 hotová
+(A + B s doporučenými variantami), všech 8 opraveno (vč. F-0193), HW TEST PROVEDEN
+(zásadní část potvrzena přímo na desce).** Zápis →
 [`audit/2026-09-27_matematika-kriticky.md`](audit/2026-09-27_matematika-kriticky.md).
 - `98c4394` **F-0186 [S2]**: délka okna z **přesných ticků** 2,5 ns (`fpga_freq_dt_ticks`),
   ne z `gate_time_ns` (FPGA posílá floor) — hi-res, statistika, datalog, perioda, velké
@@ -22,13 +23,23 @@
   (`status` → `SEQ FPGA`) a vzorek s dírou se zahodí; totéž při ztrátě signálu (SEQ při ní
   stojí, díra by nebyla vidět); `fpgasim` měří na pevné mřížce + injektor `fault gap`. L-0104.
   Přitom opraveno nepravdivé tvrzení v CLAUDE.md, že FPGA drží měření do ACK.
-- **HW test rozpracovaný** ([`audit/2026-09-27_hw-test-modul24.md`](audit/2026-09-27_hw-test-modul24.md)):
-  obě banky naflashované, po SW resetu přes web ověřeno, že deska běží a **boot selftest
-  PASS**; USB konzole po SW resetu přes SWD mlčí → zbytek čeká na power-cyklus. Při testu
-  opravena regrese F-0189 ve `status` (`a83bf1d`, L-0105) a nalezen **F-0194 [S3]**
+- **HW test proveden po power-cyklu** ([`audit/2026-09-27_hw-test-modul24.md`](audit/2026-09-27_hw-test-modul24.md),
+  `../STATUS.md` TODO #255): **`selftest` 16/16 PASS** vč. nových vektorů (F-0186, F-0187,
+  F-0193) poprvé na reálném křemíku; **F-0186** opakovaně přesná hi-res hodnota na
+  asynchronním kmitočtu (žádný posun z floor hradla); **F-0188/F-0192** změna signálu
+  vynulovala pyramidu právě jednou; **F-0193** klidový stav `diry 0` i injektor
+  `fpgasim fault gap` → `diry 1 (zmeskano 3 mereni)` přesně podle návrhu; **F-0189**
+  POR-skip potvrzen (`ADEV rekonstrukce: preskocena — start po zapnuti napajeni`).
+  ⬜ **Neověřeno:** rekonstrukce po WARM (ne POR) resetu a vizuální kroky F-0177/F-0191
+  (`screenshot` přes USB CDC je best-effort a při čtení hostem se zasekl na ~30 %).
+  Během testu spontánní výpadek desky (USB+síť+SWD najednou, vyřešen power-cyklem) —
+  podezření na `cm4 restart` **vyvráceno** (`errlog` neobsahuje `NET reboot`, příkaz se
+  k firmwaru vůbec nedostal), skutečná příčina neznámá, `cm4 restart` netestován.
+  Nalezeno: regrese F-0189 ve `status` (opravena `a83bf1d`, L-0105) a **F-0194 [S3]**
   (`*TST?` přes TCP/HTTP vždy FAIL, TODO #258, oprava čeká na souhlas).
-- 🔑 **Pokračovat zde:** power-cyklus desky → `ping` na COM8 → `../STATUS.md` TODO #255
-  kroky (1)–(24).
+- 🔑 **Pokračovat zde:** rozhodnout o opravě F-0194 (TODO #258); vizuální ověření
+  (F-0177 podtržení, F-0191 pás) potřebuje buď fyzický pohled na displej, nebo vyjmout
+  SD kartu po `screenshot sd`/`screenshot all`.
 
 **Předchozí, 2026-09-27:** 🟡 **Modul 24, TŘETÍ PRŮCHOD — F5 hotová
 (skupiny A+B), ⬜ vše neověřeno na HW.**
