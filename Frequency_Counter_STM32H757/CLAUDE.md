@@ -1296,6 +1296,11 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`,
   errlog transfer kanál `ipc_errlog_xfer_t` (v17).
+- 🔴 **`IPC_VERSION` = 19** (2026-09-27, audit F-0180): snapshot nese **`double freq4_hz`** =
+  přesný kmitočet /4 z dvojice hrany/hradlo (`fpga_freq_hires_hz`; 0 = není → platí
+  `freq4_x100000`). Leží v bývalých `offset`+`drift` (nikdy neplněné), takže **velikost 480 B
+  i offsety zůstaly** — hlídá `_Static_assert` pod `ipc_snapshot_t` (offset 144, `gps_lat_e7`
+  na 152). v18 = `eth_tx_ok/err` ve vycpávce `cm4` bloku (F-0138). Níže historie do v17:
 - **`IPC_VERSION` = 17** (2026-09-13: nový kanál `errlog` na konci celé struktury — trvalý
   zaznamník chyb (W25Q, `errlog.h`) dostupný webu přes `GET /api/errlog?n=&from=`, stejný
   request/response handshake jako `log`. Displejové okno CHYBY bylo do té doby jedinou cestou,
@@ -1555,6 +1560,11 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   trvale 1), **`MEAS:PER?`**, `MEAS:FREQ:STAL?`, **`SYST:TEMP:ALL?`** + **`MEAS:VOLT:ALL?`** (agregáty =
   1 round-trip). ⚠️ **Perioda má 15 des. míst (femtosekundy):** zlomek se tiskne **po dvou 32b půlkách**
   (`%07lu%08lu`) — 15 cifer se do `unsigned long` nevejde a newlib-nano neumí `%llu`.
+  🔴 **Kmitočet (`MEAS:FREQ?`, `FETC`, `READ?`, `MEAS:FREQ:ALL?` f4, `CALC:DATA?`) a JSON
+  `freq_hz` = 15 PLATNÝCH číslic** (`fmt_scpi_hz_sig`, od F-0180), když zdroj nese přesnou
+  hodnotu (`scpi_src_t.freq4_hz` > 0); jinak poctivých 5 desetin z x1e5. ⚠️ **Ne pevný počet
+  desetin** — podlaha čítače je relativní, pevné desetiny absolutní (při 10 Hz by 9 desetin
+  bylo jen 10⁻¹⁰), lekce **L-0097**.
 - **`INPut[n]:` (vstupní cesta) — příkazy hotové, HW ne (2026-09-06):** `COUPling|IMPedance|ATTenuation|LEVel|HYSTeresis`, každý platný končí `-241 "Hardware missing"` (vstupní modul se teprve staví). Meze jsou ale **závazné už teď**: práh ±1,024 V (`MCP4728`), hystereze 1–60 mV, impedance jen 50 Ω / 1 MΩ, dělič jen 1 / 10. ⚠️ **Nic se neukládá** — uložená a neuplatněná hodnota by byla stejná past jako okno SÍŤ. ⚠️ Pořadí chyb: chyba příkazu **před** chybou provedení (`INP:LEV 99` → `-222`, ne `-241`). 🔴 **`INPut1:`/`INPut2:` musí fungovat** — `kw_match` číslici neumí, proto `inp_match()`; neexistující kanál = `-114`, ne `-113`.
 - **`SENSe:FREQuency:APERture` = alias `GATE`** (VISA/IVI hledají `APERture`). Drženo v JEDNÉ podmínce `||`, aby se obě cesty nemohly rozejít.
 - **SET příkazy** (SCPI už není read-only): `SENS:FREQ:GATE <s>` (presety 0,1/1/10/100 s), `SENS:FREQ:CHAN`,
@@ -1573,6 +1583,10 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   rámec** (nula při mrtvém linku), ne **NASTAVENÍ** (`g_ui_cfg`). Opraveno v **IPC v11** (snapshot má
   `ui_cfg`, bývalý `_pad_s` → velikost beze změny). **Poučení: readback musí číst NASTAVENÍ, ne poslední
   naměřenou hodnotu** — jinak se chyba projeví teprve když měření neběží a vypadá jako porucha zápisu.
+  🔴 **F-0185 (2026-09-27, OTEVŘENO): USB cesta má slepý readback TAKY** — tvrzení „USB cesta
+  byla správně" neplatí: `scpi_src_load_cm7_ex` plní `set_*` a hned za tím dělá `memset`,
+  takže přes USB `GATE?`/`CHAN?`/`INIT:CONT?` vrací vždy výchozí hodnotu (od `6e43eb2`).
+  Ověření: `scpi SENS:FREQ:GATE?` proti `scpi ipc SENS:FREQ:GATE?` po `GATE 10`.
 - ⚠️ **`scpi_selftest` hlásí ŘÁDEK prvního neúspěšného assertu** (`scpi_selftest_fail_line()`) — je to 101
   kontrol v jedné návratové hodnotě a na hostu se spustit **nedá** (jen arm-none-eabi, žádný nativní C).
   **Totéž má od 2026-08-30 i `httpd_min_selftest`** (`httpd_min_selftest_fail_line()`, makro `HT_OK`).
@@ -1663,7 +1677,7 @@ se jednou založí znovu), vše zarovnané na 64 KB, deska je generická.
 DATA regionu zůstávají volné pro další bulk použití (fonty XIP, rekonstrukce Allan pyramidy). (Plný
 region = ~242 dní; dřív tu chybně stálo „~600".)
 - **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
-  `seq(0)`, `t_unix(4)`, `freq_x100000(8)` (🔴 bit 63 = `freq_avg`: průměr všech měření za periodu, F-0172; staré záznamy 0 = okamžitý vzorek 0,25 s), `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
+  `seq(0)`, `t_unix(4)`, `freq(8)` (🔴 bit 63 = `freq_avg`: průměr všech měření za periodu, F-0172; staré záznamy 0 = okamžitý vzorek 0,25 s; 🔴 **bity 62..0 od F-0180 = IEEE double [Hz]**, když je exponent (bity 62..52) nenulový, jinak **starý x1e5** — `DATALOG_FREQ_EXP_MASK`; `datalog_rec_t.freq_hz` + `freq_exact`, `freq_x100000` se dopočítá), `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
   `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
   - ⚠️ **`rf_mv(22)` jsou SYROVÉ mV, ne dBm** (přejmenováno z `rf_dbm10` 2026-08-18). Uložení
     v mV je záměr — kalibrace `g_calib.ad8307_*` se může změnit, syrová hodnota ne. Jenže staré

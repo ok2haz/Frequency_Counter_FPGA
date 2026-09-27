@@ -72,7 +72,19 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
   Obojí je formát/rozhraní → skupina B.
 - **Riziko opravy:** střední (IPC bump, formát datalogu, JSON kontrakt — `json_kontrakt.py`).
 - **Vztah k lekcím:** L-0094 (přesnost vůči VARIACI), L-0018, L-0012 (displej opravený, dvojčata ne).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`e5d7521`) — **jinak, než navrhoval nález.**
+  (a) snapshot nese `double freq4_hz` (`fpga_freq_hires_hz`, přesná dvojice
+  jednoho rámce) v bývalých `offset`+`drift`, takže velikost 480 B i offsety
+  zůstaly (`_Static_assert`) a detekce nesouladu bank funguje; `IPC_VERSION`
+  18 → 19. SCPI (`MEAS:FREQ?`, `FETC`, `READ?`, `MEAS:FREQ:ALL?`, `CALC:DATA?`)
+  i JSON `freq_hz` tisknou **15 platných číslic** (`fmt_scpi_hz_sig`), ne 9
+  desetin — pevný počet desetin je při 10 Hz jen 10⁻¹⁰ relativně, což nová deska
+  přesáhne; 15 platných číslic je ≤ 8,4·10⁻¹⁵ na 0,5 Hz..3,9 GHz
+  (`sim/2026-09-27_fmt_hz_sig.js`). Bez přesné hodnoty zůstává poctivých
+  5 desetin. (b) datalog ukládá **IEEE double** místo nHz (tentýž důvod),
+  starý záznam se pozná podle nulového exponentu; rekonstrukce, CSV
+  a `MMEM:DATA?` čtou přesnou hodnotu, web obálka `/api/log` a UART dump dál
+  x1e5. ⬜ neověřeno na HW — **flashnout obě banky** (TODO #255).
 
 ---
 
@@ -87,7 +99,8 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
   na přesnější reprezentaci (např. surové `edges·mul` a `gate_ns`, tedy přesně).
 - **Návrh:** ukládat přesnou dvojici (cykly, hradlo) místo zaokrouhleného µHz —
   rozhodnout spolu s bodem 5 (skupina C, až bude konzument).
-- **Stav:** otevřeno.
+- **Stav:** odloženo 2026-09-27 (skupina C) — cache nemá konzumenta; formát se
+  rozhodne spolu s ním (bod 5), ať se nemění dvakrát.
 
 ---
 
@@ -104,7 +117,14 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
 - **Návrh (skupina A):** MDEV přes prefixové součty fáze
   (`S_j = ΔC(3m) − 2ΔC(2m) + ΔC(m)`), jeden výpočet ADEV sdílený; do
   `stat_test.js` kontrola shody s referencí (už existuje) + rychlostní případ.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`724e3f7`) — **jinak, než navrhoval nález:**
+  prefixové součty FÁZE ztrácejí číslice (fáze při driftu roste kvadraticky,
+  její součty kubicky a rozdíl dvou velkých součtů ruší cifry) — s offsetem
+  10⁻⁶ relativní chyba **3,6·10⁻⁵**. Místo nich klouzavé okno nad druhými
+  diferencemi d[k] (lineární fáze v nich už zmizela): chyba < 3·10⁻¹⁵, ~20×
+  rychleji (`sim/2026-09-27_mdev_presnost.js`). ADEV i MDEV se v `drawStab`
+  počítají jednou. `stat_test.js`: přesnost při driftu a offsetu + rychlost
+  > 4× (nad starou SPA selže, 1×). ⬜ neověřeno v prohlížeči na HW.
 
 ---
 
@@ -118,7 +138,62 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
   vzorky s jiným τ0 a `tau0_scale` ukazuje jejich průměr.
 - **Návrh (skupina A):** vynulovat statistiku, když se τ0 nového vzorku liší od
   průměru o víc než 2 % (a hlásit to v `status full`).
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-09-27 (`6047fec`) spolu s F-0184 — **kritérium jinak:**
+  nuluje se při relativní změně KMITOČTU > 10⁻⁴ proti přesnému kmitočtu při
+  posledním nulování, ne při změně τ0. τ0 je až důsledek změny signálu
+  a známe ho teprve po celém vzorku, kmitočet hned z prvního měření. τ0 a jeho
+  kolísání `status full` hlásí už od #27. Pozitivní kontrolou této opravy se
+  našel F-0184. ⬜ neověřeno na HW.
+
+---
+
+### F-0184 [S2] Signál přesně kolem 10 MHz nuluje statistiku při každém překročení hranice dekády — Allan ani histogram se nenasbírají
+
+- **Místo:** `CM7/app/screens/screen_main.c` — `freq_advance()` (do `6047fec`):
+  podmínka `need = (idg != s_freq_int || hires != s_freq_hires)` spouštěla
+  přestavbu formátu **i** `screen_main_stats_reset()` a nový nominál.
+- **Popis:** Změna počtu celých číslic znamená jen, že se musí přestavět formát
+  čísla. Kód z ní ale vyvozoval i „měří se jiný signál". Signál přesně na
+  10 MHz (hlavní případ použití GPSDO) kmitá mezi 9 999 999,x a 10 000 000,x —
+  šum jednoho měření 0,25 s s TDC 2,5 ns je ~0,14 Hz — takže se při každém
+  překročení statistika vynulovala a nominál poskočil o 1 Hz (y o 10⁻⁷).
+- **Důkaz (`sim/2026-09-26_f0183_detekce.js`, přepis obou logik):** stabilní
+  10 MHz se šumem 1,4·10⁻⁸: **1931 nulování na 4000 měření** (stará logika)
+  proti 1 (nová). Nalezeno jako pozitivní kontrola opravy F-0183 — simulace
+  selhala na scénáři „stabilní signál se nesmí nulovat".
+- **Dopad:** s reálným signálem 10 MHz by okna ALLAN/HISTOGRAM/trend zůstala
+  prázdná nebo s pár body. Dnes neviditelné jen proto, že SIM fallback
+  a `fpgasim` s malým šumem hranici nepřekračují.
+- **Oprava:** `fmt_need` (řád, /4↔/16, formát periody) = jen přestavba formátu,
+  nominál zůstává; `sig_change` (první reálné měření, změna zdroje, relativní
+  změna > 10⁻⁴) = přestavba + nulování + nový nominál. I přestavba při
+  FREQ↔PERIOD nominál nemění.
+- **Vztah k lekcím:** L-0095.
+- **Stav:** opraveno 2026-09-27 (`6047fec`). ⬜ neověřeno na HW (`fpgasim on
+  10000000` s šumem → počet vzorků v okně ALLAN musí růst).
+
+---
+
+### F-0185 [S3] USB SCPI: readback nastavení (`GATE?`, `CHAN?`, `INIT:CONT?`) vrací vždy výchozí hodnotu
+
+- **Místo:** `CM7/Core/Src/scpi.c:1085-1093` (`scpi_src_load_cm7_ex`): blok,
+  který plní `set_chan`/`set_gate_idx`/`set_running` z `g_ui_cfg`, stojí
+  **před** `memset(src, 0, sizeof *src)` na ř. 1093 — memset ho hned smaže.
+  Dotazy na ř. 807-817 pak čtou nuly.
+- **Popis:** Přes USB konzoli vrací `SENS:FREQ:GATE?` vždy 0,1 s, `CHAN?` 0
+  a `INIT:CONT?` 0 bez ohledu na skutečné nastavení; `READ?` proto vždy pošle
+  požadavek RUN. Výjimka: SET a readback v jedné zprávě (SET zapisuje do `src`
+  po načtení). Přes TCP/HTTP (CM4, `ipc_scpi.c`) je readback správný — tentýž
+  přístroj tedy dává dvě pravdy (L-0018). CLAUDE.md tvrdí, že „USB cesta byla
+  správně"; v kódu od `6e43eb2` (přidání readbacku) správně nebyla.
+- **Důkaz:** statický — pořadí přiřazení a `memset` v téže funkci; `git log -L`
+  ukazuje, že blok přibyl nad existující memset. Nalezeno při úpravě téže funkce
+  pro F-0180, **mimo zadání modulu 24** (patří k modulu SCPI).
+- **Reprodukce:** UART `scpi SENS:FREQ:GATE 10` → pak samostatně
+  `scpi SENS:FREQ:GATE?` → `0.100000`; `scpi ipc SENS:FREQ:GATE?` → `10.000000`.
+- **Návrh (skupina A):** přesunout blok za `memset`; do `scpi_selftest` nelze
+  (test nejde přes loader), ověřit `scpi` vs `scpi ipc` na HW.
+- **Stav:** otevřeno — čeká na odsouhlasení (mimo schválený rozsah).
 
 ---
 
@@ -141,6 +216,11 @@ Nálezy stojí na simulaci/měření; skripty v `sim/`:
 Displej je po předchozích průchodech na plné přesnosti; **všechny cesty ven
 (web, SCPI, datalog) jsou o řády hrubší** — to je hlavní zbývající rozdíl mezi
 tím, co přístroj změří, a tím, co z něj dostane uživatel mimo displej.
+
+**Po opravách (2026-09-27):** nálezy celkem 6 — přibyly **F-0184 [S2]**
+(nalezen pozitivní kontrolou opravy F-0183) a **F-0185 [S3]** (mimo modul,
+při úpravě SCPI loaderu). Opraveno F-0180, F-0182, F-0183, F-0184; F-0181
+odloženo (C); F-0185 čeká na odsouhlasení. Všechny opravy ⬜ neověřeno na HW.
 
 ## Návrh triáže
 

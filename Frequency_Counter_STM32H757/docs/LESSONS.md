@@ -3269,6 +3269,87 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0095 — Jedna podmínka pro dvě různé věci: „formát už nesedí" není „měří se jiný signál"
+
+- **Datum:** 2026-09-27 (modul 24, F-0183 + F-0184)
+- **Oblast:** `screen_main.c` — `freq_advance()`, přestavba formátu vs. nulování statistiky
+- **Symptom:** žádný viditelný dnes (SIM ani `fpgasim` s malým šumem hranici
+  nepřekračují). Simulace: stabilní 10 MHz → **1931 nulování statistiky na
+  4000 měření**; naopak přechod 10 → 12 MHz statistiku **nevynuloval** vůbec.
+- **Příčina:** `need = (počet celých číslic se změnil)` řídilo dvě věci naráz:
+  přestavbu formátu (správně) a „jiný signál → vynulovat statistiku, nový
+  nominál" (špatně). Počet číslic je vlastnost ZOBRAZENÍ, ne signálu — signál
+  na hranici dekády ho mění při každém šumovém překmitu, jiný signál v téže
+  dekádě ho nemění vůbec.
+- **Oprava:** dvě proměnné, `fmt_need` (jen formát) a `sig_change` (relativní
+  změna > 10⁻⁴ proti přesnému kmitočtu při posledním nulování) (`6047fec`).
+  F-0184 se našel až **pozitivní kontrolou** opravy F-0183: simulace měla scénář
+  „stabilní signál se nesmí nulovat" a ten selhal už na STARÉ logice.
+- **Pravidlo:** **Když jedna podmínka spouští víc důsledků, u každého se zeptej,
+  jestli je podmínka jeho SKUTEČNÁ příčina, nebo jen korelát.** Vlastnost
+  zobrazení (počet číslic, jednotka, rozsah osy) nesmí rozhodovat o datech.
+  A pozitivní kontrola opravy má mít i scénář „tohle se NESMÍ stát" — ten najde
+  vadu, kterou oprava nezavedla, ale zdědila.
+- **Detekce:** přepis rozhodovací logiky do simulace se šumem **přesně na
+  hranici** (10 MHz, 1 MHz, …), počítat nulování i skoky reference.
+- **Commit:** `6047fec`
+- **Stav:** aktivní
+
+---
+
+### L-0096 — Zrychlení přes prefixové součty KUMULATIVNÍ veličiny ruší číslice: nejdřív diferencovat, pak sčítat
+
+- **Datum:** 2026-09-27 (modul 24, F-0182)
+- **Oblast:** webová `mdev()` (SPA v `httpd_min.c`)
+- **Symptom:** návrh opravy z vlastního auditu (prefixové součty fáze) dával na
+  bílém šumu shodné výsledky a byl 18× rychlejší. Se signálem, který má offset
+  10⁻⁶ (necentrovaná data), ale relativní chybu **3,6·10⁻⁵**.
+- **Příčina:** fáze je součet kmitočtů — při offsetu/driftu roste lineárně až
+  kvadraticky, její prefixové součty kvadraticky až kubicky. MDEV potřebuje
+  rozdíl dvou takových obřích součtů, tedy malé číslo z velkých → zbytek double
+  se vyruší. Test „shoda s referencí" na centrovaném bílém šumu to neviděl.
+- **Oprava:** klouzavé okno nad druhými diferencemi d[k] = x[k+2m]−2x[k+m]+x[k]
+  — lineární fáze (offset) v nich už zmizela, sčítají se malá čísla (`724e3f7`).
+  Chyba < 3·10⁻¹⁵, rychlost stejná (~20×).
+- **Pravidlo:** **Zrychlení, které nahrazuje sčítání rozdílem kumulativních
+  součtů, ověř na datech s OFFSETEM a DRIFTEM, ne jen na centrovaném šumu.**
+  Kde to jde, nejdřív odstraň to, co roste (diferencuj), a teprve pak akumuluj.
+  Tatáž třída jako L-0094 (přesnost vůči variaci, ne vůči hodnotě).
+- **Detekce:** `docs/audit/sim/2026-09-27_mdev_presnost.js` (varianty proti
+  naivní referenci, scénáře drift/offset); `stat_test.js` hlídá drift i offset.
+- **Commit:** `724e3f7`
+- **Stav:** aktivní
+
+---
+
+### L-0097 — Pevný počet desetin je absolutní krok; přesnost výstupu musí být RELATIVNÍ jako přesnost měření
+
+- **Datum:** 2026-09-27 (modul 24, F-0180)
+- **Oblast:** SCPI/JSON formát kmitočtu, datalog, IPC snapshot
+- **Symptom:** web, SCPI i datalog dostávaly kmitočet po 10 µHz, displej v plné
+  přesnosti → pro tatáž data různá σy (při 1 kHz 6×, při nižších nula).
+  Vlastní návrh opravy (9 desetin, datalog v nHz) by vadu jen posunul níž:
+  při 10 Hz je 1 nHz relativně 10⁻¹⁰, což podlaha nové desky přesáhne.
+- **Příčina:** podlaha čítače je RELATIVNÍ (tdc/τ, na kmitočtu nezávislá),
+  kdežto pevný počet desetin je ABSOLUTNÍ krok — relativně roste s klesajícím
+  kmitočtem. Každý pevný počet desetin tedy někde pod nějakým kmitočtem selže.
+- **Oprava:** výstup s **15 platnými číslicemi** (DBL_DIG, `fmt_scpi_hz_sig`),
+  datalog jako IEEE double — relativně ~10⁻¹⁵ na libovolném kmitočtu
+  (`e5d7521`). Snapshot dostal double do dvou nikdy neplněných floatů, takže
+  layout zůstal (`_Static_assert` na offset i velikost).
+- **Pravidlo:** **U veličiny s relativní přesností (kmitočet, poměr) formátuj
+  a ukládej v PLATNÝCH číslicích (nebo plovoucí čárce), ne v pevných
+  desetinách.** Než zvolíš krok, spočítej ho relativně u NEJNIŽŠÍ hodnoty
+  rozsahu. A když výstup nemá přesná data, nepředstírej je — tiskni jen tolik
+  číslic, kolik zdroj nese.
+- **Detekce:** pro každý formátovač/úložiště spočítej `krok / hodnota` na dolním
+  konci rozsahu a porovnej s podlahou měření (`sim/2026-09-26_kvantizace_10uHz.js`,
+  `sim/2026-09-27_fmt_hz_sig.js`).
+- **Commit:** `e5d7521`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
