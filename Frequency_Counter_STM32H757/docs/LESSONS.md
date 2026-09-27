@@ -3525,6 +3525,28 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0105 — Když změníš VÝZNAM stavu, projdi všechny, kdo ho čtou
+
+- **Datum:** 2026-09-27 (regrese vlastní opravy F-0189, nalezeno při HW testu)
+- **Oblast:** `app_gpsdo.c` — rekonstrukce ADEV z datalogu, UART `status`
+- **Symptom:** bez FPGA desky by `status` trvale hlásil `ADEV rekonstrukce: BEZI …
+  <== zive vzorkovani zatim stoji`, přestože živé vzorkování běželo.
+- **Příčina:** F-0189 změnil stav 3 z krátké sondy („vyplatí se rekonstrukce?") na
+  **neomezené čekání** na první reálné měření. Automat jsem upravil a ověřil simulací,
+  ale `app_gpsdo_stats_seed_progress` — jediný čtenář stavu mimo automat — zůstal u
+  starého významu „3 = běží". Simulace testovala automat, ne jeho diagnostiku.
+- **Oprava:** progress vrací `SEED_PROG_IDLE/RUN/WAIT/SKIP_POR`, `status` je rozliší
+  (`a83bf1d`).
+- **Pravidlo:** **Když stav dostane nový význam (trvání, co se během něj děje), grepni
+  VŠECHNY čtenáře té proměnné — diagnostika, UI, IPC, testy — a u každého ověř, že
+  jeho výklad pořád platí.**
+- **Detekce:** `grep -n "s_xxx_state"` přes celý strom při každé změně automatu;
+  u stavu, který může trvat libovolně dlouho, zkontrolovat, co o něm říká `status`.
+- **Commit:** `a83bf1d`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

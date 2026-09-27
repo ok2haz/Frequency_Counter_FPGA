@@ -195,7 +195,8 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   mezera"): čas „teď" z RTC smí číst jen defaultTask, takže kritériem je druh resetu.
   Pojistka proti zdvojení podle `seq`. Ověření: `sim/2026-09-27_f0189_rekonstrukce.js`
   (vloží 1350 záznamů posledního úseku, 2 řezy; stará logika 9750 včetně 12 MHz).
-  Lekce L-0102.
+  Lekce L-0102. ⚠️ **Následná oprava `a83bf1d`** (nalezeno při HW testu): čekání na první
+  reálné měření hlásil `status` jako běh rekonstrukce („živé vzorkování stojí"); L-0105.
 
 ---
 
