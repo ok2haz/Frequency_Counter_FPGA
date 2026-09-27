@@ -3573,6 +3573,42 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0107 — Když stav plní VÍC konzumentů, nulovací funkce musí projít VŠECHNY, ne jen toho, kvůli kterému vznikla
+
+- **Datum:** 2026-09-27 (F-0195, nalezeno přezkumem vlastních oprav modulu 24)
+- **Oblast:** `fpga_freq.c` — `fpga_stat_break()`/`fpga_stat_flush()` nad `s_acc[FPGA_ACC_N]`
+- **Symptom:** žádný pozorovaný na HW (nález ze statického přezkumu) — HYPOTÉZA
+  s mechanismem: při změně měřeného signálu nebo díře v `SEQUENCE` uprostřed
+  10s datalogové periody by `s_acc[FPGA_ACC_DATALOG]` dál tiše sčítal cykly
+  a hradla z obou stran přechodu, a výsledek by se zapsal do trvalého datalogu
+  s příznakem `freq_avg=1` (= „čistý průměr"), ačkoli je to směs dvou různých
+  kmitočtů.
+- **Příčina:** `fpga_stat_break()` vznikla u F-0193 (SEQUENCE gap) a `fpga_stat_flush()`
+  u F-0188 (přechod REAL↔SIM / změna signálu) — obě řešily tehdy jediného
+  známého konzumenta `s_acc[FPGA_ACC_STATS]` (živá statistika). O pár řádků níž
+  ale existuje **druhý** akumulátor téhož pole, `s_acc[FPGA_ACC_DATALOG]`
+  (`datalog.c` ho čte přes `fpga_acc_take` jednou za periodu) — L-0101 už
+  přesně tohle pravidlo formuloval („nuluj i to, co je na cestě"), jenže se
+  aplikovalo jen na akumulátor, kvůli kterému se psalo, ne na `FPGA_ACC_N`
+  jako celek.
+- **Oprava:** obě funkce teď iterují `for (i = 0; i < FPGA_ACC_N; i++)` místo
+  pevného indexu `FPGA_ACC_STATS` (`fpga_freq.c`).
+- **Pravidlo:** **Když pole/struktura má víc slotů pro víc nezávislých
+  konzumentů (`s_acc[FPGA_ACC_N]`, podobně by to platilo pro cokoli
+  parametrizované `enum`em konzumenta), nulovací/reset funkce MUSÍ iterovat
+  přes VŠECHNY sloty, ne jen přes ten, kvůli kterému vznikla.** Při psaní
+  takové funkce vypiš si všechny čtenáře pole (grep na jeho jméno), ne jen
+  toho, co motivoval opravu — přesně to L-0101 už žádal a tady se to
+  nedodrželo doslova.
+- **Detekce:** grep `s_acc\[` v `fpga_freq.c` — každá funkce, která na pole
+  sahá s pevným indexem místo smyčkou přes `FPGA_ACC_N`, je kandidát na
+  stejnou mezeru. ⬜ Neověřeno na HW (mechanismus vyžaduje zásah do 10s okna
+  s přesností na desetiny sekundy, viz `docs/audit/2026-09-27_matematika-audit-oprav.md`).
+- **Commit:** (F-0195 fix, viz git log)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
