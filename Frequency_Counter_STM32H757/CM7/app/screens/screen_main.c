@@ -2278,17 +2278,27 @@ static int16_t allan_y(prim_rect_t inner, float log_val, int ymin, int dec)
 static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
                             const int16_t *ylo, int np)
 {
+    /* 🔴 F-0191: KAZDY SLOUPEC JEN JEDNOU. Vypln je poloprusvitna (OVER), takze
+     * druhy pruchod tymz sloupcem ho ztmavi. Drive kazdy usek kreslil sloupce
+     * x0..x1 vcetne obou kraju -> koncovy sloupec useku i byl zaroven pocatecni
+     * useku i+1 a bod na stejnem pixelu dal navic sloupec x0+1. Pri 54 bodech
+     * (hustota 9/dek) byl v karte kazdy treti sloupec pasu tmavsi. `x` je
+     * neklesajici (tau roste), takze staci pamatovat posledni vyplneny sloupec. */
+    int16_t xd = INT16_MIN;
     for (int i = 1; i < np; i++) {
         int16_t x0 = pts[i - 1].x, x1 = pts[i].x;
         int16_t cols = (int16_t)(x1 - x0);
-        if (cols < 1) cols = 1;
         for (int16_t c = 0; c <= cols; c++) {
             int16_t cx = (int16_t)(x0 + c);
-            int16_t yu = (int16_t)(yup[i - 1] + (int32_t)(yup[i] - yup[i - 1]) * c / cols);
-            int16_t yl = (int16_t)(ylo[i - 1] + (int32_t)(ylo[i] - ylo[i - 1]) * c / cols);
+            if (cx <= xd) continue;
+            int16_t yu = cols ? (int16_t)(yup[i - 1] + (int32_t)(yup[i] - yup[i - 1]) * c / cols)
+                              : yup[i - 1];
+            int16_t yl = cols ? (int16_t)(ylo[i - 1] + (int32_t)(ylo[i] - ylo[i - 1]) * c / cols)
+                              : ylo[i - 1];
             if (yl < yu) { int16_t t = yu; yu = yl; yl = t; }
             prim_fill_rect((prim_rect_t){cx, yu, 1, (int16_t)(yl - yu + 1)},
                            PRIM_ALPHA(UI_COLOR_ACC, 0x22), PRIM_BLEND_OVER);
+            xd = cx;
         }
     }
 }
