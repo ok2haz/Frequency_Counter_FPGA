@@ -208,5 +208,56 @@ if (api.floorOf) {
   check(near(F('mtie', 10, 1, T), Math.sqrt(3) * T / 2), 'MTIE: sqrt3*tau*tdc/(2 tau)');
   check(near(F('tdev', 2, 0.25, T), T / (2 * Math.sqrt(24))), 'TDEV s tau0 0,25 s: m = tau/tau0');
 }
+/* F-0190: rada mereni `M` se plni podle `seq_meas` a musi byt SOUVISLA.
+ * Pozitivni kontrola: nad SPA pred opravou (bez ingestM/mTau0) test SELZE,
+ * a hlavne scenar POLL (kazde 4. mereni) tam rada rostla - tady ne. */
+console.log('--- souvislost rady mereni (F-0190) ---');
+{
+  const names = ['mClear', 'ingestM', 'mTau0'];
+  const bodies = names.map(grab);
+  names.forEach((n, i) => check(bodies[i] !== null, 'funkce ' + n + '() je v SPA'));
+  const decl = grabVar('MAXM') + grabVar('lastSeq') + grabVar('MMISS');
+  if (bodies.every(b => b) && decl.indexOf('mMiss') >= 0) {
+    const E = new Function(decl + '\nvar streaming=1;\n' + bodies.join('\n')
+      + '\nreturn {M:function(){return M;},'
+      + 'st:function(){return {q:lastSeq,miss:mMiss,cut:mCut,why:mWhy};},'
+      + 'stream:function(v){streaming=v;},ingestM:ingestM,mTau0:mTau0,mClear:mClear};')();
+    const T0 = 0.25, add = q => E.ingestM(q, 10e6, q * T0);
+    const len = () => E.M().f.length;
+
+    for (let q = 1; q <= 400; q++) add(q);
+    check(len() === 400 && E.st().miss === 0, 'SSE souvisle: 400 mereni, 0 chybi');
+    check(add(400) === 0 && len() === 400, 'totez mereni podruhe se neprida');
+    add(402);                                     /* chybi 401 - ojedinela dira */
+    check(len() === 401 && E.st().miss === 1, 'ojedinela dira (1 z 402) se toleruje');
+    check(Math.abs(E.mTau0(len()) / T0 - 1) < 1e-12,
+          'tau0 pres diru = skutecny rozestup (' + E.mTau0(len()) + ' s)');
+
+    let c0 = E.st().cut;
+    for (let q = 1000; q < 1010; q++) add(q);     /* velky skok -> rez */
+    add(1011);                                    /* 1 z 11 = 9 % -> rez */
+    check(len() === 1 && E.st().cut === c0 + 2, 'dira nad 1 % rady -> rada zacne znovu');
+
+    E.stream(0); c0 = E.st().cut;
+    for (let q = 2000; q < 2400; q += 4) add(q);  /* 1 Hz poll pri 4 merenich/s */
+    check(len() === 1 && E.st().cut === c0 + 100,
+          'poll (kazde 4. mereni): rada neroste, ' + (E.st().cut - c0) + ' rezu');
+    check(E.st().why.indexOf('SSE') >= 0, 'duvod v aWarn: ' + E.st().why);
+    E.stream(1);
+
+    add(4294967295); add(0);                      /* preteceni uint32 */
+    check(len() === 2 && E.st().miss === 0, 'seq 0xFFFFFFFF -> 0 je souvisle');
+    for (let q = 1; q < 300; q++) add(q);
+    c0 = E.st().cut; add(5);                      /* seq se vratil (reset FPGA) */
+    check(len() === 1 && E.st().cut === c0 + 1, 'seq zpet -> rada zacne znovu');
+
+    E.mClear();
+    for (let q = 10000; q < 10150; q++) add(q);
+    for (let q = 10151; q < 12152; q++) add(q);   /* dira po 150 vzorcich, pak 2001 */
+    check(len() === 2000 && E.st().miss === 0,
+          'dira vypadla z okna MAXM -> mMiss zpet na 0 (' + E.st().miss + ')');
+  }
+}
+
 console.log(bad ? ('\nCHYBA: ' + bad + ' kontrol selhalo') : '\nvse OK');
 process.exitCode = bad ? 1 : 0;
