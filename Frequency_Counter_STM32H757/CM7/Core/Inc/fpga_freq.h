@@ -66,6 +66,25 @@ uint32_t fpga_freq_crc_last_age_s(void);
  *  @return true pokud prislo NOVE platne cerstve mereni (CRC ok, VALID, FRESH, nova SEQUENCE). */
 bool fpga_freq_poll(fpga_meas_t *out);
 
+/* ── Souvislost SEQUENCE (F-0193) ─────────────────────────────────────────────
+ * FPGA zvedne SEQUENCE s KAZDYM merenim a nepotvrzene mereni prepise dalsim
+ * (`spi_app.v:190`). Kdyz FpgaTask ramec nestihne (> ~250 ms, typicky UART
+ * `fpgaraw`/`fpgaloop` drzi SPI mutex), mereni je navzdy pryc — a vzorek
+ * statistiky, do ktereho by dira padla, by mel uvnitr mrtvou dobu. Dosud se to
+ * nepoznalo (porovnavala se jen ZMENA SEQUENCE) a nikde nepocitalo. */
+#define FPGA_SEQ_GAP_MAX  64u            /* vetsi skok = resync, ne zmeskana mereni */
+#define FPGA_SEQ_RESYNC   0xFFFFFFFFu   /* skok/navrat SEQUENCE (reset FPGA, start emulace) */
+/** Kolik mereni chybi mezi `prev` a `cur` (ciste-logicke, selftest #1).
+ *  0 = navazuje nebo `prev` jeste neni (0xFFFFFFFF), 1..63 = dira,
+ *  FPGA_SEQ_RESYNC = skok vetsi nez FPGA_SEQ_GAP_MAX nebo navrat zpet.
+ *  Pocita modulo 2^32, takze preteceni SEQUENCE diru nedela. */
+uint32_t fpga_seq_gap(uint32_t prev, uint32_t cur);
+/** Dira pred merenim, ktere naposledy vratil `fpga_freq_poll` (hodnota jako
+ *  `fpga_seq_gap`). Vola FpgaTask hned po `fpga_freq_poll`. */
+uint32_t fpga_freq_seq_gap(void);
+/** Soucty od bootu pro `status`: pocet der, zmeskanych mereni a resyncu. */
+void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync);
+
 /** Naformatuje kmitocet x100000: "123.456.789,01234Hz" (tecky=tisice, carka=des., 5 mist). */
 void fpga_freq_format_val(uint64_t freq_x100000, char *buf, int buflen);
 
@@ -158,7 +177,8 @@ uint32_t fpga_acc_take(int which, double *hz, double *gate_s);
 /** Odebere nejstarsi hotovy vzorek. @return 1 = `*hz` [Hz] a `*tau_s` (delka
  *  jeho oken) vyplneny, 0 = fronta prazdna. Vola VYHRADNE UiTask. */
 int fpga_stat_pop(double *hz, double *tau_s);
-/** Rozpracovany vzorek zahodit (neplatne mereni = okna uz nenavazuji). FpgaTask. */
+/** Rozpracovany vzorek zahodit — okna uz nenavazuji: neplatne mereni, dira
+ *  v SEQUENCE nebo ztrata signalu/linku (F-0193). FpgaTask. */
 void fpga_stat_break(void);
 /** F-0188: rozpracovany vzorek I celou frontu zahodit — pri nulovani statistiky
  *  kvuli zmene signalu. Jinak by prvni 1-2 vzorky nove pyramidy byly ze STAREHO
@@ -226,6 +246,9 @@ double fpga_sim_hz(void);
  *   "crc"    poskozene CRC (musi ho chytit prijem, ne parse)
  *   "div16"  chyba deleni /16 (status2 bit0 -> test vyberu odbocky)
  *   "phase"  dira ve `phase_status` (chybejici faze TDC)
+ *   "gap"    JEDNORAZOVE preskoci 3 mereni (dira v SEQUENCE, F-0193) —
+ *            totez, co udela skutecna FPGA, kdyz FpgaTask ramec nestihne;
+ *            aktivni porucha zustava beze zmeny
  *  @return 0 = nezname jmeno poruchy. */
 int  fpga_sim_fault(const char *what);
 

@@ -78,10 +78,16 @@ void StartFpgaTask(void *argument)
       /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
        * ti si pak vezmou prumer za sve okno misto posledniho vzorku (mrtva doba).
        * Kriterium platnosti je tytez jako u `g_freq_valid` vyse. */
-      if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST))
+      if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        /* 🔴 F-0193: mereni pred timhle FPGA prepsala drive, nez jsme ho precetli
+         * (dira v SEQUENCE) -> rozpracovany vzorek by mel uvnitr mrtvou dobu:
+         * Σhradel ~1 s, v case ale vic. Zahodit a zacit od tohoto mereni.
+         * Pocita se v `fpga_freq_poll` (`status` -> radek SEQ FPGA). */
+        if (fpga_freq_seq_gap() != 0u) fpga_stat_break();
         fpga_acc_add(v, m.edge_count, m.gate_time_ns);
-      else
+      } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
+      }
       /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
        * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
        * ⚠️ Nasobitel `edge_count` (1/4/16) NEODVOZUJEME sami: `fpga_freq_hires_uhz`
@@ -117,7 +123,14 @@ void StartFpgaTask(void *argument)
     uint8_t l = (!fpga_freq_link_ok() || fpga_freq_signal_lost()) ? 1 : 0;
     if (l != lost) {
       lost = l;
-      if (l) (void)errlog_put(ERRLOG_K_FPGA, 2u, fpga_freq_crc_count(), 0u, "signal");
+      if (l) {
+        (void)errlog_put(ERRLOG_K_FPGA, 2u, fpga_freq_crc_count(), 0u, "signal");
+        /* F-0193: pri ztrate signalu FPGA nemeri a SEQUENCE neroste, takze
+         * po navratu by na sebe navazovala — dira v case by v SEQUENCE nebyla
+         * videt a rozpracovany vzorek by slepil mereni pred ztratou a po ni.
+         * (U mrtveho linku FPGA meri dal, takze diru pak ukaze i SEQUENCE.) */
+        fpga_stat_break();
+      }
       taskENTER_CRITICAL();
       g_freq_stale = l;
       if (l) g_freq_valid = 0;   /* ztrata signalu -> hodnota uz neni platna (headline -> SIM fallback / seda) */

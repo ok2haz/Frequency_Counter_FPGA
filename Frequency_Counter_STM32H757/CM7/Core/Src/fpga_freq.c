@@ -48,6 +48,12 @@ extern SPI_HandleTypeDef hspi2;
 #define ST_ERROR         (1u << 7)
 
 static uint32_t g_last_seq = 0xFFFFFFFFu;  /* posledni potvrzena seq */
+/* F-0193: souvislost SEQUENCE (pise jen FpgaTask v `fpga_freq_poll`; `status`
+ * cte 32bitove hodnoty bez zamku — jednotlive jsou atomicke). */
+static uint32_t s_poll_gap   = 0u;         /* dira pred poslednim vracenym merenim */
+static uint32_t s_seq_gaps   = 0u;         /* kolikrat byla dira */
+static uint32_t s_seq_missed = 0u;         /* kolik mereni celkem chybelo */
+static uint32_t s_seq_resync = 0u;         /* skoky/navraty (reset FPGA, start emulace) */
 static uint32_t g_sck_hz   = 0;
 static uint8_t  s_link_ok  = 0;            /* 1 = posledni poll dostal platny ramec (MAGIC+CRC) */
 static uint32_t g_rx_crc   = 0;            /* pocet ramcu se spatnym CRC */
@@ -267,6 +273,7 @@ static float    s_sim_drift  = 0.0f;     /* ppb/hodinu */
 static uint8_t  s_sim_fault  = SIM_FAULT_NONE;
 static uint32_t s_sim_seq    = 0;
 static uint32_t s_sim_next_ms = 0;       /* kdy vyrobit DALSI mereni */
+static uint32_t s_sim_skip   = 0;        /* F-0193: jednorazove preskocit N mereni */
 static uint64_t s_sim_ts     = 0;
 static uint32_t s_sim_t0     = 0;        /* start emulace (pro drift) */
 static uint32_t s_sim_rnd    = 0x12345678u;
@@ -363,15 +370,24 @@ static void sim_build_frame(uint8_t *f, int fresh)
 
 /* Vyrobi ramec do rx[]. Nova SEQ jen ~4x/s (realna FPGA ma gate 0,25 s), i kdyz
  * FpgaTask polluje 20x/s — jinak by emulace vyrabela 20 mereni/s a zkreslila by
- * vse, co se opira o tempo mereni. */
+ * vse, co se opira o tempo mereni.
+ * 🔴 F-0193: mereni bezi na PEVNE mrizce 250 ms a SEQUENCE roste o POCET mereni,
+ * ktera od minula probehla — jako FPGA, ktera meri nepretrzite a nepotvrzene
+ * mereni prepise. Drive se dalsi mereni planovalo az od okamziku pollu
+ * (`now + 250`), takze zpozdeny FpgaTask diru v SEQUENCE nikdy nevidel a rozestup
+ * mereni se zaokrouhloval NAHORU na nasobek periody pollu (50 ms + zpracovani),
+ * tedy mene nez 4 mereni/s pri hradle 0,25 s = skryta mrtva doba emulatoru. */
 static void sim_produce(uint8_t *rx)
 {
     uint32_t now = HAL_GetTick();
     int fresh = 0;
     if ((int32_t)(now - s_sim_next_ms) >= 0) {
-        s_sim_next_ms = now + 250u;
-        s_sim_seq++;
-        s_sim_ts += 2500000ull;      /* 0,25 s v tikach 10 MHz */
+        uint32_t k = (now - s_sim_next_ms) / 250u + 1u;   /* kolik mereni probehlo */
+        s_sim_next_ms += k * 250u;
+        k += s_sim_skip;             /* injektor `fpgasim fault gap` */
+        s_sim_skip = 0u;
+        s_sim_seq += k;
+        s_sim_ts  += (uint64_t)k * 2500000ull;   /* 0,25 s v tikach 10 MHz */
         fresh = 1;
     }
     sim_build_frame(rx, fresh);
@@ -404,6 +420,7 @@ int fpga_sim_fault(const char *what)
     if (strcmp(what, "crc")   == 0) { s_sim_fault = SIM_FAULT_CRC;   return 1; }
     if (strcmp(what, "div16") == 0) { s_sim_fault = SIM_FAULT_DIV16; return 1; }
     if (strcmp(what, "phase") == 0) { s_sim_fault = SIM_FAULT_PHASE; return 1; }
+    if (strcmp(what, "gap")   == 0) { s_sim_skip = 3u;               return 1; }   /* F-0193 */
     return 0;
 }
 
@@ -475,9 +492,33 @@ bool fpga_freq_poll(fpga_meas_t *out)
     if (!(status & ST_DATA_VALID) || !(status & ST_DATA_FRESH)) return false;
     if (s_last.sequence == g_last_seq) return false;   /* neni nove */
 
+    /* F-0193: NOVE nestaci — musi i NAVAZOVAT. Dira = mereni, ktere FPGA
+     * prepsala drive, nez jsme ho precetli; spocitat a ohlasit volajicimu. */
+    s_poll_gap = fpga_seq_gap(g_last_seq, s_last.sequence);
+    if (s_poll_gap == FPGA_SEQ_RESYNC)  s_seq_resync++;
+    else if (s_poll_gap != 0u)        { s_seq_gaps++; s_seq_missed += s_poll_gap; }
+
     if (out) *out = s_last;
     g_last_seq = s_last.sequence;                       /* dalsi ACK potvrdi tuto seq */
     return true;
+}
+
+uint32_t fpga_seq_gap(uint32_t prev, uint32_t cur)
+{
+    if (prev == 0xFFFFFFFFu) return 0u;                /* prvni mereni po bootu */
+    uint32_t d = cur - prev;                           /* modulo 2^32 */
+    if (d == 1u) return 0u;
+    if (d >= 2u && d <= FPGA_SEQ_GAP_MAX) return d - 1u;
+    return FPGA_SEQ_RESYNC;                            /* velky skok nebo navrat zpet */
+}
+
+uint32_t fpga_freq_seq_gap(void) { return s_poll_gap; }
+
+void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync)
+{
+    if (gaps)   *gaps   = s_seq_gaps;
+    if (missed) *missed = s_seq_missed;
+    if (resync) *resync = s_seq_resync;
 }
 
 bool fpga_freq_signal_lost(void)
@@ -735,7 +776,17 @@ bool fpga_freq_select_selftest(void)
         double f = fpga_freq_hires_hz(999999990000ull, 2500000ull, (100000001ull * 5u) >> 1);
         ok &= (fabs(f / 9999999.900000001 - 1.0) < 1e-15);
     }
-    printf("fpga: select hystereze + ticky okna selftest %s\n", ok ? "OK" : "FAIL");
+    /* F-0193: souvislost SEQUENCE — navazuje, dira, preteceni uint32, mez diry,
+     * navrat zpet a prvni mereni po bootu (sentinel). */
+    ok &= (fpga_seq_gap(5u, 6u) == 0u);
+    ok &= (fpga_seq_gap(5u, 9u) == 3u);
+    ok &= (fpga_seq_gap(0xFFFFFFFEu, 0u) == 1u);          /* ...FE, (FF chybi), 0 */
+    ok &= (fpga_seq_gap(0xFFFFFFFEu, 0xFFFFFFFFu) == 0u);
+    ok &= (fpga_seq_gap(5u, 5u + FPGA_SEQ_GAP_MAX) == FPGA_SEQ_GAP_MAX - 1u);
+    ok &= (fpga_seq_gap(5u, 6u + FPGA_SEQ_GAP_MAX) == FPGA_SEQ_RESYNC);
+    ok &= (fpga_seq_gap(100u, 3u) == FPGA_SEQ_RESYNC);    /* reset FPGA */
+    ok &= (fpga_seq_gap(0xFFFFFFFFu, 12345u) == 0u);      /* jeste zadne mereni */
+    printf("fpga: select hystereze + ticky okna + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 

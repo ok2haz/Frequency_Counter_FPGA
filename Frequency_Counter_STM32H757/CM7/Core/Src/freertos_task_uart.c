@@ -2229,7 +2229,7 @@ void UartTask_run(void *argument)
 				   *   fpgasim                     stav
 				   *   fpgasim off
 				   *   fpgasim on [Hz] [noise_ppb] [drift_ppb/h]
-				   *   fpgasim fault none|lost|crc|div16|phase           */
+				   *   fpgasim fault none|lost|crc|div16|phase|gap       */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strncmp(a, "on", 2) == 0) {
 					  /* Rucni parsovani (zadny sscanf — nano.specs). */
@@ -2261,8 +2261,10 @@ void UartTask_run(void *argument)
 					  printf("FPGASIM: vypnuto (zpet na skutecne SPI)\n");
 				  } else if (strncmp(a, "fault", 5) == 0) {
 					  const char *w = (a[5] == ' ') ? &a[6] : "";
-					  if (fpga_sim_fault(w)) printf("FPGASIM: porucha = %s\n", w);
-					  else printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase)\n");
+					  if (!fpga_sim_fault(w)) printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase|gap)\n");
+					  else if (strcmp(w, "gap") == 0)   /* F-0193: jednorazova, ne trvaly rezim */
+						  printf("FPGASIM: pristi mereni preskoci 3 (dira v SEQ) -> status: SEQ FPGA\n");
+					  else printf("FPGASIM: porucha = %s\n", w);
 				  } else {
 					  if (fpga_sim_active()) {
 						  char hb[32]; fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
@@ -2270,7 +2272,7 @@ void UartTask_run(void *argument)
 					  } else {
 						  printf("FPGASIM: vypnuto\n");
 					  }
-					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap>\n");
 				  }
 			  }
 			  /* 🔴 `rpipe [0|1|2]` — zpozdeni vzorkovani CTENYCH dat z SDRAM za CAS latenci,
@@ -2795,6 +2797,15 @@ void UartTask_run(void *argument)
 					  	  else
 					  	    printf("STATISTIKA: tau0 = -- (zadny realny vzorek)\n");
 					  	}
+					  	/* F-0193: mereni, ktera FPGA prepsala drive, nez je FpgaTask precetl.
+					  	 * Za bezneho provozu (poll 20 Hz, mereni 4/s) ma byt `diry 0`; nenulove
+					  	 * = FpgaTask nestiha (napr. behem `fpgaloop`). Vzorek s dirou se do
+					  	 * statistiky nedostane, tady je jen videt, jak casto se to deje.
+					  	 * `resync` = skok/navrat SEQUENCE (reset FPGA, start emulace). */
+					  	{ uint32_t sg, sm, sr; fpga_freq_seq_stats(&sg, &sm, &sr);
+					  	  printf("SEQ FPGA: diry %lu (zmeskano %lu mereni), resync %lu%s\n",
+					  	         (unsigned long)sg, (unsigned long)sm, (unsigned long)sr,
+					  	         sg ? "  <== FpgaTask nestihal" : ""); }
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
 					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
 					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich
