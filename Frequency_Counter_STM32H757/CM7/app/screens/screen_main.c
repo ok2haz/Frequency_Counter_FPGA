@@ -1063,6 +1063,10 @@ static void freq_step(void)
  * ⚠️ Seqlock cteni: FpgaTask (Normal) muze preemptnout UiTask (BelowNormal) a jeho
  * zapis je atomicky (kriticka sekce) + `g_freq_seq` roste kazdou zmenou -> re-check
  * seq odhali soubezny commit bez nutnosti FreeRTOS kriticke sekce tady. */
+/* F-0183: kmitocet pri poslednim prestaveni formatu v REALNEM rezimu (0 = jeste
+ * zadne). Slouzi k poznani, ze se zmenil MERENY SIGNAL i v ramci teze dekady. */
+static double s_freq_ref_hz = 0.0;
+
 static void freq_advance(void)
 {
     if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
@@ -1079,7 +1083,9 @@ static void freq_advance(void)
         double f_hz = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
         uint64_t fx = (f_hz > 0.0) ? (uint64_t)(f_hz * 100000.0 + 0.5)
                                    : (10000000ull * 100000ull);
+        double keep_nom = s_freq_nominal_hz;   /* F-0184: jen format, NE reference y */
         num_build_for(fx, 0u, 0u, s_freq_hires ? FREQ_FRAC_HIRES : FREQ_FRAC_SIM);
+        if (keep_nom > 0.0) s_freq_nominal_hz = keep_nom;
         s_freq_fmt_changed = 1;
         s_last_fpga_seq    = seq - 1u;   /* dalsi realne mereni znovu vyhodnot */
     }
@@ -1092,25 +1098,52 @@ static void freq_advance(void)
             uint64_t whole = x100000 / 100000ull;
             int idg = 1; for (uint64_t t = whole; t >= 10ull; t /= 10ull) idg++;
             if (idg > 12) idg = 12;
-            /* Prestav format pri zmene RADU nebo pri prepnuti /4<->/16: s /16 zmizi
-             * `edge_count`, tedy i moznost hi-res dopoctu -> pocet desetin se MUSI
-             * srazit, jinak by se dokreslovaly nuly, ktere mereni nenese. */
-            int need = (idg != s_freq_int || hires != s_freq_hires);
+            /* Dve RUZNE veci, ktere se do 2026-09-27 sly jednou podminkou:
+             *  fmt_need   = format uz neodpovida hodnote (jiny RAD, prepnuti /4<->/16,
+             *               format periody) -> format se MUSI prestavet, jinak by
+             *               `freq_fill_segments` zahodila vedouci cislici nebo
+             *               dokreslovala nuly, ktere mereni nenese;
+             *  sig_change = meri se JINY signal nebo zdroj -> navic vynulovat statistiku
+             *               a nastavit novy nominal.
+             * 🔴 F-0184: do te doby kazda zmena RADU nulovala statistiku a posunula
+             * nominal. Jenze signal PRESNE kolem 10 MHz (hlavni pripad pouziti) kmita
+             * mezi 9 999 999,x a 10 000 000,x — pri TDC 2,5 ns ma jedno mereni sum
+             * ~0,14 Hz — takze se statistika nulovala porad dokola a Allan ani
+             * histogram se nikdy nenasbiraly; nominal navic skakal o 1 Hz (y o 1e-7).
+             * 🔴 F-0183: a naopak JINY signal v teze dekade (40 -> 60 Hz, 10 -> 12 MHz)
+             * statistiku NEnuloval (rad stejny) — michala se y proti staremu nominalu
+             * a pri nizkem kmitoctu i s jinym τ0 (vzorek = K hradel, #27).
+             * Signal se pozna z RELATIVNI zmeny proti PRESNEMU kmitoctu pri poslednim
+             * nulovani (`s_freq_ref_hz`), ne proti nominalu: nominal je cele Hz, takze
+             * u 40,9 Hz je |y| = 2 % legitimne. Prah 1e-4 je o rady nad driftem
+             * oscilatoru i nad sumem mereni a hluboko pod zmenou signalu. Overeno
+             * prepisem v `docs/audit/sim/2026-09-26_f0183_detekce.js`. */
+            int fmt_need   = (idg != s_freq_int || hires != s_freq_hires);
+            int sig_change = (hires != s_freq_hires);
+            double hz_now = (double)x100000 / 100000.0;
+            if (s_freq_ref_hz <= 0.0) sig_change = 1;          /* prvni realne mereni */
+            else if (fabs(hz_now / s_freq_ref_hz - 1.0) > 1e-4) sig_change = 1;
             /* 🔴 V rezimu PERIODA hlidej JESTE format periody: ta se posune o dekadu
              * i UVNITR jedne frekvencni dekady (9,99 MHz -> 100 ns / 1,00 MHz -> 1 us),
              * takze samotne `idg` to nechytne a `freq_fill_segments` by tise zahodila
              * vedouci cislici. Viz `period_fmt_of`. */
-            if (!need && s_disp_period) {
+            if (!fmt_need && s_disp_period) {
                 const char *u; double us; int p_int;
                 period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
-                if (p_int != s_disp_int || us != s_disp_unit_s) need = 1;
+                if (p_int != s_disp_int || us != s_disp_unit_s) fmt_need = 1;
             }
-            if (need) {
+            if (fmt_need || sig_change) {
+                double keep_nom = s_freq_nominal_hz;
                 s_freq_hires = hires;
                 num_build_for(x100000, edges, gate_ns,
                               hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5);
                 s_freq_fmt_changed = 1;
-                screen_main_stats_reset();            /* jiny rad/zdroj -> nemichat s pyramidou */
+                if (sig_change) {                     /* jiny signal/zdroj -> nemichat s pyramidou */
+                    screen_main_stats_reset();
+                    s_freq_ref_hz = hz_now;
+                } else {
+                    s_freq_nominal_hz = keep_nom;     /* F-0184: jen format, reference y zustava */
+                }
             } else {
                 s_freq_n = freq_frame_to_lsb(x100000, edges, gate_ns, hires);
                 disp_update();
@@ -1120,7 +1153,8 @@ static void freq_advance(void)
         return;
     }
 
-    if (!s_freq_is_sim) { s_freq_is_sim = 1; screen_main_stats_reset(); s_freq_fmt_changed = 1; }  /* REAL->SIM: ukaz marker */
+    if (!s_freq_is_sim) { s_freq_is_sim = 1; screen_main_stats_reset(); s_freq_fmt_changed = 1;
+                          s_freq_ref_hz = 0.0; }  /* REAL->SIM: ukaz marker; referenci signalu znovu zachytit */
     freq_step();
 }
 
