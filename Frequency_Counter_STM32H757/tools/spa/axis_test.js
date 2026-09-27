@@ -14,7 +14,7 @@ function grab(name) {
 }
 const api = new Function(
   ['niceStep', 'niceAxis', 'niceAxisLog', 'axDec', 'axNum', 'logSlope',
-   'noiseName', 'noiseDesc', 'adev', 'mdev'].map(grab).join('\n')
+   'noiseName', 'noiseDesc', 'mGrid', 'adev', 'mdev'].map(grab).join('\n')
   + '\nreturn {step:niceStep, ax:niceAxis, axl:niceAxisLog, slope:logSlope,'
   + ' nname:noiseName, ndesc:noiseDesc, adev:adev, mdev:mdev,'
   + ' dec:axDec, num:axNum};')();

@@ -40,7 +40,7 @@ function grabVar(name) {                       /* `var NAME=[...];` na jednom ra
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 
-const parts = ['adev', 'mdev', 'fit', 'effN', 'fitSig', 'floorOf'].map(n => [n, grab(n)]);
+const parts = ['mGrid', 'adev', 'mdev', 'fit', 'effN', 'fitSig', 'floorOf'].map(n => [n, grab(n)]);
 for (const [n, body] of parts) check(body !== null, 'funkce ' + n + '() je v SPA');
 const body = grabVar('T95') + parts.filter(p => p[1]).map(p => p[1]).join('\n');
 const api = new Function(body + '\nreturn {'
@@ -89,6 +89,28 @@ for (const N of [24, 64, 257]) {
         name + ' N=' + N + ' m=' + m + ': clenu ' + p.n + ' (ref ' + r.n + '), rel ' + rel.toExponential(1));
     }
   }
+}
+
+/* Hustota bodu (BODY/DEK, 2026-09-27): mrizka = mantisy x 10^k jako displej
+ * (screen_main.c DENS_M), kazdy bod dal presne podle SP1065 a s polem `m`. */
+if (api.mGrid) {
+  console.log('--- mrizka tau podle hustoty (3 / 5 / 9 na dekadu) ---');
+  const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  check(eq(api.mGrid(24), [1, 2, 5]), 'vychozi (bez den) = 1-2-5: ' + api.mGrid(24).join(','));
+  check(eq(api.mGrid(90, 5), [1, 2, 3, 5, 7, 10, 20, 30]), '5/dek do 3m<=90: ' + api.mGrid(90, 5).join(','));
+  check(eq(api.mGrid(40, 9), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), '9/dek do 3m<=40: ' + api.mGrid(40, 9).join(','));
+  check(api.mGrid(3).length === 1 && api.mGrid(2).length === 0, 'mez 3m <= N');
+  const y = []; for (let i = 0; i < 400; i++) y.push(rnd() * 1e-9);
+  for (const den of [5, 9])
+    for (const [name, fn, ref] of [['adev', api.adev, refAdev], ['mdev', api.mdev, refMdev]]) {
+      const pts = fn(y, 1.0, den); let bad = 0;
+      for (const p of pts) {
+        const r = ref(y, 1.0, p.m);
+        if (!(p.m === Math.round(p.tau) && p.n === r.n && Math.abs(p.sig / r.sig - 1) < 1e-9)) bad++;
+      }
+      check(bad === 0 && pts.length === api.mGrid(400, den).length,
+            name + ' ' + den + '/dek N=400: ' + pts.length + ' bodu, vse podle SP1065');
+    }
 }
 
 /* F-0182: mdev() pocita vnitrni soucet klouzavym oknem. Musi zustat presna i tam,

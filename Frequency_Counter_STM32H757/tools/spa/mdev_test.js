@@ -13,7 +13,7 @@ function grab(name) {
     else if (src[k] === '}') { d--; if (d === 0) return src.slice(i, k + 1); }
   }
 }
-const api = new Function(grab('adev') + grab('mdev') + grab('stabPoints')
+const api = new Function(grab('mGrid') + grab('adev') + grab('mdev') + grab('stabPoints')
   + '\nreturn {adev:adev, mdev:mdev, stab:stabPoints};')();
 
 /* Deterministicky, ale POCTIVY generator. ⚠️ Prvni verze pouzivala LCG

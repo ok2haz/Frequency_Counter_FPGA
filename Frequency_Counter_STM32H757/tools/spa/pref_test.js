@@ -32,15 +32,16 @@ function mk(store) {
    * vyjimka, ale jako TICHE NEULOZENI - a test pak hlasi zahadnou chybu
    * v kodu, ktera je ve skutecnosti v harnessu. */
   const f = new Function('localStorage',
-    'var win=300, dlWin=0, metric="adev", statPer=0, devMul=1;\n'
+    'var win=300, dlWin=0, metric="adev", aDen=3, statPer=0, devMul=1;\n'
     + 'var THEMES=["amber","blue","light"], theme="amber";\n'
     + 'var FRZ=null, FRZPAIR=[["lFreq","rFreq"],["lAdev","rAdev"],["lPn","rPn"]];\n'
     + grab('saveUi') + grab('loadUi')
     + '\nreturn {save:saveUi, load:loadUi,'
-    + ' get:function(){return {win:win,dlWin:dlWin,metric:metric,statPer:statPer,'
+    + ' get:function(){return {win:win,dlWin:dlWin,metric:metric,aDen:aDen,statPer:statPer,'
     + '   devMul:devMul,theme:theme,frz:FRZ};},'
     + ' set:function(o){ if(o.win!==undefined)win=o.win; if(o.dlWin!==undefined)dlWin=o.dlWin;'
     + '  if(o.metric!==undefined)metric=o.metric; if(o.statPer!==undefined)statPer=o.statPer;'
+    + '  if(o.aDen!==undefined)aDen=o.aDen;'
     + '  if(o.devMul!==undefined)devMul=o.devMul; if(o.theme!==undefined)theme=o.theme;'
     + '  if(o.frz!==undefined)FRZ=o.frz; }};')(LS);
   f.LS = LS;
@@ -59,6 +60,15 @@ ok('metric', g.metric === 'tdev', g.metric);
 ok('statPer', g.statPer === 1, g.statPer);
 ok('devMul', g.devMul === 1000, g.devMul);
 ok('win', g.win === 3600, g.win);
+
+console.log('\n--- hustota Allanova grafu (BODY/DEK, 2026-09-27) ---');
+a = mk({}); a.set({ aDen: 9 }); a.save();
+b = mk(a.LS.d); b.load(); g = b.get();
+ok('aDen 9 obnoveno', g.aDen === 9, g.aDen);
+for (const bad of ['{"ad":4}', '{"ad":"9"}', '{"ad":null}']) {
+  b = mk({ gpref: bad }); b.load(); g = b.get();
+  ok('neplatne ' + bad + ' -> vychozi 3', g.aDen === 3, g.aDen);
+}
 
 console.log('\n--- dlouhe okno (datalog) ma prednost pred kratkym ---');
 a = mk({}); a.set({ win: 300, dlWin: 86400 }); a.save();
