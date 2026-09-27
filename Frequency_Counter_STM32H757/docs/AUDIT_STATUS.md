@@ -18,10 +18,12 @@
 - `d448b57` **F-0190 [S3]**: web — souvislost `seq_meas`, díry do 1 % řady tolerované
   (jinak by padla obnova po F5), poll řadu restartuje s důvodem v `aWarn`. L-0103.
 - `378569b` **F-0191 [S4]**: pás nejistoty Allanova grafu blenduje každý sloupec jednou.
-- Kontrolou téhož vzoru přibyl **F-0193 [S4]** (displej nepočítá díry v `SEQUENCE`),
-  otevřený → `../STATUS.md` TODO #257.
-- 🔑 **Pokračovat zde:** HW test = `../STATUS.md` TODO #255 (kroky 11–23, flashnout OBĚ
-  banky, power-cyklus); F-0193 (#257) začít čítačem děr.
+- `7f65f4a` **F-0193 [S4]** (nalezen kontrolou téhož vzoru): díry v `SEQUENCE` se počítají
+  (`status` → `SEQ FPGA`) a vzorek s dírou se zahodí; totéž při ztrátě signálu (SEQ při ní
+  stojí, díra by nebyla vidět); `fpgasim` měří na pevné mřížce + injektor `fault gap`. L-0104.
+  Přitom opraveno nepravdivé tvrzení v CLAUDE.md, že FPGA drží měření do ACK.
+- 🔑 **Pokračovat zde:** HW test = `../STATUS.md` TODO #255 (kroky 11–24, flashnout OBĚ
+  banky, power-cyklus).
 
 **Předchozí, 2026-09-27:** 🟡 **Modul 24, TŘETÍ PRŮCHOD — F5 hotová
 (skupiny A+B), ⬜ vše neověřeno na HW.**
@@ -1070,7 +1072,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 7 ze 8** (F-0186..F-0192 vč. S2; F-0193 [S4] nalezen při opravě, otevřen — TODO #257; ⬜ neověřeno na HW) | 2026-09-27 | 0 | 4 | 17 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ⬜ neověřeno na HW) | 2026-09-27 | 0 | 4 | 17 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -1112,7 +1114,7 @@ sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 25 | 0 |
 | S3 | 2 | 92 | 0 |
-| S4 | 6 | 54 | 0 |
+| S4 | 5 | 55 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
 dokumentů a při rozporu skončí nenulovým kódem (lekce **L-0014**). Sloupec „Otevřené“
@@ -1129,8 +1131,8 @@ vada byla vlastností běžícího programu, ne cold-boot závodu).
 **S2 „Otevřené" = F-0026 (částečně)** — F-0148 opraveno 2026-09-25,
 F-0158 (disciplinace LSE) opraveno 2026-09-26, obojí ⬜ neověřeno na HW.
 **Kritický průchod modulu 24 (2026-09-27):** F-0186 [S2], F-0187..F-0190 [S3],
-F-0191/F-0192 [S4] **opraveny týž den** (⬜ neověřeno na HW); nově otevřený
-**F-0193 [S4]** (díry v `SEQUENCE` na displeji, TODO #257).
+F-0191/F-0192 [S4] **opraveny týž den** (⬜ neověřeno na HW), stejně jako při opravě
+nalezený **F-0193 [S4]** (díry v `SEQUENCE`, `7f65f4a`).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
 **+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
 zůstává otevřený jako záznam, ne jako dluh).
@@ -1138,7 +1140,7 @@ zůstává otevřený jako záznam, ne jako dluh).
 opraveny 2026-09-27 (⬜ neověřeno na HW); **F-0181** [S4] skupina C (až s konzumentem
 `sdram_log`); **F-0185 [S3]** (USB SCPI readback nastavení, mimo modul) opraven
 tentýž den (`f81e25a`), ⬜ neověřeno na HW.
-**S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168 + F-0181 + F-0193** (F-0154 a F-0168 skupina C;
+**S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168 + F-0181** (F-0154 a F-0168 skupina C;
 F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty z FPGA).
 **+ F-0176** (druhý průchod modulu 24: GUM u rozlišení v rozpočtu nejistoty — skupina C,
 rozhoduje se spolu s F-0168). Ostatní nálezy druhého průchodu (F-0171..F-0175, F-0177,

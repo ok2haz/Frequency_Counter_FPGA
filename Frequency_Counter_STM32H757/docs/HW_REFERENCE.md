@@ -345,6 +345,9 @@ už zahrnutá ve FPGA → STM NEnásobí**. `edge_count` = počet period (diag),
 full-duplex vrací DATA. Po validním ACK smí FPGA shodit DATA_FRESH. **Měření je platné když:**
 CRC OK ∧ DATA_VALID ∧ DATA_FRESH ∧ SEQUENCE ≠ poslední přečtená. SEQUENCE roste pomaleji
 u nízkých f (okno čeká na hrany) — ztrátu signálu hlásí error_flags bit1, ne zamrzlá SEQ.
+⚠️ **Nepotvrzené měření FPGA NEDRŽÍ** — další `new_meas` ho přepíše a SEQUENCE poskočí
+(`spi_app.v:190`). STM proto hlídá i **souvislost** SEQUENCE (`fpga_seq_gap`, F-0193):
+díra se počítá (`status` → `SEQ FPGA`) a rozpracovaný vzorek statistiky se zahodí.
 
 **Formát kmitočtu (BEZ float):** `frequency_x100000` = kmitočet × 100000 (5 desetinných míst
 v Hz). `integer_hz = v / 100000`, `frac = v % 100000`. Zobrazení: české oddělení tisíců **tečkou**,

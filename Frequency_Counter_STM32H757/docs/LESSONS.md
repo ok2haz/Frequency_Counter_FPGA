@@ -3499,6 +3499,32 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0104 — Pořadové číslo dokazuje souvislost jen toho, co zdroj čísluje: díru v čase, kdy zdroj mlčí, musí hlásit jiný mechanismus
+
+- **Datum:** 2026-09-27 (modul 24, F-0193)
+- **Oblast:** `fpga_freq.c` / `freertos_task_fpga.c` — vzorky statistiky z měření FPGA
+- **Symptom:** vzorek statistiky mohl mít uvnitř mrtvou dobu (součet hradel 1 s, v čase
+  víc), aniž by to cokoli ohlásilo — dvěma cestami: FpgaTask nestihl rámec (měření
+  přepsané FPGA) a ztráta signálu uprostřed vzorku.
+- **Příčina:** (1) nové měření se poznávalo jen podle ZMĚNY `SEQUENCE`, ne souvislosti
+  (L-0103); (2) i s kontrolou souvislosti by zůstala druhá díra: při ztrátě signálu FPGA
+  **neměří**, `SEQUENCE` stojí a po návratu **navazuje** — díra je v čase, ne v číslování.
+  Emulátor přitom díru nevyrobil vůbec (plánoval měření od okamžiku pollu), takže žádný
+  test nemohl ani jednu cestu ukázat (L-0099).
+- **Oprava:** `fpga_seq_gap` + čítače v `status` (`SEQ FPGA`), `fpga_stat_break` při díře
+  i při přechodu na ztrátu signálu/linku, emulátor na pevné mřížce + injektor
+  `fpgasim fault gap` (`7f65f4a`).
+- **Pravidlo:** **Kontrola pořadového čísla chytí jen ztrátu toho, co zdroj očísloval.
+  Vyjmenuj stavy, kdy zdroj NEČÍSLUJE (ztráta signálu, pauza, restart), a pro každý
+  zařiď přerušení řady zvlášť.**
+- **Detekce:** u každé souvislé řady (akumulátor, pyramida, buffer) projít seznam
+  stavů zdroje a ke každému najít místo, kde řadu přeruší; injektor díry
+  (`fpgasim fault gap`) a simulace `sim/2026-09-27_f0193_diry_seq.js`.
+- **Commit:** `7f65f4a`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

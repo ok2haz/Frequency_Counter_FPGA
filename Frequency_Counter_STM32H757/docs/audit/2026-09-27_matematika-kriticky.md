@@ -276,7 +276,16 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   už existuje a FpgaTask ji volá u neplatného měření (`freertos_task_fpga.c:84`), stačí ji
   zavolat i při díře. Nejdřív čítač (levný, rozhodne o zbytku).
 - **Vztah k lekcím:** L-0103, L-0017 (tichý přeskok musí být spočítaný).
-- **Stav:** otevřeno (TODO #257 v `../STATUS.md`).
+- **Stav:** opraveno 2026-09-27 (`7f65f4a`), ⬜ neověřeno na HW. Podle návrhu (čítač +
+  `fpga_stat_break` při díře, klasifikace `fpga_seq_gap`: díra 1–63, větší skok nebo návrat
+  = resync; `status` → řádek `SEQ FPGA: diry N (zmeskano M mereni), resync K`) a **navíc
+  dvě věci, které návrh nepokrýval:** (1) **ztráta signálu** — FPGA při ní neměří a
+  `SEQUENCE` po návratu **navazuje**, takže díra v čase se v `SEQUENCE` neukáže; break
+  proto i při přechodu na ztrátu signálu/linku (simulace: jinak 1 slepený vzorek na
+  ztrátu uprostřed vzorku); (2) **emulátor** — měřil od okamžiku pollu (`now + 250`), díru
+  tedy nevyrobil nikdy a rozestup zaokrouhloval nahoru na periodu pollu (skrytá mrtvá
+  doba); nově pevná mřížka 250 ms jako FPGA a injektor `fpgasim fault gap` (jednorázově
+  přeskočí 3 měření). Ověření: `sim/2026-09-27_f0193_diry_seq.js`. Lekce L-0104.
 
 ---
 
@@ -327,4 +336,5 @@ se simulací a pozitivní kontrolou; ⬜ **nic z toho neběželo na desce** — 
 v `../STATUS.md` TODO #255. Jinak než návrh: F-0190 (tolerance 1 % místo řezu při každé
 díře), F-0189 (kritérium „krátká mezera" = druh resetu, ne čas z RTC), F-0188 (filtr
 i vyprázdnění fronty). Kontrolou téhož vzoru přibyl **F-0193 [S4]** (displej nepočítá
-díry v `SEQUENCE`) — otevřený, TODO #257.
+díry v `SEQUENCE`) — opraven týž den (`7f65f4a`), rozšířený o ztrátu signálu a věrný
+emulátor, ⬜ neověřeno na HW.
