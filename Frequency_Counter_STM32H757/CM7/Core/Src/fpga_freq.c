@@ -694,7 +694,12 @@ void fpga_stat_break(void)
 {
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
-    memset(&s_acc[FPGA_ACC_STATS], 0, sizeof s_acc[FPGA_ACC_STATS]);
+    /* F-0195: nulovat VŠECHNY akumulatory, ne jen STATS — DATALOG (index 1)
+     * plni `datalog.c` jednou za periodu (`fpga_acc_take`) a bez tohoto
+     * nulovani by pres hranici zmeny signalu/diry v SEQUENCE tise smichal
+     * cykly a hradla DVOU ruznych kmitoctu do jednoho zaznamu s prizankem
+     * freq_avg=1, ktery pak vypada jako cisty prumer (viz L-0101). */
+    for (int i = 0; i < FPGA_ACC_N; i++) memset(&s_acc[i], 0, sizeof s_acc[i]);
     __set_PRIMASK(pm);
 }
 
@@ -702,7 +707,7 @@ void fpga_stat_flush(void)
 {
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
-    memset(&s_acc[FPGA_ACC_STATS], 0, sizeof s_acc[FPGA_ACC_STATS]);
+    for (int i = 0; i < FPGA_ACC_N; i++) memset(&s_acc[i], 0, sizeof s_acc[i]);
     s_stat_r = s_stat_w;                              /* fronta prazdna */
     __set_PRIMASK(pm);
 }
