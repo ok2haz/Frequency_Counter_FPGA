@@ -8263,7 +8263,22 @@ void app_gpsdo_tick_freq(void)
 static uint32_t s_seed_left  = 0;     /* kolik zaznamu jeste zbyva (0 = hotovo/nezacato) */
 static uint32_t s_seed_total = 0;     /* kolik jich bylo na zacatku (postup v `status`) */
 static uint32_t s_seed_done  = 0;     /* kolik uz vlozeno (diagnostika) */
-static uint8_t  s_seed_state = 0;     /* 0=nezacato 1=bezi 2=hotovo 3=ceka na sondu */
+static uint8_t  s_seed_state = 0;     /* 0=nezacato 1=bezi 2=hotovo 3=ceka na sondu
+                                        6=preskocit (po zapnuti napajeni, F-0189) */
+/* 🔴 F-0189: rekonstrukce smi do pyramidy dat jen POSLEDNI SOUVISLY usek logu
+ * TEHOZ signalu. Do 2026-09-27 se zaznamy sypaly jeden za druhym bez ohledu na
+ * cas a signal: mezery (vypnuty pristroj, vypadek signalu, vypnuty log) i data
+ * jineho zdroje se slepila, jako by sla po sobe, a dlouha τ nesla nabehy OCXO
+ * predchozich sezeni — verohodne vypadajici „drift“. Zaroven ziva cesta pri
+ * vypadku signalu pyramidu NULUJE, takze rekonstrukce se chovala jinak.
+ * Rez (= pyramida se vynuluje a pokracuje se od dalsiho zaznamu) nastane pri:
+ *  - zaznamu, ktery neni pouzitelny (bez prumeru, SIM, bez casu, jiny signal),
+ *  - mezere v case > perioda logu + SEED_GAP_EXTRA_S (kratky restart projde). */
+#define SEED_GAP_EXTRA_S 120u
+static uint32_t s_seed_last_t   = 0;   /* t_unix posledniho vlozeneho zaznamu */
+static uint32_t s_seed_last_seq = 0;   /* seq posledniho PRECTENEHO (zdvojeni) */
+static uint8_t  s_seed_brk      = 0;   /* pred dalsim pouzitelnym zaznamem rez */
+static uint32_t s_seed_cuts     = 0;   /* kolikrat se rezalo (diagnostika) */
 /* ⚠️ `static`, NE na stack: 64 x 32 B = 2 kB, zatimco UiTask ma volneho stacku
  * ~5 kB. Stejne pravidlo jako u selftestu (CLAUDE.md: pole > ~200 B = static).
  * Bezpecne, protoze rekonstrukci vola VYHRADNE UiTask. */
@@ -8273,6 +8288,11 @@ void app_gpsdo_stats_seed_start(void)
 {
     datalog_status_t st; datalog_get_status(&st);
     if (!st.ready || st.records < 4u) { s_seed_state = 2; return; }
+    /* 🔴 F-0189: po ZAPNUTI NAPAJENI (POR/BOR) se nerekonstruuje — mezera od
+     * posledniho zaznamu je neznama a OCXO nabiha, takze historie na zivou radu
+     * nenavazuje. Po teplem resetu (flash, NRST, watchdog) trva mezera sekundy
+     * a OCXO zustal teply. (Cas „ted“ z RTC tu nejde — cte ho jen defaultTask.) */
+    if (g_reset_rsr & (RCC_RSR_PORRSTF | RCC_RSR_BORRSTF)) { s_seed_state = 6; return; }
     /* Strop drzi dobu rekonstrukce v jednotkach minut. Vznikl jako ADEV_RING x 10^4
      * (pri ringu 24 uz vic vzorku nemelo co pridat); od 2026-09-27 je ring 60,
      * takze nejvyssi stage z logu uz neni plna — zaplni se zive. Strop se zamerne
@@ -8281,6 +8301,7 @@ void app_gpsdo_stats_seed_start(void)
     s_seed_left  = (st.records < cap) ? st.records : cap;
     s_seed_total = s_seed_left;
     s_seed_done  = 0;
+    s_seed_last_t = 0; s_seed_last_seq = 0; s_seed_brk = 0; s_seed_cuts = 0;
     /* ⚠️ Sonda (a tedy prvni QSPI cteni) az v tiku, ne tady — `app_gpsdo_init()`
      * drzi prvni render obrazovky a blokujici cteni sem nepatri. */
     s_seed_state = 3;
@@ -8293,12 +8314,18 @@ void app_gpsdo_stats_seed_start(void)
  * NEJNOVEJSICH zaznamu: kdyz v ni neni ani jedno pouzitelne mereni, ve starsich
  * uz tim spis nebude (log je chronologicky a mereni se bud dari, nebo ne).
  * ⚠️ Je to heuristika, ne dukaz — zato stoji jeden QSPI prikaz misto statisic. */
+/* Patri zaznam do rekonstrukce? F-0189: navic cas a TYZ signal (prah 1e-4 proti
+ * referenci, tentyz jako nulovani statistiky pri zmene signalu). */
+static int seed_rec_usable(const datalog_rec_t *r)
+{
+    return r->freq_x100000 != 0u && r->freq_avg && !(r->flags & DATALOG_F_SIM)
+        && r->t_unix != 0u && screen_main_signal_match(r->freq_hz);
+}
 static int seed_worth_it(void)
 {
     uint32_t got = datalog_read_bulk(0, s_seed_buf, DATALOG_BULK_MAX, NULL);
     for (uint32_t i = 0; i < got; i++)
-        if (s_seed_buf[i].freq_x100000 != 0u && s_seed_buf[i].freq_avg
-            && !(s_seed_buf[i].flags & DATALOG_F_SIM))
+        if (seed_rec_usable(&s_seed_buf[i]))
             return 1;
     return 0;
 }
@@ -8306,7 +8333,16 @@ static int seed_worth_it(void)
 /* Vrati 1, dokud rekonstrukce bezi (volajici pak nemusi delat nic jineho). */
 static int stats_seed_tick(void)
 {
+    if (s_seed_state == 6) {
+        s_seed_state = 2;
+        printf("ADEV: rekonstrukce preskocena — po zapnuti napajeni (mezera neznama, OCXO nabiha)\n");
+        return 0;
+    }
     if (s_seed_state == 3) {                 /* sonda: vyplati se to vubec? */
+        /* F-0189: az po prvnim realnem mereni — do te doby neni reference
+         * signalu a nelze poznat, ktere zaznamy k nemu patri. Mezitim se nic
+         * nerekonstruuje ani zive nevzorkuje (bez mereni neni co). */
+        if (screen_main_signal_ref_hz() <= 0.0) return 0;
         if (!seed_worth_it()) {
             s_seed_state = 2;
             printf("ADEV: rekonstrukce preskocena — log nema platne mereni (SPI link?)\n");
@@ -8328,14 +8364,27 @@ static int stats_seed_tick(void)
         s_seed_left -= (consumed < s_seed_left) ? consumed : s_seed_left;
         /* `out[0]` je NEJNOVEJSI davky -> zpetne, at pyramida dostane vzorky
          * chronologicky (starsi driv). */
+        uint32_t gmax = (uint32_t)datalog_period_s() + SEED_GAP_EXTRA_S;
         for (uint32_t i = got; i-- > 0; ) {
             const datalog_rec_t *r = &s_seed_buf[i];
-            if (r->freq_x100000 == 0u) continue;             /* bez FPGA linku */
-            if (r->flags & DATALOG_F_SIM) continue;          /* emulovana data */
-            /* 🔴 F-0172: jen PRUMER za periodu sedi na stage pyramidy. Okamzity
-             * vzorek 0,25 s (stare zaznamy, perioda bez mereni) by dal σy ~3x
-             * vys nez zive vzorky a v jedne pyramide by se michaly. */
-            if (!r->freq_avg) continue;
+            /* F-0189: za behu rekonstrukce (minuty) pribyvaji zaznamy a index „od
+             * nejnovejsiho“ se posouva k starsim — kazdy novy zaznam zpusobi, ze se
+             * JEDEN preskoci (jednovzorkova mezera, pod prahem rezu; zato se dojde az
+             * k nejnovejsimu a rekonstrukce navaze na ziva data). Kdyby se cteni
+             * posouvalo opacne, zdvojeny zaznam zahodi tahle pojistka podle `seq`. */
+            if (s_seed_last_seq != 0u && r->seq <= s_seed_last_seq) continue;
+            s_seed_last_seq = r->seq;
+            /* Nepouzitelny zaznam (bez FPGA linku, SIM, bez casu, jiny signal) je
+             * DIRA v rade -> rez. 🔴 F-0172: jen PRUMER za periodu sedi na stage
+             * pyramidy; okamzity vzorek 0,25 s (stare zaznamy, perioda bez mereni)
+             * by dal σy ~3x vys nez zive vzorky. */
+            if (!seed_rec_usable(r)) { s_seed_brk = 1; continue; }
+            if (s_seed_last_t != 0u && r->t_unix - s_seed_last_t > gmax) s_seed_brk = 1;
+            if (s_seed_brk) {                                /* novy souvisly usek */
+                if (s_seed_done) { screen_main_stats_reset(); s_seed_cuts++; }
+                s_seed_done = 0; s_seed_brk = 0;
+            }
+            s_seed_last_t = r->t_unix;
             /* ⚠️ Vzorec `(hz - f0) / f0` se tu driv pocital RUCNE — a ziva cesta
              * (`stats_sample`) mela svuj vlastni, ktery se s nim rozesel (F-0037).
              * Obe pritom plni TUTEZ ADEV pyramidu. Ted jde obojí pres jeden
@@ -8348,8 +8397,9 @@ static int stats_seed_tick(void)
     }
     if (s_seed_left == 0) {
         s_seed_state = 2;
-        printf("ADEV: rekonstrukce z datalogu hotova, %lu vzorku (tau0=10 s)\n",
-               (unsigned long)s_seed_done);
+        printf("ADEV: rekonstrukce z datalogu hotova, %lu vzorku posledniho souvisleho "
+               "useku (tau0=10 s, %lu rezu)\n",
+               (unsigned long)s_seed_done, (unsigned long)s_seed_cuts);
     }
     return 1;
 }
