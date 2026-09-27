@@ -40,15 +40,16 @@ double mp_period_s(double hz)
     return (hz > 0.0) ? (1.0 / hz) : 0.0;
 }
 
-double mp_period_sample_s(uint64_t edges, uint64_t gate_ns, uint32_t mul,
+double mp_period_sample_s(uint64_t edges, uint64_t dt_ps, uint32_t mul,
                           double hz_fallback)
 {
-    /* Přímá cesta: okno `gate_ns` nanosekund obsahovalo `edges·mul` period
+    /* Přímá cesta: okno `dt_ps` pikosekund obsahovalo `edges·mul` period
      * vstupního signálu, takže perioda = doba / počet. Žádný mezikrok přes
-     * kmitočet -> žádná ztráta na zaokrouhlení (viz meas_present.h). */
-    if (mul != 0u && edges != 0u && gate_ns != 0u) {
+     * kmitočet -> žádná ztráta na zaokrouhlení (viz meas_present.h).
+     * 🔴 F-0186: `dt_ps` z PŘESNÝCH ticků, ne `gate_time_ns` (floor). */
+    if (mul != 0u && edges != 0u && dt_ps != 0u) {
         double n = (double)edges * (double)mul;
-        if (n > 0.0) return ((double)gate_ns * 1e-9) / n;
+        if (n > 0.0) return ((double)dt_ps * 1e-12) / n;
     }
     return mp_period_s(hz_fallback);
 }
@@ -337,11 +338,11 @@ int mp_selftest(void)
 
     /* Perioda PŘÍMO z reciproké dvojice (#109). 1000 period v okně 100 µs =
      * 100 ns; totéž musí vyjít, když je 250 hran s násobitelem 4. */
-    ok &= (fabs(mp_period_sample_s(1000u, 100000u, 1u, 0.0) - 1e-7) < 1e-18);
-    ok &= (fabs(mp_period_sample_s(250u,  100000u, 4u, 0.0) - 1e-7) < 1e-18);
+    ok &= (fabs(mp_period_sample_s(1000u, 100000000u, 1u, 0.0) - 1e-7) < 1e-18);
+    ok &= (fabs(mp_period_sample_s(250u,  100000000u, 4u, 0.0) - 1e-7) < 1e-18);
     /* Nepoužitelná dvojice -> degradace na 1/f (mul==0 = žádný násobitel nesedí). */
-    ok &= (fabs(mp_period_sample_s(250u, 100000u, 0u, 10e6) - 1e-7) < 1e-15);
-    ok &= (fabs(mp_period_sample_s(0u,   100000u, 4u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(250u, 100000000u, 0u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(0u,   100000000u, 4u, 10e6) - 1e-7) < 1e-15);
     ok &= (fabs(mp_period_sample_s(250u, 0u,      4u, 10e6) - 1e-7) < 1e-15);
     ok &= (mp_period_sample_s(0u, 0u, 0u, 0.0) == 0.0);
 

@@ -8,6 +8,7 @@
 #include "cmsis_os2.h"   /* SPI2 mutex: FpgaTask poll vs UART fpgaraw/fpgaloop */
 #include <string.h>
 #include <stdio.h>
+#include <math.h>     /* fabs v selftestu */
 
 extern SPI_HandleTypeDef hspi2;
 
@@ -306,13 +307,23 @@ static void sim_build_frame(uint8_t *f, int fresh)
     memset(f, 0, FR_LEN);
 
     double hz = sim_freq_hz();
-    /* Kontrakt: hodnota uz zahrnuje delicku, STM nenasobi. Obe odbocky nesou
-     * TENTYZ kmitocet (na desce je to jeden citac, dve odbocky) — tim se testuje
-     * i to, ze `fpga_freq_select` prepina podle rozsahu, ne podle rozdilu hodnot. */
-    uint64_t fx = (uint64_t)(hz * 100000.0 + 0.5);
-    /* Gate ~250 ms s drobnym rozptylem, jako u realneho reciprokeho mereni. */
-    uint64_t gate_ns = 250000000ull + (sim_rand() % 200000u);
-    uint64_t edges   = (uint64_t)(hz * (double)gate_ns / 1e9);
+    /* 🔴 F-0186: emulator dela TOTEZ co FPGA (`spi_app.v`), jinak by vadu
+     * z hradla zaokrouhleneho dolu nikdy neukazal. Reciproky citac pocita N celych
+     * period (tady NEdeleneho signalu, nasobitel 1) a cas mezi prvni a posledni
+     * hranou v tickach 2,5 ns od nahodne faze; `frequency_x100000` z PRESNEHO dt
+     * (`spi_app.v:515`), `gate_time_ns` jako FLOOR(dt · 2,5 ns) (`spi_app.v:507`).
+     * Drive se bral libovolny celociselny gate a `edges = floor(hz·gate)`: hi-res
+     * pak mel sum ze zaokrouhleni poctu hran az 1/edges (4e-7 pri 10 MHz), ktery
+     * realny citac nema, a floor hradla chybel uplne.
+     * Kontrakt: hodnota uz zahrnuje delicku, STM nenasobi. Obe odbocky nesou
+     * TENTYZ kmitocet (na desce je to jeden citac, dve odbocky). */
+    uint64_t edges = (uint64_t)(hz * 0.25);
+    if (edges == 0u) edges = 1u;                     /* nizke f: okno se protahne */
+    double   ph    = (double)(sim_rand() % 1000u) / 1000.0;   /* faze 1. hrany v ticku */
+    uint64_t ticks = (uint64_t)((double)edges / hz * (double)FPGA_TICKS_PER_S + ph);
+    if (ticks == 0u) ticks = 1u;
+    uint64_t gate_ns = (ticks * 5u) >> 1;            /* FLOOR jako FPGA */
+    uint64_t fx = (uint64_t)((double)edges * 1e5 * (double)FPGA_TICKS_PER_S / (double)ticks + 0.5);
 
     sim_put_le64(pl + 0,  fx);                       /* frequency_x100000 (/4)  */
     sim_put_le64(pl + 8,  edges);                    /* edge_count              */
@@ -532,33 +543,46 @@ uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     return 0u;                                           /* nesedi zadny -> hi-res nepouzivat */
 }
 
+uint64_t fpga_freq_dt_ticks(uint64_t gate_ns)
+{
+    /* round(gate_ns · 1000 / TICK_PS). Pro gate_ns = floor(dt · 2,5) vyjde PRESNE dt:
+     * sudy dt -> 0,4·g = dt, lichy -> 0,4·g = dt - 0,2. Bez preteceni do ~9e12 s. */
+    return (gate_ns * 2000ull + FPGA_TICK_PS) / (2ull * FPGA_TICK_PS);
+}
+
 uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 {
     uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
-    if (mul == 0u) return x100000 * 10ull;               /* fallback: x1e5 -> µHz je x10 */
+    uint64_t t   = fpga_freq_dt_ticks(gate_ns);
+    if (mul == 0u || t == 0u) return x100000 * 10ull;    /* fallback: x1e5 -> µHz je x10 */
     /* Dlouhe deleni na 6 desetin (µHz). Nasobit napred (num × 1e6) NELZE —
-     * pri 10 MHz uz to je ~1e22 >> 1,8e19. */
-    uint64_t num = edges * mul * 1000000000ull;          /* <= 4e18, viz guard vyse */
-    uint64_t v = num / gate_ns, rem = num % gate_ns;
-    for (int i = 0; i < 6; i++) { rem *= 10u; v = v * 10u + rem / gate_ns; rem %= gate_ns; }
+     * pri 10 MHz uz to je ~1e22 >> 1,8e19. F-0186: jmenovatel = PRESNE ticky okna;
+     * `edges·mul` <= 4e9 (guard ve `fpga_freq_hires_mul`) × 4e8 ticku/s = 1,6e18. */
+    uint64_t num = edges * mul * FPGA_TICKS_PER_S;
+    uint64_t v = num / t, rem = num % t;
+    for (int i = 0; i < 6; i++) { rem *= 10u; v = v * 10u + rem / t; rem %= t; }
     return v;
 }
 
 double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 {
     uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
-    if (mul == 0u) return 0.0;
-    /* `edges·mul` <= 4e9 (guard ve `fpga_freq_hires_mul`) i `gate_ns` jsou v double
-     * presne; zaokrouhluje jen nasobeni 1e9 a deleni, tedy ~2e-16 relativne. */
-    return (double)(edges * mul) * 1e9 / (double)gate_ns;
+    uint64_t t   = fpga_freq_dt_ticks(gate_ns);
+    if (mul == 0u || t == 0u) return 0.0;
+    /* `edges·mul` <= 4e9 (guard ve `fpga_freq_hires_mul`) i ticky jsou v double
+     * presne; zaokrouhluje jen nasobeni a deleni, tedy ~2e-16 relativne.
+     * F-0186: PRESNE ticky okna, ne `gate_ns` (to je floor). */
+    return (double)(edges * mul) * (double)FPGA_TICKS_PER_S / (double)t;
 }
 
 /* ── Akumulátor měření (F-0171/F-0172, viz fpga_freq.h) ──────────────────────
  * Cykly se drží v jednotkách 1e-5 cyklu (`cyc_e5`), aby se do jednoho celého
  * čísla vešla přesná cesta (`edges·mul`, celé periody) i záložní cesta z
  * `x100000` (kmitočet ×1e5 · hradlo). Rozsah: 1,4 GHz = 1,4e14 jednotek/s,
- * perioda datalogu nejvýš 3600 s → 5e17, tedy hluboko pod mezí 2^62 níže. */
-typedef struct { uint64_t cyc_e5; uint64_t gate_ns; uint32_t n; } fpga_acc_t;
+ * perioda datalogu nejvýš 3600 s → 5e17, tedy hluboko pod mezí 2^62 níže.
+ * F-0186: délka oken se sčítá v PIKOSEKUNDÁCH z přesných ticků (3600 s =
+ * 3,6e15 ps), ne v `gate_time_ns` — to FPGA posílá zaokrouhlené dolů. */
+typedef struct { uint64_t cyc_e5; uint64_t gate_ps; uint32_t n; } fpga_acc_t;
 static fpga_acc_t s_acc[FPGA_ACC_N];
 /* #27: fronta hotovych vzorku statistiky (producent FpgaTask, konzument UiTask),
  * indexy pod PRIMASK. */
@@ -570,6 +594,7 @@ static uint32_t   s_stat_drop = 0u;
 void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
 {
     if (gate_ns == 0u || x100000 == 0u) return;
+    uint64_t gate_ps = fpga_freq_dt_ticks(gate_ns) * FPGA_TICK_PS;   /* F-0186 */
     uint64_t cyc_e5;
     uint32_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
     if (mul != 0u) {
@@ -577,7 +602,7 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
     } else {
         /* Násobitel neověřen (větev /16, starý rámec) → cykly z x1e5 a hradla.
          * V double: 1,4e14 · 2,5e8 = 3,5e22 se do uint64 nevejde. */
-        double c = (double)x100000 * (double)gate_ns * 1e-9;
+        double c = (double)x100000 * (double)gate_ps * 1e-12;
         cyc_e5 = (uint64_t)(c + 0.5);
     }
     /* Krátký IRQ-off místo FreeRTOS API — tentýž idiom jako `fpga_freq_get_last`
@@ -590,14 +615,14 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
          * uint64 — nad 2^62 (~9 h při 1,4 GHz) se jeho okno zahodí. */
         if (s_acc[i].cyc_e5 > (1ull << 62)) memset(&s_acc[i], 0, sizeof s_acc[i]);
         s_acc[i].cyc_e5  += cyc_e5;
-        s_acc[i].gate_ns += gate_ns;
+        s_acc[i].gate_ps += gate_ps;
         s_acc[i].n++;
     }
     /* #27: vzorek statistiky je hotovy, jakmile Σhradel >= 1 s - hradlo/2, tedy
      * `2·Σ + g >= 2 s` (bez odcitani — pri hradle > 2 s by 2e9 - g podteklo).
      * Pri 0,25 s to jsou vzdy prave 4 mereni. */
     fpga_acc_t *st = &s_acc[FPGA_ACC_STATS];
-    if (2ull * st->gate_ns + gate_ns >= 2000000000ull) {
+    if (2ull * st->gate_ps + gate_ps >= 2000000000000ull) {
         uint8_t nw = (uint8_t)((s_stat_w + 1u) % FPGA_STAT_RING);
         if (nw == s_stat_r) {                            /* plno -> zahodit nejstarsi */
             s_stat_r = (uint8_t)((s_stat_r + 1u) % FPGA_STAT_RING);
@@ -618,8 +643,9 @@ int fpga_stat_pop(double *hz, double *tau_s)
     fpga_acc_t a = s_stat_ring[s_stat_r];
     s_stat_r = (uint8_t)((s_stat_r + 1u) % FPGA_STAT_RING);
     __set_PRIMASK(pm);
-    if (hz)    *hz    = (a.gate_ns != 0u) ? (double)a.cyc_e5 * 1e4 / (double)a.gate_ns : 0.0;
-    if (tau_s) *tau_s = (double)a.gate_ns * 1e-9;
+    /* f = (cyc_e5 · 1e-5) / (gate_ps · 1e-12) = cyc_e5 · 1e7 / gate_ps */
+    if (hz)    *hz    = (a.gate_ps != 0u) ? (double)a.cyc_e5 * 1e7 / (double)a.gate_ps : 0.0;
+    if (tau_s) *tau_s = (double)a.gate_ps * 1e-12;
     return 1;
 }
 
@@ -643,10 +669,10 @@ uint32_t fpga_acc_take(int which, double *hz, double *gate_s)
     fpga_acc_t a = s_acc[which];
     memset(&s_acc[which], 0, sizeof s_acc[which]);
     __set_PRIMASK(pm);
-    /* f = (cyc_e5 · 1e-5) / (gate_ns · 1e-9) = cyc_e5 · 1e4 / gate_ns */
-    if (hz && a.n != 0u && a.gate_ns != 0u)
-        *hz = (double)a.cyc_e5 * 1e4 / (double)a.gate_ns;
-    if (gate_s) *gate_s = (double)a.gate_ns * 1e-9;
+    /* f = (cyc_e5 · 1e-5) / (gate_ps · 1e-12) = cyc_e5 · 1e7 / gate_ps */
+    if (hz && a.n != 0u && a.gate_ps != 0u)
+        *hz = (double)a.cyc_e5 * 1e7 / (double)a.gate_ps;
+    if (gate_s) *gate_s = (double)a.gate_ps * 1e-12;
     return a.n;
 }
 
@@ -688,7 +714,19 @@ bool fpga_freq_select_selftest(void)
     u = fpga_freq_select_core(u, &m); ok &= (u == 0);
 
     #undef SEL_MHZ
-    printf("fpga: select hystereze selftest %s\n", ok ? "OK" : "FAIL");
+
+    /* F-0186: ticky z gate_time_ns = floor(dt · 2,5 ns) (spi_app.v:507) a hi-res
+     * kmitocet z nich — lichy i sudy dt, i dlouhe okno (21,5 s = 8,6e9 ticku). */
+    {   static const uint64_t DT[] = { 100000000ull, 100000001ull, 8600000001ull, 1ull, 2ull };
+        for (unsigned i = 0; i < sizeof DT / sizeof DT[0]; i++)
+            ok &= (fpga_freq_dt_ticks((DT[i] * 5u) >> 1) == DT[i]);
+        /* 10 MHz nedeleny (mul 1): 2 500 000 hran za 100 000 001 ticku (lichy dt).
+         * Presne f = 2,5e6 · 4e8 / 100000001 = 9 999 999,900000001 Hz; z floor hradla
+         * (250 000 002 ns) by vyslo 9 999 999,92 — o 2e-9 vys. */
+        double f = fpga_freq_hires_hz(999999990000ull, 2500000ull, (100000001ull * 5u) >> 1);
+        ok &= (fabs(f / 9999999.900000001 - 1.0) < 1e-15);
+    }
+    printf("fpga: select hystereze + ticky okna selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 

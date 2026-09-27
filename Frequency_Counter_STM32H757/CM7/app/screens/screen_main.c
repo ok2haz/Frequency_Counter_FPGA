@@ -734,8 +734,10 @@ static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7
  * posledni mista kresli ztlumene (SIGMA/FLOOR).
  * ⚠️ Pocita se DLOUHYM DELENIM (cela cast + cislice po jedne), NE `num × 10^frac / den`:
  * to by pri 7 desetinach pretekl uint64 uz kolem 10 MHz (2,5e22 >> 1,8e19).
- * ⚠️ `num = edges × 4 × 1e9` je bezpecne (nejhorsi pripad ~8,6e18 pri 21,5 s okne),
- * presto se hlida stropem — pri prekroceni se degraduje na x1e5 misto tichého preteceni.
+ * ⚠️ `num = edges·mul · 4e8` (ticku/s) <= 1,6e18 — `edges·mul` <= 4e9 hlida
+ * `fpga_freq_hires_mul`, pri prekroceni se degraduje na x1e5 misto tichého preteceni.
+ * 🔴 F-0186: jmenovatel jsou PRESNE ticky okna (`fpga_freq_dt_ticks`), ne
+ * `gate_time_ns` — to FPGA posila zaokrouhlene DOLU a hi-res byl o 0 az 2e-9 vys.
  *
  * FALLBACK (bez hi-res): 5 desetin z `x100000`. ⚠️ DELENIM `10^(5-frac)`, protoze
  * `x100000 × 10^frac / 1e5` by pri ~4 GHz pretekl (4e19 > 1,8e19). */
@@ -751,14 +753,15 @@ static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gat
          * ne druhy nezavisly vypocet. Kdyz nesedi zadny nasobitel, hi-res se
          * NEPOUZIJE — radeji 5 poctivych desetin nez 15 spatnych. */
         uint64_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
-        if (mul) {
-            uint64_t num = edges * mul * 1000000000ull;
-            uint64_t v   = num / gate_ns;
-            uint64_t rem = num % gate_ns;
-            for (int i = 0; i < frac; i++) {                  /* rem < gate_ns -> rem×10 nepretece */
+        uint64_t t   = fpga_freq_dt_ticks(gate_ns);
+        if (mul && t) {
+            uint64_t num = edges * mul * FPGA_TICKS_PER_S;
+            uint64_t v   = num / t;
+            uint64_t rem = num % t;
+            for (int i = 0; i < frac; i++) {                  /* rem < t -> rem×10 nepretece */
                 rem *= 10u;
-                v    = v * 10u + rem / gate_ns;
-                rem %= gate_ns;
+                v    = v * 10u + rem / t;
+                rem %= t;
             }
             return v;
         }

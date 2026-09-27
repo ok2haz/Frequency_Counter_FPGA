@@ -8420,7 +8420,9 @@ void app_gpsdo_tick_stats_sample(void)
       if (g_freq_valid && fpga_freq_get_last(&fm)) {
           uint32_t mul = fpga_freq_hires_mul(fm.frequency_x100000,
                                              fm.edge_count, fm.gate_time_ns);
-          t_s = mp_period_sample_s(fm.edge_count, fm.gate_time_ns, mul, hz_now);
+          t_s = mp_period_sample_s(fm.edge_count,
+                                   fpga_freq_dt_ticks(fm.gate_time_ns) * FPGA_TICK_PS,   /* F-0186 */
+                                   mul, hz_now);
       } else {
           t_s = mp_period_s(hz_now);
       }

@@ -49,7 +49,7 @@ double mp_period_s(double hz);
  * zopakuje chybu „×4" (viz fpga_freq.h). `mul==0` = žádný nesedí.
  * Když dvojice není použitelná, degraduje na `1/hz_fallback`.
  * @return perioda v sekundách; 0 když ji nelze určit. */
-double mp_period_sample_s(uint64_t edges, uint64_t gate_ns, uint32_t mul,
+double mp_period_sample_s(uint64_t edges, uint64_t dt_ps, uint32_t mul,   /* dt_ps: F-0186 */
                           double hz_fallback);
 
 /* Čitelná časová jednotka pro |sec|: vrací "s"/"ms"/"us"/"ns"/"ps" a do *scale

@@ -22,7 +22,8 @@
 typedef struct {
     uint64_t frequency_x100000;   /* pin28 /4: kmitocet v jednotkach 1/100000 Hz (5 des. mist) */
     uint64_t edge_count;          /* pocet period v okne (pin28, diagnostika) */
-    uint64_t gate_time_ns;        /* skutecne Dt okna [ns] ~250e6 (mirne kolisa) */
+    uint64_t gate_time_ns;        /* Dt okna [ns] ~250e6 — ⚠️ FLOOR z ticku 2,5 ns, presne Dt
+                                   * jen pres `fpga_freq_dt_ticks` (F-0186) */
     uint64_t timestamp_ticks;     /* 10 MHz ticky */
     uint64_t freq16_x100000;      /* pin27 /16: kmitocet x 100000 (vyssi rozsah) */
     uint32_t error_flags;         /* bit0=meas err(/4), bit1=SIGNAL_LOST, bit2=overflow */
@@ -102,6 +103,22 @@ uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns)
  *  `x100000` a NEPREDSTIRA vic cislic, nez mereni nese. */
 double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
 
+/* ── Presna delka okna (F-0186) ─────────────────────────────────────────────
+ * 🔴 `gate_time_ns` z ramce NENI presne Δt: FPGA ho posila jako FLOOR(dt · 2,5 ns)
+ * (`../Frequency_Counter_FPGA_Module/src/spi_app.v:507`, `(dt*5) >> 1`), u licheho
+ * poctu ticku tedy o 0,5 ns MENE, zatimco `frequency_x100000` pocita z presneho dt
+ * (`spi_app.v:515`). Kdo delil primo `gate_time_ns`, mel u asynchronniho signalu
+ * systematicky 0 az +2e-9 (sim/2026-09-27_gate_floor.js). Rekonstrukce je
+ * bezztratova: dt = round(gate_ns / 2,5 ns) — pravidlo (1) FPGA_PROTOCOL_V2_NAVRH.md.
+ * ⚠️ Tick 2,5 ns plati pro DNESNI modul (4 faze 100 MHz); nova deska (carry chain)
+ * ma jiny tick a protokol v2 musi nest Δt v tickach nebo ps, ne floor v ns. */
+#define FPGA_TICK_PS      2500u
+#define FPGA_TICKS_PER_S  (1000000000000ull / FPGA_TICK_PS)   /* 4e8 */
+/** Pocet ticku okna z `gate_time_ns` (zaokrouhleni na nejblizsi tick). JEDINE misto,
+ *  kudy se z ramce bere delka okna pro vypocet — kdo deli `gate_time_ns` sam,
+ *  zopakuje F-0186. */
+uint64_t fpga_freq_dt_ticks(uint64_t gate_ns);
+
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog
  * 1× za periodu. Do 2026-09-26 si oba brali jen POSLEDNÍ měření a zbylá
@@ -120,7 +137,7 @@ double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
 #define FPGA_ACC_N        2
 
 /** Přičte jedno platné měření do všech akumulátorů. Volá VÝHRADNĚ FpgaTask. */
-void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);   /* gate_ns = z ramce */
 
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
  *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka
