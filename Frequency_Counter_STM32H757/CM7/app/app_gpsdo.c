@@ -8279,6 +8279,7 @@ static uint32_t s_seed_last_t   = 0;   /* t_unix posledniho vlozeneho zaznamu */
 static uint32_t s_seed_last_seq = 0;   /* seq posledniho PRECTENEHO (zdvojeni) */
 static uint8_t  s_seed_brk      = 0;   /* pred dalsim pouzitelnym zaznamem rez */
 static uint32_t s_seed_cuts     = 0;   /* kolikrat se rezalo (diagnostika) */
+static uint8_t  s_seed_skip_por = 0;   /* 1 = preskocena po zapnuti napajeni (status) */
 /* ⚠️ `static`, NE na stack: 64 x 32 B = 2 kB, zatimco UiTask ma volneho stacku
  * ~5 kB. Stejne pravidlo jako u selftestu (CLAUDE.md: pole > ~200 B = static).
  * Bezpecne, protoze rekonstrukci vola VYHRADNE UiTask. */
@@ -8302,6 +8303,7 @@ void app_gpsdo_stats_seed_start(void)
     s_seed_total = s_seed_left;
     s_seed_done  = 0;
     s_seed_last_t = 0; s_seed_last_seq = 0; s_seed_brk = 0; s_seed_cuts = 0;
+    s_seed_skip_por = 0;
     /* ⚠️ Sonda (a tedy prvni QSPI cteni) az v tiku, ne tady — `app_gpsdo_init()`
      * drzi prvni render obrazovky a blokujici cteni sem nepatri. */
     s_seed_state = 3;
@@ -8335,13 +8337,15 @@ static int stats_seed_tick(void)
 {
     if (s_seed_state == 6) {
         s_seed_state = 2;
+        s_seed_skip_por = 1;                 /* `status` to rekne i pozdeji */
         printf("ADEV: rekonstrukce preskocena — po zapnuti napajeni (mezera neznama, OCXO nabiha)\n");
         return 0;
     }
     if (s_seed_state == 3) {                 /* sonda: vyplati se to vubec? */
         /* F-0189: az po prvnim realnem mereni — do te doby neni reference
          * signalu a nelze poznat, ktere zaznamy k nemu patri. Mezitim se nic
-         * nerekonstruuje ani zive nevzorkuje (bez mereni neni co). */
+         * nerekonstruuje; zive vzorkovani (i SIM fallback) bezi dal, protoze
+         * tahle vetev vraci 0. Bez FPGA muze cekani trvat libovolne dlouho. */
         if (screen_main_signal_ref_hz() <= 0.0) return 0;
         if (!seed_worth_it()) {
             s_seed_state = 2;
@@ -8407,13 +8411,20 @@ static int stats_seed_tick(void)
 /* Postup rekonstrukce pro UART `status`. 🔑 Bez nej byla doba jejiho behu
  * NEVIDITELNA — a prave proto se 1 h 47 min blokovane statistiky nikdo nevsiml
  * (audit F-0039). Prace, ktera blokuje jinou praci, musi hlasit, jak dlouho
- * jeste potrva. @return 1 = prave bezi. */
+ * jeste potrva. @return `SEED_PROG_*`.
+ * 🔴 Stav 3 se dřív hlásil jako BĚH — to platilo, dokud to byla kratka sonda.
+ * Od F-0189 v nem rekonstrukce CEKA na prvni realne mereni (bez FPGA libovolne
+ * dlouho) a `status` pak tvrdil „zive vzorkovani zatim stoji", prestoze bezelo
+ * (zjisteno na HW 2026-09-27, bez FPGA desky). */
 int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total)
 {
     if (done)  *done  = s_seed_done;
     if (left)  *left  = s_seed_left;
     if (total) *total = s_seed_total;
-    return (s_seed_state == 1 || s_seed_state == 3);
+    if (s_seed_state == 1) return SEED_PROG_RUN;
+    if (s_seed_state == 3) return SEED_PROG_WAIT;
+    if (s_seed_skip_por)   return SEED_PROG_SKIP_POR;
+    return SEED_PROG_IDLE;
 }
 
 /* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~1x/s). */

@@ -103,9 +103,15 @@ void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
 
 /** Postup rekonstrukce ADEV pyramidy z datalogu (UART `status`).
  *  Dokud bezi, ZIVE vzorkovani statistiky STOJI — proto to musi byt videt.
- *  Kterykoli ukazatel smi byt NULL. @return 1 = prave bezi.
+ *  Kterykoli ukazatel smi byt NULL. @return `SEED_PROG_*`.
+ *  ⚠️ Cekani na prvni realne mereni (F-0189) NENI beh: zive vzorkovani
+ *  (i SIM fallback) pritom jede, takze se hlasi zvlast.
  *  ⚠️ Zdanlive vysoka hodnota `total` proti `done` je normalni: zaznamy bez
  *  platneho mereni (freq==0 / SIM) se preskakuji, takze `done` roste pomaleji. */
+#define SEED_PROG_IDLE     0   /* nebezi (hotova, preskocena z jineho duvodu) */
+#define SEED_PROG_RUN      1   /* vklada zaznamy, zive vzorkovani stoji */
+#define SEED_PROG_WAIT     2   /* ceka na prvni realne mereni (reference signalu) */
+#define SEED_PROG_SKIP_POR 3   /* preskocena: start po zapnuti napajeni (POR/BOR) */
 int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total);
 
 /** Hloubka navigacniho zasobniku (ZPET) pro UART `status`.

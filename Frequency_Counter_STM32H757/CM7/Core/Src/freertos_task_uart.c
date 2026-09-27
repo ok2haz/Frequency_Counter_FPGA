@@ -2666,11 +2666,17 @@ void UartTask_run(void *argument)
 					  	/* Dokud rekonstrukce ADEV bezi, ZIVE vzorkovani statistiky stoji
 					  	 * (sigma_y@1s zustane 0) — proto se to vypisuje vzdy, ne jen pri chybe. */
 					  	{ uint32_t sd = 0, sl = 0, stt = 0;
-					  	  if (app_gpsdo_stats_seed_progress(&sd, &sl, &stt))
+					  	  int sp = app_gpsdo_stats_seed_progress(&sd, &sl, &stt);
+					  	  if (sp == SEED_PROG_RUN)
 					  	      printf("ADEV rekonstrukce: BEZI %lu/%lu zaznamu, vlozeno %lu"
 					  	             "  <== zive vzorkovani zatim stoji\r\n",
 					  	             (unsigned long)(stt - sl), (unsigned long)stt,
 					  	             (unsigned long)sd);
+					  	  else if (sp == SEED_PROG_WAIT)   /* F-0189: bez FPGA libovolne dlouho */
+					  	      printf("ADEV rekonstrukce: ceka na prvni realne mereni"
+					  	             " (zive vzorkovani bezi)\r\n");
+					  	  else if (sp == SEED_PROG_SKIP_POR)
+					  	      printf("ADEV rekonstrukce: preskocena — start po zapnuti napajeni\r\n");
 					  	  else if (stt)
 					  	      printf("ADEV rekonstrukce: hotova, vlozeno %lu z %lu zaznamu\r\n",
 					  	             (unsigned long)sd, (unsigned long)stt); } }
