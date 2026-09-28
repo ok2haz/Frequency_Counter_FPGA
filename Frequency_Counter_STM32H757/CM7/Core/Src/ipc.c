@@ -843,15 +843,23 @@ int ipc_selftest(void)
         ok &= (ipc_cfg_apply(&c2, IPC_CFG_NULL_ACQ, 0, 0, 1e7) == 1 && c2.null_en == 1);  /* s freq */
     }
 
-    /* F-0194: `selftest_pass` musi ze snapshotu vyjit STEJNE jako `g_selftest_res`,
-     * ktere ho plni (`ipc_stamp` nize) — jinak `*TST?` pres TCP/HTTP rika neco
-     * jineho nez USB/`/api/state`. Obe hodnoty (PASS i FAIL), pres cisty
-     * `ipc_scpi_src_from_snap` nad lokalni `t`, ne nad `g_ipc`. */
+    /* F-0194: `selftest_pass` musi ze snapshotu vyjit STEJNE jako `g_selftest_res`
+     * — jinak `*TST?` pres TCP/HTTP rika neco jineho nez USB/`/api/state`. Obe
+     * hodnoty (PASS i FAIL), pres cisty `ipc_scpi_src_from_snap` nad lokalni `t`,
+     * ne nad `g_ipc`.
+     * 🔴 F-0196: `ipc_stamp()` (viz vyse) `t.snap.selftest_res` NEPLNI — jen
+     * memsetuje snap na nulu a nastavi magic/version/size. Skutecne plneni dela
+     * az `ipc_publish()` nad `g_ipc`, ne nad lokalni `t`. Bez explicitniho
+     * dopsani zustavalo `t.snap.selftest_res` porad 0, `ss.selftest_pass` tedy
+     * vzdy false, a assert `== 1` spolehlive spadl -> `ipc_selftest()` FAIL,
+     * "SELFTEST: 15/16 FAIL #12" pri kazdem bootu. Puvodni komentar tvrdil
+     * presny opak ("ktere ho plni ipc_stamp nize") — stejny vzorec jako L-0018,
+     * ktery tato oprava sama cituje: overuj proti kodu, ne proti okolnimu textu. */
     {
         scpi_src_t ss; uint8_t save = g_selftest_res;
-        g_selftest_res = 1; ipc_stamp(&t);
+        g_selftest_res = 1; ipc_stamp(&t); t.snap.selftest_res = g_selftest_res;
         ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 1);
-        g_selftest_res = 2; ipc_stamp(&t);
+        g_selftest_res = 2; ipc_stamp(&t); t.snap.selftest_res = g_selftest_res;
         ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 0);
         g_selftest_res = save; ipc_stamp(&t);
     }
