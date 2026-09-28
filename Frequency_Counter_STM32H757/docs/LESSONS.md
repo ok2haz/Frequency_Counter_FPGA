@@ -534,6 +534,22 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   varianty, ale jeden vzor rozepsany, protoze ho nelze zabalit. Commit `2253ac4`,
   viz `docs/audit/2026-09-11_aplikacni-okna.md` (F-0052) a
   `docs/audit/2026-09-16_perzistence-zaznamniky.md` (F-0096).
+- 🔁 **Opakovalo se POTRETI 2026-09-28 (F-0197, druhe kolo modulu 24).**
+  `syscfg_load()` (`syscfg.c`) je **pate** misto zapisujici `g_meas_cfg` —
+  strukturalne stejna funkce jako `setup_load()` (nacte perzistovany
+  math/limit blok a aplikuje ho na `g_meas_cfg`), volana ze stejneho tasku,
+  a presto do sweepu 2026-09-18 nespadla. Pravidlo „po pridani lekce zkontroluj
+  zbytek projektu na stejny vzor" (`docs/templates/LESSON.md` bod 5) se tehdy
+  aplikovalo jen na MISTA ZNAMA V TU CHVILI (ctyri), ne na VSECHNA mista se
+  stejnym UCELEM — `syscfg_load` a `setup_load` delaji totez (persist->g_meas_cfg
+  po power-cyklu/nacteni profilu) ale zily ve dvou ruznych souborech, takze
+  textove hledani „stejny vzor" na ne nemuselo narazit soucasne. Opraveno
+  `docs/audit/2026-09-28_matematika-druhe-kolo.md`, overeno na HW
+  (`SELFTEST: 16/16 PASS` po opravenem `syscfg_load`).
+  🔑 **Dodatek k pravidlu:** kontrola „stejny vzor" po pridani lekce nestaci
+  hledat DUPLICITNI KOD — musi hledat i FUNKCE SE STEJNYM UCELEM v jinych
+  souborech (zde: „kdo vsechno perzistuje/nacita g_meas_cfg", ne jen „kdo ma
+  stejny zdrojovy radek").
 - **Stav:** aktivni
 
 ### L-0019 — Ucetnictvi bylo pripojene k CESTAM ke zmene stavu, ne ke zmene samotne

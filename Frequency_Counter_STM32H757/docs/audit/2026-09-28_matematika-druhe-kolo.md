@@ -29,18 +29,18 @@ vznikly přímo z něj.
 každá netriviální větev má vlastní selftest vektor a citovanou lekci. Ruční
 rozbor `mp_fit_solve`/`mp_fit_significant`/`pn_compute`/`meas_limit_eval`
 nenašel nic nového. **Jeden nový nález S3**: `syscfg_load()` (`syscfg.c`)
-přepisuje `g_meas_cfg` po jednotlivých polích **bez kritické sekce** — přesně
+přepisoval `g_meas_cfg` po jednotlivých polích **bez kritické sekce** — přesně
 ta třída chyby, kterou L-0018 (pokračování k 2026-09-18) popisuje jako
-opravenou na **všech** tehdy známých místech (`scpi.c`, `ipc.c`, okno MATH
-v `app_gpsdo.c`, `setup_load`). `syscfg_load()` je páté místo, které do
-sweepu nespadlo.
+opravenou na **všech** tehdy known místech (`scpi.c`, `ipc.c`, okno MATH
+v `app_gpsdo.c`, `setup_load`). `syscfg_load()` byla páté místo, které do
+sweepu nespadlo — **opraveno a ověřeno na HW v tomto sezení** (viz F-0197 níže).
 
 ---
 
 ### F-0197 [S3] `syscfg_load()` je páté místo přepisující `g_meas_cfg` bez kritické sekce — L-0018/L-0096 se nedodrželo dopočtem
 
 - **Místo:** `CM7/Core/Src/syscfg.c:249-260` (`syscfg_load()`).
-- **Popis:** Po načtení blobu z W25Q funkce zapisuje devět polí `g_meas_cfg`
+- **Popis:** Po načtení blobu z W25Q funkce zapisovala devět polí `g_meas_cfg`
   (`math_en`, `null_en`, `limit_en`, `alarm_en`, `m`, `b`, `null_ref`, `lo`,
   `hi`) jedno za druhým **přímo do globálu**, bez `taskENTER_CRITICAL()`:
   ```c
@@ -65,7 +65,7 @@ sweepu nespadlo.
   a **commituje atomicky** pod druhým zámkem. `syscfg_load()` — sesterská
   funkce se stejným účelem (aplikace persistovaných math/limit hodnot),
   volaná ze stejného tasku (UiTask, přes `app_gpsdo_init()`) — tenhle vzor
-  nemá vůbec.
+  neměla vůbec.
 - **Důkaz:** `grep -n "g_meas_cfg\s*=\|g_meas_cfg\." CM7/**/*.c` ukazuje pět
   zapisovatelů: `ipc.c:635`, `scpi.c:1065`, `setup.c:156`, `app_gpsdo.c:9090`
   (všechny čtyři `taskENTER_CRITICAL(); g_meas_cfg = <lokální kopie>;
@@ -96,10 +96,8 @@ sweepu nespadlo.
   prakticky neopakovatelné bez instrumentace (breakpoint na `syscfg.c:254`
   by navíc sám o sobě boot ovlivnil). Statický důkaz (asymetrie vůči
   `setup_load()` a dokumentovanému vzoru) je ale jednoznačný bez měření.
-- **Návrh opravy:** stejný vzor jako `setup_load()` — načíst `g_meas_cfg` do
-  lokální kopie (netřeba ani pod zámkem, protože se čte jen pro `if (lo>hi)`
-  swap, ale konzistence s ostatními místy mluví pro zámek i tady), aplikovat
-  devět polí na lokální kopii, commitnout pod `taskENTER_CRITICAL()`.
+- **Návrh opravy:** stejný vzor jako `setup_load()` — sestavit devět polí do
+  lokální kopie `meas_cfg_t`, commitnout pod `taskENTER_CRITICAL()`.
   Minimální diff, žádná změna formátu blobu, žádný bump magicu.
 - **Riziko opravy:** nízké — mění se jen tělo `syscfg_load()`, syscfg_load
   běží jednou při bootu, žádný jiný kód na časování tohoto úseku nespoléhá.
@@ -109,7 +107,16 @@ sweepu nespadlo.
   `docs/templates/LESSON.md` („po přidání lekce zkontroluj zbytek projektu
   na stejný vzor") — přesně tahle kontrola se u `syscfg.c` v 2026-09-18
   evidentně nestihla.
-- **Stav:** otevřeno — čeká na schválení opravy uživatelem (§F5 workflow).
+- **Stav:** ✅ opraveno 2026-09-28 (`CM7/Core/Src/syscfg.c`) — přesně podle
+  návrhu: devět polí se teď skládá do lokální `meas_cfg_t c` (vč. `lo>hi`
+  swapu), commit `taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();`.
+  Přidány includy `FreeRTOS.h`/`task.h` (stejné jako `setup.c`). Build Release
+  CM7 0 varování, `tools/audit.py` 92/0/2 (baseline), `.text` 629672 → 629704 B
+  (+32 B, kritická sekce), ověřeno v disassembly (`bl vPortEnterCritical` /
+  `bl vPortExitCritical` uvnitř `syscfg_load`). `IPC_VERSION` beze změny
+  (jen CM7). ✅ **Ověřeno na HW** po reflash + power-cyklu: `SELFTEST: 16/16
+  PASS`, `Reset: power-on`, `ULOZISTE: syscfg OK`, žádný HardFault ani jiná
+  anomálie — čistý studený start s opravenou funkcí.
 
 ---
 
@@ -155,10 +162,12 @@ sweepu nespadlo.
 
 ## Nezkontrolováno / omezení tohoto běhu
 
-- **F-0197 je HYPOTÉZA co do reprodukce** — mechanismus (chybějící kritická
-  sekce) je doložený ze zdrojového kódu jednoznačně, ale vyvolat ho na živé
-  desce (přesné načasování preempce při bootu) realisticky nejde bez
-  instrumentovaného buildu.
+- **F-0197 zůstává HYPOTÉZA co do reprodukce PŘED opravou** — mechanismus
+  (chybějící kritická sekce) je doložený ze zdrojového kódu jednoznačně, ale
+  vyvolat ten konkrétní roztržený stav na živé desce (přesné načasování
+  preempce při bootu) realisticky nejde bez instrumentovaného buildu. Oprava
+  samotná je ověřená na HW (čistý boot, `selftest` 16/16 PASS) — to ale
+  dokazuje jen „oprava nic nerozbila", ne přímo „původní race existoval".
 - Neprocházel jsem znovu řádek po řádku `app_gpsdo.c` okno MATH/LIMITY
   (~150 řádků UI) ani `scpi.c`/`ipc_scpi.c` SCPI handlery pro `CALC:*` —
   ty prošly F3 auditem už 2026-09-11/19 a critickým průchodem 2026-09-27;
