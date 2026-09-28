@@ -3,7 +3,21 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-28 — 🟢 **F-0194 + F-0195 ověřeny na HW, nalezen
+**Poslední aktualizace:** 2026-09-28 (večer) — 🟡 **Modul 24, DRUHÉ KOLO (F3,
+souběh + kontrola proti `LESSONS.md`) — 1 nový nález, oprava NEproběhla.**
+Zápis → [`audit/2026-09-28_matematika-druhe-kolo.md`](audit/2026-09-28_matematika-druhe-kolo.md).
+🔴 **F-0197 [S3]:** `syscfg_load()` (`syscfg.c:249-259`) je **páté** místo, které
+přepisuje `g_meas_cfg` po jednotlivých polích bez `taskENTER_CRITICAL()` — L-0018
+(2026-09-18, F-0052+F-0096) dřív opravila stejnou třídu ve **čtyřech** tehdy
+známých místech (`scpi.c`, `ipc.c`, okno MATH, `setup_load`) a doslova zdůvodnila
+proč (roztržená dvojice `lo`/`hi`), ale `syscfg_load()` do sweepu nespadla. Dopad
+je užší než u F-0052 (jen `alarm_tick()` čte `limit_en`/`alarm_en` z tohoto okna,
+ne `lo`/`hi`), proto S3 jako F-0096, ne S2 jako F-0052. Zbytek modulu (`meas_math.c`,
+`phase_noise.c`, `meas_present.c` celé, `fpga_freq_hires_*`) prošel ručním
+rozborem znovu — nic dalšího. 🔑 **Pokračovat zde:** nabídnout opravu F-0197
+(stejný vzor jako `setup_load()` — lokální kopie + atomický commit).
+
+**Předchozí, 2026-09-28 (odpoledne):** 🟢 **F-0194 + F-0195 ověřeny na HW, nalezen
 a opraven F-0196 (test vlastní opravy F-0194 byl sám vadný).** Deska bez FPGA i bez
 GPS (obojí odpojeno). Zápis →
 [`audit/2026-09-28_hw-test-f0194-f0195-f0196.md`](audit/2026-09-28_hw-test-f0194-f0195-f0196.md).
@@ -1118,7 +1132,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ⬜ neověřeno na HW) | 2026-09-27 | 0 | 4 | 17 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ✅ vše ověřeno na HW 2026-09-28). **Přezkum oprav: nalezeno F-0195 [S2] (opraveno) + F-0196 [S3] (opraveno, obojí ✅ ověřeno na HW).** **Druhé kolo (F3, souběh + lekce): 1 nový nález F-0197 [S3]** (`syscfg_load()` páté nechráněné místo zápisu `g_meas_cfg`, otevřeno — čeká na schválení opravy) | 2026-09-28 | 0 | 5 | 19 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) + [2](audit/2026-09-27_matematika-audit-oprav.md) + [1](audit/2026-09-28_matematika-druhe-kolo.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím
@@ -1150,17 +1164,18 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 ## Souhrn nálezů
 
-✅ **Srovnáno 2026-09-28** — čísla níže jsou výstup `tools/audit_stav.py --kontrola`
-(189 nálezů celkem, po F-0196 z HW testu F-0194/F-0195). Historie rozjetí: moduly 23
-(F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147 (mezitím opraveny `docs:`)
-se do tabulky dřív nepropsaly; F-0195 (2026-09-27) a F-0196 (2026-09-28) byly nalezeny
-a rovnou opraveny, pokaždé se souhrnem dorovnaným v témže sezení.
+✅ **Srovnáno 2026-09-28 (večer)** — čísla níže jsou výstup `tools/audit_stav.py
+--kontrola` (190 nálezů celkem, po F-0197 z druhého kola modulu 24). Historie
+rozjetí: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147
+(mezitím opraveny `docs:`) se do tabulky dřív nepropsaly; F-0195 a F-0196
+(2026-09-27/28) byly nalezeny a rovnou opraveny, F-0197 (2026-09-28) čeká na
+schválení opravy — pokaždé se souhrnem dorovnaným v témže sezení.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 26 | 0 |
-| S3 | 2 | 94 | 0 |
+| S3 | 3 | 94 | 0 |
 | S4 | 5 | 55 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
@@ -1192,6 +1207,8 @@ nalezený **F-0193 [S4]** (díry v `SEQUENCE`, `7f65f4a`).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
 **+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
 zůstává otevřený jako záznam, ne jako dluh)
+**+ F-0197** (`syscfg_load()` páté nechráněné místo zápisu `g_meas_cfg`,
+`docs/audit/2026-09-28_matematika-druhe-kolo.md` — čeká na schválení opravy)
 **+ F-0194** — opraveno 2026-09-27 (`72bf839`, L-0106). ✅ **ověřeno na HW
 2026-09-28** — `scpi *TST?` a `scpi ipc *TST?` hlásí stejnou hodnotu (SHODA).
 Test přidaný touž opravou byl ale sám vadný — viz nový **F-0196 [S3]** níže.
