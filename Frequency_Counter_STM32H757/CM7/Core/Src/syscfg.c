@@ -22,6 +22,8 @@
 #include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
 #include <stdio.h>             /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
+#include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0197) */
+#include "task.h"
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
 #include <stddef.h>            /* offsetof — hlidani layoutu blobu (allan_dens ve vycpavce) */
@@ -245,18 +247,27 @@ void syscfg_load(void)
     g_fx_enabled = (uint16_t)(b.fx_en & FX_ALL);
 
     /* Math/limity: taky NENI v BKP -> aplikuj VZDY (jako fx). Preset indexy (M,
-     * pasmo) v UI se dopocitaji z g_meas_cfg pri otevreni okna (math_sync_idx). */
-    g_meas_cfg.math_en  = b.meas_math_en ? 1 : 0;
-    g_meas_cfg.null_en  = b.meas_null_en ? 1 : 0;
-    g_meas_cfg.limit_en = b.meas_limit_en ? 1 : 0;
-    g_meas_cfg.alarm_en = b.meas_alarm_en ? 1 : 0;
-    g_meas_cfg.m        = (b.meas_m != 0.0) ? b.meas_m : 1.0;   /* 0 by byl mrtvy scale */
-    g_meas_cfg.b        = b.meas_b;
-    g_meas_cfg.null_ref = b.meas_null_ref;
-    g_meas_cfg.lo       = b.meas_lo;
-    g_meas_cfg.hi       = b.meas_hi;
-    if (g_meas_cfg.lo > g_meas_cfg.hi) {   /* invertovane pasmo (stary/poskozeny blob) -> prohodit (F-0096) */
-        double t = g_meas_cfg.lo; g_meas_cfg.lo = g_meas_cfg.hi; g_meas_cfg.hi = t;
+     * pasmo) v UI se dopocitaji z g_meas_cfg pri otevreni okna (math_sync_idx).
+     * 🔴 F-0197: commitovat ATOMICKY, ne pole po poli — `g_meas_cfg` cte
+     * `alarm_tick()` z defaultTasku (vyssi priorita nez UiTask, kde tahle
+     * funkce bezi) a primy zapis by mohl preemtovanym ctenim videt roztrzenou
+     * kombinaci poli. Stejny vzor jako `scpi.c`/`ipc.c`/okno MATH/`setup_load()`
+     * (F-0052, F-0096, L-0018). */
+    {
+        meas_cfg_t c;
+        c.math_en  = b.meas_math_en ? 1 : 0;
+        c.null_en  = b.meas_null_en ? 1 : 0;
+        c.limit_en = b.meas_limit_en ? 1 : 0;
+        c.alarm_en = b.meas_alarm_en ? 1 : 0;
+        c.m        = (b.meas_m != 0.0) ? b.meas_m : 1.0;   /* 0 by byl mrtvy scale */
+        c.b        = b.meas_b;
+        c.null_ref = b.meas_null_ref;
+        c.lo       = b.meas_lo;
+        c.hi       = b.meas_hi;
+        if (c.lo > c.hi) {   /* invertovane pasmo (stary/poskozeny blob) -> prohodit (F-0096) */
+            double t = c.lo; c.lo = c.hi; c.hi = t;
+        }
+        taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();
     }
     /* Self-survey poloha: NENI v BKP -> aplikuj VZDY (jako fx/meas). */
     g_survey_valid  = b.survey_valid ? 1 : 0;
