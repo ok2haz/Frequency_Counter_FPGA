@@ -3,7 +3,32 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-27 (noc) — 🟢 **Modul 24, KRITICKÝ PRŮCHOD — F5 hotová
+**Poslední aktualizace:** 2026-09-28 — 🟢 **F-0194 + F-0195 ověřeny na HW, nalezen
+a opraven F-0196 (test vlastní opravy F-0194 byl sám vadný).** Deska bez FPGA i bez
+GPS (obojí odpojeno). Zápis →
+[`audit/2026-09-28_hw-test-f0194-f0195-f0196.md`](audit/2026-09-28_hw-test-f0194-f0195-f0196.md).
+- **F-0194** (SCPI `*TST?` TCP/HTTP vs USB): `scpi *TST?` → `1`, `scpi ipc *TST?` →
+  `CM7:1 IPC:1 SHODA` — obě cesty teď hlásí stejnou hodnotu. ✅ ověřeno.
+- **F-0195** (datalog mixoval kmitočty přes hranici změny signálu): reprodukce
+  `fpgasim on 10000000` → mid-period `fpgasim on 10500000` dala záznam s čistou
+  hodnotou `10.500.000,00000Hz`, ne směs. ✅ ověřeno.
+- 🔴 **Nalezeno při testu: `SELFTEST: 15/16 FAIL #12`** — nový test, který F-0194
+  přidala do `ipc_selftest()`, spoléhal na to, že `ipc_stamp()` propíše
+  `g_selftest_res` do lokální testovací kopie snapshotu; nepropíše (jen `memset` +
+  magic/version/size). Produkční cesta (`ipc_scpi_src_from_snap`) byla v pořádku,
+  vadný byl jen test. **F-0196 [S3]**, opraveno (`ipc.c:852,854`), L-0108.
+  ✅ **ověřeno na HW** — po opravě + reflash CM7 + power-cyklus `SELFTEST: 16/16 PASS`.
+- ⚠️ **SW reset (`-rst`) po flashi znovu nedal probudit USB CDC konzoli** (COM8 mlčel,
+  SWD přitom funkční) — stejný jev jako `2026-09-27_hw-test-modul24.md`. Pomohl jen
+  fyzický power-cyklus, dvakrát (po prvním i po druhém flashi).
+- 🔑 **Pokračovat zde:** vizuální ověření (F-0177 podtržení, F-0191 pás v okně ALLAN)
+  pořád čeká na fyzický pohled na displej nebo vytažení SD karty po
+  `screenshot sd`/`screenshot all` — GPS i FPGA teď navíc odpojené, takže i
+  rekonstrukce po WARM resetu a cokoli závislé na reálném FPGA rámci zůstává
+  neověřené. Zbytek otevřených nálezů (F-0003, F-0061, F-0154, F-0168, F-0176,
+  F-0181) čeká na skupinu C (viz „Souhrn nálezů" níže).
+
+**Předchozí, 2026-09-27 (noc):** 🟢 **Modul 24, KRITICKÝ PRŮCHOD — F5 hotová
 (A + B s doporučenými variantami), všech 8 opraveno (vč. F-0193), HW TEST PROVEDEN
 (zásadní část potvrzena přímo na desce).** Zápis →
 [`audit/2026-09-27_matematika-kriticky.md`](audit/2026-09-27_matematika-kriticky.md).
@@ -1120,18 +1145,17 @@ a bez opravy základu se horní vrstvy auditují zbytečně.
 
 ## Souhrn nálezů
 
-🔴 **Srovnáno 2026-09-26** (po F5 modulu 24) — čísla níže jsou výstup
-`tools/audit_stav.py` (187 nálezů celkem po opravách kritického průchodu modulu 24 a HW testu, 2026-09-27). Tabulka byla rozjetá už před tímto
-sezením: moduly 23 (F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147
-(mezitím opraveny `docs:`) se do ní nepropsaly. **+1 od 2026-09-27** (F-0195,
-nalezeno a rovnou opraveno, viz níže) — tabulka opět nesrovnaná,
-`audit_stav.py --kontrola` to při příštím běhu ukáže.
+✅ **Srovnáno 2026-09-28** — čísla níže jsou výstup `tools/audit_stav.py --kontrola`
+(189 nálezů celkem, po F-0196 z HW testu F-0194/F-0195). Historie rozjetí: moduly 23
+(F-0026 částečně, F-0152 zamítnuto) a F-0144/F-0145/F-0147 (mezitím opraveny `docs:`)
+se do tabulky dřív nepropsaly; F-0195 (2026-09-27) a F-0196 (2026-09-28) byly nalezeny
+a rovnou opraveny, pokaždé se souhrnem dorovnaným v témže sezení.
 
 | Severity | Otevřené | Opravené | Zamítnuté (wontfix + důvod) |
 |---|---|---|---|
 | S1 | 0 | 6 | 0 |
 | S2 | 1 | 26 | 0 |
-| S3 | 2 | 93 | 0 |
+| S3 | 2 | 94 | 0 |
 | S4 | 5 | 55 | 0 |
 
 ⚠️ **Čísla nepiš ručně** — `python tools/audit_stav.py --kontrola` je odvodí z nálezových
@@ -1153,18 +1177,32 @@ F-0158 (disciplinace LSE) opraveno 2026-09-26, obojí ⬜ neověřeno na HW.
 `fpga_stat_flush()` čistily jen `FPGA_ACC_STATS`, nikdy `FPGA_ACC_DATALOG` →
 změna signálu uprostřed 10s periody by dala do datalogu `freq_avg=1` záznam
 smíchaný ze dvou různých kmitočtů. Opraveno smyčkou přes `FPGA_ACC_N`
-(`fpga_freq.c`), L-0107. ⬜ neověřeno na HW.
+(`fpga_freq.c`), L-0107. ✅ **ověřeno na HW 2026-09-28**
+(`docs/audit/2026-09-28_hw-test-f0194-f0195-f0196.md`): reprodukce dala
+u záznamu z periody se změnou signálu čistou hodnotu `10.500.000,00000Hz`,
+ne směs.
 **Kritický průchod modulu 24 (2026-09-27):** F-0186 [S2], F-0187..F-0190 [S3],
 F-0191/F-0192 [S4] **opraveny týž den** (⬜ neověřeno na HW), stejně jako při opravě
 nalezený **F-0193 [S4]** (díry v `SEQUENCE`, `7f65f4a`).
 **S3 „Otevřené" = F-0003** (VOSRDY timeout, vědomě odloženo na příští CubeMX regen)
 **+ F-0152** (návrh zamítnut měřením na HW — zdržení je nosné, L-0084; v dokumentu
 zůstává otevřený jako záznam, ne jako dluh)
-**+ F-0194** — opraveno 2026-09-27 (`72bf839`, L-0106), ⬜ neověřeno na HW.
+**+ F-0194** — opraveno 2026-09-27 (`72bf839`, L-0106). ✅ **ověřeno na HW
+2026-09-28** — `scpi *TST?` a `scpi ipc *TST?` hlásí stejnou hodnotu (SHODA).
+Test přidaný touž opravou byl ale sám vadný — viz nový **F-0196 [S3]** níže.
 **+ třetí průchod modulu 24:** F-0180, F-0182, F-0183 a nově nalezený **F-0184 [S2]**
 opraveny 2026-09-27 (⬜ neověřeno na HW); **F-0181** [S4] skupina C (až s konzumentem
 `sdram_log`); **F-0185 [S3]** (USB SCPI readback nastavení, mimo modul) opraven
 tentýž den (`f81e25a`), ⬜ neověřeno na HW.
+✅ **F-0196 [S3]** — nalezeno HW testem F-0194/F-0195 (2026-09-28,
+`docs/audit/2026-09-28_hw-test-f0194-f0195-f0196.md`): test přidaný touž
+opravou F-0194 v `ipc_selftest()` spoléhal na to, že `ipc_stamp()` propíše
+`g_selftest_res` do lokální testovací kopie snapshotu — nepropíše (jen
+`memset`+magic/version/size), takže `SELFTEST: 15/16 FAIL #12` hlásil
+KAŽDÝ boot. Produkční cesta (`ipc_scpi_src_from_snap`) byla v pořádku, vadný
+byl jen test sám. Opraveno doplněním `t.snap.selftest_res = g_selftest_res;`
+(`ipc.c:852,854`), L-0108. ✅ **ověřeno na HW** — po opravě `SELFTEST: 16/16
+PASS`.
 **S4 „Otevřené" = F-0061 (částečně) + F-0154 + F-0168 + F-0181** (F-0154 a F-0168 skupina C;
 F-0168 = metrologická definice rozpočtu nejistoty, otevřít s reálnými daty z FPGA).
 **+ F-0176** (druhý průchod modulu 24: GUM u rozlišení v rozpočtu nejistoty — skupina C,

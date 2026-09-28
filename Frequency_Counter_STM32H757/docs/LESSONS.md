@@ -3602,9 +3602,53 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   nedodrželo doslova.
 - **Detekce:** grep `s_acc\[` v `fpga_freq.c` — každá funkce, která na pole
   sahá s pevným indexem místo smyčkou přes `FPGA_ACC_N`, je kandidát na
-  stejnou mezeru. ⬜ Neověřeno na HW (mechanismus vyžaduje zásah do 10s okna
-  s přesností na desetiny sekundy, viz `docs/audit/2026-09-27_matematika-audit-oprav.md`).
+  stejnou mezeru.
 - **Commit:** (F-0195 fix, viz git log)
+- ✅ **OVĚŘENO NA HW 2026-09-28** (power-cyklus, bez FPGA/GPS): reprodukce dle
+  postupu výše (`fpgasim on 10000000`, po detekci hranice periody `fpgasim on
+  10500000` uprostřed okna) — postižený datalogový záznam `#165819` nese čistou
+  hodnotu `10.500.000,00000Hz`, ne směs (predikce bez opravy by dala hodnotu
+  mezi 10,0 a 10,5 MHz podle toho, jak daleko v periodě ke změně došlo).
+- **Stav:** aktivní
+
+---
+
+### L-0108 — Test, který mění globál a spoléhá, že ho pomocná funkce přečte, si tu funkci musí přečíst — ne věřit komentáři vedle volání
+
+- **Datum:** 2026-09-28 (F-0196, nalezeno při HW ověřování opravy F-0194)
+- **Oblast:** `ipc.c` — `ipc_selftest()`, nový test pro `selftest_pass` přidaný
+  spolu s F-0194
+- **Symptom:** `SELFTEST: 15/16 FAIL #12` po každém bootu (ověřeno na HW) —
+  konzistentně, ne přerušovaně, protože příčina byla deterministická logická
+  chyba, ne závod.
+- **Příčina:** Nový test (`ipc.c:850-857`, commit `72bf839`) nastavil
+  `g_selftest_res = 1`, zavolal `ipc_stamp(&t)` a čekal, že
+  `t.snap.selftest_res` teď bude `1` — komentář u volání to tvrdil doslovně
+  („ktere ho plni ipc_stamp nize"). `ipc_stamp()` ale dělá jen `memset` snapu
+  na nulu + zápis magic/version/size (řádek 80); `g_selftest_res` nikdy nečte.
+  Skutečné plnění `snap.selftest_res = g_selftest_res` dělá až `ipc_publish()`,
+  a to nad **globálním** `g_ipc`, ne nad lokální testovací instancí `t`. Test
+  tedy porovnával `t.snap.selftest_res` (vždy 0 po `ipc_stamp`) s očekávanou
+  `1`, a assert `== 1` spolehlivě spadl.
+- **Oprava:** za každé `ipc_stamp(&t)` v testu doplněno explicitní
+  `t.snap.selftest_res = g_selftest_res;` (`ipc.c:852,854`) — test si teď plní
+  pole sám, místo aby spoléhal na funkci, která ho neplní.
+- **Pravidlo:** **Když test volá pomocnou funkci a předpokládá, co udělá s
+  konkrétním polem, ověř si to v TĚLE té funkce, ne v komentáři vedle volání —
+  a zvlášť když je pomocná funkce sdílená (`ipc_stamp` slouží i `ipc_init`,
+  kde žádné doplňkové pole plnit nemá).** Komentář, který popisuje chování
+  cizí funkce, je tvrzení, ne důkaz; ironicky přesně tenhle vzorec (věřit
+  textu místo kódu) cituje i commit zprávy oprava samotná — L-0018 tuhle třídu
+  už jednou pojmenovala a tady se zopakovala o úroveň hlouběji: v testu, který
+  měl být pojistkou proti přesně takové chybě.
+- **Detekce:** `selftest` → `SELFTEST: N/16 PASS` musí být vždy N=16 na čistém
+  stromu (baseline, CLAUDE.md bod 3); jakýkoli nový sub-test, který manipuluje
+  globál a hned volá pomocnou funkci, si zaslouží druhé čtení té funkce
+  (ne jen jejího komentáře) předtím, než se commitne.
+- **Commit:** (F-0196 fix, viz git log)
+- ✅ **OVĚŘENO NA HW 2026-09-28** (power-cyklus): před opravou `SELFTEST:
+  15/16 FAIL #12`, po opravě + reflash CM7 + power-cyklus `SELFTEST: 16/16
+  PASS`.
 - **Stav:** aktivní
 
 ---
