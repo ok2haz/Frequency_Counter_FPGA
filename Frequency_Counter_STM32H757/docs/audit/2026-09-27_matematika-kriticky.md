@@ -234,10 +234,13 @@ přímo jeho zdroj (`spi_app.v`), ne dokumentace.
   (α 0x22) se tam nanese dvakrát, u bodů na stejném pixelu třikrát. Při 18 bodech to byly
   nenápadné čárky, při 54 (hustota 9) je v kartě každý třetí sloupec pásu tmavší.
 - **Návrh (A):** v úsecích i ≥ 2 začínat od `c = 1`, bod na stejném pixelu přeskočit.
-- **Stav:** opraveno 2026-09-27 (`378569b`), ⬜ neověřeno na HW. Obecněji než návrh:
+- **Stav:** opraveno 2026-09-27 (`378569b`). Obecněji než návrh:
   pamatuje se poslední vyplněný sloupec (x je neklesající) a sloupec ≤ němu se přeskočí —
   pokryje kraje úseků i body na stejném pixelu jednou podmínkou. Ověření:
   `sim/2026-09-27_f0191_pas.js` (stará logika 44 sloupců dvakrát, nová každý jednou).
+  ✅ **OVĚŘENO NA HW 2026-09-28** (`fpgasim on 10000000 50`, okno ALLAN otevřené
+  klepnutím na kartu Allan): uživatel u desky potvrdil, že pás nejistoty je
+  rovnoměrný, bez tmavších svislých pruhů.
 
 ---
 

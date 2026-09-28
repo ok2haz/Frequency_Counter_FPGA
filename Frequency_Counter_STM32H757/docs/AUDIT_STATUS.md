@@ -21,12 +21,17 @@ GPS (obojí odpojeno). Zápis →
 - ⚠️ **SW reset (`-rst`) po flashi znovu nedal probudit USB CDC konzoli** (COM8 mlčel,
   SWD přitom funkční) — stejný jev jako `2026-09-27_hw-test-modul24.md`. Pomohl jen
   fyzický power-cyklus, dvakrát (po prvním i po druhém flashi).
-- 🔑 **Pokračovat zde:** vizuální ověření (F-0177 podtržení, F-0191 pás v okně ALLAN)
-  pořád čeká na fyzický pohled na displej nebo vytažení SD karty po
-  `screenshot sd`/`screenshot all` — GPS i FPGA teď navíc odpojené, takže i
-  rekonstrukce po WARM resetu a cokoli závislé na reálném FPGA rámci zůstává
-  neověřené. Zbytek otevřených nálezů (F-0003, F-0061, F-0154, F-0168, F-0176,
-  F-0181) čeká na skupinu C (viz „Souhrn nálezů" níže).
+- ✅ **Vizuální kroky ověřeny na HW 2026-09-28** (`fpgasim on 10000000 50` kvůli
+  šumu pro Allan; uživatel u desky se díval přímo na displej): **F-0177**
+  (`docs/audit/2026-09-26_matematika-mereni-2.md`) — jednotka „Hz" a nejisté
+  desetiny menším šedým fontem, modré podtržení pod poslední důvěryhodnou
+  číslicí, přesně dle návrhu. **F-0191** (`docs/audit/2026-09-27_matematika-kriticky.md`)
+  — pás nejistoty v okně ALLAN rovnoměrný, bez tmavších svislých pruhů.
+- 🔑 **Pokračovat zde:** rekonstrukce po WARM resetu (na rozdíl od POR) a cokoli
+  závislé na reálném FPGA rámci zůstává neověřené — GPS i FPGA jsou teď odpojené.
+  Zbytek otevřených nálezů (F-0003, F-0061, F-0154, F-0168, F-0176, F-0181) čeká
+  na skupinu C (viz „Souhrn nálezů" níže) — většina potřebuje reálná FPGA data
+  nebo CubeMX regen, ne jen další HW test.
 
 **Předchozí, 2026-09-27 (noc):** 🟢 **Modul 24, KRITICKÝ PRŮCHOD — F5 hotová
 (A + B s doporučenými variantami), všech 8 opraveno (vč. F-0193), HW TEST PROVEDEN

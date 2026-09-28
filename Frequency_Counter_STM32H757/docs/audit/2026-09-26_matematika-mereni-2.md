@@ -257,7 +257,10 @@ po F-0161 (`phase_noise.c:44-106`), Welford v self-survey, hi-res dělení.
   vyžaduje zásah do `num_layout` — rozhodnutí o vzhledu.
 - **Riziko opravy:** střední (layout velkého čísla).
 - **Vztah k lekcím:** L-0089.
-- **Stav:** opraveno 2026-09-26 (`50b3124`) — varianta z návrhu rozšířená: podtržení na poslední SKUTEČNĚ důvěryhodné číslici i v celé části (plán po číslicích v `num_layout`, mez [1, celkem−1]). Přepisem do Node ověřeno, že v původním rozsahu je segmentace shodná (348 kombinací, `sim/2026-09-26_layout_check.js`). ⚠️ Důsledek: při 10 MHz s TDC 2,5 ns jsou všechny desetiny nejisté a podtržené jednotky Hz. ⬜ neověřeno na HW (vzhled: `fpgasim on 100000000`).
+- **Stav:** opraveno 2026-09-26 (`50b3124`) — varianta z návrhu rozšířená: podtržení na poslední SKUTEČNĚ důvěryhodné číslici i v celé části (plán po číslicích v `num_layout`, mez [1, celkem−1]). Přepisem do Node ověřeno, že v původním rozsahu je segmentace shodná (348 kombinací, `sim/2026-09-26_layout_check.js`). ⚠️ Důsledek: při 10 MHz s TDC 2,5 ns jsou všechny desetiny nejisté a podtržené jednotky Hz.
+  ✅ **OVĚŘENO NA HW 2026-09-28** (`fpgasim on 10000000 50`, main obrazovka): jednotka
+  „Hz" a desetiny vykresleny menším šedým fontem, pod poslední důvěryhodnou číslicí
+  modré podtržení — uživatel u desky potvrdil vizuálně přesně tenhle vzhled.
 
 ---
 
