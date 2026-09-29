@@ -250,3 +250,79 @@ vyšel jeden konkrétní nález** (viz níže).
 ---
 
 **Závěr dodatku:** 1 nový nález (F-0198, S4, čistě dokumentační).
+
+---
+
+## Třetí kolo — revize CELÉHO kódu, cíl „optimalizace" (2026-09-29, tentýž den)
+
+Uživatel požádal o revizi **celého** kódu (105 vlastních `.c` souborů CM7+CM4,
+mimo vendor/HAL/FreeRTOS/lwIP/FatFs/USB knihovny) s cílem najít **nové**
+příležitosti k optimalizaci — ne jen ověřit, že stávající mechanismy fungují.
+Systematicky prověřeny zbylé horké cesty, které předchozí dvě kola tohoto
+auditu (a moduly 8/24) ještě nezachytila cíleně:
+
+### 11. `CM7/Core/Src/freertos_task_sensors.c` (SensorsTask_run, celý soubor)
+2 Hz plný sweep senzorů (TMP117×3, ADS1115×4, ADC3×3, Si5356 status) +
+10 Hz RF fast-path. **Nejhustěji zdokumentovaný soubor v projektu z hlediska
+CPU rozpočtu** — každé rozhodnutí má naměřené číslo přímo v komentáři:
+`ADC3_AVG_N=16` → „~2,7 % CPU" (16 vzorků × 3 kanály × ~262 µs busy-poll),
+half-rate ADC3 (1 Hz místo 2 Hz) → „setří ~1,3 % CPU". Filtr `SENS_CORE_T`
+(IIR α=1/8) je explicitně zdůvodněný jako jediné místo, kde se smí filtrovat
+(nic na té hodnotě nevisí — žádný alarm/práh ji nečte). Žádný nález.
+
+### 12. `CM7/Core/Src/gps.c` — `gps_feed_char()` + `gps_get()`
+Parser NMEA je O(1) na znak (žádné zpětné skenování, přetečení řádku
+řešeno příznakem `s_drop`). `gps_get()` kopíruje `gps_data_t` (~200 B,
+obsahuje `sats[24]`) pod `taskENTER_CRITICAL()` — **už vědomě
+zdokumentováno** v `scpi.c:1076` („kopie ~200 B v kritické sekci"), nejvyšší
+frekvence volání je `app_gpsdo_tick_clock` (~10 Hz). Na 480 MHz Cortex-M7
+je memcpy 200 B v řádu stovek ns — zanedbatelné proti periodě 100 ms.
+Žádný nález.
+
+### 13. `CM7/Core/Src/freertos_task_uart.c` — RX smyčka konzole
+`osMessageQueueGet(...50)` + `printf` echo na backspace/Enter — čistě
+interaktivní cesta (typing rychlost člověka, řádově Hz), žádný CPU tlak.
+Nekontrolováno dál do hloubky (parser příkazů je strcmp řetězec, ale
+spouští se jen na explicitní příkaz uživatele, ne v tiku).
+
+### 14. `CM4/LWIP/App/lwip_app.c` — `lwip_app_process()` (~1 ms polling)
+Standardní `NO_SYS=1` bare-metal lwIP smyčka (`ethernetif_input` +
+`iwdg2_kick`), zdokumentovaná a auditovaná už moduly 12/22. Žádný nový
+nález při optimalizační optice.
+
+### Souhrn revize celého kódu
+
+Napříč oběma dnešními koly (viz sekce výše i tento dodatek) bylo cíleně
+prověřeno: `gradient.c`, `prim_stm32_hal.c` (DMA2D backend celý), `text.c`,
+`screen_main.c` (dispatch, `gate_same`, decimační pyramidy, ADEV/EDF
+smyčky), `app_gpsdo.c` (tik dispatch, `dchg`), `sensor_hist.c`,
+`freertos_task_fpga.c`, `freertos_task_sensors.c`, `gps.c`,
+`freertos_task_uart.c` (RX cesta), `lwip_app.c`, web `mdev()` (httpd_min.c),
+plus křížová kontrola `CLAUDE.md` proti `.cproject` (F-0198).
+
+**Jediný nález celé revize je F-0198** (dokumentační rozpor -O2 vs. -Os),
+**už opravený**. Žádný nový S1/S2/S3 nález v žádné z prověřených horkých
+cest. Důvod, proč revize celého kódu nepřinesla víc, je zjevný z hustoty
+komentářů: tento projekt má **neobvykle vysokou hustotu měřených
+optimalizačních rozhodnutí přímo u kódu** (desítky „zmereno: X → Y %/ms"
+poznámek v `CLAUDE.md` i inline), takže většina snadno dostupných
+optimalizací už byla nalezena a zdokumentována v předchozích sezeních
+(F-0032/33/35/36/140 pro vykreslování, F-0039/L-0021 pro datalog batching,
+F-0179/F-0182/F-0186 pro matematiku).
+
+### Nezkontrolováno v tomto kole (rozsah 105 souborů je velký)
+
+- **`scpi.c`** (1472 ř.) a **`scpi_tcp.c`** — parser samotný prošel funkčním
+  auditem (modul 13), ne cíleně na výkon; SCPI příkazy přicházejí řádově
+  Hz, takže i neoptimální parser by nebyl bottleneck, ale nebylo to ověřeno
+  měřením.
+- **`w25q.c`/`w25q_store.c`/`datalog.c`/`flightrec.c`** — QSPI I/O vrstva;
+  `datalog_read_bulk` vs. `_read_back` (F-0039) je jediné známé místo, kde
+  batching hrál roli; zbytek (write cesty, erase) neprošel cíleně na výkon,
+  jen na správnost (moduly 6, 16).
+- **`meas_present.c`/`phase_noise.c`** (algoritmická složitost FFT/fit) —
+  detailně prošlo modulem 24 (viz `2026-09-28_matematika-druhe-kolo.md`,
+  „Co bylo zkontrolováno"), ne znovu opakováno zde.
+- **CM4 `httpd_min.c`** mimo `mdev()` — zbytek JS (~3000 řádků) prošel
+  funkčně modulem 15, ne cíleně na výkon (běží v prohlížeči, ne na MCU,
+  nižší riziko).

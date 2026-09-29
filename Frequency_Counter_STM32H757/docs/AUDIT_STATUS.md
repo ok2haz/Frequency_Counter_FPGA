@@ -35,6 +35,18 @@ to opakovaně stejně dokumentuje — čistě dokumentační rozpor. Uživatel
 schválil skupinu A, opraveno (`CLAUDE.md:711`, čistě `docs:`, žádný
 kód/`.cproject` se neměnil). `🔁` záznam doplněn k L-0008.
 
+**Třetí kolo, tentýž den — revize CELÉHO kódu (105 vlastních souborů
+CM7+CM4) s cílem optimalizace.** Doplňkově prověřeny `freertos_task_sensors.c`
+(nejhustěji CPU-zdokumentovaný soubor projektu — každé rozhodnutí má
+naměřené %), `gps.c` (NMEA parser O(1)/znak, `gps_get()` ~200 B kopie pod
+kritickou sekcí — už vědomě zdokumentováno v `scpi.c:1076`, zanedbatelné),
+UART RX smyčka (čistě interaktivní) a CM4 `lwip_app.c` (standardní ~1 ms
+polling, pokryto moduly 12/22). **Žádný nový nález** — jediný nález celé
+třetí revize zůstává F-0198 (viz výše, opravený). Nezkontrolováno cíleně
+na výkon (jen funkčně, jinými moduly): `scpi.c`/`scpi_tcp.c`, QSPI write/
+erase cesty ve `w25q.c`/`w25q_store.c`, zbytek web SPA JS mimo `mdev()`.
+Detaily → `docs/audit/2026-09-29_optimalizace.md`, sekce „Třetí kolo".
+
 **Předchozí, 2026-09-28 (večer):** 🟢 **Modul 24, DRUHÉ KOLO (F3,
 souběh + kontrola proti `LESSONS.md`) — 1 nový nález, opraveno a ověřeno na HW.**
 Zápis → [`audit/2026-09-28_matematika-druhe-kolo.md`](audit/2026-09-28_matematika-druhe-kolo.md).
