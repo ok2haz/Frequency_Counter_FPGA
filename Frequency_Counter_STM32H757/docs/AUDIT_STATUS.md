@@ -3,7 +3,23 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-29 (noc, HW test) — ✅ **F-0197 + F-0199
+**Poslední aktualizace:** 2026-09-29 (noc, vyšetření) — 🔴 **`FONTY:
+preskocenych glyfu 6` vysvětleno — nalezen F-0200 [S4].** Zápis →
+[`audit/2026-09-29_fonty-preskocene-glyfy.md`](audit/2026-09-29_fonty-preskocene-glyfy.md).
+`app_gpsdo.c:8146` (demo dlaždice „eased číslo", okno PŘÍKLADY ANIMACÍ,
+`s_view=25`) formátuje `"%+ld"` (vynucené znaménko `+` u kladných hodnot),
+ale `ui_font_mono_25` má v sadě `-`, ne `+` (ověřeno v `gen_fonts.js` i
+v kompilovaném fontu — glyfy skáčou `41→44`, `42`/`43` chybí). Jediný
+výskyt `"%+` v celém CM7. Kladné hodnoty demo ukazuje bez znaménka; nulový
+dopad na měření (čistě interní testovací obrazovka). Kontrastní precedent
+v tomtéž souboru (`app_gpsdo.c:3907-3909`, ODCHYLKA×N) řeší identickou
+třídu správně volbou `mono_30` (má `+`/`-`).
+🔑 **Pokračovat zde:** oprava čeká na volbu varianty — (1) přepnout tuhle
+jednu `prim_draw_text` na plný-charset font (`mono_22`, nízké riziko,
+žádný zásah do fontů), nebo (2) přidat `+` do `ui_font_mono_25` a
+přegenerovat (konzistentní s precedentem 2026-08-29, o něco dražší).
+
+**Předchozí, 2026-09-29 (noc, HW test):** ✅ **F-0197 + F-0199
 OVĚŘENY NA HW po reflashi + power-cyklu.** Deska přešla mezitím na jiný
 COM port (COM10, ne COM8 — `tools/uartq.ps1 -Port COM10`). `status` →
 `Reset: power-on` (skutečný studený start), `ULOZISTE: syscfg OK | calib OK
@@ -1239,7 +1255,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 8 | vykreslovací řetězec | `prim_stm32_hal.c`, `libprim/*`, `libui/*` (bez fontů) | CM7 | **opraveno vše** (F-0140 ✅ změřeno 38→0, ⬜ vizuálně nepotvrzeno) | 2026-09-22 | 0 | 2 | 4 | 0 | [6](audit/2026-09-10_vykreslovaci-retezec.md) |
 | 9 | hlavní obrazovka | `screens/screen_main.c`, `screen_main_data.c` | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 1 | 1 | 0 | 1 | [3](audit/2026-09-11_hlavni-obrazovka.md) |
 | 10 | navigace, model fokusu, vstup, tiky | `app_gpsdo.c` (strojovna, ≈2 800 ř.) | CM7 | **opraveno vše** (⬜ neověřeno na HW) | 2026-09-11 | 0 | 1 | 3 | 2 | [6](audit/2026-09-11_navigace-fokus-vstup.md) |
-| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | **opraveno 3 ze 4** (F-0053/F-0054 otevřené, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 1 | 1 | [4](audit/2026-09-11_aplikacni-okna.md) |
+| 11 | aplikační okna (`render_*`) | `app_gpsdo.c` (≈6 200 ř.) | CM7 | **opraveno 3 ze 4** (F-0053/F-0054 otevřené, ⬜ neověřeno na HW). **Vyšetření `FONTY:` čítače 2026-09-29: nalezen F-0200 [S4]** (demo dlaždice „eased číslo" ztrácí `+`, `mono_25` sadu nemá) — otevřeno, čeká na volbu varianty opravy | 2026-09-29 | 0 | 2 | 1 | 2 | [4](audit/2026-09-11_aplikacni-okna.md) + [1](audit/2026-09-29_fonty-preskocene-glyfy.md) |
 | 12 | síťová vrstva: HTTP + SCPI/TCP + mDNS | `httpd_min.c` (bez SPA blobu), `scpi_tcp.c`, `lwip_app.c` (≈1 460 ř.) | **CM4** | **opraveno 6 ze 7** (1 odložený, ⬜ neověřeno na HW) | 2026-09-11 | 0 | 2 | 3 | 2 | [7](audit/2026-09-11_sit-cm4.md) |
 | 13 | parsery nedůvěryhodného vstupu: SCPI + NMEA | `scpi.c` (1 472 ř.), `gps.c` (511 ř.) | **oba** (`scpi.o` je i v obrazu CM4) | **opraveno vše** (✅ část ověřena na HW) | 2026-09-12 | 0 | 1 | 6 | 2 | [9](audit/2026-09-12_parsery-scpi-gps.md) |
 | 14 | UART konzole (parser příkazů) | `freertos_task_uart.c` (2 365 ř., z toho `UartTask_run` 1 966 ř.) | CM7 | **opraveny 3, 1 částečně, F-0074 → TODO #243** (⬜ neověřeno na HW) | 2026-09-12 | 0 | 0 | 3 | 2 | [5](audit/2026-09-12_uart-konzole.md) |
