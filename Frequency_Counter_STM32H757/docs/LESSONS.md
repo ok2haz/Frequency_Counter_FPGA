@@ -3678,6 +3678,50 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   PASS`.
 - **Stav:** aktivní
 
+### L-0109 — Citovat vzor v komentáři nestačí; oprava musí ten vzor DODRŽET CELÝ, ne jen jeho poslední krok
+
+- **Datum:** 2026-09-29 (F-0199, nalezeno přezkumem vlastní opravy F-0197)
+- **Oblast:** `syscfg.c` — `syscfg_load()`, atomický commit `g_meas_cfg`
+- **Symptom:** Žádný pozorovatelný — latentní vada nalezená statickým
+  srovnáním, ne selháním na desce.
+- **Příčina:** Oprava F-0197 (2026-09-28) přidala komentář „Stejný vzor jako
+  `scpi.c`/`ipc.c`/okno MATH/`setup_load()`" a skutečně zkopírovala **poslední
+  krok** toho vzoru (`taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();`),
+  ale vynechala **první krok**, který mají všechny tři citované sesterské
+  implementace: `taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();`
+  hned po deklaraci lokální kopie. Bez něj zůstala `meas_cfg_t c;`
+  neinicializovaná a výplňové bajty struktury (zarovnání `double` polí na 8 B)
+  se do globálu zapsaly jako obsah zásobníku, ne jako to, co tam bylo předtím.
+  Kompilátor (`-fanalyzer -Wmaybe-uninitialized`, stejné flagy jako produkční
+  build) to **nezachytí** — vidí jen pojmenovaná pole, ne padding bajty
+  struktury, takže žádný z nástrojů, kterými se projekt rutinně kontroluje,
+  tuhle třídu vady nenajde.
+- **Oprava:** Doplněn chybějící první krok (`c = g_meas_cfg;` pod kritickou
+  sekcí) — `syscfg.c:257-258`, přesně podle citovaného vzoru.
+- **Pravidlo:** **Když komentář/commit zprávy tvrdí „stejný vzor jako X",
+  ověř to porovnáním KAŽDÉHO kroku s X, ne jen toho, který zrovna píšeš.**
+  Citace vzoru bez úplného dodržení je horší než žádná citace — vytváří dojem
+  prověřené shody tam, kde je jen částečná. Platí obzvlášť pro „atomický
+  commit lokální kopie" idiom (read-modify-write pod kritickou sekcí): chybí-li
+  **read** krok, `write` kopíruje nedourčená data tam, kde předtím byla
+  struktura netknutá.
+- **Detekce:** U každého nového „lokální kopie → commit" bloku zkontroluj, že
+  lokální proměnná je **buď** (a) inicializovaná čtením z global **před**
+  prvním přepisem pole, **nebo** (b) skutečně KAŽDÉ pole struktury má
+  explicitní přiřazení A struktura nemá zarovnávací mezery (ověř `sizeof`
+  vs. součet velikostí polí). `-fanalyzer`/`-Wmaybe-uninitialized` na tohle
+  nestačí — nutná ruční kontrola proti sesterským implementacím.
+- **Vztah k lekcím:** rozšiřuje `L-0018` (dvě místa počítající totéž se
+  rozejdou) o jemnější variantu: tady se nerozešly DVĚ NEZÁVISLÉ
+  implementace, ale JEDNA nová implementace se rozešla s vlastním prohlášeným
+  vzorem. Souvisí i s `L-0012` (oprava symetrické instance se nepřenesla
+  celá) — tady šlo o první KROK vzoru, ne o celou druhou instanci.
+- **Commit:** F-0199 fix, viz git log (`fix(F-0199): ...`)
+- ⬜ **Neověřeno na HW** — build/audit.py v pořádku (`.text` 629704→629752 B,
+  2 páry `vPortEnterCritical`/`vPortExitCritical` v disassembly), power-cyklus
+  zatím neproběhl.
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
