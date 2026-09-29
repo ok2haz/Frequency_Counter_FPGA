@@ -3,7 +3,26 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-29 (noc) — 🟢 **Přezkum vlastní opravy
+**Poslední aktualizace:** 2026-09-29 (noc, HW test) — ✅ **F-0197 + F-0199
+OVĚŘENY NA HW po reflashi + power-cyklu.** Deska přešla mezitím na jiný
+COM port (COM10, ne COM8 — `tools/uartq.ps1 -Port COM10`). `status` →
+`Reset: power-on` (skutečný studený start), `ULOZISTE: syscfg OK | calib OK
+| sestavy OK | flightrec OK | errlog OK`; `selftest` → `SELFTEST: 16/16
+PASS`; `scpi CALC:LIM:STAT?/LOW?/UPP?` → `0`/`0.00000`/`0.00000` (zdravá
+SCPI cesta nad `g_meas_cfg`, žádný pád/NaN). Žádná regrese — přesně
+očekávaný výsledek (vada F-0199 je ve výplňových bajtech struktury,
+funkčně neviditelná, ověření dokazuje „bez regrese", ne přímo „garbage tam
+byla"). Zápis doplněn do `docs/audit/2026-09-29_fixreview-f0197.md` a
+`docs/LESSONS.md` L-0109.
+📎 Vedlejší pozorování (nesouvisí, nesledováno dál): `status` hlásil
+`pokusy o zachranu: syscfg 1` (existující mechanismus F-0098) a `FONTY:
+preskocenych glyfu 6` — obojí mimo rozsah dnešní opravy.
+🔑 **Pokračovat zde:** další kolo fixreview (kandidáti: F-0187 fázová
+pyramida, F-0188/192 nulování při změně signálu, F-0193 díry v SEQUENCE),
+nebo prošetřit `FONTY: preskocenych glyfu 6` (L-0017 — počitadlo existuje
+právě proto, aby se nenulová hodnota nepřehlédla).
+
+**Předchozí, 2026-09-29 (noc):** 🟢 **Přezkum vlastní opravy
 F-0186 — 0 nových nálezů, verdikt funkční.** Zápis →
 [`audit/2026-09-29_fixreview-f0186.md`](audit/2026-09-29_fixreview-f0186.md).
 Uživatel zvolil pokračovat dalším kolem fixreview. F-0186 (přepočet délky
@@ -1233,7 +1252,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 21 | DSI bridge, sdílený SCPI backend, USB CDC | `tc358762.c`, `ipc_scpi.c`, `usb_console.c` (426 ř. vč. hlaviček) | CM7 (+`ipc_scpi` i CM4) | **opraveno 3 ze 4** (F-0130 [S4] otevřen, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 1 | 2 | 1 | [4](audit/2026-09-19_bridge-ipcscpi-usbcdc.md) |
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
-| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ✅ vše ověřeno na HW 2026-09-28). **Přezkum oprav: nalezeno F-0195 [S2] (opraveno) + F-0196 [S3] (opraveno, obojí ✅ ověřeno na HW).** **Druhé kolo (F3, souběh + lekce): nalezen a opraven F-0197 [S3]** (`syscfg_load()` páté nechráněné místo zápisu `g_meas_cfg`, ✅ ověřeno na HW). **Přezkum OPRAVY F-0197 (2026-09-29): nalezen a OPRAVEN F-0199 [S3]** — oprava sama nedodržela vzor tří sesterských míst (chybělo `c = g_meas_cfg;` před přepisem polí → nedourčené výplňové bajty struktury); doplněno, ⬜ neověřeno na HW. **Přezkum OPRAVY F-0186 (2026-09-29): 0 nálezů, verdikt funkční** — matematika `fpga_freq_dt_ticks()` staticky ověřena, všech 56 výskytů `gate_ns`/`gate_time_ns` klasifikováno, žádný přehlédnutý sourozenec | 2026-09-29 | 0 | 6 | 19 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) + [2](audit/2026-09-27_matematika-audit-oprav.md) + [1](audit/2026-09-28_matematika-druhe-kolo.md) + [1](audit/2026-09-29_fixreview-f0197.md) + [1](audit/2026-09-29_fixreview-f0186.md) |
+| **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ✅ vše ověřeno na HW 2026-09-28). **Přezkum oprav: nalezeno F-0195 [S2] (opraveno) + F-0196 [S3] (opraveno, obojí ✅ ověřeno na HW).** **Druhé kolo (F3, souběh + lekce): nalezen a opraven F-0197 [S3]** (`syscfg_load()` páté nechráněné místo zápisu `g_meas_cfg`, ✅ ověřeno na HW). **Přezkum OPRAVY F-0197 (2026-09-29): nalezen a OPRAVEN F-0199 [S3]** — oprava sama nedodržela vzor tří sesterských míst (chybělo `c = g_meas_cfg;` před přepisem polí → nedourčené výplňové bajty struktury); doplněno, ✅ **ověřeno na HW** (reflash+power-cyklus, `Reset: power-on`, `SELFTEST: 16/16 PASS`, `ULOZISTE: syscfg OK`). **Přezkum OPRAVY F-0186 (2026-09-29): 0 nálezů, verdikt funkční** — matematika `fpga_freq_dt_ticks()` staticky ověřena, všech 56 výskytů `gate_ns`/`gate_time_ns` klasifikováno, žádný přehlédnutý sourozenec | 2026-09-29 | 0 | 6 | 19 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) + [2](audit/2026-09-27_matematika-audit-oprav.md) + [1](audit/2026-09-28_matematika-druhe-kolo.md) + [1](audit/2026-09-29_fixreview-f0197.md) + [1](audit/2026-09-29_fixreview-f0186.md) |
 | **25** | **optimalizace** (průřezový, mimo moduly 8+24) | `gradient.c` (isqrt), `prim_stm32_hal.c` (fresh re-čtení), `text.c` (glyph accel), `screen_main.c` (`gate_same`, `trend_feed`), `sensor_hist.c`, `app_gpsdo.c` (`dchg`, tik dispatch), `freertos_task_fpga.c`, `httpd_min.c` (web `mdev`), `CLAUDE.md` vs `.cproject` | CM7 (+CM4 web) | **F3 hotová (2 kola) — 1 nález opraven (F-0198 [S4], doc/config rozpor, `docs:` commit).** | 2026-09-29 | 0 | 0 | 0 | 1 | [1](audit/2026-09-29_optimalizace.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,

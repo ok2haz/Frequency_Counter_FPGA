@@ -3717,9 +3717,11 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   vzorem. Souvisí i s `L-0012` (oprava symetrické instance se nepřenesla
   celá) — tady šlo o první KROK vzoru, ne o celou druhou instanci.
 - **Commit:** F-0199 fix, viz git log (`fix(F-0199): ...`)
-- ⬜ **Neověřeno na HW** — build/audit.py v pořádku (`.text` 629704→629752 B,
-  2 páry `vPortEnterCritical`/`vPortExitCritical` v disassembly), power-cyklus
-  zatím neproběhl.
+- ✅ **OVĚŘENO NA HW 2026-09-29** (reflash + power-cyklus): `Reset: power-on`,
+  `SELFTEST: 16/16 PASS`, `ULOZISTE: syscfg OK`, SCPI nad `g_meas_cfg`
+  odpovídá zdravě. Žádná regrese — jak se čekalo (vada je ve výplňových
+  bajtech, funkčně neviditelná, ověření dokazuje „bez regrese", ne přímo
+  „byla tam garbage").
 - **Stav:** aktivní
 
 ---
