@@ -252,9 +252,18 @@ void syscfg_load(void)
      * `alarm_tick()` z defaultTasku (vyssi priorita nez UiTask, kde tahle
      * funkce bezi) a primy zapis by mohl preemtovanym ctenim videt roztrzenou
      * kombinaci poli. Stejny vzor jako `scpi.c`/`ipc.c`/okno MATH/`setup_load()`
-     * (F-0052, F-0096, L-0018). */
+     * (F-0052, F-0096, L-0018).
+     * 🔴 F-0199: `c` se MUSI nejdriv NACIST z `g_meas_cfg` (jako u vsech tri
+     * sesterskych mist) — bez toho zustanou vyplnove bajty struktury (mezery
+     * pred `double` poli, zarovnani 8 B) neurcite (obsah zasobniku UiTasku)
+     * a `g_meas_cfg = c;` je pak zapise do globalu. Dnes bez pozorovatelneho
+     * dopadu (jediny `memcmp` nad `g_meas_cfg`, `ipc.c:630-636`, porovnava
+     * dve kopie ze stejneho zdroje ve stejnem okamziku), ale je to deviace
+     * od vlastniho citovaneho vzoru — priste by na tom mohl zavislet kod,
+     * ktery `g_meas_cfg` porovnava/kopiruje jako syrove bajty. */
     {
         meas_cfg_t c;
+        taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();
         c.math_en  = b.meas_math_en ? 1 : 0;
         c.null_en  = b.meas_null_en ? 1 : 0;
         c.limit_en = b.meas_limit_en ? 1 : 0;
