@@ -3,7 +3,39 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-28 (večer) — 🟢 **Modul 24, DRUHÉ KOLO (F3,
+**Poslední aktualizace:** 2026-09-29 — 🟢 **Modul „optimalizace" (průřezový,
+F3) — 0 nových nálezů, verdikt funkční.** Zápis →
+[`audit/2026-09-29_optimalizace.md`](audit/2026-09-29_optimalizace.md).
+Cíleně prověřeny optimalizační mechanismy **mimo** už hotová jádra modulů 8
+(vykreslovací řetězec) a 24 (matematické funkce): `isqrt32` (gradient.c),
+DMA2D backend + copy-forward (fresh re-čtení, potvrzuje F-0032..F-0140 beze
+změny), glyph akcelerace (`prim_set_glyph_accel` — 3 párová volání, žádný
+únik stavu), `gate_same()` guard (STATUS #88), decimační pyramidy
+`trend_feed` vs. `sensor_hist.c` (typy `int32_t`/`float` v pořádku, L-0031
+dodrženo), `dchg()` invariant u volatile globálů (`g_freq_info`/`g_spi_text`
+— NUL vynucen explicitně, past se dnes neaktivuje), web `mdev()` po F-0182
+(potvrzeno O(N), ne O(N²)). Žádný S1/S2/S3. Kód neměněn (F3 čistá, beze
+zásahu).
+🔑 **Pokračovat zde:** HW-dependentní optimalizace #140 (SDCLK 100 MHz) a
+#144 (SDMMC 25/50 MHz) čekají na HW úpravu (odpor + kondenzátor), nejsou to
+nálezy kódu — zůstávají v `STATUS.md`.
+
+**Dodatek, 2026-09-29 (tentýž den):** Uživatel upřesnil zájem na
+**efektivitu funkcí** konkrétně. Doplňkově prověřen dispatch tiku UI
+(`app_gpsdo_tick`/`app_gpsdo_tick_anim` — čistý `s_view` dispatch, žádná
+práce navíc pro neviditelná okna) a smyčka `StartFpgaTask` (~20 Hz poll —
+levné formátování + drahé kreslení jen při změně, stejný vzor jako
+`dchg()`). Citován precedens **F-0039/L-0021** (rekonstrukce ADEV z datalogu:
+173 µs QSPI režie/záznam → dávka 64 = 1 h 47 min → ~4 min) jako doklad,
+že tahle třída chyby v projektu už byla hledaná, nalezená a opravená.
+**Nalezen a OPRAVEN F-0198 [S4]:** `CLAUDE.md:711` tvrdil „Největší CPU
+výhra zůstává -O2/Release", ale `.cproject` (obě jádra) má Release
+prokazatelně na `-Os` (potvrzeno grepem konfigurace) a zbytek dokumentu
+to opakovaně stejně dokumentuje — čistě dokumentační rozpor. Uživatel
+schválil skupinu A, opraveno (`CLAUDE.md:711`, čistě `docs:`, žádný
+kód/`.cproject` se neměnil). `🔁` záznam doplněn k L-0008.
+
+**Předchozí, 2026-09-28 (večer):** 🟢 **Modul 24, DRUHÉ KOLO (F3,
 souběh + kontrola proti `LESSONS.md`) — 1 nový nález, opraveno a ověřeno na HW.**
 Zápis → [`audit/2026-09-28_matematika-druhe-kolo.md`](audit/2026-09-28_matematika-druhe-kolo.md).
 ✅ **F-0197 [S3]:** `syscfg_load()` (`syscfg.c:249-259`) byla **páté** místo, které
@@ -1140,6 +1172,7 @@ Stav: `nezačato` → `probíhá` → `nálezy zapsány` → `opraveno` → `kom
 | 22 | CM4: ETH/lwIP glue, boot a smyčka, IWDG2 | `ethernetif.c`, `CM4/Core/Src/main.c`, `iwdg2.c` (1 218 ř. vč. hlaviček) | **CM4** | **skupina A opravena** (5 ze 8, ⬜ neověřeno na HW) | 2026-09-19 | 0 | 0 | 6 | 2 | [7](audit/2026-09-19_cm4-eth-boot.md) |
 | **23** | **generované init soubory periferií** (`MX_*_Init` + `USER CODE`) | **`fmc.c`** (180 ř. ručně), **`usart.c`** (88 ř. ručně), dál `adc.c`, `dsihost.c`, `ltdc.c`, `quadspi.c`, `spi.c`, `tim.c`, `eth.c` (17–19 ř. ručně) | oba | **opraveno 4 z 6, ✅ OVĚŘENO NA HW po studeném startu** (F-0149/150/151/153). 🔴 **F-0152 ZAMÍTNUTO měřením** (zdržení je nosné pro USB CDC → vráceno, L-0084); F-0154 [S4] odložen do C | 2026-09-25 | 0 | 1 | 2 | 3 | [6](audit/2026-09-25_generovane-init-periferie.md) |
 | **24** | **matematické funkce měření** (průřezový) | `meas_math.c`, `phase_noise.c`, `meas_present.c` celé; matematické úseky `screen_main.c`, `app_gpsdo.c`, `fpga_freq.c`, `rtc.c` (+ převody dBm v `scpi.c`, `httpd_min.c`) | oba | **1. průchod: opraveno 12 z 13** (F-0168 odložen do C; ⬜ neověřeno na HW). **2. průchod: opraveno 8 z 9** (vč. F-0179 float podlaha; F-0176 [S4] odložen do C s F-0168; ⬜ neověřeno na HW). **3. průchod (přesnost/rychlost): opraveno 5 z 6** (F-0180, F-0182, F-0183 + nalezený F-0184 [S2] + F-0185 [S3] mimo modul; F-0181 do C; ⬜ neověřeno na HW). **Hustota Allanova grafu 3/5/9 na dekádu** (`6835bd5` displej + Nastavení → DISPLEJ, `708c120` web). **Kritický průchod: opraveno 8 z 8** (F-0186..F-0192 vč. S2 + F-0193 [S4] nalezený při opravě; ✅ vše ověřeno na HW 2026-09-28). **Přezkum oprav: nalezeno F-0195 [S2] (opraveno) + F-0196 [S3] (opraveno, obojí ✅ ověřeno na HW).** **Druhé kolo (F3, souběh + lekce): nalezen a opraven F-0197 [S3]** (`syscfg_load()` páté nechráněné místo zápisu `g_meas_cfg`, ✅ ověřeno na HW) | 2026-09-28 | 0 | 5 | 19 | 15 | [13](audit/2026-09-26_matematika-mereni.md) + [9](audit/2026-09-26_matematika-mereni-2.md) + [6](audit/2026-09-26_matematika-mereni-3.md) + [8](audit/2026-09-27_matematika-kriticky.md) + [2](audit/2026-09-27_matematika-audit-oprav.md) + [1](audit/2026-09-28_matematika-druhe-kolo.md) |
+| **25** | **optimalizace** (průřezový, mimo moduly 8+24) | `gradient.c` (isqrt), `prim_stm32_hal.c` (fresh re-čtení), `text.c` (glyph accel), `screen_main.c` (`gate_same`, `trend_feed`), `sensor_hist.c`, `app_gpsdo.c` (`dchg`, tik dispatch), `freertos_task_fpga.c`, `httpd_min.c` (web `mdev`), `CLAUDE.md` vs `.cproject` | CM7 (+CM4 web) | **F3 hotová (2 kola) — 1 nález opraven (F-0198 [S4], doc/config rozpor, `docs:` commit).** | 2026-09-29 | 0 | 0 | 0 | 1 | [1](audit/2026-09-29_optimalizace.md) |
 
 🔑 **Modul 15 uzavřel poslední velkou neauditovanou oblast projektu.** Je jediný,
 jehož kód neběží na přístroji — a právě proto se na něj nevztahuje nic z toho, čím

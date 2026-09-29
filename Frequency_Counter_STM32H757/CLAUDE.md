@@ -708,7 +708,11 @@ konfigurace displeje" výše), FB0/FB1/FB2 na `0xC0000000`/`0xC0100000`/`0xC0200
   - ⚠️ **Cache platí jen pro statické `const` fonty** (klíč = adresa coverage dat). Runtime-generované/škálované glyfy by ji rozbily (různé glyfy stejná adresa) → nutná invalidace. Cache nemá eviction (bump alokátor); po naplnění (96 položek / 256 KB) nové glyfy padají na CPU.
   - ⚠️ **Zrychlený glyf NEdělá `mark_dirty`** (jako CPU text) → spoléhá na dirty rect předchozího clearu (fill/blit) kvůli copy-forwardu přes 3 buffery. Každý partial redraw velkého textu MUSÍ začít clear, jinak bliká.
 - ITCM/DTCM linker sekce (`.itcm_text`/`.dtcm_data`) + kopírovací smyčka v `main.c` USER CODE 1 byly odstraněny (držel je jen smazaný gfx hot-path). V git historii, kdyby bylo potřeba ITCM zrychlení vrátit.
-- Největší CPU výhra zůstává **-O2/Release**.
+- Největší CPU výhra zůstává přechod **Debug (`-O0`) → Release (`-Os`)**
+  (audit F-0198, 2026-09-29: text dřív tvrdil „-O2/Release", ale `.cproject`
+  má Release na obou jádrech prokazatelně `-Os`, ne `-O2` — žádné místo
+  v projektu `-O2` jako produkční flag nepoužívá; jediné výskyty `-O2`
+  v `STATUS.md` jsou dočasný audit sweep pro statickou analýzu, ne build).
 
 ### FreeRTOS tasky (freertos.c)
 

@@ -201,6 +201,17 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   ~2 B = `b .` = tiché zamrznutí). Doplňkově: při auditu modulu je povinné číst celé tělo
   handleru, viz `CHECKLIST_STM32H7.md` sekce E.
 - **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0002
+- 🔁 **Opakovalo se 2026-09-29 v jiné podobě (F-0198, modul „optimalizace"):**
+  `CLAUDE.md:711` tvrdilo „Největší CPU výhra zůstává -O2/Release", ale
+  `.cproject` má Release na obou jádrech prokazatelně `-Os` — a zbytek téhož
+  dokumentu to jinde (sekce „Build / flash") popisuje správně, s naměřenými
+  čísly. Tentokrát to není komentář vs. zbytek funkce, ale **dokumentace vs.
+  konfigurační soubor**, což je širší instance téhož vzoru: text tvrdí něco,
+  co jde ověřit strojově (grep `.cproject`), a nikdo tu kontrolu neudělal.
+  🔑 **Rozšíření pravidla: „ověř to, co jde ověřit" platí i pro tvrzení o
+  BUILD KONFIGURACI, ne jen o chování kódu** — `.cproject`/`.ioc`/linker
+  skript jsou zdroj pravdy stejně jako generovaný zbytek funkce.
+- **Commit:** F-0198 viz `docs/audit/2026-09-29_optimalizace.md`
 - **Stav:** aktivní
 
 ### L-0009 — Kritické volání v generovaném kódu se hlídá ověřením stavu, ne návratové hodnoty
