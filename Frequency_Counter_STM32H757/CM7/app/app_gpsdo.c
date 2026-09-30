@@ -8144,8 +8144,11 @@ static void tick_animdemo(void)
         float v = ad_ease(&s_ad_num, 0.2f);
         prim_fill_rect(cr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
         snprintf(buf, sizeof buf, "%+ld", lround_f(v));
+        /* F-0200: NE mono_25 — jeho sada ma '-', ale ne '+' (vynucene znamenko
+         * u kladnych hodnot se tise ztraci, `text.c` chybejici glyf preskoci).
+         * mono_22 ma plny charset (viz precedent u ODCHYLKA xN / mono_30). */
         prim_draw_text((prim_point_t){(int16_t)(cr.x + cr.w / 2), (int16_t)(cr.y + cr.h / 2 + 6)},
-                       buf, &ui_font_mono_25, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
+                       buf, &ui_font_mono_22, UI_COLOR_ACC, PRIM_ALIGN_CENTER);
     }
 
     /* 5. Zvyrazneni cislice: posledni cislice se meni a na 5 tiku problikne accent. */
