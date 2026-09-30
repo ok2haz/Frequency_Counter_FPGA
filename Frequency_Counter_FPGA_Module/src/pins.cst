@@ -1,43 +1,58 @@
 // ============================================================
 // File: pins.cst
-// Tang Nano 9K (GW1NR-9C) na carrier desce v2.0
-// Zdroj pravdy: FPGA_Module_2_0 netlist + BOARD_V20_CHECKLIST.md
-// POZOR: bench s jumpery podle stareho zapojeni nutno prepojit!
+// Tang Nano 9K (GW1NR-9C) na NOVÉM vstupním modulu (dva symetrické kanály)
+// Zdroj pravdy: ../../citac_zadani_predavaci.md §4 (Tang Nano pinout, SMLUVNÍ)
+//
+// 🔴 ZMĚNA PROTI STARÉ DESCE (FPGA_Module_2_0):
+//   - sig_in4/sig_in16 (odbočky ÷4/÷16 jednoho děliče MC100EP016) KONČÍ.
+//     Nahrazují je DVA SYMETRICKÉ kanály CH_A/CH_B (PIN25/PIN27).
+//   - div_res (PIN53, MR děliče) končí — PIN53 je na nové desce volný
+//     odstup vedle SPI. Předdělička ÷10 (MC12080) je teď spínaná relé,
+//     ne touhle FPGA MR linkou (mimo rozsah dnešního bring-upu).
+//   - clk_p2p5/p5/p7p5_100m (4fázový vernier ze Si5356) KONČÍ — nová deska
+//     dává jen JEDEN REF_100MHz (PIN35). Carry-chain TDC (jemné rozlišení)
+//     je budoucí stupeň 3 (PHASE_CAL_DESIGN.md) — dnes jen hrubé čítání
+//     na hraně clk_p0 (10 ns/LSB), viz coarse_edge_detect v top.v.
+//   - GPS_1PPS (PIN33), Ref_Ctrl (PIN41), Ext_Ref_Sens (PIN51) přidány do
+//     tabulky pro úplnost, ale V TOMTO KROKU NEPOUŽITY (bring-up = jen
+//     dual-channel hrubé čítání + SPI v2 beze změny).
 // ============================================================
 
-IO_LOC "clk_ref_10m"      63;  // 10MHz_GPSDO_CLK4 (LMK1C1104), IOR5A / RPLL_T_in
-IO_LOC "clk_p0_100m"      35;  // PLL_CLK1 = U4 CLK_0, 0°   - IOB29A / GCLKT_4 (master!)
-IO_LOC "clk_p2p5_100m"    34;  // PLL_CLK2 = U4 CLK_2, 90°  - IOB23B
-IO_LOC "clk_p5_100m"      40;  // PLL_CLK3 = U4 CLK_4, 180° - IOB33B
-IO_LOC "clk_p7p5_100m"    33;  // PLL_CLK4 = U4 CLK_6, 270° - IOB23A
+IO_LOC "clk_p0_100m"      35;  // REF_100MHz, GCLKT_4 PRIMARY [M] (jediná ref. hodina)
+IO_LOC "clk_ref_10m"      42;  // REF_10MHz, záloha přímo z OCXO (gate-window časování)
 
-IO_LOC "sig_in4"          28;  // DIV_Bit1/2 (MC100EP016 tap /4 pres MC100EPT23)
-IO_LOC "sig_in16"         27;  // DIV_Bit3/4 (/16)
+IO_LOC "ch_a"             25;  // CH_A, carry chain A (PIN25_IOB8A)
+IO_LOC "ch_b"             27;  // CH_B, carry chain B (PIN27_IOB11A)
 
-IO_LOC "div_res"          53;  // MC100EP016 MR (aktivni HIGH) - drzet LOW!
+IO_LOC "led_tx"           29;  // LED stavu (statické, ne PWM — zadání §J4)
 
-IO_LOC "led_tx"           16;  // on-module LED
-
-// SPI slave (STM32H757 = master), 3.3V, Mode 0, CS active LOW
+// SPI slave (STM32H757 = master), 3.3V, Mode 0, CS active LOW — beze změny
+// proti staré desce (PIN54-57 stejné, protokol v2 zatím beze změny).
 IO_LOC "spi_mosi"         54;
-IO_LOC "spi_miso"         57;
 IO_LOC "spi_sck"          55;
 IO_LOC "spi_cs_n"         56;
+IO_LOC "spi_miso"         57;
 
-IO_PORT "clk_ref_10m"      IO_TYPE=LVCMOS33;
-IO_PORT "clk_p0_100m"      IO_TYPE=LVCMOS33;
-IO_PORT "clk_p2p5_100m"    IO_TYPE=LVCMOS33;
-IO_PORT "clk_p5_100m"      IO_TYPE=LVCMOS33;
-IO_PORT "clk_p7p5_100m"    IO_TYPE=LVCMOS33;
+IO_PORT "clk_p0_100m"     IO_TYPE=LVCMOS33;
+IO_PORT "clk_ref_10m"     IO_TYPE=LVCMOS33;
 
-IO_PORT "sig_in4"          IO_TYPE=LVCMOS33;
-IO_PORT "sig_in16"         IO_TYPE=LVCMOS33;
+IO_PORT "ch_a"             IO_TYPE=LVCMOS33;
+IO_PORT "ch_b"             IO_TYPE=LVCMOS33;
 
-IO_PORT "div_res"          IO_TYPE=LVCMOS33 DRIVE=8;
-
-IO_PORT "led_tx"  IO_TYPE=LVCMOS18;
+// 🔴 LVCMOS18 (jako na stare desce, PIN16) NEJDE — PIN29 je ve stejne
+// bance jako CH_A/CH_B/SPI (3,3V), banka nesnese dve ruzna napeti najednou
+// (Gowin CT1136). Nova deska ma led_tx v jine bance nez stara.
+IO_PORT "led_tx"  IO_TYPE=LVCMOS33;
 
 IO_PORT "spi_mosi" IO_TYPE=LVCMOS33;
 IO_PORT "spi_miso" IO_TYPE=LVCMOS33 DRIVE=8;
 IO_PORT "spi_sck"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;  // Mode 0: hodiny idle LOW (ne UP!)
 IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// ── NEPOUŽITO V TOMTO KROKU (rezervováno pro budoucí práci) ─────────────
+// IO_LOC "gps_1pps"      33;  // PIN33_IOB23A, carry chain C — čeká na time_error_ps (v3)
+// IO_LOC "ref_ctrl"      41;  // PIN41_IOB41A, statický oddělovač referencí
+// IO_LOC "ref_10m_raw"   42;  // shodné s clk_ref_10m výše — NEpřidávat dvakrát
+// IO_LOC "ext_ref_sens"  51;  // PIN51_IOR17B, 10 MHz monitor (jiný bank)
+// Data_RDY (PIN49) se NEPOUŽÍVÁ (rozhodnuto 2026-08-30, FPGA_PROTOCOL_V3_NAVRH.md §2/§3) —
+// nahrazuje ho příznak na MISO při CS=1 (v3 §3), dnes ani to není zapojeno (v2 beze změny).
