@@ -2083,7 +2083,7 @@ void UartTask_run(void *argument)
 			  else if (strcmp(RxBuffer, "fpgaloop") == 0) {
 				  /* Hustá série přenosů pro scope/LA (trigger na CS↓). ~3 s. */
 				  printf("FPGA loop: ~2000 prenosu (scope na pinech FPGA: CS56/SCK55/MISO57)...\n");
-				  uint8_t rx[64];
+				  uint8_t rx[FPGA_FRAME_LEN];
 				  for (int n = 0; n < 2000; n++) {
 					  fpga_freq_raw_xfer(rx);
 					  osDelay(1);
@@ -2091,19 +2091,21 @@ void UartTask_run(void *argument)
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
 			  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
-				  /* Bring-up diagnostika: jeden prenos + vypis vsech 64 prijatych bajtu.
-				   * Cekame: byte0=A5 byte1=01 byte2=80. Same FF/00 = MISO nebudi (FPGA mlci). */
-				  uint8_t rx[64];
+				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN
+				   * prijatych bajtu (v2 = 128 B, v1 bylo 64 B).
+				   * Cekame: byte0=A5 byte1=02 byte2=80. Same FF/00 = MISO nebudi (FPGA mlci). */
+				  uint8_t rx[FPGA_FRAME_LEN];
 				  bool ok = fpga_freq_raw_xfer(rx);
 				  printf("FPGA raw xfer HAL:%s\n", ok ? "OK" : "ERR");
 				  /* ⚠️ `p` se kontroluje PRED pouzitim (audit F-0076): `sizeof(line) - p`
 				   * je `size_t`, takze pri `p > sizeof(line)` podtece na obrovske cislo
-				   * a `snprintf` dostane nesmyslnou kapacitu. Dnes to nedosazitelne je
-				   * (16 bajtu x 3 znaky = 48 ze 64), ale rezerva je jen 16 B — staci
-				   * zmenit format na ctyri znaky. Tentyz vzor uz ma `uart_i2c4_probe`. */
+				   * a `snprintf` dostane nesmyslnou kapacitu. Radek je vzdy 16 bajtu
+				   * (16 x 3 znaky = 48 z 64), bez ohledu na FPGA_FRAME_LEN — rezerva
+				   * je 16 B, staci zmenit format na ctyri znaky. Tentyz vzor uz ma
+				   * `uart_i2c4_probe`. */
 				  char line[64];
 				  int p = 0;
-				  for (int i = 0; i < 64; i++) {
+				  for (int i = 0; i < (int)FPGA_FRAME_LEN; i++) {
 					  if (p >= 0 && (size_t)p < sizeof line)
 						  p += snprintf(line + p, sizeof(line) - (size_t)p, "%02X ", rx[i]);
 					  if ((i & 0xF) == 0xF) { printf("[%02d] %s\n", i - 15, line); p = 0; }

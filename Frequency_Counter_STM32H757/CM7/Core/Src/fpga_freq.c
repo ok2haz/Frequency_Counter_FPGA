@@ -25,11 +25,13 @@ extern SPI_HandleTypeDef hspi2;
 #error "FPGA_SCK_TARGET_HZ prekracuje povolene maximum FPGA slave (~10 MHz)"
 #endif
 
-/* === Frame === */
-#define FR_LEN        64
+/* === Frame (v2, FPGA_PROTOCOL_V2_NAVRH.md) === */
+#define FR_LEN        FPGA_FRAME_LEN   /* 128 B — jediny zdroj pravdy v fpga_freq.h (L-0012) */
 #define FR_MAGIC      0xA5
-#define FR_VERSION    0x01
-#define FR_PAYLOAD    12               /* offset payloadu */
+#define FR_VERSION    0x02
+#define FR_PAYLOAD    12               /* offset payloadu (beze zmeny proti v1) */
+#define FR_PAYLOAD_MAX 114             /* v2: max payload (bylo 50 u v1) */
+#define FR_CRC_LEN    126              /* CRC pokryva byte 0..125 (bylo 0..61 u v1) */
 
 /* TYPE */
 #define TYPE_ACK      0x06
@@ -91,7 +93,7 @@ static uint16_t crc16_ccitt(const uint8_t *d, int n)
 /* === Sestaveni TX ramce === */
 static void build_frame(uint8_t type, uint32_t seq, const uint8_t *payload, uint16_t plen, uint8_t *f)
 {
-    if (plen > 50) plen = 50;      /* klamp PRED zapisem PAYLOAD_LEN (konzistence pole vs. data) */
+    if (plen > FR_PAYLOAD_MAX) plen = FR_PAYLOAD_MAX;  /* klamp PRED zapisem PAYLOAD_LEN */
     memset(f, 0, FR_LEN);
     f[0] = FR_MAGIC;
     f[1] = FR_VERSION;
@@ -105,9 +107,9 @@ static void build_frame(uint8_t type, uint32_t seq, const uint8_t *payload, uint
     f[9] = (uint8_t)(plen >> 8);
     /* f[10..11] RESERVED = 0 */
     if (payload && plen) memcpy(&f[FR_PAYLOAD], payload, plen);
-    uint16_t crc = crc16_ccitt(f, 62);
-    f[62] = (uint8_t)(crc);        /* low byte */
-    f[63] = (uint8_t)(crc >> 8);   /* high byte */
+    uint16_t crc = crc16_ccitt(f, FR_CRC_LEN);
+    f[126] = (uint8_t)(crc);        /* low byte */
+    f[127] = (uint8_t)(crc >> 8);   /* high byte */
 }
 
 /* === Presne us prodlevy pres DWT cyklovy citac (M7 @ SystemCoreClock).
@@ -306,7 +308,11 @@ static void sim_put_le64(uint8_t *p, uint64_t v)
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
 }
 
-/* Naplni `f` (64 B) kompletnim DATA ramcem. `fresh` = jde o NOVE mereni. */
+/* Naplni `f` (FR_LEN B, v2 ramec) kompletnim DATA ramcem. `fresh` = jde o NOVE
+ * mereni. ⚠️ `pl[50]` zustava — emulator plni jen v1-kompatibilni cast
+ * payloadu (offsety 12..59), v2 rozsireni (fw_version/caps/clk_status/
+ * win_count/window[0..1], abs 60..99) necha na nule z memsetu nize. Parser
+ * to precte jako "SIM, verze 0" — nezavadi, SIM marker uz je jinde prioritni. */
 static void sim_build_frame(uint8_t *f, int fresh)
 {
     uint8_t pl[50];
@@ -362,10 +368,10 @@ static void sim_build_frame(uint8_t *f, int fresh)
     f[8] = 50;                                       /* PAYLOAD_LEN */
     memcpy(&f[FR_PAYLOAD], pl, sizeof pl);
 
-    uint16_t crc = crc16_ccitt(f, 62);
+    uint16_t crc = crc16_ccitt(f, FR_CRC_LEN);
     if (s_sim_fault == SIM_FAULT_CRC) crc ^= 0xFFFFu;   /* schvalne spatne */
-    f[62] = (uint8_t)(crc);
-    f[63] = (uint8_t)(crc >> 8);
+    f[126] = (uint8_t)(crc);
+    f[127] = (uint8_t)(crc >> 8);
 }
 
 /* Vyrobi ramec do rx[]. Nova SEQ jen ~4x/s (realna FPGA ma gate 0,25 s), i kdyz
@@ -437,6 +443,13 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     m->phase_status       = p[38];             /* abs 50 */
     m->status2            = p[39];             /* abs 51 */
     m->freq16_x100000     = rd_le64(p + 40);   /* abs 52: pin27 /16  */
+    /* v2 rozsireni — beze zmeny proti tomu, co uz existovalo v v1 offsetech
+     * 0..47 (payload). Stary v1 rámec (a emulator, ktery je NEplni) tady
+     * necha nuly, coz se cte jako "neznama verze" — bezpecne. */
+    m->fw_version         = (uint16_t)p[48] | ((uint16_t)p[49] << 8);   /* abs 60-61 */
+    m->caps               = (uint16_t)p[50] | ((uint16_t)p[51] << 8);   /* abs 62-63 */
+    m->clk_status         = p[52];             /* abs 64 */
+    m->win_count          = p[53];             /* abs 65 */
     m->sequence           = rd_le32(&rx[4]);
     m->status_flags       = rx[3];
 }
@@ -464,8 +477,8 @@ bool fpga_freq_poll(fpga_meas_t *out)
 
     if (rx[0] != FR_MAGIC) { s_link_ok = 0; return false; }
 
-    uint16_t crc_calc = crc16_ccitt(rx, 62);
-    uint16_t crc_rx   = (uint16_t)rx[62] | ((uint16_t)rx[63] << 8);
+    uint16_t crc_calc = crc16_ccitt(rx, FR_CRC_LEN);
+    uint16_t crc_rx   = (uint16_t)rx[126] | ((uint16_t)rx[127] << 8);
     if (crc_calc != crc_rx) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s_link_ok = 0; return false; }
 
     s_link_ok = 1;   /* platny ramec dorazil -> link je ziva (i kdyz neni nove mereni) */
@@ -477,8 +490,9 @@ bool fpga_freq_poll(fpga_meas_t *out)
     /* Latch KAZDEHO platneho DATA ramce (i kdyz neni fresh/valid) -> STM vidi
      * error_flags/SIGNAL_LOST/phase_status i pri ztrate signalu (kdy VALID=0).
      * Parse do lokalu + kopie pod kratkym IRQ-off: s_last cte i UiTask pres
-     * fpga_freq_get_last() (okno Citac) — bez toho by mohl videt roztrzeny
-     * ramec (64 B, vic nez jedna 32bit operace). */
+     * fpga_freq_get_last() (okno Citac) — bez toho by mohl videt roztrzenou
+     * `fpga_meas_t` strukturu (vic nez jedna 32bit operace, velikost neni
+     * dulezita — roste s v2 poli, viz fpga_freq.h). */
     fpga_meas_t tmp;
     parse_data(rx, &tmp);
     {
@@ -528,7 +542,7 @@ bool fpga_freq_signal_lost(void)
 
 bool fpga_freq_get_last(fpga_meas_t *out)
 {
-    /* Kratky IRQ-off (~64 B memcpy) = vzajemne vylouceni s latchem ve
+    /* Kratky IRQ-off (memcpy fpga_meas_t) = vzajemne vylouceni s latchem ve
      * fpga_freq_poll() bez zavislosti na FreeRTOS API (drzi to driver cisty). */
     uint32_t pm = __get_PRIMASK();
     __disable_irq();
@@ -838,6 +852,13 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
     u64_to_str(m->gate_time_ns, g);
     uint8_t present = m->phase_status & 0x0F;          /* zive faze (ideal 0xF) */
     uint8_t fine    = (m->phase_status >> 4) & 0x0F;   /* videne jemne kody (ideal 0xF) */
+    /* ⚠️ BRING-UP nove desky (2026-09-30, dva symetricke kanaly, FPGA_PROTOCOL_V3_NAVRH.md):
+     * prechodny FPGA top.v (FW_VERSION 0x0300) vubec nema 4fazovy TDC (carry-chain
+     * je "stupen 3", zatim jen koncept v PHASE_CAL_DESIGN.md) -> phase_status je
+     * VZDY 0x00, tedy "PH:0/0". NENI to porucha ani chybejici fazova hrana -
+     * je to ocekavany stav, dokud nepribude skutecny TDC. NEHLEDAT v tom vadu
+     * hardwaru (viz CLAUDE.md "HW OBVINEN - A BYL NEVINNY") - zkontroluj nejdriv
+     * FW_VERSION v `status`/`fpgaraw`, jestli bezi prechodny bring-up bitstream. */
 
     /* chybovy tag (priorita: ztrata > overflow > div chyby) */
     const char *etag = "";
@@ -853,12 +874,12 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
              use16 ? "/16" : "/4", present, fine, g, (unsigned long)m->sequence, etag);
 }
 
-bool fpga_freq_raw_xfer(uint8_t *rx64)
+bool fpga_freq_raw_xfer(uint8_t *rx_frame)
 {
     if (!g_init_ok) return false;
     uint8_t tx[FR_LEN];
     build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);   /* posleme platny ACK ramec */
-    return xfer(tx, rx64);
+    return xfer(tx, rx_frame);
 }
 
 void fpga_freq_format_status(char *buf, int buflen)

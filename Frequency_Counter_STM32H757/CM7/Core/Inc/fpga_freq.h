@@ -2,9 +2,18 @@
  * @file    fpga_freq.h
  * @brief   SPI2 master driver pro FPGA citac kmitoctu (FPGA = SPI slave).
  *
- * Protokol: pevny 64B full-duplex ramec, STM32 generuje SCK+CS. FPGA vraci
- * posledni hotove mereni v ramci stejneho prenosu. Handshake in-band pres
- * STATUS/FLAGS. ACK (TYPE 0x06) potvrzuje prijatou SEQUENCE.
+ * Protokol: pevny 128B full-duplex ramec (v2, FPGA_PROTOCOL_V2_NAVRH.md),
+ * STM32 generuje SCK+CS. FPGA vraci posledni hotove mereni v ramci stejneho
+ * prenosu. Handshake in-band pres STATUS/FLAGS. ACK (TYPE 0x06) potvrzuje
+ * prijatou SEQUENCE.
+ *
+ * 🔴 MIGRACE v1->v2 (2026-09-30): puvodni rámec byl 64B/VERSION=0x01. Payload
+ * offsety 12..59 jsou 1:1 shodne s v1 (zadna zmena parse_data), jen rámec
+ * narostl na 128B a CRC pokryva 0..125 (bylo 0..61), CRC je na 126/127
+ * (bylo 62/63). Nutne kvuli FPGA strane: `spi_app.v` (nova deska, dual-channel
+ * bring-up) uz implementuje v2 beze zmeny — kdyby STM driver zustal na v1,
+ * 64 hodinovych pulzu proti FPGA cekajici 128 by CS zvedlo v polovine ramce
+ * a CRC by nikdy nesedelo (viz FPGA_PROTOCOL_V2_NAVRH.md).
  *
  * SPI: mode 0, MSB first, 8-bit, CS=PB12 active-low (manualni GPIO),
  *      bring-up ~1 MHz (viz FPGA_SCK_TARGET_HZ).
@@ -15,10 +24,21 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* 🔑 JEDINY zdroj pravdy o delce ramce — sdileji `fpga_freq.c` (FR_LEN) i
+ * UART diagnostika (`fpgaraw`/`fpgaloop` v freertos_task_uart.c). Driv byl
+ * FR_LEN soukromy v .c a UART mel vlastni `uint8_t rx[64]` — pri migraci na
+ * v2 by to byl presne ten "zapomenuty sourozenec" (L-0012): HAL_SPI_
+ * TransmitReceive by zapsal 128 B do 64B bufferu na zasobniku. */
+#define FPGA_FRAME_LEN  128u
+
 /* Jedno mereni (payload TYPE=0x80 DATA).
  * 4-fazove reciproke mereni, dva preddelice: pin28 /4 (primar, nejlepsi rozliseni),
  * pin27 /16 (vyssi rozsah / cross-check). freq*_x100000 = realny kmitocet x 100000
- * (delicka uz zahrnuta ve FPGA -> NENASOBIT 4 ani 16). */
+ * (delicka uz zahrnuta ve FPGA -> NENASOBIT 4 ani 16).
+ * ⚠️ NA NOVE DESCE (dual-channel bring-up, FPGA_PROTOCOL_V3_NAVRH.md) je tenhle
+ * 4fazovy/16-odbockovy popis uz jen historicky — `top.v` tam posila CH_A do
+ * primarniho slotu a CH_B do "/16" slotu (viz poznamka u fpga_freq_format_info).
+ * Pole zustavaji stejna, jen jejich VYZNAM je prechodne jiny. */
 typedef struct {
     uint64_t frequency_x100000;   /* pin28 /4: kmitocet v jednotkach 1/100000 Hz (5 des. mist) */
     uint64_t edge_count;          /* pocet period v okne (pin28, diagnostika) */
@@ -33,6 +53,11 @@ typedef struct {
     uint8_t  status_flags;        /* STATUS/FLAGS byte z ramce (offset 3) */
     uint8_t  phase_status;        /* bity3:0=present[3:0] (zive faze), bity7:4=fine_seen[3:0] */
     uint8_t  status2;             /* bit0 = chyba deleni pin27 (/16) */
+    /* ── v2 rozsireni (abs offset v ramci, viz FPGA_PROTOCOL_V2_NAVRH.md) ──── */
+    uint16_t fw_version;          /* abs 60-61: verze bitstreamu (0 = neznama/stary FW) */
+    uint16_t caps;                /* abs 62-63: bit0=window stream, bit1=SET_CONFIG, bit4=Λ/fine */
+    uint8_t  clk_status;          /* abs 64: bit0=10MHz pritomen, bit1=PLL/DLL lock */
+    uint8_t  win_count;           /* abs 65: kolik window zaznamu (0..2) je platnych (dnes nevyuzito) */
 } fpga_meas_t;
 
 /* error_flags bity */
@@ -62,7 +87,8 @@ uint32_t fpga_freq_crc_count(void);
 /** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
 uint32_t fpga_freq_crc_last_age_s(void);
 
-/** Jeden 64B full-duplex prenos (posle ACK posledni seq, prijme aktualni ramec).
+/** Jeden FPGA_FRAME_LEN-B full-duplex prenos (posle ACK posledni seq, prijme
+ *  aktualni ramec).
  *  @return true pokud prislo NOVE platne cerstve mereni (CRC ok, VALID, FRESH, nova SEQUENCE). */
 bool fpga_freq_poll(fpga_meas_t *out);
 
@@ -206,16 +232,18 @@ bool fpga_freq_signal_lost(void);
  *  @return false = zadny DATA ramec zatim nedorazil (out se nemeni). */
 bool fpga_freq_get_last(fpga_meas_t *out);
 
-/** Diagnostika: jeden 64B prenos (posle ACK), syrova odpoved do rx64 (min. 64 B).
+/** Diagnostika: jeden FPGA_FRAME_LEN-B prenos (posle ACK), syrova odpoved do
+ *  rx_frame (min. FPGA_FRAME_LEN B — volajici pole musi mit tuto velikost).
  *  @return true pokud HAL prenos prosel (rika nic o platnosti dat). */
-bool fpga_freq_raw_xfer(uint8_t *rx64);
+bool fpga_freq_raw_xfer(uint8_t *rx_frame);
 
 /** Naformatuje stav SPI + komunikace: "SPI <x.xx>MHZ LINK:OK SEQ:<n> CRC:<n>".
  *  (rychlost SCK, stav linky, posledni potvrzena SEQ, pocet CRC chyb). */
 void fpga_freq_format_status(char *buf, int buflen);
 
 /* ══════════════ Emulator FPGA ramcu (vyvoj bez osazene FPGA desky) ══════════
- * Misto `xfer()` slozi SYNTETICKY 64B DATA ramec. Vsechno za tim — kontrola
+ * Misto `xfer()` slozi SYNTETICKY DATA ramec (FPGA_FRAME_LEN B; v1-kompatibilni
+ * payload 0..49, v2 rozsireni necha na nule — viz sim_build_frame). Vsechno za tim — kontrola
  * MAGICu, overeni CRC, `parse_data`, latch, VALID/FRESH/SEQ, hystereze /4-/16 —
  * bezi PRESNE jako s hardwarem, takze se testuje skutecna datova cesta, ne jeji
  * obejiti. Nahrazuje tim horsi simulaci, ktera dosud zila az v UI vrstve
