@@ -5,7 +5,8 @@
 > **jediný cross-project pohled**: stav, sdílená smlouva a otevřené úkoly
 > s vyznačením závislostí. Detaily NEduplikuje — odkazuje na dokumenty stran.
 >
-> **Poslední aktualizace:** 2026-07-20 · udržují OK2HAZ & OK2JNJ.
+> **Poslední aktualizace:** 2026-09-30 (SPI protokol migrován v1→v2, viz TODO #261)
+> · udržují OK2HAZ & OK2JNJ.
 > Při větší změně na jedné straně aktualizuj sekci **Sdílený kontrakt** a **TODO**.
 
 ---
@@ -18,7 +19,7 @@ disciplinovaného z GPS (NEO-7M). Cíl = GPSDO + přesný čítač do ~1,4 GHz.
 
 ```
   GPS (NEO-7M) ──1PPS/UTC──► STM32H757 ◄──── TMP117/ADS1115/W25Q (senzory, flash)
-                                │ SPI2 (64B rámec, master)
+                                │ SPI2 (128B rámec v2, master)
                                 ▼
    OCXO 10MHz ──► Si5356A ──4×100MHz(0/90/180/270°)──► FPGA GW1NR-9
                                                           │  MC100EP016A ÷4/÷16
@@ -32,7 +33,11 @@ disciplinovaného z GPS (NEO-7M). Cíl = GPSDO + přesný čítač do ~1,4 GHz.
 ### STM32H757 (`Frequency_Counter_STM32H757/`) — zralý
 - Displej, FreeRTOS, senzory, GPS, RTC, W25Q flash, UI (libprim/libui/app),
   menu + okna, alarmy, IWDG, holdover — **funkční**. Detaily → `CLAUDE.md`.
-- SPI driver `fpga_freq.c` (64B rámec, CRC16, polling ~20 Hz, /4↔/16 hystereze) — **hotový**.
+- SPI driver `fpga_freq.c` — **migrován na protokol v2** (2026-09-30): 128B rámec,
+  CRC16 nad byte 0..125, polling ~20 Hz. ⬜ neověřeno na HW (stará deska mluví v1
+  a je mrtvá — `RX0:FF`; nová deska s v2 firmwarem ještě nezapojená). Historická
+  /4↔/16 hystereze v kódu zůstává (stará deska), ale u nové desky ji nahradí
+  CH_A/CH_B symetrické kanály.
 - ⚠️ **Velké číslo na hlavní obrazovce je zatím SIMULACE.** Reálná data z FPGA
   tečou jen do UART `freq` + diag okna (`g_freq_text`/`g_freq_info`).
   **Napojení reálných dat na headline + statistiky = hlavní otevřený úkol.**
@@ -71,16 +76,27 @@ disciplinovaného z GPS (NEO-7M). Cíl = GPSDO + přesný čítač do ~1,4 GHz.
 > kanály `CH_A`/`CH_B`** s carry-chain TDC; místo 4fázového vernieru ze `Si5356` jediný
 > `REF_100MHz`; **`Data_RDY` místo pollingu**; dva kanály + akumulátory + bulk vyčítání PSRAM.
 
-**SPI: STM32 master, FPGA slave, mode 0, MSB, 8-bit. Pevný 64B full-duplex rámec.**
-SCK cíl ≤6 MHz (max ~10 MHz). CRC-16/CCITT-FALSE (0x1021/0xFFFF) přes byte 0..61.
-DATA payload (TYPE 0x80): `frequency_x100000` (/4), `freq16_x100000` (/16),
-`edge_count`, `gate_time_ns`, `phase_status`, `error_flags`, …
+**SPI: STM32 master, FPGA slave, mode 0, MSB, 8-bit.**
+🔴 **2026-09-30: OBĚ STRANY MIGROVÁNY NA v2 — pevný 128B full-duplex rámec**
+(bylo 64B/v1). SCK cíl ≤6 MHz (max ~10 MHz). CRC-16/CCITT-FALSE (0x1021/0xFFFF)
+přes byte 0..125 (bylo 0..61), CRC na pozici 126/127 (bylo 62/63). Payload
+offsety 0..47 (v payloadu, tj. abs 12..59) zůstávají 1:1 shodné s v1 — žádná
+změna `parse_data` pro stávající pole. DATA payload (TYPE 0x80):
+`frequency_x100000`, `freq16_x100000`, `edge_count`, `gate_time_ns`,
+`phase_status`, `error_flags`, … + nová v2 pole `fw_version`/`caps`/
+`clk_status`/`win_count` (abs offset 60-65, zatím nikde nespotřebovaná).
+⬜ **Neověřeno na HW** — nová deska (dva symetrické kanály CH_A/CH_B místo
+/4↔/16) ještě není zapojená; stará deska mluvila v1 a byla mrtvá (`RX0:FF`),
+takže v2 na SPI ještě fyzicky neprošlo. **Obě strany musí naběhnout současně**
+— nesoulad v1/v2 by zvedl CS v polovině rámce a CRC by nikdy nesedělo.
 
-- **Autoritativní specifikace v1:** `Frequency_Counter_STM32H757/CLAUDE.md`
-  → sekce „FPGA strana protokolu" (tabulka offsetů, bity STATUS/FLAGS, škálování).
+- **Autoritativní specifikace v2 (aktuální):** `FPGA_PROTOCOL_V2_NAVRH.md`.
+- **Historická specifikace v1** (payload offsety 0..47 pořád platí i pro v2):
+  `Frequency_Counter_STM32H757/CLAUDE.md` → sekce „FPGA strana protokolu".
 - **Handoff / bring-up:** `Frequency_Counter_STM32H757/FPGA_SPI_HANDOFF.md`,
   `FPGA_INSTANCE_BRIEF.md`.
-- **Protokol v2 (návrh + odpověď FPGA strany):** `FPGA_PROTOCOL_V2_NAVRH.md`.
+- **Protokol v3 (návrh, dual-channel + akumulátory + PSRAM stream, NEIMPLEMENTOVÁNO):**
+  viz `citac_zadani_predavaci.md` a poznámky v `FPGA_PROTOCOL_V2_NAVRH.md`.
 
 > **Pravidlo:** jakákoli změna rámce/offsetů/škálování se promítá do OBOU stran.
 > Nejdřív uprav specifikaci v `CLAUDE.md`, pak obě implementace, a zapiš do TODO níže.
@@ -417,6 +433,8 @@ opravil a potvrdil funkční. **Celé TODO #246 tímto uzavřeno.** | STM32 (IPC
 | 259 | ✅ **F-0195 OVERENO NA HW 2026-09-28 + NALEZEN A OPRAVEN F-0196 [S3] (`docs/audit/2026-09-28_hw-test-f0194-f0195-f0196.md`).** **F-0195** (datalogovy akumulator michal kmitocty pri zmene signalu uprostred periody, oprava `d6ecda3`): reprodukce `fpgasim on 10000000` -> uprostred periody `fpgasim on 10500000` dala zaznam s cistou hodnotou `10.500.000,00000Hz` (ne smes) presne podle navrhu opravy. **F-0196** nalezen pri tomtez testu: test pridany F-0194 do `ipc_selftest()` (`ipc.c:850-857`) spolehal, ze `ipc_stamp()` propise `g_selftest_res` do lokalni testovaci kopie snapshotu — nepropise (jen memset + magic/version/size, skutecne plneni dela az `ipc_publish()` nad GLOBALNIM `g_ipc`, ne nad lokalni testovaci instanci). Dusledek: `SELFTEST: 15/16 FAIL #12` pri KAZDEM bootu (produkcni cesta `ipc_scpi_src_from_snap` byla v poradku, vadny byl jen test). Oprava: doplneno `t.snap.selftest_res = g_selftest_res;` za kazde `ipc_stamp(&t)` v testu (`ipc.c:852,854`). Lekce L-0108. **Overeno na HW:** pred opravou `15/16 FAIL #12`, po oprave + reflash CM7 + power-cyklus `SELFTEST: 16/16 PASS`. ⚠️ **SW reset (`-rst`) po flashi znovu neprobudil USB CDC konzoli** (COM8 mlcel, SWD pritom funkcni) — stejny jev jako u testu modulu 24 (#255); pomohl jen fyzicky power-cyklus, opakovane. | STM32 | ✅ |
 
 | 260 | ✅ **F-0197 [S3] NALEZEN A OPRAVEN 2026-09-28 (druhe kolo auditu modulu 24, `docs/audit/2026-09-28_matematika-druhe-kolo.md`), OVERENO NA HW.** `syscfg_load()` (`syscfg.c:249-259`) byla PATE misto, ktere prepisovalo `g_meas_cfg` po jednotlivych polich bez `taskENTER_CRITICAL()` — L-0018 (2026-09-18, F-0052+F-0096) driv opravila stejnou tridu ve CTYRECH tehdy znamych mistech (`scpi.c`, `ipc.c`, okno MATH, `setup_load`) vc. komentare vysvetlujiciho proc (roztrzena dvojice `lo`/`hi`), ale `syscfg_load()` do sweepu nespadla. `syscfg_load()` bezi jen JEDNOU pri bootu (UiTask, pres `app_gpsdo_init()`, chraneno `s_inited`), defaultTask (vyssi priorita, `alarm_tick()` cte `g_meas_cfg.limit_en/alarm_en`) ji mohl preemptovat uprostred devitipolove sekvence zapisu. Dopad uzsi nez F-0052 (alarm_tick necte `lo`/`hi`), proto S3 jako F-0096. Opraveno stejnym vzorem jako `setup_load()` — lokalni kopie + atomicky commit (`taskENTER_CRITICAL`); pridany includy `FreeRTOS.h`/`task.h`. Build Release CM7 0 varovani, `tools/audit.py` 92/0/2, `.text` +32 B, `bl vPortEnterCritical/vPortExitCritical` overeno v disassembly. Po reflashi + power-cyklu: `SELFTEST: 16/16 PASS`, `Reset: power-on`, `ULOZISTE: syscfg OK`, zadna anomalie. Lekce L-0018 (treti opakovani). | STM32 | ✅ |
+
+| 261 | ✅ **F-0200 [S4] OPRAVENO 2026-09-30** (`app_gpsdo.c:8146`, demo dlazdice "eased cislo" v okne PRIKLADY ANIMACI): `%+ld` vynucovalo znamenko `+`, ale `ui_font_mono_25` ho v sade nema (jen `-`) → kladne hodnoty se tise kreslily bez znamenka. Prehozeno na `ui_font_mono_22` (plny charset), stejny precedent jako ODCHYLKA×N. Build 0 varovani, `audit.py` 92/0/2. ⬜ neovereno na HW (kosmeticke, demo obrazovka). 🔴 **MIMO audit cyklus (na vyslovne zadani uzivatele — priprava FPGA komunikace pred pripojenim noveho dvoukanaloveho modulu): SPI protokol migrovan v1→v2.** **STM32** (`fpga_freq.c`/`.h`): `FPGA_FRAME_LEN`=128 (bylo 64), `FR_VERSION`=0x02, CRC nad byte 0..125 (bylo 0..61, pozice 126/127), 4 nova pole `fpga_meas_t` (fw_version/caps/clk_status/win_count, abs offset 60-65, zatim nikde nectena). **Kriticky zachyceno v miste vzniku:** `freertos_task_uart.c` (`fpgaloop`/`fpgaraw`) melo vlastni `uint8_t rx[64]` nezavisle na `FR_LEN` — pri 128B ramci by `HAL_SPI_TransmitReceive` prepsal zasobnik o 64 B navic (presne vzor L-0012 „zapomenuty sourozenec"), opraveno soucasne. Fixreview sebe sama nasel a opravil `-Wsign-compare` regresi z te same zmeny. **FPGA** (`Frequency_Counter_FPGA_Module/src/top.v`+4 dalsi soubory): novy `coarse_edge_detect` (jednohodinovy debounce, nahrazuje 4fazovy `phase_oversampler` — nova deska ma jen jednu referencni hodinu), dva symetricke kanaly CH_A/CH_B sdileji nezmeneny `win_recip`, `FW_VERSION` 0x0201→0x0300. Synteza + P&R cisty (0 chyb, 1 benigni WARN PR1014). CH_B mozna jednorazova staleness o jedno okno zdokumentovana, neopravena (nizka zavaznost, zdedena z `win_recip`). Symetricke rozlozeni na die NEreseno (Gowin floorplan syntax neoverena). | STM32 + FPGA (kontrakt) | ⬜ **neovereno na HW** — bitstream v2 jeste nenaflashovan, stara deska mrtva (RX0:FF); az bude nova deska zapojena, musi jit naflashnout OBE strany soucasne (jinak CS zvedne v pulce 128B ramce a CRC nikdy nesedi) |
 
 > Vychází z porovnání s Keysight 53230A / SR620 / Microsemi 5120A / TimeLab (co dělají tovární
 > čítače a fázové analyzátory a co ještě nemáme). ⭐ **#36 (1PPS TIC) je NEJVYŠŠÍ HW priorita této

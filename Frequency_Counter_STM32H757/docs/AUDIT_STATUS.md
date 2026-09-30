@@ -3,7 +3,46 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-29 (noc, vyšetření) — 🔴 **`FONTY:
+**Poslední aktualizace:** 2026-09-30 — ✅ **F-0200 OPRAVENO** + **mimo
+audit cyklus: SPI protokol CM7 driveru migrován v1→v2 (128B ramec) a
+pripravena FPGA RTL pro novy dvoukanalovy vstupni modul.** Vse na explicitni
+zadani uzivatele (priprava FPGA komunikace pred pripojenim nove desky), ne
+jako soucast auditni smycky — zapsano sem kvuli stopovatelnosti.
+- **F-0200 [S4] opraveno:** `app_gpsdo.c:8146` (demo dlazdice "eased cislo")
+  prehozen z `ui_font_mono_25` (nema `+`) na `ui_font_mono_22` (plny charset).
+  Cist `fix:` commit `6152c1a`, build 0 varovani, `audit.py` 92/0/2. ⬜
+  neovereno na HW (cist kosmeticky, demo obrazovka).
+- **v1→v2 migrace SPI ramce** (`fpga_freq.c`/`.h`, commit `4910330`):
+  `FPGA_FRAME_LEN`=128 (bylo 64), `FR_VERSION`=0x02, CRC 0..125 (bylo 0..61,
+  pozice 126/127), 4 nova pole `fpga_meas_t` (fw_version/caps/clk_status/
+  win_count, abs offset 60-65). **Kriticky zachycen L-0012 vzor v miste
+  vzniku** — `freertos_task_uart.c` (`fpgaloop`/`fpgaraw`) mely vlastni
+  `uint8_t rx[64]` nezavisle na `FR_LEN`; pri 128B ramci by
+  `HAL_SPI_TransmitReceive` prepsal zasobnik o 64 B navic. Opraveno soucasne,
+  ne jako zapomenuty sourozenec. Fixreview sebe sama: nalezena a opravena
+  `-Wsign-compare` regrese (`int i < FPGA_FRAME_LEN` — unsigned porovnani),
+  audit baseline obnovena (92/0/2). Disassembly potvrzuje nova pole se
+  skutecne ctou z abs offsetu 60/62/64/65 a zapisuji do struktury
+  (`ldrh/ldrb [r4,#60..65]` → `strh/strb [r3,#54..59]`). ⬜ **neovereno na
+  HW** — cilova FPGA jeste neposila v2 ramec (stara deska mrtva, RX0:FF).
+- **FPGA RTL priprava pro dvoukanalovy modul** (`top.v`+4 dalsi soubory
+  v `Frequency_Counter_FPGA_Module/`, commit `5f56bff`): novy
+  `coarse_edge_detect` (jednohodinovy debounce misto 4fazoveho
+  `phase_oversampler`), dva symetricke kanaly CH_A/CH_B sdileji `win_recip`
+  ze stareho `spi_app.v` (beze zmeny), `FW_VERSION` 0x0201→0x0300. Synteza +
+  P&R cisty (0 chyb, 1 benigni WARN). Fixreview (`coarse_edge_detect` —
+  cisty 2-FF synchronizer + stavovy automat, zadny race) nenasel zadnou
+  novou vadu. CH_B mozna jednorazova staleness o jedno okno zdokumentovana,
+  ne opravena (nizka zavaznost, zdedena z `win_recip`). Symetricke rozlozeni
+  na die NEreseno (Gowin floorplan LOC/region syntax neoverena). ⬜
+  **neovereno na HW** — bitstream jeste nenaflashovan.
+🔑 **Pokracovat zde:** az bude nova deska zapojena — naflashovat FPGA v2
+bitstream + tento CM7 build (obe strany musi mluvit v2 soucasne, jinak CS
+zvedne v pulce ramce a CRC nikdy nesedi), pak `fpgaraw`/`status` na overeni
+linky. Zbytek otevreneho auditniho backlogu (viz predchozi zaznamy nize)
+cekal nedotceny.
+
+**Předchozí, 2026-09-29 (noc, vyšetření) — 🔴 `FONTY:
 preskocenych glyfu 6` vysvětleno — nalezen F-0200 [S4].** Zápis →
 [`audit/2026-09-29_fonty-preskocene-glyfy.md`](audit/2026-09-29_fonty-preskocene-glyfy.md).
 `app_gpsdo.c:8146` (demo dlaždice „eased číslo", okno PŘÍKLADY ANIMACÍ,
