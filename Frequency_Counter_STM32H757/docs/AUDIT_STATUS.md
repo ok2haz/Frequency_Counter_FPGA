@@ -3,7 +3,43 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-09-30 — ✅ **F-0200 OPRAVENO** + **mimo
+**Poslední aktualizace:** 2026-10-01 — **mimo audit cyklus: SPI PHY FPGA
+presunuta z 10 MHz na 100 MHz (clk_p0_100m) + CDC vuci 10MHz aplikaci.**
+Zadani uzivatele po diskuzi o limitech SPI rychlosti (viz konverzace
+2026-10-01). Komplet:
+- **Duvod:** `spi_slave_phy.v` oversampluje SCK vlastnim `clk` (zadny
+  dedikovany clock vstup) — na 10 MHz byl spolehlivy strop jen ~2 MHz SCK
+  (5x oversampling rezerva dle vlastniho komentare souboru), hluboko pod
+  kontraktem (cil 6 MHz / max 10 MHz). Na 100 MHz (uz existuje na desce,
+  REF_100MHz ze Si5356) je stejna rezerva ~20 MHz.
+- **RX smer (PHY->app) nepotreboval zmenu** — `fe_s`/`rx_valid_pulse`
+  v `top.v` byl uz od zacatku spravny 3-stupnovy toggle-sync, driv jen
+  no-op v ramci stejne domeny.
+- **TX smer potreboval novy CDC.** Misto noveho 1024b zachytavaciho
+  registru (nevesel by se — registry FPGA byly na 79 %, 5245/6693) zvolen
+  levny navrh: novy mezistav `S_TX_ARM` v `spi_app.v` (frame_ok padne
+  CELY jeden takt clk_ref_10m = 100 ns pred prepisem `tx_b[]`) + 2-stupnovy
+  level-synchronizer `txv_s` v `top.v` (+3 registry). `tx_frame_flat`
+  zustava kombinacni vodic bez noveho registru — bezpecne diky te 100ns
+  rezerve (3-5x nad potrebu 2-3-taktoveho zpozdeni synchronizeru). Bez
+  tohohle mezikroku hrozil torn ramec (nova data + stara CRC) behem
+  ~20-30ns okna — stejna trida vady, jakou uz projekt resil v ramci JEDNE
+  domeny (puvodni komentar "audit V3" u `frame_ok`).
+- **Overeno:** synteza+P&R cisty (0 chyb, stejne 1 benigni WARN jako driv),
+  registry 5245→**5248** (+3, presne `txv_s`), **TNS=0 na obou hodinovych
+  domenach** (0 selhavajicich koncovych bodu setup i hold v Gowin STA),
+  Fmax clk_p0_100m=101,4 MHz (pozadavek 100 MHz), clk_ref_10m=51,6 MHz
+  (pozadavek 10 MHz). STM strana beze zmeny (SCK target zustava 1 MHz
+  bring-up, hluboko pod novym i starym stropem).
+  Commit `feat(fpga)`: `7affd41`.
+  ⬜ **Neovereno na HW** — deska jeste neni zapojena, zadny realny SCK
+  signal tudy jeste neprosel.
+🔑 **Pokracovat zde:** az bude nova deska zapojena, ozkouset SCK postupne
+nad dnesnich 1 MHz (STM `FPGA_SCK_TARGET_HZ`) — novy FPGA strop dovoluje
+az ~10 MHz s rezervou, ale zvysovat SCK az PO overeni 1 MHz linky
+(postupne, s merenim, ne naslepo).
+
+**Předchozí, 2026-09-30:** ✅ **F-0200 OPRAVENO** + **mimo
 audit cyklus: SPI protokol CM7 driveru migrován v1→v2 (128B ramec) a
 pripravena FPGA RTL pro novy dvoukanalovy vstupni modul.** Vse na explicitni
 zadani uzivatele (priprava FPGA komunikace pred pripojenim nove desky), ne
