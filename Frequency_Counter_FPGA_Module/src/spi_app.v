@@ -37,6 +37,20 @@
 //  24 fine kódy | 25 flags{bit0=cal_mode} | 26..32 S1 | 33..42 S2
 //  43..46 edges(u32) | 47..125 rezerva=0
 //
+// 🔴 S1/S2/fine/hist POLE JSOU NAVRŽENA PRO 4FÁZOVÝ VERNIER (stará deska,
+// phase_oversampler), NE pro carry-chain TDC nové desky. LSB fine kódu = 2,5 ns
+// (perioda VCO/4 ze Si5356 fázového vzorkování), proto "ts_rel" v S1/Λ-regresi
+// i histogram binů počítají s krokem 2,5 ns. Na nové desce dnes `meas_s1`/
+// `meas_s2`/`meas_hist`/`meas_fine_fl` přichází jako konstantní 0 (top.v --
+// `coarse_edge_detect` nemá fine výstup, viz jeho hlavička). Až přibude
+// skutečný carry-chain TDC (PHASE_CAL_DESIGN.md "stupeň 3"), bude potřeba
+// PŘEŠKÁLOVAT: LSB carry-chain TDC je dané délkou delay-line buňky
+// (~22 ps single-shot, bin ~50 ps dle zadání), ne periodou PLL hodin --
+// rozsah akumulátorů (u56/u80) i interpretace Λ/Ω regrese ve fpga_freq.h
+// dokumentaci (FPGA_PROTOCOL_V2_NAVRH.md) se musí přepočítat na nové LSB,
+// ne jen přepojit signály. Nekopírovat předpoklad "LSB=2,5 ns" do nové
+// implementace bez ověření.
+//
 // Flat mapování (shodné s PHY): bit[1023]=byte0[7], MSB-first, byte0 první.
 // ============================================================
 

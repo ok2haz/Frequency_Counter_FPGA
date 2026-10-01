@@ -31,6 +31,13 @@
 //     jdou do spi_app jako konstantní 0 (CAL report bude nesmyslný, dokud
 //     nepřibude skutečný TDC -- to je OČEKÁVANÉ, ne přehlédnutí).
 //
+// 🔴 PROTOKOLOVÁ POLE S1/S2/fine/hist (spi_app.v, caps bit4 rezerva) jsou
+// navržena pro LSB=2,5 ns 4fázového vernieru, ne pro carry-chain TDC.
+// Až přibude skutečný TDC (PHASE_CAL_DESIGN.md "stupeň 3"), nestačí jen
+// propojit signály -- LSB i rozsah akumulátorů se musí přepočítat na nové
+// jemné rozlišení (~22 ps single-shot / bin ~50 ps). Detail viz komentář
+// u mapy payloadu ve spi_app.v.
+//
 // Piny: nová deska, viz src/pins.cst + ../../citac_zadani_predavaci.md §4.
 // ✅ SYNTÉZA + P&R OVĚŘENY (gw_sh.exe build.tcl, 2026-09-30): 0 chyb,
 // 1 benigní varování (PR1014 -- clk_ref_10m na obecném routingu, 10 MHz
