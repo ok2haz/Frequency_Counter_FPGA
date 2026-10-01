@@ -2990,6 +2990,20 @@ void UartTask_run(void *argument)
 						     (unsigned long)fpga_freq_crc_last_age_s());
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  /* v2 pole (abs 60-65) — zatim jen diagnosticky vypis, nic je
+				   * nespotrebovava (window stream/SET_CONFIG/CAL report jeste
+				   * nejsou zapojene, viz FPGA_PROTOCOL_V2_NAVRH.md checklist).
+				   * `fpga_freq_format_info()` uz desitky let slibuje "zkontroluj
+				   * FW_VERSION v status/fpgaraw" pri bring-upu nove desky — tenhle
+				   * radek to konecne plni (predtim se FW_VERSION v `status` vubec
+				   * nevypisoval, i kdyz na nej komentar odkazoval). */
+				  {
+					  fpga_meas_t m;
+					  if (fpga_freq_get_last(&m))
+						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X WIN:%u\n",
+							     (unsigned)m.fw_version, (unsigned)m.caps,
+							     (unsigned)m.clk_status, (unsigned)m.win_count);
+				  }
 				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni
 				   * misto, kam se sahne pri diagnostice. */
 				  if (fpga_sim_active()) {
