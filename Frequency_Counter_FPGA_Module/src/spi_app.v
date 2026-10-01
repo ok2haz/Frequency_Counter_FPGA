@@ -175,10 +175,11 @@ module spi_app (
 
     // FSM
     localparam [2:0] S_IDLE    = 3'd0;
-    localparam [2:0] S_TX_CRC  = 3'd1;
-    localparam [2:0] S_TX_FIN  = 3'd2;
-    localparam [2:0] S_RX_CRC  = 3'd3;
-    localparam [2:0] S_RX_PROC = 3'd4;
+    localparam [2:0] S_TX_ARM  = 3'd1;   // NOVY: viz komentar u S_IDLE/S_TX_ARM nize
+    localparam [2:0] S_TX_CRC  = 3'd2;
+    localparam [2:0] S_TX_FIN  = 3'd3;
+    localparam [2:0] S_RX_CRC  = 3'd4;
+    localparam [2:0] S_RX_PROC = 3'd5;
 
     reg [2:0]  state    = S_IDLE;
     reg [6:0]  crc_idx  = 7'd0;
@@ -247,6 +248,22 @@ module spi_app (
                     crc_idx <= 7'd0;
                     state   <= S_RX_CRC;
                 end else if (meas_dirty || tx_dirty) begin
+                    // 🔴 CDC (PHY ted bezi na clk_p0_100m, viz top.v): frame_ok
+                    // padne TADY, O CELY JEDEN TAKT DRIV nez se tx_b[] zacne
+                    // prepisovat (zapis az v S_TX_ARM nize). Dava to synchronizeru
+                    // tx_valid v top.v (clk_p0_100m domena) celych 100 ns (10 taktu
+                    // @100MHz) rezervy na ustaleni PRED tím, než se data skutečně
+                    // zmeni -- bez tohohle mezikroku by mohl PHY behem ~20-30ns
+                    // okna (zpozdeni 2-3-stupnoveho synchronizeru) zachytit torn
+                    // ramec (nova data + stara CRC), protoze tx_frame_flat je
+                    // kombinacni vodic (nesynchronizovany -- novy 1024b registr by
+                    // se nevesel, registry FPGA jsou na 79 %). Viz spi_slave_phy.v.
+                    frame_ok <= 1'b0;
+                    state    <= S_TX_ARM;
+                end
+            end
+
+            S_TX_ARM: begin
                     // sestav hlavičku + payload
                     tx_b[0] <= MAGIC;
                     tx_b[1] <= VERSION;
@@ -330,9 +347,9 @@ module spi_app (
                     crc_idx    <= 7'd0;
                     meas_dirty <= 1'b0;
                     tx_dirty   <= 1'b0;
-                    frame_ok   <= 1'b0;   // rámec neúplný až do S_TX_FIN
+                    // frame_ok uz je 0 (nastaveno v S_IDLE o takt drive -- CDC
+                    // rezerva, viz komentar tam); tady se neopakuje.
                     state      <= S_TX_CRC;
-                end
             end
 
             S_TX_CRC: begin

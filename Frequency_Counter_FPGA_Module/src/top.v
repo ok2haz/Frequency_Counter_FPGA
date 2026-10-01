@@ -258,14 +258,44 @@ module top (
     wire [7:0]    spi_status;
     wire [10:0]   rx_bit_count;
 
+    // 🔴 CDC 2026-10-01: PHY prešla z clk_ref_10m na clk_p0_100m (10x vyssi
+    // oversampling SCK -> spolehlivy strop ~20 MHz misto ~2 MHz, viz hlavicka
+    // spi_slave_phy.v "Pozn. rychlost"). spi_app.v ZUSTAVA na clk_ref_10m
+    // (FSM se nesaha) -- vznika tim hranice dvou domen presne tam, kde to
+    // spi_slave_phy.v uz davno predpovidala ("pak je nutne osetrit CDC
+    // ramcu vuci aplikaci").
+    //
+    // RX smer (PHY 100MHz -> app 10MHz) nepotreboval ZADNOU zmenu: fe_s/
+    // rx_valid_pulse nize je UZ od zacatku 3-stupnovy synchronizer toggle
+    // bitu frame_end_tgl - fungoval spravne i driv (kdy byl synchronizace
+    // v ramci STEJNE domeny, tedy no-op), a je to presne spravny vzor i
+    // pro SKUTECNOU cross-domain hranici. rx_frame_flat (=PHY rx_shadow)
+    // je stabilni od CS^ do dalsiho CS v (>=25us mezera mezi ramci = 250
+    // taktu clk_ref_10m), tedy s obrovskou rezervou nad potrebu synchronizace.
+    //
+    // TX smer (app 10MHz -> PHY 100MHz) synchronizaci DRIV nepotreboval
+    // (stejna domena) a ted ano: tx_frame_valid (=spi_app `frame_ok`) jde
+    // pres novy 2-stupnovy LEVEL synchronizer (txv_s) do PHY domeny.
+    // tx_frame_flat SAMOTNY (1024b) se NESYNCHRONIZUJE (kombinacni vodic
+    // beze zmeny) -- bezpecne jen diky tomu, ze spi_app.v ma novy mezistav
+    // S_TX_ARM: frame_ok padne CELY JEDEN takt clk_ref_10m (100 ns = 10
+    // taktu @100MHz) PRED tím, nez se tx_b[] zacne prepisovat. To dava
+    // 2-stupnovemu synchronizeru (max ~2-3 takty @100MHz = 20-30 ns zpozdeni)
+    // 3-5x rezervu PRED tím, nez by data mohla byt torn. Novy 1024b
+    // zachytavaci registr by se NEVESEL (registry FPGA jsou na 79 %,
+    // 5245/6693) -- proto tenhle levnejsi navrh bez duplikace ramce.
+    reg [2:0] txv_s = 3'b000;
+    always @(posedge clk_p0_100m) txv_s <= {txv_s[1:0], tx_frame_valid};
+    wire tx_valid_sync = txv_s[2];
+
     spi_slave_phy u_phy (
-        .clk(clk_ref_10m),
+        .clk(clk_p0_100m),
         .sck_pin(spi_sck),
         .cs_pin(spi_cs_n),
         .mosi_pin(spi_mosi),
         .miso(spi_miso),
         .tx_frame_flat(tx_frame_flat),
-        .tx_valid(tx_frame_valid),
+        .tx_valid(tx_valid_sync),
         .rx_frame_flat(rx_frame_flat),
         .frame_end_tgl(frame_end_tgl),
         .rx_bit_count(rx_bit_count)

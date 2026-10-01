@@ -4,8 +4,8 @@
 // (protokol v2 dle FPGA_PROTOCOL_V2_NAVRH.md).
 //
 // FPGA negeneruje hodiny. SCK/CS/MOSI jsou asynchronní vstupy
-// oversamplované systémovými hodinami (clk = clk_ref_10m, 10 MHz),
-// hrany SCK/CS se detekují -> robustní vůči metastabilitě a delším drátům.
+// oversamplované systémovými hodinami (parametr `clk`), hrany SCK/CS se
+// detekují -> robustní vůči metastabilitě a delším drátům.
 //
 // Mode 0:
 //   - MOSI vzorkuj na NÁBĚŽNÉ hraně SCK
@@ -17,10 +17,16 @@
 //
 // Mapování flat: bit[1023] = byte0[7] (MSB), MSB-first, byte0 první.
 //
-// Pozn. rychlost: oversampling 10 MHz / 3FF sync je spolehlivý do ~2 MHz
-//   SCK (rámec 128 B = 1024 bitů -> ~512 µs). Pro SCK 4+ MHz dle v2 návrhu
-//   přepoj clk na 100 MHz (clk_p0_100m) - PHY je na hodinách generický,
-//   ale pak je nutné ošetřit CDC rámců vůči aplikaci (10 MHz doména).
+// 🔴 Pozn. rychlost (2026-10-01): `clk` = clk_p0_100m (100 MHz, bylo
+//   clk_ref_10m/10 MHz) -- oversampling/3FF sync spolehlivý do ~20 MHz SCK
+//   (bylo ~2 MHz), rezerva ~5x. CDC vůči aplikaci (clk_ref_10m, 10 MHz)
+//   řeší top.v: RX směr (frame_end_tgl) má 3-stupňový toggle-sync (fe_s),
+//   TX směr (tx_valid) má nový 2-stupňový level-sync (txv_s) + mezistav
+//   S_TX_ARM ve spi_app.v, který dává 100 ns rezervy před přepisem
+//   tx_b[] -- bez něj by torn rámec (nová data + stará CRC) mohl projít
+//   ~20-30ns oknem zpoždění synchronizeru. Žádný nový 1024b registr
+//   (nevešel by se, registry FPGA byly na 79 %) -- tx_frame_flat zůstává
+//   kombinační vodič, bezpečný právě díky té 100 ns rezervě.
 // ============================================================
 
 module spi_slave_phy (
