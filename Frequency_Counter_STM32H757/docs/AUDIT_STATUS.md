@@ -18,13 +18,13 @@ Zadani uzivatele po diskuzi o limitech SPI rychlosti (viz konverzace
 - **TX smer potreboval novy CDC.** Misto noveho 1024b zachytavaciho
   registru (nevesel by se — registry FPGA byly na 79 %, 5245/6693) zvolen
   levny navrh: novy mezistav `S_TX_ARM` v `spi_app.v` (frame_ok padne
-  CELY jeden takt clk_ref_10m = 100 ns pred prepisem `tx_b[]`) + 2-stupnovy
-  level-synchronizer `txv_s` v `top.v` (+3 registry). `tx_frame_flat`
-  zustava kombinacni vodic bez noveho registru — bezpecne diky te 100ns
-  rezerve (3-5x nad potrebu 2-3-taktoveho zpozdeni synchronizeru). Bez
-  tohohle mezikroku hrozil torn ramec (nova data + stara CRC) behem
-  ~20-30ns okna — stejna trida vady, jakou uz projekt resil v ramci JEDNE
-  domeny (puvodni komentar "audit V3" u `frame_ok`).
+  CELY jeden takt clk_ref_10m = 100 ns pred prepisem `tx_b[]`) + 3-stupnovy
+  level-synchronizer `txv_s` v `top.v` (+3 registry, stejny vzor jako
+  `fe_s`). `tx_frame_flat` zustava kombinacni vodic bez noveho registru —
+  bezpecne diky te 100ns rezerve (~3,3x nad potrebu 3-taktoveho/30ns
+  zpozdeni synchronizeru). Bez tohohle mezikroku hrozil torn ramec (nova
+  data + stara CRC) behem ~30ns okna — stejna trida vady, jakou uz projekt
+  resil v ramci JEDNE domeny (puvodni komentar "audit V3" u `frame_ok`).
 - **Overeno:** synteza+P&R cisty (0 chyb, stejne 1 benigni WARN jako driv),
   registry 5245→**5248** (+3, presne `txv_s`), **TNS=0 na obou hodinovych
   domenach** (0 selhavajicich koncovych bodu setup i hold v Gowin STA),
@@ -34,6 +34,28 @@ Zadani uzivatele po diskuzi o limitech SPI rychlosti (viz konverzace
   Commit `feat(fpga)`: `7affd41`.
   ⬜ **Neovereno na HW** — deska jeste neni zapojena, zadny realny SCK
   signal tudy jeste neprosel.
+- 🟡 **FIXREVIEW 2026-10-01 (sebekontrola téhož dne) — nalezena a opravena
+  JEDNA nepřesnost, žádná funkční vada.** `txv_s` je `reg [2:0]` se čtením
+  `txv_s[2]` — tedy **skutečně 3stupňový** synchronizér (shodný vzor s
+  `fe_s`/`resA_s`/PHY vlastními `sck_s`/`cs_s`/`mosi_s`), ale komentáře
+  v `top.v`/`spi_slave_phy.v` i tenhle zápis ho PŮVODNĚ označovaly jako
+  „2stupňový" — čistě popisná chyba (commit `7affd41`), ne chyba kódu;
+  3stupňová realizace je BEZPEČNĚJŠÍ než popsaná 2stupňová varianta, takže
+  marže (100ns/30ns ≈ 3,3×) platí a je spíš konzervativnější, ne horší,
+  než jak bylo tvrzeno. Opraveno `docs:` komentářem (3 soubory). Dál
+  prověřeno a BEZ NÁLEZU: (1) `S_TX_ARM` nemění prioritu RX zpracování
+  (ta zůstává vázaná jen na `S_IDLE`, nedotčeno); (2) race `meas_dirty`
+  vs. souběžný `new_meas` v přesně té samé hraně — **existoval už
+  PŘED touto změnou** (textové pořadí přiřazení v původním `S_IDLE` dávalo
+  `case`-větvi přednost před `if(new_meas)` větví na stejném signálu);
+  můj zásah ho NEZHORŠIL, spíš zúžil (`S_IDLE` už `meas_dirty` vůbec
+  nepíše, takže na jeho rozhodovací hraně ke kolizi dojít nemůže) — je to
+  ale pořád **latentní, předchozí nález**, mimo rozsah dnešní CDC opravy,
+  nezapsaný jako nové F-číslo (žádný pozorovatelný dopad: `h_freq`/atd.
+  se aktualizují vždy, jen `meas_dirty` flag by se teoreticky mohl ztratit
+  na jedno okno — příští `new_meas` o ~100-250ms později to srovná). Pokud
+  má mít formální nález, je to kandidát na **FPGA_PROTOCOL** audit, ne na
+  dnešní práci.
 🔑 **Pokracovat zde:** az bude nova deska zapojena, ozkouset SCK postupne
 nad dnesnich 1 MHz (STM `FPGA_SCK_TARGET_HZ`) — novy FPGA strop dovoluje
 az ~10 MHz s rezervou, ale zvysovat SCK az PO overeni 1 MHz linky
