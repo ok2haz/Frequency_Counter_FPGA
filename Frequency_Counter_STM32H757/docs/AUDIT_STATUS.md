@@ -3,7 +3,29 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-01 — **mimo audit cyklus: SPI PHY FPGA
+**Poslední aktualizace:** 2026-10-01 — ✅ **Hlubsi audit SPI v2 protokolu
+(STM+FPGA) + oprava nalezu.** Krizova kontrola kazdeho pole `tx_b[]`
+(`spi_app.v`) proti `parse_data()` (`fpga_freq.c`) bajt po bajtu — VSECH
+15 poli DATA ramce (frequency_x100000..status_flags) sedi presne, vcetne
+CRC pokryti (0..125 na obou stranach) a endianity SEQUENCE. **Zadna
+neshoda.** FPGA funkcni simulace **nebyla mozna** (zadny Verilog
+simulator v prostredi — jen synteza/P&R/timing, zapsano jako zname
+omezeni metody, ne jako "otestovano").
+🔴 **Nalezeno: `fpga_freq_format_info()` sliboval v komentari "zkontroluj
+FW_VERSION v status/fpgaraw" pri podezreni na bring-up bitstream, ale
+`status` FW_VERSION nikdy nevypisoval** — diagnostika, na kterou komentar
+odkazoval, neexistovala. **Opraveno** (`fix: d6100be`): `status` ted
+vypisuje FW/CAPS/CLK/WIN z posledniho DATA ramce (kdyz uz nejaky prisel).
+Build 0 varovani, `audit.py` 92/0/2, `.text` +80 B (overeno v obraze).
+⬜ neovereno na HW.
+**Zbyva (NENI oprava, je to nove feature scope — nezahrnuto bez
+samostatneho zadani):** STM nikdy neparsuje `window[0]`/`window[1]`
+(abs 68-99), neposila SET_CONFIG (GATE tlacitko na displeji proto porad
+nic nedela), nezada CAL report (0xA0) — vsechny tri jsou v
+`FPGA_PROTOCOL_V2_NAVRH.md` vyslovne oznacene "volitelne", tedy vedomy
+nedodelek, ne prehlednuty.
+
+**Předchozí, 2026-10-01 (dřívější dnešní zápis):** **mimo audit cyklus: SPI PHY FPGA
 presunuta z 10 MHz na 100 MHz (clk_p0_100m) + CDC vuci 10MHz aplikaci.**
 Zadani uzivatele po diskuzi o limitech SPI rychlosti (viz konverzace
 2026-10-01). Komplet:
