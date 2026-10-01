@@ -36,6 +36,21 @@ jako soucast auditni smycky — zapsano sem kvuli stopovatelnosti.
   ne opravena (nizka zavaznost, zdedena z `win_recip`). Symetricke rozlozeni
   na die NEreseno (Gowin floorplan LOC/region syntax neoverena). ⬜
   **neovereno na HW** — bitstream jeste nenaflashovan.
+- **Dodatek 2026-10-01 (oprava uzivatelem):** reference pro merici
+  kmitocet je **JEDNY hodiny REF_100MHz ze Si5356 + carry-chain TDC
+  v FPGA fabric** (dle `citac_zadani_predavaci.md`), NE 4fazovy vernier
+  (ten je metoda STARE desky). Dnesni `coarse_edge_detect` (`top.v`) tenhle
+  carry-chain TDC jeste neimplementuje (`fine` natvrdo 0) — je to vedomy
+  mezikrok pro elektricky bring-up, ne finalni presnost. Zaroven zjisten
+  limit rychlosti teto docasne implementace: debounce potrebuje 2 takty
+  synchronizeru + cely LOW usek mezi hranami, tedy ~clk_p0/3..clk_p0/2 ≈
+  **33-50 MHz pri 100 MHz clk_p0** — hluboko pod cilovou specifikaci
+  (200 MHz primo / 1,1 GHz pres ÷10), protoze zadna predelicka na nove
+  desce jeste neni a FPGA cte signal primo. Dopsana poznamka do
+  `spi_app.v`+`top.v` (komentare, `docs:` commit `b4b81fd`): protokolova
+  pole S1/S2/fine/hist (caps bit4 rezerva) maji LSB=2,5 ns odvozene z
+  vernieru a pri prechodu na skutecny carry-chain TDC se musi PRESKALOVAT
+  (nove LSB ~22 ps/bin ~50 ps), ne jen propojit signaly.
 🔑 **Pokracovat zde:** az bude nova deska zapojena — naflashovat FPGA v2
 bitstream + tento CM7 build (obe strany musi mluvit v2 soucasne, jinak CS
 zvedne v pulce ramce a CRC nikdy nesedi), pak `fpgaraw`/`status` na overeni
