@@ -11,6 +11,21 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.10.0 (2026-10-01) = SPI protokol FPGA migrovan v1->v2: ramec 64B->128B,
+ * CRC16 nad byte 0..125 (bylo 0..61), 4 nova pole fpga_meas_t (fw_version/
+ * caps/clk_status/win_count). Kriticky zachycen L-0012 vzor v miste vzniku:
+ * UART diagnostika (`fpgaloop`/`fpgaraw`) mela vlastni `rx[64]` nezavisle
+ * na FR_LEN, opraveno soucasne (zasobnik by se jinak prepsal o 64 B). FPGA
+ * strana (Frequency_Counter_FPGA_Module, bitstream FW_VERSION 0x0300):
+ * RTL pro novy dvoukanalovy vstupni modul (CH_A/CH_B, jednohodinove hrube
+ * citani misto 4fazoveho vernieru) + SPI PHY presunuta z 10 MHz na 100 MHz
+ * (clk_p0_100m) s rucne navrzenym CDC vuci 10MHz aplikaci (spolehlivy SCK
+ * strop ~2 MHz -> ~20 MHz). `status` nove vypisuje FW/CAPS/CLK/WIN z
+ * posledniho DATA ramce. F-0200: demo dlazdice "eased cislo" ztracela
+ * znamenko '+' (chybejici glyf v mono_25). ⬜ Cela v2 migrace + FPGA RTL
+ * NEOVERENY NA HW -- nova deska jeste neni zapojena, stara mluvi jen v1
+ * a je mrtva (RX0:FF). Window stream/SET_CONFIG/CAL report (volitelne
+ * casti protokolu v2) STM strana zatim nepouziva. */
 /* v0.9.0 (2026-09-13) = tři nezávislé rychlosti I2C4 podle zařízení (ATtiny
  * 50 kHz — bit-bang slave, CPU 1 MHz je limit; FT5x06 75 kHz; TMP117 400 kHz;
  * `i2c4_speed_select()`), okno PAMĚŤ ukazuje FLASH/RAM OBOU jader (IPC v16),
@@ -47,8 +62,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 9
+#define FW_VERSION_MINOR 10
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.9.0"
+#define FW_VERSION_STR   "v0.10.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
