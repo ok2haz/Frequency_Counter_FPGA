@@ -21,10 +21,10 @@
 //   clk_ref_10m/10 MHz) -- oversampling/3FF sync spolehlivý do ~20 MHz SCK
 //   (bylo ~2 MHz), rezerva ~5x. CDC vůči aplikaci (clk_ref_10m, 10 MHz)
 //   řeší top.v: RX směr (frame_end_tgl) má 3-stupňový toggle-sync (fe_s),
-//   TX směr (tx_valid) má nový 2-stupňový level-sync (txv_s) + mezistav
+//   TX směr (tx_valid) má nový 3-stupňový level-sync (txv_s) + mezistav
 //   S_TX_ARM ve spi_app.v, který dává 100 ns rezervy před přepisem
 //   tx_b[] -- bez něj by torn rámec (nová data + stará CRC) mohl projít
-//   ~20-30ns oknem zpoždění synchronizeru. Žádný nový 1024b registr
+//   ~30ns oknem zpoždění synchronizeru (3 takty @100MHz). Žádný nový 1024b registr
 //   (nevešel by se, registry FPGA byly na 79 %) -- tx_frame_flat zůstává
 //   kombinační vodič, bezpečný právě díky té 100 ns rezervě.
 // ============================================================

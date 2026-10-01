@@ -275,15 +275,16 @@ module top (
     //
     // TX smer (app 10MHz -> PHY 100MHz) synchronizaci DRIV nepotreboval
     // (stejna domena) a ted ano: tx_frame_valid (=spi_app `frame_ok`) jde
-    // pres novy 2-stupnovy LEVEL synchronizer (txv_s) do PHY domeny.
+    // pres novy 3-stupnovy LEVEL synchronizer (txv_s, stejny vzor jako
+    // fe_s nize i PHY vlastni sck_s/cs_s/mosi_s) do PHY domeny.
     // tx_frame_flat SAMOTNY (1024b) se NESYNCHRONIZUJE (kombinacni vodic
     // beze zmeny) -- bezpecne jen diky tomu, ze spi_app.v ma novy mezistav
     // S_TX_ARM: frame_ok padne CELY JEDEN takt clk_ref_10m (100 ns = 10
     // taktu @100MHz) PRED tím, nez se tx_b[] zacne prepisovat. To dava
-    // 2-stupnovemu synchronizeru (max ~2-3 takty @100MHz = 20-30 ns zpozdeni)
-    // 3-5x rezervu PRED tím, nez by data mohla byt torn. Novy 1024b
-    // zachytavaci registr by se NEVESEL (registry FPGA jsou na 79 %,
-    // 5245/6693) -- proto tenhle levnejsi navrh bez duplikace ramce.
+    // 3-stupnovemu synchronizeru (max 3 takty @100MHz = 30 ns zpozdeni
+    // do ustaleni) ~3,3x rezervu PRED tím, nez by data mohla byt torn.
+    // Novy 1024b zachytavaci registr by se NEVESEL (registry FPGA jsou
+    // na 79 %, 5245/6693) -- proto tenhle levnejsi navrh bez duplikace ramce.
     reg [2:0] txv_s = 3'b000;
     always @(posedge clk_p0_100m) txv_s <= {txv_s[1:0], tx_frame_valid};
     wire tx_valid_sync = txv_s[2];
