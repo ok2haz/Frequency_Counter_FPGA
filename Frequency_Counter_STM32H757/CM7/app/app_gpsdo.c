@@ -898,8 +898,11 @@ void app_gpsdo_render_diag(void)
                            .header_label = "Napeti (ADS1115 + MCU)"};
         ui_card_render_chrome(&c_adc);
         dlabel(DG_LLBL, 258, "OCXO_VC");      /* AIN0: ladici napeti OCXO */
-        dlabel(DG_LLBL, 284, "RF_Level");     /* AIN1: uroven vstupniho signalu */
-        dlabel(DG_LLBL, 310, "AIN2 (12V)");
+        /* 🔴 2026-10-02: AIN1 je VBUS, ne RF_Level (AD8307 na desce neni —
+         * viz RF_LEVEL_HW_PRESENT, calib.h); AIN2 preskalovano z "12V" na
+         * "+3V3" (overeno netlistem FPGA_Module_2_1). */
+        dlabel(DG_LLBL, 284, "VBUS");         /* AIN1 */
+        dlabel(DG_LLBL, 310, "AIN2 (+3V3)");
         dlabel(DG_LLBL, 336, "AIN3 (5V)");
         dlabel(DG_LLBL, 362, "VREF");
         dlabel(DG_LLBL, 388, "VBAT");
@@ -1272,7 +1275,9 @@ static int draw_health_values(int force)
           ps = "Unkn"; pc = UI_COLOR_INK_3;
       } else {
           long m12 = lround_f(v12->last), m5 = lround_f(v5->last);
-          int ok12 = (m12 > 10800 && m12 < 13200);    /* 12 V ±10 % */
+          /* 🔴 2026-10-02: v12 (AIN2) je fyzicky +3V3, ne 12V (viz calib.c) —
+           * druhy nezavisly vyskyt stejne chyby jako warn_rail_bad(). */
+          int ok12 = (m12 > 2970 && m12 < 3630);      /* +3V3 ±10 % */
           int ok5  = (m5  > 4500  && m5  < 5500);     /* 5 V ±10 % */
           if (ok12 && ok5) { ps = "OK";   pc = UI_COLOR_OK; }
           else             { ps = "FAIL"; pc = UI_COLOR_BAD; }
@@ -1463,8 +1468,8 @@ void app_gpsdo_render_sensors(void)
         dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "OCXO");
         dlabel(DG_LLBL, SENS_R0 + 3 * SENS_DY, "FPGA board");
         dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "OCXO_VC");
-        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "RF_Level");
-        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "12V vetev");
+        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "VBUS");
+        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "+3V3 vetev");
         dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "5V vetev");
         dlabel(DG_RLBL, SENS_R0 + 4 * SENS_DY, "VREF");
         dlabel(DG_RLBL, SENS_R0 + 5 * SENS_DY, "VBAT");
@@ -1525,9 +1530,11 @@ static prim_color_t graph_line_col(int i)
                  case 2: return UI_COLOR_WARN; default: return UI_COLOR_BAD; }
 }
 
-/* Vertikalni bargrafy vpravo — napajeci vetve + Vc, s nominalni hodnotou. */
+/* Vertikalni bargrafy vpravo — napajeci vetve + Vc, s nominalni hodnotou.
+ * 🔴 2026-10-02: AIN2 label/meze preskalovany z "12V" na "+3V3" (viz calib.c
+ * pro plne zduvodneni netlistem FPGA_Module_2_1). */
 static const struct { uint8_t id; const char *lab; float lo, hi, nom; } GRAPH_BAR[5] = {
-    { SENS_ADS2, "12V", 10800.f, 13200.f, 12000.f },
+    { SENS_ADS2, "3V3", 2970.f, 3630.f, 3300.f },
     { SENS_ADS3, "5V",   4500.f,  5500.f,  5000.f },
     { SENS_VDDA, "REF",  2300.f,  2700.f,  2500.f },
     { SENS_VBAT, "BAT",  2500.f,  3400.f,  3300.f },   /* CR2032, nominal 3,3 V */
@@ -1842,7 +1849,9 @@ static const struct {
      * volty s milivolty, `bar` vyslo zaporne a clamp ho srazil na 0. Vysledek: bar
      * byl PRAZDNY, ackoli hodnota vpravo (jde pres tentyz `hbar_disp`) byla spravne.
      * REF marker to nechytil, protoze se pocita primo z `nom` — tedy mV proti mV. */
-    { SENS_ADS2,   "12V vetev",  10.8f,  13.2f,  12.0f,  0.001f, 3, " V",   0 },
+    /* 🔴 2026-10-02: AIN2 preskalovano z "12V"/10,8-13,2V na "+3V3"/2,97-3,63V
+     * (viz calib.c pro plne zduvodneni netlistem FPGA_Module_2_1). */
+    { SENS_ADS2,   "+3V3 vetev", 2.97f,  3.63f,  3.30f,  0.001f, 3, " V",   0 },
     { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 3, " V",   0 },
     { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 3, " V",   0 },
     { SENS_VBAT,   "VBAT",        2.5f,   3.4f,   3.3f,  0.001f, 3, " V",   0 },   /* CR2032, nominal 3,3 V */
@@ -1885,9 +1894,13 @@ static float hbar_disp(int r, float raw)
     if (HBAR[r].rf) {   /* AD8307 — jediny prevod `mp_ad8307_dbm` (F-0165) */
         float d;
         /* Neplatna strmost -> NaN = „nevim": text vyjde „--" (`fmt_fixed`),
-         * bar prazdny (`hbar_pct_disp`). Drive se tise dosadilo 25 mV/dB. */
-        return mp_ad8307_dbm(raw, g_calib.ad8307_slope_mv_db,
-                             g_calib.ad8307_intercept_dbm, &d) ? d : NAN;
+         * bar prazdny (`hbar_pct_disp`). Drive se tise dosadilo 25 mV/dB.
+         * 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT,
+         * calib.h) — stejna „nevim" cesta, aby se nezobrazilo cislo ze
+         * spatneho vstupu (AIN1 je VBUS). */
+        return (RF_LEVEL_HW_PRESENT &&
+                mp_ad8307_dbm(raw, g_calib.ad8307_slope_mv_db,
+                             g_calib.ad8307_intercept_dbm, &d)) ? d : NAN;
     }
     return raw * HBAR[r].scale;
 }
@@ -3761,9 +3774,11 @@ static void app_gpsdo_render_dualch(void)
     /* RF uroven — spolecna (jeden AD8307), bar v obou kartach. */
     /* F-0165: jediny prevod + politika „nevim". Drive se pri NEPLATNEM senzoru
      * dosadilo `mv = 0`, takze se zobrazil samotny intercept (-84 dBm), jako by
-     * byl zmereny — stejna trida jako tise dosazena strmost. Ted NaN -> „--". */
+     * byl zmereny — stejna trida jako tise dosazena strmost. Ted NaN -> „--".
+     * 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT, calib.h) —
+     * karta trvale ukazuje „--", protoze AIN1 je VBUS, ne AD8307 vystup. */
     float dbm = NAN;
-    if (g_sensors[SENS_ADS1].valid)
+    if (RF_LEVEL_HW_PRESENT && g_sensors[SENS_ADS1].valid)
         (void)mp_ad8307_dbm(g_sensors[SENS_ADS1].last, g_calib.ad8307_slope_mv_db,
                             g_calib.ad8307_intercept_dbm, &dbm);
     /* ⚠️ Zdrojovy buffer MUSI byt >= cache: `dchg` dela `strncpy(cache, now, n-1)`,
@@ -4045,8 +4060,11 @@ static const struct { volatile float *val; float step, lo, hi; int decimals;
                       const char *label, *unit; int16_t y; } KALIB_ROWS[4] = {
     { &g_calib.ad8307_slope_mv_db,     0.5f,  10.0f,   40.0f, 1, "AD8307 slope",     "mV/dB", 110 },
     { &g_calib.ad8307_intercept_dbm,   0.5f, -100.0f, -60.0f, 1, "AD8307 intercept", "dBm",   176 },
-    { &g_calib.gain_12v,               0.010f, 4.000f, 5.500f, 3, "12V delic gain",  "x",     242 },
-    { &g_calib.gain_5v,                0.005f, 1.500f, 2.500f, 3, "5V delic gain",   "x",     308 },
+    /* 🔴 2026-10-02: rozsahy preskalovany na skutecne delice AIN2(+3V3)/AIN3(+5V)
+     * z netlistu FPGA_Module_2_1 (viz calib.c) - default gain_12v~2,0, gain_5v~1,4545,
+     * puvodni rozsahy (4,000-5,500 / 1,500-2,500) byly pro neexistujici delice. */
+    { &g_calib.gain_12v,               0.010f, 1.000f, 3.000f, 3, "+3V3 delic gain", "x",     242 },
+    { &g_calib.gain_5v,                0.005f, 1.000f, 2.000f, 3, "5V delic gain",   "x",     308 },
 };
 #define KALIB_BTN_W 60
 #define KALIB_BTN_H 60
@@ -4827,8 +4845,10 @@ static void app_gpsdo_render_datalog(void)
 static const struct {
     uint8_t sens; volatile float *gain; float nom_mv, lo_gain, hi_gain; const char *name;
 } WIZ_BR[WIZ_BRANCH_N] = {
-    { SENS_ADS2, &g_calib.gain_12v, 12000.0f, 4.000f, 5.500f, "12V vetev" },
-    { SENS_ADS3, &g_calib.gain_5v,   5000.0f, 1.500f, 2.500f, "5V vetev"  },
+    /* 🔴 2026-10-02: AIN2 preskalovano z "12V"(gain~4,8) na "+3V3"(gain~2,0),
+     * AIN3 rozsah gainu posunut na skutecnych ~1,4545 (viz calib.c). */
+    { SENS_ADS2, &g_calib.gain_12v,  3300.0f, 1.500f, 2.500f, "+3V3 vetev" },
+    { SENS_ADS3, &g_calib.gain_5v,   5000.0f, 1.000f, 2.000f, "5V vetev"  },
 };
 static int   s_wiz_br     = 0;      /* vybrana vetev */
 static float s_wiz_target = 0.0f;   /* co ukazuje multimetr [mV] */
@@ -7776,10 +7796,12 @@ void app_gpsdo_render_help(void)
 
 typedef struct { uint8_t prio; const char *text; } warn_t;
 
-/* Aktualni RF uroven v dBm (jeden AD8307; 0 dBm = strop pouzitelneho vstupu). */
+/* Aktualni RF uroven v dBm (jeden AD8307; 0 dBm = strop pouzitelneho vstupu).
+ * 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT, calib.h) —
+ * funkce trvale vraci sentinel „nevim" (AIN1 je VBUS, ne AD8307 vystup). */
 static float warn_rf_dbm(void)
 {
-    if (!g_sensors[SENS_ADS1].valid) return -99.0f;
+    if (!RF_LEVEL_HW_PRESENT || !g_sensors[SENS_ADS1].valid) return -99.0f;
     float dbm;
     /* F-0165: jediny prevod; „nevim" = -99 stejne jako neplatny senzor (zadne
      * varovani o pretizeni), ne tise dosazenych 25 mV/dB. */
@@ -7787,11 +7809,15 @@ static float warn_rf_dbm(void)
                          g_calib.ad8307_intercept_dbm, &dbm) ? dbm : -99.0f;
 }
 
-/* Napajeci vetve mimo +-10 % (12V na AIN2, 5V na AIN3 — obe uz prepoctene). */
+/* Napajeci vetve mimo +-10 % (+3V3 na AIN2, +5V na AIN3 — obe uz prepoctene).
+ * 🔴 2026-10-02: AIN2 meze PRESKALOVANY z 12V na +3V3 (10800-13200 -> 2970-3630
+ * mV) - overeno netlistem FPGA_Module_2_1, AIN2 je R55=10k/R56=10k delic
+ * +3V3 vetve, ne 12V delic (ten komentar byl zastaraly, viz calib.c). Promenna
+ * `v12` je ponechana jako historicky nazev (viz calib.h), fyzicky meri +3V3. */
 static int warn_rail_bad(void)
 {
     const sensor_stat_t *v12 = &g_sensors[SENS_ADS2], *v5 = &g_sensors[SENS_ADS3];
-    if (v12->valid && (v12->last < 10800.0f || v12->last > 13200.0f)) return 1;
+    if (v12->valid && (v12->last < 2970.0f || v12->last > 3630.0f)) return 1;
     if (v5->valid  && (v5->last  <  4500.0f || v5->last  >  5500.0f)) return 1;
     return 0;
 }
@@ -8006,6 +8032,11 @@ void app_gpsdo_tick_clock(uint32_t ms_since_boot)
 void app_gpsdo_tick_signal(void)
 {
     if (s_view != 0) return;             /* RF level je zivy HW udaj (bez RUN gate) */
+    /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT, calib.h) —
+     * AIN1 je VBUS, ne vystup log-detektoru. Bar se vubec nekresli, misto
+     * zobrazeni cisla spocitaneho ze spatneho vstupu (oblast zustane prazdna,
+     * jak ji nechal posledni plny render). */
+    if (!RF_LEVEL_HW_PRESENT) return;
     const sensor_stat_t *rf = &g_sensors[SENS_ADS1];
     if (rf->samples == 0) return;        /* jeste zadne mereni */
     float mv = rf->last; if (mv < 0.0f) mv = 0.0f;

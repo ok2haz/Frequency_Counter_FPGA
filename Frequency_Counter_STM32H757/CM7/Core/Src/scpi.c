@@ -14,6 +14,14 @@
 #include "../Inc/scpi.h"       /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
 #include "../Inc/version.h"   /* FW_VERSION_FULL — *IDN? */
 #include "../Inc/meas_present.h"  /* mp_ad8307_dbm — jediny prevod mV->dBm (F-0165), i na CM4 */
+/* 🔴 2026-10-02: calib.h UNCONDITIONNE (ne jen pod CORE_CM7) kvuli
+ * RF_LEVEL_HW_PRESENT — tenhle flag potrebuje i sdileny kod MMEM:DATA? dumpu
+ * (scpi_exec_one), ktery bezi na OBOU jadrech. Je to bezpecne: calib.h sam
+ * nema HAL/FreeRTOS zavislost (jen <stdbool.h>) a `extern volatile calib_t
+ * g_calib` je proste deklarace — CM4 ji nikde nedereferencuje (to zustava
+ * vyhradne pod `#if defined(CORE_CM7)` nize), takze linker na CM4 nehleda
+ * definici, kterou (spravne) nema. */
+#include "../Inc/calib.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -23,7 +31,6 @@
 #include "fpga_freq.h"        /* fpga_freq_get_last, FPGA_ERR_* — CM7 backend */
 #include "gps.h"              /* gps_get */
 #include "sensor_stat.h"      /* g_sensors[] */
-#include "calib.h"            /* g_calib */
 #include "freertos_shared.h"  /* g_spi_ok, g_si5356_*, g_selftest_res, g_uptime_s */
 #include "datalog.h"          /* datalog_get_status/read_back */
 #include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomický snímek g_meas_cfg */
@@ -851,7 +858,10 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
          * export datalogu vyrobil verohodne dBm, zatimco `MEAS:POW?` o par set
          * radku vys poctive hlasil „nevim". Ted tataz politika jako tam. */
         float dbm;
-        if (r.rf_mv == DATALOG_INVALID16 ||
+        /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0,
+         * calib.h) — stejna politika jako SCPI_V_RF vyse, ne jen pro live
+         * mereni, ale i pro export z datalogu. */
+        if (!RF_LEVEL_HW_PRESENT || r.rf_mv == DATALOG_INVALID16 ||
             !mp_ad8307_dbm((float)r.rf_mv, src->ad8307_slope_mv_db,
                            src->ad8307_intercept_dbm, &dbm)) {
             snprintf(rf, sizeof rf, "9.91E37");
@@ -1118,7 +1128,12 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
     if (g_sensors[SENS_CORE_T].valid) { src->t_mcu_c100   = (int16_t)(g_sensors[SENS_CORE_T].last* 100.0f); src->valid |= SCPI_V_T_MCU; }
     if (g_sensors[SENS_T4A].valid)    { src->t_fpga_c100  = (int16_t)(g_sensors[SENS_T4A].last  * 100.0f); src->valid |= SCPI_V_T_FPGA; }
     if (g_sensors[SENS_ADS0].valid)   { src->ocxo_vc_mv = (uint16_t)g_sensors[SENS_ADS0].last; src->valid |= SCPI_V_VC; }
-    if (g_sensors[SENS_ADS1].valid)   { src->rf_mv      = (uint16_t)g_sensors[SENS_ADS1].last; src->valid |= SCPI_V_RF; }
+    /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0, calib.h) —
+     * AIN1 je VBUS. `rf_mv` se dal plni (nekdo z datalogu ho jeste muze cist
+     * jako syrove napeti), ale SCPI_V_RF se NESTAVI -> MEAS:POW? korektne
+     * hlasi 9.91E37 misto dBm spocitaneho ze spatneho vstupu. */
+    if (g_sensors[SENS_ADS1].valid)   { src->rf_mv = (uint16_t)g_sensors[SENS_ADS1].last;
+                                         if (RF_LEVEL_HW_PRESENT) src->valid |= SCPI_V_RF; }
     if (g_sensors[SENS_ADS2].valid)   { src->v_12v_mv   = (uint16_t)g_sensors[SENS_ADS2].last; src->valid |= SCPI_V_V12; }
     if (g_sensors[SENS_ADS3].valid)   { src->v_5v_mv    = (uint16_t)g_sensors[SENS_ADS3].last; src->valid |= SCPI_V_V5; }
     if (g_sensors[SENS_VDDA].valid)   { src->vref_mv    = (uint16_t)g_sensors[SENS_VDDA].last; src->valid |= SCPI_V_VREF; }

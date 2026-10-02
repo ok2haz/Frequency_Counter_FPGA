@@ -2846,9 +2846,12 @@ static void render_card_trend(prim_rect_t rect)
     trend_drawn_store(s_spark_prev, s_trend_n, sig_lo, sig_hi);
 }
 
-/* Signal bargraf = REALNY vstupni vykon z AD8307 log-detektoru (ADS1115 AIN1;
- * SensorsTask fast-path ~10 Hz), zobrazeny v dBm. Prevod mV->dBm dela volajici
- * (app_gpsdo_tick_signal, konstanty AD8307). Drzime rect + hodnotu pro partial redraw. */
+/* Signal bargraf — myslen jako RF vykon z AD8307 log-detektoru (ADS1115 AIN1).
+ * 🔴 2026-10-02: AD8307 na teto desce FYZICKY NENI (RF_LEVEL_HW_PRESENT,
+ * calib.h) — AIN1 je VBUS. `app_gpsdo_tick_signal()` se proto NEVOLA a `s_signal_pct`
+ * zustava 0 / `s_signal_dbm10` zustava na sentinelu -100000 ("--- dBm"), takze
+ * karta trvale ukazuje "nedostupne" misto cisla ze spatneho vstupu. Drzime
+ * rect + hodnotu pro partial redraw, kdyby se RF HW nekdy doplnilo. */
 static prim_rect_t s_signal_rect = {0, 0, 0, 0};
 static int16_t     s_signal_pct  = 0;
 static int32_t     s_signal_dbm10 = -100000;  /* posl. zobrazene dBm×10 (<-99999 = jeste nic) */

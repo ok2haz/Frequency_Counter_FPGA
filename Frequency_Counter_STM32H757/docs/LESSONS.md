@@ -3726,6 +3726,49 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0110 — Napěťové kanály ADS1115 pojmenované podle NÁVRHU, ne podle NETLISTU
+
+- **Datum:** 2026-10-02
+- **Oblast:** periferie / kalibrace / dokumentace
+- **Symptom:** Headline displeje byl přeškrtnutý (`warn_rail_bad()` hlásil napájecí
+  větev mimo rozsah), přestože uživatel fyzicky ověřil, že napájení je v pořádku.
+  Hlubší prozkoumání ukázalo, že firmware porovnával AIN2/AIN3 proti nominálům
+  12 V / 5 V a gainům odvozeným z komentáře "v2.0 rev2" — spekulativní tabulky
+  napsané předem, nikdy neověřené proti skutečně osazeným rezistorům.
+- **Příčina:** Komentáře i `g_calib` výchozí hodnoty vycházely z PŘEDPOKLÁDANÉHO
+  zapojení desky (`ADS1115_HW_DIVIDERS_REV2` plán), ne ze skutečného schématu.
+  Export netlistu (`kicad-cli sch export netlist`) z `FPGA_Module_2_1.kicad_sch`
+  ukázal realitu: AIN0=OCXO_VC (R51=15k/R52=10k, gain 2,5 — firmware ho vůbec
+  needelal), AIN1=**VBUS** (R53=100k/R54=4k99, gain ~21,04 — NE RF_Level/AD8307,
+  ten na desce **fyzicky není**, v žádném z 5 listů schématu), AIN2=+3V3
+  (R55=10k/R56=10k, gain 2,0 — firmware počítal s "12V" a gainem 4,768),
+  AIN3=+5V (R57=10k/R58=22k, gain ~1,4545 — firmware počítal s gainem 1,971).
+- **Oprava:** `freertos_task_sensors.c` aplikuje správné gainy na všech 4
+  kanálech (`AIN0_GAIN_OCXO_VC`, `AIN1_GAIN_VBUS`, `g_calib.gain_12v/gain_5v`
+  přepočtené v `calib.c`). AD8307/RF_Level HW nepřítomnost je jeden centrální
+  flag `RF_LEVEL_HW_PRESENT` (`calib.h`) — zamezuje publikaci `SCPI_V_RF`/
+  `IPC_V_RF` (`scpi.c`, `ipc.c`), takže `MEAS:POW?`, web JSON `rf_dbm` i UI
+  karty (hbar, dualch, warn, main-screen bargraf) korektně hlásí "nevím"
+  místo dBm spočítaného z napětí VBUS.
+- **Pravidlo:** **Komentář popisující zapojení HW je HYPOTÉZA, dokud není
+  ověřený proti reálnému schématu/netlistu — "v2.0 rev2 plán" není totéž co
+  "takhle to je osazené".** Exportuj netlist (`kicad-cli sch export netlist
+  --format kicadxml`) a dohledej skutečné rezistory/nety, než se podle
+  komentáře píše gain nebo PGA rozsah.
+- **Detekce:** Žádná regex nechytí "komentář neodpovídá schématu" — jediná
+  obrana je opakovat netlist-export kontrolu při jakékoli pochybnosti o
+  analogovém kanálu, ne věřit existujícímu komentáři jen proto, že tam je.
+- **Vztah k lekcím:** stejná třída jako `L-0012` (dvě místa nesoucí stejný
+  fakt se rozejdou) — tady šlo o DESET míst (štítky, gainy, SCPI, IPC, web,
+  datalog, autocal) odvozených ze stejného špatného předpokladu.
+- **Commit:** fix voda do git log (hash viz `git log --oneline -1`)
+- ⬜ **NEOVĚŘENO NA HW** — oprava je zatím jen přeložená (0 varování,
+  92/0/2 audit baseline), žádný power-cyklus s multimetrem na AIN0-3 zatím
+  neproběhl.
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

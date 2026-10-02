@@ -209,7 +209,12 @@ void ipc_publish(void)
     IPC_PUB_SENS(SENS_CORE_T, t_mcu_c100,   100.0f, IPC_V_T_MCU);
     IPC_PUB_SENS(SENS_T4A,    t_fpga_c100,  100.0f, IPC_V_T_FPGA);   /* 0x4A dnes neosazen */
     IPC_PUB_SENS(SENS_ADS0,   ocxo_vc_mv,     1.0f, IPC_V_VC);
-    IPC_PUB_SENS(SENS_ADS1,   rf_mv,          1.0f, IPC_V_RF);
+    /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0, calib.h),
+     * AIN1 je VBUS — `rf_mv` se do snapshotu dal plni (syrove napeti), ale
+     * IPC_V_RF/SCPI_V_RF se NESTAVI, aby CM4/web MEAS:POW? nehlasilo dBm
+     * spocitane ze spatneho vstupu (stejna politika jako scpi.c). */
+    g_ipc.snap.rf_mv = (uint16_t)(g_sensors[SENS_ADS1].last * 1.0f);
+    if (RF_LEVEL_HW_PRESENT && g_sensors[SENS_ADS1].valid) sv |= IPC_V_RF;
     IPC_PUB_SENS(SENS_ADS2,   v_12v_mv,       1.0f, IPC_V_V12);
     IPC_PUB_SENS(SENS_ADS3,   v_5v_mv,        1.0f, IPC_V_V5);
     IPC_PUB_SENS(SENS_VDDA,   vref_mv,        1.0f, IPC_V_VREF);

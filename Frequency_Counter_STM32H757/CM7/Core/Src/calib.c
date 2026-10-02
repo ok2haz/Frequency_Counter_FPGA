@@ -19,8 +19,19 @@
  * v app_gpsdo.c / freertos_task_sensors.c, ted jen jednou zde. */
 #define CALIB_DEFAULT_AD8307_SLOPE      25.0f
 #define CALIB_DEFAULT_AD8307_INTERCEPT  (-84.0f)
-#define CALIB_DEFAULT_GAIN_12V          (13417.0f / 2814.0f)   /* ~4.768 */
-#define CALIB_DEFAULT_GAIN_5V           (4978.0f  / 2526.0f)   /* ~1.971 */
+/* 🔴 2026-10-02: PRESKALOVANO na skutecne delice z netlistu FPGA_Module_2_1
+ * (overeno kicad-cli exportem, ne jen komentarem v kodu - viz
+ * freertos_task_sensors.c pro plnou tabulku vsech 4 kanalu). Jmena poli
+ * `gain_12v`/`gain_5v` jsou HISTORICKA (puvodni navrh desky) a NEODPOVIDAJI
+ * uz tomu, co kanal fyzicky meri - AIN2 je dnes +3V3 (ne 12V), AIN3 je +5V
+ * pres JINY delic nez puvodni komentar predpokladal. Prejmenovani poli je
+ * samostatny (vetsi) zasah, odlozeno - viz AUDIT_STATUS.md.
+ *   AIN2 (+3V3): R55=10k / R56=10k -> gain = (10+10)/10 = 2,0 (BYLO 4,768
+ *     pro neexistujici "12V" delic 100k/4,99k, ktery je ve skutecnosti na AIN1)
+ *   AIN3 (+5V):  R57=10k / R58=22k -> gain = (10+22)/22 = 32/22 ~= 1,4545
+ *     (BYLO 1,971 pro delic 15k/10k, ktery na desce neni) */
+#define CALIB_DEFAULT_GAIN_12V          (20.0f / 10.0f)         /* AIN2=+3V3, R55=10k/R56=10k: 2,0 */
+#define CALIB_DEFAULT_GAIN_5V           (32.0f / 22.0f)         /* AIN3=+5V,  R57=10k/R58=22k: ~1,4545 */
 
 volatile calib_t g_calib = {
     CALIB_DEFAULT_AD8307_SLOPE, CALIB_DEFAULT_AD8307_INTERCEPT,

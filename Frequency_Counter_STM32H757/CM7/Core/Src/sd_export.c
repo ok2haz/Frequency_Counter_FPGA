@@ -253,11 +253,16 @@ int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
         snprintf(toc, sizeof toc, "%d.%02u", r->t_ocxo_c100 / 100, (unsigned)(abs(r->t_ocxo_c100) % 100));
     if (r->t_board_c100 != DATALOG_INVALID16)
         snprintf(tbo, sizeof tbo, "%d.%02u", r->t_board_c100 / 100, (unsigned)(abs(r->t_board_c100) % 100));
-    /* ⚠️ `rf_mv` jsou SYROVE mV z AD8307, ne dBm x10. Do 2026-08-18 se tu delilo
+    /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10. Do 2026-08-18 se tu delilo
      * deseti a do sloupce nazvaneho `rf_dBm` slo "57.1" misto -61,2 dBm.
      * Do CSV jde ted SYROVA hodnota pod spravnym nazvem (`rf_mV`) — je to
      * bezztratove a odpovida to filozofii datalogu (kalibrace se muze zmenit,
-     * syrova hodnota ne); dBm si uzivatel dopocita konstantami z okna Kalibrace. */
+     * syrova hodnota ne).
+     * 🔴 2026-10-02: fyzicky zdroj tohoto pole je AIN1 = VBUS (hlavni napajeni),
+     * NE AD8307 — ten na teto desce neni (RF_LEVEL_HW_PRESENT, calib.h).
+     * Sloupec `rf_mV` tedy od tohoto fixu nese skutecne napeti VBUS v mV, ne
+     * AD8307 vystup. Nazev sloupce se nemeni (zmena CSV formatu je samostatny
+     * zasah); uzivatel dBm z tohoto pole dopocitat NEMA (viz MEAS:POW? -> N/A). */
     if (r->rf_mv     != DATALOG_INVALID16)
         snprintf(rf,  sizeof rf,  "%d", (int)r->rf_mv);
 

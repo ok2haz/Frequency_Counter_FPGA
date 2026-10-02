@@ -201,10 +201,15 @@ typedef struct {
     int16_t  t_fpga_c100;          /* FPGA deska (TMP117 0x4A — dnes NEOSAZEN -> bit v sens_valid = 0).
                                     * Do v3 pole chybelo uplne, takze `SYST:TEMP? FPGA` na CM4
                                     * nesla vubec zodpovedet — dalsi rozdil proti USB. */
-    uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0) */
-    uint16_t rf_mv;                /* RF level SYROVE mV (AD8307, AIN1) */
-    uint16_t v_12v_mv;             /* 12V vetev (AIN2, uz po gain) */
-    uint16_t v_5v_mv;              /* 5V vetev (AIN3) */
+    uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0, uz po gain x2,5) */
+    /* 🔴 2026-10-02: AD8307 na desce FYZICKY NENI (RF_LEVEL_HW_PRESENT, calib.h) —
+     * AIN1 je VBUS. Pole zustava kvuli stabilite ABI, nese syrove napeti VBUS
+     * (uz po gain ~x21,04), ne AD8307 mV. IPC_V_RF se NESTAVI -> konzument pozna
+     * "nedostupne" z bitu, ne z hodnoty. Nazev pole ponechan (rename = samostatny
+     * zasah do ABI napric vice soubory). */
+    uint16_t rf_mv;                /* VBUS SYROVE mV (jmeno historicke, viz vyse) */
+    uint16_t v_12v_mv;             /* 🔴 nazev historicky — AIN2 je dnes +3V3, uz po gain (viz calib.c) */
+    uint16_t v_5v_mv;              /* 5V vetev (AIN3, uz po gain) */
     uint16_t vref_mv;              /* VREF+ ~2,5 V (ADC3) */
     uint16_t vbat_mv;              /* VBAT (ADC3) */
     uint8_t  channel_id;           /* aktivni kanal FPGA */
@@ -293,7 +298,8 @@ typedef struct {
     int16_t  t_ocxo_c100;          /* OCXO [0,01 °C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;         /* STM deska [0,01 °C] */
     uint16_t ocxo_vc_mv;           /* ladici napeti [mV] */
-    uint16_t rf_mv;                /* RF SYROVE mV (dBm dopocita CM4 pres kalibraci) */
+    uint16_t rf_mv;                /* VBUS SYROVE mV (jmeno historicke — AD8307 na
+                                       desce neni, viz RF_LEVEL_HW_PRESENT v calib.h) */
     uint16_t vbat_mv;              /* VBAT [mV]; 0 = nezaznamenano */
     uint8_t  flags;                /* DATALOG_F_* */
     uint8_t  sats;                 /* pocet druzic */

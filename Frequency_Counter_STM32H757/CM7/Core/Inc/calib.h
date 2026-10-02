@@ -10,11 +10,28 @@
 
 #include <stdbool.h>
 
+/* 🔴 2026-10-02: AD8307 (RF log-detektor) na teto desce FYZICKY NENI OSAZEN —
+ * overeno kicad-cli exportem netlistu FPGA_Module_2_1 (zadny AD8307 v zadnem
+ * z 5 listu schematu). AIN1 (SENS_ADS1, viz sensor_stat.h) meri VBUS, ne
+ * vystup logaritmickeho detektoru. Vsechna mista, ktera z tohoto kanalu
+ * pocitaji dBm (`mp_ad8307_dbm` nad `ad8307_slope_mv_db`/`ad8307_intercept_dbm`
+ * nize), MUSI tento priznak respektovat a hlasit "nedostupne" (NaN/SCPI
+ * 9.91E37/prazdny bar), ne pocitat verohodne vypadajici cislo ze spatneho
+ * vstupu — stejna politika jako F-0165 u neplatne strmosti. */
+#define RF_LEVEL_HW_PRESENT 0
+
 typedef struct {
-    float ad8307_slope_mv_db;    /* mV / dB (typicky 25.0, datasheet AD8307) */
-    float ad8307_intercept_dbm;  /* dBm pri 0 V (typicky -84.0) */
-    float gain_12v;              /* multiplikator ADS mV -> skutecne mV, 12V vetev */
-    float gain_5v;                /* multiplikator ADS mV -> skutecne mV, 5V vetev */
+    float ad8307_slope_mv_db;    /* mV / dB (typicky 25.0, datasheet AD8307).
+                                     Viz RF_LEVEL_HW_PRESENT vyse — na teto desce
+                                     se nepouziva (HW neni osazen), pole zustava
+                                     kvuli stabilite formatu CALIB blobu. */
+    float ad8307_intercept_dbm;  /* dBm pri 0 V (typicky -84.0), totez omezeni */
+    /* 🔴 2026-10-02: nazvy poli jsou HISTORICKE, neodpovidaji uz realne
+     * fyzicke vetvi (overeno netlistem FPGA_Module_2_1) - prejmenovani je
+     * samostatny zasah, viz calib.c. `gain_12v` je dnes AIN2 = +3V3,
+     * `gain_5v` je dnes AIN3 = +5V pres jiny delic nez puvodne. */
+    float gain_12v;              /* multiplikator ADS mV -> skutecne mV, AIN2 = +3V3 vetev */
+    float gain_5v;                /* multiplikator ADS mV -> skutecne mV, AIN3 = +5V vetev */
 } calib_t;
 
 /* Live hodnoty. Cte SensorsTask (gain_12v/gain_5v, prepocet ADS -> skutecne

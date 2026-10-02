@@ -74,8 +74,10 @@
 /* Pozn.: RxBuffer/RxIndex a ram_buf/sdram_buf jsou privatni ve freertos_task_uart.c.
  * Globaly nize jsou sdilene (extern ve freertos_shared.h) -> definice zustavaji zde. */
 /* Senzory: 3× TMP117 (0x48 I2C4 displej, 0x49/0x4A I2C1 FPGA deska) + 4× ADS1115
- * (AIN0/1 primo, AIN2=12V vetev, AIN3=5V vetev po prepoctu delice). Hodnota +
- * platnost + statistika (min/max/avg) + citace chyb -> viz sensor_stat.h.
+ * (vsechny 4 kanaly pres odporovy delic, viz freertos_task_sensors.c k_ads_pga:
+ * AIN0=OCXO_VC gain 2,5, AIN1=VBUS gain ~21,04, AIN2=+3V3 gain 2,0, AIN3=+5V
+ * gain ~1,4545). Hodnota + platnost + statistika (min/max/avg) + citace chyb
+ * -> viz sensor_stat.h.
  * Zapisuje SensorsTask pres sensor_update()/sensor_fail(). Nulova init je OK
  * (samples=0 -> min/max/mean se lazy-inicializuji prvnim platnym vzorkem). */
 sensor_stat_t g_sensors[SENS_COUNT] = {0};
@@ -86,10 +88,13 @@ const sensor_desc_t g_sensor_desc[SENS_COUNT] = {
   { "TMP117 0x48",   "C"  },   /* SENS_T48   */
   { "TMP117 0x49",   "C"  },   /* SENS_T49   */
   { "TMP117 0x4A",   "C"  },   /* SENS_T4A   */
-  { "ADS AIN0",      "mV" },   /* SENS_ADS0  */
-  { "ADS AIN1",      "mV" },   /* SENS_ADS1  */
-  { "ADS AIN2(12V)", "mV" },   /* SENS_ADS2  */
-  { "ADS AIN3(5V)",  "mV" },   /* SENS_ADS3  */
+  /* 🔴 2026-10-02: labely preskalovany na skutecne zapojeni z netlistu
+   * FPGA_Module_2_1 (viz calib.c/sensor_stat.h pro plne zduvodneni) — AIN1 je
+   * VBUS (ne RF_Level/AD8307, ten na desce fyzicky neni), AIN2 je +3V3 (ne 12V). */
+  { "ADS AIN0(VC)",   "mV" },   /* SENS_ADS0  */
+  { "ADS AIN1(VBUS)", "mV" },   /* SENS_ADS1  */
+  { "ADS AIN2(+3V3)", "mV" },   /* SENS_ADS2  */
+  { "ADS AIN3(5V)",   "mV" },   /* SENS_ADS3  */
   { "MCU jadro",     "C"  },   /* SENS_CORE_T */
   { "VREF",          "mV" },   /* SENS_VDDA (VREF+) */
   { "VBAT",          "mV" },   /* SENS_VBAT  */

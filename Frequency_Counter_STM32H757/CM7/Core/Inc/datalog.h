@@ -99,13 +99,16 @@ typedef struct {
     uint8_t  freq_avg;
     int16_t  t_ocxo_c100;      /* teplota OCXO [0,01 C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;     /* teplota STM desky [0,01 C] */
-    int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0) */
-    /* ⚠️ Uroven RF v SYROVYCH mV z AD8307 (ADS AIN1), NE v dBm. Je to zamer:
-     * kalibrace (g_calib.ad8307_*) se muze zmenit, syrova hodnota ne — dBm se
-     * dopocita az pri zobrazeni. Pole se do 2026-08-18 jmenovalo `rf_dbm10` a
-     * PRESNE TA ZAMENA jmena za obsah zpusobila, ze CSV export i SCPI
-     * `MMEM:DATA?` delily hodnotu deseti a servirovaly ji jako dBm: 571 mV
-     * vyslo jako "57,1 dBm" (spravne je -61,2 dBm). Odhaleno testem pres UART. */
+    int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0, uz po gain x2,5) */
+    /* ⚠️ Pole se do 2026-08-18 jmenovalo `rf_dbm10` a PRESNE TA ZAMENA jmena za
+     * obsah zpusobila, ze CSV export i SCPI `MMEM:DATA?` delily hodnotu deseti
+     * a servirovaly ji jako dBm: 571 mV vyslo jako "57,1 dBm" (spravne je
+     * -61,2 dBm). Odhaleno testem pres UART.
+     * 🔴 2026-10-02: AD8307 na teto desce FYZICKY NENI (RF_LEVEL_HW_PRESENT,
+     * calib.h) — ADS AIN1 je VBUS (hlavni napajeni), ne vystup log-detektoru.
+     * Pole dal nese SYROVE mV (uz po gain delice ~x21,04), jen uz ne z AD8307.
+     * Nazev pole ponechan (zmena formatu datalogu je samostatny zasah); SCPI
+     * MMEM:DATA?/MEAS:POW? pro tato data hlasi 9.91E37 (viz scpi.c), ne dBm. */
     int16_t  rf_mv;
     uint8_t  flags;            /* viz DATALOG_F_* */
     uint8_t  sats;             /* pocet pouzitych druzic (GGA) */

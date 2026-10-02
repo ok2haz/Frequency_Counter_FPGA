@@ -30,7 +30,10 @@ static ac_result_t check(sensor_id_t id, float nom, float tol_frac)
 void autocal_run(void)
 {
     g_autocal.vref   = check(SENS_VDDA, 2500.0f, 0.04f);   /* VREFBUF ~2,5 V ±4 % */
-    g_autocal.rail12 = check(SENS_ADS2, 12000.0f, 0.05f);  /* 12V ±5 % */
+    /* 🔴 2026-10-02: AIN2 je fyzicky +3V3, ne 12V (overeno netlistem
+     * FPGA_Module_2_1, viz calib.c pro plne zduvodneni). Pole `rail12`
+     * zustava jako historicky nazev. */
+    g_autocal.rail12 = check(SENS_ADS2, 3300.0f, 0.05f);  /* +3V3 ±5 % */
     g_autocal.rail5  = check(SENS_ADS3, 5000.0f, 0.05f);   /* 5V ±5 % */
     /* VBAT: baterie „slabá" pod ~2,5 V (jinak OK); ne symetrická tolerance. */
     {
@@ -42,7 +45,7 @@ void autocal_run(void)
     /* Staged (mění koeficienty / vyžadují externí referenci nebo reinit) — zatím NA. */
     g_autocal.adc_selfcal = AC_NA;   /* HW self-cal ADC3 — koordinovaný reinit v SensorsTasku */
     g_autocal.timebase    = AC_NA;   /* offset ref vůči GPS — ⬅ reálné měření (#2) */
-    g_autocal.rf          = AC_NA;   /* AD8307 slope/intercept — externí RF reference */
+    g_autocal.rf          = AC_NA;   /* AD8307 slope/intercept — HW na teto desce neni (RF_LEVEL_HW_PRESENT) */
     g_autocal.ran = 1;
 }
 
@@ -101,7 +104,7 @@ const char *autocal_summary(void)
     ac_result_t worst = AC_PASS;
     ac_result_t chk[4] = { g_autocal.vref, g_autocal.rail12, g_autocal.rail5, g_autocal.vbat };
     for (int i = 0; i < 4; i++) if (chk[i] > worst && chk[i] != AC_NA) worst = chk[i];
-    snprintf(s, sizeof s, "AUTO-CAL: VREF %s  12V %s  5V %s  VBAT %s  [%s]",
+    snprintf(s, sizeof s, "AUTO-CAL: VREF %s  3V3 %s  5V %s  VBAT %s  [%s]",
              rs(g_autocal.vref), rs(g_autocal.rail12), rs(g_autocal.rail5),
              rs(g_autocal.vbat), rs(worst));
     return s;

@@ -227,35 +227,29 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
     return 10000;                   /* pak @ 10 s */
 }
 
-/* ── ADS1115 per-kanal PGA ────────────────────────────────────────────────
+/* ── ADS1115 per-kanal PGA + gain ─────────────────────────────────────────
  * Kazda konverze prepisuje Config registr (kvuli MUX) -> PGA per kanal je zdarma.
- * Rev2 dle SKUTECNE osazenych delicu ve schematu v2.0 (netlist 2026-07-27):
- *   AIN0 OCXO_VC_Sense: R51=15k  / R52=10k  (0-5V  -> 2.00V) -> +-2.048V ✓
- *   AIN1 RF_Level (AD8307): R53=1k ser.     (~0.25-2.6V)     -> +-4.096V
- *          ⚠️ R54=10k je STALE OSAZEN -> zatezuje vystup AD8307 (25mV/dB do int.
- *             12,5k) a srazi strmost. Pro presnost R54 -> DNP (viz TODO §7).
- *   AIN2 VBUS: R55=100k / R56=4k99 (0-40V -> 1.90V)          -> +-2.048V ✓
- *   AIN3 +5V:  R57=15k  / R58=10k  (0-5V  -> 2.00V)          -> +-2.048V ✓
- * AIN0/AIN2/AIN3 mapovany na ~2V -> +-2.048V; jen AIN1 (AD8307, ~2.6V) je +-4.096V.
- * Az bude v2.0 deska osazena, prepni REV2 na 1 + prepocitat g_calib:
- *   gain_12v pro delic 100k/4k99 (=x21.0), gain_5v pro 15k/10k (=x2.5, drive 8k2/10k),
- *   + pridat skalovani AIN0 x2.5 (OCXO_VC) — viz BOARD_V20 §7.2. */
-#ifndef ADS1115_HW_DIVIDERS_REV2
-#define ADS1115_HW_DIVIDERS_REV2 0    /* 0 = stara deska (delice 5k1/10k) */
-#endif
-
-#if ADS1115_HW_DIVIDERS_REV2
+ * 🔴 2026-10-02: SKUTECNE osazene delice OVERENY primo z netlistu FPGA_Module_2_1
+ * (kicad-cli export, ne z komentare — predchozi "v2.0 rev2" tabulka byla
+ * spekulativni a AIN1/AIN2 mela prohozene):
+ *   AIN0 OCXO_VC_Sense: R51=15k(top) / R52=10k(GND) -> gain (15+10)/10 = 2,5
+ *   AIN1 VBUS (hlavni napajeni PRED regulatory +3V3/+5V, ne RF_Level/AD8307 —
+ *          ten na desce FYZICKY NENI, viz RF_LEVEL_HW_PRESENT v calib.h):
+ *          R53=100k(top) / R54=4k99(GND) -> gain (100+4,99)/4,99 ~= 21,042
+ *   AIN2 +3V3: R55=10k(top) / R56=10k(GND) -> gain 2,0 (g_calib.gain_12v)
+ *   AIN3 +5V:  R57=10k(top) / R58=22k(GND) -> gain (10+22)/22 ~= 1,4545 (g_calib.gain_5v)
+ * Vsechny ctyri kanaly jedou na +-4.096V (nejvetsi spolecny rozsah, zadny
+ * neklipuje) — jemnejsi PGA per kanal by zpresnilo rozliseni, ale je to
+ * samostatna optimalizace, ne oprava spravnosti. */
 static const ads1115_pga_t k_ads_pga[4] = {
-    ADS1115_PGA_2V048,   /* AIN0 OCXO_VC_Sense (15k/10k -> 2.00V) */
-    ADS1115_PGA_4V096,   /* AIN1 RF_Level (AD8307, ~2.6V) */
-    ADS1115_PGA_2V048,   /* AIN2 VBUS (100k/4k99 -> 1.90V @ 40V) */
-    ADS1115_PGA_2V048,   /* AIN3 +5V (15k/10k -> 2.00V) */
-};
-#else
-static const ads1115_pga_t k_ads_pga[4] = {   /* stara deska: vse +-4.096V */
     ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096,
 };
-#endif
+
+/* Fixni gainy pevne dane odporovym delicem (nejsou uzivatelsky editovatelne
+ * jako gain_12v/gain_5v, protoze AIN0/AIN1 nejsou v kalibracnim pruvodci —
+ * viz WIZ_BR v app_gpsdo.c, jen 2 vetve). */
+#define AIN0_GAIN_OCXO_VC   (25.0f / 10.0f)          /* R51=15k/R52=10k: 2,5 */
+#define AIN1_GAIN_VBUS      (104.99f / 4.99f)        /* R53=100k/R54=4k99: ~21,042 */
 
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
@@ -304,14 +298,17 @@ void SensorsTask_run(void *argument)
   osDelay(2);
 
   for(;;) {
-	// === RF_Level fast-path (AIN1, ~10 Hz): na NE-sweep ticich, jen kdyz je I2C1
+	// === VBUS fast-path (AIN1, ~10 Hz): na NE-sweep ticich, jen kdyz je I2C1
 	// zdrava (streak==0 — pri mrtvem busu nehammerovat, sweep ridi back-off).
 	// Jedine misto rychleho zapisu SENS_ADS1 mimo sweep (porad jediny writer task).
+	// 🔴 2026-10-02: AIN1 = VBUS (viz k_ads_pga komentar vyse), ne RF_Level —
+	// gain delice (R53/R54) se musi aplikovat i tady, jinak by fast-path
+	// prepsal spravnou hodnotu ze sweepu syrovym mV za ~100 ms.
 	if (sub != 0) {
 	  if (i2c1_streak == 0) {
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
-		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = RF_Level */
+		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = VBUS */
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (started) {
@@ -321,7 +318,10 @@ void SensorsTask_run(void *argument)
 			got = ads1115_read_raw(&hi2c1, &raw);
 			osMutexRelease(i2c1MutexHandle);
 		  }
-		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw, k_ads_pga[1]));
+		  if (got) {
+			float mv = (float)ads1115_raw_to_mv(raw, k_ads_pga[1]) * AIN1_GAIN_VBUS;
+			sensor_update(SENS_ADS1, mv);
+		  }
 		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
 		}
 	  }
@@ -465,12 +465,16 @@ void SensorsTask_run(void *argument)
 		}
 		if (got) {
 		  int32_t mv = ads1115_raw_to_mv(raw, k_ads_pga[ch]);
-		  /* AIN2 = 12V vetev pres odporovy delic, AIN3 = 5V vetev pres delic ->
-			 skutecne napeti. Gain je editovatelna kalibrace (g_calib, okno
-			 Kalibrace); vychozi = datasheet pomer (13417/2814, 4978/2526).
+		  /* Vsechny 4 kanaly jdou pres odporovy delic -> skutecne napeti =
+			 syrove mV * gain delice (viz k_ads_pga komentar vyse, 2026-10-02).
+			 AIN2/AIN3 maji EDITOVATELNOU kalibraci (g_calib, okno Kalibrace) —
+			 vychozi = dopocitano z osazenych hodnot (10k/10k, 10k/22k).
+			 AIN0/AIN1 maji FIXNI gain (nejsou v kalibracnim pruvodci).
 			 ⚠️ Kratke okno pri bootu pred calib_load() (UiTask) jede na vychozich
 			 hodnotach z calib.c — kosmeticke, diagnosticke cteni ~1 Hz. */
-		  if      (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
+		  if      (ch == 0) mv = (int32_t)((float)mv * AIN0_GAIN_OCXO_VC + 0.5f);
+		  else if (ch == 1) mv = (int32_t)((float)mv * AIN1_GAIN_VBUS   + 0.5f);
+		  else if (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
 		  else if (ch == 3) mv = (int32_t)((float)mv * g_calib.gain_5v  + 0.5f);
 		  sensor_update(sid, (float)mv); any_ok = 1;
 		} else {
