@@ -68,6 +68,8 @@ module spi_app (
     input  wire [31:0] meas_periods_b,       // CH_B: počet period v okně
     input  wire [7:0]  meas_tdc_status,      // viz hlavička (abs 100)
     input  wire [191:0] meas_cal_diag,       // diagnostika kalibrace A[95:0] B[191:96]
+    input  wire [15:0] dbg_mosi_cnt,         // diag: hrany MOSI v poslednim ramci (tx_b[116,117])
+    input  wire [15:0] dbg_sck_cnt,          // diag: nabezne hrany SCK v poslednim ramci (tx_b[124,125])
 
     input  wire [1023:0] rx_frame_flat,
     input  wire          rx_valid,           // pulz po CS↑ (synchronizováno)
@@ -90,7 +92,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0403;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0404;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -337,11 +339,11 @@ module spi_app (
                             tx_b[108 + k] <= h_edge_b[8*k +: 8];
                         tx_b[112] <= d_ccl;  tx_b[113] <= d_cch;
                         tx_b[114] <= d_rcl;  tx_b[115] <= d_rch;
-                        tx_b[116] <= 8'd0;   tx_b[117] <= 8'd0;
+                        tx_b[116] <= dbg_mosi_cnt[7:0]; tx_b[117] <= dbg_mosi_cnt[15:8];
                         for (k = 0; k < 6; k = k + 1)
                             tx_b[118 + k] <= h_dt_a[8*k +: 8];
-                        tx_b[124] <= 8'd0;
-                        tx_b[125] <= 8'd0;
+                        tx_b[124] <= dbg_sck_cnt[7:0];
+                        tx_b[125] <= dbg_sck_cnt[15:8];
                     end
 
                     crc_acc    <= 16'hFFFF;

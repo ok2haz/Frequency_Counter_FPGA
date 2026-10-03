@@ -305,6 +305,23 @@ module top (
         .rx_bit_count(rx_bit_count)
     );
 
+    // DIAGNOSTIKA vstupu SPI (2026-10-03): kolik hran MOSI a nabeznych hran SCK FPGA
+    // videla v poslednim ramci (pocitano v CS=0, latch pri CS rise). Rozlisi
+    // "pin nic nevidi" (hrany MOSI = 0) od chyby zachyceni bitu v PHY.
+    reg [2:0] dm_mosi = 3'b000, dm_sck = 3'b000, dm_cs = 3'b111;
+    reg [15:0] dm_mc = 16'd0, dm_sc = 16'd0, dm_mlat = 16'd0, dm_slat = 16'd0;
+    always @(posedge clk_p0_100m) begin
+        dm_mosi <= {dm_mosi[1:0], spi_mosi};
+        dm_sck  <= {dm_sck[1:0],  spi_sck};
+        dm_cs   <= {dm_cs[1:0],   spi_cs_n};
+        if (dm_cs[2:1] == 2'b10) begin dm_mc <= 16'd0; dm_sc <= 16'd0; end
+        else if (!dm_cs[2]) begin
+            if (dm_mosi[2] ^ dm_mosi[1])        dm_mc <= dm_mc + 16'd1;
+            if (dm_sck[2:1] == 2'b01)           dm_sc <= dm_sc + 16'd1;
+        end
+        if (dm_cs[2:1] == 2'b01) begin dm_mlat <= dm_mc; dm_slat <= dm_sc; end
+    end
+
     reg [2:0] fe_s = 3'b000;
     always @(posedge clk_ref_10m)
         fe_s <= {fe_s[1:0], frame_end_tgl};
@@ -328,6 +345,8 @@ module top (
         .meas_periods_b(periods_b_hold),
         .meas_tdc_status(tdc_status),
         .meas_cal_diag(cal_diag),
+        .dbg_mosi_cnt(dm_mlat),
+        .dbg_sck_cnt(dm_slat),
         .cal_mode(cal_mode),
         .base_win(base_win),
         .rx_frame_flat(rx_frame_flat),

@@ -16,7 +16,7 @@ module tb_link;
   spi_app app(.clk(clk10),.meas_freq_x100000(64'd0),.meas_periods(32'd0),.meas_gate_ns(64'd0),
      .meas_timestamp(64'd0),.meas_error_flags(32'd0),.meas_channel(8'd0),.new_meas(1'b0),.signal_lost(1'b0),
      .meas_freq16_x100000(64'd0),.meas_phase_status(8'd0),.meas_status2(8'd0),.meas_dt_a_ps(48'd0),
-     .meas_dt_b_ps(48'd0),.meas_periods_b(32'd0),.meas_tdc_status(8'h03),.meas_cal_diag(192'd0),
+     .meas_dt_b_ps(48'd0),.meas_periods_b(32'd0),.meas_tdc_status(8'h03),.meas_cal_diag(192'd0),.dbg_mosi_cnt(16'd0),.dbg_sck_cnt(16'd0),
      .rx_frame_flat(rxf),.rx_valid(rxv),.tx_frame_flat(txf),.tx_valid(txv),.dbg_status(dbg),
      .cal_mode(cal_mode),.base_win(bw));
   function [15:0] crc(input [15:0] c0, input [7:0] d);
