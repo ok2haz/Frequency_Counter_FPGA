@@ -19,7 +19,9 @@ extern SPI_HandleTypeDef hspi2;
 /* === SPI rychlost ===
  * Kontrakt FPGA (GW1NR-9, oversampling SCK na 100 MHz): cil <= 6 MHz,
  * absolutni maximum ~10 MHz. NEPREKRACOVAT. */
-#define FPGA_SCK_TARGET_HZ  1000000u   /* 1 MHz bring-up */
+#define FPGA_SCK_TARGET_HZ  5000000u   /* strop 5 MHz (zadani 2026-10-03); skutecny takt = kernel/2^n,
+ *   viz "fpga: SPI2 kernel=.. SCK ~.." v boot logu. ⚠️ Vyzaduje bitstream s PHY na 100 MHz (7affd41);
+ *   starsi PHY na 10 MHz zvlada jen ~2 MHz. Pri NOLINK vratit 1000000u. */
 #define FPGA_SCK_MAX_HZ     10000000u  /* tvrdy strop dle kontraktu */
 #if FPGA_SCK_TARGET_HZ > FPGA_SCK_MAX_HZ
 #error "FPGA_SCK_TARGET_HZ prekracuje povolene maximum FPGA slave (~10 MHz)"
