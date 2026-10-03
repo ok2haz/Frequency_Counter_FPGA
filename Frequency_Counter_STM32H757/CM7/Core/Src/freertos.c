@@ -162,7 +162,8 @@ volatile uint8_t  g_freq_valid = 0;                    /* 1 = platne mereni (CRC
 /* Surova reciproka dvojice pro HI-RES dopocet headline (f = edges × 4 × 1e9 / gate_ns).
  * Da vic desetin nez zaokrouhlene `x100000`; plati JEN pro vetev /4 (viz g_freq_hires). */
 volatile uint64_t g_freq_edges = 0;                    /* pocet period v okne (pin28 = /4) */
-volatile uint64_t g_freq_gate_ns = 0;                  /* skutecna delka okna [ns] */
+volatile uint64_t g_freq_gate_ns = 0;                  /* skutecna delka okna [ns] (zobrazeni) */
+volatile uint64_t g_freq_gate_ps = 0;                  /* PRESNA delka okna [ps] (vsechny vypocty) */
 volatile uint8_t  g_freq_hires = 0;                    /* 1 = zobrazeny zdroj je /4 a edges/gate jsou pouzitelne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */

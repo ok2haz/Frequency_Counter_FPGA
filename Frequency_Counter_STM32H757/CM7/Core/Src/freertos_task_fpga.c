@@ -72,7 +72,8 @@ void StartFpgaTask(void *argument)
        * nema -> pri prepnuti na /16 se hi-res vypne a zobrazi se 5 desetin z x1e5. */
       g_freq_edges   = m.edge_count;
       g_freq_gate_ns = m.gate_time_ns;
-      g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_time_ns > 0u) ? 1u : 0u;
+      g_freq_gate_ps = m.gate_ps;
+      g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_ps > 0u) ? 1u : 0u;
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
       /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
@@ -84,7 +85,7 @@ void StartFpgaTask(void *argument)
          * Σhradel ~1 s, v case ale vic. Zahodit a zacit od tohoto mereni.
          * Pocita se v `fpga_freq_poll` (`status` -> radek SEQ FPGA). */
         if (fpga_freq_seq_gap() != 0u) fpga_stat_break();
-        fpga_acc_add(v, m.edge_count, m.gate_time_ns);
+        fpga_acc_add(v, m.edge_count, m.gate_ps);
       } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
       }
@@ -98,7 +99,7 @@ void StartFpgaTask(void *argument)
       uint32_t lf = SDRAM_LOG_F_A_VALID;   /* kanal B az s dvoukanalovou deskou */
       if (m.error_flags & FPGA_ERR_SIGNAL_LOST) lf |= SDRAM_LOG_F_STALE;
       sdram_log_put(m.sequence,
-                    fpga_freq_hires_uhz(v, m.edge_count, m.gate_time_ns),
+                    fpga_freq_hires_uhz(v, m.edge_count, m.gate_ps),
                     0u, lf,
                     HAL_GetTick(), m.gate_time_ns,
                     fpga_sim_active() ? 1u : 0u);

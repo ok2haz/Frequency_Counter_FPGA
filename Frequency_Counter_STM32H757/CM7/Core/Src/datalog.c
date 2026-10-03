@@ -471,7 +471,7 @@ static void sample(datalog_rec_t *r)
         r->freq_x100000 = use16 ? m.freq16_x100000 : m.frequency_x100000;
         /* F-0180: presne jen z overene dvojice /4; jinak 0 -> ulozi se x1e5. */
         if (!use16) r->freq_hz = fpga_freq_hires_hz(m.frequency_x100000,
-                                                    m.edge_count, m.gate_time_ns);
+                                                    m.edge_count, m.gate_ps);
     }
     /* 🔴 F-0172: kmitocet za periodu = PRUMER vsech mereni od minuleho zaznamu
      * (`fpga_acc_take`), ne posledni jednotlive mereni 0,25 s. Kdyz v periode

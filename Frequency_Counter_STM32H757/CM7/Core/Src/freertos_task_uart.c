@@ -2094,6 +2094,41 @@ void UartTask_run(void *argument)
 				  }
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
+			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0) {
+				  /* TDC (FW >= 0x0400): `tdc` = diagnostika kalibrace (CAL report),
+				   * `tdc cal` = spustit kalibraci (~0,5-1 s, mereni stoji) a pockat.
+				   * Bezi z UartTasku (nehlidany watchdogem) -> osDelay je v poradku. */
+				  fpga_tdc_cal_t d;
+				  memset(&d, 0, sizeof d);
+				  if (strcmp(RxBuffer, "tdc cal") == 0) {
+					  if (!fpga_freq_tdc_cal_start()) {
+						  printf("TDC: SET_CONFIG se nepodaril (link? fpgasim?)\n");
+					  } else {
+						  printf("TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...\n");
+						  for (int i = 0; i < 24; i++) {          /* nejvyse ~6 s */
+							  osDelay(250);
+							  if (fpga_freq_tdc_report(&d) && !(d.status & FPGA_TDC_CAL_BUSY) &&
+							      (d.status & (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) ==
+							      (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) break;
+						  }
+					  }
+				  }
+				  if (fpga_freq_tdc_report(&d)) {
+					  for (int ch = 0; ch < 2; ch++)
+						  printf("TDC %c: kodu %u/256 (nejvyssi %u), nejvetsi %lu, za koncem retezu %lu\n",
+							     'A' + ch, (unsigned)d.nz[ch], (unsigned)d.last[ch],
+							     (unsigned long)d.peak[ch], (unsigned long)d.ovf[ch]);
+					  printf("TDC: status 0x%02X (cal A:%u B:%u fail:%u busy:%u, retez kratky A:%u B:%u)\n",
+						     (unsigned)d.status,
+						     (d.status & FPGA_TDC_CAL_A) ? 1u : 0u, (d.status & FPGA_TDC_CAL_B) ? 1u : 0u,
+						     (d.status & FPGA_TDC_CAL_FAIL) ? 1u : 0u, (d.status & FPGA_TDC_CAL_BUSY) ? 1u : 0u,
+						     (d.status & FPGA_TDC_SHORT_A) ? 1u : 0u, (d.status & FPGA_TDC_SHORT_B) ? 1u : 0u);
+					  printf("TDC: ~170-180 kodu a 'za koncem' ~0 = retez pokryva 10 ns; mene kodu nebo\n"
+					         "     velke 'za koncem' = retez kratky (rychlejsi nez STA model 57 ps/tap)\n");
+				  } else {
+					  printf("TDC: CAL report nedorazil (stary FW? link? fpgasim?)\n");
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
 				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN
 				   * prijatych bajtu (v2 = 128 B, v1 bylo 64 B).
@@ -3003,10 +3038,17 @@ void UartTask_run(void *argument)
 				   * nevypisoval, i kdyz na nej komentar odkazoval). */
 				  {
 					  fpga_meas_t m;
-					  if (fpga_freq_get_last(&m))
+					  if (fpga_freq_get_last(&m)) {
 						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X WIN:%u\n",
 							     (unsigned)m.fw_version, (unsigned)m.caps,
 							     (unsigned)m.clk_status, (unsigned)m.win_count);
+						  if (m.caps & FPGA_CAP_DT)
+							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu ps (`tdc` = detail)\n",
+								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,
+								     (m.tdc_status & FPGA_TDC_CAL_BUSY) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_FAIL) ? 1u : 0u,
+								     (m.tdc_status & FPGA_TDC_SHORT_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_SHORT_B) ? 1u : 0u,
+								     (unsigned long)m.gate_ps);
+					  }
 				  }
 				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni
 				   * misto, kam se sahne pri diagnostice. */

@@ -1116,7 +1116,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
         src->freq4_x100000  = m.frequency_x100000;
         src->freq16_x100000 = m.freq16_x100000;
         /* F-0180: tataz presna hodnota jako v IPC snapshotu (`ipc_publish`). */
-        src->freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000, m.edge_count, m.gate_time_ns);
+        src->freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000, m.edge_count, m.gate_ps);
         if (m.error_flags & (FPGA_ERR_SIGNAL_LOST | FPGA_ERR_MEAS)) src->freq_err = 1;
         int fresh_ok = (m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
         if (fresh_ok)                                  src->valid |= SCPI_V_FREQ;

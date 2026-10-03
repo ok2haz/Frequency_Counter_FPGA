@@ -58,7 +58,8 @@ extern volatile uint32_t g_freq_seq;       /* SEQUENCE posledního platného rá
 extern volatile uint8_t  g_freq_valid;     /* 1 = platné měření (CRC+VALID+FRESH) */
 /* Surová reciproká dvojice pro HI-RES headline (víc desetin než zaokrouhlené `x100000`). */
 extern volatile uint64_t g_freq_edges;     /* počet period v okně (pin28 = /4) */
-extern volatile uint64_t g_freq_gate_ns;   /* skutečná délka okna [ns] */
+extern volatile uint64_t g_freq_gate_ns;   /* skutečná délka okna [ns] — jen zobrazení */
+extern volatile uint64_t g_freq_gate_ps;   /* PŘESNÁ délka okna [ps] — všechny výpočty (fpga_meas_t.gate_ps) */
 extern volatile uint8_t  g_freq_hires;     /* 1 = zdroj je /4 → lze dopočítat; 0 = /16 (edge_count chybí) */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */

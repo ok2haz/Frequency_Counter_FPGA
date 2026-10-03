@@ -140,7 +140,7 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
  * web je servíruje v `/api/state` — jinak by vznikla čtvrtá kopie v `httpd_min.c`.
  * ⚠️ Nová deska má carry chain ~50 ps bin (~22 ps single-shot), tedy o dva řády
  * jinde — při přechodu změnit TADY a nikde jinde. */
-#define MP_TDC_PS      2500.0   /* Si5356 4 fáze po 90° = 2,5 ns krok TDC (HW konstanta) */
+#define MP_TDC_PS      57.0     /* carry-chain TDC: krok jednoho tapu (STA model GW1NR-9C 57 ps; HYPOTÉZA do měření na desce, viz CAL report) */
 #define MP_REF_PPB     1.0      /* systematická nejistota GPSDO reference vůči UTC */
 
 /* ══════════════ AD8307: mV → dBm — JEDINÝ zdroj převodu (F-0165) ═══════════

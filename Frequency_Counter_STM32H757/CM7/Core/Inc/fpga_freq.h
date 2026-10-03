@@ -58,12 +58,32 @@ typedef struct {
     uint16_t caps;                /* abs 62-63: bit0=window stream, bit1=SET_CONFIG, bit4=Λ/fine */
     uint8_t  clk_status;          /* abs 64: bit0=10MHz pritomen, bit1=PLL/DLL lock */
     uint8_t  win_count;           /* abs 65: kolik window zaznamu (0..2) je platnych (dnes nevyuzito) */
+    /* ── 2026-10-03: skutecny carry-chain TDC (FW >= 0x0400, caps bit5) ──────── */
+    uint64_t gate_ps;             /* PRESNE okno CH_A [ps] — jediny zdroj delky okna pro VSECHNY
+                                   * vypocty (hi-res, akumulatory, statistika). Novy FW: z dt v
+                                   * jednotkach T_clk/16384 (abs 118) * 625/1024; stary FW /
+                                   * emulator: z gate_time_ns pres `fpga_freq_dt_ticks` (F-0186) */
+    uint64_t dt_b_ps;             /* okno CH_B [ps] (abs 101..106); 0 = neznamo */
+    uint32_t edges_b;             /* periody CH_B v okne (abs 108) */
+    uint8_t  tdc_status;          /* abs 100: viz FPGA_TDC_* */
 } fpga_meas_t;
+
+/* caps bity (abs 62-63) */
+#define FPGA_CAP_DT           (1u << 5)   /* ramec nese dt_a/dt_b v jednotkach T_clk/16384 */
+/* tdc_status bity (abs 100) */
+#define FPGA_TDC_CAL_A        (1u << 0)   /* tabulka kanalu A platna */
+#define FPGA_TDC_CAL_B        (1u << 1)
+#define FPGA_TDC_CAL_FAIL     (1u << 2)   /* posledni kalibrace selhala (timeout kruhu) */
+#define FPGA_TDC_CAL_BUSY     (1u << 3)   /* probiha kalibrace -> mereni blokovana */
+#define FPGA_TDC_SHORT_A      (1u << 4)   /* retez A kratky: > 1/16 udalosti za jeho koncem */
+#define FPGA_TDC_SHORT_B      (1u << 5)
 
 /* error_flags bity */
 #define FPGA_ERR_MEAS         (1u << 0)   /* pin28 (/4): Dt==0 / zadny signal v okne */
 #define FPGA_ERR_SIGNAL_LOST  (1u << 1)   /* watchdog ~2.5 s bez mereni; zaroven VALID=0 */
 #define FPGA_ERR_OVERFLOW     (1u << 2)   /* okno > ~21.5 s (extremne nizky f) */
+#define FPGA_ERR_ALIAS        (1u << 3)   /* okno bez hrany > ~25 s: dt neplatne (FW >= 0x0400) */
+#define FPGA_ERR_TDC          (1u << 4)   /* TDC CH_A nezkalibrovan / probiha kalibrace (FW >= 0x0400) */
 /* status2 bity */
 #define FPGA_ST2_DIV16_ERR    (1u << 0)   /* pin27 (/16): Dt==0 */
 
@@ -135,34 +155,53 @@ int fpga_freq_select_core(int use16, const fpga_meas_t *m);
  *  2026-08-30 pri psani datove cache). Kdo si nasobitel odvozuje sam, tu chybu
  *  si zopakuje — proto je tahle funkce JEDINY zdroj pravdy.
  *  @return 1, 4 nebo 16; 0 = nesedi zadny -> hi-res se NESMI pouzit. */
-uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ps);
 
 /** Kmitocet v µHz z reciproke dvojice s OVERENYM nasobitelem (viz vyse).
  *  Kdyz zadny nasobitel nesedi, degraduje na `x100000` (tj. 5 desetin). */
-uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ps);
 
 /** Kmitocet [Hz] z reciproke dvojice s OVERENYM nasobitelem, v `double` (F-0180).
  *  Presnost ~1e-16 relativne na libovolnem kmitoctu — tim se lisi od `x100000`
  *  (krok 10 µHz = 1e-8 pri 1 kHz, vic nez podlaha citace) i od µHz vyse.
  *  @return 0.0 = nasobitel neoveren (vetev /16, stary ramec) -> volajici pouzije
  *  `x100000` a NEPREDSTIRA vic cislic, nez mereni nese. */
-double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ns);
+double fpga_freq_hires_hz(uint64_t x100000, uint64_t edges, uint64_t gate_ps);
 
-/* ── Presna delka okna (F-0186) ─────────────────────────────────────────────
- * 🔴 `gate_time_ns` z ramce NENI presne Δt: FPGA ho posila jako FLOOR(dt · 2,5 ns)
- * (`../Frequency_Counter_FPGA_Module/src/spi_app.v:507`, `(dt*5) >> 1`), u licheho
- * poctu ticku tedy o 0,5 ns MENE, zatimco `frequency_x100000` pocita z presneho dt
- * (`spi_app.v:515`). Kdo delil primo `gate_time_ns`, mel u asynchronniho signalu
- * systematicky 0 az +2e-9 (sim/2026-09-27_gate_floor.js). Rekonstrukce je
- * bezztratova: dt = round(gate_ns / 2,5 ns) — pravidlo (1) FPGA_PROTOCOL_V2_NAVRH.md.
- * ⚠️ Tick 2,5 ns plati pro DNESNI modul (4 faze 100 MHz); nova deska (carry chain)
- * ma jiny tick a protokol v2 musi nest Δt v tickach nebo ps, ne floor v ns. */
-#define FPGA_TICK_PS      2500u
-#define FPGA_TICKS_PER_S  (1000000000000ull / FPGA_TICK_PS)   /* 4e8 */
-/** Pocet ticku okna z `gate_time_ns` (zaokrouhleni na nejblizsi tick). JEDINE misto,
- *  kudy se z ramce bere delka okna pro vypocet — kdo deli `gate_time_ns` sam,
- *  zopakuje F-0186. */
+/* ── Presna delka okna ─────────────────────────────────────────────────────
+ * 🔴 2026-10-03: delka okna se VSUDE bere z `fpga_meas_t.gate_ps` [ps].
+ *  * Novy FW (caps bit5, carry-chain TDC): FPGA posila dt v jednotkach
+ *    T_clk/16384 = 0,6103515625 ps (1,6384e12 jednotek/s); `gate_ps` =
+ *    round(dt * 625 / 1024) (chyba <= 0,5 ps = 2e-12 pri 0,25 s). FPGA uz
+ *    NEPOCITA frequency_x100000 — tu vypocte parser z (edge_count, gate_ps).
+ *  * Stary FW / emulator: `gate_time_ns` je FLOOR(dt * 2,5 ns) (F-0186), presne
+ *    dt = round(gate_ns / 2,5 ns) (`fpga_freq_dt_ticks`) -> gate_ps = dt * 2500.
+ * Kdo deli `gate_time_ns` sam, zopakuje F-0186 (floor) i nepresnost ns. */
+#define FPGA_LEGACY_TICK_PS  2500u                        /* 4fazovy vernier (stary FW) */
+#define FPGA_PS_PER_S        1000000000000ull
+/** LEGACY: pocet ticku 2,5 ns okna z `gate_time_ns` stareho FW (zaokrouhleni
+ *  na nejblizsi tick). Pro novy FW se NEPOUZIVA — pouzij `gate_ps`. */
 uint64_t fpga_freq_dt_ticks(uint64_t gate_ns);
+/** floor(n * 1e12 * 10^frac / t_ps) bez 128bitoveho deleni (dlouhe deleni po
+ *  cislicich). `n` <= 4e9 (n*1e6 se musi vejit do uint64), `t_ps` <= ~1e16.
+ *  Pro n = pocet period, t_ps = okno: kmitocet [Hz] * 10^frac. */
+uint64_t fpga_freq_scaled(uint64_t n, uint64_t t_ps, int frac);
+
+/* ── TDC (kalibrace a diagnostika, FW >= 0x0400) ───────────────────────────── */
+typedef struct {
+    uint32_t ovf[2];      /* [A,B] udalosti kalibrace za koncem retezu (kod 255) */
+    uint32_t peak[2];     /* nejvetsi pocet udalosti na jeden kod */
+    uint16_t nz[2];       /* pocet neprazdnych kodu (~175 = retez pokryva 10 ns) */
+    uint16_t last[2];     /* nejvyssi neprazdny kod */
+    uint8_t  status;      /* FPGA_TDC_* */
+    uint8_t  cal_mode;    /* posledni SET_CONFIG 0x02 */
+} fpga_tdc_cal_t;
+/** Spusti kalibraci TDC (SET_CONFIG 0x02: 0 pak 1 = nabezna hrana). FPGA ji
+ *  dokonci za ~0,5-1 s a behem ni nemeri. @return false pri chybe prenosu. */
+bool fpga_freq_tdc_cal_start(void);
+/** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
+ *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
+bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
 
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog
@@ -182,7 +221,7 @@ uint64_t fpga_freq_dt_ticks(uint64_t gate_ns);
 #define FPGA_ACC_N        2
 
 /** Přičte jedno platné měření do všech akumulátorů. Volá VÝHRADNĚ FpgaTask. */
-void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ns);   /* gate_ns = z ramce */
+void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ps);   /* gate_ps = `fpga_meas_t.gate_ps` */
 
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
  *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka

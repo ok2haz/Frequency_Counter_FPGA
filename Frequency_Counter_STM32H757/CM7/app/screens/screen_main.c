@@ -741,10 +741,10 @@ static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7
  *
  * FALLBACK (bez hi-res): 5 desetin z `x100000`. ⚠️ DELENIM `10^(5-frac)`, protoze
  * `x100000 × 10^frac / 1e5` by pri ~4 GHz pretekl (4e19 > 1,8e19). */
-static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int hires)
+static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gate_ps, int hires)
 {
     int frac = s_freq_frac;
-    if (hires && gate_ns > 0u && edges > 0u) {
+    if (hires && gate_ps > 0u && edges > 0u) {
         /* ⚠️ NASOBITEL SE NEPREDPOKLADA, ALE OVERUJE — a to na JEDINEM miste
          * (`fpga_freq_hires_mul`, viz fpga_freq.h). `edge_count` muze byt pocet
          * period DELENE vetve (/4) NEBO neděleného signalu (emulator), takze
@@ -752,18 +752,11 @@ static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gat
          * je `frequency_x100000` z ramce; hi-res je jen JEMNEJSI ODECET TEHOZ,
          * ne druhy nezavisly vypocet. Kdyz nesedi zadny nasobitel, hi-res se
          * NEPOUZIJE — radeji 5 poctivych desetin nez 15 spatnych. */
-        uint64_t mul = fpga_freq_hires_mul(x100000, edges, gate_ns);
-        uint64_t t   = fpga_freq_dt_ticks(gate_ns);
-        if (mul && t) {
-            uint64_t num = edges * mul * FPGA_TICKS_PER_S;
-            uint64_t v   = num / t;
-            uint64_t rem = num % t;
-            for (int i = 0; i < frac; i++) {                  /* rem < t -> rem×10 nepretece */
-                rem *= 10u;
-                v    = v * 10u + rem / t;
-                rem %= t;
-            }
-            return v;
+        uint64_t mul = fpga_freq_hires_mul(x100000, edges, gate_ps);
+        if (mul) {
+            /* okno je PRESNE v ps (`gate_ps`); dlouhe deleni po cislicich je jen
+             * v `fpga_freq_scaled` (jediny zdroj, bez 128bitoveho deleni) */
+            return fpga_freq_scaled(edges * mul, gate_ps, frac);
         }
         /* zadny nasobitel nesedel -> spadni na x1e5 (nize) */
     }
@@ -919,13 +912,13 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
 #define FREQ_TDC_PS  MP_TDC_PS
 double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
 
-static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ns, int frac)
+static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
 {
     if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
-    if (gate_ns == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
+    if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
     double hz = (double)x100000 / 100000.0;
     if (hz <= 0.0) return 2;
-    double gate_s   = (double)gate_ns * 1e-9;
+    double gate_s   = (double)gate_ps * 1e-12;
     double u_res    = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;   /* relativni */
     double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
     /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
@@ -973,7 +966,7 @@ static void period_fmt_of(double hz, const char **unit, double *unit_s, int *int
     *int_digits = n;
 }
 
-static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, int max_frac)
+static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, int max_frac)
 {
     uint64_t whole = x100000 / 100000ull;
     int int_digits = 1;
@@ -983,7 +976,7 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, in
      *        VZDY, i v rezimu PERIODA). Frac = kolik nese zdroj (hi-res 7 / x1e5 5 / sim). ── */
     s_freq_int  = int_digits;
     s_freq_frac = (max_frac > FREQ_FRAC_HIRES) ? FREQ_FRAC_HIRES : max_frac;
-    s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ns, s_freq_hires) : 0u;
+    s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ps, s_freq_hires) : 0u;
     s_freq_nominal_hz = (double)whole;
     s_freq_center     = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
 
@@ -992,13 +985,13 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ns, in
     if (!s_disp_period) {
         s_disp_unit = SCR_S_UNIT_HZ; s_disp_unit_s = 1.0;
         for (int frac = max_frac; ; frac--) {
-            num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ns, frac));
+            num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ps, frac));
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
         }
         /* freq frac = to, co num_layout vybral dle FREQ_MAX_W (v tomto rezimu jsou
          * frekvence a zobrazeni identicke) */
         s_freq_frac = s_disp_frac;
-        s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ns, s_freq_hires) : 0u;
+        s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ps, s_freq_hires) : 0u;
         s_freq_center = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
     } else {
         const char *u; double us; int p_int;
@@ -1085,9 +1078,9 @@ static void freq_advance(void)
 {
     if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
 
-    uint32_t seq; uint64_t x100000, edges, gate_ns; uint8_t valid, hires;
+    uint32_t seq; uint64_t x100000, edges, gate_ps; uint8_t valid, hires;
     do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid;
-         edges = g_freq_edges; gate_ns = g_freq_gate_ns; hires = g_freq_hires; }
+         edges = g_freq_edges; gate_ps = g_freq_gate_ps; hires = g_freq_hires; }
     while (seq != g_freq_seq);
 
     /* Prepnul se FREQUENCY <-> PERIOD (footer toggle) -> vynut rebuild formatu
@@ -1138,7 +1131,7 @@ static void freq_advance(void)
              * jen kdyz nasobitel nesedi. LSB `x100000` (1e-5 Hz) je pod ~0,1 Hz vetsi
              * nez prah 1e-4, takze by se nulovalo pri kazdem preklopeni zaokrouhleni
              * (dnes f_min ~0,19 Hz s rezervou 2x; nova deska meri bez predelicky). */
-            double hz_now = hires ? fpga_freq_hires_hz(x100000, edges, gate_ns) : 0.0;
+            double hz_now = hires ? fpga_freq_hires_hz(x100000, edges, gate_ps) : 0.0;
             if (!(hz_now > 0.0)) hz_now = (double)x100000 / 100000.0;
             if (s_freq_ref_hz <= 0.0) sig_change = 1;          /* prvni realne mereni */
             else if (fabs(hz_now / s_freq_ref_hz - 1.0) > 1e-4) sig_change = 1;
@@ -1154,7 +1147,7 @@ static void freq_advance(void)
             if (fmt_need || sig_change) {
                 double keep_nom = s_freq_nominal_hz;
                 s_freq_hires = hires;
-                num_build_for(x100000, edges, gate_ns,
+                num_build_for(x100000, edges, gate_ps,
                               hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5);
                 s_freq_fmt_changed = 1;
                 if (sig_change) {                     /* jiny signal/zdroj -> nemichat s pyramidou */
@@ -1169,7 +1162,7 @@ static void freq_advance(void)
                     s_freq_nominal_hz = keep_nom;     /* F-0184: jen format, reference y zustava */
                 }
             } else {
-                s_freq_n = freq_frame_to_lsb(x100000, edges, gate_ns, hires);
+                s_freq_n = freq_frame_to_lsb(x100000, edges, gate_ps, hires);
                 disp_update();
             }
         }

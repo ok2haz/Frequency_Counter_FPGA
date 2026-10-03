@@ -168,7 +168,7 @@ void ipc_publish(void)
         g_ipc.snap.seq_meas       = m.sequence;
         /* F-0180: presna hodnota ze TEHOZ ramce (0 = nasobitel neoveren). */
         g_ipc.snap.freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000,
-                                                       m.edge_count, m.gate_time_ns);
+                                                       m.edge_count, m.gate_ps);
     } else {
         g_ipc.snap.freq4_x100000 = g_ipc.snap.freq16_x100000 = g_ipc.snap.freq_x100000 = 0u;
         g_ipc.snap.gate_ns = 0u;
