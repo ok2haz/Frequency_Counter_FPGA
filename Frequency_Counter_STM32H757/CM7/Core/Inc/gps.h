@@ -76,8 +76,9 @@ typedef struct {
  * Vola se na zacatku draineru v defaultTask. */
 void gps_init(void);
 
-/* UBX-CFG-TP5: TIMEPULSE = s fixem 1PPS (zarovnane na UTC, jde na FPGA PIN33
- * pres GPS_CLK_Buff — do STM nevede), bez fixu 10 Hz (frekvence = indikator fixu).
+/* UBX-CFG-TP5: TIMEPULSE = s fixem 1PPS (pulz 100 ms, nabezna hrana na zacatku
+ * UTC sekundy; jde na FPGA PIN33 pres GPS_CLK_Buff — do STM nevede), bez fixu
+ * 10 Hz se stridou 50 % (frekvence = indikator fixu).
  * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init a gps_tick (1x/min).
  * TX bezi v preruseni; volat jen z tasku pri bezicim scheduleru. */
 void gps_config_timepulse(void);

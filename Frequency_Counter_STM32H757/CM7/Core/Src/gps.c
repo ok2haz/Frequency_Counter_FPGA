@@ -397,28 +397,38 @@ static bool ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
  * zadnou PLL nema a FPGA na PIN33 ceka 1PPS. */
 #define GPS_TP_FREQ_HZ        1u        /* s fixem: 1PPS pro FPGA */
 #define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: 10 Hz (indikator bez fixu) */
+/* Delka pulzu v us (isLength = 1). S fixem TYPICKA strida 1PPS: 100 ms high
+ * (10 %, vychozi hodnota u-blox), ne 50 % — zadani uzivatele 2026-10-03.
+ * Bez fixu 50 ms pri 10 Hz = 50 % jako dosud. Casovou znackou je NABEZNA hrana. */
+#define GPS_TP_LEN_LOCK_US    100000u   /* s fixem: pulz 100 ms */
+#define GPS_TP_LEN_NOFIX_US   50000u    /* bez fixu: pulz 50 ms (strida 50 %) */
 #define GPS_TP_RESEND_MS      60000u    /* opakovani TP5 (F-0219): 1x/min, zadani uzivatele */
 static uint32_t s_tp_last_ms;           /* posledni odeslani TP5 (HAL_GetTick) — jen defaultTask */
 
+/* Ulozi uint32 little-endian do UBX payloadu. */
+static void put_le32(uint8_t *p, uint32_t v)
+{
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
 /* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
  * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
- * sekundy); freqPeriod (no lock) = 10 Hz. 50% strida. */
+ * sekundy), pulz 100 ms; freqPeriod (no lock) = 10 Hz, pulz 50 ms.
+ * isFreq = periody v Hz, isLength = delky pulzu v us (ne pomer 2^-32). */
 void gps_config_timepulse(void)
 {
-  uint32_t fl = GPS_TP_FREQ_HZ;         /* s fixem */
-  uint32_t fn = GPS_TP_FREQ_NOFIX_HZ;   /* bez fixu */
   uint8_t pl[32] = {0};
-  pl[0]  = 0;                                  /* tpIdx = 0 (TIMEPULSE) */
-  pl[8]  = (uint8_t)fn; pl[9]  = (uint8_t)(fn >> 8);  /* freqPeriod (no lock) = 10 Hz */
-  pl[10] = (uint8_t)(fn >> 16); pl[11] = (uint8_t)(fn >> 24);
-  pl[12] = (uint8_t)fl; pl[13] = (uint8_t)(fl >> 8);  /* freqPeriodLock (fix) = 1 Hz */
-  pl[14] = (uint8_t)(fl >> 16); pl[15] = (uint8_t)(fl >> 24);
-  pl[19] = 0x80;                               /* pulseLenRatio = 50% (2^31) */
-  pl[23] = 0x80;                               /* pulseLenRatioLock = 50% */
-  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|alignToTow|polarity = 0x6F */
-  pl[28] = 0x6F;
+  pl[0] = 0;                                     /* tpIdx = 0 (TIMEPULSE) */
+  put_le32(&pl[8],  GPS_TP_FREQ_NOFIX_HZ);       /* freqPeriod (no lock) = 10 Hz */
+  put_le32(&pl[12], GPS_TP_FREQ_HZ);             /* freqPeriodLock (fix) = 1 Hz */
+  put_le32(&pl[16], GPS_TP_LEN_NOFIX_US);        /* pulseLenRatio (no lock) = 50 ms */
+  put_le32(&pl[20], GPS_TP_LEN_LOCK_US);         /* pulseLenRatioLock (fix) = 100 ms */
+  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|isLength|alignToTow|polarity = 0x7F */
+  pl[28] = 0x7F;
   ubx_send(0x06, 0x31, pl, 32);
 }
+_Static_assert(GPS_TP_LEN_LOCK_US < 1000000u / GPS_TP_FREQ_HZ, "pulz 1PPS musi byt kratsi nez perioda");
+_Static_assert(GPS_TP_LEN_NOFIX_US < 1000000u / GPS_TP_FREQ_NOFIX_HZ, "pulz bez fixu musi byt kratsi nez perioda");
 
 /* UBX-CFG-TMODE2 (0x06 0x3D, 28 B): timeMode 0=disabled 1=survey-in. Pro survey-in
  * naseto svinMinDur [s] (off 20) + svinAccLimit [mm] (off 24), zbytek 0. */
