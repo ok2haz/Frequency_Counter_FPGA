@@ -24,6 +24,7 @@ static uint8_t s_len;
  * 2026-09-06**; sem se oprava tehdy nepreneslа (L-0012). */
 static uint8_t s_drop;
 static uint32_t s_overflows;         /* kolikrat se ramec zahodil — tichy preskok se pocita (L-0017) */
+static uint32_t s_resyncs;           /* kolikrat '$' useknul rozepsany radek (UBX odpoved, smeti) — F-0223 */
 
 /* ── Diagnostika linky STM<->GPS ───────────────────────────────────────── */
 static volatile uint32_t s_raw_bytes;   /* vsechny prijate bajty (i smeti) */
@@ -463,6 +464,15 @@ void gps_feed_char(char c)
     }
     return;
   }
+  /* '$' = zacatek NMEA vety -> zacni radek znovu (audit F-0223). Binarni odpoved
+   * UBX (ACK/NAK na nas UBX-CFG-*) nekonci "\r\n", takze by se prilepila PRED
+   * nasledujici vetu, radek by nezacinal '$' a parse_line by zahodil i tu vetu.
+   * Zahozeny zacatek se pocita (L-0017). */
+  if (c == '$') {
+    if (s_len > 0 || s_drop) { if (s_resyncs < 0xFFFFFFFFu) s_resyncs++; }
+    s_len = 0;
+    s_drop = 0;
+  }
   if (s_drop) return;                 /* uvnitr prilis dlouheho ramce — zahazuj */
   if (s_len < sizeof(s_line) - 1) { s_line[s_len++] = c; return; }
   s_drop = 1;                         /* preteceni -> zahazuj az do konce radku */
@@ -587,7 +597,7 @@ void gps_format_raw(char *buf, int n)
   raw  = s_raw_bytes;
   sent = s_gps.sentences;
   taskEXIT_CRITICAL();
-  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu last=[%s]",
+  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu last=[%s]",
            (unsigned long)raw, (unsigned long)sent, (unsigned long)s_overflows,
-           last[0] ? last : "(zatim nic)");
+           (unsigned long)s_resyncs, last[0] ? last : "(zatim nic)");
 }
