@@ -1071,6 +1071,32 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   **Kadence statistiky = průměr měření za vzorek složený PODLE POČTU měření** (🔴 F-0171 + `d0a02e5`: FpgaTask sčítá cykly a hradla každého měření a vzorek uzavře při Σhradel ≥ 1 s − hradlo/2, UiTask je bere `fpga_stat_pop` z fronty 16 vzorků — ne podle 1s tiku, který se opožďuje o latenci smyčky; dřív se brala jen POSLEDNÍ 0,25s hodnota za sekundu = mrtvá doba 75 %, σy 2× až 23× vysoko; bez nového měření se nevzorkuje, jinak by držená hodnota σy snížila); **přechod REAL↔SIM i změna SIGNÁLU (relativně > 10⁻⁴ proti referenci, z hi-res kmitočtu — F-0183/F-0192) resetují Allan/trend pyramidu** (nemíchat nekompatibilní vzorky). 🔴 **Nulování vyprázdní i to, co je „na cestě"** (F-0188, `b619ea8`): `fpga_stat_flush()` zahodí frontu hotových vzorků i rozpracovaný akumulátor a `app_gpsdo_tick_stats_sample` navíc zahodí každý vzorek, který neprojde `screen_main_signal_match()` (vzorek složený přes hranici změny) — dřív prošly 1–2 cizí vzorky v 99,6 % přepnutí a dožívaly na dlouhých τ dny (L-0101). ⚠️ Plný redraw zóny (změna formátu / REAL↔SIM) **musí nejdřív naplnit číslice i shadow** — jinak se o snímek déle drží stará hodnota. 🔴 **`screen_main_redraw_freq_area()` čistí SJEDNOCENÍ s předchozí zónou** — číslo je vycentrované, takže při změně formátu se mění i jeho levý okraj; bez toho by po stranách zůstali „duchové" starých číslic (typicky i stará jednotka `Hz`), protože partial redraw už do té oblasti nikdy nesáhne. **Jednotka `Hz` se kreslí vždy** (`ui_big_number_render_tail` ji přidává na konec každého partial redrawu). ⚠️ **`s_freq_center`/`s_freq_nominal_hz` už NEjsou fixně 10 MHz** — `screen_main_freq_hz()` = `s_freq_n / 10^frac` (nezávislé na centru); pod 1 Hz je centrum rovno naměřené hodnotě (nulové by SIM stahovalo k nule). ⚠️ **Kolik číslic je nejistých už NENÍ natvrdo 2 (#51, 2026-08-28):** `freq_uncertain_frac()` odvozuje počet ztlumených desetin z **rozlišení hradla reciprokého čítače** (√2·tdc/gate, `FREQ_TDC_PS`=2500 — deterministické, NE simulace) → delší hradlo = víc důvěryhodných cifer. **SIM fallback (`gate_ns`==0) dává 2** (nezměněný vzhled), REAL/emulátor počítá z `gate_ns` rámce; sanitace na [1, celkem−1] — 🔴 od F-0177 smí nejistota zasáhnout i **celou část** a podtržení skončí na poslední skutečně důvěryhodné číslici (dřív byla vždy aspoň jedna desetina „důvěryhodná", i při rozlišení 1,4 Hz na 100 MHz). Fade fontem se kreslí víc/míň desetin podle skutečné rozlišovací meze. ⚠️ **τ0 pyramidy pořád předpokládá ~1 s** (plně správný τ0=skutečný rozestup = MathTask #27). Test: `fpgasim on <hz>` → headline; `fpgasim on 32768`/`1400000000` → přeformátování; `fpgasim fault lost` → šedá; `fpgasim off` → SIM marker.
 - **Signal bargraf = REÁLNÝ** (už ne simulace): RF vstupní výkon z **AD8307** log-detektoru přes ADS1115 **AIN1** (SensorsTask fast-path ~10 Hz). `app_gpsdo_tick_signal` převádí mV→dBm (`dBm = mV/AD8307_SLOPE_MV_DB + AD8307_INTERCEPT_DBM`, typ. 25 mV/dB, intercept −84 dBm), bargraf mapuje pásmo `RF_DBM_MIN..MAX` (−80..+10 dBm), text „−45.5 dBm". ⚠️ slope/intercept jsou datasheet-typické → přesná **kalibrace do CALIB store** (viz [[w25q-flash]]).
 
+## 🟢 FPGA FW 0x0400 — skutečný carry-chain TDC (2026-10-03, `f968517`)
+
+**Nahrazuje dřívější popis (`carry_tdc` zredukovaný syntézou na invertor, F-0201).** Zdroj: `Frequency_Counter_FPGA_Module/src/tdc.v`.
+- **Jak měří:** 2 kanály po **256 přímo instancovaných `ALU`** (carry průchod, STA 57 ps/tap = 14,5 ns), vzorkování 100 MHz,
+  kalibrace code density **ve FPGA** (ring oscilátor + LFSR dělič, tabulka v BRAM). Startuje sama po zapnutí (~0,2 s)
+  a na `tdc cal`. Během ní se nemeří (`tdc_status` bit3). Přesný čas dostane **jen hrana na hranici okna**
+  (vzorky se zmrazí clock enable na 5 taktů, dekodér má SDC multicycle); hrany v okně se jen **počítají**.
+- 🔴 **Jednotka času = T_clk/16384 = 0,6103515625 ps** (1,6384e12 jednotek/s), ne ps ani 2,5 ns. `ps = jednotky·625/1024`.
+- 🔴 **FPGA už NEPOČÍTÁ kmitočet:** `frequency_x100000` a `freq16_x100000` v rámci jsou **0**. Rámec nese
+  `edge_count` (abs 20), `dt_a` (abs 118, u64), `edges_b` (abs 108), `dt_b` (abs 101..106, u48), `tdc_status` (abs 100);
+  `FW_VERSION` 0x0400, `CAPS` 0x0023 (bit5 = dt). **Parser (`parse_data`) vypočte `frequency_x100000`, `gate_ps`,
+  `freq16_x100000`** — vše z celých čísel, `fpga_meas_t.gate_ps` je PŘESNÉ okno [ps] (±0,5 ps). `gate_time_ns` je jen
+  informativní (`dt·5>>13`). Všechny výpočty (hi-res, akumulátory, statistika, datalog, IPC, SCPI) berou `gate_ps`.
+  Starý FW/emulátor: `gate_ps = fpga_freq_dt_ticks(gate_time_ns) · 2500` (F-0186). Funkce `fpga_freq_scaled()` je jediné
+  místo dlouhého dělení (bez 128 b).
+- **Diagnostika:** UART `tdc` (CAL report: počet neprázdných kódů `nz` ≈ 170–180 a „za koncem řetězu" ≈ 0 = řetěz pokrývá
+  10 ns; jinak je řetěz na křemíku rychlejší než STA model), `tdc cal` (spustí kalibraci a počká), `status` řádek `TDC:`.
+  `fpgasim` posílá stejný formát včetně kvantizačního šumu TDC (σ dt ~23 ps).
+- ⚠️ **Omezení:** v řetězu smí být jedna hrana → vstup do ~34 MHz (nad tím předdělička/počítání period). Přesný čas
+  jen 1× za okno. Λ/Ω regrese (S1/S2) odstraněna. Tabulka platí pro teplotu kalibrace (opakuj `tdc cal`).
+  Ve FPGA je konstantní offset mezi kanály (STA: pin→hlava A 6,23 ns, B 6,14 ns); pro frekvenci se krátí, pro TI A–B ne.
+- ✅ **Ověřeno:** Icarus `sim/tb_tdc.sv` (σ dt 26/24 ps, A−B 2 ps), `tb_phy_equiv`, `tb_gate_div`; P&R `clk_p0_100m`
+  Fmax 101,3 MHz, TNS 0, logika 69 %, registry 74 %; netlist `sim/check_tdc_netlist.py`. ⬜ **NEOVĚŘENO NA KŘEMÍKU**
+  (skutečné zpoždění tapů, ring oscilátor, `tdc cal` na desce) — viz L-0116..L-0119.
+- **Nasazení:** flashnout OBĚ strany (bitstream + CM7), po power-cyklu `status` → `FW:0x0400 CAPS:0x0023`, pak `tdc cal`, `tdc`.
+
 ## 🟢 NOVÁ REVIZE DESKY (zadání 2026-08-30) — co se změní a co tím padá
 
 > **Zdroj:** `../citac_zadani_predavaci.md` (předávací zadání: vstupní modul + firmware FPGA).
@@ -1191,6 +1217,16 @@ Co k tomu bude potřeba a co už máme:
   okno Holdover (s_view=16), disciplinace LSE z GPS (`rtc_lse_*`) jako vzor struktury
   (fáze na hraně GPS sekundy, běžící průměr, korekce nejvýš 1×/h). ⚠️ Jsou to **dvě
   nezávislé smyčky** s různým cílem — nemíchat.
+- ✅ **Driver AD5693R PŘIPRAVEN (2026-10-02), čip zatím NEOSAZEN (objednán).** Popis,
+  zapojení z netlistu a protokol = **`ad5693.h`**; implementace v `freertos_task_sensors.c`
+  (`ad5693_service()`, poslední transakce I2C1 bloku SensorsTasku). UART **`dac`** (stav),
+  `dac probe`, `dac <kód>`, `dac mv <mV>`; řádek `DAC OCXO:` ve `status`; `scan1` zná 0x4C.
+  GAIN ×2 → 0..5 V (76,3 µV/LSB). **Kód se nikdy nezapisuje automaticky** — při startu se
+  jen najde čip, zapíše control registr a PŘEČTE kód (po resetu jen STM32 drží DAC
+  poslední hodnotu). ⚠️ Osazená verze MUSÍ být **AD5693R** (VREF pin má jen 100 nF).
+  ⬜ Po osazení ověřit: power-on stav (readback + `sensors` AIN0 PŘED prvním zápisem) a
+  formu readbacku (hypotéza, viz hlavička). Smyčka a perzistence kódu = další krok.
+  🔴 **Sonda NENÍ `HAL_I2C_IsDeviceReady`** — viz L-0112.
 
 ### Otevřené otázky (NEROZHODNUTO — nezakládat na tom kód)
 

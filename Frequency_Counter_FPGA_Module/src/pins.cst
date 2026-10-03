@@ -9,10 +9,10 @@
 //   - div_res (PIN53, MR děliče) končí — PIN53 je na nové desce volný
 //     odstup vedle SPI. Předdělička ÷10 (MC12080) je teď spínaná relé,
 //     ne touhle FPGA MR linkou (mimo rozsah dnešního bring-upu).
-//   - clk_p2p5/p5/p7p5_100m (4fázový vernier ze Si5356) KONČÍ — nová deska
-//     dává jen JEDEN REF_100MHz (PIN35). Carry-chain TDC (jemné rozlišení)
-//     je budoucí stupeň 3 (PHASE_CAL_DESIGN.md) — dnes jen hrubé čítání
-//     na hraně clk_p0 (10 ns/LSB), viz coarse_edge_detect v top.v.
+//   - clk_p2p5/p5/p7p5_100m (4fazovy vernier ze Si5356) KONCI — nova deska
+//     dava jen JEDEN REF_100MHz (PIN35). Jemne rozliseni dela carry-chain TDC
+//     (src/tdc.v, 2026-10-03): 2x 256 ALU, kalibrace code density ve FPGA,
+//     cas v jednotkach T_clk/16384 (0,61 ps).
 //   - GPS_1PPS (PIN33), Ref_Ctrl (PIN41), Ext_Ref_Sens (PIN51) přidány do
 //     tabulky pro úplnost, ale V TOMTO KROKU NEPOUŽITY (bring-up = jen
 //     dual-channel hrubé čítání + SPI v2 beze změny).

@@ -3776,6 +3776,64 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0111 — Široké srovnání jako enable širokého registru (FPGA fanout)
+
+- **Datum:** 2026-10-02
+- **Oblast:** FPGA / timing
+- **Symptom:** Po opravě kritické cesty ve `win_recip` (S1 rozdělena 28+28b)
+  synteza hlásila HORŠÍ agregát (TNS −1,25 → −13,52 ns, 11 → 56 endpointů).
+  Nejhorší cesty: `u_phy/bit_in_6/7 → rx_shadow_*/CE`.
+- **Příčina:** `spi_slave_phy.v` gatoval 1024b shift registr `rx_shadow` živým
+  11bitovým srovnáním `bit_in != 1024` a load/nulování 2048 FF (`tx_shadow`,
+  `rx_shadow`) srovnáním `bit_in == 0`. Výsledek srovnání musel v jednom taktu
+  doběhnout do tisíců CE/D vstupů; syntezér rozprostřel komparátor k cílům.
+  Vada existovala už předtím (slack −0,002 až −0,246 ns, A/B syntézou doloženo),
+  přidání registrů jinde jen zhoršilo umístění.
+- **Oprava:** Registrované příznaky spočtené takt předem: `rx_done`
+  (nastaví se při shiftu s `bit_in == 1023`) a `rx_armed` (≡ `bit_in == 0`,
+  mění se na týchž dvou místech jako `bit_in`) — `spi_slave_phy.v`.
+  Výsledek: 0 porušení, Fmax 114,5 MHz.
+- **Pravidlo:** **Enable/mux širokého registru (stovky FF) musí řídit výstup
+  JEDNOHO flip-flopu, nikdy živá kombinační funkce více bitů — počítej
+  podmínku takt předem a ověř ekvivalenci výčtem všech míst, kde se mění
+  zdrojový čítač.**
+- **Detekce:** Timing report — nejhorší cesty typu `<čítač>_N/Q → <široký
+  registr>_M/CE`. Při opravě timingu VŽDY dělej A/B syntézu (revert jen
+  své změny), jinak nepoznáš, jestli nová porušení způsobila oprava, nebo
+  jen odkryla/zhoršila starou vadu.
+- **Commit:** zatím necommitnuto (viz `git log` po commitu)
+- ⬜ **NEOVĚŘENO NA HW.**
+- **Stav:** aktivní
+
+---
+
+### L-0112 — `HAL_I2C_IsDeviceReady` na chybějícím čipu hlásí TIMEOUT, ne NACK
+
+- **Datum:** 2026-10-02
+- **Oblast:** periferie / I2C
+- **Symptom:** (zachyceno před nasazením) Periodická sonda neosazeného AD5693R
+  přes `HAL_I2C_IsDeviceReady` by každých 10 s spustila obnovu I2C1
+  (9 pulzů SCL + re-init) — sběrnice přitom zdravá, jen čip chybí.
+- **Příčina:** HAL H7 (`stm32h7xx_hal_i2c.c`, konec `HAL_I2C_IsDeviceReady`)
+  po vyčerpání pokusů nastaví `ErrorCode |= HAL_I2C_ERROR_TIMEOUT` i tehdy,
+  když každý pokus skončil čistým NACKem. `i2c1_recover_if_wedged()` bere
+  TIMEOUT jako „slave drží sběrnici".
+- **Oprava:** Sonda NOP zápisem (`HAL_I2C_Master_Transmit`, CMD 0) — NACK
+  pak končí jako `HAL_I2C_ERROR_AF`, který obnovu nespouští
+  (`freertos_task_sensors.c`, `ad5693_probe_nop`).
+- **Pravidlo:** **Kde po I2C transakci rozhoduje chybový kód (obnova,
+  back-off, počítadla), nesonduj přítomnost zařízení `HAL_I2C_IsDeviceReady`
+  — použij skutečnou neškodnou transakci, jejíž NACK skončí jako AF.**
+- **Detekce:** `grep -n IsDeviceReady` v kódu, který běží PŘED
+  `i2c1_recover_if_wedged()`/podobnou kontrolou `HAL_I2C_GetError`.
+  ⚠️ Zbytková latentní varianta (předchozí stav, neopravováno): UART
+  `scan1` IsDeviceReady používá a nechá v `hi2c1` TIMEOUT; kdyby SensorsTask
+  hned potom nezískal mutex, kontrola za blokem by ho viděla.
+- **Commit:** zatím necommitnuto
+- **Stav:** aktivní
+
+---
+
 ### L-0113 — Konfigurace externího čipu přežila výměnu desky: firmware dál krmil PLL, která už neexistuje
 
 - **Datum:** 2026-10-03 (dotaz uživatele „proč nejde 1PPS signál z GPS", F-0218)
@@ -3850,6 +3908,85 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Detekce:** u každého řádkového parseru se zeptej: co udělá s bajty, které přijdou mezi
   koncem jedné věty a začátkem další?
 - **Commit:** `01c7e25`
+- **Stav:** aktivní
+
+---
+
+### L-0116 — O tom, co je ve FPGA, rozhoduje NETLIST: ani zdroják, ani timing report to neřeknou
+
+- **Datum:** 2026-10-03 (F-0201, carry-chain TDC)
+- **Oblast:** FPGA, `tdc.v`, syntéza
+- **Symptom:** carry-chain TDC byl „implementovaný", komentáře tvrdily rozlišení 625 ps, build
+  prošel a timing report byl v pořádku. Přitom v bitstreamu žádný TDC nebyl a měření bylo hrubé 10 ns.
+- **Příčina:** výraz `{15{sig}}+1` je pro syntézu triviální (všechny operandy jsou tentýž bit),
+  zredukovala ho na invertor + 1 FF. Atribut `(* keep *)` zachovává JMÉNA sítí, ne aritmetiku.
+  Timing report „v pořádku" nic nedokazoval — cesty, které neexistují, se nemají čím porušit.
+- **Oprava:** řetěz se staví z PRIMITIV `ALU` přímo (`tdc_chain`), `Frequency_Counter_FPGA_Module/
+  sim/check_tdc_netlist.py` po každé syntéze ověří v `.vg` počet `ALU`, `I0=VCC/I1=GND`, hlavu
+  řetězu a použití všech `SUM`. Commit `f968517`.
+- **Pravidlo:** **Funkci, která závisí na tom, že syntéza nic nezjednoduší (řetězy, zpoždění,
+  kruhové oscilátory), ověřuj v syntetizovaném NETLISTU — a to po každé syntéze, ne jednou.**
+- **Detekce:** `python Frequency_Counter_FPGA_Module/sim/check_tdc_netlist.py` (musí vypsat 512 `ALU`,
+  512 s `I0=VCC/I1=GND`, 2 hlavy s `CIN = sig_eff`).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0117 — Rozpočet logiky na 100 MHz v GW1NR-9C je ~3 úrovně LUT: nejdřív změř, pak navrhuj
+
+- **Datum:** 2026-10-03 (TDC, dekodér)
+- **Oblast:** FPGA, časování
+- **Symptom:** dekodér 256 tapů jedním taktem měl cestu ~20 ns (slack −10 ns), po opravách řídicích
+  cest dál −2 až −3 ns u zdánlivě triviální logiky (24bitový čítač, dekódování stavu).
+- **Příčina:** v tomhle fabricu stojí každý přechod mezi LUT 2–3 ns routingu (vzdálenost, fanout),
+  takže na 10 ns vyjdou ~3 úrovně. Řetěz je navíc dlouhý sloupec, takže se jeho vzorky routují daleko.
+- **Oprava:** (1) přesný čas jen pro hranu na hranici okna (hrany uvnitř okna se jen počítají) →
+  vzorky se zmrazí clock enable na 5 taktů a kombinační dekodér má SDC multicycle; (2) one-hot stavy
+  a předpočítané registrované příznaky v řídicích cestách; (3) jednotka času T_clk/16384, aby
+  kalibrace byla posun místo násobení; (4) částečné součty čítače s registrovaným přenosem.
+- **Pravidlo:** **Před návrhem logiky na 100 MHz v tomto fabricu změř cesty (P&R timing report,
+  `timing_paths`), ne odhaduj z počtu LUT; a když funkci stačí jednou za okno, dej jí víc taktů
+  (zmrazení + multicycle) místo pipeline na každý takt.**
+- **Detekce:** `gw_sh build.tcl` → `Max Frequency Summary` a `Total Negative Slack` (musí být 0).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0118 — Kalibrační zdroj, který není statisticky nezávislý na hodinách, vyrobí v histogramu jen pár kódů
+
+- **Datum:** 2026-10-03 (kalibrace TDC, simulace)
+- **Oblast:** FPGA, kalibrace code density, simulace
+- **Symptom:** simulovaná kalibrace dala jen 25 neprázdných kódů místo ~176 a σ chyby 93 ps.
+- **Příčina:** model ring oscilátoru měl přesně racionální periodu (83,2 ns), takže události padaly
+  jen do 25 pevných fází vůči 100 MHz hodinám. Skutečný kruh má jitter, ale spoléhat na to je riziko
+  (injection locking, stabilní teplota).
+- **Oprava:** v hardware dělič kruhu s pseudonáhodným modulem (16/17 oběhů podle LFSR), v simulaci
+  jitter zpoždění LUT. Po opravě 178 kódů, σ 26 ps. Přitom se ukázalo, že LUT s transportním
+  zpožděním dovolí kruhu oscilovat na vyšší harmonické (4× rychleji) → model s inertním zpožděním.
+- **Pravidlo:** **Zdroj pro code-density kalibraci musí mít prokazatelně nerovnoměrnou fázi vůči
+  vzorkovacím hodinám; ověř histogram simulací s pozitivní kontrolou (kolik kódů je neprázdných).**
+- **Detekce:** `tb_tdc.sv` vypisuje `nz` (počet neprázdných kódů) a `ovf`; na desce `tdc` (`nz`≈170–180).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0119 — Využití registrů nad ~87 % shodí placer/router i při splněném limitu zdrojů
+
+- **Datum:** 2026-10-03 (FPGA, TDC)
+- **Oblast:** FPGA, zdroje
+- **Symptom:** `PR0003 Failed to place with 165 REG(s) unPlaced` a později `PR0004 78 unrouted nets`
+  při 84–88 % registrů (limit 100 %), a časování se zhoršilo i v nedotčeném PHY (setup −3,3 ns).
+- **Příčina:** dlouhé carry řetězy se musí umístit do sloupců a PHY má fanout 1024; při zaplnění
+  nad ~85 % heuristika nenajde rozumné umístění.
+- **Oprava:** odstraněn `recip_calc` (FPGA už nepočítá kmitočet, host ho počítá přesněji z celých
+  čísel `edge_count`/`dt`), zrušena Λ/Ω regrese, `gate_div` = `dt·5>>13`, zúženy čítače → 74 % FF /
+  69 % logiky. TX posun v PHY předpočítán a rozdělen na 8 segmentů (ekvivalence ověřena).
+- **Pravidlo:** **Držet registry pod ~80 %; co umí host (dělení, přesná aritmetika), nepočítej ve FPGA.**
+- **Detekce:** `Counter_FPGA.rpt.txt` → `Register ... %` (≤ 80 %).
+- **Commit:** `f968517`
 - **Stav:** aktivní
 
 ---
