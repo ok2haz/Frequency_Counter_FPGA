@@ -276,7 +276,7 @@ tedy dnešní `3cbbdb9`, `01c7e25` a `12ec7ac`. Během přezkumu upřesnil uživ
   komentář u SURVEY ale zůstal „Blokující TX (jen na tap)". Je to třída L-0105: oprava změnila
   význam a jeden čtenář (komentář) zůstal u starého.
 - **Návrh:** `docs:` → „TX v přerušení (ubx_send), volat z tasku".
-- **Stav:** otevřeno, skupina **A** (`docs:`)
+- **Stav:** **opraveno `docs:` commitem 2026-10-03** (obraz beze změny, `.text` 631 720 B)
 
 ### F-0227 [S4] `gps glonass` hlásí „odesláno", i když se rámec neodeslal
 
@@ -286,7 +286,11 @@ tedy dnešní `3cbbdb9`, `01c7e25` a `12ec7ac`. Během přezkumu upřesnil uživ
   (L-0028). Selhání je vidět jen jako přírůstek `neodeslano` v `gpsraw` `UBX:n/m`.
 - **Dopad:** zanedbatelný (ruční diagnostický příkaz, selhání prakticky nenastane).
 - **Návrh:** `gps_config_gnss()` → `bool`, hláška podle výsledku. Totéž zvážit pro `survey_start`.
-- **Stav:** otevřeno, skupina **A**
+- **Stav:** **opraveno v `7219e0a`** (2026-10-03): `gps_config_gnss()` vrací `bool`, konzole vypíše
+  `NEODESLANO`, když se rámec nespustil. `survey_start`/`survey_stop` se neměnily: UI okna SURVEY
+  o odeslání nic netvrdí („TMODE2 = best-effort"), takže tam slib bez krytí není.
+  Build 0 varování, `audit.py` 92/0/2, `.text` 631 616 → 631 720 B, rámec `UartTask_run`
+  476 B (L-0035). ⬜ neověřeno na HW
 
 ### Prověřeno a v pořádku (přezkum `12ec7ac` a `01c7e25`)
 

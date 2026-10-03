@@ -90,7 +90,8 @@ void gps_tick(void);
 /* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
  * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích
  * (LEA-6T/M8T…); NEO-7M příkaz nejspíš NAKne = neškodné. Firmwarové průměrování
- * polohy (app vrstva) běží nezávisle na tomto příkazu. Blokující TX (jen na tap). */
+ * polohy (app vrstva) běží nezávisle na tomto příkazu. TX v přerušení (ubx_send,
+ * audit F-0226): volat jen z tasku, vrací se hned po startu přenosu. */
 void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm);
 /* Vypne time-mód (timeMode=0). */
 void gps_survey_disable_cmd(void);

@@ -920,6 +920,10 @@ Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopřed
   🔑 Pravidlo platí **oběma směry**: slib „hlídá to X" i slib „X se tu neděje" je
   testovatelný — najdi řádek (ne)dělající X. Sdílený helper může slib tiše porušit.
   Commit `662e049`, viz `docs/audit/2026-09-18_senzory-drivery.md`, F-0114.
+- 🔁 **2026-10-03 (F-0227):** `gps glonass` vypisoval „UBX-CFG-GNSS odeslano" bez ohledu na
+  výsledek. `gps_config_gnss()` byla `void` a `ubx_send` po `12ec7ac` umí selhat. Opraveno
+  `7219e0a` (návratová hodnota až do hlášky). Hláška o úspěchu je taky slib, který musí
+  mít řádek, kde se úspěch čte.
 
 ---
 
@@ -3569,6 +3573,9 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   jeho výklad pořád platí.**
 - **Detekce:** `grep -n "s_xxx_state"` přes celý strom při každé změně automatu;
   u stavu, který může trvat libovolně dlouho, zkontrolovat, co o něm říká `status`.
+- 🔁 **2026-10-03 (F-0226):** `12ec7ac` převedl UBX na TX v přerušení, ale komentář u
+  `gps_survey_in_cmd` (`gps.h:93`) dál tvrdil „Blokující TX". Čtenářem změněného chování je
+  i komentář u každé deklarace, která ho popisuje. Opraveno `docs:` commitem.
 - **Commit:** `a83bf1d`
 - **Stav:** aktivní
 
