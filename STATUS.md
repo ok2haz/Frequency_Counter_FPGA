@@ -18,13 +18,17 @@ Reference 4×100 MHz (0/90/180/270°) generuje Si5356A z 10 MHz OCXO,
 disciplinovaného z GPS (NEO-7M). Cíl = GPSDO + přesný čítač do ~1,4 GHz.
 
 ```
-  GPS (NEO-7M) ──1PPS/UTC──► STM32H757 ◄──── TMP117/ADS1115/W25Q (senzory, flash)
+  GPS (NEO-7M) ──UART/NMEA─► STM32H757 ◄──── TMP117/ADS1115/W25Q (senzory, flash)
                                 │ SPI2 (128B rámec v2, master)
                                 ▼
    OCXO 10MHz ──► Si5356A ──4×100MHz(0/90/180/270°)──► FPGA GW1NR-9
                                                           │  MC100EP016A ÷4/÷16
    RF vstup ──► MAX9601 tvarovač ──────────────────────► (reciproký čítač + TDC)
 ```
+
+> ⚠️ **GPS TIMEPULSE** (s fixem 1PPS, bez fixu 10 Hz) vede přes `GPS_CLK_Buff` na **FPGA PIN33**,
+> do STM32 1PPS nevede (2026-10-03, F-0218). Do STM32 má v další revizi desky vést jen 10 MHz z OCXO.
+> Zbytek diagramu popisuje starou desku 2.0 (4fázový vernier, ÷4/÷16).
 
 ---
 

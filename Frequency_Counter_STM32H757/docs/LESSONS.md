@@ -3769,6 +3769,34 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0113 — Konfigurace externího čipu přežila výměnu desky: firmware dál krmil PLL, která už neexistuje
+
+- **Datum:** 2026-10-03 (dotaz uživatele „proč nejde 1PPS signál z GPS", F-0218)
+- **Oblast:** `gps.c` — UBX-CFG-TP5 (TIMEPULSE modulu NEO-7M), deska FPGA 2.0 → 2.1
+- **Symptom:** na vstupu FPGA PIN33 (`GPS_1PPS`) nikdy nebyl 1PPS. S fixem tam šlo 100 kHz,
+  bez fixu 10 Hz. UI k tomu hlásilo „Time Pulse 100 kHz" a blokové schéma kreslilo
+  „UART/1PPS" na spoji GPS→STM32, kudy 1PPS vůbec nevede.
+- **Příčina:** `GPS_TP_FREQ_HZ = 100000` byla správná hodnota pro desku 2.0, kde TIMEPULSE
+  napájel hardwarovou PLL na listu GPSDO. Deska 2.1 PLL nemá a net `GPS_CLK_Buff` končí na
+  FPGA PIN33 jako 1PPS. Při přechodu desek se prošly piny FPGA, napětí i SPI, ale **hodnota,
+  kterou firmware posílá do čipu mimo MCU**, se proti novému spotřebiteli signálu nikdy
+  nekontrolovala. Komentář u konstanty to přitom říkal přímo („GPSDO PLL reference … JP2").
+  Odkazoval na HW, který na nové desce není.
+- **Oprava:** `GPS_TP_FREQ_HZ` 100000 → 1 (`gps.c:362`), bez fixu dál 10 Hz (zadání uživatele).
+  Srovnány texty v UI (`app_gpsdo.c:961`, `:4399`, `:7176`). Commit `3cbbdb9`.
+- **Pravidlo:** **Při výměně revize desky projdi každou hodnotu, kterou firmware ZAPISUJE do
+  čipu mimo MCU (UBX/I²C/SPI konfigurace, DAC, PLL registry), a u každé najdi v NOVÉM netlistu,
+  kdo signál spotřebovává.** Komentář, který jmenuje součástku nebo propojku (PLL, JP2…),
+  je tvrzení o desce. Ověř, že ta součástka na nové desce existuje.
+- **Detekce:** při změně revize grep na konfigurační zápisy do externích čipů (`ubx_send`,
+  `HAL_I2C_Mem_Write`, `wr_masked`, `REGMAP[]`) a ke každému dohledat spotřebitele v netlistu.
+  Ruční krok, patří do checklistu přechodu desky (sourozenec L-0110: tam šlo o čtení
+  kanálů ADS1115 podle návrhu místo podle netlistu, tady o zápis).
+- **Commit:** `3cbbdb9`
+- **Stav:** aktivní (⬜ oprava neověřena na HW — osciloskop na R50/PIN33 po power-cyklu)
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
