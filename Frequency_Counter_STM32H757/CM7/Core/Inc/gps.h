@@ -2,14 +2,17 @@
  * gps.h — u-blox NEO-7M GPS na USART1 (9600 8N1), NMEA parser.
  *
  * USART1 je vyhrazen pro GPS (konzole je na USB CDC). RX bajty jdou z ISR
- * (HAL_UART_RxCpltCallback v usart.c) do GpsRxQueue; GpsTask je vybira a krmi
- * gps_feed_char(), ktery sklada NMEA vety a parsuje $xxRMC + $xxGGA.
+ * (HAL_UART_RxCpltCallback v usart.c) do GpsRxQueue; vybira je drain
+ * v defaultTasku (freertos.c, vlastni GpsTask neexistuje) a krmi
+ * gps_feed_char(), ktery sklada NMEA vety a parsuje $xxRMC/GGA/GSA/GSV.
  *
- * Bez float v printf: souradnice se drzi jako float (HW FPU), ale formatuji se
- * pres integer extrakci (newlib-nano nelinkuje %f).
+ * Bez float v printf: souradnice se drzi celociselne ve stupnich x 1e7
+ * (lat_e7/lon_e7, audit F-0070) a formatuji se pres integer extrakci
+ * (newlib-nano nelinkuje %f).
  *
- * Hotovo: NMEA parser, UI (GPS okno + header), TIMEPULSE (UBX-CFG-TP5).
- * Navazujici (viz [[gps-todo]]): RTC sync hodin, GLONASS (UBX-CFG-GNSS).
+ * STM -> GPS: UBX-CFG-TP5 (TIMEPULSE: s fixem 1PPS na FPGA PIN33, bez fixu 10 Hz;
+ * 1PPS do STM32 nevede), na vyzadani UBX-CFG-TMODE2 (SURVEY) a UBX-CFG-GNSS
+ * (UART `gps glonass`). Navazujici: viz [[gps-todo]].
  */
 #ifndef INC_GPS_H_
 #define INC_GPS_H_

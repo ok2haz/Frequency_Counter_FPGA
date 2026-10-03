@@ -3797,6 +3797,52 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0114 — Komentář varoval před pastí knihovny, která v použité verzi není, a tím blokoval opravu
+
+- **Datum:** 2026-10-03 (F-0219, F-0221, F-0222)
+- **Oblast:** `gps.c` — UBX konfigurace přes USART1 (`ubx_send`, `gps_init`)
+- **Symptom:** konfigurace TIMEPULSE (1PPS pro FPGA) se posílala jen jednou při startu, do RAM
+  modulu a bez kontroly ACK. Po samostatném resetu GPS modulu ji STM32 nikdy neobnovil.
+- **Příčina:** komentář v `gps_init` tvrdil, že blokující `HAL_UART_Transmit` drží `huart->Lock`
+  a souběžný re-arm RX v callbacku by dostal `HAL_BUSY`, takže RX umře navždy. Opakované
+  vysílání za běhu tím vypadalo nebezpečně. V HAL 1.11.6 to **neplatí**: TX (`gState`) a RX
+  (`RxState`) jsou nezávislé automaty bez `__HAL_LOCK`. Tvrzení „za běhu žádný TX neběží"
+  navíc vyvracel kód o kus dál (SURVEY z UiTasku, `gps glonass` z UartTasku).
+- **Oprava:** `ubx_send` přes `HAL_UART_Transmit_IT` se statickým bufferem (start v kritické
+  sekci, čekání na předchozí rámec přes `vTaskDelay`), `gps_tick()` z defaultTasku posílá TP5
+  znovu 1×/min, počítadla `UBX:odeslano/neodeslano` v `gpsraw`. Commit `12ec7ac`.
+- **Pravidlo:** **Komentář, který popisuje chování cizí knihovny („HAL drží zámek", „tahle funkce
+  blokuje"), ověř proti zdroji té knihovny v projektu a uveď její verzi.** Neověřená past se
+  stává důvodem nedělat správnou věc. A **konfiguraci, která žije jen v RAM externího čipu
+  a nedá se ověřit čtením, posílej opakovaně** (idempotentní zápis), ne jednou při startu
+  hostitele. Externí čip se může resetovat sám.
+- **Detekce:** grep komentářů na jména interních symbolů knihovny (`Lock`, `__HAL_LOCK`,
+  `gState`) a jejich porovnání s `Drivers/`. U každého zápisu konfigurace do externího čipu
+  se zeptej: kdo ji obnoví, když se čip resetuje a hostitel ne?
+- **Commit:** `12ec7ac`
+- **Stav:** aktivní (⬜ neověřeno na HW: osciloskopem ověřit, že opakované TP5 neruší 1PPS)
+
+---
+
+### L-0115 — Textový parser na sdílené lince s binárním protokolem se musí synchronizovat na začátku rámce, ne jen na konci
+
+- **Datum:** 2026-10-03 (F-0223)
+- **Oblast:** `gps.c` — `gps_feed_char` (NMEA vedle UBX na USART1)
+- **Symptom:** po každém UBX příkazu se ztratila jedna NMEA věta. Tiše, žádné počítadlo.
+- **Příčina:** řádek se ukončoval jen na `\r\n`. Binární odpověď UBX-ACK `\r\n` nemá, takže
+  se přilepila před další NMEA větu, řádek nezačínal `$` a parser zahodil obojí.
+- **Oprava:** `$` vždy začne nový řádek, useknutý začátek se počítá (`RSY:` v `gpsraw`).
+  Commit `01c7e25`.
+- **Pravidlo:** **Když linkou tečou dva protokoly (text + binární), parser jednoho z nich se
+  musí resynchronizovat na svém počátečním znaku**, jinak cizí rámec zničí i ten následující.
+  Zahozená data se počítají (L-0017).
+- **Detekce:** u každého řádkového parseru se zeptej: co udělá s bajty, které přijdou mezi
+  koncem jedné věty a začátkem další?
+- **Commit:** `01c7e25`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

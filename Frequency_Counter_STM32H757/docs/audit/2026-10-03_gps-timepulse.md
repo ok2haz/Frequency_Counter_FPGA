@@ -29,7 +29,8 @@ Zbylé nálezy se týkají robustnosti: konfigurace se posílá jednou, naslepo 
 modulu (F-0219). Fáze B bude muset rozlišit 10 Hz bez fixu od 1PPS na témže pinu (F-0220).
 Dál zastaralé komentáře a drobnosti UART cesty.
 
-**Verdikt: podmíněně funkční.** Po opravě je konfigurace správná podle zadání. Že ji modul opravdu
+**Verdikt: podmíněně funkční.** (F5 2026-10-03: F-0218, F-0219, F-0221, F-0222, F-0223, F-0224
+opraveny; otevřený zůstává jen F-0220, požadavek na Fázi B.) Po opravě je konfigurace správná podle zadání. Že ji modul opravdu
 přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
 
 ---
@@ -90,7 +91,14 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
 - **Riziko opravy:** (1) nízké, (2) střední (nový parser binárního protokolu).
 - **Vztah k lekcím:** L-0003, L-0028, L-0086 (stav v externím čipu se po resetu čte zpět,
   nepředpokládá se)
-- **Stav:** otevřeno, skupina **B** (kdy a odkud opakovat)
+- **Stav:** **opraveno v `12ec7ac`** (2026-10-03), varianta (1) podle rozhodnutí uživatele:
+  `gps_tick()` z defaultTasku posílá TP5 znovu **1×/min** (`GPS_TP_RESEND_MS`). Aby to v hlídaném
+  tasku nebyl spin, přešel zároveň `ubx_send` na IT TX (F-0222). Návratovou hodnotu teď vrací
+  `ubx_send` a počítá ji `gpsraw` jako `UBX:odeslano/neodeslano`. **Doručení modulu to pořád
+  nedokazuje** (ACK se nečte, varianta (2) neprovedena). ⚠️ `HYPOTÉZA` k ověření osciloskopem:
+  opakované (i shodné) TP5 nesmí způsobit vynechaný nebo zkrácený pulz 1PPS. Kdyby ho
+  způsobovalo, je to pro Fázi B horší než původní vada a periodu je třeba přehodnotit.
+  ⬜ neověřeno na HW
 
 ---
 
@@ -140,7 +148,9 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
   ⚠️ Při upgradu HAL tvrzení ověřit znovu.
 - **Riziko opravy:** nulové (komentář).
 - **Vztah k lekcím:** L-0008, L-0028
-- **Stav:** otevřeno, skupina **A** (`docs:`)
+- **Stav:** **opraveno v `12ec7ac`** (2026-10-03). Komentář se přepsal v `fix:` commitu, ne `docs:`,
+  protože popisuje chování, které se tímtéž commitem měnilo (IT TX). Paměť projektu (gps-todo)
+  opravena také.
 
 ---
 
@@ -158,7 +168,10 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
   do UartTasku přes požadavek (vzor `g_*_req`).
 - **Riziko opravy:** nízké až střední (IT TX na USART1 vedle IT RX).
 - **Vztah k lekcím:** L-0040
-- **Stav:** otevřeno, skupina **C** (dnes kosmetické)
+- **Stav:** **opraveno v `12ec7ac`** (2026-10-03), mimo původní triáž (byla C): IT TX se statickým
+  bufferem, test `gState` + kopie + start v kritické sekci, čekání na předchozí rámec přes
+  `vTaskDelay` max 200 ms. Bylo to nutné kvůli F-0219 (opakování z hlídaného defaultTasku).
+  ⬜ neověřeno na HW
 
 ---
 
@@ -177,7 +190,9 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
 - **Návrh opravy:** v `gps_feed_char` při `c == '$'` začít nový řádek (`s_len = 0; s_drop = 0;`).
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0017 (tichý přeskok bez počitadla)
-- **Stav:** otevřeno, skupina **A**
+- **Stav:** **opraveno v `01c7e25`** (2026-10-03): `$` vždy začne nový řádek (a zruší zahazování
+  po přetečení), useknutý začátek počítá `s_resyncs` → `gpsraw` `RSY:n`. ⚠️ Od F-0219 roste `RSY`
+  o ~1/min (ACK na periodické TP5), to je normální. ⬜ neověřeno na HW
 
 ---
 
@@ -191,8 +206,8 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
   uživatel potvrdil 2026-10-03.
   ⚠️ Diagram v `../STATUS.md:20-27` celý popisuje desku 2.0 (4fázový vernier, MC100EP016A ÷4/÷16).
   Opravuje se jen šipka GPS, zbytek je mimo rozsah.
-- **Stav:** první tři místa **opravena `docs:` commitem tohoto běhu**; `gps.h` hlavička otevřeno
-  (skupina **A**, `docs:`)
+- **Stav:** první tři místa **opravena `docs:` commitem tohoto běhu**; hlavička `gps.h` opravena `docs:` commitem 2026-10-03
+  (drain v defaultTasku, GSA/GSV, souřadnice v e7, UBX příkazy)
 
 ---
 
