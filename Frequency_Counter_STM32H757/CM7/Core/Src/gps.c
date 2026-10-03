@@ -334,13 +334,31 @@ static void parse_line(char *l)
   else if (strncmp(typ, "GSV", 3) == 0) parse_gsv(talker, f, nf);
 }
 
-/* ── UBX odesilani (STM -> GPS, blokujici; volano jen pri init) ─────────── */
+/* ── UBX odesilani (STM -> GPS, v preruseni) ───────────────────────────── */
+/* 🔑 TX jde pres HAL_UART_Transmit_IT, ne blokujici HAL_UART_Transmit (audit
+ * F-0219/F-0222): ramec 36-44 B trva pri 9600 Bd 37-46 ms a blokujici varianta
+ * to cele aktivne cekala — v UiTasku (SURVEY) i v defaultTasku, ktery ted
+ * posila TP5 1x/min. Volajici se vrati hned po startu prenosu.
+ * ⚠️ Buffer MUSI zit po celou dobu prenosu (HAL do nej jen ukazuje), proto je
+ * staticky a prepise se jen pri gState == READY. Test + kopie + start jsou v
+ * kriticke sekci: volaji tri tasky (defaultTask, UiTask, UartTask) a USART1 IRQ
+ * (priorita 5) je v ni maskovana, takze ani ErrorCode, ktery Transmit_IT nuluje,
+ * nekoliduje s ErrorCallbackem.
+ * ⚠️ HAL 1.11.6: TX (gState) a RX (RxState) jsou nezavisle stavove automaty bez
+ * __HAL_LOCK (stm32h7xx_hal_uart.c HAL_UART_Transmit_IT / HAL_UART_Receive_IT),
+ * takze prenos smi bezet soucasne s RX v preruseni. Pri upgradu HAL overit. */
+#define UBX_TX_WAIT_MS  200u              /* jak dlouho cekat na dobehnuti predchoziho TX */
+static uint8_t  s_ubx_tx[80];
+static uint32_t s_ubx_sent, s_ubx_fail;   /* odeslane / neodeslane UBX ramce (L-0017) */
+
 /* Slozi UBX ramec: B5 62 | cls id | len(LE) | payload | CK_A CK_B (Fletcher
- * pres cls..payload) a odvysila pres USART1 TX (PB14). */
-static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
+ * pres cls..payload) a spusti jeho odvysilani pres USART1 TX (PB14).
+ * Volat jen z tasku pri bezicim scheduleru (ceka pres vTaskDelay).
+ * @return true = prenos spusten. Doruceni modulu to NEDOKAZUJE (ACK se necte). */
+static bool ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
 {
   uint8_t f[80];
-  if (n > 64) return;
+  if (n > 64) return false;
   uint16_t i = 0;
   f[i++] = 0xB5; f[i++] = 0x62;
   f[i++] = cls;  f[i++] = id;
@@ -349,7 +367,24 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
   uint8_t a = 0, b = 0;
   for (uint16_t k = 2; k < i; k++) { a = (uint8_t)(a + f[k]); b = (uint8_t)(b + a); }
   f[i++] = a; f[i++] = b;
-  HAL_UART_Transmit(&huart1, f, i, 100);
+
+  uint32_t t0 = HAL_GetTick();
+  for (;;) {
+    int expired = ((uint32_t)(HAL_GetTick() - t0) >= UBX_TX_WAIT_MS);
+    HAL_StatusTypeDef st = HAL_BUSY;
+    taskENTER_CRITICAL();
+    if (huart1.gState == HAL_UART_STATE_READY) {
+      memcpy(s_ubx_tx, f, i);
+      st = HAL_UART_Transmit_IT(&huart1, s_ubx_tx, i);
+    }
+    int give_up = (st != HAL_OK) && (st != HAL_BUSY || expired);
+    if (st == HAL_OK) s_ubx_sent++;
+    else if (give_up) s_ubx_fail++;
+    taskEXIT_CRITICAL();
+    if (st == HAL_OK) return true;
+    if (give_up) return false;
+    vTaskDelay(1);                    /* predchozi ramec jeste bezi — ustup, nespinuj */
+  }
 }
 
 /* TIMEPULSE kmitocty (deska FPGA 2.1). Vystup TIMEPULSE vede pres J3 pin2
@@ -362,6 +397,8 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
  * zadnou PLL nema a FPGA na PIN33 ceka 1PPS. */
 #define GPS_TP_FREQ_HZ        1u        /* s fixem: 1PPS pro FPGA */
 #define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: 10 Hz (indikator bez fixu) */
+#define GPS_TP_RESEND_MS      60000u    /* opakovani TP5 (F-0219): 1x/min, zadani uzivatele */
+static uint32_t s_tp_last_ms;           /* posledni odeslani TP5 (HAL_GetTick) — jen defaultTask */
 
 /* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
  * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
@@ -435,16 +472,34 @@ void gps_init(void)
   HAL_UART_Init(&huart1);
 
   /* TIMEPULSE config (s fixem 1PPS do FPGA, bez fixu 10 Hz; viz gps_config_timepulse).
-   * Vyzaduje zapojene STM
-   * PB14 (USART1 TX) -> GPS RX. Posila se v RAM modulu (plati do power-cyklu).
-   * ⚠️ MUSI byt PRED HAL_UART_Receive_IT: HAL_UART_Transmit (blokujici) drzi
-   * huart->Lock; kdyby uz bezel RX IT, RxCpltCallback by pri re-armu dostal
-   * HAL_BUSY a RX by NAVZDY umrel (displej zamrzne na "acquiring"). Po TX uz na
-   * USART1 zadny dalsi TX nebezi (printf -> USB) => re-arm RX uz nikdy nekoliduje. */
+   * Vyzaduje zapojene STM PB14 (USART1 TX) -> GPS RX. Konfigurace zije jen v RAM
+   * modulu, proto ji gps_tick() posila znovu 1x/min (audit F-0219).
+   * Poradi TX -> RX tady uz neni nutne (audit F-0221): drivejsi komentar tvrdil, ze
+   * TX drzi huart->Lock a soubezny re-arm RX by umrel — v HAL 1.11.6 ani
+   * HAL_UART_Transmit(_IT), ani HAL_UART_Receive_IT __HAL_LOCK nepouzivaji a UBX
+   * se za behu posila i z UiTasku (SURVEY) a UartTasku (`gps glonass`). */
   gps_config_timepulse();
+  s_tp_last_ms = HAL_GetTick();
 
-  /* Az ted nahodit RX v IT rezimu. */
+  /* RX v IT rezimu. */
   HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+}
+
+/* Periodicka obnova konfigurace TIMEPULSE (audit F-0219). TP5 se posila jen do RAM
+ * modulu a firmware nevi, jestli ji modul prijal (ACK se necte), ani jestli ji
+ * neztratil (modul je napajeny z desky FPGA, muze se resetovat sam). Ramec je
+ * idempotentni, takze ho staci posilat znovu: po ztrate konfigurace plati spravna
+ * hodnota nejpozdeji za minutu.
+ * ⚠️ Kazde poslani vyvola UBX-ACK, ktery gps_feed_char od F-0223 jen spocita
+ * (RSY v `gpsraw` tedy roste ~1x/min — normalni).
+ * ⚠️ HYPOTEZA k overeni osciloskopem: modul po (i shodne) TP5 nesmi vynechat
+ * ani zkratit pulz 1PPS. Volat VYHRADNE z defaultTasku (drain GPS). */
+void gps_tick(void)
+{
+  uint32_t now = HAL_GetTick();
+  if ((uint32_t)(now - s_tp_last_ms) < GPS_TP_RESEND_MS) return;
+  s_tp_last_ms = now;
+  gps_config_timepulse();
 }
 
 void gps_feed_char(char c)
@@ -597,7 +652,8 @@ void gps_format_raw(char *buf, int n)
   raw  = s_raw_bytes;
   sent = s_gps.sentences;
   taskEXIT_CRITICAL();
-  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu last=[%s]",
+  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu UBX:%lu/%lu last=[%s]",
            (unsigned long)raw, (unsigned long)sent, (unsigned long)s_overflows,
-           (unsigned long)s_resyncs, last[0] ? last : "(zatim nic)");
+           (unsigned long)s_resyncs, (unsigned long)s_ubx_sent, (unsigned long)s_ubx_fail,
+           last[0] ? last : "(zatim nic)");
 }

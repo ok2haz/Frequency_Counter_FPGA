@@ -728,6 +728,7 @@ void StartDefaultTask(void *argument)
     while (osMessageQueueGet(GpsRxQueueHandle, &gc, NULL, 0) == osOK) {
       gps_feed_char((char)gc);
     }
+    gps_tick();       /* TP5 (1PPS do FPGA) znovu 1x/min — konfigurace zije jen v RAM modulu (F-0219) */
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */
