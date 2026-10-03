@@ -1095,7 +1095,17 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - ✅ **Ověřeno:** Icarus `sim/tb_tdc.sv` (σ dt 26/24 ps, A−B 2 ps), `tb_phy_equiv`, `tb_gate_div`; P&R `clk_p0_100m`
   Fmax 101,3 MHz, TNS 0, logika 69 %, registry 74 %; netlist `sim/check_tdc_netlist.py`. ⬜ **NEOVĚŘENO NA KŘEMÍKU**
   (skutečné zpoždění tapů, ring oscilátor, `tdc cal` na desce) — viz L-0116..L-0119.
-- **Nasazení:** flashnout OBĚ strany (bitstream + CM7), po power-cyklu `status` → `FW:0x0400 CAPS:0x0023`, pak `tdc cal`, `tdc`.
+- **Nasazení:** flashnout OBĚ strany (bitstream + CM7), po power-cyklu `status` → `FW:0x0408 CAPS:0x0023`, pak `tdc cal`, `tdc`.
+  Bitstream staví `gw_sh build.tcl` (stačí nahrát `impl/pnr/Counter_FPGA.fs`); 🔴 **build v Gowin IDE použije
+  vlastní volby pinů, ne `build.tcl`** — výsledek ověřuj v `impl/pnr/device.cfg` (L-0122).
+- ✅ **SPI STM → FPGA funguje od 2026-10-03** (ověřeno sondou: přijato `A5 02 06`, CRC sedí, `ack_ok=1`).
+  Do té doby FPGA ignorovala VŠECHNY povely (ACK/SET_CONFIG/CAL): PHY mazala přijatý rámec (L-0120)
+  a na prvním kusu Tang Nano byl vadný vstup pinu 54 = MOSI (L-0121, vyřešeno výměnou modulu).
+  ⬜ CAL report (`tdc`) zatím na desce neověřen — konzole byla mezitím nedostupná (USB hub, L-0123).
+- **Diagnostika SPI v DATA rámci (FW ≥ 0x0404, `fpgaraw`):** `[66][67][107]` = co FPGA přijala (`rx[0..2]`,
+  ACK = `A5 02 06`), `[112..115]` = CRC spočtené (lo,hi) / přijaté (lo,hi), `[116,117]` = hrany MOSI,
+  `[124,125]` = náběžné hrany SCK (musí být 1024 = `00 04`). Flags (bajt 3): bit5 `rx_crc_error` = 0, bit6 `ack_ok` = 1.
+  STM tyto bajty neparsuje (`gate_ps` maskuje `dt_a` na 48 bitů, takže `[124,125]` mu nevadí).
 
 ## 🟢 NOVÁ REVIZE DESKY (zadání 2026-08-30) — co se změní a co tím padá
 

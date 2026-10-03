@@ -3,7 +3,9 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-03 (večer) — ✅ **Skutečný carry-chain TDC hotový (varianta b),
+**Poslední aktualizace:** 2026-10-03 (noc) — ✅ **SPI STM → FPGA opraveno** (FW 0x0408, ověřeno sondou: FPGA přijímá ACK, CRC sedí). Dvě příčiny: PHY mazala přijatý rámec (L-0120, `5a00b7f`) a vadný vstup pinu 54 na kusu Tang Nano (L-0121, výměna modulu). Měření z generátoru 10 MHz na CH_A běží reálně (~10 000 006 Hz). 🔑 **Pokračovat zde:** nahrát `Counter_FPGA.fs` FW 0x0408 (úklid voleb pinů, L-0122), konzole přímo do PC bez USB hubu (L-0123), pak `status` (`FW:0x0408`), `tdc cal`, `tdc` — ověřit CAL report (`nz` ≈ 170–180, „za koncem" ≈ 0), `fpgaraw` flags `0x41`/`0x43`.
+
+**Předchozí:** 2026-10-03 (večer) — ✅ **Skutečný carry-chain TDC hotový (varianta b),
 F-0201..F-0208 opraveny, ⬜ vše neověřeno na křemíku.** Detail → [audit/2026-10-02_fpga-tdc-napeti-dac.md](audit/2026-10-02_fpga-tdc-napeti-dac.md).
 FPGA (`f968517`): `tdc.v` — 2 kanály po 256 přímo instancovaných `ALU` (STA 57 ps/tap, 14,5 ns na
 řetěz), kalibrace code density ve FPGA (ring oscilátor + LFSR dělič), čas v jednotkách T_clk/16384
@@ -1855,3 +1857,4 @@ místo abych přečetl jeho čísla) — stálo to jeden flash cyklus a jednu vr
 | 2026-10-03 | přezkum vlastních oprav GPS (`3cbbdb9`, `01c7e25`, `12ec7ac`) | Bez jména modulu, žádný `nezačato` → přezkum posledních oprav (precedent F-0155/F-0199). **F-0225 [S3]**: F-0218 převzala střídu 50 % ze staré 100kHz konfigurace, 1PPS měl pulz 500 ms. Uživatel upřesnil „typická střída 1PPS" → opraveno `b8019dd` (`isLength`, s fixem 100 ms, bez fixu 50 ms, `_Static_assert` pulz < perioda); 🔁 L-0113. **F-0226 [S4]** zastaralý komentář „Blokující TX" (`gps.h:93`, třída L-0105), **F-0227 [S4]** `gps glonass` hlásí úspěch bezpodmínečně (L-0028) — otevřené, skupina A. IT TX vedle IT RX prověřen proti HAL 1.11.6 (chyba příjmu TX nepřeruší), buffer, kritická sekce, čekání a resync `$` v pořádku. Build CM7 0 varování, `audit.py` 92/0/2, `.text` 631600 → 631616 B, rámec ověřen v disassembly. ⬜ **neověřeno na HW.** | 🔁 L-0113 |
 | 2026-10-03 | F5 GPS (F-0226, F-0227) | Na pokyn uživatele. `7219e0a` **F-0227**: `gps_config_gnss()` vrací `bool`, `gps glonass` vypíše `NEODESLANO`, když se rámec nespustil (🔁 L-0028). Commitnut jen vlastní hunk `freertos_task_uart.c` (pracovní kopie má cizí necommitnuté změny). `docs:` **F-0226**: komentář `gps.h:93` „Blokující TX" → TX v přerušení (🔁 L-0105). Build 0 varování, `audit.py` 92/0/2, `.text` 631616 → 631720 B (docs beze změny obrazu), rámec `UartTask_run` 476 B. Z GPS auditu otevřený jen F-0220. ⬜ **neověřeno na HW.** | 🔁 L-0028, L-0105 |
 | 2026-10-03 | FPGA carry-chain TDC (varianta b, F-0201..F-0208) | `f968517` FPGA + STM commit. Detail viz hlavička a audit. ⬜ neověřeno na křemíku. | L-0116..L-0119 |
+| 2026-10-03 | FPGA SPI STM→FPGA (PHY rx_shadow, vadný pin 54 Tang Nano, úklid voleb) | `5a00b7f`, `deeda88` + diag FW 0x0402–0x0407. ⬜ CAL report neověřen na HW. | L-0120..L-0123 |

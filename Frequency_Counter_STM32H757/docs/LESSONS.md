@@ -3991,6 +3991,90 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0120 — Přijatý rámec, který aplikace čte „živě", se nesmí mazat dřív, než ho dočte
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `spi_slave_phy.v`, SPI STM → FPGA
+- **Symptom:** FPGA ignorovala VŠECHNY povely STM (ACK, START, SET_CONFIG, žádost o CAL
+  report). `tdc` hlásilo „CAL report nedorazil", ve `fpgaraw` byl trvale bit `rx_crc_error`.
+  Směr FPGA → STM přitom fungoval, takže link vypadal zdravě.
+- **Příčina:** PHY nulovala `rx_shadow` hned po CS↑ (stav `rx_armed`), ale `spi_app`
+  (10 MHz) čte `rx_frame_flat` = `rx_shadow` ŽIVĚ ještě ~13 µs (S_RX_CRC, 126 taktů).
+  Viděla samé nuly → MAGIC/CRC selhaly vždy. Komentář o řádek výš přitom tvrdil
+  „rx_shadow je stabilní od CS↑ do dalšího CS↓". Vada od prvního commitu (`38d7e2b`);
+  zůstala skrytá, protože SPI link do té doby nikdy neběžel.
+- **Oprava:** nulování odstraněno (1024 bitů posuvu přepíše celý registr). Commit `5a00b7f`.
+  End-to-end test `sim/tb_link.sv` (PHY + `spi_app`) v `run.ps1`: se starou PHY dá
+  přesně symptom z desky (`flags=23`, odpověď `type=80`), s opravou `flags=43` a `type=a0`.
+- **Pravidlo:** **Když modul A předává data modulu B jako „stabilní vodič", ověř, kdo
+  a kdy ten registr přepisuje — komentář to nedokazuje. Testuj spojení obou modulů,
+  ne každý zvlášť** (ekvivalenční test PHY proti staré PHY vadu zdědil).
+- **Detekce:** `fpgaraw` → flags (bajt 3) bit 5 = `rx_crc_error` musí být 0, bit 6 `ack_ok` = 1.
+- **Commit:** `5a00b7f`, `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0121 — Diagnostiku vstupu měř hranami na pinu, ne obsahem dat — a teprve pak viň konfiguraci
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, piny, Tang Nano 9K
+- **Symptom:** i po L-0120 FPGA přijímala od STM samé `FF`. Osciloskop i sniffer na pinu 54
+  (MOSI) ukazovaly čistý signál 0,1 / 3,2 V. Tři kola hypotéz o konfiguračních pinech
+  (`use_cpu/mode/ready/done/reconfign/i2c_as_gpio`) nepomohla.
+- **Příčina:** vadný vstup pinu 54 na konkrétním kusu Tang Nano. Po výměně modulu
+  MOSI funguje (přijato `A5 02 06`, CRC sedí, `ack_ok=1`).
+- **Co rozhodlo:** počítadla hran přímo za vstupním bufferem v rámci (`[116,117]` hrany
+  MOSI, `[124,125]` hrany SCK): SCK 1024, MOSI **0** → pad do logiky nic nepouští. Pak
+  pull-down na pinu (FPGA dál čte 1) → pin neplave, ani ho nedrží konfigurace (UG290:
+  `CLKHOLD_N` patří do SSPI, ta byla uvolněná od začátku).
+- **Pravidlo:** **U „vstup čte konstantu" nejdřív postav počítadlo hran hned za IBUF
+  a porovnej se sousedním pinem téže banky. Než viníš konfiguraci, ověř v dokumentaci,
+  do které skupiny pin patří. Vadný kus modulu je legitimní hypotéza, když SW i konfigurace
+  prokazatelně sedí — a ověří se výměnou kusu.** (Doplňuje tabulku „HW obviněn — a byl
+  nevinný": tady byl HW skutečně vadný, ale až po vyloučení SW měřením.)
+- **Detekce:** `fpgaraw` bajty `[66][67][107]` = přijaté `rx[0..2]`, `[112..115]` = CRC
+  spočtené/přijaté, `[116,117]` hrany MOSI, `[124,125]` hrany SCK (FW ≥ 0x0404).
+- **Commit:** `9ae86de`, `fbd1630`, `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0122 — Gowin si volby `set_option` pamatuje v projektu: vrácení = výslovně nastavit 0
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA build (`build.tcl`, `gw_sh`)
+- **Symptom:** po odstranění řádků `set_option -use_*_as_gpio 1` z `build.tcl` hlásil nový
+  `impl/pnr/device.cfg` pořád `READY/DONE/I2C/RECONFIG_N regular_io = true`.
+- **Příčina:** `gw_sh` ukládá volby do projektu; smazaný řádek je nezmění.
+- **Oprava:** volby výslovně `set_option ... 0`; ověřeno v `device.cfg`. Commit `deeda88`.
+- **Pravidlo:** **Výsledek konfigurace FPGA ověřuj v `impl/pnr/device.cfg`, ne ve skriptu.
+  Vrácení volby = zapsat výchozí hodnotu, ne smazat řádek.**
+- **Detekce:** `head impl/pnr/device.cfg`
+- **Commit:** `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0123 — USB hub mezi PC a deskou umí „umlčet" CDC konzoli, zatímco zbytek běží
+
+- **Datum:** 2026-10-03
+- **Oblast:** USB CDC konzole (COM10), diagnostika
+- **Symptom:** COM10 ve Windows `OK`, zápis prochází, ale na `ping` žádná odpověď —
+  opakovaně, i po power-cyklu. Displej, ETH (`/api/state`, SCPI 5025) i měření jely.
+  Sonda ukázala, že konzole na straně STM je v pořádku (ring prázdný, nic nezahozeno).
+- **Příčina:** USB hub, na kterém byly STM, FPGA a programátor. Po připojení přímo do PC
+  (bez hubu) konzole odpovídá.
+- **Pravidlo:** **Když konzole mlčí a ETH/displej jedou, nejdřív odstraň USB hub, než
+  začneš hledat ve firmwaru.** Diagnostika mezitím jde přes ETH (`/api/state`) nebo
+  ČTENÍM sondou (`STM32_Programmer_CLI mode=HOTPLUG -r32`; ⚠️ zastaví jádro → I2C4 do
+  power-cyklu).
+- **Detekce:** `curl http://<IP>/api/state` odpovídá, `ping` na COM10 ne.
+- **Commit:** —
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
