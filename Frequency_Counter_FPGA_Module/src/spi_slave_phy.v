@@ -148,7 +148,12 @@ module spi_slave_phy (
             end else begin
                 miso      <= tx_shadow[1023];
             end
-            rx_shadow <= 1024'd0;
+            // 🔴 2026-10-03: rx_shadow se tady NESMI nulovat. Aplikace (10 MHz) cte
+            // rx_frame_flat (= rx_shadow) ZIVE ~13 us po CS↑ (S_RX_CRC, 126 taktu);
+            // nulovani hned po CS↑ (rx_armed=1) jí podsunulo samé nuly -> MAGIC/CRC
+            // selhaly VZDY -> FPGA ignorovala vsechny povely STM (ACK, START,
+            // SET_CONFIG, CAL) a hlasila rx_crc_error=1. Vada od prvniho commitu.
+            // Mazat netreba: rámec o 1024 bitech prepise vsech 1024 bitu posuvem.
         end
 
         if (cs_active) begin
