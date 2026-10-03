@@ -68,6 +68,9 @@ module spi_app (
     input  wire [31:0] meas_periods_b,       // CH_B: počet period v okně
     input  wire [7:0]  meas_tdc_status,      // viz hlavička (abs 100)
     input  wire [191:0] meas_cal_diag,       // diagnostika kalibrace A[95:0] B[191:96]
+    output wire [7:0]  hist_k,               // vypis histogramu: adresa kodu (CAL pozadavek)
+    input  wire [23:0] meas_hist_a,          // hist_A[hist_k] (kvazistaticke)
+    input  wire [23:0] meas_hist_b,          // hist_B[hist_k]
     input  wire [15:0] dbg_mosi_cnt,         // diag: hrany MOSI v poslednim ramci (tx_b[116,117])
     input  wire [15:0] dbg_sck_cnt,          // diag: nabezne hrany SCK v poslednim ramci (tx_b[124,125])
 
@@ -92,7 +95,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h040A;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h040B;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -162,6 +165,10 @@ module spi_app (
 
     // konfigurace (SET_CONFIG)
     reg        cal_mode_r = 1'b0;
+    // CAL pozadavek s payloadem [12]=1 -> rezim vypisu histogramu, [14] = kod
+    reg        hist_mode = 1'b0;
+    reg [7:0]  hist_k_r  = 8'd0;
+    assign hist_k = hist_k_r;
     // DIAGNOSTIKA RX (2026-10-03): co FPGA skutecne prijala od STM v poslednim ramci
     // (zachyceno v S_RX_PROC) -> tx_b[66,67,107,112..115] = rx[0], rx[1], rx[2],
     // CRC spoctene FPGA (lo,hi), CRC prijate (lo,hi). Rozhodne, jestli jsou spatne
@@ -294,6 +301,18 @@ module spi_app (
                         tx_b[37] <= {7'd0, cal_mode_r};
                         for (k = 38; k < 126; k = k + 1)
                             tx_b[k] <= 8'd0;
+                        // vypis histogramu: [38]=1, [39]=kod, [40..42]=A, [43..45]=B
+                        // (hodnota platna: od zmeny hist_k uplynulo >= 1 SPI transakce)
+                        if (hist_mode) begin
+                            tx_b[38] <= 8'd1;
+                            tx_b[39] <= hist_k_r;
+                            tx_b[40] <= meas_hist_a[7:0];
+                            tx_b[41] <= meas_hist_a[15:8];
+                            tx_b[42] <= meas_hist_a[23:16];
+                            tx_b[43] <= meas_hist_b[7:0];
+                            tx_b[44] <= meas_hist_b[15:8];
+                            tx_b[45] <= meas_hist_b[23:16];
+                        end
                         cal_req <= 1'b0;
                     end else begin
                         // ---- DATA 0x80 (offsety 12..59 = 1:1 s v1) ----
@@ -402,6 +421,9 @@ module spi_app (
                         TYPE_CAL: begin          // žádost o CAL report
                             ack_ok  <= 1'b0;
                             cal_req <= 1'b1;
+                            // [12]==1: vypis hist[k] (k = [14]); jinak souhrn
+                            hist_mode <= (rx_b[12] == 8'd1);
+                            if (rx_b[12] == 8'd1) hist_k_r <= rx_b[14];
                         end
                         default:    ack_ok <= 1'b0;  // rezervované TYPE = ignorovat
                     endcase

@@ -2094,6 +2094,25 @@ void UartTask_run(void *argument)
 				  }
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
+			  else if (strcmp(RxBuffer, "tdc hist") == 0) {
+				  /* Vypis histogramu kalibrace TDC (FW >= 0x040B): radky "k;A;B" pro kody
+				   * 0..255 (vynechane jsou radky A=B=0). Sirka binu [ps] = hist / N * 10000,
+				   * N = soucet (kalibrace z 2^20 udalosti). Diagnostika DNL / bublin.
+				   * Bezi z UartTasku (nehlidany watchdogem); ~256 x 2 SPI transakce. */
+				  uint32_t sa = 0, sb = 0, ma = 0, mb = 0; unsigned ka = 0, kb = 0, bad = 0;
+				  printf("TDC hist: k;A;B\n");
+				  for (unsigned k = 0; k < 256u; k++) {
+					  uint32_t a = 0, b = 0;
+					  if (!fpga_freq_tdc_hist((uint8_t)k, &a, &b)) { bad++; continue; }
+					  sa += a; sb += b;
+					  if (a > ma) { ma = a; ka = k; }
+					  if (b > mb) { mb = b; kb = k; }
+					  if (a || b) printf("%u;%lu;%lu\n", k, (unsigned long)a, (unsigned long)b);
+					  if ((k & 15u) == 15u) osDelay(1);
+				  }
+				  printf("TDC hist: soucet A %lu B %lu | max A k=%u %lu, B k=%u %lu | nepreceteno %u\n",
+				         (unsigned long)sa, (unsigned long)sb, ka, (unsigned long)ma, kb, (unsigned long)mb, bad);
+			  }
 			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0) {
 				  /* TDC (FW >= 0x0400): `tdc` = diagnostika kalibrace (CAL report),
 				   * `tdc cal` = spustit kalibraci (~0,5-1 s, mereni stoji) a pockat.

@@ -201,7 +201,12 @@ module tdc_chan #(
     output reg [31:0]  d_ovf,       // hist[255]: udalosti za koncem retezu
     output reg [31:0]  d_peak,      // nejvetsi hist[k]
     output reg [15:0]  d_nz,        // pocet neprazdnych kodu (<= 256)
-    output reg [15:0]  d_last       // nejvyssi neprazdny kod
+    output reg [15:0]  d_last,      // nejvyssi neprazdny kod
+    // vypis histogramu (diagnostika DNL, 2026-10-03): mimo kalibraci cte BRAM
+    // hist[dump_k]; dump_k je kvazistaticky (nastavi ho STM pozadavkem), cteni
+    // z 10 MHz domeny probehne az mikrosekundy po zmene -> vicebitove CDC OK.
+    input  wire [7:0]  dump_k,
+    output wire [23:0] dump_q
 );
     localparam TAPS = 256;
     localparam HW   = CAL_LOG2 + 1;           // sirka citace kodu (0..2^CAL_LOG2)
@@ -304,7 +309,7 @@ module tdc_chan #(
     reg           cnt_hit = 1'b0;             // cnt == CNT_LAST (registrovane)
     reg  [13:0]    lutv   = 14'd0;             // hodnota tabulky (saturovana)
 
-    wire [7:0]    hist_ra = s_cmp ? scan_k : code_r;
+    wire [7:0]    hist_ra = s_cmp ? scan_k : (cal_busy ? code_r : dump_k);
     wire          hist_we = s_clr | hist_we_r;
     wire [7:0]    hist_wa = s_clr ? clr_k[7:0] : code_r;
     wire [HW-1:0] hist_wd = s_clr ? {HW{1'b0}} : hist_wd_r;
@@ -324,6 +329,8 @@ module tdc_chan #(
         ts_ps    <= tick_ps - {34'd0, lut_q};
         ts_valid <= dv2 & cal_valid & ~cal_busy;
     end
+
+    assign dump_q = {{(24-HW){1'b0}}, hist_rd};
 
     // faze: jedno-horka, mimo DRN/CMP drzena v 1; po ph[9] se sama otoci na ph[0]
     // (nezavisla na cal_req -> kratka cesta)

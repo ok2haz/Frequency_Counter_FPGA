@@ -202,6 +202,10 @@ bool fpga_freq_tdc_cal_start(void);
 /** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
+/* Vypis histogramu kalibrace (FW >= 0x040B): hist[k] obou kanalu (pocet udalosti
+ * kalibrace s kodem k; sirka binu = hist[k] / N * 10 ns). Diagnostika DNL.
+ * Vraci false, kdyz odpoved neprisla nebo nese jiny kod. */
+bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b);
 
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog

@@ -1011,6 +1011,37 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
     return ok;
 }
 
+bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b)
+{
+    if (!g_init_ok || s_sim_on || a == NULL || b == NULL) return false;
+    uint8_t tx[FR_LEN], rx[FR_LEN], pl[3] = { 1u, 0u, k };
+    bool locked = false, ok = false;
+    if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) {
+        if (osMutexAcquire(s_spi_mtx, 200) != osOK) return false;
+        locked = true;
+    }
+    /* Stejny vzor jako fpga_freq_tdc_report: zadost + odpoved pod JEDNIM zamkem.
+     * FPGA nastavi adresu hist_k pri zpracovani zadosti a CAL ramec slozi az pak,
+     * takze hodnota v odpovedi uz patri k `k` (BRAM cteni trva ns, ramec us). */
+    build_frame(TYPE_CAL, 0, pl, 3, tx);
+    if (xfer_raw(tx, rx)) {
+        for (int i = 0; i < 3 && !ok; i++) {
+            delay_us(200);
+            build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);
+            if (!xfer_raw(tx, rx)) break;
+            if (rx[0] != FR_MAGIC || rx[2] != TYPE_CAL) continue;
+            uint16_t cc = crc16_ccitt(rx, FR_CRC_LEN);
+            if (cc != ((uint16_t)rx[126] | ((uint16_t)rx[127] << 8))) continue;
+            if (rx[38] != 1u || rx[39] != k) continue;
+            *a = (uint32_t)rx[40] | ((uint32_t)rx[41] << 8) | ((uint32_t)rx[42] << 16);
+            *b = (uint32_t)rx[43] | ((uint32_t)rx[44] << 8) | ((uint32_t)rx[45] << 16);
+            ok = true;
+        }
+    }
+    if (locked) osMutexRelease(s_spi_mtx);
+    return ok;
+}
+
 bool fpga_freq_raw_xfer(uint8_t *rx_frame)
 {
     if (!g_init_ok) return false;

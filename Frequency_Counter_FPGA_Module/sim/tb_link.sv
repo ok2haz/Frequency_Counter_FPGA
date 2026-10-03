@@ -16,7 +16,7 @@ module tb_link;
   spi_app app(.clk(clk10),.meas_freq_x100000(64'd0),.meas_periods(32'd0),.meas_gate_ns(64'd0),
      .meas_timestamp(64'd0),.meas_error_flags(32'd0),.meas_channel(8'd0),.new_meas(1'b0),.signal_lost(1'b0),
      .meas_freq16_x100000(64'd0),.meas_phase_status(8'd0),.meas_status2(8'd0),.meas_dt_a_ps(48'd0),
-     .meas_dt_b_ps(48'd0),.meas_periods_b(32'd0),.meas_tdc_status(8'h03),.meas_cal_diag(192'd0),.dbg_mosi_cnt(16'd0),.dbg_sck_cnt(16'd0),
+     .meas_dt_b_ps(48'd0),.meas_periods_b(32'd0),.meas_tdc_status(8'h03),.meas_cal_diag(192'd0),.hist_k(),.meas_hist_a(24'h123456),.meas_hist_b(24'h0ABCDE),.dbg_mosi_cnt(16'd0),.dbg_sck_cnt(16'd0),
      .rx_frame_flat(rxf),.rx_valid(rxv),.tx_frame_flat(txf),.tx_valid(txv),.dbg_status(dbg),
      .cal_mode(cal_mode),.base_win(bw));
   function [15:0] crc(input [15:0] c0, input [7:0] d);
@@ -38,7 +38,12 @@ module tb_link;
     if (rx[3][5] || !rx[3][6]) $display("FAIL: ACK neprijat (flags=%h)", rx[3]);
     build(8'hA0,0,0); xfer; build(8'h06,0,0); xfer;
     $display("CAL req->: rx type=%h (ocek A0) flags=%h", rx[2], rx[3]);
-    if (rx[2] == 8'hA0) $display("PASS: tb_link"); else $display("FAIL: tb_link");
+    // vypis histogramu: CAL s payloadem [12]=1, [14]=kod -> odpoved [38]=1 [39]=kod [40..45]=A,B
+    build(8'hA0,8'd1,8'd0); tx[14]=8'd77; cc=16'hFFFF; for(i=0;i<126;i=i+1) cc=crc(cc,tx[i]); tx[126]=cc[7:0]; tx[127]=cc[15:8];
+    xfer; build(8'h06,0,0); xfer;
+    $display("HIST: type=%h [38]=%h k=%0d A=%h%h%h B=%h%h%h", rx[2], rx[38], rx[39], rx[42],rx[41],rx[40], rx[45],rx[44],rx[43]);
+    if (rx[2] == 8'hA0 && rx[38] == 8'h01 && rx[39] == 8'd77 && {rx[42],rx[41],rx[40]} == 24'h123456 && {rx[45],rx[44],rx[43]} == 24'h0ABCDE)
+        $display("PASS: tb_link"); else $display("FAIL: tb_link");
     $finish;
   end
 endmodule

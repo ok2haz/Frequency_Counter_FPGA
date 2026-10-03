@@ -53,13 +53,15 @@ module tb_tdc;
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_a), .trig_ack(trig_a),
         .ts_valid(tsv_a), .ts_ps(ts_a), .use_ro(use_ro_a), .cal_busy(busy_a),
         .cal_valid(valid_a), .cal_fail(fail_a),
-        .d_ovf(ovf_a), .d_peak(peak_a), .d_nz(nz_a), .d_last(last_a));
+        .d_ovf(ovf_a), .d_peak(peak_a), .d_nz(nz_a), .d_last(last_a),
+        .dump_k(8'd0), .dump_q());
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) cb (
         .clk(clk), .sig_raw(sig_b), .ro(ro), .tick_ps(tick_ps), .want(want_b),
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_b), .trig_ack(trig_b),
         .ts_valid(tsv_b), .ts_ps(ts_b), .use_ro(use_ro_b), .cal_busy(busy_b),
         .cal_valid(valid_b), .cal_fail(fail_b),
-        .d_ovf(ovf_b), .d_peak(peak_b), .d_nz(nz_b), .d_last(last_b));
+        .d_ovf(ovf_b), .d_peak(peak_b), .d_nz(nz_b), .d_last(last_b),
+        .dump_k(8'd0), .dump_q());
 
     wire [25:0] per_a, per_b;
     wire [47:0] dt_a, dt_b;
