@@ -69,12 +69,12 @@ typedef struct {
 } gps_data_t;
 
 /* Inicializace: prepne USART1 na 9600 8N1 (regen-safe, nezavisle na .ioc),
- * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 100 kHz/10 Hz).
+ * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 1PPS s fixem / 10 Hz bez).
  * Vola se na zacatku draineru v defaultTask. */
 void gps_init(void);
 
-/* UBX-CFG-TP5: TIMEPULSE = s fixem 100 kHz (GPSDO PLL reference, disciplinovane
- * na GNSS), bez fixu 10 Hz (frekvence = lock indikator -> deska drzi VC OCXO).
+/* UBX-CFG-TP5: TIMEPULSE = s fixem 1PPS (zarovnane na UTC, jde na FPGA PIN33
+ * pres GPS_CLK_Buff — do STM nevede), bez fixu 10 Hz (frekvence = indikator fixu).
  * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init; lze i samostatne. */
 void gps_config_timepulse(void);
 

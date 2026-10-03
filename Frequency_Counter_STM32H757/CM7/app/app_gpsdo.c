@@ -941,8 +941,9 @@ static int draw_gps_values(int force)
     int drew = force;
 
     /* ── Radek 1 karty FIX (bez nadpisu): "FIX: 3D/2D/No signal" (velke, vlevo) +
-     * Time Pulse (vpravo). Time Pulse: s fixem 100 kHz (GPSDO PLL ref, disc. na
-     * GNSS), bez fixu 10 Hz (hold VC / holdover). ── */
+     * Time Pulse (vpravo). Time Pulse: s fixem 1PPS (zarovnany na UTC, jde na
+     * FPGA PIN33), bez fixu 10 Hz (gps_config_timepulse). ⚠️ STM pulz nevidi —
+     * popisek je odvozeny z fixu NMEA, ne zmereny. ── */
     const char *fs; prim_color_t fc;
     if      (g.valid && g.fix_mode == 3) { fs = "FIX: 3D";        fc = UI_COLOR_OK; }
     else if (g.valid && g.fix_mode == 2) { fs = "FIX: 2D";        fc = UI_COLOR_OK; }
@@ -957,7 +958,7 @@ static int draw_gps_values(int force)
         drew = 1; }
 
     const char *tp; prim_color_t tc;
-    if (g.fix_quality) { tp = "Time Pulse 100 kHz"; tc = UI_COLOR_OK; }
+    if (g.fix_quality) { tp = "Time Pulse 1PPS";    tc = UI_COLOR_OK; }
     else               { tp = "Time Pulse 10 Hz";   tc = UI_COLOR_WARN; }
     if (force || dchg(c_tp, sizeof c_tp, tp)) {
         prim_fill_rect((prim_rect_t){300, 74, (int16_t)(GPS_LX + GPS_LW - 14 - 300), 30},
@@ -4395,7 +4396,7 @@ static void app_gpsdo_render_holdover(void)
     snprintf(b, sizeof b, "%s", g.valid ? (g.fix_mode == 3 ? "3D fix" : "2D fix") : (g.fixes > 0 ? "ztracen" : "zadny"));
     { prim_color_t vc = g.valid ? UI_COLOR_OK : UI_COLOR_INK_2; int chg = dchg(c_gps, sizeof c_gps, b);
       if (first) kv_row(160, "GPS lock:", b, vc); else if (chg) kv_row_narrow(160, b, vc); }
-    snprintf(b, sizeof b, "%s", g.fix_quality ? "100 kHz (disc.)" : "10 Hz (hold)");
+    snprintf(b, sizeof b, "%s", g.fix_quality ? "1PPS (FPGA)" : "10 Hz bez fixu");
     { prim_color_t vc = g.fix_quality ? UI_COLOR_OK : UI_COLOR_WARN; int chg = dchg(c_tp, sizeof c_tp, b);
       if (first) kv_row(196, "Timepulse:", b, vc); else if (chg) kv_row_narrow(196, b, vc); }
     /* fmt_temp (stejne jako Diagnostika/Senzory) — driv se tu formatovalo inline
@@ -7171,7 +7172,8 @@ static void cd_redraw_all(void)
     { prim_point_t p[2] = {{692, 342}, {670, 342}};                          cd_path(p, 2, c_rf);   }
 
     /* Popisky spoju — chip sedi PRIMO na care (prekryje ji), sirka dle textu. */
-    snprintf(buf, sizeof buf, "UART/1PPS: %s",
+    /* Jen UART (NMEA): 1PPS vede z GPS na FPGA PIN33, do STM32 ne. */
+    snprintf(buf, sizeof buf, "UART: %s",
              g.valid ? "FIX" : (g.sentences ? "NO FIX" : "--"));
     cd_label_chip(222, 171, buf, c_gps);
     snprintf(buf, sizeof buf, "I2C1/I2C4: %s", (s1 || s4) ? "CHYBA" : "OK");

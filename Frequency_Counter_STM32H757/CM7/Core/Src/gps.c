@@ -351,15 +351,20 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
   HAL_UART_Transmit(&huart1, f, i, 100);
 }
 
-/* TIMEPULSE kmitocty. S FIXEM = GPSDO PLL reference (musi sedet s delickou OCXO,
- * JP2: 100 kHz / 1 MHz -> pro 1MHz zmen na 1000000). BEZ FIXU = 10 Hz: sama
- * FREKVENCE slouzi desce jako lock-indikator (detektor: 100 kHz -> disciplinuj,
- * 10 Hz -> hold VC OCXO = holdover). NIKDY nevystup 100 kHz z interniho osc modulu. */
-#define GPS_TP_FREQ_HZ        100000u   /* s fixem: GPSDO PLL reference */
-#define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: MANDATORY 10 Hz (hold indikator) */
+/* TIMEPULSE kmitocty (deska FPGA 2.1). Vystup TIMEPULSE vede pres J3 pin2
+ * (GPS_CLK_Out) -> U7 74LVC1G17 -> GPS_CLK_Buff -> R50 -> FPGA PIN33_IOB23A
+ * (GPS_1PPS, carry chain C). Do STM32 1PPS NEVEDE — STM ho uvidi jen pres FPGA.
+ * S FIXEM = 1PPS, nabezna hrana na zacatku UTC sekundy: casova znacka, kterou
+ * FPGA porovna s OCXO (time error pro smycku GPSDO, STATUS #36).
+ * BEZ FIXU = 10 Hz: frekvence zustava indikatorem fix/bez fixu (zadani 2026-10-03).
+ * ⚠️ 100 kHz s fixem patrilo stare desce 2.0 (HW PLL na listu GPSDO); deska 2.1
+ * zadnou PLL nema a FPGA na PIN33 ceka 1PPS. */
+#define GPS_TP_FREQ_HZ        1u        /* s fixem: 1PPS pro FPGA */
+#define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: 10 Hz (indikator bez fixu) */
 
-/* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 100 kHz disciplinovany na
- * GNSS + zarovnany na UTC (alignToTow); freqPeriod (no lock) = 10 Hz. 50% strida. */
+/* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
+ * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
+ * sekundy); freqPeriod (no lock) = 10 Hz. 50% strida. */
 void gps_config_timepulse(void)
 {
   uint32_t fl = GPS_TP_FREQ_HZ;         /* s fixem */
@@ -368,7 +373,7 @@ void gps_config_timepulse(void)
   pl[0]  = 0;                                  /* tpIdx = 0 (TIMEPULSE) */
   pl[8]  = (uint8_t)fn; pl[9]  = (uint8_t)(fn >> 8);  /* freqPeriod (no lock) = 10 Hz */
   pl[10] = (uint8_t)(fn >> 16); pl[11] = (uint8_t)(fn >> 24);
-  pl[12] = (uint8_t)fl; pl[13] = (uint8_t)(fl >> 8);  /* freqPeriodLock (fix) = 100 kHz */
+  pl[12] = (uint8_t)fl; pl[13] = (uint8_t)(fl >> 8);  /* freqPeriodLock (fix) = 1 Hz */
   pl[14] = (uint8_t)(fl >> 16); pl[15] = (uint8_t)(fl >> 24);
   pl[19] = 0x80;                               /* pulseLenRatio = 50% (2^31) */
   pl[23] = 0x80;                               /* pulseLenRatioLock = 50% */
@@ -428,7 +433,7 @@ void gps_init(void)
   huart1.Init.BaudRate = 9600;
   HAL_UART_Init(&huart1);
 
-  /* TIMEPULSE config (100 kHz GPSDO PLL reference; viz gps_config_timepulse).
+  /* TIMEPULSE config (s fixem 1PPS do FPGA, bez fixu 10 Hz; viz gps_config_timepulse).
    * Vyzaduje zapojene STM
    * PB14 (USART1 TX) -> GPS RX. Posila se v RAM modulu (plati do power-cyklu).
    * ⚠️ MUSI byt PRED HAL_UART_Receive_IT: HAL_UART_Transmit (blokujici) drzi
