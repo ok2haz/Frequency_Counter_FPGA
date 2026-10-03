@@ -3793,6 +3793,10 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
   Ruční krok, patří do checklistu přechodu desky (sourozenec L-0110: tam šlo o čtení
   kanálů ADS1115 podle návrhu místo podle netlistu, tady o zápis).
 - **Commit:** `3cbbdb9`
+- 🔁 **2026-10-03, F-0225:** táž třída hned v opravě samé. F-0218 změnila frekvenci na 1 Hz, ale
+  **střídu 50 % převzala ze staré konfigurace 100 kHz** → 1PPS měl pulz 500 ms. Opraveno `b8019dd`
+  (100 ms, `isLength`). Pravidlo platí pro **každé pole** zapisované konfigurace, ne jen pro to,
+  které je zjevně špatně.
 - **Stav:** aktivní (⬜ oprava neověřena na HW — osciloskop na R50/PIN33 po power-cyklu)
 
 ---

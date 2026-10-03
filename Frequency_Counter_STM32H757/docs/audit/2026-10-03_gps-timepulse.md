@@ -242,3 +242,69 @@ přijal, ale firmware ověřit neumí, a na HW to zatím neběželo.
   čas (TIE vůči UTC) ne. Rozhodnutí patří ke kalibraci Fáze B, ne sem.
 - **FPGA strana (Fáze B) neexistuje.** PIN33 je v `pins.cst:53` zakomentovaný, takže spotřebitel
   1PPS se zatím ověřit nedá.
+
+---
+
+## Přezkum vlastních oprav (F3, 2026-10-03, druhý běh téhož dne)
+
+`/audit-modul` přišel bez jména modulu a žádný modul se stavem `nezačato` nezbývá. Podle
+precedentu (F-0153 → F-0155/156, F-0197 → F-0199) se proto přezkoumaly poslední opravy kódu,
+tedy dnešní `3cbbdb9`, `01c7e25` a `12ec7ac`. Během přezkumu upřesnil uživatel zadání
+(„na PIN33 po fixu nebude jen 1 Hz, má i typickou střídu pro 1PPS"), z toho vznikl F-0225.
+
+### F-0225 [S3] Oprava F-0218 převzala střídu 50 % ze staré konfigurace: 1PPS měl pulz 500 ms
+
+- **Místo:** `gps.c` `gps_config_timepulse()` (stav po `3cbbdb9`: `pl[19] = pl[23] = 0x80`, flags `0x6F`)
+- **Popis:** F-0218 změnila jen `freqPeriodLock` na 1 Hz. Délku pulzu nechala jako poměr 2³¹ = 50 %,
+  tedy 500 ms high. To byla hodnota pro 100 kHz čtverec, ne pro 1PPS.
+- **Důkaz:** disassembly po `3cbbdb9`: `0x80` na bajtech 19 a 23, bit `isLength` (0x10) v příznacích chybí.
+- **Dopad:** časová značka (náběžná hrana) byla správně, ale signál neodpovídal zadání (typický
+  1PPS = krátký pulz). Kdyby Fáze B časovala i sestupnou hranu nebo se na pin připojil jiný
+  spotřebitel 1PPS, 500 ms by vadilo.
+- **Oprava (provedena, na pokyn uživatele):** `isLength` (flags `0x7F`), s fixem 1 Hz / **100 ms**
+  (výchozí délka u-blox, 10 %), bez fixu 10 Hz / 50 ms (50 % jako dosud). `put_le32()` místo
+  ručního skládání bajtů a dva `_Static_assert` (pulz < perioda).
+- **Ověření:** build 0 varování, `audit.py` 92/0/2, `.text` 631 600 → 631 616 B, disassembly:
+  `[16..19] = 50000`, `[20..23] = 0x0186A0 = 100000`, `[28] = 0x7F`.
+- **Vztah k lekcím:** 🔁 L-0113 (parametr staré konfigurace převzatý bez ověření proti novému spotřebiteli)
+- **Stav:** **opraveno v `b8019dd`**, ⬜ neověřeno na HW
+
+### F-0226 [S4] Komentář u `gps_survey_in_cmd` dál tvrdí „Blokující TX"
+
+- **Místo:** `CM7/Core/Inc/gps.h:93`
+- **Popis / důkaz:** od `12ec7ac` jde UBX přes `HAL_UART_Transmit_IT` (`gps.c` `ubx_send`),
+  komentář u SURVEY ale zůstal „Blokující TX (jen na tap)". Je to třída L-0105: oprava změnila
+  význam a jeden čtenář (komentář) zůstal u starého.
+- **Návrh:** `docs:` → „TX v přerušení (ubx_send), volat z tasku".
+- **Stav:** otevřeno, skupina **A** (`docs:`)
+
+### F-0227 [S4] `gps glonass` hlásí „odesláno", i když se rámec neodeslal
+
+- **Místo:** `freertos_task_uart.c:1933-1934`, `gps.c` `gps_config_gnss()` (vrací `void`)
+- **Popis:** `ubx_send` od `12ec7ac` vrací `bool` (`false` = předchozí rámec neskončil do 200 ms),
+  ale `gps_config_gnss` výsledek zahodí a konzole vypíše „UBX-CFG-GNSS odeslano" bezpodmínečně
+  (L-0028). Selhání je vidět jen jako přírůstek `neodeslano` v `gpsraw` `UBX:n/m`.
+- **Dopad:** zanedbatelný (ruční diagnostický příkaz, selhání prakticky nenastane).
+- **Návrh:** `gps_config_gnss()` → `bool`, hláška podle výsledku. Totéž zvážit pro `survey_start`.
+- **Stav:** otevřeno, skupina **A**
+
+### Prověřeno a v pořádku (přezkum `12ec7ac` a `01c7e25`)
+
+- **IT TX vedle IT RX** (HAL 1.11.6): `HAL_UART_AbortReceive` v `usart.c` ErrorCallbacku maže jen
+  `PEIE|RXNEIE` (CR1) a `EIE|RXFTIE` (CR3) a nastavuje `RxState`. `gState` ani TX přerušení
+  nepoužívá. Chybová větev `HAL_UART_IRQHandler` volá jen `UART_EndRxTransfer`, nikdy
+  `UART_EndTxTransfer`. Chyba příjmu tedy běžící vysílání nepřeruší. ✅
+- **Buffer `s_ubx_tx`:** přepíše se jen při `gState == READY`. HAL ho nastaví až v
+  `UART_EndTransmit_IT` (přerušení TC, tedy po odvysílání posledního bajtu). FIFO je vypnuté
+  (`usart.c:88`), cesta TXE → TC. Buffer leží v AXI SRAM, TX jde bez DMA, takže cache neřeší. ✅
+- **Kritická sekce:** USART1 IRQ má prioritu 5 = `configMAX_SYSCALL_INTERRUPT_PRIORITY`, takže
+  je maskovaná. `HAL_UART_Transmit_IT` uvnitř nevolá RTOS a nečeká. ✅
+- **Čekání:** nejvýš 200 ms přes `vTaskDelay(1)` (uvolňuje procesor). V defaultTasku to zdrží
+  `watchdog_supervise` nejvýš o 0,2 s při limitu 2,5 s. Všichni volající běží za běžícím
+  schedulerem (`gps_init` ze `StartDefaultTask`). ✅
+- **`s_tp_last_ms`:** jediný kontext (defaultTask, `gps_init` i `gps_tick`). ✅
+- **Resync na `$` (`01c7e25`):** běžná věta nic nezapočítá (`s_len == 0` po `\n`). Bajt `0x24`
+  uvnitř UBX odpovědi jen posune začátek odpadu; skutečný `$` resynchronizuje znovu a checksum
+  NMEA zbytek odfiltruje. ✅
+- **L-0012 (sourozenci):** USART1 nemá jiného TX uživatele (konzole jde přes USB CDC,
+  `main.c:716`). GPS je jen na CM7. ✅
