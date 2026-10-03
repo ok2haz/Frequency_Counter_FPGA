@@ -20,8 +20,10 @@
 module ALU (output SUM, output COUT, input I0, input I1, input I3, input CIN);
     parameter ALU_MODE = 0;
     parameter ID = "";
-    parameter TAP_MEAN_PS   = 57;
-    parameter TAP_SPREAD_PS = 20;       // +- (rovnomerne)
+    // 2026-10-03: na krzemiku zmereno ~32 ps/stupen (CAL report: 256 stupnu = ~8,3 ns),
+    // STA model rikal 57 ps. Simulace drzi KRZEMIK, ne STA.
+    parameter TAP_MEAN_PS   = 32;
+    parameter TAP_SPREAD_PS = 12;       // +- (rovnomerne)
     integer d;
     integer seed;
     initial begin

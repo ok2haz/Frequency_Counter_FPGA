@@ -3,8 +3,9 @@
 # (F-0201: `{15{sig}}+1` syntéza zredukovala na invertor, v netlistu nebyla jedina
 # ALU bunka a timing report presto vypadal v poradku). Spoustet po KAZDE syntéze:
 #   python sim/check_tdc_netlist.py [cesta/k/Counter_FPGA.vg]
-# Ocekavano: 2 x 256 ALU (stupne g[i].h.u), vsechny I0=VCC a I1=GND, 2 hlavy
-# retezu s CIN = sig_eff, vsech 512 SUM pouzito.
+# Ocekavano (FW >= 0x040A, STRIDE 2): 2 x 511 stupnu g[i].h.u (512. stupen se
+# nevzorkuje, syntéza ho vypusti), vsechny I0=VCC a I1=GND, 2 hlavy retezu
+# s CIN = sig_eff. Mene stupnu = retez zkraceny syntézou -> CHYBA.
 import io, re, sys, os
 d = os.path.dirname(os.path.abspath(__file__))
 p = sys.argv[1] if len(sys.argv) > 1 else os.path.join(d, '..', 'impl', 'gwsynthesis', 'Counter_FPGA.vg')
@@ -31,3 +32,6 @@ for n, b in chain:
         print('   ', n, 'CIN =', port(b, 'CIN'))
 sums = sum(1 for n, b in chain if port(b, 'SUM'))
 print('stupne s pouzitym SUM:', sums)
+if len(chain) < 1022 or ok != len(chain) or len(heads) != 2:
+    print('CHYBA: retez neodpovida ocekavani (2 x 511 pruchodu carry)'); sys.exit(1)
+print('OK: retez kompletni')

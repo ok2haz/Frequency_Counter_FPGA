@@ -11,7 +11,9 @@
 `timescale 1ps/1ps
 module tb_tdc;
     localparam CAL_LOG2 = 15;
-    localparam TSIG     = 31337;                 // perioda signalu [ps] (~31,9 MHz)
+    // 2026-10-03: retez ~16,6 ns (512 ALU x ~32 ps) -> pulperioda vstupu MUSI byt delsi
+    // (jinak dve hrany v retezu). 31,3 ns (32 MHz) uz nejde; 97,1 ns ~ 10,3 MHz = realny vstup.
+    localparam TSIG     = 97123;                 // perioda signalu [ps] (~10,3 MHz)
     localparam B_SKEW   = 3333;                  // B je opozdeno vuci A [ps]
 
     reg clk = 0;
@@ -80,6 +82,13 @@ module tb_tdc;
     initial begin : gen_b
         #(123 + B_SKEW);
         forever begin sig_b = 1; #(TSIG/2); sig_b = 0; #(TSIG - TSIG/2); end
+    end
+
+    // pojistka: simulace se nesmi zacyklit (cekani na kalibraci / okna)
+    initial begin
+        #(64'd40_000_000_000);
+        $display("FAIL: tb_tdc timeout (t=%0t ps) valid_a=%0d valid_b=%0d fail=%0d/%0d", $time, valid_a, valid_b, fail_a, fail_b);
+        $finish;
     end
 
     // ---- kalibrace + kontrola pokryti ----

@@ -52,8 +52,8 @@
 //   hodin se timto NEOVERI ani neodecte (patri k TI A-B, mimo tento krok).
 //
 // OMEZENI (poctive)
-//   * Okno retezu 256 x ~57 ps = ~14,6 ns: v nem smi byt nejvyse JEDNA hrana,
-//     tedy perioda vstupu >= ~2 x 14,6 ns => horni mez ~34 MHz (nominalne;
+//   * Okno retezu 512 ALU x ~32 ps (krzemik) = ~16,6 ns: v nem smi byt nejvyse JEDNA hrana,
+//     tedy perioda vstupu >= ~2 x 16,6 ns => horni mez ~30 MHz (nominalne;
 //     na krzemiku dle skutecneho zpozdeni). Nad tim je nutna predelicka.
 //   * Pokud je retez na krzemiku RYCHLEJSI nez STA model (~57 ps), nemusi
 //     pokryt 10 ns. Kalibrace to ukaze: d_ovf (udalosti za koncem retezu)
@@ -72,7 +72,8 @@
 //   t0          = vzorek tapu 0 BEZ zmrazeni (hrube pocitani hran)
 // ------------------------------------------------------------
 module tdc_chain #(
-    parameter TAPS = 256
+    parameter TAPS   = 256,   // pocet VZORKOVANYCH tapu (FF, sirka kodu)
+    parameter STRIDE = 2      // ALU na jeden vzorkovany tap (delka retezu = TAPS*STRIDE)
 )(
     input  wire             clk,       // clk_p0_100m
     input  wire             sig,       // asynchronni vstup (po vyberu zdroje)
@@ -80,24 +81,39 @@ module tdc_chain #(
     output wire [TAPS-1:0]  thermo_o,
     output reg              t0
 );
+    // 🔴 2026-10-03 (FW 0x040A): na krzemiku je stupen ~32 ps, ne 57 ps (STA model)
+    // -> 256 stupnu pokrylo jen ~8,3 ns z periody 10 ns a ~17 % hran padlo za
+    // konec retezu (CAL report: A 16,8 %, B 18,5 %; neprazdnych jen ~133/256 kodu).
+    // Retez je proto STRIDE-krat delsi a vzorkuje se jen kazdy STRIDE-ty stupen:
+    // pocet FF, dekoder i tabulky zustavaji (TAPS), pokryti ~16,6 ns pri STRIDE 2.
+    localparam NALU = TAPS * STRIDE;
     wire [TAPS-1:0] s;
 
     // Kazdy stupen ma VLASTNI skalarni vodice (g[i].co) misto jednoho vektoru:
-    // v simulaci (Icarus) jinak kazda zmena jednoho bitu preslo vsech 256 portu.
+    // v simulaci (Icarus) jinak kazda zmena jednoho bitu preslo vsech portu.
+    // syn_keep: stupne s NEPOUZITYM SUM jsou jen pruchod carry (COUT = CIN)
+    // a syntéza by je jinak smela nahradit vodicem -> retez by se zkratil.
     genvar i;
     generate
-        for (i = 0; i < TAPS; i = i + 1) begin : g
+        for (i = 0; i < NALU; i = i + 1) begin : g
             wire co;
             wire su;
             if (i == 0) begin : h
                 // I0=1, I1=0: COUT = CIN (pruchod), SUM = ~CIN
+                (* syn_keep = 1 *)
                 ALU #(.ALU_MODE(0)) u (.I0(1'b1), .I1(1'b0), .I3(1'b0),
                                        .CIN(sig), .COUT(co), .SUM(su));
             end else begin : h
+                (* syn_keep = 1 *)
                 ALU #(.ALU_MODE(0)) u (.I0(1'b1), .I1(1'b0), .I3(1'b0),
                                        .CIN(g[i-1].co), .COUT(co), .SUM(su));
             end
-            assign s[i] = su;
+            // vzorkuje se jen kazdy STRIDE-ty stupen; PRIMO ze skalaru `su` --
+            // mezivektor (s_all[NALU]) Icarus prepocitaval pri KAZDE zmene bitu pro
+            // vsechny cteni => simulace ~100x pomalejsi (2026-10-03).
+            if ((i % STRIDE) == 0) begin : t
+                assign s[i / STRIDE] = su;
+            end
         end
     endgenerate
 
