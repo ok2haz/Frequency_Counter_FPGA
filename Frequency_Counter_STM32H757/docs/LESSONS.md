@@ -4075,6 +4075,44 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0124 — Změna parametru musí projít VŠEMI odvozenými konstantami (jediný zdroj)
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `top.v` / `tdc.v`, kalibrace TDC
+- **Symptom:** první CAL report z desky: 16,8 % (A) a 18,5 % (B) událostí za koncem řetězu,
+  ale `status` hlásil `retez kratky A:0 B:0`.
+- **Příčina:** moje změna `CAL_LOG2` 22 → 20 (`97da8c3`) se nepropsala do `OVF_LIM` v `top.v`,
+  kde zůstalo natvrdo `1 << (22 − 4)` = 262 144 > 175 705. Mez tedy byla 4× vyšší, než měla být.
+- **Oprava:** `localparam CAL_LOG2` v `top.v` jako jediný zdroj, předává se do obou `tdc_chan`
+  i do `OVF_LIM`. Commit `7ada866`.
+- **Pravidlo:** **Při změně parametru grepni jeho STARÉ ČÍSLO v celém návrhu (ne jen jméno) —
+  natvrdo opsané hodnoty jméno nenese.** A detektor, který má něco hlásit, ověř pozitivní
+  kontrolou: dokud nevidíš, že naskočí na skutečně vadném stavu, nic nedokazuje.
+- **Detekce:** `status` → `retez kratky A:1` při `za koncem retezu` > 1/16 událostí (`tdc`).
+- **Commit:** `7ada866`
+- **Stav:** aktivní
+
+---
+
+### L-0125 — Zpoždění carry řetězu na křemíku NENÍ STA model: dimenzuj délku podle měření
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `tdc.v` (`tdc_chain`), GW1NR-9C
+- **Symptom:** 256 stupňů mělo podle STA (57 ps) pokrýt 14,6 ns; na desce pokryly jen ~8,3 ns
+  (~32 ps/stupeň) a ~17 % hran dostalo kód 255 (chyba až ±0,9 ns). Obsazených kódů jen ~133/256.
+- **Oprava (varianta B, FW 0x040A):** řetěz 2× delší (512 ALU/kanál), vzorkuje se každý druhý
+  stupeň (`STRIDE = 2`) → registry, dekodér i tabulky beze změny, pokrytí ~16,6 ns.
+  Průchozí stupně bez použitého `SUM` drží `syn_keep`; `check_tdc_netlist.py` teď skončí chybou,
+  když je stupňů méně než 2 × 511. Simulační model ALU přestaven na 32 ± 12 ps (křemík, ne STA).
+  Simulace: kontrola STRIDE 1 (model 32 ps) reprodukuje desku: 19 % za koncem, σ 351 ps; STRIDE 2: 0 za koncem, σ 28/32 ps, A−B 0,0 ps, 6/6 PASS
+- **Pravidlo:** **Délku TDC řetězu navrhuj s rezervou ≥ 1,5× proti STA a ověř ji kalibrací
+  na desce (`za koncem retezu` ≈ 0). Simulační model ladit podle změřeného křemíku.**
+- **Detekce:** `tdc` → `za koncem retezu` musí být ≈ 0, `kodu` řádově 150–256.
+- **Commit:** `6e4fcd7`
+- **Stav:** ⚠️ ČÁSTEČNĚ: na desce (FW 0x040A) pokrytí OK (0 za koncem), ale σ okna ~1,9 ns (horší než 0,7 ns se STRIDE 1) — dominantní kódy 7 % / 13 % událostí, jen ~100 obsazených kódů. Příčina neznámá (HYPOTÉZA: bubliny/nepravidelnost skutečného carry řetězu, model je nezná). Další krok: výpis celého histogramu (`tdc hist`), pak dekodér počtu jedniček nebo STRIDE 1 s 384 tapy.
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

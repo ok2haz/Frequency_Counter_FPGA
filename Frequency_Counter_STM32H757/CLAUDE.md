@@ -1074,7 +1074,9 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 ## 🟢 FPGA FW 0x0400 — skutečný carry-chain TDC (2026-10-03, `f968517`)
 
 **Nahrazuje dřívější popis (`carry_tdc` zredukovaný syntézou na invertor, F-0201).** Zdroj: `Frequency_Counter_FPGA_Module/src/tdc.v`.
-- **Jak měří:** 2 kanály po **256 přímo instancovaných `ALU`** (carry průchod, STA 57 ps/tap = 14,5 ns), vzorkování 100 MHz,
+- **Jak měří:** 2 kanály, každý **512 přímo instancovaných `ALU`** (carry průchod), vzorkuje se **každý druhý** stupeň
+  (`STRIDE = 2` → 256 FF/kanál, FW ≥ 0x040A). 🔴 **Křemík ~32 ps/stupeň, ne 57 ps (STA)** — 256 stupňů pokrylo jen ~8,3 ns
+  a ~17 % hran padlo za konec (L-0125); 512 stupňů ≈ 16,6 ns. Vzorkování 100 MHz,
   kalibrace code density **ve FPGA** (ring oscilátor + LFSR dělič, tabulka v BRAM). Startuje sama po zapnutí (~0,2 s)
   a na `tdc cal`. Během ní se nemeří (`tdc_status` bit3). Přesný čas dostane **jen hrana na hranici okna**
   (vzorky se zmrazí clock enable na 5 taktů, dekodér má SDC multicycle); hrany v okně se jen **počítají**.
@@ -1089,14 +1091,14 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - **Diagnostika:** UART `tdc` (CAL report: počet neprázdných kódů `nz` ≈ 170–180 a „za koncem řetězu" ≈ 0 = řetěz pokrývá
   10 ns; jinak je řetěz na křemíku rychlejší než STA model), `tdc cal` (spustí kalibraci a počká), `status` řádek `TDC:`.
   `fpgasim` posílá stejný formát včetně kvantizačního šumu TDC (σ dt ~23 ps).
-- ⚠️ **Omezení:** v řetězu smí být jedna hrana → vstup do ~34 MHz (nad tím předdělička/počítání period). Přesný čas
+- ⚠️ **Omezení:** v řetězu smí být jedna hrana → vstup do ~30 MHz (nad tím předdělička/počítání period). Přesný čas
   jen 1× za okno. Λ/Ω regrese (S1/S2) odstraněna. Tabulka platí pro teplotu kalibrace (opakuj `tdc cal`).
   Ve FPGA je konstantní offset mezi kanály (STA: pin→hlava A 6,23 ns, B 6,14 ns); pro frekvenci se krátí, pro TI A–B ne.
 - ✅ **Ověřeno:** Icarus `sim/tb_tdc.sv` (σ dt 26/24 ps, A−B 2 ps), `tb_phy_equiv`, `tb_gate_div`; P&R `clk_p0_100m`
   Fmax 101,3 MHz, TNS 0, logika 69 %, registry 74 %; netlist `sim/check_tdc_netlist.py`. ⬜ **NEOVĚŘENO NA KŘEMÍKU**
   (skutečné zpoždění tapů, ring oscilátor, `tdc cal` na desce) — viz L-0116..L-0119.
 - **Nasazení:** flashnout OBĚ strany (bitstream + CM7), po power-cyklu `status` → `FW:0x0408 CAPS:0x0023`, pak `tdc cal`, `tdc`.
-  Bitstream staví `gw_sh build.tcl` (stačí nahrát `impl/pnr/Counter_FPGA.fs`); 🔴 **build v Gowin IDE použije
+  Timing: `impl/pnr/Counter_FPGA_tr_content.html` (Max Frequency / TNS; `.tr.html` je jen rám). Bitstream staví `gw_sh build.tcl` (stačí nahrát `impl/pnr/Counter_FPGA.fs`); 🔴 **build v Gowin IDE použije
   vlastní volby pinů, ne `build.tcl`** — výsledek ověřuj v `impl/pnr/device.cfg` (L-0122).
 - ✅ **SPI STM → FPGA funguje od 2026-10-03** (ověřeno sondou: přijato `A5 02 06`, CRC sedí, `ack_ok=1`).
   Do té doby FPGA ignorovala VŠECHNY povely (ACK/SET_CONFIG/CAL): PHY mazala přijatý rámec (L-0120)
