@@ -90,7 +90,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0401;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0402;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -160,6 +160,12 @@ module spi_app (
 
     // konfigurace (SET_CONFIG)
     reg        cal_mode_r = 1'b0;
+    // DIAGNOSTIKA RX (2026-10-03): co FPGA skutecne prijala od STM v poslednim ramci
+    // (zachyceno v S_RX_PROC) -> tx_b[66,67,107,112..115] = rx[0], rx[1], rx[2],
+    // CRC spoctene FPGA (lo,hi), CRC prijate (lo,hi). Rozhodne, jestli jsou spatne
+    // bity MOSI (posun/ruseni) nebo CRC.
+    reg [7:0]  d_rx0 = 8'd0, d_rx1 = 8'd0, d_rx2 = 8'd0;
+    reg [7:0]  d_ccl = 8'd0, d_cch = 8'd0, d_rcl = 8'd0, d_rch = 8'd0;
     reg [1:0]  base_win_r = 2'd1;            // default 250 ms
     assign cal_mode = cal_mode_r;
     assign base_win = base_win_r;
@@ -310,8 +316,8 @@ module spi_app (
                         tx_b[63] <= CAPS[15:8];
                         tx_b[64] <= 8'h01;              // clk_status: bit0=10MHz OK
                         tx_b[65] <= {6'd0, win_cnt};
-                        tx_b[66] <= 8'd0;
-                        tx_b[67] <= 8'd0;
+                        tx_b[66] <= d_rx0;
+                        tx_b[67] <= d_rx1;
                         for (k = 0; k < 4; k = k + 1) begin
                             tx_b[68 + k] <= w0_seq  [8*k +: 8];
                             tx_b[72 + k] <= w0_edges[8*k +: 8];
@@ -326,11 +332,12 @@ module spi_app (
                         tx_b[100] <= meas_tdc_status;   // ZIVE (ne latch z new_meas): bez signalu by jinak nebylo videt, jak dopadla kalibrace
                         for (k = 0; k < 6; k = k + 1)
                             tx_b[101 + k] <= h_dt_b[8*k +: 8];
-                        tx_b[107] <= 8'd0;
+                        tx_b[107] <= d_rx2;
                         for (k = 0; k < 4; k = k + 1)
                             tx_b[108 + k] <= h_edge_b[8*k +: 8];
-                        for (k = 112; k < 118; k = k + 1)
-                            tx_b[k] <= 8'd0;
+                        tx_b[112] <= d_ccl;  tx_b[113] <= d_cch;
+                        tx_b[114] <= d_rcl;  tx_b[115] <= d_rch;
+                        tx_b[116] <= 8'd0;   tx_b[117] <= 8'd0;
                         for (k = 0; k < 6; k = k + 1)
                             tx_b[118 + k] <= h_dt_a[8*k +: 8];
                         tx_b[124] <= 8'd0;
@@ -367,6 +374,9 @@ module spi_app (
             end
 
             S_RX_PROC: begin
+                d_rx0 <= rx_b[0];  d_rx1 <= rx_b[1];  d_rx2 <= rx_b[2];
+                d_ccl <= crc_acc[7:0]; d_cch <= crc_acc[15:8];
+                d_rcl <= rx_b[126];    d_rch <= rx_b[127];
                 if (rx_b[0] == MAGIC && crc_acc == {rx_b[127], rx_b[126]}) begin
                     rx_crc_error <= 1'b0;
                     case (rx_b[2])
