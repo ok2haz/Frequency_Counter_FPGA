@@ -458,8 +458,10 @@ static void gnss_block(uint8_t *b, uint8_t gnss_id, uint8_t res, uint8_t max, ui
 }
 
 /* UBX-CFG-GNSS (0x06 0x3E): zapne GPS+SBAS+QZSS+GLONASS souběžně. Viz gps.h —
- * best-effort, JEN na explicitní vyžádání (UART "gps glonass"). */
-void gps_config_gnss(void)
+ * best-effort, JEN na explicitní vyžádání (UART "gps glonass").
+ * @return vysledek ubx_send: true = prenos spusten (ACK se necte, prijeti
+ *         modulem to nedokazuje), false = neodeslano (audit F-0227). */
+bool gps_config_gnss(void)
 {
   uint8_t pl[4 + 4 * 8] = {0};
   pl[0] = 0;      /* msgVer */
@@ -470,7 +472,7 @@ void gps_config_gnss(void)
   gnss_block(&pl[12], 1, 1,  3, 1);   /* SBAS */
   gnss_block(&pl[20], 5, 0,  3, 1);   /* QZSS (nutné s GPS) */
   gnss_block(&pl[28], 6, 8, 14, 1);   /* GLONASS L1OF */
-  ubx_send(0x06, 0x3E, pl, sizeof pl);
+  return ubx_send(0x06, 0x3E, pl, sizeof pl);
 }
 
 /* ── Verejne API ───────────────────────────────────────────────────────── */

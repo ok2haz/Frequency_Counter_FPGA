@@ -1905,8 +1905,12 @@ void UartTask_run(void *argument)
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
 				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
 				   * "gpsraw" (mely by prijit i $GLGSV vety). */
-				  gps_config_gnss();
-				  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
+				  /* Hlaska podle vysledku ubx_send (audit F-0227) — driv tvrdila "odeslano"
+				   * bezpodminecne. Ani true neznamena, ze modul prikaz prijal (ACK se necte). */
+				  if (gps_config_gnss())
+					  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
+				  else
+					  printf("GPS: UBX-CFG-GNSS NEODESLANO (USART1 TX obsazen > 200 ms), zkus znovu\n");
 			  }
 			  else if (strcmp(RxBuffer, "adcraw") == 0) {
 				  /* Diag ADC3: raw 3 internich kanalu (cteno po jednom jako SensorsTask)

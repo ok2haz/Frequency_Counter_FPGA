@@ -100,8 +100,9 @@ void gps_survey_disable_cmd(void);
  * ⚠️ Best-effort a NEvolá se automaticky z gps_init: reconfig GNSS nejde bez HW
  * ověřit a špatný blok by mohl vypnout GPS → spouští se JEN explicitně (UART
  * "gps glonass") na HW, kde uživatel výsledek vidí. NEO-7M příkaz může NAKnout
- * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak. */
-void gps_config_gnss(void);
+ * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak.
+ * @return true = přenos spuštěn (doručení modulu nedokazuje), false = neodesláno. */
+bool gps_config_gnss(void);
 
 /* Krmeni parseru jednim bajtem (vola GpsTask z GpsRxQueue). */
 void gps_feed_char(char c);
