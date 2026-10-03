@@ -9,6 +9,13 @@ set_option -top_module top
 set_option -use_sspi_as_gpio 1
 set_option -use_mspi_as_gpio 1
 set_option -use_cpu_as_gpio 1
+# 2026-10-03: pin 54 (MOSI, CFG "DIN/CLKHOLD_N") videl i s sspi/mspi/cpu 0 hran,
+# prestoze na pinu je signal (osciloskop + diag pocitadlo v ramci). Uvolneni
+# vsech zbylych dual-purpose skupin KROME JTAG (jinak by neslo FPGA programovat).
+set_option -use_mode_as_gpio 1
+set_option -use_ready_as_gpio 1
+set_option -use_done_as_gpio 1
+set_option -use_reconfign_as_gpio 1
 # Vyssi usili placeru/routeru: cross-fazove cesty TDC (2,5/5/7,5 ns rozpocty)
 set_option -place_option 1
 set_option -route_option 1
