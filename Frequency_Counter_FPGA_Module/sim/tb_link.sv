@@ -35,8 +35,10 @@ module tb_link;
     #5000; // po startu
     build(8'h06,0,0); xfer; xfer;
     $display("ACK: rx type=%h flags=%h  (bit5=rx_crc_error)", rx[2], rx[3]);
+    if (rx[3][5] || !rx[3][6]) $display("FAIL: ACK neprijat (flags=%h)", rx[3]);
     build(8'hA0,0,0); xfer; build(8'h06,0,0); xfer;
     $display("CAL req->: rx type=%h (ocek A0) flags=%h", rx[2], rx[3]);
+    if (rx[2] == 8'hA0) $display("PASS: tb_link"); else $display("FAIL: tb_link");
     $finish;
   end
 endmodule

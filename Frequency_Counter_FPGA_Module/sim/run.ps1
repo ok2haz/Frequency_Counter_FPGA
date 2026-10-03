@@ -37,6 +37,9 @@ $tests = @(
        defs = @("-DSIM_LUT_PS=800") }
     @{ name = "phase"; top = "tb_phase_oversampler";
        rtl = @("spi_app.v"); tb = "tb_phase_oversampler.sv" }
+    # end-to-end SPI: PHY + spi_app (ACK prijat, CAL report na zadost)
+    @{ name = "link"; top = "tb_link";
+       rtl = @("spi_slave_phy.v", "spi_app.v"); tb = "tb_link.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 

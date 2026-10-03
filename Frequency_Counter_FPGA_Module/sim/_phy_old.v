@@ -120,7 +120,8 @@ module spi_slave_phy_old (
             end else begin
                 miso      <= tx_shadow[1023];
             end
-            rx_shadow <= 1024'd0;
+            // (2026-10-03) nulovani rx_shadow odstraneno i v referenci -- opravena vada,
+            // viz spi_slave_phy.v; tento test hlida jen ekvivalenci predpocitaneho posuvu TX.
         end
 
         if (cs_active) begin
