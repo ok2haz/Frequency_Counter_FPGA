@@ -16,6 +16,8 @@ set_option -use_mode_as_gpio 1
 set_option -use_ready_as_gpio 1
 set_option -use_done_as_gpio 1
 set_option -use_reconfign_as_gpio 1
+# device.cfg ukazal "I2C regular_io = false" jako jedinou zbylou skupinu (krome JTAG)
+set_option -use_i2c_as_gpio 1
 # Vyssi usili placeru/routeru: cross-fazove cesty TDC (2,5/5/7,5 ns rozpocty)
 set_option -place_option 1
 set_option -route_option 1
