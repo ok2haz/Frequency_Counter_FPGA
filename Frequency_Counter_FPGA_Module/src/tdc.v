@@ -163,7 +163,7 @@ endmodule
 //   presne casy obou kanalu, v rozdilech (okno) se kruti.
 // ------------------------------------------------------------
 module tdc_chan #(
-    parameter CAL_LOG2 = 22         // kalibrace z 2^CAL_LOG2 udalosti
+    parameter CAL_LOG2 = 20         // kalibrace z 2^CAL_LOG2 udalosti (1M: ~1/4 casu, chyba bunky ~1 ps)
 )(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
@@ -336,8 +336,9 @@ module tdc_chan #(
                     end
                 end
                 if (cal_abort) begin              // RO nejde -> selhani (timeout z top.v)
-                    cal_fail <= 1'b1;
-                    s_col    <= 1'b0;
+                    cal_fail  <= 1'b1;
+                    cal_valid <= 1'b1;            // degradovany rezim: nominalni LUT (57 ps/tap), mereni nestoji
+                    s_col     <= 1'b0;
                 end
             end
             if (s_drn) begin                      // dobehne zapis posledni udalosti

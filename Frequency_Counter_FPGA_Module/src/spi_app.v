@@ -323,7 +323,7 @@ module spi_app (
                             tx_b[92 + k] <= w1_dt[8*k +: 8];
                         end
                         // TDC (caps bit5): stav, okno CH_B, hrany CH_B, okno CH_A [ps]
-                        tx_b[100] <= h_tdc;
+                        tx_b[100] <= meas_tdc_status;   // ZIVE (ne latch z new_meas): bez signalu by jinak nebylo videt, jak dopadla kalibrace
                         for (k = 0; k < 6; k = k + 1)
                             tx_b[101 + k] <= h_dt_b[8*k +: 8];
                         tx_b[107] <= 8'd0;

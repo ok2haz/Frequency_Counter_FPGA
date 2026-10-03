@@ -99,16 +99,16 @@ module top (
     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
 
     // Timeout kalibrace (RO nejde / udalosti nechodi): spolecny pro oba kanaly,
-    // ~2,7 s (2^28 taktu) od zacatku sberu; sber 2^22 udalosti trva ~0,3-0,6 s.
-    reg [27:0] cal_tmo   = 28'd0;
+    // ~5,4 s (2^29 taktu) od zacatku sberu; sber 2^20 udalosti trva ~0,1-0,5 s (podle rychlosti kruhu).
+    reg [28:0] cal_tmo   = 29'd0;
     reg        cal_abort = 1'b0;
     always @(posedge clk_p0_100m) begin
         cal_abort <= 1'b0;
         if (use_ro_a | use_ro_b) begin
-            cal_tmo <= cal_tmo + 28'd1;
+            cal_tmo <= cal_tmo + 29'd1;
             if (&cal_tmo) cal_abort <= 1'b1;
         end else begin
-            cal_tmo <= 28'd0;
+            cal_tmo <= 29'd0;
         end
     end
 
