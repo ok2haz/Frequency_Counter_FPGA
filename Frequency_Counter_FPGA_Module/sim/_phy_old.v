@@ -1,3 +1,6 @@
+// REFERENCNI KOPIE spi_slave_phy.v z 2026-10-03 PRED upravou (predpocitany posun TX, segmenty);
+// modul prejmenovan spi_slave_phy_old. Pouziva ho JEN tb_phy_equiv.sv (ekvivalencni test).
+// Neupravovat -- smyslem je zmrazeny puvodni stav.
 // ============================================================
 // File: spi_slave_phy.v
 // SPI SLAVE PHY (Mode 0: CPOL=0, CPHA=0), MSB-first, 8N, 128 B/transakce
@@ -29,7 +32,7 @@
 //   kombinační vodič, bezpečný právě díky té 100 ns rezervě.
 // ============================================================
 
-module spi_slave_phy (
+module spi_slave_phy_old (
     input  wire         clk,          // 10 MHz system clock (clk_ref_10m)
 
     input  wire         sck_pin,
@@ -57,24 +60,12 @@ module spi_slave_phy (
 
     wire sck_rise = (sck_s[2:1] == 2'b01);
     wire sck_fall = (sck_s[2:1] == 2'b10);
-    // 🔴 2026-10-03: posun TX (`cs_active && sck_fall`) je PREDPOCITAN o takt drive
-    // do jednoho registru. Duvod: enable 1024 FF `tx_shadow` ctel cs_s[2] a
-    // sck_s[2:1] pres LUT s fanoutem 1024 a po pridani TDC (placeni 84 % FF)
-    // mel setup -3,3 ns (routing cs_s_2 -> LUT 4,4 ns + LUT -> FF 3,4 ns).
-    // Ekvivalence: v dalsim taktu plati cs_s[2] == cs_s[1] a sck_s[2:1] == sck_s[1:0]
-    // dnesniho taktu, takze `tx_shift_r` == (cs_active && sck_fall) PRESNE ve stejnem
-    // cyklu jako drive (overeno sim/tb_phy_equiv.sv proti puvodnimu modulu).
-    reg tx_shift_r = 1'b0;
-    always @(posedge clk) tx_shift_r <= (sck_s[1:0] == 2'b10) & ~cs_s[1];
-    // ... a pro enable 1024 FF `tx_shadow` je navic REPLIKOVANY po 8 segmentech
-    // (kazdy segment 128 FF ma vlastni registr strobe, `keep` brani sloucení):
-    // jediny registr s fanoutem 1024 mel i po predpoctu setup -0,5 ns.
 
     wire cs_active = ~cs_s[2];
     wire cs_fall   = (cs_s[2:1] == 2'b10); // 1 -> 0 : start rámce
     wire cs_rise   = (cs_s[2:1] == 2'b01); // 0 -> 1 : konec rámce
 
-    wire [1023:0] tx_shadow;                   // slozeno ze 8 segmentu (viz nize)
+    reg [1023:0] tx_shadow = 1024'd0;
     reg [1023:0] rx_shadow = 1024'd0;
     reg [10:0]   bit_in    = 11'd0;
     // 🔴 2026-10-02: `rx_done` NAHRAZUJE `bit_in != 11'd1024` jako enable pro
@@ -108,26 +99,6 @@ module spi_slave_phy (
     // rx_shadow je stabilní od CS↑ do dalšího CS↓ -> čteme ho přímo (úspora 1024 FF)
     assign rx_frame_flat = rx_shadow;
 
-    // TX posuvny registr po 8 segmentech (128 FF). Chovani PRESNE jako puvodni
-    // jediny registr: nacteni pri (rx_armed && tx_valid), posuv doleva o 1 bit pri
-    // tx_shift (posuv ma prednost, jako v puvodnim poradi prirazeni).
-    genvar sg;
-    generate
-        for (sg = 0; sg < 8; sg = sg + 1) begin : txs
-            (* keep = "true" *) reg sh_r = 1'b0;
-            reg [127:0] seg = 128'd0;
-            always @(posedge clk) begin
-                sh_r <= (sck_s[1:0] == 2'b10) & ~cs_s[1];
-                if (rx_armed & tx_valid) seg <= tx_frame_flat[128*sg +: 128];
-                if (sh_r) begin
-                    if (sg == 0) seg <= {seg[126:0], 1'b0};
-                    else         seg <= {seg[126:0], tx_shadow[(sg > 0) ? (128*sg - 1) : 0]};
-                end
-            end
-            assign tx_shadow[128*sg +: 128] = seg;
-        end
-    endgenerate
-
     initial begin
         miso          = 1'b1;
         frame_end_tgl = 1'b0;
@@ -144,6 +115,7 @@ module spi_slave_phy (
         // rámec, nikdy mix nového payloadu se starým CRC (audit V3).
         if (rx_armed) begin   // == (bit_in == 0), registrovane — viz deklarace
             if (tx_valid) begin
+                tx_shadow <= tx_frame_flat;
                 miso      <= tx_frame_flat[1023];
             end else begin
                 miso      <= tx_shadow[1023];
@@ -164,11 +136,11 @@ module spi_slave_phy (
                 // ne 1024 CE vstupů.
                 if (bit_in == 11'd1023) rx_done <= 1'b1;
             end
-        end
-
-        // posuň TX, nová MSB na MISO (== cs_active && sck_fall, predpocitano)
-        if (tx_shift_r) begin
-            miso      <= tx_shadow[1022];
+            if (sck_fall) begin
+                // posuň TX, nová MSB na MISO
+                tx_shadow <= {tx_shadow[1022:0], 1'b0};
+                miso      <= tx_shadow[1022];
+            end
         end
 
         // konec rámce: zachyť počet bitů, toggle, a reset bit_in -> re-arm

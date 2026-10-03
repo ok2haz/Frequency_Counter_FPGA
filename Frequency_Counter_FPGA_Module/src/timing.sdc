@@ -27,3 +27,19 @@ set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clo
 // staveny desky — NOVE top.v (dva symetricke kanaly, hrube citani) uz
 // cal_mode/ring_osc vubec nema, takze tenhle false_path odstranen (Gowin
 // TA2003: registr calm_s_1_s0 neexistuje -> chyba synteze).
+
+// ============================================================
+// TDC (tdc.v). Vstup retezu (net `sig_eff`) je z definice ASYNCHRONNI k clk_p0
+// (vstupni pin, ring oscilator, kvazistaticky vyber zdroje) a koncí v tap FF.
+// Presne to se meri, ne casova cesta k uzavreni => false path pres tento net.
+// Cesta CE (zmrazeni) a vse ostatni zustava casovane.
+// ============================================================
+set_false_path -through [get_nets {u_tdca/sig_eff}]
+set_false_path -through [get_nets {u_tdcb/sig_eff}]
+
+// Dekoder: vzorky q jsou po spusteni ZMRAZENE (clock enable) 5 taktu a
+// code_r se bere az na konci => kombinacni cesta q -> code_r ma 5 taktu.
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]

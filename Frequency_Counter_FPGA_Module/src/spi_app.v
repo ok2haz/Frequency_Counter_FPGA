@@ -28,28 +28,23 @@
 //  60..61 fw_version(u16) 62..63 caps(u16) 64 clk_status 65 win_count
 //  66..67 pad 68..83 window[0] 84..99 window[1]
 //  window rec: +0 win_seq(u32) +4 edges(u32) +8 dt_ns(u64)
-//  Rozšíření v rezervě (caps bit4): 100 {fine_last[3:2],fine_first[1:0]}
-//  101..107 S1=Σts_rel(u56) 108..117 S2=ΣS1(u80) 118..125 rezerva=0
-//  [Λ/Ω regrese: body i=0..N, N=edges okna, t_0=0: Σt=S1, Σi·t=N·S1−S2]
+//  100 tdc_status: bit0=cal_valid A, bit1=cal_valid B, bit2=cal_fail (A|B),
+//      bit3=cal_busy (A|B), bit4=retez A kratky (udalosti za koncem), bit5=totez B
+//  101..106 dt_b (u48, tez T_clk/16384) | 107 rez | 108..111 edges_b (u32) | 112..117 rez=0
+//  118..125 dt_a (u64) = presne okno CH_A v jednotkach T_clk/16384 (= 0,6104 ps,
+//           1,6384e12 jednotek/s; caps bit5). ps = jednotky * 625 / 1024.
+//  (gate_ns v abs 28 = floor(dt * 5 / 8192), informativni; frequency_x100000 = 0)
+//  [Λ/Ω regrese (S1/S2, caps bit4) ODSTRANENA 2026-10-03: s casem v ps by
+//   S1 potreboval ~65 b a S2 ~90 b; STM je stejne nikdy nectl. Viz tdc.v.]
 //
-// CAL payload 0xA0 (abs offset):
-//  12..23 hist0..3 (4x u24, hrany dle fine kódu za poslední okno)
-//  24 fine kódy | 25 flags{bit0=cal_mode} | 26..32 S1 | 33..42 S2
-//  43..46 edges(u32) | 47..125 rezerva=0
+// CAL payload 0xA0 (abs offset): diagnostika kalibrace TDC
+//  12..23 kanal A: ovf(u32 = udalosti za koncem retezu) peak(u32) nz(u16) last(u16)
+//  24..35 kanal B: totez | 36 tdc_status | 37 {7'd0,cal_mode} | 38..125 rezerva=0
 //
-// 🔴 S1/S2/fine/hist POLE JSOU NAVRŽENA PRO 4FÁZOVÝ VERNIER (stará deska,
-// phase_oversampler), NE pro carry-chain TDC nové desky. LSB fine kódu = 2,5 ns
-// (perioda VCO/4 ze Si5356 fázového vzorkování), proto "ts_rel" v S1/Λ-regresi
-// i histogram binů počítají s krokem 2,5 ns. Na nové desce dnes `meas_s1`/
-// `meas_s2`/`meas_hist`/`meas_fine_fl` přichází jako konstantní 0 (top.v --
-// `coarse_edge_detect` nemá fine výstup, viz jeho hlavička). Až přibude
-// skutečný carry-chain TDC (PHASE_CAL_DESIGN.md "stupeň 3"), bude potřeba
-// PŘEŠKÁLOVAT: LSB carry-chain TDC je dané délkou delay-line buňky
-// (~22 ps single-shot, bin ~50 ps dle zadání), ne periodou PLL hodin --
-// rozsah akumulátorů (u56/u80) i interpretace Λ/Ω regrese ve fpga_freq.h
-// dokumentaci (FPGA_PROTOCOL_V2_NAVRH.md) se musí přepočítat na nové LSB,
-// ne jen přepojit signály. Nekopírovat předpoklad "LSB=2,5 ns" do nové
-// implementace bez ověření.
+// 🔴 2026-10-03: SKUTECNY carry-chain TDC (`tdc.v`), cas v pikosekundach.
+//  FW_VERSION 0x0400, CAPS 0x0023 (window stream, SET_CONFIG, dt_ps).
+//  SET_CONFIG 0x02 = 1 spusti kalibraci TDC (ring oscilator, ~0,3 s), 0 = nic;
+//  kalibrace probehne i sama po zapnuti. Behem ni jsou mereni zablokovana.
 //
 // Flat mapování (shodné s PHY): bit[1023]=byte0[7], MSB-first, byte0 první.
 // ============================================================
@@ -57,7 +52,7 @@
 module spi_app (
     input  wire        clk,                  // clk_ref_10m
 
-    input  wire [63:0] meas_freq_x100000,    // hotový kmitočet * 100000 (z recip_calc)
+    input  wire [63:0] meas_freq_x100000,    // 2026-10-03: vždy 0 (host počítá z edges/dt_ps)
     input  wire [31:0] meas_periods,         // počet period v okně -> edge_count
     input  wire [63:0] meas_gate_ns,         // skutečné okno Δt [ns]
     input  wire [63:0] meas_timestamp,       // živý 10MHz tick counter
@@ -68,10 +63,11 @@ module spi_app (
     input  wire [63:0] meas_freq16_x100000,  // pin27 /16 kmitočet *100000
     input  wire [7:0]  meas_phase_status,    // {fine_seen[3:0], present[3:0]}
     input  wire [7:0]  meas_status2,         // pin27 status/flags
-    input  wire [3:0]  meas_fine_fl,         // {fine_last, fine_first} okna
-    input  wire [95:0] meas_hist,            // 4x24b histogram fine kódů (za okno)
-    input  wire [55:0] meas_s1,              // Λ: Σ ts_rel přes hrany okna
-    input  wire [79:0] meas_s2,              // Λ: Σ S1 (dvojitá akumulace)
+    input  wire [47:0] meas_dt_a_ps,         // CH_A: okno Δt [T_clk/16384]
+    input  wire [47:0] meas_dt_b_ps,         // CH_B: okno Δt [T_clk/16384]
+    input  wire [31:0] meas_periods_b,       // CH_B: počet period v okně
+    input  wire [7:0]  meas_tdc_status,      // viz hlavička (abs 100)
+    input  wire [191:0] meas_cal_diag,       // diagnostika kalibrace A[95:0] B[191:96]
 
     input  wire [1023:0] rx_frame_flat,
     input  wire          rx_valid,           // pulz po CS↑ (synchronizováno)
@@ -94,7 +90,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0300;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0400;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -102,8 +98,8 @@ module spi_app (
     // CH_B; phase_status je mrtve pole, vzdy 0 -- zadny TDC jeste neni).
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
-    // caps: bit0=window stream, bit1=SET_CONFIG, bit4=Λ/fine rozšíření v rezervě
-    localparam [15:0] CAPS            = 16'h0013;
+    // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
+    localparam [15:0] CAPS            = 16'h0023;
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -150,12 +146,10 @@ module spi_app (
     reg [63:0] h_ts    = 64'd0;
     reg [31:0] h_err   = 32'd0;
     reg [7:0]  h_ch    = 8'd0;
-    reg [3:0]  h_fine_fl = 4'd0;             // {fine_last, fine_first}
-    // Λ sumy latchované PŘI new_meas (audit V1): s1_lat/s2_lat v top se
-    // přepisují už při res_valid4 (~8,7 µs před valid4) -> rámec postavený
-    // v tom okně by míchal S1/S2 okna N+1 s edge_count/gate okna N.
-    reg [55:0] h_s1   = 56'd0;
-    reg [79:0] h_s2   = 80'd0;
+    reg [47:0] h_dt_a = 48'd0;               // okno CH_A [ps]
+    reg [47:0] h_dt_b = 48'd0;               // okno CH_B [ps]
+    reg [31:0] h_edge_b = 32'd0;
+    reg [7:0]  h_tdc  = 8'd0;
 
     // window stream (2 poslední uzavřená okna; gap-free z win_recip)
     reg [31:0] win_seq  = 32'd1;
@@ -222,9 +216,10 @@ module spi_app (
             h_ts       <= meas_timestamp;
             h_err      <= meas_error_flags;
             h_ch       <= meas_channel;
-            h_fine_fl  <= meas_fine_fl;
-            h_s1       <= meas_s1;
-            h_s2       <= meas_s2;
+            h_dt_a     <= meas_dt_a_ps;
+            h_dt_b     <= meas_dt_b_ps;
+            h_edge_b   <= meas_periods_b;
+            h_tdc      <= meas_tdc_status;
             // window stream: posuň historii (okna na sebe navazují hranou)
             w1_seq   <= w0_seq;   w1_edges <= w0_edges;  w1_dt <= w0_dt;
             w0_seq   <= win_seq;  w0_edges <= meas_periods;
@@ -285,17 +280,11 @@ module spi_app (
                         // ---- CAL report 0xA0 ----
                         // hist záměrně ŽIVÝ (per-gate statistika, atomický
                         // 1-taktový update v top) - koherenci s oknem nepotřebuje
-                        for (k = 0; k < 12; k = k + 1)
-                            tx_b[12 + k] <= meas_hist[8*k +: 8];
-                        tx_b[24] <= {4'd0, h_fine_fl};
-                        tx_b[25] <= {7'd0, cal_mode_r};
-                        for (k = 0; k < 7; k = k + 1)
-                            tx_b[26 + k] <= h_s1[8*k +: 8];
-                        for (k = 0; k < 10; k = k + 1)
-                            tx_b[33 + k] <= h_s2[8*k +: 8];
-                        for (k = 0; k < 4; k = k + 1)
-                            tx_b[43 + k] <= w0_edges[8*k +: 8];
-                        for (k = 47; k < 126; k = k + 1)
+                        for (k = 0; k < 24; k = k + 1)
+                            tx_b[12 + k] <= meas_cal_diag[8*k +: 8];
+                        tx_b[36] <= meas_tdc_status;
+                        tx_b[37] <= {7'd0, cal_mode_r};
+                        for (k = 38; k < 126; k = k + 1)
                             tx_b[k] <= 8'd0;
                         cal_req <= 1'b0;
                     end else begin
@@ -333,14 +322,19 @@ module spi_app (
                             tx_b[76 + k] <= w0_dt[8*k +: 8];
                             tx_b[92 + k] <= w1_dt[8*k +: 8];
                         end
-                        // rezerva (caps bit4): Λ/Ω + fine kódy posledního okna
-                        tx_b[100] <= {4'd0, h_fine_fl};
-                        for (k = 0; k < 7; k = k + 1)
-                            tx_b[101 + k] <= h_s1[8*k +: 8];
-                        for (k = 0; k < 10; k = k + 1)
-                            tx_b[108 + k] <= h_s2[8*k +: 8];
-                        for (k = 118; k < 126; k = k + 1)
+                        // TDC (caps bit5): stav, okno CH_B, hrany CH_B, okno CH_A [ps]
+                        tx_b[100] <= h_tdc;
+                        for (k = 0; k < 6; k = k + 1)
+                            tx_b[101 + k] <= h_dt_b[8*k +: 8];
+                        tx_b[107] <= 8'd0;
+                        for (k = 0; k < 4; k = k + 1)
+                            tx_b[108 + k] <= h_edge_b[8*k +: 8];
+                        for (k = 112; k < 118; k = k + 1)
                             tx_b[k] <= 8'd0;
+                        for (k = 0; k < 6; k = k + 1)
+                            tx_b[118 + k] <= h_dt_a[8*k +: 8];
+                        tx_b[124] <= 8'd0;
+                        tx_b[125] <= 8'd0;
                     end
 
                     crc_acc    <= 16'hFFFF;
@@ -420,148 +414,26 @@ endmodule
 // ============================================================
 
 // ------------------------------------------------------------
-// divu_seq: generická bezznaménková sekvenční dělička (restoring).
-//   quotient = dividend / divisor. 1 iterace/takt -> NW taktů.
-//   start (1 takt) zachytí operandy; done pulzne s platným quotient.
+// gate_div: gate_ns = floor(dt * 5 / 8192) = floor(dt[T/16384] * 0,6104 ps / 1000).
+//   🔴 2026-10-03: nahrazuje `recip_calc` (reciproký výpočet kmitočtu, ~450
+//   registrů) i dělení 1000. FPGA NEPOČÍTÁ frequency_x100000 (v rámci = 0):
+//   přesný poměr edge_count / dt počítá host. Jednotka času je T_clk/16384,
+//   takže převod na ns je jen dt*5 >> 13 (bez děliček).
 // ------------------------------------------------------------
-module divu_seq #(
-    parameter NW = 72,          // šířka dividendu i kvocientu
-    parameter DW = 34           // šířka dělitele
-) (
-    input  wire          clk,
-    input  wire          start,
-    input  wire [NW-1:0] dividend,
-    input  wire [DW-1:0] divisor,
-    output reg  [NW-1:0] quotient,
-    output reg           busy,
-    output reg           done
-);
-    reg  [DW:0]   rem;          // částečný zbytek (DW+1 bit)
-    reg  [NW-1:0] quo;          // posuvný registr: nahoře zbytek, dole kvocient
-    reg  [7:0]    cnt;          // čítač iterací (NW <= 255)
-
-    wire [DW:0] rem_sh = {rem[DW-1:0], quo[NW-1]};
-    wire        ge     = (rem_sh >= {1'b0, divisor});
-    wire [DW:0] rem_nx = ge ? (rem_sh - {1'b0, divisor}) : rem_sh;
-
-    initial begin
-        quotient = {NW{1'b0}};
-        busy     = 1'b0;
-        done     = 1'b0;
-        rem      = {(DW+1){1'b0}};
-        quo      = {NW{1'b0}};
-        cnt      = 8'd0;
-    end
-
-    always @(posedge clk) begin
-        done <= 1'b0;
-
-        if (start && !busy) begin
-            rem  <= {(DW+1){1'b0}};
-            quo  <= dividend;
-            cnt  <= NW[7:0];
-            busy <= 1'b1;
-        end else if (busy) begin
-            rem <= rem_nx;
-            quo <= {quo[NW-2:0], ge};
-            cnt <= cnt - 8'd1;
-            if (cnt == 8'd1) begin
-                busy     <= 1'b0;
-                done     <= 1'b1;
-                quotient <= {quo[NW-2:0], ge};
-            end
-        end
-    end
-endmodule
-
-
-// ------------------------------------------------------------
-// recip_calc: reciproký výpočet kmitočtu (clk_ref_10m).
-//   freq_x100000 = round(periods * CONST / dt); gate_ns = dt*2,5 ns.
-//   CONST = PRESCALE * 1e5 / 2.5ns:  /4 -> 1.6e14,  /16 -> 6.4e14.
-//   NW=80: num = periods*CONST až ~2^74 (u /16 při vysokém f) > 72 bit.
-// ------------------------------------------------------------
-module recip_calc #(
-    parameter [63:0] CONST = 64'd160000000000000   // /4 (1.6e14); /16 = 6.4e14
-) (
+module gate_div (
     input  wire        clk,            // clk_ref_10m
-    input  wire        start,          // 1-taktový puls: dt/periods platné
-    input  wire [31:0] periods,        // počet period v okně
-    input  wire [33:0] dt,             // Δt mezi referenčními hranami [tick 2,5 ns]
-
-    output reg  [63:0] freq_x100000,
-    output reg  [63:0] gate_ns,        // skutečné okno = dt * 2,5 ns
-    output reg         valid,          // 1-taktový puls: freq_x100000 platné
-    output reg         err             // dt==0 (nelze dělit) -> výsledek 0
+    input  wire        start,          // 1-taktový puls: dt platné
+    input  wire [47:0] dt,             // Δt [T_clk/16384]
+    output reg  [63:0] gate_ns,
+    output reg         valid,          // 1-taktový puls: gate_ns platné
+    output wire        busy
 );
-    reg  [79:0] num;
-    reg  [33:0] divr;
-    reg         run_div;
-    reg         pending;
-
-    wire        div_done;
-    wire        div_busy;
-    wire [79:0] div_q;
-
-    divu_seq #(.NW(80), .DW(34)) u_div (
-        .clk(clk),
-        .start(run_div),
-        .dividend(num),
-        .divisor(divr),
-        .quotient(div_q),
-        .busy(div_busy),
-        .done(div_done)
-    );
-
-    // MCP kotva: vstupy z P0 domény (r_periods/r_dt) nejdřív zachyť v clk
-    // (10M) doméně obyčejnými DFF. Bez toho si DSP packing přetáhl registr
-    // do své pipeline s hodinami P0 (MULT18X18 .CLK(clk_p0)!) a cesta
-    // count+1 -> násobička padala na 10ns rozpočtu. Hodnoty jsou při start
-    // stabilní (toggle handshake jde o >=3 takty později), +1 takt nevadí.
-    reg [31:0] periods_q = 32'd0;
-    reg [33:0] dt_q      = 34'd0;
-    reg        start_q   = 1'b0;
-
-    initial begin
-        freq_x100000 = 64'd0;
-        gate_ns      = 64'd0;
-        valid        = 1'b0;
-        err          = 1'b0;
-        num          = 80'd0;
-        divr         = 34'd0;
-        run_div      = 1'b0;
-        pending      = 1'b0;
-    end
-
+    assign busy = 1'b0;
+    wire [49:0] x5 = {2'b00, dt} + {dt, 2'b00};        // dt * 5
+    initial begin gate_ns = 64'd0; valid = 1'b0; end
     always @(posedge clk) begin
-        periods_q <= periods;
-        dt_q      <= dt;
-        start_q   <= start;
-
-        valid   <= 1'b0;
-        run_div <= 1'b0;
-
-        if (start_q && !pending) begin           // ignoruj start, dokud běží dělení
-            gate_ns <= ({30'd0, dt_q} * 64'd5) >> 1;   // dt * 2,5 ns
-            if (dt_q == 34'd0) begin
-                err          <= 1'b1;
-                freq_x100000 <= 64'd0;
-                valid        <= 1'b1;                 // publikuj nulu
-                pending      <= 1'b0;
-            end else begin
-                err     <= 1'b0;
-                num     <= ({48'd0, periods_q} * CONST) + {47'd0, dt_q[33:1]}; // +dt/2
-                divr    <= dt_q;
-                run_div <= 1'b1;                      // spusť děličku příští takt
-                pending <= 1'b1;
-            end
-        end
-
-        if (div_done && pending) begin
-            freq_x100000 <= div_q[63:0];
-            valid        <= 1'b1;
-            pending      <= 1'b0;
-        end
+        valid <= start;
+        if (start) gate_ns <= {27'd0, x5[49:13]};      // max ~1,6e11 (38 b)
     end
 endmodule
 
@@ -629,113 +501,81 @@ endmodule
 
 module win_recip (
     input  wire         clk,           // clk_p0_100m
-    input  wire         sig_rise,
-    input  wire [33:0]  ev_ts,         // {tick_p0, fine}, LSB 2,5 ns
-    input  wire         gate_tick,     // ~okno puls (sdílený)
+    input  wire         rise_c,        // kazda nabezna hrana (hrube, tdc_chan)
+    input  wire         trig_ack,      // tato hrana spustila presny cas
+    input  wire         ts_valid,      // 7 taktu po trig_ack: ts_ps platny
+    input  wire [47:0]  ts_ps,         // presny cas hrany [T_clk/16384], mod 2^48 (172 s)
+    input  wire         gate_tick,     // ~okno puls (sdileny)
+    input  wire         hold,          // 1 = kalibrace/neplatny TDC: zahod rozpracovane okno
+    output wire         want,          // okno ceka na presny cas pristi hrany
     output reg  [25:0]  r_periods,
-    output reg  [33:0]  r_dt,
-    output reg  [1:0]   r_fine_first,  // fine kód první hrany okna
-    output reg  [1:0]   r_fine_last,   // fine kód poslední hrany okna
-    output reg          r_dt_alias,    // okno bez hran > 42,9 s -> r_dt alias (neplatné)
-    output reg  [55:0]  r_s1,          // Λ: Σ ts_rel (vůči první hraně)
-    output reg  [79:0]  r_s2,          // Λ: Σ S1 (dvojitá akumulace)
+    output reg  [47:0]  r_dt,          // Δt okna [T_clk/16384]
+    output reg          r_dt_alias,    // okno bez hran > ~25 s -> r_dt neplatne
     output reg          res_tgl
 );
-    // Λ/Ω regrese: pro body i=0..N (t_0=0, t_N=Δt) platí
-    //   Σ t_i = r_s1,  Σ i·t_i = N·r_s1 − r_s2   (N = r_periods)
-    // STM z toho spočte LSQ slope -> kvantizace/nelinearita binů se
-    // průměruje ~sqrt(N). Šířky: ts_rel <= ~2^27 (okno), N <= dt/10
-    // (debounce ~40 MHz) => S1 < 2^51, S2 < 2^75 - rezerva je.
-    //
-    // PIPELINE (timing): sub 34b (st0) a akumulace 56/80b (st1) jsou
-    // v oddělených taktech - jednotaktová verze měla slack -2,5 ns.
-    // Bezpečné: oversampler garantuje >= 2 takty mezi hranami (debounce
-    // vyžaduje celo-LOW okno), takže st1 nikdy nekoliduje s dalším st0.
-    reg [25:0] count  = 26'd0;
-    reg [33:0] ref_ts = 34'd0;
+    // 🔴 2026-10-03: okno uzavira PRVNI hrana po gate_tick; ta dostane presny
+    // cas (tdc_chan ji zmrazi a dekoduje), hrany uvnitr okna se POCITAJI
+    // (rise_c, bez omezeni rychlosti). Uzavírací hrana je zároveň první hranou
+    // dalšího okna (gap-free). Hrany, které přijdou za uzavírací hranou během
+    // 7 taktů dekódování, patří do NOVÉHO okna (count se nuluje při trig_ack).
     reg        armed  = 1'b0;
     reg        primed = 1'b0;
-    reg [55:0] s1     = 56'd0;
-    reg [79:0] s2     = 80'd0;
-    // Stáří otevřeného okna: dt je mod 2^34 ticků (42,9 s) - bez tohoto
-    // čítače by první měření po >42,9s výpadku signálu tiše aliasovalo
-    // (dt_ovf bit33 kryje jen 21,5-42,9 s). Kritická analýza 2026-07-10.
-    reg [31:0] win_age = 32'd0;
-    reg        age_ovf = 1'b0;
-
-    reg        acc_d    = 1'b0;    // st1: akumuluj ts_rel_d
-    reg        close_d  = 1'b0;    // st1: uzávěrka okna (latch r_*)
-    reg [33:0] ts_rel_d = 34'd0;
-    // st2: horní polovina S2 (80b sčítačka rozdělena 40+40, carry v registru;
-    // jednotaktová 80b verze měla slack ~-1,6 ns)
-    reg        acc_d2   = 1'b0;
-    reg        close_d2 = 1'b0;
-    reg        s2_cy    = 1'b0;
-    reg [15:0] s1_hi_d  = 16'd0;
-
-    wire [33:0] ts_rel = ev_ts - ref_ts;   // mod 2^34 (okno << rozsah)
+    reg [25:0] snap   = 26'd0;      // pocet period uzavirane okna
+    reg [47:0] ref_ts = 48'd0;
+    reg [7:0]  age    = 8'd0;       // gate_tick od posledni uzaviraci hrany
+    reg        alias_s = 1'b0;
+    // vsechny pulzy se zpozdi o 1 takt (kratke cesty); konzistentne pro count
+    // i uzavirani, takze poradi udalosti se nemeni
+    reg        rise_q = 1'b0, trig_q = 1'b0, gate_q = 1'b0, hold_q = 1'b0;
+    // citac okna: dolnich 8 b + registrovany prenos do hornich 18 b (kratka cesta);
+    // hrany jsou od sebe >= 3 takty, takze preneseny hi je hotovy dřív než se count cte
+    reg        cy_q   = 1'b0;
+    reg [17:0] count_hi = 18'd0;
+    reg [7:0]  count_lo = 8'd0;
+    wire [25:0] count = {count_hi, count_lo};
+    assign want = armed;
 
     initial begin
-        r_periods = 26'd0;  r_dt = 34'd0;  res_tgl = 1'b0;
-        r_fine_first = 2'd0; r_fine_last = 2'd0; r_dt_alias = 1'b0;
-        r_s1 = 56'd0; r_s2 = 80'd0;
+        r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0;
     end
 
+    wire inc   = rise_q & ~trig_q;         // bezna hrana uvnitr okna
     always @(posedge clk) begin
-        if (gate_tick) armed <= 1'b1;
-
-        // stáří okna: saturace na 2^32-1 taktů -> sticky flag (reset při otevření)
-        if (&win_age) age_ovf <= 1'b1;
-        else          win_age <= win_age + 32'd1;
-
-        // ---- stage 0: událost (jen 34b subtract + řízení okna) ----
-        acc_d   <= 1'b0;
-        close_d <= 1'b0;
-        if (sig_rise) begin
-            ts_rel_d <= ts_rel;
-            acc_d    <= primed;            // první hrana vůbec se neakumuluje
-            if (armed) begin
-                close_d      <= primed;
-                r_periods    <= count + 26'd1;
-                r_fine_first <= ref_ts[1:0];
-                r_fine_last  <= ev_ts[1:0];
-                r_dt_alias   <= age_ovf;
-                // uzavírací hrana = první hrana dalšího okna (gap-free)
-                ref_ts  <= ev_ts;
-                count   <= 26'd0;
-                armed   <= 1'b0;
-                primed  <= 1'b1;
-                win_age <= 32'd0;      // nové okno začíná teď (přebije inkrement)
-                age_ovf <= 1'b0;
-            end else begin
-                count <= count + 26'd1;
+        rise_q <= rise_c;
+        trig_q <= trig_ack;
+        gate_q <= gate_tick;
+        hold_q <= hold;
+        cy_q   <= inc & (count_lo == 8'hFF) & ~hold_q;
+        if (cy_q) count_hi <= count_hi + 18'd1;
+        if (hold_q) begin
+            armed    <= 1'b0;
+            primed   <= 1'b0;
+            count_lo <= 8'd0;
+            count_hi <= 18'd0;
+            age      <= 8'd0;
+        end else begin
+            if (gate_q) begin
+                armed <= 1'b1;
+                if (age != 8'hFF) age <= age + 8'd1;
             end
-        end
-
-        // ---- stage 1: s1 (56b) + dolních 40b S2 (carry do registru) ----
-        acc_d2   <= acc_d;
-        close_d2 <= close_d;
-        if (acc_d) begin
-            {s2_cy, s2[39:0]} <= {1'b0, s2[39:0]} + {1'b0, s1[39:0]};
-            s1_hi_d           <= s1[55:40];          // staré S1 (bod i-1)
-            if (close_d) begin
-                r_dt <= ts_rel_d;
-                r_s1 <= s1 + {22'd0, ts_rel_d};      // bod i=N včetně
-                s1   <= 56'd0;                       // nové okno
-            end else begin
-                s1 <= s1 + {22'd0, ts_rel_d};
+            if (inc) count_lo <= count_lo + 8'd1;
+            if (rise_q & trig_q) begin
+                snap     <= count;                 // + 1 (uzaviraci hrana) pri vystupu
+                count_lo <= 8'd0;
+                count_hi <= 18'd0;
+                armed    <= 1'b0;
+                alias_s  <= (age >= 8'd250);       // >= 250 oken bez hrany
+                age      <= 8'd0;
             end
-        end
-
-        // ---- stage 2: horních 40b S2; při uzávěrce latch r_s2 + reset ----
-        if (acc_d2) begin
-            if (close_d2) begin
-                r_s2    <= {s2[79:40] + {24'd0, s1_hi_d} + {39'd0, s2_cy},
-                            s2[39:0]};
-                res_tgl <= ~res_tgl;
-                s2      <= 80'd0;
-            end else begin
-                s2[79:40] <= s2[79:40] + {24'd0, s1_hi_d} + {39'd0, s2_cy};
+            if (ts_valid) begin
+                if (primed) begin                  // prvni hrana vubec okno neuzavira
+                    r_periods  <= snap + 26'd1;
+                    r_dt       <= ts_ps - ref_ts;
+                    r_dt_alias <= alias_s;
+                    res_tgl    <= ~res_tgl;
+                end
+                ref_ts <= ts_ps;
+                primed <= 1'b1;
             end
         end
     end

@@ -23,8 +23,18 @@ if (-not (Get-Command iverilog -ErrorAction SilentlyContinue)) {
 $tests = @(
     @{ name = "coarse"; top = "tb_coarse_counter";
        rtl = @("coarse_counter.v"); tb = "tb_coarse_counter.sv" }
-    @{ name = "recip"; top = "tb_recip_calc";
-       rtl = @("spi_app.v"); tb = "tb_recip_calc.sv" }
+    # 2026-10-03: recip_calc zanikl (FPGA uz kmitocet nepocita), nahrazen gate_div
+    @{ name = "gatediv"; top = "tb_gate_div";
+       rtl = @("spi_app.v"); tb = "tb_gate_div.sv" }
+    # PHY: nova (predpocitany posun TX po segmentech) == puvodni modul
+    @{ name = "phyequiv"; top = "tb_phy_equiv";
+       rtl = @("spi_slave_phy.v"); tb = "tb_phy_equiv.sv"; extra = @("_phy_old.v") }
+    # TDC: kalibrace ring oscilatorem + presnost a symetrie 2 kanalu (~2 min).
+    # Behavioralni modely primitiv ALU/LUT1/LUT2 (sim/gowin_models.v), SIM_LUT_PS
+    # zpomaluje kruh pro rychlost simulace.
+    @{ name = "tdc"; top = "tb_tdc";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800") }
     @{ name = "phase"; top = "tb_phase_oversampler";
        rtl = @("spi_app.v"); tb = "tb_phase_oversampler.sv" }
     # další testy přidávej sem, jak přibývají moduly
@@ -36,11 +46,12 @@ foreach ($t in $tests) {
 
     $vvp = Join-Path $sim ("{0}.vvp" -f $t.name)
     $files = @()
+    foreach ($e in $t.extra) { $files += (Join-Path $sim $e) }
     foreach ($r in $t.rtl) { $files += (Join-Path $src $r) }
     $files += (Join-Path $sim $t.tb)
 
     Write-Host "--- Test '$($t.name)' ---" -ForegroundColor Cyan
-    & iverilog -g2012 -Wall -s $t.top -o $vvp @files
+    & iverilog -g2012 -s $t.top @($t.defs) -o $vvp @files
     if ($LASTEXITCODE -ne 0) { Write-Host "  COMPILE FAIL" -ForegroundColor Red; $fail++; continue }
 
     $out = & vvp $vvp
