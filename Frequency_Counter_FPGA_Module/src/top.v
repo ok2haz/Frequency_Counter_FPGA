@@ -43,8 +43,11 @@ module top (
     // P0 doména: volnoběžný čas v jednotkách T_clk/16384 (= 0,6104 ps),
     // +16384 za takt (mod 2^48 = 172 s). Nižších 14 bitů je konstantně 0.
     // ----------------------------------------------------------
-    reg [47:0] tick_ps = 48'd0;
-    always @(posedge clk_p0_100m) tick_ps <= tick_ps + 48'd16384;
+    // +16384 za takt = 2^14 -> spodnich 14 bitu je konstantni 0, cita se jen horni cast
+    // (kratsi carry, bez nerízených bitu [13:0]).
+    reg  [33:0] tick_hi = 34'd0;
+    always @(posedge clk_p0_100m) tick_hi <= tick_hi + 34'd1;
+    wire [47:0] tick_ps = {tick_hi, 14'd0};
 
     // ----------------------------------------------------------
     // Hradlovací okno (SET_CONFIG: 100 ms / 250 ms / 1 s, default 250 ms).
