@@ -95,6 +95,10 @@ module top (
     reg  cal_req = 1'b0;                                  // registrovano (kratke cesty)
     always @(posedge clk_p0_100m) cal_req <= (calm_s[1] & ~calm_s[2]) | cal_boot;
 
+    // Pocet udalosti kalibrace = 2^CAL_LOG2. JEDINY zdroj: predava se do obou tdc_chan
+    // i do meze OVF_LIM nize (2026-10-03: OVF_LIM mel natvrdo 22, kalibrace 20 ->
+    // retez pokryvajici jen ~83 % periody se nenahlasil jako kratky).
+    localparam CAL_LOG2 = 20;
     wire use_ro_a, use_ro_b, ro_sig;
     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
 
@@ -121,7 +125,7 @@ module top (
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
     wire [15:0] da_nz, da_last, db_nz, db_last;
 
-    tdc_chan u_tdca (
+    tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
@@ -129,7 +133,7 @@ module top (
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last)
     );
-    tdc_chan u_tdcb (
+    tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -182,7 +186,7 @@ module top (
         cbs_s <= {cbs_s[0], cal_busy_a | cal_busy_b};
     end
     // retez kratky: > 1/16 udalosti kalibrace za koncem retezu (kod 255)
-    localparam [31:0] OVF_LIM = 32'd1 << (22 - 4);       // CAL_LOG2 = 22 (default)
+    localparam [31:0] OVF_LIM = 32'd1 << (CAL_LOG2 - 4);
     wire short_a = (da_ovf > OVF_LIM);
     wire short_b = (db_ovf > OVF_LIM);
     wire [7:0] tdc_status = {2'b00, short_b, short_a, cbs_s[1], cfl_s[1], cvb_s[1], cva_s[1]};
