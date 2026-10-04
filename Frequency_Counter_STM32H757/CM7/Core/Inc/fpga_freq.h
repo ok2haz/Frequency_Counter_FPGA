@@ -231,6 +231,12 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ps);   /* gate
 void     fpga_stat_set_target_ms(uint32_t ms);
 uint32_t fpga_stat_target_ms(void);
 
+/* Zakladni okno FPGA (SET_CONFIG 0x01): delsi = lepsi syrove rozliseni, mene SPI. */
+#define FPGA_WIN_100MS 0u
+#define FPGA_WIN_250MS 1u
+#define FPGA_WIN_1S    2u
+bool fpga_freq_set_window(uint8_t mode);
+
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
  *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka
  *  sečtených oken [s] — skutečné τ0 vzorku (bod 6). @return počet měření v okně;

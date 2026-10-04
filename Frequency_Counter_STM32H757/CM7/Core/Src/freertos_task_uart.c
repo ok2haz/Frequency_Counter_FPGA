@@ -2226,9 +2226,16 @@ void UartTask_run(void *argument)
 					   * rozliseni (lin. s dobou), kratsi az 250 ms = rychlejsi/zasumenejsi. */
 					  const char *ga = RxBuffer + 8;
 					  while (*ga == ' ') ga++;
-					  if (*ga >= '0' && *ga <= '9') fpga_stat_set_target_ms((uint32_t)atoi(ga));
-					  printf("GATESTAT: vzorek statistiky ~%lu ms (delsi=presnejsi, kratsi az 250 ms=rychlejsi)\n",
-					         (unsigned long)fpga_stat_target_ms());
+					  if (*ga >= '0' && *ga <= '9') {
+						  fpga_stat_set_target_ms((uint32_t)atoi(ga));
+						  /* A1: nastav i FPGA okno na nejvetsi <= cil (min. hran oken -> lepsi syrove rozliseni). */
+						  uint32_t t = fpga_stat_target_ms();
+						  uint8_t win = (t >= 1000u) ? FPGA_WIN_1S : (t >= 250u) ? FPGA_WIN_250MS : FPGA_WIN_100MS;
+						  fpga_freq_set_window(win);
+					  }
+					  printf("GATESTAT: vzorek ~%lu ms, FPGA okno %u (0=100ms 1=250ms 2=1s) (delsi=presnejsi, kratsi=rychlejsi)\n",
+					         (unsigned long)fpga_stat_target_ms(),
+					         (unsigned)((fpga_stat_target_ms() >= 1000u) ? 2u : (fpga_stat_target_ms() >= 250u) ? 1u : 0u));
 				  }
 				  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
 				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN

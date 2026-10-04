@@ -976,6 +976,18 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
 }
 
 /* ── TDC: kalibrace a CAL report (FW >= 0x0400) ───────────────────────────── */
+/* Nastavi zakladni okno FPGA (SET_CONFIG 0x01): 0=100 ms, 1=250 ms, 2=1 s.
+ * Delsi okno = min. nezavislych TDC chyb na hranach oken -> lepsi syrove rozliseni
+ * (1 s okno ~2x lepsi nez CM7 akumulace 4×250 ms, protoze ma 1 par hran misto 4). */
+bool fpga_freq_set_window(uint8_t mode)
+{
+    if (!g_init_ok || s_sim_on) return false;
+    if (mode > 2u) mode = 2u;
+    uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x01u, mode };
+    build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
+    return xfer(tx, rx);
+}
+
 bool fpga_freq_tdc_cal_start(void)
 {
     if (!g_init_ok || s_sim_on) return false;
