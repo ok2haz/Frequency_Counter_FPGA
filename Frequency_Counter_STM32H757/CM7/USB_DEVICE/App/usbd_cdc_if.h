@@ -109,7 +109,9 @@ extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
-
+/* TX watchdog (usb_console.c): stav a nouzovy reset zaseknuteho IN prenosu. */
+uint8_t CDC_TxState(void);      /* 0 = volno, 1 = vysila, 2 = neni linka (CONFIGURED) */
+void    CDC_ForceTxIdle(void);  /* vynuceny reset zaseknuteho TxState */
 /* USER CODE END EXPORTED_FUNCTIONS */
 
 /**

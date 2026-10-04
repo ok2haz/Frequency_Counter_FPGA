@@ -3055,6 +3055,11 @@ void UartTask_run(void *argument)
 					  	    if (txd || rxd)
 					  	  	  printf("KONZOLE: zahozeno TX %lu B / RX %lu B\n",
 					  	  	         (unsigned long)txd, (unsigned long)rxd); }
+					  	  /* TX watchdog: >0 = CDC TxState se zasekl (IN transfer nedokoncen) a byl
+					  	   * nouzove zotaven (pridano 2026-10-04, jinak TX konzole mrtva). */
+					  	  { uint32_t rcv = usb_console_tx_recover();
+					  	    if (rcv)
+					  	  	  printf("KONZOLE: TX watchdog zlomil zasek %lux\n", (unsigned long)rcv); }
 					  	/* Dosazena konfigurace IWDG + stav pipaku. Obojí je „tiche
 					  	 * selhani, o kterem se jinak nedozvis" (audit F-0104/F-0111):
 					  	 * neprosla propagace PR/RLR znamena watchdog 0,5 s misto 4 s,

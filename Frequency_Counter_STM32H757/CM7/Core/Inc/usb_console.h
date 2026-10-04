@@ -37,4 +37,9 @@ void usb_console_on_rx(const uint8_t *data, uint32_t len);
 uint32_t usb_console_tx_dropped(void);
 uint32_t usb_console_rx_dropped(void);
 
+/* Kolikrat TX watchdog zlomil zaseknuty CDC TxState (IN transfer, ktery se po
+ * USB resetu / prvnim armu nedokoncil). >0 = zasek realne nastal a byl zotaven.
+ * Pridano 2026-10-04 po zmereni mrtveho TX pri zivem RX. */
+uint32_t usb_console_tx_recover(void);
+
 #endif /* INC_USB_CONSOLE_H_ */
