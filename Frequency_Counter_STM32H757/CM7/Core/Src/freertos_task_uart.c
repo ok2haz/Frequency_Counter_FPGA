@@ -48,6 +48,7 @@
 #include "flightrec.h"   /* UART "flightrec" — kontext pred resetem (#18) */
 #include "syscfg.h"      /* syscfg_storage_text/_store_retries — radek ULOZISTE (F-0098) */
 #include "errlog.h"      /* errlog_init_retries — tentyz radek */
+#include "ad5693.h"      /* UART "dac" — DAC ladeni OCXO (zadost pro SensorsTask) */
 #include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
 #include "fmc.h"         /* fmc_sdram_init_sequence, g_fmc_init_fail — diagnostika SDRAM */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
@@ -652,6 +653,29 @@ static void i2cspeed_run(uint32_t n, int dev_sel)
     printf("  (! = mezi chybami byla ticha neshoda: ACK, ale jina data)\n");
 }
 
+/* Stav DAC ladeni OCXO (AD5693R) — prikaz `dac` i radek ve `status`.
+ * Vedle kodu DAC tiskne i napeti na pinu VC zmerene NEZAVISLE pres AIN0:
+ * to je kontrola konec-konec, ktera nezavisi na readbacku DAC. */
+static void dac_print_status(void)
+{
+    if (!g_dac.probed) { printf("DAC OCXO: AD5693R jeste nesondovan\n"); return; }
+    if (!g_dac.present) {
+        printf("DAC OCXO: AD5693R 0x%02X nenalezen (neosazen?) -> OCXO Vc nikdo neridi\n",
+               (unsigned)AD5693_ADDR7);
+        return;
+    }
+    uint16_t c = g_dac.code, rb = g_dac.code_rb;
+    printf("DAC OCXO: AD5693R 0x%02X, ctrl %s | kod %s%u = %lu mV | readback %s%u\n",
+           (unsigned)AD5693_ADDR7, g_dac.ctrl_ok ? "OK" : "*** NEZAPSAN ***",
+           g_dac.code_valid ? "" : "? ", (unsigned)c, (unsigned long)ad5693_code_to_mv(c),
+           g_dac.rb_ok ? "" : "selhal, posl. ", (unsigned)rb);
+    printf("DAC OCXO: zapisu %lu, chyb I2C %lu, readback nesedi %lu | pin VC (AIN0) %s%ld mV\n",
+           (unsigned long)g_dac.writes, (unsigned long)g_dac.errors,
+           (unsigned long)g_dac.rb_mismatch,
+           g_sensors[SENS_ADS0].valid ? "" : "neplatne, posl. ",
+           (long)g_sensors[SENS_ADS0].last);
+}
+
 void UartTask_run(void *argument)
 {
 	(void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
@@ -1147,6 +1171,7 @@ void UartTask_run(void *argument)
 					  if (r == HAL_OK) {
 						  const char *n = (i == 0x48) ? " ADS1115" :
 						                  (i == 0x49 || i == 0x4A) ? " TMP117" :
+						                  (i == AD5693_ADDR7) ? " AD5693R (DAC OCXO Vc)" :
 						                  (i == 0x70 || i == 0x71) ? " Si5356A" : "";
 						  printf("I2C1 0x%02X%s\n", i, n);
 						  found++;
@@ -1322,7 +1347,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2075,6 +2100,54 @@ void UartTask_run(void *argument)
 			  	g_si5356_clr_req = 1;
 			  	printf("SI5356: sticky bude vynulovan (obslouzi SensorsTask do ~0,5 s)\n");
 			  }
+			  else if (strncmp(RxBuffer, "dac", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  /* DAC ladeni OCXO (AD5693R). `dac` = stav, `dac probe` = znovu najit
+				   * + control registr, `dac <kod>` / `dac mv <mV>` = zapis.
+				   * ⚠️ I2C dela VYHRADNE SensorsTask (vlastnik I2C1) — tady jen zadost,
+				   * vzor `si5356 clr`. 🔴 Zapis PRELADI OCXO = posune celou referenci. */
+				  const char *a = &RxBuffer[3];
+				  while (*a == ' ') a++;
+				  int req = 0;            /* 0 = stav, 1 = zapis, 2 = sonda, -1 = chyba */
+				  uint32_t code = 0;
+				  if (*a == '\0') {
+					  req = 0;
+				  } else if (strcmp(a, "probe") == 0) {
+					  req = 2;
+				  } else {
+					  int is_mv = 0;
+					  if (strncmp(a, "mv", 2) == 0) { is_mv = 1; a += 2; while (*a == ' ') a++; }
+					  uint32_t v = 0; int nd = 0;
+					  /* Mez PRED nasobenim (L-0034): v <= 100000 -> v*10+9 se vejde. */
+					  while (*a >= '0' && *a <= '9' && v <= 100000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; nd++; }
+					  if (nd == 0 || *a != '\0' || (is_mv ? v > AD5693_FS_MV : v > 65535u)) {
+						  printf("DAC: pouziti `dac` | `dac probe` | `dac <kod 0..65535>` | `dac mv <0..%u>`\n",
+						         (unsigned)AD5693_FS_MV);
+						  req = -1;
+					  } else {
+						  code = is_mv ? ad5693_mv_to_code(v) : v;
+						  req = 1;
+					  }
+				  }
+				  if (req > 0) {
+					  int ok = (req == 1) ? ad5693_request_write((uint16_t)code) : ad5693_request_probe();
+					  if (!ok) {
+						  printf("DAC: predchozi zadost jeste bezi\n");
+					  } else {
+						  if (req == 1)
+							  printf("DAC: zapis kodu %lu = %lu mV (PRELADI OCXO)\n",
+							         (unsigned long)code, (unsigned long)ad5693_code_to_mv((uint16_t)code));
+						  /* I2C1 blok SensorsTasku bezi ~2 Hz; pri mrtve sbernici back-off az 10 s. */
+						  uint32_t t0 = HAL_GetTick();
+						  while ((g_dac.req_write || g_dac.req_probe) && (HAL_GetTick() - t0) < 3000u) osDelay(10);
+						  if (g_dac.req_write || g_dac.req_probe)
+							  printf("DAC: zadost ceka (I2C1 back-off?) - vysledek ukaze `dac`\n");
+						  else
+							  printf("DAC: %s\n", ad5693_res_text(g_dac.req_result));
+					  }
+				  }
+				  if (req >= 0) dac_print_status();
+			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */
 				  if (osMutexAcquire(i2c1MutexHandle, 300) == osOK) {
@@ -2764,6 +2837,7 @@ void UartTask_run(void *argument)
 					  		            (stk & SI5356_PLL_LOL)   ? "  PLL_LOL"   : "",
 					  		            (stk & SI5356_SYS_CAL)   ? "  SYS_CAL"   : "");
 					  	}
+					  	dac_print_status();   /* DAC ladeni OCXO (AD5693R) — dnes neosazen */
 					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
 					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
 					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);

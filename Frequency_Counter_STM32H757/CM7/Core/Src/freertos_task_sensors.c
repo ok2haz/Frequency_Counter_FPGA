@@ -17,6 +17,7 @@
 #include "si5356.h"
 #include "errlog.h"   /* udalosti: ztrata reference, vypadek senzoru */       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
+#include "ad5693.h"       /* DAC ladeni OCXO — obsluha zadosti pod i2c1MutexHandle */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
 
@@ -225,6 +226,116 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
     if (streak < 6) return 1000;    /* 3 pokusy @ 1 s (streak 3,4,5) */
     if (streak < 8) return 2000;    /* 2 pokusy @ 2 s (streak 6,7) */
     return 10000;                   /* pak @ 10 s */
+}
+
+/* ── AD5693R: DAC ladeni OCXO (I2C1 0x4C) — popis a zapojeni v ad5693.h ──────
+ * Implementace je ZDE, ne v novem ad5693.c: novy .c se do buildu nedostane bez
+ * Close/Open Project v IDE (CLAUDE.md, mechanicke pravidlo 2). Vsechny funkce
+ * volat jen ze SensorsTasku pod i2c1MutexHandle. */
+volatile ad5693_state_t g_dac;
+
+#define AD5693_I2C_TMO_MS  10u   /* 3 B pri ~50 kHz = ~0,8 ms */
+
+static int ad5693_write3(uint8_t cmd, uint16_t data)
+{
+    uint8_t b[3] = { cmd, (uint8_t)(data >> 8), (uint8_t)data };
+    return HAL_I2C_Master_Transmit(&hi2c1, AD5693_ADDR8, b, 3, AD5693_I2C_TMO_MS) == HAL_OK;
+}
+
+/* 🔴 Sonda NOP zapisem, NE `HAL_I2C_IsDeviceReady`: ta pri chybejicim cipu
+ * konci s `HAL_I2C_ERROR_TIMEOUT` a `i2c1_recover_if_wedged()` (vola se hned
+ * po tomto bloku) by pak kazdych 10 s spoustel obnovu sbernice (9 pulzu SCL
+ * + re-init) kvuli cipu, ktery jen neni osazeny. NACK na zapisu konci jako
+ * `HAL_I2C_ERROR_AF`, ktery obnovu nespousti — stejne jako neosazeny 0x4A.
+ * NOP (CMD 0) cip ignoruje, na vystup nesahne. */
+static int ad5693_probe_nop(void)
+{
+    return ad5693_write3(AD5693_CMD_NOP, 0u);
+}
+
+static int ad5693_readback(uint16_t *code)
+{
+    uint8_t b[2];
+    if (HAL_I2C_Mem_Read(&hi2c1, AD5693_ADDR8, AD5693_CMD_NOP, I2C_MEMADD_SIZE_8BIT,
+                         b, 2, AD5693_I2C_TMO_MS) != HAL_OK) return 0;
+    *code = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+    return 1;
+}
+
+/* Sonda + control registr + prevzeti aktualniho kodu (bez zapisu kodu). */
+static void ad5693_probe(void)
+{
+    g_dac.probed   = 1u;
+    g_dac.probe_ms = HAL_GetTick();
+    if (!ad5693_probe_nop()) {
+        g_dac.present = 0u;
+        g_dac.ctrl_ok = 0u;
+        return;
+    }
+    g_dac.present = 1u;
+    g_dac.ctrl_ok = ad5693_write3(AD5693_CMD_CTRL, AD5693_CTRL_VALUE) ? 1u : 0u;
+    if (!g_dac.ctrl_ok) g_dac.errors++;
+    uint16_t rb;
+    if (ad5693_readback(&rb)) {
+        g_dac.code_rb = rb;
+        g_dac.rb_ok   = 1u;
+        /* Prevzit stav DAC (po resetu jen STM32 drzi DAC posledni kod) —
+         * jen pokud jsme sami jeste nic nezapsali. */
+        if (!g_dac.code_valid) { g_dac.code = rb; g_dac.code_valid = 1u; }
+    } else {
+        /* Readback je diagnostika s neoverenou formou (viz ad5693.h) — do
+         * `errors` se nepocita, jinak by hypoteza o protokolu vypadala jako
+         * porucha sbernice. Pozna se z `rb_ok = 0`. */
+        g_dac.rb_ok = 0u;
+    }
+}
+
+/* Volano kazdy cyklus I2C1 (~2 Hz) JAKO POSLEDNI transakce pred uvolnenim
+ * mutexu — `i2c1_recover_if_wedged()` pak vidi chybovy kod prave odsud. */
+static void ad5693_service(void)
+{
+    if (g_dac.req_probe ||
+        (!g_dac.present && (!g_dac.probed ||
+                            (uint32_t)(HAL_GetTick() - g_dac.probe_ms) >= AD5693_REPROBE_MS))) {
+        ad5693_probe();
+        if (g_dac.req_probe) {
+            g_dac.req_result = !g_dac.present ? AD5693_RES_ABSENT
+                             : g_dac.ctrl_ok  ? AD5693_RES_OK : AD5693_RES_I2C_ERR;
+            g_dac.req_probe = 0u;     /* az po vysledku — UART ceka na tenhle flag */
+        }
+    }
+
+    if (g_dac.req_write) {
+        uint16_t code = g_dac.req_code;
+        uint8_t  res;
+        if (!g_dac.present) {
+            res = AD5693_RES_ABSENT;
+        } else if (!g_dac.ctrl_ok &&
+                   !(g_dac.ctrl_ok = ad5693_write3(AD5693_CMD_CTRL, AD5693_CTRL_VALUE) ? 1u : 0u)) {
+            /* Bez control registru by kod platil pri GAIN x1 = polovicni napeti. */
+            g_dac.errors++;
+            res = AD5693_RES_I2C_ERR;
+        } else if (!ad5693_write3(AD5693_CMD_WRITE_DAC, code)) {
+            g_dac.errors++;
+            res = AD5693_RES_I2C_ERR;
+        } else {
+            g_dac.code       = code;
+            g_dac.code_valid = 1u;
+            g_dac.writes++;
+            uint16_t rb;
+            if (ad5693_readback(&rb)) {
+                g_dac.code_rb = rb;
+                g_dac.rb_ok   = 1u;
+                if (rb == code) res = AD5693_RES_OK;
+                else { g_dac.rb_mismatch++; res = AD5693_RES_VERIFY_FAIL; }
+            } else {
+                g_dac.rb_ok = 0u;
+                res = AD5693_RES_OK;   /* zapis prosel; readback je jen diagnostika */
+            }
+        }
+        g_dac.req_result = res;
+        g_dac.req_write  = 0u;        /* az po vysledku — UART ceka na tenhle flag */
+    }
 }
 
 /* ── ADS1115 per-kanal PGA + gain ─────────────────────────────────────────
@@ -439,6 +550,8 @@ void SensorsTask_run(void *argument)
 				/* Pri neuspechu zadost zustava a zkusi se priste. */
 			}
 		}
+		/* DAC ladeni OCXO — POSLEDNI transakce bloku (viz ad5693_service). */
+		ad5693_service();
 		osMutexRelease(i2c1MutexHandle);
 	  } else {
 		sensor_fail(SENS_T49);
