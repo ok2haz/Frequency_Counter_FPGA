@@ -5,7 +5,7 @@
 import serial, time, re, statistics as st, sys
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 80
 s = serial.Serial('COM10', 115200, timeout=0.3)
-def run(c, w=0.6):
+def run(c, w=1.3):   # 2026-10-04: 0.6->1.3 s, cely 128B ramec (+echo+hlavicka ~470 B) se do 0,6 s pri CDC draininu nevesel -> 0 ramcu
     s.reset_input_buffer(); s.write(c + b'\r\n'); t = time.time(); d = b''
     while time.time() - t < w: d += s.read(2000)
     return d.decode('utf-8', 'replace')
@@ -16,7 +16,7 @@ while len(vals) < N and time.time() - t0 < 240:
     for l in r.splitlines():
         if l.startswith('[') and ']' in l:
             by += [int(x, 16) for x in l.split(']', 1)[1].split()]
-    if len(by) < 128: continue
+    if len(by) < 124: continue   # staci dt_a (b118..123); posledni bajt 127 se v hex vypisu casto urizne
     seq = int.from_bytes(bytes(by[4:8]), 'little')
     if seq == last: continue
     last = seq
