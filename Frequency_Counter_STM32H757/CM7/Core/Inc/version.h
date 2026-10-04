@@ -11,6 +11,18 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.11.0 (2026-10-04) = oprava USB CDC konzole + zpresneni mereni TDC.
+ * KONZOLE: deadlock TX ringu pri plnem bufferu (drzeny blok se neuvolnil ->
+ * avail==0 -> vse zahazovano), ISR-safe drain z CDC callbacku (HAL_GetTick
+ * misto osKernelGetTickCount, ktery je z IRQ nebezpecny), ring 1->4 KB.
+ * Pricina „mrtve konzole" nalezena merenim (RX jel, TX mrtvy). TDC: cesta A
+ * spike-reject oken poskozenych obrim binem (kod 134 = ~19,5 % hran) ze
+ * statistiky/Allan (sigma okna 880->314 ps, ~2,6x, prah 3e-9 zmereny);
+ * teplotni rekalibrace (CM7 posle `tdc cal` pri driftu FPGA teploty >=3 C);
+ * zobrazovane cifry z NAMERENE sigma_y@1s misto teoretickeho TDC/hradlo
+ * (display uz nelze); `gatestat <ms>` laditelne prumerovani 250 ms..100 s +
+ * nastaveni FPGA okna (SET_CONFIG 0x01). Analyzy docs/audit/2026-10-04_*.
+ * ⬜ TDC zmeny neovereny na HW po power-cyklu; FPGA bitstream beze zmeny (0x040C). */
 /* v0.10.0 (2026-10-01) = SPI protokol FPGA migrovan v1->v2: ramec 64B->128B,
  * CRC16 nad byte 0..125 (bylo 0..61), 4 nova pole fpga_meas_t (fw_version/
  * caps/clk_status/win_count). Kriticky zachycen L-0012 vzor v miste vzniku:
@@ -62,8 +74,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 10
+#define FW_VERSION_MINOR 11
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.10.0"
+#define FW_VERSION_STR   "v0.11.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
