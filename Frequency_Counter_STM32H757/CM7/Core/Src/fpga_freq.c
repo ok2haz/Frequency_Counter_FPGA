@@ -700,6 +700,20 @@ static fpga_acc_t s_stat_ring[FPGA_STAT_RING];
 static uint8_t    s_stat_w = 0u, s_stat_r = 0u;
 static uint32_t   s_stat_drop = 0u;
 
+/* Cilova delka vzorku statistiky [ps]. Vzorek je hotovy pri Σhradel >= tohle.
+ * Default 1 s (= 4 okna po 0,25 s, puvodni chovani). Laditelne `gatestat <ms>`:
+ * delsi -> lepsi rozliseni (TDC chyba fixni, deli se delsim oknem), ale pomalejsi
+ * obnova; kratsi az ~250 ms (jedno FPGA okno) -> rychle, ale zasumenejsi. Pyramida
+ * Allana si τ0 bere ze skutecne delky vzorku (tau0_scale), takze se prizpusobi. */
+static uint64_t   s_stat_target_ps = 1000000000000ull;   /* 1 s */
+void fpga_stat_set_target_ms(uint32_t ms)
+{
+    if (ms < 250u)    ms = 250u;      /* floor = jedno FPGA okno (0,25 s) */
+    if (ms > 100000u) ms = 100000u;   /* strop 100 s */
+    s_stat_target_ps = (uint64_t)ms * 1000000000ull;
+}
+uint32_t fpga_stat_target_ms(void) { return (uint32_t)(s_stat_target_ps / 1000000000ull); }
+
 void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ps)
 {
     if (gate_ps == 0u || x100000 == 0u) return;
@@ -730,7 +744,7 @@ void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ps)
      * `2·Σ + g >= 2 s` (bez odcitani — pri hradle > 2 s by 2e9 - g podteklo).
      * Pri 0,25 s to jsou vzdy prave 4 mereni. */
     fpga_acc_t *st = &s_acc[FPGA_ACC_STATS];
-    if (2ull * st->gate_ps + gate_ps >= 2000000000000ull) {
+    if (2ull * st->gate_ps + gate_ps >= 2ull * s_stat_target_ps) {   /* Σhradel >= cil (gatestat) */
         uint8_t nw = (uint8_t)((s_stat_w + 1u) % FPGA_STAT_RING);
         if (nw == s_stat_r) {                            /* plno -> zahodit nejstarsi */
             s_stat_r = (uint8_t)((s_stat_r + 1u) % FPGA_STAT_RING);

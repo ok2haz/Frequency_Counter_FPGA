@@ -226,6 +226,10 @@ bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b);
 
 /** Přičte jedno platné měření do všech akumulátorů. Volá VÝHRADNĚ FpgaTask. */
 void fpga_acc_add(uint64_t x100000, uint64_t edges, uint64_t gate_ps);   /* gate_ps = `fpga_meas_t.gate_ps` */
+/* Cilova delka vzorku statistiky (prumerovani): delsi = lepsi rozliseni (lin.),
+ * kratsi az 250 ms (jedno FPGA okno) = rychlejsi. UART `gatestat <ms>`. */
+void     fpga_stat_set_target_ms(uint32_t ms);
+uint32_t fpga_stat_target_ms(void);
 
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
  *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka

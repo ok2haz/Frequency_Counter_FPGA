@@ -687,6 +687,7 @@ static char     s_seps[NUM_SEG_MAX]; /* mutable separatory (num_layout: '.'/','/
 static uint32_t s_last_fpga_seq = 0;   /* posledni zpracovana SEQUENCE (kadence vzorku) */
 static uint8_t  s_freq_is_sim   = 1;   /* 1 = headline zeny simulaci (fallback), 0 = realne mereni */
 static uint8_t  s_freq_fmt_changed = 0;/* num_layout prestavel format -> nutny plny redraw zony */
+static int      s_freq_unc_last = -1;  /* #1: posledni zapeceny pocet nejistych cislic (σy -> prestavba pri zmene) */
 
 static void freq_fill_segments(void);   /* fwd (num_build_for naplni pocatecni hodnotu) */
 
@@ -918,8 +919,16 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
     if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
     double hz = (double)x100000 / 100000.0;
     if (hz <= 0.0) return 2;
-    double gate_s   = (double)gate_ps * 1e-12;
-    double u_res    = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;   /* relativni */
+    /* #1 (2026-10-04): kdyz uz je NAMERENA σy@1s, pouzij ji — zahrnuje VSECHEN sum
+     * (TDC kvantizaci + drift reference/generatoru za okno), ne jen teoretickou TDC
+     * kvantizaci. Teoreticky vzorec totiz realnou nejistotu PODSTRELUJE (ignoruje
+     * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
+     * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
+    double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
+    if (!(u_res > 0.0)) {
+        double gate_s = (double)gate_ps * 1e-12;
+        u_res = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
+    }
     double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
     /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
      * 🔴 F-0177: pocita se i do CELE casti (vysledek smi byt > frac) — driv se
@@ -988,6 +997,7 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
             num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ps, frac));
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
         }
+        s_freq_unc_last = freq_uncertain_frac(x100000, gate_ps, s_disp_frac);  /* #1: zapamatuj pro trigger prestavby */
         /* freq frac = to, co num_layout vybral dle FREQ_MAX_W (v tomto rezimu jsou
          * frekvence a zobrazeni identicke) */
         s_freq_frac = s_disp_frac;
@@ -1144,6 +1154,9 @@ static void freq_advance(void)
                 period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
                 if (p_int != s_disp_int || us != s_disp_unit_s) fmt_need = 1;
             }
+            if (!s_disp_period && s_freq_unc_last >= 0 &&
+                freq_uncertain_frac(x100000, gate_ps, s_freq_frac) != s_freq_unc_last)
+                fmt_need = 1;   /* #1: σy dokonvergovala/zmenila se -> jiny pocet nejistych cislic */
             if (fmt_need || sig_change) {
                 double keep_nom = s_freq_nominal_hz;
                 s_freq_hires = hires;

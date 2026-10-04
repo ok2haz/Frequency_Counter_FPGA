@@ -2221,7 +2221,16 @@ void UartTask_run(void *argument)
 					  printf("TDC: CAL report nedorazil (stary FW? link? fpgasim?)\n");
 				  }
 			  }
-			  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
+			  else if (strncmp(RxBuffer, "gatestat", 8) == 0) {
+					  /* Cilova delka vzorku statistiky (prumerovani). Delsi = lepsi
+					   * rozliseni (lin. s dobou), kratsi az 250 ms = rychlejsi/zasumenejsi. */
+					  const char *ga = RxBuffer + 8;
+					  while (*ga == ' ') ga++;
+					  if (*ga >= '0' && *ga <= '9') fpga_stat_set_target_ms((uint32_t)atoi(ga));
+					  printf("GATESTAT: vzorek statistiky ~%lu ms (delsi=presnejsi, kratsi az 250 ms=rychlejsi)\n",
+					         (unsigned long)fpga_stat_target_ms());
+				  }
+				  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
 				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN
 				   * prijatych bajtu (v2 = 128 B, v1 bylo 64 B).
 				   * Cekame: byte0=A5 byte1=02 byte2=80. Same FF/00 = MISO nebudi (FPGA mlci). */
