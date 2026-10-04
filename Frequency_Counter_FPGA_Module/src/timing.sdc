@@ -21,7 +21,26 @@
 create_clock -name clk_ref_10m   -period 100.0 -waveform {0 50.0}  [get_ports {clk_ref_10m}]
 create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}   [get_ports {clk_p0_100m}]
 
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}]
+// 🔴 2026-10-04 (#264): SPI PHY je taktovana primo SCK (spi_sck, pin 55).
+// Cil 30 MHz (perioda 33,3 ns) = rezerva pro zrychleni SPI (dnes 5 MHz).
+// V SCK domene jsou i cesty nabezna -> sestupna hrana (pul periody, 16,7 ns):
+// tx_rdata (posedge) -> cur (negedge), tcnt (negedge) -> adresa TX RAM (posedge).
+// Prechody do ostatnich domen: dvouportova blokova RAM (TX) a staticke registry
+// po CS nahoru (RX vysledek, diagnostika) -> asynchronni skupiny.
+create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {spi_sck}]
+
+set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}]
+
+// I/O SPI vuci SCK (rozhoduje o skutecnem stropu SPI, ne vnitrni Fmax):
+//  MISO: PHY ho meni sestupnou hranou SCK, STM vzorkuje nabeznou -> cesta
+//        SCK pin -> registr -> MISO pin musi stihnout pul periody minus 5 ns
+//        (setup STM + spoje, odhad).
+//  MOSI: STM ho meni sestupnou hranou, FPGA vzorkuje nabeznou -> vstupni zpozdeni
+//        az 5 ns po sestupne hrane (odhad).
+set_output_delay -clock spi_sck -max 5.0 [get_ports {spi_miso}]
+set_output_delay -clock spi_sck -min 0.0 [get_ports {spi_miso}]
+set_input_delay  -clock spi_sck -clock_fall -max 5.0 [get_ports {spi_mosi}]
+set_input_delay  -clock spi_sck -clock_fall -min 0.0 [get_ports {spi_mosi}]
 
 // 🔴 cal_mode mux (calm_s -> sig4_eff, false_path) byl v pravodobem top.v
 // staveny desky — NOVE top.v (dva symetricke kanaly, hrube citani) uz
@@ -43,3 +62,16 @@ set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get
 set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
 set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
 set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
+
+// Diagnostika kalibrace (tdc.v, faze ph[5] pruchodu tabulkou): scan_k se meni
+// jen jednou za 10 taktu (ph[9]) a hcur v ph[1] -> do zapisu d_* v ph[5] maji
+// >= 4 takty. Bez tohoto omezeni byla tahle diagnostika nejtesnejsi cestou
+// celeho navrhu (rezerva 0,06 ns) a ubirala misto skutecnym cestam.
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]

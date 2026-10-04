@@ -26,9 +26,6 @@ $tests = @(
     # 2026-10-03: recip_calc zanikl (FPGA uz kmitocet nepocita), nahrazen gate_div
     @{ name = "gatediv"; top = "tb_gate_div";
        rtl = @("spi_app.v"); tb = "tb_gate_div.sv" }
-    # PHY: nova (predpocitany posun TX po segmentech) == puvodni modul
-    @{ name = "phyequiv"; top = "tb_phy_equiv";
-       rtl = @("spi_slave_phy.v"); tb = "tb_phy_equiv.sv"; extra = @("_phy_old.v") }
     # TDC: kalibrace ring oscilatorem + presnost a symetrie 2 kanalu (~2 min).
     # Behavioralni modely primitiv ALU/LUT1/LUT2 (sim/gowin_models.v), SIM_LUT_PS
     # zpomaluje kruh pro rychlost simulace.
@@ -37,7 +34,10 @@ $tests = @(
        defs = @("-DSIM_LUT_PS=800") }
     @{ name = "phase"; top = "tb_phase_oversampler";
        rtl = @("spi_app.v"); tb = "tb_phase_oversampler.sv" }
-    # end-to-end SPI: PHY + spi_app (ACK prijat, CAL report na zadost)
+    # end-to-end SPI: PHY (SCK domena + blokova RAM) + spi_app: ACK, CAL report,
+    # vypis histogramu, zatez 120 ramcu pri SCK 5/20/31 MHz s novymi merenimi
+    # v nahodnych okamzicich (konzistence snimku, CRC). Nahrazuje tb_phy_equiv
+    # (porovnani se starou PHY, ktera po #264 neexistuje).
     @{ name = "link"; top = "tb_link";
        rtl = @("spi_slave_phy.v", "spi_app.v"); tb = "tb_link.sv" }
     # další testy přidávej sem, jak přibývají moduly

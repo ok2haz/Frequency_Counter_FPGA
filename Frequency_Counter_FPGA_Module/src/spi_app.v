@@ -46,7 +46,8 @@
 //  SET_CONFIG 0x02 = 1 spusti kalibraci TDC (ring oscilator, ~0,3 s), 0 = nic;
 //  kalibrace probehne i sama po zapnuti. Behem ni jsou mereni zablokovana.
 //
-// Flat mapování (shodné s PHY): bit[1023]=byte0[7], MSB-first, byte0 první.
+// 🔴 2026-10-04 (#264): ramce uz nejsou 1024bit vodice, ale bloková RAM v PHY
+//  (po bajtech, TX ve dvou polovinach). Viz spi_slave_phy.v.
 // ============================================================
 
 module spi_app (
@@ -74,12 +75,21 @@ module spi_app (
     input  wire [15:0] dbg_mosi_cnt,         // diag: hrany MOSI v poslednim ramci (tx_b[116,117])
     input  wire [15:0] dbg_sck_cnt,          // diag: nabezne hrany SCK v poslednim ramci (tx_b[124,125])
 
-    input  wire [1023:0] rx_frame_flat,
+    // RX: vysledek prijateho ramce zpracovany za letu v PHY (staticky po CS nahoru)
     input  wire          rx_valid,           // pulz po CS↑ (synchronizováno)
+    input  wire [7:0]    rx_b0, rx_b1, rx_b2,// MAGIC, VER, TYPE
+    input  wire [31:0]   rx_seq,
+    input  wire [7:0]    rx_p0, rx_p1, rx_p2,
+    input  wire [15:0]   rx_crc_calc, rx_crc_recv,
 
-    output wire [1023:0] tx_frame_flat,
-    output wire          tx_valid,           // 1 = rámec kompletní (payload i CRC);
-                                             // PHY při 0 drží poslední celý rámec
+    // TX: ramec se sklada po bajtech do NEAKTIVNI poloviny TX RAM PHY
+    output wire          tx_half,            // aktivni polovina (PHY ji vysila)
+    output wire          tx_we,
+    output wire [7:0]    tx_waddr,
+    output wire [7:0]    tx_wdata,
+    input  wire          phy_busy,           // CS dole (domena 100 MHz, synchronizuje se zde)
+    input  wire          phy_base,           // polovina, kterou PHY prave vysila
+
     output wire [7:0]    dbg_status,
     output wire          cal_mode,           // 1 = RO mux místo pin28
     output wire [1:0]    base_win            // 0=100ms 1=250ms 2=1s
@@ -95,7 +105,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h040B;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h040C;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -120,28 +130,20 @@ module spi_app (
         end
     endfunction
 
-    // ---- TX bajty + RX rozbalení ----
-    reg  [7:0] tx_b [0:127];
-    wire [7:0] rx_b [0:127];
-
-    genvar gi;
-    generate
-        for (gi = 0; gi < 128; gi = gi + 1) begin : g_flat
-            assign tx_frame_flat[1023 - 8*gi -: 8] = tx_b[gi];
-            assign rx_b[gi] = rx_frame_flat[1023 - 8*gi -: 8];
-        end
-    endgenerate
-
     // ---- stav / příznaky ----
     reg [31:0] seq           = 32'd1;
     reg [31:0] last_sent_seq = 32'd0;
-    reg [31:0] b_seq         = 32'd1;   // SEQUENCE použitá v právě skládaném rámci
     reg        data_valid    = 1'b1;
     reg        data_fresh    = 1'b1;
     reg        ack_ok        = 1'b0;
     reg        rx_crc_error  = 1'b0;
 
-    // držené (latchované) měření
+    // držené (latchované) měření = SNIMEK pro skladani ramce. 🔴 Ramec se od
+    // 2026-10-04 sklada PO BAJTECH (128 taktu), takze se tyto registry behem
+    // skladani NESMI zmenit (jinak by vicebajtove pole bylo roztrzene) -> nove
+    // mereni se behem S_TX_WR jen poznamena (meas_pend) a prevezme po nem.
+    // Vstupy meas_* drzi top.v az do dalsiho mereni (>= ~100 ms), odklad o
+    // max. ~13 us je bezpecny.
     reg [63:0] h_freq  = 64'd12345678901234; // power-on dummy pro bring-up
     reg [63:0] h_edge  = 64'd0;
     reg [63:0] h_gate  = 64'd250000000;      // skutečné okno [ns] (default 0,25 s)
@@ -151,10 +153,10 @@ module spi_app (
     reg [63:0] h_ts    = 64'd0;
     reg [31:0] h_err   = 32'd0;
     reg [7:0]  h_ch    = 8'd0;
-    reg [47:0] h_dt_a = 48'd0;               // okno CH_A [ps]
-    reg [47:0] h_dt_b = 48'd0;               // okno CH_B [ps]
+    reg [47:0] h_dt_a = 48'd0;               // okno CH_A [T_clk/16384]
+    reg [47:0] h_dt_b = 48'd0;               // okno CH_B [T_clk/16384]
     reg [31:0] h_edge_b = 32'd0;
-    reg [7:0]  h_tdc  = 8'd0;
+    reg [1:0]  meas_pend = 2'd0;         // pocet mereni odlozenych behem S_TX_WR (saturace 3)
 
     // window stream (2 poslední uzavřená okna; gap-free z win_recip)
     reg [31:0] win_seq  = 32'd1;
@@ -170,9 +172,7 @@ module spi_app (
     reg [7:0]  hist_k_r  = 8'd0;
     assign hist_k = hist_k_r;
     // DIAGNOSTIKA RX (2026-10-03): co FPGA skutecne prijala od STM v poslednim ramci
-    // (zachyceno v S_RX_PROC) -> tx_b[66,67,107,112..115] = rx[0], rx[1], rx[2],
-    // CRC spoctene FPGA (lo,hi), CRC prijate (lo,hi). Rozhodne, jestli jsou spatne
-    // bity MOSI (posun/ruseni) nebo CRC.
+    // -> DATA [66,67,107,112..115] = rx[0], rx[1], rx[2], CRC spoctene (lo,hi), prijate (lo,hi)
     reg [7:0]  d_rx0 = 8'd0, d_rx1 = 8'd0, d_rx2 = 8'd0;
     reg [7:0]  d_ccl = 8'd0, d_cch = 8'd0, d_rcl = 8'd0, d_rch = 8'd0;
     reg [1:0]  base_win_r = 2'd1;            // default 250 ms
@@ -184,25 +184,33 @@ module spi_app (
 
     // FSM
     localparam [2:0] S_IDLE    = 3'd0;
-    localparam [2:0] S_TX_ARM  = 3'd1;   // NOVY: viz komentar u S_IDLE/S_TX_ARM nize
-    localparam [2:0] S_TX_CRC  = 3'd2;
-    localparam [2:0] S_TX_FIN  = 3'd3;
-    localparam [2:0] S_RX_CRC  = 3'd4;
-    localparam [2:0] S_RX_PROC = 3'd5;
+    localparam [2:0] S_TX_WR   = 3'd1;   // 128 bajtu do TX RAM + CRC
+    localparam [2:0] S_RX_PROC = 3'd5;   // vyhodnoceni ramce (CRC spocitala PHY za letu)
 
     reg [2:0]  state    = S_IDLE;
-    reg [6:0]  crc_idx  = 7'd0;
+    reg [7:0]  idx      = 8'd0;          // index skladaneho TX bajtu 0..127
     reg [15:0] crc_acc  = 16'hFFFF;
-    reg        tx_dirty = 1'b1;   // postav první rámec po resetu
+    reg        tx_dirty = 1'b1;          // postav první rámec po resetu
     reg        meas_dirty = 1'b0;
-    // audit V2: rx_valid je 1-taktový a FSM může být v S_TX_*/S_RX_* (build
-    // + CRC ~130 taktů po new_meas) -> pulz by se ztratil (zahozený povel).
-    reg        rx_pend  = 1'b0;
-    // audit V3: platnost TX rámce - PHY při frame_ok=0 (probíhá přestavba)
-    // drží poslední KOMPLETNÍ rámec, jinak by CS↓ uprostřed přestavby
-    // odvysílal nový payload se starým CRC.
-    reg        frame_ok = 1'b0;
-    assign tx_valid = frame_ok;
+    reg        rx_pend  = 1'b0;          // rx_valid zachyceny i mimo S_IDLE
+    reg        is_cal   = 1'b0;          // skladany ramec = CAL report
+    reg [2:0]  cool     = 3'd0;          // odstup po prepnuti poloviny (CDC, viz nize)
+
+    // TX RAM: aplikace pise do NEAKTIVNI poloviny (~tx_half_r), PHY vysila aktivni
+    reg        tx_half_r = 1'b0;
+    assign tx_half = tx_half_r;
+    reg        tx_we_r   = 1'b0;
+    reg [7:0]  tx_waddr_r = 8'd0, tx_wdata_r = 8'd0;
+    assign tx_we = tx_we_r; assign tx_waddr = tx_waddr_r; assign tx_wdata = tx_wdata_r;
+
+    // stav PHY do teto domeny (busy = CS dole, base = polovina, kterou PHY vysila)
+    reg [2:0]  pb_s = 3'b000, pbase_s = 3'b000;
+    always @(posedge clk) begin pb_s <= {pb_s[1:0], phy_busy}; pbase_s <= {pbase_s[1:0], phy_base}; end
+    // Zapis do ~tx_half_r je bezpecny, kdyz PHY nevysila PRAVE tuto polovinu.
+    // `cool` (>= 4 takty po prepnuti) pokryje zpozdeni synchronizatoru: PHY mohla
+    // pri CS dole zamknout jeste starou polovinu, tedy tu, do ktere by se psalo.
+    wire       tx_can = (cool == 3'd0) && !(pb_s[2] && (pbase_s[2] == ~tx_half_r));
+
 
     // error_flags do rámce: latchované chyby měření + ŽIVÝ signal_lost (bit1),
     // ten musí jít do rámce i bez new_meas. bit0=měření, bit1=signal_lost, bit2=Δt ovf.
@@ -214,18 +222,111 @@ module spi_app (
 
     assign dbg_status = flags_byte;
 
-    integer k;
+    // ---- obsah TX bajtu podle indexu (driv 685 FF `tx_b`, ted kombinacni mux) ----
+    reg [7:0] tb;
+    always @* begin
+        tb = 8'd0;
+        case (idx[6:0])
+            7'd0:  tb = MAGIC;
+            7'd1:  tb = VERSION;
+            7'd2:  tb = is_cal ? TYPE_CAL : TYPE_DATA;
+            7'd3:  tb = flags_byte;
+            // SEQUENCE je soucast snimku (behem S_TX_WR se nemeni) -> patri ke
+            // stejnemu mereni jako data; zvlastni kopie (driv b_seq) zachycena
+            // v taktu startu se mohla rozejit s h_*, kdyz nove mereni prislo
+            // prave v tom taktu (nalezeno tb_link 2026-10-04).
+            7'd4:  tb = seq[7:0];
+            7'd5:  tb = seq[15:8];
+            7'd6:  tb = seq[23:16];
+            7'd7:  tb = seq[31:24];
+            7'd8:  tb = PAYLOAD_LEN[7:0];
+            7'd9:  tb = PAYLOAD_LEN[15:8];
+            default: begin
+                if (is_cal) begin
+                    // ---- CAL report 0xA0 ----
+                    if (idx[6:0] >= 7'd12 && idx[6:0] <= 7'd35) tb = meas_cal_diag[8*(idx[6:0]-7'd12) +: 8];
+                    else case (idx[6:0])
+                        7'd36: tb = meas_tdc_status;
+                        7'd37: tb = {7'd0, cal_mode_r};
+                        // vypis histogramu: [38]=1, [39]=kod, [40..42]=A, [43..45]=B
+                        7'd38: tb = hist_mode ? 8'd1 : 8'd0;
+                        7'd39: tb = hist_mode ? hist_k_r : 8'd0;
+                        7'd40: tb = hist_mode ? meas_hist_a[7:0]   : 8'd0;
+                        7'd41: tb = hist_mode ? meas_hist_a[15:8]  : 8'd0;
+                        7'd42: tb = hist_mode ? meas_hist_a[23:16] : 8'd0;
+                        7'd43: tb = hist_mode ? meas_hist_b[7:0]   : 8'd0;
+                        7'd44: tb = hist_mode ? meas_hist_b[15:8]  : 8'd0;
+                        7'd45: tb = hist_mode ? meas_hist_b[23:16] : 8'd0;
+                        default: tb = 8'd0;
+                    endcase
+                end else begin
+                    // ---- DATA 0x80 (offsety 12..59 = 1:1 s v1) ----
+                    if      (idx[6:0] >= 7'd12  && idx[6:0] <= 7'd19)  tb = h_freq  [8*(idx[6:0]-7'd12)  +: 8];
+                    else if (idx[6:0] >= 7'd20  && idx[6:0] <= 7'd27)  tb = h_edge  [8*(idx[6:0]-7'd20)  +: 8];
+                    else if (idx[6:0] >= 7'd28  && idx[6:0] <= 7'd35)  tb = h_gate  [8*(idx[6:0]-7'd28)  +: 8];
+                    else if (idx[6:0] >= 7'd36  && idx[6:0] <= 7'd43)  tb = h_ts    [8*(idx[6:0]-7'd36)  +: 8];
+                    else if (idx[6:0] >= 7'd46  && idx[6:0] <= 7'd49)  tb = err_word[8*(idx[6:0]-7'd46)  +: 8];
+                    else if (idx[6:0] >= 7'd52  && idx[6:0] <= 7'd59)  tb = h_freq16[8*(idx[6:0]-7'd52)  +: 8];
+                    else if (idx[6:0] >= 7'd68  && idx[6:0] <= 7'd71)  tb = w0_seq  [8*(idx[6:0]-7'd68)  +: 8];
+                    else if (idx[6:0] >= 7'd72  && idx[6:0] <= 7'd75)  tb = w0_edges[8*(idx[6:0]-7'd72)  +: 8];
+                    else if (idx[6:0] >= 7'd76  && idx[6:0] <= 7'd83)  tb = w0_dt   [8*(idx[6:0]-7'd76)  +: 8];
+                    else if (idx[6:0] >= 7'd84  && idx[6:0] <= 7'd87)  tb = w1_seq  [8*(idx[6:0]-7'd84)  +: 8];
+                    else if (idx[6:0] >= 7'd88  && idx[6:0] <= 7'd91)  tb = w1_edges[8*(idx[6:0]-7'd88)  +: 8];
+                    else if (idx[6:0] >= 7'd92  && idx[6:0] <= 7'd99)  tb = w1_dt   [8*(idx[6:0]-7'd92)  +: 8];
+                    else if (idx[6:0] >= 7'd101 && idx[6:0] <= 7'd106) tb = h_dt_b  [8*(idx[6:0]-7'd101) +: 8];
+                    else if (idx[6:0] >= 7'd108 && idx[6:0] <= 7'd111) tb = h_edge_b[8*(idx[6:0]-7'd108) +: 8];
+                    else if (idx[6:0] >= 7'd118 && idx[6:0] <= 7'd123) tb = h_dt_a  [8*(idx[6:0]-7'd118) +: 8];
+                    else case (idx[6:0])
+                        7'd44:  tb = h_ch;
+                        7'd45:  tb = {6'd0, data_fresh, data_valid};
+                        7'd50:  tb = h_phase;     // {fine_seen[3:0], present[3:0]}
+                        7'd51:  tb = h_status2;   // pin27 status
+                        // ---- v2 rozšíření ----
+                        7'd60:  tb = FW_VERSION[7:0];
+                        7'd61:  tb = FW_VERSION[15:8];
+                        7'd62:  tb = CAPS[7:0];
+                        7'd63:  tb = CAPS[15:8];
+                        7'd64:  tb = 8'h01;              // clk_status: bit0=10MHz OK
+                        7'd65:  tb = {6'd0, win_cnt};
+                        7'd66:  tb = d_rx0;
+                        7'd67:  tb = d_rx1;
+                        // TDC (caps bit5): stav ZIVE (bez signalu by jinak nebylo videt kalibraci)
+                        7'd100: tb = meas_tdc_status;
+                        7'd107: tb = d_rx2;
+                        7'd112: tb = d_ccl;
+                        7'd113: tb = d_cch;
+                        7'd114: tb = d_rcl;
+                        7'd115: tb = d_rch;
+                        7'd116: tb = dbg_mosi_cnt[7:0];
+                        7'd117: tb = dbg_mosi_cnt[15:8];
+                        7'd124: tb = dbg_sck_cnt[7:0];
+                        7'd125: tb = dbg_sck_cnt[15:8];
+                        default: tb = 8'd0;
+                    endcase
+                end
+            end
+        endcase
+    end
 
     always @(posedge clk) begin
+        tx_we_r <= 1'b0;
+        if (cool != 3'd0) cool <= cool - 3'd1;
+
         // ---- nové měření: SEQUENCE++, FRESH/VALID, latch dat, window stream ----
-        if (new_meas) begin
-            seq        <= seq + 32'd1;
+        // (behem skladani ramce jen poznamenat, prevzit az po nem -- viz h_*)
+        // Vic mereni behem jednoho skladani se slije do jednoho snimku (vstupy nesou
+        // jen posledni), ale SEQUENCE poroste o JEJICH POCET -> STM sloucene
+        // mereni pozna jako diru v SEQUENCE a statistika ho poctive zapocita.
+        if (new_meas && state == S_TX_WR && meas_pend != 2'd3) meas_pend <= meas_pend + 2'd1;
+        if ((new_meas || meas_pend != 2'd0) && state != S_TX_WR) begin
+            meas_pend  <= 2'd0;
+            seq        <= seq + {30'd0, meas_pend} + {31'd0, new_meas};
             data_valid <= 1'b1;
             data_fresh <= 1'b1;
-            h_freq     <= meas_freq_x100000;     // hotový výpočet z recip_calc
+            h_freq     <= meas_freq_x100000;
             h_edge     <= {32'd0, meas_periods}; // edge_count = počet period v okně
             h_gate     <= meas_gate_ns;          // skutečné Δt okna [ns]
-            h_freq16   <= meas_freq16_x100000;   // pin27 /16
+            h_freq16   <= meas_freq16_x100000;
             h_phase    <= meas_phase_status;
             h_status2  <= meas_status2;
             h_ts       <= meas_timestamp;
@@ -234,7 +335,6 @@ module spi_app (
             h_dt_a     <= meas_dt_a_ps;
             h_dt_b     <= meas_dt_b_ps;
             h_edge_b   <= meas_periods_b;
-            h_tdc      <= meas_tdc_status;
             // window stream: posuň historii (okna na sebe navazují hranou)
             w1_seq   <= w0_seq;   w1_edges <= w0_edges;  w1_dt <= w0_dt;
             w0_seq   <= win_seq;  w0_edges <= meas_periods;
@@ -242,7 +342,7 @@ module spi_app (
             win_seq  <= win_seq + 32'd1;
             if (win_cnt != 2'd2) win_cnt <= win_cnt + 2'd1;
             meas_dirty <= 1'b1;
-        end else if (signal_lost) begin
+        end else if (signal_lost && !new_meas && meas_pend == 2'd0) begin
             data_valid <= 1'b0;          // ztráta signálu -> data nejsou platná
         end
 
@@ -253,177 +353,70 @@ module spi_app (
             S_IDLE: begin
                 if (rx_pend || rx_valid) begin
                     // zpracuj příchozí rámec (priorita)
-                    rx_pend <= 1'b0;
-                    crc_acc <= 16'hFFFF;
-                    crc_idx <= 7'd0;
-                    state   <= S_RX_CRC;
-                end else if (meas_dirty || tx_dirty) begin
-                    // 🔴 CDC (PHY ted bezi na clk_p0_100m, viz top.v): frame_ok
-                    // padne TADY, O CELY JEDEN TAKT DRIV nez se tx_b[] zacne
-                    // prepisovat (zapis az v S_TX_ARM nize). Dava to synchronizeru
-                    // tx_valid v top.v (clk_p0_100m domena) celych 100 ns (10 taktu
-                    // @100MHz) rezervy na ustaleni PRED tím, než se data skutečně
-                    // zmeni -- bez tohohle mezikroku by mohl PHY behem ~20-30ns
-                    // okna (zpozdeni 2-3-stupnoveho synchronizeru) zachytit torn
-                    // ramec (nova data + stara CRC), protoze tx_frame_flat je
-                    // kombinacni vodic (nesynchronizovany -- novy 1024b registr by
-                    // se nevesel, registry FPGA jsou na 79 %). Viz spi_slave_phy.v.
-                    frame_ok <= 1'b0;
-                    state    <= S_TX_ARM;
+                    rx_pend    <= 1'b0;
+                    state      <= S_RX_PROC;
+                end else if ((meas_dirty || tx_dirty) && tx_can) begin
+                    // zacni skladat do NEAKTIVNI poloviny; snimek h_* drzi (meas_pend)
+                    is_cal     <= cal_req;
+                    crc_acc    <= 16'hFFFF;
+                    idx        <= 8'd0;
+                    meas_dirty <= 1'b0;
+                    tx_dirty   <= 1'b0;
+                    state      <= S_TX_WR;
                 end
             end
 
-            S_TX_ARM: begin
-                    // sestav hlavičku + payload
-                    tx_b[0] <= MAGIC;
-                    tx_b[1] <= VERSION;
-                    tx_b[2] <= cal_req ? TYPE_CAL : TYPE_DATA;
-                    tx_b[3] <= flags_byte;
-
-                    tx_b[4] <= seq[7:0];
-                    tx_b[5] <= seq[15:8];
-                    tx_b[6] <= seq[23:16];
-                    tx_b[7] <= seq[31:24];
-                    b_seq   <= seq;
-
-                    tx_b[8]  <= PAYLOAD_LEN[7:0];
-                    tx_b[9]  <= PAYLOAD_LEN[15:8];
-                    tx_b[10] <= 8'd0;
-                    tx_b[11] <= 8'd0;
-
-                    if (cal_req) begin
-                        // ---- CAL report 0xA0 ----
-                        // hist záměrně ŽIVÝ (per-gate statistika, atomický
-                        // 1-taktový update v top) - koherenci s oknem nepotřebuje
-                        for (k = 0; k < 24; k = k + 1)
-                            tx_b[12 + k] <= meas_cal_diag[8*k +: 8];
-                        tx_b[36] <= meas_tdc_status;
-                        tx_b[37] <= {7'd0, cal_mode_r};
-                        for (k = 38; k < 126; k = k + 1)
-                            tx_b[k] <= 8'd0;
-                        // vypis histogramu: [38]=1, [39]=kod, [40..42]=A, [43..45]=B
-                        // (hodnota platna: od zmeny hist_k uplynulo >= 1 SPI transakce)
-                        if (hist_mode) begin
-                            tx_b[38] <= 8'd1;
-                            tx_b[39] <= hist_k_r;
-                            tx_b[40] <= meas_hist_a[7:0];
-                            tx_b[41] <= meas_hist_a[15:8];
-                            tx_b[42] <= meas_hist_a[23:16];
-                            tx_b[43] <= meas_hist_b[7:0];
-                            tx_b[44] <= meas_hist_b[15:8];
-                            tx_b[45] <= meas_hist_b[23:16];
-                        end
-                        cal_req <= 1'b0;
-                    end else begin
-                        // ---- DATA 0x80 (offsety 12..59 = 1:1 s v1) ----
-                        for (k = 0; k < 8; k = k + 1) begin
-                            tx_b[12 + k] <= h_freq[8*k +: 8];
-                            tx_b[20 + k] <= h_edge[8*k +: 8];
-                            tx_b[28 + k] <= h_gate[8*k +: 8];
-                            tx_b[36 + k] <= h_ts  [8*k +: 8];
-                        end
-                        tx_b[44] <= h_ch;
-                        tx_b[45] <= {6'd0, data_fresh, data_valid};
-                        for (k = 0; k < 4; k = k + 1)
-                            tx_b[46 + k] <= err_word[8*k +: 8];
-                        tx_b[50] <= h_phase;     // {fine_seen[3:0], present[3:0]}
-                        tx_b[51] <= h_status2;   // pin27 status
-                        for (k = 0; k < 8; k = k + 1)
-                            tx_b[52 + k] <= h_freq16[8*k +: 8];
-                        // ---- v2 rozšíření ----
-                        tx_b[60] <= FW_VERSION[7:0];
-                        tx_b[61] <= FW_VERSION[15:8];
-                        tx_b[62] <= CAPS[7:0];
-                        tx_b[63] <= CAPS[15:8];
-                        tx_b[64] <= 8'h01;              // clk_status: bit0=10MHz OK
-                        tx_b[65] <= {6'd0, win_cnt};
-                        tx_b[66] <= d_rx0;
-                        tx_b[67] <= d_rx1;
-                        for (k = 0; k < 4; k = k + 1) begin
-                            tx_b[68 + k] <= w0_seq  [8*k +: 8];
-                            tx_b[72 + k] <= w0_edges[8*k +: 8];
-                            tx_b[84 + k] <= w1_seq  [8*k +: 8];
-                            tx_b[88 + k] <= w1_edges[8*k +: 8];
-                        end
-                        for (k = 0; k < 8; k = k + 1) begin
-                            tx_b[76 + k] <= w0_dt[8*k +: 8];
-                            tx_b[92 + k] <= w1_dt[8*k +: 8];
-                        end
-                        // TDC (caps bit5): stav, okno CH_B, hrany CH_B, okno CH_A [ps]
-                        tx_b[100] <= meas_tdc_status;   // ZIVE (ne latch z new_meas): bez signalu by jinak nebylo videt, jak dopadla kalibrace
-                        for (k = 0; k < 6; k = k + 1)
-                            tx_b[101 + k] <= h_dt_b[8*k +: 8];
-                        tx_b[107] <= d_rx2;
-                        for (k = 0; k < 4; k = k + 1)
-                            tx_b[108 + k] <= h_edge_b[8*k +: 8];
-                        tx_b[112] <= d_ccl;  tx_b[113] <= d_cch;
-                        tx_b[114] <= d_rcl;  tx_b[115] <= d_rch;
-                        tx_b[116] <= dbg_mosi_cnt[7:0]; tx_b[117] <= dbg_mosi_cnt[15:8];
-                        for (k = 0; k < 6; k = k + 1)
-                            tx_b[118 + k] <= h_dt_a[8*k +: 8];
-                        tx_b[124] <= dbg_sck_cnt[7:0];
-                        tx_b[125] <= dbg_sck_cnt[15:8];
-                    end
-
-                    crc_acc    <= 16'hFFFF;
-                    crc_idx    <= 7'd0;
-                    meas_dirty <= 1'b0;
-                    tx_dirty   <= 1'b0;
-                    // frame_ok uz je 0 (nastaveno v S_IDLE o takt drive -- CDC
-                    // rezerva, viz komentar tam); tady se neopakuje.
-                    state      <= S_TX_CRC;
-            end
-
-            S_TX_CRC: begin
-                crc_acc <= crc16_step(crc_acc, tx_b[crc_idx]);
-                if (crc_idx == 7'd125) state <= S_TX_FIN;
-                else                   crc_idx <= crc_idx + 7'd1;
-            end
-
-            S_TX_FIN: begin
-                tx_b[126]     <= crc_acc[7:0];
-                tx_b[127]     <= crc_acc[15:8];
-                last_sent_seq <= b_seq;
-                frame_ok      <= 1'b1;    // payload + CRC konzistentní
-                state         <= S_IDLE;
-            end
-
-            S_RX_CRC: begin
-                crc_acc <= crc16_step(crc_acc, rx_b[crc_idx]);
-                if (crc_idx == 7'd125) state <= S_RX_PROC;
-                else                   crc_idx <= crc_idx + 7'd1;
+            S_TX_WR: begin
+                // bajt idx: 0..125 obsah (+CRC), 126/127 CRC (LE)
+                tx_we_r    <= 1'b1;
+                tx_waddr_r <= {~tx_half_r, idx[6:0]};
+                if (idx < 8'd126) begin
+                    tx_wdata_r <= tb;
+                    crc_acc    <= crc16_step(crc_acc, tb);
+                    idx        <= idx + 8'd1;
+                end else if (idx == 8'd126) begin
+                    tx_wdata_r <= crc_acc[7:0];
+                    idx        <= idx + 8'd1;
+                end else begin
+                    tx_wdata_r    <= crc_acc[15:8];
+                    // ramec kompletni -> prepnout polovinu (zapis bajtu 127 probehne
+                    // TIMTO taktem; PHY prepnuti uvidi az pres 3stup. synchronizator)
+                    tx_half_r     <= ~tx_half_r;
+                    cool          <= 3'd5;
+                    last_sent_seq <= seq;
+                    if (is_cal) cal_req <= 1'b0;
+                    state         <= S_IDLE;
+                end
             end
 
             S_RX_PROC: begin
-                d_rx0 <= rx_b[0];  d_rx1 <= rx_b[1];  d_rx2 <= rx_b[2];
-                d_ccl <= crc_acc[7:0]; d_cch <= crc_acc[15:8];
-                d_rcl <= rx_b[126];    d_rch <= rx_b[127];
-                if (rx_b[0] == MAGIC && crc_acc == {rx_b[127], rx_b[126]}) begin
+                d_rx0 <= rx_b0;  d_rx1 <= rx_b1;  d_rx2 <= rx_b2;
+                d_ccl <= rx_crc_calc[7:0]; d_cch <= rx_crc_calc[15:8];
+                d_rcl <= rx_crc_recv[7:0]; d_rch <= rx_crc_recv[15:8];
+                if (rx_b0 == MAGIC && rx_crc_calc == rx_crc_recv) begin
                     rx_crc_error <= 1'b0;
-                    case (rx_b[2])
+                    case (rx_b2)
                         TYPE_ACK: begin
                             ack_ok <= 1'b1;
                             // SEQUENCE v ACK (LE) == naposledy odeslaná -> shoď FRESH
-                            if ({rx_b[7], rx_b[6], rx_b[5], rx_b[4]} == last_sent_seq)
-                                data_fresh <= 1'b0;
+                            if (rx_seq == last_sent_seq) data_fresh <= 1'b0;
                         end
                         TYPE_START: ack_ok <= 1'b0; // continuous měření běží i tak
                         TYPE_STOP:  ack_ok <= 1'b0;
                         TYPE_SET_CONFIG: begin
                             ack_ok <= 1'b0;
-                            case (rx_b[12])
-                                8'h01: base_win_r <= (rx_b[13] <= 8'd2)
-                                                     ? rx_b[13][1:0] : 2'd1;
-                                8'h02: cal_mode_r <= rx_b[13][0];
+                            case (rx_p0)
+                                8'h01: base_win_r <= (rx_p1 <= 8'd2) ? rx_p1[1:0] : 2'd1;
+                                8'h02: cal_mode_r <= rx_p1[0];
                                 default: ;      // neznámé config_id = ignorovat
                             endcase
                         end
                         TYPE_CAL: begin          // žádost o CAL report
-                            ack_ok  <= 1'b0;
-                            cal_req <= 1'b1;
+                            ack_ok    <= 1'b0;
+                            cal_req   <= 1'b1;
                             // [12]==1: vypis hist[k] (k = [14]); jinak souhrn
-                            hist_mode <= (rx_b[12] == 8'd1);
-                            if (rx_b[12] == 8'd1) hist_k_r <= rx_b[14];
+                            hist_mode <= (rx_p0 == 8'd1);
+                            if (rx_p0 == 8'd1) hist_k_r <= rx_p2;
                         end
                         default:    ack_ok <= 1'b0;  // rezervované TYPE = ignorovat
                     endcase

@@ -262,73 +262,40 @@ module top (
     // (jen freq16_x100000) -- viz hlavička souboru, proč je to bezpečné
     // provizorium (sdílené hradlo, v3 migrace je samostatný krok).
     // ----------------------------------------------------------
-    wire [1023:0] tx_frame_flat;
-    wire [1023:0] rx_frame_flat;
+    // 🔴 2026-10-04 (#264): PHY je taktovana primo SCK, ramce lezi v blokove RAM
+    // uvnitr PHY (TX ve dvou polovinach, RX ve dvou polovinach). Prechod mezi
+    // domenami SCK <-> clk_ref_10m (aplikace) dela RAM; ridici bity jsou po dobu
+    // transakce staticke. Driv: 1024bit vodice + tx_valid synchronizator +
+    // 1024bit posuvne registry (~2700 FF) a strop SCK ~8-10 MHz.
     wire          frame_end_tgl;
-    wire          tx_frame_valid;
     wire [7:0]    spi_status;
-    wire [10:0]   rx_bit_count;
-
-    // 🔴 CDC 2026-10-01: PHY prešla z clk_ref_10m na clk_p0_100m (10x vyssi
-    // oversampling SCK -> spolehlivy strop ~20 MHz misto ~2 MHz, viz hlavicka
-    // spi_slave_phy.v "Pozn. rychlost"). spi_app.v ZUSTAVA na clk_ref_10m
-    // (FSM se nesaha) -- vznika tim hranice dvou domen presne tam, kde to
-    // spi_slave_phy.v uz davno predpovidala ("pak je nutne osetrit CDC
-    // ramcu vuci aplikaci").
-    //
-    // RX smer (PHY 100MHz -> app 10MHz) nepotreboval ZADNOU zmenu: fe_s/
-    // rx_valid_pulse nize je UZ od zacatku 3-stupnovy synchronizer toggle
-    // bitu frame_end_tgl - fungoval spravne i driv (kdy byl synchronizace
-    // v ramci STEJNE domeny, tedy no-op), a je to presne spravny vzor i
-    // pro SKUTECNOU cross-domain hranici. rx_frame_flat (=PHY rx_shadow)
-    // je stabilni od CS^ do dalsiho CS v (>=25us mezera mezi ramci = 250
-    // taktu clk_ref_10m), tedy s obrovskou rezervou nad potrebu synchronizace.
-    //
-    // TX smer (app 10MHz -> PHY 100MHz) synchronizaci DRIV nepotreboval
-    // (stejna domena) a ted ano: tx_frame_valid (=spi_app `frame_ok`) jde
-    // pres novy 3-stupnovy LEVEL synchronizer (txv_s, stejny vzor jako
-    // fe_s nize i PHY vlastni sck_s/cs_s/mosi_s) do PHY domeny.
-    // tx_frame_flat SAMOTNY (1024b) se NESYNCHRONIZUJE (kombinacni vodic
-    // beze zmeny) -- bezpecne jen diky tomu, ze spi_app.v ma novy mezistav
-    // S_TX_ARM: frame_ok padne CELY JEDEN takt clk_ref_10m (100 ns = 10
-    // taktu @100MHz) PRED tím, nez se tx_b[] zacne prepisovat. To dava
-    // 3-stupnovemu synchronizeru (max 3 takty @100MHz = 30 ns zpozdeni
-    // do ustaleni) ~3,3x rezervu PRED tím, nez by data mohla byt torn.
-    // Novy 1024b zachytavaci registr by se NEVESEL (registry FPGA jsou
-    // na 79 %, 5245/6693) -- proto tenhle levnejsi navrh bez duplikace ramce.
-    reg [2:0] txv_s = 3'b000;
-    always @(posedge clk_p0_100m) txv_s <= {txv_s[1:0], tx_frame_valid};
-    wire tx_valid_sync = txv_s[2];
+    wire          tx_half, tx_we, phy_busy, phy_base;
+    wire [7:0]    tx_waddr, tx_wdata;
+    wire [7:0]    rx_b0, rx_b1, rx_b2, rx_p0, rx_p1, rx_p2;
+    wire [31:0]   rx_seq;
+    wire [15:0]   rx_crc_calc, rx_crc_recv;
+    wire [15:0]   dbg_mosi_cnt, dbg_sck_cnt;
 
     spi_slave_phy u_phy (
         .clk(clk_p0_100m),
+        .clk_app(clk_ref_10m),
         .sck_pin(spi_sck),
         .cs_pin(spi_cs_n),
         .mosi_pin(spi_mosi),
         .miso(spi_miso),
-        .tx_frame_flat(tx_frame_flat),
-        .tx_valid(tx_valid_sync),
-        .rx_frame_flat(rx_frame_flat),
+        .tx_half(tx_half),
+        .tx_we(tx_we),
+        .tx_waddr(tx_waddr),
+        .tx_wdata(tx_wdata),
+        .tx_base(phy_base),
+        .busy(phy_busy),
+        .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
+        .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2),
+        .rx_crc_calc(rx_crc_calc), .rx_crc_recv(rx_crc_recv),
         .frame_end_tgl(frame_end_tgl),
-        .rx_bit_count(rx_bit_count)
+        .dbg_mosi_cnt(dbg_mosi_cnt),
+        .dbg_sck_cnt(dbg_sck_cnt)
     );
-
-    // DIAGNOSTIKA vstupu SPI (2026-10-03): kolik hran MOSI a nabeznych hran SCK FPGA
-    // videla v poslednim ramci (pocitano v CS=0, latch pri CS rise). Rozlisi
-    // "pin nic nevidi" (hrany MOSI = 0) od chyby zachyceni bitu v PHY.
-    reg [2:0] dm_mosi = 3'b000, dm_sck = 3'b000, dm_cs = 3'b111;
-    reg [15:0] dm_mc = 16'd0, dm_sc = 16'd0, dm_mlat = 16'd0, dm_slat = 16'd0;
-    always @(posedge clk_p0_100m) begin
-        dm_mosi <= {dm_mosi[1:0], spi_mosi};
-        dm_sck  <= {dm_sck[1:0],  spi_sck};
-        dm_cs   <= {dm_cs[1:0],   spi_cs_n};
-        if (dm_cs[2:1] == 2'b10) begin dm_mc <= 16'd0; dm_sc <= 16'd0; end
-        else if (!dm_cs[2]) begin
-            if (dm_mosi[2] ^ dm_mosi[1])        dm_mc <= dm_mc + 16'd1;
-            if (dm_sck[2:1] == 2'b01)           dm_sc <= dm_sc + 16'd1;
-        end
-        if (dm_cs[2:1] == 2'b01) begin dm_mlat <= dm_mc; dm_slat <= dm_sc; end
-    end
 
     reg [2:0] fe_s = 3'b000;
     always @(posedge clk_ref_10m)
@@ -356,14 +323,20 @@ module top (
         .hist_k(hist_k),
         .meas_hist_a(hq_a),
         .meas_hist_b(hq_b),
-        .dbg_mosi_cnt(dm_mlat),
-        .dbg_sck_cnt(dm_slat),
+        .dbg_mosi_cnt(dbg_mosi_cnt),
+        .dbg_sck_cnt(dbg_sck_cnt),
         .cal_mode(cal_mode),
         .base_win(base_win),
-        .rx_frame_flat(rx_frame_flat),
         .rx_valid(rx_valid_pulse),
-        .tx_frame_flat(tx_frame_flat),
-        .tx_valid(tx_frame_valid),
+        .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
+        .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2),
+        .rx_crc_calc(rx_crc_calc), .rx_crc_recv(rx_crc_recv),
+        .tx_half(tx_half),
+        .tx_we(tx_we),
+        .tx_waddr(tx_waddr),
+        .tx_wdata(tx_wdata),
+        .phy_busy(phy_busy),
+        .phy_base(phy_base),
         .dbg_status(spi_status)
     );
 
