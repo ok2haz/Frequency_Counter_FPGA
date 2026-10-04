@@ -4113,6 +4113,27 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 
 ---
 
+### L-0126 — Než optimalizuješ zdroje FPGA, rozlož je po signálech; největší žrout bývá infrastruktura
+
+- **Datum:** 2026-10-04
+- **Oblast:** FPGA, `spi_slave_phy.v`, `spi_app.v` (#264)
+- **Symptom:** registry 77–79 %, CLS 87–88 %; pro TDC 1PPS (#262) a akumulátory (#263) nebylo místo.
+  Odhad „kde to je" mířil na TDC (řetězy, kalibrace).
+- **Příčina:** rozpad netlistu (`sim/res_breakdown.py`) ukázal, že **přes polovinu registrů držely
+  rámce SPI** — 128bajtový rámec existoval 3× v registrech (PHY TX posuvný registr, PHY RX, aplikace `tx_b`).
+  TDC vzorky byly jen 512 FF.
+- **Oprava:** rámce do blokové RAM (1 blok), PHY po bajtech a taktovaná přímo SCK (vedlejší zisk: strop SPI
+  ~8–10 → ~40 MHz), RX zpracovaný za letu. FF 77 % → 38 %. Commit `ebba0b0`.
+- **Pravidlo:** **Před optimalizací spusť `sim/res_breakdown.py` a seřaď podle velikosti. Data, která se
+  přenášejí po bajtech, nepatří do registrů, ale do blokové RAM.** Při přechodu na sestavování po bajtech
+  hlídej konzistenci snímku (vícebajtová pole se během skládání nesmí měnit) — a otestuj to zátěží s pozitivní
+  kontrolou (`tb_link`: vypnutá ochrana → 61 chyb).
+- **Detekce:** `python sim/res_breakdown.py 30`; `impl/pnr/Counter_FPGA.rpt.txt` (Register, CLS).
+- **Commit:** `ebba0b0`
+- **Stav:** aktivní (⬜ neověřeno na HW)
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

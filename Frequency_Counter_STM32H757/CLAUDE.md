@@ -1104,6 +1104,12 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   Do té doby FPGA ignorovala VŠECHNY povely (ACK/SET_CONFIG/CAL): PHY mazala přijatý rámec (L-0120)
   a na prvním kusu Tang Nano byl vadný vstup pinu 54 = MOSI (L-0121, vyřešeno výměnou modulu).
   ⬜ CAL report (`tdc`) zatím na desce neověřen — konzole byla mezitím nedostupná (USB hub, L-0123).
+- 🔴 **SPI PHY od FW 0x040C taktovaná přímo SCK, rámce v blokové RAM (#264, `ebba0b0`).** Strop SCK z FPGA
+  strany **~40 MHz** (SCK→MISO ~7,5 ns, I/O omezení v `timing.sdc`), dřív ~8–10 MHz. TX: dvě poloviny RAM,
+  aplikace skládá do neaktivní a přepne po CRC; RX: CRC a bajty 0,1,2,4–7,12–14,126,127 počítá PHY za letu.
+  Odpověď na povel je hotová ~13 µs po CS↑ → **mezera mezi rámci na STM (`FPGA_FRAME_GAP_US`) nesmí klesnout
+  pod ~15 µs**, má-li odpověď přijít v hned následující transakci. Registry 38 %, CLS 64 % (`sim/res_breakdown.py`).
+  ⬜ Neověřeno na HW; zvyšování `FPGA_SCK_TARGET_HZ` až po ověření při 5 MHz, postupně, s měřením `CRC err`.
 - **Diagnostika SPI v DATA rámci (FW ≥ 0x0404, `fpgaraw`):** `[66][67][107]` = co FPGA přijala (`rx[0..2]`,
   ACK = `A5 02 06`), `[112..115]` = CRC spočtené (lo,hi) / přijaté (lo,hi), `[116,117]` = hrany MOSI,
   `[124,125]` = náběžné hrany SCK (musí být 1024 = `00 04`). Flags (bajt 3): bit5 `rx_crc_error` = 0, bit6 `ack_ok` = 1.
