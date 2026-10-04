@@ -56,6 +56,7 @@
 #define SDRAM_LOG_F_A_VALID  (1u << 0)   /* kanal A nese platne mereni */
 #define SDRAM_LOG_F_B_VALID  (1u << 1)   /* kanal B nese platne mereni */
 #define SDRAM_LOG_F_STALE    (1u << 2)   /* SIGNAL_LOST / mrtvy link v okamziku vzorku */
+#define SDRAM_LOG_F_SPIKE    (1u << 3)   /* okno TDC-poskozene (obri bin) -> konzument ho bere jako MEZERU v case, ne platny vzorek (jinak by stlacil Allan radu) */
 
 /* Jeden vzorek = OBA kanaly. 32 B -> 262 144 zaznamu na 8 MB.
  * ⚠️ Velikost MUSI zustat mocnina 2 — index se pak maskuje, ne deli.

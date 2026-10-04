@@ -104,6 +104,7 @@ void StartFpgaTask(void *argument)
       /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
        * ti si pak vezmou prumer za sve okno misto posledniho vzorku (mrtva doba).
        * Kriterium platnosti je tytez jako u `g_freq_valid` vyse. */
+      int spike = 0;   /* okno vyrazene spike-rejectem (obri bin) — oznaci se i v sdram_logu jako mezera */
       if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST)) {
         /* 🔴 F-0193: mereni pred timhle FPGA prepsala drive, nez jsme ho precetli
          * (dira v SEQUENCE) -> rozpracovany vzorek by mel uvnitr mrtvou dobu:
@@ -115,7 +116,6 @@ void StartFpgaTask(void *argument)
          * (realna zmena signalu se nezablokuje, nejvyse 1 okno). Vyradi se jen ze
          * statistiky/Allan; datalog (nize) i displej vedou syrovou hodnotu dal. */
         uint64_t uhz = (m.gate_ps > 0u) ? fpga_freq_hires_uhz(v, m.edge_count, m.gate_ps) : 0u;
-        int spike = 0;
         /* uhz_prev = posledni PRIJATE okno (ne posledni vubec) -> izolovany spike se
          * zahodi cistě (revert po nem uz neni vuci spiku). Pojistka reject_run: po 3
          * zamitnutich v rade to NENI spike, ale skutecna zmena signalu (pod prahem
@@ -128,6 +128,14 @@ void StartFpgaTask(void *argument)
           if (uhz > 0u) uhz_prev = uhz;
           reject_run = 0u;
           fpga_acc_add(v, m.edge_count, m.gate_ps);
+        } else {
+          /* Vyrazene okno = MEZERA V CASE, ne vyhozeni. Preruš akumulaci statistiky
+           * stejne jako dira v SEQUENCE / ztrata signalu (fpga_stat_break): jinak by
+           * se vzorky PRED a PO spiku slepily do jednoho a Allanova rada by se casove
+           * "stlacila" (fazove body by se sparovaly pres diru -> zkreslene σy(τ)).
+           * Cena: pri vysoke cetnosti spiku (obri bin, dokud neni opraven FPGA) kratsi
+           * souvisly beh a mene dlouhych τ — spravnost ma prednost pred pokrytim. */
+          fpga_stat_break();
         }
       } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
@@ -142,6 +150,7 @@ void StartFpgaTask(void *argument)
        * kadence FPGA (~4/s), ne 20 Hz pollu. */
       uint32_t lf = SDRAM_LOG_F_A_VALID;   /* kanal B az s dvoukanalovou deskou */
       if (m.error_flags & FPGA_ERR_SIGNAL_LOST) lf |= SDRAM_LOG_F_STALE;
+      if (spike) lf |= SDRAM_LOG_F_SPIKE;  /* TDC-poskozene okno -> rekonstrukce Allan ho vezme jako mezeru */
       sdram_log_put(m.sequence,
                     fpga_freq_hires_uhz(v, m.edge_count, m.gate_ps),
                     0u, lf,
