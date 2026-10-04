@@ -3140,12 +3140,19 @@ void UartTask_run(void *argument)
 						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X WIN:%u\n",
 							     (unsigned)m.fw_version, (unsigned)m.caps,
 							     (unsigned)m.clk_status, (unsigned)m.win_count);
-						  if (m.caps & FPGA_CAP_DT)
+						  if (m.caps & FPGA_CAP_DT) {
 							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu ps (`tdc` = detail)\n",
 								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,
 								     (m.tdc_status & FPGA_TDC_CAL_BUSY) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_FAIL) ? 1u : 0u,
 								     (m.tdc_status & FPGA_TDC_SHORT_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_SHORT_B) ? 1u : 0u,
 								     (unsigned long)m.gate_ps);
+							  {
+							    int c0 = g_tdc_cal_temp_c10 / 10, c1 = g_tdc_cal_temp_c10 % 10;
+							    if (c1 < 0) { c1 = -c1; }
+							    printf("  TDC: teplot. rekal %lux (cal pri %d.%d C) | spike-reject %lu oken (obri bin)\n",
+							           (unsigned long)g_tdc_recal_count, c0, c1, (unsigned long)g_tdc_spike_count);
+							  }
+						  }
 					  }
 				  }
 				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni

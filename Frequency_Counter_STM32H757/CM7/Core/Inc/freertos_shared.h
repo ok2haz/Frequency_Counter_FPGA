@@ -344,5 +344,6 @@ uint32_t RunTimeStats_GetCount(void);
 /* Teplotni rekalibrace TDC (freertos_task_fpga.c) — pro radek `status`. */
 extern volatile uint32_t g_tdc_recal_count;   /* pocet teplotnich rekalibraci TDC */
 extern volatile int16_t  g_tdc_cal_temp_c10;  /* teplota posledni kalibrace, ×10 °C */
+extern volatile uint32_t g_tdc_spike_count;   /* pocet oken vyrazenych jako obri-bin artefakt (cesta A) */
 
 #endif /* INC_FREERTOS_SHARED_H_ */

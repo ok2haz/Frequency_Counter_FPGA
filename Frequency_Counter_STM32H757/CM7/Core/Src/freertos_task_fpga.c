@@ -33,6 +33,15 @@
 volatile uint32_t g_tdc_recal_count = 0;   /* kolik teplotnich rekalibraci probehlo (status) */
 volatile int16_t  g_tdc_cal_temp_c10 = 0;  /* teplota posledni kalibrace, ×10 °C (status) */
 
+/* Cesta A (2026-10-04): vyrazeni oken poskozenych obrim binem TDC (kod 134 = 19,5 %
+ * hran). Kdyz hrana okna padne do saturovaneho kodu, dt_a je o ~2-4 ns mimo ->
+ * hi-res kmitocet jednorazove skoci o ~1,6·10⁻⁸ (max 4330 ps / 250 ms okno). To je
+ * >> sum dobrych hran (~7·10⁻¹⁰) a hluboko pod realnou zmenou signalu (>1e-4, tu resi
+ * signal-match reset v screen_main). Takove okno se nepridava do statistiky/Allan.
+ * Prah relativne: uhz_prev / TDC_SPIKE_REL_DIV = uhz_prev × 5·10⁻⁹ (~0,05 Hz @ 10 MHz). */
+#define TDC_SPIKE_REL_DIV   200000000ull
+volatile uint32_t g_tdc_spike_count = 0;   /* kolik oken vyrazeno jako obri-bin artefakt (status) */
+
 void StartFpgaTask(void *argument)
 {
   (void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
@@ -57,6 +66,8 @@ void StartFpgaTask(void *argument)
   uint8_t  lost  = 0;
   float    tdc_cal_t = -1000.0f;    /* teplota [°C] posledni kalibrace TDC; < -500 = jeste nemame referenci */
   uint32_t tdc_cal_next_ms = 0;     /* HAL_GetTick, od kdy smi dalsi rekalibrace (rate-limit) */
+  uint64_t uhz_prev = 0u;           /* hi-res kmitocet posledniho PRIJATEHO okna [µHz] — spike reject (cesta A) */
+  uint32_t reject_run = 0u;         /* kolik oken za sebou zamitnuto (pojistka proti zablokovani na realne zmene) */
   for (;;) {
     watchdog_kick_fpga();   /* heartbeat pro IWDG (zatuhnuti FpgaTasku -> reset) */
     if (fpga_freq_poll(&m)) {
@@ -99,9 +110,28 @@ void StartFpgaTask(void *argument)
          * Σhradel ~1 s, v case ale vic. Zahodit a zacit od tohoto mereni.
          * Pocita se v `fpga_freq_poll` (`status` -> radek SEQ FPGA). */
         if (fpga_freq_seq_gap() != 0u) fpga_stat_break();
-        fpga_acc_add(v, m.edge_count, m.gate_ps);
+        /* Cesta A: vyrad okno poskozene obrim binem TDC (viz hlavicka). Detekce =
+         * jednorazovy skok hi-res kmitoctu > uhz_prev×5e-9; ref se aktualizuje VZDY
+         * (realna zmena signalu se nezablokuje, nejvyse 1 okno). Vyradi se jen ze
+         * statistiky/Allan; datalog (nize) i displej vedou syrovou hodnotu dal. */
+        uint64_t uhz = (m.gate_ps > 0u) ? fpga_freq_hires_uhz(v, m.edge_count, m.gate_ps) : 0u;
+        int spike = 0;
+        /* uhz_prev = posledni PRIJATE okno (ne posledni vubec) -> izolovany spike se
+         * zahodi cistě (revert po nem uz neni vuci spiku). Pojistka reject_run: po 3
+         * zamitnutich v rade to NENI spike, ale skutecna zmena signalu (pod prahem
+         * 1e-4 signal-matche) -> prijmi a resyncni, aby se stat nezablokoval. */
+        if (uhz > 0u && uhz_prev > 0u && reject_run < 3u) {
+          uint64_t d = (uhz > uhz_prev) ? (uhz - uhz_prev) : (uhz_prev - uhz);
+          if (d > uhz_prev / TDC_SPIKE_REL_DIV) { spike = 1; reject_run++; g_tdc_spike_count++; }
+        }
+        if (!spike) {
+          if (uhz > 0u) uhz_prev = uhz;
+          reject_run = 0u;
+          fpga_acc_add(v, m.edge_count, m.gate_ps);
+        }
       } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
+        uhz_prev = 0u; reject_run = 0u;   /* ztrata signalu -> zahod referenci spike-rejectu */
       }
       /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
        * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
