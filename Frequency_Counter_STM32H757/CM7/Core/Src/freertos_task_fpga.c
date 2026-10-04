@@ -20,6 +20,18 @@
 #include "sdram_log.h"   /* datova cache mereni v SDRAM (dlouha presna historie) */
 #include <stdio.h>       /* printf — hlaseni vadneho SDRAM regionu pri initu */
 #include "errlog.h"   /* udalosti: ztrata linku / signalu FPGA */
+#include "sensor_stat.h"  /* g_sensors[SENS_T4A] — FPGA teplota pro rekalibraci TDC */
+
+/* Teplotni rekalibrace TDC (2026-10-04). Kalibracni tabulka hustoty kodu plati
+ * pro teplotu, pri ktere probehla: zpozdeni carry retezu na kremiku driftuji
+ * s teplotou (~0,1-0,3 %/°C), takze kody se posunou a presnost TDC degraduje.
+ * CM7 hlida FPGA teplotu (TMP117 0x4A u FPGA) a pri driftu >= TDC_RECAL_DELTA_C
+ * od posledni kalibrace posle `tdc cal` (bezi ve FPGA ~0,5 s, mereni se zastavi).
+ * Neblokujici: jen posle povel, dalsi polly ukazou BUSY a pak novou tabulku. */
+#define TDC_RECAL_DELTA_C   3.0f      /* prah driftu FPGA teploty pro rekalibraci [°C] */
+#define TDC_RECAL_MIN_MS    30000u    /* min. odstup dvou rekalibraci (proti thrashingu na prahu) */
+volatile uint32_t g_tdc_recal_count = 0;   /* kolik teplotnich rekalibraci probehlo (status) */
+volatile int16_t  g_tdc_cal_temp_c10 = 0;  /* teplota posledni kalibrace, ×10 °C (status) */
 
 void StartFpgaTask(void *argument)
 {
@@ -43,6 +55,8 @@ void StartFpgaTask(void *argument)
   fpga_meas_t m;
   uint32_t fails = 0;
   uint8_t  lost  = 0;
+  float    tdc_cal_t = -1000.0f;    /* teplota [°C] posledni kalibrace TDC; < -500 = jeste nemame referenci */
+  uint32_t tdc_cal_next_ms = 0;     /* HAL_GetTick, od kdy smi dalsi rekalibrace (rate-limit) */
   for (;;) {
     watchdog_kick_fpga();   /* heartbeat pro IWDG (zatuhnuti FpgaTasku -> reset) */
     if (fpga_freq_poll(&m)) {
@@ -151,6 +165,28 @@ void StartFpgaTask(void *argument)
       g_spi_dirty = 1;
     }
     taskEXIT_CRITICAL();
+
+    /* --- Teplotni rekalibrace TDC (viz hlavicka souboru) --- */
+    if (fpga_freq_link_ok() && g_sensors[SENS_T4A].valid) {
+      float t = g_sensors[SENS_T4A].last;
+      uint32_t now_ms = HAL_GetTick();
+      if (tdc_cal_t < -500.0f) {
+        tdc_cal_t = t;                           /* prvni platna teplota = reference boot kalibrace */
+        g_tdc_cal_temp_c10 = (int16_t)(t * 10.0f);
+      } else if (now_ms >= tdc_cal_next_ms) {
+        float d = t - tdc_cal_t; if (d < 0.0f) d = -d;
+        if (d >= TDC_RECAL_DELTA_C && fpga_freq_tdc_cal_start()) {
+          /* bez %f (nano.specs) -> teploty jako cele.desetiny */
+          int o0 = (int)tdc_cal_t, o1 = (int)((tdc_cal_t - (float)o0) * 10.0f);
+          int n0 = (int)t,         n1 = (int)((t - (float)n0) * 10.0f);
+          printf("TDC: teplotni rekalibrace, FPGA %d.%d -> %d.%d C\n", o0, o1, n0, n1);
+          tdc_cal_t          = t;
+          g_tdc_cal_temp_c10 = (int16_t)(t * 10.0f);
+          tdc_cal_next_ms    = now_ms + TDC_RECAL_MIN_MS;
+          g_tdc_recal_count++;
+        }
+      }
+    }
 
     osDelay(50);   /* ~20 Hz cteni */
   }

@@ -341,4 +341,8 @@ void StartFpgaTask(void *argument);        /* freertos_task_fpga.c */
 void RunTimeStats_Init(void);
 uint32_t RunTimeStats_GetCount(void);
 
+/* Teplotni rekalibrace TDC (freertos_task_fpga.c) — pro radek `status`. */
+extern volatile uint32_t g_tdc_recal_count;   /* pocet teplotnich rekalibraci TDC */
+extern volatile int16_t  g_tdc_cal_temp_c10;  /* teplota posledni kalibrace, ×10 °C */
+
 #endif /* INC_FREERTOS_SHARED_H_ */
