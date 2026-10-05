@@ -128,15 +128,15 @@ void StartFpgaTask(void *argument)
           if (uhz > 0u) uhz_prev = uhz;
           reject_run = 0u;
           fpga_acc_add(v, m.edge_count, m.gate_ps);
-        } else {
-          /* Vyrazene okno = MEZERA V CASE, ne vyhozeni. Preruš akumulaci statistiky
-           * stejne jako dira v SEQUENCE / ztrata signalu (fpga_stat_break): jinak by
-           * se vzorky PRED a PO spiku slepily do jednoho a Allanova rada by se casove
-           * "stlacila" (fazove body by se sparovaly pres diru -> zkreslene σy(τ)).
-           * Cena: pri vysoke cetnosti spiku (obri bin, dokud neni opraven FPGA) kratsi
-           * souvisly beh a mene dlouhych τ — spravnost ma prednost pred pokrytim. */
-          fpga_stat_break();
         }
+        /* Spike (obri bin): okno se do akumulatoru NEPRIDA (dropne se), vzorek se
+         * dopocte ze zbylych oken -> Allan se dal kresli (mezera je jen sub-vzorkova,
+         * ~0,25 s z ~1 s vzorku). Pyramidu ZAMERNE NEresetujeme: pri ~19,5 % spiku
+         * by `fpga_stat_break` Allan VYHLADOVEL (nekreslil by se vubec) a mezeru v
+         * pyramide stejne neoznaci (break nuluje jen akumulator). Prava oprava je
+         * odstranit obri bin ve FPGA (B1a, STATUS #267) -- uzivatel zvolil prioritu
+         * B1a, ne kompromis ve statistice. Vadne okno se znaci v ULOZENE rade
+         * priznakem SDRAM_LOG_F_SPIKE (nize), aby ho pozdejsi rekonstrukce poznala. */
       } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
         uhz_prev = 0u; reject_run = 0u;   /* ztrata signalu -> zahod referenci spike-rejectu */

@@ -11,6 +11,15 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.12.1 (2026-10-05) = fix: Allan graf se zase kresli (revert break-on-spike).
+ * v0.12.0 zavedlo spike = fpga_stat_break na ~19,5 % oken (obri bin). To ale
+ * VYHLADOVELO Allan pyramidu (1s vzorek se skoro nikdy nedokoncil bez preruseni)
+ * -> graf se na displeji nekreslil a g_adev_1s ~0; a mezeru v pyramide stejne
+ * neoznacilo (break nuluje jen akumulator). Byla to prekorekce. Revert na v0.11.0:
+ * vadne okno se jen VYRADI z akumulatoru, vzorek se dopocte ze zbylych -> Allan
+ * jede dal, mezera je jen sub-vzorkova. Vadne okno se znaci SDRAM_LOG_F_SPIKE v
+ * ulozene rade. Prava oprava stlaceni = odstranit obri bin ve FPGA (B1a #267),
+ * zvolena priorita uzivatelem. ⬜ Neovereno na HW. */
 /* v0.12.0 (2026-10-05) = konzistence web/displej + spravnost Allan + B1a diag.
  * WEB: headline (fmtFreqHtml) podtrhaval posledni "duveryhodnou" cislici NAPEVNO
  * na 3. desetine, bez ohledu na rozliseni -> pri horsim rozliseni nez 0,001 Hz
@@ -89,7 +98,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 12
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.12.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.12.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
