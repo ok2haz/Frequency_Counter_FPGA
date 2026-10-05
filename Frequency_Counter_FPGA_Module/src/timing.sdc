@@ -62,6 +62,12 @@ set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get
 set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
 set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
 set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
+// B1a: hicode_r (nejvyssi set tap) ma TUTEZ hlubokou kombinacni cestu q -> hk ->
+// hicode_r, latchuje se na tomtez fz4 jako code_r => stejnych 5 taktu multicycle.
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/hicode_r*}]
 
 // Diagnostika kalibrace (tdc.v, faze ph[5] pruchodu tabulkou): scan_k se meni
 // jen jednou za 10 taktu (ph[9]) a hcur v ph[1] -> do zapisu d_* v ph[5] maji

@@ -69,6 +69,8 @@ module spi_app (
     input  wire [31:0] meas_periods_b,       // CH_B: počet period v okně
     input  wire [7:0]  meas_tdc_status,      // viz hlavička (abs 100)
     input  wire [191:0] meas_cal_diag,       // diagnostika kalibrace A[95:0] B[191:96]
+    input  wire [15:0] meas_maxtap_a,        // B1a: nejvyssi KDY set tap A (bubliny: >> d_last)
+    input  wire [15:0] meas_maxtap_b,        // B1a: nejvyssi KDY set tap B
     output wire [7:0]  hist_k,               // vypis histogramu: adresa kodu (CAL pozadavek)
     input  wire [23:0] meas_hist_a,          // hist_A[hist_k] (kvazistaticke)
     input  wire [23:0] meas_hist_b,          // hist_B[hist_k]
@@ -105,7 +107,11 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h040C;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h040D;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x040C -> 0x040D (2026-10-04, B1a): CAL report nese navic d_maxtap (nejvyssi
+    // KDY navzorkovany tap, CAL bajty 46..49) k diagnoze obriho binu -- maxtap>>d_last
+    // = bubliny nad prvni nulou, maxtap~d_last = retez tam fyzicky konci. Jen diag,
+    // zadna zmena mereni/DATA ramce.
     // 🔴 0x0201 -> 0x0300 (2026-09-30): top.v prešel na novou desku (dva
     // symetricke kanaly CH_A/CH_B, hrube citani na jedne 100MHz referenci
     // misto 4fazoveho vernieru). spi_app.v samo je netknute, ale semantika
@@ -257,6 +263,11 @@ module spi_app (
                         7'd43: tb = hist_mode ? meas_hist_b[7:0]   : 8'd0;
                         7'd44: tb = hist_mode ? meas_hist_b[15:8]  : 8'd0;
                         7'd45: tb = hist_mode ? meas_hist_b[23:16] : 8'd0;
+                        // B1a: nejvyssi set tap (stabilni diag, vzdy ve CAL reportu)
+                        7'd46: tb = meas_maxtap_a[7:0];
+                        7'd47: tb = meas_maxtap_a[15:8];
+                        7'd48: tb = meas_maxtap_b[7:0];
+                        7'd49: tb = meas_maxtap_b[15:8];
                         default: tb = 8'd0;
                     endcase
                 end else begin

@@ -192,7 +192,8 @@ typedef struct {
     uint32_t ovf[2];      /* [A,B] udalosti kalibrace za koncem retezu (kod 255) */
     uint32_t peak[2];     /* nejvetsi pocet udalosti na jeden kod */
     uint16_t nz[2];       /* pocet neprazdnych kodu (~175 = retez pokryva 10 ns) */
-    uint16_t last[2];     /* nejvyssi neprazdny kod */
+    uint16_t last[2];     /* nejvyssi neprazdny kod (= nejvyssi pozice PRVNI nuly) */
+    uint16_t maxtap[2];   /* B1a: nejvyssi KDY navzorkovany tap; maxtap>>last = bubliny nad prvni nulou */
     uint8_t  status;      /* FPGA_TDC_* */
     uint8_t  cal_mode;    /* posledni SET_CONFIG 0x02 */
 } fpga_tdc_cal_t;

@@ -1028,6 +1028,9 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
                 out->nz[ch]   = (uint16_t)(q[8]  | (q[9]  << 8));
                 out->last[ch] = (uint16_t)(q[10] | (q[11] << 8));
             }
+            /* B1a: nejvyssi set tap A/B z CAL bajtu 46..49 (mimo 12-byte blok) */
+            out->maxtap[0] = (uint16_t)(rx[FR_PAYLOAD + 34] | (rx[FR_PAYLOAD + 35] << 8));
+            out->maxtap[1] = (uint16_t)(rx[FR_PAYLOAD + 36] | (rx[FR_PAYLOAD + 37] << 8));
             out->status   = rx[FR_PAYLOAD + 24];
             out->cal_mode = rx[FR_PAYLOAD + 25];
             ok = true;

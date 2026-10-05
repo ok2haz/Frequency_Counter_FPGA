@@ -2207,9 +2207,26 @@ void UartTask_run(void *argument)
 				  }
 				  if (fpga_freq_tdc_report(&d)) {
 					  for (int ch = 0; ch < 2; ch++)
-						  printf("TDC %c: kodu %u/256 (nejvyssi %u), nejvetsi %lu, za koncem retezu %lu\n",
+						  printf("TDC %c: kodu %u/256 (nejvyssi %u), nejvetsi %lu, za koncem retezu %lu, max tap %u\n",
 							     'A' + ch, (unsigned)d.nz[ch], (unsigned)d.last[ch],
-							     (unsigned long)d.peak[ch], (unsigned long)d.ovf[ch]);
+							     (unsigned long)d.peak[ch], (unsigned long)d.ovf[ch],
+							     (unsigned)d.maxtap[ch]);
+					  /* B1a: obri bin = d_last zustava na ~134. maxtap to rozlisi:
+					   *   maxtap ~ last  -> teplomer CISTY, retez tam fyzicky konci
+					   *                     (oprava = delsi/jiny P&R carry chain)
+					   *   maxtap >> last -> BUBLINY nad prvni nulou, retez pokracuje
+					   *                     (oprava = vzorkovani / metastabilita FF) */
+					  for (int ch = 0; ch < 2; ch++) {
+						  if (d.maxtap[ch] == 0u && d.last[ch] > 0u) {
+							  printf("TDC %c: maxtap N/A (stary FPGA FW? B1a potrebuje >=0x040D)\n", 'A' + ch);
+							  continue;
+						  }
+						  int bub = ((int)d.maxtap[ch] - (int)d.last[ch]) > 3;
+						  printf("TDC %c: maxtap %u vs nejvyssi kod %u -> %s\n",
+						         'A' + ch, (unsigned)d.maxtap[ch], (unsigned)d.last[ch],
+						         bub ? "BUBLINY nad prvni nulou (retez pokracuje; oprava = vzorkovani/metastabilita)"
+						             : "teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)");
+					  }
 					  printf("TDC: status 0x%02X (cal A:%u B:%u fail:%u busy:%u, retez kratky A:%u B:%u)\n",
 						     (unsigned)d.status,
 						     (d.status & FPGA_TDC_CAL_A) ? 1u : 0u, (d.status & FPGA_TDC_CAL_B) ? 1u : 0u,

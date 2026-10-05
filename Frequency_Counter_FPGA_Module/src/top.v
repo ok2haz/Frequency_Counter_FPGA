@@ -124,6 +124,7 @@ module top (
     wire        cal_busy_a, cal_busy_b, cal_valid_a, cal_valid_b, cal_fail_a, cal_fail_b;
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
     wire [15:0] da_nz, da_last, db_nz, db_last;
+    wire [15:0] da_maxtap, db_maxtap;          // B1a: nejvyssi set tap (bubliny: >> d_last)
     wire [7:0]  hist_k;                        // z spi_app (kvazistaticky)
     wire [23:0] hq_a, hq_b;                    // hist[hist_k] kanalu A/B
 
@@ -134,6 +135,7 @@ module top (
         .use_ro(use_ro_a), .cal_busy(cal_busy_a),
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last),
+        .d_maxtap(da_maxtap),
         .dump_k(hist_k), .dump_q(hq_a)
     );
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdcb (
@@ -143,6 +145,7 @@ module top (
         .use_ro(use_ro_b), .cal_busy(cal_busy_b),
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last),
+        .d_maxtap(db_maxtap),
         .dump_k(hist_k), .dump_q(hq_b)
     );
 
@@ -320,6 +323,8 @@ module top (
         .meas_periods_b(periods_b_hold),
         .meas_tdc_status(tdc_status),
         .meas_cal_diag(cal_diag),
+        .meas_maxtap_a(da_maxtap),
+        .meas_maxtap_b(db_maxtap),
         .hist_k(hist_k),
         .meas_hist_a(hq_a),
         .meas_hist_b(hq_b),

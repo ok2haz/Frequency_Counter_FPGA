@@ -201,7 +201,13 @@ module tdc_chan #(
     output reg [31:0]  d_ovf,       // hist[255]: udalosti za koncem retezu
     output reg [31:0]  d_peak,      // nejvetsi hist[k]
     output reg [15:0]  d_nz,        // pocet neprazdnych kodu (<= 256)
-    output reg [15:0]  d_last,      // nejvyssi neprazdny kod
+    output reg [15:0]  d_last,      // nejvyssi neprazdny kod (= nejvyssi pozice PRVNI nuly)
+    // B1a (2026-10-04): nejvyssi KDY navzorkovany tap za celou kalibraci. Dekoder
+    // bere PRVNI nulu, takze d_last nerozlisi "retez fyzicky konci" od "bublina,
+    // retez pokracuje". d_maxtap to rozlisi:
+    //   d_maxtap ~ d_last  -> teplomer cisty, retez tam fyzicky konci (oprava = delsi/jiny P&R retezu)
+    //   d_maxtap >> d_last -> bubliny nad prvni nulou (oprava = vzorkovani/metastabilita)
+    output reg [15:0]  d_maxtap,
     // vypis histogramu (diagnostika DNL, 2026-10-03): mimo kalibraci cte BRAM
     // hist[dump_k]; dump_k je kvazistaticky (nastavi ho STM pozadavkem), cteni
     // z 10 MHz domeny probehne az mikrosekundy po zmene -> vicebitove CDC OK.
@@ -213,7 +219,7 @@ module tdc_chan #(
 
     initial begin
         ts_valid = 1'b0; ts_ps = 48'd0; cal_valid = 1'b0; cal_fail = 1'b0;
-        d_ovf = 32'd0; d_peak = 32'd0; d_nz = 16'd0; d_last = 16'd0;
+        d_ovf = 32'd0; d_peak = 32'd0; d_nz = 16'd0; d_last = 16'd0; d_maxtap = 16'd0;
     end
 
     // ---------------- stav kalibrace (ONE-HOT, kazda cesta <= 1-2 LUT) -----
@@ -279,13 +285,37 @@ module tdc_chan #(
         end
     end
 
+    // B1a: nejvyssi SET tap (0..255). Stejna 8-blokova struktura jako pk (casove
+    // bezpecne, tyz MCP). hi32 = pozice nejvyssi 1 v bloku (32 = zadna); nejvyssi
+    // neprazdny blok prepise -> celkova nejvyssi 1.
+    function [5:0] hi32;
+        input [31:0] v;
+        integer j;
+        begin
+            hi32 = 6'd32;
+            for (j = 0; j < 32; j = j + 1) if (v[j]) hi32 = j[5:0];
+        end
+    endfunction
+    reg [7:0] hk;
+    reg [5:0] hld;
+    integer   hg;
+    always @* begin
+        hk  = 8'd0;
+        hld = 6'd32;
+        for (hg = 0; hg < 8; hg = hg + 1) begin
+            hld = hi32(th[32*hg +: 32]);
+            if (hld != 6'd32) hk = {hg[2:0], hld[4:0]};
+        end
+    end
+
     reg [7:0] code_r = 8'd255;
+    reg [7:0] hicode_r = 8'd0;                // B1a: nejvyssi set tap tohoto eventu
     reg       dv1 = 1'b0, dv2 = 1'b0;
     wire      fz4 = (fz == 3'd4);
     always @(posedge clk) begin
         dv1 <= fz4;                           // dekoder dokoncen na konci fz==4
         dv2 <= dv1;
-        if (fz4) code_r <= pk;                // q zmrazene >= 5 taktu (MCP 5)
+        if (fz4) begin code_r <= pk; hicode_r <= hk; end   // q zmrazene >= 5 taktu (MCP 5)
     end
 
     // ---------------- kalibracni tabulka + histogram (BRAM) --------------
@@ -346,6 +376,7 @@ module tdc_chan #(
             cnt       <= {HW{1'b0}};
             cal_valid <= 1'b0;
             cal_fail  <= 1'b0;
+            d_maxtap  <= 16'd0;               // B1a: reset pred novou kalibraci
         end else begin
             if (s_clr) begin                      // vynuluj histogram (256 taktu)
                 clr_k <= clr_k + 9'd1;
@@ -354,6 +385,7 @@ module tdc_chan #(
             if (s_col) begin                      // sbirej udalosti
                 if (dv2) begin
                     cnt <= cnt + {{(HW-1){1'b0}}, 1'b1};
+                    if ({8'd0, hicode_r} > d_maxtap) d_maxtap <= {8'd0, hicode_r};  // B1a
                     if (cnt_hit) begin            // 2^CAL_LOG2. udalost
                         s_col <= 1'b0; s_drn <= 1'b1;
                     end
