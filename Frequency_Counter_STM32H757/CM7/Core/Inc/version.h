@@ -11,6 +11,20 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.12.0 (2026-10-05) = konzistence web/displej + spravnost Allan + B1a diag.
+ * WEB: headline (fmtFreqHtml) podtrhaval posledni "duveryhodnou" cislici NAPEVNO
+ * na 3. desetine, bez ohledu na rozliseni -> pri horsim rozliseni nez 0,001 Hz
+ * jine cislo nez displej. Ted pocita hranici ze SKUTECNEHO rozliseni (namerena
+ * sigma_y@1s z klientskeho ADEV, fallback sqrt2*tdc/gate) = jako firmware
+ * freq_uncertain_frac; 7 desetin jako displej; vybledle cifry kontrastnejsi.
+ * ALLAN SPRAVNOST: spike-reject (v0.11.0) vyrazene okno obriho binu jen nepridal
+ * do akumulatoru, ale NEPRERUSIL -> vzorky pred/po spiku se slepily a rada se
+ * casove "stlacila". Ted spike = MEZERA v case (fpga_stat_break) + priznak
+ * SDRAM_LOG_F_SPIKE v ulozene rade (rekonstrukce ho vezme jako mezeru).
+ * B1a (FPGA FW 0x040D): CAL report nese d_maxtap (nejvyssi KDY navzorkovany tap)
+ * k diagnoze obriho binu -- `tdc`: maxtap~last = retez fyzicky konci, maxtap>>last
+ * = bubliny nad prvni nulou (jina oprava). STATUS #267.
+ * ⬜ Vse neovereno na HW po power-cyklu; flashnout CM4 (web) + CM7 + bitstream 0x040D. */
 /* v0.11.0 (2026-10-04) = oprava USB CDC konzole + zpresneni mereni TDC.
  * KONZOLE: deadlock TX ringu pri plnem bufferu (drzeny blok se neuvolnil ->
  * avail==0 -> vse zahazovano), ISR-safe drain z CDC callbacku (HAL_GetTick
@@ -74,8 +88,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 11
+#define FW_VERSION_MINOR 12
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.11.0"
+#define FW_VERSION_STR   "v0.12.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
