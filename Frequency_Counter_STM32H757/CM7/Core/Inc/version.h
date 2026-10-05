@@ -11,6 +11,15 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.12.2 (2026-10-05) = web: headline podtrhava TOTEZ cislo co displej + 3 grafy.
+ * (1) WEB HEADLINE = DISPLEJ: firmware servíruje NAMERENOU σy@1s (`sy1e15` v
+ * /api/state, z g_adev_1s = tyz zdroj co displej, pres sigma_tau[0] ve snapshotu).
+ * fmtFreqHtml ji pouzije misto vlastni klientske sigmaAtTau(1) -> u hranice dekady
+ * uz nepodtrhava jine cislo. IPC_VERSION beze zmeny (sigma_tau[0] existovalo).
+ * (2) FAZOVY SUM jde MAXIMALIZOVAT (klik -> fullscreen, drawZoomPn log-log) a ma
+ * popsanou osu X (offset [Hz] + svisla mrizka gxPn). (3) ALLAN/faz.sum maji
+ * VEDLEJSI LOG mrizku (mantisy 2..9 v dekade, .gm/.gvm) - carkovane log pozadi.
+ * ⬜ Neovereno v prohlizeci; flashnout CM4 (web) + CM7 (sy1e15). */
 /* v0.12.1 (2026-10-05) = fix: Allan graf se zase kresli (revert break-on-spike).
  * v0.12.0 zavedlo spike = fpga_stat_break na ~19,5 % oken (obri bin). To ale
  * VYHLADOVELO Allan pyramidu (1s vzorek se skoro nikdy nedokoncil bez preruseni)
@@ -98,7 +107,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 12
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.12.1"
+#define FW_VERSION_PATCH 2
+#define FW_VERSION_STR   "v0.12.2"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

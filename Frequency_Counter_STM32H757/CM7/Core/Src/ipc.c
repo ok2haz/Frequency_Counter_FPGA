@@ -175,7 +175,13 @@ void ipc_publish(void)
         g_ipc.snap.freq4_hz = 0.0;
     }
 
-    /* ⚠️ sigma_tau/tau_s ZAMERNE neplnime (zdroj = simulace #2). */
+    /* sigma_tau[0] = NAMERENA σy@1s (g_adev_1s z firmwarove Allan pyramidy) —
+     * web (headline) z ni pocita hranici podtrzeni posledni duveryhodne cislice
+     * STEJNE jako displej (jediny zdroj σy), takze podtrhavaji TOTEZ cislo.
+     * Zbytek pole (ADEV krivka) se dal neplni — web si ADEV kresli vlastni cestou
+     * z realnych mereni. Driv tu stalo "zdroj = simulace #2", to uz neplati (SPI
+     * link je realny), ale servirujeme JEN σy@1s pro headline, ne celou krivku. */
+    g_ipc.snap.sigma_tau[0] = g_adev_1s;
 
     /* ⚠️ Uz zadny prevod pres float — `gps_data_t` nese e7 primo (F-0070),
      * takze snapshot dostane tutez hodnotu bez kvantizace. `IPC_VERSION` se

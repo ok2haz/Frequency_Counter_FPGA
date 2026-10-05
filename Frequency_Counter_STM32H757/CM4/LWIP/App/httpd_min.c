@@ -454,6 +454,17 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
      * Celociselne, zadny `%f` (nano.specs). */
     jputf(&j, "\"tdc_ps\":%lu,", (unsigned long)(MP_TDC_PS));
     jputf(&j, "\"ref_ppb_x10\":%lu,", (unsigned long)(MP_REF_PPB * 10.0 + 0.5));
+    /* NAMERENA σy@1s z firmwaru (sigma_tau[0]) jako integer ×1e15 (zadny %f):
+     * headline pocita hranici podtrzeni z TEZE σy co displej -> shoda. 0 = jeste
+     * neni (web spadne na teoreticke √2·tdc/gate). Clamp na uint32. */
+    {
+        unsigned long sy1e15 = 0ul;
+        if (snap->sigma_tau[0] > 0.0f) {
+            double sv = (double)snap->sigma_tau[0] * 1e15;
+            sy1e15 = (sv > 4.0e9) ? 4000000000ul : (unsigned long)sv;
+        }
+        jputf(&j, "\"sy1e15\":%lu,", sy1e15);
+    }
     jbool(&j, "running", s.set_running);
     jnum_c100(&j, "temp_ocxo_c",  s.valid & SCPI_V_T_OCXO,  s.t_ocxo_c100);
     jnum_c100(&j, "temp_board_c", s.valid & SCPI_V_T_BOARD, s.t_board_c100);
@@ -885,6 +896,12 @@ static const char SPA_HTML[] =
  * stejnou vahu, delala by z grafu kostkovany papir a prebila krivku. */
 ".gv{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
 "stroke-dasharray:1 6;opacity:.55}\n"
+/* Vedlejsi LOG mrizka (mantisy 2..9 uvnitr dekady) - log-log grafy (ALLAN, faz.
+   sum). Jeste slabsi nez hlavni dekadove cary: jen naznaci log rozlozeni. */
+".gm{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:1 7;opacity:.3}\n"
+".gvm{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:1 7;opacity:.28}\n"
 /* `stroke-linecap:round` dodelava to, co uz delal `linejoin`: konce useku pri
  * dire v datech (a osamocene body) nejsou uriznute natvrdo. */
 ".ln{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;\n"
@@ -1497,12 +1514,13 @@ static const char SPA_HTML[] =
 "</div>\n"
 "\n"
 "<div class='card' id='cPn'>\n"
-"<div class='ttl'>[ FAZOVY SUM L(f) ]<span class='r mono' id='stPn'>--</span></div>\n"
+"<div class='ttl'>[ FAZOVY SUM L(f) ]<span class='zo'>klikni = detail</span><span class='r mono' id='stPn'>--</span></div>\n"
 "<div class='big'><b id='pnHead' data-na='1'>--</b><span>dBc/Hz</span></div>\n"
-"<div class='cw'>\n"
+"<div class='cw' data-z='pn'>\n"
 "<div class='pa'>\n"
 "<svg viewBox='0 0 100 100' preserveAspectRatio='none'>\n"
 "<g id='gyPn'></g>\n"
+"<g id='gxPn'></g>\n"
 "<polyline class='ln rf' id='rPn'/>\n"
 "<polyline class='ln s2' id='lPn'/>\n"
 "</svg>\n"
@@ -1958,6 +1976,11 @@ static const char SPA_HTML[] =
 "    h+='<b class='+(p<4?'yat':(p>96?'yab':'ya'))+' style=top:'+p.toFixed(2)+'%>'\n"
 "      +f(ax.log?Math.pow(10,v):v)+'</b>';\n"
 "  }\n"
+"  /* Vedlejsi LOG cary (mantisy 2..9 v kazde dekade) - jen log osa, jen do mrizky. */\n"
+"  if(ax.log&&g){ var dd,kk,lv,pm;\n"
+"    for(dd=Math.floor(ax.lo);dd<ax.hi;dd++) for(kk=2;kk<10;kk++){ lv=dd+Math.log10(kk);\n"
+"      pm=ax.map?ax.map(lv):(100-(lv-ax.lo)*100/rng); if(pm<-0.05||pm>100.05) continue;\n"
+"      s+='<line class=gm x1=0 y1='+pm.toFixed(2)+' x2=100 y2='+pm.toFixed(2)+' />'; } }\n"
 "  if(g) g.innerHTML=s;\n"
 "  if(yl) yl.innerHTML=h;\n"
 "}\n"
@@ -1973,6 +1996,11 @@ static const char SPA_HTML[] =
 "    h+='<b class='+(p<4?'xf':(p>96?'xe':'xm'))+' style=left:'+p.toFixed(2)+'%>'\n"
 "      +f(ax.log?Math.pow(10,v):v)+'</b>';\n"
 "  }\n"
+"  /* Vedlejsi LOG svisle cary (mantisy 2..9) - jen log osa, jen do mrizky. */\n"
+"  if(ax.log&&g){ var dd,kk,lv,pm;\n"
+"    for(dd=Math.floor(ax.lo);dd<ax.hi;dd++) for(kk=2;kk<10;kk++){ lv=dd+Math.log10(kk);\n"
+"      pm=(lv-ax.lo)*100/rng; if(pm<-0.05||pm>100.05) continue;\n"
+"      s+='<line class=gvm x1='+pm.toFixed(2)+' y1=0 x2='+pm.toFixed(2)+' y2=100 />'; } }\n"
 "  if(g) g.innerHTML=s;\n"
 "  if(unit) h+='<b class=xu>'+unit+'</b>';\n"
 "  if(xl){ xl.className='xl xa'; xl.innerHTML=h; }\n"
@@ -2144,6 +2172,7 @@ static const char SPA_HTML[] =
 "  $('dSat').innerHTML='';   /* tabulka druzic patri jen do GPS detailu */\n"
 "\n"
 "  if(zoom==='adev'){ drawZoomAdev(svg,ax); return; }\n"
+"  if(zoom==='pn'){ drawZoomPn(svg,ax); return; }\n"
 "\n"
 "  var s=spec(zoom);\n"
 "  $('dTtl').textContent=s.title;\n"
@@ -2260,6 +2289,39 @@ static const char SPA_HTML[] =
 "  $('dSat').innerHTML=t;   /* vlastni kontejner -> prepise se, nehromadi se */\n"
 "}\n"
 "\n"
+"/* Detail fazoveho sumu: log-log L(f), stejna data jako karta (pnCompute). */\n"
+"function drawZoomPn(svg,ax){\n"
+"  $('dTtl').textContent='FAZOVY SUM L(f) - dBc/Hz vs offset [Hz]';\n"
+"  $('dNote').textContent='L(f) z realnych mereni. fs~1 Hz -> jen nizke offsety do Nyquistu (fs/2); Welch 50 %.';\n"
+"  var n=M.f.length,i;\n"
+"  if(n<PN_N){ $('dSt').innerHTML=''; return; }\n"
+"  var tau0=mTau0(n); if(!(tau0>0)){ $('dSt').innerHTML=''; return; }\n"
+"  var fs=1/tau0, mean=0; for(i=0;i<n;i++) mean+=M.f[i]; mean/=n;\n"
+"  if(!(mean>0)){ $('dSt').innerHTML=''; return; }\n"
+"  var y=[]; for(i=0;i<n;i++) y.push((M.f[i]-mean)/mean);\n"
+"  var r=pnCompute(y,mean,fs), P=r.pts;\n"
+"  if(!P.length){ $('dSt').innerHTML=''; return; }\n"
+"  var lo=P[0].l,hi=P[0].l; for(i=1;i<P.length;i++){ if(P[i].l<lo)lo=P[i].l; if(P[i].l>hi)hi=P[i].l; }\n"
+"  if(hi-lo<10){ var md=(hi+lo)/2; lo=md-5; hi=md+5; }\n"
+"  var ay=niceAxis(lo,hi,6); lo=ay.lo; hi=ay.hi;\n"
+"  var axl=niceAxisLog(Math.log10(P[0].f),Math.log10(P[P.length-1].f));\n"
+"  var xlo=axl.lo,xhi=axl.hi,k,lv,xm;\n"
+"  for(i=0;i<ay.t.length;i++){ var vv=ay.t[i], yy=100-(vv-lo)*100/(hi-lo); if(yy<-0.05||yy>100.05) continue;\n"
+"    var g=mk('line','g'); g.setAttribute('x1',0);g.setAttribute('x2',100);g.setAttribute('y1',yy);g.setAttribute('y2',yy); svg.appendChild(g);\n"
+"    var b=document.createElement('b'); b.style.top=yy+'%'; b.textContent=vv.toFixed(0); ax.appendChild(b); }\n"
+"  for(i=Math.floor(xlo);i<=xhi;i++){ var xx=(xhi>xlo)?((i-xlo)*100/(xhi-xlo)):0;\n"
+"    if(xx>=-0.05&&xx<=100.05){ var gv=mk('line','gv'); gv.setAttribute('x1',xx);gv.setAttribute('x2',xx);gv.setAttribute('y1',0);gv.setAttribute('y2',100); svg.appendChild(gv);\n"
+"      var u=document.createElement('u'); u.style.left=xx+'%'; u.textContent=fmtOff(i); ax.appendChild(u); }\n"
+"    if(i<xhi) for(k=2;k<10;k++){ lv=i+Math.log10(k); xm=(lv-xlo)*100/(xhi-xlo); if(xm<0||xm>100) continue;\n"
+"      var gm=mk('line','gvm'); gm.setAttribute('x1',xm);gm.setAttribute('x2',xm);gm.setAttribute('y1',0);gm.setAttribute('y2',100); svg.appendChild(gm); } }\n"
+"  var p='';\n"
+"  for(i=0;i<P.length;i++){ var x=(xhi>xlo)?((Math.log10(P[i].f)-xlo)*100/(xhi-xlo)):0, yv=100-(P[i].l-lo)*100/(hi-lo);\n"
+"    if(yv<0)yv=0; if(yv>100)yv=100; p+=x.toFixed(2)+','+yv.toFixed(2)+' '; }\n"
+"  var pl=mk('polyline','ln s2'); pl.setAttribute('points',p); svg.appendChild(pl);\n"
+"  var h='';\n"
+"  for(i=0;i<P.length;i++) h+='<div><div class=k>'+fmtOff(Math.log10(P[i].f))+'</div><div class=v>'+P[i].l.toFixed(1)+' dBc/Hz</div></div>';\n"
+"  $('dSt').innerHTML=h;\n"
+"}\n"
 "function drawZoomAdev(svg,ax){\n"
 "  $('dTtl').textContent='ALLAN sigma_y(tau) - log-log';\n"
 "  $('dNote').textContent='Prekryvajici se (overlapping) ADEV z realnych mereni z FPGA, tau0 = skutecny rozestup mereni. '\n"
@@ -2312,9 +2374,10 @@ static const char SPA_HTML[] =
 " * modre podtrzena, za ni NEJISTA mista mensim pismem a svetlejsim odstinem.\n"
 " * Hranice se NEPOCITA napevno (driv vzdy 3. desetina, bez ohledu na rozliseni\n"
 " * - proto podtrhavala JINE cislo nez displej). Bere se ze SKUTECNEHO rozliseni,\n"
-" * presne jako firmware `freq_uncertain_frac`: u_res = namerena sigma_y@1s\n"
-" * (`sigmaAtTau(1)` z klientskeho ADEV - tyz zdroj co rozpocet nejistoty),\n"
-" * jinak teoreticke sqrt2*tdc/gate; res_hz = u_res*f; nejista je kazda cislice\n"
+" * presne jako firmware `freq_uncertain_frac`: u_res = NAMERENA sigma_y@1s Z\n"
+" * FIRMWARU (`sy1e15` v /api/state = tataz g_adev_1s co displej -> JEDEN zdroj,\n"
+" * takze podtrhavaji TOTEZ cislo; driv klientske sigmaAtTau(1) = jina sigma_y = jine\n"
+" * cislo), jinak teoreticke sqrt2*tdc/gate; res_hz = u_res*f; nejista je kazda cislice\n"
 " * od konce, jejiz mistni hodnota je pod res_hz (smi zasahnout i do cele casti,\n"
 " * F-0177). Zobrazuje 7 desetin (hi-res /4 jako displej). */\n"
 "function fmtFreqHtml(v){\n"
@@ -2323,7 +2386,7 @@ static const char SPA_HTML[] =
 "  var NF=7, iv=Math.floor(v), fp=Math.round((v-iv)*1e7);\n"
 "  if(fp>=1e7){ fp-=1e7; iv+=1; }\n"
 "  var ipS=String(iv), fsS=String(fp); while(fsS.length<NF) fsS='0'+fsS;\n"
-"  var s=LAST, sy=(typeof sigmaAtTau==='function')?sigmaAtTau(1):0;\n"
+"  var s=LAST, sy=(s&&s.sy1e15>0)?s.sy1e15*1e-15:0;\n"
 "  var uRes=(sy>0)?sy:((s&&s.tdc_ps&&(+s.gate_ns)>0)?Math.SQRT2*(s.tdc_ps*1e-12)/((+s.gate_ns)*1e-9):0);\n"
 "  var resHz=uRes*v, nUnc;\n"
 "  if(resHz>0){ nUnc=0; var pv=Math.pow(10,-NF); while(pv<resHz&&nUnc<NF+12){nUnc++;pv*=10;} }\n"
@@ -3422,7 +3485,7 @@ static const char SPA_HTML[] =
 "  function none(msg){\n"
 "    $('lPn').setAttribute('points',''); no.style.display='flex';\n"
 "    $('stPn').textContent='--'; setv('pnHead',null);\n"
-"    $('ylPn').innerHTML=''; $('gyPn').innerHTML=''; $('xlPn').innerHTML='';\n"
+"    $('ylPn').innerHTML=''; $('gyPn').innerHTML=''; $('gxPn').innerHTML=''; $('xlPn').innerHTML='';\n"
 "    no.textContent=msg; warn.textContent='';\n"
 "  }\n"
 "  if(n<PN_N){ none((mWhy?mWhy+' | ':'')+'potrebuje '+PN_N+' mereni (zatim '+n+')'); return; }\n"
@@ -3451,7 +3514,7 @@ static const char SPA_HTML[] =
 "  }\n"
 "  $('lPn').setAttribute('points',p);\n"
 "  axY('gyPn','ylPn',ayPn,function(v){ return v.toFixed(0); },'dBc/Hz');\n"
-"  axX(null,'xlPn',axPn,function(v){ return fmtOff(v); },'offset');\n"
+"  axX('gxPn','xlPn',axPn,function(v){ return fmtOff(v); },'Hz');\n"
 "  /* Headline = bin nejblizsi 0,1 Hz - tentyz offset, ktery ukazuje okno ANALYZA. */\n"
 "  var bi=0, bd=Math.abs(P[0].f-0.1);\n"
 "  for(i=1;i<P.length;i++){ var d=Math.abs(P[i].f-0.1); if(d<bd){ bd=d; bi=i; } }\n"
