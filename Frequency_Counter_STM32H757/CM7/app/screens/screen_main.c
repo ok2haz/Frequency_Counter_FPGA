@@ -925,9 +925,17 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
      * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
      * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
     double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
-    if (!(u_res > 0.0)) {
+    /* 🔴 2026-10-06: NAMERENY rozptyl smi nejistotu jen ZVETSIT, nikdy snizit pod
+     * rozliseni hradla. Kdyz je signal synchronni s hodinami TDC (citac meri
+     * vlastni referenci), lezi obe krajni hrany okna stale na STEJNEM kodu
+     * retezu, kvantizacni chyba je konstantni, ne nahodna -- v rozptylu se
+     * neprojevi a σy vyjde temer 0. Display pak tvrdil 10 000 000,000 0000 Hz
+     * se vsemi cislicemi "duveryhodnymi", ackoli jedno okno 0,25 s nese pri
+     * kroku TDC ~57 ps nanejvys ~3·10⁻¹⁰. Proto max(σy, √2·tdc/gate). */
+    {
         double gate_s = (double)gate_ps * 1e-12;
-        u_res = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
+        double u_floor = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
+        if (!(u_res > u_floor)) u_res = u_floor;
     }
     double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
     /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
@@ -2189,10 +2197,8 @@ static int noise_desc(char *name, size_t nn, char *slope, size_t ns)
 }
 
 /* Spolecne log-log mapovani ADEV krivky do 'inner' (+ markery). Y pevne dekady
- * 10^ALLAN_Y_MIN..10^(ALLAN_Y_MIN+ALLAN_Y_DEC), X dynamicky [tau_min..tau_max].
+ * dle `allan_metric_yrange` (auto-range), X dynamicky [tau_min..tau_max].
  * Sdili nahled (marker_r=2) i velky graf (marker_r=3). */
-#define ALLAN_Y_MIN  (-10)
-#define ALLAN_Y_DEC  4
 
 /* ── Metrika Allan okna (segmented v okne ALLAN) ─────────────────────────────
  *   0 = ADEV  σy(τ)         — overlapping
@@ -2232,24 +2238,52 @@ static float allan_metric_value(float tau, float base)
     }
 }
 
-/* Y rozsah [10^ymin .. 10^(ymin+dec)] dle metriky. ADEV pevny (10⁻⁶..10⁻¹⁰ jako
- * drive); TDEV/MTIE AUTO-RANGE dle skutecnych hodnot — jejich magnituda je
- * nepredvidatelna (τ·ADEV nasobky), pevny rozsah by krivku uspal na okraj osy. */
-static void allan_metric_yrange(const float *vals, int np, int *ymin, int *dec)
+/* Y rozsah [10^ymin .. 10^(ymin+dec)] — AUTO-RANGE pro VSECHNY metriky.
+ * 🔴 2026-10-06: ADEV mel pevny rozsah 10⁻¹⁰..10⁻⁶ a bod pod 10⁻¹⁰ se
+ * PRILEPIL ke spodni hrane (`allan_y` orezava) -> graf "nekreslil" nic pod
+ * 10⁻¹⁰, prestoze citac s carry-chain TDC (~3·10⁻¹⁰ pri 0,25 s) a OCXO jde
+ * na dlouhych τ k 10⁻¹² a niz. Rozsah se ted bere z hodnot krivky A z podlahy
+ * citace (kdyz se kresli), s rezervou: kdyz bod lezi < 0,15 dekady od hrany,
+ * prida se dekada. Pocet dekad 3..8 (mene by na kartu byla jedna dve cary).
+ * Hystereze `yr`: rozsireni hned, ZUZENI az kdyz uzsi rozsah plati 10 vykresleni
+ * za sebou -- jinak by osa poskakovala, kdyz krivka sedi u hranice dekady. */
+typedef struct { int ymin, dec, metric, shrink_n; } allan_yr_t;
+
+static void allan_metric_yrange(const float *vals, const float *flr, int np,
+                                allan_yr_t *yr, int *ymin, int *dec)
 {
-    if (s_allan_metric == 0) { *ymin = ALLAN_Y_MIN; *dec = ALLAN_Y_DEC; return; }
     float lo = 1e30f, hi = -1e30f;
     for (int i = 0; i < np; i++) {
-        if (vals[i] <= 0.0f) continue;
-        float l = log10f(vals[i]);
-        if (l < lo) lo = l;
-        if (l > hi) hi = l;
+        for (int k = 0; k < 2; k++) {
+            float v = k ? (flr ? flr[i] : 0.0f) : vals[i];
+            if (!(v > 0.0f)) continue;
+            float l = log10f(v);
+            if (l < lo) lo = l;
+            if (l > hi) hi = l;
+        }
     }
-    if (lo > hi) { *ymin = -12; *dec = 5; return; }   /* fallback: zadna platna data */
-    int y0 = (int)floorf(lo) - 1;                     /* 1 dekada rezervy dole */
-    int y1 = (int)ceilf(hi) + 1;                      /* 1 dekada rezervy nahore */
-    int d = y1 - y0; if (d < 2) d = 2; else if (d > 8) d = 8;
-    *ymin = y0; *dec = d;
+    int y0, y1;
+    if (lo > hi) { y0 = -12; y1 = -8; }                  /* zadna platna data */
+    else {
+        y0 = (int)floorf(lo); if (lo - (float)y0 < 0.15f) y0--;
+        y1 = (int)ceilf(hi);  if ((float)y1 - hi < 0.15f) y1++;
+        while (y1 - y0 < 3) { if (((y1 - y0) & 1) == 0) y1++; else y0--; }
+        if (y1 - y0 > 8) y0 = y1 - 8;                      /* krivka je dulezitejsi nez podlaha dole */
+    }
+    if (yr->dec <= 0 || yr->metric != s_allan_metric) {  /* prvni kresleni / jina metrika */
+        yr->ymin = y0; yr->dec = y1 - y0; yr->metric = s_allan_metric; yr->shrink_n = 0;
+    } else {
+        int c0 = yr->ymin, c1 = yr->ymin + yr->dec;
+        if (y0 < c0 || y1 > c1) {                         /* rozsirit hned */
+            if (y0 < c0) c0 = y0;
+            if (y1 > c1) c1 = y1;
+            if (c1 - c0 > 8) { c0 = y0; c1 = y1; }
+            yr->ymin = c0; yr->dec = c1 - c0; yr->shrink_n = 0;
+        } else if (y0 != c0 || y1 != c1) {               /* uzsi -> az po 10 shodach */
+            if (++yr->shrink_n >= 10) { yr->ymin = y0; yr->dec = y1 - y0; yr->shrink_n = 0; }
+        } else yr->shrink_n = 0;
+    }
+    *ymin = yr->ymin; *dec = yr->dec;
 }
 
 /* Popisek dekady "10⁻N" (horni index). Nahrazuje pevne SCR_ALLAN_Y_TICKS —
@@ -2397,7 +2431,9 @@ static void allan_plot(prim_rect_t area, int big)
     static float vals[ADEV_PTS_MAX];
     for (int i = 0; i < np; i++) vals[i] = allan_metric_value(taus[i], adevs[i]);
     for (int i = 0; i < np; i++) flr[i]  = allan_metric_value(taus[i], flr[i]);
-    int ymin, dec; allan_metric_yrange(vals, np, &ymin, &dec);
+    static allan_yr_t s_yr[2];                      /* hystereze osy: [0] karta, [1] okno */
+    int ymin, dec;
+    allan_metric_yrange(vals, show_floor ? flr : NULL, np, &s_yr[big ? 1 : 0], &ymin, &dec);
     for (int j = 0; j <= dec; j++) {
         int16_t y = (int16_t)(in.y + (int32_t)j * in.h / dec);
         prim_draw_line((prim_point_t){in.x, y},
