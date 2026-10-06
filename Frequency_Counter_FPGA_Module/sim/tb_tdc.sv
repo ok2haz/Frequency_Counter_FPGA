@@ -43,6 +43,7 @@ module tb_tdc;
 
     reg cal_req = 0;
     wire rise_a, trig_a, tsv_a, want_a, rise_b, trig_b, tsv_b, want_b;
+    wire rise_sa, rise_sb;
     wire [47:0] ts_a, ts_b;
     wire busy_a, valid_a, fail_a, busy_b, valid_b, fail_b;
     wire [31:0] ovf_a, peak_a, ovf_b, peak_b;
@@ -50,14 +51,14 @@ module tb_tdc;
 
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) ca (
         .clk(clk), .sig_raw(sig_a), .ro(ro), .tick_ps(tick_ps), .want(want_a),
-        .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_a), .trig_ack(trig_a),
+        .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a),
         .ts_valid(tsv_a), .ts_ps(ts_a), .use_ro(use_ro_a), .cal_busy(busy_a),
         .cal_valid(valid_a), .cal_fail(fail_a),
         .d_ovf(ovf_a), .d_peak(peak_a), .d_nz(nz_a), .d_last(last_a),
         .dump_k(8'd0), .dump_q());
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) cb (
         .clk(clk), .sig_raw(sig_b), .ro(ro), .tick_ps(tick_ps), .want(want_b),
-        .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_b), .trig_ack(trig_b),
+        .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b),
         .ts_valid(tsv_b), .ts_ps(ts_b), .use_ro(use_ro_b), .cal_busy(busy_b),
         .cal_valid(valid_b), .cal_fail(fail_b),
         .d_ovf(ovf_b), .d_peak(peak_b), .d_nz(nz_b), .d_last(last_b),
@@ -66,14 +67,41 @@ module tb_tdc;
     wire [25:0] per_a, per_b;
     wire [47:0] dt_a, dt_b;
     wire        al_a, al_b, tgl_a, tgl_b;
-    win_recip wa (.clk(clk), .rise_c(rise_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
+    win_recip wa (.clk(clk), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
                   .gate_tick(gate_tick), .hold(busy_a | ~valid_a), .want(want_a),
                   .r_periods(per_a), .r_dt(dt_a), .r_dt_alias(al_a), .res_tgl(tgl_a));
-    win_recip wb (.clk(clk), .rise_c(rise_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
+    win_recip wb (.clk(clk), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
                   .gate_tick(gate_tick), .hold(busy_b | ~valid_b), .want(want_b),
                   .r_periods(per_b), .r_dt(dt_b), .r_dt_alias(al_b), .res_tgl(tgl_b));
 
     integer errors = 0;
+
+    // ---- 2026-10-06 (FW 0x040F): vstrikovani metastability na kanalu A ----
+    // Icarus metastabilitu neumi, tak se vyrobi jeji DUSLEDKY primo na registrech:
+    //  (a) kazda 97. hrana: `t0p` si o takt dele drzi 0 -> syrova rise_c prijde
+    //      DVAKRAT (presne to, co driv napocitalo hranu navic = +4 Hz);
+    //  (b) uzaviraci hrana (trig_ack): `rise_s` posunuta na +2 takty (t0s drzen 0)
+    //      nebo na 0 taktu (t0s nastaven driv) -- win_recip ji musi sparovat.
+    // Kanal B bezi bez zasahu jako reference; dt-kontrola nize (chyba vs per*TSIG)
+    // odhali kazde okno s hranou navic/chybejici (+-97 ns).
+    integer inj_on = 0, nr = 0, ntr = 0, n_dbl = 0, n_d0 = 0, n_d2 = 0;
+    always @(posedge clk) if (inj_on && ca.rise_c && !ca.trig_ack) begin
+        nr = nr + 1;
+        if (nr % 97 == 0) begin
+            #1 force ca.t0p = 1'b0; n_dbl = n_dbl + 1;
+            @(posedge clk); #1 release ca.t0p;
+        end
+    end
+    always @(posedge clk) if (inj_on && ca.trig_ack) begin
+        ntr = ntr + 1;
+        if (ntr % 3 == 0) begin                       // +2 takty
+            #1 force ca.t0s = 1'b0; n_d2 = n_d2 + 1;
+            @(posedge clk); #1 release ca.t0s;
+        end else if (ntr % 3 == 1) begin              // 0 taktu (soucasne s trig)
+            #1 force ca.t0s = 1'b1; n_d0 = n_d0 + 1;
+            @(posedge clk); #1 release ca.t0s;
+        end
+    end
 
     // ---- signal: periodicky, A od casu 0, B opozdene o B_SKEW ----
     // nezavisle generatory (nemeni se behem kalibrace -- tam signal nema vliv)
@@ -106,6 +134,11 @@ module tb_tdc;
         end
         // 1 + 40 oken
         run_windows(24);
+        // totez s vstrikovanou metastabilitou na kanalu A
+        inj_on = 1;
+        run_windows(24);
+        $display("VSTRIK A: dvojita syrova hrana %0d x, rise_s +2 takty %0d x, 0 taktu %0d x", n_dbl, n_d2, n_d0);
+        if (n_dbl < 3 || n_d2 < 3 || n_d0 < 3) begin $display("FAIL: vstrik se neprovedl"); errors = errors + 1; end
         if (errors == 0) $display("PASS: tb_tdc"); else $display("FAIL: tb_tdc (%0d chyb)", errors);
         $finish;
     end

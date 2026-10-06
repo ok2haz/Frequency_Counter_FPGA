@@ -190,6 +190,7 @@ module tdc_chan #(
     input  wire        cal_abort,   // 1-taktovy pulz: timeout kalibrace (top.v)
 
     output wire        rise_c,
+    output wire        rise_s,      // tataz hrana pro POCITANI, za synchronizatorem (+1..2 takty)
     output wire        trig_ack,
     output reg         ts_valid,
     output reg  [47:0] ts_ps,           // [T_clk/16384]
@@ -243,6 +244,23 @@ module tdc_chan #(
         arm_r <= s_col | want;
     end
     assign rise_c = t0 & ~t0p;
+
+    // 🔴 2026-10-06 (FW 0x040F): POCITANI hran za 2. stupnem synchronizace.
+    // `t0` vzorkuje ASYNCHRONNI vstup jedinym FF. Kdyz zachyti hranu metastabilne,
+    // rise_c = t0 & ~t0p ji mohl videt jako 1 a `t0p` si pritom ulozit jeste 0 ->
+    // v dalsim taktu rise_c = 1 PODRUHE = hrana navic v okne = +1/gate (10 MHz,
+    // 0,25 s: presne +4 Hz, ~20x za 30 min pri mereni vlastni reference, kde
+    // synchronni signal drzi fazi hrany u hran hodin). `t0s` dostane `t0` az po
+    // celem taktu na ustaleni -> posloupnost t0s je cista a kazda hrana se
+    // napocita PRAVE JEDNOU. Spousteni presneho casu (rise_c/trig_ok/cap_en)
+    // zustava beze zmeny (zmrazeni teplomeru se nesmi zpozdit, viz pokus 0x040E);
+    // uzaviraci hranu s ni paruje `win_recip` (rozdil 0..2 takty).
+    reg t0s = 1'b0, t0sp = 1'b0;
+    always @(posedge clk) begin
+        t0s  <= t0;
+        t0sp <= t0s;
+    end
+    assign rise_s = t0s & ~t0sp;
 
     wire trig_ok  = t0 & ~t0p & arm_r & idle_r;           // 1 LUT
     assign trig_ack = trig_ok & ~s_col;

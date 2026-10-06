@@ -107,7 +107,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h040D;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h040F;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x040C -> 0x040D (2026-10-04, B1a): CAL report nese navic d_maxtap (nejvyssi
     // KDY navzorkovany tap, CAL bajty 46..49) k diagnoze obriho binu -- maxtap>>d_last
     // = bubliny nad prvni nulou, maxtap~d_last = retez tam fyzicky konci. Jen diag,
@@ -539,7 +539,7 @@ endmodule
 
 module win_recip (
     input  wire         clk,           // clk_p0_100m
-    input  wire         rise_c,        // kazda nabezna hrana (hrube, tdc_chan)
+    input  wire         rise_s,        // kazda nabezna hrana, SYNCHRONIZOVANA (tdc_chan, pro pocitani)
     input  wire         trig_ack,      // tato hrana spustila presny cas
     input  wire         ts_valid,      // 7 taktu po trig_ack: ts_ps platny
     input  wire [47:0]  ts_ps,         // presny cas hrany [T_clk/16384], mod 2^48 (172 s)
@@ -565,6 +565,15 @@ module win_recip (
     // vsechny pulzy se zpozdi o 1 takt (kratke cesty); konzistentne pro count
     // i uzavirani, takze poradi udalosti se nemeni
     reg        rise_q = 1'b0, trig_q = 1'b0, gate_q = 1'b0, hold_q = 1'b0;
+    // 🔴 2026-10-06 (FW 0x040F): hrany se pocitaji ze SYNCHRONIZOVANE `rise_s`
+    // (driv `rise_c` primo z jednoho FF na asynchronnim vstupu -> metastabilita
+    // obcas napocitala hranu dvakrat, viz tdc_chan). `rise_s` uzaviraci hrany
+    // prijde 0..2 takty PO jejim `trig_ack` (trig jede z rychle cesty). `pend`
+    // ceka na ni: prvni rise_s po trig = uzaviraci hrana (dalsi hrana je >= 3
+    // takty dal, takze zamena nehrozi). Pojistka: po 3 taktech bez rise_s se
+    // okno uzavre i tak (nesmi nastat; jinak by okno viselo).
+    reg        pend   = 1'b0;
+    reg [1:0]  pend_n = 2'd0;
     // citac okna: dolnich 8 b + registrovany prenos do hornich 18 b (kratka cesta);
     // hrany jsou od sebe >= 3 takty, takze preneseny hi je hotovy dřív než se count cte
     reg        cy_q   = 1'b0;
@@ -577,9 +586,10 @@ module win_recip (
         r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0;
     end
 
-    wire inc   = rise_q & ~trig_q;         // bezna hrana uvnitr okna
+    wire close = (trig_q | pend) & (rise_q | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
+    wire inc   = rise_q & ~close;          // bezna hrana uvnitr okna
     always @(posedge clk) begin
-        rise_q <= rise_c;
+        rise_q <= rise_s;
         trig_q <= trig_ack;
         gate_q <= gate_tick;
         hold_q <= hold;
@@ -588,6 +598,8 @@ module win_recip (
         if (hold_q) begin
             armed    <= 1'b0;
             primed   <= 1'b0;
+            pend     <= 1'b0;
+            pend_n   <= 2'd0;
             count_lo <= 8'd0;
             count_hi <= 18'd0;
             age      <= 8'd0;
@@ -597,7 +609,12 @@ module win_recip (
                 if (age != 8'hFF) age <= age + 8'd1;
             end
             if (inc) count_lo <= count_lo + 8'd1;
-            if (rise_q & trig_q) begin
+            if (trig_q & ~rise_q) begin pend <= 1'b1; pend_n <= 2'd0; end
+            else if (pend & ~rise_q) pend_n <= pend_n + 2'd1;
+            if (trig_q) armed <= 1'b0;          // dalsi trig az po dalsim gate_tick
+            if (close) begin
+                pend     <= 1'b0;
+                pend_n   <= 2'd0;
                 snap     <= count;                 // + 1 (uzaviraci hrana) pri vystupu
                 count_lo <= 8'd0;
                 count_hi <= 18'd0;

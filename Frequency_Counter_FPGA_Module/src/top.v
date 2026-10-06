@@ -120,6 +120,7 @@ module top (
     // 2x TDC kanál (tdc.v): hrana -> sig_rise + ev_ts [ps]
     // ----------------------------------------------------------
     wire        rise_a, rise_b, trig_a, trig_b, tsv_a, tsv_b, want_a, want_b;
+    wire        rise_sa, rise_sb;     // synchronizovane hrany pro pocitani (FW 0x040F)
     wire [47:0] ts_a, ts_b;
     wire        cal_busy_a, cal_busy_b, cal_valid_a, cal_valid_b, cal_fail_a, cal_fail_b;
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
@@ -131,7 +132,7 @@ module top (
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .cal_req(cal_req), .cal_abort(cal_abort),
-        .rise_c(rise_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
+        .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .use_ro(use_ro_a), .cal_busy(cal_busy_a),
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last),
@@ -141,7 +142,7 @@ module top (
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .cal_req(cal_req), .cal_abort(cal_abort),
-        .rise_c(rise_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
+        .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .use_ro(use_ro_b), .cal_busy(cal_busy_b),
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last),
@@ -158,13 +159,13 @@ module top (
     wire        alias_a,      alias_b_nc;
 
     win_recip u_wra (
-        .clk(clk_p0_100m), .rise_c(rise_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
+        .clk(clk_p0_100m), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .gate_tick(gate_tick), .want(want_a),
         .hold(cal_busy_a | ~cal_valid_a),
         .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a)
     );
     win_recip u_wrb (
-        .clk(clk_p0_100m), .rise_c(rise_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
+        .clk(clk_p0_100m), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .gate_tick(gate_tick), .want(want_b),
         .hold(cal_busy_b | ~cal_valid_b),
         .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b)
