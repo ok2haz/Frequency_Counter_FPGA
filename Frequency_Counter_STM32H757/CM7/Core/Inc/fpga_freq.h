@@ -128,6 +128,12 @@ uint32_t fpga_seq_gap(uint32_t prev, uint32_t cur);
 /** Dira pred merenim, ktere naposledy vratil `fpga_freq_poll` (hodnota jako
  *  `fpga_seq_gap`). Vola FpgaTask hned po `fpga_freq_poll`. */
 uint32_t fpga_freq_seq_gap(void);
+/** Miscount mereni, ktere naposledy vratil `fpga_freq_poll` (k = -2..+2, 0 = OK).
+ *  Nenulove = okno ma o k hran vic/min nez ma -> volajici ho NESMI dat do
+ *  statistiky ani zobrazit. Do `fpga_freq_get_last` se takove okno nedostane. */
+int  fpga_freq_poll_miscount(void);
+/** Soucty od bootu pro `status`: oken s hranou navic / chybejici hranou. */
+void fpga_freq_miscount_stats(uint32_t *pos, uint32_t *neg);
 /** Soucty od bootu pro `status`: pocet der, zmeskanych mereni a resyncu. */
 void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync);
 
@@ -160,6 +166,16 @@ uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ps)
 /** Kmitocet v µHz z reciproke dvojice s OVERENYM nasobitelem (viz vyse).
  *  Kdyz zadny nasobitel nesedi, degraduje na `x100000` (tj. 5 desetin). */
 uint64_t fpga_freq_hires_uhz(uint64_t x100000, uint64_t edges, uint64_t gate_ps);
+
+/** Chybne napocitane okno (2026-10-06): kmitocet `uhz` se lisi od reference
+ *  `uhz_ref` (posledni prijate okno) o CELY nasobek kroku jedne hrany
+ *  `mul · 1e18 / gate_ps` [µHz] (+-1, +-2), s toleranci 1/8 kroku. Takovy skok
+ *  neni zmena signalu ani sum TDC (ten je o rady mensi), ale hrana navic nebo
+ *  chybejici v `edge_count` -- typicky metastabilita detekce hrany ve FPGA
+ *  (`tdc.v` t0/t0p). Pri 10 MHz a 0,25 s je to presne +-4 Hz.
+ *  Ciste-logicke (selftest #1).
+ *  @return k = -2..+2 (0 = okno je v poradku nebo nelze rozhodnout). */
+int fpga_freq_miscount(uint64_t uhz, uint64_t uhz_ref, uint64_t gate_ps, uint32_t mul);
 
 /** Kmitocet [Hz] z reciproke dvojice s OVERENYM nasobitelem, v `double` (F-0180).
  *  Presnost ~1e-16 relativne na libovolnem kmitoctu — tim se lisi od `x100000`

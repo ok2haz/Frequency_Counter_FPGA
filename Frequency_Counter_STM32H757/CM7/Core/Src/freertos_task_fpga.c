@@ -72,6 +72,14 @@ void StartFpgaTask(void *argument)
     watchdog_kick_fpga();   /* heartbeat pro IWDG (zatuhnuti FpgaTasku -> reset) */
     if (fpga_freq_poll(&m)) {
       fails = 0;
+      if (fpga_freq_poll_miscount() != 0) {
+      /* Chybne napocitane okno (hrana navic/chybi, `fpga_freq_miscount`): neni to
+       * mereni. Displej ho nezobrazi (drzi predchozi okno), do statistiky ani
+       * datalogu nejde; v SDRAM logu je MEZERA (priznak SPIKE). `fpga_stat_break`
+       * se nevola -- vzorek se doplni ze zbylych oken (stejne jako spike). */
+        sdram_log_put(m.sequence, 0u, 0u, SDRAM_LOG_F_A_VALID | SDRAM_LOG_F_SPIKE,
+                      HAL_GetTick(), m.gate_time_ns, fpga_sim_active() ? 1u : 0u);
+      } else {
       /* Vyber zobrazovany zdroj: /4 (nejlepsi rozliseni) dokud bez chyby a pod ~380 MHz,
        * jinak /16 (vyssi rozsah). freq*_x100000 uz ma delicku zahrnutou -> jen /100000. */
       int use16 = 0;
@@ -156,6 +164,7 @@ void StartFpgaTask(void *argument)
                     0u, lf,
                     HAL_GetTick(), m.gate_time_ns,
                     fpga_sim_active() ? 1u : 0u);
+      }
     } else if (!fpga_freq_link_ok()) {
       /* zadny platny ramec -> FPGA mozna bootl pozdeji / resetoval; po ~3 s znovu START
        * (20 Hz polling -> 60 iteraci = ~3 s) */

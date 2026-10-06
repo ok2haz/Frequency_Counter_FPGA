@@ -3185,6 +3185,12 @@ void UartTask_run(void *argument)
 							    printf("  TDC: teplot. rekal %lux (cal pri %d.%d C) | spike-reject %lu oken (obri bin)\n",
 							           (unsigned long)g_tdc_recal_count, c0, c1, (unsigned long)g_tdc_spike_count);
 							  }
+							  {
+							    uint32_t mp = 0u, mn = 0u;
+							    fpga_freq_miscount_stats(&mp, &mn);
+							    printf("  CITANI HRAN: okno s hranou navic %lu, s chybejici %lu (nezobrazeno, mimo statistiku)%s\n",
+							           (unsigned long)mp, (unsigned long)mn, (mp + mn) ? "  <== FPGA metastabilita" : "");
+							  }
 						  }
 					  }
 				  }

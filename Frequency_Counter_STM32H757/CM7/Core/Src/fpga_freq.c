@@ -57,6 +57,13 @@ static uint32_t g_last_seq = 0xFFFFFFFFu;  /* posledni potvrzena seq */
 /* F-0193: souvislost SEQUENCE (pise jen FpgaTask v `fpga_freq_poll`; `status`
  * cte 32bitove hodnoty bez zamku — jednotlive jsou atomicke). */
 static uint32_t s_poll_gap   = 0u;         /* dira pred poslednim vracenym merenim */
+/* 2026-10-06: okna s chybnym POCTEM hran (`fpga_freq_miscount`). Takove okno se
+ * NEZAPISE do `s_last`, takze ho neuvidi zadny konzument (IPC/web, SCPI, okna UI),
+ * a FpgaTask ho dostane s priznakem, aby ho vyradil i ze statistiky. */
+static uint64_t s_mc_ref     = 0u;         /* µHz posledniho prijateho okna (reference) */
+static uint32_t s_mc_run     = 0u;         /* kolik oken za sebou vyrazeno (pojistka) */
+static int      s_poll_mc    = 0;          /* miscount posledniho vraceneho mereni (k) */
+static uint32_t s_mc_pos     = 0u, s_mc_neg = 0u;   /* soucty od bootu pro `status` */
 static uint32_t s_seq_gaps   = 0u;         /* kolikrat byla dira */
 static uint32_t s_seq_missed = 0u;         /* kolik mereni celkem chybelo */
 static uint32_t s_seq_resync = 0u;         /* skoky/navraty (reset FPGA, start emulace) */
@@ -546,7 +553,31 @@ bool fpga_freq_poll(fpga_meas_t *out)
      * dulezita — roste s v2 poli, viz fpga_freq.h). */
     fpga_meas_t tmp;
     parse_data(rx, &tmp);
-    {
+
+    /* Chybne napocitane okno (hrana navic/chybi, metastabilita detekce hrany
+     * ve FPGA): rozhodne se PRED latchem. Pri 10 MHz / 0,25 s = skok +-4 Hz.
+     * Pojistka: 3 takova okna za sebou uz neni porucha citani, ale skutecna
+     * zmena signalu -> prijmout a vzit za novou referenci. */
+    int is_new = (status & ST_DATA_VALID) && (status & ST_DATA_FRESH)
+                 && tmp.sequence != g_last_seq;
+    int mc = 0;
+    if (is_new && (tmp.measurement_status & 0x01u)
+        && !(tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        uint32_t mul = fpga_freq_hires_mul(tmp.frequency_x100000, tmp.edge_count, tmp.gate_ps);
+        uint64_t uhz = fpga_freq_hires_uhz(tmp.frequency_x100000, tmp.edge_count, tmp.gate_ps);
+        mc = (s_mc_run < 3u) ? fpga_freq_miscount(uhz, s_mc_ref, tmp.gate_ps, mul) : 0;
+        if (mc != 0) {
+            s_mc_run++;
+            if (mc > 0) s_mc_pos++; else s_mc_neg++;
+        } else {
+            s_mc_run = 0u;
+            if (uhz > 0u && mul != 0u) s_mc_ref = uhz;
+        }
+    } else if (is_new || (tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        s_mc_ref = 0u; s_mc_run = 0u;                  /* bez platneho mereni -> bez reference */
+    }
+
+    if (mc == 0) {
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
         s_last = tmp;
@@ -554,18 +585,26 @@ bool fpga_freq_poll(fpga_meas_t *out)
         __set_PRIMASK(pm);
     }
 
-    if (!(status & ST_DATA_VALID) || !(status & ST_DATA_FRESH)) return false;
-    if (s_last.sequence == g_last_seq) return false;   /* neni nove */
+    if (!is_new) return false;
+    s_poll_mc = mc;
 
     /* F-0193: NOVE nestaci — musi i NAVAZOVAT. Dira = mereni, ktere FPGA
      * prepsala drive, nez jsme ho precetli; spocitat a ohlasit volajicimu. */
-    s_poll_gap = fpga_seq_gap(g_last_seq, s_last.sequence);
+    s_poll_gap = fpga_seq_gap(g_last_seq, tmp.sequence);
     if (s_poll_gap == FPGA_SEQ_RESYNC)  s_seq_resync++;
     else if (s_poll_gap != 0u)        { s_seq_gaps++; s_seq_missed += s_poll_gap; }
 
-    if (out) *out = s_last;
-    g_last_seq = s_last.sequence;                       /* dalsi ACK potvrdi tuto seq */
+    if (out) *out = tmp;
+    g_last_seq = tmp.sequence;                          /* dalsi ACK potvrdi tuto seq */
     return true;
+}
+
+int  fpga_freq_poll_miscount(void) { return s_poll_mc; }
+
+void fpga_freq_miscount_stats(uint32_t *pos, uint32_t *neg)
+{
+    if (pos) *pos = s_mc_pos;
+    if (neg) *neg = s_mc_neg;
 }
 
 uint32_t fpga_seq_gap(uint32_t prev, uint32_t cur)
@@ -647,6 +686,18 @@ uint32_t fpga_freq_hires_mul(uint64_t x100000, uint64_t edges, uint64_t gate_ps)
         if (d * 1000ull <= ref) return MUL[i];           /* shoda do 0,1 % */
     }
     return 0u;                                           /* nesedi zadny -> hi-res nepouzivat */
+}
+
+int fpga_freq_miscount(uint64_t uhz, uint64_t uhz_ref, uint64_t gate_ps, uint32_t mul)
+{
+    if (uhz == 0u || uhz_ref == 0u || gate_ps == 0u || mul == 0u) return 0;
+    /* krok jedne hrany [µHz] = mul / gate_s Hz = mul · 1e18 / gate_ps µHz */
+    double step = (double)mul * 1e18 / (double)gate_ps;
+    double d    = (double)uhz - (double)uhz_ref;   /* rozdil je maly, double staci */
+    double k    = floor(d / step + 0.5);
+    if (k == 0.0 || fabs(k) > 2.0) return 0;
+    if (fabs(d - k * step) > step * 0.125) return 0;  /* neni cely nasobek kroku */
+    return (int)k;
 }
 
 uint64_t fpga_freq_dt_ticks(uint64_t gate_ns)
@@ -885,6 +936,20 @@ bool fpga_freq_select_selftest(void)
         /* lichy pocet jednotek: 1 jednotka = 0,6103515625 ps zaokrouhleno */
         ok &= (dt_units_to_ps(1ull) == 1ull && dt_units_to_ps(3ull) == 2ull);
     }
+    /* 2026-10-06: chybne napocitane okno. 10 MHz, 0,25 s, mul 1 -> krok 4 Hz =
+     * 4 000 000 µHz. +1 hrana = +4 Hz, -1 = -4 Hz; sum TDC (~mHz) ani realna zmena
+     * mimo cely nasobek se za miscount vydavat nesmi. */
+    {   const uint64_t R = 10000000000000ull, G = 250000000000ull;   /* 10 MHz v µHz, 0,25 s */
+        ok &= (fpga_freq_miscount(R + 4000000ull, R, G, 1u) == 1);
+        ok &= (fpga_freq_miscount(R - 4000000ull, R, G, 1u) == -1);
+        ok &= (fpga_freq_miscount(R + 8000000ull, R, G, 1u) == 2);
+        ok &= (fpga_freq_miscount(R + 4000123ull, R, G, 1u) == 1);   /* + sum 0,1 mHz */
+        ok &= (fpga_freq_miscount(R + 7000ull,    R, G, 1u) == 0);   /* sum TDC */
+        ok &= (fpga_freq_miscount(R + 2000000ull, R, G, 1u) == 0);   /* pul kroku */
+        ok &= (fpga_freq_miscount(R + 16000000ull, R, G, 1u) == 0);  /* +4 kroky = zmena */
+        ok &= (fpga_freq_miscount(R + 16000000ull, R, G, 4u) == 1);  /* /4 vetev: krok 16 Hz */
+        ok &= (fpga_freq_miscount(R, 0u, G, 1u) == 0);
+    }
     /* F-0193: souvislost SEQUENCE — navazuje, dira, preteceni uint32, mez diry,
      * navrat zpet a prvni mereni po bootu (sentinel). */
     ok &= (fpga_seq_gap(5u, 6u) == 0u);
@@ -895,7 +960,7 @@ bool fpga_freq_select_selftest(void)
     ok &= (fpga_seq_gap(5u, 6u + FPGA_SEQ_GAP_MAX) == FPGA_SEQ_RESYNC);
     ok &= (fpga_seq_gap(100u, 3u) == FPGA_SEQ_RESYNC);    /* reset FPGA */
     ok &= (fpga_seq_gap(0xFFFFFFFFu, 12345u) == 0u);      /* jeste zadne mereni */
-    printf("fpga: select hystereze + ticky okna + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
+    printf("fpga: select hystereze + ticky okna + miscount + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 
