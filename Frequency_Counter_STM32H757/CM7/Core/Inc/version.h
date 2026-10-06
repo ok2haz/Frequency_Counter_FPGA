@@ -11,6 +11,16 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.13.0 (2026-10-06) = mereni: chybne napocitane okno + duveryhodne cislice +
+ * Allan osa + statistika webu z pristroje.
+ * (1) +4 Hz SKOK pri mereni vlastni reference = HRANA NAVIC v okne (metastabilita
+ * detekce hrany ve FPGA). STM ho pozna (`fpga_freq_miscount`), nezobrazi a
+ * nepocita; `status` -> CITANI HRAN. FPGA FW 0x040F pocita hrany za
+ * synchronizatorem (oprava pricin). (2) Pocet duveryhodnych cislic ma podlahu
+ * √2·tdc/gate -- synchronni signal mel σy ~0 a displej tvrdil vsech 7 desetin.
+ * (3) Allan osa Y auto-range pro vsechny metriky (driv pevne 10⁻¹⁰..10⁻⁶).
+ * (4) IPC v20: web bere ADEV/MDEV z firmwarove pyramidy (`/api/stab`).
+ * ⬜ Neovereno na HW; FLASHNOUT OBE BANKY (IPC v20) + bitstream 0x040F. */
 /* v0.12.2 (2026-10-05) = web: headline podtrhava TOTEZ cislo co displej + 3 grafy.
  * (1) WEB HEADLINE = DISPLEJ: firmware servíruje NAMERENOU σy@1s (`sy1e15` v
  * /api/state, z g_adev_1s = tyz zdroj co displej, pres sigma_tau[0] ve snapshotu).
@@ -106,8 +116,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 12
-#define FW_VERSION_PATCH 2
-#define FW_VERSION_STR   "v0.12.2"
+#define FW_VERSION_MINOR 13
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.13.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
