@@ -8466,6 +8466,19 @@ int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *tota
 /* GPSDO statistika (jen hlavni obrazovka, jen RUN): vzorkovani frakcni odchylky (~1x/s). */
 void app_gpsdo_tick_stats_sample(void)
 {
+    /* v20: statistika stability -> web (`/api/stab`). Publikuje se pri ZMENE dat
+     * (novy vzorek nebo nulovani), tedy ~1x/s; data jsou z predchoziho tiku. */
+    {   static uint32_t s_stab_ver = 0xFFFFFFFFu;
+        uint32_t v = screen_main_stats_version();
+        if (v != s_stab_ver) {
+            static ipc_stab_pt_t pt[IPC_STAB_PTS];      /* static: 1,2 kB, jen UiTask */
+            uint32_t ns = 0u; float t0 = 0.0f, dr = 0.0f, of = 0.0f;
+            int np = screen_main_stab_export(pt, IPC_STAB_PTS, &ns, &t0, &dr, &of);
+            ipc_stab_publish(pt, np, screen_main_gate_actual_s() > 0.0, ns, t0,
+                             screen_main_adev_1s(), dr, of);
+            s_stab_ver = v;
+        }
+    }
     /* Vzorkuje se VZDY kdyz mereni bezi — nezavisle na zobrazenem okne (drive
      * jen na main -> Allan/histogram se zastavily pri screensaveru/oknech a
      * nikdy nedosahly dlouhych tau). Kresleni je gatovane zvlast (draw ticky). */

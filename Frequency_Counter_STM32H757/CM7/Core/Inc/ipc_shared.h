@@ -31,7 +31,7 @@
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  19u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  20u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -109,7 +109,11 @@
                                        nikdo nepsal ani necetl. Zmereno pred i po: sizeof(ipc_snapshot_t)
                                        = 480 B, sizeof(ipc_shared_t) = 11744 B, gps_lat_e7 na 152.
                                        Hlida `_Static_assert` pod `ipc_snapshot_t`. Bumpnuto kvuli
-                                       detekci nesouladu bank. Flashnout obe banky. */
+                                       detekci nesouladu bank. Flashnout obe banky.
+                                       v20 (2026-10-06): blok `stab` na KONCI struktury -- statistika
+                                       stability (ADEV/MDEV/HDEV) Z FIRMWAROVE pyramidy pro web
+                                       (`GET /api/stab`), aby web a displej ukazovaly TYTEZ hodnoty.
+                                       Layout pred `cm4` beze zmeny (detekce nesouladu funguje). */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -483,6 +487,37 @@ _Static_assert(offsetof(ipc_cm4_status_t, cm4_flash_bytes)
                "v18: eth_tx_err/eth_tx_ok maji byt UVNITR byvale vycpavky cm4_fault_rsvd[3] "
                "-- posunuty offset znamena, ze snapshot nabehl navic, coz vyzaduje bump IPC_VERSION");
 
+/* ── v20 (2026-10-06): statistika stability Z FIRMWARU pro web ─────────────
+ * Do v19 si SPA pocitala ADEV/MDEV z VLASTNI rady mereni (surova okna 0,25 s,
+ * vcetne oken, ktera firmware vyradi jako artefakt TDC nebo chybne napocitana)
+ * -> web a displej ukazovaly dve ruzne krivky pro tentyz pristroj. Ted publikuje
+ * UiTask (vlastnik pyramidy) body na mrizce 1..9 x 10^s (nejhustsi; web si
+ * vybere 1-2-5 / 1-2-3-5-7 sam) ~1x/s, CM4 je jen servira.
+ * Zapis: VYHRADNE CM7 UiTask, seqlock `seq` (liche = zapis). Cteni: CM4 s retry. */
+#define IPC_STAB_PTS 60
+typedef struct {
+    float    tau;                  /* skutecne τ [s] (vc. prepoctu τ0) */
+    float    adev, mdev, hdev;     /* 0 = v bode nespocteno */
+    uint16_t nterm;                /* pocet prumeru stage (pro EDF / "paru") */
+    uint8_t  m;                    /* mantisa 1..9 (τ = m·10^s·τ0) */
+    uint8_t  _pad;
+} ipc_stab_pt_t;
+_Static_assert(sizeof(ipc_stab_pt_t) == 20, "ipc_stab_pt_t layout");
+
+typedef struct {
+    volatile uint32_t seq;         /* seqlock: liche = rozepsano */
+    uint32_t gen;                  /* roste s kazdou publikaci (web pozna novou verzi) */
+    uint16_t np;                   /* platnych bodu v pt[] */
+    uint8_t  real;                 /* 1 = realne/emulovane mereni, 0 = SIM fallback */
+    uint8_t  _pad;
+    uint32_t nsamp;                /* vzorku od posledniho nulovani statistiky */
+    float    tau0;                 /* prumerne τ0 vzorku [s] */
+    float    sy1;                  /* σy@1 s (= g_adev_1s, tytez data jako displej) */
+    float    drift;                /* df/dt [1/s] (karta Drift na displeji) */
+    float    offset;               /* prumerna frakcni odchylka (karta Offset) */
+    ipc_stab_pt_t pt[IPC_STAB_PTS];
+} ipc_stab_t;
+
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
     ipc_snapshot_t   snap;         /* CM7 -> CM4 */
@@ -491,6 +526,7 @@ typedef struct {
     ipc_cm4_status_t cm4;          /* CM4 -> CM7 */
     ipc_datalog_xfer_t log;        /* CM4 <-> CM7 (v12, bulk historie na vyzadani) */
     ipc_errlog_xfer_t errlog;      /* CM4 <-> CM7 (v17, trvaly zaznamnik chyb na vyzadani) */
+    ipc_stab_t       stab;         /* CM7 -> CM4 (v20, statistika stability z firmwaru) */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -604,6 +640,9 @@ extern "C" {
 #endif
 void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu, pred publikaci) */
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
+/* v20: publikuj statistiku stability (VOLA VYHRADNE UiTask -- vlastnik pyramidy). */
+void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
+                      float tau0, float sy1, float drift, float offset);
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 void ipc_errlog_service(void); /* v17: obsluz errlog transfer (req_gen != resp_gen) -> naplni errlog.rec[]. VOLA defaultTask (blokujici W25Q cteni) */

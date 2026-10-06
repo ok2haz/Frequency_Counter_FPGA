@@ -581,6 +581,43 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
 }
 
 /* ── v12 (#5): GPS druzice pro sky plot. `{"n":N,"s":[[prn,elev,azim,snr,constel],..]}` */
+/* v20: cislo ve vedeckem tvaru BEZ %f/%e (nano.specs je neumi): 6 platnych
+ * cislic jako "mantisa e exponent", napr. 1,23456e-11 -> "123456e-16". JS ho
+ * nacte primo (Number/JSON.parse). 0 a neplatne -> "0". */
+static void jput_sci(jbuf_t *j, double v)
+{
+    if (!(v > 0.0) || v > 1e30) { jputf(j, "0"); return; }
+    int e = 0;
+    while (v >= 999999.5) { v /= 10.0; e++; }
+    while (v < 99999.5)   { v *= 10.0; e--; }
+    jputf(j, "%lue%d", (unsigned long)(v + 0.5), e);
+}
+
+/* v20: statistika stability Z FIRMWARU (tytez body jako graf na displeji). */
+static size_t build_stab_json(char *out, size_t out_sz, const ipc_stab_t *b)
+{
+    jbuf_t j; jinit(&j, out, out_sz);
+    double drift = (double)b->drift, off = (double)b->offset;
+    jputf(&j, "{\"g\":%lu,\"real\":%u,\"n\":%lu,\"tau0\":",
+          (unsigned long)b->gen, (unsigned)b->real, (unsigned long)b->nsamp);
+    jput_sci(&j, (double)b->tau0);
+    jputf(&j, ",\"sy1\":"); jput_sci(&j, (double)b->sy1);
+    jputf(&j, ",\"drift\":%s", drift < 0.0 ? "-" : ""); jput_sci(&j, drift < 0.0 ? -drift : drift);
+    jputf(&j, ",\"off\":%s", off < 0.0 ? "-" : "");     jput_sci(&j, off < 0.0 ? -off : off);
+    jputf(&j, ",\"p\":[");
+    for (unsigned i = 0; i < b->np; i++) {
+        const ipc_stab_pt_t *p = &b->pt[i];
+        jputf(&j, "%s[", i ? "," : "");
+        jput_sci(&j, (double)p->tau);  jputf(&j, ",");
+        jput_sci(&j, (double)p->adev); jputf(&j, ",");
+        jput_sci(&j, (double)p->mdev); jputf(&j, ",");
+        jput_sci(&j, (double)p->hdev);
+        jputf(&j, ",%u,%u]", (unsigned)p->nterm, (unsigned)p->m);
+    }
+    jputf(&j, "]}");
+    return j.ovf ? 0u : j.used;
+}
+
 static size_t build_sats_json(char *out, size_t out_sz, const ipc_snapshot_t *snap)
 {
     jbuf_t j; jinit(&j, out, out_sz);
@@ -2885,9 +2922,26 @@ static const char SPA_HTML[] =
 "  if(f>=1e3) return Math.round(f/1e3)*1e3;\n"
 "  return f;\n"
 "}\n"
+"/* v20: statistika stability Z FIRMWARU (/api/stab) - TYTEZ body jako graf\n"
+"   na displeji (pristroj je autorita: ma vyrazena okna TDC artefaktu i chybne\n"
+"   napocitana okna, ktera web v rade mereni nevidi). Vlastni vypocet z rady\n"
+"   mereni zustava jen jako ZALOHA, kdyz firmware data nedava (SIM, stary CM7).\n"
+"   Bod = [tau, adev, mdev, hdev, pocet clenu, mantisa 1..9]. */\n"
+"var FWS=null;\n"
+"function pollStab(){ fetch('/api/stab').then(function(r){ return r.ok?r.json():null; })\n"
+"  .then(function(d){ FWS=d; }).catch(function(){ FWS=null; }); }\n"
+"function fwPts(col,den){\n"
+"  if(!FWS||!FWS.real||!FWS.p||!FWS.p.length) return null;\n"
+"  var K=(den===5)?[1,2,3,5,7]:((den===9)?[1,2,3,4,5,6,7,8,9]:[1,2,5]), o=[], i, q;\n"
+"  for(i=0;i<FWS.p.length;i++){ q=FWS.p[i];\n"
+"    if(K.indexOf(q[5])<0||!(q[col]>0)) continue;\n"
+"    o.push({tau:q[0],sig:q[col],n:q[4],m:q[5]}); }\n"
+"  return o.length?o:null;\n"
+"}\n"
 "function drawStab(){\n"
 "  var n=M.f.length,i,j;\n"
-"  if(n<4){\n"
+"  var fA=fwPts(1,aDen), fM=fwPts(2,aDen);\n"
+"  if(n<4&&!fA){\n"
 "    lastAdev=null;\n"
 "    $('nAdev').style.display='flex'; $('stAdev').textContent='--';\n"
 "    $('tAdev').innerHTML=''; setv('aHead',null);\n"
@@ -2899,14 +2953,14 @@ static const char SPA_HTML[] =
 "  }\n"
 "  /* tau0 = SKUTECNY prumerny rozestup mereni (ne nastavena brana): tempo urcuje\n"
 "   * FPGA a pri nizkych kmitoctech se reciproke okno legitimne protahne. */\n"
-"  var tau0=mTau0(n);\n"
+"  var ctau0=(n>=4)?mTau0(n):0, tau0=fA?FWS.tau0:ctau0;   /* ctau0 = rada webu, tau0 = Allan */\n"
 "  var mean=0; for(i=0;i<n;i++) mean+=M.f[i]; mean/=n;\n"
 "  var y=[]; for(i=0;i<n;i++) y.push((M.f[i]-mean)/mean);\n"
 "\n"
 "  /* ADEV se pocita VZDY (potrebuje ho rozpocet nejistoty pres `sigmaAtTau`),\n"
 "     krivka se pak kresli podle zvolene metriky. */\n"
-"  lastAdev=adev(y,tau0,aDen);\n"
-"  var Md=mdev(y,tau0,aDen);     /* jednou: TDEV z ni (+ klasifikace pri 1-2-5) */\n"
+"  lastAdev=fA||adev(y,ctau0,aDen);\n"
+"  var Md=fA?(fM||[]):mdev(y,ctau0,aDen);     /* jednou: TDEV z ni (+ klasifikace pri 1-2-5) */\n"
 "  var A=stabPoints(y,tau0,metric,lastAdev,Md);\n"
 "  if(A.length){\n"
 "    var lt=[],ls=[];\n"
@@ -2942,7 +2996,7 @@ static const char SPA_HTML[] =
 "    }\n"
 "    setv('aHead',sci(A[0].sig)+metUnit(metric));\n"
 "    $('aHeadL').textContent=metLabel(metric)+' @ '+A[0].tau.toFixed(A[0].tau<1?2:0)+' s';\n"
-"    $('stAdev').textContent='tau0 '+tau0.toFixed(2)+' s  n='+n;\n"
+"    $('stAdev').textContent=(fA?'PRISTROJ ':'WEB ')+'tau0 '+tau0.toFixed(2)+' s  n='+(fA?FWS.n:n);\n"
 "    var h='';\n"
 "    /* Tabulka = body mrizky 1-2-5 i pri hustsim grafu (jinak by pri 9/dek\n"
 "       ukazala jen tau0..6 tau0). */\n"
@@ -2958,17 +3012,23 @@ static const char SPA_HTML[] =
 "    var aw=[];\n"
 "    if(last.n<10) aw.push('nejdelsi tau ma jen '+last.n+' paru - jen orientacni, nech to bezet dele');\n"
 "    if(pf) aw.push('carka-tecka: podlaha citace (TDC), pod ni meri citac, ne oscilator');\n"
-"    if(mMiss>0) aw.push('v rade chybi '+mMiss+' mereni (do 1 % - zkresleni pod nejistotou)');\n"
+"    if(fA) aw.push('statistika z pristroje (tytez body jako displej)');\n"
+"    else {\n"
+"      aw.push('!! vlastni vypocet webu - pristroj statistiku nedava');\n"
+"      if(mMiss>0) aw.push('v rade chybi '+mMiss+' mereni (do 1 % - zkresleni pod nejistotou)');\n"
+"    }\n"
 "    $('aWarn').textContent=aw.join(' | ');\n"
 "    /* Typ sumu se urcuje VZDY z ADEV (+MDEV na rozliseni PM), ne ze zobrazene\n"
 "       metriky - sklony TDEV/MTIE jsou posunute o tau a klasifikace by lhala. */\n"
 "    /* Typ sumu VZDY z mrizky 1-2-5 - je to vlastnost dat, ne zvolene hustoty\n"
 "       (stejne jako displej `noise_desc`). */\n"
 "    $('nzAd').textContent=(aDen===3)?noiseDesc(lastAdev,Md)\n"
-"      :noiseDesc(adev(y,tau0,3),mdev(y,tau0,3));\n"
+"      :(fA?noiseDesc(fwPts(1,3),fwPts(2,3)):noiseDesc(adev(y,ctau0,3),mdev(y,ctau0,3)));\n"
 "  } else $('nzAd').textContent='';\n"
 "\n"
-"  var F=fit(y,tau0);\n"
+"  var F=(n>=4)?fit(y,ctau0):null;\n"
+"  if(!F&&n<4){ setv('dHead',null); $('tDrift').innerHTML=''; $('stDrift').textContent='--';\n"
+"    $('dWarn').textContent=''; $('lFit').setAttribute('points',''); }\n"
 "  if(F){\n"
 "    var perDay=F.a*86400, ok=fitSig(F.r,F.n,F.rho);\n"
 "    setv('dHead',(perDay>=0?'+':'')+sci(perDay));\n"
@@ -2983,7 +3043,7 @@ static const char SPA_HTML[] =
 "      if(sp){\n"
 "        var L=fa.length, q='';\n"
 "        for(i=0;i<L;i++){\n"
-"          var v=F.a*(i*tau0)*mean, yy2=100-(v-sp[0])*100/(sp[1]-sp[0]);\n"
+"          var v=F.a*(i*ctau0)*mean, yy2=100-(v-sp[0])*100/(sp[1]-sp[0]);\n"
 "          if(yy2<-50||yy2>150){ q=''; break; }\n"
 "          if(yy2<0)yy2=0; if(yy2>100)yy2=100;\n"
 "          q+=(L<2?0:i*100/(L-1)).toFixed(2)+','+yy2.toFixed(2)+' ';\n"
@@ -2999,7 +3059,7 @@ static const char SPA_HTML[] =
 "    hh+='<b>DRIFT</b><span>'+(perDay>=0?'+':'')+sci(perDay)+'</span><i>za den</i>';\n"
 "    hh+='<b>ROZSAH</b><span>'+(Math.max.apply(null,M.f)-Math.min.apply(null,M.f)).toFixed(5)\n"
 "      +' Hz</span><i>pp</i>';\n"
-"    hh+='<b>OKNO</b><span>'+upt(Math.round(M.t[n-1]-M.t[0]))+'</span><i>tau0 '+tau0.toFixed(2)+' s</i>';\n"
+"    hh+='<b>OKNO</b><span>'+upt(Math.round(M.t[n-1]-M.t[0]))+'</span><i>tau0 '+ctau0.toFixed(2)+' s</i>';\n"
 "    $('tDrift').innerHTML=hh;\n"
 "  }\n"
 "}\n"
@@ -4025,6 +4085,7 @@ static const char SPA_HTML[] =
 "setInterval(saveM,15000);                  /* periodicky, at prezije i pad zalozky */\n"
 "window.addEventListener('beforeunload',saveM);\n"
 "poll(); startStream(); pollSats(); setInterval(pollSats,3000); fetchErrlog(0);\n"
+"pollStab(); setInterval(function(){ pollStab(); drawStab(); if(zoom) drawZoom(); },2000);\n"
 "</script></body></html>\n";
 
 /* ── Odesilaci fronta (hlavicka + telo po kouscich pres tcp_sent). ───────────── */
@@ -4309,6 +4370,16 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         size_t rn = scpi_process_ctx(&ctx, &src, line, c->bodybuf, sizeof c->bodybuf - 1u);
         if (rn > 0 && rn < sizeof(c->bodybuf) - 1u) { c->bodybuf[rn++] = '\n'; }
         queue_response(c, 200, "OK", "text/plain", c->bodybuf, rn);
+        return;
+    }
+    /* v20: statistika stability z firmwaru (web kresli TYTEZ body jako displej). */
+    if (strcmp(r->method, "GET") == 0 && path_is(r->path, "/api/stab")) {
+        static ipc_stab_t st;               /* 1,2 kB: mimo zasobnik, httpd je jednovlaknovy */
+        int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read_stab(&st);
+        if (!have) { queue_text(c, 503, "Service Unavailable", "CM7 unreachable\n"); return; }
+        size_t n = build_stab_json(c->bodybuf, sizeof c->bodybuf, &st);
+        if (n == 0) { queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n"); return; }
+        queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
         return;
     }
     /* v12 (#5): GPS druzice pro sky plot. */

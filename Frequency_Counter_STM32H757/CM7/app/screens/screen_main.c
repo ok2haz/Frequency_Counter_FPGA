@@ -1278,6 +1278,7 @@ static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Al
 static void trend_feed(double v);   /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
+static uint32_t s_stats_nsamp = 0;        /* vzorku od posledniho nulovani (web `/api/stab`) */
 static float    s_tau0_mean = 0.0f, s_tau0_dev = 0.0f;   /* bod 6: skutecne τ0 vzorku */
 static uint32_t s_tau0_n = 0;
 
@@ -1350,6 +1351,7 @@ static void stats_push(double y)
     adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
+    s_stats_nsamp++;
 }
 
 /* SIM fallback: vzorek = aktualni hodnota headline. */
@@ -1659,6 +1661,7 @@ void screen_main_stats_reset(void)
     memset(s_tr, 0, sizeof s_tr);
     s_tau0_mean = s_tau0_dev = 0.0f; s_tau0_n = 0;   /* bod 6 */
     s_stats_ver++;
+    s_stats_nsamp = 0u;
     stats_anim_resync();
     trend_anim_resync();
 }
@@ -2149,6 +2152,41 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
             edf[i] = adev_edf_alpha(nz_alpha(mu, mum, hm), pM[i], pm[i]);
         }
     }
+    return np;
+}
+
+/* v20 (2026-10-06): export statistiky stability pro web (`ipc_stab_t`). Body na
+ * NEJHUSTSI mrizce 1..9 x 10^s (web si hustotu vybere sam), vsechny tri
+ * estimatory ze STEJNE pyramidy jako graf na displeji: σy(1 s) z plocheho ringu
+ * (F-0178), MDEV nad stage >= 1 jen z polozek s fazi (F-0187). VOLA VYHRADNE
+ * UiTask. @return pocet bodu. */
+int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
+                            float *drift, float *offset)
+{
+    int np = 0;
+    float ts = tau0_scale();
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        float dec = powf(10.0f, (float)s);
+        for (int m = 1; m <= 9; m++) {
+            if (np >= max) break;
+            float a = (s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV);
+            float md = adev_stage_kind(s, m, ADEV_KIND_MDEV);
+            float hd = adev_stage_kind(s, m, ADEV_KIND_HDEV);
+            if (!(a > 0.0f) && !(md > 0.0f) && !(hd > 0.0f)) continue;
+            pt[np].tau = dec * (float)m * ts;
+            pt[np].adev = (a > 0.0f) ? a : 0.0f;
+            pt[np].mdev = (md > 0.0f) ? md : 0.0f;
+            pt[np].hdev = (hd > 0.0f) ? hd : 0.0f;
+            pt[np].nterm = (uint16_t)((s == 0 && m == 1) ? s_y_count : s_adev[s].count);
+            pt[np].m = (uint8_t)m;
+            pt[np]._pad = 0u;
+            np++;
+        }
+    }
+    if (nsamp)  *nsamp  = s_stats_nsamp;
+    if (tau0)   *tau0   = ts;
+    if (drift)  *drift  = stats_drift();
+    if (offset) *offset = stats_mean(s_y_count);
     return np;
 }
 

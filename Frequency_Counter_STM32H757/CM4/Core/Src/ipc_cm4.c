@@ -93,6 +93,24 @@ int ipc_cm4_read(ipc_snapshot_t *out)
     return !retry && out->magic == IPC_MAGIC;     /* 1 = konzistentni a platny snapshot */
 }
 
+int ipc_cm4_read_stab(ipc_stab_t *out)
+{
+    if (!s_ready || out == NULL) return 0;
+    uint32_t s0, s1;
+    int tries = 0;
+    /* Seqlock jako u snapshotu: UiTask publikuje ~1x/s, retry je vzacny; strop 8. */
+    do {
+        s0 = g_ipc.stab.seq;
+        IPC_DMB();
+        *out = g_ipc.stab;
+        IPC_DMB();
+        s1 = g_ipc.stab.seq;
+    } while (((s0 & 1u) || s0 != s1) && ++tries < 8);
+    if ((s0 & 1u) || s0 != s1) return 0;
+    if (out->np > IPC_STAB_PTS) out->np = IPC_STAB_PTS;
+    return 1;
+}
+
 int ipc_cm4_cm7_alive(uint32_t now_ms)
 {
     /* Liveness CM7 z pohledu CM4: snapshot `seq` roste (CM7 publikuje na kazde mereni

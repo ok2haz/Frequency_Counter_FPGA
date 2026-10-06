@@ -84,6 +84,7 @@ static void ipc_stamp(volatile ipc_shared_t *p)
     memset((void *)&p->resp,   0, sizeof p->resp);
     memset((void *)&p->log,    0, sizeof p->log);
     memset((void *)&p->errlog, 0, sizeof p->errlog);
+    memset((void *)&p->stab,   0, sizeof p->stab);
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
@@ -105,6 +106,32 @@ void ipc_clear_cm4_block(void)
  * (defaultTask, pred smyckou). CM4 po bootu overi magic+version+size; nesouhlas
  * -> IPC vypne a jede degradovane. */
 void ipc_init(void) { ipc_stamp(&g_ipc); }
+
+/* v20: statistika stability pro web (viz `ipc_stab_t`). Jediny zapisovatel je
+ * UiTask, takze seqlock nepotrebuje zamek; CM4 cte s retry. */
+void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
+                      float tau0, float sy1, float drift, float offset)
+{
+    volatile ipc_stab_t *b = &g_ipc.stab;
+    if (np < 0) np = 0;
+    if (np > IPC_STAB_PTS) np = IPC_STAB_PTS;
+    uint32_t s = b->seq;
+    b->seq = s + 1u;                                   /* liche = rozepsano */
+    IPC_DMB();
+    b->gen++;
+    b->np = (uint16_t)np;
+    b->real = (uint8_t)(real ? 1 : 0);
+    b->nsamp = nsamp;
+    b->tau0 = tau0; b->sy1 = sy1; b->drift = drift; b->offset = offset;
+    for (int i = 0; i < np; i++) {
+        b->pt[i].tau = pt[i].tau;   b->pt[i].adev = pt[i].adev;
+        b->pt[i].mdev = pt[i].mdev; b->pt[i].hdev = pt[i].hdev;
+        b->pt[i].nterm = pt[i].nterm; b->pt[i].m = pt[i].m; b->pt[i]._pad = 0u;
+    }
+    IPC_DMB();
+    b->seq = s + 2u;
+    IPC_DMB();
+}
 
 /* Minimalni agregace zdravi z REALNYCH globalu (samostatna od app compute_sys_level,
  * ktera zije v UI vrstve). 0=OK, 1=warn (degradovano, meri dal), 2=err (kriticke). */
