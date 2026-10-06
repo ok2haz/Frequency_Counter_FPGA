@@ -4132,6 +4132,71 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** `ebba0b0`
 - **Stav:** aktivní (⬜ neověřeno na HW)
 
+### L-0127 — Asynchronní vstup se nesmí počítat z jediného klopného obvodu; detekce hrany patří za synchronizátor
+
+- **Datum:** 2026-10-06
+- **Oblast:** FPGA, `tdc.v` (`tdc_chan`), `spi_app.v` (`win_recip`)
+- **Symptom:** při měření vlastní reference 10 MHz ~20× za 30 min 10 000 004 Hz místo 10 000 000 Hz,
+  pak zase správně. +4 Hz při hradle 0,25 s = přesně jedna hrana navíc, Δt v pořádku.
+- **Příčina:** `t0` vzorkuje asynchronní vstup jedním FF a `rise_c = t0 & ~t0p` se počítalo přímo. Když `t0`
+  zachytí hranu metastabilně, `rise_c` ji vidí jako 1, ale `t0p` si uloží ještě 0 → v dalším taktu
+  `rise_c` = 1 podruhé. Synchronní signál (vlastní reference) drží fázi hrany u hran hodin, takže se trefuje opakovaně.
+- **Oprava:** počítání ze synchronizované `rise_s` (`t0s`/`t0sp`), uzavírací hranu páruje `win_recip` s
+  `trig_ack` v okně 0..2 takty (`pend`). Spouštění přesného času beze změny. FW 0x040F, commit `38011fc`.
+  STM pojistka `fpga_freq_miscount` (okno o celý násobek kroku hrany se nezobrazí ani nezapočítá), `8bd4045`.
+- **Pravidlo:** **Každý signál z asynchronní domény, který se POČÍTÁ nebo řídí stavový automat, musí projít
+  dvěma FF, než se z něj dělá hrana; rychlou nesynchronizovanou cestu smí mít jen časová značka, a pak se
+  musí explicitně spárovat s počítací cestou.**
+- **Detekce:** `tb_tdc` vstřikuje důsledky metastability (`force` na `t0p`/`t0s`) a dt-kontrola chytí okno
+  s hranou navíc; negativní kontrola proti starému RTL musí selhat. Na desce `status` → `CITANI HRAN`.
+- **Commit:** `38011fc`, `8bd4045`
+- **Stav:** aktivní (⬜ neověřeno na křemíku)
+
+### L-0128 — Naměřený rozptyl smí nejistotu jen zvětšit, nikdy ji nesnížit pod rozlišení přístroje
+
+- **Datum:** 2026-10-06
+- **Oblast:** `screen_main.c` `freq_uncertain_frac`, web `fmtFreqHtml`
+- **Symptom:** vlastní reference → displej `10 000 000,000 0000 Hz`, všechny číslice „důvěryhodné"; uživatel
+  správně neuvěřil.
+- **Příčina:** počet důvěryhodných číslic se bral z naměřené σy@1s. U signálu synchronního s hodinami TDC leží
+  obě krajní hrany okna stále na STEJNÉM kódu — kvantizační chyba je konstantní, ne náhodná, v rozptylu se
+  neprojeví a σy vyjde ~0.
+- **Oprava:** `u = max(σy, √2·tdc/gate)` na displeji i webu, commit `d63df87`.
+- **Pravidlo:** **Rozptyl dat je dolní odhad nejistoty jen pro NÁHODNOU chybu; systematickou (kvantizace
+  koherentního signálu, offset) nevidí. Zobrazená přesnost musí mít podlahu z rozlišení přístroje.**
+- **Detekce:** měření vlastní reference musí ukázat podtržení nejvýš na ~0,01 Hz (10 MHz, 0,25 s).
+- **Commit:** `d63df87`
+- **Stav:** aktivní
+
+### L-0129 — Pevná osa grafu tiše ořízne data; rozsah ber z dat (s hysterezí)
+
+- **Datum:** 2026-10-06
+- **Oblast:** `screen_main.c` `allan_metric_yrange`
+- **Symptom:** Allanův graf na displeji „nekreslil nic pod 10⁻¹⁰".
+- **Příčina:** ADEV měl pevný rozsah 10⁻¹⁰..10⁻⁶ (z doby 4fázového vernieru 2,5 ns); `allan_y` bod pod osou
+  přilepí ke spodní hraně. Auto-range existoval, ale jen pro TDEV/MTIE.
+- **Oprava:** auto-range pro všechny metriky (křivka + podlaha), hystereze proti poskakování, `d63df87`.
+- **Pravidlo:** **Když se změní rozlišení přístroje, projdi všechny pevné rozsahy os a prahy, které z
+  původního rozlišení vznikly; graf, který bod ořízne, ho nesmí tiše přilepit ke hraně.**
+- **Detekce:** `grep -n "Y_MIN\|Y_MAX" CM7/app` — pevná mez osy musí mít zdůvodnění.
+- **Commit:** `d63df87`
+- **Stav:** aktivní
+
+### L-0130 — Dva nezávislé výpočty téže statistiky se rozejdou; servíruj výsledek autority
+
+- **Datum:** 2026-10-06
+- **Oblast:** IPC v20 (`ipc_stab_t`), `httpd_min.c` `/api/stab`, SPA `drawStab`
+- **Symptom:** Allan/MDEV na webu jiné než na displeji.
+- **Příčina:** SPA počítala ADEV z vlastní řady surových oken (včetně oken, která firmware vyřazuje, jiná
+  agregace, mezery z SSE) — druhý estimátor nad jinými daty.
+- **Oprava:** firmware publikuje body z vlastní pyramidy (UiTask, seqlock), web je kreslí; vlastní výpočet
+  jen záloha s varováním. Commit `bcaf00c`.
+- **Pravidlo:** **Statistiku počítej na JEDNOM místě (u dat, která vidí filtry a vyřazení) a ostatní
+  rozhraní ji jen zobrazují; druhý výpočet smí existovat jen jako označená záloha.**
+- **Detekce:** web karta ALLAN musí ukazovat `PRISTROJ tau0 …`; `WEB …` = záloha.
+- **Commit:** `bcaf00c`
+- **Stav:** aktivní (⬜ neověřeno v prohlížeči)
+
 ---
 
 ## Archiv (neplatné lekce)
