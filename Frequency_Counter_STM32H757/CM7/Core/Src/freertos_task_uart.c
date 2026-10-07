@@ -3230,11 +3230,11 @@ void UartTask_run(void *argument)
 							     (unsigned)m.clk_status,
 							     !(m.caps & FPGA_CAP_REGR) ? "neni" : (m.regr_used ? "pouzita" : (m.rg_ok == 3u ? "zamitnuta" : "bez dat")));
 						  if (m.caps & FPGA_CAP_DT) {
-							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu ps (`tdc` = detail)\n",
+							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu us (`tdc` = detail)\n",
 								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,
 								     (m.tdc_status & FPGA_TDC_CAL_BUSY) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_FAIL) ? 1u : 0u,
 								     (m.tdc_status & FPGA_TDC_SHORT_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_SHORT_B) ? 1u : 0u,
-								     (unsigned long)m.gate_ps);
+								     (unsigned long)(m.gate_ps / 1000000ull));
 							  {
 							    int c0 = g_tdc_cal_temp_c10 / 10, c1 = g_tdc_cal_temp_c10 % 10;
 							    if (c1 < 0) { c1 = -c1; }

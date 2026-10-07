@@ -262,7 +262,7 @@ void fpga_freq_regr_stat(fpga_regr_stat_t *out);
 double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b);
 void fpga_freq_regr_reset(void);
 /** Mez konzistence regrese s dvoubodovym odhadem (relativne) a minimum znacek v segmentu. */
-#define FPGA_REGR_MAX_REL   3.0e-7     /* ~12 ns v okne 0,25 s: vic je porucha, ne sum TDC */
+#define FPGA_REGR_MAX_REL   5.0e-8     /* ~40 sigma dvoubodoveho odhadu (sigma ~1,2e-9 pri 215 ps na znacku, okno 0,25 s) */
 #define FPGA_REGR_MIN_N     8u
 
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────

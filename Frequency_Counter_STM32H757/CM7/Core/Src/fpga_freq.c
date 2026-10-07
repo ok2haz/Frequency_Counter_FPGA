@@ -482,6 +482,8 @@ void fpga_freq_regr_reset(void)
 void fpga_freq_regr_stat(fpga_regr_stat_t *o)
 {
     if (o == NULL) return;
+    const uint32_t pm = __get_PRIMASK();      /* FpgaTask zapisuje pocitadla; cteni bez zamku by se roztrhlo */
+    __disable_irq();
     o->windows = s_rg_win; o->used = s_rg_used; o->rejected = s_rg_rej;
     o->n_last[0] = s_rg_nl[0]; o->n_last[1] = s_rg_nl[1];
     o->f_regr_last = s_rg_fr; o->f_2pt_last = s_rg_f2;
@@ -490,6 +492,7 @@ void fpga_freq_regr_stat(fpga_regr_stat_t *o)
     double var = s_rg_s2 / n - mu * mu;
     o->d_mean_ppb  = mu * 1e9;
     o->d_sigma_ppb = (var > 0.0) ? sqrt(var) * 1e9 : 0.0;
+    __set_PRIMASK(pm);
 }
 
 static uint32_t rd_le24(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16); }
@@ -1020,10 +1023,10 @@ bool fpga_freq_select_selftest(void)
      * stredy segmentu 2 000 000 hran a 0,2 s od sebe -> 10 MHz presne. Konzistentni regrese (rozdil 1e-8)
      * nahradi delku okna efektivni N / f_regr; nekonzistentni (1e-6) se zamitne a zustane dvoubodova. */
     {   uint8_t rx[FR_LEN];
-        for (int sc = 0; sc < 3; sc++) {
+        for (int sc = 0; sc < 4; sc++) {
             memset(rx, 0, sizeof rx);
             uint8_t *p = &rx[FR_PAYLOAD];
-            const double f0 = 1.0e7 * (1.0 + (sc == 0 ? 0.0 : (sc == 1 ? 1.0e-8 : 1.0e-6)));
+            const double f0 = 1.0e7 * (1.0 + (sc == 0 ? 0.0 : (sc == 1 ? 1.0e-8 : (sc == 2 ? 1.0e-6 : 1.0e-7))));
             sim_put_le64(p + 8, 2500000ull);                  /* edge_count */
             p[49] = 0x04; p[50] = 0xE2;                       /* fw 0x0400, caps 0x00E2 (DT + REGR) */
             sim_put_le64(p + 106, 409600000000ull);           /* dt_a = 0,25 s -> gate_ps 2,5e11 */
@@ -1045,7 +1048,7 @@ bool fpga_freq_select_selftest(void)
             if (sc <= 1) {          /* konzistentni: gate_ps = N / f_regr */
                 const uint64_t g = (uint64_t)(2500000.0 * 1e12 / f0 + 0.5);
                 ok &= (pm.regr_used == 1u && (pm.gate_ps > g ? pm.gate_ps - g : g - pm.gate_ps) <= 2u);
-            } else {                /* 1e-6 > mez: zamitnuto, zustava dvoubodova */
+            } else {                /* 1e-7 a 1e-6 > mez 5e-8: zamitnuto, zustava dvoubodova */
                 ok &= (pm.regr_used == 0u && pm.gate_ps == 250000000000ull);
             }
         }
