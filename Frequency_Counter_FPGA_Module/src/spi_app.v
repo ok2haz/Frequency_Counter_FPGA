@@ -71,7 +71,8 @@ module spi_app (
     input  wire [191:0] meas_cal_diag,       // diagnostika kalibrace A[95:0] B[191:96]
     input  wire [15:0] meas_maxtap_a,        // B1a: nejvyssi KDY set tap A (bubliny: >> d_last)
     input  wire [15:0] meas_maxtap_b,        // B1a: nejvyssi KDY set tap B
-    output wire [7:0]  hist_k,               // vypis histogramu: adresa kodu (CAL pozadavek)
+    input  wire [15:0] meas_tdc_cfg,         // konfigurace TDC: [4:0] log2(adres tabulky), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu
+    output wire [9:0]  hist_k,               // vypis histogramu: adresa {sada, kod} (CAL pozadavek)
     input  wire [23:0] meas_hist_a,          // hist_A[hist_k] (kvazistaticke)
     input  wire [23:0] meas_hist_b,          // hist_B[hist_k]
     input  wire [15:0] dbg_mosi_cnt,         // diag: hrany MOSI v poslednim ramci (tx_b[116,117])
@@ -107,7 +108,11 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h040F;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0410;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x040F -> 0x0410 (2026-10-07): nova architektura spousteni TDC (volne vzorky q + kompaktni
+    // kopie qd, detekce hrany z 2. stupne, zadny samostatny `t0`; viz tdc.v): odstranuje obri bin
+    // (pricina: slepota spoustece 1,87/5,3 ns). Dekoder a multiplexer TX bajtu ~3x mensi.
+    // CAL report: hist_k 10 bitu, maxtap s rozlisenim 8 tapu, bajty 50..53 = konfigurace TDC.
     // 🔴 0x040C -> 0x040D (2026-10-04, B1a): CAL report nese navic d_maxtap (nejvyssi
     // KDY navzorkovany tap, CAL bajty 46..49) k diagnoze obriho binu -- maxtap>>d_last
     // = bubliny nad prvni nulou, maxtap~d_last = retez tam fyzicky konci. Jen diag,
@@ -120,7 +125,7 @@ module spi_app (
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
-    localparam [15:0] CAPS            = 16'h0023;
+    localparam [15:0] CAPS            = 16'h0063;   // bit6 = CAL: hist_k 10 b + konfigurace TDC (50..53)
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -175,7 +180,7 @@ module spi_app (
     reg        cal_mode_r = 1'b0;
     // CAL pozadavek s payloadem [12]=1 -> rezim vypisu histogramu, [14] = kod
     reg        hist_mode = 1'b0;
-    reg [7:0]  hist_k_r  = 8'd0;
+    reg [9:0]  hist_k_r  = 10'd0;
     assign hist_k = hist_k_r;
     // DIAGNOSTIKA RX (2026-10-03): co FPGA skutecne prijala od STM v poslednim ramci
     // -> DATA [66,67,107,112..115] = rx[0], rx[1], rx[2], CRC spoctene (lo,hi), prijate (lo,hi)
@@ -228,7 +233,9 @@ module spi_app (
 
     assign dbg_status = flags_byte;
 
-    // ---- obsah TX bajtu podle indexu (driv 685 FF `tx_b`, ted kombinacni mux) ----
+    // ---- obsah TX bajtu podle indexu: ploche `case` nad bajty (2026-10-07; generovano ze seznamu poli) ----
+    // Drive retez porovnani rozsahu s odecitanim indexu (`idx >= a && idx <= b` + `x[8*(idx-a) +: 8]`)
+    // dával ~800 LUT (8 bitu x ~100). Ploche `case` je cisty 128:1 mux nad konstantnimi vyrezy.
     reg [7:0] tb;
     always @* begin
         tb = 8'd0;
@@ -237,85 +244,128 @@ module spi_app (
             7'd1:  tb = VERSION;
             7'd2:  tb = is_cal ? TYPE_CAL : TYPE_DATA;
             7'd3:  tb = flags_byte;
-            // SEQUENCE je soucast snimku (behem S_TX_WR se nemeni) -> patri ke
-            // stejnemu mereni jako data; zvlastni kopie (driv b_seq) zachycena
-            // v taktu startu se mohla rozejit s h_*, kdyz nove mereni prislo
-            // prave v tom taktu (nalezeno tb_link 2026-10-04).
+            // SEQUENCE je soucast snimku (behem S_TX_WR se nemeni) -> patri ke stejnemu mereni jako data
             7'd4:  tb = seq[7:0];
             7'd5:  tb = seq[15:8];
             7'd6:  tb = seq[23:16];
             7'd7:  tb = seq[31:24];
             7'd8:  tb = PAYLOAD_LEN[7:0];
             7'd9:  tb = PAYLOAD_LEN[15:8];
-            default: begin
-                if (is_cal) begin
-                    // ---- CAL report 0xA0 ----
-                    if (idx[6:0] >= 7'd12 && idx[6:0] <= 7'd35) tb = meas_cal_diag[8*(idx[6:0]-7'd12) +: 8];
-                    else case (idx[6:0])
-                        7'd36: tb = meas_tdc_status;
-                        7'd37: tb = {7'd0, cal_mode_r};
-                        // vypis histogramu: [38]=1, [39]=kod, [40..42]=A, [43..45]=B
-                        7'd38: tb = hist_mode ? 8'd1 : 8'd0;
-                        7'd39: tb = hist_mode ? hist_k_r : 8'd0;
-                        7'd40: tb = hist_mode ? meas_hist_a[7:0]   : 8'd0;
-                        7'd41: tb = hist_mode ? meas_hist_a[15:8]  : 8'd0;
-                        7'd42: tb = hist_mode ? meas_hist_a[23:16] : 8'd0;
-                        7'd43: tb = hist_mode ? meas_hist_b[7:0]   : 8'd0;
-                        7'd44: tb = hist_mode ? meas_hist_b[15:8]  : 8'd0;
-                        7'd45: tb = hist_mode ? meas_hist_b[23:16] : 8'd0;
-                        // B1a: nejvyssi set tap (stabilni diag, vzdy ve CAL reportu)
-                        7'd46: tb = meas_maxtap_a[7:0];
-                        7'd47: tb = meas_maxtap_a[15:8];
-                        7'd48: tb = meas_maxtap_b[7:0];
-                        7'd49: tb = meas_maxtap_b[15:8];
-                        default: tb = 8'd0;
-                    endcase
-                end else begin
-                    // ---- DATA 0x80 (offsety 12..59 = 1:1 s v1) ----
-                    if      (idx[6:0] >= 7'd12  && idx[6:0] <= 7'd19)  tb = h_freq  [8*(idx[6:0]-7'd12)  +: 8];
-                    else if (idx[6:0] >= 7'd20  && idx[6:0] <= 7'd27)  tb = h_edge  [8*(idx[6:0]-7'd20)  +: 8];
-                    else if (idx[6:0] >= 7'd28  && idx[6:0] <= 7'd35)  tb = h_gate  [8*(idx[6:0]-7'd28)  +: 8];
-                    else if (idx[6:0] >= 7'd36  && idx[6:0] <= 7'd43)  tb = h_ts    [8*(idx[6:0]-7'd36)  +: 8];
-                    else if (idx[6:0] >= 7'd46  && idx[6:0] <= 7'd49)  tb = err_word[8*(idx[6:0]-7'd46)  +: 8];
-                    else if (idx[6:0] >= 7'd52  && idx[6:0] <= 7'd59)  tb = h_freq16[8*(idx[6:0]-7'd52)  +: 8];
-                    else if (idx[6:0] >= 7'd68  && idx[6:0] <= 7'd71)  tb = w0_seq  [8*(idx[6:0]-7'd68)  +: 8];
-                    else if (idx[6:0] >= 7'd72  && idx[6:0] <= 7'd75)  tb = w0_edges[8*(idx[6:0]-7'd72)  +: 8];
-                    else if (idx[6:0] >= 7'd76  && idx[6:0] <= 7'd83)  tb = w0_dt   [8*(idx[6:0]-7'd76)  +: 8];
-                    else if (idx[6:0] >= 7'd84  && idx[6:0] <= 7'd87)  tb = w1_seq  [8*(idx[6:0]-7'd84)  +: 8];
-                    else if (idx[6:0] >= 7'd88  && idx[6:0] <= 7'd91)  tb = w1_edges[8*(idx[6:0]-7'd88)  +: 8];
-                    else if (idx[6:0] >= 7'd92  && idx[6:0] <= 7'd99)  tb = w1_dt   [8*(idx[6:0]-7'd92)  +: 8];
-                    else if (idx[6:0] >= 7'd101 && idx[6:0] <= 7'd106) tb = h_dt_b  [8*(idx[6:0]-7'd101) +: 8];
-                    else if (idx[6:0] >= 7'd108 && idx[6:0] <= 7'd111) tb = h_edge_b[8*(idx[6:0]-7'd108) +: 8];
-                    else if (idx[6:0] >= 7'd118 && idx[6:0] <= 7'd123) tb = h_dt_a  [8*(idx[6:0]-7'd118) +: 8];
-                    else case (idx[6:0])
-                        7'd44:  tb = h_ch;
-                        7'd45:  tb = {6'd0, data_fresh, data_valid};
-                        7'd50:  tb = h_phase;     // {fine_seen[3:0], present[3:0]}
-                        7'd51:  tb = h_status2;   // pin27 status
-                        // ---- v2 rozšíření ----
-                        7'd60:  tb = FW_VERSION[7:0];
-                        7'd61:  tb = FW_VERSION[15:8];
-                        7'd62:  tb = CAPS[7:0];
-                        7'd63:  tb = CAPS[15:8];
-                        7'd64:  tb = 8'h01;              // clk_status: bit0=10MHz OK
-                        7'd65:  tb = {6'd0, win_cnt};
-                        7'd66:  tb = d_rx0;
-                        7'd67:  tb = d_rx1;
-                        // TDC (caps bit5): stav ZIVE (bez signalu by jinak nebylo videt kalibraci)
-                        7'd100: tb = meas_tdc_status;
-                        7'd107: tb = d_rx2;
-                        7'd112: tb = d_ccl;
-                        7'd113: tb = d_cch;
-                        7'd114: tb = d_rcl;
-                        7'd115: tb = d_rch;
-                        7'd116: tb = dbg_mosi_cnt[7:0];
-                        7'd117: tb = dbg_mosi_cnt[15:8];
-                        7'd124: tb = dbg_sck_cnt[7:0];
-                        7'd125: tb = dbg_sck_cnt[15:8];
-                        default: tb = 8'd0;
-                    endcase
-                end
-            end
+            7'd12: tb = is_cal ? (meas_cal_diag[7:0]) : (h_freq[7:0]);
+            7'd13: tb = is_cal ? (meas_cal_diag[15:8]) : (h_freq[15:8]);
+            7'd14: tb = is_cal ? (meas_cal_diag[23:16]) : (h_freq[23:16]);
+            7'd15: tb = is_cal ? (meas_cal_diag[31:24]) : (h_freq[31:24]);
+            7'd16: tb = is_cal ? (meas_cal_diag[39:32]) : (h_freq[39:32]);
+            7'd17: tb = is_cal ? (meas_cal_diag[47:40]) : (h_freq[47:40]);
+            7'd18: tb = is_cal ? (meas_cal_diag[55:48]) : (h_freq[55:48]);
+            7'd19: tb = is_cal ? (meas_cal_diag[63:56]) : (h_freq[63:56]);
+            7'd20: tb = is_cal ? (meas_cal_diag[71:64]) : (h_edge[7:0]);
+            7'd21: tb = is_cal ? (meas_cal_diag[79:72]) : (h_edge[15:8]);
+            7'd22: tb = is_cal ? (meas_cal_diag[87:80]) : (h_edge[23:16]);
+            7'd23: tb = is_cal ? (meas_cal_diag[95:88]) : (h_edge[31:24]);
+            7'd24: tb = is_cal ? (meas_cal_diag[103:96]) : (h_edge[39:32]);
+            7'd25: tb = is_cal ? (meas_cal_diag[111:104]) : (h_edge[47:40]);
+            7'd26: tb = is_cal ? (meas_cal_diag[119:112]) : (h_edge[55:48]);
+            7'd27: tb = is_cal ? (meas_cal_diag[127:120]) : (h_edge[63:56]);
+            7'd28: tb = is_cal ? (meas_cal_diag[135:128]) : (h_gate[7:0]);
+            7'd29: tb = is_cal ? (meas_cal_diag[143:136]) : (h_gate[15:8]);
+            7'd30: tb = is_cal ? (meas_cal_diag[151:144]) : (h_gate[23:16]);
+            7'd31: tb = is_cal ? (meas_cal_diag[159:152]) : (h_gate[31:24]);
+            7'd32: tb = is_cal ? (meas_cal_diag[167:160]) : (h_gate[39:32]);
+            7'd33: tb = is_cal ? (meas_cal_diag[175:168]) : (h_gate[47:40]);
+            7'd34: tb = is_cal ? (meas_cal_diag[183:176]) : (h_gate[55:48]);
+            7'd35: tb = is_cal ? (meas_cal_diag[191:184]) : (h_gate[63:56]);
+            7'd36: tb = is_cal ? (meas_tdc_status) : (h_ts[7:0]);
+            7'd37: tb = is_cal ? ({7'd0, cal_mode_r}) : (h_ts[15:8]);
+            7'd38: tb = is_cal ? ({5'd0, hist_mode ? hist_k_r[9:8] : 2'd0, hist_mode}) : (h_ts[23:16]);
+            7'd39: tb = is_cal ? (hist_mode ? hist_k_r[7:0] : 8'd0) : (h_ts[31:24]);
+            7'd40: tb = is_cal ? (hist_mode ? meas_hist_a[7:0] : 8'd0) : (h_ts[39:32]);
+            7'd41: tb = is_cal ? (hist_mode ? meas_hist_a[15:8] : 8'd0) : (h_ts[47:40]);
+            7'd42: tb = is_cal ? (hist_mode ? meas_hist_a[23:16] : 8'd0) : (h_ts[55:48]);
+            7'd43: tb = is_cal ? (hist_mode ? meas_hist_b[7:0] : 8'd0) : (h_ts[63:56]);
+            7'd44: tb = is_cal ? (hist_mode ? meas_hist_b[15:8] : 8'd0) : (h_ch);
+            7'd45: tb = is_cal ? (hist_mode ? meas_hist_b[23:16] : 8'd0) : ({6'd0, data_fresh, data_valid});
+            7'd46: tb = is_cal ? (meas_maxtap_a[7:0]) : (err_word[7:0]);
+            7'd47: tb = is_cal ? (meas_maxtap_a[15:8]) : (err_word[15:8]);
+            7'd48: tb = is_cal ? (meas_maxtap_b[7:0]) : (err_word[23:16]);
+            7'd49: tb = is_cal ? (meas_maxtap_b[15:8]) : (err_word[31:24]);
+            7'd50: tb = is_cal ? (meas_tdc_cfg[7:0]) : (h_phase);
+            7'd51: tb = is_cal ? (meas_tdc_cfg[15:8]) : (h_status2);
+            7'd52: tb = is_cal ? 8'd0 : (h_freq16[7:0]);
+            7'd53: tb = is_cal ? 8'd0 : (h_freq16[15:8]);
+            7'd54: tb = is_cal ? 8'd0 : (h_freq16[23:16]);
+            7'd55: tb = is_cal ? 8'd0 : (h_freq16[31:24]);
+            7'd56: tb = is_cal ? 8'd0 : (h_freq16[39:32]);
+            7'd57: tb = is_cal ? 8'd0 : (h_freq16[47:40]);
+            7'd58: tb = is_cal ? 8'd0 : (h_freq16[55:48]);
+            7'd59: tb = is_cal ? 8'd0 : (h_freq16[63:56]);
+            7'd60: tb = is_cal ? 8'd0 : (FW_VERSION[7:0]);
+            7'd61: tb = is_cal ? 8'd0 : (FW_VERSION[15:8]);
+            7'd62: tb = is_cal ? 8'd0 : (CAPS[7:0]);
+            7'd63: tb = is_cal ? 8'd0 : (CAPS[15:8]);
+            7'd64: tb = is_cal ? 8'd0 : (8'h01);
+            7'd65: tb = is_cal ? 8'd0 : ({6'd0, win_cnt});
+            7'd66: tb = is_cal ? 8'd0 : (d_rx0);
+            7'd67: tb = is_cal ? 8'd0 : (d_rx1);
+            7'd68: tb = is_cal ? 8'd0 : (w0_seq[7:0]);
+            7'd69: tb = is_cal ? 8'd0 : (w0_seq[15:8]);
+            7'd70: tb = is_cal ? 8'd0 : (w0_seq[23:16]);
+            7'd71: tb = is_cal ? 8'd0 : (w0_seq[31:24]);
+            7'd72: tb = is_cal ? 8'd0 : (w0_edges[7:0]);
+            7'd73: tb = is_cal ? 8'd0 : (w0_edges[15:8]);
+            7'd74: tb = is_cal ? 8'd0 : (w0_edges[23:16]);
+            7'd75: tb = is_cal ? 8'd0 : (w0_edges[31:24]);
+            7'd76: tb = is_cal ? 8'd0 : (w0_dt[7:0]);
+            7'd77: tb = is_cal ? 8'd0 : (w0_dt[15:8]);
+            7'd78: tb = is_cal ? 8'd0 : (w0_dt[23:16]);
+            7'd79: tb = is_cal ? 8'd0 : (w0_dt[31:24]);
+            7'd80: tb = is_cal ? 8'd0 : (w0_dt[39:32]);
+            7'd81: tb = is_cal ? 8'd0 : (w0_dt[47:40]);
+            7'd82: tb = is_cal ? 8'd0 : (w0_dt[55:48]);
+            7'd83: tb = is_cal ? 8'd0 : (w0_dt[63:56]);
+            7'd84: tb = is_cal ? 8'd0 : (w1_seq[7:0]);
+            7'd85: tb = is_cal ? 8'd0 : (w1_seq[15:8]);
+            7'd86: tb = is_cal ? 8'd0 : (w1_seq[23:16]);
+            7'd87: tb = is_cal ? 8'd0 : (w1_seq[31:24]);
+            7'd88: tb = is_cal ? 8'd0 : (w1_edges[7:0]);
+            7'd89: tb = is_cal ? 8'd0 : (w1_edges[15:8]);
+            7'd90: tb = is_cal ? 8'd0 : (w1_edges[23:16]);
+            7'd91: tb = is_cal ? 8'd0 : (w1_edges[31:24]);
+            7'd92: tb = is_cal ? 8'd0 : (w1_dt[7:0]);
+            7'd93: tb = is_cal ? 8'd0 : (w1_dt[15:8]);
+            7'd94: tb = is_cal ? 8'd0 : (w1_dt[23:16]);
+            7'd95: tb = is_cal ? 8'd0 : (w1_dt[31:24]);
+            7'd96: tb = is_cal ? 8'd0 : (w1_dt[39:32]);
+            7'd97: tb = is_cal ? 8'd0 : (w1_dt[47:40]);
+            7'd98: tb = is_cal ? 8'd0 : (w1_dt[55:48]);
+            7'd99: tb = is_cal ? 8'd0 : (w1_dt[63:56]);
+            7'd100: tb = is_cal ? 8'd0 : (meas_tdc_status);
+            7'd101: tb = is_cal ? 8'd0 : (h_dt_b[7:0]);
+            7'd102: tb = is_cal ? 8'd0 : (h_dt_b[15:8]);
+            7'd103: tb = is_cal ? 8'd0 : (h_dt_b[23:16]);
+            7'd104: tb = is_cal ? 8'd0 : (h_dt_b[31:24]);
+            7'd105: tb = is_cal ? 8'd0 : (h_dt_b[39:32]);
+            7'd106: tb = is_cal ? 8'd0 : (h_dt_b[47:40]);
+            7'd107: tb = is_cal ? 8'd0 : (d_rx2);
+            7'd108: tb = is_cal ? 8'd0 : (h_edge_b[7:0]);
+            7'd109: tb = is_cal ? 8'd0 : (h_edge_b[15:8]);
+            7'd110: tb = is_cal ? 8'd0 : (h_edge_b[23:16]);
+            7'd111: tb = is_cal ? 8'd0 : (h_edge_b[31:24]);
+            7'd112: tb = is_cal ? 8'd0 : (d_ccl);
+            7'd113: tb = is_cal ? 8'd0 : (d_cch);
+            7'd114: tb = is_cal ? 8'd0 : (d_rcl);
+            7'd115: tb = is_cal ? 8'd0 : (d_rch);
+            7'd116: tb = is_cal ? 8'd0 : (dbg_mosi_cnt[7:0]);
+            7'd117: tb = is_cal ? 8'd0 : (dbg_mosi_cnt[15:8]);
+            7'd118: tb = is_cal ? 8'd0 : (h_dt_a[7:0]);
+            7'd119: tb = is_cal ? 8'd0 : (h_dt_a[15:8]);
+            7'd120: tb = is_cal ? 8'd0 : (h_dt_a[23:16]);
+            7'd121: tb = is_cal ? 8'd0 : (h_dt_a[31:24]);
+            7'd122: tb = is_cal ? 8'd0 : (h_dt_a[39:32]);
+            7'd123: tb = is_cal ? 8'd0 : (h_dt_a[47:40]);
+            7'd124: tb = is_cal ? 8'd0 : (dbg_sck_cnt[7:0]);
+            7'd125: tb = is_cal ? 8'd0 : (dbg_sck_cnt[15:8]);
+            default: tb = 8'd0;
         endcase
     end
 
@@ -425,9 +475,10 @@ module spi_app (
                         TYPE_CAL: begin          // žádost o CAL report
                             ack_ok    <= 1'b0;
                             cal_req   <= 1'b1;
-                            // [12]==1: vypis hist[k] (k = [14]); jinak souhrn
-                            hist_mode <= (rx_p0 == 8'd1);
-                            if (rx_p0 == 8'd1) hist_k_r <= rx_p2;
+                            // [12] bit0 = 1: vypis hist[k] (k = {[12][2:1], [14]}, 10 bitu; starsi STM posila
+                            // [12] == 1 a k < 256 -> stejny vyznam); jinak souhrn
+                            hist_mode <= (rx_p0[0] && rx_p0[7:3] == 5'd0);
+                            if (rx_p0[0] && rx_p0[7:3] == 5'd0) hist_k_r <= {rx_p0[2:1], rx_p2};
                         end
                         default:    ack_ok <= 1'b0;  // rezervované TYPE = ignorovat
                     endcase

@@ -99,6 +99,18 @@ module top (
     // i do meze OVF_LIM nize (2026-10-03: OVF_LIM mel natvrdo 22, kalibrace 20 ->
     // retez pokryvajici jen ~83 % periody se nenahlasil jako kratky).
     localparam CAL_LOG2 = 20;
+    // Konfigurace TDC (oba kanaly stejna; viz tdc.v). Volba z P&R matice 2026-10-07 (docs/audit/2026-10-07_tdc-vlastni-reference.md):
+    //   STRIDE 1 / DUAL 0 : CLS 65 %, Fmax 111 MHz, TNS 0  <-- VYCHOZI (jemne biny ~39 ps, MENSI nez STRIDE 2: retez
+    //                                                         ma jen TAPS ALU misto 512, z nichz >240 stejne nešlo pouzit)
+    //   STRIDE 2 / DUAL 0 : CLS 69 %, Fmax 111 MHz, TNS 0
+    //   DUAL 1            : CLS 87 %, Fmax 80-94 MHz, TNS < 0   (v simulaci funguje, na tomto cipu se nevejde)
+    // STRIDE 2 = vzorek kazdy 2. ALU (dosavadni), 1 = kazdy ALU. DUAL 1 = druha sada vzorku na sestupnou hranu hodin.
+    // TAPS = vzorku (nasobek 32): 320 = 12,5 ns pri 39 ps/ALU (rezerva nad 10 ns + slepota spoustece; fyzicky konec
+    // retezu na desce byl dosud ~268. ALU, o poloze zlomu v novem netlistu rozhodne `tdc` -> nejvetsi bin).
+    localparam TDC_STRIDE = 1;
+    localparam TDC_DUAL   = 0;
+    localparam TDC_TAPS   = (TDC_STRIDE == 1) ? 320 : 256;
+    localparam TDC_KD     = (TDC_STRIDE == 1) ? 1 : 2;
     wire use_ro_a, use_ro_b, ro_sig;
     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
 
@@ -126,10 +138,10 @@ module top (
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
     wire [15:0] da_nz, da_last, db_nz, db_last;
     wire [15:0] da_maxtap, db_maxtap;          // B1a: nejvyssi set tap (bubliny: >> d_last)
-    wire [7:0]  hist_k;                        // z spi_app (kvazistaticky)
+    wire [9:0]  hist_k;                        // z spi_app (kvazistaticky)
     wire [23:0] hq_a, hq_b;                    // hist[hist_k] kanalu A/B
 
-    tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdca (
+    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
@@ -139,7 +151,7 @@ module top (
         .d_maxtap(da_maxtap),
         .dump_k(hist_k), .dump_q(hq_a)
     );
-    tdc_chan #(.CAL_LOG2(CAL_LOG2)) u_tdcb (
+    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -199,6 +211,10 @@ module top (
     wire short_b = (db_ovf > OVF_LIM);
     wire [7:0] tdc_status = {2'b00, short_b, short_a, cbs_s[1], cfl_s[1], cvb_s[1], cva_s[1]};
     wire [191:0] cal_diag = {db_last, db_nz, db_peak, db_ovf, da_last, da_nz, da_peak, da_ovf};
+    // konfigurace TDC pro host: [4:0] log2(adres tabulky), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu
+    localparam [8:0] TDC_TAPS9 = TDC_TAPS;
+    localparam [4:0] TDC_AW5   = $clog2(TDC_TAPS) + TDC_DUAL;
+    wire [15:0] tdc_cfg = {TDC_TAPS9, (TDC_STRIDE == 1) ? 1'b1 : 1'b0, (TDC_DUAL != 0) ? 1'b1 : 1'b0, TDC_AW5};
 
     // ----------------------------------------------------------
     // Výsledky oken do 10 MHz domény. FPGA kmitočet NEPOČÍTÁ: rámec nese přesné
@@ -324,6 +340,7 @@ module top (
         .meas_periods_b(periods_b_hold),
         .meas_tdc_status(tdc_status),
         .meas_cal_diag(cal_diag),
+        .meas_tdc_cfg(tdc_cfg),
         .meas_maxtap_a(da_maxtap),
         .meas_maxtap_b(db_maxtap),
         .hist_k(hist_k),

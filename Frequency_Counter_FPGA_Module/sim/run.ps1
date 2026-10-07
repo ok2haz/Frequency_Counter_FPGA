@@ -32,6 +32,25 @@ $tests = @(
     @{ name = "tdc"; top = "tb_tdc";
        rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_LUT_PS=800") }
+    # 2026-10-07: TDC se SILICON modelem (zlom retezu na 268. ALU, ~39 ps/ALU) -- chyba casove znacky KAZDE hrany
+    # podle faze (INL, skoky), histogram kalibrace. Prahy: sigma znacky < 40 ps, skoky < 1 %. Zdravy stav ~18 ps / 0 %.
+    # (Stara architektura s `t0` dava na stejnem modelu obri bin 1,3 ns a sigma ~150 ps.) ~2-3 min.
+    @{ name = "tdcinl"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=320", "-DPSTRIDE=1", "-DPKD=1", "-DPDUAL=0",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # totez s DUAL=1 (vzorky i na sestupnou hranu hodin); na desce se nevejde (CLS 87 %), ale musi fungovat
+    @{ name = "tdcinl_dual"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=256", "-DPSTRIDE=2", "-DPKD=2", "-DPDUAL=1",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
+    @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
+    @{ name = "decequiv320"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=320") }
+    # multiplexer TX bajtu (spi_app) == puvodni (tx_old_ref.v = spi_app pred prepisem 2026-10-07)
+    @{ name = "txequiv"; top = "tb_tx_equiv"; rtl = @("spi_app.v"); tb = "tb_tx_equiv.sv"; extra = @("tx_old_ref.v") }
     @{ name = "phase"; top = "tb_phase_oversampler";
        rtl = @("spi_app.v"); tb = "tb_phase_oversampler.sv" }
     # end-to-end SPI: PHY (SCK domena + blokova RAM) + spi_app: ACK, CAL report,

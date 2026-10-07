@@ -3,9 +3,9 @@
 # (F-0201: `{15{sig}}+1` syntéza zredukovala na invertor, v netlistu nebyla jedina
 # ALU bunka a timing report presto vypadal v poradku). Spoustet po KAZDE syntéze:
 #   python sim/check_tdc_netlist.py [cesta/k/Counter_FPGA.vg]
-# Ocekavano (FW >= 0x040A, STRIDE 2): 2 x 511 stupnu g[i].h.u (512. stupen se
-# nevzorkuje, syntéza ho vypusti), vsechny I0=VCC a I1=GND, 2 hlavy retezu
-# s CIN = sig_eff. Mene stupnu = retez zkraceny syntézou -> CHYBA.
+# Ocekavano (od FW 0x0410 se cte z top.v: TDC_STRIDE, TDC_TAPS): 2 x (TAPS*STRIDE - (STRIDE-1)) stupnu
+# g[i].h.u (posledni ALU se u STRIDE 2 nevzorkuje, syntéza ho vypusti; u STRIDE 1 se vzorkuje kazdy),
+# vsechny I0=VCC a I1=GND, 2 hlavy retezu s CIN = sig_eff. Mene stupnu = retez zkraceny syntézou -> CHYBA.
 import io, re, sys, os
 d = os.path.dirname(os.path.abspath(__file__))
 p = sys.argv[1] if len(sys.argv) > 1 else os.path.join(d, '..', 'impl', 'gwsynthesis', 'Counter_FPGA.vg')
@@ -32,6 +32,12 @@ for n, b in chain:
         print('   ', n, 'CIN =', port(b, 'CIN'))
 sums = sum(1 for n, b in chain if port(b, 'SUM'))
 print('stupne s pouzitym SUM:', sums)
-if len(chain) < 1022 or ok != len(chain) or len(heads) != 2:
-    print('CHYBA: retez neodpovida ocekavani (2 x 511 pruchodu carry)'); sys.exit(1)
+top = io.open(os.path.join(d, '..', 'src', 'top.v'), encoding='utf-8').read()
+stride = int(re.search(r'localparam TDC_STRIDE\s*=\s*(\d+);', top).group(1))
+mt = re.search(r'localparam TDC_TAPS\s*=\s*\(TDC_STRIDE == 1\) \? (\d+) : (\d+);', top)
+taps = int(mt.group(1) if stride == 1 else mt.group(2))
+per = taps * stride - (stride - 1)
+print('ocekavano z top.v: STRIDE %d, TAPS %d -> 2 x %d stupnu' % (stride, taps, per))
+if len(chain) < 2 * per or ok != len(chain) or len(heads) != 2:
+    print('CHYBA: retez neodpovida ocekavani (2 x %d pruchodu carry)' % per); sys.exit(1)
 print('OK: retez kompletni')

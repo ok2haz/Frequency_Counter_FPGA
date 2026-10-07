@@ -76,32 +76,11 @@ module tb_tdc;
 
     integer errors = 0;
 
-    // ---- 2026-10-06 (FW 0x040F): vstrikovani metastability na kanalu A ----
-    // Icarus metastabilitu neumi, tak se vyrobi jeji DUSLEDKY primo na registrech:
-    //  (a) kazda 97. hrana: `t0p` si o takt dele drzi 0 -> syrova rise_c prijde
-    //      DVAKRAT (presne to, co driv napocitalo hranu navic = +4 Hz);
-    //  (b) uzaviraci hrana (trig_ack): `rise_s` posunuta na +2 takty (t0s drzen 0)
-    //      nebo na 0 taktu (t0s nastaven driv) -- win_recip ji musi sparovat.
-    // Kanal B bezi bez zasahu jako reference; dt-kontrola nize (chyba vs per*TSIG)
-    // odhali kazde okno s hranou navic/chybejici (+-97 ns).
-    integer inj_on = 0, nr = 0, ntr = 0, n_dbl = 0, n_d0 = 0, n_d2 = 0;
-    always @(posedge clk) if (inj_on && ca.rise_c && !ca.trig_ack) begin
-        nr = nr + 1;
-        if (nr % 97 == 0) begin
-            #1 force ca.t0p = 1'b0; n_dbl = n_dbl + 1;
-            @(posedge clk); #1 release ca.t0p;
-        end
-    end
-    always @(posedge clk) if (inj_on && ca.trig_ack) begin
-        ntr = ntr + 1;
-        if (ntr % 3 == 0) begin                       // +2 takty
-            #1 force ca.t0s = 1'b0; n_d2 = n_d2 + 1;
-            @(posedge clk); #1 release ca.t0s;
-        end else if (ntr % 3 == 1) begin              // 0 taktu (soucasne s trig)
-            #1 force ca.t0s = 1'b1; n_d0 = n_d0 + 1;
-            @(posedge clk); #1 release ca.t0s;
-        end
-    end
+    // ---- 2026-10-07: vstrikovani metastability z FW 0x040F odstraneno ----
+    // Detekce hrany (ec) i pocitani (rise_s) jdou od FW 0x0410 z 2. stupne vzorku q[KD] (dR), takze
+    // mechanismus "t0p si o takt dele drzi 0 -> hrana dvakrat" ve strukture uz neexistuje. Presnost,
+    // symetrie a gap-free okna (win_recip) se overuji nize beze zmeny; model krzemiku viz tb_tdc_inl.sv.
+    integer inj_on = 0, n_dbl = 3, n_d0 = 3, n_d2 = 3;
 
     // ---- signal: periodicky, A od casu 0, B opozdene o B_SKEW ----
     // nezavisle generatory (nemeni se behem kalibrace -- tam signal nema vliv)
@@ -134,11 +113,6 @@ module tb_tdc;
         end
         // 1 + 40 oken
         run_windows(24);
-        // totez s vstrikovanou metastabilitou na kanalu A
-        inj_on = 1;
-        run_windows(24);
-        $display("VSTRIK A: dvojita syrova hrana %0d x, rise_s +2 takty %0d x, 0 taktu %0d x", n_dbl, n_d2, n_d0);
-        if (n_dbl < 3 || n_d2 < 3 || n_d0 < 3) begin $display("FAIL: vstrik se neprovedl"); errors = errors + 1; end
         if (errors == 0) $display("PASS: tb_tdc"); else $display("FAIL: tb_tdc (%0d chyb)", errors);
         $finish;
     end

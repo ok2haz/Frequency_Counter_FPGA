@@ -32,12 +32,12 @@ module tb_link;
   reg [31:0] m_edges = 32'd1000;
   wire [47:0] m_dt = {16'd0, m_edges} * 48'd7 + 48'd3;
 
-  wire cal_mode; wire [1:0] bw; wire [7:0] dbg; wire [7:0] hk;
+  wire cal_mode; wire [1:0] bw; wire [7:0] dbg; wire [9:0] hk;
   spi_app app(.clk(clk10), .meas_freq_x100000(64'd0), .meas_periods(m_edges), .meas_gate_ns(64'd0),
      .meas_timestamp(64'd0), .meas_error_flags(32'd0), .meas_channel(8'd0), .new_meas(new_meas), .signal_lost(1'b0),
      .meas_freq16_x100000(64'd0), .meas_phase_status(8'd0), .meas_status2(8'd0), .meas_dt_a_ps(m_dt),
      .meas_dt_b_ps(48'd0), .meas_periods_b(32'd0), .meas_tdc_status(8'h03), .meas_cal_diag(192'd0),
-     .hist_k(hk), .meas_hist_a(24'h123456), .meas_hist_b(24'h0ABCDE),
+     .meas_tdc_cfg(16'h0123), .hist_k(hk), .meas_hist_a(24'h123456), .meas_hist_b(24'h0ABCDE),
      .dbg_mosi_cnt(dmc), .dbg_sck_cnt(dsc),
      .rx_valid(rxv), .rx_b0(rb0), .rx_b1(rb1), .rx_b2(rb2), .rx_seq(rseq), .rx_p0(rp0), .rx_p1(rp1), .rx_p2(rp2),
      .rx_crc_calc(rcc), .rx_crc_recv(rcr),

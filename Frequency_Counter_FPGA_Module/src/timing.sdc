@@ -56,18 +56,19 @@ set_input_delay  -clock spi_sck -clock_fall -min 0.0 [get_ports {spi_mosi}]
 set_false_path -through [get_nets {u_tdca/sig_eff}]
 set_false_path -through [get_nets {u_tdcb/sig_eff}]
 
-// Dekoder: vzorky q jsou po spusteni ZMRAZENE (clock enable) 5 taktu a
-// code_r se bere az na konci => kombinacni cesta q -> code_r ma 5 taktu.
-set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
-set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/code_r*}]
-set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
-set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/code_r*}]
-// B1a: hicode_r (nejvyssi set tap) ma TUTEZ hlubokou kombinacni cestu q -> hk ->
-// hicode_r, latchuje se na tomtez fz4 jako code_r => stejnych 5 taktu multicycle.
-set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/hicode_r*}]
-set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/q_*}] -to [get_regs {u_tdca/hicode_r*}]
-set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/hicode_r*}]
-set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/q_*}] -to [get_regs {u_tdcb/hicode_r*}]
+// Dekoder (od 2026-10-07 architektura qd): vzorky q bezi VOLNE (kratke cesty), kompaktni kopie qd je po
+// spusteni ZMRAZENA (clock enable) >= 5 taktu a code_r / hicode_r se berou az na konci (fz == 4) =>
+// kombinacni cesta qd -> code_r ma 5 taktu. `qd_*` zahrnuje zmrazene qd_r, qd_f i volbu sady qd_src
+// (DUAL; nastavi se pri spusteni a od te doby je staticka). Vsechny maji prefix qd_ a lezi v u_chain,
+// takze vzor nachazi VZDY neco (u DUAL=0 aspon qd_r) -- odkaz na neexistujici objekt je v Gowin CHYBA (TA2003).
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/code_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
 
 // Diagnostika kalibrace (tdc.v, faze ph[5] pruchodu tabulkou): scan_k se meni
 // jen jednou za 10 taktu (ph[9]) a hcur v ph[1] -> do zapisu d_* v ph[5] maji
