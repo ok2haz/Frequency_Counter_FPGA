@@ -212,6 +212,12 @@ typedef struct {
     uint16_t maxtap[2];   /* B1a: nejvyssi KDY navzorkovany tap; maxtap>>last = bubliny nad prvni nulou */
     uint8_t  status;      /* FPGA_TDC_* */
     uint8_t  cal_mode;    /* posledni SET_CONFIG 0x02 */
+    /* FW >= 0x0410 (CAL bajty 50..51): konfigurace TDC. Starsi FW je nenese -> naddr = 256, dual = 0. */
+    uint16_t naddr;       /* pocet adres tabulky kalibrace ({sada, kod}) */
+    uint16_t taps;        /* pocet vzorkovanych tapu (256 / 288) */
+    uint8_t  dual;        /* 1 = vzorky i na sestupnou hranu hodin (adresy 0..naddr/2-1 = sada R, zbytek F) */
+    uint8_t  stride1;     /* 1 = vzorek kazdeho ALU (jemnejsi biny) */
+    uint8_t  cfg_valid;   /* 1 = FW konfiguraci hlasi */
 } fpga_tdc_cal_t;
 /** Spusti kalibraci TDC (SET_CONFIG 0x02: 0 pak 1 = nabezna hrana). FPGA ji
  *  dokonci za ~0,5-1 s a behem ni nemeri. @return false pri chybe prenosu. */
@@ -220,9 +226,10 @@ bool fpga_freq_tdc_cal_start(void);
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
 /* Vypis histogramu kalibrace (FW >= 0x040B): hist[k] obou kanalu (pocet udalosti
- * kalibrace s kodem k; sirka binu = hist[k] / N * 10 ns). Diagnostika DNL.
+ * kalibrace s adresou k; sirka binu = hist[k] / N * 10 ns). Diagnostika DNL.
+ * `k` je od FW 0x0410 10bitove ({sada, kod}; starsi FW bere jen k < 256).
  * Vraci false, kdyz odpoved neprisla nebo nese jiny kod. */
-bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b);
+bool fpga_freq_tdc_hist(uint16_t k, uint32_t *a, uint32_t *b);
 
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog

@@ -2173,10 +2173,14 @@ void UartTask_run(void *argument)
 				   * N = soucet (kalibrace z 2^20 udalosti). Diagnostika DNL / bublin.
 				   * Bezi z UartTasku (nehlidany watchdogem); ~256 x 2 SPI transakce. */
 				  uint32_t sa = 0, sb = 0, ma = 0, mb = 0; unsigned ka = 0, kb = 0, bad = 0;
-				  printf("TDC hist: k;A;B\n");
-				  for (unsigned k = 0; k < 256u; k++) {
+				  fpga_tdc_cal_t hc; memset(&hc, 0, sizeof hc);
+				  unsigned nad = fpga_freq_tdc_report(&hc) ? hc.naddr : 256u;   /* FW >= 0x0410 hlasi velikost tabulky */
+				  if (nad > 1024u) nad = 1024u;
+				  printf("TDC hist: k;A;B   (adres %u%s)\n", nad,
+				         hc.dual ? ", DUAL: adresy 0..N/2-1 = sada R (nabezna hrana hodin), zbytek F (sestupna)" : "");
+				  for (unsigned k = 0; k < nad; k++) {
 					  uint32_t a = 0, b = 0;
-					  if (!fpga_freq_tdc_hist((uint8_t)k, &a, &b)) { bad++; continue; }
+					  if (!fpga_freq_tdc_hist((uint16_t)k, &a, &b)) { bad++; continue; }
 					  sa += a; sb += b;
 					  if (a > ma) { ma = a; ka = k; }
 					  if (b > mb) { mb = b; kb = k; }
@@ -2207,21 +2211,33 @@ void UartTask_run(void *argument)
 				  }
 				  if (fpga_freq_tdc_report(&d)) {
 					  for (int ch = 0; ch < 2; ch++)
-						  printf("TDC %c: kodu %u/256 (nejvyssi %u), nejvetsi %lu, za koncem retezu %lu, max tap %u\n",
-							     'A' + ch, (unsigned)d.nz[ch], (unsigned)d.last[ch],
-							     (unsigned long)d.peak[ch], (unsigned long)d.ovf[ch],
-							     (unsigned)d.maxtap[ch]);
+						  printf("TDC %c: kodu %u/%u (nejvyssi %u), nejvetsi bin %lu = %lu ps (%lu.%lu %% periody), za koncem retezu %lu, max tap %u\n",
+							     'A' + ch, (unsigned)d.nz[ch], (unsigned)(d.naddr ? d.naddr : 256u), (unsigned)d.last[ch],
+							     (unsigned long)d.peak[ch],
+							     (unsigned long)(((uint64_t)d.peak[ch] * 10000ull) >> 20),            /* N = 2^20 udalosti, perioda 10 ns */
+							     (unsigned long)(((uint64_t)d.peak[ch] * 100ull) >> 20),
+							     (unsigned long)((((uint64_t)d.peak[ch] * 1000ull) >> 20) % 10ull),
+							     (unsigned long)d.ovf[ch], (unsigned)d.maxtap[ch]);
 					  /* B1a: obri bin = d_last zustava na ~134. maxtap to rozlisi:
 					   *   maxtap ~ last  -> teplomer CISTY, retez tam fyzicky konci
 					   *                     (oprava = delsi/jiny P&R carry chain)
 					   *   maxtap >> last -> BUBLINY nad prvni nulou, retez pokracuje
 					   *                     (oprava = vzorkovani / metastabilita FF) */
+					  if (d.cfg_valid)
+						  printf("TDC: konfigurace %u tapu, %s vzorky, %s\n", (unsigned)d.taps,
+						         d.stride1 ? "kazdy ALU (jemne)" : "kazdy 2. ALU",
+						         d.dual ? "DUAL (nabezna i sestupna hrana hodin)" : "nabezna hrana hodin");
 					  for (int ch = 0; ch < 2; ch++) {
+						  if (d.dual) {                           /* adresy = {sada, kod}: maxtap vs last nema smysl */
+							  printf("TDC %c: DUAL - verdikt maxtap/last se nepouziva; sledujte nejvetsi bin (musi byt < ~200 ps)\n", 'A' + ch);
+							  continue;
+						  }
 						  if (d.maxtap[ch] == 0u && d.last[ch] > 0u) {
 							  printf("TDC %c: maxtap N/A (stary FPGA FW? B1a potrebuje >=0x040D)\n", 'A' + ch);
 							  continue;
 						  }
-						  int bub = ((int)d.maxtap[ch] - (int)d.last[ch]) > 3;
+						  /* maxtap ma od FW 0x0410 rozliseni 8 tapu (u starsich 1) -> tolerance */
+						  int bub = ((int)d.maxtap[ch] - (int)d.last[ch]) > (d.cfg_valid ? 12 : 3);
 						  printf("TDC %c: maxtap %u vs nejvyssi kod %u -> %s\n",
 						         'A' + ch, (unsigned)d.maxtap[ch], (unsigned)d.last[ch],
 						         bub ? "BUBLINY nad prvni nulou (retez pokracuje; oprava = vzorkovani/metastabilita)"
@@ -2232,8 +2248,8 @@ void UartTask_run(void *argument)
 						     (d.status & FPGA_TDC_CAL_A) ? 1u : 0u, (d.status & FPGA_TDC_CAL_B) ? 1u : 0u,
 						     (d.status & FPGA_TDC_CAL_FAIL) ? 1u : 0u, (d.status & FPGA_TDC_CAL_BUSY) ? 1u : 0u,
 						     (d.status & FPGA_TDC_SHORT_A) ? 1u : 0u, (d.status & FPGA_TDC_SHORT_B) ? 1u : 0u);
-					  printf("TDC: ~170-180 kodu a 'za koncem' ~0 = retez pokryva 10 ns; mene kodu nebo\n"
-					         "     velke 'za koncem' = retez kratky (rychlejsi nez STA model 57 ps/tap)\n");
+					  printf("TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 %% periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)\n"
+					         "     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)\n");
 				  } else {
 					  printf("TDC: CAL report nedorazil (stary FW? link? fpgasim?)\n");
 				  }

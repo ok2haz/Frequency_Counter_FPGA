@@ -1,8 +1,15 @@
 import re, math
 import sys
-p = sys.argv[1] if len(sys.argv) > 1 else 'docs/audit/2026-10-04_tdc-hist.txt'
-A = [0]*256; B = [0]*256
-for k, a, b in re.findall(r'^(\d+);(\d+);(\d+)', open(p).read(), re.M):
+# Pouziti: python tools/tdc_hist_analysis.py [soubor] [--dual]
+#   soubor = vystup UART `tdc hist` (radky "k;A;B"); --dual = FW >= 0x0410 s DUAL (adresy 0..N/2-1 = sada R,
+#   zbytek F; N = pocet adres z hlavicky "adres N"). FW <= 0x040F a FW 0x0410 bez DUAL: bez prepinace.
+p = next((x for x in sys.argv[1:] if not x.startswith('--')), 'docs/audit/2026-10-04_tdc-hist.txt')
+dual = '--dual' in sys.argv
+txt = open(p).read()
+rows = re.findall(r'^(\d+);(\d+);(\d+)', txt, re.M)
+NA = max([int(k) for k, _, _ in rows] + [255]) + 1
+A = [0]*NA; B = [0]*NA
+for k, a, b in rows:
     A[int(k)] = int(a); B[int(k)] = int(b)
 T = 10000.0  # perioda vzorkovani [ps]
 for name, H in (('A', A), ('B', B)):
@@ -21,7 +28,11 @@ for name, H in (('A', A), ('B', B)):
     sigw = math.sqrt(2) * sig1
     # bez nejvetsiho binu
     var_wo = sum((w[i] / T) * w[i] ** 2 / 12.0 for i in nz if i != srt[0][1])
-    print(f'== kanal {name}: N={N}, kody {first}..{last}, obsazenych {len(nz)}, prazdnych uvnitr {zeros}')
+    print(f'== kanal {name}: N={N}, adresy {first}..{last}, obsazenych {len(nz)}, prazdnych uvnitr {zeros}')
+    if dual:
+        half = NA // 2
+        wr = sum(w[:half]); wf = sum(w[half:])
+        print(f'   sada R {wr:.0f} ps ({100*wr/T:.1f} %), sada F {wf:.0f} ps ({100*wf/T:.1f} %)  (soucet = perioda; rozdil od 50 % = strida hodin)')
     print('   nejvetsi biny [ps]: ' + ', '.join(f'k={i}:{x:.0f}' for x, i in srt[:6]))
     print(f'   median sirky obsazeneho binu {sorted(w[i] for i in nz)[len(nz)//2]:.0f} ps, prumer na kod (vc. prazdnych) {T/(last-first+1):.0f} ps')
     print(f'   kvantizacni sigma 1 hrany {sig1:.0f} ps -> okno (2 hrany) {sigw:.0f} ps')

@@ -1098,6 +1098,14 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
             out->maxtap[1] = (uint16_t)(rx[FR_PAYLOAD + 36] | (rx[FR_PAYLOAD + 37] << 8));
             out->status   = rx[FR_PAYLOAD + 24];
             out->cal_mode = rx[FR_PAYLOAD + 25];
+            {   /* FW >= 0x0410: abs 50..51 = [4:0] log2(adres), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu */
+                uint16_t cfg = (uint16_t)(rx[FR_PAYLOAD + 38] | (rx[FR_PAYLOAD + 39] << 8));
+                out->cfg_valid = (cfg & 0x1Fu) != 0u;
+                out->naddr   = out->cfg_valid ? (uint16_t)(1u << (cfg & 0x1Fu)) : 256u;
+                out->dual    = (uint8_t)((cfg >> 5) & 1u);
+                out->stride1 = (uint8_t)((cfg >> 6) & 1u);
+                out->taps    = out->cfg_valid ? (uint16_t)(cfg >> 7) : 256u;
+            }
             ok = true;
         }
     }
@@ -1105,10 +1113,13 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
     return ok;
 }
 
-bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b)
+bool fpga_freq_tdc_hist(uint16_t k, uint32_t *a, uint32_t *b)
 {
-    if (!g_init_ok || s_sim_on || a == NULL || b == NULL) return false;
-    uint8_t tx[FR_LEN], rx[FR_LEN], pl[3] = { 1u, 0u, k };
+    if (!g_init_ok || s_sim_on || a == NULL || b == NULL || k > 1023u) return false;
+    /* [12] = 1 | k[9:8] << 1 (starsi FW bere jen [12] == 1 a k < 256), [14] = k[7:0] */
+    uint8_t tx[FR_LEN], rx[FR_LEN];
+    uint8_t p12 = (uint8_t)(1u | (((k >> 8) & 3u) << 1));
+    uint8_t pl[3] = { p12, 0u, (uint8_t)(k & 0xFFu) };
     bool locked = false, ok = false;
     if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) {
         if (osMutexAcquire(s_spi_mtx, 200) != osOK) return false;
@@ -1126,7 +1137,7 @@ bool fpga_freq_tdc_hist(uint8_t k, uint32_t *a, uint32_t *b)
             if (rx[0] != FR_MAGIC || rx[2] != TYPE_CAL) continue;
             uint16_t cc = crc16_ccitt(rx, FR_CRC_LEN);
             if (cc != ((uint16_t)rx[126] | ((uint16_t)rx[127] << 8))) continue;
-            if (rx[38] != 1u || rx[39] != k) continue;
+            if (rx[38] != p12 || rx[39] != (uint8_t)(k & 0xFFu)) continue;
             *a = (uint32_t)rx[40] | ((uint32_t)rx[41] << 8) | ((uint32_t)rx[42] << 16);
             *b = (uint32_t)rx[43] | ((uint32_t)rx[44] << 8) | ((uint32_t)rx[45] << 16);
             ok = true;
