@@ -98,3 +98,69 @@ Generátor se **vstupem 10 MHz zavěšeným na stejnou referenci**, na CH_A kmit
 
 Bez generátoru: nezávislý nezavěšený oscilátor dává jen rozptyl a σy(1 s) k porovnání s podlahou; absolutní
 chybu ne.
+
+## 5. Měření GPSDO proti vnitřnímu OCXO, kanál A (HW 2026-10-07, 60 min)
+
+Zapojení: **vstup CH_A = externí GPSDO 10 MHz (měl fix), časová základna = vnitřní OCXO** (Si5356 → 100 MHz).
+Dva nezávislé oscilátory. Data: `docs/audit/data/2026-10-07_beat_A.csv` (14 329 oken, 3 600 s, sběr přes SSE),
+rozbor `python tools/tdc_beat.py analyze ...`, FW 0x040F, v0.13.0.
+
+### 5.1 Výsledky
+
+| veličina | hodnota |
+|---|---|
+| **δ OCXO vs GPSDO** | **+839,97 ppb** (10 000 008,3997 Hz), po 5 min 839,6 až 841,0 ppb |
+| stabilita δ za hodinu | ±0,5 ppb, OCXO 47,3 °C |
+| šum časové značky (robustně, 20oknový fit) | **215 ps** (bloky po 5 min: 177–348 ps) |
+| σ okna ≈ √2 × šum značky | **304 ps = 1,2·10⁻⁹** za 0,25 s |
+| značky s chybou ≥ 2 ns | 4,4 % (u vlastní reference 26 %) |
+| počet hran v okně | N: 81 %, N+1: 9 % (hradlo končí první hranou po ticku) |
+
+Číslo δ je absolutní chyba časové základny jen tak přesně, jak je GPSDO na 10 MHz (jeho typ a stav jsem nezjišťoval).
+
+**Počítadla ve `status`** (stav před: uptime 3086 s, po: 6741 s, tedy 3 655 s ≈ 14 620 oken):
+
+| | před | po | přírůstek | podíl oken |
+|---|---|---|---|---|
+| `spike-reject` | 3 402 | 6 780 | +3 378 | **23,1 %** |
+| chybný počet hran, „navíc“ | 276 | 288 | +12 | 0,08 % |
+| chybný počet hran, „chybí“ | 97 | 97 | 0 | 0 % |
+
+### 5.2 Co z toho plyne
+
+1. **Chybné počty hran závisejí na fázi, ne na kmitočtu.** U vlastní reference (pevná fáze) 2,05 % oken, zde
+   **0,08 %**, tedy ~25× méně, a to na stejném FW 0x040F. Hypotéza „metastabilita při pevné fázi hrany vůči taktu“ tím
+   získala podporu (⬜ není to důkaz: fáze putovala velmi pomalu, viz 5.3). Synchronizátor `38011fc` tak možná
+   funguje a zbytek patří do oblasti hrany, kde se signál zdržel u vlastní reference.
+2. **`spike-reject` vyřazuje 23 % oken, ale značek s chybou ≥ 2 ns je jen 4,4 %** (≈ 9 % oken, protože chyba značky
+   zasáhne dvě okna). Práh 3·10⁻⁹ = 0,75 ns v Δt je při σ okna 304 ps jen ~2,5σ. Zbylých ~14 % oken jsou běžné
+   odlehlé hodnoty z těžkých ocasů rozdělení, ne artefakt obřího binu. Důsledek: **σy je optimistické** (ořezává
+   ocasy), a práh ladil na dřívější σ 314 ps (STATUS #267) při jiné fázi. ⬜ Nové TODO: práh vázat na změřený
+   šum, nebo rozpoznat artefakt podle ±9,28 ns, ne podle amplitudy.
+3. **Rozlišení TDC je skutečně ~215 ps na značku** (σ okna 304 ps), tedy 1,3× horší než předpověď z kalibračního
+   histogramu (228 ps pro okno A, 2.2) a **o řád horší než dříve uváděných „~30 ps“**. Tyto dvě čísla nejsou v rozporu:
+   30 ps je σ bez obřího binu, 215 ps je σ s ním a s INL.
+4. **δ je za hodinu stabilní na 1 ppb**, takže softwarová korekce časové základny by byla smysluplná, i než přijde DAC.
+5. Mezery v `SEQUENCE` v SSE: 35 událostí, 72 oken (0,5 %). Z toho 12 jsou chybně napočítaná okna (jsou
+   zamlčená záměrně), zbytek je sloučení publikace/SSE a 1 zmeškané okno FpgaTasku. Neovlivňuje výsledky.
+
+### 5.3 Co se NEPODAŘILO určit
+
+**INL/DNL a přesnou polohu skoků.** Hradlo je zarovnané na hodiny, takže fáze hrany se mezi okny posune o
+`frac(0,25 s · δ / 10 ns) · 10 ns`. Při δ = 840 ppb je `2,5·10⁷·δ = 20,9992` (po 5 min 20,989–21,025), tedy posun
+jen −8…+250 ps na okno, a to se střídavě znaménkem, takže fáze se celou hodinu zdržovala v úzkém pásmu a během
+bloku se mění o ~1 ns. Při takto pomalé změně polynom bloku INL vstřebá; mapa by byla falešná pila (nástroj to
+pozná a mapu nevypíše; první verze nástroje pilu vyrobila a dala nesmysl σ 1 ns, opraveno `91c453c`).
+
+⚠️ **Tím je i výsledek 5.2 (bod 1) fázově nejistý:** měřená fáze nepokryla celou periodu, tedy 0,08 % platí pro
+tu část, kde se fáze zdržela.
+
+### 5.4 Další krok
+
+1. **Změnit rozdíl OCXO × vstup tak, aby zlomek `2,5·10⁷·δ` ležel mezi 0,05 a 0,95** (ideálně ~0,5: posun
+   5 ns/okno, celá perioda za 2 okna, bez dwellu). Možnosti: generátor s odstavenou referencí o ±12 ppb
+   (tj. 10 000 000,12 Hz), nebo vstup jiným GPSDO výstupem. Změnit OCXO bez DAC (`AD5693R` neosazen) nejde.
+2. Až bude pokrytí fáze plné: INL mapa, přesná poloha obřího binu a závislost skoků a chybných počtů na fázi.
+3. Zopakovat na **kanálu B** (obří bin 48 %, dosud neměřen).
+4. TODO: práh `spike-reject` (viz 5.2 bod 2) a softwarová korekce δ (jen pokud má smysl před DAC).
+
