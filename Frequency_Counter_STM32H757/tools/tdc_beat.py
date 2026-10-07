@@ -77,6 +77,24 @@ def segments(rows):
     out.append(seg); return [s for s in out if len(s) >= 200]
 
 # ------------------------------------------------------------------ analyza
+def short_stats(segs):
+    """Rezidua casove znacky vuci KRATKEMU linearnimu fitu (20 oken ~ 5 s). Pomale zmeny (INL pri pomale fazi,
+    sum OCXO) se v nem vstrebou, takze dava SUM a SKOKY nezavisle na tom, jak rychle faze projizdi kody.
+    Okna, kde se zmeni pocet hran N (hradlo konci az prvni hranou), resi osa X = kumulativni N."""
+    res = []; dN = {}
+    for seg in segs:
+        n = 0; ts = 0.0; xs = []; ys = []
+        for _, _, f, g in seg:
+            N = round(f * g * 1e-9); dN[N] = dN.get(N, 0) + 1
+            n += N; ts += N / f * 1e12; xs.append(n); ys.append(ts)
+        for a in range(0, len(seg) - 10, 20):
+            x = xs[a:a + 20]; y = ys[a:a + 20]
+            if len(x) < 10: continue
+            xm = st.mean(x); sc = (x[-1] - x[0]) or 1.0
+            c, r = polyfit_robust([(v - xm) / sc for v in x], y, deg=1)
+            res.extend(r)
+    return res, dN
+
 def analyze(path, fnom, block, nb):
     rows = load(path); gaps = sum(1 for a, b in zip(rows, rows[1:]) if b[1] - a[1] != 1)
     nmiss = sum(b[1] - a[1] - 1 for a, b in zip(rows, rows[1:]) if b[1] - a[1] > 1)
@@ -87,8 +105,32 @@ def analyze(path, fnom, block, nb):
     fall = [r[2] for r in rows]
     mf = st.mean(fall); delta = mf / fnom - 1
     print('prumer f = %.7f Hz  ->  delta (OCXO vs vstup) = %+.3e  (%+.3f ppb)' % (mf, delta, delta * 1e9))
-    if abs(delta) > 1e-12: print('perioda schodu %.1f s (10 ns faze za tuto dobu)%s' % (
+    if abs(delta) > 1e-12: print('perioda schodu (10 ns faze) %.3g s%s' % (
         T_PS * 1e-12 / abs(delta), '  <-- pomale, INL mapa bude hruba' if abs(delta) < 2e-10 else ''))
+    # --- veliciny nezavisle na pokryti faze
+    sres, dN = short_stats(segs)
+    good = [x for x in sres if abs(x) < JUMP_PS]
+    if good:
+        mad = st.median(abs(x - st.median(good)) for x in good) * 1.4826
+        print('POCET HRAN v okne: ' + ', '.join('N%+d: %d' % (k - min(dN), v) for k, v in sorted(dN.items())) +
+              '  (hradlo konci az prvni hranou po tiku)')
+        print('KRATKY FIT (20 oken): sum casove znacky robustne %.0f ps (sigma okna ~ sqrt2 x = %.0f ps = %.1e relativne), skoky >= %.0f ps: %.1f %% znacek' % (
+            mad, math.sqrt(2) * mad, math.sqrt(2) * mad * 1e-12 / 0.25, JUMP_PS, 100.0 * (len(sres) - len(good)) / len(sres)))
+    # drift delta po 5 min
+    t0 = rows[0][0]; per = {}
+    for w, _, f, _ in rows: per.setdefault(int((w - t0) // 300), []).append(f)
+    print('delta po 5 min [ppb]: ' + ' '.join('%+.1f' % ((st.mean(v) / fnom - 1) * 1e9) for _, v in sorted(per.items())))
+    # --- pokryti faze: posun faze na okno = frac(gate * delta / T) * T
+    gate = 0.25
+    adv = ((gate * delta / (T_PS * 1e-12)) + 0.5) % 1.0 - 0.5          # v periodach taktu, (-0.5, 0.5]
+    adv_ps = adv * T_PS
+    need = 4 * T_PS / block
+    print('POSUN FAZE na okno: %+.0f ps (zlomek taktu %+.4f); pro INL mapu s blokem %d oken je treba aspon %.0f ps' % (adv_ps, adv, block, need))
+    if abs(adv_ps) < need:
+        print('  -> INL mapu NELZE spolehlive urcit: faze projizdi kody prilis pomalu a polynom bloku ji vstrebe (skutecna INL by se')
+        print('     zobrazila jako falesna pila). Hradlo je zarovnane na hodiny, proto zalezi na zlomku 2,5e7*delta, ne na delta.')
+        print('     Vynechano. Pouzij jiny rozdil OCXO x vstup (zlomek mezi 0,05 a 0,95) nebo delsi nezavisle mereni.')
+        return
     bins = [[] for _ in range(nb)]; jumps = [0] * nb; allres = []; nwin = 0
     for seg in segs:
         dts = []; ncum = []; n = 0; ts = 0.0; tsl = []
