@@ -55,9 +55,9 @@ typedef struct {
     uint8_t  status2;             /* bit0 = chyba deleni pin27 (/16) */
     /* ── v2 rozsireni (abs offset v ramci, viz FPGA_PROTOCOL_V2_NAVRH.md) ──── */
     uint16_t fw_version;          /* abs 60-61: verze bitstreamu (0 = neznama/stary FW) */
-    uint16_t caps;                /* abs 62-63: bit0=window stream, bit1=SET_CONFIG, bit4=Λ/fine */
+    uint16_t caps;                /* abs 62-63: bit1=SET_CONFIG, bit5=dt, bit6=CAL, bit7=REGR (bit0 window stream uz neni) */
     uint8_t  clk_status;          /* abs 64: bit0=10MHz pritomen, bit1=PLL/DLL lock */
-    uint8_t  win_count;           /* abs 65: kolik window zaznamu (0..2) je platnych (dnes nevyuzito) */
+    uint8_t  win_count;           /* abs 65: rezervovano (od FW 0x0411 vzdy 0; window stream odstranen) */
     /* ── 2026-10-03: skutecny carry-chain TDC (FW >= 0x0400, caps bit5) ──────── */
     uint64_t gate_ps;             /* PRESNE okno CH_A [ps] — jediny zdroj delky okna pro VSECHNY
                                    * vypocty (hi-res, akumulatory, statistika). Novy FW: z dt v

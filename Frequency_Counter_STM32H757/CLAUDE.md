@@ -1073,6 +1073,17 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 
 ## 🟢 FPGA FW 0x0400 — skutečný carry-chain TDC (2026-10-03, `f968517`)
 
+> 🔴 **AKTUALIZACE 2026-10-07 (FW 0x0410/0x0411, ⬜ NEOVĚŘENO NA KŘEMÍKU) — odstavce níže popisují FW 0x0408; platí tohle:**
+> - **0x0410:** nová architektura spouštění TDC bez samostatného `t0` (volné vzorky `q` → kopie `qd` → detekce hrany z 2. stupně),
+>   odstraňuje **obří bin** (příčina: slepota spouštěče 1,87 ns kanál A / ~5,3 ns kanál B při řetězu jen 10,45 ns — odvozeno z měření,
+>   ne změřeno přímo). `STRIDE = 1`, 320 stupňů/kanál (`TDC_TAPS`), CAL report: 10bitová adresa histogramu, bajty 50..53 = konfigurace TDC.
+>   Po flashi ověř: `tdc` → největší bin < ~200 ps a minimální kód ~1–3 u A **i B** (kanál B nebyl nikdy měřen).
+> - **0x0411:** regresní blok (bajty 68..96, CAPS `0x00E2` bit7): průměry časových značek vnitřních hran ve dvou segmentech okna,
+>   `f = (xB−xA)/(yB−yA)`; STM (`parse_data`) při shodě s dvoubodovým odhadem (mez `FPGA_REGR_MAX_REL`) nahradí `gate_ps` délkou N/f_regr.
+>   UART `regr`, `status` → `REGR:`. Window stream **odstraněn**. 🔴 **Zisk je jen pro signál nesoudělný se 100 MHz; u GPSDO 10 MHz žádný.**
+>   Cena: CLS 68 → 79 %, časová rezerva +0,017 ns (Fmax 100,165 MHz) — viz `docs/audit/2026-10-07_kriticky-audit.md` (A-03..A-06).
+> - Poučení: aritmetika šířky > ~16 bitů se v Gowin syntéze rozpadá na řetězy LUT; časování simulace nevidí → po každé změně P&R (L-0133).
+
 **Nahrazuje dřívější popis (`carry_tdc` zredukovaný syntézou na invertor, F-0201).** Zdroj: `Frequency_Counter_FPGA_Module/src/tdc.v`.
 - **Jak měří:** 2 kanály, každý **512 přímo instancovaných `ALU`** (carry průchod), vzorkuje se **každý druhý** stupeň
   (`STRIDE = 2` → 256 FF/kanál, FW ≥ 0x040A). 🔴 **Křemík ~32 ps/stupeň, ne 57 ps (STA)** — 256 stupňů pokrylo jen ~8,3 ns

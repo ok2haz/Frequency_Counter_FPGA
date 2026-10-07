@@ -4197,6 +4197,59 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** `bcaf00c`
 - **Stav:** aktivní (⬜ neověřeno v prohlížeči)
 
+### L-0131 — Model musí nejdřív reprodukovat naměřenou vadu; oprava ověřená jen v modelu není ověřená
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA TDC, simulace (`sim/gowin_models.v`, `tb_tdc_inl.sv`)
+- **Symptom:** obří bin (~134 kódů, 19,5 % hran) a skoky ±9,28 ns; několik iterací oprav, které v simulaci „prošly".
+- **Příčina:** simulační model křemíku (ALU, průměr kroku, zlom řetězu) napsaný podle domněnky; skoky ±9,28 ns v něm nevznikly vůbec,
+  takže jejich „odstranění" nelze v modelu ověřit. Obří bin model reprodukoval až po úpravě parametrů, tedy test = model ladil sám sebe.
+- **Oprava:** architektura 0x0410 (bez `t0`, volné vzorky) + test `tb_tdc_inl` s očekávaným σ a maximálním skokem; zároveň zapsáno, co by
+  hypotézu na křemíku vyvrátilo (`docs/audit/2026-10-07_kriticky-audit.md` A-01).
+- **Pravidlo:** **Než model použiješ k ověření opravy, ukaž, že reprodukuje původní měření; a výsledek z modelu označ `[SIM]`, ne jako ověřený.**
+- **Detekce:** každý nález s opravou v simulaci musí uvést, který naměřený jev model reprodukuje, a ten, který nereprodukuje.
+- **Commit:** `4667d7c`
+- **Stav:** aktivní
+
+### L-0132 — SDC odkaz na neexistující objekt = chyba; staré výstupy po selhání mlčky zůstanou
+
+- **Datum:** 2026-10-07
+- **Oblast:** build FPGA (`timing.sdc`, P&R matice)
+- **Symptom:** část běhů P&R v matici skončila, ale tabulka výsledků ukazovala čísla z předchozí konfigurace.
+- **Příčina:** `timing.sdc` odkazoval na registr (`src_l`, `qd_f`), který po úpravě architektury neexistuje → Gowin TA2003; běh skončil bez
+  nových výstupů a skript kopíroval staré soubory.
+- **Oprava:** registry s prefixem `qd_` na úrovni modulu, SDC bez neexistujících objektů; skripty před během mažou staré výstupy.
+- **Pravidlo:** **Skript, který sbírá výstupy dlouhého běhu, musí nejdřív smazat staré a po běhu ověřit jejich čerstvost; po přejmenování/odstranění registru projdi `timing.sdc`.**
+- **Detekce:** `pnr.log` bez `ERROR`/TA2003 a časové razítko `Counter_FPGA.rpt.txt` novější než start běhu.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní
+
+### L-0133 — Simulace nevidí časování: široká aritmetika se v Gowin rozpadne na řetězy LUT
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA časování (`regr_acc` v `spi_app.v`)
+- **Symptom:** regresní blok prošel všemi simulacemi, ale P&R dal Fmax 53 MHz (TNS −2460), po pipeline 69 MHz, po rozdělení čítače 94 MHz.
+- **Příčina:** 24bitové `n <= n + 1` a 64bitový `sy <= sy + dt` syntetizátor nemapoval na ALU přenos, ale na řetěz 11 LUT; navíc první verze
+  řetězila odčítání + sčítání + porovnání v jednom taktu.
+- **Oprava:** čítač 3×8 b a akumulátor 2×32 b s registrovaným přenosem, dvoufázové sčítání (`bbf5865`); výsledek 100,165 MHz, TNS 0, ale slack jen +0,017 ns.
+- **Pravidlo:** **Po každé změně aritmetiky v `clk_p0_100m` spusť P&R a čti `Counter_FPGA_tr_content.html` (Fmax, TNS, kritická cesta); aritmetiku širší než ~16 bitů rovnou rozděl s registrovaným přenosem; správnost přenosu hlídej vazbou na čekání (`S_W`).**
+- **Detekce:** `python` rozbor `tr_content.html`: `clk_p0_100m Setup … 0` a Fmax ≥ 100 MHz před každým flashem.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní
+
+### L-0134 — Přidaná funkce spolkla rezervu určenou jinému úkolu; změř cenu před přidáním
+
+- **Datum:** 2026-10-07
+- **Oblast:** rozpočet FPGA (CLS, časová rezerva)
+- **Symptom:** po regresním bloku CLS 79 % (z 68 %) a slack +0,017 ns; přitom #262 (kanál C pro 1PPS, vstup smyčky GPSDO) potřebuje volnou plochu.
+- **Příčina:** regresní blok se přidal jako „zisk přesnosti", aniž se předem vyčíslil přínos pro hlavní scénář (GPSDO 10 MHz = násobek 100 MHz = žádný zisk)
+  a cena v ploše/časování proti plánovaným úkolům.
+- **Oprava:** nic zatím; navrženo `REGR` jako parametr (výchozí 0) nebo odstranění (`docs/audit/2026-10-07_kriticky-audit.md` A-04).
+- **Pravidlo:** **Před přidáním bloku do FPGA vyčísli přínos pro hlavní použití a cenu v CLS i v časové rezervě; funkci, jejíž přínos neplatí pro hlavní použití, dej za parametr s výchozí hodnotou 0.**
+- **Detekce:** P&R report (`Counter_FPGA.rpt.txt`: CLS < ~78 %) a `Setup` slack > 0,2 ns před commitem.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní (ke zvážení)
+
 ---
 
 ## Archiv (neplatné lekce)

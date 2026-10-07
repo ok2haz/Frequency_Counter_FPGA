@@ -11,7 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
-/* v0.14.0 (2026-10-06) = mereni: chybne napocitane okno + duveryhodne cislice +
+/* v0.14.0 (2026-10-07) = FPGA FW 0x0411: regresni blok (STM: `regr`, `status` REGR:), TDC 0x0410
+ * (bez slepoty spoustece), IPC v20. Overeno jen simulaci/P&R, NE na HW.
+ */
+/* v0.13.0 (2026-10-06) = mereni: chybne napocitane okno + duveryhodne cislice +
  * Allan osa + statistika webu z pristroje.
  * (1) +4 Hz SKOK pri mereni vlastni reference = HRANA NAVIC v okne (metastabilita
  * detekce hrany ve FPGA). STM ho pozna (`fpga_freq_miscount`), nezobrazi a

@@ -3216,8 +3216,8 @@ void UartTask_run(void *argument)
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
 				  /* v2 pole (abs 60-65) — zatim jen diagnosticky vypis, nic je
-				   * nespotrebovava (window stream/SET_CONFIG/CAL report jeste
-				   * nejsou zapojene, viz FPGA_PROTOCOL_V2_NAVRH.md checklist).
+				   * nespotrebovava (SET_CONFIG/CAL report/REGR se vypisuji
+				   * v radcich nize, viz FPGA_PROTOCOL_V2_NAVRH.md).
 				   * `fpga_freq_format_info()` uz desitky let slibuje "zkontroluj
 				   * FW_VERSION v status/fpgaraw" pri bring-upu nove desky — tenhle
 				   * radek to konecne plni (predtim se FW_VERSION v `status` vubec

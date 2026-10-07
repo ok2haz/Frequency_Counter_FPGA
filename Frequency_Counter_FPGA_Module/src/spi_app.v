@@ -6,8 +6,7 @@
 //  - CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) přes byte 0..125
 //  - validuje RX rámec (MAGIC, CRC), zpracuje TYPE
 //  - SEQUENCE (++ na každé nové měření/okno) a FLAGS (VALID/FRESH/...)
-//  - window stream: 2 poslední uzavřená okna (gap-free reciproké čítání,
-//    okno N+1 začíná hranou, kterou skončilo okno N -> STM může Σedges/Σdt)
+//  - (window stream ODSTRANEN ve FW 0x0411; nahradil ho regresni blok, bajty 68..96)
 //
 // RX TYPEs: 0x01 SET_CONFIG | 0x06 ACK | 0x08 START | 0x09 STOP
 //           0xA0 žádost o CAL report (příští TX rámec = 0xA0)
@@ -45,7 +44,7 @@
 //  24..35 kanal B: totez | 36 tdc_status | 37 {7'd0,cal_mode} | 38..125 rezerva=0
 //
 // 🔴 2026-10-03: SKUTECNY carry-chain TDC (`tdc.v`), cas v pikosekundach.
-//  FW_VERSION 0x0400, CAPS 0x0023 (window stream, SET_CONFIG, dt_ps).
+//  (historie 0x0400: CAPS 0x0023 = window stream, SET_CONFIG, dt_ps; aktualne viz FW_VERSION/CAPS nize)
 //  SET_CONFIG 0x02 = 1 spusti kalibraci TDC (ring oscilator, ~0,3 s), 0 = nic;
 //  kalibrace probehne i sama po zapnuti. Behem ni jsou mereni zablokovana.
 //
@@ -373,7 +372,7 @@ module spi_app (
         tx_we_r <= 1'b0;
         if (cool != 3'd0) cool <= cool - 3'd1;
 
-        // ---- nové měření: SEQUENCE++, FRESH/VALID, latch dat, window stream ----
+        // ---- nové měření: SEQUENCE++, FRESH/VALID, latch dat ----
         // (behem skladani ramce jen poznamenat, prevzit az po nem -- viz h_*)
         // Vic mereni behem jednoho skladani se slije do jednoho snimku (vstupy nesou
         // jen posledni), ale SEQUENCE poroste o JEJICH POCET -> STM sloucene
