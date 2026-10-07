@@ -2281,7 +2281,7 @@ static float allan_metric_value(float tau, float base)
  * PRILEPIL ke spodni hrane (`allan_y` orezava) -> graf "nekreslil" nic pod
  * 10⁻¹⁰, prestoze citac s carry-chain TDC (~3·10⁻¹⁰ pri 0,25 s) a OCXO jde
  * na dlouhych τ k 10⁻¹² a niz. Rozsah se ted bere z hodnot krivky A z podlahy
- * citace (kdyz se kresli), s rezervou: kdyz bod lezi < 0,15 dekady od hrany,
+ * (jen krivka -- podlaha citace osu neovlivnuje), s rezervou: kdyz bod lezi < 0,15 dekady od hrany,
  * prida se dekada. Pocet dekad 3..8 (mene by na kartu byla jedna dve cary).
  * Hystereze `yr`: rozsireni hned, ZUZENI az kdyz uzsi rozsah plati 10 vykresleni
  * za sebou -- jinak by osa poskakovala, kdyz krivka sedi u hranice dekady. */
@@ -2290,15 +2290,15 @@ typedef struct { int ymin, dec, metric, shrink_n; } allan_yr_t;
 static void allan_metric_yrange(const float *vals, const float *flr, int np,
                                 allan_yr_t *yr, int *ymin, int *dec)
 {
+    (void)flr;   /* 🔴 2026-10-07: rozsah osy se ridi JEN krivkou; podlaha citace osu NESMI tahnout dolu
+                  * (u dlouhych tau klesa k 1e-16 a stahla by cely graf -- prani uzivatele) */
     float lo = 1e30f, hi = -1e30f;
     for (int i = 0; i < np; i++) {
-        for (int k = 0; k < 2; k++) {
-            float v = k ? (flr ? flr[i] : 0.0f) : vals[i];
-            if (!(v > 0.0f)) continue;
-            float l = log10f(v);
-            if (l < lo) lo = l;
-            if (l > hi) hi = l;
-        }
+        float v = vals[i];
+        if (!(v > 0.0f)) continue;
+        float l = log10f(v);
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
     }
     int y0, y1;
     if (lo > hi) { y0 = -12; y1 = -8; }                  /* zadna platna data */
@@ -2412,17 +2412,21 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
      * cely lezi pod rozsahem osy, se vynecha; castecny se orizne na spodni hranu
      * (jinak by `allan_y` podlahu prilepil ke dnu a vypadala by jako data). */
     if (flr) {
+        /* spodni mez kresleni podlahy: osa, u bezrozmerne ADEV/MDEV/HDEV navic 1e-11 (podlaha nesmi jit nize) */
+        const float lim = (s_allan_metric <= 2 && (float)ymin < -11.0f) ? -11.0f : (float)ymin;
         for (int i = 1; i < np; i++) {
             float l0 = log10f(flr[i - 1]), l1 = log10f(flr[i]);
-            if (!(l0 >= (float)ymin) && !(l1 >= (float)ymin)) continue;
+            if (!(l0 >= lim) && !(l1 >= lim)) continue;
             prim_point_t a = {pts[i - 1].x, allan_y(inner, l0, ymin, dec)};
             prim_point_t b = {pts[i].x,     allan_y(inner, l1, ymin, dec)};
-            if (!(l1 >= (float)ymin)) {                 /* pravy konec pod osou */
-                float t = (l0 - (float)ymin) / (l0 - l1);
+            if (!(l1 >= lim)) {                         /* pravy konec pod mezi */
+                float t = (l0 - lim) / (l0 - l1);
                 b.x = (int16_t)(a.x + t * (float)(b.x - a.x));
-            } else if (!(l0 >= (float)ymin)) {          /* levy konec pod osou */
-                float t = ((float)ymin - l0) / (l1 - l0);
+                b.y = allan_y(inner, lim, ymin, dec);
+            } else if (!(l0 >= lim)) {                  /* levy konec pod mezi */
+                float t = (lim - l0) / (l1 - l0);
                 a.x = (int16_t)(a.x + t * (float)(b.x - a.x));
+                a.y = allan_y(inner, lim, ymin, dec);
             }
             prim_draw_line_dashed(a, b, 1, UI_COLOR_INK_3, 5, 4);
         }
