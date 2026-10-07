@@ -469,6 +469,43 @@ int fpga_sim_fault(const char *what)
     return 0;
 }
 
+/* ── regrese (FW >= 0x0411) ────────────────────────────────────────────────── */
+static uint32_t s_rg_win = 0u, s_rg_used = 0u, s_rg_rej = 0u, s_rg_nl[2] = { 0u, 0u };
+static double   s_rg_fr = 0.0, s_rg_f2 = 0.0, s_rg_s1 = 0.0, s_rg_s2 = 0.0;   /* Σd, Σd² [relativne] */
+
+void fpga_freq_regr_reset(void)
+{
+    s_rg_win = s_rg_used = s_rg_rej = 0u; s_rg_nl[0] = s_rg_nl[1] = 0u;
+    s_rg_fr = s_rg_f2 = s_rg_s1 = s_rg_s2 = 0.0;
+}
+
+void fpga_freq_regr_stat(fpga_regr_stat_t *o)
+{
+    if (o == NULL) return;
+    o->windows = s_rg_win; o->used = s_rg_used; o->rejected = s_rg_rej;
+    o->n_last[0] = s_rg_nl[0]; o->n_last[1] = s_rg_nl[1];
+    o->f_regr_last = s_rg_fr; o->f_2pt_last = s_rg_f2;
+    double n = (double)(s_rg_used ? s_rg_used : 1u);
+    double mu = s_rg_s1 / n;
+    double var = s_rg_s2 / n - mu * mu;
+    o->d_mean_ppb  = mu * 1e9;
+    o->d_sigma_ppb = (var > 0.0) ? sqrt(var) * 1e9 : 0.0;
+}
+
+static uint32_t rd_le24(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16); }
+static uint64_t rd_le40(const uint8_t *p) { return (uint64_t)rd_le32(p) | ((uint64_t)p[4] << 32); }
+
+/** Kmitocet [Hz] ze sklonu primky mezi stredy segmentu A a B (cisty vypocet, selftest #1):
+ *  f = (xB - xA) / (yB - yA); x = index hrany (v 1/256), y = cas (v 1/16 jednotky T/16384 = 0,6103515625 ps).
+ *  @return 0.0 = nelze (B <= A, nulovy jmenovatel). */
+double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b)
+{
+    if (xm_b <= xm_a || ym_b <= ym_a) return 0.0;
+    double dx = (double)(xm_b - xm_a) / 256.0;                              /* hrany */
+    double dy = (double)(ym_b - ym_a) / 16.0 * 625.0 / 1024.0;              /* ps */
+    return dx / dy * 1e12;
+}
+
 static void parse_data(const uint8_t *rx, fpga_meas_t *m)
 {
     const uint8_t *p = &rx[FR_PAYLOAD];
@@ -500,6 +537,33 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
         m->dt_b_ps    = dt_units_to_ps(rd_le48(p + 89));
         m->edges_b    = rd_le32(p + 96);
         m->gate_ps    = dt_units_to_ps(rd_le64(p + 106) & 0xFFFFFFFFFFFFull);
+        m->gate2_ps   = m->gate_ps;
+        m->regr_used  = 0u; m->f_regr_hz = 0.0; m->rg_ok = 0u;
+        if (m->caps & FPGA_CAP_REGR) {
+            /* regresni blok abs 68..96 (p + 56..84), viz spi_app.v */
+            m->rg_n[0]  = rd_le24(p + 56);  m->rg_xm[0] = rd_le40(p + 59);  m->rg_ym[0] = rd_le48(p + 64);
+            m->rg_n[1]  = rd_le24(p + 70);  m->rg_xm[1] = rd_le40(p + 73);  m->rg_ym[1] = rd_le48(p + 78);
+            m->rg_ok    = (uint8_t)(p[84] & 3u);
+            if (m->rg_ok == 3u && m->edge_count > 0u && m->gate_ps > 0u) {
+                s_rg_win++; s_rg_nl[0] = m->rg_n[0]; s_rg_nl[1] = m->rg_n[1];
+                double f2 = (double)m->edge_count * 1e12 / (double)m->gate_ps;
+                double fr = fpga_freq_regr_hz(m->rg_xm[0], m->rg_xm[1], m->rg_ym[0], m->rg_ym[1]);
+                s_rg_f2 = f2;
+                if (m->rg_n[0] >= FPGA_REGR_MIN_N && m->rg_n[1] >= FPGA_REGR_MIN_N && fr > 0.0 &&
+                    fabs(fr / f2 - 1.0) < FPGA_REGR_MAX_REL) {
+                    /* efektivni delka okna N / f_regr: vsechny dalsi vypocty (hi-res, akumulatory, datalog,
+                     * IPC, SCPI) pak dostanou regresni kmitocet bez dalsich zmen. Rozdil proti skutecne
+                     * delce je <~ 1e-8 relativne (ns u okna 0,25 s) -- pro ucetnictvi casu zanedbatelny. */
+                    double g = (double)m->edge_count * 1e12 / fr;
+                    m->gate_ps = (uint64_t)(g + 0.5);
+                    m->f_regr_hz = fr; m->regr_used = 1u;
+                    double d = fr / f2 - 1.0;
+                    s_rg_used++; s_rg_fr = fr; s_rg_s1 += d; s_rg_s2 += d * d;
+                } else {
+                    s_rg_rej++;
+                }
+            }
+        }
         m->gate_time_ns       = m->gate_ps / 1000u;               /* informativne (zobrazeni) */
         m->frequency_x100000  = freq_x1e5_from(m->edge_count, m->gate_ps);
         m->freq16_x100000     = freq_x1e5_from(m->edges_b,   m->dt_b_ps);   /* CH_B */
@@ -509,6 +573,8 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
         m->dt_b_ps    = 0u;
         m->edges_b    = 0u;
         m->gate_ps    = fpga_freq_dt_ticks(m->gate_time_ns) * FPGA_LEGACY_TICK_PS;
+        m->gate2_ps   = m->gate_ps;
+        m->regr_used  = 0u; m->f_regr_hz = 0.0; m->rg_ok = 0u;
     }
 }
 
@@ -950,6 +1016,42 @@ bool fpga_freq_select_selftest(void)
         ok &= (fpga_freq_miscount(R + 16000000ull, R, G, 4u) == 1);  /* /4 vetev: krok 16 Hz */
         ok &= (fpga_freq_miscount(R, 0u, G, 1u) == 0);
     }
+    /* 2026-10-07 (FW 0x0411): regresni blok. f = (xB - xA) / (yB - yA); okno 0,25 s, N = 2 500 000 hran,
+     * stredy segmentu 2 000 000 hran a 0,2 s od sebe -> 10 MHz presne. Konzistentni regrese (rozdil 1e-8)
+     * nahradi delku okna efektivni N / f_regr; nekonzistentni (1e-6) se zamitne a zustane dvoubodova. */
+    {   uint8_t rx[FR_LEN];
+        for (int sc = 0; sc < 3; sc++) {
+            memset(rx, 0, sizeof rx);
+            uint8_t *p = &rx[FR_PAYLOAD];
+            const double f0 = 1.0e7 * (1.0 + (sc == 0 ? 0.0 : (sc == 1 ? 1.0e-8 : 1.0e-6)));
+            sim_put_le64(p + 8, 2500000ull);                  /* edge_count */
+            p[49] = 0x04; p[50] = 0xE2;                       /* fw 0x0400, caps 0x00E2 (DT + REGR) */
+            sim_put_le64(p + 106, 409600000000ull);           /* dt_a = 0,25 s -> gate_ps 2,5e11 */
+            for (int i = 0; i < 6; i++) p[89 + i] = (uint8_t)(409600000000ull >> (8 * i));   /* dt_b */
+            for (int i = 0; i < 4; i++) p[96 + i] = (uint8_t)(5000000u >> (8 * i));          /* edges_b */
+            const uint64_t xa = 5000ull * 256ull, xb = (5000ull + 2000000ull) * 256ull;
+            const uint64_t ya = 160000000000ull;               /* y*16, zacatek segmentu A */
+            const double   dy_ps = 2000000.0 / f0 * 1e12;       /* ps mezi stredy */
+            const uint64_t yb = ya + (uint64_t)(dy_ps * 1024.0 / 625.0 * 16.0 + 0.5);
+            for (int i = 0; i < 3; i++)  { p[56 + i] = (uint8_t)(2000u >> (8 * i)); p[70 + i] = (uint8_t)(2000u >> (8 * i)); }   /* n */
+            for (int i = 0; i < 5; i++)  { p[59 + i] = (uint8_t)(xa >> (8 * i));    p[73 + i] = (uint8_t)(xb >> (8 * i)); }      /* xm */
+            for (int i = 0; i < 6; i++)  { p[64 + i] = (uint8_t)(ya >> (8 * i));    p[78 + i] = (uint8_t)(yb >> (8 * i)); }      /* ym */
+            p[84] = 3u;
+            fpga_meas_t pm;
+            parse_data(rx, &pm);
+            ok &= (pm.rg_ok == 3u && pm.rg_n[0] == 2000u && pm.rg_xm[1] == xb && pm.rg_ym[1] == yb);
+            ok &= (pm.gate2_ps == 250000000000ull);
+            ok &= (fabs(fpga_freq_regr_hz(pm.rg_xm[0], pm.rg_xm[1], pm.rg_ym[0], pm.rg_ym[1]) / f0 - 1.0) < 1e-9);
+            if (sc <= 1) {          /* konzistentni: gate_ps = N / f_regr */
+                const uint64_t g = (uint64_t)(2500000.0 * 1e12 / f0 + 0.5);
+                ok &= (pm.regr_used == 1u && (pm.gate_ps > g ? pm.gate_ps - g : g - pm.gate_ps) <= 2u);
+            } else {                /* 1e-6 > mez: zamitnuto, zustava dvoubodova */
+                ok &= (pm.regr_used == 0u && pm.gate_ps == 250000000000ull);
+            }
+        }
+        fpga_freq_regr_reset();                                /* selftest nesmi zkreslit statistiku UART `regr` */
+        ok &= (fpga_freq_regr_hz(100u, 100u, 5u, 9u) == 0.0 && fpga_freq_regr_hz(100u, 200u, 9u, 5u) == 0.0);
+    }
     /* F-0193: souvislost SEQUENCE — navazuje, dira, preteceni uint32, mez diry,
      * navrat zpet a prvni mereni po bootu (sentinel). */
     ok &= (fpga_seq_gap(5u, 6u) == 0u);
@@ -960,7 +1062,7 @@ bool fpga_freq_select_selftest(void)
     ok &= (fpga_seq_gap(5u, 6u + FPGA_SEQ_GAP_MAX) == FPGA_SEQ_RESYNC);
     ok &= (fpga_seq_gap(100u, 3u) == FPGA_SEQ_RESYNC);    /* reset FPGA */
     ok &= (fpga_seq_gap(0xFFFFFFFFu, 12345u) == 0u);      /* jeste zadne mereni */
-    printf("fpga: select hystereze + ticky okna + miscount + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
+    printf("fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 

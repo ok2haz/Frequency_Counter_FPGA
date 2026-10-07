@@ -246,6 +246,19 @@ static int scpi_cmp_fields(const char *a, const char *b, int64_t *maxd, int *max
 }
 
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
+/* double -> "[-]I.FFFFFF" bez %f (nano.specs ho neumi); jen pro diagnostiku `regr` (|v| < 4e9) */
+static void uart_regr_fmt(char *o, size_t n, double v, int dec)
+{
+	const char *sg = (v < 0.0) ? "-" : "";
+	if (v < 0.0) v = -v;
+	unsigned long ip = (unsigned long)v;
+	unsigned long sc = 1ul;
+	for (int i = 0; i < dec; i++) sc *= 10ul;
+	unsigned long fp = (unsigned long)((v - (double)ip) * (double)sc + 0.5);
+	if (fp >= sc) { fp -= sc; ip += 1ul; }
+	snprintf(o, n, "%s%lu.%0*lu", sg, ip, dec, fp);
+}
+
 static void fmt_f2(char *b, size_t n, float v)
 {
 	long w = (long)v;
@@ -2167,6 +2180,32 @@ void UartTask_run(void *argument)
 				  }
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
+			  else if (strcmp(RxBuffer, "regr") == 0 || strcmp(RxBuffer, "regr reset") == 0) {
+				  /* FW >= 0x0411: regresni blok (stredni hodnoty casovych znacek vnitrnich hran ve dvou segmentech
+				   * okna). Statistika rozdilu f_regr - f_2pt a pocty oken. Zisk proti dvoum bodum je jen u signalu,
+				   * jehoz faze vuci hodinam TDC "prohazuje"; u GPSDO 10 MHz (nasobek 100 MHz) neni, ale nesmi byt posun. */
+				  if (strcmp(RxBuffer, "regr reset") == 0) { fpga_freq_regr_reset(); printf("REGR: statistika vynulovana\r\n"); }
+				  fpga_regr_stat_t rs; fpga_freq_regr_stat(&rs);
+				  fpga_meas_t rm; memset(&rm, 0, sizeof rm);
+				  int has = fpga_freq_get_last(&rm);
+				  if (has && !(rm.caps & FPGA_CAP_REGR)) {
+					  printf("REGR: FPGA FW 0x%04X regresni blok nenese (potrebuje >= 0x0411, caps bit7)\r\n", (unsigned)rm.fw_version);
+				  } else {
+					  char a1[24], a2[24], a3[16], a4[16];
+					  uart_regr_fmt(a1, sizeof a1, rs.f_regr_last, 6);
+					  uart_regr_fmt(a2, sizeof a2, rs.f_2pt_last, 6);
+					  uart_regr_fmt(a3, sizeof a3, rs.d_mean_ppb, 3);
+					  uart_regr_fmt(a4, sizeof a4, rs.d_sigma_ppb, 3);
+					  printf("REGR: oken s blokem %lu, pouzito %lu, zamitnuto %lu | znacek A %lu, B %lu\r\n",
+					         (unsigned long)rs.windows, (unsigned long)rs.used, (unsigned long)rs.rejected,
+					         (unsigned long)rs.n_last[0], (unsigned long)rs.n_last[1]);
+					  printf("REGR: posledni f_regr %s Hz | f_2pt %s Hz\r\n", a1, a2);
+					  printf("REGR: f_regr - f_2pt: stred %s ppb, sigma %s ppb  (sigma = sum dvoubodoveho odhadu; "
+					         "vetsi nez ~0,5 ppb = TDC sum)\r\n", a3, a4);
+					  printf("REGR: mez konzistence %u ppb, min. znacek %u; zamitnuto = |f_regr/f_2pt - 1| > mez\r\n",
+					         (unsigned)(FPGA_REGR_MAX_REL * 1e9), (unsigned)FPGA_REGR_MIN_N);
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "tdc hist") == 0) {
 				  /* Vypis histogramu kalibrace TDC (FW >= 0x040B): radky "k;A;B" pro kody
 				   * 0..255 (vynechane jsou radky A=B=0). Sirka binu [ps] = hist / N * 10000,
@@ -3186,9 +3225,10 @@ void UartTask_run(void *argument)
 				  {
 					  fpga_meas_t m;
 					  if (fpga_freq_get_last(&m)) {
-						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X WIN:%u\n",
+						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X REGR:%s (`regr` = detail)\n",
 							     (unsigned)m.fw_version, (unsigned)m.caps,
-							     (unsigned)m.clk_status, (unsigned)m.win_count);
+							     (unsigned)m.clk_status,
+							     !(m.caps & FPGA_CAP_REGR) ? "neni" : (m.regr_used ? "pouzita" : (m.rg_ok == 3u ? "zamitnuta" : "bez dat")));
 						  if (m.caps & FPGA_CAP_DT) {
 							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu ps (`tdc` = detail)\n",
 								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,

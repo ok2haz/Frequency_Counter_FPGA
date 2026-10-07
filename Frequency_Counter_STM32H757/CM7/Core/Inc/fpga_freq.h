@@ -66,10 +66,22 @@ typedef struct {
     uint64_t dt_b_ps;             /* okno CH_B [ps] (abs 101..106); 0 = neznamo */
     uint32_t edges_b;             /* periody CH_B v okne (abs 108) */
     uint8_t  tdc_status;          /* abs 100: viz FPGA_TDC_* */
+    /* ── 2026-10-07: regresni blok (FW >= 0x0411, caps bit7), abs 68..96 ───────────────
+     * Stredni hodnoty casovych znacek VNITRNICH hran ve dvou segmentech okna (A = zacatek, B = konec).
+     * Sklon primky mezi jejich stredy je kmitocet; zisk proti dvoum krajnim bodum je jen u signalu, jehoz
+     * faze vuci hodinam TDC "prohazuje" (viz fpga_freq_regr_*, docs/audit/2026-10-07_tdc-architektura.md). */
+    uint32_t rg_n[2];             /* pocet znacek v segmentu A/B */
+    uint64_t rg_xm[2];            /* prumerny index hrany v okne * 256 */
+    uint64_t rg_ym[2];            /* prumerny cas hrany * 16 [T/16384], vztazeny k ZACATKU okna */
+    uint8_t  rg_ok;               /* bit0 = segment A platny, bit1 = B */
+    uint8_t  regr_used;           /* 1 = `gate_ps` je EFEKTIVNI delka N / f_regr (ne dvoubodova) */
+    uint64_t gate2_ps;            /* dvoubodova delka okna [ps] (diagnostika; =gate_ps, kdyz regrese neni) */
+    double   f_regr_hz;           /* kmitocet z regrese [Hz]; 0 = neni platny / zamitnut */
 } fpga_meas_t;
 
 /* caps bity (abs 62-63) */
 #define FPGA_CAP_DT           (1u << 5)   /* ramec nese dt_a/dt_b v jednotkach T_clk/16384 */
+#define FPGA_CAP_REGR         (1u << 7)   /* ramec nese regresni blok (abs 68..96); bit0 window stream uz neni */
 /* tdc_status bity (abs 100) */
 #define FPGA_TDC_CAL_A        (1u << 0)   /* tabulka kanalu A platna */
 #define FPGA_TDC_CAL_B        (1u << 1)
@@ -230,6 +242,28 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
  * `k` je od FW 0x0410 10bitove ({sada, kod}; starsi FW bere jen k < 256).
  * Vraci false, kdyz odpoved neprisla nebo nese jiny kod. */
 bool fpga_freq_tdc_hist(uint16_t k, uint32_t *a, uint32_t *b);
+
+/* ── Regrese (FW >= 0x0411): statistika pro UART `regr` ────────────────────────
+ * Pro kazde okno s platnym regresnim blokem se porovna f_regr s dvoubodovym f_2pt. Rozdil je
+ * relativni (ppb): u signalu s "prohazujici" fazi ma byt maly a sigma(f_regr) mensi nez sigma(f_2pt);
+ * u signalu s konstantni fazi (GPSDO 10 MHz na 100 MHz) zisk neni, ale nesmi vzniknout posun. */
+typedef struct {
+    uint32_t windows;       /* oken s regresnim blokem (ok A i B) */
+    uint32_t used;          /* oken, kde se regrese pouzila (konzistentni s dvoubodovym odhadem) */
+    uint32_t rejected;      /* oken zamitnutych pro nekonzistenci (|f_regr/f_2pt - 1| > mez) nebo malo znacek */
+    uint32_t n_last[2];     /* pocet znacek v poslednim okne A/B */
+    double   f_regr_last;   /* posledni f_regr [Hz] */
+    double   f_2pt_last;    /* posledni dvoubodovy f [Hz] */
+    double   d_mean_ppb;    /* stredni rozdil f_regr - f_2pt [ppb] */
+    double   d_sigma_ppb;   /* sigma rozdilu [ppb] */
+} fpga_regr_stat_t;
+void fpga_freq_regr_stat(fpga_regr_stat_t *out);
+/** Kmitocet [Hz] ze sklonu primky mezi stredy segmentu A a B (cisty vypocet). 0.0 = nelze (B <= A). */
+double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b);
+void fpga_freq_regr_reset(void);
+/** Mez konzistence regrese s dvoubodovym odhadem (relativne) a minimum znacek v segmentu. */
+#define FPGA_REGR_MAX_REL   3.0e-7     /* ~12 ns v okne 0,25 s: vic je porucha, ne sum TDC */
+#define FPGA_REGR_MIN_N     8u
 
 /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────
  * 🔴 FPGA dává ~4 měření/s po 0,25 s, ale statistika vzorkuje 1×/s a datalog
