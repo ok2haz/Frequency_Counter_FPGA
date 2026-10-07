@@ -242,6 +242,7 @@ module tdc_chan #(
     input  wire        ro,          // asynchronni kalibracni zdroj (z ring_osc)
     input  wire [47:0] tick_ps,     // volnobezny cas [T_clk/16384], +16384 za takt
     input  wire        want,        // okno: pristi hrana ma dostat presny cas
+    input  wire        want_seg,    // FW 0x0411: i VNITRNI hrany (segmenty okna) maji dostat presny cas
     input  wire        cal_req,     // 1-taktovy pulz: spust kalibraci
     input  wire        cal_abort,   // 1-taktovy pulz: timeout kalibrace (top.v)
 
@@ -295,7 +296,7 @@ module tdc_chan #(
     wire [TAPS-1:0] th_r, th_f;
     wire       ec, src_l;
     always @(posedge clk) begin
-        arm_r <= s_col | want;
+        arm_r <= s_col | want | want_seg;
         ec_r  <= ec;
     end
     assign rise_c = ec;

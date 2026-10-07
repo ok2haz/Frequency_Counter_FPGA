@@ -25,9 +25,12 @@
 //  12 freq_x100000(u64) 20 edge_count(u64) 28 gate_ns(u64) 36 ts(u64)
 //  44 channel 45 meas_status 46 error_flags(u32) 50 phase_status
 //  51 status2 52..59 freq16_x100000(u64)
-//  60..61 fw_version(u16) 62..63 caps(u16) 64 clk_status 65 win_count
-//  66..67 pad 68..83 window[0] 84..99 window[1]
-//  window rec: +0 win_seq(u32) +4 edges(u32) +8 dt_ns(u64)
+//  60..61 fw_version(u16) 62..63 caps(u16) 64 clk_status 65 rez
+//  66..67 diag (RX) | 68..96 REGR (FW >= 0x0411, caps bit7): regresni blok CH_A (window stream ODSTRANEN):
+//    68..70 n_A(u24)  71..75 xm_A(u40, prumerny index hrany v okne * 256)  76..81 ym_A(u48, prumerny cas * 16,
+//    jednotka T/16384, vztazeny k ZACATKU okna)  82..84 n_B  85..89 xm_B  90..95 ym_B  96 {ok_B, ok_A}
+//    A = prvni cast okna (G/16..3G/16), B = posledni (13G/16..15G/16). Sklon primky mezi jejich stredy =
+//    kmitocet; zisk proti dvoum krajnim bodum je jen u signalu, jehoz faze vuci hodinam TDC "prohazuje".
 //  100 tdc_status: bit0=cal_valid A, bit1=cal_valid B, bit2=cal_fail (A|B),
 //      bit3=cal_busy (A|B), bit4=retez A kratky (udalosti za koncem), bit5=totez B
 //  101..106 dt_b (u48, tez T_clk/16384) | 107 rez | 108..111 edges_b (u32) | 112..117 rez=0
@@ -72,6 +75,11 @@ module spi_app (
     input  wire [15:0] meas_maxtap_a,        // B1a: nejvyssi KDY set tap A (bubliny: >> d_last)
     input  wire [15:0] meas_maxtap_b,        // B1a: nejvyssi KDY set tap B
     input  wire [15:0] meas_tdc_cfg,         // konfigurace TDC: [4:0] log2(adres tabulky), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu
+    // FW 0x0411: stredni hodnoty casovych znacek vnitrnich hran ve dvou segmentech okna CH_A (regr_acc)
+    input  wire [23:0] rg_n_a, rg_n_b,       // pocet znacek v segmentu
+    input  wire [39:0] rg_xm_a, rg_xm_b,     // prumerny index hrany v okne * 256
+    input  wire [47:0] rg_ym_a, rg_ym_b,     // prumerny cas hrany * 16 [T/16384], vztazeny k zacatku okna
+    input  wire        rg_ok_a, rg_ok_b,
     output wire [9:0]  hist_k,               // vypis histogramu: adresa {sada, kod} (CAL pozadavek)
     input  wire [23:0] meas_hist_a,          // hist_A[hist_k] (kvazistaticke)
     input  wire [23:0] meas_hist_b,          // hist_B[hist_k]
@@ -108,7 +116,9 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0410;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0411;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x0410 -> 0x0411 (2026-10-07): REGR -- regresni blok (stredni hodnoty znacek vnitrnich hran ve dvou
+    // segmentech okna CH_A, abs 68..96) misto window streamu (STM ho nikdy nectl). Viz regr_acc / win_recip.
     // 🔴 0x040F -> 0x0410 (2026-10-07): nova architektura spousteni TDC (volne vzorky q + kompaktni
     // kopie qd, detekce hrany z 2. stupne, zadny samostatny `t0`; viz tdc.v): odstranuje obri bin
     // (pricina: slepota spoustece 1,87/5,3 ns). Dekoder a multiplexer TX bajtu ~3x mensi.
@@ -125,7 +135,7 @@ module spi_app (
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
-    localparam [15:0] CAPS            = 16'h0063;   // bit6 = CAL: hist_k 10 b + konfigurace TDC (50..53)
+    localparam [15:0] CAPS            = 16'h00E2;   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -169,12 +179,6 @@ module spi_app (
     reg [31:0] h_edge_b = 32'd0;
     reg [1:0]  meas_pend = 2'd0;         // pocet mereni odlozenych behem S_TX_WR (saturace 3)
 
-    // window stream (2 poslední uzavřená okna; gap-free z win_recip)
-    reg [31:0] win_seq  = 32'd1;
-    reg [31:0] w0_seq   = 32'd0, w1_seq   = 32'd0;
-    reg [31:0] w0_edges = 32'd0, w1_edges = 32'd0;
-    reg [63:0] w0_dt    = 64'd0, w1_dt    = 64'd0;
-    reg [1:0]  win_cnt  = 2'd0;
 
     // konfigurace (SET_CONFIG)
     reg        cal_mode_r = 1'b0;
@@ -304,41 +308,37 @@ module spi_app (
             7'd62: tb = is_cal ? 8'd0 : (CAPS[7:0]);
             7'd63: tb = is_cal ? 8'd0 : (CAPS[15:8]);
             7'd64: tb = is_cal ? 8'd0 : (8'h01);
-            7'd65: tb = is_cal ? 8'd0 : ({6'd0, win_cnt});
             7'd66: tb = is_cal ? 8'd0 : (d_rx0);
             7'd67: tb = is_cal ? 8'd0 : (d_rx1);
-            7'd68: tb = is_cal ? 8'd0 : (w0_seq[7:0]);
-            7'd69: tb = is_cal ? 8'd0 : (w0_seq[15:8]);
-            7'd70: tb = is_cal ? 8'd0 : (w0_seq[23:16]);
-            7'd71: tb = is_cal ? 8'd0 : (w0_seq[31:24]);
-            7'd72: tb = is_cal ? 8'd0 : (w0_edges[7:0]);
-            7'd73: tb = is_cal ? 8'd0 : (w0_edges[15:8]);
-            7'd74: tb = is_cal ? 8'd0 : (w0_edges[23:16]);
-            7'd75: tb = is_cal ? 8'd0 : (w0_edges[31:24]);
-            7'd76: tb = is_cal ? 8'd0 : (w0_dt[7:0]);
-            7'd77: tb = is_cal ? 8'd0 : (w0_dt[15:8]);
-            7'd78: tb = is_cal ? 8'd0 : (w0_dt[23:16]);
-            7'd79: tb = is_cal ? 8'd0 : (w0_dt[31:24]);
-            7'd80: tb = is_cal ? 8'd0 : (w0_dt[39:32]);
-            7'd81: tb = is_cal ? 8'd0 : (w0_dt[47:40]);
-            7'd82: tb = is_cal ? 8'd0 : (w0_dt[55:48]);
-            7'd83: tb = is_cal ? 8'd0 : (w0_dt[63:56]);
-            7'd84: tb = is_cal ? 8'd0 : (w1_seq[7:0]);
-            7'd85: tb = is_cal ? 8'd0 : (w1_seq[15:8]);
-            7'd86: tb = is_cal ? 8'd0 : (w1_seq[23:16]);
-            7'd87: tb = is_cal ? 8'd0 : (w1_seq[31:24]);
-            7'd88: tb = is_cal ? 8'd0 : (w1_edges[7:0]);
-            7'd89: tb = is_cal ? 8'd0 : (w1_edges[15:8]);
-            7'd90: tb = is_cal ? 8'd0 : (w1_edges[23:16]);
-            7'd91: tb = is_cal ? 8'd0 : (w1_edges[31:24]);
-            7'd92: tb = is_cal ? 8'd0 : (w1_dt[7:0]);
-            7'd93: tb = is_cal ? 8'd0 : (w1_dt[15:8]);
-            7'd94: tb = is_cal ? 8'd0 : (w1_dt[23:16]);
-            7'd95: tb = is_cal ? 8'd0 : (w1_dt[31:24]);
-            7'd96: tb = is_cal ? 8'd0 : (w1_dt[39:32]);
-            7'd97: tb = is_cal ? 8'd0 : (w1_dt[47:40]);
-            7'd98: tb = is_cal ? 8'd0 : (w1_dt[55:48]);
-            7'd99: tb = is_cal ? 8'd0 : (w1_dt[63:56]);
+            7'd68: tb = is_cal ? 8'd0 : (rg_n_a[7:0]);
+            7'd69: tb = is_cal ? 8'd0 : (rg_n_a[15:8]);
+            7'd70: tb = is_cal ? 8'd0 : (rg_n_a[23:16]);
+            7'd71: tb = is_cal ? 8'd0 : (rg_xm_a[7:0]);
+            7'd72: tb = is_cal ? 8'd0 : (rg_xm_a[15:8]);
+            7'd73: tb = is_cal ? 8'd0 : (rg_xm_a[23:16]);
+            7'd74: tb = is_cal ? 8'd0 : (rg_xm_a[31:24]);
+            7'd75: tb = is_cal ? 8'd0 : (rg_xm_a[39:32]);
+            7'd76: tb = is_cal ? 8'd0 : (rg_ym_a[7:0]);
+            7'd77: tb = is_cal ? 8'd0 : (rg_ym_a[15:8]);
+            7'd78: tb = is_cal ? 8'd0 : (rg_ym_a[23:16]);
+            7'd79: tb = is_cal ? 8'd0 : (rg_ym_a[31:24]);
+            7'd80: tb = is_cal ? 8'd0 : (rg_ym_a[39:32]);
+            7'd81: tb = is_cal ? 8'd0 : (rg_ym_a[47:40]);
+            7'd82: tb = is_cal ? 8'd0 : (rg_n_b[7:0]);
+            7'd83: tb = is_cal ? 8'd0 : (rg_n_b[15:8]);
+            7'd84: tb = is_cal ? 8'd0 : (rg_n_b[23:16]);
+            7'd85: tb = is_cal ? 8'd0 : (rg_xm_b[7:0]);
+            7'd86: tb = is_cal ? 8'd0 : (rg_xm_b[15:8]);
+            7'd87: tb = is_cal ? 8'd0 : (rg_xm_b[23:16]);
+            7'd88: tb = is_cal ? 8'd0 : (rg_xm_b[31:24]);
+            7'd89: tb = is_cal ? 8'd0 : (rg_xm_b[39:32]);
+            7'd90: tb = is_cal ? 8'd0 : (rg_ym_b[7:0]);
+            7'd91: tb = is_cal ? 8'd0 : (rg_ym_b[15:8]);
+            7'd92: tb = is_cal ? 8'd0 : (rg_ym_b[23:16]);
+            7'd93: tb = is_cal ? 8'd0 : (rg_ym_b[31:24]);
+            7'd94: tb = is_cal ? 8'd0 : (rg_ym_b[39:32]);
+            7'd95: tb = is_cal ? 8'd0 : (rg_ym_b[47:40]);
+            7'd96: tb = is_cal ? 8'd0 : ({6'd0, rg_ok_b, rg_ok_a});
             7'd100: tb = is_cal ? 8'd0 : (meas_tdc_status);
             7'd101: tb = is_cal ? 8'd0 : (h_dt_b[7:0]);
             7'd102: tb = is_cal ? 8'd0 : (h_dt_b[15:8]);
@@ -396,12 +396,6 @@ module spi_app (
             h_dt_a     <= meas_dt_a_ps;
             h_dt_b     <= meas_dt_b_ps;
             h_edge_b   <= meas_periods_b;
-            // window stream: posuň historii (okna na sebe navazují hranou)
-            w1_seq   <= w0_seq;   w1_edges <= w0_edges;  w1_dt <= w0_dt;
-            w0_seq   <= win_seq;  w0_edges <= meas_periods;
-            w0_dt    <= meas_gate_ns;
-            win_seq  <= win_seq + 32'd1;
-            if (win_cnt != 2'd2) win_cnt <= win_cnt + 2'd1;
             meas_dirty <= 1'b1;
         end else if (signal_lost && !new_meas && meas_pend == 2'd0) begin
             data_valid <= 1'b0;          // ztráta signálu -> data nejsou platná
@@ -588,25 +582,193 @@ module phase_oversampler (
 endmodule
 
 
-module win_recip (
+// ------------------------------------------------------------
+// regr_acc: akumulace casovych znacek VNITRNICH hran ve dvou segmentech okna (FW 0x0411) -> stredni hodnoty.
+//
+// PROC: dva krajni body okna davaji sigma_f/f = sqrt2 * sigma_znacky / T_okna. Casy hran uvnitr okna se
+// zahazovaly. Kdyz fazi hrany vuci hodinam TDC "prohazuje" (vstup NENI nasobek 100 MHz), jsou chyby znacek
+// (kvantizace, INL) nezavisle a PRUMER z n znacek je lepsi o sqrt(n). Odhad kmitoctu je pak sklon primky mezi
+// stredy dvou segmentu (zacatek a konec okna):
+//     f = (x_B - x_A) / (y_B - y_A),   x = index hrany v okne, y = cas hrany
+// ⚠️ U vstupu blizkeho nasobku 100 MHz (GPSDO 10 MHz) je faze porad stejna, chyba znacek konstantni a prumer ji
+// NEzlepsi (nezhorsi ji take). Zisk tedy zavisi na signalu, ne na FPGA.
+//
+// ZADNE NASOBENI: pro kazdou znacku jen secteni (n, sum(x-x0), sum(t-t0)), prumery se pocitaji JEDNOU na konci
+// segmentu sekvencnim delenim. Vystup: n, x_prumer*256, y_prumer*16 (y relativne k `ref_ts`).
+//   xm = x0*256 + floor(sum(x-x0)*256 / n)          ym = (t0-ref)*16 + floor(sum(t-t0)*16 / n)
+// Segmenty se NEPREKRYVAJI a jsou od sebe i od uzaviraci hrany daleko (>> mrtva doba TDC), takze vzorky
+// nikdy nekoliduji s uzaviraci znackou ani s delenim. Mezi znackami je >= 8 taktu (mrtva doba TDC), proto
+// staci pipeline: 1. takt rozdily (jedna odcitacka), 2. takt scitani (jedna scitacka) -- 🔴 casovani: prvni
+// verze retezila odcitani+scitani+porovnani v jednom taktu (cesta 18 ns, Fmax 53 MHz). Akumulator se po
+// konci segmentu NEkopiruje: nikdo do nej uz nepise, dokud nezacne dalsi segment (>> deleni).
+// ------------------------------------------------------------
+module regr_acc (
+    input  wire        clk,             // clk_p0_100m
+    input  wire        seg_a,           // segment A aktivni (quasi-staticke)
+    input  wire        seg_b,           // segment B aktivni
+    input  wire [47:0] ref_ts,          // zacatek okna = ts predchozi uzaviraci hrany [T/16384]
+    input  wire        samp_v,          // 1 takt: znacka vnitrni hrany je platna
+    input  wire        samp_b,          // znacka patri do segmentu B (zachyceno pri spusteni)
+    input  wire [25:0] samp_x,          // poradi hrany v okne
+    input  wire [47:0] samp_ts,         // absolutni cas hrany [T/16384]
+    output reg  [23:0] n_a, n_b,
+    output reg  [39:0] xm_a, xm_b,      // x_prumer * 256
+    output reg  [47:0] ym_a, ym_b,      // y_prumer * 16
+    output reg         ok_a, ok_b
+);
+    initial begin n_a = 0; n_b = 0; xm_a = 0; xm_b = 0; ym_a = 0; ym_b = 0; ok_a = 0; ok_b = 0; end
+
+    // ---- akumulator aktualniho segmentu ----
+    reg        sa_p = 1'b0, sb_p = 1'b0;
+    reg        first = 1'b1;
+    // pocet znacek: 3 x 8 bitu s REGISTROVANYM prenosem. 🔴 casovani: 24bitovy `n <= n + 1` syntetizator rozlozil na
+    // retez 11 LUT misto ALU (Fmax 68 MHz); 8bitovy stupen ma ~3 urovne. Nejvyssi bajt dobehne az 2 takty po
+    // posledni znacce -- pokryva to cekani S_W.
+    reg [7:0]  n_lo = 8'd0, n_md = 8'd0, n_hi = 8'd0;
+    reg        c1 = 1'b0, c2 = 1'b0;
+    wire [23:0] n = {n_hi, n_md, n_lo};
+    reg [25:0] x0   = 26'd0;
+    reg [47:0] t0   = 48'd0;
+    reg [47:0] sx   = 48'd0;                // sum(x - x0)
+    // sum(t - t0): 2 x 32 bitu s registrovanym prenosem (casovani: 64bitove scitani nestihalo, slack -0,7 ns)
+    reg [31:0] sy_lo = 32'd0, sy_hi = 32'd0;
+    reg        sy_c = 1'b0, v2 = 1'b0;
+    reg [7:0]  dth_d = 8'd0;
+    wire [63:0] sy = {sy_hi, sy_lo};
+
+    // pipeline znacky: 1. stupen = rozdily (odcitacka), 2. stupen = scitani
+    reg        v1 = 1'b0, f1 = 1'b0;
+    reg [25:0] dx_r = 26'd0;
+    reg [39:0] dt_r = 40'd0;                // rozdil < 2^40 (segment < 0,67 s)
+    wire       act = (samp_b ? seg_b : seg_a) & (seg_a | seg_b);    // segment znacky jeste trva (jinak se zahodi)
+
+    wire end_a = sa_p & ~seg_a;
+    wire end_b = sb_p & ~seg_b;
+    wire beg_a = ~sa_p & seg_a;
+    wire beg_b = ~sb_p & seg_b;
+
+    // ---- konec segmentu -> deleni (2 takty na iteraci: odecteni, pak vyber) ----
+    localparam S_IDLE = 3'd0, S_Y0 = 3'd1, S_XD = 3'd2, S_XF = 3'd3, S_YD = 3'd4, S_YF = 3'd5, S_W = 3'd6;
+    reg [2:0]  st = S_IDLE;
+    reg        for_b = 1'b0, half = 1'b0;
+    reg [24:0] rem = 25'd0;
+    reg [67:0] nq  = 68'd0;                 // delenec se posouva doleva, zespodu se vsouvaji bity podilu
+    reg [6:0]  cnt = 7'd0;
+    reg [2:0]  wc  = 3'd0;                   // cekani po konci segmentu (dobeh pipeline znacky)
+    reg [39:0] xq  = 40'd0;
+    reg [47:0] y0r = 48'd0;                 // (t0 - ref_ts) * 16
+    wire [24:0] rem_n = {rem[23:0], nq[67]};
+    reg  [25:0] dsub  = 26'd0;              // rem_n - n (bit 25 = zapujcka)
+
+    always @(posedge clk) begin
+        sa_p <= seg_a;
+        sb_p <= seg_b;
+
+        // zacatek segmentu: vynuluj akumulator
+        if (beg_a | beg_b) begin
+            first <= 1'b1; n_lo <= 8'd0; n_md <= 8'd0; n_hi <= 8'd0; c1 <= 1'b0; c2 <= 1'b0; sx <= 48'd0; sy_lo <= 32'd0; sy_hi <= 32'd0; sy_c <= 1'b0; v2 <= 1'b0;
+            if (beg_a) ok_a <= 1'b0;                 // nove okno: stare vysledky neplati
+            if (beg_b) ok_b <= 1'b0;
+        end
+
+        // stupen 0 -> 1: rozdily proti prvni znacce segmentu; prvni znacka nastavi x0/t0
+        v1   <= samp_v & act;
+        f1   <= first;
+        dx_r <= samp_x - x0;
+        dt_r <= samp_ts[39:0] - t0[39:0];
+        if (samp_v & act & first) begin
+            first <= 1'b0; x0 <= samp_x; t0 <= samp_ts;
+        end
+
+        // stupen 1 -> 2: scitani
+        c1 <= 1'b0; c2 <= 1'b0;
+        v2 <= v1 & ~f1; dth_d <= dt_r[39:32];
+        if (v2) sy_hi <= sy_hi + {24'd0, dth_d} + {31'd0, sy_c};
+        if (c1) begin n_md <= n_md + 8'd1; c2 <= (n_md == 8'hFF); end
+        if (c2) n_hi <= n_hi + 8'd1;
+        if (v1) begin
+            n_lo <= n_lo + 8'd1; c1 <= (n_lo == 8'hFF);
+            if (!f1) begin sx <= sx + {22'd0, dx_r}; {sy_c, sy_lo} <= {1'b0, sy_lo} + {1'b0, dt_r[31:0]}; end
+        end
+
+        // konec segmentu: spust deleni (akumulator zustava beze zmeny)
+        if ((end_a | end_b) && st == S_IDLE) begin
+            for_b <= end_b; wc <= 3'd0; st <= S_W;       // n se posuzuje AZ po doběhu pipeline (S_W)
+        end
+
+        case (st)
+        S_W: begin                               // znacka prijata tesne pred koncem segmentu je jeste v pipeline
+            wc <= wc + 3'd1;                     // (2 takty): pockej, nez se n/sx/sy ustali, a teprve pak deli
+            if (wc == 3'd4) begin
+                if (n >= 24'd2) st <= S_Y0;
+                else begin st <= S_IDLE; if (for_b) ok_b <= 1'b0; else ok_a <= 1'b0; end
+            end
+        end
+        S_Y0: begin                              // (t0 - ref) * 16
+            y0r <= ((t0 - ref_ts) << 4);
+            nq <= {12'd0, sx, 8'd0}; rem <= 25'd0; cnt <= 7'd0; half <= 1'b0; st <= S_XD;
+        end
+        S_XD, S_YD: begin                        // 1. takt iterace: rem_n - n
+            dsub <= {1'b0, rem_n} - {2'b00, n};
+            st   <= (st == S_XD) ? S_XF : S_YF;
+        end
+        S_XF, S_YF: begin                        // 2. takt: vyber a posun
+            if (!dsub[25]) begin rem <= dsub[24:0]; nq <= {nq[66:0], 1'b1}; end
+            else           begin rem <= rem_n;      nq <= {nq[66:0], 1'b0}; end
+            cnt <= cnt + 7'd1;
+            if (cnt == 7'd67) begin
+                if (st == S_XF) begin
+                    xq  <= {nq[38:0], ~dsub[25]};                 // podil sum(x-x0)*256/n (40 bitu)
+                    nq  <= {sy, 4'd0}; rem <= 25'd0; cnt <= 7'd0; st <= S_YD;
+                end else begin
+                    if (for_b) begin
+                        n_b  <= n;
+                        xm_b <= {x0, 8'd0} + xq;
+                        ym_b <= y0r + {nq[46:0], ~dsub[25]};
+                        ok_b <= 1'b1;
+                    end else begin
+                        n_a  <= n;
+                        xm_a <= {x0, 8'd0} + xq;
+                        ym_a <= y0r + {nq[46:0], ~dsub[25]};
+                        ok_a <= 1'b1;
+                    end
+                    st <= S_IDLE;
+                end
+            end else st <= (st == S_XF) ? S_XD : S_YD;
+        end
+        default: ;
+        endcase
+    end
+endmodule
+
+module win_recip #(
+    parameter REGR = 0           // 1 = FW 0x0411: i vnitrni hrany ve dvou segmentech okna dostanou presny cas (regr_acc)
+)(
     input  wire         clk,           // clk_p0_100m
     input  wire         rise_s,        // kazda nabezna hrana, SYNCHRONIZOVANA (tdc_chan, pro pocitani)
     input  wire         trig_ack,      // tato hrana spustila presny cas
-    input  wire         ts_valid,      // 7 taktu po trig_ack: ts_ps platny
+    input  wire         ts_valid,      // ~8 taktu po trig_ack: ts_ps platny
     input  wire [47:0]  ts_ps,         // presny cas hrany [T_clk/16384], mod 2^48 (172 s)
     input  wire         gate_tick,     // ~okno puls (sdileny)
     input  wire         hold,          // 1 = kalibrace/neplatny TDC: zahod rozpracovane okno
+    input  wire         seg_a,         // REGR: segment A okna aktivni (staticke; mimo okamzik prechodu)
+    input  wire         seg_b,         // REGR: segment B okna aktivni
     output wire         want,          // okno ceka na presny cas pristi hrany
+    output wire         want_seg,      // REGR: i vnitrni hrany maji dostat presny cas (do tdc_chan.want_seg)
     output reg  [25:0]  r_periods,
     output reg  [47:0]  r_dt,          // Δt okna [T_clk/16384]
     output reg          r_dt_alias,    // okno bez hran > ~25 s -> r_dt neplatne
-    output reg          res_tgl
+    output reg          res_tgl,
+    output wire [23:0]  rg_n_a, rg_n_b,
+    output wire [39:0]  rg_xm_a, rg_xm_b,
+    output wire [47:0]  rg_ym_a, rg_ym_b,
+    output wire         rg_ok_a, rg_ok_b
 );
     // 🔴 2026-10-03: okno uzavira PRVNI hrana po gate_tick; ta dostane presny
     // cas (tdc_chan ji zmrazi a dekoduje), hrany uvnitr okna se POCITAJI
     // (rise_c, bez omezeni rychlosti). Uzavírací hrana je zároveň první hranou
     // dalšího okna (gap-free). Hrany, které přijdou za uzavírací hranou během
-    // 7 taktů dekódování, patří do NOVÉHO okna (count se nuluje při trig_ack).
+    // dekódování, patří do NOVÉHO okna (count se nuluje při trig_ack).
     reg        armed  = 1'b0;
     reg        primed = 1'b0;
     reg [25:0] snap   = 26'd0;      // pocet period uzavirane okna
@@ -616,13 +778,10 @@ module win_recip (
     // vsechny pulzy se zpozdi o 1 takt (kratke cesty); konzistentne pro count
     // i uzavirani, takze poradi udalosti se nemeni
     reg        rise_q = 1'b0, trig_q = 1'b0, gate_q = 1'b0, hold_q = 1'b0;
-    // 🔴 2026-10-06 (FW 0x040F): hrany se pocitaji ze SYNCHRONIZOVANE `rise_s`
-    // (driv `rise_c` primo z jednoho FF na asynchronnim vstupu -> metastabilita
-    // obcas napocitala hranu dvakrat, viz tdc_chan). `rise_s` uzaviraci hrany
-    // prijde 0..2 takty PO jejim `trig_ack` (trig jede z rychle cesty). `pend`
-    // ceka na ni: prvni rise_s po trig = uzaviraci hrana (dalsi hrana je >= 3
-    // takty dal, takze zamena nehrozi). Pojistka: po 3 taktech bez rise_s se
-    // okno uzavre i tak (nesmi nastat; jinak by okno viselo).
+    // hrany se pocitaji ze SYNCHRONIZOVANE `rise_s` (tdc_chan: ec z 2. stupne vzorku, +1 takt). `rise_s`
+    // uzaviraci hrany prijde 0..2 takty PO jejim `trig_ack`. `pend` ceka na ni: prvni rise_s po trig =
+    // uzaviraci hrana (dalsi hrana je >= 3 takty dal, takze zamena nehrozi). Pojistka: po 3 taktech bez
+    // rise_s se okno uzavre i tak (nesmi nastat; jinak by okno viselo).
     reg        pend   = 1'b0;
     reg [1:0]  pend_n = 2'd0;
     // citac okna: dolnich 8 b + registrovany prenos do hornich 18 b (kratka cesta);
@@ -637,8 +796,15 @@ module win_recip (
         r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0;
     end
 
-    wire close = (trig_q | pend) & (rise_q | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
+    // ---- REGR: rozlisi UZAVIRACI spusteni (armed) od spusteni vnitrni hrany (segment) ----
+    wire trig_c = (REGR != 0) ? (trig_q & armed)  : trig_q;      // uzaviraci hrana okna
+    wire trig_s = (REGR != 0) & trig_q & ~armed;                  // vnitrni hrana ve segmentu
+    reg        sg_pend = 1'b0, sg_b = 1'b0, ts_seg = 1'b0;
+    reg [25:0] sg_x    = 26'd0;
+
+    wire close = (trig_c | pend) & (rise_q | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
     wire inc   = rise_q & ~close;          // bezna hrana uvnitr okna
+    wire ts_close = ts_valid & ~((REGR != 0) & ts_seg);           // presny cas UZAVIRACI hrany
     always @(posedge clk) begin
         rise_q <= rise_s;
         trig_q <= trig_ack;
@@ -654,15 +820,17 @@ module win_recip (
             count_lo <= 8'd0;
             count_hi <= 18'd0;
             age      <= 8'd0;
+            sg_pend  <= 1'b0;
+            ts_seg   <= 1'b0;
         end else begin
             if (gate_q) begin
                 armed <= 1'b1;
                 if (age != 8'hFF) age <= age + 8'd1;
             end
             if (inc) count_lo <= count_lo + 8'd1;
-            if (trig_q & ~rise_q) begin pend <= 1'b1; pend_n <= 2'd0; end
+            if (trig_c & ~rise_q) begin pend <= 1'b1; pend_n <= 2'd0; end
             else if (pend & ~rise_q) pend_n <= pend_n + 2'd1;
-            if (trig_q) armed <= 1'b0;          // dalsi trig az po dalsim gate_tick
+            if (trig_c) armed <= 1'b0;          // dalsi trig az po dalsim gate_tick
             if (close) begin
                 pend     <= 1'b0;
                 pend_n   <= 2'd0;
@@ -673,7 +841,11 @@ module win_recip (
                 alias_s  <= (age >= 8'd250);       // >= 250 oken bez hrany
                 age      <= 8'd0;
             end
-            if (ts_valid) begin
+            // vnitrni hrana ve segmentu: poradi hrany se zachyti, az ji napocita rise_q (0..1 takt po trig)
+            if (trig_s) begin sg_pend <= 1'b1; sg_b <= seg_b; ts_seg <= 1'b1; end
+            if (trig_c) ts_seg <= 1'b0;
+            if (sg_pend & rise_q) begin sg_x <= count + 26'd1; sg_pend <= 1'b0; end   // count tuto hranu jeste neobsahuje
+            if (ts_close) begin
                 if (primed) begin                  // prvni hrana vubec okno neuzavira
                     r_periods  <= snap + 26'd1;
                     r_dt       <= ts_ps - ref_ts;
@@ -685,6 +857,22 @@ module win_recip (
             end
         end
     end
+
+    generate
+        if (REGR != 0) begin : rg
+            assign want_seg = seg_a | seg_b;
+            regr_acc u_rg (.clk(clk), .seg_a(seg_a), .seg_b(seg_b), .ref_ts(ref_ts),
+                           .samp_v(ts_valid & ts_seg), .samp_b(sg_b), .samp_x(sg_x), .samp_ts(ts_ps),
+                           .n_a(rg_n_a), .n_b(rg_n_b), .xm_a(rg_xm_a), .xm_b(rg_xm_b),
+                           .ym_a(rg_ym_a), .ym_b(rg_ym_b), .ok_a(rg_ok_a), .ok_b(rg_ok_b));
+        end else begin : rg
+            assign want_seg = 1'b0;
+            assign rg_n_a = 24'd0;  assign rg_n_b = 24'd0;
+            assign rg_xm_a = 40'd0; assign rg_xm_b = 40'd0;
+            assign rg_ym_a = 48'd0; assign rg_ym_b = 48'd0;
+            assign rg_ok_a = 1'b0;  assign rg_ok_b = 1'b0;
+        end
+    endgenerate
 endmodule
 
 

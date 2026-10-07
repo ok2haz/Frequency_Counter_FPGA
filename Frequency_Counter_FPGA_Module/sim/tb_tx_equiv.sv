@@ -1,6 +1,6 @@
 // tb_tx_equiv.sv -- novy plochy `case` multiplexer TX bajtu (spi_app) == puvodni retez porovnani rozsahu
 // (tx_old_ref.v = spi_app pred prepisem). Nahodny stav, vsech 126 bajtu, DATA i CAL. Rozdily jen tam, kde
-// se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS).
+// se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream nahrazen regresnim blokem v FW 0x0411).
 `timescale 1ps/1ps
 module tb_tx_equiv;
     reg clk = 0;   // hodiny STOJI: porovnava se jen kombinacni `tb`, FSM nesmi menit idx/registry
@@ -18,7 +18,7 @@ module tb_tx_equiv;
         .meas_timestamp(meas_ts), .meas_error_flags(meas_err), .meas_channel(meas_ch), .new_meas(1'b0), .signal_lost(1'b0),
         .meas_freq16_x100000(meas_freq16), .meas_phase_status(meas_phase), .meas_status2(meas_st2),
         .meas_dt_a_ps(dt_a), .meas_dt_b_ps(dt_b), .meas_periods_b(meas_periods_b), .meas_tdc_status(meas_tdc_status),
-        .meas_cal_diag(cal_diag), .meas_tdc_cfg(16'h0123), .meas_maxtap_a(mt_a), .meas_maxtap_b(mt_b), .hist_k(hk_n),
+        .meas_cal_diag(cal_diag), .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_xm_a(40'd0), .rg_xm_b(40'd0), .rg_ym_a(48'd0), .rg_ym_b(48'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .meas_maxtap_a(mt_a), .meas_maxtap_b(mt_b), .hist_k(hk_n),
         .meas_hist_a(ha), .meas_hist_b(hb), .dbg_mosi_cnt(dm), .dbg_sck_cnt(ds),
         .rx_valid(1'b0), .rx_b0(8'd0), .rx_b1(8'd0), .rx_b2(8'd0), .rx_seq(32'd0), .rx_p0(8'd0), .rx_p1(8'd0), .rx_p2(8'd0),
         .rx_crc_calc(16'd0), .rx_crc_recv(16'd0), .tx_half(th_n), .tx_we(we_n), .tx_waddr(wa_n), .tx_wdata(wd_n),
@@ -48,10 +48,10 @@ reg [63:0] tmp;
             `SB(h_freq, {$urandom, $urandom}) `SB(h_edge, {$urandom, $urandom}) `SB(h_gate, {$urandom, $urandom})
             `SB(h_freq16, {$urandom, $urandom}) `SB(h_ts, {$urandom, $urandom}) `SB(h_ch, $urandom) `SB(h_phase, $urandom)
             `SB(h_status2, $urandom) `SB(h_err, $urandom) `SB(h_dt_a, {$urandom, $urandom}) `SB(h_dt_b, {$urandom, $urandom})
-            `SB(h_edge_b, $urandom) `SB(win_cnt, $urandom) `SB(d_rx0, $urandom) `SB(d_rx1, $urandom) `SB(d_rx2, $urandom)
+            `SB(h_edge_b, $urandom) tmp = $urandom; u_old.win_cnt = tmp; `SB(d_rx0, $urandom) `SB(d_rx1, $urandom) `SB(d_rx2, $urandom)
             `SB(d_ccl, $urandom) `SB(d_cch, $urandom) `SB(d_rcl, $urandom) `SB(d_rch, $urandom)
-            `SB(w0_seq, $urandom) `SB(w0_edges, $urandom) `SB(w0_dt, {$urandom, $urandom})
-            `SB(w1_seq, $urandom) `SB(w1_edges, $urandom) `SB(w1_dt, {$urandom, $urandom})
+            tmp = $urandom; u_old.w0_seq = tmp; tmp = $urandom; u_old.w0_edges = tmp; tmp = {$urandom, $urandom}; u_old.w0_dt = tmp;
+            tmp = $urandom; u_old.w1_seq = tmp; tmp = $urandom; u_old.w1_edges = tmp; tmp = {$urandom, $urandom}; u_old.w1_dt = tmp;
             `SB(seq, $urandom) `SB(data_valid, $urandom) `SB(data_fresh, $urandom) `SB(ack_ok, $urandom)
             `SB(rx_crc_error, $urandom) `SB(cal_mode_r, $urandom) `SB(hist_mode, $urandom)
             u_new.hist_k_r = $urandom % 256; u_old.hist_k_r = u_new.hist_k_r;
@@ -60,7 +60,7 @@ reg [63:0] tmp;
                 for (i = 0; i < 126; i = i + 1) begin
                     `SB(idx, i)
                     #1;
-                    if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && i >= 60 && i <= 63)) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS (zamerne nove)
+                    if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 60 && i <= 63) || i == 65 || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
                         cmp = cmp + 1;
                         if (u_new.tb !== u_old.tb) begin
                             errs = errs + 1;

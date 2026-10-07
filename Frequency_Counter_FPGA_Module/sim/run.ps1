@@ -46,6 +46,14 @@ $tests = @(
        defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
                 "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=256", "-DPSTRIDE=2", "-DPKD=2", "-DPDUAL=1",
                 "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # 2026-10-07 (FW 0x0411): KONCOVY test regresniho bloku -- TDC (model krzemiku) + win_recip(REGR=1) na signalu
+    # s "prohazujici" fazi; porovna chybu kmitoctu dvou bodu a regrese proti znamene pravde. Zisk musi byt >= 1,8x
+    # (nameren 4,7x pri ~30 znackach v segmentu). ~3-4 min.
+    @{ name = "regre2e"; top = "tb_regr_e2e";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_regr_e2e.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # akumulator segmentu regr_acc == referencni vypocet (40 nahodnych segmentu, neekvidistantni indexy)
+    @{ name = "regracc"; top = "tb_regr_acc"; rtl = @("spi_app.v"); tb = "tb_regr_acc.sv" }
     # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
     @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
     @{ name = "decequiv320"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=320") }

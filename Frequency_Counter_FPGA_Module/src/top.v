@@ -73,6 +73,29 @@ module top (
     end
     reg [2:0] gt_s = 3'b000;
     always @(posedge clk_p0_100m) gt_s <= {gt_s[1:0], gate_tgl};
+
+    // ----------------------------------------------------------
+    // FW 0x0411: SEGMENTY okna pro regresni blok CH_A (viz regr_acc). Cas v hradle urcuje citac gtmr (10 MHz):
+    //   A = [G/16, 3G/16), B = [13G/16, 15G/16)  (G = delka hradla v taktech 10 MHz)
+    // Okno se uzavira prvni hranou PO gate_tick, tedy segment A zacina az po zacatku okna a segment B konci
+    // dost PRED jeho koncem (>= G/16 = 6 ms pri 100 ms hradle): znacky vnitrnich hran se nikdy nepotkaji
+    // s uzaviraci znackou ani s delenim v regr_acc. Prechody vlajek jsou vzdy daleko od hran signalu
+    // (staticke vuci 100 MHz), do 100 MHz domeny jdou pres 2 FF.
+    // ----------------------------------------------------------
+    wire [23:0] sa0 = (base_win == 2'd0) ? 24'd62500   : (base_win == 2'd2) ? 24'd625000  : 24'd156250;    // G/16
+    wire [23:0] sa1 = (base_win == 2'd0) ? 24'd187500  : (base_win == 2'd2) ? 24'd1875000 : 24'd468750;    // 3G/16
+    wire [23:0] sb0 = (base_win == 2'd0) ? 24'd812500  : (base_win == 2'd2) ? 24'd8125000 : 24'd2031250;   // 13G/16
+    wire [23:0] sb1 = (base_win == 2'd0) ? 24'd937500  : (base_win == 2'd2) ? 24'd9375000 : 24'd2343750;   // 15G/16
+    wire seg_a, seg_b;                     // segmenty okna CH_A (do win_recip u_wra)
+    reg sa_10 = 1'b0, sb_10 = 1'b0;
+    always @(posedge clk_ref_10m) begin
+        sa_10 <= (gtmr >= sa0) && (gtmr < sa1);
+        sb_10 <= (gtmr >= sb0) && (gtmr < sb1);
+    end
+    reg [1:0] sa_s = 2'b00, sb_s = 2'b00;
+    always @(posedge clk_p0_100m) begin sa_s <= {sa_s[0], sa_10}; sb_s <= {sb_s[0], sb_10}; end
+    assign seg_a = sa_s[1];
+    assign seg_b = sb_s[1];
     wire gate_tick = (gt_s[2] ^ gt_s[1]);  // ~gate puls v P0
 
     // ----------------------------------------------------------
@@ -132,7 +155,11 @@ module top (
     // 2x TDC kanál (tdc.v): hrana -> sig_rise + ev_ts [ps]
     // ----------------------------------------------------------
     wire        rise_a, rise_b, trig_a, trig_b, tsv_a, tsv_b, want_a, want_b;
-    wire        rise_sa, rise_sb;     // synchronizovane hrany pro pocitani (FW 0x040F)
+    wire        rise_sa, rise_sb;     // hrany pro pocitani (ec z 2. stupne vzorku, +1 takt)
+    wire        wseg_a;              // FW 0x0411: i vnitrni hrany CH_A maji dostat presny cas (regresni blok)
+    wire [23:0] rg_n_a, rg_n_b;  wire [39:0] rg_xm_a, rg_xm_b;  wire [47:0] rg_ym_a, rg_ym_b;  wire rg_ok_a, rg_ok_b;
+    wire        wseg_b_nc, rgb_ok_a_nc, rgb_ok_b_nc;
+    wire [23:0] rgb_n_a_nc, rgb_n_b_nc;  wire [39:0] rgb_xm_a_nc, rgb_xm_b_nc;  wire [47:0] rgb_ym_a_nc, rgb_ym_b_nc;
     wire [47:0] ts_a, ts_b;
     wire        cal_busy_a, cal_busy_b, cal_valid_a, cal_valid_b, cal_fail_a, cal_fail_b;
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
@@ -143,7 +170,7 @@ module top (
 
     tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
-        .want(want_a), .cal_req(cal_req), .cal_abort(cal_abort),
+        .want(want_a), .want_seg(wseg_a), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .use_ro(use_ro_a), .cal_busy(cal_busy_a),
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
@@ -153,7 +180,7 @@ module top (
     );
     tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
-        .want(want_b), .cal_req(cal_req), .cal_abort(cal_abort),
+        .want(want_b), .want_seg(1'b0), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .use_ro(use_ro_b), .cal_busy(cal_busy_b),
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
@@ -170,17 +197,21 @@ module top (
     wire        res_tgl_a,    res_tgl_b;
     wire        alias_a,      alias_b_nc;
 
-    win_recip u_wra (
+    win_recip #(.REGR(1)) u_wra (
         .clk(clk_p0_100m), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .gate_tick(gate_tick), .want(want_a),
+        .gate_tick(gate_tick), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
         .hold(cal_busy_a | ~cal_valid_a),
-        .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a)
+        .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a),
+        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
+        .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b)
     );
-    win_recip u_wrb (
+    win_recip #(.REGR(0)) u_wrb (
         .clk(clk_p0_100m), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .gate_tick(gate_tick), .want(want_b),
+        .gate_tick(gate_tick), .seg_a(1'b0), .seg_b(1'b0), .want(want_b), .want_seg(wseg_b_nc),
         .hold(cal_busy_b | ~cal_valid_b),
-        .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b)
+        .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b),
+        .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_xm_a(rgb_xm_a_nc), .rg_xm_b(rgb_xm_b_nc),
+        .rg_ym_a(rgb_ym_a_nc), .rg_ym_b(rgb_ym_b_nc), .rg_ok_a(rgb_ok_a_nc), .rg_ok_b(rgb_ok_b_nc)
     );
 
     // ----------------------------------------------------------
@@ -341,6 +372,8 @@ module top (
         .meas_tdc_status(tdc_status),
         .meas_cal_diag(cal_diag),
         .meas_tdc_cfg(tdc_cfg),
+        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
+        .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b),
         .meas_maxtap_a(da_maxtap),
         .meas_maxtap_b(db_maxtap),
         .hist_k(hist_k),

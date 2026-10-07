@@ -50,14 +50,14 @@ module tb_tdc;
     wire [15:0] nz_a, last_a, nz_b, last_b;
 
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) ca (
-        .clk(clk), .sig_raw(sig_a), .ro(ro), .tick_ps(tick_ps), .want(want_a),
+        .clk(clk), .sig_raw(sig_a), .ro(ro), .tick_ps(tick_ps), .want(want_a), .want_seg(1'b0),
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a),
         .ts_valid(tsv_a), .ts_ps(ts_a), .use_ro(use_ro_a), .cal_busy(busy_a),
         .cal_valid(valid_a), .cal_fail(fail_a),
         .d_ovf(ovf_a), .d_peak(peak_a), .d_nz(nz_a), .d_last(last_a),
         .dump_k(8'd0), .dump_q());
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) cb (
-        .clk(clk), .sig_raw(sig_b), .ro(ro), .tick_ps(tick_ps), .want(want_b),
+        .clk(clk), .sig_raw(sig_b), .ro(ro), .tick_ps(tick_ps), .want(want_b), .want_seg(1'b0),
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b),
         .ts_valid(tsv_b), .ts_ps(ts_b), .use_ro(use_ro_b), .cal_busy(busy_b),
         .cal_valid(valid_b), .cal_fail(fail_b),
@@ -67,11 +67,11 @@ module tb_tdc;
     wire [25:0] per_a, per_b;
     wire [47:0] dt_a, dt_b;
     wire        al_a, al_b, tgl_a, tgl_b;
-    win_recip wa (.clk(clk), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-                  .gate_tick(gate_tick), .hold(busy_a | ~valid_a), .want(want_a),
+    win_recip wa (.clk(clk), .seg_a(1'b0), .seg_b(1'b0), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
+                  .gate_tick(gate_tick), .hold(busy_a | ~valid_a), .want(want_a), .want_seg(),
                   .r_periods(per_a), .r_dt(dt_a), .r_dt_alias(al_a), .res_tgl(tgl_a));
-    win_recip wb (.clk(clk), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-                  .gate_tick(gate_tick), .hold(busy_b | ~valid_b), .want(want_b),
+    win_recip wb (.clk(clk), .seg_a(1'b0), .seg_b(1'b0), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
+                  .gate_tick(gate_tick), .hold(busy_b | ~valid_b), .want(want_b), .want_seg(),
                   .r_periods(per_b), .r_dt(dt_b), .r_dt_alias(al_b), .res_tgl(tgl_b));
 
     integer errors = 0;
