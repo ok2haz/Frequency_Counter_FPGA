@@ -176,3 +176,42 @@ nulovou časovou rezervu za zisk, který **neplatí pro hlavní použití přís
 4. Měřit miscount a spike-reject na 0x0410 (A-02), kanál B poprvé (A-01).
 5. Samostatný `docs:` commit s opravou zastaralých komentářů (B-02).
 6. Archivovat bitstream, který se skutečně nahrál (B-07), s hashem pro kalibraci.
+
+---
+
+## 6. Dodatek: první měření FW 0x0411 + STM v0.14.0 na desce (2026-10-07 večer, [HW])
+
+Uživatel nahrál bitstream 0x0411 i STM a hlásí, že chyba je větší. Diagnostika přes COM10 (CDC) a ETH, bez zásahu do GUI programátoru.
+
+### D-01 NOVÝ NÁLEZ (vysoká): počet hran v okně je trvale o ~0,9 % vyšší  `[HW]`
+- `fpgaraw`: `edge_count` = 0x2675EF = 2 520 559 při `dt_a` = 0,250000 s (správně); očekáváno 2 500 002. Přebytek 13 800–35 700 hran
+  na okno (průměr ~20 500, sd 3 300, autokorelace ≈ −0,1), takže `freq_hz` = 10 000 008,4 Hz + k·4 Hz, k ≈ 26 000.
+  `freq_hz` na displeji/webu ukazuje 10,08–10,13 MHz. `CITANI HRAN` to **nezachytí** (hlídá jen ±1 hranu).
+- Před nahráním (FW 0x040F) bylo `navic` 12 z 14 620 oken (0,08 %). Příčina **neznámá**: kandidáti jsou (a) 0x0410 (zdroj hran z `q_r[KD]`
+  místo vzorku tapu 0), (b) 0x0411 (regrese: ~600 000 vnitřních značek/okno, `ld` přepíná každých 100 ns), (c) změna zapojení/signálu.
+- `tdc` na desce: největší bin A = 311 ps (3,1 %), B = 224 ps (2,2 %); obří bin (1,4/4,8 ns) **zmizel**; 162/161 neprázdných kódů z 512,
+  řetěz končí na tapu ~248 z 320. Obří-bin část 0x0410 tedy na křemíku **funguje** (A mírně nad 200 ps).
+- Pozn.: test přepnutí hradla (1 s / 0,1 s / 0,25 s) nerozlišuje nic, protože hradlo FPGA se z STM **nikdy nenastavuje**
+  (`fpga_freq_set_window()` nemá volajícího). Tlačítko GATE, web a SCPI mění jen softwarové průměrování; okno FPGA je vždy 0,25 s.
+
+### D-02 NOVÝ NÁLEZ (vysoká): regresní blok na křemíku nefunguje  `[HW]`
+- `regr`: 1286 oken s blokem, **použito 0, zamítnuto 1286**, `f_regr` = 0.
+- Rámec: `n_A` = 312 499 (přesně počet hran za 31,25 ms, tedy A je v pořádku), `n_B` = 295 968 **ve všech oknech stejné**, `ym_B` = `0x013520C197C0`
+  **bit za bitem stejné ve více oknech** (průměr ~300 000 časových značek se nemůže opakovat) a `ym_A` má nesmyslná horní slova (0x7C99…, ≈ 5,2 s místo ~0,03 s).
+  `xm_B` ≈ 2,13·10⁶ místo ~2,19·10⁶ (ukazatel hran za B zaostává o ~57 000).
+- Simulace to nevidí (e2e prošel). Prokazuje to A-01 (model ≠ křemík) a že `S_W`/pipeline nebyla jediná nejistota; příčina **neznámá**, kandidát: časy vnitřních značek
+  (`ts_ps` při `ts_valid` u značek za sebou po 10 taktech) a/nebo `ref_ts`.
+
+### Opravy provedené v této fázi (nic z toho není ověřeno na desce)
+| nález | oprava | commit |
+|---|---|---|
+| A-04 regrese spolkla plochu | `TDC_REGR` parametr, výchozí 0 → **FW 0x0412**: CLS 65 % (0x0411: 79 %), Fmax 103,1 MHz, slack +0,299 ns | `0aa7d34` |
+| A-06 mez 3e-7 | `FPGA_REGR_MAX_REL` 5e-8, selftest vektor 1e-7 (zamítnout) | `439bbb9` |
+| B-03 roztržené čtení | `fpga_freq_regr_stat` pod PRIMASK | `439bbb9` |
+| `status`: `okno %lu ps` oříznuto na 32 b (ukazovalo 891 µs místo 250 ms) | tisk v µs z 64bitové hodnoty | `439bbb9` |
+
+### Otevřeno a postup (A/B na desce; JTAG blokuje otevřené Gowin Programmer GUI)
+Připraveno v `Frequency_Counter_FPGA_Module/ab_test/`: `FW_0x040F_baseline.fs`, `FW_0x0410_bez_regrese.fs`, `FW_0x0412_REGR_vypnuta.fs`.
+1. Nahrát 0x0412 → `status` (`FW:0x0412 CAPS:0x0062`), `fpgaraw` → `edge_count` = 2 500 002 ± 1? **Ano** = vinen regresní blok (0x0411). **Ne** → krok 2.
+2. Nahrát 0x040F → pokud je počet hran správný, vinen je zdroj hran 0x0410 (`q_r[KD]`); pokud ne, vstup/zapojení.
+3. Teprve podle výsledku opravovat; D-02 řešit jen pokud se regrese ponechá.

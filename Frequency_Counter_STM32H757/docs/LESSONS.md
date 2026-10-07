@@ -4250,6 +4250,32 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** `bbf5865`
 - **Stav:** aktivní (ke zvážení)
 
+### L-0135 — "Simulace + P&R prošly" neříká nic o tom, že blok na křemíku počítá správně
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA regresní blok (0x0411), ověřování
+- **Symptom:** po nahrání 0x0411 `edge_count` o ~0,9 % vyšší, `regr` zamítá 100 % oken, `ym_B` je ve všech oknech identické.
+- **Příčina:** neznámá (viz audit D-01/D-02). Jisté je, že 12 simulací, P&R i netlist kontrola prošly a přesto na desce nic z toho neplatí;
+  `tb_regr_e2e` nekontroluje absolutní počet hran (jedna hrana = tisíce ppm) ani to, že se `ym` mezi okny mění.
+- **Oprava:** blok vypnut parametrem (FW 0x0412) do doby, než bude reprodukován a pochopen; do `status` přidán stav `REGR:`.
+- **Pravidlo:** **Nový blok, který mění číslo na displeji, se před flashem opatří kontrolou, kterou jde ověřit z `status`/`fpgaraw` bez dalšího nástroje
+  (shoda `edge_count` s očekávaným, proměnlivost výstupů mezi okny), a v testbenchi se testuje i absolutní počet hran, ne jen relativní chyba.**
+- **Detekce:** po každém flashi: `fpgaraw` → `edge_count` proti `f_ref·gate`, a `regr` → `pouzito > 0`.
+- **Commit:** `0aa7d34`
+- **Stav:** aktivní
+
+### L-0136 — Ovládací prvek, který se nedostane do HW, nelze použít k diagnostice
+
+- **Datum:** 2026-10-07
+- **Oblast:** STM ↔ FPGA, `fpga_freq_set_window`
+- **Symptom:** přepnutí hradla na 1 s / 0,1 s / 0,25 s (displej, web, SCPI) nezměnilo `gate_ns` (vždy ~250 ms).
+- **Příčina:** `fpga_freq_set_window()` (SET_CONFIG 0x01) nemá volajícího; GATE mění jen SW průměrování v STM (CLAUDE.md zmiňuje jako audit #83).
+- **Oprava:** žádná (jen zjištění); test hradla nelze použít k rozlišení příčiny chyby počtu hran.
+- **Pravidlo:** **Než použiješ nastavení jako experimentální proměnnou, ověř na rámci z FPGA (`gate_ns`/`dt_a`), že se opravdu změnilo.**
+- **Detekce:** po změně nastavení porovnat `dt_a` ve `fpgaraw` před/po.
+- **Commit:** `06b01d0`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
