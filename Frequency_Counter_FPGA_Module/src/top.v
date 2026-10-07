@@ -131,6 +131,9 @@ module top (
     // TAPS = vzorku (nasobek 32): 320 = 12,5 ns pri 39 ps/ALU (rezerva nad 10 ns + slepota spoustece; fyzicky konec
     // retezu na desce byl dosud ~268. ALU, o poloze zlomu v novem netlistu rozhodne `tdc` -> nejvetsi bin).
     localparam TDC_STRIDE = 1;
+    // 0 = regresni blok vypnuty (vnitrni hrany se nemeri, CAPS bit7 = 0); 1 = FW 0x0411 chovani.
+    // Vychozi 0: zisk je jen pro signal nesoudelny se 100 MHz a stoji ~11 % CLS + casovou rezervu (audit A-04/A-05).
+    localparam TDC_REGR   = 0;
     localparam TDC_DUAL   = 0;
     localparam TDC_TAPS   = (TDC_STRIDE == 1) ? 320 : 256;
     localparam TDC_KD     = (TDC_STRIDE == 1) ? 1 : 2;
@@ -197,7 +200,7 @@ module top (
     wire        res_tgl_a,    res_tgl_b;
     wire        alias_a,      alias_b_nc;
 
-    win_recip #(.REGR(1)) u_wra (
+    win_recip #(.REGR(TDC_REGR)) u_wra (
         .clk(clk_p0_100m), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .gate_tick(gate_tick), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
         .hold(cal_busy_a | ~cal_valid_a),
@@ -353,7 +356,7 @@ module top (
         fe_s <= {fe_s[1:0], frame_end_tgl};
     wire rx_valid_pulse = (fe_s[2] ^ fe_s[1]);
 
-    spi_app u_app (
+    spi_app #(.REGR_EN(TDC_REGR)) u_app (
         .clk(clk_ref_10m),
         .meas_freq_x100000(freq_a_x100000),
         .meas_periods(periods_lat),

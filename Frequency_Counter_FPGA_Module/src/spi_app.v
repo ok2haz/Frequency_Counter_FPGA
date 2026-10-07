@@ -52,7 +52,9 @@
 //  (po bajtech, TX ve dvou polovinach). Viz spi_slave_phy.v.
 // ============================================================
 
-module spi_app (
+module spi_app #(
+    parameter REGR_EN = 0           // 1 = regresni blok (bajty 68..96) je ve ramci platny a CAPS bit7 = 1
+)(
     input  wire        clk,                  // clk_ref_10m
 
     input  wire [63:0] meas_freq_x100000,    // 2026-10-03: vždy 0 (host počítá z edges/dt_ps)
@@ -115,7 +117,7 @@ module spi_app (
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0411;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0412;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0410 -> 0x0411 (2026-10-07): REGR -- regresni blok (stredni hodnoty znacek vnitrnich hran ve dvou
     // segmentech okna CH_A, abs 68..96) misto window streamu (STM ho nikdy nectl). Viz regr_acc / win_recip.
     // 🔴 0x040F -> 0x0410 (2026-10-07): nova architektura spousteni TDC (volne vzorky q + kompaktni
@@ -134,7 +136,7 @@ module spi_app (
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
-    localparam [15:0] CAPS            = 16'h00E2;   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN
+    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h00E2 : 16'h0062;   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
