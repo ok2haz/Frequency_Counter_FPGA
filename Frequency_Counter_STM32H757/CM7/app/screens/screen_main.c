@@ -907,7 +907,7 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
  * ⚠️ ZADNY `log10` (nano.specs bez float printf je jina vec, ale libm log10 by
  *   zbytecne tahlo float — staci nasobeni 0,1 v celociselne smycce).
  * Vraci pocet nejistych desetin; volajici (`num_layout`) ho jeste sanituje. */
-/* Krok TDC [ps] — hodnota bydli v `meas_present.h` jako `MP_TDC_PS`, protoze ji
+/* σ casove znacky TDC [ps] (od 2026-10-08 zmerena, ne krok tapu) — hodnota bydli v `meas_present.h` jako `MP_TDC_PS`, protoze ji
  * potrebuje i CM4 (web ji servíruje v `/api/state` pro rozpocet nejistoty).
  * Zdejsi alias zustava jen kvuli citelnosti mistnich vzorcu. */
 #define FREQ_TDC_PS  MP_TDC_PS
@@ -2059,7 +2059,7 @@ static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky ni
  * vzorkovani), kvantizacni chyba neni nahodna a krivka muze byt i pod ni. */
 static float adev_floor_base(int kind, float tau, int m)
 {
-    double tdc = FREQ_TDC_PS * 1e-12;               /* krok TDC [s] */
+    double tdc = FREQ_TDC_PS * 1e-12 * 3.46410162;  /* σ znacky -> ekvivalentni krok kvantizace q = σ·√12 [s] */
     double t   = (double)tau;
     switch (kind) {
     case ADEV_KIND_HDEV: return (float)(0.52704628 * tdc / t);            /* √(10/3)/√12 */

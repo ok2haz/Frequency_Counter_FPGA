@@ -140,7 +140,10 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
  * web je servíruje v `/api/state` — jinak by vznikla čtvrtá kopie v `httpd_min.c`.
  * ⚠️ Nová deska má carry chain ~50 ps bin (~22 ps single-shot), tedy o dva řády
  * jinde — při přechodu změnit TADY a nikde jinde. */
-#define MP_TDC_PS      57.0     /* carry-chain TDC: krok jednoho tapu (STA model GW1NR-9C 57 ps; HYPOTÉZA do měření na desce, viz CAL report) */
+#define MP_TDC_PS      105.0    /* σ JEDNÉ časové značky [ps] (dvoubodový odhad okna), ZMĚŘENO 2026-10-08 (docs/TDC_MATEMATIKA.md kap. 10).
+                                 * Do 2026-10-08 57 ps = krok tapu ze STA (hypotéza). Význam je σ (√2·σ/hradlo = rozlišení okna);
+                                 * podlaha Allanova grafu z ní dělá ekvivalentní krok kvantizace σ·√12. S regresí (FW >= 0x041A)
+                                 * je skutečný šum okna ~13× menší — hodnota je proto konzervativní (méně „důvěryhodných“ číslic). */
 #define MP_REF_PPB     1.0      /* systematická nejistota GPSDO reference vůči UTC */
 
 /* ══════════════ AD8307: mV → dBm — JEDINÝ zdroj převodu (F-0165) ═══════════
