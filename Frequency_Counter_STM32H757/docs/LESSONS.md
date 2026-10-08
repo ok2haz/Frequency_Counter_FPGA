@@ -4311,6 +4311,21 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** (commit FW 0x041A)
 - **Stav:** aktivní
 
+### L-0139 — Konstanta z modelu a se dvěma významy: rozlišení přístroje musí být změřené a mít jeden význam
+
+- **Datum:** 2026-10-08
+- **Oblast:** `meas_present.h` `MP_TDC_PS`, `screen_main.c` `adev_floor_base`, web `floorOf`
+- **Symptom:** počet „důvěryhodných" číslic a podlaha Allanova grafu vycházely z 57 ps, přitom změřený šum značky byl ~105 ps
+  (dvoubodově) a s regresí ~10 ps ekv. Navíc rozpočet nejistoty bral konstantu jako σ, podlaha jako krok kvantizace (√12×).
+- **Příčina:** hodnota převzatá ze STA modelu („HYPOTÉZA do měření") nebyla po měření nikdy nahrazena; dva vzorce ji
+  interpretovaly různě a nikdo to nepoznal, protože obě čísla vypadala věrohodně.
+- **Oprava:** `MP_TDC_PS` = 105 ps = změřená σ; podlaha převádí na krok q = σ·√12 na displeji i na webu (commit fix(stm,web)).
+- **Pravidlo:** **Každá konstanta, která popisuje přesnost přístroje, musí mít v komentáři jednotku, VÝZNAM (σ / krok / pásmo) a zdroj
+  (měření s datem, nebo „hypotéza"); hypotéza se po prvním měření nahrazuje.**
+- **Detekce:** `grep -rn "HYPOT" CM7/Core/Inc` — každá hypotéza má mít odkaz na měření, které ji nahradí.
+- **Commit:** fix(stm,web) MP_TDC_PS
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
