@@ -2180,6 +2180,28 @@ void UartTask_run(void *argument)
 				  }
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
+			  else if (strncmp(RxBuffer, "inl", 3) == 0) {
+				  /* FW >= 0x0418: zaznamnik oken s kody TDC (INL). `inl` = stav, `inl dump` = vsechna okna
+				   * (seq;edges;gate_ps;code_st;code_end;gap), `inl reset` = smazat. Vstup: beat GPSDO x OCXO. */
+				  if (strcmp(RxBuffer, "inl reset") == 0) { fpga_freq_inl_reset(); printf("INL: zaznamnik vymazan\r\n"); }
+				  else if (strncmp(RxBuffer, "inl dump", 8) == 0) {
+					  /* `inl dump [od [pocet]]` — po castech (dlouhy vypis CDC konzole zahodi) */
+					  unsigned long from = 0ul, cnt = 0ul;
+					  (void)sscanf(RxBuffer + 8, "%lu %lu", &from, &cnt);
+					  uint32_t n = fpga_freq_inl_count();
+					  if (cnt == 0ul || from + cnt > n) cnt = (from < n) ? (n - from) : 0ul;
+					  printf("INL dump: %lu od %lu\r\nseq;edges;gate_ps;cs;ce;gap\r\n", (unsigned long)n, from);
+					  for (uint32_t i = from; i < from + cnt; i++) {
+						  fpga_inl_rec_t r;
+						  if (!fpga_freq_inl_get(i, &r)) break;
+						  printf("%lu;%lu;%lu%06lu;%u;%u;%u\r\n", (unsigned long)r.seq, (unsigned long)r.edges,
+						         (unsigned long)(r.gate_ps / 1000000ull), (unsigned long)(r.gate_ps % 1000000ull),
+						         (unsigned)r.code_st, (unsigned)r.code_end, (unsigned)r.gap);
+						  if ((i & 15u) == 15u) osDelay(15);
+					  }
+					  printf("INL end\r\n");
+				  } else printf("INL: zaznamu %lu z %u (`inl dump`, `inl reset`)\r\n", (unsigned long)fpga_freq_inl_count(), (unsigned)FPGA_INL_N);
+			  }
 			  else if (strcmp(RxBuffer, "regr") == 0 || strcmp(RxBuffer, "regr reset") == 0) {
 				  /* FW >= 0x0411: regresni blok (stredni hodnoty casovych znacek vnitrnich hran ve dvou segmentech
 				   * okna). Statistika rozdilu f_regr - f_2pt a pocty oken. Zisk proti dvoum bodum je jen u signalu,

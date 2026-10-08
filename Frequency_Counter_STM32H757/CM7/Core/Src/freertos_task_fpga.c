@@ -39,7 +39,7 @@ volatile int16_t  g_tdc_cal_temp_c10 = 0;  /* teplota posledni kalibrace, ×10 �
  * >> sum dobrych hran (~7·10⁻¹⁰) a hluboko pod realnou zmenou signalu (>1e-4, tu resi
  * signal-match reset v screen_main). Takove okno se nepridava do statistiky/Allan.
  * Prah relativne: uhz_prev / TDC_SPIKE_REL_DIV = uhz_prev × 5·10⁻⁹ (~0,05 Hz @ 10 MHz). */
-#define TDC_SPIKE_REL_DIV   333333333ull   /* 3·10⁻⁹ (koleno zmereno 2026-10-04: sigma okna 405->314 ps; tesnejsi uz nezlepsi, jen vic zahazuje) */
+#define TDC_SPIKE_REL_DIV   50000000ull    /* 2·10⁻⁸ (~5× skok obriho binu 9,28 ns = 3,7·10⁻⁸ je presne za prahem). Do 2026-10-08 3·10⁻⁹: s cistym vstupem to vyrazovalo 8,3 % BEZNYCH oken (sigma okna 196 ps = 0,8·10⁻⁹), tedy umele zlepsovalo statistiku */
 volatile uint32_t g_tdc_spike_count = 0;   /* kolik oken vyrazeno jako obri-bin artefakt (status) */
 
 void StartFpgaTask(void *argument)

@@ -77,10 +77,15 @@ typedef struct {
     uint8_t  regr_used;           /* 1 = `gate_ps` je EFEKTIVNI delka N / f_regr (ne dvoubodova) */
     uint64_t gate2_ps;            /* dvoubodova delka okna [ps] (diagnostika; =gate_ps, kdyz regrese neni) */
     double   f_regr_hz;           /* kmitocet z regrese [Hz]; 0 = neni platny / zamitnut */
+    /* FW >= 0x0418 (caps bit8), abs 68..75: kody TDC uzaviraci (end) a zahajovaci (st) hrany okna.
+     * Chyba okna = e(code_end) - e(code_st), kde e() je INL tabulky -> zaklad korekce INL. */
+    uint16_t code_a_end, code_a_st, code_b_end, code_b_st;
+    uint8_t  codes_ok;            /* 1 = kody jsou v ramci (caps bit8) */
 } fpga_meas_t;
 
 /* caps bity (abs 62-63) */
 #define FPGA_CAP_DT           (1u << 5)   /* ramec nese dt_a/dt_b v jednotkach T_clk/16384 */
+#define FPGA_CAP_CODES        (1u << 8)   /* ramec nese kody TDC okna (abs 68..75), jen kdyz neni REGR */
 #define FPGA_CAP_REGR         (1u << 7)   /* ramec nese regresni blok (abs 68..96); bit0 window stream uz neni */
 /* tdc_status bity (abs 100) */
 #define FPGA_TDC_CAL_A        (1u << 0)   /* tabulka kanalu A platna */
@@ -258,6 +263,20 @@ typedef struct {
     double   d_sigma_ppb;   /* sigma rozdilu [ppb] */
 } fpga_regr_stat_t;
 void fpga_freq_regr_stat(fpga_regr_stat_t *out);
+
+/* ── Zaznamnik oken pro INL (FW >= 0x0418): kazde nove okno bez miscountu ─────── */
+typedef struct {
+    uint32_t seq;
+    uint32_t edges;
+    uint64_t gate_ps;
+    uint16_t code_end, code_st;   /* kanal A */
+    uint16_t gap;                 /* 1 = pred oknem byla dira v SEQ (code_st neplati) */
+    uint16_t pad;
+} fpga_inl_rec_t;
+#define FPGA_INL_N 2048u
+uint32_t fpga_freq_inl_count(void);                       /* pocet zaznamu (max FPGA_INL_N) */
+int      fpga_freq_inl_get(uint32_t i, fpga_inl_rec_t *r);  /* i = 0 nejstarsi; 0 = mimo rozsah */
+void     fpga_freq_inl_reset(void);
 /** Kmitocet [Hz] ze sklonu primky mezi stredy segmentu A a B (cisty vypocet). 0.0 = nelze (B <= A). */
 double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b);
 void fpga_freq_regr_reset(void);

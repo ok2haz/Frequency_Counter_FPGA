@@ -495,6 +495,29 @@ void fpga_freq_regr_stat(fpga_regr_stat_t *o)
     __set_PRIMASK(pm);
 }
 
+/* ── zaznamnik oken pro INL ── */
+static fpga_inl_rec_t s_inl[FPGA_INL_N];
+static uint32_t s_inl_w = 0u;      /* celkem zapsanych (index = s_inl_w % N) */
+uint32_t fpga_freq_inl_count(void) { return (s_inl_w < FPGA_INL_N) ? s_inl_w : FPGA_INL_N; }
+int fpga_freq_inl_get(uint32_t i, fpga_inl_rec_t *r)
+{
+    uint32_t n = fpga_freq_inl_count();
+    if (r == NULL || i >= n) return 0;
+    uint32_t base = (s_inl_w < FPGA_INL_N) ? 0u : (s_inl_w % FPGA_INL_N);
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    *r = s_inl[(base + i) % FPGA_INL_N];
+    __set_PRIMASK(pm);
+    return 1;
+}
+void fpga_freq_inl_reset(void)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_inl_w = 0u;
+    __set_PRIMASK(pm);
+}
+
 static uint32_t rd_le24(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16); }
 static uint64_t rd_le40(const uint8_t *p) { return (uint64_t)rd_le32(p) | ((uint64_t)p[4] << 32); }
 
@@ -542,6 +565,14 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
         m->gate_ps    = dt_units_to_ps(rd_le64(p + 106) & 0xFFFFFFFFFFFFull);
         m->gate2_ps   = m->gate_ps;
         m->regr_used  = 0u; m->f_regr_hz = 0.0; m->rg_ok = 0u;
+        m->codes_ok   = 0u;
+        if (m->caps & FPGA_CAP_CODES) {      /* abs 68..75: kody TDC okna (jen kdyz neni REGR) */
+            m->code_a_end = (uint16_t)(p[56] | ((p[57] & 1u) << 8));
+            m->code_a_st  = (uint16_t)(p[58] | ((p[59] & 1u) << 8));
+            m->code_b_end = (uint16_t)(p[60] | ((p[61] & 1u) << 8));
+            m->code_b_st  = (uint16_t)(p[62] | ((p[63] & 1u) << 8));
+            m->codes_ok   = 1u;
+        }
         if (m->caps & FPGA_CAP_REGR) {
             /* regresni blok abs 68..96 (p + 56..84), viz spi_app.v */
             m->rg_n[0]  = rd_le24(p + 56);  m->rg_xm[0] = rd_le40(p + 59);  m->rg_ym[0] = rd_le48(p + 64);
@@ -660,6 +691,13 @@ bool fpga_freq_poll(fpga_meas_t *out)
     /* F-0193: NOVE nestaci — musi i NAVAZOVAT. Dira = mereni, ktere FPGA
      * prepsala drive, nez jsme ho precetli; spocitat a ohlasit volajicimu. */
     s_poll_gap = fpga_seq_gap(g_last_seq, tmp.sequence);
+    if (mc == 0 && tmp.codes_ok && (tmp.measurement_status & 0x01u) && !(tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        fpga_inl_rec_t *r = &s_inl[s_inl_w % FPGA_INL_N];
+        r->seq = tmp.sequence; r->edges = (uint32_t)tmp.edge_count; r->gate_ps = tmp.gate_ps;
+        r->code_end = tmp.code_a_end; r->code_st = tmp.code_a_st;
+        r->gap = (s_poll_gap != 0u) ? 1u : 0u; r->pad = 0u;
+        s_inl_w++;
+    }
     if (s_poll_gap == FPGA_SEQ_RESYNC)  s_seq_resync++;
     else if (s_poll_gap != 0u)        { s_seq_gaps++; s_seq_missed += s_poll_gap; }
 
