@@ -257,3 +257,26 @@ Sdílené: jeden ring oscilátor, `tick_hi` 34 b, `gtmr` 24 b, SPI rámce v BRAM
 | `spike-reject` (práh 3·10⁻⁹) | vyřazuje 8,3 % oken = běžný šum, ne artefakt → k uvolnění |
 
 ⚠️ Čísla šumu z doby před opravou vstupu (215 ps, skoky ±9,28 ns, miscount 2 %) **nejsou důvěryhodná** (L-0137).
+
+## 10. INL a šum značky — měření s kódy TDC (HW 2026-10-08, FW 0x0418, 2048 po sobě jdoucích oken)
+
+FPGA od 0x0418 posílá kód TDC uzavírací i zahajovací hrany okna (bajty 68..75, caps bit8); STM je zapisuje do záznamníku (`inl`),
+`tools/tdc_inl_fit.py` odhaduje chybu tabulky `e[kód]` metodou nejmenších čtverců společně s pomalým driftem kmitočtu
+(ověřeno na syntetických datech: korelace 0,98 se skutečnou chybou).
+
+| otázka | odpověď z dat |
+|---|---|
+| Je chyba stabilní funkcí kódu (INL)? | **Ne.** Fit na 1. polovině, test na nevidené 2.: σ okna **141 → 141 ps** (MAD), 156 → 158 ps (std). Korekce podle kódu nic nezlepší. |
+| Povaha šumu | **bílý**: autokorelace oken lag 1 = **−0,47** (≈ −0,5 = nezávislé značky), lag 2 = +0,11 |
+| σ okna / σ značky | 141–156 ps / **≈ 100–110 ps** (σ_ts = σ_okna/√2) |
+| Rozdělení | skoro Gaussovo (std/MAD = 1,1), |r| > 600 ps jen 0,2 % → **ne** chybně dekódované hrany |
+| Závislost na poloze hrany | σ okna podle kódu konce okna: kód 0–120: 170–200 ps; kód 120–250: 124–129 ps (tj. značka ≈ 88 ps vs 135 ps) |
+| Stabilita v čase | σ po blocích 256 oken: 148–166 ps, bez trendu |
+
+**Závěr:** zbývajících ~100 ps na značku není vada tabulky ani dekodéru (kvantizace jen 30 ps), ale **náhodný šum**. Nejpravděpodobnější zdroj je hrana
+na vstupním pinu (74HC04 → 120 Ω, strmost kolem 1 V/ns: 50 mV šumu na 5V napájení HC04 = 50–70 ps) nebo napájení/jitter hodin.
+Nástroje korekce proto nemají co opravit; změní se to jen zlepšením hrany, zprůměrováním více značek nebo rozlišením šumu zdroje od TDC
+(viz navržený experiment: stejný signál na CH_A i CH_B, rozdíl dt_a − dt_b = čistý šum TDC).
+
+⚠️ Regresní blok (FW 0x0411) při čistém vstupu: `n_A` = 312 499 a `xm_A` = 312 500 jsou přesné, ale `ym_A` je nesmyslné (≈ 5,2 s) a segment B se neaktualizuje
+(`n_B` = 1024, `xm_B`/`ym_B` konstantní) → regrese je stále nefunkční; příčina v návrhu (nejen ve vstupu) je **neuzavřená**.
