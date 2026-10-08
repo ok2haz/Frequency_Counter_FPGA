@@ -31,6 +31,13 @@ create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {sp
 
 set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}]
 
+// 🔴 2026-10-08: NEJISTOTA HODIN. Bez ni STA predpoklada idealni 100 MHz (nulovy jitter, presna strida).
+// Zmereno na desce: buildy regresniho bloku s nejtesnejsi rezervou 0,15 / 0,017 / -0,19 ns POCITALY CHYBNE
+// (vysledky zavisle na rozmisteni), build se stejnou logikou a rezervou >= 0,58 ns pocital presne
+// (docs/TDC_MATEMATIKA.md kap. 11). Realna rezerva tedy chybi ~0,3 ns: jitter Si5356 + vstupni buffer hodin.
+// Uncertainty 0,5 ns nuti P&R tuto rezervu dodrzet, misto aby se spolehalo na stesti pri rozmisteni.
+set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] 0.5
+
 // I/O SPI vuci SCK (rozhoduje o skutecnem stropu SPI, ne vnitrni Fmax):
 //  MISO: PHY ho meni sestupnou hranou SCK, STM vzorkuje nabeznou -> cesta
 //        SCK pin -> registr -> MISO pin musi stihnout pul periody minus 5 ns

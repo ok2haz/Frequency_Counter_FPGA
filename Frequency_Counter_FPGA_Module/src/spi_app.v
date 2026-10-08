@@ -119,7 +119,7 @@ module spi_app #(
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0418;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h041A;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0410 -> 0x0411 (2026-10-07): REGR -- regresni blok (stredni hodnoty znacek vnitrnich hran ve dvou
     // segmentech okna CH_A, abs 68..96) misto window streamu (STM ho nikdy nectl). Viz regr_acc / win_recip.
     // 🔴 0x040F -> 0x0410 (2026-10-07): nova architektura spousteni TDC (volne vzorky q + kompaktni
@@ -586,24 +586,27 @@ endmodule
 
 
 // ------------------------------------------------------------
-// regr_acc: akumulace casovych znacek VNITRNICH hran ve dvou segmentech okna (FW 0x0411) -> stredni hodnoty.
+// regr_acc: akumulace casovych znacek VNITRNICH hran ve dvou segmentech okna -> stredni hodnoty (n, x, y).
 //
-// PROC: dva krajni body okna davaji sigma_f/f = sqrt2 * sigma_znacky / T_okna. Casy hran uvnitr okna se
-// zahazovaly. Kdyz fazi hrany vuci hodinam TDC "prohazuje" (vstup NENI nasobek 100 MHz), jsou chyby znacek
-// (kvantizace, INL) nezavisle a PRUMER z n znacek je lepsi o sqrt(n). Odhad kmitoctu je pak sklon primky mezi
-// stredy dvou segmentu (zacatek a konec okna):
+// PROC: dva krajni body okna davaji sigma_f/f = sqrt2 * sigma_znacky / T_okna. Prumer z n znacek potlaci
+// NAHODNOU slozku chyby znacky o sqrt(n) (zmereno 2026-10-08: chyba znacky je bily sum ~105 ps, viz
+// docs/TDC_MATEMATIKA.md kap. 10). Kmitocet = sklon primky mezi stredy segmentu:
 //     f = (x_B - x_A) / (y_B - y_A),   x = index hrany v okne, y = cas hrany
-// ⚠️ U vstupu blizkeho nasobku 100 MHz (GPSDO 10 MHz) je faze porad stejna, chyba znacek konstantni a prumer ji
-// NEzlepsi (nezhorsi ji take). Zisk tedy zavisi na signalu, ne na FPGA.
+// Deterministicka slozka (kvantizace ~30 ps) se pri pomalu se menici fazi (vstup ~ nasobek 100 MHz) nezprumeruje.
 //
-// ZADNE NASOBENI: pro kazdou znacku jen secteni (n, sum(x-x0), sum(t-t0)), prumery se pocitaji JEDNOU na konci
-// segmentu sekvencnim delenim. Vystup: n, x_prumer*256, y_prumer*16 (y relativne k `ref_ts`).
+// Vystup: n, x_prumer*256, y_prumer*16 (y relativne k `ref_ts`):
 //   xm = x0*256 + floor(sum(x-x0)*256 / n)          ym = (t0-ref)*16 + floor(sum(t-t0)*16 / n)
-// Segmenty se NEPREKRYVAJI a jsou od sebe i od uzaviraci hrany daleko (>> mrtva doba TDC), takze vzorky
-// nikdy nekoliduji s uzaviraci znackou ani s delenim. Mezi znackami je >= 8 taktu (mrtva doba TDC), proto
-// staci pipeline: 1. takt rozdily (jedna odcitacka), 2. takt scitani (jedna scitacka) -- 🔴 casovani: prvni
-// verze retezila odcitani+scitani+porovnani v jednom taktu (cesta 18 ns, Fmax 53 MHz). Akumulator se po
-// konci segmentu NEkopiruje: nikdo do nej uz nepise, dokud nezacne dalsi segment (>> deleni).
+//
+// CASOVANI (FW 0x041A, 2026-10-08): na tomto cipu stoji jeden skok vedenim 2-3 ns, takze kazda cesta ma mit
+// nejvys ~2 urovne LUT a zadny ridici signal nesmi rozvadet do desitek FF. Predchozi verze mely rezervu
+// 0,01-0,2 ns a na krzemiku podle rozmisteni selhavaly (0x0411: segment B se neaktualizoval; jiny build:
+// sum(t-t0) o 1,3 % nizsi), prestoze logika byla spravna (overeno na desce citaci prenosu a sim/tb_regr_full.sv).
+// Proto:
+//   * zacatek/konec segmentu jsou REGISTROVANE (znacky prichazeji >= 9 taktu po nabehu segmentu),
+//   * rozdily x-x0, t-t0 se meni JEN pri znacce (enable),
+//   * sx i sy jsou rozdelene s registrovanym prenosem, n je 3 x 8 b,
+//   * delic: rozdil `dsub` se pocita KAZDY takt (bez enable), vyber a posun v kazdem 2. taktu; ridici signaly
+//     posunu/nacteni jsou predpocitane registry ve 4 KOPIICH (kazda ridi ctvrtinu bitu `nq`).
 // ------------------------------------------------------------
 module regr_acc (
     input  wire        clk,             // clk_p0_100m
@@ -621,126 +624,143 @@ module regr_acc (
 );
     initial begin n_a = 0; n_b = 0; xm_a = 0; xm_b = 0; ym_a = 0; ym_b = 0; ok_a = 0; ok_b = 0; end
 
-    // ---- akumulator aktualniho segmentu ----
-    reg        sa_p = 1'b0, sb_p = 1'b0;
+    // ---- hrany segmentu (registrovane) ----
+    reg sa_p = 1'b0, sb_p = 1'b0;
+    reg beg_a = 1'b0, beg_b = 1'b0, beg = 1'b0, end_a = 1'b0, end_b = 1'b0;
+    always @(posedge clk) begin
+        sa_p  <= seg_a;               sb_p  <= seg_b;
+        beg_a <= ~sa_p & seg_a;       beg_b <= ~sb_p & seg_b;
+        beg   <= (~sa_p & seg_a) | (~sb_p & seg_b);
+        end_a <= sa_p & ~seg_a;       end_b <= sb_p & ~seg_b;
+    end
+
+    // ---- akumulator ----
     reg        first = 1'b1;
-    // pocet znacek: 3 x 8 bitu s REGISTROVANYM prenosem. 🔴 casovani: 24bitovy `n <= n + 1` syntetizator rozlozil na
-    // retez 11 LUT misto ALU (Fmax 68 MHz); 8bitovy stupen ma ~3 urovne. Nejvyssi bajt dobehne az 2 takty po
-    // posledni znacce -- pokryva to cekani S_W.
     reg [7:0]  n_lo = 8'd0, n_md = 8'd0, n_hi = 8'd0;
     reg        c1 = 1'b0, c2 = 1'b0;
     wire [23:0] n = {n_hi, n_md, n_lo};
-    reg [25:0] x0   = 26'd0;
-    reg [47:0] t0   = 48'd0;
-    reg [47:0] sx   = 48'd0;                // sum(x - x0)
-    // sum(t - t0): 2 x 32 bitu s registrovanym prenosem (casovani: 64bitove scitani nestihalo, slack -0,7 ns)
-    reg [31:0] sy_lo = 32'd0, sy_hi = 32'd0;
-    reg        sy_c = 1'b0, v2 = 1'b0;
-    reg [7:0]  dth_d = 8'd0;
+    reg [25:0] x0 = 26'd0;
+    reg [47:0] t0 = 48'd0;
+    reg [25:0] sx_lo = 26'd0;  reg [21:0] sx_hi = 22'd0;  reg sx_c = 1'b0;   // sum(x - x0) = {sx_hi, sx_lo}
+    reg [31:0] sy_lo = 32'd0;  reg [31:0] sy_hi = 32'd0;  reg sy_c = 1'b0;   // sum(t - t0) = {sy_hi, sy_lo}
+    wire [47:0] sx = {sx_hi, sx_lo};
     wire [63:0] sy = {sy_hi, sy_lo};
-
-    // pipeline znacky: 1. stupen = rozdily (odcitacka), 2. stupen = scitani
-    reg        v1 = 1'b0, f1 = 1'b0;
+    reg        v1 = 1'b0, f1 = 1'b0, v2 = 1'b0;
     reg [25:0] dx_r = 26'd0;
     reg [39:0] dt_r = 40'd0;                // rozdil < 2^40 (segment < 0,67 s)
-    wire       act = (samp_b ? seg_b : seg_a) & (seg_a | seg_b);    // segment znacky jeste trva (jinak se zahodi)
-
-    wire end_a = sa_p & ~seg_a;
-    wire end_b = sb_p & ~seg_b;
-    wire beg_a = ~sa_p & seg_a;
-    wire beg_b = ~sb_p & seg_b;
-
-    // ---- konec segmentu -> deleni (2 takty na iteraci: odecteni, pak vyber) ----
-    localparam S_IDLE = 3'd0, S_Y0 = 3'd1, S_XD = 3'd2, S_XF = 3'd3, S_YD = 3'd4, S_YF = 3'd5, S_W = 3'd6;
-    reg [2:0]  st = S_IDLE;
-    reg        for_b = 1'b0, half = 1'b0;
-    reg [24:0] rem = 25'd0;
-    reg [67:0] nq  = 68'd0;                 // delenec se posouva doleva, zespodu se vsouvaji bity podilu
-    reg [6:0]  cnt = 7'd0;
-    reg [2:0]  wc  = 3'd0;                   // cekani po konci segmentu (dobeh pipeline znacky)
-    reg [39:0] xq  = 40'd0;
-    reg [47:0] y0r = 48'd0;                 // (t0 - ref_ts) * 16
-    wire [24:0] rem_n = {rem[23:0], nq[67]};
-    reg  [25:0] dsub  = 26'd0;              // rem_n - n (bit 25 = zapujcka)
+    reg [7:0]  dth_d = 8'd0;
+    wire       act = (samp_b ? seg_b : seg_a) & (seg_a | seg_b);
 
     always @(posedge clk) begin
-        sa_p <= seg_a;
-        sb_p <= seg_b;
-
-        // zacatek segmentu: vynuluj akumulator
-        if (beg_a | beg_b) begin
-            first <= 1'b1; n_lo <= 8'd0; n_md <= 8'd0; n_hi <= 8'd0; c1 <= 1'b0; c2 <= 1'b0; sx <= 48'd0; sy_lo <= 32'd0; sy_hi <= 32'd0; sy_c <= 1'b0; v2 <= 1'b0;
-            if (beg_a) ok_a <= 1'b0;                 // nove okno: stare vysledky neplati
-            if (beg_b) ok_b <= 1'b0;
+        // stupen 1: rozdily jen pri znacce (pak jsou stabilni az do dalsi, >= 8 taktu)
+        v1 <= samp_v & act;
+        f1 <= first;
+        if (samp_v) begin
+            dx_r <= samp_x - x0;
+            dt_r <= samp_ts[39:0] - t0[39:0];
         end
-
-        // stupen 0 -> 1: rozdily proti prvni znacce segmentu; prvni znacka nastavi x0/t0
-        v1   <= samp_v & act;
-        f1   <= first;
-        dx_r <= samp_x - x0;
-        dt_r <= samp_ts[39:0] - t0[39:0];
-        if (samp_v & act & first) begin
-            first <= 1'b0; x0 <= samp_x; t0 <= samp_ts;
-        end
-
-        // stupen 1 -> 2: scitani
+        if (samp_v & act & first) begin first <= 1'b0; x0 <= samp_x; t0 <= samp_ts; end
+        // stupen 2: dolni casti souctu + citac
         c1 <= 1'b0; c2 <= 1'b0;
-        v2 <= v1 & ~f1; dth_d <= dt_r[39:32];
-        if (v2) sy_hi <= sy_hi + {24'd0, dth_d} + {31'd0, sy_c};
-        if (c1) begin n_md <= n_md + 8'd1; c2 <= (n_md == 8'hFF); end
-        if (c2) n_hi <= n_hi + 8'd1;
+        v2 <= v1 & ~f1;
         if (v1) begin
-            n_lo <= n_lo + 8'd1; c1 <= (n_lo == 8'hFF);
-            if (!f1) begin sx <= sx + {22'd0, dx_r}; {sy_c, sy_lo} <= {1'b0, sy_lo} + {1'b0, dt_r[31:0]}; end
-        end
-
-        // konec segmentu: spust deleni (akumulator zustava beze zmeny)
-        if ((end_a | end_b) && st == S_IDLE) begin
-            for_b <= end_b; wc <= 3'd0; st <= S_W;       // n se posuzuje AZ po doběhu pipeline (S_W)
-        end
-
-        case (st)
-        S_W: begin                               // znacka prijata tesne pred koncem segmentu je jeste v pipeline
-            wc <= wc + 3'd1;                     // (2 takty): pockej, nez se n/sx/sy ustali, a teprve pak deli
-            if (wc == 3'd4) begin
-                if (n >= 24'd2) st <= S_Y0;
-                else begin st <= S_IDLE; if (for_b) ok_b <= 1'b0; else ok_a <= 1'b0; end
+            n_lo  <= n_lo + 8'd1; c1 <= (n_lo == 8'hFF);
+            dth_d <= dt_r[39:32];
+            if (!f1) begin
+                {sy_c, sy_lo} <= {1'b0, sy_lo} + {1'b0, dt_r[31:0]};
+                {sx_c, sx_lo} <= {1'b0, sx_lo} + {1'b0, dx_r};
             end
         end
-        S_Y0: begin                              // (t0 - ref) * 16
+        if (c1) begin n_md <= n_md + 8'd1; c2 <= (n_md == 8'hFF); end
+        if (c2) n_hi <= n_hi + 8'd1;
+        // stupen 3: horni casti
+        if (v2) begin
+            sy_hi <= sy_hi + {24'd0, dth_d} + {31'd0, sy_c};
+            sx_hi <= sx_hi + {21'd0, sx_c};
+        end
+        // zacatek segmentu (registrovany; nikdy soucasne se znackou)
+        if (beg) begin
+            first <= 1'b1;
+            n_lo <= 8'd0; n_md <= 8'd0; n_hi <= 8'd0;
+            sx_lo <= 26'd0; sx_hi <= 22'd0; sy_lo <= 32'd0; sy_hi <= 32'd0;
+        end
+    end
+
+    // ---- delic: dva prubehy (x, pak y), 68 iteraci po 2 taktech ----
+    reg        for_b = 1'b0, phase_y = 1'b0;
+    reg        waitf = 1'b0;  reg [2:0] wc = 3'd0;
+    reg        busy = 1'b0, fsel = 1'b0, lastr = 1'b0;
+    (* keep = "true" *) reg [3:0] ldx_q = 4'd0;      // nacti delenec x (4 kopie)
+    (* keep = "true" *) reg [3:0] ldy_q = 4'd0;      // nacti delenec y
+    (* keep = "true" *) reg [3:0] sh_q  = 4'd0;      // vyber + posun (takt s fsel = 1)
+    reg [6:0]  cnt = 7'd0;
+    reg [24:0] rem = 25'd0;
+    reg [67:0] nq  = 68'd0;
+    reg [25:0] dsub = 26'd0;
+    reg [39:0] xq  = 40'd0;
+    reg [47:0] y0r = 48'd0;
+    wire [24:0] rem_n = {rem[23:0], nq[67]};
+    wire        qb    = ~dsub[25];
+    wire [67:0] dvx   = {12'd0, sx, 8'd0};
+    wire [67:0] dvy   = {sy, 4'd0};
+
+    // dalsi stav ridicich signalu (z registru -> kratke cesty); kopie se registruji ze stejneho vyrazu
+    reg  n_ge2 = 1'b0;                                   // n >= 2 (registrovano; n je pri rozhodnuti 5 taktu stabilni)
+    wire go_x     = waitf && (wc == 3'd4) && n_ge2;
+    wire done_sel = busy & fsel & lastr;                 // posledni vyber prubehu
+    wire ld_now   = ldx_q[0] | ldy_q[0];
+    wire busy_nx  = ld_now | (busy & ~done_sel);
+    wire fsel_nx  = ld_now ? 1'b0 : (busy & ~done_sel & ~fsel);
+    wire sh_nx    = busy_nx & fsel_nx;
+
+    integer i;
+    always @(posedge clk) begin
+        // start po konci segmentu: pockat 5 taktu na dobeh pipeline akumulatoru, pak posoudit n
+        if ((end_a | end_b) && !busy && !waitf && !ld_now) begin
+            for_b <= end_b; waitf <= 1'b1; wc <= 3'd0;
+        end
+        if (waitf) begin
+            wc <= wc + 3'd1;
+            if (wc == 3'd4) begin
+                waitf <= 1'b0;
+                if (!n_ge2) begin if (for_b) ok_b <= 1'b0; else ok_a <= 1'b0; end
+            end
+        end
+        ldx_q <= {4{go_x}};
+        ldy_q <= {4{done_sel & ~phase_y}};
+        busy  <= busy_nx;
+        fsel  <= fsel_nx;
+        sh_q  <= {4{sh_nx}};
+        dsub  <= {1'b0, rem_n} - {2'b00, n};            // kazdy takt; pouzije se jen v taktu vyberu
+        lastr <= (cnt == 7'd67);
+        n_ge2 <= (n_hi != 8'd0) | (n_md != 8'd0) | (n_lo[7:1] != 7'd0);
+
+        if (ldx_q[0]) begin
             y0r <= ((t0 - ref_ts) << 4);
-            nq <= {12'd0, sx, 8'd0}; rem <= 25'd0; cnt <= 7'd0; half <= 1'b0; st <= S_XD;
-        end
-        S_XD, S_YD: begin                        // 1. takt iterace: rem_n - n
-            dsub <= {1'b0, rem_n} - {2'b00, n};
-            st   <= (st == S_XD) ? S_XF : S_YF;
-        end
-        S_XF, S_YF: begin                        // 2. takt: vyber a posun
-            if (!dsub[25]) begin rem <= dsub[24:0]; nq <= {nq[66:0], 1'b1}; end
-            else           begin rem <= rem_n;      nq <= {nq[66:0], 1'b0}; end
+            rem <= 25'd0; cnt <= 7'd0; phase_y <= 1'b0;
+        end else if (ldy_q[0]) begin
+            rem <= 25'd0; cnt <= 7'd0; phase_y <= 1'b1;
+        end else if (sh_q[0]) begin
+            rem <= dsub[25] ? rem_n : dsub[24:0];
             cnt <= cnt + 7'd1;
-            if (cnt == 7'd67) begin
-                if (st == S_XF) begin
-                    xq  <= {nq[38:0], ~dsub[25]};                 // podil sum(x-x0)*256/n (40 bitu)
-                    nq  <= {sy, 4'd0}; rem <= 25'd0; cnt <= 7'd0; st <= S_YD;
-                end else begin
-                    if (for_b) begin
-                        n_b  <= n;
-                        xm_b <= {x0, 8'd0} + xq;
-                        ym_b <= y0r + {nq[46:0], ~dsub[25]};
-                        ok_b <= 1'b1;
-                    end else begin
-                        n_a  <= n;
-                        xm_a <= {x0, 8'd0} + xq;
-                        ym_a <= y0r + {nq[46:0], ~dsub[25]};
-                        ok_a <= 1'b1;
-                    end
-                    st <= S_IDLE;
-                end
-            end else st <= (st == S_XF) ? S_XD : S_YD;
         end
-        default: ;
-        endcase
+        // nq po ctvrtinach, kazda ridena vlastni kopii ridicich signalu
+        for (i = 0; i < 68; i = i + 1) begin
+            if (ldx_q[i / 17])      nq[i] <= dvx[i];
+            else if (ldy_q[i / 17]) nq[i] <= dvy[i];
+            else if (sh_q[i / 17])  nq[i] <= (i == 0) ? qb : nq[(i == 0) ? 0 : i - 1];
+        end
+        if (done_sel & ~phase_y) xq <= {nq[38:0], qb};                 // podil sum(x-x0)*256/n
+        if (done_sel &  phase_y) begin
+            if (for_b) begin
+                n_b <= n; xm_b <= {x0, 8'd0} + xq; ym_b <= y0r + {nq[46:0], qb}; ok_b <= 1'b1;
+            end else begin
+                n_a <= n; xm_a <= {x0, 8'd0} + xq; ym_a <= y0r + {nq[46:0], qb}; ok_a <= 1'b1;
+            end
+        end
+        // nove okno: stare vysledky neplati
+        if (beg_a) ok_a <= 1'b0;
+        if (beg_b) ok_b <= 1'b0;
     end
 endmodule
 

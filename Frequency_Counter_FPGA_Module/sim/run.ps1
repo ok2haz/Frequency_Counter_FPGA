@@ -54,6 +54,11 @@ $tests = @(
        defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
     # akumulator segmentu regr_acc == referencni vypocet (40 nahodnych segmentu, neekvidistantni indexy)
     @{ name = "regracc"; top = "tb_regr_acc"; rtl = @("spi_app.v"); tb = "tb_regr_acc.sv" }
+    # 2026-10-08: regr_acc v PLNE velikosti cisel (horni bity t-t0, prenosy) -- 60 000 znacek po 100 ns
+    @{ name = "regrfull"; top = "tb_regr_full"; rtl = @("spi_app.v"); tb = "tb_regr_full.sv"; defs = @("-DNSEG=60000") }
+    # 2026-10-08: CELY top.v s regresi (SIM_TOP: hradlo 2,5 ms, kalibrace 2^12) -- ~10 min
+    @{ name = "topregr"; top = "tb_top_regr"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_regr.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
     # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
     @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
     @{ name = "decequiv320"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=320") }

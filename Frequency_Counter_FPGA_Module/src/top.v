@@ -54,9 +54,14 @@ module top (
     // Beze změny proti staré desce -- nezávisí na počtu fázových hodin.
     // ----------------------------------------------------------
     wire [1:0]  base_win;
+`ifdef SIM_TOP
+    // SIMULACE celeho top (sim/tb_top_regr.sv): hradlo 100x kratsi (base_win 1 = 2,5 ms), jinak beze zmeny
+    wire [23:0] gate_lim = 24'd24999;
+`else
     wire [23:0] gate_lim = (base_win == 2'd0) ? 24'd999999  :   // 100 ms
                            (base_win == 2'd2) ? 24'd9999999 :   // 1 s
                                                 24'd2499999;    // 250 ms
+`endif
     reg  [23:0] gtmr     = 24'd0;
     reg  [1:0]  bw_d     = 2'd1;
     reg         gate_tgl = 1'b0;
@@ -82,10 +87,14 @@ module top (
     // s uzaviraci znackou ani s delenim v regr_acc. Prechody vlajek jsou vzdy daleko od hran signalu
     // (staticke vuci 100 MHz), do 100 MHz domeny jdou pres 2 FF.
     // ----------------------------------------------------------
+`ifdef SIM_TOP
+    wire [23:0] sa0 = 24'd1562, sa1 = 24'd4687, sb0 = 24'd20312, sb1 = 24'd23437;
+`else
     wire [23:0] sa0 = (base_win == 2'd0) ? 24'd62500   : (base_win == 2'd2) ? 24'd625000  : 24'd156250;    // G/16
     wire [23:0] sa1 = (base_win == 2'd0) ? 24'd187500  : (base_win == 2'd2) ? 24'd1875000 : 24'd468750;    // 3G/16
     wire [23:0] sb0 = (base_win == 2'd0) ? 24'd812500  : (base_win == 2'd2) ? 24'd8125000 : 24'd2031250;   // 13G/16
     wire [23:0] sb1 = (base_win == 2'd0) ? 24'd937500  : (base_win == 2'd2) ? 24'd9375000 : 24'd2343750;   // 15G/16
+`endif
     wire seg_a, seg_b;                     // segmenty okna CH_A (do win_recip u_wra)
     reg sa_10 = 1'b0, sb_10 = 1'b0;
     always @(posedge clk_ref_10m) begin
@@ -109,7 +118,11 @@ module top (
         cal_boot <= 1'b0;
         if (!boot_done) begin
             boot_cnt <= boot_cnt + 24'd1;
+`ifdef SIM_TOP
+            if (boot_cnt == 24'd2000) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
+`else
             if (&boot_cnt) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
+`endif
         end
     end
     wire cal_mode;                                   // z spi_app (10 MHz doména)
@@ -121,7 +134,11 @@ module top (
     // Pocet udalosti kalibrace = 2^CAL_LOG2. JEDINY zdroj: predava se do obou tdc_chan
     // i do meze OVF_LIM nize (2026-10-03: OVF_LIM mel natvrdo 22, kalibrace 20 ->
     // retez pokryvajici jen ~83 % periody se nenahlasil jako kratky).
+`ifdef SIM_TOP
+    localparam CAL_LOG2 = 12;
+`else
     localparam CAL_LOG2 = 20;
+`endif
     // Konfigurace TDC (oba kanaly stejna; viz tdc.v). Volba z P&R matice 2026-10-07 (docs/audit/2026-10-07_tdc-vlastni-reference.md):
     //   STRIDE 1 / DUAL 0 : CLS 65 %, Fmax 111 MHz, TNS 0  <-- VYCHOZI (jemne biny ~39 ps, MENSI nez STRIDE 2: retez
     //                                                         ma jen TAPS ALU misto 512, z nichz >240 stejne nešlo pouzit)
@@ -131,9 +148,13 @@ module top (
     // TAPS = vzorku (nasobek 32): 320 = 12,5 ns pri 39 ps/ALU (rezerva nad 10 ns + slepota spoustece; fyzicky konec
     // retezu na desce byl dosud ~268. ALU, o poloze zlomu v novem netlistu rozhodne `tdc` -> nejvetsi bin).
     localparam TDC_STRIDE = 1;
-    // 0 = regresni blok vypnuty (vnitrni hrany se nemeri, CAPS bit7 = 0); 1 = FW 0x0411 chovani.
-    // Vychozi 0: zisk je jen pro signal nesoudelny se 100 MHz a stoji ~11 % CLS + casovou rezervu (audit A-04/A-05).
-    localparam TDC_REGR   = 0;
+    // 0 = regresni blok vypnuty (vnitrni hrany se nemeri, CAPS bit7 = 0, bajty 68..75 = kody TDC); 1 = regrese.
+    // FW 0x041A: zapnuto -- chyba znacky je NAHODNA (~105 ps, docs/TDC_MATEMATIKA.md kap. 10), prumer ji potlaci.
+`ifdef SIM_TOP_REGR
+    localparam TDC_REGR   = 1;
+`else
+    localparam TDC_REGR   = 1;
+`endif
     localparam TDC_DUAL   = 0;
     localparam TDC_TAPS   = (TDC_STRIDE == 1) ? 320 : 256;
     localparam TDC_KD     = (TDC_STRIDE == 1) ? 1 : 2;
