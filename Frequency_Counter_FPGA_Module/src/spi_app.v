@@ -81,6 +81,8 @@ module spi_app #(
     input  wire [39:0] rg_xm_a, rg_xm_b,     // prumerny index hrany v okne * 256
     input  wire [47:0] rg_ym_a, rg_ym_b,     // prumerny cas hrany * 16 [T/16384], vztazeny k zacatku okna
     input  wire        rg_ok_a, rg_ok_b,
+    // FW 0x0418: kody TDC uzaviraci/zahajovaci hrany okna (jen kdyz REGR_EN = 0; bajty 68..75, caps bit8)
+    input  wire [8:0]  cd_a_end, cd_a_st, cd_b_end, cd_b_st,
     output wire [9:0]  hist_k,               // vypis histogramu: adresa {sada, kod} (CAL pozadavek)
     input  wire [23:0] meas_hist_a,          // hist_A[hist_k] (kvazistaticke)
     input  wire [23:0] meas_hist_b,          // hist_B[hist_k]
@@ -117,7 +119,7 @@ module spi_app #(
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0412;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0418;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0410 -> 0x0411 (2026-10-07): REGR -- regresni blok (stredni hodnoty znacek vnitrnich hran ve dvou
     // segmentech okna CH_A, abs 68..96) misto window streamu (STM ho nikdy nectl). Viz regr_acc / win_recip.
     // 🔴 0x040F -> 0x0410 (2026-10-07): nova architektura spousteni TDC (volne vzorky q + kompaktni
@@ -136,7 +138,7 @@ module spi_app #(
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
-    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h00E2 : 16'h0062;   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN
+    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h00E2 : 16'h0162;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -311,14 +313,14 @@ module spi_app #(
             7'd64: tb = is_cal ? 8'd0 : (8'h01);
             7'd66: tb = is_cal ? 8'd0 : (d_rx0);
             7'd67: tb = is_cal ? 8'd0 : (d_rx1);
-            7'd68: tb = is_cal ? 8'd0 : (rg_n_a[7:0]);
-            7'd69: tb = is_cal ? 8'd0 : (rg_n_a[15:8]);
-            7'd70: tb = is_cal ? 8'd0 : (rg_n_a[23:16]);
-            7'd71: tb = is_cal ? 8'd0 : (rg_xm_a[7:0]);
-            7'd72: tb = is_cal ? 8'd0 : (rg_xm_a[15:8]);
-            7'd73: tb = is_cal ? 8'd0 : (rg_xm_a[23:16]);
-            7'd74: tb = is_cal ? 8'd0 : (rg_xm_a[31:24]);
-            7'd75: tb = is_cal ? 8'd0 : (rg_xm_a[39:32]);
+            7'd68: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[7:0]    : cd_a_end[7:0]);
+            7'd69: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[15:8]   : {7'd0, cd_a_end[8]});
+            7'd70: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[23:16]  : cd_a_st[7:0]);
+            7'd71: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[7:0]   : {7'd0, cd_a_st[8]});
+            7'd72: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[15:8]  : cd_b_end[7:0]);
+            7'd73: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[23:16] : {7'd0, cd_b_end[8]});
+            7'd74: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[31:24] : cd_b_st[7:0]);
+            7'd75: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[39:32] : {7'd0, cd_b_st[8]});
             7'd76: tb = is_cal ? 8'd0 : (rg_ym_a[7:0]);
             7'd77: tb = is_cal ? 8'd0 : (rg_ym_a[15:8]);
             7'd78: tb = is_cal ? 8'd0 : (rg_ym_a[23:16]);
@@ -751,6 +753,7 @@ module win_recip #(
     input  wire         ts_valid,      // ~8 taktu po trig_ack: ts_ps platny
     input  wire [47:0]  ts_ps,         // presny cas hrany [T_clk/16384], mod 2^48 (172 s)
     input  wire         gate_tick,     // ~okno puls (sdileny)
+    input  wire [8:0]   code_i,        // FW 0x0418: kod TDC prave casovane hrany (tdc_chan.code_o)
     input  wire         hold,          // 1 = kalibrace/neplatny TDC: zahod rozpracovane okno
     input  wire         seg_a,         // REGR: segment A okna aktivni (staticke; mimo okamzik prechodu)
     input  wire         seg_b,         // REGR: segment B okna aktivni
@@ -760,6 +763,7 @@ module win_recip #(
     output reg  [47:0]  r_dt,          // Δt okna [T_clk/16384]
     output reg          r_dt_alias,    // okno bez hran > ~25 s -> r_dt neplatne
     output reg          res_tgl,
+    output reg  [8:0]   r_ce, r_cs,     // FW 0x0418: kod uzaviraci a ZAHAJOVACI hrany okna (INL diagnostika/korekce)
     output wire [23:0]  rg_n_a, rg_n_b,
     output wire [39:0]  rg_xm_a, rg_xm_b,
     output wire [47:0]  rg_ym_a, rg_ym_b,
@@ -794,13 +798,14 @@ module win_recip #(
     assign want = armed;
 
     initial begin
-        r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0;
+        r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0; r_ce = 9'd0; r_cs = 9'd0;
     end
 
     // ---- REGR: rozlisi UZAVIRACI spusteni (armed) od spusteni vnitrni hrany (segment) ----
     wire trig_c = (REGR != 0) ? (trig_q & armed)  : trig_q;      // uzaviraci hrana okna
     wire trig_s = (REGR != 0) & trig_q & ~armed;                  // vnitrni hrana ve segmentu
     reg        sg_pend = 1'b0, sg_b = 1'b0, ts_seg = 1'b0;
+    reg [8:0]  code_cur = 9'd0;     // kod posledni uzaviraci hrany (= zacatek dalsiho okna)
     reg [25:0] sg_x    = 26'd0;
 
     wire close = (trig_c | pend) & (rise_q | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
@@ -852,7 +857,10 @@ module win_recip #(
                     r_dt       <= ts_ps - ref_ts;
                     r_dt_alias <= alias_s;
                     res_tgl    <= ~res_tgl;
+                    r_ce       <= code_i;
+                    r_cs       <= code_cur;
                 end
+                code_cur <= code_i;
                 ref_ts <= ts_ps;
                 primed <= 1'b1;
             end

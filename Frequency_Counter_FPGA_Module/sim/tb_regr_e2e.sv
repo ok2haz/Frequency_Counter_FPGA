@@ -65,7 +65,7 @@ module tb_regr_e2e;
 
     wire [25:0] per; wire [47:0] dt; wire al, tgl;
     wire [23:0] rg_n_a, rg_n_b; wire [39:0] rg_xm_a, rg_xm_b; wire [47:0] rg_ym_a, rg_ym_b; wire rg_ok_a, rg_ok_b;
-    win_recip #(.REGR(1)) wr (.clk(clk), .rise_s(rise_s), .trig_ack(trig), .ts_valid(tsv), .ts_ps(ts),
+    win_recip #(.REGR(1)) wr (.clk(clk), .code_i(9'd0), .rise_s(rise_s), .trig_ack(trig), .ts_valid(tsv), .ts_ps(ts),
         .gate_tick(gate_tick), .hold(busy | ~valid), .seg_a(seg_a), .seg_b(seg_b), .want(want), .want_seg(want_seg),
         .r_periods(per), .r_dt(dt), .r_dt_alias(al), .res_tgl(tgl),
         .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),

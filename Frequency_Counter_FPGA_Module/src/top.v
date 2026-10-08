@@ -164,6 +164,8 @@ module top (
     wire        wseg_b_nc, rgb_ok_a_nc, rgb_ok_b_nc;
     wire [23:0] rgb_n_a_nc, rgb_n_b_nc;  wire [39:0] rgb_xm_a_nc, rgb_xm_b_nc;  wire [47:0] rgb_ym_a_nc, rgb_ym_b_nc;
     wire [47:0] ts_a, ts_b;
+    wire [8:0]  code_a, code_b;               // FW 0x0418: kod TDC prave casovane hrany
+    wire [8:0]  r_cea, r_csa, r_ceb, r_csb;   // kod uzaviraci/zahajovaci hrany okna
     wire        cal_busy_a, cal_busy_b, cal_valid_a, cal_valid_b, cal_fail_a, cal_fail_b;
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
     wire [15:0] da_nz, da_last, db_nz, db_last;
@@ -179,7 +181,7 @@ module top (
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last),
         .d_maxtap(da_maxtap),
-        .dump_k(hist_k), .dump_q(hq_a)
+        .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a)
     );
     tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
@@ -189,7 +191,7 @@ module top (
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last),
         .d_maxtap(db_maxtap),
-        .dump_k(hist_k), .dump_q(hq_b)
+        .dump_k(hist_k), .dump_q(hq_b), .code_o(code_b)
     );
 
     // ----------------------------------------------------------
@@ -202,7 +204,7 @@ module top (
 
     win_recip #(.REGR(TDC_REGR)) u_wra (
         .clk(clk_p0_100m), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .gate_tick(gate_tick), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
+        .gate_tick(gate_tick), .code_i(code_a), .r_ce(r_cea), .r_cs(r_csa), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
         .hold(cal_busy_a | ~cal_valid_a),
         .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a),
         .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
@@ -210,7 +212,7 @@ module top (
     );
     win_recip #(.REGR(0)) u_wrb (
         .clk(clk_p0_100m), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .gate_tick(gate_tick), .seg_a(1'b0), .seg_b(1'b0), .want(want_b), .want_seg(wseg_b_nc),
+        .gate_tick(gate_tick), .code_i(code_b), .r_ce(r_ceb), .r_cs(r_csb), .seg_a(1'b0), .seg_b(1'b0), .want(want_b), .want_seg(wseg_b_nc),
         .hold(cal_busy_b | ~cal_valid_b),
         .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b),
         .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_xm_a(rgb_xm_a_nc), .rg_xm_b(rgb_xm_b_nc),
@@ -261,6 +263,7 @@ module top (
     reg [47:0] dt_b_hold    = 48'd0;
     reg        dt_ovf_lat   = 1'b0;
     reg        dt_alias_lat = 1'b0;
+    reg [8:0]  cea_lat = 9'd0, csa_lat = 9'd0, ceb_hold = 9'd0, csb_hold = 9'd0;   // FW 0x0418
     reg        gd_go        = 1'b0;
     always @(posedge clk_ref_10m) begin
         gd_go <= 1'b0;
@@ -269,11 +272,15 @@ module top (
             dt_a_lat     <= r_dt_a;
             dt_ovf_lat   <= r_dt_a[47];        // Δt >= 2^47 jednotek (~86 s)
             dt_alias_lat <= alias_a;
+            cea_lat      <= r_cea;
+            csa_lat      <= r_csa;
             gd_go        <= 1'b1;
         end
         if (res_valid_b) begin
             periods_b_hold <= {6'd0, r_periods_b};
             dt_b_hold      <= r_dt_b;
+            ceb_hold       <= r_ceb;
+            csb_hold       <= r_csb;
         end
     end
 
@@ -377,6 +384,7 @@ module top (
         .meas_tdc_cfg(tdc_cfg),
         .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
         .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b),
+        .cd_a_end(cea_lat), .cd_a_st(csa_lat), .cd_b_end(ceb_hold), .cd_b_st(csb_hold),
         .meas_maxtap_a(da_maxtap),
         .meas_maxtap_b(db_maxtap),
         .hist_k(hist_k),

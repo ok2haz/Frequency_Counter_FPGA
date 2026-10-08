@@ -267,7 +267,8 @@ module tdc_chan #(
     // vypis histogramu (diagnostika DNL): mimo kalibraci cte BRAM hist[dump_k]; dump_k je kvazistaticky
     // (nastavi ho STM pozadavkem), adresa = {sada, kod} (u DUAL=0 jen kod)
     input  wire [9:0]  dump_k,
-    output wire [23:0] dump_q
+    output wire [23:0] dump_q,
+    output wire [$clog2(TAPS)-1:0] code_o   // FW 0x0418: kod posledni presne casovane hrany (platny v ts_valid)
 );
     localparam CW = $clog2(TAPS);             // sirka kodu
     localparam AW = CW + DUAL;                // sirka adresy tabulek ({sada, kod})
@@ -346,6 +347,7 @@ module tdc_chan #(
     reg [CW-1:0] code_r   = {CW{1'b1}};
     reg [CW-1:0] hicode_r = {CW{1'b0}};       // B1a: nejvyssi set tap tohoto eventu
     reg          src_c    = 1'b0;
+    assign code_o = code_r;
     reg          dv1 = 1'b0, dv2 = 1'b0;
     wire         fz4 = (fz == 3'd4);
     always @(posedge clk) begin
