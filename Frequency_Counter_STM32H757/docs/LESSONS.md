@@ -4293,6 +4293,24 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** (tento docs commit)
 - **Stav:** aktivní
 
+### L-0138 — STA bez nejistoty hodin: „splněné" časování s rezervou pod ~0,3 ns na křemíku selhává podle rozmístění
+
+- **Datum:** 2026-10-08
+- **Oblast:** FPGA časování (`timing.sdc`), regresní blok `regr_acc`
+- **Symptom:** regrese na desce dávala nesmysly, které se měnily s každým buildem (segment B mrtvý; Σ(t−t0) o 1,3 % nižší;
+  zlomek x̄ 0,07 místo 0/0,5), přestože simulace celého `top` i jednotkové testy v plné velikosti procházely a STA hlásila TNS 0.
+- **Příčina:** `timing.sdc` neměl `set_clock_uncertainty`; STA počítala s ideálními 100 MHz. Vadné buildy měly nejtěsnější cestu
+  0,017 / 0,15 / −0,19 ns, funkční ≥ 0,58 ns. Na křemíku tedy chybí ~0,3 ns (jitter Si5356 + vstupní buffer). Ladicí buildy
+  (počítadla přenosů, souvislost značek, surové součty proti spočteným hodnotám) dokázaly, že logika je správná.
+- **Oprava:** `set_clock_uncertainty -setup ... 0.5` pro `clk_p0_100m`; `regr_acc` přepsána na krátké cesty (registrované řízení,
+  součty s registrovaným přenosem, dělič s řídicími signály ve 4 kopiích). Výsledek: regrese na desce 13× přesnější než dvoubodový
+  odhad (σ okna 5,85·10⁻¹¹ proti 7,6·10⁻¹⁰), 2628/2628 oken použito.
+- **Pravidlo:** **Každá hodina v SDC musí mít nejistotu odpovídající reálnému jitteru; výsledek, který se mění s rozmístěním
+  při splněném časování, je časový problém, ne logický — ověř to ladicím buildem s počítadly, než začneš měnit logiku.**
+- **Detekce:** `Counter_FPGA_tr_content.html` → u cesty musí být řádek `tUnc -0.500`; slack po odečtení ≥ 0.
+- **Commit:** (commit FW 0x041A)
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

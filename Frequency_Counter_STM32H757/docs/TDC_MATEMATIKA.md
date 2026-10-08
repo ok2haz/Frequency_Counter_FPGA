@@ -1,4 +1,4 @@
-# Matematika měření a TDC — přesný popis (stav k FW 0x0412, STM v0.14.0, 2026-10-08)
+# Matematika měření a TDC — přesný popis (stav k FW 0x041A, STM v0.14.0, 2026-10-08)
 
 Zdroj pravdy je kód: `Frequency_Counter_FPGA_Module/src/{tdc.v, spi_app.v, top.v}` a
 `CM7/Core/Src/fpga_freq.c`. Tento dokument nic nevymýšlí navíc; u každého čísla je uvedeno, zda je
@@ -184,20 +184,21 @@ chyby. Firmware proto bere `σ = max(naměřené σy, √2·tdc/gate)`.
 
 ---
 
-## 6. Regresní blok (FW 0x0411; ve FW 0x0412 VYPNUTÝ, `TDC_REGR = 0`)
+## 6. Regresní blok (FW 0x041A: ZAPNUTÝ a na desce ověřený — podrobnosti kap. 11)
 
-Myšlenka: kromě dvou krajních hran okna změřit i **vnitřní** hrany ve dvou segmentech
-(A = [G/16, 3G/16), B = [13G/16, 15G/16), G = délka hradla) a sklon přímky mezi jejich středy:
+Kromě dvou krajních hran okna se měří i **vnitřní** hrany ve dvou segmentech
+(A = [G/16, 3G/16), B = [13G/16, 15G/16), G = délka hradla 0,25 s) a kmitočet je sklon přímky mezi
+jejich středy:
 ```
-xm = x0 + Σ(x − x0)/n          // průměrný index hrany v okně
-ym = (t0 − ref) + Σ(t − t0)/n  // průměrný čas hrany, ref = začátek okna
+xm = x0 + Σ(x − x0)/n          // průměrný index hrany v okně (posílá se ×256)
+ym = (t0 − ref) + Σ(t − t0)/n  // průměrný čas hrany od začátku okna (posílá se ×16 v jednotkách u)
 f  = (xm_B − xm_A) / (ym_B − ym_A)
 ```
-Zisk (průměr z n značek ≈ σ/√n) platí **jen pro signál s „prohazující" fází** vůči hodinám TDC,
-**ne pro GPSDO 10 MHz** (násobek 100 MHz ⇒ stále stejná fáze).
-[SIM] v simulaci zisk 14× (krátké hradlo); **[HW] na desce regrese nefungovala**: 1286/1286 oken
-zamítnuto, `ym_B` byl ve více oknech bitově shodný, `ym_A` měl nesmyslná horní slova. Proto je od
-FW 0x0412 za parametrem a vypnutá (audit kap. 6).
+Proč to pomáhá: chyba jedné značky je **bílý šum** ~105 ps (kap. 10); průměr z n značek ho potlačí
+o √n (při 10 MHz má segment 312 500 značek). Nepotlačí se deterministická část (kvantizace ~30 ps), která
+se u signálu blízkého násobku 100 MHz během segmentu nemění (fáze se posune jen o ~25 ps).
+STM regresi použije, jen když souhlasí s dvoubodovým odhadem do `FPGA_REGR_MAX_REL` (5·10⁻⁸) a obě
+poloviny mají ≥ 8 značek; jinak zůstane dvoubodový výsledek. Efektivní délka okna = N / f_regr.
 
 ---
 
@@ -280,3 +281,42 @@ Nástroje korekce proto nemají co opravit; změní se to jen zlepšením hrany,
 
 ⚠️ Regresní blok (FW 0x0411) při čistém vstupu: `n_A` = 312 499 a `xm_A` = 312 500 jsou přesné, ale `ym_A` je nesmyslné (≈ 5,2 s) a segment B se neaktualizuje
 (`n_B` = 1024, `xm_B`/`ym_B` konstantní) → regrese je stále nefunkční; příčina v návrhu (nejen ve vstupu) je **neuzavřená**.
+
+## 11. Regrese na křemíku — proč selhávala a výsledek (HW 2026-10-08, FW 0x041A)
+
+**Příčina selhání nebyla v logice, ale v časové rezervě.** Postup (všechno měřeno, ne odhadnuto):
+
+| build | nejtěsnější cesta regrese | výsledek na desce |
+|---|---|---|
+| 0x0411 | +0,017 ns | segment B se nikdy neaktualizoval, `ym_A` nesmysl |
+| 0x0419 (ladicí) | −0,19 ns | Σ(t − t0) o 1,3 % nižší |
+| 0x041A bez nejistoty hodin | +0,15 ns | zlomek x̄ 0,07–0,55 místo přesně 0/0,5 (chyby v řádu ns) |
+| 0x041B/0x041C (ladicí, tatáž logika) | ≥ 0,37 / 0,58 ns | značky souvislé, Σ(x−x0) = n(n−1)/2 na bit, podíl přesný |
+| **0x041A + `set_clock_uncertainty 0,5 ns`** | +0,135 ns **po** odečtení 0,5 ns | **všechno přesně, viz níže** |
+
+Simulace celého `top.v` (`sim/tb_top_regr.sv`, zkrácené hradlo) i jednotkový test v plné velikosti
+(`sim/tb_regr_full.sv`, 60 000 až 312 500 značek) procházely i pro vadné buildy → vada byla fyzická.
+`timing.sdc` neměl nejistotu hodin, takže STA počítala s ideálními 100 MHz; na křemíku chybělo ~0,3 ns
+(jitter Si5356, vstupní buffer hodin). Nyní `set_clock_uncertainty -setup 0.5` nutí P&R tuto rezervu dodržet.
+Současně byla `regr_acc` přepsána tak, aby žádná cesta neměla víc než ~2 úrovně LUT a žádný řídicí signál
+nerozváděl do desítek klopných obvodů (registrované začátky/konce segmentů, součty s registrovaným
+přenosem, dělič s předpočítanými řídicími signály ve 4 kopiích).
+
+**Výsledek na desce** (GPSDO 10 MHz → CH_A, vnitřní OCXO, δ = +813 ppb, 120 s / 2628 oken):
+
+| | dvoubodový odhad (2 značky) | **regrese** |
+|---|---|---|
+| σ(df/f) sousedních oken / √2 (okno 0,25 s) | 7,6·10⁻¹⁰ (≈ 191 ps ekv.) | **5,85·10⁻¹¹ (≈ 15 ps ekv.)** |
+| použitá okna | — | 2628 / 2628 (zamítnuto 0) |
+| střední rozdíl f_regr − f_2pt | — | 0,000 ppb (σ 0,46 ppb = šum dvoubodového odhadu) |
+| počty značek A/B | — | 312 499 / 312 500 (každá hrana segmentu) |
+| zlomek x̄ | — | přesně 0 nebo 0,5 (souvislé značky) |
+
+⇒ **13× přesnější kmitočet z jednoho okna 0,25 s**. Chyby počítání: 0 (CRC 0, díry v SEQ 0, miscount 0).
+
+**Zdroje FPGA (FW 0x041A, P&R):** Logic 4 359 / 8 640 (51 %), Register 3 841 / 6 693 (58 %),
+**CLS 3 327 / 4 320 (78 %)**, BSRAM 5/26, DSP 6/10; Fmax 101,4 MHz s nejistotou 0,5 ns (reálná rezerva ≥ 0,64 ns).
+
+⚠️ Konstanta `MP_TDC_PS` (57 ps) pro počet důvěryhodných číslic a podlahu Allanova grafu neodpovídá
+ani dvoubodovému šumu (~105 ps), ani regresi (ekv. ~10 ps na značku) — viz STATUS, k řešení.
+⚠️ Regrese pokrývá jen CH_A (CH_B by potřeboval druhý blok, +~11 % CLS).
