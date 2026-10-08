@@ -4276,6 +4276,23 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** `06b01d0`
 - **Stav:** aktivní
 
+### L-0137 — Vstup pod prahem logiky: chyba, která „skáče" s každým překladem FPGA, je analogová
+
+- **Datum:** 2026-10-08
+- **Oblast:** vstup CH_A (pin 25 Tang Nano, LVCMOS33), měření HW
+- **Symptom:** počet hran v okně o +0 až +257 000 (až 8,8 %) jinak podle každého P&R a podle toho, který klopný obvod vstup vzorkuje;
+  s hysterezí vstupu naopak −289 až −549 hran v každém okně. Pět diagnostických bitstreamů (0x0413–0x0417) a řada hypotéz o logice.
+- **Příčina:** 74HC04 (5 V) budil koax zakončený 49R9 u pinu; HC04 do 50 Ω nestačí → na pinu **0 až 1,55 V**, tedy pod VIH 2,0 V.
+  Vstupní buffer se překlápěl jen šumem na vrcholu signálu → zákmity (bez hystereze) nebo vypadlé pulzy (s hysterezí).
+  Který klopný obvod zákmit zachytí, záleží na zpoždění jeho vedení = na P&R.
+- **Oprava:** 49R9 nahrazen 120 Ω (HC04 ~45 Ω výstup funguje jako sériové zakončení u zdroje) → na pinu obdélník 0–2,86 V.
+  Výsledek: `CITANI HRAN` 0/0, mezery v SEQ 0, okno σ ≈ 196 ps (FW 0x0412, bez změny logiky).
+- **Pravidlo:** **Když se chyba měření mění s každým překladem FPGA (stejná logika, jiné rozmístění), nejdřív změř sondou úrovně a hranu přímo na
+  vstupním pinu proti prahům IO standardu; do té doby neměň logiku.**
+- **Detekce:** sonda 10:1 na pinu: 0 V a ≥ 2,4 V (LVCMOS33), jediný průchod pásmem 0,8–2,0 V.
+- **Commit:** (tento docs commit)
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
