@@ -1083,6 +1083,8 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 >   UART `regr`, `status` → `REGR:`. Window stream **odstraněn**. 🔴 **Zisk je jen pro signál nesoudělný se 100 MHz; u GPSDO 10 MHz žádný.**
 >   Cena: CLS 68 → 79 %, časová rezerva +0,017 ns (Fmax 100,165 MHz) — viz `docs/audit/2026-10-07_kriticky-audit.md` (A-03..A-06).
 > - Poučení: aritmetika šířky > ~16 bitů se v Gowin syntéze rozpadá na řetězy LUT; časování simulace nevidí → po každé změně P&R (L-0133).
+> - 🔑 **Autoritativní popis matematiky, TDC a regrese (stav FW 0x041A) je `docs/TDC_MATEMATIKA.md`** (jeden dokument, k revizi; otevřené body v kap. 12).
+> - 🔴 **Regrese (FW 0x041A) je ZAPNUTÁ a na desce ověřená** (příčina dřívějších selhání = chybějící nejistota hodin v SDC, L-0138); věta o „vypnutí“ výše platí jen pro 0x0412. Vstup CH_A musí mít 0–3,3 V (L-0137).
 
 **Nahrazuje dřívější popis (`carry_tdc` zredukovaný syntézou na invertor, F-0201).** Zdroj: `Frequency_Counter_FPGA_Module/src/tdc.v`.
 - **Jak měří:** 2 kanály, každý **512 přímo instancovaných `ALU`** (carry průchod), vzorkuje se **každý druhý** stupeň
