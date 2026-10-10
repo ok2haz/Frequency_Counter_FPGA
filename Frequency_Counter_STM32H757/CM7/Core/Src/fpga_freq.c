@@ -62,11 +62,20 @@ static uint32_t s_poll_gap   = 0u;         /* dira pred poslednim vracenym meren
  * a FpgaTask ho dostane s priznakem, aby ho vyradil i ze statistiky. */
 static uint64_t s_mc_ref     = 0u;         /* µHz posledniho prijateho okna (reference) */
 static uint32_t s_mc_run     = 0u;         /* kolik oken za sebou vyrazeno (pojistka) */
+static uint8_t  s_prev_chan  = 0xFFu;      /* kanal predchoziho ramce (FW >= 0x041E) — zmena nuluje referenci miscountu */
 static int      s_poll_mc    = 0;          /* miscount posledniho vraceneho mereni (k) */
 static uint32_t s_mc_pos     = 0u, s_mc_neg = 0u;   /* soucty od bootu pro `status` */
 static uint32_t s_seq_gaps   = 0u;         /* kolikrat byla dira */
 static uint32_t s_seq_missed = 0u;         /* kolik mereni celkem chybelo */
 static uint32_t s_seq_resync = 0u;         /* skoky/navraty (reset FPGA, start emulace) */
+/* 2026-10-10 (STATUS #283): samokontrola okna (`fpga_freq_window_check`, FW 0x041F caps bit10). Zamitnute
+ * okno se jako miscount nezapise do `s_last` a FpgaTask ho vyradi; soucty jdou do `status`. */
+static int      s_poll_chk   = FPGA_CHK_OK;   /* vysledek posledniho vraceneho mereni */
+static uint32_t s_chk_count  = 0u, s_chk_clock = 0u, s_chk_window = 0u;
+static uint16_t s_prev_loss  = 0xFFFFu;    /* clk_loss predchoziho ramce (0xFFFF = zatim zadny) */
+static uint8_t  s_prev_win   = 0xFFu;      /* echo hradla predchoziho ramce: okno pres zmenu hradla se neposuzuje */
+static uint32_t s_rej_seq    = 0u;         /* SEQUENCE naposledy odmitnuteho mereni ... */
+static uint8_t  s_rej_on     = 0u;         /* ... platna (1) do prijeti dalsiho mereni */
 static uint32_t g_sck_hz   = 0;
 static uint8_t  s_link_ok  = 0;            /* 1 = posledni poll dostal platny ramec (MAGIC+CRC) */
 static uint32_t g_rx_crc   = 0;            /* pocet ramcu se spatnym CRC */
@@ -76,6 +85,8 @@ static uint8_t  g_xfer_ok  = 0;            /* 1 = posledni HAL_SPI prenos vratil
 static uint8_t  g_last_rx0 = 0;            /* prvni prijaty bajt z MISO (bring-up diag) */
 static fpga_meas_t s_last;                 /* posledni naparsovany DATA ramec (i nefresh/invalid) */
 static uint8_t  s_last_seen = 0;           /* 1 = aspon jeden DATA ramec dorazil */
+static fpga_meas_t s_frame;                /* posledni platny DATA ramec VCETNE odmitnutych mereni (jen diagnostika) */
+static uint8_t  s_frame_seen = 0;
 
 /* === Little-endian cteni === */
 static uint64_t rd_le64(const uint8_t *p)
@@ -189,9 +200,12 @@ static bool xfer(const uint8_t *tx, uint8_t *rx)
     return ok;
 }
 
+/* Co jsme FPGA naposledy POSLALI (0xFF = nic / zapomenuto) — vyznam u `fpga_freq_cfg_sync`. */
+static uint8_t s_cfg_sent_chan = 0xFFu, s_cfg_sent_win = 0xFFu;
 void fpga_freq_restart(void)
 {
     if (!g_init_ok) return;
+    s_cfg_sent_chan = 0xFFu; s_cfg_sent_win = 0xFFu;   /* ~3 s bez linku: FPGA mohla restartovat -> konfiguraci poslat znovu */
     uint8_t tx[FR_LEN], rx[FR_LEN];
     build_frame(TYPE_START, 0, NULL, 0, tx);
     xfer(tx, rx);
@@ -551,9 +565,20 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     m->fw_version         = (uint16_t)p[48] | ((uint16_t)p[49] << 8);   /* abs 60-61 */
     m->caps               = (uint16_t)p[50] | ((uint16_t)p[51] << 8);   /* abs 62-63 */
     m->clk_status         = p[52];             /* abs 64 */
-    m->win_count          = p[53];             /* abs 65 */
+    m->clk_loss           = p[53];             /* abs 65 */
     m->sequence           = rd_le32(&rx[4]);
     m->status_flags       = rx[3];
+    if (m->caps & FPGA_CAP_SELFCHK) {
+        /* FW >= 0x041F: abs 12..19 nese identitu bitstreamu (frequency_x100000 tam bylo od FW 0x0400 vzdy 0
+         * a nize se stejne prepocita z dt) a abs 97/98 kontrolni rozdil pocitani hran. */
+        m->build_time = rd_le32(p + 0);
+        m->build_git  = rd_le32(p + 4);
+        m->ccd_p      = (int8_t)p[85];
+        m->ccd_s      = (int8_t)p[86];
+        m->frequency_x100000 = 0u;
+    } else {
+        m->build_time = 0u; m->build_git = 0u; m->ccd_p = 0; m->ccd_s = 0;
+    }
 
     if (m->caps & FPGA_CAP_DT) {
         /* 🔴 FW >= 0x0400 (carry-chain TDC): FPGA frequency_x100000 NEPOCITA (0), nese
@@ -660,8 +685,41 @@ bool fpga_freq_poll(fpga_meas_t *out)
      * zmena signalu -> prijmout a vzit za novou referenci. */
     int is_new = (status & ST_DATA_VALID) && (status & ST_DATA_FRESH)
                  && tmp.sequence != g_last_seq;
+    /* Zmena KANALU (A <-> B): okno jineho signalu nema s referenci minuleho nic spolecneho, jinak by
+     * prvni az tri okna po prepnuti byla vyhlasena za chybne napocitana (`fpga_freq_miscount`). */
+    if ((tmp.caps & FPGA_CAP_CHAN) && tmp.channel_id != s_prev_chan) {
+        s_prev_chan = tmp.channel_id; s_mc_ref = 0u; s_mc_run = 0u;
+    }
+    /* Samokontrola okna (STATUS #283) -- PRED miscountem: okno, ktere neprojde, se nesmi stat ani referenci.
+     * Pocet vypadku 100 MHz se sleduje v KAZDEM ramci (ramce chodi castji nez mereni), takze se vypadek
+     * pripise prvnimu mereni, ktere ho ma za sebou. Echo hradla se meni az s merenim (spi_app latchuje
+     * phase_status s novym merenim), proto se porovnava jen mezi merenimi: okno, behem ktereho se hradlo
+     * zmenilo, ma legitimne jinou delku a neposuzuje se. */
+    int chk = FPGA_CHK_OK;
+    if (tmp.caps & FPGA_CAP_SELFCHK) {
+        /* jen NARUST: pokles = nove nahrana FPGA (pocitadlo zacina od 0), to neni vypadek */
+        int loss_new = (s_prev_loss != 0xFFFFu) && (tmp.clk_loss > s_prev_loss);
+        s_prev_loss = tmp.clk_loss;
+        if (is_new && (!(tmp.clk_status & FPGA_CLK_OK) || (tmp.clk_status & FPGA_CLK_RECOVER) || loss_new))
+            chk = FPGA_CHK_CLOCK;
+    }
+    if (is_new) {
+        uint8_t win = (tmp.caps & FPGA_CAP_CHAN) ? (uint8_t)(tmp.phase_status & 7u) : 0xFEu;
+        int win_changed = (win != s_prev_win);
+        s_prev_win = win;
+        if (chk == FPGA_CHK_OK && (tmp.measurement_status & 0x01u) && !(tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+            if ((tmp.caps & FPGA_CAP_SELFCHK) && (tmp.ccd_p > 1 || tmp.ccd_p < -1))
+                chk = FPGA_CHK_COUNT;
+            else if ((tmp.caps & FPGA_CAP_CHAN) && (tmp.caps & FPGA_CAP_DT) && !win_changed)
+                chk = fpga_freq_window_check(tmp.edge_count, tmp.gate2_ps, fpga_win_code_ps(win));
+        }
+        if (chk == FPGA_CHK_COUNT)       s_chk_count++;
+        else if (chk == FPGA_CHK_CLOCK)  s_chk_clock++;
+        else if (chk == FPGA_CHK_WINDOW) s_chk_window++;
+    }
+
     int mc = 0;
-    if (is_new && (tmp.measurement_status & 0x01u)
+    if (chk == FPGA_CHK_OK && is_new && (tmp.measurement_status & 0x01u)
         && !(tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
         uint32_t mul = fpga_freq_hires_mul(tmp.frequency_x100000, tmp.edge_count, tmp.gate_ps);
         uint64_t uhz = fpga_freq_hires_uhz(tmp.frequency_x100000, tmp.edge_count, tmp.gate_ps);
@@ -673,11 +731,24 @@ bool fpga_freq_poll(fpga_meas_t *out)
             s_mc_run = 0u;
             if (uhz > 0u && mul != 0u) s_mc_ref = uhz;
         }
-    } else if (is_new || (tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+    } else if ((is_new && chk == FPGA_CHK_OK) || (tmp.error_flags & FPGA_ERR_SIGNAL_LOST)) {
         s_mc_ref = 0u; s_mc_run = 0u;                  /* bez platneho mereni -> bez reference */
     }
 
-    if (mc == 0) {
+    /* Odmitnute mereni (miscount nebo samokontrola) se nesmi dostat do `s_last` ani POZDEJI: FPGA tentyz
+     * vysledek posila v kazdem dalsim ramci (stejna SEQUENCE, uz bez FRESH), az do dalsiho mereni. Driv se
+     * tak odmitnute okno latchlo hned v pristim pollu (~25 ms) a videl ho web, SCPI i okna UI.
+     * Diagnostika ramce (verze, identita, hlidac hodin, TDC) se proto drzi zvlast v `s_frame`. */
+    if (is_new && (mc != 0 || chk != FPGA_CHK_OK)) { s_rej_seq = tmp.sequence; s_rej_on = 1u; }
+    else if (is_new)                                 s_rej_on = 0u;
+    {
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_frame = tmp;
+        s_frame_seen = 1;
+        __set_PRIMASK(pm);
+    }
+    if (!(s_rej_on && tmp.sequence == s_rej_seq)) {
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
         s_last = tmp;
@@ -686,7 +757,8 @@ bool fpga_freq_poll(fpga_meas_t *out)
     }
 
     if (!is_new) return false;
-    s_poll_mc = mc;
+    s_poll_mc  = mc;
+    s_poll_chk = chk;
 
     /* F-0193: NOVE nestaci — musi i NAVAZOVAT. Dira = mereni, ktere FPGA
      * prepsala drive, nez jsme ho precetli; spocitat a ohlasit volajicimu. */
@@ -730,6 +802,69 @@ void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync)
     if (gaps)   *gaps   = s_seq_gaps;
     if (missed) *missed = s_seq_missed;
     if (resync) *resync = s_seq_resync;
+}
+
+int fpga_freq_window_check(uint64_t edges, uint64_t dt_ps, uint64_t gate_ps)
+{
+    if (edges < 2u || dt_ps == 0u || gate_ps == 0u) return FPGA_CHK_OK;
+    uint64_t per = dt_ps / edges;                       /* perioda signalu [ps] */
+    if (per * 2u > gate_ps) return FPGA_CHK_OK;         /* < 2 hran na hradlo: okno se protahuje legitimne */
+    uint64_t tol = 3u * per + FPGA_WIN_TOL_PS;
+    uint64_t d = (dt_ps > gate_ps) ? dt_ps - gate_ps : gate_ps - dt_ps;
+    return (d <= tol) ? FPGA_CHK_OK : FPGA_CHK_WINDOW;
+}
+
+uint64_t fpga_win_code_ps(uint8_t win)
+{
+    switch (win) {
+    case FPGA_WIN_50MS:  return  50000000000ull;
+    case FPGA_WIN_100MS: return 100000000000ull;
+    case FPGA_WIN_250MS: return 250000000000ull;
+    case FPGA_WIN_500MS: return 500000000000ull;
+    case FPGA_WIN_1S:    return 1000000000000ull;
+    default:             return 0u;
+    }
+}
+
+int fpga_freq_poll_check(void) { return s_poll_chk; }
+
+void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window)
+{
+    if (count)  *count  = s_chk_count;
+    if (clock)  *clock  = s_chk_clock;
+    if (window) *window = s_chk_window;
+}
+
+void fpga_freq_format_build(uint32_t build_time, uint32_t build_git, char *buf, int buflen)
+{
+    if (buf == NULL || buflen <= 0) return;
+    if (build_time == 0u) { snprintf(buf, (size_t)buflen, "neznama (sestaveno mimo build.tcl?)"); return; }
+    /* unix -> obcansky kalendar (H. Hinnant, days_from_civil inverzne), UTC */
+    uint32_t days = build_time / 86400u, sod = build_time % 86400u;
+    int32_t z = (int32_t)days + 719468;
+    int32_t era = z / 146097;
+    uint32_t doe = (uint32_t)(z - era * 146097);
+    uint32_t yoe = (doe - doe / 1460u + doe / 36524u - doe / 146096u) / 365u;
+    int32_t y = (int32_t)yoe + era * 400;
+    uint32_t doy = doe - (365u * yoe + yoe / 4u - yoe / 100u);
+    uint32_t mp = (5u * doy + 2u) / 153u;
+    uint32_t d = doy - (153u * mp + 2u) / 5u + 1u;
+    uint32_t m = (mp < 10u) ? mp + 3u : mp - 9u;
+    if (m <= 2u) y++;
+    snprintf(buf, (size_t)buflen, "%04ld-%02lu-%02lu %02lu:%02lu:%02lu UTC git %07lx%s",
+             (long)y, (unsigned long)m, (unsigned long)d,
+             (unsigned long)(sod / 3600u), (unsigned long)((sod / 60u) % 60u), (unsigned long)(sod % 60u),
+             (unsigned long)(build_git & 0x0FFFFFFFu), (build_git & 0x80000000u) ? "+" : "");
+}
+
+bool fpga_freq_get_frame(fpga_meas_t *out)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    uint8_t seen = s_frame_seen;
+    if (seen && out) *out = s_frame;
+    __set_PRIMASK(pm);
+    return seen != 0;
 }
 
 bool fpga_freq_signal_lost(void)
@@ -976,6 +1111,9 @@ uint64_t fpga_freq_select(const fpga_meas_t *m, int *used16)
      * Sticky stav (jediny konzument = FpgaTask): drzi zvoleny zdroj, prepina jen
      * pri prekroceni prahu s hysterezi nebo pri chybe aktivniho zdroje. */
     static int s_use16 = 0;
+    /* FW >= 0x041E: `freq16` neni odbocka /16, ale DRUHY KANAL — nikdy se na nej neprepina (uzivatel
+     * zvolil kanal tlacitkem); headline = primarni slot = vybrany kanal. */
+    if (m->caps & FPGA_CAP_CHAN) { s_use16 = 0; if (used16) *used16 = 0; return m->frequency_x100000; }
     s_use16 = fpga_freq_select_core(s_use16, m);
     if (used16) *used16 = s_use16;
     return s_use16 ? m->freq16_x100000 : m->frequency_x100000;
@@ -1056,6 +1194,38 @@ bool fpga_freq_select_selftest(void)
         ok &= (fpga_freq_miscount(R + 16000000ull, R, G, 1u) == 0);  /* +4 kroky = zmena */
         ok &= (fpga_freq_miscount(R + 16000000ull, R, G, 4u) == 1);  /* /4 vetev: krok 16 Hz */
         ok &= (fpga_freq_miscount(R, 0u, G, 1u) == 0);
+    }
+    /* 2026-10-10 (STATUS #283): samokontrola. Delka okna proti hradlu: 10 MHz/0,25 s sedi i s okrajem +-1 us
+     * a dvema periodami; okno 6,3x delsi (pripad L-0141, 1 578 628 Hz misto 10 MHz) neprojde; signal s mene nez
+     * 2 hranami na hradlo se neposuzuje. Pak parse ramce FW 0x041F (identita, hlidac hodin, rozdil pocitani). */
+    {   const uint64_t G = 250000000000ull;
+        ok &= (fpga_freq_window_check(2500002u, 250000100000ull, G) == FPGA_CHK_OK);
+        ok &= (fpga_freq_window_check(2500000u, G - 900000ull, G) == FPGA_CHK_OK);
+        ok &= (fpga_freq_window_check(2500002u, G + 1300000ull, G) == FPGA_CHK_OK);       /* 1 us + 3 periody */
+        ok &= (fpga_freq_window_check(2500002u, G + 1400000ull, G) == FPGA_CHK_WINDOW);
+        ok &= (fpga_freq_window_check(2500002u, 1583670000000ull, G) == FPGA_CHK_WINDOW);
+        ok &= (fpga_freq_window_check(3u, 3000000000000ull, G) == FPGA_CHK_OK);           /* 1 Hz: protazene okno */
+        ok &= (fpga_win_code_ps(FPGA_WIN_50MS) == 50000000000ull && fpga_win_code_ps(7u) == 0u);
+        char b[64];
+        fpga_freq_format_build(0x6ACA21F9u, 0x8D526C00u, b, sizeof b);
+        ok &= (strcmp(b, "2026-10-10 11:31:05 UTC git d526c00+") == 0);
+        fpga_freq_format_build(951782400u, 0x0ABCDEFu, b, sizeof b);                    /* prestupny den */
+        ok &= (strcmp(b, "2000-02-29 00:00:00 UTC git 0abcdef") == 0);
+        uint8_t rx[FR_LEN];
+        memset(rx, 0, sizeof rx);
+        uint8_t *p = &rx[FR_PAYLOAD];
+        for (int i = 0; i < 4; i++) { p[i] = (uint8_t)(0x6ACA21F9u >> (8 * i)); p[4 + i] = (uint8_t)(0x8D526C00u >> (8 * i)); }
+        sim_put_le64(p + 8, 2500000ull);
+        p[49] = 0x04; p[50] = 0xE2; p[51] = 0x06;             /* fw 0x041F caps 0x06E2 (DT, REGR, CHAN, SELFCHK) */
+        p[48] = 0x1F;
+        p[52] = FPGA_CLK_OK | FPGA_CLK_FAULT; p[53] = 3u;     /* hodiny OK, 3 vypadky */
+        p[85] = 0xFEu; p[86] = 1u;                            /* rozdil -2 / +1 */
+        sim_put_le64(p + 106, 409600000000ull);
+        fpga_meas_t pm;
+        parse_data(rx, &pm);
+        ok &= (pm.build_time == 0x6ACA21F9u && pm.build_git == 0x8D526C00u);
+        ok &= (pm.ccd_p == -2 && pm.ccd_s == 1 && pm.clk_loss == 3u && pm.clk_status == 0x03u);
+        ok &= (pm.frequency_x100000 == 1000000000000ull && pm.gate2_ps == G);   /* identita nepreplacne kmitocet */
     }
     /* 2026-10-07 (FW 0x0411): regresni blok. f = (xB - xA) / (yB - yA); okno 0,25 s, N = 2 500 000 hran,
      * stredy segmentu 2 000 000 hran a 0,2 s od sebe -> 10 MHz presne. Konzistentni regrese (rozdil 1e-8)
@@ -1174,8 +1344,9 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
                         : ((m->tdc_status & (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) !=
                            (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B))  ? "NOCAL"
                         : (m->tdc_status & (FPGA_TDC_SHORT_A | FPGA_TDC_SHORT_B)) ? "SHORT" : "OK";
-        snprintf(buf, buflen, "%sCHA TDC:%s GATE:%sNS SEQ:%lu%s",
-                 s_sim_on ? "SIM " : "", tdc, g, (unsigned long)m->sequence, etag);
+        snprintf(buf, buflen, "%sCH%c TDC:%s GATE:%sNS SEQ:%lu%s",
+                 s_sim_on ? "SIM " : "", fpga_meas_chb_primary(m) ? 'B' : 'A', tdc, g,
+                 (unsigned long)m->sequence, etag);
         return;
     }
     snprintf(buf, buflen, "%s%s PH:%X/%X GATE:%sNS SEQ:%lu%s",
@@ -1184,16 +1355,70 @@ void fpga_freq_format_info(const fpga_meas_t *m, int use16, char *buf, int bufle
 }
 
 /* ── TDC: kalibrace a CAL report (FW >= 0x0400) ───────────────────────────── */
-/* Nastavi zakladni okno FPGA (SET_CONFIG 0x01): 0=100 ms, 1=250 ms, 2=1 s.
+/* Nastavi zakladni okno FPGA (SET_CONFIG 0x01): 0=100 ms, 1=250 ms, 2=1 s, od FW 0x041E i 3=50 ms, 4=500 ms.
  * Delsi okno = min. nezavislych TDC chyb na hranach oken -> lepsi syrove rozliseni
  * (1 s okno ~2x lepsi nez CM7 akumulace 4×250 ms, protoze ma 1 par hran misto 4). */
 bool fpga_freq_set_window(uint8_t mode)
 {
     if (!g_init_ok || s_sim_on) return false;
-    if (mode > 2u) mode = 2u;
+    if (mode > 4u) mode = 1u;               /* neplatne -> 250 ms jako FPGA */
     uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x01u, mode };
     build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
     return xfer(tx, rx);
+}
+
+uint8_t fpga_gate_idx_to_win(uint8_t idx)
+{
+    static const uint8_t W[5] = { FPGA_WIN_50MS, FPGA_WIN_100MS, FPGA_WIN_250MS, FPGA_WIN_500MS, FPGA_WIN_1S };
+    return W[(idx < 5u) ? idx : 2u];
+}
+
+uint32_t fpga_gate_idx_ms(uint8_t idx)
+{
+    static const uint32_t MS[5] = { 50u, 100u, 250u, 500u, 1000u };
+    return MS[(idx < 5u) ? idx : 2u];
+}
+
+bool fpga_freq_set_channel(uint8_t ch)
+{
+    if (!g_init_ok || s_sim_on) return false;
+    uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x03u, (uint8_t)(ch & 1u) };
+    build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
+    return xfer(tx, rx);
+}
+
+/* Co jsme FPGA naposledy POSLALI (0xFF = nic / zapomenuto). Echo v ramci (channel_id, phase_status) se
+ * obnovuje az s dalsim merenim, takze bez signalu na vybranem kanalu zustane STARE: po prepnuti A -> B (B bez
+ * signalu) a zpet na A by echo porad rikalo „A“ a STM by povel nikdy neposlal — FPGA by zustala na B
+ * (nalezeno testem na desce 2026-10-09). Proto se posila, kdyz se lisi pozadavek od posledniho odeslaneho NEBO
+ * od echa (to druhe chyti reset FPGA, ktery na STM nevidi). Promenne jsou nad `fpga_freq_restart`. */
+
+bool fpga_freq_cfg_sync(uint8_t want_chan, uint8_t want_gate_idx)
+{
+    static uint32_t s_last_ms = 0u;
+    fpga_meas_t m;
+    if (!fpga_freq_get_last(&m) || !(m.caps & FPGA_CAP_CHAN)) return false;   /* starsi FW/emulator: nic k nastaveni */
+    uint32_t now = HAL_GetTick();
+    uint8_t want_win = fpga_gate_idx_to_win(want_gate_idx);
+    want_chan &= 1u;
+    bool diff_chan = (s_cfg_sent_chan != want_chan);
+    bool diff_win  = (s_cfg_sent_win  != want_win);
+    /* ZMENA pozadavku se posle hned; opakovani podle echa az po 1,5 s (echo se obnovuje s mereni). */
+    if (!diff_chan && !diff_win && (uint32_t)(now - s_last_ms) < 1500u) return false;
+    bool sent = false;
+    if (diff_chan || (m.channel_id & 1u) != want_chan) {
+        if (fpga_freq_set_channel(want_chan)) { s_cfg_sent_chan = want_chan; sent = true; }
+    }
+    if (diff_win || (m.phase_status & 7u) != want_win) {
+        if (fpga_freq_set_window(want_win)) { s_cfg_sent_win = want_win; sent = true; }
+    }
+    if (sent) s_last_ms = now;
+    return sent;
+}
+
+bool fpga_freq_chan_pending(const fpga_meas_t *m, uint8_t want_chan)
+{
+    return (m->caps & FPGA_CAP_CHAN) && ((m->channel_id & 1u) != (want_chan & 1u));
 }
 
 bool fpga_freq_tdc_cal_start(void)

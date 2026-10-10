@@ -578,9 +578,9 @@ static int ipc_ui_cfg_apply(uint8_t key, uint32_t arg)
 {
     uint8_t cur = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
     switch (key) {
-        case IPC_CFG_GATE:                              /* arg = index presetu 0..3 */
-            if (arg > 3u) return 0;
-            cur = (uint8_t)((cur & ~(3u << 2)) | ((arg & 3u) << 2));
+        case IPC_CFG_GATE:                              /* arg = index presetu 0..4 */
+            if (arg >= IPC_GATE_N) return 0;
+            cur = IPC_UICFG_SET_GATE(cur, arg);
             break;
         case IPC_CFG_CHAN:                              /* mame jen kanal 0/1 */
             if (arg > 1u) return 0;

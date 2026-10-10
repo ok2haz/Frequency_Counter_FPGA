@@ -120,9 +120,17 @@ static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
  * oddelene udaje — uzivatel mysli „frekvence A", ne „frekvence, kanal A". */
 static const char *MODE_NAME[2] = {"FREKVENCE", "PERIODA"};
 static const char *CHAN_NAME[2] = {"A", "B"};
-static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
+/* Hradlo: index = `IPC_UICFG_GATE` (0,05 / 0,1 / 0,25 / 0,5 / 1 s, vychozi 0,25 s = index 2). DO FPGA ho
+ * posila FpgaTask (`fpga_freq_cfg_sync`) podle `g_ui_cfg`; vyber kanalu tak same. */
+static const char *GATE_VAL[IPC_GATE_N] = {"0,05 s", "0,1 s", "0,25 s", "0,5 s", "1 s"};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
-    st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
+    st = {0, 0, (int8_t)IPC_GATE_DEFAULT, true};    /* FREQUENCY, CH A, 0,25 s, RUNNING po bootu (tlacitko "STOP") */
+/* Zabaleni `st` do kodovani `g_ui_cfg` (format v2, viz ipc_shared.h). */
+static uint8_t ui_cfg_pack(void)
+{
+    uint8_t c = (uint8_t)(IPC_UICFG_V2 | (st.mode & 1) | ((st.chan & 1) << 1) | ((st.running ? 1 : 0) << 4));
+    return IPC_UICFG_SET_GATE(c, (unsigned)st.gate);
+}
 static uint8_t s_disp_recalc = 0;   /* 1 = prepnul se FREQ/PERIOD -> vynut rebuild formatu velkeho cisla */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
@@ -139,8 +147,7 @@ void screen_main_set_mode(int m)
     /* Persist stejne jako footer prepinac (`screen_main_button_action`).
      * ⚠️ `st.mode` se uklada na JEDEN bit — az pribude treti dostupna funkce,
      * musi se `g_ui_cfg` rozsirit, jinak se po resetu vrati spatna funkce. */
-    g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
-                         | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
+    g_ui_cfg = ui_cfg_pack();
     g_ui_cfg_dirty = 1;
 }
 
@@ -323,7 +330,7 @@ void screen_main_button_action(int idx)
          * soumeritelne — a datalog `gate_time_ns` neuklada (nema volny bajt).
          * Bez teto udalosti vypada skok v sigma_y jako HW jev. */
         int8_t og = st.gate;
-        st.gate = (int8_t)((st.gate + 1) % 4);
+        st.gate = (int8_t)((st.gate + 1) % (int)IPC_GATE_N);
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)st.gate, (uint32_t)og, "brana");
         break;
     }
@@ -336,8 +343,7 @@ void screen_main_button_action(int idx)
     default: return;                                      /* 4 = MENU: nic k ulozeni */
     }
     /* Zapamatuj nastaveni -> defaultTask ho persistne do BKP (prezije warm reset). */
-    g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
-                         | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
+    g_ui_cfg = ui_cfg_pack();
     g_ui_cfg_dirty = 1;
 }
 
@@ -355,8 +361,9 @@ int screen_main_apply_cfg_req(void)
 
     int8_t mode = (int8_t)( c        & 1);
     int8_t chan = (int8_t)((c >> 1)  & 1);
-    int8_t gate = (int8_t)((c >> 2)  & 3);
+    int8_t gate = (int8_t)IPC_UICFG_GATE(c);
     bool   run  = ((c >> 4) & 1) != 0;
+    if (gate >= (int8_t)IPC_GATE_N) gate = (int8_t)IPC_GATE_DEFAULT;
     if (mode == st.mode && chan == st.chan && gate == st.gate && run == st.running)
         return 0;                                  /* nic noveho -> zadny redraw */
     if (mode != st.mode) s_disp_recalc = 1;         /* FREQ<->PERIOD -> prepocet velkeho cisla */
@@ -365,7 +372,7 @@ int screen_main_apply_cfg_req(void)
     if (st.chan != chan)
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
     st.mode = mode; st.chan = chan; st.gate = gate; st.running = run;
-    g_ui_cfg = c; g_ui_cfg_dirty = 1;              /* persist do BKP (jako z UI) */
+    g_ui_cfg = ui_cfg_pack(); g_ui_cfg_dirty = 1;  /* persist do BKP (jako z UI), format v2 */
     return 1;
 }
 
@@ -439,11 +446,13 @@ void screen_main_init(void)
     static bool s_cfg_loaded = false;
     if (!s_cfg_loaded) {
         s_cfg_loaded = true;
-        uint8_t c   = g_ui_cfg;
+        uint8_t c   = ipc_uicfg_norm(g_ui_cfg);
         st.mode     = (int8_t)( c        & 1);
         st.chan     = (int8_t)((c >> 1)  & 1);
-        st.gate     = (int8_t)((c >> 2)  & 3);
+        st.gate     = (int8_t)IPC_UICFG_GATE(c);
+        if (st.gate >= (int8_t)IPC_GATE_N) st.gate = (int8_t)IPC_GATE_DEFAULT;
         st.running  = ((c >> 4) & 1) != 0;
+        g_ui_cfg    = ui_cfg_pack();
     }
     if (cache_initialized) return;
     render_background_to_cache();
@@ -706,7 +715,7 @@ static uint64_t pow10_u64(int e)
  *   10 MHz  -> 8 celych + 5 desetin = 13 cislic ≈ 676 px -> vejde se PLNYCH 5 desetin
  *   1,4 GHz -> 10 celych + 4 desetiny = 14 cislic ≈ 736 px -> jedna desetina ustoupi
  * ⚠️ Drive 720 px zbytecne ubiralo desetinne misto uz kolem 1 GHz. */
-#define FREQ_MAX_W  780
+#define FREQ_MAX_W  790
 
 /* ⚠️ Delicka mezi `edge_count` a skutecnym kmitoctem se NEPREDPOKLADA — overuje se
  * proti `frequency_x100000` (viz `freq_frame_to_lsb`). Realna FPGA hlasi pocet
@@ -1153,6 +1162,13 @@ static void freq_advance(void)
             if (!(hz_now > 0.0)) hz_now = (double)x100000 / 100000.0;
             if (s_freq_ref_hz <= 0.0) sig_change = 1;          /* prvni realne mereni */
             else if (fabs(hz_now / s_freq_ref_hz - 1.0) > 1e-4) sig_change = 1;
+            /* Zmena KANALU (FW >= 0x041E): data A a B jsou ruzne mereni, i kdyz maji stejny kmitocet —
+             * statistika (Allan, histogram, trend) se nesmi slepit. Prvni mereni po startu jen zapamatuje. */
+            {   static int8_t s_chan_ref = -1;
+                if (s_chan_ref != (int8_t)g_freq_chan) {
+                    if (s_chan_ref >= 0) sig_change = 1;
+                    s_chan_ref = (int8_t)g_freq_chan;
+                } }
             /* 🔴 V rezimu PERIODA hlidej JESTE format periody: ta se posune o dekadu
              * i UVNITR jedne frekvencni dekady (9,99 MHz -> 100 ns / 1,00 MHz -> 1 us),
              * takze samotne `idg` to nechytne a `freq_fill_segments` by tise zahodila

@@ -20,6 +20,7 @@
 #include "sdram_log.h"   /* datova cache mereni v SDRAM (dlouha presna historie) */
 #include <stdio.h>       /* printf — hlaseni vadneho SDRAM regionu pri initu */
 #include "errlog.h"   /* udalosti: ztrata linku / signalu FPGA */
+#include "ipc_shared.h"  /* IPC_UICFG_GATE — vybrany kanal a hradlo z g_ui_cfg (UI/SCPI/web) */
 #include "sensor_stat.h"  /* g_sensors[SENS_T4A] — FPGA teplota pro rekalibraci TDC */
 
 /* Teplotni rekalibrace TDC (2026-10-04). Kalibracni tabulka hustoty kodu plati
@@ -68,13 +69,21 @@ void StartFpgaTask(void *argument)
   uint32_t tdc_cal_next_ms = 0;     /* HAL_GetTick, od kdy smi dalsi rekalibrace (rate-limit) */
   uint64_t uhz_prev = 0u;           /* hi-res kmitocet posledniho PRIJATEHO okna [µHz] — spike reject (cesta A) */
   uint32_t reject_run = 0u;         /* kolik oken za sebou zamitnuto (pojistka proti zablokovani na realne zmene) */
+  uint8_t  chan_prev  = 0xFFu;      /* kanal predchoziho zpracovaneho okna (FW >= 0x041E) */
   for (;;) {
     watchdog_kick_fpga();   /* heartbeat pro IWDG (zatuhnuti FpgaTasku -> reset) */
-    if (fpga_freq_poll(&m)) {
+    /* Vybrany kanal a hradlo = `g_ui_cfg` (tlacitka GATE/CHAN, SCPI, web; vsechny jdou pres UiTask). */
+    const uint8_t ui_cfg    = ipc_uicfg_norm(g_ui_cfg);
+    const uint8_t want_chan = (uint8_t)((ui_cfg >> 1) & 1u);
+    uint8_t want_gate       = IPC_UICFG_GATE(ui_cfg);
+    if (want_gate >= IPC_GATE_N) want_gate = IPC_GATE_DEFAULT;
+    /* Ramec jeste z JINEHO kanalu, nez uzivatel zvolil (FPGA prepina az s dalsim merenim) se nepouzije. */
+    if (fpga_freq_poll(&m) && !fpga_freq_chan_pending(&m, want_chan)) {
       fails = 0;
-      if (fpga_freq_poll_miscount() != 0) {
-      /* Chybne napocitane okno (hrana navic/chybi, `fpga_freq_miscount`): neni to
-       * mereni. Displej ho nezobrazi (drzi predchozi okno), do statistiky ani
+      if (fpga_freq_poll_miscount() != 0 || fpga_freq_poll_check() != FPGA_CHK_OK) {
+      /* Chybne napocitane okno (hrana navic/chybi, `fpga_freq_miscount`) nebo okno, ktere
+       * neproslo samokontrolou (`fpga_freq_poll_check`: kontrolni pocitani, hlidac 100 MHz,
+       * delka okna proti hradlu): neni to mereni. Displej ho nezobrazi (drzi predchozi okno), do statistiky ani
        * datalogu nejde; v SDRAM logu je MEZERA (priznak SPIKE). `fpga_stat_break`
        * se nevola -- vzorek se doplni ze zbylych oken (stejne jako spike). */
         sdram_log_put(m.sequence, 0u, 0u, SDRAM_LOG_F_A_VALID | SDRAM_LOG_F_SPIKE,
@@ -107,6 +116,7 @@ void StartFpgaTask(void *argument)
       g_freq_gate_ns = m.gate_time_ns;
       g_freq_gate_ps = m.gate_ps;
       g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_ps > 0u) ? 1u : 0u;
+      g_freq_chan    = (m.caps & FPGA_CAP_CHAN) ? (uint8_t)(m.channel_id & 1u) : 0u;
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
       /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
@@ -114,6 +124,12 @@ void StartFpgaTask(void *argument)
        * Kriterium platnosti je tytez jako u `g_freq_valid` vyse. */
       int spike = 0;   /* okno vyrazene spike-rejectem (obri bin) — oznaci se i v sdram_logu jako mezera */
       if ((m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST)) {
+        /* Prepnuti kanalu A <-> B: rozpracovany vzorek je z jineho signalu a reference spike-rejectu
+         * (kmitocet minuleho okna) s novym kanalem nesouvisi. */
+        if ((m.caps & FPGA_CAP_CHAN) && m.channel_id != chan_prev) {
+          if (chan_prev != 0xFFu) fpga_stat_break();
+          chan_prev = m.channel_id; uhz_prev = 0u; reject_run = 0u;
+        }
         /* 🔴 F-0193: mereni pred timhle FPGA prepsala drive, nez jsme ho precetli
          * (dira v SEQUENCE) -> rozpracovany vzorek by mel uvnitr mrtvou dobu:
          * Σhradel ~1 s, v case ale vic. Zahodit a zacit od tohoto mereni.
@@ -236,6 +252,11 @@ void StartFpgaTask(void *argument)
       }
     }
 
-    osDelay(50);   /* ~20 Hz cteni */
+    /* Doruci vyber kanalu a hradla do FPGA (idempotentne podle echa v ramci). */
+    (void)fpga_freq_cfg_sync(want_chan, want_gate);
+    /* Perioda cteni: pri kratkem hradle (50/100 ms) musi byt kratsi nez hradlo, jinak FPGA mereni prepise
+     * drive, nez ho precteme (dira v SEQUENCE). Jinak ~20 Hz jako dosud. */
+    { uint32_t gms = fpga_gate_idx_ms(want_gate);
+      osDelay((gms <= 50u) ? 10u : ((gms <= 100u) ? 25u : 50u)); }
   }
 }

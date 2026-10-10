@@ -9,6 +9,7 @@
 #ifndef INC_FREERTOS_SHARED_H_
 #define INC_FREERTOS_SHARED_H_
 
+#include "ipc_shared.h"   /* ipc_uicfg_norm — format g_ui_cfg v2 */
 #include <stdint.h>
 #include "cmsis_os2.h"
 #include "sensor_stat.h"   /* g_sensors[], sensor_update/fail (teploty + ADS1115) */
@@ -61,6 +62,7 @@ extern volatile uint64_t g_freq_edges;     /* počet period v okně (pin28 = /4)
 extern volatile uint64_t g_freq_gate_ns;   /* skutečná délka okna [ns] — jen zobrazení */
 extern volatile uint64_t g_freq_gate_ps;   /* PŘESNÁ délka okna [ps] — všechny výpočty (fpga_meas_t.gate_ps) */
 extern volatile uint8_t  g_freq_hires;     /* 1 = zdroj je /4 → lze dopočítat; 0 = /16 (edge_count chybí) */
+extern volatile uint8_t  g_freq_chan;      /* kanál, ze kterého je poslední přijaté měření (0 = A, 1 = B; FW >= 0x041E) */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
 extern volatile char    g_spi_text[64];

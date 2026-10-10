@@ -363,7 +363,7 @@ void syscfg_load(void)
     g_lang_en     = b.lang_en ? 1 : 0;
     g_tz_offset_h = (b.tz_offset_h < -12) ? -12 : (b.tz_offset_h > 14 ? 14 : b.tz_offset_h);
     g_tz_auto     = b.tz_auto ? 1 : 0;
-    g_ui_cfg      = b.ui_cfg;
+    g_ui_cfg      = ipc_uicfg_norm(b.ui_cfg);
     /* ⚠️ Datalog uz je obnoveny VYSE (nad `return`) — v BKP neni, viz F-0089. */
     g_anim_enabled = b.anim_en ? 1 : 0;
 }

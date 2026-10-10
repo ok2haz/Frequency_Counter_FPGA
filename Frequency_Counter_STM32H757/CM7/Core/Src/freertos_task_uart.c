@@ -2322,14 +2322,11 @@ void UartTask_run(void *argument)
 					  while (*ga == ' ') ga++;
 					  if (*ga >= '0' && *ga <= '9') {
 						  fpga_stat_set_target_ms((uint32_t)atoi(ga));
-						  /* A1: nastav i FPGA okno na nejvetsi <= cil (min. hran oken -> lepsi syrove rozliseni). */
-						  uint32_t t = fpga_stat_target_ms();
-						  uint8_t win = (t >= 1000u) ? FPGA_WIN_1S : (t >= 250u) ? FPGA_WIN_250MS : FPGA_WIN_100MS;
-						  fpga_freq_set_window(win);
+						  /* FPGA okno uz NEnastavuje tento prikaz: od FW 0x041E ho ridi tlacitko GATE (g_ui_cfg)
+						   * a FpgaTask by ho do 1,5 s stejne vratil (`fpga_freq_cfg_sync`). */
 					  }
-					  printf("GATESTAT: vzorek ~%lu ms, FPGA okno %u (0=100ms 1=250ms 2=1s) (delsi=presnejsi, kratsi=rychlejsi)\n",
-					         (unsigned long)fpga_stat_target_ms(),
-					         (unsigned)((fpga_stat_target_ms() >= 1000u) ? 2u : (fpga_stat_target_ms() >= 250u) ? 1u : 0u));
+					  printf("GATESTAT: vzorek ~%lu ms (FPGA hradlo nastavuje tlacitko GATE) (delsi=presnejsi, kratsi=rychlejsi)\n",
+					         (unsigned long)fpga_stat_target_ms());
 				  }
 				  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
 				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN
@@ -3246,11 +3243,32 @@ void UartTask_run(void *argument)
 				   * nevypisoval, i kdyz na nej komentar odkazoval). */
 				  {
 					  fpga_meas_t m;
-					  if (fpga_freq_get_last(&m)) {
+					  /* `get_frame`, ne `get_last`: kdyz FPGA meri spatne a samokontrola zamita VSECHNA okna, `s_last`
+					   * se neobnovuje -- a prave tehdy je verze, identita a stav hodin potreba (STATUS #283). */
+					  if (fpga_freq_get_frame(&m)) {
 						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X REGR:%s (`regr` = detail)\n",
 							     (unsigned)m.fw_version, (unsigned)m.caps,
 							     (unsigned)m.clk_status,
 							     !(m.caps & FPGA_CAP_REGR) ? "neni" : (m.regr_used ? "pouzita" : (m.rg_ok == 3u ? "zamitnuta" : "bez dat")));
+						  if (m.caps & FPGA_CAP_SELFCHK) {
+							  char bb[64];
+							  uint32_t ck = 0u, cc = 0u, cw = 0u;
+							  fpga_freq_format_build(m.build_time, m.build_git, bb, sizeof bb);
+							  fpga_freq_check_stats(&ck, &cc, &cw);
+							  printf("  FPGA BUILD: %s\n", bb);
+							  printf("  FPGA HODINY 100M: %s, vypadku %u%s\n",
+								     (m.clk_status & FPGA_CLK_RECOVER) ? "ZOTAVENI (mereni stoji, rekalibrace)" :
+								     ((m.clk_status & FPGA_CLK_OK) ? "OK" : "VADNE"),
+								     (unsigned)m.clk_loss,
+								     (m.clk_status & FPGA_CLK_FAULT) ? "  <== reference 100 MHz vypadla (reset STM / Si5356?)" : "");
+							  printf("  FPGA SAMOKONTROLA: zamitnuto oken: citani %lu, hodiny %lu, delka okna %lu | posledni rozdil %d%s\n",
+								     (unsigned long)ck, (unsigned long)cc, (unsigned long)cw, (int)m.ccd_p,
+								     (ck + cw) ? "  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)" : "");
+						  } else {
+							  uint32_t ck = 0u, cc = 0u, cw = 0u;
+							  fpga_freq_check_stats(&ck, &cc, &cw);
+							  printf("  FPGA SAMOKONTROLA: jen delka okna (FW < 0x041F) -> zamitnuto %lu\n", (unsigned long)cw);
+						  }
 						  if (m.caps & FPGA_CAP_DT) {
 							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu us (`tdc` = detail)\n",
 								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,

@@ -83,7 +83,7 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
      * `CHAN?` hlasilo 0 i po uspesnem `CHAN 1`. SET pritom fungoval (stejny most jako
      * RUN), takze to vypadalo jako „nejde nastavit", ale slo o SLEPY READBACK. */
     s->set_chan      = (uint8_t)((sn->ui_cfg >> 1) & 1u);
-    s->set_gate_idx  = (uint8_t)((sn->ui_cfg >> 2) & 3u);
+    s->set_gate_idx  = IPC_UICFG_GATE(sn->ui_cfg);
     s->set_running   = (sn->flags & IPC_F_RUNNING) ? 1u : 0u;   /* tentyz bit4 `g_ui_cfg`, jen uz zabaleny ve flags */
 
     /* Math/limit cfg mirror (CALC readbacky). */

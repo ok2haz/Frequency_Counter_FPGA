@@ -56,8 +56,12 @@ typedef struct {
     /* ── v2 rozsireni (abs offset v ramci, viz FPGA_PROTOCOL_V2_NAVRH.md) ──── */
     uint16_t fw_version;          /* abs 60-61: verze bitstreamu (0 = neznama/stary FW) */
     uint16_t caps;                /* abs 62-63: bit1=SET_CONFIG, bit5=dt, bit6=CAL, bit7=REGR (bit0 window stream uz neni) */
-    uint8_t  clk_status;          /* abs 64: bit0=10MHz pritomen, bit1=PLL/DLL lock */
-    uint8_t  win_count;           /* abs 65: rezervovano (od FW 0x0411 vzdy 0; window stream odstranen) */
+    uint8_t  clk_status;          /* abs 64: od FW 0x041F (caps bit10) viz FPGA_CLK_*; starsi FW konstanta 0x01 */
+    uint8_t  clk_loss;            /* abs 65: FW 0x041F pocet vypadku 100 MHz od nahrani (saturuje 255); driv 0 */
+    /* ── FW >= 0x041F (caps bit10): samokontrola ──────────────────────────────────── */
+    uint32_t build_time;          /* abs 12..15: cas sestaveni bitstreamu [unix s]; 0 = neznamy */
+    uint32_t build_git;           /* abs 16..19: [27:0] git hash zdroju, [31] = neulozene zmeny */
+    int8_t   ccd_p, ccd_s;        /* abs 97/98: kontrolni minus merny pocet hran okna (primarni/sekundarni slot) */
     /* ── 2026-10-03: skutecny carry-chain TDC (FW >= 0x0400, caps bit5) ──────── */
     uint64_t gate_ps;             /* PRESNE okno CH_A [ps] — jediny zdroj delky okna pro VSECHNY
                                    * vypocty (hi-res, akumulatory, statistika). Novy FW: z dt v
@@ -87,6 +91,43 @@ typedef struct {
 #define FPGA_CAP_DT           (1u << 5)   /* ramec nese dt_a/dt_b v jednotkach T_clk/16384 */
 #define FPGA_CAP_CODES        (1u << 8)   /* ramec nese kody TDC okna (abs 68..75), jen kdyz neni REGR */
 #define FPGA_CAP_REGR         (1u << 7)   /* ramec nese regresni blok (abs 68..96); bit0 window stream uz neni */
+#define FPGA_CAP_CHAN         (1u << 9)   /* FW >= 0x041E: SET_CONFIG 0x03 (vyber kanalu), 5 hradel, echo hradla v phase_status & 7 */
+#define FPGA_CAP_SELFCHK      (1u << 10)  /* FW >= 0x041F: identita bitstreamu (abs 12..19), hlidac 100 MHz (64/65),
+                                           * kontrolni pocitani hran (97/98) */
+/* clk_status bity (abs 64, jen s FPGA_CAP_SELFCHK) */
+#define FPGA_CLK_OK           (1u << 0)   /* 100 MHz v poslednim okne hlidace (102 us) v poradku */
+#define FPGA_CLK_FAULT        (1u << 1)   /* od nahrani aspon jeden vypadek nebo zmena kmitoctu 100 MHz */
+#define FPGA_CLK_RECOVER      (1u << 2)   /* po vypadku: FPGA drzi mereni a znovu kalibruje TDC */
+
+/* ── Samokontrola okna (STATUS #282/#283) ─────────────────────────────────────
+ * Do 2026-10-10 FPGA, ktera merila spatne (L-0141: 1 578 628 Hz misto 10 000 008 Hz v 6 ze 7 nahrani),
+ * posilala ramce, ktere vypadaly zdrave -- CRC, VALID, SEQUENCE v poradku -- a spatne cislo slo na displej,
+ * do statistiky i datalogu. Tyto kontroly okno, ktere nesedi, ZAMITNOU (stejne jako miscount: nezobrazi se,
+ * nejde do statistiky) a zapocitaji ho do `status`. */
+#define FPGA_CHK_OK       0
+#define FPGA_CHK_COUNT    1   /* kontrolni pocitani hran FPGA nesedi s mernym (|ccd| > 1) */
+#define FPGA_CHK_CLOCK    2   /* hlidac 100 MHz: neni OK / probiha zotaveni / pribyl vypadek */
+#define FPGA_CHK_WINDOW   3   /* delka okna neodpovida nastavenemu hradlu */
+/* Mez odchylky delky okna od hradla nad nejistotu uzavirani (perioda signalu): synchronizace hradla
+ * do 100 MHz (konstantni, hodiny jsou koherentni) + uzavreni o hranu pozdeji, kdyz je TDC prave obsazeny. */
+#define FPGA_WIN_TOL_PS   1000000ull
+/** Sedi delka okna `dt_ps` s hradlem `gate_ps`? Okno konci prvni hranou po kazdem tiku hradla, takze
+ *  |dt - G| < 3 periody signalu + FPGA_WIN_TOL_PS. Kdyz signal nema aspon 2 hrany na hradlo, okno se
+ *  legitimne protahuje pres vic hradel -> nelze rozhodnout (OK). Ciste-logicke (selftest #1).
+ *  @return FPGA_CHK_OK nebo FPGA_CHK_WINDOW. */
+int fpga_freq_window_check(uint64_t edges, uint64_t dt_ps, uint64_t gate_ps);
+/** Delka hradla [ps] podle kodu okna FPGA (FPGA_WIN_*, echo v phase_status & 7); 0 = neznamy kod. */
+uint64_t fpga_win_code_ps(uint8_t win);
+/** Vysledek samokontroly okna, ktere naposledy vratil `fpga_freq_poll` (FPGA_CHK_*). Nenulove = volajici
+ *  ho NESMI zobrazit ani dat do statistiky (jako `fpga_freq_poll_miscount`). */
+int  fpga_freq_poll_check(void);
+/** Soucty zamitnutych oken od bootu pro `status`. */
+void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window);
+/** "2026-10-10 14:03:05 UTC git d526c00+" (+ = neulozene zmeny); bez identity "neznama". Ciste-logicke. */
+void fpga_freq_format_build(uint32_t build_time, uint32_t build_git, char *buf, int buflen);
+/** Posledni platny DATA ramec VCETNE odmitnuteho mereni -- jen pro diagnostiku (`status`: verze, identita,
+ *  hlidac hodin, TDC). Mereni z nej NEBRAT: k tomu je `fpga_freq_get_last`, kam se odmitnute okno nedostane. */
+bool fpga_freq_get_frame(fpga_meas_t *out);
 /* tdc_status bity (abs 100) */
 #define FPGA_TDC_CAL_A        (1u << 0)   /* tabulka kanalu A platna */
 #define FPGA_TDC_CAL_B        (1u << 1)
@@ -103,6 +144,29 @@ typedef struct {
 #define FPGA_ERR_TDC          (1u << 4)   /* TDC CH_A nezkalibrovan / probiha kalibrace (FW >= 0x0400) */
 /* status2 bity */
 #define FPGA_ST2_DIV16_ERR    (1u << 0)   /* pin27 (/16): Dt==0 */
+
+/* ── Dva SLOTY ramce vs. dva KANALY (FW >= 0x041E, `FPGA_CAP_CHAN`) ────────────────────────────────
+ * Ramec ma PRIMARNI slot (`frequency_x100000`, `edge_count`, `gate_ps`, `error_flags`) a SEKUNDARNI slot
+ * (`freq16_x100000`, `edges_b`, `dt_b_ps`, `status2`). Do primarniho FPGA dava kanal vybrany SET_CONFIG 0x03
+ * (`channel_id` v ramci = 0 A / 1 B), do sekundarniho ten druhy; NOVE MERENI (SEQUENCE) spousti dokonceni okna
+ * PRIMARNIHO kanalu. Headline, statistika, datalog, IPC i SCPI proto cti primarni slot beze zmeny (= vybrany
+ * kanal). Kdo potrebuje ABSOLUTNI kanal (okno Dvojkanal), pouzije tyto pomocniky. Starsi FW a emulator:
+ * primarni = A, sekundarni = B (jako dosud). */
+static inline int fpga_meas_chb_primary(const fpga_meas_t *m)
+{
+    return (m->caps & FPGA_CAP_CHAN) && (m->channel_id == 1u);
+}
+/** Kmitocet kanalu `ch` (0 = A, 1 = B) ve formatu x1e5. */
+static inline uint64_t fpga_meas_freq_ch(const fpga_meas_t *m, int ch)
+{
+    return ((ch != 0) == (fpga_meas_chb_primary(m) != 0)) ? m->frequency_x100000 : m->freq16_x100000;
+}
+/** Chybovy priznak okna (Dt == 0) kanalu `ch`; nenulove = chyba. */
+static inline uint32_t fpga_meas_err_ch(const fpga_meas_t *m, int ch)
+{
+    return ((ch != 0) == (fpga_meas_chb_primary(m) != 0)) ? (m->error_flags & FPGA_ERR_MEAS)
+                                                          : (m->status2 & FPGA_ST2_DIV16_ERR);
+}
 
 /** Akceptacni krok 1: overi crc16("123456789")==0x29B1 (nase CRC == FPGA CRC).
  *  @return true = OK. Pri false se SPI komunikace nesmi zahajit. */
@@ -312,7 +376,21 @@ uint32_t fpga_stat_target_ms(void);
 #define FPGA_WIN_100MS 0u
 #define FPGA_WIN_250MS 1u
 #define FPGA_WIN_1S    2u
-bool fpga_freq_set_window(uint8_t mode);
+#define FPGA_WIN_50MS  3u      /* FW >= 0x041E */
+#define FPGA_WIN_500MS 4u      /* FW >= 0x041E */
+bool fpga_freq_set_window(uint8_t mode);                 /* 0..4 */
+
+/* Vyber kanalu a hradla z UI (FW >= 0x041E, `FPGA_CAP_CHAN`). Index hradla = IPC_UICFG_GATE (0,05 / 0,1 /
+ * 0,25 / 0,5 / 1 s) -> kod `FPGA_WIN_*`. */
+uint8_t  fpga_gate_idx_to_win(uint8_t idx);
+uint32_t fpga_gate_idx_ms(uint8_t idx);                  /* delka hradla [ms] — FpgaTask podle ni voli periodu cteni */
+bool     fpga_freq_set_channel(uint8_t ch);              /* SET_CONFIG 0x03: 0 = A, 1 = B primarni */
+/** Idempotentni synchronizace: porovna ECHO v poslednim ramci (`channel_id`, `phase_status & 7`) s pozadavkem
+ *  a pripadne ho znovu posle (FPGA po power-cyklu/reconfiguraci startuje s A a 0,25 s). Rate-limit 1,5 s,
+ *  protoze echo se obnovuje az s novym merenim. Volat z FpgaTasku. @return 1 = neco se poslalo. */
+bool     fpga_freq_cfg_sync(uint8_t want_chan, uint8_t want_gate_idx);
+/** 1 = ramec je jeste z JINEHO kanalu, nez uzivatel zvolil (prechod) -> nepouzit ho pro zobrazeni ani statistiku. */
+bool     fpga_freq_chan_pending(const fpga_meas_t *m, uint8_t want_chan);
 
 /** Odebere a vynuluje akumulátor `which`. `*hz` (smí být NULL) = reciproký
  *  průměr za okno od minulého odběru, `*gate_s` (smí být NULL) = celková délka

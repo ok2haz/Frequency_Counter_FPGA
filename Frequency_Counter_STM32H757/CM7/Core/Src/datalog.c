@@ -467,7 +467,8 @@ static void sample(datalog_rec_t *r)
     if (fpga_freq_get_last(&m)) {
         /* fpga_freq_select() ma vnitrni stav a smi ji volat JEN FpgaTask ->
          * tady jen precteme, ktera odbocka ma platna data (bez hystereze). */
-        use16 = (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
+        /* FW >= 0x041E: freq16 je DRUHY KANAL, ne odbocka /16 -> zadny prechod na nej (FPGA_CAP_CHAN). */
+        use16 = !(m.caps & FPGA_CAP_CHAN) && (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
         r->freq_x100000 = use16 ? m.freq16_x100000 : m.frequency_x100000;
         /* F-0180: presne jen z overene dvojice /4; jinak 0 -> ulozi se x1e5. */
         if (!use16) r->freq_hz = fpga_freq_hires_hz(m.frequency_x100000,

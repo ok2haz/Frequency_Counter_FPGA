@@ -3763,13 +3763,15 @@ static void app_gpsdo_render_dualch(void)
 
     /* Kmitocty obou kanalu (zmenovy klic = naformatovany retezec). */
     char s[40];
-    if (seen) fpga_freq_format_val(m.frequency_x100000, s, sizeof s); else snprintf(s, sizeof s, "--");
+    /* ABSOLUTNI kanaly (FW >= 0x041E: primarni slot ramce = kanal vybrany tlacitkem CHAN). */
+    const uint64_t fa = seen ? fpga_meas_freq_ch(&m, 0) : 0u, fb = seen ? fpga_meas_freq_ch(&m, 1) : 0u;
+    if (seen) fpga_freq_format_val(fa, s, sizeof s); else snprintf(s, sizeof s, "--");
     if (first || dchg(c_fa, sizeof c_fa, s)) {
-        dualch_freq(DUALCH_CA_Y, m.frequency_x100000, seen); drew = 1;
+        dualch_freq(DUALCH_CA_Y, fa, seen); drew = 1;
     }
-    if (seen) fpga_freq_format_val(m.freq16_x100000, s, sizeof s); else snprintf(s, sizeof s, "--");
+    if (seen) fpga_freq_format_val(fb, s, sizeof s); else snprintf(s, sizeof s, "--");
     if (first || dchg(c_fb, sizeof c_fb, s)) {
-        dualch_freq(DUALCH_CB_Y, m.freq16_x100000, seen); drew = 1;
+        dualch_freq(DUALCH_CB_Y, fb, seen); drew = 1;
     }
 
     /* RF uroven — spolecna (jeden AD8307), bar v obou kartach. */
@@ -3795,8 +3797,7 @@ static void app_gpsdo_render_dualch(void)
 
     /* Stavovy radek kazdeho kanalu zvlast (CH A i CH B maji vlastni chybovy bit). */
     for (int ch = 0; ch < 2; ch++) {
-        const char *st = dualch_status(seen, &m, ch == 0 ? (m.error_flags & FPGA_ERR_MEAS)
-                                                         : (m.status2 & FPGA_ST2_DIV16_ERR));
+        const char *st = dualch_status(seen, &m, (int)fpga_meas_err_ch(&m, ch));
         char *cache = (ch == 0) ? c_sa : c_sb;
         if (!first && !dchg(cache, 28, st)) continue;
         if (first) dchg(cache, 28, st);
@@ -3813,10 +3814,9 @@ static void app_gpsdo_render_dualch(void)
     /* Vysledek zvolene operace (vlastni zmenovy klic — retezec nese i NAZEV
      * operace, takze prepnuti tlacitka prekresleni vyvola samo). */
     { char d[sizeof c_dl];
-      dualch_result_text(d, sizeof d, (int64_t)m.frequency_x100000,
-                         (int64_t)m.freq16_x100000, seen);
+      dualch_result_text(d, sizeof d, (int64_t)fa, (int64_t)fb, seen);
       if (first || dchg(c_dl, sizeof c_dl, d)) {
-          dualch_result((int64_t)m.frequency_x100000, (int64_t)m.freq16_x100000, seen);
+          dualch_result((int64_t)fa, (int64_t)fb, seen);
           drew = 1;
       } }
     if (drew) present_now();

@@ -136,7 +136,7 @@ bool setup_load(int slot)
     g_lang_en     = s.lang_en ? 1 : 0;
     g_tz_offset_h = s.tz_offset_h;
     g_tz_auto     = s.tz_auto ? 1 : 0;
-    g_ui_cfg      = s.ui_cfg;
+    g_ui_cfg      = ipc_uicfg_norm(s.ui_cfg);
     g_anim_enabled = s.anim_en ? 1 : 0;
     g_fx_enabled  = (uint16_t)(s.fx_en & FX_ALL);
     /* g_meas_cfg (5 double) commitovat ATOMICKY — je sdilene s SCPI (UartTask)

@@ -12,6 +12,7 @@
  * z CM7 i z CM4 - zavislost na te -I ceste tim mizi (overeno kompilatorem
  * se zamerne vynechanou -I../../CM7/Core/Inc, viz commit). */
 #include "../Inc/scpi.h"       /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
+#include "../Inc/ipc_shared.h" /* IPC_UICFG_GATE/SET_GATE, IPC_GATE_N — kodovani g_ui_cfg (obe jadra) */
 #include "../Inc/version.h"   /* FW_VERSION_FULL — *IDN? */
 #include "../Inc/meas_present.h"  /* mp_ad8307_dbm — jediny prevod mV->dBm (F-0165), i na CM4 */
 /* 🔴 2026-10-02: calib.h UNCONDITIONNE (ne jen pod CORE_CM7) kvuli
@@ -201,14 +202,14 @@ static int scpi_parse3(const char *s, int *a, int *b, int *cc)
  * branu z vlastni kopie tabulky (dve tabulky = dve pravdy, viz `fmt_scpi_hz_d`). */
 double scpi_gate_s(uint8_t idx)
 {
-    static const double G[4] = {0.1, 1.0, 10.0, 100.0};
-    return G[idx & 3];
+    static const double G[IPC_GATE_N] = {0.05, 0.1, 0.25, 0.5, 1.0};
+    return G[(idx < IPC_GATE_N) ? idx : IPC_GATE_DEFAULT];
 }
 /* Sekundy -> index brany. @return 0..3, nebo -1 kdyz hodnota neodpovida presetu.
  * Tolerance 1 % kryje zapis "0.1" i "1E-1". */
 int scpi_gate_idx_from_s(double sec)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < (int)IPC_GATE_N; i++) {
         double g = scpi_gate_s((uint8_t)i), d = sec - g;
         if (d < 0) d = -d;
         if (d <= g * 0.01) return i;
@@ -1055,7 +1056,7 @@ static int scpi_src_set_cfg_cm7(scpi_src_t *s, uint8_t key, uint32_t vu, double 
         if (key == SCPI_CFG_GATE) {
             int gi = scpi_gate_idx_from_s(vd);
             if (gi < 0) return 0;                       /* mimo presety -> -222 */
-            cur = (uint8_t)((cur & ~(3u << 2)) | ((uint32_t)gi << 2));
+            cur = IPC_UICFG_SET_GATE(cur, gi);
             s->set_gate_idx = (uint8_t)gi;
         } else if (key == SCPI_CFG_CHAN) {
             if (vu > 1u) return 0;                      /* mame jen kanal 0/1 */
@@ -1102,7 +1103,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
     {
         uint8_t c = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
         src->set_chan     = (uint8_t)((c >> 1) & 1u);
-        src->set_gate_idx = (uint8_t)((c >> 2) & 3u);
+        src->set_gate_idx = IPC_UICFG_GATE(c);
         src->set_running  = (uint8_t)((c >> 4) & 1u);
     }
     src->selftest_pass = (g_selftest_res == 1);
@@ -1259,14 +1260,20 @@ int scpi_selftest(void)
 
     /* ── Instrument SET + readback (2026-08-15). Do teto chvile bylo SCPI mimo
      * Math read-only, takze prave tohle je jadro noveho chovani. ── */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
-    ok &= (src.set_gate_idx == 2);                       /* 10 s = index 2 */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.5", b, sizeof b);
+    ok &= (src.set_gate_idx == 3);                       /* 0,5 s = index 3 */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b);
-    ok &= (strncmp(b, "10.000000", 9) == 0);             /* readback = nastavena hodnota */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.1", b, sizeof b);
-    ok &= (src.set_gate_idx == 0);                       /* toleranci 1 % projde i "1E-1" */
+    ok &= (strncmp(b, "0.500000", 8) == 0);              /* readback = nastavena hodnota */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 1", b, sizeof b);
+    ok &= (src.set_gate_idx == 4);                       /* 1 s = index 4 (nejdelsi) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 5E-2", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* 0,05 s; toleranci 1 % projde i "5E-2" */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 3.7", b, sizeof b);
     ok &= (src.set_gate_idx == 0);                       /* mimo preset -> SET se NEaplikuje */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* 10 s uz preset NENI (nejdelsi 1 s) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.25", b, sizeof b);
+    ok &= (src.set_gate_idx == IPC_GATE_DEFAULT);        /* vychozi 0,25 s */
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 1", b, sizeof b);
     ok &= (src.set_chan == 1);
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN?", b, sizeof b);

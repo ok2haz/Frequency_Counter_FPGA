@@ -87,7 +87,7 @@ void MX_RTC_Init(void)
    * poprve kresli (screen_main_init ho rozbali do st). Cteni BKP nevyzaduje DBP;
    * neplatny magic -> g_ui_cfg zustane default z freertos.c. */
   uint32_t uicfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
-  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = (uint8_t)(uicfg & 0xFFu);
+  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = ipc_uicfg_norm((uint8_t)(uicfg & 0xFFu));
 
   /* Systemove nastaveni (jas/mute) z BKP_DR2. Neplatny magic -> default z freertos.c.
    * Platny magic = warm reset (BKP prezila) -> g_syscfg_bkp_valid=1 -> syscfg_load
