@@ -4326,6 +4326,133 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** fix(stm,web) MP_TDC_PS
 - **Stav:** aktivní
 
+### L-0140 — Logicky souvislý řetěz není fyzicky souvislý: carry chain v FPGA je jen tak dlouhý jako řádek
+
+- **Datum:** 2026-10-09
+- **Oblast:** FPGA `tdc.v` (`tdc_chain`), `top.v` `TDC_NTAP`, `pins.cst`
+- **Symptom:** žádný viditelný — TDC měřil. Teprve rozbalení bitstreamu (Apicula) a timing report z každého vzorkovacího FF
+  ukázaly, že 320tapový řetěz má tapy 0–267 v jednom řádku a 268–319 v jiném (A: R26 → R20, B: R27 → R5) za skokem obecným
+  vedením; a že při jiném sestavení placer dal kanál B do řádku R9, 19 řádků od vstupního pinu.
+- **Příčina:** carry v GW1NR-9 vede jen vodorovně v řádku (45 CFU × 6 ALU = 270, z toho hlava a konec); delší řetěz nástroj tiše
+  rozdělí a spojí vedením. Kontrola `check_tdc_netlist.py` viděla jen netlist, kde je řetěz souvislý.
+- **Oprava:** `TDC_NTAP = 268` (přesně řádek), dekodér 288 s doplněním „prošla", řádky vynucené `GROUP`/`GRP_LOC` jen nad ALU,
+  kontrola `sim/check_tdc_placement.py` nad textovým timing reportem (`top.v`, `tdc.v` `tdc_chain`, `pins.cst`).
+- **Pravidlo:** **U struktury, jejíž funkce závisí na fyzické poloze (delay line, vzorkovače), ověřuj rozmístění po P&R
+  strojově, ne netlist; a do skupiny umístění dávej jen buňky, které tvoří tu strukturu — přidané FF placer rozházel mimo slot.**
+- **Detekce:** `python sim/check_tdc_placement.py impl/pnr/Counter_FPGA.tr` musí dát PASS (jinak build neodevzdávat).
+- **Commit:** feat(fpga) FW 0x041D
+- **Stav:** aktivní
+
+### L-0141 — Splněné časování s nejistotou 0,5 ns nestačí: stejná logika měřila špatně, dokud se rezerva nezvedla na ~1 ns
+
+- **Datum:** 2026-10-09
+- **Oblast:** FPGA `timing.sdc` (`set_clock_uncertainty`), navazuje na L-0138
+- **Symptom:** FW 0x041D (TDC v jednom řádku) při P&R splněném s nejistotou 0,5 ns (skutečná rezerva 0,545 ns) měřil na desce
+  1 578 628 Hz místo 10 000 008 Hz (~1/6 hran). Stejný zdroj, stejný vstup; FW 0x041A (rezerva 0,64 ns) a sestavení
+  s nejistotou 0,9 ns měřily správně.
+- **Příčina:** NEUZAVŘENO. Hypotéza: stejně jako v L-0138 chybí v modelu skutečný jitter/skew hodin, a nejtěsnější cesty
+  (počítání hran `rise_q -> cy_q/snap`, `regr_acc`) pak počítají chybně. Výsledek byl v 6 z 7 nahrání špatný, jednou správný
+  (NE deterministický) a zmizel až s rezervou >= 0,98 ns; tedy mez není ostrá.
+- **Oprava:** `set_clock_uncertainty -setup ... 0.9` v `timing.sdc`. Ověřeno 7/7 nahrání správně, ADEV(0,25 s) 7,2·10⁻¹¹.
+- **Pravidlo:** **Po každé změně rozmístění/zdrojů v FPGA ověř na desce výsledek VÍCE nahráními (aspoň 4×) a neber jediné správné měření
+  za důkaz; rezervu hlídej proti ~1 ns, ne proti nule.**
+- **Detekce:** `Counter_FPGA_tr_content.html` → u nejhorší cesty `tUnc -0.900` a slack >= 0; na desce 4× nahrát a 4× `freq_hz`.
+- **Commit:** (commit FW 0x041D)
+- **Stav:** aktivní, příčina otevřená (O-bod: změřit skutečný jitter Si5356 / přivést 100 MHz z jiného zdroje)
+
+### L-0142 — Echo konfigurace, které se obnovuje jen s měřením, nesmí být jediný zdroj pravdy o tom, co jsme poslali
+
+- **Datum:** 2026-10-09
+- **Oblast:** `fpga_freq_cfg_sync` (výběr kanálu / hradla FPGA, FW 0x041E)
+- **Symptom:** test na desce: tlačítko CHAN A → B (na B není signál) → zpět A. Měření se po návratu na A nikdy neobnovilo
+  (`SIGNAL_LOST`, SEQUENCE stojí), FPGA zůstala na kanálu B.
+- **Příčina:** STM posílalo SET_CONFIG jen když se echo v rámci (`channel_id`, `phase_status`) lišilo od požadavku. Echo ale
+  FPGA zamyká při DOKONČENÍ MĚŘENÍ; bez signálu na vybraném kanálu zůstalo staré „A“, takže po přepnutí zpět na A se echo
+  a požadavek shodovaly a povel se nikdy neposlal.
+- **Oprava:** STM si pamatuje, co naposledy POSLALO (`s_cfg_sent_chan/win`), posílá při změně požadavku hned a opakuje podle
+  echa až po 1,5 s (to chytí reset FPGA); `fpga_freq_restart` pamatovanou hodnotu zapomene (`fpga_freq.c`).
+- **Pravidlo:** **Stav, který posíláš jinému zařízení, porovnávej s tím, co jsi POSLAL, ne jen s tím, co ti zařízení hlásí
+  zpět — hlášení může být zamčené/zastaralé přesně v situaci, kterou opravuješ. Test přepínače vždy dělej i v cestě „vybraný
+  zdroj mlčí“ a zpět.**
+- **Detekce:** na desce: `tap 3` (CHAN) dvakrát při odpojeném kanálu B → měření na A se musí obnovit do ~3 s.
+- **Commit:** (commit FW 0x041E)
+- **Stav:** aktivní, opraveno ⬜ neověřeno na desce (čeká na flash CM7)
+
+### L-0143 — Bitstream bez identity: dva různé soubory hlásily stejnou verzi, takže z desky nešlo poznat, co běží
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA build / protokol (`build.tcl`, `top.v`, `spi_app.v` bajty 12..19)
+- **Symptom:** „FPGA se někdy nahraje špatně" (STATUS #282). `ab_test/FW_0x041D_radek.fs` a `FW_0x041D_unc09.fs` jsou
+  RŮZNÉ bitstreamy (jiné SDC), oba hlásily `FW:0x041D`. Výsledky měření se tedy nedaly přiřadit souboru.
+- **Příčina:** `FW_VERSION` je ruční konstanta. Bitstream se mění i bez její změny (SDC, volby P&R, sestavení v IDE
+  místo `build.tcl`, L-0122), a nic v rámci neidentifikovalo konkrétní sestavení.
+- **Oprava:** `build.tcl` při každém sestavení zapíše `src/build_id.vh` (unix čas + git hash + příznak neuložených
+  změn), rámec ho nese v bajtech 12..19 (CAPS bit10, FW 0x041F), `status` → `FPGA BUILD:`. `tools/fpga_release.py`
+  vydá bitstream do `ab_test/` jen se jménem z identity a řádkem v `ab_test/MANIFEST.md` (md5, rezervy, CLS).
+- **Pravidlo:** **Každý artefakt, který se nahrává do HW, musí nést identitu generovanou při sestavení (čas + verze
+  zdrojů) a zařízení ji musí umět ohlásit; ručně udržované číslo verze identitou není.**
+- **Detekce:** `status` → `FPGA BUILD:` se shoduje s řádkem v `ab_test/MANIFEST.md`; `python tools/fpga_release.py`
+  kontrola „identita odpovídá .fs".
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0144 — Měřicí přístroj bez samokontroly: okno se špatným počtem hran vypadalo zdravě
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA `win_recip` (`spi_app.v`), STM `fpga_freq_poll` (`fpga_freq.c`)
+- **Symptom:** L-0141: 1 578 628 Hz místo 10 000 008 Hz v 6 ze 7 nahrání; L-0137: počet hran o desítky tisíc jinak.
+  Rámce měly platné CRC, VALID, navazující SEQUENCE — špatné číslo šlo na displej, do statistiky i datalogu.
+- **Příčina:** měřená cesta (vzorek řetězu → detekce hrany → čítač s registrovaným přenosem) neměla žádnou nezávislou
+  kontrolu a STM neověřovalo, jestli délka okna odpovídá hradlu. Vada kdekoli v té cestě byla neviditelná.
+- **Oprava:** (1) FPGA: kontrolní počítání hran vlastním synchronizátorem téhož pinu, rozdíl proti `snap` v rámci
+  (bajty 97/98); (2) STM: okno se zamítne, když |rozdíl| > 1, když délka okna nesedí s hradlem (`fpga_freq_window_check`)
+  nebo když hlídač 100 MHz hlásí výpadek; `status` → `FPGA SAMOKONTROLA:`. Zamítnuté okno se nezobrazí ani nezapočte.
+- **Pravidlo:** **Každou hodnotu, kterou přístroj vydává jako měření, musí potvrdit aspoň jedna nezávislá kontrola
+  (druhá cesta, fyzikální mez, konzistence s nastavením) a výsledek kontroly musí být vidět; bez ní je vadné měření
+  k nerozeznání od správného.**
+- **Detekce:** `sim/run.ps1 topselfchk` (5 ukradených hran → rozdíl ≥ 4); selftest #1 (`fpga_freq_window_check`:
+  okno 6,3× delší neprojde); na desce `status` → `FPGA SAMOKONTROLA: zamitnuto oken: citani 0, ...`.
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0145 — Zamítnuté měření prosáklo dalším rámcem se stejnou SEQUENCE
+
+- **Datum:** 2026-10-10
+- **Oblast:** STM `fpga_freq_poll` (`fpga_freq.c`, latch `s_last`)
+- **Symptom:** nalezeno čtením kódu, na desce nepozorováno: okno odmítnuté jako miscount se do `s_last` nezapsalo jen
+  v prvním rámci; o ~25 ms později přišel tentýž výsledek znovu (FPGA ho posílá až do dalšího měření, jen bez FRESH),
+  `is_new` byl 0, takže `mc` = 0 a okno se latchlo. Viděl ho web (IPC), SCPI i okna UI.
+- **Příčina:** podmínka latchu závisela na výsledku kontroly PRÁVĚ TOHOTO pollu, ne na tom, ke kterému měření rámec
+  patří. Rámec bez FRESH nese stále totéž měření.
+- **Oprava:** pamatuje se SEQUENCE odmítnutého měření (`s_rej_seq`) a rámce se stejnou SEQUENCE se nelatchují;
+  diagnostika rámce (verze, identita, hodiny) se drží zvlášť v `s_frame` (`fpga_freq_get_frame`).
+- **Pravidlo:** **Rozhodnutí o platnosti dat váž na identitu dat (pořadové číslo), ne na okamžik, kdy přišla —
+  zdroj, který stejná data opakuje, jinak obejde každou kontrolu, která běží jen „při novém".**
+- **Detekce:** grep `fpga_freq_get_last` u konzumentů měření; review: každý latch po kontrole musí mít podmínku
+  na SEQUENCE.
+- **Commit:** (commit fix STM samokontrola)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0146 — FPGA bez resetu nepřežije výpadek hodin: stav i kalibrace z rozbitých hodin zůstanou až do nového nahrání
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA `top.v` (hlídač 100 MHz, `boot_done`), `tdc.v` (`ring_osc` LFSR)
+- **Symptom:** HYPOTÉZA pro část případů „někdy se nahraje špatně": 100 MHz dělá Si5356, který STM po startu
+  přenastaví (OEB off → soft reset → on). Při resetu STM za běhu FPGA nebo při zapnutí (FPGA naběhne dřív než STM
+  nastaví Si5356) dostala logika TDC a oken rozbité / chybějící hodiny a kalibrace po 168 ms mohla proběhnout na jiném
+  kmitočtu. FPGA nemá reset, takže výsledek přetrval do dalšího nahrání.
+- **Příčina:** žádné hlídání referenční hodiny; boot kalibrace odpočítávala takty té hodiny bez ohledu na její stav;
+  LFSR děliče ring oscilátoru (taktovaný kruhem, runt pulzy při start/stop) neměl únik ze stavu 0.
+- **Oprava:** hlídač v doméně 10 MHz (OCXO, nezávislá na STM) počítá 100 MHz v oknech 102 µs; mimo pásmo → měření
+  stojí (`hold`), odpočet boot kalibrace se nuluje a po 168 ms stabilních hodin proběhne nová kalibrace; počet
+  výpadků v rámci (bajty 64/65); LFSR se ze stavu 0 vrátí na seed.
+- **Pravidlo:** **Logika bez resetu, která běží z hodin od jiného zařízení, musí ty hodiny hlídat hodinami, na
+  kterých nezávisí, a po výpadku se sama vrátit do čistého stavu včetně kalibrací.**
+- **Detekce:** `sim/run.ps1 topselfchk` (zastavení 100 MHz na 20 µs → výpadek započten, měření drženo, rekalibrace,
+  pak správně); na desce: reset STM (NRST) za běhu → `status` `FPGA HODINY 100M: OK, vypadku 1` a měření se obnoví.
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
 ---
 
 ## Archiv (neplatné lekce)

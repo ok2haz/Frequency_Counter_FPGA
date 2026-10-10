@@ -330,13 +330,28 @@ FPGA piny: PIN54=MOSI, PIN57=MISO, PIN55=SCK, PIN56=CS. Detaily viz `FPGA_INSTAN
 | 8 | 20 | 8 | edge_count (počet period v okně) |
 | 16 | 28 | 8 | gate_time_ns (≈250e6, kolísá) |
 | 24 | 36 | 8 | timestamp_10MHz_ticks |
-| 32 | 44 | 1 | channel_id |
+| 32 | 44 | 1 | channel_id (**FW ≥ 0x041E, CAPS bit9**: 0 = primární slot je CH_A, 1 = CH_B; SET_CONFIG 0x03) |
 | 33 | 45 | 1 | measurement_status (bit0 VALID, bit1 FRESH) |
 | 34 | 46 | 4 | error_flags (u32 LE): bit0 meas err(/4), bit1 SIGNAL_LOST, bit2 overflow (okno >~21,5 s) |
 | 38 | 50 | 1 | **phase_status**: bity3:0 present[3:0], bity7:4 fine_seen[3:0] (zdravé=0xFF = `PH:F/F`) |
+|  |  |  | ⚠️ **FW ≥ 0x041E (CAPS bit9) je bajt 50 ECHO hradla `{5'd0, base_win}`** (0=100 ms, 1=250 ms, 2=1 s, 3=50 ms, 4=500 ms; SET_CONFIG 0x01) — STM podle něj pozná, že FPGA drží hradlo, které chce (`fpga_freq_cfg_sync`) |
 | 39 | 51 | 1 | **status2**: bit0 = chyba dělení pin27 (/16) |
 | 40 | 52 | 8 | **freq16_x100000** (u64 LE) — **pin27 /16** |
 | 48 | 60 | 2 | spare = 0 |
+
+**FW ≥ 0x041F (CAPS bit10, samokontrola; rámec 128 B, STATUS #283):**
+
+| Abs | Size | Pole |
+|---|---|---|
+| 12 | 4 | **čas sestavení bitstreamu** (u32 LE, unix s; 0 = neznámý) — místo `frequency_x100000`, které od FW 0x0400 nese vždy 0 (kmitočet počítá STM z dt) |
+| 16 | 4 | **git zdrojů** (u32 LE): [27:0] zkrácený hash, [31] = neuložené změny; generuje `build.tcl` → `src/build_id.vh` |
+| 64 | 1 | **clk_status**: bit0 = 100 MHz v posledním okně hlídače (102 µs) OK, bit1 = od nahrání aspoň jeden výpadek, bit2 = zotavení (měření stojí, rekalibrace TDC) |
+| 65 | 1 | **počet výpadků 100 MHz** od nahrání (saturuje 255) |
+| 97 | 1 | **rozdíl kontrolního a měřeného počítání hran** okna, primární slot (int8, saturuje; zdravé \|d\| ≤ 1) |
+| 98 | 1 | totéž, sekundární slot |
+
+STM zamítne okno (nezobrazí, nezapočte; `status` → `FPGA SAMOKONTROLA:`), když \|d\| > 1, hlídač hlásí
+vadu/zotavení/nový výpadek, nebo délka okna nesedí s hradlem (`fpga_freq_window_check`, i pro starší FW s CAPS bit9).
 
 **Škálování:** `freq_x100000` i `freq16_x100000` = reálný kmitočet × 1e5, **dělička (/4, /16)
 už zahrnutá ve FPGA → STM NEnásobí**. `edge_count` = počet period (diag), ne Hz.

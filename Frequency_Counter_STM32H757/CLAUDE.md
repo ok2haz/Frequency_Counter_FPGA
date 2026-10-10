@@ -249,6 +249,7 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 
 **Data / protokol:**
 - Změna 64B rámce / offsetů / škálování → **OBĚ strany** + zápis do `STATUS.md`. Změna `IPC_VERSION` → **přeflashnout OBĚ banky**.
+- 🔴 **`g_ui_cfg` (a `ipc_snapshot_t.ui_cfg`) je od 2026-10-09 FORMÁT v2** (bit7 = v2, bit1 kanál A/B, **index hradla 0..4 = bity 3:2 + bit5**: 0,05 / 0,1 / 0,25 (výchozí) / 0,5 / 1 s, bit4 RUN). Dekóduj **jen** makry `IPC_UICFG_GATE()` / `IPC_UICFG_SET_GATE()` a `ipc_uicfg_norm()` v `ipc_shared.h` — ruční `(c >> 2) & 3` vidí jen 4 presety a starý formát tiše převede špatně. Kanál a hradlo do FPGA posílá `FpgaTask` (`fpga_freq_cfg_sync`, FW ≥ 0x041E, `FPGA_CAP_CHAN`) podle echa v rámci, ne UI přímo.
 - `freq*_x100000` už zahrnuje /4 i /16 — **STM NEnásobí**.
 - **Headline + statistiky (Allan, drift, offset, spektrogram, kužel) = SIMULACE**, dokud neběží SPI link (STATUS #2). Web servíruje reálná FPGA data → bez desky správně `null`.
 - Nikdy neservíruj `sigma_tau`/`offset`/`drift` ze snapshotu jako měření (CM7 je záměrně neplní).
@@ -1085,6 +1086,13 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 > - Poučení: aritmetika šířky > ~16 bitů se v Gowin syntéze rozpadá na řetězy LUT; časování simulace nevidí → po každé změně P&R (L-0133).
 > - 🔑 **Autoritativní popis matematiky, TDC a regrese (stav FW 0x041A) je `docs/TDC_MATEMATIKA.md`** (jeden dokument, k revizi; otevřené body v kap. 12).
 > - 🔴 **Regrese (FW 0x041A) je ZAPNUTÁ a na desce ověřená** (příčina dřívějších selhání = chybějící nejistota hodin v SDC, L-0138); věta o „vypnutí“ výše platí jen pro 0x0412. Vstup CH_A musí mít 0–3,3 V (L-0137).
+> - 🔴 **FW 0x041F (2026-10-10, STATUS #283, ⬜ NEOVĚŘENO NA DESCE) — SAMOKONTROLA, odpověď na „FPGA se někdy nahraje špatně“:**
+>   identita bitstreamu (čas + git, `status` → `FPGA BUILD:`; `FW_VERSION` sám identitou NENÍ, L-0143), hlídač 100 MHz
+>   s rekalibrací po výpadku (`FPGA HODINY 100M:`, L-0146), kontrolní počítání hran + kontrola délky okna na STM — okno,
+>   které neprojde, se NEZOBRAZÍ a nezapočte (`FPGA SAMOKONTROLA:`, L-0144). Rámce viz `docs/HW_REFERENCE.md`.
+>   **Bitstream vydávej jen přes `python tools/fpga_release.py --build`** (FPGA modul; brána: časování s nejistotou 0,9 ns,
+>   CLS, piny, rozmístění TDC, identita → `ab_test/` + `MANIFEST.md`), **ověřuj `tools/fpga_load_test.py`** (N× nahrání,
+>   L-0141). Cena: CLS 77 → 80 %, rezerva +0,02 ns — na další logiku ve FPGA už místo prakticky NENÍ.
 
 **Nahrazuje dřívější popis (`carry_tdc` zredukovaný syntézou na invertor, F-0201).** Zdroj: `Frequency_Counter_FPGA_Module/src/tdc.v`.
 - **Jak měří:** 2 kanály, každý **512 přímo instancovaných `ALU`** (carry průchod), vzorkuje se **každý druhý** stupeň
