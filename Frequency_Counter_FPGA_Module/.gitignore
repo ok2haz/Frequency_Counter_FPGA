@@ -48,3 +48,9 @@ _autosave-*
 
 # odvozené pomocné soubory
 _pdf_text.txt
+
+# identita bitstreamu - generuje build.tcl pri kazdem sestaveni (FW 0x041F)
+src/build_id.vh
+
+# bitstreamy z ab_test/ (kazdy ~3,5 MB) se neverzuji; ab_test/MANIFEST.md (md5, rezervy, identita) ano
+ab_test/*.fs

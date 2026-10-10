@@ -40,6 +40,13 @@ $tests = @(
        defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
                 "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=320", "-DPSTRIDE=1", "-DPKD=1", "-DPDUAL=0",
                 "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # 2026-10-09 (FW 0x041D): retez 268 tapu = jeden radek, dekoder 288 (tapy 268..287 doplnene jako 'prosla').
+    # Model zlomu na 268. ALU tedy lezi ZA koncem retezu. Prahy stejne jako tdcinl.
+    @{ name = "tdcinl268"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=288", "-DPNTAP=268", "-DPSTRIDE=1", "-DPKD=1", "-DPDUAL=0",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
     # totez s DUAL=1 (vzorky i na sestupnou hranu hodin); na desce se nevejde (CLS 87 %), ale musi fungovat
     @{ name = "tdcinl_dual"; top = "tb_tdc_inl";
        rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
@@ -59,8 +66,16 @@ $tests = @(
     # 2026-10-08: CELY top.v s regresi (SIM_TOP: hradlo 2,5 ms, kalibrace 2^12) -- ~10 min
     @{ name = "topregr"; top = "tb_top_regr"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_regr.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-09 (FW 0x041E): CELY top, vyber kanalu A->B za behu + echo hradla; CH_A 10 MHz, CH_B 5 MHz -- ~15 min
+    @{ name = "topchan"; top = "tb_top_chan"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_chan.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-10 (FW 0x041F): CELY top, samokontrola -- kontrolni pocitani hran (5 ukradenych hran -> ccd >= 4)
+    # a hlidac 100 MHz (zastaveni hodin na 20 us -> vypadek napocitan, mereni drzeno, rekalibrace, pak spravne)
+    @{ name = "topselfchk"; top = "tb_top_selfchk"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_selfchk.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
     # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
     @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
+    @{ name = "decequiv288"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=288") }
     @{ name = "decequiv320"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=320") }
     # multiplexer TX bajtu (spi_app) == puvodni (tx_old_ref.v = spi_app pred prepisem 2026-10-07)
     @{ name = "txequiv"; top = "tb_tx_equiv"; rtl = @("spi_app.v"); tb = "tb_tx_equiv.sv"; extra = @("tx_old_ref.v") }

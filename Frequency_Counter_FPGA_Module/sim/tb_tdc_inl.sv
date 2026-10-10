@@ -18,6 +18,9 @@
 `ifndef PTAPS
 `define PTAPS 256
 `endif
+`ifndef PNTAP
+`define PNTAP `PTAPS
+`endif
 `ifndef PSTRIDE
 `define PSTRIDE 2
 `endif
@@ -53,7 +56,7 @@ module tb_tdc_inl;
     wire [47:0] ts;
     wire [31:0] ovf, peak; wire [15:0] nz, last, maxtap;
     reg  [9:0] dump_k = 0; wire [23:0] dump_q;
-    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(`PTAPS), .STRIDE(`PSTRIDE), .KD(`PKD), .DUAL(`PDUAL)) ca (
+    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(`PTAPS), .STRIDE(`PSTRIDE), .KD(`PKD), .DUAL(`PDUAL), .NTAP(`PNTAP)) ca (
         .clk(clk), .sig_raw(sig), .ro(ro), .tick_ps(tick_ps), .want(want), .want_seg(1'b0),
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_c), .rise_s(rise_s), .trig_ack(trig),
         .ts_valid(tsv), .ts_ps(ts), .use_ro(use_ro), .cal_busy(busy),

@@ -56,3 +56,14 @@ IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 // IO_LOC "ext_ref_sens"  51;  // PIN51_IOR17B, 10 MHz monitor (jiný bank)
 // Data_RDY (PIN49) se NEPOUŽÍVÁ (rozhodnuto 2026-08-30, FPGA_PROTOCOL_V3_NAVRH.md §2/§3) —
 // nahrazuje ho příznak na MISO při CS=1 (v3 §3), dnes ani to není zapojeno (v2 beze změny).
+
+// ── Rozmisteni retezu TDC (2026-10-09, FW 0x041D) ───────────────────────
+// Kazdy retez = presne jeden radek CFU (C2..C46 = 45 dlazdic x 6 ALU = hlava + 268 tapu + konec).
+// Do skupiny patri JEN ALU retezu: kdyz se do ni pridaly i vzorkovaci FF (q_r), placer je rozhazel
+// mimo slot jejich ALU (tap -> FF obecnym vedenim = nemonotonni kod). FF si placer vezme sam
+// do slotu sveho ALU (vystup SUM -> D uvnitr CLS). Sousedni radky = co nejpodobnejsi hodiny a vedeni.
+// Kontrola po kazdem buildu: python sim/check_tdc_placement.py impl/pnr/Counter_FPGA.tr
+GROUP g_tdca = {"u_tdca/u_chain/g*"};
+GRP_LOC g_tdca R26C[2:46];
+GROUP g_tdcb = {"u_tdcb/u_chain/g*"};
+GRP_LOC g_tdcb R27C[2:46];

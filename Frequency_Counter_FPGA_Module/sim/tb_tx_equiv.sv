@@ -1,6 +1,7 @@
 // tb_tx_equiv.sv -- novy plochy `case` multiplexer TX bajtu (spi_app) == puvodni retez porovnani rozsahu
 // (tx_old_ref.v = spi_app pred prepisem). Nahodny stav, vsech 126 bajtu, DATA i CAL. Rozdily jen tam, kde
-// se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream nahrazen regresnim blokem v FW 0x0411).
+// se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream nahrazen regresnim blokem v FW 0x0411;
+// FW 0x041F: DATA 12..19 = identita bitstreamu misto freq_x100000, 64/65 = hlidac 100 MHz, 97/98 = kontrolni pocitani).
 `timescale 1ps/1ps
 module tb_tx_equiv;
     reg clk = 0;   // hodiny STOJI: porovnava se jen kombinacni `tb`, FSM nesmi menit idx/registry
@@ -20,6 +21,7 @@ module tb_tx_equiv;
         .meas_dt_a_ps(dt_a), .meas_dt_b_ps(dt_b), .meas_periods_b(meas_periods_b), .meas_tdc_status(meas_tdc_status),
         .meas_cal_diag(cal_diag), .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_xm_a(40'd0), .rg_xm_b(40'd0), .rg_ym_a(48'd0), .rg_ym_b(48'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .cd_a_end(9'd0), .cd_a_st(9'd0), .cd_b_end(9'd0), .cd_b_st(9'd0), .meas_maxtap_a(mt_a), .meas_maxtap_b(mt_b), .hist_k(hk_n),
         .meas_hist_a(ha), .meas_hist_b(hb), .dbg_mosi_cnt(dm), .dbg_sck_cnt(ds),
+        .meas_clk_status(8'h01), .meas_clk_loss(8'd0), .meas_ccd_p(8'd0), .meas_ccd_s(8'd0),
         .rx_valid(1'b0), .rx_b0(8'd0), .rx_b1(8'd0), .rx_b2(8'd0), .rx_seq(32'd0), .rx_p0(8'd0), .rx_p1(8'd0), .rx_p2(8'd0),
         .rx_crc_calc(16'd0), .rx_crc_recv(16'd0), .tx_half(th_n), .tx_we(we_n), .tx_waddr(wa_n), .tx_wdata(wd_n),
         .phy_busy(1'b0), .phy_base(1'b0), .dbg_status(ds_n), .cal_mode(cm_n), .base_win(bw_n));
@@ -45,7 +47,7 @@ reg [63:0] tmp;
             dt_a = {$urandom, $urandom}; dt_b = {$urandom, $urandom};
             cal_diag = {$urandom, $urandom, $urandom, $urandom, $urandom, $urandom};
             mt_a = $urandom; mt_b = $urandom; dm = $urandom; ds = $urandom; ha = $urandom; hb = $urandom;
-            `SB(h_freq, {$urandom, $urandom}) `SB(h_edge, {$urandom, $urandom}) `SB(h_gate, {$urandom, $urandom})
+            tmp = {$urandom, $urandom}; u_old.h_freq = tmp; `SB(h_edge, {$urandom, $urandom}) `SB(h_gate, {$urandom, $urandom})
             `SB(h_freq16, {$urandom, $urandom}) `SB(h_ts, {$urandom, $urandom}) `SB(h_ch, $urandom) `SB(h_phase, $urandom)
             `SB(h_status2, $urandom) `SB(h_err, $urandom) `SB(h_dt_a, {$urandom, $urandom}) `SB(h_dt_b, {$urandom, $urandom})
             `SB(h_edge_b, $urandom) tmp = $urandom; u_old.win_cnt = tmp; `SB(d_rx0, $urandom) `SB(d_rx1, $urandom) `SB(d_rx2, $urandom)
@@ -60,7 +62,7 @@ reg [63:0] tmp;
                 for (i = 0; i < 126; i = i + 1) begin
                     `SB(idx, i)
                     #1;
-                    if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 60 && i <= 63) || i == 65 || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
+                    if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 12 && i <= 19) || (i >= 60 && i <= 65) || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
                         cmp = cmp + 1;
                         if (u_new.tb !== u_old.tb) begin
                             errs = errs + 1;

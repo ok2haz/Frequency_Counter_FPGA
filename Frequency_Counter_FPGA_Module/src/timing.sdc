@@ -36,7 +36,11 @@ set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clo
 // (vysledky zavisle na rozmisteni), build se stejnou logikou a rezervou >= 0,58 ns pocital presne
 // (docs/TDC_MATEMATIKA.md kap. 8.3). Realna rezerva tedy chybi ~0,3 ns: jitter Si5356 + vstupni buffer hodin.
 // Uncertainty 0,5 ns nuti P&R tuto rezervu dodrzet, misto aby se spolehalo na stesti pri rozmisteni.
-set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] 0.5
+// 🔴 2026-10-09 (FW 0x041D): 0,5 NESTACI. Build se skutecnou rezervou 0,545 ns (slack 0,045 + 0,5) meril
+// STABILNE a deterministicky spatne (1 578 628 Hz misto 10 000 008 Hz, tj. ~1/6 hran), stejny zdroj s 0,9 ns
+// (rezerva >= 0,98 ns) meri spravne a 0x041A (rezerva 0,64) taky. Mez lezi mezi 0,55 a 0,64 ns -> 0,9 dava
+// rezervu nad ni. Nejtesnejsi cesty jsou citani hran (rise_q -> cy_q/snap) a regr_acc (L-0141).
+set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] 0.9
 
 // I/O SPI vuci SCK (rozhoduje o skutecnem stropu SPI, ne vnitrni Fmax):
 //  MISO: PHY ho meni sestupnou hranou SCK, STM vzorkuje nabeznou -> cesta
@@ -89,3 +93,18 @@ set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/scan_k*}] -to [get_reg
 set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
 set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
 set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
+
+// FW 0x041F (2026-10-10): vystup regrese xm_a/xm_b = {x0, 8'd0} + xq (spi_app.v regr_acc, 40 b). Zapisuje se jen
+// pri fin_v; x0 se meni pri PRVNI znacce segmentu (ms predtim) a xq na konci deleni x, ktere predchazi deleni y
+// o 68 iteraci po 2 taktech -> oba operandy stoji >= 136 taktu. Bez omezeni to byla nejhorsi cesta navrhu
+// (-0,4 ns pri nejistote 0,9 ns), prestoze se jeji vysledek pouzije az desitky taktu pote.
+set_multicycle_path -setup -end 2 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
+set_multicycle_path -hold  -end 1 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
+
+// Rozmisteni retezu TDC (2026-10-09): report cest Z KAZDEHO vzorkovaciho FF -> textovy report
+// (build.tcl: -gen_text_timing_rpt) nese polohu kazdeho q_r[k] = polohu ALU tapu k.
+// Vyhodnocuje sim/check_tdc_placement.py (selze, kdyz retez neni v jednom radku / FF mimo slot ALU).
+// prvni = nejhorsi cesty celeho navrhu (vlastni report_timing jinak vychozi seznam nahradi)
+report_timing -setup -max_paths 50 -max_common_paths 1
+report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]
+report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdcb/u_chain/q_r*}]

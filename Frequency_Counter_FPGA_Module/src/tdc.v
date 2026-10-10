@@ -41,9 +41,14 @@
 // ------------------------------------------------------------
 module tdc_chain #(
     parameter TAPS   = 256,   // pocet VZORKOVANYCH tapu (sirka kodu)
-    parameter STRIDE = 2,     // ALU na jeden vzorkovany tap (delka retezu = TAPS*STRIDE)
+    parameter STRIDE = 2,     // ALU na jeden vzorkovany tap (delka retezu = NTAP*STRIDE)
     parameter KD     = 2,     // tap pro detekci hrany (vzorek q[KD] -> dR)
-    parameter DUAL   = 0      // 1 = druha sada vzorku na sestupnou hranu hodin
+    parameter DUAL   = 0,     // 1 = druha sada vzorku na sestupnou hranu hodin
+    // Fyzicky postavenych tapu (<= TAPS). Tapy NTAP..TAPS-1 nemaji ALU a hlasi se jako "hrana uz prosla":
+    // dekoder (nasobek 32) tak najde prvni neproslou pozici uvnitr skutecneho retezu, a kdyz hrana
+    // dojde az na konec, je teplomer plny = kod "za koncem". Duvod: do jednoho radku CFU GW1NR-9
+    // se vejde 270 ALU = hlava + 268 tapu + konec (docs/audit/2026-10-09_tdc-3kanaly-rozmisteni.md).
+    parameter NTAP   = TAPS
 )(
     input  wire             clk,       // clk_p0_100m
     input  wire             sig,       // asynchronni vstup (po vyberu zdroje)
@@ -54,8 +59,14 @@ module tdc_chain #(
     output wire             ec,
     output wire             qd_src_o   // sada zmrazeneho vzorku: 0 = R, 1 = F (jen DUAL)
 );
-    localparam NALU = TAPS * STRIDE;
+    localparam NALU = NTAP * STRIDE;
     wire [TAPS-1:0] s;
+    genvar p;
+    generate
+        for (p = NTAP; p < TAPS; p = p + 1) begin : pad
+            assign s[p] = 1'b0;                 // q = 0 = hrana prosla (viz NTAP)
+        end
+    endgenerate
 
     // Kazdy stupen ma VLASTNI skalarni vodice (g[i].co) misto jednoho vektoru:
     // v simulaci (Icarus) jinak kazda zmena jednoho bitu preslo vsech portu.
@@ -163,7 +174,11 @@ module ring_osc #(
         if (cnt >= lim) begin
             cnt  <= {DIV_LOG2{1'b0}};
             o    <= ~o;
-            lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[14] ^ lfsr[12] ^ lfsr[3]};
+            // FW 0x041F: pojistka proti stavu 0. Tyhle registry taktuje sam kruh, a ten se pri zapnuti a vypnuti
+            // (`en`) muze zakmitnout zkracenym pulzem -> registry se mohou nastavit libovolne. Ve stavu 0 by XOR
+            // LFSR zustal navzdy (`cal_req` ho nenastavuje), delic by mel pevny modul, udalosti kalibrace by lezely
+            // na mrizce a tabulka TDC by byla spatne az do dalsiho nahrani FPGA -- tedy vada "jen nekdy po nahrani".
+            lfsr <= (lfsr == 16'd0) ? 16'hACE1 : {lfsr[14:0], lfsr[15] ^ lfsr[14] ^ lfsr[12] ^ lfsr[3]};
         end else begin
             cnt <= cnt + {{(DIV_LOG2-1){1'b0}}, 1'b1};
         end
@@ -235,7 +250,8 @@ module tdc_chan #(
     parameter TAPS     = 256,       // vzorkovanych tapu (nasobek 32)
     parameter STRIDE   = 2,         // ALU na vzorek
     parameter KD       = 2,         // tap detekce hrany
-    parameter DUAL     = 0          // 1 = i sestupna hrana hodin
+    parameter DUAL     = 0,         // 1 = i sestupna hrana hodin
+    parameter NTAP     = TAPS       // fyzicky postavenych tapu (<= TAPS), viz tdc_chain
 )(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
@@ -320,7 +336,7 @@ module tdc_chan #(
     end
 
     // sada, ve ktere byla hrana poprve videt (jen DUAL), drzi `qd_src` v retezu (SDC: u_chain/qd_*)
-    tdc_chain #(.TAPS(TAPS), .STRIDE(STRIDE), .KD(KD), .DUAL(DUAL)) u_chain (
+    tdc_chain #(.TAPS(TAPS), .STRIDE(STRIDE), .KD(KD), .DUAL(DUAL), .NTAP(NTAP)) u_chain (
         .clk(clk), .sig(sig_eff), .ld(ld), .trig(trig_ok),
         .thermo_r(th_r), .thermo_f(th_f), .ec(ec), .qd_src_o(src_l));
 
@@ -340,7 +356,8 @@ module tdc_chan #(
     integer      hg;
     always @* begin
         hk8 = {(CW-3){1'b0}};
-        for (hg = 0; hg < TAPS / 8; hg = hg + 1) if (th[8*hg]) hk8 = hg[CW-4:0];
+        // jen skutecne tapy: doplnek NTAP..TAPS-1 je vzdy "prosla" a ukazoval by vzdy konec
+        for (hg = 0; hg < (NTAP + 7) / 8; hg = hg + 1) if (th[8*hg]) hk8 = hg[CW-4:0];
     end
     wire [CW-1:0] hk = {hk8, 3'b000};
 
@@ -387,7 +404,14 @@ module tdc_chan #(
     reg           cnt_hit = 1'b0;             // cnt == CNT_LAST (registrovane)
     reg  [14:0]   lutv    = 15'd0;            // hodnota tabulky (saturovana)
 
-    wire [AW-1:0] hist_ra = s_cmp ? scan_k : (cal_busy ? caddr : dump_k[AW-1:0]);
+    // FW 0x041E: volba adresy cteni BRAM pres REGISTROVANY priznak `busy_ra` (= cal_busy o takt pozdeji) misto
+    // kombinacniho OR ctyr stavu: cesta s_col -> cal_busy -> mux -> ADB BRAM mela 3 urovne LUT a 6 ns vedeni
+    // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). Posun o takt nevadi: priklad vyberu se meni jen na
+    // zacatku/konci kalibrace, kdy se cte jen kvuli diagnostice (vypis dump_k) a pocitani (s_col) zacina az po
+    // desitkach taktu (fz/dv1/dv2). Prioritu `s_cmp` (scan_k) drzime primo.
+    reg           busy_ra = 1'b0;
+    always @(posedge clk) busy_ra <= s_clr | s_col | s_drn | s_cmp;
+    wire [AW-1:0] hist_ra = s_cmp ? scan_k : (busy_ra ? caddr : dump_k[AW-1:0]);
     wire          hist_we = s_clr | hist_we_r;
     wire [AW-1:0] hist_wa = s_clr ? clr_k : caddr;
     wire [HW-1:0] hist_wd = s_clr ? {HW{1'b0}} : hist_wd_r;
