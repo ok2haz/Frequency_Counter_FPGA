@@ -18,6 +18,19 @@
 static int s_glyph_accel = 0;
 void prim_set_glyph_accel(int enable) { s_glyph_accel = enable ? 1 : 0; }
 
+/* ── Pocitadlo chybejicich glyfu (audit F-0034) ───────────────────────────────
+ * Chybejici glyf se v `prim_draw_text` TISE preskoci (`continue`) — text proste
+ * zmizi a nic to neohlasi. Neni to teorie: audit 2026-08-29 nasel 15 takto
+ * neviditelnych retezcu (mj. splash „GPSDO"), protoze vetsina velkych fontu je
+ * subsetovana. Dosavadni obranou byla RUCNI kontrola `grep glyph_count` po
+ * regeneraci fontu — tedy presne ta slaba vrstva, o ktere lekce L-0007 rika,
+ * ze ji nikdo nespousti. Pocitadlo z toho dela meritelny udaj ve `status`.
+ * ⚠️ Zamerne se pocita JEN v `prim_draw_text`, ne v `prim_text_width` — ta se
+ * pri zarovnani CENTER/RIGHT vola na tyz retezec navic a chyby by se zdvojily. */
+static uint32_t s_missing_glyphs;
+
+uint32_t prim_text_missing_glyphs(void) { return s_missing_glyphs; }
+
 uint32_t prim_internal_utf8_next(const char **s)
 {
     const unsigned char *p = (const unsigned char *)*s;
@@ -122,7 +135,7 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
     while (*s) {
         uint32_t cp = prim_internal_utf8_next(&s);
         const prim_glyph_t *g = prim_internal_glyph(font, cp);
-        if (g == NULL) continue;
+        if (g == NULL) { s_missing_glyphs++; continue; }   /* audit F-0034 */
         const uint8_t *bm = font->bitmap_data + g->bitmap_offset;
         int16_t gx0 = (int16_t)(pen + g->ox);
         int16_t gy0 = (int16_t)(pos.y - g->oy);

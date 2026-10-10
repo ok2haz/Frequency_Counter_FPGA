@@ -4,6 +4,8 @@
  */
 #include "sd_export.h"
 #include "datalog.h"          /* datalog_read_back / datalog_get_status / card-detect */
+#include "alarm.h"            /* alarm_sd_card — dvouton pri vlozeni/vyjmuti */
+#include "scpi.h"             /* fmt_scpi_hz_sig — presny kmitocet (F-0180) */
 #include <stdio.h>            /* snprintf (bez %f — nano.specs) */
 #include <stdlib.h>           /* abs() — desetinná část záporných teplot */
 #include <string.h>
@@ -21,6 +23,7 @@
 #include "bsp_driver_sd.h"   /* BSP_SD_Init — izolace HW vrstvy pri diagnostice */
 #include "sdmmc.h"           /* hsd1 */
 #include "ff_gen_drv.h"      /* Disk_drvTypeDef — reset is_initialized pri unmountu */
+#include "gpio_guard.h"      /* gpio_cfg_lock — GPIOC pisou obe jadra (audit F-0027) */
 #include "cmsis_os2.h"       /* osDelay — polite polling v BSP_SD_GetCardState */
 #endif
 
@@ -50,6 +53,11 @@ static bool  s_mounted;
  * svazku ne. Proto tenhle příznak: po dobu blokující operace se auto-unmount
  * přeskočí (karta stejně fyzicky zmizela, zápis doběhne s chybou a uklidí se). */
 static volatile bool s_busy;
+
+/* Verejna cesta k `s_busy` pro dalsi dlouhe zapisovatele mimo tenhle soubor
+ * (dnes `screenshot_save_sd`). Duvod a pravidla jsou v `sd_export.h`. */
+void sd_export_busy_begin(void) { s_busy = true;  }
+void sd_export_busy_end(void)   { s_busy = false; }
 
 /* Auto-mount se zada jen JEDNOU po vlozeni karty (viz `sd_export_tick`). */
 static uint8_t s_mount_tried;
@@ -101,13 +109,53 @@ void sd_export_tick(void)
 #ifndef SD_EXPORT_FATFS
     s_state = SD_EXP_NO_FATFS;
 #else
+    /* 🔴 JEDINE misto, kde se posouva debounce detekce karty (audit F-0030).
+     * Dotazy odjinud (UiTask, UartTask) uz stav nemeni, takze casova konstanta
+     * je dana kadenci tohohle tiku a nicim jinym. */
+    datalog_sd_det_tick();
     bool present = datalog_sd_card_present();
+
+    /* Zvukova udalost pri vlozeni/vyjmuti (uzivatelsky pozadavek 2026-09-23).
+     * Hrana se hlida tady (jednou za tento tik), samotne pipnuti hraje
+     * alarm_tick — jediny vlastnik pipaku, viz alarm_sd_card.
+     * 🔴 NESTACI vzit baseline na PRVNIM tiku (puvodni chyba, nalezeno na HW
+     * 2026-09-23 — power reset porad pipl "vlozeni" i s kartou uz zasunutou).
+     * `datalog_sd_card_present()` je SAMA debouncovana (`SD_DET_STABLE_N`=3
+     * tiky) a po bootu VZDY zacina na "nepritomna" (`s_det_stable`=0 v BSS),
+     * i kdyz je karta fyzicky uvnitr — ustali se teprve za 3 tiky tohohle
+     * volani. Baseline vzata na 1. tiku tedy vzdy zachyti "nepritomna", a kdyz
+     * se pak debounce za par tiku dorovna na skutecnou "pritomna", vypada to
+     * jako hrana -> falesne pipnuti pri KAZDEM bootu s vlozenou kartou.
+     * Oprava: prvnich `SD_DET_STABLE_N+1` tiku (s rezervou) se hrana vubec
+     * nevyhodnocuje, jen se `s_snd_prev` prubezne aktualizuje — tim je po
+     * uplynuti teto zaruky jiz debounce jiste ustaleny a `s_snd_prev` drzi
+     * SPRAVNOU tichou baseline, at uz je karta pritomna, nebo ne.
+     * VEDLEJSI EFEKT (F-0145, doplnuje L-0079): behem grace okna se
+     * nevyhodnocuje ZADNA hrana, takze i SKUTECNE vlozeni karty presne v
+     * prvnich ~2 s po bootu se nepipne (ikona v headeru na grace okno vazana
+     * neni a objevi se). Vedome ponechano — cena opravy > prinos pro 2s okno
+     * hned po startu, kdy uzivatel sleduje boot splash, ne zvuk. */
+    static bool    s_snd_prev;
+    static uint8_t s_snd_grace = SD_DET_STABLE_N + 1u;
+    if (s_snd_grace) {
+        s_snd_grace--;
+        s_snd_prev = present;
+    } else if (present != s_snd_prev) {
+        alarm_sd_card(present);
+        s_snd_prev = present;
+    }
 
     if (!present) {
         /* ⚠️ Neodmountovávej pod rukama UartTasku, když zrovna běží export/test. */
         if (s_mounted && !s_busy) {
-            f_mount(NULL, "", 0);      /* rychlé — jen odpojí FS z ukazatele */
-            s_mounted = false;
+            /* 🔴 `sd_export_unmount()`, NE holy `f_mount(NULL,…)` (audit F-0025):
+             * ten neresetuje `disk.is_initialized[0]`, takze po opetovnem vlozeni
+             * karty `disk_initialize()` vrati RES_OK BEZ identifikace, prvni cteni
+             * ceka 30 s na kartu ve stavu IDLE a skonci `FR_DISK_ERR` — a stav
+             * ERROR se pak drzi az do dalsiho vytazeni. Rucni cesta to delala
+             * spravne, tahle kopie ne. Je to levne: `f_mount(NULL,…)` na medium
+             * nesaha a reset priznaku je zapis do RAM, takze to smi i defaultTask. */
+            sd_export_unmount();
         }
         s_mount_tried = 0;   /* pri pristim vlozeni se zkusi znovu */
         s_state = SD_EXP_ABSENT;
@@ -194,18 +242,27 @@ void sd_export_unmount(void)
  * v setinách pod hlavičkou `_C` a `-32768` místo prázdné buňky. */
 int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
 {
-    uint32_t hz  = (uint32_t)(r->freq_x100000 / 100000u);
-    uint32_t frc = (uint32_t)(r->freq_x100000 % 100000u);
+    /* F-0180: novy zaznam nese presny kmitocet (15 platnych cislic), stary
+     * jen x1e5 (5 desetin) — vic cislic, nez zaznam nese, se nepredstira. */
+    char fq[24];
+    if (r->freq_exact) fmt_scpi_hz_sig(r->freq_hz, fq, sizeof fq);
+    else snprintf(fq, sizeof fq, "%lu.%05lu", (unsigned long)(r->freq_x100000 / 100000u),
+                  (unsigned long)(r->freq_x100000 % 100000u));
     char toc[12] = "", tbo[12] = "", rf[12] = "";
     if (r->t_ocxo_c100  != DATALOG_INVALID16)
         snprintf(toc, sizeof toc, "%d.%02u", r->t_ocxo_c100 / 100, (unsigned)(abs(r->t_ocxo_c100) % 100));
     if (r->t_board_c100 != DATALOG_INVALID16)
         snprintf(tbo, sizeof tbo, "%d.%02u", r->t_board_c100 / 100, (unsigned)(abs(r->t_board_c100) % 100));
-    /* ⚠️ `rf_mv` jsou SYROVE mV z AD8307, ne dBm x10. Do 2026-08-18 se tu delilo
+    /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10. Do 2026-08-18 se tu delilo
      * deseti a do sloupce nazvaneho `rf_dBm` slo "57.1" misto -61,2 dBm.
      * Do CSV jde ted SYROVA hodnota pod spravnym nazvem (`rf_mV`) — je to
      * bezztratove a odpovida to filozofii datalogu (kalibrace se muze zmenit,
-     * syrova hodnota ne); dBm si uzivatel dopocita konstantami z okna Kalibrace. */
+     * syrova hodnota ne).
+     * 🔴 2026-10-02: fyzicky zdroj tohoto pole je AIN1 = VBUS (hlavni napajeni),
+     * NE AD8307 — ten na teto desce neni (RF_LEVEL_HW_PRESENT, calib.h).
+     * Sloupec `rf_mV` tedy od tohoto fixu nese skutecne napeti VBUS v mV, ne
+     * AD8307 vystup. Nazev sloupce se nemeni (zmena CSV formatu je samostatny
+     * zasah); uzivatel dBm z tohoto pole dopocitat NEMA (viz MEAS:POW? -> N/A). */
     if (r->rf_mv     != DATALOG_INVALID16)
         snprintf(rf,  sizeof rf,  "%d", (int)r->rf_mv);
 
@@ -214,11 +271,11 @@ int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
     if (r->vbat_mv != DATALOG_INVALID16) snprintf(vb, sizeof vb, "%d", (int)r->vbat_mv);
 
     return snprintf(b, n,
-        "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%lu.%05lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
+        "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
         SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u"
         SD_CSV_SEP "%s\r\n",
         (unsigned long)r->seq, (unsigned long)r->t_unix,
-        (unsigned long)hz, (unsigned long)frc,
+        fq,
         toc, tbo, (int)r->ocxo_vc_mv, rf,
         (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
 }
@@ -276,7 +333,7 @@ const sd_ui_info_t *sd_export_ui_info(void)
 
 /* Zjisti typ FS + kapacitu/volne misto. ⚠️ BLOKUJE (`f_getfree` u FAT16 nebo
  * neplatneho FSINFO projde celou FAT) -> jen z UartTasku, jen po zmene stavu. */
-static void ui_refresh_capacity(void)
+static void ui_refresh_capacity_body(void)
 {
 #ifdef SD_EXPORT_FATFS
     s_ui.total_mb = 0; s_ui.free_mb = 0; s_ui.fs[0] = '\0';
@@ -292,6 +349,18 @@ static void ui_refresh_capacity(void)
                   : (fs->fs_type == FS_FAT32) ? "FAT32" : "?";
     snprintf(s_ui.fs, sizeof s_ui.fs, "%s", n);
 #endif
+}
+
+/* ⚠️ OBALKA: `f_getfree()` u FAT16 nebo neplatneho FSINFO projde CELOU FAT (viz
+ * komentar u tela), takze je to treti dlouha operace nad svazkem — a jako takova
+ * musi drzet `s_busy`, jinak ji auto-unmount z defaultTasku smaze semafor pod
+ * rukama (audit F-0026). Telo je vyclenene, at se priznak neda zapomenout na
+ * nektere z jeho `return`. */
+static void ui_refresh_capacity(void)
+{
+    s_busy = true;
+    ui_refresh_capacity_body();
+    s_busy = false;
 }
 
 /* ⚠️⚠️ DESTRUKTIVNI: naformatuje CELOU kartu na FAT32 (f_mkfs) -> smaze vsechna
@@ -428,6 +497,14 @@ static void fs_show_vbr(const uint8_t *b, const char *what)
  * Idempotentni + regen-safe (nesaha na .ioc, jen prekonfiguruje piny po MspInit). */
 static void sd_dat_pullup_enable(void)
 {
+    /* 🔴 GPIOC pisou OBE jadra (CM4 tam ma ETH: PC1 MDC, PC4 RXD0, PC5 RXD1) a
+     * `HAL_GPIO_Init` dela nad MODER/AFR/PUPDR NEATOMICKY read-modify-write.
+     * `gpio_guard.h` proto zamek jmenovite predepisuje pro GPIOA/B/C/G — a tahle
+     * funkce bezi ZA BEHU (spousti ji mount, ne boot), takze do nej spada
+     * (audit F-0027). ⚠️ Smer ETH -> SD navic hlidac `GG_PINS` nekryje (PC8-PC12
+     * v nem nejsou), takze ztracena AF na datove lince by se neopravila ani
+     * nezapocitala. Zamek pri neziskani pokracuje (radeji zavod nez deadlock). */
+    gpio_cfg_lock();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     GPIO_InitTypeDef g = {0};
     g.Pin       = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11;   /* D0..D3, NE CK(PC12) */
@@ -436,27 +513,68 @@ static void sd_dat_pullup_enable(void)
     g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
     g.Alternate = GPIO_AF12_SDIO1;
     HAL_GPIO_Init(GPIOC, &g);
+    gpio_cfg_unlock();
 }
 
 /* ⚠️⚠️ KLIC K DATOVE CESTE (2026-08-14): naplni `hsd1.Init` PRESNE jako funkcni
  * Frantuv projekt na TEMZE HW (`H757_SDcard_01/sdcard.c sd_apply_config`).
- * Nejdulezitejsi je `HardwareFlowControl = ENABLE` — nase `.ioc` ho NEMA
- * (`SDMMC1.IPParameters=ClockDiv` bez HWFC), takze CLKCR bit17 HWFC_EN=0
+ * Nejdulezitejsi je `HardwareFlowControl = ENABLE`. ✅ V `.ioc` uz JE
+ * (`SDMMC1.IPParameters=ClockDiv,HardwareFlowControl`, doplneno 2026) — tenhle
+ * kod ho presto nastavuje, protoze init skladame rucne a nesmi zaviset na tom,
+ * co zrovna vygeneroval CubeMX. Puvodne v `.ioc` CHYBEL a CLKCR bit17 HWFC_EN=0
  * (zmereno `CLKCR=0x51`). Na H7 SDMMC bez flow controlu datova cesta selhava:
  * blokovy prenos nedostane ani bajt, `DPSMACT` visi (prikazy pritom jedou) —
  * presne nas symptom. Franta ma HWFC zapnuty a cte/zapisuje. Nastavujeme cely
  * Init jako on. Regen-safe (runtime, nesaha na .ioc — spravne reseni je doplnit
  * HWFC i do .ioc pres CubeMX, viz CUBEMX_CHECKLIST). */
+/* ── Takt sbernice: SDMMC_CK = 64 MHz / (2 x ClockDiv) ───────────────────────
+ * Hodnota je **shodna s `.ioc`** (`SDMMC1.ClockDiv=1`) — 64 / (2 x 1) = **32 MHz**.
+ * Init se sklada rucne (viz `BSP_SD_Init`), takze se nesmi spolehat na to, co
+ * zrovna vygeneroval CubeMX; drzime ji proto i tady a `.ioc` je referencni zdroj.
+ *
+ * 🔴 **VEDOME NAD LIMITEM Default Speed — a je to rozhodnuti, ne prehlednuti.**
+ * Strop zavisi na rezimu karty: DS = 25 MHz, HS = 50 MHz. Do High Speed se karta
+ * neprepina (zadny CMD6), takze 32 MHz je **~28 % nad limitem DS** (audit F-0028).
+ * Proc to tak zustava:
+ *   - **na teto desce to prokazatelne bezi spolehlive** (uzivatel 2026-09-11;
+ *     drive overeno `sd test`) po HW uprave: odstranen R60 = pull-up na CK,
+ *     bulk kondenzator na SD VDD 10 uF;
+ *   - SD je tu **jen export**, ale exportuje se cely datalog, takze polovicni
+ *     takt je znat;
+ *   - pokus o prepnuti do HS byl vyzkousen (2026-09-11) a **na teto karte
+ *     neprosel**, takze by za cenu vendor volani s ~49dennimi smyckami
+ *     (`SD_SwitchSpeed`, viz `BSP_SD_Init`) neprinesl nic. Proto tu neni.
+ * ⚠️ Cena: rezerva je vybrana do nuly. Jina karta, delsi vodic nebo vyssi teplota
+ * se muze projevit jako `DATA_CRC_FAIL` nebo preruvane poskozeny export.
+ * **A prave proto to NENI tichy stav:** `sd diag` vypisuje takt, rezim, platny
+ * limit a znacku `<-- NAD LIMITEM`. Az karta zacne zlobit, ZACNI TIM RADKEM,
+ * ne datovou cestou — to je cely smysl nalezu F-0028.
+ * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad limitem obou rezimu. */
+#define SD_CLKDIV  1u   /* = .ioc SDMMC1.ClockDiv -> SDMMC_CK 32 MHz */
+
 static void sd_apply_init_config(void)
 {
     hsd1.Init.ClockEdge           = SDMMC_CLOCK_EDGE_RISING;
     hsd1.Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;   /* <<< chybelo */
-    /* SDMMC_CK = 64 MHz / (2 x ClockDiv). 1 -> 32 MHz (2026-08-16, po HW uprave:
-     * R60 = pull-up na CK odstranen, bulk kondik na SD VDD 10 uF). Drive 2 = 16 MHz.
-     * ⚠️ 0 NEPOUZIVAT — bypass delicky by dal 64 MHz, nad SD HS limitem 50 MHz. */
-    hsd1.Init.ClockDiv            = 1;
+    hsd1.Init.ClockDiv            = SD_CLKDIV;         /* = .ioc, viz komentar vyse */
     hsd1.Init.BusWide             = SDMMC_BUS_WIDE_1B; /* identifikace vzdy 1-bit */
+}
+
+/* Ohranicene cekani na TRANSFER.
+ * ⚠️ HAL ma na totez vlastni smycku s `SDMMC_SWDATATIMEOUT` = 0xFFFFFFFF ms
+ * (~49 dni) — presne to, co teto desce uz jednou zpusobilo zatuhnuti
+ * (commit `ec64939`). Proto ohranicena a POJMENOVANA varianta: kdyby nekdo
+ * potreboval cekat na TRANSFER jinde, ma sahnout sem, ne do HAL.
+ * @return true = karta je v TRANSFER. */
+static bool sd_wait_transfer(uint32_t ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
+        if ((HAL_GetTick() - t0) > ms) return false;
+        if (osKernelGetState() == osKernelRunning) osDelay(1);
+    }
+    return true;
 }
 
 /* Prepne kartu i host na 4-bit sbernici BEZ `HAL_SD_ConfigWideBusOperation`
@@ -541,16 +659,15 @@ uint8_t BSP_SD_Init(void)
 
     /* OHRANICENE cekani na TRANSFER (HAL by tu tocil ~49 dni). 1 s bohate staci —
      * karta po identifikaci prechazi do TRANSFER v jednotkach ms; kdyz ne, je
-     * zaseknuta a dalsi cekani uz nic nezmeni. */
-    uint32_t t0 = HAL_GetTick();
-    while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER) {
-        if ((HAL_GetTick() - t0) > 1000u) {
-            printf("SD: karta se po identifikaci nedostala do TRANSFER (zaseknuta)\r\n");
-            printf("  -> vyjmi a znovu zasun kartu; kdyz to trva, precti ji v PC\r\n");
-            hsd1.State = HAL_SD_STATE_READY;
-            return MSD_ERROR;
-        }
-        if (osKernelGetState() == osKernelRunning) osDelay(1);
+     * zaseknuta a dalsi cekani uz nic nezmeni. ⚠️ Vyclenene do `sd_wait_transfer()`:
+     * HAL ma na totez vlastni smycku s `SDMMC_SWDATATIMEOUT` (~49 dni), takze
+     * pojmenovana ohranicena varianta je tu proto, aby se ta vendor nikdy
+     * nepouzila omylem. */
+    if (!sd_wait_transfer(1000u)) {
+        printf("SD: karta se po identifikaci nedostala do TRANSFER (zaseknuta)\r\n");
+        printf("  -> vyjmi a znovu zasun kartu; kdyz to trva, precti ji v PC\r\n");
+        hsd1.State = HAL_SD_STATE_READY;
+        return MSD_ERROR;
     }
 
     /* ⚠️⚠️ KLIC (2026-08-14): aplikuj TRANSFER konfiguraci do CLKCR sami.
@@ -560,7 +677,9 @@ uint8_t BSP_SD_Init(void)
      * jsme vynechali kvuli SCR zaseknuti. Bez toho zustane HWFC_EN=0 a data nejdou
      * (zmereno: `CLKCR=0x51`). `SDMMC_Init` saha VYHRADNE na CLKCR (jen clock/HWFC/
      * WIDBUS), na stav karty ne -> bezpecne po identifikaci. Tim se zapne HWFC,
-     * transfer takt 16 MHz i WIDBUS=1B. */
+     * transfer takt (`SD_CLKDIV`, shodny s `.ioc`) i WIDBUS=1B. ⚠️ Hodnotu sem NEOPISUJ —
+     * odvozuje se z `hsd1.Init.ClockDiv`, jinak se ty dve kopie rozejdou
+     * (uz se to stalo: komentar tvrdil 16 MHz, kod nastavoval 32, audit F-0031). */
     (void)SDMMC_Init(SDMMC1, hsd1.Init);
 
     /* 4-bit sbernice (2026-08-14). ⚠️ NE `HAL_SD_ConfigWideBusOperation` — ta cte
@@ -573,6 +692,7 @@ uint8_t BSP_SD_Init(void)
         hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
         (void)SDMMC_Init(SDMMC1, hsd1.Init);
     }
+
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     hsd1.Context   = SD_CONTEXT_NONE;
     hsd1.State     = HAL_SD_STATE_READY;
@@ -753,7 +873,12 @@ void sd_export_init_steps(void)
 
     sd_dat_pullup_enable();     /* interni pull-up na DAT0..3 (pojistka pro nepatrny pull-up) */
     sd_apply_init_config();     /* HWFC ENABLE + Init jako funkcni Frantuv projekt */
-    printf("  [a2] Init: HWFC=ENABLE, ClockDiv=2, 1-bit (dle funkcniho H757_SDcard_01)\r\n");
+    /* ⚠️ ClockDiv se VYPISUJE, neopisuje: tenhle radek tvrdil „ClockDiv=2",
+     * zatimco `sd_apply_init_config()` o radek vys nastavila 1 — diagnosticky
+     * vypis, ktery lhal o hodnote, kterou prave nastavil (audit F-0031). */
+    printf("  [a2] Init: HWFC=ENABLE, ClockDiv=%lu (%lu MHz), 1-bit (dle H757_SDcard_01)\r\n",
+           (unsigned long)hsd1.Init.ClockDiv,
+           (unsigned long)(hsd1.Init.ClockDiv ? 64u / (2u * hsd1.Init.ClockDiv) : 64u));
 
     printf("  [b] HAL_SD_InitCard (CMD0/CMD8/ACMD41/CMD2/CMD3, 1-bit)...\r\n");
     HAL_StatusTypeDef r = HAL_SD_InitCard(&hsd1);
@@ -938,9 +1063,19 @@ void sd_export_diag(void)
             uint32_t div    = clkcr & 0x3FFu;
             uint32_t widbus = (clkcr >> 14) & 3u;          /* 0=1-bit, 1=4-bit, 2=8-bit */
             uint32_t khz    = div ? (64000u / (2u * div)) : 64000u;
-            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz%s\n",
+            /* ⚠️ Rezim se vypisuje spolu s taktem, protoze STROP zavisi na nem:
+             * karta bezi v Default Speed (do High Speed se neprepina, viz
+             * `SD_CLKDIV`), takze plati limit 25 MHz. Bez teto informace neslo
+             * z vypisu poznat, jestli je takt v mezích (audit F-0028).
+             * 🔴 A protoze 32 MHz je nad tim limitem VEDOME, musi se to hlasit
+             * ZNACKOU — jinak by to byl presne ten tichy stav mimo specifikaci,
+             * kvuli kteremu nalez vznikl. */
+            const uint32_t lim_khz = 25000u;       /* Default Speed */
+            printf("  sbernice   : %s, SDMMC_CK %lu.%03lu MHz, Default Speed (limit %lu MHz)%s%s\n",
                    (widbus == 1u) ? "4-bit" : (widbus == 2u) ? "8-bit" : "1-bit",
                    (unsigned long)(khz / 1000u), (unsigned long)(khz % 1000u),
+                   (unsigned long)(lim_khz / 1000u),
+                   (khz > lim_khz) ? "  <-- NAD LIMITEM (vedome, viz SD_CLKDIV)" : "",
                    (widbus == 0u) ? "   <-- FALLBACK na 1-bit (4-bit se nepodaril)" : "");
         }
         printf("  => SD FUNGUJE, lze exportovat (`sd export`)\n");
@@ -1207,7 +1342,13 @@ static int32_t export_body(uint32_t max_rec)
     char line[160];
     UINT bw;
     int n = sd_export_csv_header(line, sizeof line);
-    f_write(&f, line, (UINT)n, &bw);
+    /* ⚠️ Kontrolovat stejne jako radky nize (audit F-0029): bez hlavicky je CSV
+     * na PC neprecitelne, a tise. */
+    if (f_write(&f, line, (UINT)n, &bw) != FR_OK || bw != (UINT)n) {
+        f_close(&f);
+        s_state = SD_EXP_ERROR;
+        return -1;
+    }
 
     /* Chronologicky (nejstarší první) — `datalog_read_back(0)` je NEJNOVĚJŠÍ,
      * takže jdeme od konce. Pro log v souboru je vzestupný čas přirozenější. */
@@ -1229,7 +1370,16 @@ static int32_t export_body(uint32_t max_rec)
         }
         written++;
     }
-    f_close(&f);      /* flush + aktualizace adresáře — bez toho je soubor prázdný */
+    /* 🔴 Navratovou hodnotu `f_close` KONTROLOVAT (audit F-0029). Prave tady se
+     * zapisuje adresarova polozka — kdyz to selze, `f_write` uz hlasilo OK a
+     * uzivatel dostane „exportovano N zaznamu", zatimco na karte soubor chybi
+     * nebo ma nulovou delku. Potvrzeni o datech, ktera nema, je horsi nez ciste
+     * selhani. Tentyz duvod je uz napsany u `selftest_body()` a `screenshot.c`;
+     * ze tri mist, ktera zaviraji soubor, to bylo jedine nekontrolovane. */
+    if (f_close(&f) != FR_OK) {
+        s_state = SD_EXP_ERROR;
+        return -1;
+    }
     return written;
 }
 #endif /* SD_EXPORT_FATFS */

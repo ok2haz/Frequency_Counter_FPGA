@@ -29,6 +29,7 @@
 #include "rtc.h"
 #include "sdmmc.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -162,8 +163,106 @@ static void MPU_Config(void)
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
     HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
+    /* ── Region 3: datova cache mereni v SDRAM (`sdram_log.c`), 8 MB @0xC1000000
+     * Normal, WRITE-BACK WRITE-ALLOCATE (TEX=001, C=1, B=1) — stejne jako region 1.
+     * ⚠️ PROC cacheable: log se cte SEKVENCNE a opakovane (Allan pres dlouha tau,
+     * spektrogram, proklad). Bez MPU regionu by adresa spadla do DEFAULTNI mapy,
+     * kde je 0xA0000000-0xDFFFFFFF **Device pamet** — tam neni cache-line prefetch
+     * a sekvencni cteni je radove pomalejsi.
+     * ⚠️ DUSLEDEK: az bude log plnit SPI přes DMA (protokol v2 / STATUS #62), musi
+     * konzument pred ctenim invalidovat D-cache — DMA obchazi cache uplne stejne
+     * jako DMA2D u framebufferu. Dokud plni CPU, je to koherentni samo od sebe.
+     * ⚠️ Region MUSI byt mocnina 2 a prirozene zarovnany: 8 MB @0xC1000000 sedi.
+     * ⚠️ Do 2026-09-10 tu tri krat stalo 16 MB, zatimco kod i linker mely 8 MB
+     * (audit F-0009). Zdroj pravdy je `SDRAM_LOG` v STM32H757BITX_FLASH.ld. */
+    /* 🔴 `Enable` se NESMI prebirat ze zbytku po oblasti 2 (audit F-0008): dnes to
+     * vychazi, ale pri prehozeni poradi nebo vlozeni zakazane oblasti by se tahle
+     * tise neaktivovala a `.measlog` by spadl do Device pameti — bez jakekoli hlasky. */
+    MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
+    MPU_InitStruct.Number           = MPU_REGION_NUMBER3;
+    MPU_InitStruct.BaseAddress      = 0xC1000000;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_8MB;
+    MPU_InitStruct.SubRegionDisable = 0x00;
+    MPU_InitStruct.TypeExtField     = MPU_TEX_LEVEL1;
+    MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+    MPU_InitStruct.DisableExec      = MPU_INSTRUCTION_ACCESS_DISABLE;
+    MPU_InitStruct.IsShareable      = MPU_ACCESS_NOT_SHAREABLE;
+    MPU_InitStruct.IsCacheable      = MPU_ACCESS_CACHEABLE;
+    MPU_InitStruct.IsBufferable     = MPU_ACCESS_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
     /* Zapnout MPU s default mapou pro nechraneny privilegovany pristup */
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+}
+
+/**
+  * @brief  Kontrola, ze napajeni a hodiny SKUTECNE sedly (audit F-0001).
+  *
+  * `SystemClock_Config()` vola `HAL_PWREx_ConfigSupply()` bez kontroly navratove
+  * hodnoty, pritom ta funkce umi po ~1 s vratit chybu (timeout ACTVOSRDY nebo
+  * SMPSEXTRDY). Bez kontroly kod tise pokracuje a nastavi VOS0 + 480 MHz nad
+  * napajenim, ktere na to nemusi byt pripravene — coz se projevi jako "obcas
+  * nenabehne" nebo nahodne HardFaulty, tedy nejhur hledatelna trida poruch.
+  *
+  * Zamerne se NEKONTROLUJE navratova hodnota, ale DOSAZENY STAV registru:
+  *   - rekne pravdu i tehdy, kdyz HAL vratil HAL_OK a VOS0 presto nesedlo,
+  *   - je to jen cteni, takze to nemuze rozbit bezici konfiguraci,
+  *   - a hlavne to zije v USER CODE, takze to PREZIJE regeneraci z CubeMX
+  *     (`SystemClock_Config` zadny USER CODE blok nema, uprava v ni by se
+  *     pri prvnim "Generate Code" ztratila).
+  *
+  * ⚠️ Nic to neopravuje ani nezastavuje — pri nesouladu jen zaznamena bitmasku
+  * pro UART `status` a vypise radek do boot logu. Reset by tu byl spatne:
+  * pri trvale vade napajeni by z toho byla smycka.
+  */
+static void pwrclk_check(void)
+{
+  uint8_t bad = 0u;
+
+  /* 1) Konfigurace napajeni v PWR_CR3 (SMPS 1,8 V napaji externi obvody + LDO,
+   *    LDO napaji Vcore). VOS0 je pripustne JEN kdyz Vcore jede z LDO. */
+  if ((PWR->CR3 & PWR_SUPPLY_CONFIG_MASK) != PWR_SMPS_1V8_SUPPLIES_EXT_AND_LDO)
+    bad |= PWRCLK_BAD_SUPPLY;
+  /* 2) Prave na tento priznak ceka `HAL_PWREx_ConfigSupply` a prave jeho timeout
+   *    je ta zahozena chyba. */
+  if ((PWR->CR3 & PWR_CR3_SMPSEXTRDY) == 0u)   bad |= PWRCLK_BAD_SMPSEXT;
+  if ((PWR->CSR1 & PWR_CSR1_ACTVOSRDY) == 0u)  bad |= PWRCLK_BAD_ACTVOS;
+
+  /* 3) VOS0 se na H74x/75x nedela zapisem "0" do VOS, ale kombinaci
+   *    VOS = scale 1 + SYSCFG_PWRCR.ODEN (viz makro __HAL_PWR_VOLTAGESCALING_CONFIG).
+   *    Kontroluji se proto oba kusy + VOSRDY. Bez ODEN by cip bezel 480 MHz na
+   *    VOS1, tedy mimo spec, a nic by to neohlasilo. */
+  if (((PWR->D3CR & PWR_D3CR_VOS) != PWR_REGULATOR_VOLTAGE_SCALE1) ||
+      ((SYSCFG->PWRCR & SYSCFG_PWRCR_ODEN) == 0u) ||
+      ((PWR->D3CR & PWR_D3CR_VOSRDY) == 0u))
+    bad |= PWRCLK_BAD_VOS0;
+
+  /* 4) Skutecne frekvence dopoctene z RCC registru (ne z komentaru). */
+  g_pwrclk_sysclk_hz = HAL_RCC_GetSysClockFreq();
+  g_pwrclk_hclk_hz   = HAL_RCC_GetHCLKFreq();
+  if (g_pwrclk_sysclk_hz != 480000000u) bad |= PWRCLK_BAD_SYSCLK;
+  if (g_pwrclk_hclk_hz   != 240000000u) bad |= PWRCLK_BAD_HCLK;
+
+  /* 5) Flash: latence musi byt 4 WS pro VOS0 @ AXI 240 MHz.
+   *    WRHIGHFREQ se jen ODECITA — nikde se neprogramuje (audit F-0006) a
+   *    nez se to zmeni, musi se vedet, jaka hodnota tam po resetu vlastne je.
+   *    Slepy zapis do FLASH_ACR na bezicim cipu, ze ktereho se vykonava kod,
+   *    by byl horsi nez dnesni stav. */
+  if ((FLASH->ACR & FLASH_ACR_LATENCY) != FLASH_LATENCY_4) bad |= PWRCLK_BAD_LATENCY;
+  g_pwrclk_wrhighfreq = (uint8_t)((FLASH->ACR & FLASH_ACR_WRHIGHFREQ) >> FLASH_ACR_WRHIGHFREQ_Pos);
+
+  g_pwrclk_bad = bad;
+
+  /* Bez `%f` (nano.specs) — MHz jako cele cislo. */
+  printf("[PWR/CLK] SYSCLK %lu MHz, HCLK %lu MHz, VOS0 %s, WRHIGHFREQ=%u -> %s\n",
+         (unsigned long)(g_pwrclk_sysclk_hz / 1000000u),
+         (unsigned long)(g_pwrclk_hclk_hz / 1000000u),
+         (bad & PWRCLK_BAD_VOS0) ? "NE" : "ano",
+         (unsigned)g_pwrclk_wrhighfreq,
+         bad ? "NESOULAD" : "OK");
+  if (bad)
+    printf("[PWR/CLK] bitmaska 0x%02X (bit0 napajeni, 1 SMPSEXT, 2 ACTVOS, "
+           "3 VOS0, 4 SYSCLK, 5 HCLK, 6 latence)\n", (unsigned)bad);
 }
 
 /* USER CODE END 0 */
@@ -246,7 +345,36 @@ g_cm4_absent = 1;
 /* USER CODE END Boot_Mode_Sequence_2 */
 
   /* USER CODE BEGIN SysInit */
+  /* 🔴 KOMPENZACNI CELA I/O — chybejici bod checklistu A (doplneno 2026-09-09).
+   *
+   * PROC: cela dorovnava budici silu (slew rate) rychlych I/O proti rozptylu
+   * VDD, procesu a TEPLOTY. Vsechny piny FMC jsou na `GPIO_SPEED_FREQ_VERY_HIGH`
+   * a jedou 50 MHz ven z pouzdra do SDRAM — presne trida, pro kterou ST celu
+   * predepisuje. Bez ni jsou hrany nekompenzovane a data se vzorkuji na hrane
+   * okna, coz sedi na namerenych 3 338 207 chybnych bitu na EXTERNI sbernici
+   * pri 100% zdravych internich pametech.
+   *
+   * ⚠️ MUSI BYT PRED `MX_FMC_Init()` (o par radku niz) — jinak by inicializacni
+   * sekvence SDRAM probehla jeste nekompenzovanymi piny. Tohle je jediny duvod,
+   * proc se sahá na casovani bootu pred bring-upem displeje (viz mechanicke
+   * pravidlo 4c v CLAUDE.md); cekani je ohranicene a v radu mikrosekund.
+   *
+   * ⚠️ Cela potrebuje bezici CSI. Ten se zapina PRIMYM zapisem do `RCC->CR`,
+   * NE pres `HAL_RCC_OscConfig()` — ten by prekonfiguroval i PLL, ktere uz bezi.
+   * ⚠️ Obe cekaci smycky maji strop (L-0004): pri neuspechu se jen zaznamena
+   * priznak pro `status`, nic se nezastavuje. Cela je zlepseni, ne podminka behu. */
+  {
+    uint32_t guard = 100000u;
+    RCC->CR |= RCC_CR_CSION;
+    while (((RCC->CR & RCC_CR_CSIRDY) == 0u) && (--guard != 0u)) { }
+    g_csi_ready = (guard != 0u) ? 1u : 0u;
 
+    __HAL_RCC_SYSCFG_CLK_ENABLE();          /* idempotentni (uz zapnul HAL_MspInit) */
+    HAL_EnableCompensationCell();
+    guard = 100000u;
+    while (((SYSCFG->CCCSR & SYSCFG_CCCSR_READY) == 0u) && (--guard != 0u)) { }
+    g_iocomp_ready = (guard != 0u) ? 1u : 0u;
+  }
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -262,7 +390,28 @@ g_cm4_absent = 1;
   MX_QUADSPI_Init();
   MX_SDMMC1_SD_Init();
   MX_FATFS_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  /* 🔑 CSS (Clock Security System): pri vypadku krystalu HSE vyvola NMI.
+   * ⚠️ PROC to u tohohle pristroje neni kosmetika: cela casova zakladna stoji
+   * na HSE 25 MHz. Bez CSS by se pri jeho ztrate mlcky prepnulo na HSI a
+   * pristroj by MERIL DAL proti spatne referenci — nejtissi mozna porucha
+   * u kmitoctoveho normalu. S CSS to skonci v `NMI_Handler`, ktery od
+   * 2026-09-08 zapise crash black-box (kind 7) a resetuje, takze `status`
+   * po restartu rekne, co se stalo.
+   * ⚠️ Zapinat AZ po `SystemClock_Config()` — driv neni HSE jeste rozbehnuta. */
+  /* 🔴 ZAPNUTI CSS ZDE ZPUSOBILO RESET SMYCKU (2026-09-08) — nezapinat.
+   * Zmereno sondou: `s_step` cykloval 0->1, `g_uptime_s` zustal 0 a `BKP3R`
+   * byl trvale 0. Sedelo to na poradi: `MX_RTC_Init()` (o 15 radku vys) crash
+   * black-box precte a SMAZE, hned nato se zapnul CSS, ten okamzite vyhodnotil
+   * vypadek, NMI zapsalo magic a resetovalo — a dokola.
+   * ⚠️ Podstatne: `RCC_CR` ukazuje **HSEBYP=1**, tedy HSE bezi z VNEJSICH
+   * hodin, ne z krystalu. Na teto desce CSS na takovy zdroj reaguje hned.
+   * ⚠️ A hlavne byla spatne i MOJE REAKCE: u kmitoctoveho normalu je reset pri
+   * ztrate casove zakladny nespravny — kdyz stav trva, vyrobi presne tuhle
+   * smycku. Spravne je bezet dal (HW se sam prepne na HSI) a NAHLAS to hlasit,
+   * viz `NMI_Handler`. Zapnout se da vedome pres UART `css on`. */
+  /* HAL_RCC_EnableCSS();  <- viz vyse */
 
   /* Pricina resetu (24/7 diagnostika): zachyt RCC->RSR a smaz flagy (RMVF),
    * aby pristi boot videl cerstvou pricinu. IWDG1RSTF = watchdog zasahl (system
@@ -323,8 +472,10 @@ g_cm4_absent = 1;
    * Pred schedulerem -> bez mutexu (zadna I2C1 konkurence). */
   si5356_init(&hi2c1);
 
-  /* Beeper na PH9 (800 Hz pres TIM7) */
-  beeper_init();
+  /* Beeper na PH9 (800 Hz pres TIM7). Vysledek se NEIGNORUJE, ale ani neshazuje
+   * pristroj — nemy pipak je vada diagnostiky, ne mereni; stav hlasi `status`
+   * pres `beeper_ready()` (audit F-0111). */
+  (void)beeper_init();
 
   /* DMA2D (Chrom-ART) si inicializuje primitives HAL (prim_stm32_init)
    * pri prvnim renderu obrazovky. */
@@ -332,19 +483,34 @@ g_cm4_absent = 1;
   /* === Inicializace Waveshare 43H-800480-IPS displeje === */
   printf("\n=== Display init start ===\n");
 
-  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on */
+  /* 1) ATTINY MCU 0x45 potrebuje cas po power-on.
+   * 🔴 RETRY, ne jeden pokus (2026-09-01): ATTINY je bit-bang I2C slave a po
+   * STUDENEM startu nabiha vlastnim tempem. Jeden probe po 100 ms je hraniční —
+   * kdyz neACKne, cely bring-up se preskoci (`goto display_skip`) a pristroj
+   * bezi DAL s CERNYM displejem, zatimco dotyk, UART i mereni funguji.
+   * Presne tak se porucha projevila. 10 pokusu po 100 ms = az ~1 s;
+   * `watchdog_init()` bezi az za timhle blokem, takze IWDG to neohrozi. */
   HAL_Delay(100);
 
   /* 2) Probe MCU a precist FW ID */
-  if (!ws_panel_probe(&hi2c4)) {
-      printf("[ERR] Panel probe selhal - pokracuji bez displeje\n");
-      bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
-      goto display_skip;
+  {
+    int probe_ok = 0;
+    for (int i = 0; i < 10 && !probe_ok; i++) {
+        probe_ok = ws_panel_probe(&hi2c4) ? 1 : 0;
+        if (!probe_ok) HAL_Delay(100);
+    }
+    if (!probe_ok) {
+        printf("[ERR] Panel probe selhal (10 pokusu) - pokracuji bez displeje\n");
+        g_display_init_step = BOOTLED_STEP_PANEL_PROBE;
+        bootled_blink_once(BOOTLED_STEP_PANEL_PROBE);
+        goto display_skip;
+    }
   }
 
   /* 3) Power-on sekvence: napajeni LCD, uvolnit reset bridge, backlight enable */
   if (!ws_panel_power_on(&hi2c4)) {
       printf("[ERR] Panel power-on selhal\n");
+      g_display_init_step = BOOTLED_STEP_PANEL_POWERON;
       bootled_blink_once(BOOTLED_STEP_PANEL_POWERON);
       goto display_skip;
   }
@@ -352,6 +518,7 @@ g_cm4_absent = 1;
   /* 4) Spustit DSI signal - bridge ho potrebuje pred inicializaci */
   if (HAL_DSI_Start(&hdsi) != HAL_OK) {
       printf("[ERR] HAL_DSI_Start selhal\n");
+      g_display_init_step = BOOTLED_STEP_DSI_START;
       bootled_blink_once(BOOTLED_STEP_DSI_START);
       goto display_skip;
   }
@@ -360,6 +527,7 @@ g_cm4_absent = 1;
   /* 5) Inicializovat TC358762 bridge pres DSI generic write */
   if (!tc358762_init(&hdsi)) {
       printf("[ERR] TC358762 init selhal\n");
+      g_display_init_step = BOOTLED_STEP_TC358762;
       bootled_blink_once(BOOTLED_STEP_TC358762);
       goto display_skip;
   }
@@ -372,8 +540,18 @@ g_cm4_absent = 1;
 
   printf("=== Display init dokoncen ===\n");
 
-  /* 8) Probe touch controlleru (po panel power-on, kdy uz neni v resetu) */
+  /* 8) Probe touch controlleru (po panel power-on, kdy uz neni v resetu).
+   * I2C4 se prepina na 75 kHz — FT5x06 je skutecna I2C periferie, ne
+   * bit-bang jako ATTINY (viz i2c4_speed_select v i2c.c).
+   * ⚠️ Klidova mezera PRED prepnutim rychlosti — stejny duvod jako
+   * `s_bl_settle` v `freertos_task_ui.c` (150 ms po zapisu jasu, nez
+   * na sbernici pusti dalsiho mastera). Tady zadna mezera nebyla (2026-09-13
+   * podezreni na "po power-cyklu nejde dotyk"); i kdyz `i2c4_speed_select`
+   * uz nedela DeInit/Init (viz i2c.c), mezera zustava jako levna pojistka —
+   * scheduler jeste nebezi, takze mutex neni potreba. */
+  HAL_Delay(150);
   printf("=== Touch init start ===\n");
+  i2c4_speed_select(I2C4_TIMING_TOUCH_75KHZ);
   if (!ft5x06_probe(&hi2c4)) {
       printf("ft5x06: probe FAILED - touch nebude k dispozici\n");
   } else {
@@ -381,6 +559,17 @@ g_cm4_absent = 1;
   }
 display_skip:
   ;
+  /* Napajeni + hodiny: overit DOSAZENY stav (audit F-0001).
+   * 🔴 ZAMERNE AZ ZA BRING-UPEM DISPLEJE (presunuto 2026-09-09). Puvodne to bylo
+   * hned za vypisem priciny resetu, tedy PRED bring-upem — a to je presne misto,
+   * kde se na teto desce nesmi bezduvodne menit casovani: studeny start ma
+   * pomalu nabihajici ATTINY (probe ma proto 10 pokusu po 100 ms) a zavod obou
+   * jader o sdilena GPIO (STATUS #219/#208). Kontrola je jen cteni registru a
+   * dva printf, takze na jejim vysledku poradi nic nemeni — zato tim prestava
+   * byt podezrela z ovlivneni bootu displeje.
+   * ⚠️ Porad je PRED schedulerem, takze `status` ma hodnoty od prvniho dotazu. */
+  pwrclk_check();
+
   /* IWDG1 watchdog (~4 s) — az tesne pred schedulerem (min. hlidany cas pred
    * prvnim refreshem z defaultTasku; startup grace pokryje rozjezd tasku). */
   watchdog_init();
@@ -595,8 +784,74 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu (`bootled_fail` blika, ale v krabicce to nikdo nevidi
+   * a `status` o tom nevi nic). Kind 5 + cislo kroku -> `status` rekne
+   * `hal_err@krok N`. Poradi: data prvni, magic naposled. */
+  /* 🔴 Bez tohohle zapisu je runtime HAL chyba po IWDG resetu k NEROZEZNANI od
+   * obycejneho watchdogu. Kind 5 + cislo kroku -> `status` rekne `hal_err@krok N`.
+   * ⚠️ `bootled_step` pokryva jen BRING-UP; runtime volani z HAL driveru by
+   * ukazalo posledni bootovni krok, coz mate. Proto se do DR5 uklada i
+   * NAVRATOVA ADRESA volajiciho — `addr2line` z ni rekne, KDO Error_Handler
+   * zavolal (38 volajicich v CM7). */
+  /* ── POLITIKA PRI VYPADKU OSCILATORU: „zustat mrtvy, ale ROZLISITELNE" ──────
+   * (rozhodnuto uzivatelem 2026-09-19; nalezy F-0007 + F-0108, varianta (a).)
+   * U kmitoctoveho normalu je beh proti spatne casove zaklade HORSI nez neběh,
+   * takze odmitnout start je spravne. Co spravne NEBYLO: ta smrt byla
+   * NEROZLISITELNA a navic UPLNE TICHA.
+   *   - `SystemClock_Config()` je generovany kod BEZ `USER CODE` bloku, takze
+   *     tam `bootled_step()` pridat nejde (pravidlo 6 + L-0009). `s_step` proto
+   *     zustal 0 a `blink_pattern(0)` neudela NIC — zadne bliknuti, zadne
+   *     pipnuti. Deska byla temna a nema.
+   *   - HSE i LSE se konfiguruji v JEDNOM `HAL_RCC_OscConfig()`, takze navratova
+   *     adresa v black-boxu je pro oba stejna a nerozlisi je.
+   * Resi se to TADY, tedy v `USER CODE`: stav oscilatoru se ODVODI z registru
+   * (dosazeny stav, ne navratova hodnota na miste) — presne vzor L-0009.
+   * ⚠️ Cist RCC se musi JAKO PRVNI, driv nez cokoli jineho stav zmeni.
+   * ⚠️ Pri selhani HSE bezi CPU dal na HSI (default po resetu), takze se tenhle
+   *    kod SKUTECNE provede; jen `SystemCoreClock` je jiny, tedy delky bliknuti
+   *    a vyska tonu budou mimo — vzor zustava citelny (uz to tak plati pro kazde
+   *    selhani pred `SystemClock_Config`). */
+  const uint32_t eh_rcc_cr   = RCC->CR;
+  const uint32_t eh_rcc_bdcr = RCC->BDCR;
+  if (bootled_step_get() == 0u) {
+    uint8_t osc_step = BOOTLED_STEP_EARLY;
+    if (!(eh_rcc_cr & RCC_CR_HSERDY))         osc_step = BOOTLED_STEP_HSE;
+    else if (!(eh_rcc_bdcr & RCC_BDCR_LSERDY)) osc_step = BOOTLED_STEP_LSE;
+    bootled_step(osc_step);   /* aby vzor NEBYL nulovy = aby vubec byl videt */
+  }
+
+  PWR->CR1 |= PWR_CR1_DBP;
+  /* Stav oscilatoru do black-boxu (BKP12 je volny; 3..5 crash, 7..9 HardFault,
+   * 10 priznak "uz jsem zkusil reset", 11 pocitadlo CSS). Cte to `rtc.c` a
+   * `status` z toho misto `hal_err@krok 15` rekne `hal_err@HSE`. */
+  RTC->BKP12R = ((eh_rcc_bdcr & RCC_BDCR_LSERDY) ? 2u : 0u)
+              | ((eh_rcc_cr   & RCC_CR_HSERDY)   ? 1u : 0u)
+              | 0x05CE0000u;   /* razitko "OSC" — 0 by znamenalo "nezapsano" */
+  RTC->BKP4R = (uint32_t)bootled_step_get();
+  RTC->BKP5R = (uint32_t)__builtin_return_address(0);
+  RTC->BKP3R = 0xC7A50000u | 5u;   /* RTC_CRASH_MAGIC | kind 5 = Error_Handler */
   __disable_irq();
-  bootled_fail();   /* donekonecna blika LED_1 (PG3) - pocet bliknuti = posledni bootled_step() */
+  /* 🔴 DRIVE TU BYLO `bootled_fail()`, ktere blika DONEKONECNA. Jenze pri
+   * selhani BEHEM INITU jeste nebezi IWDG (`watchdog_init` je az pred
+   * schedulerem), takze pristroj tam uvizl NATRVALO a jedinou zpravou byla
+   * blikajici LED — v krabicce neviditelna. Ted se vzor zopakuje nekolikrat
+   * (aby sel precist) a pak se resetuje: crash black-box uz duvod nese, takze
+   * `status` po restartu rekne `hal_err@krok N` misto ticha. */
+  /* 🔴 RESET NEJVYS JEDNOU ZA POWER-CYKLUS. Puvodne se resetovalo vzdy — jenze
+   * kdyz je pricina TRVALA (vadny init), je z toho nekonecna smycka, ktera
+   * je pro uzivatele horsi nez zamrznuti: nejde precist ani blikaci vzor.
+   * Prvni pokus tedy resetuje (casta chyba je prechodna a restart pomuze),
+   * druhy uz jen blika donekonecna — a duvod je v crash black-boxu. */
+  /* ⚠️ Priznak se MAZE po uspesnem startu (defaultTask), takze tohle je
+   * "jednou za POKUS O START", ne jednou za zivot desky. Bez toho mazani by
+   * po prvni HAL chybe uz pristroj NIKDY restart nezkusil — a komentar by lhal. */
+  if ((RTC->BKP10R & 0xFFFF0000u) != 0xE7A50000u) {
+    RTC->BKP10R = 0xE7A50000u | 1u;   /* priznak "uz jsem to jednou zkusil" */
+    bootled_fail_n(5u);
+    NVIC_SystemReset();
+  }
+  bootled_fail();   /* podruhe uz jen blikat: pocet bliknuti = bootled_step */
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

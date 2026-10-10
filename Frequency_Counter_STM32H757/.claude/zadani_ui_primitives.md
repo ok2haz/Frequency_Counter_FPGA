@@ -1,4 +1,10 @@
 # L1 — libprim (Primitive 2D Renderer)
+> 🔴 **HISTORICKÝ DOKUMENT — NENÍ PLATNÁ SPECIFIKACE.**
+> Původní zadání z **2026-06-19**, od té doby se neudržuje. Kód se mezitím
+> podstatně změnil (jen u fontů: 5 zde uvedených už neexistuje a 5 dnešních tu
+> chybí). Ber to jako záznam PŮVODNÍHO záměru, ne jako popis dneška.
+> **Autorita je `CLAUDE.md` + `docs/HW_REFERENCE.md` + zdroják.** (audit 2026-08-30)
+
 
 Nejnižší render vrstva. **Samostatná knihovna** reusable v jakémkoli embedded
 projektu s framebufferem. Generic 2D grafický stack: fill, line, arc, path,

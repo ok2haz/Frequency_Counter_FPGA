@@ -48,7 +48,17 @@ typedef struct {
     uint32_t total_b;
     uint32_t write_kbs;              /* 0 = necteno (read-only cil) */
     uint32_t read_kbs;
-    uint32_t bit_errors;             /* pocet chybnych BITU pres vsechny vzory */
+    /* Pocet chybnych BITU pres vsechny vzory — a od 2026-09-20 uz VYHRADNE to
+     * (audit F-0120 dokoncen). Driv sem `bench_iflash` davalo **1 jako SENTINEL**
+     * pro „cteni nestabilni", protoze u cile jen pro cteni neni s cim porovnavat
+     * po bitech — pole dokumentovane jako pocet bitu tedy mistami neslo pocet, ale
+     * priznak, souhrn michal jednotky a `err_bitmask` u te polozky nesel vylozit.
+     * Nove je na to `unstable` nize.
+     * ⚠️ Oprava se **zamerne delala naraz ve vsech ctyrech mistech** (tahle hlavicka,
+     * `bench_iflash`, UART vypis, okno PAMETI). Kdyby se jedno minulo, vznikl by
+     * zeleny radek s poplasnou hlaskou — tedy prave to riziko, kvuli kteremu byla
+     * oprava do te doby vedome odlozena. */
+    uint32_t bit_errors;
     uint32_t err_bitmask;            /* ktere bitove pozice selhaly (0 = zadna) */
     uint32_t first_err_addr;         /* adresa prvni neshody (jen kdyz bit_errors>0) */
     /* ── Rozlisovaci diagnostika (pridano 2026-08-23) ────────────────────────
@@ -72,11 +82,27 @@ typedef struct {
     /* 1 = behem TOHOTO cile prestala odpovidat CM4. ⚠️ Samotne „stall:CM4" v logu
      * nerekne, ktery cil to zpusobil — a dohledavat to znamena dalsi kolo na HW. */
     uint8_t  killed_cm4;
-    /* Bitmaska prekryvu MEZI framebuffery (jen SDRAM, jen kdyz `alias_off != 0`):
+    /* Bitmaska prekryvu MEZI framebuffery (jen SDRAM):
      * bit0 = FB0 sdili pamet s FB2, bit1 = FB1 s off-screen canvas poolem.
      * ⚠️ Tohle je ta opravdu drahá otázka — kdyby to platilo, triple buffering je
      * fakticky double a projevuje se to blikanim, ktere nikdo nespojuje s pameti. */
     uint8_t  fb_alias;
+    /* 🔴 1 = `fb_alias` se SKUTECNE MERILO; 0 = nemerilo se, takze jeho nula
+     * NIC NEZNAMENA (audit F-0116). Do 2026-09-19 se merilo jen kdyz
+     * `sdram_alias_span()` nasel prekryv, kdezto `alias_off` se plni i druhou
+     * cestou (`addr_lines_test`, ktera vidi i periody pod 64 kB) — v te kombinaci
+     * vypis tvrdil „framebuffery se navzajem NEprekryvaji" o mereni, ktere
+     * neprobehlo. Presne ten druh falesneho uklidneni, na kterem uz projekt stal
+     * (viz „HW OBVINEN — A BYL NEVINNY" a L-0011).
+     * ⚠️ Uklidnujici vetu smi vypis tisknout VYHRADNE kdyz je tady 1. */
+    uint8_t  fb_alias_checked;
+    /* 🔴 1 = dve po sobe jdouci cteni TEHOZ bloku se LISILA (jen interni FLASH,
+     * ktera se nezapisuje — proto se u ni hleda NESTABILNI CTENI, ne chybne bity).
+     * Do 2026-09-20 se na to pouzival SENTINEL `bit_errors = 1`, takze pole
+     * dokumentovane jako „pocet chybnych BITU" mistami neslo pocet bitu, ale
+     * priznak (audit F-0120). Souhrn pres cile pak michal jednotky a `err_bitmask`
+     * u te polozky nesel vylozit vubec. */
+    uint8_t  unstable;
     uint8_t  tested;                 /* 1 = probehlo (i kdyz s chybami) */
     uint8_t  writable;               /* 0 = jen cteni -> write_kbs/bit_errors nemaji smysl */
     uint8_t  skipped;                /* 1 = preskoceno, duvod v `msg` */
@@ -88,7 +114,11 @@ typedef struct {
     uint8_t  n;                      /* pocet cilu = MEMBENCH_TARGETS */
     uint8_t  done_once;              /* 1 = uz aspon jednou probehlo (jinak jsou vysledky prazdne) */
     uint32_t prog_pct;               /* 0..100 */
-    uint32_t total_bit_errors;       /* soucet pres vsechny cile */
+    uint32_t total_bit_errors;       /* soucet pres vsechny cile (JEN bity) */
+    /* 1 = aspon jeden cil hlasi `unstable`. Drzi se zvlast, protoze do souctu
+     * bitu to nepatri — a bez toho by celkovy verdikt rekl „OK" i pri nestabilnim
+     * cteni interni FLASH (audit F-0120). */
+    uint8_t  any_unstable;
     char     phase[28];              /* „SDRAM: vzor 55/AA" — pro UI i UART */
     membench_result_t r[MEMBENCH_TARGETS];
 } membench_state_t;

@@ -159,7 +159,11 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 /* Normal assert() semantics without relying on the provision of an assert.h
 header file. */
 /* USER CODE BEGIN 1 */
-#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* ⚠️ Bez `rtc_crash_assert` byl selhany assert TICHY: `for(;;)` -> IWDG reset,
+ * ktery `status` hlasil jen jako „watchdog" (viz audit error handleru
+ * 2026-09-07). Ted se do crash black-boxu ulozi cislo radku. */
+extern void rtc_crash_assert(unsigned long line);
+#define configASSERT( x ) if ((x) == 0) {rtc_crash_assert(__LINE__); taskDISABLE_INTERRUPTS(); for( ;; );}
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

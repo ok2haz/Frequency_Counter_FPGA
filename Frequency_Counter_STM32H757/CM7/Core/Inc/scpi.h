@@ -82,7 +82,7 @@ typedef struct {
 /* ── Zdroj dat (abstrakce mezi CM7 globály a CM4 IPC snapshotem) ──────────────
  * Parser/handlery (`scpi.c`) jsou DATA-SOURCE nezávislé — čtou z `scpi_src_t`.
  * Backend ho naplní: CM7 z `g_sensors`/`gps_get`/`fpga_freq`/`g_calib`/`g_meas_cfg`
- * (`scpi_src_load_cm7`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
+ * (`scpi_src_load_cm7_ex`), CM4 (výhled TCP) z IPC snapshotu. Bity platnosti (dole)
  * říkají, co je platné — neplatné → dotaz vrátí SCPI NaN `9.91E37`. Akce (config
  * SET, čtení logu) jsou callbacky (na CM7 zápis `g_meas_cfg`/datalog, na CM4 cmd ring). */
 #define SCPI_V_FREQ    (1u << 0)   /* platné měření /4 */
@@ -113,7 +113,7 @@ enum {
     /* ── Instrument SET (2026-08-15): nejdou do `meas_cfg_t`, ale do stavu mereni
      * (`g_ui_cfg`), takze je backend obsluhuje zvlast — `scpi_cfg_apply()` je NEzna.
      * ⚠️ Poradi MUSI sedet s `IPC_CFG_*` (hlida `_Static_assert` v ipc.c). */
-    SCPI_CFG_GATE,         /* vu = index brany 0..3 (0,1 / 1 / 10 / 100 s) */
+    SCPI_CFG_GATE,         /* vu = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
     SCPI_CFG_CHAN,         /* vu = kanal 0/1 (A/B) */
     SCPI_CFG_RUN,          /* vu = 0 STOP / 1 RUN */
 };
@@ -123,14 +123,22 @@ struct scpi_src {
     uint32_t valid;                 /* SCPI_V_* */
     /* Kmitočet (×1e5, dělička už zahrnuta). */
     uint64_t freq4_x100000, freq16_x100000;
+    /* F-0180: PRESNY kmitocet /4 [Hz] z dvojice hrany/hradlo; 0.0 = neni (plati
+     * `freq4_x100000`). Kmitoctove odpovedi ho tisknou s 15 platnymi cislicemi,
+     * bez nej poctivych 5 desetin — vic cislic, nez mereni nese, se nepredstira. */
+    double   freq4_hz;
     uint32_t gate_ns;               /* SKUTECNE zmerene okno z ramce (SENS:FREQ:GATE:ACTual?) */
     uint8_t  channel_id;            /* kanal hlaseny ramcem */
     /* NASTAVENY stav mereni (SET/readback: `SENS:FREQ:GATE?/CHAN?`, `INIT:CONT?`).
      * Zdroj je `g_ui_cfg` (CM7) resp. snapshot (CM4) — NE posledni FPGA ramec. */
-    uint8_t  set_gate_idx;          /* 0..3 */
+    uint8_t  set_gate_idx;          /* 0..4 */
     uint8_t  set_chan;              /* 0/1 */
     uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
+    /* ⚠️ 1 = kmitocet je z EMULATORU (`fpgasim`), ne z FPGA. Musi byt v `scpi_src_t`,
+     * aby `DIAG:SIM?` odpovidalo STEJNE pres USB (CM7) i pres TCP/HTTP (CM4 ze
+     * snapshotu, bit IPC_F_SIM) — jinak by web servíroval emulaci jako mereni. */
+    uint8_t  sim_active;
     /* Teploty [0,01 °C]. */
     int16_t  t_ocxo_c100, t_board_c100, t_mcu_c100, t_fpga_c100;
     /* Napětí [mV] + RF kalibrace. */
@@ -138,7 +146,8 @@ struct scpi_src {
     float    ad8307_slope_mv_db, ad8307_intercept_dbm;
     /* GPS. */
     uint8_t  gps_fix_mode, gps_num_sat, gps_hour, gps_min, gps_sec;
-    float    gps_lat_deg, gps_lon_deg, gps_alt_m;
+    int32_t  gps_lat_e7, gps_lon_e7;   /* stupne x 1e7 (F-0070; drive float) */
+    float    gps_alt_m;
     /* Stav. */
     uint8_t  spi_ok, si5356_status, si5356_ok, selftest_pass;
     uint32_t uptime_s;
@@ -153,15 +162,24 @@ struct scpi_src {
     /* Aplikuj CALC SET (SCPI_CFG_* klíč, bool vu / double vd). @return 1 = OK.
      * Aktualizuje i src->meas (aby compound SET→readback sedělo). */
     int (*set_cfg)(scpi_src_t *s, uint8_t key, uint32_t vu, double vd);
+    /* 🔴 1 = `set_cfg` je NULL ZAMERNE (ovladani zakazane), ne proto, ze chybi data.
+     * Bez tohohle rozliseni vraci parser na oba pripady `-230 "Data corrupt or
+     * stale"` — a to uzivateli LZE O PRICINE: posle ho hledat HW poruchu misto
+     * prepinace `web_ctrl_en`. SCPI-99 ma na ochranu presne `-203 "Command
+     * protected"` (*cannot be executed due to protection, e.g. password*).
+     * Nalezeno pri overovani site na HW 2026-09-02 (STATUS #130).
+     * ⚠️ NEJDE do IPC snapshotu — `scpi_src_t` se sklada lokalne na kazdem jadre
+     * (`ipc_scpi_src_from_snap`), takze pridani pole NEVYZADUJE bump IPC_VERSION. */
+    uint8_t ctrl_locked;
     /* Přečti n-tý datalog záznam od nejnovějšího (MMEM:DATA?). @return 1 = OK. */
     int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
 };
 
-/** Presety brány [s] -> index 0..3 (0,1 / 1 / 10 / 100 s); <0 = mimo presety.
+/** Presety brány [s] -> index 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s); <0 = mimo presety.
  *  Vystaveno kvuli sdilenemu IPC backendu (CM4 validuje branu lokalne, viz ipc_scpi.c). */
 int scpi_gate_idx_from_s(double sec);
 
-/** Index brány 0..3 -> sekundy (opak `scpi_gate_idx_from_s`). Sdíleno s JSON
+/** Index brány 0..4 -> sekundy (opak `scpi_gate_idx_from_s`). Sdíleno s JSON
  *  v `httpd_min.c`, aby web nedržel vlastní kopii tabulky presetů. */
 double scpi_gate_s(uint8_t idx);
 
@@ -169,6 +187,12 @@ double scpi_gate_s(uint8_t idx);
  *  mimo ±4e9 (viz implementace) — vrací `"9.91E37"` (platné i jako JSON číslo).
  *  Sdíleno mezi `CALC:*?` readbacky a `httpd_min.c` (`GET /api/state`). */
 void fmt_scpi_hz_d(double hz, char *out, size_t n);
+
+/** double Hz -> 15 PLATNYCH cislic v pevne radove carce ("10000000.0123457",
+ *  "10.0000000001234"), stejna rozsahova pojistka a NaN jako `fmt_scpi_hz_d`.
+ *  Pro presny kmitocet (F-0180): relativni krok ~1e-15 na libovolnem kmitoctu.
+ *  Sdileno se `httpd_min.c` (JSON) a CSV exportem datalogu. */
+void fmt_scpi_hz_sig(double hz, char *out, size_t n);
 
 /** Aplikuje CALC/Math SET (`key`=SCPI_CFG_MATH/NULL/LIM_*) na `meas_cfg_t`. Cista
  *  funkce (zadne globaly) — sdili ji CM7 backend i IPC most na CM4 (ipc_scpi.c).
@@ -184,7 +208,6 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
 
 #if defined(CORE_CM7)
 /** CM7 backend: naplní src z globálů + nastaví akce (g_meas_cfg / datalog). */
-void   scpi_src_load_cm7(scpi_src_t *src);
 /** USB konzole (CM7): načte CM7 zdroj + zpracuje nad SDÍLENÝM default kontextem.
  *  Signatura zachována kvůli volajícímu (freertos_task_uart.c). */
 size_t scpi_process(const char *line, char *out, size_t out_sz);

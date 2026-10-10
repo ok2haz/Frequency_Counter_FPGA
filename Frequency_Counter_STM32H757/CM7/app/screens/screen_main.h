@@ -26,7 +26,22 @@
 #define SCR_MAIN_TITLE_Y           (UI_DIM_BODY_Y + 20)
 /* Number + everything below position (tuned). */
 #define SCR_MAIN_NUMBER_Y_BASELINE (UI_DIM_BODY_Y + 94)
+/* 🔴 VRACENO na 110 (2026-09-01, na zadost uzivatele: „neposouvej nic pod ni").
+ * Mezitim tu byl vyhrazeny 34px pas NEJISTOTY, ktery mrizku posunul na 144 a
+ * Allan tim srazil z 242 na 208 px. Zadani UI Zasada 2 („odecet bez σ a poctu
+ * vzorku svadi k nezaslouzene duvere") plati dal — σ+N se ale prestehovalo do
+ * PRAVE casti titulniho radku, kde do te doby stalo napevno zadratovane
+ * „N 312 · Ω regrese", tedy VYMYSLENY pocet vzorku. Zasada je tim splnena
+ * a nestoji to ani pixel layoutu. */
 #define SCR_MAIN_GRID_Y            (UI_DIM_BODY_Y + 110)
+/* Prekryv varovani (`app_gpsdo.c warn_draw`) — kresli se PRES grafiku jako
+ * posledni pred flipem, NIC pod nim se neposouva. Lezi na hornim okraji mrizky. */
+#define SCR_MAIN_WARN_Y            (UI_DIM_BODY_Y + 112)
+#define SCR_MAIN_WARN_H            34
+/* Box σ+N v prave casti titulniho radku (partial redraw ~1x/s). Zacina daleko
+ * za nejdelsim titulkem („FREKVENCE A · GATE 100 s" ~350 px). */
+#define SCR_MAIN_UNC_X             430
+#define SCR_MAIN_UNC_W             (UI_DIM_SCREEN_W - SCR_MAIN_UNC_X - UI_DIM_PADDING_X)
 #define SCR_MAIN_GRID_GAP          14
 /* Vnejsi okraj mrizky vlevo i vpravo. 12 -> 4 (2026-07-20): 12 px po obou
  * stranach byl cisty nevyuzity pruh — Allan zleva i pravy sloupec (trend/drift)
@@ -53,6 +68,7 @@ void screen_main_render(void);      /* full render into current target */
 void screen_main_invalidate(void);  /* force cache rebuild */
 const prim_pixel_t *screen_main_bg(void);    /* shared background cache (RGB565) */
 int  screen_main_hit_button(int16_t x, int16_t y);  /* footer button idx or -1 */
+int  screen_main_button_center(int idx, int16_t *cx, int16_t *cy);  /* stred tlacitka patky; 0 = nezname */
 /* ── Rozlozeni hlavni obrazovky (prepinac v okne DISPLEJ, persist v syscfg) ──
  * 0 = HYBRIDNI (vychozi, ladene pro 4,3": Allan 47 % pres celou vysku, cisla
  *     statistik mono_18, RF bargraf v.54),
@@ -73,28 +89,64 @@ int  screen_main_redraw_time(uint32_t ms_since_boot);  /* cas+datum z GPS; vrati
 int  screen_main_redraw_header(void);                  /* horni lista: GNSS lock + pocet druzic + cas/datum z GPS */
 int  screen_main_redraw_cpu(int force);                /* blok vytizeni CPU (CM7/CM4) v headeru; vrati 1 pokud kreslil */
 int  screen_main_redraw_signal(int16_t pct, int32_t dbm10); /* RF vykon z AD8307 bargraf (pct + dBm×10); vrati 1 */
-int  screen_main_redraw_freq(void);                    /* simulovany kmitocet (per-segment dirty); vrati 1 */
-void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni (pri prepnuti RUN/STOP) */
-void screen_main_freq_sim_step(void);                  /* krok simulace BEZ kresleni (mimo main obrazovku) */
+int  screen_main_redraw_freq(void);                    /* mereny kmitocet (per-segment dirty); vrati 1 */
+void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni + SIM markeru — POUZE kdyz se meni format/magnituda (siri clear) */
+void screen_main_redraw_freq_tint(void);               /* totez, ale UZSI zonou pro cisty RUN/STOP toggle (audit F-0140) — geometrie se NESMI menit */
+void screen_main_freq_sim_step(void);                  /* krok ZDROJE (mereni/SIM) BEZ kresleni — mimo main obrazovku */
 float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
 double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */
-void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s) */
+void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s), SIM */
+void screen_main_stats_sample_hz(double hz, double tau_s); /* vzorek z prumeru mereni za tik (F-0171) */
+/* Skutecne τ0 vzorku statistiky (bod 6): prumer [s] a relativni kolisani;
+ * @return pocet realnych vzorku v odhadu (0 = zadny). */
+uint32_t screen_main_tau0(float *mean_s, float *spread);
 int  screen_main_redraw_stats(void);                   /* zivy trend + offset/sigma (~1x/s); vrati 1 */
 int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd Offset/σ/Drift (item 2, jen v2) */
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
-/** Delka zvoleneho hradla [s] (0,1/1/10/100) — rozpocet nejistoty. */
-double screen_main_gate_seconds(void);
+/** Aktualni merici funkce (0 = FREKVENCE, 1 = PERIODA) — okno FUNKCE. */
+int  screen_main_mode(void);
+/** Prepne merici funkci; mimo rozsah nebo beze zmeny = no-op. */
+void screen_main_set_mode(int m);
+
+/** SKUTECNE zmerene hradlo z posledniho FPGA ramce [s]; 0 = nezname (SIM / bez linku).
+ *  ⚠️ Protejsek vracejici NASTAVENI z UI zamerne NEEXISTUJE — nastaveni se do FPGA
+ *  nedostane (STATUS #83), takze pro rozpocet nejistoty je tohle JEDINA spravna
+ *  cesta. (`screen_main_gate_seconds()` odstranena 2026-09-01 jako mrtva past.) */
+double screen_main_gate_actual_s(void);
+
+/** Krok TDC [ps] — jediny zdroj pravdy (drive konstanta na trech mistech). */
+double screen_main_tdc_ps(void);
+
+/** Prekresli pas nejistoty (σ + N) pod velkym cislem. @return 1 = kreslilo se. */
+int screen_main_redraw_uncert(int force);
+
+/** Preskrtne zonu velkeho cisla (varovani priority 1-2 = odecet neplatny). */
+void screen_main_strike_reading(void);
 bool screen_main_is_running(void);                     /* RUN/STOP: bezi mereni? */
 bool screen_main_hit_gnss(int16_t x, int16_t y);       /* tap do GNSS pill v hlavicce? */
 bool screen_main_hit_sys(int16_t x, int16_t y);        /* tap do SYS pill v hlavicce? */
 int  screen_main_sys_poll(void);                       /* 1 = zmena SYS zdravi -> prekresli header */
 bool screen_main_hit_allan(int16_t x, int16_t y);      /* tap do Allan nahledu -> ALLAN okno? */
-bool screen_main_hit_trend(int16_t x, int16_t y);      /* tap do trend karty -> fullscreen trend? */
+bool screen_main_hit_trend(int16_t x, int16_t y);
+
+/** Tap-cile hlavni obrazovky, ktere NEJSOU tlacitka (GNSS pilulka, SYS pilulka,
+ *  Allan nahled, trend karta) — pro registr fokusu encoderu.
+ *  ⚠️ Bez nich jsou GPS okno a fullscreen trend encoderem NEDOSTUPNE.
+ *  @return kolik rectu se zapsalo (prvky, ktere se prave nekresli, se vynechaji). */
+int screen_main_focus_rects(prim_rect_t *out, int max);      /* tap do trend karty -> fullscreen trend? */
 void screen_main_render_allan_big(prim_rect_t rect);   /* fullscreen Allan log-log graf (okno) */
 void screen_main_set_allan_metric(int m);              /* 0=ADEV,1=TDEV,2=MTIE (prepinac v okne ALLAN) */
 int  screen_main_allan_metric(void);                   /* aktualni metrika 0/1/2 */
+/* Hustota bodu Allanova grafu: 0 = 3 na dekadu (1-2-5, vychozi), 1 = 5 (1-2-3-5-7),
+ * 2 = 9 (1..9). Nastavuje okno DISPLEJ, persist syscfg; mimo rozsah -> 0. */
+void screen_main_set_allan_density(int d);
+/* Reference mereneho signalu (F-0183, presny kmitocet pri poslednim nulovani
+ * statistiky; 0 = neni, SIM/start) a test, zda kmitocet patri k nemu (1e-4). */
+double screen_main_signal_ref_hz(void);
+int    screen_main_signal_match(double hz);
+int  screen_main_allan_density(void);
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */
 int  screen_main_trend_secs(void);                     /* aktualni okno trendu [s] */
@@ -107,26 +159,38 @@ bool screen_main_hist_logy(void);                       /* stav lin/log Y osy hi
 void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
-float screen_main_adev_1s(void);                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
+float screen_main_adev_1s(void);
+#include "ipc_shared.h"   /* ipc_stab_pt_t (v20) */
+int  screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
+                             float *drift, float *offset);   /* statistika stability pro web; jen UiTask */                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
 /* Vlozi vzorek z DATALOGU (kadence 10 s) do ADEV pyramidy od stage 1.
  * ⚠️ NE od stage 0: stage 1 ma tau = 10 s = presne kadenci logu, takze prevod je
  * exaktni. Sypat log do stage 0 (tau0 = 1 s) by dalo sigma_y(tau) spatne o rad
  * a pritom verohodne vypadajici. Detaily u implementace. */
-void  screen_main_adev_seed_10s(float y);
+void  screen_main_adev_seed_10s(double y);
 /** Nominal [Hz], proti kteremu se pocita frakcni odchylka (0 = jeste neinicializovano). */
 double screen_main_freq_nominal(void);
+
+/** Frakcni odchylka y = (hz − f0) / f0 proti `screen_main_freq_nominal()`.
+ *  0 = nominal jeste nezname.
+ *  🔴 JEDINY ZDROJ PRAVDY — tenhle vypocet existoval dvakrat a obe kopie se
+ *  rozesly (audit F-0037): ziva cesta pouzivala pevne meritko platne jen pro
+ *  10 MHz a 7 desetin, rekonstrukce z datalogu pocitala spravne, a obe plnily
+ *  TUTEZ ADEV pyramidu. Kdo potrebuje `y`, vola tohle — nepise vzorec znovu. */
+double screen_main_frac_dev(double hz);
+/** #45: L(f) [dBc/Hz] fazoveho sumu z ringu fluktuaci pro offset nejblizsi
+ *  `target_hz`. Vyplni `f_used`/`l_dbc`. @return 1=spocteno (>=64 s dat), 0=malo dat. */
+int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc);
 bool screen_main_selftest(void);                        /* fmt_frac+hist_h vektory (UART "selftest") */
 
 /* ── Static data (defined in screen_main_data.c) ────────────── */
 /* GNSS lock / pocet druzic / cas / datum jsou ZIVE z GPS (ne staticke). */
 extern const char *SCR_S_HDOP_L;   /* HDOP hodnota je ZIVE z GPS (render_header), ne staticka */
 extern const char *SCR_S_HOLD_L, *SCR_S_HOLD_V;
-extern const char *SCR_S_TITLE_RIGHT;
-extern const ui_digit_segment_t SCR_MAIN_DIGITS[];
-extern const int16_t SCR_MAIN_DIGIT_COUNT;
-extern const char *SCR_MAIN_SEPS, *SCR_S_UNIT_HZ;
+/* ⚠️ `SCR_MAIN_DIGITS`/`_DIGIT_COUNT`/`SCR_MAIN_SEPS` odstraneny (#1) — format
+ * velkeho cisla se stavi za behu dle magnitudy mereni (`num_layout` v .c). */
+extern const char *SCR_S_UNIT_HZ;
 /* Offset/sigma/trend hodnoty jsou POCITANE ze statistiky (screen_main.c), jen labely zde. */
-extern const char *SCR_S_OFFSET_L;
 extern const char *SCR_S_TREND_L;
 extern const char *SCR_S_SIGNAL_L;   /* signal bargraph label (hodnota+% simulovane) */
 extern const char *SCR_S_BTN_RUN, *SCR_S_BTN_GATE_L,

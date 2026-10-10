@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "encoder.h"   /* encoder_ev_t — udalost predava volajici (UiTask) */
+
 /** One-time init: bind libprim to the framebuffer, build static caches. */
 void app_gpsdo_init(void);
 
@@ -71,6 +73,67 @@ void app_gpsdo_clear(void);
  */
 bool app_gpsdo_handle_touch(int16_t x, int16_t y);
 
+/** Vykresli + flipne okno `v` (interni `render_view()`) — pro export vsech
+ *  oken na SD (UART `screenshot all`). Volat VYHRADNE z UiTasku. */
+void app_gpsdo_render_view_for_shot(int v);
+
+/** #90 — po `app_gpsdo_handle_touch()` rika, jestli trefeny prvek byl opakovatelny
+ *  „−/+" ovladac. UiTask podle toho zapne auto-repeat s akceleraci pri drzeni. */
+bool app_gpsdo_touch_repeat_armed(void);
+
+/** #90 — dlouhy stisk (>=600 ms) na (x,y) = protejsek dlouheho stisku encoderu.
+ *  Dnes no-op mimo +/- (AUTO-TRIGGER ceka na vstupni modul #78); hook pro paritu.
+ *  @return true pokud se neco obslouzilo. */
+bool app_gpsdo_handle_touch_long(int16_t x, int16_t y);
+
+/** Obsluha rotacniho encoderu (Faze A). Vola VYHRADNE UiTask, ~100 Hz.
+ *  @return 1 = neco se prekreslilo -> flipnout snimek. */
+/** Obsluzi UZ VYCTENOU udalost encoderu (fokus / navigace / aktivace).
+ *  @return 1 = neco se vykreslilo.
+ *
+ *  🔴 Udalost se PREDAVA, nepolluje se uvnitr: `encoder_poll()` je
+ *  JEDNOKONZUMENTOVE API (druhy konzument si udalosti krade) a UiTask ji
+ *  potrebuje videt DRIV — kvuli probuzeni z auto-dimu/sporice. */
+int app_gpsdo_handle_encoder(const encoder_ev_t *ev);
+
+/** Diagnostika registru zameritelnych tlacitek (UART `status`).
+ *  ⚠️ `overflow` = 1 znamena, ze v nekterem okne je tlacitek vic nez `cap`
+ *  a ta na konci NEJDOU zamerit encoderem — bez tohohle by to bylo tiche. */
+void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
+
+/** Postup rekonstrukce ADEV pyramidy z datalogu (UART `status`).
+ *  Dokud bezi, ZIVE vzorkovani statistiky STOJI — proto to musi byt videt.
+ *  Kterykoli ukazatel smi byt NULL. @return `SEED_PROG_*`.
+ *  ⚠️ Cekani na prvni realne mereni (F-0189) NENI beh: zive vzorkovani
+ *  (i SIM fallback) pritom jede, takze se hlasi zvlast.
+ *  ⚠️ Zdanlive vysoka hodnota `total` proti `done` je normalni: zaznamy bez
+ *  platneho mereni (freq==0 / SIM) se preskakuji, takze `done` roste pomaleji. */
+#define SEED_PROG_IDLE     0   /* nebezi (hotova, preskocena z jineho duvodu) */
+#define SEED_PROG_RUN      1   /* vklada zaznamy, zive vzorkovani stoji */
+#define SEED_PROG_WAIT     2   /* ceka na prvni realne mereni (reference signalu) */
+#define SEED_PROG_SKIP_POR 3   /* preskocena: start po zapnuti napajeni (POR/BOR) */
+int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total);
+
+/** Hloubka navigacniho zasobniku (ZPET) pro UART `status`.
+ *  @param peak     nejhlubsi dosazene zanoreni
+ *  @param overflow 1 = zasobnik nekdy pretekl -> ZPET vedlo jinam, nez odkud se otevrelo
+ *  @param cap      kapacita zasobniku
+ *  Kterykoli ukazatel smi byt NULL. */
+void app_gpsdo_nav_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
+
+/** Kolikrat obsluha encoderu skutecne kreslila (diagnostika problikavani). */
+uint32_t app_gpsdo_encoder_draws(void);
+
+/** Citace kreslicich zdroju hlavni obrazovky (hledani problikavani).
+ *  Poradi: [0]=flip [1]=flash tlacitka [2]=stats anim [3]=trend anim
+ *          [4]=SYS xfade [5]=velke cislo [6]=encoder. Pole aspon 7 prvku.
+ *  ⚠️ Cist pres UART dvakrat a odecist — zadna sonda (halt cile zabiji I2C4). */
+void app_gpsdo_ui_counters(uint32_t *out7);
+
+/** Nejvyssi aktivni varovani (zadani UI §12); 0 = zadne. Nizsi cislo = zavaznejsi.
+ *  ⚠️ Slouzi k overeni logiky pres UART `status`, bez pohledu na displej. */
+uint8_t app_gpsdo_warn_active(const char **txt, int *count);
+
 /** Periodic tick (~2 Hz from UiTask): refreshes the diagnostics values. */
 void app_gpsdo_tick(void);
 
@@ -102,6 +165,11 @@ void app_gpsdo_tick_allan_draw(void);
  */
 int app_gpsdo_flush(void);
 
+/* Banner "DOTYK NEDOSTUPNY" pri trvale mrtve I2C4 (dead=1 kresli, dead=0 uklidi).
+ * Vola UiTask; firmware sbernici ozivit NEUMI (ATTINY je dostupny jen po ni),
+ * takze jde vylozene o to, aby uzivatel videl, ze pristroj nezamrzl. */
+void app_gpsdo_touch_dead(int dead);
+
 /** Naplanuje rekonstrukci ADEV pyramidy z datalogu — dlouha tau tak prezijou
  *  restart. Samotne cteni bezi PO DAVKACH z `app_gpsdo_tick_stats_sample`
  *  (jeden zaznam = blokujici QSPI cteni, najednou by to shodilo watchdog). */
@@ -114,3 +182,10 @@ void app_gpsdo_stats_seed_start(void);
  * bity1:3 = jednotka odchylky, bity4:6 = index nominalu. */
 uint8_t app_gpsdo_meas_ui_get(void);
 void    app_gpsdo_meas_ui_set(uint8_t packed);
+
+/** Kolikrat se `fmt_fixed()` musela omezit — bud dostala pocet desetin mimo
+ *  podporovany rozsah 0..3, nebo by `v * 10^desetin` pretekl int32 (audit F-0053).
+ *  🔴 Nenulove cislo znamena, ze se NEKDE na displeji ukazuje ZAOKROUHLENA hodnota
+ *  misto pozadovane — a driv se to stavalo TISE (σ hlasila „0 Hz", STATUS #132).
+ *  Cte to UART `status`; vzor je `FONTY: preskocenych glyfu` (lekce L-0017). */
+uint32_t app_gpsdo_fmt_clamped(void);

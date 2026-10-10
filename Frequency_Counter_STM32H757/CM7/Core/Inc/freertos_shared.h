@@ -9,6 +9,7 @@
 #ifndef INC_FREERTOS_SHARED_H_
 #define INC_FREERTOS_SHARED_H_
 
+#include "ipc_shared.h"   /* ipc_uicfg_norm — format g_ui_cfg v2 */
 #include <stdint.h>
 #include "cmsis_os2.h"
 #include "sensor_stat.h"   /* g_sensors[], sensor_update/fail (teploty + ADS1115) */
@@ -32,6 +33,12 @@ extern osMessageQueueId_t GpsRxQueueHandle;   /* USART1 RX -> GpsTask (NEO-7M NM
 
 /* ── Požadavek na obrazovku (UART -> UiTask): 3 = main, 4 = clear ──────── */
 extern volatile uint8_t g_screen_req;
+/* Injektor doteku pro diagnostiku (UART `tap <idx>`) — viz definice ve
+ * `freertos.c`. Zapisuje UartTask, cte a nuluje VYHRADNE UiTask. */
+extern volatile int8_t  g_tap_btn_req;
+/* Export vsech oken na SD (UART `screenshot all`) — viz definice ve `freertos.c`. */
+extern volatile int16_t  g_shot_view_req;
+extern volatile uint32_t g_shot_view_done;
 
 /* ── Požadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
  * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
@@ -42,7 +49,20 @@ extern volatile uint8_t g_stats_reset_req;
 extern volatile char    g_freq_text[48];
 extern volatile char    g_freq_info[64];
 extern volatile uint8_t g_freq_dirty;
+/* 1 = varovny pruh (zadani UI §12) prave lezi v pasu nejistoty pod velkym
+ * cislem -> `screen_main_redraw_uncert` tam NESMI kreslit σ+N. Vlastnika
+ * pixelu ma vzdy jen jeden; jinak se dve vrstvy prebijeji. */
 extern volatile uint8_t g_freq_stale;      /* 1 = ztráta signálu -> UI ztlumí */
+/* Numericky vybrany zdroj pro headline + statistiky (#1) — plní FpgaTask, čte screen_main. */
+extern volatile uint64_t g_freq_x100000;   /* kmitočet × 1e5 (dělička /4 nebo /16 už zahrnuta) */
+extern volatile uint32_t g_freq_seq;       /* SEQUENCE posledního platného rámce (kadence vzorků) */
+extern volatile uint8_t  g_freq_valid;     /* 1 = platné měření (CRC+VALID+FRESH) */
+/* Surová reciproká dvojice pro HI-RES headline (víc desetin než zaokrouhlené `x100000`). */
+extern volatile uint64_t g_freq_edges;     /* počet period v okně (pin28 = /4) */
+extern volatile uint64_t g_freq_gate_ns;   /* skutečná délka okna [ns] — jen zobrazení */
+extern volatile uint64_t g_freq_gate_ps;   /* PŘESNÁ délka okna [ps] — všechny výpočty (fpga_meas_t.gate_ps) */
+extern volatile uint8_t  g_freq_hires;     /* 1 = zdroj je /4 → lze dopočítat; 0 = /16 (edge_count chybí) */
+extern volatile uint8_t  g_freq_chan;      /* kanál, ze kterého je poslední přijaté měření (0 = A, 1 = B; FW >= 0x041E) */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
 extern volatile char    g_spi_text[64];
@@ -52,6 +72,16 @@ extern volatile uint8_t g_spi_dirty;
 /* ── Si5356 reference (zapisuje SensorsTask z I2C1, čte diagnostika) ────── */
 extern volatile uint8_t g_si5356_status;   /* reg 218: bit0 SYS_CAL, bit2 LOS_CLKIN, bit4 PLL_LOL */
 extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten */
+/* 🔴 STICKY stav reference (registr 247), LATCH V FIRMWARE.
+ * Registr 218 je ŽIVÝ, takže krátký výpadek 10 MHz mezi dvěma čteními (2×/s)
+ * byl dosud NEVIDITELNÝ — a u kmitočtového normálu to znamená, že měření
+ * pořízená mezitím jsou neplatná, aniž by to kdokoli poznal.
+ * ⚠️ Drží se i v firmware (ne jen na čipu), aby uživatelské vynulování mohlo
+ * proběhnout vědomě: `g_si5356_clr_req` → obslouží SensorsTask (vlastník I2C1).
+ * ⚠️ `SI5356_LOS_XTAL` se do latche NEPOUŠTÍ — krystal není osazen, bit je
+ * trvale 1 a zaplevelil by hlášení napořád. */
+extern volatile uint8_t g_si5356_sticky;   /* reg 247, kumulativně (bez LOS_XTAL) */
+extern volatile uint8_t g_si5356_clr_req;  /* 1 = vynulovat sticky (žádost pro SensorsTask) */
 
 /* ── RTC (zapisuje defaultTask přes rtc_app_tick, čte UART/UI) ───────────────
  * RTC běží z LSE (32.768 kHz), disciplinuje se z GPS UTC. Text "YYYY-MM-DD HH:MM:SS".
@@ -108,6 +138,60 @@ extern volatile uint8_t g_ui_cfg_req_pend;  /* 1 = ceka na aplikaci UiTaskem */
  * (ztlumeni po necinnosti). UiTask (okno Nastaveni) meni + nastavi dirty;
  * defaultTask (rtc_save_syscfg_if_dirty) zapise do BKP. Nacteni z BKP dela
  * MX_RTC_Init pred schedulerem. */
+/* 🔴 Vysledek bring-upu displeje z `main.c`. 0 = OK, jinak `BOOTLED_STEP_*`
+ * kroku, ktery selhal.
+ * PROC to existuje: selhani bring-upu NENI fatalni — `main.c` udela
+ * `goto display_skip` a pristroj bezi DAL (dotyk, UART, mereni, CM4). Displej
+ * je pritom cerny a `[ERR] ...` hlasky z bring-upu se NIKAM nedostanou, protoze
+ * konzole jede po USB CDC, ktere v te chvili jeste neni vyctene. Bez tohohle
+ * priznaku nelze u cerneho displeje zjistit, jestli selhal panel, nebo se jen
+ * nic nekresli (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
+extern volatile uint8_t g_display_init_step;
+/* Pocet podteceni FIFO LTDC (definovano v `app/hal/stm32/prim_stm32_hal.c`,
+ * cteno pri kazdem flipu). Nenulove = LTDC nestiha nacitat pixely z pameti ->
+ * POSKOZENE SNIMKY na panelu, tedy problem PROPUSTNOSTI, ne kreslicího kodu.
+ * Most pres globál, protoze Core vrstva nema `app/` na include ceste. */
+extern volatile uint32_t g_ltdc_underrun;
+/* Diagnostika DMA2D (audit F-0033) — za normalniho provozu vse nulove.
+ * Definice v `CM7/app/hal/stm32/prim_stm32_hal.c`. */
+extern volatile uint32_t g_d2d_errors;
+extern volatile uint32_t g_d2d_timeouts;
+extern volatile uint32_t g_ltdc_flip_timeouts;
+extern volatile uint32_t g_d2d_wait_max_cyc;   /* nejdelsi cekani, takty jadra */
+/* Kolikrat cekani na DMA2D preteklo `D2D_SPIN_FAST` (levny spin bez cteni
+ * casovace) a padlo do POMALE, casove ridene vetve `d2d_wait()`. Od F-0140
+ * (copy-forward kopiruje plnosirkove pruhy, vic dat) tam padaji i bezne
+ * partial redrawy, ne jen celoobrazovkove — proto tahle vetev od 2026-09-24
+ * mezi kontrolami pousti scheduler (`osDelay(1)`), aby se cekani na HW
+ * prestalo pocitat jako "UiTask zanepraznen" (zmereno: CPU% ~65 -> 80-93 %
+ * po F-0140, beze zmeny skutecne prace — cistý dusledek delsiho busy-spinu). */
+extern volatile uint32_t g_d2d_slow_entries;
+/* Mrtvy cas DMA2D mezi AXI pristupy (`DMA2D_AMTCR.DT`) — brani tomu, aby DMA2D
+ * vyhladovel LTDC pri copy-forwardu. 0 = vypnuto. Ladi se za behu (`d2ddt`). */
+extern volatile uint8_t  g_d2d_deadtime;
+void prim_stm32_set_deadtime(uint8_t dt);
+/* Diagnostika F-0140: porovna DVA framebuffery pixel po pixelu a vrati pocet
+ * odlisnych pixelu + obalovy obdelnik odlisnosti. Odlisuje dve vady, ktere
+ * vypadaji stejne ("problikne"): POSKOZENY SNIMEK pri scan-outu (buffery se
+ * shoduji, vada vznikla az cestou na panel) vs. NESOULAD BUFFERU (jeden drzi
+ * stary obsah -> problikne pokazde, kdyz na nej prijde rada). ⚠️ Cte ~1,5 MB
+ * SDRAM a invaliduje cache — volat JEN z UartTasku (neni hlidany watchdogem). */
+uint32_t prim_stm32_fb_compare(int a, int b, int16_t *bx, int16_t *by,
+                               int16_t *bw, int16_t *bh);
+int prim_stm32_front_index(void);
+int prim_stm32_back_index(void);
+uint32_t prim_stm32_fb_back_count(int i);       /* kolikrat byl buffer cilem copy-forwardu */
+uint32_t prim_stm32_fb_last_copy_rects(void);   /* 0 = nic, 0xFFFFFFFF = plna kopie */
+uint32_t prim_stm32_fb_full_copies(void);
+/* Rozklad podteceni FIFO na faze `prim_stm32_present()` (F-0140):
+ * 0 = pri kresleni aplikace, 1 = pri cekani na dokresleni, 2 = kolem flipu,
+ * 3 = BEHEM copy-forwardu. Rozlisuje „aplikace kresli moc" od „copy-forward
+ * zabira sbernici" — tedy dve UPLNE jine opravy. */
+uint32_t prim_stm32_ur_phase(int i);
+/* Kolikrat se glow nevykreslil, protoze oblast prekrocila strop masky
+ * (`glow.c`). ⚠️ MUSI zustat 0 — prekroceni je jinak TICHE. Vypisuje `status`. */
+extern uint32_t g_prim_glow_skipped;
+
 extern volatile uint8_t g_brightness;    /* jas 0-255 (default 200) */
 extern volatile uint8_t g_sound_muted;   /* 1 = zvuk vypnut (default 0) */
 extern volatile uint8_t g_autodim_en;    /* 1 = auto-dim po necinnosti (default 1) */
@@ -115,6 +199,26 @@ extern volatile uint16_t g_autodim_sec;  /* prodleva auto-dim [s] (default 60, p
 extern volatile uint8_t g_theme_idx;     /* schema 0..4 = tmave/svetle/stredni/obrys/kontrast (UI_THEME_*, BKP_DR6 bit0+bity9:10) */
 extern volatile uint8_t g_lang_en;       /* 0 = cesky (default), 1 = english (BKP_DR6) */
 extern volatile uint8_t g_anim_enabled;  /* 1 = animace ZAP (default), 0 = okamzity skok (okno Animace, BKP_DR6 bit8) */
+
+/* Stav linek I2C4 pro `status` (bit0 SCL, bit1 SDA, bit2 BUSY) — viz
+ * freertos_task_ui.c. Cte se primo z IDR/ISR, takze rekne pravdu i o zaseknute
+ * sbernici (dotyk + TMP117 0x48 + ATTINY podsviceni jsou vsichni na I2C4). */
+uint8_t i2c4_line_state(void);
+
+/** 1 = bezi `i2cspeed` (mereni chybovosti I2C4 podle taktu). Ostatni konzumenti
+ *  I2C4 (touch a jas v UiTask, TMP117 0x48 v SensorsTask) musi po tu dobu bus
+ *  nechat na pokoji — viz komentar u definice ve `freertos.c`. */
+extern volatile uint8_t g_i2c4_sweep;
+/* Bezpodminecne uvolneni sbernice (9 taktu + STOP) a tvrdy reset periferie
+ * pres APB4RSTR. Obojí volat POD `i2c4MutexHandle`. Definice ve
+ * `freertos_task_ui.c`, pouziva je i stupnovana diagnostika `i2c4` v UartTasku. */
+void i2c4_bus_clear(void);
+void i2c4_hw_reset(void);
+/* 1 = diagnosticky build bez runtime zapisu na ATTINY (experiment k mrtve I2C4). */
+int i2c4_diag_no_attiny_write(void);
+/* Pocitadla zapisu jasu na ATTINY + stav ztlumeni — bez nich nejde overit,
+ * jestli test zapisu vubec neco zapsal (pri sporici se zapis nekona). */
+void i2c4_bl_stats(uint32_t *ok, uint32_t *skip, uint8_t *dimmed);
 /* Graficke efekty: bitmaska g_fx_enabled (okno Animace -> EFEKTY). Definice
  * bitu + globalu v samostatnem bezzavislostnim headeru (sdili firmware i app). */
 #include "fx_flags.h"
@@ -151,7 +255,7 @@ extern volatile uint8_t  g_selftest_res;
  * [11]=SCPI parser (scpi_selftest #25), [12]=IPC seqlock+ring (ipc_selftest #19/#20),
  * [13]=vzory + pocitani chybnych bitu (membench_selftest, okno PAMETI).
  * Zobrazuje okno Selftest (menu) — pri zmene poradi aktualizuj i jeho popisky. */
-#define SELFTEST_N 14
+#define SELFTEST_N 16
 extern volatile uint8_t  g_selftest_detail[SELFTEST_N];
 /* g_cm4_absent = 1: CM4 (domena D2) nenabehl behem boot handshake (prazdna/vadna
  * bank2 nebo BCM4=0 v option bytes). Displej bezi na CM7 -> pokracujeme degradovane
@@ -182,6 +286,46 @@ extern volatile uint32_t g_rtos_heap_free; /* xPortGetFreeHeapSize() [B] */
 extern volatile uint32_t g_rtos_heap_min;  /* min-ever-free heap [B] */
 extern volatile uint32_t g_rtos_cpu_pct;   /* zátěž CPU [%] (100 - idle) */
 extern volatile uint32_t g_uptime_s;       /* doba běhu [s] */
+/* Pocet detekci vypadku HSE (CSS). Nenulove = casova zakladna neplati. */
+extern volatile uint16_t g_css_fail;
+
+/* ── Kontrola napajeni a hodin z bootu (audit F-0001) ──────────────────────
+ * Plni `pwrclk_check()` v `main.c` (USER CODE), cte UART `status`.
+ * Overuje DOSAZENY stav registru, ne navratovou hodnotu HAL — viz freertos.c. */
+#define PWRCLK_BAD_SUPPLY    (1u << 0)  /* PWR_CR3 nenese ocekavanou konfiguraci napajeni */
+#define PWRCLK_BAD_SMPSEXT   (1u << 1)  /* SMPSEXTRDY = 0 (externi vetev SMPS nepripravena) */
+#define PWRCLK_BAD_ACTVOS    (1u << 2)  /* ACTVOSRDY = 0 (regulator neustalen) */
+#define PWRCLK_BAD_VOS0      (1u << 3)  /* VOS0 neni aktivni (VOS!=scale1+ODEN nebo VOSRDY=0) */
+#define PWRCLK_BAD_SYSCLK    (1u << 4)  /* SYSCLK != 480 MHz */
+#define PWRCLK_BAD_HCLK      (1u << 5)  /* HCLK (AXI) != 240 MHz */
+#define PWRCLK_BAD_LATENCY   (1u << 6)  /* FLASH latency != 4 WS */
+/* Kompenzacni cela I/O (SYSCFG CCCSR) a CSI, ktery ji napaji. 1 = nabehlo. */
+extern volatile uint16_t g_flightrec_lost;    /* zahozene dumpy (F-0018) */
+/* Dumpy, ktere se do flash dostaly AZ PO RESTARTU pres SDRAM staging (F-0018).
+ * Nenulove = predchozi beh skoncil pretečenim zasobniku nebo vycerpanim heapu
+ * a zaznam se zachranil dvoufazovym zapisem. */
+extern volatile uint16_t g_flightrec_staged;
+
+extern volatile uint16_t g_tmp117_cfg_fail;   /* nezdarena konfigurace TMP117 (F-0022) */
+extern volatile uint8_t  g_csi_ready;
+extern volatile uint8_t  g_iocomp_ready;
+extern volatile uint8_t  g_pwrclk_bad;        /* 0 = vse sedi */
+extern volatile uint32_t g_pwrclk_sysclk_hz;
+extern volatile uint32_t g_pwrclk_hclk_hz;
+extern volatile uint8_t  g_pwrclk_wrhighfreq; /* FLASH_ACR.WRHIGHFREQ [5:4] (F-0006) */
+/* Ktere okno UI je prave otevrene + kolikrat se okno zmenilo. Slouzi
+ * k odliseni "dotyk neprisel" od "okno se otevrelo a hned zavrelo". */
+extern volatile uint8_t  g_ui_view;
+extern volatile uint32_t g_ui_view_changes;
+
+/* Pozadavky na blokujici QSPI operace — nastavuje UI (dotyk), provadi UartTask.
+ * ⚠️ Z UiTasku je NESMIS volat primo: kresli a ma watchdog heartbeat (2,5 s),
+ * zatimco `errlog_erase` trva jednotky sekund. Viz `qspi_req_service()`. */
+extern volatile uint8_t  g_datalog_store_req;
+extern volatile uint16_t g_datalog_period_req;
+extern volatile uint8_t  g_errlog_erase_req;
+extern volatile uint8_t  g_qspi_req_busy;
+void qspi_req_service(void);
 
 /* ── Task implementace ─────────────────────────────────────────────────── */
 /* CubeMX generuje StartUartTask/StartI2C4 stuby ve freertos.c; jejich USER CODE
@@ -198,5 +342,10 @@ void StartFpgaTask(void *argument);        /* freertos_task_fpga.c */
 /* ── Run-time stats časová báze (freertos_hooks.c) ─────────────────────── */
 void RunTimeStats_Init(void);
 uint32_t RunTimeStats_GetCount(void);
+
+/* Teplotni rekalibrace TDC (freertos_task_fpga.c) — pro radek `status`. */
+extern volatile uint32_t g_tdc_recal_count;   /* pocet teplotnich rekalibraci TDC */
+extern volatile int16_t  g_tdc_cal_temp_c10;  /* teplota posledni kalibrace, ×10 °C */
+extern volatile uint32_t g_tdc_spike_count;   /* pocet oken vyrazenych jako obri-bin artefakt (cesta A) */
 
 #endif /* INC_FREERTOS_SHARED_H_ */

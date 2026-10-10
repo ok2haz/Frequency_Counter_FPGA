@@ -1,40 +1,110 @@
 // ============================================================
 // File: timing.sdc
 // Timing constraints for Counter_FPGA (GW1NR-9C / Tang Nano 9K)
+// Nová deska — dva symetrické kanály, JEDNA 100 MHz referenční hodina.
 //
-// 5 externich hodin:
-//   clk_ref_10m  = 10 MHz  (perioda 100 ns) - aplikace / SPI PHY
-//   clk_p0..p7p5 = 100 MHz (perioda 10 ns)  - TDC + citani udalosti
+// 🔴 ZMĚNA PROTI STARÉ DESCE: clk_p2p5/p5/p7p5_100m (4fázový vernier ze
+// Si5356) KONČÍ — nová deska dává jen JEDEN REF_100MHz. Cross-fázové
+// cesty (dřívější s1/s2/s3 -> os_r1 v phase_oversameru, rozpočty
+// 7,5/5/2,5 ns) tím padají — coarse_edge_detect je JEDNOHODINOVÝ modul
+// (jen clk_p0_100m), žádné waveform posuny navíc nepotřebuje.
 //
-// Ctyri faze jsou JEDEN hodinovy system (Si5356, 0/2,5/5/7,5 ns) -
-// waveform posuny zajisti, ze STA hlida realne cross-fazove cesty
-// s1/s2/s3 -> os_r1 v oversampleru (rozpocty 7,5/5/2,5 ns).
-// Asynchronni je jen 10MHz domena (toggle-handshake CDC) a SPI vstupy
-// (vzorkovane 3FF synchronizery -> nejsou hodiny).
+// 2 externí hodiny:
+//   clk_ref_10m  = 10 MHz  (perioda 100 ns) - aplikace / SPI PHY / gate-window
+//   clk_p0_100m  = 100 MHz (perioda 10 ns)  - hrubé čítání hran (10 ns/LSB)
+//
+// Asynchronní jsou: CH_A/CH_B vstupy (2FF synchronizer v coarse_edge_detect,
+// stejný vzor jako dřívější oversampler), SPI vstupy (3FF sync v PHY) a
+// CDC mezi clk_p0_100m <-> clk_ref_10m (toggle-handshake, viz top.v).
 // ============================================================
 
-create_clock -name clk_ref_10m   -period 100.0 -waveform {0 50.0}   [get_ports {clk_ref_10m}]
+create_clock -name clk_ref_10m   -period 100.0 -waveform {0 50.0}  [get_ports {clk_ref_10m}]
+create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}   [get_ports {clk_p0_100m}]
 
-create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}    [get_ports {clk_p0_100m}]
-create_clock -name clk_p2p5_100m -period 10.0  -waveform {2.5 7.5}  [get_ports {clk_p2p5_100m}]
-create_clock -name clk_p5_100m   -period 10.0  -waveform {5.0 10.0} [get_ports {clk_p5_100m}]
-create_clock -name clk_p7p5_100m -period 10.0  -waveform {7.5 12.5} [get_ports {clk_p7p5_100m}]
+// 🔴 2026-10-04 (#264): SPI PHY je taktovana primo SCK (spi_sck, pin 55).
+// Cil 30 MHz (perioda 33,3 ns) = rezerva pro zrychleni SPI (dnes 5 MHz).
+// V SCK domene jsou i cesty nabezna -> sestupna hrana (pul periody, 16,7 ns):
+// tx_rdata (posedge) -> cur (negedge), tcnt (negedge) -> adresa TX RAM (posedge).
+// Prechody do ostatnich domen: dvouportova blokova RAM (TX) a staticke registry
+// po CS nahoru (RX vysledek, diagnostika) -> asynchronni skupiny.
+create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {spi_sck}]
 
-// Parove (viceclockova skupina v jednom -group nebyla Gowin STA respektovana:
-// p0 -> ref_10m cesty se timovaly jako related s 10ns vztahem)
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}]
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p2p5_100m}]
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p5_100m}]
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p7p5_100m}]
+set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}]
 
-// cal_mode mux (calm_s -> sig4_eff -> vzorkovace vsech fazi) je kvazistaticky
-// ridici signal - prepina se jen povelem, okna kolem prepnuti STM zahodi.
-set_false_path -from [get_regs {calm_s_1_s0}]
+// 🔴 2026-10-08: NEJISTOTA HODIN. Bez ni STA predpoklada idealni 100 MHz (nulovy jitter, presna strida).
+// Zmereno na desce: buildy regresniho bloku s nejtesnejsi rezervou 0,15 / 0,017 / -0,19 ns POCITALY CHYBNE
+// (vysledky zavisle na rozmisteni), build se stejnou logikou a rezervou >= 0,58 ns pocital presne
+// (docs/TDC_MATEMATIKA.md kap. 8.3). Realna rezerva tedy chybi ~0,3 ns: jitter Si5356 + vstupni buffer hodin.
+// Uncertainty 0,5 ns nuti P&R tuto rezervu dodrzet, misto aby se spolehalo na stesti pri rozmisteni.
+// 🔴 2026-10-09 (FW 0x041D): 0,5 NESTACI. Build se skutecnou rezervou 0,545 ns (slack 0,045 + 0,5) meril
+// STABILNE a deterministicky spatne (1 578 628 Hz misto 10 000 008 Hz, tj. ~1/6 hran), stejny zdroj s 0,9 ns
+// (rezerva >= 0,98 ns) meri spravne a 0x041A (rezerva 0,64) taky. Mez lezi mezi 0,55 a 0,64 ns -> 0,9 dava
+// rezervu nad ni. Nejtesnejsi cesty jsou citani hran (rise_q -> cy_q/snap) a regr_acc (L-0141).
+set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] 0.9
 
-// phase_check toggly (u_pc/t1..t3 -> q1..q3) jsou CDC-safe (2FF sync +
-// edge detect) -> nevynucovat na nich 2,5/5/7,5 ns setup. Post-syntezni
-// jmena registru maji suffix _s0. Skutecne TDC cesty (u_os*/s1..s3 ->
-// os_r1) zustavaji hlidane waveform posuny.
-set_false_path -from [get_regs {u_pc/t1_s0}]
-set_false_path -from [get_regs {u_pc/t2_s0}]
-set_false_path -from [get_regs {u_pc/t3_s0}]
+// I/O SPI vuci SCK (rozhoduje o skutecnem stropu SPI, ne vnitrni Fmax):
+//  MISO: PHY ho meni sestupnou hranou SCK, STM vzorkuje nabeznou -> cesta
+//        SCK pin -> registr -> MISO pin musi stihnout pul periody minus 5 ns
+//        (setup STM + spoje, odhad).
+//  MOSI: STM ho meni sestupnou hranou, FPGA vzorkuje nabeznou -> vstupni zpozdeni
+//        az 5 ns po sestupne hrane (odhad).
+set_output_delay -clock spi_sck -max 5.0 [get_ports {spi_miso}]
+set_output_delay -clock spi_sck -min 0.0 [get_ports {spi_miso}]
+set_input_delay  -clock spi_sck -clock_fall -max 5.0 [get_ports {spi_mosi}]
+set_input_delay  -clock spi_sck -clock_fall -min 0.0 [get_ports {spi_mosi}]
+
+// 🔴 cal_mode mux (calm_s -> sig4_eff, false_path) byl v pravodobem top.v
+// staveny desky — NOVE top.v (dva symetricke kanaly, hrube citani) uz
+// cal_mode/ring_osc vubec nema, takze tenhle false_path odstranen (Gowin
+// TA2003: registr calm_s_1_s0 neexistuje -> chyba synteze).
+
+// ============================================================
+// TDC (tdc.v). Vstup retezu (net `sig_eff`) je z definice ASYNCHRONNI k clk_p0
+// (vstupni pin, ring oscilator, kvazistaticky vyber zdroje) a koncí v tap FF.
+// Presne to se meri, ne casova cesta k uzavreni => false path pres tento net.
+// Cesta CE (zmrazeni) a vse ostatni zustava casovane.
+// ============================================================
+set_false_path -through [get_nets {u_tdca/sig_eff}]
+set_false_path -through [get_nets {u_tdcb/sig_eff}]
+
+// Dekoder (od 2026-10-07 architektura qd): vzorky q bezi VOLNE (kratke cesty), kompaktni kopie qd je po
+// spusteni ZMRAZENA (clock enable) >= 5 taktu a code_r / hicode_r se berou az na konci (fz == 4) =>
+// kombinacni cesta qd -> code_r ma 5 taktu. `qd_*` zahrnuje zmrazene qd_r, qd_f i volbu sady qd_src
+// (DUAL; nastavi se pri spusteni a od te doby je staticka). Vsechny maji prefix qd_ a lezi v u_chain,
+// takze vzor nachazi VZDY neco (u DUAL=0 aspon qd_r) -- odkaz na neexistujici objekt je v Gowin CHYBA (TA2003).
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/code_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/code_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/code_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/qd_*}] -to [get_regs {u_tdca/hicode_r*}]
+set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
+set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
+
+// Diagnostika kalibrace (tdc.v, faze ph[5] pruchodu tabulkou): scan_k se meni
+// jen jednou za 10 taktu (ph[9]) a hcur v ph[1] -> do zapisu d_* v ph[5] maji
+// >= 4 takty. Bez tohoto omezeni byla tahle diagnostika nejtesnejsi cestou
+// celeho navrhu (rezerva 0,06 ns) a ubirala misto skutecnym cestam.
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
+set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
+
+// FW 0x041F (2026-10-10): vystup regrese xm_a/xm_b = {x0, 8'd0} + xq (spi_app.v regr_acc, 40 b). Zapisuje se jen
+// pri fin_v; x0 se meni pri PRVNI znacce segmentu (ms predtim) a xq na konci deleni x, ktere predchazi deleni y
+// o 68 iteraci po 2 taktech -> oba operandy stoji >= 136 taktu. Bez omezeni to byla nejhorsi cesta navrhu
+// (-0,4 ns pri nejistote 0,9 ns), prestoze se jeji vysledek pouzije az desitky taktu pote.
+set_multicycle_path -setup -end 2 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
+set_multicycle_path -hold  -end 1 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
+
+// Rozmisteni retezu TDC (2026-10-09): report cest Z KAZDEHO vzorkovaciho FF -> textovy report
+// (build.tcl: -gen_text_timing_rpt) nese polohu kazdeho q_r[k] = polohu ALU tapu k.
+// Vyhodnocuje sim/check_tdc_placement.py (selze, kdyz retez neni v jednom radku / FF mimo slot ALU).
+// prvni = nejhorsi cesty celeho navrhu (vlastni report_timing jinak vychozi seznam nahradi)
+report_timing -setup -max_paths 50 -max_common_paths 1
+report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]
+report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdcb/u_chain/q_r*}]

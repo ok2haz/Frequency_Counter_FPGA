@@ -28,14 +28,17 @@ volatile unsigned int g_alarm_gps_lost   = 0;  /* pocet ztrat GPS locku */
 volatile unsigned int g_alarm_limit_fail = 0;  /* pocet prechodu PASS->FAIL limitu (#44) */
 volatile unsigned int g_alarm_vbat       = 0;  /* pocet poklesu VBAT pod prah */
 volatile unsigned int g_alarm_ocxo       = 0;  /* pocet vybehnuti OCXO z pasma */
+volatile unsigned int g_alarm_ocxo_dt    = 0;  /* pocet detekci "pec netopi" (ΔT) */
 volatile unsigned int g_alarm_adev       = 0;  /* pocet prekroceni prahu σy@1s */
 
 /* Prahovy monitor — konfigurace, stav, vstup z app vrstvy. */
 mon_cfg_t g_mon_cfg;
 volatile uint8_t g_mon_vbat_bad = 0;
 volatile uint8_t g_mon_ocxo_bad = 0;
+volatile uint8_t g_mon_ocxo_dt_bad = 0;
 volatile uint8_t g_mon_adev_bad = 0;
 volatile float   g_adev_1s      = 0.0f;
+volatile uint8_t g_warmup       = 1;   /* dokud app nerekne jinak, zahrivame se (F-0088) */
 
 void mon_cfg_defaults(mon_cfg_t *c)
 {
@@ -46,12 +49,20 @@ void mon_cfg_defaults(mon_cfg_t *c)
      * (Drive 2,6 V pri predpokladu 3,0 V nominalu.) */
     c->vbat_en    = 1;
     c->vbat_lo_mv = 2800.0f;
-    /* OCXO: zmereno na teto desce 49,7–51,5 °C v ustalenem stavu, takze pasmo
-     * 45–55 °C nechava rezervu na jinou okolni teplotu a pritom chyti rozladenou
-     * pec. ZAPNUTO. */
+    /* OCXO absolutni pasmo = HRUBA POJISTKA proti prehrati, ne detekce rozladene
+     * pece (tu resi ΔT, viz `MON_OCXO_DT_MIN_C`).
+     * 🔴 Strop 55 -> 75 °C (2026-09-01): 55 bylo odvozene z JEDNOHO mereni
+     * (49,7–51,5 °C ustaleny stav) a ukazalo se jako moc tesne — pri pouhych
+     * 32,9 °C na desce uz plast dosahl 55,1 °C a varovani svitilo trvale.
+     * Plast sleduje okoli, takze v zavrene krabicce nebo v lete by to byl
+     * konstantni sum, ktery se prestane cist. 75 °C nechava rezervu ~20 °C
+     * nad nejtepleji zmerenym stavem a porad chyti skutecne prehrati.
+     * ⚠️ Spodni mez 45 °C ma TENTYZ nedostatek v opacnem smeru (v chladne
+     * mistnosti muze plast legitimne klesnout pod ni) — nechana zamerne,
+     * protoze uzivatel zadal zmenu jen stropu; viz STATUS. */
     c->ocxo_en    = 1;
     c->ocxo_lo_c  = 45.0f;
-    c->ocxo_hi_c  = 55.0f;
+    c->ocxo_hi_c  = 75.0f;
     /* ADEV: ⚠️ VYCHOZI VYPNUTO — σy@1s se dnes pocita ze SIMULACE headline
      * (~1e-8), takze jakykoli realisticky prah by pipal na sum. Zapnout az
      * po zprovozneni FPGA linku (#2). Hodnota 1e-9 = rozumny start pro OCXO. */
@@ -66,17 +77,31 @@ void alarm_reset_counters(void)
     g_alarm_limit_fail = 0;
     g_alarm_vbat = 0;
     g_alarm_ocxo = 0;
+    g_alarm_ocxo_dt = 0;
     g_alarm_adev = 0;
 }
 
-/* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ── */
-static unsigned char  s_pulses_left;   /* zbyva ON pulzu */
-static unsigned short s_on_ms, s_off_ms;
-static unsigned char  s_phase;         /* 0 idle, 1 ON, 2 OFF */
-static unsigned int   s_phase_until;   /* HAL_GetTick() konce faze */
+/* ── Neblokujici prehravac patternu (sekvence ON/OFF pulzu) ──────────────────
+ * 🔴 Stav patternu smi menit VYHRADNE defaultTask (`alarm_tick`). Kdo chce
+ * pipnout z jine ulohy, nastavi POZADAVEK — `alarm_click()` (UiTask) a
+ * `alarm_test()` (UartTask). `volatile` je tu proto, ze pozadavky prichazi
+ * z jinych uloh (audit F-0103). */
+static volatile unsigned char  s_pulses_left;   /* zbyva ON pulzu */
+static volatile unsigned short s_on_ms, s_off_ms;
+static volatile unsigned char  s_phase;         /* 0 idle, 1 ON, 2 OFF */
+static volatile unsigned int   s_phase_until;   /* HAL_GetTick() konce faze */
+
+/* SD karta (viz `alarm_sd_card` nize) deklarovana uz tady, aby na ni mohl
+ * sahnout `pattern_start()` — dvouton a bezny pattern sdileji jeden pipak,
+ * takze start jednoho musi zrusit rozehrany druhy. */
+static volatile unsigned char s_sd_req;    /* 0 nic, 1 vlozeni, 2 vyjmuti */
+static unsigned char  s_sd_phase;          /* 0 idle, 1 prvni ton, 2 druhy ton */
+static unsigned int   s_sd_until;
+static unsigned short s_sd_f2;             /* kmitocet druhe faze */
 
 static void pattern_start(unsigned char pulses, unsigned short on_ms, unsigned short off_ms)
 {
+    s_sd_phase = 0;   /* prerusi pripadny bezici SD dvouton (viz vyse) */
     s_pulses_left = pulses;
     s_on_ms = on_ms;
     s_off_ms = off_ms;
@@ -110,6 +135,53 @@ static void pattern_service(void)
     }
 }
 
+/* ── SD karta: nezavisly dvouton pri vlozeni/vyjmuti (uzivatelsky pozadavek
+ * 2026-09-23) ────────────────────────────────────────────────────────────
+ * Ostatni alarmy jsou vzdy 800 Hz (`pattern_start` pres `beeper_set`) — tenhle
+ * potrebuje DVA RUZNE kmitocty, proto vlastni maly nekolizujici prehravac.
+ * Porad vyhradne z defaultTasku (`alarm_tick`), stejne vlastnictvi pipaku
+ * jako `pattern_service`. Vlozeni = stoupajici ton (nizky->vysoky), vyjmuti
+ * = klesajici (vysoky->nizky) — zrcadlove, rozeznatelne na sluch bez pocitani
+ * pipnuti. Volajici (sd_export_tick, tentyz task) jen nastavi pozadavek —
+ * viz zduvodneni u `alarm_click`. */
+#define SD_TONE_LO_HZ   440u    /* A4 */
+#define SD_TONE_HI_HZ  1175u    /* D6 — vic nez oktava nad LO, jasne odlisitelne */
+#define SD_TONE_MS       90u
+
+/** Pozadavek na dvouton pri zasunuti/vytazeni SD karty. Thread-safe: jen
+ *  nastavi flag, prehraje ho `alarm_tick` (defaultTask). Ma prednost pred
+ *  bezicim alarm patternem (je to vzdy vedomy fyzicky zasah uzivatele) —
+ *  spusteni SD tonu predchazi `pattern_stop()` v `alarm_tick`.
+ *  POZOR, OPACNE to NEPLATI (F-0144): kazde volani `pattern_start()` (klik,
+ *  `beep test`, hrana prahoveho monitoru VBAT/OCXO/ADEV, FPGA/GPS/limit hrana)
+ *  nuluje `s_sd_phase` uz prvnim radkem, takze utne rozehrany SD dvouton.
+ *  Vedome ponechano: uzke casove okno, kosmeticky slyshitelny jev bez dopadu
+ *  na funkci. */
+void alarm_sd_card(bool inserted)
+{
+    s_sd_req = inserted ? 1u : 2u;
+}
+
+static void sd_tone_stop(void)
+{
+    s_sd_phase = 0;
+    beeper_set(false);
+}
+
+static void sd_tone_service(void)
+{
+    if (s_sd_phase == 0) return;
+    unsigned int now = HAL_GetTick();
+    if ((int)(now - s_sd_until) < 0) return;
+    if (s_sd_phase == 1) {
+        beeper_tone(s_sd_f2);
+        s_sd_phase = 2;
+        s_sd_until = now + SD_TONE_MS;
+    } else {
+        sd_tone_stop();
+    }
+}
+
 /* ── Vyhodnoceni stavu + hranove spousteni ── */
 static unsigned char s_fpga_bad_prev = 1;    /* boot = predpokladej mrtvy link (zadna OK->bad hrana) */
 static unsigned char s_fpga_ever = 0;        /* uz nekdy byl link OK (jinak start tichy) */
@@ -118,9 +190,14 @@ static unsigned char s_gps_ever = 0;         /* uz nekdy byl lock (jinak neresim
 static unsigned char s_meas_fail_prev = 0;   /* limit FAIL v predchozim vyhodnoceni */
 static unsigned char s_meas_ever = 0;        /* uz nekdy byl PASS (jinak: zapnuti limitu na spatne hodnote nepipne) */
 
-/* Touch click: UiTask jen nastavi flag, prehraje ho alarm_tick (jeden vlastnik
- * pattern stavu = defaultTask -> zadny cross-task zapis do s_phase). */
+/* Pozadavky z JINYCH uloh: volajici jen nastavi flag, prehraje ho alarm_tick
+ * (jeden vlastnik pattern stavu = defaultTask -> zadny cross-task zapis do
+ * s_phase). Touch click prichazi z UiTasku, test z UartTasku.
+ * ⚠️ `alarm_test()` to do 2026-09-17 PORUSOVAL — volal `pattern_start()` primo
+ * z UartTasku, tedy presne ten cross-task zapis, ktery tenhle komentar zakazuje
+ * (audit F-0103). */
 static volatile unsigned char s_click_req;
+static volatile unsigned char s_test_req;
 void alarm_click(void) { s_click_req = 1; }
 
 /* ── Prahovy monitor (VBAT / OCXO pasmo / σy@1s) ─────────────────────────────
@@ -129,6 +206,17 @@ void alarm_click(void) { s_click_req = 1; }
  * prahu prepinala pri kazdem vyhodnoceni (5x/s) a pipala donekonecna.
  * Jednostranne meze se zadavaji nesmyslne velkou protilehlou hodnotou. */
 #define MON_INF  1e30f
+
+/* Aktualni ΔT = plast OCXO (0x49) - deska (0x48). Vystaveno i pro UI/UART, aby
+ * se dalo overit bez sondy (viz `status`). */
+int mon_ocxo_dt(float *dt_c)
+{
+    const sensor_stat_t *t  = &g_sensors[SENS_T49];
+    const sensor_stat_t *tb = &g_sensors[SENS_T48];
+    if (!t->samples || !t->valid || !tb->samples || !tb->valid) return 0;
+    if (dt_c) *dt_c = t->last - tb->last;
+    return 1;
+}
 
 static uint8_t band_eval(uint8_t prev_bad, float v, float lo, float hi, float hyst)
 {
@@ -167,6 +255,9 @@ static void mon_edge(uint8_t bad, volatile uint8_t *state, uint8_t *ever,
 static void mon_eval(void)
 {
     static uint8_t s_vbat_ever = 0, s_ocxo_ever = 0, s_adev_ever = 0;
+    /* ΔT: `_ever` = guard prvniho dobreho stavu (mon_edge), `_armed` = pec uz
+     * jednou prokazatelne topila (viz komentar u vyhodnoceni nize). */
+    static uint8_t s_ocxo_dt_ever = 0, s_ocxo_dt_armed = 0;
 
     /* VBAT — jen pri platnem cteni; neplatny senzor NENI duvod k alarmu. */
     if (g_mon_cfg.vbat_en) {
@@ -178,15 +269,34 @@ static void mon_eval(void)
         }
     } else { g_mon_vbat_bad = 0; s_vbat_ever = 0; }
 
-    /* OCXO teplota v pasmu (0x49). */
+    /* OCXO — DVE nezavisla kriteria (viz `mon_ocxo_dt` a alarm.h):
+     *  (1) absolutni pasmo na plasti = hruba pojistka proti prehrati,
+     *  (2) ΔT proti desce = "pec opravdu topi".
+     * Drzi se ZVLAST, aby hlaseni rikalo pravdu: "mimo pasmo" a "pec netopi"
+     * jsou ruzne poruchy s ruznou zavaznosti. */
     if (g_mon_cfg.ocxo_en) {
-        const sensor_stat_t *t = &g_sensors[SENS_T49];
+        const sensor_stat_t *t  = &g_sensors[SENS_T49];
+        const sensor_stat_t *tb = &g_sensors[SENS_T48];
         if (t->samples && t->valid) {
             uint8_t bad = band_eval(g_mon_ocxo_bad, t->last,
                                     g_mon_cfg.ocxo_lo_c, g_mon_cfg.ocxo_hi_c, 0.5f);
             mon_edge(bad, &g_mon_ocxo_bad, &s_ocxo_ever, &g_alarm_ocxo);
         }
-    } else { g_mon_ocxo_bad = 0; s_ocxo_ever = 0; }
+        if (t->samples && t->valid && tb->samples && tb->valid) {
+            float dt = t->last - tb->last;
+            /* 🔴 ARMOVANI: po studenem startu ΔT stoupa od nuly, takze dokud pec
+             * jednou prokazatelne netopila, se NEVYHODNOCUJE. Bez toho by kazdy
+             * nabeh hlasil "pec netopi". Mrtva pec od zacatku se armuje nikdy —
+             * tam ji chyti absolutni pasmo (plast zustane u teploty desky). */
+            if (dt >= MON_OCXO_DT_MIN_C) s_ocxo_dt_armed = 1;
+            if (s_ocxo_dt_armed) {
+                uint8_t bad = band_eval(g_mon_ocxo_dt_bad, dt, MON_OCXO_DT_MIN_C,
+                                        MON_INF, MON_OCXO_DT_HYST_C);
+                mon_edge(bad, &g_mon_ocxo_dt_bad, &s_ocxo_dt_ever, &g_alarm_ocxo_dt);
+            }
+        }
+    } else { g_mon_ocxo_bad = 0; s_ocxo_ever = 0;
+             g_mon_ocxo_dt_bad = 0; s_ocxo_dt_ever = 0; s_ocxo_dt_armed = 0; }
 
     /* σy@1s (plni app vrstva do g_adev_1s). 0 = jeste neni dost vzorku ->
      * nevyhodnocovat, jinak by "0 < prah" vypadala jako perfektni stabilita. */
@@ -202,18 +312,56 @@ static void mon_eval(void)
 
 void alarm_tick(void)
 {
-    /* Mute: umlci okamzite (i rozehrany pattern). */
-    if (g_sound_muted && (s_phase != 0 || beeper_is_on())) pattern_stop();
+    /* 🔴 Po dobu blokujici boot melodie (UiTask) se pipaku NEDOTYKAME — jinak
+     * by `s_on` v `beeper.c` mel dva zapisovatele a ztraceny zapis by ho rozesel
+     * se skutecnym stavem TIM7 (audit F-0103). Pozadavky zustanou ve flagu
+     * a obslouzi se hned v dalsim tiku. */
+    if (beeper_melody_busy()) return;
+
+    /* Mute: umlci okamzite (i rozehrany pattern nebo SD dvouton). */
+    if (g_sound_muted && (s_phase != 0 || s_sd_phase != 0 || beeper_is_on())) {
+        pattern_stop();
+        sd_tone_stop();
+    }
     /* Presne casovani pipnuti — kazdy tik (~100 Hz), jen kdyz neni mute. */
-    if (!g_sound_muted) pattern_service();
+    if (!g_sound_muted) {
+        pattern_service();
+        sd_tone_service();
+    }
 
     /* Touch click (~12 ms tick @800 Hz): jen kdyz nehraje alarm pattern. */
     if (s_click_req) {
         s_click_req = 0;
         if (!g_sound_muted && s_phase == 0) pattern_start(1, 12, 0);
     }
+    /* Testovaci pipnuti z konzole (UART `beep test`). Na rozdil od kliku ma
+     * PREDNOST pred bezicim patternem — uzivatel si o nej rekl vedome a ceka
+     * odezvu; mute ho ale umlci stejne jako vsechno ostatni. */
+    if (s_test_req) {
+        s_test_req = 0;
+        if (!g_sound_muted) pattern_start(2, 100, 100);
+    }
+    /* SD karta: vlozeni/vyjmuti (pozadavek ze sd_export_tick, tentyz task). */
+    if (s_sd_req) {
+        unsigned char req = s_sd_req;
+        s_sd_req = 0;
+        if (!g_sound_muted) {
+            pattern_stop();     /* SD udalost ma prednost pred bezicim alarmem */
+            unsigned short f1 = (req == 1u) ? SD_TONE_LO_HZ : SD_TONE_HI_HZ;
+            s_sd_f2            = (req == 1u) ? SD_TONE_HI_HZ : SD_TONE_LO_HZ;
+            beeper_tone(f1);
+            s_sd_phase = 1;
+            s_sd_until = HAL_GetTick() + SD_TONE_MS;
+        }
+    }
 
-    /* Vyhodnoceni stavu (hrany) jen 5x/s — gps_get kopiruje ~200B v kriticke sekci. */
+    /* Vyhodnoceni stavu (hrany) jen 5x/s — rychleji to NEMA SMYSL: vstupni data
+     * se rychleji nemeni (GPS 1 Hz, senzory 2 Hz).
+     * ⚠️ Do 2026-09-17 tu jako duvod stalo „gps_get kopiruje ~200B v kriticke
+     * sekci". To je sice pravda, ale jako duvod ke skrceni to NEOBSTOJI a
+     * odporovalo si to s `rtc.c`, ktery tutez funkci vola ~100x/s: kopie ~200 B
+     * pri 480 MHz stoji radove 0,2 us, tedy 100x/s = ~20 us/s = 0,002 % CPU.
+     * Cena je zanedbatelna; rozhoduje kadence dat (audit F-0112). */
     static unsigned int last_eval;
     unsigned int now = HAL_GetTick();
     if ((now - last_eval) < 200u) return;
@@ -283,5 +431,8 @@ void alarm_tick(void)
 
 void alarm_test(void)
 {
-    pattern_start(2, 100, 100);
+    /* ⚠️ JEN POZADAVEK, zadny primy zapis do stavu patternu — volajici je
+     * UartTask, vlastnikem stavu je defaultTask (audit F-0103). Do 2026-09-17
+     * se tu volal `pattern_start()` primo. */
+    s_test_req = 1;
 }

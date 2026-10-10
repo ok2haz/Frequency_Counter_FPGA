@@ -328,7 +328,27 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 }
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+/* TX watchdog podpora pro usb_console.c (pridano 2026-10-04).
+ * Zmereno na HW: RX konzole jel (prikaz `fpgasim on` pres CDC se provedl a projevil
+ * v /api/state), ale TX byl mrtvy — `ping` prijato, `pong` se po 5 s neodeslalo,
+ * dev_state == CONFIGURED. Pricina: zaseknuty `TxState = 1` (IN transfer, ktery se
+ * po USB resetu / prvnim armu nikdy nedokoncil), kvuli kteremu `CDC_Transmit_FS`
+ * vracel navzdy USBD_BUSY. Prezivalo to i reset (zasek vznikal hned po bootu).
+ * Tyto dva helpery nechavaji pumpu zasek detekovat a nouzove zlomit. */
+uint8_t CDC_TxState(void)
+{
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return 2U;  /* 2 = neni linka */
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  if (hcdc == NULL) return 2U;
+  return hcdc->TxState ? 1U : 0U;   /* 1 = vysila (busy), 0 = volno */
+}
 
+void CDC_ForceTxIdle(void)
+{
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  if (hcdc != NULL) hcdc->TxState = 0U;   /* zahodi zaseknuty IN transfer -> dalsi CDC_Transmit_FS se znovu nahodi */
+}
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
 /**

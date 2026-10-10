@@ -30,7 +30,48 @@
 #include <stdbool.h>
 
 #define DATALOG_REC_SIZE   32u    /* bajtu na zaznam (pevne, viz datalog_rec_t) */
-#define DATALOG_PERIOD_S   10u    /* perioda vzorkovani [s] */
+#define DATALOG_PERIOD_S   10u    /* VYCHOZI perioda vzorkovani [s] — za behu ji
+                                   * meni `datalog_set_period_s`, cti VZDY pres
+                                   * `datalog_period_s()`. Makro je jen default. */
+
+/* ── Volba ulozistě ────────────────────────────────────────────────────────
+ * ⚠️ Prepnuti ROZDELI historii mezi dve media: zaznamy uz zapsane na tom druhem
+ * zustanou, kde jsou, a `datalog dump` je neuvidi. Neni to vada — je to cena za
+ * to, ze kazde uloziste ma vlastni hlavu i `seq`. */
+typedef enum {
+    DATALOG_STORE_AUTO  = 0u,   /* SD kdyz je, jinak W25Q (puvodni chovani) */
+    DATALOG_STORE_FLASH = 1u,   /* vzdy W25Q — nezavisle na vlozene karte */
+    DATALOG_STORE_SD    = 2u,   /* jen SD; bez karty se NELOGUJE (zamerne) */
+} datalog_store_t;
+
+void        datalog_set_store(uint8_t store);   /* prepne + znovu najde hlavu */
+uint8_t     datalog_get_store(void);            /* co je NASTAVENO (vc. AUTO) */
+const char *datalog_store_name(uint8_t store);  /* "AUTO"/"FLASH"/"SD" */
+
+/* Perioda vzorkovani. ⚠️ Cti ji VZDY pres tuhle funkci, ne pres makro —
+ * na periode visi i rekonstrukce Allanovy pyramidy (viz `datalog_adev_stage`). */
+uint16_t datalog_period_s(void);
+void     datalog_set_period_s(uint16_t s);
+
+/** Potlaci/povoli zapis udalosti `ERRLOG_K_CFG` v `datalog_set_period_s` a
+ *  `datalog_set_store`.
+ *
+ *  🔴 PROC: obnova ULOZENEHO nastaveni pri bootu NENI zasah uzivatele. Oba
+ *  settery ale logovaly kazdou zmenu hodnoty, a protoze statiky startuji na
+ *  vychozich hodnotach (10 s / AUTO), zapsal kazdy boot do TRVALE historie
+ *  falesnou vetu „interval logu 10s -> 60s". Presne to ma pritom `errlog`
+ *  odlisovat od HW udalosti (viz `errlog.h`, `ERRLOG_K_CFG`). Audit F-0093.
+ *  ⚠️ Vola VYHRADNE `syscfg_load()` a vzdy v paru (on -> obnova -> off).
+ *  Uzivatelske cesty (UART `datalog`, okno Datalog pres `qspi_req_service`)
+ *  zustavaji hlasite — tam je zaznam zadouci. */
+void     datalog_cfg_quiet(bool on);
+
+/* 🔴 Do KTERE stage ADEV pyramidy se smi log sypat.
+ * Pyramida decimuje x10, takze stage s ma tau = 10^s sekund. Prevod je EXAKTNI
+ * jen kdyz je perioda logu presne mocnina deseti. Pri jine periode vraci -1 a
+ * rekonstrukce se MUSI preskocit — jinak by sigma_y(tau) vysla mimo o cely rad,
+ * a pritom verohodne (tatáz past, kvuli ktere se sype od stage 1, ne 0). */
+int datalog_adev_stage(void);
 #define DATALOG_SEQ_EMPTY  0xFFFFFFFFu   /* smazana flash (0xFF) = volny slot */
 
 /* Jeden zaznam. Serializuje se RUCNE (little-endian, viz pack_rec/unpack_rec
@@ -40,15 +81,34 @@ typedef struct {
     uint32_t seq;              /* monotonni poradove cislo (od 1) */
     uint32_t t_unix;           /* UTC z RTC [s od 1970]; 0 = RTC nesynchronizovano */
     uint64_t freq_x100000;     /* kmitocet x 1e5 (zvoleny zdroj /4 nebo /16) */
+    /* F-0180: kmitocet [Hz] v PLNE presnosti. Novy zaznam ho na flash nese jako
+     * IEEE-754 double (`freq_exact = 1`); u stareho je to jen `freq_x100000 / 1e5`
+     * (`freq_exact = 0`). `freq_x100000` se u noveho dopocita zaokrouhlenim, takze
+     * ctenari, kterym 10 µHz staci (graf, UART dump, web obalka), zustavaji beze
+     * zmeny. Presnou hodnotu ctou rekonstrukce pyramidy, CSV a `MMEM:DATA?`. */
+    double   freq_hz;
+    uint8_t  freq_exact;
+    /* 1 = `freq_x100000` je PRUMER vsech mereni za periodu logu (F-0172);
+     * 0 = stary zaznam (do 2026-09-26) nebo perioda bez noveho mereni —
+     * okamzity vzorek jednoho hradla 0,25 s. Na flash se veze v bitu 63 pole
+     * kmitoctu (uvnitr CRC; kmitocet x1e5 nepresahne 2^47), takze format
+     * zaznamu zustava 32 B a stare zaznamy se ctou s `freq_avg = 0`.
+     * ⚠️ Rekonstrukce Allanovy pyramidy smi brat JEN zaznamy s `freq_avg = 1`
+     * — okamzity vzorek neni 10s prumer (σy by vysla ~3x vys, simulace
+     * `docs/audit/sim/2026-09-26_mrtva_doba.js`). */
+    uint8_t  freq_avg;
     int16_t  t_ocxo_c100;      /* teplota OCXO [0,01 C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;     /* teplota STM desky [0,01 C] */
-    int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0) */
-    /* ⚠️ Uroven RF v SYROVYCH mV z AD8307 (ADS AIN1), NE v dBm. Je to zamer:
-     * kalibrace (g_calib.ad8307_*) se muze zmenit, syrova hodnota ne — dBm se
-     * dopocita az pri zobrazeni. Pole se do 2026-08-18 jmenovalo `rf_dbm10` a
-     * PRESNE TA ZAMENA jmena za obsah zpusobila, ze CSV export i SCPI
-     * `MMEM:DATA?` delily hodnotu deseti a servirovaly ji jako dBm: 571 mV
-     * vyslo jako "57,1 dBm" (spravne je -61,2 dBm). Odhaleno testem pres UART. */
+    int16_t  ocxo_vc_mv;       /* ladici napeti OCXO [mV] (ADS AIN0, uz po gain x2,5) */
+    /* ⚠️ Pole se do 2026-08-18 jmenovalo `rf_dbm10` a PRESNE TA ZAMENA jmena za
+     * obsah zpusobila, ze CSV export i SCPI `MMEM:DATA?` delily hodnotu deseti
+     * a servirovaly ji jako dBm: 571 mV vyslo jako "57,1 dBm" (spravne je
+     * -61,2 dBm). Odhaleno testem pres UART.
+     * 🔴 2026-10-02: AD8307 na teto desce FYZICKY NENI (RF_LEVEL_HW_PRESENT,
+     * calib.h) — ADS AIN1 je VBUS (hlavni napajeni), ne vystup log-detektoru.
+     * Pole dal nese SYROVE mV (uz po gain delice ~x21,04), jen uz ne z AD8307.
+     * Nazev pole ponechan (zmena formatu datalogu je samostatny zasah); SCPI
+     * MMEM:DATA?/MEAS:POW? pro tato data hlasi 9.91E37 (viz scpi.c), ne dBm. */
     int16_t  rf_mv;
     uint8_t  flags;            /* viz DATALOG_F_* */
     uint8_t  sats;             /* pocet pouzitych druzic (GGA) */
@@ -62,6 +122,17 @@ typedef struct {
 } datalog_rec_t;
 
 #define DATALOG_INVALID16   ((int16_t)0x8000)   /* sentinel neplatne hodnoty */
+#define DATALOG_FREQ_AVG_BIT  (1ull << 63)      /* `freq_avg` na flash (viz vyse) */
+/* 🔴 F-0180: format pole kmitoctu na flash (bity 62..0; bit 63 = `freq_avg`):
+ *   exponent (bity 62..52) != 0 -> IEEE-754 double kladneho kmitoctu [Hz] (novy),
+ *   exponent == 0              -> kmitocet x 1e5 (stary; x1e5 < 2^47, exponent tedy 0).
+ * Rozliseni je jednoznacne: kladny double >= 2^-1022 ma exponent nenulovy a zadny
+ * realny kmitocet x1e5 nedosahne 2^52 (= 45 GHz). Nula se zapisuje jako 0 (stary
+ * format) a cte se zase jako 0. Proc ne nHz (navrh v nalezu): pri 10 Hz by krok
+ * 1 nHz byl 1e-10 relativne, coz na nove desce (TDC 22 ps, prumer 10 s ~2e-12)
+ * prevazi podlahu citace; double ma ~1e-16 na libovolnem kmitoctu. Zaznam
+ * zustava 32 B, stare zaznamy se ctou beze zmeny. */
+#define DATALOG_FREQ_EXP_MASK 0x7FF0000000000000ull
 
 /* ── Kodovani VBAT do 1 bajtu (offset 27) ────────────────────────────────────
  * kod = (mV - 2000) / 8, tedy 1..255 -> 2008..4040 mV pri rozliseni 8 mV.
@@ -84,6 +155,16 @@ typedef struct {
  * merena — ani po exportu do CSV, ani za pul roku pri analyze. */
 #define DATALOG_F_SIM         (1u << 6)
 
+/* 🔑 Bit 7 (POSLEDNI volny): behem tohohle vzorku hlasila reference Si5356
+ * ztratu vstupu (`LOS_CLKIN`) nebo rozpad PLL (`PLL_LOL`) — cteno ze sticky
+ * registru 247, takze to zachyti i glitch kratsi nez perioda logu.
+ * ⚠️ PROC to v logu MUSI byt: presnost citace JE presnost te reference, takze
+ * vzorky z takove chvile NEPLATI. Bez priznaku by se tise dostaly do Allanovy
+ * statistiky a zkazily ji, aniz by slo zpetne poznat KTERE.
+ * ⚠️ `LOS_XTAL` (bit2) se ZAMERNE neuvazuje — krystal XA/XB neni osazen, takze
+ * ten bit je trvale 1 a priznak by byl nastaveny vzdy. */
+#define DATALOG_F_REF_LOSS    (1u << 7)
+
 /* ── Backend uloziste (W25Q / SD / ...) ────────────────────────────────────── */
 typedef struct {
     const char *name;                                        /* "W25Q" / "SD" */
@@ -101,12 +182,28 @@ extern const datalog_backend_t datalog_backend_w25q;
  * `const datalog_backend_t`, takze se pro ne nic nemeni. */
 extern datalog_backend_t datalog_backend_sd;   /* probe()==false dokud neni SDMMC1, viz datalog_sd.c */
 
+/** Kolik po sobe jdoucich odlisnych cteni prekopi debouncovany stav card-detect
+ *  (`datalog_sd_det_tick`). JEDEN zdroj hodnoty — `sd_export.c` na ni stavi
+ *  vlastni zaruku, ze `datalog_sd_card_present()` po bootu uz je ustalena
+ *  (jinak falesne pipnuti "vlozeni" pri kazdem startu s kartou uvnitr, viz
+ *  komentar u ni). Duplicitni `#define` v ruznych souborech uz jednou
+ *  rozesel hodnotu s komentarem, co ji popisoval (audit F-0030-adjacent). */
+#define SD_DET_STABLE_N  3u
+
 /** Je v slotu vlozena SD karta? (card-detect PE3, debounced.)
  *  Nezavisi na tom, jestli je SD backend aktivni — je to ciste GPIO, takze UI
  *  muze hlasit pritomnost karty i pri `DATALOG_SD_RAW_OK == 0`.
  *  ⚠️ Debounce je "N shodnych cteni po sobe" -> casovou konstantu urcuje kadence
  *  volajiciho. Volat pravidelne (napr. 2 Hz z defaultTasku / pri prekresleni okna). */
 bool datalog_sd_card_present(void);
+
+/** Posune debounce detekce karty o jeden krok.
+ *  🔴 VOLAT VYHRADNE Z JEDNE ULOHY (dnes defaultTask pres `sd_export_tick`).
+ *  `datalog_sd_card_present()` uz stav NEMENI — jen ho cte, takze se na nej smi
+ *  ptat kdokoli a odkudkoli. Dokud aktualizoval kazdy dotaz, posouvaly ho tri
+ *  ulohy naraz a casova konstanta debounce byla nedefinovana (audit F-0030).
+ *  Preklopeni stavu trva `SD_DET_STABLE_N` (3) tiku. */
+void datalog_sd_det_tick(void);
 
 /** Syrova uroven card-detect pinu: 0 = LOW (= karta vlozena dle zapojeni J13),
  *  1 = HIGH (prazdny slot). Pro diagnostiku z konzole — UART `sd det`. */
@@ -132,6 +229,38 @@ int  datalog_sd_detect_status(void);
 /* Pure-logic test 512B RMW layeru SD backendu (proti RAM fake bloku, bez HW).
  * Volá ho datalog_selftest → součást UART "selftest". @return true = OK. */
 bool datalog_sd_selftest(void);
+
+/* ── Automaticky rostouci CSV zrcadlo na SD kartu (2026-09-23) ───────────────
+ * ROZHODNUTO s uzivatelem: W25Q zustava JEDINY autoritativni zdroj datalogu
+ * (viz `sd_export.h` "ARCHITEKTURA", 2026-08-11 — kontinuita `seq`, zadna
+ * ztrata dat pri vytazeni karty). Tohle zrcadlo NIC ve W25Q nemeni, jen
+ * PRUBEZNE DOPISUJE nove zaznamy do rostouciho CSV souboru na karte, kdyz je
+ * pripravena. Vytazeni karty export jen pozastavi; po vraceni (i jine karty)
+ * pokracuje spravne dal (viz identitu karty u `datalog_mirror_vsn`).
+ * ⚠️ Bezi VYHRADNE z UartTasku (`datalog_mirror_service()`, vedle
+ * `sd_export_service()`) — FatFs zapis blokuje, defaultTask/UiTask NESMI. */
+void datalog_mirror_set_enabled(bool on);
+bool datalog_mirror_enabled(void);
+/** Obslouzi cekajici praci (otevreni souboru, dopsani novych zaznamu).
+ *  Volat z UartTask smycky vedle `sd_export_service()`. Levne, kdyz neni
+ *  co delat (throttlovano interne). */
+void datalog_mirror_service(void);
+
+typedef struct {
+    uint8_t  active;        /* 1 = zapnuto A soubor na karte je otevreny */
+    uint32_t exported_seq;  /* posledni seq dopsany do souboru na karte */
+    uint32_t pending;       /* kolik zaznamu jeste ceka na dopsani (odhad) */
+    char     msg[40];
+} datalog_mirror_status_t;
+/** Snapshot pro UI/UART. Bezpecne odkudkoli — jen cteni. */
+const datalog_mirror_status_t *datalog_mirror_status(void);
+
+/* Perzistence (vola VYHRADNE syscfg.c): vodotisk + HW identita karty (CID
+ * product serial, NE FAT volume serial — to druhe zmeni kazdy f_mkfs), ke
+ * ktere `_seq` patri. Jina karta pri pristim otevreni = zacne se od nuly. */
+uint32_t datalog_mirror_seq(void);
+uint32_t datalog_mirror_vsn(void);
+void     datalog_mirror_restore(bool en, uint32_t seq, uint32_t vsn);
 
 /* ── Stav pro UI/UART ──────────────────────────────────────────────────────── */
 typedef struct {
@@ -161,8 +290,34 @@ bool datalog_enabled(void);
 void datalog_get_status(datalog_status_t *out);
 
 /** Precte N-ty zaznam od NEJNOVEJSIHO (0 = posledni zapsany). false = neni.
- *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART. */
+ *  Urceno pro export/analyzu; cte pod QSPI mutexem, volatelne z UI/UART.
+ *  ⚠️ Na PRUCHOD VICE ZAZNAMY pouzij `datalog_read_bulk` — tohle plati na kazdy
+ *  zaznam vlastni mutex i vlastni QSPI prikaz (zmereno ~173 us/zaznam, zatimco
+ *  32 B dat je jen ~7 us; rezie je 25x vetsi nez prenos). */
 bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out);
+
+/** Strop davky pro `datalog_read_bulk` (scratch buffer v `.bss`, 64*32 = 2 kB). */
+#define DATALOG_BULK_MAX   64u
+
+/** Precte az `max_n` zaznamu JEDNIM QSPI prikazem a pod JEDNIM mutexem.
+ *
+ *  Poradi je stejne jako u `datalog_read_back`: `out[0]` = `from_newest`
+ *  (nejnovejsi z davky), `out[1]` = `from_newest+1` (starsi), atd.
+ *
+ *  @param from_newest  index nejnovejsiho zaznamu davky (0 = posledni zapsany)
+ *  @param out          pole na aspon `max_n` zaznamu
+ *  @param max_n        kolik nejvys precist (orizne se na `DATALOG_BULK_MAX`)
+ *  @param consumed     smi byt NULL; kolik POZIC v ringu davka pokryla — o tolik
+ *                      posun `from_newest` pri dalsim volani. Lisi se od navratove
+ *                      hodnoty tehdy, kdyz je uprostred davky poskozeny zaznam.
+ *  @return pocet PLATNYCH zaznamu ulozenych do `out[]` (poskozene se preskoci,
+ *          zbytek se stlaci k zacatku — stejna politika jako `continue` u
+ *          `datalog_read_back`).
+ *
+ *  ⚠️ Rezie QSPI prikazu se rozlozi na celou davku, takze zisk roste s `max_n`.
+ *  Pri `max_n == 1` je to jen drazsi `datalog_read_back` — nepouzivat tak. */
+uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
+                           uint32_t max_n, uint32_t *consumed);
 
 /** Jednoradkovy stav: "DATALOG W25Q ON 1234/2043136 rec seq:1234 err:0". */
 void datalog_format_status(char *buf, int buflen);
@@ -186,6 +341,10 @@ void datalog_erase_service(void);
 /** Aktualni UTC cas z RTC jako unix [s]; 0 = RTC nesynchronizovano z GPS.
  *  ⚠️ Cte `g_rtc_text`/`g_rtc_synced` (pise defaultTask) -> volat jen z defaultTasku. */
 uint32_t datalog_now_unix(void);
+
+/* CRC-16/CCITT-FALSE (0x1021/0xFFFF) — vystavena, aby `errlog` nemusel delat
+ * ctvrtou kopii tehoz polynomu. */
+uint16_t datalog_crc16(const uint8_t *d, uint32_t n);
 
 /** Pure-logic selftest (serializace zaznamu + prevod data na unix cas).
  *  Bez HW a bez sdileneho stavu -> soucast UART "selftest". */

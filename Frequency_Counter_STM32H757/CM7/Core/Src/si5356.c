@@ -92,6 +92,23 @@ static bool wr_masked(I2C_HandleTypeDef *h, uint8_t reg, uint8_t val, uint8_t ma
     return wr(h, reg, cur);
 }
 
+bool si5356_read_sticky(I2C_HandleTypeDef *hi2c, uint8_t *sticky)
+{
+    /* ⚠️ Bez prepinani stranky — stejne jako `si5356_read_status`: cip zustava
+     * po `si5356_init` na page 0 a cteni 218 tak funguje prokazatelne (status
+     * `0x04` na desce). 247 je na teze strance, takze se drzi tehoz vzoru. */
+    return rd(hi2c, SI5356_REG_STICKY, sticky);
+}
+
+bool si5356_clear_sticky(I2C_HandleTypeDef *hi2c, uint8_t mask)
+{
+    uint8_t v;
+    if (!rd(hi2c, SI5356_REG_STICKY, &v)) return false;
+    /* AN565: sticky bit se maze ZAPISEM NULY. Bity mimo `mask` zapisujeme
+     * nezmenene (tedy 1, kdyz jsou nastavene), takze zustanou platne. */
+    return wr(hi2c, SI5356_REG_STICKY, (uint8_t)(v & (uint8_t)~mask));
+}
+
 bool si5356_read_status(I2C_HandleTypeDef *hi2c, uint8_t *status)
 {
     return rd(hi2c, REG_STATUS, status);
@@ -110,14 +127,17 @@ bool si5356_init(I2C_HandleTypeDef *hi2c)
     for (unsigned i = 0; i < REGMAP_N; i++)
         if (!wr_masked(hi2c, REGMAP[i].addr, REGMAP[i].val, REGMAP[i].mask)) ok = false;
 
-    /* 2) Apply procedura (SiLabs / CBPro): vystupy off -> pulse -> soft reset -> on */
-    wr_masked(hi2c, REG_OEB_ALL, 0x10, 0x10);   /* OEB_ALL = 1 (vystupy OFF) */
-    wr_masked(hi2c, REG_E2,      0x04, 0x04);
-    wr_masked(hi2c, REG_E2,      0x00, 0x04);
-    wr_masked(hi2c, REG_SOFTRST, 0x02, 0x02);   /* SOFT_RESET pulse */
-    wr_masked(hi2c, REG_SOFTRST, 0x00, 0x02);
+    /* 2) Apply procedura (SiLabs / CBPro): vystupy off -> pulse -> soft reset -> on.
+     * Navrat KAZDEHO kroku se scita do `ok` — hlavne posledni "OEB_ALL = 0" zapina
+     * 4x 100 MHz vystupy; kdyby NACKnul, zustanou OFF, FPGA by nemel casovou zakladnu
+     * a bez teto kontroly by init presto vratil OK (audit F-0113). */
+    ok &= wr_masked(hi2c, REG_OEB_ALL, 0x10, 0x10);   /* OEB_ALL = 1 (vystupy OFF) */
+    ok &= wr_masked(hi2c, REG_E2,      0x04, 0x04);
+    ok &= wr_masked(hi2c, REG_E2,      0x00, 0x04);
+    ok &= wr_masked(hi2c, REG_SOFTRST, 0x02, 0x02);   /* SOFT_RESET pulse */
+    ok &= wr_masked(hi2c, REG_SOFTRST, 0x00, 0x02);
     HAL_Delay(25);                               /* cas na re-lock PLL po resetu */
-    wr_masked(hi2c, REG_OEB_ALL, 0x00, 0x10);   /* OEB_ALL = 0 (vystupy ON) */
+    ok &= wr_masked(hi2c, REG_OEB_ALL, 0x00, 0x10);   /* OEB_ALL = 0 (vystupy ON) */
 
     uint8_t st = 0;
     rd(hi2c, REG_STATUS, &st);

@@ -4,8 +4,25 @@
  *          handlery čtou z `scpi_src_t` (viz scpi.h). Backend (CM7 globály / CM4
  *          IPC snapshot) ho naplní. Zde je jádro + CM7 backend (`#if CORE_CM7`).
  */
-#include "scpi.h"              /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
-#include "version.h"          /* FW_VERSION_FULL — *IDN? */
+/* Relativni cesty (misto pouheho "scpi.h") - tento soubor je LINKED RESOURCE
+ * i v CM4 projektu (viz CM4/.project) a CubeMX regenerace CM4/.cproject
+ * spolehlive mazala -I../../CM7/Core/Inc. GCC quote-include hleda nejdriv
+ * ve slozce SOUBORU se #include (podle jeho skutecne cesty na disku, ne
+ * podle -I ani CWD), takze relativni cesta funguje identicky pri prekladu
+ * z CM7 i z CM4 - zavislost na te -I ceste tim mizi (overeno kompilatorem
+ * se zamerne vynechanou -I../../CM7/Core/Inc, viz commit). */
+#include "../Inc/scpi.h"       /* scpi_src_t, scpi_ctx_t, SCPI_V_*, SCPI_CFG_*, meas_math/datalog typy */
+#include "../Inc/ipc_shared.h" /* IPC_UICFG_GATE/SET_GATE, IPC_GATE_N — kodovani g_ui_cfg (obe jadra) */
+#include "../Inc/version.h"   /* FW_VERSION_FULL — *IDN? */
+#include "../Inc/meas_present.h"  /* mp_ad8307_dbm — jediny prevod mV->dBm (F-0165), i na CM4 */
+/* 🔴 2026-10-02: calib.h UNCONDITIONNE (ne jen pod CORE_CM7) kvuli
+ * RF_LEVEL_HW_PRESENT — tenhle flag potrebuje i sdileny kod MMEM:DATA? dumpu
+ * (scpi_exec_one), ktery bezi na OBOU jadrech. Je to bezpecne: calib.h sam
+ * nema HAL/FreeRTOS zavislost (jen <stdbool.h>) a `extern volatile calib_t
+ * g_calib` je proste deklarace — CM4 ji nikde nedereferencuje (to zustava
+ * vyhradne pod `#if defined(CORE_CM7)` nize), takze linker na CM4 nehleda
+ * definici, kterou (spravne) nema. */
+#include "../Inc/calib.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -15,7 +32,6 @@
 #include "fpga_freq.h"        /* fpga_freq_get_last, FPGA_ERR_* — CM7 backend */
 #include "gps.h"              /* gps_get */
 #include "sensor_stat.h"      /* g_sensors[] */
-#include "calib.h"            /* g_calib */
 #include "freertos_shared.h"  /* g_spi_ok, g_si5356_*, g_selftest_res, g_uptime_s */
 #include "datalog.h"          /* datalog_get_status/read_back */
 #include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomický snímek g_meas_cfg */
@@ -52,6 +68,36 @@ static int hdr_match(const char *hdr, const char *pattern)
     }
 }
 
+/* Shoda hlavičky `INPut[n]:<zbytek>` s ČÍSELNOU PŘÍPONOU kanálu.
+ *
+ * ⚠️ `kw_match` porovnává znak po znaku a číslici neumí, takže `INP1:LEV` by
+ * spadlo na `-113 "Undefined header"` — jenže u DVOUKANÁLOVÉHO přístroje je
+ * `INPut1:` / `INPut2:` přesně to, co klient pošle (a `INPut:` bez přípony
+ * podle SCPI-99 znamená kanál 1). Ohlásit „neznámý příkaz" na legitimní
+ * adresu kanálu by bylo horší než chybějící hardware.
+ *
+ * Vrací 1 při shodě; `*ch` = číslo kanálu, `*suffix_bad` = 1 když přípona je
+ * mimo 1..2 (volající pak hlásí -114, ne -113: příkaz známe, jen ten kanál ne).
+ */
+static int inp_match(const char *hdr, const char *tail, int *ch, int *suffix_bad)
+{
+    int hl = 0; while (hdr[hl] && hdr[hl] != ':') hl++;
+    if (hdr[hl] != ':') return 0;                 /* `INPut` samo o sobě nic neřídí */
+
+    int dl = hl;                                   /* délka bez číslic na konci */
+    while (dl > 0 && hdr[dl - 1] >= '0' && hdr[dl - 1] <= '9') dl--;
+    if (!kw_match(hdr, dl, "INPut", 5)) return 0;
+
+    int n = 1;                                     /* bez přípony = kanál 1 */
+    if (dl < hl) {
+        n = 0;
+        for (int i = dl; i < hl; i++) n = n * 10 + (hdr[i] - '0');
+    }
+    *ch = n;
+    *suffix_bad = (n < 1 || n > 2);
+    return hdr_match(hdr + hl + 1, tail);
+}
+
 /* ── Formátování bez float printf (nano newlib) ─────────────────────────────── */
 /* uint64 Hz*1e5 -> "12345678.90123" (Hz < 4.29e9 -> uint32). */
 static void fmt_scpi_hz(uint64_t x100000, char *out, size_t n)
@@ -85,6 +131,28 @@ void fmt_scpi_hz_d(double hz, char *out, size_t n)
     uint32_t whole = (uint32_t)(x / 100000u);
     uint32_t frac  = (uint32_t)(x % 100000u);
     snprintf(out, n, "%s%lu.%05lu", neg ? "-" : "", (unsigned long)whole, (unsigned long)frac);
+}
+/* double Hz -> 15 platnych cislic (F-0180). Proc 15: je to DBL_DIG, tedy kazda
+ * vytistena cislice je v double skutecne ulozena, a relativni krok ~1e-15 je
+ * o rady pod podlahou citace na JAKEMKOLI kmitoctu. Pevny pocet desetin by to
+ * nesplnil: 9 desetin (nHz) je pri 10 Hz jen 1e-10 relativne, coz nova deska
+ * (TDC 22 ps) uz presahne. Pocet desetin = 15 - pocet celych cislic:
+ * 5 (GHz) .. 14 (pod 10 Hz). Celociselna extrakce, zadne `%f` (nano.specs). */
+void fmt_scpi_hz_sig(double hz, char *out, size_t n)
+{
+    if (!(hz > -4.0e9 && hz < 4.0e9)) { snprintf(out, n, "9.91E37"); return; }
+    int neg = (hz < 0.0); if (neg) hz = -hz;
+    int k = 1;
+    for (uint32_t t = (uint32_t)hz; t >= 10u; t /= 10u) k++;
+    int dec = 15 - k;                                   /* 5..14 */
+    uint64_t p = 1u;
+    for (int i = 0; i < dec; i++) p *= 10u;
+    uint64_t x = (uint64_t)(hz * (double)p + 0.5);      /* < 4e14 < 2^53 -> presne */
+    uint64_t frac = x % p;
+    char fd[16];
+    for (int i = dec - 1; i >= 0; i--) { fd[i] = (char)('0' + (int)(frac % 10u)); frac /= 10u; }
+    fd[dec] = '\0';
+    snprintf(out, n, "%s%lu.%s", neg ? "-" : "", (unsigned long)(x / p), fd);
 }
 /* Perioda [s] z kmitočtu — 15 des. míst (femtosekundové rozlišení).
  * Proč tolik: při 1,4 GHz (strop tvarovače) je perioda 714 ps, takže i
@@ -134,14 +202,14 @@ static int scpi_parse3(const char *s, int *a, int *b, int *cc)
  * branu z vlastni kopie tabulky (dve tabulky = dve pravdy, viz `fmt_scpi_hz_d`). */
 double scpi_gate_s(uint8_t idx)
 {
-    static const double G[4] = {0.1, 1.0, 10.0, 100.0};
-    return G[idx & 3];
+    static const double G[IPC_GATE_N] = {0.05, 0.1, 0.25, 0.5, 1.0};
+    return G[(idx < IPC_GATE_N) ? idx : IPC_GATE_DEFAULT];
 }
 /* Sekundy -> index brany. @return 0..3, nebo -1 kdyz hodnota neodpovida presetu.
  * Tolerance 1 % kryje zapis "0.1" i "1E-1". */
 int scpi_gate_idx_from_s(double sec)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < (int)IPC_GATE_N; i++) {
         double g = scpi_gate_s((uint8_t)i), d = sec - g;
         if (d < 0) d = -d;
         if (d <= g * 0.01) return i;
@@ -163,12 +231,17 @@ static void fmt_scpi_sec_ns(uint64_t ns, char *out, size_t n)
     uint32_t us    = (uint32_t)((ns % 1000000000u) / 1000u);
     snprintf(out, n, "%lu.%06lu", (unsigned long)whole, (unsigned long)us);
 }
-/* stupně -> "±d.dddddd" (6 des. míst; SYST:GPS:POS?). */
-static void fmt_scpi_deg6(float v, char *out, size_t n)
+/* stupně × 1e7 -> "±d.ddddddd" (7 des. míst; SYST:GPS:POS?).
+ * 🔴 Bere uz CELOCISELNOU hodnotu (audit F-0067 + F-0070). Drive to byl `float`
+ * a `(int32_t)(v * 1e6f)`: pri poskozene souradnici (99999 stupnu) to davalo
+ * 9,99e11, tedy pretypovani mimo rozsah `int32_t` = **nedefinovane chovani**.
+ * Ted zadny cast z floatu neni a rozsah hlida uz `nmea_coord_e7`. */
+static void fmt_scpi_deg7(int32_t e7, char *out, size_t n)
 {
-    int neg = (v < 0.0f); if (neg) v = -v;
-    int32_t ud = (int32_t)(v * 1000000.0f + 0.5f);
-    snprintf(out, n, "%s%ld.%06ld", neg ? "-" : "", (long)(ud / 1000000), (long)(ud % 1000000));
+    int neg = (e7 < 0);
+    uint32_t a = (uint32_t)(neg ? -(int64_t)e7 : (int64_t)e7);
+    snprintf(out, n, "%s%lu.%07lu", neg ? "-" : "",
+             (unsigned long)(a / 10000000u), (unsigned long)(a % 10000000u));
 }
 
 /* ── Chybová fronta + status registry (PER-SESSION, scpi_ctx_t) ─────────────── */
@@ -178,7 +251,11 @@ static const char *scpi_err_msg(int code)
         case 0:    return "No error";
         case -100: return "Command error";
         case -113: return "Undefined header";
+        /* Cislo kanalu mimo 1..2 u `INPut<n>:` — prikaz ZNAME, jen ta adresa
+         * neexistuje. Rozdil proti -113 je pro klienta podstatny. */
+        case -114: return "Header suffix out of range";
         case -222: return "Data out of range";
+        case -203: return "Command protected";
         case -224: return "Illegal parameter value";
         case -230: return "Data corrupt or stale";
         case -241: return "Hardware missing";
@@ -224,7 +301,21 @@ static double scpi_num(const char *s, int *ok)
     if (*s == 'e' || *s == 'E') {
         s++; int es = 1;
         if (*s == '-') { es = -1; s++; } else if (*s == '+') s++;
-        int e = 0; while (*s >= '0' && *s <= '9') { e = e * 10 + (*s - '0'); s++; }
+        /* 🔴 Exponent MUSI mit mez (audit F-0064). Do 2026-09-12 se cetl do `int`
+         * bez omezeni a aplikoval se ITERATIVNE, takze pocet iteraci byl plne
+         * v rukou odesilatele: `1E2147483647` = 2,1 miliardy nasobeni.
+         * Na CM4 to je nejhorsi — `-mfpu=fpv4-sp-d16` je single precision, takze
+         * kazde `v * 10.0` jde pres softwarovy `__aeabi_dmul` (~50 cyklu) =>
+         * ~450 s ZABLOKOVANEHO jadra. A bylo to dosazitelne BEZ autorizace:
+         * argument se parsuje driv, nez se testuje `set_cfg`/`ctrl_locked`
+         * (viz `:869` vs `:871`), plus TCP 5025 autorizaci nema vubec.
+         * ⚠️ `if (e < 10000)` navic brani preteceni `int` (signed overflow = UB)
+         * u dlouheho exponentu — cislice se dal ctou, jen se neakumuluji.
+         * Mez 308 je rozsah `double`, takze zadnou platnou hodnotu neodrizne;
+         * `*ok = 0` vede na uz existujici `-224`, tedy zadna nova chybova cesta. */
+        int e = 0;
+        while (*s >= '0' && *s <= '9') { if (e < 10000) e = e * 10 + (*s - '0'); s++; }
+        if (e > 308) { if (ok) *ok = 0; return 0.0; }
         while (e-- > 0) v = (es > 0) ? v * 10.0 : v * 0.1;
     }
     while (*s == ' ' || *s == '\t') s++;
@@ -287,7 +378,11 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
     if (hdr_match(hdr, "CALCulate:LIMit:UPPer")) { *key = SCPI_CFG_LIM_HI;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     /* ── Instrument SET (2026-08-15). Na rozdil od CALC nejdou do `meas_cfg_t`,
      * ale do stavu mereni — backend je obslouzi zvlast (viz `set_cfg`). ── */
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE"))    { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);            if (!ok) *err = 1; return 1; }
+    /* `APERture` = ALIAS `GATE` — v JEDNE podmince, aby se obe cesty nemohly
+     * rozejit v oseteni chyby (`*err`) ani v klici. Viz komentar u dotazu. */
+    if (hdr_match(hdr, "SENSe:FREQuency:GATE") ||
+        hdr_match(hdr, "SENSe:FREQuency:APERture"))
+                                                   { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel")) { *key = SCPI_CFG_CHAN; *vu = (uint32_t)scpi_num(arg, &ok);  if (!ok) *err = 1; return 1; }
     /* INITiate[:IMMediate] = spustit mereni, ABORt = zastavit (oboji bez parametru). */
     if (hdr_match(hdr, "INITiate:IMMediate") || hdr_match(hdr, "INITiate")) { *key = SCPI_CFG_RUN; *vu = 1u; return 1; }
@@ -328,10 +423,19 @@ static void scpi_status_latch(scpi_ctx_t *c, const scpi_src_t *src)
     c->oper_prev = o; c->ques_prev = q;
 }
 
-/* Kmitočet /4 [Hz] ze zdroje (0 = neplatné). */
+/* Kmitočet /4 [Hz] ze zdroje (0 = neplatné). F-0180: přesná hodnota, když ji
+ * zdroj má — tatáž, ze které počítá displej. */
 static double src_freq_hz(const scpi_src_t *s)
 {
-    return (s->valid & SCPI_V_FREQ) ? (double)s->freq4_x100000 / 100000.0 : 0.0;
+    if (!(s->valid & SCPI_V_FREQ)) return 0.0;
+    return (s->freq4_hz > 0.0) ? s->freq4_hz : (double)s->freq4_x100000 / 100000.0;
+}
+/* Kmitočet /4 jako odpověď (bez kontroly platnosti — tu dělá volající). S přesnou
+ * hodnotou 15 platných číslic, bez ní poctivých 5 desetin z x1e5. */
+static void fmt_src_freq(const scpi_src_t *s, char *out, size_t n)
+{
+    if (s->freq4_hz > 0.0) fmt_scpi_hz_sig(s->freq4_hz, out, n);
+    else                   fmt_scpi_hz(s->freq4_x100000, out, n);
 }
 
 /* Zpracuje JEDNU programovou jednotku (bez ';'). Stav v `c`, data ve `src`. */
@@ -399,9 +503,20 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:DATE")) {
 #if defined(CORE_CM7)
         if (is_query) {
-            /* `g_rtc_text` = "YYYY-MM-DD HH:MM:SS" (plni defaultTask). Cteme z nej
-             * primo aritmetikou - zadne pomocne buffery ani terminatory. */
-            const volatile char *rt = g_rtc_text;
+            /* 🔴 Bez synchronizovaneho casu vrat SCPI NaN, ne cislo (audit F-0068).
+             * `g_rtc_text` je inicializovany na "---------- --:--:--"
+             * (`freertos.c:155`), takze aritmetika nad pomlckami davala
+             * `('-'-'0') == -3` a dotaz vracel **"-3333,-33,-33" jako platne
+             * datum**. Bylo to jedine misto v souboru, ktere pri neplatnych datech
+             * nevraci `9.91E37` — vsechny ostatni (`SYST:GPS:TIME?`, `SYST:TEMP?`,
+             * `MEAS:VOLT?`) testuji bit platnosti. */
+            if (!g_rtc_synced) { snprintf(out, out_sz, "9.91E37"); return strlen(out); }
+            /* ⚠️ Kopie pod kritickou sekci: zapis v `rtc.c:576` ji ma, cteni ne,
+             * takze snimek sel roztrhnout pres hranici sekundy. */
+            char rt[sizeof g_rtc_text];
+            taskENTER_CRITICAL();
+            memcpy(rt, (const void *)g_rtc_text, sizeof rt);
+            taskEXIT_CRITICAL();
             int yy = (rt[0]-'0')*1000 + (rt[1]-'0')*100 + (rt[2]-'0')*10 + (rt[3]-'0');
             int mo = (rt[5]-'0')*10 + (rt[6]-'0');
             int dd = (rt[8]-'0')*10 + (rt[9]-'0');
@@ -426,7 +541,11 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:TIME")) {
 #if defined(CORE_CM7)
         if (is_query) {
-            const volatile char *rt = g_rtc_text;
+            if (!g_rtc_synced) { snprintf(out, out_sz, "9.91E37"); return strlen(out); }   /* F-0068 */
+            char rt[sizeof g_rtc_text];
+            taskENTER_CRITICAL();
+            memcpy(rt, (const void *)g_rtc_text, sizeof rt);
+            taskEXIT_CRITICAL();
             int hh = (rt[11]-'0')*10 + (rt[12]-'0');
             int mm = (rt[14]-'0')*10 + (rt[15]-'0');
             int ss = (rt[17]-'0')*10 + (rt[18]-'0');
@@ -547,8 +666,8 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SYSTem:GPS:POSition") && is_query) {
         if (src->valid & SCPI_V_GPS) {
             char la[16], lo[16];
-            fmt_scpi_deg6(src->gps_lat_deg, la, sizeof la);
-            fmt_scpi_deg6(src->gps_lon_deg, lo, sizeof lo);
+            fmt_scpi_deg7(src->gps_lat_e7, la, sizeof la);
+            fmt_scpi_deg7(src->gps_lon_e7, lo, sizeof lo);
             snprintf(out, out_sz, "%s,%s,%d", la, lo, (int)src->gps_alt_m);
         } else snprintf(out, out_sz, "9.91E37");
         return strlen(out);
@@ -557,7 +676,7 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* ── MEASure / FETCh (reálný FPGA kmitočet, ne sim) ─────────────────────── */
     if (hdr_match(hdr, "MEASure:FREQuency:ALL") && is_query) {
         char f4[24], f16[24];
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, f4, sizeof f4); else snprintf(f4, sizeof f4, "9.91E37");
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, f4, sizeof f4); else snprintf(f4, sizeof f4, "9.91E37");
         if (src->valid & SCPI_V_DIV16) fmt_scpi_hz(src->freq16_x100000, f16, sizeof f16); else snprintf(f16, sizeof f16, "9.91E37");
         snprintf(out, out_sz, "%s,%s", f4, f16); return strlen(out);
     }
@@ -571,12 +690,12 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
      * Ovladace (VISA/IVI) tenhle jednoradkovy tvar cekaji jako zakladni zpusob mereni. */
     if (hdr_match(hdr, "READ") && is_query) {
         if (!src->set_running && src->set_cfg) (void)src->set_cfg(src, SCPI_CFG_RUN, 1u, 0.0);
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
     if ((hdr_match(hdr, "MEASure:FREQuency") || hdr_match(hdr, "FETCh:FREQuency")) && is_query) {
-        if (src->valid & SCPI_V_FREQ) fmt_scpi_hz(src->freq4_x100000, out, out_sz);
+        if (src->valid & SCPI_V_FREQ) fmt_src_freq(src, out, out_sz);
         else                          snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
@@ -589,6 +708,12 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
      * Klient tak nemusí odvozovat důvěryhodnost z 9.91E37. */
     if (hdr_match(hdr, "MEASure:FREQuency:STALe") && is_query) {
         snprintf(out, out_sz, "%d", (!(src->valid & SCPI_V_FREQ) || src->freq_err) ? 1 : 0);
+        return strlen(out);
+    }
+    /* 1 = kmitocet pochazi z EMULATORU ramcu (`fpgasim`), NE z FPGA. Pojistka proti
+     * zamene emulace za mereni — stejna odpoved pres USB i pres TCP/HTTP. */
+    if (hdr_match(hdr, "DIAGnostic:SIMulation") && is_query) {
+        snprintf(out, out_sz, "%d", src->sim_active ? 1 : 0);
         return strlen(out);
     }
     /* Všechny napájecí větve jedním dotazem: 12V,5V,VC,VREF,VBAT. */
@@ -613,22 +738,82 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         return strlen(out);
     }
     if (hdr_match(hdr, "MEASure:POWer") && is_query) {       /* RF [dBm] přes AD8307 kalibraci */
-        if ((src->valid & SCPI_V_RF) && src->ad8307_slope_mv_db > 1.0f)
-            fmt_scpi_f2(src->rf_mv / src->ad8307_slope_mv_db + src->ad8307_intercept_dbm, out, out_sz);
+        float dbm;   /* F-0165: jediny prevod; neplatna strmost -> SCPI NaN */
+        if ((src->valid & SCPI_V_RF) &&
+            mp_ad8307_dbm(src->rf_mv, src->ad8307_slope_mv_db, src->ad8307_intercept_dbm, &dbm))
+            fmt_scpi_f2(dbm, out, out_sz);
         else snprintf(out, out_sz, "9.91E37");
         return strlen(out);
+    }
+
+    /* ── INPut: vstupní cesta (vazba, impedance, dělič, práh, hystereze) ──────
+     * 🔴 HARDWARE ZATÍM NEEXISTUJE. Vstupní modul (MCP4728 pro práh a hysterezi,
+     * relé přes MCP23017, ÷10 MC12080) se teprve staví, takže KAŽDÝ příkaz
+     * skončí SCPI-99 `-241 "Hardware missing"` — stejným idiomem, jakým `DISP:*`
+     * a `SYST:DATE` hlásí nepřítomnost displeje/RTC na CM4.
+     *
+     * Proč to tu tedy je, když to nic nespíná:
+     *   1. Parsování a MEZE jsou hotové a otestované už teď, dokud je smluvní
+     *      zadání čerstvé (práh ±1,024 V krok 0,5 mV; hystereze 1–60 mV).
+     *   2. Klient rozezná „příkaz neznám" (-113) od „umím ho, ale chybí HW"
+     *      (-241) — to je pro VISA/IVI ovladač zásadní rozdíl.
+     *   3. Až modul přijde, doplní se JEN provedení; kontrakt se nemění.
+     * ⚠️ Pořadí je SCPI-korektní: chyby PŘÍKAZU (rozsah, neplatný parametr) mají
+     * přednost před chybou PROVEDENÍ, takže `INP:LEV 99` vrátí -222, ne -241.
+     * ⚠️ Nic se NEUKLÁDÁ. Uložit hodnotu, kterou nelze uplatnit, by vyrobilo
+     * stejnou past jako okno SÍŤ (nastavení se uloží a tiše nic nedělá). */
+    {
+        int ich = 1, isuf = 0, hit = 0, bad = 0;
+        if      (inp_match(hdr, "COUPling",    &ich, &isuf)) hit = 1;
+        else if (inp_match(hdr, "IMPedance",   &ich, &isuf)) hit = 2;
+        else if (inp_match(hdr, "ATTenuation", &ich, &isuf)) hit = 3;
+        else if (inp_match(hdr, "LEVel",       &ich, &isuf)) hit = 4;
+        else if (inp_match(hdr, "HYSTeresis",  &ich, &isuf)) hit = 5;
+        if (hit) {
+            /* Přípona kanálu se kontroluje PRVNÍ: `INP3:LEV 0` je chyba adresy,
+             * ne chyba rozsahu — a rozhodně ne „neznámý příkaz". */
+            if (isuf) bad = -114;
+            else if (!is_query) {
+                int ok2 = 0; double v = 0.0;
+                if (hit == 1) {
+                    if (!(kw_match(arg, (int)strlen(arg), "AC", 2) ||
+                          kw_match(arg, (int)strlen(arg), "DC", 2))) bad = -224;
+                } else {
+                    v = scpi_num(arg, &ok2);
+                    if (!ok2) bad = -224;
+                    /* 50 Ω nebo 1 MΩ — nic mezi tím na desce není. */
+                    else if (hit == 2 && !(v > 49.0 && v < 51.0)
+                                      && !(v > 9.0e5 && v < 1.1e6))   bad = -222;
+                    /* 1 = přímá cesta (DC–200 MHz), 10 = předdělič MC12080. */
+                    else if (hit == 3 && !(v > 0.9 && v < 1.1)
+                                      && !(v > 9.5 && v < 10.5))      bad = -222;
+                    else if (hit == 4 && (v < -1.024 || v > 1.024))    bad = -222;
+                    else if (hit == 5 && (v < 0.001  || v > 0.060))    bad = -222;
+                }
+            }
+            if (!bad) bad = -241;              /* příkaz je v pořádku, chybí HW */
+            scpi_err_push(c, bad);
+            snprintf(out, out_sz, "%d,\"%s\"", bad, scpi_err_msg(bad));
+            return strlen(out);
+        }
     }
 
     /* ── SENSe (parametry z posledního FPGA rámce) ─────────────────────────── */
     /* ⚠️ GATE?/CHAN? vraci NASTAVENOU hodnotu, ne udaj z posledniho FPGA ramce —
      * SCPI kontrakt je "co zapisu, to precte zpet" (`SENS:FREQ:GATE 1` -> `?` -> 1).
      * Skutecne zmerene okno (kolisa kolem nominalu) je na `SENS:FREQ:GATE:ACTual?`. */
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE:ACTual") && is_query) {
+    /* ⚠️ `APERture` je ALIAS `GATE`. SCPI-99 i beznа praxe citacu (Keysight
+     * 53230A, Pendulum) pouzivaji pro dobu hradla prave `[SENSe:]FREQuency:
+     * APERture` — VISA/IVI ovladace hledaji ten nazev a s `GATE` pristroj
+     * neobslouzi. `GATE` zustava, aby se nerozbilo, co uz je napsane. */
+    if ((hdr_match(hdr, "SENSe:FREQuency:GATE:ACTual") ||
+         hdr_match(hdr, "SENSe:FREQuency:APERture:ACTual")) && is_query) {
         if ((src->valid & SCPI_V_FRAME) && src->gate_ns) fmt_scpi_sec_ns(src->gate_ns, out, out_sz);
         else                                             snprintf(out, out_sz, "9.91E37");
         return strlen(out);
     }
-    if (hdr_match(hdr, "SENSe:FREQuency:GATE") && is_query) {
+    if ((hdr_match(hdr, "SENSe:FREQuency:GATE") ||
+         hdr_match(hdr, "SENSe:FREQuency:APERture")) && is_query) {
         fmt_scpi_f6(scpi_gate_s(src->set_gate_idx), out, out_sz); return strlen(out);
     }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel") && is_query) {
@@ -661,18 +846,28 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
             scpi_err_push(c, -222); snprintf(out, out_sz, "-222,\"Data out of range\""); return strlen(out);
         }
         char fq[24], to[12], tb[12], rf[12], hd[12], vb[12];
-        fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
+        /* F-0180: novy zaznam nese presny kmitocet (double), stary jen x1e5. */
+        if (r.freq_exact) fmt_scpi_hz_sig(r.freq_hz, fq, sizeof fq);
+        else              fmt_scpi_hz(r.freq_x100000, fq, sizeof fq);
         if (r.t_ocxo_c100 == DATALOG_INVALID16)  snprintf(to, sizeof to, "9.91E37"); else fmt_scpi_f2(r.t_ocxo_c100  / 100.0f, to, sizeof to);
         if (r.t_board_c100 == DATALOG_INVALID16) snprintf(tb, sizeof tb, "9.91E37"); else fmt_scpi_f2(r.t_board_c100 / 100.0f, tb, sizeof tb);
         /* ⚠️ `rf_mv` jsou SYROVE mV, ne dBm x10 — prevod stejnym vzorcem jako
          * `MEAS:POW?` (AD8307 slope/intercept z kalibrace). Do 2026-08-18 se tu
          * delilo deseti a 571 mV vyslo jako "57,1" v poli, ktere se tvari jako
          * dBm (spravne -61,2). Guard na slope: 0 by delilo nulou. */
-        if (r.rf_mv == DATALOG_INVALID16) {
+        /* 🔴 F-0165: drive se pri neplatne strmosti TISE DOSADILO 25 mV/dB, takze
+         * export datalogu vyrobil verohodne dBm, zatimco `MEAS:POW?` o par set
+         * radku vys poctive hlasil „nevim". Ted tataz politika jako tam. */
+        float dbm;
+        /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0,
+         * calib.h) — stejna politika jako SCPI_V_RF vyse, ne jen pro live
+         * mereni, ale i pro export z datalogu. */
+        if (!RF_LEVEL_HW_PRESENT || r.rf_mv == DATALOG_INVALID16 ||
+            !mp_ad8307_dbm((float)r.rf_mv, src->ad8307_slope_mv_db,
+                           src->ad8307_intercept_dbm, &dbm)) {
             snprintf(rf, sizeof rf, "9.91E37");
         } else {
-            float slope = src->ad8307_slope_mv_db; if (slope < 1e-3f) slope = 25.0f;
-            fmt_scpi_f2((float)r.rf_mv / slope + src->ad8307_intercept_dbm, rf, sizeof rf);
+            fmt_scpi_f2(dbm, rf, sizeof rf);
         }
         if (r.hdop10 == 255u)                    snprintf(hd, sizeof hd, "9.91E37"); else fmt_scpi_f2(r.hdop10 / 10.0f, hd, sizeof hd);
         /* VBAT [V]; zaznamy z doby pred 2026-08-17 ho nemaji -> SCPI NaN. */
@@ -686,8 +881,11 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     /* ── CALCulate (Math Mx+B/NULL + limity nad zdrojovou cfg) ─────────────── */
     if (hdr_match(hdr, "CALCulate:DATA") && is_query) {
         double hz = src_freq_hz(src);
-        if (hz > 0.0) fmt_scpi_hz_d(meas_math_apply(&src->meas, hz), out, out_sz);
-        else          snprintf(out, out_sz, "9.91E37");
+        /* F-0180: s presnym X i vysledek na 15 platnych cislic — v rezimu NULL je
+         * Y male a 5 desetin by z nej nechalo jen par cislic. */
+        if (hz <= 0.0)               snprintf(out, out_sz, "9.91E37");
+        else if (src->freq4_hz > 0.0) fmt_scpi_hz_sig(meas_math_apply(&src->meas, hz), out, out_sz);
+        else                         fmt_scpi_hz_d(meas_math_apply(&src->meas, hz), out, out_sz);
         return strlen(out);
     }
     if (hdr_match(hdr, "CALCulate:LIMit:FAIL") && is_query) {
@@ -767,6 +965,15 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
         if (scpi_calc_parse(hdr, arg, &key, &vu, &vd, &err)) {
             if (err) { scpi_err_push(c, -224); snprintf(out, out_sz, "-224,\"Illegal parameter value\""); return strlen(out); }
             if (src->set_cfg && src->set_cfg(src, key, vu, vd)) return 0;   /* OK → ticho */
+            /* ⚠️ Rozlis PROC to neslo: `ctrl_locked` = ovladani je zakazane
+             * (`web_ctrl_en` vypnuty / chybi autorizace) -> `-203 Command
+             * protected`. Jinak je to skutecne chybejici/zastarala data -> -230.
+             * Do 2026-09-02 vracely oba pripady -230 a hlaseni tak lhalo o pricine. */
+            if (src->set_cfg == NULL && src->ctrl_locked) {
+                scpi_err_push(c, -203);
+                snprintf(out, out_sz, "-203,\"Command protected\"");
+                return strlen(out);
+            }
             scpi_err_push(c, -230); snprintf(out, out_sz, "-230,\"Data corrupt or stale\""); return strlen(out);
         }
     }
@@ -785,19 +992,44 @@ size_t scpi_process_ctx(scpi_ctx_t *ctx, scpi_src_t *src, const char *line, char
     scpi_status_latch(ctx, src);
     if (strchr(line, ';') == NULL) return scpi_exec_one(ctx, src, line, out, out_sz);
 
-    /* Složená zpráva (IEEE 488.2): jednotky ';', odpovědi dotazů spojené ';'. */
+    /* Složená zpráva (IEEE 488.2): jednotky ';', odpovědi dotazů spojené ';'.
+     * 🔴 Utnuta jednotka se NEPROVEDE (audit F-0069). Do 2026-09-12 se delsi
+     * jednotka orizla na 55 znaku a **provedla** — vcetne argumentu, takze
+     * `CALC:MATH:M 1234…;*IDN?` nastavilo ZKRACENOU hodnotu a klient dostal
+     * odpoved na `*IDN?`, tedy potvrzeni, ze vse probehlo. Tise se tak vykonalo
+     * neco jineho, nez klient poslal.
+     * Rozpocet: nejdelsi hlavicka je `SENSe:FREQuency:APERture` (24 zn.) + mezera
+     * + argument v exponencialnim tvaru (~20 zn.) => 96 B ma rezervu ~50 %. */
     size_t total = 0;
-    char sub[56];
+    /* 🔴 `static`, ne na zasobniku (merení na desce 2026-09-12): UartTask ma 4096 B
+     * a pri `scpi` prikazu z konzole klesl volny stack na **168 B** — retez
+     * `UartTask_run (700) + scpi_process (492) + scpi_process_ctx + scpi_exec_one`
+     * je sam o sobe ~1,6 kB. Tyhle dva buffery (160 B) proto patri do `.bss`.
+     * ⚠️ Bezpecne, protoze `scpi_process_ctx` NENI reentrantni a bezi vzdy jen
+     * z jednoho kontextu: na CM7 z UartTasku, na CM4 z hlavni smycky (lwIP
+     * callbacky jsou tamtez). Stejny duvod a stejny vzor jako `static` buffery
+     * v `gps_selftest`/`scpi_selftest`/`pn_selftest`. */
+    static char sub[96];
+    static char rb[64];
+    _Static_assert(sizeof(sub) > 48, "sub musi pojmout celou hlavicku hdr[48] i s argumentem");
+    _Static_assert(sizeof(rb) >= 32, "rb musi pojmout nejdelsi chybovou odpoved (31 B)");
     while (*line) {
         int k = 0;
         while (*line && *line != ';' && k < (int)sizeof(sub) - 1) sub[k++] = *line++;
         sub[k] = '\0';
+        /* Zastavili jsme se na MEZI (ne na ';' ani na konci) => jednotka je utnuta. */
+        int truncated = (*line != '\0' && *line != ';');
         while (*line && *line != ';') line++;
         if (*line == ';') line++;
         const char *t = sub; while (*t == ' ' || *t == '\t') t++;
         if (*t == '\0') continue;
-        char rb[64];
-        size_t rn = scpi_exec_one(ctx, src, sub, rb, sizeof rb);
+        size_t rn;
+        if (truncated) {
+            scpi_err_push(ctx, -100);
+            rn = (size_t)snprintf(rb, sizeof rb, "-100,\"%s\"", scpi_err_msg(-100));
+        } else {
+            rn = scpi_exec_one(ctx, src, sub, rb, sizeof rb);
+        }
         if (rn == 0) continue;
         if (total && total + 1 < out_sz) out[total++] = ';';
         size_t room = (total + 1 < out_sz) ? out_sz - total - 1 : 0;
@@ -824,7 +1056,7 @@ static int scpi_src_set_cfg_cm7(scpi_src_t *s, uint8_t key, uint32_t vu, double 
         if (key == SCPI_CFG_GATE) {
             int gi = scpi_gate_idx_from_s(vd);
             if (gi < 0) return 0;                       /* mimo presety -> -222 */
-            cur = (uint8_t)((cur & ~(3u << 2)) | ((uint32_t)gi << 2));
+            cur = IPC_UICFG_SET_GATE(cur, gi);
             s->set_gate_idx = (uint8_t)gi;
         } else if (key == SCPI_CFG_CHAN) {
             if (vu > 1u) return 0;                      /* mame jen kanal 0/1 */
@@ -859,17 +1091,21 @@ static int scpi_src_read_log_cm7(scpi_src_t *s, uint32_t from_newest, datalog_re
  * zamku, tedy rove tak drahe jako ta podminka navic. */
 static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 {
+    memset(src, 0, sizeof *src);
     /* Nastaveny stav mereni (SET/readback). Cte se z `g_ui_cfg` = tentyz zdroj,
      * ktery pouziva UI i persistence do BKP; kodovani: bit0 mode, bit1 chan,
      * bity2:3 gate, bit4 run. Kdyz ceka nas vlastni SET, uz ma prednost (aby
-     * `SET;readback` v JEDNE zprave vratilo novou hodnotu, ne tu predchozi). */
+     * `SET;readback` v JEDNE zprave vratilo novou hodnotu, ne tu predchozi).
+     * 🔴 F-0185: MUSI byt AZ ZA `memset` — do 2026-09-27 stal blok pred nim,
+     * memset ho hned smazal a pres USB vracely `GATE?`/`CHAN?`/`INIT:CONT?` vzdy
+     * vychozi hodnotu (TCP/HTTP pres `ipc_scpi.c` byly spravne = dve pravdy).
+     * Plni se i v levne variante (`full == 0`) — je to jen cteni globalu. */
     {
         uint8_t c = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
         src->set_chan     = (uint8_t)((c >> 1) & 1u);
-        src->set_gate_idx = (uint8_t)((c >> 2) & 3u);
+        src->set_gate_idx = IPC_UICFG_GATE(c);
         src->set_running  = (uint8_t)((c >> 4) & 1u);
     }
-    memset(src, 0, sizeof *src);
     src->selftest_pass = (g_selftest_res == 1);
     src->uptime_s      = g_uptime_s;
     if (!full) return;
@@ -880,17 +1116,25 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
         src->channel_id     = m.channel_id;
         src->freq4_x100000  = m.frequency_x100000;
         src->freq16_x100000 = m.freq16_x100000;
+        /* F-0180: tataz presna hodnota jako v IPC snapshotu (`ipc_publish`). */
+        src->freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000, m.edge_count, m.gate_ps);
         if (m.error_flags & (FPGA_ERR_SIGNAL_LOST | FPGA_ERR_MEAS)) src->freq_err = 1;
         int fresh_ok = (m.measurement_status & 0x01u) && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
         if (fresh_ok)                                  src->valid |= SCPI_V_FREQ;
         if (fresh_ok && !(m.status2 & FPGA_ST2_DIV16_ERR)) src->valid |= SCPI_V_DIV16;
     }
+    src->sim_active = fpga_sim_active() ? 1u : 0u;   /* emulace, ne mereni (DIAG:SIM?) */
     if (g_sensors[SENS_T49].valid)    { src->t_ocxo_c100  = (int16_t)(g_sensors[SENS_T49].last  * 100.0f); src->valid |= SCPI_V_T_OCXO; }
     if (g_sensors[SENS_T48].valid)    { src->t_board_c100 = (int16_t)(g_sensors[SENS_T48].last  * 100.0f); src->valid |= SCPI_V_T_BOARD; }
     if (g_sensors[SENS_CORE_T].valid) { src->t_mcu_c100   = (int16_t)(g_sensors[SENS_CORE_T].last* 100.0f); src->valid |= SCPI_V_T_MCU; }
     if (g_sensors[SENS_T4A].valid)    { src->t_fpga_c100  = (int16_t)(g_sensors[SENS_T4A].last  * 100.0f); src->valid |= SCPI_V_T_FPGA; }
     if (g_sensors[SENS_ADS0].valid)   { src->ocxo_vc_mv = (uint16_t)g_sensors[SENS_ADS0].last; src->valid |= SCPI_V_VC; }
-    if (g_sensors[SENS_ADS1].valid)   { src->rf_mv      = (uint16_t)g_sensors[SENS_ADS1].last; src->valid |= SCPI_V_RF; }
+    /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0, calib.h) —
+     * AIN1 je VBUS. `rf_mv` se dal plni (nekdo z datalogu ho jeste muze cist
+     * jako syrove napeti), ale SCPI_V_RF se NESTAVI -> MEAS:POW? korektne
+     * hlasi 9.91E37 misto dBm spocitaneho ze spatneho vstupu. */
+    if (g_sensors[SENS_ADS1].valid)   { src->rf_mv = (uint16_t)g_sensors[SENS_ADS1].last;
+                                         if (RF_LEVEL_HW_PRESENT) src->valid |= SCPI_V_RF; }
     if (g_sensors[SENS_ADS2].valid)   { src->v_12v_mv   = (uint16_t)g_sensors[SENS_ADS2].last; src->valid |= SCPI_V_V12; }
     if (g_sensors[SENS_ADS3].valid)   { src->v_5v_mv    = (uint16_t)g_sensors[SENS_ADS3].last; src->valid |= SCPI_V_V5; }
     if (g_sensors[SENS_VDDA].valid)   { src->vref_mv    = (uint16_t)g_sensors[SENS_VDDA].last; src->valid |= SCPI_V_VREF; }
@@ -902,7 +1146,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
     if (g.valid) {
         src->valid |= SCPI_V_GPS;
         src->gps_hour = g.hour; src->gps_min = g.minute; src->gps_sec = g.second;
-        src->gps_lat_deg = g.lat_deg; src->gps_lon_deg = g.lon_deg; src->gps_alt_m = g.alt_m;
+        src->gps_lat_e7 = g.lat_e7; src->gps_lon_e7 = g.lon_e7; src->gps_alt_m = g.alt_m;
     }
     src->spi_ok = g_spi_ok; src->si5356_status = g_si5356_status; src->si5356_ok = g_si5356_ok;
     /* (`selftest_pass` a `uptime_s` uz nastavila levna cast nahore.) */
@@ -917,7 +1161,6 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
 }
 
 static scpi_ctx_t s_default_ctx;   /* USB CDC = jediná session */
-void scpi_src_load_cm7(scpi_src_t *src) { scpi_src_load_cm7_ex(src, 1); }
 
 size_t scpi_process(const char *line, char *out, size_t out_sz)
 {
@@ -1017,14 +1260,20 @@ int scpi_selftest(void)
 
     /* ── Instrument SET + readback (2026-08-15). Do teto chvile bylo SCPI mimo
      * Math read-only, takze prave tohle je jadro noveho chovani. ── */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
-    ok &= (src.set_gate_idx == 2);                       /* 10 s = index 2 */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.5", b, sizeof b);
+    ok &= (src.set_gate_idx == 3);                       /* 0,5 s = index 3 */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b);
-    ok &= (strncmp(b, "10.000000", 9) == 0);             /* readback = nastavena hodnota */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.1", b, sizeof b);
-    ok &= (src.set_gate_idx == 0);                       /* toleranci 1 % projde i "1E-1" */
+    ok &= (strncmp(b, "0.500000", 8) == 0);              /* readback = nastavena hodnota */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 1", b, sizeof b);
+    ok &= (src.set_gate_idx == 4);                       /* 1 s = index 4 (nejdelsi) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 5E-2", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* 0,05 s; toleranci 1 % projde i "5E-2" */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 3.7", b, sizeof b);
     ok &= (src.set_gate_idx == 0);                       /* mimo preset -> SET se NEaplikuje */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* 10 s uz preset NENI (nejdelsi 1 s) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.25", b, sizeof b);
+    ok &= (src.set_gate_idx == IPC_GATE_DEFAULT);        /* vychozi 0,25 s */
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 1", b, sizeof b);
     ok &= (src.set_chan == 1);
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN?", b, sizeof b);
@@ -1066,11 +1315,23 @@ int scpi_selftest(void)
     ok &= (strstr(b, "GPSDO") != NULL);
     scpi_process_ctx(&x, &src, "CONF?", b, sizeof b);
     ok &= (strncmp(b, "\"FREQ\"", 6) == 0);
+    /* ⚠️ DISP:BRIG je HW-vazane (displej visi jen na CM7). V obraze CM4 vraci
+     * handler ZAMERNE SCPI-99 `-241 "Hardware missing"` (viz `#else` vetev
+     * u handleru vyse). Test to musi vedet — jinak spadne na cizim jadre na
+     * spravnem chovani. Nalezeno HW pruchodem 2026-08-30: `status` hlasil
+     * „SCPI(CM4): selftest FAIL" a `s_st_fail_line` ukazal presne sem. */
+#if defined(CORE_CM7)
     scpi_process_ctx(&x, &src, "DISP:BRIG 50", b, sizeof b);
     scpi_process_ctx(&x, &src, "DISP:BRIG?", b, sizeof b);
     ok &= (b[0] == '5');                                  /* ~50 % zpet */
     scpi_process_ctx(&x, &src, "DISP:BRIG 150", b, sizeof b);
     ok &= (strncmp(b, "-222", 4) == 0);                   /* mimo rozsah -> chyba */
+#else
+    scpi_process_ctx(&x, &src, "DISP:BRIG?", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* CM4: Hardware missing */
+    scpi_process_ctx(&x, &src, "DISP:BRIG 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* i SET musi odmitnout */
+#endif
 
     /* ── SYST:DATE/TIME: parser tri cisel + odmitnuti nesmyslu (2026-08-15) ── */
     { int a1 = 0, a2 = 0, a3 = 0;
@@ -1079,10 +1340,18 @@ int scpi_selftest(void)
       ok &= (scpi_parse3("2026,8", &a1, &a2, &a3) == 0);        /* jen dve cisla */
       ok &= (scpi_parse3("2026,8,15,1", &a1, &a2, &a3) == 0);   /* ctyri cisla */
       ok &= (scpi_parse3("2026,x,15", &a1, &a2, &a3) == 0); }   /* nepovoleny znak */
+    /* ⚠️ Tytez duvody jako u DISP:BRIG vyse: RTC je jen na CM7, CM4 vraci -241.
+     * Parser `scpi_parse3` (nad timto blokem) je ciste logicky -> testuje se na obou. */
     scpi_process_ctx(&x, &src, "SYST:DATE 2026,13,1", b, sizeof b);
+#if defined(CORE_CM7)
     ok &= (strncmp(b, "-222", 4) == 0);                   /* mesic 13 -> chyba */
     scpi_process_ctx(&x, &src, "SYST:TIME 25,0,0", b, sizeof b);
     ok &= (strncmp(b, "-222", 4) == 0);                   /* hodina 25 -> chyba */
+#else
+    ok &= (strncmp(b, "-241", 4) == 0);                   /* CM4: Hardware missing */
+    scpi_process_ctx(&x, &src, "SYST:TIME 25,0,0", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+#endif
     ok &= (scpi_process_ctx(&x, &src, "MMEM:CAT?", b, sizeof b) > 0);
     ok &= (scpi_process_ctx(&x, &src, "MMEM:DATA:COUN?", b, sizeof b) > 0);
 
@@ -1129,6 +1398,24 @@ int scpi_selftest(void)
         scpi_process_ctx(&x, &sv, "CALC:MATH:M?", b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
         scpi_process_ctx(&x, &sv, "CALC:DATA?",   b, sizeof b);  ok &= (strcmp(b, "9.91E37") == 0);
         meas_math_defaults(&sv.meas);            /* uklid pro pripadne dalsi pouziti */
+
+        /* F-0180: presny kmitocet jde ven s 15 platnymi cislicemi (MEAS/READ/ALL
+         * i CALC:DATA?), bez nej zustava 5 desetin z x1e5 (vyse). Vektory jsou
+         * spocitane rucne i s dvojkovou reprezentaci double. */
+        sv.freq_err = 0; sv.freq4_hz = 10000000.0123456789;
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "READ?",      b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "CALC:DATA?", b, sizeof b);  ok &= (strcmp(b, "10000000.0123457") == 0);
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ:ALL?", b, sizeof b);
+        ok &= (strcmp(b, "10000000.0123457,9.91E37") == 0);
+        sv.freq4_hz = 10.0000000001234;         /* nizky kmitocet: 13 desetin */
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10.0000000001234") == 0);
+        sv.freq4_hz = 0.0;                      /* bez presne hodnoty: 5 desetin */
+        scpi_process_ctx(&x, &sv, "MEAS:FREQ?", b, sizeof b);  ok &= (strcmp(b, "10000000.00000") == 0);
+        fmt_scpi_hz_sig(1400000000.123456, b, sizeof b);        ok &= (strcmp(b, "1400000000.12346") == 0);
+        fmt_scpi_hz_sig(-0.5, b, sizeof b);                     ok &= (strcmp(b, "-0.50000000000000") == 0);
+        { volatile double z = 0.0;              /* NaN za behu, ne konstanta */
+          fmt_scpi_hz_sig(z / z, b, sizeof b);                  ok &= (strcmp(b, "9.91E37") == 0); }
     }
 
     /* Nove SCPI-99 povinne prikazy + SENSe konstanty. */
@@ -1257,6 +1544,82 @@ int scpi_selftest(void)
     scpi_process_ctx(&x, &src, "*ESE 24;*ESE?", b, sizeof b);  ok &= (strcmp(b, "24") == 0);
     scpi_process_ctx(&x, &src, "*ESE?;*ESE?",   b, sizeof b);  ok &= (strcmp(b, "24;24") == 0);
     scpi_process_ctx(&x, &src, "*ESE 8;*ESE?",  b, sizeof b);  ok &= (strcmp(b, "8") == 0);
+    /* ── APERture je alias GATE (2026-09-06) ──────────────────────────────────
+     * VISA/IVI ovladace citacu hledaji `APERture`; kdyby se alias rozesel s
+     * `GATE`, pristroj by pres ne nesel nastavit vubec. */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER 1", b, sizeof b);
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER?", b, sizeof b);
+    { char b2[48]; scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b2, sizeof b2);
+      ok &= (strcmp(b, b2) == 0); }                    /* alias vraci TOTEZ co GATE */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:APER:ACT?", b, sizeof b);
+    { char b2[48]; scpi_process_ctx(&x, &src, "SENS:FREQ:GATE:ACT?", b2, sizeof b2);
+      ok &= (strcmp(b, b2) == 0); }
+
+    /* ── INPut: HW neni, ale meze a poradi chyb musi platit uz ted ────────────
+     * SCPI-99: chyba PRIKAZU (rozsah/parametr) ma prednost pred chybou
+     * PROVEDENI, takze mimo rozsah = -222, teprve platny prikaz = -241. */
+    scpi_process_ctx(&x, &src, "INP:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* mimo +-1,024 V */
+    scpi_process_ctx(&x, &src, "INP:LEV -2", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* v rozsahu -> chybi HW */
+    scpi_process_ctx(&x, &src, "INP:LEV abc", b, sizeof b);
+    ok &= (strncmp(b, "-224", 4) == 0);                /* neni cislo */
+    scpi_process_ctx(&x, &src, "INP:HYST 0.030", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* 30 mV je v pasmu 1..60 */
+    scpi_process_ctx(&x, &src, "INP:HYST 0.2", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* 200 mV je mimo */
+    scpi_process_ctx(&x, &src, "INP:HYST 0", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 1E6", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:IMP 600", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* nic mezi 50 a 1M neexistuje */
+    scpi_process_ctx(&x, &src, "INP:ATT 1", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:ATT 10", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:ATT 3", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);                /* jiny delic nez /10 neni */
+    scpi_process_ctx(&x, &src, "INP:COUP AC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:COUP DC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP:COUP GND", b, sizeof b);
+    ok &= (strncmp(b, "-224", 4) == 0);                /* vazba GND na desce neni */
+    scpi_process_ctx(&x, &src, "INP:LEV?", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);                /* dotaz taky nema co vratit */
+    /* 🔑 Klient MUSI rozeznat „neumim" od „umim, ale chybi HW". */
+    scpi_process_ctx(&x, &src, "INP:NESMYSL 1", b, sizeof b);
+    ok &= (strncmp(b, "-113", 4) == 0);
+
+    /* ── Ciselna pripona kanalu: `INPut1:` / `INPut2:` ────────────────────────
+     * Pristroj je DVOUKANALOVY, takze tohle klient posle bezne. `kw_match`
+     * cislici neumi, proto `inp_match`; bez nej by to bylo -113 (= „neznam"),
+     * coz je u legitimni adresy kanalu spatne. */
+    scpi_process_ctx(&x, &src, "INP1:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP2:COUP DC", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);
+    scpi_process_ctx(&x, &src, "INPut2:IMPedance 50", b, sizeof b);
+    ok &= (strncmp(b, "-241", 4) == 0);          /* i dlouhy tvar s priponou */
+    scpi_process_ctx(&x, &src, "INP1:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-222", 4) == 0);          /* rozsah plati i s priponou */
+    /* Neexistujici kanal: prikaz ZNAME, adresa ne -> -114, NE -113 ani -241. */
+    scpi_process_ctx(&x, &src, "INP3:LEV 0.5", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    scpi_process_ctx(&x, &src, "INP0:COUP AC", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    /* Pripona ma prednost pred rozsahem: spatny kanal I spatna hodnota -> -114. */
+    scpi_process_ctx(&x, &src, "INP9:LEV 99", b, sizeof b);
+    ok &= (strncmp(b, "-114", 4) == 0);
+    /* `INPut` bez dvojtecky nic neridi a nesmi se chytit. */
+    scpi_process_ctx(&x, &src, "INP?", b, sizeof b);
+    ok &= (strncmp(b, "-113", 4) == 0);
+
     #undef ok
 
     /* Posledni assert uz zadny dalsi `scpi_st_chk` nenasleduje -> dovyhodnotit. */

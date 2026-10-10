@@ -1,0 +1,4460 @@
+# LESSONS.md — registr opravených chyb („neopakovat“)
+
+**Povinné čtení před každou opravou. Povinný zápis po každé opravě.**
+
+Účel: chyba, která už byla jednou vyřešená, se nesmí vrátit — ani ve stejném
+místě, ani jinde v projektu. Každý záznam je proto uzavřený tím, že z něj vznikne
+**pravidlo** a pokud možno i **automatická detekce** (`scripts/zakazane_vzory.txt`).
+
+## Jak zapisovat
+
+- Nový záznam **na konec sekce „Aktivní lekce“**, ID `L-NNNN` vzestupně, nikdy se
+  nepřečísluje ani nemaže (historie musí být stabilní).
+- Šablona: `docs/templates/LESSON.md`.
+- Pole `Detekce` je nejdůležitější: buď regulární výraz do
+  `scripts/zakazane_vzory.txt`, nebo test, nebo bod do `CHECKLIST_STM32H7.md`.
+- `Pravidlo` musí být jedna imperativní věta, kterou lze aplikovat i mimo původní
+  místo chyby.
+- Když se lekce stane nadbytečnou (kód odstraněn), přesuň ji do „Archiv“
+  s důvodem — nemazat.
+
+## Rychlý přehled pravidel (čti aspoň tohle)
+
+| ID | Pravidlo | Detekce |
+|---|---|---|
+| L-0001 | Buffer pro DMA1/DMA2 nikdy neumísťuj do DTCM; ověř sekci v `.map`, ne jen atribut. | `scripts/check_lessons.sh` + kontrola `.map` |
+| L-0002 | Ke každému DMA přenosu patří cache operace: clean před TX, invalidate po RX, na 32 B zarovnaný rozsah. | grep `_DMA(` bez `DCache` v modulu |
+| L-0003 | Návratovou hodnotu `HAL_*` vždy vyhodnoť, nebo ignorování zdůvodni komentářem. | `-Wunused-result`, clang-tidy |
+| L-0004 | Žádná čekací smyčka bez timeoutu. | grep `while *(!*(.*&` |
+| L-0005 | Komentáře a logika nikdy v jednom commitu. | kontrola diffu před commitem |
+| L-0006 | U konstanty odvozené z hodin uveď zdroj hodin a jeho frekvenci; ověřuj přepočtem z `HAL_RCCEx_GetPeriphCLKFreq()`, ne z komentáře. | checklist G + přepočet při auditu modulu |
+| L-0007 | Sdílené PLL a systémové hodiny konfiguruje výhradně CM7; CM4 nesmí volat `SystemClock_Config()` ani `PeriphCommonClock_Config()`. | `scripts/build.sh` — `nm` nad obrazem CM4 (tvrdé selhání) + `scripts/check_lessons.sh` |
+| L-0008 | Komentář o chování při poruše piš až po přečtení celého těla funkce včetně generovaného zbytku, ne jen svého `USER CODE` bloku. | `tools/audit.py` (velikosti fault handlerů) + checklist E |
+| L-0009 | Kritické volání v generovaném kódu bez `USER CODE` bloku hlídej ověřením dosaženého stavu v `USER CODE`, ne návratovou hodnotou na místě. | UART `status` řádek `NAPAJENI/HODINY:` musí být `OK` |
+| L-0010 | Změna firmwaru je hotová až po běhu na desce a po POWER-CYKLU; do té doby `⬜ neověřeno na HW`. Diagnostiku nedávej do bootu před bring-up displeje. | `AUDIT_STATUS.md` (stav ověření u každé opravy) + CLAUDE.md bod 4b/4c |
+| L-0011 | Hlášku diagnostiky ber jako pozorování, ne diagnózu — ověř ji proti ostatním číslům z téhož výpisu, než sáhneš do kódu. U paměti: chyby u vzoru `0x00` vylučují vyhasnutí, selhání zápisu s okamžitým ověřením vylučuje retenci. | rozlišovací tabulka v CLAUDE.md („DISPLEJ ZLOBÍ?“) |
+| L-0012 | Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4, FB0/FB1), v témže commitu dolož, že druhá je opravená nebo se jí to netýká. ⚠️ Sourozenec může být i **v témže souboru** (F-0091: `flightrec_init` mazala sektor 0, zatímco `errlog_init` o 300 řádků dál brala správně `(best_i+1) % N`) nebo **na druhém jádře** (F-0137: oprava F-0104 se nepřenesla z `watchdog.c` do `iwdg2.c`). | při opravě grep na sesterskou funkci; poznámka u obou kopií |
+| L-0013 | Hook FreeRTOS (`vApplicationStackOverflowHook`) běží v kontextu výjimky, ne úlohy — RTOS API tam mlčky selže. | `osMutexAcquire`/`osDelay` v hooku = nález; použij ISR-safe cestu (RAM ring) |
+| L-0014 | Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije. | `python tools/audit_stav.py --kontrola` |
+| L-0015 | Když modul zná svou mez, musí ji na rozhraní vynutit, ne jen odvozovat — u paměti, která adresu mlčky zabalí, je ovladač jediná obrana. | u ovladače paměti se ptej, co udělá s adresou o 1 za koncem; kontrolu piš bez součtu `addr + len` |
+| L-0016 | Příznak chyby nikdy nemaž, aniž bys ho přečetl; hlídací mez, kterou lze splést s normálním provozem, není ochrana, ale generátor tichých chyb — a mez i měřidlo její rezervy se navrhují SPOLEČNĚ (můj odhad byl 5× vedle). | `status` → `DMA2D: chyb 0, timeout 0, max cekani << mez`; každý zápis do `*_IFCR` musí mít nad sebou čtení `*_ISR` |
+| L-0017 | Tichý přeskok je přípustný jen s počítadlem — co se rozhodneš nevykreslit, musí jít změřit. | `status` → `FONTY: preskocenych glyfu 0` |
+| L-0018 | Dvě místa, která počítají touž veličinu, nejsou duplicita kódu — jsou to dvě pravdy čekající, až se rozejdou. Slučuj, neopravuj obě. | při opravě grep na druhou instanci; `status` → `STATISTIKA: sigma_y@1s` |
+| L-0019 | Účetnictví, které se veze se stavem (diagnostika, paměť, invalidace), připoj ke ZMĚNĚ toho stavu, ne k některé z cest, které k ní vedou. | `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musí být prázdný |
+| L-0020 | Duplicitu, kterou je dražší odstranit než snést, převeď na KONTROLU rozdílu — a tu kontrolu vždy ověř pozitivní kontrolou, jinak jsi jen přidal zelené světlo. | `scripts/check_lessons.sh` sekce „dispatch podle `s_view`" |
+| L-0021 | Práce, která blokuje jinou práci, musí hlásit, jak dlouho ještě poběží — jinak je její doba trvání neviditelná a nikdo ji neodhalí. A než začneš optimalizovat, přečti hlavičku funkce, kterou voláš. | `status` → `ADEV rekonstrukce:` |
+| L-0022 | Obrana, která je opt-in, je neúplná, dokud není u NÍ vyjmenované, kdo ji musí zavolat — a proč nestačí ta druhá, která vypadá podobně. | u každého `s_busy`/`lock` v hlavičce seznam volajících + čím se liší od sousední obrany |
+| L-0023 | `static` uvnitř dotazovací funkce přestane být privátní ve chvíli, kdy přibude druhý volající. Dotaz odděl od aktualizace: číst smí kdokoli, posouvat stav jen jedna úloha. | funkce se `static` stavem a víc než jedním volajícím = nález |
+| L-0024 | Když limit závisí na REŽIMU, hodnota se smí nastavit nad limit jen po ověření režimu — a když se to vědomě poruší, musí to být VIDĚT. Tiché „nastav a doufej" je to, co se zakazuje; hlášený provoz nad limitem je rozhodnutí. | `sd diag` → řádek `sbernice` uvádí takt, režim, limit a značku `<-- NAD LIMITEM` |
+| L-0025 | Objekt předaný cizí knihovně přestaň vlastnit až ve chvíli, kdy ti přestane volat zpátky — `close` není `free`. Odregistruj VŠECHNY callbacky dřív, než uvolníš slot. | `tcp_close`/`*_close` bez předchozího `tcp_arg(pcb, NULL)` = nález; obsluha musí ověřit, že jí ten objekt pořád patří |
+| L-0026 | Když do záznamu přibude pole, přepočítej strop bufferu, do kterého se ten záznam skládá — a strop připoj k bufferu `_Static_assert`em, ne komentářem. | `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)` u každé pevné odpovědi |
+| L-0027 | Na neautentizovaném endpointu smí diagnostika vydat jen to, co odesílatel sám poslal. Délka odvozená z tajemství je taky únik. | u každé položky veřejné diagnostiky musí být napsané, PROČ je neškodná; „jen délky a booly" není zdůvodnění |
+| L-0028 | Věta v komentáři tvaru „hlídá to X" je TESTOVATELNÁ — najdi řádek, kde se X čte. Zahozená návratová hodnota je nejčastější podoba obrany, která neexistuje. | grep na `tcp_write(`/`f_write(`/`HAL_*` bez uložení návratu, křížem proti komentářům se slovy „hlída", „brani", „osetruje" |
+| L-0029 | Funkce volaná přes ukazatel z tabulky musí být SOBĚSTAČNÁ — volající za ni nedodělá krok, který ostatní položky tabulky dělají samy. Přidáváš-li do tabulky položku, projdi, co dělají ostatní. | `scripts/check_lessons.sh` sekce „okno z dlaždicové tabulky neflipne samo" |
+| L-0030 | Počet iterací nikdy nesmí záviset na vstupu zvenčí bez meze — a mez odvoď z rozsahu cílového typu, ne odhadem. Ochrana patří PŘED drahou operaci, ne za ni. | grep na `while (n-- > 0)` / `for` s hranicí z parsovaného vstupu; u SCPI vektor `1E999` → `*ok == 0` |
+| L-0031 | Datový typ je taky mez. Než začneš zlepšovat algoritmus, spočítej ULP typu, ve kterém hodnota přichází — a porovnej ho s přesností, kterou slibuješ. | u každé metriky konvergence/rozptylu uveď, jaké je rozlišení VSTUPU, ne jen akumulátoru |
+| L-0032 | Kontrola integrity podmíněná přítomností toho, co kontroluje, není kontrola. Chybí-li kontrolní součet, je to důvod data zahodit, ne je pustit dál. | grep na `if (checksum_je_pritomen) { kontroluj }` bez `else return` |
+| L-0033 | Odmítnutí vstupu patří do VĚTVENÍ, ne do řízení smyčky. `continue` v dlouhé smyčce přeskočí i všechno, co je za ním — u smyčky s obsluhami na konci to není odmítnutí příkazu, ale vypnutí funkcí. | u každého `continue`/`break`/`return` ve smyčce přečti tělo AŽ NA KONEC a vyjmenuj, co se přeskočí |
+| L-0034 | Mez ověř PŘED použitím hodnoty, ne po něm — konverze `double`→celé číslo mimo rozsah je UB (ne oříznutí) a odečet v `size_t` podteče na obrovské číslo (ne na zápor). Obojí selže tiše a překladač mlčí. | grep na `(uint64_t)`/`(uint32_t)` nad hodnotou z parseru a na `sizeof(x) - i` s neověřeným `i` |
+| L-0035 | Rámec funkce je vlastnost CELÉ funkce, ne větve — GCC rezervuje lokály všech cest už při vstupu, takže velký lokál v jednom příkazu ubere zásobník i cestám, které ho nepoužijí. Měř rámec nad `.elf`, ne odhadem ze zdrojáku. | `scripts/check_lessons.sh` → rámec `UartTask_run` ≤ 1024 B; ručně `objdump -d` a `sub sp, #N` |
+| L-0036 | Kadence dat je vlastnost PŘENOSU, ne konstanta konzumenta. Když se transport změní (poll → push), přehodnoť každý výpočet, který si tempo odvozoval — „počet vzorků = sekundy“ přestane platit tiše a graf začne lhát o čase, ne o hodnotách. | u každé historie se ptej: kdo rozhoduje, KDY přibude vzorek? grep na `length` použitou jako čas |
+| L-0037 | Přesun tajemství do bezpečnějšího úložiště není hotový, dokud se nesmaže z toho starého — jinak oprava mine právě ty, kdo produkt už používali. | po změně úložiště přidej jednorázový úklid a ověř ho na profilu, kde stará hodnota leží |
+| L-0038 | Kontrakt mezi dvěma jazyky uvnitř JEDNOHO obrazu nehlídá nikdo — překladač vidí jen svou půlku. Producent a konzument dat se rozejdou stejně snadno jako dva projekty, jen tišeji: v JS je chybějící pole `undefined`, ne chyba. | `tools/spa/json_kontrakt.py` (krok 5b); obecně: u každé hranice jazyků se ptej, co ten rozpor ohlásí |
+| L-0039 | Pozitivní kontrola musí obsahovat KAŽDOU vadu, kvůli které kontrola vznikla — ne jednu zástupnou. Jinak projde a ta druhá zůstane neviditelná. | ke každé nové kontrole napiš tolik pozitivních případů, kolik nálezů ji vyvolalo, a spusť je všechny |
+| L-0040 | Ustupuj scheduleru podle ČASU, ne podle počtu iterací. Když jedna iterace může trvat 1 ms i 10 ms (timeout!), počet iterací neomezuje nic — a úloha s vyšší prioritou vyhladoví tu nižší i při „pravidelném“ yieldu. | u každé smyčky s I/O timeoutem: kolik trvá NEJHORŠÍ iterace × kolik jich je mezi yieldy? |
+
+*(Řádky výše jsou „startovací“ pravidla vycházející z typických chyb na H7.
+Nech je, i když v projektu ještě nenastaly — jsou levné a chrání dopředu.)*
+
+---
+
+## Aktivní lekce
+
+### L-0001 — DMA buffer v DTCM
+
+- **Datum:** (startovací, bez incidentu)
+- **Oblast:** DMA / mapa paměti
+- **Symptom:** DMA přenos se nespustí nebo skončí `TE` (transfer error);
+  data zůstanou nulová. Zdánlivě „náhodně“ podle překladu.
+- **Příčina:** DMA1/DMA2 na H7 nemají přístup do DTCM (`0x2000_0000`).
+  Proměnná bez explicitní sekce spadne do `.bss` v DTCM.
+- **Oprava:** buffer do AXI SRAM (D1) nebo D2 SRAM, explicitní sekce v linkeru
+  + `__attribute__((section(".dma_buf"), aligned(32)))`.
+- **Pravidlo:** Buffer pro DMA1/DMA2 nikdy neumísťuj do DTCM; umístění ověř v `.map`.
+- **Detekce:** `scripts/check_lessons.sh` (heuristika) + při auditu modulu vždy
+  dohledat symbol v `build/*.map`.
+- **Commit:** —
+- **Stav:** aktivní
+
+### L-0002 — Chybějící cache maintenance u DMA
+
+- **Datum:** (startovací, bez incidentu)
+- **Oblast:** cache / DMA
+- **Symptom:** Data občas stará o jeden rámec; chyba se objeví až při vyšší zátěži
+  nebo po zapnutí optimalizací.
+- **Příčina:** Zapnutá D-cache, DMA zapisuje/čte přímo z RAM, CPU vidí cache.
+- **Oprava:** `SCB_CleanDCache_by_Addr` před TX, `SCB_InvalidateDCache_by_Addr`
+  po dokončení RX; adresa i délka zarovnané na 32 B.
+- **Pravidlo:** Ke každému DMA přenosu patří odpovídající cache operace na
+  32 B zarovnaném rozsahu — nebo buffer v nekešované MPU oblasti.
+- **Detekce:** v modulu s `_DMA(` musí být `DCache` nebo dokumentované MPU řešení.
+- **Commit:** —
+- **Stav:** aktivní
+
+### L-0003 — Ignorovaná návratová hodnota HAL
+
+- **Datum:** (startovací, bez incidentu)
+- **Oblast:** ošetření chyb
+- **Symptom:** Periferie tiše nefunguje, kód pokračuje, jako by vše proběhlo.
+- **Příčina:** `HAL_UART_Init(&huart3);` bez kontroly `!= HAL_OK`.
+- **Oprava:** kontrola + definované chování (retry / reset / error log).
+- **Pravidlo:** Návratovou hodnotu `HAL_*` vždy vyhodnoť, nebo ignorování
+  zdůvodni jednořádkovým komentářem.
+- **Detekce:** clang-tidy `bugprone-unused-return-value`, případně grep.
+- **Commit:** —
+- 🔁 **První konkrétní incident 2026-09-18 (F-0113, modul 18).** `si5356_init`
+  sledoval úspěch jen u hromadného zápisu register mapy, ale **apply proceduru**
+  (OEB off → E2 pulse → SOFT_RESET → OEB on) volal bez kontroly návratu. Zvlášť
+  poslední zápis „OEB_ALL = 0" zapíná 4× 100 MHz výstupy — jeho NACK by nechal
+  hodiny vypnuté, FPGA bez časové základny, a init by přesto vrátil `OK`, protože
+  status reg 218 (LOS_CLKIN/PLL_LOL) hlásí stav **vstupu a PLL**, ne výstupních
+  bufferů. Opraveno akumulací návratu každého kroku do `ok` (`ok &= wr_masked(...)`).
+  🔑 Vzor: **když návratová hodnota končí v `zapisy=OK`, musí ji plnit VŠECHNY
+  kritické kroky, ne jen ten první čitelný.**
+- **Commit:** `f128b59`, viz `docs/audit/2026-09-18_senzory-drivery.md`
+- **Stav:** aktivní
+
+### L-0006 — Konstanta časování spočítaná pro jiný zdroj hodin
+
+- **Datum:** 2026-09-09
+- **Oblast:** hodiny / I2C
+- **Symptom:** Dokumentace i komentáře na pěti místech tvrdily, že I2C4 i I2C1 jedou ~100 kHz.
+  Sběrnice ve skutečnosti jede ~50 kHz, takže každá transakce trvá dvakrát dýl, než s čím
+  počítaly odhady zátěže UiTasku a pravidlo „žádný spin > ~10 ms“.
+- **Příčina:** `TIMINGR = 0x70303AEE` odpovídá kernelu ~240 MHz, což je **HCLK**. I2C ale běží
+  z PCLK (`D3PCLK1` resp. `D2PCLK1`) = **120 MHz**, protože obě APB děličky jsou `/2`.
+  Do kalkulátoru časování šla nejspíš frekvence HCLK místo frekvence kernelu periferie.
+- **Oprava:** Hodnota registru **ponechána** — je funkční a ověřená provozem, a ruční přepočet
+  téhož registru už jednou desku položil (400 kHz → tmavý displej + zaseklá ATTINY).
+  Opravena dokumentace: `CLAUDE.md` (3 místa), `CUBEMX_CHECKLIST.md` (2 místa), komentář
+  v `CM7/Core/Src/i2c.c`.
+- **Pravidlo:** U každé konstanty odvozené z hodin uveď vedle ní **zdroj hodin a jeho frekvenci**;
+  při auditu ji přepočítej z `HAL_RCCEx_GetPeriphCLKFreq()`, nikdy ne z komentáře.
+- **Detekce:** `CHECKLIST_STM32H7.md` sekce G („I2C: TIMINGR odpovídá reálné frekvenci hodinového
+  zdroje periferie“) — při auditu modulu se musí doložit přepočtem, ne odkazem na dokumentaci.
+  Volitelné zpřísnění: runtime selftest porovnávající `TIMINGR` proti
+  `HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_I2C4)`.
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0004
+- **Stav:** aktivní
+
+### L-0007 — Sdílené PLL smí konfigurovat jen jedno jádro
+
+- **Datum:** 2026-09-09
+- **Oblast:** hodiny / dvě jádra
+- **Symptom:** (zatím nenastalo — pojistka proti latentní pasti.) Projevilo by se jako náhlý
+  rozpad obsahu SDRAM nebo černý displej za běhu, tedy třída „SDRAM čte samé nuly“, kterou
+  by nikdo nehledal v hodinách druhého jádra.
+- **Příčina:** CubeMX generuje `PeriphCommonClock_Config()` do `main.c` **obou** jader a volání
+  vkládá do `main()` hned za `SystemClock_Config()`. Na CM4 je ta funkce dnes jen definovaná,
+  nevolaná. Kdyby se zavolala, `HAL_RCCEx_PeriphCLKConfig()` by PLL před přeprogramováním vypnul
+  (`stm32h7xx_hal_rcc_ex.c:3717` `__HAL_RCC_PLL2_DISABLE()`, `:3821` `__HAL_RCC_PLL3_DISABLE()`),
+  a CM7 přitom z týchž PLL bere FMC/SDRAM (PLL2R), LTDC a ADC (PLL3R) a SPI2 (PLL2P).
+- **Oprava:** Kód firmwaru **beze změny** (mrtvá funkce se nemaže, regen by ji stejně vrátil).
+  Přidána kontrola do `scripts/check_lessons.sh` a bod do `CUBEMX_CHECKLIST.md`.
+- **Pravidlo:** Sdílené PLL a systémové hodiny konfiguruje **výhradně CM7**; CM4 nesmí volat
+  `SystemClock_Config()` ani `PeriphCommonClock_Config()`. Po každé regeneraci to ověř.
+- **Detekce (dvě vrstvy, primární je ta druhá):**
+  1. `scripts/check_lessons.sh` — cílená kontrola zdrojáku `CM4/Core/Src/main.c`
+     (hledá volání `PeriphCommonClock_Config();`, definici `(void)` ani prototyp nechytá).
+     ⚠️ **Slabá vrstva:** skript nikdo nespouští automaticky (není v `build.sh`, `audit.py`
+     ani v git hooku), takže sama o sobě je to detekce jen pro toho, kdo si ji vyžádá.
+  2. **`scripts/build.sh` — `check_cm4_clock_owner()`, tvrdé selhání buildu.** Měří
+     **slinkovaný obraz** (`arm-none-eabi-nm` nad `CM4/<cfg>/H757_LED_CM4.elf`), ne text
+     zdrojáku: dokud funkci nikdo nevolá, linker ji přes `--gc-sections` zahodí a v obrazu
+     není; jakmile volání vznikne, symbol se objeví. Nedá se obejít přeformátováním volání.
+     Součástí je **pozitivní kontrola měřítka** — v obrazu CM7 ten symbol být musí, jinak
+     test hlásí, že už nic neměří. Obě poruchové větve ověřeny podstrčeným obrazem
+     (exit kód 1), běžný build prochází s 0.
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0005
+- **Stav:** aktivní
+
+### L-0008 — Komentář sliboval chování, které za ním generovaný zbytek funkce ruší
+
+- **Datum:** 2026-09-09
+- **Oblast:** obsluha přerušení / chybové cesty
+- **Symptom:** `NMI_Handler` měl v `USER CODE 0` korektní ošetření CSS (potvrzení příznaku,
+  počítadlo `g_css_fail` pro `status`) a komentář tvrdící „NERESETOVAT, přístroj běží dál
+  a nahlas to hlásí“. O osm řádků níž ale zůstala generovaná `while (1) { }`, takže se
+  z obsluhy nikdy nevyšlo. Týž nepravdivý popis byl i u UART příkazu `css on`
+  („nejhorší případ je hlášení“). Skutečnost: zamrznutí a po ~4 s reset od IWDG.
+- **Příčina:** Změna se psala do bloku `USER CODE BEGIN … 0`, ale zbytek těla funkce
+  (druhý blok `USER CODE … 1` s `while (1)`) se už nečetl. Komentář tak popisoval záměr,
+  ne kód.
+- **Oprava:** Chování ponecháno (návrat z NMI na této desce nedává smysl — CSS vypne HSE,
+  SYSCLK spadne na HSI 64 MHz, PLL1/2/3 přijdou o referenci, takže USART1 má rozjetý
+  baudrate a FMC/SDRAM i LTDC zůstanou bez hodin). Místo toho se výpadek **zaznamená**
+  do crash black-boxu (kind 7, `DR4 = RCC->CR`) a komentáře opraveny na pravdu.
+- **Pravidlo:** Když komentář popisuje chování při poruše, přečti tu cestu **až po
+  uzavírací závorku funkce**, ne jen blok `USER CODE`, do kterého píšeš. Generovaný zbytek
+  funkce je součástí chování.
+- **Detekce:** `tools/audit.py` už měří velikosti fault handlerů (handler o velikosti
+  ~2 B = `b .` = tiché zamrznutí). Doplňkově: při auditu modulu je povinné číst celé tělo
+  handleru, viz `CHECKLIST_STM32H7.md` sekce E.
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0002
+- 🔁 **Opakovalo se 2026-09-29 v jiné podobě (F-0198, modul „optimalizace"):**
+  `CLAUDE.md:711` tvrdilo „Největší CPU výhra zůstává -O2/Release", ale
+  `.cproject` má Release na obou jádrech prokazatelně `-Os` — a zbytek téhož
+  dokumentu to jinde (sekce „Build / flash") popisuje správně, s naměřenými
+  čísly. Tentokrát to není komentář vs. zbytek funkce, ale **dokumentace vs.
+  konfigurační soubor**, což je širší instance téhož vzoru: text tvrdí něco,
+  co jde ověřit strojově (grep `.cproject`), a nikdo tu kontrolu neudělal.
+  🔑 **Rozšíření pravidla: „ověř to, co jde ověřit" platí i pro tvrzení o
+  BUILD KONFIGURACI, ne jen o chování kódu** — `.cproject`/`.ioc`/linker
+  skript jsou zdroj pravdy stejně jako generovaný zbytek funkce.
+- **Commit:** F-0198 viz `docs/audit/2026-09-29_optimalizace.md`
+- **Stav:** aktivní
+
+### L-0009 — Kritické volání v generovaném kódu se hlídá ověřením stavu, ne návratové hodnoty
+
+- **Datum:** 2026-09-09
+- **Oblast:** hodiny / napájení / regen-safe vzory
+- **Symptom:** `HAL_PWREx_ConfigSupply()` v `SystemClock_Config()` se volá bez kontroly
+  výsledku (`main.c:482`), přestože umí po ~1 s vrátit `HAL_ERROR` (timeout `ACTVOSRDY`
+  nebo `SMPSEXTRDY`). Při vadné napájecí větvi kód tiše pokračuje a nastaví VOS0 + 480 MHz
+  nad napájením, které na to nemusí být připravené — projev je „občas nenaběhne“
+  nebo náhodný HardFault, tedy nejhůř dohledatelná třída poruch.
+- **Příčina (proč se to neopravilo přímočaře):** `SystemClock_Config()` **nemá uvnitř žádný
+  blok `USER CODE`**. Přidání `if (... != HAL_OK)` přímo do ní by porušilo pravidlo 6
+  a první „Generate Code“ by tu kontrolu smazalo.
+- **Oprava:** Volání ponecháno beze změny. V `USER CODE` (`main.c`, funkce `pwrclk_check()`,
+  volaná z `USER CODE 2`) se místo toho ověřuje **dosažený stav registrů**: `PWR->CR3`
+  (konfigurace napájení + `SMPSEXTRDY`), `PWR->CSR1.ACTVOSRDY`, VOS0 = `PWR->D3CR` scale 1
+  **plus** `SYSCFG->PWRCR.ODEN` **plus** `VOSRDY`, `HAL_RCC_GetSysClockFreq()`,
+  `HAL_RCC_GetHCLKFreq()` a `FLASH_ACR.LATENCY`. Výsledek jde do boot logu a do UART `status`.
+- **Pravidlo:** Když kritické volání leží v generovaném kódu bez `USER CODE` bloku, nehlídej
+  ho návratovou hodnotou na místě — **ověř dosažený stav v `USER CODE`**. Je to regen-safe
+  a navíc to odhalí i případ, kdy HAL vrátí `HAL_OK` a stav přesto nesedí.
+- **Detekce:** UART `status` řádek `NAPAJENI/HODINY:` — musí být `OK`. Vypisuje se vždy,
+  i když je vše v pořádku (číslo, které je vidět jen při poruše, si nikdo neověří předem).
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, nález F-0001
+- **Stav:** aktivní
+
+### L-0010 — „Přeloženo a v obrazu“ se vydávalo za „ověřeno“; ověření po flashi není ověření
+
+- **Datum:** 2026-09-09
+- **Oblast:** metoda ověřování / náběh
+- **Symptom:** Opravy z auditu modulu hodiny/PWR (F-0001, F-0002) byly prohlášené za ověřené
+  na základě řetězce „build 0 varování + `tools/audit.py` v baseline + povyrostlý `.text`“.
+  Hned po naflashování přišlo hlášení, že **po power-cyklu se rozbije zobrazení displeje**,
+  a nebylo čím rychle rozhodnout, jestli to je regrese.
+- **Příčina:** Ten řetězec dokazuje jen to, že se změna přeložila a dostala do obrazu.
+  O chování na desce neříká nic — a **studený start je jiný stav než reset po flashi**:
+  ATTINY nabíhá vlastním tempem, SDRAM startuje s náhodným obsahem a degradovanou retencí
+  (STATUS #238), obě jádra závodí o sdílená GPIO (#219/#208), FPGA teprve načítá config.
+  Druhá polovina příčiny: nová diagnostika (`pwrclk_check()` se dvěma `printf`) byla vložená
+  do `main()` **před** bring-up displeje, tedy přesně tam, kde se to časování nemá měnit.
+- **Oprava:** Volání přesunuto **za `display_skip:`**, takže bootovní cesta až včetně
+  bring-upu displeje je zase bajt za bajtem shodná se stavem před auditem (`git diff` proti
+  základu ukazuje v `main.c` **0 smazaných řádků** a žádný přidaný před bring-upem).
+  Do `.claude/commands/audit-modul.md` a `CLAUDE.md` doplněna povinnost ověřit power-cyklem.
+  ⚠️ Samotná vada displeje se tím **neopravuje** — je to zdokumentované, otevřené
+  #141 / #237 / #238 (retence SDRAM po studeném startu), ne regrese.
+- **Pravidlo:** Změna firmwaru je hotová až po běhu na desce **a po power-cyklu**; do té doby
+  se do `AUDIT_STATUS.md` píše `⬜ neověřeno na HW`. A diagnostiku, která nemusí běžet brzy,
+  nedávej do bootovní cesty před bring-up displeje.
+- **Detekce:** `AUDIT_STATUS.md` — každá oprava firmwaru musí mít explicitní stav ověření.
+  Bod 4b/4c v mechanických pravidlech `CLAUDE.md` + oddíl „fáze F5“ v `audit-modul.md`.
+- **Commit:** viz `docs/audit/2026-09-09_hodiny-pwr.md`, oddíl „Incident při ověřování“
+- **Stav:** aktivní
+
+### L-0011 — Převzal jsem hypotézu, kterou mi nabídl diagnostický nástroj, místo abych přečetl jeho čísla
+
+- **Datum:** 2026-09-10
+- **Oblast:** metoda diagnostiky / FMC-SDRAM
+- **Symptom:** Displej problikával po power-cyklu. `membench` k tomu vypsal
+  `retence po 1 s: 496 068 chybnych bitu  <- OBSAH SE ROZPADA (refresh?)`. Vzal jsem ten
+  závěr a zdvojnásobil obnovu (`REFRESH_COUNT` 371 → 175). **Nepomohlo to** — stálo to jeden
+  flash cyklus a jednu změnu, kterou jsem pak musel vrátit.
+- **Příčina (moje, ne kódu):** V tomtéž výpisu už byl důkaz, že o retenci nejde, a já ho
+  přečetl až napodruhé:
+  - vzor **`0x00` dal 103 982 chyb** — zapsat nulu a přečíst nenulu nejde vysvětlit vyhasnutím
+    buňky, ta padá **k** nule;
+  - selhával už **zápis s okamžitým ověřením** (3 338 207 bitů), ne teprve výdrž;
+  - první chyba `@0xC0400040: čekáno 0x00000000, přečteno 0x00000157` — nesmysl při čtení,
+    ne rozpadlá data;
+  - **DTCM, AXI SRAM i SRAM1 byly 100 % OK** → vada je nutně na externí sběrnici.
+  Skutečná příčina byla **čtecí cesta FMC**: `ReadPipeDelay = 0` a nikdy nezapnutá I/O
+  kompenzační cela. Po opravě `membench` **0 chybných bitů**, retence **0**, překryv adres
+  zmizel, `LTDC podtečení` **0/1000**, displej po power-cyklu OK.
+- **Oprava:** `fmc.c` `ReadPipeDelay` → `RPIPE_DELAY_1` (+ runtime `rpipe`), I/O kompenzační
+  cela v `main.c` před `MX_FMC_Init` (+ CSI), `REFRESH_COUNT` zpět na 371.
+- **Pravidlo:** **Hlášku nástroje ber jako pozorování, ne jako diagnózu.** Když výpis nabízí
+  příčinu (`(refresh?)`), ověř ji proti **ostatním číslům z téhož výpisu**, dřív než na ni
+  sáhneš do kódu. U paměti to rozhodne jeden řádek: **chyby u vzoru `0x00` vylučují vyhasnutí**
+  (buňka padá k nule) a **selhání zápisu s okamžitým ověřením vylučuje retenci** (ta se pozná
+  až z výdrže).
+- **Druhá polovina lekce:** neprohlašuj dva projevy za nezávislé bez důkazu. Tvrdil jsem, že
+  podtečení LTDC je „druhá, nezávislá věc“ — bylo to **totéž**; opravou čtecí cesty zmizelo samo.
+- **Detekce:** rozlišovací tabulka je nově přímo v `CLAUDE.md` na začátku oddílu
+  „DISPLEJ ZLOBÍ? ZMĚŘ NEJDŘÍV PAMĚŤ“ (vzor `0x00` / mrtvý takt / skutečná retence), takže
+  se příště rozhodne z prvního výpisu, ne až z druhého flashe.
+- **Commit:** viz `docs/audit/2026-09-09_mpu-cache-linker.md` (F-0013) a STATUS #237/#238/#72
+- **Stav:** aktivní
+
+### L-0012 — Oprava se neaplikovala na dvojče
+
+- **Datum:** 2026-09-10
+- **Oblast:** I2C / obecně symetrické instance
+- **Symptom:** `i2c1_recover()` přepínal PB8 do `OUTPUT_OD` dřív, než nastavil `ODR`, takže na
+  okamžik stáhl SCL k zemi. Je to **týž anti-vzor**, který na I2C4 kdysi nechal SCL dole
+  natrvalo a kvůli kterému se psala oprava v `i2c4_recover()`.
+- **Příčina:** Oprava se udělala jen v jedné ze dvou symetrických instancí. `CLAUDE.md` k ní
+  dokonce dostala větu „Totéž hlídej v `i2c1_recover` (PB8)“ — tedy poznámku *pro příště*
+  místo změny *teď*. Poznámka se pak nikdy neproměnila v kód.
+- **Oprava:** `HAL_GPIO_WritePin(..., GPIO_PIN_SET)` přesunut před `HAL_GPIO_Init`, s odkazem
+  na sesterskou funkci přímo v komentáři, aby se ty dvě kopie daly porovnat.
+- **Pravidlo:** Když opravuješ jednu ze dvou symetrických instancí (I2C1/I2C4, CM7/CM4,
+  FB0/FB1/FB2, snap/cmd/resp), **v témže commitu dolož, že druhá je buď opravená, nebo se jí
+  to netýká.** Věta „hlídej to i tam“ není splnění, je to odklad.
+- **Detekce:** při opravě grepni jméno sesterské funkce; u obou kopií nech poznámku, že jsou
+  párové. V auditu: sekce „Co bylo zkontrolováno“ musí u symetrických driverů uvádět **obě** strany.
+- **Commit:** viz `docs/audit/2026-09-10_i2c.md`, nález F-0021
+- 🔁 **Opakovalo se 2026-09-18 (F-0115 + F-0117, modul 19) — a v nové podobě.**
+  Dvě části firmwaru se mají navzájem vyhýbat v SDRAM, a **každá měla vlastní seznam
+  toho, co je cizí**: `membench` (`SDRAM_PROTECTED[]`) nevěděl o `.measlog`, který
+  přibyl 2026-08-30, a `sdram_log` (`aliases_framebuffer`) nevěděl o `.sdram`
+  (`bg_cache`). Ani jeden seznam nebyl „kopie" toho druhého — proto to nevypadalo
+  jako duplicita a grep na sesterskou funkci by nepomohl.
+  🔑 **Nová věta k pravidlu: u VZÁJEMNÉHO vyloučení jsou strany DVĚ a bývají
+  v různých souborech.** Když A nesmí sáhnout na B, zeptej se rovnou, jestli B nesmí
+  sáhnout na A — a jestli to ví. Symetrie tu není v kódu, ale v *požadavku*.
+  🔑 **A druhá polovina: seznam „co je cizí" je duplikát mapy paměti, takže driftuje.**
+  Kde linker exportuje symboly, ber adresu z nich (`_smeaslog`), ne natvrdo — pak se
+  seznam nemůže rozejít potřetí. (`.sdram` symboly nemá, tam zůstala konstanta;
+  doplnit je by znamenalo sáhnout na `.ld`, tedy pravidlo 6.)
+- **Commit:** `caa08b4`, viz `docs/audit/2026-09-18_diagnostika-pameti.md`
+- **Stav:** aktivní
+
+### L-0013 — Hook FreeRTOS není kontext úlohy
+
+- **Datum:** 2026-09-10
+- **Oblast:** RTOS / diagnostika
+- **Symptom:** `flightrec_dump("stack")` volaný z `vApplicationStackOverflowHook` neudělal
+  **nikdy nic** — a neohlásil to. Letový zapisovač tak pro přetečení zásobníku neuložil
+  ani jednou to, kvůli čemu existuje.
+- **Příčina:** Hook běží uvnitř **PendSV** (`xPortPendSVHandler` → `vTaskSwitchContext` →
+  `taskCHECK_FOR_STACK_OVERFLOW`), tedy v kontextu výjimky. `osMutexAcquire()` tam vrací
+  `osErrorISR` a funkce se na první řádce vrátí. Omezení bylo přitom známé — u letového
+  zapisovače stálo „nezapisuje se z HardFault handleru“ — jen se nedotáhlo na druhý
+  exception kontext.
+- **Oprava:** zatím **částečná**: neúspěch zvyšuje `g_flightrec_lost` a hlásí ho `status`,
+  aby ztráta přestala být tichá. Správně je dvoufázový zápis jako má `errlog`
+  (RAM ring + vylití z úlohy).
+- **Pravidlo:** **Hook FreeRTOS není kontext úlohy.** Ve `vApplicationStackOverflowHook`,
+  `vApplicationMallocFailedHook` ani v `configASSERT` nevolej nic, co potřebuje scheduler
+  (`osMutexAcquire`, `osDelay`, fronty) — mlčky to selže. Použij ISR-safe cestu:
+  zápis do RAM ringu nebo přímo do registru (BKP).
+- **Detekce:** v `freertos_hooks.c` nesmí být `osMutex*`, `osDelay`, `osMessageQueue*`;
+  co se z hooku volá dál, musí být v hlavičce označené **ISR-SAFE** (vzor: `errlog.h`).
+- **Commit:** viz `docs/audit/2026-09-10_preruseni-rtos.md`, nález F-0018
+- **Stav:** aktivní
+
+### L-0014 — Souhrn se rozešel se zdrojem pravdy během jednoho sezení
+
+- **Datum:** 2026-09-10
+- **Oblast:** vedení auditu
+- **Symptom:** Na otázku „jsou ostatní nálezy opravené?“ se ukázalo, že souhrnná tabulka
+  v `docs/AUDIT_STATUS.md` **nesouhlasí s nálezovými dokumenty**: F-0015 byl opravený v kódu
+  (commit `8525a10`), ale jeho `Stav:` zůstal „otevřeno“, a součty podle severity byly u S1,
+  S3 i S4 špatně. Rozešlo se to **v rámci jednoho dne**, ne za měsíce.
+- **Příčina:** Skript, kterým jsem hromadně přepisoval stavy po opravách, dostal seznam tří
+  souborů a `2026-09-09_ipc-cm7-cm4.md` v něm chybělo. Součty jsem pak dopočítal ručně
+  z paměti místo z dokumentů. Je to **táž třída jako L-0006** (duplikované číslo se rozejde),
+  jen o patro výš: souhrn je druhá kopie údaje, který žije v nálezech.
+- **Oprava:** Stavy srovnány (F-0015 → opraveno, F-0006 → uzavřeno měřením). Přidán
+  **`tools/audit_stav.py`**, který stavy i součty čte přímo z `docs/audit/*.md`;
+  s `--kontrola` porovná svůj výsledek se souhrnem a při rozporu skončí nenulovým kódem.
+- **Pravidlo:** **Souhrnná čísla neudržuj ručně — odvoď je z místa, kde fakt žije.**
+  Když už druhá kopie musí existovat (protože se čte jinde), musí ji hlídat nástroj.
+- **Detekce:** `python tools/audit_stav.py --kontrola` — pustit na konci každého sezení
+  a po každé dávce oprav.
+- **Commit:** viz `docs/audit/2026-09-09_ipc-cm7-cm4.md`, nález F-0015
+- **Stav:** aktivní
+
+### L-0015 — Ovladač znal svůj limit, ale nevynucoval ho
+
+- **Datum:** 2026-09-10
+- **Oblast:** ovladače externích pamětí (QSPI/SPI/I2C EEPROM)
+- **Symptom:** Zatím žádný — je to **latentní** past, nalezená auditem (F-0023). `w25q.c`
+  má kapacitu čipu zapsanou v `W25Q_SIZE_BYTES` a používá ji k odvození celé region mapy,
+  ale `w25q_read` / `w25q_write` / `w25q_erase_sector` proti ní adresu **nekontrolovaly**.
+- **Příčina:** Sériové flash paměti adresu mimo rozsah **neohlásí** — čip vyšší adresní
+  bity prostě ignoruje, takže se přístup zabalí zpátky do kapacity a sáhne na jiné místo.
+  Chybí tedy jakákoli zpětná vazba: volající dostane „úspěch“, data jsou jinde.
+- **Oprava:** `range_ok(addr, len)` na začátku všech tří vstupních bodů, zapsané jako
+  `addr < SIZE && len <= SIZE - addr` — **záměrně bez součtu `addr + len`**, který by
+  přetekl právě tam, kde má kontrola chytat.
+- **Pravidlo:** **Když modul zná svou mez, musí ji na svém rozhraní vynutit, ne jen
+  odvozovat.** Platí dvojnásob tam, kde hardware chybu nehlásí — u paměti, která mlčky
+  zabaluje adresu, je jediná obrana v ovladači.
+  🔑 Při posuzování dopadu se dívej na **nejdestruktivnější** operaci, ne na nejčastější:
+  u čtení je následek špatná hodnota, u `erase` **tiše smazaná cizí oblast** — a když je
+  rozvržení husté (`w25q_map.h`: CONFIG, CALIB, SETUP, DATA), nesmaže se „nic“, ale
+  kalibrace. Projeví se to až po restartu jako „přístroj zapomněl konfiguraci“, tedy
+  hodně daleko od příčiny.
+  ⚠️ Než takovou mez přidáš, ověř, že na ní **žádný legitimní volající neleží** — jinak
+  z latentní pasti uděláš živou regresi.
+- **Detekce:** U každého ovladače paměti se zeptej, co udělá s adresou o jedničku za
+  koncem. Když odpověď zní „zabalí se“, chybí kontrola.
+- **Commit:** `1f69ca9` (viz `docs/audit/2026-09-10_spi-qspi.md`, nález F-0023)
+- **Stav:** aktivní
+
+### L-0016 — Příznak chyby se mazal, aniž ho kdo přečetl — a schovával druhou vadu
+
+- **Datum:** 2026-09-10
+- **Oblast:** DMA2D / diagnostika periferií
+- **Symptom:** Žádný — a právě to byl problém. `d2d_wait()` po každém přenosu mazala
+  `DMA2D` příznak chyby přenosu (`TEIF`) bez jediného čtení, a vypršení hlídací
+  smyčky se nikam nezapisovalo. Poškozený obdélník tak nezanechal **žádnou stopu**
+  a při vyšetřování vypadal jako vada paměti nebo panelu — tedy směr, kterým už
+  tenhle projekt několikrát chybně šel (tabulka „HW OBVINĚN — A BYL NEVINNÝ").
+- **Příčina:** Mazání příznaků je nutné, aby se nehromadily; jenže „vymazat" se
+  napsalo místo „přečíst, započítat, vymazat". Bez čtení je to tichý filtr chyb.
+- **Oprava:** `d2d_wait()` teď `ISR` přečte (jednou — je to horká cesta) a při
+  `TEIF`/`CEIF` zvedne `g_d2d_errors`; vypršení obou hlídacích smyček zvedne
+  `g_d2d_timeouts`, resp. `g_ltdc_flip_timeouts`. Nový řádek `DMA2D:` ve `status`.
+  Do masky mazání doplněn `CCEIF`, který se dřív nemazal vůbec.
+- 🔑 **Co to okamžitě našlo:** do 25 s běhu **14 vypršení** hlídací meze, rostoucích
+  s kreslením (14 → 23 → 25 přes vynucené plné redrawy). Mez 2 000 000 iterací je
+  při 480 MHz ~12 ms, tedy **řádově tolik, co celoobrazovkový přenos** s mrtvým
+  časem DMA2D 240 — vyprší tedy i za normálního provozu a volající pak DMA2D
+  přeprogramuje uprostřed běžícího přenosu (nález F-0036).
+- **Pravidlo:** **Příznak chyby nikdy nemaž, aniž bys ho přečetl.** Když se maže
+  proto, aby se nehromadil, musí mezi čtením a mazáním být inkrement počítadla,
+  které je vidět v `status`. Totéž platí pro vypršení hlídací smyčky: timeout bez
+  záznamu je tichá chyba, ne ochrana.
+  🔑 A druhá polovina: **hlídací mez, kterou lze splést s normálním provozem,
+  není ochrana, ale generátor tichých chyb.** Mez se volí proti nejdelšímu
+  LEGITIMNÍMU případu, ne odhadem.
+  🔴 **Třetí polovina, kterou jsem se naučil až při opravě:** i ten „nejdelší
+  legitimní případ" je potřeba ZMĚŘIT, ne odhadnout. V nálezu F-0036 jsem
+  spočítal, že celoobrazovkový přenos trvá ~12 ms, a podle toho zvolil mez
+  100 ms. Čítač `g_d2d_wait_max_cyc`, který jsem přidal jako součást téže
+  opravy, pak na desce ukázal **~61 ms** — byl jsem **5× vedle** a rezerva
+  by byla jen 1,6×. A protože nová verze při vypršení přenos **ruší**, byla
+  by ta oprava **horší než původní stav**. Po změření zvýšeno na 500 ms.
+  **Když do opravy vkládáš konstantu, přidej zároveň měřidlo, které ukáže
+  rezervu** — jinak se odhad nikdy nekonfrontuje s realitou. Mez a měřidlo
+  se navrhují společně, ne měřidlo až potom.
+- **Detekce:** `status` → řádek `DMA2D:` musí být `chyb 0, timeout 0 | flip timeout 0`.
+  Při auditu periferie: každý zápis do `*_IFCR`/`*_ICR` musí mít nad sebou čtení
+  odpovídajícího `*_ISR`.
+- **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nálezy F-0033 a F-0036
+- **Stav:** aktivní
+
+### L-0017 — Tichý přeskok místo chyby: chybějící glyf nešlo zjistit jinak než pohledem
+
+- **Datum:** 2026-09-10
+- **Oblast:** vykreslování textu / diagnostika
+- **Symptom:** `prim_draw_text` chybějící glyf **tiše přeskočí** (`if (g == NULL)
+  continue;`) — text na displeji prostě zmizí a nic to neohlásí. Není to teorie:
+  audit 2026-08-29 našel **15 takto neviditelných řetězců** (mj. splash „GPSDO"
+  a text modalu „Opravdu restartovat?"), protože většina velkých fontů je
+  subsetovaná (`mono_75`/`mono_52` jen číslice, `sans_32` jen `Hzsmunp`).
+- **Příčina:** Přeskok je sám o sobě správný (fallback glyf by kreslil nesmysl a
+  `prim_text_width` skáče stejně, takže se kresba a měření nerozejdou). Chybělo
+  ale **jakékoli hlášení**, takže vada prošla překladačem, `audit.py` i selftestem
+  a odhalil ji jen člověk, který si všiml prázdného místa.
+- **Oprava:** `s_missing_glyphs` v `libprim/src/text.c` + `prim_text_missing_glyphs()`
+  a řádek `FONTY:` ve `status`. ⚠️ Počítá se **jen** ve `prim_draw_text`, ne ve
+  `prim_text_width` — ta se při zarovnání CENTER/RIGHT volá na týž řetězec navíc
+  a chyby by se zdvojily.
+- **Pravidlo:** **Tichý přeskok je přípustný jen s počítadlem.** Když se kód
+  rozhodne něco nevykreslit / nezpracovat, musí to jít změřit — jinak se z toho
+  stane vada, kterou najde až uživatel. V tomhle projektu je to levné: nový čítač
+  do `status` stojí jeden build a zůstane užitečný.
+- **Detekce:** `status` → `FONTY: preskocenych glyfu 0`. Nahrazuje ruční
+  `grep glyph_count` po regeneraci fontů, o kterém `L-0007` říká, že takové
+  vrstvy nikdo nespouští.
+- **Commit:** viz `docs/audit/2026-09-10_vykreslovaci-retezec.md`, nález F-0034
+- 🔁 **Doplněno 2026-09-19 (F-0132 + F-0138, modul 22) — a je to podstatné zpřísnění:**
+  🔴 **Počítadlo, které nikdo nečte, tichý přeskok NEVYŘEŠÍ.** Opravoval jsem F-0132
+  (zahozený TX paket bez záznamu) doplněním `g_eth_tx_err++` — a teprve při tom zjistil,
+  že **`g_eth_tx_ok`/`g_eth_tx_err` nečte nikdo**, přestože komentář u nich tvrdil
+  *„cte je CM7 pres IPC (`status`)"*. Ve snapshotu pro ně není pole a v `CM7/` na ně
+  nikdo nesahá. Inkrement do neviditelného počítadla je tedy **poloviční oprava**, která
+  navíc *vypadá* hotově.
+  🔑 **Pravidlo se tím rozšiřuje na dvě části, obě povinné:**
+  (1) tichý přeskok se **započítá**, a (2) to počítadlo je **dosažitelné bez ladicí
+  sondy** — na tomhle projektu tedy přes `status`, IPC nebo web. Sonda se nepočítá:
+  jeden halt zabije I2C4 do power-cyklu, takže „lze to přečíst sondou" znamená
+  v praxi „nepřečte to nikdo".
+  ⚠️ Druhá polovina se ověřuje stejně testovatelně jako L-0028: **najdi řádek, kde se
+  to počítadlo ČTE.** Když neexistuje, není to diagnostika, ale mrtvá proměnná.
+  (U F-0131 to naopak vyšlo dobře **bez** nového počítadla — selhání se projeví jako
+  `NET: DOWN` místo falešného `NET: UP`, a `net_link` se publikuje už dnes. Nejlepší
+  počítadlo je to, které není potřeba.)
+  Commity `356fe02` (F-0132), `dd8ef75` (komentář F-0138).
+  ✅ **Druhá část pravidla uzavřena 2026-09-19 (F-0138):** počítadla `g_eth_tx_ok`/
+  `g_eth_tx_err` se publikují do IPC (`eth_tx_ok`/`eth_tx_err` v bloku `cm4`,
+  recyklovaná vycpávka, `IPC_VERSION` 18) a UART `status` je tiskne na řádku
+  `TX(CM4):`. Do té chvíle to byl **doložený případ přesně toho selhání, které
+  tahle lekce popisuje**: inkrement existoval, čtenář ne, takže hodnota byla
+  dosažitelná jen ladicí sondou — a ta za běhu zabíjí I2C4 do power-cyklu, tedy
+  fakticky nedosažitelná. Navazuje **L-0059** (nula toho počítadla nese diagnózu,
+  proto musí saturovat, ne přetékat).
+- **Stav:** aktivní
+
+### L-0018 — Dva vypocty teze veliciny: oprav obe, nebo vyrob jeden zdroj pravdy
+
+- **Datum:** 2026-09-11
+- **Oblast:** metrologie / hlavni obrazovka
+- **Symptom:** Frakcni odchylka `y = (f-f0)/f0` se pocitala **dvakrat**. V
+  `screen_main.c stats_sample()` pevnym meritkem `y = off_n * 1e-14f`, ktere plati
+  jen pro `frac == 7` a `f0 == 10 MHz`; v `app_gpsdo.c` (rekonstrukce z datalogu)
+  spravne jako `(hz - f0) / f0`. Obe cesty pritom sypou vzorky do **teze** ADEV
+  pyramidy, takze se v ni michala dve ruzna meritka. Pri dnesnim vychozim stavu
+  (SIM, `frac == 6`) byla vsechna zobrazena cisla **10x mensi**, nez odpovida signalu.
+- **Pricina:** Konstanta `1e-14` vznikla zkracenim `10^-frac / f0` za predpokladu,
+  ktery **prestal platit** ve chvili, kdy se `s_freq_frac` i `s_freq_nominal_hz`
+  staly dynamickymi (dynamicky format headline). Komentar u toho radku ty dva
+  predpoklady poctive vyjmenovaval — a presto se prehlizely, protoze se cetly
+  jako popis, ne jako podminka platnosti.
+- **Oprava:** `screen_main_frac_dev(double hz)` = **jediny** vypocet, ktery volaji
+  obe cesty. Oprava „na miste" (prepsat vzorec v `stats_sample`) by nechala dve
+  kopie vzorce, tedy presne stav, ktery tu vadu vyrobil.
+- **Pravidlo:** **Dve mista, ktera pocitaji touz velicinu, nejsou duplicita kodu —
+  jsou to dve ruzne pravdy cekajici, az se rozejdou.** Kdyz pri oprave najdes druhou
+  instanci, neopravuj ji zvlast: sluc je do jedne funkce a uved ji v nalezu.
+  (Zesileni `L-0012`, ktere zatim rikalo jen „opravit obe".)
+- **Detekce:** `status` -> radek `STATISTIKA: sigma_y@1s` (pridan touz opravou,
+  protoze sigma_y sla do te doby precist **jen z displeje** — opravu tedy neslo
+  na desce overit, jen ji verit). Hodnota musi odpovidat radu signalu; skok o
+  dekadu pri prechodu SIM<->REAL znamena, ze se meritka opet rozesla.
+- **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0037
+- 🔁 **Opakovalo se 2026-09-18 (F-0052 + F-0096, moduly 11/16).** Zapis do
+  `g_meas_cfg` byl na CTYRECH mistech: scpi.c a ipc.c ho commitovaly atomicky
+  (lokalni kopie + kriticka sekce), okno MATH a `setup_load` psaly pole po poli
+  bez ochrany -> roztrzena dvojice lo/hi = trvaly FAIL + alarm. Opraveno tak, ze
+  vsechny UI cesty pouzivaji **identicky inline vzor** jako scpi/ipc.
+  🔑 **Nuance k pravidlu „sluc do jedne funkce":** tady to NESLO — `g_meas_cfg`
+  bydli v `meas_math.c`, ktery se linkuje i do CM4 obrazu, a CM4 je bare-metal
+  **bez FreeRTOS**, takze sdileny helper s `taskENTER_CRITICAL` tam nemuze
+  existovat. Kdyz hranice jazyku/jader brani jedne funkci, disciplina se meni na:
+  **identicky inline vzor VSUDE + poznamka, proc se nesjednotilo.** Ne ctyri ruzne
+  varianty, ale jeden vzor rozepsany, protoze ho nelze zabalit. Commit `2253ac4`,
+  viz `docs/audit/2026-09-11_aplikacni-okna.md` (F-0052) a
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md` (F-0096).
+- 🔁 **Opakovalo se POTRETI 2026-09-28 (F-0197, druhe kolo modulu 24).**
+  `syscfg_load()` (`syscfg.c`) je **pate** misto zapisujici `g_meas_cfg` —
+  strukturalne stejna funkce jako `setup_load()` (nacte perzistovany
+  math/limit blok a aplikuje ho na `g_meas_cfg`), volana ze stejneho tasku,
+  a presto do sweepu 2026-09-18 nespadla. Pravidlo „po pridani lekce zkontroluj
+  zbytek projektu na stejny vzor" (`docs/templates/LESSON.md` bod 5) se tehdy
+  aplikovalo jen na MISTA ZNAMA V TU CHVILI (ctyri), ne na VSECHNA mista se
+  stejnym UCELEM — `syscfg_load` a `setup_load` delaji totez (persist->g_meas_cfg
+  po power-cyklu/nacteni profilu) ale zily ve dvou ruznych souborech, takze
+  textove hledani „stejny vzor" na ne nemuselo narazit soucasne. Opraveno
+  `docs/audit/2026-09-28_matematika-druhe-kolo.md`, overeno na HW
+  (`SELFTEST: 16/16 PASS` po opravenem `syscfg_load`).
+  🔑 **Dodatek k pravidlu:** kontrola „stejny vzor" po pridani lekce nestaci
+  hledat DUPLICITNI KOD — musi hledat i FUNKCE SE STEJNYM UCELEM v jinych
+  souborech (zde: „kdo vsechno perzistuje/nacita g_meas_cfg", ne jen „kdo ma
+  stejny zdrojovy radek").
+- **Stav:** aktivni
+
+### L-0019 — Ucetnictvi bylo pripojene k CESTAM ke zmene stavu, ne ke zmene samotne
+
+- **Datum:** 2026-09-11
+- **Oblast:** navigace UI / diagnostika / model fokusu
+- **Symptom:** Dve nezavisle vady, ktere vypadaly nesouvisle, dokud se nenapsaly vedle sebe:
+  (a) `status` u **hlavni obrazovky a MENU** hlasil cizi okno, takze diagnostika „otevrelo
+  se okno?" **aktivne lhala** a potvrzovala zaver „dotyk se neprijal" (F-0047);
+  (b) pamet fokusu per okno (zadani UI §7) neplatila, kdyz se uzivatel do okna vratil bez
+  otoceni knoflikem (F-0051).
+- **Pricina:** Stav `s_view` se menil na **53 mistech**, ale dve navazna ucetnictvi byla
+  pripojena jinam — diagnostika do `window_first()` a nacteni fokusu az do obsluhy encoderu.
+  Obe ta mista jsou jen **jedna z cest** ke zmene stavu, ne ta zmena. `window_first()`
+  nevola 17 ze ~45 oken; obsluha encoderu nebezi, kdyz uzivatel navigoval prstem. Kazda
+  cesta, ktera to obesla, ucetnictvi tise vynechala.
+- **Oprava:** `view_set(uint8_t)` = **jedine misto, kde se `s_view` meni**, a nese s sebou
+  diagnostiku i fokus. Vsech 53 prirazeni jde tudy; `window_first()` diagnostiku uz neplni.
+  ⚠️ Sentinel `s_view = 0xFF` (vynuceni plneho renderu) zustal MIMO — neni to prechod na
+  jine okno a pres `view_set` by vyrobil falesny zaznam v diagnostice.
+- **Pravidlo:** **Ucetnictvi, ktere se veze se stavem — diagnostika, pamet, invalidace,
+  notifikace — pripoj ke ZMENE toho stavu, ne k nektere z cest, ktere k ni vedou.**
+  Kdyz se stav meni na N mistech, je to N prilezitosti zapomenout; kdyz na jednom, je to
+  nula. A nejhorsi varianta neni „nezaznamena se nic", ale **„zaznamena se predchozi
+  hodnota"** — to uz neni chybejici udaj, ale nespravny (viz `L-0011`).
+- **Detekce:** `grep -nE "^\s*s_view = [0-9]+;" CM7/app/app_gpsdo.c` musi byt **prazdny**
+  (radek je i v `scripts/zakazane_vzory.txt`). Obecne: kdyz najdes stav, ktery se meni na
+  vic nez par mistech a neco se k nemu „pripocitava", zeptej se, jestli to pripocitavani
+  vidi VSECHNY zmeny.
+- **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0047 a F-0051
+- **Stav:** aktivni
+
+### L-0020 — Duplicitu, kterou je drazsi odstranit nez snest, prevedi na KONTROLU rozdilu
+
+- **Datum:** 2026-09-11
+- **Oblast:** vedeni oprav / struktura UI dispatch
+- **Symptom:** `s_view` je v `app_gpsdo.c` rozvetvene do **peti** nezavislych tabulek
+  (46 `case` + 32 vetvi + 10 + 10 + 57 testu). Okna 49 (FUNKCE) a 50 (NAPOVEDA) chybela
+  v `render_view()`, takze obnova obrazovky je vykreslila jako hlavni obrazovku — TISE
+  (F-0049). Projekt uz jednou tuhle tridu zazil: `goto_view` vs. `render_view` se rozesly
+  a symptom byl uplne stejny.
+- **Pricina:** Duplicita sama. Jenze sjednotit ji **nebylo spravne**: plosny refaktor sahá
+  na kazde okno v kodu, ktery funguje, a dve z tech tabulek se lisi ZAMERNE a s dolozenym
+  duvodem (`exit_screensaver` je zuzena kopie `render_view`, protoze plosna varianta
+  zamrzla dotykovou vrstvu).
+- **Oprava:** Misto sjednoceni **kontrola rozdilu** v `scripts/check_lessons.sh`: okno,
+  ktere ma `view_set(N)` ale nema `case N:` v `render_view()`, se nahlasi. Vyjimky
+  (default / screensaver / splash) jsou ve skriptu vyjmenovane **i se zduvodnenim**.
+- **Pravidlo:** **Kdyz je odstraneni duplicity drazsi nez vada, kterou pusobi, nenechavej
+  ji tichou — preved ji na kontrolu rozdilu.** Zaznamenej pritom i to, co se lisit MA,
+  a proc; jinak z vyjimek vznikne druhy tichy seznam.
+  🔴 **A kazdou takovou kontrolu overi POZITIVNI KONTROLA** — spust ji nad zdrojakem, do
+  ktereho jsi vadu schvalne vratil, a prekontroluj, ze zazni. Bez toho jsi nepridal
+  kontrolu, ale zelene svetlo. (Tady to bylo nutne: prvni verze se kotvila na
+  `/^static void render_view\(/`, coz chytilo DOPREDNOU DEKLARACI o 7 000 radku vys,
+  awk skoncil na prvni `}` a test „nenasel" nic — pritom hlasil vsech 52 oken jako
+  chybejici. Stejnou past uz projekt zna z `-fanalyzer` + `-fsyntax-only`.)
+- **Detekce:** `scripts/check_lessons.sh` — sekce „dispatch podle `s_view`". Musi byt
+  cista; kdyz zazni, pridalo se okno a nekdo zapomnel na `render_view`.
+- **Commit:** viz `docs/audit/2026-09-11_navigace-fokus-vstup.md`, nalezy F-0049 a F-0050
+- **Stav:** aktivni
+
+### L-0021 — Prace, ktera blokuje jinou praci, musi hlasit, jak dlouho jeste potrva
+
+- **Datum:** 2026-09-11
+- **Oblast:** statistika / datalog / diagnostika
+- **Symptom:** Rekonstrukce ADEV pyramidy z datalogu po bootu blokovala ZIVE
+  vzorkovani statistiky **1 h 47 min po kazdem zapnuti** (`sigma_y@1s` zustala 0).
+  Nikdo si toho mesice nevsiml a odhalilo to az pocitadlo pridane kvuli jine oprave
+  (F-0037). Komentar u kodu pritom sliboval „~2 min".
+- **Pricina:** Dve chyby, ktere se nascitaly:
+  1. **Rozpocet davky byl spocitany proti kadenci, ktera v kodu neexistuje** —
+     komentar predpokladal tik 20 Hz, skutecny volajici bezel 1 Hz (20 zaznamu/s
+     misto 400). Instance `L-0006`.
+  2. **Doba behu nebyla nikde videt.** Zadny citac, zadny radek v `status` —
+     takze „statistika po zapnuti dlouho nic neukazuje" vypadalo jako vlastnost,
+     ne jako vada s konkretnim koncem.
+- **Oprava:** `datalog_read_bulk` misto `datalog_read_back` (rezie QSPI prikazu se
+  rozlozi na 64 zaznamu misto na jeden), sonda „ma to vubec smysl?" pred startem,
+  a **radek postupu v `status`**.
+- **Pravidlo:** **Kdyz jedna prace blokuje druhou, jeji doba trvani je funkcni
+  parametr, ne detail — a musi byt MERITELNA za behu.** Bez toho se z docasneho
+  stavu stane neviditelny trvaly stav.
+  🔴 **A druha polovina teto lekce: NEZ zacnes neco optimalizovat, precti hlavicku
+  funkce, kterou volas.** `datalog.h` mel u `datalog_read_back` napsane „na pruchod
+  vice zaznamy pouzij `datalog_read_bulk`" **vcetne zmerenych cisel** (~173 us
+  rezie na zaznam vs ~7 us na data). Bulk cesta uz existovala a byla proverena
+  (pouziva ji web pres IPC). Puvodni tri navrhy oprav v nalezu ji NEOBSAHOVALY,
+  protoze jsem hlavicku funkce, kterou nalez cituje, necetl.
+- **Detekce:** `status` -> radek `ADEV rekonstrukce:`. Pri bootu musi bud zmizet
+  hned („preskocena"), nebo dojet do „hotova" v jednotkach minut.
+  Obecne: u kazde davkove operace, ktera neco blokuje, se zeptej, kde se da
+  precist, kolik jeste zbyva.
+- **Commit:** viz `docs/audit/2026-09-11_hlavni-obrazovka.md`, nalez F-0039
+- **Stav:** aktivni
+
+### L-0022 — Obrana, ktera je opt-in, dojde jen na ty volajici, kteri o ni vedi
+
+- **Datum:** 2026-09-11
+- **Oblast:** FatFs / SD / sdilene zdroje mezi ulohami
+- **Symptom:** Projekt mel proti odmountovani svazku pod rukama jine ulohy obranu —
+  priznak `s_busy`, ktery na dobu dlouhe operace vypne auto-unmount. Byl ale nasazeny
+  jen na DVA ze CTYR dlouhych zapisovatelu. `screenshot sd` (1,15 MB) a `f_getfree()`
+  ho nenastavovaly, takze vytazeni karty behem nich znamenalo
+  `osSemaphoreDelete` -> `vPortFree` nad semaforem, ktery druha uloha PRAVE DRZI —
+  tedy zapis do uvolnene haldy FreeRTOS (audit F-0026).
+- **Pricina:** Obrana byla **opt-in a nikde nebylo napsane, kdo ji ma zapnout**.
+  Navic vedle ni zila druha, podobne vypadajici obrana (`sd_blocking_begin/end`,
+  ktera resi PRIORITU, ne svazek) — a `screenshot sd` volal prave tu. Vypadalo to
+  tedy jako osetreny pripad, i kdyz byl osetreny jen z poloviny.
+- **Oprava:** `sd_export_busy_begin/end()` vystaveno v hlavicce a u nich napsano
+  (a) **ze se volaji SPOLU** se `sd_blocking_*`, (b) **cim se lisi**, (c) ze se
+  nastavuji vyhradne obalkou nad vyclenenym telem.
+- **Pravidlo:** **Obrana, ktera je opt-in, je neuplna, dokud neni U NI vyjmenovane,
+  kdo ji musi zavolat — a proc nestaci ta druha, ktera vypada podobne.** Kdyz vedle
+  sebe zijou dve podobne pojmenovane obrany, je to samo o sobe duvod to napsat:
+  pristi volajici si vybere jednu a bude si myslet, ze ma hotovo.
+- **Detekce:** U kazdeho priznaku typu `s_busy`/`lock`, ktery neco vypina, si vypis
+  VSECHNY dlouhe operace nad tymz zdrojem a over, ze ho maji vsechny. Tady:
+  `grep -n "s_busy = " sd_export.c` proti seznamu volajicich `f_write`/`f_getfree`
+  nad svazkem.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0026
+- **Stav:** aktivni
+
+### L-0023 — `static` v dotazovaci funkci prestane byt privatni s druhym volajicim
+
+- **Datum:** 2026-09-11
+- **Oblast:** detekce SD karty / sdileny stav mezi ulohami
+- **Symptom:** `datalog_sd_card_present()` drzela `static uint8_t stable, cnt;` a
+  menila je pri KAZDEM dotazu. Volaly ji ale **tri ulohy** (defaultTask, UiTask,
+  UartTask) ruznou kadenci. Dusledky dva: neatomicky read-modify-write nad sdilenym
+  stavem, a hlavne — casova konstanta debounce byla **nedefinovana**, protoze tri
+  nezavisle kadence se scitaly (audit F-0030).
+- **Pricina:** Funkce byla napsana jako dotaz a chovala se jako tik. Komentar u ni
+  rikal „casovou konstantu urcuje kadence volajiciho" — coz byla pravda, dokud byl
+  volajici jeden. Nikdo tu vetu nezkontroloval, kdyz pribyli dalsi dva.
+- **Oprava:** Dotaz oddelen od aktualizace: `datalog_sd_card_present()` uz jen cte,
+  novy `datalog_sd_det_tick()` posouva stav a vola ho **jedina** uloha.
+- **Pravidlo:** **`static` uvnitr dotazovaci funkce prestane byt privatni ve chvili,
+  kdy pribude druhy volajici.** Kdyz funkce vypada jako dotaz (`*_present()`,
+  `*_get()`, `*_is_*()`), ale meni stav, oddel to: cist smi kdokoli, posouvat stav
+  jen jedna uloha.
+  ⚠️ A kdyz komentar mluvi o „kadenci volajiciho", je to signal, ze funkce ma
+  **jednoho** volajiciho — over, jestli to jeste plati.
+- **Detekce:** Funkce se `static` promennou, ktera se v ni **zapisuje**, a s vic nez
+  jednim volajicim napric ulohami = nalez. Hledat pres `grep -n "static.*;" ` uvnitr
+  funkci + spocitat volajici.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0030
+- **Stav:** aktivni
+
+### L-0024 — Limit zavisi na REZIMU: nastav hodnotu az po overeni rezimu, pri selhani spadni na bezpecnou
+
+- **Datum:** 2026-09-11
+- **Oblast:** SDMMC / konstanty odvozene z provozniho rezimu
+- **Symptom:** `SDMMC_CK` bylo natvrdo 32 MHz a komentar to obhajoval limitem
+  **50 MHz**. Jenze 50 MHz plati az pro **High Speed**, do ktereho se karta NIKDY
+  neprepinala (nikde v projektu nebyl CMD6). V Default Speed je strop **25 MHz**,
+  takze sbernice jela ~28 % nad specifikaci — tise, roky, a na jedne konkretni
+  karte to fungovalo (audit F-0028).
+- **Pricina:** Hodnota byla nastavena podle limitu rezimu, ktery se nikdy nezapnul.
+  Nikdo neoveril, ze ten rezim opravdu naskocil, protoze **nebylo kde** — `sd diag`
+  vypisoval takt, ale ne rezim, takze z nej neslo poznat, ktery limit vlastne plati.
+  ⚠️ Vlastni pojistka HAL to nechytne: porovnava `ClockDiv` proti
+  `sdmmc_clk / (2 x SD_NORMAL_SPEED_FREQ)`, coz je celociselne `64e6/50e6 = 1` —
+  takze `ClockDiv = 1` (32 MHz) projde, prestoze je nad 25 MHz.
+- **Oprava:** ⚠️ **Takt ZUSTAL 32 MHz, tedy nad limitem Default Speed (25 MHz) —
+  vedome rozhodnuti uzivatele (2026-09-11), oprene o dlouhodobe spolehlivy provoz na
+  teto desce po HW uprave.** Prepinani do High Speed bylo zkouseno a **odstraneno**
+  (na teto karte CMD6 neprosel, takze vendor volani s ~49dennimi smyckami nic
+  neprinaselo).
+  Opravena je tedy **viditelnost, ne hodnota**: komentar u konstanty uz necituje
+  limit rezimu, ve kterem pristroj nebezi, a `sd diag` hlasi takt, rezim, platny
+  limit **a znacku `<-- NAD LIMITEM`**.
+  🔑 Lekce proto NEtvrdi, ze kod pada na bezpecnou hodnotu. Tvrdi, ze **kdyz se
+  limit vedome prekroci, musi to byt videt** — a ze duvod patri k tomu mistu.
+- **Pravidlo:** **Kdyz limit zavisi na REZIMU, smi se hodnota nastavit nad limit az po
+  overeni rezimu — a kdyz se to vedome porusi, MUSI to byt videt.**
+  Zakazane je tiche „nastav a doufej": vypadek prepnuti pak udela **nepoznatelny**
+  provoz mimo specifikaci. Hlaseny provoz nad limitem je naopak legitimni rozhodnuti —
+  nekdo ho udelal, vi o nem a diagnostika ho pripomene, az zacne karta zlobit.
+  🔑 A druha polovina, ktera je tim DULEZITEJSI: **do diagnostiky patri i REZIM, ne
+  jen hodnota.** Samotny takt neni overitelny udaj, kdyz strop zavisi na necem, co
+  vypis neukazuje. Kdyz se rozhodne jet nad limitem, je ten radek jedina obrana.
+- **Detekce:** `sd diag` -> radek `sbernice` musi uvadet takt, rezim i limit.
+  Znacka `<-- NAD LIMITEM` neni sama o sobe nalez (dnes je to vedomy stav), ale je to
+  **prvni misto, kam se podivat**, kdyz karta zacne hlasit `DATA_CRC_FAIL` nebo
+  preruvane poskozeny export. Nalez by byl, kdyby ten radek rezim NEUVADEL.
+  Obecne: u kazde konstanty, jejiz komentar cituje nejaky „limit", over, ze rezim,
+  pro ktery ten limit plati, je opravdu zapnuty.
+- **Commit:** viz `docs/audit/2026-09-10_sdmmc-fatfs.md`, nalez F-0028
+- **Stav:** aktivni
+
+### L-0025 — `tcp_close` neni `free`: cizi knihovna volala zpatky na uvolneny slot
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`pump_send`), `CM4/LWIP/App/scpi_tcp.c`
+- **Co se stalo:** `pump_send()` po odeslani odpovedi zavolalo `tcp_recv(pcb, NULL)`,
+  `tcp_close(pcb)` a `c->pcb = NULL`. Jenze `tcp_close` pcb **NEZRUSI** — necha ho
+  v `tcp_active_pcbs` ve stavu FIN_WAIT_1/2 (az `TCP_FIN_WAIT_TIMEOUT` = 20 s, plus
+  retransmise `TCP_MAXRTX` = 12) **i s `callback_arg`**, ktery porad ukazuje na ten
+  slot. `c->pcb = NULL` ale uz znamena „slot volny", takze `conn_alloc` ho okamzite
+  pridelil dalsimu klientovi — a pozdni `on_err` (RST po zavreni posila prohlizec
+  bezne) nebo `on_poll` pak sahly na **cizi, zive spojeni** a zabily ho.
+- **Jak se to naslo:** cteni vendorovaneho lwIP, ne symptomu. `tcp.c:484` + doc
+  komentar `tcp.c:462-470` („put in a closing state … automatically freed in
+  `tcp_slowtmr()`") a `tcp_priv.h:223-228`, kde `TCP_EVENT_POLL` predava
+  `(pcb)->callback_arg`.
+  🔑 **Rozhodujici indicie byla ASYMETRIE ve vlastnim kodu:** `on_poll` v temze
+  souboru `tcp_arg(pcb, NULL)` pred `tcp_abort` delalo, `scpi_tcp.c` taky —
+  jen `pump_send` ne. Kdyz jedno misto dela navic krok, ktery ostatni nedelaji,
+  je to bud zbytecne, nebo tam jinde chybi; tretí moznost neni.
+- **Oprava:** spolecne `conn_detach/conn_close/conn_abort`, ktere odregistruji
+  `tcp_arg`/`tcp_recv`/`tcp_sent`/`tcp_err`/`tcp_poll` **pred** uvolnenim slotu,
+  a druha vrstva: kazda obsluha overi `c->pcb == pcb` a cizi callback zahodi.
+- **Pravidlo:** **Objekt predany cizi knihovne prestan vlastnit az ve chvili, kdy ti
+  prestane volat zpatky — `close` neni `free`.** Kdyz API rika „po zavreni uz pcb
+  nepouzivej", neznamena to „po zavreni uz te nikdo nezavola". Odregistruj VSECHNY
+  callbacky, ne jen ten, ktery te zrovna trapi.
+- **Detekce:** `tcp_close(`/`*_close(` bez predchoziho `tcp_arg(pcb, NULL)` v temze
+  bloku = nalez. Obsluha, ktera dostava `arg` i handle, musi overit, ze k sobe patri.
+- **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0057
+- 🔁 **Opakovalo se 2026-09-19 (F-0127, modul 21) — s jinou cizi knihovnou.**
+  `usb_console_tx_pump()` uvolnil slot kruhoveho bufferu ve chvili, kdy
+  `CDC_Transmit_FS` vratil `USBD_OK`. Jenze cela cesta CDC je **zero-copy**:
+  `USBD_CDC_SetTxBuffer` si ulozi jen ukazatel, `USBD_CDC_TransmitPacket` vrati
+  `USBD_OK` **pred prenosem** a pri `dma_enable = DISABLE` plni FIFO az obsluha
+  preruseni USB — primo z naseho bufferu. „Prijato k odeslani" tedy neznamena
+  „uz to nepotrebuju"; producent prepisoval vysilana data.
+  🔑 **Zobecneni teto lekce: navratova hodnota „OK" od cizi knihovny rika, ze
+  ZADANI bylo prijato, ne ze PRACE skoncila.** Vlastnictvi bufferu se vraci az
+  dokoncenim — a to je jiny okamzik.
+  🔴 **A druha polovina, ktera je proti intuici:** uvolneni navazane na
+  **dokoncovaci callback** (`CDC_TransmitCplt_FS`) je „presnejsi", ale samo o
+  sobe **horsi** — kdyz se host odpoji uprostred prenosu, callback nikdy
+  neprijde, drzeny blok se neuvolni a konzole se jevi trvale plna, tedy vada
+  **zavaznejsi nez ta puvodni**. Zvolena varianta uvolnuje az pri PRISTIM
+  uspesnem zadani (`USBD_OK` dokazuje, ze predchozi dojelo) a tim **se hoji
+  sama**. **Kdyz stavis uvolneni na cizi notifikaci, zeptej se, co kdyz
+  neprijde** — a preferuj konstrukci, ktera se zotavi bez ni.
+  ⚠️ Vedlejsi dusledek, se kterym je nutne pocitat: politika „pri plnem bufferu
+  zahod nejstarsi" **prestane byt pouzitelna**, protoze nejstarsi je prave to
+  letici. Zahazuje se prichozi — a tim zahazovani zhoustne, takze pocitadlo
+  (L-0017) uz neni kosmetika. Commit `f4f4ebf`, viz
+  `docs/audit/2026-09-19_bridge-ipcscpi-usbcdc.md`, F-0127 + F-0128.
+- **Stav:** aktivni
+
+---
+
+### L-0026 — nove pole v zaznamu prebilo strop bufferu, o kterem nikdo nevedel
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`build_log_json`, `HTTPD_BODYBUF_MAX`)
+- **Co se stalo:** strop „48 bodu na odpoved `/api/log`" vznikl ve v12 (`c802108`)
+  a pocital s bodem o sedmi polozkach. Ve v13 (`2bd7574`) pribyla **min/max obalka
+  kmitoctu**, tedy dve dalsi cisla na bod — a strop se **neprepocital**. Pri 10 MHz
+  to jeste vyslo (3997 B ze 4096, rezerva 2,4 %), od 100 MHz uz ne: `fmt_scpi_hz_d`
+  je o znak delsi a jsou tri na bod. Odpoved pretekla, zapisovac ji **tise oriznul**
+  a klient dostal JSON useknuty uprostred tokenu.
+- **Proc to bylo horsi nez „graf se nenacte":** SPA hlasila
+  `historie se nenacetla … bezi datalog? (CM7 odpovida pres IPC)` — tedy poslala
+  uzivatele ladit datalog a mezijaderny kanal, ktere byly v poradku.
+  **Tichy orez si vzdy najde nekoho nevinneho, koho obvinit.**
+- **Oprava:** rozpocet je VYPOCET hlidany `_Static_assert`
+  (`HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_BODYBUF_MAX`),
+  buffer 4096 -> 6144 B, a orez prestal byt tichy: `jbuf_t.ovf` -> `build_*_json`
+  vrati 0 -> volajici posle 503 misto neplatneho JSON.
+  ⚠️ Samotne snizeni stropu by nestacilo a jeste by uskodilo: SPA pokracuje
+  v sesivani davek jen kdyz dostane **presne** pozadovany pocet bodu, takze mensi
+  strop by zkratil historii. Rozpocet se musel zvednout, ne oriznout.
+- **Pravidlo:** **Kdyz do zaznamu pribude pole, prepocitej strop bufferu, do ktereho
+  se ten zaznam sklada — a strop pripoj k bufferu `_Static_assert`em, ne komentarem.**
+  Komentar „strop kvuli velikosti bufferu" nikoho pri pridavani pole nezastavi;
+  `_Static_assert` ano.
+- **Detekce:** kazda pevna odpoved skladana do pevneho bufferu musi mit
+  `_Static_assert(POCET * MAX_NA_KUS + HLAVICKA < BUFFER)`. Zapisovac do pevneho
+  bufferu musi umet ohlasit, ze se neco nevesolo (viz **L-0017**).
+- **Commit:** `d2038cc`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0056
+- 🔁 **Opakovalo se 2026-09-16 (F-0097, modul 16).** Blob store nad W25Q ma strop
+  `W25Q_STORE_MAX_BLOB` = 4080 B a **ani jeden ze tri blobu** (`syscfg_blob_t`,
+  `setup_book_t`, `calib_blob_t`) ho nemel hlidany prekladem — mez se kontroluje
+  az za behu a `w25q_store_write` vrati `false` **tise**. `syscfg_save` by pak
+  vracel `false` navzdy, `syscfg_flash_tick` by to zkousel 100x/s a nastaveni by
+  se prestalo ukladat, aniz by `status` rekl cokoli; projevilo by se to jako
+  „nastaveni neprezije power-cyklus", tedy symptom hledany uplne jinde.
+  Syscfg blob pritom vyrostl uz nejmene dvanactkrat (historie magicu
+  `"SCFG"` -> `"SCG1"`). Doplneny tri `_Static_assert` (commit `e583432`),
+  kazdy overeny pozitivni kontrolou (docasne nafouknuti struktury o 4096 B ->
+  preklad skutecne spadne).
+  🔑 **Poucen z toho je i dosah lekce:** puvodne byla o JEDNE odpovedi v `httpd_min.c`;
+  pravidlo ale plati pro **kazdy pevny strop, ktery se kontroluje az za behu** —
+  a ten se hleda tak, ze se u kazdeho `MAX`/`CAP` makra zepta, kdo ho vynucuje.
+- **Stav:** aktivni
+
+---
+
+### L-0027 — „jen delky a booly" prozradilo delku hesla
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`s_auth_dbg`, `GET /api/state`)
+- **Co se stalo:** diagnostika posledniho pokusu o prihlaseni nesla
+  `expected_len = strlen(web_user) + 1 + strlen(web_pass)` a servirovala se
+  v `/api/state`, ktere je **zamerne otevrene** (cteni nevyzaduje autorizaci).
+  Komentar u struktury pritom vyslovne tvrdil, ze se „jen delky a bool vysledky"
+  exportuji proto, aby *„se pres `/api/state` neda vytahat platne heslo"*.
+  Heslo se opravdu vytahnout nedalo — **jeho delka ano**, cimz se zuzuje hruba sila,
+  a `expected_len == 1` navic znamena „obe pole prazdna". Dosazitelne jednim parem
+  pozadavku bez znalosti hesla: `POST /api/scpi` s libovolnou `Authorization`
+  hlavickou pole naplnilo **jeste pred** porovnanim, pak stacilo `GET /api/state`.
+- **Oprava:** pole odstraneno ze struktury i z JSON, SPA hlaska ukazuje uz jen delku
+  toho, co poslal klient sam. Komentare uvedeny na pravou miru.
+- **Pravidlo:** **Na neautentizovanem endpointu smi diagnostika vydat jen to, co
+  odesilatel sam poslal.** Delka odvozena z tajemstvi je taky unik — a „neni to cele
+  tajemstvi" neni argument. Kdyz u diagnostiky pises „nic tajneho neexportuje",
+  **vyjmenuj kazdou polozku a u kazde napis, proc je neskodna**; souhrnne tvrzeni
+  o cele strukture se pri pristim pridanem poli stane nepravdivym a nikdo si toho
+  nevsimne.
+- **Detekce:** u kazde polozky verejne diagnostiky se zeptej „vznikla z dat, ktera
+  mi poslal ten, kdo to cte?". Kdyz ne, ven nepatri.
+- **Commit:** `3df104c`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0060
+- **Stav:** aktivni
+
+---
+
+### L-0028 — komentar popisoval obranu, kterou kod nedelal (uz podruhe v temze souboru)
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` (`sse_push`, timeout drzenych spojeni)
+- **Co se stalo:** SSE spojeni bylo z timeoutu **vyjmute uplne**, s oduvodnenim
+  primo v komentari: *„misto toho ho hlida `tcp_write` chyba a `on_err`"*. Jenze
+  `sse_push` zahazoval navratove hodnoty **vsech tri** `tcp_write`. Ta obrana tedy
+  neexistovala a klient, ktery zmizel bez FIN/RST (uspany notebook, vypnuta Wi-Fi,
+  NAT zahodil stav), drzel jeden z peti slotu minuty.
+- 🔴 **Tatáz trida vady je v temze souboru zdokumentovana uz od 2026-09-06**
+  (`scpi_tcp.c:135-140`): *„Komentar pritom uz tehdy tvrdil, ze se tomu brani — kod
+  delal opak."* Tam slo o zahazovani prilis dlouheho radku, tady o navratovou
+  hodnotu — ale mechanismus je stejny a **za tri mesice se to nezmenilo**, protoze
+  z toho prvniho nalezu nevznikla lekce, jen komentar na miste.
+- **Oprava:** navratove hodnoty se kontroluji (`ERR_MEM` nemuze uprostred nastat —
+  misto ve `sndbuf` je overene pro vsechny tri kusy naraz), pri chybe se spojeni
+  zrusi, a SSE dostalo vlastni timeout `HTTPD_SSE_IDLE_MS` 120 s **mereny od
+  POTVRZENEHO odeslani** (`on_sent`), ne od posledniho pokusu o zapis. To je
+  podstatne: do `sndbuf` se mrtvemu klientovi jeste par udalosti zapise, ale ACK
+  uz neprijde.
+- **Pravidlo:** **Veta v komentari tvaru „hlida to X" je TESTOVATELNA — najdi radek,
+  kde se X cte.** Kdyz takovy radek neexistuje, neni to nepresny komentar, ale
+  **chybejici obrana**, a komentar ji navic maskuje: pristi ctenar uz hledat nebude.
+  Zahozena navratova hodnota je nejcastejsi podoba teto vady (srov. **L-0003**).
+- **Detekce:** grep na volani, jejichz navrat se nikam neuklada
+  (`tcp_write(`, `f_write(`, `HAL_*`), a krizem proti komentarum se slovy
+  „hlida", „brani", „osetruje", „pozna". Kazdy takovy par je kandidat na nalez.
+- **Commit:** `d508139`, viz `docs/audit/2026-09-11_sit-cm4.md`, nalez F-0059
+- 🔁 **Opakovalo se 2026-09-18 (F-0114, modul 18).** `ws_panel_set_backlight`
+  i `ws_panel_set_portc` měly v komentáři slib „ŽÁDNÝ printf zde — volá to hlídaný
+  UiTask", ale oba volaly sdílený `ws_write_reg`, který na chybové cestě `printf`
+  dělá. Slib byl tedy nepravdivý přesně jako v původním nálezu — jen naopak
+  (komentář tvrdil, že se něco NEDĚJE, a ono se to dělo). Při selhání zápisu jasu
+  na umírající I2C4 by z UiTasku běžel printf, a na místě volání navíc pod
+  `vTaskSuspendAll` (systémový stall na USART cestě). Opraveno sjednocením do
+  `ws_write_reg_ex(…, log)` — jeden zdroj pravdy pro přenos, settery volají
+  s `log = false` (L-0018). Komentáře uvedeny na pravdu.
+  🔑 Pravidlo platí **oběma směry**: slib „hlídá to X" i slib „X se tu neděje" je
+  testovatelný — najdi řádek (ne)dělající X. Sdílený helper může slib tiše porušit.
+  Commit `662e049`, viz `docs/audit/2026-09-18_senzory-drivery.md`, F-0114.
+- 🔁 **2026-10-03 (F-0227):** `gps glonass` vypisoval „UBX-CFG-GNSS odeslano" bez ohledu na
+  výsledek. `gps_config_gnss()` byla `void` a `ubx_send` po `12ec7ac` umí selhat. Opraveno
+  `7219e0a` (návratová hodnota až do hlášky). Hláška o úspěchu je taky slib, který musí
+  mít řádek, kde se úspěch čte.
+
+---
+
+### L-0029 — okno se kreslilo do zadniho bufferu a nikdy se neukazalo
+
+- **Kde:** `CM7/app/app_gpsdo.c` (`app_gpsdo_render_errlog`, okno CHYBY / s_view=51)
+- **Co se stalo:** dlazdice „Chyby (log)" v NASTROJICH pusobila mrtve — po tapu se
+  nestalo nic, jen bylo slyset klik. `app_gpsdo_render_errlog()` totiz na konci
+  **neflipovalo**. Okna z tabulek `MENU_ITEMS`/`MEAS_ITEMS`/`TOOLS_ITEMS` se volaji
+  pres ukazatel (`TOOLS_ITEMS[i].fn()`) a **volajici za ne flip nedodela**: obsluha
+  tapu jen vrati `true` a UiTask na to reaguje POUZE zvukovou odezvou. Okno se tedy
+  vykreslilo do zadniho bufferu a nikdy se neukazalo — `s_view` uz pritom bylo 51,
+  takze pristroj v tom okne „byl", jen ho nebylo videt.
+- 🔑 **Ten klik byl DIAGNOSTIKA, ne zvuk navic.** `freertos_task_ui.c:382`:
+  `if (app_gpsdo_handle_touch(tx, ty)) { alarm_click(); … }` — klik zazni **prave
+  kdyz byl dotyk obslouzeny**. „Nic to nedela, ale klikne" tedy od zacatku rikalo
+  *„vstup je v poradku, problem je za nim"*. Kdyby neklikalo, hledalo by se
+  v souradnicich a v `list_hit`; takhle slo jit rovnou na vykresleni.
+- **Jak se to naslo:** ne hledanim v hlasenem miste, ale **vyctem vsech polozek
+  obou tabulek** — ze 22 oken bylo `render_errlog` JEDINE bez vlastniho flipu.
+  Kdyz jedna polozka homogenni tabulky dela neco jinak nez ostatnich 21, je to
+  bud zamer s oduvodnenim, nebo vada; treti moznost neni.
+- **Oprava:** `present_now()` na konec funkce + kontrola do `check_lessons.sh`.
+- **Pravidlo:** **Funkce volana pres ukazatel z tabulky musi byt SOBESTACNA.**
+  Volajici, ktery ji spousti pres `fn()`, za ni nemuze doplnit krok, ktery ostatni
+  polozky delaji samy — nevi, ktera to je. Kdyz do takove tabulky pridavas polozku,
+  **projdi, co dela sousedni**, a ne jen to, co potrebuje ta tvoje.
+- **Detekce:** `scripts/check_lessons.sh` — sekce „okno z dlazdicove tabulky
+  neflipne samo": vytahne jmena funkci z `MENU/MEAS/TOOLS_ITEMS`, najde jejich
+  telo a overi `present_now`/`s_dirty = 1`.
+  🔴 **Pozitivni kontrola je soucast teto lekce, ne volitelny doplnek** (L-0020).
+  Overeno odebranim flipu ze **tri ruznych** funkci (`render_errlog`, `render_mem`,
+  `render_sd`) — kontrola pokazde ohlasila spravne jmeno a po obnove zase mlcela.
+  ⚠️ A jeste jednou se pritom potvrdila L-0020: **prvni verze toho testu se
+  ukotvila na FORWARD DEKLARACI** (`static void f(void);`) misto na definici,
+  takze „nic nenasla" a vypadala jako dukaz, ze kontrola nefunguje. Kotvit se musi
+  na hlavicku nasledovanou `{`.
+- **Commit:** `1b21c82`, viz `docs/audit/2026-09-11_aplikacni-okna.md`, nalez F-0063
+- **Stav:** aktivni
+
+---
+
+### L-0030 — exponent bez meze: dve miliardy iteraci z jednoho retezce
+
+- **Kde:** `CM7/Core/Src/scpi.c` (`scpi_num`), dopad na **CM4**
+- **Co se stalo:** `scpi_num` cetl exponent do `int` bez omezeni a aplikoval ho
+  **iterativne** (`while (e-- > 0) v *= 10.0`). Pocet iteraci byl tim plne
+  v rukou odesilatele: `1E2147483647` = 2,1 miliardy nasobeni.
+  Nejhorsi to bylo na CM4, kde `-mfpu=fpv4-sp-d16` znamena **single precision**,
+  takze kazde `v * 10.0` (double) jde pres softwarovy `__aeabi_dmul` (~50 cyklu)
+  → **~450 s zablokovaneho jadra**, ktere zaroven publikuje IPC heartbeat
+  (CM7 by hlasil `stall:CM4`) a jehoz IWDG2 je zamerne vypnuty.
+- 🔴 **A bylo to dosazitelne BEZ autorizace**, protoze argument se parsuje pri
+  rozpoznavani hlavicky (`:869`), kdezto opravneni se testuje az za tim
+  (`:871`/`:876`). Ochrana tedy byla **az za** drahou operaci.
+- **Oprava:** mez `e > 308` (rozsah `double`) → `*ok = 0` → uz existujici `-224`;
+  `if (e < 10000)` navic brani preteceni `int` (signed overflow = UB).
+  Poradi parsovani vs. opravneni se ZAMERNE nemenilo — SCPI-99 chce chybu
+  prikazu hlasit pred chybou provedeni.
+- **Pravidlo:** **Pocet iteraci nikdy nesmi zaviset na vstupu zvenci bez meze —
+  a mez odvod z ROZSAHU CILOVEHO TYPU, ne odhadem.** `double` ma 308 dekad, takze
+  vyssi exponent neni "velke cislo", ale neplatny vstup.
+  🔑 Druha polovina: **ochrana patri PRED drahou operaci.** Kontrola opravneni,
+  ktera se provede az po zpracovani argumentu, chrani stav, ale ne cas.
+- **Detekce:** grep na `while (n-- > 0)` / cyklus, jehoz hranice pochazi
+  z parsovaneho vstupu. U SCPI konkretne vektor `1E999` → `*ok == 0`.
+- **Commit:** `aaacaf5`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0064
+- **Stav:** aktivni
+
+---
+
+### L-0031 — datovy typ byl mez, o ktere nikdo nevedel (self-survey stal na 0,42 m)
+
+- **Kde:** `CM7/Core/Inc/gps.h` (`lat_deg`/`lon_deg` byly `float`),
+  konzument `CM7/app/app_gpsdo.c` (`survey_accumulate`)
+- **Co se stalo:** self-survey (#53) pocita Welfordem horizontalni rozptyl polohy
+  a ten rozptyl je **meritko konvergence** — ma klesat s poctem vzorku. Neklesal
+  pod ~0,4 m a vypadalo to jako vlastnost anteny nebo prijimace.
+  Pricina byla v **datovem typu**: `float` ma pro hodnotu ~50 stupnu
+  ULP 2⁻¹⁸ = 3,81·10⁻⁶ stupne, coz je **0,42 m**. Akumulator pritom `double` byl —
+  jenze kvantizace byla uz ve VSTUPU a lepsim akumulatorem se nevrati.
+- 🔑 **Jak se to naslo:** ne merenim, ale **vypoctem ULP** pri cteni parseru.
+  Predpoved byla ciselna (0,42 m v sirce, 0,27 m v delce na 50°), takze se da
+  na HW potvrdit i vyvratit — to je rozdil proti "mozna je to presnosti".
+- **Oprava:** souradnice cele celociselne v 1e-7 stupne (`int32_t lat_e7`),
+  parsovani bez floatu. ⚠️ **Zisk limituje format zaznamu**: `ddmm.mmmm` (4
+  desetiny minut) = 1,85 m, `ddmm.mmmmm` (5) = 18,5 cm. Typ uz uzkym hrdlem neni,
+  rozliseni NMEA ano — a to je ted zapsane u pole, ne domyslene.
+- **Pravidlo:** **Datovy typ je taky mez.** Nez zacnes zlepsovat algoritmus nebo
+  hledat vadu v hardwaru, spocitej **ULP typu, ve kterem hodnota prichazi**, a
+  porovnej ho s presnosti, kterou slibujes. U metriky konvergence (rozptyl,
+  smerodatna odchylka, residuum) uved, jake je rozliseni VSTUPU — ne jen
+  akumulatoru.
+- **Detekce:** u kazde veliciny, ktera se ma "zlepsovat s poctem vzorku", musi byt
+  napsana spodni mez daná typem a formatem zdroje.
+- **Commit:** `868ed6e`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0070
+- **Stav:** aktivni
+
+---
+
+### L-0032 — kontrola integrity byla podminena tim, ze integrita dorazila
+
+- **Kde:** `CM7/Core/Src/gps.c` (`parse_line`, NMEA checksum)
+- **Co se stalo:** cela kontrola checksumu byla uvnitr `if (star)`:
+  ```c
+  char *star = strchr(l, '*');
+  if (star) { … if (cs != given) return; }
+  /* else: nic — pokracuje se na parsovani */
+  ```
+  Veta **bez** `*HH` tedy prosla, jako by byla overena. Pritom prave to je pripad,
+  kdy se ma zahodit: NMEA 0183 checksum u `$`-vet vyzaduje a u-blox ho vzdy posila,
+  takze jeho absence znamena poskozeny nebo cizi ramec.
+- 🔴 **Ve dvojici s chybejicim „zahazuj do konce radku" (F-0066) to byla uplna
+  injekcni cesta**: vstup delsi nez buffer, jehoz ocas zacina `$GPRMC,…` bez
+  checksumu, se prijal jako platna veta. Zadna z tech dvou vad nebyla sama o sobe
+  vic nez „tolerance k sumu".
+- **Oprava:** `if (star == NULL) return;`
+- **Pravidlo:** **Kontrola integrity podminena pritomnosti toho, co kontroluje,
+  neni kontrola.** Chybi-li kontrolni soucet (CRC, checksum, podpis, delka), je to
+  duvod data ZAHODIT, ne je pustit dal s tim, ze „nemame cim overit".
+  🔑 Obecneji: `if (mame_cim_overit) { over }` je vzdy podezrele — spravne je
+  `if (!mame_cim_overit) return;`.
+- **Detekce:** grep na `if (<kontrolni_udaj_existuje>) { kontroluj }` bez
+  `else return`. U parseru vstupu se na to ptej u KAZDE volitelne casti ramce.
+- **Commit:** `b483158`, viz `docs/audit/2026-09-12_parsery-scpi-gps.md`, F-0065
+- **Stav:** aktivni
+
+---
+
+### L-0033 — `continue` v dlouhe smycce neodmita prikaz, ale vypina funkce
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`UartTask_run`), oprava F-0073.
+  🔴 **Tohle je moje vlastni chyba, zachycena pred commitem** — zapisuje se proto,
+  ze byla naprosto neviditelna v diffu a vypadala jako spravne reseni.
+- **Co se stalo:** utnuty prikaz se mel NEPROVEST. Napsal jsem to takhle:
+  ```c
+  if (s_rx_trunc) { s_rx_trunc = 0; printf("ERR …"); continue; }
+  ```
+  Cetl jsem to jako „preskoc zpracovani prikazu". Jenze `UartTask_run` je jedna
+  `for (;;)` smycka o ~2000 radcich a **za** zpracovanim prikazu, uplne dole, jeste
+  bezi `sd_export_service()`, `datalog_erase_service()`, `membench_service()`,
+  `qspi_req_service()` a zaverecny `osDelay(1)`. `continue` tedy neodmitl prikaz —
+  **vypnul na tu iteraci export na SD, mazani datalogu, benchmark pameti i QSPI
+  pozadavky** a odebral smycce jedine misto, kde ustupuje scheduleru.
+- 🔑 **Proc to slo prehlednout:** odmitnuti prikazu a obsluhy pozadavku z UI jsou
+  dve nesouvisejici veci, ktere jen bydli v tomtez tele smycky. Diff mel tri radky
+  a zadny z nich se tech obsluh netykal — souvislost je **1800 radku daleko**.
+- **Oprava:** odmitnuti je prvni clen uz existujiciho `else if` retezu:
+  ```c
+  if (s_rx_trunc) { s_rx_trunc = 0; printf("ERR …"); }
+  else if (RxBuffer[0] == '\0') { /* nic */ }
+  else if (strcmp(RxBuffer, "led on") == 0) { … }
+  ```
+  Vetveni vyjadruje presne to, co jsem chtel (tenhle prikaz se neprovede), a nesaha
+  na beh smycky.
+- **Pravidlo:** **Odmitnuti vstupu patri do VETVENI, ne do rizeni smycky.**
+  U kazdeho `continue`/`break`/`return` uvnitr smycky precti telo **az na konec** a
+  vyjmenuj, co se preskoci. V dlouhe smycce s obsluhami na konci je `continue`
+  skoro vzdy chyba.
+  ⚠️ Plati i pro `return` v inicializacni funkci, za kterou jeste neco bezi.
+- **Detekce:** grep na `continue;` ve funkci delsi nez obrazovka; pak se zeptej,
+  co je mezi nim a `}` smycky. Nova veta v `docs/STYLE_CZ.md` to nezachyti — je to
+  otazka na telo funkce, ne na formu.
+- **Commit:** `b1aa262` (oprava uz v poradi; chybny mezistav se necommitoval),
+  viz `docs/audit/2026-09-12_uart-konzole.md`, F-0073
+- **Stav:** aktivni
+
+---
+
+### L-0034 — mez PRED pouzitim: konverze mimo rozsah a odecet v `size_t`
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` — `fpgasim on <Hz>` (F-0075)
+  a `fpgaraw` (F-0076)
+- **Co se stalo:** dve ruzne podoby teze chyby, obe v jednom souboru.
+  1. **`fpgasim on 99999999999999999999`** — parser cetl cislice do `double` bez
+     horni meze (kontroloval jen `hz < 1.0`), takze vysledek byl ~1e20. Nasledne
+     `(uint64_t)(hz * 100000.0)` je **nedefinovane chovani**, ne zabaleni: ARM to
+     provede jako `VCVT` se saturaci, ale spolehat se na to nelze a hodnota je
+     stejne nesmyslna.
+  2. **`fpgaraw`** — `p += snprintf(line + p, sizeof(line) - p, …)` bez kontroly
+     `p`. `sizeof` je `size_t`, takze pri `p > sizeof(line)` **podtece** na ~1,8e19
+     a `snprintf` dostane kapacitu, kterou nema. Dnes je to nedosazitelne
+     (16 bajtu x 3 znaky = 48 ze 64), ale rezerva je **16 B** — staci zmenit format.
+- 🔑 **Spolecny jmenovatel:** v obou pripadech se hodnota **nejdriv pouzila** a
+  teprve pak (nebo vubec) omezila. Prekladac na obojim mlci a `-fanalyzer` taky,
+  protoze mez zavisi na vstupu za behu.
+- **Oprava:** mez uvnitr akumulacni smycky (`if (hz < 1.0e12) hz = hz*10 + …`) plus
+  strop `4.0e9` shodny s `fmt_scpi_hz_d`; u `snprintf` podminka
+  `if (p >= 0 && (size_t)p < sizeof line)` pred pouzitim.
+  ⚠️ Mez **uvnitr** smycky je zamerne: cislice se dal ctou (parser zustane
+  synchronizovany), jen se uz nepricitaji.
+- **Pravidlo:** **Mez over PRED pouzitim hodnoty.** Konverze `double`→celociselny
+  typ mimo rozsah je UB, ne orez; odecet v bezznamenkovem typu podtece na obrovske
+  cislo, ne na zapor. Ani jedno neni „nepravdepodobne cislo", obojim jde projit.
+- **Detekce:** grep na `(uint64_t)`/`(uint32_t)` nad hodnotou z parseru a na
+  `sizeof(x) - i`, kde `i` neni tesne predtim overene.
+- **Commit:** `b1aa262`, viz `docs/audit/2026-09-12_uart-konzole.md`, F-0075/F-0076
+- **Stav:** aktivni
+
+---
+
+### L-0035 — ramec je vlastnost cele funkce, ne vetve (a meri se nad `.elf`)
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`UartTask_run`, 1 966 radku),
+  nalezy F-0077 a F-0074
+- **Co se stalo:** cela konzole je **jedna funkce**, ve ktere ma kazdy prikaz svou
+  vetev a sve lokaly. GCC ale rezervuje ramec **vsech** lokalu uz pri vstupu do
+  funkce, takze velke pole v obsluze jednoho prikazu ubere zasobnik i vsem ostatnim
+  cestam — vcetne tech, ktere se toho prikazu nikdy nedotknou.
+  Projekt uz tim jednou pretekl: docasny `waste[3600]` udelal ramec 4904 B proti
+  4096 B zasobniku → HardFault pri prvnim znaku z USB (STATUS #34).
+  Dnes je ramec **700 B** jen proto, ze optimalizator sloty disjunktnich vetvi
+  sdili — coz je vlastnost prekladu, ne zaruka.
+- 🔑 **Odhad ze zdrojaku tu nefunguje.** Soucet deklarovanych lokalu je o rad vetsi
+  nez skutecny ramec (sdilene sloty) a naopak volana funkce si pridava svuj
+  (`scpi_process` 492 B, `scpi_exec_one` 268 B). Jedine pouzitelne cislo je
+  `sub sp, sp, #N` v disassembly **slinkovaneho obrazu**.
+- **Opatreni:** do `scripts/check_lessons.sh` pribyla kontrola, ktera ramec
+  `UartTask_run` zmeri v `CM7/Release/H757_LED_CM7.elf` (objdump) a **kricí nad
+  1024 B**. Mez je zamerne nizko: UartTask ma 4096 B a na desce mu zbyva 168 B.
+  🔴 **Pozitivni kontrola je soucast tohohle opatreni, ne volitelny doplnek
+  (L-0020):** poprve kontrola vracela **0 B** — awk mel `match()` se tremi
+  skupinami a cetl `m[2]` misto `m[3]`, takze by mlcela nad jakkoli velkym ramcem.
+  Overeno snizenim meze na 256 B (musi zakricet: 700 > 256) a zamenou symbolu za
+  neexistujici (musi mlcet a nespadnout).
+- **Pravidlo:** **Ramec funkce je vlastnost cele funkce, ne vetve.** Velky lokal
+  patri do `static` (kdyz je funkce jednovlaknova) nebo do vlastni funkce —
+  a jestli to platit zustalo, se overuje **merenim nad obrazem**, ne cetbou.
+- **Detekce:** `scripts/check_lessons.sh`; rucne
+  `objdump -d … | awk '/<fn>:/{f=1} f&&/sub.*sp, #/{print}'`.
+- **Souvislost:** velikost samotneho zasobniku UartTasku resi **TODO #243**
+  (`.ioc`, rozhodnuti uzivatele) — tahle lekce je o tom, aby ramec nerostl znovu.
+- **Commit:** kontrola v `scripts/check_lessons.sh`, viz
+  `docs/audit/2026-09-12_uart-konzole.md`, F-0077
+- **Stav:** aktivni
+
+---
+
+### L-0036 — kadence dat je vlastnost prenosu, ne domnenka konzumenta
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c`, SPA (`render`, `xlab`, odecet pod kurzorem),
+  nalez F-0080
+- **Co se stalo:** graf ukladal jeden bod na kazdou prijatou zpravu a osa X pocitala
+  **body jako sekundy**. To platilo, dokud se data tahala pollem 1 Hz. Pak pribyl
+  SSE push, ktery server posila pri KAZDEM novem mereni (~4/s pri brane 0,25 s) —
+  a osa zacala tvrdit az 4x delsi cas, nez data pokryvala. Okno „1 h" (3600 bodu)
+  drzelo ctvrthodinu.
+- 🔑 **Nejzajimavejsi na tom je, ze autor tu past znal.** Buffer mereni `M` se plni
+  **jen na zmenu `seq_meas`** a komentar nad nim presne vysvetluje proc: *„poll bezi
+  1 Hz, ale mereni chodi jinym tempem … opakovane hodnoty vypadaji jako dokonala
+  stabilita -> sigma_y by vysla nesmyslne NIZKA"*. Tataz uvaha se ale nepromitla do
+  historie grafu `H[]`, ktera je o dvacet radku vedle. **Obrana byla spravna a uplna
+  — jen se neaplikovala na druhy buffer v temze souboru.**
+- **Oprava:** throttle `H[]` na 1 Hz (praha 0,95 s kvuli jitteru pollu). Druha
+  varianta (ukladat ke vzorku cas) byla zvazena a zamitnuta: je vetsi a nevyresila
+  by, ze 3600 bodu pri 4/s pokryje jen ctvrthodinu.
+- **Pravidlo:** **Kadence dat je vlastnost PRENOSU, ne konstanta konzumenta.**
+  Kdyz se zmeni transport (poll -> push, 1 Hz -> event-driven), projdi VSECHNY
+  vypocty, ktere si tempo odvozovaly. Chyba se neprojevi chybnymi hodnotami, ale
+  chybnym **casem** — a to se pri pohledu na graf pozna nejhur.
+- **Detekce:** u kazde historie se zeptej „kdo rozhoduje, KDY do ni pribude vzorek?"
+  a grep na `length` pouzitou jako cas (`n-1` sekund, `idx` jako stari).
+- **Commit:** `e0e542e`, viz `docs/audit/2026-09-12_spa-web.md`, F-0080
+- **Stav:** aktivni
+
+---
+
+### L-0037 — presun tajemstvi neuklidi to stare misto
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c`, SPA (`auth`/`login`/init), nalez F-0082
+- **Co se stalo:** heslo se ukladalo do `localStorage` v otevrene podobe a zustavalo
+  tam navzdy. Oprava ho presunula do `sessionStorage` (plati do zavreni zalozky).
+  🔴 **Samotny presun by ale minul prave ty, kdo web uz pouzivali:** jejich heslo
+  lezi v `localStorage` dal a nova verze uz se tam nedivá, takze by ho nikdo nikdy
+  nesmazal. Uzivatel by navic mel dojem, ze je problem vyresen.
+- **Oprava:** pri prvnim nacteni `localStorage.removeItem('gp')` + hlaska, ze se
+  heslo nove uklada jen do zavreni zalozky.
+- **Pravidlo:** **Zmena ulozisteho tajemstvi neni hotova, dokud se tajemstvi
+  nesmaze z toho stareho.** Plati stejne pro klic v souboru, heslo v BKP registru
+  i token v konfiguraci — nove misto je jen pulka prace.
+  ⚠️ Tyz vzor plati i pro ZMENSENI rozsahu (kratsi platnost, uzsi opravneni):
+  stare zaznamy si drzi stara pravidla, dokud je nekdo aktivne nezrusi.
+- **Detekce:** po kazde zmene ulozeni tajemstvi si polozit otazku „co je na starem
+  miste TED, na profilu, ktery uz produkt pouzival?" a napsat na to uklid.
+- **Commit:** `e0e542e`, viz `docs/audit/2026-09-12_spa-web.md`, F-0082
+- **Stav:** aktivni
+
+---
+
+⚠️ **F-0088 nova lekce NENI** — je to dalsi vyskyt **L-0018** (dve mista pocitaji touz
+velicinu: warm-up si web odvozoval z `uptime_s`, pristroj z `warmup_ready()`).
+Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
+**vysledek**, ne vstupy.
+
+---
+
+### L-0038 — kontrakt mezi dvema jazyky uvnitr jednoho obrazu nehlida nikdo
+
+- **Kde:** `CM4/LWIP/App/httpd_min.c` — `build_state_json()` (C) a `SPA_HTML` (JS)
+  v temze souboru; nalezy F-0078 a F-0079
+- **Co se stalo:** klient cetl `gps.valid` a `gps.nsat`. Ani jedno pole v odpovedi
+  neni: `valid` se neemituje vubec a `nsat` lezi o uroven vys (v bloku `gps` je
+  `num_sat`). Dusledek byl trvaly a tichy — karta HOLDOVER hlasila `NO LOCK`
+  i pri 3D fixu a karta KVALITA GPS zustala navzdy prazdna.
+- 🔑 **Nejsilnejsi na tom je, ze obe poloviny jsou v JEDNOM souboru, jednom commitu
+  a jednom obrazu.** Neni to rozjeta verze ani zapomenuty deploy: producent
+  i konzument se preloz(il)i spolu — jen kazdeho kontroluje neco jineho. C prekladac
+  vidi `jputf("\"num_sat\":%u")` jako obycejny retezec, JS zadny prekladac nema
+  a cteni neexistujiciho pole je v nem `undefined`, tedy platna hodnota.
+- **Oprava:** `valid` odvozen z `fix_mode >= 2` (tentyz zdroj, jaky pouziva pilulka
+  v hlavicce), `nsat` -> `num_sat`; a hlavne **kontrola** `tools/spa/json_kontrakt.py`
+  zapojena jako krok 5b overovaciho retezce.
+- **Pravidlo:** **Hranice mezi jazyky uvnitr jednoho obrazu je stejne krehka jako
+  hranice mezi dvema projekty — jen tissi.** U kazde takove hranice se zeptej,
+  CO ohlasi rozpor. Kdyz odpoved zni „nic", patri tam kontrola, ne opatrnost.
+  ⚠️ Tyz vzor plati pro C ↔ Python nastroje (jmena symbolu v `check_lessons.sh`),
+  C ↔ linker skript (jmena sekci) a firmware ↔ `.ioc`.
+- **Detekce:** `python tools/spa/json_kontrakt.py` (soucast `check.py`).
+- **Commit:** `4a6e4ba` (oprava), `2d5f35f` (kontrola), viz
+  `docs/audit/2026-09-12_spa-web.md`, F-0078 a F-0079
+- **Stav:** aktivni
+
+---
+
+### L-0039 — pozitivni kontrola musi obsahovat KAZDOU vadu, kvuli ktere vznikla
+
+- **Kde:** `tools/spa/json_kontrakt.py`, pri opravach F-0078 a F-0079
+- **Co se stalo:** nova kontrola hranice JSON mela pokryt oba nalezy. Pozitivni
+  kontrolu jsem udelal na obou — a vyplatilo se to: pripad (b) (`nsat` existuje,
+  ale jinde) **zakricel spravne**, zatimco pripad (a) (`gps.valid` neexistuje
+  vubec) **prosel TISE**. Kontrola tedy nenasla prave ten nalez, kvuli kteremu
+  primarne vznikla.
+- **Proc:** `drawTfom` dostava stav pres `var s=LAST;`, ne jako parametr; nastroj
+  umel jen parametr a `LAST.` primo, takze cele telo te funkce ignoroval.
+  🔴 Kdybych pozitivni kontrolu udelal jen na jednom (lehcim) pripadu, mel bych
+  zelenou kontrolu, ktera **prehlizi polovinu tridy vad** — a duveroval bych ji.
+- **Oprava:** doplnena lokalni kopie korene (`var s=LAST`) + komentar primo v kodu
+  kontroly, proc tam ten radek je.
+- **Pravidlo:** **Pozitivnich pripadu musi byt tolik, kolik nalezu kontrolu
+  vyvolalo** — jeden zastupny nestaci, protoze tridu vad obvykle tvori vic cest
+  a nastroj muze umet jen nektere. Doplnek k **L-0020**.
+  ⚠️ Stejne plati po kazdem rozsireni kontroly: novy pripad = novy pozitivni test.
+- **Detekce:** u kazde kontroly si vypsat nalezy, ktere ji vyvolaly, a overit, ze
+  na kazdem z nich skonci nenulovym kodem.
+- **Commit:** `2d5f35f`, viz `docs/audit/2026-09-12_spa-web.md`
+- **Stav:** aktivni
+
+---
+
+### L-0040 — ustupuj podle casu, ne podle poctu iteraci
+
+- **Kde:** `CM7/Core/Src/freertos_task_uart.c` (`i2cspeed_run`), nalez z mereni
+  2026-09-12; TODO #244
+- **Co se stalo:** mereni chybovosti I2C4 pousti ostatni ulohy ke slovu **po 64
+  transakcich**. Pri 25-100 kHz je to v poradku (transakce trva ~1 ms, tedy
+  ~64 ms mezi ustupy). Pri 150 kHz ale kazda transakce skonci **plnym 10ms
+  timeoutem**, takze tentyz kod drzi CPU **~640 ms v kuse** — a UiTask
+  (BelowNormal) se nespusti vubec. Jeho heartbeat zestarne pres 2,5 s,
+  `watchdog_supervise` prestane krmit IWDG a deska se resetuje.
+  🔑 **Zmereno:** `N=25` krok dokoncil, `N=500` i `N=1000` restart. Rozhoduje
+  DOBA, ne frekvence.
+- 🔴 **Past je v tom, ze yield tam BYL a vypadal pravidelne.** Kdo cte kod, vidi
+  „kazdych 64 transakci se ustupuje" a ma pocit, ze je to osetrene. Jenze
+  „64 transakci" neni jednotka casu — a prave v poruchovem rezimu, kde na tom
+  zalezi, se hodnota te jednotky zmeni o rad.
+- **Pravidlo:** **Ustupuj podle CASU.** `if (HAL_GetTick() - last >= 20u) { osDelay(1); last = ...; }`
+  omezi drzeni CPU bez ohledu na to, jak dlouho trva jedna iterace. Pocet iteraci
+  se smi pouzit jen tam, kde je iterace prokazatelne kratka a NEMA timeout.
+  ⚠️ Druha polovina: u smycky, ktera bouchá do nefunkcniho HW, patri i **mez
+  neuspechu** — tisic marnych pokusu neprinese vic informace nez padesat.
+- **Detekce:** u kazde smycky s I/O timeoutem si spocitej `nejhorsi_iterace ×
+  pocet_mezi_yieldy`. Kdyz to prekroci ~100 ms, je to vada (projektove pravidlo
+  „zadny spin > ~10 ms" plati pro hlidane tasky; tady slo o nehlidany UartTask,
+  ktery ale muze vyhladovet hlidane).
+- **Stav:** aktivni — **oprava `i2cspeed` zatim NEPROVEDENA** (TODO #244),
+  uzivatel mereni uzavrel driv. Do te doby plati provozni opatreni: nad 100 kHz
+  jen male `N`.
+
+---
+
+<!-- Nové záznamy přidávej sem, ID pokračuje L-0025, L-0026, … -->
+
+### L-0057 — Diagnostika, která porušuje invariant produkčního kódu, se nemusí rušit — stačí ji ODMÍTNOUT tam, kde by kolidovala
+
+- **Datum:** 2026-09-19
+- **Oblast:** mezijádrové IPC / diagnostické příkazy konzole
+- **Symptom:** `cmd` a `resp` jsou bezzámkové **SPSC** ringy — jejich správnost stojí
+  na tom, že `cmd` má jediného producenta (CM4) a `resp` jediného konzumenta (CM4).
+  Dva diagnostické příkazy na CM7 to porušovaly: `ipccmd` do `cmd` pushoval a z `resp`
+  popoval (F-0014), a totéž dělala `ipc_scpi_set_cfg` napojená na `scpi ipc` (F-0129).
+  Při souběhu se zápisem z webu by oba producenti přečetli tentýž `head`, zapsali do
+  **téhož slotu** a oba ho zvedli → jeden příkaz se **tiše ztratí**, druhý přenese
+  poškozený. Ringy ztrátu nedetekují.
+- **Příčina:** Nález F-0014 navrhoval opravu *„na CM7 má příkaz volat rovnou
+  `ipc_cfg_apply()`, protože je na tomtéž jádře a ring nepotřebuje"*. U `scpi ipc` to
+  platilo, ale **u `ipccmd` by to příkaz zrušilo**: jeho účel je v kódu napsaný —
+  *„pošli příkaz PŘESNĚ tou cestou, kterou použije CM4 … ověřit ovládací cestu
+  CM4→CM7 bez sítě, bez SCPI a bez webu"* (kritérium W1). Oprava podle návrhu by
+  odstranila právě to, kvůli čemu nástroj existuje.
+- **Oprava — tři různé zásahy pro tři různé situace, ne jeden vzor na všechno:**
+  1. **`scpi ipc` (F-0129):** ring **není potřeba** — nástroj srovnává *odpovědi*.
+     Soubor `ipc_scpi.c` se kompiluje **dvakrát** (jednou per jádro), takže stačila
+     jádrová podmínka `#if defined(CORE_CM4)`. Zůstala **jedna** funkce, validace se
+     neduplikovala (`L-0018`). Doloženo velikostí: `ipc_scpi_set_cfg` má na CM7 128 B,
+     na CM4 548 B, a **CM4 `.text` je bajt za bajtem shodný**.
+  2. **`ipccmd` (F-0014):** ring **je potřeba** (to je celý účel) → příkaz se
+     **ODMÍTNE**, když může existovat druhý producent: `ipc_cm4_alive() && g_web_ctrl_en`.
+     Únikový východ `ipccmd force <…>`.
+  3. Predikát je **záměrně úzký**: bez `g_web_ctrl_en` dostane SCPI na CM4
+     `set_cfg = NULL`, takže druhý producent vůbec nevznikne a guard nezasahuje —
+     tedy přesně ve stavu, pro který `ipccmd` vznikl (bez sítě, bez webu).
+- **Pravidlo:** **Když diagnostický nástroj porušuje invariant, na kterém stojí
+  produkční kód, nejdřív se zeptej, JESTLI ten invariant potřebuje porušovat.**
+  - Nepotřebuje → nech ho pracovat nad lokální kopií a produkční cestu nechte být.
+  - Potřebuje (porušení JE ten test) → **neruš nástroj, odmítni jeho spuštění ve
+    stavu, kdy by kolidoval** — a nech únikový východ (`force`) pro toho, kdo ví,
+    že kolize nehrozí.
+  🔑 **Odmítnutí je plnohodnotná oprava.** „Nástroj to musí umět, takže tu vadu
+  musíme snést" je falešné dilema: většina diagnostik se používá v řízeném stavu,
+  ve kterém kolize nehrozí — stačí ten stav vynutit.
+  ⚠️ A ověř účel nástroje **z kódu, ne z názvu**: návrh opravy v F-0014 byl napsaný,
+  aniž by se citoval komentář, který u `ipccmd` ten účel vysvětluje.
+- **Detekce:** Projekt už tenhle vzor jednou použil — příkaz `eth` odmítne bit-bang
+  SMI, když ETH obsluhuje CM4 (*„dva masteři na MDIO"*). Hledej to takhle: u každého
+  diagnostického příkazu, který sahá na zdroj vlastněný druhým jádrem nebo jinou
+  úlohou, musí být buď odmítnutí, nebo napsané, proč kolize nehrozí.
+- **Commit:** `7cd8613` (F-0129) a tento (F-0014), viz
+  `docs/audit/2026-09-19_bridge-ipcscpi-usbcdc.md` a `docs/audit/2026-09-09_ipc-cm7-cm4.md`
+- **Stav:** aktivní
+
+### L-0056 — Diagnostiku poruchy zapisuj podle NÁSLEDKU, ne podle detekce
+
+- **Datum:** 2026-09-17
+- **Oblast:** watchdog / crash black-box
+- **Symptom:** `watchdog_supervise()` psal do crash black-boxu `stall:UiTask`
+  ve chvíli, kdy **odmítl obnovit IWDG** — tedy při *detekci*. Když se úloha
+  do ~1,5 s vzpamatovala, reset **nepřišel**, ale záznam v BKP zůstal ležet
+  a smazal ho až `MX_RTC_Init` při příštím bootu. `status` ho pak připsal
+  resetu, který s ním neměl nic společného — klidně `power-on` za dva dny,
+  protože doména je zálohovaná z CR2032.
+- **Příčina:** Zápis se pověsil na **rozhodnutí** („nekrmím watchdog"), ne na
+  **následek** („watchdog mě skutečně resetoval"). Mezi tím je okno ~1,5 s,
+  ve kterém se stav může vrátit do normálu. Navíc `s_stall_logged` se nikdy
+  nenulovalo, takže druhý — a možná skutečně fatální — stall **jiné** úlohy se
+  už nezapsal a po resetu se hlásil ten první.
+- 🔑 **Proč to nejde „prostě psát až při resetu":** v okamžiku resetu už kód
+  neběží. Záznam **musí** vzniknout dopředu. Řešení tedy není přesunout zápis,
+  ale **umět ho vzít zpět**, když následek nenastal.
+- **Oprava:** při návratu obou heartbeatů se záznam **zneplatní** (`RTC->BKP3R = 0`)
+  a modul se znovu armuje. ⚠️ Zneplatňuje se **jen když je pořád náš**
+  (magic + `kind == 3`) — mezitím ho mohl přepsat HardFault nebo `configASSERT`
+  a ten patří někomu jinému (táž disciplína jako **L-0025**). Ztracený údaj se
+  nezahazuje tiše: `watchdog_stall_recovered()` ho počítá a hlásí `status`.
+- **Pravidlo:** **Když musíš diagnostiku zapsat dřív, než víš, jestli k následku
+  dojde, doplň k ní cestu, jak ji vzít zpět — a ověř, že rušíš vlastní záznam,
+  ne cizí.** Jinak se z „co se stalo" stane „co se skoro stalo", přiřazené
+  k náhodné pozdější události. A stav, který jsi zrušil, musí zůstat měřitelný.
+- **Detekce:** u každého zápisu do trvalého úložiště, který předchází očekávané
+  poruše, se ptej: *co když k té poruše nedojde?* `status` →
+  `WATCHDOG: … ` a řádek `zotavenych stallu`.
+- **Commit:** `76bf1f6`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0105
+- **Stav:** aktivní
+
+### L-0055 — Hodnotu, kterou HW nemusí přijmout, po zápisu PŘEČTI zpátky a zveřejni
+
+- **Datum:** 2026-09-17
+- **Oblast:** watchdog / inicializace periferií
+- **Symptom:** `watchdog_init()` čekal na propagaci `PR`/`RLR` **ohraničenou**
+  smyčkou (což je správně), ale její výsledek zahodil a nastavil `s_ready = 1`
+  bezpodmínečně. Kdyby se `SR` nevyprázdnil, zůstaly by v platnosti reset
+  defaulty `PR = 0` (/4) a `RLR = 0xFFF` → timeout **~0,51 s místo 4,0 s**,
+  tedy osmkrát kratší — a tiše.
+- **Proč to není teoretické:** defaultTask smí v jedné iteraci dělat
+  `syscfg_save()` → `w25q_store_write()` → **erase sektoru 50–400 ms**.
+  Projev by byl „náhodný reset při ukládání nastavení", tedy symptom, který se
+  hledá kdekoli jinde než v inicializaci watchdogu.
+- **Oprava:** `PR`/`RLR` se po propagaci **odečtou z registrů** a `status` je
+  vypisuje i s odvozeným timeoutem a značkou `<== NESEDI`. Drží se **naměřený**
+  stav, ne zamýšlený.
+  ⚠️ **Vědomě se NEOPRAVUJE retry ani `Error_Handler`em:** IWDG už běží (START
+  je neodvolatelný), takže spadnout kvůli tomu do `Error_Handler` by
+  z nepohodlí udělalo nefunkčnost. Zveřejnit stav stačí.
+- **Pravidlo:** **Ohraničená čekací smyčka je jen polovina práce — druhá je
+  přečíst, co v registru doopravdy zůstalo, a vystavit to.** Platí všude, kde
+  HW zápis potvrzuje vlastním příznakem (`PVU`/`RVU`, `VOSRDY`, `RECALPF`,
+  `DBP`): mez chrání před zatuhnutím, ale sama o sobě nezaručuje, že se hodnota
+  uplatnila.
+- **Detekce:** ke každé smyčce `while/for (… && REG & FLAG)` dopiš, co se stane
+  při vypršení — a když je odpovědí „degraduje se tiše", patří dosažený stav
+  do `status`. Rozšíření **L-0009** z generovaného kódu i na vlastní.
+- **Commit:** `76bf1f6`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0104
+- **Stav:** aktivní
+
+### L-0054 — „Jeden vlastník" je tvrzení o VŠECH volajících, ne o tom hlavním
+
+- **Datum:** 2026-09-17
+- **Oblast:** souběh mezi úlohami / zvuková cesta
+- **Symptom:** `alarm.c` mělo v komentáři napsaný návrh *„jeden vlastník pattern
+  stavu = defaultTask → žádný cross-task zápis do `s_phase`"*. `alarm_click()`
+  (UiTask) ho poslušně dodržoval přes flag — a přitom **dva jiní zapisovatelé
+  ho porušovali**: `alarm_test()` volal `pattern_start()` přímo z UartTasku
+  a `beeper_boot_melody()` psala `s_on`, `TIM7->ARR` i `CNT` z UiTasku.
+  Žádná z proměnných stavu nebyla `volatile`.
+- **Příčina:** Pravidlo se zapsalo **u té cesty, která ho dodržuje**, místo aby
+  se ověřilo u všech. Komentář tak popisoval *záměr*, ne skutečnost — a působil
+  jako důkaz, že je věc vyřešená. Kdo četl `alarm_click`, viděl vzorovou
+  implementaci a neměl důvod hledat dál.
+- 🔑 **Proč je zrovna u „stavové proměnné periferie" následek nepříjemný:**
+  `beeper_set()` začíná `if (on == s_on) return;`. Ztracený zápis do `s_on` ho
+  rozejde se skutečným stavem TIM7, a ta horší polovina je tichá: TIM7 běží,
+  ale `s_on == false` → `beeper_set(false)` se vrátí na první řádce a **pípák
+  troubí souvisle**.
+- **Oprava:** `alarm_test()` nastavuje jen požadavek (stejný vzor jako
+  `alarm_click`); boot melodie je s `alarm_tick` **vzájemně vyloučená**
+  (`beeper_melody_busy()`). Mimo to okno je defaultTask jediný zapisovatel.
+  ⚠️ **Není to zámek** a je to u toho napsané: když je defaultTask už uvnitř
+  `pattern_service`, jeden tón se může uříznout. Přesun melodie do defaultTasku
+  by okno uzavřel úplně, ale sahal by na časování startu (CLAUDE.md 4c).
+- **Pravidlo:** **Větu „stav vlastní úloha X" ověř VÝČTEM volajících, ne
+  u jedné cesty.** `grep` na každou funkci, která ten stav mění, a u každého
+  volajícího urči úlohu. Dokud ten výčet není v hlavičce, je „jeden vlastník"
+  jen přání.
+- **Detekce:** u každého `static` stavu s komentářem o vlastnictví musí být
+  seznam volajících a jejich úloh (rozšíření **L-0022** a **L-0023**).
+  Konkrétně: `grep -n "pattern_start\|beeper_set\|beeper_tone" CM7 -r` a ověřit,
+  že mimo `alarm_tick`/`beeper_boot_melody` nikdo jiný nevolá.
+- **Commit:** `68ae8c8`, viz `docs/audit/2026-09-17_cas-alarmy-watchdog.md`, nález F-0103
+- **Stav:** aktivní
+
+### L-0053 — Záznam o provedené akci vydávej až podle jejího VÝSLEDKU, ne na jejím začátku
+
+- **Datum:** 2026-09-17
+- **Oblast:** trvalý záznamník chyb / perzistence
+- **Symptom:** Dvě nezávislá místa tvrdila, že se něco povedlo, aniž by to věděla:
+  (a) `calib_save()` mělo `errlog_put(… ERRLOG_CFG_CALIB …)` jako **první příkaz
+  funkce** — tedy před kontrolou `s_store.ready`, před získáním mutexu i před
+  zápisem. Na všech třech chybových cestách zůstala v trvalé historii věta
+  *„uložena kalibrace napětí"* o změně, která se neprovedla.
+  (b) `errlog_erase()` zahazovala výsledek všech 64 `w25q_erase_sector` přes
+  `(void)`, bezpodmínečně nastavila `s_el_ready = 1` a oba volající hlásili
+  *„smazáno"*.
+- **Proč na tom záleží:** (a) podle záznamu o změně kalibrace se později vysvětluje
+  skok v naměřených datech — falešný záznam pošle analýzu hledat příčinu jinam.
+  (b) po nedokončeném mazání se hlava vrátí na začátek regionu, zatímco ve zbytku
+  zůstanou **starší záznamy s vyšším `seq`**, které příští `errlog_init()` najde
+  jako „nejnovější" a ustaví hlavu na špatném místě.
+- 🔑 **Obojí mělo v témže projektu hotovou předlohu, jen o pár souborů dál.**
+  `datalog_erase_all()` návratové hodnoty kontroluje a stav posouvá jen při `ok`;
+  UART `flightrec test` má v komentáři přímo *„Hlas vysledek, ne zamer"*. Je to
+  `L-0012` v čisté podobě: dvě symetrické instance, z nichž jedna zaostala.
+- **Oprava:** `errlog_put` v `calib_save` až za zápis a podmíněné úspěchem;
+  `errlog_erase()` vrací `bool`, při chybě přeruší smyčku a stav **neposouvá**,
+  oba volající hlásí výsledek (`"smazáno"` / `"SELHALO (log zůstává)"`).
+  ⚠️ Neúspěšný zápis patří pod `ERRLOG_K_STORAGE`, ne pod „nastavení se změnilo".
+- **Pravidlo:** **Záznam o akci patří ZA akci a pod její návratovou hodnotu.**
+  Když se hlásí na začátku, není to záznam o tom, co se stalo, ale o tom, co se
+  zamýšlelo — a to je horší než mlčet, protože to zní stejně důvěryhodně.
+  Totéž platí pro hlášku volajícímu: hlas výsledek, ne záměr.
+- **Detekce:** `grep -n "errlog_put\|(void)w25q_\|(void)f_" CM7/Core/Src/*.c` — u
+  každého výskytu ověř, že je ZA operací, o které mluví, a že je na ní podmíněný.
+  Obecně: první příkaz funkce, který něco zaznamenává, je vždy podezřelý.
+- **Commit:** `15aa8d3` (F-0094), `a9af9de` (F-0099), viz
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md`
+- **Stav:** aktivní
+
+### L-0052 — Obnova uloženého stavu není změna stavu: setter s vedlejším účinkem potřebuje tichou variantu
+
+- **Datum:** 2026-09-17
+- **Oblast:** perzistence / trvalý záznamník chyb
+- **Symptom:** Po **každém studeném startu** se do trvalé historie chyb zapsala věta
+  `NASTAV  interval logu 10s -> 60s`, ačkoli uživatel nic nezměnil. Navíc se tím
+  zkreslilo počítadlo `repeat` u příští **skutečné** změny (druhé volání padlo do
+  rate-limitu, který je na DRUH, ne na podtyp, a jen inkrementovalo `s_el_pending`).
+- **Příčina:** `datalog_set_period_s()` / `datalog_set_store()` logovaly **každou**
+  změnu hodnoty. `syscfg_load()` je při bootu volá, aby obnovil uložené nastavení —
+  a protože statiky startují na výchozích hodnotách (10 s / AUTO), setter to
+  vyhodnotil jako změnu. Účel `ERRLOG_K_CFG` je přitom v `errlog.h` výslovně
+  **odlišit zásah uživatele od HW události**, aby skok ve statistice nevypadal
+  jako porucha — falešný záznam dělá přesně opak.
+- 🔑 **Proč to není jen kosmetika:** je to trvalá historie, podle které se později
+  rozhoduje, čím byl způsobený skok v měření. Záznam, který lže o tom, že zásah
+  proběhl, pošle analýzu stejně špatným směrem jako chybějící záznam — jen
+  sebejistěji (tatáž třída jako `L-0026`: „tichý ořez si vždy najde někoho
+  nevinného, koho obvinit").
+- **Oprava:** `datalog_cfg_quiet(bool)` potlačí záznam po dobu obnovy; uživatelské
+  cesty (UART `datalog`, okno Datalog přes `qspi_req_service`) zůstávají hlasité.
+- **Pravidlo:** **Když setter kromě nastavení hodnoty něco HLÁSÍ (log, alarm,
+  notifikace), ptej se, kdo ho ještě volá — obnova uloženého stavu při bootu
+  není zásah uživatele a hlásit se nesmí.** Buď dej setteru tichou variantu, nebo
+  obnovu veď mimo něj; „nastav" a „nastav a oznam" jsou dvě různé operace.
+- **Detekce:** u každého setteru, který volá `errlog_put`/`alarm_*`/`printf`,
+  vyjmenuj v komentáři volající a u každého uveď, jestli má být hlasitý.
+  Křížem: `grep -n "errlog_put" CM7/Core/Src/*.c` a u každého výskytu ověřit,
+  že se na tu cestu nedá dostat z `syscfg_load()`.
+- **Commit:** `6d1b6e5` (spolu s L-0050), viz `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nález F-0093
+- **Stav:** aktivní
+
+### L-0051 — Když platnost ukazatele hlídá samostatný příznak, pořadí zápisu je invariant
+
+- **Datum:** 2026-09-17
+- **Oblast:** souběh mezi úlohami / perzistence
+- **Symptom:** `datalog_init()` (re-init při přepnutí úložiště, běží v UartTasku)
+  nuloval `s_be = NULL; s_ready = false;` **v tomto pořadí**. Mezi těmi dvěma
+  příkazy platilo `s_ready == 1 && s_be == NULL`, takže souběžný čtenář
+  (`datalog_get_status` z UiTasku, 2×/s) dereferencoval NULL → HardFault.
+- 🔴 **Komentář nad tím tvrdil, že je čtenáři chrání mutex** — jenže **žádný ze
+  čtyř čtenářů QSPI mutex nebere** (a záměrně: drží ho i minuty trvající
+  `datalog_erase_all`). Popsaná ochrana neexistovala, a skutečný následek nebyl
+  „hlásil NEDOSTUPNE", jak komentář předpokládal, ale pád. Už potřetí v projektu
+  komentář popisoval obranu, kterou kód nedělá (`L-0028`).
+- 🔑 **Reachability byla těsnější, než jak to vypadá:** tlačítko na přepnutí
+  úložiště **je v okně Datalog** a totéž okno volá `datalog_get_status()` v každém
+  tiku — ty dvě úlohy tedy běží současně právě kvůli tomu jednomu stisku.
+  „Okno je jen dvě instrukce" není argument, když ho obě strany otevírají naráz.
+- **Oprava:** (1) pořadí obráceno a obě hranice oddělené `__DMB()` (díky `"memory"`
+  clobberu je to bariéra i pro překladač); na konci initu opačné pořadí —
+  `s_be` a hlava hotové **dřív**, než `s_ready` pustí čtenáře dovnitř.
+  (2) Čtenáři si ukazatel čtou **jednou do lokálu** a testují ho vedle příznaku;
+  zastaralý ukazatel je bezpečný (backendy mají statickou dobu života), NULL nebyl.
+- **Pravidlo:** **Dvojice „ukazatel + příznak platnosti" se zapisuje v opačném
+  pořadí při zapnutí a při vypnutí — příznak se shazuje PRVNÍ a zvedá POSLEDNÍ —
+  a mezi ně patří bariéra.** Čtenář, který ukazatel dereferencuje, si ho musí
+  přečíst jednou do lokálu; opakovaný dotaz uprostřed funkce už může vidět jiný stav.
+- **Detekce:** najdi každou dvojici `X = NULL` / `X_ready = false` v jednom bloku
+  a ověř pořadí. Obecně: u každého „guard flag + pointer" se ptej, co vidí čtenář
+  MEZI těmi dvěma zápisy.
+- **Commit:** `a80caed`, viz `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nález F-0090
+- **Stav:** aktivní
+
+### L-0050 — Nové pole v perzistované struktuře patří do TÉ poloviny obnovy, kde jeho hodnota ještě žije
+
+- **Datum:** 2026-09-17
+- **Oblast:** perzistence nastavení / chování po resetu
+- **Symptom:** Nastavení datalogu (zap/vyp, úložiště, perioda) **nepřežilo teplý
+  reset**. Po reflashi, po Menu → Restart, po watchdogu i po NRST se vrátilo na
+  výchozí `ON` / `AUTO` / `10 s`. Uživatel, který záznam vypnul, ho měl po
+  restartu zase zapnutý a psalo se do flash.
+  🔴 **Přes power-cyklus to fungovalo**, takže to vypadalo jako náhoda — a právě
+  proto to zůstalo deset dní neviditelné.
+- **Příčina:** `syscfg_load()` je rozdělená na dvě poloviny. Nad `return` patří
+  pole, která **nejsou v BKP** a flash je jejich jediný zdroj; pod `return` pole,
+  která BKP drží a při teplém resetu z ní přijdou novější. Tři pole datalogu,
+  přidaná 2026-09-07 (magic `"SCG0"` → `"SCG1"`), skončila **pod** `return` —
+  přestože v BKP nejsou. Zařadila se prostě tam, kam se dopsala nejsnáz.
+- 🔑 **Soubor to pravidlo měl napsané a stejně se porušilo.** Komentář nad tou
+  polovinou říká *„Čteme VŽDY (i warm reset): `g_fx_enabled` NENÍ v BKP, flash je
+  jeho jediný zdroj"* — jenže je to pravidlo o **kategorii**, ne o konkrétním poli,
+  takže ho při přidávání nikdo nemusel spojit s tím, co zrovna píše.
+- **Oprava:** tři řádky přesunuty nad `return`, k ostatním polím, která BKP nedrží
+  (fx, meas, survey, monitor, layout, enc_div). Pořadí perioda → úložiště zachováno.
+  ⚠️ **Muselo se opravovat spolu s `L-0052`** — bez toho by se falešné záznamy
+  o „změně nastavení" rozšířily ze studeného startu na každý reset.
+- **Pravidlo:** **Když je obnova stavu rozdělená podle toho, kde ta hodnota ještě
+  žije (záložní doména / flash / nikde), zařaď nové pole VÝČTEM toho druhého
+  zdroje, ne dojmem.** U perzistence vždy ověř obě cesty resetu zvlášť: studený
+  start a teplý reset jsou dva různé stavy a feature může fungovat jen v jednom.
+- **Detekce:** `scripts/check_lessons.sh` — sekce „pod `if (g_syscfg_bkp_valid)
+  return;`". Kontrola je **rozdílová**: seznam „co drží BKP" se nevypisuje ručně,
+  odvozuje se z toho, co `rtc.c` z BKP doopravdy obnovuje. Hlásí jak volání funkce
+  pod returnem, tak globál, který `rtc.c` nezná. Ověřeno pozitivní kontrolou na
+  obou podobách vady (`L-0039`).
+- **Commit:** `6d1b6e5` + `165023c` (kontrola), viz
+  `docs/audit/2026-09-16_perzistence-zaznamniky.md`, nálezy F-0089 a F-0093
+- **Stav:** aktivní
+
+### L-0049 — Rozlušti binární `a`/`b` do věty JEDNOU, na zdroji, ne u každého konzumenta
+
+- **Datum:** 2026-09-13
+- **Oblast:** `errlog.h`/`flightrec.c` (trvalý zaznamník chyb), IPC protokol, web SPA
+- **Symptom:** uživatel nahlásil okno CHYBY jako "neprehledne". Skutečná vada
+  nebyla v layoutu — byla v OBSAHU: okno tisklo `a`/`b` (dvě `uint32_t` z
+  `errlog_put`) jako holá čísla `"12345/6789"` bez popisku. Význam těch dvou
+  čísel se přitom **liší podle `kind`** (u `ERRLOG_K_UART` je to ORE/(FE|NE<<8|
+  PE<<16), u `ERRLOG_K_CFG` je to nová/stará hodnota nastavení, u `ERRLOG_K_REF`
+  sticky bity Si5356…) — čitelný byl jen tomu, kdo šel číst zdrojový kód
+  volajícího `errlog_put`.
+- **Příčina/nález:** dekódovací znalost ("co `a`/`b` u tohoto `kind` znamenají")
+  neměla ŽÁDNÉ centrální místo — byla rozptýlená po jedenácti call-sitech
+  `errlog_put` v šesti různých souborech. Když přišel druhý konzument (web,
+  na žádost "muzes ho pridat i do webu?"), měl dvě možnosti: duplikovat tu
+  znalost podruhé v JS (a časem se s displejem rozejít — přesně to varuje
+  `sens_valid`/`IPC_CFG_*` sekce v CLAUDE.md), nebo poslat surová čísla a nechat
+  prohlížeč hádat totéž, co uhodnout nešlo ani na displeji.
+- **Řešení:** `errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)`
+  (`flightrec.c`, deklarace `errlog.h`) je JEDINÉ místo, které zná mapování
+  `kind`→význam `a`/`b`/`sub`. Displej (`app_gpsdo_render_errlog`) i nový IPC
+  kanál `ipc_errlog_xfer_t` (`ipc_errlog_service`, v17) volají tutéž funkci;
+  web (`build_errlog_json`, SPA) dostane už HOTOVOU větu (`"sbernice I2C4, chyb=
+  12, resetu touche=3"`) a nemusí znát nic o `kind` kromě toho, jakou barvu si
+  k němu domyslet (CRASH=červená, BOOT/CFG=ztlumené, jinak amber — tahle
+  trojice je jediná věc, která se v SPA zopakovala, protože je to jen barva,
+  ne sémantika).
+- **Proč to nebylo vidět dřív:** okno CHYBY existovalo přes rok bez stížnosti —
+  vývojář, který ho psal, zdrojový kód `errlog_put` zná zpaměti, takže mu
+  "12345/6789" dávalo smysl. Teprve pohled uživatele, který zdrojový kód nečte,
+  odhalil, že displej mluvil jazykem implementace, ne jazykem události.
+- **Pravidlo:** Když se strukturovaná binární data (kód důvodu, bitová maska,
+  pár čísel s významem závislým na typu záznamu) zobrazují na VÍCE než jednom
+  místě (displej, log, web, UART výpis…), dekódovací funkce patří K DATŮM
+  (headeru/implementaci, co je vytváří), ne ke každému zobrazovači zvlášť.
+  Nový konzument tím dostane čitelnost zdarma a nemůže se se starým rozejít.
+- **Detekce:** žádná automatická — nález vznikl při plnění uživatelského
+  požadavku ("log se vypisuje neprehledne"), ne z auditu.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
+### L-0048 — Malé `N` odhalilo reálnou "mrtvou zónu" na 150–200 kHz (ne jen artefakt testu)
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), metodika měření
+- **Symptom:** kompletní sweep I2C4 (25–500 kHz, `N=25`, všechna tři
+  zařízení, bez resetu desky) ukázal, že 150 a 200 kHz dávají **100 %
+  chyb na VŠECH třech zařízeních najednou** s `SDA` drženou dole
+  (skutečně zavěšená sběrnice) — ale 250 kHz a výš (250/300/400/500)
+  TMP117 dává znovu čistou nulu a FT5x06/ATtiny čistý NACK (`SDA=1`,
+  žádné zavěšení).
+- **Příčina/nález:** předchozí dvě měření (velké `N`) měla nad ~125 kHz
+  jen kontaminovaná data, protože velké `N` samo způsobovalo reset desky
+  (TODO #244) — takže se nedalo rozlišit „je to vlastnost sběrnice" od
+  „je to artefakt vlastního testu". S `N=25` (žádný reset) se ukázalo,
+  že **mrtvá zóna na 150–200 kHz je reálná, opakovatelná vlastnost**,
+  ne testovací artefakt — a je úzká: hned o 50 kHz výš (250 kHz) TMP117
+  běží čistě. Mechanismus neznámý (možná rezonance/odraz na vedení
+  přesně v tom pásmu kombinace SCLH/SCLL, možná interakce s kapacitou
+  sběrnice) — nezkoumáno dál, protože provozní rychlosti (50/75/400 kHz)
+  tu zónu neprotínají.
+- **Proč to nebylo vidět dřív:** dvě předchozí měření odvodila
+  „nad 125 kHz vše kontaminováno" ze SPRÁVNÉHO pozorování (velké `N`
+  resetovalo desku), ale tenhle správný závěr **zakryl jiný, skutečný
+  jev** v datech, která byla technicky nedůvěryhodná ze zcela jiného
+  důvodu. Oprava metodiky (malé `N`) neprokázala jen "400 kHz je OK" —
+  odhalila i něco, co se předtím nedalo vidět vůbec.
+- **Pravidlo:** **Když je měření kontaminované JEDNÍM konkrétním
+  mechanismem (tady: reset desky od velkého `N`), neuzavírej celé
+  frekvenční/parametrické pásmo jako „nedůvěryhodné" navždy — oprav
+  ten jeden mechanismus a změř to pásmo znovu.** „Kontaminováno" a
+  „nemá to zajímavé vlastnosti" jsou dvě různá tvrzení; první nedokazuje
+  druhé. Prázdné místo v datech je díra k zalátání, ne důvod ho navěky
+  ignorovat.
+- **Detekce:** žádná automatická — čistě HW nález z opakovaného měření
+  s opravenou metodikou.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
+### L-0047 — Přepnutí I2C rychlosti není "levná" operace, když je na sběrnici bit-bang slave
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), regrese vlastní úpravou, HW nález za běhu
+- **Symptom:** po naflashování a power-cyklu s `i2c4_speed_select()`
+  (L-0045/L-0046) dotyk vůbec nefungoval, boot splash se neukázal, displej
+  byl ~7 s černý a hlavní obrazovka se ukázala pozdě, screensaver se
+  aktivoval ~11,5 s po zapnutí — reálný HW test, ne odhad.
+- **Příčina (✅ POTVRZENO druhým HW testem — oprava fungovala):**
+  `i2c4_speed_select()` do té doby dělal `HAL_I2C_DeInit()` +
+  `HAL_I2C_Init()` (stejný vzor jako starší `i2c4_recover()`/
+  `i2csp_set_timing`). DeInit/Init ale přes `MspDeInit`/`MspInit`
+  **překonfiguruje GPIO SCL/SDA** (AF → jiný mode → AF) — a to je přesně
+  ta třída hranového přechodu na sběrnici, před kterou kód u
+  `s_bl_settle` (`freertos_task_ui.c`) roky varuje: „zápis jasu tesně
+  následovaný START-em touch čtení mu rozhodí slave automat → drží SDA →
+  mrtvá I2C4 až do power-cyklu". Boot bring-up (`main.c`) dělal přesně
+  tuhle sekvenci **bez jakékoli klidové mezery**: zápis jasu do ATtiny
+  (50 kHz) → `i2c4_speed_select` (dřívější DeInit/Init) → `ft5x06_probe` —
+  runtime cesta má aspoň 150 ms `s_bl_settle`, boot cesta žádnou.
+- **Oprava:** `i2c4_speed_select()` přepsán na **minimální RM0399 postup**:
+  `PE=0` (jen bit v `CR1`, nesahá na GPIO) → přímý zápis `TIMINGR` → `PE=1`.
+  Žádný `HAL_I2C_DeInit`/`Init`, žádné `MspInit`, žádná GPIO hrana. Navíc
+  doplněna 150ms klidová mezera do boot sekvence (`main.c`, mezi zápisem
+  jasu a přepnutím rychlosti) jako levná pojistka navíc, i když už by
+  nemusela být nutná.
+- **Pravidlo:** **Když na sběrnici sedí bit-bang slave (firmware, ne
+  hardwarový blok, dělá časování), NEPOUŽÍVEJ k přeladění rychlosti nic
+  těžšího, než co periferie/registr doopravdy vyžaduje.** `HAL_I2C_DeInit`/
+  `Init` je "bezpečný vzor" jen ve smyslu "nespustí `Error_Handler()`" — o
+  GPIO vedlejších účincích nic neříká. Než se sáhne po hotovém vzoru
+  z jiného místa v kódu (`i2c4_recover`), ověř, že ten vzor běžel v STEJNÉM
+  kontextu (frekvence volání, blízkost k zápisu do citlivého slave) — vzor
+  bezpečný v diagnostickém nástroji (`i2cspeed`, izolované přepnutí jednou
+  za krok, mimo produkční provoz) nemusí být bezpečný v produkční cestě
+  (přepnutí na KAŽDÉM touch pollu, těsně po zápisu jasu).
+- **Detekce:** žádná automatická — build i audit prošly čistě, je to
+  funkční/HW vada. Odhaleno jen reálným power-cyklem na desce.
+- **Commit:** `7a1cecb`
+- **Stav:** ✅ aktivní, potvrzeno na HW — dotyk, boot splash i čas do
+  hlavní obrazovky po power-cyklu s opravou v pořádku (uživatel 2026-09-13:
+  „ok funguje").
+
+### L-0046 — Per-target rychlost sběrnice: kdo ji nenastaví, zdědí cizí
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), regrese vlastní úpravou
+- **Symptom:** po zavedení `i2c4_speed_select()` (L-0045 — 50 kHz ATtiny,
+  200 kHz FT5x06/TMP117) přestaly tři diagnostické UART příkazy (`panel`,
+  `scanner`, `i2c4`) spolehlivě fungovat s ATtiny — všechny tři osloví 0x45
+  přímo nebo v rámci širšího skenu, ale žádný z nich `i2c4_speed_select`
+  nevolal. V provozu konverguje "zbytková" rychlost sběrnice k 200 kHz
+  (touch poll ~15 Hz + TMP117 poll 2 Hz běží mnohem častěji než zápis do
+  ATtiny), takže tyhle příkazy by na 200 kHz spuštěné za běhu tiše falešně
+  hlásily "ATtiny neodpovídá", i když žije.
+- **Příčina:** zavedením per-target přepínání rychlosti se rychlost sběrnice
+  změnila z **globální konstanty** (jedna hodnota, platí vždy) na **sdílený
+  proměnlivý stav** (platí, dokud ji někdo jiný nezmění) — a při hledání
+  všech míst, která na I2C4 sahají, se prohledaly jen "produkční" spotřebitele
+  (`main.c`, oba FreeRTOS tasky), ne diagnostické UART příkazy ve stejném
+  souboru o pár set řádků dál.
+- **Oprava:** `i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ)` doplněno do
+  všech tří příkazů. 🔑 **U `scanner`/`i2c4` (přes sdílenou `uart_i2c4_probe`)
+  to musí být UVNITŘ per-adresa smyčky, ne jednou před ní** — mutex se mezi
+  adresami pouští (aby touch/TMP117 „dýchaly"), takže by jiný task mohl
+  rychlost mezitím vrátit na 200 kHz. `panel` mutex mezi probe/power-on
+  nepouští, takže mu stačí nastavit jednou na začátku KAŽDÉHO mutex-bloku
+  (má dva, oddělené DSI kroky mezi nimi).
+- **Pravidlo:** **Když sdílený stav periferie (rychlost, konfigurace, adresa…)
+  přestane být konstantní a stane se závislým na tom, kdo tam sáhl
+  posledně, promysli VŠECHNY konzumenty — ne jen ty, které jsi měnil.**
+  Konkrétně: (1) vyhledej *všechny* volající té periferie v celém projektu,
+  ne jen v souborech, které jsi právě upravoval; (2) u každého, co drží
+  mutex/zámek PŘES víc transakcí najednou, stačí nastavit stav jednou; (3) u
+  každého, co zámek MEZI transakcemi pouští, musí být nastavení stavu
+  UVNITŘ každé transakce (jinak ho někdo jiný mezitím změní).
+- **Detekce:** žádná automatická (build i audit prošly čistě — jde o
+  logickou/funkční vadu, ne syntaktickou). Odhaleno až při psaní přehledové
+  tabulky konzumentů pro dokumentaci — **sepsání kompletního přehledu "kdo
+  sahá na X" je samo o sobě metoda pro odhalení chybějících míst.**
+- **Commit:** `65773b7`
+- **Stav:** aktivní
+
+### L-0045 — Kmitočtový limit bit-bang I2C slave = jeho vlastní CPU takt
+
+- **Datum:** 2026-09-13
+- **Oblast:** periferie (I2C4), metodika měření
+- **Symptom:** dva samostatné sweepy chybovosti (2026-09-10, 2026-09-12 se
+  třikrát tvrdšími pull-upy) shodně naměřily koleno mezi 75 a 100 kHz, kde
+  začíná NACKovat jen ATtiny na 0x45 — dotyk (FT5x06, 0x38) a teploměr
+  (TMP117, 0x48) na téže sběrnici zůstávaly čisté až do 100 kHz. Oba
+  dokumenty explicitně nechaly otevřenou otázku **proč** koleno leží zrovna
+  tam — jestli je to firmware slave, nebo náběžná hrana (pull-up × kapacita).
+- **Příčina:** ATtiny na desce má **CPU CLK 1 MHz**. Je to bit-bang I2C
+  slave — SCL/SDA časování dělá firmware na ATtiny polling smyčkou/přerušením,
+  ne hardwarový I2C blok — a při 1 MHz jádrovém taktu nestíhá obsloužit hrany
+  nad ~75 kHz. FT5x06 a TMP117 mají oba hardwarový I2C blok, takže tenhle
+  limit na ně neplatí a mohly by běžet rychleji, aniž by to ATtiny ohrozilo.
+- **Oprava:** I2C4 dostala dvě provozní rychlosti (`i2c4_speed_select()` v
+  `i2c.c`) — 50 kHz pro ATtiny (beze změny, bezpečná rezerva do ~75 kHz),
+  200 kHz pro FT5x06+TMP117. Přepíná se podle cílového zařízení PŘED každou
+  transakcí, pod `i2c4MutexHandle`.
+- **Pravidlo:** **Když bit-bang slave omezuje rychlost celé I2C sběrnice,
+  zjisti jeho CPU takt DŘÍV, než začneš měřit sweep chybovosti napříč
+  všemi zařízeními na sběrnici najednou.** Pevná (fyzikální) mez daná
+  hodinovým kmitočtem firmwaru slave je jiná třída limitu než integrita
+  signálu (pull-up/kapacita/náběžná hrana) — první se nedá obejít NIČÍM na
+  master straně ani na desce (silnější pull-up nepomůže, protože slave stejně
+  nestihne zpracovat data), druhá ano. Škrtit VŠECHNA zařízení na sběrnici na
+  rychlost nejpomalejšího slave je zbytečné, pokud ten slave je jediný
+  bit-bang mezi hardwarovými I2C periferiemi — per-target `TIMINGR` přepínání
+  (bezpečný vzor: `DeInit` → změna `Init.Timing` → `Init`, nikdy
+  `MX_I2C4_Init` s jeho `Error_Handler()` trapem) škáluje sběrnici na
+  rychlost KAŽDÉHO zařízení zvlášť.
+- **Detekce:** žádná automatická — šlo o doménovou znalost HW (datasheet
+  ATtiny), kterou žádný sweep ani analyzátor nemůže odvodit ze samotné
+  chybovosti. ⚠️ **200 kHz pro FT5x06/TMP117 samotné (bez souběžné zátěže
+  ATtiny) zůstává ⬜ neověřeno na HW** — obě existující měření mají čistá data
+  jen do 100 kHz, vše nad 125 kHz je v obou dokumentech označeno jako
+  kontaminované zavěšenou sběrnicí (viz oprava bodu 3 v
+  `docs/audit/2026-09-10_i2c.md` — i to tvrzení dřív citovalo nedůvěryhodná
+  data). Ověřit `i2cspeed` s malým `N`, jen `0x38`/`0x48`.
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
+### L-0044 — Ne každou fragilní `-I` cestu se má odstranit stejným trikem
+
+- **Datum:** 2026-09-13
+- **Oblast:** build (CubeMX regen, `CM7/.cproject`, libui/libprim architektura)
+- **Symptom:** `CM7/.cproject` má čtyři `-I` cesty (`app`, `libui/include`,
+  `libprim/include`, `libprim/src`), které byly jednou (2026-08-29) fragilní
+  a vyžádaly manuální opravu. Po opravě L-0042/L-0043 (odstranění závislosti
+  na `-I` u `scpi.h` v CM4) padla otázka, jestli udělat totéž i tady.
+- **Příčina zjištěná při zkoumání:** rozšířený scan (`find_fragile_includes.py`
+  varianta pro CM7) zprvu ukázal jen 12 fragilních řádků — ale to bylo
+  neúplné, protože skript hledal jen **uvozovkové** `#include "x.h"`.
+  `libui/src` a `libprim/src` (73 souborů, 169 řádků) uvnitř sebe používají
+  **úhlové** `#include <ui/button.h>`, `#include <prim/fb.h>` — záměrný
+  návrhový vzor (obě knihovny se includují, jako by byly externí/instalované,
+  přesně jak to popisuje `CLAUDE.md`: „libprim nezná ui/*", „libui nezná
+  app/*"). Úhlový include **nemá fallback** na „hledej nejdřív ve složce
+  including souboru" (na rozdíl od uvozovkového) — je to čistě `-I`
+  závislost, a je to 169 míst, ne 12.
+- **Rozhodnutí (ne oprava):** relativní `#include` trik z L-0042 se sem
+  **nepřenesl**. Přepsat 169 úhlových includů na relativní uvozovkové by
+  bořilo záměrnou architekturu (dvě knihovny jako samostatné moduly) za
+  problém, který se od jednorázového incidentu 2026-08-29 (šlo o mezeru
+  v Release configu při prvním zavedení složek, ne o „regen to maže
+  pořád") **neopakoval přes čtyři další regeny** (2026-09-01/06/12/13).
+  Riziko refaktoru > riziko problému.
+- **Oprava, která místo toho proběhla:** `check_regen()` v `scripts/build.sh`
+  rozšířena o kontrolu přítomnosti všech čtyř `-I` cest v `CM7/.cproject`
+  (`libprim/include`, `libui/include`, `${ProjName}/app`) — **detekce**, ne
+  odstranění závislosti. Když se to příště přece jen ztratí, `build.sh` to
+  nahlásí PŘED buildem, ne až jako záhadný `fatal error: ui/button.h`.
+- **Pravidlo:** **Cena odstranění `-I` závislosti (relativní `#include`)
+  škáluje s počtem míst, která na ní závisí, a úhlové includy tuhle cenu
+  zvyšují — nemají fallback, takže je nejde postupně/částečně opravit.**
+  Než se rozhodne mezi „odstranit závislost" (L-0042 vzor) a „jen ji
+  hlídat" (`check_regen()`), spočítej **reálný** počet závislých míst
+  (včetně `<...>` includů, ne jen `"..."`) A frekvenci opakování problému.
+  Malý počet + opakující se incident → odstranit. Velký počet + jeden
+  historický incident → hlídat, nepřepisovat záměrnou architekturu.
+- **Detekce:** `check_regen()` (3 nové kontroly, ověřené kontrolovaným
+  pokusem — zdravý strom mlčí, každá ze tří cest jednotlivě odstraněná
+  z `.cproject` hlásí).
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
+### L-0043 — "Generate IRQ handler" vypnuto NESTAČÍ, když je handler mimo USER CODE
+
+- **Datum:** 2026-09-13
+- **Oblast:** build / dvoujádro (CubeMX regen, CM4 crash black-box)
+- **Symptom:** V `.ioc` se u `NVIC2.HardFault_IRQn` (CM4) odškrtlo "Generate IRQ
+  handler" (6. pole `false`) — stejná hodnota, jakou má CM7 už od 2026-08-16 a
+  jejíž `naked` handler přežil minimálně tři dřívější regeny. Po reálném
+  "Generate Code" v IDE ale CubeMX **celou funkci `HardFault_Handler` na CM4
+  smazal** (i doxygen komentář nad ní) — přesně ta vada, které měl flag
+  zabránit.
+- **Příčina:** vypnutý "Generate IRQ handler" řekne CubeMX jen "nepiš přes
+  tohle svůj stub" — NEŘÍKÁ "nesahej na obsah". Regen dál skenuje soubor,
+  pozná svůj vlastní generovaný blok (doxygen `@brief This function handles
+  Hard fault interrupt.` + jméno funkce) a když handler přestane být
+  "potřebný" (flag vypnutý), blok **aktivně odstraní** jako už nepoužívaný —
+  bez ohledu na to, že v něm mezitím byl náš `naked` kód. CM7ho handler tuhle
+  osudu unikl ze zcela jiného důvodu: leží **uvnitř** `/* USER CODE BEGIN 1 */
+  ... END 1 */` a nemá CubeMX doxygen komentář — regen do USER CODE obsahu
+  nikdy nesahá, takže ho ani nerozpoznal jako "svůj" blok k úklidu.
+- **Oprava:** `HardFault_Handler` na CM4 přesunut do stejného slotu jako na
+  CM7 — definice do `USER CODE BEGIN 1`/`END 1` v `stm32h7xx_it.c`, prototyp
+  do `USER CODE BEGIN EFP`/`END EFP` v `stm32h7xx_it.h` (regen smazal i
+  prototyp, ne jen tělo). Ověřeno reálným "Generate Code" v IDE (ne
+  syntetickým testem) + `./scripts/build.sh Release BOTH` (0 varování) +
+  `nm` (`HardFault_Handler` je `T`, definovaný silný symbol, ne weak default).
+- **Pravidlo:** **Regen-safe vlastní handler potřebuje OBĚ pojistky najednou:**
+  (1) v `.ioc` vypnuté "Generate IRQ handler" (jinak regen přepíše obsah
+  svým stubem) **a** (2) umístění celého kódu (tělo i prototyp) uvnitř
+  `USER CODE` bloků (jinak regen i s vypnutým flagem svůj rozpoznaný blok
+  odstraní). Jedna bez druhé nestačí — a chybu neodhalí nic než skutečný
+  regen, protože obě chybové cesty (přepsání stubem / smazání) vypadají
+  na první pohled jinak, ale obě mají stejný symptom: zmizelý kód.
+- **Detekce:** `check_regen()` v `scripts/build.sh` (`grep -c naked` v
+  `stm32h7xx_it.c`) — hlásí zmizení bez ohledu na to, KTERÝ z obou
+  mechanismů selhal. Nově navíc kryté i tím, že kód leží v `USER CODE`
+  (self-evidentní ochrana, ne jen kontrola po škodě).
+- **Commit:** (viz git log — commit bezprostředně po tomto zápisu)
+- **Stav:** aktivní
+
+### L-0041 — `grep -c … || echo 0` v shellu dá "0\n0", ne "0"
+
+- **Datum:** 2026-09-12
+- **Oblast:** build / styl (shell skriptování)
+- **Symptom:** `check_regen()` v `scripts/build.sh` měla dvě pozitivní kontroly
+  (chybějící include cesty, chybějící `naked` handler) a OBĚ mlčely i na
+  uměle rozbitém stromu — vypadalo to jako „kontrola je hotová a funguje",
+  přitom nikdy nic nehlásila.
+- **Příčina:** `grep -c PATTERN file` při **nulové shodě** vypíše `0` **a
+  současně** skončí s návratovým kódem 1 (grep signalizuje "nic nenalezeno"
+  přes exit code, ne přes prázdný výstup). `n="$(grep -c … || echo 0)"` proto
+  při nulové shodě spustí OBĚ větve `||` — `grep` vypíše `0` na stdout, exit
+  kód 1 spustí `echo 0`, a `$(...)` posbírá výstup obojího → `n` je řetězec
+  `"0\n0"`. `[ "$n" -lt 2 ]` na takovém vstupu spadne na
+  `integer expected`, `set -e` (respektive nezachycená chyba testu) kontrolu
+  potichu přeskočí.
+- **Oprava:** sdílená funkce `cnt()` (`scripts/build.sh`) — `grep -c … || true`
+  (ne `|| echo 0`, aby se druhá větev nikdy nevypsala) + `case "$n" in
+  ''|*[!0-9]*) n=0 ;; esac`, která cokoli, co není čistě číslo, převede na `0`.
+- **Pravidlo:** **Nikdy `$(prikaz || echo NAHRADA)` u příkazu, který sám umí
+  vypsat výstup i při neúspěchu** (`grep -c`, `wc -l` na neexistující soubor
+  přes pipe apod.) — `||` nahradí až prázdný/chybějící výstup, ne výstup,
+  který přišel spolu s nenulovým exit kódem. Bezpečný vzor: zachytit syrový
+  výstup (`|| true`, aby `$(...)` neskončilo na chybě), pak ho **validovat**
+  (regex na číslo), ne slepě věřit, že je to jedna hodnota.
+- **Detekce:** kontrolovaný pokus s třemi větvemi (zdravý strom → ticho;
+  odstraněný `naked` → hlásí; odstraněné include cesty → hlásí) —
+  `scripts/build.sh` sám o sobě nemá jednotkové testy, takže jde o manuální
+  ověření při každé úpravě `check_regen()`/`cnt()`. Obecný test na tuto třídu
+  chyby: `n="$(grep -c nic /dev/null || echo 0)"; [ "$n" = "0" ]` musí projít
+  (dřívější kód by na `/dev/null` dal `"0\n0"` a test by spadl).
+- **Commit:** `1e9e211`
+- **Stav:** aktivní
+
+### L-0042 — Fragilní `-I` v `.cproject` šlo obejít, ne jen hlídat
+
+- **Datum:** 2026-09-13
+- **Oblast:** build / dvoujádro (CM7↔CM4 sdílené soubory)
+- **Symptom:** `CM4/.cproject` má dvě `-I../../CM7/Core/Inc` položky (Debug+
+  Release × C/C++ compiler), které CubeMX regenerace maže při KAŽDÉM běhu
+  (je to XML mimo `USER CODE`, nezměnitelné). `check_regen()` (viz L-0041)
+  to jen hlásila — oprava byla „`git checkout -- CM4/.cproject`" po každém
+  regenu, navěky.
+- **Příčina:** šest `#include "X.h"` řádků (`scpi.c`, `meas_math.c`,
+  `ipc_scpi.c` v `CM7/Core/Src` — fyzicky sdílené soubory, linkované i do
+  CM4 přes `CM4/.project`; a `main.c`, `httpd_min.c`, `scpi_tcp.c` v CM4
+  samotném) psalo bare jméno hlavičky (`scpi.h`, `version.h`, `meas_math.h`,
+  `ipc_shared.h`, `meas_present.h`) místo cesty — tím se řešení jména
+  headeru odevzdalo kompilátorovému `-I` seznamu, tedy `.cproject`.
+  Zbytek headerů, které tyto soubory potřebují (`meas_math.h`/`datalog.h`
+  ze `scpi.h`), leží ve STEJNÉ složce jako `scpi.h` (`CM7/Core/Inc`) — ty se
+  řeší samy, protože GCC quote-include vždy nejdřív zkusí složku
+  *includujícího souboru*, a to bylo od začátku regen-safe.
+- **Oprava:** těch šest `#include` se přepsalo na cestu relativní k
+  **fyzickému umístění souboru na disku** (`#include "../Inc/scpi.h"` v
+  `CM7/Core/Src/scpi.c`, `#include "../../../CM7/Core/Inc/scpi.h"` v
+  `CM4/Core/Src/main.c` a `CM4/LWIP/App/*.c`) — přesně vzor, který `ipc_cm4.h`
+  používal pro `ipc_shared.h` už dřív. GCC řeší quote-include vůči adresáři
+  souboru, který `#include` napsal, ne vůči CWD ani `-I` — a ten adresář je
+  pevný bez ohledu na to, které jádro soubor zrovna kompiluje (fyzická cesta
+  na disku je jen jedna). `.cproject` se **nemusel měnit** — jeho `-I` cesta
+  zůstala (harmless), ale žádný `#include` na ní už nezávisí.
+- **Pravidlo:** **Sdílený/cross-adresářový header nikdy neincluduj bare
+  jménem, jen relativní cestou k jeho fyzickému umístění** — tím se
+  rozpoznávání souboru přestane opírat o build-systémový `-I` seznam, který
+  generátor (CubeMX, ale stejně tak CMake/IDE reimport) může kdykoli
+  přepsat. Bare `#include "x.h"` je bezpečné jen pro header ve STEJNÉ složce
+  jako soubor, který ho includuje.
+- **Detekce:** `tools/find_fragile_includes.py`-styl skript (scratchpad této
+  session) — projde všechny soubory jednoho jádra, pro každý bare
+  `#include "X.h"` zkontroluje, jestli `X.h` leží ve stejné složce jako
+  including soubor; pokud ne a cesta není `../`-relativní, je to fragilní
+  závislost na `-I`. Ověřeno i přímým kompilátorem: `arm-none-eabi-gcc
+  -fsyntax-only` se **záměrně vyříznutou** `-I../../CM7/Core/Inc` (přímo v
+  `CM4/Release/*/subdir.mk`, tedy artefaktu, který regen skutečně přepisuje)
+  — po opravě prošlo všech šest souborů, `./scripts/build.sh Release BOTH`
+  dal byte-přesně stejný `.elf` jako s tou `-I` cestou.
+- **Commit:** (viz git log — commit bezprostředně po L-0041)
+- **Stav:** aktivní
+
+---
+
+### L-0058 — Nedosažitelný kód, který by při dosažení byl vadný, není mrtvý kód, ale past
+
+- **Datum:** 2026-09-19
+- **Oblast:** CM4 / lwIP glue, vlastnictví objektů předaných knihovně
+- **Symptom:** Žádný — a právě to je na tom to nebezpečné. `HAL_ETH_TxFreeCallback`
+  v `CM4/LWIP/Target/ethernetif.c` dělala `pbuf_free((struct pbuf *)buff)`, tedy
+  uvolňovala pbuf, který si v zero-copy návrhu ST `low_level_output` předtím
+  přivlastnil přes `pbuf_ref()`. My `pbuf_ref()` nevoláme vůbec, takže ten účet
+  nebyl vyrovnaný. Nespadlo to jen proto, že **callback nikdo nevolá**:
+  `HAL_ETH_Transmit` (blokující varianta, kterou používáme) ho nevolá,
+  `HAL_ETH_ReleaseTxPacket` nevolá v celém projektu nikdo a ETH přerušení se
+  neobsluhuje.
+- **Příčina:** Callback se převzal z příkladu ST, ale bez druhé půlky páru.
+  Zrádné je, že **vypadá jako součást funkčního páru** — čtenář nemá důvod
+  hledat chybějící `pbuf_ref`. Odjistila by ho první přirozená další změna:
+  přechod na `HAL_ETH_Transmit_IT` kvůli propustnosti, nebo zavolání
+  `HAL_ETH_ReleaseTxPacket`, což návod ST doporučuje. Následek by bylo dvojí
+  uvolnění v lwIP haldě na CM4 — tedy poškození haldy, které se projeví
+  **náhodně a daleko od příčiny** (zatuhlé spojení, podivný obsah odpovědí,
+  pád CM4).
+- **Oprava:** Callback odstraněn (HAL má `__weak` variantu, takže se nic
+  nerozbilo — `--gc-sections` symbol z obrazu zahodil úplně). Na jeho místě
+  zůstal komentář, který příští úpravě říká, že při přechodu na `Transmit_IT`
+  se musí udělat **obojí naráz**: vrátit callback **a** přidat `pbuf_ref(p)`.
+  Jedno bez druhého je buď dvojí uvolnění, nebo únik paměti.
+- **Pravidlo:** **Kód, který dnes nikdo nevolá, není neškodný.** Když by po
+  dosažení byl vadný, je to nabitá zbraň — buď ho odstraň, nebo dopáruj; a když
+  ho odstraníš, napiš do komentáře, co musí příští úprava udělat SPOLEČNĚ, aby
+  ho směla vrátit. „Nevolá se, tak to nevadí" je popis dnešního stavu, ne
+  vlastnost kódu.
+- **Detekce:** U každého callbacku nebo funkce, která **uvolňuje či zavírá cizí
+  objekt**, najdi řádek, kde se ten objekt přivlastňuje (`*_ref`, `*_alloc`,
+  `*_take`). Když takový řádek neexistuje, je to jedno z dvojice: past (uvolňuje
+  se nepřivlastněné), nebo únik (přivlastňuje se bez uvolnění). Obojí je nález.
+  Souvisí s **L-0025** (`close` není `free`), tam ale obráceně: tam se
+  neuvolňovalo, tady se uvolňuje něco, co nám nepatří.
+- **Commit:** viz git log — `fix(cm4-eth)` s F-0134
+- **Stav:** aktivní
+
+---
+
+### L-0059 — Čítač, jehož NULA nese diagnózu, nesmí přetékat — saturuj ho
+
+- **Datum:** 2026-09-19
+- **Oblast:** IPC / diagnostika napříč jádry
+- **Symptom:** `g_eth_tx_ok` na CM4 je volně běžící `uint32_t`. Při publikaci do
+  sdílené struktury (kde bylo místo jen na `uint16_t` v recyklované vycpávce) by
+  se prostým přetypováním po 65 536 paketech vrátil na **0**.
+- **Příčina:** U tohohle čítače nula **není počáteční stav, ale diagnóza**:
+  „CM4 neodeslala ani jeden paket". Přesně to byla nejcennější odpověď při
+  nejdelším ladění v projektu (TX adresa, 2026-09-08), kdy `NET: UP 100 Mbit
+  full` i `ETH(CM4): init OK` tvrdily, že je vše v pořádku, a na drát přitom
+  nešel ani bajt. Přetečení by tu diagnózu **nerozlišitelně zfalšovalo** —
+  a to v okamžiku, kdy vysílání funguje nejlépe.
+- **Oprava:** Saturace při **publikaci**, ne v inkrementu (`ipc_cm4_set_eth_tx`):
+  `ok` saturuje na 65535, `err` na 255. Semantika je dokumentovaná jako „aspoň
+  tolik" a v `status` se saturovaná hodnota tiskne s `+`. Nula tak zůstává
+  vyhrazená výhradně pro „nikdy" a výpis ji rovnou označí
+  (`<== NEODESLALA ANI JEDEN PAKET`).
+- **Pravidlo:** **Než zúžíš nebo publikuješ čítač, zeptej se, co znamená jeho
+  nula.** Když nese význam („nikdy", „nespustilo se", „chybí"), musí čítač
+  saturovat. Volně běžící čítač smí přetékat jen tam, kde se sleduje POUZE růst
+  (`heartbeat`, `SEQUENCE`) — tam je rozdíl dvou hodnot, ne hodnota sama.
+- **Detekce:** U každého čítače, který se někam publikuje nebo zužuje, projdi
+  obě otázky: (1) co znamená 0, (2) co se stane při přetečení. Když odpověď na
+  (1) je diagnóza a na (2) „vrátí 0", je to nález. Doplňkově: saturující pole
+  musí být poznatelné i ve výpisu (značka `+`), jinak čtenář nepozná „přesně
+  tolik" od „aspoň tolik".
+- **Commit:** viz git log — `fix(ipc)` s F-0138
+- **Stav:** aktivní
+
+---
+
+### L-0060 — Nula podmíněně měřené hodnoty znamená dvě věci; bez třetího stavu z ní diagnostika udělá tvrzení
+
+- **Datum:** 2026-09-19
+- **Oblast:** diagnostika (`membench`), interpretace výsledků
+- **Symptom:** `membench` umí v jednom výpisu napsat *„ADRESY SE OPAKUJI po 4 kB —
+  dve ruzne adresy = tataz bunka!"* a **hned pod tím** *„framebuffery se ale
+  navzajem NEprekryvaji — zobrazeni tim netrpi"*. To druhé je přitom tvrzení
+  o měření, které **vůbec neproběhlo**.
+- **Příčina:** `fb_alias` se měřil jen pod `if (span)`, tedy když překryv našla
+  sonda `sdram_alias_span()` (skenuje od 64 kB). `alias_off` se ale plní i
+  **druhou cestou** — z `addr_lines_test()`, která jde už od 4 B. Perioda
+  překryvu **pod 64 kB** (vadný nízký adresní bit, např. `HADDR[10]` = 4 kB) je
+  proto pro první sondu neviditelná a pro druhou viditelná. V té kombinaci
+  zůstal `fb_alias` na nule z `memset` — a výpis nulu přečetl jako „neexistuje",
+  ačkoli znamenala „nezměřeno". U nejdražší otázky modulu (kdyby FB0 a FB2
+  sdílely paměť, triple buffering je fakticky double) to je **aktivní falešné
+  uklidnění**, a vada nízkého adresního bitu se navíc projeví *uvnitř* každého
+  framebufferu, takže ta věta nebyla jen nedoložená, ale nejspíš i nepravdivá.
+- **Oprava:** Dvě věci naráz, protože každá řeší jinou polovinu: (1) `fb_alias`
+  se měří **bezpodmínečně** a jako první věc, ještě před kontrolou chráněných
+  oblastí — takže odpověď existuje i když se celý test přeskočí; (2) přibyl
+  **třetí stav `fb_alias_checked`** a uklidňující věta se tiskne výhradně při
+  něm, jinak se vypíše „překryv MEZI framebuffery se NEMĚŘIL".
+- **Pravidlo:** **Když je hodnota měřená podmíněně, její nula znamená dvě různé
+  věci — „neexistuje" a „neměřilo se" — a diagnostika mezi nimi MUSÍ umět
+  rozlišit.** Buď měř bezpodmínečně, nebo zaveď příznak „změřeno"; tvrzení
+  o nepřítomnosti vady se nikdy neopírá o nulu, u které se nedá dokázat, že
+  vznikla měřením. (Souvisí s **L-0011**: hláška diagnostiky je pozorování, ne
+  diagnóza — tady dokonce ani to pozorování neexistovalo.)
+- **Detekce:** U každé uklidňující věty ve výpisu („…NEpřekrývají", „…je v
+  pořádku", „bez chyb") najdi řádek, který tu hodnotu **zapsal**, a ověř, že se
+  provede na každé cestě, po které se ta věta může vytisknout. Když je zápis pod
+  `if`, musí být pod stejným `if` i ta věta — nebo musí existovat příznak.
+  Doplňkově: pozor na zřetězení `if (A) … else if (B)`, kde `else` neúmyslně visí
+  u posledního testu (přesně to tu bylo a fungovalo jen shodou okolností).
+- **Commit:** viz git log — `fix(membench,sdramlog)` s F-0116
+- **Stav:** aktivní
+
+---
+
+### L-0061 — Převod akce na „požadavek pro cizí úlohu" je hotový až s odpovědí na to, co když ta úloha nepřijde
+
+- **Datum:** 2026-09-19
+- **Oblast:** mezivláknové mosty (`*_req` příznaky), vlastnictví stavu
+- **Symptom:** `sdram_log_reset()` nulovala `s_head` přímo z UartTasku, přestože
+  hlavička deklaruje **jediného producenta** (FpgaTask) a celá bezzámkovost ringu
+  na tom stojí. Producent dělá `h = s_head; … s_head = h + 1u;`, takže reset
+  padnoucí mezi ty dva kroky se **tiše ztratil** — uživatel viděl, že
+  `sdramlog reset` „nic neudělal".
+- **Příčina:** Zjevná oprava je vzor, který projekt už používá desetkrát
+  (`g_membench_req`, `g_screen_req`, `g_ui_cfg_req`, `g_sd_req`,
+  `g_si5356_clr_req`): cizí úloha nastaví příznak, **vlastník** ho zkonzumuje.
+  Jenže tím se akce stane **závislou na tom, že vlastník běží** — a tady vlastník
+  běží jen dokud přicházejí vzorky. Při mrtvém SPI linku by `sdramlog reset`
+  přestal fungovat úplně. Čistý invariant by tedy rozbil funkci.
+- **Oprava:** Požadavek **plus** ohraničené čekání u volajícího (300 ms = ~6
+  příležitostí při 20 Hz pollu) **plus** `_force()` jako poslední instance, která
+  invariant vědomě poruší — a výpis to **přizná jinou větou** („vynulovano PRIMO
+  — producent se za 300 ms neozval"). Čekání s `osDelay` je u volajícího, aby
+  modul zůstal bez závislosti na scheduleru.
+- **Pravidlo:** **Když měníš přímou akci na požadavek konzumovaný jinou úlohou,
+  napiš v témže commitu, co se stane, když ta úloha nepřijde.** Odpověď smí být
+  i „nic se nestane, je to v pořádku" — ale musí být vyslovená a ověřená, protože
+  „vlastník to zkonzumuje" je předpoklad o běhu, ne vlastnost kódu. Když
+  existuje fallback, který invariant poruší, MUSÍ se navenek hlásit **jinak** než
+  normální cesta; jinak jedno slovo znamená dvě různé věci.
+- **Detekce:** U každého `*_req` příznaku najdi úlohu, která ho konzumuje, a zeptej
+  se: (1) za jakých okolností ta úloha neběží nebo nepolluje, (2) co v takovém
+  případě uvidí uživatel. Když odpověď na (2) je „nic, a bude si myslet, že to
+  proběhlo", je to nález. Souvisí s **L-0054** („jeden vlastník" je tvrzení
+  o VŠECH volajících) — tahle lekce je jeho druhá polovina: o tom, co ta
+  jednovlastnická disciplína stojí.
+- **Commit:** viz git log — `fix(membench,sdramlog)` s F-0118
+- **Stav:** aktivní
+
+---
+
+### L-0062 — Než odstraníš duplikát, zjisti, jestli jedna z kopií nedělá něco navíc
+
+- **Datum:** 2026-09-19
+- **Oblast:** `.ioc` vs. ruční inicializace, sdílená GPIO mezi jádry
+- **Symptom:** TIM1 (encoder) měl **dvě konfigurace**: jednu z `.ioc` přes
+  `MX_TIM1_Init()` a jednu jako surové zápisy do registrů v `encoder_init()`.
+  Protože `encoder_init()` běží z UiTasku, tedy po `main()`, ruční verze vždy
+  vyhrála a ta z `.ioc` **nikdy nenabyla účinku**. Kdo změnil filtr v CubeMX,
+  nezměnil nic — a existuje commit, který ty hodnoty „opravoval" v domnění, že
+  na nich záleží.
+- **Příčina:** Zjevná náprava je „zruš duplikát a nech jednu pravdu". Jenže ty dvě
+  kopie **nebyly rovnocenné**: modul kromě timeru konfiguroval i piny PA8/PA9,
+  a to **pod `gpio_cfg_lock()`** (HSEM). Generovaný `HAL_TIM_Encoder_MspInit()`
+  nastaví tytéž piny stejnými hodnotami, ale **bez toho zámku** — a `GPIOA` sdílí
+  CM4 (ETH: PA1 REF_CLK, PA2 MDIO, PA7 CRS_DV). `HAL_GPIO_Init` dělá nad
+  `MODER`/`AFR` neatomický read-modify-write, takže ztracený zápis jednoho jádra
+  tiše vrátí cizí pin. Naivní „smaž duplikát" by tedy odstranilo **jediný zápis
+  chráněný proti závodu** a vyrobilo přesně tu třídu vady, která v tomhle projektu
+  shodila displej (PG8) i síť (PG11).
+- **Oprava:** Rozdělit vlastnictví podle toho, co která kopie umí: **parametry
+  timeru** = `.ioc`/`MX_TIM1_Init` (jediná pravda, surové zápisy zrušeny),
+  **konfigurace pinů** = modul, pod zámkem, idempotentně, s komentářem „nemazat
+  jako duplikaci — duplikace je jen v hodnotách, jediný vlastník zápisu pod zámkem
+  je tenhle modul". Navíc guard `htim1.Instance != TIM1` (**L-0009**), aby regen,
+  který by TIM1 z `.ioc` vyhodil, encoder rovnou vypnul místo startu
+  nenakonfigurovaného timeru.
+- **Pravidlo:** **U každé duplikované inicializace porovnej kopie řádek po řádku,
+  ne jen výsledné hodnoty — a ptej se, co navíc dělá kontext** (zámek, bariéra,
+  pořadí, cache operace, kontrola návratu). Když jedna kopie má něco, co druhá
+  nemá, není to duplikát ke smazání, ale dvě různé odpovědnosti ke **rozdělení**;
+  a to „něco navíc" patří do komentáře, jinak to smaže příští čtenář.
+- **Detekce:** Před odstraněním duplikátu: `git grep` na obě místa a diff jejich
+  *okolí*, ne jen těla. Konkrétně u GPIO: každý `HAL_GPIO_Init` nad **sdíleným
+  portem** (GPIOA, GPIOG na této desce) musí být obklopen `gpio_cfg_lock()` /
+  `_unlock()`; generovaný kód to nikdy nemá, takže „spolehnu se na MspInit" je
+  u sdíleného portu vždy zhoršení. Souvisí s **L-0018** (dvě místa konfigurující
+  touž věc) — tahle lekce říká, jak to rozpletnout, aniž se přitom něco ztratí.
+- **Commit:** viz git log — `fix(encoder)` s F-0122
+- **Stav:** aktivní
+
+---
+
+### L-0063 — „Odmítnout start" je legitimní politika, ale musí jít poznat od vypnuté desky
+
+- **Datum:** 2026-09-19
+- **Oblast:** hodiny / politika při poruše, boot diagnostika
+- **Symptom:** Když nenaběhne HSE (25 MHz) nebo LSE (32,768 kHz), `SystemClock_Config()`
+  selže a spadne do `Error_Handler()`. Přístroj z pohledu uživatele **neudělal
+  vůbec nic**: žádný displej, žádná konzole, **a ani bliknutí nebo pípnutí**.
+  Od nefunkčního napájení to nebylo k rozeznání.
+- **Příčina:** Dvě věci se sešly. (1) U kmitočtového normálu je odmítnutí startu
+  **správná** politika — běh proti špatné časové základně je horší než neběh — jen
+  nebyla nikde vyslovená. (2) Diagnostika ji nedokázala ohlásit: `bootled_step`
+  startuje na **0**, `SystemClock_Config()` je generovaný kód **bez `USER CODE`
+  bloku**, takže si tam krok zapsat nelze, a `blink_pattern(0)` proběhne
+  **prázdnou smyčkou**. Nula jako „nezačalo se" tedy dala vzor „nic". Navíc HSE
+  a LSE se konfigurují v **jednom** `HAL_RCC_OscConfig()`, takže ani návratová
+  adresa v crash black-boxu je neodliší.
+- **Oprava:** Politika vyslovena a zapsána (CLAUDE.md), a rozlišení se odvodí
+  **z registrů v `USER CODE`** (`RCC_CR.HSERDY`, `RCC_BDCR.LSERDY`) — ne úpravou
+  generovaného kódu. `Error_Handler` tím nastaví nenulový krok (15 = HSE,
+  16 = LSE, 17 = jinak před prvním initem), takže vzor je vidět i slyšet, a stav
+  oscilátorů uloží do black-boxu → `status` hlásí `hal_err@HSE` / `hal_err@LSE`.
+- **Pravidlo:** **Když se firmware rozhodne nenaběhnout, musí to říct jiným kanálem
+  než tím, který zároveň nefunguje.** A u každé diagnostiky, jejíž intenzita je
+  číslo (počet bliknutí, délka, počet pípnutí), se zeptej, **co dělá nula** — když
+  nula znamená „nic se nestane", je to tichá cesta právě pro ten nejranější a
+  nejhorší případ. Výchozí hodnota takového čítače nesmí být neodlišitelná od
+  „všechno v pořádku".
+- **Detekce:** U každého vzoru řízeného počtem projdi cestu s hodnotou 0 a 1.
+  Konkrétně: `bootled_step` = 0 nastane pro **každé** selhání před prvním
+  `bootled_step()` — tedy `HAL_Init`, `SystemClock_Config`, MPU, `MX_GPIO_Init`.
+  Obecněji: u fáze bootu, která nemá `USER CODE` hook, se stav ověřuje **až za ní**
+  z registrů (**L-0009**), a diagnostika pro ni musí mít vlastní kód, ne výchozí nulu.
+  ⚠️ Přiznaná mez téhle konkrétní opravy: 15 vs 16 bliknutí se počítá nespolehlivě,
+  takže rozlišitelné je „hodiny vs periferie", ne „HSE vs LSE" — to řekne až
+  black-box. Když má být čitelný i ten rozdíl, musí se změnit **tvar** vzoru, ne
+  jeho počet.
+- **Commit:** viz git log — `fix(hodiny)` s F-0007 + F-0108
+- **Stav:** aktivní
+
+---
+
+### L-0064 — Než vynutíš mez, zjisti, kdo ji dnes legitimně používá — a jestli není druhá mez na hodnotě
+
+- **Datum:** 2026-09-19
+- **Oblast:** formátování bez `%f` (nano.specs), vynucení mezí na rozhraní
+- **Symptom:** `fmt_fixed()` má `case 1/2/3` a `default:`, které vytiskne jen celou
+  část. Komentář u funkce i nález tvrdily „podporuje 1–3 desetiny", takže se
+  nabízelo `default:` změnit na „ořízni na 3".
+- **Příčina:** Obojí bylo **nepravda ve prospěch horší opravy**. `default:` je
+  zároveň **legitimní implementace nuly** (`fixed_split(v,0,…)` dá scale 1 a
+  frac 0, takže `"%ld"` je správný výstup) a spoléhají na ni **čtyři skuteční
+  volající** — min/max v seznamu senzorů a teplotní pásmo OCXO. Navržená oprava
+  by z „45" udělala „45.000". Skutečný rozsah je **0–3**.
+  A byla tam **druhá, ostřejší mez, o které nemluvil nikdo**: `fixed_split`
+  počítá `t = (int32_t)(v · 10^decimals + 0.5)`, takže platí i
+  `|v| · 10^decimals < 2,15e9` — při 3 desetinách `|v| < ~2,15e6`. Nad tím int32
+  přeteče. Tuhle cestu spouští **hodnota**, ne argument, takže ji žádný grep
+  nenajde a nikdo by ji nehledal.
+- **Oprava:** Clamp na 0..3, pak `d` snižovat, dokud `|v| · 10^d` nevleze do
+  int32, a každé omezení počítat do `status` (`FORMAT: omezenych desetin N`).
+  Bez `configASSERT` — pád uprostřed kreslení by shodil desku kvůli formátování.
+- **Pravidlo:** **Než vynutíš mez, vypiš si všechny volající a zjisti, které
+  hodnoty dnes používají** — `default:`/`else` bývá živá větev, ne jen chybová.
+  A u každé meze se ptej, jestli není **druhá mez na hodnotě**, ne na argumentu:
+  kdekoli se vstup násobí nebo škáluje do celého čísla, existuje rozsah, ve kterém
+  argument projde a přesto to přeteče.
+- **Detekce:** `grep` na volání funkce a rozdělit je podle **literál vs. proměnná**.
+  Literály zkontroluješ očima; proměnné (`HBAR[].deci`, `KALIB_ROWS[].decimals`,
+  spočítané výrazy) jsou skutečná riziková plocha a ty potřebují runtime clamp
+  s počítadlem. U škálování do `intN` dopočítej mez na vstupní hodnotu a napiš ji
+  do komentáře v jednotkách, ve kterých volající myslí.
+- **Commit:** viz git log — `fix(format,ipc)` s F-0053
+- **Stav:** aktivní
+
+---
+
+### L-0065 — Sdílenou paměť nulujte po vlastnictví, ne po adresním rozsahu
+
+- **Datum:** 2026-09-19
+- **Oblast:** IPC CM7 ↔ CM4, inicializace sdílené paměti
+- **Symptom:** `ipc_init()` na CM7 dělal `memset` přes **celou** sdílenou strukturu
+  včetně bloku `cm4`, do kterého zapisuje výhradně druhé jádro. Protože se volá
+  ze `StartDefaultTask` (~sekundy po bootu, za bring-upem displeje), zatímco CM4
+  je bare-metal a publikuje už ~1,3 s po bootu, mohl memset dopadnout **doprostřed
+  publikování**. Doloženo na HW 2026-08-30: dopadl mezi publikaci httpd a eth,
+  takže `status` hlásil „SCPI(CM4): jeste nedobehl", přestože selftest prošel.
+- **Příčina:** `memset(p, 0, sizeof *p)` je operace nad **adresním rozsahem**, ale
+  sdílená struktura je rozdělená podle **vlastnictví**. Jedno `sizeof` je pohodlné
+  a vypadá jako „uveď do známého stavu" — jenže tím CM7 přepisuje data, která mu
+  nepatří. Obrana pak visela jen na disciplíně („každou hodnotu publikuj
+  opakovaně"), tedy na pravidlu v komentáři, ne na kódu.
+- **Oprava:** Každé jádro nuluje svůj blok: CM7 `snap`/`cmd`/`resp`/`log`/`errlog`,
+  CM4 svůj `cm4` ve vlastním initu (tam je jediným zapisovatelem a ještě
+  nepublikoval → bez závodu). CM7 na `cm4` sáhne jen když je **doloženo**, že CM4
+  nenaběhla (vypršelý boot gate) — tím se uzavře i studený start s náhodným
+  obsahem SRAM. Layout se nemění, `IPC_VERSION` se nezvedá.
+- **Pravidlo:** **Sdílenou paměť inicializuj po blocích podle vlastníka, nikdy
+  jedním `memset` přes `sizeof` celé struktury.** Když potřebuješ vyčistit i cizí
+  blok, smí to být jen ve stavu, kdy je **dokázáno**, že vlastník nezapisuje —
+  a ten důkaz napiš do kódu jako podmínku, ne do komentáře jako předpoklad.
+- **Detekce:** U každého `memset`/`memcpy` nad sdílenou strukturou vypiš, které
+  její členy píše které jádro (nebo úloha), a porovnej s rozsahem operace.
+  Doplňkově se ptej, jestli je ztráta v daném bloku **vratná**: ring nebo handshake
+  se sám zhojí (prázdný ring = pošli znovu), jednorázově zapsaný stav ne — a právě
+  ten blok se nulovat nesmí. Souvisí s **L-0054** („jeden vlastník" je tvrzení
+  o všech volajících) a **L-0061** (požadavek konzumovaný cizí úlohou).
+- **Commit:** viz git log — `fix(format,ipc)` s F-0017
+- **Stav:** aktivní
+
+---
+
+### L-0066 — Prázdná sekce nic nerezervuje; ochrana paměti musí umět selhat při linkování
+
+- **Datum:** 2026-09-19
+- **Oblast:** linker skripty, sdílená paměť mezi jádry
+- **Symptom:** CM7 linker měl sekci `.ipc_shared (NOLOAD) … >RAM_D3` s komentářem
+  „IPC sdílená paměť CM7↔CM4, 64 KB" a vypadalo to jako ochrana. Ve skutečnosti
+  měla sekce **délku 0** (`_sipc_shared == _eipc_shared == 0x38000000`), protože
+  `g_ipc` je **makro nad pevnou adresou**, ne objekt — do té sekce tedy nikdy nic
+  nespadlo. CM4 linker `RAM_D3` neznal vůbec.
+- **Příčina:** Sekce s `KEEP(*(.ipc_shared))` rezervuje jen to, co do ní někdo
+  umístí. Když se k paměti sahá přes přetypovanou konstantu (což je u sdílené
+  paměti mezi jádry běžné, protože obě strany musí vidět **tutéž** adresu), je
+  vstupní seznam prázdný a sekce je nulová. Ochrana tedy existovala jen proto, že
+  do RAM_D3 zatím nikdo nic nedal — ne proto, že by tomu něco bránilo. První další
+  sekce s `>RAM_D3` by začala přesně na `0x38000000`, tedy na hlavičce IPC, a
+  projevilo by se to jako „IPC občas nenaběhne" nebo poškozený snapshot.
+- **Oprava:** Rezervovat **explicitně** (`. = _sipc_shared + 64K;` — absolutně, ne
+  `. = . + 64K`, to by se přičítalo za případné umístěné objekty), a to v linkeru
+  **obou** jader; plus `ASSERT(_sipc_shared == <IPC_BASE>)`, protože adresa je
+  zdvojená mezi hlavičkou a linkerem a tenhle assert je jediné místo, kde se ty dvě
+  pravdy potkají.
+- **Pravidlo:** **Region, na který se sahá přes pevnou adresu, musí být v linkeru
+  rezervovaný explicitní velikostí, ne jen značkami.** A ochrana paměti má hodnotu
+  jen tehdy, když umí **selhat při linkování** — komentář, značka ani prázdná sekce
+  nejsou ochrana. Platí to pro **každý** obraz, který tu paměť vidí, ne jen pro ten,
+  kde je definovaná.
+- **Detekce:** `nm <elf> | grep _s<sekce>` a porovnej se značkou konce — stejná
+  adresa = sekce nic nerezervuje. **A udělej negativní test:** dočasně přidej do
+  toho regionu sekci o pár bajtů a ověř, že link **selže** (`region … overflowed`).
+  Bez toho testu nevíš, jestli rezervace funguje — přesně to je **L-0039**
+  (pozitivní kontrola musí obsahovat vadu, kvůli které kontrola vznikla).
+  ⚠️ `NOLOAD` rezervace nic nepřidá do `.text`, ale `size` ji vykáže v `bss` —
+  nenech se tím zmást při porovnávání velikostí před/po.
+- **Commit:** viz git log — `fix(linker)` s F-0016
+- **Stav:** aktivní
+
+---
+
+### L-0067 — Zachraňující retry smí obnovit PŘÍSTUP, ne data — jinak přepíše to, co mezitím vzniklo
+
+- **Datum:** 2026-09-19
+- **Oblast:** perzistence (W25Q blob store), zotavení z neúspěšné inicializace
+- **Symptom:** Pět inicializací úložiště (`syscfg_load`, `setup_init`, `calib_load`,
+  `flightrec_init`, `errlog_init`) mělo tvar *„nedostal jsem mutex → `return`"*.
+  Příznak připravenosti pak zůstal `false` **po celý zbytek běhu**: nastavení se
+  nikdy neuložilo, kalibrace zůstala na datasheetových výchozích a tlačítka v okně
+  SESTAVY tiše nedělala nic. Uživatel to poznal teprve tím, že se mu po restartu
+  ztratilo nastavení — a bez jakékoli stopy proč.
+- **Příčina:** Dvě věci. Za prvé selhání nemělo **žádný** výstup (na rozdíl od
+  `datalog_init`, který ho vypisuje — takže bylo vidět, že to jde). Za druhé, když
+  se dopisoval **retry**, nabízelo se prostě zavolat `syscfg_load()` znovu. To by
+  ale bylo špatně: `syscfg_load()` **čte blob z flash do RAM**, a v RAM už může být
+  novější nastavení, které uživatel mezitím změnil. Zachrana by tedy přepsala živý
+  stav starou verzí z disku — vada *horší* než ta, kterou léčí, a projevila by se
+  jako „nastavení se samo vrátilo".
+- **Oprava:** Retry volá **jen `w25q_init()` + `w25q_store_init()`** — to naskenuje
+  sektory a nastaví `ready`/`seq`, ale payload nikam nekopíruje. Obnoví se tedy
+  **přístup k úložišti**, ne jeho obsah. Retry je navíc **ohraničený** (5 pokusů,
+  ≥10 s od sebe), protože `errlog_init()` může skončit `w25q_erase_sector`, tj.
+  50–400 ms v úloze, která krmí watchdog. A stav je vidět třemi cestami: `status`,
+  okno PAMĚŤ a **amber SYS pilulka**.
+- **Pravidlo:** **Když dopisuješ zotavení z neúspěšné inicializace, rozděl ji na
+  „obnov přístup" a „načti data" a zopakuj JEN tu první část.** Opakované volání
+  celého `*_load()` přepíše stav, který mezitím vznikl v RAM. A každý retry, který
+  může sáhnout na pomalou periferii, musí mít **strop počtu i minimální rozestup** —
+  nekonečné opakování mrtvého hardwaru je horší než přiznaná porucha.
+- **Detekce:** U každého `if (…) return;` v inicializaci se ptej: *„co zůstane
+  rozbité do konce běhu a jak se to pozná?"* Když odpověď na druhou část je „nijak",
+  je to nález i bez retry. U navrhovaného retry pak projdi, co všechno ta funkce
+  **zapisuje do RAM** — a jestli je bezpečné to přepsat v okamžiku, kdy zařízení už
+  nějakou dobu běží. Souvisí s **L-0017** (tichý přeskok jen s počítadlem) a
+  **L-0016** (obrana, kterou nikdo nečte, není obrana).
+- **Commit:** viz git log — `fix(uloziste)` s F-0098
+- **Stav:** aktivní
+
+---
+
+### L-0068 — Pevně dlouhé textové pole není místo na prefix; strukturu ukládej strukturovaně
+
+- **Datum:** 2026-09-19
+- **Oblast:** trvalý záznamník chyb (`errlog`), návrh formátu záznamu
+- **Symptom:** Crash black-box dekóduje příčinu do `g_crash_text` jako
+  `"stall:UiTask"` / `"stack:UartTask"`. Do trvalé historie se z toho kopírovalo
+  prvních `ERRLOG_TAG_LEN` = **6 znaků**, tedy přesně `"stall:"` a `"stack:"` —
+  jméno tasku zmizelo. Zmizelo přitom právě to, kvůli čemu se black-box kdysi
+  rozšiřoval („prostý IWDG reset byl němý — RSR řekl jen watchdog, ne který task").
+- **Příčina:** Text nesl **dvě informace najednou**: druh pádu (prefix) a co spadlo
+  (za dvojtečkou). Pole má pevnou délku, takže prefix — informace, která má jen šest
+  možných hodnot a už existuje pro ni číselné pole `sub` — spolykal celou kapacitu.
+  Zrádné je, že `errlog.h` `sub` jako „kind" **dokumentoval**, ale jediný zapisovatel
+  do něj posílal nulu; formát byl navržený správně a nepoužíval se.
+- **Oprava:** Rozdělit: druh pádu → `sub` (jedna hodnota), rozlišující část za
+  oddělovačem → `tag`. Formát záznamu se nezměnil, jen se přestal plýtvat. Výpis pak
+  prefix **rekonstruuje** z `sub` přes tabulku jmen, která leží hned u dekódování.
+- **Pravidlo:** **Když do pevně dlouhého textového pole ukládáš řetězec, který má
+  strukturu, ulož strukturu do strukturovaných polí a do textu jen to, co se jinam
+  nevejde.** A než takové pole zkrátíš, napiš si skutečné hodnoty, které do něj
+  poletí, a ořež je na papíře — u šesti znaků je rozdíl mezi `"stall:"` a `"UiTask"`
+  rozdíl mezi žádnou a celou informací.
+- **Detekce:** U každého `for (i = 0; i < LEN && src[i]; i++)` kopírování do pevného
+  pole dohledej **všechny** formáty, které do `src` mohou přijít (tady `rtc.c`), a ořež
+  je. Když po ořezu vznikne u dvou různých příčin **tentýž** výsledek, je to nález.
+  Doplňkově: každé dokumentované pole, které nikdo neplní, je taky nález — grep na
+  zapisovatele (souvisí s **L-0028**: věta v komentáři je testovatelná).
+- **Commit:** viz git log — `fix(errlog,flightrec)` s F-0092
+- **Stav:** aktivní
+
+---
+
+### L-0069 — Periodický plán `next += period` musí mít ošetřené velké zpoždění, jinak dohání
+
+- **Datum:** 2026-09-19
+- **Oblast:** periodické vzorkování (`datalog_tick`), plánování v tikové úloze
+- **Symptom:** `datalog_tick` posouvá plán `s_next_ms += perioda`. Když tik dlouho
+  neběžel (blokující `membench`, `sd_export` nebo erase QSPI z UartTasku), zůstal
+  `s_next_ms` daleko v minulosti a následující tiky by zapsaly **několik záznamů
+  hned za sebou** — a to se stejným obsahem i `t_unix`, protože `sample()` čte živé
+  globály, ne historii.
+- **Příčina:** `next += period` je správný vzor: drží kadenci **bez driftu**, protože
+  nezávisí na tom, kdy se tik zrovna probudil. Má ale tichý předpoklad, že zpoždění
+  je menší než perioda. Když není, změní se z „udržuj kadenci" na „doháněj", a u
+  vzorkování to vyrobí **duplikáty předstírající měření v čase, kdy se neměřilo**.
+  Allan rekonstruovaný z logu je pak vezme jako plnohodnotné vzorky s τ₀ = 10 s.
+- **Oprava:** `next += period` zůstává, ale když je plán i po přičtení stále
+  v minulosti, posune se **od teď** a zvedne se počítadlo zmeškaných period, které
+  se vypisuje (`skip:N` ve `status`). Díra v logu je správná odpověď — tiše dohnané
+  duplikáty jsou horší než přiznaná mezera.
+- **Pravidlo:** **U každého plánu `next += period` odpověz, co se stane při zpoždění
+  větším než perioda.** Buď se má dohánět (vzácné — typicky u počítání událostí), nebo
+  se plán resetuje od teď a mezera se **spočítá a ohlásí**. „Dohánět" nikdy nevol
+  mlčky u dat, která nesou časovou značku odvozenou od okamžiku zápisu.
+- **Detekce:** Grep na `+= ` u plánovacích proměnných (`*_next_ms`, `*_next_tick`)
+  a u každé se ptej: (1) kdo v téže úloze může blokovat déle než periodu, (2) co
+  zapíše několik iterací hned po sobě. U vzorkovacích tiků platí i obráceně: když
+  `sample()` čte živý stav, **nesmí** se volat víckrát pro jeden časový bod.
+- **Commit:** viz git log — `fix(datalog)` s F-0102
+- **Stav:** aktivní
+
+---
+
+### L-0070 — Kontrola, která hlásí nálezy i ve zdravém stromě, přestává být kontrolou
+
+- **Datum:** 2026-09-19
+- **Oblast:** předepsané kontroly v dokumentaci, detekce pastí
+- **Symptom:** `CLAUDE.md` u pasti `fmt_fixed` předepisovalo: *„Kontrola:
+  `grep -rn "fmt_fixed([^;]*, *[4-9])" CM7` musí být prázdný."* Ten grep vracel
+  **6 shod a žádná z nich nebyla vada**: tři komentáře, které před tou pastí varují,
+  a kopie v `Debug/`/`Release/`.
+- **Příčina:** Kontrola se psala „odshora" jako regulární výraz nad zdrojem, ale
+  neprošla si vlastním výstupem na zdravém stromě. Šum ji tím znehodnotil dvakrát:
+  kdo ji spustí, **musí ručně probírat výsledky**, a jakmile to udělá dvakrát, přestane
+  ji spouštět. Navíc ta konkrétní past má i druhou podobu (přetečení `int32` podle
+  **hodnoty**, ne argumentu), kterou grep nad zdrojem najít vůbec nemůže.
+- **Oprava:** Kontrola přesunuta do **běžícího přístroje**: funkce si mez vynucuje
+  sama a každé omezení **počítá** (`status` → `FORMAT: omezenych desetin 0`). Číslo je
+  buď nula, nebo je něco špatně — žádné probírání výsledků.
+- **Pravidlo:** **Každou předepsanou kontrolu spusť na zdravém stromě a ověř, že je
+  zelená.** Když není, není to kontrola, ale seznam ke čtení. A kdykoli jde místo grepu
+  nad zdrojem použít **počítadlo v běžícím zařízení**, je to lepší: pokrývá i případy,
+  které ze zdroje nejsou vidět (**L-0017**).
+- **Detekce:** Projdi kontroly předepsané v `CLAUDE.md`/`docs/` a spusť je. Každá,
+  která na čistém stromě vrátí nenulový výstup, je nález. U grepů nad zdrojem navíc
+  vždy vyluč `Debug/` a `Release/` — jinak se každý nález počítá třikrát. Souvisí
+  s **L-0039** (pozitivní kontrola musí obsahovat vadu, kvůli které vznikla)
+  a **L-0016** (obrana, kterou nikdo nečte, není obrana).
+- **Commit:** viz git log — `docs:` s F-0054
+- **Stav:** aktivní
+
+---
+
+### L-0071 — Z kontextu výjimky se nezapisuje; ukládej přes paměť, která přežije reset
+
+- **Datum:** 2026-09-20
+- **Oblast:** hooky FreeRTOS, letový zapisovač, co přežije reset
+- **Symptom:** `flightrec_dump()` volaný z `vApplicationStackOverflowHook`
+  **deterministicky nezapsal nic**. Hook běží v kontextu výjimky PendSV
+  (`xPortPendSVHandler` → `vTaskSwitchContext` → `taskCHECK_FOR_STACK_OVERFLOW`),
+  kde `osMutexAcquire` vždy vrátí `osErrorISR` — funkce se na téže řádce vrátila.
+  Letový zapisovač byl tedy slepý přesně pro ten scénář, kvůli kterému vznikl.
+- **Příčina:** Sáhnout na flash z výjimky **nejde ani bez mutexu**: `w25q wait_ready()`
+  uvnitř volá `osDelay(1)`, který v PendSV taky neprojde, takže by z toho byl spin
+  až do IWDG resetu. Zapisovací cesta prostě **není z výjimky dosažitelná**, a žádné
+  obcházení zámků to nezmění.
+- **Oprava:** Dvoufázově — hook složí data do paměti (jen bajtové zápisy, žádný zámek,
+  žádný `osDelay`) a do flash je vylije **po restartu** ta úloha, která na to má
+  prostředí. 🔴 Klíčový detail: **`.bss` maže `Reset_Handler`**, takže staging v obyčejné
+  RAM by se při resetu ztratil. Musí to být paměť, které se startup nedotkne — tady
+  sekce `.sdram` (NOLOAD), jejíž obsah reset přežije (tentýž důvod, proč boot musí
+  framebuffer memsetovat na černo).
+- **Pravidlo:** **Kód volaný z hooku nebo ISR nesmí obsahovat nic, co ustupuje
+  scheduleru nebo bere zámek** — a když má něco uložit, rozděl to na „slož do paměti"
+  a „zapiš na médium", přičemž druhá část patří do úlohy. Paměť pro to předání musí být
+  doložitelně **mimo `.bss`**, jinak ji smaže startup.
+- **Detekce:** U každé funkce volané z hooku/ISR projdi její **celý** řetěz volání
+  a hledej `osMutexAcquire`, `osDelay`, `osMessageQueue*`, `HAL_Delay` — stačí jeden
+  a cesta je mrtvá. U staging paměti ověř v linkeru, do které sekce patří, a jestli ji
+  startup nuluje. Doplňkově: výsledek předání musí být **vidět** (počítadlo „zachráněno
+  po restartu"), jinak se nepozná rozdíl mezi „nestalo se nic" a „ztratilo se to"
+  (**L-0017**). Souvisí s **L-0013** (hook běží v kontextu výjimky, RTOS API tam mlčky
+  selže).
+- **Commit:** viz git log — `fix(flightrec)` s F-0018
+- **Stav:** aktivní
+
+---
+
+### L-0072 — Hromadnou úpravu dokumentů nedělej multiline regexem a vždy zkontroluj diffstat
+
+- **Datum:** 2026-09-20
+- **Oblast:** vlastní nástroje, dávkové úpravy `docs/`
+- **Symptom:** Skript na hromadnou změnu řádků `- **Stav:**` v nálezových dokumentech
+  použil `re.search` se vzorem `(### ID.*?)\n- \*\*Stav:\*\*[^\n]*(?:\n(?!###|---).*)*`.
+  U prvního nálezu prošel, u druhého **smazal 631 řádků** souboru — kvantifikátor
+  `(?:…)*` se rozjel přes celý zbytek dokumentu.
+- **Příčina:** Multiline regex nad strukturovaným textem je **nekontrolovatelný**:
+  „dokud nenarazíš na další nadpis" se v `re` píše snadno a chová se jinak, než člověk
+  čte. Nic to nehlásí — regex „uspěje" a zahodí, co nemá.
+  ⚠️ Druhá polovina problému: skript **nekontroloval, co udělal**. Kdybych po zápisu
+  porovnal počet nadpisů nebo diffstat, poznal bych to okamžitě místo o krok později.
+- **Oprava:** Přepsáno **po řádcích**: najdi index nadpisu, dopředu hledej první
+  `- **Stav:**` a **zastav se na dalším `### `**, pak spotřebuj jen odsazené
+  pokračovací řádky. Soubor se obnovil z gitu (byl committnutý, nic se neztratilo).
+- **Pravidlo:** **Dávkovou úpravu strukturovaného textu piš po řádcích s explicitní
+  hranicí sekce, ne multiline regexem** — a po každém zápisu ověř invariant, který
+  změna zachovat má (počet sekcí, `git diff --stat`, počet řádků). Když skript umí
+  smazat víc, než měl, musí to sám poznat.
+- **Detekce:** Grep na `re.search`/`re.sub` s `re.S`/`(?s)` nebo `.*` přes řádky
+  v nástrojích nad `docs/`. Před spuštěním takového skriptu nad víc soubory ho pusť
+  na **jeden** a podívej se na `git diff --stat`; u dávkových úprav si nech vypsat
+  počet změněných řádků na soubor.
+- **Commit:** viz git log — `fix(flightrec)` s F-0018 (skript vznikl při té dávce)
+- **Stav:** aktivní
+
+---
+
+### L-0073 — Fokus na kraji seznamu se zastavoval, místo aby se zacyklil
+
+- **Datum:** 2026-09-20
+- **Oblast:** UI, encoder (`app_gpsdo_handle_encoder`)
+- **Symptom:** Uživatel nahlásil „v hlavní nabídce jde blbě encoder". Nejdřív jsem
+  podezíral HW vrstvu (zákmity, chybný dělič) — opakované měření `enc` (přesně
+  1 západka/s) ale ukázalo čistou schodovitou řadu +1/krok, žádné zákmity,
+  `delic=4` správně. Chyba tedy nebyla v počítání kroků.
+- **Příčina:** `app_gpsdo.c:8529-8531` počítal nový index fokusu `s_focus + ev.steps`
+  a **ořezával** ho na `[0, n-1]` (`if (nf < 0) nf = 0; if (nf >= n) nf = n - 1;`).
+  Na krátkém seznamu (MENU = 4 dlaždice + 3 tlačítka patky = 7 prvků) to znamená, že
+  otočení za poslední/první prvek se prostě zastaví — uživatel musí otočit zpátky
+  celou cestu, což se subjektivně jeví jako „mrtvý směr" nebo vadný encoder.
+- **Oprava:** Ořez nahrazen modulem: `nf = (s_focus + ev.steps) % n; if (nf < 0) nf += n;`
+  (`app_gpsdo.c:8528-8535`). `n > 0` je už zaručeno guardem o pár řádků výš.
+- **Pravidlo:** **Fokus v cyklickém seznamu (menu, karusel) se má ZACYKLIT, ne
+  zarazit na kraji** — ořezávací clamp na indexu, který reprezentuje pozici
+  v uzavřeném seznamu položek, je skoro vždy špatné chování; správně patří modulo.
+  Než se HW podezírá ze zákmitů/chybného děliče, ověř kontrolovaným měřením
+  (SKILL §0), že vada skutečně leží tam — v tomto případě neležela.
+- **Detekce:** Grep `if (nf < 0)` / `if (.*< 0.*=.*0.*>=.*n.*=.*n *- *1` v souborech
+  s `s_focus`/`menu_list_t` — kandidát na clamp místo wrapu v cyklickém seznamu.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
+### L-0074 — Volání, které jen MĚNÍ STAV, ale nikdy neKRESLÍ, vypadá jako mrtvý vstup
+
+- **Datum:** 2026-09-20
+- **Oblast:** UI, encoder (`app_gpsdo_handle_encoder`), obecně partial-redraw architektura
+- **Symptom:** Zkoušel jsem opravit hlášení „zaseknul se na channel a nehýbe se pomocí
+  encoderu" přidáním speciální větve, kde otáčení na GATE/CHAN volalo
+  `screen_main_button_action(bi)` opakovaně. Uživatel hned nato hlásil: „jde tlačítko,
+  ale otáčení nereaguje" — tedy hodnota v `st.gate`/`st.chan` se měnila (ověřitelné
+  jinudy), ale na displeji se nic neukázalo.
+- **Příčina:** `screen_main_button_action()` je **čistá state-mutace** — nastaví
+  `st.gate`/`st.chan`/`g_ui_cfg_dirty` a nic víc. Dotyková cesta
+  (`app_gpsdo_handle_touch`) po ní VŽDY volá i `prim_set_target`+`prim_reset_clip`+
+  `screen_main_redraw_button`+`screen_main_button_flash_start`+`screen_main_redraw_title`+
+  `present_now()` — tenhle redraw balík je oddělený od samotné akce a nikde
+  vynucený signaturou ani komentářem. Nová volající vrstva (encoder) zavolala jen
+  akci, ne redraw, a nic ji na to neupozornilo — ani build, ani audit (žádná z těch
+  funkcí nevrací chybu, když se nezavolá).
+- **Oprava:** Zrcadlit CELOU dotykovou redraw sekvenci (ne jen samotnou akci) na
+  nové volací cestě. V tomto konkrétním případě šla vlastnost `otáčení mění hodnotu
+  GATE/CHAN přímo` nakonec **celá pryč** (uživatel po vyzkoušení na HW rozhodl, že
+  rotace na hlavní obrazovce má vždy jen listovat fokusem, ne měnit hodnotu —
+  zmena hodnoty otáčením patří jen do vyhrazených číselných polí typu IP oktet).
+  Missing-redraw bug tím zmizel spolu s celou větví, ale vzorek zůstává platný
+  pro příští podobné volání.
+- **Pravidlo:** **Když se v kódu objeví `<akce>()` bez doprovodného volání redraw
+  funkce, kterou VŠECHNY OSTATNÍ cesty k téže akci volají, je to podezřelé — najdi
+  všechny volající téže state-mutující funkce a porovnej, co dělají navíc.**
+  Funkce, která jen mění stav a nikdy nekreslí, by měla mít v komentáři u definice
+  jasně napsáno „NEKRESLÍ, volající musí redraw udělat sám" (`screen_main_button_action`
+  ho nemělo).
+- **Detekce:** Grep na `screen_main_button_action(` (nebo obdobné `*_action`/`*_apply`
+  state-mutátory) — u KAŽDÉHO volání zkontroluj, že v okolí je i redraw. Obecněji:
+  když nová volací cesta k existující funkci vznikne, diffni ji proti VŠEM
+  ostatním volajícím téže funkce, ne jen proti nejbližšímu příkladu.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
+### L-0075 — Ověřování požadavku PO ODESLÁNÍ musí číst návrat, ne stav vlastníka hned potom
+
+- **Datum:** 2026-09-20
+- **Oblast:** cross-task request/apply vzor (`encoder_set_div`), obecně F5 fix-phase
+  verifikace na HW
+- **Symptom:** Při verifikaci F-0125 (fix z 2026-09-19, přechod `encoder_set_div()`
+  na request-pattern) na reálné desce: `enc div 2` odpověděl `ENC: neplatny delic
+  (povoleno 1, 2, 4); zustava 4` — přestože 2 je platná hodnota. Následný `enc div 4`
+  odpověděl `... zustava 2` (napovědělo, že se `2` mezitím přece jen uplatnilo).
+  `enc` pak ukázal `delic=4` — obě volání ve skutečnosti PROŠLA, jen o tom UART
+  lhal pokaždé, když se hodnota doopravdy měnila.
+- **Příčina:** `freertos_task_uart.c` po `encoder_set_div(d)` okamžitě porovnával
+  `d == encoder_div()`. `encoder_set_div()` ale od F-0125 jen ZAFRONTUJE `s_div_req`;
+  skutečné `s_div` (co čte `encoder_div()`) mění až `encoder_poll()` v UiTasku o poll
+  později. Srovnání tedy vždy vidělo STAROU hodnotu — funkční je jen náhodou, když
+  se nová hodnota rovná staré (typicky nikdy, protože proč by uživatel nastavoval
+  to, co už je nastavené).
+- **Oprava:** `encoder_set_div()` teď VRACÍ, jestli `d` bylo platné (`int`, 1/0),
+  místo aby volající hádal ze zpožděné asynchronní hodnoty. Volající (`enc div`)
+  čte návrat, ne `encoder_div()`. Druhý volající (`syscfg_load()`) návrat ignoruje
+  (nepotřebuje ho — spoléhá na tichý no-op interní validace, jak už dřív dělal).
+- **Pravidlo:** **Když se synchronní mutace převede na frontový požadavek pro
+  cizí úlohu (L-0061), KAŽDÝ volající, který si po volání ověřoval výsledek čtením
+  stavu vlastníka, se MUSÍ přepnout na návratovou hodnotu funkce (nebo jiný
+  synchronní signál) — čtení stavu vlastníka hned po zafrontování čte starou
+  hodnotu skoro jistě.** Tahle třída chyby je neviditelná v recenzi kódu (obě
+  volání vypadají rozumně samostatně) a build/audit ji nechytí (typy sedí) —
+  odhalí ji jen skutečné vyvolání na HW se sledováním výsledku.
+- **Detekce:** Po každém převodu funkce na request-pattern (F5.3: „vzor
+  `g_membench_req`") vypsat VŠECHNY volající PŮVODNÍ (synchronní) verze a u
+  každého zkontrolovat, jestli si po volání čte stav zpět OKAMŽITĚ. Grep:
+  volání `X_set_*` následované do pár řádků čtením `X_get_*`/gettru stejného pole.
+- **Commit:** (nekomitováno v době zápisu — viz git log následující commit)
+- **Stav:** aktivní
+
+---
+
+### L-0077 — U sdílené SDRAM rozhoduje VZOR přístupu, ne objem dat (strided kopie hladoví LTDC)
+
+- **Datum:** 2026-09-22
+- **Oblast:** DMA2D/LTDC, SDRAM, rendering
+- **Symptom:** Hlavní obrazovka **pokaždé** problikla poškozeným snímkem při
+  stisku RUN/STOP. Plný render celé obrazovky (`ui`) byl přitom vždy **čistý**
+  (0 podtečení), i když přenáší 768 kB — tedy podstatně víc dat než to malé
+  překreslení, které problikávalo. Ladění `d2ddt` (mrtvý čas DMA2D) na strop
+  255 ani zúžení překreslované zóny to neodstranilo.
+- **Příčina:** `copy_forward_dedup()` kopíroval jednotlivé dirty obdélníky, tedy
+  `d2d_blit_ex` se šířkou < šířky framebufferu → `FGOR`/`OOR` ≠ 0 =
+  **strided přístup**: každý řádek kopie začíná v jiné SDRAM řadě. Přepínání řad
+  sebere propustnost LTDC, které čte snímek na panel sekvenčně, jeho FIFO
+  podteče a na panel jde poškozený snímek. Plná kopie má `FGOR`=`OOR`=0, jede
+  **lineárně** a je proto levnější navzdory většímu objemu.
+- **Oprava:** copy-forward kopíruje **plnošířkové pásy slité po ose Y**
+  (`prim_stm32_hal.c`, `copy_forward_dedup`). Naměřeno **38 → 0** podtečení na
+  20 stisků RUN/STOP.
+- **Pravidlo:** **U sdíleného paměťového rozhraní posuzuj VZOR přístupu, ne jen
+  objem přenesených dat.** Víc bajtů lineárně bývá levnější než míň bajtů
+  skákavě — a proto „zmenši, co překresluješ" nemusí pomoct vůbec, kdežto
+  „kopíruj to samé lineárně" pomůže úplně. Platí i obráceně jako diagnostický
+  test: **když VĚTŠÍ operace neproblikává a MENŠÍ ano, přestaň hledat v objemu
+  a podívej se na stride.**
+- **Detekce:** `fbdiff` → řádek `podteceni po fazich` musí mít u
+  `COPY-FORWARD` nulu. Reprodukce bez prstu: `tap 1` (injektor doteku).
+  ⚠️ Nové místo, které volá `d2d_blit_ex` s šířkou < `FB_W` v horké cestě
+  souběžně se scan-outem, si tuhle vadu přinese znovu.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0076 — Neměř zátěžovým burstem to, co uživatel dělá jednotlivě; a měř FÁZE, ne jen součet
+
+- ⚠️ **REVIDOVÁNO 2026-09-22.** Původní znění (níže) vzniklo, když jsem si
+  myslel, že jde o fyzický strop propustnosti sběrnice, protože žádná ze
+  softwarových pák nedávala nulu. **Byl to špatný závěr** — příčina byla
+  strided vzor přístupu v copy-forwardu (viz **L-0077**) a nula šla dosáhnout.
+  Platná část lekce je metodická, ne technická:
+  🔑 **Součtové počítadlo („kolik podtečení celkem") neřekne, KDE vada vzniká.**
+  Dokud se podtečení četlo jen jednou za flip, každá teorie (velikost burstu,
+  glyph akcelerace, mrtvý čas, obnova SDRAM, fáze vůči vblanku) se dala
+  obhájit i vyvrátit. Rozhodl až **rozklad na fáze** (`kresleni | cekani |
+  flip | copy-forward`), který ukázal `0 | 0 | 0 | 38` a všechny předchozí
+  hypotézy naráz smetl.
+  🔑 **A druhá: co nejde reprodukovat bez uživatele, se ladí strašně draho.**
+  Vada šla jen fyzickým dotekem (vzdálené SCPI ji nedělá), takže každé měření
+  stálo jedno kolo konverzace — dokud nevznikl injektor `tap <idx>`, který
+  volá tutéž cestu ze stejného místa smyčky. Ten měl vzniknout **hned**, ne
+  po hodinách.
+
+**Původní (mylné) znění:** Ladicí konstanta i „šíř clear region" mají STROP daný sdílenou SDRAM sběrnicí, ne kódem
+
+- **Datum:** 2026-09-21
+- **Oblast:** DMA2D/LTDC, rendering, ladicí konstanty
+- **Symptom:** Uživatel hlásil problikávání hlavní obrazovky při RUN/STOP.
+  Naměřeno (F-0140): burst RUN/STOP toggle korelovaně zvedal
+  `status` → `LTDC: podtečení FIFO` (52/1000 při d2ddt=240). Zúžení DMA2D
+  přenosu (přesná `freq_area()` místo "maximální možné" `freq_clear_area()`
+  + vypnutí HW glyph akcelerace pro tenhle konkrétní redraw) snížilo poměr na
+  27/1000 (d2ddt=240) resp. 17/1000 (d2ddt=255, strop registru) — **reálné,
+  změřené zlepšení, ale ne nula**. Izolovaný JEDEN toggle (skutečné použití,
+  ne umělý burst) byl **čistý i PŘED touto opravou** (0–2 podtečení na
+  tisíce flipů).
+- **Příčina:** Podtečení FIFO LTDC je **sdílené pásmo SDRAM sběrnice**
+  (DMA2D burst soutěží s nepřetržitým čtením scanline LTDC) — je to fyzikální
+  strop desky, ne chyba v kódu. Zúžení přenosu (méně bajtů) i mrtvý čas
+  DMA2D (`d2ddt`, max 255 = strop 8bitového registru `AMTCR.DT`) ho jen
+  **posouvají**, nikdy neodstraní: i kombinace obou u tohohle konkrétního
+  redrawu zůstala na ~17/1000 pod umělým burstem.
+- **Oprava:** `screen_main_redraw_freq_tint()` — nová, užší varianta pro
+  RUN/STOP toggle (geometrie čísla se nemění) vedle `screen_main_redraw_freq_area()`
+  (`CM7/app/screens/screen_main.c:2694-2790`, volající `app_gpsdo.c:7834,8642`).
+  Zlepšení je **skutečné a bezrizikové** (menší přenos, žádná logická změna
+  chování), ale **není to "úplná" oprava** — zbytkové riziko pod extrémním
+  burstem zůstává, protože strop je fyzikální. Reálné jednotlivé použití
+  (fyzický dotek) bylo čisté už PŘED opravou u SCPI ekvivalentu — otevřená
+  otázka, jestli LTDC podtečení vůbec vysvětluje to, co uživatel vidí na
+  fyzickém doteku (nebylo možné ověřit bez skutečného doteku displeje).
+- **Pravidlo:** **Když je nález korelovaný s fyzikálním sdíleným prostředkem
+  (sběrnice, hodiny, napájení), žádná kombinace SW pák nemusí dát nulu —
+  změř VŽDY nejlevnější/nejrealističtější scénář (jeden dotek, ne umělý
+  burst) PŘED tím, než umělý stresový test prohlásíš za reprezentativní pro
+  hlášený symptom.** Umělý burst je nástroj na ODHALENÍ jevu, ne na potvrzení,
+  že vysvětluje TOTO konkrétní hlášení uživatele.
+- **Detekce:** Žádná automatická — vyžaduje reálné měření na HW (`status` →
+  `LTDC: podtečení FIFO`) v obou scénářích (jeden dotek vs. burst) při každém
+  budoucím podezření na "problikávání" korelované s DMA2D/LTDC.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0078 — `sd_blocking_begin()` snižuje PRIORITU volajícího tasku; obalovat jen JEDEN zápis, ne smyčku s cross-task čekáním
+
+- **Datum:** 2026-09-23
+- **Oblast:** RTOS, SD karta, cross-task komunikace
+- **Symptom:** Nový UART příkaz `screenshot all` (export všech ~50 oken UI na SD,
+  každé jako vlastní BMP) na desce **zaseklo přístroj na 6+ minut** — neodpovídal
+  ani na `ping` (triviální, bez SD/kreslení). Zotavilo se to až po **reflashi +
+  softwarovém resetu**; halt sondou k diagnostice nebyl použit (viz pravidlo
+  o mrtvé I2C4 — zbytečně riskantní pro tenhle případ).
+- **Příčina:** `sd_blocking_begin()` (`sd_export.c`) není jen příznak — **sníží
+  prioritu VOLAJÍCÍHO tasku na `osPriorityLow`** po dobu držení (obrana proti
+  zaseknutému SD HAL, aby zaseknutí nezabralo displej/dotyk/watchdog). Existující
+  volání (`screenshot sd` aj.) ho drží jen kolem JEDNOHO blokujícího zápisu
+  (~1-3 s) — bezpečné. Nový kód ho ale držel kolem **CELÉ smyčky 49 oken**,
+  včetně fáze, kdy UartTask čeká (`osDelay(5)` polling) na to, až UiTask
+  vykreslí požadované okno přes `g_shot_view_req`/`g_shot_view_done` handshake.
+  UartTask tak strávil několik minut na sníženou prioritu, zatímco na něm
+  ZÁROVEŇ záviselo dokončení cross-task predávání — přesně ten typ kombinace,
+  co RTOS scheduler nemá důvod řešit rychle.
+- **Oprava:** `sd_blocking_begin()/end()` obaluje **jen samotné volání
+  `screenshot_save_sd_named()`** (per soubor), ne čekání na UiTask ani celou
+  smyčku — stejný rozsah jako u všech ostatních volajících v projektu.
+  Ověřeno na desce: 3 okna OK, 40 oken OK (vč. SD KARTA/DATALOG/SESTAVY/
+  BENCHMARK — podezřelá kvůli vlastnímu sahání na SD/QSPI), **49/49 OK**,
+  žádné zaseknutí.
+- **Pravidlo:** **Funkce, která mění vlastnosti VOLAJÍCÍHO tasku (prioritu,
+  masku přerušení…) kvůli JEDNÉ krátké operaci, se nesmí obalit kolem širší
+  smyčky — a obzvlášť ne kolem smyčky, která sama čeká na JINÝ task.** Než
+  se `_begin()/_end()` pár použije v novém kontextu, ověřit, co přesně dělá
+  (grep tělo, ne jen jméno) — jméno `sd_blocking_begin` naznačuje "necham
+  bezet SD blokujici operaci", ne "snizim si prioritu na minuty".
+- **Detekce:** Žádná automatická — realisticky jen **testovat přírůstkově**
+  (malý vzorek → střední → plný rozsah), přesně jak se to nakonec udělalo
+  (a mělo se to udělat rovnou, ne až po jednom zaseknutí).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0079 — Baseline pro "první pozorování není hrana" musí čekat, až se ustálí DEBOUNCE, ne jen na první tik volajícího
+
+- **Datum:** 2026-09-23
+- **Oblast:** SD karta (card-detect), zvukový alarm, boot
+- **Symptom:** Nový dvouton při vložení/vyjmutí SD karty (`alarm_sd_card`) pípal
+  "vložení" i po **power resetu s kartou už zasunutou** — přesně to, co měl
+  guard "první pozorování po bootu není hrana" zabránit, a podle kódu (i podle
+  prvního testu přes SW reset debuggeru) vypadal jako funkční.
+- **Příčina:** Guard bral baseline (`s_snd_prev = present`) na **prvním volání
+  `sd_export_tick()`** — jenže `present` (`datalog_sd_card_present()`) je sám
+  o sobě **debouncovaný** (`SD_DET_STABLE_N`=3 tiky) a po bootu vždy začíná na
+  "nepřítomna" (`s_det_stable`=0 v BSS), bez ohledu na to, jestli je karta
+  fyzicky uvnitř. Debounce se na skutečnou "přítomna" dorovná až za 3 tiky
+  tohoto volání (~1,5 s). Baseline vzatá na 1. tiku tedy VŽDY zachytí
+  "nepřítomna", a jakmile debounce o pár tiků později dožene realitu, guard to
+  vidí jako hranu nepřítomna→přítomna a pípne — při KAŽDÉM bootu s vloženou
+  kartou, nezávisle na typu resetu.
+  ⚠️ Testování přes SW reset (`STM32_Programmer_CLI -rst`) tuhle chybu
+  neprokázalo ani nevyvrátilo — bez sluchu na desce jsem si "ticho" jen
+  domyslel z toho, že `status`/`datalog mirror` pár sekund po resetu vypadaly
+  v pořádku. Až skutečný power-cyklus (uživatel) odhalil, že pípnutí je pořád
+  tam.
+- **Oprava:** Guard teď má vlastní **zpožďovací okno `SD_DET_STABLE_N+1` tiků**
+  (`s_snd_grace`), po které se hrana vůbec nevyhodnocuje — jen se `s_snd_prev`
+  každý tik přepisuje aktuální hodnotou. Tím je po uplynutí okna debounce jistě
+  ustálený a `s_snd_prev` drží SPRÁVNOU tichou baseline (ať je karta přítomná,
+  nebo ne). `SD_DET_STABLE_N` přitom bylo doteď `#define`ováno jen uvnitř
+  `datalog_sd.c` — přesunuto do `datalog.h` jako jeden sdílený zdroj, aby
+  `sd_export.c` nezavedl druhou nezávislou "3" (viz i L-0070 duch téhož problému
+  jinde).
+- **Pravidlo:** **"Nehodnoť hranu na prvním pozorování" nestačí, když je
+  sledovaná hodnota SAMA odvozená z debounce/filtru s vlastním zpožděním.**
+  Baseline se smí vzít až PO tom, co uplyne alespoň tolik tiků, kolik ten
+  filtr potřebuje k ustálení — jinak baseline zachytí přechodný stav filtru,
+  ne skutečnost. Platí obecně, ne jen pro tenhle guard.
+- **Detekce:** Žádná automatická — filtr/debounce vypadá zdravě i v jednotkovém
+  testu nad ustáleným vstupem; potřeba je test PŘES BOOT se vstupem, který je
+  od začátku "true" (karta vložená před zapnutím), a to nejlépe skutečným
+  power-cyklem, ne SW resetem (viz L-0078 sekce o SW vs. power reset jinde
+  v projektu).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0080 — Vypnutí funkce, která drží otevřený soubor, musí soubor i ZAVŘÍT, ne jen nastavit příznak
+
+- **Datum:** 2026-09-24
+- **Oblast:** SD karta / FatFs, datalog zrcadlo
+- **Symptom:** Při opravě F-0142 (čtení posledního řádku souboru při znovuotevření
+  na téže kartě) se přidal `FA_READ` k dosavadnímu `FA_WRITE` v `f_open()`. Hned
+  při prvním ověřovacím testu na HW (`datalog mirror off` → `on`) začalo
+  opětovné otevření selhávat (`"otevreni souboru selhalo"`), přestože stejná
+  sekvence předtím v této session opakovaně fungovala.
+- **Příčina:** `datalog_mirror_set_enabled(false)` (`datalog_sd.c`) od svého
+  vzniku jen nastavovala `s_mirror_open = false`, **nikdy nevolala `f_close()`**
+  na `s_mirror_fil`. FatFs tak dál vedla soubor jako otevřený týmž objektem;
+  dokud se znovu otevíral jen s `FA_WRITE`, kolize se neprojevila. Přidání
+  `FA_READ` (kombinovaný režim čtení+zápis) narazilo na zámek, který ten
+  zapomenutý, nikdy nezavřený objekt pořád držel — a `f_open()` na stejné
+  jméno selhal.
+- **Oprava:** `datalog_mirror_set_enabled(false)` teď při `s_mirror_open`
+  zavolá `f_close(&s_mirror_fil)` (obaleno `sd_blocking_begin/end` +
+  `sd_export_busy_begin/end` — volající je UartTask, blokování je v pořádku).
+  `datalog_sd.c:477-495` (F-0146).
+- **Pravidlo:** **Přepínač "vypnuto/zapnuto" nad zdrojem, který drží HANDLE
+  (soubor, socket, periferie), musí handle při vypnutí uvolnit — samotné
+  shození příznaku nestačí, i když se to chvíli nemusí projevit.** Chyba může
+  zůstat skrytá, dokud se nezmění NĚCO JINÉHO (tady: přidaný `FA_READ`), co
+  na existenci uniklého handle najednou narazí — testuj vypnutí/zapnutí
+  vždy PO každé změně otvíracích příznaků, ne jen při prvním napsání kódu.
+- **Detekce:** Žádná automatická — projeví se jen funkčním testem sekvence
+  zapnuto→vypnuto→zapnuto na reálném FatFs svazku.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0081 — Oprava napsaná hned vedle právě opraveného anti-vzoru ho dokázala zopakovat o pár řádků níž
+
+- **Datum:** 2026-09-24 (nalezeno), 2026-09-25 (opraveno)
+- **Oblast:** SD karta / FatFs, datalog zrcadlo — přímé pokračování L-0080
+- **Symptom:** V TÉŽE session, v TOMTÉŽ commitu (`caa5f70`), který opravil
+  F-0146 (`datalog_mirror_set_enabled(false)` nezavíralo `s_mirror_fil`),
+  vznikla NOVÁ funkce (`datalog_mirror_service()`, blok F-0143 — detekce
+  smazání W25Q logu), která **stejný anti-vzor zopakovala** — nastavila
+  `s_mirror_open = false` bez `f_close()`, o pár desítek řádků výš ve
+  stejném souboru, než kde byl ten samý vzor právě opraven.
+- **Příčina:** Oprava F-0146 se soustředila na MÍSTO, kde se bug projevil
+  (disable větev), ne na VZOR samotný. Nová funkce (F-0143) vznikla
+  paralelně, ve stejném pracovním kroku, ale nebyla proti tomu vzoru
+  zkontrolována — přesně to, před čím varuje `/audit-modul` §F5.3
+  ("zkontroluj vlastní zásah na tutéž třídu vady, kterou opravuješ"),
+  jenže tady nešlo o zásah do STEJNÉ funkce, ale o SOUBĚŽNĚ psanou jinou
+  funkci v tomtéž souboru a commitu — širší dosah, než na jaký F5.3 svým
+  doslovným zněním míří.
+  Odhaleno až následným, nezávislým průchodem `/audit-modul` nad HOTOVÝMI
+  opravami (ne nad původní vadou) — teprve čtení kódu s otázkou "kde jinde
+  se ten samý vzor mohl zopakovat" ho našlo; funkční UART test (off/on
+  toggle) na to nedosáhl, protože triggerem je jiná akce (`datalog erase`).
+- **Oprava:** Stejný vzor jako F-0146 — `f_close(&s_mirror_fil)` (uvnitř
+  `if (s_mirror_open)`) před resetem příznaků, `sd_blocking_begin/end`
+  scope rozšířen tak, aby ho zahrnul. `datalog_sd.c:717-747`.
+- **Pravidlo:** **Když opravíš anti-vzor na jednom místě, PROHLEDEJ CELÝ
+  SOUBOR (ne jen okolí opravy) na stejný vzor — zvlášť pokud v TÉŽE úpravě
+  vzniká NOVÝ kód nad STEJNÝM sdíleným stavem** (tady: `s_mirror_open`/
+  `s_mirror_fil`). `grep` jménem proměnné, co se do ní zapisuje `false`
+  bez sousedního `f_close`, je levná, mechanická kontrola, která by tohle
+  chytla přímo při psaní — ne až při druhém, samostatném auditu o den
+  později.
+- **Detekce:** `grep -n "s_mirror_open = false"` a u KAŽDÉHO výskytu ověřit,
+  že mu bezprostředně předchází `f_close()` NEBO je vedle komentář
+  zdůvodňující, proč je to bezpečné bez něj (přesně tenhle kontrast —
+  3 ze 4 míst mělo jedno nebo druhé, jedno nemělo nic — odhalil nález).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní
+
+---
+
+### L-0082 — Zámek, který bere jen jedna strana, nevylučuje nic — a premisa, která vyloučila podezřelého, se musí ověřit proti pořadí bootu
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, audit modulu 23, F-0149)
+- **Oblast:** sdílená GPIO mezi CM7 a CM4, `fmc.c` obranné potvrzení PG8
+- **Symptom:** Nevysvětlený přepis `PG8` (`FMC_SDCLK`) do režimu ANALOG →
+  SDRAM bez hodin → černý displej po power-cyklu a `membench` 10 551 639
+  chybných bitů. Obrana proti tomu existovala (ruční potvrzení pinu ve
+  `MX_FMC_Init`), ale příčina se roky nenašla.
+- **Příčina — dvě vrstvy, obě v téže dvacítce řádků:**
+  1. **Jednostranný zámek.** CM4 kolem všech svých `MX_*_Init` (a ty
+     konfigurují `GPIOG`: PG7, PG11, PG13, PG14) poctivě drží HSEM 1
+     (`CM4/main.c:175-193`). CM7 ve FMC cestě ho nebral vůbec. `HAL_GPIO_Init`
+     přitom dělá nad `MODER`/`AFR` **neatomický read-modify-write**, takže
+     vzájemné vyloučení, které drží jen jedna strana, je **žádné vzájemné
+     vyloučení**. Obrana proti ztrátě PG8 tu ztrátu sama umožňovala — a v
+     opačném směru mohla sebrat `AFR` pinu PG11 (`ETH_TX_EN`, deska bez IP).
+  2. **Vyloučení podezřelého na premise, kterou kód popírá.** Komentář
+     u té obrany vyloučil CM4 větou *„Stav byl analog uz ~200 ms po resetu,
+     tedy PRED bootem CM4"*. Jenže CM4 se budí uvolněním HSEM 0 v
+     `Boot_Mode_Sequence_2` (`main.c:333-335`), zatímco `MX_FMC_Init()` běží
+     až z `main.c:382` — **CM4 startuje dřív, ne později.** Nejpravděpodobnější
+     kandidát byl tím vyškrtnut a pátrání se zastavilo u obrany místo příčiny.
+- **Oprava:** `gpio_cfg_lock()` / `gpio_cfg_unlock()` kolem bloku
+  (`fmc.c`, `USER CODE FMC_Init 2`) + premisa v komentáři uvedena na pravdu.
+  🔑 **Stojící výmluva u `gpio_cfg_lock` neplatila:** komentář tam říká, že
+  generované `MX_*_Init` nelze regen-safe obalit — to platí pro
+  `HAL_FMC_MspInit`, **ne** pro ruční blok, který leží v `USER CODE`.
+- **Pravidlo:** **U každého zámku nad sdíleným prostředkem vyjmenuj VŠECHNY,
+  kdo ho musí brát, a ověř, že ho berou — zámek držený jednou stranou je
+  horší než žádný, protože vypadá jako ochrana.** A **každou větu, která
+  vylučuje podezřelého z časových důvodů („to bylo dřív/později než X"),
+  ověř proti skutečnému pořadí volání, ne proti dojmu** — u dvoujádrového
+  bootu je pořadí neintuitivní a dá se přečíst ze zdrojáku za minutu.
+- **Detekce:** pro každý port, na který sahají obě jádra, `grep` na
+  `HAL_GPIO_Init(GPIO<X>` napříč **oběma** projekty a u každého výskytu
+  ověřit `gpio_cfg_lock()` v okolí (nebo zdůvodnění, proč tam být nemůže).
+  Nenulový `GPIO HLIDAC` ve `status` = závod opravdu probíhá.
+- **Commit:** viz `fix(F-0149)`
+- **Stav:** aktivní
+
+---
+
+### L-0083 — Když sjednotíš zdroj pravdy, kontrola, která hlídala rozchod, se stane tautologií — a nikdo si toho nevšimne
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, audit modulu 23, F-0151)
+- **Oblast:** `fmc.c` / `fmc.h`, `REFRESH_COUNT`
+- **Symptom:** `_Static_assert(REFRESH_COUNT == REFRESH_COUNT_EXPECTED,
+  "fmc.h se rozeslo s fmc.c")` vypadal jako pojistka na nejnebezpečnější
+  konstantě v projektu. Po preprocesoru z něj ale bylo `371 == 371`:
+  **nemohl selhat nikdy.**
+- **Příčina:** Assert vznikl správně — v době, kdy byla hodnota **ručně
+  zdvojená** ve `fmc.c` i `fmc.h`, a tehdy rozchod skutečně hlídal. Pak přišla
+  správná oprava (sjednocení na jediný zdroj, `#define REFRESH_COUNT
+  REFRESH_COUNT_EXPECTED`) — a tím **zmizela vada, kterou assert hlídal**,
+  zatímco assert zůstal i s hláškou, která tvrdí, že ji hlídá dál.
+  Je to zrcadlo L-0070: tam kontrola hlásila nález i ve zdravém stromě,
+  tady nehlásí nikdy nic. Obojí přestává být kontrolou.
+- **Oprava:** Assert nahrazen mezí, která **selhat může** a hlídá vadu, jež
+  reálně hrozí — rozchod hodnoty s **taktem SDCLK** (`REFRESH_COUNT_SPEC_MAX`
+  ve `fmc.h`). Mez je jednostranná záměrně: obnovovat se smí častěji, nikdy
+  řidčeji. Pozitivní kontrola (L-0039) proběhla na **obou** vadách, kvůli
+  kterým vznikla: historická hodnota `1835` → build spadl, SDCLK 50 → 25 MHz
+  → build spadl, nedotčený strom → prošel.
+- **Pravidlo:** **Když odstraníš duplicitu, projdi kontroly, které ten rozchod
+  hlídaly — buď je smaž, nebo je přesměruj na vadu, která po té změně ještě
+  existuje.** Kontrola, jejíž obě strany se staly týmž symbolem, je mrtvá.
+  🔑 A obecněji: **u každého `_Static_assert` si polož otázku „jaká konkrétní
+  změna ho shodí?" — když na ni neumíš odpovědět příkladem, není to pojistka,
+  ale dekorace.** Odpověď patří do komentáře u něj.
+- **Detekce:** u `_Static_assert(A == B)` ověřit, že `A` a `B` mají **různé
+  zdroje**; pokud je jedno `#define`ované druhým, je to tautologie. Obecně:
+  ke každé nové pojistce spustit pozitivní kontrolu a její výsledek zapsat.
+- **Commit:** viz `fix(F-0151)`
+- **Stav:** aktivní
+
+---
+
+### L-0084 — Anonymní zdržení v bootu drželo při životě ÚPLNĚ JINÝ subsystém, než u kterého stálo; modulový audit ho ověřit nemohl
+
+- **Datum:** 2026-09-25 (nalezeno, opraveno, vráceno — audit modulu 23, F-0152)
+- **Oblast:** `fmc.c` `USER CODE FMC_Init 2`, boot časování, USB CDC konzole
+- **Symptom:** Po odstranění bezpodmínečného `HAL_Delay(200)` (plus blikání
+  LED_1) z `MX_FMC_Init` **přestala po STUDENÉM STARTU odpovídat USB CDC
+  konzole**. Zařízení se vyenumerovalo se správným `VID/PID 0483:5740`, ale
+  data netekla při žádné kombinaci DTR/RTS. Po SW resetu se konzole **vždy**
+  vrátila → rozdíl byl výlučně ve studeném startu.
+- **Proč to audit ani ověření nechytily — tohle je jádro lekce:** návrh smazat
+  to byl **dobře odůvodněný**. Zdržení nemělo v kódu žádné vysvětlení, vypadalo
+  jako pozůstatek z bring-upu a `CLAUDE.md` pravidlo 4c blokující zdržení v boot
+  cestě před bring-upem displeje zakazuje jmenovitě. Nález navíc **předem
+  označil riziko** („nelze vyloučit, že je omylem nosné") a předepsal ověření
+  studeným startem. **A to ověření prošlo** — všechno, co modulový audit
+  kontroluje, bylo v pořádku:
+  `g_fmc_init_fail=0`, `g_display_init_step=0`, `g_cm4_absent=0`,
+  `membench` 0 chybných bitů a retence 0, `bgcheck` BEZE ZMĚNY,
+  `GPIO HLIDAC` 0, `uptime` normálně rostl.
+  **Rozbil se subsystém, který s auditovaným modulem nemá nic společného** —
+  a proto se na něj v kontrolním seznamu nikdo nedíval.
+  🔑 A rozbil se **zrovna ten, kterým se všechno ostatní měří.** Kdyby mě
+  nenapadlo sáhnout po sondě, vypadalo by to jako „deska po power-cyklu
+  nenaběhla" — přitom běžela úplně normálně.
+- **Příčina:** neznámá; komentář u konstanty to **přiznává jako HYPOTÉZU**
+  (rozběh napájení? enumerační okno vůči hostu?). Jistá je jen ta závislost,
+  doložená kontrolovaným pokusem s jedinou změněnou proměnnou:
+  bez zdržení + power-on → konzole mlčí (opakovaně); se zdržením + power-on →
+  `Reset: power-on`, `uptime 22s`, `ping` → `pong`.
+  Druhý kandidát (bouře chybových ISR z F-0153) **vyloučen měřením, ne úvahou**:
+  `g_uart1_rearm_fail` i `g_gps_rx_drop` byly 0 a nerostly.
+- **Oprava:** zdržení vráceno jako pojmenovaná konstanta
+  `FMC_POST_INIT_SETTLE_MS` se zdůvodněním a s výsledky měření. Blikání LED_1
+  vráceno **nebylo** — na časování nemá vliv a LED_1 je výstup `bootled` pro
+  hlášení poruch, takže se pletlo se vzorem poruchy.
+- **Pravidlo:** **Absence zdůvodnění u zdržení NENÍ důkaz, že je zbytečné.**
+  Anonymní `HAL_Delay` v bootu je podezřelý, ale podezření se uzavírá
+  **měřením, ne úsudkem o čistotě kódu**.
+  🔴 A hlavně: **když měníš časování bootu, ověření se NESMÍ omezit na
+  auditovaný modul — musí pokrýt CELÝ přístroj, a jako první ten kanál,
+  kterým diagnostikuješ** (tady USB CDC konzole). Kontrolní seznam
+  „SDRAM + displej + CM4" je pro změnu boot časování **nedostatečný**;
+  patří do něj `ping` po studeném startu.
+  ⚠️ Platí i obráceně: dokud konzole odpovídá, „deska nenaběhla" je tvrzení,
+  které si musíš ověřit sondou (`g_uptime_s`), ne odvodit z ticha na portu.
+- **Detekce:** po KAŽDÉ změně, která sahá na boot časování (`HAL_Delay`,
+  `printf`, blokující volání v `main()` nebo v `MX_*_Init`), povinně:
+  power-cyklus → `ping` → `status` s `Reset: power-on` → `selftest` →
+  `membench`/`bgcheck`. Samotný SW reset **tuhle třídu vady neodhalí vůbec**.
+- **Commit:** `fix(F-0152)` (odstranění), `fix(F-0152)` (vrácení, `830ea2c`)
+- **Stav:** aktivní
+
+---
+
+### L-0085 — Nová varianta pod existujícím druhem zdědí CIZÍ prodlevu a CIZÍ dekodér; a událost se dala potlačit sama sebou v jednom průchodu ISR
+
+- **Datum:** 2026-09-25 (nalezeno i opraveno, přezkum vlastních oprav, F-0155 + F-0156)
+- **Oblast:** `usart.c` (F-0153), záznamník chyb `errlog`
+- **Symptom:** Oprava F-0153 měla udělat tichou poruchu (selhání re-armu GPS
+  příjmu = trvalá smrt RX) **viditelnou**. Zalogovala ji pod existující druh
+  `ERRLOG_K_UART` s novým `sub = 0xFE`. Výsledek byl horší než nic:
+  1. **Dekodér ten `sub` neznal.** `errlog_fmt_detail` rozlišoval jen
+     `sub == 0xFF`; všechno ostatní padalo do větve
+     `"ORE=%lu FE=%lu NE=%lu PE=%lu"`. Trvalá smrt příjmu se tedy vypsala jako
+     **falešné `ORE=<počet>`** — záznamník tvrdil chybu, která se nestala.
+  2. **Prodleva `errlog_put` je per DRUH, ne per `sub`** (`ERRLOG_COOLDOWN_MS`
+     = 60 s). `HAL_UART_ErrorCallback` loguje **dvakrát v jednom průchodu**:
+     nejdřív chybu linky, pak — o pár instrukcí dál — selhání re-armu. Druhé
+     volání narazilo na prodlevu, **kterou si první právě nastavilo**, takže
+     se v hlavní cestě záznam neemitoval **nikdy**. A protože je porucha
+     terminální (další callback nepřijde), nevyvezl ho ani žádný příští záznam.
+- **Příčina:** „Přidám to pod existující druh, je to přece taky UART" vypadá
+  jako úspora. Jenže druh v tomhle záznamníku nese **dvě implicitní politiky** —
+  jak se událost **rozluští** a jak často se **smí emitovat** — a nový `sub`
+  zdědí obě, aniž by o něm kterákoli z nich věděla.
+- **Oprava:** vlastní druh `ERRLOG_K_UARTFATAL` (na KONEC výčtu — čísla jsou
+  v zapsaných datech), vlastní větev ve `errlog_fmt_detail`, vlastní jméno
+  v `errlog_kind_name`, a posunutý `ERRLOG_KIND_MAX`.
+  ✅ **Ověřeno ve slinkovaném obrazu, ne předpokladem:** `s_el_cool_next` má
+  nově **52 B = 13 × uint32** a `s_el_pending` **26 B = 13 × uint16**, tedy
+  nový druh má prokazatelně **vlastní kbelík prodlevy**.
+- **Pravidlo:** **Než přidáš novou variantu pod existující druh/kategorii,
+  vyjmenuj, co ta kategorie implicitně určuje** — typicky rate-limit, dekodér,
+  jméno, filtr v UI — **a ověř, že to nová varianta smí zdědit.** Když se liší
+  v ŽIVOTNOSTI (přechodná × trvalá) nebo ve VÝZNAMU, patří jí vlastní druh.
+  🔴 A zvlášť: **dvě diagnostická hlášení v jednom průchodu ISR si můžou
+  navzájem vyčerpat sdílený rate-limit.** To se nepozná čtením ani jednoho
+  z nich zvlášť — jen přečtením obou v pořadí, v jakém běží.
+- **🔑 Meta-poučení (tohle je na té lekci nejcennější):** F-0153 prošlo
+  **buildem (0 varování), `audit.py` v baseline, kontrolou symbolu v `.elf`
+  i HW testem na desce** — a přesto nedělalo, co mělo. Žádná z těch kontrol na
+  tuhle třídu nedosáhne, protože **všechny ověřují, že se kód přeložil
+  a vykonal, ne že jeho VÝSTUP dává smysl.** Odhalilo to až přečtení
+  **konzumenta** (`errlog_fmt_detail`) a **mechanismu** (`errlog_put`) — tedy
+  kódu, který se vůbec neměnil. Ke každé opravě, která něco *hlásí*, patří
+  otázka: **kdo to čte a co z toho udělá?**
+- **Detekce:** u každého `errlog_put`/loggeru ověř, že (a) dekodér zná použitý
+  `sub`/`kind` — jinak vypíše cizí větev, (b) v témže průchodu se neloguje
+  víckrát pod stejný druh. Mechanicky: vypsat všechna volání jako
+  `kind + sub` a porovnat s větvemi ve formátovači.
+- **Commit:** `fix(F-0155/F-0156)`
+- **Stav:** aktivní
+
+---
+
+### L-0086 — Běžící průměr regulační smyčky přežil vlastní akční zásah; a stav z backup domény se po resetu předpokládal nulový
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0158)
+- **Oblast:** `rtc.c` — disciplinace LSE podle GPS (`rtc_lse_*`, `RTC_CALR`)
+- **Symptom:** žádný viditelný — smyčka „běžela“, korekce se zapisovaly. Teprve
+  simulace přesně podle aritmetiky kódu ukázala, že při driftu +10 ppm zbytek
+  osciluje −10..+6 ppm a **neustálí se ani po 4 dnech**.
+- **Příčina:** (1) běžící průměr driftu se po zápisu korekce **nenuloval**, takže
+  míchal okna naměřená pod starou kalibrací s okny pod novou, a vzorec
+  `avg − cal` odečetl jen tu novou. (2) Sourozenec: `s_lse_cal_ppm` startoval po
+  resetu na 0 s komentářem „co je zapsané v `RTC_CALR`“ — jenže `RTC_CALR` žije
+  v backup doméně a reset přežije. První korekce po každém resetu tak u správně
+  zkalibrovaného krystalu **správnou kalibraci odstranila**.
+- **Oprava:** po úspěšném `HAL_RTCEx_SetSmoothCalib` nulovat průměr, počet
+  i fázovou referenci; `rtc_lse_cal_from_reg()` načte `RTC_CALR` při prvním
+  vzorku (`rtc.c`, `USER CODE BEGIN 1`).
+- **Pravidlo:** **Estimátor, jehož vstup mění vlastní korekce, začíná po každé
+  korekci novou epochu.** A **stav, který v HW přežije reset (backup doména,
+  option bytes, externí čip), se po resetu čte zpět z HW** — nikdy se
+  nepředpokládá výchozí hodnota proměnné v RAM.
+- **Detekce:** u každé smyčky s akumulátorem se ptej: *nuluje ho akční zásah?*
+  U každé proměnné, jejíž komentář odkazuje na registr, najdi řádek, kde se ten
+  registr **čte** (L-0028). Chování smyčky ověř simulací její aritmetiky, ne
+  čtením — zde by čtení vadu nenašlo.
+- **Commit:** `c387409`
+- **Stav:** aktivní
+
+---
+
+### L-0087 — Porovnání s mezí je pro NaN vždy nepravdivé, takže mez NaN propustí; ošetření existovalo, jen u dvojčete
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0160 / F-0163 / F-0164)
+- **Oblast:** `meas_math.c` (limitní tester), formátovače `fmt_hz`/`fmt_sdec`/
+  `fmt_fixed` (`app_gpsdo.c`), `fmt_frac` (`screen_main.c`)
+- **Symptom:** limitní tester vyhodnotil NaN jako **PASS** — a NaN je dosažitelné
+  třemi SCPI příkazy (`CALC:MATH:M 1E308` → `+Inf`, `CALC:NULL:ACQ` → `Inf − Inf`).
+  Formátovače tiskly pro NaN věrohodnou nulu (`(uint32_t)NaN` je UB, M7 `VCVT`
+  dá 0) a `fmt_frac` se pro `+Inf` zasekl v normalizační smyčce → IWDG.
+- **Příčina:** `if (y < lo) FAIL; if (y > hi) FAIL; PASS` — pro NaN jsou obě
+  porovnání nepravdivá, takže tok spadne do „dobré“ větve. Tatáž mez u formátovače
+  (`if (a >= 4.2e9) …`) NaN nechytí a přetypování za ní je UB. SCPI dvojče
+  `fmt_scpi_hz_d` to přitom mělo vzorově ošetřené (L-0012).
+- **Oprava:** negovaná porovnání `if (!(y >= lo)) …` (pro NaN pravdivá) a meze
+  formátovačů ve tvaru `if (!(a < MEZ)) → "--"`; horní normalizační smyčka dostala
+  mez iterací (L-0030).
+- **Pravidlo:** **Každá mez, za kterou následuje verdikt nebo přetypování, se píše
+  tak, aby NaN padlo do BEZPEČNÉ větve** — tedy `!(x >= lo)` / `!(x < MEZ)`, ne
+  `x < lo` / `x >= MEZ`. „Chybí-li hodnota, projde“ je u testeru i formátovače
+  nejhorší možný výsledek. ⚠️ Platí jen bez `-ffast-math` (ověřeno: projekt ho
+  nemá); s ním smí překladač NaN porovnání vyoptimalizovat.
+- **Detekce:** selftest, který NaN vyrobí **cestou zvenku** (ne dosazením), a pro
+  každou mez před `(int)`/`(uint32_t)` nad `float`/`double` otázka „co udělá NaN?“.
+- **Commit:** `479d7d1`
+- **Stav:** aktivní
+
+---
+
+### L-0088 — Estimátor se ověřuje nezávislou referencí, ne komentářem u téže smyčky; a „vylepšení“ se přijímá až po pozitivní kontrole
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0161 / F-0166 / F-0167)
+- **Oblast:** `screen_main.c` (overlapping ADEV/HDEV/MDEV, konfidenční pás),
+  `phase_noise.c` (ℒ(f))
+- **Symptom:** všechny tři overlapping estimátory končily smyčku o člen dřív, než
+  povoluje vzorec NIST SP1065 **uvedený v komentáři přímo nad smyčkou**; odhady
+  byly nezkreslené, jen na dlouhých τ bez 7–10 % členů. Konfidenční pás počítal
+  počet členů **druhým vzorcem** vedle estimátoru (u HDEV už nesouhlasil o +1)
+  a overlapping členy bral jako nezávislé → pás ~1,5× užší. ℒ(f) měřil kmitočtový
+  offset místo šumu (symetrický Hann bez odečtu střední hodnoty).
+- **Příčina:** vzorec v komentáři a smyčka pod ním vypadají jako shoda, dokud se
+  nedosadí konkrétní indexy — a nikdo je nedosadil. A oprava ℒ(f) podle návrhu
+  (odečíst i lineární trend) by **vyrobila vlastní artefakt**: tón s celým počtem
+  period má nenulovou projekci na rampu, takže proklad z něj ukousne (bin 1 jen
+  −14,9 dB pod špičkou). Chytila to až pozitivní kontrola na hostu.
+- **Oprava:** meze smyček podle vzorců; pás z EDF (bílý FM, SP1065) místo počtu
+  členů; ℒ(f) jen odečet střední hodnoty + periodický Hann; detrend zamítnut.
+- **Pravidlo:** **Statistický estimátor ověř proti NEZÁVISLÉ implementaci** (jiný
+  algoritmus — tady SP1065 z fázových dat — na hostu, shoda na počet členů i na
+  číslice), ne proti komentáři u téže smyčky. **Každé „vylepšení“ numerické metody
+  prožeň pozitivní kontrolou dřív, než ho zapíšeš** — i když ho navrhl nález:
+  návrh je hypotéza, ne specifikace.
+- **Detekce:** u každého estimátoru dosaď do meze smyčky konkrétní `M`, `m`
+  a spočítej členy ručně; nový selftest musí na STARÉM kódu selhat
+  (přepis 1:1 na hostu včetně zaokrouhlení na `float`).
+- **Další výskyt (2026-09-26, bod 4 — EDF podle typu šumu):** vzorec EDF pro
+  blikavý FM při m = 1 jsem zapsal z paměti jako `2(N−2)/(2,3N−4,9)`; Monte Carlo
+  (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`) dalo empirickou EDF ~19 proti 0,9
+  ze vzorce — správně je `2(N−2)²/…`. **Vzorec z literatury/paměti se do měřidla
+  nepouští bez simulace, která ho změří** (ostatní čtyři typy seděly do ~12 %).
+- **Commit:** `35d3453`, `32efe36` (+ `06cbfd8` pro další výskyt)
+- **Stav:** aktivní
+
+---
+
+### L-0089 — Popisek a barva tvrdily vlastnost, kterou veličina nemá
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0159 / F-0162)
+- **Oblast:** `app_gpsdo.c` — okno ANALÝZA (rozpočet nejistoty), okno SELF-SURVEY
+- **Symptom:** okno ANALÝZA ukazovalo „Nejistotu U“ a „Platných cifer“ spočítané
+  z hradla, které si `mp_budget` při neznámém hradle **dosadil (1 s)** — živě, na
+  dnešní desce bez FPGA; řádek rozlišení vedle přitom poctivě ukazoval „--“.
+  SELF-SURVEY barvil „Rozptyl H“ zeleně pod 2 m s popisem „klesá s N“ — jenže
+  šlo o směrodatnou odchylku jednotlivých fixů, která s N **neklesá**. Barva
+  závisela na místě, ne na délce průzkumu.
+- **Příčina:** výpočet byl správný, **nesprávné bylo to, co o něm říkalo UI**.
+  Dosazená hodnota nenesla žádný příznak, takže volající nemohl poznat, že čte
+  vymyšlený vstup; a popisek „konvergence“ převzal význam, který by měla chyba
+  průměru `σ/√N`, ne rozptyl fixů.
+- **Oprava:** příznak `mp_budget_t.valid` cestuje **s výsledkem** a řídí všechny
+  tři řádky; survey ukazuje „Rozptyl fixu“ neutrální barvou s vysvětlivkou.
+- **Pravidlo:** **Než hodnotu obarvíš jako OK nebo ji nazveš přesností
+  či konvergencí, ověř, že má tu vlastnost, kterou popisek tvrdí** (klesá s N?
+  platí pro skutečné hradlo?). **Náhradní hodnotu dosazenou za neznámý vstup
+  nesmí výsledek nést bez příznaku** — příznak patří do struktury výsledku, ne do
+  podmínky u každého volajícího (tu jeden zapomene, L-0012).
+- **Detekce:** u každé barvy/verdiktu v UI najdi, z čeho se počítá, a zeptej se
+  „co by ta hodnota udělala, kdybych měřil 10× déle?“. U funkcí, které dosazují
+  výchozí vstup, grep na volající, kteří nečtou příznak platnosti.
+- **Commit:** `8c79ced`, `038288c`
+- **Stav:** aktivní
+
+---
+
+### L-0090 — Nezměněná velikost `.text` není důkaz, že změna chybí; a ověřovací řetězec patří za KAŽDOU opravu, ne za dávku
+
+- **Datum:** 2026-09-26 (audit modulu 24, F-0160 na CM4, F-0169)
+- **Oblast:** ověřovací metoda (CLAUDE.md mechanická pravidla 3 a 4)
+- **Symptom:** (1) Po opravě `meas_limit_eval` zůstala `.text` CM4 **bajt za bajt
+  stejná** (242 692 B), ačkoli pravidlo 4 říká „když obraz neroste, změna vypadla“.
+  (2) Oprava F-0169 prošla buildem s 0 varováními, ale zavedla `-Wshadow`
+  v selftestu; `tools/audit.py` ho chytil až **o tři commity později**, protože
+  běžel jen na konci dávky.
+- **Příčina:** (1) CM4 má FPU jen single precision, `double` porovnání dělá
+  `__aeabi_dcmp*`, a záměna `dcmplt`/`dcmpgt` za `dcmpge`/`dcmple` má stejný
+  počet instrukcí — změna v obrazu **je**, jen je stejně velká. (2) Build
+  (`-Wall`) a audit (`-Wshadow` a spol.) mají **různé sady varování**; build
+  sám baseline auditu nehlídá.
+- **Oprava:** (1) změna doložena disassembly (`meas_limit_eval` volá
+  `__aeabi_dcmpge`/`__aeabi_dcmple`); (2) přejmenování v `7f29799`.
+- **Pravidlo:** **Pravidlo 4 je jednosměrné: RŮST `.text` dokazuje, že změna je
+  v obrazu; NERŮST nedokazuje opak** — u záměny operátoru, konstanty nebo
+  podmínky ověř změnu v disassembly dotčené funkce. A **`tools/audit.py` pouštěj
+  po každé opravě, ne po dávce** — build ho nenahrazuje.
+- **Detekce:** když `.text` po opravě nezměnila velikost, `objdump -d` nad
+  funkcí a hledat nový opkód/konstantu; `audit.py` v každém `fix:` commitu
+  (baseline 92 / 0 / 2).
+- **Commit:** `479d7d1`, `7f29799`
+- **Stav:** aktivní
+
+---
+
+### L-0091 — „NaN-safe“ v komentáři znamenalo „bez UB“, ne „správný verdikt“; vadu v originálu odhalilo až psaní jeho dvojčete
+
+- **Datum:** 2026-09-26 (oprava F-0170)
+- **Oblast:** `meas_present.c` (`mp_fit_significant`, `mp_fit_solve`) ↔ SPA `fitSig`
+- **Symptom:** žádný viditelný. Při přenosu t-testu z firmwaru do webu (F-0170)
+  jsem pro JS nejdřív sepsal chování **na okrajích** jako testovací tabulku
+  (n < 3, r = ±1, NaN). Firmwarová funkce, kterou jsem týž den sám napsal
+  (F-0169) a opatřil poznámkou *„dokonalá přímka (i NaN-safe)“*, vracela pro
+  `r = NaN` **1 = průkazné**. Tentýž den jsem přitom zapsal L-0087 („NaN do
+  bezpečné větve“) — a vlastní nový kód ji porušoval.
+- **Příčina:** `if (!(r2 < 1.0)) return 1;` je negovaná forma, takže **nezpůsobí
+  UB** a to jsem nazval „NaN-safe“. Jenže negace posílá NaN do větve, kterou
+  zrovna ta podmínka označuje — a tady to byla větev **„dokonalá přímka“**.
+  Negovaná forma není bezpečná sama o sobě; bezpečná je jen tehdy, když
+  větev, do které NaN padne, je ta opatrná. `mp_fit_solve` měla totéž z druhé
+  strany: `dx <= 0 || dx < 1e-30` NaN v X propustila.
+- **Oprava:** explicitní `if (f->r != f->r) return 0;`, v `mp_fit_solve`
+  `!(dx >= 1e-30)` a kontrola NaN směrnice; tři nové případy v `mp_selftest`
+  a tentýž případ v `tools/spa/stat_test.js` pro web (`a8089d2`, `e99ccbb`).
+- **Pravidlo:** **U každé meze rozhodni, KAM má padnout NaN, a napiš to do
+  komentáře slovy („NaN → neprůkazné“), ne nálepkou „NaN-safe“.** Negovaná
+  forma `!(x < mez)` pošle NaN do větve *za* podmínkou — ověř, že je to ta
+  opatrná. A **když přenášíš funkci do dvojčete, sepiš nejdřív tabulku jejího
+  chování na okrajích a pusť ji proti ORIGINÁLU** — dvojče napsané podle
+  úmyslu odhalí, kde se od úmyslu odchýlil originál.
+- **Detekce:** grep na komentáře „NaN-safe“/„NaN safe“ a u každého ověřit,
+  který verdikt NaN dostane; u dvojčat (C ↔ JS, CM7 ↔ CM4) sdílená tabulka
+  okrajových případů v obou testech (`mp_selftest` + `stat_test.js`).
+- **Commit:** `a8089d2`, `e99ccbb`
+- **Stav:** aktivní
+
+---
+
+### L-0092 — Rozestup vzorků sedí, okno průměrování ne: okamžitý vzorek není průměr za τ0
+
+- **Datum:** 2026-09-26 (druhý průchod modulu 24, F-0171 / F-0172)
+- **Oblast:** statistika stability (`app_gpsdo_tick_stats_sample`, `stats_sample`),
+  datalog (`datalog.c sample`), rekonstrukce Allanovy pyramidy
+- **Symptom:** žádný viditelný — Allanova křivka vypadala věrohodně. Simulace
+  ukázala, že je 2× (bílý FM) až 23× (bílý PM) vysoko a že šum přístroje dostal
+  sklon bílého FM. První průchod auditu stejný kód prohlásil za „τ0 = 1 s
+  správně".
+- **Příčina:** FPGA dává ~4 měření/s po 0,25 s. Statistika brala 1×/s **poslední**
+  měření, datalog 1× za 10 s taky. Rozestup vzorků (1 s, 10 s) byl správně, ale
+  vzorek pokrýval jen 0,25 s — mrtvá doba 75 % a 97 %. ADEV/MDEV i rekonstrukce
+  předpokládají, že vzorek je **průměr za celé τ0**.
+- **Oprava:** FpgaTask sčítá cykly a hradla všech měření do akumulátoru každého
+  konzumenta; ten si vezme reciproký průměr `Σcykly/Σhradla` (`ace2939`).
+- **Pravidlo:** **U každého estimátoru s „τ0" ověř DVĚ věci: rozestup vzorků
+  a okno, přes které vzorek průměruje.** Vzorkování „vezmi poslední hodnotu"
+  z rychlejšího zdroje není průměr; mezi dvěma konzumenty téhož proudu dat
+  (1 s a 10 s) má každý dostat vlastní průměr, ne sdílený snímek.
+- **Detekce:** u každé statistiky se ptej: *kolik měření za τ0 dává zdroj a kolik
+  jich konzument použije?* Když méně než všechna, je tam mrtvá doba. Simulace
+  `docs/audit/sim/2026-09-26_mrtva_doba.js` jako vzor.
+- **Další výskyt (týž den, v MÉ opravě):** i po F-0171 se vzorek skládal podle
+  1s tiku `HAL_GetTick() - last >= 1000; last = now` — ten se opožďuje o latenci
+  smyčky (~1,01 s), takže občas pobral měření navíc, a při nízkém kmitočtu se délky
+  vzorků střídaly (±20 % při hradle 0,4 s). **Vzorek z proudu událostí skládej podle
+  POČTU událostí, ne podle vlastních hodin konzumenta** (`d0a02e5`).
+- **Commit:** `ace2939`, `d0a02e5`
+- **Stav:** aktivní
+
+---
+
+### L-0093 — Statistický test ověřený na nezávislých datech selže na datech, která doopravdy dostane
+
+- **Datum:** 2026-09-26 (druhý průchod modulu 24, F-0173)
+- **Oblast:** `mp_fit_significant` (t-test průkaznosti prokladu) + web `fitSig`
+- **Symptom:** oprava F-0169 (t-test místo pevného |r| ≥ 0,5) prošla pozitivní
+  kontrolou — na **bílém šumu** dávala správných 5 % falešných poplachů. Na
+  datech, která okno ANALÝZA skutečně prokládá (Vc a teplota z datalogu, pomalu
+  putující), ale hlásila falešný „průkazný drift" v 63–91 % případů, tedy hůř
+  než pravidlo, které nahradila.
+- **Příčina:** t-test předpokládá **nezávislá rezidua**. Autokorelovaná data nesou
+  méně nezávislé informace, než kolik mají bodů, takže df = n − 2 je přemrštěné.
+  Pozitivní kontrola byla postavená na datech, pro která test platí, ne na
+  datech, která dostane.
+- **Oprava:** df z efektivního počtu bodů n(1−ρ)/(1+ρ) podle lag-1 autokorelace
+  reziduí (`472ece6`); simulace: 7 % (AR) a 28 % (náhodná procházka) falešných,
+  skutečný drift dál detekovaný.
+- **Pravidlo:** **Pozitivní kontrolu statistické metody postav i na DATECH, KTERÁ
+  METODA V PŘÍSTROJI SKUTEČNĚ DOSTANE** (autokorelace, drift, mrtvá doba,
+  kvantizace), ne jen na ideálním bílém šumu. Předpoklady testu (nezávislost,
+  normalita, stacionarita) vypiš a u každého ověř, jestli ho vstup splňuje.
+- **Detekce:** simulace falešných poplachů pro bílý šum, AR(1) a náhodnou
+  procházku (`docs/audit/sim/2026-09-26_ttest_autokorelace.js`) — metoda smí
+  u šumu bez driftu hlásit „průkazné" jen blízko své hladiny.
+- **Commit:** `472ece6`
+- **Stav:** aktivní
+
+---
+
+### L-0094 — Přesnost typu se posuzuje vůči VARIACI, ne vůči hodnotě: „Float OK" platilo pro 10 MHz a nikde jinde
+
+- **Datum:** 2026-09-26 (modul 24, F-0179)
+- **Oblast:** `screen_main.c` — ring a pyramidy statistiky stability
+- **Symptom:** žádný viditelný; při 10 MHz výsledky sedí. Simulace pro nízké
+  kmitočty: ADEV 3–4× vysoko (1 MHz, 100 kHz) a při 10 kHz / 1 kHz **nula** —
+  body grafu tiše zmizely.
+- **Příčina:** `y` nese offset až 1/f (nominál je celé Hz) a `float` má relativní
+  krok 6·10⁻⁸ vůči HODNOTĚ, ne vůči variaci. Pro statistiku stability rozhoduje
+  poměr variace/hodnota — a ten je u stabilního zdroje s offsetem 10⁻⁴ jen 10⁻⁸.
+  Komentář „Float OK (cold path)" posoudil rychlost, ne přesnost. Je to tatáž
+  třída jako **L-0031** (typ jako nepoznaná mez), jen na jiném místě.
+- **Oprava:** úložiště a mezisoučty v `double`; `float` jen při kreslení, vždy
+  relativně k referenci (`5c019b1`).
+- **Pravidlo:** **Když ukládáš veličinu, ze které se počítají ROZDÍLY nebo
+  rozptyl, porovnej krok typu s nejmenší VARIACÍ, kterou chceš rozlišit — při
+  NEJVĚTŠÍM možném offsetu.** Nevyhovuje-li, ukládej v širším typu nebo
+  odchylky od reference. Komentář „typ X stačí" musí říct, pro jaký rozsah.
+- **Detekce:** u každého `float` akumulátoru statistiky spočítej `ulp(max|hodnota|) /
+  min(variace)`; simulace `docs/audit/sim/2026-09-26_float_podlaha.js` jako vzor.
+- **Commit:** `5c019b1`
+- **Stav:** aktivní
+
+---
+
+### L-0095 — Jedna podmínka pro dvě různé věci: „formát už nesedí" není „měří se jiný signál"
+
+- **Datum:** 2026-09-27 (modul 24, F-0183 + F-0184)
+- **Oblast:** `screen_main.c` — `freq_advance()`, přestavba formátu vs. nulování statistiky
+- **Symptom:** žádný viditelný dnes (SIM ani `fpgasim` s malým šumem hranici
+  nepřekračují). Simulace: stabilní 10 MHz → **1931 nulování statistiky na
+  4000 měření**; naopak přechod 10 → 12 MHz statistiku **nevynuloval** vůbec.
+- **Příčina:** `need = (počet celých číslic se změnil)` řídilo dvě věci naráz:
+  přestavbu formátu (správně) a „jiný signál → vynulovat statistiku, nový
+  nominál" (špatně). Počet číslic je vlastnost ZOBRAZENÍ, ne signálu — signál
+  na hranici dekády ho mění při každém šumovém překmitu, jiný signál v téže
+  dekádě ho nemění vůbec.
+- **Oprava:** dvě proměnné, `fmt_need` (jen formát) a `sig_change` (relativní
+  změna > 10⁻⁴ proti přesnému kmitočtu při posledním nulování) (`6047fec`).
+  F-0184 se našel až **pozitivní kontrolou** opravy F-0183: simulace měla scénář
+  „stabilní signál se nesmí nulovat" a ten selhal už na STARÉ logice.
+- **Pravidlo:** **Když jedna podmínka spouští víc důsledků, u každého se zeptej,
+  jestli je podmínka jeho SKUTEČNÁ příčina, nebo jen korelát.** Vlastnost
+  zobrazení (počet číslic, jednotka, rozsah osy) nesmí rozhodovat o datech.
+  A pozitivní kontrola opravy má mít i scénář „tohle se NESMÍ stát" — ten najde
+  vadu, kterou oprava nezavedla, ale zdědila.
+- **Detekce:** přepis rozhodovací logiky do simulace se šumem **přesně na
+  hranici** (10 MHz, 1 MHz, …), počítat nulování i skoky reference.
+- **Commit:** `6047fec`
+- **Stav:** aktivní
+
+---
+
+### L-0096 — Zrychlení přes prefixové součty KUMULATIVNÍ veličiny ruší číslice: nejdřív diferencovat, pak sčítat
+
+- **Datum:** 2026-09-27 (modul 24, F-0182)
+- **Oblast:** webová `mdev()` (SPA v `httpd_min.c`)
+- **Symptom:** návrh opravy z vlastního auditu (prefixové součty fáze) dával na
+  bílém šumu shodné výsledky a byl 18× rychlejší. Se signálem, který má offset
+  10⁻⁶ (necentrovaná data), ale relativní chybu **3,6·10⁻⁵**.
+- **Příčina:** fáze je součet kmitočtů — při offsetu/driftu roste lineárně až
+  kvadraticky, její prefixové součty kvadraticky až kubicky. MDEV potřebuje
+  rozdíl dvou takových obřích součtů, tedy malé číslo z velkých → zbytek double
+  se vyruší. Test „shoda s referencí" na centrovaném bílém šumu to neviděl.
+- **Oprava:** klouzavé okno nad druhými diferencemi d[k] = x[k+2m]−2x[k+m]+x[k]
+  — lineární fáze (offset) v nich už zmizela, sčítají se malá čísla (`724e3f7`).
+  Chyba < 3·10⁻¹⁵, rychlost stejná (~20×).
+- **Pravidlo:** **Zrychlení, které nahrazuje sčítání rozdílem kumulativních
+  součtů, ověř na datech s OFFSETEM a DRIFTEM, ne jen na centrovaném šumu.**
+  Kde to jde, nejdřív odstraň to, co roste (diferencuj), a teprve pak akumuluj.
+  Tatáž třída jako L-0094 (přesnost vůči variaci, ne vůči hodnotě).
+- **Detekce:** `docs/audit/sim/2026-09-27_mdev_presnost.js` (varianty proti
+  naivní referenci, scénáře drift/offset); `stat_test.js` hlídá drift i offset.
+- **Commit:** `724e3f7`
+- **Stav:** aktivní
+
+---
+
+### L-0097 — Pevný počet desetin je absolutní krok; přesnost výstupu musí být RELATIVNÍ jako přesnost měření
+
+- **Datum:** 2026-09-27 (modul 24, F-0180)
+- **Oblast:** SCPI/JSON formát kmitočtu, datalog, IPC snapshot
+- **Symptom:** web, SCPI i datalog dostávaly kmitočet po 10 µHz, displej v plné
+  přesnosti → pro tatáž data různá σy (při 1 kHz 6×, při nižších nula).
+  Vlastní návrh opravy (9 desetin, datalog v nHz) by vadu jen posunul níž:
+  při 10 Hz je 1 nHz relativně 10⁻¹⁰, což podlaha nové desky přesáhne.
+- **Příčina:** podlaha čítače je RELATIVNÍ (tdc/τ, na kmitočtu nezávislá),
+  kdežto pevný počet desetin je ABSOLUTNÍ krok — relativně roste s klesajícím
+  kmitočtem. Každý pevný počet desetin tedy někde pod nějakým kmitočtem selže.
+- **Oprava:** výstup s **15 platnými číslicemi** (DBL_DIG, `fmt_scpi_hz_sig`),
+  datalog jako IEEE double — relativně ~10⁻¹⁵ na libovolném kmitočtu
+  (`e5d7521`). Snapshot dostal double do dvou nikdy neplněných floatů, takže
+  layout zůstal (`_Static_assert` na offset i velikost).
+- **Pravidlo:** **U veličiny s relativní přesností (kmitočet, poměr) formátuj
+  a ukládej v PLATNÝCH číslicích (nebo plovoucí čárce), ne v pevných
+  desetinách.** Než zvolíš krok, spočítej ho relativně u NEJNIŽŠÍ hodnoty
+  rozsahu. A když výstup nemá přesná data, nepředstírej je — tiskni jen tolik
+  číslic, kolik zdroj nese.
+- **Detekce:** pro každý formátovač/úložiště spočítej `krok / hodnota` na dolním
+  konci rozsahu a porovnej s podlahou měření (`sim/2026-09-26_kvantizace_10uHz.js`,
+  `sim/2026-09-27_fmt_hz_sig.js`).
+- **Commit:** `e5d7521`
+- **Stav:** aktivní
+
+---
+
+### L-0098 — Nulování struktury PO jejím naplnění: překladač zápisy tiše zahodil, dvojče měřítko mělo
+
+- **Datum:** 2026-09-27 (F-0185, nalezeno při úpravě téže funkce pro F-0180)
+- **Oblast:** `scpi.c` — `scpi_src_load_cm7_ex` (USB SCPI)
+- **Symptom:** přes USB vracely `SENS:FREQ:GATE?`, `CHAN?` a `INIT:CONT?` vždy
+  výchozí hodnotu; přes TCP/HTTP správnou. Od `6e43eb2` (přidání readbacku), tedy
+  týdny, a CLAUDE.md přitom tvrdil, že „USB cesta byla správně".
+- **Příčina:** blok plnící `set_*` byl přidán NAD existující `memset(src, 0, …)`.
+  Překladač zápisy před memsetem odstranil jako mrtvé (`.text` po opravě +32 B)
+  — bez varování, GCC na mrtvé zápisy neupozorňuje. Selftest SCPI jde přes vlastní
+  `scpi_src_t`, ne přes loader, takže to neviděl.
+- **Oprava:** blok za `memset` (`f81e25a`).
+- **Pravidlo:** **Ve funkci, která strukturu nuluje, patří nulování na ÚPLNÝ
+  začátek a každé plnění až za něj — a při přidávání pole do takové funkce se
+  podívej, kde memset leží.** Když existuje dvojče (tady USB loader a IPC loader
+  téže `scpi_src_t`), rozdíl mezi nimi je nejlevnější test: `scpi X` proti
+  `scpi ipc X` hlásí SHODA/ROZDIL.
+- **Detekce:** grep `memset(` ve funkcích typu `*_load*`/`*_fill*` a kontrola, že
+  nad ním nejsou přiřazení do téže struktury; na HW porovnání `scpi` vs `scpi ipc`
+  pro každý readback.
+- **Commit:** `f81e25a`
+- **Stav:** aktivní
+
+---
+
+### L-0099 — Emulátor, který nevyrábí data jako skutečný zdroj, vadu nemůže ukázat: kvantizaci zdroje modeluj bit za bit
+
+- **Datum:** 2026-09-27 (modul 24, F-0186)
+- **Oblast:** `fpga_freq.c` — hi-res kmitočet, `fpgasim`
+- **Symptom:** hi-res kmitočet (7 desetin na displeji, 15 platných číslic ven) nesl
+  u asynchronního signálu systematickou chybu 0 až +2·10⁻⁹ (10 MHz: až 20 mHz) —
+  horší než obyčejné `x100000`. Žádný test ani ověřovací běh ji neviděl.
+- **Příčina:** FPGA posílá `gate_time_ns` jako **floor** z Δt v ticích 2,5 ns
+  (`spi_app.v:507`), STM ho bralo jako přesné Δt. Pravidlo rekonstrukce ticků bylo
+  sepsané v návrhu protokolu v2, jen neimplementované. Emulátor `fpgasim` vyráběl
+  hradlo jako libovolné celé ns a hrany `floor(hz·gate)` — tedy **jinak než FPGA**,
+  takže vadu nemohl ukázat a navíc přidal vlastní šum až 4·10⁻⁷, který by ji zakryl.
+- **Oprava:** `fpga_freq_dt_ticks()` = round(gate_ns/2,5 ns), dělí se přesnými ticky
+  ve všech pěti místech; emulátor skládá rámec jako FPGA (celé periody, Δt v ticích,
+  `gate_time_ns` floor) (`98c4394`).
+- **Pravidlo:** **Emulátor nebo testovací zdroj musí vyrábět data TÍMŽ algoritmem
+  a TOUŽ kvantizací jako skutečný zdroj — čti jeho zdroj (RTL), ne dokumentaci.**
+  Pole, které zdroj zaokrouhluje, se bere jako zaokrouhlené; když vedle něj
+  existuje přesnější veličina (tady ticky), rekonstruuj ji.
+- **Detekce:** u každého pole z FPGA dohledat v `spi_app.v`, jak vzniká (floor /
+  round / přesné); selftest s vektorem, kde se floor a přesná hodnota liší
+  (`fpga_freq_select_selftest`, 9 999 999,900000001 Hz);
+  `sim/2026-09-27_gate_floor.js`, `sim/2026-09-27_f0186_emulator.js`.
+- **Commit:** `98c4394`
+- **Stav:** aktivní
+
+---
+
+### L-0100 — Estimátor nad podvzorkovanými daty není týž estimátor: MDEV z pyramidy průměrů kmitočtu
+
+- **Datum:** 2026-09-27 (modul 24, F-0187)
+- **Oblast:** `screen_main.c` — decimační pyramida ADEV/MDEV/HDEV
+- **Symptom:** MDEV/TDEV nad 10 s u bílého PM 3,2× (stage 1) až 10× (stage 2)
+  vysoko, bílý PM se klasifikoval jako blikavý; web (plná data) ukazoval jiné MDEV
+  než displej.
+- **Příčina:** stage s drží průměry kmitočtu po 10ˢ s = fázi podvzorkovanou po 10ˢ s.
+  ADEV a HDEV potřebují jen průměry kmitočtu přes τ, takže jim to nevadí; MDEV
+  průměruje FÁZI přes n = τ/τ0 bodů a z podvzorkované fáze průměroval jen m bodů.
+  Komentář to věděl (podlaha „m, ne τ/1 s"), ale nikdo z toho neodvodil, že výsledek
+  není MDEV.
+- **Oprava:** fázová pyramida — každá položka nese průměr fáze bloku relativně
+  k jeho začátku, decimace ho skládá přesně, MDEV nad stage ≥ 1 je pak standardní
+  (`35ca1ff`).
+- **Pravidlo:** **Než spočítáš estimátor nad komprimovanými daty (decimace,
+  průměry, histogram), napiš, co přesně komprese zachovává, a ověř, že estimátor
+  nepotřebuje nic dalšího.** ADEV z průměrů kmitočtu ano, MDEV/TDEV ne (potřebují
+  průměr fáze), MTIE ne (potřebuje extrémy fáze).
+- **Detekce:** porovnání pyramidy s přímým výpočtem z plných dat pro každý typ
+  šumu a každou stage (`sim/2026-09-27_mdev_pyramida.js`); selftest proti přímé
+  definici nad průměry fáze bloků (`screen_main_selftest`).
+- **Commit:** `35ca1ff`
+- **Stav:** aktivní
+
+---
+
+### L-0101 — Nulování stavu musí vyprázdnit i všechno, co je k němu „na cestě"
+
+- **Datum:** 2026-09-27 (modul 24, F-0188)
+- **Oblast:** `screen_main.c` / `fpga_freq.c` — statistika při změně signálu
+- **Symptom:** po přepnutí měřeného zdroje prošly do vynulované pyramidy v 99,6 %
+  případů 1–2 vzorky starého nebo smíšeného signálu (|y| až 0,17) a decimací
+  dožívaly na dlouhých τ hodiny až dny.
+- **Příčina:** `screen_main_stats_reset()` vynulovala pyramidy, ale ne frontu hotových
+  vzorků (FpgaTask → UiTask) ani rozpracovaný akumulátor. Nulování a producent běží
+  v různých taskách, takže v okamžiku nulování vždy něco „letí".
+- **Oprava:** `fpga_stat_flush()` při nulování + filtr `screen_main_signal_match()`
+  při odběru (`b619ea8`).
+- **Pravidlo:** **Když nuluješ stav, který plní jiný task přes frontu nebo
+  akumulátor, vyprázdni i je — a konzument ať navíc ověří, že vzorek k novému stavu
+  patří (stejnou podmínkou, jakou se změna detekovala).** Samotné vyprázdnění
+  nestačí, když může vzniknout vzorek složený přes hranici.
+- **Detekce:** u každé funkce `*_reset`/`*_clear` vypsat, kdo daný stav plní
+  a přes jaké mezičlánky; simulace přepnutí v náhodné fázi
+  (`sim/2026-09-27_reset_fronta.js`).
+- **Commit:** `b619ea8`
+- **Stav:** aktivní
+
+---
+
+### L-0102 — Historie se smí navázat na živá data jen přes SOUVISLÝ úsek téhož zdroje
+
+- **Datum:** 2026-09-27 (modul 24, F-0189)
+- **Oblast:** `app_gpsdo.c` — rekonstrukce Allanovy pyramidy z datalogu
+- **Symptom:** dlouhé τ (10³–10⁵ s) po restartu nesly náběhy OCXO a skoky předchozích
+  sezení, mezery dnů i data jiného zdroje — věrohodně vypadající „drift".
+- **Příčina:** rekonstrukce sypala záznamy za sebe a kontrolovala jen jejich vlastnosti
+  (průměr, SIM), ne **vztah k sousedům** (čas, stejný signál). Živá cesta přitom při
+  výpadku pyramidu nuluje — obnova z logu se chovala jinak než měření, které nahrazuje.
+- **Oprava:** jen poslední souvislý úsek téhož signálu (řez při mezeře > perioda
+  + 120 s nebo nepoužitelném záznamu), start až po prvním reálném měření, po zapnutí
+  napájení vůbec (`4eee405`).
+- **Pravidlo:** **Obnova stavu z uložené historie musí dodržet TÁŽ pravidla, podle
+  kterých živý běh stav nuluje — co by živě vyvolalo reset, musí v historii vyvolat
+  řez.** Kontroluj vztah záznamu k předchozímu (čas, zdroj), ne jen záznam sám.
+- **Detekce:** syntetický log s mezerou, jiným signálem a výpadkem
+  (`sim/2026-09-27_f0189_rekonstrukce.js`); na HW `status` po warm resetu → hláška
+  „… vzorku posledniho souvisleho useku (… rezu)".
+- **Commit:** `4eee405`
+- **Stav:** aktivní
+
+---
+
+### L-0103 — „Nové" není „navazující": u počítadla kontroluj souvislost, ne jen změnu
+
+- **Datum:** 2026-09-27 (modul 24, F-0190)
+- **Oblast:** SPA (`httpd_min.c`) — buffer měření pro Allan/drift/ℒ(f) na webu
+- **Symptom:** v záložním 1 Hz pollu (bez SSE) počítal web Allanovu odchylku z každého
+  ~4. měření: mrtvá doba 75 %, ADEV 2× až 23× vysoko se sklonem bílého FM —
+  tatáž vada, kterou displej měl do F-0171 a opravil jen u sebe.
+- **Příčina:** vzorek se přidal při jakékoli ZMĚNĚ `seq_meas`; že mezi dvěma vzorky
+  chybí měření, SPA nepoznala, přestože počítadlo tu informaci nese.
+- **Oprava:** `ingestM` počítá chybějící měření (`seq − last − 1`, uint32), toleruje
+  je do 1 % řady a τ0 je zahrnuje; víc = řada začne znovu a `aWarn` řekne proč
+  (`d448b57`).
+- **Pravidlo:** **Když zdroj čísluje data, kontroluj `q == last + 1`, ne `q != last` —
+  a rozhodni, kolik děr je přípustné, podle toho, jak moc zkreslí výsledek, ne
+  nulovou tolerancí, která zruší i legitimní případy (reload, ojedinělá ztráta).**
+- **Detekce:** grep `!==lastSeq` / `!= s_last_seq` v kódu, který z dat počítá
+  statistiku; `tools/spa/stat_test.js` oddíl F-0190 (poll = každé 4. měření).
+- **Commit:** `d448b57`
+- **Stav:** aktivní
+
+---
+
+### L-0104 — Pořadové číslo dokazuje souvislost jen toho, co zdroj čísluje: díru v čase, kdy zdroj mlčí, musí hlásit jiný mechanismus
+
+- **Datum:** 2026-09-27 (modul 24, F-0193)
+- **Oblast:** `fpga_freq.c` / `freertos_task_fpga.c` — vzorky statistiky z měření FPGA
+- **Symptom:** vzorek statistiky mohl mít uvnitř mrtvou dobu (součet hradel 1 s, v čase
+  víc), aniž by to cokoli ohlásilo — dvěma cestami: FpgaTask nestihl rámec (měření
+  přepsané FPGA) a ztráta signálu uprostřed vzorku.
+- **Příčina:** (1) nové měření se poznávalo jen podle ZMĚNY `SEQUENCE`, ne souvislosti
+  (L-0103); (2) i s kontrolou souvislosti by zůstala druhá díra: při ztrátě signálu FPGA
+  **neměří**, `SEQUENCE` stojí a po návratu **navazuje** — díra je v čase, ne v číslování.
+  Emulátor přitom díru nevyrobil vůbec (plánoval měření od okamžiku pollu), takže žádný
+  test nemohl ani jednu cestu ukázat (L-0099).
+- **Oprava:** `fpga_seq_gap` + čítače v `status` (`SEQ FPGA`), `fpga_stat_break` při díře
+  i při přechodu na ztrátu signálu/linku, emulátor na pevné mřížce + injektor
+  `fpgasim fault gap` (`7f65f4a`).
+- **Pravidlo:** **Kontrola pořadového čísla chytí jen ztrátu toho, co zdroj očísloval.
+  Vyjmenuj stavy, kdy zdroj NEČÍSLUJE (ztráta signálu, pauza, restart), a pro každý
+  zařiď přerušení řady zvlášť.**
+- **Detekce:** u každé souvislé řady (akumulátor, pyramida, buffer) projít seznam
+  stavů zdroje a ke každému najít místo, kde řadu přeruší; injektor díry
+  (`fpgasim fault gap`) a simulace `sim/2026-09-27_f0193_diry_seq.js`.
+- **Commit:** `7f65f4a`
+- **Stav:** aktivní
+
+---
+
+### L-0105 — Když změníš VÝZNAM stavu, projdi všechny, kdo ho čtou
+
+- **Datum:** 2026-09-27 (regrese vlastní opravy F-0189, nalezeno při HW testu)
+- **Oblast:** `app_gpsdo.c` — rekonstrukce ADEV z datalogu, UART `status`
+- **Symptom:** bez FPGA desky by `status` trvale hlásil `ADEV rekonstrukce: BEZI …
+  <== zive vzorkovani zatim stoji`, přestože živé vzorkování běželo.
+- **Příčina:** F-0189 změnil stav 3 z krátké sondy („vyplatí se rekonstrukce?") na
+  **neomezené čekání** na první reálné měření. Automat jsem upravil a ověřil simulací,
+  ale `app_gpsdo_stats_seed_progress` — jediný čtenář stavu mimo automat — zůstal u
+  starého významu „3 = běží". Simulace testovala automat, ne jeho diagnostiku.
+- **Oprava:** progress vrací `SEED_PROG_IDLE/RUN/WAIT/SKIP_POR`, `status` je rozliší
+  (`a83bf1d`).
+- **Pravidlo:** **Když stav dostane nový význam (trvání, co se během něj děje), grepni
+  VŠECHNY čtenáře té proměnné — diagnostika, UI, IPC, testy — a u každého ověř, že
+  jeho výklad pořád platí.**
+- **Detekce:** `grep -n "s_xxx_state"` přes celý strom při každé změně automatu;
+  u stavu, který může trvat libovolně dlouho, zkontrolovat, co o něm říká `status`.
+- 🔁 **2026-10-03 (F-0226):** `12ec7ac` převedl UBX na TX v přerušení, ale komentář u
+  `gps_survey_in_cmd` (`gps.h:93`) dál tvrdil „Blokující TX". Čtenářem změněného chování je
+  i komentář u každé deklarace, která ho popisuje. Opraveno `docs:` commitem.
+- **Commit:** `a83bf1d`
+- **Stav:** aktivní
+
+---
+
+### L-0106 — `scpi_src_t` má dva loadery a chybějící pole v jednom z nich je neviditelné, dokud se ten transport nezeptá
+
+- **Datum:** 2026-09-27 (F-0194, nalezeno při HW testu modulu 24)
+- **Oblast:** `ipc_scpi.c` — `ipc_scpi_src_from_snap` (TCP 5025 + `POST /api/scpi`, oba CM4)
+- **Symptom:** `*TST?` přes síť hlásilo FAIL (`1`) i po prošlém selftestu, přestože
+  `/api/state` ze stejného snapshotu ukazovalo `"selftest":1` a USB `*TST?` hlásilo 0.
+- **Příčina:** `ipc_scpi_src_from_snap` (druhý přehrávač téhož `scpi_src_t` vedle USB
+  loaderu `scpi_src_load_cm7_ex`) pole `selftest_pass` prostě nikdy nepřiřadila —
+  ani mrtvý zápis, ani špatné pořadí, jen chybějící řádek. Snapshot přitom hodnotu
+  (`selftest_res`) nesl od začátku; nikdo si jen nevšiml, že se nikam nekopíruje.
+- **Oprava:** `s->selftest_pass = (sn->selftest_res == 1);` + test v `ipc_selftest`
+  (nastaví `g_selftest_res` na 1 i 2, ověří `ipc_scpi_src_from_snap` obojí).
+- **Pravidlo:** **Když má jedna instrument-state struktura víc než jeden loader,
+  NEOPRAVUJ nalezené pole jednotlivě — vypiš si VŠECHNA pole struktury a projdi
+  je proti KAŽDÉMU loaderu najednou.** Tohle je třetí nález stejné třídy u
+  `scpi_src_t` (IPC v11 slepý readback nastavení, F-0185 USB `memset` nad
+  plněním, teď F-0194) — se třetím výskytem přestává být náhoda a je čas na
+  systematickou kontrolu všech polí, ne další jednotlivou opravu.
+- **Detekce:** pro každé pole `scpi_src_t` (`scpi.h`) porovnej, jestli ho nastavují
+  VŠECHNY loadery (`grep -n "src->\|s->" scpi.c ipc_scpi.c` a diff seznamů polí);
+  na HW `scpi X` vs `scpi ipc X` pro každý readback (stejný test jako L-0098).
+- **Commit:** `72bf839`
+- **Stav:** aktivní
+
+---
+
+### L-0107 — Když stav plní VÍC konzumentů, nulovací funkce musí projít VŠECHNY, ne jen toho, kvůli kterému vznikla
+
+- **Datum:** 2026-09-27 (F-0195, nalezeno přezkumem vlastních oprav modulu 24)
+- **Oblast:** `fpga_freq.c` — `fpga_stat_break()`/`fpga_stat_flush()` nad `s_acc[FPGA_ACC_N]`
+- **Symptom:** žádný pozorovaný na HW (nález ze statického přezkumu) — HYPOTÉZA
+  s mechanismem: při změně měřeného signálu nebo díře v `SEQUENCE` uprostřed
+  10s datalogové periody by `s_acc[FPGA_ACC_DATALOG]` dál tiše sčítal cykly
+  a hradla z obou stran přechodu, a výsledek by se zapsal do trvalého datalogu
+  s příznakem `freq_avg=1` (= „čistý průměr"), ačkoli je to směs dvou různých
+  kmitočtů.
+- **Příčina:** `fpga_stat_break()` vznikla u F-0193 (SEQUENCE gap) a `fpga_stat_flush()`
+  u F-0188 (přechod REAL↔SIM / změna signálu) — obě řešily tehdy jediného
+  známého konzumenta `s_acc[FPGA_ACC_STATS]` (živá statistika). O pár řádků níž
+  ale existuje **druhý** akumulátor téhož pole, `s_acc[FPGA_ACC_DATALOG]`
+  (`datalog.c` ho čte přes `fpga_acc_take` jednou za periodu) — L-0101 už
+  přesně tohle pravidlo formuloval („nuluj i to, co je na cestě"), jenže se
+  aplikovalo jen na akumulátor, kvůli kterému se psalo, ne na `FPGA_ACC_N`
+  jako celek.
+- **Oprava:** obě funkce teď iterují `for (i = 0; i < FPGA_ACC_N; i++)` místo
+  pevného indexu `FPGA_ACC_STATS` (`fpga_freq.c`).
+- **Pravidlo:** **Když pole/struktura má víc slotů pro víc nezávislých
+  konzumentů (`s_acc[FPGA_ACC_N]`, podobně by to platilo pro cokoli
+  parametrizované `enum`em konzumenta), nulovací/reset funkce MUSÍ iterovat
+  přes VŠECHNY sloty, ne jen přes ten, kvůli kterému vznikla.** Při psaní
+  takové funkce vypiš si všechny čtenáře pole (grep na jeho jméno), ne jen
+  toho, co motivoval opravu — přesně to L-0101 už žádal a tady se to
+  nedodrželo doslova.
+- **Detekce:** grep `s_acc\[` v `fpga_freq.c` — každá funkce, která na pole
+  sahá s pevným indexem místo smyčkou přes `FPGA_ACC_N`, je kandidát na
+  stejnou mezeru.
+- **Commit:** (F-0195 fix, viz git log)
+- ✅ **OVĚŘENO NA HW 2026-09-28** (power-cyklus, bez FPGA/GPS): reprodukce dle
+  postupu výše (`fpgasim on 10000000`, po detekci hranice periody `fpgasim on
+  10500000` uprostřed okna) — postižený datalogový záznam `#165819` nese čistou
+  hodnotu `10.500.000,00000Hz`, ne směs (predikce bez opravy by dala hodnotu
+  mezi 10,0 a 10,5 MHz podle toho, jak daleko v periodě ke změně došlo).
+- **Stav:** aktivní
+
+---
+
+### L-0108 — Test, který mění globál a spoléhá, že ho pomocná funkce přečte, si tu funkci musí přečíst — ne věřit komentáři vedle volání
+
+- **Datum:** 2026-09-28 (F-0196, nalezeno při HW ověřování opravy F-0194)
+- **Oblast:** `ipc.c` — `ipc_selftest()`, nový test pro `selftest_pass` přidaný
+  spolu s F-0194
+- **Symptom:** `SELFTEST: 15/16 FAIL #12` po každém bootu (ověřeno na HW) —
+  konzistentně, ne přerušovaně, protože příčina byla deterministická logická
+  chyba, ne závod.
+- **Příčina:** Nový test (`ipc.c:850-857`, commit `72bf839`) nastavil
+  `g_selftest_res = 1`, zavolal `ipc_stamp(&t)` a čekal, že
+  `t.snap.selftest_res` teď bude `1` — komentář u volání to tvrdil doslovně
+  („ktere ho plni ipc_stamp nize"). `ipc_stamp()` ale dělá jen `memset` snapu
+  na nulu + zápis magic/version/size (řádek 80); `g_selftest_res` nikdy nečte.
+  Skutečné plnění `snap.selftest_res = g_selftest_res` dělá až `ipc_publish()`,
+  a to nad **globálním** `g_ipc`, ne nad lokální testovací instancí `t`. Test
+  tedy porovnával `t.snap.selftest_res` (vždy 0 po `ipc_stamp`) s očekávanou
+  `1`, a assert `== 1` spolehlivě spadl.
+- **Oprava:** za každé `ipc_stamp(&t)` v testu doplněno explicitní
+  `t.snap.selftest_res = g_selftest_res;` (`ipc.c:852,854`) — test si teď plní
+  pole sám, místo aby spoléhal na funkci, která ho neplní.
+- **Pravidlo:** **Když test volá pomocnou funkci a předpokládá, co udělá s
+  konkrétním polem, ověř si to v TĚLE té funkce, ne v komentáři vedle volání —
+  a zvlášť když je pomocná funkce sdílená (`ipc_stamp` slouží i `ipc_init`,
+  kde žádné doplňkové pole plnit nemá).** Komentář, který popisuje chování
+  cizí funkce, je tvrzení, ne důkaz; ironicky přesně tenhle vzorec (věřit
+  textu místo kódu) cituje i commit zprávy oprava samotná — L-0018 tuhle třídu
+  už jednou pojmenovala a tady se zopakovala o úroveň hlouběji: v testu, který
+  měl být pojistkou proti přesně takové chybě.
+- **Detekce:** `selftest` → `SELFTEST: N/16 PASS` musí být vždy N=16 na čistém
+  stromu (baseline, CLAUDE.md bod 3); jakýkoli nový sub-test, který manipuluje
+  globál a hned volá pomocnou funkci, si zaslouží druhé čtení té funkce
+  (ne jen jejího komentáře) předtím, než se commitne.
+- **Commit:** (F-0196 fix, viz git log)
+- ✅ **OVĚŘENO NA HW 2026-09-28** (power-cyklus): před opravou `SELFTEST:
+  15/16 FAIL #12`, po opravě + reflash CM7 + power-cyklus `SELFTEST: 16/16
+  PASS`.
+- **Stav:** aktivní
+
+### L-0109 — Citovat vzor v komentáři nestačí; oprava musí ten vzor DODRŽET CELÝ, ne jen jeho poslední krok
+
+- **Datum:** 2026-09-29 (F-0199, nalezeno přezkumem vlastní opravy F-0197)
+- **Oblast:** `syscfg.c` — `syscfg_load()`, atomický commit `g_meas_cfg`
+- **Symptom:** Žádný pozorovatelný — latentní vada nalezená statickým
+  srovnáním, ne selháním na desce.
+- **Příčina:** Oprava F-0197 (2026-09-28) přidala komentář „Stejný vzor jako
+  `scpi.c`/`ipc.c`/okno MATH/`setup_load()`" a skutečně zkopírovala **poslední
+  krok** toho vzoru (`taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();`),
+  ale vynechala **první krok**, který mají všechny tři citované sesterské
+  implementace: `taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();`
+  hned po deklaraci lokální kopie. Bez něj zůstala `meas_cfg_t c;`
+  neinicializovaná a výplňové bajty struktury (zarovnání `double` polí na 8 B)
+  se do globálu zapsaly jako obsah zásobníku, ne jako to, co tam bylo předtím.
+  Kompilátor (`-fanalyzer -Wmaybe-uninitialized`, stejné flagy jako produkční
+  build) to **nezachytí** — vidí jen pojmenovaná pole, ne padding bajty
+  struktury, takže žádný z nástrojů, kterými se projekt rutinně kontroluje,
+  tuhle třídu vady nenajde.
+- **Oprava:** Doplněn chybějící první krok (`c = g_meas_cfg;` pod kritickou
+  sekcí) — `syscfg.c:257-258`, přesně podle citovaného vzoru.
+- **Pravidlo:** **Když komentář/commit zprávy tvrdí „stejný vzor jako X",
+  ověř to porovnáním KAŽDÉHO kroku s X, ne jen toho, který zrovna píšeš.**
+  Citace vzoru bez úplného dodržení je horší než žádná citace — vytváří dojem
+  prověřené shody tam, kde je jen částečná. Platí obzvlášť pro „atomický
+  commit lokální kopie" idiom (read-modify-write pod kritickou sekcí): chybí-li
+  **read** krok, `write` kopíruje nedourčená data tam, kde předtím byla
+  struktura netknutá.
+- **Detekce:** U každého nového „lokální kopie → commit" bloku zkontroluj, že
+  lokální proměnná je **buď** (a) inicializovaná čtením z global **před**
+  prvním přepisem pole, **nebo** (b) skutečně KAŽDÉ pole struktury má
+  explicitní přiřazení A struktura nemá zarovnávací mezery (ověř `sizeof`
+  vs. součet velikostí polí). `-fanalyzer`/`-Wmaybe-uninitialized` na tohle
+  nestačí — nutná ruční kontrola proti sesterským implementacím.
+- **Vztah k lekcím:** rozšiřuje `L-0018` (dvě místa počítající totéž se
+  rozejdou) o jemnější variantu: tady se nerozešly DVĚ NEZÁVISLÉ
+  implementace, ale JEDNA nová implementace se rozešla s vlastním prohlášeným
+  vzorem. Souvisí i s `L-0012` (oprava symetrické instance se nepřenesla
+  celá) — tady šlo o první KROK vzoru, ne o celou druhou instanci.
+- **Commit:** F-0199 fix, viz git log (`fix(F-0199): ...`)
+- ✅ **OVĚŘENO NA HW 2026-09-29** (reflash + power-cyklus): `Reset: power-on`,
+  `SELFTEST: 16/16 PASS`, `ULOZISTE: syscfg OK`, SCPI nad `g_meas_cfg`
+  odpovídá zdravě. Žádná regrese — jak se čekalo (vada je ve výplňových
+  bajtech, funkčně neviditelná, ověření dokazuje „bez regrese", ne přímo
+  „byla tam garbage").
+- **Stav:** aktivní
+
+---
+
+### L-0110 — Napěťové kanály ADS1115 pojmenované podle NÁVRHU, ne podle NETLISTU
+
+- **Datum:** 2026-10-02
+- **Oblast:** periferie / kalibrace / dokumentace
+- **Symptom:** Headline displeje byl přeškrtnutý (`warn_rail_bad()` hlásil napájecí
+  větev mimo rozsah), přestože uživatel fyzicky ověřil, že napájení je v pořádku.
+  Hlubší prozkoumání ukázalo, že firmware porovnával AIN2/AIN3 proti nominálům
+  12 V / 5 V a gainům odvozeným z komentáře "v2.0 rev2" — spekulativní tabulky
+  napsané předem, nikdy neověřené proti skutečně osazeným rezistorům.
+- **Příčina:** Komentáře i `g_calib` výchozí hodnoty vycházely z PŘEDPOKLÁDANÉHO
+  zapojení desky (`ADS1115_HW_DIVIDERS_REV2` plán), ne ze skutečného schématu.
+  Export netlistu (`kicad-cli sch export netlist`) z `FPGA_Module_2_1.kicad_sch`
+  ukázal realitu: AIN0=OCXO_VC (R51=15k/R52=10k, gain 2,5 — firmware ho vůbec
+  needelal), AIN1=**VBUS** (R53=100k/R54=4k99, gain ~21,04 — NE RF_Level/AD8307,
+  ten na desce **fyzicky není**, v žádném z 5 listů schématu), AIN2=+3V3
+  (R55=10k/R56=10k, gain 2,0 — firmware počítal s "12V" a gainem 4,768),
+  AIN3=+5V (R57=10k/R58=22k, gain ~1,4545 — firmware počítal s gainem 1,971).
+- **Oprava:** `freertos_task_sensors.c` aplikuje správné gainy na všech 4
+  kanálech (`AIN0_GAIN_OCXO_VC`, `AIN1_GAIN_VBUS`, `g_calib.gain_12v/gain_5v`
+  přepočtené v `calib.c`). AD8307/RF_Level HW nepřítomnost je jeden centrální
+  flag `RF_LEVEL_HW_PRESENT` (`calib.h`) — zamezuje publikaci `SCPI_V_RF`/
+  `IPC_V_RF` (`scpi.c`, `ipc.c`), takže `MEAS:POW?`, web JSON `rf_dbm` i UI
+  karty (hbar, dualch, warn, main-screen bargraf) korektně hlásí "nevím"
+  místo dBm spočítaného z napětí VBUS.
+- **Pravidlo:** **Komentář popisující zapojení HW je HYPOTÉZA, dokud není
+  ověřený proti reálnému schématu/netlistu — "v2.0 rev2 plán" není totéž co
+  "takhle to je osazené".** Exportuj netlist (`kicad-cli sch export netlist
+  --format kicadxml`) a dohledej skutečné rezistory/nety, než se podle
+  komentáře píše gain nebo PGA rozsah.
+- **Detekce:** Žádná regex nechytí "komentář neodpovídá schématu" — jediná
+  obrana je opakovat netlist-export kontrolu při jakékoli pochybnosti o
+  analogovém kanálu, ne věřit existujícímu komentáři jen proto, že tam je.
+- **Vztah k lekcím:** stejná třída jako `L-0012` (dvě místa nesoucí stejný
+  fakt se rozejdou) — tady šlo o DESET míst (štítky, gainy, SCPI, IPC, web,
+  datalog, autocal) odvozených ze stejného špatného předpokladu.
+- **Commit:** fix voda do git log (hash viz `git log --oneline -1`)
+- ⬜ **NEOVĚŘENO NA HW** — oprava je zatím jen přeložená (0 varování,
+  92/0/2 audit baseline), žádný power-cyklus s multimetrem na AIN0-3 zatím
+  neproběhl.
+- **Stav:** aktivní
+
+---
+
+### L-0111 — Široké srovnání jako enable širokého registru (FPGA fanout)
+
+- **Datum:** 2026-10-02
+- **Oblast:** FPGA / timing
+- **Symptom:** Po opravě kritické cesty ve `win_recip` (S1 rozdělena 28+28b)
+  synteza hlásila HORŠÍ agregát (TNS −1,25 → −13,52 ns, 11 → 56 endpointů).
+  Nejhorší cesty: `u_phy/bit_in_6/7 → rx_shadow_*/CE`.
+- **Příčina:** `spi_slave_phy.v` gatoval 1024b shift registr `rx_shadow` živým
+  11bitovým srovnáním `bit_in != 1024` a load/nulování 2048 FF (`tx_shadow`,
+  `rx_shadow`) srovnáním `bit_in == 0`. Výsledek srovnání musel v jednom taktu
+  doběhnout do tisíců CE/D vstupů; syntezér rozprostřel komparátor k cílům.
+  Vada existovala už předtím (slack −0,002 až −0,246 ns, A/B syntézou doloženo),
+  přidání registrů jinde jen zhoršilo umístění.
+- **Oprava:** Registrované příznaky spočtené takt předem: `rx_done`
+  (nastaví se při shiftu s `bit_in == 1023`) a `rx_armed` (≡ `bit_in == 0`,
+  mění se na týchž dvou místech jako `bit_in`) — `spi_slave_phy.v`.
+  Výsledek: 0 porušení, Fmax 114,5 MHz.
+- **Pravidlo:** **Enable/mux širokého registru (stovky FF) musí řídit výstup
+  JEDNOHO flip-flopu, nikdy živá kombinační funkce více bitů — počítej
+  podmínku takt předem a ověř ekvivalenci výčtem všech míst, kde se mění
+  zdrojový čítač.**
+- **Detekce:** Timing report — nejhorší cesty typu `<čítač>_N/Q → <široký
+  registr>_M/CE`. Při opravě timingu VŽDY dělej A/B syntézu (revert jen
+  své změny), jinak nepoznáš, jestli nová porušení způsobila oprava, nebo
+  jen odkryla/zhoršila starou vadu.
+- **Commit:** zatím necommitnuto (viz `git log` po commitu)
+- ⬜ **NEOVĚŘENO NA HW.**
+- **Stav:** aktivní
+
+---
+
+### L-0112 — `HAL_I2C_IsDeviceReady` na chybějícím čipu hlásí TIMEOUT, ne NACK
+
+- **Datum:** 2026-10-02
+- **Oblast:** periferie / I2C
+- **Symptom:** (zachyceno před nasazením) Periodická sonda neosazeného AD5693R
+  přes `HAL_I2C_IsDeviceReady` by každých 10 s spustila obnovu I2C1
+  (9 pulzů SCL + re-init) — sběrnice přitom zdravá, jen čip chybí.
+- **Příčina:** HAL H7 (`stm32h7xx_hal_i2c.c`, konec `HAL_I2C_IsDeviceReady`)
+  po vyčerpání pokusů nastaví `ErrorCode |= HAL_I2C_ERROR_TIMEOUT` i tehdy,
+  když každý pokus skončil čistým NACKem. `i2c1_recover_if_wedged()` bere
+  TIMEOUT jako „slave drží sběrnici".
+- **Oprava:** Sonda NOP zápisem (`HAL_I2C_Master_Transmit`, CMD 0) — NACK
+  pak končí jako `HAL_I2C_ERROR_AF`, který obnovu nespouští
+  (`freertos_task_sensors.c`, `ad5693_probe_nop`).
+- **Pravidlo:** **Kde po I2C transakci rozhoduje chybový kód (obnova,
+  back-off, počítadla), nesonduj přítomnost zařízení `HAL_I2C_IsDeviceReady`
+  — použij skutečnou neškodnou transakci, jejíž NACK skončí jako AF.**
+- **Detekce:** `grep -n IsDeviceReady` v kódu, který běží PŘED
+  `i2c1_recover_if_wedged()`/podobnou kontrolou `HAL_I2C_GetError`.
+  ⚠️ Zbytková latentní varianta (předchozí stav, neopravováno): UART
+  `scan1` IsDeviceReady používá a nechá v `hi2c1` TIMEOUT; kdyby SensorsTask
+  hned potom nezískal mutex, kontrola za blokem by ho viděla.
+- **Commit:** zatím necommitnuto
+- **Stav:** aktivní
+
+---
+
+### L-0113 — Konfigurace externího čipu přežila výměnu desky: firmware dál krmil PLL, která už neexistuje
+
+- **Datum:** 2026-10-03 (dotaz uživatele „proč nejde 1PPS signál z GPS", F-0218)
+- **Oblast:** `gps.c` — UBX-CFG-TP5 (TIMEPULSE modulu NEO-7M), deska FPGA 2.0 → 2.1
+- **Symptom:** na vstupu FPGA PIN33 (`GPS_1PPS`) nikdy nebyl 1PPS. S fixem tam šlo 100 kHz,
+  bez fixu 10 Hz. UI k tomu hlásilo „Time Pulse 100 kHz" a blokové schéma kreslilo
+  „UART/1PPS" na spoji GPS→STM32, kudy 1PPS vůbec nevede.
+- **Příčina:** `GPS_TP_FREQ_HZ = 100000` byla správná hodnota pro desku 2.0, kde TIMEPULSE
+  napájel hardwarovou PLL na listu GPSDO. Deska 2.1 PLL nemá a net `GPS_CLK_Buff` končí na
+  FPGA PIN33 jako 1PPS. Při přechodu desek se prošly piny FPGA, napětí i SPI, ale **hodnota,
+  kterou firmware posílá do čipu mimo MCU**, se proti novému spotřebiteli signálu nikdy
+  nekontrolovala. Komentář u konstanty to přitom říkal přímo („GPSDO PLL reference … JP2").
+  Odkazoval na HW, který na nové desce není.
+- **Oprava:** `GPS_TP_FREQ_HZ` 100000 → 1 (`gps.c:362`), bez fixu dál 10 Hz (zadání uživatele).
+  Srovnány texty v UI (`app_gpsdo.c:961`, `:4399`, `:7176`). Commit `3cbbdb9`.
+- **Pravidlo:** **Při výměně revize desky projdi každou hodnotu, kterou firmware ZAPISUJE do
+  čipu mimo MCU (UBX/I²C/SPI konfigurace, DAC, PLL registry), a u každé najdi v NOVÉM netlistu,
+  kdo signál spotřebovává.** Komentář, který jmenuje součástku nebo propojku (PLL, JP2…),
+  je tvrzení o desce. Ověř, že ta součástka na nové desce existuje.
+- **Detekce:** při změně revize grep na konfigurační zápisy do externích čipů (`ubx_send`,
+  `HAL_I2C_Mem_Write`, `wr_masked`, `REGMAP[]`) a ke každému dohledat spotřebitele v netlistu.
+  Ruční krok, patří do checklistu přechodu desky (sourozenec L-0110: tam šlo o čtení
+  kanálů ADS1115 podle návrhu místo podle netlistu, tady o zápis).
+- **Commit:** `3cbbdb9`
+- 🔁 **2026-10-03, F-0225:** táž třída hned v opravě samé. F-0218 změnila frekvenci na 1 Hz, ale
+  **střídu 50 % převzala ze staré konfigurace 100 kHz** → 1PPS měl pulz 500 ms. Opraveno `b8019dd`
+  (100 ms, `isLength`). Pravidlo platí pro **každé pole** zapisované konfigurace, ne jen pro to,
+  které je zjevně špatně.
+- **Stav:** aktivní (⬜ oprava neověřena na HW — osciloskop na R50/PIN33 po power-cyklu)
+
+---
+
+### L-0114 — Komentář varoval před pastí knihovny, která v použité verzi není, a tím blokoval opravu
+
+- **Datum:** 2026-10-03 (F-0219, F-0221, F-0222)
+- **Oblast:** `gps.c` — UBX konfigurace přes USART1 (`ubx_send`, `gps_init`)
+- **Symptom:** konfigurace TIMEPULSE (1PPS pro FPGA) se posílala jen jednou při startu, do RAM
+  modulu a bez kontroly ACK. Po samostatném resetu GPS modulu ji STM32 nikdy neobnovil.
+- **Příčina:** komentář v `gps_init` tvrdil, že blokující `HAL_UART_Transmit` drží `huart->Lock`
+  a souběžný re-arm RX v callbacku by dostal `HAL_BUSY`, takže RX umře navždy. Opakované
+  vysílání za běhu tím vypadalo nebezpečně. V HAL 1.11.6 to **neplatí**: TX (`gState`) a RX
+  (`RxState`) jsou nezávislé automaty bez `__HAL_LOCK`. Tvrzení „za běhu žádný TX neběží"
+  navíc vyvracel kód o kus dál (SURVEY z UiTasku, `gps glonass` z UartTasku).
+- **Oprava:** `ubx_send` přes `HAL_UART_Transmit_IT` se statickým bufferem (start v kritické
+  sekci, čekání na předchozí rámec přes `vTaskDelay`), `gps_tick()` z defaultTasku posílá TP5
+  znovu 1×/min, počítadla `UBX:odeslano/neodeslano` v `gpsraw`. Commit `12ec7ac`.
+- **Pravidlo:** **Komentář, který popisuje chování cizí knihovny („HAL drží zámek", „tahle funkce
+  blokuje"), ověř proti zdroji té knihovny v projektu a uveď její verzi.** Neověřená past se
+  stává důvodem nedělat správnou věc. A **konfiguraci, která žije jen v RAM externího čipu
+  a nedá se ověřit čtením, posílej opakovaně** (idempotentní zápis), ne jednou při startu
+  hostitele. Externí čip se může resetovat sám.
+- **Detekce:** grep komentářů na jména interních symbolů knihovny (`Lock`, `__HAL_LOCK`,
+  `gState`) a jejich porovnání s `Drivers/`. U každého zápisu konfigurace do externího čipu
+  se zeptej: kdo ji obnoví, když se čip resetuje a hostitel ne?
+- **Commit:** `12ec7ac`
+- **Stav:** aktivní (⬜ neověřeno na HW: osciloskopem ověřit, že opakované TP5 neruší 1PPS)
+
+---
+
+### L-0115 — Textový parser na sdílené lince s binárním protokolem se musí synchronizovat na začátku rámce, ne jen na konci
+
+- **Datum:** 2026-10-03 (F-0223)
+- **Oblast:** `gps.c` — `gps_feed_char` (NMEA vedle UBX na USART1)
+- **Symptom:** po každém UBX příkazu se ztratila jedna NMEA věta. Tiše, žádné počítadlo.
+- **Příčina:** řádek se ukončoval jen na `\r\n`. Binární odpověď UBX-ACK `\r\n` nemá, takže
+  se přilepila před další NMEA větu, řádek nezačínal `$` a parser zahodil obojí.
+- **Oprava:** `$` vždy začne nový řádek, useknutý začátek se počítá (`RSY:` v `gpsraw`).
+  Commit `01c7e25`.
+- **Pravidlo:** **Když linkou tečou dva protokoly (text + binární), parser jednoho z nich se
+  musí resynchronizovat na svém počátečním znaku**, jinak cizí rámec zničí i ten následující.
+  Zahozená data se počítají (L-0017).
+- **Detekce:** u každého řádkového parseru se zeptej: co udělá s bajty, které přijdou mezi
+  koncem jedné věty a začátkem další?
+- **Commit:** `01c7e25`
+- **Stav:** aktivní
+
+---
+
+### L-0116 — O tom, co je ve FPGA, rozhoduje NETLIST: ani zdroják, ani timing report to neřeknou
+
+- **Datum:** 2026-10-03 (F-0201, carry-chain TDC)
+- **Oblast:** FPGA, `tdc.v`, syntéza
+- **Symptom:** carry-chain TDC byl „implementovaný", komentáře tvrdily rozlišení 625 ps, build
+  prošel a timing report byl v pořádku. Přitom v bitstreamu žádný TDC nebyl a měření bylo hrubé 10 ns.
+- **Příčina:** výraz `{15{sig}}+1` je pro syntézu triviální (všechny operandy jsou tentýž bit),
+  zredukovala ho na invertor + 1 FF. Atribut `(* keep *)` zachovává JMÉNA sítí, ne aritmetiku.
+  Timing report „v pořádku" nic nedokazoval — cesty, které neexistují, se nemají čím porušit.
+- **Oprava:** řetěz se staví z PRIMITIV `ALU` přímo (`tdc_chain`), `Frequency_Counter_FPGA_Module/
+  sim/check_tdc_netlist.py` po každé syntéze ověří v `.vg` počet `ALU`, `I0=VCC/I1=GND`, hlavu
+  řetězu a použití všech `SUM`. Commit `f968517`.
+- **Pravidlo:** **Funkci, která závisí na tom, že syntéza nic nezjednoduší (řetězy, zpoždění,
+  kruhové oscilátory), ověřuj v syntetizovaném NETLISTU — a to po každé syntéze, ne jednou.**
+- **Detekce:** `python Frequency_Counter_FPGA_Module/sim/check_tdc_netlist.py` (musí vypsat 512 `ALU`,
+  512 s `I0=VCC/I1=GND`, 2 hlavy s `CIN = sig_eff`).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0117 — Rozpočet logiky na 100 MHz v GW1NR-9C je ~3 úrovně LUT: nejdřív změř, pak navrhuj
+
+- **Datum:** 2026-10-03 (TDC, dekodér)
+- **Oblast:** FPGA, časování
+- **Symptom:** dekodér 256 tapů jedním taktem měl cestu ~20 ns (slack −10 ns), po opravách řídicích
+  cest dál −2 až −3 ns u zdánlivě triviální logiky (24bitový čítač, dekódování stavu).
+- **Příčina:** v tomhle fabricu stojí každý přechod mezi LUT 2–3 ns routingu (vzdálenost, fanout),
+  takže na 10 ns vyjdou ~3 úrovně. Řetěz je navíc dlouhý sloupec, takže se jeho vzorky routují daleko.
+- **Oprava:** (1) přesný čas jen pro hranu na hranici okna (hrany uvnitř okna se jen počítají) →
+  vzorky se zmrazí clock enable na 5 taktů a kombinační dekodér má SDC multicycle; (2) one-hot stavy
+  a předpočítané registrované příznaky v řídicích cestách; (3) jednotka času T_clk/16384, aby
+  kalibrace byla posun místo násobení; (4) částečné součty čítače s registrovaným přenosem.
+- **Pravidlo:** **Před návrhem logiky na 100 MHz v tomto fabricu změř cesty (P&R timing report,
+  `timing_paths`), ne odhaduj z počtu LUT; a když funkci stačí jednou za okno, dej jí víc taktů
+  (zmrazení + multicycle) místo pipeline na každý takt.**
+- **Detekce:** `gw_sh build.tcl` → `Max Frequency Summary` a `Total Negative Slack` (musí být 0).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0118 — Kalibrační zdroj, který není statisticky nezávislý na hodinách, vyrobí v histogramu jen pár kódů
+
+- **Datum:** 2026-10-03 (kalibrace TDC, simulace)
+- **Oblast:** FPGA, kalibrace code density, simulace
+- **Symptom:** simulovaná kalibrace dala jen 25 neprázdných kódů místo ~176 a σ chyby 93 ps.
+- **Příčina:** model ring oscilátoru měl přesně racionální periodu (83,2 ns), takže události padaly
+  jen do 25 pevných fází vůči 100 MHz hodinám. Skutečný kruh má jitter, ale spoléhat na to je riziko
+  (injection locking, stabilní teplota).
+- **Oprava:** v hardware dělič kruhu s pseudonáhodným modulem (16/17 oběhů podle LFSR), v simulaci
+  jitter zpoždění LUT. Po opravě 178 kódů, σ 26 ps. Přitom se ukázalo, že LUT s transportním
+  zpožděním dovolí kruhu oscilovat na vyšší harmonické (4× rychleji) → model s inertním zpožděním.
+- **Pravidlo:** **Zdroj pro code-density kalibraci musí mít prokazatelně nerovnoměrnou fázi vůči
+  vzorkovacím hodinám; ověř histogram simulací s pozitivní kontrolou (kolik kódů je neprázdných).**
+- **Detekce:** `tb_tdc.sv` vypisuje `nz` (počet neprázdných kódů) a `ovf`; na desce `tdc` (`nz`≈170–180).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0119 — Využití registrů nad ~87 % shodí placer/router i při splněném limitu zdrojů
+
+- **Datum:** 2026-10-03 (FPGA, TDC)
+- **Oblast:** FPGA, zdroje
+- **Symptom:** `PR0003 Failed to place with 165 REG(s) unPlaced` a později `PR0004 78 unrouted nets`
+  při 84–88 % registrů (limit 100 %), a časování se zhoršilo i v nedotčeném PHY (setup −3,3 ns).
+- **Příčina:** dlouhé carry řetězy se musí umístit do sloupců a PHY má fanout 1024; při zaplnění
+  nad ~85 % heuristika nenajde rozumné umístění.
+- **Oprava:** odstraněn `recip_calc` (FPGA už nepočítá kmitočet, host ho počítá přesněji z celých
+  čísel `edge_count`/`dt`), zrušena Λ/Ω regrese, `gate_div` = `dt·5>>13`, zúženy čítače → 74 % FF /
+  69 % logiky. TX posun v PHY předpočítán a rozdělen na 8 segmentů (ekvivalence ověřena).
+- **Pravidlo:** **Držet registry pod ~80 %; co umí host (dělení, přesná aritmetika), nepočítej ve FPGA.**
+- **Detekce:** `Counter_FPGA.rpt.txt` → `Register ... %` (≤ 80 %).
+- **Commit:** `f968517`
+- **Stav:** aktivní
+
+---
+
+### L-0120 — Přijatý rámec, který aplikace čte „živě", se nesmí mazat dřív, než ho dočte
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `spi_slave_phy.v`, SPI STM → FPGA
+- **Symptom:** FPGA ignorovala VŠECHNY povely STM (ACK, START, SET_CONFIG, žádost o CAL
+  report). `tdc` hlásilo „CAL report nedorazil", ve `fpgaraw` byl trvale bit `rx_crc_error`.
+  Směr FPGA → STM přitom fungoval, takže link vypadal zdravě.
+- **Příčina:** PHY nulovala `rx_shadow` hned po CS↑ (stav `rx_armed`), ale `spi_app`
+  (10 MHz) čte `rx_frame_flat` = `rx_shadow` ŽIVĚ ještě ~13 µs (S_RX_CRC, 126 taktů).
+  Viděla samé nuly → MAGIC/CRC selhaly vždy. Komentář o řádek výš přitom tvrdil
+  „rx_shadow je stabilní od CS↑ do dalšího CS↓". Vada od prvního commitu (`38d7e2b`);
+  zůstala skrytá, protože SPI link do té doby nikdy neběžel.
+- **Oprava:** nulování odstraněno (1024 bitů posuvu přepíše celý registr). Commit `5a00b7f`.
+  End-to-end test `sim/tb_link.sv` (PHY + `spi_app`) v `run.ps1`: se starou PHY dá
+  přesně symptom z desky (`flags=23`, odpověď `type=80`), s opravou `flags=43` a `type=a0`.
+- **Pravidlo:** **Když modul A předává data modulu B jako „stabilní vodič", ověř, kdo
+  a kdy ten registr přepisuje — komentář to nedokazuje. Testuj spojení obou modulů,
+  ne každý zvlášť** (ekvivalenční test PHY proti staré PHY vadu zdědil).
+- **Detekce:** `fpgaraw` → flags (bajt 3) bit 5 = `rx_crc_error` musí být 0, bit 6 `ack_ok` = 1.
+- **Commit:** `5a00b7f`, `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0121 — Diagnostiku vstupu měř hranami na pinu, ne obsahem dat — a teprve pak viň konfiguraci
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, piny, Tang Nano 9K
+- **Symptom:** i po L-0120 FPGA přijímala od STM samé `FF`. Osciloskop i sniffer na pinu 54
+  (MOSI) ukazovaly čistý signál 0,1 / 3,2 V. Tři kola hypotéz o konfiguračních pinech
+  (`use_cpu/mode/ready/done/reconfign/i2c_as_gpio`) nepomohla.
+- **Příčina:** vadný vstup pinu 54 na konkrétním kusu Tang Nano. Po výměně modulu
+  MOSI funguje (přijato `A5 02 06`, CRC sedí, `ack_ok=1`).
+- **Co rozhodlo:** počítadla hran přímo za vstupním bufferem v rámci (`[116,117]` hrany
+  MOSI, `[124,125]` hrany SCK): SCK 1024, MOSI **0** → pad do logiky nic nepouští. Pak
+  pull-down na pinu (FPGA dál čte 1) → pin neplave, ani ho nedrží konfigurace (UG290:
+  `CLKHOLD_N` patří do SSPI, ta byla uvolněná od začátku).
+- **Pravidlo:** **U „vstup čte konstantu" nejdřív postav počítadlo hran hned za IBUF
+  a porovnej se sousedním pinem téže banky. Než viníš konfiguraci, ověř v dokumentaci,
+  do které skupiny pin patří. Vadný kus modulu je legitimní hypotéza, když SW i konfigurace
+  prokazatelně sedí — a ověří se výměnou kusu.** (Doplňuje tabulku „HW obviněn — a byl
+  nevinný": tady byl HW skutečně vadný, ale až po vyloučení SW měřením.)
+- **Detekce:** `fpgaraw` bajty `[66][67][107]` = přijaté `rx[0..2]`, `[112..115]` = CRC
+  spočtené/přijaté, `[116,117]` hrany MOSI, `[124,125]` hrany SCK (FW ≥ 0x0404).
+- **Commit:** `9ae86de`, `fbd1630`, `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0122 — Gowin si volby `set_option` pamatuje v projektu: vrácení = výslovně nastavit 0
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA build (`build.tcl`, `gw_sh`)
+- **Symptom:** po odstranění řádků `set_option -use_*_as_gpio 1` z `build.tcl` hlásil nový
+  `impl/pnr/device.cfg` pořád `READY/DONE/I2C/RECONFIG_N regular_io = true`.
+- **Příčina:** `gw_sh` ukládá volby do projektu; smazaný řádek je nezmění.
+- **Oprava:** volby výslovně `set_option ... 0`; ověřeno v `device.cfg`. Commit `deeda88`.
+- **Pravidlo:** **Výsledek konfigurace FPGA ověřuj v `impl/pnr/device.cfg`, ne ve skriptu.
+  Vrácení volby = zapsat výchozí hodnotu, ne smazat řádek.**
+- **Detekce:** `head impl/pnr/device.cfg`
+- **Commit:** `deeda88`
+- **Stav:** aktivní
+
+---
+
+### L-0123 — USB hub mezi PC a deskou umí „umlčet" CDC konzoli, zatímco zbytek běží
+
+- **Datum:** 2026-10-03
+- **Oblast:** USB CDC konzole (COM10), diagnostika
+- **Symptom:** COM10 ve Windows `OK`, zápis prochází, ale na `ping` žádná odpověď —
+  opakovaně, i po power-cyklu. Displej, ETH (`/api/state`, SCPI 5025) i měření jely.
+  Sonda ukázala, že konzole na straně STM je v pořádku (ring prázdný, nic nezahozeno).
+- **Příčina:** USB hub, na kterém byly STM, FPGA a programátor. Po připojení přímo do PC
+  (bez hubu) konzole odpovídá.
+- **Pravidlo:** **Když konzole mlčí a ETH/displej jedou, nejdřív odstraň USB hub, než
+  začneš hledat ve firmwaru.** Diagnostika mezitím jde přes ETH (`/api/state`) nebo
+  ČTENÍM sondou (`STM32_Programmer_CLI mode=HOTPLUG -r32`; ⚠️ zastaví jádro → I2C4 do
+  power-cyklu).
+- **Detekce:** `curl http://<IP>/api/state` odpovídá, `ping` na COM10 ne.
+- **Commit:** —
+- **Stav:** aktivní
+
+---
+
+### L-0124 — Změna parametru musí projít VŠEMI odvozenými konstantami (jediný zdroj)
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `top.v` / `tdc.v`, kalibrace TDC
+- **Symptom:** první CAL report z desky: 16,8 % (A) a 18,5 % (B) událostí za koncem řetězu,
+  ale `status` hlásil `retez kratky A:0 B:0`.
+- **Příčina:** moje změna `CAL_LOG2` 22 → 20 (`97da8c3`) se nepropsala do `OVF_LIM` v `top.v`,
+  kde zůstalo natvrdo `1 << (22 − 4)` = 262 144 > 175 705. Mez tedy byla 4× vyšší, než měla být.
+- **Oprava:** `localparam CAL_LOG2` v `top.v` jako jediný zdroj, předává se do obou `tdc_chan`
+  i do `OVF_LIM`. Commit `7ada866`.
+- **Pravidlo:** **Při změně parametru grepni jeho STARÉ ČÍSLO v celém návrhu (ne jen jméno) —
+  natvrdo opsané hodnoty jméno nenese.** A detektor, který má něco hlásit, ověř pozitivní
+  kontrolou: dokud nevidíš, že naskočí na skutečně vadném stavu, nic nedokazuje.
+- **Detekce:** `status` → `retez kratky A:1` při `za koncem retezu` > 1/16 událostí (`tdc`).
+- **Commit:** `7ada866`
+- **Stav:** aktivní
+
+---
+
+### L-0125 — Zpoždění carry řetězu na křemíku NENÍ STA model: dimenzuj délku podle měření
+
+- **Datum:** 2026-10-03
+- **Oblast:** FPGA, `tdc.v` (`tdc_chain`), GW1NR-9C
+- **Symptom:** 256 stupňů mělo podle STA (57 ps) pokrýt 14,6 ns; na desce pokryly jen ~8,3 ns
+  (~32 ps/stupeň) a ~17 % hran dostalo kód 255 (chyba až ±0,9 ns). Obsazených kódů jen ~133/256.
+- **Oprava (varianta B, FW 0x040A):** řetěz 2× delší (512 ALU/kanál), vzorkuje se každý druhý
+  stupeň (`STRIDE = 2`) → registry, dekodér i tabulky beze změny, pokrytí ~16,6 ns.
+  Průchozí stupně bez použitého `SUM` drží `syn_keep`; `check_tdc_netlist.py` teď skončí chybou,
+  když je stupňů méně než 2 × 511. Simulační model ALU přestaven na 32 ± 12 ps (křemík, ne STA).
+  Simulace: kontrola STRIDE 1 (model 32 ps) reprodukuje desku: 19 % za koncem, σ 351 ps; STRIDE 2: 0 za koncem, σ 28/32 ps, A−B 0,0 ps, 6/6 PASS
+- **Pravidlo:** **Délku TDC řetězu navrhuj s rezervou ≥ 1,5× proti STA a ověř ji kalibrací
+  na desce (`za koncem retezu` ≈ 0). Simulační model ladit podle změřeného křemíku.**
+- **Detekce:** `tdc` → `za koncem retezu` musí být ≈ 0, `kodu` řádově 150–256.
+- **Commit:** `6e4fcd7`
+- **Stav:** ⚠️ ČÁSTEČNĚ: na desce (FW 0x040A) pokrytí OK (0 za koncem), ale σ okna ~1,9 ns (horší než 0,7 ns se STRIDE 1) — dominantní kódy 7 % / 13 % událostí, jen ~100 obsazených kódů. Příčina neznámá (HYPOTÉZA: bubliny/nepravidelnost skutečného carry řetězu, model je nezná). Další krok: výpis celého histogramu (`tdc hist`), pak dekodér počtu jedniček nebo STRIDE 1 s 384 tapy.
+
+---
+
+### L-0126 — Než optimalizuješ zdroje FPGA, rozlož je po signálech; největší žrout bývá infrastruktura
+
+- **Datum:** 2026-10-04
+- **Oblast:** FPGA, `spi_slave_phy.v`, `spi_app.v` (#264)
+- **Symptom:** registry 77–79 %, CLS 87–88 %; pro TDC 1PPS (#262) a akumulátory (#263) nebylo místo.
+  Odhad „kde to je" mířil na TDC (řetězy, kalibrace).
+- **Příčina:** rozpad netlistu (`sim/res_breakdown.py`) ukázal, že **přes polovinu registrů držely
+  rámce SPI** — 128bajtový rámec existoval 3× v registrech (PHY TX posuvný registr, PHY RX, aplikace `tx_b`).
+  TDC vzorky byly jen 512 FF.
+- **Oprava:** rámce do blokové RAM (1 blok), PHY po bajtech a taktovaná přímo SCK (vedlejší zisk: strop SPI
+  ~8–10 → ~40 MHz), RX zpracovaný za letu. FF 77 % → 38 %. Commit `ebba0b0`.
+- **Pravidlo:** **Před optimalizací spusť `sim/res_breakdown.py` a seřaď podle velikosti. Data, která se
+  přenášejí po bajtech, nepatří do registrů, ale do blokové RAM.** Při přechodu na sestavování po bajtech
+  hlídej konzistenci snímku (vícebajtová pole se během skládání nesmí měnit) — a otestuj to zátěží s pozitivní
+  kontrolou (`tb_link`: vypnutá ochrana → 61 chyb).
+- **Detekce:** `python sim/res_breakdown.py 30`; `impl/pnr/Counter_FPGA.rpt.txt` (Register, CLS).
+- **Commit:** `ebba0b0`
+- **Stav:** aktivní (⬜ neověřeno na HW)
+
+### L-0127 — Asynchronní vstup se nesmí počítat z jediného klopného obvodu; detekce hrany patří za synchronizátor
+
+- **Datum:** 2026-10-06
+- **Oblast:** FPGA, `tdc.v` (`tdc_chan`), `spi_app.v` (`win_recip`)
+- **Symptom:** při měření vlastní reference 10 MHz ~20× za 30 min 10 000 004 Hz místo 10 000 000 Hz,
+  pak zase správně. +4 Hz při hradle 0,25 s = přesně jedna hrana navíc, Δt v pořádku.
+- **Příčina:** `t0` vzorkuje asynchronní vstup jedním FF a `rise_c = t0 & ~t0p` se počítalo přímo. Když `t0`
+  zachytí hranu metastabilně, `rise_c` ji vidí jako 1, ale `t0p` si uloží ještě 0 → v dalším taktu
+  `rise_c` = 1 podruhé. Synchronní signál (vlastní reference) drží fázi hrany u hran hodin, takže se trefuje opakovaně.
+- **Oprava:** počítání ze synchronizované `rise_s` (`t0s`/`t0sp`), uzavírací hranu páruje `win_recip` s
+  `trig_ack` v okně 0..2 takty (`pend`). Spouštění přesného času beze změny. FW 0x040F, commit `38011fc`.
+  STM pojistka `fpga_freq_miscount` (okno o celý násobek kroku hrany se nezobrazí ani nezapočítá), `8bd4045`.
+- **Pravidlo:** **Každý signál z asynchronní domény, který se POČÍTÁ nebo řídí stavový automat, musí projít
+  dvěma FF, než se z něj dělá hrana; rychlou nesynchronizovanou cestu smí mít jen časová značka, a pak se
+  musí explicitně spárovat s počítací cestou.**
+- **Detekce:** `tb_tdc` vstřikuje důsledky metastability (`force` na `t0p`/`t0s`) a dt-kontrola chytí okno
+  s hranou navíc; negativní kontrola proti starému RTL musí selhat. Na desce `status` → `CITANI HRAN`.
+- **Commit:** `38011fc`, `8bd4045`
+- **Stav:** aktivní (⬜ neověřeno na křemíku)
+
+### L-0128 — Naměřený rozptyl smí nejistotu jen zvětšit, nikdy ji nesnížit pod rozlišení přístroje
+
+- **Datum:** 2026-10-06
+- **Oblast:** `screen_main.c` `freq_uncertain_frac`, web `fmtFreqHtml`
+- **Symptom:** vlastní reference → displej `10 000 000,000 0000 Hz`, všechny číslice „důvěryhodné"; uživatel
+  správně neuvěřil.
+- **Příčina:** počet důvěryhodných číslic se bral z naměřené σy@1s. U signálu synchronního s hodinami TDC leží
+  obě krajní hrany okna stále na STEJNÉM kódu — kvantizační chyba je konstantní, ne náhodná, v rozptylu se
+  neprojeví a σy vyjde ~0.
+- **Oprava:** `u = max(σy, √2·tdc/gate)` na displeji i webu, commit `d63df87`.
+- **Pravidlo:** **Rozptyl dat je dolní odhad nejistoty jen pro NÁHODNOU chybu; systematickou (kvantizace
+  koherentního signálu, offset) nevidí. Zobrazená přesnost musí mít podlahu z rozlišení přístroje.**
+- **Detekce:** měření vlastní reference musí ukázat podtržení nejvýš na ~0,01 Hz (10 MHz, 0,25 s).
+- **Commit:** `d63df87`
+- **Stav:** aktivní
+
+### L-0129 — Pevná osa grafu tiše ořízne data; rozsah ber z dat (s hysterezí)
+
+- **Datum:** 2026-10-06
+- **Oblast:** `screen_main.c` `allan_metric_yrange`
+- **Symptom:** Allanův graf na displeji „nekreslil nic pod 10⁻¹⁰".
+- **Příčina:** ADEV měl pevný rozsah 10⁻¹⁰..10⁻⁶ (z doby 4fázového vernieru 2,5 ns); `allan_y` bod pod osou
+  přilepí ke spodní hraně. Auto-range existoval, ale jen pro TDEV/MTIE.
+- **Oprava:** auto-range pro všechny metriky (křivka + podlaha), hystereze proti poskakování, `d63df87`.
+- **Pravidlo:** **Když se změní rozlišení přístroje, projdi všechny pevné rozsahy os a prahy, které z
+  původního rozlišení vznikly; graf, který bod ořízne, ho nesmí tiše přilepit ke hraně.**
+- **Detekce:** `grep -n "Y_MIN\|Y_MAX" CM7/app` — pevná mez osy musí mít zdůvodnění.
+- **Commit:** `d63df87`
+- **Stav:** aktivní
+
+### L-0130 — Dva nezávislé výpočty téže statistiky se rozejdou; servíruj výsledek autority
+
+- **Datum:** 2026-10-06
+- **Oblast:** IPC v20 (`ipc_stab_t`), `httpd_min.c` `/api/stab`, SPA `drawStab`
+- **Symptom:** Allan/MDEV na webu jiné než na displeji.
+- **Příčina:** SPA počítala ADEV z vlastní řady surových oken (včetně oken, která firmware vyřazuje, jiná
+  agregace, mezery z SSE) — druhý estimátor nad jinými daty.
+- **Oprava:** firmware publikuje body z vlastní pyramidy (UiTask, seqlock), web je kreslí; vlastní výpočet
+  jen záloha s varováním. Commit `bcaf00c`.
+- **Pravidlo:** **Statistiku počítej na JEDNOM místě (u dat, která vidí filtry a vyřazení) a ostatní
+  rozhraní ji jen zobrazují; druhý výpočet smí existovat jen jako označená záloha.**
+- **Detekce:** web karta ALLAN musí ukazovat `PRISTROJ tau0 …`; `WEB …` = záloha.
+- **Commit:** `bcaf00c`
+- **Stav:** aktivní (⬜ neověřeno v prohlížeči)
+
+### L-0131 — Model musí nejdřív reprodukovat naměřenou vadu; oprava ověřená jen v modelu není ověřená
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA TDC, simulace (`sim/gowin_models.v`, `tb_tdc_inl.sv`)
+- **Symptom:** obří bin (~134 kódů, 19,5 % hran) a skoky ±9,28 ns; několik iterací oprav, které v simulaci „prošly".
+- **Příčina:** simulační model křemíku (ALU, průměr kroku, zlom řetězu) napsaný podle domněnky; skoky ±9,28 ns v něm nevznikly vůbec,
+  takže jejich „odstranění" nelze v modelu ověřit. Obří bin model reprodukoval až po úpravě parametrů, tedy test = model ladil sám sebe.
+- **Oprava:** architektura 0x0410 (bez `t0`, volné vzorky) + test `tb_tdc_inl` s očekávaným σ a maximálním skokem; zároveň zapsáno, co by
+  hypotézu na křemíku vyvrátilo (`docs/audit/2026-10-07_kriticky-audit.md` A-01).
+- **Pravidlo:** **Než model použiješ k ověření opravy, ukaž, že reprodukuje původní měření; a výsledek z modelu označ `[SIM]`, ne jako ověřený.**
+- **Detekce:** každý nález s opravou v simulaci musí uvést, který naměřený jev model reprodukuje, a ten, který nereprodukuje.
+- **Commit:** `4667d7c`
+- **Stav:** aktivní
+
+### L-0132 — SDC odkaz na neexistující objekt = chyba; staré výstupy po selhání mlčky zůstanou
+
+- **Datum:** 2026-10-07
+- **Oblast:** build FPGA (`timing.sdc`, P&R matice)
+- **Symptom:** část běhů P&R v matici skončila, ale tabulka výsledků ukazovala čísla z předchozí konfigurace.
+- **Příčina:** `timing.sdc` odkazoval na registr (`src_l`, `qd_f`), který po úpravě architektury neexistuje → Gowin TA2003; běh skončil bez
+  nových výstupů a skript kopíroval staré soubory.
+- **Oprava:** registry s prefixem `qd_` na úrovni modulu, SDC bez neexistujících objektů; skripty před během mažou staré výstupy.
+- **Pravidlo:** **Skript, který sbírá výstupy dlouhého běhu, musí nejdřív smazat staré a po běhu ověřit jejich čerstvost; po přejmenování/odstranění registru projdi `timing.sdc`.**
+- **Detekce:** `pnr.log` bez `ERROR`/TA2003 a časové razítko `Counter_FPGA.rpt.txt` novější než start běhu.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní
+
+### L-0133 — Simulace nevidí časování: široká aritmetika se v Gowin rozpadne na řetězy LUT
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA časování (`regr_acc` v `spi_app.v`)
+- **Symptom:** regresní blok prošel všemi simulacemi, ale P&R dal Fmax 53 MHz (TNS −2460), po pipeline 69 MHz, po rozdělení čítače 94 MHz.
+- **Příčina:** 24bitové `n <= n + 1` a 64bitový `sy <= sy + dt` syntetizátor nemapoval na ALU přenos, ale na řetěz 11 LUT; navíc první verze
+  řetězila odčítání + sčítání + porovnání v jednom taktu.
+- **Oprava:** čítač 3×8 b a akumulátor 2×32 b s registrovaným přenosem, dvoufázové sčítání (`bbf5865`); výsledek 100,165 MHz, TNS 0, ale slack jen +0,017 ns.
+- **Pravidlo:** **Po každé změně aritmetiky v `clk_p0_100m` spusť P&R a čti `Counter_FPGA_tr_content.html` (Fmax, TNS, kritická cesta); aritmetiku širší než ~16 bitů rovnou rozděl s registrovaným přenosem; správnost přenosu hlídej vazbou na čekání (`S_W`).**
+- **Detekce:** `python` rozbor `tr_content.html`: `clk_p0_100m Setup … 0` a Fmax ≥ 100 MHz před každým flashem.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní
+
+### L-0134 — Přidaná funkce spolkla rezervu určenou jinému úkolu; změř cenu před přidáním
+
+- **Datum:** 2026-10-07
+- **Oblast:** rozpočet FPGA (CLS, časová rezerva)
+- **Symptom:** po regresním bloku CLS 79 % (z 68 %) a slack +0,017 ns; přitom #262 (kanál C pro 1PPS, vstup smyčky GPSDO) potřebuje volnou plochu.
+- **Příčina:** regresní blok se přidal jako „zisk přesnosti", aniž se předem vyčíslil přínos pro hlavní scénář (GPSDO 10 MHz = násobek 100 MHz = žádný zisk)
+  a cena v ploše/časování proti plánovaným úkolům.
+- **Oprava:** nic zatím; navrženo `REGR` jako parametr (výchozí 0) nebo odstranění (`docs/audit/2026-10-07_kriticky-audit.md` A-04).
+- **Pravidlo:** **Před přidáním bloku do FPGA vyčísli přínos pro hlavní použití a cenu v CLS i v časové rezervě; funkci, jejíž přínos neplatí pro hlavní použití, dej za parametr s výchozí hodnotou 0.**
+- **Detekce:** P&R report (`Counter_FPGA.rpt.txt`: CLS < ~78 %) a `Setup` slack > 0,2 ns před commitem.
+- **Commit:** `bbf5865`
+- **Stav:** aktivní (ke zvážení)
+
+### L-0135 — "Simulace + P&R prošly" neříká nic o tom, že blok na křemíku počítá správně
+
+- **Datum:** 2026-10-07
+- **Oblast:** FPGA regresní blok (0x0411), ověřování
+- **Symptom:** po nahrání 0x0411 `edge_count` o ~0,9 % vyšší, `regr` zamítá 100 % oken, `ym_B` je ve všech oknech identické.
+- **Příčina:** neznámá (viz audit D-01/D-02). Jisté je, že 12 simulací, P&R i netlist kontrola prošly a přesto na desce nic z toho neplatí;
+  `tb_regr_e2e` nekontroluje absolutní počet hran (jedna hrana = tisíce ppm) ani to, že se `ym` mezi okny mění.
+- **Oprava:** blok vypnut parametrem (FW 0x0412) do doby, než bude reprodukován a pochopen; do `status` přidán stav `REGR:`.
+- **Pravidlo:** **Nový blok, který mění číslo na displeji, se před flashem opatří kontrolou, kterou jde ověřit z `status`/`fpgaraw` bez dalšího nástroje
+  (shoda `edge_count` s očekávaným, proměnlivost výstupů mezi okny), a v testbenchi se testuje i absolutní počet hran, ne jen relativní chyba.**
+- **Detekce:** po každém flashi: `fpgaraw` → `edge_count` proti `f_ref·gate`, a `regr` → `pouzito > 0`.
+- **Commit:** `0aa7d34`
+- **Stav:** aktivní
+
+### L-0136 — Ovládací prvek, který se nedostane do HW, nelze použít k diagnostice
+
+- **Datum:** 2026-10-07
+- **Oblast:** STM ↔ FPGA, `fpga_freq_set_window`
+- **Symptom:** přepnutí hradla na 1 s / 0,1 s / 0,25 s (displej, web, SCPI) nezměnilo `gate_ns` (vždy ~250 ms).
+- **Příčina:** `fpga_freq_set_window()` (SET_CONFIG 0x01) nemá volajícího; GATE mění jen SW průměrování v STM (CLAUDE.md zmiňuje jako audit #83).
+- **Oprava:** žádná (jen zjištění); test hradla nelze použít k rozlišení příčiny chyby počtu hran.
+- **Pravidlo:** **Než použiješ nastavení jako experimentální proměnnou, ověř na rámci z FPGA (`gate_ns`/`dt_a`), že se opravdu změnilo.**
+- **Detekce:** po změně nastavení porovnat `dt_a` ve `fpgaraw` před/po.
+- **Commit:** `06b01d0`
+- **Stav:** aktivní
+
+### L-0137 — Vstup pod prahem logiky: chyba, která „skáče" s každým překladem FPGA, je analogová
+
+- **Datum:** 2026-10-08
+- **Oblast:** vstup CH_A (pin 25 Tang Nano, LVCMOS33), měření HW
+- **Symptom:** počet hran v okně o +0 až +257 000 (až 8,8 %) jinak podle každého P&R a podle toho, který klopný obvod vstup vzorkuje;
+  s hysterezí vstupu naopak −289 až −549 hran v každém okně. Pět diagnostických bitstreamů (0x0413–0x0417) a řada hypotéz o logice.
+- **Příčina:** 74HC04 (5 V) budil koax zakončený 49R9 u pinu; HC04 do 50 Ω nestačí → na pinu **0 až 1,55 V**, tedy pod VIH 2,0 V.
+  Vstupní buffer se překlápěl jen šumem na vrcholu signálu → zákmity (bez hystereze) nebo vypadlé pulzy (s hysterezí).
+  Který klopný obvod zákmit zachytí, záleží na zpoždění jeho vedení = na P&R.
+- **Oprava:** 49R9 nahrazen 120 Ω (HC04 ~45 Ω výstup funguje jako sériové zakončení u zdroje) → na pinu obdélník 0–2,86 V.
+  Výsledek: `CITANI HRAN` 0/0, mezery v SEQ 0, okno σ ≈ 196 ps (FW 0x0412, bez změny logiky).
+- **Pravidlo:** **Když se chyba měření mění s každým překladem FPGA (stejná logika, jiné rozmístění), nejdřív změř sondou úrovně a hranu přímo na
+  vstupním pinu proti prahům IO standardu; do té doby neměň logiku.**
+- **Detekce:** sonda 10:1 na pinu: 0 V a ≥ 2,4 V (LVCMOS33), jediný průchod pásmem 0,8–2,0 V.
+- **Commit:** (tento docs commit)
+- **Stav:** aktivní
+
+### L-0138 — STA bez nejistoty hodin: „splněné" časování s rezervou pod ~0,3 ns na křemíku selhává podle rozmístění
+
+- **Datum:** 2026-10-08
+- **Oblast:** FPGA časování (`timing.sdc`), regresní blok `regr_acc`
+- **Symptom:** regrese na desce dávala nesmysly, které se měnily s každým buildem (segment B mrtvý; Σ(t−t0) o 1,3 % nižší;
+  zlomek x̄ 0,07 místo 0/0,5), přestože simulace celého `top` i jednotkové testy v plné velikosti procházely a STA hlásila TNS 0.
+- **Příčina:** `timing.sdc` neměl `set_clock_uncertainty`; STA počítala s ideálními 100 MHz. Vadné buildy měly nejtěsnější cestu
+  0,017 / 0,15 / −0,19 ns, funkční ≥ 0,58 ns. Na křemíku tedy chybí ~0,3 ns (jitter Si5356 + vstupní buffer). Ladicí buildy
+  (počítadla přenosů, souvislost značek, surové součty proti spočteným hodnotám) dokázaly, že logika je správná.
+- **Oprava:** `set_clock_uncertainty -setup ... 0.5` pro `clk_p0_100m`; `regr_acc` přepsána na krátké cesty (registrované řízení,
+  součty s registrovaným přenosem, dělič s řídicími signály ve 4 kopiích). Výsledek: regrese na desce 13× přesnější než dvoubodový
+  odhad (σ okna 5,85·10⁻¹¹ proti 7,6·10⁻¹⁰), 2628/2628 oken použito.
+- **Pravidlo:** **Každá hodina v SDC musí mít nejistotu odpovídající reálnému jitteru; výsledek, který se mění s rozmístěním
+  při splněném časování, je časový problém, ne logický — ověř to ladicím buildem s počítadly, než začneš měnit logiku.**
+- **Detekce:** `Counter_FPGA_tr_content.html` → u cesty musí být řádek `tUnc -0.500`; slack po odečtení ≥ 0.
+- **Commit:** (commit FW 0x041A)
+- **Stav:** aktivní
+
+### L-0139 — Konstanta z modelu a se dvěma významy: rozlišení přístroje musí být změřené a mít jeden význam
+
+- **Datum:** 2026-10-08
+- **Oblast:** `meas_present.h` `MP_TDC_PS`, `screen_main.c` `adev_floor_base`, web `floorOf`
+- **Symptom:** počet „důvěryhodných" číslic a podlaha Allanova grafu vycházely z 57 ps, přitom změřený šum značky byl ~105 ps
+  (dvoubodově) a s regresí ~10 ps ekv. Navíc rozpočet nejistoty bral konstantu jako σ, podlaha jako krok kvantizace (√12×).
+- **Příčina:** hodnota převzatá ze STA modelu („HYPOTÉZA do měření") nebyla po měření nikdy nahrazena; dva vzorce ji
+  interpretovaly různě a nikdo to nepoznal, protože obě čísla vypadala věrohodně.
+- **Oprava:** `MP_TDC_PS` = 105 ps = změřená σ; podlaha převádí na krok q = σ·√12 na displeji i na webu (commit fix(stm,web)).
+- **Pravidlo:** **Každá konstanta, která popisuje přesnost přístroje, musí mít v komentáři jednotku, VÝZNAM (σ / krok / pásmo) a zdroj
+  (měření s datem, nebo „hypotéza"); hypotéza se po prvním měření nahrazuje.**
+- **Detekce:** `grep -rn "HYPOT" CM7/Core/Inc` — každá hypotéza má mít odkaz na měření, které ji nahradí.
+- **Commit:** fix(stm,web) MP_TDC_PS
+- **Stav:** aktivní
+
+### L-0140 — Logicky souvislý řetěz není fyzicky souvislý: carry chain v FPGA je jen tak dlouhý jako řádek
+
+- **Datum:** 2026-10-09
+- **Oblast:** FPGA `tdc.v` (`tdc_chain`), `top.v` `TDC_NTAP`, `pins.cst`
+- **Symptom:** žádný viditelný — TDC měřil. Teprve rozbalení bitstreamu (Apicula) a timing report z každého vzorkovacího FF
+  ukázaly, že 320tapový řetěz má tapy 0–267 v jednom řádku a 268–319 v jiném (A: R26 → R20, B: R27 → R5) za skokem obecným
+  vedením; a že při jiném sestavení placer dal kanál B do řádku R9, 19 řádků od vstupního pinu.
+- **Příčina:** carry v GW1NR-9 vede jen vodorovně v řádku (45 CFU × 6 ALU = 270, z toho hlava a konec); delší řetěz nástroj tiše
+  rozdělí a spojí vedením. Kontrola `check_tdc_netlist.py` viděla jen netlist, kde je řetěz souvislý.
+- **Oprava:** `TDC_NTAP = 268` (přesně řádek), dekodér 288 s doplněním „prošla", řádky vynucené `GROUP`/`GRP_LOC` jen nad ALU,
+  kontrola `sim/check_tdc_placement.py` nad textovým timing reportem (`top.v`, `tdc.v` `tdc_chain`, `pins.cst`).
+- **Pravidlo:** **U struktury, jejíž funkce závisí na fyzické poloze (delay line, vzorkovače), ověřuj rozmístění po P&R
+  strojově, ne netlist; a do skupiny umístění dávej jen buňky, které tvoří tu strukturu — přidané FF placer rozházel mimo slot.**
+- **Detekce:** `python sim/check_tdc_placement.py impl/pnr/Counter_FPGA.tr` musí dát PASS (jinak build neodevzdávat).
+- **Commit:** feat(fpga) FW 0x041D
+- **Stav:** aktivní
+
+### L-0141 — Splněné časování s nejistotou 0,5 ns nestačí: stejná logika měřila špatně, dokud se rezerva nezvedla na ~1 ns
+
+- **Datum:** 2026-10-09
+- **Oblast:** FPGA `timing.sdc` (`set_clock_uncertainty`), navazuje na L-0138
+- **Symptom:** FW 0x041D (TDC v jednom řádku) při P&R splněném s nejistotou 0,5 ns (skutečná rezerva 0,545 ns) měřil na desce
+  1 578 628 Hz místo 10 000 008 Hz (~1/6 hran). Stejný zdroj, stejný vstup; FW 0x041A (rezerva 0,64 ns) a sestavení
+  s nejistotou 0,9 ns měřily správně.
+- **Příčina:** NEUZAVŘENO. Hypotéza: stejně jako v L-0138 chybí v modelu skutečný jitter/skew hodin, a nejtěsnější cesty
+  (počítání hran `rise_q -> cy_q/snap`, `regr_acc`) pak počítají chybně. Výsledek byl v 6 z 7 nahrání špatný, jednou správný
+  (NE deterministický) a zmizel až s rezervou >= 0,98 ns; tedy mez není ostrá.
+- **Oprava:** `set_clock_uncertainty -setup ... 0.9` v `timing.sdc`. Ověřeno 7/7 nahrání správně, ADEV(0,25 s) 7,2·10⁻¹¹.
+- **Pravidlo:** **Po každé změně rozmístění/zdrojů v FPGA ověř na desce výsledek VÍCE nahráními (aspoň 4×) a neber jediné správné měření
+  za důkaz; rezervu hlídej proti ~1 ns, ne proti nule.**
+- **Detekce:** `Counter_FPGA_tr_content.html` → u nejhorší cesty `tUnc -0.900` a slack >= 0; na desce 4× nahrát a 4× `freq_hz`.
+- **Commit:** (commit FW 0x041D)
+- **Stav:** aktivní, příčina otevřená (O-bod: změřit skutečný jitter Si5356 / přivést 100 MHz z jiného zdroje)
+
+### L-0142 — Echo konfigurace, které se obnovuje jen s měřením, nesmí být jediný zdroj pravdy o tom, co jsme poslali
+
+- **Datum:** 2026-10-09
+- **Oblast:** `fpga_freq_cfg_sync` (výběr kanálu / hradla FPGA, FW 0x041E)
+- **Symptom:** test na desce: tlačítko CHAN A → B (na B není signál) → zpět A. Měření se po návratu na A nikdy neobnovilo
+  (`SIGNAL_LOST`, SEQUENCE stojí), FPGA zůstala na kanálu B.
+- **Příčina:** STM posílalo SET_CONFIG jen když se echo v rámci (`channel_id`, `phase_status`) lišilo od požadavku. Echo ale
+  FPGA zamyká při DOKONČENÍ MĚŘENÍ; bez signálu na vybraném kanálu zůstalo staré „A“, takže po přepnutí zpět na A se echo
+  a požadavek shodovaly a povel se nikdy neposlal.
+- **Oprava:** STM si pamatuje, co naposledy POSLALO (`s_cfg_sent_chan/win`), posílá při změně požadavku hned a opakuje podle
+  echa až po 1,5 s (to chytí reset FPGA); `fpga_freq_restart` pamatovanou hodnotu zapomene (`fpga_freq.c`).
+- **Pravidlo:** **Stav, který posíláš jinému zařízení, porovnávej s tím, co jsi POSLAL, ne jen s tím, co ti zařízení hlásí
+  zpět — hlášení může být zamčené/zastaralé přesně v situaci, kterou opravuješ. Test přepínače vždy dělej i v cestě „vybraný
+  zdroj mlčí“ a zpět.**
+- **Detekce:** na desce: `tap 3` (CHAN) dvakrát při odpojeném kanálu B → měření na A se musí obnovit do ~3 s.
+- **Commit:** (commit FW 0x041E)
+- **Stav:** aktivní, opraveno ⬜ neověřeno na desce (čeká na flash CM7)
+
+### L-0143 — Bitstream bez identity: dva různé soubory hlásily stejnou verzi, takže z desky nešlo poznat, co běží
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA build / protokol (`build.tcl`, `top.v`, `spi_app.v` bajty 12..19)
+- **Symptom:** „FPGA se někdy nahraje špatně" (STATUS #282). `ab_test/FW_0x041D_radek.fs` a `FW_0x041D_unc09.fs` jsou
+  RŮZNÉ bitstreamy (jiné SDC), oba hlásily `FW:0x041D`. Výsledky měření se tedy nedaly přiřadit souboru.
+- **Příčina:** `FW_VERSION` je ruční konstanta. Bitstream se mění i bez její změny (SDC, volby P&R, sestavení v IDE
+  místo `build.tcl`, L-0122), a nic v rámci neidentifikovalo konkrétní sestavení.
+- **Oprava:** `build.tcl` při každém sestavení zapíše `src/build_id.vh` (unix čas + git hash + příznak neuložených
+  změn), rámec ho nese v bajtech 12..19 (CAPS bit10, FW 0x041F), `status` → `FPGA BUILD:`. `tools/fpga_release.py`
+  vydá bitstream do `ab_test/` jen se jménem z identity a řádkem v `ab_test/MANIFEST.md` (md5, rezervy, CLS).
+- **Pravidlo:** **Každý artefakt, který se nahrává do HW, musí nést identitu generovanou při sestavení (čas + verze
+  zdrojů) a zařízení ji musí umět ohlásit; ručně udržované číslo verze identitou není.**
+- **Detekce:** `status` → `FPGA BUILD:` se shoduje s řádkem v `ab_test/MANIFEST.md`; `python tools/fpga_release.py`
+  kontrola „identita odpovídá .fs".
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0144 — Měřicí přístroj bez samokontroly: okno se špatným počtem hran vypadalo zdravě
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA `win_recip` (`spi_app.v`), STM `fpga_freq_poll` (`fpga_freq.c`)
+- **Symptom:** L-0141: 1 578 628 Hz místo 10 000 008 Hz v 6 ze 7 nahrání; L-0137: počet hran o desítky tisíc jinak.
+  Rámce měly platné CRC, VALID, navazující SEQUENCE — špatné číslo šlo na displej, do statistiky i datalogu.
+- **Příčina:** měřená cesta (vzorek řetězu → detekce hrany → čítač s registrovaným přenosem) neměla žádnou nezávislou
+  kontrolu a STM neověřovalo, jestli délka okna odpovídá hradlu. Vada kdekoli v té cestě byla neviditelná.
+- **Oprava:** (1) FPGA: kontrolní počítání hran vlastním synchronizátorem téhož pinu, rozdíl proti `snap` v rámci
+  (bajty 97/98); (2) STM: okno se zamítne, když |rozdíl| > 1, když délka okna nesedí s hradlem (`fpga_freq_window_check`)
+  nebo když hlídač 100 MHz hlásí výpadek; `status` → `FPGA SAMOKONTROLA:`. Zamítnuté okno se nezobrazí ani nezapočte.
+- **Pravidlo:** **Každou hodnotu, kterou přístroj vydává jako měření, musí potvrdit aspoň jedna nezávislá kontrola
+  (druhá cesta, fyzikální mez, konzistence s nastavením) a výsledek kontroly musí být vidět; bez ní je vadné měření
+  k nerozeznání od správného.**
+- **Detekce:** `sim/run.ps1 topselfchk` (5 ukradených hran → rozdíl ≥ 4); selftest #1 (`fpga_freq_window_check`:
+  okno 6,3× delší neprojde); na desce `status` → `FPGA SAMOKONTROLA: zamitnuto oken: citani 0, ...`.
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0145 — Zamítnuté měření prosáklo dalším rámcem se stejnou SEQUENCE
+
+- **Datum:** 2026-10-10
+- **Oblast:** STM `fpga_freq_poll` (`fpga_freq.c`, latch `s_last`)
+- **Symptom:** nalezeno čtením kódu, na desce nepozorováno: okno odmítnuté jako miscount se do `s_last` nezapsalo jen
+  v prvním rámci; o ~25 ms později přišel tentýž výsledek znovu (FPGA ho posílá až do dalšího měření, jen bez FRESH),
+  `is_new` byl 0, takže `mc` = 0 a okno se latchlo. Viděl ho web (IPC), SCPI i okna UI.
+- **Příčina:** podmínka latchu závisela na výsledku kontroly PRÁVĚ TOHOTO pollu, ne na tom, ke kterému měření rámec
+  patří. Rámec bez FRESH nese stále totéž měření.
+- **Oprava:** pamatuje se SEQUENCE odmítnutého měření (`s_rej_seq`) a rámce se stejnou SEQUENCE se nelatchují;
+  diagnostika rámce (verze, identita, hodiny) se drží zvlášť v `s_frame` (`fpga_freq_get_frame`).
+- **Pravidlo:** **Rozhodnutí o platnosti dat váž na identitu dat (pořadové číslo), ne na okamžik, kdy přišla —
+  zdroj, který stejná data opakuje, jinak obejde každou kontrolu, která běží jen „při novém".**
+- **Detekce:** grep `fpga_freq_get_last` u konzumentů měření; review: každý latch po kontrole musí mít podmínku
+  na SEQUENCE.
+- **Commit:** (commit fix STM samokontrola)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0146 — FPGA bez resetu nepřežije výpadek hodin: stav i kalibrace z rozbitých hodin zůstanou až do nového nahrání
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA `top.v` (hlídač 100 MHz, `boot_done`), `tdc.v` (`ring_osc` LFSR)
+- **Symptom:** HYPOTÉZA pro část případů „někdy se nahraje špatně": 100 MHz dělá Si5356, který STM po startu
+  přenastaví (OEB off → soft reset → on). Při resetu STM za běhu FPGA nebo při zapnutí (FPGA naběhne dřív než STM
+  nastaví Si5356) dostala logika TDC a oken rozbité / chybějící hodiny a kalibrace po 168 ms mohla proběhnout na jiném
+  kmitočtu. FPGA nemá reset, takže výsledek přetrval do dalšího nahrání.
+- **Příčina:** žádné hlídání referenční hodiny; boot kalibrace odpočítávala takty té hodiny bez ohledu na její stav;
+  LFSR děliče ring oscilátoru (taktovaný kruhem, runt pulzy při start/stop) neměl únik ze stavu 0.
+- **Oprava:** hlídač v doméně 10 MHz (OCXO, nezávislá na STM) počítá 100 MHz v oknech 102 µs; mimo pásmo → měření
+  stojí (`hold`), odpočet boot kalibrace se nuluje a po 168 ms stabilních hodin proběhne nová kalibrace; počet
+  výpadků v rámci (bajty 64/65); LFSR se ze stavu 0 vrátí na seed.
+- **Pravidlo:** **Logika bez resetu, která běží z hodin od jiného zařízení, musí ty hodiny hlídat hodinami, na
+  kterých nezávisí, a po výpadku se sama vrátit do čistého stavu včetně kalibrací.**
+- **Detekce:** `sim/run.ps1 topselfchk` (zastavení 100 MHz na 20 µs → výpadek započten, měření drženo, rekalibrace,
+  pak správně); na desce: reset STM (NRST) za běhu → `status` `FPGA HODINY 100M: OK, vypadku 1` a měření se obnoví.
+- **Commit:** (commit FW 0x041F)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+---
+
+## Archiv (neplatné lekce)
+
+*(prázdné)*

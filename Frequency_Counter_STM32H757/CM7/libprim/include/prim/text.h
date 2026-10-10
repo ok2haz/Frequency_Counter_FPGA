@@ -27,3 +27,15 @@ PRIM_API int16_t prim_text_height(const prim_font_t *font);
  *        backend s draw_glyph; jinak je no-op (vzdy CPU).
  */
 PRIM_API void prim_set_glyph_accel(int enable);
+
+/**
+ * @brief Kolikrat se od bootu preskocil glyf, ktery font nema (audit F-0034).
+ *
+ * `prim_draw_text` chybejici glyf TISE preskoci — text zmizi a nic to nehlasi.
+ * Vetsina velkych fontu je subsetovana (`mono_75`/`mono_52` jen cislice,
+ * `sans_32` jen `Hzsmunp`), takze je to zivá past: audit 2026-08-29 nasel
+ * 15 takto neviditelnych retezcu. Nenulova hodnota = nekde na displeji CHYBI
+ * text. Vypisuje `status`.
+ * ⚠️ Pocita se jen ve `prim_draw_text`, ne ve `prim_text_width`.
+ */
+PRIM_API uint32_t prim_text_missing_glyphs(void);

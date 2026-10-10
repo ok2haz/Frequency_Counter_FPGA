@@ -75,3 +75,19 @@ void ui_icon_speaker_muted(prim_point_t pos, int16_t size, prim_color_t color)
     speaker_body(color);
     prim_draw_line(ICON_PT(3, 4), ICON_PT(21, 21), 2, color);   /* diagonalni preskrtnuti */
 }
+
+/* SD karta: obrys obdelniku se sikmo useknutym pravym hornim rohem (typicky
+ * tvar SD karty) + tri kontakty dole. Jen obrys (ne vypln) — kontakty by ve
+ * vyplnene barve nebyly videt. */
+void ui_icon_sdcard(prim_point_t pos, int16_t size, prim_color_t color)
+{
+    ICON_BEGIN(pos, size);
+    prim_draw_line(ICON_PT(5, 2),  ICON_PT(16, 2),  2, color);
+    prim_draw_line(ICON_PT(16, 2), ICON_PT(19, 5),  2, color);
+    prim_draw_line(ICON_PT(19, 5), ICON_PT(19, 22), 2, color);
+    prim_draw_line(ICON_PT(19, 22),ICON_PT(5, 22),  2, color);
+    prim_draw_line(ICON_PT(5, 22), ICON_PT(5, 2),   2, color);
+    prim_draw_line(ICON_PT(8, 15),  ICON_PT(8, 19),  2, color);
+    prim_draw_line(ICON_PT(12, 15), ICON_PT(12, 19), 2, color);
+    prim_draw_line(ICON_PT(16, 15), ICON_PT(16, 19), 2, color);
+}

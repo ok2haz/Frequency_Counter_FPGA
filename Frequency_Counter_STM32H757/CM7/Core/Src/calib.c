@@ -8,6 +8,8 @@
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* qspiMutexHandle — W25Q sdili vic tasku */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release */
+#include "errlog.h"   /* udalost: ulozena kalibrace */
+#include "meas_present.h"   /* mp_ad8307_slope_ok — kontrola rozsahu pri nacteni (F-0165) */
 
 /* Timeouty QSPI mutexu: boot (calib_load) i ULOZIT (calib_save) bezi v UiTask
  * na explicitni akci uzivatele, takze si muzou pockat i na bezici erase (~400 ms). */
@@ -17,8 +19,19 @@
  * v app_gpsdo.c / freertos_task_sensors.c, ted jen jednou zde. */
 #define CALIB_DEFAULT_AD8307_SLOPE      25.0f
 #define CALIB_DEFAULT_AD8307_INTERCEPT  (-84.0f)
-#define CALIB_DEFAULT_GAIN_12V          (13417.0f / 2814.0f)   /* ~4.768 */
-#define CALIB_DEFAULT_GAIN_5V           (4978.0f  / 2526.0f)   /* ~1.971 */
+/* 🔴 2026-10-02: PRESKALOVANO na skutecne delice z netlistu FPGA_Module_2_1
+ * (overeno kicad-cli exportem, ne jen komentarem v kodu - viz
+ * freertos_task_sensors.c pro plnou tabulku vsech 4 kanalu). Jmena poli
+ * `gain_12v`/`gain_5v` jsou HISTORICKA (puvodni navrh desky) a NEODPOVIDAJI
+ * uz tomu, co kanal fyzicky meri - AIN2 je dnes +3V3 (ne 12V), AIN3 je +5V
+ * pres JINY delic nez puvodni komentar predpokladal. Prejmenovani poli je
+ * samostatny (vetsi) zasah, odlozeno - viz AUDIT_STATUS.md.
+ *   AIN2 (+3V3): R55=10k / R56=10k -> gain = (10+10)/10 = 2,0 (BYLO 4,768
+ *     pro neexistujici "12V" delic 100k/4,99k, ktery je ve skutecnosti na AIN1)
+ *   AIN3 (+5V):  R57=10k / R58=22k -> gain = (10+22)/22 = 32/22 ~= 1,4545
+ *     (BYLO 1,971 pro delic 15k/10k, ktery na desce neni) */
+#define CALIB_DEFAULT_GAIN_12V          (20.0f / 10.0f)         /* AIN2=+3V3, R55=10k/R56=10k: 2,0 */
+#define CALIB_DEFAULT_GAIN_5V           (32.0f / 22.0f)         /* AIN3=+5V,  R57=10k/R58=22k: ~1,4545 */
 
 volatile calib_t g_calib = {
     CALIB_DEFAULT_AD8307_SLOPE, CALIB_DEFAULT_AD8307_INTERCEPT,
@@ -38,7 +51,19 @@ typedef struct {
     float    gain_5v;
 } calib_blob_t;
 
+/* Viz stejný `_Static_assert` v `syscfg.c` (audit F-0097, lekce L-0026). Dnes 20 B
+ * ze 4080 — rezerva je obrovská, ale kalibrační MATICE nové desky (koeficient na
+ * každou kombinaci cesty, útlumu a amplitudy, viz CLAUDE.md) se do jednoho sektoru
+ * vejít NEMUSÍ, a tohle je místo, kde se to pozná při překladu. */
+_Static_assert(sizeof(calib_blob_t) <= W25Q_STORE_MAX_BLOB,
+               "kalibracni blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+
 static w25q_store_t s_store;
+
+/* F-0098: bez tohohle nebylo jak poznat, ze CALIB store nenabehl — `g_calib` pak
+ * zustane na datasheetovych vychozich a RF v dBm i vetve 12 V/5 V jsou
+ * NEKALIBROVANE, aniz by to cokoli ohlasilo. */
+int calib_store_ready(void) { return s_store.ready ? 1 : 0; }
 
 void calib_load(void)
 {
@@ -54,8 +79,15 @@ void calib_load(void)
     osMutexRelease(qspiMutexHandle);
 
     if (n == sizeof(b) && b.magic == CALIB_BLOB_MAGIC) {
-        g_calib.ad8307_slope_mv_db   = b.ad8307_slope_mv_db;
-        g_calib.ad8307_intercept_dbm = b.ad8307_intercept_dbm;
+        /* F-0165: magic + CRC uloziste potvrzuji jen to, ze blob patri kalibraci,
+         * ne ze dava smysl. Strmost mimo rozsah (nebo NaN prusecik) by vsechny
+         * prevody RF shodila na „nevim" — radeji datasheetovy par, ktery aspon
+         * meri. Strmost a prusecik jsou dvojice, proto se odmitaji spolecne. */
+        if (mp_ad8307_slope_ok(b.ad8307_slope_mv_db) &&
+            b.ad8307_intercept_dbm == b.ad8307_intercept_dbm) {
+            g_calib.ad8307_slope_mv_db   = b.ad8307_slope_mv_db;
+            g_calib.ad8307_intercept_dbm = b.ad8307_intercept_dbm;
+        }
         g_calib.gain_12v             = b.gain_12v;
         g_calib.gain_5v              = b.gain_5v;
     }
@@ -75,5 +107,16 @@ bool calib_save(void)
     if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return false;
     bool ok = w25q_store_write(&s_store, &b, sizeof b);
     osMutexRelease(qspiMutexHandle);
+
+    /* Zmena kalibrace posune VSECHNY nasledujici prepocty (RF dBm, 12V/5V) —
+     * bez zaznamu by skok v logu vypadal jako zmena mereneho signalu.
+     * 🔴 AZ TEDY, a jen pri uspechu (audit F-0094). Do 2026-09-17 bylo tohle
+     * volani PRVNIM prikazem funkce, tedy pred kontrolou `s_store.ready`, pred
+     * zamkem i pred zapisem — na vsech trech chybovych cestach pak v TRVALE
+     * historii zustala veta „ulozena kalibrace napeti" o zmene, ktera se
+     * neprovedla. Analyza pozdejsiho skoku v datech by pak hledala pricinu na
+     * nespravnem miste. Neuspesny zapis patri pod ERRLOG_K_STORAGE (tam uz
+     * hlasi `datalog_tick`), ne pod „nastaveni se zmenilo". */
+    if (ok) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CALIB, 0u, 0u, "kalib");
     return ok;
 }

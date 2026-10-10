@@ -7,15 +7,26 @@
 #include "w25q_store.h"
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_brightness, g_theme_idx, g_tz_*, g_ui_cfg, qspiMutexHandle */
-#include "datalog.h"
-#include "datalog.h"   /* datalog_sd_det_force/forced — persist override PE3 */           /* datalog_enabled/set_enabled — persist zap/vyp logovani */
+#include "datalog.h"   /* datalog_enabled/set_enabled — persist zap/vyp logovani;
+                        * datalog_sd_det_force/forced — persist override PE3.
+                        * (Do 2026-09-19 tu byl DVAKRAT a druhy radek nesl dva
+                        *  komentare, z nichz jeden patril k prvnimu — audit F-0102.) */
 #include "meas_math.h"         /* g_meas_cfg — persist Math/limity (#43/#44) */
 #include "alarm.h"             /* g_mon_cfg — persist prahoveho monitoru */
 #include "app_gpsdo.h"         /* app_gpsdo_meas_ui_* — persist okna MERENI (#67) */
+#include "encoder.h"          /* encoder_div/_set_div — persist delice kroku */
 #include "screens/screen_main.h" /* screen_main_*_layout_classic — persist rozlozeni */
+#include "setup.h"             /* setup_store_ready — souhrn uloziste (F-0098) */
+#include "calib.h"             /* calib_store_ready — souhrn uloziste (F-0098) */
+#include "flightrec.h"         /* flightrec_ready — souhrn uloziste (F-0098) */
+#include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
+#include <stdio.h>             /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
+#include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0197) */
+#include "task.h"
 #include "stm32h7xx_hal.h"     /* HAL_GetTick */
 #include <string.h>
+#include <stddef.h>            /* offsetof — hlidani layoutu blobu (allan_dens ve vycpavce) */
 
 /* Verzovany blob (magic se zmeni pri nekompatibilni zmene layoutu; store sam
  * overuje CRC16 -> magic jen potvrzuje ze bajty patri syscfg). Pole zabalena
@@ -36,7 +47,10 @@
  * jinak by se z flash nacetl stary 2,6 V; lze i rucne v okne PRAHY bez bumpu).
  * Dusledek: prvni boot po teto zmene najde neznamy magic, nastaveni se vrati na
  * vychozi a pri prvni zmene se ulozi uz v novem formatu. */
-#define SYSCFG_BLOB_MAGIC   0x53434646u   /* "SCFF" (2026-08-24: VBAT prah 2,6->2,8 V pro CR2032 3,3 V nominal) */
+/* 2026-09-07: pribylo `datalog_store` + `datalog_period_s` (volba uloziste a
+ * cetnosti dlouhodobeho logu) -> "SCG0" -> "SCG1". 2026-09-23: pribylo
+ * automaticke CSV zrcadlo na SD (mirror_en/_seq/_vsn) -> "SCG1" -> "SCG2". */
+#define SYSCFG_BLOB_MAGIC   0x53434732u   /* "SCG2" */
 #define SYSCFG_DEBOUNCE_MS  1500u         /* klid pred flash zapisem */
 /* Timeouty QSPI mutexu. Boot (UiTask) muze pockat; auto-save z defaultTask NE —
  * defaultTask krmi watchdog (watchdog_supervise) a drenuje GPS frontu, takze pri
@@ -56,6 +70,8 @@ typedef struct {
     uint8_t  tz_auto;
     uint8_t  ui_cfg;
     uint8_t  datalog_en;   /* 1 = zaznam stability bezi (okno Datalog) */
+    uint8_t  datalog_store;    /* datalog_store_t: 0 AUTO / 1 FLASH / 2 SD */
+    uint16_t datalog_period_s; /* perioda vzorkovani [s]; 0 = vychozi */
     uint8_t  anim_en;      /* 1 = animace zapnute (okno Animace) */
     uint16_t fx_en;        /* bitmaska grafickych efektu (FX_*), viz freertos_shared.h */
     /* Math/limity (#43/#44). Flash je jediny zdroj (nejsou v BKP) -> aplikuji se
@@ -103,7 +119,39 @@ typedef struct {
     /* Rozlozeni hlavni obrazovky (0 = hybridni/vychozi, 1 = klasicke). Neni v BKP
      * -> flash je jediny zdroj a aplikuje se VZDY (jako fx_en/anim_en). */
     uint8_t  layout_classic;
+    /* Delic kroku TIM1 na jednu ZAPADKU encoderu (1/2/4). Jedina HW-zavisla
+     * konstanta UI vrstvy — persistuje, aby se kvuli ni nemuselo preflashovat.
+     * ⚠️ 0 (stary blob) je neplatna hodnota a `encoder_set_div` ji ignoruje,
+     * takze zustane vychozi 4. */
+    uint8_t  enc_div;
+    /* Automaticke CSV zrcadlo datalogu na SD (viz datalog.h). NENI v BKP ->
+     * flash je jediny zdroj, aplikuje se VZDY (jako fx/meas/survey/monitor).
+     * `mirror_seq`/`mirror_vsn` = vodotisk + HW identita karty, ke ktere patri
+     * (viz `datalog_mirror_vsn` proc CID, ne FAT volume serial). */
+    uint8_t  mirror_en;
+    /* Hustota bodu Allanova grafu (0 = 3, 1 = 5, 2 = 9 na dekadu; 2026-09-27).
+     * ⚠️ Lezi ve BYVALE VYCPAVCE za `mirror_en` — velikost blobu (192 B) ani
+     * offset `mirror_seq` (184) se nezmenily (hlida _Static_assert nize), takze
+     * magic se NEZVEDA a uzivatel neprijde o nastaveni. Stary blob ma na tom
+     * miste nulu (`pack` nuluje vcetne vycpavky od #43) = vychozi 3 na dekadu. */
+    uint8_t  allan_dens;
+    uint32_t mirror_seq;
+    uint32_t mirror_vsn;
 } syscfg_blob_t;
+
+/* 🔴 Strop blobu je vlastnost UKLADACE, ne komentare (audit F-0097, lekce L-0026).
+ * `w25q_store_write` vrati `false`, kdyz payload nepretece jeden sektor — jenze
+ * tise: `syscfg_save` by zacal vracet `false` navzdy a `syscfg_flash_tick` by to
+ * zkousel 100x/s, nastaveni by se prestalo ukladat a `status` by nerekl nic.
+ * Projevilo by se to jako „nastaveni neprezije power-cyklus", tedy symptom, ktery
+ * se hleda uplne jinde. Blob uz vyrostl nejmene dvanactkrat (viz historie magicu
+ * vyse), takze to neni teoreticka mez. Dnes 192 B ze 4080. */
+_Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
+               "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
+/* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
+   by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
+_Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u,
+               "syscfg blob zmenil layout -- to vyzaduje novy magic (SYSCFG_BLOB_MAGIC)");
 
 static w25q_store_t s_store;
 
@@ -126,6 +174,8 @@ static void pack(syscfg_blob_t *b)
     b->tz_auto      = g_tz_auto;
     b->ui_cfg       = g_ui_cfg;
     b->datalog_en   = datalog_enabled() ? 1u : 0u;
+    b->datalog_store    = datalog_get_store();
+    b->datalog_period_s = datalog_period_s();
     b->anim_en      = g_anim_enabled ? 1u : 0u;
     b->fx_en        = (uint16_t)(g_fx_enabled & FX_ALL);
     b->meas_math_en  = g_meas_cfg.math_en ? 1u : 0u;
@@ -162,6 +212,11 @@ static void pack(syscfg_blob_t *b)
     strncpy(b->web_user, (const char *)g_web_user, sizeof b->web_user - 1);
     strncpy(b->web_pass, (const char *)g_web_pass, sizeof b->web_pass - 1);
     b->layout_classic = screen_main_layout_is_classic() ? 1u : 0u;
+    b->enc_div        = encoder_div();
+    b->mirror_en      = datalog_mirror_enabled() ? 1u : 0u;
+    b->allan_dens     = (uint8_t)screen_main_allan_density();
+    b->mirror_seq     = datalog_mirror_seq();
+    b->mirror_vsn     = datalog_mirror_vsn();
 }
 
 void syscfg_load(void)
@@ -192,16 +247,37 @@ void syscfg_load(void)
     g_fx_enabled = (uint16_t)(b.fx_en & FX_ALL);
 
     /* Math/limity: taky NENI v BKP -> aplikuj VZDY (jako fx). Preset indexy (M,
-     * pasmo) v UI se dopocitaji z g_meas_cfg pri otevreni okna (math_sync_idx). */
-    g_meas_cfg.math_en  = b.meas_math_en ? 1 : 0;
-    g_meas_cfg.null_en  = b.meas_null_en ? 1 : 0;
-    g_meas_cfg.limit_en = b.meas_limit_en ? 1 : 0;
-    g_meas_cfg.alarm_en = b.meas_alarm_en ? 1 : 0;
-    g_meas_cfg.m        = (b.meas_m != 0.0) ? b.meas_m : 1.0;   /* 0 by byl mrtvy scale */
-    g_meas_cfg.b        = b.meas_b;
-    g_meas_cfg.null_ref = b.meas_null_ref;
-    g_meas_cfg.lo       = b.meas_lo;
-    g_meas_cfg.hi       = b.meas_hi;
+     * pasmo) v UI se dopocitaji z g_meas_cfg pri otevreni okna (math_sync_idx).
+     * 🔴 F-0197: commitovat ATOMICKY, ne pole po poli — `g_meas_cfg` cte
+     * `alarm_tick()` z defaultTasku (vyssi priorita nez UiTask, kde tahle
+     * funkce bezi) a primy zapis by mohl preemtovanym ctenim videt roztrzenou
+     * kombinaci poli. Stejny vzor jako `scpi.c`/`ipc.c`/okno MATH/`setup_load()`
+     * (F-0052, F-0096, L-0018).
+     * 🔴 F-0199: `c` se MUSI nejdriv NACIST z `g_meas_cfg` (jako u vsech tri
+     * sesterskych mist) — bez toho zustanou vyplnove bajty struktury (mezery
+     * pred `double` poli, zarovnani 8 B) neurcite (obsah zasobniku UiTasku)
+     * a `g_meas_cfg = c;` je pak zapise do globalu. Dnes bez pozorovatelneho
+     * dopadu (jediny `memcmp` nad `g_meas_cfg`, `ipc.c:630-636`, porovnava
+     * dve kopie ze stejneho zdroje ve stejnem okamziku), ale je to deviace
+     * od vlastniho citovaneho vzoru — priste by na tom mohl zavislet kod,
+     * ktery `g_meas_cfg` porovnava/kopiruje jako syrove bajty. */
+    {
+        meas_cfg_t c;
+        taskENTER_CRITICAL(); c = g_meas_cfg; taskEXIT_CRITICAL();
+        c.math_en  = b.meas_math_en ? 1 : 0;
+        c.null_en  = b.meas_null_en ? 1 : 0;
+        c.limit_en = b.meas_limit_en ? 1 : 0;
+        c.alarm_en = b.meas_alarm_en ? 1 : 0;
+        c.m        = (b.meas_m != 0.0) ? b.meas_m : 1.0;   /* 0 by byl mrtvy scale */
+        c.b        = b.meas_b;
+        c.null_ref = b.meas_null_ref;
+        c.lo       = b.meas_lo;
+        c.hi       = b.meas_hi;
+        if (c.lo > c.hi) {   /* invertovane pasmo (stary/poskozeny blob) -> prohodit (F-0096) */
+            double t = c.lo; c.lo = c.hi; c.hi = t;
+        }
+        taskENTER_CRITICAL(); g_meas_cfg = c; taskEXIT_CRITICAL();
+    }
     /* Self-survey poloha: NENI v BKP -> aplikuj VZDY (jako fx/meas). */
     g_survey_valid  = b.survey_valid ? 1 : 0;
     g_survey_n      = b.survey_n;
@@ -241,12 +317,39 @@ void syscfg_load(void)
      * ⚠️ `syscfg_load` bezi v `app_gpsdo_init` PRED prvnim renderem, takze se
      * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
+    screen_main_set_allan_density(b.allan_dens);   /* mimo 0..2 -> 0 (vychozi) */
+    encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;
     g_net_ip        = b.net_ip;
     g_net_mask      = b.net_mask;
     g_net_gw        = b.net_gw;
     datalog_sd_det_force(b.sd_det_force ? 1 : 0);
+
+    /* Datalog (zap/vyp, uloziste, perioda): NENI v BKP -> flash je jediny zdroj,
+     * takze se aplikuje VZDY (jako fx/meas/survey/monitor/layout).
+     * 🔴 Do 2026-09-17 tyhle tri radky lezely POD `return` nize, tedy ve skupine
+     * poli, ktera drzi BKP — jenze zadne z nich v BKP neni (DR1/DR2/DR6 nesou jen
+     * jas, mute, auto-dim, schema, jazyk, zonu, animace a `g_ui_cfg`; viz
+     * `rtc.c` USER CODE Check_RTC_BKUP). Po KAZDEM teplem resetu — tedy po
+     * reflashi, po Menu->Restart i po watchdogu — se proto nastaveni tise vracelo
+     * na vychozi ON / AUTO / 10 s. Pres power-cyklus to fungovalo, takze to
+     * vypadalo jako nahoda. Audit F-0089.
+     * ⚠️ Poradi: perioda PRED ulozistem — `datalog_set_store` dela re-init,
+     * ktery si periodu cte pri planovani prvniho vzorku.
+     * ⚠️ `datalog_cfg_quiet` MUSI obalit obe volani: bez nej by kazdy reset zapsal
+     * do trvale historie falesnou „zmenu nastaveni uzivatelem" (F-0093) — a po
+     * tomhle presunu uz ne jen pri studenem startu, ale pokazde. */
+    datalog_cfg_quiet(true);
+    datalog_set_enabled(b.datalog_en != 0);
+    if (b.datalog_period_s) datalog_set_period_s(b.datalog_period_s);
+    datalog_set_store(b.datalog_store);
+    datalog_cfg_quiet(false);
+
+    /* Zrcadlo na SD: NENI v BKP -> aplikuj VZDY (jako datalog vyse). Jen
+     * obnovi stav (vodotisk + identita karty) — samotne otevreni/dopsani
+     * souboru dela az `datalog_mirror_service()` z UartTasku. */
+    datalog_mirror_restore(b.mirror_en != 0, b.mirror_seq, b.mirror_vsn);
 
     /* Ostatni pole: pri WARM resetu ma prednost BKP (uz drzi nejnovejsi) -> nechat. */
     if (g_syscfg_bkp_valid) return;
@@ -260,8 +363,8 @@ void syscfg_load(void)
     g_lang_en     = b.lang_en ? 1 : 0;
     g_tz_offset_h = (b.tz_offset_h < -12) ? -12 : (b.tz_offset_h > 14 ? 14 : b.tz_offset_h);
     g_tz_auto     = b.tz_auto ? 1 : 0;
-    g_ui_cfg      = b.ui_cfg;
-    datalog_set_enabled(b.datalog_en != 0);
+    g_ui_cfg      = ipc_uicfg_norm(b.ui_cfg);
+    /* ⚠️ Datalog uz je obnoveny VYSE (nad `return`) — v BKP neni, viz F-0089. */
     g_anim_enabled = b.anim_en ? 1 : 0;
 }
 
@@ -278,9 +381,59 @@ bool syscfg_save(void)
     return ok;
 }
 
+int syscfg_store_ready(void) { return s_store.ready ? 1 : 0; }
+
+static uint32_t s_store_retries;
+uint32_t syscfg_store_retries(void) { return s_store_retries; }
+
+/* Nejvys tolik pokusu a nejmene takhle daleko od sebe — stejne zduvodneni jako
+ * u `errlog_tick` (F-0098): `w25q_init()` resetuje cip a `w25q_store_init` skenuje
+ * sektory, takze v defaultTasku (krmi watchdog) se to nesmi opakovat bez stropu. */
+#define SYSCFG_RETRY_MAX  5u
+#define SYSCFG_RETRY_MS   10000u
+
+/* 🔑 JEDINY zdroj faktu o pripravenosti uloziste. Oba konzumenty (UART `status`,
+ * displej) ho pouzivaji pres tuhle funkci nebo pres `syscfg_storage_text` — nikdo
+ * si tu petici necte sam. Tim se nemuze zopakovat F-0100 (treti konzument, ktery
+ * si vyklada tytez udaje po svem). */
+int syscfg_storage_ready_count(void)
+{
+    return syscfg_store_ready() + calib_store_ready() + setup_store_ready()
+         + flightrec_ready()    + errlog_ready();
+}
+
+int syscfg_storage_text(char *buf, size_t n)
+{
+    snprintf(buf, n, "syscfg %s | calib %s | sestavy %s | flightrec %s | errlog %s",
+             syscfg_store_ready() ? "OK" : "--", calib_store_ready() ? "OK" : "--",
+             setup_store_ready()  ? "OK" : "--", flightrec_ready()   ? "OK" : "--",
+             errlog_ready()       ? "OK" : "--");
+    return syscfg_storage_ready_count();
+}
+
 void syscfg_flash_tick(void)
 {
-    if (!s_store.ready) return;
+    /* 🔴 ZACHRANA NEPOVEDENEHO INITU (audit F-0098). `syscfg_load()` pri bootu
+     * odchazi na `osMutexAcquire(...) != osOK`, takze jedna nestastna sekunda
+     * znamenala, ze se nastaveni uz NIKDY neulozi — `syscfg_save()` vraci false
+     * navzdy a uzivatel to pozna teprve tim, ze se mu po restartu ztratilo
+     * nastaveni. Bez retry, bez pocitadla, bez radku v `status`.
+     * ⚠️ Znovu se pripravuje POUZE ULOZISTE, blob se ZNOVU NECTE — v RAM uz muze
+     * byt novejsi nastaveni od uzivatele a precteni stare verze by ho pretlacilo.
+     * `w25q_store_init` jen naskenuje sektory a nastavi `ready`/`seq`; payload
+     * nikam nekopiruje, takze je to presne to, co je potreba. */
+    if (!s_store.ready) {
+        static uint32_t s_last_try;
+        if (s_store_retries >= SYSCFG_RETRY_MAX) return;
+        uint32_t now = HAL_GetTick();
+        if (s_last_try != 0u && (now - s_last_try) < SYSCFG_RETRY_MS) return;
+        s_last_try = now ? now : 1u;
+        s_store_retries++;
+        if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_SAVE_MS) != osOK) return;
+        if (w25q_init()) (void)w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS);
+        osMutexRelease(qspiMutexHandle);
+        return;
+    }
 
     static syscfg_blob_t snap;
     static uint8_t  have_snap = 0;

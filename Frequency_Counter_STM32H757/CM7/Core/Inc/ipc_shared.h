@@ -27,10 +27,29 @@
  * Migrace: krok M4 zebriku (STATUS.md) je timto splneny.
  */
 #include <stdint.h>
+#include <stddef.h>   /* offsetof — hlida, ze recyklovana vycpavka nezvetsila strukturu */
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
-#define IPC_VERSION  12u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+/* ── g_ui_cfg / `ipc_snapshot_t.ui_cfg` — FORMAT v2 (2026-10-09) ──────────────
+ * bit0 mode (0 FREKVENCE / 1 PERIODA), bit1 KANAL (0 = A / 1 = B), bity3:2 + bit5 = INDEX BRANY
+ * 0..4 (bit5 je bit 2 indexu), bit4 RUN, bit7 = priznak formatu v2. Index -> sekundy: 0 = 0,05 s,
+ * 1 = 0,1 s, 2 = 0,25 s (VYCHOZI), 3 = 0,5 s, 4 = 1 s (`scpi_gate_s`). Format v1 (4 presety
+ * 0,1/1/10/100 s, bez bitu 7) se pri nacteni z BKP/flash prevede `ipc_uicfg_norm`: ponecha mode a RUN,
+ * kanal vrati na A a hradlo na vychozi (stary index by znamenal jinou delku).
+ * IPC_VERSION 21: stejny layout, ale JINY VYZNAM bajtu `ui_cfg` -> CM4 musi byt ze stejne verze. */
+#define IPC_UICFG_V2             0x80u
+#define IPC_GATE_N               5u
+#define IPC_GATE_DEFAULT         2u
+#define IPC_UICFG_GATE(c)        ((uint8_t)((((c) >> 2) & 3u) | (((c) >> 3) & 4u)))
+#define IPC_UICFG_SET_GATE(c, g) ((uint8_t)(((c) & ~0x2Cu) | (((g) & 3u) << 2) | ((((g) >> 2) & 1u) << 5)))
+static inline uint8_t ipc_uicfg_norm(uint8_t c)
+{
+    return (c & IPC_UICFG_V2) ? c
+         : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
+}
+
+#define IPC_VERSION  21u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -57,7 +76,62 @@
                                        ⚠️⚠️ v12 MENI LAYOUT PRED `cm4` blokem (snapshot roste o alarmy+
                                        druzice) -> gracefull detekce nesouladu bank (cm4_ipc_version na
                                        znamem offsetu) TADY NEFUNGUJE. MUSI se preflashnout OBE banky;
-                                       jinak si jadra prestanou rozumet uz v adrese cm4 bloku. */
+                                       jinak si jadra prestanou rozumet uz v adrese cm4 bloku.
+                                       v13 (2026-08-26): `IPC_F_SIM` (jen bit ve `flags` — snapshot NEroste,
+                                       emulovana data uz nejdou zamenit za mereni na webu/SCPI) + min/max
+                                       OBALKA kmitoctu v `ipc_log_rec_t` a davkovane cteni datalogu
+                                       (`req_env`/`resp_scanned`/`resp_full_env`).
+                                       ⚠️ Roste jen `log`, ktery je AZ ZA `cm4` blokem -> detekce nesouladu
+                                       bank u v13 FUNGUJE (na rozdil od v12). Flashnout stejne obe banky.
+                                       v15 (2026-09-12, audit F-0088): `warmup` (byval prvni bajt `_pad_h`
+                                       -> velikost struktury BEZE ZMENY, bumpnuto kvuli detekci nesouladu
+                                       bank, stejne jako v8/v9/v11). Web dosud odvozoval warm-up jen
+                                       z `uptime_s < 300`, kdezto pristroj k tomu vyzaduje i ustalenou
+                                       teplotu (`warmup_ready`: |dT/dt| < 0,08 °C/min) -> po studenem
+                                       startu hlasil displej WARMUP a web uz LOCK. Kriterium je nove
+                                       na JEDNOM miste a do snapshotu jde hotovy vysledek.
+                                       v16 (2026-09-13): `cm4_flash_bytes`/`cm4_ram_bytes` — velikost
+                                       OBRAZU CM4 z jeho vlastnich linker symbolu, razitkovano v kazdem
+                                       heartbeatu (stejny duvod jako `cm4_ipc_version`: memset v ipc_init()
+                                       by jednorazovy zapis smazal). Pro okno PAMET na CM7, ktere do ted
+                                       ukazovalo jen CM7 - uzivatel se ptal, proc chybi CM4. SKUTECNY
+                                       rust snapshotu o 8 B (novy blok na konci ipc_cm4_status_t, ne
+                                       recyklovany padding), takze OBE banky se MUSI preflashnout.
+                                       v17 (2026-09-13): novy kanal `errlog` — trvaly zaznamnik chyb
+                                       (W25Q, viz errlog.h) na vyzadani pro web, stejny handshake jako
+                                       `log` (req_gen/resp_gen). Okno CHYBY na displeji bylo do ted
+                                       jedinou cestou, jak historii chyb videt; uzivatel se zeptal, jestli
+                                       to jde i na webu. ⚠️ `errlog` je AZ ZA `log`, tedy na konci cele
+                                       struktury -> detekce nesouladu bank (cm4_ipc_version) funguje
+                                       stejne jako u v13. Flashnout obe banky.
+                                       v18 (2026-09-19, audit F-0138): `eth_tx_ok`/`eth_tx_err` — pocitadla
+                                       vyslani na CM4, ktera do ted NIKDO NECETL (byla citelna jen sondou,
+                                       a ta za behu zabiji I2C4 do power-cyklu). Odlisi „nevysilame vubec"
+                                       od „vysilame, ale nic se nevraci" — presne tu otazku, ktera stala za
+                                       nejdelsim ladenim v projektu (TX adresa, 2026-09-08).
+                                       ⚠️ VELIKOST STRUKTURY SE NEZMENILA: obe pole leží v byvalem
+                                       `cm4_fault_rsvd[3]` (offsety 45..47 uvnitr `ipc_cm4_status_t`).
+                                       Zmereno pred i po: sizeof(ipc_shared_t) = 11744 B,
+                                       sizeof(ipc_cm4_status_t) = 56 B, offsetof(cm4_flash_bytes) = 48.
+                                       Hlida to `_Static_assert` u te struktury, ne jen tento komentar.
+                                       ⚠️ Bumpnuto PRESTO, stejne jako v8/v9/v11/v15 — recyklace vycpavky
+                                       sice nemuze rozhodit adresy, ale bump je jediny zpusob, jak udelat
+                                       nesoulad bank VIDITELNYM. Flashnout obe banky.
+                                       v19 (2026-09-27, audit F-0180): `freq4_hz` — PRESNY kmitocet /4 [Hz]
+                                       v double z dvojice hrany/hradlo (`fpga_freq_hires_hz`). Web a TCP
+                                       SCPI dostavaly jen `freq4_x100000` (krok 10 µHz = 1e-8 relativne
+                                       pri 1 kHz, vic nez podlaha citace), zatimco displej pocita z plne
+                                       presnosti -> web a displej ukazovaly pro tatáz data ruzna σy.
+                                       ⚠️ VELIKOST ANI OFFSETY SE NEZMENILY: double lezi presne v byvalych
+                                       `offset`+`drift` (2× float na offsetu 144, zarovnanem na 8), ktere
+                                       nikdo nepsal ani necetl. Zmereno pred i po: sizeof(ipc_snapshot_t)
+                                       = 480 B, sizeof(ipc_shared_t) = 11744 B, gps_lat_e7 na 152.
+                                       Hlida `_Static_assert` pod `ipc_snapshot_t`. Bumpnuto kvuli
+                                       detekci nesouladu bank. Flashnout obe banky.
+                                       v20 (2026-10-06): blok `stab` na KONCI struktury -- statistika
+                                       stability (ADEV/MDEV/HDEV) Z FIRMWAROVE pyramidy pro web
+                                       (`GET /api/stab`), aby web a displej ukazovaly TYTEZ hodnoty.
+                                       Layout pred `cm4` beze zmeny (detekce nesouladu funguje). */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -86,6 +160,11 @@
 
 #define IPC_ADEV_PTS 12            /* ADEV bodu ve snapshotu (tau pyramida) */
 #define IPC_RING_N   16            /* slotu v cmd/resp ringu — MUSI byt mocnina 2 */
+/* Vynuceno prekladacem, ne komentarem (audit F-0015): indexace ringu je
+ * `h & (IPC_RING_N - 1u)`, coz plati JEN pro mocninu dvou. Pri jine hodnote by
+ * se zapis a cteni rozesly a data mezi jadry by se tise michala. */
+_Static_assert((IPC_RING_N & (IPC_RING_N - 1u)) == 0u,
+               "IPC_RING_N musi byt mocnina 2 — ring se indexuje maskou");
 #define IPC_GPS_MAX_SATS 24        /* v12: druzice ve snapshotu (sky plot); == GPS_MAX_SATS (hlida _Static_assert v ipc.c) */
 #define IPC_LOG_CHUNK    96        /* v12: datalog zaznamu na jeden transfer round-trip (dlouha historie webu) */
 
@@ -117,8 +196,11 @@ typedef struct {
     /* Statistika (float — CM4 jen zobrazuje/serviruje, POCITA CM7 (double FPU)). */
     float    sigma_tau[IPC_ADEV_PTS]; /* ADEV σy(τ) body */
     float    tau_s[IPC_ADEV_PTS];     /* odpovidajici τ [s] */
-    float    offset;                  /* frakcni offset (f-f0)/f0 */
-    float    drift;                   /* drift / den */
+    /* v19 (F-0180): PRESNY kmitocet /4 [Hz] z dvojice hrany/hradlo (`fpga_freq_hires_hz`).
+     * 0.0 = nasobitel neoveren -> plati `freq4_x100000` (5 desetin). Plati se stejnym
+     * bitem `IPC_V_FREQ` a patri k temuz `seq_meas` (plni se v tetez publikaci).
+     * ⚠️ Byvaly `offset`+`drift` (2× float, nikdy neplnene) -> velikost beze zmeny. */
+    double   freq4_hz;
 
     /* GPS. */
     int32_t  gps_lat_e7;            /* stupne × 1e7 */
@@ -141,10 +223,15 @@ typedef struct {
     int16_t  t_fpga_c100;          /* FPGA deska (TMP117 0x4A — dnes NEOSAZEN -> bit v sens_valid = 0).
                                     * Do v3 pole chybelo uplne, takze `SYST:TEMP? FPGA` na CM4
                                     * nesla vubec zodpovedet — dalsi rozdil proti USB. */
-    uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0) */
-    uint16_t rf_mv;                /* RF level SYROVE mV (AD8307, AIN1) */
-    uint16_t v_12v_mv;             /* 12V vetev (AIN2, uz po gain) */
-    uint16_t v_5v_mv;              /* 5V vetev (AIN3) */
+    uint16_t ocxo_vc_mv;           /* EFC ladici napeti (AIN0, uz po gain x2,5) */
+    /* 🔴 2026-10-02: AD8307 na desce FYZICKY NENI (RF_LEVEL_HW_PRESENT, calib.h) —
+     * AIN1 je VBUS. Pole zustava kvuli stabilite ABI, nese syrove napeti VBUS
+     * (uz po gain ~x21,04), ne AD8307 mV. IPC_V_RF se NESTAVI -> konzument pozna
+     * "nedostupne" z bitu, ne z hodnoty. Nazev pole ponechan (rename = samostatny
+     * zasah do ABI napric vice soubory). */
+    uint16_t rf_mv;                /* VBUS SYROVE mV (jmeno historicke, viz vyse) */
+    uint16_t v_12v_mv;             /* 🔴 nazev historicky — AIN2 je dnes +3V3, uz po gain (viz calib.c) */
+    uint16_t v_5v_mv;              /* 5V vetev (AIN3, uz po gain) */
     uint16_t vref_mv;              /* VREF+ ~2,5 V (ADC3) */
     uint16_t vbat_mv;              /* VBAT (ADC3) */
     uint8_t  channel_id;           /* aktivni kanal FPGA */
@@ -164,7 +251,10 @@ typedef struct {
     uint32_t flags;                /* IPC_F_* */
     uint8_t  sys_level;            /* 0=OK 1=warn 2=err (agregace do SYS pilulky) */
     uint8_t  alarm_active;
-    uint16_t _pad_h;
+    uint8_t  warmup;               /* 1 = OCXO se jeste zahriva (v15). Plni APP vrstva
+                                    * pres `g_warmup` — je to `warmup_ready()`, tedy uptime
+                                    * >= 300 s A |dT/dt| < 0,08 °C/min, ne jen uptime. */
+    uint8_t  _pad_h;
     uint32_t uptime_s;
     uint32_t cm7_cpu_pct;
     uint32_t reset_cause;          /* RCC->RSR (raw) */
@@ -206,6 +296,13 @@ typedef struct {
     uint8_t  _pad_sk[3];
     ipc_sat_t gps_sats[IPC_GPS_MAX_SATS];
 } ipc_snapshot_t;
+/* v19: `freq4_hz` musel sednout PRESNE na byvale `offset`+`drift` — kdyby se double
+   posunul (zarovnani), posunulo by se vse za nim a nesoulad bank by prestal byt
+   detekovatelny (layout pred `cm4` blokem, viz v12). */
+_Static_assert(offsetof(ipc_snapshot_t, freq4_hz) == 144u,
+               "freq4_hz se posunul -- recyklace offset+drift nesedi");
+_Static_assert(offsetof(ipc_snapshot_t, gps_lat_e7) == 152u && sizeof(ipc_snapshot_t) == 480u,
+               "snapshot zmenil layout -- to vyzaduje vedome rozhodnuti (viz v12), ne vedlejsi efekt");
 
 /* ── v12 #6: datalog transfer kanal (CM7 W25Q -> web) ───────────────────────
  * Zvlast od snapshotu (seqlock), protoze prenos je NA VYZADANI a bulk.
@@ -215,11 +312,16 @@ typedef struct {
  * ⚠️ Datalog cte JEN CM7 (W25Q je na CM7); CM4 na nej nema pristup -> tudy. */
 typedef struct {
     uint32_t t_unix;               /* UTC [s]; 0 = RTC nesynchronizovano */
-    uint64_t freq_x100000;         /* kmitocet × 1e5 (zvoleny zdroj) */
+    uint64_t freq_x100000;         /* kmitocet × 1e5 (zvoleny zdroj) — reprezentant bucketu */
+    /* v13: MIN/MAX kmitoctu v ramci bucketu (obalka). Prosta decimace („ber kazdy
+     * N-ty zaznam") vykyv MEZI vzorky NEUKAZE — u okna 24 h pripada na jeden bod
+     * ~30 min, takze by se ztratilo skoro vse. 0 = nedostupne (obalka nevyzadana). */
+    uint64_t freq_min_x100000, freq_max_x100000;
     int16_t  t_ocxo_c100;          /* OCXO [0,01 °C]; DATALOG_INVALID16 = neplatne */
     int16_t  t_board_c100;         /* STM deska [0,01 °C] */
     uint16_t ocxo_vc_mv;           /* ladici napeti [mV] */
-    uint16_t rf_mv;                /* RF SYROVE mV (dBm dopocita CM4 pres kalibraci) */
+    uint16_t rf_mv;                /* VBUS SYROVE mV (jmeno historicke — AD8307 na
+                                       desce neni, viz RF_LEVEL_HW_PRESENT v calib.h) */
     uint16_t vbat_mv;              /* VBAT [mV]; 0 = nezaznamenano */
     uint8_t  flags;                /* DATALOG_F_* */
     uint8_t  sats;                 /* pocet druzic */
@@ -227,16 +329,63 @@ typedef struct {
     uint8_t  _pad;
 } ipc_log_rec_t;
 
+/* ⚠️ Strop CTENI na JEDEN pozadavek (v13). Poctiva obalka by musela precist VSECHNY
+ * zaznamy v okne (24 h = 8640, 7 dni = 60 480, 30 dni = 259 200); pri ~128 ctenich
+ * na tik defaultTasku (100 Hz) by 30 dni trvalo pres 20 s. Nad timto stropem se
+ * proto bucket VZORKUJE (min/max z casti zaznamu) a odpoved to PRIZNA pres
+ * `resp_full_env` — obalka z podvzorku se nesmi vydavat za uplnou. */
+#define IPC_LOG_SCAN_MAX    20000u   /* max. prectenych zaznamu na pozadavek (~1,6 s) */
+#define IPC_LOG_SCAN_BUDGET   128u   /* max. cteni na JEDNO volani service (~5 ms, viz "zadny spin >10 ms") */
+
 typedef struct {
     volatile uint32_t req_gen;     /* CM4 zvedne pri NOVEM pozadavku (0 = zadny) */
     uint32_t req_from;             /* index nejnovejsiho zaznamu (0 = posledni zapsany) */
     uint16_t req_count;            /* kolik zaznamu (<= IPC_LOG_CHUNK) */
     uint16_t req_step;             /* decimace: ber kazdy `req_step`-ty (>=1) */
+    uint8_t  req_env;              /* v13: 1 = spocitej min/max obalku kmitoctu v bucketu */
+    uint8_t  _pad_rq[3];
     volatile uint32_t resp_gen;    /* CM7 nastavi = req_gen po naplneni `rec[]` */
     uint16_t resp_count;           /* kolik zaznamu SKUTECNE nacteno */
     uint16_t resp_total;           /* kolik zaznamu v logu vubec je (pro UI rozsah) */
+    uint32_t resp_scanned;         /* v13: kolik zaznamu se pro obalku opravdu precetlo */
+    uint8_t  resp_full_env;        /* v13: 1 = obalka z KAZDEHO zaznamu, 0 = z podvzorku */
+    uint8_t  _pad_rs[3];
     ipc_log_rec_t rec[IPC_LOG_CHUNK];
 } ipc_datalog_xfer_t;
+
+/* ── v17: trvaly zaznamnik chyb (CM7 W25Q ERRLOG region -> web) ─────────────
+ * Stejny handshake jako `ipc_datalog_xfer_t` (req_gen/resp_gen), ale JEDNODUSSI:
+ * errlog nema decimaci ani obalku — jde jen o strankovani `errlog_read_batch`.
+ * `text` je uz HOTOVA veta z `errlog_fmt_detail()` (viz errlog.h) — CM4/web
+ * NEZNA vyznam `a`/`b`/`sub` pro jednotlive druhy udalosti, jen ho zobrazi;
+ * jinak by musel duplikovat tutez znalost jako displej (a casem se rozejit). */
+#define IPC_ERRLOG_TAG_LEN    6u    /* == ERRLOG_TAG_LEN (errlog.h), hlida _Static_assert v ipc.c */
+#define IPC_ERRLOG_DETAIL_LEN 72u   /* == ERRLOG_DETAIL_LEN (errlog.h), hlida _Static_assert v ipc.c */
+#define IPC_ERRLOG_CHUNK      64u   /* zaznamu na jeden transfer round-trip */
+
+typedef struct {
+    uint32_t seq;
+    uint32_t t_unix;               /* UTC [s]; 0 = RTC nesynchronizovano */
+    uint32_t uptime_s;              /* uptime v okamziku udalosti */
+    uint16_t repeat;                /* kolikrat se to od minuleho zapisu opakovalo */
+    uint8_t  kind;                  /* ERRLOG_K_* (errlog.h) — web si k nemu domysli barvu */
+    uint8_t  _pad;
+    char     tag[IPC_ERRLOG_TAG_LEN];
+    char     text[IPC_ERRLOG_DETAIL_LEN];  /* hotova veta z errlog_fmt_detail(), 0-terminovano */
+} ipc_errlog_rec_t;
+
+typedef struct {
+    volatile uint32_t req_gen;     /* CM4 zvedne pri NOVEM pozadavku (0 = zadny) */
+    uint32_t req_from;             /* index nejnovejsiho zaznamu (0 = posledni zapsany) */
+    uint16_t req_count;            /* kolik zaznamu (<= IPC_ERRLOG_CHUNK) */
+    uint8_t  _pad_rq[2];
+    volatile uint32_t resp_gen;    /* CM7 nastavi = req_gen po naplneni `rec[]` */
+    uint16_t resp_count;           /* kolik zaznamu SKUTECNE nacteno */
+    uint16_t resp_total;           /* kolik zaznamu v logu vubec je (pro strankovani) */
+    uint16_t resp_dropped;         /* errlog_dropped() — ring zahodil (byl plny) */
+    uint8_t  _pad_rs[2];
+    ipc_errlog_rec_t rec[IPC_ERRLOG_CHUNK];
+} ipc_errlog_xfer_t;
 
 /* ── Prikaz CM4 -> CM7 + odpoved CM7 -> CM4. */
 typedef struct {
@@ -293,7 +442,99 @@ typedef struct {
      * stejny idiom jako `scpi_selftest_ok` (byval posledni volny `_eth_rsvd` bajt).
      * 0 = jeste nedobehl, 1 = PASS, 2 = FAIL. */
     uint8_t  httpd_selftest_ok;
+
+    /* ── Crash black-box CM4 (v14, 2026-09-08) ─────────────────────────────
+     * 🔴 PROC: `HardFault_Handler` na CM4 byl holy `while(1)` (2 B v obrazu)
+     * a IWDG2 je ZAMERNE vypnuty, protoze jeho reset scope je system-wide.
+     * CM4 tedy po faultu visel do power-cyklu a duvod se ztratil UPLNE —
+     * CM7 videl jen `stall:CM4`. Na BKP registry CM4 nedosahne (nema povolene
+     * hodiny RTC), takze jedina cesta ven je sdilena pamet.
+     * ⚠️ Zapisuje se z FAULT KONTEXTU: zadny HAL, zadne zamky, jen primy zapis
+     * do SRAM4 + `__DMB()`. Seqlock se zamerne nepouziva — v tu chvili uz na
+     * konzistenci s heartbeatem nezalezi a zamrznuty seqlock by byl horsi.
+     * ⚠️ `ipc_init()` na CM7 dela memset CELE struktury vcetne tohoto bloku
+     * (viz varovani u `ipc_cm4_heartbeat`), takze fault DRIV nez CM7 dobehne
+     * init by se ztratil. Prakticky nevadi: init je hotovy do par sekund. */
+    uint32_t cm4_fault_pc;      /* stacknute PC = kde to spadlo (addr2line) */
+    uint32_t cm4_fault_lr;      /* stacknute LR = odkud se skocilo */
+    uint32_t cm4_fault_cfsr;    /* SCB->CFSR */
+    uint8_t  cm4_fault_kind;    /* 0 = zadny, 1 = HardFault, 2 = Error_Handler */
+
+    /* ── Pocitadla vyslani ETH (v18, 2026-09-19, audit F-0138) ────────────
+     * 🔴 PROC: `g_eth_tx_ok`/`g_eth_tx_err` v `ethernetif.c` se inkrementovaly,
+     * ale NIKDO je necetl — byly dosazitelne jen ladici sondou, a ta za behu
+     * zabiji I2C4 do power-cyklu. Odlisit „nevysilame vubec" od „vysilame, ale
+     * nic se nevraci" pritom byla ta nejdrazsi otazka celeho ladeni TX adresy
+     * (2026-09-08), kde `NET: UP` i `ETH(CM4): init OK` tvrdily, ze je vse dobre.
+     *
+     * ⚠️ OBE POLE SE VESLA DO BYVALE VYCPAVKY `cm4_fault_rsvd[3]` (offsety 45..47),
+     * takze struktura NEROSTE — hlida to `_Static_assert` pod definici.
+     *
+     * ⚠️ SATURUJI, nepretacaji se. Volne bezici citac by po pretoceni ukazal 0,
+     * coz je presne ta hodnota, ktera znamena „nevyslal jsem nic" — tedy nejhorsi
+     * mozna zamena. Saturace znamena „aspon tolik" a nulu drzi vyhradne pro
+     * „nikdy". Publikuje se OPAKOVANE ze smycky CM4 (`ipc_cm4_set_eth_tx`), ne
+     * jednorazove — jinak by to smazal `memset` v `ipc_init()` na CM7.
+     *
+     * ⚠️ Cteni na CM7: 0/0 znamena bud „CM4 nehlasi" (starsi obraz), nebo
+     * „jeste nic neposlala". Rozlisi to `cm4_ipc_version`. */
+    uint8_t  eth_tx_err;        /* zahozene TX pakety, saturuje na 255; 0 = zadny */
+    uint16_t eth_tx_ok;         /* uspesne TX pakety, saturuje na 65535; 0 = zadny/nehlasi */
+
+    /* ── Velikost obrazu CM4 (v16, 2026-09-13) ────────────────────────────
+     * Z VLASTNICH linker symbolu CM4 (`_sidata`/`_edata`/`_sdata`/`_ebss`/
+     * `_sbss`), stejny vzorec jako uz CM7 pouziva ve svem okne PAMET
+     * (`app_gpsdo.c`). Konstantni po celou dobu behu (staticka velikost
+     * obrazu), ale razitkuje se OPAKOVANE v kazdem heartbeatu — stejny
+     * duvod jako `cm4_ipc_version`: `memset` v `ipc_init()` na CM7 by
+     * jednorazovy zapis smazal. */
+    uint32_t cm4_flash_bytes;  /* velikost obrazu ve FLASH bank2 (max 1024 KB) */
+    uint32_t cm4_ram_bytes;    /* .data+.bss v RAM (SRAM2, max 128 KB) */
 } ipc_cm4_status_t;
+
+/* 🔴 Dukaz, ze v18 (`eth_tx_err`/`eth_tx_ok`) recyklovalo VYCPAVKU a strukturu
+ * nezvetsilo: `cm4_fault_kind` + ta dve pole musi presne vyplnit 4 B, po kterych
+ * zacina `cm4_flash_bytes`. Kdyby kdokoli pridal dalsi pole nebo zmenil jejich
+ * typ, offset se posune a preklad SKONCI — misto aby snapshot tise narostl a
+ * nesoulad bank se projevil az jako podivne chovani webu.
+ * ⚠️ Zamerne se NEasertuje `sizeof(ipc_shared_t)` jako celek: ta smi legitimne
+ * rust (v13, v16, v17 rostly). Invariant je lokalni — „tohle jsou recyklovane
+ * bajty", ne „struktura nikdy neporoste". */
+_Static_assert(offsetof(ipc_cm4_status_t, cm4_flash_bytes)
+               == offsetof(ipc_cm4_status_t, cm4_fault_kind) + 4u,
+               "v18: eth_tx_err/eth_tx_ok maji byt UVNITR byvale vycpavky cm4_fault_rsvd[3] "
+               "-- posunuty offset znamena, ze snapshot nabehl navic, coz vyzaduje bump IPC_VERSION");
+
+/* ── v20 (2026-10-06): statistika stability Z FIRMWARU pro web ─────────────
+ * Do v19 si SPA pocitala ADEV/MDEV z VLASTNI rady mereni (surova okna 0,25 s,
+ * vcetne oken, ktera firmware vyradi jako artefakt TDC nebo chybne napocitana)
+ * -> web a displej ukazovaly dve ruzne krivky pro tentyz pristroj. Ted publikuje
+ * UiTask (vlastnik pyramidy) body na mrizce 1..9 x 10^s (nejhustsi; web si
+ * vybere 1-2-5 / 1-2-3-5-7 sam) ~1x/s, CM4 je jen servira.
+ * Zapis: VYHRADNE CM7 UiTask, seqlock `seq` (liche = zapis). Cteni: CM4 s retry. */
+#define IPC_STAB_PTS 60
+typedef struct {
+    float    tau;                  /* skutecne τ [s] (vc. prepoctu τ0) */
+    float    adev, mdev, hdev;     /* 0 = v bode nespocteno */
+    uint16_t nterm;                /* pocet prumeru stage (pro EDF / "paru") */
+    uint8_t  m;                    /* mantisa 1..9 (τ = m·10^s·τ0) */
+    uint8_t  _pad;
+} ipc_stab_pt_t;
+_Static_assert(sizeof(ipc_stab_pt_t) == 20, "ipc_stab_pt_t layout");
+
+typedef struct {
+    volatile uint32_t seq;         /* seqlock: liche = rozepsano */
+    uint32_t gen;                  /* roste s kazdou publikaci (web pozna novou verzi) */
+    uint16_t np;                   /* platnych bodu v pt[] */
+    uint8_t  real;                 /* 1 = realne/emulovane mereni, 0 = SIM fallback */
+    uint8_t  _pad;
+    uint32_t nsamp;                /* vzorku od posledniho nulovani statistiky */
+    float    tau0;                 /* prumerne τ0 vzorku [s] */
+    float    sy1;                  /* σy@1 s (= g_adev_1s, tytez data jako displej) */
+    float    drift;                /* df/dt [1/s] (karta Drift na displeji) */
+    float    offset;               /* prumerna frakcni odchylka (karta Offset) */
+    ipc_stab_pt_t pt[IPC_STAB_PTS];
+} ipc_stab_t;
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
@@ -302,6 +543,8 @@ typedef struct {
     ipc_resp_ring_t  resp;         /* CM7 -> CM4 */
     ipc_cm4_status_t cm4;          /* CM4 -> CM7 */
     ipc_datalog_xfer_t log;        /* CM4 <-> CM7 (v12, bulk historie na vyzadani) */
+    ipc_errlog_xfer_t errlog;      /* CM4 <-> CM7 (v17, trvaly zaznamnik chyb na vyzadani) */
+    ipc_stab_t       stab;         /* CM7 -> CM4 (v20, statistika stability z firmwaru) */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -318,6 +561,11 @@ _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4
 #define IPC_F_SI5356_LOS   (1u << 5)   /* ztrata 10 MHz reference (bit3 reg218) */
 #define IPC_F_DATALOG_ON   (1u << 6)
 #define IPC_F_RUNNING      (1u << 7)   /* mereni bezi (RUN) */
+/* ⚠️ Kmitocet pochazi z EMULATORU ramcu (`fpgasim`), ne z FPGA. Bez tohoto bitu
+ * servirovaly web i SCPI pres TCP/HTTP emulovana data jako mereni — displej,
+ * UART `status` i datalog (`DATALOG_F_SIM`) je pritom oznacuji. Volny bit ve
+ * `flags`, takze snapshot NEroste a `IPC_VERSION` se kvuli nemu nezvedá. */
+#define IPC_F_SIM          (1u << 8)   /* data z emulatoru fpgasim (NE realne mereni) */
 
 /* ── Typy prikazu (CM4 -> CM7). */
 enum {
@@ -343,7 +591,7 @@ enum {
     /* Instrument SET (2026-08-15) — stav mereni, ne Math. ⚠️ Poradi 1:1 se `SCPI_CFG_*`.
      * Rozsireni VYCTU nemeni layout `ipc_cmd_t` (klic je uint8_t), takze `IPC_VERSION`
      * se NEZVYSUJE: stara CM4 nove klice neposila a nova CM7 jim rozumi. */
-    IPC_CFG_GATE,         /* arg = index brany 0..3 */
+    IPC_CFG_GATE,         /* arg = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
     IPC_CFG_CHAN,         /* arg = kanal 0/1 */
     IPC_CFG_RUN,          /* arg = 0 STOP / 1 RUN */
 };
@@ -410,14 +658,27 @@ extern "C" {
 #endif
 void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu, pred publikaci) */
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
+/* v20: publikuj statistiku stability (VOLA VYHRADNE UiTask -- vlastnik pyramidy). */
+void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
+                      float tau0, float sy1, float drift, float offset);
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
+void ipc_errlog_service(void); /* v17: obsluz errlog transfer (req_gen != resp_gen) -> naplni errlog.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
+/* Velikost obrazu CM4 (FLASH/RAM, v16). @return 1 = platne (CM4 zapsala magic),
+ * 0 = bez CM4 (oba vystupy vynulovany). Pro okno PAMET (CM7), viz app_gpsdo.c. */
+int ipc_cm4_mem(uint32_t *flash_bytes, uint32_t *ram_bytes);
 int  ipc_cm4_net(uint8_t *speed_mbps, uint8_t *duplex, uint32_t *ip); /* 1=link UP, ETH stav z CM4 (v5,F1) */
 /* ETH bring-up stav z CM4 (v6, F3). @return 1 = HAL_ETH_Init na CM4 proslo.
  * `phy_id` (nepovinne) = PHYID1<<16|PHYID2, 0 = neprecteno. Bez ziveho CM4 vraci 0. */
 int  ipc_cm4_eth(uint32_t *phy_id);
+/* Pocitadla vyslani ETH z CM4 (v18, audit F-0138). @return 1 = CM4 zapsala magic
+ * (hodnoty maji smysl), 0 = bez CM4 (oba vystupy vynulovany).
+ * ⚠️ `ok == 0` pri zive CM4 znamena „za celou dobu neodeslala ANI JEDEN paket" —
+ * tedy presne ten stav, ktery pri ladeni TX adresy (2026-09-08) `NET: UP` zamlcelo.
+ * ⚠️ Hodnoty SATURUJI (ok na 65535, err na 255), takze znamenaji „aspon tolik". */
+int  ipc_cm4_eth_tx(uint16_t *ok, uint8_t *err);
 /* IPC_VERSION, se kterou byl prelozen obraz CM4. 0 = CM4 nezapsala magic, nebo je to
  * starsi obraz, ktery verzi nehlasi. ⚠️ Kdyz != IPC_VERSION, CM4 IGNORUJE snapshot
  * (heartbeat ale bezi dal, takze "4:xx%" klame) -> je potreba preflashnout obe banky. */
@@ -428,7 +689,18 @@ uint8_t ipc_cm4_scpi_selftest(void);
 /* Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejny vyznam navratove hodnoty
  * jako `ipc_cm4_scpi_selftest`. */
 uint8_t ipc_cm4_httpd_selftest(void);
+
+/* Crash black-box CM4 (v14). Vraci druh (0 = zadny, 1 = HardFault,
+ * 2 = Error_Handler) a vyplni PC/LR/CFSR. ⚠️ CM4 se po faultu ZAMERNE
+ * neresetuje — `NVIC_SystemReset()` z nej shodi cely pristroj. */
+uint8_t ipc_cm4_fault(uint32_t *pc, uint32_t *lr, uint32_t *cfsr);
 int  ipc_selftest(void);    /* pure-logic: seqlock parita + ring push/pop/wrap; 1 = PASS */
+/* Vynuluje blok, ktery vlastni CM4 (audit F-0017). 🔴 Volat VYHRADNE kdyz je
+ * DOLOZENE, ze CM4 publikovat nebude — tedy po vyprseni boot gate
+ * (`g_cm4_absent`). Za normalniho behu si `cm4` nuluje CM4 sama v
+ * `ipc_cm4_init()`; kdyby na nej sahl CM7, mohl by tise smazat jednorazovy
+ * zapis (doloženo na HW 2026-08-30 u `scpi_selftest_ok`). */
+void ipc_clear_cm4_block(void);
 
 /* ── CM4 -> CM7: publikace stavu ETH linky (v5, F1). Vola CM4 (dnes natvrdo down,
  * po lwIP realne). speed_mbps=10/100/0, duplex 0=half/1=full, ip=oktety a.b.c.d. */
@@ -436,6 +708,13 @@ void ipc_cm4_set_net(uint8_t link_up, uint8_t speed_mbps, uint8_t duplex, uint32
 
 /* ── CM4 -> CM7: vysledek ETH bring-upu (v6, F3). Vola CM4 jednou po MX_ETH_Init. */
 void ipc_cm4_set_eth(uint8_t init_ok, uint32_t phy_id);
+
+/* ── CM4 -> CM7: pocitadla vyslani (v18, audit F-0138). Bere volne bezici uint32
+ * citace z `ethernetif.c` a ulozi je SATUROVANE do snapshotu.
+ * ⚠️ MUSI se volat OPAKOVANE ze smycky CM4 (jako `ipc_cm4_set_eth`), ne jednou —
+ * `ipc_init()` na CM7 dela memset cele sdilene struktury, takze jednorazovy zapis
+ * se muze tise ztratit a uz nikdy nevratit. */
+void ipc_cm4_set_eth_tx(uint32_t tx_ok, uint32_t tx_err);
 
 /* ── CM4 -> CM7: vysledek `scpi_selftest()` na CM4 (v7, W2). ok: 1=PASS, 0=FAIL. */
 void ipc_cm4_set_scpi_selftest(uint8_t ok);

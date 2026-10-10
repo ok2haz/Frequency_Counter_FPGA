@@ -2,14 +2,17 @@
  * gps.h — u-blox NEO-7M GPS na USART1 (9600 8N1), NMEA parser.
  *
  * USART1 je vyhrazen pro GPS (konzole je na USB CDC). RX bajty jdou z ISR
- * (HAL_UART_RxCpltCallback v usart.c) do GpsRxQueue; GpsTask je vybira a krmi
- * gps_feed_char(), ktery sklada NMEA vety a parsuje $xxRMC + $xxGGA.
+ * (HAL_UART_RxCpltCallback v usart.c) do GpsRxQueue; vybira je drain
+ * v defaultTasku (freertos.c, vlastni GpsTask neexistuje) a krmi
+ * gps_feed_char(), ktery sklada NMEA vety a parsuje $xxRMC/GGA/GSA/GSV.
  *
- * Bez float v printf: souradnice se drzi jako float (HW FPU), ale formatuji se
- * pres integer extrakci (newlib-nano nelinkuje %f).
+ * Bez float v printf: souradnice se drzi celociselne ve stupnich x 1e7
+ * (lat_e7/lon_e7, audit F-0070) a formatuji se pres integer extrakci
+ * (newlib-nano nelinkuje %f).
  *
- * Hotovo: NMEA parser, UI (GPS okno + header), TIMEPULSE (UBX-CFG-TP5).
- * Navazujici (viz [[gps-todo]]): RTC sync hodin, GLONASS (UBX-CFG-GNSS).
+ * STM -> GPS: UBX-CFG-TP5 (TIMEPULSE: s fixem 1PPS na FPGA PIN33, bez fixu 10 Hz;
+ * 1PPS do STM32 nevede), na vyzadani UBX-CFG-TMODE2 (SURVEY) a UBX-CFG-GNSS
+ * (UART `gps glonass`). Navazujici: viz [[gps-todo]].
  */
 #ifndef INC_GPS_H_
 #define INC_GPS_H_
@@ -45,8 +48,17 @@ typedef struct {
   uint8_t  hour, minute, second;   /* UTC cas */
   uint8_t  day, month;
   uint16_t year;        /* 4-mistny (2000+) */
-  float    lat_deg;     /* stupne, + sever / - jih */
-  float    lon_deg;     /* stupne, + vychod / - zapad */
+  /* 🔴 CELOCISELNE v 1e-7 stupne, NE float (audit F-0070). `float` ma pro
+   * hodnotu ~50 stupnu ULP 2^-18 = 3,81e-6 stupne, tedy **kvantizacni krok
+   * 0,42 m** — a self-survey (#53) z techto hodnot pocita horizontalni rozptyl,
+   * ktery ma byt meritkem konvergence. Pod tu mez se tedy nedostal, at bezel jak
+   * chtel dlouho, a vypadalo to jako vlastnost anteny.
+   * 1e-7 stupne = ~1,1 cm, tedy pod rozlisenim NMEA i pod tim, co GPS umi.
+   * ⚠️ Skutecny zisk limituje POCET DESETIN MINUT, ktere prijimac posila:
+   * `ddmm.mmmm` (4) = 1,85 m, `ddmm.mmmmm` (5) = 18,5 cm. Typ uz tedy prestal
+   * byt uzkym hrdlem, ale rozliseni zaznamu ano. */
+  int32_t  lat_e7;      /* stupne x 1e7, + sever / - jih */
+  int32_t  lon_e7;      /* stupne x 1e7, + vychod / - zapad */
   float    alt_m;       /* nadmorska vyska [m] (GGA) */
   float    speed_kn;    /* rychlost nad zemi [uzly] (RMC) */
   uint8_t  fix_mode;    /* GSA: 1 = no fix, 2 = 2D, 3 = 3D */
@@ -60,19 +72,26 @@ typedef struct {
 } gps_data_t;
 
 /* Inicializace: prepne USART1 na 9600 8N1 (regen-safe, nezavisle na .ioc),
- * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 100 kHz/10 Hz).
+ * nahodi RX v IT rezimu a posle UBX-CFG-TP5 (TIMEPULSE 1PPS s fixem / 10 Hz bez).
  * Vola se na zacatku draineru v defaultTask. */
 void gps_init(void);
 
-/* UBX-CFG-TP5: TIMEPULSE = s fixem 100 kHz (GPSDO PLL reference, disciplinovane
- * na GNSS), bez fixu 10 Hz (frekvence = lock indikator -> deska drzi VC OCXO).
- * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init; lze i samostatne. */
+/* UBX-CFG-TP5: TIMEPULSE = s fixem 1PPS (pulz 100 ms, nabezna hrana na zacatku
+ * UTC sekundy; jde na FPGA PIN33 pres GPS_CLK_Buff — do STM nevede), bez fixu
+ * 10 Hz se stridou 50 % (frekvence = indikator fixu).
+ * Vyzaduje STM PB14 (USART1 TX) -> GPS RX. Vola gps_init a gps_tick (1x/min).
+ * TX bezi v preruseni; volat jen z tasku pri bezicim scheduleru. */
 void gps_config_timepulse(void);
+
+/* Periodicka obnova TP5 (1x/min, audit F-0219) — konfigurace zije jen v RAM
+ * modulu a ACK se necte. Volat VYHRADNE z defaultTasku (vedle drainu GPS). */
+void gps_tick(void);
 
 /* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
  * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích
  * (LEA-6T/M8T…); NEO-7M příkaz nejspíš NAKne = neškodné. Firmwarové průměrování
- * polohy (app vrstva) běží nezávisle na tomto příkazu. Blokující TX (jen na tap). */
+ * polohy (app vrstva) běží nezávisle na tomto příkazu. TX v přerušení (ubx_send,
+ * audit F-0226): volat jen z tasku, vrací se hned po startu přenosu. */
 void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm);
 /* Vypne time-mód (timeMode=0). */
 void gps_survey_disable_cmd(void);
@@ -82,8 +101,9 @@ void gps_survey_disable_cmd(void);
  * ⚠️ Best-effort a NEvolá se automaticky z gps_init: reconfig GNSS nejde bez HW
  * ověřit a špatný blok by mohl vypnout GPS → spouští se JEN explicitně (UART
  * "gps glonass") na HW, kde uživatel výsledek vidí. NEO-7M příkaz může NAKnout
- * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak. */
-void gps_config_gnss(void);
+ * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak.
+ * @return true = přenos spuštěn (doručení modulu nedokazuje), false = neodesláno. */
+bool gps_config_gnss(void);
 
 /* Krmeni parseru jednim bajtem (vola GpsTask z GpsRxQueue). */
 void gps_feed_char(char c);

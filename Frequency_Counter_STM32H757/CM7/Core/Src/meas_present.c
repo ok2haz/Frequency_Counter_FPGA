@@ -40,6 +40,34 @@ double mp_period_s(double hz)
     return (hz > 0.0) ? (1.0 / hz) : 0.0;
 }
 
+double mp_period_sample_s(uint64_t edges, uint64_t dt_ps, uint32_t mul,
+                          double hz_fallback)
+{
+    /* Přímá cesta: okno `dt_ps` pikosekund obsahovalo `edges·mul` period
+     * vstupního signálu, takže perioda = doba / počet. Žádný mezikrok přes
+     * kmitočet -> žádná ztráta na zaokrouhlení (viz meas_present.h).
+     * 🔴 F-0186: `dt_ps` z PŘESNÝCH ticků, ne `gate_time_ns` (floor). */
+    if (mul != 0u && edges != 0u && dt_ps != 0u) {
+        double n = (double)edges * (double)mul;
+        if (n > 0.0) return ((double)dt_ps * 1e-12) / n;
+    }
+    return mp_period_s(hz_fallback);
+}
+
+const char *mp_time_unit(double sec, double *scale)
+{
+    double a = fabs(sec), s;
+    const char *u;
+    if      (a >= 1.0)  { u = "s";  s = 1.0;   }
+    else if (a >= 1e-3) { u = "ms"; s = 1e-3;  }
+    else if (a >= 1e-6) { u = "us"; s = 1e-6;  }
+    else if (a >= 1e-9) { u = "ns"; s = 1e-9;  }
+    else if (a > 0.0)   { u = "ps"; s = 1e-12; }
+    else                { u = "s";  s = 1.0;   }
+    if (scale) *scale = s;
+    return u;
+}
+
 /* ── Automatický nominál (nejbližší kulatá reference) ────────────────────── */
 double mp_nominal_auto(double hz)
 {
@@ -157,7 +185,11 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
 {
     if (o == NULL) return;
     memset(o, 0, sizeof *o);
-    if (gate_s <= 0.0) gate_s = 1.0;
+    /* F-0159: neznámé hradlo se DÁL nahrazuje 1 s, ale jen kvůli numerické
+     * bezpečnosti (dělení) — výsledek se označí jako neplatný a volající ho
+     * nesmí zobrazit. `!(gate_s > 0)` chytí i NaN. */
+    o->valid = (gate_s > 0.0) ? 1 : 0;
+    if (!(gate_s > 0.0)) gate_s = 1.0;
 
     /* Rozliseni: kvantizace na obou hranach hradla -> sqrt(2)·tdc/gate. */
     o->u_res_rel = 1.41421356 * (tdc_ps * 1e-12) / gate_s;
@@ -192,12 +224,24 @@ void mp_fit_reset(mp_fit_t *f)
 void mp_fit_add(mp_fit_t *f, double x, double y)
 {
     if (f == NULL) return;
+    /* F-0169: akumuluje se RELATIVNĚ k prvnímu bodu. Směrnice i r jsou vůči
+     * posunu invariantní, takže výsledek se nemění — mění se jen to, že se
+     * v `n·Σxx − (Σx)²` neodečítají dvě obří skoro stejná čísla. */
+    if (f->n == 0u) { f->x0 = x; f->y0 = y; }
     f->n++;
-    f->sx  += x;
-    f->sy  += y;
-    f->sxx += x * x;
-    f->syy += y * y;
-    f->sxy += x * y;
+    double dx = x - f->x0, dy = y - f->y0;
+    f->sx  += dx;
+    f->sy  += dy;
+    f->sxx += dx * dx;
+    f->syy += dy * dy;
+    f->sxy += dx * dy;
+    if (f->n >= 2u) {                             /* F-0173: součty sousedních dvojic */
+        f->l_yy += dy * f->py;  f->l_xx += dx * f->px;
+        f->l_xy += dx * f->py;  f->l_yx += dy * f->px;
+        f->l_ylead += dy; f->l_ylag += f->py;
+        f->l_xlead += dx; f->l_xlag += f->px;
+    }
+    f->px = dx; f->py = dy;
 }
 
 int mp_fit_solve(mp_fit_t *f)
@@ -206,11 +250,16 @@ int mp_fit_solve(mp_fit_t *f)
     double n = (double)f->n;
     double dx = n * f->sxx - f->sx * f->sx;      /* n·Sxx - Sx² */
     /* Nulovy rozptyl X (vsechny vzorky ve stejnem case/teplote) -> smernice
-     * neni definovana. Radeji "nevim" nez deleni skoro nulou. */
-    if (dx <= 0.0 || dx < 1e-30) return 0;
+     * neni definovana. Radeji "nevim" nez deleni skoro nulou. Negovana forma
+     * chyti i NaN v X (F-0170, L-0087) — puvodni `dx <= 0 || dx < 1e-30` ho
+     * propustila. */
+    if (!(dx >= 1e-30)) return 0;
 
     f->b = (n * f->sxy - f->sx * f->sy) / dx;
-    f->a = (f->sy - f->b * f->sx) / n;
+    if (f->b != f->b) return 0;                  /* NaN v Y -> „nevim", ne NaN smernice */
+    /* Průsečík je v centrovaných souřadnicích -> posunout zpět do původních
+     * (y = a' + b·(x − x0) + y0  =>  a = a' + y0 − b·x0). */
+    f->a = (f->sy - f->b * f->sx) / n + f->y0 - f->b * f->x0;
 
     double dy = n * f->syy - f->sy * f->sy;
     /* Konstantni Y (dokonaly, ale nulovy signal) -> korelace nedefinovana; b je
@@ -218,7 +267,65 @@ int mp_fit_solve(mp_fit_t *f)
     f->r = (dy > 0.0) ? ((n * f->sxy - f->sx * f->sy) / sqrt(dx * dy)) : 0.0;
     if (f->r >  1.0) f->r =  1.0;                /* zaokrouhlovaci prestrel */
     if (f->r < -1.0) f->r = -1.0;
+
+    /* F-0173: lag-1 autokorelace reziduí e = Y − ac − b·X (centrované souřadnice,
+     * ac = centrovaný průsečík). Obojí se rozepíše na už nasbírané součty:
+     *   Σe²       = Syy − 2ac·Sy − 2b·Sxy + n·ac² + 2ac·b·Sx + b²·Sxx
+     *   Σe_i·e_i-1 = Lyy − ac(Ly⁺ + Ly⁻) − b(Lyx + Lxy) + (n−1)ac²
+     *               + ac·b(Lx⁺ + Lx⁻) + b²·Lxx
+     * Když jsou rezidua proti rozptylu Y zanedbatelná (dokonalá přímka), je ρ
+     * z odečtu šumem zaokrouhlení — pak 0 (o průkaznosti rozhodne r). */
+    {
+        double ac  = (f->sy - f->b * f->sx) / n;
+        double b   = f->b;
+        double see = f->syy - 2.0 * ac * f->sy - 2.0 * b * f->sxy + n * ac * ac
+                   + 2.0 * ac * b * f->sx + b * b * f->sxx;
+        double se1 = f->l_yy - ac * (f->l_ylead + f->l_ylag) - b * (f->l_yx + f->l_xy)
+                   + (n - 1.0) * ac * ac + ac * b * (f->l_xlag + f->l_xlead)
+                   + b * b * f->l_xx;
+        double yv  = f->syy - f->sy * f->sy / n;       /* Σ(Y − Ȳ)² */
+        f->rho = 0.0;
+        if (see > 1e-9 * yv && see > 0.0) {
+            f->rho = se1 / see;
+            if (!(f->rho <= 1.0))  f->rho = (f->rho > 1.0) ? 1.0 : 0.0;   /* i NaN -> 0 */
+            if (f->rho < -1.0)     f->rho = -1.0;
+        }
+    }
     return 1;
+}
+
+/* Kritické hodnoty Studentova t, dvoustranně 5 %, df = 1..30 (standardní
+ * tabulka). Nad 30 se bere 2,042 (hodnota pro df = 30) — konzervativně: pro
+ * velká df je skutečná mez jen nepatrně nižší (df = 200: 1,972). */
+static const float T95_2S[30] = {
+    12.706f, 4.303f, 3.182f, 2.776f, 2.571f, 2.447f, 2.365f, 2.306f, 2.262f, 2.228f,
+     2.201f, 2.179f, 2.160f, 2.145f, 2.131f, 2.120f, 2.110f, 2.101f, 2.093f, 2.086f,
+     2.080f, 2.074f, 2.069f, 2.064f, 2.060f, 2.056f, 2.052f, 2.048f, 2.045f, 2.042f
+};
+
+/* F-0169: průkaznost směrnice t-testem korelace, místo dřívějšího pevného prahu
+ * |r| < 0,5 v okně ANALÝZA. Ten nebral ohled na počet bodů: při n ≈ 200
+ * (decimace v `ana_recompute`) je r = 0,3 průkazné na p < 1e-4 a hlásilo se
+ * „neprůkazné", při n = 4 není průkazné ani r = 0,9 a hlásilo se jako platné. */
+int mp_fit_significant(const mp_fit_t *f)
+{
+    if (f == NULL || f->n < 3u) return 0;
+    /* F-0173: efektivní počet bodů podle autokorelace reziduí (viz hlavička).
+     * Záporná ρ se NEuplatňuje — zvýšit n_eff nad n by bylo neopatrné. */
+    double ne = (double)f->n;
+    if (f->rho > 0.0) ne = ne * (1.0 - f->rho) / (1.0 + f->rho);
+    if (!(ne >= 3.0)) return 0;
+    uint32_t df = (uint32_t)(ne - 2.0);                /* ⌊n_eff⌋ − 2, >= 1 */
+    double tc = (df <= 30u) ? (double)T95_2S[df - 1u] : 2.042;
+    /* 🔴 F-0170: NaN MUSÍ padnout do „neprůkazné" (L-0087). Do 2026-09-26 tu
+     * stálo jen `if (!(r2 < 1.0)) return 1;` s poznámkou „i NaN-safe" — bez UB
+     * to bylo, ale NaN tou větví prošel jako PRŮKAZNÝ. Webové dvojče `fitSig`
+     * vrací pro NaN false a obě se musí shodovat (hlídá `tools/spa/stat_test.js`). */
+    if (f->r != f->r) return 0;
+    double r2 = f->r * f->r;
+    if (!(r2 < 1.0)) return 1;                   /* dokonalá přímka */
+    double t = fabs(f->r) * sqrt((double)df / (1.0 - r2));
+    return (t >= tc) ? 1 : 0;
 }
 
 int mp_selftest(void)
@@ -228,6 +335,42 @@ int mp_selftest(void)
     /* Perioda. */
     ok &= (fabs(mp_period_s(10e6) - 1e-7) < 1e-15);
     ok &= (mp_period_s(0.0) == 0.0);
+
+    /* Perioda PŘÍMO z reciproké dvojice (#109). 1000 period v okně 100 µs =
+     * 100 ns; totéž musí vyjít, když je 250 hran s násobitelem 4. */
+    ok &= (fabs(mp_period_sample_s(1000u, 100000000u, 1u, 0.0) - 1e-7) < 1e-18);
+    ok &= (fabs(mp_period_sample_s(250u,  100000000u, 4u, 0.0) - 1e-7) < 1e-18);
+    /* Nepoužitelná dvojice -> degradace na 1/f (mul==0 = žádný násobitel nesedí). */
+    ok &= (fabs(mp_period_sample_s(250u, 100000000u, 0u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(0u,   100000000u, 4u, 10e6) - 1e-7) < 1e-15);
+    ok &= (fabs(mp_period_sample_s(250u, 0u,      4u, 10e6) - 1e-7) < 1e-15);
+    ok &= (mp_period_sample_s(0u, 0u, 0u, 0.0) == 0.0);
+
+    /* 🔑 Proč perioda potřebuje VLASTNÍ akumulátor a nestačí převést statistiku
+     * z Hz: průměr period NENÍ převrácený průměr kmitočtů (Jensen). Pro f = 1 a
+     * 3 Hz je mean(f) = 2 -> 1/mean = 0,5, ale mean(T) = (1 + 1/3)/2 = 2/3. */
+    {   mp_stats_t fs, ps; mp_stats_reset(&fs); mp_stats_reset(&ps);
+        double f2[2] = { 1.0, 3.0 };
+        for (int i = 0; i < 2; i++) {
+            mp_stats_add(&fs, f2[i]);
+            mp_stats_add(&ps, mp_period_s(f2[i]));
+        }
+        ok &= (fabs(ps.mean - (2.0 / 3.0)) < 1e-12);
+        ok &= (fabs(1.0 / fs.mean - 0.5)   < 1e-12);
+        ok &= (fabs(ps.mean - 1.0 / fs.mean) > 0.1);   /* liší se PROKAZATELNĚ */
+    }
+
+    /* Volba časové jednotky. */
+    {   double sc = 0.0;
+        ok &= (strcmp(mp_time_unit(5.0,    &sc), "s")  == 0 && sc == 1.0);
+        ok &= (strcmp(mp_time_unit(2e-3,   &sc), "ms") == 0 && sc == 1e-3);
+        ok &= (strcmp(mp_time_unit(4e-6,   &sc), "us") == 0 && sc == 1e-6);
+        ok &= (strcmp(mp_time_unit(1e-7,   &sc), "ns") == 0 && sc == 1e-9);
+        ok &= (strcmp(mp_time_unit(-1e-7,  &sc), "ns") == 0);   /* dle |sec| */
+        ok &= (strcmp(mp_time_unit(1e-13,  &sc), "ps") == 0 && sc == 1e-12);
+        ok &= (strcmp(mp_time_unit(0.0,    &sc), "s")  == 0);
+        ok &= (strcmp(mp_time_unit(1e-7, NULL), "ns") == 0);    /* scale smí být NULL */
+    }
 
     /* Automatický nominál (tolerantně — pow(10,e) nemusí být bit-přesné; snapy jsou MHz od sebe). */
     ok &= (fabs(mp_nominal_auto(9.9999e6) - 10e6) < 1.0);
@@ -335,6 +478,80 @@ int mp_selftest(void)
         mp_fit_reset(&ft);
         for (int i = 0; i < 5; i++) mp_fit_add(&ft, (double)i, 3.0);
         ok &= (mp_fit_solve(&ft) == 1 && ft.b > -1e-9 && ft.b < 1e-9);
+        ok &= (mp_fit_significant(&ft) == 0);          /* r = 0 -> neprukazne */
+
+        /* F-0169 (1): NUMERICKA STABILITA. Drift kmitoctu v unix case: x ~1,76e9 s,
+         * y ~1e7 Hz, 1 mHz za hodinu, 200 bodu. Puvodni necentrovany vzorec tu dal
+         * rozptyl y <= 0 -> r = 0 („dokonala primka je neprukazna"); overeno na
+         * hostu v IEEE double. ⚠️ Na cili muze GCC stahnout nasobeni a scitani do
+         * FMA, takze presna podoba chyby stareho vzorce se muze lisit — tenhle
+         * test proto overuje, ze NOVY vypocet je spravne, ne ze stary selze. */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 200; i++)
+            mp_fit_add(&ft, 1.76e9 + 3600.0 * (double)i, 1e7 + 1e-3 * (double)i);
+        ok &= (mp_fit_solve(&ft) == 1);
+        ok &= (fabs(ft.b - 1e-3 / 3600.0) < 1e-12);    /* smernice [Hz/s] */
+        ok &= (ft.r > 0.999);
+        ok &= (fabs((ft.a + ft.b * 1.76e9) - 1e7) < 1e-3);   /* a posunute zpet */
+        ok &= (mp_fit_significant(&ft) == 1);
+
+        /* F-0169 (2): prukaznost zavisi na n, ne na pevnem |r|. Stejne r ~0,4:
+         * pri n = 200 prukazne, pri n = 5 ne. Syntetizovano primo pres r, n. */
+        {   mp_fit_t fs = {0};
+            fs.r = 0.4; fs.n = 200u; ok &= (mp_fit_significant(&fs) == 1);
+            fs.n = 5u;               ok &= (mp_fit_significant(&fs) == 0);
+            fs.r = 0.99; fs.n = 5u;  ok &= (mp_fit_significant(&fs) == 1);   /* t=12 > 3,18 */
+            /* F-0170: NaN -> neprukazne (starý kód vracel 1), shodne s webem. */
+            fs.r = (double)NAN; fs.n = 100u; ok &= (mp_fit_significant(&fs) == 0);
+            /* F-0173: autokorelace snizi n_eff. n = 200, r = 0,4, rho = 0,9 ->
+             * n_eff 10,5 -> df 8 -> t = 1,23 < 2,31 -> neprukazne (bez korekce
+             * t = 6,1 -> prukazne; stary kod tenhle pripad NESPLNI). Zaporna rho
+             * se neuplatnuje. Tytez vektory ma webove `fitSig` (stat_test.js). */
+            fs.r = 0.4; fs.n = 200u; fs.rho = 0.9;  ok &= (mp_fit_significant(&fs) == 0);
+            fs.rho = -0.5;                          ok &= (mp_fit_significant(&fs) == 1);
+            fs.rho = 0.0;                           ok &= (mp_fit_significant(&fs) == 1);
+        }
+
+        /* F-0173: rho z JEDNOHO pruchodu musi sedet s dvouprochodovou referenci
+         * (primo z reziduí) — i pri velkem posunu X/Y (unix cas, 1e6 offset). */
+        {   static double rxs[64], rys[64];
+            mp_fit_reset(&ft);
+            for (int i = 0; i < 64; i++) {
+                rxs[i] = 1.76e9 + 10.0 * (double)i;
+                rys[i] = 1e6 + 0.3 * (double)i + 2.0 * sin(2.0 * M_PI * (double)i / 16.0);
+                mp_fit_add(&ft, rxs[i], rys[i]);
+            }
+            ok &= (mp_fit_solve(&ft) == 1);
+            double mx = 0, my = 0;
+            for (int i = 0; i < 64; i++) { mx += rxs[i]; my += rys[i]; }
+            mx /= 64.0; my /= 64.0;
+            double sxx = 0, sxy = 0;
+            for (int i = 0; i < 64; i++) { sxx += (rxs[i]-mx)*(rxs[i]-mx); sxy += (rxs[i]-mx)*(rys[i]-my); }
+            double bb = sxy / sxx, aa = my - bb * mx, e0 = 0, e1 = 0, ep = 0;
+            for (int i = 0; i < 64; i++) {
+                double e = rys[i] - aa - bb * rxs[i];
+                e0 += e * e; if (i) e1 += e * ep; ep = e;
+            }
+            ok &= (fabs(ft.rho - e1 / e0) < 1e-6);
+        }
+        /* strida +1/-1 -> rho ~ -1 (a neuplatni se) */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 100; i++) mp_fit_add(&ft, (double)i, (i & 1) ? 1.0 : -1.0);
+        ok &= (mp_fit_solve(&ft) == 1 && ft.rho < -0.9);
+
+        /* F-0170: NaN v datech -> proklad „nevim" (0), ne NaN smernice. */
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, (double)i, (i == 2) ? (double)NAN : (double)i);
+        ok &= (mp_fit_solve(&ft) == 0);
+        mp_fit_reset(&ft);
+        for (int i = 0; i < 5; i++) mp_fit_add(&ft, (i == 2) ? (double)NAN : (double)i, (double)i);
+        ok &= (mp_fit_solve(&ft) == 0);
+    }
+
+    /* ── Rozpocet nejistoty: priznak platnosti (F-0159) ─────────────────────── */
+    {   mp_budget_t bv;
+        mp_budget(1e7, 0.0, 2500.0, 0.0, 1.0, &bv);   ok &= (bv.valid == 0);
+        mp_budget(1e7, 0.25, 2500.0, 0.0, 1.0, &bv);  ok &= (bv.valid == 1);
     }
 
     return ok;

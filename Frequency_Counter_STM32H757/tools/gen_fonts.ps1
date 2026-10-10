@@ -51,16 +51,16 @@ Gen 'jbmono_bold_25' $JB_BOLD 25 $ASCII                       # tecky + "> RUN"
 Gen 'jbmono_reg_24'  $JB_REG  24 $ASCII                       # cas
 Gen 'jbmono_reg_21'  $JB_REG  21 $ASCII                       # GATE/CHAN radek 2
 Gen 'jbmono_bold_20' $JB_BOLD 20 $ASCII                       # FREQUENCY
-Gen 'jbmono_reg_20'  $JB_REG  20 ($ASCII + $SAFE)             # CH B / GATE 1 s + ·
+Gen 'jbmono_reg_20'  $JB_REG  20 ($ASCII + $SAFE)             # CH B / GATE 1 s + 
 Gen 'jbmono_med_18'  $JB_MED  18 $ASCII                       # pilulky (GNSS/System/9)
-Gen 'jbmono_reg_17'  $JB_REG  17 ($ASCII + $SAFE)             # N312/trend (·, +-, e-notace)
+Gen 'jbmono_reg_17'  $JB_REG  17 ($ASCII + $SAFE)             # N312/trend (, +-, e-notace)
 Gen 'jbmono_reg_14'  $JB_REG  14 $ASCII                       # pilulky label
 
 # === Inter ===
 Gen 'inter_med_20'   $IN_MED  20 ($ASCII + $SAFE)            # nazvy karet + hodnoty (+- u ADEV)
 Gen 'inter_reg_16'   $IN_REG  16 $ASCII                       # GATE label
-Gen 'inter_reg_14'   $IN_REG  14 ($ASCII + $SAFE)             # datum + ·
-Gen 'inter_reg_10'   $IN_REG  10 ($ASCII + $SAFE)             # osy grafu + ·
+Gen 'inter_reg_14'   $IN_REG  14 ($ASCII + $SAFE)             # datum + 
+Gen 'inter_reg_10'   $IN_REG  10 ($ASCII + $SAFE)             # osy grafu + 
 
 # lv_font_conv pise #include "lvgl/lvgl.h"; nas include path miri na KOREN lvgl/ -> oprav na "lvgl.h"
 $u8 = New-Object System.Text.UTF8Encoding($false)

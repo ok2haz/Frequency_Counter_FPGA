@@ -11,14 +11,116 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.14.0 (2026-10-07) = FPGA FW 0x0411: regresni blok (STM: `regr`, `status` REGR:), TDC 0x0410
+ * (bez slepoty spoustece), IPC v20. Overeno jen simulaci/P&R, NE na HW.
+ */
+/* v0.13.0 (2026-10-06) = mereni: chybne napocitane okno + duveryhodne cislice +
+ * Allan osa + statistika webu z pristroje.
+ * (1) +4 Hz SKOK pri mereni vlastni reference = HRANA NAVIC v okne (metastabilita
+ * detekce hrany ve FPGA). STM ho pozna (`fpga_freq_miscount`), nezobrazi a
+ * nepocita; `status` -> CITANI HRAN. FPGA FW 0x040F pocita hrany za
+ * synchronizatorem (oprava pricin). (2) Pocet duveryhodnych cislic ma podlahu
+ * √2·tdc/gate -- synchronni signal mel σy ~0 a displej tvrdil vsech 7 desetin.
+ * (3) Allan osa Y auto-range pro vsechny metriky (driv pevne 10⁻¹⁰..10⁻⁶).
+ * (4) IPC v20: web bere ADEV/MDEV z firmwarove pyramidy (`/api/stab`).
+ * ⬜ Neovereno na HW; FLASHNOUT OBE BANKY (IPC v20) + bitstream 0x040F. */
+/* v0.12.2 (2026-10-05) = web: headline podtrhava TOTEZ cislo co displej + 3 grafy.
+ * (1) WEB HEADLINE = DISPLEJ: firmware servíruje NAMERENOU σy@1s (`sy1e15` v
+ * /api/state, z g_adev_1s = tyz zdroj co displej, pres sigma_tau[0] ve snapshotu).
+ * fmtFreqHtml ji pouzije misto vlastni klientske sigmaAtTau(1) -> u hranice dekady
+ * uz nepodtrhava jine cislo. IPC_VERSION beze zmeny (sigma_tau[0] existovalo).
+ * (2) FAZOVY SUM jde MAXIMALIZOVAT (klik -> fullscreen, drawZoomPn log-log) a ma
+ * popsanou osu X (offset [Hz] + svisla mrizka gxPn). (3) ALLAN/faz.sum maji
+ * VEDLEJSI LOG mrizku (mantisy 2..9 v dekade, .gm/.gvm) - carkovane log pozadi.
+ * ⬜ Neovereno v prohlizeci; flashnout CM4 (web) + CM7 (sy1e15). */
+/* v0.12.1 (2026-10-05) = fix: Allan graf se zase kresli (revert break-on-spike).
+ * v0.12.0 zavedlo spike = fpga_stat_break na ~19,5 % oken (obri bin). To ale
+ * VYHLADOVELO Allan pyramidu (1s vzorek se skoro nikdy nedokoncil bez preruseni)
+ * -> graf se na displeji nekreslil a g_adev_1s ~0; a mezeru v pyramide stejne
+ * neoznacilo (break nuluje jen akumulator). Byla to prekorekce. Revert na v0.11.0:
+ * vadne okno se jen VYRADI z akumulatoru, vzorek se dopocte ze zbylych -> Allan
+ * jede dal, mezera je jen sub-vzorkova. Vadne okno se znaci SDRAM_LOG_F_SPIKE v
+ * ulozene rade. Prava oprava stlaceni = odstranit obri bin ve FPGA (B1a #267),
+ * zvolena priorita uzivatelem. ⬜ Neovereno na HW. */
+/* v0.12.0 (2026-10-05) = konzistence web/displej + spravnost Allan + B1a diag.
+ * WEB: headline (fmtFreqHtml) podtrhaval posledni "duveryhodnou" cislici NAPEVNO
+ * na 3. desetine, bez ohledu na rozliseni -> pri horsim rozliseni nez 0,001 Hz
+ * jine cislo nez displej. Ted pocita hranici ze SKUTECNEHO rozliseni (namerena
+ * sigma_y@1s z klientskeho ADEV, fallback sqrt2*tdc/gate) = jako firmware
+ * freq_uncertain_frac; 7 desetin jako displej; vybledle cifry kontrastnejsi.
+ * ALLAN SPRAVNOST: spike-reject (v0.11.0) vyrazene okno obriho binu jen nepridal
+ * do akumulatoru, ale NEPRERUSIL -> vzorky pred/po spiku se slepily a rada se
+ * casove "stlacila". Ted spike = MEZERA v case (fpga_stat_break) + priznak
+ * SDRAM_LOG_F_SPIKE v ulozene rade (rekonstrukce ho vezme jako mezeru).
+ * B1a (FPGA FW 0x040D): CAL report nese d_maxtap (nejvyssi KDY navzorkovany tap)
+ * k diagnoze obriho binu -- `tdc`: maxtap~last = retez fyzicky konci, maxtap>>last
+ * = bubliny nad prvni nulou (jina oprava). STATUS #267.
+ * ⬜ Vse neovereno na HW po power-cyklu; flashnout CM4 (web) + CM7 + bitstream 0x040D. */
+/* v0.11.0 (2026-10-04) = oprava USB CDC konzole + zpresneni mereni TDC.
+ * KONZOLE: deadlock TX ringu pri plnem bufferu (drzeny blok se neuvolnil ->
+ * avail==0 -> vse zahazovano), ISR-safe drain z CDC callbacku (HAL_GetTick
+ * misto osKernelGetTickCount, ktery je z IRQ nebezpecny), ring 1->4 KB.
+ * Pricina „mrtve konzole" nalezena merenim (RX jel, TX mrtvy). TDC: cesta A
+ * spike-reject oken poskozenych obrim binem (kod 134 = ~19,5 % hran) ze
+ * statistiky/Allan (sigma okna 880->314 ps, ~2,6x, prah 3e-9 zmereny);
+ * teplotni rekalibrace (CM7 posle `tdc cal` pri driftu FPGA teploty >=3 C);
+ * zobrazovane cifry z NAMERENE sigma_y@1s misto teoretickeho TDC/hradlo
+ * (display uz nelze); `gatestat <ms>` laditelne prumerovani 250 ms..100 s +
+ * nastaveni FPGA okna (SET_CONFIG 0x01). Analyzy docs/audit/2026-10-04_*.
+ * ⬜ TDC zmeny neovereny na HW po power-cyklu; FPGA bitstream beze zmeny (0x040C). */
+/* v0.10.0 (2026-10-01) = SPI protokol FPGA migrovan v1->v2: ramec 64B->128B,
+ * CRC16 nad byte 0..125 (bylo 0..61), 4 nova pole fpga_meas_t (fw_version/
+ * caps/clk_status/win_count). Kriticky zachycen L-0012 vzor v miste vzniku:
+ * UART diagnostika (`fpgaloop`/`fpgaraw`) mela vlastni `rx[64]` nezavisle
+ * na FR_LEN, opraveno soucasne (zasobnik by se jinak prepsal o 64 B). FPGA
+ * strana (Frequency_Counter_FPGA_Module, bitstream FW_VERSION 0x0300):
+ * RTL pro novy dvoukanalovy vstupni modul (CH_A/CH_B, jednohodinove hrube
+ * citani misto 4fazoveho vernieru) + SPI PHY presunuta z 10 MHz na 100 MHz
+ * (clk_p0_100m) s rucne navrzenym CDC vuci 10MHz aplikaci (spolehlivy SCK
+ * strop ~2 MHz -> ~20 MHz). `status` nove vypisuje FW/CAPS/CLK/WIN z
+ * posledniho DATA ramce. F-0200: demo dlazdice "eased cislo" ztracela
+ * znamenko '+' (chybejici glyf v mono_25). ⬜ Cela v2 migrace + FPGA RTL
+ * NEOVERENY NA HW -- nova deska jeste neni zapojena, stara mluvi jen v1
+ * a je mrtva (RX0:FF). Window stream/SET_CONFIG/CAL report (volitelne
+ * casti protokolu v2) STM strana zatim nepouziva. */
+/* v0.9.0 (2026-09-13) = tři nezávislé rychlosti I2C4 podle zařízení (ATtiny
+ * 50 kHz — bit-bang slave, CPU 1 MHz je limit; FT5x06 75 kHz; TMP117 400 kHz;
+ * `i2c4_speed_select()`), okno PAMĚŤ ukazuje FLASH/RAM OBOU jader (IPC v16),
+ * a okno CHYBY (errlog) přehlednější — sloupec DETAIL s čitelnou větou
+ * (`errlog_fmt_detail()`) nahradil holá čísla `a/b`, přidáno záhlaví sloupců.
+ * Errlog nově dostupný i na webu: nový IPC kanál `ipc_errlog_xfer_t` +
+ * `GET /api/errlog?n=&from=` + karta [ CHYBY / LOG ] v SPA (stránkování
+ * NOVEJSI/STARSI). Web nezná význam `a`/`b`/`sub` — CM7 posílá hotovou
+ * větu, jeden zdroj pravdy pro displej i web. IPC v17. */
 /* ⚠️ v0.6.0 (2026-08-22) = přechod HSE 10 → 25 MHz (X1/TCXO). PLL1/2/3 přepočteny
  * (VCO identická, mění se jen vstupní dělič M + DSI NDIV), výstupy beze změny.
  * TENTO A VYŠŠÍ FW NENABĚHNE NA DESCE S 10 MHz HSE (PLL se nezamkne). + 5 barevných
- * schémat (KONTRAST), odstranění A/B větve hlavní obrazovky. */
+ * schémat (KONTRAST), odstranění A/B větve hlavní obrazovky.
+ * v0.7.0 (2026-08-25) = kompletní ETH/lwIP na CM4 (F3/F5, DHCP), SCPI přes TCP 5025
+ * + HTTP, webový dashboard (W0–W5) + rozšíření v12 (ovládání, mDNS gpsdo.local, SSE,
+ * alarmy, GPS sky plot, dlouhá historie 24h/7d/30d + CSV). VBAT prah na CR2032 3,3 V.
+ * IPC v12. ⚠️ Kód webu v12 na CM4 čeká na reflash OBOU bank na v12. */
+/* v0.8.1 (2026-09-06) = PG11 (ETH_TX_EN) ztracel alternativni funkci -> MAC
+ * odeslal, DMA deskriptor se dokoncil bez chyby, ale PHY nikdy nedostal
+ * povoleni vysilat -> deska nedostala IP z DHCP. Stejny podpis jako PG8:
+ * na GPIOG sahaji OBE JADRA neatomickym read-modify-write. Pridan hlidac
+ * `gpio_guard_tick()` (1 Hz z defaultTask), ktery PG8/PG11/PG13 kontroluje,
+ * opravuje a POCITA zasahy (`status` -> radek GPIO HLIDAC).
+ *
+ * v0.8.0 (2026-09-06) = DVĚ VADY DISPLEJE UZAVŘENY NA HW (viz STATUS „PROČ NEŠEL
+ * DISPLEJ"): (1) `PG8`/`FMC_SDCLK` byl v ANALOGOVÉM režimu → SDRAM bez hodin
+ * četla samé nuly → černý displej po power-resetu, `membench` 10,5 M chyb,
+ * `sdramlog` sám vypnutý; `MX_FMC_Init` pin nově potvrzuje před inicializační
+ * sekvencí. (2) Podtečení LTDC FIFO při každém flipu (copy-forward na DMA2D
+ * souběžně se skenováním panelu) → probliknutí při každém překreslení; mrtvý
+ * čas DMA2D 8 → 240 (zlom změřen na ~208). Dále: SCPI `INPut[n]:` + `APERture`
+ * jako alias `GATE`, web (osy s hezkým dělením a rám grafu, karty DVOJKANÁL /
+ * LINKA / REFERENCE / RF vstup, fázový šum, alarmy, Math počítaný klientem),
+ * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 6
+#define FW_VERSION_MINOR 13
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.6.0"
+#define FW_VERSION_STR   "v0.14.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

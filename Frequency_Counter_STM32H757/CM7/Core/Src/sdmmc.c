@@ -21,6 +21,7 @@
 #include "sdmmc.h"
 
 /* USER CODE BEGIN 0 */
+#include "gpio_guard.h"   /* gpio_cfg_lock — GPIOC pisou obe jadra (audit F-0027) */
 
 /* USER CODE END 0 */
 
@@ -99,7 +100,12 @@ void HAL_SD_MspInit(SD_HandleTypeDef* sdHandle)
   if(sdHandle->Instance==SDMMC1)
   {
   /* USER CODE BEGIN SDMMC1_MspInit 0 */
-
+  /* 🔴 GPIOC pisou OBE jadra (CM4: ETH PC1/PC4/PC5) a `HAL_GPIO_Init` nize dela
+   * neatomicky read-modify-write nad MODER/AFR. Tahle funkce bezi ZA BEHU
+   * (spousti ji `BSP_SD_Init` pri mountu, ne boot), takze spada pod pravidlo
+   * z `gpio_guard.h` (audit F-0027). Zamek se drzi pres OBA generovane
+   * `HAL_GPIO_Init` (GPIOC i GPIOD) — odemyka se v bloku MspInit 1. */
+  gpio_cfg_lock();
   /* USER CODE END SDMMC1_MspInit 0 */
 
   /** Initializes the peripherals clock
@@ -140,7 +146,7 @@ void HAL_SD_MspInit(SD_HandleTypeDef* sdHandle)
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SDMMC1_MspInit 1 */
-
+  gpio_cfg_unlock();
   /* USER CODE END SDMMC1_MspInit 1 */
   }
 }

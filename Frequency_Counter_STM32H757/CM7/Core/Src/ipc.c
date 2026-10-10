@@ -16,7 +16,7 @@
  * CHAN/LOG) dozraje se SCPI/webem na CM4 — tam vznikne producent prikazu.
  *
  * ⚠️ ZLATE PRAVIDLO (STATUS.md): do snapshotu se plni JEN realna data. Statistika
- * (sigma_tau/offset/drift) se ZATIM NEPUBLIKUJE — jejich zdroj je dnes simulace
+ * (sigma_tau) se ZATIM NEPUBLIKUJE — jejich zdroj je dnes simulace
  * headline (#2). Doplni se, az je bude pocitat MathTask z realnych dat FPGA (#27).
  * Pole zustavaji vynulovana (init), aby CM4 nikdy neservoval simulaci jako pravdu.
  */
@@ -27,6 +27,7 @@
 #include "calib.h"            /* g_calib — AD8307 slope/intercept do snapshotu (v2) */
 #include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
 #include "datalog.h"          /* datalog_set_enabled — IPC_CMD_LOG z CM4 (W1); v12 datalog_read_back/status */
+#include "errlog.h"           /* v17: errlog_count/read_batch/fmt_detail — trvaly zaznamnik chyb na web */
 #include "alarm.h"            /* g_alarm_*, g_mon_*_bad — dashboard STAV karta (v12, #4) */
 #include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
 #include <stddef.h>           /* offsetof — kontrola layoutu ipc_sat_t vs gps_sat_t */
@@ -39,6 +40,12 @@
 /* ── v12: `ipc_sat_t` (ipc_shared.h, bez gps.h) MUSI mit shodny layout s
  * `gps_sat_t` (gps.h) — publikace druzic je proste `memcpy`. Kdyby se rozesly,
  * web by kreslil sky plot ze smetĺ. Ty dva headery se jinak nepotkaji v jedne TU. */
+/* ── v17: `ipc_errlog_rec_t` rozmery MUSI sedet s `errlog_rec_t` (errlog.h) —
+ * jinak `tag`/`text` v odpovedi weburi neco jineho, nez co `errlog_fmt_detail`
+ * doopravdy naplnila (a ticho oriznute). */
+_Static_assert(IPC_ERRLOG_TAG_LEN == ERRLOG_TAG_LEN, "IPC/errlog tag delka se rozesla");
+_Static_assert(IPC_ERRLOG_DETAIL_LEN == ERRLOG_DETAIL_LEN, "IPC/errlog detail delka se rozesla");
+
 _Static_assert(IPC_GPS_MAX_SATS == GPS_MAX_SATS, "IPC/GPS pocet druzic se rozesel");
 _Static_assert(sizeof(ipc_sat_t) == sizeof(gps_sat_t), "ipc_sat_t != gps_sat_t velikost");
 _Static_assert(offsetof(ipc_sat_t, prn)     == offsetof(gps_sat_t, prn),     "sat.prn offset");
@@ -50,12 +57,48 @@ _Static_assert(offsetof(ipc_sat_t, azim)    == offsetof(gps_sat_t, azim),    "sa
 /* ── Razitko: vynuluj celou sdilenou strukturu (seq=0 sude, ringy prazdne) a
  * orazitkuj snapshot (magic/verze/velikost). Pracuje nad DANOU instanci → sdili
  * ho ipc_init (g_ipc) i selftest (lokalni kopie), zadny duplikat. */
+/* 🔴 NULUJE JEN TO, CO VLASTNI CM7 — blok `cm4` se ZAMERNE nechava (audit F-0017).
+ * Driv to byl `memset` pres CELOU strukturu, a protoze `ipc_init()` bezi ze
+ * `StartDefaultTask` (tedy SEKUNDY po bootu, az za bring-upem displeje), zatimco
+ * CM4 je bare-metal a publikuje uz ~1,3 s po bootu, mohl dopadnout DOPROSTRED
+ * publikovani a jednorazovy zapis do `cm4` tise smazat NAVZDY. Doloženo na HW
+ * 2026-08-30: dopadl mezi publikaci httpd a eth, takze `status` hlasil
+ * „SCPI(CM4): jeste nedobehl", prestoze selftest probehl a prosel.
+ *
+ * Nove plati jednoducha delba: **kazde jadro nuluje svuj blok.** `cm4` si nuluje
+ * CM4 v `ipc_cm4_init()` (tam je jedinym zapisovatelem a jeste nepublikovala, tedy
+ * bez race). Tim padá i to, ze pravidlo „publikuj opakovane" bylo jedinou obranou
+ * — drzela ho jen disciplina a nic nebranilo napsat dalsi jednorazovy zapis.
+ *
+ * ⚠️ `cmd`, `log` a `errlog` se nuluji, prestoze do nich CM4 taky pise: `cmd` je
+ * ring (vynulovany = prazdny, CM4 posle znovu) a `log`/`errlog` jsou HANDSHAKY
+ * (`req_gen`/`resp_gen`) — vynulovane znamena „zadny pozadavek nebezi" a web si
+ * o nej rekne pri dalsim HTTP dotazu. Obojí se tedy samo zhoji. Blok `cm4` je
+ * jediny, kde ztrata NEVRATNA — proto jen on.
+ * ⚠️ `snap` se nuluje CELY (nejen header) — CM7 je jeho jediny zapisovatel.
+ * ⚠️ Layout se nemeni, takze `IPC_VERSION` se tim NEZVEDA. */
 static void ipc_stamp(volatile ipc_shared_t *p)
 {
-    memset((void *)p, 0, sizeof *p);
+    memset((void *)&p->snap,   0, sizeof p->snap);
+    memset((void *)&p->cmd,    0, sizeof p->cmd);
+    memset((void *)&p->resp,   0, sizeof p->resp);
+    memset((void *)&p->log,    0, sizeof p->log);
+    memset((void *)&p->errlog, 0, sizeof p->errlog);
+    memset((void *)&p->stab,   0, sizeof p->stab);
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
+    IPC_DMB();
+}
+
+/* Vynuluje blok, ktery vlastni CM4. Volat VYHRADNE kdyz je DOLOZENE, ze CM4
+ * publikovat nebude — tedy po vyprseni boot gate (`g_cm4_absent`). Bez toho by
+ * pri studenem startu bez CM4 zustalo v `cm4` nahodne smeti ze SRAM4 a `magic`
+ * by mohlo nahodou sednout (1 : 4 miliardam, ale je to argument pravdepodobnosti,
+ * ne dukaz — a tady ho mit nemusime). */
+void ipc_clear_cm4_block(void)
+{
+    memset((void *)&g_ipc.cm4, 0, sizeof g_ipc.cm4);
     IPC_DMB();
 }
 
@@ -63,6 +106,32 @@ static void ipc_stamp(volatile ipc_shared_t *p)
  * (defaultTask, pred smyckou). CM4 po bootu overi magic+version+size; nesouhlas
  * -> IPC vypne a jede degradovane. */
 void ipc_init(void) { ipc_stamp(&g_ipc); }
+
+/* v20: statistika stability pro web (viz `ipc_stab_t`). Jediny zapisovatel je
+ * UiTask, takze seqlock nepotrebuje zamek; CM4 cte s retry. */
+void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
+                      float tau0, float sy1, float drift, float offset)
+{
+    volatile ipc_stab_t *b = &g_ipc.stab;
+    if (np < 0) np = 0;
+    if (np > IPC_STAB_PTS) np = IPC_STAB_PTS;
+    uint32_t s = b->seq;
+    b->seq = s + 1u;                                   /* liche = rozepsano */
+    IPC_DMB();
+    b->gen++;
+    b->np = (uint16_t)np;
+    b->real = (uint8_t)(real ? 1 : 0);
+    b->nsamp = nsamp;
+    b->tau0 = tau0; b->sy1 = sy1; b->drift = drift; b->offset = offset;
+    for (int i = 0; i < np; i++) {
+        b->pt[i].tau = pt[i].tau;   b->pt[i].adev = pt[i].adev;
+        b->pt[i].mdev = pt[i].mdev; b->pt[i].hdev = pt[i].hdev;
+        b->pt[i].nterm = pt[i].nterm; b->pt[i].m = pt[i].m; b->pt[i]._pad = 0u;
+    }
+    IPC_DMB();
+    b->seq = s + 2u;
+    IPC_DMB();
+}
 
 /* Minimalni agregace zdravi z REALNYCH globalu (samostatna od app compute_sys_level,
  * ktera zije v UI vrstve). 0=OK, 1=warn (degradovano, meri dal), 2=err (kriticke). */
@@ -111,6 +180,7 @@ void ipc_publish(void)
     if (!g.valid && g.fixes > 0)         flags |= IPC_F_HOLDOVER;   /* fix byl a ztratil se */
     if (g_si5356_ok && (g_si5356_status & (1u << 3))) flags |= IPC_F_SI5356_LOS;
     if (g_ui_cfg & (1u << 4))            flags |= IPC_F_RUNNING;    /* bit4 = RUN (BKP_DR1) */
+    if (fpga_sim_active())               flags |= IPC_F_SIM;        /* emulovana data, ne mereni */
 
     uint8_t sysl = ipc_sys_level(&g);
 
@@ -123,15 +193,28 @@ void ipc_publish(void)
         g_ipc.snap.freq_x100000   = m.frequency_x100000;   /* zvoleny zdroj = /4 (vyber /16 je app vrstva) */
         g_ipc.snap.gate_ns        = (uint32_t)m.gate_time_ns;
         g_ipc.snap.seq_meas       = m.sequence;
+        /* F-0180: presna hodnota ze TEHOZ ramce (0 = nasobitel neoveren). */
+        g_ipc.snap.freq4_hz       = fpga_freq_hires_hz(m.frequency_x100000,
+                                                       m.edge_count, m.gate_ps);
     } else {
         g_ipc.snap.freq4_x100000 = g_ipc.snap.freq16_x100000 = g_ipc.snap.freq_x100000 = 0u;
         g_ipc.snap.gate_ns = 0u;
+        g_ipc.snap.freq4_hz = 0.0;
     }
 
-    /* ⚠️ sigma_tau/tau_s/offset/drift ZAMERNE neplnime (zdroj = simulace #2). */
+    /* sigma_tau[0] = NAMERENA σy@1s (g_adev_1s z firmwarove Allan pyramidy) —
+     * web (headline) z ni pocita hranici podtrzeni posledni duveryhodne cislice
+     * STEJNE jako displej (jediny zdroj σy), takze podtrhavaji TOTEZ cislo.
+     * Zbytek pole (ADEV krivka) se dal neplni — web si ADEV kresli vlastni cestou
+     * z realnych mereni. Driv tu stalo "zdroj = simulace #2", to uz neplati (SPI
+     * link je realny), ale servirujeme JEN σy@1s pro headline, ne celou krivku. */
+    g_ipc.snap.sigma_tau[0] = g_adev_1s;
 
-    g_ipc.snap.gps_lat_e7   = (int32_t)(g.lat_deg * 1e7f);
-    g_ipc.snap.gps_lon_e7   = (int32_t)(g.lon_deg * 1e7f);
+    /* ⚠️ Uz zadny prevod pres float — `gps_data_t` nese e7 primo (F-0070),
+     * takze snapshot dostane tutez hodnotu bez kvantizace. `IPC_VERSION` se
+     * NEMENI: pole tu bylo `int32_t` uz predtim. */
+    g_ipc.snap.gps_lat_e7   = g.lat_e7;
+    g_ipc.snap.gps_lon_e7   = g.lon_e7;
     g_ipc.snap.gps_alt_cm   = (int32_t)(g.alt_m * 100.0f);
     g_ipc.snap.gps_hdop     = g.hdop;
     g_ipc.snap.gps_valid    = g.valid;
@@ -139,11 +222,12 @@ void ipc_publish(void)
     g_ipc.snap.gps_num_sat  = g.num_sat;
     /* rtc_unix = aktualni UTC z RTC (0 = nesynchronizovano). Bez toho web/SCPI
      * ukazoval CAS UTC "00:00:00" (pole zustavalo 0 z memsetu). ipc_publish bezi
-     * v defaultTasku, stejne jako pisatel g_rtc_text -> cteni je konzistentni. */
+     * v defaultTasku, stejne jako pisatel g_rtc_text -> cteni je konzistentni.
+     * ✅ Overeno na HW 2026-08-25 (cas na webu spravne). */
     g_ipc.snap.rtc_unix     = datalog_now_unix();
 
     /* ⚠️ Hodnota + BIT PLATNOSTI musi vzniknout ZAROVEN a stejnym pravidlem jako
-     * ve `scpi_src_load_cm7()`, jinak by tentyz pristroj rekl pres USB neco jineho
+     * ve `scpi_src_load_cm7_ex()`, jinak by tentyz pristroj rekl pres USB neco jineho
      * nez pres TCP. Dokud bit neni nastaven, obsah pole je nezavazny (drzime tam
      * posledni dobrou hodnotu — pro trendy se hodi, jako mereni se servirovat NESMI).
      * Do v3 se neplatna napeti publikovala jako 0 (nerozeznatelne od skutecne nuly)
@@ -158,7 +242,12 @@ void ipc_publish(void)
     IPC_PUB_SENS(SENS_CORE_T, t_mcu_c100,   100.0f, IPC_V_T_MCU);
     IPC_PUB_SENS(SENS_T4A,    t_fpga_c100,  100.0f, IPC_V_T_FPGA);   /* 0x4A dnes neosazen */
     IPC_PUB_SENS(SENS_ADS0,   ocxo_vc_mv,     1.0f, IPC_V_VC);
-    IPC_PUB_SENS(SENS_ADS1,   rf_mv,          1.0f, IPC_V_RF);
+    /* 🔴 2026-10-02: AD8307 na teto desce neni (RF_LEVEL_HW_PRESENT=0, calib.h),
+     * AIN1 je VBUS — `rf_mv` se do snapshotu dal plni (syrove napeti), ale
+     * IPC_V_RF/SCPI_V_RF se NESTAVI, aby CM4/web MEAS:POW? nehlasilo dBm
+     * spocitane ze spatneho vstupu (stejna politika jako scpi.c). */
+    g_ipc.snap.rf_mv = (uint16_t)(g_sensors[SENS_ADS1].last * 1.0f);
+    if (RF_LEVEL_HW_PRESENT && g_sensors[SENS_ADS1].valid) sv |= IPC_V_RF;
     IPC_PUB_SENS(SENS_ADS2,   v_12v_mv,       1.0f, IPC_V_V12);
     IPC_PUB_SENS(SENS_ADS3,   v_5v_mv,        1.0f, IPC_V_V5);
     IPC_PUB_SENS(SENS_VDDA,   vref_mv,        1.0f, IPC_V_VREF);
@@ -166,11 +255,11 @@ void ipc_publish(void)
     #undef IPC_PUB_SENS
 
     /* Mereni + GPS do tehoz slova — CM4 pak jen priradi `src->valid = snap.sens_valid`.
-     * Podminky MUSI doslova odpovidat `scpi_src_load_cm7()` (scpi.c):
+     * Podminky MUSI doslova odpovidat `scpi_src_load_cm7_ex()` (scpi.c):
      *   FRAME  = `fpga_freq_get_last()` vratil ramec (zdejsi `have_meas`),
      *   FREQ   = k tomu measurement_status bit0 a zadny SIGNAL_LOST (`meas_ok`),
      *   DIV16  = k tomu bez FPGA_ST2_DIV16_ERR.
-     * ⚠️ FREQ zamerne NEvyzaduje novou SEQ — `scpi_src_load_cm7` ji taky nekontroluje
+     * ⚠️ FREQ zamerne NEvyzaduje novou SEQ — `scpi_src_load_cm7_ex` ji taky nekontroluje
      * (staleness hlasi zvlast `MEAS:FREQ:STAL?`). */
     if (have_meas) {
         sv |= IPC_V_FRAME;
@@ -232,6 +321,7 @@ void ipc_publish(void)
     g_ipc.snap.mon_ocxo_bad = g_mon_ocxo_bad;
     g_ipc.snap.mon_adev_bad = g_mon_adev_bad;
     g_ipc.snap.selftest_res = g_selftest_res;
+    g_ipc.snap.warmup       = g_warmup;   /* v15, F-0088 */
 
     /* v12 (#5): GPS druzice pro sky plot. Layout ipc_sat_t == gps_sat_t (assert
      * vyse) -> proste memcpy platnych polozek. */
@@ -254,41 +344,163 @@ void ipc_publish(void)
  * kratky mutex timeout a pri obsazene flash zaznam vynecha (nezdrzi watchdog). */
 void ipc_datalog_service(void)
 {
+    /* Stav rozpracovaneho pozadavku — cteni se DAVKUJE pres vic volani (viz nize). */
+    static uint32_t s_gen;            /* generace, kterou prave obsluhujeme (0 = nic) */
+    static uint32_t s_records;        /* pocet zaznamu v logu (zjisteno na zacatku) */
+    static uint32_t s_from, s_scanned;
+    static uint16_t s_want, s_step, s_bucket, s_got, s_per_bucket, s_sub, s_k;
+    static uint8_t  s_env, s_full;
+    static uint64_t s_min, s_max;     /* akumulator obalky aktualniho bucketu */
+    static datalog_rec_t s_first;     /* reprezentant bucketu (prvni precteny) */
+    static uint8_t  s_have_first;
+
     uint32_t req = g_ipc.log.req_gen;
     if (req == g_ipc.log.resp_gen) return;          /* zadny novy pozadavek */
 
-    datalog_status_t st;
-    datalog_get_status(&st);
-    g_ipc.log.resp_total = st.records;
+    if (s_gen != req) {                              /* NOVY pozadavek -> priprav stav */
+        datalog_status_t st;
+        datalog_get_status(&st);
+        s_records = st.records;
+        g_ipc.log.resp_total = st.records;
 
-    uint16_t want = g_ipc.log.req_count;
-    if (want > IPC_LOG_CHUNK) want = IPC_LOG_CHUNK;
-    uint16_t step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
-    uint32_t from = g_ipc.log.req_from;             /* 0 = nejnovejsi */
+        s_want = g_ipc.log.req_count;
+        if (s_want > IPC_LOG_CHUNK) s_want = IPC_LOG_CHUNK;
+        s_step = g_ipc.log.req_step ? g_ipc.log.req_step : 1u;
+        /* ⚠️ Kdyz log jeste nema dost zaznamu na pozadovane okno (typicky „30 dni" po
+         * dvou dnech behu), pozadovany krok by nasbiral jen par bodu a graf by byl
+         * temer prazdny. Krok se proto zmensi tak, aby se vyuzila CELA dostupna
+         * historie; skutecne pokryty cas si klient odvodi z casovych znacek. */
+        if (s_want > 0u && s_records > 0u) {
+            uint32_t max_step = s_records / s_want;
+            if (max_step < 1u) max_step = 1u;
+            if ((uint32_t)s_step > max_step) s_step = (uint16_t)max_step;
+        }
+        s_from = g_ipc.log.req_from;
+        s_env  = g_ipc.log.req_env ? 1u : 0u;
 
-    uint16_t got = 0;
-    for (uint16_t i = 0; i < want; i++) {
-        datalog_rec_t r;
-        uint32_t idx = from + (uint32_t)i * step;
-        if (idx >= st.records) break;
-        if (!datalog_read_back(idx, &r)) break;     /* mimo rozsah / flash obsazena */
-        ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[got];
-        o->t_unix       = r.t_unix;
-        o->freq_x100000 = r.freq_x100000;
-        o->t_ocxo_c100  = r.t_ocxo_c100;
-        o->t_board_c100 = r.t_board_c100;
-        o->ocxo_vc_mv   = (uint16_t)r.ocxo_vc_mv;
-        o->rf_mv        = (uint16_t)r.rf_mv;
-        o->vbat_mv      = (uint16_t)r.vbat_mv;
-        o->flags        = r.flags;
-        o->sats         = r.sats;
-        o->hdop10       = r.hdop10;
-        o->_pad         = 0u;
-        got++;
+        /* Kolik zaznamu z KAZDEHO bucketu se opravdu precte. Bez obalky staci jeden
+         * (reprezentant). S obalkou ideealne vsechny, ale jen do stropu
+         * IPC_LOG_SCAN_MAX — nad nim se bucket VZORKUJE a `resp_full_env` to prizna. */
+        if (!s_env || s_step <= 1u) {
+            s_per_bucket = 1u; s_sub = 1u; s_full = (s_step <= 1u) ? 1u : 0u;
+        } else {
+            uint32_t total = (uint32_t)s_want * s_step;
+            if (total <= IPC_LOG_SCAN_MAX) { s_per_bucket = s_step; s_full = 1u; }
+            else {
+                uint32_t pb = IPC_LOG_SCAN_MAX / (s_want ? s_want : 1u);
+                if (pb < 1u) pb = 1u;
+                s_per_bucket = (uint16_t)pb; s_full = 0u;
+            }
+            s_sub = (uint16_t)(s_step / s_per_bucket);
+            if (s_sub < 1u) s_sub = 1u;
+        }
+        s_bucket = 0u; s_k = 0u; s_got = 0u; s_scanned = 0u;
+        s_have_first = 0u; s_min = 0u; s_max = 0u;
+        s_gen = req;
     }
-    g_ipc.log.resp_count = got;
+
+    /* ⚠️ ROZPOCET NA JEDNO VOLANI: `datalog_read_back` je blokujici QSPI cteni a
+     * defaultTask nesmi spinovat dele nez ~10 ms (viz watchdog v CLAUDE.md).
+     * Zbytek se dobere v dalsich ticich; HTTP odpoved na CM4 na to ceka. */
+    uint16_t budget = IPC_LOG_SCAN_BUDGET;
+    while (s_bucket < s_want && budget > 0u) {
+        uint32_t idx = s_from + (uint32_t)s_bucket * s_step + (uint32_t)s_k * s_sub;
+        /* ⚠️ ROZLISUJ „log dosel" od „cteni se nepovedlo". `datalog_read_back` vraci
+         * false v obou pripadech, ale znamenaji neco jineho: mimo rozsah = konec
+         * dat, kdezto neuspech je typicky jen ZANEPRAZDNENA flash (kratky timeout
+         * QSPI mutexu, do ktereho obcas trefi datalog_tick nebo syscfg zapis).
+         * Drive se oboji brala jako konec -> jedina kolize uprostred skenu by
+         * uriznula zbytek grafu. U obalky se cte az 20 000 zaznamu, takze na to
+         * dojde skoro jiste; proto se neuspesny vzorek jen PRESKOCI. */
+        int endofdata = (idx >= s_records);
+        if (!endofdata) {
+            datalog_rec_t r;
+            budget--;                                /* i neuspesne cteni stoji cas */
+            if (datalog_read_back(idx, &r)) {
+                s_scanned++;
+                if (!s_have_first) { s_first = r; s_have_first = 1u; }
+                if (r.freq_x100000 != 0u) {          /* 0 = tehdy nebyl FPGA link */
+                    if (s_min == 0u || r.freq_x100000 < s_min) s_min = r.freq_x100000;
+                    if (r.freq_x100000 > s_max)                s_max = r.freq_x100000;
+                }
+            }
+            s_k++;
+        }
+        /* Na konci dat se rozpracovany bucket JESTE DOPISE (ma min vzorku, ale je
+         * platny) — jinak by posledni bod grafu zmizel. */
+        if (s_k >= s_per_bucket || endofdata) {      /* bucket hotov */
+            if (s_have_first) {
+                const datalog_rec_t *r0 = &s_first;
+                ipc_log_rec_t *o = (ipc_log_rec_t *)&g_ipc.log.rec[s_got];
+                o->t_unix       = r0->t_unix;
+                o->freq_x100000 = r0->freq_x100000;
+                o->freq_min_x100000 = s_min;
+                o->freq_max_x100000 = s_max;
+                o->t_ocxo_c100  = r0->t_ocxo_c100;
+                o->t_board_c100 = r0->t_board_c100;
+                o->ocxo_vc_mv   = (uint16_t)r0->ocxo_vc_mv;
+                o->rf_mv        = (uint16_t)r0->rf_mv;
+                o->vbat_mv      = (uint16_t)r0->vbat_mv;
+                o->flags        = r0->flags;
+                o->sats         = r0->sats;
+                o->hdop10       = r0->hdop10;
+                o->_pad         = 0u;
+                s_got++;
+            }
+            s_bucket++; s_k = 0u;
+            s_have_first = 0u; s_min = 0u; s_max = 0u;
+            if (endofdata) { s_bucket = s_want; break; }   /* dal uz data nejsou */
+        }
+    }
+    if (s_bucket < s_want) return;                   /* jeste nehotovo, pokracuj priste */
+
+    g_ipc.log.resp_count    = s_got;
+    g_ipc.log.resp_scanned  = s_scanned;
+    g_ipc.log.resp_full_env = s_full;
     IPC_DMB();
     g_ipc.log.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
+}
+
+/* ── v17: obsluha errlog transfer kanalu (CM4 -> CM7 -> CM4). ────────────────
+ * Podstatne jednodussi nez `ipc_datalog_service`: `errlog_read_batch` uz sama
+ * davkuje pod JEDNIM zamknutim QSPI (viz flightrec.c), takze na rozdil od
+ * datalogu (ktery muze skenovat az 20 000 zaznamu kvuli obalce) tu neni co
+ * rozkladat pres vic ticku defaultTasku — jeden pozadavek (<= IPC_ERRLOG_CHUNK
+ * zaznamu, typicky desitky) se vyridi v JEDNOM volani. */
+void ipc_errlog_service(void)
+{
+    uint32_t req = g_ipc.errlog.req_gen;
+    if (req == g_ipc.errlog.resp_gen) return;          /* zadny novy pozadavek */
+
+    /* Docasny buffer NA STACKU by prekrocil rozpocet defaultTasku
+     * (IPC_ERRLOG_CHUNK × sizeof(errlog_rec_t) = 64×32 B = 2048 B proti
+     * stacku 384 slov = 1536 B) — proto `static`, stejny duvod jako u
+     * ostatnich velkych bufferu selftestu (viz CLAUDE.md). Bezpecne: volani
+     * jen z defaultTasku, jednovlaknove. */
+    static errlog_rec_t s_tmp[IPC_ERRLOG_CHUNK];
+
+    uint16_t want = g_ipc.errlog.req_count;
+    if (want > IPC_ERRLOG_CHUNK) want = IPC_ERRLOG_CHUNK;
+    uint32_t got = errlog_read_batch(g_ipc.errlog.req_from, want, s_tmp);
+
+    for (uint32_t i = 0; i < got; i++) {
+        volatile ipc_errlog_rec_t *o = &g_ipc.errlog.rec[i];
+        o->seq      = s_tmp[i].seq;
+        o->t_unix   = s_tmp[i].t_unix;
+        o->uptime_s = s_tmp[i].uptime_s;
+        o->repeat   = s_tmp[i].repeat;
+        o->kind     = s_tmp[i].kind;
+        for (uint32_t k = 0; k < IPC_ERRLOG_TAG_LEN; k++) o->tag[k] = s_tmp[i].tag[k];
+        char det[ERRLOG_DETAIL_LEN];
+        errlog_fmt_detail(&s_tmp[i], det, sizeof det);
+        for (uint32_t k = 0; k < IPC_ERRLOG_DETAIL_LEN; k++) o->text[k] = det[k];
+    }
+
+    g_ipc.errlog.resp_count   = (uint16_t)got;
+    g_ipc.errlog.resp_total   = (uint16_t)(errlog_count()   > 0xFFFFu ? 0xFFFFu : errlog_count());
+    g_ipc.errlog.resp_dropped = (uint16_t)(errlog_dropped() > 0xFFFFu ? 0xFFFFu : errlog_dropped());
+    IPC_DMB();
+    g_ipc.errlog.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
 }
 
 /* Posledni REALNY kmitocet /4 [Hz] (pro NULL_ACQ). @return 1 = platne. */
@@ -366,9 +578,9 @@ static int ipc_ui_cfg_apply(uint8_t key, uint32_t arg)
 {
     uint8_t cur = g_ui_cfg_req_pend ? g_ui_cfg_req : g_ui_cfg;
     switch (key) {
-        case IPC_CFG_GATE:                              /* arg = index presetu 0..3 */
-            if (arg > 3u) return 0;
-            cur = (uint8_t)((cur & ~(3u << 2)) | ((arg & 3u) << 2));
+        case IPC_CFG_GATE:                              /* arg = index presetu 0..4 */
+            if (arg >= IPC_GATE_N) return 0;
+            cur = IPC_UICFG_SET_GATE(cur, arg);
             break;
         case IPC_CFG_CHAN:                              /* mame jen kanal 0/1 */
             if (arg > 1u) return 0;
@@ -484,6 +696,20 @@ uint32_t ipc_cm4_cpu_pct(void)
     return (p > 100u) ? 100u : p;
 }
 
+/* ── Velikost obrazu CM4 (v16) — pro okno PAMET, viz app_gpsdo.c. Bez CM4
+ * (magic nezapsan) vraci 0 a vynuluje oba vystupy (degradovane "--"). */
+int ipc_cm4_mem(uint32_t *flash_bytes, uint32_t *ram_bytes)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (flash_bytes) *flash_bytes = 0u;
+        if (ram_bytes)   *ram_bytes   = 0u;
+        return 0;
+    }
+    if (flash_bytes) *flash_bytes = g_ipc.cm4.cm4_flash_bytes;
+    if (ram_bytes)   *ram_bytes   = g_ipc.cm4.cm4_ram_bytes;
+    return 1;
+}
+
 /* ── Stav ETH linky z CM4 (v5, F1). @return 1 = link UP. Vyplni volitelne
  * speed [Mbps], duplex (0=half/1=full) a IP (oktety a.b.c.d v uint32). Bez zapsaneho
  * CM4 magicu vraci 0 a nuluje vystupy (degradovane "NET: down"). */
@@ -516,6 +742,23 @@ int ipc_cm4_eth(uint32_t *phy_id)
     return g_ipc.cm4.eth_init_ok ? 1 : 0;
 }
 
+/* ── Pocitadla vyslani z CM4 (v18, audit F-0138). Do teto opravy se
+ * `g_eth_tx_ok`/`g_eth_tx_err` inkrementovaly na CM4, ale nikdo je necetl —
+ * byly dosazitelne jen ladici sondou, ktera za behu zabiji I2C4 do power-cyklu.
+ * ⚠️ Navratova hodnota rika jen „CM4 zapsala magic", NE ze vysilani funguje:
+ * `ok == 0` pri zive CM4 je prave ta diagnoza „neodeslala ani jeden paket". */
+int ipc_cm4_eth_tx(uint16_t *ok, uint8_t *err)
+{
+    if (g_ipc.cm4.magic != IPC_MAGIC) {
+        if (ok)  *ok  = 0u;
+        if (err) *err = 0u;
+        return 0;
+    }
+    if (ok)  *ok  = g_ipc.cm4.eth_tx_ok;
+    if (err) *err = g_ipc.cm4.eth_tx_err;
+    return 1;
+}
+
 /* ── IPC_VERSION obrazu CM4 (v6). 0 = CM4 nezapsala magic, nebo bezi starsi obraz,
  * ktery verzi nehlasi. Existuje proto, ze nesoulad bank byl do ted TICHY: CM4 pri
  * neshode jen prestane cist snapshot, ale heartbeat publikuje dal -> `ipc_cm4_alive()`
@@ -535,6 +778,16 @@ uint8_t ipc_cm4_scpi_selftest(void)
 }
 
 /* ── Vysledek `httpd_min_selftest()` na CM4 (v9, W4). Stejna degradace. */
+uint8_t ipc_cm4_fault(uint32_t *pc, uint32_t *lr, uint32_t *cfsr)
+{
+    uint8_t k = g_ipc.cm4.cm4_fault_kind;
+    if (k == 0u) return 0u;
+    if (pc)   *pc   = g_ipc.cm4.cm4_fault_pc;
+    if (lr)   *lr   = g_ipc.cm4.cm4_fault_lr;
+    if (cfsr) *cfsr = g_ipc.cm4.cm4_fault_cfsr;
+    return k;
+}
+
 uint8_t ipc_cm4_httpd_selftest(void)
 {
     if (g_ipc.cm4.magic != IPC_MAGIC) return 0u;
@@ -628,6 +881,27 @@ int ipc_selftest(void)
         ok &= (ipc_cfg_apply(&c2, IPC_CFG_NULL_ACQ, 0, 0, 1e7) == 1 && c2.null_en == 1);  /* s freq */
     }
 
+    /* F-0194: `selftest_pass` musi ze snapshotu vyjit STEJNE jako `g_selftest_res`
+     * — jinak `*TST?` pres TCP/HTTP rika neco jineho nez USB/`/api/state`. Obe
+     * hodnoty (PASS i FAIL), pres cisty `ipc_scpi_src_from_snap` nad lokalni `t`,
+     * ne nad `g_ipc`.
+     * 🔴 F-0196: `ipc_stamp()` (viz vyse) `t.snap.selftest_res` NEPLNI — jen
+     * memsetuje snap na nulu a nastavi magic/version/size. Skutecne plneni dela
+     * az `ipc_publish()` nad `g_ipc`, ne nad lokalni `t`. Bez explicitniho
+     * dopsani zustavalo `t.snap.selftest_res` porad 0, `ss.selftest_pass` tedy
+     * vzdy false, a assert `== 1` spolehlive spadl -> `ipc_selftest()` FAIL,
+     * "SELFTEST: 15/16 FAIL #12" pri kazdem bootu. Puvodni komentar tvrdil
+     * presny opak ("ktere ho plni ipc_stamp nize") — stejny vzorec jako L-0018,
+     * ktery tato oprava sama cituje: overuj proti kodu, ne proti okolnimu textu. */
+    {
+        scpi_src_t ss; uint8_t save = g_selftest_res;
+        g_selftest_res = 1; ipc_stamp(&t); t.snap.selftest_res = g_selftest_res;
+        ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 1);
+        g_selftest_res = 2; ipc_stamp(&t); t.snap.selftest_res = g_selftest_res;
+        ok &= (ipc_scpi_src_from_snap(&ss, &t.snap) == 1) && (ss.selftest_pass == 0);
+        g_selftest_res = save; ipc_stamp(&t);
+    }
+
     return ok;
 }
 
@@ -640,9 +914,14 @@ int ipc_selftest(void)
  * staticke asserty nize. Kdyby se rozesly, preklad by neprosel.
  *
  * ⚠️ Co snapshot NEMA, zustava nulove/neplatne — a to je spravne: lepe "nevim"
- * nez vymysleny udaj. Konkretne datalog (MMEM:*) a `selftest_pass` snapshot
- * dnes nenese, takze CM4 na ne odpovi prazdno; az to bude potreba, doplni se do
- * snapshotu s bumpem IPC_VERSION (dnes by to byla mrtva vaha). */
+ * nez vymysleny udaj. Konkretne datalog (MMEM:*) snapshot nenese, takze CM4 na
+ * ne odpovi prazdno; az to bude potreba, doplni se do snapshotu s bumpem
+ * IPC_VERSION (dnes by to byla mrtva vaha).
+ * 🔴 `selftest_pass` TADY DO 2026-09-27 CHYBNE STALO jako dalsi priklad —
+ * nepravda: snapshot ho nese uz od zacatku (`selftest_res` nize, viz F-0088
+ * a okolni pole), jen ho `ipc_scpi_src_from_snap` do F-0194 necetla (oprava
+ * `ipc_scpi.c`). Tenhle komentar sam byl zdrojem omylu, ne jen jeho popisem —
+ * priste overuj proti kodu, ne proti okolnimu textu (L-0018). */
 _Static_assert((int)SCPI_V_FREQ    == (int)IPC_V_FREQ,    "SCPI/IPC bit FREQ se rozesel");
 _Static_assert((int)SCPI_V_DIV16   == (int)IPC_V_DIV16,   "SCPI/IPC bit DIV16 se rozesel");
 _Static_assert((int)SCPI_V_FRAME   == (int)IPC_V_FRAME,   "SCPI/IPC bit FRAME se rozesel");
