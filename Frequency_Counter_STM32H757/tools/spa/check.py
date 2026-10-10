@@ -32,7 +32,8 @@ HTML = os.path.join(OUT, 'spa.html')
 JS = os.path.join(OUT, 'spa.js')
 TESTS = ['spa_test', 'hov_test', 'unc_test', 'pwr_test',
          'mdev_test', 'pn_test', 'alarm_test', 'pref_test', 'axis_test', 'sys_test',
-         'stat_test']   # F-0170: estimatory proti SP1065 + t-test = firmware
+         'stat_test',   # F-0170: estimatory proti SP1065 + t-test = firmware
+         'zoom_test']   # detail histogramu a spektrogramu Df (klik na kartu)
 
 fail = []
 
