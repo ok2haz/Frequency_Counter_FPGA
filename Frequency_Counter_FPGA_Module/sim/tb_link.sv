@@ -11,8 +11,9 @@
 //     dt_a = edges * 7 + 3, seq z ramce = poradi mereni). Roztrzeny snimek nebo
 //     rozpracovany ramec na drate = FAIL.
 `timescale 1ns/1ps
+`include "tb_clk.vh"
 module tb_link;
-  reg clk100 = 0; always #5  clk100 = ~clk100;
+  reg clk100 = 0; always #(`TB_THALF_PS/1000.0) clk100 = ~clk100;
   reg clk10  = 0; always #50 clk10  = ~clk10;
   reg sck = 0, cs = 1, mosi = 0; wire miso;
 
@@ -32,7 +33,7 @@ module tb_link;
   reg [31:0] m_edges = 32'd1000;
   wire [47:0] m_dt = {16'd0, m_edges} * 48'd7 + 48'd3;
 
-  wire cal_mode; wire [1:0] bw; wire [7:0] dbg; wire [9:0] hk;
+  wire cal_mode; wire [2:0] bw; wire [7:0] dbg; wire [9:0] hk;
   spi_app app(.clk(clk10), .meas_freq_x100000(64'd0), .meas_periods(m_edges), .meas_gate_ns(64'd0),
      .meas_timestamp(64'd0), .meas_error_flags(32'd0), .meas_channel(8'd0), .new_meas(new_meas), .signal_lost(1'b0),
      .meas_freq16_x100000(64'd0), .meas_phase_status(8'd0), .meas_status2(8'd0), .meas_dt_a_ps(m_dt),
@@ -43,7 +44,7 @@ module tb_link;
      .rx_crc_calc(rcc), .rx_crc_recv(rcr),
      .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata),
      .phy_busy(phy_busy), .phy_base(phy_base),
-     .dbg_status(dbg), .cal_mode(cal_mode), .base_win(bw));
+     .dbg_status(dbg), .cal_mode(cal_mode), .base_win(bw), .meas_clk_mhz(8'd100));
 
   function [15:0] crc(input [15:0] c0, input [7:0] d);
     integer b; reg [15:0] c; begin c=c0^{d,8'd0}; for(b=0;b<8;b=b+1) c=c[15]?((c<<1)^16'h1021):(c<<1); crc=c; end endfunction

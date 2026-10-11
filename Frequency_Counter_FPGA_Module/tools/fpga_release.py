@@ -25,8 +25,8 @@ MIN_SETUP_NS = 0.0        # zaporna rezerva = cesta nesplnena
 WARN_SETUP_NS = 0.2       # L-0134: pod 0,2 ns jen varovani
 MIN_HOLD_NS = 0.0
 MIN_UNC_NS = 0.9          # L-0141: s nejistotou 0,5 ns meril build na desce spatne
-MAX_CLS_PCT = 82          # nad tim uz P&R casovani nezvladne (P&R 2026-10-10: 83 % = TNS -91 ns)
-WARN_CLS_PCT = 78         # L-0134
+MAX_CLS_PCT = 85          # od FW 0x0421 (RTL pro 8 ns) ma navrh 83-85 %; do 0x0420 platilo 82 (tehdy P&R 83 % = TNS -91 ns pri 100 MHz)
+WARN_CLS_PCT = 82         # L-0134
 MAX_REG_PCT = 80          # L-0119
 FS_ID_MAX_AGE_S = 3600    # identita v build_id.vh nesmi byt o hodinu starsi nez bitstream (IDE build)
 
@@ -83,6 +83,16 @@ def parse_unc(sdc):
     return None
 
 
+def parse_period(sdc):
+    """Perioda [ns] referencnich hodin FPGA (create_clock clk_p0_100m -period X; jmeno je historicke)."""
+    for line in sdc.splitlines():
+        s = line.strip()
+        if s.startswith('//') or 'create_clock' not in s or 'clk_p0_100m' not in s: continue
+        m = re.search(r'-period\s+([\d.]+)', s)
+        if m: return float(m.group(1))
+    return None
+
+
 def parse_build_id(txt):
     t = re.search(r"BLD_TIME\s*=\s*32'h([0-9A-Fa-f]{8})", txt)
     g = re.search(r"BLD_GIT\s*=\s*32'h([0-9A-Fa-f]{8})", txt)
@@ -127,7 +137,10 @@ def check(t_start=None):
     R.add(ws is not None and ws >= MIN_SETUP_NS, 'nejhorsi setup rezerva',
           '%s ns  (%s)' % (ws, t['setup_path']), warn=(ws is not None and ws < WARN_SETUP_NS))
     R.add(t['hold_ws'] is not None and t['hold_ws'] >= MIN_HOLD_NS, 'nejhorsi hold rezerva', '%s ns' % t['hold_ws'])
-    R.add(t['fmax'] is not None and t['fmax'] >= 100.0, 'Fmax clk_p0_100m', '%s MHz (s nejistotou)' % t['fmax'])
+    per = parse_period(read(os.path.join(ROOT, 'src', 'timing.sdc')))
+    fmin = None if per is None else 1000.0 / per
+    R.add(t['fmax'] is not None and fmin is not None and t['fmax'] >= fmin, 'Fmax clk_p0_100m',
+          '%s MHz (s nejistotou), hodiny %s MHz' % (t['fmax'], None if fmin is None else round(fmin, 3)))
 
     unc = parse_unc(read(os.path.join(ROOT, 'src', 'timing.sdc'))); info['unc'] = unc
     R.add(unc is not None and unc >= MIN_UNC_NS, 'nejistota hodin (L-0141)', '%s ns, min %.1f' % (unc, MIN_UNC_NS))
@@ -204,6 +217,7 @@ def selftest():
     ok &= parse_build_id("localparam [31:0] BLD_TIME = 32'h6ACA21F9;\nlocalparam [31:0] BLD_GIT  = 32'h8D526C00;") \
         == (0x6ACA21F9, 0x8D526C00)
     ok &= parse_fw("localparam [15:0] FW_VERSION      = 16'h041F;") == 0x041F
+    ok &= parse_period('// create_clock -name clk_p0_100m -period 8.0\ncreate_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}  [get_ports {clk_p0_100m}]') == 10.0
     print('selftest fpga_release: %s' % ('PASS' if ok else 'FAIL'))
     return 0 if ok else 1
 

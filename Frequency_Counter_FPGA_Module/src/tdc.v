@@ -302,7 +302,10 @@ module tdc_chan #(
     reg s_clr = 1'b0, s_col = 1'b0, s_drn = 1'b0, s_cmp = 1'b0;
     reg [9:0] ph = 10'd1;                     // one-hot faze (DRN/CMP)
     assign use_ro   = s_col;
-    assign cal_busy = s_clr | s_col | s_drn | s_cmp;
+    // FW 0x0421: cal_busy z REGISTRU (busy_ra = OR ctyr stavu o takt pozdeji): fanout do oken a hold nestihal; o takt pozdejsi
+    // nastup/konec hlaseni je bezpecny (cal_valid se meni soucasne se stavem a ts_valid se pri cal_busy neemituje).
+    reg  busy_ra = 1'b0;
+    assign cal_busy = busy_ra;
     wire sig_eff = s_col ? ro : sig_raw;
 
     // ---------------- spousteni a zmrazeni vzorku ----------------
@@ -385,54 +388,81 @@ module tdc_chan #(
     // Adresa = {sada, kod}; kumulativni poradi pri vypoctu tabulky: nejdriv VSECHNY kody sady R, pak F.
     // Proto je V[F, k] = w_lo + tau_F[k] (w_lo = podil udalosti sady R x T) a V[R, k] = T + tau_R[k]
     // (+T se pridava jednim bitem 14 v `lutv`, viz nize) -- obe sady na jedne case ose bez dalsiho scitani.
-    reg [14:0]    lut  [0:NC-1];
+    // FW 0x0421: polozka tabulky je HOTOVA pro vypocet casove znacky: {amt[1:0], neg[13:0]}. Cas = tick*16384 - V, V = 16384*b14 + x14
+    // (b14 = bit +T), tedy dolnich 14 bitu = -x14 (mod 2^14) = `neg` a horni cast = tick_hi - amt, amt = b14 + (x14 != 0).
+    // Pocita se pri kalibraci (ne za behu), takze za BRAM neni zadna aritmetika.
+    reg [15:0]    lut  [0:NC-1];
     reg [HW-1:0]  hist [0:NC-1];
-    integer li;
+    integer li, nx, ng;
     initial begin
-        // nominalni hodnota, dokud neprobehne kalibrace (jen orientacne; cal_valid = 0 => ts se nevydavaji)
-        for (li = 0; li < NC; li = li + 1)
-            lut[li] = (li * 93 + 46 > 16383) ? 15'd16383 : (li * 93 + 46);
+        // nominalni hodnota, dokud neprobehne kalibrace (jen orientacne; cal_valid = 0 => ts se nevydavaji); V = 16384 + x14
+        for (li = 0; li < NC; li = li + 1) begin
+            nx = (li * 93 + 46 > 16383) ? 16383 : (li * 93 + 46);
+            ng = 16384 - nx;
+            lut[li] = (nx == 0) ? 16'h4000 : {2'd2, ng[13:0]};
+        end
     end
 
-    reg  [14:0]   lut_q   = 15'd0;
+    reg  [15:0]   lut_q   = 16'd0;
+    reg  [15:0]   lut_q2  = 16'd0;            // FW 0x0421: vystup BRAM (synteza lut_q + lut_q2 vtahne do BRAM: adresa + vystupni registr)
+    reg  [15:0]   lut_q3  = 16'd0;            // samostatny FF za BRAM (tCO 3,5 ns): az od nej se vybira
+    reg  [33:0]   tr0     = 34'd0, tr1 = 34'd0, tr2 = 34'd0;   // tick_hi - 0/1/2 (viz nize; tr0 jen pro DUAL)
+    reg           tv_y    = 1'b0, tv_z = 1'b0;
     reg  [HW-1:0] hist_rd = {HW{1'b0}};
+    reg  [HW-1:0] hist_rd2  = {HW{1'b0}};     // FW 0x0421: samostatny registr za vystupem BRAM (tCO 3,5 ns + inkrement nestihal)
     reg  [HW-1:0] hist_wd_r = {HW{1'b0}};
     reg           hist_we_r = 1'b0;
+    reg           evc1      = 1'b0;           // zapocitana udalost kalibrace (dv2 & s_col), o takt zpozdena
     reg  [AW-1:0] scan_k  = {AW{1'b0}};
     reg  [AW-1:0] clr_k   = {AW{1'b0}};
     reg  [HW-1:0] cnt     = {HW{1'b0}};
     reg           cnt_hit = 1'b0;             // cnt == CNT_LAST (registrovane)
-    reg  [14:0]   lutv    = 15'd0;            // hodnota tabulky (saturovana)
+    reg  [15:0]   lutv    = 16'd0;            // polozka tabulky {amt, neg}
+    reg  [13:0]   xs14    = 14'd0;            // saturovana hodnota x14 (viz vypocet tabulky)
 
     // FW 0x041E: volba adresy cteni BRAM pres REGISTROVANY priznak `busy_ra` (= cal_busy o takt pozdeji) misto
     // kombinacniho OR ctyr stavu: cesta s_col -> cal_busy -> mux -> ADB BRAM mela 3 urovne LUT a 6 ns vedeni
     // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). Posun o takt nevadi: priklad vyberu se meni jen na
     // zacatku/konci kalibrace, kdy se cte jen kvuli diagnostice (vypis dump_k) a pocitani (s_col) zacina az po
     // desitkach taktu (fz/dv1/dv2). Prioritu `s_cmp` (scan_k) drzime primo.
-    reg           busy_ra = 1'b0;
-    always @(posedge clk) busy_ra <= s_clr | s_col | s_drn | s_cmp;
-    wire [AW-1:0] hist_ra = s_cmp ? scan_k : (busy_ra ? caddr : dump_k[AW-1:0]);
+    reg           cmp_ra  = 1'b0;             // FW 0x0421: s_cmp o takt pozdeji (vyber adresy z registru; faze kalibrace o 1 dale)
+    always @(posedge clk) begin busy_ra <= s_clr | s_col | s_drn | s_cmp; cmp_ra <= s_cmp; end
+    wire [AW-1:0] hist_ra = cmp_ra ? scan_k : (busy_ra ? caddr : dump_k[AW-1:0]);
     wire          hist_we = s_clr | hist_we_r;
     wire [AW-1:0] hist_wa = s_clr ? clr_k : caddr;
     wire [HW-1:0] hist_wd = s_clr ? {HW{1'b0}} : hist_wd_r;
-    wire          lut_we  = s_cmp & ph[4];
+    wire          lut_we  = s_cmp & ph[8];
     wire [AW-1:0] lut_wa  = scan_k;
-    wire [14:0]   lut_wd  = lutv;
+    wire [15:0]   lut_wd  = lutv;
 
     always @(posedge clk) begin
         lut_q     <= lut[caddr];
+        lut_q2    <= lut_q;
+        lut_q3    <= lut_q2;
         hist_rd   <= hist[hist_ra];
-        hist_wd_r <= hist_rd + {{(HW-1){1'b0}}, 1'b1};
-        hist_we_r <= dv2 & s_col;
+        hist_rd2  <= hist_rd;
+        hist_wd_r <= hist_rd2 + {{(HW-1){1'b0}}, 1'b1};
+        evc1      <= dv2 & s_col;             // zapisuje se JEN udalost, kterou citac `cnt` zapocetl (i po s_col -> s_drn)
+        hist_we_r <= evc1;
         if (lut_we)  lut[lut_wa]   <= lut_wd;
         if (hist_we) hist[hist_wa] <= hist_wd;
 
-        // presny cas hrany (~8 taktu od trig_ack)
-        ts_ps    <= tick_ps - {33'd0, lut_q};
-        ts_valid <= dv2 & cal_valid & ~cal_busy;
+        // presny cas hrany (~8 taktu od trig_ack) = tick*16384 - V. FW 0x0421 (casovani pro periodu 8 ns): BEZ ARITMETIKY za BRAM. Polozka tabulky nese
+        // dolnich 14 bitu hotovych (neg) a `amt` = o kolik se horni cast lisi od tick_hi. tick_hi se pricita PRAVE o 1 za takt
+        // (mod 2^34), takze tick_hi - 1 a tick_hi - 2 jsou jeho dve predchozi hodnoty: misto 34bitoveho odecitani se vybira
+        // z posuvneho registru. DUAL = 0: V ma vzdy bit +T, tedy amt = 1 nebo 2; DUAL = 1: amt = 0, 1 nebo 2 (tr0).
+        tr0   <= tick_ps[47:14];
+        tr1   <= (DUAL != 0) ? tr0 : tick_ps[47:14];
+        tr2   <= tr1;
+        // ts_ps se DRZI do dalsi platne znacky (>= 5 taktu): okno/regrese z nej odecitaji ve 2 taktech (multicycle v SDC)
+        if (tv_z) ts_ps <= {(DUAL != 0) ? ((lut_q3[15:14] == 2'd0) ? tr0 : ((lut_q3[15:14] == 2'd1) ? tr1 : tr2))
+                                       : (lut_q3[15] ? tr2 : tr1), lut_q3[13:0]};
+        tv_y     <= dv2 & cal_valid & ~cal_busy;
+        tv_z     <= tv_y;
+        ts_valid <= tv_z;
     end
 
-    assign dump_q = {{(24-HW){1'b0}}, hist_rd};
+    assign dump_q = {{(24-HW){1'b0}}, hist_rd2};
 
     // faze: jedno-horka, mimo DRN/CMP drzena v 1; po ph[9] se sama otoci na ph[0]
     // (nezavisla na cal_req -> kratka cesta)
@@ -476,7 +506,7 @@ module tdc_chan #(
             end
             if (s_cmp) begin                      // NC adres x 10 taktu
                 if (ph[9]) begin
-                    if (scan_k == ADDR_LAST) begin
+                    if (lastk_r) begin
                         s_cmp     <= 1'b0;
                         cal_valid <= 1'b1;
                     end else begin
@@ -496,33 +526,41 @@ module tdc_chan #(
     reg [HW+1:0]  xv   = {(HW+2){1'b0}};
     reg [HW-1:0]  hcur = {HW{1'b0}};
     reg           hnz  = 1'b0, hgt = 1'b0;
-    reg  [AW:0]   nzc  = {(AW+1){1'b0}};      // pocet neprazdnych kodu
+    reg           dg_nz = 1'b0, dg_pk = 1'b0, dg_ov = 1'b0;
+    reg           lastk_r = 1'b0, clr_d = 1'b0;
     wire [HW+1:0] xsh  = xv >> (CAL_LOG2 - 13);        // 0..16384
     // sada R (adresy bez horniho bitu u DUAL, vsechny u DUAL=0) dostava +T = bit 14
     wire          r_entry = (DUAL != 0) ? ~scan_k[AW-1] : 1'b1;
     always @(posedge clk) begin
-        if (s_clr) begin
-            d_ovf <= 32'd0; d_peak <= 32'd0; d_nz <= 16'd0; d_last <= 16'd0; nzc <= {(AW+1){1'b0}};
+        clr_d <= s_clr;                                   // vynulovani diagnostiky z registru (s_clr ridi i BRAM, velky fanout)
+        if (clr_d) begin
+            d_ovf <= 32'd0; d_peak <= 32'd0; d_nz <= 16'd0; d_last <= 16'd0;
         end
         if (s_drn) cum <= {(HW+1){1'b0}};
-        if (s_cmp & ph[1]) hcur <= hist_rd;               // hist_rd = hist[scan_k]
-        if (s_cmp & ph[2]) begin
+        if (s_cmp & ph[3]) hcur <= hist_rd2;              // hist_rd2 = hist[scan_k] o 2 takty (FW 0x0421; BRAM DO ma jediny odbernik hist_rd2)
+        // FW 0x0421 (casovani pro periodu 8 ns): hcur je stabilni od ph[1], soucty se delaji az v ph[3] (multicycle 2 v timing.sdc)
+        // a vsechny dalsi kroky se o fazi posunuly (ph[4]: hnz/hgt/lutv, ph[5]: zapis tabulky, ph[6]: diagnostika).
+        if (s_cmp & ph[5]) begin
             xv  <= {cum, 1'b0} + {2'b00, hcur};
             cum <= cum + {1'b0, hcur};
         end
-        if (s_cmp & ph[3]) begin
+        if (s_cmp & ph[6]) begin
             hnz  <= (hcur != {HW{1'b0}});
             hgt  <= ({{(32-HW){1'b0}}, hcur} > d_peak);
-            lutv <= {r_entry, ((xsh > 16383) ? 14'd16383 : xsh[13:0])};   // saturace (x = 2N)
+            xs14 <= (xsh > 16383) ? 14'd16383 : xsh[13:0];                // saturace (x = 2N)
         end
-        if (s_cmp & ph[5]) begin                          // diagnostika
-            if (hnz) begin
-                d_nz   <= {{(15-AW){1'b0}}, nzc + {{AW{1'b0}}, 1'b1}};
-                nzc    <= nzc + {{AW{1'b0}}, 1'b1};
-                d_last <= {{(16-AW){1'b0}}, scan_k};
-                if (hgt) d_peak <= {{(32-HW){1'b0}}, hcur};
-            end
-            if (scan_k == ADDR_LAST) d_ovf <= {{(32-HW){1'b0}}, hcur};
+        if (s_cmp & ph[7])                                                 // polozka tabulky {amt, neg}: V = 16384*r_entry + x14
+            lutv <= {{1'b0, r_entry} + {1'b0, (xs14 != 14'd0)}, 14'd0 - xs14};
+        // povoleni zapisu diagnostiky jsou REGISTRY (CE jednim FF, ne z ph/hnz/hgt/scan_k): v ph[7] se pripravi, v ph[8] plati
+        dg_nz <= s_cmp & ph[8] & hnz;
+        dg_pk <= s_cmp & ph[8] & hnz & hgt;
+        lastk_r <= (scan_k == ADDR_LAST);                 // scan_k se meni jednou za 10 taktu
+        dg_ov <= s_cmp & ph[8] & lastk_r;
+        if (dg_nz) begin                                  // diagnostika
+            d_nz   <= d_nz + 16'd1;                       // pocet neprazdnych kodu (multicycle 3 v timing.sdc)
+            d_last <= {{(16-AW){1'b0}}, scan_k};
         end
+        if (dg_pk) d_peak <= {{(32-HW){1'b0}}, hcur};
+        if (dg_ov) d_ovf  <= {{(32-HW){1'b0}}, hcur};
     end
 endmodule

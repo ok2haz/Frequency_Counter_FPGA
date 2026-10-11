@@ -31,6 +31,11 @@ module top (
     input  wire ch_b,            // PIN27: kanál B (carry chain B)
 
     output reg  led_tx,          // heartbeat (PIN29)
+    output reg  fpga_ok,         // FW 0x0422 PIN63 (IOR5A) -> LED D5 "FPGA_OK" (anoda na pinu, 1k k zemi): svit = bitstream bezi A referencni hodiny OK
+
+    // FW 0x0420: vyber reference (prepinac U19: OCXO / externi 10 MHz)
+    output wire ref_ctrl,        // PIN41 Ref_Ctrl: 0 = OCXO, 1 = externi
+    input  wire ext_ref_sens,    // PIN51 Ext_Ref_Sens: externi reference po Schmittu (jen detekce pritomnosti hran)
 
     // SPI slave (STM32 = master, Mode 0, active-low CS) -- beze změny
     input  wire spi_sck,
@@ -45,6 +50,11 @@ module top (
     // ----------------------------------------------------------
     // +16384 za takt = 2^14 -> spodnich 14 bitu je konstantni 0, cita se jen horni cast
     // (kratsi carry, bez nerízených bitu [13:0]).
+    // REFERENCNI KMITOCET FPGA = 100 MHz (Si5356 CLK0/1). FW 0x0421/0x0422 bezely na 125 MHz; FW 0x0423 (2026-10-11) se vraci
+    // na 100 MHz: na 125 MHz mela casova znacka chybu T/2 a T podle faze hrany (ADEV 1,4e-8) a regrese pocitala spatne (L-0152).
+    // Jednotka casu v ramci je T_clk/16384 = 0,6103515625 ps (ps = jednotky * 625 / 1024); kmitocet jde v ramci (abs 99), aby host
+    // nepocital s jinym taktem, nez na jakem FPGA skutecne bezi. Vse ostatni (TDC, tabulka kalibrace) je v tehle jednotce.
+    localparam CLK_MHZ = 100;
     reg  [33:0] tick_hi = 34'd0;
     always @(posedge clk_p0_100m) tick_hi <= tick_hi + 34'd1;
     wire [47:0] tick_ps = {tick_hi, 14'd0};
@@ -82,7 +92,10 @@ module top (
     reg        clk_flt = 1'b0;             // od nahrani aspon jeden prechod OK -> vadne
     reg [7:0]  clk_loss = 8'd0;            // pocet takovych prechodu (saturuje)
     wire       cm_edge = cm_s[2] ^ cm_s[1];
-    wire       cm_good = (cm_cnt >= 11'd636) && (cm_cnt <= 11'd644);
+    // Ocekavany pocet prechodu cdiv[4] v okne 1024 taktu 10 MHz (102,4 us): cdiv[4] se prepne kazdych 16 taktu referencni hodiny
+    // -> 102,4 us * CLK_MHZ / 16 us = 6,4 * CLK_MHZ (100 MHz: 640); odchylka nejvys 1, okno +-4.
+    localparam [10:0] CM_EXP = (CLK_MHZ * 32) / 5;
+    wire       cm_good = (cm_cnt >= CM_EXP - 11'd4) && (cm_cnt <= CM_EXP + 11'd4);
     always @(posedge clk_ref_10m) begin
         cm_s   <= {cm_s[1:0], cdiv[4]};
         cm_win <= cm_win + 10'd1;
@@ -193,7 +206,8 @@ module top (
     reg [2:0] calm_s = 3'b000;
     always @(posedge clk_p0_100m) calm_s <= {calm_s[1:0], cal_mode};
     reg  cal_req = 1'b0;                                  // registrovano (kratke cesty)
-    always @(posedge clk_p0_100m) cal_req <= (calm_s[1] & ~calm_s[2]) | cal_boot;
+    reg  rt_go   = 1'b0;                                  // FW 0x0422: automaticke opakovani kalibrace po selhani (viz nize)
+    always @(posedge clk_p0_100m) cal_req <= (calm_s[1] & ~calm_s[2]) | cal_boot | rt_go;
 
     // Pocet udalosti kalibrace = 2^CAL_LOG2. JEDINY zdroj: predava se do obou tdc_chan
     // i do meze OVF_LIM nize (2026-10-03: OVF_LIM mel natvrdo 22, kalibrace 20 ->
@@ -235,11 +249,14 @@ module top (
     // ~5,4 s (2^29 taktu) od zacatku sberu; sber 2^20 udalosti trva ~0,1-0,5 s (podle rychlosti kruhu).
     reg [28:0] cal_tmo   = 29'd0;
     reg        cal_abort = 1'b0;
+    reg        tmo_h = 1'b0, tmo_l = 1'b0;           // FW 0x0421: 29bitove AND ve dvou registrovanych castech
     always @(posedge clk_p0_100m) begin
         cal_abort <= 1'b0;
+        tmo_h <= &cal_tmo[28:15];
+        tmo_l <= &cal_tmo[14:0];
         if (use_ro_a | use_ro_b) begin
             cal_tmo <= cal_tmo + 29'd1;
-            if (&cal_tmo) cal_abort <= 1'b1;
+            if (tmo_h & tmo_l) cal_abort <= 1'b1;
         end else begin
             cal_tmo <= 29'd0;
         end
@@ -286,6 +303,29 @@ module top (
     );
 
     // ----------------------------------------------------------
+    // FW 0x0422: AUTOMATICKY OPAKOVANA KALIBRACE po selhani. cal_fail = vyprsel casovac sberu (kruh se nerozbehl / udalosti nechodi).
+    // HW 2026-10-11: ten samy bitstream mel pri nekterych nahranich tdc_status bit2 (cal_fail) a pak mereni s nominalni tabulkou
+    // (chyba desitek ns) BEZ jakeho koli chyboveho priznaku. Po selhani se za ~8 ms (2^20 taktu) kalibrace spusti znovu, nejvyse 15x
+    // za sebou; pocet pokusu (saturuje na 3) nese tdc_status[7:6].
+    wire cfail = cal_fail_a | cal_fail_b;
+    reg        cfail_q = 1'b0, rt_run = 1'b0;
+    reg [19:0] rt_dly  = 20'd0;
+    reg [3:0]  rt_n    = 4'd0;
+    reg [1:0]  rt_tot  = 2'd0;
+    always @(posedge clk_p0_100m) begin
+        cfail_q <= cfail;
+        rt_go   <= 1'b0;
+        if (cfail & ~cfail_q & (rt_n != 4'hF)) rt_run <= 1'b1;               // nova porucha
+        if (rt_run) begin
+            rt_dly <= rt_dly + 20'd1;
+            if (&rt_dly) begin
+                rt_run <= 1'b0; rt_go <= 1'b1; rt_n <= rt_n + 4'd1;
+                if (rt_tot != 2'd3) rt_tot <= rt_tot + 2'd1;
+            end
+        end
+        if (cal_valid_a & cal_valid_b & ~cfail) rt_n <= 4'd0;                // kalibrace se povedla
+    end
+
     // 2x windowed reciproký čítač (win_recip ze spi_app.v), čas v ps.
     // ----------------------------------------------------------
     wire [25:0] r_periods_a,  r_periods_b;
@@ -294,10 +334,16 @@ module top (
     wire        alias_a,      alias_b_nc;
     wire [7:0]  r_ccd_a,      r_ccd_b;      // FW 0x041F: kontrolni pocitani hran (viz win_recip)
 
+    // `hold` do oken z registru (cal_busy je OR ctyr stavu; FW 0x0421: fanout + vzdalenost TDC <-> okno byly pri 8 ns periode cestou -0,4 ns)
+    reg hold_a = 1'b1, hold_b = 1'b1;
+    always @(posedge clk_p0_100m) begin
+        hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done;
+        hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done;
+    end
     win_recip #(.REGR(TDC_REGR)) u_wra (
         .clk(clk_p0_100m), .sig_pin(ch_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .gate_tick(gate_tick), .code_i(code_a), .r_ce(r_cea), .r_cs(r_csa), .r_ccd(r_ccd_a), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
-        .hold(cal_busy_a | ~cal_valid_a | ~boot_done),
+        .hold(hold_a),
         .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a),
         .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
         .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b)
@@ -305,7 +351,7 @@ module top (
     win_recip #(.REGR(0)) u_wrb (
         .clk(clk_p0_100m), .sig_pin(ch_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .gate_tick(gate_tick), .code_i(code_b), .r_ce(r_ceb), .r_cs(r_csb), .r_ccd(r_ccd_b), .seg_a(1'b0), .seg_b(1'b0), .want(want_b), .want_seg(wseg_b_nc),
-        .hold(cal_busy_b | ~cal_valid_b | ~boot_done),
+        .hold(hold_b),
         .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b),
         .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_xm_a(rgb_xm_a_nc), .rg_xm_b(rgb_xm_b_nc),
         .rg_ym_a(rgb_ym_a_nc), .rg_ym_b(rgb_ym_b_nc), .rg_ok_a(rgb_ok_a_nc), .rg_ok_b(rgb_ok_b_nc)
@@ -337,7 +383,9 @@ module top (
     localparam [31:0] OVF_LIM = 32'd1 << (CAL_LOG2 - 4);
     wire short_a = (da_ovf > OVF_LIM);
     wire short_b = (db_ovf > OVF_LIM);
-    wire [7:0] tdc_status = {2'b00, short_b, short_a, cbs_s[1], cfl_s[1], cvb_s[1], cva_s[1]};
+    reg [1:0] rt1 = 2'b00, rt2 = 2'b00;                                      // pocet automatickych opakovani kalibrace (do 10 MHz)
+    always @(posedge clk_ref_10m) begin rt1 <= rt_tot; rt2 <= rt1; end
+    wire [7:0] tdc_status = {rt2, short_b, short_a, cbs_s[1], cfl_s[1], cvb_s[1], cva_s[1]};
     wire [191:0] cal_diag = {db_last, db_nz, db_peak, db_ovf, da_last, da_nz, da_peak, da_ovf};
     // konfigurace TDC pro host: [4:0] log2(adres tabulky), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu
     localparam [8:0] TDC_TAPS9 = TDC_NTAP;                // fyzicke tapy (STM `tdc`: konfigurace N tapu)
@@ -400,11 +448,15 @@ module top (
     // (boot_done = 0: ceka se na ustaleni + novou kalibraci, mereni stoji)
     reg [1:0]  bd_s = 2'b00;
     always @(posedge clk_ref_10m) bd_s <= {bd_s[0], boot_done};
-    wire [7:0] clk_status = {5'd0, ~bd_s[1], clk_flt, clk_ok};
+    // FW 0x0420: stav reference z ref_guard (domena OSC) do 10 MHz, bity 3..5
+    wire ref_act, ref_ext_pres, ref_ext_lost;
+    reg [1:0] ra_s = 2'b00, rp_s = 2'b00, rl_s = 2'b00;
+    always @(posedge clk_ref_10m) begin ra_s <= {ra_s[0], ref_act}; rp_s <= {rp_s[0], ref_ext_pres}; rl_s <= {rl_s[0], ref_ext_lost}; end
+    wire [7:0] clk_status = {2'd0, rl_s[1], rp_s[1], ra_s[1], ~bd_s[1], clk_flt, clk_ok};
 
     wire [63:0] gate_ns_a;
     wire        valid_a, gd_busy;
-    gate_div u_gd (.clk(clk_ref_10m), .start(gd_go), .dt(dt_p),
+    gate_div #(.CLK_MHZ(CLK_MHZ)) u_gd (.clk(clk_ref_10m), .start(gd_go), .dt(dt_p),
                    .gate_ns(gate_ns_a), .valid(valid_a), .busy(gd_busy));
 
     wire [63:0] freq_a_x100000 = 64'd0;                 // host počítá (viz spi_app.v)
@@ -483,6 +535,14 @@ module top (
         fe_s <= {fe_s[1:0], frame_end_tgl};
     wire rx_valid_pulse = (fe_s[2] ^ fe_s[1]);
 
+    wire ref_sel;
+    // vnitrni oscilator FPGA (250 MHz / 8 = 31,25 MHz): hlidac reference nesmi zaviset na vnejsich hodinach
+    wire osc_clk;
+    OSC #(.FREQ_DIV(8), .DEVICE("GW1NR-9C")) u_osc (.OSCOUT(osc_clk));
+    ref_guard u_refg (.osc_clk(osc_clk), .ext_sens(ext_ref_sens), .sel_req(ref_sel), .ref_ctrl(ref_ctrl),
+                      .ext_present(ref_ext_pres), .ext_lost(ref_ext_lost));
+    assign ref_act = ref_ctrl;
+
     spi_app #(.REGR_EN(TDC_REGR), .BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT)) u_app (
         .clk(clk_ref_10m),
         .meas_freq_x100000(freq_a_x100000),
@@ -515,11 +575,13 @@ module top (
         .dbg_sck_cnt(dbg_sck_cnt),
         .meas_clk_status(clk_status),
         .meas_clk_loss(clk_loss),
+        .meas_clk_mhz(CLK_MHZ[7:0]),
         .meas_ccd_p(ccd_p),
         .meas_ccd_s(ccd_s),
         .cal_mode(cal_mode),
         .base_win(base_win),
         .chan_sel(chan_sel),
+        .ref_sel(ref_sel),
         .rx_valid(rx_valid_pulse),
         .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2),
@@ -539,5 +601,27 @@ module top (
     initial led_tx = 1'b1;
     always @(posedge clk_ref_10m)
         if (valid_a) led_tx <= ~led_tx;
+
+    // ----------------------------------------------------------
+    // FW 0x0422: LED "FPGA_OK" (D5, PIN63). Bezi z VNITRNIHO oscilatoru FPGA (osc_clk), aby se po vypadku vnejsich hodin nezasekla:
+    //   * svit     = bitstream bezi A referencni hodiny jsou OK (10 MHz pritomne A hlidac hodin hlasi 100 MHz v toleranci)
+    //   * zhasnuto = bitstream nenabehl, nebo chybi/je mimo toleranci nektera referencni hodina (napr. Si5356 bez zamku)
+    // Kalibrace TDC do podminky NEPATRI (reference hodin a TDC jsou ruzne veci; stav TDC je v tdc_status).
+    // 10 MHz pritomnost: preklapeny bit z domeny clk_ref_10m, v osc domene detekce hran s casovym oknem.
+    // ----------------------------------------------------------
+    reg tgl10 = 1'b0;
+    always @(posedge clk_ref_10m) tgl10 <= ~tgl10;
+    wire good10 = clk_ok;                                  // hlidac hodin: 100 MHz v toleranci (meri se proti 10 MHz)
+    reg [2:0] t10_s = 3'b000;
+    reg [1:0] good_s = 2'b00;
+    reg [7:0] t10_tmo = 8'd0;
+    initial fpga_ok = 1'b0;
+    always @(posedge osc_clk) begin
+        t10_s  <= {t10_s[1:0], tgl10};
+        good_s <= {good_s[0], good10};
+        if (t10_s[2] ^ t10_s[1])      t10_tmo <= 8'd250;      // hrana ~kazdych 200 ns; 250 taktu osc = ~8 us
+        else if (t10_tmo != 8'd0)     t10_tmo <= t10_tmo - 8'd1;
+        fpga_ok <= (t10_tmo != 8'd0) & good_s[1];
+    end
 
 endmodule

@@ -1,7 +1,8 @@
 // tb_regr_acc.sv -- regr_acc proti referencnimu vypoctu (SV longint, celociselne deleni)
 `timescale 1ps/1ps
+`include "tb_clk.vh"
 module tb_regr_acc;
-    reg clk = 0; always #5000 clk = ~clk;
+    reg clk = 0; always #(`TB_THALF_PS) clk = ~clk;
     reg seg_a = 0, seg_b = 0, samp_v = 0, samp_b = 0;
     reg [47:0] ref_ts = 0, samp_ts = 0; reg [25:0] samp_x = 0;
     wire [23:0] n_a, n_b; wire [39:0] xm_a, xm_b; wire [47:0] ym_a, ym_b; wire ok_a, ok_b;
@@ -14,6 +15,7 @@ module tb_regr_acc;
     task run_seg(input bit isb, input integer ns, input bit tight);   // tight: posledni znacka je 1 takt pred koncem segmentu
         begin
             x0 = 0; t0 = 0; sx = 0; sy = 0; nn = 0; x = 50 + ($urandom % 100000);
+            samp_b = isb;                                            // jako v desce: zname pred znackou (act je registrovane)
             @(negedge clk); if (isb) seg_b = 1; else seg_a = 1;     // vstupy se meni na sestupne hrane (zadny zavod s DUT)
             repeat (3) @(negedge clk);
             for (j = 0; j < ns; j = j + 1) begin

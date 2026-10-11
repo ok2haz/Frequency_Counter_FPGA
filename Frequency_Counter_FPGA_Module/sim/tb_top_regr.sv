@@ -7,29 +7,30 @@
 //   f_regr = (xm_B - xm_A)/(ym_B - ym_A) ~ f_in na 1e-7.
 // ============================================================
 `timescale 1ps/1fs
+`include "tb_clk.vh"
 module tb_top_regr;
     reg clk10 = 0, clk100 = 0;
     always #50000 clk10 = ~clk10;
-    initial begin #2300; forever #5000 clk100 = ~clk100; end    // pevny fazovy posun proti 10 MHz
+    initial begin #2300; forever #(`TB_THALF_PS) clk100 = ~clk100; end    // pevny fazovy posun proti 10 MHz
     real TSIG = 100000.0 / (1.0 + 813e-9);
     reg ch_a = 0;
     initial begin #12345; forever begin ch_a = 1; #(TSIG/2.0); ch_a = 0; #(TSIG/2.0); end end
     wire miso, led;
-    top dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(1'b0), .led_tx(led),
+    top dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(1'b0), .led_tx(led), .ref_ctrl(), .ext_ref_sens(1'b0),
              .spi_sck(1'b0), .spi_cs_n(1'b1), .spi_mosi(1'b0), .spi_miso(miso));
 
     real U, f_in, fr, fdt;
     integer win = 0, errs = 0;
     reg tg_p = 0;
     initial begin
-        U = 0.6103515625 / 16.0;    // ym jednotka [ps]
+        U = `TB_PS_PER_UNIT / 16.0;    // ym jednotka [ps]
         f_in = 1.0e12 / TSIG;
     end
     always @(posedge clk100) begin
         tg_p <= dut.res_tgl_a;
         if (dut.res_tgl_a !== tg_p && dut.cal_valid_a && !dut.cal_busy_a) begin
             win = win + 1;
-            fdt = real'(dut.r_periods_a) / (real'(dut.r_dt_a) * 0.6103515625) * 1.0e12;
+            fdt = real'(dut.r_periods_a) / (real'(dut.r_dt_a) * `TB_PS_PER_UNIT) * 1.0e12;
             $display("okno %0d: N=%0d dt=%0d u  f_2pt=%.4f Hz (chyba %.2f ppm) | A: ok=%0d n=%0d xm=%.1f ym=%.3f us | B: ok=%0d n=%0d xm=%.1f ym=%.3f us",
                 win, dut.r_periods_a, dut.r_dt_a, fdt, (fdt/f_in-1.0)*1e6,
                 dut.rg_ok_a, dut.rg_n_a, real'(dut.rg_xm_a)/256.0, real'(dut.rg_ym_a)*U*1e-6,

@@ -4,7 +4,7 @@ module tb_gate_div;
     reg clk = 0; always #50 clk = ~clk;
     reg start = 0; reg [47:0] dt = 0;
     wire [63:0] g; wire v, b;
-    gate_div dut (.clk(clk), .start(start), .dt(dt), .gate_ns(g), .valid(v), .busy(b));
+    gate_div dut (.clk(clk), .start(start), .dt(dt), .gate_ns(g), .valid(v), .busy(b));                       // 100 MHz: dt*5>>13
     integer errors = 0, i;
     reg [47:0] vec [0:11];
     task chk(input [47:0] x);

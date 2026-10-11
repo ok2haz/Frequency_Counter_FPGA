@@ -16,6 +16,7 @@
 //   0x01 base window: 0=100 ms, 1=250 ms (default), 2=1 s, 3=50 ms, 4=500 ms
 //   0x02 cal_mode:    0=normal, 1=ring oscilátor místo pin28 (kalibrace)
 //   0x03 channel:     0=CH_A (default), 1=CH_B primarni (FW >= 0x041E)
+//   0x04 reference:  0=OCXO (default po zapnuti), 1=externi 10 MHz vstup (FW >= 0x0420, caps bit11); pin Ref_Ctrl ridi ref_guard
 //
 // Rámec (128 B, little-endian vícebajtová pole):
 //  0 MAGIC=0xA5 | 1 VER=0x02 | 2 TYPE | 3 FLAGS | 4..7 SEQUENCE
@@ -100,7 +101,8 @@ module spi_app #(
     input  wire [15:0] dbg_sck_cnt,          // diag: nabezne hrany SCK v poslednim ramci (tx_b[124,125])
     // FW 0x041F: samokontrola (caps bit10)
     input  wire [7:0]  meas_clk_status,      // stav hlidace 100 MHz (zivy), viz hlavicka bajt 64
-    input  wire [7:0]  meas_clk_loss,        // pocet vypadku 100 MHz (zivy)
+    input  wire [7:0]  meas_clk_loss,        // pocet vypadku hodin FPGA (zivy)
+    input  wire [7:0]  meas_clk_mhz,         // FW 0x0421: kmitocet referencnich hodin FPGA v MHz (abs 99)
     input  wire [7:0]  meas_ccd_p,           // rozdil kontrolniho a merneho pocitani hran, primarni slot (s merenim)
     input  wire [7:0]  meas_ccd_s,           // totez, sekundarni slot
 
@@ -122,7 +124,8 @@ module spi_app #(
     output wire [7:0]    dbg_status,
     output wire          cal_mode,           // 1 = RO mux místo pin28
     output wire [2:0]    base_win,           // 0=100ms 1=250ms 2=1s 3=50ms 4=500ms
-    output wire          chan_sel            // FW 0x041E: 0 = CH_A primarni, 1 = CH_B primarni
+    output wire          chan_sel,           // FW 0x041E: 0 = CH_A primarni, 1 = CH_B primarni
+    output wire          ref_sel             // FW 0x0420: pozadavek na referenci (0 = OCXO, 1 = externi); skutecny stav ridi ref_guard
 );
 
     // ---- konstanty rámce ----
@@ -135,7 +138,21 @@ module spi_app #(
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h041F;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0423;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x0422 -> 0x0423 (2026-10-11): REFERENCNI HODINY FPGA ZPET 125 -> 100 MHz (Si5356 CLK0/1, top.v CLK_MHZ, timing.sdc 10 ns).
+    // Na 125 MHz mela casova znacka chybu T/2 a T podle faze hrany (ADEV(0,25 s) 1,4e-8 misto 7e-10) a regrese pocitala spatne
+    // (L-0152). RTL zustava (vcetne zmen 0x0421 pro casovani na 8 ns), meni se jen hodiny: bisect, zda vadu dela kmitocet.
+    // Jednotka casu T_clk/16384 = 0,6103515625 ps, hlidac hodin ocekava 640 prechodu, abs 99 = 100.
+    // 0x0421 -> 0x0422 (2026-10-11): oprava souběhu v win_recip (reference okna se aktualizují o takt později, L-0151), LED FPGA_OK na PIN63,
+    // automaticke opakovani kalibrace TDC po selhani (L-0153).
+    // 0x0420 -> 0x0421 (2026-10-10): referencni hodiny FPGA 100 -> 125 MHz (v 0x0423 vraceno). Zustava z ni: kmitocet hodin
+    // v ramci (abs 99, CAPS bit12) a casovani pro 8 ns (registrovane cesty, 3taktova iterace deleni regrese, drzena casova
+    // znacka -- viz timing.sdc, tabulka kalibrace nese hotove {amt, neg}).
+    // 🔴 0x041F -> 0x0420 (2026-10-10, STATUS #285): VYBER REFERENCE (SET_CONFIG 0x04, caps bit11). Pin Ref_Ctrl (PIN41)
+    // prepina OCXO / externi 10 MHz vstup (prepinac U19). Hlidac `ref_guard` bezi z vnitrniho oscilatoru FPGA, nezavisle
+    // na vnejsich hodinach: externi referenci pusti jen kdyz na PIN51 jsou hrany, a kdyz zmizi, SAM prepne zpet na OCXO.
+    // Stav v clk_status (abs 64): bit3 = vybrana externi, bit4 = na externim vstupu jsou hrany, bit5 = externi vypadla
+    // (automaticky navrat na OCXO; smaze se pozadavkem 0). Po zapnuti je VZDY OCXO.
     // 🔴 0x041E -> 0x041F (2026-10-10, STATUS #282/#283): SAMOKONTROLA (caps bit10). Identita bitstreamu (cas
     // sestaveni + git) v bajtech 12..19; hlidac 100 MHz (bajty 64/65) -- po vypadku nebo zmene kmitoctu reference
     // drzi mereni a po ustaleni znovu kalibruje TDC (driv vypadek 100 MHz, napr. init Si5356 pri resetu STM za behu
@@ -168,7 +185,8 @@ module spi_app #(
     // Bez bumpu by FW_VERSION lhalo -- stejne cislo jako stara jednokanalova
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
-    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h06E2 : 16'h0762;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
+    // bit12 (0x1000) = abs 99 nese kmitocet hodin FPGA [MHz] (od FW 0x0421; dnes 100)
+    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h1EE2 : 16'h1F62;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -225,9 +243,11 @@ module spi_app #(
     reg [7:0]  d_ccl = 8'd0, d_cch = 8'd0, d_rcl = 8'd0, d_rch = 8'd0;
     reg [2:0]  base_win_r = 3'd1;            // default 250 ms
     reg        chan_sel_r = 1'b0;            // default CH_A
+    reg        ref_sel_r  = 1'b0;            // default OCXO
     assign cal_mode = cal_mode_r;
     assign base_win = base_win_r;
     assign chan_sel = chan_sel_r;
+    assign ref_sel  = ref_sel_r;
 
     // žádost o CAL report (one-shot: příští TX rámec = 0xA0)
     reg        cal_req = 1'b0;
@@ -377,6 +397,7 @@ module spi_app #(
             7'd96: tb = is_cal ? 8'd0 : ({6'd0, rg_ok_b, rg_ok_a});
             7'd97:  tb = is_cal ? 8'd0 : (h_ccd_p);
             7'd98:  tb = is_cal ? 8'd0 : (h_ccd_s);
+            7'd99:  tb = is_cal ? 8'd0 : (meas_clk_mhz);
             7'd100: tb = is_cal ? 8'd0 : (meas_tdc_status);
             7'd101: tb = is_cal ? 8'd0 : (h_dt_b[7:0]);
             7'd102: tb = is_cal ? 8'd0 : (h_dt_b[15:8]);
@@ -503,6 +524,7 @@ module spi_app #(
                                 8'h01: base_win_r <= (rx_p1 <= 8'd4) ? rx_p1[2:0] : 3'd1;
                                 8'h02: cal_mode_r <= rx_p1[0];
                                 8'h03: chan_sel_r <= rx_p1[0];          // 0 = CH_A, 1 = CH_B
+                                8'h04: ref_sel_r  <= rx_p1[0];          // 0 = OCXO, 1 = externi (FW >= 0x0420)
                                 default: ;      // neznámé config_id = ignorovat
                             endcase
                         end
@@ -543,7 +565,9 @@ endmodule
 //   přesný poměr edge_count / dt počítá host. Jednotka času je T_clk/16384,
 //   takže převod na ns je jen dt*5 >> 13 (bez děliček).
 // ------------------------------------------------------------
-module gate_div (
+module gate_div #(
+    parameter CLK_MHZ = 100          // referencni hodiny FPGA: jednotka dt = T_clk/16384 -> gate_ns = dt * 1000 / (CLK_MHZ * 16384)
+)(
     input  wire        clk,            // clk_ref_10m
     input  wire        start,          // 1-taktový puls: dt platné
     input  wire [47:0] dt,             // Δt [T_clk/16384]
@@ -552,11 +576,13 @@ module gate_div (
     output wire        busy
 );
     assign busy = 1'b0;
+    // 100 MHz: ns = dt * 5 / 8192 (10 ns / 16384 = 5/8192 ns). Plati JEN pro CLK_MHZ = 100 (jiny kmitocet = jiny prevod).
     wire [49:0] x5 = {2'b00, dt} + {dt, 2'b00};        // dt * 5
+    wire [47:0] g_ns = {11'd0, x5[49:13]};
     initial begin gate_ns = 64'd0; valid = 1'b0; end
     always @(posedge clk) begin
         valid <= start;
-        if (start) gate_ns <= {27'd0, x5[49:13]};      // max ~1,6e11 (38 b)
+        if (start) gate_ns <= {16'd0, g_ns};           // max ~1,6e11 (38 b)
     end
 endmodule
 
@@ -682,21 +708,33 @@ module regr_acc (
     reg [31:0] sy_lo = 32'd0;  reg [31:0] sy_hi = 32'd0;  reg sy_c = 1'b0;   // sum(t - t0) = {sy_hi, sy_lo}
     wire [47:0] sx = {sx_hi, sx_lo};
     wire [63:0] sy = {sy_hi, sy_lo};
+    reg        v0 = 1'b0, f0 = 1'b0, cap_q = 1'b0;     // FW 0x0421: stupen 0 (takt znacky)
     reg        v1 = 1'b0, f1 = 1'b0, v2 = 1'b0;
     reg [25:0] dx_r = 26'd0;
     reg [39:0] dt_r = 40'd0;                // rozdil < 2^40 (segment < 0,67 s)
     reg [7:0]  dth_d = 8'd0;
-    wire       act = (samp_b ? seg_b : seg_a) & (seg_a | seg_b);
+    // FW 0x0421 (casovani pro periodu 8 ns): `act` je REGISTROVANE. seg_a/seg_b chodi z 10 MHz domeny (sa_s/sb_s) a rozvadely se na ~100 CE
+    // (x0, t0): cesta mela 3,7 ns vedeni a byla nejhorsi v navrhu (-0,9 ns). Znacka prichazi >= 8 taktu po spusteni
+    // (samp_b je tou dobou stabilni) a okraj segmentu se posune o 1 takt (stejne jako jeho synchronizace z 10 MHz).
+    reg        act = 1'b0;
+    always @(posedge clk) act <= (samp_b ? seg_b : seg_a) & (seg_a | seg_b);
 
     always @(posedge clk) begin
-        // stupen 1: rozdily jen pri znacce (pak jsou stabilni az do dalsi, >= 8 taktu)
-        v1 <= samp_v & act;
-        f1 <= first;
-        if (samp_v) begin
+        // stupen 0 (takt znacky): zachyt prvni znacky segmentu
+        v0 <= samp_v & act;
+        f0 <= first;
+        cap_q <= samp_v & act & first;
+        // zachyceni o takt pozdeji (FW 0x0421): samp_ts (= ts_ps) i samp_x (sg_x) jsou drzene, dalsi znacka az za >= 5 taktu
+        if (cap_q) begin first <= 1'b0; x0 <= samp_x; t0 <= samp_ts; end
+        // stupen 1 (o takt pozdeji): rozdily jen pri znacce. FW 0x0421 (casovani pro periodu 8 ns): samp_ts (= ts_ps, drzena) i samp_x (sg_x)
+        // jsou stabilni >= 5 taktu, takze rozdily maji 2 takty (multicycle v timing.sdc). U PRVNI znacky segmentu je t0
+        // uz prepsane (rozdil 0) -- ta se stejne zahazuje (f1).
+        v1 <= v0;
+        f1 <= f0;
+        if (v0) begin
             dx_r <= samp_x - x0;
             dt_r <= samp_ts[39:0] - t0[39:0];
         end
-        if (samp_v & act & first) begin first <= 1'b0; x0 <= samp_x; t0 <= samp_ts; end
         // stupen 2: dolni casti souctu + citac
         c1 <= 1'b0; c2 <= 1'b0;
         v2 <= v1 & ~f1;
@@ -727,12 +765,19 @@ module regr_acc (
     reg        for_b = 1'b0, phase_y = 1'b0;
     reg        waitf = 1'b0;  reg [2:0] wc = 3'd0;
     reg        busy = 1'b0, fsel = 1'b0, lastr = 1'b0;
-    (* keep = "true" *) reg [3:0] ldx_q = 4'd0;      // nacti delenec x (4 kopie)
-    (* keep = "true" *) reg [3:0] ldy_q = 4'd0;      // nacti delenec y
-    (* keep = "true" *) reg [3:0] sh_q  = 4'd0;      // vyber + posun (takt s fsel = 1)
+    // FW 0x0421 (casovani pro periodu 8 ns): iterace delice trva 3 takty (fc0, fc1 = pocitani dsub, fsel = vyber a posun). 26bitovy rozdil
+    // `dsub` (rem, nq[67], n) ma tak 2 takty (multicycle v timing.sdc): jeden takt byl pri periode 8 ns nesplnitelny (7,5 ns).
+    reg        fc0 = 1'b0, fc1 = 1'b0;
+    (* keep = "true" *) reg [7:0] ldx_q = 8'd0;      // nacti delenec x (8 kopii, FW 0x0421: kazda ridi ~9 bitu nq)
+    (* keep = "true" *) reg [7:0] ldy_q = 8'd0;      // nacti delenec y
+    (* keep = "true" *) reg [7:0] sh_q  = 8'd0;      // vyber + posun (takt s fsel = 1)
     reg [6:0]  cnt = 7'd0;
     reg [24:0] rem = 25'd0;
-    reg        fin_v = 1'b0, fin_b = 1'b0;      // odlozeny posledni krok (viz nize)
+    // FW 0x0421: odlozeny posledni krok (viz nize), zvlast pro segment A a B a ve 2 KOPIICH (0 = n, xm; 1 = ym, ok):
+    // jediny `fin_v` rizeny CE ~110 registru a jeho cesta (5,8 ns vedeni) byla pri periode 8 ns nesplnena.
+    reg        finp_a = 1'b0, finp_b = 1'b0;
+    (* keep = "true" *) reg [1:0] fin_va = 2'b00;
+    (* keep = "true" *) reg [1:0] fin_vb = 2'b00;
     reg [47:0] fin_q = 48'd0;
     reg [47:0] dtr   = 48'd0;                // t0 - ref_ts (kazdy takt; t0 i ref_ts jsou pri nacteni deliteli davno stabilni)
     reg [67:0] nq  = 68'd0;
@@ -746,11 +791,18 @@ module regr_acc (
 
     // dalsi stav ridicich signalu (z registru -> kratke cesty); kopie se registruji ze stejneho vyrazu
     reg  n_ge2 = 1'b0;                                   // n >= 2 (registrovano; n je pri rozhodnuti 5 taktu stabilni)
-    wire go_x     = waitf && (wc == 3'd4) && n_ge2;
-    wire done_sel = busy & fsel & lastr;                 // posledni vyber prubehu
-    wire ld_now   = ldx_q[0] | ldy_q[0];
+    wire go_x     = waitf && (wc == 3'd6) && n_ge2;
+    // FW 0x0421: `done_sel` je REGISTR (dsel_q): posledni vyber = takt vyberu, kdyz cnt == 67 (cnt se meni jen v taktu vyberu,
+    // takze je v taktu fc1 stabilni a dsel_q je v taktu vyberu totez co driv `busy & fsel & lastr`).
+    reg  dsel_q = 1'b0;
+    wire done_sel = dsel_q;                              // posledni vyber prubehu
+    // FW 0x0421: ld_now je JEDEN registr (driv OR dvou, ridil ~10 cest -> wc, busy, fc0, ...)
+    (* keep = "true" *) reg ldn_q = 1'b0;
+    wire ld_now   = ldn_q;
     wire busy_nx  = ld_now | (busy & ~done_sel);
-    wire fsel_nx  = ld_now ? 1'b0 : (busy & ~done_sel & ~fsel);
+    wire fc0_nx   = ld_now | (busy & ~done_sel & fsel);
+    wire fc1_nx   = busy & ~done_sel & fc0;
+    wire fsel_nx  = busy & ~done_sel & fc1 & ~ld_now;
     wire sh_nx    = busy_nx & fsel_nx;
 
     integer i;
@@ -761,19 +813,22 @@ module regr_acc (
         end
         if (waitf) begin
             wc <= wc + 3'd1;
-            if (wc == 3'd4) begin
+            if (wc == 3'd6) begin
                 waitf <= 1'b0;
                 if (!n_ge2) begin if (for_b) ok_b <= 1'b0; else ok_a <= 1'b0; end
             end
         end
-        ldx_q <= {4{go_x}};
-        ldy_q <= {4{done_sel & ~phase_y}};
+        ldn_q <= go_x | (done_sel & ~phase_y);
+        ldx_q <= {8{go_x}};
+        ldy_q <= {8{done_sel & ~phase_y}};
         busy  <= busy_nx;
+        fc0   <= fc0_nx;
+        fc1   <= fc1_nx;
         fsel  <= fsel_nx;
-        sh_q  <= {4{sh_nx}};
+        sh_q  <= {8{sh_nx}};
         dtr   <= t0 - ref_ts;
         dsub  <= {1'b0, rem_n} - {2'b00, n};            // kazdy takt; pouzije se jen v taktu vyberu
-        lastr <= (cnt == 7'd67);
+        dsel_q <= fsel_nx & (cnt == 7'd67);
         n_ge2 <= (n_hi != 8'd0) | (n_md != 8'd0) | (n_lo[7:1] != 7'd0);
 
         if (ldx_q[0]) begin
@@ -787,23 +842,23 @@ module regr_acc (
         end
         // nq po ctvrtinach, kazda ridena vlastni kopii ridicich signalu
         for (i = 0; i < 68; i = i + 1) begin
-            if (ldx_q[i / 17])      nq[i] <= dvx[i];
-            else if (ldy_q[i / 17]) nq[i] <= dvy[i];
-            else if (sh_q[i / 17])  nq[i] <= (i == 0) ? qb : nq[(i == 0) ? 0 : i - 1];
+            if (ldx_q[i / 9])       nq[i] <= dvx[i];
+            else if (ldy_q[i / 9])  nq[i] <= dvy[i];
+            else if (sh_q[i / 9])   nq[i] <= (i == 0) ? qb : nq[(i == 0) ? 0 : i - 1];
         end
         if (done_sel & ~phase_y) xq <= {nq[38:0], qb};                 // podil sum(x-x0)*256/n
         // FW 0x041E: posledni krok (48bitovy soucet s y0r) se odlozi o takt: podil {nq,qb} se nejdriv ZAREGISTRUJE
         // (`fin_q`), teprve pak se scita. Driv vedla cesta dsub[25] -> qb -> carry chain 48 b -> ym_a/ym_b
         // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). n, x0, xq, y0r jsou v tu chvili stabilni.
-        fin_v <= done_sel & phase_y;
-        if (done_sel & phase_y) begin fin_b <= for_b; fin_q <= {nq[46:0], qb}; end
-        if (fin_v) begin
-            if (fin_b) begin
-                n_b <= n; xm_b <= {x0, 8'd0} + xq; ym_b <= y0r + fin_q; ok_b <= 1'b1;
-            end else begin
-                n_a <= n; xm_a <= {x0, 8'd0} + xq; ym_a <= y0r + fin_q; ok_a <= 1'b1;
-            end
-        end
+        finp_a <= done_sel & phase_y & ~for_b;           // takt po done_sel: fin_q uz platne
+        finp_b <= done_sel & phase_y &  for_b;
+        fin_va <= {2{finp_a}};                           // o dalsi takt: ym = y0r + fin_q ma 2 takty (multicycle v SDC)
+        fin_vb <= {2{finp_b}};
+        if (done_sel & phase_y) fin_q <= {nq[46:0], qb};
+        if (fin_vb[0]) begin n_b <= n; xm_b <= {x0, 8'd0} + xq; end
+        if (fin_vb[1]) begin ym_b <= y0r + fin_q; ok_b <= 1'b1; end
+        if (fin_va[0]) begin n_a <= n; xm_a <= {x0, 8'd0} + xq; end
+        if (fin_va[1]) begin ym_a <= y0r + fin_q; ok_a <= 1'b1; end
         // nove okno: stare vysledky neplati
         if (beg_a) ok_a <= 1'b0;
         if (beg_b) ok_b <= 1'b0;
@@ -851,6 +906,13 @@ module win_recip #(
     // vsechny pulzy se zpozdi o 1 takt (kratke cesty); konzistentne pro count
     // i uzavirani, takze poradi udalosti se nemeni
     reg        rise_q = 1'b0, trig_q = 1'b0, gate_q = 1'b0, hold_q = 1'b0;
+    // FW 0x0421 (casovani pro periodu 8 ns): `rise_q` rizeni okna (close/pend/armed/sg_x) je SAMOSTATNA kopie, ostatni `rise_q` je jen pro citani hran
+    // (count_lo, cy_q): jediny registr s fanoutem pres ~60 prvku byl nejhorsi cestou (-0,1 ns).
+    // FW 0x0421: rise_a/trig_a = prvni registrovy stupen (jen vedeni od TDC), rise_q/trig_q a jejich kopie pro rizeni okna jsou
+    // az za nim (blizko spotrebitelum). Merena i kontrolni cesta jsou o takt delsi, tedy stejny rozdil (viz ce3).
+    reg rise_a = 1'b0, trig_a = 1'b0;
+    (* keep = "true" *) reg rise_k = 1'b0;
+    (* keep = "true" *) reg trig_k = 1'b0;       // totez pro `trig_q` (rizeni okna: trig_c, pend, armed)
     // FW 0x041F: kopie hold_q jen pro vystupni registry okna (r_*, res_tgl, primed, ref_ts). hold_q ma fanout
     // pres sto FF a jeho cesta do res_tgl byla po pridani samokontroly nejtesnejsi v navrhu (+0,03 ns).
     (* keep = "true" *) reg hold_o = 1'b0;
@@ -884,7 +946,7 @@ module win_recip #(
     // v citaci, metastabilita, nebo vstup na hranici prahu, kdy ho kazdy klopny obvod vidi jinak (L-0137). Driv se
     // takova chyba projevila jen spatnym kmitoctem bez jakehokoli priznaku (STATUS #282).
     (* keep = "true" *) reg cp1 = 1'b0;
-    reg        cp2 = 1'b0, cp3 = 1'b0, ce1 = 1'b0, ce2 = 1'b0;     // ce2 je soucasne s rise_q stejne hrany
+    reg        cp2 = 1'b0, cp3 = 1'b0, ce1 = 1'b0, ce2 = 1'b0, ce3 = 1'b0;     // ce3 je soucasne s rise_q stejne hrany (FW 0x0421)
     reg [9:0]  ccnt  = 10'd0;           // kontrolni hrany od posledniho uzavreni (vcetne te uzaviraci), mod 1024
     reg        cl_q  = 1'b0, cl_q2 = 1'b0, cl_q3 = 1'b0;
     reg [9:0]  csnap = 10'd0;           // ccnt uzavreneho okna
@@ -894,24 +956,37 @@ module win_recip #(
         cp1 <= sig_pin; cp2 <= cp1; cp3 <= cp2;
         ce1 <= cp2 & ~cp3;
         ce2 <= ce1;
+        ce3 <= ce2;
     end
 
     // ---- REGR: rozlisi UZAVIRACI spusteni (armed) od spusteni vnitrni hrany (segment) ----
-    wire trig_c = (REGR != 0) ? (trig_q & armed)  : trig_q;      // uzaviraci hrana okna
+    wire trig_c = (REGR != 0) ? (trig_k & armed)  : trig_k;      // uzaviraci hrana okna
     wire trig_s = (REGR != 0) & trig_q & ~armed;                  // vnitrni hrana ve segmentu
     reg        sg_pend = 1'b0, sg_b = 1'b0, ts_seg = 1'b0;
     reg [8:0]  code_cur = 9'd0;     // kod posledni uzaviraci hrany (= zacatek dalsiho okna)
     reg [25:0] sg_x    = 26'd0;
 
-    wire close = (trig_c | pend) & (rise_q | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
+    wire close = (trig_c | pend) & (rise_k | (pend & (pend_n == 2'd3)));  // uzaviraci hrana
     // FW 0x041F: pocita se KAZDA hrana vcetne uzaviraci (driv inc = rise_q & ~close a +1 na vystupu). Uzaviraci
     // hrana tak padne do `count` v taktu close a v taktu cl_q se zachyti se `snap`; `close` uz nelezi na ceste
     // rise_q -> count_lo / cy_q, ktera byla nejtesnejsi v navrhu (rezerva 0,08 ns, L-0141).
     wire inc   = rise_q;
     wire ts_close = ts_valid & ~((REGR != 0) & ts_seg);           // presny cas UZAVIRACI hrany
+    // FW 0x0421 (casovani pro periodu 8 ns): vystup okna se zachyti o TAKT PO ts_valid z jednoho registru (CE ~120 registru r_*, ref_ts, code_cur:
+    // `ts_valid` do nich vedl 5 ns). ts_ps se drzi do dalsi platne znacky a code_i (kod posledni znacky) tez; po uzaviraci hrane
+    // dalsi znacka az s dalsim oknem (>= ms), takze o takt pozdejsi zachyceni nic neposune.
+    reg        tsc_q = 1'b0;
+    // FW 0x0422: reference dalsiho okna (ref_ts, code_cur, primed) se aktualizuji az o takt PO zachyceni vystupu (tsc_q2). Predtim se
+    // vystup (r_dt = ts_ps - ref_ts, r_cs = code_cur) a nove reference menily na STEJNE hrane hodin; na krzemiku (podle rozmisteni) vystup
+    // videl uz nove hodnoty: dt = 0 a code_end == code_st v kazdem okne (HW 2026-10-10, kanal A). STA to nepoznala.
+    reg        tsc_q2 = 1'b0;
     always @(posedge clk) begin
-        rise_q <= rise_s;
-        trig_q <= trig_ack;
+        rise_a <= rise_s;
+        trig_a <= trig_ack;
+        rise_q <= rise_a;
+        rise_k <= rise_a & ~hold;        // = rise_q mimo hold; jina funkce, aby ji synteza nesloucila s rise_q
+        trig_q <= trig_a;
+        trig_k <= trig_a & ~hold;
         gate_q <= gate_tick;
         hold_q <= hold;
         hold_o <= hold;
@@ -929,9 +1004,9 @@ module win_recip #(
         cl_q3 <= cl_q2;
         // kontrolni pocitani: `ccnt` v taktu cl_q obsahuje i kontrolni dvojce uzaviraci hrany (kdyz prijde o takt
         // pozde, pripadne dalsimu oknu: -1 / +1 v sousednich oknech, pri stale stejnem zpozdeni se vyrusi)
-        if (hold_q)     ccnt <= 10'd0;
-        else if (cl_q)  ccnt <= {9'd0, ce2};
-        else            ccnt <= ccnt + {9'd0, ce2};
+        // (FW 0x0421: bez vetve hold_q -> 0: kazde uzavreni ccnt stejne nastavi a prvni okno po holdu se jen zahaji, nevystupuje)
+        if (cl_q)       ccnt <= {9'd0, ce3};
+        else            ccnt <= ccnt + {9'd0, ce3};
         if (cl_q)  csnap <= ccnt;
         if (cl_q2) cdd   <= csnap - count[9:0];          // mod 1024; count v tomto taktu = to, co jde do snap
         if (cl_q3) cdd8  <= ((&cdd[9:7]) | ~(|cdd[9:7])) ? cdd[7:0] : (cdd[9] ? 8'h80 : 8'h7F);
@@ -951,8 +1026,8 @@ module win_recip #(
                 if (age != 8'hFF) age <= age + 8'd1;
             end
             if (inc) count_lo <= count_lo + 8'd1;
-            if (trig_c & ~rise_q) begin pend <= 1'b1; pend_n <= 2'd0; end
-            else if (pend & ~rise_q) pend_n <= pend_n + 2'd1;
+            if (trig_c & ~rise_k) begin pend <= 1'b1; pend_n <= 2'd0; end
+            else if (pend & ~rise_k) pend_n <= pend_n + 2'd1;
             if (trig_c) armed <= 1'b0;          // dalsi trig az po dalsim gate_tick
             if (close) begin
                 pend     <= 1'b0;
@@ -971,10 +1046,12 @@ module win_recip #(
             // vnitrni hrana ve segmentu: poradi hrany se zachyti, az ji napocita rise_q (0..1 takt po trig)
             if (trig_s) begin sg_pend <= 1'b1; sg_b <= seg_b; ts_seg <= 1'b1; end
             if (trig_c) ts_seg <= 1'b0;
-            if (sg_pend & rise_q) begin sg_x <= count + 26'd1; sg_pend <= 1'b0; end   // count tuto hranu jeste neobsahuje
+            if (sg_pend & rise_k) begin sg_x <= count + 26'd1; sg_pend <= 1'b0; end   // count tuto hranu jeste neobsahuje
         end
         // vystup okna: rizeny kopii hold_o (stejna hodnota jako hold_q, viz deklarace)
-        if (ts_close && !hold_o) begin
+        tsc_q <= ts_close & ~hold_o;
+        tsc_q2 <= tsc_q & ~hold_o;
+        if (tsc_q) begin
             if (primed) begin                      // prvni hrana vubec okno neuzavira
                 r_periods  <= snap;
                 r_dt       <= ts_ps - ref_ts;
@@ -984,6 +1061,8 @@ module win_recip #(
                 r_cs       <= code_cur;
                 r_ccd      <= cdd8;               // hotove 4 takty po close (<= T+6), ts_close je T+7 (T = trig_ack)
             end
+        end
+        if (tsc_q2) begin                          // reference pro dalsi okno az o takt po zachyceni vystupu (viz tsc_q2)
             code_cur <= code_i;
             ref_ts <= ts_ps;
             primed <= 1'b1;
@@ -1043,4 +1122,51 @@ module phase_check (
             if (q3[1] ^ q3[0]) seen[3] <= 1'b1;
         end
     end
+endmodule
+
+
+// ------------------------------------------------------------
+// ref_guard (FW 0x0420): bezpecne prepnuti reference OCXO <-> externi 10 MHz (pin Ref_Ctrl -> prepinac U19).
+//   Bezi z VNITRNIHO oscilatoru FPGA (OSC), tedy NEZAVISLE na vnejsich hodinach: vybrana externi reference, ktera
+//   zmizi, by jinak zastavila hodiny celeho FPGA (Si5356 CLKIN) a nikdo by uz nemohl prepnout zpet.
+//   * ext_present: na ext_sens (PIN51, externi vstup po Schmittu) byly hrany v poslednich ~PRES_TMO taktech osc.
+//   * Externi se pusti az po NEPRETRZITE pritomnosti ~STABLE_N taktu (zakmity pri pripojovani kabelu).
+//   * Zmizi-li externi, kdyz je vybrana: sel = 0 (OCXO) a ext_lost = 1 (sticky) -- dalsi pokus az po sel_req = 0.
+//   * Po zapnuti FPGA je sel = 0 (a pin Ref_Ctrl ma navic externi pulldown 10k) => OCXO.
+//   Kmitocet externiho signalu se NEkontroluje (jen pritomnost hran): musi to byt 10 MHz.
+// ------------------------------------------------------------
+module ref_guard #(
+    parameter [7:0]  PRES_TMO = 8'd250,   // ~8 us pri 31,25 MHz: bez hrany po tuto dobu = externi chybi
+    parameter [9:0]  STABLE_N = 10'd512   // ~16 us nepretrzite pritomna, nez se externi pusti
+)(
+    input  wire osc_clk,       // vnitrni oscilator (OSC), nezavisly na vnejsich hodinach
+    input  wire ext_sens,      // PIN51: externi reference (asynchronni)
+    input  wire sel_req,       // pozadavek z aplikace (domena 10 MHz, kvazistaticky)
+    output wire ref_ctrl,      // PIN41: 1 = externi, 0 = OCXO
+    output reg  ext_present,
+    output reg  ext_lost
+);
+    reg [2:0] es = 3'b000;
+    reg [1:0] rq = 2'b00;
+    reg [7:0] tmo = 8'd0;
+    reg [9:0] stab = 10'd0;
+    reg       sel = 1'b0;
+    initial begin ext_present = 1'b0; ext_lost = 1'b0; end
+    always @(posedge osc_clk) begin
+        es <= {es[1:0], ext_sens};
+        rq <= {rq[0], sel_req};
+        if (es[2] ^ es[1]) tmo <= PRES_TMO;
+        else if (tmo != 8'd0) tmo <= tmo - 8'd1;
+        ext_present <= (tmo != 8'd0);
+        if (!ext_present)            stab <= 10'd0;
+        else if (stab != STABLE_N)   stab <= stab + 10'd1;
+        if (!rq[1]) begin
+            sel      <= 1'b0;
+            ext_lost <= 1'b0;
+        end else if (!ext_lost) begin
+            if (sel && !ext_present)                  begin sel <= 1'b0; ext_lost <= 1'b1; end
+            else if (!sel && stab == STABLE_N)        sel <= 1'b1;
+        end
+    end
+    assign ref_ctrl = sel;
 endmodule

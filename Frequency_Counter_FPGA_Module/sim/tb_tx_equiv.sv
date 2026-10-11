@@ -12,7 +12,7 @@ module tb_tx_equiv;
     reg [191:0] cal_diag = 0; reg [15:0] mt_a = 0, mt_b = 0, dm = 0, ds = 0;
     reg [23:0] ha = 0, hb = 0;
     wire [9:0] hk_n; wire [7:0] hk_o;
-    wire [7:0] ds_n, ds_o; wire cm_n, cm_o; wire [1:0] bw_n, bw_o;
+    wire [7:0] ds_n, ds_o; wire cm_n, cm_o; wire [2:0] bw_n; wire [1:0] bw_o;   // novy spi_app ma base_win 3 b (FW 0x041E), stara reference 2 b
     wire th_n, th_o, we_n, we_o; wire [7:0] wa_n, wa_o, wd_n, wd_o;
 
     spi_app u_new (.clk(clk), .meas_freq_x100000(meas_freq), .meas_periods(meas_periods), .meas_gate_ns(meas_gate),
@@ -21,7 +21,7 @@ module tb_tx_equiv;
         .meas_dt_a_ps(dt_a), .meas_dt_b_ps(dt_b), .meas_periods_b(meas_periods_b), .meas_tdc_status(meas_tdc_status),
         .meas_cal_diag(cal_diag), .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_xm_a(40'd0), .rg_xm_b(40'd0), .rg_ym_a(48'd0), .rg_ym_b(48'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .cd_a_end(9'd0), .cd_a_st(9'd0), .cd_b_end(9'd0), .cd_b_st(9'd0), .meas_maxtap_a(mt_a), .meas_maxtap_b(mt_b), .hist_k(hk_n),
         .meas_hist_a(ha), .meas_hist_b(hb), .dbg_mosi_cnt(dm), .dbg_sck_cnt(ds),
-        .meas_clk_status(8'h01), .meas_clk_loss(8'd0), .meas_ccd_p(8'd0), .meas_ccd_s(8'd0),
+        .meas_clk_status(8'h01), .meas_clk_loss(8'd0), .meas_clk_mhz(8'd100), .meas_ccd_p(8'd0), .meas_ccd_s(8'd0),
         .rx_valid(1'b0), .rx_b0(8'd0), .rx_b1(8'd0), .rx_b2(8'd0), .rx_seq(32'd0), .rx_p0(8'd0), .rx_p1(8'd0), .rx_p2(8'd0),
         .rx_crc_calc(16'd0), .rx_crc_recv(16'd0), .tx_half(th_n), .tx_we(we_n), .tx_waddr(wa_n), .tx_wdata(wd_n),
         .phy_busy(1'b0), .phy_base(1'b0), .dbg_status(ds_n), .cal_mode(cm_n), .base_win(bw_n));

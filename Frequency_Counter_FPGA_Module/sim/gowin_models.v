@@ -90,3 +90,10 @@ module LUT2 (output F, input I0, input I1);
     end
     assign F = f_r;
 endmodule
+
+
+// OSC (vnitrni oscilator FPGA): f = 250 MHz / FREQ_DIV (UG286 6.1.1, GW1NR-9C). Behavioralni model pro Icarus.
+module OSC #(parameter FREQ_DIV = 100, parameter DEVICE = "GW1N-4") (output reg OSCOUT);
+    initial OSCOUT = 1'b0;
+    always #(FREQ_DIV * 2000) OSCOUT = ~OSCOUT;     // pulperioda [ps] = FREQ_DIV * 2 ns
+endmodule

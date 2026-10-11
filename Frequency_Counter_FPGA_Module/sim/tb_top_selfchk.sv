@@ -9,17 +9,18 @@
 // CH_A = 10 MHz * (1 + 813 ppm), CH_B = 5 MHz * (1 - 300 ppm).
 // ============================================================
 `timescale 1ps/1fs
+`include "tb_clk.vh"
 module tb_top_selfchk;
     reg clk10 = 0, clk100 = 0, clk100_en = 1;
     always #50000 clk10 = ~clk10;
-    initial begin #2300; forever begin #5000; clk100 = clk100_en ? ~clk100 : 1'b0; end end
+    initial begin #2300; forever begin #(`TB_THALF_PS); clk100 = clk100_en ? ~clk100 : 1'b0; end end
     real TA = 100000.0 / (1.0 + 813e-6);          // CH_A: 10 MHz
     real TB = 200000.0 / (1.0 - 300e-6);          // CH_B: 5 MHz
     reg ch_a = 0, ch_b = 0;
     initial begin #12345; forever begin ch_a = 1; #(TA/2.0); ch_a = 0; #(TA/2.0); end end
     initial begin #23456; forever begin ch_b = 1; #(TB/2.0); ch_b = 0; #(TB/2.0); end end
     wire miso, led;
-    top dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led),
+    top dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .ref_ctrl(), .ext_ref_sens(1'b0),
              .spi_sck(1'b0), .spi_cs_n(1'b1), .spi_mosi(1'b0), .spi_miso(miso));
 
     real fa, fp;
@@ -28,7 +29,7 @@ module tb_top_selfchk;
     initial fa = 1.0e12 / TA;
 
     function real hz(input [31:0] per, input [47:0] dt);
-        hz = (dt == 0) ? 0.0 : real'(per) / (real'(dt) * 0.6103515625) * 1.0e12;
+        hz = (dt == 0) ? 0.0 : real'(per) / (real'(dt) * `TB_PS_PER_UNIT) * 1.0e12;
     endfunction
 
     // faze 3: zotaveni musi projit drzenim mereni a novou kalibraci

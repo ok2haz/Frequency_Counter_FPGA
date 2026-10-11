@@ -9,6 +9,7 @@
 // Vyhodnoceni PASS/FAIL: -DEXPECT_SIGMA_PS=<limit>, -DEXPECT_MAXJUMP=<max skoku ve %>
 // ============================================================
 `timescale 1ps/1ps
+`include "tb_clk.vh"
 `ifndef CAL_LOG2_TB
 `define CAL_LOG2_TB 16
 `endif
@@ -38,7 +39,7 @@ module tb_tdc_inl;
     localparam TSIG     = 97123;                 // perioda signalu [ps]; posun faze na hranu 7123 ps (pokryti)
 
     reg clk = 0;
-    always #5000 clk = ~clk;                     // 100 MHz
+    always #(`TB_THALF_PS) clk = ~clk;                  // referencni hodiny (tb_clk.vh)
     reg [47:0] tick_ps = 48'd0;
     always @(posedge clk) tick_ps <= tick_ps + 48'd16384;
 
@@ -77,8 +78,8 @@ module tb_tdc_inl;
     integer k_first = 0;
     always @(posedge clk) if (tsv && nrec < `NEDGES) begin
         t_edge = T0 + (k_first + nrec) * 1.0 * TSIG;
-        terr[nrec] = $itor(ts) * 625.0 / 1024.0 - t_edge;
-        tph[nrec]  = t_edge - 10000.0 * $floor(t_edge / 10000.0);
+        terr[nrec] = $itor(ts) * `TB_PS_PER_UNIT - t_edge;
+        tph[nrec]  = t_edge - `TB_TCLK_R * $floor(t_edge / `TB_TCLK_R);
         nrec = nrec + 1;
     end
 
@@ -112,16 +113,16 @@ module tb_tdc_inl;
             if (firstk < 0) firstk = k; lastk = k; nonz = nonz + 1; if (h[k] > h[maxk]) maxk = k;
         end
         $display("HIST: N=%0d, adresy %0d..%0d, obsazenych %0d, nejvetsi bin a=%0d = %0.0f ps (%0.1f %% periody)",
-                 hsum, firstk, lastk, nonz, maxk, 10000.0 * h[maxk] / hsum, 100.0 * h[maxk] / hsum);
+                 hsum, firstk, lastk, nonz, maxk, `TB_TCLK_R * h[maxk] / hsum, 100.0 * h[maxk] / hsum);
         if (`PDUAL != 0) begin
             n0 = 0; n1 = 0;
             for (k = 0; k < NC / 2; k = k + 1) begin n0 = n0 + h[k]; n1 = n1 + h[k + NC / 2]; end
             $display("HIST: sada R %0.1f %% udalosti (w_lo = %0.0f ps), sada F %0.1f %% (w_hi = %0.0f ps)",
-                     100.0 * n0 / hsum, 10000.0 * n0 / hsum, 100.0 * n1 / hsum, 10000.0 * n1 / hsum);
+                     100.0 * n0 / hsum, `TB_TCLK_R * n0 / hsum, 100.0 * n1 / hsum, `TB_TCLK_R * n1 / hsum);
         end
         // sigma kvantizace 1 hrany z histogramu (jako tools/tdc_hist_analysis.py)
         tot = 0.0;
-        for (k = 0; k < NC; k = k + 1) begin w = 10000.0 * h[k] / hsum; tot = tot + (w / 10000.0) * w * w / 12.0; end
+        for (k = 0; k < NC; k = k + 1) begin w = `TB_TCLK_R * h[k] / hsum; tot = tot + (w / `TB_TCLK_R) * w * w / 12.0; end
         $display("HIST: sigma kvantizace 1 hrany = %0.0f ps (okno = x sqrt2 = %0.0f ps)", $sqrt(tot), $sqrt(2.0 * tot));
         // ---- mereni: want=1 -> kazda hrana dostane presny cas ----
         k_first = 0;
@@ -152,7 +153,7 @@ module tb_tdc_inl;
         end
         for (i = 0; i < `NEDGES; i = i + 1) begin
             w = terr[i] - TSIG * $floor((terr[i] - mean_all) / TSIG + 0.5) - med;    // chyba znacky vuci medianu
-            nb = $rtoi(tph[i] / (10000.0 / nbin)); if (nb > nbin - 1) nb = nbin - 1;
+            nb = $rtoi(tph[i] / (`TB_TCLK_R / nbin)); if (nb > nbin - 1) nb = nbin - 1;
             if (w > 2000.0 || w < -2000.0) begin nj = nj + 1; bj[nb] = bj[nb] + 1; end
             else begin bsum[nb] = bsum[nb] + w; bsq[nb] = bsq[nb] + w * w; bn[nb] = bn[nb] + 1; s_all = s_all + w * w; end
         end
@@ -160,8 +161,8 @@ module tb_tdc_inl;
         for (i = 0; i < nbin; i = i + 1) begin
             if (bn[i] > 0) begin
                 mu = bsum[i] / bn[i]; m2 = bsq[i] / bn[i] - mu * mu;
-                $display("%5d-%5d %4d %8.1f %8.1f %4d", i * 10000 / nbin, (i + 1) * 10000 / nbin, bn[i], mu, (m2 > 0) ? $sqrt(m2) : 0.0, bj[i]);
-            end else $display("%5d-%5d %4d      ---      --- %4d", i * 10000 / nbin, (i + 1) * 10000 / nbin, 0, bj[i]);
+                $display("%5d-%5d %4d %8.1f %8.1f %4d", i * (`TB_THALF_PS * 2) / nbin, (i + 1) * (`TB_THALF_PS * 2) / nbin, bn[i], mu, (m2 > 0) ? $sqrt(m2) : 0.0, bj[i]);
+            end else $display("%5d-%5d %4d      ---      --- %4d", i * (`TB_THALF_PS * 2) / nbin, (i + 1) * (`TB_THALF_PS * 2) / nbin, 0, bj[i]);
         end
         $display("\nSHRNUTI: hran %0d, skoky >2 ns: %0d (%0.1f %%), sigma mimo skoky %0.1f ps", `NEDGES, nj, 100.0 * nj / `NEDGES,
                  $sqrt(s_all / (`NEDGES - nj)));

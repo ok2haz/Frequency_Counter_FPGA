@@ -73,6 +73,8 @@ $tests = @(
     # a hlidac 100 MHz (zastaveni hodin na 20 us -> vypadek napocitan, mereni drzeno, rekalibrace, pak spravne)
     @{ name = "topselfchk"; top = "tb_top_selfchk"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_selfchk.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-10 (FW 0x0420): ref_guard -- bezpecne prepnuti reference OCXO <-> externi 10 MHz z vnitrniho oscilatoru
+    @{ name = "refguard"; top = "tb_ref_guard"; rtl = @("spi_app.v"); tb = "tb_ref_guard.sv" }
     # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
     @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
     @{ name = "decequiv288"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=288") }
@@ -101,7 +103,7 @@ foreach ($t in $tests) {
     $files += (Join-Path $sim $t.tb)
 
     Write-Host "--- Test '$($t.name)' ---" -ForegroundColor Cyan
-    & iverilog -g2012 -s $t.top @($t.defs) -o $vvp @files
+    & iverilog -g2012 -I $sim -s $t.top @($t.defs) -o $vvp @files
     if ($LASTEXITCODE -ne 0) { Write-Host "  COMPILE FAIL" -ForegroundColor Red; $fail++; continue }
 
     $out = & vvp $vvp

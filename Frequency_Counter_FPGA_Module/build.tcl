@@ -20,7 +20,10 @@ set_option -use_done_as_gpio 0
 set_option -use_reconfign_as_gpio 0
 set_option -use_i2c_as_gpio 0
 # Vyssi usili placeru/routeru: cross-fazove cesty TDC (2,5/5/7,5 ns rozpocty)
-set_option -place_option 1
+# place_option 2: zmereno pri FW 0x0421 (perioda 8 ns), 8 sestaveni kazde varianty (jine BLD_TIME = jine rozmisteni):
+# place 1: ~1 z 6 bez poruseni casovani, place 2: 3 z 8 (a 2 z 4 ve starsi verzi); route_option 2 zadne zlepseni.
+# Od FW 0x0423 jsou hodiny zase 100 MHz (10 ns); volba zustava.
+set_option -place_option 2
 set_option -route_option 1
 # Textovy timing report: nese polohu vzorkovacich FF TDC (sim/check_tdc_placement.py)
 set_option -gen_text_timing_rpt 1

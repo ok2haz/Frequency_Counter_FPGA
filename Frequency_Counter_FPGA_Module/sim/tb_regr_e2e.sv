@@ -8,6 +8,7 @@
 // PASS: vsechna okna maji ok_A & ok_B, sigma_reg < sigma_2pt / 1.8, |stred_reg| < 3*sigma_reg/sqrt(n).
 // ============================================================
 `timescale 1ps/1ps
+`include "tb_clk.vh"
 `ifndef CAL_LOG2_TB
 `define CAL_LOG2_TB 14
 `endif
@@ -29,9 +30,9 @@
 module tb_regr_e2e;
     localparam CAL_LOG2 = `CAL_LOG2_TB;
     localparam TSIG = `TSIG_PS;
-    localparam GP = 6000;                          // hradlo [takty 100 MHz] = 60 us; G/16 musi byt > ~300 taktu (deleni v regr_acc)
+    localparam GP = 8000;                          // hradlo [takty hodin] = 64 us; G/16 musi byt > ~420 taktu (deleni v regr_acc, FW 0x0421: 3 takty/iteraci)
 
-    reg clk = 0; always #5000 clk = ~clk;
+    reg clk = 0; always #(`TB_THALF_PS) clk = ~clk;
     reg [47:0] tick_ps = 48'd0;
     always @(posedge clk) tick_ps <= tick_ps + 48'd16384;
 
@@ -88,10 +89,10 @@ module tb_regr_e2e;
         tg_p <= tgl;
         if (tgl !== tg_p && started) begin
             // regresni vystupy platne pro PRAVE uzavrene okno (segment B skoncil pred jeho koncem)
-            f2 = ($itor(per) / ($itor(dt) * 625.0 / 1024.0)) * 1.0e12;
+            f2 = ($itor(per) / ($itor(dt) * `TB_PS_PER_UNIT)) * 1.0e12;
             if (rg_ok_a && rg_ok_b && rg_n_a >= 2 && rg_n_b >= 2) begin
                 dxm = ($itor(rg_xm_b) - $itor(rg_xm_a)) / 256.0;
-                dym = ($itor(rg_ym_b) - $itor(rg_ym_a)) / 16.0 * 625.0 / 1024.0;      // ps
+                dym = ($itor(rg_ym_b) - $itor(rg_ym_a)) / 16.0 * `TB_PS_PER_UNIT;      // ps
                 fr  = dxm / dym * 1.0e12;
                 if (nw < `NWIN) begin e2[nw] = f2 / f_true - 1.0; er[nw] = fr / f_true - 1.0; nw = nw + 1; end
                 if (nw <= 4) $display("  okno %0d: n_A=%0d n_B=%0d  2pt %0.1f ppb  regr %0.1f ppb", nw, rg_n_a, rg_n_b,

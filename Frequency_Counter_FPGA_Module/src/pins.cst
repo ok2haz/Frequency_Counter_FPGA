@@ -18,13 +18,21 @@
 //     dual-channel hrubé čítání + SPI v2 beze změny).
 // ============================================================
 
-IO_LOC "clk_p0_100m"      35;  // REF_100MHz, GCLKT_4 PRIMARY [M] (jediná ref. hodina)
+IO_LOC "clk_p0_100m"      35;  // REF_100MHz (Si5356 CLK0/1; FW 0x0421/0x0422 125 MHz), GCLKT_4 PRIMARY [M] (jediná ref. hodina).
 IO_LOC "clk_ref_10m"      42;  // REF_10MHz, záloha přímo z OCXO (gate-window časování)
 
 IO_LOC "ch_a"             25;  // CH_A, carry chain A (PIN25_IOB8A)
 IO_LOC "ch_b"             27;  // CH_B, carry chain B (PIN27_IOB11A)
 
 IO_LOC "led_tx"           29;  // LED stavu (statické, ne PWM — zadání §J4)
+
+// FW 0x0420 (2026-10-10): vyber reference. Ref_Ctrl ridi prepinac U19 (TS5A3159): 0 = OCXO (U16/U17), 1 = externi vstup (U18/U20);
+// pin ma na desce pulldown 10k (R113) => po zapnuti OCXO. Ext_Ref_Sens je vystup Schmitta U20 externiho vstupu (jen detekce hran).
+// Banky 3,3 V: PIN41 je v bance 2 jako CH_A/CH_B a REF_10MHz (PIN42), PIN51 v bance 1 jako SPI (PIN54-57).
+IO_LOC "ref_ctrl"         41;
+IO_LOC "ext_ref_sens"     51;
+IO_PORT "ref_ctrl"        IO_TYPE=LVCMOS33 DRIVE=8 PULL_MODE=DOWN;
+IO_PORT "ext_ref_sens"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
 // SPI slave (STM32H757 = master), 3.3V, Mode 0, CS active LOW — beze změny
 // proti staré desce (PIN54-57 stejné, protokol v2 zatím beze změny).
@@ -44,6 +52,10 @@ IO_PORT "ch_b"             IO_TYPE=LVCMOS33;
 // (Gowin CT1136). Nova deska ma led_tx v jine bance nez stara.
 IO_PORT "led_tx"  IO_TYPE=LVCMOS33;
 
+// FW 0x0422: LED D5 "FPGA_OK" na PIN63 (IOR5A), anoda na pinu, katoda pres R31 1k k zemi -> aktivni 1 (netlist FPGA_Module_2_1).
+IO_LOC "fpga_ok"          63;
+IO_PORT "fpga_ok" IO_TYPE=LVCMOS33 DRIVE=8;
+
 IO_PORT "spi_mosi" IO_TYPE=LVCMOS33;
 IO_PORT "spi_miso" IO_TYPE=LVCMOS33 DRIVE=8;
 IO_PORT "spi_sck"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;  // Mode 0: hodiny idle LOW (ne UP!)
@@ -51,9 +63,9 @@ IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
 // ── NEPOUŽITO V TOMTO KROKU (rezervováno pro budoucí práci) ─────────────
 // IO_LOC "gps_1pps"      33;  // PIN33_IOB23A, carry chain C — čeká na time_error_ps (v3)
-// IO_LOC "ref_ctrl"      41;  // PIN41_IOB41A, statický oddělovač referencí
+// (ref_ctrl PIN41 je od FW 0x0420 pouzit vyse)
 // IO_LOC "ref_10m_raw"   42;  // shodné s clk_ref_10m výše — NEpřidávat dvakrát
-// IO_LOC "ext_ref_sens"  51;  // PIN51_IOR17B, 10 MHz monitor (jiný bank)
+// (ext_ref_sens PIN51 je od FW 0x0420 pouzit vyse)
 // Data_RDY (PIN49) se NEPOUŽÍVÁ (rozhodnuto 2026-08-30, FPGA_PROTOCOL_V3_NAVRH.md §2/§3) —
 // nahrazuje ho příznak na MISO při CS=1 (v3 §3), dnes ani to není zapojeno (v2 beze změny).
 

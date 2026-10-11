@@ -9,6 +9,7 @@
 //      vuci taktu) -- vysledek se nesmi zmenit
 // ============================================================
 `timescale 1ps/1ps
+`include "tb_clk.vh"
 module tb_tdc;
     localparam CAL_LOG2 = 15;
     // 2026-10-03: retez ~16,6 ns (512 ALU x ~32 ps) -> pulperioda vstupu MUSI byt delsi
@@ -17,7 +18,7 @@ module tb_tdc;
     localparam B_SKEW   = 3333;                  // B je opozdeno vuci A [ps]
 
     reg clk = 0;
-    always #5000 clk = ~clk;                     // 100 MHz
+    always #(`TB_THALF_PS) clk = ~clk;                  // referencni hodiny (tb_clk.vh)
 
     reg [47:0] tick_ps = 48'd0;
     always @(posedge clk) tick_ps <= tick_ps + 48'd16384;   // jednotka T_clk/16384
@@ -55,14 +56,14 @@ module tb_tdc;
         .ts_valid(tsv_a), .ts_ps(ts_a), .use_ro(use_ro_a), .cal_busy(busy_a),
         .cal_valid(valid_a), .cal_fail(fail_a),
         .d_ovf(ovf_a), .d_peak(peak_a), .d_nz(nz_a), .d_last(last_a),
-        .dump_k(8'd0), .dump_q());
+        .dump_k(10'd0), .dump_q());
     tdc_chan #(.CAL_LOG2(CAL_LOG2)) cb (
         .clk(clk), .sig_raw(sig_b), .ro(ro), .tick_ps(tick_ps), .want(want_b), .want_seg(1'b0),
         .cal_req(cal_req), .cal_abort(abort), .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b),
         .ts_valid(tsv_b), .ts_ps(ts_b), .use_ro(use_ro_b), .cal_busy(busy_b),
         .cal_valid(valid_b), .cal_fail(fail_b),
         .d_ovf(ovf_b), .d_peak(peak_b), .d_nz(nz_b), .d_last(last_b),
-        .dump_k(8'd0), .dump_q());
+        .dump_k(10'd0), .dump_q());
 
     wire [25:0] per_a, per_b;
     wire [47:0] dt_a, dt_b;
@@ -132,14 +133,14 @@ module tb_tdc;
                 @(posedge clk);
                 if (tgl_a !== tga) begin
                     tga = tgl_a;
-                    ea = $itor(dt_a) * 625.0 / 1024.0 - $itor(per_a) * TSIG;
+                    ea = $itor(dt_a) * `TB_PS_PER_UNIT - $itor(per_a) * TSIG;
                     sa = sa + ea; sa2 = sa2 + ea*ea; na_ = na_ + 1;
                     if (ea > 150.0 || ea < -150.0) bad = bad + 1;
                     if (al_a) begin $display("FAIL: alias A"); errors = errors + 1; end
                 end
                 if (tgl_b !== tgb) begin
                     tgb = tgl_b;
-                    eb = $itor(dt_b) * 625.0 / 1024.0 - $itor(per_b) * TSIG;
+                    eb = $itor(dt_b) * `TB_PS_PER_UNIT - $itor(per_b) * TSIG;
                     sb = sb + eb; sb2 = sb2 + eb*eb; nb_ = nb_ + 1;
                     if (eb > 150.0 || eb < -150.0) bad = bad + 1;
                     got = got + 1;
