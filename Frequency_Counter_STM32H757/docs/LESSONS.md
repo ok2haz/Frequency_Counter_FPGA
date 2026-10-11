@@ -4453,6 +4453,134 @@ Opraveno tak, jak L-0018 zada: kriterium zustalo na jednom miste a prenasi se
 - **Commit:** (commit FW 0x041F)
 - **Stav:** aktivní, ⬜ neověřeno na desce
 
+### L-0147 — Přepínač zdroje hodin nesmí ležet za hodinami, které přepíná
+
+- **Datum:** 2026-10-10
+- **Oblast:** FPGA `ref_guard` (`spi_app.v`), pin `Ref_Ctrl`, přepínač reference `U19`
+- **Symptom:** návrh (ještě bez kódu): kdyby FPGA ovládala přepnutí OCXO → externí reference z logiky v doméně 10/100 MHz,
+  vybraná externí reference, která zmizí (vytažený kabel), by zastavila hodiny celého FPGA (Si5356 CLKIN) a tím i logiku,
+  která měla přepnout zpět — zařízení by zůstalo viset do power-cyklu.
+- **Příčina:** obvod, který rozhoduje o zdroji hodin, běžel na těch hodinách.
+- **Oprava:** `ref_guard` běží z vnitřního oscilátoru FPGA (OSC), nezávisle na vnějších hodinách: externí pustí jen při nepřetržité
+  přítomnosti hran, při jejím zmizení se sám vrátí na OCXO; po zapnutí je výchozí OCXO (hardwarový pulldown + `sel = 0`).
+- **Pravidlo:** **Kdo vybírá zdroj hodin, musí mít vlastní nezávislý zdroj hodin a bezpečný výchozí stav; ovládání, které by po výpadku
+  vybraného zdroje už nemělo čím běžet, je past.**
+- **Detekce:** `sim/run.ps1 refguard` (vypadnutí vybrané reference → zpět na OCXO do ~15 µs); `status` → `FPGA REFERENCE:`.
+- **Commit:** (commit FW 0x0420)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0148 — Změna jednoho výstupu Si5356 nesmí jít přes soft reset
+
+- **Datum:** 2026-10-10
+- **Oblast:** `si5356.c` (generátor CLK2/3, CLK4/5, CLK6/7), reference FPGA na CLK0/1
+- **Symptom:** (návrh, před kódem) nejkratší cesta k „volné frekvenci“ je zapsat nové MultiSynth registry a udělat
+  soft reset jako při inicializaci. Soft reset (reg 246) ale **vypne všechny výstupy**, tedy i CLK0/1 = 125 MHz,
+  časovou základnu FPGA — jedno přeladění generátoru by FPGA shodilo (a spustilo rekalibraci TDC).
+- **Příčina:** výstupy jednoho čipu sdílejí reset; „nezávislé“ jsou jen děliče.
+- **Oprava:** `si5356_gen_apply` mění jednu dvojici bez resetu: `OEB_x` (reg 230) → R + MS (10 registrů) → uvolnit `OEB_x`.
+  Zapisuje jen SensorsTask (vlastník I2C1) na žádost `si5356_gen_request`. Výpočet P1/P2/P3 je přesný racionální
+  (P2/P3 = zbytek/fms zkrácený), pro 125/50/150/200 MHz vychází bit za bitem export z CBPro.
+- **Pravidlo:** **Co sdílí zdroj hodin s kritickým odběratelem, se nikdy nemění operací, která zasahuje celý čip (reset, power-down);
+  mění se jen vlastní větev a ověří se, že referenční výstup po zásahu běží.**
+- **Detekce:** UART `gen` (zapsáno vs. přečteno z čipu → `SHODA`/`ROZDIL`) a `status` → `FPGA HODINY`: výpadek 100/125 MHz
+  se po přeladění generátoru nesmí zvýšit.
+- **Commit:** (doplnit)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0149 — Jednotku času a takt hodin nese ramec, ne konstanta v hostu
+
+- **Datum:** 2026-10-10
+- **Oblast:** `fpga_freq.c` (`dt_units_to_ps`), `spi_app.v` (abs 99), `timing.sdc`
+- **Symptom:** (předem, při změně hodin FPGA 100 → 125 MHz) rámec nese Δt v jednotkách T_clk/16384 a STM je přepočítával konstantou `625/1024` (= 100 MHz). Kdyby se bitstream a firmware
+  rozešly (jedno nahráno, druhé ne), čítač by tiše ukazoval kmitočet o 25 % vedle — a ten rozdíl není z ničeho vidět, `status` je zdravý.
+- **Oprava:** FPGA nese kmitočet hodin v rámci (abs 99, CAPS bit12); host z něj počítá `ps = jednotky·15625/(256·clk_mhz)`; chybějící bit = 100 MHz (starý bitstream), bajt 0 se bere jako 100.
+- **Pravidlo:** **Veličina, kterou si dvě strany vykládají stejně jen shodou konstant, patří do protokolu — ať ji strana, která ji zná, hlásí, místo aby ji druhá předpokládala.**
+- **Detekce:** `selftest` (blok „FW 0x0421“: 0,25 s při 125 MHz = 2,5·10¹¹ ps; bajt 0 → 100 MHz); `status` → `FPGA HODINY <n>M`.
+- **Commit:** (doplnit)
+- **Stav:** aktivní, ⬜ neověřeno na desce
+
+### L-0150 — Za výstupem BRAM nesmí být logika; „keep" neudrží kopii registru
+
+- **Datum:** 2026-10-10
+- **Oblast:** `tdc.v` (tabulka kalibrace, histogram), `spi_app.v` (kopie řídicích registrů)
+- **Symptom:** při 125 MHz padaly cesty `BRAM DO → inkrement/negace` o 0,8–3,9 ns (tCO bloku 3,5 ns + aritmetika) a cesty z registrů s velkým fanoutem; syntéza navíc `lut_q`+`lut_q2` vtáhla do BRAM
+  (adresní + výstupní registr), takže „FF za BRAM" nebyl FF. Kopie `rise_k` označená `(* keep *)` byla slita s `rise_q` (identický vstup).
+- **Oprava:** hned za BRAM jen samostatný FF (`lut_q3`, `hist_rd2`), aritmetika předpočítaná při kalibraci (tabulka nese `{amt, neg}`); kopie registrů musí být **funkčně odlišné** (`rise_k <= rise_a & ~hold`).
+- **Pravidlo:** **Za BRAM patří jen FF; kopie registru, kterou syntéza nemá důvod nechat, zmizí i s `keep` — udělej ji logicky jinou. A výsledek P&R jednoho sestavení nic nedokazuje: sestavení závisí na `BLD_TIME`, posuzuj víc sestavení.**
+- **Detekce:** `python tools/fpga_release.py --build` (setup/hold/Fmax/CLS/rozmístění) opakovaně; `sim/run.ps1` (celý soubor).
+- **Commit:** (doplnit)
+- **Stav:** aktivní
+
+### L-0151 — Vystup okna a nove reference nesmi menit stejnou hranou hodin; STA to nepozna
+
+- **Datum:** 2026-10-10
+- **Oblast:** `spi_app.v` (`win_recip`: `r_dt`, `r_cs`, `ref_ts`, `code_cur`), diagnostika `/api/fpga` (IPC v22)
+- **Symptom:** po nahrani FPGA (125 MHz, FW 0x0421) nemerel kanal A: `error_flags` bit0 (dt == 0), `gate_ps = 0`, pocet hran spravne,
+  `code_end == code_st` v kazdem okne; kanal B ve stejnem bitstreamu v poradku. Cast sestaveni (stejne zdroje, jiny BLD_TIME) fungovala, cast ne.
+  Statická analyza casovani byla u vsech cista (rezerva setup +0,03 az +0,06 ns, hold +0,45 az +0,54 ns).
+- **Pricina (nejpravdepodobnejsi, ⬜ neprokazana primym merenim):** `r_dt <= ts_ps - ref_ts` a `ref_ts <= ts_ps` (a stejne `r_cs <= code_cur` / `code_cur <= code_i`) se
+  provadely na JEDNE hrane hodin (`tsc_q`). Na krzemiku vystup videl uz nove hodnoty (dt = 0, code_end == code_st). Zavisi na rozmisteni, proto jedno sestaveni ano a druhe ne.
+- **Oprava:** reference se aktualizuji az o takt pozdeji (`tsc_q2`), vystup se zachyti drive. Simulace link/regracc/regrfull/txequiv PASS.
+- **Pravidlo:** **Vystupni registr a registr, ze ktereho cte, nemenit na stejne hrane (ani kdyz STA hold projde). A vysledek sestaveni, ktere projde STA, jeste nic nedokazuje:
+  po kazde zmene FPGA nahraj bitstream NEKOLIKRAT a over OBA kanaly (`/api/fpga`: `error_flags`, `gate_ps`, `tdc_status` = 0x3).**
+- **Detekce:** `GET /api/fpga` (pole `w[]` dekoduje `tools/fpga_diag.py`): `error_flags`, `gate_ps`, `code_end/st`, `tdc_status`; `status` -> `FPGA SAMOKONTROLA`.
+- **Stav:** aktivni, ⬜ ověřeno jen na jednom kusu desky; regresni blok (`rg_ok`) ve vydanem sestaveni neověřen
+
+### L-0152 — Regresni blok se do ramce cte ZIVE, ne zamcený při uzavreni okna
+
+- **Datum:** 2026-10-10
+- **Oblast:** `spi_app.v` (TX mux bajty 68..96 cte `rg_n_*`, `rg_ym_*`, `rg_ok_*` primo z `regr_acc`)
+- **Symptom:** `rg_ok` v ramci je podle sestaveni 3 / 2 / 0 a `xm` nesedi k `ym` (offset desítky ms); dt, periody a kody jsou naproti tomu zamcene pri uzavreni okna.
+- **Pricina:** hodnoty regrese se berou v okamziku skladani ramce (zivé registry), kdyz uz bezi dalsi okno (`beg_a` maze `ok_a`).
+- **Pravidlo:** vsechno, co patri k jednomu oknu, se zamyka ve stejnem okamziku (pri `res_valid`), ne pri skladani ramce.
+- **Stav:** ⬜ OTEVRENE (nespraveno); STM kvuli `rg_ok != 3` regresi nepouzije, mereni je jako dvoubodove.
+
+**Dodatek 2026-10-11 (vyvraceni hypotezy "zive cteni je pricina"):** zamek pri uzavreni okna (FW 0x0423) nesel sestavit (CLS 85-86 %, setup -1,6 az -3,6 ns,
+8 pokusu) a hlavne **neresi pricinu**. Merenim na desce (FW 0x0422, G = 0,25 s): `ym` ma jen tri hodnoty 17,176 / 31,250 / 45,324 ms, tj. chyba je presne
+**+-2^53 v souctu sum(t - t0)** (14,074 ms * 312 500 / 0,488 ps = 9,007e15 = 2^53); sum je pri plnem hradle prave kolem 2^53 (bit 21 `sy_hi`). `xm` se opakuje z male mnoziny.
+RTL aritmetika je **spravna i v plnem meritku**: `sim/tb_regr_big.sv` (312 500 znacek/segment, 125 MHz) = PASS (puvodni sim jedel jen 25 000 hran a mez 2^53 nikdy nepotkal).
+Zbyva casovani/zapojeni na krzemiku (multicycle vyjimky pridane pro 125 MHz v timing.sdc, nebo vstupni znacky), ne logika. Neresit zamkem; dalsi krok = bitstream
+s ladicim citacem nad `sy_hi` (ne rozsirovat rozmisteni). Pozn.: A-B (stejny signal na A i B) ma stred 0,011 ns, sigma jadra 0,17 ns, ale ~17 % oken ma
+chybu -6..+5 ns (plynule, pilovite) = zona chyby TDC pri urcite fazi hrany (INL/kalibracni tabulka).
+
+**Dodatek 2026-10-11 vecer (UART analyza, FW 0x0422 @ 125 MHz, 10 MHz z externiho GPSDO na A i B):** `sdramlog dump` 200 souvislych oken:
+**ADEV(0,25 s) = 1,4e-8** (na 100 MHz dvoubodove 7,6e-10, s regresi 5,4e-11). Jen 105/200 oken je v +-0,5 ns; chyby delky okna jsou KVANTOVANE kolem
+**+4 ns (= T/2 pri 125 MHz)** a **+8..9,5 / -7,5 ns (= T)**, vzor s rozestupy 4-4-2 okna (zazneje signal x hodiny) = deterministicka chyba casove znacky
+podle faze hrany, NE sum a NE modulace (jednostranne). Je spolecna kanalum A i B (shodna struktura TDC); kanalove rozdily (19 % oken) rostou
+pilovite s fazi. Spike-reject (5 ns) chyti jen chyby ~T, chyby T/2 projdou. Kalibrace TDC je pritom v poradku (`tdc hist`: ~130 kodu, prumer 62 ps,
+max bin 257 ps A / 182 ps B, za koncem 0). Aritmetika tabulky {amt, neg} (0x0421) prosla ctenim bez nalezu. **Dalsi krok = bisect 100 MHz:**
+bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Vedlejsi: UART `tdc` prepocitava bin na ps s periodou 10 ns
+(vypise 321 ps misto 257 ps).
+
+### L-0153 — Kalibrace TDC nahodne selhava a mereni pak bezi s nominalni tabulkou BEZ priznaku
+
+- **Datum:** 2026-10-11
+- **Oblast:** `tdc.v` (`cal_fail`), `top.v` (retry), `freertos_task_fpga.c`
+- **Symptom:** ten samy bitstream mel pri nekterych nahranich `tdc_status` bit2 (`cal_fail`, vyprsel casovac sberu) a okna A/B se lisila o desitky ns
+  (`50000061101` ps misto `50000008xxx`), `error_flags` = 0. Nahodne, zhruba kazde 4. nahrani.
+- **Pricina:** neurcena (podezreni: kruhovy oscilator se nekdy nerozbehne / udalosti kalibrace nechodi). `cal_fail` nastavi `cal_valid = 1` s nominalni tabulkou,
+  takze mereni nestoji a nic neupozorni.
+- **Oprava (mitigace):** FPGA po selhani sama spusti kalibraci znovu (za 2^20 taktu, nejvyse 15x; pocet pokusu v `tdc_status[7:6]`); STM pri `FPGA_TDC_CAL_FAIL`
+  pozada o novou kalibraci (nejvyse 1x za 15 s).
+- **Pravidlo:** selhani kalibrace NESMI zustat tichym degradovanym rezimem. Po kazdem nahrani FPGA over `tdc_status == 0x03` (A, B zkalibrovane, bez FAIL).
+- **Stav:** ⬜ pricina otevrena, mitigace na desce 8 nahrani bez selhani (pocet opakovani 0) -- opakovani samo nebylo vyvolano.
+
+### L-0154 — Zmena kmitoctu hodin FPGA prosla STA i simulaci, a pritom rozbila casove znacky (T/2, T podle faze)
+
+- **Datum:** 2026-10-11
+- **Oblast:** hodiny FPGA / TDC (`top.v` `CLK_MHZ`, `timing.sdc`, `si5356.c` `REGMAP`)
+- **Symptom:** po prechodu 100 -> 125 MHz (FW 0x0421/0x0422) „meri mene stabilne nez driv": ADEV(0,25 s) 1,4e-8 (na 100 MHz 7,6e-10 / s regresi 5,4e-11),
+  delka okna chybna o +4 ns (= T/2) a +-8 ns (= T) v ~polovine oken podle faze hrany vuci hodinam (vzor 4-4-2 okna), spolecne kanalum A i B;
+  regrese vzdy zamitnuta. Spike-reject (5 ns) chytil jen chyby ~T. Kalibrace TDC (`tdc hist`) pritom vypadala zdrave.
+- **Pricina:** neurcena (bisect probiha). Vylouceno: aritmetika regrese (`sim/tb_regr_big.sv` v plnem meritku PASS), kalibracni tabulka
+  (max bin 257 ps), skew A-B (0,01 ns). Kandidati: casovani na krzemiku pri 8 ns mimo STA (multicycle predpoklady), prirazeni hrany k taktu.
+- **Oprava:** FW 0x0423 vraci hodiny na 100 MHz (Si5356 MS A = 22, `top.v` `CLK_MHZ = 100`, `timing.sdc` 10 ns), RTL beze zmeny = bisect.
+- **Pravidlo:** zmenu kmitoctu hodin (nebo cokoli, co meni casovani TDC) prohlas za hotovou az po MERENI ADEV a rozlozeni chyby delky okna
+  na desce (`sdramlog dump` + rozdeleni odchylek), ne po STA, simulaci a „A i B meri".
+- **Detekce:** `sdramlog dump 200` -> podil oken v +-0,5 ns od medianu (zdrave > 95 %) a ADEV(0,25 s); `regr` -> pouzito > 0.
+- **Commit:** (neni, neulozeno)
+- **Stav:** aktivni; ⬜ vysledek bisectu na desce
+
 ---
 
 ## Archiv (neplatné lekce)

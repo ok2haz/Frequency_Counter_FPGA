@@ -345,10 +345,13 @@ FPGA piny: PIN54=MOSI, PIN57=MISO, PIN55=SCK, PIN56=CS. Detaily viz `FPGA_INSTAN
 |---|---|---|
 | 12 | 4 | **čas sestavení bitstreamu** (u32 LE, unix s; 0 = neznámý) — místo `frequency_x100000`, které od FW 0x0400 nese vždy 0 (kmitočet počítá STM z dt) |
 | 16 | 4 | **git zdrojů** (u32 LE): [27:0] zkrácený hash, [31] = neuložené změny; generuje `build.tcl` → `src/build_id.vh` |
-| 64 | 1 | **clk_status**: bit0 = 100 MHz v posledním okně hlídače (102 µs) OK, bit1 = od nahrání aspoň jeden výpadek, bit2 = zotavení (měření stojí, rekalibrace TDC) |
-| 65 | 1 | **počet výpadků 100 MHz** od nahrání (saturuje 255) |
+| 64 | 1 | **clk_status**: bit0 = hodiny FPGA (100 MHz; FW 0x0421/0x0422 125 MHz) v posledním okně hlídače (102 µs) OK, bit1 = od nahrání aspoň jeden výpadek, bit2 = zotavení (měření stojí, rekalibrace TDC) |
+| 65 | 1 | **počet výpadků hodin FPGA** od nahrání (saturuje 255) |
+| 99 | 1 | **FW ≥ 0x0421 (CAPS bit12): kmitočet referenčních hodin FPGA v MHz** (od FW 0x0423 = 100; FW 0x0421/0x0422 = 125). Jednotka času v rámci = T_clk/16384 → `ps = jednotky·15625/(256·clk_mhz)` (100 MHz: ·625/1024). Bez bitu = 100 MHz |
 | 97 | 1 | **rozdíl kontrolního a měřeného počítání hran** okna, primární slot (int8, saturuje; zdravé \|d\| ≤ 1) |
 | 98 | 1 | totéž, sekundární slot |
+
+**FW ≥ 0x0420 (CAPS bit11, výběr reference, STATUS #285):** `SET_CONFIG` config_id **0x04**, hodnota bit0 = 0 OCXO (výchozí po zapnutí), 1 = externí 10 MHz vstup. Pin `Ref_Ctrl` (FPGA PIN41) řídí přepínač `U19` (TS5A3159): nízko = OCXO (`U16`/`U17`), vysoko = externí vstup (`U18`/`U20`); pulldown 10k (`R113`). `clk_status` (abs 64) bity: **bit3** = vybrána externí, **bit4** = na externím vstupu (`Ext_Ref_Sens`, PIN51) jsou hrany, **bit5** = externí vypadla (FPGA sama přešla na OCXO; smaže se požadavkem 0). Hlídač `ref_guard` běží z vnitřního oscilátoru FPGA (OSC 31,25 MHz), nezávisle na vnějších hodinách; externí pustí po ~16 µs nepřetržité přítomnosti hran, při jejím zmizení vrátí OCXO do ~8 µs. ⚠️ Kmitočet externího signálu se NEkontroluje (musí být 10 MHz). UART `ref [ext|int]`, `status` → `FPGA REFERENCE:`.
 
 STM zamítne okno (nezobrazí, nezapočte; `status` → `FPGA SAMOKONTROLA:`), když \|d\| > 1, hlídač hlásí
 vadu/zotavení/nový výpadek, nebo délka okna nesedí s hradlem (`fpga_freq_window_check`, i pro starší FW s CAPS bit9).
@@ -408,4 +411,5 @@ Driver `w25q_init` přebíjí prescaler na `W25Q_SCK_PRESCALER=3` → SCLK 60 MH
 `42`=přístup (jméno/heslo pro web+SCPI), `43`=paměti (benchmark RAM/FLASH),
 `44`=MĚŘENÍ rozcestník, `45`=TI 1PPS (placeholder — HW), `46`=Dvojkanál (/4 + /16 + RF bargraf),
 `47`=Odchylka ×N (ADRET 4110 styl — df·N + ppb/ppm), `48`=NÁSTROJE (pod Diagnostikou —
-blok.schéma/paměť/selftest/benchmark/SD/reference).
+blok.schéma/paměť/selftest/benchmark/SD/reference), `49`=FUNKCE, `50`=NÁPOVĚDA, `51`=CHYBY,
+`52`=GENERÁTOR (výstupy Si5356 CLK2/3, CLK4/5, CLK6/7; Nastavení → 10. dlaždice).
