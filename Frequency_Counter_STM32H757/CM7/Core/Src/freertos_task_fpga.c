@@ -252,6 +252,21 @@ void StartFpgaTask(void *argument)
       }
     }
 
+    /* 2026-10-11: kalibrace TDC SELHALA (FPGA_TDC_CAL_FAIL = vyprsel casovac kruhu). FPGA ji zkousi opakovat sama, ale kdyz
+     * selhani prezije (nebo je to starsi bitstream), mereni bezi s nominalni tabulkou a chyba jde do desitek ns BEZ priznaku.
+     * Proto STM pozada o novou kalibraci, nejvyse 1x za 15 s. */
+    {
+      fpga_meas_t cm;
+      static uint32_t s_calfail_next_ms;
+      if (fpga_freq_get_last(&cm) && (cm.tdc_status & FPGA_TDC_CAL_FAIL)) {
+        uint32_t n_ms = HAL_GetTick();
+        if ((int32_t)(n_ms - s_calfail_next_ms) >= 0) {
+          s_calfail_next_ms = n_ms + 15000u;
+          if (fpga_freq_tdc_cal_start()) { printf("TDC: kalibrace selhala, spoustim znovu\n"); g_tdc_recal_count++; }
+        }
+      }
+    }
+
     /* Doruci vyber kanalu a hradla do FPGA (idempotentne podle echa v ramci). */
     (void)fpga_freq_cfg_sync(want_chan, want_gate);
     /* Perioda cteni: pri kratkem hradle (50/100 ms) musi byt kratsi nez hradlo, jinak FPGA mereni prepise

@@ -352,15 +352,24 @@ static void ad5693_service(void)
  * Vsechny ctyri kanaly jedou na +-4.096V (nejvetsi spolecny rozsah, zadny
  * neklipuje) — jemnejsi PGA per kanal by zpresnilo rozliseni, ale je to
  * samostatna optimalizace, ne oprava spravnosti. */
+volatile int16_t g_ads_raw_last[4];             /* posledni surovy vysledek AINx (diagnostika) */
+volatile uint32_t g_si5356_err_cnt = 0;   /* nepodareni cteni stavu Si5356 od bootu (diagnostika I2C1, /api/fpga) */
+
+/* 2026-10-11: PGA PER VSTUP podle skutecneho rozsahu (vstup ADS = napeti * 1/gain delice):
+ *   AIN0 OCXO Vc : +-2,048 V (EFC 0-4 V -> 1,6 V; DAC do 5 V -> 2,0 V; oriznuti od 5,12 V)
+ *   AIN1 VBUS    : +-2,048 V (12 V -> 0,57 V; oriznuti od 43 V)
+ *   AIN2 +3V3    : +-2,048 V (3,63 V -> 1,8 V; oriznuti od 4,1 V)
+ *   AIN3 +5V     : +-4,096 V (5,5 V -> 3,8 V; vic nejde, delic dava 3,44 V u 5 V)
+ * Prehled a presnosti: docs/audit/2026-10-11_ads1115-presnost.md. */
 static const ads1115_pga_t k_ads_pga[4] = {
-    ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096,
+    ADS1115_PGA_2V048, ADS1115_PGA_2V048, ADS1115_PGA_2V048, ADS1115_PGA_4V096,
 };
 
 /* Fixni gainy pevne dane odporovym delicem (nejsou uzivatelsky editovatelne
  * jako gain_12v/gain_5v, protoze AIN0/AIN1 nejsou v kalibracnim pruvodci —
  * viz WIZ_BR v app_gpsdo.c, jen 2 vetve). */
-#define AIN0_GAIN_OCXO_VC   (25.0f / 10.0f)          /* R51=15k/R52=10k: 2,5 */
-#define AIN1_GAIN_VBUS      (104.99f / 4.99f)        /* R53=100k/R54=4k99: ~21,042 */
+/* Od 2026-10-11 jsou gainy AIN0 (OCXO Vc) a AIN1 (VBUS) EDITOVATELNE jako ostatni vetve (`g_calib.gain_vc`/`gain_vbus`,
+ * okno Kalibrace + pruvodce); vychozi hodnoty z rezistoru jsou v calib.c. */
 
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
@@ -430,8 +439,10 @@ void SensorsTask_run(void *argument)
 			osMutexRelease(i2c1MutexHandle);
 		  }
 		  if (got) {
-			float mv = (float)ads1115_raw_to_mv(raw, k_ads_pga[1]) * AIN1_GAIN_VBUS;
-			sensor_update(SENS_ADS1, mv);
+			if (!ADS1115_RAW_SATURATED(raw)) {
+			  float mv = ads1115_raw_to_mv_f(raw, k_ads_pga[1]) * g_calib.gain_vbus;
+			  sensor_update(SENS_ADS1, mv);
+			}
 		  }
 		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
 		}
@@ -511,7 +522,7 @@ void SensorsTask_run(void *argument)
 		/* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
 		uint8_t si_st;
 		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
-		else                                    { g_si5356_ok = 0; }
+		else                                    { g_si5356_ok = 0; g_si5356_err_cnt++; }
 		/* 🔴 STICKY (reg 247) vedle ziveho stavu: podrzi i mikrosekundovy vypadek
 		 * reference, ktery by mezi dvema cteními ziveho registru zmizel beze stopy.
 		 * Latchuje se do `g_si5356_sticky` a na cipu se NEMAZE — dokud uzivatel
@@ -550,6 +561,9 @@ void SensorsTask_run(void *argument)
 				/* Pri neuspechu zadost zustava a zkusi se priste. */
 			}
 		}
+		/* Generator Si5356 (okno GENERATOR / UART `gen`): zapis jedne dvojice vystupu.
+		 * I2C1 vlastni tenhle task, takze zapis smi udelat JEN on (vzor `g_si5356_clr_req`). */
+		si5356_gen_service(&hi2c1);
 		/* DAC ladeni OCXO — POSLEDNI transakce bloku (viz ad5693_service). */
 		ad5693_service();
 		osMutexRelease(i2c1MutexHandle);
@@ -577,7 +591,8 @@ void SensorsTask_run(void *argument)
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (got) {
-		  int32_t mv = ads1115_raw_to_mv(raw, k_ads_pga[ch]);
+		  g_ads_raw_last[ch] = raw;
+		  float mv = ads1115_raw_to_mv_f(raw, k_ads_pga[ch]);   /* float: bez orezu pod 1 mV (viz ads1115.h) */
 		  /* Vsechny 4 kanaly jdou pres odporovy delic -> skutecne napeti =
 			 syrove mV * gain delice (viz k_ads_pga komentar vyse, 2026-10-02).
 			 AIN2/AIN3 maji EDITOVATELNOU kalibraci (g_calib, okno Kalibrace) —
@@ -585,11 +600,13 @@ void SensorsTask_run(void *argument)
 			 AIN0/AIN1 maji FIXNI gain (nejsou v kalibracnim pruvodci).
 			 ⚠️ Kratke okno pri bootu pred calib_load() (UiTask) jede na vychozich
 			 hodnotach z calib.c — kosmeticke, diagnosticke cteni ~1 Hz. */
-		  if      (ch == 0) mv = (int32_t)((float)mv * AIN0_GAIN_OCXO_VC + 0.5f);
-		  else if (ch == 1) mv = (int32_t)((float)mv * AIN1_GAIN_VBUS   + 0.5f);
-		  else if (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
-		  else if (ch == 3) mv = (int32_t)((float)mv * g_calib.gain_5v  + 0.5f);
-		  sensor_update(sid, (float)mv); any_ok = 1;
+		  if      (ch == 0) mv *= g_calib.gain_vc;
+		  else if (ch == 1) mv *= g_calib.gain_vbus;
+		  else if (ch == 2) mv *= g_calib.gain_12v;
+		  else if (ch == 3) mv *= g_calib.gain_5v;
+		  /* vstup na dorazu PGA = hodnota by se tise orizla -> neplatne misto zavadejiciho cisla */
+		  if (ADS1115_RAW_SATURATED(raw)) sensor_fail(sid);
+		  else { sensor_update(sid, mv); any_ok = 1; }
 		} else {
 		  sensor_fail(sid);
 		}

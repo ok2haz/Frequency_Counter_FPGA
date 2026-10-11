@@ -4,8 +4,9 @@
  *
  * Aplikuje kompletni register map z ClockBuilder Pro (CBPro) + oficialni
  * SiLabs "apply" proceduru (disable outputs -> soft reset -> enable outputs).
- * Register map je prevzata z uzivatelova I2C trace (cil: 100 MHz + fazovy posun);
- * frekvence/faze jsou DANE TOUTO MAPOU (tj. CBPro konfiguraci), driver je jen aplikuje.
+ * Register map je export z CBPro (Si5356-RevB-Registers.h): CLK0/1 = 100 MHz
+ * reference FPGA, CLK2/3, CLK4/5, CLK6/7 vystupy na konektory (vychozi 50/150/200 MHz,
+ * dal je meni okno GENERATOR pres si5356_gen_*). Frekvence jsou DANE TOUTO MAPOU.
  *
  * Pri zmene konfigurace: v CBPro nastav vystupy/fazi, exportuj "C Code Header"
  * a nahrad obsah REGMAP[] v si5356.c (format {addr, val, mask} je stejny).
@@ -86,5 +87,50 @@ bool si5356_read_sticky(I2C_HandleTypeDef *hi2c, uint8_t *sticky);
 /** Vynuluje sticky bity uvedene v `mask` (AN565: maze se ZAPISEM NULY).
  *  Read-modify-write, takze ostatni sticky bity zustanou zachovane. */
 bool si5356_clear_sticky(I2C_HandleTypeDef *hi2c, uint8_t mask);
+
+/* ── GENERATOR (CLK2/3, CLK4/5, CLK6/7) ─────────────────────────────────────
+ * Kanal 0/1/2 = dvojice CLK2/3, CLK4/5, CLK6/7 (MultiSynth B/C/D). CLK0/1 (reference
+ * FPGA, 100 MHz) se odsud NEMENI. VCO je spolecny 10 MHz x 220 = 2,2 GHz.
+ * Meze dle datasheetu Si5356A (Tab. 3, Clock Output Frequency): 1 .. 200 MHz.
+ * MultiSynth sam umi 5..200 MHz (AN565), pod 5 MHz ho doplni R delic (1..32). */
+#define SI5356_VCO_HZ         2200000000ull
+#define SI5356_GEN_N          3u
+#define SI5356_MS_F_MIN_HZ    5000000ull
+#define SI5356_GEN_F_MIN_HZ   1000000u       /* datasheet Tab. 3: FO min 1 MHz (R=8 z MS 8 MHz) */
+#define SI5356_GEN_F_MAX_HZ   200000000u     /* datasheet Tab. 3: FO max 200 MHz */
+
+enum { SI5356_GEN_OK = 0, SI5356_GEN_ERR_I2C = 1, SI5356_GEN_ERR_RANGE = 2 };
+
+typedef struct {
+    volatile uint32_t freq_hz;   /* pozadovany kmitocet [Hz] */
+    volatile uint8_t  on;        /* 1 = vystup povolen */
+    volatile uint8_t  pend;      /* 1 = zadost ceka na SensorsTask */
+    volatile uint8_t  state;     /* SI5356_GEN_* (vysledek posledniho zapisu) */
+} si5356_gen_t;
+
+/** Stav a zadosti generatoru. UI/UART zapisuji pres si5356_gen_request, zapis do cipu
+ *  dela VYHRADNE SensorsTask (vlastnik I2C1) pres si5356_gen_service. */
+extern volatile si5356_gen_t g_si_gen[SI5356_GEN_N];
+
+/** Parametry MultiSynthu: f_ms = VCO/(a+b/c) = f_out * 2^rexp. */
+typedef struct { uint8_t rexp; uint32_t p1, p2, p3; } si5356_ms_t;
+
+/** Cista funkce (bez I2C): kmitocet -> P1/P2/P3/R. false = mimo rozsah. Presny
+ *  racionalni vypocet, zadne zaokrouhlovani. */
+bool     si5356_gen_calc(uint32_t f_hz, si5356_ms_t *m);
+/** Zpetny prepocet: jaky kmitocet z techto parametru cip vyrobi. */
+uint32_t si5356_gen_actual_hz(const si5356_ms_t *m);
+/** Zakoduje P1/P2/P3 do 10 bajtu registru MS (B+0..B+9). */
+void     si5356_gen_pack(const si5356_ms_t *m, uint8_t b[10]);
+/** Zapise jednu dvojici do cipu (OEB_x -> R + MS -> OEB_x), bez soft resetu. */
+bool     si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, bool on);
+/** Zadost z UI/UART (neblokuje). */
+void     si5356_gen_request(unsigned ch, uint32_t f_hz, bool on);
+/** Obsluha zadosti — jen SensorsTask pod i2c1Mutex. */
+void     si5356_gen_service(I2C_HandleTypeDef *hi2c);
+/** Vychozi stav = to, co zapsal REGMAP (vola si5356_init). */
+void     si5356_gen_defaults(void);
+/** Precte R(1) + MS(10) + reg 230(1) pro diagnostiku (`gen`). */
+bool     si5356_gen_readback(I2C_HandleTypeDef *hi2c, unsigned ch, uint8_t regs[12]);
 
 #endif /* SI5356_H */

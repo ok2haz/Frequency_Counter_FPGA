@@ -85,6 +85,7 @@ static void ipc_stamp(volatile ipc_shared_t *p)
     memset((void *)&p->log,    0, sizeof p->log);
     memset((void *)&p->errlog, 0, sizeof p->errlog);
     memset((void *)&p->stab,   0, sizeof p->stab);
+    memset((void *)&p->fpgadiag, 0, sizeof p->fpgadiag);
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
@@ -161,6 +162,17 @@ void ipc_publish(void)
      * (gate 0,25 s) -> pevny 2 Hz throttle by mereni PODVZORKOVAL; takhle snapshot chytne
      * kazde mereni s min. latenci (~jeden defaultTask tik po tom, co ho FpgaTask zverejni). */
     int meas_new = have_meas && (m.sequence != s_last_seq_meas);
+    {   /* v22: surova diagnostika FPGA ~2 Hz, nezavisle na tom, jestli prislo (nezamitnute) mereni */
+        static uint32_t s_diag_ms;
+        if ((now - s_diag_ms) >= 500u) {
+            s_diag_ms = now;
+            uint32_t w[IPC_FPGADIAG_N];
+            fpga_freq_diag_fill(w, IPC_FPGADIAG_N);
+            for (uint32_t i = 0; i < IPC_FPGADIAG_N; i++) g_ipc.fpgadiag.w[i] = w[i];
+            IPC_DMB();
+            g_ipc.fpgadiag.gen++;
+        }
+    }
     if (!meas_new && (now - s_last_ms) < 500u) return;
     s_last_ms = now;
     if (have_meas) s_last_seq_meas = m.sequence;

@@ -3,6 +3,7 @@
  * @brief   Viz calib.h.
  */
 #include "calib.h"
+#include <string.h>          /* memset blobu pred nactenim */
 #include "w25q.h"
 #include "w25q_store.h"
 #include "w25q_map.h"
@@ -31,25 +32,40 @@
  *   AIN3 (+5V):  R57=10k / R58=22k -> gain = (10+22)/22 = 32/22 ~= 1,4545
  *     (BYLO 1,971 pro delic 15k/10k, ktery na desce neni) */
 #define CALIB_DEFAULT_GAIN_12V          (20.0f / 10.0f)         /* AIN2=+3V3, R55=10k/R56=10k: 2,0 */
-#define CALIB_DEFAULT_GAIN_5V           (32.0f / 22.0f)         /* AIN3=+5V,  R57=10k/R58=22k: ~1,4545 */
+#define CALIB_DEFAULT_GAIN_5V           (20.0f / 10.0f)         /* AIN3=+5V,  R57=10k/R58=10k (R58 vymenen z 22k 2026-10-11): 2,0 */
+#define CALIB_LEGACY_GAIN_5V            (32.0f / 22.0f)         /* puvodni delic 10k/22k: ulozena hodnota ~1,4545 uz nesedi k desce */
+
+#define CALIB_DEFAULT_GAIN_VC           (25.0f / 10.0f)         /* AIN0=OCXO Vc, R51=15k/R52=10k: 2,5 */
+#define CALIB_DEFAULT_GAIN_VBUS         (105.1f / 5.1f)         /* AIN1=VBUS,    R53=100k/R54=5k1 (R54 4k99 nebyl osazen; 5k1 dosazen 2026-10-11): ~20,608 */
 
 volatile calib_t g_calib = {
     CALIB_DEFAULT_AD8307_SLOPE, CALIB_DEFAULT_AD8307_INTERCEPT,
     CALIB_DEFAULT_GAIN_12V, CALIB_DEFAULT_GAIN_5V,
+    CALIB_DEFAULT_GAIN_VC, CALIB_DEFAULT_GAIN_VBUS,
 };
 
 /* Ulozeny format (store payload) - VERZOVANY magicem, nezavisly na sizeof(calib_t)
  * (budouci pole se pridaji na konec, magic se zmeni pri nekompatibilni zmene
  * layoutu). Store sam uz overuje CRC16 payloadu -> magic tu jen potvrzuje, ze
  * blob patri kalibraci (region by teoreticky mohl driv drzet neco jineho). */
-#define CALIB_BLOB_MAGIC 0x43414C31u   /* "CAL1" */
+#define CALIB_BLOB_MAGIC    0x43414C32u   /* "CAL2" (od 2026-10-11: + gain_vc, gain_vbus) */
+#define CALIB_BLOB_MAGIC_V1 0x43414C31u   /* "CAL1": starsi blob bez gain_vc/gain_vbus -> ty zustanou vychozi */
 typedef struct {
     uint32_t magic;
     float    ad8307_slope_mv_db;
     float    ad8307_intercept_dbm;
     float    gain_12v;
     float    gain_5v;
+    float    gain_vc;
+    float    gain_vbus;
 } calib_blob_t;
+#define CALIB_BLOB_V1_SIZE 20u            /* sizeof puvodniho blobu CAL1 (magic + 4 floaty) */
+
+/* Ulozena hodnota delice musi byt konecna a v rozumnem rozsahu; jinak se nechava vychozi. */
+static float calib_gain_or(float g, float lo, float hi, float def)
+{
+    return (g == g && g >= lo && g <= hi) ? g : def;
+}
 
 /* Viz stejný `_Static_assert` v `syscfg.c` (audit F-0097, lekce L-0026). Dnes 20 B
  * ze 4080 — rezerva je obrovská, ale kalibrační MATICE nové desky (koeficient na
@@ -71,6 +87,7 @@ void calib_load(void)
      * nesmi vlezt jiny kontext). */
     if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return;
     calib_blob_t b;
+    memset(&b, 0, sizeof b);
     uint32_t n = 0;
     if (w25q_init()) {   /* flash nedostupna -> g_calib zustava na vychozich */
         w25q_store_init(&s_store, W25Q_CALIB_BASE, W25Q_CALIB_SECTORS);
@@ -78,7 +95,9 @@ void calib_load(void)
     }
     osMutexRelease(qspiMutexHandle);
 
-    if (n == sizeof(b) && b.magic == CALIB_BLOB_MAGIC) {
+    const bool v2 = (n == sizeof(b)) && (b.magic == CALIB_BLOB_MAGIC);
+    const bool v1 = (n == CALIB_BLOB_V1_SIZE) && (b.magic == CALIB_BLOB_MAGIC_V1);
+    if (v2 || v1) {
         /* F-0165: magic + CRC uloziste potvrzuji jen to, ze blob patri kalibraci,
          * ne ze dava smysl. Strmost mimo rozsah (nebo NaN prusecik) by vsechny
          * prevody RF shodila na „nevim" — radeji datasheetovy par, ktery aspon
@@ -90,6 +109,13 @@ void calib_load(void)
         }
         g_calib.gain_12v             = b.gain_12v;
         g_calib.gain_5v              = b.gain_5v;
+        /* 2026-10-11: R58 vymenen 22k -> 10k. Ulozeny gain u puvodniho delice (1,40-1.50) by 5 V ukazoval o ~27 % nizsi,
+         * proto se pouzije novy vychozi; kalibrace multimetrem pak jde znovu ulozit. */
+        if (b.gain_5v > 1.40f && b.gain_5v < 1.50f) g_calib.gain_5v = CALIB_DEFAULT_GAIN_5V;
+        if (v2) {
+            g_calib.gain_vc   = calib_gain_or(b.gain_vc,   0.2f, 4.0f,  CALIB_DEFAULT_GAIN_VC);
+            g_calib.gain_vbus = calib_gain_or(b.gain_vbus, 5.0f, 40.0f, CALIB_DEFAULT_GAIN_VBUS);
+        }
     }
     /* jinak: zadny/nevalidni zaznam (nova/vymazana flash) -> vychozi hodnoty */
 }
@@ -103,6 +129,8 @@ bool calib_save(void)
         g_calib.ad8307_intercept_dbm,
         g_calib.gain_12v,
         g_calib.gain_5v,
+        g_calib.gain_vc,
+        g_calib.gain_vbus,
     };
     if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return false;
     bool ok = w25q_store_write(&s_store, &b, sizeof b);

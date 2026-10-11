@@ -618,6 +618,18 @@ static size_t build_stab_json(char *out, size_t out_sz, const ipc_stab_t *b)
     return j.ovf ? 0u : j.used;
 }
 
+/* v22: surovy stav ramce FPGA a pocitadla odmitnuti (`fpga_freq_diag_fill`, CM7/Core/Src/fpga_freq.c) --
+ * jako pole 32 cisel, aby CM4 nemusela znat vyznam; dekoduje se na PC (tools/fpga_diag.py). */
+static size_t build_fpga_json(char *out, size_t out_sz)
+{
+    jbuf_t j; jinit(&j, out, out_sz);
+    jputf(&j, "{\"g\":%lu,\"w\":[", (unsigned long)g_ipc.fpgadiag.gen);
+    for (unsigned i = 0; i < IPC_FPGADIAG_N; i++)
+        jputf(&j, "%s%lu", i ? "," : "", (unsigned long)g_ipc.fpgadiag.w[i]);
+    jputf(&j, "]}");
+    return j.ovf ? 0u : j.used;
+}
+
 static size_t build_sats_json(char *out, size_t out_sz, const ipc_snapshot_t *snap)
 {
     jbuf_t j; jinit(&j, out, out_sz);
@@ -1414,7 +1426,7 @@ static const char SPA_HTML[] =
 "<i class='eod' id='epwr'></i>\n"
 "</div>\n"
 "</div>\n"
-"<div class='lg'><span><i class='k0'></i>12 V</span><span><i class='k3'></i>5 V</span>\n"
+"<div class='lg'><span><i class='k0'></i>3V3</span><span><i class='k3'></i>5 V</span>\n"
 "<span><i class='k1'></i>VREF</span><span><i class='k2'></i>VBAT</span></div>\n"
 "</div>\n"
 "\n"
@@ -1696,7 +1708,7 @@ static const char SPA_HTML[] =
 "var GATE=[0.05,0.1,0.25,0.5,1];   /* stejne presety jako scpi_gate_s (firmware) */\n"
 "var MAXH=3600, win=300;\n"
 "var H={f:[],t0:[],t1:[],t2:[],t3:[],vc:[],p0:[],p1:[],p2:[],p3:[],ns:[],hd:[]};\n"
-"var NOMV={p0:12000,p1:5000,p2:2500,p3:3300};\n"
+"var NOMV={p0:3300,p1:5000,p2:2500,p3:3300};\n"
 "var lastOk=0, zoom=null, pollTimer=0;\n"
 "var lastPush=0;   /* [s] posledni vzorek v historii grafu - throttle 1 Hz (F-0080) */\n"
 "/* Pocet vyjimek pri vykreslovani (F-0081). Drive je SSE cesta polykala prazdnym\n"
@@ -2098,7 +2110,7 @@ static const char SPA_HTML[] =
 "    s.series=[{n:'OCXO',c:0,a:src('t0')},{n:'DESKA',c:1,a:src('t1')},\n"
 "              {n:'MCU',c:2,a:src('t2')},{n:'FPGA',c:3,a:src('t3')}];\n"
 "    s.fmt=function(v){ return v.toFixed(2)+' C'; }; s.unit='C';\n"
-"    s.note='FPGA deska (TMP117 0x4A) neni osazena - jeji rada zustane prazdna.'\n"
+"    s.note='FPGA = TMP117 0x4A (teplota FPGA desky). MCU je filtrovano (IIR ~8 s), po startu proto pomalu nabiha.'\n"
 "      +(DL?' V dlouhych oknech chybi i MCU: datalog uklada jen OCXO a desku.':'');\n"
 "  } else if(k==='vc'){\n"
 "    s.title='LADICI NAPETI OCXO (Vc)';\n"
@@ -2108,7 +2120,7 @@ static const char SPA_HTML[] =
 "    s.unit='mV';\n"
 "    s.note='Vc ukazuje, jak si disciplinacni smycka doladuje oscilator. Trvaly beh k jednomu kraji = OCXO dochazi ladici rozsah.';\n"
 "  } else {\n"
-"    var ks=['p0','p1','p2','p3'], nm=['12 V','5 V','VREF','VBAT'], cc=[0,3,1,2];\n"
+"    var ks=['p0','p1','p2','p3'], nm=['3V3','5 V','VREF','VBAT'], cc=[0,3,1,2];\n"
 "    s.title='NAPAJENI - odchylka od nominalu [mV]';\n"
 "    /* Odchylka v MILIVOLTECH, ne v procentech. `p0..p3` i `NOMV` uz jsou v mV,\n"
 "       takze rozdil je rovnou mV - zadne prepocty.\n"
@@ -2130,10 +2142,10 @@ static const char SPA_HTML[] =
 "    /* ROZPTYL (rozkmit, smerodatna odchylka) v mV a BEZ znamenka - obe veliciny\n"
 "       jsou z definice nezaporne, tak at u nich nesviti zbytecne +. */\n"
 "    s.fmtSpr=function(v){ return v.toFixed(1)+' mV'; };\n"
-"    s.note='Odchylka od nominalu v mV (12 V / 5 V / 2,5 V / 3,3 V). Osa je SPOLECNA vsem'\n"
+"    s.note='Odchylka od nominalu v mV (3,3 V / 5 V / 2,5 V / 3,3 V). Osa je SPOLECNA vsem'\n"
 "      +' vetvim, takze vetev s nejvetsim rozkmitem urcuje meritko a stabilni vetve mohou'\n"
 "      +' vypadat ploche - jejich hodnotu prectes odectem pod kurzorem.'\n"
-"      +(DL?' V dlouhych oknech je jen VBAT: 12 V/5 V/VREF datalog neuklada.':'');\n"
+"      +(DL?' V dlouhych oknech je jen VBAT: 3V3/5 V/VREF datalog neuklada.':'');\n"
 "  }\n"
 "  var arrs=[]; for(j=0;j<s.series.length;j++) arrs.push(s.series[j].a);\n"
 "  if(s.env){ arrs.push(s.env.lo); arrs.push(s.env.hi); }   /* pasmo musi byt v meritku */\n"
@@ -2898,8 +2910,8 @@ static const char SPA_HTML[] =
 "   {n:'FPGA',pct:pctOf(s.temp_fpga_c,20,80),v:s.temp_fpga_c===null?null:fx(s.temp_fpga_c)+' C'}]);\n"
 "\n"
 "  rows('gPwr',[\n"
-"   {n:'12 V',pct:pctOf(s.v12_mv,0,14000),mark:pctOf(12000,0,14000),\n"
-"    v:s.v12_mv===null?null:(s.v12_mv/1000).toFixed(3)+' V',st:railSt(s.v12_mv,12000)},\n"
+"   {n:'3V3',pct:pctOf(s.v12_mv,0,4000),mark:pctOf(3300,0,4000),\n"
+"    v:s.v12_mv===null?null:(s.v12_mv/1000).toFixed(3)+' V',st:railSt(s.v12_mv,3300)},\n"
 "   {n:'5 V',pct:pctOf(s.v5_mv,0,6000),mark:pctOf(5000,0,6000),\n"
 "    v:s.v5_mv===null?null:(s.v5_mv/1000).toFixed(3)+' V',st:railSt(s.v5_mv,5000)},\n"
 "   {n:'VREF',pct:pctOf(s.vref_mv,0,3300),mark:pctOf(2500,0,3300),\n"
@@ -4474,6 +4486,13 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         int have = ipc_cm4_ready() && ipc_cm4_cm7_alive(HAL_GetTick()) && ipc_cm4_read_stab(&st);
         if (!have) { queue_text(c, 503, "Service Unavailable", "CM7 unreachable\n"); return; }
         size_t n = build_stab_json(c->bodybuf, sizeof c->bodybuf, &st);
+        if (n == 0) { queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n"); return; }
+        queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
+        return;
+    }
+    /* v22: diagnostika FPGA (surovy ramec + pocitadla odmitnuti). */
+    if (strcmp(r->method, "GET") == 0 && path_is(r->path, "/api/fpga")) {
+        size_t n = build_fpga_json(c->bodybuf, sizeof c->bodybuf);
         if (n == 0) { queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n"); return; }
         queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
         return;

@@ -296,6 +296,7 @@ static const prim_rect_t TZ_MINUS     = {30, 310, 72, 64};    /* rucni posun - *
 static const prim_rect_t TZ_PLUS      = {250, 310, 72, 64};   /* rucni posun + */
 static const prim_rect_t SETUP_ENTER_RECT = {SETNAV_XB, 240, SETNAV_W, SETNAV_H}; /* -> SESTAVY (33) */
 static const prim_rect_t ABOUT_RECT  = {SETNAV_XC, 240, SETNAV_W, SETNAV_H};  /* -> O pristroji (10) */
+static const prim_rect_t GENNAV_RECT = {SETNAV_XA, 326, SETNAV_W, SETNAV_H};  /* -> Generator (52) */
 /* Reference / SD karta / Benchmark pameti se presunuly do MENU (nastroje, ne nastaveni). */
 /* Okno SESTAVY (s_view=33): vyber slotu (-/+) + ULOZIT/NACIST/SMAZAT ve footeru. */
 static const prim_rect_t SET_SLOT_MINUS = {40, 116, 64, 64};
@@ -897,11 +898,11 @@ void app_gpsdo_render_diag(void)
         ui_card_t c_adc = {.rect = {DG_LX, 212, DG_COLW, 192},
                            .header_label = "Napeti (ADS1115 + MCU)"};
         ui_card_render_chrome(&c_adc);
-        dlabel(DG_LLBL, 258, "OCXO_VC");      /* AIN0: ladici napeti OCXO */
+        dlabel(DG_LLBL, 258, "AIN0 OCXO_VC");      /* AIN0: ladici napeti OCXO */
         /* 🔴 2026-10-02: AIN1 je VBUS, ne RF_Level (AD8307 na desce neni —
          * viz RF_LEVEL_HW_PRESENT, calib.h); AIN2 preskalovano z "12V" na
          * "+3V3" (overeno netlistem FPGA_Module_2_1). */
-        dlabel(DG_LLBL, 284, "VBUS");         /* AIN1 */
+        dlabel(DG_LLBL, 284, "AIN1 VBUS");
         dlabel(DG_LLBL, 310, "AIN2 (+3V3)");
         dlabel(DG_LLBL, 336, "AIN3 (5V)");
         dlabel(DG_LLBL, 362, "VREF");
@@ -913,7 +914,7 @@ void app_gpsdo_render_diag(void)
         ui_card_render_chrome(&c_fpga);
 
         ui_card_t c_ref = {.rect = {DG_RX, 160, DG_COLW, 72},
-                           .header_label = "Reference Si5356 (4x100MHz)"};
+                           .header_label = "Reference Si5356 (100MHz)"};
         ui_card_render_chrome(&c_ref);
 
         ui_card_t c_sys = {.rect = {DG_RX, 242, DG_COLW, 162},
@@ -1468,10 +1469,10 @@ void app_gpsdo_render_sensors(void)
         dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "MCU jadro");
         dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "OCXO");
         dlabel(DG_LLBL, SENS_R0 + 3 * SENS_DY, "FPGA board");
-        dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "OCXO_VC");
-        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "VBUS");
-        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "+3V3 vetev");
-        dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "5V vetev");
+        dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "AIN0 OCXO_VC");
+        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "AIN1 VBUS");
+        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "AIN2 +3V3");
+        dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "AIN3 5V");
         dlabel(DG_RLBL, SENS_R0 + 4 * SENS_DY, "VREF");
         dlabel(DG_RLBL, SENS_R0 + 5 * SENS_DY, "VBAT");
     }
@@ -1852,11 +1853,11 @@ static const struct {
      * REF marker to nechytil, protoze se pocita primo z `nom` — tedy mV proti mV. */
     /* 🔴 2026-10-02: AIN2 preskalovano z "12V"/10,8-13,2V na "+3V3"/2,97-3,63V
      * (viz calib.c pro plne zduvodneni netlistem FPGA_Module_2_1). */
-    { SENS_ADS2,   "+3V3 vetev", 2.97f,  3.63f,  3.30f,  0.001f, 3, " V",   0 },
-    { SENS_ADS3,   "5V vetev",    4.5f,   5.5f,   5.0f,  0.001f, 3, " V",   0 },
+    { SENS_ADS2,   "AIN2 +3V3", 2.97f,  3.63f,  3.30f,  0.001f, 3, " V",   0 },
+    { SENS_ADS3,   "AIN3 5V",     4.5f,   5.5f,   5.0f,  0.001f, 3, " V",   0 },
     { SENS_VDDA,   "REF 2V5",     2.3f,   2.7f,   2.5f,  0.001f, 3, " V",   0 },
     { SENS_VBAT,   "VBAT",        2.5f,   3.4f,   3.3f,  0.001f, 3, " V",   0 },   /* CR2032, nominal 3,3 V */
-    { SENS_ADS0,   "OCXO Vc",     0.0f,   3.3f,   1.65f, 0.001f, 3, " V",   0 },
+    { SENS_ADS0,   "AIN0 OCXO Vc", 0.0f,   3.3f,   1.65f, 0.001f, 3, " V",   0 },
     { SENS_ADS1,   "RF level",    -80.f,   10.f,  -100.f, 1.f,     1, " dBm", 1 },  /* nom < lo = zadny REF marker (RF nema ocekavanou hodnotu) */
 };
 /* Stred radku (y) pro index r (0..3 = karta Teploty, 4..9 = karta Napajeni). */
@@ -2807,6 +2808,7 @@ void app_gpsdo_render_settings(void)
         { &ANIMNAV_RECT,    "ANIMACE >"     },   /* footer: EFEKTY / PRIKLADY */
         { &SETUP_ENTER_RECT,"SESTAVY >"     },
         { &ABOUT_RECT,      "O PRISTROJI >" },
+        { &GENNAV_RECT,     "GENERATOR >"   },   /* CLK2/3, CLK4/5, CLK6/7 (Si5356) */
     };
     for (unsigned i = 0; i < sizeof SETNAV / sizeof SETNAV[0]; i++) {
         ui_button_t nb = {.rect = *SETNAV[i].r, .variant = UI_BUTTON_NORMAL,
@@ -3017,6 +3019,7 @@ static void app_gpsdo_render_meas_menu(void);
 void app_gpsdo_render_func(void);          /* FUNKCE MERENI (s_view=49) */
 void app_gpsdo_render_help(void);          /* NAPOVEDA (s_view=50) */    /* MERENI rozcestnik (s_view=44) */
 static void app_gpsdo_render_tools(void);        /* NASTROJE pod Diagnostikou (s_view=48) */
+static void app_gpsdo_render_generator(void);    /* GENERATOR - vystupy Si5356 (s_view=52) */
 static void app_gpsdo_render_errlog(void);       /* CHYBY — trvaly log ve W25Q (s_view=51) */
 static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first); /* def niz */
 static void kv_margin_bar(int16_t base_y, int pct, prim_color_t c, const char *label); /* def niz */
@@ -3095,7 +3098,7 @@ static void btnreg_observer(const prim_rect_t *r)
 }
 
 /* ── PAMET FOKUSU PER OKNO (zadani UI §7 „menu si pamatuje posledni volbu") ── */
-#define S_VIEW_MAX 52   /* 0..51; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY */
+#define S_VIEW_MAX 53   /* 0..52; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR */
 static int8_t s_focus_of[S_VIEW_MAX];
 static int8_t s_focus;                        /* fokus AKTUALNIHO okna */
 /* Okno, ve kterem uz je znacka fokusu vykreslena (0xFF = zadne). Prvni otoceni
@@ -3985,7 +3988,7 @@ static void app_gpsdo_render_confirm_restart(void)
     present_now();
 }
 
-/* ── Reference (s_view=14): stav Si5356 + konfigurace 4×100 MHz vernier hodin. ── */
+/* ── Reference (s_view=14): stav Si5356 + konfigurace referencnich hodin FPGA 100 MHz. ── */
 /* VYNULOVAT sticky (footer, pred BACK_RECT x=650). ⚠️ Zapis na I2C1 dela
  * VYHRADNE SensorsTask — tady se jen nastavi zadost. */
 static const prim_rect_t REF_CLR_RECT = {18, 417, 200, 61};
@@ -3997,14 +4000,14 @@ static void app_gpsdo_render_reference(void)
     if (first) {
         view_set(14);
         window_chrome("REFERENCE  Si5356", WIN_TITLE_Y);
-        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Vernier reference (4-fazovy TDC)"};
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Referencni hodiny FPGA"};
         ui_card_render_chrome(&c);
         prim_draw_text((prim_point_t){DG_LLBL, 112}, "Vstup:",  &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 112}, "10 MHz -> VCO 2,2 GHz (N=220) /22", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 112}, "10 MHz -> VCO 2,2 GHz (N=220) /17,6", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 148}, "Vystup:", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 148}, "4x 100 MHz, faze 0/90/180/270 (2,5 ns)", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 148}, "CLK0/1 = 100 MHz (bez fazi)", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 184}, "Pouziti:",&ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 184}, "reciproky citac FPGA, jemny krok 2,5 ns", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(DG_LLBL+150), 184}, "hodiny FPGA (carry-chain TDC)", &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){DG_LLBL, 240}, "Stav (reg 218):", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         /* 🔴 Sticky radek: registr 218 je ZIVY, takze kratky vypadek reference
          * mezi dvema ctenimi (2x/s) by zmizel beze stopy — a mereni porizena
@@ -4047,6 +4050,150 @@ static void app_gpsdo_render_reference(void)
     if (drew) present_now();
 }
 
+/* ── GENERATOR (s_view=52): volne nastavitelne vystupy Si5356 ──────────────────
+ * Tri radky = dvojice CLK2/3, CLK4/5, CLK6/7 (vystupy na konektorech). CLK0/1 je
+ * 100 MHz reference FPGA a menit se nesmi (neni tu). Radek: kmitocet, -/+ o zvoleny
+ * KROK, volba kroku (1 Hz .. 10 MHz), ZAPNOUT/VYPNOUT (label = AKCE). Kmitocet i
+ * stav (zapisuji / OK / chyba I2C) jsou ZIVE; zapis do cipu dela SensorsTask
+ * (vlastnik I2C1), tady se jen posila zadost `si5356_gen_request`.
+ * Dve ovladaci cesty: tlacitka se registruji do fokusu (encoder) a stejne tak
+ * jdou ovladat dotykem; presny kmitocet jde zadat UART prikazem `gen`. */
+#define GEN_CARD_X     18
+#define GEN_CARD_W     764
+#define GEN_CARD_H     104
+#define GEN_ROW_Y(i)   ((int16_t)(66 + 112 * (i)))          /* 66, 178, 290 (konci 394) */
+#define GEN_VAL_X      30
+#define GEN_STAT_X     30
+#define GEN_BTN_Y(i)   ((int16_t)(GEN_ROW_Y(i) + 34))
+static prim_rect_t gen_minus_rect(int i) { return (prim_rect_t){392, GEN_BTN_Y(i), 64, 64}; }
+static prim_rect_t gen_plus_rect(int i)  { return (prim_rect_t){464, GEN_BTN_Y(i), 64, 64}; }
+static prim_rect_t gen_step_rect(int i)  { return (prim_rect_t){538, GEN_BTN_Y(i), 120, 64}; }
+static prim_rect_t gen_onoff_rect(int i) { return (prim_rect_t){666, GEN_BTN_Y(i), 110, 64}; }
+
+static const uint32_t GEN_STEP_HZ[8] = { 1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u };
+static const char *const GEN_STEP_LBL[8] = { "1 Hz", "10 Hz", "100 Hz", "1 kHz",
+                                             "10 kHz", "100 kHz", "1 MHz", "10 MHz" };
+static uint8_t s_gen_step[SI5356_GEN_N] = { 6, 6, 6 };       /* vychozi krok 1 MHz */
+
+/* 200000000 -> "200.000.000 Hz" (tecky po tisicich, jako velke cislo kmitoctu) */
+static void gen_fmt_hz(char *out, size_t n, uint32_t hz)
+{
+    char d[12]; int nd = 0;
+    do { d[nd++] = (char)('0' + (hz % 10u)); hz /= 10u; } while (hz != 0u);
+    size_t o = 0;
+    for (int i = nd - 1; i >= 0 && o + 2 < n; i--) {
+        out[o++] = d[i];
+        if (i > 0 && (i % 3) == 0 && o + 2 < n) out[o++] = '.';
+    }
+    snprintf(out + o, n - o, " Hz");
+}
+
+static void gen_draw_btns(int i)
+{
+    const uint8_t on = g_si_gen[i].on;
+    prim_rect_t clr = {392, (int16_t)(GEN_BTN_Y(i) - 2), 386, 68};
+    prim_fill_rect(clr, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    ui_button_t bm = {.rect = gen_minus_rect(i), .variant = UI_BUTTON_NORMAL, .label = "-"};
+    ui_button_t bp = {.rect = gen_plus_rect(i),  .variant = UI_BUTTON_NORMAL, .label = "+"};
+    ui_button_t bs = {.rect = gen_step_rect(i),  .variant = UI_BUTTON_NORMAL,
+                      .label = GEN_STEP_LBL[s_gen_step[i]]};
+    ui_button_t bo = {.rect = gen_onoff_rect(i), .variant = on ? UI_BUTTON_STOP : UI_BUTTON_RUN,
+                      .label = on ? "VYPNOUT" : "ZAPNOUT"};      /* label = AKCE (F-0141) */
+    ui_button_render(&bm);
+    ui_button_render(&bp);
+    ui_button_render(&bs);
+    ui_button_render(&bo);
+}
+
+/* Prekresli kmitocet + stav radku, kdyz se zmenily. Vrati 1, kdyz neco kreslilo. */
+static int gen_draw_vals(int i, int force)
+{
+    static char c_val[SI5356_GEN_N][24], c_st[SI5356_GEN_N][24];
+    const uint8_t on = g_si_gen[i].on, st = g_si_gen[i].state, pend = g_si_gen[i].pend;
+    char val[24], sx[24];
+    gen_fmt_hz(val, sizeof val, g_si_gen[i].freq_hz);
+    if (!on) strncat(val, "  VYP", sizeof val - strlen(val) - 1);
+    const char *stx = pend ? "zapisuji..." :
+                      st == SI5356_GEN_OK ? "zapsano do cipu" :
+                      st == SI5356_GEN_ERR_I2C ? "CHYBA I2C!" : "MIMO ROZSAH!";
+    prim_color_t sc = pend ? UI_COLOR_INK_3 : st == SI5356_GEN_OK ? UI_COLOR_OK : UI_COLOR_BAD;
+    snprintf(sx, sizeof sx, "%s", stx);
+    int drew = 0;
+    if (force) { c_val[i][0] = c_st[i][0] = '\0'; }
+    if (dchg(c_val[i], sizeof c_val[i], val)) {
+        dtext_tall(GEN_VAL_X, (int16_t)(GEN_ROW_Y(i) + 66), 340, val,
+                   on ? UI_COLOR_INK : UI_COLOR_INK_4, &ui_font_mono_25);
+        drew = 1;
+    }
+    if (dchg(c_st[i], sizeof c_st[i], sx)) {
+        dtext(GEN_STAT_X, (int16_t)(GEN_ROW_Y(i) + 94), 340, sx, sc, &ui_font_sans_16);
+        drew = 1;
+    }
+    return drew;
+}
+
+static void app_gpsdo_render_generator(void)
+{
+    window_prep();
+    view_set(52);
+    window_chrome("GENERATOR", WIN_TITLE_Y);
+    for (int i = 0; i < (int)SI5356_GEN_N; i++) {
+        char hd[24];
+        snprintf(hd, sizeof hd, "CLK%d/%d", 2 + 2 * i, 3 + 2 * i);
+        ui_card_t c = {.rect = {GEN_CARD_X, GEN_ROW_Y(i), GEN_CARD_W, GEN_CARD_H},
+                       .header_label = hd};
+        ui_card_render_chrome(&c);
+        prim_draw_text((prim_point_t){598, (int16_t)(GEN_ROW_Y(i) + 25)}, "krok",
+                       &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+        gen_draw_btns(i);
+        (void)gen_draw_vals(i, 1);
+    }
+    prim_draw_text((prim_point_t){30, 447}, "CLK0/1 = 100 MHz reference FPGA (pevne)",
+                   &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    present_now();
+}
+
+static void gen_tick(void)
+{
+    window_prep();
+    int drew = 0;
+    for (int i = 0; i < (int)SI5356_GEN_N; i++) drew |= gen_draw_vals(i, 0);
+    if (drew) present_now();
+}
+
+/* Dotek v okne GENERATOR. Vraci true, kdyz se trefil do ovladace. */
+static bool gen_touch(int16_t x, int16_t y)
+{
+    for (int i = 0; i < (int)SI5356_GEN_N; i++) {
+        uint32_t f  = g_si_gen[i].freq_hz;
+        uint8_t  on = g_si_gen[i].on;
+        const uint32_t step = GEN_STEP_HZ[s_gen_step[i]];
+        int changed = 0, redraw_btns = 0;
+        if (in_rect(x, y, gen_minus_rect(i))) {
+            f = (f < SI5356_GEN_F_MIN_HZ + step) ? SI5356_GEN_F_MIN_HZ : f - step;
+            changed = 1;
+        } else if (in_rect(x, y, gen_plus_rect(i))) {
+            f = ((uint64_t)f + step > SI5356_GEN_F_MAX_HZ) ? SI5356_GEN_F_MAX_HZ : f + step;
+            changed = 1;
+        } else if (in_rect(x, y, gen_step_rect(i))) {
+            s_gen_step[i] = (uint8_t)((s_gen_step[i] + 1u) % 8u);
+            redraw_btns = 1;
+        } else if (in_rect(x, y, gen_onoff_rect(i))) {
+            on = on ? 0u : 1u;
+            changed = 1; redraw_btns = 1;
+        } else {
+            continue;
+        }
+        if (changed) si5356_gen_request((unsigned)i, f, on != 0u);
+        prim_set_target(&s_fb); prim_reset_clip();
+        if (redraw_btns) gen_draw_btns(i);
+        (void)gen_draw_vals(i, 1);
+        present_now();
+        return true;
+    }
+    return false;
+}
+
 /* ── Kalibrace (s_view=15): editovatelne konstanty AD8307 + ADS delice. ──────
  * Tap na -/+ meni g_calib HNED (zive - promita se do RF dBm / 12V-5V napeti
  * uz na dalsim vzorku), tlacitko ULOZIT persistuje do W25Q CALIB store
@@ -4059,13 +4206,20 @@ static void app_gpsdo_render_reference(void)
  * spodek karty — viz app_gpsdo_render_kalib. */
 static const struct { volatile float *val; float step, lo, hi; int decimals;
                       const char *label, *unit; int16_t y; } KALIB_ROWS[4] = {
+    /* 2026-10-11: AD8307 na teto desce NENI osazen (RF_LEVEL_HW_PRESENT 0), jeho dva radky byly k nicemu. Misto nich
+     * jsou delice OCXO Vc (AIN0) a VBUS (AIN1), ktere dosud nesly kalibrovat. Hodnoty AD8307 zustavaji v g_calib/blobu. */
+#if RF_LEVEL_HW_PRESENT
     { &g_calib.ad8307_slope_mv_db,     0.5f,  10.0f,   40.0f, 1, "AD8307 slope",     "mV/dB", 110 },
     { &g_calib.ad8307_intercept_dbm,   0.5f, -100.0f, -60.0f, 1, "AD8307 intercept", "dBm",   176 },
+#else
+    { &g_calib.gain_vc,                0.001f, 0.200f,  4.000f, 3, "AIN0 OCXO Vc gain", "x",   110 },
+    { &g_calib.gain_vbus,              0.005f, 5.000f, 40.000f, 3, "AIN1 VBUS gain",    "x",   176 },
+#endif
     /* 🔴 2026-10-02: rozsahy preskalovany na skutecne delice AIN2(+3V3)/AIN3(+5V)
      * z netlistu FPGA_Module_2_1 (viz calib.c) - default gain_12v~2,0, gain_5v~1,4545,
      * puvodni rozsahy (4,000-5,500 / 1,500-2,500) byly pro neexistujici delice. */
-    { &g_calib.gain_12v,               0.010f, 1.000f, 3.000f, 3, "+3V3 delic gain", "x",     242 },
-    { &g_calib.gain_5v,                0.005f, 1.000f, 2.000f, 3, "5V delic gain",   "x",     308 },
+    { &g_calib.gain_12v,               0.001f, 1.000f, 3.000f, 3, "AIN2 +3V3 gain",    "x",   242 },
+    { &g_calib.gain_5v,                0.001f, 1.500f, 2.500f, 3, "AIN3 5V gain",      "x",   308 },
 };
 #define KALIB_BTN_W 60
 #define KALIB_BTN_H 60
@@ -4107,6 +4261,23 @@ static void kalib_row_redraw(int i)
     dtext((int16_t)(DG_LLBL + 230), KALIB_ROWS[i].y, 312, full, UI_COLOR_ACC, &ui_font_mono_18);
 }
 
+/* ── Akcelerace kroku pri DRZENI -/+ (Kalibrace, Pruvodce) ───────────────────────
+ * Jednotlivy krok je nejmensi (1 mV v pruvodci, 0,001 u gainu); cim dele se -/+ drzi, tim vetsi nasobek:
+ * <2 s x1, <5 s x10, <8 s x100, dele x1000. Drzeni se pozna podle toho, ze se volani opakuje s odstupem
+ * <= 400 ms (auto-repeat UiTasku jede po 70-350 ms); pauza nebo jednotlive klepnuti nasobek vrati na x1. */
+static uint32_t s_pm_last_ms, s_pm_start_ms;
+static float pm_hold_mult(void)
+{
+    const uint32_t now = HAL_GetTick();
+    if ((uint32_t)(now - s_pm_last_ms) > 400u) s_pm_start_ms = now;
+    s_pm_last_ms = now;
+    const uint32_t held = now - s_pm_start_ms;
+    if (held >= 8000u) return 1000.0f;
+    if (held >= 5000u) return 100.0f;
+    if (held >= 2000u) return 10.0f;
+    return 1.0f;
+}
+
 /* Status/napoveda radek: prazdne/vychozi = staticka napoveda (bylo samostatnym
  * radkem "Zmena se projevi..." — sloucen sem, uvolnil misto pro vetsi tlacitka).
  * Po editaci WARN "Zmeneno...", po ULOZIT OK/BAD vysledek zapisu. */
@@ -4120,7 +4291,7 @@ static void kalib_status_redraw(const char *msg, prim_color_t col)
  * hodnotu + status radek (bez ulozeni - to az tlacitko ULOZIT). */
 static void kalib_step(int i, int dir)
 {
-    float v = *KALIB_ROWS[i].val + (float)dir * KALIB_ROWS[i].step;
+    float v = *KALIB_ROWS[i].val + (float)dir * KALIB_ROWS[i].step * pm_hold_mult();
     if (v < KALIB_ROWS[i].lo) v = KALIB_ROWS[i].lo;
     if (v > KALIB_ROWS[i].hi) v = KALIB_ROWS[i].hi;
     *KALIB_ROWS[i].val = v;
@@ -4842,14 +5013,17 @@ static void app_gpsdo_render_datalog(void)
  * (`mv_zobrazene = mv_ads * gain`), takze syrovou hodnotu ADS znat nepotrebujeme:
  *     novy_gain = stary_gain * (skutecne / zobrazene)
  * Diky tomu je prevod nezavisly na tom, jaky gain je zrovna nastaveny. */
-#define WIZ_BRANCH_N 2
+#define WIZ_BRANCH_N 4
 static const struct {
     uint8_t sens; volatile float *gain; float nom_mv, lo_gain, hi_gain; const char *name;
 } WIZ_BR[WIZ_BRANCH_N] = {
     /* 🔴 2026-10-02: AIN2 preskalovano z "12V"(gain~4,8) na "+3V3"(gain~2,0),
      * AIN3 rozsah gainu posunut na skutecnych ~1,4545 (viz calib.c). */
-    { SENS_ADS2, &g_calib.gain_12v,  3300.0f, 1.500f, 2.500f, "+3V3 vetev" },
-    { SENS_ADS3, &g_calib.gain_5v,   5000.0f, 1.000f, 2.000f, "5V vetev"  },
+    { SENS_ADS2, &g_calib.gain_12v,  3300.0f, 1.500f, 2.500f, "AIN2 +3V3" },
+    { SENS_ADS3, &g_calib.gain_5v,   5000.0f, 1.500f, 2.500f, "AIN3 5V"   },
+    /* 2026-10-11: ladici napeti OCXO (AIN0) a VBUS (AIN1). Nominaly jen pro vychozi cil, kdyz se zatim nic nemeri. */
+    { SENS_ADS0, &g_calib.gain_vc,   1900.0f, 0.200f, 4.000f, "AIN0 OCXO Vc" },
+    { SENS_ADS1, &g_calib.gain_vbus, 5000.0f, 5.000f, 40.000f, "AIN1 VBUS" },
 };
 static int   s_wiz_br     = 0;      /* vybrana vetev */
 static float s_wiz_target = 0.0f;   /* co ukazuje multimetr [mV] */
@@ -7180,7 +7354,7 @@ static void cd_redraw_all(void)
     cd_label_chip(575, 171, buf, c_sens);
     snprintf(buf, sizeof buf, "SPI2: %s", g_spi_ok ? "LINK OK" : "NO LINK");
     cd_label_chip(495, 275, buf, c_spi);
-    snprintf(buf, sizeof buf, "4x100MHz: %s", si_st);
+    snprintf(buf, sizeof buf, "100MHz: %s", si_st);
     cd_label_chip(400, 347, buf, c_si);
 
     s_cd_color[0] = c_gps; s_cd_color[1] = c_sens; s_cd_color[2] = UI_COLOR_ACC;
@@ -7476,6 +7650,7 @@ static void render_view(uint8_t v)
     case 49: app_gpsdo_render_func();      break;
     case 50: app_gpsdo_render_help();      break;
     case 51: app_gpsdo_render_errlog();    break;
+    case 52: app_gpsdo_render_generator(); break;
     /* Modal potvrzeni restartu se po obnove ZAMERNE NEOBNOVUJE: potvrzeni
      * destruktivni akce se nema samo vynorit po udalosti, kterou uzivatel
      * nevyvolal. Vraci se tam, kam vede i tlacitko NE (`CONFIRM_NO`), takze
@@ -7971,6 +8146,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 43) app_gpsdo_render_membench();  /* PAMETI: prubeh a vysledky benchmarku */
     else if (s_view == 46) app_gpsdo_render_dualch();    /* Dvojkanal /4 + /16 + RF (zive) */
     else if (s_view == 47) app_gpsdo_render_devmult();   /* Odchylka x N (zive df) */
+    else if (s_view == 52) gen_tick();                   /* Generator: stav zapisu do Si5356 */
     /* ⚠️ Varovny pruh AZ NA KONCI ticku, aby lezel NAD tim, co prave
      * prekreslila okna vyse — pri plnem re-renderu by ho jinak chrome smazal. */
     if (app_gpsdo_tick_warn()) s_dirty = 1;
@@ -8875,6 +9051,11 @@ static uint8_t touch_pm_control(int16_t x, int16_t y)
         case 33: return (uint8_t)(in_rect(x, y, SET_SLOT_MINUS) || in_rect(x, y, SET_SLOT_PLUS));
         case 38: return (uint8_t)(in_rect(x, y, GPSQ_MINUS)|| in_rect(x, y, GPSQ_PLUS));
         case 40: return (uint8_t)(in_rect(x, y, WIZ_MINUS) || in_rect(x, y, WIZ_PLUS));
+        case 15: {
+            for (int i = 0; i < 4; i++)
+                if (in_rect(x, y, kalib_minus_hit(KALIB_ROWS[i].y)) || in_rect(x, y, kalib_plus_hit(KALIB_ROWS[i].y))) return 1u;
+            return 0u;
+        }
         case 35: return (uint8_t)(in_rect(x, y, NET_MINUS_RECT) || in_rect(x, y, NET_PLUS_RECT));
         case 39: {
             for (int i = 0; i < THR_ROWS; i++)
@@ -9163,8 +9344,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             if (in_rect(x, y, ALRMNAV_RECT)) { nav_push(7); app_gpsdo_render_alarms();   return true; }
             if (in_rect(x, y, KALIBNAV_RECT)){ nav_push(7); app_gpsdo_render_kalib();    return true; }
             if (in_rect(x, y, ANIMNAV_RECT)) { nav_push(7); app_gpsdo_render_anim();     return true; }
+            if (in_rect(x, y, GENNAV_RECT))  { nav_push(7); app_gpsdo_render_generator(); return true; }
             #undef SETTINGS_UPD
         }
+        if (s_view == 52 && gen_touch(x, y)) return true;   /* okno GENERATOR */
         if (s_view == 43) {                                 /* okno PAMETI */
             /* ⚠️ Jen POZADAVEK — benchmark bezi jednotky sekund a UiTask je hlidany
              * watchdogem (viz membench.h). Behem behu se dalsi stisk ignoruje. */
@@ -9590,12 +9773,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             if (in_rect(x, y, WIZ_MINUS) || in_rect(x, y, WIZ_PLUS)) {
                 float dir = in_rect(x, y, WIZ_PLUS) ? 1.0f : -1.0f;
-                s_wiz_target += dir * 10.0f;                    /* krok 10 mV */
-                /* Drz cil v +-20 % kolem jmenovite hodnoty — mimo to uz by
-                 * vysledny gain stejne vypadl z povoleneho rozsahu. */
-                float nom = WIZ_BR[s_wiz_br].nom_mv;
-                if (s_wiz_target < nom * 0.8f) s_wiz_target = nom * 0.8f;
-                if (s_wiz_target > nom * 1.2f) s_wiz_target = nom * 1.2f;
+                s_wiz_target += dir * 1.0f * pm_hold_mult();   /* 1 mV, pri drzeni x10/x100/x1000 */
+                /* Rozsah cile: 1 mV .. 30 V. Dopocteny gain se stejne kontroluje proti lo/hi vetve
+                 * (wiz_new_gain), takze nesmyslny cil jen zobrazi „mimo rozsah". Drive +-20 % kolem
+                 * jmenovite hodnoty — to nestacilo na Vc (75 mV proti 315 mV) ani VBUS (12 V proti 5 V). */
+                if (s_wiz_target < 1.0f)     s_wiz_target = 1.0f;
+                if (s_wiz_target > 30000.0f) s_wiz_target = 30000.0f;
                 app_gpsdo_render_wizard(); return true;
             }
             if (in_rect(x, y, WIZ_APPLY_RECT)) {                /* dopocitany gain -> g_calib */

@@ -57,7 +57,10 @@ typedef struct {
     uint16_t fw_version;          /* abs 60-61: verze bitstreamu (0 = neznama/stary FW) */
     uint16_t caps;                /* abs 62-63: bit1=SET_CONFIG, bit5=dt, bit6=CAL, bit7=REGR (bit0 window stream uz neni) */
     uint8_t  clk_status;          /* abs 64: od FW 0x041F (caps bit10) viz FPGA_CLK_*; starsi FW konstanta 0x01 */
-    uint8_t  clk_loss;            /* abs 65: FW 0x041F pocet vypadku 100 MHz od nahrani (saturuje 255); driv 0 */
+    uint8_t  clk_loss;            /* abs 65: FW 0x041F pocet vypadku hodin FPGA od nahrani (saturuje 255); driv 0 */
+    uint8_t  clk_mhz;             /* abs 99: od FW 0x0421 (caps bit12) kmitocet referencnich hodin FPGA [MHz] (dnes 100;
+                                   * FW 0x0421/0x0422 bezely na 125); bez bitu (FW <= 0x0420): 100.
+                                   * Jednotka casu v ramci je T_clk/16384 -> ps = jednotky * 15625 / (256 * clk_mhz) */
     /* ── FW >= 0x041F (caps bit10): samokontrola ──────────────────────────────────── */
     uint32_t build_time;          /* abs 12..15: cas sestaveni bitstreamu [unix s]; 0 = neznamy */
     uint32_t build_git;           /* abs 16..19: [27:0] git hash zdroju, [31] = neulozene zmeny */
@@ -65,7 +68,7 @@ typedef struct {
     /* ── 2026-10-03: skutecny carry-chain TDC (FW >= 0x0400, caps bit5) ──────── */
     uint64_t gate_ps;             /* PRESNE okno CH_A [ps] — jediny zdroj delky okna pro VSECHNY
                                    * vypocty (hi-res, akumulatory, statistika). Novy FW: z dt v
-                                   * jednotkach T_clk/16384 (abs 118) * 625/1024; stary FW /
+                                   * jednotkach T_clk/16384 (abs 118) * 15625/(256*clk_mhz); stary FW /
                                    * emulator: z gate_time_ns pres `fpga_freq_dt_ticks` (F-0186) */
     uint64_t dt_b_ps;             /* okno CH_B [ps] (abs 101..106); 0 = neznamo */
     uint32_t edges_b;             /* periody CH_B v okne (abs 108) */
@@ -92,12 +95,18 @@ typedef struct {
 #define FPGA_CAP_CODES        (1u << 8)   /* ramec nese kody TDC okna (abs 68..75), jen kdyz neni REGR */
 #define FPGA_CAP_REGR         (1u << 7)   /* ramec nese regresni blok (abs 68..96); bit0 window stream uz neni */
 #define FPGA_CAP_CHAN         (1u << 9)   /* FW >= 0x041E: SET_CONFIG 0x03 (vyber kanalu), 5 hradel, echo hradla v phase_status & 7 */
-#define FPGA_CAP_SELFCHK      (1u << 10)  /* FW >= 0x041F: identita bitstreamu (abs 12..19), hlidac 100 MHz (64/65),
+#define FPGA_CAP_REFCTL       (1u << 11)  /* FW >= 0x0420: SET_CONFIG 0x04 = vyber reference, stav v clk_status bity 3..5 */
+#define FPGA_CAP_SELFCHK      (1u << 10)  /* FW >= 0x041F: identita bitstreamu (abs 12..19), hlidac hodin (64/65),
                                            * kontrolni pocitani hran (97/98) */
+#define FPGA_CAP_CLK          (1u << 12)  /* FW >= 0x0421: abs 99 nese kmitocet hodin FPGA [MHz]; bez bitu = 100 MHz */
 /* clk_status bity (abs 64, jen s FPGA_CAP_SELFCHK) */
-#define FPGA_CLK_OK           (1u << 0)   /* 100 MHz v poslednim okne hlidace (102 us) v poradku */
-#define FPGA_CLK_FAULT        (1u << 1)   /* od nahrani aspon jeden vypadek nebo zmena kmitoctu 100 MHz */
+#define FPGA_CLK_OK           (1u << 0)   /* hodiny FPGA v poslednim okne hlidace (102 us) v poradku (kmitocet jako clk_mhz) */
+#define FPGA_CLK_FAULT        (1u << 1)   /* od nahrani aspon jeden vypadek nebo zmena kmitoctu hodin */
 #define FPGA_CLK_RECOVER      (1u << 2)   /* po vypadku: FPGA drzi mereni a znovu kalibruje TDC */
+/* FW >= 0x0420 (caps bit11, FPGA_CAP_REFCTL): vyber reference OCXO / externi 10 MHz (pin Ref_Ctrl, prepinac U19) */
+#define FPGA_CLK_REF_EXT      (1u << 3)   /* vybrana EXTERNI reference (jinak OCXO) */
+#define FPGA_CLK_EXT_PRESENT  (1u << 4)   /* na externim vstupu (Ext_Ref_Sens) jsou hrany */
+#define FPGA_CLK_EXT_LOST     (1u << 5)   /* externi vypadla, kdyz byla vybrana: FPGA SAMA prepnula zpet na OCXO */
 
 /* ── Samokontrola okna (STATUS #282/#283) ─────────────────────────────────────
  * Do 2026-10-10 FPGA, ktera merila spatne (L-0141: 1 578 628 Hz misto 10 000 008 Hz v 6 ze 7 nahrani),
@@ -123,8 +132,15 @@ uint64_t fpga_win_code_ps(uint8_t win);
 int  fpga_freq_poll_check(void);
 /** Soucty zamitnutych oken od bootu pro `status`. */
 void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window);
+/** v22: surovy posledni ramec FPGA (vcetne zamitnutych oken) + pocitadla do `w[0..n-1]` (IPC `fpgadiag`).
+ *  Poradi slov viz telo funkce a `build_fpga_json` v CM4/LWIP/App/httpd_min.c. */
+void fpga_freq_diag_fill(uint32_t *w, uint32_t n);
 /** "2026-10-10 14:03:05 UTC git d526c00+" (+ = neulozene zmeny); bez identity "neznama". Ciste-logicke. */
 void fpga_freq_format_build(uint32_t build_time, uint32_t build_git, char *buf, int buflen);
+/** Pozada FPGA o referenci: 0 = OCXO, 1 = externi 10 MHz (SET_CONFIG 0x04, FW >= 0x0420). FPGA externi pusti jen kdyz na vstupu
+ *  jsou hrany a pri jejim vypadku se SAMA vrati na OCXO; po zapnuti je vzdy OCXO (nic se neuklada).
+ *  @return true = povel odeslan (ne ze se prepnuto; to hlasi clk_status v ramci). */
+bool fpga_freq_set_ref(uint8_t ext);
 /** Posledni platny DATA ramec VCETNE odmitnuteho mereni -- jen pro diagnostiku (`status`: verze, identita,
  *  hlidac hodin, TDC). Mereni z nej NEBRAT: k tomu je `fpga_freq_get_last`, kam se odmitnute okno nedostane. */
 bool fpga_freq_get_frame(fpga_meas_t *out);
@@ -342,7 +358,7 @@ uint32_t fpga_freq_inl_count(void);                       /* pocet zaznamu (max 
 int      fpga_freq_inl_get(uint32_t i, fpga_inl_rec_t *r);  /* i = 0 nejstarsi; 0 = mimo rozsah */
 void     fpga_freq_inl_reset(void);
 /** Kmitocet [Hz] ze sklonu primky mezi stredy segmentu A a B (cisty vypocet). 0.0 = nelze (B <= A). */
-double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b);
+double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz);
 void fpga_freq_regr_reset(void);
 /** Mez konzistence regrese s dvoubodovym odhadem (relativne) a minimum znacek v segmentu. */
 #define FPGA_REGR_MAX_REL   5.0e-8     /* ~40 sigma dvoubodoveho odhadu (sigma ~1,2e-9 pri 215 ps na znacku, okno 0,25 s) */

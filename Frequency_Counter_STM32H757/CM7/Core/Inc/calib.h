@@ -32,6 +32,10 @@ typedef struct {
      * `gain_5v` je dnes AIN3 = +5V pres jiny delic nez puvodne. */
     float gain_12v;              /* multiplikator ADS mV -> skutecne mV, AIN2 = +3V3 vetev */
     float gain_5v;                /* multiplikator ADS mV -> skutecne mV, AIN3 = +5V vetev */
+    /* 2026-10-11: ladici napeti OCXO (AIN0) a VBUS (AIN1) dostaly EDITOVATELNY gain jako ostatni vetve
+     * (dosud pevne z hodnot rezistoru, tj. nesly zkalibrovat podle multimetru). Ulozeny blob "CAL2". */
+    float gain_vc;                /* multiplikator ADS mV -> skutecne mV, AIN0 = OCXO Vc (R51/R52, ~2,5) */
+    float gain_vbus;              /* multiplikator ADS mV -> skutecne mV, AIN1 = VBUS (R53/R54, ~21,04) */
 } calib_t;
 
 /* Live hodnoty. Cte SensorsTask (gain_12v/gain_5v, prepocet ADS -> skutecne

@@ -139,8 +139,12 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 /* USER CODE BEGIN 1 */
 /* I2C1 na FPGA desce: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71.
  * Piny PB8=SCL, PB9=SDA (AF4). Self-contained (GPIO+clock zde), aby to prezilo
- * CubeMX regeneraci. Timing jako I2C4, stejny kernel 120 MHz -> ~50 kHz
- * (NE 100 kHz, jak tu stalo do 2026-09-09; prepocet je v CLAUDE.md). */
+ * CubeMX regeneraci. Kernel 120 MHz.
+ * 2026-10-11: I2C1 400 kHz (Timing 0x30700E3B, tentyz jako overeny bod TMP117 na I2C4, kernel 120 MHz). Drive 0x70303AEE (~50 kHz, sdileno
+ * s I2C4, kde je ATtiny s kolenem 75-100 kHz); I2C1 ATtiny nema. Zarizeni na sbernici (TMP117, ADS1115, AD5693R, Si5356) umi 400 kHz.
+ * Otestovano na desce: 60 kHz, 200 kHz i 400 kHz (po 4-14 min): TMP117 0x49, Si5356 a ADS1115 AIN0/2/3 bez jedine chyby cteni.
+ * Jedina pull-up dvojice je na desce FPGA (R64/R65 2k2; na desce STM zadny), cas nabehu zatim NEZMEREN osciloskopem -- 400 kHz je pri
+ * 2k2 a ~150 pF na hrane (tr ~300 ns). Kdyby se objevily chyby, vratit 200 kHz (0x70300E3B). */
 I2C_HandleTypeDef hi2c1;
 
 void MX_I2C1_Init(void)
@@ -164,7 +168,7 @@ void MX_I2C1_Init(void)
   HAL_GPIO_Init(GPIOB, &gpio);
 
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x70303AEE;
+  hi2c1.Init.Timing = 0x30700E3B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;

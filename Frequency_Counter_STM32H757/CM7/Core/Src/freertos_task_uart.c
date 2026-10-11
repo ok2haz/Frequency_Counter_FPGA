@@ -689,6 +689,78 @@ static void dac_print_status(void)
            (long)g_sensors[SENS_ADS0].last);
 }
 
+/* ── UART `gen` — generator Si5356 (CLK2/3, CLK4/5, CLK6/7) ───────────────────
+ * `gen`                     stav + KONTROLA registru (zapsano vs. precteno z cipu)
+ * `gen <2|4|6> <Hz>`        nastavi kmitocet dvojice CLKn/n+1 (zapne ji)
+ * `gen <2|4|6> on|off`      povoli / zakaze vystup
+ * `gen <2|4|6> <Hz> off`    nastavi kmitocet a necha vystup vypnuty
+ * Cislo je index PRVNIHO pinu dvojice (jako popisky na desce); CLK0/1 = reference FPGA
+ * se odsud menit NEDA. Zapis do cipu dela SensorsTask (vlastnik I2C1), tady jen zadost.
+ * noinline: vlastni ramec, at nezvetsuje ramec UartTask_run (L-0035). */
+__attribute__((noinline)) static void uart_gen_cmd(const char *a)
+{
+    while (*a == ' ') a++;
+    if (*a != '\0') {
+        if (*a < '2' || *a > '6' || (*a & 1) != 0) {
+            printf("GEN: dvojice je 2, 4 nebo 6 (CLK2/3, CLK4/5, CLK6/7); CLK0/1 je reference FPGA\n");
+            return;
+        }
+        const unsigned ch = (unsigned)(*a - '2') / 2u;
+        a++;
+        while (*a == ' ') a++;
+        uint32_t f  = g_si_gen[ch].freq_hz;
+        bool     on = g_si_gen[ch].on != 0u;
+        if (*a >= '0' && *a <= '9') {
+            uint32_t v = 0u;
+            while (*a >= '0' && *a <= '9' && v <= 400000000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; }
+            if (*a >= '0' && *a <= '9') { printf("GEN: kmitocet je mimo rozsah\n"); return; }
+            f = v; on = true;
+            while (*a == ' ') a++;
+        }
+        if      (strcmp(a, "on") == 0)  on = true;
+        else if (strcmp(a, "off") == 0) on = false;
+        else if (*a != '\0')            { printf("GEN: neznamy argument `%s`\n", a); return; }
+        if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ) {
+            printf("GEN: %lu Hz je mimo rozsah %lu .. %lu Hz\n", (unsigned long)f,
+                   (unsigned long)SI5356_GEN_F_MIN_HZ, (unsigned long)SI5356_GEN_F_MAX_HZ);
+            return;
+        }
+        si5356_gen_request(ch, f, on);
+        for (int i = 0; i < 100 && g_si_gen[ch].pend; i++) osDelay(20);
+        if (g_si_gen[ch].pend) printf("GEN: zadost ceka (I2C1 back-off?) - vysledek ukaze `gen`\n");
+    }
+
+    for (unsigned ch = 0; ch < SI5356_GEN_N; ch++) {
+        const uint32_t f = g_si_gen[ch].freq_hz;
+        const unsigned clk = 2u + 2u * ch;
+        const uint8_t  st  = g_si_gen[ch].state;
+        printf("GEN CLK%u/%u: %lu Hz %s  stav %s%s\n", clk, clk + 1u, (unsigned long)f,
+               g_si_gen[ch].on ? "ZAP" : "VYP",
+               st == SI5356_GEN_OK ? "OK" : (st == SI5356_GEN_ERR_I2C ? "CHYBA I2C" : "MIMO ROZSAH"),
+               g_si_gen[ch].pend ? " (zapis ceka)" : "");
+        si5356_ms_t m;
+        if (!si5356_gen_calc(f, &m)) continue;
+        uint8_t want[10], got[12];
+        si5356_gen_pack(&m, want);
+        bool rd_ok = false;
+        if (osMutexAcquire(i2c1MutexHandle, 200) == osOK) {
+            rd_ok = si5356_gen_readback(&hi2c1, ch, got);
+            osMutexRelease(i2c1MutexHandle);
+        }
+        printf("  MS: R=%u P1=%lu P2=%lu P3=%lu -> %lu Hz\n", 1u << m.rexp, (unsigned long)m.p1,
+               (unsigned long)m.p2, (unsigned long)m.p3, (unsigned long)si5356_gen_actual_hz(&m));
+        if (!rd_ok) { printf("  cip: nelze cist (I2C1 obsazena)\n"); continue; }
+        bool same = (got[0] == (uint8_t)(0xC0u | ((unsigned)m.rexp << 2)));
+        for (unsigned i = 0; i < 9u; i++) same = same && (got[1 + i] == want[i]);
+        same = same && ((got[10] & 0x3Fu) == want[9]);
+        const bool out_on = (got[11] & (1u << (ch + 1u))) == 0u;
+        printf("  cip: R=%02X MS=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X OEB=%02X (vystup %s) %s\n",
+               got[0], got[1], got[2], got[3], got[4], got[5], got[6], got[7], got[8], got[9], got[10], got[11],
+               out_on ? "ZAP" : "VYP", same ? "SHODA" : "ROZDIL");
+    }
+    printf("GEN: CLK0/1 = 100 MHz reference FPGA (pevne)\n");
+}
+
 void UartTask_run(void *argument)
 {
 	(void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
@@ -1360,7 +1432,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2170,6 +2242,10 @@ void UartTask_run(void *argument)
 					  printf("Si5356A: I2C1 busy\n");
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "gen", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  uart_gen_cmd(&RxBuffer[3]);
+			  }
 			  else if (strcmp(RxBuffer, "fpgaloop") == 0) {
 				  /* Hustá série přenosů pro scope/LA (trigger na CS↓). ~3 s. */
 				  printf("FPGA loop: ~2000 prenosu (scope na pinech FPGA: CS56/SCK55/MISO57)...\n");
@@ -2251,6 +2327,42 @@ void UartTask_run(void *argument)
 				  printf("TDC hist: soucet A %lu B %lu | max A k=%u %lu, B k=%u %lu | nepreceteno %u\n",
 				         (unsigned long)sa, (unsigned long)sb, ka, (unsigned long)ma, kb, (unsigned long)mb, bad);
 			  }
+			  else if (strcmp(RxBuffer, "ref") == 0 || strcmp(RxBuffer, "ref ext") == 0 || strcmp(RxBuffer, "ref int") == 0) {
+				  /* Reference FPGA (FW >= 0x0420): `ref` = stav, `ref ext` = externi 10 MHz, `ref int` = OCXO. Po zapnuti je vzdy OCXO
+				   * (nic se neuklada). FPGA externi pusti jen kdyz na vstupu jsou hrany; kdyz externi vypadne, SAMA se vrati na OCXO.
+				   * ⚠️ Kmitocet externiho signalu FPGA nehlida: MUSI to byt 10 MHz. Bezi z UartTasku (osDelay je v poradku). */
+				  fpga_meas_t rm;
+				  const int want_ext = (strcmp(RxBuffer, "ref ext") == 0), want_int = (strcmp(RxBuffer, "ref int") == 0);
+				  if (!fpga_freq_get_frame(&rm) || !(rm.caps & FPGA_CAP_REFCTL)) {
+					  printf("REF: FPGA nepodporuje vyber reference (potrebuje FW >= 0x0420, caps bit11)\n");
+				  } else if (want_ext && !(rm.clk_status & FPGA_CLK_EXT_PRESENT)) {
+					  printf("REF: ODMITNUTO - na externim vstupu nejsou hrany (Ext_Ref_Sens). Pripoj 10 MHz a zopakuj.\n");
+				  } else {
+					  if (want_ext || want_int) {
+						  if (!fpga_freq_set_ref(want_ext ? 1u : 0u)) {
+							  printf("REF: SET_CONFIG se nepodaril (link? fpgasim?)\n");
+						  } else {
+							  int done = 0;
+							  for (int i = 0; i < 40 && !done; i++) {      /* ~4 s: prepnuti + znovuzamceni Si5356 + hlidac hodin FPGA */
+								  osDelay(100);
+								  if (fpga_freq_get_frame(&rm) && (((rm.clk_status & FPGA_CLK_REF_EXT) != 0) == (want_ext != 0))) done = 1;
+							  }
+							  if (done) {
+								  osDelay(1500);                       /* Si5356 se znovu zamkne; sticky LOS/LOL z prepnuti je ocekavane, ne porucha */
+								  g_si5356_clr_req = 1;
+								  osDelay(600);
+							  } else {
+								  printf("REF: FPGA prepnuti nepotvrdila do 4 s\n");
+							  }
+						  }
+					  }
+					  (void)fpga_freq_get_frame(&rm);
+					  printf("REF: vybrana %s | externi vstup: %s%s\n",
+						     (rm.clk_status & FPGA_CLK_REF_EXT) ? "EXTERNI 10 MHz" : "OCXO",
+						     (rm.clk_status & FPGA_CLK_EXT_PRESENT) ? "hrany ano" : "bez hran",
+						     (rm.clk_status & FPGA_CLK_EXT_LOST) ? "  <== externi VYPADLA, FPGA sama presla na OCXO" : "");
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0) {
 				  /* TDC (FW >= 0x0400): `tdc` = diagnostika kalibrace (CAL report),
 				   * `tdc cal` = spustit kalibraci (~0,5-1 s, mereni stoji) a pockat.
@@ -2271,11 +2383,14 @@ void UartTask_run(void *argument)
 					  }
 				  }
 				  if (fpga_freq_tdc_report(&d)) {
+					  /* perioda hodin FPGA z ramce (abs 99); pevnych 10 ns ukazovalo na 125 MHz (FW 0x0421/0x0422) o 25 % vic */
+					  uint32_t tdc_per_ps = 10000u;
+					  { fpga_meas_t tf; if (fpga_freq_get_frame(&tf) && tf.clk_mhz != 0u) tdc_per_ps = 1000000u / tf.clk_mhz; }
 					  for (int ch = 0; ch < 2; ch++)
 						  printf("TDC %c: kodu %u/%u (nejvyssi %u), nejvetsi bin %lu = %lu ps (%lu.%lu %% periody), za koncem retezu %lu, max tap %u\n",
 							     'A' + ch, (unsigned)d.nz[ch], (unsigned)(d.naddr ? d.naddr : 256u), (unsigned)d.last[ch],
 							     (unsigned long)d.peak[ch],
-							     (unsigned long)(((uint64_t)d.peak[ch] * 10000ull) >> 20),            /* N = 2^20 udalosti, perioda 10 ns */
+							     (unsigned long)(((uint64_t)d.peak[ch] * tdc_per_ps) >> 20),         /* N = 2^20 udalosti, perioda hodin FPGA */
 							     (unsigned long)(((uint64_t)d.peak[ch] * 100ull) >> 20),
 							     (unsigned long)((((uint64_t)d.peak[ch] * 1000ull) >> 20) % 10ull),
 							     (unsigned long)d.ovf[ch], (unsigned)d.maxtap[ch]);
@@ -3256,11 +3371,16 @@ void UartTask_run(void *argument)
 							  fpga_freq_format_build(m.build_time, m.build_git, bb, sizeof bb);
 							  fpga_freq_check_stats(&ck, &cc, &cw);
 							  printf("  FPGA BUILD: %s\n", bb);
-							  printf("  FPGA HODINY 100M: %s, vypadku %u%s\n",
+							  if (m.caps & FPGA_CAP_REFCTL)
+								  printf("  FPGA REFERENCE: %s | externi vstup: %s%s (`ref` = detail)\n",
+									     (m.clk_status & FPGA_CLK_REF_EXT) ? "EXTERNI 10 MHz" : "OCXO",
+									     (m.clk_status & FPGA_CLK_EXT_PRESENT) ? "hrany ano" : "bez hran",
+									     (m.clk_status & FPGA_CLK_EXT_LOST) ? "  <== externi vypadla, FPGA sama presla na OCXO" : "");
+							  printf("  FPGA HODINY %uM: %s, vypadku %u%s\n", (unsigned)(m.clk_mhz ? m.clk_mhz : 100u),
 								     (m.clk_status & FPGA_CLK_RECOVER) ? "ZOTAVENI (mereni stoji, rekalibrace)" :
 								     ((m.clk_status & FPGA_CLK_OK) ? "OK" : "VADNE"),
 								     (unsigned)m.clk_loss,
-								     (m.clk_status & FPGA_CLK_FAULT) ? "  <== reference 100 MHz vypadla (reset STM / Si5356?)" : "");
+								     (m.clk_status & FPGA_CLK_FAULT) ? "  <== hodiny FPGA vypadly nebo zmenily kmitocet (reset STM / Si5356?)" : "");
 							  printf("  FPGA SAMOKONTROLA: zamitnuto oken: citani %lu, hodiny %lu, delka okna %lu | posledni rozdil %d%s\n",
 								     (unsigned long)ck, (unsigned long)cc, (unsigned long)cw, (int)m.ccd_p,
 								     (ck + cw) ? "  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)" : "");

@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  21u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  22u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -536,6 +536,16 @@ typedef struct {
     ipc_stab_pt_t pt[IPC_STAB_PTS];
 } ipc_stab_t;
 
+/* ── v22 (2026-10-10): diagnostika FPGA pro web (`GET /api/fpga`). Konzole bylo mlcela a SCPI/web nemely
+ * jak ukazat, PROC se okna jednoho kanalu nezobrazuji (odmitnuta okna se do snapshotu nedostanou).
+ * Slova plni `fpga_freq_diag_fill` (poradi viz tam), zapisuje CM7 defaultTask, bez seqlocku —
+ * jde o diagnostiku, roztrzene cteni nevadi. */
+#define IPC_FPGADIAG_N 40u
+typedef struct {
+    volatile uint32_t gen;         /* roste s kazdou publikaci */
+    uint32_t w[IPC_FPGADIAG_N];
+} ipc_fpgadiag_t;
+
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
     ipc_snapshot_t   snap;         /* CM7 -> CM4 */
@@ -545,6 +555,7 @@ typedef struct {
     ipc_datalog_xfer_t log;        /* CM4 <-> CM7 (v12, bulk historie na vyzadani) */
     ipc_errlog_xfer_t errlog;      /* CM4 <-> CM7 (v17, trvaly zaznamnik chyb na vyzadani) */
     ipc_stab_t       stab;         /* CM7 -> CM4 (v20, statistika stability z firmwaru) */
+    ipc_fpgadiag_t   fpgadiag;     /* CM7 -> CM4 (v22, surovy stav ramce FPGA + pocitadla odmitnuti, web /api/fpga) */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");

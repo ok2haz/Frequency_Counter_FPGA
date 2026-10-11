@@ -1,6 +1,7 @@
 # Mereni chyby delky okna na desce: N po sobe jdoucich DATA ramcu (fpgaraw),
 # z kazdeho edges (abs 20) a dt_a (abs 118, jednotky T/16384). Kmitocet generatoru
 # se odhadne jako median f_i, chyba okna = dt_i - edges_i / f_ref (v ps).
+# FW >= 0x0421: kmitocet hodin FPGA je v abs 99 [MHz] (dnes 100); jednotka T/16384 = 1e6/(16384*clk) ps (bez bitu: 100 MHz).
 # POZOR: obsahuje i nestabilitu generatoru a OCXO za ~0,25 s a drift za dobu mereni.
 import serial, time, re, statistics as st, sys
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 80
@@ -21,10 +22,13 @@ while len(vals) < N and time.time() - t0 < 240:
     if seq == last: continue
     last = seq
     e = int.from_bytes(bytes(by[20:28]), 'little'); d = int.from_bytes(bytes(by[118:124]), 'little')
+    clk = by[99] if len(by) > 99 and by[99] else 100
     if e and d: vals.append((seq, e, d))
-f = [e * 1.6384e12 / d for _, e, d in vals]
+UPS = clk * 1e6 * 16384.0          # jednotek za sekundu
+PS = 1e12 / UPS                    # ps na jednotku
+f = [e * UPS / d for _, e, d in vals]
 fref = st.median(f)
-err = [(d - e / fref * 1.6384e12) * 625 / 1024 for _, e, d in vals]
+err = [(d - e / fref * UPS) * PS for _, e, d in vals]
 print(f'ramcu {len(vals)}, f_ref {fref:.5f} Hz, sigma f {st.stdev(f):.5f} Hz ({st.stdev(f)/fref:.2e})')
 print(f'chyba okna: sigma {st.stdev(err):.0f} ps, min {min(err):.0f}, max {max(err):.0f} ps')
 srt = sorted(abs(x) for x in err)
