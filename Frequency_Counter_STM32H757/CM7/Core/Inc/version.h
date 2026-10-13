@@ -11,6 +11,13 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.15.0 (2026-10-13) = FPGA FW 0x0423 (referencni hodiny FPGA 100 MHz; pokus se 125 MHz z 0x0421/0x0422 je VRACEN, L-0154),
+ * Si5356 CLK0/1 = 100 MHz + okno GENERATOR (CLK2/3, CLK4/5, CLK6/7, UART `gen`), ADS1115 PGA AIN0-2 +-2,048 V a prevod float
+ * (+ kalibrace gain_vc/gain_vbus, blob CAL2), I2C1 400 kHz, `GET /api/fpga` a IPC v22 (40 slov diagnostiky FPGA),
+ * UART `tdc` pocita sirku binu z kmitoctu hodin v ramci, LED FPGA_OK, opakovani kalibrace TDC po cal_fail.
+ * Overeno na desce po power-cyklu: FW 0x0423 + CM7, regrese pouzita ~99,9 %, ADEV(0,25 s) 1,1e-10 (kanal A, regrese); denik mereni
+ * docs/MERENI_A_KALIBRACE.md. ⬜ Neovereno: dvoubodovy sum pri zapojeni A+B, kalibrace TDC po zahrati (studeny start 3,7 % rezervy retezu).
+ * FLASHNOUT OBE BANKY (IPC v22) + bitstream 0x0423. MINOR se do v0.14.0 nezvysil (zustal 13) -> srovnano. */
 /* v0.14.0 (2026-10-07) = FPGA FW 0x0411: regresni blok (STM: `regr`, `status` REGR:), TDC 0x0410
  * (bez slepoty spoustece), IPC v20. Overeno jen simulaci/P&R, NE na HW.
  */
@@ -119,8 +126,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 13
+#define FW_VERSION_MINOR 15
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.14.0"
+#define FW_VERSION_STR   "v0.15.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
