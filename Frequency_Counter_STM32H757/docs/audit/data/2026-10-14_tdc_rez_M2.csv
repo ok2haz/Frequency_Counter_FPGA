@@ -1,0 +1,10 @@
+wall,uptime_s,t48,t49,t4a,a_last,a_maxtap,a_maxbin_ps,a_ovf,b_last,b_maxtap,b_maxbin_ps,b_ovf,rez_a,rez_b,tag
+2026-10-14T17:50:38,87,28.83,45.64,35.59,252,248,251,0,250,248,179,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T17:54:16,305,28.99,45.87,35.82,252,248,235,0,250,248,174,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T17:59:17,606,29.23,46.14,36.00,252,248,242,0,250,248,167,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T18:04:17,905,29.32,45.89,36.01,252,248,235,0,250,248,179,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T18:09:16,1205,29.38,45.85,36.03,252,248,246,0,250,248,180,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T18:19:16,1805,29.45,46.10,36.24,252,248,239,0,250,248,180,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T18:34:16,2705,29.30,46.61,36.45,252,248,254,0,250,248,167,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T18:49:16,3604,29.34,46.64,36.54,252,248,275,0,250,248,171,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
+2026-10-14T19:19:17,5406,29.39,46.78,36.59,252,248,264,0,250,248,181,0,16,18,M2 po power-cyklu, A=ext GPSDO, B odpojen, FW 0x0423, CM7 ef07ca0+a30b0b4
