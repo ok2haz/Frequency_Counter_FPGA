@@ -93,7 +93,10 @@ f_clk > 2·f_in. Pro vstupy nad ~50 MHz je nutný prescaler/IDES (viz kap. 6), t
 
 - **Si5356 (dnes):** VCO = 10 MHz × N (celé N), výstup = VCO / celé dělení → nízký jitter. Plány s celými čísly pro všechny kandidáty:
   100 = 2,2G/22 · 125 = 2,5G/20 · 150 = 2,4G/16 · 160 = 2,4G/15 · 166,7 = 2,5G/15 · 200 = 2,4G/12.
-  Maximální CMOS výstup Si5356 a rozsah VCO **[?]** (z paměti 200 MHz CMOS / VCO 2,2–2,84 GHz; ověřit v ClockBuilder Pro, je nainstalován).
+  **[D] ověřeno 2026-10-14 v `datasheets/` (Si5356A rev 1.2, AN565 rev 0,5):** výstup CMOS 1–200 MHz, MultiSynth 5–200 MHz, zátěž ≤ 15 pF
+  (hrana ≤ 2 ns), střída 45/50/55 %, chyba syntézy 0–1 ppb, CLKIN 5–200 MHz, fpfd 5–40 MHz. **Rozsah VCO v textu není** — vzorce AN565 pro
+  zpětnovazební MultiSynth počítají s fVCO = 2,2 GHz (128 × 2200 = 281 600), jiné VCO **[?]** ověřit v ClockBuilder Pro (je nainstalován).
+  Jitter Si5356 viz kap. 10.
 - **Poměr k 10 MHz:** 100/150/160/200 → celé číslo (10/15/16/20 taktů na periodu 10 MHz). **125 → 12,5** (vzor se opakuje po dvou periodách).
   Nevadí (domény jsou stejně asynchronní + handshake), ale „10 taktů na periodu“ nesmí být nikde předpoklad.
 - **Vnitřní PLL FPGA (zadání: 100 → 400 MHz VCO → 200 MHz) [D]:** funguje bez změny desky, ale **přidá jitter** vnitřního PLL oproti
@@ -116,6 +119,9 @@ ne kmitočet vzorkování. Ref_Ctrl (PIN41) a přepínač OCXO/externí referenc
 je **to** řádově významnější krok než změna taktu.
 
 ## 8. Doporučení
+
+> ⚠️ **Přehodnoceno 2026-10-14 — viz kap. 10.** Pokus se 125 MHz (FW 0x0421/0x0422) selhal na desce (L-0154) a nebyl čistý bisect
+> (měnil i dělič). Dnešní doporučení: zůstat na 100 MHz, případně nejdřív zkusit 110 MHz = 2,2 GHz / 20. Text níže je HISTORIE úvahy z 2026-10-10.
 
 1. **Ideální kmitočet pro náš případ: 125 MHz (výchozí), případně 150 MHz.**
    - 125: rezerva řetězu 6 → 33 %, časování vyžaduje jen pět tříd úprav (reálné, bez dvou domén), Si5356 2,5G/20. Nevýhoda: poměr 12,5 k 10 MHz.
@@ -141,3 +147,84 @@ je **to** řádově významnější krok než změna taktu.
   testbenche (11 používá periodu).
 - Si5356 `REGMAP` (z ClockBuilder Pro), popisky „4× 100 MHz“ v UI/dokumentaci.
 - Kalibrace TDC: počet tapů/dekodér (TAPS násobek 32), `TDC_NTAP`, `OVF_LIM`, tabulky.
+
+---
+
+## 10. Dodatek 2026-10-14 — datasheet Si5356, přehodnocení po pokusu 125 MHz, rezerva řetězu
+
+Fáze auditu: **kód se nemění**. Podklady: `datasheets/Si5356.pdf` (rev 1.2), `Si5356A_AN565.pdf` (rev 0,5), `docs/MERENI_A_KALIBRACE.md`, L-0152..L-0154,
+`docs/audit/2026-10-10_si5356-generator.md`, `tdc.v`, `top.v`. Legenda jako výše, **[V]** = výpočet z [D]/[M] hodnot.
+
+### 10.1 Jitter hodin [D] a co z něj plyne [V]
+
+| Parametr (Si5356A, výstupy na stejném kmitočtu, fOUT > 5 MHz) | typ | max |
+|---|---|---|
+| Period jitter (10 000 taktů) | 50 ps pk-pk | 75 ps pk-pk |
+| Cycle-cycle jitter (10 000 taktů) | 40 ps pk | 70 ps pk |
+| Phase jitter (12 kHz–20 MHz) | 2 ps rms | — |
+| Výstup–výstup skew | — | ±150 ps |
+| Šířka pásma PLL | 1,6 MHz | — |
+
+- 75 ps pk-pk za 10 000 taktů odpovídá ≈ 10 ps rms (předpoklad Gaussova rozdělení, pk-pk ≈ 7σ) **[V]**. To je < 1 % rozptylu šumu jedné značky
+  (σ ≈ 105 ps, O4). Hypotéza „šum značky je jitter Si5356“ proto **není podložena**; zdroj O4 je jinde.
+- Datasheet **nerozlišuje celé a zlomkové dělení** MultiSynthu, hodnoty platí „pro libovolnou kombinaci výstupů“. Pro zlomkové dělení tedy
+  záruka platí jen v rámci toho tvrzení; deterministická periodická složka zlomkového děliče by se v pk-pk za 10 000 taktů měla projevit, ale to je **[?]**.
+- Střída 45/50/55 % (±0,4 ns při 8 ns) nevadí při vzorkování jen náběžnou hranou (`DUAL = 0`); u `DUAL = 1` (sestupná hrana) by byla další překážka.
+
+### 10.2 Pokus se 125 MHz NEBYL čistý bisect [D]
+
+`2026-10-10_si5356-generator.md` (ř. 54) a STATUS #292 uvádějí: 125 MHz se dělalo na **VCO 2,2 GHz zlomkovým dělením 17 3/5** (VCO je společné
+s generátorem CLK2–7; MS A reg 53/54/55/59). Návrat na 100 MHz (FW 0x0423) vrátil **MS A = 22 (celé)**. Přechod 100 → 125 MHz tedy změnil najednou:
+
+| | 100 MHz (funguje) | 125 MHz (T/2, T chyby) | 110 MHz (návrh) |
+|---|---|---|---|
+| kmitočet | 100 | 125 | 110 |
+| MultiSynth A | ÷22 celé | ÷17 3/5 **zlomek** | ÷20 celé |
+| VCO | 2,2 GHz | 2,2 GHz | 2,2 GHz |
+| takty na periodu 10 MHz | 10 | **12,5** | 11 |
+
+L-0154 vede změnu jako „jen hodiny“ a příčinu jako neurčenou (STA a simulace prošly). Mezi kandidáty je proto stále i **zlomkové dělení** a
+**poloviční poměr 12,5**, nejen časování na křemíku. ⚠️ Dřívější doporučení v kap. 8 („125 = Si5356 2,5G/20“) se **neprovedlo**; zbytek kap. 8 nebrat jako plán.
+
+### 10.3 Rezerva řetězu a důsledek přetečení [V]
+
+- Rezerva při 100 MHz: A 252 z 268 tapů (6 %), **B po studeném startu 258 (3,7 %)**, po rekalibraci za tepla B 250. Citlivost na teplotu **neznáme** (A se neměnilo).
+- Rezerva = 268 / potřebné tapy − 1, nejhorší případ B za studena (δ_B = 10 ns / 258 = 38,8 ps):
+
+| f [MHz] | potřebné tapy | rezerva |
+|---|---|---|
+| 100 | 258 | +4 % |
+| 110 | 235 | +14 % |
+| 120 | 215 | +25 % |
+| 125 | 206 | +30 % |
+
+- **Přetečení je pozvolné, ne skokové.** Tabulka dává každému kódu čas středu binu (`tdc.v`: `V[a] = 16384·(cum_pred + hist[a]/2)/N`), takže hrany za koncem
+  řetězu (poslední bin, `da_ovf`) dostanou čas středu chybějícího úseku *s*; chyba je omezená na ±*s*/2. Při rovnoměrné fázi hran:
+
+| chybí *s* | podíl hran za koncem | rms přes všechny hrany |
+|---|---|---|
+| 5 tapů (0,2 ns) | 2 % | 8 ps |
+| 13 tapů (0,5 ns) | 5 % | 32 ps (+4 % k 105 ps) |
+| 26 tapů (1,0 ns) | 10 % | 91 ps (+32 %) |
+| 52 tapů (2,0 ns) | 20 % | 258 ps |
+
+- Příznak `SHORT` (`tdc_status` bit4/5) se nastaví při > 1/16 událostí kalibrace za koncem (`top.v:383`), tj. při ≈ 0,6 ns (rms ≈ 45 ps). Je to příznak po zhoršení;
+  včasné varování (zbývající tapy, podíl `ovf`) se nikde nevyhodnocuje. Z kódu STM jsem našel jen zobrazení „SHORT“ (`fpga_freq.c`), ne vyřazení oken.
+- Pravděpodobnější cesta k vyčerpání rezervy než chladná místnost je **jiná deska s rychlejším křemíkem** (neměřeno).
+
+### 10.4 Doporučený postup (každý krok samostatně ověřit)
+
+1. **STM, bez zásahu do FPGA ani měřicí cesty:** do `status`/errlogu/`/api/fpga` zobrazit rezervu (tapy, podíl `ovf`) s prahy.
+2. **Simulace** (`sim/tb_tdc_inl.sv`, silikonový model): zkrátit zpoždění tapu o 10 a 20 % a ověřit model z 10.3.
+3. **Chladový test:** studený start v chladnější místnosti (případně lokální chlazení modulu, pozor na kondenzaci), `tdc cal`, odečet `last`/`ovf`.
+4. **Jen když krok 3 ukáže, že rezerva mizí:** 110 MHz = **2,2 GHz / 20** (stejné VCO, celé dělení, poměr 11; Si5356 jen MS A: `reg 54` `0x09 → 0x08`,
+   P1 = 128·20 − 512 = 2048 — ověřit v CBPro). FPGA: `CLK_MHZ = 110`, `timing.sdc` 9,09 ns, hlídač hodin 704 přechodů (6,4·`CLK_MHZ`), `gate_div` (od 0x0423 jen 100 MHz),
+   kontrolní seznam kap. 9. STM `dt_units_to_ps` bere kmitočet z rámce. Přijetí podle L-0154: podíl oken v ±0,5 ns > 95 %, ADEV(0,25 s) ≈ 1·10⁻¹⁰, `regr` použito > 0.
+   Pokud 110 MHz projde, vyloučí to kmitočet i zlomkové dělení jako příčinu z L-0154 (zbude poměr 12,5 a časování).
+5. **120 MHz** (2,4 GHz / 20 celé, nebo zlomek 18 1/3) až po ověření rozsahu VCO v CBPro; změna VCO přeplánuje i generátor CLK2–7.
+6. **Vyhnout se:** `DUAL = 1` (CLS 87 %, Fmax 80–94 MHz, střída 45–55 %), návrat 320 tapů (F-0228), změna `OVF_LIM` bez nového bitstreamu a pravidelná rekalibrace za chodu
+   (díra v řadě oken → zahodí rozpracovaný vzorek statistiky).
+
+### 10.5 Neověřeno
+
+Rozsah VCO Si5356, datasheet GW1NR (max. kmitočet GCLK, jitter vnitřního PLL), teplotní citlivost zpoždění tapu, chování `SHORT` na STM, model 10.3 na desce.
