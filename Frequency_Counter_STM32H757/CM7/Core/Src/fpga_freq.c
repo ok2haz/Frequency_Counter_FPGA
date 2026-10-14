@@ -1364,7 +1364,7 @@ bool fpga_freq_select_selftest(void)
     ok &= (fpga_seq_gap(100u, 3u) == FPGA_SEQ_RESYNC);    /* reset FPGA */
     ok &= (fpga_seq_gap(0xFFFFFFFFu, 12345u) == 0u);      /* jeste zadne mereni */
     /* 2026-10-14: rezerva TDC retezu (fpga_tdc_rez_eval). 268 tapu: A 252 -> 16 OK, B 258 -> 10 POZOR (stav z desky po studenem
-     * startu); hranice 15/14 a 8/7; udalosti za koncem (last = max. kod) rezervu nepocitaji, KRIT az od 1/16 = 65536 z 2^20. */
+     * startu); hranice 15/14 a 8/7; udalosti za koncem (last = max. kod) rezervu nepocitaji a davaji vzdy KRITICKE. */
     {   fpga_tdc_cal_t c;
         fpga_tdc_rez_t  r;
         memset(&c, 0, sizeof c);
@@ -1384,11 +1384,11 @@ bool fpga_freq_select_selftest(void)
         c.last[0] = 511u; c.last[1] = 511u;                                   /* udalosti za koncem: last = max. adresa */
         c.ovf[0] = 1000u; c.ovf[1] = 65536u;                                  /* 954 ppm / 62500 ppm = presne 1/16 */
         fpga_tdc_rez_eval(&c, &r);
-        ok &= (r.rez_tap[0] == 0 && r.ovf_ppm[0] == 953u && r.lvl[0] == FPGA_TDC_REZ_POZOR);
+        ok &= (r.rez_tap[0] == 0 && r.ovf_ppm[0] == 953u && r.lvl[0] == FPGA_TDC_REZ_KRIT);
         ok &= (r.ovf_ppm[1] == 62500u && r.lvl[1] == FPGA_TDC_REZ_KRIT);
-        c.ovf[1] = 65535u;                                                    /* o jednu udalost pod mezi */
+        c.ovf[1] = 1u; c.ovf[0] = 0u; c.last[0] = 254u;                       /* jedina udalost za koncem = KRITICKE; bez ni a 14 tapu POZOR */
         fpga_tdc_rez_eval(&c, &r);
-        ok &= (r.ovf_ppm[1] == 62499u && r.lvl[1] == FPGA_TDC_REZ_POZOR);
+        ok &= (r.ovf_ppm[1] == 0u && r.lvl[1] == FPGA_TDC_REZ_KRIT && r.lvl[0] == FPGA_TDC_REZ_POZOR);
     }
     printf("fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ + rezerva TDC selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
@@ -1573,9 +1573,10 @@ void fpga_tdc_rez_eval(const fpga_tdc_cal_t *c, fpga_tdc_rez_t *r)
             lvl = (rez >= FPGA_TDC_REZ_OK_TAPS)   ? FPGA_TDC_REZ_OK
                 : (rez >= FPGA_TDC_REZ_WARN_TAPS) ? FPGA_TDC_REZ_POZOR : FPGA_TDC_REZ_KRIT;
         } else {
-            /* hrany uz dosly za konec: `last` je kod "za koncem" (max. adresa), z nej rezerva nejde, rozhoduje podil;
-             * mez 1/16 je tatez jako FPGA priznak SHORT (top.v OVF_LIM) */
-            lvl = (ppm >= (1000000u >> 4)) ? FPGA_TDC_REZ_KRIT : FPGA_TDC_REZ_POZOR;
+            /* hrany uz dosly za konec: `last` je kod "za koncem" (max. adresa), z nej rezerva nejde. Uroven musi byt
+             * MONOTONNI se zkracovanim retezu: v simulaci (38 ps/tap) je rezerva 7 tapu = KRITICKE bez zhorseni sigmy,
+             * o ~1 ps/tap kratsi retez uz ma 3,9 % udalosti za koncem, takze to nesmi vyjit mirneji nez rezerva 7. */
+            lvl = FPGA_TDC_REZ_KRIT;
         }
         r->rez_tap[ch] = rez;
         r->ovf_ev[ch]  = ev;

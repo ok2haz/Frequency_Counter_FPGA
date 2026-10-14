@@ -330,8 +330,8 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
  * (> 1/16 udalosti za koncem). Tohle je VCASNE varovani, jen z CAL reportu — nic nemeni v mereni ani ve FPGA.
  * Vyhodnocuje se jednou po kazde kalibraci (report je ulozen v `fpga_freq_tdc_report`). */
 #define FPGA_TDC_REZ_OK       0u    /* >= FPGA_TDC_REZ_OK_TAPS tapu, nic za koncem */
-#define FPGA_TDC_REZ_POZOR    1u    /* 8..14 tapu, nebo aspon jedna udalost za koncem (< 1/16) */
-#define FPGA_TDC_REZ_KRIT     2u    /* < 8 tapu, nebo >= 1/16 udalosti za koncem (= FPGA priznak SHORT) */
+#define FPGA_TDC_REZ_POZOR    1u    /* 8..14 tapu */
+#define FPGA_TDC_REZ_KRIT     2u    /* < 8 tapu, nebo aspon jedna udalost za koncem (FPGA priznak SHORT az od 1/16) */
 #define FPGA_TDC_REZ_OK_TAPS    15
 #define FPGA_TDC_REZ_WARN_TAPS  8
 /* Pocet udalosti kalibrace = 2^CAL_LOG2 ve FPGA (top.v: CAL_LOG2 = 20). Jediny zdroj je FPGA; zmena tam = zmena tady. */

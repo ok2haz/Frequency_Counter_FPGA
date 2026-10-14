@@ -3412,7 +3412,7 @@ void UartTask_run(void *argument)
 							  }
 							  {
 							    /* Rezerva TDC retezu (audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10): cte se jednou po kazde kalibraci.
-							     * Hranice: >= 15 tapu OK, 8..14 POZOR, < 8 nebo >= 1/16 udalosti za koncem KRITICKE (= FPGA priznak SHORT). */
+							     * Hranice: >= 15 tapu OK, 8..14 POZOR, < 8 tapu nebo aspon jedna udalost za koncem KRITICKE. */
 							    fpga_tdc_rez_t rz;
 							    if (fpga_tdc_rez_get(&rz)) {
 							      static const char *const ln[3] = { "OK", "POZOR", "KRITICKE" };
