@@ -2424,6 +2424,15 @@ void UartTask_run(void *argument)
 						     (d.status & FPGA_TDC_CAL_A) ? 1u : 0u, (d.status & FPGA_TDC_CAL_B) ? 1u : 0u,
 						     (d.status & FPGA_TDC_CAL_FAIL) ? 1u : 0u, (d.status & FPGA_TDC_CAL_BUSY) ? 1u : 0u,
 						     (d.status & FPGA_TDC_SHORT_A) ? 1u : 0u, (d.status & FPGA_TDC_SHORT_B) ? 1u : 0u);
+					  {   /* rezerva retezu z TOHOTO reportu (stejne vyhodnoceni jako `status`; behem kalibrace jsou hodnoty nedokoncene) */
+						  fpga_tdc_rez_t rz;
+						  fpga_tdc_rez_eval(&d, &rz);
+						  printf("TDC: rezerva retezu A %d tapu, B %d tapu z %u (OK >= %d, POZOR >= %d), za koncem A %lu B %lu ud.%s\n",
+						         (int)rz.rez_tap[0], (int)rz.rez_tap[1], (unsigned)rz.taps,
+						         FPGA_TDC_REZ_OK_TAPS, FPGA_TDC_REZ_WARN_TAPS,
+						         (unsigned long)rz.ovf_ev[0], (unsigned long)rz.ovf_ev[1],
+						         (d.status & FPGA_TDC_CAL_BUSY) ? "  (kalibrace bezi, hodnoty nejsou konecne)" : "");
+					  }
 					  printf("TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 %% periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)\n"
 					         "     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)\n");
 				  } else {
@@ -3400,6 +3409,25 @@ void UartTask_run(void *argument)
 							    if (c1 < 0) { c1 = -c1; }
 							    printf("  TDC: teplot. rekal %lux (cal pri %d.%d C) | spike-reject %lu oken (obri bin)\n",
 							           (unsigned long)g_tdc_recal_count, c0, c1, (unsigned long)g_tdc_spike_count);
+							  }
+							  {
+							    /* Rezerva TDC retezu (audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10): cte se jednou po kazde kalibraci.
+							     * Hranice: >= 15 tapu OK, 8..14 POZOR, < 8 nebo >= 1/16 udalosti za koncem KRITICKE (= FPGA priznak SHORT). */
+							    fpga_tdc_rez_t rz;
+							    if (fpga_tdc_rez_get(&rz)) {
+							      static const char *const ln[3] = { "OK", "POZOR", "KRITICKE" };
+							      uint32_t pa = rz.taps ? ((uint32_t)rz.rez_tap[0] * 1000u) / rz.taps : 0u;
+							      uint32_t pb = rz.taps ? ((uint32_t)rz.rez_tap[1] * 1000u) / rz.taps : 0u;
+							      uint8_t  lw = (rz.lvl[0] > rz.lvl[1]) ? rz.lvl[0] : rz.lvl[1];
+							      printf("  TDC REZERVA: A %d tapu (%lu.%lu %%) %s | B %d tapu (%lu.%lu %%) %s | z %u tapu, za koncem A %lu B %lu ud. (cal #%lu)%s\n",
+							             (int)rz.rez_tap[0], (unsigned long)(pa / 10u), (unsigned long)(pa % 10u), ln[rz.lvl[0] > 2u ? 2u : rz.lvl[0]],
+							             (int)rz.rez_tap[1], (unsigned long)(pb / 10u), (unsigned long)(pb % 10u), ln[rz.lvl[1] > 2u ? 2u : rz.lvl[1]],
+							             (unsigned)rz.taps, (unsigned long)rz.ovf_ev[0], (unsigned long)rz.ovf_ev[1], (unsigned long)rz.n,
+							             (lw >= FPGA_TDC_REZ_KRIT) ? "  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)" :
+							             ((lw == FPGA_TDC_REZ_POZOR) ? "  <== rezerva retezu klesa" : ""));
+							    } else {
+							      printf("  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)\n");
+							    }
 							  }
 							  {
 							    uint32_t mp = 0u, mn = 0u;

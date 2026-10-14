@@ -461,7 +461,7 @@ bool flightrec_report(void)
 /* ⚠️ Musi ukazovat na POSLEDNI polozku `errlog_kind_t` — `errlog_put` podle
  * toho odmita neznamy druh a obe pole nize se tim dimenzuji. Pri pridani
  * druhu to sem nezapomen prenest (2026-09-25: F-0156 pridal UARTFATAL). */
-#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_UARTFATAL)
+#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_TDC)
 
 static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
@@ -535,6 +535,7 @@ const char *errlog_kind_name(uint8_t kind)
     case ERRLOG_K_NET:     return "SIT";
     case ERRLOG_K_CFG:     return "NASTAV";
     case ERRLOG_K_UARTFATAL: return "GPS!";
+    case ERRLOG_K_TDC:     return "TDC";
     default:               return "?";
     }
 }
@@ -927,6 +928,16 @@ void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
         snprintf(buf, n, "GPS prijem MRTVY az do resetu (re-arm selhal, pokusu=%lu)",
                  (unsigned long)r->a);
         break;
+    /* a = zbyvajici tapy A | B << 16, b = uroven A | B << 4 | ppm << 8 (errlog.h). Uroven 0 OK, 1 POZOR, 2 KRITICKE. */
+    case ERRLOG_K_TDC: {
+        static const char *const lv[3] = { "OK", "POZOR", "KRITICKE" };
+        uint32_t la = r->b & 0xFu, lb = (r->b >> 4) & 0xFu;
+        snprintf(buf, n, "rezerva TDC retezu A=%luT %s, B=%luT %s, za koncem %lu ppm",
+                 (unsigned long)(r->a & 0xFFFFu), lv[la > 2u ? 2u : la],
+                 (unsigned long)(r->a >> 16),     lv[lb > 2u ? 2u : lb],
+                 (unsigned long)(r->b >> 8));
+        break;
+    }
     case ERRLOG_K_SENSOR: {
         const char *name = (r->sub < SENS_COUNT) ? g_sensor_desc[r->sub].label : "?";
         snprintf(buf, n, "%s neodpovida, chyb celkem=%lu, v rade=%lu",

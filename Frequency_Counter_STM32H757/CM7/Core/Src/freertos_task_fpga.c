@@ -267,6 +267,46 @@ void StartFpgaTask(void *argument)
       }
     }
 
+    /* 2026-10-14: vcasne varovani rezervy TDC retezu (audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10). CAL report (last/ovf)
+     * se meni JEN kalibraci, takze se cte jednou po kazde dokoncene (boot, teplotni rekalibrace, opakovani po FAIL, UART `tdc cal`),
+     * ne periodicky: kazde cteni je SPI transakce navic. Nemeni mereni ani FPGA; vysledek je v `status` (TDC REZERVA) a pri zmene
+     * urovne v errlogu. Start je tichy: prvni vyhodnoceni se hlasi jen kdyz neni OK. */
+    {
+      static uint8_t  s_rez_need = 1u;        /* 1 = dalsi dokoncenou kalibraci precist (po startu hned prvni) */
+      static uint32_t s_rez_try_ms;
+      static uint32_t s_rez_seen_n;
+      static int8_t   s_rez_lvl_prev = -1;
+      fpga_meas_t rm;
+      if (fpga_freq_get_last(&rm) && (rm.caps & FPGA_CAP_DT)) {
+        const uint8_t both = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B);
+        if (rm.tdc_status & FPGA_TDC_CAL_BUSY) s_rez_need = 1u;      /* kalibrace bezi -> po jejim konci precist */
+        if (s_rez_need && !(rm.tdc_status & (FPGA_TDC_CAL_BUSY | FPGA_TDC_CAL_FAIL)) && (rm.tdc_status & both) == both) {
+          uint32_t t_ms = HAL_GetTick();
+          if ((int32_t)(t_ms - s_rez_try_ms) >= 0) {
+            fpga_tdc_cal_t rc;
+            memset(&rc, 0, sizeof rc);
+            s_rez_try_ms = t_ms + 5000u;                                /* neuspech (napr. zrovna simulace) nezahlti sbernici */
+            if (fpga_freq_tdc_report(&rc)) s_rez_need = 0u;
+          }
+        }
+        fpga_tdc_rez_t rz;
+        if (fpga_tdc_rez_get(&rz) && rz.n != s_rez_seen_n) {            /* nove vyhodnoceni (odtud nebo z UART `tdc`) */
+          s_rez_seen_n = rz.n;
+          uint8_t lvl = (rz.lvl[0] > rz.lvl[1]) ? rz.lvl[0] : rz.lvl[1];
+          if (s_rez_lvl_prev < 0 ? (lvl != FPGA_TDC_REZ_OK) : ((int8_t)lvl != s_rez_lvl_prev)) {
+            uint32_t ppm = (rz.ovf_ppm[0] > rz.ovf_ppm[1]) ? rz.ovf_ppm[0] : rz.ovf_ppm[1];
+            printf("TDC: rezerva retezu A %d, B %d tapu z %u, za koncem %lu ppm -> %s\n",
+                   (int)rz.rez_tap[0], (int)rz.rez_tap[1], (unsigned)rz.taps, (unsigned long)ppm,
+                   (lvl == FPGA_TDC_REZ_OK) ? "OK" : ((lvl == FPGA_TDC_REZ_POZOR) ? "POZOR" : "KRITICKE"));
+            (void)errlog_put(ERRLOG_K_TDC, 0u,
+                             (uint32_t)(uint16_t)rz.rez_tap[0] | ((uint32_t)(uint16_t)rz.rez_tap[1] << 16),
+                             (uint32_t)rz.lvl[0] | ((uint32_t)rz.lvl[1] << 4) | (ppm << 8), "tdc");
+          }
+          s_rez_lvl_prev = (int8_t)lvl;
+        }
+      }
+    }
+
     /* Doruci vyber kanalu a hradla do FPGA (idempotentne podle echa v ramci). */
     (void)fpga_freq_cfg_sync(want_chan, want_gate);
     /* Perioda cteni: pri kratkem hradle (50/100 ms) musi byt kratsi nez hradlo, jinak FPGA mereni prepise

@@ -1363,7 +1363,34 @@ bool fpga_freq_select_selftest(void)
     ok &= (fpga_seq_gap(5u, 6u + FPGA_SEQ_GAP_MAX) == FPGA_SEQ_RESYNC);
     ok &= (fpga_seq_gap(100u, 3u) == FPGA_SEQ_RESYNC);    /* reset FPGA */
     ok &= (fpga_seq_gap(0xFFFFFFFFu, 12345u) == 0u);      /* jeste zadne mereni */
-    printf("fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ selftest %s\n", ok ? "OK" : "FAIL");
+    /* 2026-10-14: rezerva TDC retezu (fpga_tdc_rez_eval). 268 tapu: A 252 -> 16 OK, B 258 -> 10 POZOR (stav z desky po studenem
+     * startu); hranice 15/14 a 8/7; udalosti za koncem (last = max. kod) rezervu nepocitaji, KRIT az od 1/16 = 65536 z 2^20. */
+    {   fpga_tdc_cal_t c;
+        fpga_tdc_rez_t  r;
+        memset(&c, 0, sizeof c);
+        c.taps = 268u;
+        c.last[0] = 252u; c.last[1] = 258u;
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.rez_tap[0] == 16 && r.lvl[0] == FPGA_TDC_REZ_OK && r.rez_tap[1] == 10 && r.lvl[1] == FPGA_TDC_REZ_POZOR);
+        c.last[0] = 253u; c.last[1] = 254u;                                   /* 15 = OK, 14 = POZOR */
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.lvl[0] == FPGA_TDC_REZ_OK && r.lvl[1] == FPGA_TDC_REZ_POZOR);
+        c.last[0] = 260u; c.last[1] = 261u;                                   /* 8 = POZOR, 7 = KRITICKE */
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.lvl[0] == FPGA_TDC_REZ_POZOR && r.lvl[1] == FPGA_TDC_REZ_KRIT && r.rez_tap[1] == 7);
+        c.last[0] = 268u; c.last[1] = 300u;                                   /* za koncem bez udalosti: rezerva 0, nikdy zaporna */
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.rez_tap[0] == 0 && r.rez_tap[1] == 0 && r.lvl[0] == FPGA_TDC_REZ_KRIT && r.lvl[1] == FPGA_TDC_REZ_KRIT);
+        c.last[0] = 511u; c.last[1] = 511u;                                   /* udalosti za koncem: last = max. adresa */
+        c.ovf[0] = 1000u; c.ovf[1] = 65536u;                                  /* 954 ppm / 62500 ppm = presne 1/16 */
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.rez_tap[0] == 0 && r.ovf_ppm[0] == 953u && r.lvl[0] == FPGA_TDC_REZ_POZOR);
+        ok &= (r.ovf_ppm[1] == 62500u && r.lvl[1] == FPGA_TDC_REZ_KRIT);
+        c.ovf[1] = 65535u;                                                    /* o jednu udalost pod mezi */
+        fpga_tdc_rez_eval(&c, &r);
+        ok &= (r.ovf_ppm[1] == 62499u && r.lvl[1] == FPGA_TDC_REZ_POZOR);
+    }
+    printf("fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ + rezerva TDC selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 
@@ -1531,6 +1558,57 @@ bool fpga_freq_tdc_cal_start(void)
     return xfer(tx, rx);
 }
 
+/* ── Rezerva TDC retezu (viz fpga_freq.h) ───────────────────────────────────────────────────────────────────── */
+void fpga_tdc_rez_eval(const fpga_tdc_cal_t *c, fpga_tdc_rez_t *r)
+{
+    r->taps = c->taps;
+    for (int ch = 0; ch < 2; ch++) {
+        uint32_t ev  = c->ovf[ch];
+        uint32_t ppm = (uint32_t)(((uint64_t)ev * 1000000ull) >> FPGA_TDC_CAL_LOG2);
+        int16_t  rez = 0;
+        uint8_t  lvl;
+        if (ev == 0u) {
+            /* nic za koncem: `last` je nejvyssi skutecny kod retezu, zbytek do `taps` je rezerva */
+            rez = (c->taps > c->last[ch]) ? (int16_t)(c->taps - c->last[ch]) : (int16_t)0;
+            lvl = (rez >= FPGA_TDC_REZ_OK_TAPS)   ? FPGA_TDC_REZ_OK
+                : (rez >= FPGA_TDC_REZ_WARN_TAPS) ? FPGA_TDC_REZ_POZOR : FPGA_TDC_REZ_KRIT;
+        } else {
+            /* hrany uz dosly za konec: `last` je kod "za koncem" (max. adresa), z nej rezerva nejde, rozhoduje podil;
+             * mez 1/16 je tatez jako FPGA priznak SHORT (top.v OVF_LIM) */
+            lvl = (ppm >= (1000000u >> 4)) ? FPGA_TDC_REZ_KRIT : FPGA_TDC_REZ_POZOR;
+        }
+        r->rez_tap[ch] = rez;
+        r->ovf_ev[ch]  = ev;
+        r->ovf_ppm[ch] = ppm;
+        r->lvl[ch]     = lvl;
+    }
+}
+
+static fpga_tdc_rez_t s_rez;               /* posledni vyhodnoceni; psat smi FpgaTask i UartTask (`tdc`), cist kdokoli */
+
+/* Kopie ~40 B pod PRIMASK (< 1 us): ctenar nikdy neuvidi pul zapisu a nikdo nesmi cekat/spinout. */
+bool fpga_tdc_rez_get(fpga_tdc_rez_t *r)
+{
+    if (r == NULL) return false;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    *r = s_rez;
+    __set_PRIMASK(pm);
+    return r->valid != 0u;
+}
+
+static void rez_store(const fpga_tdc_cal_t *c)
+{
+    fpga_tdc_rez_t t;
+    fpga_tdc_rez_eval(c, &t);
+    t.valid = 1u;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    t.n   = s_rez.n + 1u;
+    s_rez = t;
+    __set_PRIMASK(pm);
+}
+
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
 {
     if (!g_init_ok || s_sim_on || out == NULL) return false;
@@ -1576,6 +1654,11 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
         }
     }
     if (locked) osMutexRelease(s_spi_mtx);
+    /* Vcasne varovani rezervy retezu (fpga_freq.h) — mimo SPI zamek. Jen z DOKONCENE kalibrace: behem ni FPGA
+     * diagnostiku maze a znovu sklada (last/ovf by byly castecne a vyrobily falesny verdikt). */
+    if (ok && !(out->status & FPGA_TDC_CAL_BUSY) &&
+        (out->status & (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) == (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B))
+        rez_store(out);
     return ok;
 }
 

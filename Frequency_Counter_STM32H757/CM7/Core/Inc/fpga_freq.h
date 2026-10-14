@@ -322,6 +322,33 @@ bool fpga_freq_tdc_cal_start(void);
 /** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
+
+/* ── Rezerva TDC retezu (2026-10-14, audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10) ─────────────────────────
+ * Retez ma nejvys TDC_NTAP (268) tapu a musi pokryt celou periodu hodin. Rezerva na 100 MHz je jen ~4-6 % (B po
+ * studenem startu 258 z 268). Hrany za koncem retezu padnou do JEDNOHO posledniho binu, ktery kalibrace nastavi na
+ * jeho stred, takze degradace je pozvolna (chyba ±s/2), ale nic ji dosud nehlasilo drive nez FPGA priznak SHORT
+ * (> 1/16 udalosti za koncem). Tohle je VCASNE varovani, jen z CAL reportu — nic nemeni v mereni ani ve FPGA.
+ * Vyhodnocuje se jednou po kazde kalibraci (report je ulozen v `fpga_freq_tdc_report`). */
+#define FPGA_TDC_REZ_OK       0u    /* >= FPGA_TDC_REZ_OK_TAPS tapu, nic za koncem */
+#define FPGA_TDC_REZ_POZOR    1u    /* 8..14 tapu, nebo aspon jedna udalost za koncem (< 1/16) */
+#define FPGA_TDC_REZ_KRIT     2u    /* < 8 tapu, nebo >= 1/16 udalosti za koncem (= FPGA priznak SHORT) */
+#define FPGA_TDC_REZ_OK_TAPS    15
+#define FPGA_TDC_REZ_WARN_TAPS  8
+/* Pocet udalosti kalibrace = 2^CAL_LOG2 ve FPGA (top.v: CAL_LOG2 = 20). Jediny zdroj je FPGA; zmena tam = zmena tady. */
+#define FPGA_TDC_CAL_LOG2     20u
+typedef struct {
+    int16_t  rez_tap[2];   /* [A,B] zbyvajici tapy = taps - last; 0, kdyz uz jsou udalosti za koncem (last je pak max. kod) */
+    uint32_t ovf_ev[2];    /* udalosti kalibrace za koncem retezu */
+    uint32_t ovf_ppm[2];   /* totez v ppm vsech udalosti */
+    uint8_t  lvl[2];       /* FPGA_TDC_REZ_* */
+    uint16_t taps;         /* fyzicke tapy z reportu */
+    uint8_t  valid;        /* 1 = report aspon jednou precten */
+    uint32_t n;            /* kolikaty report (pocita jen uspesna cteni) */
+} fpga_tdc_rez_t;
+/** Ciste vyhodnoceni CAL reportu (bez stavu, testovatelne). */
+void fpga_tdc_rez_eval(const fpga_tdc_cal_t *c, fpga_tdc_rez_t *r);
+/** Posledni ulozene vyhodnoceni (z jakehokoli uspesneho `fpga_freq_tdc_report`). @return r->valid */
+bool fpga_tdc_rez_get(fpga_tdc_rez_t *r);
 /* Vypis histogramu kalibrace (FW >= 0x040B): hist[k] obou kanalu (pocet udalosti
  * kalibrace s adresou k; sirka binu = hist[k] / N * 10 ns). Diagnostika DNL.
  * `k` je od FW 0x0410 10bitove ({sada, kod}; starsi FW bere jen k < 256).

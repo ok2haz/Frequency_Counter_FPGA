@@ -66,6 +66,11 @@ typedef enum {
      * ⚠️ Pri pridani dalsiho druhu nezapomen na `ERRLOG_KIND_MAX` ve
      * `flightrec.c` — je navazany na KONKRETNI polozku, ne na posledni. */
     ERRLOG_K_UARTFATAL = 12u,
+    /* Rezerva TDC retezu FPGA zmenila uroven (2026-10-14). `a` = zbyvajici tapy A | B << 16 (0 = uz jsou udalosti za koncem),
+     * `b` = uroven A | B << 4 (FPGA_TDC_REZ_*) | max. podil udalosti za koncem [ppm] << 8. `sub` = 0.
+     * VLASTNI druh a ne `sub` pod `ERRLOG_K_FPGA`: prodleva je per druh (60 s) a udalost z kalibrace by jinak mohla spolknout
+     * ztratu linku/signalu (a naopak) — stejny duvod jako ERRLOG_K_UARTFATAL (F-0155). */
+    ERRLOG_K_TDC = 13u,
 } errlog_kind_t;
 
 /* Podtypy pro ERRLOG_K_CFG (pole `sub`). */
