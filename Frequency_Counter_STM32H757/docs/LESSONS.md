@@ -4581,6 +4581,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (neni, neulozeno)
 - **Stav:** aktivni; ⬜ vysledek bisectu na desce
 
+### L-0155 — Stupnice varování poskládaná ze dvou veličin musí být monotónní, a „zbývající položky" nadhodnocují rezervu
+
+- **Datum:** 2026-10-14
+- **Oblast:** FPGA/TDC diagnostika (`fpga_tdc_rez_eval`, `fpga_freq.c`)
+- **Symptom:** včasné varování rezervy TDC řetězu (OK ≥ 15 tapů, POZOR 8–14, KRITICKÉ < 8) dalo v simulaci při zkracování řetězu nejdřív KRITICKÉ (38 ps/tap, rezerva 7), a o 1 ps později POZOR (37 ps/tap, 3,9 % událostí za koncem).
+- **Příčina:** dvě různé veličiny na jedné stupnici. Rezerva `taps − last` se počítá jen dokud nic není za koncem; jakmile hrany za konec dojdou, je `last` kód „za koncem" a rezerva nejde spočítat, takže jsem přešel na podíl událostí s vlastními prahy (KRIT až od 1/16) a ty vyšly mírněji než poslední hodnota první stupnice. Navíc `taps − last` nadhodnocuje rezervu: užitečný řetěz je v modelu ~264 tapů (`maxtap` se ve všech bězích s přetečením zastaví na 264), ne 268.
+- **Oprava:** jakákoli událost za koncem = KRITICKÉ (`fpga_freq.c`, `fpga_tdc_rez_eval`); selftest má vektory pro oba případy; hranice 15/8 potvrzeny simulací (rezerva 7 = 3–4 tapy před přetečením).
+- **Pravidlo:** když se stupnice varování skládá ze dvou veličin, ověř ji na modelu, který mez překročí, a zkontroluj, že úroveň s horšícím se stavem nikdy neklesne; vlastní mez „zbývá N položek" přepočítej na veličinu, která se opravdu mění (zde rychlost tapu: ≈ 2,7 tapu na 1 %).
+- **Detekce:** `fpga_freq_select_selftest` (vektory rezervy), sweep `tb_tdc_inl` podle `docs/audit/2026-10-10_volba-kmitoctu-hodin.md` kap. 10.6.
+- **Commit:** `a30b0b4` (původní verze `ef07ca0`)
+- **Stav:** aktivni; ⬜ neověřeno na desce
+
 ---
 
 ## Archiv (neplatné lekce)

@@ -228,3 +228,37 @@ L-0154 vede změnu jako „jen hodiny“ a příčinu jako neurčenou (STA a sim
 ### 10.5 Neověřeno
 
 Rozsah VCO Si5356, datasheet GW1NR (max. kmitočet GCLK, jitter vnitřního PLL), teplotní citlivost zpoždění tapu, chování `SHORT` na STM, model 10.3 na desce.
+
+### 10.6 Kroky 1 a 2 provedeny 2026-10-14
+
+**Krok 1 (STM, `ef07ca0` + oprava `a30b0b4`).** CAL report se čte jednou po každé dokončené kalibraci; `status` → `TDC REZERVA`, UART `tdc`, errlog druh `ERRLOG_K_TDC`.
+Úrovně: **OK** ≥ 15 tapů, **POZOR** 8–14, **KRITICKÉ** < 8 tapů nebo aspoň jedna událost za koncem (FPGA příznak `SHORT` zůstává až od 1/16). Nemění měření, FPGA ani IPC.
+Release CM7 `.text` 653 856 → 655 768 B, 0 varování, `audit.py` 92 OK / 0 selhání / 2 s varováním. ⬜ Neověřeno na desce (řádek `TDC REZERVA` v `status` po flashi).
+
+**Krok 2 (simulace, Icarus, `sim/tb_tdc_inl.sv`, parametry jako `tdcinl268`, jen `SIM_TAP_MEAN`/`SIM_TAP_SPREAD` škálované společně, `NEDGES=2000`, `CAL_LOG2_TB=14`, bez `EXPECT_*`).**
+Jeden běh = jeden náhodný průběh zpoždění tapů; kalibrace z 16 384 událostí (na desce 2^20).
+
+| tap [ps] | řetěz [ns] | `last` | `maxtap` | za koncem | největší bin | σ značky [ps] |
+|---|---|---|---|---|---|---|
+| 39 | 10,45 | 254 (rezerva 14) | 248 | 0 | 63 | **18,5** |
+| 38 | 10,18 | 261 (rezerva 7) | 256 | 0 | 67 | **18,3** |
+| 37 | 9,92 | 511 | 264 | 3,87 % | 387 | 28,4 |
+| 36 | 9,65 | 511 | 264 | 6,53 % | 653 | 51,6 |
+| 35 | 9,38 | 511 | 264 | 9,22 % | 922 | 83,1 |
+| 34 | 9,11 | 511 | 264 | 11,93 % | 1193 | 119,4 |
+| 33 | 8,84 | 511 | 264 | 14,62 % | 1462 | 161,1 |
+| 31 | 8,31 | 511 | 264 | 17,80 % | 1780 | 218,3 |
+| 29 | 7,77 | 511 | 264 | 22,28 % | 2228 | 302,0 |
+
+(`last` = 511 znamená, že nejvyšší obsazený kód je „za koncem“.)
+
+1. **Model z 10.3 platí.** Předpověď σ² = σ₀² + (p^1,5·T/√12)², kde p je naměřený podíl hran za koncem a σ₀ = 18,5 ps, vychází 28,7 / 51,6 / 82,9 / 120 / 162 / 304 ps proti naměřeným 28,4 / 51,6 / 83,1 / 119,4 / 161,1 / 302,0 ps
+   (37 / 36 / 35 / 34 / 33 / 29 ps), tedy shoda do ~1 %. Poslední bin má šířku = chybějící úsek a kalibrace mu přiřadí střed, jak se předpokládalo.
+2. **Užitečný řetěz je asi 264 tapů, ne 268.** Ve všech sedmi bězích s přetečením se `maxtap` zastaví na 264. Rezerva `taps − last` proto nadhodnocuje skutečnou rezervu o ~4 tapy.
+3. **Přetečení začíná mezi 38 a 37 ps.** Mezi 39 a 38 ps (−2,6 % rychlosti tapu) se `last` posune o 7 tapů (≈ 2,7 tapu na 1 % rychlosti). Z toho **[V, hrubé]**: rezerva 14 tapů ≈ 4–5 % rychlosti, 7 tapů ≈ 1,5–2,5 %.
+   Pro desku: **B po studeném startu (rezerva 10) má v rychlosti tapu jen ~2 % do přetečení, A (rezerva 16) ~4 %.** To je méně, než naznačovalo „3,7 % / 6 %“ v tapech.
+4. **Cena přetečení je mírná, dokud je malé.** Podíl hran za koncem 6,25 % (práh FPGA `SHORT`) odpovídá přidanému rms ≈ 45 ps; proti šumu značky na desce ~105 ps je to +9 %. Skutečně špatné je až 10–20 % (σ 83–300 ps).
+5. **Prahy z kroku 1 jsou v modelu vhodně nastavené.** Rezerva 7 (38 ps, σ ještě 18,3 ps) = KRITICKÉ je 3–4 tapy před přetečením; 14 (39 ps) = POZOR. Původní zařazení 0 < ovf < 1/16 jako POZOR bylo nemonotónní (mírnější než rezerva 7) a opraveno `a30b0b4` (L-0155).
+
+**Omezení modelu:** zpoždění tapů rovnoměrně ±38 % bez struktury INL, jeden náhodný průběh na bod, 2000 hran, kalibrace z 16 384 událostí, žádná teplotní závislost. Nic z toho neříká, co dělá křemík při chladu (krok 3), ani nic o chybě T/2 u 125 MHz (L-0154).
+Reprodukce: `sim/run.ps1` definice `tdcinl268` s jinými `SIM_TAP_MEAN`/`SIM_TAP_SPREAD`, `-DNEDGES=2000` a bez `EXPECT_*`; `PATH` musí obsahovat `C:\iverilog\bin`; osm běhů paralelně ~10 min.
