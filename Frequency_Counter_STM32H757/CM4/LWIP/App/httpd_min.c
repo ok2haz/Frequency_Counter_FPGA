@@ -558,7 +558,8 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jputf(&j, "\"selftest\":%u,", (unsigned)snap->selftest_res);
     jputf(&j, "\"sys_level\":%u,", (unsigned)snap->sys_level);
     /* ⚠️ Warm-up MUSI prijit z pristroje, ne se odhadovat na webu (audit F-0088):
-     * kriterium je `warmup_ready()` = uptime >= 300 s A ustalena teplota OCXO.
+     * kriterium je `warmup_ready()` (app_gpsdo.c): uptime (900 s po zapnuti napajeni, 300 s po resetu)
+     * A platna a ustalena teplota OCXO (sklon < 0,3 C/min, pec topi).
      * Klient ho drive nahrazoval pouhym `uptime_s < 300` a hlasil LOCK ve chvili,
      * kdy displej jeste spravne hlasil WARMUP. */
     jbool(&j, "warmup", snap->warmup);

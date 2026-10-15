@@ -269,8 +269,9 @@ typedef struct {
     uint8_t  sys_level;            /* 0=OK 1=warn 2=err (agregace do SYS pilulky) */
     uint8_t  alarm_active;
     uint8_t  warmup;               /* 1 = OCXO se jeste zahriva (v15). Plni APP vrstva
-                                    * pres `g_warmup` — je to `warmup_ready()`, tedy uptime
-                                    * >= 300 s A |dT/dt| < 0,08 °C/min, ne jen uptime. */
+                                    * pres `g_warmup` — je to `warmup_ready()` (app_gpsdo.c: teplota plaste platna,
+                                    * pec topi, uptime >= 900 s po zapnuti napajeni / 300 s po resetu, sklon
+                                    * < 0,3 °C/min), ne jen uptime. */
     uint8_t  tdc_rez_n;            /* v23: poradi vyhodnoceni rezervy TDC (`fpga_tdc_rez_t.n`, mod 256), viz `tdc_rez_st`.
                                     * Byval `_pad_h`. */
     uint32_t uptime_s;

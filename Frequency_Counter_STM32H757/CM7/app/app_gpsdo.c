@@ -4510,10 +4510,17 @@ static void holdover_cone_draw(int state, uint32_t t_in_state_s)
 }
 
 /* ── Warm-up / stabilizace OCXO ──────────────────────────────────────────────
- * OCXO potrebuje ~jednotky minut tepelne ustaleni, nez je disciplinace duveryhodna.
- * "Hotovo" = uptime >= WARMUP_MIN_S A tepelny sklon |dT/dt| < WARMUP_SLOPE (z RAM
- * historie 0x49 pres sensor_hist). Nahrazuje drivejsi naivni uptime<180 ve stavu
- * WARMUP. Sklon [°C/min] vraci ve *slope (smi byt NULL). */
+ * OCXO se po zapnuti ustaluje (Bliley 6891: +-0,03 ppm za 5 min, +-0,01 ppm za 15 min). "Hotovo" znamena
+ * vsechno naraz:
+ *   1) teplota plaste OCXO (0x49) je platna,
+ *   2) pec topi: dT = T(0x49) - T(deska 0x48) >= MON_OCXO_DT_MIN_C (jako monitor "pec netopi"); bez teploty
+ *      desky se dT nehodnoti,
+ *   3) uptime >= WARMUP_MIN_S_POR (900 s) po zapnuti napajeni (POR/BOR v g_reset_rsr), jinak
+ *      WARMUP_MIN_S_RST (300 s): po resetu STM OCXO bezi dal, uptime neni jeho stari,
+ *   4) sklon plaste |dT/dt| < WARMUP_SLOPE (0,3 C/min, okno 120 s z RAM historie sensor_hist).
+ * Sklon meri dohrivani plaste a desky, ne regulaci pece: frekvence byla v +-10 ppb uz od ~160 s, kdy sklon
+ * byl +4,8 C/min (docs/MERENI_A_KALIBRACE.md, "Kriterium teplota neustalena"). Prah 0,3 C/min = <= 1 ppb za
+ * 10 min pri teplotni vazbe 3x vetsi nez datasheet (0,09 ppb/C). Sklon [°C/min] vraci ve *slope (smi byt NULL). */
 #define WARMUP_MIN_S_POR 900u     /* min. uptime po zapnuti napajeni (Bliley 6891: +-0,01 ppm za 15 min) [s] */
 #define WARMUP_MIN_S_RST 300u     /* po resetu pri zapnutem napajeni: OCXO bezi dal (+-0,03 ppm za 5 min) [s] */
 #define WARMUP_SLOPE     0.3f     /* prah ustaleni plaste [°C/min]: <= 1 ppb / 10 min pri 3x vetsi vazbe nez datasheet */
