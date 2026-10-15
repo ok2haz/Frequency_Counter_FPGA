@@ -4629,6 +4629,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (doplnit)
 - **Stav:** aktivní; ✅ ověřeno po resetu i po power-cyklu (2026-10-15, uživatelův terminál + `cdc_lag_test.py`: `ping` -> `pong` celý do ~60 ms); ⬜ nepozorován dlouhodobý běh
 
+### L-0159 — „Neplatný" slot flash nebyl „volný": poškozený záznam se bral za hlavu logu a každý boot přepsal minulý
+
+- **Datum:** 2026-10-15
+- **Oblast:** trvalý záznamník chyb (`errlog`, W25Q NOR), STATUS #296
+- **Symptom:** `/api/errlog?from=0..3` vracel `n:0`, `errlog dump` vypsal jen hlavičku, `total` se nehýbal (4873 → 4871) ani po novém bootu a nejnovější záznamy (vč. nového druhu `ERRLOG_K_TDC`) se nikdy nezobrazily. Pod tím šlo ~90 % logu o jedinou opakující se událost „ztráta linku" každou minutu.
+- **Příčina:** `errlog_init` hledal hlavu jako PRVNÍ slot, kde `el_unpack` selže (seq = 0xFFFFFFFF nebo CRC). Jenže selhat může i poškozený, nedopsaný slot (výpadek napájení při zápisu), který NENÍ smazaný. NOR umí jen 1 → 0, takže zápis do něj dá AND se starým obsahem, tedy zase neplatný záznam. Boot N tak zapsal čtyři záznamy na tytéž sloty jako boot N−1 (AND = oba zničeny), `maxseq` z neplatných se nezvětšil, a proto `total` stál. Na desce bylo 45 takových slotů v sektoru hlavy.
+- **Oprava:** slot má tři stavy (smazaný 0xFF / platný / poškozený); hlava je první SMAZANÝ slot, poškozený se přeskočí; `errlog_tick` před zápisem ověří, že cíl je smazaný, jinak ho přeskočí (a počítá); `errlog_count` počítá sloty, ne `seq`; `errlog_read_batch` vrací za poškozený slot placeholder `kind = 0` („POSK") místo konce čtení; `errlog dump` vypisuje diagnostiku (slot hlavy, poškozené při startu, přeskočené zápisem). Navíc narůstá prodleva opakující se události (60 s → 30 min, zpět po klidu), aby jedna nevytlačovala vzácné.
+- **Pravidlo:** U paměti, kterou lze jen mazat po blocích (NOR), rozlišuj „smazané" (všechny bity 1) od „neplatné"; volné místo se pozná podle obsahu 0xFF, ne podle selhání kontrolního součtu, a do nesmazaného místa se nezapisuje.
+- **Detekce:** `errlog dump` — hlavička `hlava: … poškozených slotů …`; po kterémkoli resetu musí `zaznamu` růst a nejnovější `#seq` odpovídat novému bootu.
+- **Commit:** (doplnit)
+- **Stav:** aktivní; ✅ ověřeno na desce (3 resety po sobě: záznamy přibývají, poškozených při startu stále 45); ⬜ nepozorován zápis `ERRLOG_K_TDC` / `REFRST` (čeká na M4)
+
 ---
 
 ## Archiv (neplatné lekce)
