@@ -127,6 +127,11 @@ uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out);
 
 uint32_t errlog_count(void);          /* kolik zaznamu je v logu */
 uint32_t errlog_dropped(void);        /* kolik jich ring zahodil (byl plny) */
+/* Diagnostika poskozenych (nedopsanych, nesmazanych) slotu, STATUS #296. `skipped` = preskocene zapisem od startu,
+ * `dirty_init` = poskozene v sektoru hlavy pri startu, `head_slot` = index slotu hlavy v sektoru. */
+uint32_t errlog_skipped(void);
+uint32_t errlog_dirty_init(void);
+uint32_t errlog_head_slot(void);
 /* ⚠️ Destruktivni a BLOKUJICI (64 sektoru = jednotky sekund) -> jen z UartTasku.
  * @return false = nektery sektor se nepodarilo smazat; stav logu pak ZUSTAVA
  * nezmeneny (hlava se neposouva), aby se nezapisovalo pres stare zaznamy

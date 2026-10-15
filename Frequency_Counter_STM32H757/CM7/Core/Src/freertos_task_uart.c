@@ -989,6 +989,8 @@ void UartTask_run(void *argument)
 							 (unsigned long)total,
 							 (unsigned long)(W25Q_ERRLOG_SECTORS * (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)),
 							 (unsigned long)errlog_dropped());
+					  printf("  hlava: slot %lu v sektoru, poskozenych slotu: pri startu %lu, preskoceno zapisem %lu\n",
+					         (unsigned long)errlog_head_slot(), (unsigned long)errlog_dirty_init(), (unsigned long)errlog_skipped());
 					  if (total == 0u) {
 						  printf("  (zatim nic — to je dobre)\n");
 					  }

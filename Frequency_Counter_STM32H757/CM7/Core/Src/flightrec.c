@@ -456,6 +456,7 @@ bool flightrec_report(void)
 
 #define ERRLOG_RING_N       16u
 #define ERRLOG_COOLDOWN_MS  60000u     /* max 1 zaznam na druh a minutu */
+#define ERRLOG_COOLDOWN_MAX 1800000u   /* strop narustu prodlevy pri trvale se opakujici udalosti (30 min) */
 #define ERRLOG_PER_SECTOR   (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)   /* 128 */
 #define ERRLOG_CAPACITY     (W25Q_ERRLOG_SECTORS * ERRLOG_PER_SECTOR)
 /* ⚠️ Musi ukazovat na POSLEDNI polozku `errlog_kind_t` — `errlog_put` podle
@@ -467,6 +468,11 @@ static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
 static volatile uint32_t s_el_dropped;                  /* ring byl plny */
 static uint32_t          s_el_cool_next[ERRLOG_KIND_MAX + 1u];
+/* Narust prodlevy (STATUS #296): ~90 % logu byl jeden opakujici se zaznam `FPGA ztrata linku` kazdou minutu, ktery
+ * vytlacoval vzacne udalosti (BOOT, CRASH, REF). Kdyz se druh emituje znovu drive nez za dvojnasobek aktualni prodlevy,
+ * prodleva se zdvojnasobi (60 s -> 120 s -> ... -> 30 min); po klidu se vraci na 60 s. Opakovani se dal scitaji do pole `repeat`. */
+static uint32_t          s_el_cool_len[ERRLOG_KIND_MAX + 1u];
+static uint32_t          s_el_last_emit[ERRLOG_KIND_MAX + 1u];
 static uint16_t          s_el_pending[ERRLOG_KIND_MAX + 1u];
 
 static uint32_t s_el_write_off;    /* kam padne PRISTI zaznam */
@@ -520,9 +526,30 @@ static bool el_unpack(const uint8_t *b, errlog_rec_t *r)
     return true;
 }
 
+/* 🔴 SLOT MÁ TŘI STAVY, ne dva (STATUS #296, 2026-10-15). Dřív `el_unpack` == false znamenalo „volný", jenže poškozený
+ * (nedopsaný při výpadku napájení) slot není smazaný: NOR do něj nejde zapsat znovu, jen AND se starým obsahem. Init
+ * ho vzal za hlavu, zápis na něj dal opět neplatný záznam a každý další boot přepsal (AND) záznamy minulého bootu →
+ * nejnovější záznamy nečitelné, `total` se nehýbal (maxseq z neplatných se nezvětšil). */
+#define EL_SLOT_BLANK   0   /* celý slot 0xFF = smazaný, smí se do něj zapisovat */
+#define EL_SLOT_VALID   1
+#define EL_SLOT_DIRTY   2   /* není smazaný a CRC nesedí = poškozený; NIKDY se do něj nezapisuje */
+static int el_slot_state(const uint8_t *b, errlog_rec_t *r)
+{
+    bool blank = true;
+    for (uint32_t i = 0; i < ERRLOG_REC_SIZE; i++) if (b[i] != 0xFFu) { blank = false; break; }
+    if (blank) return EL_SLOT_BLANK;
+    return el_unpack(b, r) ? EL_SLOT_VALID : EL_SLOT_DIRTY;
+}
+
+/* Sloty spotřebované od nejstaršího (platné + poškozené), pro `errlog_count`; plní init a tick. */
+static uint32_t s_el_slots;
+static uint32_t s_el_skipped;      /* poškozených slotů přeskočených zápisem od startu */
+static uint32_t s_el_dirty_init;   /* poškozených slotů v sektoru hlavy při startu */
+
 const char *errlog_kind_name(uint8_t kind)
 {
     switch (kind) {
+    case 0:                return "POSK";     /* placeholder za poškozený slot (errlog_read_batch) */
     case ERRLOG_K_BOOT:    return "BOOT";
     case ERRLOG_K_CRASH:   return "CRASH";
     case ERRLOG_K_I2C:     return "I2C";
@@ -551,11 +578,15 @@ void errlog_init(void)
      * najde prvni volny slot. ⚠️ `seq` NESMI byt odvozena od uptime — to se po
      * resetu vraci k nule (tatáz past, jakou ma v komentari `flightrec_init`). */
     uint32_t best = 0; int best_i = -1;
+    uint32_t used_sectors = 0;                  /* sektory, jejichz prvni slot neni smazany (platny i poskozeny) */
+    s_el_slots = 0u; s_el_skipped = 0u; s_el_dirty_init = 0u;
     for (uint32_t i = 0; i < W25Q_ERRLOG_SECTORS; i++) {
         uint8_t h[ERRLOG_REC_SIZE];
         errlog_rec_t r;
         if (!w25q_read(W25Q_ERRLOG_BASE + i * W25Q_SECTOR_SIZE, h, sizeof h)) continue;
-        if (el_unpack(h, &r) && (best_i < 0 || r.seq > best)) { best = r.seq; best_i = (int)i; }
+        int st = el_slot_state(h, &r);
+        if (st != EL_SLOT_BLANK) used_sectors++;
+        if (st == EL_SLOT_VALID && (best_i < 0 || r.seq > best)) { best = r.seq; best_i = (int)i; }
     }
 
     if (best_i < 0) {
@@ -569,10 +600,13 @@ void errlog_init(void)
             uint8_t h[ERRLOG_REC_SIZE];
             errlog_rec_t r;
             if (!w25q_read(base + slot * ERRLOG_REC_SIZE, h, sizeof h)) break;
-            if (!el_unpack(h, &r)) break;               /* prvni volny/vadny = hlava */
-            if (r.seq > maxseq) maxseq = r.seq;
+            int st = el_slot_state(h, &r);
+            if (st == EL_SLOT_BLANK) break;             /* prvni SMAZANY slot = hlava; poskozeny se preskoci */
+            if (st == EL_SLOT_DIRTY) s_el_dirty_init++;
+            else if (r.seq > maxseq) maxseq = r.seq;
         }
         s_el_seq_next = maxseq + 1u;
+        s_el_slots = (used_sectors ? (used_sectors - 1u) : 0u) * ERRLOG_PER_SECTOR + slot;
         if (slot >= ERRLOG_PER_SECTOR) {
             /* Sektor plny -> dalsi (s pretocenim) a predem ho smaz. */
             uint32_t ni = ((uint32_t)best_i + 1u) % W25Q_ERRLOG_SECTORS;
@@ -596,7 +630,14 @@ bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *t
 
     bool emit = false;
     if ((int32_t)(now - s_el_cool_next[kind]) >= 0) {
-        s_el_cool_next[kind] = now + ERRLOG_COOLDOWN_MS;
+        uint32_t len = s_el_cool_len[kind];
+        if (len == 0u || s_el_last_emit[kind] == 0u || (uint32_t)(now - s_el_last_emit[kind]) >= 2u * len)
+            len = ERRLOG_COOLDOWN_MS;                                          /* klid -> zpet na zaklad */
+        else if (len < ERRLOG_COOLDOWN_MAX)
+            len = (2u * len > ERRLOG_COOLDOWN_MAX) ? ERRLOG_COOLDOWN_MAX : 2u * len;   /* trvale opakovani */
+        s_el_cool_len[kind]   = len;
+        s_el_last_emit[kind]  = now ? now : 1u;
+        s_el_cool_next[kind]  = now + len;
         uint32_t nxt = (s_el_head_i + 1u) % ERRLOG_RING_N;
         if (nxt == s_el_tail_i) {
             s_el_dropped++;                /* ring plny — `tick` nestiha */
@@ -672,12 +713,26 @@ void errlog_tick(void)
         /* Zacatek noveho sektoru -> smaz ho (zahodi 128 nejstarsich zaznamu). */
         if ((s_el_write_off % W25Q_SECTOR_SIZE) == 0u) {
             if (!w25q_erase_sector(s_el_write_off)) break;
+        } else {
+            /* 🔴 Cil musi byt SMAZANY (STATUS #296): NOR umi jen 1 -> 0, zapis do neuplne smazaneho slotu da AND se starym
+             * obsahem = neplatny zaznam. Nesmazany slot se preskoci a pocita (`s_el_skipped`). */
+            uint8_t cur[ERRLOG_REC_SIZE];
+            errlog_rec_t tmp;
+            if (!w25q_read(s_el_write_off, cur, sizeof cur)) break;
+            if (el_slot_state(cur, &tmp) != EL_SLOT_BLANK) {
+                s_el_skipped++;
+                s_el_slots++;
+                s_el_write_off += ERRLOG_REC_SIZE;
+                if (s_el_write_off >= W25Q_ERRLOG_BASE + W25Q_ERRLOG_SIZE) s_el_write_off = W25Q_ERRLOG_BASE;
+                continue;                                   /* stejny zaznam z ringu na dalsi slot */
+            }
         }
         uint8_t b[ERRLOG_REC_SIZE];
         el_pack(&r, b);
         if (!w25q_write(s_el_write_off, b, sizeof b)) break;
 
         s_el_seq_next++;
+        s_el_slots++;
         s_el_write_off += ERRLOG_REC_SIZE;
         if (s_el_write_off >= W25Q_ERRLOG_BASE + W25Q_ERRLOG_SIZE) s_el_write_off = W25Q_ERRLOG_BASE;
         s_el_tail_i = (s_el_tail_i + 1u) % ERRLOG_RING_N;
@@ -687,7 +742,8 @@ void errlog_tick(void)
 
 uint32_t errlog_count(void)
 {
-    uint32_t written = (s_el_seq_next > 1u) ? (s_el_seq_next - 1u) : 0u;
+    /* Sloty (platne i poskozene), ne `seq`: poskozeny slot v kruhu je tez pozice, kterou cteni musi projit (STATUS #296). */
+    uint32_t written = s_el_slots;
     /* 🔴 Strop NENI cela kapacita (audit F-0101). Sektor, do ktereho se prave
      * zapisuje, byl pri vstupu do nej CELY smazan, takze slotu ZA hlavou je az
      * `ERRLOG_PER_SECTOR - 1` prazdnych — a pri pretoceni kruhu se cteni dostane
@@ -702,6 +758,9 @@ uint32_t errlog_count(void)
 }
 
 uint32_t errlog_dropped(void) { return s_el_dropped; }
+uint32_t errlog_skipped(void) { return s_el_skipped; }
+uint32_t errlog_dirty_init(void) { return s_el_dirty_init; }
+uint32_t errlog_head_slot(void) { return ((s_el_write_off - W25Q_ERRLOG_BASE) % W25Q_SECTOR_SIZE) / ERRLOG_REC_SIZE; }
 
 /* Funkce `errlog_read_back` (cteni JEDNOHO zaznamu) byla odstranena 2026-09-20: po
  * oprave F-0100 uz nemelo zadneho volajiciho — UART `errlog dump` i okno CHYBY
@@ -755,10 +814,16 @@ uint32_t errlog_read_batch(uint32_t from, uint32_t count, errlog_rec_t *out)
         uint32_t k = 0;
         for (; k < n; k++) {
             /* `buf` je vzestupne (od nejstarsiho), vystup chceme od nejnovejsiho. */
-            if (!el_unpack(&buf[(n - 1u - k) * ERRLOG_REC_SIZE], &out[got + k])) break;
+            int st = el_slot_state(&buf[(n - 1u - k) * ERRLOG_REC_SIZE], &out[got + k]);
+            if (st == EL_SLOT_BLANK) break;                /* smazany slot = konec citelne historie */
+            if (st == EL_SLOT_DIRTY) {
+                /* Poskozeny slot NENI konec (drive cteni skoncilo a vse starsi bylo nedostupne): vrati se
+                 * placeholder `kind = 0`, at pozice `from + k` zustava pravdiva a nic se tise nepreskoci. */
+                memset(&out[got + k], 0, sizeof out[0]);
+            }
         }
         got += k;
-        if (k < n) break;      /* prvni vadny/prazdny slot = konec citelne historie */
+        if (k < n) break;
     }
     osMutexRelease(qspiMutexHandle);
     return got;
@@ -783,6 +848,7 @@ bool errlog_erase(void)
     if (ok) {
         s_el_seq_next  = 1u;
         s_el_write_off = W25Q_ERRLOG_BASE;
+        s_el_slots     = 0u;
         s_el_ready     = 1;
     }
     osMutexRelease(qspiMutexHandle);
@@ -892,6 +958,9 @@ void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
     tag[ERRLOG_TAG_LEN] = '\0';
 
     switch (r->kind) {
+    case 0:
+        snprintf(buf, n, "poskozeny slot (nesmazany, CRC nesedi) - zaznam ztracen");
+        break;
     case ERRLOG_K_BOOT:
         snprintf(buf, n, "duvod=%s, bring-up krok %u", tag, (unsigned)r->sub);
         break;
