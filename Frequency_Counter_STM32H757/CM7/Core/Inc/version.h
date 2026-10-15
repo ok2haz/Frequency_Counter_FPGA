@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.16.2 (2026-10-15) = oprava trvaleho zaznamniku chyb (STATUS #296, L-0159): poskozeny (nedopsany, nesmazany) slot flash se bral
+ * za hlavu logu a kazdy boot prepsal zaznamy minuleho (nejnovejsi zaznamy necitelne, `total` stal). Slot ma nove 3 stavy, hlava = prvni
+ * SMAZANY slot, zapis jen do smazaneho, poskozeny slot ve cteni je placeholder POSK; narust prodlevy opakujici se udalosti (60 s az 30 min).
+ * `errlog dump` ma diagnosticky radek. Bez zmeny IPC (v23), CM4 beze zmeny. ⬜ Zapis ERRLOG_K_TDC/REFRST neni na desce videt (M4). */
 /* v0.16.1 (2026-10-15) = oprava USB konzole (STATUS #298, L-0158): vysila se jen pri pritomnem hostu (DTR / data od hosta),
  * zasekly IN prenos se rusi na HW vcetne TX FIFO (drive zpozdena konzole o jeden prenos po kazde pauze bez hosta), pri zavrenem
  * portu se zahazuje nejstarsi; `status` ma radek KONZOLE: host. Skripty v adresari tools nastavuji DtrEnable. Bez zmeny IPC (v23).
@@ -138,7 +142,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 16
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.16.1"
+#define FW_VERSION_PATCH 2
+#define FW_VERSION_STR   "v0.16.2"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
