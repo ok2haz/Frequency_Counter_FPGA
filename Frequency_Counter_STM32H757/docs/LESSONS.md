@@ -4627,7 +4627,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** Přepsání softwarového stavu automatu (příznak „vysílám") bez zrušení stavu v periferii ho jen rozjede s hardwarem; zásek řeš zrušením přenosu a vyprázdněním fronty periferie, a nezkoušej vysílat, dokud druhá strana neposlouchá.
 - **Detekce:** `python tools/cdc_lag_test.py COM10 4` (po resetu a po 30 s bez hosta; každá odpověď musí dorazit celá do ~100 ms); SWD: `DIEPCTL1.EPENA`, `DTXFSTS1` = 0x80 při klidu, `status` bez řádku „TX watchdog zlomil zasek".
 - **Commit:** (doplnit)
-- **Stav:** aktivní; testováno po resetu (flash), ⬜ neověřeno po power-cyklu a s Terminal/PuTTY
+- **Stav:** aktivní; ✅ ověřeno po resetu i po power-cyklu (2026-10-15, uživatelův terminál + `cdc_lag_test.py`: `ping` -> `pong` celý do ~60 ms); ⬜ nepozorován dlouhodobý běh
 
 ---
 
