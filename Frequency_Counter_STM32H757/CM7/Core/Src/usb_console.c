@@ -45,45 +45,81 @@ static volatile uint32_t s_rx_dropped;
 static uint32_t          s_tx_prog;       /* osKernelGetTickCount posledniho USBD_OK */
 static volatile uint32_t s_tx_recover;    /* kolikrat se zasek zlomil (diagnostika) */
 
+/* 🔴 Pritomnost hosta (STATUS #298, 2026-10-15). Kdyz host port nema otevreny, IN koncovy bod nikdo nesbira: prenos se
+ * nedokonci a watchdog ho zlamal jen v SW (`TxState = 0`), HW prenos i TX FIFO zustaly -> nova data sla ZA stara, konzole
+ * byla trvale o jeden prenos pozadu (zmereno: IN FIFO plne, `EPENA = 0`, ring prazdny). Proto se do USB vysila JEN
+ * kdyz je host pritomen, a vsechny prechody (otevreni, zavreni, ztrata linky, zlomeny zasek) koncí ZRUSENIM HW prenosu
+ * a vyprazdnenim FIFO (`CDC_AbortTx`), nikdy jen zmenou priznaku.
+ * Pritomen = linka CONFIGURED a (DTR z SET_CONTROL_LINE_STATE, NEBO host v poslednich USB_HOST_RX_HOLD_MS posilal data -
+ * napr. .NET SerialPort ma DtrEnable = false, ale prikazy posila). */
+#define USB_HOST_RX_HOLD_MS 30000u
+static volatile uint8_t  s_dtr;              /* DTR hosta */
+static volatile uint8_t  s_rx_seen;          /* host aspon jednou poslal data */
+static volatile uint32_t s_rx_ms;            /* HAL_GetTick posledniho RX */
+static volatile uint8_t  s_open;             /* vysledek posledniho vyhodnoceni (jen pumpa) */
+static volatile uint8_t  s_ep_dirty;         /* 1 = pred dalsim vysilanim zrusit HW prenos a vyprazdnit TX FIFO */
+static volatile uint8_t  s_in_reset;         /* pumpa uvnitr CDC_AbortTx -> ostatni volajici se vrati */
+static volatile uint32_t s_tx_overwritten;   /* bajtu zahozenych NEJSTARSICH pri zavrenem hostu (ring pretekl) */
+
 void usb_console_tx_pump(void)
 {
-  /* ⚠️ Volano ze DVOU kontextu: defaultTask (bez zamku) i _write->usb_console_tx
-   * (pod uartTxMutex). Bez serializace by dva soubezne pumpy videly stejny tail,
-   * poslaly stejny blok 2x a rozjely s_tail. PRIMASK kriticka sekce = plna
-   * mutualni exkluze; funguje i PRED spustenim scheduleru (early printf z main
-   * USER CODE 2) a nezavisi na FreeRTOS. CDC_Transmit_FS je neblokujici (jen
-   * naprogramuje endpoint / vrati USBD_BUSY) -> maskovani IRQ na par us je OK. */
-  /* 🔴 HAL_GetTick(), NE osKernelGetTickCount(): pumpu vola i CDC callbback
-   * CDC_TransmitCplt_FS z USB IRQ, a osKernelGetTickCount je FreeRTOS API
-   * nebezpecne z preruseni (rozbilo by to drain-retez v callbacku -> ocas
-   * vypisu i echo odkapavaly jen pres pomale polling cesty). HAL_GetTick je
-   * jen cteni uwTick -> ISR-safe. (ms, 0 pred spustenim casove zakladny.) */
+  /* ⚠️ Volano ze TRI kontextu: defaultTask (bez zamku), _write->usb_console_tx (pod uartTxMutex) i USB IRQ
+   * (CDC_TransmitCplt_FS). Bez serializace by dva soubezne pumpy videly stejny tail, poslaly stejny blok 2x a rozjely
+   * s_tail. PRIMASK kriticka sekce = plna mutualni exkluze; funguje i PRED spustenim scheduleru (early printf z main
+   * USER CODE 2) a nezavisi na FreeRTOS. CDC_Transmit_FS je neblokujici (jen naprogramuje endpoint / vrati USBD_BUSY)
+   * -> maskovani IRQ na par us je OK. */
+  /* 🔴 HAL_GetTick(), NE osKernelGetTickCount(): pumpu vola i CDC callback CDC_TransmitCplt_FS z USB IRQ, a
+   * osKernelGetTickCount je FreeRTOS API nebezpecne z preruseni. HAL_GetTick je jen cteni uwTick -> ISR-safe. */
   uint32_t now = HAL_GetTick();
+  uint8_t  link = CDC_TxState();                 /* 0 volno, 1 vysila, 2 neni linka (CONFIGURED) */
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
+  if (s_in_reset) { __set_PRIMASK(primask); return; }   /* jiny kontext prave ruší HW prenos; data zustavaji v ringu */
+
+  if (link == 2U) s_dtr = 0U;                    /* linka pryc (USB reset / odpojeni) -> DTR hosta uz neplati */
+  const uint8_t present = (link != 2U) &&
+                          (s_dtr || (s_rx_seen && (uint32_t)(now - s_rx_ms) < USB_HOST_RX_HOLD_MS));
+  if (!present) {
+    /* Host neposlouchal / odesel: nic se nevysila. Co letelo, se po dalsim otevreni poslé znovu od s_tail, HW stav se
+     * uklidi pri otevreni (`s_ep_dirty`). */
+    if (s_open) { s_open = 0U; s_ep_dirty = 1U; s_pending = 0U; }
+    __set_PRIMASK(primask);
+    return;
+  }
+  if (!s_open) { s_open = 1U; s_ep_dirty = 1U; s_pending = 0U; s_tx_prog = now; }   /* otevreni = cisty start */
+
+  uint16_t used  = (uint16_t)(s_head - s_tail);
+  /* TX watchdog: zaseknuty IN transfer (TxState = 1) nechava CDC_Transmit_FS navzdy BUSY. Posledni instance - pri
+   * pritomnem hostu by se to nemelo stavat. Dokud host nesbira, zlomeni jen odlozi chybu, proto se zlomi NA HW. */
+  if (!s_ep_dirty && used && link == 1U && (uint32_t)(now - s_tx_prog) > USB_TX_WEDGE_MS) {
+    s_ep_dirty = 1U;
+    s_pending  = 0U;           /* letici blok se NIKDY neodeslal -> poslat znovu od s_tail */
+    s_tx_recover++;
+  }
+  if (s_ep_dirty) {
+    /* Zruseni HW prenosu ceka na EPENA = 0 (az ms) -> nikdy z preruseni; udela to pristi volani z ulohy. */
+    if (__get_IPSR() != 0U) { __set_PRIMASK(primask); return; }
+    s_in_reset = 1U;
+    __set_PRIMASK(primask);                      /* IRQ zpet: CDC_AbortTx si zakaze jen USB IRQ */
+    CDC_AbortTx();                               /* EP1: SNAK+EPDIS, flush TX FIFO, TxState = 0 */
+    primask = __get_PRIMASK();
+    __disable_irq();
+    s_ep_dirty = 0U;
+    s_in_reset = 0U;
+    now        = HAL_GetTick();
+    s_tx_prog  = now;
+    used = (uint16_t)(s_head - s_tail);          /* mezitim mohl producent pridat data */
+  }
   /* `s_pending` bajtu od `s_tail` jeste LETI v CDC -> poslat jde teprve to za nimi.
    * Invariant `s_pending <= used` drzi sam: `chunk` se vybira z `avail`. */
-  uint16_t used  = (uint16_t)(s_head - s_tail);
-  /* 🔴 2026-10-04: uvolni DRZENY (uz odeslany) blok hned, jak je CDC idle.
-   * Bez toho pri PLNEM ringu plati s_pending == used -> avail == 0 -> dalsi
-   * CDC_Transmit_FS se uz nikdy nezavola, blok se neuvolni a ring zustane
-   * navzdy plny -> VSECHNY odpovedi se zahazuji (zmereno sondou: head=1023
-   * tail=0 pending=1023 tx_dropped=641, TX konzole mrtva pri zivem RX).
-   * Uvolneni se veze na POLLovany TxState (ne na callback, ten pri odpojeni
-   * hosta neprijde) — TxState==0 znamena, ze prenos probehl a data odesla. */
+  /* 🔴 2026-10-04: uvolni DRZENY (uz odeslany) blok hned, jak je CDC idle. Bez toho pri PLNEM ringu plati
+   * s_pending == used -> avail == 0 -> dalsi CDC_Transmit_FS se uz nikdy nezavola a ring zustane navzdy plny.
+   * Uvolneni se veze na POLLovany TxState (ne na callback, ten pri odpojeni hosta neprijde) — TxState==0 znamena, ze
+   * prenos probehl a data odesla. */
   if (s_pending && CDC_TxState() == 0U) {
     s_tail    = (uint16_t)(s_tail + s_pending);
     s_pending = 0;
     used      = (uint16_t)(s_head - s_tail);
-  }
-  /* TX watchdog: zaseknuty IN transfer (TxState=1) nechava CDC_Transmit_FS navzdy
-   * BUSY. Kdyz je linka CONFIGURED, cekaji data a busy drzi dele nez prah, zasek
-   * nouzove zlom a letici blok posli znovu (nikdy se neodeslal). */
-  if (used && CDC_TxState() == 1U && (uint32_t)(now - s_tx_prog) > USB_TX_WEDGE_MS) {
-    CDC_ForceTxIdle();
-    s_pending = 0;             /* letici blok se NIKDY neodeslal -> poslat znovu od s_tail */
-    s_tx_recover++;
-    s_tx_prog = now;
   }
   uint16_t avail = (uint16_t)(used - s_pending);
   if (avail) {
@@ -112,10 +148,28 @@ void usb_console_tx_pump(void)
 uint32_t usb_console_tx_dropped(void) { return s_tx_dropped; }
 uint32_t usb_console_rx_dropped(void) { return s_rx_dropped; }
 uint32_t usb_console_tx_recover(void) { return s_tx_recover; }
+uint32_t usb_console_tx_overwritten(void) { return s_tx_overwritten; }
+uint8_t  usb_console_host_open(void) { return s_open; }
+uint8_t  usb_console_dtr(void) { return s_dtr; }
+
+/* DTR z SET_CONTROL_LINE_STATE (volano z USB IRQ, jen zapis priznaku; HW uklid dela pumpa z ulohy). */
+void usb_console_set_dtr(uint8_t on) { s_dtr = on ? 1U : 0U; }
 
 void usb_console_tx(const uint8_t *data, uint16_t len)
 {
   for (uint16_t i = 0; i < len; i++) {
+    if ((uint16_t)(s_head - s_tail) >= TXRING_MASK && !s_open) {
+      /* 🔴 Host nepritomen (STATUS #298): nic nelezi v USB, `s_pending` je 0, takze NEJSTARSI bajt smi pryc - po otevreni
+       * portu host dostane poslednich 4 KB (konec boot vypisu / posledni udalosti), ne uplne prvnich. Pod PRIMASK,
+       * protoze s_tail meni i pumpa (USB IRQ). Znovu se overuje, ze host stale nepritomen. */
+      uint32_t pm = __get_PRIMASK();
+      __disable_irq();
+      if (!s_open && s_pending == 0U && (uint16_t)(s_head - s_tail) >= TXRING_MASK) {
+        s_tail++;
+        s_tx_overwritten++;
+      }
+      __set_PRIMASK(pm);
+    }
     if ((uint16_t)(s_head - s_tail) >= TXRING_MASK) {   /* plny ring */
       /* 🔴 2026-10-04: NEBLOKUJICI. Drivejsi backpressure (osDelay az 300 ms pri
        * plnem ringu) se podilel na boot loopu (viz konec usb_console_tx). Jen
@@ -149,6 +203,8 @@ void usb_console_tx(const uint8_t *data, uint16_t len)
 
 void usb_console_on_rx(const uint8_t *data, uint32_t len)
 {
+  s_rx_ms   = HAL_GetTick();    /* host posila data -> je pritomen, i kdyz nema DTR (viz USB_HOST_RX_HOLD_MS) */
+  s_rx_seen = 1U;
   for (uint32_t i = 0; i < len; i++) {
     uint8_t b = data[i];
     /* ISR-safe (timeout 0). ⚠️ Navrat se VYHODNOCUJE: pri plne fronte se znak
@@ -166,5 +222,9 @@ void usb_console_on_rx(const uint8_t *data, uint32_t len) { (void)data; (void)le
 uint32_t usb_console_tx_dropped(void) { return 0u; }
 uint32_t usb_console_rx_dropped(void) { return 0u; }
 uint32_t usb_console_tx_recover(void) { return 0u; }
+uint32_t usb_console_tx_overwritten(void) { return 0u; }
+uint8_t  usb_console_host_open(void) { return 0u; }
+uint8_t  usb_console_dtr(void) { return 0u; }
+void     usb_console_set_dtr(uint8_t on) { (void)on; }
 
 #endif

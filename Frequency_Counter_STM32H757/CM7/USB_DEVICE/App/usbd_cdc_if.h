@@ -112,6 +112,7 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 /* TX watchdog (usb_console.c): stav a nouzovy reset zaseknuteho IN prenosu. */
 uint8_t CDC_TxState(void);      /* 0 = volno, 1 = vysila, 2 = neni linka (CONFIGURED) */
 void    CDC_ForceTxIdle(void);  /* vynuceny reset zaseknuteho TxState */
+void    CDC_AbortTx(void);      /* zrusi rozpracovany IN prenos na HW + vyprazdni TX FIFO EP1 (STATUS #298) */
 /* USER CODE END EXPORTED_FUNCTIONS */
 
 /**

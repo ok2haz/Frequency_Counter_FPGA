@@ -3308,6 +3308,9 @@ void UartTask_run(void *argument)
 					  	  { uint32_t rcv = usb_console_tx_recover();
 					  	    if (rcv)
 					  	  	  printf("KONZOLE: TX watchdog zlomil zasek %lux\n", (unsigned long)rcv); }
+					  	  /* Pritomnost hosta (STATUS #298): vysila se jen pro otevreny port; zahozene NEJSTARSI = ring pretekl, kdyz host chybel. */
+					  	  printf("KONZOLE: host %s (DTR %u), zahozeno nejstarsich %lu B\n", usb_console_host_open() ? "pritomen" : "NEPRITOMEN",
+					  	         (unsigned)usb_console_dtr(), (unsigned long)usb_console_tx_overwritten());
 					  	/* Dosazena konfigurace IWDG + stav pipaku. Obojí je „tiche
 					  	 * selhani, o kterem se jinak nedozvis" (audit F-0104/F-0111):
 					  	 * neprosla propagace PR/RLR znamena watchdog 0,5 s misto 4 s,
