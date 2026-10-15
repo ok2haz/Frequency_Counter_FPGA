@@ -334,6 +334,26 @@ void ipc_publish(void)
     g_ipc.snap.mon_adev_bad = g_mon_adev_bad;
     g_ipc.snap.selftest_res = g_selftest_res;
     g_ipc.snap.warmup       = g_warmup;   /* v15, F-0088 */
+    /* v23: rezerva TDC retezu z posledni kalibrace + pocet automatickych re-initu Si5356 (#295/#297). */
+    {
+        fpga_tdc_rez_t rz;
+        uint8_t st = 0u;
+        if (fpga_tdc_rez_get(&rz)) {
+            st = (uint8_t)(IPC_TDCREZ_VALID | (rz.lvl[0] & 3u) | ((rz.lvl[1] & 3u) << 2));
+            if (rz.ovf_ev[0]) st |= IPC_TDCREZ_OVF_A;
+            if (rz.ovf_ev[1]) st |= IPC_TDCREZ_OVF_B;
+            g_ipc.snap.tdc_rez_a = (uint8_t)((rz.rez_tap[0] < 0) ? 0 : (rz.rez_tap[0] > 255) ? 255 : rz.rez_tap[0]);
+            g_ipc.snap.tdc_rez_b = (uint8_t)((rz.rez_tap[1] < 0) ? 0 : (rz.rez_tap[1] > 255) ? 255 : rz.rez_tap[1]);
+            g_ipc.snap.tdc_rez_n = (uint8_t)rz.n;
+        } else {
+            g_ipc.snap.tdc_rez_a = 0u;
+            g_ipc.snap.tdc_rez_b = 0u;
+            g_ipc.snap.tdc_rez_n = 0u;
+        }
+        g_ipc.snap.tdc_rez_st  = st;
+        uint32_t rn = g_si5356_reinit_cnt;
+        g_ipc.snap.si_reinit_n = (uint8_t)((rn > 255u) ? 255u : rn);
+    }
 
     /* v12 (#5): GPS druzice pro sky plot. Layout ipc_sat_t == gps_sat_t (assert
      * vyse) -> proste memcpy platnych polozek. */

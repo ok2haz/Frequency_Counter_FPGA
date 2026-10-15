@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  22u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  23u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -131,7 +131,14 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v20 (2026-10-06): blok `stab` na KONCI struktury -- statistika
                                        stability (ADEV/MDEV/HDEV) Z FIRMWAROVE pyramidy pro web
                                        (`GET /api/stab`), aby web a displej ukazovaly TYTEZ hodnoty.
-                                       Layout pred `cm4` beze zmeny (detekce nesouladu funguje). */
+                                       Layout pred `cm4` beze zmeny (detekce nesouladu funguje).
+                                       v21: jiny vyznam bajtu `ui_cfg` (viz vyse); v22: blok `fpgadiag`.
+                                       v23 (2026-10-15): rezerva TDC retezu (`tdc_rez_a/b/st/n`) a pocet
+                                       automatickych re-initu Si5356 (`si_reinit_n`) pro `/api/state`.
+                                       ⚠️ VELIKOST ANI OFFSETY SE NEZMENILY: pole lezi v byvalych
+                                       `_pad_gps`, `_pad_h` a `_pad_sk[3]` (hlida `_Static_assert` pod
+                                       `ipc_snapshot_t`). Bumpnuto kvuli detekci nesouladu bank (CM4 se
+                                       starou verzi by bajty cetla jako vycpavku). Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -166,6 +173,14 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
 _Static_assert((IPC_RING_N & (IPC_RING_N - 1u)) == 0u,
                "IPC_RING_N musi byt mocnina 2 — ring se indexuje maskou");
 #define IPC_GPS_MAX_SATS 24        /* v12: druzice ve snapshotu (sky plot); == GPS_MAX_SATS (hlida _Static_assert v ipc.c) */
+
+/* v23: `ipc_snapshot_t.tdc_rez_st` — uroven rezervy TDC (FPGA_TDC_REZ_*: 0 OK, 1 POZOR, 2 KRITICKE) a udalosti
+ * za koncem retezu. Bez IPC_TDCREZ_VALID kalibrace jeste nebyla prectena a ostatni pole nic neznamenaji. */
+#define IPC_TDCREZ_LVL_A(s)   ((uint8_t)((s) & 3u))
+#define IPC_TDCREZ_LVL_B(s)   ((uint8_t)(((s) >> 2) & 3u))
+#define IPC_TDCREZ_OVF_A      (1u << 4)   /* aspon jedna udalost kalibrace A za koncem retezu */
+#define IPC_TDCREZ_OVF_B      (1u << 5)
+#define IPC_TDCREZ_VALID      (1u << 7)
 #define IPC_LOG_CHUNK    96        /* v12: datalog zaznamu na jeden transfer round-trip (dlouha historie webu) */
 
 /* ── v12: kompaktni kopie gps_sat_t pro sky plot na webu. ipc_shared.h nesmi
@@ -211,7 +226,9 @@ typedef struct {
     uint8_t  gps_valid;
     uint8_t  gps_fix_mode;         /* 0 / 2 / 3 */
     uint8_t  gps_num_sat;
-    uint8_t  _pad_gps;
+    /* v23: automaticke re-inicializace Si5356 od startu (`g_si5356_reinit_cnt`, STATUS #295), saturuje na 255.
+     * Byval `_pad_gps` -> velikost beze zmeny. */
+    uint8_t  si_reinit_n;
 
     /* Senzory — PLNA sada (v2), aby CM4 (SCPI/web) obslouzil dotazy BEZ pristupu ke
      * g_sensors/g_calib (na CM4 nejsou). Teploty × 100 °C, napeti mV, kalibrace RF. */
@@ -254,7 +271,8 @@ typedef struct {
     uint8_t  warmup;               /* 1 = OCXO se jeste zahriva (v15). Plni APP vrstva
                                     * pres `g_warmup` — je to `warmup_ready()`, tedy uptime
                                     * >= 300 s A |dT/dt| < 0,08 °C/min, ne jen uptime. */
-    uint8_t  _pad_h;
+    uint8_t  tdc_rez_n;            /* v23: poradi vyhodnoceni rezervy TDC (`fpga_tdc_rez_t.n`, mod 256), viz `tdc_rez_st`.
+                                    * Byval `_pad_h`. */
     uint32_t uptime_s;
     uint32_t cm7_cpu_pct;
     uint32_t reset_cause;          /* RCC->RSR (raw) */
@@ -293,7 +311,12 @@ typedef struct {
 
     /* #5 GPS druzice (sky plot na webu). `gps_sat_count` = pocet platnych. */
     uint8_t  gps_sat_count;
-    uint8_t  _pad_sk[3];
+    /* v23 (2026-10-15): rezerva TDC retezu FPGA z posledni kalibrace (`fpga_tdc_rez_get`, fpga_freq.h) pro web
+     * (`/api/state`), aby sla merit i bez USB konzole (STATUS #297/#298). Zbyvajici tapy A/B (oriznute na 255;
+     * 0 pri udalostech za koncem) a `tdc_rez_st` = IPC_TDCREZ_*. Byvale `_pad_sk[3]` -> velikost beze zmeny. */
+    uint8_t  tdc_rez_a;
+    uint8_t  tdc_rez_b;
+    uint8_t  tdc_rez_st;
     ipc_sat_t gps_sats[IPC_GPS_MAX_SATS];
 } ipc_snapshot_t;
 /* v19: `freq4_hz` musel sednout PRESNE na byvale `offset`+`drift` — kdyby se double

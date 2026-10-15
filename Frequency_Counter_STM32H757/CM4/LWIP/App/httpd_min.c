@@ -562,6 +562,22 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
      * Klient ho drive nahrazoval pouhym `uptime_s < 300` a hlasil LOCK ve chvili,
      * kdy displej jeste spravne hlasil WARMUP. */
     jbool(&j, "warmup", snap->warmup);
+    /* v23: rezerva TDC retezu z posledni kalibrace (zbyvajici tapy A/B, uroven 0 OK / 1 POZOR / 2 KRITICKE,
+     * udalosti za koncem 0/1) a pocet automatickych re-initu Si5356 (STATUS #295/#297). Pred prvnim vyhodnocenim
+     * null, ne 0: nula tapu by se cetla jako "retez prave dosel" (L-0060). `si_reinit` saturuje na 255. */
+    {
+        const uint8_t st = snap->tdc_rez_st;
+        if (st & IPC_TDCREZ_VALID)
+            jputf(&j, "\"tdc_rez_n\":%u,\"tdc_rez_a\":%u,\"tdc_rez_b\":%u,\"tdc_lvl_a\":%u,\"tdc_lvl_b\":%u,"
+                      "\"tdc_ovf_a\":%u,\"tdc_ovf_b\":%u,",
+                  (unsigned)snap->tdc_rez_n, (unsigned)snap->tdc_rez_a, (unsigned)snap->tdc_rez_b,
+                  (unsigned)IPC_TDCREZ_LVL_A(st), (unsigned)IPC_TDCREZ_LVL_B(st),
+                  (st & IPC_TDCREZ_OVF_A) ? 1u : 0u, (st & IPC_TDCREZ_OVF_B) ? 1u : 0u);
+        else
+            jputf(&j, "\"tdc_rez_n\":null,\"tdc_rez_a\":null,\"tdc_rez_b\":null,\"tdc_lvl_a\":null,\"tdc_lvl_b\":null,"
+                      "\"tdc_ovf_a\":null,\"tdc_ovf_b\":null,");
+        jputf(&j, "\"si_reinit\":%u,", (unsigned)snap->si_reinit_n);
+    }
     jputf(&j, "\"nsat\":%u,", (unsigned)snap->gps_sat_count);
     jputf(&j, "\"cm4\":{\"ipc_version\":%u},", (unsigned)IPC_VERSION);
     /* ⚠️ Diagnostika prihlaseni (W5) — vysledek POSLEDNIHO pokusu pres /api/scpi.
