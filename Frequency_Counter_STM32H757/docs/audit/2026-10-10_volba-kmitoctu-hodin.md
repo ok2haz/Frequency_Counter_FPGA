@@ -262,3 +262,23 @@ Jeden běh = jeden náhodný průběh zpoždění tapů; kalibrace z 16 384 udá
 
 **Omezení modelu:** zpoždění tapů rovnoměrně ±38 % bez struktury INL, jeden náhodný průběh na bod, 2000 hran, kalibrace z 16 384 událostí, žádná teplotní závislost. Nic z toho neříká, co dělá křemík při chladu (krok 3), ani nic o chybě T/2 u 125 MHz (L-0154).
 Reprodukce: `sim/run.ps1` definice `tdcinl268` s jinými `SIM_TAP_MEAN`/`SIM_TAP_SPREAD`, `-DNEDGES=2000` a bez `EXPECT_*`; `PATH` musí obsahovat `C:\iverilog\bin`; osm běhů paralelně ~10 min.
+
+
+### 10.7 P&R test 110 MHz (2026-10-15) [V]
+
+**Otázka (riziko z #297):** uzavře se časování návrhu při 110 MHz (perioda 9,09 ns), když audit uváděl Fmax 108–113 MHz a CLS je na 80 %?
+**Postup:** kopie `src/` FPGA modulu mimo repo, změněno **jen** `top.v` `CLK_MHZ = 110` a `timing.sdc` perioda `clk_p0_100m` 9,0909 ns (nejistota hodin 0,9 ns a vše ostatní beze změny), `gw_sh build.tcl` (Gowin 1.9.12, `place_option 2`). Referenční kopie na 100 MHz + 7 sestavení na 110 MHz, každé s jiným `BLD_TIME` (= jiné rozmístění). Nic se nenahrávalo na desku, repozitář se nezměnil. Data: `docs/audit/data/2026-10-15_pnr_110MHz.txt`.
+
+| sestavení | Fmax `clk_p0_100m` | TNS setup | nejhorší cesta (slack, včetně nejistoty 0,9 ns) | CLS |
+|---|---|---|---|---|
+| 100 MHz (reference) | 115,3 MHz | 0 | +1,327 ns | 84 % |
+| 110 MHz, 1. | 105,2 MHz | **−0,415 ns (1 koncový bod)** | −0,415 ns (`u_tdca/arm_r_s1` → `u_wra/trig_a_s0`) | 83 % |
+| 110 MHz, s1…s6 | 110,1 / 111,6 / 114,1 / 116,5 / 115,5 / 113,9 MHz | 0 (všech 6) | +0,008 / +0,131 / +0,324 / +0,510 / +0,435 / +0,315 ns | 83–85 % |
+
+**Závěry:**
+1. **Časování se na 110 MHz uzavře, ale s malou rezervou a ne vždy:** 6 ze 7 sestavení prošlo, 1 neprošlo (jediná cesta, −0,415 ns). Nejhorší slack prošlých sestavení je +0,008 až +0,51 ns, na 100 MHz +1,33 ns. Rezerva se tedy zmenšuje o ~1 ns, víc než samotná změna periody (0,91 ns), protože P&R má méně prostoru.
+2. **Slack je počítán včetně nejistoty 0,9 ns**, takže skutečná rezerva je o 0,9 ns větší. Kritéria z L-0141 (měřilo špatně při skutečné rezervě 0,545 ns a správně při ≥ 0,64 ns) tedy splňují všechna prošlá sestavení; neprošlé sestavení (skutečně 0,485 ns) je pod mezí.
+3. **Vydání 110 MHz by vyžadovalo víc sestavení a výběr** (`tools/fpga_release.py` brána + `fpga_load_test.py`), nebo úpravu RTL u cesty `arm_r` → `trig_a` (8,2 ns zpoždění dat při 2 logických úrovních = špatné rozmístění, ne hloubka logiky).
+4. **CLS se nezměnilo** (83–85 %, na 100 MHz 84 %). Nové logiky se nepřidává, takže 110 MHz tuto rezervu nezhorší.
+5. **Další věci, které by 110 MHz vyžadovalo mimo časování** [D, ze zdrojů]: `gate_div` v `spi_app.v` převádí na ns pevně `dt·5 >> 13` (platí jen pro 100 MHz; ns v rámci je informativní, FW počítá z `dt` a `clk_mhz`); Si5356 reg 54 `0x09 → 0x08` (2,2 GHz / 20); hlídač hodin a `CM_EXP` se z `CLK_MHZ` počítají samy; FW parser už `clk_mhz` z rámce bere (abs 99, CAPS bit12).
+6. **Co test NEŘÍKÁ:** nezkoumal chybu časové značky podle fáze hrany (L-0152/L-0154 – to bylo na 125 MHz, 110 MHz je jiný poměr k 10 MHz referenci), jitter při jiném děliči (10.1) ani chování TDC na křemíku. Přínos pro rezervu řetězu je odhad: při stejné rychlosti tapu a periodě 9,09 ns by řetěz potřeboval ~91 % tapů proti dnešku, tj. B po studeném startu (last 265) by měl rezervu řádově 25 tapů místo 3 **[HYPOTÉZA – ověřit sestavením a `tdc` na desce]**.

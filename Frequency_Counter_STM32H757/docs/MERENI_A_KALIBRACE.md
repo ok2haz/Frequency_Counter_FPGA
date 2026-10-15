@@ -277,6 +277,45 @@ OCXO 25,1 °C, deska 24,7 °C, power-cyklus. Si5356 se nezamkl (`si5356_status =
 `freq_hz = null`. Po druhém power-cyklu s teplým OCXO (45 °C): `si5356_status = 0`, měření běží. Podrobnosti a postup ověření: `STATUS.md` TODO #295; surová data `docs/audit/data/2026-10-14_tdc_rez_M3_boot.raw.txt`.
 Rezerva TDC za studeného startu tedy **změřena není**.
 
+#### M3b: studený start podruhé (2026-10-15 16:50, deska chladla přes noc) – Si5356 nezamkl, re-init v 61 s pomohl, rezerva B 3–6 tapů
+
+Sestava jako M1/M2 (A = externí GPSDO, B odpojen), FW 0x0423 (build 2026-10-11 17:03), CM7 ef07ca0+a30b0b4. Skripty `tools/cold_start_log.ps1` (`/api/state` á 5 s) a `tools/cold_start_auto.ps1` (scénář);
+data `docs/audit/data/2026-10-15_M3b_studeny.csv` (+`.raw.jsonl`), `2026-10-15_M3b_auto.txt`, `2026-10-15_M3b_boot_manual.raw.txt`, `2026-10-15_M3b_tdc_cold.raw.txt`.
+- **Teploty při zapnutí:** OCXO 23,85 °C, deska 23,9 °C. Ohřev OCXO 24 → 36 °C za 190 s.
+- **Si5356:** `si5356_status = 28` (LOS_CLKIN + PLL_LOL) od uptime 11 s, `seq_meas = 0`. V uptime 61 s UART `si5356` (re-init) → `status218 = 0x00`, o 5 s později `si5356_status = 0`, měření běží
+  (10000016 → 10000008 Hz). Uptime souvislý, žádný reset. **Potvrzuje hypotézu (a) z TODO #295**; spontánní zamknutí vylučuje M3 (28 po 19 min). 2 studené starty ze 2 selhaly (M3, M3b).
+- **Boot kalibrace č. 1 (hned po zotavení, FPGA 23,9 °C):** rezerva **A 14 / B 3** tapů z 268, za koncem 0/0; nejvyšší kód A 254 / **B 265**, max tap A 248 / **B 264**, největší bin A 200 ps / B 160 ps.
+- **Ruční `tdc cal` (uptime ~100 s):** A 14 / **B 6** (A last 254, B last 262, max tap B 264). **Teplotní rekalibrace č. 7 (cal při 26,9 °C):** A 16 / **B 6**.
+- **Proti teplému startu (M1/M2): A 252 / B 250, rezerva 16 / 18.** Za studena je řetěz B o ~12–15 tapů delší (rychlejší hradla), rezerva B klesá z 18 na 3–6 (1–2 %). Události za koncem řetězu 0.
+- **Závěr:** pravidlo kap. 10.4 („≤ ~4 tapy" → plán 110 MHz) splnila boot kalibrace B (3); všechny studené hodnoty B (3/6/6) jsou pod 8. Zatím 1 pokus při ~24 °C okolí. TODO #297; rozhodnutí o 110 MHz patří uživateli.
+- ⬜ **Neověřeno:** zápis `ERRLOG_K_TDC` (k=13) – `/api/errlog?from=0` opět `n:0`, `total` 4873 beze změny (viz #296).
+
+### Kritérium „teplota neustálená" (`warmup_ready`) proti naměřené frekvenci OCXO (2026-10-15, STATUS #299)
+
+Otázka: je podmínka `uptime >= 300 s` **a** `|dT/dt| < 0,08 °C/min` (teplota TMP117 0x49, okno 120 s) opodstatněná jako ukazatel „OCXO ještě není stabilní"?
+Data: M3b (studený start, A = externí GPSDO, `freq_hz` z `/api/state` á 5 s, 457 vzorků, 2381 s) a M3c (OCXO už horké, reset STM, 357 vzorků). Skript a výstup: `docs/audit/data/2026-10-15_warmup_an.py`, `…_warmup_analyza.txt`.
+`freq_hz` = rozdíl GPSDO − OCXO (OCXO je zároveň časová základna čítače), takže jeho změna je posun OCXO. 1 Hz = 100 ppb.
+
+| veličina | studený start (M3b) |
+|---|---|
+| frekvence do ±10 ppb od ustálené hodnoty | **od uptime ~160 s** (T_ocxo 34 °C, sklon +4,8 °C/min) |
+| `warmup_ready()` natrvalo pravda | **až v 1092 s** (sklon < 0,08 °C/min), tj. ~7× později |
+| zbytkový posun po 1092 s | 10 → 0 ppb se táhne ještě do ~2050 s, při sklonu 0,00–0,04 °C/min |
+| T_ocxo (TMP117) za tu dobu | 26,7 → 46,2 °C; časová konstanta zahřívání pouzdra ~210 s |
+
+- **Datasheet (Bliley 6891):** ±1 ppm za 2 min, ±0,1 ppm za 2,5 min, ±0,03 ppm za 5 min, ±0,01 ppm za 15 min (vztaženo k 30 min po zapnutí). Naměřeno (M3b) je lepší nebo shodné: ±10 ppb od ~160 s. **Pravidlo `uptime >= 300 s` se datasheetem i měřením obhájit dá** (±30 ppb).
+- **Sklon teploty z TMP117 měří zahřívání pouzdra a desky, ne regulaci pece.** Pec uvnitř OCXO dosáhne pracovního bodu za ~2–3 min; pouzdro a deska se prohřívají dalších ~15 min, na frekvenci to (podle dat) skoro nemá vliv. Datasheet udává teplotní stabilitu ±0,005 ppm v −5…+50 °C okolí (< 0,1 ppb/°C); v datech je změna 36 → 46 °C doprovázena posunem ~10 ppb, což by byl ~1 ppb/°C, ale **nelze oddělit od ustalování a stárnutí** (Vc se zároveň posouvá o 27 mV; příčina neurčena).
+- **Šum kritéria:** v M3c (teplo) leží sklon v pásu −0,02…+0,06 °C/min, práh 0,08 nekmitá; o hlášce tam rozhoduje jen 300 s. M3c ale ukázalo, že `uptime` je uptime **STM, ne OCXO**: po resetu STM při horkém OCXO svítí „neustálená" 300 s, přestože posun frekvence je < 1,5 ppb od prvního vzorku (107 s).
+- **Kritérium pro něco jiného:** práh „pod 0,1 °C/min" pochází ze zadání **kalibračního průvodce offsetu vstupního modulu** (`citac_zadani_UI.md` kap. 10, krok 1/5 „Teplota ustálená"), kde jde o teplotu **modulu** (TMP117 0x4A) a drift analogového vstupu, ne o OCXO. FW ho převzal pro OCXO (0x49) a text varování „kalibrace zamčená" slibuje zámek, který neexistuje.
+
+**Závěr [V, N = 1 studený start]:** pro hlášku „OCXO se zahřívá" je podmínka sklonu teploty **neopodstatněná** (prodlužuje hlášku o ~13 min za hranici 300 s, kdy už je frekvence ~2 min v ±10 ppb) a zbytek 10 ppb ji nezachytí. Podmínka `uptime >= 300 s` je opodstatněná. Pro budoucí zámek kalibrace vstupního modulu by sklon dával smysl, ale na teplotě **modulu** (0x4A).
+**Neověřeno:** druhý studený start (M4 dá další řadu), prvních 160 s (měření se překrývá s re-initem Si5356 v 61 s, výchylky ±400 ppb v 67–98 s jsou pravděpodobně artefakt, ne OCXO – **HYPOTÉZA**), závislost na okolní teplotě (jen ~24 °C).
+
+**Změna kritéria po rozboru (2026-10-15, `warmup_ready`, necommitnuto, ⬜ neověřeno na HW):** hláška i TFOM/web zůstávají, podmínka je nově: platná T49; ΔT (T49−T48) ≥ 10 °C, je-li T48 platná;
+sklon T49 < 0,3 °C/min (dřív 0,08; odvození: ≤ 1 ppb / 10 min při vazbě 3× nad datasheet 0,09 ppb/°C); uptime ≥ 900 s po zapnutí napájení (POR/BOR), jinak ≥ 300 s.
+Přehrání záznamů (`docs/audit/data/2026-10-15_warmup_nove_pravidlo.txt`): M3b studený start hotovo od 904 s (dřív 1092 s), M3c teplý 304 s beze změny, simulovaná mrtvá pec (ΔT 1 °C, sklon 0) nikdy (dřív po 300 s).
+Text hlášky změněn na „TEPLOTA NEUSTALENA  - OCXO se zahriva, presnost snizena" (slib „kalibrace zamčená" odstraněn, nic se nezamykalo) — viz STATUS #299.
+
 ### Dlouhodobě — offset reference (datalog, 2026-10-04 až 2026-10-11)
 
 Měřený kmitočet externího GPSDO proti OCXO na desce: **10 000 008,40 Hz (±0,03 Hz v 2h průměrech)**, tj. OCXO desky je o

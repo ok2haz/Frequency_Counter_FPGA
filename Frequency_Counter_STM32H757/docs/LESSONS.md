@@ -4593,6 +4593,30 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `a30b0b4` (původní verze `ef07ca0`)
 - **Stav:** aktivni; ⬜ neověřeno na desce
 
+### L-0156 — Čip, který se zamyká na vnější signál, nestačí inicializovat jednou při bootu: při studeném startu ještě signál není
+
+- **Datum:** 2026-10-15
+- **Oblast:** periferie / hodiny (`si5356.c`, `freertos_task_sensors.c`), STATUS #295
+- **Symptom:** po studeném zapnutí (2 ze 2 pokusů, M3 a M3b) přístroj neměřil vůbec: Si5356 hlásil trvale `LOS_CLKIN + PLL_LOL` (status 0x1C), `seq_meas = 0`, a sám se nezamkl ani za 19 min, i když OCXO už dávalo 10 MHz (FPGA z něj běžela). Teplý start byl v pořádku. Ruční UART `si5356` (nový init) zamkl okamžitě.
+- **Příčina:** `si5356_init` běží jednou v `main()` před schedulerem, tedy dřív, než studený OCXO dá platný vstup. Po soft resetu bez vstupu se PLL Si5356 sama nezamkne ani poté, co vstup přijde (pozorováno, mechanismus v čipu neověřen). Firmware stav čipu četl a hlásil (`REFERENCE:`, SYS pilulka), ale nic s ním nedělal. U teplého startu je OCXO platné hned, takže vada se při běžném vývoji (flash + reset) nikdy neukázala.
+- **Oprava:** `si5356_lock_watch` (`freertos_task_sensors.c`): trvá-li FAULT 10 s, SensorsTask (vlastník I2C1) init zopakuje, další pokusy s rozestupem 2× delším až do 300 s; zámek rozestup vrátí. Nastavení generátoru CLK2–7 se před initem uloží a znovu vyžádá; před prvním zámkem se odloží armování sticky registru (výpadek do prvního zámku je součást náběhu). Init bez `printf` (`si5356_init_quiet`), protože SensorsTask má 1,5 kB zásobníku. Výsledek: `status` → `REFERENCE: auto re-init Si5356 …`, errlog druh `ERRLOG_K_REFINIT` (vlastní, kvůli prodlevě per druh, L-0085), web `/api/state` → `si_reinit`.
+- **Pravidlo:** Konfiguraci čipu, jehož funkce závisí na vnějším signálu (PLL, synchronizace, přijímač), nepovažuj za hotovou po jednom zápisu při bootu: když stav čipu trvale hlásí ztrátu, konfiguraci zopakuj s omezeným tempem, a chování ověř studeným startem, ne jen resetem.
+- **Detekce:** studený start (deska vychladlá ≥ 1 h) a `status` → `REFERENCE:` + `/api/state` `si5356_status`/`si_reinit`. Pro jiné čipy: u každého jednorázového zápisu konfigurace (`*_init` v `main.c`/na začátku tasku) se zeptat, co se stane, když v tu chvíli vstup ještě není. Stejná třída je už ošetřená u GPS (TP5 se posílá znovu 1×/min, F-0219); AD5693R zatím neosazen.
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní; ⬜ neověřeno na desce (studený start)
+
+### L-0157 — Práh „ustáleno" převzatý z jiného účelu: měřil pouzdro, ne pec, a mrtvá pec by hlášku vypnula
+
+- **Datum:** 2026-10-15
+- **Oblast:** UI / metrologická důvěryhodnost (`warmup_ready`, `app_gpsdo.c`), STATUS #299
+- **Symptom:** hláška „TEPLOTA NEUSTALENA" po studeném startu svítila ~18 min, ač frekvence OCXO byla v ±10 ppb od ~160 s; zároveň by zmizela po 300 s i u pece, která netopí (stabilní teplota ⇒ sklon 0).
+- **Příčina:** podmínka `|dT/dt| < 0,08 °C/min` na plášti OCXO (TMP117 0x49) vznikla z prahu kalibračního průvodce vstupního modulu (zadání UI) a měří dohřívání pouzdra a desky, ne regulaci pece. Chyběla kontrola, že teplota vůbec platí a že pec topí (ΔT plášť−deska), takže „klid" mohl znamenat „studená a mrtvá".
+- **Oprava:** `warmup_ready()` — práh sklonu 0,3 °C/min (≤ 1 ppb / 10 min při 3× větší teplotní vazbě než datasheet), povinná platná T49 a ΔT ≥ 10 °C (je-li T48 k dispozici), minimum 900 s po zapnutí napájení (datasheet ±0,01 ppm za 15 min; naměřeno 9,8 ppb v 954 s) a 300 s po resetu při zapnutém napájení (POR/BOR z `g_reset_rsr`). Přehrání záznamů: studený start hotovo v 904 s (dřív 1092 s), teplý 304 s beze změny, mrtvá pec nikdy (dřív po 300 s).
+- **Pravidlo:** Prahový údaj převzatý ze zadání jiné funkce ověř na naměřených datech té veličiny, na které ti záleží (zde frekvence), a kritérium „ustáleno" vždy doplň o důkaz, že sledovaný děj vůbec probíhá (pec topí, senzor platí) — klid může znamenat i poruchu.
+- **Detekce:** přehrání záznamů `docs/audit/data/2026-10-15_warmup_nove.py` (starý × nový práh, mrtvá pec); na desce: `/api/state` `warmup` a hláška na hlavní obrazovce po studeném startu (očekáváno do ~15 min) a po resetu STM při horkém OCXO (~5 min).
+- **Commit:** (nekomitováno v době zápisu)
+- **Stav:** aktivní; ⬜ neověřeno na desce (studený start, M4)
+
 ---
 
 ## Archiv (neplatné lekce)
