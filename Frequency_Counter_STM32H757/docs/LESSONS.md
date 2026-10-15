@@ -4617,6 +4617,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (nekomitováno v době zápisu)
 - **Stav:** aktivní; ⬜ neověřeno na desce (studený start, M4)
 
+### L-0158 — Softwarový reset příznaku nezruší hardwarový přenos: USB TX watchdog rozjel IN FIFO a konzole zůstala o jeden přenos pozadu
+
+- **Datum:** 2026-10-15
+- **Oblast:** USB CDC konzole (`usb_console.c`, `usbd_cdc_if.c`), STATUS #298
+- **Symptom:** konzole „mlčí" nebo vypisuje zpožděně: odpověď na příkaz dorazí až s dalším příkazem (`ing|pong|p` = zbytek minulé odpovědi + první znak nové ozvěny), ocas `status` uvízl > 60 s. Displej, ETH i měření jedou. Dřív konzole fungovala.
+- **Příčina:** když host nemá port otevřený, nikdo nesbírá IN koncový bod a přenos se nedokončí. TX watchdog (2026-10-04) po 250 ms zavolal `CDC_ForceTxIdle` — vynuloval jen softwarový příznak `TxState`. Hardwarový přenos zůstal armovaný a jeho data v TX FIFO; další `CDC_Transmit_FS` zapsal nová data ZA ně a jádro vysílá z hlavy FIFO → konstantní zpoždění o jeden přenos, trvalé do resetu. Zjištěno čtením stavu: ring prázdný (`s_head == s_tail`, `s_pending == 0`), `DIEPCTL1.EPENA = 0`, ale `DTXFSTS1` ≠ 0x80; počítadlo watchdogu 1211 za 9 min, 91 za 25 s bez hosta; po resetu s hostem od začátku 0 a konzole správná.
+- **Oprava:** `usb_console.c`: vysílá se jen při přítomném hostu (linka CONFIGURED a DTR z `SET_CONTROL_LINE_STATE`, nebo data od hosta mladší 30 s), při zavřeném portu se jen plní ring a při přetečení se zahazuje NEJSTARŠÍ; každý přechod (otevření, zavření, ztráta linky, zlomený zásek) končí `CDC_AbortTx` (`usbd_cdc_if.c`): zákaz doplňování FIFO z IRQ, `HAL_PCD_EP_Abort` + `HAL_PCD_EP_Flush`, vynulování příznaků a `TxState`. Aborty se dělají jen z kontextu úlohy. `status`: řádek `KONZOLE: host …`. Nástroje v `tools/` nastavují `DtrEnable`.
+- **Pravidlo:** Přepsání softwarového stavu automatu (příznak „vysílám") bez zrušení stavu v periferii ho jen rozjede s hardwarem; zásek řeš zrušením přenosu a vyprázdněním fronty periferie, a nezkoušej vysílat, dokud druhá strana neposlouchá.
+- **Detekce:** `python tools/cdc_lag_test.py COM10 4` (po resetu a po 30 s bez hosta; každá odpověď musí dorazit celá do ~100 ms); SWD: `DIEPCTL1.EPENA`, `DTXFSTS1` = 0x80 při klidu, `status` bez řádku „TX watchdog zlomil zasek".
+- **Commit:** (doplnit)
+- **Stav:** aktivní; testováno po resetu (flash), ⬜ neověřeno po power-cyklu a s Terminal/PuTTY
+
 ---
 
 ## Archiv (neplatné lekce)
