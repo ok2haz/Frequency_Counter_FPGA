@@ -461,7 +461,7 @@ bool flightrec_report(void)
 /* ⚠️ Musi ukazovat na POSLEDNI polozku `errlog_kind_t` — `errlog_put` podle
  * toho odmita neznamy druh a obe pole nize se tim dimenzuji. Pri pridani
  * druhu to sem nezapomen prenest (2026-09-25: F-0156 pridal UARTFATAL). */
-#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_TDC)
+#define ERRLOG_KIND_MAX     ((uint8_t)ERRLOG_K_REFINIT)
 
 static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
@@ -536,6 +536,7 @@ const char *errlog_kind_name(uint8_t kind)
     case ERRLOG_K_CFG:     return "NASTAV";
     case ERRLOG_K_UARTFATAL: return "GPS!";
     case ERRLOG_K_TDC:     return "TDC";
+    case ERRLOG_K_REFINIT: return "REFRST";
     default:               return "?";
     }
 }
@@ -947,6 +948,18 @@ void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)
     case ERRLOG_K_FPGA:
         snprintf(buf, n, "%s, CRC chyb celkem=%lu",
                  (r->sub == 2u) ? "ztrata signalu" : "ztrata linku", (unsigned long)r->a);
+        break;
+    /* Zapisuje SensorsTask (`si5356_lock_watch`), rozlozeni `a`/`b` viz errlog.h. */
+    case ERRLOG_K_REFINIT:
+        if (r->b & (1ul << 17))
+            snprintf(buf, n, "Si5356 re-init c. %lu %s: 0x%02lX -> 0x%02lX, zapisy %s",
+                     (unsigned long)r->a, (r->sub == 1u) ? "pred 1. zamkem" : "po ztrate zamku",
+                     (unsigned long)(r->b & 0xFFu), (unsigned long)((r->b >> 8) & 0xFFu),
+                     (r->b & (1ul << 16)) ? "OK" : "CHYBA");
+        else
+            snprintf(buf, n, "Si5356 re-init c. %lu %s: 0x%02lX -> nectene, zapisy %s",
+                     (unsigned long)r->a, (r->sub == 1u) ? "pred 1. zamkem" : "po ztrate zamku",
+                     (unsigned long)(r->b & 0xFFu), (r->b & (1ul << 16)) ? "OK" : "CHYBA");
         break;
     case ERRLOG_K_REF: {
         uint8_t newbits = (uint8_t)(r->sub & (uint8_t)~r->b);

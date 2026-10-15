@@ -82,6 +82,17 @@ extern volatile uint8_t g_si5356_ok;       /* 1 = status úspěšně přečten *
  * trvale 1 a zaplevelil by hlášení napořád. */
 extern volatile uint8_t g_si5356_sticky;   /* reg 247, kumulativně (bez LOS_XTAL) */
 extern volatile uint8_t g_si5356_clr_req;  /* 1 = vynulovat sticky (žádost pro SensorsTask) */
+/* Automatická re-inicializace Si5356 při trvalé ztrátě zámku (STATUS #295, `si5356_lock_watch`
+ * ve freertos_task_sensors.c). Píše jen SensorsTask; `status` řádek REFERENCE. */
+#define SI5356_REINIT_RES_NONE   0u   /* žádný pokus */
+#define SI5356_REINIT_RES_LOCK   1u   /* po initu bez LOS_CLKIN/PLL_LOL */
+#define SI5356_REINIT_RES_FAULT  2u   /* zápisy OK, ale po initu stále FAULT (nebo status nečten) */
+#define SI5356_REINIT_RES_WRERR  3u   /* některý zápis neACKoval */
+#define SI5356_REINIT_RES_NACK   4u   /* čip neodpověděl na 0x70 */
+extern volatile uint32_t g_si5356_reinit_cnt;   /* pokusů od startu (saturuje 0xFFFF) */
+extern volatile uint32_t g_si5356_reinit_ms;    /* HAL tick posledního pokusu */
+extern volatile uint8_t  g_si5356_reinit_res;   /* SI5356_REINIT_RES_* posledního pokusu */
+extern volatile uint8_t  g_si5356_locked_once;  /* 1 = od startu aspoň jednou bez FAULT */
 
 /* ── RTC (zapisuje defaultTask přes rtc_app_tick, čte UART/UI) ───────────────
  * RTC běží z LSE (32.768 kHz), disciplinuje se z GPS UTC. Text "YYYY-MM-DD HH:MM:SS".

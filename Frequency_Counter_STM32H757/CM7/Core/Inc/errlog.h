@@ -71,6 +71,12 @@ typedef enum {
      * VLASTNI druh a ne `sub` pod `ERRLOG_K_FPGA`: prodleva je per druh (60 s) a udalost z kalibrace by jinak mohla spolknout
      * ztratu linku/signalu (a naopak) — stejny duvod jako ERRLOG_K_UARTFATAL (F-0155). */
     ERRLOG_K_TDC = 13u,
+    /* Automaticka re-inicializace Si5356 pri trvale ztrate zamku (STATUS #295, 2026-10-15). `sub` = 1 pred prvnim zamkem
+     * od startu (studeny start), 2 po ztrate zamku za behu. `a` = poradi pokusu od startu, `b` = status 218 pred | status 218
+     * po << 8 | zapisy OK << 16 | status po precten << 17.
+     * VLASTNI druh a ne `sub` pod `ERRLOG_K_REF`: REF zapisuje zmenu sticky registru a pri studenem startu prijde tesne pred
+     * prvnim pokusem — se sdilenou prodlevou (60 s) by re-init nikdy nezapsal (F-0155, L-0085). */
+    ERRLOG_K_REFINIT = 14u,
 } errlog_kind_t;
 
 /* Podtypy pro ERRLOG_K_CFG (pole `sub`). */

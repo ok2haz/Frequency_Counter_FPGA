@@ -4062,7 +4062,7 @@ static const char SPA_HTML[] =
  * z druhu udalosti (k), stejna trojice jako pouziva displej: CRASH cervene,
  * BOOT/NASTAV ztlumene, jinak amber. */
 "var errFrom=0, ERRN=20;\n"
-"var EKNAME={1:'BOOT',2:'CRASH',3:'I2C',4:'UART',5:'SENZOR',6:'FPGA',7:'REF',8:'ULOZ',9:'GPIO',10:'SIT',11:'NASTAV'};\n"
+"var EKNAME={1:'BOOT',2:'CRASH',3:'I2C',4:'UART',5:'SENZOR',6:'FPGA',7:'REF',8:'ULOZ',9:'GPIO',10:'SIT',11:'NASTAV',12:'GPS!',13:'TDC',14:'REFRST'};\n"
 "function ekName(k){ return EKNAME[k]||'?'; }\n"
 "function ekClass(k){ return k===2?'bad':((k===1||k===11)?'dim':'warn'); }\n"
 "function durBeh(s){\n"

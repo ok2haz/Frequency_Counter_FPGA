@@ -3068,6 +3068,23 @@ void UartTask_run(void *argument)
 					  		            (stk & SI5356_PLL_LOL)   ? "  PLL_LOL"   : "",
 					  		            (stk & SI5356_SYS_CAL)   ? "  SYS_CAL"   : "");
 					  	}
+					  	/* #295: automaticka re-inicializace Si5356 pri trvale ztrate zamku (si5356_lock_watch, SensorsTask). */
+					  	{
+					  		uint32_t rn = g_si5356_reinit_cnt;
+					  		if (rn == 0u) printf("REFERENCE: auto re-init Si5356 zadny%s\n",
+					  		                     g_si5356_locked_once ? " (zamceno od startu)" : "  <== od startu NEZAMCENO");
+					  		else {
+					  			uint8_t rr = g_si5356_reinit_res;
+					  			printf("REFERENCE: auto re-init Si5356 %lu%s pokusu, posledni pred %lu s -> %s%s\n",
+					  			       (unsigned long)rn, (rn >= 0xFFFFu) ? "+" : "",
+					  			       (unsigned long)((HAL_GetTick() - g_si5356_reinit_ms) / 1000u),
+					  			       (rr == SI5356_REINIT_RES_LOCK)  ? "zamceno"
+					  			     : (rr == SI5356_REINIT_RES_FAULT) ? "porad LOS_CLKIN/PLL_LOL"
+					  			     : (rr == SI5356_REINIT_RES_WRERR) ? "CHYBA ZAPISU"
+					  			     : (rr == SI5356_REINIT_RES_NACK)  ? "cip NEODPOVIDA" : "?",
+					  			       g_si5356_locked_once ? "" : "  <== od startu NEZAMCENO");
+					  		}
+					  	}
 					  	dac_print_status();   /* DAC ladeni OCXO (AD5693R) — dnes neosazen */
 					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
 					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"

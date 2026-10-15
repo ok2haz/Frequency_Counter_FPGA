@@ -257,11 +257,30 @@ bool si5356_read_status(I2C_HandleTypeDef *hi2c, uint8_t *status)
 
 bool si5356_init(I2C_HandleTypeDef *hi2c)
 {
-    uint8_t probe;
-    if (!rd(hi2c, 0x00, &probe)) {
+    si5356_init_res_t r;
+    bool ok = si5356_init_quiet(hi2c, &r);
+    if (!r.present) {
         printf("Si5356A: NACK na 0x70 (neni pripojen?)\n");
         return false;
     }
+    const uint8_t st = r.st;
+    printf("Si5356A init: zapisy=%s, status218=0x%02X%s%s%s%s\n",
+           ok ? "OK" : "CHYBA", st,
+           (st & 0x01) ? " SYS_CAL" : "",
+           (st & 0x04) ? " LOS_XTAL(bez krystalu, ok)" : "",
+           (st & 0x08) ? " LOS_CLKIN!" : "",
+           (st & 0x10) ? " PLL_LOL!" : "");
+    return ok;
+}
+
+/* Jadro initu BEZ printf: vola ho i SensorsTask (automaticka re-inicializace, #295), ktery printf nesmi
+ * (zasobnik 1,5 kB, viz `sensor_update`). `si5356_init` vyse je jen tenky obal s vypisem. */
+bool si5356_init_quiet(I2C_HandleTypeDef *hi2c, si5356_init_res_t *r)
+{
+    uint8_t probe;
+    r->present = 0u; r->writes_ok = 0u; r->st_ok = 0u; r->st = 0u;
+    if (!rd(hi2c, 0x00, &probe)) return false;
+    r->present = 1u;
 
     /* 1) Zapsat kompletni register map (vc. prepinani stranek pres 0xFF) */
     bool ok = true;
@@ -283,12 +302,8 @@ bool si5356_init(I2C_HandleTypeDef *hi2c)
     si5356_gen_defaults();       /* cip ma ted vystupy z REGMAP, ne z okna Generator */
 
     uint8_t st = 0;
-    rd(hi2c, REG_STATUS, &st);
-    printf("Si5356A init: zapisy=%s, status218=0x%02X%s%s%s%s\n",
-           ok ? "OK" : "CHYBA", st,
-           (st & 0x01) ? " SYS_CAL" : "",
-           (st & 0x04) ? " LOS_XTAL(bez krystalu, ok)" : "",
-           (st & 0x08) ? " LOS_CLKIN!" : "",
-           (st & 0x10) ? " PLL_LOL!" : "");
+    r->st_ok     = rd(hi2c, REG_STATUS, &st) ? 1u : 0u;
+    r->st        = st;
+    r->writes_ok = ok ? 1u : 0u;
     return ok;
 }

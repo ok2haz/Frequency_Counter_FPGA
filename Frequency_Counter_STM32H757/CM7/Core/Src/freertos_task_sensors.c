@@ -355,6 +355,75 @@ static void ad5693_service(void)
 volatile int16_t g_ads_raw_last[4];             /* posledni surovy vysledek AINx (diagnostika) */
 volatile uint32_t g_si5356_err_cnt = 0;   /* nepodareni cteni stavu Si5356 od bootu (diagnostika I2C1, /api/fpga) */
 
+/* ── Automaticka re-inicializace Si5356 (STATUS #295, 2026-10-15) ─────────────────────────────────────────────────
+ * ZMERENO (M3 2026-10-14, M3b 2026-10-15): po STUDENEM startu hlasi Si5356 trvale LOS_CLKIN + PLL_LOL (status 0x1C)
+ * a sam se nezamkne ani za 19 min, prestoze OCXO uz dava 10 MHz (FPGA z nej bezi). `si5356_init` probehl v `main()`
+ * driv, nez studeny OCXO dal platny vstup. Novy init (UART `si5356`) zamknul hned (M3b: 0x1C -> 0x00 v uptime 61 s).
+ * Proto: trva-li FAULT (LOS_CLKIN nebo PLL_LOL) bez preruseni SI5356_REINIT_FIRST_MS, SensorsTask (vlastnik I2C1) init
+ * zopakuje; dalsi pokusy s rozestupem 2x delsim az do SI5356_REINIT_MAX_MS (skutecne chybejici reference se tim
+ * neopravi, jen se nema bombardovat I2C1). Zamek rozestup vrati na zacatek.
+ * ⚠️ Soft reset v initu shodi i CLK0/1 = hodiny FPGA (L-0148). Pri FAULT uz neplati, FPGA vypadek pozna hlidac
+ * (L-0146) a po navratu hodin sama prekalibruje TDC. Generator CLK2-7 vrati init na REGMAP, proto se jeho nastaveni
+ * pred initem ulozi a znovu pozada (`si5356_gen_service` ho zapise ve stejnem bloku).
+ * ⚠️ Zadny printf (zasobnik SensorsTasku, viz `sensor_update`): vysledek nese `status` (REFERENCE:) a errlog. */
+#define SI5356_REINIT_FIRST_MS  10000u     /* FAULT trva bez preruseni -> prvni pokus */
+#define SI5356_REINIT_MAX_MS    300000u    /* strop rozestupu pokusu */
+volatile uint32_t g_si5356_reinit_cnt;     /* automaticke re-inity od startu (saturuje na 0xFFFF, L-0059) */
+volatile uint32_t g_si5356_reinit_ms;      /* HAL tick posledniho pokusu (plati jen pri cnt > 0) */
+volatile uint8_t  g_si5356_reinit_res;     /* SI5356_REINIT_RES_* posledniho pokusu */
+volatile uint8_t  g_si5356_locked_once;    /* 1 = od startu aspon jednou bez FAULT */
+
+/* Armovani sticky registru (viz `SI5356_STICKY_ARM_MS`). Na urovni souboru, protoze re-init PRED prvnim zamkem ho
+ * odklada: sticky bity, ktere nastavi studeny start a re-init, jsou soucast nabehu (zadne mereni jeste neexistovalo,
+ * FPGA meri az se zamcenou referenci), stejne jako bity z `si5356_init` v `main()`. Po prvnim zamku se NEodklada —
+ * vypadek za behu je skutecny a sticky ho musi drzet. */
+static uint8_t  s_si_armed;
+static uint32_t s_si_arm_at = SI5356_STICKY_ARM_MS;
+
+/* Vola se pod i2c1MutexHandle po kazdem uspesnem cteni statusu 218. */
+static void si5356_lock_watch(uint8_t st)
+{
+    static uint8_t  s_fault;                           /* 1 = FAULT trva od `s_t0` */
+    static uint32_t s_t0;                              /* zacatek FAULT nebo posledni pokus */
+    static uint32_t s_iv = SI5356_REINIT_FIRST_MS;     /* rozestup do pristiho pokusu */
+    const uint32_t now = HAL_GetTick();
+
+    if ((st & SI5356_FAULT_MASK) == 0u) {
+        s_fault = 0u;
+        s_iv = SI5356_REINIT_FIRST_MS;
+        g_si5356_locked_once = 1u;
+        return;
+    }
+    if (!s_fault) { s_fault = 1u; s_t0 = now; return; }
+    if ((uint32_t)(now - s_t0) < s_iv) return;
+
+    const uint8_t before_lock = g_si5356_locked_once ? 0u : 1u;
+    uint32_t gen_hz[SI5356_GEN_N];
+    uint8_t  gen_on[SI5356_GEN_N];
+    for (unsigned i = 0; i < SI5356_GEN_N; i++) { gen_hz[i] = g_si_gen[i].freq_hz; gen_on[i] = g_si_gen[i].on; }
+
+    si5356_init_res_t r;
+    (void)si5356_init_quiet(&hi2c1, &r);              /* vysledek nese `r` */
+
+    for (unsigned i = 0; i < SI5356_GEN_N; i++)
+        if (g_si_gen[i].freq_hz != gen_hz[i] || g_si_gen[i].on != gen_on[i])
+            si5356_gen_request(i, gen_hz[i], gen_on[i] != 0u);
+
+    if (g_si5356_reinit_cnt < 0xFFFFu) g_si5356_reinit_cnt++;
+    g_si5356_reinit_ms  = now;
+    g_si5356_reinit_res = !r.present                                    ? SI5356_REINIT_RES_NACK
+                        : !r.writes_ok                                  ? SI5356_REINIT_RES_WRERR
+                        : (r.st_ok && (r.st & SI5356_FAULT_MASK) == 0u) ? SI5356_REINIT_RES_LOCK
+                        :                                                 SI5356_REINIT_RES_FAULT;
+    if (before_lock) { s_si_armed = 0u; s_si_arm_at = HAL_GetTick() + SI5356_STICKY_ARM_MS; }
+    (void)errlog_put(ERRLOG_K_REFINIT, before_lock ? 1u : 2u, g_si5356_reinit_cnt,
+                     (uint32_t)st | ((uint32_t)r.st << 8) | ((uint32_t)r.writes_ok << 16) | ((uint32_t)r.st_ok << 17),
+                     "Si5356");
+
+    s_t0 = HAL_GetTick();                              /* init trva ~0,1 s; rozestup se meri od jeho konce */
+    s_iv = (s_iv >= SI5356_REINIT_MAX_MS / 2u) ? SI5356_REINIT_MAX_MS : s_iv * 2u;
+}
+
 /* 2026-10-11: PGA PER VSTUP podle skutecneho rozsahu (vstup ADS = napeti * 1/gain delice):
  *   AIN0 OCXO Vc : +-2,048 V (EFC 0-4 V -> 1,6 V; DAC do 5 V -> 2,0 V; oriznuti od 5,12 V)
  *   AIN1 VBUS    : +-2,048 V (12 V -> 0,57 V; oriznuti od 43 V)
@@ -521,7 +590,7 @@ void SensorsTask_run(void *argument)
 		} else sensor_fail(SENS_T4A);
 		/* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
 		uint8_t si_st;
-		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
+		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; si5356_lock_watch(si_st); }
 		else                                    { g_si5356_ok = 0; g_si5356_err_cnt++; }
 		/* 🔴 STICKY (reg 247) vedle ziveho stavu: podrzi i mikrosekundovy vypadek
 		 * reference, ktery by mezi dvema cteními ziveho registru zmizel beze stopy.
@@ -530,9 +599,8 @@ void SensorsTask_run(void *argument)
 		 * ⚠️ `SI5356_LOS_XTAL` se maskuje pryc: krystal neni osazen, bit je trvale
 		 * 1 a bez masky by hlaseni svitilo napord. */
 		{
-			/* Jednorazove armovani po startu — viz `SI5356_STICKY_ARM_MS`. */
-			static uint8_t s_si_armed = 0;
-			if (!s_si_armed && HAL_GetTick() > SI5356_STICKY_ARM_MS) {
+			/* Armovani po startu — viz `SI5356_STICKY_ARM_MS`; re-init pred prvnim zamkem ho odklada (`s_si_arm_at`). */
+			if (!s_si_armed && (int32_t)(HAL_GetTick() - s_si_arm_at) > 0) {
 				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
 					g_si5356_sticky = 0;
 					s_si_armed = 1;

@@ -44,6 +44,19 @@
  *  @return true pokud vsechny I2C zapisy ACKovaly. */
 bool si5356_init(I2C_HandleTypeDef *hi2c);
 
+/** Vysledek `si5356_init_quiet`. */
+typedef struct {
+    uint8_t present;     /* 1 = cip odpovedel na 0x70 */
+    uint8_t writes_ok;   /* 1 = vsechny zapisy register mapy i apply procedury ACKovaly */
+    uint8_t st_ok;       /* 1 = status 218 po initu precten */
+    uint8_t st;          /* status 218 po initu (platny jen pri st_ok) */
+} si5356_init_res_t;
+
+/** Totez co `si5356_init`, ale BEZ printf — pro SensorsTask (automaticka re-inicializace pri trvale ztrate
+ *  zamku, STATUS #295), ktery printf nesmi. Stejne jako `si5356_init` vrati generator na vychozi stav REGMAP.
+ *  @return true pokud vsechny I2C zapisy ACKovaly. */
+bool si5356_init_quiet(I2C_HandleTypeDef *hi2c, si5356_init_res_t *r);
+
 /** Precte status reg 218 (0xDA). Bitova mapa dle AN565: bit0=SYS_CAL (probiha
  *  kalibrace), bit2=LOS_XTAL (krystal XA/XB — na teto desce NEOSAZEN, piny
  *  uzemnene -> bit je TRVALE 1, benigni), bit3=LOS_CLKIN (ztrata 10 MHz na
