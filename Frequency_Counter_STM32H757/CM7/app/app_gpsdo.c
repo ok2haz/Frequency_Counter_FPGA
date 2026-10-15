@@ -4514,8 +4514,9 @@ static void holdover_cone_draw(int state, uint32_t t_in_state_s)
  * "Hotovo" = uptime >= WARMUP_MIN_S A tepelny sklon |dT/dt| < WARMUP_SLOPE (z RAM
  * historie 0x49 pres sensor_hist). Nahrazuje drivejsi naivni uptime<180 ve stavu
  * WARMUP. Sklon [°C/min] vraci ve *slope (smi byt NULL). */
-#define WARMUP_MIN_S     300u     /* min. doba nabehu [s] */
-#define WARMUP_SLOPE     0.08f    /* prah ustaleni [°C/min] */
+#define WARMUP_MIN_S_POR 900u     /* min. uptime po zapnuti napajeni (Bliley 6891: +-0,01 ppm za 15 min) [s] */
+#define WARMUP_MIN_S_RST 300u     /* po resetu pri zapnutem napajeni: OCXO bezi dal (+-0,03 ppm za 5 min) [s] */
+#define WARMUP_SLOPE     0.3f     /* prah ustaleni plaste [°C/min]: <= 1 ppb / 10 min pri 3x vetsi vazbe nez datasheet */
 static int warmup_ready(float *slope_c_min)
 {
     float buf[16], mn, mx; int32_t span = 0;
@@ -4523,7 +4524,14 @@ static int warmup_ready(float *slope_c_min)
     float slope = (n >= 2 && span > 0) ? (buf[n - 1] - buf[0]) / (float)span * 60.0f : 0.0f;
     if (slope_c_min) *slope_c_min = slope;
     float a = slope < 0 ? -slope : slope;
-    return (g_uptime_s >= WARMUP_MIN_S) && (a < WARMUP_SLOPE);
+    /* Bez platne teploty plaste nelze tvrdit "ustaleno"; pec musi topit (dT plast-deska, jako monitor
+     * `g_mon_ocxo_dt_bad`): mrtva pec s ustalenou teplotou by jinak mela sklon 0 a hlaska by zmizela.
+     * Deska (0x48, I2C4) muze chybet -> bez dT se jen nehodnoti, ne zakazuje. */
+    float dt;
+    if (!g_sensors[SENS_T49].valid) return 0;
+    if (mon_ocxo_dt(&dt) && dt < MON_OCXO_DT_MIN_C) return 0;
+    const uint32_t min_s = (g_reset_rsr & (RCC_RSR_PORRSTF | RCC_RSR_BORRSTF)) ? WARMUP_MIN_S_POR : WARMUP_MIN_S_RST;
+    return (g_uptime_s >= min_s) && (a < WARMUP_SLOPE);
 }
 
 static void app_gpsdo_render_holdover(void)
@@ -8008,7 +8016,7 @@ static uint8_t warn_eval(const char **txt, int *count)
     static const char *T_SIG  = "BEZ SIGNALU  - odecet je sum";
     static const char *T_OVL  = "PRETIZENI VSTUPU  - zvys utlum";
     static const char *T_OCXO = "OCXO MIMO TEPLOTNI PASMO";
-    static const char *T_WARM = "TEPLOTA NEUSTALENA  - kalibrace zamcena";
+    static const char *T_WARM = "TEPLOTA NEUSTALENA  - OCXO se zahriva, presnost snizena";
     static const char *T_BAT  = "ZALOZNI BATERIE SLABA  - hrozi ztrata casu a nastaveni";
 
     /* ⚠️ Kapacita MUSI pokryt kazde `if` nize. Do 2026-09-06 tu bylo `w[8]` pri
