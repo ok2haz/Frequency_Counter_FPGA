@@ -11,6 +11,13 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.16.0 (2026-10-15) = studeny start a diagnostika bez konzole. Bitstream FPGA beze zmeny (0x0423, 100 MHz).
+ * (1) Automaticky re-init Si5356 pri trvale ztrate zamku reference (studeny start dvakrat nezamkl, #295, L-0156);
+ * `status` REFERENCE: auto re-init, errlog druh REFRST. (2) IPC v23: `/api/state` nese rezervu TDC retezu (tdc_rez_*,
+ * tdc_lvl_*, tdc_ovf_*) a `si_reinit`, aby sla rezerva cist pres ETH i kdyz USB konzole mlci (#297/#298).
+ * (3) `warmup_ready`: prah sklonu 0,3 C/min, minimum 900 s po zapnuti napajeni (300 s po resetu), povinna platna teplota a
+ * pec topi; nova hlaska "TEPLOTA NEUSTALENA - OCXO se zahriva, presnost snizena" (#299, L-0157).
+ * Zadne zmeny mereni ani protokolu FPGA. ⬜ Neovereno na desce: studeny start (M4, #300). FLASHNOUT OBE BANKY (IPC v23). */
 /* v0.15.0 (2026-10-13) = FPGA FW 0x0423 (referencni hodiny FPGA 100 MHz; pokus se 125 MHz z 0x0421/0x0422 je VRACEN, L-0154),
  * Si5356 CLK0/1 = 100 MHz + okno GENERATOR (CLK2/3, CLK4/5, CLK6/7, UART `gen`), ADS1115 PGA AIN0-2 +-2,048 V a prevod float
  * (+ kalibrace gain_vc/gain_vbus, blob CAL2), I2C1 400 kHz, `GET /api/fpga` a IPC v22 (40 slov diagnostiky FPGA),
@@ -126,8 +133,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 15
+#define FW_VERSION_MINOR 16
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.15.0"
+#define FW_VERSION_STR   "v0.16.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
