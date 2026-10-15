@@ -46,6 +46,7 @@ function Err($sp) {
 }
 
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.NewLine = "`r`n"; $sp.ReadTimeout = 200
 try {
   $sp.Open(); Start-Sleep -Milliseconds 200; $sp.DiscardInBuffer()

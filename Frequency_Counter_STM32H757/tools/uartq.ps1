@@ -30,6 +30,7 @@ param(
 $CmdList = @($Cmds -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
 
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.NewLine      = "`r`n"
 $sp.ReadTimeout  = 200
 $sp.Encoding     = [System.Text.Encoding]::UTF8

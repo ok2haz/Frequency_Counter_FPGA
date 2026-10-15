@@ -12,6 +12,7 @@ param(
   [int]   $baud = 115200
 )
 $sp = New-Object System.IO.Ports.SerialPort $port, $baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.NewLine     = "`r`n"     # prikazy zakoncene CRLF
 $sp.ReadTimeout = 2000
 try {

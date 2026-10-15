@@ -31,6 +31,7 @@ if ($Reset) {
 }
 
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.ReadTimeout = 2000; $sp.Open(); Start-Sleep -Milliseconds 300
 
 Write-Host ("{0,-8} {1,-34} {2,-16} {3}" -f "uptime", "co hlasi deska", "HTTP z PC", "ping")

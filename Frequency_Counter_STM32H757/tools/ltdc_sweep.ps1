@@ -44,6 +44,7 @@ function Get-Counters([System.IO.Ports.SerialPort]$sp) {
 }
 
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.ReadTimeout = 1500; $sp.NewLine = "`n"
 $sp.Open()
 Start-Sleep -Milliseconds 300

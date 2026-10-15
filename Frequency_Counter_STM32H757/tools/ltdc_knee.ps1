@@ -34,6 +34,7 @@ function Get-Cnt([System.IO.Ports.SerialPort]$sp) {
 }
 
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.DtrEnable = $true   # USB CDC konzole vysila jen pro otevreny port (DTR), STATUS #298
 $sp.ReadTimeout = 1500; $sp.Open(); Start-Sleep -Milliseconds 300
 
 Write-Host ("{0,-6} {1,10} {2,12} {3,12} {4,14}" -f "d2ddt", "flipu", "podteceni", "podt./flip", "ms/prekresleni")
