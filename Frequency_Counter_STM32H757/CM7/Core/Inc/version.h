@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.16.1 (2026-10-15) = oprava USB konzole (STATUS #298, L-0158): vysila se jen pri pritomnem hostu (DTR / data od hosta),
+ * zasekly IN prenos se rusi na HW vcetne TX FIFO (drive zpozdena konzole o jeden prenos po kazde pauze bez hosta), pri zavrenem
+ * portu se zahazuje nejstarsi; `status` ma radek KONZOLE: host. Skripty v adresari tools nastavuji DtrEnable. Bez zmeny IPC (v23).
+ * ⬜ Neovereno po power-cyklu. CM4 beze zmeny, staci nahrat CM7. */
 /* v0.16.0 (2026-10-15) = studeny start a diagnostika bez konzole. Bitstream FPGA beze zmeny (0x0423, 100 MHz).
  * (1) Automaticky re-init Si5356 pri trvale ztrate zamku reference (studeny start dvakrat nezamkl, #295, L-0156);
  * `status` REFERENCE: auto re-init, errlog druh REFRST. (2) IPC v23: `/api/state` nese rezervu TDC retezu (tdc_rez_*,
@@ -134,7 +138,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 16
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.16.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.16.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
