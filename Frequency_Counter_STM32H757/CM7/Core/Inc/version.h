@@ -11,6 +11,13 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.17.0 (2026-10-16) = SMYCKA GPSDO + DAC LADENI OCXO (STATUS #305, #304, #306). FPGA FW 0x0424 (bajty 52..56 = GPS 1PPS, hruby
+ * citac 100 MHz bez TDC, caps bit13), IPC v24 (dac_* ve snapshotu, blok gpsdo). (1) Smycka: FLL s merenim K + PLL 2. radu (tau 1000 s),
+ * HOLD pri ztrate 1PPS, sawtooth korekce z UBX-TIM-TP (znamenko voli sama), kod AD5693R do flash jen pri zamceni; UART `gpsdo`,
+ * `status` GPSDO:, vychozi ZAPNUTO (rucni `dac` ji vypne). (2) Obnova posledniho kodu DAC po startu (syscfg dac_code, bez zmeny
+ * magic). (3) Web: osy Vc (kod DAC vlevo, napeti vpravo, ADC/DAC LSB pod grafem), RESET ALLAN / RESET TREND (i na displeji, dvoji
+ * stisk), zapinani krivek legendou, svetlejsi pomocne osy. ⬜ NEOVERENO NA DESCE (smycka, FPGA 0x0424, web). FLASHNOUT OBE BANKY
+ * (IPC v24) + bitstream FPGA FW 0x0424; bez bitstreamu smycka stoji ve WAIT (bezpecne). */
 /* v0.16.2 (2026-10-15) = oprava trvaleho zaznamniku chyb (STATUS #296, L-0159): poskozeny (nedopsany, nesmazany) slot flash se bral
  * za hlavu logu a kazdy boot prepsal zaznamy minuleho (nejnovejsi zaznamy necitelne, `total` stal). Slot ma nove 3 stavy, hlava = prvni
  * SMAZANY slot, zapis jen do smazaneho, poskozeny slot ve cteni je placeholder POSK; narust prodlevy opakujici se udalosti (60 s az 30 min).
@@ -141,8 +148,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 16
-#define FW_VERSION_PATCH 2
-#define FW_VERSION_STR   "v0.16.2"
+#define FW_VERSION_MINOR 17
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.17.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
