@@ -2,10 +2,10 @@
  * @file    ad5693.h
  * @brief   AD5693R — 16bitovy DAC ladiciho napeti OCXO (I2C1, adresa 0x4C).
  *
- * ⬜ CIP ZATIM NENI OSAZEN (objednan, 2026-10-02). Kod je pripraveny tak, aby
- * po osazeni fungoval bez zasahu: SensorsTask cip sam najde (sonda kazdych
- * AD5693_REPROBE_MS), zapise control registr a precte aktualni kod. Dokud cip
- * chybi, jen hlasi "nenalezen" — zadny zapis do OCXO, zadna obnova sbernice.
+ * Cip je od 2026-10-16 OSAZEN a overen na desce (AD5693RBRMZ, scan1 najde 0x4C, readback sedi pro nenulove kody,
+ * zapnuti na zero-scale, strmost EFC 4,3-4,6 Hz/V; docs/MERENI_A_KALIBRACE.md). SensorsTask cip sam najde (sonda kazdych
+ * AD5693_REPROBE_MS), zapise control registr a precte aktualni kod. Dokud cip chybi, jen hlasi "nenalezen" —
+ * zadny zapis do OCXO, zadna obnova sbernice.
  *
  * Zapojeni (netlist FPGA_Module_2_1, kicad-cli export 2026-10-02):
  *   U12 AD5693RxRM: VDD=+5V, VLOGIC=+3V3 (R108/D6), ~RESET=VLOGIC,
@@ -31,7 +31,8 @@
  * 5 V a delic AIN0 je dimenzovany na 0..5 V. Po zapnuti napajeni je DAC dle
  * datasheetu na nule s GAIN x1 -> 0 V; control registr se zapisuje pri kodu 0,
  * vystup se tim nehne. Pri resetu JEN STM32 (DAC napajeny dal) si DAC drzi
- * posledni kod — firmware ho pri startu proto NEPREPISUJE, jen precte.
+ * posledni kod — firmware ho pri startu NEPREPISUJE nenulovym readbackem (`AD5693_RESTORE_KEPT`), jen kdyz DAC
+ * hlasi 0 (power-on) a v syscfg je ulozeny kod, zapise ho (`AD5693_RESTORE_DONE`).
  * ⬜ Power-on stav (nula/stred) overit hned po prvnim zapnuti s osazenym cipem:
  *   `dac` (readback) a `sensors` (AIN0) jeste PRED prvnim zapisem.
  *
@@ -39,10 +40,11 @@
  * `ad5693_service()` pod i2c1MutexHandle. UART/UI jen nastavi zadost
  * (`ad5693_request_*`) a cekaji na `req_* == 0` — vzor `g_si5356_clr_req`.
  * Obe strany bezi na CM7, volatile poradi pristupu staci (bez __DMB).
- * 🔴 Zapis kodu PRELADI OCXO = posune kmitocet cele reference. Kod se proto
- * NIKDY nezapisuje automaticky, jen na vyslovnou zadost (dnes UART `dac`).
- * Regulacni smycka GPSDO a perzistence kodu pres power-cyklus (syscfg) jsou
- * dalsi krok (Faze B), ne soucast tohoto driveru.
+ * 🔴 Zapis kodu PRELADI OCXO = posune kmitocet cele reference. Kod pochazi z TRI zdroju (od 2026-10-16):
+ *   (1) rucni zadost (UART `dac`, vypne smycku GPSDO a ulozi kod do flash), (2) obnova posledniho kodu po startu
+ *   (`ad5693_restore`, jen z hodnoty ulozene v syscfg, nad AD5693_RESTORE_MAX_MV se ignoruje), (3) smycka GPSDO
+ *   (`gpsdo.h`, zapis dela `ad5693_servo` s ditherem; kod do flash jen pri zamceni 1x/10 min).
+ *   Zadny jiny kod DAC nezapisuje.
  */
 #ifndef AD5693_H
 #define AD5693_H
