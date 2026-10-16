@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.18.0 (2026-10-16) = GRAF TIE A STAVU SMYCKY GPSDO (STATUS #37): displej okno s_view=45 "GPSDO TIE" (dlazdice v MERENI, driv placeholder
+ * TI 1PPS) - prepinac TIE / y / KOD, osa z bodu LOCK, pas stavu OFF/WAIT/FLL/LOCK/HOLD, historie 2 h po 10 s; web karta GPSDO (stejny
+ * prepinac + pas stavu). IPC v25 (`ipc_gpsdo_t.x_raw_ns`, blok 36 -> 40 B na konci struktury). FLASHNOUT OBE BANKY (CM7 + CM4).
+ * FPGA bitstream beze zmeny (FW 0x0424). ⬜ Neovereno na desce (vzhled oken, chovani historie po resetu). */
 /* v0.17.1 (2026-10-16) = web: RESET ALLAN / RESET TREND rekne, PROC je zamceny (zapis z webu vyzaduje zapnute vzdalene ovladani na pristroji
  * + prihlaseni; na desce bylo web_ctrl_en = False). Funkcne beze zmeny firmwaru CM7, meni se jen web v CM4 (staci nahrat CM4; CM7 jen kvuli cislu verze).
  * Bez zmeny IPC (v24). */
@@ -151,8 +155,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 17
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.17.1"
+#define FW_VERSION_MINOR 18
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.18.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
