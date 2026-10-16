@@ -1048,7 +1048,7 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   - ⚠️ **`/16` NENÍ nezávislý cross-check** (dřívější zavádějící popis): sdílí tvarovač i společný čítač s `/4`, takže společné chyby (výpadek tvarovače u 1,4 GHz, miscount čítače) se projeví v OBOU shodně → porovnání `freq_x100000` vs `freq16_x100000` je jen **downstream sanity** (chytne rozbité čítání/timestamp na jednom pinu ve FPGA, ne front-end). Nesoudělný poměr je s binárními odbočkami nedosažitelný; skutečně nezávislá kontrola by chtěla druhý samostatný dělič (HW). Dvě odbočky slouží hlavně **rozsahu + hladkému handoveru**, ne validaci.
 - **Detekce ztráty signálu (SIGNAL_LOST):** FPGA má **autoritativní watchdog** — ~2,5 s bez dokončeného měření → `error_flags` bit1 SIGNAL_LOST + DATA_VALID=0. FpgaTask čte `fpga_freq_signal_lost()` (latch posledního DATA rámce, funguje i při VALID=0) a při ztrátě **nebo mrtvém linku** nastaví `g_freq_stale=1` → UiTask ztlumí kmitočet na **šedou** (čte `g_freq_text`/`g_freq_stale` při překreslení). **Dřívější SEQ-staleness heuristika ODSTRANĚNA** (falešně hlásila stale u nízkých kmitočtů, kde se reciproké okno legitimně protáhne) — teď se věří FPGA flagu.
 - **Auto-re-START:** když ~3 s nepřijde žádný platný rámec (`fpga_freq_link_ok()`==0, tj. mrtvý link, ne jen „bez nového měření"), FpgaTask znovu pošle START (20 Hz polling → práh `fails>=60`) — pokrývá FPGA který nabootuje/resetuje až po STM32.
-- DATA payload (`fpga_meas_t`, parse v `parse_data()`): `frequency_x100000`(abs12, /4), `edge_count`(20), `gate_time_ns`(28), `timestamp`(36), `channel`(44), `measurement_status`(45), `error_flags`(46), **`phase_status`(50)**, **`status2`(51)**, **`freq16_x100000`(52, /16)**. **`freq*_x100000` = reálný kmitočet × 1e5 (děličku /4 i /16 už zahrnuje FPGA → STM NEnásobí 4 ani 16); `gate_ns` ≈ 250e6 a kolísá.**
+- DATA payload (`fpga_meas_t`, parse v `parse_data()`): `frequency_x100000`(abs12, /4), `edge_count`(20), `gate_time_ns`(28), `timestamp`(36), `channel`(44), `measurement_status`(45), `error_flags`(46), **`phase_status`(50)**, **`status2`(51)**, **`freq16_x100000`(52, /16; **od FW 0x0424 (CAPS bit13) abs 52..55 = `pps_ts`, abs 56 = `pps_seq` — GPS 1PPS**, viz sekce Smyčka GPSDO)**. **`freq*_x100000` = reálný kmitočet × 1e5 (děličku /4 i /16 už zahrnuje FPGA → STM NEnásobí 4 ani 16); `gate_ns` ≈ 250e6 a kolísá.**
   - **`error_flags`:** bit0=`FPGA_ERR_MEAS` (/4 Δt==0), bit1=`FPGA_ERR_SIGNAL_LOST`, bit2=`FPGA_ERR_OVERFLOW` (okno >~21,5 s). **`status2`** bit0=`FPGA_ST2_DIV16_ERR` (/16 Δt==0).
   - **`phase_status`:** bity3:0=present[3:0] (živost 4 fází), bity7:4=fine_seen[3:0] (viděné jemné 2,5 ns kódy). **Zdravé = `PH:F/F`** (obě nibble plné). Mezera v fine_seen → chybějící/špatně posunutá fáze (kontrola 90° rozestupu). ⚠️ SEQUENCE roste pomaleji u nízkých f (okno čeká na hrany) — to NENÍ chyba, skutečnou ztrátu hlásí SIGNAL_LOST.
 - **⚠️ V IOC/main.h je PB12 pod starým názvem `SPI2_RCK`** (pozůstatek po 74HC595; PB4 = `SPI2_RES`, nepoužitý). CS pin si `fpga_freq_init` konfiguruje **sám** (push-pull, idle high) — regen-safe, nezávisí na gpio.c.
@@ -1238,39 +1238,57 @@ Pasti ze zadání §6:
 - **Kalibraci ukládej s hashem bitstreamu** — po rekompilaci FPGA může být offset jiný
   a firmware to musí poznat.
 
-### 🔴 NOVÉ: smyčku GPSDO nově drží STM32 (potvrzeno 2026-08-30)
+### ✅ Smyčka GPSDO (od v0.17.0, 2026-10-16): FPGA měří 1PPS, STM32 řídí OCXO přes AD5693R
 
-**`AD5693R` @0x4C = řídicí DAC ladicího napětí OCXO a regulační smyčku drží STM32.**
-To je **nový podsystém**, ne úprava stávajícího — dnes přístroj GPSDO jenom *zobrazuje*,
-nic nedisciplinuje (kromě krystalu LSE, viz `rtc_lse_*`).
+> Původní zadání (2026-08-30) bylo „smyčku drží STM32, FPGA dodá `time_error_ns`". **Implementováno jinak a jednodušeji:**
+> FPGA **neměří fázi TDC, ale čas hrany 1PPS v taktech 100 MHz** (hrubý čítač, 10 ns), STM32 z rozdílu hran spočítá
+> chybu periody a fázi. Důvod: 1PPS z NEO-7M má ~30 ns RMS (⬜ HYPOTÉZA, datasheet u-bloxu v repu není), kvantizace 10 ns
+> (σ 2,9 ns) je proti tomu zanedbatelná a ve FPGA je CLS 85 % (strop brány) — TDC kanál C se nevešel (#262).
+> **Autorita: STATUS #305 (smyčka), #304 (obnova DAC), #306 (UI/web), `gpsdo.h`, `ad5693.h`.**
 
-Co k tomu bude potřeba a co už máme:
-- **Zdroj fázové odchylky:** FPGA porovnává OCXO proti `GPS_1PPS` (PIN33, carry chain C)
-  → do protokolu přidat `time_error_ns` (STATUS #36). **Bez toho smyčka nemá vstup.**
-- **Výstup:** 16bitový DAC po I2C1. ⚠️ Zápis patří k **jednomu vlastníkovi sběrnice** —
-  I2C1 dnes obsluhuje SensorsTask pod `i2c1MutexHandle`; regulátor běží ≤1 Hz, takže
-  se nabízí buď SensorsTask, nebo defaultTask s mutexem. **Ne z UiTasku.**
-- **Zpětná vazba:** OCXO Vc už měříme na `ADS AIN0` (`SENS_ADS0`) → čtení zpět toho,
-  co jsme zapsali (kontrola, ne regulace).
-- 🔴 **Poslední dobrá hodnota Vc MUSÍ přežít power-cycle** a nastavit se **brzy po bootu**.
-  Jinak každý start rozjede disciplinaci od nuly (u OCXO hodiny ustalování).
-  ⚠️ Ověř v datasheetu `AD5693R`, jestli je power-on reset na **zero-scale, nebo midscale** —
-  podle toho, jak moc OCXO při startu skočí, než regulátor stihne zasáhnout.
-  Kam to uložit: syscfg blob ve W25Q (nový magic) — BKP power-cycle nepřežije.
-- **Už hotové stavební kameny:** `warmup_ready()` (platná teplota pláště, pec topí ΔT ≥ 10 °C, uptime ≥ 900 s po zapnutí napájení / 300 s po resetu **a** |dT/dt| < 0,3 °C/min),
-  okno Holdover (s_view=16), disciplinace LSE z GPS (`rtc_lse_*`) jako vzor struktury
-  (fáze na hraně GPS sekundy, běžící průměr, korekce nejvýš 1×/h). ⚠️ Jsou to **dvě
-  nezávislé smyčky** s různým cílem — nemíchat.
-- ✅ **Driver AD5693R PŘIPRAVEN (2026-10-02), čip zatím NEOSAZEN (objednán).** Popis,
-  zapojení z netlistu a protokol = **`ad5693.h`**; implementace v `freertos_task_sensors.c`
-  (`ad5693_service()`, poslední transakce I2C1 bloku SensorsTasku). UART **`dac`** (stav),
-  `dac probe`, `dac <kód>`, `dac mv <mV>`; řádek `DAC OCXO:` ve `status`; `scan1` zná 0x4C.
-  GAIN ×2 → 0..5 V (76,3 µV/LSB). **Kód se nikdy nezapisuje automaticky** — při startu se
-  jen najde čip, zapíše control registr a PŘEČTE kód (po resetu jen STM32 drží DAC
-  poslední hodnotu). ⚠️ Osazená verze MUSÍ být **AD5693R** (VREF pin má jen 100 nF).
-  ⬜ Po osazení ověřit: power-on stav (readback + `sensors` AIN0 PŘED prvním zápisem) a
-  formu readbacku (hypotéza, viz hlavička). Smyčka a perzistence kódu = další krok.
-  🔴 **Sonda NENÍ `HAL_I2C_IsDeviceReady`** — viz L-0112.
+**Řetěz:**
+- **FPGA FW 0x0424** — modul `pps_cap` (`spi_app.v`): 2-FF synchronizace PIN33 (`gps_1pps`, LVCMOS33, pulldown) + snímek
+  `tick_hi[31:0]` + pořadí hran. Rámec: **abs 52..55 `pps_ts` (u32, takty 100 MHz mod 2³²), abs 56 `pps_seq`**, CAPS bit13 (`FPGA_CAP_PPS`,
+  CAPS = `0x3EE2`). Čte se ŽIVĚ z domény 100 MHz bez snímku → STM bere hodnotu až při **shodě dvou po sobě jdoucích rámců**
+  (`fpga_pps_get`, `fpga_pps_torn()`). Sim `tb_pps` (+ 3 mutace). Bitstream: `ab_test/FW_0x0424_…fs`.
+- **STM32** — `gpsdo_tick()` v **defaultTask** (100 Hz; implementace v `freertos_task_fpga.c`, API `gpsdo.h`; NE ve FpgaTasku — ten má málo stacku):
+  `e_ns = (Δtakty − n·1e8)·10 ns` za interval 1PPS, fáze `x = Σe`, **FLL** (okna 16→256 s, K se **MĚŘÍ** z kroků > 50 LSB; záporné K nebo kód na dorazu ⇒
+  zastavit) → **PLL 2. řádu** (ζ 0,7, τ 1000 s, předfiltr τ/30, anti-windup), **HOLD** po 5 s bez 1PPS (drží kód), **WAIT** s důvodem (bez DAC / bez 1PPS /
+  bez fixu / FPGA na externí referenci / vadné hodiny). Selftest `gpsdo test` (3 strmosti, špatné znaménko, nedostatečný rozsah EFC).
+  **Výchozí stav = ZAPNUTO** (nepersistuje se); ruční `dac` ji vypne, `gpsdo on` zapne.
+- **DAC** — zápis dělá výhradně **SensorsTask** (`ad5693_servo`, vlastník I2C1): kód v Q16.16 z `g_gpsdo_code_q16`, zlomek dithrem 1. řádu při 2 Hz;
+  do flash (`g_dac_persist` → syscfg) jen při zamčení a nejvýš 1×/10 min (wear W25Q). **Emulace** (`fpgasim`) řídí jen VIRTUÁLNÍ kód
+  (`gpsdo_sim_dac_code`) — skutečný DAC se při emulaci NEZAPISUJE (L-0160). `fpgasim fault nopps` = GPS bez 1PPS (test holdoveru).
+- **Sawtooth (F3)** — `gps.c`: binární parser UBX před NMEA, **UBX-TIM-TP** (`CFG-MSG` 1×/min spolu s TP5), oprava `e −= Δq` s **automatickou volbou
+  znaménka** podle rozptylu druhých diferencí (zapne se jen při zlepšení ≥ 25 %). Na desce vyšlo `−q`, rozptyl 494 → 63 ns² (NEO-7M TIM-TP VYSÍLÁ).
+
+**DAC cesta (osazeno 2026-10-16):** U12 `AD5693RBRMZ` (MSOP-10, A0=GND → 0x4C, GAIN ×2 → 0..5 V, 76,3 µV/LSB, POR = zero-scale), C55 10 nF X7R (VREF),
+**C56 neosazen** (limit 2 nF na VOUT), R78 100k + **C68 1 µF film**, U15 OPA365 (sledovač), R73 1k0 + **C61 1 µF film**, R72 82R + C59 100 nF X7R → pin VC
+OCXO (Bliley 6891: EFC 0–4 V, 2,5–5,5 Hz/V, vstupní impedance 10–100 kΩ); U14 sleduje VC → AIN0 (÷2,5). 🔑 **Smyčka na hodnotách součástek NEZÁVISÍ:**
+K = **změřených** ~3,4·10⁻¹¹/LSB (4,3–4,6 Hz/V × 76,3 µV) zahrnuje dělič R73+R72 proti vstupní impedanci EFC; časové konstanty (100 ms, 1 ms, 8 µs)
+jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Neřešené: dither 2 Hz ladí Vc o ±1 LSB (±1,7·10⁻¹¹) — pod stabilitou OCXO na 0,1–1 s;
+rychlejší dither (100–400 Hz) a RC 100k+2,2 µF = #277.
+
+**Naměřeno na desce (2026-10-16, první minuty po flashi, ⬜ dlouhodobě neověřeno):** `LOCK`, y −0,055 ppb, fáze −13 ns, kód 24794 (1,892 V),
+434 intervalů 1PPS / 0 odmítnuto / 0 děr / 0 roztržených čtení. **Nezměřeno:** ADEV zamčeného OCXO, holdover (#303), chování po power-cyklu, stack defaultTasku.
+
+**Perzistence kódu (#304):** `syscfg_blob_t.dac_code` (offset 182, v poslední výplni, velikost 192 B a magic `SCG2` beze změny). Po startu `ad5693_restore()`
+(SensorsTask) čeká na načtený syscfg + čip s control registrem: DAC už drží nenulový kód (reset jen STM32) → **ponechat** (`KEPT`), jinak zapsat uložený
+(`DONE`); uložený kód nad **4000 mV** (`AD5693_RESTORE_MAX_MV`, rozsah EFC) se ignoruje (`RANGE`); ruční zápis má přednost. `dac`/`status` → `obnova po startu:`.
+
+**Ovládání a diagnostika:** UART `gpsdo [on|off|tau <100..20000>|kdac <K×1e13>|test]`, `dac [probe|<kód>|mv <mV>]`; `status` řádky `GPSDO:` (stav, y, fáze, kód, K, τ,
+1PPS ok/rej/diry/roztržená čtení, sawtooth + rozptyly) a `DAC OCXO:`; `gpsraw` → `RX:`/`TIMTP:`. **Displej:** okno **s_view=45 „GPSDO TIE"** (dlaždice v MĚŘENÍ,
+dřív placeholder TI 1PPS): přepínač **TIE / y / KOD**, historie 720 bodů po 10 s (2 h, `gpsdo_hist_at`), osa podle bodů LOCK, pás STAVU smyčky, číselný sloupec.
+**Web:** karta „GPSDO: TIE a stav smyčky" (stejný přepínač, pás stavu, `/api/state` → `gpsdo{state,why,locked,y_ppt,x_ns,xr_ns,code,…}`), osy grafu Vc
+(vlevo kód DAC, vpravo V, pod grafem DAC/ADC LSB), `dac{}`. IPC **v24** (DAC ve snapshotu, blok `gpsdo`), **v25** (`xr_ns` = surová fáze, blok 40 B).
+
+**Omezení a pasti:**
+- 🔴 **Fáze je RELATIVNÍ** (od rozběhu/návratu z HOLD), nezarovnává 1PPS na UTC ani nezná zpoždění kabelu/bufferu — smyčka ladí **kmitočet** a drží fázi na startovní hodnotě.
+- 🔴 **Web RESET ALLAN/TREND** (`CALC:AVER:CLE` → `IPC_CFG_STATS_CLR`) i všechny zápisy z webu vyžadují **zapnuté vzdálené ovládání** (`web_ctrl_en`, Nastavení → SÍŤ → PŘÍSTUP) + přihlášení; jinak `-203`.
+- ⚠️ RESET na displeji má **dvojí stisk** a nesmí do `touch_pm_control` (autorepeat při držení, L-0162).
+- ⚠️ FPGA je na **CLS 85 %** (strop brány `fpga_release.py`), rezerva časování regresního bloku 0,06 ns — další logika ve FPGA tam už prakticky nemá místo.
+- ⚠️ Bitstream 0x0424 byl sestaven z necommitnutých zdrojů (identita `+ neuložené změny`); po commitu přestavět.
+- Holdover: dnes jen amber „H" a **ilustrativní** kužel (šířka ∝ čas, žádná fyzika). Skutečný odhad až po změření stárnutí (STATUS #303; stárnutí jde odvodit z **kódu DAC v čase**, smyčku k tomu vypínat netřeba — kód zatím do datalogu nejde).
 
 ### Otevřené otázky (NEROZHODNUTO — nezakládat na tom kód)
 
@@ -1424,6 +1442,9 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`,
   errlog transfer kanál `ipc_errlog_xfer_t` (v17).
+- 🔴 **`IPC_VERSION` = 25** (2026-10-16): v24 = DAC AD5693R ve snapshotu (`dac_code`, `dac_restore`, `dac_flags` v koncové výplni 476..479 — velikost 480 B beze změny)
+  + blok **`ipc_gpsdo_t gpsdo`** na KONCI `ipc_shared_t` (seqlock `gen`; stav smyčky pro web); v25 = `x_raw_ns` (surová fáze/TIE), blok 36 → 40 B. Vše za `cm4`
+  blokem, takže detekce nesouladu bank (`cm4_ipc_version`) funguje. ⚠️⚠️ **Flashnout OBĚ banky.**
 - 🔴 **`IPC_VERSION` = 19** (2026-09-27, audit F-0180): snapshot nese **`double freq4_hz`** =
   přesný kmitočet /4 z dvojice hrany/hradlo (`fpga_freq_hires_hz`; 0 = není → platí
   `freq4_x100000`). Leží v bývalých `offset`+`drift` (nikdy neplněné), takže **velikost 480 B
@@ -2241,7 +2262,7 @@ ne z počtu členů, F-0167; `allan_band_fill`), **`FX_HOLD_CONE`** (holdover dr
   - **MĚŘENÍ (`s_view=44`, `app_gpsdo_render_meas_menu`)** — podrozcestník 3×4 = 12 dlaždic (`MEAS_ITEMS`, geometrie jako dřívější top Menu: 14/276/538, 248×76, y=68/154/240/326): **Čítač** (→ hl. obrazovka s_view=0 = klasické velké číslo, `app_gpsdo_render_main`) · Prezentace (34, #67) · Analýza (41) · **Čítač detail** (19, FPGA reciproké — dřív dlaždice „Čítač") · **Math/Limity** (31, na místě dřívějšího „Allan detail") · Histogram (6) · Holdover (16) · Datalog (17) · Kvalita GPS (38) · **TI 1PPS (45)** · **Dvojkanál (46, kanály /4 a /16 NAD SEBOU, plná šířka)** · **Odchylka ×N (47)**. ⚠️ **„Allan detail" už NENÍ dlaždice** — okno ALLAN (s_view=23) se otevírá **rozklikem Allan náhledu na hlavní obrazovce** (`screen_main_hit_allan`).
   - **NÁSTROJE (`s_view=48`, `app_gpsdo_render_tools`)** — z **footeru Diagnostiky** (`NASTROJE > · ZPĚT`, `DIAG_TOOLS_BTN_RECT`; DIAGRAM/PAMET/SELFTEST tlačítka zrušena). Mřížka 3×2 = 6 (`TOOLS_ITEMS`, 248×96, y=92/214): Blokové schéma (21) · Paměť (5) · Selftest (20) · Benchmark (43) · SD karta (37) · Reference Si5356 (14).
   - **Nové měřicí funkce** (v `app_gpsdo.c`, dlaždice v MĚŘENÍ):
-    - **TI 1PPS (s_view=45)** — placeholder. Time-interval OCXO vs GPS 1PPS potřebuje HW/FPGA (1PPS do FPGA + `time_error_ns` v protokolu v2, STATUS #36). Okno jen popisuje závislost.
+    - **GPSDO TIE (s_view=45)** — živé okno smyčky GPSDO (dřív placeholder TI 1PPS, STATUS #37/#305): graf **TIE / y / kód DAC** (přepínač v patce), pás stavu, číselný sloupec; viz sekce Smyčka GPSDO (výše). Data z `gpsdo_get`/`gpsdo_hist_at`.
     - **Dvojkanál (s_view=46, `render_dualch`)** — **`CH A` (= odbočka /4, `frequency_x100000`) a `CH B` (= /16, `freq16_x100000`) NAD SEBOU**, dvě karty na plnou šířku (764×178 na y=52 a y=236). V každé: kmitočet `mono_30` + jednotka „Hz" `sans_18` zvlášť (⚠️ mono_30 nemá 'H'/'z'), **RF bargraf s číselnou hodnotou** („−61.2 dBm", 40 segmentů) a **vlastní stavový řádek** (CH A čte `FPGA_ERR_MEAS`, CH B `FPGA_ST2_DIV16_ERR`; SIGNAL_LOST/overflow/link jsou společné). RF je jedna hodnota do obou karet — HW má **jeden** AD8307 (ADS AIN1). Živé (2 Hz tik), šedý kmitočet při `g_freq_stale`. ⚠️ `dualch_bar` **musí clearovat před renderem** — `ui_bargraph_render` value text jen kreslí, nečistí. Svislý rozpočet karty je v komentáři u `DUALCH_CA_Y`.
     - **Odchylka ×N (s_view=47, `render_devmult`)** — měřič kmitočtové odchylky se **zesílením chyby jako ADRET 4110**: `df = f − f0`, velké číslo = `df × N` (N cyklus ×1..×1e6, `DM_MUL_RECT`), vedle `df` v Hz + ppb + ppm. **NUL** (`DM_NUL_RECT`) nastaví `f0 = screen_main_freq_hz()` (nulování jako Adret). Čistě SW nad headline; `f0` se při vstupu bere z `screen_main_freq_nominal()`. Nepersistuje.
   - ⚠️ **NEJSOU dlaždice:** Senzory = footer System Health (`SENZORY · GRAFY · ZPĚT`); Kalibrace/Cas/Sit/Alarmy/Animace/O přístroji = dlaždice Nastavení; **Status ribbon** demo = footer EFEKTY. Restart → confirm okno (s_view=13).
