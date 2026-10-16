@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.17.1 (2026-10-16) = web: RESET ALLAN / RESET TREND rekne, PROC je zamceny (zapis z webu vyzaduje zapnute vzdalene ovladani na pristroji
+ * + prihlaseni; na desce bylo web_ctrl_en = False). Funkcne beze zmeny firmwaru CM7, meni se jen web v CM4 (staci nahrat CM4; CM7 jen kvuli cislu verze).
+ * Bez zmeny IPC (v24). */
 /* v0.17.0 (2026-10-16) = SMYCKA GPSDO + DAC LADENI OCXO (STATUS #305, #304, #306). FPGA FW 0x0424 (bajty 52..56 = GPS 1PPS, hruby
  * citac 100 MHz bez TDC, caps bit13), IPC v24 (dac_* ve snapshotu, blok gpsdo). (1) Smycka: FLL s merenim K + PLL 2. radu (tau 1000 s),
  * HOLD pri ztrate 1PPS, sawtooth korekce z UBX-TIM-TP (znamenko voli sama), kod AD5693R do flash jen pri zamceni; UART `gpsdo`,
@@ -149,7 +152,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 17
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.17.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.17.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
