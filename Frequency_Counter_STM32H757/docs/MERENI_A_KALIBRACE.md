@@ -316,6 +316,51 @@ sklon T49 < 0,3 °C/min (dřív 0,08; odvození: ≤ 1 ppb / 10 min při vazbě 
 Přehrání záznamů (`docs/audit/data/2026-10-15_warmup_nove_pravidlo.txt`): M3b studený start hotovo od 904 s (dřív 1092 s), M3c teplý 304 s beze změny, simulovaná mrtvá pec (ΔT 1 °C, sklon 0) nikdy (dřív po 300 s).
 Text hlášky změněn na „TEPLOTA NEUSTALENA  - OCXO se zahriva, presnost snizena" (slib „kalibrace zamčená" odstraněn, nic se nezamykalo) — viz STATUS #299.
 
+#### M4: studený start potřetí (2026-10-16 16:19, deska chladla přes noc), CM7 v0.16.2 – Si5356 zamkl sám, re-init se nespustil
+
+Sestava podle plánu #300 (A = externí GPSDO, B měl být přes T-kus na tentýž signál; **zapojení B uživatel v tomto běhu nepotvrdil**, rezerva B se měří z kalibrace TDC bez ohledu na signál; hradlo 1 s), FW 0x0423 (build 2026-10-11 17:03), CM7 v0.16.2. `tools/cold_start_log.ps1` (45 min plánováno, záznam do uptime 2293 s = 38 min, pak deska vypnuta) + `tools/cold_start_auto.ps1`;
+data `docs/audit/data/2026-10-16_M4_studeny.csv` (+`.raw.jsonl`), `2026-10-16_M4_auto.txt`, rozbor `2026-10-16_M4_analyza.txt` (skript `m4_an.py` v scratchpadu, ne v repu).
+- **Teploty při zapnutí:** OCXO 23,83 °C, deska (T48) 23,87 °C, FPGA 24,09 °C. Ohřev OCXO: 30,5 °C za 119 s, 40,1 °C za 302 s, 45,2 °C za 900 s, 46,7 °C za 2198 s.
+- **Si5356:** `si5356_status = 0` od prvního vzorku (uptime 8 s), ani jeden řádek s nenulovým stavem, `si_reinit = 0` celou dobu. **Auto re-init (v0.16.0) se nespustil, protože nebylo co opravovat → jeho funkce zůstává NEOVĚŘENA.**
+  Z 3 studených startů (M3, M3b, M4) selhaly 2, tj. vada je přerušovaná; M4 ji nevyprovokoval. Ve `status` v uptime ~11 s: `REFERENCE: auto re-init Si5356 zadny (zamceno od startu)`.
+- **errlog (#296) ověřen:** `total` 4873 → 4974; po bootu přibyly záznamy `power-on`, `Si5356 ztrata 10MHz reference (LOS_CLKIN)` (sticky z náběhu, stejné razítko jako boot; `status` ukazuje sticky 247 = 0) a **`ERRLOG_K_TDC` (k=13): „rezerva TDC retezu A=14T POZOR, B=3T KRITICKE"**. První potvrzený zápis tohoto druhu.
+- **Frekvence (`freq_hz` = GPSDO − OCXO, 1 Hz = 100 ppb):** ustálená 10 000 008,3148 Hz, σ 1,3 ppb (uptime ≥ 1800 s, N = 98). V ±100 ppb od uptime 130 s, **v ±10 ppb od 144 s** (posledně M3b: od 160 s), v ±3 ppb pořád občas mimo (σ 1,3 ppb). Odchylka od ustálené: +15 570 ppb v 28 s, +3 374 ppb v 59 s, −373 ppb v 99 s, +2 ppb v 160 s.
+- **`warmup_ready` (nové pravidlo) přehráno nad CSV:** sklon T49 za 120 s: 2,55 °C/min v 302 s, 0,55 v 600 s, **0,115 v 900 s** (< 0,3), ΔT (T49 − T48) = 17 °C (≥ 10) → podmínka je splněna **v uptime 900 s** (shodně s M3b: 904 s). ⬜ Skutečné zhasnutí hlášky na displeji nepozorováno.
+- **Rezerva TDC (A / B z 268 tapů) podle kalibrace:**
+
+| kalibrace | uptime | T_FPGA | A | B |
+|---|---|---|---|---|
+| č. 1–4 | 14–160 s | 24,1–28,2 °C | 14 | **3** |
+| č. 5 | 242 s | 29,9 °C | 16 | 6 |
+| č. 6 | 494 s | 32,9 °C | 16 | 10 |
+| č. 7 | 1591 s | 35,8 °C | 16 | **18** |
+
+  Za koncem řetězu 0 / 0 po celou dobu, `ovf` 0 / 0. Rezerva B je 3 v celém pásmu 24–28 °C, pak roste ~2 tapy/°C (6 při 29,9 °C, 10 při 32,9 °C, 18 při 35,8 °C), tj. není lineární; studená boot kalibrace č. 1–4 (B = 3) je shodná s M3b (3–6).
+  **Závěr (N = 2 studené starty při ~24 °C okolí):** B za studena 3–6 tapů, tj. pod prahem 8 z kap. 10.4; po ~10 min je B ≥ 10 a po zahřátí 18. Rozhodnutí o plánu 110 MHz (TODO #297) zůstává na uživateli; data ukazují, že problém je omezen na prvních ~4 min po studeném zapnutí.
+- **Ztráta měření při kalibracích:** hradlo 1 s → 0,9978 měření/s, za 2279 s chybí **6 měření**, a to přesně v krocích, kde se změnila kalibrace TDC: č. 3 (−1), č. 5 (−1), č. 6 (−2), č. 7 (−2). Žádné jiné díry (`seq_meas` jinak +5 za 5 s). Tj. teplotní rekalibrace stojí 1–2 okna; to je očekávaná cena, ne chyba.
+- **Samokontrola FPGA (`status`):** po prvním `status` (uptime ~15 s) „zamítnuto oken: čtení 1, hodiny 0, délka okna 0 ⇒ `<== FPGA MĚŘÍ ŠPATNĚ`", ve druhém (~150 s) stejně 1 a navíc `CITANI HRAN: s chybějící 5 (nezobrazeno)`. Hodiny 0, délka 0. ⬜ **Neověřeno:** příčina zamítnutého okna č. 1 (jednorázové při náběhu, nebo opakovatelné); konečný stav počítadel po 38 min nezachycen (deska vypnuta dřív, než šel pustit `status`). Při příštím běhu přidat `status` na konci.
+- **Neověřeno:** auto re-init Si5356 (nebylo vyprovokováno), zhasnutí hlášky „neustálená" na displeji, příčina zamítnutého okna a 5 oken s chybějící hranou. Zaměření příštího studeného startu (M5): `status` na konci běhu, delší záznam, jiná okolní teplota.
+
+### 2026-10-16 večer — AD5693R poprvé osazen: ladění OCXO přes DAC (CM7 v0.16.2, FPGA FW 0x0423, uptime 130–280 s, OCXO 45–46 °C)
+
+Osazení: U12 `AD5693RBRMZ-RL7`, C55 10 nF X7R, C56 neosazen, R78 100k, C68 1 µF film (dočasně), R73 1k0, C61 1 µF film, R72 82R, C59 100 nF X7R. `scan1` našel 0x4C; `dac`: `ctrl OK`, kód 0, readback 0.
+Měřeno `dac mv <mV>` po 12 s ustálení, pak 10 vzorků `freq_hz` z `/api/state` (hradlo 1 s); `freq_hz` = měřený kmitočet GPSDO vůči OCXO jako časové základně, 1 Hz = 100 ppb. Skript a výstup: scratchpad `dac_step.ps1`, `dac_step2.txt`.
+
+| zápis DAC | AIN0 (pin VC) | `freq_hz` (průměr 10 vzorků) | změna proti předchozímu |
+|---|---|---|---|
+| 0 mV (kód 0) | 56 mV | 10 000 008,4075 Hz | – |
+| 1000 mV (kód 13107) | 1034 mV | 10 000 004,0951 Hz | −4,312 Hz |
+| 2000 mV (kód 26214) | 2015 mV | 9 999 999,4844 Hz | −4,611 Hz |
+| zpět 0 mV | 56 mV | 10 000 008,4128 Hz | +8,928 Hz (rozdíl od první nuly 5 mHz = 0,5 ppb) |
+
+- **Readback sedí pro nenulové kódy** (13107 i 26214 vrátily přesně zapsanou hodnotu, `readback nesedi 0`, chyb I2C 0). Hypotéza z `ad5693.h` o tvaru readbacku (NOP + opakovaný START místo čistého čtení) tím padá: **není potřeba měnit kód**.
+- **Zapnutí na zero-scale potvrzeno** (kód 0, readback 0, před prvním zápisem). Frekvence s DAC na nule (10 000 008,41 Hz) je shodná s dřívějším stavem bez čipu (10 000 008,36 Hz, M4), tj. osazení samo ladění nezměnilo.
+- **Strmost EFC:** 4,31 Hz/V (0→1 V) a 4,61 Hz/V (1→2 V) vůči zapsanému napětí, tj. 0,43–0,46 ppm/V. Leží v rozsahu 2,5–5,5 Hz/V, který předpokládá #277. Jeden LSB (76,3 µV) = 0,33–0,35 mHz = 3,3–3,5·10⁻¹¹ relativně. Zvýšení Vc zvyšuje kmitočet OCXO (`freq_hz` klesá).
+- **OCXO je při Vc ≈ 1,89 V naladěn na GPSDO** (lineární interpolace úseku 1–2 V: `freq_hz` = 0 při 1,0 + 4,0951/4,6107 = 1,888 V, tj. kód ≈ 24 746 = 1888 × 65536 / 5000). Při Vc = 0 je OCXO o 0,84 ppm níž. ⚠️ Platí pro teplotu 46 °C a ještě se zahřívající OCXO, jen orientačně. Kód se do OCXO sám nezapisuje (smyčka #82 a perzistence kódu nejsou).
+- **Chyba AIN0 vůči zapsanému napětí:** AIN0 ≈ 56 mV + 0,98·V_dac (56 / 1034 / 2015 mV pro 0 / 1000 / 2000 mV). **Offset 56 mV při nule** může být v měřicí cestě (U14, ADS1115, dělič) nebo ve vstupu OCXO; z dat nelze určit. **Sklon 0,98** by odpovídal vstupní impedanci EFC ~50 kΩ za 1,08 kΩ (R73 + R72), ale stejně dobře tolerancím děliče AIN0 (±1 %). Datasheet OCXO (Bliley 6891) udává vstupní impedanci EFC **10–100 kΩ**, s čímž je ~50 kΩ v souladu (úbytek na R73 + R72 = 1,08 kΩ tedy 1–10 %; servo ho vyrovná, jen strmost v Hz/V za DAC je o to menší). Rozhodl by multimetr přímo na pinu VC při kódu 0 a při 2000 mV.
+- **Čas ustálení RC (R78 100k × C68 1 µF) neměřen:** AIN0 se čte ~2× za sekundu, první čtení po zápisu bylo vždy ještě staré (80 mV, resp. 1034 mV, resp. 1960 mV); po 12 s sedí.
+- **Pozorování při startu (⬜ nevysvětleno):** po zapnutí měla každá z kanálů ADS1115 AIN0–3 jednu chybu čtení (`err=1..4`, `last=` ≈ uptime) a pak žádné další (`strk=0`, nerostou). Při předchozím startu bez čipu (M4) byly počty 0. Možná souvislost s první sondou/zápisem control registru DAC v prvních sekundách na I2C1. Ověřit při příštím power-cyklu.
+
 ### Dlouhodobě — offset reference (datalog, 2026-10-04 až 2026-10-11)
 
 Měřený kmitočet externího GPSDO proti OCXO na desce: **10 000 008,40 Hz (±0,03 Hz v 2h průměrech)**, tj. OCXO desky je o

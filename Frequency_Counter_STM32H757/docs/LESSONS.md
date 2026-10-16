@@ -4641,6 +4641,42 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (doplnit)
 - **Stav:** aktivní; ✅ ověřeno na desce (3 resety po sobě: záznamy přibývají, poškozených při startu stále 45); ⬜ nepozorován zápis `ERRLOG_K_TDC` / `REFRST` (čeká na M4)
 
+### L-0160 — Emulátor, který zpětně ovlivňuje model, nesmí zapisovat do SKUTEČNÉHO akčního členu
+
+- **Datum:** 2026-10-16
+- **Oblast:** emulace FPGA (`fpgasim`), smyčka GPSDO, DAC ladění OCXO (STATUS #305)
+- **Symptom:** (zachyceno při revizi, než se to dostalo na desku) emulátor 1PPS ladí „OCXO" podle kódu DAC a smyčka GPSDO tentýž kód zapisuje do AD5693R. S `fpgasim on` by smyčka řídila skutečný DAC podle výmyslu modelu a fyzické OCXO by se rozladilo (reference celého přístroje), aniž by se na jeho vstupu cokoli reálně měřilo.
+- **Příčina:** smyčka nerozlišovala, odkud pochází její vstup (emulace × FPGA); „akční člen" byl jen jeden — skutečný DAC.
+- **Oprava:** `freertos_task_fpga.c`: při emulaci smyčka řídí VIRTUÁLNÍ kód (`s_g_cmd_q16`, čte ho `gpsdo_sim_dac_code`), `g_gpsdo_drive` zůstává 0 a SensorsTask nezapisuje; změna zdroje (emulace ↔ FPGA) smyčku vrací do WAIT.
+- **Pravidlo:** Cokoli, co v emulaci uzavírá zpětnou vazbu (výstup → model → vstup), musí mít VIRTUÁLNÍ akční člen oddělený od skutečného; emulovaný vstup nikdy nesmí vést k zápisu do fyzické periferie.
+- **Detekce:** `fpgasim on 10000000` + `gpsdo`: `status` → `DAC OCXO` počet zápisů (`writes`) se nesmí zvyšovat a AIN0 se nesmí pohnout, zatímco `gpsdo` ukazuje FLL/LOCK.
+- **Commit:** (doplnit)
+- **Stav:** aktivní; ⬜ neověřeno na desce
+
+### L-0161 — Pevné zesílení regulátoru z datasheetu rozkmitalo smyčku: strmost se musí MĚŘIT z prvních kroků
+
+- **Datum:** 2026-10-16
+- **Oblast:** smyčka GPSDO (`core_step`, `freertos_task_fpga.c`), STATUS #305
+- **Symptom:** simulace na hostu (model OCXO se skutečnou strmostí 0,5×–3,5× odhadu): s pevným K = 3,4·10⁻¹¹/LSB FLL buď kmitala, nebo nezamkla do 4000 s (K 2× jiné); se špatným znaménkem K běžela donekonečna proti dorazu.
+- **Příčina:** K (relativní změna kmitočtu na LSB) je naměřená JEDNOU na jedné desce při jedné teplotě (4,3–4,6 Hz/V) a strmost EFC se u OCXO liší 2,5–5,5 Hz/V (datasheet). Pevná hodnota nemá žádnou zpětnou vazbu na to, zda krok kódu udělal to, co se čekalo.
+- **Oprava:** FLL po každém velkém kroku (> 50 LSB) spočte `K = Δy / Δkód` z naměřených oken: záporné K = smyčka se zastaví (špatné znaménko), K v pásmu 0,25×–4× zadaného se převezme; tři okna za sebou s kódem na dorazu a pořád odchylkou > 10⁻⁸ = konec (rozsah EFC nestačí). Selftest `gpsdo test` ověřuje 3 strmosti, špatné znaménko i nedostatečný rozsah.
+- **Pravidlo:** Zesílení smyčky, které závisí na vlastnosti konkrétního kusu hardwaru, odhadni za běhu z odezvy na vlastní zásah a hlídej její znaménko; dynamiku regulátoru ověř simulací proti modelu s jiným zesílením, než pro které je navržen, dřív než ji nasadíš na HW.
+- **Detekce:** `gpsdo test` (on-target) a host simulace (`scratchpad/gpsdo_sim.py`, kopie jádra); na desce `gpsdo` → `K` vypsané v řádku stavu (odhad z FLL) vs. zadané.
+- **Commit:** (doplnit)
+- **Stav:** aktivní; ⬜ neověřeno na desce
+
+### L-0162 — Tlačítko s armováním do třídy s autorepeatem: držení prstu provede potvrzení samo
+
+- **Datum:** 2026-10-16
+- **Oblast:** UI (`app_gpsdo.c`, `touch_pm_control`), RESET ALLAN / RESET TREND (STATUS #306)
+- **Symptom:** (zachyceno před commitem) při přidání RESET TREND do `touch_pm_control` (seznam ovládání +/−, která se při držení opakují) by držení prstu na tlačítku proběhlo armování i potvrzení za sebou a smazalo by nasbíraná data bez jakékoli volby.
+- **Příčina:** dvoustupňové potvrzení předpokládá DVA samostatné stisky; třída ovládání s opakováním generuje stisky sama.
+- **Oprava:** RESET ALLAN / RESET TREND se do `touch_pm_control` nepřidávají; armování vyprší za 5 s a druhý stisk je zvlášť událost.
+- **Pravidlo:** Destruktivní akce s potvrzením nikdy nezařazuj do kategorie ovládání s automatickým opakováním při držení.
+- **Detekce:** při přidání tlačítka s armováním zkontroluj `touch_pm_control` a ostatní třídy s `s_touch_rep`; na desce podržet prst na RESET (musí jen armovat).
+- **Commit:** (doplnit)
+- **Stav:** aktivní; ⬜ neověřeno na desce
+
 ---
 
 ## Archiv (neplatné lekce)

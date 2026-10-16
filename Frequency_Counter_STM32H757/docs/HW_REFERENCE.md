@@ -336,7 +336,7 @@ FPGA piny: PIN54=MOSI, PIN57=MISO, PIN55=SCK, PIN56=CS. Detaily viz `FPGA_INSTAN
 | 38 | 50 | 1 | **phase_status**: bity3:0 present[3:0], bity7:4 fine_seen[3:0] (zdravé=0xFF = `PH:F/F`) |
 |  |  |  | ⚠️ **FW ≥ 0x041E (CAPS bit9) je bajt 50 ECHO hradla `{5'd0, base_win}`** (0=100 ms, 1=250 ms, 2=1 s, 3=50 ms, 4=500 ms; SET_CONFIG 0x01) — STM podle něj pozná, že FPGA drží hradlo, které chce (`fpga_freq_cfg_sync`) |
 | 39 | 51 | 1 | **status2**: bit0 = chyba dělení pin27 (/16) |
-| 40 | 52 | 8 | **freq16_x100000** (u64 LE) — **pin27 /16** |
+| 40 | 52 | 8 | **freq16_x100000** (u64 LE) — **pin27 /16**. 🔴 **FW ≥ 0x0424 (CAPS bit13 = 0x2000): GPS 1PPS** — abs 52..55 `pps_ts` (u32 LE, takt hodin FPGA 100 MHz = OCXO přes Si5356 při poslední náběžné hraně 1PPS, mod 2³²), abs 56 `pps_seq` (u8, počet hran), 57..59 = 0. Čte se ŽIVĚ z domény 100 MHz (modul `pps_cap`, hrubý čítač, bez TDC) → STM bere hodnotu až při shodě dvou po sobě jdoucích rámců (`fpga_pps_get`). Kmitočet CH_B se i tak počítá z `edges_b`/`dt_b` (abs 101..111). |
 | 48 | 60 | 2 | spare = 0 |
 
 **FW ≥ 0x041F (CAPS bit10, samokontrola; rámec 128 B, STATUS #283):**
