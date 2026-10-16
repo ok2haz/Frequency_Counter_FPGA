@@ -12,6 +12,8 @@
 #include "encoder.h"   /* Faze A: gesta encoderu (UI_ENCODER_NAVRH.md) */
 #include "fx_flags.h"           /* g_fx_enabled + FX_* — graficke efekty (OCXO budik, holdover kuzel, spektrogram) */
 #include "gps.h"                /* gps_get() — zive GPS data do GNSS okna */
+#include "gpsdo.h"              /* gpsdo_get/gpsdo_hist_at — okno GPSDO TIE (s_view=45) */
+#include <stdlib.h>             /* labs — okno GPSDO TIE */
 #include "w25q.h"               /* w25q_read_jedec — externi flash v okne PAMET */
 #include "w25q_map.h"           /* W25Q_DATA_BASE/SIZE — okno Datalog */
 #include "datalog.h"            /* datalog_get_status/set_enabled — okno Datalog */
@@ -3066,7 +3068,7 @@ static void app_gpsdo_render_generator(void);    /* GENERATOR - vystupy Si5356 (
 static void app_gpsdo_render_errlog(void);       /* CHYBY — trvaly log ve W25Q (s_view=51) */
 static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first); /* def niz */
 static void kv_margin_bar(int16_t base_y, int pct, prim_color_t c, const char *label); /* def niz */
-static void app_gpsdo_render_ti(void);           /* TI — 1PPS time-interval (s_view=45, placeholder) */
+static void app_gpsdo_render_ti(void);           /* GPSDO TIE + stav smycky (s_view=45) */
 static void app_gpsdo_render_dualch(void);       /* Dvojkanal /4 + /16 + RF bargraf (s_view=46) */
 static void app_gpsdo_render_devmult(void);      /* Odchylka x N — ADRET 4110 styl (s_view=47) */
 static void app_gpsdo_render_commdiag(void);     /* Blokove schema (s_view=21) — dlazdice v NASTROJE */
@@ -3281,7 +3283,7 @@ static const menu_item_t MEAS_ITEMS[MEAS_N] = {
 
     { "MATH/LIMITY",  app_gpsdo_render_math     },   /* s_view=31 */
     { "HOLDOVER",     app_gpsdo_render_holdover },   /* s_view=16 */
-    { "TI 1PPS",      app_gpsdo_render_ti       },   /* s_view=45 */
+    { "GPSDO TIE",    app_gpsdo_render_ti       },   /* s_view=45 (TIE + stav smycky) */
     { "ODCHYLKA XN",  app_gpsdo_render_devmult  },   /* s_view=47 */
 };
 static const menu_list_t MEAS_LIST = {
@@ -3596,48 +3598,222 @@ static int16_t card_freq_draw(int16_t x, int16_t base, const char *num,
 }
 
 
-/* ── TI (s_view=45): 1PPS time-interval counter — faze/cas. chyba OCXO vs GPS ──
- * PLACEHOLDER: potrebuje HW/FPGA upravu (privest GPS 1PPS do FPGA + timestamp
- * proti 100 MHz), viz STATUS #36.
- *
- * 🔴 Okno drzi STEJNOU KOSTRU jako ostatni merici funkce (karta + velke cislo na
- * baseline 180 + radky duvodu), jen s hodnotou `--` v sede. ZAMERNE se nekresli
- * prazdna karta ani se okno neskryva: u merici funkce je prazdno k nerozeznani
- * od poruchy, kdezto seda hodnota + duvod rekne „tohle jeste neumime a proc".
- * Az pole `time_error_ns` v protokolu prijde, prepise se jen hodnota — layout
- * uz sedi s Odchylkou xN a Dvojkanalem. */
-static void app_gpsdo_render_ti(void)
+/* ── GPSDO / TIE (s_view=45, STATUS #37/#305): FAZOVA CHYBA OCXO vs GPS 1PPS a STAV SMYCKY ──────────────
+ * Dlazdice „GPSDO TIE" v MERENI (driv placeholder TI 1PPS). Data dava smycka `gpsdo.h`: zivy stav
+ * (`gpsdo_get`) a historie 1 bod / 10 s, 720 bodu = 2 h (`gpsdo_hist_at`). Prepinac TIE / y / KOD:
+ *   TIE  = surova fazova chyba smycky [ns] -- JEN ve stavu LOCK (FLL ji nema, v HOLD se nemeri),
+ *   y    = odhad relativni odchylky OCXO [ppb] (FLL: okno, LOCK: filtr 60 s),
+ *   KOD  = povel DAC [LSB] (zlomek je dither).
+ * Osa Y se nastavi podle bodu ve stavu LOCK (kdyz jich je >= 10), jinak ze vsech; body mimo se
+ * zakresli na okraj, aby rozbeh FLL (stovky ppb) nezplostil ustalenou cast. Pod grafem pas STAVU smycky
+ * (kazdy sloupec = stav toho bodu). Prekresluje se kazdy tik (2 Hz) cely -- uz bez change-key skipu,
+ * protoze se stejne meni zive cisla (a skip by porusil pravidlo o trech framebufferech).
+ * ⚠️ Zadne %f (nano.specs): hodnoty se tisknou celociselne po prenasobeni. */
+static const prim_rect_t GP_SEG_RECT = {18, 417, 300, 61};          /* prepinac TIE / y / KOD (footer vlevo) */
+static const char *const GP_SEG_LBL[3] = {"TIE", "y", "KOD"};
+static uint8_t s_gp_mode;                                           /* 0 = TIE [ns], 1 = y [ppb], 2 = kod DAC */
+
+static prim_color_t gp_state_color(uint8_t st)
 {
-    window_prep();
-    view_set(45);
-    window_chrome("TI  1PPS time-interval", WIN_TITLE_Y);
-    ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Casova/fazova chyba OCXO vs GPS 1PPS"};
-    ui_card_render_chrome(&c);
-
-    /* Velke cislo na TEMZE miste a v teze typografii jako Odchylka xN. */
-    card_freq_draw(DG_LLBL, 180, "--", 0, UI_COLOR_INK_3, "ns");
-    prim_draw_text((prim_point_t){DG_LLBL, 120},
-        "Interval mezi GPS 1PPS a hranou 100 MHz reference.",
-        &ui_font_sans_18, UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-
-    /* Rozlozeni radku shodne s `render_devmult` (236/272/308/344). */
-    dlabel(DG_LLBL, 236, "Stav:");
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 110), 236},
-        "NEDOSTUPNE — vyzaduje HW", &ui_font_mono_18, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
-    dlabel(DG_LLBL, 272, "Odemyka:");
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 110), 272},
-        "TIE graf, sawtooth korekci, holdover predikci", &ui_font_mono_18,
-        UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    dlabel(DG_LLBL, 308, "Ceka na:");
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 110), 308},
-        "GPS 1PPS -> pin FPGA; timestamp proti 100 MHz (TDC 2,5 ns)",
-        &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 110), 344},
-        "protokol v2: pole time_error_ns v DATA ramci   (STATUS #36)",
-        &ui_font_mono_16, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    present_now();
+    switch (st) {
+    case GPSDO_LOCK: return UI_COLOR_OK;
+    case GPSDO_FLL:  return UI_COLOR_VIOLET;
+    case GPSDO_HOLD: return UI_COLOR_ACC;
+    case GPSDO_WAIT: return UI_COLOR_WARN;
+    default:         return UI_COLOR_INK_4;
+    }
 }
 
+/* Hodnota bodu v jednotce zvoleneho modu. @return 0 = bod se v tomto modu nekresli. */
+static int gp_value(const gpsdo_hist_pt_t *p, int mode, double *v)
+{
+    if (mode == 0) { if (p->state != GPSDO_LOCK) return 0; *v = (double)p->x_ns; return 1; }
+    if (mode == 1) { *v = (double)p->y_ppt * 1e-3; return 1; }          /* ppt -> ppb */
+    *v = (double)p->code_q16 / 65536.0; return 1;
+}
+
+/* Hezky rozsah osy (1/2/5 x 10^n), ~4 dilky. */
+static void gp_nice(double lo, double hi, double *olo, double *ohi, double *step)
+{
+    double span = hi - lo;
+    if (span < 1e-9) { lo -= 1.0; hi += 1.0; span = 2.0; }
+    double raw = span / 4.0, e = 1.0;
+    while (raw >= 10.0 * e) e *= 10.0;
+    while (raw < e) e /= 10.0;
+    double m = raw / e;
+    double st = ((m <= 1.0) ? 1.0 : (m <= 2.0) ? 2.0 : (m <= 5.0) ? 5.0 : 10.0) * e;
+    double a = lo / st, b = hi / st;
+    long fa = (long)a; if ((double)fa > a) fa--;                        /* floor */
+    long cb = (long)b; if ((double)cb < b) cb++;                        /* ceil */
+    *olo = (double)fa * st; *ohi = (double)cb * st; *step = st;
+}
+
+/* Cislo s `dec` desetinami bez %f. */
+static void gp_fmt(char *b, size_t n, double v, int dec)
+{
+    long sc = 1; for (int i = 0; i < dec; i++) sc *= 10;
+    double a = (v < 0.0) ? -v : v;
+    long q = (long)(a * (double)sc + 0.5);
+    if (dec == 0) snprintf(b, n, "%s%ld", (v < 0.0 && q) ? "-" : "", q);
+    else          snprintf(b, n, "%s%ld.%0*ld", (v < 0.0 && q) ? "-" : "", q / sc, dec, q % sc);
+}
+
+static void gp_plot(prim_rect_t area)
+{
+    prim_fill_rect(area, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    prim_rect_t in = {(int16_t)(area.x + 62), (int16_t)(area.y + 8), (int16_t)(area.w - 70), (int16_t)(area.h - 34)};
+    uint16_t n = gpsdo_hist_count();
+    if (n < 2) {
+        prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2), (int16_t)(in.y + in.h / 2)},
+                       "ceka na data (1 bod / 10 s)...", &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+        return;
+    }
+    /* rozsah osy: z bodu LOCK, kdyz jich je dost, jinak ze vsech */
+    gpsdo_hist_pt_t pt;
+    uint16_t nl = 0;
+    for (uint16_t i = 0; i < n; i++) if (gpsdo_hist_at(i, &pt) && pt.state == GPSDO_LOCK) nl++;
+    int lock_only = (nl >= 10u);
+    double lo = 0.0, hi = 0.0; int have = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        double v;
+        if (!gpsdo_hist_at(i, &pt) || (lock_only && pt.state != GPSDO_LOCK) || !gp_value(&pt, s_gp_mode, &v)) continue;
+        if (!have) { lo = hi = v; have = 1; } else { if (v < lo) lo = v; if (v > hi) hi = v; }
+    }
+    if (!have) {
+        prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2), (int16_t)(in.y + in.h / 2)},
+                       s_gp_mode == 0 ? "TIE se meri jen ve stavu LOCK" : "zatim zadna data",
+                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_CENTER);
+        return;
+    }
+    double alo, ahi, st;
+    gp_nice(lo, hi, &alo, &ahi, &st);
+    int dec = (st >= 1.0) ? 0 : (st >= 0.1) ? 1 : (st >= 0.01) ? 2 : 3;
+    double rng = ahi - alo; if (rng <= 0.0) rng = 1.0;
+    /* vodorovna mrizka + popisky osy Y (nulova cara vyraznejsi) */
+    for (double v = alo; v <= ahi + st * 0.001; v += st) {
+        int16_t y = (int16_t)((double)in.y + (double)in.h - (v - alo) * (double)in.h / rng + 0.5);
+        int zero = (v > -st * 0.001 && v < st * 0.001);
+        prim_draw_line((prim_point_t){in.x, y}, (prim_point_t){(int16_t)(in.x + in.w), y}, 1,
+                       zero ? UI_COLOR_INK_4 : screen_main_plot_grid_color());
+        char lb[16]; gp_fmt(lb, sizeof lb, v, dec);
+        prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(y + 5)}, lb, &ui_font_mono_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_RIGHT);
+    }
+    /* svisla mrizka po ctvrtinach + popisky casu (stare -> ted) */
+    char tl[16];
+    for (int k = 0; k <= 4; k++) {
+        int16_t x = (int16_t)(in.x + k * (in.w - 1) / 4);
+        if (k > 0 && k < 4) prim_draw_line((prim_point_t){x, in.y}, (prim_point_t){x, (int16_t)(in.y + in.h)}, 1,
+                                           screen_main_plot_grid_color());
+        if (k == 4) snprintf(tl, sizeof tl, "ted");
+        else { screen_main_fmt_dur(tl, (int)sizeof tl, (int32_t)((uint32_t)n * GPSDO_HIST_PERIOD_S * (uint32_t)(4 - k) / 4u)); }
+        char lab[20]; if (k == 4) snprintf(lab, sizeof lab, "%s", tl); else snprintf(lab, sizeof lab, "-%s", tl);
+        prim_draw_text((prim_point_t){x, (int16_t)(in.y + in.h + 18)}, lab, &ui_font_mono_14, UI_COLOR_INK_3,
+                       (k == 0) ? PRIM_ALIGN_LEFT : (k == 4) ? PRIM_ALIGN_RIGHT : PRIM_ALIGN_CENTER);
+    }
+    /* krivka: dva sousedni platne body se spoji, mimo rozsah na okraj */
+    int have_prev = 0; prim_point_t pp = {0, 0};
+    for (uint16_t i = 0; i < n; i++) {
+        double v;
+        if (!gpsdo_hist_at(i, &pt) || !gp_value(&pt, s_gp_mode, &v)) { have_prev = 0; continue; }
+        if (v < alo) v = alo;
+        if (v > ahi) v = ahi;
+        prim_point_t cp = {(int16_t)(in.x + (int32_t)i * (in.w - 1) / (n - 1)),
+                           (int16_t)((double)in.y + (double)in.h - (v - alo) * (double)in.h / rng + 0.5)};
+        if (have_prev) prim_draw_line(pp, cp, 2, UI_COLOR_ACC);
+        pp = cp; have_prev = 1;
+    }
+}
+
+/* Pas STAVU smycky: sloupec = bod historie, barva = stav (OFF/WAIT/FLL/LOCK/HOLD) + legenda. */
+static void gp_state_strip(prim_rect_t area)
+{
+    prim_fill_rect(area, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    uint16_t n = gpsdo_hist_count();
+    int16_t sx = (int16_t)(area.x + 62), sw = (int16_t)(area.w - 70);
+    gpsdo_hist_pt_t pt;
+    if (n >= 2) {
+        for (int16_t x = 0; x < sw; x++) {
+            uint16_t i = (uint16_t)((int32_t)x * (n - 1) / (sw > 1 ? sw - 1 : 1));
+            if (gpsdo_hist_at(i, &pt))
+                prim_fill_rect((prim_rect_t){(int16_t)(sx + x), area.y, 1, 10}, gp_state_color(pt.state), PRIM_BLEND_REPLACE);
+        }
+    }
+    static const uint8_t ST[5] = {GPSDO_OFF, GPSDO_WAIT, GPSDO_FLL, GPSDO_LOCK, GPSDO_HOLD};
+    int16_t lx = sx;
+    for (int k = 0; k < 5; k++) {
+        const char *nm = gpsdo_state_name(ST[k]);
+        prim_fill_rect((prim_rect_t){lx, (int16_t)(area.y + 18), 10, 10}, gp_state_color(ST[k]), PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){(int16_t)(lx + 14), (int16_t)(area.y + 27)}, nm, &ui_font_mono_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_LEFT);
+        lx = (int16_t)(lx + 14 + 9 * (int16_t)strlen(nm) + 14);
+    }
+}
+
+static void gp_row(int16_t y, const char *label, const char *val, prim_color_t vc)
+{
+    prim_draw_text((prim_point_t){582, y}, label, &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    prim_draw_text((prim_point_t){762, y}, val, &ui_font_mono_16, vc, PRIM_ALIGN_RIGHT);
+}
+
+static void app_gpsdo_render_ti(void)
+{
+    int first = window_first(45);
+    if (first) {
+        view_set(45);
+        window_chrome("GPSDO  TIE a stav smycky", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_A, .header_label = "Fazova chyba OCXO vs GPS 1PPS, stav smycky"};
+        ui_card_render_chrome(&c);
+        prim_draw_line((prim_point_t){572, 92}, (prim_point_t){572, 398}, 1, UI_COLOR_LINE);
+    }
+    gpsdo_status_t s;
+    gpsdo_get(&s);
+
+    /* stavovy radek */
+    prim_rect_t sl = {26, 94, 540, 30};
+    prim_fill_rect(sl, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    char b[96];
+    snprintf(b, sizeof b, "%s%s", gpsdo_state_name(s.state), s.locked ? "  ZAMCENO" : "");
+    prim_draw_text((prim_point_t){30, 118}, b, &ui_font_mono_22, gp_state_color(s.state), PRIM_ALIGN_LEFT);
+    if (s.why != GPSDO_WHY_NONE)
+        prim_draw_text((prim_point_t){566, 117}, gpsdo_why_text(s.why), &ui_font_sans_16, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
+    else {
+        snprintf(b, sizeof b, "v tomto stavu %lu s", (unsigned long)s.state_s);
+        prim_draw_text((prim_point_t){566, 117}, b, &ui_font_sans_16, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
+    }
+
+    gp_plot((prim_rect_t){26, 130, 540, 226});
+    gp_state_strip((prim_rect_t){26, 362, 540, 36});
+
+    /* pravy sloupec: cisla */
+    prim_rect_t tb = {578, 94, 188, 304};
+    prim_fill_rect(tb, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    long yp = (long)(s.y * 1e12 + (s.y >= 0.0 ? 0.5 : -0.5));          /* ppt */
+    snprintf(b, sizeof b, "%c%ld.%03ld", yp < 0 ? '-' : '+', labs(yp) / 1000, labs(yp) % 1000);
+    gp_row(118, "y [ppb]", b, UI_COLOR_INK);
+    snprintf(b, sizeof b, "%+ld", (long)(s.x_raw_ns + (s.x_raw_ns >= 0.0 ? 0.5 : -0.5)));
+    gp_row(148, "faze [ns]", s.state == GPSDO_LOCK ? b : "--", UI_COLOR_INK);
+    long cd = (long)(s.code * 100.0 + 0.5);
+    snprintf(b, sizeof b, "%ld.%02ld", cd / 100, cd % 100);
+    gp_row(178, "kod DAC", b, UI_COLOR_INK);
+    long kk = (long)(s.kdac * 1e13 + 0.5);
+    snprintf(b, sizeof b, "%ld.%02lde-11", kk / 100, kk % 100);
+    gp_row(208, "K / LSB", b, UI_COLOR_INK_2);
+    snprintf(b, sizeof b, "%lu s", (unsigned long)(s.tau_s + 0.5));
+    gp_row(238, "tau PLL", b, UI_COLOR_INK_2);
+    snprintf(b, sizeof b, "%lu/%lu", (unsigned long)s.pps_ok, (unsigned long)s.pps_rej);
+    gp_row(268, "1PPS ok/rej", b, s.pps_rej ? UI_COLOR_WARN : UI_COLOR_INK_2);
+    snprintf(b, sizeof b, "%lu", (unsigned long)s.pps_gap);
+    gp_row(298, "diry 1PPS", b, s.pps_gap ? UI_COLOR_WARN : UI_COLOR_INK_2);
+    static const char *const SW[4] = {"vypnuta", "+q", "-q", "bez dat"};
+    gp_row(328, "sawtooth", s.saw < 4u ? SW[s.saw] : "?", UI_COLOR_INK_2);
+    snprintf(b, sizeof b, "%ld/%ld", (long)(s.saw_var[2] + 0.5f), (long)(s.saw_var[0] + 0.5f));
+    gp_row(358, "rozptyl q/bez", b, UI_COLOR_INK_3);
+
+    ui_segmented_t sg = {.rect = GP_SEG_RECT, .labels = GP_SEG_LBL, .n = 3, .selected = s_gp_mode};
+    ui_segmented_render(&sg);
+    present_now();
+}
 
 /* ── Dvojkanal (s_view=46): CH A + CH B NAD SEBOU, kmitocet + RF bargraf ──────
  * CH A = `frequency_x100000` (primarni odbocka), CH B = `freq16_x100000`
@@ -8179,6 +8355,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 5) app_gpsdo_render_mem();     /* live refresh (RTOS heap) okna PAMET */
     else if (s_view == 6) app_gpsdo_render_histogram(); /* live/snapshot histogram mereni */
     else if (s_view == 23) app_gpsdo_render_allan();  /* fullscreen Allan graf (zivy) */
+    else if (s_view == 45) app_gpsdo_render_ti();     /* GPSDO TIE + stav smycky (zivy) */
     else if (s_view == 8) saver_draw();               /* screensaver hodiny (1x/s dle RTC) */
     else if (s_view == 9) app_gpsdo_render_trend();   /* fullscreen trend (zivy) */
     else if (s_view == 10) app_gpsdo_render_about();  /* O pristroji (uptime tick) */
@@ -9613,6 +9790,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 else if (seg == 1) app_gpsdo_render_histogram();
                 else               app_gpsdo_render_waterfall();
             }
+            return true;
+        }
+        if (s_view == 45 && in_rect(x, y, GP_SEG_RECT)) {         /* GPSDO: prepinac TIE / y / KOD */
+            ui_segmented_t sg = {.rect = GP_SEG_RECT, .labels = GP_SEG_LBL, .n = 3, .selected = s_gp_mode};
+            int seg = ui_segmented_hit(&sg, x, y);
+            if (seg >= 0 && seg != s_gp_mode) { s_gp_mode = (uint8_t)seg; app_gpsdo_render_ti(); }
             return true;
         }
         if (s_view == 23 && in_rect(x, y, ALLAN_RESET_RECT)) {    /* RESET ALLAN: dvoji stisk */

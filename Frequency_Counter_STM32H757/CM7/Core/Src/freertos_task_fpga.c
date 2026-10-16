@@ -458,6 +458,39 @@ static float     s_saw_var[3];
 static uint32_t  s_saw_dec;
 static gpsdo_status_t s_pub;                   /* publikovany stav (kopie pod kritickou sekci) */
 
+/* Historie smycky (viz gpsdo.h): kruhovy buffer, 1 bod / 10 s. Zapisuje jen gpsdo_tick (defaultTask). */
+static int16_t  s_h_x[GPSDO_HIST_N];
+static int32_t  s_h_y[GPSDO_HIST_N];
+static uint32_t s_h_code[GPSDO_HIST_N];
+static uint8_t  s_h_st[GPSDO_HIST_N];
+static volatile uint16_t s_h_head, s_h_n;      /* head = index PRISTIHO zapisu, n = platnych bodu */
+static uint32_t s_h_ms;
+
+static void gp_hist_push(uint32_t now)
+{
+    if ((uint32_t)(now - s_h_ms) < GPSDO_HIST_PERIOD_S * 1000u) return;
+    s_h_ms = now ? now : 1u;
+    uint16_t h = s_h_head;
+    double x = (s_g_state == GPSDO_LOCK) ? s_gc.x : 0.0;     /* TIE ma smysl jen v LOCK */
+    s_h_x[h]    = (int16_t)gp_clamp(x, -32768.0, 32767.0);
+    s_h_y[h]    = (int32_t)gp_clamp(s_gc.yf * 1e12, -2e9, 2e9);
+    s_h_code[h] = (uint32_t)(gp_clamp(s_gc.code, 0.0, 65535.0) * 65536.0 + 0.5);
+    s_h_st[h]   = s_g_state;
+    __DMB();
+    s_h_head = (uint16_t)((h + 1u) % GPSDO_HIST_N);
+    if (s_h_n < GPSDO_HIST_N) s_h_n++;
+}
+
+uint16_t gpsdo_hist_count(void) { return s_h_n; }
+int gpsdo_hist_at(uint16_t i, gpsdo_hist_pt_t *p)
+{
+    uint16_t n = s_h_n, head = s_h_head;
+    if (i >= n || !p) return 0;
+    uint16_t idx = (uint16_t)((head + GPSDO_HIST_N - n + i) % GPSDO_HIST_N);
+    p->x_ns = s_h_x[idx]; p->y_ppt = s_h_y[idx]; p->code_q16 = s_h_code[idx]; p->state = s_h_st[idx];
+    return 1;
+}
+
 static void g_set_state(uint8_t st, uint8_t why)
 {
     if (st != s_g_state) s_g_state_ms = HAL_GetTick();
@@ -619,6 +652,8 @@ void gpsdo_tick(void)
     gpsdo_status_t st;
     st.state = s_g_state; st.why = s_g_why; st.locked = g_gpsdo_lockflag; st.saw = s_saw;
     st.y = s_gc.yf; st.x_ns = s_gc.xf; st.code = s_gc.code;
+    st.x_raw_ns = (s_g_state == GPSDO_LOCK) ? s_gc.x : 0.0;
+    gp_hist_push(now);
     st.kdac = (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac;   /* odhad z FLL, jinak zadane */
     st.tau_s = s_g_tau;
     st.fll_win_s = s_gc.fll_win; st.state_s = (now - s_g_state_ms) / 1000u;

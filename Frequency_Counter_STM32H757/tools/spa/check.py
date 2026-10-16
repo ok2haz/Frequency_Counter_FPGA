@@ -35,7 +35,8 @@ TESTS = ['spa_test', 'hov_test', 'unc_test', 'pwr_test',
          'stat_test',   # F-0170: estimatory proti SP1065 + t-test = firmware
          'zoom_test',   # detail histogramu a spektrogramu Df (klik na kartu)
          'ser_test',    # selektivni zapinani/vypinani krivek (legenda, jen web)
-         'vcaxes_test'] # osy grafu Vc: vlevo kod DAC, vpravo napeti (poloha car = hodnota)
+         'vcaxes_test', # osy grafu Vc: vlevo kod DAC, vpravo napeti (poloha car = hodnota)
+         'gp_test']     # graf GPSDO: TIE / y / kod, osa z bodu LOCK
 
 fail = []
 

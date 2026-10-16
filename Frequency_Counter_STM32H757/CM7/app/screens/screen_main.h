@@ -153,6 +153,8 @@ int  screen_main_trend_secs(void);                     /* aktualni okno trendu [
 /* Doba [s] -> kompaktni text ("45 s" / "10 min" / "6 h" / "30 d"). Sdileno s app
  * vrstvou, aby popisek tlacitka a overlay trendu formatovaly stejne. */
 void screen_main_fmt_dur(char *buf, int len, int32_t secs);
+/* Barva pomocnych os (mrizky) grafu -- 50 % mix LINE a INK_4, funguje ve vsech 5 tematech. */
+prim_color_t screen_main_plot_grid_color(void);
 void screen_main_render_histogram(prim_rect_t rect);   /* histogram distribuce y do rect (okno) */
 void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka do rect (okno) */
 bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */

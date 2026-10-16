@@ -56,6 +56,7 @@ typedef struct {
     uint8_t  saw;          /* GPSDO_SAW_* (rozhodnuto naposledy) */
     double   y;            /* posledni odhad relativni odchylky OCXO (FLL: okno, LOCK: filtr) */
     double   x_ns;         /* filtrovana fazova chyba [ns] (LOCK) */
+    double   x_raw_ns;     /* SUROVA fazova chyba (TIE) [ns] od zamceni / navratu z HOLD; mimo LOCK 0 */
     double   code;         /* povel DAC [LSB] vcetne zlomku */
     double   kdac;         /* K [relativne / LSB] */
     double   tau_s;        /* casova konstanta PLL [s] */
@@ -65,6 +66,16 @@ typedef struct {
     float    saw_var[3];   /* rozptyl 2. diferenci faze [ns^2]: bez opravy / +q / -q (posledni okno) */
     uint32_t saw_n;        /* pocet rozhodnuti sawtooth */
 } gpsdo_status_t;
+
+/* ── Historie smycky (TIE graf, okno TI/GPSDO na displeji): 1 bod / 10 s, 720 bodu = 2 h ────────────────
+ * Zapisuje VYHRADNE defaultTask (gpsdo_tick), cte UiTask pres gpsdo_hist_at (bez zamku -- zapis meni jen
+ * jeden slot, roztrzeny bod pri precteni by byl nanejvys jednou vadny pixel). `x_ns` je surova fazova chyba
+ * smycky (platna jen ve stavu LOCK), `y_ppt` odhad odchylky OCXO [1e-12], `code_q16` povel DAC [Q16.16]. */
+#define GPSDO_HIST_N         720u
+#define GPSDO_HIST_PERIOD_S  10u
+typedef struct { int16_t x_ns; int32_t y_ppt; uint32_t code_q16; uint8_t state; } gpsdo_hist_pt_t;
+uint16_t gpsdo_hist_count(void);                       /* 0..GPSDO_HIST_N */
+int      gpsdo_hist_at(uint16_t i, gpsdo_hist_pt_t *p); /* i = 0 nejstarsi; @return 0 = mimo rozsah */
 
 void     gpsdo_tick(void);                 /* VYHRADNE defaultTask, ~100 Hz */
 void     gpsdo_get(gpsdo_status_t *out);

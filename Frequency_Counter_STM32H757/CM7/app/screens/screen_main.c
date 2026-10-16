@@ -2410,6 +2410,8 @@ static prim_color_t plot_grid_color(void)
     return PRIM_RGB(r, g, bl);
 }
 
+prim_color_t screen_main_plot_grid_color(void) { return plot_grid_color(); }
+
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
                              const float *vals, const float *edf,
                              const float *flr, int np,

@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  24u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  25u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -144,7 +144,9 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v koncove vycpavce `ipc_snapshot_t` (476..479) -> VELIKOST ANI
                                        OFFSETY SE NEZMENILY (hlida `_Static_assert`). Navic blok
                                        `gpsdo` (smycka GPSDO, #305) na KONCI `ipc_shared_t`. Bumpnuto
-                                       kvuli detekci nesouladu bank. Flashnout obe banky. */
+                                       kvuli detekci nesouladu bank. Flashnout obe banky.
+                                       v25 (2026-10-16): `ipc_gpsdo_t.x_raw_ns` (surova fazova chyba pro graf TIE na webu);
+                                       blok roste 36 -> 40 B, lezi na KONCI struktury -> nic pred nim se neposouva. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -600,8 +602,9 @@ typedef struct {
     uint32_t pps_ok, pps_rej;      /* prijate / odmitnute intervaly 1PPS */
     uint16_t tau_s;                /* casova konstanta PLL [s] */
     uint16_t kdac_e13;             /* K (odhad z FLL) x 1e13 */
+    int32_t  x_raw_ns;             /* v25: SUROVA fazova chyba (TIE) [ns], platna ve stavu LOCK (jinak 0) */
 } ipc_gpsdo_t;
-_Static_assert(sizeof(ipc_gpsdo_t) == 36u, "ipc_gpsdo_t zmenil velikost");
+_Static_assert(sizeof(ipc_gpsdo_t) == 40u, "ipc_gpsdo_t zmenil velikost");
 
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {

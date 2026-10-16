@@ -191,6 +191,7 @@ void ipc_publish(void)
             g_ipc.gpsdo.pps_ok   = gs.pps_ok; g_ipc.gpsdo.pps_rej = gs.pps_rej;
             g_ipc.gpsdo.tau_s    = (uint16_t)gs.tau_s;
             g_ipc.gpsdo.kdac_e13 = (uint16_t)(gs.kdac * 1e13 + 0.5);
+            g_ipc.gpsdo.x_raw_ns = (int32_t)((gs.x_raw_ns > 2e9) ? 2e9 : (gs.x_raw_ns < -2e9 ? -2e9 : gs.x_raw_ns));
             IPC_DMB(); g_ipc.gpsdo.gen++;
         }
     }
