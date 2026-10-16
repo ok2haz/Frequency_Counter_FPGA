@@ -15,12 +15,21 @@
 #include <ui/ui.h>
 #include "sensor_stat.h"   /* g_sensors[] — agregace chyb do SYS pilulky */
 #include "alarm.h"         /* g_mon_*_bad — prahovy monitor v SYS pilulce */
+#include "syscfg.h"        /* syscfg_storage_ready_count — nepripravene uloziste v SYS pilulce (F-0098) */
+#include "freertos_shared.h"  /* g_freq_x100000/seq/valid/stale — realny kmitocet z FpgaTasku (#1) */
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
+#include "phase_noise.h"   /* pn_compute — L(f) fazovy sum z ringu s_y[] (#45) */
+#include "meas_present.h"  /* MP_TDC_PS — jediny zdroj kroku TDC (sdileny s CM4/webem) */
+#include "../hal/stm32/prim_stm32_hal.h"  /* prim_stm32_fb_count — guardy „nekresli, je to stejne" */
+#include "fpga_freq.h"     /* fpga_freq_hires_mul — overeni nasobitele reciproke dvojice */
 #include <prim/prim.h>
 #include "gps.h"     /* gps_get() — zive GNSS lock / pocet druzic / cas+datum v headeru */
 #include <stdio.h>   /* snprintf pro cas/datum */
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
+#include "datalog.h"
+#include "sd_export.h"  /* sd_export_ui_info()->present — mikro-ikona SD karty v headeru */
+#include "errlog.h"     /* udalosti zmeny nastaveni (soumeritelnost mereni) */   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
 /* RTC cas (defaultTask zapise pres rtc_app_tick) — hodiny v headeru z RTC, ne
  * GPS-direct: tikaji plynule i pri ztrate fixu (RTC bezi z LSE). */
@@ -57,10 +66,26 @@ extern volatile uint8_t g_ui_cfg_req_pend;
  * ZVOLENE casove zone z Nastaveni; UTC kdyz je zona 0 — label zony k tomu dava
  * g_tz_label). Dokud nebyl RTC srovnan z GPS, vraci placeholdery
  * "--:--:--" / "no GPS". time8/date10 = char[16]. */
+/* ⚠️ `g_rtc_text_local` zapisuje defaultTask (`rtc_app_tick`, 1 Hz, `strncpy`,
+ * BEZ zamku), cteme ho z UiTasku -> cteni muze zastihnout pulku stare a pulku
+ * nove hodnoty. Nejhorsi realny dopad je jeden snimek s pomichanym casem, pres
+ * pulnoc i s datem.
+ * 🔴 PAROVE MISTO: `get_fattime()` v `CM7/FATFS/App/fatfs.c` cte TENTYZ retezec
+ * a ochranu uz mel — tady chybela (audit F-0038, trida `L-0012`). Pouzit je
+ * ZAMERNE tentyz vzor, at se ty dve kopie daji porovnat: precti dvakrat a
+ * shodni se; pisar tika 1x za sekundu, takze dve cteni tesne za sebou prakticky
+ * nemuzou padnout do dvou ruznych zapisu. Kdyz se lisi, bereme druhou kopii —
+ * ta uz je za zapisem.
+ * ⚠️ Sdilena funkce pro obe mista NENI mozna: `fatfs.c` je generovany a nema
+ * USER CODE blok pro include, proto si tam `extern` deklaruje rucne. */
 static void rtc_time_date(char *time8, char *date10)
 {
-    char rt[24];
-    strncpy(rt, (const char *)g_rtc_text_local, sizeof rt - 1); rt[sizeof rt - 1] = '\0';
+    char rt[24], again[24];
+    for (int attempt = 0; attempt < 3; attempt++) {
+        strncpy(rt,    (const char *)g_rtc_text_local, sizeof rt - 1);    rt[sizeof rt - 1] = '\0';
+        strncpy(again, (const char *)g_rtc_text_local, sizeof again - 1); again[sizeof again - 1] = '\0';
+        if (strcmp(rt, again) == 0) break;   /* dve po sobe jdouci cteni shodna -> stabilni */
+    }
     if (g_rtc_synced && strlen(rt) >= 19) {
         snprintf(time8,  16, "%.8s",  rt + 11);   /* "HH:MM:SS" */
         snprintf(date10, 16, "%.10s", rt);        /* "YYYY-MM-DD" */
@@ -90,19 +115,57 @@ static char s_time_buf[16] = "14:32:07";
 static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
 
 /* Interactive UI state (iteration-1: drives labels/title, no live measurement). */
-static const char *MODE_NAME[2] = {"FREQUENCY", "PERIOD"};
-static const char *CHAN_NAME[2] = {"CH A", "CH B"};
-static const char *GATE_VAL[4]  = {"0,1 s", "1 s", "10 s", "100 s"};
-/* Tataz sada v sekundach — pro rozpocet nejistoty (rozliseni ~ tdc/gate).
- * ⚠️ Drzet SYNCHRONNI s GATE_VAL: popisek a hodnota musi rikat totez. */
-static const float GATE_SEC[4] = {0.1f, 1.0f, 10.0f, 100.0f};
+/* ⚠️ Nazvy funkci cesky a ve tvaru, ktery zada zadani UI §4 (`FREKVENCE A`).
+ * Kanal se pripojuje az v `render_body_title`, aby to byl JEDEN pojem, ne dva
+ * oddelene udaje — uzivatel mysli „frekvence A", ne „frekvence, kanal A". */
+static const char *MODE_NAME[2] = {"FREKVENCE", "PERIODA"};
+static const char *CHAN_NAME[2] = {"A", "B"};
+/* Hradlo: index = `IPC_UICFG_GATE` (0,05 / 0,1 / 0,25 / 0,5 / 1 s, vychozi 0,25 s = index 2). DO FPGA ho
+ * posila FpgaTask (`fpga_freq_cfg_sync`) podle `g_ui_cfg`; vyber kanalu tak same. */
+static const char *GATE_VAL[IPC_GATE_N] = {"0,05 s", "0,1 s", "0,25 s", "0,5 s", "1 s"};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
-    st = {0, 1, 1, true};    /* FREQUENCY, CH B, 1 s, RUNNING po bootu (tlacitko "STOP") */
+    st = {0, 0, (int8_t)IPC_GATE_DEFAULT, true};    /* FREQUENCY, CH A, 0,25 s, RUNNING po bootu (tlacitko "STOP") */
+/* Zabaleni `st` do kodovani `g_ui_cfg` (format v2, viz ipc_shared.h). */
+static uint8_t ui_cfg_pack(void)
+{
+    uint8_t c = (uint8_t)(IPC_UICFG_V2 | (st.mode & 1) | ((st.chan & 1) << 1) | ((st.running ? 1 : 0) << 4));
+    return IPC_UICFG_SET_GATE(c, (unsigned)st.gate);
+}
+static uint8_t s_disp_recalc = 0;   /* 1 = prepnul se FREQ/PERIOD -> vynut rebuild formatu velkeho cisla */
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 
-/* RUN/STOP: ridi, zda bezi simulace mereni (kmitocet, bargraf, statistika). */
-double screen_main_gate_seconds(void) { return (double)GATE_SEC[st.gate & 3]; }
+/* Aktualni merici funkce = `st.mode` (0 FREKVENCE / 1 PERIODA). Vystaveno pro
+ * okno FUNKCE (zadani UI §7), aby app vrstva nemusela sahat do `st`. */
+int  screen_main_mode(void) { return st.mode; }
+
+void screen_main_set_mode(int m)
+{
+    if (m < 0 || m > 1 || m == st.mode) return;
+    st.mode = (int8_t)m;
+    s_disp_recalc = 1;     /* FREQ<->PERIOD -> prepocet formatu velkeho cisla */
+    /* Persist stejne jako footer prepinac (`screen_main_button_action`).
+     * ⚠️ `st.mode` se uklada na JEDEN bit — az pribude treti dostupna funkce,
+     * musi se `g_ui_cfg` rozsirit, jinak se po resetu vrati spatna funkce. */
+    g_ui_cfg = ui_cfg_pack();
+    g_ui_cfg_dirty = 1;
+}
+
+/* 🔴 SKUTECNE zmerene hradlo z posledniho ramce [s], 0 = nezname.
+ * ⚠️ Zamerne NEEXISTUJE protejsek vracejici NASTAVENI z UI: to se do FPGA vubec
+ * nedostane (audit STATUS #83) a okno ANALYZA z nej kdysi pocitalo rozliseni,
+ * takze pri brane 100 s hlasilo 400x lepsi nejistotu, nez jaka je. Drivejsi
+ * `screen_main_gate_seconds()` zbyla jen jako past — mela jediny obsah komentare
+ * „tuhle nepouzivej" a zadneho volajiciho, takze byla 2026-09-01 odstranena.
+ * Kdyz nominal opravdu potrebujes, vezmi si ho z popisku `GATE_VAL[st.gate]`.
+ * Headline uz poctivou hodnotu pouzival (`freq_uncertain_frac` bere `gate_ns`
+ * z ramce), takze se dve mista rozchazela. */
+double screen_main_gate_actual_s(void)
+{
+    uint64_t g = g_freq_gate_ns;
+    return g ? (double)g * 1e-9 : 0.0;
+}
+
 
 bool screen_main_is_running(void) { return st.running; }
 
@@ -202,6 +265,16 @@ static int compute_sys_level(void)
      * RED zustava vyhrazena ztrate reference a selftest FAILu, tedy stavum, kdy
      * pristroj bud nemeri, nebo mere spatne a nevi o tom. */
     if (g_mon_vbat_bad || g_mon_ocxo_bad || g_mon_adev_bad) lvl = 1;
+    /* Nepripravene ulozistě ve W25Q (audit F-0098). AMBER, protoze pristroj MERI
+     * dal — jen si nic nepamatuje: nastaveni se neulozi, kalibrace zustane na
+     * datasheetovych vychozich (tedy RF v dBm a vetve 12 V/5 V nekalibrovane)
+     * a tlacitka v okne SESTAVY tise nedelaji nic.
+     * 🔴 Bez tohohle byla ta vada UPLNE TICHA a uzivatel ji poznal teprve tim, ze
+     * se mu po restartu ztratilo nastaveni — bez jakekoli stopy proc. Detail je
+     * v okne PAMET (radek `uloziste`) a v UART `status` (radek `ULOZISTE:`).
+     * ⚠️ Cislo se bere z `syscfg_storage_ready_count()`, tedy z tehoz zdroje jako
+     * oba vypisy — zadne vlastni scitani tady (F-0100). */
+    if (syscfg_storage_ready_count() != 5) lvl = 1;
     /* RED: kriticke (prebiji). LOS_CLKIN (bit3) = ztrata 10 MHz reference — LOL se
      * pri fyzicke ztrate vstupu NEasertuje (viz komentar u SI_* vyse), takze LOS je
      * tady nutny. SI_LOS_XTAL (bit2) se zamerne NEhodnoti (bez krystalu trvale 1). */
@@ -215,6 +288,8 @@ static int s_sys_level = -1;   /* posledni vykreslena uroven (pro poll zmeny) */
  * s_sys_mix 0 = barva urovne s_sys_from_level, 1 = barva s_sys_level (usazeno). */
 static int   s_sys_from_level = -1;
 static float s_sys_mix        = 1.0f;
+/* #88: do kolika bufferu uz dosla USAZENA podoba pilulky (viz gate_same). */
+static int8_t s_sys_reps;
 #define SYS_XFADE_STEP 0.14f   /* ~7 tiku @20 Hz -> ~0,35 s */
 
 /* Vrati 1 pokud se uroven SYS zdravi zmenila od posledniho render_header -> volajici
@@ -231,18 +306,44 @@ int screen_main_hit_button(int16_t x, int16_t y)
     return -1;
 }
 
+/* Stred tlacitka patky — pro injektor doteku (`tap <idx>`, diagnostika F-0140)
+ * a pro aktivaci encoderem. @return 0 = index mimo rozsah nebo jeste nezname
+ * rozlozeni (patka se kresli az pri prvnim renderu). */
+int screen_main_button_center(int idx, int16_t *cx, int16_t *cy)
+{
+    if (idx < 0 || idx >= SCR_BTN_COUNT) return 0;
+    prim_rect_t r = s_btn_rect[idx];
+    if (r.w <= 0 || r.h <= 0) return 0;
+    if (cx) *cx = (int16_t)(r.x + r.w / 2);
+    if (cy) *cy = (int16_t)(r.y + r.h / 2);
+    return 1;
+}
+
 void screen_main_button_action(int idx)
 {
     switch (idx) {
-    case 0: st.mode = (int8_t)(st.mode ? 0 : 1); break;   /* FREQ <-> PERIOD */
+    case 0: st.mode = (int8_t)(st.mode ? 0 : 1);          /* FREQ <-> PERIOD */
+            s_disp_recalc = 1; break;                     /* prepocitej velke cislo (perioda 1/f) */
     case 1: st.running = !st.running;            break;   /* RUN <-> STOP */
-    case 2: st.gate = (int8_t)((st.gate + 1) % 4); break; /* cycle gate */
-    case 3: st.chan = (int8_t)(st.chan ? 0 : 1); break;   /* CH A <-> CH B */
+    case 2: {
+        /* 🔑 Zmena brany meni tau0 mereni, takze starsi zaznamy uz nejsou
+         * soumeritelne — a datalog `gate_time_ns` neuklada (nema volny bajt).
+         * Bez teto udalosti vypada skok v sigma_y jako HW jev. */
+        int8_t og = st.gate;
+        st.gate = (int8_t)((st.gate + 1) % (int)IPC_GATE_N);
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)st.gate, (uint32_t)og, "brana");
+        break;
+    }
+    case 3: {                                             /* CH A <-> CH B */
+        int8_t oc = st.chan;
+        st.chan = (int8_t)(st.chan ? 0 : 1);
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)st.chan, (uint32_t)oc, "kanal");
+        break;
+    }
     default: return;                                      /* 4 = MENU: nic k ulozeni */
     }
     /* Zapamatuj nastaveni -> defaultTask ho persistne do BKP (prezije warm reset). */
-    g_ui_cfg = (uint8_t)((st.mode & 1) | ((st.chan & 1) << 1)
-                         | ((st.gate & 3) << 2) | ((st.running ? 1 : 0) << 4));
+    g_ui_cfg = ui_cfg_pack();
     g_ui_cfg_dirty = 1;
 }
 
@@ -260,12 +361,18 @@ int screen_main_apply_cfg_req(void)
 
     int8_t mode = (int8_t)( c        & 1);
     int8_t chan = (int8_t)((c >> 1)  & 1);
-    int8_t gate = (int8_t)((c >> 2)  & 3);
+    int8_t gate = (int8_t)IPC_UICFG_GATE(c);
     bool   run  = ((c >> 4) & 1) != 0;
+    if (gate >= (int8_t)IPC_GATE_N) gate = (int8_t)IPC_GATE_DEFAULT;
     if (mode == st.mode && chan == st.chan && gate == st.gate && run == st.running)
         return 0;                                  /* nic noveho -> zadny redraw */
+    if (mode != st.mode) s_disp_recalc = 1;         /* FREQ<->PERIOD -> prepocet velkeho cisla */
+    if (st.gate != gate)
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)gate, (uint32_t)st.gate, "brana");
+    if (st.chan != chan)
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
     st.mode = mode; st.chan = chan; st.gate = gate; st.running = run;
-    g_ui_cfg = c; g_ui_cfg_dirty = 1;              /* persist do BKP (jako z UI) */
+    g_ui_cfg = ui_cfg_pack(); g_ui_cfg_dirty = 1;  /* persist do BKP (jako z UI), format v2 */
     return 1;
 }
 
@@ -297,7 +404,39 @@ static void render_background_to_cache(void)
     prim_set_target(prev);
 }
 
-void screen_main_invalidate(void) { cache_initialized = false; }
+/* ══ Guard „obsah je stejny -> nekresli" NAPRIC VSEMI BUFFERY (STATUS #88) ═════
+ * 🔴 Guard je JEDEN stav, ale framebuffery jsou TRI. Kdyz se po zmene nakresli
+ * jen jednou, ma novy obsah pouze ten buffer, do ktereho se zrovna kreslilo —
+ * a jakmile se page-flip dostane na ostatni, ukazou starsi obsah. To je presne
+ * to PROBLIKAVANI (#88). Copy-forward to nezachrani: kopiruje sjednoceni dirty
+ * z poslednich DVOU snimku, takze kdyz se kvuli preskoceni prestane flipovat,
+ * dirty rect toho jedineho kresleni z historie vypadne driv, nez ho ostatni
+ * buffery dostanou.
+ *
+ * Pravidlo: preskocit se smi az kdyz tentyz obsah dostal KAZDY buffer.
+ *
+ * Pouziti — VZDY tesne pred kreslenim:
+ *     int same = (…obsah se nezmenil…);
+ *     if (gate_same(&reps, same)) return 0;      // uz to maji vsechny -> skip
+ *     …kresli…                                   // pri !same jeste uloz novy obsah
+ *
+ * ⚠️ Guard NESMI byt schovany za dalsi podminkou, ktera po usazeni prestane
+ * platit (typicky „animace se hybe"): pak by se doplnujici kresby do zbylych
+ * bufferu nikdy neprovedly a chyba zustane. Volej ho na KAZDY tik.
+ * ⚠️ Pole guardu (per segment/karta) = jedno `reps` na prvek, ne jedno spolecne. */
+static int gate_same(int8_t *reps, int same)
+{
+    if (!same) { *reps = 1; return 0; }        /* novy obsah -> zatim v 1 bufferu */
+    if (*reps >= (int8_t)prim_stm32_fb_count()) return 1;   /* maji ho vsechny */
+    (*reps)++;                                 /* dokresli do dalsiho bufferu */
+    return 0;
+}
+
+static void trend_drawn_invalidate(void);   /* fwd — definice u trend animace nize */
+
+/* ⚠️ Krome bg_cache se zneplatnuje i guard trend grafu — po zmene tematu je
+ * bg_cache i paleta jina, takze "stejne body" uz NEznamenaji stejnou kresbu. */
+void screen_main_invalidate(void) { cache_initialized = false; trend_drawn_invalidate(); }
 
 void screen_main_init(void)
 {
@@ -307,11 +446,13 @@ void screen_main_init(void)
     static bool s_cfg_loaded = false;
     if (!s_cfg_loaded) {
         s_cfg_loaded = true;
-        uint8_t c   = g_ui_cfg;
+        uint8_t c   = ipc_uicfg_norm(g_ui_cfg);
         st.mode     = (int8_t)( c        & 1);
         st.chan     = (int8_t)((c >> 1)  & 1);
-        st.gate     = (int8_t)((c >> 2)  & 3);
+        st.gate     = (int8_t)IPC_UICFG_GATE(c);
+        if (st.gate >= (int8_t)IPC_GATE_N) st.gate = (int8_t)IPC_GATE_DEFAULT;
         st.running  = ((c >> 4) & 1) != 0;
+        g_ui_cfg    = ui_cfg_pack();
     }
     if (cache_initialized) return;
     render_background_to_cache();
@@ -396,22 +537,13 @@ static void render_header(void)
     /* Zive GPS: GNSS lock pill + pocet druzic (SAT pill) + datum z GPS. */
     gps_data_t g;
     gps_get(&g);
-    char sat_v[8], date_v[16], hdop_v[8];
+    char sat_v[8], date_v[16];
     const char *gnss_s; ui_pill_variant_t gnss_var;
     if      (g.valid && g.fix_mode == 3) { gnss_s = "GNSS 3D";  gnss_var = UI_PILL_OK; }
     else if (g.fix_quality > 0)          { gnss_s = "GNSS FIX"; gnss_var = UI_PILL_OK; }
     else if (g.sats_in_view > 0)         { gnss_s = "ACQUIRE";  gnss_var = UI_PILL_WARN; }
     else                                 { gnss_s = "NO GNSS";  gnss_var = UI_PILL_BAD; }
     snprintf(sat_v, sizeof sat_v, "%u", g.num_sat);
-    /* HDOP z GPS (GGA/GSA): 1 des. misto, ceska carka. Bez fixu "--".
-     * Cap 99,9 (vyssi HDOP = nesmyslny fix; zaroven omezi rozsah pro snprintf). */
-    if (g.fix_quality > 0 && g.hdop > 0.0f) {
-        int h10 = (int)(g.hdop * 10.0f + 0.5f);
-        if (h10 < 0) h10 = 0; else if (h10 > 999) h10 = 999;   /* bound [0,999] -> snprintf bezpecne */
-        snprintf(hdop_v, sizeof hdop_v, "%d,%d", h10 / 10, h10 % 10);
-    } else {
-        snprintf(hdop_v, sizeof hdop_v, "--");
-    }
     /* GNSS/SAT pilulky zustavaji z GPS (odrazi fix); datum bere RTC (tika i bez fixu). */
     { char tdummy[16]; rtc_time_date(tdummy, date_v); }   /* header chce jen datum */
 
@@ -447,9 +579,11 @@ static void render_header(void)
                     .icon_color = UI_COLOR_OK_SOFT};
     hdr_pill_fit(&p, &x);
 
-    p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
-                    .label = SCR_S_HDOP_L, .value = hdop_v};   /* reálné HDOP z GPS */
-    hdr_pill_fit(&p, &x);
+    /* HDOP pilulka ODSTRANENA z headeru (2026-09-23, na prani uzivatele) —
+     * udelala misto pro SD ikonu nize. HDOP zustava dostupne v okne GPS/GNSS
+     * (s_view=2, karta Poloha), tady jen prestalo byt kriticke pro prehled
+     * na prvni pohled. `SCR_S_HDOP_L` je tim mrtvy string — ponechano v
+     * screen_main_data.c pro pripad, ze by se HDOP pilulka nekdy vratila. */
 
     /* HOLD pilulka: AMBER pri holdoveru (fix ztracen pote, co uz nekdy byl) —
      * nahrazuje drivejsi zvlastni "H" u casu. HOLD je PRED CAL (dulezitejsi: nese
@@ -466,6 +600,18 @@ static void render_header(void)
     p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL, .value = "CAL", .has_led = true};
     hdr_pill_fit(&p, &x);
 
+    /* SD karta: JEN ikona (bez labelu/hodnoty), nejnizsi priorita ze vsech —
+     * za CAL, takze pri pretlaku vypadne jako prvni. Zobrazuje SUROVY
+     * card-detect (PE3), ne stav mountu — kdyz karta neni vlozena, `hdr_pill_fit`
+     * se proste nezavola a nezustane po ni zadna mezera (uzivatelsky pozadavek:
+     * "pokud karta neni vlozena ikona se nezobrazi vubec"). */
+    if (sd_export_ui_info()->present) {
+        p = (ui_pill_t){.y = y, .variant = UI_PILL_NORMAL,
+                        .icon_render = ui_icon_sdcard, .icon_size = 18,
+                        .icon_color = UI_COLOR_ACC};
+        hdr_pill_fit(&p, &x);
+    }
+
     int16_t time_x = UI_DIM_SCREEN_W - SCR_MAIN_CLOCK_MARGIN;
     prim_draw_text((prim_point_t){time_x, 23}, s_time_buf, &ui_font_mono_25,
                    UI_COLOR_INK, PRIM_ALIGN_RIGHT);
@@ -476,49 +622,83 @@ static void render_header(void)
     screen_main_redraw_cpu(1);   /* blok vytizeni CPU mezi pilulkami a hodinami */
 }
 
+static void uncert_draw(void);   /* σ+N vpravo v titulku (definice nize) */
+
 static void render_body_title(void)
 {
     int16_t x = UI_DIM_PADDING_X + 4;
     int16_t y = SCR_MAIN_TITLE_Y;
-    x = draw_word(x, y, MODE_NAME[st.mode], &ui_font_mono_20, UI_COLOR_ACC);
-    x = draw_word(x, y, "  ·  ",            &ui_font_mono_20, UI_COLOR_INK_4);
-    x = draw_word(x, y, CHAN_NAME[st.chan], &ui_font_mono_20, UI_COLOR_INK_2);
-    x = draw_word(x, y, "  ·  ",            &ui_font_mono_20, UI_COLOR_INK_4);
-    x = draw_word(x, y, "GATE ",            &ui_font_mono_20, UI_COLOR_INK_2);
-    x = draw_word(x, y, GATE_VAL[st.gate],  &ui_font_mono_20, UI_COLOR_INK_2);
-    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W - UI_DIM_PADDING_X, y},
-                   SCR_S_TITLE_RIGHT, &ui_font_mono_18, UI_COLOR_INK_3,
-                   PRIM_ALIGN_RIGHT);
+    /* „FREKVENCE A" jako JEDEN pojem (zadani UI §4), ne funkce a kanal zvlast. */
+    x = draw_word(x, y, MODE_NAME[st.mode], &ui_font_mono_22, UI_COLOR_ACC);
+    x = draw_word(x, y, " ",                &ui_font_mono_22, UI_COLOR_ACC);
+    x = draw_word(x, y, CHAN_NAME[st.chan], &ui_font_mono_22, UI_COLOR_ACC);
+    x = draw_word(x, y, "  ·  ",            &ui_font_mono_22, UI_COLOR_INK_4);
+    x = draw_word(x, y, "GATE ",            &ui_font_mono_22, UI_COLOR_INK_2);
+    x = draw_word(x, y, GATE_VAL[st.gate],  &ui_font_mono_22, UI_COLOR_INK_2);
+    /* Prava cast titulku = σ + pocet vzorku (zadani UI Zasada 2). Kresli se TADY,
+     * aby mel plnou sirku titulniho radku JEDINEHO vlastnika: `screen_main_redraw_title`
+     * cisti 0..800, takze kdyby σ+N kreslil nekdo jiny, po kazdem redrawu titulku
+     * by zmizelo. Partial 1Hz update dela `screen_main_redraw_uncert` nad UZSIM boxem. */
+    uncert_draw();
 }
 
-/* Velke cislo kmitoctu je SIMULOVANE: hodnota je realisticky kmitocet (~10 MHz),
- * ktery se meni SPOJITE (mean-revert random walk) 20x/s -> nizke cislice zivot,
- * vyssi stabilni. Pocet mist je PEVNY (zero-pad) podle layoutu segmentu.
+/* Velke cislo kmitoctu: hodnota je REALNE mereni z FPGA (nebo emulatoru), pri
+ * chybejicim mereni simulace jako fallback — viz `freq_advance()`. Pocet mist
+ * je dany magnitudou mereni (`num_layout`, zero-pad na sirku formatu).
  * Prekresleni je PER-SEGMENT DIRTY (screen_main_redraw_freq): prekresli jen
  * skupiny cislic, ktere se zmenily (resp. ocas od nich) -> stabilni cela cast se
  * neprekresluje. Drzime zive + predchozi cislice (shadow) + deskriptor. */
-static ui_digit_segment_t s_num_seg[8];
-static char               s_num_buf[8][8];    /* aktualni cislice (zive) */
-static char               s_num_prev[8][8];   /* cislice z minuleho snimku (per-segment dirty) */
+/* ⚠️ Kapacita 12 segmentu (drive 8): dynamicky format je deli jemneji — cela cast
+ * az 4 skupiny + zlomek az 5 (trojice + osamocena posledni duveryhodna cislice
+ * kvuli podtrzeni + 2 nejiste). Nejhorsi pripad 9; 12 je rezerva. */
+#define NUM_SEG_MAX 12
+static ui_digit_segment_t s_num_seg[NUM_SEG_MAX];
+static char               s_num_buf[NUM_SEG_MAX][8];    /* aktualni cislice (zive) */
+static char               s_num_prev[NUM_SEG_MAX][8];   /* cislice z minuleho snimku (per-segment dirty) */
 static ui_big_number_t    s_num;
 static int                s_num_ready = 0;
-/* Cachovana geometrie cisla (monospace -> konstantni; spocte se v num_build,
- * redraw_freq uz neprochazi prim_text_width kazdy snimek). */
+/* Cachovana geometrie cisla (monospace -> konstantni; spocte se v num_layout,
+ * redraw_freq uz neprochazi prim_text_width kazdy snimek). ⚠️ Prepocitava se pri
+ * KAZDE zmene formatu (jina magnituda mereni), ne jen jednou pri bootu. */
 static int16_t            s_num_w, s_num_left, s_num_top;
-static int16_t            s_seg_x[8];   /* x-pozice zacatku kazde skupiny cislic */
-static uint8_t            s_seg_len[8]; /* delka textu kazde skupiny (konst. -> cache misto strlen v hot-path) */
+static int16_t            s_seg_x[NUM_SEG_MAX];   /* x-pozice zacatku kazde skupiny cislic */
+static uint8_t            s_seg_len[NUM_SEG_MAX]; /* delka textu kazde skupiny (cache misto strlen v hot-path) */
 
-/* Simulacni stav kmitoctu (integer matematika, bez float). N = vsechny cislice
- * jako jedno cele cislo, desetinna carka je az v zobrazeni (dana separatory). */
-static uint64_t s_freq_n      = 0;   /* aktualni 15(=total)-mistne cislo */
-static uint64_t s_freq_center = 0;   /* stred (10 MHz v jednotkach LSB) */
+/* Stav kmitoctu (integer matematika, bez float). N = vsechny cislice jako jedno
+ * cele cislo v LSB = 10^-`s_freq_frac` Hz; desetinna carka je az v zobrazeni. */
+static uint64_t s_freq_n      = 0;   /* aktualni FREKVENCE v LSB = 10^-s_freq_frac Hz. VZDY frekvence
+                                       (i v rezimu PERIODA) — cte ji statistika, SIM walk, freq_hz. */
+static uint64_t s_freq_center = 0;   /* stred pasma FREKVENCE v LSB (rad mereni; NE fixne 10 MHz) */
 /* Tentyz stred, ale v Hz — pro rekonstrukci z datalogu (ta pocita y z Hz, ne
  * z LSB). Drzime obe formy, at se nikde nedopocitava zpetne z `s_freq_center`
  * (pocet desetinnych mist je vlastnost formatovani, ne mereni). */
 static double   s_freq_nominal_hz = 0.0;
-static int      s_freq_total  = 0;   /* celkovy pocet cislic (= sirka, pevna) */
+static int      s_freq_frac   = 0;   /* desetinna mista FREKVENCE (LSB exponent pro s_freq_n) */
+static int      s_freq_int    = 0;   /* cele cislice FREKVENCE (rebuild formatu jen pri zmene radu) */
+/* ── ZOBRAZENI (footer PERIOD/FREQ toggle) ── `s_disp_n` je to, co se skutecne
+ * kresli: v rezimu FREQUENCY = `s_freq_n`; v rezimu PERIOD = 1/f prepoctena do
+ * ns/us/ms. Statistika/SIM/Math to NEvidi (pracuji dal s frekvenci). */
+static uint64_t s_disp_n      = 0;   /* zobrazovane cislo (sirka = s_disp_total) */
+static int      s_disp_total  = 0;   /* celkovy pocet cislic zobrazeneho formatu */
+static int      s_disp_frac   = 0;   /* desetinna mista zobrazeneho formatu */
+static int      s_disp_int    = 0;   /* cele cislice zobrazeneho formatu */
+static uint8_t  s_disp_period = 0;   /* 1 = rezim PERIODA */
+/* s_disp_recalc deklarovano vyse (u `st`) — pouziva ho i screen_main_button_action. */
+static const char *s_disp_unit = "Hz";   /* "Hz" / "ns" / "us" / "ms" */
+static double   s_disp_unit_s  = 1.0;    /* zobrazena jednotka -> sekundy (perioda: 1e-9/1e-6/1e-3) */
+static char     s_seps[NUM_SEG_MAX]; /* mutable separatory (num_layout: '.'/','/' '/SEP_NONE) */
 
-static void freq_fill_segments(void);   /* fwd (num_build naplni pocatecni hodnotu) */
+/* ── #1: napojeni realnych/emulovanych dat FPGA na headline + statistiky ──────
+ * s_freq_n (hinge, cte ho headline i vsechna statistika) je bud REALNY kmitocet
+ * z FpgaTasku (g_freq_*), nebo — kdyz neni platne mereni — SIMULACE freq_step()
+ * jako fallback (viditelne oznaceny). Format velkeho cisla se prizpusobuje
+ * magnitude mereni (Hz..GHz). */
+static uint32_t s_last_fpga_seq = 0;   /* posledni zpracovana SEQUENCE (kadence vzorku) */
+static uint8_t  s_freq_is_sim   = 1;   /* 1 = headline zeny simulaci (fallback), 0 = realne mereni */
+static uint8_t  s_freq_fmt_changed = 0;/* num_layout prestavel format -> nutny plny redraw zony */
+static int      s_freq_unc_last = -1;  /* #1: posledni zapeceny pocet nejistych cislic (σy -> prestavba pri zmene) */
+
+static void freq_fill_segments(void);   /* fwd (num_build_for naplni pocatecni hodnotu) */
 
 static uint64_t pow10_u64(int e)
 {
@@ -527,68 +707,509 @@ static uint64_t pow10_u64(int e)
     return p;
 }
 
-static void num_build(void)
+/* Max sirka zony velkeho cisla [px] — rozpocet pro vyber poctu desetin.
+ * Zona lezi SVISLE mezi hlavickou a mrizkou (`s_num_top` = baseline-72, vyska 88
+ * konci presne na `SCR_MAIN_GRID_Y`), takze VODOROVNE je volna cela obrazovka a
+ * omezuji jen jeji okraje: 800 - 2×10 px rezerva = 780.
+ * Rozpocet (mono_75 monospace = 45 px/cislici, separatory ~15-18 px, "Hz" ~43):
+ *   10 MHz  -> 8 celych + 5 desetin = 13 cislic ≈ 676 px -> vejde se PLNYCH 5 desetin
+ *   1,4 GHz -> 10 celych + 4 desetiny = 14 cislic ≈ 736 px -> jedna desetina ustoupi
+ * ⚠️ Drive 720 px zbytecne ubiralo desetinne misto uz kolem 1 GHz. */
+#define FREQ_MAX_W  790
+
+/* ⚠️ Delicka mezi `edge_count` a skutecnym kmitoctem se NEPREDPOKLADA — overuje se
+ * proti `frequency_x100000` (viz `freq_frame_to_lsb`). Realna FPGA hlasi pocet
+ * period vetve /4, emulator neděleneho signalu; pevna konstanta by jednu z nich
+ * zobrazila 4x spatne. Pin27 (/16) svuj pocet period v ramci NEMA -> tam hi-res
+ * dopocet nejde vubec (viz `g_freq_hires`). */
+/* Kolik desetin ma smysl zobrazit: z reciproke dvojice (edges/gate) se da spocitat
+ * libovolne mnoho, ze zaokrouhleneho `x100000` jen 5.
+ * `FREQ_FRAC_SIM` = zakladni (SIM) format: o jedno desetinne misto VELKYM fontem
+ * vic nez x1e5, takze pred dvema malymi nejistymi cislicemi jsou ctyri velke.
+ * Fabrikace to neni — SIM hodnotu si stejne generuje `freq_step()` a cislo je
+ * viditelne oznacene markerem "SIM". */
+#define FREQ_FRAC_HIRES 7
+#define FREQ_FRAC_X1E5  5
+#define FREQ_FRAC_SIM   6
+
+static uint8_t s_freq_hires = 0;   /* 1 = format postaveny pro hi-res dopocet (7 desetin) */
+
+/* Prevod mereni z FPGA ramce na vnitrni LSB (= 10^-`s_freq_frac` Hz).
+ *
+ * HI-RES (`hires`): reciproky citac meri f = N / Δt, takze z `edge_count` (presny
+ * pocet period vetve /4) a `gate_time_ns` (skutecna delka okna) se da podil spocitat
+ * na VIC desetin, nez nese zaokrouhlene `frequency_x100000`. Ty cislice navic jsou
+ * SKUTECNE (podil realne zmerenych velicin) — nejsou to vymyslene nuly; jen lezi pod
+ * sumem (rozliseni TDC 2,5 ns / 0,25 s okno ~ 0,1 Hz pri 10 MHz), a prave proto je
+ * posledni mista kresli ztlumene (SIGMA/FLOOR).
+ * ⚠️ Pocita se DLOUHYM DELENIM (cela cast + cislice po jedne), NE `num × 10^frac / den`:
+ * to by pri 7 desetinach pretekl uint64 uz kolem 10 MHz (2,5e22 >> 1,8e19).
+ * ⚠️ `num = edges·mul · 4e8` (ticku/s) <= 1,6e18 — `edges·mul` <= 4e9 hlida
+ * `fpga_freq_hires_mul`, pri prekroceni se degraduje na x1e5 misto tichého preteceni.
+ * 🔴 F-0186: jmenovatel jsou PRESNE ticky okna (`fpga_freq_dt_ticks`), ne
+ * `gate_time_ns` — to FPGA posila zaokrouhlene DOLU a hi-res byl o 0 az 2e-9 vys.
+ *
+ * FALLBACK (bez hi-res): 5 desetin z `x100000`. ⚠️ DELENIM `10^(5-frac)`, protoze
+ * `x100000 × 10^frac / 1e5` by pri ~4 GHz pretekl (4e19 > 1,8e19). */
+static uint64_t freq_frame_to_lsb(uint64_t x100000, uint64_t edges, uint64_t gate_ps, int hires)
 {
-    int n = SCR_MAIN_DIGIT_COUNT;
-    if (n > 8) n = 8;
-    for (int i = 0; i < n; i++) {
-        strncpy(s_num_buf[i], SCR_MAIN_DIGITS[i].text, sizeof(s_num_buf[i]) - 1);
-        s_num_buf[i][sizeof(s_num_buf[i]) - 1] = '\0';
-        s_num_seg[i].text          = s_num_buf[i];
-        s_num_seg[i].level         = SCR_MAIN_DIGITS[i].level;
-        s_num_seg[i].with_underline = SCR_MAIN_DIGITS[i].with_underline;
+    int frac = s_freq_frac;
+    if (hires && gate_ps > 0u && edges > 0u) {
+        /* ⚠️ NASOBITEL SE NEPREDPOKLADA, ALE OVERUJE — a to na JEDINEM miste
+         * (`fpga_freq_hires_mul`, viz fpga_freq.h). `edge_count` muze byt pocet
+         * period DELENE vetve (/4) NEBO neděleného signalu (emulator), takze
+         * pevne „×4" davalo pri `fpgasim on 10000000` kmitocet 40 MHz. Autoritativni
+         * je `frequency_x100000` z ramce; hi-res je jen JEMNEJSI ODECET TEHOZ,
+         * ne druhy nezavisly vypocet. Kdyz nesedi zadny nasobitel, hi-res se
+         * NEPOUZIJE — radeji 5 poctivych desetin nez 15 spatnych. */
+        uint64_t mul = fpga_freq_hires_mul(x100000, edges, gate_ps);
+        if (mul) {
+            /* okno je PRESNE v ps (`gate_ps`); dlouhe deleni po cislicich je jen
+             * v `fpga_freq_scaled` (jediny zdroj, bez 128bitoveho deleni) */
+            return fpga_freq_scaled(edges * mul, gate_ps, frac);
+        }
+        /* zadny nasobitel nesedel -> spadni na x1e5 (nize) */
     }
+    if (frac <= FREQ_FRAC_X1E5) return x100000 / pow10_u64(FREQ_FRAC_X1E5 - frac);
+    return x100000 * pow10_u64(frac - FREQ_FRAC_X1E5);   /* format chce vic, data nemaji */
+}
+
+/* ── #1: dynamicky format velkeho cisla ──────────────────────────────────────
+ * Poskladej segmenty (cela cast po skupinach 3 = tisicove '.', pak ',' a
+ * `frac_digits` desetin) pro dany pocet celych cislic. Naplni s_num_seg/s_seps/
+ * s_num + geometrii. Hodnoty cislic se doplni pozdeji freq_fill_segments().
+ * @return skutecny pocet segmentu. */
+static int num_layout(int int_digits, int frac_digits, int n_unc)
+{
+    if (int_digits < 1) int_digits = 1;
+    if (int_digits > 12) int_digits = 12;
+    if (frac_digits < 0) frac_digits = 0;
+    if (frac_digits > FREQ_FRAC_HIRES) frac_digits = FREQ_FRAC_HIRES;
+
+    /* ── Skladba segmentu (delka / uroven / podtrzeni) + separator ZA kazdym ──
+     * CELA cast: skupiny po 3 zprava, oddelene TECKOU (ceske tisice).
+     * ZLOMEK: taky po trojicich, ale oddelene MEZEROU (SI styl) — po desetinne
+     *   carce se uz zadna tecka nekresli, aby nebylo pochyb, co je desetinny
+     *   oddelovac. `mono_25` ma prazdny glyf mezery (advance 15, zadny ink).
+     * ⚠️ Uvnitr trojice se skupina jeste deli tam, kde se meni VZHLED (posledni
+     *   duveryhodna cislice = modre podtrzeni, pak SIGMA a FLOOR mensim fontem);
+     *   takove predely dostanou `UI_BIGNUM_SEP_NONE`, takze cislice zustanou
+     *   slepene a trojice se opticky nerozpadne.
+     * ⚠️ #51: kolik cislic je NEJISTYCH uz NENI natvrdo 2 — `n_unc` odvozuje
+     *   volajici (`num_build_for` -> `freq_uncertain_frac`) z ROZLISENI hradla
+     *   reciprocniho citace (√2·tdc/gate, deterministicke — NE simulace). SIM
+     *   fallback dava 2 (nezmeneny vzhled).
+     * 🔴 F-0177: `n_unc` = pocet NEJISTYCH cislic OD KONCE a smi zasahnout i do
+     *   CELE casti. Do 2026-09-26 se sanitoval na [1, frac-1], tedy aspon jedna
+     *   desetina byla vzdy „duveryhodna" a nesla modre podtrzeni — i kdyz
+     *   rozliseni bylo horsi nez 0,1 Hz (nad ~7 MHz pri 0,25 s a TDC 2,5 ns;
+     *   pri 100 MHz 1,4 Hz, pri 1,4 GHz ~20 Hz). Ted se sanituje na
+     *   [1, celkem-1]: aspon 1 nejista (hi-res posledni misto lezi vzdy pod
+     *   sumem) a aspon 1 duveryhodna (vedouci cislice). Podtrzeni tak skonci
+     *   na posledni SKUTECNE duveryhodne cislici, klidne na desitkach Hz.
+     *   Dokud je rozliseni pod 0,1 Hz, vychazi rozlozeni stejne jako drive.
+     *   Pri 0/1 desetine zustava puvodni chovani (desetiny nejiste, bez podtrzeni). */
+    int glen[NUM_SEG_MAX]; uint8_t glvl[NUM_SEG_MAX]; uint8_t gund[NUM_SEG_MAX];
+    char gsep[NUM_SEG_MAX]; int gn = 0;
+
+    int total = int_digits + frac_digits;
+    int n_cert;                                    /* pocet duveryhodnych cislic ZLEVA */
+    int no_und = 0;
+    if (frac_digits < 2) {                         /* 0/1 desetina -> vse nejiste, bez podtrzeni */
+        n_cert = int_digits; no_und = 1;
+    } else {
+        if (n_unc < 1) n_unc = 1;
+        if (n_unc > total - 1) n_unc = total - 1;
+        n_cert = total - n_unc;
+    }
+    /* Vzhled cislice d (1 = nejlevejsi): duveryhodna / podtrzena / SIGMA / FLOOR. */
+    #define DG_LVL(d) ((uint8_t)(((d) <= n_cert) ? UI_DIGIT_CERTAIN \
+                      : (((d) == n_cert + 1) ? UI_DIGIT_SIGMA : UI_DIGIT_FLOOR)))
+    #define DG_UND(d) ((uint8_t)((!no_und && (d) == n_cert) ? 1u : 0u))
+
+    /* CELA cast: trojice zprava (konec trojice = (int_digits - q) % 3 == 0),
+     * uvnitr trojice se deli jen pri zmene vzhledu (SEP_NONE = slepene). */
+    int p = 1;
+    while (p <= int_digits && gn < NUM_SEG_MAX) {
+        uint8_t lvl = DG_LVL(p), und = DG_UND(p);
+        int len = 1;
+        while (p + len <= int_digits) {
+            int q = p + len;
+            if (((int_digits - (q - 1)) % 3) == 0) break;          /* q-1 uzavrela trojici */
+            if (DG_LVL(q) != lvl || DG_UND(q) != und) break;       /* zmena vzhledu */
+            len++;
+        }
+        int endpos = p + len - 1;
+        glen[gn] = len; glvl[gn] = lvl; gund[gn] = und;
+        if (endpos == int_digits)
+            gsep[gn] = (frac_digits > 0) ? ',' : UI_BIGNUM_SEP_NONE;   /* desetinna carka */
+        else
+            gsep[gn] = (((int_digits - endpos) % 3) == 0) ? '.' : UI_BIGNUM_SEP_NONE;
+        gn++; p += len;
+    }
+
+    /* ZLOMEK: trojice zleva oddelene mezerou, deleni pri zmene vzhledu. */
+    p = 1;
+    while (p <= frac_digits && gn < NUM_SEG_MAX) {
+        int d = int_digits + p;
+        uint8_t lvl = DG_LVL(d), und = DG_UND(d);
+        int len = 0;
+        while (p + len <= frac_digits) {                 /* rozsiruj, dokud se nic nemeni */
+            int q = p + len;
+            if (DG_LVL(int_digits + q) != lvl || DG_UND(int_digits + q) != und) break;
+            if (len > 0 && ((q - 1) % 3) == 0) break;     /* hranice trojice */
+            len++;
+        }
+        int endpos = p + len - 1;
+        glen[gn] = len; glvl[gn] = lvl; gund[gn] = und;
+        /* Mezera jen na skutecne hranici trojice, jinak segmenty slepit. */
+        gsep[gn] = (endpos % 3 == 0 && endpos < frac_digits) ? ' ' : UI_BIGNUM_SEP_NONE;
+        gn++; p += len;
+    }
+    gsep[gn - 1] = UI_BIGNUM_SEP_NONE;                    /* za poslednim segmentem nic */
+    #undef DG_LVL
+    #undef DG_UND
+
+    for (int i = 0; i < gn - 1; i++) s_seps[i] = gsep[i];
+    s_seps[(gn > 0) ? gn - 1 : 0] = '\0';
+
+    s_disp_total = 0;
+    for (int i = 0; i < gn; i++) {
+        int L = glen[i];
+        s_seg_len[i] = (uint8_t)L;
+        memset(s_num_buf[i], '0', (size_t)L); s_num_buf[i][L] = '\0';
+        s_num_seg[i].text           = s_num_buf[i];
+        s_num_seg[i].level          = glvl[i];
+        s_num_seg[i].with_underline = gund[i] ? true : false;
+        s_disp_total += L;
+    }
+    s_disp_int  = int_digits;
+    s_disp_frac = frac_digits;
+
+    /* Nejiste cislice: MENSI font (`fade_font`) + tmavsi odstin (`ui_level_color`:
+     * INK -> INK_4 -> INK_5). Posledni duveryhodna cislice ma modre podtrzeni
+     * (UI_COLOR_ACC v `ui_big_number_render_tail`). */
     s_num = (ui_big_number_t){
         .x_center = UI_DIM_SCREEN_W / 2, .y_baseline = SCR_MAIN_NUMBER_Y_BASELINE,
         .main_font = &ui_font_mono_75, .fade_font = &ui_font_mono_52,
         .sep_font = &ui_font_mono_25, .decimal_font = &ui_font_mono_30,
-        .unit_font = &ui_font_sans_32, .segments = s_num_seg, .segment_count = (int16_t)n,
-        .separators = SCR_MAIN_SEPS, .sep_color = UI_COLOR_INK_3,
-        .decimal_color = UI_COLOR_ACC, .unit = SCR_S_UNIT_HZ, .unit_color = UI_COLOR_INK_2,
+        .unit_font = &ui_font_sans_32, .segments = s_num_seg, .segment_count = (int16_t)gn,
+        .separators = s_seps, .sep_color = UI_COLOR_INK_3,
+        .decimal_color = UI_COLOR_ACC, .unit = s_disp_unit, .unit_color = UI_COLOR_INK_2,
     };
-    /* Cache geometrie (jednou): sirka, levy okraj, top a x-pozice vsech skupin. */
     s_num_w    = ui_big_number_width(&s_num);
     s_num_left = (int16_t)(UI_DIM_SCREEN_W / 2 - s_num_w / 2);
     s_num_top  = (int16_t)(SCR_MAIN_NUMBER_Y_BASELINE - 72);
-    for (int i = 0; i < n; i++) s_seg_x[i] = ui_big_number_seg_x(&s_num, (int16_t)i);
-
-    /* Spocti layout cislic z delek segmentu + pozice desetinne carky (sep ',').
-     * Stred = 10 MHz zarovnane na celou cast (zbytek = desetinna mista). */
-    s_freq_total = 0;
-    int int_digits = 0;
-    int comma_seen = 0;
-    for (int i = 0; i < n; i++) {
-        int L = (int)strlen(SCR_MAIN_DIGITS[i].text);
-        s_seg_len[i] = (uint8_t)L;            /* cache pro freq_fill_segments (hot-path) */
-        s_freq_total += L;
-        if (!comma_seen) {
-            int_digits += L;
-            if (SCR_MAIN_SEPS && (size_t)i < strlen(SCR_MAIN_SEPS)
-                && SCR_MAIN_SEPS[i] == ',') comma_seen = 1;
-        }
-    }
-    int frac_digits = s_freq_total - int_digits;
-    s_freq_center = 10000000ull * pow10_u64(frac_digits);   /* 10 MHz */
-    s_freq_nominal_hz = 10000000.0;                          /* tentyz stred v Hz */
-    s_freq_n      = s_freq_center;
-    freq_fill_segments();                            /* pocatecni 10 MHz do segmentu */
-    for (int i = 0; i < n; i++) strcpy(s_num_prev[i], s_num_buf[i]);   /* shadow = init */
-    s_num_ready   = 1;
+    for (int i = 0; i < gn; i++) s_seg_x[i] = ui_big_number_seg_x(&s_num, (int16_t)i);
+    return gn;
 }
 
-/* Spojity krok kmitoctu: mean-revert random walk kolem stredu (10 MHz).
- * Krok ~±0,05 Hz (LSB = 10^-frac Hz), navrat /32 -> hodnota se pohybuje v pasmu
- * ~±0,3 Hz: cele cislo (10.000.000) stabilni, desetinna mista zivot. */
+/* ── #51: kolik trailing cislic je NEJISTYCH (kresli se fade fontem) ───────────
+ * (Od F-0177 se pocitaji i cislice CELE casti — viz telo a `num_layout`.)
+ * Reciprocni citac s TDC krokem 2,5 ns a hradlem `gate_ns` ma kvantizacni
+ * ROZLISENI ~√2·tdc/gate (relativne) = deterministicka fyzika, NEZAVISLA na
+ * simulaci headline. Prepocet na Hz -> pocet duveryhodnych desetin = kolik
+ * desetinnych mist ma mistni hodnotu jeste nad rozlisenim. Zbytek = nejiste.
+ *   - SIM (gate_ns==0): vracime 2 -> nezmeneny vzhled simulace.
+ *   - REAL/emulator (gate_ns z FPGA ramce, ~250e6 = 0,25 s): spocitane z hradla,
+ *     takze delsi hradlo -> vic duveryhodnych cislic (spravne chovani citace).
+ * ⚠️ ZADNY `log10` (nano.specs bez float printf je jina vec, ale libm log10 by
+ *   zbytecne tahlo float — staci nasobeni 0,1 v celociselne smycce).
+ * Vraci pocet nejistych desetin; volajici (`num_layout`) ho jeste sanituje. */
+/* σ casove znacky TDC [ps] (od 2026-10-08 zmerena, ne krok tapu) — hodnota bydli v `meas_present.h` jako `MP_TDC_PS`, protoze ji
+ * potrebuje i CM4 (web ji servíruje v `/api/state` pro rozpocet nejistoty).
+ * Zdejsi alias zustava jen kvuli citelnosti mistnich vzorcu. */
+#define FREQ_TDC_PS  MP_TDC_PS
+double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
+
+static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
+{
+    if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
+    if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
+    double hz = (double)x100000 / 100000.0;
+    if (hz <= 0.0) return 2;
+    /* #1 (2026-10-04): kdyz uz je NAMERENA σy@1s, pouzij ji — zahrnuje VSECHEN sum
+     * (TDC kvantizaci + drift reference/generatoru za okno), ne jen teoretickou TDC
+     * kvantizaci. Teoreticky vzorec totiz realnou nejistotu PODSTRELUJE (ignoruje
+     * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
+     * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
+    double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
+    /* 🔴 2026-10-06: NAMERENY rozptyl smi nejistotu jen ZVETSIT, nikdy snizit pod
+     * rozliseni hradla. Kdyz je signal synchronni s hodinami TDC (citac meri
+     * vlastni referenci), lezi obe krajni hrany okna stale na STEJNEM kodu
+     * retezu, kvantizacni chyba je konstantni, ne nahodna -- v rozptylu se
+     * neprojevi a σy vyjde temer 0. Display pak tvrdil 10 000 000,000 0000 Hz
+     * se vsemi cislicemi "duveryhodnymi", ackoli jedno okno 0,25 s nese pri
+     * kroku TDC ~57 ps nanejvys ~3·10⁻¹⁰. Proto max(σy, √2·tdc/gate). */
+    {
+        double gate_s = (double)gate_ps * 1e-12;
+        double u_floor = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
+        if (!(u_res > u_floor)) u_res = u_floor;
+    }
+    double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
+    /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
+     * 🔴 F-0177: pocita se i do CELE casti (vysledek smi byt > frac) — driv se
+     * tu vynucovala aspon jedna „duveryhodna" desetina, takze nad ~7 MHz
+     * podtrzeni tvrdilo 0,1 Hz pri skutecnem rozliseni 1,4 Hz (100 MHz) ci
+     * ~20 Hz (1,4 GHz). Mez [1, celkem-1] vynucuje `num_layout`. */
+    double pv = 1.0;
+    for (int i = 0; i < frac; i++) pv *= 0.1;           /* mistni hodnota posledni cislice */
+    int n_unc = 0;
+    while (pv < res_hz && n_unc < frac + 12) { n_unc++; pv *= 10.0; }
+    return n_unc;
+}
+
+/* Poskladej format pro dane mereni: urci pocet celych cislic a zvol NEJVIC desetin,
+ * ktere (a) `max_frac` povoluje (kolik jich zdroj unese) a (b) vejdou se do
+ * FREQ_MAX_W. Naplni pocatecni hodnotu a shadow.
+ * Volat pri INITu a pri zmene magnitudy/zdroje. */
+static void disp_update(void);   /* fwd — prepocet s_disp_n z s_freq_n dle rezimu */
+
+/* Jednotka a pocet CELYCH cislic pro periodu 1/f (SI predpona tak, aby mantisa
+ * byla 1 <= m < 1000).
+ *
+ * 🔴 JEDEN ZDROJ PRAVDY pro dve mista, ktera se driv mohla rozejit:
+ *   - `num_build_for` podle toho STAVI format,
+ *   - `freq_advance` podle toho pozna, ze se format MUSI prestavet.
+ * Driv se prestavba spoustela jen pri zmene dekady FREKVENCE (`idg != s_freq_int`),
+ * jenze uvnitr jedne frekvencni dekady se perioda posune o dekadu take:
+ *   f = 9 999 999 Hz -> 100,0 ns (3 cele cislice)
+ *   f = 1 000 000 Hz ->   1,0 us (1 cela cislice)   <- tataz dekada f (7 cislic)!
+ * Format se neprestavel a `freq_fill_segments` plni od LSB nahoru, takze pri
+ * pretečeni **TISE ZAHODIL VEDOUCI CISLICI** (z 1000 ns bylo „000"). */
+static void period_fmt_of(double hz, const char **unit, double *unit_s, int *int_digits)
+{
+    double t_ns = (hz > 0.0) ? 1e9 / hz : 0.0;
+    double t_disp;
+    if      (t_ns >= 1e9) { t_disp = t_ns / 1e9;  *unit = "s";  *unit_s = 1.0;   }
+    else if (t_ns >= 1e6) { t_disp = t_ns / 1e6;  *unit = "ms"; *unit_s = 1e-3;  }
+    else if (t_ns >= 1e3) { t_disp = t_ns / 1e3;  *unit = "us"; *unit_s = 1e-6;  }
+    else if (t_ns >= 1.0) { t_disp = t_ns;        *unit = "ns"; *unit_s = 1e-9;  }
+    else                  { t_disp = t_ns * 1e3;  *unit = "ps"; *unit_s = 1e-12; }
+    uint64_t whole = (uint64_t)t_disp;
+    int n = 1;
+    for (uint64_t t = whole; t >= 10ull; t /= 10ull) n++;
+    *int_digits = n;
+}
+
+static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, int max_frac)
+{
+    uint64_t whole = x100000 / 100000ull;
+    int int_digits = 1;
+    for (uint64_t t = whole; t >= 10ull; t /= 10ull) int_digits++;
+
+    /* ── 1) FREKVENCNI stav (drzi ho statistika / SIM walk / screen_main_freq_hz —
+     *        VZDY, i v rezimu PERIODA). Frac = kolik nese zdroj (hi-res 7 / x1e5 5 / sim). ── */
+    s_freq_int  = int_digits;
+    s_freq_frac = (max_frac > FREQ_FRAC_HIRES) ? FREQ_FRAC_HIRES : max_frac;
+    s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ps, s_freq_hires) : 0u;
+    s_freq_nominal_hz = (double)whole;
+    s_freq_center     = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
+
+    /* ── 2) ZOBRAZENI: FREQUENCY nebo PERIODA (footer toggle `st.mode`). ── */
+    s_disp_period = (uint8_t)(st.mode & 1);
+    if (!s_disp_period) {
+        s_disp_unit = SCR_S_UNIT_HZ; s_disp_unit_s = 1.0;
+        for (int frac = max_frac; ; frac--) {
+            num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ps, frac));
+            if (s_num_w <= FREQ_MAX_W || frac == 0) break;
+        }
+        s_freq_unc_last = freq_uncertain_frac(x100000, gate_ps, s_disp_frac);  /* #1: zapamatuj pro trigger prestavby */
+        /* freq frac = to, co num_layout vybral dle FREQ_MAX_W (v tomto rezimu jsou
+         * frekvence a zobrazeni identicke) */
+        s_freq_frac = s_disp_frac;
+        s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ps, s_freq_hires) : 0u;
+        s_freq_center = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
+    } else {
+        const char *u; double us; int p_int;
+        period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
+        s_disp_unit = u; s_disp_unit_s = us;
+        for (int frac = FREQ_FRAC_HIRES; ; frac--) {
+            num_layout(p_int, frac, 2);
+            if (s_num_w <= FREQ_MAX_W || frac == 0) break;
+        }
+    }
+
+    disp_update();   /* naplni s_disp_n (freq: = s_freq_n; period: 1/f -> jednotka) */
+    freq_fill_segments();
+    for (int i = 0; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
+    s_num_ready = 1;
+}
+
+/* Prepocet zobrazovaneho cisla `s_disp_n` z frekvence `s_freq_n` podle rezimu.
+ * Vola se po KAZDE zmene s_freq_n bez rebuilu formatu (SIM krok, drzeny FPGA seq). */
+static void disp_update(void)
+{
+    if (!s_disp_period) { s_disp_n = s_freq_n; return; }
+    double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);   /* Hz */
+    if (f <= 0.0) { s_disp_n = 0; return; }
+    double t_disp = (1.0 / f) / s_disp_unit_s;                       /* v jednotce s_disp_unit */
+    s_disp_n = (uint64_t)(t_disp * (double)pow10_u64(s_disp_frac) + 0.5);
+}
+
+/* Init: zakladni SIM format pro 10 MHz (bez hi-res dvojice), 6 desetin =
+ * 4 velke + 2 male nejiste. */
+static void num_build(void)
+{
+    num_build_for(10000000ull * 100000ull, 0u, 0u, FREQ_FRAC_SIM);   /* 10 MHz × 1e5 */
+}
+
+/* SIM fallback: mean-revert random walk kolem `s_freq_center` (posledni znamy rad).
+ * Krok ~±0,05 Hz, navrat /32 -> pasmo ~±0,3 Hz: cela cast stabilni, desetinna mista
+ * zivot.
+ * ⚠️ Amplituda se POCITA Z `s_freq_frac`, ne pevne v LSB: LSB je 10^-frac Hz, takze
+ * konstantni krok by pri jinem poctu desetin znamenal jinou FYZIKALNI amplitudu
+ * (pri 5 desetinach by pevnych ±524288 LSB delalo ±5 Hz misto ±0,05 Hz a rozkmitalo
+ * by i celou cast). Takhle zustava vzhled simulace stejny v kazdem formatu. */
 static void freq_step(void)
 {
     static uint32_t rng = 0xDEADBEEFu;
     rng = rng * 1664525u + 1013904223u;
-    int32_t step = (int32_t)((rng >> 12) & 0xFFFFF) - 0x80000;  /* ±524288 */
+    int64_t amp = (int64_t)pow10_u64(s_freq_frac) / 20;         /* ~0,05 Hz v LSB */
+    if (amp < 1) amp = 1;                                       /* bez desetin: min. 1 LSB */
+    int64_t r    = (int64_t)((rng >> 12) & 0xFFFFF) - 0x80000;  /* ±524288 */
+    int64_t step = r * amp / 0x80000;                           /* -> ±amp */
     int64_t off  = (int64_t)s_freq_n - (int64_t)s_freq_center;
     off += step - (off / 32);                                   /* random walk + decay (/32) */
     int64_t v = (int64_t)s_freq_center + off;
     if (v < 0) v = 0;
     s_freq_n = (uint64_t)v;
+    disp_update();   /* prepocitej zobrazovane cislo (period: 1/f) */
+}
+
+/* ── #1: aktualizace s_freq_n ze ZDROJE (real FPGA / emulator, jinak SIM fallback).
+ * REAL (FpgaTask `g_freq_*`) ma prednost; bez platneho mereni -> `freq_step()`.
+ * Pri zmene magnitudy prestavi format (num_build_for) a nahodi s_freq_fmt_changed
+ * (redraw_freq pak udela plny redraw misto per-segment). Prechod REAL<->SIM resetuje
+ * statistiku (nemichat nekompatibilni vzorky). Volat 1×/tik z redraw_freq (on-main)
+ * NEBO screen_main_freq_sim_step (off-main) — nikdy obe zaroven (jinak dvojity krok).
+ * ⚠️ Seqlock cteni: FpgaTask (Normal) muze preemptnout UiTask (BelowNormal) a jeho
+ * zapis je atomicky (kriticka sekce) + `g_freq_seq` roste kazdou zmenou -> re-check
+ * seq odhali soubezny commit bez nutnosti FreeRTOS kriticke sekce tady. */
+/* F-0183: kmitocet pri poslednim prestaveni formatu v REALNEM rezimu (0 = jeste
+ * zadne). Slouzi k poznani, ze se zmenil MERENY SIGNAL i v ramci teze dekady. */
+static double s_freq_ref_hz = 0.0;
+
+/* F-0188/F-0189: patri kmitocet k PRAVE merenemu signalu? Tentyz prah 1e-4 proti
+ * tez referenci jako detekce zmeny signalu, takze vzorek, ktery by statistiku
+ * vynuloval, se do ni nesmi dostat ani jinou cestou (fronta, rekonstrukce z logu).
+ * Bez reference (SIM, start) = 1. */
+int screen_main_signal_match(double hz)
+{
+    if (s_freq_ref_hz <= 0.0) return 1;
+    return (hz > 0.0) && fabs(hz / s_freq_ref_hz - 1.0) <= 1e-4;
+}
+double screen_main_signal_ref_hz(void) { return s_freq_ref_hz; }
+
+static void freq_advance(void)
+{
+    if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
+
+    uint32_t seq; uint64_t x100000, edges, gate_ps; uint8_t valid, hires;
+    do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid;
+         edges = g_freq_edges; gate_ps = g_freq_gate_ps; hires = g_freq_hires; }
+    while (seq != g_freq_seq);
+
+    /* Prepnul se FREQUENCY <-> PERIOD (footer toggle) -> vynut rebuild formatu
+     * z posledni znamé FREKVENCE (na novém mereni / SIM kroku nezavisle). */
+    if (s_disp_recalc) {
+        s_disp_recalc = 0;
+        double f_hz = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
+        uint64_t fx = (f_hz > 0.0) ? (uint64_t)(f_hz * 100000.0 + 0.5)
+                                   : (10000000ull * 100000ull);
+        double keep_nom = s_freq_nominal_hz;   /* F-0184: jen format, NE reference y */
+        num_build_for(fx, 0u, 0u, s_freq_hires ? FREQ_FRAC_HIRES : FREQ_FRAC_SIM);
+        if (keep_nom > 0.0) s_freq_nominal_hz = keep_nom;
+        s_freq_fmt_changed = 1;
+        s_last_fpga_seq    = seq - 1u;   /* dalsi realne mereni znovu vyhodnot */
+    }
+
+    if (valid && x100000 > 0) {
+        if (s_freq_is_sim) { s_freq_is_sim = 0; screen_main_stats_reset();
+                             s_last_fpga_seq = seq - 1u; s_freq_fmt_changed = 1; }  /* SIM->REAL: sundej marker */
+        if (seq != s_last_fpga_seq) {                 /* NOVE mereni */
+            s_last_fpga_seq = seq;
+            uint64_t whole = x100000 / 100000ull;
+            int idg = 1; for (uint64_t t = whole; t >= 10ull; t /= 10ull) idg++;
+            if (idg > 12) idg = 12;
+            /* Dve RUZNE veci, ktere se do 2026-09-27 sly jednou podminkou:
+             *  fmt_need   = format uz neodpovida hodnote (jiny RAD, prepnuti /4<->/16,
+             *               format periody) -> format se MUSI prestavet, jinak by
+             *               `freq_fill_segments` zahodila vedouci cislici nebo
+             *               dokreslovala nuly, ktere mereni nenese;
+             *  sig_change = meri se JINY signal nebo zdroj -> navic vynulovat statistiku
+             *               a nastavit novy nominal.
+             * 🔴 F-0184: do te doby kazda zmena RADU nulovala statistiku a posunula
+             * nominal. Jenze signal PRESNE kolem 10 MHz (hlavni pripad pouziti) kmita
+             * mezi 9 999 999,x a 10 000 000,x — pri TDC 2,5 ns ma jedno mereni sum
+             * ~0,14 Hz — takze se statistika nulovala porad dokola a Allan ani
+             * histogram se nikdy nenasbiraly; nominal navic skakal o 1 Hz (y o 1e-7).
+             * 🔴 F-0183: a naopak JINY signal v teze dekade (40 -> 60 Hz, 10 -> 12 MHz)
+             * statistiku NEnuloval (rad stejny) — michala se y proti staremu nominalu
+             * a pri nizkem kmitoctu i s jinym τ0 (vzorek = K hradel, #27).
+             * Signal se pozna z RELATIVNI zmeny proti PRESNEMU kmitoctu pri poslednim
+             * nulovani (`s_freq_ref_hz`), ne proti nominalu: nominal je cele Hz, takze
+             * u 40,9 Hz je |y| = 2 % legitimne. Prah 1e-4 je o rady nad driftem
+             * oscilatoru i nad sumem mereni a hluboko pod zmenou signalu. Overeno
+             * prepisem v `docs/audit/sim/2026-09-26_f0183_detekce.js`. */
+            int fmt_need   = (idg != s_freq_int || hires != s_freq_hires);
+            int sig_change = (hires != s_freq_hires);
+            /* 🔴 F-0192: kmitocet pro detekci z PRESNYCH ticku (hi-res), `x100000`
+             * jen kdyz nasobitel nesedi. LSB `x100000` (1e-5 Hz) je pod ~0,1 Hz vetsi
+             * nez prah 1e-4, takze by se nulovalo pri kazdem preklopeni zaokrouhleni
+             * (dnes f_min ~0,19 Hz s rezervou 2x; nova deska meri bez predelicky). */
+            double hz_now = hires ? fpga_freq_hires_hz(x100000, edges, gate_ps) : 0.0;
+            if (!(hz_now > 0.0)) hz_now = (double)x100000 / 100000.0;
+            if (s_freq_ref_hz <= 0.0) sig_change = 1;          /* prvni realne mereni */
+            else if (fabs(hz_now / s_freq_ref_hz - 1.0) > 1e-4) sig_change = 1;
+            /* Zmena KANALU (FW >= 0x041E): data A a B jsou ruzne mereni, i kdyz maji stejny kmitocet —
+             * statistika (Allan, histogram, trend) se nesmi slepit. Prvni mereni po startu jen zapamatuje. */
+            {   static int8_t s_chan_ref = -1;
+                if (s_chan_ref != (int8_t)g_freq_chan) {
+                    if (s_chan_ref >= 0) sig_change = 1;
+                    s_chan_ref = (int8_t)g_freq_chan;
+                } }
+            /* 🔴 V rezimu PERIODA hlidej JESTE format periody: ta se posune o dekadu
+             * i UVNITR jedne frekvencni dekady (9,99 MHz -> 100 ns / 1,00 MHz -> 1 us),
+             * takze samotne `idg` to nechytne a `freq_fill_segments` by tise zahodila
+             * vedouci cislici. Viz `period_fmt_of`. */
+            if (!fmt_need && s_disp_period) {
+                const char *u; double us; int p_int;
+                period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
+                if (p_int != s_disp_int || us != s_disp_unit_s) fmt_need = 1;
+            }
+            if (!s_disp_period && s_freq_unc_last >= 0 &&
+                freq_uncertain_frac(x100000, gate_ps, s_freq_frac) != s_freq_unc_last)
+                fmt_need = 1;   /* #1: σy dokonvergovala/zmenila se -> jiny pocet nejistych cislic */
+            if (fmt_need || sig_change) {
+                double keep_nom = s_freq_nominal_hz;
+                s_freq_hires = hires;
+                num_build_for(x100000, edges, gate_ps,
+                              hires ? FREQ_FRAC_HIRES : FREQ_FRAC_X1E5);
+                s_freq_fmt_changed = 1;
+                if (sig_change) {                     /* jiny signal/zdroj -> nemichat s pyramidou */
+                    screen_main_stats_reset();
+                    /* 🔴 F-0188: zahodit i vzorky, ktere FpgaTask uz slozil (fronta)
+                     * nebo sklada (akumulator) — jsou ze starého nebo smiseneho
+                     * signalu a prosly by do cerstve pyramidy (y ~ Δf/f, dozivani
+                     * az tydny na dlouhych τ). Zbytek hlida `screen_main_signal_match`. */
+                    fpga_stat_flush();
+                    s_freq_ref_hz = hz_now;
+                } else {
+                    s_freq_nominal_hz = keep_nom;     /* F-0184: jen format, reference y zustava */
+                }
+            } else {
+                s_freq_n = freq_frame_to_lsb(x100000, edges, gate_ps, hires);
+                disp_update();
+            }
+        }
+        /* stejny seq -> hodnota drzi (FPGA ~4/s, displej 20 Hz) */
+        return;
+    }
+
+    if (!s_freq_is_sim) { s_freq_is_sim = 1; screen_main_stats_reset(); s_freq_fmt_changed = 1;
+                          s_freq_ref_hz = 0.0; }  /* REAL->SIM: ukaz marker; referenci signalu znovu zachytit */
+    freq_step();
 }
 
 /* Rozlozi s_freq_n do segmentu (MSB first, zero-pad na pevnou sirku). */
@@ -596,11 +1217,11 @@ static void freq_fill_segments(void)
 {
     char d[20];
     memset(d, '0', sizeof d);   /* hardening: kdyby Σ s_seg_len > s_freq_total, cti '0' (ne smeti) */
-    uint64_t v = s_freq_n;
-    for (int i = s_freq_total - 1; i >= 0; i--) { d[i] = (char)('0' + (int)(v % 10u)); v /= 10u; }
+    uint64_t v = s_disp_n;
+    for (int i = s_disp_total - 1; i >= 0; i--) { d[i] = (char)('0' + (int)(v % 10u)); v /= 10u; }
     int p = 0, n = s_num.segment_count;
     for (int s = 0; s < n; s++) {
-        int L = s_seg_len[s];                /* cachovana delka (num_build) misto strlen */
+        int L = s_seg_len[s];                /* cachovana delka (num_layout) misto strlen */
         for (int k = 0; k < L; k++) s_num_buf[s][k] = d[p++];
         s_num_buf[s][L] = '\0';
     }
@@ -609,11 +1230,25 @@ static void freq_fill_segments(void)
 /* Obdelnik velkeho cisla (vc. jednotky) = clear/podbarvovaci zona. Shodny s
  * partial-redraw oblasti v screen_main_redraw_freq: vyska 88 konci presne nad
  * horni hranou karet mrizky (SCR_MAIN_GRID_Y), takze jim podbarveni nezasahuje
- * do okraju. Platny az po num_build (cachovana geometrie). */
+ * do okraju. Platny az po num_layout (cachovana geometrie; meni se s formatem). */
 static prim_rect_t freq_area(void)
 {
     return (prim_rect_t){(int16_t)(s_num_left - 2), s_num_top,
                          (int16_t)(s_num_w + 10), 88};
+}
+
+/* MAXIMALNI zona, kterou cislo muze zabrat = vycentrovanych `FREQ_MAX_W` + rezerva
+ * na jednotku a podtrzeni. Pouziva ji `screen_main_redraw_freq_area` jako clear:
+ * cislo je vycentrovane, takze pri zmene formatu se hybe i jeho levy okraj a
+ * sledovat "predchozi" zonu je krehke (viz komentar tam).
+ * ⚠️ Vodorovne je v tomto pasu volna cela obrazovka (lezi mezi hlavickou a
+ * mrizkou), takze prekryv nehrozi. Svisle zona konci PRESNE na `SCR_MAIN_UNCERT_Y`
+ * (s_num_top = baseline-72 = BODY_Y+22, +88 = BODY_Y+110) -> pas σ+N se necisti. */
+static prim_rect_t freq_clear_area(void)
+{
+    int16_t w = (int16_t)(FREQ_MAX_W + 20);
+    if (w > UI_DIM_SCREEN_W) w = UI_DIM_SCREEN_W;
+    return (prim_rect_t){(int16_t)((UI_DIM_SCREEN_W - w) / 2), s_num_top, w, 88};
 }
 
 /* STOP -> lehke cervene podbarveni cele zony kmitoctu (mereni STOJI). Kresli se
@@ -635,34 +1270,113 @@ static void render_body_number(void)
     prim_set_glyph_accel(0);
 }
 
-/* ── GPSDO statistika ze SIMULOVANEHO kmitoctu ──────────────────────────────
- * Frakcni odchylka y=(f-f0)/f0 (f0=10 MHz). Poctiva magnituda (~1e-8 dle kolisani
- * simulace). Vzorkuje se 1x/s (jen pri RUN, τ0=1s) do (a) plocheho ring bufferu
+/* ── GPSDO statistika z MERENEHO kmitoctu ───────────────────────────────────
+ * Frakcni odchylka y=(f-f0)/f0 (f0 = `s_freq_nominal_hz`, tj. rad mereni).
+ * Zdroj je realne mereni z FPGA (nebo SIM fallback — viz `freq_advance`).
+ * ⚠️ Vzorkuje se pri NOVEM mereni (`g_freq_seq`), v SIM rezimu 1x/s — kadenci ridi
+ * `app_gpsdo_tick_stats_sample`. Pyramida ale porad predpoklada ~1 s rozestup
+ * (τ0=1s); presny τ0 = skutecny rozestup az s MathTaskem (#27). Do (a) plocheho ring bufferu
  * (kratkodobe: trend 60s, offset, drift, σy@1s) a (b) decimacni pyramidy
- * (dlouhodoby Allan, tau 1..100000+ s, viz adev_feed). Prekresleni 1x/s. Float OK
- * (cold path; mimo no-float pravidlo pro protokol kmitoctu). */
+ * (dlouhodoby Allan, tau 1..100000+ s, viz adev_feed). Prekresleni 1x/s.
+ * 🔴 F-0179: ulozeni a mezisoucty v DOUBLE, ne float. Drive tu stalo „Float OK"
+ * — jenze f0 je CELE Hz, takze |y| < 1/f, a float ma relativni krok 6e-8: pri
+ * 10 kHz je kvantizace y ~7e-12 a dekadove soucty (acc ~1e-3) ~1e-11. Simulace
+ * (`docs/audit/sim/2026-09-26_float_podlaha.js`, stabilni zdroj 1e-12): ADEV
+ * 3,2x vys pri 1 MHz a tau 1000 s, 4,4x pri 100 kHz, a pri 10 kHz / 1 kHz
+ * vysla NULA (sum zmizel v kvantizaci, body z grafu tise vypadly). */
 /* Plochy ring = jen kratkodobe (trend 60s, offset, drift, σy@1s). DLOUHODOBY Allan
  * (tau az 100000 s / 100+ dni) resi decimacni pyramida nize. Vzorkuje se 1/s. */
 #define STAT_N    120               /* 1/s -> 120 s (trend 60s + drift baseline) */
 #define TREND_WIN 60                /* trend sparkline = posledni okno 60 s (1/s) */
-static float s_y[STAT_N];
+static double s_y[STAT_N];                 /* F-0179: double, viz vyse */
 static int   s_y_head = 0, s_y_count = 0;
-static void adev_feed(float v);     /* fwd — decimacni pyramida (dlouhodoby Allan) */
-static void trend_feed(float v);    /* fwd — decimacni pyramida (dlouhodoby trend) */
+static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
+static void trend_feed(double v);   /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
+static uint32_t s_stats_nsamp = 0;        /* vzorku od posledniho nulovani (web `/api/stab`) */
+static float    s_tau0_mean = 0.0f, s_tau0_dev = 0.0f;   /* bod 6: skutecne τ0 vzorku */
+static uint32_t s_tau0_n = 0;
 
-static void stats_sample(void)
+/* #27 cast 2: meritko osy τ = zmerene τ0 vzorku. Vzorky se od `d0a02e5` skladaji
+ * podle POCTU mereni, takze jsou stejne dlouhe a stage s ma skutecne τ =
+ * 10^s·m·τ0 — staci tedy osu a popisky vynasobit prumernym τ0 (pri nizkem
+ * kmitoctu 1,02-1,05 s i vic; pod ~1 Hz > 1 s). Jen pri REALNEM mereni a od
+ * 8 vzorku; jinak 1 s (SIM vzorkuje 1x/s, prvni vzorky jeste nejsou prumer). */
+static float tau0_scale(void)
 {
-    /* off_n = odchylka v LSB (LSB=1e-7 Hz), f0=1e7 Hz -> y = off_n*1e-14 */
-    int64_t off_n = (int64_t)s_freq_n - (int64_t)s_freq_center;
-    float y = (float)off_n * 1e-14f;
+    if (s_tau0_n >= 8u && s_tau0_mean > 0.0f && screen_main_gate_actual_s() > 0.0)
+        return s_tau0_mean;
+    return 1.0f;
+}
+
+/* Popisek τ na 3 platne cislice ("1,05 s", "10,5 s", "105 s", "1,05 ks"). */
+static void fmt_tau_lbl(char *b, size_t n, float tau)
+{
+    const char *u = "s";
+    if (tau >= 1000.0f) { tau /= 1000.0f; u = "ks"; }
+    /* Modulo omezuje cifry i pro kompilator (-Wformat-truncation): nejdelsi
+     * vystup je "99999 ks" = 8 znaku. */
+    if (!(tau >= 0.0f)) tau = 0.0f;
+    if (tau < 10.0f) {
+        unsigned c = (unsigned)(tau * 100.0f + 0.5f) % 1000u;
+        snprintf(b, n, "%u,%02u %s", c / 100u, c % 100u, u);
+    } else if (tau < 100.0f) {
+        unsigned c = (unsigned)(tau * 10.0f + 0.5f) % 1000u;
+        snprintf(b, n, "%u,%u %s", c / 10u, c % 10u, u);
+    } else {
+        snprintf(b, n, "%u %s", (unsigned)(tau + 0.5f) % 100000u, u);
+    }
+}
+
+/* ── JEDINY ZDROJ PRAVDY pro frakcni odchylku y = (f − f0) / f0 ───────────────
+ * f0 = `s_freq_nominal_hz` = rad prave merene veliciny; 0 = jeste nezname
+ * (pred prvnim merenim, nebo kmitocet < 1 Hz) -> vraci 0.
+ *
+ * 🔴 PROC TO JE FUNKCE, A NE VZOREC NA MISTE (audit F-0037): tenhle vypocet
+ * existoval DVAKRAT a obe kopie se rozesly. `stats_sample` pouzival pevne
+ * meritko `off_n * 1e-14`, ktere plati JEN pro `s_freq_frac == 7` a `f0 == 10 MHz` —
+ * jenze obojí je dynamicke (`frac` je 7 hi-res / 6 SIM / 5 pro vetev /16 a `f0`
+ * je cokoli od 32 kHz po 1,4 GHz). V dnesnim vychozim stavu (SIM, frac = 6)
+ * vychazela `y` **10x mensi**, pri vetvi /16 100x. Druha cesta
+ * (`stats_seed_tick` v app_gpsdo.c, rekonstrukce z datalogu) pocitala SPRAVNE —
+ * a obe konci ve STEJNE ADEV pyramide, takze se v ni michala dve meritka.
+ * Zive na tom visi Offset, σy@1s, Drift, trend, histogram, σy(τ) tabulka,
+ * Allanuv graf, ℒ(f) i prahovy monitor (`g_adev_1s`).
+ * ⚠️ Kdo bude potrebovat `y` na tretim miste, VOLA TOHLE — nepise vzorec znovu.
+ *
+ * ⚠️ Presnost: pracuje se s ABSOLUTNIM kmitoctem, ne s odchylkou v LSB. Pri
+ * 1,4 GHz a 7 desetinach je `s_freq_n` ~1,4e16, tedy nad presnym rozsahem
+ * double (2^53 ≈ 9e15) — zaokrouhleni je ale ~2 LSB = 2e-7 Hz, zatimco
+ * nejmensi odchylka, ktera nas zajima, je pri tom kmitoctu ~0,014 Hz
+ * (rozliseni TDC). Relativni chyba ~2e-5 je proti sumu mereni zanedbatelna
+ * a stoji za to mit JEDEN vzorec misto dvou. */
+double screen_main_frac_dev(double hz)
+{
+    double f0 = s_freq_nominal_hz;
+    if (f0 <= 0.0) return 0.0;
+    return (hz - f0) / f0;       /* F-0179: double — float zde smazal sum pri nizkem f */
+}
+
+/* Jediné místo, kudy vzorek vstupuje do statistiky (ring, Allan, trend). */
+static void stats_push(double y)
+{
     s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
     adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
+    s_stats_nsamp++;
+}
+
+/* SIM fallback: vzorek = aktualni hodnota headline. */
+static void stats_sample(void)
+{
+    /* `s_freq_n` je v LSB = 10^-`s_freq_frac` Hz -> na Hz a pak pres jediny
+     * zdroj pravdy vyse. (Drive tu bylo pevne `off_n * 1e-14` — viz F-0037.) */
+    double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
+    stats_push(screen_main_frac_dev(f));
 }
 
 /* Verze statistickych dat — histogram okno se prekresli jen kdyz se zmeni
@@ -675,7 +1389,7 @@ uint32_t screen_main_stats_version(void) { return s_stats_ver; }
 static float stats_adev(int m);
 float screen_main_adev_1s(void) { return stats_adev(1); }
 
-static float stat_at(int age)   /* age 0 = nejnovejsi */
+static double stat_at(int age)  /* age 0 = nejnovejsi */
 {
     int idx = (s_y_head - 1 - age + 2 * STAT_N) % STAT_N;
     return s_y[idx];
@@ -685,17 +1399,17 @@ static float stats_mean(int n)
 {
     if (n > s_y_count) n = s_y_count;
     if (n <= 0) return 0.0f;
-    float s = 0; for (int i = 0; i < n; i++) s += stat_at(i);
-    return s / (float)n;
+    double s = 0; for (int i = 0; i < n; i++) s += stat_at(i);
+    return (float)(s / (double)n);
 }
 
 static float stats_pp(int n)
 {
     if (n > s_y_count) n = s_y_count;
     if (n <= 0) return 0.0f;
-    float mn = stat_at(0), mx = mn;
-    for (int i = 1; i < n; i++) { float v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
-    return mx - mn;
+    double mn = stat_at(0), mx = mn;
+    for (int i = 1; i < n; i++) { double v = stat_at(i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    return (float)(mx - mn);
 }
 
 /* Non-overlapping ADEV plocheho ringu pro tau = m vzorku (tau0=1 s, 1/s). Pouziva
@@ -704,12 +1418,12 @@ static float stats_adev(int m)
 {
     int blocks = s_y_count / m;
     if (blocks < 2) return 0.0f;
-    float prev = 0; int have = 0; double acc = 0; int nd = 0;
+    double prev = 0; int have = 0; double acc = 0; int nd = 0;
     for (int b = 0; b < blocks; b++) {
-        float bs = 0;
+        double bs = 0;
         for (int j = 0; j < m; j++) bs += stat_at(b * m + j);
-        bs /= (float)m;
-        if (have) { float d = bs - prev; acc += (double)d * (double)d; nd++; }
+        bs /= (double)m;
+        if (have) { double d = bs - prev; acc += d * d; nd++; }
         prev = bs; have = 1;
     }
     return (nd > 0) ? sqrtf((float)(0.5 * acc / (double)nd)) : 0.0f;
@@ -721,39 +1435,74 @@ static float stats_drift(void)
 {
     int h = s_y_count / 2;
     if (h < 1) return 0.0f;
-    float nm = 0, om = 0;
+    double nm = 0, om = 0;
     for (int i = 0; i < h; i++) { nm += stat_at(i); om += stat_at(s_y_count - 1 - i); }
-    nm /= (float)h; om /= (float)h;
-    float dt = (float)h;                  /* odstup centroidu pulek [s] (vzorky × 1 s) */
-    return (dt > 0.0f) ? (nm - om) / dt : 0.0f;
+    nm /= (double)h; om /= (double)h;
+    double dt = (double)h;                /* odstup centroidu pulek [s] (vzorky × 1 s) */
+    return (dt > 0.0) ? (float)((nm - om) / dt) : 0.0f;
 }
 
 /* ── Decimacni pyramida pro DLOUHODOBY Allan (tau 1..100000 s, ohranicena pamet) ──
  * Vzorek y (1/s) jde do stage 0; po 10 vzorcich se jejich prumer posune do dalsi
- * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~640 B
+ * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~2,9 kB
  * (plochy buffer by chtel desitky MB). */
 #define ADEV_STAGES 6                 /* tau = 1, 10, 100, 1k, 10k, 100k s */
-#define ADEV_RING   24                /* prumeru na stage (na ADEV vypocet) */
-typedef struct { float ring[ADEV_RING]; int16_t head, count; float acc; int16_t acc_n; } adev_stage_t;
+/* Prumeru na stage. 60 (drive 24) kvuli hustsimu Allanovu grafu (2026-09-27):
+ * body τ = m·10^s s s mantisou m az 9 (viz `DENS_M`) potrebuji pro MDEV/HDEV
+ * M >= 3m+1 = 28 prumeru, a s 24 by se nespocitaly vubec. Pri m = 9 zbyva ADEV
+ * 43 clenu, MDEV 35 a HDEV 34. Vedlejsi efekt i u vychozich 1-2-5: vic clenu
+ * (uzsi pas nejistoty), za cenu delsi pameti stage (60·10^s s misto 24·10^s s). */
+#define ADEV_RING   60
+/* 🔴 F-0187: stage nese vedle prumeru kmitoctu Ybar i FAZI uvnitr bloku:
+ *   E = (prumer faze bloku - faze na jeho zacatku) / delka bloku   (τ0 = 1).
+ * Bez ni je stage jen faze PODVZORKOVANA po 10^s τ0 — ADEV a HDEV tomu staci
+ * (potrebuji jen prumery kmitoctu pres τ), ale MDEV ne: prumeroval by m bodu
+ * faze misto n = m·10^s a u bileho PM vychazel 3,2x (stage 1) az 10x (stage 2)
+ * vysoko a bily PM se hlasil jako blikavy (sim/2026-09-27_mdev_pyramida.js).
+ * S E je MDEV nad stage PRESNE standardni MDEV (τ0 = 1), jen se starty po 10^s.
+ * Decimace x10: Ybar = Σ Ybar_j / 10,  E = Σ (C_j + E_j) / 100,
+ * C_j = Σ Ybar predchozich podbloku. Stage 0 (blok = 1 vzorek) ma E = 0.
+ * `e_n` = kolik NEJNOVEJSICH polozek ma E platne: rekonstrukce z datalogu
+ * (10s prumery) fazi uvnitr bloku nezna, takze MDEV se nad ni nepocita. */
+typedef struct {
+    double  ring[ADEV_RING];      /* prumery kmitoctu Ybar */
+    double  eph[ADEV_RING];       /* E (viz vyse) */
+    int16_t head, count;
+    int16_t e_n;                  /* pocet nejnovejsich polozek s platnym E */
+    double  acc;                  /* decimace: Σ Ybar podbloku (= C_j pro dalsi) */
+    double  acc_e;                /* decimace: Σ (C_j + E_j) */
+    int16_t acc_n;
+    uint8_t acc_e_ok;             /* vsechny podbloky mely platne E */
+} adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
  * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
  * ma kadenci PRESNE 10 s = tau stage 1. */
-static void adev_feed_from(int s0, float v)
+/* `e`/`e_ok` = faze uvnitr bloku vkladaneho vzorku (F-0187); nad pyramidou `pyr`
+ * s `nst` stagemi (selftest si stavi vlastni, zivou nesmi menit). */
+static void adev_feed_into(adev_stage_t *pyr, int nst, int s0, double v, double e, int e_ok)
 {
-    for (int s = s0; s < ADEV_STAGES; s++) {
-        adev_stage_t *sg = &s_adev[s];    /* 'sg', ne 'st' — nekolidovat s globalnim UI stavem */
+    for (int s = s0; s < nst; s++) {
+        adev_stage_t *sg = &pyr[s];       /* 'sg'/'pyr', ne 'st' — nekolidovat s globalnim UI stavem */
         sg->ring[sg->head] = v;
+        sg->eph[sg->head]  = e;
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
         if (sg->count < ADEV_RING) sg->count++;
-        sg->acc += v;
+        sg->e_n = e_ok ? (int16_t)((sg->e_n < ADEV_RING) ? sg->e_n + 1 : ADEV_RING) : 0;
+        if (sg->acc_n == 0) sg->acc_e_ok = 1u;
+        sg->acc_e += sg->acc + e;                 /* C_j + E_j, C_j = Σ Ybar predchozich */
+        sg->acc   += v;
+        if (!e_ok) sg->acc_e_ok = 0u;
         if (++sg->acc_n < 10) return;             /* dalsi stage jeste nema co krmit */
-        v = sg->acc / 10.0f; sg->acc = 0; sg->acc_n = 0;   /* dekadovy prumer -> dal */
+        v    = sg->acc / 10.0;                    /* dekadovy prumer -> dal */
+        e    = sg->acc_e / 100.0;
+        e_ok = sg->acc_e_ok;
+        sg->acc = 0.0; sg->acc_e = 0.0; sg->acc_n = 0;
     }
 }
 
-static void adev_feed(float v) { adev_feed_from(0, v); }
+static void adev_feed(double v) { adev_feed_into(s_adev, ADEV_STAGES, 0, v, 0.0, 1); }
 
 /* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
  * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
@@ -762,7 +1511,11 @@ static void adev_feed(float v) { adev_feed_from(0, v); }
  *
  * ⚠️ KLICOVE: vzorek z logu se vklada od STAGE 1, ne od stage 0. Stage 1 ma
  * tau = 10 s, coz je PRESNE kadence datalogu, takze prevod je exaktni — zadne
- * prevzorkovani, zadna zmena tau0. Kdyby se log sypal do stage 0 (tau0 = 1 s),
+ * prevzorkovani, zadna zmena tau0. 🔴 Ale JEN pro zaznamy s `freq_avg = 1`
+ * (prumer vsech mereni za periodu, F-0172): do 2026-09-26 datalog ukladal
+ * okamzity vzorek jednoho hradla 0,25 s, ktery 10s prumer NENI — rozestup
+ * sedel, okno prumerovani ne, a σy z historie vychazela ~3x nad zivymi
+ * vzorky. Filtr je u volajiciho (`stats_seed_tick`). Kdyby se log sypal do stage 0 (tau0 = 1 s),
  * vysla by sigma_y(tau) systematicky SPATNE o cely rad a pritom by vypadala
  * verohodne. Stage 0 zustava prazdna, dokud ji nenaplni zive vzorky — a to je
  * spravne: log zadna 1s data nema.
@@ -771,7 +1524,22 @@ static void adev_feed(float v) { adev_feed_from(0, v); }
  * 10s kadence loguje na zadnou jeji stage nesedne a musela by se prevzorkovat —
  * tim by se zkreslila casova osa. Dlouha okna trendu maji misto toho cist
  * datalog primo, stejnym vzorem jako okno GRAFY. */
-void screen_main_adev_seed_10s(float y) { adev_feed_from(1, y); }
+/* 🔴 Stage se NEODVOZUJE od jmena funkce, ale od SKUTECNE periody logu.
+ * Do 2026-09-07 byla perioda pevnych 10 s a stage 1 sedela; od chvile, kdy je
+ * perioda nastavitelna, by natvrdo zapsana 1 znamenala sigma_y(tau) mimo
+ * o cely rad — a VEROHODNE, tedy nejhorsi druh chyby. `datalog_adev_stage()`
+ * vraci -1, kdyz perioda neni mocnina deseti; pak se vzorek ZAHODI, protoze
+ * nesedne na zadnou stage exaktne. */
+void screen_main_adev_seed_10s(double y)
+{
+    /* 'stg', ne 'st' — globalni UI stav se jmenuje `st` (viz komentar
+     * v `adev_feed_from`); -Wshadow to jinak hlasi. */
+    int stg = datalog_adev_stage();
+    if (stg < 0 || stg >= ADEV_STAGES) return;
+    /* F-0187: 10s prumer z logu fazi uvnitr bloku nenese -> E neplatne (MDEV nad
+     * rekonstrukci se nepocita); jen stage 0 (blok = 1 vzorek) ho ma trivialne 0. */
+    adev_feed_into(s_adev, ADEV_STAGES, stg, y, 0.0, stg == 0);
+}
 
 /* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
  * Je to tentyz stred, jaky pouziva `stats_sample` (jen v Hz misto v LSB), takze
@@ -782,10 +1550,57 @@ double screen_main_freq_nominal(void)
     return s_num_ready ? s_freq_nominal_hz : 0.0;
 }
 
-static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prvek */
+/* ── #45: L(f) fazoveho sumu z ringu frakcnich fluktuaci `s_y[]` ──────────────
+ * Spocita spektrum (phase_noise.c) z poslednich PN_NFFT vzorku (1/s) a vrati
+ * L(f) na binu nejblizsim `target_hz`. Cold path — vola se jen pri renderu okna
+ * ANALYZA (ne v tiku). Buffery `static` (nezatezovat stack UiTasku).
+ * @return 1 = spocteno (>=PN_NFFT vzorku, ~64 s behu); 0 = zatim malo dat. */
+int screen_main_phase_noise(double target_hz, double *f_used, double *l_dbc)
 {
-    int idx = (sg->head - sg->count + i + 2 * ADEV_RING) % ADEV_RING;
-    return sg->ring[idx];
+    if (s_y_count < PN_NFFT) return 0;
+    static float      chron[STAT_N];        /* chronologicky (nejstarsi first) */
+    static pn_point_t pts[PN_NBINS];
+    int n = s_y_count;
+    /* F-0179: `pn_compute` bere float — absolutni y by kvantizace pri nizkem f
+     * smazala, proto se prumer odecte uz tady v double (pn_compute ho odecita
+     * znovu per segment, coz je pak neskodne). */
+    double ym = 0.0;
+    for (int i = 0; i < n; i++) ym += stat_at(i);
+    ym /= (double)n;
+    for (int i = 0; i < n; i++) chron[i] = (float)(stat_at(n - 1 - i) - ym);
+    double f0 = (s_freq_nominal_hz > 0.0) ? s_freq_nominal_hz : 1e7;
+    int np = pn_compute(chron, n, f0, 1.0, pts, PN_NBINS);
+    if (np <= 0) return 0;
+    int best = 0; double bd = 1e30;
+    for (int i = 0; i < np; i++) {
+        double d = pts[i].f_hz - target_hz; if (d < 0) d = -d;
+        if (d < bd) { bd = d; best = i; }
+    }
+    if (f_used) *f_used = pts[best].f_hz;
+    if (l_dbc)  *l_dbc  = pts[best].l_dbc;
+    return 1;
+}
+
+/* Index nejstarsiho prvku ringu — pocita se JEDNOU na estimator. Drive se modulo
+ * delalo v nejvnitrnejsi smycce (az dvakrat na clen); s ringem 60 a m az 9
+ * (hustsi Allan) by to stalo radove vic nez samotna aritmetika. Soucet se
+ * sklada ze TYCHZ clenu ve STEJNEM poradi, vysledek je tedy bit za bit stejny. */
+static int adev_base_n(const adev_stage_t *sg, int n)  /* index nejstarsi z n nejnovejsich */
+{
+    return (sg->head - n + ADEV_RING) % ADEV_RING;
+}
+static int adev_base(const adev_stage_t *sg) { return adev_base_n(sg, sg->count); }
+static double adev_e_at(const adev_stage_t *sg, int base, int i)   /* E i-teho (F-0187) */
+{
+    int k = base + i;
+    if (k >= ADEV_RING) k -= ADEV_RING;
+    return sg->eph[k];
+}
+static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstarsi */
+{
+    int k = base + i;                   /* base < RING, i < RING -> k < 2·RING */
+    if (k >= ADEV_RING) k -= ADEV_RING;
+    return sg->ring[k];
 }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
@@ -802,10 +1617,10 @@ static float adev_rat(const adev_stage_t *sg, int i)       /* i-ty nejstarsi prv
 #define TR_STAGES 9
 #define TR_RING   128
 #define TR_DECIM  4
-typedef struct { float ring[TR_RING]; int16_t head, count; float acc; int16_t acc_n; } tr_stage_t;
+typedef struct { double ring[TR_RING]; int16_t head, count; double acc; int16_t acc_n; } tr_stage_t;
 static tr_stage_t s_tr[TR_STAGES];
 
-static void trend_feed(float v)
+static void trend_feed(double v)
 {
     for (int s = 0; s < TR_STAGES; s++) {
         tr_stage_t *sg = &s_tr[s];
@@ -814,7 +1629,7 @@ static void trend_feed(float v)
         if (sg->count < TR_RING) sg->count++;
         sg->acc += v;
         if (++sg->acc_n < TR_DECIM) return;            /* vyssi stage jeste nema co krmit */
-        v = sg->acc / (float)TR_DECIM; sg->acc = 0; sg->acc_n = 0;
+        v = sg->acc / (double)TR_DECIM; sg->acc = 0; sg->acc_n = 0;
     }
 }
 
@@ -831,7 +1646,7 @@ static int tr_pick(int32_t win_s)
     return TR_STAGES - 1;
 }
 
-static float tr_at(int s, int age)      /* age 0 = nejnovejsi */
+static double tr_at(int s, int age)     /* age 0 = nejnovejsi */
 {
     const tr_stage_t *sg = &s_tr[s];
     int idx = (sg->head - 1 - age + 2 * TR_RING) % TR_RING;
@@ -860,7 +1675,9 @@ void screen_main_stats_reset(void)
     s_y_head = 0; s_y_count = 0;
     memset(s_adev, 0, sizeof s_adev);
     memset(s_tr, 0, sizeof s_tr);
+    s_tau0_mean = s_tau0_dev = 0.0f; s_tau0_n = 0;   /* bod 6 */
     s_stats_ver++;
+    s_stats_nsamp = 0u;
     stats_anim_resync();
     trend_anim_resync();
 }
@@ -877,7 +1694,7 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
 
 /* Non-overlapping ADEV stage s pri decimaci m (tau = m*10^s s). */
 /* ── Estimatory stability nad ringem jedne stage (τ0 = 10^s s) ───────────────
- * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_rat`).
+ * Ring drzi M kmitoctovych vzorku y_0..y_{M-1} (nejstarsi prvni, `adev_at`).
  * Vsechny tri jsou OVERLAPPING (Riley, NIST SP1065) — z TYCHZ dat davaji vyrazne
  * lepsi konfidenci nez non-overlapping varianta, ktera tu byla do 2026-08-18:
  * ta pri tau = m·τ0 zahodila vetsinu moznych dvojic (pouzila jen M/m bloku misto
@@ -893,15 +1710,24 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
  *        ADEV je od sebe neodlisi, MDEV ano (jiny sklon).
  *   HDEV je imunni vuci LINEARNIMU DRIFTU (druhe diference), takze u OCXO se
  *        stárnutím ukaze skutecny sum misto driftove rampy.
- * Slozitost O(M·m²) pri M<=24 a m<=5 -> par set operaci, bezi 1x/s. */
+ * Slozitost O(M·m²) pri M<=60 a m<=9 -> nejhure ~5 tisic scitani na bod (MDEV),
+ * bez modula v nejvnitrnejsi smycce (`adev_at`), bezi 1x/s.
+ *
+ * ⚠️ F-0166 (2026-09-26): meze smycek odpovidaji poctum clenu ve vzorcich vyse
+ * (0-indexovano posledni platne j = M-2m / M-3m / M-3m+1). Do te doby vsechny
+ * tri smycky koncily o jedna driv a zahazovaly posledni platny clen — odhady
+ * byly nezkreslene (deli se skutecnym `n`), ale na dlouhych tau prisly o 7-10 %
+ * clenu, tedy prave tam, kde je dat nejmene. Vstupni meze (M >= 2m+1 / 3m+1)
+ * zustaly, aby se pri rozbehu neobjevil novy bod z jedineho clenu. */
 #define ADEV_KIND_ADEV  0
 #define ADEV_KIND_MDEV  1
 #define ADEV_KIND_HDEV  2
 
-static float adev_stage_kind(int s, int m, int kind)
+/* `pb` = stage s bloky delsimi nez 1 vzorek (s >= 1): MDEV pak pouzije fazi E. */
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb)
 {
-    const adev_stage_t *sg = &s_adev[s];
     int M = sg->count;
+    int b = adev_base(sg);
     if (m < 1) m = 1;
 
     double acc = 0.0;
@@ -909,12 +1735,12 @@ static float adev_stage_kind(int s, int m, int kind)
 
     if (kind == ADEV_KIND_HDEV) {
         if (M < 3 * m + 1) return 0.0f;
-        for (int j = 0; j + 3 * m <= M - 1; j++) {
+        for (int j = 0; j <= M - 3 * m; j++) {            /* M-3m+1 clenu (SP1065) */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
-                inner += (double)adev_rat(sg, i + 2 * m)
-                       - 2.0 * (double)adev_rat(sg, i + m)
-                       + (double)adev_rat(sg, i);
+                inner += (double)adev_at(sg, b, i + 2 * m)
+                       - 2.0 * (double)adev_at(sg, b, i + m)
+                       + (double)adev_at(sg, b, i);
             acc += inner * inner; n++;
         }
         if (n == 0) return 0.0f;
@@ -922,12 +1748,23 @@ static float adev_stage_kind(int s, int m, int kind)
     }
 
     if (kind == ADEV_KIND_MDEV) {
-        if (M < 3 * m + 1) return 0.0f;
-        for (int j = 0; j + 3 * m - 1 <= M - 1; j++) {
+        /* 🔴 F-0187: nad stage >= 1 jen NEJNOVEJSI polozky s platnou fazi E, clen
+         * Σ(E[l+2m] - 2E[l+m] + E[l]) doplni prumer faze uvnitr bloku, a posledni
+         * start j = M-3m (faze za poslednim blokem neni). Na stage 0 je E = 0
+         * a posledni start M-3m+1 (faze na konci posledniho vzorku znama). */
+        int Mm = pb ? sg->e_n : M;
+        if (Mm < 3 * m + 1) return 0.0f;
+        int bm   = pb ? adev_base_n(sg, Mm) : b;
+        int last = pb ? Mm - 3 * m : Mm - 3 * m + 1;
+        for (int j = 0; j <= last; j++) {                 /* M-3m+2 / M-3m+1 clenu */
             double inner = 0.0;
             for (int i = j; i < j + m; i++)
                 for (int k = i; k < i + m; k++)
-                    inner += (double)adev_rat(sg, k + m) - (double)adev_rat(sg, k);
+                    inner += (double)adev_at(sg, bm, k + m) - (double)adev_at(sg, bm, k);
+            if (pb)
+                for (int l = j; l < j + m; l++)
+                    inner += adev_e_at(sg, bm, l + 2 * m) - 2.0 * adev_e_at(sg, bm, l + m)
+                           + adev_e_at(sg, bm, l);
             acc += inner * inner; n++;
         }
         if (n == 0) return 0.0f;
@@ -937,16 +1774,17 @@ static float adev_stage_kind(int s, int m, int kind)
 
     /* ADEV (overlapping) */
     if (M < 2 * m + 1) return 0.0f;
-    for (int j = 0; j + 2 * m <= M - 1; j++) {
+    for (int j = 0; j <= M - 2 * m; j++) {                /* M-2m+1 clenu (SP1065) */
         double inner = 0.0;
         for (int i = j; i < j + m; i++)
-            inner += (double)adev_rat(sg, i + m) - (double)adev_rat(sg, i);
+            inner += (double)adev_at(sg, b, i + m) - (double)adev_at(sg, b, i);
         acc += inner * inner; n++;
     }
     if (n == 0) return 0.0f;
     return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
 
+static float adev_stage_kind(int s, int m, int kind) { return adev_ring_kind(&s_adev[s], m, kind, s > 0); }
 static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
@@ -955,10 +1793,17 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
 {
     static const char *const SUP[10] = {"⁰","¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"};
     float a = fabsf(v);
+    /* 🔴 F-0164: +Inf by horni normalizacni smycku NIKDY neukoncil
+     * (`Inf / 10 = Inf`) — UiTask by se zasekl uprostred kresleni a watchdog by
+     * desku resetoval (`stall:UiTask`). NaN by smycky preskocil a skoncil
+     * `(int)NaN` = UB. Forma `!(a < FLT_MAX)` chyti obe. Dnes je `y` vzdy
+     * konecne (`screen_main_frac_dev` hlida f0 > 0), takze jde o pojistku
+     * proti budoucimu zdroji vzorku, ne o zivou vadu. */
+    if (!(a < 3.0e38f)) { snprintf(buf, len, "--"); return; }
     if (a < 1e-15f) { snprintf(buf, len, "0"); return; }
     int e = 0;
     while (a < 1.0f && e < 30) { a *= 10.0f; e++; }   /* hodnoty <1 -> e>0 (10⁻e) */
-    while (a >= 10.0f) { a /= 10.0f; e--; }
+    while (a >= 10.0f && e > -40) { a /= 10.0f; e--; } /* mez jako dolni smycka (L-0030) */
     int M = (int)a;
     int m = (int)((a - (float)M) * 10.0f + 0.5f);
     if (m >= 10) { m = 0; M++; }
@@ -979,6 +1824,31 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
  * + hist_h invarianty (peak=plna vyska, log zveda slabe biny). Zadny sdileny
  * stav -> bezpecne z UartTasku za behu. Soucast UART "selftest". */
 static int16_t hist_h(float count, int peak, int16_t H, bool logy);   /* fwd */
+static int   nz_alpha(float mu, float mu_m, int have_m);                  /* fwd — typ sumu (bod 4) */
+static float adev_edf_alpha(int alpha, int M, int m);                  /* fwd — EDF podle typu sumu */
+static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb);  /* fwd — estimator stage */
+/* Nezavisla reference pro selftest: vzorce SP1065 primo nad chronologickym polem
+ * (index pres puvodni modulo `(head - count + i + 2R) % R`, ne pres `adev_at`),
+ * takze kontroluje i pretoceni ringu. */
+static double adev_ref(const double *y, int M, int m, int kind)
+{
+    double acc = 0.0; int n = 0;
+    int last = (kind == ADEV_KIND_ADEV) ? M - 2 * m : (kind == ADEV_KIND_HDEV ? M - 3 * m : M - 3 * m + 1);
+    for (int j = 0; j <= last; j++) {
+        double in = 0.0;
+        if (kind == ADEV_KIND_MDEV) {
+            for (int i = j; i < j + m; i++) for (int k = i; k < i + m; k++) in += y[k + m] - y[k];
+        } else {
+            for (int i = j; i < j + m; i++)
+                in += (kind == ADEV_KIND_HDEV) ? y[i + 2 * m] - 2.0 * y[i + m] + y[i] : y[i + m] - y[i];
+        }
+        acc += in * in; n++;
+    }
+    double mm = (double)m;
+    double den = (kind == ADEV_KIND_MDEV) ? 2.0 * mm * mm * mm * mm
+               : (kind == ADEV_KIND_HDEV ? 6.0 * mm * mm : 2.0 * mm * mm);
+    return sqrt(acc / (den * (double)n));
+}
 bool screen_main_selftest(void)
 {
     char b[24]; int ok = 1;
@@ -991,7 +1861,104 @@ bool screen_main_selftest(void)
     ok &= (hist_h(10.0f, 10, 100, false) == 100);
     ok &= (hist_h(10.0f, 10, 100, true) == 100);
     ok &= (hist_h(1.0f, 10, 100, true) > hist_h(1.0f, 10, 100, false));
-    printf("ui: fmt_frac+hist_h selftest %s\n", ok ? "OK" : "FAIL");
+
+    /* ── gate_same (#88) ──────────────────────────────────────────────────────
+     * Po ZMENE obsahu se musi kreslit presne `fb_count`-krat (jednou do kazdeho
+     * bufferu) a teprve pak smi guard preskakovat. Prave tenhle vzor drzi
+     * problikavani pod kontrolou, takze si zaslouzi test, ne jen komentar. */
+    {   int nfb = prim_stm32_fb_count();
+        int8_t reps = 0, draws = 0;
+        /* zmena -> pak uz porad "stejne" */
+        if (!gate_same(&reps, 0)) draws++;                 /* 1. vykresleni */
+        for (int i = 0; i < 10; i++) if (!gate_same(&reps, 1)) draws++;
+        ok &= (draws == nfb);            /* dohromady prave fb_count kreseb */
+        /* dalsi zmena musi ucetnictvi zacit znovu */
+        draws = 0;
+        if (!gate_same(&reps, 0)) draws++;
+        for (int i = 0; i < 10; i++) if (!gate_same(&reps, 1)) draws++;
+        ok &= (draws == nfb);
+        /* trvale se menici obsah = kresli se pokazde, nikdy se nepreskoci */
+        draws = 0;
+        for (int i = 0; i < 6; i++) if (!gate_same(&reps, 0)) draws++;
+        ok &= (draws == 6);
+        ok &= (nfb >= 2);                /* sanity: triple/double buffering */
+    }
+
+    /* Bod 4: typ sumu (prahy jako web noiseName) a EDF podle typu (hodnoty
+     * spocitane ze vzorcu SP1065, overenych Monte Carlem). */
+    ok &= (nz_alpha(-1.0f, -1.5f, 1) == 2);          /* bily PM */
+    ok &= (nz_alpha(-1.0f, -1.0f, 1) == 1);          /* blikavy PM */
+    ok &= (nz_alpha(-0.9f,  0.0f, 0) == 2);          /* PM bez MDEV -> bily */
+    ok &= (nz_alpha(-0.5f,  0.0f, 0) == 0);          /* bily FM */
+    ok &= (nz_alpha( 0.05f, 0.0f, 0) == -1);         /* blikavy FM */
+    ok &= (nz_alpha( 0.5f,  0.0f, 0) == -2);         /* RW FM */
+    ok &= (nz_alpha( 1.0f,  0.0f, 0) == -2);         /* drift -> RW FM pro EDF */
+    {   static const struct { int al, M, m; float e; } EV[] = {
+            { 2, 24, 1, 12.4583f}, { 1, 24, 1, 14.585f}, { 0, 24, 1, 15.182f},
+            {-1, 24, 1, 20.114f},  {-2, 24, 1, 24.140f}, { 0, 24, 5, 5.105f} };
+        for (unsigned i = 0; i < sizeof EV / sizeof EV[0]; i++) {
+            float e = adev_edf_alpha(EV[i].al, EV[i].M, EV[i].m);
+            ok &= (fabsf(e / EV[i].e - 1.0f) < 2e-3f);
+        }
+    }
+    /* Hustsi Allan (2026-09-27): estimator s indexem `adev_at` (bez modula) nad
+     * PRETOCENYM ringem = reference nad chronologickym polem, pro m az 9 a vsechny
+     * tri estimatory. `static` — pole > 200 B nepatri na zasobnik (CLAUDE.md). */
+    {   static adev_stage_t tst;
+        static double chron[ADEV_RING];
+        uint32_t r = 12345u;
+        memset(&tst, 0, sizeof tst);
+        tst.head = 17; tst.count = ADEV_RING;          /* plny ring, nejstarsi na 17 */
+        for (int i = 0; i < ADEV_RING; i++) {
+            r = r * 1103515245u + 12345u;
+            tst.ring[i] = 1e-4 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5);  /* offset + sum */
+        }
+        for (int i = 0; i < ADEV_RING; i++)
+            chron[i] = tst.ring[(tst.head - tst.count + i + 2 * ADEV_RING) % ADEV_RING];
+        static const int KM[3] = {1, 5, 9};
+        for (int kind = 0; kind < 3; kind++)
+            for (int t = 0; t < 3; t++) {
+                double ref = adev_ref(chron, ADEV_RING, KM[t], kind);
+                float  got = adev_ring_kind(&tst, KM[t], kind, 0);
+                ok &= (ref > 0.0) && (fabs((double)got / ref - 1.0) < 1e-5);
+            }
+        tst.count = 20;                                  /* M < 3·9+1 -> m=9 MDEV/HDEV nejde */
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_MDEV, 0) == 0.0f);
+        ok &= (adev_ring_kind(&tst, 9, ADEV_KIND_ADEV, 0) > 0.0f);   /* M >= 2·9+1 */
+    }
+    /* F-0187: MDEV ze stage 1 FAZOVE pyramidy = PRIMA definice nad temiz daty
+     * (prumery faze po blocich 10 vzorku, starty zarovnane na blok), m = 1/3/9;
+     * pak vzorek bez faze (rekonstrukce z logu) MDEV nad stage 1 vypne, ADEV ne. */
+    {   static adev_stage_t tp[2];
+        static double xb[40];                            /* prumery faze bloku */
+        memset(tp, 0, sizeof tp);
+        uint32_t r = 777u; double x = 0.0, sx = 0.0; int nb = 0;
+        for (int i = 0; i < 400; i++) {
+            r = r * 1103515245u + 12345u;
+            double y = 3e-5 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5);  /* offset + sum */
+            if (i % 10 == 0) sx = 0.0;
+            sx += x;                                     /* faze na ZACATKU vzorku i */
+            x  += y;                                     /* τ0 = 1 */
+            if (i % 10 == 9) xb[nb++] = sx / 10.0;
+            adev_feed_into(tp, 2, 0, y, 0.0, 1);
+        }
+        static const int PM[3] = {1, 3, 9};
+        for (int t = 0; t < 3; t++) {
+            int m = PM[t]; double a2 = 0.0; int n2 = 0;
+            for (int k = 0; k + 3 * m <= nb; k++) {
+                double a = 0.0;
+                for (int l = k; l < k + m; l++) a += xb[l + 2 * m] - 2.0 * xb[l + m] + xb[l];
+                a /= (double)m; a2 += a * a; n2++;
+            }
+            double ref = sqrt(a2 / (2.0 * (10.0 * m) * (10.0 * m) * (double)n2));
+            float  got = adev_ring_kind(&tp[1], m, ADEV_KIND_MDEV, 1);
+            ok &= (ref > 0.0) && (fabs((double)got / ref - 1.0) < 1e-5);
+        }
+        adev_feed_into(tp, 2, 1, 3e-5, 0.0, 0);         /* vzorek z logu: bez faze */
+        ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_MDEV, 1) == 0.0f);
+        ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_ADEV, 1) > 0.0f);
+    }
+    printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
 
@@ -1007,50 +1974,285 @@ bool screen_main_hit_allan(int16_t x, int16_t y)
 }
 
 /* Tap do trend karty -> fullscreen trend (cela historie ringu, ne jen 60 s). */
+int screen_main_focus_rects(prim_rect_t *out, int max)
+{
+    /* 🔴 Ctyri vstupy z hlavni obrazovky NEJSOU tlacitka (pilulky a karty), takze
+     * je registr fokusu v app_gpsdo NEVIDI — `ui_button_render` jimi neprochazi.
+     * Bez tohohle jsou GPS okno a fullscreen trend ENCODEREM NEDOSTUPNE, coz porusuje
+     * pozadavek „encoder sam musi stacit" (UI_ENCODER_NAVRH.md §2.1).
+     * Poradi = poradi encoderu; rect s w==0 znamena „prvek se prave nekresli"
+     * (pilulka vypadla z rady kvuli HDR_PILL_LIMIT) a preskakuje se. */
+    const prim_rect_t r[4] = { s_gnss_pill_rect, s_sys_pill_rect, s_allan_rect, s_trend_rect };
+    int n = 0;
+    for (int i = 0; i < 4 && n < max; i++)
+        if (r[i].w > 0 && r[i].h > 0) out[n++] = r[i];
+    return n;
+}
+
 bool screen_main_hit_trend(int16_t x, int16_t y)
 {
     return s_trend_rect.w != 0 && pt_in(x, y, s_trend_rect);
 }
 
-/* ADEV body z decimacni pyramidy: per stage tau = {1,2,5}×10^s s (log spacing
- * 1,2,5,10,20,50,...). Delsi tau nabihaji jak roste historie -> osa se prodluzuje
+/* ADEV body z decimacni pyramidy: per stage tau = m×10^s s, mantisy m podle
+ * zvolene HUSTOTY (`DENS_M`, vychozi 1,2,5 -> 1,2,5,10,20,50,...). Delsi tau
+ * nabihaji jak roste historie -> osa se prodluzuje
  * az k 100000+ s (100 dni), pamet ohranicena. Sdili NAHLED na hlavni obrazovce
  * i velky graf (screen_main_render_allan_big). Vraci pocet bodu (<=max). */
-/* ns (nepovinne, NULL-safe): pocet clenu sumy na kazdy tau bod — slouzi ke
- * konfidencnimu pasu (rel. nejistota ~ 1/sqrt(2*ns)). */
-static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
-static int adev_points(float *taus, float *adevs, int *ns, int max)
+/* edf (nepovinne, NULL-safe): EKVIVALENTNI POCET STUPNU VOLNOSTI na kazdy tau
+ * bod — slouzi ke konfidencnimu pasu (rel. 1σ nejistota ~ 1/sqrt(2·edf)).
+ *
+ * 🔴 F-0167 (2026-09-26): driv se sem posilal POCET CLENU sumy, spocitany
+ * ZNOVU vlastnim vzorcem vedle estimatoru (L-0018) — u HDEV uz nesedel (+1).
+ * A hlavne: u OVERLAPPING odhadu jsou cleny KORELOVANE, takze jejich pocet neni
+ * pocet nezavislych vzorku. Pas pak vysel na dlouhych tau ~1,5x uzsi, nez
+ * odpovida datum (M=24, m=5: 0,21 misto 0,31). Tvrzeni „pas je proto uzsi,
+ * a to opravnene" bylo pravda jen napul.
+ * Od 2026-09-26 (bod 4) EDF PODLE TYPU SUMU v danem bode (dosud vzdy bily FM).
+ * Jednoduche aproximace Howe-Allan-Barnes (NIST SP1065) pro overlapping ADEV,
+ * N = M+1 fazovych bodu:
+ *   bily PM    (α= 2)  (N+1)(N-2m) / (2(N-m))
+ *   blikavy PM (α= 1)  exp( √( ln((N-1)/(2m)) · ln((2m+1)(N-1)/4) ) )
+ *   bily FM    (α= 0)  [3(N-1)/(2m) - 2(N-2)/N] · 4m²/(4m²+5)
+ *   blikavy FM (α=-1)  m=1: 2(N-2)²/(2,3N-4,9);  m>=2: 5N²/(4m(N+3m))
+ *   RW FM      (α=-2)  (N-2)/m · ((N-1)² - 3m(N-1) + 4m²) / (N-3)²
+ * Overeno Monte Carlem (`docs/audit/sim/2026-09-26_edf_typ_sumu.js`): shoda
+ * s empirickou EDF do ~12 % pro M = 24 i 120 a m = 1, 2, 5. 🔑 Simulace chytila
+ * chybu v prvnim zapisu vzorce pro blikavy FM (chybel ctverec (N-2)² -> EDF 0,9
+ * misto ~19) — vzorec z pameti se bez overeni neprebira (L-0088).
+ * ⚠️ Pro MDEV/HDEV/TDEV se pouzivaji tytez (ADEV) vzorce jako aproximace. */
+static float adev_edf_alpha(int alpha, int M, int m)
 {
-    static const int SM[] = {1, 2, 5};
+    double N = (double)M + 1.0, mm = (double)m, e;
+    switch (alpha) {
+    case 2:  e = (N + 1.0) * (N - 2.0 * mm) / (2.0 * (N - mm)); break;
+    case 1:  e = exp(sqrt(log((N - 1.0) / (2.0 * mm)) * log((2.0 * mm + 1.0) * (N - 1.0) / 4.0)));
+             break;
+    case -1: e = (m == 1) ? 2.0 * (N - 2.0) * (N - 2.0) / (2.3 * N - 4.9)
+                          : 5.0 * N * N / (4.0 * mm * (N + 3.0 * mm));
+             break;
+    case -2: e = (N - 2.0) / mm * ((N - 1.0) * (N - 1.0) - 3.0 * mm * (N - 1.0) + 4.0 * mm * mm)
+               / ((N - 3.0) * (N - 3.0));
+             break;
+    default: e = (3.0 * (N - 1.0) / (2.0 * mm) - 2.0 * (N - 2.0) / N)
+               * 4.0 * mm * mm / (4.0 * mm * mm + 5.0);
+    }
+    return (e >= 1.0) ? (float)e : 1.0f;     /* i NaN (blikavy PM mimo platnost) -> 1 */
+}
+
+/* Typ sumu α ze sklonu μ log-log ADEV; u fazoveho sumu bily/blikavy ze sklonu
+ * MDEV — TYTEZ prahy jako web `noiseName` (nejblizsi z μ = -1, -1/2, 0, +1/2,
+ * +1; PM: sklon MDEV < -1,25 -> bily). Drift (μ = +1) se pro EDF bere jako
+ * RW FM. Bez sklonu MDEV zustava PM bily (web v tom pripade rika jen „PM"). */
+static int nz_alpha(float mu, float mu_m, int have_m)
+{
+    static const float MU[5] = {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f};
+    int b = 0;
+    for (int i = 1; i < 5; i++) if (fabsf(mu - MU[i]) < fabsf(mu - MU[b])) b = i;
+    switch (b) {
+    case 0:  return (have_m && !(mu_m < -1.25f)) ? 1 : 2;   /* PM */
+    case 1:  return 0;
+    case 2:  return -1;
+    default: return -2;                                       /* RW FM a drift */
+    }
+}
+
+static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky nize */
+/* ── Podlaha citace v grafu stability (bod 3, 2026-09-26) ─────────────────────
+ * Kvantizace casovych znacek TDC je BILY FAZOVY SUM: kazda znacka ma chybu
+ * rovnomerne v kroku `tdc`, tedy σx = tdc/√12, a sousedni vzorky sdileji
+ * hranicni znacku (navazujici okna, F-0171). Pro tentyz ESTIMATOR, jakym se
+ * pocita krivka, z toho plyne jeho podlaha (dosazeno do vzorcu SP1065):
+ *   ADEV  σ² = 6σx²/(2τ²)         -> σ = √3·σx/τ      = tdc/(2τ)
+ *   HDEV  H² = 20σx²/(6τ²)        -> H = √(10/3)·σx/τ = 0,527·tdc/τ
+ *   MDEV  M² = 6σx²/(2·n·τ²)      -> M = tdc/(2τ·√n), n = τ/τ0 (pocet bodu faze
+ *         v prumeru). Do F-0187 tu stalo m = nasobek TE stage, protoze pyramida
+ *         pocitala MDEV nad podvzorkovanou fazi — nestandardne; s fazi E v kazde
+ *         stage je MDEV standardni a podlaha tedy s n = m·10^s.
+ * TDEV a MTIE se z podlahy odvodi tymz `allan_metric_value` jako krivka.
+ * Pod touto carou krivka neukazuje oscilator, ale citac. ⚠️ Plati pro signal
+ * ASYNCHRONNI k referenci citace; merite-li samotnou referenci (koherentni
+ * vzorkovani), kvantizacni chyba neni nahodna a krivka muze byt i pod ni. */
+static float adev_floor_base(int kind, float tau, int m)
+{
+    double tdc = FREQ_TDC_PS * 1e-12 * 3.46410162;  /* σ znacky -> ekvivalentni krok kvantizace q = σ·√12 [s] */
+    double t   = (double)tau;
+    switch (kind) {
+    case ADEV_KIND_HDEV: return (float)(0.52704628 * tdc / t);            /* √(10/3)/√12 */
+    case ADEV_KIND_MDEV: return (float)(tdc / (2.0 * t * sqrt((double)m)));
+    default:             return (float)(tdc / (2.0 * t));
+    }
+}
+
+/* ── Hustota bodu Allanova grafu (2026-09-27, na prani uzivatele) ─────────────
+ * Body na dekadu τ: 0 = 3 (1-2-5, vychozi), 1 = 5 (1-2-3-5-7), 2 = 9 (1..9).
+ * Vsechny body jedne dekady se pocitaji z TEZE stage pyramidy (τ = m·10^s),
+ * tedy ze stejnych dat — hustsi graf NEPRINASI novou informaci (sousedni body
+ * jsou silne korelovane) a pas nejistoty v bode se nemeni; dava hladsi krivku
+ * a presnejsi sklon. Nastavuje se v okne DISPLEJ, persist v syscfg.
+ * ⚠️ Klasifikace typu sumu (`noise_desc`) hustotu ZAMERNE nesleduje — je to
+ * vlastnost dat, ne zobrazeni, a nesmi se menit s volbou v Nastaveni. */
+#define ALLAN_DENS_N 3
+#define ALLAN_DENS_MAXK 9
+static const uint8_t DENS_M[ALLAN_DENS_N][ALLAN_DENS_MAXK] = {
+    {1, 2, 5}, {1, 2, 3, 5, 7}, {1, 2, 3, 4, 5, 6, 7, 8, 9} };
+static const uint8_t DENS_K[ALLAN_DENS_N] = {3, 5, 9};
+_Static_assert(ADEV_RING >= 3 * ALLAN_DENS_MAXK + 1,
+               "ring stage nestaci na MDEV/HDEV pri nejvetsi mantise");
+#define ADEV_PTS_MAX (ADEV_STAGES * ALLAN_DENS_MAXK)
+static int s_allan_dens = 0;
+void screen_main_set_allan_density(int d) { s_allan_dens = (d < 0 || d >= ALLAN_DENS_N) ? 0 : d; }
+int  screen_main_allan_density(void)      { return s_allan_dens; }
+
+/* ⚠️ Pole bodu jsou `static` (az 54 bodu x 6 poli = ~1,3 kB) — volaji to
+ * VYHRADNE UiTask pri kresleni (`allan_plot`), zasobnik UiTasku ma volnych ~5 kB. */
+static int adev_points(float *taus, float *adevs, float *edf, float *flr, int max)
+{
+    const uint8_t *SM = DENS_M[s_allan_dens];
+    int nk = DENS_K[s_allan_dens];
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
+    if (max > ADEV_PTS_MAX) max = ADEV_PTS_MAX;
+    static int16_t pM[ADEV_PTS_MAX]; static int8_t pm[ADEV_PTS_MAX];  /* M a m bodu (EDF) */
+    static float   ad[ADEV_PTS_MAX], md[ADEV_PTS_MAX];  /* ADEV a MDEV v bode (typ sumu) */
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
-        for (int mi = 0; mi < 3; mi++) {
+        for (int mi = 0; mi < nk; mi++) {
             if (np >= max) return np;
             int m = SM[mi];
-            float a = adev_stage_kind(s, m, kind);
+            float a;
+            int   m_edf = s_adev[s].count;
+            /* F-0187: MDEV nad stage >= 1 bere jen polozky s fazi (e_n). */
+            if (kind == ADEV_KIND_MDEV && s > 0) m_edf = s_adev[s].e_n;
+            if (s == 0 && m == 1 && kind == ADEV_KIND_ADEV) {
+                /* 🔴 F-0178: σy(1 s) z TEHOZ zdroje jako tabulka vedle grafu, karta
+                 * σ@1s a prahovy monitor (`stats_adev(1)`, plochy ring 120 vzorku).
+                 * Drive bod grafu bral ring stage 0 (24 vzorku) a okno ALLAN tak
+                 * ukazovalo pro tutez velicinu dve ruzna cisla (L-0018). Pri m = 1
+                 * je overlapping a non-overlapping odhad totez, EDF plati beze zmeny. */
+                a = stats_adev(1); m_edf = s_y_count;
+            } else {
+                a = adev_stage_kind(s, m, kind);
+            }
             if (a <= 0.0f) continue;
-            taus[np] = dec * (float)m; adevs[np] = a;
-            /* Pocet clenu sumy = sirka konfidencniho pasu (~1/sqrt(2n)).
-             * U OVERLAPPING variant je jich radove vic nez u puvodnich
-             * non-overlapping bloku — pas je proto uzsi, a to opravnene. */
-            if (ns) {
-                int M = s_adev[s].count;
-                int n = (kind == ADEV_KIND_ADEV) ? (M - 2 * m) : (M - 3 * m + 1);
-                ns[np] = (n > 1) ? n : 1;
+            taus[np] = dec * (float)m * tau0_scale(); adevs[np] = a;   /* #27: skutecne τ */
+            pM[np] = (int16_t)m_edf; pm[np] = (int8_t)m;
+            /* Typ sumu se urcuje VZDY z ADEV (+MDEV), ne ze zobrazene metriky —
+             * stejne jako web: sklony TDEV/MTIE jsou posunute o τ. */
+            ad[np] = (kind == ADEV_KIND_ADEV) ? a
+                   : ((s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV));
+            md[np] = (kind == ADEV_KIND_MDEV) ? a : adev_stage_kind(s, m, ADEV_KIND_MDEV);
+            if (flr) {                              /* F-0187: MDEV podlaha s n = τ/τ0 */
+                int nfl = m;
+                for (int q = 0; q < s; q++) nfl *= 10;
+                flr[np] = adev_floor_base(kind, taus[np], nfl);
             }
             np++;
+        }
+    }
+    /* Sirka konfidencniho pasu z EDF (ne z poctu clenu — overlapping cleny jsou
+     * korelovane, F-0167), EDF podle LOKALNIHO typu sumu: sklon z obou sousedu
+     * (na okrajich jednostranne). Soused = nejblizsi bod aspon 0,29 dekady
+     * daleko: pri 1-2-5 jsou to presne sousedni body (log 2 = 0,301), takze
+     * vychozi chovani je beze zmeny; pri 9/dek by sklon ze sousedu 0,05 dekady
+     * daleko byl jen sum a typ sumu (tedy EDF) by skakal bod od bodu. */
+    if (edf) {
+        for (int i = 0; i < np; i++) {
+            int i0 = i, i1 = i;
+            while (i0 > 0 && log10f(taus[i] / taus[i0]) < 0.29f) i0--;
+            while (i1 < np - 1 && log10f(taus[i1] / taus[i]) < 0.29f) i1++;
+            float mu = -0.5f, mum = 0.0f; int hm = 0;
+            float lt = (i1 > i0) ? log10f(taus[i1] / taus[i0]) : 0.0f;
+            if (lt > 0.0f && ad[i0] > 0.0f && ad[i1] > 0.0f) mu = log10f(ad[i1] / ad[i0]) / lt;
+            if (lt > 0.0f && md[i0] > 0.0f && md[i1] > 0.0f) { mum = log10f(md[i1] / md[i0]) / lt; hm = 1; }
+            edf[i] = adev_edf_alpha(nz_alpha(mu, mum, hm), pM[i], pm[i]);
         }
     }
     return np;
 }
 
+/* v20 (2026-10-06): export statistiky stability pro web (`ipc_stab_t`). Body na
+ * NEJHUSTSI mrizce 1..9 x 10^s (web si hustotu vybere sam), vsechny tri
+ * estimatory ze STEJNE pyramidy jako graf na displeji: σy(1 s) z plocheho ringu
+ * (F-0178), MDEV nad stage >= 1 jen z polozek s fazi (F-0187). VOLA VYHRADNE
+ * UiTask. @return pocet bodu. */
+int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
+                            float *drift, float *offset)
+{
+    int np = 0;
+    float ts = tau0_scale();
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        float dec = powf(10.0f, (float)s);
+        for (int m = 1; m <= 9; m++) {
+            if (np >= max) break;
+            float a = (s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV);
+            float md = adev_stage_kind(s, m, ADEV_KIND_MDEV);
+            float hd = adev_stage_kind(s, m, ADEV_KIND_HDEV);
+            if (!(a > 0.0f) && !(md > 0.0f) && !(hd > 0.0f)) continue;
+            pt[np].tau = dec * (float)m * ts;
+            pt[np].adev = (a > 0.0f) ? a : 0.0f;
+            pt[np].mdev = (md > 0.0f) ? md : 0.0f;
+            pt[np].hdev = (hd > 0.0f) ? hd : 0.0f;
+            pt[np].nterm = (uint16_t)((s == 0 && m == 1) ? s_y_count : s_adev[s].count);
+            pt[np].m = (uint8_t)m;
+            pt[np]._pad = 0u;
+            np++;
+        }
+    }
+    if (nsamp)  *nsamp  = s_stats_nsamp;
+    if (tau0)   *tau0   = ts;
+    if (drift)  *drift  = stats_drift();
+    if (offset) *offset = stats_mean(s_y_count);
+    return np;
+}
+
+/* Sklon log-log nejmensimi ctverci — zrcadlo webove `logSlope`. */
+static int nz_slope(const float *t, const float *v, int n, float *out)
+{
+    double sx = 0, sy = 0, sxx = 0, sxy = 0; int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (!(v[i] > 0.0f) || !(t[i] > 0.0f)) continue;
+        double X = log10((double)t[i]), Y = log10((double)v[i]);
+        sx += X; sy += Y; sxx += X * X; sxy += X * Y; k++;
+    }
+    if (k < 2) return 0;
+    double d = k * sxx - sx * sx;
+    if (!(fabs(d) > 1e-15)) return 0;
+    *out = (float)((k * sxy - sx * sy) / d);
+    return 1;
+}
+
+/* Prevladajici typ sumu pro okno ALLAN (bod 4) — jako web `noiseDesc`: sklon
+ * pres VSECHNY body ADEV, fazovy sum rozlisi sklon MDEV. Nezavisle na zobrazene
+ * metrice. @return 1 = popis vyplnen (aspon 3 body), 0 = malo dat. */
+static int noise_desc(char *name, size_t nn, char *slope, size_t ns)
+{
+    static const int SM[] = {1, 2, 5};
+    float t[20], ad[20], md[20]; int n = 0;
+    for (int s = 0; s < ADEV_STAGES && n < 20; s++)
+        for (int mi = 0; mi < 3 && n < 20; mi++) {
+            int m = SM[mi];
+            float a = (s == 0 && m == 1) ? stats_adev(1) : adev_stage_kind(s, m, ADEV_KIND_ADEV);
+            if (!(a > 0.0f)) continue;
+            t[n] = powf(10.0f, (float)s) * (float)m; ad[n] = a;
+            md[n] = adev_stage_kind(s, m, ADEV_KIND_MDEV);
+            n++;
+        }
+    float mu = 0.0f, mum = 0.0f;
+    if (n < 3 || !nz_slope(t, ad, n, &mu)) return 0;
+    int hm = nz_slope(t, md, n, &mum);
+    static const char *const NM[5] = {"RW FM / drift", "blikavy FM", "bily FM", "blikavy PM", "bily PM"};
+    int al = nz_alpha(mu, mum, hm);
+    snprintf(name, nn, "%s", NM[al + 2]);
+    int c = (int)(mu * 100.0f + (mu >= 0.0f ? 0.5f : -0.5f));
+    int ac = (c < 0) ? -c : c;
+    snprintf(slope, ns, "τ^%c%d,%02d", (c < 0) ? '-' : '+', ac / 100, ac % 100);
+    return 1;
+}
+
 /* Spolecne log-log mapovani ADEV krivky do 'inner' (+ markery). Y pevne dekady
- * 10^ALLAN_Y_MIN..10^(ALLAN_Y_MIN+ALLAN_Y_DEC), X dynamicky [tau_min..tau_max].
+ * dle `allan_metric_yrange` (auto-range), X dynamicky [tau_min..tau_max].
  * Sdili nahled (marker_r=2) i velky graf (marker_r=3). */
-#define ALLAN_Y_MIN  (-10)
-#define ALLAN_Y_DEC  4
 
 /* ── Metrika Allan okna (segmented v okne ALLAN) ─────────────────────────────
  *   0 = ADEV  σy(τ)         — overlapping
@@ -1090,24 +2292,52 @@ static float allan_metric_value(float tau, float base)
     }
 }
 
-/* Y rozsah [10^ymin .. 10^(ymin+dec)] dle metriky. ADEV pevny (10⁻⁶..10⁻¹⁰ jako
- * drive); TDEV/MTIE AUTO-RANGE dle skutecnych hodnot — jejich magnituda je
- * nepredvidatelna (τ·ADEV nasobky), pevny rozsah by krivku uspal na okraj osy. */
-static void allan_metric_yrange(const float *vals, int np, int *ymin, int *dec)
+/* Y rozsah [10^ymin .. 10^(ymin+dec)] — AUTO-RANGE pro VSECHNY metriky.
+ * 🔴 2026-10-06: ADEV mel pevny rozsah 10⁻¹⁰..10⁻⁶ a bod pod 10⁻¹⁰ se
+ * PRILEPIL ke spodni hrane (`allan_y` orezava) -> graf "nekreslil" nic pod
+ * 10⁻¹⁰, prestoze citac s carry-chain TDC (~3·10⁻¹⁰ pri 0,25 s) a OCXO jde
+ * na dlouhych τ k 10⁻¹² a niz. Rozsah se ted bere z hodnot krivky A z podlahy
+ * (jen krivka -- podlaha citace osu neovlivnuje), s rezervou: kdyz bod lezi < 0,15 dekady od hrany,
+ * prida se dekada. Pocet dekad 3..8 (mene by na kartu byla jedna dve cary).
+ * Hystereze `yr`: rozsireni hned, ZUZENI az kdyz uzsi rozsah plati 10 vykresleni
+ * za sebou -- jinak by osa poskakovala, kdyz krivka sedi u hranice dekady. */
+typedef struct { int ymin, dec, metric, shrink_n; } allan_yr_t;
+
+static void allan_metric_yrange(const float *vals, const float *flr, int np,
+                                allan_yr_t *yr, int *ymin, int *dec)
 {
-    if (s_allan_metric == 0) { *ymin = ALLAN_Y_MIN; *dec = ALLAN_Y_DEC; return; }
+    (void)flr;   /* 🔴 2026-10-07: rozsah osy se ridi JEN krivkou; podlaha citace osu NESMI tahnout dolu
+                  * (u dlouhych tau klesa k 1e-16 a stahla by cely graf -- prani uzivatele) */
     float lo = 1e30f, hi = -1e30f;
     for (int i = 0; i < np; i++) {
-        if (vals[i] <= 0.0f) continue;
-        float l = log10f(vals[i]);
+        float v = vals[i];
+        if (!(v > 0.0f)) continue;
+        float l = log10f(v);
         if (l < lo) lo = l;
         if (l > hi) hi = l;
     }
-    if (lo > hi) { *ymin = -12; *dec = 5; return; }   /* fallback: zadna platna data */
-    int y0 = (int)floorf(lo) - 1;                     /* 1 dekada rezervy dole */
-    int y1 = (int)ceilf(hi) + 1;                      /* 1 dekada rezervy nahore */
-    int d = y1 - y0; if (d < 2) d = 2; else if (d > 8) d = 8;
-    *ymin = y0; *dec = d;
+    int y0, y1;
+    if (lo > hi) { y0 = -12; y1 = -8; }                  /* zadna platna data */
+    else {
+        y0 = (int)floorf(lo); if (lo - (float)y0 < 0.15f) y0--;
+        y1 = (int)ceilf(hi);  if ((float)y1 - hi < 0.15f) y1++;
+        while (y1 - y0 < 3) { if (((y1 - y0) & 1) == 0) y1++; else y0--; }
+        if (y1 - y0 > 8) y0 = y1 - 8;                      /* krivka je dulezitejsi nez podlaha dole */
+    }
+    if (yr->dec <= 0 || yr->metric != s_allan_metric) {  /* prvni kresleni / jina metrika */
+        yr->ymin = y0; yr->dec = y1 - y0; yr->metric = s_allan_metric; yr->shrink_n = 0;
+    } else {
+        int c0 = yr->ymin, c1 = yr->ymin + yr->dec;
+        if (y0 < c0 || y1 > c1) {                         /* rozsirit hned */
+            if (y0 < c0) c0 = y0;
+            if (y1 > c1) c1 = y1;
+            if (c1 - c0 > 8) { c0 = y0; c1 = y1; }
+            yr->ymin = c0; yr->dec = c1 - c0; yr->shrink_n = 0;
+        } else if (y0 != c0 || y1 != c1) {               /* uzsi -> az po 10 shodach */
+            if (++yr->shrink_n >= 10) { yr->ymin = y0; yr->dec = y1 - y0; yr->shrink_n = 0; }
+        } else yr->shrink_n = 0;
+    }
+    *ymin = yr->ymin; *dec = yr->dec;
 }
 
 /* Popisek dekady "10⁻N" (horni index). Nahrazuje pevne SCR_ALLAN_Y_TICKS —
@@ -1138,49 +2368,85 @@ static int16_t allan_y(prim_rect_t inner, float log_val, int ymin, int dec)
 
 /* Konfidencni pas (efekt FX_ALLAN_CONF): meke accent podbarveni mezi horni
  * (yup) a dolni (ylo) mezi ADEV odhadu. Per-sloupec svisla vypln mezi
- * interpolovanymi mezemi (np<=20 bodu -> levne). Kresli se POD krivku. */
+ * interpolovanymi mezemi (cena ~ sirka grafu v px, ne pocet bodu). Kresli se POD krivku. */
 static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
                             const int16_t *ylo, int np)
 {
+    /* 🔴 F-0191: KAZDY SLOUPEC JEN JEDNOU. Vypln je poloprusvitna (OVER), takze
+     * druhy pruchod tymz sloupcem ho ztmavi. Drive kazdy usek kreslil sloupce
+     * x0..x1 vcetne obou kraju -> koncovy sloupec useku i byl zaroven pocatecni
+     * useku i+1 a bod na stejnem pixelu dal navic sloupec x0+1. Pri 54 bodech
+     * (hustota 9/dek) byl v karte kazdy treti sloupec pasu tmavsi. `x` je
+     * neklesajici (tau roste), takze staci pamatovat posledni vyplneny sloupec. */
+    int16_t xd = INT16_MIN;
     for (int i = 1; i < np; i++) {
         int16_t x0 = pts[i - 1].x, x1 = pts[i].x;
         int16_t cols = (int16_t)(x1 - x0);
-        if (cols < 1) cols = 1;
         for (int16_t c = 0; c <= cols; c++) {
             int16_t cx = (int16_t)(x0 + c);
-            int16_t yu = (int16_t)(yup[i - 1] + (int32_t)(yup[i] - yup[i - 1]) * c / cols);
-            int16_t yl = (int16_t)(ylo[i - 1] + (int32_t)(ylo[i] - ylo[i - 1]) * c / cols);
+            if (cx <= xd) continue;
+            int16_t yu = cols ? (int16_t)(yup[i - 1] + (int32_t)(yup[i] - yup[i - 1]) * c / cols)
+                              : yup[i - 1];
+            int16_t yl = cols ? (int16_t)(ylo[i - 1] + (int32_t)(ylo[i] - ylo[i - 1]) * c / cols)
+                              : ylo[i - 1];
             if (yl < yu) { int16_t t = yu; yu = yl; yl = t; }
             prim_fill_rect((prim_rect_t){cx, yu, 1, (int16_t)(yl - yu + 1)},
                            PRIM_ALPHA(UI_COLOR_ACC, 0x22), PRIM_BLEND_OVER);
+            xd = cx;
         }
     }
 }
 
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
-                             const float *vals, const int *ns, int np,
+                             const float *vals, const float *edf,
+                             const float *flr, int np,
                              int16_t marker_r, int ymin, int dec)
 {
     float lmin = log10f(taus[0]);                   /* nejkratsi tau = levy okraj */
     float lmax = log10f(taus[np - 1]);              /* nejdelsi tau = pravy okraj */
     float xspan = lmax - lmin;
     if (xspan < 1e-6f) xspan = 1.0f;
-    prim_point_t pts[20];
-    int16_t yup[20], ylo[20];
-    if (np > 20) np = 20;
+    static prim_point_t pts[ADEV_PTS_MAX];          /* static: jen UiTask, viz adev_points */
+    static int16_t yup[ADEV_PTS_MAX], ylo[ADEV_PTS_MAX];
+    if (np > ADEV_PTS_MAX) np = ADEV_PTS_MAX;
     for (int i = 0; i < np; i++) {
         float fx = (log10f(taus[i]) - lmin) / xspan;            /* 0..1 pres sirku */
         pts[i].x = (int16_t)(inner.x + fx * inner.w);
         pts[i].y = allan_y(inner, log10f(vals[i]), ymin, dec);
-        /* Konfidencni mez: rel. pulsirka ~ 0,8/sqrt(paru) (1. rad, white FM);
-         * pro TDEV/MTIE stejna relativni nejistota (jsou τ·ADEV nasobky). */
+        /* Konfidencni mez: rel. 1σ ~ 1/sqrt(2·edf) (1. rad; EDF podle typu sumu
+         * v bode, viz `adev_edf_alpha`). Pro TDEV/MTIE stejna relativni nejistota (jsou
+         * τ·ADEV nasobky). ⚠️ Drive tu stalo „0,8/sqrt(paru)" a o par radku vys
+         * „1/sqrt(2*ns)" — dva ruzne vzorce pro totez; plati tenhle (F-0167). */
         float f = 0.0f;
-        if (ns) { int nd = ns[i] < 1 ? 1 : ns[i]; f = 0.8f / sqrtf((float)nd); if (f > 0.9f) f = 0.9f; }
+        if (edf) { float e = edf[i] < 1.0f ? 1.0f : edf[i]; f = 1.0f / sqrtf(2.0f * e); if (f > 0.9f) f = 0.9f; }
         yup[i] = allan_y(inner, log10f(vals[i] * (1.0f + f)), ymin, dec);
         ylo[i] = allan_y(inner, log10f(vals[i] * (1.0f - f)), ymin, dec);
     }
-    if (ns && (g_fx_enabled & FX_ALLAN_CONF))        /* pas POD krivku */
+    if (edf && (g_fx_enabled & FX_ALLAN_CONF))       /* pas POD krivku */
         allan_band_fill(pts, yup, ylo, np);
+    /* Podlaha citace (viz `adev_floor_base`) — cerkovane, POD krivku. Usek, ktery
+     * cely lezi pod rozsahem osy, se vynecha; castecny se orizne na spodni hranu
+     * (jinak by `allan_y` podlahu prilepil ke dnu a vypadala by jako data). */
+    if (flr) {
+        /* spodni mez kresleni podlahy: osa, u bezrozmerne ADEV/MDEV/HDEV navic 1e-11 (podlaha nesmi jit nize) */
+        const float lim = (s_allan_metric <= 2 && (float)ymin < -11.0f) ? -11.0f : (float)ymin;
+        for (int i = 1; i < np; i++) {
+            float l0 = log10f(flr[i - 1]), l1 = log10f(flr[i]);
+            if (!(l0 >= lim) && !(l1 >= lim)) continue;
+            prim_point_t a = {pts[i - 1].x, allan_y(inner, l0, ymin, dec)};
+            prim_point_t b = {pts[i].x,     allan_y(inner, l1, ymin, dec)};
+            if (!(l1 >= lim)) {                         /* pravy konec pod mezi */
+                float t = (l0 - lim) / (l0 - l1);
+                b.x = (int16_t)(a.x + t * (float)(b.x - a.x));
+                b.y = allan_y(inner, lim, ymin, dec);
+            } else if (!(l0 >= lim)) {                  /* levy konec pod mezi */
+                float t = (lim - l0) / (l1 - l0);
+                a.x = (int16_t)(a.x + t * (float)(b.x - a.x));
+                a.y = allan_y(inner, lim, ymin, dec);
+            }
+            prim_draw_line_dashed(a, b, 1, UI_COLOR_INK_3, 5, 4);
+        }
+    }
     for (int i = 1; i < np; i++)
         prim_draw_line(pts[i - 1], pts[i], 2, UI_COLOR_ACC);
     for (int i = 0; i < np; i++)                     /* marker v kazdem tau bode */
@@ -1205,9 +2471,11 @@ static void allan_plot(prim_rect_t area, int big)
     prim_rect_t in = {(int16_t)(area.x + resl), (int16_t)(area.y + rest),
                       (int16_t)(area.w - resl - 10), (int16_t)(area.h - rest - resb)};
 
-    float taus[20], adevs[20];
-    int ns[20];
-    int np = adev_points(taus, adevs, ns, 20);
+    static float taus[ADEV_PTS_MAX], adevs[ADEV_PTS_MAX];   /* static: jen UiTask */
+    static float edf[ADEV_PTS_MAX], flr[ADEV_PTS_MAX];
+    int np = adev_points(taus, adevs, edf, flr, ADEV_PTS_MAX);
+    /* Podlaha citace jen pri REALNEM mereni — SIM krivku citac nemeril. */
+    int show_floor = (screen_main_gate_actual_s() > 0.0);
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
                                       (int16_t)(in.y + in.h / 2 + 5)},
@@ -1218,9 +2486,12 @@ static void allan_plot(prim_rect_t area, int big)
 
     /* Transformuj na zvolenou metriku (ADEV/TDEV/MTIE) + urci Y rozsah (TDEV/MTIE
      * auto-range dle hodnot). Y mrizka + dekadove popisky (allan_ylabel). */
-    float vals[20];
+    static float vals[ADEV_PTS_MAX];
     for (int i = 0; i < np; i++) vals[i] = allan_metric_value(taus[i], adevs[i]);
-    int ymin, dec; allan_metric_yrange(vals, np, &ymin, &dec);
+    for (int i = 0; i < np; i++) flr[i]  = allan_metric_value(taus[i], flr[i]);
+    static allan_yr_t s_yr[2];                      /* hystereze osy: [0] karta, [1] okno */
+    int ymin, dec;
+    allan_metric_yrange(vals, show_floor ? flr : NULL, np, &s_yr[big ? 1 : 0], &ymin, &dec);
     for (int j = 0; j <= dec; j++) {
         int16_t y = (int16_t)(in.y + (int32_t)j * in.h / dec);
         prim_draw_line((prim_point_t){in.x, y},
@@ -1248,7 +2519,33 @@ static void allan_plot(prim_rect_t area, int big)
                        dl, lf, lc, PRIM_ALIGN_CENTER);
     }
 
-    allan_plot_curve(in, taus, vals, ns, np, 3, ymin, dec);
+    /* Marker mensi s hustotou: pri 9 bodech na dekadu jsou body v karte ~3 px
+     * od sebe a markery r=3 by slily v tlustou caru. */
+    int16_t mr = (s_allan_dens == 0) ? 3 : (s_allan_dens == 1 ? 2 : 1);
+    allan_plot_curve(in, taus, vals, edf, show_floor ? flr : NULL, np, mr, ymin, dec);
+    /* Bod 6 / #27: skutecne τ0 vzorku (Σ hradel). Od #27 casti 2 je osa τ
+     * prepoctena (`tau0_scale`), takze pri stabilnim τ0 staci INFORMACE; VAROVANI
+     * zustava pro kolisani nad 5 % (nestejne dlouhe vzorky — to prepocet nespravi).
+     * Aspon 8 vzorku, at nevaruje prvni sekunda po startu. */
+    {   float t0m, t0s;
+        if (big && show_floor && screen_main_tau0(&t0m, &t0s) >= 8u
+            && (fabsf(t0m - 1.0f) > 0.005f || t0s > 0.05f)) {
+            int c = (int)(t0m * 100.0f + 0.5f), pc = (int)(t0s * 100.0f + 0.5f);
+            char wb[64];
+            if (t0s > 0.05f)
+                snprintf(wb, sizeof wb, "! τ0 %d,%02d s kolisa %d %% - osa τ neni presna",
+                         c / 100, c % 100, pc);
+            else
+                snprintf(wb, sizeof wb, "τ0 = %d,%02d s (osa τ prepoctena)", c / 100, c % 100);
+            prim_draw_text((prim_point_t){(int16_t)(in.x + 4), (int16_t)(in.y + 14)}, wb,
+                           &ui_font_sans_14, (t0s > 0.05f) ? UI_COLOR_WARN : UI_COLOR_INK_3,
+                           PRIM_ALIGN_LEFT);
+        }
+    }
+    if (show_floor && big)                           /* legenda jen ve velkem okne */
+        prim_draw_text((prim_point_t){(int16_t)(in.x + in.w - 4), (int16_t)(in.y + 14)},
+                       "- - podlaha citace (TDC)", &ui_font_sans_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_RIGHT);
 }
 
 /* Allan karta na hlavni obrazovce: vlevo pres vysku statistik+trendu (364×176,
@@ -1283,11 +2580,39 @@ static void render_card_allan(prim_rect_t rect)
  * mono_16 — karty se roztahly na 1/3 sirky, takze je misto; mono_18 MA horni
  * indexy ⁰..⁹⁻ pro fmt_frac). Baseline in.y+15: glyf 18px zacina AZ POD
  * descenty headeru (sans_18 konci ~y_karty+30, glyf top = +32). */
-static void draw_stat_card(prim_rect_t r, const char *label, const char *val, prim_color_t c)
+/* Obdelniky tri statistickych karet — plni je `draw_offset_sigma`; deklarovano
+ * TADY, protoze na nem stoji `stat_inner()` nize (jediny zdroj geometrie). */
+static prim_rect_t s_stat_card_rect[3];
+
+/* 🔴 JEDEN ZDROJ PRAVDY pro popisky i vnitrni geometrii tri statistickych karet.
+ * Kresli je DVE cesty: `draw_stat_card` (plny redraw ~1x/s) a `draw_stat_card_value`
+ * (jen hodnota, 20x/s eased dojezd) — a do 2026-09-01 si kazda pocitala vnitrni
+ * obdelnik sama. Rozesly se: partial cesta stavela `ui_card_t` BEZ `header_label`,
+ * jenze `ui_card_inner_rect()` pricita `UI_CARD_HEADER_H` (26 px) POUZE kdyz je
+ * hlavicka nastavena. Partial redraw tedy mel `in.y` o 26 px vys, cistil pruh
+ * PRESNE pres popisek a hodnotu kreslil do hlavickoveho radku.
+ * Projev: „tri pole nad trendem neukazuji popis" (a hodnota sedela nahore).
+ * ⚠️ Komentar u partial cesty pritom tvrdil „Geometrie/baseline shodne s
+ * draw_stat_card" — nebyla. Proto obe cesty berou popisek i rect ODSUD.
+ *
+ * Popisky: vsechny tri veliciny jsou FRAKCNI (bezrozmerne y), takze se ctou jako
+ * rada y -> σy -> dy/dt. Drivejsi „Offset / σy 1s / Drift/s" neriklo, ceho offset
+ * ani v cem drift. ⚠️ sans_18 ma plny charset vc. reckeho rozsahu (σ = U+03C3),
+ * takze se tise nepreskoci — u subsetovanych fontu by to neplatilo. */
+static const char *const STAT_L[3] = { "Offset y", "σy(1 s)", "Drift y/s" };
+
+/* Vnitrni obdelnik karty `idx` — POVINNE pres tuhle funkci, at se cesty nerozejdou. */
+static prim_rect_t stat_inner(int idx)
 {
-    ui_card_t card = {.rect = r, .header_label = label};
+    ui_card_t c = {.rect = s_stat_card_rect[idx], .header_label = STAT_L[idx]};
+    return ui_card_inner_rect(&c);
+}
+
+static void draw_stat_card(int idx, const char *val, prim_color_t c)
+{
+    ui_card_t card = {.rect = s_stat_card_rect[idx], .header_label = STAT_L[idx]};
     ui_card_render_chrome(&card);
-    prim_rect_t in = ui_card_inner_rect(&card);
+    prim_rect_t in = stat_inner(idx);
     /* Klasicke rozlozeni ma uzsi karty -> mensi font a jina baseline (viz
      * komentar u `screen_main_set_layout_classic`). */
     if (s_layout_classic)
@@ -1307,8 +2632,10 @@ static void draw_stat_card(prim_rect_t r, const char *label, const char *val, pr
  * -> pri navratu na hlavni obrazovku po case v podnabidce se cislo NEukaze
  * zastarale (nedojete od doby, kdy tik nebezel), ale rovnou spravne. */
 static anim_t     s_anim_off, s_anim_sig, s_anim_drift;
-static prim_rect_t s_stat_card_rect[3];
 static char        s_stat_cache[3][24];   /* cache = velikost zdroje (off/s1/dr[24]), viz STATUS.md #13 */
+/* #88: kolikrat uz PRAVE TATO hodnota dosla do framebufferu. Jedno cislo na
+ * kartu — spolecne by dokreslovani jedne karty umlcelo zbyle dve. */
+static int8_t      s_stat_reps[3];
 
 static void stats_anim_resync(void)
 {
@@ -1344,19 +2671,25 @@ static void draw_offset_sigma(prim_rect_t rect)
         fmt_frac(s1,  sizeof(s1),  s_anim_sig.cur,   0);   /* σy@1s (τ=1s, 1/s) */
         fmt_frac(dr,  sizeof(dr),  s_anim_drift.cur, 1);   /* df/dt [1/s] */
         strcpy(s_stat_cache[0], off); strcpy(s_stat_cache[1], s1); strcpy(s_stat_cache[2], dr);
+        /* #88: tenhle render je JEDNO vykresleni -> obsah zatim ma jen jeden
+         * buffer. `reps = 1` (ne 0 a ne fb_count) drzi ucetnictvi presne:
+         * 20Hz tik pak hodnotu dokresli do zbylych dvou a teprve pak preskoci. */
+        s_stat_reps[0] = s_stat_reps[1] = s_stat_reps[2] = 1;
     }
-    draw_stat_card(s_stat_card_rect[0], SCR_S_OFFSET_L, off, UI_COLOR_OK);
-    draw_stat_card(s_stat_card_rect[1], "σy 1s", s1, UI_COLOR_VIOLET);
-    draw_stat_card(s_stat_card_rect[2], "Drift/s", dr, UI_COLOR_ACC);
+    draw_stat_card(0, off, UI_COLOR_OK);
+    draw_stat_card(1, s1,  UI_COLOR_VIOLET);
+    draw_stat_card(2, dr,  UI_COLOR_ACC);
 }
 
 /* Hodnota jedne stat karty bez chrome (jen box clear + text) — pro 20Hz partial
- * update mezi 1Hz plnymi redrawy vyse. Geometrie/baseline shodne s draw_stat_card. */
+ * update mezi 1Hz plnymi redrawy vyse.
+ * ⚠️ Vnitrni obdelnik MUSI prijit z `stat_inner()`, ne z lokalne slozene `ui_card_t`:
+ * `ui_card_inner_rect` pricita vysku hlavicky jen kdyz je `header_label` nastaveny,
+ * takze karta bez popisku dava obdelnik o 26 px vys — a clear pak smaze popisek
+ * (nalezeno 2026-09-01, viz komentar u `STAT_L`). */
 static void draw_stat_card_value(int idx, const char *val, prim_color_t c)
 {
-    prim_rect_t r = s_stat_card_rect[idx];
-    ui_card_t card = {.rect = r};
-    prim_rect_t in = ui_card_inner_rect(&card);
+    prim_rect_t in = stat_inner(idx);
     int16_t base = (int16_t)(in.y + 15);            /* v2 only (viz tick nize) */
     prim_fill_rect((prim_rect_t){in.x, (int16_t)(base - 16), in.w, 22},
                    UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -1372,27 +2705,35 @@ int screen_main_tick_stats_anim(void)
     if (!screen_main_is_running()) return 0;
     if (s_stat_card_rect[0].w == 0) return 0;
 
-    int m0 = anim_step(&s_anim_off,   0.15f, 1e-13f);
-    int m1 = anim_step(&s_anim_sig,   0.15f, 1e-13f);
-    int m2 = anim_step(&s_anim_drift, 0.15f, 1e-13f);
+    /* Krok animace se musi provest VZDY (posouva easing), ale na rozhodnuti
+     * „kreslit?" se uz NEPOUZIVA — viz nize. */
+    anim_step(&s_anim_off,   0.15f, 1e-13f);
+    anim_step(&s_anim_sig,   0.15f, 1e-13f);
+    anim_step(&s_anim_drift, 0.15f, 1e-13f);
 
+    /* 🔴 #88: drive tu bylo `if (m0) { if (strcmp(...)) {kresli;} }`. Obe podminky
+     * dohromady zpusobily, ze se nova hodnota nakreslila PRESNE JEDNOU — do toho
+     * bufferu, ktery byl zrovna back. Jakmile easing dojel, `m0` uz nikdy nebylo
+     * 1, takze doplnujici kresby do zbylych dvou bufferu se NEPROVEDLY a ty
+     * v nich drzely starou hodnotu natrvalo -> pri kazdem flipu problikla.
+     * Ted se hodnota formatuje kazdy tik a o kresleni rozhoduje `gate_same`,
+     * ktery dokresli do vsech bufferu a teprve pak zacne preskakovat.
+     * (`fmt_frac` + `strcmp` 3x za tik je proti blitu karty zanedbatelne.) */
     int drew = 0;
     char buf[24];
-    if (m0) {
-        fmt_frac(buf, sizeof buf, s_anim_off.cur, 1);
-        if (strcmp(buf, s_stat_cache[0]) != 0) {
-            strcpy(s_stat_cache[0], buf); draw_stat_card_value(0, buf, UI_COLOR_OK); drew = 1; }
-    }
-    if (m1) {
-        fmt_frac(buf, sizeof buf, s_anim_sig.cur, 0);
-        if (strcmp(buf, s_stat_cache[1]) != 0) {
-            strcpy(s_stat_cache[1], buf); draw_stat_card_value(1, buf, UI_COLOR_VIOLET); drew = 1; }
-    }
-    if (m2) {
-        fmt_frac(buf, sizeof buf, s_anim_drift.cur, 1);
-        if (strcmp(buf, s_stat_cache[2]) != 0) {
-            strcpy(s_stat_cache[2], buf); draw_stat_card_value(2, buf, UI_COLOR_ACC); drew = 1; }
-    }
+
+    fmt_frac(buf, sizeof buf, s_anim_off.cur, 1);
+    if (!gate_same(&s_stat_reps[0], strcmp(buf, s_stat_cache[0]) == 0)) {
+        strcpy(s_stat_cache[0], buf); draw_stat_card_value(0, buf, UI_COLOR_OK); drew = 1; }
+
+    fmt_frac(buf, sizeof buf, s_anim_sig.cur, 0);
+    if (!gate_same(&s_stat_reps[1], strcmp(buf, s_stat_cache[1]) == 0)) {
+        strcpy(s_stat_cache[1], buf); draw_stat_card_value(1, buf, UI_COLOR_VIOLET); drew = 1; }
+
+    fmt_frac(buf, sizeof buf, s_anim_drift.cur, 1);
+    if (!gate_same(&s_stat_reps[2], strcmp(buf, s_stat_cache[2]) == 0)) {
+        strcpy(s_stat_cache[2], buf); draw_stat_card_value(2, buf, UI_COLOR_ACC); drew = 1; }
+
     return drew;
 }
 
@@ -1419,6 +2760,48 @@ static int         s_trend_n         = 0;
 static int16_t     s_trend_sig_lo, s_trend_sig_hi;
 static int         s_trend_phase     = TREND_ANIM_STEPS;   /* STEPS = "dojeto", tik je no-op */
 static int         s_trend_resync_pending = 0;
+
+/* ── Guard "kresba by byla BIT-IDENTICKA" (optimalizace 2026-08-30) ────────────
+ * `screen_main_tick_trend_anim` bezel 20x/s a POKAZDE delal `blit_bg_region`
+ * cele plochy grafu (398x100 = 80 kB pres DMA2D) + `trend_plot_draw` (sigma pas,
+ * polyline s CPU antialiasingem, area vypln). Pritom interpolace mezi dvema
+ * temer shodnymi sadami bodu se casto zaokrouhli na TYZ pixelovy prubeh —
+ * kresba je pak bit za bitem stejna a je to cista prace navic. Pri stabilnim
+ * GPSDO (coz je bezny stav) to plati pro vetsinu z 20 kroku dojezdu.
+ * ⚠️ Klic MUSI obsahovat VSE, co kresbu ovlivnuje: body, meze sigma pasu
+ * i priznak area vyplne — jinak by se preskocila zmena, ktera je videt.
+ * (Ostatni 20Hz tiky uz svuj guard maly: stats pres `strcmp` formatovaneho
+ * textu, headline pres per-segment `strcmp`, sys xfade pres `s_sys_mix`.) */
+static int16_t     s_trend_drawn[SPARK_N];
+static int         s_trend_drawn_n = -1;            /* -1 = neplatne -> kresli vzdy */
+static int16_t     s_trend_drawn_lo, s_trend_drawn_hi;
+static uint8_t     s_trend_drawn_fx;
+/* Kolikrat uz se PRAVE TENTO obsah nakreslil. Preskakovat se smi az od
+ * `prim_stm32_fb_count()` — do te doby ho nemaji vsechny buffery. */
+static int8_t      s_trend_reps;
+
+static uint8_t trend_fx_key(void) { return (uint8_t)((g_fx_enabled & FX_SPARK_FILL) != 0); }
+
+static int trend_drawn_same(const int16_t *arr, int n, int16_t lo, int16_t hi)
+{
+    return s_trend_drawn_n == n && s_trend_drawn_lo == lo && s_trend_drawn_hi == hi
+        && s_trend_drawn_fx == trend_fx_key()
+        && memcmp(s_trend_drawn, arr, sizeof(int16_t) * (size_t)n) == 0;
+}
+
+static void trend_drawn_store(const int16_t *arr, int n, int16_t lo, int16_t hi)
+{
+    if (n > SPARK_N) n = SPARK_N;
+    memcpy(s_trend_drawn, arr, sizeof(int16_t) * (size_t)n);
+    s_trend_drawn_n  = n;
+    s_trend_drawn_lo = lo;
+    s_trend_drawn_hi = hi;
+    s_trend_drawn_fx = trend_fx_key();
+}
+
+/* Zneplatni guard — po zmene tematu/palety (bg_cache i barvy jsou jine) nebo
+ * kdykoli plocha grafu prestane platit. */
+static void trend_drawn_invalidate(void) { s_trend_drawn_n = -1; s_trend_reps = 0; }
 
 static void trend_anim_resync(void) { s_trend_resync_pending = 1; }
 
@@ -1472,11 +2855,28 @@ int screen_main_tick_trend_anim(void)
     for (int i = 0; i < s_trend_n; i++)
         disp[i] = (int16_t)(s_spark_prev[i] + (s_spark[i] - s_spark_prev[i]) * t + 0.5f);
 
-    blit_bg_region(s_trend_inner);
-    trend_plot_draw(s_trend_inner, disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
-
+    /* ⚠️ Ucetnictvi fáze se MUSI dokoncit i kdyz se nekresli (early return nize),
+     * jinak by dalsi cyklus interpoloval od spatneho vychoziho bodu. */
     if (s_trend_phase >= TREND_ANIM_STEPS)             /* dojeto -> dalsi cyklus interpoluje ODSUD */
         memcpy(s_spark_prev, s_spark, sizeof(int16_t) * (size_t)s_trend_n);
+
+    /* Interpolace se zaokrouhlila na TYZ pixelovy prubeh -> kresba by byla
+     * bit-identicka. Preskoc ji (usetri blit 398x100 + CPU AA polyline) a
+     * NEhlas zmenu, aby se kvuli tomu ani neflipoval snimek.
+     *
+     * 🔴 ALE AZ TEHDY, KDYZ UZ OBSAH MA KAZDY FRAMEBUFFER (`s_trend_reps`).
+     * Jinak zustane jen v tom jednom, do ktereho se zrovna kreslilo, a jakmile
+     * se cyklus dostane na ostatni, ukazou starsi krivku = PROBLIKAVANI.
+     * ⚠️ Copy-forward to nezachrani: kopiruje sjednoceni dirty z poslednich
+     * DVOU snimku, jenze kdyz se kvuli preskoceni neflipuje, dirty rect toho
+     * jedineho kresleni z te historie vypadne driv, nez ho ostatni buffery
+     * dostanou. (Prave tim jsem 2026-08-30 zpusobil problikavani trendu.) */
+    int same = trend_drawn_same(disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
+    if (gate_same(&s_trend_reps, same)) return 0;   /* uz to maji vsechny buffery */
+
+    blit_bg_region(s_trend_inner);
+    trend_plot_draw(s_trend_inner, disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
+    if (!same) trend_drawn_store(disp, s_trend_n, s_trend_sig_lo, s_trend_sig_hi);
     return 1;
 }
 
@@ -1541,11 +2941,17 @@ static void render_card_trend(prim_rect_t rect)
         s_trend_phase = 0;                          /* novy cil -> rozjed dojezd od s_spark_prev */
     }
     trend_plot_draw(inner, s_spark_prev, s_trend_n, sig_lo, sig_hi);
+    /* Guard 20Hz tiku musi vedet, CO je ted na obrazovce — jinak by prvni tik
+     * po plnem renderu prekreslil totez znovu (nebo, hur, preskocil zmenu). */
+    trend_drawn_store(s_spark_prev, s_trend_n, sig_lo, sig_hi);
 }
 
-/* Signal bargraf = REALNY vstupni vykon z AD8307 log-detektoru (ADS1115 AIN1;
- * SensorsTask fast-path ~10 Hz), zobrazeny v dBm. Prevod mV->dBm dela volajici
- * (app_gpsdo_tick_signal, konstanty AD8307). Drzime rect + hodnotu pro partial redraw. */
+/* Signal bargraf — myslen jako RF vykon z AD8307 log-detektoru (ADS1115 AIN1).
+ * 🔴 2026-10-02: AD8307 na teto desce FYZICKY NENI (RF_LEVEL_HW_PRESENT,
+ * calib.h) — AIN1 je VBUS. `app_gpsdo_tick_signal()` se proto NEVOLA a `s_signal_pct`
+ * zustava 0 / `s_signal_dbm10` zustava na sentinelu -100000 ("--- dBm"), takze
+ * karta trvale ukazuje "nedostupne" misto cisla ze spatneho vstupu. Drzime
+ * rect + hodnotu pro partial redraw, kdyby se RF HW nekdy doplnilo. */
 static prim_rect_t s_signal_rect = {0, 0, 0, 0};
 static int16_t     s_signal_pct  = 0;
 static int32_t     s_signal_dbm10 = -100000;  /* posl. zobrazene dBm×10 (<-99999 = jeste nic) */
@@ -1655,6 +3061,7 @@ static void render_body_grid_hybrid(void)
 /* Vyber rozlozeni — viz `screen_main_set_layout_classic`. */
 static void render_body_grid(void)
 {
+    screen_main_redraw_uncert(1);   /* pas σ + N nad mrizkou (Zasada 2) */
     if (s_layout_classic) render_body_grid_classic();
     else                  render_body_grid_hybrid();
 }
@@ -1704,6 +3111,62 @@ static void render_footer(void)
 }
 
 /* Restore a rectangle from the static background cache (partial-redraw clear). */
+/* ── Pas nejistoty pod odectem (zadani UI Zasada 2) ──────────────────────────
+ * „Odecet bez σ a poctu vzorku je v tomto pristroji NEPOUZITELNY, protoze
+ * rozliseni 12 cislic svadi k nezaslouzene duvere."
+ *
+ * ⚠️ Ukazuje σy (frakcni odchylka) @1s, ne σ v Hz jako maketa zadani — zadani
+ * samo rika, ze maketa je „rozvrzeni informaci, ne graficky navrh", a frakcni
+ * σy je u GPSDO standardni zapis, ktery uz pouziva i karta statistik.
+ * ⚠️ Zacina CLEAREM (blit pozadi) — pravidlo partial redrawu. */
+/* Preskrtne zonu velkeho cisla — zadani UI §12: pri prioritach 1-2 se mereni
+ * zastavi a „odecet zobraz preskrtnuty nebo sede".
+ * ⚠️ Kresli se AZ ZA cislem (prekryv), takze se vola z varovneho ticku po tom,
+ * co `tick_freq` cislo prekreslil. Cara jde pres `prim_fill_rect` (DMA2D cesta),
+ * takze `mark_dirty` NEobchazi — na rozdil od `prim_draw_line`, ktera by sla
+ * pres `prim_internal_blend_px` a v jednom ze tri bufferu by chybela. */
+void screen_main_strike_reading(void)
+{
+    prim_rect_t z = freq_area();
+    int16_t y = (int16_t)(z.y + z.h / 2);
+    prim_fill_rect((prim_rect_t){z.x, y, z.w, 4}, UI_COLOR_BAD, PRIM_BLEND_REPLACE);
+}
+
+/* Jeden zdroj textu σ+N (pouziva ho plny render titulku i partial 1Hz update). */
+static void uncert_text(char *out, size_t n)
+{
+    char sb[24];
+    float sy = stats_adev(1);
+    if (sy > 0.0f) fmt_frac(sb, sizeof sb, sy, 0);
+    else           snprintf(sb, sizeof sb, "--");
+    snprintf(out, n, "σy %s @1s  N=%lu", sb, (unsigned long)screen_main_stats_version());
+}
+
+/* Vykresli σ+N vpravo v titulnim radku. NEcisti — volajici uz clear udelal. */
+static void uncert_draw(void)
+{
+    char b[48];
+    uncert_text(b, sizeof b);
+    prim_draw_text((prim_point_t){UI_DIM_SCREEN_W - UI_DIM_PADDING_X, SCR_MAIN_TITLE_Y},
+                   b, &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+}
+
+int screen_main_redraw_uncert(int force)
+{
+    static char s_prev[48];
+    char b[48];
+    uncert_text(b, sizeof b);
+    if (!force && strncmp(s_prev, b, sizeof s_prev) == 0) return 0;
+    strncpy(s_prev, b, sizeof s_prev - 1); s_prev[sizeof s_prev - 1] = '\0';
+
+    /* ⚠️ Cisti se JEN pravy box, ne cely titulni radek — vlevo lezi titulek
+     * („FREKVENCE A · GATE …"), ktery tahle cesta nekresli. */
+    blit_bg_region((prim_rect_t){SCR_MAIN_UNC_X, (int16_t)(SCR_MAIN_TITLE_Y - 18),
+                                 SCR_MAIN_UNC_W, 28});
+    uncert_draw();
+    return 1;
+}
+
 static void blit_bg_region(prim_rect_t r)
 {
     const prim_pixel_t *src = bg_cache + (int)r.y * SCR_MAIN_BG_CACHE_W + r.x;
@@ -1782,6 +3245,7 @@ int screen_main_redraw_time(uint32_t ms_since_boot)
 static uint32_t s_cpu_shown = 999;
 static uint8_t  s_cm4_shown = 255;
 static uint8_t  s_cm4_pct_shown = 255;   /* posledni vykreslene CM4 % (change-detect) */
+static int8_t   s_cpu_reps;              /* #88: do kolika bufferu uz tenhle udaj dosel */
 /* Stav CM4 pro spodni radek: 0 = D2 ready ale IPC ticho ("CM4:--"), 1 = heartbeat
  * roste, CM4 mluvi pres IPC ("CM4:xx%"), 2 = nenabehl ("CM4:off"). */
 static uint8_t cm4_state(void)
@@ -1794,7 +3258,12 @@ int screen_main_redraw_cpu(int force)
     uint32_t c7 = g_rtos_cpu_pct; if (c7 > 99) c7 = 99;
     uint8_t  c4st = cm4_state();
     uint32_t c4p = g_cm4_cpu_pct; if (c4p > 99) c4p = 99;
-    if (!force && c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown) return 0;
+    /* #88: pouhe „hodnota se nezmenila -> return 0" by novy udaj nechalo jen
+     * v tom bufferu, do ktereho se prave kreslilo. `force` (plny render) je
+     * take jedno vykresleni, takze i tam se pocitadlo nastavi na 1. */
+    int same = (c7 == s_cpu_shown && c4st == s_cm4_shown && (uint8_t)c4p == s_cm4_pct_shown);
+    if (!force && gate_same(&s_cpu_reps, same)) return 0;
+    if (force) s_cpu_reps = 1;                 /* plny render = jedno vykresleni */
     s_cpu_shown = c7; s_cm4_shown = c4st; s_cm4_pct_shown = (uint8_t)c4p;
     blit_bg_region((prim_rect_t){582, 1, 61, 53});      /* podklad headeru pod blokem (konci na 643 < 644) */
     char l[12];
@@ -1832,10 +3301,18 @@ int screen_main_redraw_header(void)
  * pokud kreslil (flip odlozen na flush). */
 int screen_main_tick_sys_xfade(void)
 {
-    if (s_sys_mix >= 1.0f) return 0;               /* usazeno, neni co prolinat */
     if (s_sys_pill_rect.w == 0) { s_sys_mix = 1.0f; return 0; }  /* pilulka pretekla (neviditelna) */
-    s_sys_mix += SYS_XFADE_STEP;
-    if (s_sys_mix > 1.0f) s_sys_mix = 1.0f;
+    /* 🔴 #88: drive `if (s_sys_mix >= 1.0f) return 0;` HNED tady — posledni
+     * snimek prolnuti (mix == 1,0) se tim nakreslil PRESNE JEDNOU a ve zbylych
+     * dvou bufferech zustala mezilehla barva pilulky natrvalo -> pri kazdem
+     * flipu probliknuti. Usazeny stav se ted jeste dokresli do vsech bufferu
+     * a teprve pak se zacne preskakovat. */
+    int settled = (s_sys_mix >= 1.0f);
+    if (gate_same(&s_sys_reps, settled)) return 0;
+    if (!settled) {
+        s_sys_mix += SYS_XFADE_STEP;
+        if (s_sys_mix > 1.0f) s_sys_mix = 1.0f;
+    }
     blit_bg_region(s_sys_pill_rect);               /* podklad headeru pod pilulkou */
     ui_pill_t p; sys_pill_setup(&p, s_sys_pill_rect.y);
     p.x = s_sys_pill_rect.x;
@@ -1873,45 +3350,62 @@ int screen_main_redraw_signal(int16_t pct, int32_t dbm10)
     return drew;
 }
 
-/* Posune simulovany kmitocet o jeden spojity krok, prepise cislice a prekresli
- * cele cislo — ale PER-SEGMENT DIRTY: zmeny jsou v nizkych cislicich, takze staci
- * prekreslit OCAS od prvni zmenene skupiny doprava; stabilni vyssi cislice (cela
- * cast) se neprekresluji. Obraz je pixel-identicky s full redrawem, ale za zlomek
- * zateze (typicky 2-4 mono_75 glyfy misto 15). Volat ~20x/s. Vrati 1 pri zmene. */
-/* Krok simulace BEZ kresleni — voláno mimo hlavni obrazovku (jine okno /
+/* Krok zdroje BEZ kresleni — voláno mimo hlavni obrazovku (jine okno /
  * screensaver), aby statistika (ring + ADEV pyramida) rostla 24/7 a Allan
- * dosahl dlouhych tau. Kresli se az zase na main. */
+ * dosahl dlouhych tau. Aktualizuje s_freq_n z realneho mereni (nebo SIM fallback).
+ * Kresli se az zase na main. */
 void screen_main_freq_sim_step(void)
 {
-    freq_step();
+    freq_advance();
 }
 
-/* Frakcni odchylka simulovaneho kmitoctu -> 0..1 (0,5 = stred 10 MHz). Pasmo
- * ~±0,4 Hz mapuje na plny rozsah. Slouzi spektrogramu (vodopad Δf). */
+/* Frakcni odchylka kmitoctu od stredu -> 0..1 (0,5 = na stredu). Pasmo ±0,4 Hz
+ * mapuje na plny rozsah. Slouzi spektrogramu (vodopad Δf). */
 float screen_main_freq_dev_unit(void)
 {
-    if (s_freq_center == 0 || !s_num_ready) return 0.5f;
+    if (!s_num_ready) return 0.5f;
     int64_t off = (int64_t)s_freq_n - (int64_t)s_freq_center;
-    float lsb_per_hz = (float)s_freq_center / 1.0e7f;   /* s_freq_center = 1e7 * 10^frac */
+    float lsb_per_hz = (float)pow10_u64(s_freq_frac);   /* LSB = 10^-frac Hz */
+    if (lsb_per_hz <= 0.0f) return 0.5f;
     float dev_hz = (float)off / lsb_per_hz;
     float u = 0.5f + dev_hz / 0.8f;                     /* ±0,4 Hz -> [0,1] */
     if (u < 0.0f) u = 0.0f; else if (u > 1.0f) u = 1.0f;
     return u;
 }
 
-/* Aktualni zobrazovany kmitocet v Hz (double). s_freq_n je v LSB = 10^-frac Hz,
- * s_freq_center = 1e7 * 10^frac -> Hz = s_freq_n * 1e7 / s_freq_center. Zdroj pro
- * Math/limity (#43/#44). ⚠️ Dnes SIMULACE (headline) — po #2 reálný FPGA kmitocet. */
+/* Aktualni zobrazovany kmitocet v Hz (double). s_freq_n je v LSB = 10^-frac Hz
+ * -> Hz = s_freq_n / 10^frac. Zdroj pro Math/limity (#43/#44), Allan, drift.
+ * Realny FPGA kmitocet (nebo emulator), pri fallbacku simulace (viz freq_advance). */
 double screen_main_freq_hz(void)
 {
-    if (!s_num_ready || s_freq_center == 0) return 0.0;
-    return (double)s_freq_n * 1.0e7 / (double)s_freq_center;
+    if (!s_num_ready) return 0.0;
+    return (double)s_freq_n / (double)pow10_u64(s_freq_frac);
 }
 
+/* Vezme aktualni hodnotu ze zdroje (`freq_advance`: realne mereni / SIM fallback),
+ * prepise cislice a prekresli cislo — PER-SEGMENT DIRTY: meni se hlavne nizke
+ * cislice, takze staci prekreslit OCAS od prvni zmenene skupiny doprava; stabilni
+ * vyssi cislice (cela cast) se neprekresluji. Obraz je pixel-identicky s full
+ * redrawem, ale za zlomek zateze (typicky 2-4 mono_75 glyfy misto vsech).
+ * Volat ~20x/s z hlavni obrazovky. @return 1 = kreslilo se (volajici flipne). */
 int screen_main_redraw_freq(void)
 {
     if (!s_num_ready) return 0;
-    freq_step();
+    freq_advance();
+
+    /* Zmena formatu (jina magnituda) NEBO prepnuti REAL<->SIM (marker) -> per-segment
+     * dirty cesta nestaci, nutny PLNY redraw zony.
+     * ⚠️ Cislice i shadow se MUSI naplnit i tady: pri prepnuti REAL<->SIM se format
+     * nemeni (num_build_for se nevola), takze bez toho by se vykreslila jeste STARA
+     * hodnota a spravna by naskocila az o snimek pozdeji. */
+    if (s_freq_fmt_changed) {
+        s_freq_fmt_changed = 0;
+        freq_fill_segments();
+        for (int i = 0; i < s_num.segment_count; i++) strcpy(s_num_prev[i], s_num_buf[i]);
+        screen_main_redraw_freq_area();
+        return 1;
+    }
+
     freq_fill_segments();
 
     int from = -1;                                  /* prvni zmenena skupina cislic */
@@ -1934,18 +3428,68 @@ int screen_main_redraw_freq(void)
     return 1;
 }
 
-/* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,
- * STOP = lehce cervene). Vola se pri PREPNUTI RUN/STOP — tam se meni podklad,
- * ne cislice, takze per-segment dirty cesta (screen_main_redraw_freq) by nic
- * neprekreslila (a pri STOP uz stejne nebezi). */
-void screen_main_redraw_freq_area(void)
+/* Spolecne jadro plneho prekresleni zony kmitoctu: cisti PODANOU oblast,
+ * kresli podbarveni STOP, pak cislo (HW glyfy jen kdyz `glyph_accel`).
+ * `area` musi pokryt VESKERY aktualne zobrazovany obsah (stary i novy) —
+ * volajici za to odpovida (viz komentare u obou volajicich nize). */
+static void redraw_freq_area_ex(prim_rect_t area, int glyph_accel)
 {
     if (!s_num_ready) return;
-    blit_bg_region(freq_area());
+    blit_bg_region(area);
     freq_tint_if_stopped();
-    prim_set_glyph_accel(1);
+    if (glyph_accel) prim_set_glyph_accel(1);
     ui_big_number_render(&s_num);
-    prim_set_glyph_accel(0);
+    if (glyph_accel) prim_set_glyph_accel(0);
+    /* #1: SIM marker — headline žene simulace (žádné platné měření z FPGA/emulátoru).
+     * Emulovaná data (fpgasim) jdou reálnou cestou (g_freq_valid=1) -> BEZ markeru. */
+    if (s_freq_is_sim) {
+        prim_rect_t fa = freq_area();
+        prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 14)},
+                       "SIM", &ui_font_mono_16, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
+    }
+}
+
+/* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,
+ * STOP = lehce cervene). Vola se PRI ZMENE FORMATU/MAGNITUDY (FREQ<->PERIOD,
+ * jina magnituda, /4<->/16) — tam se meni podklad i sirka cisla. */
+void screen_main_redraw_freq_area(void)
+{
+    /* 🔴 Cisti se CELA MOZNA zona cisla (`freq_clear_area`), ne jen aktualni
+     * `freq_area()` a ne sjednoceni s "predchozi" zonou.
+     *
+     * PROC: cislo je VYCENTROVANE, takze pri zmene formatu (FREQ<->PERIOD, jina
+     * magnituda, /4<->/16) se meni i jeho LEVY okraj — stara sirsi hodnota po
+     * stranach precniva a partial redraw uz do te oblasti nikdy nesahne.
+     *
+     * ⚠️ Driv se to resilo sjednocenim s `static prim_rect_t s_prev_area`, jenze
+     * ten se aktualizoval VYHRADNE tady. Cislo ale kresli i PLNY render
+     * (`render_body_number` ze `screen_main_render`, tj. pri kazdem navratu na
+     * hlavni obrazovku, zmene tematu, rozlozeni...) a ten svou geometrii nikam
+     * nezapsal. Po bootu byl `s_prev_area` dokonce nulovy -> vetev `else`
+     * vycistila jen NOVOU (uzsi) zonu a po stranach zustaly duchove stare.
+     * Projev: „pri prepnuti FREQ/PERIODA nekde neco zbyde" — vzdy pri PRVNIM
+     * prepnuti po plnem renderu, pak uz ne (od druheho prepnuti sjednoceni
+     * nahodou vyslo). Nalezeno 2026-09-01.
+     *
+     * Sledovani „kdo naposled kreslil cislo" je zbytecne krehke: staci pevna
+     * zona sirsi nez nejsirsi mozne cislo. Stoji jeden blit ~68 kB, ale bezi jen
+     * pri ZMENE formatu / RUN-STOP, ne ve 20Hz smycce. */
+    redraw_freq_area_ex(freq_clear_area(), 1);
+}
+
+/* Uzsi varianta pro CISTY RUN/STOP toggle (audit F-0140, 2026-09-21): geometrie
+ * cisla se NEMENI (zadna zmena formatu/magnitudy, jen podbarveni), takze staci
+ * PRESNA aktualni zona `freq_area()` misto "maximalni mozne" `freq_clear_area()`
+ * — nehrozi "duchove" po stranach, protoze se sirka mezi starym a novym stavem
+ * nemeni. DMA2D burst navic bezi bez HW glyph akcelerace (CPU rasterizace se
+ * na sbernici rozprostre do vic mensich transakci misto jednoho velkeho
+ * prenosu) — obe zmeny spolu meritelne snizuji podteceni FIFO LTDC pri
+ * opakovanem RUN/STOP (zmereno: 52/1000 -> viz F-0140 pro presna cisla).
+ * ⚠️ NIKDY nepouzivat tam, kde se muze zmenit sirka cisla — pak plati jen
+ * `screen_main_redraw_freq_area()` s `freq_clear_area()`. */
+void screen_main_redraw_freq_tint(void)
+{
+    redraw_freq_area_ex(freq_area(), 0);
 }
 
 /* FX_HEAD_GLOW (bloom za kmitoctem pri cerstvem mereni) ODSTRANEN 2026-07-26 na
@@ -1956,6 +3500,40 @@ void screen_main_redraw_freq_area(void)
 void screen_main_stats_sample(void)
 {
     stats_sample();
+}
+
+/* ── τ0 ze skutecne delky oken (bod 6, 2026-09-26) ─────────────────────────────
+ * Pyramida i vsechny popisky τ predpokladaji τ0 = 1 s. Vzorek je ale soucet oken
+ * mereni za tik (F-0171) a jeho delka se da ZMERIT (Σ hradel). Normalne 4 × 0,25 s
+ * = 1,000 s. Odchylky: (a) pod ~100 Hz se okno kazdeho mereni protahuje az o
+ * periodu signalu, pod ~1 Hz je delsi nez 1 s; (b) 1Hz tik se opozduje o latenci
+ * smycky UiTasku, takze obcas pobere o mereni vic (1,25 s). Tady se to jen MERI
+ * a hlasi (okno ALLAN, UART `status full`) — osa τ se neprepocitava; poctivy
+ * prepocet by chtel vzorkovat po POCTU mereni, ne po case (TODO #27).
+ * Prumer a relativni kolisani = EMA (α = 1/16) delky a |odchylky| vzorku. */
+/* (s_tau0_* jsou definovane u s_stats_ver — potrebuje je i reset) */
+
+uint32_t screen_main_tau0(float *mean_s, float *spread)
+{
+    if (mean_s) *mean_s = s_tau0_mean;
+    if (spread) *spread = s_tau0_dev;
+    return s_tau0_n;
+}
+
+/* F-0171: realne mereni — vzorek je PRUMER vsech mereni za posledni tik
+ * (`fpga_acc_take`), ne jedno 0,25s mereni. `tau_s` = soucet jejich oken. */
+void screen_main_stats_sample_hz(double hz, double tau_s)
+{
+    stats_push(screen_main_frac_dev(hz));
+    if (tau_s > 0.0) {
+        float t = (float)tau_s;
+        if (s_tau0_n == 0u) { s_tau0_mean = t; s_tau0_dev = 0.0f; }
+        else {
+            s_tau0_mean += (t - s_tau0_mean) / 16.0f;
+            s_tau0_dev  += (fabsf(t - s_tau0_mean) / s_tau0_mean - s_tau0_dev) / 16.0f;
+        }
+        s_tau0_n++;
+    }
 }
 
 /* Zive prekresleni trend + offset/sigma (lehke; volat ~1x/s). Vrati 1. */
@@ -2012,8 +3590,13 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* Jedna kopie ringu do lokalniho pole (stat_at dela modulo — dal uz jen
      * linearni pristupy); poradi je pro min/max/mean/biny/median nepodstatne. */
+    /* F-0179: hodnoty RELATIVNE k prumeru (double) — absolutni y ve float by pri
+     * nizkem f splynulo do par binu. Popisky pricitaji `ref` zpet. */
+    double ref = 0.0;
+    for (int i = 0; i < n; i++) ref += stat_at(i);
+    ref /= (double)n;
     float srt[STAT_N];
-    for (int i = 0; i < n; i++) srt[i] = stat_at(i);
+    for (int i = 0; i < n; i++) srt[i] = (float)(stat_at(i) - ref);
 
     float mn = srt[0], mx = mn, sum = 0.0f;
     for (int i = 0; i < n; i++) { float v = srt[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
@@ -2093,8 +3676,8 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* X popisky: min (vlevo) / max (vpravo) ve frac notaci */
     char lb[24], rb[24];
-    fmt_frac(lb, sizeof lb, mn, 1);
-    fmt_frac(rb, sizeof rb, mx, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mn + ref), 1);
+    fmt_frac(rb, sizeof rb, (float)((double)mx + ref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_draw_text((prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h + 16)}, rb,
@@ -2102,12 +3685,12 @@ void screen_main_render_histogram(prim_rect_t rect)
 
     /* overlay: N/mean/sigma (radek 1, vpravo nahore) + median (radek 2, amber) */
     char ov[80], mb[24], sb[24];
-    fmt_frac(mb, sizeof mb, mean, 1);
+    fmt_frac(mb, sizeof mb, (float)((double)mean + ref), 1);
     fmt_frac(sb, sizeof sb, sd, 0);
     snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
                    &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
-    char db[28]; fmt_frac(mb, sizeof mb, median, 1);
+    char db[28]; fmt_frac(mb, sizeof mb, (float)((double)median + ref), 1);
     snprintf(db, sizeof db, "med=%s", mb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 36)}, db,
                    &ui_font_mono_14, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
@@ -2134,11 +3717,29 @@ void screen_main_render_stats_table(prim_rect_t rect)
         if (a > 0.0f) fmt_frac(vb, sizeof vb, a, 0);
         else { vb[0] = vb[1] = '-'; vb[2] = '\0'; }
         int16_t ty = (int16_t)(ry + i * 30);
-        prim_draw_text((prim_point_t){rect.x, ty}, TL[i],
+        /* #27: pri τ0 != 1 s popisek se skutecnym τ = 10^i·τ0 (hodnota je z tehoz
+         * radku pyramidy, jen popisek ji rika pravdive). */
+        char tl[16];
+        float t0 = tau0_scale();
+        if (fabsf(t0 - 1.0f) > 0.005f) fmt_tau_lbl(tl, sizeof tl, t0 * powf(10.0f, (float)i));
+        else snprintf(tl, sizeof tl, "%s", TL[i]);
+        prim_draw_text((prim_point_t){rect.x, ty}, tl,
                        &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ty}, vb,
                        &ui_font_mono_14, (a > 0.0f) ? UI_COLOR_INK_2 : UI_COLOR_INK_4,
                        PRIM_ALIGN_RIGHT);
+    }
+    /* Bod 4: prevladajici typ sumu (tytez prahy jako web). Jen kdyz se vejde
+     * do vysky rectu (tabulka ma 5 radku po 30 px od rect.y + 46). */
+    int16_t ny = (int16_t)(ry + 5 * 30 + 4);
+    char nb[20], sb[16];
+    if (ny + 26 <= rect.y + rect.h && noise_desc(nb, sizeof nb, sb, sizeof sb)) {
+        prim_draw_text((prim_point_t){rect.x, ny}, "sum", &ui_font_mono_14, UI_COLOR_INK_3,
+                       PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), ny}, nb, &ui_font_mono_14,
+                       UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(ny + 22)}, sb,
+                       &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
     }
 }
 
@@ -2182,8 +3783,11 @@ void screen_main_render_trend_big(prim_rect_t rect)
                        "Waiting for data...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
-    float mn = tr_at(ts, 0), mx = mn;
-    for (int i = 1; i < n; i++) { float v = tr_at(ts, i); if (v < mn) mn = v; if (v > mx) mx = v; }
+    /* F-0179: krivka RELATIVNE k nejnovejsimu bodu (double), popisky pricitaji
+     * `tref` zpet — absolutni y ve float by pri nizkem f splynulo. */
+    double tref = tr_at(ts, 0);
+    float mn = 0.0f, mx = 0.0f;
+    for (int i = 1; i < n; i++) { float v = (float)(tr_at(ts, i) - tref); if (v < mn) mn = v; if (v > mx) mx = v; }
     float span = mx - mn;
     if (span < 1e-18f) span = 1e-18f;
 
@@ -2198,7 +3802,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     /* krivka: nejstarsi vlevo -> nejnovejsi vpravo */
     int16_t px_prev = 0, py_prev = 0;
     for (int i = 0; i < n; i++) {
-        float v = tr_at(ts, n - 1 - i);
+        float v = (float)(tr_at(ts, n - 1 - i) - tref);
         int16_t px = (int16_t)(in.x + (int32_t)i * in.w / (n - 1));
         int16_t py = (int16_t)(in.y + in.h - (int16_t)((v - mn) / span * (float)in.h));
         if (i) prim_draw_line((prim_point_t){px_prev, py_prev}, (prim_point_t){px, py},
@@ -2210,10 +3814,10 @@ void screen_main_render_trend_big(prim_rect_t rect)
 
     /* Y popisky: max nahore / min dole (frac notace) */
     char lb[24];
-    fmt_frac(lb, sizeof lb, mx, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mx + tref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y - 6)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
-    fmt_frac(lb, sizeof lb, mn, 1);
+    fmt_frac(lb, sizeof lb, (float)((double)mn + tref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     /* overlay: okno + skutecne pokryty cas + krok decimace (vpravo nahore).

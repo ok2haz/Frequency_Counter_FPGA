@@ -15,8 +15,10 @@
  *   ZAPIS  — `ipc_scpi_set_cfg()`: SCPI SET -> `IPC_CMD_CFG_SET` do cmd ringu,
  *            CM7 ho vyridi v `ipc_service` (viz W1 v WEB_UI_PLAN.md).
  */
-#include "ipc_shared.h"
-#include "scpi.h"
+/* Relativni cesty - viz komentar u stejneho vzoru v scpi.c (soubor je taky
+ * linked resource v CM4 projektu, regen CM4/.cproject bere -I../../CM7/Core/Inc). */
+#include "../Inc/ipc_shared.h"
+#include "../Inc/scpi.h"
 #include <string.h>
 
 int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
@@ -31,6 +33,7 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->freq4_x100000  = sn->freq4_x100000;
     s->freq16_x100000 = sn->freq16_x100000;
+    s->freq4_hz       = sn->freq4_hz;       /* v19 (F-0180): presna hodnota, 0 = neni */
     s->gate_ns        = sn->gate_ns;
     s->channel_id     = sn->channel_id;
 
@@ -50,8 +53,8 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->gps_fix_mode = sn->gps_fix_mode;
     s->gps_num_sat  = sn->gps_num_sat;
-    s->gps_lat_deg  = (float)sn->gps_lat_e7 * 1e-7f;
-    s->gps_lon_deg  = (float)sn->gps_lon_e7 * 1e-7f;
+    s->gps_lat_e7   = sn->gps_lat_e7;      /* e7 -> e7, bez mezikroku pres float (F-0070) */
+    s->gps_lon_e7   = sn->gps_lon_e7;
     s->gps_alt_m    = (float)sn->gps_alt_cm * 0.01f;
     /* Cas: snapshot nese unix, `scpi_src_t` hodiny/minuty/sekundy. Prevod je
      * ciste modularni — datum SCPI z tohohle pole necte (`SYST:GPS:TIME?`). */
@@ -62,18 +65,25 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
 
     s->si5356_status = sn->si5356_status;
     s->si5356_ok     = sn->si5356_ok;
+    /* F-0194: snapshot NESE `selftest_res` (ipc_shared.h, plni ipc.c), jen se tu
+     * necetl -> `*TST?` pres TCP/HTTP vracelo vzdy FAIL (0 z memsetu), zatimco
+     * USB (scpi.c:1098) i `/api/state` (`snap->selftest_res`) hlasily PASS —
+     * dve pravdy o jednom pristroji. Stejny vzor jako slepy readback (IPC v11)
+     * a F-0185 (L-0098): pole existuje, loader ho neplnil. */
+    s->selftest_pass = (sn->selftest_res == 1);
     s->uptime_s      = sn->uptime_s;
     s->spi_ok        = (sn->flags & IPC_F_FPGA_LINK) ? 1u : 0u;
     s->freq_err      = (sn->flags & IPC_F_SIGNAL_LOST) ? 1u : 0u;
+    s->sim_active    = (sn->flags & IPC_F_SIM) ? 1u : 0u;   /* emulace, ne mereni (DIAG:SIM?) */
     /* ⚠️ NASTAVENI (brana/kanal/RUN) se cte z `ui_cfg` (v11), presne stejnym dekodem
-     * jako CM7 backend `scpi_src_load_cm7` — jinak by tentyz dotaz vracel pres USB
+     * jako CM7 backend `scpi_src_load_cm7_ex` — jinak by tentyz dotaz vracel pres USB
      * neco jineho nez pres TCP/HTTP. Do v10 se `set_gate_idx` neplnilo VUBEC (zustalo
      * 0 z memsetu => `SENS:FREQ:GATE?` vzdy 0,1 s) a `set_chan` se bralo z
      * `channel_id`, coz je kanal HLASENY FPGA RAMCEM — pri mrtvem linku 0, takze
      * `CHAN?` hlasilo 0 i po uspesnem `CHAN 1`. SET pritom fungoval (stejny most jako
      * RUN), takze to vypadalo jako „nejde nastavit", ale slo o SLEPY READBACK. */
     s->set_chan      = (uint8_t)((sn->ui_cfg >> 1) & 1u);
-    s->set_gate_idx  = (uint8_t)((sn->ui_cfg >> 2) & 3u);
+    s->set_gate_idx  = IPC_UICFG_GATE(sn->ui_cfg);
     s->set_running   = (sn->flags & IPC_F_RUNNING) ? 1u : 0u;   /* tentyz bit4 `g_ui_cfg`, jen uz zabaleny ve flags */
 
     /* Math/limit cfg mirror (CALC readbacky). */
@@ -135,10 +145,30 @@ int ipc_scpi_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
             break;
     }
 
+#if defined(CORE_CM4)
     if (!ipc_cmd_push(&c)) return 0;              /* ring plny -> SCPI ohlasi chybu */
 
     /* Vysyp odpovedi, at resp ring nepretece — na vysledek necekame (viz vyse). */
     ipc_resp_t r;
     while (ipc_resp_pop(&r)) { /* zahazujeme */ }
+#else
+    /* 🔴 NA CM7 SE DO RINGU NESAHA (audit F-0129, spolu s F-0014).
+     * `cmd` je bezzamkovy SPSC ring, jehoz JEDINYM producentem je CM4, a `resp`
+     * ma jedineho konzumenta taky na CM4. Push/pop odtud invariant rozbiji: dva
+     * producenti precetli tyz `head`, zapsali do TEHOZ slotu a oba zvedli head
+     * -> jeden prikaz se ztrati a druhy se prenese poskozeny, bez jakekoli hlasky.
+     *
+     * CM7 tuhle funkci pouziva VYHRADNE v diagnostice `scpi ipc <cmd>`, ktera
+     * SROVNAVA ODPOVEDI backendu CM4 s backendem CM7. K tomu staci lokalni
+     * zrcadlo (`s->meas`, `s->set_*`) naplnene ve `switch` vyse — proto se vraci
+     * uspech: jinak by compound "SET;READBACK?" vysel jako ROZDIL a nastroj by
+     * hlasil diru ve snapshotu, ktera tam neni.
+     * ⚠️ Dusledek, se kterym se musi pocitat: `scpi ipc <SET>` na CM7 pristroj
+     * NEPRESTAVI (to dela `scpi <SET>` pres backend CM7 nebo UI). Mezijadrovy
+     * zapisovy transport overuje web/TCP cesta, kde tenhle kod bezi na CM4.
+     * Tentyz vzor uz v projektu je: `scpi_test_set_cfg` v `scpi.c` taky aplikuje
+     * SET jen na `src.meas`. */
+    (void)c;
+#endif
     return 1;
 }

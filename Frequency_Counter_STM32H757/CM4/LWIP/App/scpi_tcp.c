@@ -23,7 +23,9 @@
 #include "lwip/tcp.h"
 #include <string.h>
 
-#include "scpi.h"
+/* Relativni cesta - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
+ * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); nezavisi na te -I ceste. */
+#include "../../../CM7/Core/Inc/scpi.h"
 #include "ipc_cm4.h"
 #include "main.h"          /* HAL_GetTick */
 
@@ -37,6 +39,8 @@ typedef struct {
     scpi_ctx_t ctx;
     char     rxbuf[SCPI_TCP_RXLINE_MAX];
     uint16_t rxlen;
+    uint8_t  drop;         /* radek pretekl -> zahazuj AZ DO konce radku */
+    uint32_t last_ms;      /* posledni aktivita -> timeout necinneho spojeni */
 } scpi_conn_t;
 
 /* Staticky pool — ZADNY malloc/mem_malloc navic mimo to, co uz lwIP dela pro pbuf/pcb.
@@ -54,6 +58,19 @@ static void conn_free(scpi_conn_t *c)
 {
     c->pcb = NULL;
     c->rxlen = 0;
+    c->drop = 0;
+}
+
+/* 🔴 Odregistrace VSECH callbacku pred uvolnenim slotu — tentyz duvod jako
+ * v `httpd_min.c` (audit F-0057): `tcp_close` pcb nezrusi, necha ho v aktivnim
+ * seznamu i s `callback_arg`, a slot uz je pritom volny pro dalsiho klienta.
+ * Tady se `tcp_arg`/`tcp_recv` odregistrovaly uz drive, `tcp_err`/`tcp_poll` ne. */
+static void conn_detach(struct tcp_pcb *pcb)
+{
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_err(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
 }
 
 /* Zpracuje jeden radek (uz bez LF/CR) a odesle odpoved. Cte snapshot ZNOVU pro
@@ -71,6 +88,10 @@ static void process_line(scpi_conn_t *c)
     }
     src.read_log = NULL;                                          /* #26, odlozeno */
     src.set_cfg  = (have && snap.web_ctrl_en) ? ipc_scpi_set_cfg : NULL;
+    /* ⚠️ Zakazane ovladani je OCHRANA, ne chybejici data -> `-203` misto -230.
+     * TCP 5025 nema Basic Auth (VISA raw socket nezna HTTP hlavicky), takze tu
+     * rozhoduje jen `web_ctrl_en` — viz CLAUDE.md. */
+    src.ctrl_locked = (have && src.set_cfg == NULL) ? 1u : 0u;   /* bez snapshotu je to -230, ne ochrana */
 
     static char txbuf[SCPI_TCP_TXBUF_MAX];
     size_t n = scpi_process_ctx(&c->ctx, &src, c->rxbuf, txbuf, sizeof(txbuf) - 2u);
@@ -96,32 +117,46 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     scpi_conn_t *c = (scpi_conn_t *)arg;
 
+    /* ⚠️ Stejna kontrola jako v `on_poll` — tahle obsluha ji nemela (audit F-0062),
+     * a po F-0057 je potreba i test `c->pcb != pcb` (pozdni callback zavreneho pcb). */
+    if (c == NULL) { tcp_arg(pcb, NULL); tcp_abort(pcb); if (p != NULL) pbuf_free(p); return ERR_ABRT; }
+    if (c->pcb != pcb) { if (p != NULL) pbuf_free(p); tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }
+
     if (p == NULL) {                              /* protejsek zavrel spojeni */
-        tcp_arg(pcb, NULL);
-        tcp_recv(pcb, NULL);
-        tcp_close(pcb);
         conn_free(c);
+        conn_detach(pcb);
+        (void)tcp_close(pcb);                     /* ERR_MEM si lwIP dozavre sam */
         return ERR_OK;
     }
     if (err != ERR_OK) { pbuf_free(p); return err; }
 
     tcp_recved(pcb, p->tot_len);
+    c->last_ms = HAL_GetTick();
 
     for (struct pbuf *q = p; q != NULL; q = q->next) {
         const char *d = (const char *)q->payload;
         for (u16_t i = 0; i < q->len; i++) {
             char ch = d[i];
             if (ch == '\n' || ch == '\r') {
-                if (c->rxlen > 0) {
+                /* Konec radku ruzi zahazovani AZ TADY — teprve ted zacina novy prikaz. */
+                if (c->drop) { c->drop = 0; c->rxlen = 0; }
+                else if (c->rxlen > 0) {
                     c->rxbuf[c->rxlen] = '\0';
                     process_line(c);
                     c->rxlen = 0;
                 }
+            } else if (c->drop) {
+                /* uvnitr prilis dlouheho radku — zahazuj */
             } else if (c->rxlen < SCPI_TCP_RXLINE_MAX - 1u) {
                 c->rxbuf[c->rxlen++] = ch;
             } else {
-                /* Radek delsi nez buffer — zahod a cekej na dalsi LF/CR, at se
-                 * neprocesuje uriznuty (a tedy jinak znejici) prikaz. */
+                /* 🔴 Radek delsi nez buffer se zahazuje CELY, az do konce radku.
+                 * Do 2026-09-06 se tu jen nulovalo `rxlen`, takze se hned zacalo
+                 * plnit znovu a OCAS prilis dlouheho radku se provedl jako prikaz:
+                 * `<100 znaku smeti>SENS:FREQ:GATE 100\n` skutecne prestavilo
+                 * branu. Komentar pritom uz tehdy tvrdil, ze se tomu brani —
+                 * kod delal opak. */
+                c->drop  = 1;
                 c->rxlen = 0;
             }
         }
@@ -137,6 +172,23 @@ static void on_err(void *arg, err_t err)
     if (arg != NULL) conn_free((scpi_conn_t *)arg);
 }
 
+/* Timeout necinneho spojeni. Bez nej drzi klient, ktery zmizel bez FIN (spadla
+ * aplikace, vytazeny kabel, NAT zahodil stav), jeden ze CTYR slotu navzdy —
+ * lwIP samo TCP keepalive nedela. VISA relace ale muze legitimne mlcet dlouho
+ * mezi dotazy, takze je timeout velkorysy: 5 minut, ne sekundy. */
+#define SCPI_TCP_IDLE_MS  300000u
+
+static err_t on_poll(void *arg, struct tcp_pcb *pcb)
+{
+    scpi_conn_t *c = (scpi_conn_t *)arg;
+    if (c == NULL) { tcp_abort(pcb); return ERR_ABRT; }
+    if (c->pcb != pcb) { tcp_arg(pcb, NULL); tcp_abort(pcb); return ERR_ABRT; }   /* F-0057 */
+    if ((uint32_t)(HAL_GetTick() - c->last_ms) < SCPI_TCP_IDLE_MS) return ERR_OK;
+    conn_free(c);
+    conn_detach(pcb); tcp_abort(pcb);
+    return ERR_ABRT;
+}
+
 static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
     (void)arg;
@@ -150,11 +202,14 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     c->pcb = newpcb;
     c->rxlen = 0;
+    c->drop = 0;
+    c->last_ms = HAL_GetTick();
     scpi_ctx_init(&c->ctx);
 
     tcp_arg(newpcb, c);
     tcp_recv(newpcb, on_recv);
     tcp_err(newpcb, on_err);
+    tcp_poll(newpcb, on_poll, 8);      /* ~1x za sekundu staci */
     tcp_nagle_disable(newpcb);   /* kratke prikazy/odpovedi — latence pred propustnosti */
     return ERR_OK;
 }

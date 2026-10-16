@@ -14,8 +14,10 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "adc.h"          /* hadc3 — MCU teplota jadra / VDDA / VBAT (interni kanaly) */
 #include "ads1115.h"
-#include "si5356.h"       /* si5356_read_status (reg 218: LOS_CLKIN/PLL_LOL/SYS_CAL) */
+#include "si5356.h"
+#include "errlog.h"   /* udalosti: ztrata reference, vypadek senzoru */       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
+#include "ad5693.h"       /* DAC ladeni OCXO — obsluha zadosti pod i2c1MutexHandle */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
 
@@ -82,7 +84,14 @@ static int adc3_read_chan(uint32_t channel, uint32_t *out)
 static void tmp117_set_2hz(I2C_HandleTypeDef *hi2c, uint16_t addr8)
 {
     uint8_t cfg[2] = { (uint8_t)(TMP117_CFG_2HZ >> 8), (uint8_t)(TMP117_CFG_2HZ & 0xFF) };
-    HAL_I2C_Mem_Write(hi2c, addr8, TMP117_REG_CONFIG, I2C_MEMADD_SIZE_8BIT, cfg, 2, 100);
+    /* ⚠️ Navratovou hodnotu vyhodnocujeme (L-0003, audit F-0022). Selhani NENI
+     * fatalni — cidlo zustane ve vychozim prevodnim cyklu a MERI DAL, jen jinou
+     * kadenci. Prave proto se to musi dat poznat: tiche jine vzorkovani by menilo
+     * casovou konstantu teplotnich trendu, ze kterych se pocita warm-up OCXO. */
+    if (HAL_I2C_Mem_Write(hi2c, addr8, TMP117_REG_CONFIG,
+                          I2C_MEMADD_SIZE_8BIT, cfg, 2, 100) != HAL_OK) {
+        g_tmp117_cfg_fail++;
+    }
 }
 
 /* ── Statistika senzoru (zapis g_sensors[], viz sensor_stat.h) ──────────── */
@@ -116,6 +125,12 @@ void sensor_fail(sensor_id_t id)
     sensor_stat_t *s = &g_sensors[id];
 
     s->err_total++;
+    /* ⚠️ Az od SERIE, ne od prvni chyby: jednotlive selhani cteni je bezne
+     * (sdilena sbernice, kolize s touchem) a samo se zotavi. Trvala serie uz
+     * znamena, ze senzor opravdu zmizel. Rate-limit errlogu resi zbytek. */
+    if (s->err_streak == 20u) {
+        (void)errlog_put(ERRLOG_K_SENSOR, (uint8_t)id, s->err_total, s->err_streak, "senzor");
+    }
     s->err_last_ms = HAL_GetTick();   /* cas posledni chyby -> "uptime od posledni" (UART sensors) */
     if (s->err_streak < 0xFFFF) s->err_streak++;
     s->valid = 0;   /* 'last' zustava -> matematika/statistika ignoruji podle valid */
@@ -158,10 +173,19 @@ static void i2c1_recover(void)
     GPIO_InitTypeDef g = {0};
     g.Pin = GPIO_PIN_9; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;        /* SDA vstup */
     HAL_GPIO_Init(GPIOB, &g);
+    /* 🔴 ODR MUSI byt 1 uz PRED prepnutim do OUTPUT_OD (audit F-0021, 2026-09-10).
+     * `HAL_GPIO_Init` na `ODR` NESAHA, takze pin prevezme starou hodnotu — a ta je
+     * po resetu 0, protoze do ni software nikdy nepsal (pin ridila periferie).
+     * Pri opacnem poradi tedy SCL na par instrukci stahne k zemi, coz je falesna
+     * hodinova hrana prave ve chvili, kdy je sbernice rozhozena.
+     * ⚠️ Totez pravidlo a tataz oprava je v `i2c4_recover` (freertos_task_ui.c) —
+     * tam to kdysi zpusobilo, ze SCL zustala dole NATRVALO. Sem se oprava
+     * neprenesla; drz obe kopie v souladu. */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
     g.Pin = GPIO_PIN_8; g.Mode = GPIO_MODE_OUTPUT_OD; g.Pull = GPIO_PULLUP;
     g.Speed = GPIO_SPEED_FREQ_LOW;                             /* SCL open-drain out */
     HAL_GPIO_Init(GPIOB, &g);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);        /* pojistka po Init */
     for (int i = 0; i < 9; i++) {                              /* 9 pulzu -> slave pusti SDA */
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); i2c1_delay();
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   i2c1_delay();
@@ -204,39 +228,222 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
     return 10000;                   /* pak @ 10 s */
 }
 
-/* ── ADS1115 per-kanal PGA ────────────────────────────────────────────────
- * Kazda konverze prepisuje Config registr (kvuli MUX) -> PGA per kanal je zdarma.
- * Rev2 dle SKUTECNE osazenych delicu ve schematu v2.0 (netlist 2026-07-27):
- *   AIN0 OCXO_VC_Sense: R51=15k  / R52=10k  (0-5V  -> 2.00V) -> +-2.048V ✓
- *   AIN1 RF_Level (AD8307): R53=1k ser.     (~0.25-2.6V)     -> +-4.096V
- *          ⚠️ R54=10k je STALE OSAZEN -> zatezuje vystup AD8307 (25mV/dB do int.
- *             12,5k) a srazi strmost. Pro presnost R54 -> DNP (viz TODO §7).
- *   AIN2 VBUS: R55=100k / R56=4k99 (0-40V -> 1.90V)          -> +-2.048V ✓
- *   AIN3 +5V:  R57=15k  / R58=10k  (0-5V  -> 2.00V)          -> +-2.048V ✓
- * AIN0/AIN2/AIN3 mapovany na ~2V -> +-2.048V; jen AIN1 (AD8307, ~2.6V) je +-4.096V.
- * Az bude v2.0 deska osazena, prepni REV2 na 1 + prepocitat g_calib:
- *   gain_12v pro delic 100k/4k99 (=x21.0), gain_5v pro 15k/10k (=x2.5, drive 8k2/10k),
- *   + pridat skalovani AIN0 x2.5 (OCXO_VC) — viz BOARD_V20 §7.2. */
-#ifndef ADS1115_HW_DIVIDERS_REV2
-#define ADS1115_HW_DIVIDERS_REV2 0    /* 0 = stara deska (delice 5k1/10k) */
-#endif
+/* ── AD5693R: DAC ladeni OCXO (I2C1 0x4C) — popis a zapojeni v ad5693.h ──────
+ * Implementace je ZDE, ne v novem ad5693.c: novy .c se do buildu nedostane bez
+ * Close/Open Project v IDE (CLAUDE.md, mechanicke pravidlo 2). Vsechny funkce
+ * volat jen ze SensorsTasku pod i2c1MutexHandle. */
+volatile ad5693_state_t g_dac;
 
-#if ADS1115_HW_DIVIDERS_REV2
+#define AD5693_I2C_TMO_MS  10u   /* 3 B pri ~50 kHz = ~0,8 ms */
+
+static int ad5693_write3(uint8_t cmd, uint16_t data)
+{
+    uint8_t b[3] = { cmd, (uint8_t)(data >> 8), (uint8_t)data };
+    return HAL_I2C_Master_Transmit(&hi2c1, AD5693_ADDR8, b, 3, AD5693_I2C_TMO_MS) == HAL_OK;
+}
+
+/* 🔴 Sonda NOP zapisem, NE `HAL_I2C_IsDeviceReady`: ta pri chybejicim cipu
+ * konci s `HAL_I2C_ERROR_TIMEOUT` a `i2c1_recover_if_wedged()` (vola se hned
+ * po tomto bloku) by pak kazdych 10 s spoustel obnovu sbernice (9 pulzu SCL
+ * + re-init) kvuli cipu, ktery jen neni osazeny. NACK na zapisu konci jako
+ * `HAL_I2C_ERROR_AF`, ktery obnovu nespousti — stejne jako neosazeny 0x4A.
+ * NOP (CMD 0) cip ignoruje, na vystup nesahne. */
+static int ad5693_probe_nop(void)
+{
+    return ad5693_write3(AD5693_CMD_NOP, 0u);
+}
+
+static int ad5693_readback(uint16_t *code)
+{
+    uint8_t b[2];
+    if (HAL_I2C_Mem_Read(&hi2c1, AD5693_ADDR8, AD5693_CMD_NOP, I2C_MEMADD_SIZE_8BIT,
+                         b, 2, AD5693_I2C_TMO_MS) != HAL_OK) return 0;
+    *code = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+    return 1;
+}
+
+/* Sonda + control registr + prevzeti aktualniho kodu (bez zapisu kodu). */
+static void ad5693_probe(void)
+{
+    g_dac.probed   = 1u;
+    g_dac.probe_ms = HAL_GetTick();
+    if (!ad5693_probe_nop()) {
+        g_dac.present = 0u;
+        g_dac.ctrl_ok = 0u;
+        return;
+    }
+    g_dac.present = 1u;
+    g_dac.ctrl_ok = ad5693_write3(AD5693_CMD_CTRL, AD5693_CTRL_VALUE) ? 1u : 0u;
+    if (!g_dac.ctrl_ok) g_dac.errors++;
+    uint16_t rb;
+    if (ad5693_readback(&rb)) {
+        g_dac.code_rb = rb;
+        g_dac.rb_ok   = 1u;
+        /* Prevzit stav DAC (po resetu jen STM32 drzi DAC posledni kod) —
+         * jen pokud jsme sami jeste nic nezapsali. */
+        if (!g_dac.code_valid) { g_dac.code = rb; g_dac.code_valid = 1u; }
+    } else {
+        /* Readback je diagnostika s neoverenou formou (viz ad5693.h) — do
+         * `errors` se nepocita, jinak by hypoteza o protokolu vypadala jako
+         * porucha sbernice. Pozna se z `rb_ok = 0`. */
+        g_dac.rb_ok = 0u;
+    }
+}
+
+/* Volano kazdy cyklus I2C1 (~2 Hz) JAKO POSLEDNI transakce pred uvolnenim
+ * mutexu — `i2c1_recover_if_wedged()` pak vidi chybovy kod prave odsud. */
+static void ad5693_service(void)
+{
+    if (g_dac.req_probe ||
+        (!g_dac.present && (!g_dac.probed ||
+                            (uint32_t)(HAL_GetTick() - g_dac.probe_ms) >= AD5693_REPROBE_MS))) {
+        ad5693_probe();
+        if (g_dac.req_probe) {
+            g_dac.req_result = !g_dac.present ? AD5693_RES_ABSENT
+                             : g_dac.ctrl_ok  ? AD5693_RES_OK : AD5693_RES_I2C_ERR;
+            g_dac.req_probe = 0u;     /* az po vysledku — UART ceka na tenhle flag */
+        }
+    }
+
+    if (g_dac.req_write) {
+        uint16_t code = g_dac.req_code;
+        uint8_t  res;
+        if (!g_dac.present) {
+            res = AD5693_RES_ABSENT;
+        } else if (!g_dac.ctrl_ok &&
+                   !(g_dac.ctrl_ok = ad5693_write3(AD5693_CMD_CTRL, AD5693_CTRL_VALUE) ? 1u : 0u)) {
+            /* Bez control registru by kod platil pri GAIN x1 = polovicni napeti. */
+            g_dac.errors++;
+            res = AD5693_RES_I2C_ERR;
+        } else if (!ad5693_write3(AD5693_CMD_WRITE_DAC, code)) {
+            g_dac.errors++;
+            res = AD5693_RES_I2C_ERR;
+        } else {
+            g_dac.code       = code;
+            g_dac.code_valid = 1u;
+            g_dac.writes++;
+            uint16_t rb;
+            if (ad5693_readback(&rb)) {
+                g_dac.code_rb = rb;
+                g_dac.rb_ok   = 1u;
+                if (rb == code) res = AD5693_RES_OK;
+                else { g_dac.rb_mismatch++; res = AD5693_RES_VERIFY_FAIL; }
+            } else {
+                g_dac.rb_ok = 0u;
+                res = AD5693_RES_OK;   /* zapis prosel; readback je jen diagnostika */
+            }
+        }
+        g_dac.req_result = res;
+        g_dac.req_write  = 0u;        /* az po vysledku — UART ceka na tenhle flag */
+    }
+}
+
+/* ── ADS1115 per-kanal PGA + gain ─────────────────────────────────────────
+ * Kazda konverze prepisuje Config registr (kvuli MUX) -> PGA per kanal je zdarma.
+ * 🔴 2026-10-02: SKUTECNE osazene delice OVERENY primo z netlistu FPGA_Module_2_1
+ * (kicad-cli export, ne z komentare — predchozi "v2.0 rev2" tabulka byla
+ * spekulativni a AIN1/AIN2 mela prohozene):
+ *   AIN0 OCXO_VC_Sense: R51=15k(top) / R52=10k(GND) -> gain (15+10)/10 = 2,5
+ *   AIN1 VBUS (hlavni napajeni PRED regulatory +3V3/+5V, ne RF_Level/AD8307 —
+ *          ten na desce FYZICKY NENI, viz RF_LEVEL_HW_PRESENT v calib.h):
+ *          R53=100k(top) / R54=4k99(GND) -> gain (100+4,99)/4,99 ~= 21,042
+ *   AIN2 +3V3: R55=10k(top) / R56=10k(GND) -> gain 2,0 (g_calib.gain_12v)
+ *   AIN3 +5V:  R57=10k(top) / R58=22k(GND) -> gain (10+22)/22 ~= 1,4545 (g_calib.gain_5v)
+ * Vsechny ctyri kanaly jedou na +-4.096V (nejvetsi spolecny rozsah, zadny
+ * neklipuje) — jemnejsi PGA per kanal by zpresnilo rozliseni, ale je to
+ * samostatna optimalizace, ne oprava spravnosti. */
+volatile int16_t g_ads_raw_last[4];             /* posledni surovy vysledek AINx (diagnostika) */
+volatile uint32_t g_si5356_err_cnt = 0;   /* nepodareni cteni stavu Si5356 od bootu (diagnostika I2C1, /api/fpga) */
+
+/* ── Automaticka re-inicializace Si5356 (STATUS #295, 2026-10-15) ─────────────────────────────────────────────────
+ * ZMERENO (M3 2026-10-14, M3b 2026-10-15): po STUDENEM startu hlasi Si5356 trvale LOS_CLKIN + PLL_LOL (status 0x1C)
+ * a sam se nezamkne ani za 19 min, prestoze OCXO uz dava 10 MHz (FPGA z nej bezi). `si5356_init` probehl v `main()`
+ * driv, nez studeny OCXO dal platny vstup. Novy init (UART `si5356`) zamknul hned (M3b: 0x1C -> 0x00 v uptime 61 s).
+ * Proto: trva-li FAULT (LOS_CLKIN nebo PLL_LOL) bez preruseni SI5356_REINIT_FIRST_MS, SensorsTask (vlastnik I2C1) init
+ * zopakuje; dalsi pokusy s rozestupem 2x delsim az do SI5356_REINIT_MAX_MS (skutecne chybejici reference se tim
+ * neopravi, jen se nema bombardovat I2C1). Zamek rozestup vrati na zacatek.
+ * ⚠️ Soft reset v initu shodi i CLK0/1 = hodiny FPGA (L-0148). Pri FAULT uz neplati, FPGA vypadek pozna hlidac
+ * (L-0146) a po navratu hodin sama prekalibruje TDC. Generator CLK2-7 vrati init na REGMAP, proto se jeho nastaveni
+ * pred initem ulozi a znovu pozada (`si5356_gen_service` ho zapise ve stejnem bloku).
+ * ⚠️ Zadny printf (zasobnik SensorsTasku, viz `sensor_update`): vysledek nese `status` (REFERENCE:) a errlog. */
+#define SI5356_REINIT_FIRST_MS  10000u     /* FAULT trva bez preruseni -> prvni pokus */
+#define SI5356_REINIT_MAX_MS    300000u    /* strop rozestupu pokusu */
+volatile uint32_t g_si5356_reinit_cnt;     /* automaticke re-inity od startu (saturuje na 0xFFFF, L-0059) */
+volatile uint32_t g_si5356_reinit_ms;      /* HAL tick posledniho pokusu (plati jen pri cnt > 0) */
+volatile uint8_t  g_si5356_reinit_res;     /* SI5356_REINIT_RES_* posledniho pokusu */
+volatile uint8_t  g_si5356_locked_once;    /* 1 = od startu aspon jednou bez FAULT */
+
+/* Armovani sticky registru (viz `SI5356_STICKY_ARM_MS`). Na urovni souboru, protoze re-init PRED prvnim zamkem ho
+ * odklada: sticky bity, ktere nastavi studeny start a re-init, jsou soucast nabehu (zadne mereni jeste neexistovalo,
+ * FPGA meri az se zamcenou referenci), stejne jako bity z `si5356_init` v `main()`. Po prvnim zamku se NEodklada —
+ * vypadek za behu je skutecny a sticky ho musi drzet. */
+static uint8_t  s_si_armed;
+static uint32_t s_si_arm_at = SI5356_STICKY_ARM_MS;
+
+/* Vola se pod i2c1MutexHandle po kazdem uspesnem cteni statusu 218. */
+static void si5356_lock_watch(uint8_t st)
+{
+    static uint8_t  s_fault;                           /* 1 = FAULT trva od `s_t0` */
+    static uint32_t s_t0;                              /* zacatek FAULT nebo posledni pokus */
+    static uint32_t s_iv = SI5356_REINIT_FIRST_MS;     /* rozestup do pristiho pokusu */
+    const uint32_t now = HAL_GetTick();
+
+    if ((st & SI5356_FAULT_MASK) == 0u) {
+        s_fault = 0u;
+        s_iv = SI5356_REINIT_FIRST_MS;
+        g_si5356_locked_once = 1u;
+        return;
+    }
+    if (!s_fault) { s_fault = 1u; s_t0 = now; return; }
+    if ((uint32_t)(now - s_t0) < s_iv) return;
+
+    const uint8_t before_lock = g_si5356_locked_once ? 0u : 1u;
+    uint32_t gen_hz[SI5356_GEN_N];
+    uint8_t  gen_on[SI5356_GEN_N];
+    for (unsigned i = 0; i < SI5356_GEN_N; i++) { gen_hz[i] = g_si_gen[i].freq_hz; gen_on[i] = g_si_gen[i].on; }
+
+    si5356_init_res_t r;
+    (void)si5356_init_quiet(&hi2c1, &r);              /* vysledek nese `r` */
+
+    for (unsigned i = 0; i < SI5356_GEN_N; i++)
+        if (g_si_gen[i].freq_hz != gen_hz[i] || g_si_gen[i].on != gen_on[i])
+            si5356_gen_request(i, gen_hz[i], gen_on[i] != 0u);
+
+    if (g_si5356_reinit_cnt < 0xFFFFu) g_si5356_reinit_cnt++;
+    g_si5356_reinit_ms  = now;
+    g_si5356_reinit_res = !r.present                                    ? SI5356_REINIT_RES_NACK
+                        : !r.writes_ok                                  ? SI5356_REINIT_RES_WRERR
+                        : (r.st_ok && (r.st & SI5356_FAULT_MASK) == 0u) ? SI5356_REINIT_RES_LOCK
+                        :                                                 SI5356_REINIT_RES_FAULT;
+    if (before_lock) { s_si_armed = 0u; s_si_arm_at = HAL_GetTick() + SI5356_STICKY_ARM_MS; }
+    (void)errlog_put(ERRLOG_K_REFINIT, before_lock ? 1u : 2u, g_si5356_reinit_cnt,
+                     (uint32_t)st | ((uint32_t)r.st << 8) | ((uint32_t)r.writes_ok << 16) | ((uint32_t)r.st_ok << 17),
+                     "Si5356");
+
+    s_t0 = HAL_GetTick();                              /* init trva ~0,1 s; rozestup se meri od jeho konce */
+    s_iv = (s_iv >= SI5356_REINIT_MAX_MS / 2u) ? SI5356_REINIT_MAX_MS : s_iv * 2u;
+}
+
+/* 2026-10-11: PGA PER VSTUP podle skutecneho rozsahu (vstup ADS = napeti * 1/gain delice):
+ *   AIN0 OCXO Vc : +-2,048 V (EFC 0-4 V -> 1,6 V; DAC do 5 V -> 2,0 V; oriznuti od 5,12 V)
+ *   AIN1 VBUS    : +-2,048 V (12 V -> 0,57 V; oriznuti od 43 V)
+ *   AIN2 +3V3    : +-2,048 V (3,63 V -> 1,8 V; oriznuti od 4,1 V)
+ *   AIN3 +5V     : +-4,096 V (5,5 V -> 3,8 V; vic nejde, delic dava 3,44 V u 5 V)
+ * Prehled a presnosti: docs/audit/2026-10-11_ads1115-presnost.md. */
 static const ads1115_pga_t k_ads_pga[4] = {
-    ADS1115_PGA_2V048,   /* AIN0 OCXO_VC_Sense (15k/10k -> 2.00V) */
-    ADS1115_PGA_4V096,   /* AIN1 RF_Level (AD8307, ~2.6V) */
-    ADS1115_PGA_2V048,   /* AIN2 VBUS (100k/4k99 -> 1.90V @ 40V) */
-    ADS1115_PGA_2V048,   /* AIN3 +5V (15k/10k -> 2.00V) */
+    ADS1115_PGA_2V048, ADS1115_PGA_2V048, ADS1115_PGA_2V048, ADS1115_PGA_4V096,
 };
-#else
-static const ads1115_pga_t k_ads_pga[4] = {   /* stara deska: vse +-4.096V */
-    ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096, ADS1115_PGA_4V096,
-};
-#endif
+
+/* Fixni gainy pevne dane odporovym delicem (nejsou uzivatelsky editovatelne
+ * jako gain_12v/gain_5v, protoze AIN0/AIN1 nejsou v kalibracnim pruvodci —
+ * viz WIZ_BR v app_gpsdo.c, jen 2 vetve). */
+/* Od 2026-10-11 jsou gainy AIN0 (OCXO Vc) a AIN1 (VBUS) EDITOVATELNE jako ostatni vetve (`g_calib.gain_vc`/`gain_vbus`,
+ * okno Kalibrace + pruvodce); vychozi hodnoty z rezistoru jsou v calib.c. */
 
 /* Volano ze StartI2C4 stubu ve freertos.c (CubeMX-regen-safe). */
 void SensorsTask_run(void *argument)
 {
+  (void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
   uint8_t rawData[2];
   int16_t tempRaw;
 
@@ -254,6 +461,7 @@ void SensorsTask_run(void *argument)
 
   // Jednorazove: vsechny 3 TMP117 na 500ms konverzni cyklus (cerstve 2x/s).
   if (osMutexAcquire(i2c4MutexHandle, osWaitForever) == osOK) {
+    i2c4_speed_select(I2C4_TIMING_TMP117_400KHZ);   // TMP117 = periferie, ne bit-bang
     tmp117_set_2hz(&hi2c4, TMP117_ADDR);          // 0x48 (I2C4)
     osMutexRelease(i2c4MutexHandle);
   }
@@ -279,14 +487,17 @@ void SensorsTask_run(void *argument)
   osDelay(2);
 
   for(;;) {
-	// === RF_Level fast-path (AIN1, ~10 Hz): na NE-sweep ticich, jen kdyz je I2C1
+	// === VBUS fast-path (AIN1, ~10 Hz): na NE-sweep ticich, jen kdyz je I2C1
 	// zdrava (streak==0 — pri mrtvem busu nehammerovat, sweep ridi back-off).
 	// Jedine misto rychleho zapisu SENS_ADS1 mimo sweep (porad jediny writer task).
+	// 🔴 2026-10-02: AIN1 = VBUS (viz k_ads_pga komentar vyse), ne RF_Level —
+	// gain delice (R53/R54) se musi aplikovat i tady, jinak by fast-path
+	// prepsal spravnou hodnotu ze sweepu syrovym mV za ~100 ms.
 	if (sub != 0) {
 	  if (i2c1_streak == 0) {
 		int started = 0;
 		if (osMutexAcquire(i2c1MutexHandle, 50) == osOK) {
-		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = RF_Level */
+		  started = ads1115_start(&hi2c1, 1, k_ads_pga[1]);   /* AIN1 = VBUS */
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (started) {
@@ -296,7 +507,12 @@ void SensorsTask_run(void *argument)
 			got = ads1115_read_raw(&hi2c1, &raw);
 			osMutexRelease(i2c1MutexHandle);
 		  }
-		  if (got) sensor_update(SENS_ADS1, (float)ads1115_raw_to_mv(raw, k_ads_pga[1]));
+		  if (got) {
+			if (!ADS1115_RAW_SATURATED(raw)) {
+			  float mv = ads1115_raw_to_mv_f(raw, k_ads_pga[1]) * g_calib.gain_vbus;
+			  sensor_update(SENS_ADS1, mv);
+			}
+		  }
 		  /* selhani zde NEpocitame do back-offu ani sensor_fail — vyhodnoti sweep */
 		}
 	  }
@@ -316,16 +532,36 @@ void SensorsTask_run(void *argument)
 	 * 100 ms se uplatnilo VYHRADNE pri poruse — a prave tam nejvic skodilo. */
 	static uint32_t i2c4_streak = 0;    /* po sobe jdouci selhani cteni 0x48 */
 	static uint32_t i2c4_skip   = 0;    /* kolik cyklu jeste preskocit */
+	/* ⚠️ Behem `i2cspeed` se na I2C4 nesaha (kontaminace mereni). Zamerne jako
+	 * PRVNI CLEN tohohle retezu, ne `return`/`continue`: za blokem 0x48 nasleduji
+	 * senzory na I2C1 a ADC3, ktere s merenim nemaji nic spolecneho (L-0033).
+	 * Statistika senzoru se tim NEspini — `sensor_fail` ani streak se nize
+	 * nezapocitavaji, takze `sensors` po mereni neukazuje falesne chyby. */
+	static uint8_t sweep_prev = 0;
+	if (sweep_prev && !g_i2c4_sweep) {
+	  /* Sestupna hrana: pokus o zotaveni TMP117. Mereni nad ~125 kHz mu
+	   * 2026-09-10 rozhodilo pointer/CONFIG tak, ze pomohl az power-cycle;
+	   * tohle uz bezi na obnovenem taktu a nic nestoji. */
+	  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	    i2c4_speed_select(I2C4_TIMING_TMP117_400KHZ);
+	    tmp117_set_2hz(&hi2c4, TMP117_ADDR);
+	    osMutexRelease(i2c4MutexHandle);
+	  }
+	}
+	sweep_prev = g_i2c4_sweep;
 	HAL_StatusTypeDef i2cStatus = HAL_ERROR;
-	if (i2c4_skip > 0) {
+	if (g_i2c4_sweep) {
+	  i2cStatus = HAL_BUSY;             /* bezi mereni -> na bus se nesaha */
+	} else if (i2c4_skip > 0) {
 	  i2c4_skip--;                      /* back-off: tenhle cyklus se na bus nesaha */
 	  i2cStatus = HAL_BUSY;             /* != HAL_OK -> sensor_fail nize (drzi posl. dobrou) */
 	} else if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+	  i2c4_speed_select(I2C4_TIMING_TMP117_400KHZ);
 	  i2cStatus = HAL_I2C_Mem_Read( &hi2c4, TMP117_ADDR, TMP117_REG_TEMP, I2C_MEMADD_SIZE_8BIT, rawData, 2, 20);
 	  osMutexRelease(i2c4MutexHandle);
 	}
 	if (i2cStatus == HAL_OK) { i2c4_streak = 0; }
-	else if (i2c4_skip == 0) {
+	else if (i2c4_skip == 0 && !g_i2c4_sweep) {
 	  if (i2c4_streak < 100) i2c4_streak++;
 	  /* Cyklus je 500 ms -> 3x normalne, pak 1 s, 2 s, nakonec 10 s (jako I2C1). */
 	  i2c4_skip = (i2c4_streak < 3) ? 0 : (i2c4_streak < 6) ? 1 : (i2c4_streak < 8) ? 3 : 19;
@@ -334,7 +570,7 @@ void SensorsTask_run(void *argument)
 	  // MSB v rawData[0], LSB v rawData[1]; 0.0078125 °C/LSB
 	  tempRaw = (int16_t)((rawData[0] << 8) | rawData[1]);
 	  sensor_update(SENS_T48, (float)tempRaw * TMP117_RESOLUTION);
-	} else {
+	} else if (!g_i2c4_sweep) {
 	  sensor_fail(SENS_T48);   /* drzi posledni dobrou hodnotu, valid=0, loguje */
 	}
 
@@ -354,8 +590,50 @@ void SensorsTask_run(void *argument)
 		} else sensor_fail(SENS_T4A);
 		/* Si5356 reference: status reg 218 (LOS_CLKIN / PLL_LOL / SYS_CAL) -> diagnostika */
 		uint8_t si_st;
-		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; }
-		else                                    { g_si5356_ok = 0; }
+		if (si5356_read_status(&hi2c1, &si_st)) { g_si5356_status = si_st; g_si5356_ok = 1; any_ok = 1; si5356_lock_watch(si_st); }
+		else                                    { g_si5356_ok = 0; g_si5356_err_cnt++; }
+		/* 🔴 STICKY (reg 247) vedle ziveho stavu: podrzi i mikrosekundovy vypadek
+		 * reference, ktery by mezi dvema cteními ziveho registru zmizel beze stopy.
+		 * Latchuje se do `g_si5356_sticky` a na cipu se NEMAZE — dokud uzivatel
+		 * nepozada, drzi cip i firmware tutez informaci ("stalo se to nekdy").
+		 * ⚠️ `SI5356_LOS_XTAL` se maskuje pryc: krystal neni osazen, bit je trvale
+		 * 1 a bez masky by hlaseni svitilo napord. */
+		{
+			/* Armovani po startu — viz `SI5356_STICKY_ARM_MS`; re-init pred prvnim zamkem ho odklada (`s_si_arm_at`). */
+			if (!s_si_armed && (int32_t)(HAL_GetTick() - s_si_arm_at) > 0) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky = 0;
+					s_si_armed = 1;
+				}
+			}
+			uint8_t stk;
+			/* ⚠️ Zavorky jsou POVINNE — puvodni `if` byl jednoradkovy a pridani
+			 * dalsiho prikazu bez nich by tise vypadlo z podminky. */
+			if (si5356_read_sticky(&hi2c1, &stk)) {
+				uint8_t prev_stk = g_si5356_sticky;
+				g_si5356_sticky |= (uint8_t)(stk & ~SI5356_LOS_XTAL);
+				/* 🔑 Nova ztrata reference = nejzavaznejsi udalost, jakou tenhle
+				 * pristroj zna: presnost citace JE presnost te reference, takze
+				 * mereni z te doby NEPLATI (v datalogu to znaci DATALOG_F_REF_LOSS). */
+				if (g_si5356_sticky != prev_stk) {
+					(void)errlog_put(ERRLOG_K_REF, g_si5356_sticky, stk, prev_stk, "Si5356");
+				}
+			}
+			/* Vynulovani na zadost (UI/UART). I2C1 vlastni tenhle task, takze
+			 * zapis smi udelat JEN on — stejny request/pend vzor jako jinde. */
+			if (g_si5356_clr_req) {
+				if (si5356_clear_sticky(&hi2c1, 0xFFu)) {
+					g_si5356_sticky  = 0;
+					g_si5356_clr_req = 0;
+				}
+				/* Pri neuspechu zadost zustava a zkusi se priste. */
+			}
+		}
+		/* Generator Si5356 (okno GENERATOR / UART `gen`): zapis jedne dvojice vystupu.
+		 * I2C1 vlastni tenhle task, takze zapis smi udelat JEN on (vzor `g_si5356_clr_req`). */
+		si5356_gen_service(&hi2c1);
+		/* DAC ladeni OCXO — POSLEDNI transakce bloku (viz ad5693_service). */
+		ad5693_service();
 		osMutexRelease(i2c1MutexHandle);
 	  } else {
 		sensor_fail(SENS_T49);
@@ -381,15 +659,22 @@ void SensorsTask_run(void *argument)
 		  osMutexRelease(i2c1MutexHandle);
 		}
 		if (got) {
-		  int32_t mv = ads1115_raw_to_mv(raw, k_ads_pga[ch]);
-		  /* AIN2 = 12V vetev pres odporovy delic, AIN3 = 5V vetev pres delic ->
-			 skutecne napeti. Gain je editovatelna kalibrace (g_calib, okno
-			 Kalibrace); vychozi = datasheet pomer (13417/2814, 4978/2526).
+		  g_ads_raw_last[ch] = raw;
+		  float mv = ads1115_raw_to_mv_f(raw, k_ads_pga[ch]);   /* float: bez orezu pod 1 mV (viz ads1115.h) */
+		  /* Vsechny 4 kanaly jdou pres odporovy delic -> skutecne napeti =
+			 syrove mV * gain delice (viz k_ads_pga komentar vyse, 2026-10-02).
+			 AIN2/AIN3 maji EDITOVATELNOU kalibraci (g_calib, okno Kalibrace) —
+			 vychozi = dopocitano z osazenych hodnot (10k/10k, 10k/22k).
+			 AIN0/AIN1 maji FIXNI gain (nejsou v kalibracnim pruvodci).
 			 ⚠️ Kratke okno pri bootu pred calib_load() (UiTask) jede na vychozich
 			 hodnotach z calib.c — kosmeticke, diagnosticke cteni ~1 Hz. */
-		  if      (ch == 2) mv = (int32_t)((float)mv * g_calib.gain_12v + 0.5f);
-		  else if (ch == 3) mv = (int32_t)((float)mv * g_calib.gain_5v  + 0.5f);
-		  sensor_update(sid, (float)mv); any_ok = 1;
+		  if      (ch == 0) mv *= g_calib.gain_vc;
+		  else if (ch == 1) mv *= g_calib.gain_vbus;
+		  else if (ch == 2) mv *= g_calib.gain_12v;
+		  else if (ch == 3) mv *= g_calib.gain_5v;
+		  /* vstup na dorazu PGA = hodnota by se tise orizla -> neplatne misto zavadejiciho cisla */
+		  if (ADS1115_RAW_SATURATED(raw)) sensor_fail(sid);
+		  else { sensor_update(sid, mv); any_ok = 1; }
 		} else {
 		  sensor_fail(sid);
 		}
@@ -424,7 +709,29 @@ void SensorsTask_run(void *argument)
 		float ts   = (float)rt * (float)vref / (float)ADC_VREF_CHARAC;
 		int   span = (int)ADC_TS_CAL2 - (int)ADC_TS_CAL1;   /* 30..110 °C */
 		float tc   = span ? ((ts - (float)ADC_TS_CAL1) * 80.0f / (float)span + 30.0f) : 0.0f;
-		sensor_update(SENS_CORE_T, tc);
+		/* 🔴 JEDINA teplota, ktera se FILTRUJE — a je to zamer, ne nedbalost jinde.
+		 * Zmereno 2026-09-01: dva odecty par sekund po sobe daly 52,17 a 48,9 °C
+		 * (rozptyl 3,3 °C), zatimco TMP117 na desce drzel 0,5 °C za cely beh.
+		 * Neni to zavada: cidlo v kremiku ma nekalibrovanou presnost v jednotkach
+		 * °C a jde navic pres VREFINT, takze se scita sum OBOU prevodu. Bez filtru
+		 * to zaplevelilo min/max (41,8/52,2 proti 31,1/31,6 u ostatnich radku) a
+		 * na prehledu kanalu to vypadalo jako porucha, prestoze `err=0`.
+		 *
+		 * ⚠️ Filtrovat SE SMI PRAVE PROTO, ze na teto hodnote nic nevisi: je to
+		 * indikator „jak je horky kremik", ne merici vstup. Necte ji zadny alarm,
+		 * zadny prah ani warm-up kriterium (to jede z OCXO 0x49), takze zpozdeni
+		 * radu sekund nikomu nevadi. U ANALOGOVYCH vetvi (ADS, VREF, VBAT) by to
+		 * bylo NEPRIPUSTNE — ty do mereni mluvi a filtr by zakryl skutecny
+		 * vypadek napajeni. Nekopirovat to sem na jine senzory.
+		 *
+		 * IIR alfa = 1/8 pri 1 Hz -> casova konstanta ~8 s. To je hluboko pod
+		 * tepelnou setrvacnosti pouzdra, takze skutecny nabeh po startu
+		 * (~42 -> 52 °C behem minut) projde nezkresleny; potlaci se jen sum. */
+		static float s_core_flt = 0.0f;
+		static uint8_t s_core_seen = 0u;
+		if (!s_core_seen) { s_core_flt = tc; s_core_seen = 1u; }
+		else              { s_core_flt += (tc - s_core_flt) * 0.125f; }
+		sensor_update(SENS_CORE_T, s_core_flt);
 	  } else sensor_fail(SENS_CORE_T);
 	  if (a_b) {
 		uint32_t vbat = (uint32_t)((uint64_t)rb * vref / 65535u) * 4u;   /* vnitrni delic /4 */

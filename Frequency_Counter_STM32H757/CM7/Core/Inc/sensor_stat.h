@@ -26,9 +26,21 @@ typedef enum {
     SENS_T48 = 0,   /* TMP117 0x48 (displej, I2C4)   [°C] */
     SENS_T49,       /* TMP117 0x49 (FPGA, I2C1)      [°C] */
     SENS_T4A,       /* TMP117 0x4A (FPGA, I2C1)      [°C] */
-    SENS_ADS0,      /* ADS1115 AIN0                  [mV] */
-    SENS_ADS1,      /* ADS1115 AIN1                  [mV] */
-    SENS_ADS2,      /* ADS1115 AIN2 = 12V větev      [mV] */
+    /* 🔴 2026-10-02: AIN0 = OCXO_VC_Sense pres delic R51=15k/R52=10k (gain 2,5),
+     * ne 1:1 jak firmware do ted pocitala (overeno netlistem FPGA_Module_2_1).
+     * Gain se aplikuje JEDNOU v freertos_task_sensors.c pred sensor_update(). */
+    SENS_ADS0,      /* ADS1115 AIN0 = OCXO_VC_Sense (po gainu x2,5)   [mV] */
+    /* 🔴 2026-10-02: AIN1 je ve schematu VBUS (hlavni/surove napajeni PRED
+     * regulatory +3V3/+5V, delic R53=100k/R54=4k99, gain ~21,04) - NE vystup
+     * AD8307 log-detektoru. AD8307 jsem v zadnem z 5 listu schematu
+     * FPGA_Module_2_1 nenasel - na teto desce FYZICKY NENI. Viz
+     * RF_LEVEL_HW_PRESENT (calib.h): vsechny prevody na dBm z tohoto kanalu
+     * musi hlasit "nedostupne", ne pocitat cislo ze spatneho vstupu. */
+    SENS_ADS1,      /* ADS1115 AIN1 = VBUS (po gainu x21,04)          [mV] */
+    /* 🔴 2026-10-02: popisek byl "12V vetev" - zastaraly, overeno netlistem
+     * FPGA_Module_2_1 (R55=10k/R56=10k): AIN2 je ve skutecnosti +3V3 delic.
+     * Viz calib.c pro plne zduvodneni a prepocet gainu. */
+    SENS_ADS2,      /* ADS1115 AIN2 = +3V3 větev     [mV] */
     SENS_ADS3,      /* ADS1115 AIN3 = 5V větev       [mV] */
     SENS_CORE_T,    /* MCU teplota jádra (ADC3 TEMPSENSOR)       [°C] */
     SENS_VDDA,      /* VREF+ z ADC3 VREFINT (= VREFBUF ~2,5 V, NE VDDA;

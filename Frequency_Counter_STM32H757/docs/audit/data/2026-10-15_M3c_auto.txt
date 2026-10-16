@@ -1,0 +1,5 @@
+[17:45:52.500] cekam na vypnuti desky
+[18:58:57.288] deska vypnuta, armuji
+[18:59:07.768] COM10 existuje
+[18:59:08.679] ETH odpovida, uptime_s=11 si5356_status=0
+[18:59:10.693] pokus o prvni zachyceni c. 1

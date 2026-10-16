@@ -22,3 +22,14 @@ typedef struct {
 } ui_button_t;
 
 UI_API void ui_button_render(const ui_button_t *btn);
+
+/** Pozorovatel VYKRESLENYCH tlacitek. Nastavuje app vrstva; libui ho zavola pro
+ *  kazde tlacitko, ktere projde `ui_button_render`.
+ *
+ *  Proc: model fokusu (encoder) potrebuje znat tlacitka aktualniho okna. Vyjmenovat
+ *  je rucne u ~45 oken by byla duplicita, ktera by se rozesla pri prvni zmene
+ *  layoutu. `ui_button_render` je jedine hrdlo, kterym VSECHNA tlacitka prochazeji,
+ *  takze se seznam sestavi sam pri kresleni okna.
+ *  ⚠️ libui tim neziskava zavislost na app — jen vola callback, ktery dostane. */
+typedef void (*ui_button_observer_t)(const prim_rect_t *rect);
+UI_API void ui_button_set_observer(ui_button_observer_t obs);

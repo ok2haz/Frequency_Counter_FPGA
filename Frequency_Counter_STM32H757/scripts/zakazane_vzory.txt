@@ -1,0 +1,20 @@
+# zakazane_vzory.txt — vzory vycházející z docs/LESSONS.md
+# Formát: <regex ERE><TAB><zpráva>
+#   ZAKAZANO: = mělo by být vždy 0 výskytů
+#   REVIZE:   = informativní seznam míst k ručnímu ověření (výskyty jsou normální)
+# Nový řádek přidávej při každé nové lekci (viz .claude/commands/lekce.md).
+
+while *\( *! *\(	ZAKAZANO: čekací smyčka bez timeoutu (L-0004)
+HAL_MAX_DELAY	ZAKAZANO: nekonečné blokující čekání, nahraď konkrétním timeoutem (L-0004)
+^[[:space:]]*HAL_[A-Za-z0-9_]*_(Init|DeInit|Transmit|Receive|Start|Stop|Write|Read|Erase|ConfigChannel)[A-Za-z0-9_]*\(	ZAKAZANO: nevyhodnocená návratová hodnota HAL (L-0003)
+__attribute__ *\(\( *section *\( *"\.[dD][tT][cC][mM]	REVIZE: sekce v DTCM — DMA1/DMA2 sem nemají přístup (L-0001)
+(Transmit|Receive|Start)_DMA *\(	REVIZE: ověř umístění bufferu v .map + cache maintenance + zarovnání 32 B (L-0001, L-0002)
+HAL_Delay *\(	REVIZE: nesmí být v ISR ani v RTOS tasku (tam osDelay/vTaskDelay)
+#pragma GCC diagnostic ignored	ZAKAZANO: potlačený warning bez zdůvodnění v komentáři
+(TODO|FIXME|HACK|XXX)[^(]	ZAKAZANO: TODO/FIXME musí mít formát TODO(jmeno, RRRR-MM-DD)
+\b(malloc|calloc|realloc|free|sprintf|strcpy|strcat)\b	ZAKAZANO: dynamická alokace / nebezpečné string funkce ve firmwaru
+^[[:space:]]*//[[:space:]]*[a-zA-Z_][a-zA-Z0-9_ ]*(\(|=).*;[[:space:]]*$	ZAKAZANO: zakomentovaný kód — smazat, historie je v gitu
+-> *[A-Z0-9_]+ *(\|=|=) *0x[0-9a-fA-F]{4,}	REVIZE: magická konstanta do registru — použij CMSIS makra bitů
+\( *(uint32_t|uint8_t|void) *\* *\) *0x[0-9a-fA-F]{6,}	REVIZE: pevná adresa v kódu — patří do linkeru nebo pojmenované konstanty
+__disable_irq *\(	REVIZE: ověř párové __enable_irq a délku kritické sekce
+^[[:space:]]*s_view = [0-9]+;	ZAKAZANO: `s_view` se meni VYHRADNE pres view_set() — jinak se ztrati diagnostika okna i pamet fokusu (L-0019)
