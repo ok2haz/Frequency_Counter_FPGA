@@ -88,6 +88,12 @@ typedef struct {
      * Chyba okna = e(code_end) - e(code_st), kde e() je INL tabulky -> zaklad korekce INL. */
     uint16_t code_a_end, code_a_st, code_b_end, code_b_st;
     uint8_t  codes_ok;            /* 1 = kody jsou v ramci (caps bit8) */
+    /* FW >= 0x0424 (caps bit13, FPGA_CAP_PPS), abs 52..56: GPS 1PPS (STATUS #305). Cas posledni hrany v taktech
+     * hodin FPGA (100 MHz = OCXO pres Si5356, mod 2^32) a pocet hran (mod 256). FPGA je cte ZIVE (bez snimku),
+     * proto se pouziva az po shode dvou po sobe jdoucich ramcu (`fpga_pps_get`). */
+    uint32_t pps_ts;
+    uint8_t  pps_seq;
+    uint8_t  pps_ok;              /* 1 = ramec 1PPS nese (caps bit13) */
 } fpga_meas_t;
 
 /* caps bity (abs 62-63) */
@@ -99,6 +105,25 @@ typedef struct {
 #define FPGA_CAP_SELFCHK      (1u << 10)  /* FW >= 0x041F: identita bitstreamu (abs 12..19), hlidac hodin (64/65),
                                            * kontrolni pocitani hran (97/98) */
 #define FPGA_CAP_CLK          (1u << 12)  /* FW >= 0x0421: abs 99 nese kmitocet hodin FPGA [MHz]; bez bitu = 100 MHz */
+#define FPGA_CAP_PPS          (1u << 13)  /* FW >= 0x0424: abs 52..56 nese GPS 1PPS (cas hrany v taktech hodin + poradi) */
+
+/* ── GPS 1PPS z FPGA (FW >= 0x0424, STATUS #305) ─────────────────────────────────────────────────
+ * Udalost = nova hrana 1PPS potvrzena SHODOU dvou po sobe jdoucich ramcu ({seq, ts} stejne): FPGA bajty
+ * 52..56 neskladuje do snimku, takze hrana prave behem skladani ramce muze dat roztrzenou hodnotu, ktera
+ * se ve dvou ramcich nezopakuje. `first_ms` = HAL_GetTick, kdy se nova hodnota objevila POPRVE (hrana
+ * nastala nejvys ~1 periodu pollu predtim -- pro prirazeni opravy sawtooth z UBX-TIM-TP). */
+typedef struct {
+    uint32_t ts;          /* takty hodin FPGA pri hrane (mod 2^32) */
+    uint8_t  seq;         /* poradi hrany (mod 256) */
+    uint8_t  clk_mhz;     /* kmitocet hodin FPGA [MHz] (z ramce) */
+    uint8_t  ref_ext;     /* 1 = FPGA bezi z EXTERNI reference (cita se ext., ne OCXO) */
+    uint8_t  clk_bad;     /* 1 = hodiny FPGA hlasi vypadek/zotaveni (clk_status) */
+    uint32_t first_ms;    /* HAL_GetTick prvniho vyskytu teto hodnoty */
+    uint32_t n;           /* poradove cislo udalosti od startu (pro konzumenta: zmena = nova udalost) */
+} fpga_pps_t;
+/* Posledni potvrzena udalost 1PPS. @return false = zadna (FPGA bez caps bit13 nebo jeste zadna hrana). */
+bool     fpga_pps_get(fpga_pps_t *out);
+uint32_t fpga_pps_torn(void);   /* pocet zahozenych (neshodnych) cteni -- diagnostika */
 /* clk_status bity (abs 64, jen s FPGA_CAP_SELFCHK) */
 #define FPGA_CLK_OK           (1u << 0)   /* hodiny FPGA v poslednim okne hlidace (102 us) v poradku (kmitocet jako clk_mhz) */
 #define FPGA_CLK_FAULT        (1u << 1)   /* od nahrani aspon jeden vypadek nebo zmena kmitoctu hodin */

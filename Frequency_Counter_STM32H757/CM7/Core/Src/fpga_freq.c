@@ -8,6 +8,7 @@
 #include "i2c.h"          /* hi2c1.TIMINGR do diagnostiky */
 #include "sensor_stat.h"  /* g_sensors[].err_total/samples do diagnostiky I2C1 */
 #include "cmsis_os2.h"   /* SPI2 mutex: FpgaTask poll vs UART fpgaraw/fpgaloop */
+#include "gpsdo.h"       /* gpsdo_sim_dac_code — emulator 1PPS ladi OCXO podle kodu DAC */
 #include <string.h>
 #include <stdio.h>
 #include <math.h>     /* fabs v selftestu */
@@ -377,6 +378,38 @@ static void sim_put_le64(uint8_t *p, uint64_t v)
 static double sim_urand(void) { return (double)(sim_rand() % 100001u) / 100000.0; }   /* 0..1 */
 #define SIM_CLK_MHZ 100u     /* emulovane hodiny FPGA = skutecne (top.v CLK_MHZ) */
 
+/* ── Emulace GPS 1PPS (FW 0x0424, L-0099: tak, jak ji sklada RTL `pps_cap`) ─────────────────────────
+ * Hrany na mrizce 1000 ms (HAL_GetTick = emulovany cas GPS). FPGA posila takt citace 100 MHz pri hrane;
+ * hodiny 100 MHz jsou z OCXO, takze idealni faze roste o 1e8 * (1 + y_ocxo) taktu za sekundu a kazda hrana
+ * ma vlastni (NEakumulovany) sum GPS ~30 ns RMS = 3 takty, pak floor na cely takt (kvantizace 10 ns).
+ * y_ocxo zavisi na kodu DAC (`gpsdo_sim_dac_code`) -> `fpgasim on` + smycka GPSDO = uplna smycka bez desky.
+ * ⚠️ Kanal A (mereny signal) na OCXO NEZAVISI -- zjednoduseni, emulator neladi casovou zakladnu mereni. */
+#define SIM_OCXO_Y0    (-8.4e-7)    /* zmereno 2026-10-16 pri Vc = 0 V */
+#define SIM_OCXO_KDAC  (3.1e-11)    /* relativne / LSB -- ZAMERNE jinak nez vychozi odhad serva (3,4e-11) */
+static uint32_t s_sim_pps_next_ms;
+static double   s_sim_pps_phase;    /* idealni faze [takty] od startu emulace */
+static uint32_t s_sim_pps_ts;
+static uint8_t  s_sim_pps_seq;
+static uint8_t  s_sim_nopps;        /* `fpgasim fault nopps`: GPS bez 1PPS (test holdoveru) */
+
+static double sim_gauss(void)       /* ~N(0,1): soucet 3 rovnomernych (rozptyl 1/4) * 2 */
+{
+    return (sim_urand() + sim_urand() + sim_urand() - 1.5) * 2.0;
+}
+
+static void sim_pps_step(uint32_t now)
+{
+    if (s_sim_nopps) { s_sim_pps_next_ms = now + 1000u; return; }
+    while ((int32_t)(now - s_sim_pps_next_ms) >= 0) {
+        double y = SIM_OCXO_Y0 + SIM_OCXO_KDAC * (double)gpsdo_sim_dac_code();
+        s_sim_pps_phase += 1e8 * (1.0 + y);
+        double t = floor(s_sim_pps_phase + sim_gauss() * 3.0);
+        s_sim_pps_ts = (uint32_t)(uint64_t)t;            /* mod 2^32 jako 32bitovy citac ve FPGA */
+        s_sim_pps_seq++;
+        s_sim_pps_next_ms += 1000u;
+    }
+}
+
 static void sim_build_frame(uint8_t *f, int fresh)
 {
     uint8_t pl[FR_PAYLOAD_MAX];
@@ -409,9 +442,10 @@ static void sim_build_frame(uint8_t *f, int fresh)
     }
     pl[38] = 0;                                      /* phase_status: mrtve pole */
     pl[39] = (s_sim_fault == SIM_FAULT_DIV16) ? 0x01u : 0x00u;   /* status2 bit0 (CH_B chyba) */
-    sim_put_le64(pl + 40, 0u);                       /* freq16_x100000: FW 0x0400 nepocita */
+    for (int i = 0; i < 4; i++) pl[40 + i] = (uint8_t)(s_sim_pps_ts >> (8 * i));   /* abs 52..55: 1PPS (FW 0x0424) */
+    pl[44] = s_sim_pps_seq;                          /* abs 56 */
     pl[48] = 0x00; pl[49] = 0x04;                    /* fw_version 0x0400 (abs 60-61) */
-    pl[50] = 0x23; pl[51] = 0x10;                    /* caps 0x1023 (abs 62-63): bit12 = abs 99 nese kmitocet hodin */
+    pl[50] = 0x23; pl[51] = 0x30;                    /* caps 0x3023 (abs 62-63): bit12 = abs 99 hodiny, bit13 = 1PPS */
     pl[87] = (uint8_t)SIM_CLK_MHZ;                   /* abs 99: hodiny FPGA [MHz] */
     pl[52] = 0x01;                                   /* clk_status */
     pl[88] = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B |
@@ -461,6 +495,7 @@ static void sim_produce(uint8_t *rx)
         s_sim_ts  += (uint64_t)k * 2500000ull;   /* 0,25 s v tikach 10 MHz */
         fresh = 1;
     }
+    sim_pps_step(now);
     sim_build_frame(rx, fresh);
 }
 
@@ -474,6 +509,8 @@ void fpga_sim_set(int on, double hz, float noise_ppb, float drift_ppb_h)
     s_sim_drift = drift_ppb_h;
     s_sim_t0    = HAL_GetTick();
     s_sim_next_ms = s_sim_t0;
+    s_sim_pps_next_ms = s_sim_t0 + 1000u;
+    s_sim_nopps = 0u;
     /* SEQ zamerne NEnulujeme: `g_last_seq` uz muze byt cokoli a shodne cislo by
      * vypadalo jako "neni nove mereni". Skok kupredu je bezpecny (kontrakt
      * porovnava jen nerovnost). */
@@ -486,7 +523,8 @@ double fpga_sim_hz(void)     { return s_sim_on ? s_sim_hz : 0.0; }
 int fpga_sim_fault(const char *what)
 {
     if (what == NULL)                   return 0;
-    if (strcmp(what, "none")  == 0) { s_sim_fault = SIM_FAULT_NONE;  return 1; }
+    if (strcmp(what, "none")  == 0) { s_sim_fault = SIM_FAULT_NONE; s_sim_nopps = 0u; return 1; }
+    if (strcmp(what, "nopps") == 0) { s_sim_nopps = 1u;              return 1; }   /* GPS bez 1PPS (holdover) */
     if (strcmp(what, "lost")  == 0) { s_sim_fault = SIM_FAULT_LOST;  return 1; }
     if (strcmp(what, "crc")   == 0) { s_sim_fault = SIM_FAULT_CRC;   return 1; }
     if (strcmp(what, "div16") == 0) { s_sim_fault = SIM_FAULT_DIV16; return 1; }
@@ -559,6 +597,55 @@ double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t y
     return dx / dy * 1e12;
 }
 
+/* ── GPS 1PPS (FW >= 0x0424, STATUS #305) ───────────────────────────────────────────────────────
+ * FPGA cte bajty 52..56 zive z domeny 100 MHz (bez snimku). Hrana prave behem skladani ramce muze dat
+ * roztrzenou hodnotu; ta se ve dvou po sobe jdoucich ramcich nezopakuje (hodnota se meni nejvys 10x/s,
+ * ramce chodi 20x/s), takze udalost se vyhlasi az pri SHODE dvou ramcu. Zapisuje FpgaTask (z pollu),
+ * cte kdokoli pres fpga_pps_get (kratky IRQ-off, jako fpga_freq_get_last). */
+static fpga_pps_t s_pps;
+static uint8_t    s_pps_have;
+static uint32_t   s_pps_torn;
+static uint32_t   s_pc_ts, s_pc_first;
+static uint8_t    s_pc_seq, s_pc_have;
+
+static void pps_feed(const fpga_meas_t *m)
+{
+    if (!m->pps_ok) { s_pc_have = 0u; return; }
+    if (s_pc_have && m->pps_seq == s_pc_seq && m->pps_ts == s_pc_ts) {
+        if (s_pps_have && s_pps.seq == m->pps_seq && s_pps.ts == m->pps_ts) return;   /* uz vyhlaseno */
+        fpga_pps_t e;
+        e.ts       = m->pps_ts;
+        e.seq      = m->pps_seq;
+        e.clk_mhz  = m->clk_mhz ? m->clk_mhz : 100u;
+        e.ref_ext  = ((m->caps & FPGA_CAP_REFCTL) && (m->clk_status & FPGA_CLK_REF_EXT)) ? 1u : 0u;
+        e.clk_bad  = ((m->caps & FPGA_CAP_SELFCHK) &&
+                      (!(m->clk_status & FPGA_CLK_OK) || (m->clk_status & FPGA_CLK_RECOVER))) ? 1u : 0u;
+        e.first_ms = s_pc_first;
+        e.n        = s_pps.n + 1u;
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_pps = e; s_pps_have = 1u;
+        __set_PRIMASK(pm);
+        return;
+    }
+    /* nova hodnota: kandidat. Zmena jen jedne slozky = jiste roztrzene cteni (nova hrana meni obe). */
+    if (s_pc_have && ((m->pps_seq == s_pc_seq) != (m->pps_ts == s_pc_ts))) s_pps_torn++;
+    s_pc_seq = m->pps_seq; s_pc_ts = m->pps_ts; s_pc_have = 1u;
+    s_pc_first = HAL_GetTick();
+}
+
+bool fpga_pps_get(fpga_pps_t *out)
+{
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    uint8_t have = s_pps_have;
+    if (have && out) *out = s_pps;
+    __set_PRIMASK(pm);
+    return have != 0u;
+}
+
+uint32_t fpga_pps_torn(void) { return s_pps_torn; }
+
 static void parse_data(const uint8_t *rx, fpga_meas_t *m)
 {
     const uint8_t *p = &rx[FR_PAYLOAD];
@@ -582,6 +669,11 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     m->clk_mhz            = (m->caps & FPGA_CAP_CLK) ? p[87] : 100u;   /* abs 99: hodiny FPGA [MHz]; bez bitu 100 (FW <= 0x0420) */
     m->sequence           = rd_le32(&rx[4]);
     m->status_flags       = rx[3];
+    /* FW >= 0x0424 (caps bit13): abs 52..56 = GPS 1PPS (do 0x0423 freq16_x100000, ktery FPGA posilala jako 0
+     * a ktery se s caps bit5 stejne prepocita nize z edges_b/dt_b) */
+    m->pps_ok  = (m->caps & FPGA_CAP_PPS) ? 1u : 0u;
+    m->pps_ts  = m->pps_ok ? rd_le32(p + 40) : 0u;   /* abs 52..55 */
+    m->pps_seq = m->pps_ok ? p[44] : 0u;              /* abs 56 */
     if (m->caps & FPGA_CAP_SELFCHK) {
         /* FW >= 0x041F: abs 12..19 nese identitu bitstreamu (frequency_x100000 tam bylo od FW 0x0400 vzdy 0
          * a nize se stejne prepocita z dt) a abs 97/98 kontrolni rozdil pocitani hran. */
@@ -692,6 +784,7 @@ bool fpga_freq_poll(fpga_meas_t *out)
      * dulezita — roste s v2 poli, viz fpga_freq.h). */
     fpga_meas_t tmp;
     parse_data(rx, &tmp);
+    pps_feed(&tmp);   /* 1PPS nezavisi na mereni (VALID/FRESH) -> kazdy platny DATA ramec */
 
     /* Chybne napocitane okno (hrana navic/chybi, metastabilita detekce hrany
      * ve FPGA): rozhodne se PRED latchem. Pri 10 MHz / 0,25 s = skok +-4 Hz.

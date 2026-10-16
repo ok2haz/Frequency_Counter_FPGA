@@ -219,6 +219,11 @@ static void view_tabs_render(int active)
 /* Trend okno: RELATIVNI +/- casove okno (presety 10/20/30/60/120 s), hodnota mezi. */
 static const prim_rect_t TREND_MINUS = {18, 417, 90, 61};
 static const prim_rect_t TREND_PLUS  = {214, 417, 90, 61};
+/* RESET TRENDU (2026-10-16): vynuluje trend + Allan + histogram (screen_main_stats_reset). Maze nasbirana data
+ * -> DVOJI STISK (prvni armuje 5 s). Stred patky mezi '+' (konci 304) a ZPET (zacina 650). */
+static const prim_rect_t TREND_RESET_RECT = {330, 417, 200, 61};
+static uint8_t  s_trend_rst_armed;
+static uint32_t s_trend_rst_t;
 /* Presety casoveho okna trendu. ⚠️ int32_t (NE int16_t) — 60 dni = 5 184 000 s
  * by v int16 preteklo. Dlouha okna kresli decimacni pyramida (screen_main.c
  * trend_feed): krok se automaticky prizpusobi, u 30 d je ~18 h/vzorek. */
@@ -2509,10 +2514,31 @@ static void allan_metric_render(void)
     ui_segmented_render(&sc);
 }
 
+/* RESET ALLAN (2026-10-16): vynuluje Allan/histogram/trend (screen_main_stats_reset). Maze nasbirana data
+ * (hodiny az dny) -> DVOJI STISK: prvni jen armuje (5 s), druhy provede. Lezi v pravem sloupci pod tabulkou
+ * tau, protoze patka je plna (zalozky + 5 metrik + ZPET) a dotykovy cil nesmi pod 60 px. Tabulka tau konci
+ * nejdele na y~326 (5 radku + 2 radky 'sum'), tlacitko zacina na 334. ⚠️ Tabulka cisti CELY svuj rect
+ * (582,100,180,292), tedy i toto misto -> po kazdem jejim vykresleni se tlacitko kresli znovu. */
+static const prim_rect_t ALLAN_RESET_RECT = {582, 334, 180, 62};
+#define ALLAN_RESET_ARM_S 5u
+static uint8_t  s_allan_rst_armed;
+static uint32_t s_allan_rst_t;
+
+static void allan_reset_btn_render(void)
+{
+    ui_button_t b = {.rect = ALLAN_RESET_RECT,
+                     .variant = s_allan_rst_armed ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                     .label = s_allan_rst_armed ? "POTVRDIT" : "RESET ALLAN"};
+    prim_fill_rect(ALLAN_RESET_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* zmena labelu/barvy */
+    ui_button_render(&b);
+}
+
 static void app_gpsdo_render_allan(void)
 {
     static uint32_t s_allan_key;
+    static uint8_t  s_allan_rst_c = 0xFF;
     int first = window_first(23);
+    if (first) s_allan_rst_armed = 0u;
     if (first) {
         view_set(23);
         /* ⚠️ Titulek jen ASCII — mono_25 (font nadpisu) NEMA recke glyfy σ/τ
@@ -2529,10 +2555,14 @@ static void app_gpsdo_render_allan(void)
         allan_metric_render();   /* prepinac ADEV/TDEV/MTIE (footer stred) */
     }
     uint32_t key = screen_main_stats_version();
-    if (first || key != s_allan_key) {
+    int arm_to = s_allan_rst_armed && (g_uptime_s - s_allan_rst_t) >= ALLAN_RESET_ARM_S;
+    if (arm_to) s_allan_rst_armed = 0u;                       /* vyprsel cas na potvrzeni */
+    if (first || key != s_allan_key || s_allan_rst_c != s_allan_rst_armed) {
         s_allan_key = key;
+        s_allan_rst_c = s_allan_rst_armed;
         screen_main_render_allan_big(HIST_PLOT_RECT);
         screen_main_render_stats_table(HIST_TABLE_RECT);
+        allan_reset_btn_render();                             /* tabulka zrovna vycistila i jeho misto */
         present_now();
     }
 }
@@ -2558,6 +2588,12 @@ static void render_trend_scale_btns(void)
     char v[16];
     screen_main_fmt_dur(v, sizeof v, (int32_t)screen_main_trend_secs());   /* "10 min" / "6 h" / "30 d" */
     prim_draw_text((prim_point_t){161, 455}, v, &ui_font_mono_22, UI_COLOR_INK, PRIM_ALIGN_CENTER);
+    /* RESET TRENDU (dvoji stisk): footer ma pozadi okna, takze se pred prekreslenim vraci pozadi */
+    prim_blit(TREND_RESET_RECT, screen_main_bg() + (int)TREND_RESET_RECT.y * UI_DIM_SCREEN_W + TREND_RESET_RECT.x,
+              UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+    ui_button_t rb = {.rect = TREND_RESET_RECT, .variant = s_trend_rst_armed ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
+                      .label = s_trend_rst_armed ? "POTVRDIT" : "RESET TREND"};
+    ui_button_render(&rb);
 }
 
 /* ── Trend fullscreen okno (s_view=9): tap na trend kartu na hlavni obrazovce.
@@ -2566,6 +2602,13 @@ void app_gpsdo_render_trend(void)
 {
     static uint32_t s_trend_key;
     int first = window_first(9);
+    if (first) s_trend_rst_armed = 0u;
+    if (!first && s_trend_rst_armed && (g_uptime_s - s_trend_rst_t) >= 5u) {   /* cas na potvrzeni vyprsel */
+        s_trend_rst_armed = 0u;
+        prim_set_target(&s_fb); prim_reset_clip();
+        render_trend_scale_btns();
+        present_now();
+    }
     if (first) {
         view_set(9);
         window_chrome("TREND  y = (f-f0)/f0", WIN_TITLE_Y);
@@ -9525,6 +9568,19 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
              * slepy hotspot, ktery dialog zrusil. Zavrit ho jde jen pres NE. */
             return false;
         }
+        if (s_view == 9 && in_rect(x, y, TREND_RESET_RECT)) {   /* RESET TRENDU: dvoji stisk */
+            if (!s_trend_rst_armed) {
+                s_trend_rst_armed = 1u; s_trend_rst_t = g_uptime_s;   /* prvni stisk jen armuje */
+            } else {
+                s_trend_rst_armed = 0u;
+                screen_main_stats_reset();                            /* UiTask vlastni statistiku -> primo */
+            }
+            prim_set_target(&s_fb); prim_reset_clip();
+            render_trend_scale_btns();                                /* prekresli tlacitko */
+            screen_main_render_trend_big((prim_rect_t){(int16_t)(DG_LX + 8), 96, (int16_t)(764 - 16), 300});
+            present_now();
+            return true;
+        }
         if (s_view == 9) {                                 /* trend: relativni +/- casove okno */
             int step = 0;
             if (in_rect(x, y, TREND_MINUS)) step = -1;
@@ -9557,6 +9613,16 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 else if (seg == 1) app_gpsdo_render_histogram();
                 else               app_gpsdo_render_waterfall();
             }
+            return true;
+        }
+        if (s_view == 23 && in_rect(x, y, ALLAN_RESET_RECT)) {    /* RESET ALLAN: dvoji stisk */
+            if (!s_allan_rst_armed) {
+                s_allan_rst_armed = 1u; s_allan_rst_t = g_uptime_s;   /* prvni stisk jen armuje */
+            } else {
+                s_allan_rst_armed = 0u;
+                screen_main_stats_reset();                        /* UiTask vlastni statistiku -> primo */
+            }
+            app_gpsdo_render_allan();                             /* prekresli tlacitko (a graf po resetu) */
             return true;
         }
         if (s_view == 23 && in_rect(x, y, ALLAN_METRIC_RECT)) {   /* prepinac ADEV/TDEV/MTIE */

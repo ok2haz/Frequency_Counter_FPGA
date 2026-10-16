@@ -373,6 +373,7 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
     if (hdr_match(hdr, "CALCulate:MATH:B"))      { *key = SCPI_CFG_MATH_B;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:NULL:STATe"))  { *key = SCPI_CFG_NULL_EN;  *vu = (uint32_t)scpi_bool(arg, &ok); if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:NULL:ACQuire")){ *key = SCPI_CFG_NULL_ACQ; return 1; }   /* akce, bez arg */
+    if (hdr_match(hdr, "CALCulate:AVERage:CLEar")){ *key = SCPI_CFG_STATS_CLR; return 1; }  /* akce: vynuluj Allan/histogram/trend */
     if (hdr_match(hdr, "CALCulate:LIMit:STATe")) { *key = SCPI_CFG_LIM_EN;   *vu = (uint32_t)scpi_bool(arg, &ok); if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:LIMit:LOWer")) { *key = SCPI_CFG_LIM_LO;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "CALCulate:LIMit:UPPer")) { *key = SCPI_CFG_LIM_HI;   *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
@@ -1070,6 +1071,7 @@ static int scpi_src_set_cfg_cm7(scpi_src_t *s, uint8_t key, uint32_t vu, double 
         g_ui_cfg_req_pend = 1;                          /* az teprve ted -> UiTask cte hotovou hodnotu */
         return 1;
     }
+    if (key == SCPI_CFG_STATS_CLR) { g_stats_reset_req = 1; return 1; }   /* statistiku vlastni UiTask -> jen pozadavek */
     double fhz = src_freq_hz(s);   /* pro NULL_ACQ */
     meas_cfg_t tmp; taskENTER_CRITICAL(); tmp = g_meas_cfg; taskEXIT_CRITICAL();
     if (!scpi_cfg_apply(&tmp, key, vu, vd, fhz)) return 0;
@@ -1189,6 +1191,7 @@ static int scpi_test_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
                                 s->set_gate_idx = (uint8_t)gi; return 1; }
     if (key == SCPI_CFG_CHAN) { if (vu > 1u) return 0; s->set_chan = (uint8_t)vu; return 1; }
     if (key == SCPI_CFG_RUN)  { s->set_running = vu ? 1u : 0u; return 1; }
+    if (key == SCPI_CFG_STATS_CLR) return 1;   /* akce bez stavu v src */
     return scpi_cfg_apply(&s->meas, key, vu, vd, 1e7);
 }
 

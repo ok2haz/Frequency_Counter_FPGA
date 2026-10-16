@@ -49,6 +49,7 @@
 #include "syscfg.h"      /* syscfg_storage_text/_store_retries — radek ULOZISTE (F-0098) */
 #include "errlog.h"      /* errlog_init_retries — tentyz radek */
 #include "ad5693.h"      /* UART "dac" — DAC ladeni OCXO (zadost pro SensorsTask) */
+#include "gpsdo.h"       /* UART "gpsdo" — smycka GPSDO (STATUS #305) */
 #include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
 #include "fmc.h"         /* fmc_sdram_init_sequence, g_fmc_init_fail — diagnostika SDRAM */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
@@ -687,6 +688,39 @@ static void dac_print_status(void)
            (unsigned long)g_dac.rb_mismatch,
            g_sensors[SENS_ADS0].valid ? "" : "neplatne, posl. ",
            (long)g_sensors[SENS_ADS0].last);
+    static const char *const k_rst[] = {
+        "zadny ulozeny kod (0 V)", "kod z flash zapsan a overen",
+        "DAC uz drzel kod (reset jen STM32), ponechan", "ZAPIS SELHAL",
+        "ulozeny kod MIMO ROZSAH, ignorovan" };
+    uint8_t r = g_dac.restore;
+    printf("DAC OCXO: obnova po startu: %s | ulozeny kod %u = %lu mV%s\n",
+           r < 5u ? k_rst[r] : "?", (unsigned)g_dac_persist,
+           (unsigned long)ad5693_code_to_mv(g_dac_persist),
+           g_dac.restore_done ? "" : " (ceka)");
+}
+
+/* Smycka GPSDO (STATUS #305) — prikaz `gpsdo` i radek ve `status`. Bez %f (nano.specs): cisla se tisknou
+ * celociselne po prenasobeni (y v 1e-12, kod v setinach LSB, K v 1e-13). */
+static long gp_round(double v) { return (long)(v + (v >= 0.0 ? 0.5 : -0.5)); }
+static void gpsdo_print_status(void)
+{
+    gpsdo_status_t s;
+    gpsdo_get(&s);
+    long y  = gp_round(s.y * 1e12);          /* y v 1e-12 = ppt */
+    long cd = gp_round(s.code * 100.0);      /* kod v setinach LSB */
+    long k  = gp_round(s.kdac * 1e13);       /* K v 1e-13 */
+    printf("GPSDO: %s%s%s%s | %lu s | y %c%ld.%03ld ppb | faze %+ld ns | kod %ld.%02ld | K %ld.%02lde-11 | tau %lu s\n",
+           gpsdo_state_name(s.state), s.locked ? " (ZAMCENO)" : "",
+           (s.why != GPSDO_WHY_NONE) ? " - " : "", gpsdo_why_text(s.why), (unsigned long)s.state_s,
+           (y < 0) ? '-' : '+', labs(y) / 1000, labs(y) % 1000, gp_round(s.x_ns),
+           cd / 100, labs(cd) % 100, k / 100, labs(k) % 100, (unsigned long)gp_round(s.tau_s));
+    static const char *const sw[] = { "vypnuta", "+q", "-q", "bez dat TIM-TP" };
+    printf("GPSDO: 1PPS prijato %lu, odmitnuto %lu, diry %lu, roztrzena cteni %lu | FLL okno %lu s | sawtooth %s "
+           "(rozptyl ns2: bez %ld / +q %ld / -q %ld, rozhodnuti %lu)\n",
+           (unsigned long)s.pps_ok, (unsigned long)s.pps_rej, (unsigned long)s.pps_gap,
+           (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
+           (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
+           (unsigned long)s.saw_n);
 }
 
 /* ── UART `gen` — generator Si5356 (CLK2/3, CLK4/5, CLK6/7) ───────────────────
@@ -1434,7 +1468,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2009,7 +2043,7 @@ void UartTask_run(void *argument)
 				  printf("GPS: %s\n", gbuf);
 			  }
 			  else if (strcmp(RxBuffer, "gpsraw") == 0) {
-				  char gbuf[128];
+				  char gbuf[192];   /* +RX/TIMTP pocitadla UBX (STATUS #305) */
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
 			  }
@@ -2187,6 +2221,39 @@ void UartTask_run(void *argument)
 			  	g_si5356_clr_req = 1;
 			  	printf("SI5356: sticky bude vynulovan (obslouzi SensorsTask do ~0,5 s)\n");
 			  }
+			  else if (strncmp(RxBuffer, "gpsdo", 5) == 0 &&
+			           (RxBuffer[5] == '\0' || RxBuffer[5] == ' ')) {
+				  /* Smycka GPSDO (STATUS #305): `gpsdo` stav | on | off | tau <100..20000 s> |
+				   * kdac <K v 1e-13, napr. 340 = 3,40e-11> | test (selftest regulatoru nad modelem OCXO) */
+				  const char *a = &RxBuffer[5];
+				  while (*a == ' ') a++;
+				  uint32_t v = 0; int nd = 0;
+				  const char *num = NULL;
+				  if (strncmp(a, "tau", 3) == 0 || strncmp(a, "kdac", 4) == 0) {
+					  num = a + ((a[0] == 't') ? 3 : 4);
+					  while (*num == ' ') num++;
+					  while (*num >= '0' && *num <= '9' && v <= 100000u) { v = v * 10u + (uint32_t)(*num - '0'); num++; nd++; }
+				  }
+				  if (*a == '\0') {
+					  /* jen stav */
+				  } else if (strcmp(a, "on") == 0) {
+					  gpsdo_enable(1); printf("GPSDO: zapnuto\n");
+				  } else if (strcmp(a, "off") == 0) {
+					  gpsdo_enable(0); printf("GPSDO: vypnuto (DAC zustava na poslednim kodu)\n");
+				  } else if (strncmp(a, "tau", 3) == 0 && nd > 0 && *num == '\0') {
+					  gpsdo_set_tau(v); printf("GPSDO: tau %lu s (meze 100..20000)\n", (unsigned long)v);
+				  } else if (strncmp(a, "kdac", 4) == 0 && nd > 0 && *num == '\0') {
+					  gpsdo_set_kdac((double)v * 1e-13);
+					  printf("GPSDO: K %lu x 1e-13 (prevezme se v dalsim intervalu; mimo 1e-12..1e-9 se ignoruje)\n", (unsigned long)v);
+				  } else if (strcmp(a, "test") == 0) {
+					  uint32_t t0 = HAL_GetTick();
+					  int ok = gpsdo_selftest();
+					  printf("GPSDO selftest: %s (%lu ms)\n", ok ? "PASS" : "FAIL", (unsigned long)(HAL_GetTick() - t0));
+				  } else {
+					  printf("GPSDO: pouziti `gpsdo` | `gpsdo on|off` | `gpsdo tau <s>` | `gpsdo kdac <K*1e13>` | `gpsdo test`\n");
+				  }
+				  gpsdo_print_status();
+			  }
 			  else if (strncmp(RxBuffer, "dac", 3) == 0 &&
 			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
 				  /* DAC ladeni OCXO (AD5693R). `dac` = stav, `dac probe` = znovu najit
@@ -2215,6 +2282,12 @@ void UartTask_run(void *argument)
 						  code = is_mv ? ad5693_mv_to_code(v) : v;
 						  req = 1;
 					  }
+				  }
+				  if (req == 1 && gpsdo_enabled()) {
+					  /* Rucni kod a smycka GPSDO by se o DAC pretahovaly -- rucni zapis smycku vypne. */
+					  gpsdo_enable(0);
+					  osDelay(30);   /* defaultTask (100 Hz) shodi g_gpsdo_drive, SensorsTask uz kod neprepise */
+					  printf("DAC: smycka GPSDO VYPNUTA (rucni zapis; zapnout `gpsdo on`)\n");
 				  }
 				  if (req > 0) {
 					  int ok = (req == 1) ? ad5693_request_write((uint16_t)code) : ad5693_request_probe();
@@ -3087,7 +3160,8 @@ void UartTask_run(void *argument)
 					  			       g_si5356_locked_once ? "" : "  <== od startu NEZAMCENO");
 					  		}
 					  	}
-					  	dac_print_status();   /* DAC ladeni OCXO (AD5693R) — dnes neosazen */
+					  	dac_print_status();   /* DAC ladeni OCXO (AD5693R) */
+				  	gpsdo_print_status(); /* smycka GPSDO (STATUS #305) */
 					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
 					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
 					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);

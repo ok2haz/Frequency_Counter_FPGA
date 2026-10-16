@@ -116,6 +116,7 @@ enum {
     SCPI_CFG_GATE,         /* vu = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
     SCPI_CFG_CHAN,         /* vu = kanal 0/1 (A/B) */
     SCPI_CFG_RUN,          /* vu = 0 STOP / 1 RUN */
+    SCPI_CFG_STATS_CLR,    /* akce `CALC:AVER:CLE`: vynulovat statistiku stability (Allan/histogram/trend), 2026-10-16 */
 };
 
 typedef struct scpi_src scpi_src_t;

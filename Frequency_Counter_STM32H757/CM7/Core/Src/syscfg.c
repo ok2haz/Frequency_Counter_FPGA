@@ -20,7 +20,8 @@
 #include "calib.h"             /* calib_store_ready — souhrn uloziste (F-0098) */
 #include "flightrec.h"         /* flightrec_ready — souhrn uloziste (F-0098) */
 #include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
-#include <stdio.h>             /* snprintf v syscfg_storage_text */
+#include "ad5693.h"            /* g_dac_persist — kod DAC ladeni OCXO obnoveny po startu */
+#include <stdio.h>            /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0197) */
 #include "task.h"
@@ -135,6 +136,11 @@ typedef struct {
      * magic se NEZVEDA a uzivatel neprijde o nastaveni. Stary blob ma na tom
      * miste nulu (`pack` nuluje vcetne vycpavky od #43) = vychozi 3 na dekadu. */
     uint8_t  allan_dens;
+    /* Kod DAC ladeni OCXO (AD5693R) z posledniho behu; 0 = nic neulozeno (vychozi
+     * 0 V po zapnuti). ⚠️ Lezi v posledni zbyle vycpavce pred `mirror_seq` —
+     * velikost blobu (192 B) ani offset `mirror_seq` (184) se nezmenily, magic se
+     * NEZVEDA. Stary blob ma na tomhle miste nulu = nic se neobnovuje. */
+    uint16_t dac_code;
     uint32_t mirror_seq;
     uint32_t mirror_vsn;
 } syscfg_blob_t;
@@ -150,7 +156,8 @@ _Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
                "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
 /* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
    by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
-_Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u,
+_Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u &&
+               offsetof(syscfg_blob_t, dac_code) == 182u,
                "syscfg blob zmenil layout -- to vyzaduje novy magic (SYSCFG_BLOB_MAGIC)");
 
 static w25q_store_t s_store;
@@ -215,7 +222,8 @@ static void pack(syscfg_blob_t *b)
     b->enc_div        = encoder_div();
     b->mirror_en      = datalog_mirror_enabled() ? 1u : 0u;
     b->allan_dens     = (uint8_t)screen_main_allan_density();
-    b->mirror_seq     = datalog_mirror_seq();
+    b->dac_code       = g_dac_persist;
+    b->mirror_seq    = datalog_mirror_seq();
     b->mirror_vsn     = datalog_mirror_vsn();
 }
 
@@ -233,12 +241,23 @@ void syscfg_load(void)
 
     syscfg_blob_t b;
     uint32_t n = 0;
+    bool store_ok = false;
     if (w25q_init() && w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS)) {
         /* Cteme VZDY (i warm reset): g_fx_enabled NENI v BKP, flash je jeho jediny
          * zdroj. Ostatni pole se z flash aplikuji jen pri studenem startu (nize). */
         n = w25q_store_read(&s_store, &b, sizeof b);
+        store_ok = true;
     }
     osMutexRelease(qspiMutexHandle);
+
+    /* Kod DAC ladeni OCXO: aplikuj VZDY (neni v BKP) a hned, dokud existuje cesta
+     * `return` nize. `loaded` se nastavi jen kdyz je uloziste dostupne — prazdna
+     * flash / stary magic znamena „nic ulozeno" (0 V), ale nedostupne uloziste
+     * nesmi obnovu spustit s nulou (na rozdil od neexistujiciho kodu). */
+    if (store_ok) {
+        if (n == sizeof(b) && b.magic == SYSCFG_BLOB_MAGIC) g_dac_persist = b.dac_code;
+        g_dac_persist_loaded = 1u;
+    }
 
     if (n != sizeof(b) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/stary magic */
 

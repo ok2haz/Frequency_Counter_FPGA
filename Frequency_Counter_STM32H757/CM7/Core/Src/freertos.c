@@ -36,6 +36,7 @@
 #include "errlog.h"           /* trvaly zaznamnik chyb ve W25Q (historie, ne jen posledni) */
 #include "sd_export.h"        /* sd_export_tick — detekce SD karty + auto-unmount (#28) */
 #include "alarm.h"            /* alarm_tick — zvukovy alarm (SIGNAL_LOST/GPS) */
+#include "gpsdo.h"            /* gpsdo_tick — smycka GPSDO (STATUS #305) */
 #include "gpio_guard.h"       /* hlidac konfigurace GPIOG (PG8 SDCLK, PG11/13 ETH TX) */
 #include "watchdog.h"         /* watchdog_supervise — IWDG refresh dle heartbeatu */
 #include "fpga_freq.h"        /* fpga_freq_*_selftest — run_selftests() */
@@ -731,6 +732,7 @@ void StartDefaultTask(void *argument)
       gps_feed_char((char)gc);
     }
     gps_tick();       /* TP5 (1PPS do FPGA) znovu 1x/min — konfigurace zije jen v RAM modulu (F-0219) */
+    gpsdo_tick();     /* smycka GPSDO: 1PPS z FPGA -> povel DAC OCXO (STATUS #305; DAC zapisuje SensorsTask) */
     rtc_app_tick();   /* sync RTC z GPS UTC + format g_rtc_text (throttle 1 Hz uvnitr) */
     rtc_save_uicfg_if_dirty();   /* persist UI nastaveni (mode/chan/gate/run) do BKP pri zmene */
     rtc_save_syscfg_if_dirty();  /* persist systemove nastaveni (jas/mute) do BKP pri zmene */

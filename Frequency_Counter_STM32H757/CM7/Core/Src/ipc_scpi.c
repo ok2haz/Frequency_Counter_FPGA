@@ -138,6 +138,8 @@ int ipc_scpi_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
         case SCPI_CFG_RUN:
             s->set_running = vu ? 1u : 0u;
             break;
+        case SCPI_CFG_STATS_CLR:
+            break;                                /* akce bez lokalniho zrcadla; jde jen pres ring na CM7 */
         default:
             /* Math/limity: aplikuj i na lokalni zrcadlo (`scpi_cfg_apply` je cista
              * funkce nad `meas_cfg_t`), aby readback ve stejne zprave sedel. */

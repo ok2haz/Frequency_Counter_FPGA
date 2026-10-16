@@ -2397,6 +2397,19 @@ static void allan_band_fill(const prim_point_t *pts, const int16_t *yup,
     }
 }
 
+/* Barva POMOCNYCH OS (mrizky grafu). `UI_COLOR_LINE` je navrzena pro RAMECKY karet a v tmavych tematech
+ * (#152030 na kartu #0C1420) je ve grafu skoro nevidet (2026-10-16, pripominka uzivatele). Mrizka bere
+ * 50 % mix LINE a INK_4 -> viditelna, ale porad pod krivkou a popisky; funguje ve vsech 5 tematech
+ * (mix se pocita z aktualni palety, ne z literalu). Pro rameky, oddelovace a baseline se NEPOUZIVA. */
+static prim_color_t plot_grid_color(void)
+{
+    prim_color_t a = UI_COLOR_LINE, b = UI_COLOR_INK_4;
+    uint32_t r = ((uint32_t)PRIM_R(a) + PRIM_R(b)) / 2u;
+    uint32_t g = ((uint32_t)PRIM_G(a) + PRIM_G(b)) / 2u;
+    uint32_t bl = ((uint32_t)PRIM_B(a) + PRIM_B(b)) / 2u;
+    return PRIM_RGB(r, g, bl);
+}
+
 static void allan_plot_curve(prim_rect_t inner, const float *taus,
                              const float *vals, const float *edf,
                              const float *flr, int np,
@@ -2495,7 +2508,7 @@ static void allan_plot(prim_rect_t area, int big)
     for (int j = 0; j <= dec; j++) {
         int16_t y = (int16_t)(in.y + (int32_t)j * in.h / dec);
         prim_draw_line((prim_point_t){in.x, y},
-                       (prim_point_t){(int16_t)(in.x + in.w), y}, 1, UI_COLOR_LINE);
+                       (prim_point_t){(int16_t)(in.x + in.w), y}, 1, plot_grid_color());
         char ylb[12]; allan_ylabel(ylb, sizeof ylb, ymin + dec - j);
         prim_draw_text((prim_point_t){(int16_t)(in.x - 6), (int16_t)(y + 5)},
                        ylb, lf, lc, PRIM_ALIGN_RIGHT);
@@ -2510,7 +2523,7 @@ static void allan_plot(prim_rect_t area, int big)
         float fx = ((float)e - lmin) / xspan;
         int16_t x = (int16_t)(in.x + fx * in.w);
         prim_draw_line((prim_point_t){x, in.y},
-                       (prim_point_t){x, (int16_t)(in.y + in.h)}, 1, UI_COLOR_LINE);
+                       (prim_point_t){x, (int16_t)(in.y + in.h)}, 1, plot_grid_color());
         char dl[8];                                 /* tau_min >= 1 s -> e >= 0 (10^e) */
         long v = 1;
         for (int j = 0; j < e; j++) v *= 10;
@@ -3797,7 +3810,7 @@ void screen_main_render_trend_big(prim_rect_t rect)
     for (int j = 0; j <= 2; j++) {
         int16_t yy = (int16_t)(in.y + (int32_t)j * in.h / 2);
         prim_draw_line((prim_point_t){in.x, yy}, (prim_point_t){(int16_t)(in.x + in.w), yy},
-                       1, UI_COLOR_LINE);
+                       1, plot_grid_color());
     }
     /* krivka: nejstarsi vlevo -> nejnovejsi vpravo */
     int16_t px_prev = 0, py_prev = 0;

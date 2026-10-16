@@ -18,6 +18,7 @@
 #include "errlog.h"   /* udalosti: ztrata reference, vypadek senzoru */       /* si5356_read_status (218) + _sticky (247) */
 #include "calib.h"        /* g_calib.gain_12v/gain_5v — editovatelna kalibrace (okno Kalibrace) */
 #include "ad5693.h"       /* DAC ladeni OCXO — obsluha zadosti pod i2c1MutexHandle */
+#include "gpsdo.h"        /* g_gpsdo_drive/_code_q16/_lockflag — povel smycky GPSDO pro AD5693R */
 #include "sensor_hist.h"  /* sensor_hist_feed — kratkodoba RAM historie (okno Grafy #31) */
 #include "freertos_shared.h"
 
@@ -234,7 +235,13 @@ static uint32_t i2c1_backoff_ms(uint32_t streak)
  * volat jen ze SensorsTasku pod i2c1MutexHandle. */
 volatile ad5693_state_t g_dac;
 
+/* Kod k obnoveni po startu. Plni ho `syscfg_load` (z flash) a nize uspesny zapis
+ * kodu; cte ho `syscfg` pri ukladani (shadow-diff -> flash po ~1,5 s klidu). */
+volatile uint16_t g_dac_persist;
+volatile uint8_t  g_dac_persist_loaded;
+
 #define AD5693_I2C_TMO_MS  10u   /* 3 B pri ~50 kHz = ~0,8 ms */
+#define AD5693_RESTORE_TRIES 5u  /* po tolika selhanich zapisu se obnova vzda */
 
 static int ad5693_write3(uint8_t cmd, uint16_t data)
 {
@@ -290,6 +297,93 @@ static void ad5693_probe(void)
     }
 }
 
+/* Po startu vrati do DAC kod z posledniho behu (`g_dac_persist`, nacteny ze
+ * syscfg). Bezi jen jednou a teprve kdyz (a) syscfg je nactene, (b) cip je nalezen
+ * a ma zapsany control registr (jinak by kod platil pri GAIN x1 = polovicni
+ * napeti). Rucni zapis (`req_write`) ma prednost — viz volani nize. */
+static void ad5693_restore(void)
+{
+    static uint8_t tries;
+    if (g_dac.restore_done || !g_dac_persist_loaded) return;
+    if (!g_dac.present || !g_dac.ctrl_ok) return;
+
+    uint16_t want = g_dac_persist;
+    g_dac.restore_code = want;
+    if (want == 0u) {                                   /* nic ulozeno = vychozi 0 V */
+        g_dac.restore = AD5693_RESTORE_NONE;
+        g_dac.restore_done = 1u;
+        return;
+    }
+    if (want > ad5693_mv_to_code(AD5693_RESTORE_MAX_MV)) {
+        g_dac.restore = AD5693_RESTORE_RANGE;
+        g_dac.restore_done = 1u;
+        return;
+    }
+    if (g_dac.rb_ok && g_dac.code_rb != 0u) {
+        /* Reset jen STM32: DAC je napajeny dal a drzi nejnovejsi kod, flash muze
+         * byt o debounce okno starsi. Ponechat a flash srovnat podle DAC. */
+        g_dac_persist = g_dac.code_rb;
+        g_dac.restore = AD5693_RESTORE_KEPT;
+        g_dac.restore_done = 1u;
+        return;
+    }
+    if (!ad5693_write3(AD5693_CMD_WRITE_DAC, want)) {
+        g_dac.errors++;
+        if (++tries >= AD5693_RESTORE_TRIES) {
+            g_dac.restore = AD5693_RESTORE_FAIL;
+            g_dac.restore_done = 1u;
+        }
+        return;                                         /* jinak zkusi za 0,5 s */
+    }
+    g_dac.code       = want;
+    g_dac.code_valid = 1u;
+    g_dac.writes++;
+    uint16_t rb;
+    if (ad5693_readback(&rb)) {
+        g_dac.code_rb = rb;
+        g_dac.rb_ok   = 1u;
+        if (rb != want) g_dac.rb_mismatch++;
+        g_dac.restore = (rb == want) ? AD5693_RESTORE_DONE : AD5693_RESTORE_FAIL;
+    } else {
+        g_dac.rb_ok   = 0u;
+        g_dac.restore = AD5693_RESTORE_DONE;            /* zapis prosel, readback je jen diagnostika */
+    }
+    g_dac.restore_done = 1u;
+}
+
+/* Smycka GPSDO (STATUS #305, gpsdo.h): povel kodu prichazi z defaultTasku v Q16.16 (`g_gpsdo_code_q16`),
+ * zapis dela JEN tady (jediny vlastnik I2C1). Zlomek kodu se realizuje ditherem 1. radu (sigma-delta) pri
+ * kazdem cyklu SensorsTasku (2 Hz): stredni hodnota kodu je pak presna na 1/65536 LSB, za cenu strídani
+ * dvou sousednich kodu. ⚠️ 2 Hz je pomale proti RC pred bufferem (R78 100k x C68 1 uF = 100 ms) -- OCXO tak
+ * vidi obdelnik 1 LSB (~3,4e-11 p-p pri 1 Hz), coz je pod vlastni stabilitou OCXO 1e-10 (0,1-1 s, datasheet);
+ * rychlejsi dither (#277, 100-400 Hz) by potreboval vlastni casovani mimo tenhle 500ms cyklus.
+ * Readback se pri techto zapisech nedela (2x/s by zbytecne zatezovalo I2C1); kontrolu konec-konec dava AIN0. */
+static void ad5693_servo(void)
+{
+    static uint32_t s_acc, s_persist_ms;
+    static uint8_t  s_persist_init;
+    if (!g_gpsdo_drive || !g_dac.present || !g_dac.ctrl_ok) return;
+    if (!g_dac.restore_done || g_dac.req_write || g_dac.req_probe) return;   /* nejdriv obnova / rucni zadost */
+    uint32_t q  = g_gpsdo_code_q16;
+    uint32_t ci = q >> 16;
+    s_acc += q & 0xFFFFu;
+    if (s_acc >= 0x10000u) { s_acc -= 0x10000u; if (ci < 0xFFFFu) ci++; }
+    if (!g_dac.code_valid || ci != g_dac.code) {
+        if (ad5693_write3(AD5693_CMD_WRITE_DAC, (uint16_t)ci)) {
+            g_dac.code = (uint16_t)ci; g_dac.code_valid = 1u; g_dac.writes++;
+        } else {
+            g_dac.errors++;
+        }
+    }
+    /* Kod do flash (obnova po startu, #304): jen pri zamceni a nejvys 1x za 10 min (wear W25Q). */
+    uint32_t now = HAL_GetTick();
+    if (g_gpsdo_lockflag && (!s_persist_init || (uint32_t)(now - s_persist_ms) >= 600000u)) {
+        g_dac_persist  = (uint16_t)((q + 0x8000u) >> 16);
+        s_persist_ms   = now;
+        s_persist_init = 1u;
+    }
+}
+
 /* Volano kazdy cyklus I2C1 (~2 Hz) JAKO POSLEDNI transakce pred uvolnenim
  * mutexu — `i2c1_recover_if_wedged()` pak vidi chybovy kod prave odsud. */
 static void ad5693_service(void)
@@ -333,9 +427,16 @@ static void ad5693_service(void)
                 res = AD5693_RES_OK;   /* zapis prosel; readback je jen diagnostika */
             }
         }
+        if (res == AD5693_RES_OK) {
+            g_dac_persist = code;         /* ulozi se do flash po ~1,5 s klidu (syscfg) */
+            g_dac.restore_done = 1u;      /* rucni zapis ma prednost pred obnovou po startu */
+        }
         g_dac.req_result = res;
         g_dac.req_write  = 0u;        /* az po vysledku — UART ceka na tenhle flag */
     }
+
+    ad5693_restore();
+    ad5693_servo();
 }
 
 /* ── ADS1115 per-kanal PGA + gain ─────────────────────────────────────────

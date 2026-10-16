@@ -44,6 +44,7 @@
 #include "../../../CM7/Core/Inc/scpi.h"
 #include "../../../CM7/Core/Inc/meas_present.h"   /* MP_TDC_PS / MP_REF_PPB — servírují se v /api/state */
 #include "ipc_cm4.h"
+#include "../../../CM7/Core/Inc/gpsdo.h"          /* GPSDO_* stavy smycky (v24 blok g_ipc.gpsdo) -- jen konstanty */
 #include "main.h"          /* HAL_GetTick */
 
 #define HTTPD_PORT          80u
@@ -579,6 +580,44 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
                       "\"tdc_ovf_a\":null,\"tdc_ovf_b\":null,");
         jputf(&j, "\"si_reinit\":%u,", (unsigned)snap->si_reinit_n);
     }
+    /* v24: DAC ladeni OCXO (AD5693R, #304). `code`/`mv` = null, dokud kod neni znamy (cip chybi /
+     * jeste nesondovan) — nula by se cetla jako „Vc = 0 V". `mv` = kod x 5000 / 65536 (GAIN x2).
+     * `restore` = AD5693_RESTORE_* (0 zadny kod, 1 obnoven, 2 ponechan, 3 selhal, 4 mimo rozsah). */
+    {
+        const uint8_t f = snap->dac_flags;
+        jputf(&j, "\"dac\":{\"present\":%u,\"ctrl\":%u,", (f & IPC_DAC_F_PRESENT) ? 1u : 0u,
+              (f & IPC_DAC_F_CTRL) ? 1u : 0u);
+        if ((f & IPC_DAC_F_PRESENT) && (f & IPC_DAC_F_VALID))
+            jputf(&j, "\"code\":%u,\"mv\":%lu,", (unsigned)snap->dac_code,
+                  (unsigned long)(((uint32_t)snap->dac_code * 5000u + 32768u) >> 16));
+        else
+            jputf(&j, "\"code\":null,\"mv\":null,");
+        jputf(&j, "\"restore\":%u,\"restore_done\":%u},", (unsigned)snap->dac_restore,
+              (f & IPC_DAC_F_RSTDONE) ? 1u : 0u);
+    }
+    /* v24: smycka GPSDO (#305) z bloku g_ipc.gpsdo (seqlock, nejvys 8 pokusu; pri neuspechu poslední kopie).
+     * `y_ppt` = relativni odchylka OCXO x 1e12, `x_ns` = filtrovana fazova chyba proti 1PPS, `code` = povel DAC. */
+    {
+        static const char *const gst[] = { "OFF", "WAIT", "FLL", "LOCK", "HOLD" };
+        static const char *const gsw[] = { "off", "+q", "-q", "nodata" };
+        ipc_gpsdo_t gd;
+        for (int t = 0; t < 8; t++) {
+            uint32_t g1 = g_ipc.gpsdo.gen;
+            __DMB();
+            gd = *(const ipc_gpsdo_t *)&g_ipc.gpsdo;
+            __DMB();
+            if (!(g1 & 1u) && g1 == g_ipc.gpsdo.gen) break;
+        }
+        uint32_t cq = gd.code_q16, cf = (uint32_t)(((cq & 0xFFFFu) * 100u + 32768u) >> 16);
+        uint32_t ci = cq >> 16;
+        if (cf >= 100u) { cf -= 100u; ci++; }
+        jputf(&j, "\"gpsdo\":{\"state\":\"%s\",\"why\":%u,\"locked\":%u,\"y_ppt\":%ld,\"x_ns\":%ld,"
+                  "\"code\":%lu.%02lu,\"t_s\":%lu,\"pps_ok\":%lu,\"pps_rej\":%lu,\"tau_s\":%u,\"kdac_e13\":%u,\"saw\":\"%s\"},",
+              (gd.state < 5u) ? gst[gd.state] : "?", (unsigned)gd.why, (unsigned)gd.locked,
+              (long)gd.y_e12, (long)gd.x_ns, (unsigned long)ci, (unsigned long)cf, (unsigned long)gd.state_s,
+              (unsigned long)gd.pps_ok, (unsigned long)gd.pps_rej, (unsigned)gd.tau_s, (unsigned)gd.kdac_e13,
+              (gd.saw < 4u) ? gsw[gd.saw] : "?");
+    }
     jputf(&j, "\"nsat\":%u,", (unsigned)snap->gps_sat_count);
     jputf(&j, "\"cm4\":{\"ipc_version\":%u},", (unsigned)IPC_VERSION);
     /* ⚠️ Diagnostika prihlaseni (W5) — vysledek POSLEDNIHO pokusu pres /api/scpi.
@@ -953,21 +992,21 @@ static const char SPA_HTML[] =
  * `:focus-visible` (ne `:focus`) -> mys fokusovy ramecek nevyvola. */
 ":focus-visible{outline:2px solid var(--acc);outline-offset:2px}\n"
 "svg{width:100%;height:100%;display:block}\n"
-/* Mrizka smi byt slabsi nez driv: ram a plna osni linka uz graf drzi, takze
- * carkovane cary maji jen vest oko - ne soutezit s krivkou. */
-".g{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
-"stroke-dasharray:2 5;opacity:.75}\n"
+/* Pomocne osy (mrizka). 2026-10-16: byly prilis slabe (--line = barva RAMECKU, v tmavem tematu #26303f na #111721),
+ * proto --line2 a vyssi kryti. Porad carkovane a pod krivkou (.ln 1,6 px, plna barva). */
+".g{stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:3 4;opacity:.95}\n"
 /* Svisla (casova) mrizka. Slabsi nez vodorovna zamerne: vodorovna se CTE
  * (patri k ose Y s popisky), svisla jen deli cas na ctvrtiny okna - kdyby mela
  * stejnou vahu, delala by z grafu kostkovany papir a prebila krivku. */
-".gv{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
-"stroke-dasharray:1 6;opacity:.55}\n"
+".gv{stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:2 5;opacity:.8}\n"
 /* Vedlejsi LOG mrizka (mantisy 2..9 uvnitr dekady) - log-log grafy (ALLAN, faz.
    sum). Jeste slabsi nez hlavni dekadove cary: jen naznaci log rozlozeni. */
-".gm{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
-"stroke-dasharray:1 7;opacity:.3}\n"
-".gvm{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;\n"
-"stroke-dasharray:1 7;opacity:.28}\n"
+".gm{stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:1 5;opacity:.55}\n"
+".gvm{stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke;\n"
+"stroke-dasharray:1 5;opacity:.5}\n"
 /* `stroke-linecap:round` dodelava to, co uz delal `linejoin`: konce useku pri
  * dire v datech (a osamocene body) nejsou uriznute natvrdo. */
 ".ln{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;\n"
@@ -1100,6 +1139,8 @@ static const char SPA_HTML[] =
  * do 45 px siroke mezery, tedy oriznute o ctyri znaky zleva. */
 ".yl b.yu{top:0;transform:translateY(-100%);margin-top:-3px;\n"
 "letter-spacing:.1em;color:var(--ink2)}\n"
+"/* PRAVA osa (graf Vc: vlevo kod DAC, vpravo napeti): zrcadlo .yl, popisky vedle plochy ZA pravou hranou. */\n"
+".yl.yr b{right:auto;left:100%;margin-right:0;margin-left:7px;text-align:left}\n"
 ".xl.xa b.xu{left:auto;right:0;transform:none;letter-spacing:.1em;color:var(--ink2)}\n"
 /* Hodnotova osa X (histogram, ALLAN, fazovy sum): popisky na libovolnych
  * pozicich -> absolutne, ne flexem. Krajni se zarovnaji dovnitr grafu. */
@@ -1126,6 +1167,10 @@ static const char SPA_HTML[] =
 ".lg i.k0{background:var(--c0)} .lg i.k1{background:var(--c1)}\n"
 ".lg i.k2{background:var(--c2)} .lg i.k3{background:var(--c3)}\n"
 ".lg i.kb{background:var(--bad)}\n"
+".lg span[data-s]{cursor:pointer;user-select:none;padding:0 3px;border-radius:2px}\n"
+".lg span[data-s]:hover{color:var(--acc)}\n"
+".lg span.off,.dst div.off{opacity:.38;text-decoration:line-through}\n"
+".dst div[data-s]{cursor:pointer}\n"
 /* Prazdny stav ma vypadat jako zamer, ne jako chybejici text: mensi, prostrkany,
  * verzalkami a s vlastnim podkladem, aby prekryl mrizku pod sebou. */
 ".nod{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;\n"
@@ -1405,13 +1450,13 @@ static const char SPA_HTML[] =
 "<i class='eod' id='etemp'></i>\n"
 "</div>\n"
 "</div>\n"
-"<div class='lg'><span><i class='k0'></i>OCXO</span><span><i class='k1'></i>deska</span>\n"
-"<span><i class='k2'></i>MCU</span><span><i class='k3'></i>FPGA</span></div>\n"
+"<div class='lg'><span data-g='temp' data-s='0'><i class='k0'></i>OCXO</span><span data-g='temp' data-s='1'><i class='k1'></i>deska</span>\n"
+"<span data-g='temp' data-s='2'><i class='k2'></i>MCU</span><span data-g='temp' data-s='3'><i class='k3'></i>FPGA</span></div>\n"
 "</div>\n"
 "\n"
 "<div class='card'>\n"
 "<div class='ttl'>[ OCXO Vc ]<span class='zo'>klikni = detail</span><span class='r mono' id='stVc'>--</span></div>\n"
-"<div class='cw' data-z='vc'>\n"
+"<div class='cw' data-z='vc' style='--pl:64px;--pr:50px'>\n"
 "<div class='pa'>\n"
 "<svg viewBox='0 0 100 100' preserveAspectRatio='none'>\n"
 "<g id='gyVc'></g>\n"
@@ -1419,12 +1464,15 @@ static const char SPA_HTML[] =
 "<polygon class='ar f1' id='aVc'/><polyline class='ln s1' id='lVc'/>\n"
 "</svg>\n"
 "<div class='yl' id='ylVc'></div>\n"
+"<div class='yl yr' id='yrVc'></div>\n"
 "<div class='xl' id='xlVc'></div>\n"
 "<div class='nod' id='nVc'>ceka na data...</div>\n"
 "<i class='eod' id='evc'></i>\n"
 "</div>\n"
 "</div>\n"
-"<div class='lg'><span><i class='k1'></i>ladici napeti - jak si smycka doladuje OCXO</span></div>\n"
+"<div class='lg'><span><i class='k1'></i>ladici napeti (EFC 0-4 V)</span><span class='mono' id='vcDac'>--</span>\n"
+"<span class='mono' id='vcRng' style='display:none;color:var(--warn)'></span>\n"
+"<span class='mono' id='vcGps'>GPSDO --</span></div>\n"
 "</div>\n"
 "\n"
 "<div class='card' id='cPwr'>\n"
@@ -1443,8 +1491,8 @@ static const char SPA_HTML[] =
 "<i class='eod' id='epwr'></i>\n"
 "</div>\n"
 "</div>\n"
-"<div class='lg'><span><i class='k0'></i>3V3</span><span><i class='k3'></i>5 V</span>\n"
-"<span><i class='k1'></i>VREF</span><span><i class='k2'></i>VBAT</span></div>\n"
+"<div class='lg'><span data-g='pwr' data-s='0'><i class='k0'></i>3V3</span><span data-g='pwr' data-s='1'><i class='k3'></i>5 V</span>\n"
+"<span data-g='pwr' data-s='2'><i class='k1'></i>VREF</span><span data-g='pwr' data-s='3'><i class='k2'></i>VBAT</span></div>\n"
 "</div>\n"
 "\n"
 "</div>\n"
@@ -1710,7 +1758,7 @@ static const char SPA_HTML[] =
 "\n"
 "<div class='ovl' id='ovl'><div class='dlg'>\n"
 "<div class='dhead'><span id='dTtl'>DETAIL</span>\n"
-"<span class='r'><button class='tbtn' id='dX'>ZAVRIT [ESC]</button></span></div>\n"
+"<span class='r'><button class='tbtn' id='dAdRst' style='display:none'>RESET ALLAN</button> <button class='tbtn' id='dX'>ZAVRIT [ESC]</button></span></div>\n"
 "<div class='dbody'>\n"
 "<div class='dcw'><svg id='dSvg' viewBox='0 0 100 100' preserveAspectRatio='none'></svg>\n"
 "<div class='dax' id='dAx'></div></div>\n"
@@ -2098,6 +2146,27 @@ static const char SPA_HTML[] =
 "}\n"
 "\n"
 "/* -- POPIS GRAFU: jeden zdroj pravdy pro maly nahled i detailni okno -------- */\n"
+"/* -- selektivni zapinani/vypinani krivek (jen WEB): legenda grafu klikem skryje/zobrazi radu.\n"
+"   Skryta rada se nekresli, NEJDE do autoskaly osy ani do odectu pod kurzorem; tabulky hodnot\n"
+"   zustavaji. Stav se pamatuje v prohlizeci (localStorage 'ghid'), klic grafu = 'temp'/'pwr'. */\n"
+"var HID={};\n"
+"try{ HID=JSON.parse(localStorage.getItem('ghid')||'{}')||{}; }catch(e){ HID={}; }\n"
+"function hidOn(g,i){ return !!(HID[g]&&HID[g][i]); }\n"
+"function legSync(){\n"
+"  var e=document.querySelectorAll('[data-s]'),i,o;\n"
+"  for(i=0;i<e.length;i++){ o=hidOn(e[i].getAttribute('data-g'),+e[i].getAttribute('data-s'));\n"
+"    if(e[i].classList.contains('off')!==o) e[i].classList.toggle('off',o); }\n"
+"}\n"
+"function togSer(g,i){\n"
+"  var a=HID[g]||(HID[g]=[]); a[i]=a[i]?0:1;\n"
+"  try{ localStorage.setItem('ghid',JSON.stringify(HID)); }catch(e){}\n"
+"  drawAll(); if(zoom) drawZoom(); legSync();\n"
+"}\n"
+"document.addEventListener('click',function(e){\n"
+"  var n=e.target&&e.target.closest?e.target.closest('[data-s]'):null;\n"
+"  if(!n||!n.getAttribute('data-g')) return;\n"
+"  togSer(n.getAttribute('data-g'),+n.getAttribute('data-s'));\n"
+"});\n"
 "function spec(k){\n"
 "  var i,j,s={k:k,series:[],fmt:function(v){return v.toFixed(2);},note:'',title:''};\n"
 "  if(k==='freq'){\n"
@@ -2135,7 +2204,8 @@ static const char SPA_HTML[] =
 "    s.fmt=function(v){ return (v/1000).toFixed(4)+' V'; };\n"
 "    /* Osa je v mV (rada je v mV), jen se u ni napise jednotka. */\n"
 "    s.unit='mV';\n"
-"    s.note='Vc ukazuje, jak si disciplinacni smycka doladuje oscilator. Trvaly beh k jednomu kraji = OCXO dochazi ladici rozsah.';\n"
+"    s.note='Vc ukazuje, jak si disciplinacni smycka doladuje oscilator. Trvaly beh k jednomu kraji = OCXO dochazi ladici rozsah.'\n"
+"      +(LAST&&LAST.dac&&LAST.dac.code!==null?(' DAC: kod '+LAST.dac.code+' (1 LSB = 0,076 mV = cca 3,4e-11 relativne).'):'');\n"
 "  } else {\n"
 "    var ks=['p0','p1','p2','p3'], nm=['3V3','5 V','VREF','VBAT'], cc=[0,3,1,2];\n"
 "    s.title='NAPAJENI - odchylka od nominalu [mV]';\n"
@@ -2164,7 +2234,9 @@ static const char SPA_HTML[] =
 "      +' vypadat ploche - jejich hodnotu prectes odectem pod kurzorem.'\n"
 "      +(DL?' V dlouhych oknech je jen VBAT: 3V3/5 V/VREF datalog neuklada.':'');\n"
 "  }\n"
-"  var arrs=[]; for(j=0;j<s.series.length;j++) arrs.push(s.series[j].a);\n"
+"  var arrs=[], nvis=0;\n"
+"  for(j=0;j<s.series.length;j++){ s.series[j].hid=hidOn(k,j); if(!s.series[j].hid) nvis++; }\n"
+"  for(j=0;j<s.series.length;j++) if(!s.series[j].hid||!nvis) arrs.push(s.series[j].a);\n"
 "  if(s.env){ arrs.push(s.env.lo); arrs.push(s.env.hi); }   /* pasmo musi byt v meritku */\n"
 "  s.span=span(arrs);\n"
 "  return s;\n"
@@ -2227,6 +2299,9 @@ static const char SPA_HTML[] =
 "\n"
 "function drawZoom(){\n"
 "  if(!zoom) return;\n"
+"  /* RESET jen v detailu Allan a v detailu trendu kmitoctu; popisek podle detailu */\n"
+"  $('dAdRst').style.display=(zoom==='adev'||zoom==='freq')?'inline':'none';\n"
+"  if(!$('dAdRst').disabled) $('dAdRst').textContent=(zoom==='freq')?'RESET TREND':'RESET ALLAN';\n"
 "  var svg=$('dSvg'), ax=$('dAx'), i, j;\n"
 "  while(svg.firstChild) svg.removeChild(svg.firstChild);\n"
 "  ax.innerHTML='';\n"
@@ -2268,6 +2343,7 @@ static const char SPA_HTML[] =
 "    ax.appendChild(u);\n"
 "  }\n"
 "  for(j=0;j<s.series.length;j++){\n"
+"    if(s.series[j].hid) continue;\n"
 "    var pl=mk('polyline','ln s'+s.series[j].c);\n"
 "    pl.setAttribute('points',pointsOf(s.series[j].a,lo,hi));\n"
 "    svg.appendChild(pl);\n"
@@ -2275,7 +2351,7 @@ static const char SPA_HTML[] =
 "  var h='';\n"
 "  for(j=0;j<s.series.length;j++){\n"
 "    var st=stats(s.series[j].a);\n"
-"    h+='<div><div class=k>'+s.series[j].n+'</div><div class=v>'+(st?s.fmt(st.last):'--')+'</div></div>';\n"
+"    h+='<div'+((s.k==='temp'||s.k==='pwr')?(' data-g='+s.k+' data-s='+j+(s.series[j].hid?' class=off':'')):'')+'><div class=k>'+s.series[j].n+'</div><div class=v>'+(st?s.fmt(st.last):'--')+'</div></div>';\n"
 "  }\n"
 "  var s0=stats(s.series[0].a);\n"
 "  if(s0){\n"
@@ -2822,6 +2898,32 @@ static const char SPA_HTML[] =
 "  var p=(v-lo)*100/(hi-lo); return p<0?0:(p>100?100:p); }\n"
 "function railSt(v,nv){ if(v===null||v===undefined) return '';\n"
 "  var d=Math.abs(v-nv)/nv; return d<0.05?'ok':(d<0.15?'warn':'bad'); }\n"
+"/* Ladici rozsah EFC OCXO je 0-4 V (Bliley 6891). Do 5 % od kraje = dochazi rozsah:\n"
+"   smycka uz nema kam ladit (nebo DAC stoji na 0 V po startu bez ulozeneho kodu). */\n"
+"var VC_FS=4000, VC_LO=200, VC_HI=3800;\n"
+"function vcSt(v){ if(v===null||v===undefined) return '';\n"
+"  return (v<VC_LO||v>VC_HI)?'warn':'ok'; }\n"
+"function drawVc(s){\n"
+"  var d=s.dac, e=$('vcDac'), w=$('vcRng'), v=s.vc_mv;\n"
+"  var R=['bez ulozeneho kodu','kod obnoven z flash','kod ponechan (reset STM)',\n"
+"         'obnova SELHALA','ulozeny kod mimo rozsah'];\n"
+"  if(!d||!d.present) e.textContent='DAC nenalezen | ADC '+((v===null||v===undefined)?'--':Math.round(v/ADC_VC_MV)+' LSB (1 LSB = 0,156 mV)');\n"
+"  else e.textContent='DAC '+(d.code===null?'--':d.code+' LSB ('+(d.code*5/65.536).toFixed(1)+' mV; 1 LSB = 0,076 mV)')\n"
+"    +' | ADC '+((v===null||v===undefined)?'--':Math.round(v/ADC_VC_MV)+' LSB (1 LSB = 0,156 mV)')\n"
+"    +' | '+(d.restore_done?(R[d.restore]||'?'):'obnova ceka');\n"
+"  var lim=(v!==null&&v!==undefined)&&(v<VC_LO||v>VC_HI);\n"
+"  w.style.display=lim?'inline':'none';\n"
+"  if(lim) w.textContent=v<VC_LO?'DOCHAZI LADICI ROZSAH (dolni kraj)':'DOCHAZI LADICI ROZSAH (horni kraj)';\n"
+"  /* Smycka GPSDO (#305): stav, odchylka OCXO proti GPS [ppb] a fazova chyba proti 1PPS. */\n"
+"  var g=s.gpsdo, gs=$('vcGps');\n"
+"  if(!g){ gs.textContent='GPSDO --'; return; }\n"
+"  var WHY=['','DAC nenalezen','FPGA bez 1PPS','GPS bez fixu','externi reference','hodiny FPGA','divergence','vypnuto'];\n"
+"  var t='GPSDO '+g.state+(g.locked?' (ZAMCENO)':'')+(g.why?' - '+(WHY[g.why]||'?'):'');\n"
+"  if(g.state==='FLL'||g.state==='LOCK'||g.state==='HOLD')\n"
+"    t+=' | y '+(g.y_ppt/1000).toFixed(3)+' ppb | faze '+g.x_ns+' ns | kod '+g.code+' | 1PPS '+g.pps_ok;\n"
+"  gs.textContent=t;\n"
+"  gs.style.color=g.locked?'var(--ok)':(g.state==='HOLD'||g.state==='FLL'?'var(--warn)':'');\n"
+"}\n"
 "\n"
 "/* -- render ---------------------------------------------------------------- */\n"
 "function render(s){\n"
@@ -2908,7 +3010,7 @@ static const char SPA_HTML[] =
 "  }\n"
 "  drawAll(); drawStab(); drawStats(); drawHist(); drawUnc();\n"
 "  drawDev(); drawSpec(); drawGq(); drawTfom(); drawPn(); drawAlarm(s);\n"
-"  drawDual(s); drawLink(s); drawRef(s); drawMath(s); drawRf(s);\n"
+"  drawDual(s); drawLink(s); drawRef(s); drawMath(s); drawRf(s); drawVc(s);\n"
 "  if(zoom) drawZoom();\n"
 "\n"
 "  rows('gTemp',[\n"
@@ -2936,7 +3038,8 @@ static const char SPA_HTML[] =
 "   {n:'VBAT',pct:pctOf(s.vbat_mv,0,3600),mark:pctOf(3300,0,3600),\n"
 "    v:s.vbat_mv===null?null:(s.vbat_mv/1000).toFixed(3)+' V',\n"
 "    st:(s.vbat_mv!==null&&s.vbat_mv<2800)?'warn':'ok'},\n"
-"   {n:'OCXO Vc',pct:pctOf(s.vc_mv,0,3300),v:s.vc_mv===null?null:(s.vc_mv/1000).toFixed(3)+' V'}]);\n"
+"   {n:'OCXO Vc',pct:pctOf(s.vc_mv,0,VC_FS),v:s.vc_mv===null?null:(s.vc_mv/1000).toFixed(3)+' V',\n"
+"    st:vcSt(s.vc_mv)}]);\n"
 "\n"
 "  var ns=s.gps.num_sat, deg=Math.min(ns,12)*30;\n"
 "  var col=fm>=3?'var(--ok)':(fm===2?'var(--warn)':'var(--bad)');\n"
@@ -2995,7 +3098,20 @@ static const char SPA_HTML[] =
 "  $('stg').innerHTML=h;\n"
 "}\n"
 "\n"
+"/* Graf Vc: vlevo KOD DAC (1 LSB = 5000/65536 mV = 0,0763 mV - mala zmena je videt), vpravo napeti [V]. Dilky jsou\n"
+"   hezka cisla v KAZDE jednotce zvlast; poloha cary se pocita z rozsahu v mV, takze krivka sedi na obe osy. */\n"
+"var DAC_K=65536/5000, ADC_VC_MV=0.15625;   /* ADC_VC_MV = 2,048 V/32768 x 2,5 (delic AIN0); presne dle gain_vc v kalibraci */\n"
+"function vcAxes(s){\n"
+"  var lo=s.span[0], hi=s.span[1], rng=(hi>lo)?(hi-lo):1;\n"
+"  var ax=niceAxis(lo*DAC_K,hi*DAC_K,4);\n"
+"  ax.map=function(v){ return 100-(v/DAC_K-lo)*100/rng; };\n"
+"  axY('gyVc','ylVc',ax,function(v){ return String(Math.round(v)); },'DAC kod');\n"
+"  var ay=niceAxis(lo/1000,hi/1000,4);\n"
+"  ay.map=function(v){ return 100-(v*1000-lo)*100/rng; };\n"
+"  axY(null,'yrVc',ay,function(v){ return v.toFixed(ay.step<0.01?3:2); },'V');\n"
+"}\n"
 "function drawAll(){\n"
+"  legSync();\n"
 "  var j,k, KS=['freq','temp','vc','pwr'];\n"
 "  var IDS={freq:['lFreq'],temp:['lT0','lT1','lT2','lT3'],vc:['lVc'],pwr:['lP0','lP1','lP2','lP3']};\n"
 "  var FILL={freq:'aFreq',vc:'aVc'};\n"
@@ -3012,11 +3128,11 @@ static const char SPA_HTML[] =
 "      (s.env&&s.span)?envPoints(s.env,s.span[0],s.span[1]):'');\n"
 "    if(s.span){\n"
 "      for(j=0;j<ids.length;j++)\n"
-"        if(poly(ids[j],s.series[j].a,s.span[0],s.span[1],j===0?FILL[key]:null)) any=1;\n"
+"        if(poly(ids[j],s.series[j].hid?[]:s.series[j].a,s.span[0],s.span[1],j===0?FILL[key]:null)||(s.series[j].hid&&clean(s.series[j].a).length>1)) any=1;\n"
 "    } else for(j=0;j<ids.length;j++) poly(ids[j],[],0,1,j===0?FILL[key]:null);\n"
 "    $(NOD[key]).style.display=any?'none':'flex';\n"
 "    /* Koncovy bod = aktualni hodnota prvni rady (barva rady). */\n"
-"    var dot=$('e'+key), p=any?lastXY(s.series[0].a,s.span[0],s.span[1]):null;\n"
+"    var dot=$('e'+key), p=(any&&!s.series[0].hid)?lastXY(s.series[0].a,s.span[0],s.span[1]):null;\n"
 "    if(dot){\n"
 "      if(p){ dot.style.display='block'; dot.style.left=p[0]+'%'; dot.style.top=p[1]+'%';\n"
 "             dot.style.background='var(--c'+s.series[0].c+')'; }\n"
@@ -3027,7 +3143,7 @@ static const char SPA_HTML[] =
 "         jednotku u kazde hodnoty, takze popisek narostl az na 11 znaku a do\n"
 "         leveho sloupce (45 px) se neveslo ani 8. Osa si cislo zformatuje\n"
 "         podle sveho kroku; `s.fmt` zustava pro odecet pod kurzorem. */\n"
-"      ylab(YT[key][0],YT[key][1],s.span[0],s.span[1],null,s.unit);\n"
+"      if(key==='vc') vcAxes(s); else ylab(YT[key][0],YT[key][1],s.span[0],s.span[1],null,s.unit);\n"
 "      var st=stats(s.series[0].a);\n"
 "      /* Aktualni hodnota = UROVEN, `pp` = ROZPTYL -> kazde svou jednotkou. */\n"
 "      $(ST[key]).textContent=st?(fLvl(s,st.last,s.series[0])\n"
@@ -3035,7 +3151,8 @@ static const char SPA_HTML[] =
 "    } else { $(ST[key]).textContent='--';\n"
 "      /* Bez dat vyprazdni i osu - jinak by mrizka a popisky zustaly viset\n"
 "         u prazdneho grafu a tvrdily rozsah, ktery uz neplati. */\n"
-"      $(YT[key][0]).innerHTML=''; $(YT[key][1]).innerHTML=''; }\n"
+"      $(YT[key][0]).innerHTML=''; $(YT[key][1]).innerHTML='';\n"
+"      if(key==='vc') $('yrVc').innerHTML=''; }\n"
 "  }\n"
 "}\n"
 "\n"
@@ -3263,6 +3380,7 @@ static const char SPA_HTML[] =
 "  var h='<u>'+head+'</u>', any=0;\n"
 "  for(j=0;j<s.series.length;j++){\n"
 "    var se=s.series[j], v=(se.a&&idx<se.a.length)?se.a[idx]:null;\n"
+"    if(se.hid) continue;\n"
 "    if(v===null||v===undefined) continue;\n"
 "    any=1;\n"
 "    h+='<i class=k'+se.c+'></i>'+se.n+' '+s.fmt(v)+'<br>';\n"
@@ -4173,6 +4291,18 @@ static const char SPA_HTML[] =
 "for(var q=0;q<cws.length;q++)\n"
 "  cws[q].addEventListener('click',function(){ openZoom(this.getAttribute('data-z')); });\n"
 "$('dX').addEventListener('click',closeZoom);\n"
+"$('dAdRst').addEventListener('click',function(){\n"
+"  var b=$('dAdRst'), z=zoom; b.disabled=true;\n"
+"  function done(msg){ b.textContent=msg; setTimeout(function(){ b.disabled=false; if(zoom) drawZoom(); },2500); }\n"
+"  /* Firmware vynuluje Allan + histogram + trend (stejne jako RESET na displeji); web si k tomu vycisti\n"
+"     vlastni rady: u Allanu radu mereni M, u trendu kmitoctu historii grafu H.f. */\n"
+"  post('CALC:AVER:CLE').then(function(t){ t=t.trim();\n"
+"    if(isErr(t)){ done('ZAKAZANO ('+t.split(',')[0]+')'); return; }\n"
+"    if(z==='freq'){ H.f.length=0; DL=null; }\n"
+"    else { mClear(); mWhy=''; FWS=null; lastAdev=null; setTimeout(pollStab,600); }\n"
+"    done('VYNULOVANO'); if(zoom) drawZoom();\n"
+"  }).catch(function(){ done('CHYBA SPOJENI'); });\n"
+"});\n"
 "$('ovl').addEventListener('click',function(e){ if(e.target===$('ovl')) closeZoom(); });\n"
 "document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeZoom(); });\n"
 "\n"

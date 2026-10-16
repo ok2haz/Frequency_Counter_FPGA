@@ -123,4 +123,21 @@ void gps_format_raw(char *buf, int n);
  * stav, bezpecne za behu. Soucast UART "selftest". @return true = OK. */
 bool gps_selftest(void);
 
+/* ── UBX-TIM-TP: kvantizacni chyba (sawtooth) PRISTI hrany 1PPS (STATUS #305, F3) ─────────────
+ * NEO-7M generuje TIMEPULSE z vlastnich hodin, takze hrana je posunuta o cast jejich periody
+ * (desitky ns, "pila"). TIM-TP prichazi PRED hranou, kterou popisuje, a nese tu chybu (`q_ps`).
+ * Smycka GPSDO ji odecita; ZNAMENKO a spravnost prirazeni si overuje sama (rozptylem faze),
+ * protoze ani jedno neni z dokumentace v repu doloženo (⬜ HYPOTEZA: NEO-7M TIM-TP podporuje).
+ * Zapis VYHRADNE defaultTask (gps_feed_char), cteni pres gps_timtp_get (kriticka sekce). */
+typedef struct {
+  uint32_t tow_ms;     /* cas hrany (GPS TOW, ms), ke ktere oprava patri */
+  int32_t  q_ps;       /* kvantizacni chyba [ps] */
+  uint32_t rx_ms;      /* HAL_GetTick prijeti zpravy */
+  uint32_t n;          /* pocet prijatych TIM-TP od startu (zmena = nova zprava) */
+} gps_timtp_t;
+/* `last` = posledni, `prev` = predposledni zprava. @return false = zadna jeste neprisla. */
+bool gps_timtp_get(gps_timtp_t *last, gps_timtp_t *prev);
+/* UBX-CFG-MSG: zapne TIM-TP 1x za navigacni epochu (posila gps_init a gps_tick 1x/min spolu s TP5). */
+void gps_config_timtp(void);
+
 #endif /* INC_GPS_H_ */

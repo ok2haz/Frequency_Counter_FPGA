@@ -30,6 +30,8 @@
 #include "errlog.h"           /* v17: errlog_count/read_batch/fmt_detail — trvaly zaznamnik chyb na web */
 #include "alarm.h"            /* g_alarm_*, g_mon_*_bad — dashboard STAV karta (v12, #4) */
 #include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
+#include "ad5693.h"           /* g_dac — v24 stav DAC ladeni OCXO do snapshotu */
+#include "gpsdo.h"            /* gpsdo_get — v24 blok `gpsdo` (smycka GPSDO) */
 #include <stddef.h>           /* offsetof — kontrola layoutu ipc_sat_t vs gps_sat_t */
 #include "freertos_shared.h"  /* g_spi_ok, g_freq_stale, g_si5356_*, g_ui_cfg, g_uptime_s, ... */
 #include "FreeRTOS.h"         /* taskENTER_CRITICAL — atomicky commit g_meas_cfg */
@@ -86,6 +88,7 @@ static void ipc_stamp(volatile ipc_shared_t *p)
     memset((void *)&p->errlog, 0, sizeof p->errlog);
     memset((void *)&p->stab,   0, sizeof p->stab);
     memset((void *)&p->fpgadiag, 0, sizeof p->fpgadiag);
+    memset((void *)&p->gpsdo, 0, sizeof p->gpsdo);
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
@@ -171,6 +174,24 @@ void ipc_publish(void)
             for (uint32_t i = 0; i < IPC_FPGADIAG_N; i++) g_ipc.fpgadiag.w[i] = w[i];
             IPC_DMB();
             g_ipc.fpgadiag.gen++;
+
+            /* v24: smycka GPSDO (#305) -- seqlock (gen liche = zapis), hodnoty spolu souvisi */
+            gpsdo_status_t gs;
+            gpsdo_get(&gs);
+            uint32_t q = (uint32_t)((gs.code < 0.0 ? 0.0 : (gs.code > 65535.0 ? 65535.0 : gs.code)) * 65536.0 + 0.5);
+            double ye = gs.y * 1e12;
+            double xe = gs.x_ns;
+            g_ipc.gpsdo.gen++; IPC_DMB();
+            g_ipc.gpsdo.state  = gs.state;  g_ipc.gpsdo.why = gs.why;
+            g_ipc.gpsdo.locked = gs.locked; g_ipc.gpsdo.saw = gs.saw;
+            g_ipc.gpsdo.y_e12  = (int32_t)((ye > 2e9) ? 2e9 : (ye < -2e9 ? -2e9 : ye));
+            g_ipc.gpsdo.x_ns   = (int32_t)((xe > 2e9) ? 2e9 : (xe < -2e9 ? -2e9 : xe));
+            g_ipc.gpsdo.code_q16 = q;
+            g_ipc.gpsdo.state_s  = gs.state_s;
+            g_ipc.gpsdo.pps_ok   = gs.pps_ok; g_ipc.gpsdo.pps_rej = gs.pps_rej;
+            g_ipc.gpsdo.tau_s    = (uint16_t)gs.tau_s;
+            g_ipc.gpsdo.kdac_e13 = (uint16_t)(gs.kdac * 1e13 + 0.5);
+            IPC_DMB(); g_ipc.gpsdo.gen++;
         }
     }
     if (!meas_new && (now - s_last_ms) < 500u) return;
@@ -353,6 +374,18 @@ void ipc_publish(void)
         g_ipc.snap.tdc_rez_st  = st;
         uint32_t rn = g_si5356_reinit_cnt;
         g_ipc.snap.si_reinit_n = (uint8_t)((rn > 255u) ? 255u : rn);
+    }
+    /* v24: DAC ladeni OCXO (#304). `g_dac` plni SensorsTask; roztrzene cteni je neskodne
+     * (zobrazovaci udaj, obnovi se pri dalsi publikaci). */
+    {
+        uint8_t f = 0u;
+        if (g_dac.present)      f |= IPC_DAC_F_PRESENT;
+        if (g_dac.ctrl_ok)      f |= IPC_DAC_F_CTRL;
+        if (g_dac.code_valid)   f |= IPC_DAC_F_VALID;
+        if (g_dac.restore_done) f |= IPC_DAC_F_RSTDONE;
+        g_ipc.snap.dac_code    = g_dac.code;
+        g_ipc.snap.dac_restore = g_dac.restore;
+        g_ipc.snap.dac_flags   = f;
     }
 
     /* v12 (#5): GPS druzice pro sky plot. Layout ipc_sat_t == gps_sat_t (assert
@@ -573,6 +606,7 @@ _Static_assert((int)SCPI_CFG_LIM_HI   == (int)IPC_CFG_LIM_HI,   "SCPI/IPC klic L
 _Static_assert((int)SCPI_CFG_GATE     == (int)IPC_CFG_GATE,     "SCPI/IPC klic GATE se rozesel");
 _Static_assert((int)SCPI_CFG_CHAN     == (int)IPC_CFG_CHAN,     "SCPI/IPC klic CHAN se rozesel");
 _Static_assert((int)SCPI_CFG_RUN      == (int)IPC_CFG_RUN,      "SCPI/IPC klic RUN se rozesel");
+_Static_assert((int)SCPI_CFG_STATS_CLR == (int)IPC_CFG_STATS_CLR, "SCPI/IPC klic STATS_CLR se rozesel");
 
 /* ⚠️ Totez pro masku platnosti: `snap.sens_valid` se na CM4 priradi PRIMO do
  * `scpi_src_t.valid`, takze bitove pozice musi sedet 1:1 se `SCPI_V_*`.
@@ -667,6 +701,8 @@ static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_rin
                  * (bezi i v selftestu nad lokalni kopii), kdezto GATE/CHAN/RUN sahaji na globaly. */
                 if (c.key == IPC_CFG_GATE || c.key == IPC_CFG_CHAN || c.key == IPC_CFG_RUN) {
                     if (!ipc_ui_cfg_apply(c.key, c.arg)) r.status = 1u;
+                } else if (c.key == IPC_CFG_STATS_CLR) {
+                    g_stats_reset_req = 1;      /* stav statistiky vlastni UiTask (screen_main_stats_reset) -> jen pozadavek */
                 } else if (!ipc_cfg_apply(cfg, c.key, c.arg, c.argd, freq_hz)) {
                     r.status = 1u;
                 }

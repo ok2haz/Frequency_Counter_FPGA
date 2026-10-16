@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  23u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  24u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -138,7 +138,13 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        ⚠️ VELIKOST ANI OFFSETY SE NEZMENILY: pole lezi v byvalych
                                        `_pad_gps`, `_pad_h` a `_pad_sk[3]` (hlida `_Static_assert` pod
                                        `ipc_snapshot_t`). Bumpnuto kvuli detekci nesouladu bank (CM4 se
-                                       starou verzi by bajty cetla jako vycpavku). Flashnout obe banky. */
+                                       starou verzi by bajty cetla jako vycpavku). Flashnout obe banky.
+                                       v24 (2026-10-16): DAC ladeni OCXO (`dac_code`, `dac_restore`,
+                                       `dac_flags`) pro `/api/state` a web (STATUS #304). Pole lezi
+                                       v koncove vycpavce `ipc_snapshot_t` (476..479) -> VELIKOST ANI
+                                       OFFSETY SE NEZMENILY (hlida `_Static_assert`). Navic blok
+                                       `gpsdo` (smycka GPSDO, #305) na KONCI `ipc_shared_t`. Bumpnuto
+                                       kvuli detekci nesouladu bank. Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -319,7 +325,19 @@ typedef struct {
     uint8_t  tdc_rez_b;
     uint8_t  tdc_rez_st;
     ipc_sat_t gps_sats[IPC_GPS_MAX_SATS];
+    /* v24 (2026-10-16): DAC ladeni OCXO (AD5693R, `g_dac` v ad5693.h) pro web. Byvala koncova vycpavka
+     * struktury (476..479) -> velikost beze zmeny. `dac_code` = posledni zapsany/prevzaty kod (plati jen
+     * s IPC_DAC_F_VALID), `dac_restore` = AD5693_RESTORE_* (obnova kodu z flash po startu, #304). */
+    uint16_t dac_code;
+    uint8_t  dac_restore;
+    uint8_t  dac_flags;            /* IPC_DAC_F_* */
 } ipc_snapshot_t;
+#define IPC_DAC_F_PRESENT  0x01u   /* cip odpovida na 0x4C */
+#define IPC_DAC_F_CTRL     0x02u   /* control registr zapsan (int. reference, GAIN x2) */
+#define IPC_DAC_F_VALID    0x04u   /* `dac_code` je znamy */
+#define IPC_DAC_F_RSTDONE  0x08u   /* obnova po startu vyrizena */
+_Static_assert(offsetof(ipc_snapshot_t, dac_code) == 476u,
+               "dac_code mel lezet v koncove vycpavce snapshotu (476) -- layout se posunul");
 /* v19: `freq4_hz` musel sednout PRESNE na byvale `offset`+`drift` — kdyby se double
    posunul (zarovnani), posunulo by se vse za nim a nesoulad bank by prestal byt
    detekovatelny (layout pred `cm4` blokem, viz v12). */
@@ -570,6 +588,21 @@ typedef struct {
     uint32_t w[IPC_FPGADIAG_N];
 } ipc_fpgadiag_t;
 
+/* ── v24 (2026-10-16): smycka GPSDO pro web (`/api/state` -> "gpsdo", STATUS #305). Zapisuje CM7 defaultTask
+ * ~2 Hz (gpsdo_get), cte CM4 se SEQLOCKEM (`gen` liche = zapis): hodnoty spolu souvisi (stav + y + faze). */
+typedef struct {
+    volatile uint32_t gen;         /* seqlock */
+    uint8_t  state, why, locked, saw;  /* GPSDO_*, GPSDO_WHY_*, 1 = zamceno, GPSDO_SAW_* (gpsdo.h) */
+    int32_t  y_e12;                /* odhad relativni odchylky OCXO x 1e12 (ppt) */
+    int32_t  x_ns;                 /* filtrovana fazova chyba [ns] */
+    uint32_t code_q16;             /* povel DAC [LSB] v Q16.16 */
+    uint32_t state_s;              /* sekund v aktualnim stavu */
+    uint32_t pps_ok, pps_rej;      /* prijate / odmitnute intervaly 1PPS */
+    uint16_t tau_s;                /* casova konstanta PLL [s] */
+    uint16_t kdac_e13;             /* K (odhad z FLL) x 1e13 */
+} ipc_gpsdo_t;
+_Static_assert(sizeof(ipc_gpsdo_t) == 36u, "ipc_gpsdo_t zmenil velikost");
+
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
     ipc_snapshot_t   snap;         /* CM7 -> CM4 */
@@ -580,6 +613,7 @@ typedef struct {
     ipc_errlog_xfer_t errlog;      /* CM4 <-> CM7 (v17, trvaly zaznamnik chyb na vyzadani) */
     ipc_stab_t       stab;         /* CM7 -> CM4 (v20, statistika stability z firmwaru) */
     ipc_fpgadiag_t   fpgadiag;     /* CM7 -> CM4 (v22, surovy stav ramce FPGA + pocitadla odmitnuti, web /api/fpga) */
+    ipc_gpsdo_t      gpsdo;        /* CM7 -> CM4 (v24, smycka GPSDO, web /api/state) -- NA KONCI: layout pred `cm4` beze zmeny */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -629,6 +663,7 @@ enum {
     IPC_CFG_GATE,         /* arg = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
     IPC_CFG_CHAN,         /* arg = kanal 0/1 */
     IPC_CFG_RUN,          /* arg = 0 STOP / 1 RUN */
+    IPC_CFG_STATS_CLR,    /* akce: vynulovat statistiku stability (Allan/histogram/trend) -> g_stats_reset_req (2026-10-16) */
 };
 
 /* ── Pametova bariera (core-agnostic; funguje na CM7 i CM4, bez CMSIS zavislosti). */

@@ -491,6 +491,7 @@ void gps_init(void)
    * HAL_UART_Transmit(_IT), ani HAL_UART_Receive_IT __HAL_LOCK nepouzivaji a UBX
    * se za behu posila i z UiTasku (SURVEY) a UartTasku (`gps glonass`). */
   gps_config_timepulse();
+  gps_config_timtp();
   s_tp_last_ms = HAL_GetTick();
 
   /* RX v IT rezimu. */
@@ -512,11 +513,90 @@ void gps_tick(void)
   if ((uint32_t)(now - s_tp_last_ms) < GPS_TP_RESEND_MS) return;
   s_tp_last_ms = now;
   gps_config_timepulse();
+  gps_config_timtp();   /* STATUS #305: konfigurace zije jen v RAM modulu, stejne jako TP5 */
+}
+
+/* UBX-CFG-MSG (0x06 0x01, 3 B): msgClass, msgID, rate na AKTUALNIM portu (UART1). TIM-TP = 0x0D 0x01. */
+void gps_config_timtp(void)
+{
+  const uint8_t pl[3] = { 0x0D, 0x01, 1u };
+  ubx_send(0x06, 0x01, pl, 3);
+}
+
+/* ── Prijem UBX (STATUS #305) ─────────────────────────────────────────────────────────────────
+ * Binarni ramec B5 62 | cls id | len(LE) | payload | CK_A CK_B se prolina s NMEA. Bajty uvnitr ramce
+ * se do NMEA radku NEPOSILAJI (jinak by binarni payload s '$', '\r', '\n' rozbil rozepsanou vetu).
+ * Zpracuje se jen TIM-TP (16 B); ostatni (ACK/NAK na nase CFG) se jen spocitaji. */
+#define UBX_PL_MAX 40u
+static uint8_t     s_ubx_st;                 /* 0 = mimo ramec, 1 = B5, 2 = cls, 3 = id, 4 = lenL, 5 = lenH, 6 = payload, 7 = CK_A, 8 = CK_B */
+static uint8_t     s_ubx_cls, s_ubx_id, s_ubx_cka;
+static uint16_t    s_ubx_len, s_ubx_pos;
+static uint8_t     s_ubx_a, s_ubx_b;
+static uint8_t     s_ubx_pl[UBX_PL_MAX];
+static uint32_t    s_ubx_rx_ok, s_ubx_rx_bad; /* prijate UBX ramce se spravnym / spatnym checksumem */
+static gps_timtp_t s_tp_last, s_tp_prev;
+static uint8_t     s_tp_have;
+
+static void ubx_frame_done(void)
+{
+  s_ubx_rx_ok++;
+  if (s_ubx_cls == 0x0D && s_ubx_id == 0x01 && s_ubx_len == 16u) {
+    const uint8_t *p = s_ubx_pl;
+    gps_timtp_t e;
+    e.tow_ms = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    e.q_ps   = (int32_t)((uint32_t)p[8] | ((uint32_t)p[9] << 8) | ((uint32_t)p[10] << 16) | ((uint32_t)p[11] << 24));
+    e.rx_ms  = HAL_GetTick();
+    e.n      = s_tp_last.n + 1u;
+    taskENTER_CRITICAL();
+    s_tp_prev = s_tp_last; s_tp_last = e; s_tp_have = 1u;
+    taskEXIT_CRITICAL();
+  }
+}
+
+/* @return 1 = bajt patri UBX ramci (NMEA ho nesmi videt). */
+static int ubx_feed(uint8_t b)
+{
+  switch (s_ubx_st) {
+  case 0: if (b == 0xB5) { s_ubx_st = 1; return 1; } return 0;
+  case 1: if (b == 0x62) { s_ubx_st = 2; s_ubx_a = 0; s_ubx_b = 0; return 1; }
+          s_ubx_st = 0; return 0;              /* B5 bez 62 -> smeti, bajt patri NMEA */
+  default: break;
+  }
+  if (s_ubx_st <= 6) { s_ubx_a = (uint8_t)(s_ubx_a + b); s_ubx_b = (uint8_t)(s_ubx_b + s_ubx_a); }
+  switch (s_ubx_st) {
+  case 2: s_ubx_cls = b; s_ubx_st = 3; break;
+  case 3: s_ubx_id  = b; s_ubx_st = 4; break;
+  case 4: s_ubx_len = b; s_ubx_st = 5; break;
+  case 5: s_ubx_len |= (uint16_t)((uint16_t)b << 8); s_ubx_pos = 0;
+          s_ubx_st = (s_ubx_len > 512u) ? 0 : (s_ubx_len ? 6 : 7);   /* nesmyslna delka = smeti */
+          break;
+  case 6: if (s_ubx_pos < UBX_PL_MAX) s_ubx_pl[s_ubx_pos] = b;
+          if (++s_ubx_pos >= s_ubx_len) s_ubx_st = 7;
+          break;
+  case 7: s_ubx_cka = b; s_ubx_st = 8; break;
+  case 8: if (s_ubx_cka == s_ubx_a && b == s_ubx_b && s_ubx_len <= UBX_PL_MAX) ubx_frame_done();
+          else s_ubx_rx_bad++;
+          s_ubx_st = 0;
+          break;
+  default: s_ubx_st = 0; break;
+  }
+  return 1;
+}
+
+bool gps_timtp_get(gps_timtp_t *last, gps_timtp_t *prev)
+{
+  taskENTER_CRITICAL();
+  uint8_t h = s_tp_have;
+  if (h && last) *last = s_tp_last;
+  if (h && prev) *prev = s_tp_prev;
+  taskEXIT_CRITICAL();
+  return h != 0u;
 }
 
 void gps_feed_char(char c)
 {
   s_raw_bytes++;                       /* dukaz, ze z GPS vubec neco chodi */
+  if (ubx_feed((uint8_t)c)) return;    /* binarni UBX (TIM-TP, ACK) -- do NMEA radku nepatri */
   if (c == '\r' || c == '\n') {
     if (s_drop) { s_drop = 0; s_len = 0; return; }   /* konec zahazovaneho ramce */
     if (s_len > 0) {
@@ -664,8 +744,9 @@ void gps_format_raw(char *buf, int n)
   raw  = s_raw_bytes;
   sent = s_gps.sentences;
   taskEXIT_CRITICAL();
-  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu UBX:%lu/%lu last=[%s]",
+  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu UBX:%lu/%lu RX:%lu/%lu TIMTP:%lu last=[%s]",
            (unsigned long)raw, (unsigned long)sent, (unsigned long)s_overflows,
            (unsigned long)s_resyncs, (unsigned long)s_ubx_sent, (unsigned long)s_ubx_fail,
+           (unsigned long)s_ubx_rx_ok, (unsigned long)s_ubx_rx_bad, (unsigned long)s_tp_last.n,
            last[0] ? last : "(zatim nic)");
 }

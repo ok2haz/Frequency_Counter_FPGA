@@ -315,3 +315,416 @@ void StartFpgaTask(void *argument)
       osDelay((gms <= 50u) ? 10u : ((gms <= 100u) ? 25u : 50u)); }
   }
 }
+
+/* ═══════════════ Smycka GPSDO (STATUS #305) — popis v gpsdo.h ═════════════════════════════════════
+ * Implementace je ZDE, ne v novem gpsdo.c: novy .c se do buildu nedostane bez Close/Open Project
+ * (CLAUDE.md, mechanicke pravidlo 2). Bezi v defaultTasku (gpsdo_tick), NE ve FpgaTasku -- ten ma malo
+ * zasobniku (status 2026-10-16: ~750 B volnych). Udalosti 1PPS sem predava fpga_pps_get (FpgaTask je
+ * vyhlasi az po shode dvou ramcu), DAC zapisuje SensorsTask podle `g_gpsdo_code_q16`. */
+#include "gpsdo.h"
+#include "ad5693.h"      /* g_dac, ad5693_mv_to_code, AD5693_RESTORE_MAX_MV */
+#include "gps.h"         /* gps_get (fix), gps_timtp_get (sawtooth) */
+#include <math.h>
+
+volatile uint8_t  g_gpsdo_drive;
+volatile uint32_t g_gpsdo_code_q16;
+volatile uint8_t  g_gpsdo_lockflag;
+
+#define GPSDO_KDAC_DEFAULT  3.4e-11   /* relativne / LSB, zmereno 2026-10-16 (4,3-4,6 Hz/V x 76,3 uV/LSB) */
+#define GPSDO_TAU_DEFAULT   1000u     /* [s] casova konstanta PLL: sum GPS 30 ns -> ~4e-11 na povelu */
+#define GPSDO_ZETA          0.7
+#define GPSDO_FLL_WIN0      16u       /* [s] prvni okno FLL */
+#define GPSDO_FLL_WINMAX    256u
+#define GPSDO_FLL_LOCK_Y    5e-10     /* FLL -> LOCK: odchylka okna pod touto mezi ... */
+#define GPSDO_FLL_LOCK_WIN  128u      /* ... a okno aspon tak dlouhe (sum okna 16 s je ~3e-9) */
+#define GPSDO_Y_MAX         2.5e-6    /* interval s vetsi odchylkou se nebere (EFC +-1,1 ppm + rezerva) */
+#define GPSDO_OUTLIER_Y     3e-7      /* LOCK: skok > 300 ns/s proti filtru = vadna hrana (~7 sigma) */
+#define GPSDO_HOLD_MS       5000u     /* bez prijateho 1PPS tak dlouho -> HOLD */
+#define GPSDO_X_SLIP_NS     50000.0   /* LOCK: faze > 50 us = neco se pokazilo -> znovu FLL */
+#define GPSDO_SAW_W         64u       /* okno rozhodnuti o oprave sawtooth [vzorku] */
+#define GPSDO_TP_GUARD_MS   60u       /* TIM-TP musi prijit aspon tolik PRED prvnim videnim hrany */
+
+/* ── Jadro regulatoru (cista logika, testuje gpsdo_selftest) ───────────────────────────────────── */
+typedef struct {
+    uint8_t  state;              /* GPSDO_FLL / GPSDO_LOCK (jine stavy resi obal) */
+    double   code, code_max;     /* povel [LSB] */
+    double   kdac, tau;
+    double   k0;                 /* K zadane uzivatelem (meze odhadu: 0,25x .. 4x) */
+    double   fll_e, fll_prev_y;  /* FLL: soucet chyb periody [ns], odchylka predchoziho okna */
+    double   last_dc;            /* FLL: posledni krok kodu [LSB] (odhad K) */
+    uint32_t fll_n, fll_win;
+    uint8_t  settle, fll_steps, rail;
+    double   x, xf, integ, code_lock, yf;   /* LOCK: faze [ns], filtr faze, integrator [rel], kod pri zamceni */
+    uint32_t good, bad_run;
+    uint8_t  locked, diverged;
+} gp_core_t;
+
+static double gp_clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+static void core_start_fll(gp_core_t *c)
+{
+    c->state = GPSDO_FLL;
+    c->last_dc = 0.0; c->rail = 0u;
+    c->fll_e = 0.0; c->fll_n = 0u; c->fll_win = GPSDO_FLL_WIN0;
+    c->settle = 1u; c->fll_prev_y = 0.0; c->fll_steps = 0u;
+    c->locked = 0u;
+}
+
+/* Jeden interval 1PPS. e_ns = chyba periody za n sekund [ns] (kladna = OCXO rychly).
+ * @return 1 = interval pouzit, 0 = odmitnut. */
+static int core_step(gp_core_t *c, double e_ns, uint32_t n)
+{
+    double y = e_ns * 1e-9 / (double)n;
+    if (fabs(y) > GPSDO_Y_MAX) return 0;
+    if (c->state == GPSDO_FLL) {
+        if (c->settle) { c->settle--; return 1; }        /* prvni interval po kroku DAC nese prechod */
+        c->fll_e += e_ns; c->fll_n += n;
+        if (c->fll_n < c->fll_win) return 1;
+        double ya = c->fll_e * 1e-9 / (double)c->fll_n;
+        c->yf = ya;
+        /* K se MERI z velkych kroku (dy / dkod): opravuje odhad (2026-10-16 simulace: pevne K 2x mimo FLL
+         * rozkmitalo) a hlavne pozna SPATNE ZNAMENKO (zaporne K = kazdy krok by OCXO vzdaloval). */
+        int kupd = 0;
+        if (c->fll_steps > 0u && fabs(c->last_dc) > 50.0) {
+            double ko = (ya - c->fll_prev_y) / c->last_dc;
+            if (ko <= 0.0) { c->diverged = 1u; return 1; }
+            if (ko > 0.25 * c->k0 && ko < 4.0 * c->k0) { c->kdac = ko; kupd = 1; }
+        }
+        /* Odchylka po kroku vetsi nez 1,5x pred nim (a K se tim nevysvetlilo) = divergence. */
+        if (!kupd && c->fll_steps > 0u && fabs(ya) > 1e-8 && fabs(ya) > 1.5 * fabs(c->fll_prev_y)) { c->diverged = 1u; return 1; }
+        double old = c->code;
+        c->code = gp_clamp(c->code - ya / c->kdac, 0.0, c->code_max);
+        c->last_dc = c->code - old;
+        /* Kod na dorazu a kmitocet porad mimo: rozsah EFC nestaci (nebo znamenko) -> 3 okna a konec. */
+        if (fabs(ya) > 1e-8 && fabs(c->last_dc) < 1.0) c->rail++; else c->rail = 0u;
+        if (c->rail >= 3u) { c->diverged = 1u; return 1; }
+        c->fll_prev_y = ya; c->fll_steps++;
+        c->fll_e = 0.0; c->fll_n = 0u; c->settle = 1u;
+        if (fabs(ya) < GPSDO_FLL_LOCK_Y && c->fll_win >= GPSDO_FLL_LOCK_WIN) {
+            c->state = GPSDO_LOCK;
+            c->x = 0.0; c->xf = 0.0; c->integ = 0.0; c->code_lock = c->code;
+            c->good = 0u; c->bad_run = 0u; c->yf = 0.0;
+        } else if (fabs(ya) < 3e-8 && c->fll_win < GPSDO_FLL_WINMAX) {
+            c->fll_win *= 2u;
+        }
+        return 1;
+    }
+    /* LOCK: PLL 2. radu. Rovnice: x' = y_zbytek - Kp*x - I, I' = Ki*x -> wn = 1/tau, Kp = 2*zeta/tau, Ki = 1/tau^2.
+     * Faze se predfiltruje (tau/30), aby sum GPS (~30 ns/s) nesel primo do povelu. */
+    if (c->good > 10u && fabs(y - c->yf) > GPSDO_OUTLIER_Y) {
+        if (++c->bad_run > 30u) core_start_fll(c);       /* trvale "odlehle" = skok kmitoctu, ne vadna hrana */
+        return 0;
+    }
+    c->bad_run = 0u;
+    c->x += e_ns;
+    double tf = c->tau / 30.0; if (tf < 10.0) tf = 10.0;
+    double a = (double)n / tf; if (a > 1.0) a = 1.0;
+    c->xf += (c->x - c->xf) * a;
+    double ay = (double)n / 60.0; if (ay > 1.0) ay = 1.0;
+    c->yf += (y - c->yf) * ay;
+    double kp = 2.0 * GPSDO_ZETA / c->tau, ki = 1.0 / (c->tau * c->tau);
+    double integ_new = c->integ + ki * c->xf * 1e-9 * (double)n;
+    double code = c->code_lock - (kp * c->xf * 1e-9 + integ_new) / c->kdac;
+    if (code < 0.0 || code > c->code_max) code = gp_clamp(code, 0.0, c->code_max);   /* anti-windup: integrator stoji */
+    else c->integ = integ_new;
+    c->code = code;
+    c->good += n;
+    c->locked = (fabs(c->xf) < 200.0 && fabs(c->yf) < 1e-9 && c->good >= 60u) ? 1u : 0u;
+    if (fabs(c->xf) > GPSDO_X_SLIP_NS) core_start_fll(c);
+    return 1;
+}
+
+/* ── Obal: vstupy, sawtooth, stavy WAIT/HOLD/OFF (VYHRADNE defaultTask) ────────────────────────── */
+static gp_core_t s_gc;
+static uint8_t   s_g_en = 1u;                  /* vychozi ZAPNUTO (zadani 2026-10-16); nepersistuje se */
+static uint8_t   s_g_state = GPSDO_WAIT, s_g_why = GPSDO_WHY_NOPPS, s_g_hold_from;
+static double    s_g_tau = (double)GPSDO_TAU_DEFAULT, s_g_kdac = GPSDO_KDAC_DEFAULT;
+static uint32_t  s_g_pps_n, s_g_ts_prev, s_g_last_ok_ms, s_g_state_ms;
+static uint8_t   s_g_have_prev;
+static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezme se v dalsim intervalu) */
+static volatile uint32_t s_g_cmd_q16;          /* povel kodu (i virtualni pri emulaci) */
+static volatile uint8_t  s_g_virt;             /* 1 = smycka ridi virtualni DAC emulatoru (`fpgasim`) */
+static uint32_t  s_g_ok, s_g_rej, s_g_gap;
+/* sawtooth */
+static uint32_t  s_q_rec_n;                    /* `n` TIM-TP pouzite pro predchozi hranu */
+static double    s_q_prev;                     /* oprava predchozi hrany [ns] */
+static uint8_t   s_q_have;
+static double    s_e_prev[3];                  /* predchozi e: bez / -dq / +dq */
+static uint8_t   s_e_prev_ok;
+static double    s_sv[3];
+static uint32_t  s_sv_n;
+static uint8_t   s_saw = GPSDO_SAW_NODATA;
+static float     s_saw_var[3];
+static uint32_t  s_saw_dec;
+static gpsdo_status_t s_pub;                   /* publikovany stav (kopie pod kritickou sekci) */
+
+static void g_set_state(uint8_t st, uint8_t why)
+{
+    if (st != s_g_state) s_g_state_ms = HAL_GetTick();
+    s_g_state = st; s_g_why = why;
+}
+
+/* Oprava sawtooth pro hranu, ktera byla poprve videt v `first_ms`: posledni TIM-TP, ktere prislo aspon
+ * GPSDO_TP_GUARD_MS PRED tim a ne drive nez 1,5 s. Kazde TIM-TP smi patrit jen jedne hrane. */
+static int saw_lookup(uint32_t first_ms, double *q_ns, uint32_t *rec_n)
+{
+    gps_timtp_t a, b;
+    if (!gps_timtp_get(&a, &b)) return 0;
+    const gps_timtp_t *r[2] = { &a, &b };
+    for (int i = 0; i < 2; i++) {
+        int32_t lead = (int32_t)(first_ms - r[i]->rx_ms);
+        if (r[i]->n != 0u && lead >= (int32_t)GPSDO_TP_GUARD_MS && lead < 1500) {
+            *q_ns = (double)r[i]->q_ps * 1e-3; *rec_n = r[i]->n; return 1;
+        }
+    }
+    return 0;
+}
+
+/* Rozhodnuti o oprave: rozptyl druhych diferenci faze (= rozdil po sobe jdoucich chyb periody) bez opravy
+ * a s obema znamenky. Oprava se zapne jen kdyz rozptyl snizi aspon o 25 % -- jinak (spatne prirazeni, modul
+ * TIM-TP neposila, sum jinde) by mohla pridat sum misto ubrat. */
+static void saw_account(double e_ns, int dq_ok, double dq)
+{
+    if (!dq_ok) { s_e_prev_ok = 0u; return; }
+    double e[3] = { e_ns, e_ns - dq, e_ns + dq };
+    if (s_e_prev_ok) {
+        for (int i = 0; i < 3; i++) { double d = e[i] - s_e_prev[i]; s_sv[i] += d * d; }
+        if (++s_sv_n >= GPSDO_SAW_W) {
+            for (int i = 0; i < 3; i++) s_saw_var[i] = (float)(s_sv[i] / (double)s_sv_n);
+            int best = (s_sv[1] < s_sv[2]) ? 1 : 2;
+            s_saw = (s_sv[best] < 0.75 * s_sv[0]) ? (uint8_t)((best == 1) ? GPSDO_SAW_PLUS : GPSDO_SAW_MINUS)
+                                                   : (uint8_t)GPSDO_SAW_OFF;
+            s_saw_dec++;
+            s_sv[0] = s_sv[1] = s_sv[2] = 0.0; s_sv_n = 0u;
+        }
+    }
+    for (int i = 0; i < 3; i++) s_e_prev[i] = e[i];
+    s_e_prev_ok = 1u;
+}
+
+static double g_start_code(void)
+{
+    if (g_dac.present && g_dac.code_valid) return (double)g_dac.code;
+    return (double)g_dac_persist;
+}
+
+void gpsdo_tick(void)
+{
+    uint32_t now = HAL_GetTick();
+    int sim = fpga_sim_active();
+    int dac_ok = sim || (g_dac.present && g_dac.ctrl_ok);
+    /* Zmena zdroje 1PPS (emulator <-> FPGA): virtualni povel nesmi pokracovat na skutecnem DAC ani naopak. */
+    static uint8_t s_sim_prev;
+    if ((uint8_t)sim != s_sim_prev) {
+        s_sim_prev = (uint8_t)sim;
+        s_g_have_prev = 0u; s_g_virt = 0u;
+        if (s_g_state != GPSDO_OFF) g_set_state(GPSDO_WAIT, GPSDO_WHY_NOPPS);
+    }
+
+    if (!s_g_en) {
+        if (s_g_state != GPSDO_OFF || s_g_why == GPSDO_WHY_NONE) g_set_state(GPSDO_OFF, (s_g_why == GPSDO_WHY_DIVERGE) ? GPSDO_WHY_DIVERGE : GPSDO_WHY_USER);
+        s_g_have_prev = 0u;
+    } else if (s_g_state == GPSDO_OFF) {
+        g_set_state(GPSDO_WAIT, GPSDO_WHY_NOPPS);
+    }
+
+    fpga_pps_t p;
+    int have = fpga_pps_get(&p);
+    if (s_g_en && have && p.n != s_g_pps_n) {
+        s_g_pps_n = p.n;
+        gps_data_t g;
+        gps_get(&g);
+        int fix = sim || (g.valid && g.fix_mode >= 2);
+        uint8_t why = !dac_ok ? GPSDO_WHY_NODAC : p.ref_ext ? GPSDO_WHY_REFEXT : p.clk_bad ? GPSDO_WHY_CLK
+                    : !fix ? GPSDO_WHY_NOFIX : GPSDO_WHY_NONE;
+        if (why != GPSDO_WHY_NONE) {
+            s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u;
+            if (s_g_state == GPSDO_WAIT) s_g_why = why;
+        } else if (!s_g_have_prev) {
+            s_g_ts_prev = p.ts; s_g_have_prev = 1u;
+            double q; uint32_t rn;
+            if (saw_lookup(p.first_ms, &q, &rn)) { s_q_prev = q; s_q_rec_n = rn; s_q_have = 1u; } else s_q_have = 0u;
+            s_e_prev_ok = 0u;
+        } else {
+            uint32_t dticks = p.ts - s_g_ts_prev;              /* mod 2^32 */
+            s_g_ts_prev = p.ts;
+            double F = (double)p.clk_mhz * 1e6;
+            uint32_t ns = (uint32_t)((double)dticks / F + 0.5);
+            double e_t = (double)dticks - (double)ns * F;
+            /* oprava sawtooth teto hrany (nejdriv precist, at se drzi navaznost i pri odmitnuti) */
+            double q = 0.0; uint32_t rn = 0u;
+            int q_ok = saw_lookup(p.first_ms, &q, &rn) && (rn != s_q_rec_n || !s_q_have);
+            int dq_ok = q_ok && s_q_have && ns == 1u;
+            double dq = dq_ok ? (q - s_q_prev) : 0.0;
+            if (q_ok) { s_q_prev = q; s_q_rec_n = rn; s_q_have = 1u; } else s_q_have = 0u;
+
+            if (ns < 1u || ns > 40u || fabs(e_t) > GPSDO_Y_MAX * (double)ns * F) {
+                s_g_rej++; s_e_prev_ok = 0u;                   /* 10 Hz bez fixu dava ns = 0 */
+            } else {
+                if (ns > 1u) s_g_gap++;
+                double e_ns = e_t * 1000.0 / (double)p.clk_mhz;
+                saw_account(e_ns, dq_ok, dq);
+                double e_use = e_ns;
+                if (dq_ok && s_saw == GPSDO_SAW_PLUS)  e_use = e_ns - dq;
+                if (dq_ok && s_saw == GPSDO_SAW_MINUS) e_use = e_ns + dq;
+
+                if (s_g_state == GPSDO_WAIT) {                 /* prvni pouzitelny interval -> rozbeh */
+                    memset(&s_gc, 0, sizeof s_gc);
+                    s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u;
+                    s_gc.code_max = (double)ad5693_mv_to_code(AD5693_RESTORE_MAX_MV);
+                    s_gc.code = gp_clamp(g_start_code(), 0.0, s_gc.code_max);
+                    core_start_fll(&s_gc);
+                    g_set_state(GPSDO_FLL, GPSDO_WHY_NONE);
+                } else if (s_g_state == GPSDO_HOLD) {          /* navrat 1PPS po holdoveru */
+                    if (s_g_hold_from == GPSDO_LOCK) {
+                        /* nova fazova kotva; integrator (= zbytkovy kmitocet) zustava, kod se nepohne */
+                        s_gc.code_lock = s_gc.code + s_gc.integ / s_gc.kdac;
+                        s_gc.x = 0.0; s_gc.xf = 0.0; s_gc.good = 0u; s_gc.bad_run = 0u;
+                        s_gc.state = GPSDO_LOCK;
+                    } else {
+                        core_start_fll(&s_gc);
+                    }
+                    g_set_state(s_gc.state, GPSDO_WHY_NONE);
+                }
+                /* K se prepisuje jen novou hodnotou od uzivatele -- jinak by se zahodil odhad z FLL */
+                if (s_g_kset) { s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u; }
+                s_gc.tau = s_g_tau;
+                if (core_step(&s_gc, e_use, ns)) { s_g_ok++; s_g_last_ok_ms = now; } else s_g_rej++;
+                if (s_gc.diverged) {
+                    s_g_en = 0u; g_set_state(GPSDO_OFF, GPSDO_WHY_DIVERGE);
+                } else if (s_gc.state != s_g_state && (s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK)) {
+                    g_set_state(s_gc.state, GPSDO_WHY_NONE);
+                }
+            }
+        }
+    }
+
+    /* Bez prijateho 1PPS -> holdover (drzi posledni kod). */
+    if ((s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK) && (uint32_t)(now - s_g_last_ok_ms) > GPSDO_HOLD_MS) {
+        s_g_hold_from = s_g_state;
+        g_set_state(GPSDO_HOLD, GPSDO_WHY_NONE);
+    }
+    if (s_g_en && s_g_state == GPSDO_WAIT && !have) s_g_why = GPSDO_WHY_NOPPS;
+
+    /* Vystup pro SensorsTask. DAC se ridi jen v aktivnich stavech; WAIT/OFF ho nechava byt.
+     * 🔴 S emulatorem (`fpgasim`) se ridi jen VIRTUALNI DAC (`s_g_cmd_q16` -> gpsdo_sim_dac_code): emulovana
+     * 1PPS by jinak skutecnym DAC rozladila fyzicky OCXO podle modelu, ktery s nim nema nic spolecneho. */
+    int drive = (s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK || s_g_state == GPSDO_HOLD) && dac_ok;
+    if (drive) s_g_cmd_q16 = (uint32_t)(gp_clamp(s_gc.code, 0.0, 65535.0) * 65536.0 + 0.5);
+    s_g_virt = (drive && sim) ? 1u : 0u;
+    if (drive && !sim) g_gpsdo_code_q16 = s_g_cmd_q16;
+    g_gpsdo_drive    = (drive && !sim) ? 1u : 0u;
+    g_gpsdo_lockflag = (s_g_state == GPSDO_LOCK && s_gc.locked) ? 1u : 0u;
+
+    gpsdo_status_t st;
+    st.state = s_g_state; st.why = s_g_why; st.locked = g_gpsdo_lockflag; st.saw = s_saw;
+    st.y = s_gc.yf; st.x_ns = s_gc.xf; st.code = s_gc.code;
+    st.kdac = (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac;   /* odhad z FLL, jinak zadane */
+    st.tau_s = s_g_tau;
+    st.fll_win_s = s_gc.fll_win; st.state_s = (now - s_g_state_ms) / 1000u;
+    st.pps_ok = s_g_ok; st.pps_rej = s_g_rej; st.pps_gap = s_g_gap;
+    st.saw_var[0] = s_saw_var[0]; st.saw_var[1] = s_saw_var[1]; st.saw_var[2] = s_saw_var[2]; st.saw_n = s_saw_dec;
+    taskENTER_CRITICAL(); s_pub = st; taskEXIT_CRITICAL();
+}
+
+void gpsdo_get(gpsdo_status_t *out)
+{
+    taskENTER_CRITICAL(); *out = s_pub; taskEXIT_CRITICAL();
+}
+
+void gpsdo_enable(int on)
+{
+    if (on) { if (!s_g_en) { s_gc.diverged = 0u; s_g_why = GPSDO_WHY_NONE; } s_g_en = 1u; }
+    else    { s_g_en = 0u; s_g_why = GPSDO_WHY_USER; }
+}
+int gpsdo_enabled(void) { return s_g_en ? 1 : 0; }
+
+void gpsdo_set_tau(uint32_t tau_s)
+{
+    if (tau_s < 100u) tau_s = 100u;
+    if (tau_s > 20000u) tau_s = 20000u;
+    s_g_tau = (double)tau_s;
+}
+void gpsdo_set_kdac(double k)
+{
+    if (k >= 1e-12 && k <= 1e-9) { s_g_kdac = k; s_g_kset = 1u; }
+}
+
+const char *gpsdo_state_name(uint8_t st)
+{
+    static const char *const n[] = { "OFF", "WAIT", "FLL", "LOCK", "HOLD" };
+    return (st < 5u) ? n[st] : "?";
+}
+const char *gpsdo_why_text(uint8_t why)
+{
+    static const char *const t[] = { "", "DAC nenalezen", "FPGA nehlasi 1PPS (FW < 0x0424?)", "GPS bez fixu",
+                                     "FPGA na externi referenci", "hodiny FPGA vadne",
+                                     "FLL divergovala (znamenko/velikost K?)", "vypnuto uzivatelem" };
+    return (why < 8u) ? t[why] : "?";
+}
+
+uint16_t gpsdo_sim_dac_code(void)
+{
+    if (s_g_virt) return (uint16_t)((s_g_cmd_q16 + 0x8000u) >> 16);   /* smycka ridi virtualni DAC emulatoru */
+    if (g_dac.present && g_dac.code_valid) return g_dac.code;
+    return g_dac_persist;
+}
+
+/* ── Selftest: regulator nad modelem OCXO (bez HW) ──────────────────────────────────────────────
+ * Model: y = Y0 + Ktrue * kod, faze roste o y*1e9 ns/s, kazda hrana ma sum ~N(0, 30 ns) a kvantizaci
+ * 10 ns. Ktrue je ZAMERNE o ~9 % jinak nez odhad regulatoru. Pozadavky: (1) do 4000 s LOCK, (2) za
+ * dalsich 8000 s |y| < 2e-10 a |faze| < 300 ns, (3) se SPATNYM znamenkem K se FLL zastavi (divergence). */
+static uint32_t s_st_rnd;
+static double st_gauss(void)
+{
+    double s = 0.0;
+    for (int i = 0; i < 3; i++) { s_st_rnd ^= s_st_rnd << 13; s_st_rnd ^= s_st_rnd >> 17; s_st_rnd ^= s_st_rnd << 5;
+                                  s += (double)(s_st_rnd >> 8) / 16777216.0; }
+    return (s - 1.5) * 2.0;
+}
+
+static int st_run(double kdac_est, double KT, uint32_t secs, uint32_t *lock_at, double *y_end, double *x_end, int *div)
+{
+    static gp_core_t c;                         /* static: ~170 B mimo zasobnik volajiciho */
+    memset(&c, 0, sizeof c);
+    c.code_max = 52429.0; c.kdac = kdac_est; c.k0 = fabs(kdac_est); c.tau = (double)GPSDO_TAU_DEFAULT; c.code = 0.0;
+    core_start_fll(&c);
+    const double Y0 = -8.4e-7;
+    double ph = 0.0, t_prev = 0.0;
+    *lock_at = 0u; *div = 0;
+    double ysum = 0.0; uint32_t yn = 0u;
+    for (uint32_t s = 1; s <= secs; s++) {
+        double y = Y0 + KT * c.code;
+        ph += y * 1e9;
+        double t = floor((ph + st_gauss() * 30.0) / 10.0) * 10.0;   /* sum GPS + kvantizace 10 ns */
+        if (s > 1u) (void)core_step(&c, t - t_prev, 1u);
+        t_prev = t;
+        if (c.diverged) { *div = 1; return 0; }
+        if (c.state == GPSDO_LOCK && *lock_at == 0u) *lock_at = s;
+        if (s > secs - 2000u) { ysum += y; yn++; }
+    }
+    *y_end = yn ? ysum / (double)yn : 1.0;
+    *x_end = c.xf;
+    return c.state == GPSDO_LOCK;
+}
+
+int gpsdo_selftest(void)
+{
+    /* Skutecne K modelu ruzne od odhadu 3,4e-11 (0,5x .. 3,5x): FLL si ho zmeri a zamkne. */
+    static const double KT[3] = { 3.1e-11, 1.7e-11, 1.2e-10 };
+    uint32_t la; double ye, xe; int dv;
+    int ok = 1;
+    for (int i = 0; i < 3; i++) {
+        s_st_rnd = 0x9E3779B9u + (uint32_t)i;
+        int lk = st_run(GPSDO_KDAC_DEFAULT, KT[i], 12000u, &la, &ye, &xe, &dv);
+        ok = ok && lk && la > 0u && la < 4000u && fabs(ye) < 2e-10 && fabs(xe) < 300.0 && !dv;
+    }
+    /* Spatne znamenko K a rozsah EFC, ktery nestaci (K 3,4x mensi): smycka se musi ZASTAVIT. */
+    s_st_rnd = 0x12345u;
+    (void)st_run(-GPSDO_KDAC_DEFAULT, 3.1e-11, 3000u, &la, &ye, &xe, &dv);
+    ok = ok && dv;
+    s_st_rnd = 0x54321u;
+    (void)st_run(GPSDO_KDAC_DEFAULT, 1.0e-11, 3000u, &la, &ye, &xe, &dv);
+    ok = ok && dv;
+    return ok;
+}

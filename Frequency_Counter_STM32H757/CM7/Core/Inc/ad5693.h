@@ -63,6 +63,19 @@
 
 #define AD5693_FS_MV          5000u                /* 2 x VREF (2500 mV) */
 #define AD5693_REPROBE_MS     10000u               /* sonda, dokud cip chybi */
+/* Nejvyssi kod, ktery se po startu obnovi z flash (ladici rozsah OCXO 0..4 V,
+ * STATUS #277; z PDF OCXO neoveren). Poskozeny/cizi blob tak nemuze vyhnat Vc
+ * k hornimu dorazu. Rucni `dac` zapis touhle mezi dnes omezen neni. */
+#define AD5693_RESTORE_MAX_MV 4000u
+
+/* Vysledek obnovy kodu po startu (`g_dac.restore`). */
+enum {
+    AD5693_RESTORE_NONE = 0,  /* jeste nebezelo / zadny ulozeny kod */
+    AD5693_RESTORE_DONE,      /* kod z flash zapsan do DAC a overen */
+    AD5693_RESTORE_KEPT,      /* DAC uz drzi nenulovy kod (reset jen STM32) — ponechan */
+    AD5693_RESTORE_FAIL,      /* zapis/overeni selhalo (zkusi se znovu pri dalsi sonde) */
+    AD5693_RESTORE_RANGE      /* ulozeny kod mimo AD5693_RESTORE_MAX_MV — ignorovan */
+};
 
 /* Vysledek posledni zadosti (`req_result`). */
 enum {
@@ -86,6 +99,9 @@ typedef struct {
     uint32_t errors;          /* selhane I2C transakce s pritomnym cipem */
     uint32_t rb_mismatch;     /* readback != zapsany kod */
     uint32_t probe_ms;        /* HAL_GetTick() posledni sondy */
+    uint8_t  restore;         /* AD5693_RESTORE_* — obnova kodu z flash po startu */
+    uint8_t  restore_done;    /* 1 = obnova vyrizena (uspech, ponechano, mimo rozsah) */
+    uint16_t restore_code;    /* kod, o ktery se obnova pokousela (0 = zadny) */
     /* --- zadosti: nastavuje UART/UI, nuluje SensorsTask po vyrizeni --- */
     uint16_t req_code;
     uint8_t  req_write;       /* 1 = zapsat `req_code` */
@@ -94,6 +110,13 @@ typedef struct {
 } ad5693_state_t;
 
 extern volatile ad5693_state_t g_dac;   /* definice: freertos_task_sensors.c */
+
+/* Kod, ktery se ma po startu vratit do DAC (0 = zadny / vychozi 0 V). Plni ho
+ * `syscfg_load` z flash a SensorsTask po kazdem uspesnem zapisu kodu; cte ho
+ * `syscfg` pri ukladani. `g_dac_persist_loaded` = syscfg uz hodnotu nacetl
+ * (bez nej obnova ceka, aby se nezapsala 0 drive, nez se flash precte). */
+extern volatile uint16_t g_dac_persist;
+extern volatile uint8_t  g_dac_persist_loaded;
 
 static inline uint32_t ad5693_code_to_mv(uint16_t code)
 {
