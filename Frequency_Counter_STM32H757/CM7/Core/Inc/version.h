@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.19.0 (2026-10-17) = (1) kod DAC OCXO v zaznamu datalogu (bajty 30..31, mimo CRC; stare zaznamy = nezaznamenano), UART `datalog dump` + CSV `dac_code`
+ * (STATUS #311, stari OCXO bez PC); (2) CM4: pocitadla vytizeni spojeni v `/api/state` blok `conn` (STATUS #307). Format datalogu je zpetne kompatibilni,
+ * IPC beze zmeny (v25). FLASHNOUT OBE BANKY (CM7 datalog + CM4 web/pocitadla). ⬜ Neovereno na desce (spustit `selftest`, `datalog dump`). */
 /* v0.18.1 (2026-10-17) = web (CM4): graf OCXO Vc ma druhou krivku POVEL DAC (STATUS #310, legenda jde skryvat) a tabulka karty ALLAN ukazuje
  * 6 radku rozlozenych pres cely rozsah tau vcetne nejdelsiho (STATUS #309). Jen SPA v CM4; IPC beze zmeny (v25), CM7 beze zmeny kodu - FLASHNOUT CM4
  * (CM7 jen kvuli cislu verze). ⬜ Neovereno v prohlizeci/na desce. */
@@ -158,8 +161,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 18
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.18.1"
+#define FW_VERSION_MINOR 19
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.19.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
