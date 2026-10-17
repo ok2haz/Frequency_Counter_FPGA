@@ -343,6 +343,8 @@ volatile uint8_t  g_gpsdo_lockflag;
 #define GPSDO_X_SLIP_NS     50000.0   /* LOCK: faze > 50 us = neco se pokazilo -> znovu FLL */
 #define GPSDO_SAW_W         64u       /* okno rozhodnuti o oprave sawtooth [vzorku] */
 #define GPSDO_TP_GUARD_MS   60u       /* TIM-TP musi prijit aspon tolik PRED prvnim videnim hrany */
+#define GPSDO_PM_NS         30.0      /* sum jedne hrany 1PPS [ns RMS] (HYPOTEZA, NEO-7M) -> sum odchylky okna FLL */
+#define GPSDO_FLL_K_SIGMAS  5.0       /* K se z kroku meri jen kdyz i nejmensi verohodna zmena presahuje sum o tolik sigma */
 
 /* ── Jadro regulatoru (cista logika, testuje gpsdo_selftest) ───────────────────────────────────── */
 typedef struct {
@@ -352,7 +354,7 @@ typedef struct {
     double   k0;                 /* K zadane uzivatelem (meze odhadu: 0,25x .. 4x) */
     double   fll_e, fll_prev_y;  /* FLL: soucet chyb periody [ns], odchylka predchoziho okna */
     double   last_dc;            /* FLL: posledni krok kodu [LSB] (odhad K) */
-    uint32_t fll_n, fll_win;
+    uint32_t fll_n, fll_win, fll_prev_n;   /* fll_prev_n = delka predchoziho okna [s] (sum rozdilu odchylek) */
     uint8_t  settle, fll_steps, rail;
     double   x, xf, integ, code_lock, yf;   /* LOCK: faze [ns], filtr faze, integrator [rel], kod pri zamceni */
     uint32_t good, bad_run;
@@ -365,7 +367,7 @@ static void core_start_fll(gp_core_t *c)
 {
     c->state = GPSDO_FLL;
     c->last_dc = 0.0; c->rail = 0u;
-    c->fll_e = 0.0; c->fll_n = 0u; c->fll_win = GPSDO_FLL_WIN0;
+    c->fll_e = 0.0; c->fll_n = 0u; c->fll_win = GPSDO_FLL_WIN0; c->fll_prev_n = 0u;
     c->settle = 1u; c->fll_prev_y = 0.0; c->fll_steps = 0u;
     c->locked = 0u;
 }
@@ -383,9 +385,16 @@ static int core_step(gp_core_t *c, double e_ns, uint32_t n)
         double ya = c->fll_e * 1e-9 / (double)c->fll_n;
         c->yf = ya;
         /* K se MERI z velkych kroku (dy / dkod): opravuje odhad (2026-10-16 simulace: pevne K 2x mimo FLL
-         * rozkmitalo) a hlavne pozna SPATNE ZNAMENKO (zaporne K = kazdy krok by OCXO vzdaloval). */
+         * rozkmitalo) a hlavne pozna SPATNE ZNAMENKO (zaporne K = kazdy krok by OCXO vzdaloval).
+         * Jen kdyz je krok dost velky proti SUMU oken (STATUS #318): odchylka okna n s ma sum ~sqrt(2)*PM/n (16 s: ~2,7e-9),
+         * rozdil dvou oken sqrt(2)x vic. Maly krok (napr. -73 LSB = 1,2e-9 pri K 1,7e-11) by dal nahodne K, i zaporne,
+         * a smycka by vyhlasila falesnou divergenci. Zmena, kterou by dala i nejmensi verohodna strmost (0,25x K0),
+         * musi sum prevysit GPSDO_FLL_K_SIGMAS-krat; jinak se K nemeri a plati dosavadni odhad. */
         int kupd = 0;
-        if (c->fll_steps > 0u && fabs(c->last_dc) > 50.0) {
+        double s_cur = GPSDO_PM_NS * 1.4142135623730951e-9 / (double)c->fll_n;
+        double s_prv = GPSDO_PM_NS * 1.4142135623730951e-9 / (double)(c->fll_prev_n ? c->fll_prev_n : 1u);
+        double s_dif = sqrt(s_cur * s_cur + s_prv * s_prv);
+        if (c->fll_steps > 0u && fabs(c->last_dc) > 50.0 && fabs(c->last_dc) * 0.25 * c->k0 > GPSDO_FLL_K_SIGMAS * s_dif) {
             double ko = (ya - c->fll_prev_y) / c->last_dc;
             if (ko <= 0.0) { c->diverged = 1u; return 1; }
             if (ko > 0.25 * c->k0 && ko < 4.0 * c->k0) { c->kdac = ko; kupd = 1; }
@@ -398,7 +407,7 @@ static int core_step(gp_core_t *c, double e_ns, uint32_t n)
         /* Kod na dorazu a kmitocet porad mimo: rozsah EFC nestaci (nebo znamenko) -> 3 okna a konec. */
         if (fabs(ya) > 1e-8 && fabs(c->last_dc) < 1.0) c->rail++; else c->rail = 0u;
         if (c->rail >= 3u) { c->diverged = 1u; return 1; }
-        c->fll_prev_y = ya; c->fll_steps++;
+        c->fll_prev_y = ya; c->fll_prev_n = c->fll_n; c->fll_steps++;
         c->fll_e = 0.0; c->fll_n = 0u; c->settle = 1u;
         if (fabs(ya) < GPSDO_FLL_LOCK_Y && c->fll_win >= GPSDO_FLL_LOCK_WIN) {
             c->state = GPSDO_LOCK;
