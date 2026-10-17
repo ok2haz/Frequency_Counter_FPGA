@@ -491,6 +491,99 @@ int gpsdo_hist_at(uint16_t i, gpsdo_hist_pt_t *p)
     return 1;
 }
 
+/* ── Doporuceni tau smycky (gpsdo.h, STATUS #308 C). Ciste jadro nad poli (kryje gpsdo_selftest). ── */
+static const uint16_t GP_ADV_M[GPSDO_ADV_NT] = {1, 2, 5, 10, 20, 50, 100, 200};   /* nasobky 10 s */
+
+/* Overlapping HDEV (Hadamard) z faze x [s] pri tau = m*tau0; 0 = malo clenu (< 10).
+ * HDEV, ne ADEV: linearni drift OCXO (starnuti, pomala teplota) ADEV zvedne umerne tau, ale PLL 2. radu ho
+ * sleduje bez chyby kmitoctu — pro volbu tau smycky neni sumem. Nocni beh 2026-10-17: ADEV kodu DAC rostla
+ * ~tau (drift ~5 ppb/den) a "prusecik" by vychazel jen z driftu. HDEV je vuci linearnimu driftu imunni. */
+static double gp_hdev_phase(const float *x, int n, int m, double tau0)
+{
+    if (n - 3 * m < 10) return 0.0;
+    double s = 0.0;
+    for (int i = 0; i + 3 * m < n; i++) {
+        double d = (double)x[i + 3 * m] - 3.0 * (double)x[i + 2 * m] + 3.0 * (double)x[i + m] - (double)x[i];
+        s += d * d;
+    }
+    double t = (double)m * tau0;
+    return sqrt(s / (6.0 * (double)(n - 3 * m) * t * t));
+}
+
+/* x = faze OCXO vs GPS [s] po tau0, tau_loop = aktualni tau smycky. Vysledek viz gpsdo_tau_adv_t (gpsdo.h). */
+static void gp_tau_advise_core(const float *x, int n, double tau0, double tau_loop, gpsdo_tau_adv_t *o)
+{
+    memset(o, 0, sizeof *o);
+    o->n = (uint16_t)n;
+    if (n < 180) { o->bound = 2; return; }                     /* < 30 min LOCK: malo dat */
+    for (unsigned k = 0; k < GPSDO_ADV_NT; k++) o->sx[k] = (float)gp_hdev_phase(x, n, GP_ADV_M[k], tau0);
+    if (o->sx[0] <= 0.0f) { o->bound = 2; return; }
+    o->ok = 1;
+    double a = (double)o->sx[0] * (GP_ADV_M[0] * tau0);         /* bily PM: HDEV = a / tau */
+    o->pps10 = (float)(a / 10.0);
+    /* Pomer r = HDEV faze / (a/tau). Prebytek nad bilym PM 1PPS (OCXO NEBO putovani casu GPS) se rovna
+     * bilemu PM prave pri r = sqrt(2). Hodnoti se jen tau <= tau_loop/3 (vys smycka fazi drzi). Prusecik
+     * se interpoluje v log-log mezi sousednimi body mrizky (pevny bod skakal mezi okny 100..2000 s). */
+    double rec = 0.0, last = 0.0, pt = 0.0, pr = 0.0;
+    const double thr = 1.41421356;
+    uint8_t bnd = 1u;                                           /* zadny prebytek: jen dolni mez */
+    for (unsigned k = 1; k < GPSDO_ADV_NT && rec == 0.0; k++) {
+        double t = GP_ADV_M[k] * tau0;
+        if (t > tau_loop / 3.0 || o->sx[k] <= 0.0f) break;
+        double r = (double)o->sx[k] * t / a;
+        if (r >= thr) {
+            bnd = 0u;
+            if (pr > 0.0 && pr < thr && r > pr)
+                rec = exp(log(pt) + (log(thr) - log(pr)) / (log(r) - log(pr)) * (log(t) - log(pt)));
+            else
+                rec = t;
+        }
+        pt = t; pr = r; last = t;
+    }
+    o->bound = bnd;
+    if (rec == 0.0) rec = last;
+    if (rec > 0.0 && rec < 100.0) rec = 100.0;                  /* meze gpsdo_set_tau */
+    if (rec > 20000.0) rec = 20000.0;
+    o->tau_rec = (float)rec;
+}
+
+void gpsdo_tau_advise(gpsdo_tau_adv_t *out)
+{
+    static float s_x[GPSDO_HIST_N];                             /* 2,9 kB, ne na stack */
+    static gpsdo_tau_adv_t s_last;
+    static uint32_t s_last_ms;
+    static volatile uint8_t s_busy;
+    uint32_t now = HAL_GetTick();
+    if (out == NULL) return;
+    taskENTER_CRITICAL();
+    int mine = !s_busy && (s_last_ms == 0u || (uint32_t)(now - s_last_ms) >= GPSDO_HIST_PERIOD_S * 1000u);
+    if (mine) s_busy = 1u;
+    taskEXIT_CRITICAL();
+    if (mine) {                                                 /* volaji UiTask i UartTask: pocita jen jeden */
+        uint16_t cnt = gpsdo_hist_count();
+        int n = 0;
+        gpsdo_hist_pt_t p;
+        for (int i = (int)cnt - 1; i >= 0; i--) {               /* posledni souvisly usek LOCK (od nejnovejsiho) */
+            if (!gpsdo_hist_at((uint16_t)i, &p) || p.state != GPSDO_LOCK) break;
+            n++;
+        }
+        gpsdo_status_t st;
+        gpsdo_get(&st);
+        for (int k = 0; k < n; k++) {
+            gpsdo_hist_at((uint16_t)(cnt - n + k), &p);
+            s_x[k] = (float)p.x_ns * 1e-9f;
+        }
+        gpsdo_tau_adv_t r;
+        gp_tau_advise_core(s_x, n, (double)GPSDO_HIST_PERIOD_S, st.tau_s, &r);
+        taskENTER_CRITICAL();
+        s_last = r; s_last_ms = now ? now : 1u; s_busy = 0u;
+        taskEXIT_CRITICAL();
+    }
+    taskENTER_CRITICAL();
+    *out = s_last;                                              /* kopie pod zamkem: druhy volajici muze prave zapisovat */
+    taskEXIT_CRITICAL();
+}
+
 static void g_set_state(uint8_t st, uint8_t why)
 {
     if (st != s_g_state) s_g_state_ms = HAL_GetTick();
@@ -743,6 +836,33 @@ static int st_run(double kdac_est, double KT, uint32_t secs, uint32_t *lock_at, 
     return c.state == GPSDO_LOCK;
 }
 
+/* Doporuceni tau nad syntetickou fazi (720 bodu po 10 s = 2 h, smycka tau 1000 s):
+ *  (1) jen bily PM 1PPS (sigma 5 ns) -> prusecik neni, jen dolni mez;
+ *  (2) + bily FM OCXO 3e-10 na 10 s -> sum OCXO vystoupi nad 1PPS mezi 100 a 200 s;
+ *  (3) 100 bodu (< 30 min) -> malo dat. */
+static int st_tau_advise(void)
+{
+    static float x[GPSDO_HIST_N];
+    gpsdo_tau_adv_t r;
+    int ok = 1;
+    for (int pass = 0; pass < 2; pass++) {
+        s_st_rnd = 0xC0FFEEu + (uint32_t)pass;
+        double rw = 0.0;
+        for (unsigned i = 0; i < GPSDO_HIST_N; i++) {
+            if (pass) rw += 3.0e-10 * 10.0 * st_gauss();     /* bily FM: krok faze = y * tau0 */
+            x[i] = (float)(5e-9 * st_gauss() + rw);
+        }
+        /* ocekavani: (1) HDEV bileho PM pri 10 s ~ 9e-10, prebytek zadny -> dolni mez = posledni hodnocene
+         * tau 200 s (<= 1000/3); (2) prusecik bileho FM 3e-10 a bileho PM vychazi ~95 s (namereno 114 s). */
+        gp_tau_advise_core(x, (int)GPSDO_HIST_N, 10.0, 1000.0, &r);
+        if (pass == 0) ok = ok && r.ok && r.bound == 1u && r.tau_rec == 200.0f && r.pps10 > 6e-10f && r.pps10 < 1.2e-9f;
+        else           ok = ok && r.ok && r.bound == 0u && r.tau_rec >= 100.0f && r.tau_rec <= 200.0f;
+    }
+    gp_tau_advise_core(x, 100, 10.0, 1000.0, &r);
+    ok = ok && !r.ok && r.bound == 2u;
+    return ok;
+}
+
 int gpsdo_selftest(void)
 {
     /* Skutecne K modelu ruzne od odhadu 3,4e-11 (0,5x .. 3,5x): FLL si ho zmeri a zamkne. */
@@ -761,5 +881,6 @@ int gpsdo_selftest(void)
     s_st_rnd = 0x54321u;
     (void)st_run(GPSDO_KDAC_DEFAULT, 1.0e-11, 3000u, &la, &ye, &xe, &dv);
     ok = ok && dv;
+    ok = ok && st_tau_advise();
     return ok;
 }

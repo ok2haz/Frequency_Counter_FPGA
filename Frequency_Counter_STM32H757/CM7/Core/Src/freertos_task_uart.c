@@ -721,6 +721,20 @@ static void gpsdo_print_status(void)
            (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
            (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
            (unsigned long)s.saw_n);
+    /* Nejkratsi rozumne tau (gpsdo.h): HDEV faze proti bilemu PM 1PPS. Jen zobrazeni, smycku nemeni. */
+    gpsdo_tau_adv_t ad;
+    gpsdo_tau_advise(&ad);
+    if (ad.bound == 2u) {
+        printf("GPSDO: tau min. -- (malo dat: %u bodu LOCK po 10 s, potreba 180 = 30 min)\n", (unsigned)ad.n);
+    } else {
+        printf("GPSDO: tau min. %s%lu s (aktualne %lu s) | sum 1PPS HDEV(10 s) %ld e-12 | HDEV faze e-12:",
+               ad.bound == 1u ? ">=" : "", (unsigned long)gp_round(ad.tau_rec), (unsigned long)gp_round(s.tau_s),
+               gp_round(ad.pps10 * 1e12));
+        static const uint16_t T[GPSDO_ADV_NT] = {10, 20, 50, 100, 200, 500, 1000, 2000};
+        for (unsigned j = 0; j < GPSDO_ADV_NT; j++)
+            if (ad.sx[j] > 0.0f) printf(" %u:%ld", (unsigned)T[j], gp_round(ad.sx[j] * 1e12));
+        printf("\nGPSDO: (dolni mez: prebytek nad bilym sumem 1PPS muze byt OCXO i putovani casu GPS)\n");
+    }
 }
 
 /* ── UART `gen` — generator Si5356 (CLK2/3, CLK4/5, CLK6/7) ───────────────────

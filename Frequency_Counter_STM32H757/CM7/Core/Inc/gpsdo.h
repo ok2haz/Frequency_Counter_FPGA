@@ -77,6 +77,29 @@ typedef struct { int16_t x_ns; int32_t y_ppt; uint32_t code_q16; uint8_t state; 
 uint16_t gpsdo_hist_count(void);                       /* 0..GPSDO_HIST_N */
 int      gpsdo_hist_at(uint16_t i, gpsdo_hist_pt_t *p); /* i = 0 nejstarsi; @return 0 = mimo rozsah */
 
+/* ── NEJKRATSI rozumna casova konstanta smycky z mereni (STATUS #308 C; jen ZOBRAZENI, smycku to nemeni) ───
+ * Optimalni tau PLL lezi na prusecku sumu 1PPS a sumu OCXO. Z dvojice OCXO–GPS ale NEJDE oddelit sum OCXO
+ * od putovani casu GPS (multipath, ionosfera) — oboje se ve fazi projevi stejne. Proto se pocita jen
+ * DOLNI MEZ: tau, od ktereho se ve fazi objevi prebytek nad bilym sumem 1PPS. Je-li prebytek z OCXO,
+ * optimum lezi prave tam; je-li z GPS, lezi vys. (Nocni beh 2026-10-17: prebytek ~4e-11 pri 100 s, coz
+ * je rad nad tim, co OCXO teto tridy obvykle ma — spis GPS. ⬜ HYPOTEZA; rozhodne treti reference.)
+ * Pocita se CTENIM historie (posledni souvisly usek LOCK, 1 bod / 10 s), gpsdo_tick se nemeni:
+ *  - a = HDEV faze pri 10 s x 10 s (predpoklad: na 10 s prevlada bily PM 1PPS, HDEV = a/tau);
+ *  - tau <= tau_smycky/3 (vys smycka fazi drzi): mez = kde HDEV faze dosahne sqrt(2) x a/tau, interpolace
+ *    log-log mezi body mrizky. HDEV (ne ADEV): linearni drift OCXO by ADEV zvedl, PLL 2. radu ho ale
+ *    sleduje bez chyby kmitoctu. HEURISTIKA, ⬜ neovereno na desce. */
+#define GPSDO_ADV_NT 8u                       /* mrizka tau: 10 20 50 100 200 500 1000 2000 s */
+typedef struct {
+    uint8_t  ok;          /* 1 = spocteno (dost bodu LOCK) */
+    uint8_t  bound;       /* 0 = prebytek nalezen (tau_rec = mez), 1 = zadny prebytek do tau_smycky/3
+                             (mez = posledni hodnocene tau), 2 = malo dat (< 30 min LOCK) */
+    uint16_t n;           /* bodu LOCK pouzitych (po 10 s) */
+    float    pps10;       /* HDEV sumu 1PPS pri 10 s (= a / 10 s) */
+    float    tau_rec;     /* nejkratsi rozumne tau PLL [s] (orezano na 100..20000); 0 = nic */
+    float    sx[GPSDO_ADV_NT];  /* HDEV z faze (0 = nespocteno) */
+} gpsdo_tau_adv_t;
+void     gpsdo_tau_advise(gpsdo_tau_adv_t *out);   /* UiTask / UartTask; vysledek se drzi 10 s (cache) */
+
 void     gpsdo_tick(void);                 /* VYHRADNE defaultTask, ~100 Hz */
 void     gpsdo_get(gpsdo_status_t *out);
 void     gpsdo_enable(int on);             /* on = 1: zapnout (z OFF jde pres WAIT); 0: vypnout, DAC se uz neridi */

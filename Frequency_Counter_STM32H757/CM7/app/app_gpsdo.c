@@ -3809,6 +3809,12 @@ static void app_gpsdo_render_ti(void)
     gp_row(328, "sawtooth", s.saw < 4u ? SW[s.saw] : "?", UI_COLOR_INK_2);
     snprintf(b, sizeof b, "%ld/%ld", (long)(s.saw_var[2] + 0.5f), (long)(s.saw_var[0] + 0.5f));
     gp_row(358, "rozptyl q/bez", b, UI_COLOR_INK_3);
+    /* Nejkratsi rozumne tau smycky (gpsdo.h): jen zobrazeni. Pod aktualnim tau = varovani. */
+    gpsdo_tau_adv_t ad;
+    gpsdo_tau_advise(&ad);
+    if (ad.bound == 2u) snprintf(b, sizeof b, "--");
+    else snprintf(b, sizeof b, "%s%lu s", ad.bound == 1u ? ">=" : "", (unsigned long)(ad.tau_rec + 0.5f));
+    gp_row(388, "tau min.", b, (ad.bound != 2u && s.tau_s < ad.tau_rec) ? UI_COLOR_WARN : UI_COLOR_INK_2);
 
     ui_segmented_t sg = {.rect = GP_SEG_RECT, .labels = GP_SEG_LBL, .n = 3, .selected = s_gp_mode};
     ui_segmented_render(&sg);
