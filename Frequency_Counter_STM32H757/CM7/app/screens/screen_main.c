@@ -29,6 +29,7 @@
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 #include "datalog.h"
 #include "dtcm.h"       /* DTCM_BSS: pyramidy statistiky v DTCM (STATUS #320, V9) */
+#include "main.h"       /* HAL_GetTick: delka selftestu (F-0252) */
 #include "sd_export.h"  /* sd_export_ui_info()->present — mikro-ikona SD karty v headeru */
 #include "errlog.h"     /* udalosti zmeny nastaveni (soumeritelnost mereni) */   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
@@ -1986,6 +1987,7 @@ static double adev_ref(const double *y, int M, int m, int kind)
 }
 bool screen_main_selftest(void)
 {
+    const uint32_t t_start_ms = HAL_GetTick();   /* F-0252: delka selftestu se vypisuje (A2/V3 pridaly ~4 000 vlozeni do pyramid) */
     char b[24]; int ok = 1;
     fmt_frac(b, sizeof b, 1.23e-8f, 0);   ok &= (strcmp(b, "1,2×10⁻⁸") == 0);
     fmt_frac(b, sizeof b, -4.56e-11f, 0); ok &= (strcmp(b, "-4,6×10⁻¹¹") == 0);
@@ -2131,16 +2133,16 @@ bool screen_main_selftest(void)
     {   static adev_stage_t tw;
         uint32_t r = 99u;
         memset(&tw, 0, sizeof tw);
-        for (int i = 0; i < 6000; i++) {
+        for (int i = 0; i < 3600; i++) {
             r = r * 1103515245u + 12345u;
             double g = ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;      /* rozptyl 1 (rovnomerne rozdeleni) */
-            adev_feed_into(&tw, 1, 0, (i < 3000 ? 1e-8 : 1e-9) * g, 0.0, 1);  /* prvnich 3000 sigma 1e-8, dalsich 3000 sigma 1e-9 */
+            adev_feed_into(&tw, 1, 0, (i < 1800 ? 1e-9 : 1e-8) * g, 0.0, 1);  /* 1800 sigma 1e-9, pak 1800 sigma 1e-8 (skok sumu) */
         }
         float cum = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 0), win = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 1);
-        /* okno: ~1,28e-9 (staré 3000 clenu s vahou e^-5 jeste pridava ~4e-16 k novym 6e-16; ověreno hostovým modelem) */
-        ok &= (cum > 5e-9f) && (cum < 9e-9f) && (win > 1.0e-9f) && (win < 1.6e-9f) && (win < cum * 0.3f);
+        /* od resetu ~7,1e-9 (sqrt((1e-18+1e-16)/2)); okno sleduje skok: ~1,0e-8 (hostovy model: 9,7-10,1e-9 pro 3 semena) */
+        ok &= (cum > 6e-9f) && (cum < 8e-9f) && (win > 0.85e-8f) && (win < 1.15e-8f) && (win > cum * 1.25f);
     }
-    printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
+    printf("ui: fmt_frac+hist_h+gate_same selftest %s (%lu ms)\n", ok ? "OK" : "FAIL", (unsigned long)(HAL_GetTick() - t_start_ms));
     return ok != 0;
 }
 

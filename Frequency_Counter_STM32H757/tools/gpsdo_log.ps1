@@ -28,7 +28,17 @@ function Get-Json($path, $to) { try { return ((Invoke-WebRequest -Uri ("http://"
 function V($o, $a) { try { $x = $o; foreach ($k in $a) { $x = $x.$k }; if ($null -eq $x) { return "" } else { return [string]$x } } catch { return "" } }
 
 $cols = @("wall","uptime_s","seq_meas","freq_hz","gp_state","gp_locked","gp_why","gp_y_ppt","gp_x_ns","gp_xr_ns","gp_code","gp_t_s","gp_pps_ok","gp_pps_rej","gp_tau","gp_kdac_e13","gp_saw",
-          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s","http_used","http_peak","http_rej","scpi_used","scpi_rej","gate_s","gate_ns")
+          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s_cum","http_used","http_peak","http_rej","scpi_used","scpi_rej","gate_s","gate_ns")
+# F-0253 (L-0166): soubor, do ktereho se pripisuje, musi mit TUTEZ hlavicku. Od FW v0.23.0 je sloupec `sigma1s` kumulativni (od resetu
+# statistiky), ne okno 120 s -> prejmenovan na `sigma1s_cum`; starsi soubor s jinou hlavickou se NEPREPISUJE, prejmenuje se.
+if (Test-Path $Out) {
+  $h0 = (Get-Content -Path $Out -TotalCount 1)
+  if ($h0 -ne ($cols -join ",")) {
+    $bak = $Out + ".stara-hlavicka-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    Move-Item -Path $Out -Destination $bak
+    Write-Host ("F-0253: existujici " + $Out + " mela jinou hlavicku (sloupce se zmenily) -> prejmenovano na " + $bak)
+  }
+}
 if (-not (Test-Path $Out)) { Set-Content -Path $Out -Encoding ASCII -Value ($cols -join ",") }
 
 if (-not (Test-Path $ph)) { Set-Content -Path $ph -Encoding ASCII -Value "wall,n_lock,xr_mean_ns,xr_std_ns,xr_pp_ns,y_mean_ppt,y_std_ppt" }
