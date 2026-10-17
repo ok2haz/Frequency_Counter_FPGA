@@ -38,6 +38,7 @@ volatile uint8_t g_mon_ocxo_bad = 0;
 volatile uint8_t g_mon_ocxo_dt_bad = 0;
 volatile uint8_t g_mon_adev_bad = 0;
 volatile float   g_adev_1s      = 0.0f;
+volatile float   g_adev_1s_cum  = 0.0f;   /* V4: sigma_y(1 s) od resetu (A2) - zobrazeni; g_adev_1s = okno <= 120 s pro monitor */
 volatile uint8_t g_warmup       = 1;   /* dokud app nerekne jinak, zahrivame se (F-0088) */
 
 void mon_cfg_defaults(mon_cfg_t *c)

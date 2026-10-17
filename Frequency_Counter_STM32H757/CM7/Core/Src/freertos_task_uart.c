@@ -2969,6 +2969,13 @@ void UartTask_run(void *argument)
 				  alarm_reset_counters();   /* g_alarm_* jsou proste volatile globaly, bezzamkove */
 				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
 			  }
+			  else if (strncmp(RxBuffer, "meas gate", 9) == 0) {
+				  /* V1: brana Allan pyramidy podle ustaleni reference (OCXO dohrato + smycka zamcena). */
+				  if (strcmp(RxBuffer, "meas gate on") == 0) g_stats_refgate_en = 1u;
+				  else if (strcmp(RxBuffer, "meas gate off") == 0) g_stats_refgate_en = 0u;
+				  printf("MERENI: brana Allan pyramidy podle reference %s, nyni %s (`meas gate on|off`)\n",
+				         g_stats_refgate_en ? "ZAP" : "VYP", screen_main_adev_gate_open() ? "OTEVRENA" : "ZAVRENA (reference se nena ustalila)");
+			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
 				  static TaskStatus_t ta[12], tb[12];
 				  uint32_t t0 = 0, t1 = 0;
@@ -3283,7 +3290,7 @@ void UartTask_run(void *argument)
 					  	 * jednotky az desitky 1e-9, tedy radove 1e6 v tehle jednotce.
 					  	 * ⚠️ Plni ho UiTask jen kdyz bezi hlavni obrazovka — v jinem okne
 					  	 * hodnota STOJI (neni to chyba mereni). */
-					  	{ float a = g_adev_1s;
+					  	{ float a = g_adev_1s_cum;   /* V4: tatez hodnota jako karta/tabulka */
 					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
 					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
 					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }

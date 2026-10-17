@@ -112,6 +112,7 @@ extern volatile unsigned int g_alarm_adev;
  *  ⚠️ Stejny vzor jako `g_meas_verdict`: Core vrstva nesmi sahat do `app/screens/`,
  *  takze se hodnota preda pres globál. 0 = jeste neni dost vzorku. */
 extern volatile float g_adev_1s;
+extern volatile float g_adev_1s_cum;   /* V4: sigma_y(1 s) od resetu statistiky (zobrazeni, snapshot) */
 
 /** 1 = OCXO se jeste zahriva (`warmup_ready()` v app vrstve: platna teplota
  *  plaste, dT plast-deska >= MON_OCXO_DT_MIN_C, uptime >= 900 s po zapnuti

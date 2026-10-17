@@ -11,6 +11,8 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.23.1 (2026-10-17) = audit A2: V1 brana Allan pyramidy (jen ustalena reference: OCXO dohrato + smycka OFF/WAIT/HOLD/LOCK, `meas gate on|off`),
+ * V2 zadny clen pres mezeru (>30 s bez vzorku, STOP/RUN, napojeni rekonstrukce), V4 snapshot/UART sigma_y(1 s) = karta (`g_adev_1s_cum`). IPC v26 beze zmeny. */
 /* v0.23.0 (2026-10-17) = A2 (STATUS #321): ADEV/MDEV/HDEV z akumulatoru clenu od resetu (n roste, ne okno 60); sigma_y(1 s) na karte/tabulce/grafu/webu
  * z akumulatoru, prahovy monitor dal z okna 120 s (`screen_main_adev_1s_live`). Web: text o poctu clenu (CM4). IPC v26 beze zmeny. */
 /* v0.22.1 (2026-10-17) = web (CM4): detail grafu OCXO Vc ma vlevo kod DAC [LSB], vpravo napeti (jako nahled). Flashnout jen CM4 (IPC v26 beze zmeny). */
@@ -181,7 +183,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 23
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.23.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.23.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

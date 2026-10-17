@@ -244,7 +244,7 @@ void ipc_publish(void)
      * Zbytek pole (ADEV krivka) se dal neplni — web si ADEV kresli vlastni cestou
      * z realnych mereni. Driv tu stalo "zdroj = simulace #2", to uz neplati (SPI
      * link je realny), ale servirujeme JEN σy@1s pro headline, ne celou krivku. */
-    g_ipc.snap.sigma_tau[0] = g_adev_1s;
+    g_ipc.snap.sigma_tau[0] = g_adev_1s_cum;   /* V4: tatez hodnota jako karta/tabulka (A2), ne okno monitoru */
 
     /* ⚠️ Uz zadny prevod pres float — `gps_data_t` nese e7 primo (F-0070),
      * takze snapshot dostane tutez hodnotu bez kvantizace. `IPC_VERSION` se

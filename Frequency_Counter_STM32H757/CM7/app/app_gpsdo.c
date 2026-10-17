@@ -8785,6 +8785,24 @@ static int seed_worth_it(void)
     return 0;
 }
 
+/* V1 (audit A2, F-0242): Allan pyramida bere vzorky jen pri USTALENE referenci. Nabeh OCXO (+-0,1 ppm za 2,5 min) a kroky FLL
+ * by se v souctech A2 drzely navzdy. Ustaleno = OCXO dohrato (`warmup_ready`) a smycka GPSDO v OFF / WAIT / HOLD nebo
+ * LOCK se zamcenim; FLL ne. Plochy ring (karta, histogram) a trend bezi dal. Bez realneho mereni (SIM fallback,
+ * `fpgasim`) brana zustava otevrena. Vypnuti: UART `meas gate off`. */
+volatile uint8_t g_stats_refgate_en = 1u;
+static void stats_ref_gate_update(void)
+{
+    int open = 1;
+    if (g_stats_refgate_en && g_freq_valid && !fpga_sim_active()) {
+        gpsdo_status_t gs;
+        gpsdo_get(&gs);
+        int loop_ok = (gs.state == GPSDO_OFF) || (gs.state == GPSDO_WAIT) || (gs.state == GPSDO_HOLD) ||
+                      (gs.state == GPSDO_LOCK && gs.locked);
+        open = warmup_ready(NULL) && loop_ok;
+    }
+    screen_main_adev_gate(open);
+}
+
 /* Vrati 1, dokud rekonstrukce bezi (volajici pak nemusi delat nic jineho). */
 static int stats_seed_tick(void)
 {
@@ -8854,6 +8872,7 @@ static int stats_seed_tick(void)
     }
     if (s_seed_left == 0) {
         s_seed_state = 2;
+        screen_main_adev_break();             /* V2: mezi poslednim zaznamem logu a zivymi daty je (maly) neznamy cas */
         printf("ADEV: rekonstrukce z datalogu hotova, %lu vzorku posledniho souvisleho "
                "useku (tau0=10 s, %lu rezu)\n",
                (unsigned long)s_seed_done, (unsigned long)s_seed_cuts);
@@ -8913,6 +8932,7 @@ void app_gpsdo_tick_stats_sample(void)
      * casovy tik — ten se opozduje o latenci smycky a obcas by pobral mereni
      * navic. Tady se jen odeberou vsechny hotove (0, 1, vyjimecne 2); pri STOP,
      * rekonstrukci nebo SIM se odeberou a zahodi. */
+    stats_ref_gate_update();                 /* V1 */
     int seeding = stats_seed_tick();
     int take = !seeding && screen_main_is_running() && g_freq_valid;
     int got = 0;
@@ -8968,6 +8988,7 @@ void app_gpsdo_tick_stats_sample(void)
      * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
      * hodnota publikuje pres globál. */
     g_adev_1s = screen_main_adev_1s_live();   /* A2: monitor ma byt rychly -> okno, ne historie od resetu */
+    g_adev_1s_cum = screen_main_adev_1s();    /* V4: snapshot / UART / web = tatez hodnota jako karta a tabulka */
     /* Warm-up OCXO -> Core globál pro snapshot (audit F-0088). Web si ho dosud
      * odvozoval sam z `uptime_s < 300`, takze po studenem startu hlasil LOCK,
      * zatimco displej jeste WARMUP. Kriterium je `warmup_ready()` a od teto

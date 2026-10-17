@@ -113,6 +113,8 @@ void app_gpsdo_btnreg_stats(uint8_t *peak, uint8_t *overflow, uint8_t *cap);
 #define SEED_PROG_WAIT     2   /* ceka na prvni realne mereni (reference signalu) */
 #define SEED_PROG_SKIP_POR 3   /* preskocena: start po zapnuti napajeni (POR/BOR) */
 int app_gpsdo_stats_seed_progress(uint32_t *done, uint32_t *left, uint32_t *total);
+/** V1: brana Allan pyramidy podle ustaleni reference (UART `meas gate on|off`, `status full`). */
+extern volatile uint8_t g_stats_refgate_en;
 
 /** Hloubka navigacniho zasobniku (ZPET) pro UART `status`.
  *  @param peak     nejhlubsi dosazene zanoreni

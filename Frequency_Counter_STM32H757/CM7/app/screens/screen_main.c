@@ -1291,6 +1291,10 @@ static void render_body_number(void)
 static double s_y[STAT_N];                 /* F-0179: double, viz vyse */
 static int   s_y_head = 0, s_y_count = 0;
 static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
+static void adev_break_all(void);   /* fwd — V2: mezera v rade */
+#define ADEV_GAP_S 30u                /* V2: mezera mezi vzorky pyramidy > tolik s = zlom (kratsi diry se ignoruji) */
+static uint8_t  s_adev_gate_open = 1;   /* V1: 0 = reference neni ustalena, vzorky se do pyramidy nevkladaji */
+static uint32_t s_adev_last_s;          /* g_uptime_s posledniho vzorku vlozeneho do pyramidy (0 = zatim zadny) */
 static void trend_feed(double v);   /* fwd — decimacni pyramida (dlouhodoby trend) */
 
 static uint32_t s_stats_ver = 0;          /* verze dat: roste s kazdym vzorkem (change-key oken) */
@@ -1364,7 +1368,11 @@ static void stats_push(double y)
     s_y[s_y_head] = y;                    /* plochy ring (kratkodobe) */
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
-    adev_feed(y);                         /* decimacni pyramida (dlouhodoby Allan) */
+    if (s_adev_gate_open) {               /* V1: neustalena reference (nabeh, FLL) do pyramidy nepatri */
+        if (s_adev_last_s != 0u && (uint32_t)(g_uptime_s - s_adev_last_s) > ADEV_GAP_S) adev_break_all();   /* V2 */
+        s_adev_last_s = g_uptime_s ? g_uptime_s : 1u;
+        adev_feed(y);                     /* decimacni pyramida (dlouhodoby Allan) */
+    }
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
     s_stats_nsamp++;
@@ -1485,6 +1493,7 @@ typedef struct {
     double   qs[3][ADEV_MMAX];
     uint32_t qn[3][ADEV_MMAX];
     uint32_t tot;
+    uint32_t since;               /* V2: polozek od posledni mezery (clen nesmi presahnout mezeru) */
 } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
 static void adev_acc_update(adev_stage_t *sg, int pb);   /* fwd - A2 */
@@ -1503,7 +1512,7 @@ static void adev_feed_into(adev_stage_t *pyr, int nst, int s0, double v, double 
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
         if (sg->count < ADEV_RING) sg->count++;
         sg->e_n = e_ok ? (int16_t)((sg->e_n < ADEV_RING) ? sg->e_n + 1 : ADEV_RING) : 0;
-        sg->tot++;
+        sg->tot++; sg->since++;
         adev_acc_update(sg, s > 0);
         if (sg->acc_n == 0) sg->acc_e_ok = 1u;
         sg->acc_e += sg->acc + e;                 /* C_j + E_j, C_j = Σ Ybar predchozich */
@@ -1630,7 +1639,7 @@ static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstar
  * MDEV nad stage >= 1 (`pb`) pouziva jen polozky s platnou fazi E (`e_n`), jako okenni estimator. */
 static void adev_acc_update(adev_stage_t *sg, int pb)
 {
-    const int M = sg->count;
+    const int M = (sg->since < (uint32_t)sg->count) ? (int)sg->since : sg->count;   /* V2: jen polozky za poslednim zlomem */
     for (int m = 1; m <= ADEV_MMAX; m++) {
         if (M >= 2 * m) {                                       /* ADEV: clen j = M-2m */
             int b = adev_base_n(sg, 2 * m);
@@ -1646,7 +1655,7 @@ static void adev_acc_update(adev_stage_t *sg, int pb)
             sg->qs[ADEV_KIND_HDEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_HDEV][m - 1]++;
         }
         int need = pb ? 3 * m : 3 * m - 1;                      /* MDEV: nejnovejsich `need` polozek */
-        int Mm   = pb ? sg->e_n : M;
+        int Mm   = pb ? ((sg->e_n < M) ? sg->e_n : M) : M;
         if (Mm >= need) {
             int b = adev_base_n(sg, need);
             double inner = 0.0;
@@ -1683,6 +1692,23 @@ static int32_t adev_acc_M(const adev_stage_t *sg, int m, int kind, int pb)
     uint64_t me = (uint64_t)n + (uint64_t)add;
     return (me > 2000000000u) ? 2000000000 : (int32_t)me;
 }
+
+/* V2: mezera v rade vzorku (STOP/RUN, ztrata signalu, napojeni rekonstrukce, brana): zadny clen nesmi presahnout
+ * zlom. Soucty zustavaji; rozpracovany blok decimace se zahodi (obsahoval by cas pres mezeru). */
+static void adev_break_all(void)
+{
+    for (int s = 0; s < ADEV_STAGES; s++) {
+        s_adev[s].since = 0u; s_adev[s].acc_n = 0; s_adev[s].acc = 0.0; s_adev[s].acc_e = 0.0;
+    }
+}
+void screen_main_adev_break(void) { adev_break_all(); }
+/* V1: brana pyramidy. open = 0 -> vzorky se do ni nevkladaji (plochy ring, histogram a trend bezi dal); zmena stavu = zlom. */
+void screen_main_adev_gate(int open)
+{
+    uint8_t o = open ? 1u : 0u;
+    if (o != s_adev_gate_open) { adev_break_all(); s_adev_gate_open = o; }
+}
+int screen_main_adev_gate_open(void) { return s_adev_gate_open; }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
  * Plochy ring s_y[] pokryje jen 120 s; okno 30 dni by v nem chtelo 2,6 M vzorku
@@ -1755,6 +1781,7 @@ void screen_main_stats_reset(void)
     memset(s_y, 0, sizeof s_y);
     s_y_head = 0; s_y_count = 0;
     memset(s_adev, 0, sizeof s_adev);
+    s_adev_last_s = 0u;
     memset(s_tr, 0, sizeof s_tr);
     s_tau0_mean = s_tau0_dev = 0.0f; s_tau0_n = 0;   /* bod 6 */
     s_stats_ver++;
@@ -2068,6 +2095,14 @@ bool screen_main_selftest(void)
         ok &= (ta[0].tot == 590u) && (ta[0].qn[ADEV_KIND_ADEV][0] == 589u) && (ta[0].qn[ADEV_KIND_ADEV][8] == 573u);
         ok &= (adev_acc_M(&ta[0], 1, ADEV_KIND_ADEV, 0) == 590) && (adev_acc_M(&ta[0], 9, ADEV_KIND_HDEV, 0) == 590);
         ok &= (adev_acc_kind(&ta[0], 1, ADEV_KIND_ADEV, 0) > 0.0f);
+        /* V2: po zlomu (since = 0) se prvni polozka ani druha-jen-s-m=1 nepocita jako clen pres mezeru:
+         * m = 1 potrebuje 2 polozky za zlomem, m = 2 ctyri, m = 9 osmnact. */
+        uint32_t n1 = ta[0].qn[ADEV_KIND_ADEV][0], n2 = ta[0].qn[ADEV_KIND_ADEV][1];
+        ta[0].since = 0u;
+        adev_feed_into(ta, 1, 0, 3e-5, 0.0, 1);
+        ok &= (ta[0].qn[ADEV_KIND_ADEV][0] == n1) && (ta[0].qn[ADEV_KIND_ADEV][1] == n2);        /* 1 polozka za zlomem: zadny clen */
+        adev_feed_into(ta, 1, 0, 3e-5, 0.0, 1);
+        ok &= (ta[0].qn[ADEV_KIND_ADEV][0] == n1 + 1u) && (ta[0].qn[ADEV_KIND_ADEV][1] == n2);   /* 2 polozky: m = 1 ano, m = 2 ne */
     }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
