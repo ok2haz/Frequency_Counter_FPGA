@@ -46,9 +46,9 @@ do přístroje (M1). **Rozhodující měření celé otázky je Rb normál, kter
 **F3 „3A"** (1206, LCSC C182445) → **síť +5V**. Zpětná vazba: R97 100k od uzlu **C105 (výstup L1)**, R98 24k9 k zemi → Uout = 1,0 V × (1 + 100/24,9) = **5,016 V**
 (VFB 1,0 V ±1,5 %, datasheet; s rezistory 1 % ≈ 4,87–5,17 V, v mezích OCXO 5 V ±5 %). Druhý buck U24 (3V3) je nezávislý (VBUS2 přes F2).
 
-**Co sedí na síti +5V** (21 uzlů): **OCXO U13 (VCC, pin 3)**, AD5693R U12 (VDD), 2× OPA365 (U14, U15), **vstupní modul J4 pin 18** (účel a odběr ⬜ neznámé: relé modul napájí z vlastního 5 V, viz níže),
+**Co sedí na síti +5V** (21 uzlů): **OCXO U13 (VCC, pin 3)**, AD5693R U12 (VDD), 2× OPA365 (U14, U15), (konektor J4 vstupního modulu **není osazen**, takže pin 18 žádný odběr nemá — uživatel 2026-10-17),
 **Tang Nano 9K** (U6 pin 31, přes ferit FB1), GPS (JP1 pin 3, poloha 5 V), dělič R57/R58 pro ADS1115 (AIN3), LED D3. Tedy **OCXO sdílí kolejnici s FPGA deskou
-a s malým odběrem vstupního modulu (J4 pin 18). **Relé na této kolejnici NEJSOU** — vstupní modul dostává `VBUS` přes J4 pin 19/20 a pro relé má vlastní 5 V stabilizátor na své desce (uživatel 2026-10-17).**
+a s GPS (poloha JP1 5 V). **Vstupní modul na kolejnici nevisí:** J4 není osazen; až bude, dostane `VBUS` přes pin 19/20 a pro relé má vlastní 5 V na své desce (uživatel 2026-10-17).**
 
 **🔴 Hlavní zjištění — regulace je ZA ZÁTĚŽÍ nesnímaná:** FB se bere z uzlu **před L4 a F3**, takže úbytek na **L4 (DCR) + F3 + měděných cestách** není regulován
 a **přímo se přičítá k napájení OCXO**: ΔU = ΔI · R_nereg. L4 je **0805** (jmenovitě 1 µH; DCR i Isat nedohledány, u 0805 typicky 50–150 mΩ a Isat 1,5–2 A),
@@ -67,7 +67,7 @@ OPA365 PSRR ≈ 100 dB. **Frekvenci ovlivňuje v podstatě jen VCC samotného OC
 LMR33630 snižuje kmitočet („folds back frequency at light load"); odběr OCXO + FPGA je daleko nad tím, takže se to neuplatní (⬜ práh nevyčten).
 
 **Další zjištění k ověření v BOM / na schématu:**
-- ✅ **Pojistky F1/F2 „1A" ve schématu jsou na desce 3 A** (uživatel 2026-10-17; osazeno LCSC C182445 = 3 A u všech čtyř pojistek F1–F4, v schématu je jen chybný text hodnoty). Vstupní proud 5V bucku ~0,65 A z 12 V (OCXO 1 A při náběhu + Tang ~0,3 A + GPS ~0,1 A, účinnost 90 %) má tedy rezervu. ⬜ **Opravit hodnotu F1 a F2 ve schématu na 3A** (jen popis, ať BOM a schéma nelhou); odběr J4 pin 18 a Tang Nano zůstává neměřený.
+- ✅ **Pojistky F1/F2 „1A" ve schématu jsou na desce 3 A** (uživatel 2026-10-17; osazeno LCSC C182445 = 3 A u všech čtyř pojistek F1–F4, v schématu je jen chybný text hodnoty). Vstupní proud 5V bucku ~0,65 A z 12 V (OCXO 1 A při náběhu + Tang ~0,3 A + GPS ~0,1 A, účinnost 90 %) má tedy rezervu. ⬜ **Opravit hodnotu F1 a F2 ve schématu na 3A** (jen popis, ať BOM a schéma nelhou); odběr Tang Nano zůstává neměřený.
 - **L4 0805 1 µH v sérii s 1 A+ zátěží:** Isat malých 0805 induktorů bývá 1,5–2 A; při špičce (náběh OCXO 1 A + ostatní) hrozí nasycení a propad kolejnice. ⬜ vyčíst z katalogu.
 - **D6 (B0520LW)** je mezi VLOGIC AD5693R (katoda na +5V) — chrání pořadí napájení; nemá vliv na reference.
 
@@ -75,9 +75,9 @@ LMR33630 snižuje kmitočet („folds back frequency at light load"); odběr OCX
 1. **Měření M1a (osciloskop, bez zásahu do HW):** AC vazba, sonda 1×, **1 mV/div**, na pinu VCC OCXO (U13 pin 3) vůči zemi OCXO; spoušť na CS SPI (PB12). Hledat kroky 1–5 mV v 4 Hz cadenci měření a při přepnutí kanálu/hradla (mění zátěž FPGA). Tím je přímo vidět ΔU, kterou jsem odhadoval.
 2. **Měření M1b (voltmetr):** DC úbytek mezi uzlem C105 (regulovaný bod) a pinem OCXO při zapnutém / vypnutém Tang Nano a vstupním modulu → přímo R_nereg · I.
 3. **Logger:** do `gpsdo_log.ps1` přidat `v5_mv`, `v12_mv` (v `/api/state` už jsou; ADS1115 AIN3, rozlišení 0,25 mV po děliči 2×) — zachytí jen pomalé změny, ne 4 Hz.
-4. **HW — nejlevnější úprava:** napájet OCXO **přímo z uzlu C112/C116 PŘED F3** (krátký vodič nebo samostatná cesta), ostatní zátěže (FB1 → Tang Nano, J4 pin 18, GPS) nechat za F3 a **každou přes vlastní ferit/LC**. Tím z R_nereg vypadne F3 a sdílení s FPGA.
+4. **HW — nejlevnější úprava:** napájet OCXO **přímo z uzlu C112/C116 PŘED F3** (krátký vodič nebo samostatná cesta), ostatní zátěže (FB1 → Tang Nano, GPS) nechat za F3 a **každou přes vlastní ferit/LC**. Tím z R_nereg vypadne F3 a sdílení s FPGA.
 5. **HW — lepší:** zpětnou vazbu přesunout **až za F3** (R97 na +5V). Pozor: L4 + C116 má fc ≈ 10,7 kHz — pokud je pod mezním kmitočtem smyčky bucku (řádově desítky kHz), vložená LC zhorší fázovou rezervu → před zásahem prověřit simulací (TI WEBENCH) nebo L4 nahradit rezistorem 20–50 mΩ.
-6. **HW — nejlepší (až podle M1a):** pro OCXO **samostatný nízkošumový stabilizátor**: LDO potřebuje rezervu (5,0 V z 5,0 V nejde) → buď U23 přestavit na ~5,5–5,6 V a z něj LDO 5,0 V (LT3042/LT3045/ADM7150) jen pro OCXO, nebo samostatný malý buck 6 V z VBUS + LDO. R98 → pro 5,6 V ≈ 21k7 (⬜ přepočet a kontrola, že ostatní odběry na 5 V snesou: Tang Nano 5 V vstup, GPS v poloze 5 V, J4 pin 18).
+6. **HW — nejlepší (až podle M1a):** pro OCXO **samostatný nízkošumový stabilizátor**: LDO potřebuje rezervu (5,0 V z 5,0 V nejde) → buď U23 přestavit na ~5,5–5,6 V a z něj LDO 5,0 V (LT3042/LT3045/ADM7150) jen pro OCXO, nebo samostatný malý buck 6 V z VBUS + LDO. R98 → pro 5,6 V ≈ 21k7 (⬜ přepočet a kontrola, že ostatní odběry na 5 V snesou: Tang Nano 5 V vstup, GPS v poloze 5 V).
 
 ### 3.2 Dither DAC (bod 2) — FW, jistý zisk
 Simulace (1. řád ΣΔ → RC 220 ms → K): zlomek kódu se mění pomalu se smyčkou, takže v provozu projdou všechny řádky tabulky.
