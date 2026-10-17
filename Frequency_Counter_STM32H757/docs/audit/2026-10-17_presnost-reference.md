@@ -41,7 +41,7 @@ do přístroje (M1). **Rozhodující měření celé otázky je Rb normál, kter
 ### 3.1 Napájení OCXO (bod 1) — rozbor větve +5 V ze schématu (netlist `kicad-cli`, 2026-10-17)
 
 **Jak se +5 V vyrábí** (`power_supply.kicad_sch`, ověřeno netlistem):
-`VBUS` (12 V) → **F1 „1A"** (1206, LCSC C182445) → **U23 LMR33630ADDAR** (buck, **400 kHz**, 3 A; „A" verze = 340/400/460 kHz podle datasheetu)
+`VBUS` (12 V) → **F1 „1A" ve schématu = ve skutečnosti 3 A** (1206, LCSC C182445) → **U23 LMR33630ADDAR** (buck, **400 kHz**, 3 A; „A" verze = 340/400/460 kHz podle datasheetu)
 → **L1 8 µH** → uzel C105 (100n + 1n + **100 µF**) → **L4 „1uH"** (footprint 0805, LCSC C17701176) → uzel C112 (100n + **220 µF**) →
 **F3 „3A"** (1206, LCSC C182445) → **síť +5V**. Zpětná vazba: R97 100k od uzlu **C105 (výstup L1)**, R98 24k9 k zemi → Uout = 1,0 V × (1 + 100/24,9) = **5,016 V**
 (VFB 1,0 V ±1,5 %, datasheet; s rezistory 1 % ≈ 4,87–5,17 V, v mezích OCXO 5 V ±5 %). Druhý buck U24 (3V3) je nezávislý (VBUS2 přes F2).
@@ -67,8 +67,7 @@ OPA365 PSRR ≈ 100 dB. **Frekvenci ovlivňuje v podstatě jen VCC samotného OC
 LMR33630 snižuje kmitočet („folds back frequency at light load"); odběr OCXO + FPGA je daleko nad tím, takže se to neuplatní (⬜ práh nevyčten).
 
 **Další zjištění k ověření v BOM / na schématu:**
-- 🔴 **F1 „1A" a F3 „3A" mají stejné LCSC číslo C182445** (ve schématu jsou jako jiné hodnoty). Jedna z hodnot je špatně, nebo je číslo zkopírované. Zjistit, co je skutečně osazeno.
-  Pojistka **F1 1 A na vstupu 5V bucku**: 5 V × (OCXO 1 A při náběhu + Tang ~0,3 A + GPS ~0,1 A) ≈ 7 W → ~0,65 A z 12 V (účinnost 90 %) — pod 1 A, ale rezerva je malá a hodnota F1/F3 je beze sporu chyba v BOM. ⬜ Odběr J4 pin 18 a Tang Nano nezměřen.
+- ✅ **Pojistky F1/F2 „1A" ve schématu jsou na desce 3 A** (uživatel 2026-10-17; osazeno LCSC C182445 = 3 A u všech čtyř pojistek F1–F4, v schématu je jen chybný text hodnoty). Vstupní proud 5V bucku ~0,65 A z 12 V (OCXO 1 A při náběhu + Tang ~0,3 A + GPS ~0,1 A, účinnost 90 %) má tedy rezervu. ⬜ **Opravit hodnotu F1 a F2 ve schématu na 3A** (jen popis, ať BOM a schéma nelhou); odběr J4 pin 18 a Tang Nano zůstává neměřený.
 - **L4 0805 1 µH v sérii s 1 A+ zátěží:** Isat malých 0805 induktorů bývá 1,5–2 A; při špičce (náběh OCXO 1 A + ostatní) hrozí nasycení a propad kolejnice. ⬜ vyčíst z katalogu.
 - **D6 (B0520LW)** je mezi VLOGIC AD5693R (katoda na +5V) — chrání pořadí napájení; nemá vliv na reference.
 
