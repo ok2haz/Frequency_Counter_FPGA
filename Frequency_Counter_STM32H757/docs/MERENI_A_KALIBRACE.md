@@ -491,6 +491,24 @@ ADEV čítače 0,60 / 0,45 / 0,29 ppb na 20 / 50 / 100 s proti 0,24 / 0,11 / 0,0
   4. A/B ditheru `dac dither 2` / `100` / `200` po 30–60 min při stejném hradle 0,25 s (smyčka LOCK, kanál A = externí GPSDO, `analyze_gpsdo_log.py`): srovnávat **mediány `sigma1s`** (kolísá až 5×) a ADEV CSV @ 0,25–10 s; očekávání z modelu: rozdíl pod hranicí rozlišení dosavadních běhů (viz výše), pozitivní výsledek není zaručen.
   5. Chování FLL při rozběhu smyčky po power-cyklu (log `GPSDO:` stav, počet oken do LOCK; dosud LOCK za ~280 s při K modelu 3,1·10⁻¹¹).
 
+### 2026-10-17 večer — v0.21.1 NA DESCE po power-cyklu: krátké ověření (uptime 581–594 s, smyčka LOCK od 288 s, FPGA FW 0x0424, IPC v26)
+
+Nástroj: UART `uartq.ps1 -Port COM10` (`gpsdo test`, `dac dither test`, `dac`, `stats`, `status`). Jde o kontrolu funkce, **ne o měření stability** (A/B ditheru zatím neproběhlo).
+
+| kontrola | výsledek |
+|---|---|
+| `version` | gpsdo-ui v0.21.1 |
+| `gpsdo test` (#318) | ✅ **PASS (48 ms)** (do v0.21.0 FAIL pro K modelu 1,7·10⁻¹¹) |
+| `dac dither test` | ✅ PASS |
+| `dac` | dither 100 Hz (DacTask 5 ms), zápisů 28 459 za ~580 s (≈ 50/s: zapisuje se jen při změně kódu, viz zlomek povelu), **chyb I2C 0, readback nesedí 0, kroky bez mutexu 0, vynecháno po chybě 0** |
+| `stats` | DacTask stackfree **808 B** z 1024, CPU 0 % (zaokrouhleno), IDLE 64 %, celkem 36 %, halda **5 744 B volných** (min-ever totéž) |
+| smyčka po power-cyklu | LOCK po **288 s**, y +0,05…+0,15 ppb, fáze +3…+5 ns, kód 24 920,08 → 24 920,01, K 3,40·10⁻¹¹; 1PPS přijato 555 / odmítnuto 21 / díry 0 / roztržená čtení 0 |
+| `status` | `SEQ FPGA` díry 0, `LTDC` podtečení 0/8022, `GPIO HLÍDAČ` 0 oprav, `I2C4` zdravá, CM4 alive, link FPGA OK (CRC err 0), hodiny 100M výpadků 0 |
+
+- Pin VC (AIN0) 1 918 mV při kódu 24 920 (1 901 mV): rozdíl 17 mV odpovídá děliči/ADS (stejně jako dříve).
+- ⚠️ `FPGA SAMOKONTROLA: zamítnuto oken: čítání 1` s hláškou „FPGA MĚŘÍ ŠPATNĚ" — 1 okno za 594 s, hodiny 0, délka okna 0. Změna FPGA ani počítání v této verzi nebyla; **příčina nevyšetřena** (HYPOTÉZA: jednorázové okno při náběhu, `FPGA REFERENCE: OCXO | externí vstup: bez hran` — na vstupu nemusel být signál). Ověřit, jestli počítadlo roste při připojeném signálu.
+- ⬜ Zbývá: A/B ditheru 2 / 100 / 200 Hz (30–60 min každý), dlouhodobá stabilita smyčky, stack `FpgaTask` 628 B (beze změny proti dřívějšku).
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
