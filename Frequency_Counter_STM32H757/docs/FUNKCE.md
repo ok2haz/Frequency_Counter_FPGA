@@ -66,7 +66,7 @@
 | **Akumulátory členů od resetu** (7 stage, τ do 9·10⁶ s, 63 bodů) | 🟡 | v0.23.0–v0.24.0 (`adev_acc_update`) |
 | Brána podle ustálení reference, zlom na mezeře | 🟡 | `meas gate on|off` |
 | Pohledy **VSE / OKNO (~600 členů) / RAW** | 🟡 | tlačítko v okně ALLAN |
-| **Filtr izolovaných odlehlých vzorků** (Hampel 31, 5 MAD) + surová pyramida, počet vyřazených | 🟡 | v0.27.0, `meas outlier on|off`, `status full` |
+| **Filtr izolovaných odlehlých vzorků** (Hampel 31, 7 MAD) + surová pyramida, počet vyřazených | 🟡 | v0.27.0, `meas outlier on|off`, `status full` |
 | Rekonstrukce dlouhých τ z datalogu po resetu | 🟡 | poslední souvislý úsek, jen po warm resetu |
 | `allan log`: overlapping s krokem 1 s nad `.measlog` (τ do 1000 s) | 🟡 | UART, ~0,3 s |
 | Fázový šum ℒ(f) (Welch FFT, 0,016–0,5 Hz) | 🟡 | okno ANALÝZA |

@@ -4803,6 +4803,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0172 — Funkce, která kaskáduje do `pyr[1..n-1]`, dostane délku pole SPOLU s polem
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** `screen_main.c` (`hamp_push`, `adev_feed_into`, selftest filtru), audit v0.27.0 F-0254
+- **Symptom:** (nález z auditu, před flashem) selftest filtru by přepsal paměť za svými statickými objekty včetně vlastního stavu `th`.
+- **Příčina:** `adev_feed_into(pyr, nst, ...)` po každých 10 položkách zapisuje do `pyr[1]`, `pyr[2]` … Wrapper `hamp_push` předával pevně `ADEV_STAGES`, test mu dal ukazatel na jeden objekt. Python model chybu nezachytil, protože jeho seznamy měly vlastní délku.
+- **Oprava:** délka pole je parametr (`nst`) a předává ji ten, kdo pole vlastní; test používá pole s kanárkem (0xA5) za koncem, který se po testu kontroluje.
+- **Pravidlo:** Ukazatel na pole nikdy bez jeho délky; wrapper nesmí tvrdit konstantu, kterou zná jen produkční volající. Testovací kopie struktur mají mít za sebou kanárek.
+- **Detekce:** kanárek v `screen_main_selftest`; grep `adev_feed_into(` – `nst` musí odpovídat velikosti pole (`nm -S` objektu / `sizeof`).
+- **Commit:** viz v0.27.1
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

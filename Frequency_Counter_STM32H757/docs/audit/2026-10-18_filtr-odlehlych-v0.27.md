@@ -24,7 +24,7 @@ Filtr je navržený metrologicky správně (izolovaný vzorek, díra místo náh
 - **Návrh opravy:** `hamp_push(h, pyr, nst, y)` s `nst` jako parametrem (produkce předá `ADEV_STAGES`, test `1`) a v testu `adev_feed_into(&tw2, 1, ...)`. Nebo pole `[ADEV_STAGES]` (+24 kB .bss). První varianta.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** nová lekce po opravě (parametr délky pole se předává spolu s polem; testovací kopie struktur musí mít stejnou délku jako produkční).
-- **Stav:** otevřeno. **Do opravy neflashovat v0.27.0.**
+- **Stav:** opraveno 2026-10-18 (v0.27.1). Opraveno podle návrhu (`hamp_push(h, pyr, nst, y)`), navíc **kanárek 0xA5 za testovacím polem** (zapis za konec objektu se příště projeví jako FAIL testu). ⬜ neověřeno na HW. **v0.27.0 neflashovat.**
 
 ### F-0255 [S3] Filtr na skutečných datech označuje 0,04–0,17 % vzorků (ne 10⁻⁶ jako u Gaussova šumu)
 
@@ -34,20 +34,20 @@ Filtr je navržený metrologicky správně (izolovaný vzorek, díra místo náh
 - **Dopad:** malý (ADEV −0,7 % @ 1 s), ale statistika se tiše „vylepšuje" proti skutečnému šumu zdroje; počet je viditelný, takže to není skryté.
 - **Návrh:** buď zvýšit práh (HAMP_K 7–8 → zhruba desetkrát méně označených), nebo přejmenovat výstup na „kandidáti na odlehlé" a ponechat. Rozhodnutí o politice (jak agresivně) patří uživateli.
 - **Riziko opravy:** nízké; mění jen konstantu.
-- **Stav:** otevřeno (skupina B: rozhodnout).
+- **Stav:** opraveno 2026-10-18 (v0.27.1), rozhodnutí: **HAMP_K = 7**. Podklad (`docs/audit/sim/`, offline na 120min a gate025b): označených vzorků 5 MAD 0,171/0,042 %, 6 MAD 0,073/0,032 %, **7 MAD 0,049/0,021 %**, 8 MAD stejně jako 7, 10 MAD 0,024/0,011 %; citlivost na vložené izolované špičky 12σ se u 7 MAD nezhoršila (21 vs 19 z 28). 7 je nejnižší hodnota, od které označení dál neklesá výrazně.
 
 ### F-0256 [S4] Čtení pyramid z UartTasku bez synchronizace (`screen_main_adev_compare`, `screen_main_outlier_info`)
 
 - **Místo:** `screen_main.c` (funkce volané z `status full`).
 - **Popis:** UartTask čte `double` součty a počítadla, která UiTask aktualizuje; 64bitové čtení není atomické. Může se vypsat jedno roztržené číslo. Stejná tolerance jako u dosavadních výpisů `STATISTIKA:` (L-0023).
-- **Stav:** otevřeno (kosmetické, skupina C).
+- **Stav:** opraveno 2026-10-18 (v0.27.1): `screen_main_outlier_info` a `screen_main_adev_compare` čtou pod PRIMASK (UiTask se mezitím nepřepne, čtení je konzistentní). Opraveno jen u těchto dvou nových funkcí; dosavadní `STATISTIKA:` výpisy zůstávají s tolerancí roztrženého čtení.
 
 ### F-0257 [S4] Netestovaná větev `meas outlier off`
 
 - **Místo:** `adev_feed_filtered` (uvolnění cekajícího vzorku při vypnutí filtru).
 - **Popis:** Selftest pokrývá `hamp_push` a rozhodnutí, ne přepnutí za běhu (uvolnění `s_hamp.have`, pořadí vzorků v pyramidě).
 - **Návrh:** přidat do selftestu kontrolu pořadí (předat dva vzorky, přepnout, předat třetí; `s_adev.tot` o 3). Po opravě F-0254.
-- **Stav:** otevřeno.
+- **Stav:** opraveno 2026-10-18 (v0.27.1): `hamp_flush` + test (`tot` 2 → flush → 3, další vzorek zase čeká).
 
 ---
 

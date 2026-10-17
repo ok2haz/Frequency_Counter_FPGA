@@ -4,7 +4,7 @@ Pouziti: python 2026-10-18_hampel_realna_data.py <csv> [orez_s]"""
 import csv, sys
 import numpy as np
 
-HN, HMIN, HK = 31, 15, 5.0
+HN, HMIN, HK = 31, 15, 7.0   # od v0.27.1 (audit F-0255); puvodne 5.0
 rows = list(csv.DictReader(open(sys.argv[1])))
 T0 = float(sys.argv[2]) if len(sys.argv) > 2 else 1200.0
 def num(v):
