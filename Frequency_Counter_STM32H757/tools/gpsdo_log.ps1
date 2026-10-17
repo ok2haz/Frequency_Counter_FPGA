@@ -7,6 +7,7 @@
 
   Pouziti:
     powershell -ExecutionPolicy Bypass -File tools\gpsdo_log.ps1 -Out docs\audit\data\2026-10-17_noc.csv -Every 2 -MaxMin 480
+  Sloupec http_used zapocitava i dotaz loggeru samotneho (cizich klientu je http_used - 1, F-0240).
   Vystupy: <Out> (CSV), <Out>.stab.jsonl (ADEV), <Out>.events.txt (errlog pred a po), <Out>.phase.csv (sigma a rozpeti faze xr_ns po blocich -StabEvery, jen ve stavu LOCK), <Out>.log (preflight + udalosti).
   ASCII only (PowerShell 5.1 cte skript bez BOM jako ANSI).
 #>

@@ -640,7 +640,9 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
               (unsigned long)gd.pps_ok, (unsigned long)gd.pps_rej, (unsigned)gd.tau_s, (unsigned)gd.kdac_e13,
               (gd.saw < 4u) ? gsw[gd.saw] : "?");
     }
-    {   /* STATUS #307: vytizeni spojeni CM4 - odpoved na 'kolik PC se vejde' a dukaz, ze se nekdo nevesel (rej > 0) */
+    {   /* STATUS #307: vytizeni spojeni CM4 - odpoved na 'kolik PC se vejde' a dukaz, ze se nekdo nevesel (rej > 0).
+         * ⚠️ F-0240: `http.used` VCETNE spojeni, ktere prave tenhle dotaz obsluhuje (pres /api/state je vzdy >= 1);
+         * cizich klientu je used - 1. Pres SSE (`/api/stream`) to plati obdobne (vlastni SSE slot). */
         unsigned sse = 0u, used = http_slots_used(&sse);
         uint8_t su = 0u, sm = 0u, sp = 0u; uint32_t sr = 0u;
         scpi_tcp_stats(&su, &sm, &sp, &sr);
