@@ -1838,7 +1838,7 @@ DATA regionu zůstávají volné pro další bulk použití (fonty XIP, rekonstr
 region = ~242 dní; dřív tu chybně stálo „~600".)
 - **Záznam (LE, ruční serializace — NE memcpy struktury, aby byl formát nezávislý na kompilátoru):**
   `seq(0)`, `t_unix(4)`, `freq(8)` (🔴 bit 63 = `freq_avg`: průměr všech měření za periodu, F-0172; staré záznamy 0 = okamžitý vzorek 0,25 s; 🔴 **bity 62..0 od F-0180 = IEEE double [Hz]**, když je exponent (bity 62..52) nenulový, jinak **starý x1e5** — `DATALOG_FREQ_EXP_MASK`; `datalog_rec_t.freq_hz` + `freq_exact`, `freq_x100000` se dopočítá), `t_ocxo_c100(16)`, `t_board_c100(18)`, `ocxo_vc_mv(20)`,
-  `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27).
+  `rf_mv(22)`, `flags(24)`, `sats(25)`, `hdop10(26)`, **`vbat(27)`**, **CRC16(28)** (CCITT-FALSE přes byte 0..27). **`dac_code(30)`** u16 = kód DAC OCXO (AD5693R) v okamžiku záznamu, **MIMO CRC** (bajty 30..31 byly rezerva; staré záznamy mají nuly = „nezaznamenáno", 0xFFFF taky; ve smyčce zaokrouhlený POVEL bez ditheru, jinak poslední zapsaný kód, při emulaci nic; STATUS #311, v0.19.0). Zobrazuje UART `datalog dump` (`Dac=`) a CSV sloupec `dac_code`.
   - ⚠️ **`rf_mv(22)` jsou SYROVÉ mV, ne dBm** (přejmenováno z `rf_dbm10` 2026-08-18). Uložení
     v mV je záměr — kalibrace `g_calib.ad8307_*` se může změnit, syrová hodnota ne. Jenže staré
     jméno pole neodpovídalo obsahu a **oba konzumenti to vzali doslova**: CSV export i SCPI
