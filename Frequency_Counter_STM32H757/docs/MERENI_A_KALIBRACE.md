@@ -458,6 +458,39 @@ ADEV čítače 0,60 / 0,45 / 0,29 ppb na 20 / 50 / 100 s proti 0,24 / 0,11 / 0,0
 
   Mediány nocí (1 s) a gate025b (0,25 s) se liší jen o 12 % a obě porovnávané hodnoty leží uvnitř pásma p10–p90 svého běhu. Nezávisle z CSV (1s průměry ze 4 měření 0,25 s, klouzavé okno 120 s): gate025b medián 8,8·10⁻¹¹ (p10–p90 3,9·10⁻¹¹–1,8·10⁻¹⁰), 120min 7,0·10⁻¹¹ — týž rozptyl ×4–5, takže jde o vlastnost signálu, ne firmwaru. Z nočního CSV (hradlo 1 s) ADEV(1 s) spočítat nejde: logger četl po 2 s a `seq` skáče o 2 (každé druhé měření chybí). ⚠️ Zbytek: v běhu 120min je medián firmwaru 1,7× pod CSV (gate025b sedí) — pravděpodobně různé vážení (firmware vzorkovaný řádky loggeru, CSV okny), neověřeno.
 
+### 2026-10-17 večer — dither DAC (v0.21.0/v0.21.1) a oprava FLL (#318): JEN SIMULACE, NA DESCE NEZMĚŘENO (CM7 v0.21.1, FPGA FW 0x0424 beze změny, IPC v26)
+
+Žádné měření na desce — firmware v0.21.0/v0.21.1 zatím nebyl flashnut. Zapsáno proto, aby bylo jasné, **co se předpokládá a čím se to má ověřit**. Všechna čísla níže jsou ze simulace na hostu, ne z přístroje.
+
+- **Dither DAC (STATUS #317, v0.21.0; výchozí 100 Hz od v0.21.1).** Zápis kódu smyčky dělá `DacTask` (5 ms takt, dělič 2 → 100 Hz; `dac dither 200` vrátí maximum). Simulace `dither_sim2.py` (RC 220 ms + 1 ms, K 3,4·10⁻¹¹/LSB):
+
+  | dither | zvlnění Vc (p-p) | ADEV 0,25–10 s |
+  |---|---|---|
+  | 2 Hz (do v0.20.1) | 30·10⁻¹² | až 8·10⁻¹² |
+  | 200 Hz | ≤ 0,8·10⁻¹² | ≤ 2,4·10⁻¹³ |
+  | 200 Hz se zpožděnými zápisy 0–3 ms nebo 2 % vynechaných kroků | ≤ 5·10⁻¹² | ≤ 4·10⁻¹³ |
+  | 100 Hz | HYPOTÉZA: skoro stejně jako 200 Hz (simulace 100 Hz „skoro stejně dobrá“, samostatná tabulka nebyla zapsána) | — |
+  | 50 Hz | 2–3× horší než 200 Hz | — |
+
+  🔑 Z dosavadních měření (ADEV firmwaru 8·10⁻¹¹ @ 2 s, hrbol 3–5·10⁻¹⁰ @ 20–50 s) **dither nic nevysvětluje ani nezmění**: jeho příspěvek je i při 2 Hz o 1–2 řády pod tím, co se měří (hrbol pochází z externího GPSDO, viz výše). Zlepšení se proto na ADEV čítače **nemusí vůbec projevit**; smysl má jako odstranění známého zdroje šumu v OCXO na 0,25–10 s.
+- **Oprava FLL (STATUS #318, v0.21.1).** Příčina `gpsdo test` FAIL: K se měřilo i z malého kroku (−73 LSB), jehož očekávaná změna (1,2·10⁻⁹) je pod šumem rozdílu dvou 16s oken (~3,7·10⁻⁹). Host simulace `st_fix_sim.py` (model: sum hrany 30 ns, kvantizace 10 ns, Y0 −8,4·10⁻⁷, 12 000 s, 20 seedů):
+
+  | skutečné K modelu | před opravou | po opravě |
+  |---|---|---|
+  | 3,1·10⁻¹¹ | 20/20 | 20/20 |
+  | 1,7·10⁻¹¹ | 16/20 | **20/20** |
+  | 2,3·10⁻¹¹ | 18/20 | **20/20** |
+  | 1,2·10⁻¹⁰ | 20/20 | 20/20 |
+  | 1,5·10⁻¹¹ | 0/20 | 0/20 (z principu: 52 429 LSB × 1,5·10⁻¹¹ < 8,4·10⁻⁷, rozsah EFC nestačí) |
+
+  Zastavení při špatném znaménku K a při nedostatečném rozsahu: 10/10 před i po. ⚠️ Model šumu 1PPS (30 ns RMS) je **HYPOTÉZA** (datasheet NEO-7M v repu není); skutečný šum na desce lze odhadnout z rozptylu `e` ve smyčce (`status` → `GPSDO:` sawtooth rozptyly).
+- **Co se musí změřit po flashi CM7 a power-cyklu (zapsat sem jako nový záznam):**
+  1. `gpsdo test` → PASS (dosud na desce nikdy nebyl PASS).
+  2. `dac dither test` → PASS; `dac` → dither 100 Hz, `kroky bez mutexu` řádově ≤ 1 %, `chyb I2C` neroste.
+  3. `stats` → DacTask stackfree > 300 B, CPU ~1–2 %, halda ≥ 5 kB; `status` → `SEQ FPGA` díry 0.
+  4. A/B ditheru `dac dither 2` / `100` / `200` po 30–60 min při stejném hradle 0,25 s (smyčka LOCK, kanál A = externí GPSDO, `analyze_gpsdo_log.py`): srovnávat **mediány `sigma1s`** (kolísá až 5×) a ADEV CSV @ 0,25–10 s; očekávání z modelu: rozdíl pod hranicí rozlišení dosavadních běhů (viz výše), pozitivní výsledek není zaručen.
+  5. Chování FLL při rozběhu smyčky po power-cyklu (log `GPSDO:` stav, počet oken do LOCK; dosud LOCK za ~280 s při K modelu 3,1·10⁻¹¹).
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
