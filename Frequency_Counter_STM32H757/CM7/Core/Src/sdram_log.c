@@ -236,6 +236,15 @@ void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flag
     s_head = h + 1u;
 }
 
+/* Je zkopirovany zaznam s absolutnim indexem `a` jeste platny, kdyz po kopii hlava ukazuje `head`?
+ * 🔴 F-0237: slot zaznamu `a` prepisuje zapis indexu `a + CAP` a ten probiha, kdyz `s_head == a + CAP`
+ * (hlava se zvedne az PO zapisu). Neplatne je proto uz `head - a >= CAP`, ne az `> CAP` — drive projel
+ * rozepsany nejstarsi zaznam jako platny. Ciste, kryje selftest. */
+static int rec_still_valid(uint32_t head, uint32_t a)
+{
+    return (head - a) < SDRAM_LOG_CAP;
+}
+
 /* Prevede "i-ty nejnovejsi" na absolutni index; 0 = mimo rozsah. */
 static int idx_of(uint32_t head, uint32_t i, uint32_t *abs_out)
 {
@@ -251,8 +260,9 @@ int sdram_log_get(uint32_t i, sdram_log_rec_t *out)
     uint32_t h = s_head, abs;
     if (!idx_of(h, i, &abs)) return 0;
     *out = s_buf[abs & (SDRAM_LOG_CAP - 1u)];
+    __DMB();                 /* kopie dat PRED kontrolou hlavy (prekladac nesmi cteni s_buf presunout za ni) */
     /* Producent mohl mezitim prepsat prave tenhle (nejstarsi) zaznam. */
-    if (s_head - abs > SDRAM_LOG_CAP) return 0;
+    if (!rec_still_valid(s_head, abs)) return 0;
     return 1;
 }
 
@@ -272,8 +282,9 @@ uint32_t sdram_log_read_back(uint32_t i, sdram_log_rec_t *out, uint32_t n)
         out[got++] = s_buf[a & (SDRAM_LOG_CAP - 1u)];
         if (a == oldest) break;                   /* dosli jsme na nejstarsi platny */
     }
+    __DMB();                 /* kopie dat PRED kontrolou hlavy */
     /* Jedna kontrola na konci: prepsal producent behem cteni neco, co jsme vzali? */
-    if (s_head - (abs - (got - 1u)) > SDRAM_LOG_CAP) return 0;
+    if (!rec_still_valid(s_head, abs - (got - 1u))) return 0;
     return got;
 }
 
@@ -304,7 +315,7 @@ uint32_t sdram_log_read_abs(uint32_t from, sdram_log_rec_t *out, uint32_t n,
     __DMB();
     /* Behem kopie mohl producent (a) prepsat nejstarsi ctene zaznamy po pretoceni, nebo (b) zahajit
      * novou epochu (vynulovat `s_head`). V obou pripadech je kopie nedoveryhodna -> 0, klient se zepta znovu. */
-    if (s_epoch != ep || s_head < h || s_head - a0 > SDRAM_LOG_CAP) {
+    if (s_epoch != ep || s_head < h || !rec_still_valid(s_head, a0)) {
         if (w != NULL) w->epoch = s_epoch;
         return 0;
     }
@@ -390,5 +401,10 @@ int sdram_log_selftest(void)
     win_of(0u, &lo);                       if (lo != 0u) return 0;
     win_of(SDRAM_LOG_CAP, &lo);            if (lo != 0u) return 0;
     win_of(SDRAM_LOG_CAP + 7u, &lo);       if (lo != 7u) return 0;
+    /* F-0237: hranice platnosti — zaznam `a` je neplatny uz pri hlave a+CAP (jeho slot se prave zapisuje). */
+    if (!rec_still_valid(100u, 100u - 1u))                     return 0;   /* nejnovejsi */
+    if (!rec_still_valid(SDRAM_LOG_CAP + 6u, 7u))              return 0;   /* nejstarsi dostupny */
+    if (rec_still_valid(SDRAM_LOG_CAP + 7u, 7u))               return 0;   /* jeho slot se prave prepisuje */
+    if (rec_still_valid(SDRAM_LOG_CAP + 8u, 7u))               return 0;   /* uz prepsany */
     return 1;
 }
