@@ -18,7 +18,7 @@ function grab(name) {
 
 /* Minimalni prostredi: H (historie), src(), tail, DL, win, LAST, NOMV, localStorage, drawAll/drawZoom/zoom/legSync stuby. */
 const pre = `
-var HID={}; var H={f:[],t0:[],t1:[],t2:[],t3:[],vc:[],p0:[],p1:[],p2:[],p3:[],ns:[],hd:[]};
+var HID={}; var H={f:[],t0:[],t1:[],t2:[],t3:[],vc:[],vd:[],p0:[],p1:[],p2:[],p3:[],ns:[],hd:[]};
 var win=300, DL=null, zoom=null, LAST=null, NOMV={p0:3300,p1:5000,p2:2500,p3:3300};
 var calls={draw:0,zoom:0}; var store={};
 var localStorage={getItem:function(k){return store[k]===undefined?null:store[k];},setItem:function(k,v){store[k]=v;}};
@@ -69,7 +69,20 @@ ok(sNone.span && sNone.span[0] === sAll.span[0] && sNone.span[1] === sAll.span[1
 
 api.reset();
 ok(api.spec('freq').series.every(x => !x.hid) && api.spec('vc').series.every(x => !x.hid),
-   'grafy s jednou radou (freq, vc) skryti nezasahne');
+   'graf kmitoctu (jedna rada) a Vc (dve rady) po resetu nic neskryva');
+
+/* #310: graf Vc ma DVE rady (Vc z ADC + povel DAC v mV); skryti jedne prizpusobi osu druhe. */
+for (let i = 0; i < 40; i++) { api.H.vc.push(1917 + 0.5 * Math.sin(i / 5)); api.H.vd.push(1899.6 + 2 * Math.sin(i / 7)); }
+const v2 = api.spec('vc');
+ok(v2.series.length === 2 && v2.series[1].n === 'povel DAC', 'Vc: dve rady (Vc, povel DAC)');
+ok(v2.span[0] < 1900 && v2.span[1] > 1917, 'Vc: osa pokryva obe rady (' + v2.span[0].toFixed(1) + '..' + v2.span[1].toFixed(1) + ')');
+api.tog('vc', 1);   /* skryj povel DAC */
+const v1 = api.spec('vc');
+ok(v1.series[1].hid && v1.span[0] > 1915 && v1.span[1] < 1919, 'Vc: po skryti DAC se osa zuzi na samotne Vc (' + v1.span[0].toFixed(1) + '..' + v1.span[1].toFixed(1) + ')');
+api.tog('vc', 1); api.tog('vc', 0);   /* DAC zpet, skryj Vc */
+const v0 = api.spec('vc');
+ok(v0.series[0].hid && v0.span[1] < 1905, 'Vc: po skryti Vc se osa zuzi na samotny povel DAC (' + v0.span[0].toFixed(1) + '..' + v0.span[1].toFixed(1) + ')');
+api.reset();
 
 console.log(bad ? 'ser_test: CHYBA (' + bad + ')' : 'ser_test: vse OK');
 process.exit(bad ? 1 : 0);
