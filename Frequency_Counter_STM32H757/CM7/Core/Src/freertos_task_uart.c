@@ -725,7 +725,7 @@ static void gpsdo_print_status(void)
     gpsdo_tau_adv_t ad;
     gpsdo_tau_advise(&ad);
     if (ad.bound == 2u) {
-        printf("GPSDO: tau min. -- (malo dat: %u bodu LOCK po 10 s, potreba 180 = 30 min)\n", (unsigned)ad.n);
+        printf("GPSDO: tau min. -- (malo dat: %u bodu LOCK po 10 s od zamceni/zmeny tau, potreba 180 = 30 min)\n", (unsigned)ad.n);
     } else {
         printf("GPSDO: tau min. %s%lu s (aktualne %lu s) | sum 1PPS HDEV(10 s) %ld e-12 | HDEV faze e-12:",
                ad.bound == 1u ? ">=" : "", (unsigned long)gp_round(ad.tau_rec), (unsigned long)gp_round(s.tau_s),

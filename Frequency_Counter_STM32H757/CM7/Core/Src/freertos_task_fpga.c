@@ -439,6 +439,7 @@ static gp_core_t s_gc;
 static uint8_t   s_g_en = 1u;                  /* vychozi ZAPNUTO (zadani 2026-10-16); nepersistuje se */
 static uint8_t   s_g_state = GPSDO_WAIT, s_g_why = GPSDO_WHY_NOPPS, s_g_hold_from;
 static double    s_g_tau = (double)GPSDO_TAU_DEFAULT, s_g_kdac = GPSDO_KDAC_DEFAULT;
+static volatile uint32_t s_g_tau_ms;           /* HAL_GetTick posledni zmeny tau (0 = nemenilo se); gpsdo_tau_advise, F-0241 */
 static uint32_t  s_g_pps_n, s_g_ts_prev, s_g_last_ok_ms, s_g_state_ms;
 static uint8_t   s_g_have_prev;
 static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezme se v dalsim intervalu) */
@@ -566,6 +567,12 @@ void gpsdo_tau_advise(gpsdo_tau_adv_t *out)
         for (int i = (int)cnt - 1; i >= 0; i--) {               /* posledni souvisly usek LOCK (od nejnovejsiho) */
             if (!gpsdo_hist_at((uint16_t)i, &p) || p.state != GPSDO_LOCK) break;
             n++;
+        }
+        /* F-0241: po zmene tau jen body NOVE smycky (fazi starsich tvarovala jina smycka). 0 = tau se nemenilo. */
+        uint32_t tch = s_g_tau_ms;
+        if (tch != 0u) {
+            uint32_t since = (uint32_t)(now - tch) / (GPSDO_HIST_PERIOD_S * 1000u);
+            if ((uint32_t)n > since) n = (int)since;
         }
         gpsdo_status_t st;
         gpsdo_get(&st);
@@ -771,6 +778,7 @@ void gpsdo_set_tau(uint32_t tau_s)
 {
     if (tau_s < 100u) tau_s = 100u;
     if (tau_s > 20000u) tau_s = 20000u;
+    if ((double)tau_s != s_g_tau) s_g_tau_ms = HAL_GetTick() | 1u;   /* F-0241: od ted plati nova smycka */
     s_g_tau = (double)tau_s;
 }
 void gpsdo_set_kdac(double k)
