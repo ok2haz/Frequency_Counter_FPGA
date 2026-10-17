@@ -15,7 +15,8 @@ param(
   [string]$Ip = "10.0.0.106",
   [int]$Every = 2,
   [int]$StabEvery = 600,
-  [double]$MaxMin = 480
+  [double]$MaxMin = 480,
+  [double]$ExpectGate = 0   # >0: ocekavane hradlo [s]; v preflightu varuje, kdyz neodpovida (sloupec gate_s je v CSV vzdy)
 )
 $ErrorActionPreference = "Continue"
 $ph = "$Out.phase.csv"; $stab = "$Out.stab.jsonl"; $evt = "$Out.events.txt"; $lg = "$Out.log"
@@ -25,7 +26,7 @@ function Get-Json($path, $to) { try { return ((Invoke-WebRequest -Uri ("http://"
 function V($o, $a) { try { $x = $o; foreach ($k in $a) { $x = $x.$k }; if ($null -eq $x) { return "" } else { return [string]$x } } catch { return "" } }
 
 $cols = @("wall","uptime_s","seq_meas","freq_hz","gp_state","gp_locked","gp_why","gp_y_ppt","gp_x_ns","gp_xr_ns","gp_code","gp_t_s","gp_pps_ok","gp_pps_rej","gp_tau","gp_kdac_e13","gp_saw",
-          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s","http_used","http_peak","http_rej","scpi_used","scpi_rej")
+          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s","http_used","http_peak","http_rej","scpi_used","scpi_rej","gate_s","gate_ns")
 if (-not (Test-Path $Out)) { Set-Content -Path $Out -Encoding ASCII -Value ($cols -join ",") }
 
 if (-not (Test-Path $ph)) { Set-Content -Path $ph -Encoding ASCII -Value "wall,n_lock,xr_mean_ns,xr_std_ns,xr_pp_ns,y_mean_ppt,y_std_ppt" }
@@ -40,6 +41,8 @@ else {
   if ($null -eq $g) { Log "VAROVANI: /api/state nema blok gpsdo (stary CM4/CM7?)" }
   elseif ($g.state -ne "LOCK") { Log ("VAROVANI: smycka neni LOCK (" + $g.state + ") - pocitej s rozbehem, zaklad meri az od zamceni") }
   elseif ([int]$g.t_s -lt 3600) { Log ("POZOR: LOCK jen " + $g.t_s + " s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)") }
+  Log ("HRADLO: nastaveno " + (V $s @("set_gate_s")) + " s, posledni namerene " + (V $s @("gate_ns")) + " ns")
+  if ($ExpectGate -gt 0 -and [math]::Abs([double]$s.set_gate_s - $ExpectGate) -gt 1e-6) { Log ("VAROVANI: hradlo " + $s.set_gate_s + " s, ocekavano " + $ExpectGate + " s - zaznam by bezel s jinym hradlem") }
   if ($s.warmup) { Log "VAROVANI: OCXO se jeste zahriva (warmup)" }
   if ($s.gps -and [int]$s.gps.fix_mode -lt 3) { Log "VAROVANI: GPS bez 3D fixu" }
   if ($s.uptime_s -lt 1800) { Log "POZOR: uptime pod 30 min" }
@@ -64,7 +67,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
       (V $s @("dac","code")), (V $s @("dac","mv")), (V $s @("vc_mv")), (V $s @("temp_ocxo_c")), (V $s @("temp_board_c")), (V $s @("temp_fpga_c")), (V $s @("temp_mcu_c")),
       (V $s @("gps","valid")), (V $s @("gps","fix_mode")), (V $s @("gps","num_sat")), (V $s @("gps","hdop")), (V $s @("warmup")), (V $s @("si5356_status")),
       (V $s @("cm4","ipc_version")), (V $s @("sy1e15")),
-      (V $s @("conn","http","used")), (V $s @("conn","http","peak")), (V $s @("conn","http","rej")), (V $s @("conn","scpi","used")), (V $s @("conn","scpi","rej")))
+      (V $s @("conn","http","used")), (V $s @("conn","http","peak")), (V $s @("conn","http","rej")), (V $s @("conn","scpi","used")), (V $s @("conn","scpi","rej")), (V $s @("set_gate_s")), (V $s @("gate_ns")))
     Add-Content -Path $Out -Encoding ASCII -Value ($row -join ",")
     if ($g -and $g.state -eq "LOCK") { [void]$bx.Add([double]$g.xr_ns); [void]$by.Add([double]$g.y_ppt) }
     $up = [int]$s.uptime_s
