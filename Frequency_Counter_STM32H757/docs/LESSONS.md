@@ -4761,6 +4761,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0169 — Odhad z rozdílu dvou zašuměných měření: absolutní práh kroku neříká nic, krok se musí srovnat se šumem
+ 
+- **Datum:** 2026-10-17
+- **Oblast:** `freertos_task_fpga.c` `core_step` (FLL smyčky GPSDO), STATUS #318
+- **Symptom:** `gpsdo test` FAIL pro model s K 1,7·10⁻¹¹; po malém kroku (−73 LSB) se změřilo záporné K a smyčka vyhlásila falešnou divergenci.
+- **Příčina:** K se odhadovalo jako Δy/Δkód pro každý krok > 50 LSB (absolutní práh). Očekávaná změna 73 × 1,7·10⁻¹¹ = 1,2·10⁻⁹ je ale menší než šum rozdílu dvou 16s oken (~3,7·10⁻⁹), takže znaménko je náhodné.
+- **Oprava:** K se měří jen když nejmenší věrohodná změna (0,25·K0·|Δkód|) přesahuje 5 σ rozdílu oken; σ okna = √2·PM/délka okna (nové `fll_prev_n`). Jinak platí dosavadní odhad.
+- **Pravidlo:** Veličina odvozená dělením (Δy/Δx) smí rozhodovat o divergenci/znaménku jen tehdy, když je čitatel významný proti šumu měření; práh na jmenovateli (kroku) to nezaručí.
+- **Detekce:** `gpsdo test` (K modelu 1,7·10⁻¹¹ je regresní případ), host simulace `st_fix_sim.py`.
+- **Commit:** `19afcb9`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
