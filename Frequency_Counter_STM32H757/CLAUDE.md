@@ -68,6 +68,7 @@ python tools/audit.py
 | `docs/STYLE_CZ.md` | Před psaním/úpravou komentářů a kódu |
 | `docs/LESSONS.md` | Před opravou a po opravě (povinné) |
 | `docs/ARCHITECTURE.md` | Při orientaci v projektu; průběžně doplňuj doloženými fakty |
+| `docs/FUNKCE.md` | **Přehled schopností HW a firmwaru a jejich stavu** (✅ HW / 🟡 neověřeno / ⬜ plán); udržovat při každé nové funkci nebo změně stavu |
 | `docs/AUDIT_STATUS.md` | Na začátku a konci sezení — co je hotové, kde pokračovat |
 | `docs/MERENI_A_KALIBRACE.md` | Před měřením na desce a po něm — deník měření (ADEV, A−B, regrese) a stav kalibrací; výsledky zapisuj sem |
 | `docs/audit/*.md` | Nálezy z jednotlivých běhů (výstup, ne vstup) |
