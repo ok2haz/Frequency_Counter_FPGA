@@ -11,6 +11,8 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.25.0 (2026-10-18) = audit A2 V3: druha sada akumulatoru se zapominanim (okno ~600 clenu kazde stage) a prepinac pohledu VSE / OKNO v okne ALLAN
+ * (tlacitko vedle RESET; hlavicka tabulky 'sigma_y(tau) okno'). Nepersistuje se. IPC v27 beze zmeny. */
 /* v0.24.0 (2026-10-18) = audit A2 V6/V7: sedma stage Allan pyramidy (tau do 9·10^6 s), `ipc_stab_pt_t.nterm` 32 b, IPC_STAB_PTS 63. IPC v27 -> FLASHNOUT OBE BANKY. */
 /* v0.23.1 (2026-10-17) = audit A2: V1 brana Allan pyramidy (jen ustalena reference: OCXO dohrato + smycka OFF/WAIT/HOLD/LOCK, `meas gate on|off`),
  * V2 zadny clen pres mezeru (>30 s bez vzorku, STOP/RUN, napojeni rekonstrukce), V4 snapshot/UART sigma_y(1 s) = karta (`g_adev_1s_cum`). IPC v26 beze zmeny. */
@@ -183,8 +185,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 24
+#define FW_VERSION_MINOR 25
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.24.0"
+#define FW_VERSION_STR   "v0.25.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

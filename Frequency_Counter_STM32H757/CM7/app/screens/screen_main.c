@@ -1479,6 +1479,9 @@ static float stats_drift(void)
 #define ADEV_KIND_MDEV  1
 #define ADEV_KIND_HDEV  2
 #define ADEV_MMAX       9            /* nejvetsi mantisa m (DENS_M) */
+#define ADEV_WIN_ITEMS  600          /* V3: pamet okna ~600 clenu kazde stage (tau = 1 s: 10 min, 10 s: 100 min, 100 s: 17 h) */
+#define ADEV_FORGET     (1.0 - 1.0 / (double)ADEV_WIN_ITEMS)
+static uint8_t s_allan_win;          /* V3: 0 = od resetu (vsechny cleny), 1 = okno ~600 clenu (rychla odezva) */
 typedef struct {
     double  ring[ADEV_RING];      /* prumery kmitoctu Ybar */
     double  eph[ADEV_RING];       /* E (viz vyse) */
@@ -1492,6 +1495,9 @@ typedef struct {
      * qs = soucet ctvercu clenu, qn = jejich pocet, [typ ADEV_KIND_*][m-1]; tot = polozek vlozeno od resetu. */
     double   qs[3][ADEV_MMAX];
     uint32_t qn[3][ADEV_MMAX];
+    /* V3: druha sada se zapominanim (okno ~ADEV_WIN_ITEMS clenu): fs = lambda*fs + c^2, fn = lambda*fn + 1. */
+    double   fs[3][ADEV_MMAX];
+    double   fn[3][ADEV_MMAX];
     uint32_t tot;
     uint32_t since;               /* V2: polozek od posledni mezery (clen nesmi presahnout mezeru) */
 } adev_stage_t;
@@ -1637,6 +1643,10 @@ static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstar
  * akumulator stejny vysledek (hlida `screen_main_selftest`). Porucha (skok, vypadek) zustane v souctu az do resetu
  * (RESET ALLAN, zmena signalu/hradla/REAL<->SIM nuluji vse).
  * MDEV nad stage >= 1 (`pb`) pouziva jen polozky s platnou fazi E (`e_n`), jako okenni estimator. */
+#define ADEV_ADD(K, C2) do { double c2_ = (C2); \
+    sg->qs[K][m - 1] += c2_; sg->qn[K][m - 1]++; \
+    sg->fs[K][m - 1] = sg->fs[K][m - 1] * ADEV_FORGET + c2_; \
+    sg->fn[K][m - 1] = sg->fn[K][m - 1] * ADEV_FORGET + 1.0; } while (0)
 static void adev_acc_update(adev_stage_t *sg, int pb)
 {
     const int M = (sg->since < (uint32_t)sg->count) ? (int)sg->since : sg->count;   /* V2: jen polozky za poslednim zlomem */
@@ -1645,14 +1655,14 @@ static void adev_acc_update(adev_stage_t *sg, int pb)
             int b = adev_base_n(sg, 2 * m);
             double inner = 0.0;
             for (int i = 0; i < m; i++) inner += adev_at(sg, b, i + m) - adev_at(sg, b, i);
-            sg->qs[ADEV_KIND_ADEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_ADEV][m - 1]++;
+            ADEV_ADD(ADEV_KIND_ADEV, inner * inner);
         }
         if (M >= 3 * m) {                                       /* HDEV: clen j = M-3m */
             int b = adev_base_n(sg, 3 * m);
             double inner = 0.0;
             for (int i = 0; i < m; i++)
                 inner += adev_at(sg, b, i + 2 * m) - 2.0 * adev_at(sg, b, i + m) + adev_at(sg, b, i);
-            sg->qs[ADEV_KIND_HDEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_HDEV][m - 1]++;
+            ADEV_ADD(ADEV_KIND_HDEV, inner * inner);
         }
         int need = pb ? 3 * m : 3 * m - 1;                      /* MDEV: nejnovejsich `need` polozek */
         int Mm   = pb ? ((sg->e_n < M) ? sg->e_n : M) : M;
@@ -1664,13 +1674,14 @@ static void adev_acc_update(adev_stage_t *sg, int pb)
             if (pb)
                 for (int l = 0; l < m; l++)
                     inner += adev_e_at(sg, b, l + 2 * m) - 2.0 * adev_e_at(sg, b, l + m) + adev_e_at(sg, b, l);
-            sg->qs[ADEV_KIND_MDEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_MDEV][m - 1]++;
+            ADEV_ADD(ADEV_KIND_MDEV, inner * inner);
         }
     }
 }
 
-/* Odhad z akumulatoru; 0 = zatim malo clenu (stejne prahy jako `adev_ring_kind`: 2 cleny, MDEV na stage 0 3). */
-static float adev_acc_kind(const adev_stage_t *sg, int m, int kind, int pb)
+/* Odhad z akumulatoru; 0 = zatim malo clenu (stejne prahy jako `adev_ring_kind`: 2 cleny, MDEV na stage 0 3).
+ * `win` = V3: odhad z exponencialne vazenych souctu (okno ~ADEV_WIN_ITEMS clenu) misto souctu od resetu. */
+static float adev_acc_kind_w(const adev_stage_t *sg, int m, int kind, int pb, int win)
 {
     if (m < 1 || m > ADEV_MMAX) return 0.0f;
     uint32_t n = sg->qn[kind][m - 1];
@@ -1679,8 +1690,15 @@ static float adev_acc_kind(const adev_stage_t *sg, int m, int kind, int pb)
     double mm = (double)m;
     double c = (kind == ADEV_KIND_ADEV) ? 2.0 * mm * mm
              : ((kind == ADEV_KIND_HDEV) ? 6.0 * mm * mm : 2.0 * mm * mm * mm * mm);
+    if (win) {
+        double fn = sg->fn[kind][m - 1];
+        if (!(fn > 0.0)) return 0.0f;
+        return sqrtf((float)(sg->fs[kind][m - 1] / (c * fn)));
+    }
     return sqrtf((float)(sg->qs[kind][m - 1] / (c * (double)n)));
 }
+static float adev_acc_kind(const adev_stage_t *sg, int m, int kind, int pb)
+{ return adev_acc_kind_w(sg, m, kind, pb, s_allan_win); }
 
 /* Ekvivalentni pocet polozek M odhadu (pro EDF a "paru"): n = M-2m+1 (ADEV), M-3m+1 (HDEV), M-3m+2 / M-3m+1 (MDEV). */
 static int32_t adev_acc_M(const adev_stage_t *sg, int m, int kind, int pb)
@@ -1689,6 +1707,7 @@ static int32_t adev_acc_M(const adev_stage_t *sg, int m, int kind, int pb)
     uint32_t n = sg->qn[kind][m - 1];
     if (n == 0u) return 0;
     int32_t add = (kind == ADEV_KIND_ADEV) ? 2 * m - 1 : ((kind == ADEV_KIND_HDEV || pb) ? 3 * m - 1 : 3 * m - 2);
+    if (s_allan_win && n > 2u * ADEV_WIN_ITEMS) n = 2u * ADEV_WIN_ITEMS;   /* V3: n_eff vazeni = (1+l)/(1-l) = 2L */
     uint64_t me = (uint64_t)n + (uint64_t)add;
     return (me > 2000000000u) ? 2000000000 : (int32_t)me;
 }
@@ -1709,6 +1728,9 @@ void screen_main_adev_gate(int open)
     if (o != s_adev_gate_open) { adev_break_all(); s_adev_gate_open = o; }
 }
 int screen_main_adev_gate_open(void) { return s_adev_gate_open; }
+/* V3: pohled statistiky: 0 = od resetu, 1 = okno ~600 clenu kazde stage. Meni zobrazeni (graf, tabulka, karta, web), ne data. */
+void screen_main_set_allan_win(int w) { uint8_t v = w ? 1u : 0u; if (v != s_allan_win) { s_allan_win = v; s_stats_ver++; } }
+int  screen_main_allan_win(void) { return s_allan_win; }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
  * Plochy ring s_y[] pokryje jen 120 s; okno 30 dni by v nem chtelo 2,6 M vzorku
@@ -2103,6 +2125,18 @@ bool screen_main_selftest(void)
         ok &= (ta[0].qn[ADEV_KIND_ADEV][0] == n1) && (ta[0].qn[ADEV_KIND_ADEV][1] == n2);        /* 1 polozka za zlomem: zadny clen */
         adev_feed_into(ta, 1, 0, 3e-5, 0.0, 1);
         ok &= (ta[0].qn[ADEV_KIND_ADEV][0] == n1 + 1u) && (ta[0].qn[ADEV_KIND_ADEV][1] == n2);   /* 2 polozky: m = 1 ano, m = 2 ne */
+    }
+    /* V3: pohled "okno" se rychle prizpusobi zmene sumu, pohled "od resetu" je zprumerovany pres celou historii. */
+    {   static adev_stage_t tw;
+        uint32_t r = 99u;
+        memset(&tw, 0, sizeof tw);
+        for (int i = 0; i < 6000; i++) {
+            r = r * 1103515245u + 12345u;
+            double g = ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;      /* rozptyl 1 (rovnomerne rozdeleni) */
+            adev_feed_into(&tw, 1, 0, (i < 3000 ? 1e-8 : 1e-9) * g, 0.0, 1);  /* prvnich 3000 sigma 1e-8, dalsich 3000 sigma 1e-9 */
+        }
+        float cum = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 0), win = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 1);
+        ok &= (cum > 5e-9f) && (cum < 9e-9f) && (win > 0.8e-9f) && (win < 1.4e-9f);
     }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
@@ -3859,7 +3893,7 @@ void screen_main_render_stats_table(prim_rect_t rect)
      * refreshi postupne tuhly (kresli se mimo clear oblast). sans_18 (TODO
      * #11(2b), bylo sans_16): skutecny oy velkych pismen je 14 (ne nominalni
      * ascent 18), takze pri baseline=rect.y+18 zustava 4 px rezervy nahore. */
-    prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)}, "σy(τ)  Allan",
+    prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)}, s_allan_win ? "σy(τ)  okno" : "σy(τ)  Allan",
                    &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
     static const char *TL[5] = {"1 s", "10 s", "100 s", "1 ks", "10 ks"};
     int16_t ry = (int16_t)(rect.y + 46);

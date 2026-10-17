@@ -165,7 +165,9 @@ float screen_main_adev_1s(void);
 float screen_main_adev_1s_live(void);
 void screen_main_adev_break(void);      /* V2: mezera v rade (napr. napojeni rekonstrukce z datalogu) */
 void screen_main_adev_gate(int open);   /* V1: 0 = reference neustalena, Allan pyramida nebere vzorky */
-int  screen_main_adev_gate_open(void);   /* A2: okno <= 120 s pro prahovy monitor (screen_main_adev_1s je od resetu) */
+int  screen_main_adev_gate_open(void);
+void screen_main_set_allan_win(int w);   /* V3: 0 = od resetu, 1 = okno ~600 clenu kazde stage */
+int  screen_main_allan_win(void);   /* A2: okno <= 120 s pro prahovy monitor (screen_main_adev_1s je od resetu) */
 #include "ipc_shared.h"   /* ipc_stab_pt_t (v20) */
 int  screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
                              float *drift, float *offset);   /* statistika stability pro web; jen UiTask */                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */

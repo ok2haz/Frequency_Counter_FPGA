@@ -2521,7 +2521,8 @@ static void allan_metric_render(void)
  * tau, protoze patka je plna (zalozky + 5 metrik + ZPET) a dotykovy cil nesmi pod 60 px. Tabulka tau konci
  * nejdele na y~326 (5 radku + 2 radky 'sum'), tlacitko zacina na 334. ⚠️ Tabulka cisti CELY svuj rect
  * (582,100,180,292), tedy i toto misto -> po kazdem jejim vykresleni se tlacitko kresli znovu. */
-static const prim_rect_t ALLAN_RESET_RECT = {582, 334, 180, 62};
+static const prim_rect_t ALLAN_RESET_RECT = {582, 334, 88, 62};   /* V3: pul sirky; druhou polovinu ma prepinac pohledu */
+static const prim_rect_t ALLAN_WIN_RECT   = {674, 334, 88, 62};   /* V3: VSE (od resetu) <-> OKNO (~600 clenu kazde stage) */
 #define ALLAN_RESET_ARM_S 5u
 static uint8_t  s_allan_rst_armed;
 static uint32_t s_allan_rst_t;
@@ -2530,15 +2531,19 @@ static void allan_reset_btn_render(void)
 {
     ui_button_t b = {.rect = ALLAN_RESET_RECT,
                      .variant = s_allan_rst_armed ? UI_BUTTON_STOP : UI_BUTTON_NORMAL,
-                     .label = s_allan_rst_armed ? "POTVRDIT" : "RESET ALLAN"};
+                     .label = s_allan_rst_armed ? "OK?" : "RESET"};
     prim_fill_rect(ALLAN_RESET_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* zmena labelu/barvy */
     ui_button_render(&b);
+    ui_button_t w = {.rect = ALLAN_WIN_RECT, .variant = screen_main_allan_win() ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
+                     .label = screen_main_allan_win() ? "OKNO" : "VSE"};
+    prim_fill_rect(ALLAN_WIN_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+    ui_button_render(&w);
 }
 
 static void app_gpsdo_render_allan(void)
 {
     static uint32_t s_allan_key;
-    static uint8_t  s_allan_rst_c = 0xFF;
+    static uint8_t  s_allan_rst_c = 0xFF, s_allan_win_c = 0xFF;
     int first = window_first(23);
     if (first) s_allan_rst_armed = 0u;
     if (first) {
@@ -2559,9 +2564,10 @@ static void app_gpsdo_render_allan(void)
     uint32_t key = screen_main_stats_version();
     int arm_to = s_allan_rst_armed && (g_uptime_s - s_allan_rst_t) >= ALLAN_RESET_ARM_S;
     if (arm_to) s_allan_rst_armed = 0u;                       /* vyprsel cas na potvrzeni */
-    if (first || key != s_allan_key || s_allan_rst_c != s_allan_rst_armed) {
+    if (first || key != s_allan_key || s_allan_rst_c != s_allan_rst_armed || s_allan_win_c != (uint8_t)screen_main_allan_win()) {
         s_allan_key = key;
         s_allan_rst_c = s_allan_rst_armed;
+        s_allan_win_c = (uint8_t)screen_main_allan_win();
         screen_main_render_allan_big(HIST_PLOT_RECT);
         screen_main_render_stats_table(HIST_TABLE_RECT);
         allan_reset_btn_render();                             /* tabulka zrovna vycistila i jeho misto */
@@ -9833,6 +9839,11 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 screen_main_stats_reset();                        /* UiTask vlastni statistiku -> primo */
             }
             app_gpsdo_render_allan();                             /* prekresli tlacitko (a graf po resetu) */
+            return true;
+        }
+        if (s_view == 23 && in_rect(x, y, ALLAN_WIN_RECT)) {      /* V3: prepinac pohledu VSE / OKNO */
+            screen_main_set_allan_win(!screen_main_allan_win());
+            app_gpsdo_render_allan();
             return true;
         }
         if (s_view == 23 && in_rect(x, y, ALLAN_METRIC_RECT)) {   /* prepinac ADEV/TDEV/MTIE */
