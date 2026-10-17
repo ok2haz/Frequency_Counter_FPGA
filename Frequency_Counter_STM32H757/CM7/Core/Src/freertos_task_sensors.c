@@ -354,7 +354,7 @@ static void ad5693_restore(void)
 /* Smycka GPSDO (STATUS #305, gpsdo.h): povel kodu prichazi z defaultTasku v Q16.16 (`g_gpsdo_code_q16`),
  * zapis dela JEN tady (jediny vlastnik I2C1). Zlomek kodu se realizuje ditherem 1. radu (sigma-delta) pri
  * kazdem cyklu SensorsTasku (2 Hz): stredni hodnota kodu je pak presna na 1/65536 LSB, za cenu strídani
- * dvou sousednich kodu. ⚠️ 2 Hz je pomale proti RC pred bufferem (R78 100k x C68 1 uF = 100 ms) -- OCXO tak
+ * dvou sousednich kodu. ⚠️ 2 Hz je pomale proti RC pred bufferem (R78 100k x C68 2,2 uF = 220 ms) -- OCXO tak
  * vidi obdelnik 1 LSB (~3,4e-11 p-p pri 1 Hz), coz je pod vlastni stabilitou OCXO 1e-10 (0,1-1 s, datasheet);
  * rychlejsi dither (#277, 100-400 Hz) by potreboval vlastni casovani mimo tenhle 500ms cyklus.
  * Readback se pri techto zapisech nedela (2x/s by zbytecne zatezovalo I2C1); kontrolu konec-konec dava AIN0. */

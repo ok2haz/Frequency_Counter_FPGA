@@ -1263,7 +1263,7 @@ Pasti ze zadání §6:
   znaménka** podle rozptylu druhých diferencí (zapne se jen při zlepšení ≥ 25 %). Na desce vyšlo `−q`, rozptyl 494 → 63 ns² (NEO-7M TIM-TP VYSÍLÁ).
 
 **DAC cesta (osazeno 2026-10-16):** U12 `AD5693RBRMZ` (MSOP-10, A0=GND → 0x4C, GAIN ×2 → 0..5 V, 76,3 µV/LSB, POR = zero-scale), C55 10 nF X7R (VREF),
-**C56 neosazen** (limit 2 nF na VOUT), R78 100k + **C68 1 µF film**, U15 OPA365 (sledovač), R73 1k0 + **C61 1 µF film**, R72 82R + C59 100 nF X7R → pin VC
+**C56 neosazen** (limit 2 nF na VOUT), R78 100k + **C68 2,2 µF film** (τ 220 ms; do 2026-10-17 tu stálo 1 µF — schéma aktualizováno uživatelem), U15 OPA365 (sledovač), R73 1k0 + **C61 1 µF film**, R72 82R + C59 100 nF X7R → pin VC
 OCXO (Bliley 6891: EFC 0–4 V, 2,5–5,5 Hz/V, vstupní impedance 10–100 kΩ); U14 sleduje VC → AIN0 (÷2,5). 🔑 **Smyčka na hodnotách součástek NEZÁVISÍ:**
 K = **změřených** ~3,4·10⁻¹¹/LSB (4,3–4,6 Hz/V × 76,3 µV) zahrnuje dělič R73+R72 proti vstupní impedanci EFC; časové konstanty (100 ms, 1 ms, 8 µs)
 jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Neřešené: dither 2 Hz ladí Vc o ±1 LSB (±1,7·10⁻¹¹) — pod stabilitou OCXO na 0,1–1 s;
