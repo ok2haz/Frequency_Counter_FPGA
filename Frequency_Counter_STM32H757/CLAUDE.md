@@ -1275,7 +1275,7 @@ jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Dither 2
 (SensorsTask) čeká na načtený syscfg + čip s control registrem: DAC už drží nenulový kód (reset jen STM32) → **ponechat** (`KEPT`), jinak zapsat uložený
 (`DONE`); uložený kód nad **4000 mV** (`AD5693_RESTORE_MAX_MV`, rozsah EFC) se ignoruje (`RANGE`); ruční zápis má přednost. `dac`/`status` → `obnova po startu:`.
 
-**Ovládání a diagnostika:** UART `gpsdo [on|off|tau <100..20000>|kdac <K×1e13>|test]`, `dac [probe|<kód>|mv <mV>]`; `status` řádky `GPSDO:` (stav, y, fáze, kód, K, τ,
+**Ovládání a diagnostika:** UART `gpsdo [on|off|tau <100..20000>|kdac <K×1e13>|test]` (od v0.22.0 **ve stavu OFF běží pasivní fázový monitor**: `xr_ns` se dál sčítá od vypnutí, DAC se neřídí; STATUS #319 = zkontrolovat, zda to nevrátit; ⬜ neověřeno na HW), `dac [probe|<kód>|mv <mV>]`; `status` řádky `GPSDO:` (stav, y, fáze, kód, K, τ,
 1PPS ok/rej/diry/roztržená čtení, sawtooth + rozptyly, od v0.20.0 **`tau min.`**) a `DAC OCXO:`; `gpsraw` → `RX:`/`TIMTP:`.
 **`tau min.` (v0.20.0, `gpsdo_tau_advise`, jen zobrazení):** HDEV fáze z 2h historie proti bílému šumu 1PPS → τ, od kterého fáze nese přebytek. 🔴 Je to **DOLNÍ MEZ**, ne optimum: z dvojice OCXO–GPS nejde oddělit šum OCXO od putování času GPS (noc 2026-10-17: přebytek ~4·10⁻¹¹ @100 s, spíš GPS). Na displeji (okno GPSDO TIE) amber, když je nastavené τ kratší. **Displej:** okno **s_view=45 „GPSDO TIE"** (dlaždice v MĚŘENÍ,
 dřív placeholder TI 1PPS): přepínač **TIE / y / KOD**, historie 720 bodů po 10 s (2 h, `gpsdo_hist_at`), osa podle bodů LOCK, pás STAVU smyčky, číselný sloupec.
