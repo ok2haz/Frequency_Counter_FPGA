@@ -11,6 +11,8 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.22.0 (2026-10-17) = pasivni fazovy monitor ve stavu OFF (STATUS #319): po `gpsdo off` se fazova chyba OCXO proti GPS 1PPS dal scita
+ * (`xr_ns`), DAC se neridi; zaznam volne bezici reference vuci GPS pro #312. TODO #319: rozhodnout, zda to vratit. FPGA bitstream beze zmeny, IPC v26. */
 /* v0.21.1 (2026-10-17) = oprava #318: FLL v core_step meri K z kroku kodu jen kdyz krok presahuje sum oken (5 sigma) -> konec falesne
  * divergence a `gpsdo test` FAIL; vychozi rychlost ditheru DAC 100 Hz (`dac dither 200` vrati maximum). Bitstream FPGA beze zmeny, IPC v26. */
 /* v0.21.0 (2026-10-17) = dither DAC OCXO 200 Hz (STATUS #317): zapis kodu smycky GPSDO dela novy DacTask (AboveNormal, 5 ms) misto
@@ -175,8 +177,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 21
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.21.1"
+#define FW_VERSION_MINOR 22
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.22.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

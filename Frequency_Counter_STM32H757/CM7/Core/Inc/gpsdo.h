@@ -56,7 +56,7 @@ typedef struct {
     uint8_t  saw;          /* GPSDO_SAW_* (rozhodnuto naposledy) */
     double   y;            /* posledni odhad relativni odchylky OCXO (FLL: okno, LOCK: filtr) */
     double   x_ns;         /* filtrovana fazova chyba [ns] (LOCK) */
-    double   x_raw_ns;     /* SUROVA fazova chyba (TIE) [ns] od zamceni / navratu z HOLD; mimo LOCK 0 */
+    double   x_raw_ns;     /* SUROVA fazova chyba (TIE) [ns] od zamceni / navratu z HOLD; v OFF pasivni monitor od vypnuti (STATUS #319); jinak 0 */
     double   code;         /* povel DAC [LSB] vcetne zlomku */
     double   kdac;         /* K [relativne / LSB] */
     double   tau_s;        /* casova konstanta PLL [s] */

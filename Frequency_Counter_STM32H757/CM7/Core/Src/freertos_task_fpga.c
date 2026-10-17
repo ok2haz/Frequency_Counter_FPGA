@@ -450,6 +450,11 @@ static uint8_t   s_g_state = GPSDO_WAIT, s_g_why = GPSDO_WHY_NOPPS, s_g_hold_fro
 static double    s_g_tau = (double)GPSDO_TAU_DEFAULT, s_g_kdac = GPSDO_KDAC_DEFAULT;
 static volatile uint32_t s_g_tau_ms;           /* HAL_GetTick posledni zmeny tau (0 = nemenilo se); gpsdo_tau_advise, F-0241 */
 static uint32_t  s_g_pps_n, s_g_ts_prev, s_g_last_ok_ms, s_g_state_ms;
+/* Pasivni fazovy monitor ve stavu OFF (STATUS #319): smycka DAC neridi, ale fazi OCXO proti GPS 1PPS dal soucita (surova TIE,
+ * stejne intervaly a sawtooth oprava jako v LOCK). Vznikne zaznam volne bezici reference vuci GPS bez vlivu smycky (STATUS #312).
+ * Nuluje se pri vstupu do OFF a pri kazdem preruseni (bez fixu, externi reference, odmitnuty interval). */
+static double    s_mon_x;
+static uint8_t   s_mon_on;
 static uint8_t   s_g_have_prev;
 static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezme se v dalsim intervalu) */
 static volatile uint32_t s_g_cmd_q16;          /* povel kodu (i virtualni pri emulaci) */
@@ -665,22 +670,23 @@ void gpsdo_tick(void)
 
     if (!s_g_en) {
         if (s_g_state != GPSDO_OFF || s_g_why == GPSDO_WHY_NONE) g_set_state(GPSDO_OFF, (s_g_why == GPSDO_WHY_DIVERGE) ? GPSDO_WHY_DIVERGE : GPSDO_WHY_USER);
-        s_g_have_prev = 0u;
-    } else if (s_g_state == GPSDO_OFF) {
-        g_set_state(GPSDO_WAIT, GPSDO_WHY_NOPPS);
+        if (!s_mon_on) { s_mon_on = 1u; s_mon_x = 0.0; s_g_have_prev = 0u; }   /* monitor navazuje na intervaly od teto chvile */
+    } else {
+        s_mon_on = 0u;
+        if (s_g_state == GPSDO_OFF) g_set_state(GPSDO_WAIT, GPSDO_WHY_NOPPS);
     }
 
     fpga_pps_t p;
     int have = fpga_pps_get(&p);
-    if (s_g_en && have && p.n != s_g_pps_n) {
+    if (have && p.n != s_g_pps_n) {                            /* i v OFF: fazovy monitor (s_mon_x) */
         s_g_pps_n = p.n;
         gps_data_t g;
         gps_get(&g);
         int fix = sim || (g.valid && g.fix_mode >= 2);
-        uint8_t why = !dac_ok ? GPSDO_WHY_NODAC : p.ref_ext ? GPSDO_WHY_REFEXT : p.clk_bad ? GPSDO_WHY_CLK
+        uint8_t why = (!dac_ok && s_g_en) ? GPSDO_WHY_NODAC : p.ref_ext ? GPSDO_WHY_REFEXT : p.clk_bad ? GPSDO_WHY_CLK
                     : !fix ? GPSDO_WHY_NOFIX : GPSDO_WHY_NONE;
         if (why != GPSDO_WHY_NONE) {
-            s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u;
+            s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u; s_mon_x = 0.0;
             if (s_g_state == GPSDO_WAIT) s_g_why = why;
         } else if (!s_g_have_prev) {
             s_g_ts_prev = p.ts; s_g_have_prev = 1u;
@@ -701,7 +707,7 @@ void gpsdo_tick(void)
             if (q_ok) { s_q_prev = q; s_q_rec_n = rn; s_q_have = 1u; } else s_q_have = 0u;
 
             if (ns < 1u || ns > 40u || fabs(e_t) > GPSDO_Y_MAX * (double)ns * F) {
-                s_g_rej++; s_e_prev_ok = 0u;                   /* 10 Hz bez fixu dava ns = 0 */
+                s_g_rej++; s_e_prev_ok = 0u; s_mon_x = 0.0;    /* 10 Hz bez fixu dava ns = 0 */
             } else {
                 if (ns > 1u) s_g_gap++;
                 double e_ns = e_t * 1000.0 / (double)p.clk_mhz;
@@ -710,7 +716,9 @@ void gpsdo_tick(void)
                 if (dq_ok && s_saw == GPSDO_SAW_PLUS)  e_use = e_ns - dq;
                 if (dq_ok && s_saw == GPSDO_SAW_MINUS) e_use = e_ns + dq;
 
-                if (s_g_state == GPSDO_WAIT) {                 /* prvni pouzitelny interval -> rozbeh */
+                if (!s_g_en) {                                 /* OFF: jen soucet faze, nic se neridi */
+                    s_mon_x += e_use; s_g_ok++;
+                } else if (s_g_state == GPSDO_WAIT) {          /* prvni pouzitelny interval -> rozbeh */
                     memset(&s_gc, 0, sizeof s_gc);
                     s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u;
                     s_gc.code_max = (double)ad5693_mv_to_code(AD5693_RESTORE_MAX_MV);
@@ -728,14 +736,16 @@ void gpsdo_tick(void)
                     }
                     g_set_state(s_gc.state, GPSDO_WHY_NONE);
                 }
-                /* K se prepisuje jen novou hodnotou od uzivatele -- jinak by se zahodil odhad z FLL */
-                if (s_g_kset) { s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u; }
-                s_gc.tau = s_g_tau;
-                if (core_step(&s_gc, e_use, ns)) { s_g_ok++; s_g_last_ok_ms = now; } else s_g_rej++;
-                if (s_gc.diverged) {
-                    s_g_en = 0u; g_set_state(GPSDO_OFF, GPSDO_WHY_DIVERGE);
-                } else if (s_gc.state != s_g_state && (s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK)) {
-                    g_set_state(s_gc.state, GPSDO_WHY_NONE);
+                if (s_g_en) {
+                    /* K se prepisuje jen novou hodnotou od uzivatele -- jinak by se zahodil odhad z FLL */
+                    if (s_g_kset) { s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u; }
+                    s_gc.tau = s_g_tau;
+                    if (core_step(&s_gc, e_use, ns)) { s_g_ok++; s_g_last_ok_ms = now; } else s_g_rej++;
+                    if (s_gc.diverged) {
+                        s_g_en = 0u; g_set_state(GPSDO_OFF, GPSDO_WHY_DIVERGE);
+                    } else if (s_gc.state != s_g_state && (s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK)) {
+                        g_set_state(s_gc.state, GPSDO_WHY_NONE);
+                    }
                 }
             }
         }
@@ -761,7 +771,7 @@ void gpsdo_tick(void)
     gpsdo_status_t st;
     st.state = s_g_state; st.why = s_g_why; st.locked = g_gpsdo_lockflag; st.saw = s_saw;
     st.y = s_gc.yf; st.x_ns = s_gc.xf; st.code = s_gc.code;
-    st.x_raw_ns = (s_g_state == GPSDO_LOCK) ? s_gc.x : 0.0;
+    st.x_raw_ns = (s_g_state == GPSDO_LOCK) ? s_gc.x : ((s_g_state == GPSDO_OFF) ? s_mon_x : 0.0);   /* OFF: fazovy monitor */
     gp_hist_push(now);
     st.kdac = (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac;   /* odhad z FLL, jinak zadane */
     st.tau_s = s_g_tau;
