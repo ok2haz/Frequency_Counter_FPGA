@@ -567,6 +567,14 @@ const osThreadAttr_t FpgaTask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* DacTask: dither DAC OCXO po 5 ms (STATUS #317, freertos_task_sensors.c). Nejvyssi priorita z taskow, ale
+ * pracuje ~0,1 ms z kazdych 5 ms; mutex I2C1 bere s timeoutem 2 ms a pri selhani zapisu se tlumi. */
+osThreadId_t DacTaskHandle;
+const osThreadAttr_t DacTask_attributes = {
+  .name = "DacTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
+};
 /* GpsRxQueue: USART1 RX (ISR) -> defaultTask drain. 256 B ~= 266 ms @ 9600.
  * GPS NMEA parsujeme v idle defaultTask (NE vlastni task) — heap (15 KB) uz
  * nepojme 6. task; defaultTask stejne jen idloval. */
@@ -667,6 +675,10 @@ void MX_FREERTOS_Init(void) {
   FpgaTaskHandle = osThreadNew(StartFpgaTask, NULL, &FpgaTask_attributes);
   if (FpgaTaskHandle == NULL) {
     printf("[ERR] FpgaTask se nevytvoril - malo FreeRTOS heapu\n");
+  }
+  DacTaskHandle = osThreadNew(DacTask_run, NULL, &DacTask_attributes);
+  if (DacTaskHandle == NULL) {
+    printf("[ERR] DacTask se nevytvoril - malo FreeRTOS heapu, dither DAC pojede jen 2 Hz v SensorsTasku\n");
   }
   /* GpsTask zrusen — GPS NMEA se drainuje v defaultTask (heap setreni). */
   /* USER CODE END RTOS_THREADS */

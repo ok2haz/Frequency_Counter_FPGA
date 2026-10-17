@@ -688,6 +688,10 @@ static void dac_print_status(void)
            (unsigned long)g_dac.rb_mismatch,
            g_sensors[SENS_ADS0].valid ? "" : "neplatne, posl. ",
            (long)g_sensors[SENS_ADS0].last);
+    printf("DAC OCXO: dither %u Hz (%s) | kroky bez mutexu %lu, vynechano po chybe %lu\n",
+           (unsigned)(ad5693_dither_task_alive() ? ad5693_dither_hz() : 2u),
+           ad5693_dither_task_alive() ? "DacTask 5 ms" : "SensorsTask 2 Hz - DacTask nebezi",
+           (unsigned long)g_dac_dith_miss, (unsigned long)g_dac_dith_skip);
     static const char *const k_rst[] = {
         "zadny ulozeny kod (0 V)", "kod z flash zapsan a overen",
         "DAC uz drzel kod (reset jen STM32), ponechan", "ZAPIS SELHAL",
@@ -2285,6 +2289,25 @@ void UartTask_run(void *argument)
 					  req = 0;
 				  } else if (strcmp(a, "probe") == 0) {
 					  req = 2;
+				  } else if (strncmp(a, "dither", 6) == 0 && (a[6] == '\0' || a[6] == ' ')) {
+					  /* `dac dither` = stav, `dac dither <2..200>` = rychlost ditheru [Hz], `dac dither test` = selftest logiky */
+					  const char *d = a + 6;
+					  while (*d == ' ') d++;
+					  if (*d == '\0') {
+						  /* jen stav (vypise se nize) */
+					  } else if (strcmp(d, "test") == 0) {
+						  printf("DAC dither selftest: %s\n", ad5693_dither_selftest() ? "PASS" : "FAIL");
+					  } else {
+						  uint32_t hz = 0; int nd = 0;
+						  while (*d >= '0' && *d <= '9' && hz <= 1000u) { hz = hz * 10u + (uint32_t)(*d - '0'); d++; nd++; }
+						  if (nd == 0 || *d != '\0' || hz < 2u || hz > 200u) {
+							  printf("DAC: pouziti `dac dither` | `dac dither <2..200 Hz>` | `dac dither test`\n");
+						  } else {
+							  uint16_t e = ad5693_dither_set_hz((uint16_t)hz);
+							  printf("DAC: dither nastaven na %u Hz (nepersistuje se; vychozi 200)\n", (unsigned)e);
+						  }
+					  }
+					  req = 0;
 				  } else {
 					  int is_mv = 0;
 					  if (strncmp(a, "mv", 2) == 0) { is_mv = 1; a += 2; while (*a == ' ') a++; }
@@ -2292,7 +2315,7 @@ void UartTask_run(void *argument)
 					  /* Mez PRED nasobenim (L-0034): v <= 100000 -> v*10+9 se vejde. */
 					  while (*a >= '0' && *a <= '9' && v <= 100000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; nd++; }
 					  if (nd == 0 || *a != '\0' || (is_mv ? v > AD5693_FS_MV : v > 65535u)) {
-						  printf("DAC: pouziti `dac` | `dac probe` | `dac <kod 0..65535>` | `dac mv <0..%u>`\n",
+						  printf("DAC: pouziti `dac` | `dac probe` | `dac <kod 0..65535>` | `dac mv <0..%u>` | `dac dither [Hz|test]`\n",
 						         (unsigned)AD5693_FS_MV);
 						  req = -1;
 					  } else {

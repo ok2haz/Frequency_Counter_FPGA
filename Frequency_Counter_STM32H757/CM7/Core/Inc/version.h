@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.21.0 (2026-10-17) = dither DAC OCXO 200 Hz (STATUS #317): zapis kodu smycky GPSDO dela novy DacTask (AboveNormal, 5 ms) misto
+ * 2 Hz v SensorsTasku; zvlneni Vc klesne ~40x (simulace: 30e-12 -> <= 0,8e-12 p-p, ADEV 0,25 s ze 8e-12 na <= 2,4e-13). UART `dac dither
+ * [2..200|test]`, `status` radek `DAC OCXO: dither`. IPC beze zmeny (v26) -> staci flashnout CM7. ⬜ Neovereno na desce (`stats` DacTask
+ * stack/CPU, `dac dither test`, `dac` kroky bez mutexu, A/B ADEV dither 2 Hz vs 200 Hz). */
 /* v0.20.1 (2026-10-17) = opravy z prezkumu v0.20.0 (docs/audit/2026-10-17_fixreview-v0.20.md): F-0237 detekce prepsani
  * v sdram_log (>= CAP), F-0238 cislo epochy jednoznacne pres restart + pojistka kurzoru, F-0239 SD zrcadlo jineho formatu
  * se prejmenuje, F-0241 tau min. po zmene tau. IPC beze zmeny (v26); CM4 jen komentar -> staci CM7, ale z v0.19.x
@@ -169,8 +173,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 20
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.20.1"
+#define FW_VERSION_MINOR 21
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.21.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

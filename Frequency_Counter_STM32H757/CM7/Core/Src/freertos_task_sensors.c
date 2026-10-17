@@ -243,10 +243,15 @@ volatile uint8_t  g_dac_persist_loaded;
 #define AD5693_I2C_TMO_MS  10u   /* 3 B pri ~50 kHz = ~0,8 ms */
 #define AD5693_RESTORE_TRIES 5u  /* po tolika selhanich zapisu se obnova vzda */
 
-static int ad5693_write3(uint8_t cmd, uint16_t data)
+static int ad5693_write3t(uint8_t cmd, uint16_t data, uint32_t tmo_ms)
 {
     uint8_t b[3] = { cmd, (uint8_t)(data >> 8), (uint8_t)data };
-    return HAL_I2C_Master_Transmit(&hi2c1, AD5693_ADDR8, b, 3, AD5693_I2C_TMO_MS) == HAL_OK;
+    return HAL_I2C_Master_Transmit(&hi2c1, AD5693_ADDR8, b, 3, tmo_ms) == HAL_OK;
+}
+
+static int ad5693_write3(uint8_t cmd, uint16_t data)
+{
+    return ad5693_write3t(cmd, data, AD5693_I2C_TMO_MS);
 }
 
 /* 🔴 Sonda NOP zapisem, NE `HAL_I2C_IsDeviceReady`: ta pri chybejicim cipu
@@ -351,28 +356,84 @@ static void ad5693_restore(void)
     g_dac.restore_done = 1u;
 }
 
-/* Smycka GPSDO (STATUS #305, gpsdo.h): povel kodu prichazi z defaultTasku v Q16.16 (`g_gpsdo_code_q16`),
- * zapis dela JEN tady (jediny vlastnik I2C1). Zlomek kodu se realizuje ditherem 1. radu (sigma-delta) pri
- * kazdem cyklu SensorsTasku (2 Hz): stredni hodnota kodu je pak presna na 1/65536 LSB, za cenu strídani
- * dvou sousednich kodu. ⚠️ 2 Hz je pomale proti RC pred bufferem (R78 100k x C68 2,2 uF = 220 ms) -- OCXO tak
- * vidi obdelnik 1 LSB (~3,4e-11 p-p pri 1 Hz), coz je pod vlastni stabilitou OCXO 1e-10 (0,1-1 s, datasheet);
- * rychlejsi dither (#277, 100-400 Hz) by potreboval vlastni casovani mimo tenhle 500ms cyklus.
- * Readback se pri techto zapisech nedela (2x/s by zbytecne zatezovalo I2C1); kontrolu konec-konec dava AIN0. */
-static void ad5693_servo(void)
+/* ── Dither DAC: smycka GPSDO (STATUS #305), rychlost 200 Hz (STATUS #317) ───────────────────────────
+ * Smycka (gpsdo.h) posila povel kodu v Q16.16 (`g_gpsdo_code_q16`); zlomek kodu se realizuje ditherem 1. radu
+ * (sigma-delta): stredni hodnota kodu je pak presna na 1/65536 LSB, za cenu strideni dvou sousednich kodu.
+ * Od v0.21.0 dither bezi v DacTasku po 5 ms (200 Hz), ne v 500ms cyklu SensorsTasku (2 Hz). Duvod: RC pred
+ * bufferem (R78 100k x C68 2,2 uF = 220 ms) na 2 Hz tlumi jen malo, takze OCXO videl zvlneni az 3e-11 p-p
+ * (ADEV 0,25-1 s az 8e-12). Simulace (RC 220 ms + 1 ms, K 3,4e-11/LSB, scratchpad dither_sim2.py): 200 Hz da
+ * zvlneni <= 0,8e-12 p-p a ADEV 0,25-10 s <= 2,4e-13; se zpozdenymi zapisy (0-3 ms) nebo 2 % vynechanych kroku
+ * <= 4e-13. 100 Hz je skoro stejne dobre, 50 Hz uz 2-3x horsi. Cena: zapis 3 B @ 400 kHz ~0,1 ms = ~2 % sbernice
+ * I2C1 a ~2 % CPU.
+ * Vlakna: zapis kodu dela JEDINE DacTask (AboveNormal) pod i2c1MutexHandle; SensorsTask obsluhuje dal sondu,
+ * obnovu a rucni zadosti (`ad5693_service`). Kdyby se DacTask nevytvoril (malo haldy), `ad5693_service` dithruje
+ * po stare 2 Hz (zaloha). Podminky zapisu se kontroluji znovu UVNITR mutexu, aby dither neprepsal rucni zapis
+ * (`dac <kod>`) ani obnovu po startu. Readback se u techto zapisu nedela; kontrolu konec-konec dava AIN0. */
+#define DAC_DITH_PERIOD_MS   5u       /* zakladni perioda ditheru (200 Hz) = 5 ticku FreeRTOS */
+#define DAC_DITH_BASE_HZ     200u
+#define DAC_DITH_I2C_TMO_MS  2u       /* zapis 3 B @ 400 kHz trva ~0,1 ms; delsi = sbernice stoji (nezdrzovat 5ms smycku) */
+#define DAC_DITH_MUTEX_MS    2u       /* mutex drzi SensorsTask az ~3 ms; kdyz se neziska, krok se preskoci (kod dozapise dalsi) */
+#define DAC_DITH_FAIL_MAX    3u       /* po tolika selhanich zapisu za sebou se zkousi jen 1x za DAC_DITH_RETRY_MS */
+#define DAC_DITH_RETRY_MS    500u
+
+volatile uint16_t g_dac_dith_div = 1u;     /* 1 = 200 Hz ... 100 = 2 Hz (`dac dither <Hz>`, nepersistuje se) */
+volatile uint32_t g_dac_dith_miss;         /* kroky, kdy se nepodarilo ziskat mutex I2C1 */
+volatile uint32_t g_dac_dith_skip;         /* kroky vynechane v back-offu po selhani zapisu */
+static volatile uint8_t s_dith_alive;      /* 1 = DacTask bezi (SensorsTask pak sam nedithruje) */
+static uint32_t s_dith_acc;                /* akumulator zlomku kodu (0..0xFFFF); meni ho jen servo pod mutexem */
+
+/* Jeden krok sigma-delta 1. radu: q = povel Q16.16, *acc = akumulator zlomku. Vraci kod DAC pro tento krok.
+ * Na 65536 krocich je soucet kodu presne q (acc se vraci na vychozi hodnotu), kod kolisa o nejvys 1 LSB. */
+static uint32_t dither_next(uint32_t *acc, uint32_t q)
 {
-    static uint32_t s_acc, s_persist_ms;
-    static uint8_t  s_persist_init;
-    if (!g_gpsdo_drive || !g_dac.present || !g_dac.ctrl_ok) return;
-    if (!g_dac.restore_done || g_dac.req_write || g_dac.req_probe) return;   /* nejdriv obnova / rucni zadost */
-    uint32_t q  = g_gpsdo_code_q16;
     uint32_t ci = q >> 16;
-    s_acc += q & 0xFFFFu;
-    if (s_acc >= 0x10000u) { s_acc -= 0x10000u; if (ci < 0xFFFFu) ci++; }
+    *acc += q & 0xFFFFu;
+    if (*acc >= 0x10000u) { *acc -= 0x10000u; if (ci < 0xFFFFu) ci++; }
+    return ci;
+}
+
+/* Cista logika ditheru (UART `dac dither test`): pro ruzne povely musi soucet kodu za 65536 kroku dat presne q
+ * a kod nesmi kolisat o vic nez 1 LSB. @return 1 = PASS. */
+int ad5693_dither_selftest(void)
+{
+    static const uint32_t Q[] = { 0x00000000u, 0x00018000u, 0x00010001u, 0x0001FFFFu, 0x5F5E0123u, 0x9A800000u };
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof Q / sizeof Q[0]; i++) {
+        uint32_t acc = 0u, lo = 0xFFFFFFFFu, hi = 0u;
+        uint64_t sum = 0u;
+        for (uint32_t k = 0; k < 65536u; k++) {
+            uint32_t c = dither_next(&acc, Q[i]);
+            sum += c;
+            if (c < lo) lo = c;
+            if (c > hi) hi = c;
+        }
+        ok = ok && sum == (uint64_t)Q[i] && acc == 0u && (hi - lo) <= 1u;
+    }
+    return ok;
+}
+
+/* Podminky, za kterych smi dither zapisovat (kontroluje se pred mutexem levne i uvnitr mutexu znovu). */
+static int ad5693_servo_ready(void)
+{
+    return g_gpsdo_drive && g_dac.present && g_dac.ctrl_ok && g_dac.restore_done &&
+           !g_dac.req_write && !g_dac.req_probe;
+}
+
+/* Jeden krok ditheru. Volat POD i2c1MutexHandle. @return 0 = zapsano / neni co zapisovat, -1 = zapis selhal. */
+static int ad5693_servo(uint32_t tmo_ms)
+{
+    static uint32_t s_persist_ms;
+    static uint8_t  s_persist_init;
+    int r = 0;
+    if (!ad5693_servo_ready()) return 0;                       /* nejdriv obnova / rucni zadost */
+    uint32_t q  = g_gpsdo_code_q16;
+    uint32_t ci = dither_next(&s_dith_acc, q);
     if (!g_dac.code_valid || ci != g_dac.code) {
-        if (ad5693_write3(AD5693_CMD_WRITE_DAC, (uint16_t)ci)) {
+        if (ad5693_write3t(AD5693_CMD_WRITE_DAC, (uint16_t)ci, tmo_ms)) {
             g_dac.code = (uint16_t)ci; g_dac.code_valid = 1u; g_dac.writes++;
         } else {
             g_dac.errors++;
+            r = -1;
         }
     }
     /* Kod do flash (obnova po startu, #304): jen pri zamceni a nejvys 1x za 10 min (wear W25Q). */
@@ -381,6 +442,51 @@ static void ad5693_servo(void)
         g_dac_persist  = (uint16_t)((q + 0x8000u) >> 16);
         s_persist_ms   = now;
         s_persist_init = 1u;
+    }
+    return r;
+}
+
+/* Rychlost ditheru [Hz]: delic zakladni periody 5 ms. Dopocita se nejblizsi delic, vraci skutecnou rychlost. */
+uint16_t ad5693_dither_set_hz(uint16_t hz)
+{
+    if (hz < 2u) hz = 2u;
+    if (hz > DAC_DITH_BASE_HZ) hz = DAC_DITH_BASE_HZ;
+    g_dac_dith_div = (uint16_t)((DAC_DITH_BASE_HZ + hz / 2u) / hz);
+    return (uint16_t)(DAC_DITH_BASE_HZ / g_dac_dith_div);
+}
+uint16_t ad5693_dither_hz(void)
+{
+    uint16_t d = g_dac_dith_div;
+    return (uint16_t)(DAC_DITH_BASE_HZ / (d ? d : 1u));
+}
+int ad5693_dither_task_alive(void) { return s_dith_alive; }
+
+/* DacTask: dither po 5 ms. Kazdy zapis bere mutex I2C1 s kratkym timeoutem; kdyz sbernici drzi SensorsTask, krok se
+ * preskoci a dalsi zapise aktualni kod (zpozdeni hrany je jen chyba strid -- viz simulace). Pri opakovanem selhani
+ * zapisu (zaseknuta sbernice) se zkousi jen 1x za 500 ms, aby 2ms timeouty nevyhladovely ostatni tasky; obnovu
+ * sbernice dela SensorsTask (`i2c1_recover_if_wedged`) a vidi ji i v chybovem kodu `hi2c1`. */
+void DacTask_run(void *argument)
+{
+    (void)argument;
+    TickType_t t = xTaskGetTickCount();
+    uint32_t n = 0u, fail = 0u, fail_ms = 0u;
+    s_dith_alive = 1u;
+    for (;;) {
+        vTaskDelayUntil(&t, pdMS_TO_TICKS(DAC_DITH_PERIOD_MS));
+        uint32_t dv = g_dac_dith_div;
+        if (dv < 1u) dv = 1u;
+        if (++n < dv) continue;
+        n = 0u;
+        if (!ad5693_servo_ready()) { fail = 0u; continue; }
+        if (fail >= DAC_DITH_FAIL_MAX && (uint32_t)(HAL_GetTick() - fail_ms) < DAC_DITH_RETRY_MS) {
+            g_dac_dith_skip++;
+            continue;
+        }
+        if (osMutexAcquire(i2c1MutexHandle, DAC_DITH_MUTEX_MS) != osOK) { g_dac_dith_miss++; continue; }
+        int r = ad5693_servo(DAC_DITH_I2C_TMO_MS);
+        osMutexRelease(i2c1MutexHandle);
+        if (r < 0) { if (fail < 255u) fail++; fail_ms = HAL_GetTick(); }
+        else       { fail = 0u; }
     }
 }
 
@@ -436,7 +542,7 @@ static void ad5693_service(void)
     }
 
     ad5693_restore();
-    ad5693_servo();
+    if (!s_dith_alive) (void)ad5693_servo(AD5693_I2C_TMO_MS);   /* zaloha 2 Hz, kdyz DacTask neni */
 }
 
 /* ── ADS1115 per-kanal PGA + gain ─────────────────────────────────────────

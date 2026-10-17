@@ -36,9 +36,11 @@
  * ⬜ Power-on stav (nula/stred) overit hned po prvnim zapnuti s osazenym cipem:
  *   `dac` (readback) a `sensors` (AIN0) jeste PRED prvnim zapisem.
  *
- * Vlakna: I2C1 vlastni SensorsTask -> I2C transakce dela VYHRADNE jeho
+ * Vlakna: I2C1 vlastni SensorsTask -> sondu, obnovu a rucni zadosti dela jeho
  * `ad5693_service()` pod i2c1MutexHandle. UART/UI jen nastavi zadost
  * (`ad5693_request_*`) a cekaji na `req_* == 0` — vzor `g_si5356_clr_req`.
+ * Od v0.21.0 (STATUS #317) zapisuje kod smycky GPSDO s ditherem 200 Hz DacTask (AboveNormal), take pod
+ * i2c1MutexHandle a s kontrolou podminek znovu uvnitr mutexu.
  * Obe strany bezi na CM7, volatile poradi pristupu staci (bez __DMB).
  * 🔴 Zapis kodu PRELADI OCXO = posune kmitocet cele reference. Kod pochazi z TRI zdroju (od 2026-10-16):
  *   (1) rucni zadost (UART `dac`, vypne smycku GPSDO a ulozi kod do flash), (2) obnova posledniho kodu po startu
@@ -119,6 +121,14 @@ extern volatile ad5693_state_t g_dac;   /* definice: freertos_task_sensors.c */
  * (bez nej obnova ceka, aby se nezapsala 0 drive, nez se flash precte). */
 extern volatile uint16_t g_dac_persist;
 extern volatile uint8_t  g_dac_persist_loaded;
+
+/* Dither zlomku kodu (STATUS #317): bezi v DacTasku po 5 ms (200 Hz); implementace a popis v freertos_task_sensors.c. */
+uint16_t ad5693_dither_hz(void);                /* aktualni rychlost ditheru [Hz] */
+uint16_t ad5693_dither_set_hz(uint16_t hz);      /* 2..200 Hz, vraci skutecnou rychlost; nepersistuje se */
+int      ad5693_dither_task_alive(void);         /* 1 = DacTask bezi (jinak zaloha 2 Hz v SensorsTasku) */
+int      ad5693_dither_selftest(void);           /* cista logika sigma-delta, 1 = PASS (UART `dac dither test`) */
+extern volatile uint32_t g_dac_dith_miss;        /* kroky bez mutexu I2C1 (sbernici drzel SensorsTask) */
+extern volatile uint32_t g_dac_dith_skip;        /* kroky vynechane v back-offu po selhani zapisu */
 
 static inline uint32_t ad5693_code_to_mv(uint16_t code)
 {
