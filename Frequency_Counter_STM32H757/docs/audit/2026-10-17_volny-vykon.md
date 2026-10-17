@@ -25,7 +25,8 @@ Pro plánování proto počítat s **~30 % v nejhorším případě**, ne s 60 %
 
 **Skutečné stropy nejsou CPU:**
 - **CM4 = RAM** (38 kB; jeden HTTP slot stojí 8,4 kB) a **chybí double FPU** (statistika v `double` by běžela softwarově).
-- **I2C1 50 kHz** — dither DAC 200 Hz by zabral ~16 % sběrnice (#277) a bez RC před bufferem nemá smysl (HW).
+- ~~I2C1 50 kHz~~ **opraveno 2026-10-17:** I2C1 (DAC, ADC, Si5356, TMP117 0x49/0x4A) běží od `bfe6e46` (2026-10-11) na
+  **400 kHz** (`i2c.c:171`, `0x30700E3B`), CLAUDE.md uváděl zastaralých 50 kHz. Sběrnice tedy **NENÍ strop** — viz návrh H.
 - **FPGA CLS 85 %** — nová logika tam prakticky není.
 - **SPI pull/ACK + hradlo** — FPGA nepotvrzené měření nedrží, takže zpoždění FpgaTasku > 250 ms = ztracené měření.
 - **Pravidlo spinu ~10 ms** v hlídaných taskech (defaultTask, UiTask, FpgaTask).
@@ -89,7 +90,18 @@ Kdyby regresní blok FPGA posílal jen surové součty a dělení/normalizaci d�
 ### Nedoporučeno
 - **Přesun ADEV/statistiky na CM4** — nemá double FPU, výhoda nulová (#308).
 - **VXI-11/HiSLIP, PTP** — velká práce, malý přínos pro měření (#308 (5), (6)).
-- **Rychlejší dither DAC (#277)** — CPU je dost, chybí sběrnice I2C1 a RC na desce.
+
+### H. Rychlejší dither DAC (#277) — oproti první verzi analýzy PROVEDITELNÝ
+První verze tu tvrdila, že chybí sběrnice a RC. Obojí neplatí:
+- **Sběrnice:** zápis 3 B do AD5693R ≈ 38 bitů ≈ 95 µs při 400 kHz, s režií HAL ~150 µs → při 200 Hz **~3 % I2C1**
+  (#277 počítal 16 % pro 50 kHz).
+- **RC před bufferem je osazený** (R78 100k + C68 1 µF, τ = 100 ms; CLAUDE.md „DAC cesta, osazeno 2026-10-16"). Při ditheru
+  200 Hz zbude ze skoku 1 LSB (76 µV) zvlnění řádově < 1 µV (1/(2π·200 Hz·0,1 s) ≈ 0,8 %), tedy ~10⁻¹³ relativně.
+  Dnešní dither 2 Hz tímto RC prochází téměř celý (±1 LSB ≈ ±1,7·10⁻¹¹ s periodou 0,5 s).
+- ⚠️ **Tohle JE zásah do měření** — DAC ladí OCXO. Zápis dnes dělá SensorsTask v cyklu 500 ms (`ad5693_servo`,
+  `freertos_task_sensors.c:361`); 200 Hz potřebuje vlastní časování pod `i2c1MutexHandle` a nesmí blokovat čtení ADS1115/Si5356.
+  Proto samostatný pokus s A/B během (ADEV 0,25–10 s se zapnutou smyčkou), ne „využití volného výkonu" mimochodem.
+  Přínos je malý, dokud šum čítače na krátkých τ (~10⁻¹⁰) leží o řád nad ditherem.
 
 ## 4. Doporučené pořadí (k rozhodnutí uživatele)
 1. **Změřit rozpočet:** `stats` a `status` (heap free/min) ve dvou oknech (hlavní obrazovka, ALLAN) — až po skončení běhu loggeru.

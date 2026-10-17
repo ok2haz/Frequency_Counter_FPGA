@@ -184,7 +184,7 @@ Hardware: STM32H757 → DSI (1 lane) → **TC358762** DSI-to-DPI bridge → Wave
 ## ⚡ ZLATÁ PRAVIDLA (poruš = rozbiješ desku / boot / měření)
 
 **HW konfigurace a regen (CubeMX „Generate Code"):**
-- **I2C4 i I2C1 Timing = `0x70303AEE`** (**~50 kHz**, ne 100 — přepočet níže) — ručně NEPŘEPOČÍTÁVAT. Špatná 400 kHz hodnota → tmavý displej + zaseklá ATTINY na sběrnici (jen power-cycle desky i panelu pomůže).
+- **I2C4 Timing = `0x70303AEE`** (**~50 kHz**, ne 100 — přepočet níže; výchozí pro ATTINY, za běhu přepíná `i2c4_speed_select`) — ručně NEPŘEPOČÍTÁVAT. Špatná 400 kHz hodnota → tmavý displej + zaseklá ATTINY na sběrnici (jen power-cycle desky i panelu pomůže). **I2C1 (deska FPGA: DAC, ADC, Si5356, TMP117 0x49/0x4A) běží od `bfe6e46` (2026-10-11) na 400 kHz, `0x30700E3B`** (`i2c.c:171`) — ATTINY na ní není, past výše se jí netýká.
 - **DSI:** `VidCfg.Mode==DSI_VID_MODE_BURST` + `ColorCoding==DSI_RGB565`. Jinak per-řádek shear / rotace barev. Při regresi displeje sem koukej první.
 - **PB12 (FPGA CS) default Output Level = High** v `gpio.c` — jinak STM drží CS LOW během config loadu FPGA z flash → GW1NR-9 nenaběhne (`RX0:FF`).
 - **`HSE_VALUE` = 25000000** v obou `hal_conf.h`. FW **nenaběhne** na desce s 10 MHz HSE. `fpga_freq_init` z toho počítá SPI prescaler.
@@ -2073,7 +2073,7 @@ Card-detect PE3, LOW = vloženo. Load-bearing:
 - **Plánované dál:** rekonstrukce Allanovy pyramidy z logu po bootu; export přes USB CDC; memory-mapped XIP.
 
 ## I2C1 — senzory na FPGA desce (i2c.c MX_I2C1_Init, ads1115.c/h)
-Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, **~50 kHz**, Timing 0x70303AEE jako I2C4 — viz přepočet u „I2C4 timing NEMĚNIT ručně“).
+Druhá I2C sběrnice **I2C1**: SCL=**PB8**, SDA=**PB9** (AF4, **400 kHz**, Timing `0x30700E3B` od `bfe6e46` 2026-10-11, `i2c.c:171`; do té doby 0x70303AEE ~50 kHz jako I2C4).
 `MX_I2C1_Init` je **self-contained v i2c.c USER CODE 1** (GPIO+clock tam, regen-safe) — voláno v main.c USER CODE 2 před schedulerem. Mutex `i2c1MutexHandle`.
 - **TMP117** @ 0x49, 0x4A (čteno v SensorsTask 2×/s). **⚠️ 0x4A zatím není na sběrnici** → vrací NACK (rychlá chyba `sensor_fail`, červený `!` na diagu) — to je očekávané, NEodstraňovat. 0x49 osazený.
   - ✅ **Vyjasněno 2026-08-30:** 0x4A **je `TMP117` ve vstupním modulu** (`ADD0 → SDA`, smluvní I²C mapa nové desky) — objeví se, jakmile bude modul připojen. Dřívější „NENÍ osazený, ať se připojí až bude" byl správný odhad; teď je to zapsané. Labelovat ho jako **teplota modulu**, ne „FPGA board" (dnešní popisek v diagnostice).
