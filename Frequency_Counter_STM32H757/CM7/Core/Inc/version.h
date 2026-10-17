@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.18.1 (2026-10-17) = web (CM4): graf OCXO Vc ma druhou krivku POVEL DAC (STATUS #310, legenda jde skryvat) a tabulka karty ALLAN ukazuje
+ * 6 radku rozlozenych pres cely rozsah tau vcetne nejdelsiho (STATUS #309). Jen SPA v CM4; IPC beze zmeny (v25), CM7 beze zmeny kodu - FLASHNOUT CM4
+ * (CM7 jen kvuli cislu verze). ⬜ Neovereno v prohlizeci/na desce. */
 /* v0.18.0 (2026-10-16) = GRAF TIE A STAVU SMYCKY GPSDO (STATUS #37): displej okno s_view=45 "GPSDO TIE" (dlazdice v MERENI, driv placeholder
  * TI 1PPS) - prepinac TIE / y / KOD, osa z bodu LOCK, pas stavu OFF/WAIT/FLL/LOCK/HOLD, historie 2 h po 10 s; web karta GPSDO (stejny
  * prepinac + pas stavu). IPC v25 (`ipc_gpsdo_t.x_raw_ns`, blok 36 -> 40 B na konci struktury). FLASHNOUT OBE BANKY (CM7 + CM4).
@@ -156,7 +159,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 18
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.18.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.18.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
