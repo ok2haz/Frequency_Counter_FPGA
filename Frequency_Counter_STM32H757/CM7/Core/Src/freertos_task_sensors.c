@@ -371,12 +371,13 @@ static void ad5693_restore(void)
  * (`dac <kod>`) ani obnovu po startu. Readback se u techto zapisu nedela; kontrolu konec-konec dava AIN0. */
 #define DAC_DITH_PERIOD_MS   5u       /* zakladni perioda ditheru (200 Hz) = 5 ticku FreeRTOS */
 #define DAC_DITH_BASE_HZ     200u
+#define DAC_DITH_DEFAULT_HZ  100u     /* vychozi rychlost ditheru (2026-10-17: zatim 100 Hz, ne 200); `dac dither 200` vrati maximum */
 #define DAC_DITH_I2C_TMO_MS  2u       /* zapis 3 B @ 400 kHz trva ~0,1 ms; delsi = sbernice stoji (nezdrzovat 5ms smycku) */
 #define DAC_DITH_MUTEX_MS    2u       /* mutex drzi SensorsTask az ~3 ms; kdyz se neziska, krok se preskoci (kod dozapise dalsi) */
 #define DAC_DITH_FAIL_MAX    3u       /* po tolika selhanich zapisu za sebou se zkousi jen 1x za DAC_DITH_RETRY_MS */
 #define DAC_DITH_RETRY_MS    500u
 
-volatile uint16_t g_dac_dith_div = 1u;     /* 1 = 200 Hz ... 100 = 2 Hz (`dac dither <Hz>`, nepersistuje se) */
+volatile uint16_t g_dac_dith_div = DAC_DITH_BASE_HZ / DAC_DITH_DEFAULT_HZ;   /* 1 = 200 Hz, 2 = 100 Hz (vychozi) ... 100 = 2 Hz (`dac dither <Hz>`, nepersistuje se) */
 volatile uint32_t g_dac_dith_miss;         /* kroky, kdy se nepodarilo ziskat mutex I2C1 */
 volatile uint32_t g_dac_dith_skip;         /* kroky vynechane v back-offu po selhani zapisu */
 static volatile uint8_t s_dith_alive;      /* 1 = DacTask bezi (SensorsTask pak sam nedithruje) */
