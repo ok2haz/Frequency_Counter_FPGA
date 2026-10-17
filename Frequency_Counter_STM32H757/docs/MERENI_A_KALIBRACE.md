@@ -388,7 +388,26 @@ Data `docs/audit/data/2026-10-17_noc.csv*` (zapisovač `tools/gpsdo_log.ps1`, an
 - ⚠️ **Drift OCXO v tomto okně ≈ 5 ppb/den** (regrese kódu na čas 150 LSB/den × 3,4·10⁻¹¹ = 5,1 ppb/den; na konci 4,4 LSB/h ≈ 3,6 ppb/den), tedy ~4–5× nad datasheetovým stárnutím 1 ppb/den. **Nelze oddělit** teplotu (OCXO −0,4 °C, deska −0,8 °C, r(kód, teplota) = −0,95) od stárnutí po zapnutí (OCXO běželo před startem jen ~2 h). Regrese dává tempco jen −0,21 ppb/°C a čas 4,9 ppb/den, ale s kolinearitou. Pro #303 (holdover) použít jako **horní mez**, ne jako stárnutí; změřit znovu po dnech provozu bez přerušení.
 - Zapisovač: 5 mezer v čase > 3 s (max 5 s), 221 skoků `seq_meas` jiných než 1–2 (1,2 %) — zpoždění HTTP odpovědí, ne ztráta dat desky.
 
-Co zbývá: ⬜ běh se `gpsdo off` a drženým DAC (stabilita OCXO), ⬜ opakování po dnech (stárnutí), ⬜ zapsat kód DAC do datalogu (stárnutí bez PC), ⬜ znovu sestavený bitstream z commitnutých zdrojů (FW 0x0424 byl sestaven z necommitnutých).
+Co zbývá: ✅ běh se `gpsdo off` a drženým DAC (viz níže, jen 1,9 h), ⬜ opakování po dnech (stárnutí), ⬜ zapsat kód DAC do datalogu (stárnutí bez PC), ⬜ znovu sestavený bitstream z commitnutých zdrojů (FW 0x0424 byl sestaven z necommitnutých).
+
+### 2026-10-17 dopoledne — FREE-RUN: smyčka GPSDO VYPNUTÁ (`gpsdo off`), DAC drží kód 24 899 (CM7/CM4 v0.18.0, IPC 25, FPGA FW 0x0424, gate 1 s, kanál A = externí GPSDO)
+
+Data `docs/audit/data/2026-10-17_free.csv*`. Start 08:06:10 (OCXO předtím ~10 h v provozu, bez přerušení napájení), **zastaveno uživatelem 09:59:33 po 1,9 h** (plán byl 10 h, `-MaxMin 600`). 3 385 řádků po 2 s, 0× `NA`, 0 resetů desky, stav smyčky celou dobu `OFF`, kód DAC beze změny (24 899,35), uptime 39 357 → 46 160 s. Fáze `xr_ns` se v OFF nepočítá (nuly), proto z tohoto běhu fáze nejde.
+
+| Veličina (po odříznutí první hodiny) | Výsledek |
+|---|---|
+| Kmitočet OCXO (kód drží) proti externímu GPSDO | střed **+0,118 ppb** (1. hodina +0,078, 2. hodina +0,118), σ jednotlivého vzorku 0,69 ppb |
+| Trend kmitočtu | −0,015 ppb/h, **v rámci nejistoty** (hodinové střední má σ ≈ 0,1 ppb, protože šum je barevný s korelací ~100 s) |
+| ADEV proti externímu GPSDO (jen data free-runu) | 1,75·10⁻¹⁰ @ 2 s, 2,2·10⁻¹⁰ @ 4 s, 4,1·10⁻¹⁰ @ 10 s, **vrchol 5,2·10⁻¹⁰ @ 20 s**, 4,5·10⁻¹⁰ @ 50 s, 2,6·10⁻¹⁰ @ 100 s, 1,5·10⁻¹⁰ @ 200 s, 6,8·10⁻¹¹ @ 500 s |
+| Spektrum kmitočtu (rovnoměrná mřížka 2 s, po detrendu) | široké pásmo **T = 30–300 s** (cca 90 % výkonu), žádná jedna čára; nejvyšší maxima se mezi oběma běhy neopakují (91, 144, 90, 258, 40 s vs 157, 118, 185, 94, 63 s) |
+| Korelace s teplotou OCXO / desky / FPGA / MCU, počtem družic, HDOP | všude \|r\| < 0,05 |
+
+**Závěry (s výhradami):**
+- ✅ **DAC držený na posledním kódu smyčky dává kmitočet shodný s GPS na ~0,1 ppb** (+0,12 ppb proti −0,004 ppb se zapnutou smyčkou). `gpsdo off` tedy kmitočet nerozhodí (kód zůstane).
+- 🔑 **Vrchol ADEV na 20–50 s a jeho šířka (30–300 s) jsou STEJNÉ se smyčkou zapnutou i vypnutou** (rms 0,75 ppb v obou během, ADEV do 500 s v rámci šumu totožná). Tím je vyloučena smyčka (předfiltr τ/30 ≈ 33 s) jako příčina. **Nekoreluje s žádnou teplotou ani s GPS.** Zbývají ⬜ HYPOTÉZY: šum externího GPSDO (jeho vlastní smyčka), nebo měřicí řetězec čítače. Ověření: změřit týž signál druhým kanálem / proti třetí referenci, nebo vyměnit roli (OCXO měřit externím čítačem).
+- ⚠️ **Drift OCXO z kódu DAC (5 ppb/den) tímto během NENÍ potvrzen ani vyvrácen:** při driftu 4,4 LSB/h × 3,4·10⁻¹¹ = 0,15 ppb/h by za 1,9 h vyšlo ~0,3 ppb, což je pod rozlišením (hodinové střední ±0,1 ppb, rozdíl dvou hodin ±0,17 ppb). Naměřených −0,015 ppb/h je s oběma hodnotami slučitelných. Dlouhé τ nad ~1 h potřebuje běh desítky hodin.
+- ⚠️ **Firmwarové ADEV z `/api/stab` NEPLATÍ pro free-run ve vyšších τ:** ring stage obsahuje i data předchozí noci se smyčkou (n = 44 u τ 1000 s ≈ 12 h zpět), takže hodnoty od ~500 s (5,7·10⁻¹¹ @ 1000 s, 2,2·10⁻¹¹ @ 5000 s) míchají oba režimy. Pro čistý free-run bylo nutné restartovat ADEV (`CALC:AVER:CLE`) před startem.
+- Zapisovač: 0 mezer > 3 s, skoků `seq_meas` jiných než 1–2 je 43 z 3 385 (1,3 %).
 
 ## 3. Stav kalibrací
 
