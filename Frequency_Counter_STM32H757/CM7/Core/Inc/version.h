@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.20.1 (2026-10-17) = opravy z prezkumu v0.20.0 (docs/audit/2026-10-17_fixreview-v0.20.md): F-0237 detekce prepsani
+ * v sdram_log (>= CAP), F-0238 cislo epochy jednoznacne pres restart + pojistka kurzoru, F-0239 SD zrcadlo jineho formatu
+ * se prejmenuje, F-0241 tau min. po zmene tau. IPC beze zmeny (v26); CM4 jen komentar -> staci CM7, ale z v0.19.x
+ * flashnout OBE banky (IPC v26). ⬜ Neovereno na desce. */
 /* v0.20.0 (2026-10-17) = (1) web `GET /api/raw`: surova mereni ze sdram_log od kurzoru (epocha + absolutni index), IPC v26 kanal `raw`,
  * PC `tools/raw_fetch.py` (STATUS #308 E); (2) `tau min.` smycky GPSDO = dolni mez z HDEV faze proti bilemu sumu 1PPS, UART `gpsdo`
  * + okno GPSDO TIE, jen zobrazeni (#308 C); (3) web graf Vc: kazda osa sve meritko (vlevo kod DAC, vpravo Vc). IPC v26 ->
@@ -166,7 +170,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 20
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.20.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.20.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
