@@ -424,7 +424,18 @@ ADEV čítače 0,60 / 0,45 / 0,29 ppb na 20 / 50 / 100 s proti 0,24 / 0,11 / 0,0
 - ✅ **Není z teploty ani z GPS** (|r| < 0,05, viz výše).
 - Zbývá **externí GPSDO** nebo **měřicí řetězec čítače**. Pro externí GPSDO mluví tvar: vrchol u 20–50 s a pokles ∝ 1/τ nad ním (3·10⁻¹⁰ @ 100 s, 1,5·10⁻¹⁰ @ 200 s, 6,8·10⁻¹¹ @ 500 s) odpovídá OCXO přisvorkovanému smyčkou o τ řádu desítek sekund k zašuměné 1PPS vlastního přijímače. ⬜ **HYPOTÉZA**, přímo neprokázaná.
 - Test „fáze hrany vůči mřížce 10 ns" (kvantizační vzor čítače) vyšel nulově (vysvětleno 0,02 % rozptylu), ale fáze se integruje z šumných kmitočtů, takže **není průkazný**.
-- ⬜ **Rozhodující pokus:** změnit hradlo (0,25 / 0,5 / 1 s). Chyba čítače v časové oblasti je stálá, takže v ppb roste ∝ 1/hradlo; vlastnost externího GPSDO nezávisí na hradle. Doplňkově kanál B (druhý TDC řetěz) a ideálně třetí reference (druhý čítač nebo 1PPS externího GPSDO do FPGA).
+- ✅ **Rozhodující pokus proveden (2026-10-17 11:12–14:12, hradlo 0,25 s, smyčka LOCK, `docs/audit/data/2026-10-17_gate025b.csv`, každé měření `-OnNew`, 96 221 dotazů, 42 744 měření, 2× `NA`, 0 resetů; ADEV firmwaru vynulované na začátku):**
+
+  | τ | hradlo 1 s (noc, CSV / firmware) | hradlo 1 s (free-run, CSV) | **hradlo 0,25 s (CSV / firmware)** |
+  |---|---|---|---|
+  | 10 s | 4,1·10⁻¹⁰ / 5,7·10⁻¹⁰ | 4,1·10⁻¹⁰ | **3,7·10⁻¹⁰ / 5,0·10⁻¹⁰** |
+  | 20 s | 6·10⁻¹⁰ / 9·10⁻¹⁰ | 5,2·10⁻¹⁰ | **4,7·10⁻¹⁰ / 6,5·10⁻¹⁰** |
+  | 50 s | — / 8·10⁻¹⁰ | 4,5·10⁻¹⁰ | **3,0·10⁻¹⁰ / 3,8·10⁻¹⁰** |
+  | 100 s | — / 3·10⁻¹⁰ | 2,6·10⁻¹⁰ | **2,0·10⁻¹⁰ / 2,1·10⁻¹⁰** |
+
+  Chyba čítače v časové oblasti by při 4× kratším hradle zvedla hrbol **4×** (na ~2·10⁻⁹). Hrbol místo toho zůstal na stejné úrovni (v rámci rozptylu krátkých běhů ±30 %). 🔑 **Hrbol tedy NENÍ kvantizace ani TDC čítače.** Spolu s předchozím (není v OCXO, není ze smyčky, nekoreluje s teplotou ani GPS) zbývá **externí GPSDO** jako měřený signál — ⬜ přímo nepotvrzeno (k tomu třetí reference, STATUS #312 bod 3).
+  ⚠️ Vedlejší pozorování (nevysvětleno): ADEV firmwaru při τ = 1 s je s hradlem 0,25 s **3,9·10⁻¹¹**, s hradlem 1 s v noci 1,07·10⁻¹⁰. Vzorek 1 s se skládá ze 4 oken po sobě, takže by měl mít stejný šum TDC jako jedno 1s okno. ⬜ Ověřit (regresní blok FPGA se u delšího okna chová jinak? jiný počet hran v řetězu?).
+  Fáze proti GPS (smyčka): σ hodinová 7–9 ns, TDEV 0,9 ns @ 20 s … 6 ns @ 2000 s; kód DAC +4,4 LSB za 2 h (1,6 ppb/den, s teplotou r = −0,64).
 
 ## 3. Stav kalibrací
 
