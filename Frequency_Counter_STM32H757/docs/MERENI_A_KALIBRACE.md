@@ -437,6 +437,18 @@ ADEV čítače 0,60 / 0,45 / 0,29 ppb na 20 / 50 / 100 s proti 0,24 / 0,11 / 0,0
   🔑 **Nezávislé měření stejného externího GPSDO (2018, uživatel, <https://ok2haz.ok2kld.cz/ok2haz/2018/12/citac-s-gps-normalem-3-stabilita/>):** GPSDO s u-blox NEO-7M a OCXO Trimble 34310-T, měřeno **proti Rb normálu** Efratom FRK-LLN-1A1B1A komparátorem Adret 4110, Stable32 (overlapping ADEV). Výsledek: **GPSDO při τ < 100 s ≈ 3·10⁻¹⁰**; volné OCXO (pevné ladicí napětí) 1–100 s ≈ 3·10⁻¹²; Rb za 1 den ≈ 1·10⁻¹². Integrátor smyčky R18 100 kΩ + C24 (100 µF, v názvu grafu 10 µF) = **časová konstanta ~10 s**; kolísání GPS hodin ~22 ns p-p. Srovnání s naším měřením: ADEV vůči externímu GPSDO 3–6·10⁻¹⁰ na 10–50 s (hradlo 1 s i 0,25 s) a 2·10⁻¹⁰ @ 100 s — **řádově i úrovní stejné jako publikovaná stabilita GPSDO**, a vrchol u 20–50 s odpovídá smyčce s τ ~ 10 s, která propouští šum 1PPS přijímače (~6 ns rms → ADEV ≈ √3·σx/τ ≈ 5·10⁻¹⁰ @ 20 s). Tím je hrbol s vysokou pravděpodobností **šum externího GPSDO**, ne čítače ani našeho OCXO. ✅ **Potvrzeno uživatelem (2026-10-17):** článek popisuje TENTÝŽ externí zdroj, který dnes měříme; měřicí přístroj (FPGA + STM32) je od té doby kompletně přepracovaný, **GPS přijímač je stejný typ (NEO-7M) na obou stranách**. ⚠️ Publikovaná tabulka hodnot po τ není v textu — jen „< 100 s ≈ 3·10⁻¹⁰". ✅ **Antény jsou ODDĚLENÉ (uživatel 2026-10-17):** externí GPSDO má malou anténu za oknem (vidí ~160° obzoru), náš přístroj kvalitní anténu na střeše (360°). Chyby GPS obou přijímačů jsou tedy nezávislé — kovariance (#312 krok 3) je použitelná a vyšší šum externího GPSDO (horší geometrie, víc multipathu) tomu odpovídá. Nevyřešeno zůstává **náš** přebytek fáze OCXO–GPS ~4·10⁻¹¹ @ 100 s (#312): tohle měření se týká externího zdroje, ne našeho OCXO.
   ⚠️ Vedlejší pozorování (nevysvětleno): ADEV firmwaru při τ = 1 s je s hradlem 0,25 s **3,9·10⁻¹¹**, s hradlem 1 s v noci 1,07·10⁻¹⁰. Vzorek 1 s se skládá ze 4 oken po sobě, takže by měl mít stejný šum TDC jako jedno 1s okno. ⬜ Ověřit (regresní blok FPGA se u delšího okna chová jinak? jiný počet hran v řetězu?).
   Fáze proti GPS (smyčka): σ hodinová 7–9 ns, TDEV 0,9 ns @ 20 s … 6 ns @ 2000 s; kód DAC +4,4 LSB za 2 h (1,6 ppb/den, s teplotou r = −0,64).
+- ✅ **Opakování (2026-10-17 15:19–16:48, `docs/audit/data/2026-10-17_120min.csv`, hradlo 0,25 s, v0.20.1, smyčka LOCK celou dobu):** plánovaných 120 min, logger skončil po 88 min (21 209 řádků, 0 mezer > 3 s, 5 přeskočených `seq`, 0 resetů). Analýza po odříznutí prvních 20 min (`analyze_gpsdo_log.py … 1200`, n = 16 421):
+  | τ | ADEV vůči externímu GPSDO (CSV) | ADEV firmwaru | TDEV fáze OCXO–GPS |
+  |---|---|---|---|
+  | 2 s | 8,4·10⁻¹¹ | 8,6·10⁻¹¹ | 3,0 ns |
+  | 10 s | 2,3·10⁻¹⁰ | 3,5·10⁻¹⁰ | 1,0 ns |
+  | 20 s | **2,9·10⁻¹⁰** | 4,5·10⁻¹⁰ | 0,8 ns |
+  | 50 s | 2,0·10⁻¹⁰ | 3,1·10⁻¹⁰ | 0,9 ns |
+  | 100 s | 1,8·10⁻¹⁰ | 2,0·10⁻¹⁰ | 1,4 ns |
+  | 200 s | 1,0·10⁻¹⁰ | 1,1·10⁻¹⁰ | 2,2 ns |
+  | 500 s | 3,1·10⁻¹¹ | 3,1·10⁻¹¹ | 3,1 ns |
+  | 1000 s | 1,5·10⁻¹¹ | (n = 4) | 6,4 ns |
+  Střední rozdíl proti externímu GPSDO **+0,006 ppb**, sklon −0,012 ppb/h (nulový); šum jednotlivého 0,25s měření sd 0,39 ppb. **Hrbol na 20–50 s je znovu přítomen na stejné úrovni** (3–5·10⁻¹⁰) jako ve všech předchozích bězích — potvrzuje, že jde o šum externího GPSDO (viz výše), ne o náš čítač ani OCXO. Na τ ≥ 1000 s nemá 88 min dostatek nezávislých bodů (n = 4–55), proto je tam jen orientační. Kód DAC +39 LSB/den (1,3 ppb/den), koreluje s teplotou desky (r = −0,70), s teplotou OCXO jen r = 0,16; tempco 0,16 ppb/°C je nespolehlivé (čas a teplota kolineární). ADEV firmwaru @ 1 s = 6,0·10⁻¹¹ (hradlo 0,25 s) — anomálie 4× rozdílu proti hradlu 1 s zůstává nevysvětlená.
 
 ## 3. Stav kalibrací
 
