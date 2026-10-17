@@ -701,7 +701,7 @@ static size_t build_stab_json(char *out, size_t out_sz, const ipc_stab_t *b)
         jput_sci(&j, (double)p->adev); jputf(&j, ",");
         jput_sci(&j, (double)p->mdev); jputf(&j, ",");
         jput_sci(&j, (double)p->hdev);
-        jputf(&j, ",%u,%u]", (unsigned)p->nterm, (unsigned)p->m);
+        jputf(&j, ",%lu,%u]", (unsigned long)p->nterm, (unsigned)p->m);
     }
     jputf(&j, "]}");
     return j.ovf ? 0u : j.used;

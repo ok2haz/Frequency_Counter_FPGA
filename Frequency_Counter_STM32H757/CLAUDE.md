@@ -1442,6 +1442,7 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`,
   errlog transfer kanál `ipc_errlog_xfer_t` (v17).
+- 🔴 **`IPC_VERSION` = 27** (2026-10-18): `ipc_stab_pt_t` 20 → 24 B (`nterm` uint32), `IPC_STAB_PTS` 60 → 63 (sedmá stage ADEV pyramidy, τ do 9·10⁶ s); `fpgadiag`/`gpsdo`/`raw` se posunuly. ⚠️⚠️ **Flashnout OBĚ banky.**
 - 🔴 **`IPC_VERSION` = 26** (2026-10-17): kanál **`raw`** (`ipc_raw_xfer_t`) na KONCI `ipc_shared_t` za `gpsdo` — surová měření ze `sdram_log` pro **`GET /api/raw?from=&epoch=&n=`** (≤ 100 záznamů `[seq,t_ms,f_uhz,flags]` na dotaz). Kurzor = **absolutní index v epoše + číslo epochy** (`sdram_log_read_abs`, `sdram_log_win_t`), NE `seq` z FPGA (ten se po resetu FPGA vrací na nulu). Kopii dělá CM7 `ipc_raw_service` v defaultTasku; CM4 SDRAM číst nesmí (na CM7 cacheable). PC: `python tools/raw_fetch.py --out x.csv [--follow]` (navazuje). ⚠️⚠️ **Flashnout OBĚ banky.**
 - 🔴 **`IPC_VERSION` = 25** (2026-10-16): v24 = DAC AD5693R ve snapshotu (`dac_code`, `dac_restore`, `dac_flags` v koncové výplni 476..479 — velikost 480 B beze změny)
   + blok **`ipc_gpsdo_t gpsdo`** na KONCI `ipc_shared_t` (seqlock `gen`; stav smyčky pro web); v25 = `x_raw_ns` (surová fáze/TIE), blok 36 → 40 B. Vše za `cm4`

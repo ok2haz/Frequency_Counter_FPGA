@@ -132,7 +132,8 @@ void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
     for (int i = 0; i < np; i++) {
         b->pt[i].tau = pt[i].tau;   b->pt[i].adev = pt[i].adev;
         b->pt[i].mdev = pt[i].mdev; b->pt[i].hdev = pt[i].hdev;
-        b->pt[i].nterm = pt[i].nterm; b->pt[i].m = pt[i].m; b->pt[i]._pad = 0u;
+        b->pt[i].nterm = pt[i].nterm; b->pt[i].m = pt[i].m;
+        b->pt[i]._pad[0] = b->pt[i]._pad[1] = b->pt[i]._pad[2] = 0u;
     }
     IPC_DMB();
     b->seq = s + 2u;

@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  26u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  27u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -148,7 +148,11 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v25 (2026-10-16): `ipc_gpsdo_t.x_raw_ns` (surova fazova chyba pro graf TIE na webu);
                                        blok roste 36 -> 40 B, lezi na KONCI struktury -> nic pred nim se neposouva.
                                        v26 (2026-10-17): kanal `raw` (surova mereni ze sdram_log, web /api/raw)
-                                       na KONCI struktury za `gpsdo`. Flashnout obe banky. */
+                                       na KONCI struktury za `gpsdo`. Flashnout obe banky.
+                                       v27 (2026-10-18, audit A2 V6/V7): `ipc_stab_pt_t` 20 -> 24 B (`nterm` uint16 -> uint32: po ~18 h
+                                       by pocet clenu sasoval na 65 535) a `IPC_STAB_PTS` 60 -> 63 (sedma stage pyramidy, tau do 9·10^6 s).
+                                       Blok `stab` lezi PRED `fpgadiag`/`gpsdo`/`raw`, ty se POSUNOU (za `cm4` -> detekce nesouladu bank
+                                       funguje). ⚠️⚠️ Flashnout OBE banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -558,15 +562,15 @@ _Static_assert(offsetof(ipc_cm4_status_t, cm4_flash_bytes)
  * UiTask (vlastnik pyramidy) body na mrizce 1..9 x 10^s (nejhustsi; web si
  * vybere 1-2-5 / 1-2-3-5-7 sam) ~1x/s, CM4 je jen servira.
  * Zapis: VYHRADNE CM7 UiTask, seqlock `seq` (liche = zapis). Cteni: CM4 s retry. */
-#define IPC_STAB_PTS 60
+#define IPC_STAB_PTS 63            /* 7 stage x mantisy 1..9 (v27; do v26 6 stage = 54, strop byl 60) */
 typedef struct {
     float    tau;                  /* skutecne τ [s] (vc. prepoctu τ0) */
     float    adev, mdev, hdev;     /* 0 = v bode nespocteno */
-    uint16_t nterm;                /* pocet prumeru stage (pro EDF / "paru") */
+    uint32_t nterm;                /* ekvivalentni pocet polozek stage od resetu (v27: 32 b; pro EDF / "paru") */
     uint8_t  m;                    /* mantisa 1..9 (τ = m·10^s·τ0) */
-    uint8_t  _pad;
+    uint8_t  _pad[3];
 } ipc_stab_pt_t;
-_Static_assert(sizeof(ipc_stab_pt_t) == 20, "ipc_stab_pt_t layout");
+_Static_assert(sizeof(ipc_stab_pt_t) == 24, "ipc_stab_pt_t layout");
 
 typedef struct {
     volatile uint32_t seq;         /* seqlock: liche = rozepsano */

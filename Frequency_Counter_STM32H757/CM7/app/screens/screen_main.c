@@ -1457,7 +1457,7 @@ static float stats_drift(void)
  * Vzorek y (1/s) jde do stage 0; po 10 vzorcich se jejich prumer posune do dalsi
  * stage (tau ×10). Stage s drzi prumery na tau=10^s s. Pokryje 100+ dni v ~2,9 kB
  * (plochy buffer by chtel desitky MB). */
-#define ADEV_STAGES 6                 /* tau = 1, 10, 100, 1k, 10k, 100k s */
+#define ADEV_STAGES 7                 /* tau = 1, 10, 100, 1k, 10k, 100k, 1M s (V6: sedma stage, 1M s = 11,6 dne) */
 /* Prumeru na stage. 60 (drive 24) kvuli hustsimu Allanovu grafu (2026-09-27):
  * body τ = m·10^s s s mantisou m az 9 (viz `DENS_M`) potrebuji pro MDEV/HDEV
  * M >= 3m+1 = 28 prumeru, a s 24 by se nespocitaly vubec. Pri m = 9 zbyva ADEV
@@ -2246,6 +2246,7 @@ static const uint8_t DENS_K[ALLAN_DENS_N] = {3, 5, 9};
 _Static_assert(ADEV_RING >= 3 * ALLAN_DENS_MAXK + 1,
                "ring stage nestaci na MDEV/HDEV pri nejvetsi mantise");
 #define ADEV_PTS_MAX (ADEV_STAGES * ALLAN_DENS_MAXK)
+_Static_assert(IPC_STAB_PTS >= ADEV_STAGES * 9, "IPC_STAB_PTS nestaci na vsechny body pyramidy");
 static int s_allan_dens = 0;
 void screen_main_set_allan_density(int d) { s_allan_dens = (d < 0 || d >= ALLAN_DENS_N) ? 0 : d; }
 int  screen_main_allan_density(void)      { return s_allan_dens; }
@@ -2329,10 +2330,9 @@ int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *
             pt[np].adev = (a > 0.0f) ? a : 0.0f;
             pt[np].mdev = (md > 0.0f) ? md : 0.0f;
             pt[np].hdev = (hd > 0.0f) ? hd : 0.0f;
-            { int32_t me = adev_stage_M(s, m, ADEV_KIND_ADEV);          /* A2: clenu od resetu, ne okno 60 */
-              pt[np].nterm = (uint16_t)((me > 65535) ? 65535 : me); }
+            pt[np].nterm = (uint32_t)adev_stage_M(s, m, ADEV_KIND_ADEV);   /* A2: clenu od resetu, ne okno 60 */
             pt[np].m = (uint8_t)m;
-            pt[np]._pad = 0u;
+            pt[np]._pad[0] = pt[np]._pad[1] = pt[np]._pad[2] = 0u;
             np++;
         }
     }
