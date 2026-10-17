@@ -409,6 +409,23 @@ Data `docs/audit/data/2026-10-17_free.csv*`. Start 08:06:10 (OCXO předtím ~10 
 - ⚠️ **Firmwarové ADEV z `/api/stab` NEPLATÍ pro free-run ve vyšších τ:** ring stage obsahuje i data předchozí noci se smyčkou (n = 44 u τ 1000 s ≈ 12 h zpět), takže hodnoty od ~500 s (5,7·10⁻¹¹ @ 1000 s, 2,2·10⁻¹¹ @ 5000 s) míchají oba režimy. Pro čistý free-run bylo nutné restartovat ADEV (`CALC:AVER:CLE`) před startem.
 - Zapisovač: 0 mezer > 3 s, skoků `seq_meas` jiných než 1–2 je 43 z 3 385 (1,3 %).
 
+**Příčina hrbolu ADEV na 20–50 s (analýza nočního běhu, 2026-10-17, skript `bump_cause.py` v scratchpadu):** čítač měří OCXO proti externímu GPSDO (`y_c`), současně smyčka měří OCXO proti GPS 1PPS (`xr_ns`, `y_x` = sklon fáze v bloku). Po první hodině, 16 200 vzorků po 2 s, vše ve stavu LOCK:
+
+| τ bloku | rozptyl `y_c` [ppb²] | rozptyl `y_x` [ppb²] | korelace |
+|---|---|---|---|
+| 20 s | 0,41 | 0,05 | 0,00 |
+| 50 s | 0,17 | 0,011 | 0,02 |
+| 100 s | 0,059 | 0,003 | 0,07 |
+| 200 s | 0,019 | 0,001 | 0,10 |
+
+ADEV čítače 0,60 / 0,45 / 0,29 ppb na 20 / 50 / 100 s proti 0,24 / 0,11 / 0,06 ppb u fáze OCXO–GPS (ta navíc obsahuje šum 1PPS, je to tedy horní mez OCXO).
+- ✅ **Hrbol NENÍ v OCXO:** rozptyl kmitočtu OCXO proti GPS je na 20–100 s 8–20× menší než rozptyl, který vidí čítač, a obě řady spolu nekorelují (vysvětleno 0–1 %).
+- ✅ **Hrbol NENÍ ze smyčky:** je i ve free-runu (viz výše) a smyčka s τ 1000 s na 20–100 s prakticky nemění kmitočet (korekce ~3·10⁻¹¹).
+- ✅ **Není z teploty ani z GPS** (|r| < 0,05, viz výše).
+- Zbývá **externí GPSDO** nebo **měřicí řetězec čítače**. Pro externí GPSDO mluví tvar: vrchol u 20–50 s a pokles ∝ 1/τ nad ním (3·10⁻¹⁰ @ 100 s, 1,5·10⁻¹⁰ @ 200 s, 6,8·10⁻¹¹ @ 500 s) odpovídá OCXO přisvorkovanému smyčkou o τ řádu desítek sekund k zašuměné 1PPS vlastního přijímače. ⬜ **HYPOTÉZA**, přímo neprokázaná.
+- Test „fáze hrany vůči mřížce 10 ns" (kvantizační vzor čítače) vyšel nulově (vysvětleno 0,02 % rozptylu), ale fáze se integruje z šumných kmitočtů, takže **není průkazný**.
+- ⬜ **Rozhodující pokus:** změnit hradlo (0,25 / 0,5 / 1 s). Chyba čítače v časové oblasti je stálá, takže v ppb roste ∝ 1/hradlo; vlastnost externího GPSDO nezávisí na hradle. Doplňkově kanál B (druhý TDC řetěz) a ideálně třetí reference (druhý čítač nebo 1PPS externího GPSDO do FPGA).
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
