@@ -4677,6 +4677,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (doplnit)
 - **Stav:** aktivní; ⬜ neověřeno na desce
 
+### L-0163 — Náhled „prvních N řádků" ukazuje právě ty, které se přestaly měnit: karta vypadala zamrzle
+
+- **Datum:** 2026-10-17
+- **Oblast:** web SPA (`httpd_min.c`, karta ALLAN `drawStab`), STATUS #309
+- **Symptom:** karta Allan na webu „neaktualizovala naměřené páry", ale po rozkliknutí (detail) data byla.
+- **Příčina:** tabulka karty brala jen prvních 6 bodů mřížky 1-2-5 (τ 1…50 s). Ty mají v ringu stage plný počet členů (n ≤ 60, u τ 1 s 120) a s časem se nemění; nová data přibývají u DLOUHÝCH τ, která karta nikdy neukázala. Detail kreslil všechny body a „PARU (posl.)" bral z nejdelšího τ. ⬜ HYPOTÉZA podle čtení kódu, ověřit v prohlížeči.
+- **Oprava:** karta ukazuje 6 řádků rozložených rovnoměrně přes celý rozsah τ včetně nejdelšího; v `aWarn` poznámka, že n je členů v okně stage (max 60).
+- **Pravidlo:** Kompaktní náhled časově rostoucí řady nesmí brát „prvních N" – ukaž řádky rovnoměrně přes celý rozsah (a poslední), jinak ukazuje jen nasycenou část.
+- **Detekce:** porovnat kartu s detailem po hodině běhu; test `ser_test`/ruční kontrola řádků tabulky.
+- **Commit:** (doplnit)
+- **Stav:** aktivní; ⬜ neověřeno v prohlížeči
+
 ---
 
 ## Archiv (neplatné lekce)

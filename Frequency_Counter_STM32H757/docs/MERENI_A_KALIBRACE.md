@@ -368,6 +368,28 @@ Měřený kmitočet externího GPSDO proti OCXO na desce: **10 000 008,40 Hz (±
 
 ---
 
+### 2026-10-16/17 noc — 10 h základní měření smyčky GPSDO (CM7/CM4 v0.18.0, IPC 25, FPGA FW 0x0424, gate 1 s, kanál A = externí GPSDO)
+
+Data `docs/audit/data/2026-10-17_noc.csv*` (zapisovač `tools/gpsdo_log.ps1`, analýza `python tools/analyze_gpsdo_log.py <csv>`). Běh 21:37–07:37, 17 907 řádků po 2 s, 0× `NA`, 0 resetů desky, `errlog` beze změny (4998), smyčka celou dobu `LOCK` (`locked` = 1), `pps_rej` stále 22 (z rozběhu). Rozběh (první hodina) z vyhodnocení odříznut. Smyčka byla po celou dobu **ZAPNUTÁ**, tedy měří se OCXO **řízené** podle GPS, ne volně běžící OCXO.
+
+| Veličina (od 2. hodiny) | Výsledek |
+|---|---|
+| Kmitočet interního OCXO proti externímu GPSDO (CH A, gate 1 s) | střed **−0,004 ppb**, hodinové střední −0,014…+0,009 ppb, trend **−0,0001 ppb/h**; šum jednotlivého vzorku σ 0,77 ppb (rozlišení hradla ~0,15 ppb + rozptyl 10–50 s, viz níže) |
+| Fáze `xr_ns` proti GPS 1PPS | hodinová σ 4–8 ns (první hodina 22 ns), rozpětí 23–40 ns za hodinu; celkem −150…−25 ns, příznak zamčení se nikdy nepřepnul (práh 200 ns) |
+| TDEV fáze (smyčka zapnutá) | 1,4 ns @ 20 s … 4,2 ns @ 5000 s |
+| ADEV kmitočtu proti externímu GPSDO | 1,8·10⁻¹⁰ @ 2 s, **vrchol 6·10⁻¹⁰ @ 20 s**, 4,0·10⁻¹¹ @ 1000 s, 1,0·10⁻¹¹ @ 4000 s; firmware ADEV obdobně (9·10⁻¹⁰ @ 20 s, 5,4·10⁻¹¹ @ 1000 s, 6,7·10⁻¹² @ 5000 s) |
+| Kód DAC | 24 832 → 24 896 (hodinové střední), sklon klesá z 12,7 na 4,4 LSB/h |
+
+**Závěry (s výhradami):**
+- ✅ **Obě reference se po celou noc shodují** (střed −0,004 ppb, bez trendu). Rozdíl nikdy nedosáhl úrovně, kterou by šlo oddělit od šumu měření. Konec běhu s hodnotou +1,25 ppb (`10000000,01249`) byl jen šum jednoho vzorku (σ 0,77 ppb), ne odchylka.
+- ⚠️ **Dlouhé τ (≥ 1000 s) měří smyčku, ne OCXO:** ADEV klesá jako 1/τ (bílý fázový šum — fáze je vázaná k GPS). Stabilitu samotného OCXO ukáže až běh se `gpsdo off` a drženým DAC (druhý běh).
+- ⚠️ **Vrchol ADEV 6–9·10⁻¹⁰ při 20–50 s nelze z těchto dat přiřadit:** může jít o šum 1PPS prošlý předfiltrem smyčky (τ/30 ≈ 33 s), o vlastní časovou konstantu externího GPSDO, nebo o OCXO. ⬜ HYPOTÉZA; rozhodne běh bez smyčky a/nebo změna `gpsdo tau`.
+- 🔑 **Fáze neleží na nule, ale úměrně driftu OCXO:** hodinový střed fáze (−125 → −40 ns) je přímo úměrný hodinovému sklonu kódu DAC (≈ −9,3 ns na 1 LSB/h, stálé po celou noc). To odpovídá PLL 2. řádu sledujícímu frekvenční rampu: konstantní fázová chyba = rampa/ω_n², ω_n ≈ 1/τ = 10⁻³ s⁻¹ (měřeno 1/ω_n² ≈ 9,9·10⁵ s²). Není to chyba; fáze se vrací k nule úměrně tomu, jak OCXO přestává driftovat.
+- ⚠️ **Drift OCXO v tomto okně ≈ 5 ppb/den** (regrese kódu na čas 150 LSB/den × 3,4·10⁻¹¹ = 5,1 ppb/den; na konci 4,4 LSB/h ≈ 3,6 ppb/den), tedy ~4–5× nad datasheetovým stárnutím 1 ppb/den. **Nelze oddělit** teplotu (OCXO −0,4 °C, deska −0,8 °C, r(kód, teplota) = −0,95) od stárnutí po zapnutí (OCXO běželo před startem jen ~2 h). Regrese dává tempco jen −0,21 ppb/°C a čas 4,9 ppb/den, ale s kolinearitou. Pro #303 (holdover) použít jako **horní mez**, ne jako stárnutí; změřit znovu po dnech provozu bez přerušení.
+- Zapisovač: 5 mezer v čase > 3 s (max 5 s), 221 skoků `seq_meas` jiných než 1–2 (1,2 %) — zpoždění HTTP odpovědí, ne ztráta dat desky.
+
+Co zbývá: ⬜ běh se `gpsdo off` a drženým DAC (stabilita OCXO), ⬜ opakování po dnech (stárnutí), ⬜ zapsat kód DAC do datalogu (stárnutí bez PC), ⬜ znovu sestavený bitstream z commitnutých zdrojů (FW 0x0424 byl sestaven z necommitnutých).
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
