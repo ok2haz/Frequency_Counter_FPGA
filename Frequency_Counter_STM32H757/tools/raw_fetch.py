@@ -77,8 +77,10 @@ def main():
             j = get(a.ip, cur, epoch, a.n)
             if not j.get("ready"):
                 print("deska: datova cache nebezi (ready=0)", file=sys.stderr)
-            if j["epoch"] != epoch and epoch != 0:
-                print("NOVA EPOCHA %d -> %d (zmena brany / SIM / reset logu); rada zacina znovu" % (epoch, j["epoch"]))
+            # F-0238: novou radu hlasi deska (newep: jine cislo epochy NEBO kurzor za hlavou = jiny beh se shodnym cislem)
+            if (j["epoch"] != epoch and epoch != 0) or j.get("newep"):
+                print("NOVA RADA: epocha %d -> %d (zmena brany / SIM / reset logu / restart desky); rada zacina znovu"
+                      % (epoch, j["epoch"]))
                 last_seq = None
             if j.get("trunc"):
                 print("POZOR: zaznamy %d..%d uz byly prepsany (deska drzi jen ~18 h)" % (cur, j["first"] - 1))

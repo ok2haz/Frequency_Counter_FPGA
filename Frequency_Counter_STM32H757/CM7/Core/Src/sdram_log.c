@@ -210,6 +210,8 @@ static int gate_changed(uint64_t a, uint64_t b)
     return d * 10u > ((a < b) ? a : b);
 }
 
+static uint32_t epoch_step(uint32_t e);   /* nize u rec_still_valid (F-0238) */
+
 void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flags,
                    uint32_t t_ms, uint64_t gate_ns, uint8_t sim)
 {
@@ -226,7 +228,15 @@ void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flag
     if (sim != s_sim || gate_changed(gate_ns, s_gate_ns)) {
         s_sim = sim; s_gate_ns = gate_ns; s_head = 0;
     }
-    if (s_head == 0u) s_epoch++;  /* prvni zaznam epochy (i po startu) -> ctenar od kurzoru pozna novou radu */
+    if (s_head == 0u) {           /* prvni zaznam epochy (i po startu) -> ctenar od kurzoru pozna novou radu */
+        uint32_t e = s_epoch;
+        /* 🔴 F-0238: `s_epoch` je v .bss, takze by kazdy boot zacinal epochou 1 a klient navazujici kurzorem by po
+         * restartu desky nepoznal, ze jde o jinou radu. Prvni epocha po startu se proto bere z cyklu CPU v okamziku
+         * PRVNIHO mereni: FPGA meri nezavisle na bootu STM32, takze tento okamzik je nahodny v radu stovek ms
+         * (~1e8 cyklu). DWT bezi od bootu (bootled/runtime stats); kdyby nebezel, vyjde 1 jako drive. */
+        if (e == 0u) { e = DWT->CYCCNT * 2654435761u; e ^= e >> 15; }
+        s_epoch = epoch_step(e);
+    }
     uint32_t h = s_head;
     sdram_log_rec_t *r = &s_buf[h & (SDRAM_LOG_CAP - 1u)];
     r->seq = seq; r->t_ms = t_ms;
@@ -243,6 +253,14 @@ void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flag
 static int rec_still_valid(uint32_t head, uint32_t a)
 {
     return (head - a) < SDRAM_LOG_CAP;
+}
+
+/* Dalsi cislo epochy: 1..2^30-1, nikdy 0 (0 = "klient nezna"). Strop 2^30: CM4 parsuje `epoch` z URL pres
+ * `atol` (long = 32 b), takze cislo musi zustat kladne i po mnoha epochach. Ciste, kryje selftest. */
+static uint32_t epoch_step(uint32_t e)
+{
+    e = (e + 1u) & 0x3FFFFFFFu;
+    return e ? e : 1u;
 }
 
 /* Prevede "i-ty nejnovejsi" na absolutni index; 0 = mimo rozsah. */
@@ -406,5 +424,10 @@ int sdram_log_selftest(void)
     if (!rec_still_valid(SDRAM_LOG_CAP + 6u, 7u))              return 0;   /* nejstarsi dostupny */
     if (rec_still_valid(SDRAM_LOG_CAP + 7u, 7u))               return 0;   /* jeho slot se prave prepisuje */
     if (rec_still_valid(SDRAM_LOG_CAP + 8u, 7u))               return 0;   /* uz prepsany */
+    /* F-0238: cislo epochy nikdy 0 (= "klient nezna") a zustava pod 2^30 (CM4 ho cte pres atol). */
+    if (epoch_step(0u) != 1u || epoch_step(41u) != 42u)        return 0;
+    if (epoch_step(0x3FFFFFFFu) != 1u)                         return 0;   /* preteceni masky -> 1, ne 0 */
+    if (epoch_step(0xFFFFFFFFu) != 1u)                         return 0;   /* semeno z CYCCNT mimo rozsah */
+    if (epoch_step(0x9E3779B9u) >= 0x40000000u)                return 0;
     return 1;
 }

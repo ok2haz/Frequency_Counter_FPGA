@@ -592,6 +592,9 @@ void ipc_raw_service(void)
     (void)sdram_log_read_abs(0u, NULL, 0u, NULL, &w);   /* jen okno: epocha, hlava, nejstarsi */
     uint32_t from = g_ipc.raw.req_from;
     if (g_ipc.raw.req_epoch != w.epoch) { from = 0u; if (g_ipc.raw.req_epoch != 0u) fl |= IPC_RAW_F_NEWEP; }
+    /* F-0238 pojistka: kurzor ZA hlavou je ve stejne epose nemozny -> klient zna jinou radu se shodnym cislem
+     * (napr. z predchoziho behu, kdyby se cislo epochy po restartu nahodou shodlo) -> zacit od nejstarsiho. */
+    else if (from > w.head) { from = 0u; fl |= IPC_RAW_F_NEWEP; }
     uint32_t ep0 = w.epoch;
     for (int pokus = 0; pokus < 2; pokus++) {           /* producent mohl behem kopie prepsat data / zmenit epochu */
         got = sdram_log_read_abs(from, s_tmp, want, &first, &w);
