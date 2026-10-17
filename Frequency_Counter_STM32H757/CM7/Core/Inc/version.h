@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.20.0 (2026-10-17) = (1) web `GET /api/raw`: surova mereni ze sdram_log od kurzoru (epocha + absolutni index), IPC v26 kanal `raw`,
+ * PC `tools/raw_fetch.py` (STATUS #308 E); (2) `tau min.` smycky GPSDO = dolni mez z HDEV faze proti bilemu sumu 1PPS, UART `gpsdo`
+ * + okno GPSDO TIE, jen zobrazeni (#308 C); (3) web graf Vc: kazda osa sve meritko (vlevo kod DAC, vpravo Vc). IPC v26 ->
+ * FLASHNOUT OBE BANKY. ⬜ Neovereno na desce (`selftest` vc. `gpsdo test`, `/api/raw`, okno GPSDO TIE, graf Vc v prohlizeci). */
 /* v0.19.0 (2026-10-17) = (1) kod DAC OCXO v zaznamu datalogu (bajty 30..31, mimo CRC; stare zaznamy = nezaznamenano), UART `datalog dump` + CSV `dac_code`
  * (STATUS #311, stari OCXO bez PC); (2) CM4: pocitadla vytizeni spojeni v `/api/state` blok `conn` (STATUS #307). Format datalogu je zpetne kompatibilni,
  * IPC beze zmeny (v25). FLASHNOUT OBE BANKY (CM7 datalog + CM4 web/pocitadla). ⬜ Neovereno na desce (spustit `selftest`, `datalog dump`). */
@@ -161,8 +165,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 19
+#define FW_VERSION_MINOR 20
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.19.0"
+#define FW_VERSION_STR   "v0.20.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
