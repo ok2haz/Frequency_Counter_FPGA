@@ -1990,9 +1990,12 @@ void UartTask_run(void *argument)
 						  char vb[12];
 						  if (r.vbat_mv == DATALOG_INVALID16) snprintf(vb, sizeof vb, "--");
 						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
-						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s fl=0x%02X sat=%u\n",
+						  char dc[8];
+						  if (r.dac_code == DATALOG_DAC_NONE) snprintf(dc, sizeof dc, "--");
+						  else snprintf(dc, sizeof dc, "%u", (unsigned)r.dac_code);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s Dac=%s fl=0x%02X sat=%u\n",
 							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
-							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb, dc,
 							     (unsigned)r.flags, (unsigned)r.sats);
 					  }
 				  } else {

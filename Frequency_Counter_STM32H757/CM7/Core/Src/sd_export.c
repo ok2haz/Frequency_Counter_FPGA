@@ -269,15 +269,18 @@ int sd_export_csv_row(char *b, size_t n, const datalog_rec_t *r)
     /* VBAT: prazdna bunka pro zaznamy porizene pred 2026-08-17 (nezaznamenano). */
     char vb[12] = "";
     if (r->vbat_mv != DATALOG_INVALID16) snprintf(vb, sizeof vb, "%d", (int)r->vbat_mv);
+    /* kod DAC (STATUS #311): prazdna bunka = nezaznamenano (stare zaznamy) */
+    char dcs[8] = "";
+    if (r->dac_code != DATALOG_DAC_NONE) snprintf(dcs, sizeof dcs, "%u", (unsigned)r->dac_code);
 
     return snprintf(b, n,
         "%lu" SD_CSV_SEP "%lu" SD_CSV_SEP "%s" SD_CSV_SEP "%s" SD_CSV_SEP "%s"
         SD_CSV_SEP "%d" SD_CSV_SEP "%s" SD_CSV_SEP "0x%02X" SD_CSV_SEP "%u" SD_CSV_SEP "%u"
-        SD_CSV_SEP "%s\r\n",
+        SD_CSV_SEP "%s" SD_CSV_SEP "%s\r\n",
         (unsigned long)r->seq, (unsigned long)r->t_unix,
         fq,
         toc, tbo, (int)r->ocxo_vc_mv, rf,
-        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb);
+        (unsigned)r->flags, (unsigned)r->sats, (unsigned)r->hdop10, vb, dcs);
 }
 
 int sd_export_csv_header(char *b, size_t n)
@@ -285,7 +288,7 @@ int sd_export_csv_header(char *b, size_t n)
     return snprintf(b, n,
         "seq" SD_CSV_SEP "t_unix" SD_CSV_SEP "freq_hz" SD_CSV_SEP "t_ocxo_C" SD_CSV_SEP
         "t_board_C" SD_CSV_SEP "ocxo_vc_mV" SD_CSV_SEP "rf_mV" SD_CSV_SEP
-        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV\r\n");
+        "flags" SD_CSV_SEP "sats" SD_CSV_SEP "hdop10" SD_CSV_SEP "vbat_mV" SD_CSV_SEP "dac_code\r\n");
 }
 
 /* ── Diagnostika SD (UART `sd diag`) ─────────────────────────────────────────

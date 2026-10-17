@@ -18,6 +18,8 @@
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_sensors, g_rtc_text, g_spi_ok, qspiMutexHandle */
 #include "fpga_freq.h"
+#include "gpsdo.h"       /* g_gpsdo_drive/_code_q16 - kod DAC do zaznamu (STATUS #311) */
+#include "ad5693.h"      /* g_dac */
 #include "gps.h"
 #include "si5356.h"   /* SI5356_LOS_CLKIN/PLL_LOL — priznak neplatne reference */
 #include "errlog.h"    /* udalosti: chyba zapisu, zmena nastaveni */
@@ -153,7 +155,7 @@ static uint64_t get_u64(const uint8_t *p) { return (uint64_t)get_u32(p) | ((uint
 
 /* Rozvrzeni 32B zaznamu: 0 seq, 4 t_unix, 8 freq, 16 t_ocxo, 18 t_board,
  * 20 vc_mv, 22 rf_mv, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
- * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 rezerva.
+ * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 dac_code (u16, MIMO CRC, 0 = nezaznamenano).
  * ⚠️ Bajt 27 byl do 2026-08-17 `spare` (vzdy 0) a je UVNITR CRC. Diky tomu, ze
  * je 0 vyhrazena jako "nezaznamenano", se stare zaznamy ctou dal spravne a
  * format zustava 32 B — zadna migrace ani verze zaznamu netreba. */
@@ -193,6 +195,7 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     b[26] = r->hdop10;
     b[27] = vbat_encode(r->vbat_mv);
     put_u16(b + 28, crc16(b, 28));
+    put_u16(b + 30, r->dac_code);      /* mimo CRC (viz datalog.h) */
 }
 
 static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
@@ -224,6 +227,8 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->sats          = b[25];
     r->hdop10        = b[26];
     r->vbat_mv       = vbat_decode(b[27]);   /* stare zaznamy: 0 -> DATALOG_INVALID16 */
+    {   uint16_t d = get_u16(b + 30);        /* stare zaznamy: 0; smazany/poskozeny 0xFFFF -> nezaznamenano */
+        r->dac_code = (d == 0xFFFFu) ? (uint16_t)DATALOG_DAC_NONE : d; }
     return true;
 }
 
@@ -458,6 +463,21 @@ static int16_t sens_mv(sensor_id_t id)
     return (int16_t)(v + 0.5f);
 }
 
+/* Kod DAC pro zaznam (STATUS #311). Ve smycce GPSDO (FLL/LOCK/HOLD) je to zaokrouhleny POVEL `g_gpsdo_code_q16`: skutecny
+ * zapsany kod dithruje mezi k a k+1 s periodou 0,5 s, a vzorek po 10 s by s tim aliasoval (cas vzorku je nasobek periody),
+ * povel je deterministicky. Mimo smycku (vypnuta, WAIT, rucni `dac`) je to posledni kod zapsany do cipu. Emulace (`fpgasim`)
+ * ridi jen VIRTUALNI DAC, takze se nezaznamenava nic (L-0160). 0 = nezaznamenano. */
+static uint16_t dac_code_now(void)
+{
+    if (fpga_sim_active()) return DATALOG_DAC_NONE;
+    if (g_gpsdo_drive) {
+        uint32_t c = ((uint32_t)g_gpsdo_code_q16 + 0x8000u) >> 16;
+        return (c > 0xFFFEu) ? (uint16_t)0xFFFEu : (uint16_t)c;
+    }
+    if (g_dac.present && g_dac.code_valid) return g_dac.code;
+    return DATALOG_DAC_NONE;
+}
+
 static void sample(datalog_rec_t *r)
 {
     memset(r, 0, sizeof *r);
@@ -494,6 +514,7 @@ static void sample(datalog_rec_t *r)
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
     r->rf_mv     = sens_mv(SENS_ADS1);
     r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
+    r->dac_code     = dac_code_now();         /* STATUS #311: drift OCXO z kodu DAC */
 
     gps_data_t g;
     gps_get(&g);
@@ -735,7 +756,7 @@ bool datalog_selftest(void)
         .t_ocxo_c100 = -1234, .t_board_c100 = 4567,
         .ocxo_vc_mv = 2500, .rf_mv = -455,
         .flags = DATALOG_F_GPS_VALID | DATALOG_F_DIV16, .sats = 9, .hdop10 = 12,
-        .vbat_mv = 2920,
+        .vbat_mv = 2920, .dac_code = 24899,
     };
     uint8_t b[DATALOG_REC_SIZE];
     datalog_rec_t r;
@@ -745,6 +766,7 @@ bool datalog_selftest(void)
     if (r.t_ocxo_c100 != a.t_ocxo_c100 || r.t_board_c100 != a.t_board_c100) return false;
     if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_mv != a.rf_mv) return false;
     if (r.flags != a.flags || r.sats != a.sats || r.hdop10 != a.hdop10) return false;
+    if (r.dac_code != a.dac_code) return false;        /* STATUS #311 */
     /* VBAT je kvantovany na 8 mV, takze round-trip NENI presny — 2920 sedne
      * na 2920 (2920-2000=920, 920/8=115 -> 2000+115*8), ale obecne se testuje
      * jen to, ze se hodnota vejde do kroku. */
@@ -802,6 +824,22 @@ bool datalog_selftest(void)
         pack_rec(nb, &n);
         if (nb[27] != DATALOG_VBAT_NONE) return false;
         if (!unpack_rec(nb, &nr) || nr.vbat_mv != DATALOG_INVALID16) return false;
+    }
+
+    /* STATUS #311: `dac_code` lezi v bajtech 30..31 MIMO CRC. Stary zaznam (nuly) a smazany/poskozeny (0xFFFF) = "nezaznamenano";
+     * poskozeni tohoto pole zaznam NEzneplatni (CRC ho nekryje) - je to zamer, ne chyba (viz datalog.h). */
+    {   uint8_t db[DATALOG_REC_SIZE]; datalog_rec_t dr;
+        pack_rec(db, &a);
+        if (db[30] != (uint8_t)(24899u & 0xFFu) || db[31] != (uint8_t)(24899u >> 8)) return false;
+        db[30] = 0u; db[31] = 0u;                                   /* zaznam z doby pred polem */
+        if (!unpack_rec(db, &dr) || dr.dac_code != DATALOG_DAC_NONE) return false;
+        db[30] = 0xFFu; db[31] = 0xFFu;
+        if (!unpack_rec(db, &dr) || dr.dac_code != DATALOG_DAC_NONE) return false;
+        db[30] = 0x34u; db[31] = 0x12u;
+        if (!unpack_rec(db, &dr) || dr.dac_code != 0x1234u) return false;
+        datalog_rec_t z = a; z.dac_code = DATALOG_DAC_NONE;
+        pack_rec(db, &z);
+        if (db[30] != 0u || db[31] != 0u) return false;
     }
 
     /* 2) poskozeny bajt musi CRC odhalit */

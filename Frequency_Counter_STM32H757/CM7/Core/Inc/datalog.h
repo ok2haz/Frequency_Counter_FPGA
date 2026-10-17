@@ -119,7 +119,17 @@ typedef struct {
      * je baterie vybita, ale degradace CR2032 trva mesice a bez zaznamu nejde
      * odhadnout, KDY ji vymenit. */
     int16_t  vbat_mv;
+    /* Kod DAC ladeni OCXO (AD5693R, LSB) v okamziku zaznamu; DATALOG_DAC_NONE (0) = nezaznamenano (STATUS #311).
+     * Smyslem je STARNUTI OCXO bez PC: smycka GPSDO drzi frekvenci a kod DAC se posouva o 3,4e-11 relativne na LSB,
+     * takze dlouhodobe posouvani kodu (po odecteni teploty) JE drift oscilatoru.
+     * ⚠️ Na flash se veze v bajtech 30..31 (drive rezerva) a je MIMO CRC (CRC kryje bajty 0..27 a lezi na 28..29 -
+     * zmena pokryti by zneplatnila vsechny dosavadni zaznamy). Poskozeny bajt v tomhle poli tedy NEzneplatni zaznam,
+     * jen da odlehly bod; stare zaznamy maji v bajtech 30..31 nuly -> cte se "nezaznamenano".
+     * Uklada se CELE cislo: ve smycce zaokrouhleny POVEL (`g_gpsdo_code_q16`, bez ditheru 2 Hz, aby vzorkovani po 10 s
+     * nealiasovalo se stridanim k/k+1), jinak posledni zapsany kod. Pri emulaci (`fpgasim`) se NEuklada. */
+    uint16_t dac_code;
 } datalog_rec_t;
+#define DATALOG_DAC_NONE    0u              /* `dac_code`: nezaznamenano */
 
 #define DATALOG_INVALID16   ((int16_t)0x8000)   /* sentinel neplatne hodnoty */
 #define DATALOG_FREQ_AVG_BIT  (1ull << 63)      /* `freq_avg` na flash (viz vyse) */
