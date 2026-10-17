@@ -55,12 +55,32 @@ Pro plánování proto počítat s **~30 % v nejhorším případě**, ne s 60 %
 - **spektrum Sy(f) (Welch, FFT 4k–16k bodů)** — hrbol 30–300 s by byl vidět přímo na displeji/webu, dnes jsem ho počítal na PC.
 Měření se nedotkne (jen čte ring). Cena: RAM pro FFT ~128–256 kB (DTCM/SRAM1 jsou volné), CPU desítky ms na výpočet 1×/min.
 
-### B. „Tři rohy" (three-cornered hat) přímo v přístroji (CM7)
-Přístroj už měří **současně dvě nezávislé dvojice**: OCXO↔externí reference (čítač) a OCXO↔GPS 1PPS (smyčka, `e_ns`).
-Třetí rozdíl (externí↔GPS) se dopočte. Ze tří ADEV jde odhadnout šum každého zdroje zvlášť:
-σ²_OCXO = ½(σ²_OCXO–ext + σ²_OCXO–GPS − σ²_ext–GPS). Odpověděl by trvale na dnešní otázku „čí je hrbol" bez PC.
-Cena: 2 další pyramidy ~6 kB každá (RAM_D1). ⚠️ Platí jen tam, kde jsou šumy nezávislé: externí GPSDO i náš GPS jsou vázané
-na GPS, takže na dlouhých τ (≳ 1000 s) korelují a odhad může vyjít záporný — zobrazovat jen τ, kde vyjde kladný.
+### B. Podíl vlastní reference na naměřené ADEV (CM7) — pro LIBOVOLNÝ měřený signál
+⚠️ Opraveno po připomínce uživatele: externí OCXO/GPSDO je dnes jen **měřený signál**, v provozu bude na vstupu cokoli —
+„tři rohy" jako obecná funkce smysl nemají. Obecná otázka zní: **je naměřená ADEV vlastností signálu, nebo naší reference?**
+Přístroj současně měří dvě dvojice: signál↔OCXO (čítač, `y_c`) a OCXO↔GPS 1PPS (smyčka, `y_x`). Je-li signál nezávislý
+na GPS, platí **cov(y_c, y_x) = −σ²_OCXO**, takže z kovariance obou řad jde odhadnout šum reference na každém τ
+(dnes jsem tak na PC zjistil, že hrbol 20–50 s v OCXO není: korelace ≈ 0).
+Návrh: v Allanově grafu (displej i web) vedle podlahy čítače TDC druhá čárkovaná čára **„podlaha reference"**
+= max(odhad z kovariance, ADEV fáze OCXO–GPS jako horní mez) a značka u τ, kde měření leží < 2× nad ní
+(„omezeno referencí"). Cena: 1 pyramida pro `y_x` + akumulátor kovariance po stagích (~6 kB RAM_D1).
+⚠️ Neplatí pro signál odvozený z GPS (GPSDO): sdílí šum GPS, kovariance je zkreslená na dlouhých τ (≳ 1000 s).
+
+### A2. ADEV bez stropu 60 párů — akumulátory místo okna (CM7, levné)
+Dnes (`screen_main.c:1455`, `adev_ring_kind` `:1727`) se estimátor přepočítává **nad oknem posledních 60 průměrů** každé
+stage. Na každém τ je proto ≤ 59 členů navždy a **ADEV při τ = 1 s vychází jen z poslední minuty**, při 10 s z posledních
+10 min — nejistota ~1/√n ≈ ±13 % se s časem nezlepšuje a křivka na krátkých τ „dýchá".
+Návrh: při vložení nové položky do stage s spočítat pro každé m (1..9) **jediný nový člen** (ten, který končí nejnovější
+položkou) a přičíst jeho čtverec do Σ a n++ — pro ADEV, MDEV (jen s platným E) i HDEV. Výsledek = overlapping estimátor přes
+**celou historii od resetu** (se startem po 10^s), n roste: po 1 h 3 600 členů (±1,7 %), po dni 86 400 (±0,3 %) při τ = 1 s.
+- Paměť ~2 kB (6 stage × 9 m × 3 druhy × (double + uint32)); CPU < 1000 operací/s, tedy **méně** než dnešní přepočet okna.
+- Ring 60 zůstává (stačí na 3m+1 = 28 položek, které nový člen potřebuje), maximální τ beze změny.
+- Nulování: stejné události jako dnes (změna signálu, REAL↔SIM, hradlo, RESET). Cena: porucha (skok, výpadek) zůstane
+  v součtu až do resetu → zobrazit n a nechat i dnešní „okno" jako druhou volbu (rychlá odezva vs. přesnost).
+- EDF/pás nejistoty z celkového počtu členů; web text „n = členů v okně (max 60)" (`httpd_min.c:3372`) upravit.
+- Selftest: dokud ring nepřetekl, musí akumulátor dát totéž co dnešní estimátor nad oknem (shoda na zaokrouhlení).
+- Měřicí cesta nedotčena: `adev_feed` běží ve vzorkování statistiky v UiTasku, ne ve FpgaTasku.
+- Alternativa „větší ring (600)" = 10× víc RAM (57 kB) a ~10× delší přepočet v UiTasku (MDEV je O(M·m²)) → nedoporučeno.
 
 ### C. Doporučení časové konstanty smyčky z měření (CM7)
 Z B vyjde σ_OCXO(τ) a σ_1PPS(τ); optimální τ smyčky je jejich průsečík. Dnes je τ pevně 1000 s. **Jen zobrazit doporučení**
@@ -105,7 +125,8 @@ První verze tu tvrdila, že chybí sběrnice a RC. Obojí neplatí:
 
 ## 4. Doporučené pořadí (k rozhodnutí uživatele)
 1. **Změřit rozpočet:** `stats` a `status` (heap free/min) ve dvou oknech (hlavní obrazovka, ALLAN) — až po skončení běhu loggeru.
-2. **A** (surová řada → ADEV + spektrum) — největší diagnostický přínos, jen čte.
-3. **B** (tři rohy) — staví na A, řeší původ hrbolu trvale.
-4. **E** (`/api/raw`) — zbaví měření závislosti na PC loggeru.
-5. **D**, pak **C**.
+2. **A2** (ADEV bez stropu 60 párů) — malá změna v jednom souboru, okamžitý přínos na krátkých τ.
+3. **A** (surová řada → ADEV + spektrum) — největší diagnostický přínos, jen čte.
+4. **B** (podlaha reference v Allanově grafu) — pro libovolný měřený signál řekne, kdy měření omezuje naše reference.
+5. **E** (`/api/raw`) — zbaví měření závislosti na PC loggeru.
+6. **D**, pak **C**; **H** jako samostatný pokus.
