@@ -3445,7 +3445,7 @@ static const char SPA_HTML[] =
 "    if(last.n<10) aw.push('nejdelsi tau ma jen '+last.n+' paru - jen orientacni, nech to bezet dele');\n"
 "    if(pf) aw.push('carka-tecka: podlaha citace (TDC), pod ni meri citac, ne oscilator');\n"
 "    if(fA) aw.push('statistika z pristroje (tytez body jako displej)');\n"
-"    if(fA&&FWS.rn!==undefined) aw.push('Hampel (izolovane odlehle vzorky, 5 MAD): vyrazeno '+FWS.ro+' z '+FWS.rn+(((FWS.rm||0)&4)?'':' - FILTR VYP')+' | pohled: '+['od resetu','okno ~600','RAW bez filtru'][(FWS.rm||0)&3]);\n"
+"    if(fA&&FWS.rn!==undefined) aw.push('Hampel (izolovane odlehle vzorky, 7 MAD): vyrazeno '+FWS.ro+' z '+FWS.rn+(((FWS.rm||0)&4)?'':' - FILTR VYP')+' | pohled: '+['od resetu','okno ~600','RAW bez filtru'][(FWS.rm||0)&3]);\n"
 "    if(fA) aw.push('n = clenu od resetu Allanu (overlapping, cleny jsou korelovane - nejistota klesa pomaleji nez 1/sqrt(n))');\n"
 "    else {\n"
 "      aw.push('!! vlastni vypocet webu - pristroj statistiku nedava');\n"

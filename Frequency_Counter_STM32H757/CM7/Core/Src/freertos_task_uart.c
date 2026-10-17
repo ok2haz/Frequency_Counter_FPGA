@@ -2974,7 +2974,7 @@ void UartTask_run(void *argument)
 				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
 			  }
 			  else if (strncmp(RxBuffer, "meas outlier", 12) == 0) {
-				  /* Filtr izolovanych odlehlych vzorku pred Allan pyramidou (5 MAD, okno 31); vypnuti = vsechny vzorky jako platne. */
+				  /* Filtr izolovanych odlehlych vzorku pred Allan pyramidou (7 MAD, okno 31); vypnuti = vsechny vzorky jako platne. */
 				  if (strcmp(RxBuffer, "meas outlier on") == 0) g_adev_hampel_en = 1u;
 				  else if (strcmp(RxBuffer, "meas outlier off") == 0) g_adev_hampel_en = 0u;
 				  { uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
@@ -3309,7 +3309,7 @@ void UartTask_run(void *argument)
 					  	/* Filtr odlehlych: kolik vyrazil a o kolik se lisi sigma_y(1 s) filtrovane a surove pyramidy (stage 0..3 = 1, 10, 100, 1000 s). */
 					  	if (full) {
 					  	  uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
-					  	  printf("STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 5 MAD) %s: vyrazeno %lu z %lu posouzenych\n",
+					  	  printf("STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 7 MAD) %s: vyrazeno %lu z %lu posouzenych\n",
 					  	         g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs);
 					  	  static const unsigned long TS[4] = {1ul, 10ul, 100ul, 1000ul};
 					  	  for (int q = 0; q < 4; q++) { float fa = 0.0f, ra = 0.0f;

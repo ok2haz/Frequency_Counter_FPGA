@@ -11,6 +11,8 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.27.1 (2026-10-18) = audit v0.27.0 (docs/audit/2026-10-18_filtr-odlehlych-v0.27.md): F-0254 selftest filtru zapisoval za konec pole (`hamp_push` ma parametr `nst`, kanarek v testu),
+ * F-0255 prah filtru 5 -> 7 MAD (na realnych datech 0,02-0,05 % misto 0,04-0,17 %), F-0256 atomicke cteni pro UartTask, F-0257 test vypnuti filtru za behu. IPC v28 beze zmeny. */
 /* v0.27.0 (2026-10-18) = filtr IZOLOVANYCH odlehlych vzorku pred Allan pyramidou (Hampel 31 vzorku, 5 MAD, vyrazeny vzorek = dira; skok a shluk 2+ se nevyrazuje),
  * surova pyramida `s_adev_raw` vedle filtrovane, pohled RAW (tlacitko VSE/OKNO/RAW), pocet vyrazenych v tabulce ALLAN / `status full` / webu, `meas outlier on|off`.
  * IPC v28 (hlavicka ipc_stab_t: mode, outl, outn) -> FLASHNOUT OBE BANKY. */
@@ -197,7 +199,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 27
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.27.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.27.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

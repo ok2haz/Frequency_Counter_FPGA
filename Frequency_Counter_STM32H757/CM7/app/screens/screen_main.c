@@ -1548,8 +1548,8 @@ static void adev_feed(double v) { adev_feed_into(s_adev, ADEV_STAGES, 0, v, 0.0,
 /* ── Filtr IZOLOVANYCH odlehlych vzorku pred Allan pyramidou (audit "odlehla hodnota", STATUS #321) ─────────────────
  * Metrologie (NIST SP1065, IEEE 1139): odlehlou hodnotu lze z Allanovy statistiky vyradit JEN je-li to chyba mereni (ne skutecna
  * udalost zdroje), kriterium musi byt popsane a pocet vyrazenych ukazan. Proto:
- *   - posuzuje se vzorek P (1 s prumer kmitoctu) vuci MEDIANU a MAD okna 31 predchozich vzorku (5 MAD, MAD*1,4826 = sigma pri normalnim
- *     rozdeleni); P je vyrazen JEN kdyz je IZOLOVANY: predchozi i nasledujici vzorek jsou "v norme" (|x - med| < 2,5 MAD). Skok kmitoctu
+ *   - posuzuje se vzorek P (1 s prumer kmitoctu) vuci MEDIANU a MAD okna 31 predchozich vzorku (7 MAD, MAD*1,4826 = sigma pri normalnim
+ *     rozdeleni); P je vyrazen JEN kdyz je IZOLOVANY: predchozi i nasledujici vzorek jsou "v norme" (|x - med| < 3,5 MAD = 0,5 prahu). Skok kmitoctu
  *     (trvale jina uroven) nebo kratky shluk dvou a vice vzorku se NEVYRAZUJE - je to udalost, ma byt v Allanu videt;
  *   - vyrazeny vzorek je diru (jako spike okno), ne nahrazena hodnota; ostatni stage a trend/histogram se nemeni;
  *   - vedle filtrovane pyramidy bezi SUROVA (`s_adev_raw`, stejne vzorky bez filtru) -> pohled RAW a porovnani v `status full`;
@@ -1557,7 +1557,7 @@ static void adev_feed(double v) { adev_feed_into(s_adev, ADEV_STAGES, 0, v, 0.0,
  * Posouzeni ma zpozdeni 1 vzorek (musi se znat nasledujici). Okno se pred 15 vzorky nepouziva (filtr vypnut). */
 #define HAMP_N    31
 #define HAMP_MIN  15
-#define HAMP_K    5.0
+#define HAMP_K    7.0     /* B (audit F-0255): 5 MAD oznacilo na realnych datech 0,04-0,17 % vzorku, 7 MAD 0,02-0,05 % pri stejne citlivosti na izolovane spicky */
 typedef struct { double w[HAMP_N]; uint8_t n, h, have; double p; uint32_t seen, out; } hamp_t;
 static hamp_t s_hamp;
 volatile uint8_t g_adev_hampel_en = 1u;
@@ -1573,7 +1573,7 @@ static double hamp_median(const double *a, int n)
     return (n & 1) ? t[n / 2] : 0.5 * (t[n / 2 - 1] + t[n / 2]);
 }
 
-/* 1 = P je izolovany odlehly vzorek vuci oknu w[0..n-1]: |P-med| > 5 MAD a predchozi (prev) i nasledujici (nx) vzorek je v norme. */
+/* 1 = P je izolovany odlehly vzorek vuci oknu w[0..n-1]: |P-med| > 7 MAD a predchozi (prev) i nasledujici (nx) vzorek je v norme. */
 static int hamp_is_outlier(const double *w, int n, double prev, double P, double nx)
 {
     if (n < HAMP_MIN) return 0;
@@ -1589,40 +1589,53 @@ static int hamp_is_outlier(const double *w, int n, double prev, double P, double
 static void hamp_reset(hamp_t *h) { h->n = 0u; h->h = 0u; h->have = 0u; }
 
 /* Vlozi vzorek y; predchozi (cekajici) vzorek se posoudi a bud vlozi do pyramidy `pyr`, nebo vyradi. */
-static void hamp_push(hamp_t *h, adev_stage_t *pyr, double y)
+static void hamp_push(hamp_t *h, adev_stage_t *pyr, int nst, double y)   /* nst = pocet stage POLE pyr (F-0254) */
 {
     if (!h->have) { h->p = y; h->have = 1u; return; }
     double P = h->p;
     double prev = h->n ? h->w[(uint8_t)((h->h + HAMP_N - 1u) % HAMP_N)] : P;
     h->seen++;
     if (hamp_is_outlier(h->w, h->n, prev, P, y)) h->out++;
-    else adev_feed_into(pyr, ADEV_STAGES, 0, P, 0.0, 1);
+    else adev_feed_into(pyr, nst, 0, P, 0.0, 1);
     h->w[h->h] = P; h->h = (uint8_t)((h->h + 1u) % HAMP_N);
     if (h->n < HAMP_N) h->n++;
     h->p = y;
+}
+
+/* Pusti cekajici vzorek do pyramidy bez posouzeni (vypnuti filtru za behu), v puvodnim poradi. */
+static void hamp_flush(hamp_t *h, adev_stage_t *pyr, int nst)
+{
+    if (h->have) { adev_feed_into(pyr, nst, 0, h->p, 0.0, 1); h->have = 0u; }
 }
 
 static void adev_feed_filtered(double y)
 {
     adev_feed_into(s_adev_raw, ADEV_STAGES, 0, y, 0.0, 1);     /* surova pyramida: vzdy a hned */
     if (!g_adev_hampel_en) {
-        if (s_hamp.have) { adev_feed(s_hamp.p); s_hamp.have = 0u; }   /* uvolnit cekajici vzorek, ať neni v rade diru */
+        hamp_flush(&s_hamp, s_adev, ADEV_STAGES);   /* uvolnit cekajici vzorek, ať neni v rade diru */
         adev_feed(y);
         return;
     }
-    hamp_push(&s_hamp, s_adev, y);
+    hamp_push(&s_hamp, s_adev, ADEV_STAGES, y);
 }
 
 void screen_main_outlier_info(uint32_t *seen, uint32_t *out)
 {
-    if (seen) *seen = s_hamp.seen;
-    if (out)  *out  = s_hamp.out;
+    uint32_t pm = __get_PRIMASK();       /* F-0256: cte UartTask, zapisuje UiTask -> bez preruseni/prepnuti ulohy */
+    __disable_irq();
+    uint32_t a = s_hamp.seen, b = s_hamp.out;
+    __set_PRIMASK(pm);
+    if (seen) *seen = a;
+    if (out)  *out  = b;
 }
 /* Porovnani filtrovane a surove pyramidy: sigma_y(m = 1) ve stage `st`. @return 1 = obe znamy. */
 int screen_main_adev_compare(int stg, float *filt, float *raw)   /* 'stg', ne 'st' (globalni UI stav) */
 {
     if (stg < 0 || stg >= ADEV_STAGES) return 0;
+    uint32_t pm = __get_PRIMASK();       /* F-0256: dvojice double soucet/pocet se nesmi roztrhnout zapisem UiTasku */
+    __disable_irq();
     float a = adev_acc_kind_w(&s_adev[stg], 1, ADEV_KIND_ADEV, 0, 0), b = adev_acc_kind_w(&s_adev_raw[stg], 1, ADEV_KIND_ADEV, 0, 0);
+    __set_PRIMASK(pm);
     if (filt) *filt = a;
     if (raw)  *raw  = b;
     return (a > 0.0f && b > 0.0f);
@@ -2251,32 +2264,47 @@ bool screen_main_selftest(void)
         /* od resetu ~7,1e-9 (sqrt((1e-18+1e-16)/2)); okno sleduje skok: ~1,0e-8 (hostovy model: 9,7-10,1e-9 pro 3 semena) */
         ok &= (cum > 6e-9f) && (cum < 8e-9f) && (win > 0.85e-8f) && (win < 1.15e-8f) && (win > cum * 1.25f);
     }
-    /* Filtr izolovanych odlehlych vzorku: 3 izolovane outliery vyradi, shluk dvou po sobe NE (udalost), surova pyramida je vyssi. */
+    /* Filtr izolovanych odlehlych vzorku: 3 izolovane outliery vyradi, shluk dvou po sobe NE (udalost), surova pyramida je vyssi.
+     * F-0254: testovaci pyramidy jsou JEDNA stage -> `nst` = 1; za polem je kanarek (0xA5), ktery se nesmi zmenit
+     * (zapis za konec objektu = stejna trida chyby jako v0.27.0). */
     {   static hamp_t th;
-        static adev_stage_t tf, tw2;
+        static struct { adev_stage_t a, b; } gp;
+        static adev_stage_t tw2;
+        adev_stage_t *tf = &gp.a;
         uint32_t r = 2024u;
-        memset(&th, 0, sizeof th); memset(&tf, 0, sizeof tf); memset(&tw2, 0, sizeof tw2);
+        memset(&th, 0, sizeof th); memset(&gp, 0, sizeof gp); memset(&tw2, 0, sizeof tw2);
+        memset(&gp.b, 0xA5, sizeof gp.b);
         for (int i = 0; i < 600; i++) {
             r = r * 1103515245u + 12345u;
             double y = 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;       /* sigma 1e-9 (rovnomerne, |y| < 1,74e-9) */
             if (i == 200 || i == 350 || i == 500) y = 2e-8;                            /* izolovane outliery (20 sigma) */
-            hamp_push(&th, &tf, y);
-            adev_feed_into(&tw2, ADEV_STAGES, 0, y, 0.0, 1);
+            hamp_push(&th, tf, 1, y);
+            adev_feed_into(&tw2, 1, 0, y, 0.0, 1);
         }
-        float flt = adev_acc_kind_w(&tf, 1, ADEV_KIND_ADEV, 0, 0), raw = adev_acc_kind_w(&tw2, 1, ADEV_KIND_ADEV, 0, 0);
+        float flt = adev_acc_kind_w(tf, 1, ADEV_KIND_ADEV, 0, 0), raw = adev_acc_kind_w(&tw2, 1, ADEV_KIND_ADEV, 0, 0);
         ok &= (th.out == 3u) && (th.seen == 599u);
         ok &= (flt > 0.85e-9f) && (flt < 1.25e-9f) && (raw > 1.5f * flt);
-        memset(&th, 0, sizeof th); memset(&tf, 0, sizeof tf);
+        memset(&th, 0, sizeof th); memset(tf, 0, sizeof *tf);
         for (int i = 0; i < 600; i++) {                                                // shluk dvou po sobe jdoucich = udalost, zustane
             r = r * 1103515245u + 12345u;
             double y = 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;
             if (i == 300 || i == 301) y = 3e-8;
-            hamp_push(&th, &tf, y);
+            hamp_push(&th, tf, 1, y);
         }
         ok &= (th.out == 0u);
+        /* F-0257: vypnuti filtru za behu = cekajici vzorek se uvolni v poradi a dalsi zase ceka. */
+        memset(&th, 0, sizeof th); memset(tf, 0, sizeof *tf);
+        hamp_push(&th, tf, 1, 1e-9); hamp_push(&th, tf, 1, 2e-9); hamp_push(&th, tf, 1, 3e-9);
+        ok &= (tf->tot == 2u) && th.have;                                              // 1. a 2. vlozeny, 3. ceka
+        hamp_flush(&th, tf, 1);
+        ok &= (tf->tot == 3u) && !th.have;                                             // 3. uvolnen
+        hamp_push(&th, tf, 1, 4e-9);
+        ok &= (tf->tot == 3u) && th.have;                                              // 4. zase ceka
         ok &= !hamp_is_outlier(NULL, 0, 0.0, 1.0, 0.0);                                  /* prazdne okno: nelze posoudit */
         static const double Z[HAMP_MIN] = {0};
         ok &= !hamp_is_outlier(Z, HAMP_MIN, 0.0, 1.0, 0.0);                              /* MAD = 0: nelze posoudit */
+        const uint8_t *cb = (const uint8_t *)&gp.b;                                      /* kanarek za polem se nesmel zmenit */
+        for (unsigned q = 0; q < sizeof gp.b; q++) ok &= (cb[q] == 0xA5u);
     }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s (%lu ms)\n", ok ? "OK" : "FAIL", (unsigned long)(HAL_GetTick() - t_start_ms));
     return ok != 0;
@@ -4039,7 +4067,7 @@ void screen_main_render_stats_table(prim_rect_t rect)
     prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)},
                    s_allan_raw ? "σy(τ)  RAW" : (s_allan_win ? "σy(τ)  okno" : "σy(τ)  Allan"),
                    &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-    {   /* pocet vyrazenych izolovanych odlehlych vzorku (filtr 5 MAD), viz blok HAMP vyse */
+    {   /* pocet vyrazenych izolovanych odlehlych vzorku (filtr 7 MAD), viz blok HAMP vyse */
         char ob[16];
         if (!g_adev_hampel_en) snprintf(ob, sizeof ob, "filtr VYP");
         else if (s_hamp.out > 999u) snprintf(ob, sizeof ob, "vyr.>999");
