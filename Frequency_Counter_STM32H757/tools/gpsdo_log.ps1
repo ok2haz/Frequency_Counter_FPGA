@@ -7,7 +7,7 @@
 
   Pouziti:
     powershell -ExecutionPolicy Bypass -File tools\gpsdo_log.ps1 -Out docs\audit\data\2026-10-17_noc.csv -Every 2 -MaxMin 480
-  Vystupy: <Out> (CSV), <Out>.stab.jsonl (ADEV), <Out>.events.txt (errlog pred a po), <Out>.log (preflight + udalosti).
+  Vystupy: <Out> (CSV), <Out>.stab.jsonl (ADEV), <Out>.events.txt (errlog pred a po), <Out>.phase.csv (sigma a rozpeti faze xr_ns po blocich -StabEvery, jen ve stavu LOCK), <Out>.log (preflight + udalosti).
   ASCII only (PowerShell 5.1 cte skript bez BOM jako ANSI).
 #>
 param(
@@ -18,7 +18,7 @@ param(
   [double]$MaxMin = 480
 )
 $ErrorActionPreference = "Continue"
-$stab = "$Out.stab.jsonl"; $evt = "$Out.events.txt"; $lg = "$Out.log"
+$ph = "$Out.phase.csv"; $stab = "$Out.stab.jsonl"; $evt = "$Out.events.txt"; $lg = "$Out.log"
 
 function Log($s) { $l = "[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $s; Write-Host $l; Add-Content -Path $lg -Encoding ASCII -Value $l }
 function Get-Json($path, $to) { try { return ((Invoke-WebRequest -Uri ("http://" + $Ip + $path) -UseBasicParsing -TimeoutSec $to).Content | ConvertFrom-Json) } catch { return $null } }
@@ -28,6 +28,9 @@ $cols = @("wall","uptime_s","seq_meas","freq_hz","gp_state","gp_locked","gp_why"
           "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s")
 if (-not (Test-Path $Out)) { Set-Content -Path $Out -Encoding ASCII -Value ($cols -join ",") }
 
+if (-not (Test-Path $ph)) { Set-Content -Path $ph -Encoding ASCII -Value "wall,n_lock,xr_mean_ns,xr_std_ns,xr_pp_ns,y_mean_ppt,y_std_ppt" }
+$bx = New-Object System.Collections.ArrayList; $by = New-Object System.Collections.ArrayList
+function Stat($a) { $n = $a.Count; if ($n -lt 2) { return @($n, "", "", "", "") }; $m = ($a | Measure-Object -Average -Minimum -Maximum); $s = 0.0; foreach ($v in $a) { $s += ($v - $m.Average) * ($v - $m.Average) }; return @($n, $m.Average, [math]::Sqrt($s / ($n - 1)), ($m.Maximum - $m.Minimum), 0) }
 # ---- preflight --------------------------------------------------------------------------------
 $s = Get-Json "/api/state" 4
 if (-not $s) { Log "PREFLIGHT: deska na $Ip neodpovida - zaznam pojede dal a cekat na ni (radky NA)" }
@@ -62,6 +65,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
       (V $s @("gps","valid")), (V $s @("gps","fix_mode")), (V $s @("gps","num_sat")), (V $s @("gps","hdop")), (V $s @("warmup")), (V $s @("si5356_status")),
       (V $s @("cm4","ipc_version")), (V $s @("sy1e15")))
     Add-Content -Path $Out -Encoding ASCII -Value ($row -join ",")
+    if ($g -and $g.state -eq "LOCK") { [void]$bx.Add([double]$g.xr_ns); [void]$by.Add([double]$g.y_ppt) }
     $up = [int]$s.uptime_s
     if ($lastUp -ge 0 -and $up -lt $lastUp) { $resets++; Log ("!!! RESET pristroje: uptime " + $lastUp + " -> " + $up + " (reset c. " + $resets + ")") }
     $lastUp = $up
@@ -74,6 +78,9 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
   }
   if (((Get-Date) - $lastStab).TotalSeconds -ge $StabEvery) {
     $lastStab = Get-Date
+    $a = Stat $bx; $b = Stat $by
+    Add-Content -Path $ph -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss") + "," + $a[0] + "," + $a[1] + "," + $a[2] + "," + $a[3] + "," + $b[1] + "," + $b[2])
+    $bx.Clear(); $by.Clear()
     $st = Get-Json "/api/stab" 6
     if ($st) { Add-Content -Path $stab -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss") + " " + ($st | ConvertTo-Json -Compress -Depth 6)) }
   }
