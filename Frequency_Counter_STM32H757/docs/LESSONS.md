@@ -4775,6 +4775,34 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0170 — Odhad nad celou historií bez brány a zlomu navždy drží přechodové jevy a mezery
+
+- **Datum:** 2026-10-18
+- **Oblast:** `screen_main.c` (Allan pyramida, A2), audit `docs/audit/2026-10-17_a2-allan.md` F-0242/F-0243
+- **Symptom:** (nález z auditu, bez pozorování na desce) po náběhu OCXO nebo kroku FLL by ADEV na středních τ zůstala nadsazená, dokud uživatel nedá RESET ALLAN.
+- **Příčina:** okno 60 položek přechodový jev samo zapomnělo; průběžné součty od resetu (A2) ne. Totéž platí pro mezery (STOP/RUN, ztráta signálu): člen přes mezeru nese změnu kmitočtu za celou pauzu.
+- **Oprava:** brána (do pyramidy jen při ustálené referenci), počet položek od posledního zlomu (`since`; člen nesmí přesáhnout zlom), zlom po > 30 s bez vzorku a po rekonstrukci z logu. Krátké díry (spike okna) se NEpočítají jako zlom, jinak by se decimace nikdy nedokončila. Reset na hraně ustálení se nepoužil: smazal by i rekonstrukci z datalogu po warm resetu.
+- **Pravidlo:** Kdo změní odhad z „okna" na „historii", musí zároveň rozhodnout, co z historie vyřadit (neustálený stav, mezery) a kdy; okno to dělalo zadarmo.
+- **Detekce:** `meas gate` (stav brány), selftest A2 (člen nepřekročí zlom), `allan log` jako nezávislá kontrola.
+- **Commit:** `03f5ca5`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
+### L-0171 — Monte Carlo: normalizace každé realizace její vlastní směrodatnou odchylkou zkreslí rozptyl odhadu
+
+- **Datum:** 2026-10-18
+- **Oblast:** `docs/audit/sim/2026-10-18_edf_velke_M.py` (V8, EDF)
+- **Symptom:** empirické EDF blikavých šumů vycházelo ~50 místo stovek až tisíců (poměr k formuli 0,01–0,2).
+- **Příčina:** generátor 1/f šumu dělil každou realizaci její vlastní směrodatnou odchylkou. U blikavého šumu ji určují náhodné nejnižší frekvence, takže AVAR dostal umělý rozptyl navíc.
+- **Oprava:** pevná amplituda bez normalizace realizace (EDF je relativní veličina). Po opravě sedí empirické EDF s formulí v ±12 % (až na blikavý PM pro velká m).
+- **Pravidlo:** Když simulace nesedí s teorií o řády, podezírej nejdřív měřicí nástroj (generátor), ne teorii (SKILL §0, L-0097).
+- **Detekce:** poměr empirické/teoretické EDF pro bílé šumy (musí vyjít ≈ 1 dřív, než se věří blikavým).
+- **Commit:** `5e1bfdc`
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
