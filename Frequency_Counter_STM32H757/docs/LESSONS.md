@@ -4747,6 +4747,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0168 — Rychlý periodický zápis na sdílenou sběrnici: podmínky znovu v mutexu, krátké timeouty, tlumení při chybě
+
+- **Datum:** 2026-10-17
+- **Oblast:** `freertos_task_sensors.c` (`DacTask_run`, `ad5693_servo`), `freertos.c`, STATUS #317 (dither DAC 200 Hz)
+- **Symptom:** žádný pozorovaný; návrh dithru 200 Hz odhalil tři pasti dřív, než se dostaly na desku.
+- **Příčina / pasti:** (1) Dither dřív běžel v 500ms cyklu SensorsTasku, kde byl jediným zapisovačem DAC; vlastní task by zapsal kód i po ručním `dac <kód>`, pokud by podmínky ověřil jen PŘED čekáním na mutex (mezitím proběhne zápis z SensorsTasku). (2) `HAL_I2C_Master_Transmit` je aktivní čekání s timeoutem; u tasku s nejvyšší prioritou by 10ms timeout při zaseknuté sběrnici běžící každých 5 ms vyhladověl UiTask i defaultTask (pravidlo „žádný spin > 10 ms"). (3) `hi2c1.ErrorCode` je jeden pro všechny volající; `i2c1_recover_if_wedged` ho čte po transakcích SensorsTasku, takže druhý zapisovač jeho význam „poslední transakce" jen zachová, pokud selhání přetrvá (zaseknutá sběrnice selže i při dalším zápisu).
+- **Oprava:** `ad5693_servo_ready()` se volá levně před mutexem a znovu UVNITŘ mutexu; mutex i zápis mají timeout 2 ms (zápis 3 B @ 400 kHz trvá ~0,1 ms); po 3 selháních za sebou se zkouší jen 1× za 500 ms a obnovu sběrnice dál dělá SensorsTask; zálohou je dither 2 Hz v SensorsTasku, kdyby se task nevytvořil (malá halda).
+- **Pravidlo:** Nový rychlý zapisovač na sběrnici s existujícím vlastníkem: (a) kontrolovat podmínky znovu po získání mutexu, (b) timeouty řádově kratší než perioda, (c) back-off po opakovaném selhání, (d) nechat vlastníkovi sběrnice obnovu a ověřit, že vidí chybu, (e) mít zálohu při selhání `osThreadNew`.
+- **Detekce:** `dac dither test` (logika), `dac` → `kroky bez mutexu` / `vynechano po chybe`, `stats` → DacTask stackfree a CPU; ruční `dac 24000` za běhu smyčky nesmí být přepsán (smyčka se vypne, kód zůstane).
+- **Commit:** `a3aa147`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

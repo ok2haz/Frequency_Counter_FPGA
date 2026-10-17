@@ -75,13 +75,14 @@
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
 | FpgaTask | Normal | 2048 B |
+| DacTask | AboveNormal | 1024 B (v0.21.0, dither DAC 200 Hz, `freertos_task_sensors.c`; v `USER CODE`, ne v `.ioc`) |
 | UartRxQueue | — | 64 × 1 B |
 | GpsRxQueue | — | 256 × 1 B |
 
 ⚠️ **Tabulku drž synchronní se skutečnými `.stack_size` v `freertos.c`** (audit 2026-08-17
 odhalil rozjetí: dřív tu bylo 1536/2048 B, realita 2560/4096 B — defaultTask rostl kvůli
 `rtc_app_tick` snprintf, UartTask kvůli TODO #9 bumpu 512→1024 words). Součet stacků
-**23 552 B ze 32 768 B heapu = 9 216 B** rezerva na TCB, fronty, mutexy a malloc
+**24 576 B ze 32 768 B heapu = 8 192 B** rezerva (od v0.21.0 vč. DacTasku 1 024 B; stav 2026-10-17 přes `stats`: volno 6 960 B před DacTaskem) na TCB, fronty, mutexy a malloc
 (2026-09-12; předtím tu stálo 18 432 B, což bylo zastaralé už o 1 024 B).
 🔴 **Tři z pěti tasků řídí `.ioc`** (`FREERTOS_M7.Tasks01` = defaultTask, UartTask,
 I2C4Task); UiTask a FpgaTask jsou v `USER CODE` blocích. Změna velikosti u prvních tří

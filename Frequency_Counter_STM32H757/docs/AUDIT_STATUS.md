@@ -15,9 +15,9 @@ Verdikt **podmíněně funkční**. Zápis → [`audit/2026-10-17_fixreview-v0.2
 (epocha z `DWT->CYCCNT` při prvním měření + pojistka kurzor za hlavou + `raw_fetch.py`), `056168e` F-0239 (B: starý soubor →
 `GPSDOLnn.CSV`), `95d835b` F-0241 (C: úsek od změny τ), `e8925a8` F-0240 (`docs:`). Lekce **L-0164..L-0167**. Release CM7
 `.text` 673 712 → 674 536 B, 0 varování, `audit.py` 92/0/2; CM4 jen komentář (velikost beze změny). ⬜ **vše neověřeno na HW.**
-🔑 **Pokračovat zde:** po skončení loggeru flash OBOU bank (IPC v26 z v0.20.0) + power-cyklus, pak `selftest` (vč. `sdram_log`
-hranice/epocha), `gpsdo test`, `gpsdo` (`tau min.`), `raw_fetch.py --follow` přes restart desky (musí hlásit `NOVA RADA`),
-SD karta se starým zrcadlem → `GPSDOL01.CSV`.
+✅ **Ověřeno na desce 2026-10-17 (v0.20.1, bez power-cyklu):** `selftest` 16/16 PASS, `gpsdo` řádek `tau min. 137 s`. 🔴 **`gpsdo test` = FAIL** (STATUS #318: falešná divergence FLL při K modelu 1,7·10⁻¹¹, příčina doložena kopií testu na hostu) — nezačato opravou.
+**v0.21.0 (2026-10-17, `a3aa147`):** dither DAC OCXO 200 Hz v novém `DacTask` (STATUS #317, L-0168); Release CM7 `.text` 674 536 → 675 728 B, 0 varování, `audit.py` 92/0/2. IPC beze změny (v26) → stačí flashnout CM7. ⬜ **neověřeno na HW.**
+🔑 **Pokračovat zde:** flash CM7 v0.21.0 + power-cyklus; `stats` (DacTask stack/CPU/halda), `dac dither test`, `dac` (dither 200 Hz, kroky bez mutexu), A/B `dac dither 2` vs `200` (STATUS #317); pak `raw_fetch.py --follow` přes restart desky (`NOVA RADA`), SD karta se starým zrcadlem → `GPSDOL01.CSV`, graf Vc v prohlížeči; rozhodnout opravu #318.
 
 **Předchozí, 2026-10-14** — **Volba kmitočtu hodin FPGA a rezerva TDC řetězu.** Audit `audit/2026-10-10_volba-kmitoctu-hodin.md` doplněn o kap. 10 (datasheet Si5356, pokus se 125 MHz nebyl čistý bisect — zlomkový dělič ÷17 3/5 a poměr 12,5, rezerva řetězu, simulace). Provedeny kroky 1 a 2:
 (1) STM: včasné varování rezervy řetězu — `status` → `TDC REZERVA`, UART `tdc`, errlog `ERRLOG_K_TDC` (`ef07ca0`, oprava monotónnosti `a30b0b4`, L-0155); Release CM7 `.text` 653 856 → 655 768 B, 0 varování, `audit.py` 92/0/2.

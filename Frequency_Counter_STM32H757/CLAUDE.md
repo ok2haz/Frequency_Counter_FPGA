@@ -1256,7 +1256,7 @@ Pasti ze zadání §6:
   zastavit) → **PLL 2. řádu** (ζ 0,7, τ 1000 s, předfiltr τ/30, anti-windup), **HOLD** po 5 s bez 1PPS (drží kód), **WAIT** s důvodem (bez DAC / bez 1PPS /
   bez fixu / FPGA na externí referenci / vadné hodiny). Selftest `gpsdo test` (3 strmosti, špatné znaménko, nedostatečný rozsah EFC).
   **Výchozí stav = ZAPNUTO** (nepersistuje se); ruční `dac` ji vypne, `gpsdo on` zapne.
-- **DAC** — zápis dělá výhradně **SensorsTask** (`ad5693_servo`, vlastník I2C1): kód v Q16.16 z `g_gpsdo_code_q16`, zlomek dithrem 1. řádu při 2 Hz;
+- **DAC** — zápis kódu smyčky dělá od **v0.21.0 (#317) `DacTask`** (AboveNormal, 5 ms, `ad5693_servo`) pod `i2c1MutexHandle`; SensorsTask (vlastník I2C1) dál řeší sondu, obnovu a ruční zápis: kód v Q16.16 z `g_gpsdo_code_q16`, zlomek dithrem 1. řádu při **200 Hz** (do v0.20.1 2 Hz; zálohou je 2 Hz v SensorsTasku, když se DacTask nevytvoří);
   do flash (`g_dac_persist` → syscfg) jen při zamčení a nejvýš 1×/10 min (wear W25Q). **Emulace** (`fpgasim`) řídí jen VIRTUÁLNÍ kód
   (`gpsdo_sim_dac_code`) — skutečný DAC se při emulaci NEZAPISUJE (L-0160). `fpgasim fault nopps` = GPS bez 1PPS (test holdoveru).
 - **Sawtooth (F3)** — `gps.c`: binární parser UBX před NMEA, **UBX-TIM-TP** (`CFG-MSG` 1×/min spolu s TP5), oprava `e −= Δq` s **automatickou volbou
@@ -1266,8 +1266,7 @@ Pasti ze zadání §6:
 **C56 neosazen** (limit 2 nF na VOUT), R78 100k + **C68 2,2 µF film** (τ 220 ms; do 2026-10-17 tu stálo 1 µF — schéma aktualizováno uživatelem), U15 OPA365 (sledovač), R73 1k0 + **C61 1 µF film**, R72 82R + C59 100 nF X7R → pin VC
 OCXO (Bliley 6891: EFC 0–4 V, 2,5–5,5 Hz/V, vstupní impedance 10–100 kΩ); U14 sleduje VC → AIN0 (÷2,5). 🔑 **Smyčka na hodnotách součástek NEZÁVISÍ:**
 K = **změřených** ~3,4·10⁻¹¹/LSB (4,3–4,6 Hz/V × 76,3 µV) zahrnuje dělič R73+R72 proti vstupní impedanci EFC; časové konstanty (100 ms, 1 ms, 8 µs)
-jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Neřešené: dither 2 Hz ladí Vc o ±1 LSB (±1,7·10⁻¹¹) — pod stabilitou OCXO na 0,1–1 s;
-rychlejší dither (100–400 Hz) a RC 100k+2,2 µF = #277.
+jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Dither 200 Hz (#317, simulace `dither_sim2.py`): zvlnění Vc ≤ 0,8·10⁻¹² p-p a ADEV 0,25–10 s ≤ 2,4·10⁻¹³ (2 Hz: 30·10⁻¹² a až 8·10⁻¹²); se zpožděnými zápisy 0–3 ms nebo 2 % vynechaných kroků ≤ 4·10⁻¹³. UART `dac dither [2..200|test]` (nepersistuje se), `status` → `DAC OCXO: dither … kroky bez mutexu … vynechano po chybe …`. ⬜ neověřeno na HW.
 
 **Naměřeno na desce (2026-10-16, první minuty po flashi, ⬜ dlouhodobě neověřeno):** `LOCK`, y −0,055 ppb, fáze −13 ns, kód 24794 (1,892 V),
 434 intervalů 1PPS / 0 odmítnuto / 0 děr / 0 roztržených čtení. **Nezměřeno:** ADEV zamčeného OCXO, holdover (#303), chování po power-cyklu, stack defaultTasku.
