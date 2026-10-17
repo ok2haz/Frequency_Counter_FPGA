@@ -1,7 +1,8 @@
 import csv, json, sys
 import numpy as np
 
-P = sys.argv[1] if len(sys.argv) > 1 else "docs/audit/data/2026-10-17_noc.csv"   # pouziti: python tools/analyze_gpsdo_log.py <csv>
+P = sys.argv[1] if len(sys.argv) > 1 else "docs/audit/data/2026-10-17_noc.csv"   # pouziti: python tools/analyze_gpsdo_log.py <csv> [orez_s]
+T0 = float(sys.argv[2]) if len(sys.argv) > 2 else 3600.0   # orez rozbehu [s] od zacatku zaznamu (vychozi 1 h; u kratkeho behu napr. 1200)
 rows = list(csv.DictReader(open(P)))
 def col(n):
     out = []
@@ -14,7 +15,7 @@ t = (wall - wall[0]).astype("timedelta64[ms]").astype(float) / 1000.0
 f = col("freq_hz"); y = col("gp_y_ppt"); xr = col("gp_xr_ns"); x = col("gp_x_ns")
 code = col("gp_code"); to = col("t_ocxo"); tb = col("t_board"); seq = col("seq_meas")
 state = [r["gp_state"] for r in rows]; lk = col("gp_locked")
-print("radku", len(rows), "delka h", round(t[-1] / 3600, 2))
+print("radku", len(rows), "delka h", round(t[-1] / 3600, 2), " orez rozbehu %.0f s" % T0)
 dt = np.diff(t); print("mezery >3 s:", int((dt > 3).sum()), "max dt", dt.max())
 print("stav ne-LOCK:", sum(1 for s in state if s != "LOCK"), " locked==0:", int((lk == 0).sum()))
 ds = np.diff(seq); print("seq skoky !=1 nebo 2:", int(((ds != 2) & (ds != 1)).sum()), " pomer krok2:", round(float((ds == 2).mean()), 3))
@@ -32,8 +33,7 @@ for h0 in range(0, 10):
         np.nanmean(code[m]), np.nanmean(to[m]), np.nanmean(tb[m])))
 
 # --- orez rozbehu: od 1 h (smycka v LOCK od ~22:15 ustalena)
-T0 = 3600.0
-m = t >= T0
+m = (t >= T0) & np.isfinite(f)   # radky NA (vypadek odpovedi desky) se nepocitaji
 print()
 print("== po orezu prvni hodiny: n =", int(m.sum()))
 fe = (f[m] - 1e7) / 1e7 * 1e9
@@ -46,8 +46,8 @@ A = np.vstack([t[m] / 3600, np.ones(m.sum())]).T
 sl, ic = np.linalg.lstsq(A, fe, rcond=None)[0]
 print("trend freq vs ext: %.4f ppb/h  (zacatek %.3f, konec %.3f ppb)" % (sl, ic + sl * t[m][0] / 3600, ic + sl * t[m][-1] / 3600))
 for k in (0, 1, 2, 3, 4, 5, 6, 7, 8):
-    mm = (t >= (1 + k) * 3600) & (t < (2 + k) * 3600)
-    if mm.sum() > 50: print("  hodina %d: ext-offset %.3f ppb" % (1 + k, np.nanmean((f[mm] - 1e7) / 1e7 * 1e9)))
+    mm = (t >= T0 + k * 3600) & (t < T0 + (k + 1) * 3600)
+    if mm.sum() > 50: print("  okno %d (od %.0f s, delka <= 1 h): ext-offset %.3f ppb" % (1 + k, T0 + k * 3600, np.nanmean((f[mm] - 1e7) / 1e7 * 1e9)))
 
 # --- DAC kod: drift, teplota
 print()
@@ -87,7 +87,7 @@ for r in adev_tdev(xg, 2.0, [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 1500, 250
     print("  %7.0f  %.3e  %.3e  %7.3f  %d" % r)
 # ADEV z externi freq (1 s hradlo, kazdy 2. vzorek)
 ye = (f - 1e7) / 1e7
-mm = (t >= T0)
+mm = (t >= T0) & np.isfinite(f)
 tg = t[mm]; yv = ye[mm]; okv = np.isfinite(yv); tg = tg[okv]; yv = yv[okv]
 bi = ((tg - tg[0]) // 2.0).astype(int); nb = bi.max() + 1                      # kose po 2 s, vzorky v kosi se PRUMERUJI (rychle logovani)
 cnt = np.bincount(bi, minlength=nb); yg = np.bincount(bi, weights=yv, minlength=nb) / np.maximum(cnt, 1)
