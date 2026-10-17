@@ -693,6 +693,7 @@ static size_t build_stab_json(char *out, size_t out_sz, const ipc_stab_t *b)
     jputf(&j, ",\"sy1\":"); jput_sci(&j, (double)b->sy1);
     jputf(&j, ",\"drift\":%s", drift < 0.0 ? "-" : ""); jput_sci(&j, drift < 0.0 ? -drift : drift);
     jputf(&j, ",\"off\":%s", off < 0.0 ? "-" : "");     jput_sci(&j, off < 0.0 ? -off : off);
+    jputf(&j, ",\"ro\":%lu,\"rn\":%lu,\"rm\":%u", (unsigned long)b->outl, (unsigned long)b->outn, (unsigned)b->mode);
     jputf(&j, ",\"p\":[");
     for (unsigned i = 0; i < b->np; i++) {
         const ipc_stab_pt_t *p = &b->pt[i];
@@ -3444,6 +3445,7 @@ static const char SPA_HTML[] =
 "    if(last.n<10) aw.push('nejdelsi tau ma jen '+last.n+' paru - jen orientacni, nech to bezet dele');\n"
 "    if(pf) aw.push('carka-tecka: podlaha citace (TDC), pod ni meri citac, ne oscilator');\n"
 "    if(fA) aw.push('statistika z pristroje (tytez body jako displej)');\n"
+"    if(fA&&FWS.rn!==undefined) aw.push('Hampel (izolovane odlehle vzorky, 5 MAD): vyrazeno '+FWS.ro+' z '+FWS.rn+(((FWS.rm||0)&4)?'':' - FILTR VYP')+' | pohled: '+['od resetu','okno ~600','RAW bez filtru'][(FWS.rm||0)&3]);\n"
 "    if(fA) aw.push('n = clenu od resetu Allanu (overlapping, cleny jsou korelovane - nejistota klesa pomaleji nez 1/sqrt(n))');\n"
 "    else {\n"
 "      aw.push('!! vlastni vypocet webu - pristroj statistiku nedava');\n"

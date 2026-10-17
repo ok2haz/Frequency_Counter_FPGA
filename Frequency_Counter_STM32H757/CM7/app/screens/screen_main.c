@@ -1294,6 +1294,8 @@ static double s_y[STAT_N] DTCM_BSS;                 /* F-0179: double, viz vyse 
 static int   s_y_head = 0, s_y_count = 0;
 static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
 static void adev_break_all(void);   /* fwd — V2: mezera v rade */
+static void adev_feed_filtered(double y);   /* fwd — vstup do pyramid pres filtr odlehlych */
+static float adev_1s_cum(void);   /* fwd - definice az za pyramidou */
 #define ADEV_GAP_S 30u                /* V2: mezera mezi vzorky pyramidy > tolik s = zlom (kratsi diry se ignoruji) */
 static uint8_t  s_adev_gate_open = 1;   /* V1: 0 = reference neni ustalena, vzorky se do pyramidy nevkladaji */
 static uint32_t s_adev_last_s;          /* g_uptime_s posledniho vzorku vlozeneho do pyramidy (0 = zatim zadny) */
@@ -1373,7 +1375,7 @@ static void stats_push(double y)
     if (s_adev_gate_open) {               /* V1: neustalena reference (nabeh, FLL) do pyramidy nepatri */
         if (s_adev_last_s != 0u && (uint32_t)(g_uptime_s - s_adev_last_s) > ADEV_GAP_S) adev_break_all();   /* V2 */
         s_adev_last_s = g_uptime_s ? g_uptime_s : 1u;
-        adev_feed(y);                     /* decimacni pyramida (dlouhodoby Allan) */
+        adev_feed_filtered(y);            /* decimacni pyramida (dlouhodoby Allan), pres filtr izolovanych odlehlych */
     }
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
@@ -1398,7 +1400,11 @@ uint32_t screen_main_stats_version(void) { return s_stats_ver; }
  * statistika vypadala jako nula. `stats_adev` je definovana az nize, proto fwd. */
 static float stats_adev(int m);
 static float stats_adev_win(int m);
-float screen_main_adev_1s(void) { return stats_adev(1); }
+/* sigma_y(1 s) pro snapshot / web / UART: VZDY filtrovana pyramida od resetu (nezavisle na zvolenem pohledu karty). */
+float screen_main_adev_1s(void)
+{
+    return adev_1s_cum();
+}
 /* A2: zive okno (poslednich <= 120 s) pro prahovy monitor v alarm.c - rychle reaguje na zhorseni; zobrazeni jede z akumulatoru. */
 float screen_main_adev_1s_live(void) { return stats_adev_win(1); }
 
@@ -1504,6 +1510,9 @@ typedef struct {
     uint32_t since;               /* V2: polozek od posledni mezery (clen nesmi presahnout mezeru) */
 } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES] DTCM_BSS;   /* V9: DTCM, nulovano v main() */
+static adev_stage_t s_adev_raw[ADEV_STAGES] DTCM_BSS;   /* SUROVA pyramida: tytez vzorky BEZ filtru odlehlych (porovnani, pohled RAW) */
+static uint8_t s_allan_raw;                          /* 1 = zobrazeni cte s_adev_raw (pohled RAW) */
+static float adev_acc_kind_w(const adev_stage_t *sg, int m, int kind, int pb, int win);   /* fwd */
 static void adev_acc_update(adev_stage_t *sg, int pb);   /* fwd - A2 */
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
@@ -1535,6 +1544,89 @@ static void adev_feed_into(adev_stage_t *pyr, int nst, int s0, double v, double 
 }
 
 static void adev_feed(double v) { adev_feed_into(s_adev, ADEV_STAGES, 0, v, 0.0, 1); }
+
+/* ── Filtr IZOLOVANYCH odlehlych vzorku pred Allan pyramidou (audit "odlehla hodnota", STATUS #321) ─────────────────
+ * Metrologie (NIST SP1065, IEEE 1139): odlehlou hodnotu lze z Allanovy statistiky vyradit JEN je-li to chyba mereni (ne skutecna
+ * udalost zdroje), kriterium musi byt popsane a pocet vyrazenych ukazan. Proto:
+ *   - posuzuje se vzorek P (1 s prumer kmitoctu) vuci MEDIANU a MAD okna 31 predchozich vzorku (5 MAD, MAD*1,4826 = sigma pri normalnim
+ *     rozdeleni); P je vyrazen JEN kdyz je IZOLOVANY: predchozi i nasledujici vzorek jsou "v norme" (|x - med| < 2,5 MAD). Skok kmitoctu
+ *     (trvale jina uroven) nebo kratky shluk dvou a vice vzorku se NEVYRAZUJE - je to udalost, ma byt v Allanu videt;
+ *   - vyrazeny vzorek je diru (jako spike okno), ne nahrazena hodnota; ostatni stage a trend/histogram se nemeni;
+ *   - vedle filtrovane pyramidy bezi SUROVA (`s_adev_raw`, stejne vzorky bez filtru) -> pohled RAW a porovnani v `status full`;
+ *   - vypnuti: UART `meas outlier off`; pocet vyrazenych / posuzenych je v tabulce ALLAN, `status full` a na webu.
+ * Posouzeni ma zpozdeni 1 vzorek (musi se znat nasledujici). Okno se pred 15 vzorky nepouziva (filtr vypnut). */
+#define HAMP_N    31
+#define HAMP_MIN  15
+#define HAMP_K    5.0
+typedef struct { double w[HAMP_N]; uint8_t n, h, have; double p; uint32_t seen, out; } hamp_t;
+static hamp_t s_hamp;
+volatile uint8_t g_adev_hampel_en = 1u;
+
+static double hamp_median(const double *a, int n)
+{
+    double t[HAMP_N];
+    for (int i = 0; i < n; i++) {
+        double v = a[i]; int j = i;
+        while (j > 0 && t[j - 1] > v) { t[j] = t[j - 1]; j--; }
+        t[j] = v;
+    }
+    return (n & 1) ? t[n / 2] : 0.5 * (t[n / 2 - 1] + t[n / 2]);
+}
+
+/* 1 = P je izolovany odlehly vzorek vuci oknu w[0..n-1]: |P-med| > 5 MAD a predchozi (prev) i nasledujici (nx) vzorek je v norme. */
+static int hamp_is_outlier(const double *w, int n, double prev, double P, double nx)
+{
+    if (n < HAMP_MIN) return 0;
+    double med = hamp_median(w, n);
+    double d[HAMP_N];
+    for (int i = 0; i < n; i++) d[i] = fabs(w[i] - med);
+    double mad = 1.4826 * hamp_median(d, n);
+    if (!(mad > 0.0)) return 0;                              /* zadny rozptyl (kvantizovana/konstantni data) -> nelze posoudit */
+    double T = HAMP_K * mad;
+    return (fabs(P - med) > T) && (fabs(prev - med) < 0.5 * T) && (fabs(nx - med) < 0.5 * T);
+}
+
+static void hamp_reset(hamp_t *h) { h->n = 0u; h->h = 0u; h->have = 0u; }
+
+/* Vlozi vzorek y; predchozi (cekajici) vzorek se posoudi a bud vlozi do pyramidy `pyr`, nebo vyradi. */
+static void hamp_push(hamp_t *h, adev_stage_t *pyr, double y)
+{
+    if (!h->have) { h->p = y; h->have = 1u; return; }
+    double P = h->p;
+    double prev = h->n ? h->w[(uint8_t)((h->h + HAMP_N - 1u) % HAMP_N)] : P;
+    h->seen++;
+    if (hamp_is_outlier(h->w, h->n, prev, P, y)) h->out++;
+    else adev_feed_into(pyr, ADEV_STAGES, 0, P, 0.0, 1);
+    h->w[h->h] = P; h->h = (uint8_t)((h->h + 1u) % HAMP_N);
+    if (h->n < HAMP_N) h->n++;
+    h->p = y;
+}
+
+static void adev_feed_filtered(double y)
+{
+    adev_feed_into(s_adev_raw, ADEV_STAGES, 0, y, 0.0, 1);     /* surova pyramida: vzdy a hned */
+    if (!g_adev_hampel_en) {
+        if (s_hamp.have) { adev_feed(s_hamp.p); s_hamp.have = 0u; }   /* uvolnit cekajici vzorek, ať neni v rade diru */
+        adev_feed(y);
+        return;
+    }
+    hamp_push(&s_hamp, s_adev, y);
+}
+
+void screen_main_outlier_info(uint32_t *seen, uint32_t *out)
+{
+    if (seen) *seen = s_hamp.seen;
+    if (out)  *out  = s_hamp.out;
+}
+/* Porovnani filtrovane a surove pyramidy: sigma_y(m = 1) ve stage `st`. @return 1 = obe znamy. */
+int screen_main_adev_compare(int stg, float *filt, float *raw)   /* 'stg', ne 'st' (globalni UI stav) */
+{
+    if (stg < 0 || stg >= ADEV_STAGES) return 0;
+    float a = adev_acc_kind_w(&s_adev[stg], 1, ADEV_KIND_ADEV, 0, 0), b = adev_acc_kind_w(&s_adev_raw[stg], 1, ADEV_KIND_ADEV, 0, 0);
+    if (filt) *filt = a;
+    if (raw)  *raw  = b;
+    return (a > 0.0f && b > 0.0f);
+}
 
 /* ── Rekonstrukce dlouhych tau z datalogu (STATUS.md G) ──────────────────────
  * Kazdy reboot dosud vynuloval celou ADEV pyramidu, takze dlouha tau (1k, 10k s)
@@ -1571,6 +1663,7 @@ void screen_main_adev_seed_10s(double y)
     /* F-0187: 10s prumer z logu fazi uvnitr bloku nenese -> E neplatne (MDEV nad
      * rekonstrukci se nepocita); jen stage 0 (blok = 1 vzorek) ho ma trivialne 0. */
     adev_feed_into(s_adev, ADEV_STAGES, stg, y, 0.0, stg == 0);
+    adev_feed_into(s_adev_raw, ADEV_STAGES, stg, y, 0.0, stg == 0);   /* surova pyramida dostane totez (log je uz prumer) */
 }
 
 /* Nominal [Hz], proti kteremu se pocita frakcni odchylka y = (f - f0)/f0.
@@ -1720,7 +1813,9 @@ static void adev_break_all(void)
 {
     for (int s = 0; s < ADEV_STAGES; s++) {
         s_adev[s].since = 0u; s_adev[s].acc_n = 0; s_adev[s].acc = 0.0; s_adev[s].acc_e = 0.0;
+        s_adev_raw[s].since = 0u; s_adev_raw[s].acc_n = 0; s_adev_raw[s].acc = 0.0; s_adev_raw[s].acc_e = 0.0;
     }
+    hamp_reset(&s_hamp);               /* okno a cekajici vzorek patri k predchozimu useku */
 }
 void screen_main_adev_break(void) { adev_break_all(); }
 /* V1: brana pyramidy. open = 0 -> vzorky se do ni nevkladaji (plochy ring, histogram a trend bezi dal); zmena stavu = zlom. */
@@ -1731,8 +1826,14 @@ void screen_main_adev_gate(int open)
 }
 int screen_main_adev_gate_open(void) { return s_adev_gate_open; }
 /* V3: pohled statistiky: 0 = od resetu, 1 = okno ~600 clenu kazde stage. Meni zobrazeni (graf, tabulka, karta, web), ne data. */
-void screen_main_set_allan_win(int w) { uint8_t v = w ? 1u : 0u; if (v != s_allan_win) { s_allan_win = v; s_stats_ver++; } }
-int  screen_main_allan_win(void) { return s_allan_win; }
+/* Pohled 0 = od resetu (filtrovana), 1 = okno ~600 clenu (filtrovana), 2 = RAW (od resetu, BEZ filtru odlehlych). */
+void screen_main_set_allan_win(int w)
+{
+    uint8_t m = (w < 0 || w > 2) ? 0u : (uint8_t)w;
+    uint8_t win = (m == 1u) ? 1u : 0u, raw = (m == 2u) ? 1u : 0u;
+    if (win != s_allan_win || raw != s_allan_raw) { s_allan_win = win; s_allan_raw = raw; s_stats_ver++; }
+}
+int  screen_main_allan_win(void) { return s_allan_raw ? 2 : (s_allan_win ? 1 : 0); }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
  * Plochy ring s_y[] pokryje jen 120 s; okno 30 dni by v nem chtelo 2,6 M vzorku
@@ -1805,6 +1906,8 @@ void screen_main_stats_reset(void)
     memset(s_y, 0, sizeof s_y);
     s_y_head = 0; s_y_count = 0;
     memset(s_adev, 0, sizeof s_adev);
+    memset(s_adev_raw, 0, sizeof s_adev_raw);
+    memset(&s_hamp, 0, sizeof s_hamp);
     s_adev_last_s = 0u;
     memset(s_tr, 0, sizeof s_tr);
     s_tau0_mean = s_tau0_dev = 0.0f; s_tau0_n = 0;   /* bod 6 */
@@ -1913,12 +2016,18 @@ static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb)
     return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
 
-static float adev_stage_kind(int s, int m, int kind) { return adev_acc_kind(&s_adev[s], m, kind, s > 0); }
-static int32_t adev_stage_M(int s, int m, int kind) { return adev_acc_M(&s_adev[s], m, kind, s > 0); }
+static float adev_1s_cum(void)
+{
+    float a = adev_acc_kind_w(&s_adev[0], 1, ADEV_KIND_ADEV, 0, 0);
+    return (a > 0.0f) ? a : stats_adev_win(1);
+}
+static adev_stage_t *adev_view(void) { return s_allan_raw ? s_adev_raw : s_adev; }   /* pyramida, kterou cte zobrazeni */
+static float adev_stage_kind(int s, int m, int kind) { return adev_acc_kind(&adev_view()[s], m, kind, s > 0); }
+static int32_t adev_stage_M(int s, int m, int kind) { return adev_acc_M(&adev_view()[s], m, kind, s > 0); }
 /* sigma_y(1 s): od A2 z akumulatoru stage 0 (cele historie od resetu), dokud nema 2 cleny, z okna 120 s. */
 static float stats_adev(int m)
 {
-    if (m == 1) { float a = adev_acc_kind(&s_adev[0], 1, ADEV_KIND_ADEV, 0); if (a > 0.0f) return a; }
+    if (m == 1) { float a = adev_acc_kind(&adev_view()[0], 1, ADEV_KIND_ADEV, 0); if (a > 0.0f) return a; }
     return stats_adev_win(m);
 }
 static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
@@ -2142,6 +2251,33 @@ bool screen_main_selftest(void)
         /* od resetu ~7,1e-9 (sqrt((1e-18+1e-16)/2)); okno sleduje skok: ~1,0e-8 (hostovy model: 9,7-10,1e-9 pro 3 semena) */
         ok &= (cum > 6e-9f) && (cum < 8e-9f) && (win > 0.85e-8f) && (win < 1.15e-8f) && (win > cum * 1.25f);
     }
+    /* Filtr izolovanych odlehlych vzorku: 3 izolovane outliery vyradi, shluk dvou po sobe NE (udalost), surova pyramida je vyssi. */
+    {   static hamp_t th;
+        static adev_stage_t tf, tw2;
+        uint32_t r = 2024u;
+        memset(&th, 0, sizeof th); memset(&tf, 0, sizeof tf); memset(&tw2, 0, sizeof tw2);
+        for (int i = 0; i < 600; i++) {
+            r = r * 1103515245u + 12345u;
+            double y = 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;       /* sigma 1e-9 (rovnomerne, |y| < 1,74e-9) */
+            if (i == 200 || i == 350 || i == 500) y = 2e-8;                            /* izolovane outliery (20 sigma) */
+            hamp_push(&th, &tf, y);
+            adev_feed_into(&tw2, ADEV_STAGES, 0, y, 0.0, 1);
+        }
+        float flt = adev_acc_kind_w(&tf, 1, ADEV_KIND_ADEV, 0, 0), raw = adev_acc_kind_w(&tw2, 1, ADEV_KIND_ADEV, 0, 0);
+        ok &= (th.out == 3u) && (th.seen == 599u);
+        ok &= (flt > 0.85e-9f) && (flt < 1.25e-9f) && (raw > 1.5f * flt);
+        memset(&th, 0, sizeof th); memset(&tf, 0, sizeof tf);
+        for (int i = 0; i < 600; i++) {                                                // shluk dvou po sobe jdoucich = udalost, zustane
+            r = r * 1103515245u + 12345u;
+            double y = 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5) * 3.4641016;
+            if (i == 300 || i == 301) y = 3e-8;
+            hamp_push(&th, &tf, y);
+        }
+        ok &= (th.out == 0u);
+        ok &= !hamp_is_outlier(NULL, 0, 0.0, 1.0, 0.0);                                  /* prazdne okno: nelze posoudit */
+        static const double Z[HAMP_MIN] = {0};
+        ok &= !hamp_is_outlier(Z, HAMP_MIN, 0.0, 1.0, 0.0);                              /* MAD = 0: nelze posoudit */
+    }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s (%lu ms)\n", ok ? "OK" : "FAIL", (unsigned long)(HAL_GetTick() - t_start_ms));
     return ok != 0;
 }
@@ -2352,7 +2488,7 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
  * (F-0178), MDEV nad stage >= 1 jen z polozek s fazi (F-0187). VOLA VYHRADNE
  * UiTask. @return pocet bodu. */
 int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
-                            float *drift, float *offset)
+                            float *drift, float *offset, uint32_t *outl, uint32_t *outn, uint8_t *mode)
 {
     int np = 0;
     float ts = tau0_scale();
@@ -2378,6 +2514,9 @@ int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *
     if (tau0)   *tau0   = ts;
     if (drift)  *drift  = stats_drift();
     if (offset) *offset = stats_mean(s_y_count);
+    if (outl)   *outl   = s_hamp.out;
+    if (outn)   *outn   = s_hamp.seen;
+    if (mode)   *mode   = (uint8_t)((uint8_t)screen_main_allan_win() | (g_adev_hampel_en ? 4u : 0u));   /* bity 1:0 pohled, bit 2 = filtr zapnut */
     return np;
 }
 
@@ -3897,8 +4036,17 @@ void screen_main_render_stats_table(prim_rect_t rect)
      * refreshi postupne tuhly (kresli se mimo clear oblast). sans_18 (TODO
      * #11(2b), bylo sans_16): skutecny oy velkych pismen je 14 (ne nominalni
      * ascent 18), takze pri baseline=rect.y+18 zustava 4 px rezervy nahore. */
-    prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)}, s_allan_win ? "σy(τ)  okno" : "σy(τ)  Allan",
+    prim_draw_text((prim_point_t){rect.x, (int16_t)(rect.y + 18)},
+                   s_allan_raw ? "σy(τ)  RAW" : (s_allan_win ? "σy(τ)  okno" : "σy(τ)  Allan"),
                    &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    {   /* pocet vyrazenych izolovanych odlehlych vzorku (filtr 5 MAD), viz blok HAMP vyse */
+        char ob[16];
+        if (!g_adev_hampel_en) snprintf(ob, sizeof ob, "filtr VYP");
+        else if (s_hamp.out > 999u) snprintf(ob, sizeof ob, "vyr.>999");
+        else snprintf(ob, sizeof ob, "vyr. %u", (unsigned)s_hamp.out);
+        prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 18)}, ob, &ui_font_mono_14,
+                       (g_adev_hampel_en && s_hamp.out) ? UI_COLOR_WARN : UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
+    }
     static const char *TL[5] = {"1 s", "10 s", "100 s", "1 ks", "10 ks"};
     int16_t ry = (int16_t)(rect.y + 46);
     for (int i = 0; i < 5; i++) {

@@ -167,10 +167,14 @@ void screen_main_adev_break(void);      /* V2: mezera v rade (napr. napojeni rek
 void screen_main_adev_gate(int open);   /* V1: 0 = reference neustalena, Allan pyramida nebere vzorky */
 int  screen_main_adev_gate_open(void);
 void screen_main_set_allan_win(int w);   /* V3: 0 = od resetu, 1 = okno ~600 clenu kazde stage */
-int  screen_main_allan_win(void);   /* A2: okno <= 120 s pro prahovy monitor (screen_main_adev_1s je od resetu) */
+int  screen_main_allan_win(void);          /* 0 = od resetu, 1 = okno ~600, 2 = RAW (bez filtru odlehlych) */
+extern volatile uint8_t g_adev_hampel_en;   /* filtr izolovanych odlehlych vzorku pred Allan pyramidou (UART `meas outlier`) */
+void screen_main_outlier_info(uint32_t *seen, uint32_t *out);   /* posuzenych / vyrazenych vzorku */
+int  screen_main_adev_compare(int st, float *filt, float *raw);  /* sigma_y(m=1) stage st: filtrovana vs surova */   /* A2: okno <= 120 s pro prahovy monitor (screen_main_adev_1s je od resetu) */
 #include "ipc_shared.h"   /* ipc_stab_pt_t (v20) */
 int  screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
-                             float *drift, float *offset);   /* statistika stability pro web; jen UiTask */                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
+                             float *drift, float *offset,
+                            uint32_t *outl, uint32_t *outn, uint8_t *mode);   /* statistika stability pro web; jen UiTask */                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */
 /* Vlozi vzorek z DATALOGU (kadence 10 s) do ADEV pyramidy od stage 1.
  * ⚠️ NE od stage 0: stage 1 ma tau = 10 s = presne kadenci logu, takze prevod je
  * exaktni. Sypat log do stage 0 (tau0 = 1 s) by dalo sigma_y(tau) spatne o rad

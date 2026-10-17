@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.27.0 (2026-10-18) = filtr IZOLOVANYCH odlehlych vzorku pred Allan pyramidou (Hampel 31 vzorku, 5 MAD, vyrazeny vzorek = dira; skok a shluk 2+ se nevyrazuje),
+ * surova pyramida `s_adev_raw` vedle filtrovane, pohled RAW (tlacitko VSE/OKNO/RAW), pocet vyrazenych v tabulce ALLAN / `status full` / webu, `meas outlier on|off`.
+ * IPC v28 (hlavicka ipc_stab_t: mode, outl, outn) -> FLASHNOUT OBE BANKY. */
 /* v0.26.2 (2026-10-18) = F-0252 kratsi test pohledu OKNO (3 600 misto 6 000 vlozeni) + `selftest` vypisuje delku v ms, F-0253 logger gpsdo_log.ps1: sloupec `sigma1s_cum`,
  * soubor s jinou hlavickou se prejmenuje. IPC v27 beze zmeny. */
 /* v0.26.1 (2026-10-18) = audit zmen v0.23-v0.26 (docs/audit/2026-10-18_zmeny-v0.23-v0.26.md): F-0248 debounce zavreni brany Allanu (10 s), F-0249 mez selftestu okna,
@@ -193,8 +196,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 26
-#define FW_VERSION_PATCH 2
-#define FW_VERSION_STR   "v0.26.2"
+#define FW_VERSION_MINOR 27
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.27.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

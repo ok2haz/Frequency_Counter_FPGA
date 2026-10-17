@@ -1486,7 +1486,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2973,6 +2973,14 @@ void UartTask_run(void *argument)
 				  alarm_reset_counters();   /* g_alarm_* jsou proste volatile globaly, bezzamkove */
 				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
 			  }
+			  else if (strncmp(RxBuffer, "meas outlier", 12) == 0) {
+				  /* Filtr izolovanych odlehlych vzorku pred Allan pyramidou (5 MAD, okno 31); vypnuti = vsechny vzorky jako platne. */
+				  if (strcmp(RxBuffer, "meas outlier on") == 0) g_adev_hampel_en = 1u;
+				  else if (strcmp(RxBuffer, "meas outlier off") == 0) g_adev_hampel_en = 0u;
+				  { uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
+				    printf("MERENI: filtr izolovanych odlehlych vzorku %s, vyrazeno %lu z %lu posouzenych (`meas outlier on|off`)\n",
+				           g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs); }
+			  }
 			  else if (strncmp(RxBuffer, "meas gate", 9) == 0) {
 				  /* V1: brana Allan pyramidy podle ustaleni reference (OCXO dohrato + smycka zamcena). */
 				  if (strcmp(RxBuffer, "meas gate on") == 0) g_stats_refgate_en = 1u;
@@ -3298,6 +3306,16 @@ void UartTask_run(void *argument)
 					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
 					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
 					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
+					  	/* Filtr odlehlych: kolik vyrazil a o kolik se lisi sigma_y(1 s) filtrovane a surove pyramidy (stage 0..3 = 1, 10, 100, 1000 s). */
+					  	if (full) {
+					  	  uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
+					  	  printf("STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 5 MAD) %s: vyrazeno %lu z %lu posouzenych\n",
+					  	         g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs);
+					  	  static const unsigned long TS[4] = {1ul, 10ul, 100ul, 1000ul};
+					  	  for (int q = 0; q < 4; q++) { float fa = 0.0f, ra = 0.0f;
+					  	    if (screen_main_adev_compare(q, &fa, &ra))
+					  	      printf("STATISTIKA: ADEV(%lu s): filtrovana %ld e-15, surova %ld e-15\n", TS[q], (long)(fa * 1e15f), (long)(ra * 1e15f)); }
+					  	}
 					  	/* Bod 6: skutecne τ0 vzorku statistiky (Σ hradel za tik). Osa τ
 					  	 * i tabulky pocitaji s 1 s; tady je videt, o kolik se lisi.
 					  	 * Cte staticke floaty UiTasku bez zamku — roztrzene cteni je jen

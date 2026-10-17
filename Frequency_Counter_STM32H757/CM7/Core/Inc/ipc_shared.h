@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  27u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  28u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -152,7 +152,9 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v27 (2026-10-18, audit A2 V6/V7): `ipc_stab_pt_t` 20 -> 24 B (`nterm` uint16 -> uint32: po ~18 h
                                        by pocet clenu sasoval na 65 535) a `IPC_STAB_PTS` 60 -> 63 (sedma stage pyramidy, tau do 9·10^6 s).
                                        Blok `stab` lezi PRED `fpgadiag`/`gpsdo`/`raw`, ty se POSUNOU (za `cm4` -> detekce nesouladu bank
-                                       funguje). ⚠️⚠️ Flashnout OBE banky. */
+                                       funguje). ⚠️⚠️ Flashnout OBE banky.
+                                       v28 (2026-10-18): hlavicka `ipc_stab_t` nese `mode` (pohled/filtr) a `outl`/`outn` (vyrazene / posouzene vzorky filtru
+                                       izolovanych odlehlych, web `/api/stab` pole ro/rn/rm); `pt[]` se POSUNULO. ⚠️⚠️ Flashnout OBE banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -577,12 +579,14 @@ typedef struct {
     uint32_t gen;                  /* roste s kazdou publikaci (web pozna novou verzi) */
     uint16_t np;                   /* platnych bodu v pt[] */
     uint8_t  real;                 /* 1 = realne/emulovane mereni, 0 = SIM fallback */
-    uint8_t  _pad;
+    uint8_t  mode;                 /* v28: bity 1:0 pohled Allanu (0 od resetu, 1 okno, 2 RAW), bit 2 = filtr odlehlych zapnut */
     uint32_t nsamp;                /* vzorku od posledniho nulovani statistiky */
     float    tau0;                 /* prumerne τ0 vzorku [s] */
     float    sy1;                  /* σy@1 s (= g_adev_1s, tytez data jako displej) */
     float    drift;                /* df/dt [1/s] (karta Drift na displeji) */
     float    offset;               /* prumerna frakcni odchylka (karta Offset) */
+    uint32_t outl;                 /* v28: vyrazenych izolovanych odlehlych vzorku (filtr 5 MAD) */
+    uint32_t outn;                 /* v28: posouzenych vzorku */
     ipc_stab_pt_t pt[IPC_STAB_PTS];
 } ipc_stab_t;
 
@@ -780,7 +784,8 @@ void ipc_init(void);        /* orazitkuj snapshot + vynuluj ringy (1x pri bootu,
 void ipc_publish(void);     /* CM7 -> CM4 snapshot pres seqlock (throttle ~2 Hz uvnitr) */
 /* v20: publikuj statistiku stability (VOLA VYHRADNE UiTask -- vlastnik pyramidy). */
 void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
-                      float tau0, float sy1, float drift, float offset);
+                      float tau0, float sy1, float drift, float offset,
+                      uint32_t outl, uint32_t outn, uint8_t mode);
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 void ipc_errlog_service(void); /* v17: obsluz errlog transfer (req_gen != resp_gen) -> naplni errlog.rec[]. VOLA defaultTask (blokujici W25Q cteni) */

@@ -2534,8 +2534,9 @@ static void allan_reset_btn_render(void)
                      .label = s_allan_rst_armed ? "OK?" : "RESET"};
     prim_fill_rect(ALLAN_RESET_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* zmena labelu/barvy */
     ui_button_render(&b);
+    static const char *const WL[3] = {"VSE", "OKNO", "RAW"};          /* VSE = od resetu, OKNO = ~600 clenu, RAW = bez filtru odlehlych */
     ui_button_t w = {.rect = ALLAN_WIN_RECT, .variant = screen_main_allan_win() ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
-                     .label = screen_main_allan_win() ? "OKNO" : "VSE"};
+                     .label = WL[screen_main_allan_win() % 3]};
     prim_fill_rect(ALLAN_WIN_RECT, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
     ui_button_render(&w);
 }
@@ -8926,10 +8927,10 @@ void app_gpsdo_tick_stats_sample(void)
         uint32_t v = screen_main_stats_version();
         if (v != s_stab_ver) {
             static ipc_stab_pt_t pt[IPC_STAB_PTS];      /* static: 1,2 kB, jen UiTask */
-            uint32_t ns = 0u; float t0 = 0.0f, dr = 0.0f, of = 0.0f;
-            int np = screen_main_stab_export(pt, IPC_STAB_PTS, &ns, &t0, &dr, &of);
+            uint32_t ns = 0u, ol = 0u, on = 0u; float t0 = 0.0f, dr = 0.0f, of = 0.0f; uint8_t md = 0u;
+            int np = screen_main_stab_export(pt, IPC_STAB_PTS, &ns, &t0, &dr, &of, &ol, &on, &md);
             ipc_stab_publish(pt, np, screen_main_gate_actual_s() > 0.0, ns, t0,
-                             screen_main_adev_1s(), dr, of);
+                             screen_main_adev_1s(), dr, of, ol, on, md);
             s_stab_ver = v;
         }
     }
@@ -9854,7 +9855,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             return true;
         }
         if (s_view == 23 && in_rect(x, y, ALLAN_WIN_RECT)) {      /* V3: prepinac pohledu VSE / OKNO */
-            screen_main_set_allan_win(!screen_main_allan_win());
+            screen_main_set_allan_win((screen_main_allan_win() + 1) % 3);   /* VSE -> OKNO -> RAW -> VSE */
             app_gpsdo_render_allan();
             return true;
         }

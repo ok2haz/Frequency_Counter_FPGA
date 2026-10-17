@@ -116,7 +116,8 @@ void ipc_init(void) { ipc_stamp(&g_ipc); }
 /* v20: statistika stability pro web (viz `ipc_stab_t`). Jediny zapisovatel je
  * UiTask, takze seqlock nepotrebuje zamek; CM4 cte s retry. */
 void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
-                      float tau0, float sy1, float drift, float offset)
+                      float tau0, float sy1, float drift, float offset,
+                      uint32_t outl, uint32_t outn, uint8_t mode)
 {
     volatile ipc_stab_t *b = &g_ipc.stab;
     if (np < 0) np = 0;
@@ -129,6 +130,7 @@ void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
     b->real = (uint8_t)(real ? 1 : 0);
     b->nsamp = nsamp;
     b->tau0 = tau0; b->sy1 = sy1; b->drift = drift; b->offset = offset;
+    b->outl = outl; b->outn = outn; b->mode = mode;
     for (int i = 0; i < np; i++) {
         b->pt[i].tau = pt[i].tau;   b->pt[i].adev = pt[i].adev;
         b->pt[i].mdev = pt[i].mdev; b->pt[i].hdev = pt[i].hdev;
