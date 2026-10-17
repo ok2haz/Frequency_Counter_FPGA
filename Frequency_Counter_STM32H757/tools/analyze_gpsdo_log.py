@@ -10,7 +10,7 @@ def col(n):
         except: out.append(np.nan)
     return np.array(out)
 wall = np.array([np.datetime64(r["wall"]) for r in rows])
-t = (wall - wall[0]).astype("timedelta64[s]").astype(float)
+t = (wall - wall[0]).astype("timedelta64[ms]").astype(float) / 1000.0
 f = col("freq_hz"); y = col("gp_y_ppt"); xr = col("gp_xr_ns"); x = col("gp_x_ns")
 code = col("gp_code"); to = col("t_ocxo"); tb = col("t_board"); seq = col("seq_meas")
 state = [r["gp_state"] for r in rows]; lk = col("gp_locked")
@@ -88,7 +88,11 @@ for r in adev_tdev(xg, 2.0, [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 1500, 250
 # ADEV z externi freq (1 s hradlo, kazdy 2. vzorek)
 ye = (f - 1e7) / 1e7
 mm = (t >= T0)
-tg = t[mm]; yg = np.interp(np.arange(tg[0], tg[-1], 2.0), tg, ye[mm])
+tg = t[mm]; yv = ye[mm]; okv = np.isfinite(yv); tg = tg[okv]; yv = yv[okv]
+bi = ((tg - tg[0]) // 2.0).astype(int); nb = bi.max() + 1                      # kose po 2 s, vzorky v kosi se PRUMERUJI (rychle logovani)
+cnt = np.bincount(bi, minlength=nb); yg = np.bincount(bi, weights=yv, minlength=nb) / np.maximum(cnt, 1)
+yg = np.where(cnt > 0, yg, np.interp(np.arange(nb), np.nonzero(cnt)[0], yg[cnt > 0]))
+print("vzorku v kosi 2 s: prumer %.1f" % cnt[cnt > 0].mean())
 print()
 print("ADEV(freq vs externi GPSDO, tau0=2 s, mrtva doba 50 %) tau  sigma")
 for m_ in (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2000):

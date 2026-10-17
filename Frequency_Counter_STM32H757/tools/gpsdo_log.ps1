@@ -13,9 +13,10 @@
 param(
   [string]$Out = "gpsdo_log.csv",
   [string]$Ip = "10.0.0.106",
-  [int]$Every = 2,
+  [double]$Every = 2,        # perioda dotazu [s]; muze byt i zlomek (0.1)
   [int]$StabEvery = 600,
   [double]$MaxMin = 480,
+  [switch]$OnNew,            # zapsat radek jen kdyz se zmenil seq_meas (kazde mereni prave jednou; s -Every 0.1 pro hradlo 0,25 s)
   [double]$ExpectGate = 0   # >0: ocekavane hradlo [s]; v preflightu varuje, kdyz neodpovida (sloupec gate_s je v CSV vzdy)
 )
 $ErrorActionPreference = "Continue"
@@ -53,7 +54,7 @@ if ($e) { $tot0 = [int]$e.total; ("=== errlog PRED ZACATKEM (total " + $tot0 + "
 else { $tot0 = -1 }
 
 # ---- smycka -----------------------------------------------------------------------------------
-$t0 = Get-Date; $lastStab = (Get-Date).AddSeconds(-$StabEvery); $nok = 0; $nna = 0; $lastUp = -1; $resets = 0
+$t0 = Get-Date; $lastStab = (Get-Date).AddSeconds(-$StabEvery); $nok = 0; $nna = 0; $lastUp = -1; $resets = 0; $script:lastSeq = -1
 Log ("START: " + $Out + ", perioda " + $Every + " s, max " + $MaxMin + " min")
 while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
   $tick = Get-Date
@@ -61,7 +62,10 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
   if ($s) {
     $nok++
     $g = $s.gpsdo
-    $row = @((Get-Date -Format "yyyy-MM-ddTHH:mm:ss"), (V $s @("uptime_s")), (V $s @("seq_meas")), (V $s @("freq_hz")),
+    $write = $true
+    if ($OnNew) { if ($script:lastSeq -eq $s.seq_meas) { $write = $false } else { $script:lastSeq = $s.seq_meas } }
+    if ($write) {
+    $row = @((Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fff"), (V $s @("uptime_s")), (V $s @("seq_meas")), (V $s @("freq_hz")),
       (V $g @("state")), (V $g @("locked")), (V $g @("why")), (V $g @("y_ppt")), (V $g @("x_ns")), (V $g @("xr_ns")), (V $g @("code")), (V $g @("t_s")),
       (V $g @("pps_ok")), (V $g @("pps_rej")), (V $g @("tau_s")), (V $g @("kdac_e13")), (V $g @("saw")),
       (V $s @("dac","code")), (V $s @("dac","mv")), (V $s @("vc_mv")), (V $s @("temp_ocxo_c")), (V $s @("temp_board_c")), (V $s @("temp_fpga_c")), (V $s @("temp_mcu_c")),
@@ -70,6 +74,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
       (V $s @("conn","http","used")), (V $s @("conn","http","peak")), (V $s @("conn","http","rej")), (V $s @("conn","scpi","used")), (V $s @("conn","scpi","rej")), (V $s @("set_gate_s")), (V $s @("gate_ns")))
     Add-Content -Path $Out -Encoding ASCII -Value ($row -join ",")
     if ($g -and $g.state -eq "LOCK") { [void]$bx.Add([double]$g.xr_ns); [void]$by.Add([double]$g.y_ppt) }
+    }
     $up = [int]$s.uptime_s
     if ($lastUp -ge 0 -and $up -lt $lastUp) { $resets++; Log ("!!! RESET pristroje: uptime " + $lastUp + " -> " + $up + " (reset c. " + $resets + ")") }
     $lastUp = $up
@@ -77,7 +82,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
     if ($g) { $script:prevSt = $g.state }
   } else {
     $nna++
-    Add-Content -Path $Out -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss") + (",NA" * ($cols.Count - 1)))
+    Add-Content -Path $Out -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fff") + (",NA" * ($cols.Count - 1)))
     if ($nna -eq 1 -or ($nna % 30) -eq 0) { Log ("NEODPOVIDA (" + $nna + "x)") }
   }
   if (((Get-Date) - $lastStab).TotalSeconds -ge $StabEvery) {
