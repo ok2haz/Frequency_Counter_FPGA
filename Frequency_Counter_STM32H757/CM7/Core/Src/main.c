@@ -392,6 +392,10 @@ g_cm4_absent = 1;
   MX_FATFS_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  /* DTCM_APP (`dtcm.h`): startup nuluje jen .bss, sekce .dtcm_bss ma po resetu nahodny/stary obsah -> nulovat pred prvnim
+   * pouzitim (statistika Allan/trend). ~20 kB = desitky us, boot se tim nezdrzi. */
+  { extern uint8_t _sdtcm_bss[], _edtcm_bss[];
+    memset(_sdtcm_bss, 0, (size_t)(_edtcm_bss - _sdtcm_bss)); }
   /* 🔑 CSS (Clock Security System): pri vypadku krystalu HSE vyvola NMI.
    * ⚠️ PROC to u tohohle pristroje neni kosmetika: cela casova zakladna stoji
    * na HSE 25 MHz. Bez CSS by se pri jeho ztrate mlcky prepnulo na HSI a

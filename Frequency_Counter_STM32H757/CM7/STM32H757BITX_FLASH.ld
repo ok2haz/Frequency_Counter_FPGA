@@ -46,7 +46,11 @@ MEMORY
 {
   RAM_D1 (xrw)   : ORIGIN = 0x24000000, LENGTH =  512K
   FLASH   (rx)   : ORIGIN = 0x08000000, LENGTH = 1024K    /* Memory is divided. Actual start is 0x08000000 and actual length is 2048K */
-  DTCMRAM (xrw)  : ORIGIN = 0x20000000, LENGTH = 128K
+  /* DTCM se DELI (STATUS #320, audit A2 V9): spodnich 64 kB = testovaci oblast `membench` (DTCM_TEST_ADDR/SIZE v membench.c,
+   * destruktivni zapis vzoru!) -> sem se NIC neumistuje; hornich 64 kB (DTCM_APP) = statistika CPU-only (Allan pyramida,
+   * trend pyramida, plochy ring). DMA1/2, SDMMC IDMA, LTDC, DMA2D, ETH ani CM4 do DTCM nedosahnou -> NIKDY DMA buffer. */
+  DTCMRAM (xrw)  : ORIGIN = 0x20000000, LENGTH = 64K
+  DTCM_APP (xrw) : ORIGIN = 0x20010000, LENGTH = 64K
   RAM_D2 (xrw)   : ORIGIN = 0x30000000, LENGTH = 128K  /* D2 SPLIT: CM7 = SRAM1 (128K). CM4 vlastni SRAM2+3 (160K @0x10020000, viz CM4 linker + NAVRH §11.5). Diagnosticky 'ram write/read' (0x30001000, ~78 KB) se vejde do SRAM1. CM7 do RAM_D2 nic nelinkuje. */
   RAM_D3 (xrw)   : ORIGIN = 0x38000000, LENGTH = 64K
   ITCMRAM (xrw)  : ORIGIN = 0x00000000, LENGTH = 64K
@@ -192,6 +196,17 @@ SECTIONS
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
   } >RAM_D1
+
+  /* Data v DTCM (NOLOAD, nulovana v main.c USER CODE 2 pred prvnim pouzitim — startup nuluje jen .bss). Viz `dtcm.h`. */
+  .dtcm_bss (NOLOAD) :
+  {
+    . = ALIGN(8);
+    _sdtcm_bss = .;
+    *(.dtcm_bss)
+    *(.dtcm_bss*)
+    . = ALIGN(8);
+    _edtcm_bss = .;
+  } >DTCM_APP
 
   /* Externi SDRAM scratch (NOLOAD): libprim glow scratch + GPSDO screen caches.
    * Naplnuje se za behu, takze zadny load z FLASH. @0xC0800000 (viz MEMORY). */

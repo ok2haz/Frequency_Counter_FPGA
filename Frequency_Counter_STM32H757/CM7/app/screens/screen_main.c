@@ -28,6 +28,7 @@
 #include <string.h>  /* strncpy */
 #include <math.h>    /* sqrtf/log10f/fabsf/powf/ceilf/floorf — GPSDO statistika (cold path, 1/s) */
 #include "datalog.h"
+#include "dtcm.h"       /* DTCM_BSS: pyramidy statistiky v DTCM (STATUS #320, V9) */
 #include "sd_export.h"  /* sd_export_ui_info()->present — mikro-ikona SD karty v headeru */
 #include "errlog.h"     /* udalosti zmeny nastaveni (soumeritelnost mereni) */   /* datalog_adev_stage — perioda logu urcuje stage pyramidy */
 
@@ -1288,7 +1289,7 @@ static void render_body_number(void)
  * (tau az 100000 s / 100+ dni) resi decimacni pyramida nize. Vzorkuje se 1/s. */
 #define STAT_N    120               /* 1/s -> 120 s (trend 60s + drift baseline) */
 #define TREND_WIN 60                /* trend sparkline = posledni okno 60 s (1/s) */
-static double s_y[STAT_N];                 /* F-0179: double, viz vyse */
+static double s_y[STAT_N] DTCM_BSS;                 /* F-0179: double, viz vyse */
 static int   s_y_head = 0, s_y_count = 0;
 static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
 static void adev_break_all(void);   /* fwd — V2: mezera v rade */
@@ -1501,7 +1502,7 @@ typedef struct {
     uint32_t tot;
     uint32_t since;               /* V2: polozek od posledni mezery (clen nesmi presahnout mezeru) */
 } adev_stage_t;
-static adev_stage_t s_adev[ADEV_STAGES];
+static adev_stage_t s_adev[ADEV_STAGES] DTCM_BSS;   /* V9: DTCM, nulovano v main() */
 static void adev_acc_update(adev_stage_t *sg, int pb);   /* fwd - A2 */
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
@@ -1747,7 +1748,7 @@ int  screen_main_allan_win(void) { return s_allan_win; }
 #define TR_RING   128
 #define TR_DECIM  4
 typedef struct { double ring[TR_RING]; int16_t head, count; double acc; int16_t acc_n; } tr_stage_t;
-static tr_stage_t s_tr[TR_STAGES];
+static tr_stage_t s_tr[TR_STAGES] DTCM_BSS;
 
 static void trend_feed(double v)
 {
