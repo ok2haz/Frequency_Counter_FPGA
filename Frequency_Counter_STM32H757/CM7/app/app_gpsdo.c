@@ -8967,7 +8967,7 @@ void app_gpsdo_tick_stats_sample(void)
     /* σy@1s -> Core globál pro prahovy monitor v alarm.c. ⚠️ Stejny most jako
      * `g_meas_verdict`: Core vrstva nesmi volat do `app/screens/`, takze se
      * hodnota publikuje pres globál. */
-    g_adev_1s = screen_main_adev_1s();
+    g_adev_1s = screen_main_adev_1s_live();   /* A2: monitor ma byt rychly -> okno, ne historie od resetu */
     /* Warm-up OCXO -> Core globál pro snapshot (audit F-0088). Web si ho dosud
      * odvozoval sam z `uptime_s < 300`, takze po studenem startu hlasil LOCK,
      * zatimco displej jeste WARMUP. Kriterium je `warmup_ready()` a od teto

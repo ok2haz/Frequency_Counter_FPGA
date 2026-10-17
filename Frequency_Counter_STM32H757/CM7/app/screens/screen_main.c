@@ -1387,7 +1387,10 @@ uint32_t screen_main_stats_version(void) { return s_stats_ver; }
  * vzorku — volajici to MUSI odlisit od "vynikajici stability", jinak by prazdna
  * statistika vypadala jako nula. `stats_adev` je definovana az nize, proto fwd. */
 static float stats_adev(int m);
+static float stats_adev_win(int m);
 float screen_main_adev_1s(void) { return stats_adev(1); }
+/* A2: zive okno (poslednich <= 120 s) pro prahovy monitor v alarm.c - rychle reaguje na zhorseni; zobrazeni jede z akumulatoru. */
+float screen_main_adev_1s_live(void) { return stats_adev_win(1); }
 
 static double stat_at(int age)  /* age 0 = nejnovejsi */
 {
@@ -1414,7 +1417,7 @@ static float stats_pp(int n)
 
 /* Non-overlapping ADEV plocheho ringu pro tau = m vzorku (tau0=1 s, 1/s). Pouziva
  * se pro σy@1s (m=1). Dlouhodoby Allan dela pyramida (adev_stage). >=2 bloky. */
-static float stats_adev(int m)
+static float stats_adev_win(int m)
 {
     int blocks = s_y_count / m;
     if (blocks < 2) return 0.0f;
@@ -1464,6 +1467,10 @@ static float stats_drift(void)
  * C_j = Σ Ybar predchozich podbloku. Stage 0 (blok = 1 vzorek) ma E = 0.
  * `e_n` = kolik NEJNOVEJSICH polozek ma E platne: rekonstrukce z datalogu
  * (10s prumery) fazi uvnitr bloku nezna, takze MDEV se nad ni nepocita. */
+#define ADEV_KIND_ADEV  0
+#define ADEV_KIND_MDEV  1
+#define ADEV_KIND_HDEV  2
+#define ADEV_MMAX       9            /* nejvetsi mantisa m (DENS_M) */
 typedef struct {
     double  ring[ADEV_RING];      /* prumery kmitoctu Ybar */
     double  eph[ADEV_RING];       /* E (viz vyse) */
@@ -1473,8 +1480,14 @@ typedef struct {
     double  acc_e;                /* decimace: Σ (C_j + E_j) */
     int16_t acc_n;
     uint8_t acc_e_ok;             /* vsechny podbloky mely platne E */
+    /* A2 (STATUS #321): prubezne soucty clenu overlapping estimatoru od resetu, ne jen z okna ringu.
+     * qs = soucet ctvercu clenu, qn = jejich pocet, [typ ADEV_KIND_*][m-1]; tot = polozek vlozeno od resetu. */
+    double   qs[3][ADEV_MMAX];
+    uint32_t qn[3][ADEV_MMAX];
+    uint32_t tot;
 } adev_stage_t;
 static adev_stage_t s_adev[ADEV_STAGES];
+static void adev_acc_update(adev_stage_t *sg, int pb);   /* fwd - A2 */
 
 /* Vlozi vzorek od zvolene stage vys (stage s ma tau = 10^s s). Bezny zivy vzorek
  * jde od stage 0 (tau0 = 1 s); rekonstrukce z datalogu od stage 1, protoze log
@@ -1490,6 +1503,8 @@ static void adev_feed_into(adev_stage_t *pyr, int nst, int s0, double v, double 
         sg->head = (int16_t)((sg->head + 1) % ADEV_RING);
         if (sg->count < ADEV_RING) sg->count++;
         sg->e_n = e_ok ? (int16_t)((sg->e_n < ADEV_RING) ? sg->e_n + 1 : ADEV_RING) : 0;
+        sg->tot++;
+        adev_acc_update(sg, s > 0);
         if (sg->acc_n == 0) sg->acc_e_ok = 1u;
         sg->acc_e += sg->acc + e;                 /* C_j + E_j, C_j = Σ Ybar predchozich */
         sg->acc   += v;
@@ -1601,6 +1616,72 @@ static double adev_at(const adev_stage_t *sg, int base, int i)   /* i-ty nejstar
     int k = base + i;                   /* base < RING, i < RING -> k < 2·RING */
     if (k >= ADEV_RING) k -= ADEV_RING;
     return sg->ring[k];
+}
+
+/* ── A2 (STATUS #321): akumulatory clenu overlapping ADEV / MDEV / HDEV ────────────────────────
+ * Dosavadni estimator (`adev_ring_kind`) prepocital odhad nad OKNEM poslednich ADEV_RING (60) polozek stage, takze
+ * na kazdem tau bylo navzdy <= 59 clenu (tau = 1 s: jen z poslednich ~minuty) a nejistota se s casem nezlepsovala.
+ * Nove se pri vlozeni KAZDE polozky do stage spocte jediny novy clen (ten, ktery konci nejnovejsi polozkou) a jeho
+ * ctverec se pricte do souctu: odhad je overlapping pres celou historii od resetu, n roste (po 10 h ~36 000 clenu pri
+ * tau = 1 s). Ring 60 staci (clen potrebuje nejvyse 3m polozek, m <= 9). Cena: ~2 kB, ~500 operaci na vlozenou polozku.
+ * Ctyri vzorce jsou TYTEZ jako v `adev_ring_kind` (SP1065), jen jeden clen misto vsech; dokud se ring neprelil, dava
+ * akumulator stejny vysledek (hlida `screen_main_selftest`). Porucha (skok, vypadek) zustane v souctu az do resetu
+ * (RESET ALLAN, zmena signalu/hradla/REAL<->SIM nuluji vse).
+ * MDEV nad stage >= 1 (`pb`) pouziva jen polozky s platnou fazi E (`e_n`), jako okenni estimator. */
+static void adev_acc_update(adev_stage_t *sg, int pb)
+{
+    const int M = sg->count;
+    for (int m = 1; m <= ADEV_MMAX; m++) {
+        if (M >= 2 * m) {                                       /* ADEV: clen j = M-2m */
+            int b = adev_base_n(sg, 2 * m);
+            double inner = 0.0;
+            for (int i = 0; i < m; i++) inner += adev_at(sg, b, i + m) - adev_at(sg, b, i);
+            sg->qs[ADEV_KIND_ADEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_ADEV][m - 1]++;
+        }
+        if (M >= 3 * m) {                                       /* HDEV: clen j = M-3m */
+            int b = adev_base_n(sg, 3 * m);
+            double inner = 0.0;
+            for (int i = 0; i < m; i++)
+                inner += adev_at(sg, b, i + 2 * m) - 2.0 * adev_at(sg, b, i + m) + adev_at(sg, b, i);
+            sg->qs[ADEV_KIND_HDEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_HDEV][m - 1]++;
+        }
+        int need = pb ? 3 * m : 3 * m - 1;                      /* MDEV: nejnovejsich `need` polozek */
+        int Mm   = pb ? sg->e_n : M;
+        if (Mm >= need) {
+            int b = adev_base_n(sg, need);
+            double inner = 0.0;
+            for (int i = 0; i < m; i++)
+                for (int k = i; k < i + m; k++) inner += adev_at(sg, b, k + m) - adev_at(sg, b, k);
+            if (pb)
+                for (int l = 0; l < m; l++)
+                    inner += adev_e_at(sg, b, l + 2 * m) - 2.0 * adev_e_at(sg, b, l + m) + adev_e_at(sg, b, l);
+            sg->qs[ADEV_KIND_MDEV][m - 1] += inner * inner; sg->qn[ADEV_KIND_MDEV][m - 1]++;
+        }
+    }
+}
+
+/* Odhad z akumulatoru; 0 = zatim malo clenu (stejne prahy jako `adev_ring_kind`: 2 cleny, MDEV na stage 0 3). */
+static float adev_acc_kind(const adev_stage_t *sg, int m, int kind, int pb)
+{
+    if (m < 1 || m > ADEV_MMAX) return 0.0f;
+    uint32_t n = sg->qn[kind][m - 1];
+    uint32_t nmin = (kind == ADEV_KIND_MDEV && !pb) ? 3u : 2u;
+    if (n < nmin) return 0.0f;
+    double mm = (double)m;
+    double c = (kind == ADEV_KIND_ADEV) ? 2.0 * mm * mm
+             : ((kind == ADEV_KIND_HDEV) ? 6.0 * mm * mm : 2.0 * mm * mm * mm * mm);
+    return sqrtf((float)(sg->qs[kind][m - 1] / (c * (double)n)));
+}
+
+/* Ekvivalentni pocet polozek M odhadu (pro EDF a "paru"): n = M-2m+1 (ADEV), M-3m+1 (HDEV), M-3m+2 / M-3m+1 (MDEV). */
+static int32_t adev_acc_M(const adev_stage_t *sg, int m, int kind, int pb)
+{
+    if (m < 1 || m > ADEV_MMAX) return 0;
+    uint32_t n = sg->qn[kind][m - 1];
+    if (n == 0u) return 0;
+    int32_t add = (kind == ADEV_KIND_ADEV) ? 2 * m - 1 : ((kind == ADEV_KIND_HDEV || pb) ? 3 * m - 1 : 3 * m - 2);
+    uint64_t me = (uint64_t)n + (uint64_t)add;
+    return (me > 2000000000u) ? 2000000000 : (int32_t)me;
 }
 
 /* ── Decimacni pyramida pro DLOUHODOBY TREND (okno az ~60 dni) ────────────────
@@ -1719,9 +1800,6 @@ void screen_main_fmt_dur(char *b, int n, int32_t s) { fmt_dur(b, n, s); }
  * byly nezkreslene (deli se skutecnym `n`), ale na dlouhych tau prisly o 7-10 %
  * clenu, tedy prave tam, kde je dat nejmene. Vstupni meze (M >= 2m+1 / 3m+1)
  * zustaly, aby se pri rozbehu neobjevil novy bod z jedineho clenu. */
-#define ADEV_KIND_ADEV  0
-#define ADEV_KIND_MDEV  1
-#define ADEV_KIND_HDEV  2
 
 /* `pb` = stage s bloky delsimi nez 1 vzorek (s >= 1): MDEV pak pouzije fazi E. */
 static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb)
@@ -1784,7 +1862,14 @@ static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb)
     return sqrtf((float)(acc / (2.0 * (double)m * (double)m * (double)n)));
 }
 
-static float adev_stage_kind(int s, int m, int kind) { return adev_ring_kind(&s_adev[s], m, kind, s > 0); }
+static float adev_stage_kind(int s, int m, int kind) { return adev_acc_kind(&s_adev[s], m, kind, s > 0); }
+static int32_t adev_stage_M(int s, int m, int kind) { return adev_acc_M(&s_adev[s], m, kind, s > 0); }
+/* sigma_y(1 s): od A2 z akumulatoru stage 0 (cele historie od resetu), dokud nema 2 cleny, z okna 120 s. */
+static float stats_adev(int m)
+{
+    if (m == 1) { float a = adev_acc_kind(&s_adev[0], 1, ADEV_KIND_ADEV, 0); if (a > 0.0f) return a; }
+    return stats_adev_win(m);
+}
 static float adev_stage(int s, int m) { return adev_stage_kind(s, m, ADEV_KIND_ADEV); }
 
 /* Format frakcni hodnoty jako "<sign>M,m×10⁻E" s HORNIM INDEXEM exponentu
@@ -1958,6 +2043,32 @@ bool screen_main_selftest(void)
         ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_MDEV, 1) == 0.0f);
         ok &= (adev_ring_kind(&tp[1], 1, ADEV_KIND_ADEV, 1) > 0.0f);
     }
+    /* A2: akumulatory = totez co okenni estimator, dokud se ring neprelil (tot <= ADEV_RING); pak n roste dal. */
+    {   static adev_stage_t ta[2];
+        uint32_t r = 4242u;
+        memset(ta, 0, sizeof ta);
+        for (int i = 0; i < 59; i++) {                   /* stage 0: 59 polozek, ring neprelit */
+            r = r * 1103515245u + 12345u;
+            adev_feed_into(ta, 2, 0, 3e-5 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5), 0.0, 1);
+        }
+        for (int kind = 0; kind < 3; kind++)
+            for (int m = 1; m <= ADEV_MMAX; m++) {
+                float w = adev_ring_kind(&ta[0], m, kind, 0), a = adev_acc_kind(&ta[0], m, kind, 0);
+                ok &= (w > 0.0f) ? (fabs((double)a / (double)w - 1.0) < 1e-5) : (a == 0.0f);
+            }
+        for (int i = 59; i < 590; i++) {                 /* stage 0 pretece, stage 1 ma 59 polozek (s fazi E) */
+            r = r * 1103515245u + 12345u;
+            adev_feed_into(ta, 2, 0, 3e-5 + 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5), 0.0, 1);
+        }
+        for (int kind = 0; kind < 3; kind++)
+            for (int m = 1; m <= ADEV_MMAX; m++) {
+                float w = adev_ring_kind(&ta[1], m, kind, 1), a = adev_acc_kind(&ta[1], m, kind, 1);
+                ok &= (w > 0.0f) ? (fabs((double)a / (double)w - 1.0) < 1e-5) : (a == 0.0f);
+            }
+        ok &= (ta[0].tot == 590u) && (ta[0].qn[ADEV_KIND_ADEV][0] == 589u) && (ta[0].qn[ADEV_KIND_ADEV][8] == 573u);
+        ok &= (adev_acc_M(&ta[0], 1, ADEV_KIND_ADEV, 0) == 590) && (adev_acc_M(&ta[0], 9, ADEV_KIND_HDEV, 0) == 590);
+        ok &= (adev_acc_kind(&ta[0], 1, ADEV_KIND_ADEV, 0) > 0.0f);
+    }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
 }
@@ -2113,7 +2224,7 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
     int kind = allan_metric_kind();   /* krivka sleduje zvolenou metriku (fwd nize) */
     int np = 0;
     if (max > ADEV_PTS_MAX) max = ADEV_PTS_MAX;
-    static int16_t pM[ADEV_PTS_MAX]; static int8_t pm[ADEV_PTS_MAX];  /* M a m bodu (EDF) */
+    static int32_t pM[ADEV_PTS_MAX]; static int8_t pm[ADEV_PTS_MAX];  /* M a m bodu (EDF) */
     static float   ad[ADEV_PTS_MAX], md[ADEV_PTS_MAX];  /* ADEV a MDEV v bode (typ sumu) */
     for (int s = 0; s < ADEV_STAGES; s++) {
         float dec = powf(10.0f, (float)s);          /* 1,10,100,1k,10k,100k */
@@ -2121,22 +2232,12 @@ static int adev_points(float *taus, float *adevs, float *edf, float *flr, int ma
             if (np >= max) return np;
             int m = SM[mi];
             float a;
-            int   m_edf = s_adev[s].count;
-            /* F-0187: MDEV nad stage >= 1 bere jen polozky s fazi (e_n). */
-            if (kind == ADEV_KIND_MDEV && s > 0) m_edf = s_adev[s].e_n;
-            if (s == 0 && m == 1 && kind == ADEV_KIND_ADEV) {
-                /* 🔴 F-0178: σy(1 s) z TEHOZ zdroje jako tabulka vedle grafu, karta
-                 * σ@1s a prahovy monitor (`stats_adev(1)`, plochy ring 120 vzorku).
-                 * Drive bod grafu bral ring stage 0 (24 vzorku) a okno ALLAN tak
-                 * ukazovalo pro tutez velicinu dve ruzna cisla (L-0018). Pri m = 1
-                 * je overlapping a non-overlapping odhad totez, EDF plati beze zmeny. */
-                a = stats_adev(1); m_edf = s_y_count;
-            } else {
-                a = adev_stage_kind(s, m, kind);
-            }
+            /* A2: M pro EDF = polozek, ze kterych je odhad (od resetu), ne okno 60. sigma_y(1 s) je tez z akumulatoru. */
+            int32_t m_edf = adev_stage_M(s, m, kind);
+            a = adev_stage_kind(s, m, kind);
             if (a <= 0.0f) continue;
             taus[np] = dec * (float)m * tau0_scale(); adevs[np] = a;   /* #27: skutecne τ */
-            pM[np] = (int16_t)m_edf; pm[np] = (int8_t)m;
+            pM[np] = m_edf; pm[np] = (int8_t)m;
             /* Typ sumu se urcuje VZDY z ADEV (+MDEV), ne ze zobrazene metriky —
              * stejne jako web: sklony TDEV/MTIE jsou posunute o τ. */
             ad[np] = (kind == ADEV_KIND_ADEV) ? a
@@ -2193,7 +2294,8 @@ int screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *
             pt[np].adev = (a > 0.0f) ? a : 0.0f;
             pt[np].mdev = (md > 0.0f) ? md : 0.0f;
             pt[np].hdev = (hd > 0.0f) ? hd : 0.0f;
-            pt[np].nterm = (uint16_t)((s == 0 && m == 1) ? s_y_count : s_adev[s].count);
+            { int32_t me = adev_stage_M(s, m, ADEV_KIND_ADEV);          /* A2: clenu od resetu, ne okno 60 */
+              pt[np].nterm = (uint16_t)((me > 65535) ? 65535 : me); }
             pt[np].m = (uint8_t)m;
             pt[np]._pad = 0u;
             np++;

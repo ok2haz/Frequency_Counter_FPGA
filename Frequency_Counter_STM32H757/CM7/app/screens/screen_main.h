@@ -162,6 +162,7 @@ void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y os
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
 float screen_main_adev_1s(void);
+float screen_main_adev_1s_live(void);   /* A2: okno <= 120 s pro prahovy monitor (screen_main_adev_1s je od resetu) */
 #include "ipc_shared.h"   /* ipc_stab_pt_t (v20) */
 int  screen_main_stab_export(ipc_stab_pt_t *pt, int max, uint32_t *nsamp, float *tau0,
                              float *drift, float *offset);   /* statistika stability pro web; jen UiTask */                        /* σy@τ=1s (0 = jeste neni dost vzorku) — prahovy monitor */

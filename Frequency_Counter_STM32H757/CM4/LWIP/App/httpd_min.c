@@ -3444,7 +3444,7 @@ static const char SPA_HTML[] =
 "    if(last.n<10) aw.push('nejdelsi tau ma jen '+last.n+' paru - jen orientacni, nech to bezet dele');\n"
 "    if(pf) aw.push('carka-tecka: podlaha citace (TDC), pod ni meri citac, ne oscilator');\n"
 "    if(fA) aw.push('statistika z pristroje (tytez body jako displej)');\n"
-"    if(fA) aw.push('n = clenu v okne stage (max 60): s casem roste rozsah tau, ne pocet paru');\n"
+"    if(fA) aw.push('n = clenu od resetu Allanu (overlapping, cleny jsou korelovane - nejistota klesa pomaleji nez 1/sqrt(n))');\n"
 "    else {\n"
 "      aw.push('!! vlastni vypocet webu - pristroj statistiku nedava');\n"
 "      if(mMiss>0) aw.push('v rade chybi '+mMiss+' mereni (do 1 % - zkresleni pod nejistotou)');\n"
