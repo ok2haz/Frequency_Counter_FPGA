@@ -46,6 +46,9 @@ typedef struct {
 /* Staticky pool — ZADNY malloc/mem_malloc navic mimo to, co uz lwIP dela pro pbuf/pcb.
  * CM4 nema heap rezervu na dynamickou alokaci per-spojeni. */
 static scpi_conn_t s_conn[SCPI_TCP_MAX_CONN];
+/* Vytizeni poolu (STATUS #307): plni on_accept, cte scpi_tcp_stats (-> /api/state `conn`). */
+static uint32_t s_rej;
+static uint8_t  s_peak;
 
 static scpi_conn_t *conn_alloc(void)
 {
@@ -197,10 +200,15 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     scpi_conn_t *c = conn_alloc();
     if (c == NULL) {
         /* Strop soubeznych spojeni dosazen — slusne odmitni, nenechavej viset. */
+        if (s_rej < 0xFFFFFFFFu) s_rej++;
         tcp_abort(newpcb);
         return ERR_ABRT;
     }
     c->pcb = newpcb;
+    {   uint8_t u = 0u;                                   /* peak vcetne tohoto spojeni (pcb se priradilo vyse) */
+        for (unsigned i = 0; i < SCPI_TCP_MAX_CONN; i++) if (s_conn[i].pcb != NULL) u++;
+        if (u > s_peak) s_peak = u;
+    }
     c->rxlen = 0;
     c->drop = 0;
     c->last_ms = HAL_GetTick();
@@ -212,6 +220,14 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     tcp_poll(newpcb, on_poll, 8);      /* ~1x za sekundu staci */
     tcp_nagle_disable(newpcb);   /* kratke prikazy/odpovedi — latence pred propustnosti */
     return ERR_OK;
+}
+
+void scpi_tcp_stats(uint8_t *used, uint8_t *max, uint8_t *peak, uint32_t *rej)
+{
+    if (used) { uint8_t u = 0u; for (unsigned i = 0; i < SCPI_TCP_MAX_CONN; i++) if (s_conn[i].pcb != NULL) u++; *used = u; }
+    if (max)  *max  = (uint8_t)SCPI_TCP_MAX_CONN;
+    if (peak) *peak = s_peak;
+    if (rej)  *rej  = s_rej;
 }
 
 void scpi_tcp_init(void)

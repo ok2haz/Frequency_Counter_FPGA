@@ -44,6 +44,7 @@
 #include "../../../CM7/Core/Inc/scpi.h"
 #include "../../../CM7/Core/Inc/meas_present.h"   /* MP_TDC_PS / MP_REF_PPB — servírují se v /api/state */
 #include "ipc_cm4.h"
+#include "scpi_tcp.h"    /* scpi_tcp_stats - vytizeni poolu spojeni v /api/state (STATUS #307) */
 #include "../../../CM7/Core/Inc/gpsdo.h"          /* GPSDO_* stavy smycky (v24 blok g_ipc.gpsdo) -- jen konstanty */
 #include "main.h"          /* HAL_GetTick */
 
@@ -117,6 +118,18 @@ typedef struct {
 } http_conn_t;
 
 static http_conn_t s_hconn[HTTPD_MAX_CONN];
+/* Vytizeni slotu (STATUS #307): kolik klientu se vejde a kolikrat se nekdo nevesel. Plni on_accept, cte /api/state `conn`.
+ * Drzene SSE spojeni (/api/stream) slot nevraci, proto se pocitaji zvlast. */
+static uint32_t s_http_rej;     /* odmitnuta spojeni (vsechny sloty obsazene), saturuje */
+static uint8_t  s_http_peak;    /* nejvic soucasne obsazenych slotu od startu */
+static unsigned http_slots_used(unsigned *sse)
+{
+    unsigned u = 0u, s = 0u;
+    for (unsigned i = 0; i < HTTPD_MAX_CONN; i++)
+        if (s_hconn[i].pcb != NULL) { u++; if (s_hconn[i].mode == HCONN_SSE) s++; }
+    if (sse) *sse = s;
+    return u;
+}
 
 /* ── Pure-logic parser (viz httpd_min.h) ─────────────────────────────────────── */
 
@@ -617,6 +630,15 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
               (long)gd.y_e12, (long)gd.x_ns, (long)gd.x_raw_ns, (unsigned long)ci, (unsigned long)cf, (unsigned long)gd.state_s,
               (unsigned long)gd.pps_ok, (unsigned long)gd.pps_rej, (unsigned)gd.tau_s, (unsigned)gd.kdac_e13,
               (gd.saw < 4u) ? gsw[gd.saw] : "?");
+    }
+    {   /* STATUS #307: vytizeni spojeni CM4 - odpoved na 'kolik PC se vejde' a dukaz, ze se nekdo nevesel (rej > 0) */
+        unsigned sse = 0u, used = http_slots_used(&sse);
+        uint8_t su = 0u, sm = 0u, sp = 0u; uint32_t sr = 0u;
+        scpi_tcp_stats(&su, &sm, &sp, &sr);
+        jputf(&j, "\"conn\":{\"http\":{\"used\":%u,\"max\":%u,\"sse\":%u,\"peak\":%u,\"rej\":%lu},"
+                  "\"scpi\":{\"used\":%u,\"max\":%u,\"peak\":%u,\"rej\":%lu}},",
+              used, (unsigned)HTTPD_MAX_CONN, sse, (unsigned)s_http_peak, (unsigned long)s_http_rej,
+              (unsigned)su, (unsigned)sm, (unsigned)sp, (unsigned long)sr);
     }
     jputf(&j, "\"nsat\":%u,", (unsigned)snap->gps_sat_count);
     jputf(&j, "\"cm4\":{\"ipc_version\":%u},", (unsigned)IPC_VERSION);
@@ -4930,8 +4952,9 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     if (err != ERR_OK || newpcb == NULL) return ERR_VAL;
 
     http_conn_t *c = conn_alloc();
-    if (c == NULL) { tcp_abort(newpcb); return ERR_ABRT; }   /* strop spojeni dosazen */
+    if (c == NULL) { if (s_http_rej < 0xFFFFFFFFu) s_http_rej++; tcp_abort(newpcb); return ERR_ABRT; }   /* strop spojeni dosazen */
     c->pcb = newpcb; c->rxlen = 0; c->dispatched = 0; c->body_ptr = NULL; c->mode = HCONN_NORMAL;
+    { unsigned u = http_slots_used(NULL); if (u > s_http_peak) s_http_peak = (uint8_t)u; }
     c->last_ms = HAL_GetTick();
 
     tcp_arg(newpcb, c);
