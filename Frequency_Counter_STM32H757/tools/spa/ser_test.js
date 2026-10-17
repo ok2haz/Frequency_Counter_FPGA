@@ -20,6 +20,7 @@ function grab(name) {
 const pre = `
 var HID={}; var H={f:[],t0:[],t1:[],t2:[],t3:[],vc:[],vd:[],p0:[],p1:[],p2:[],p3:[],ns:[],hd:[]};
 var win=300, DL=null, zoom=null, LAST=null, NOMV={p0:3300,p1:5000,p2:2500,p3:3300};
+var DAC_K=65536/5000;   /* globalni konstanta SPA (graf Vc), spec ji od 2026-10-17 pouziva pro rozsah leve osy */
 var calls={draw:0,zoom:0}; var store={};
 var localStorage={getItem:function(k){return store[k]===undefined?null:store[k];},setItem:function(k,v){store[k]=v;}};
 function drawAll(){calls.draw++;} function drawZoom(){calls.zoom++;}
@@ -76,9 +77,19 @@ for (let i = 0; i < 40; i++) { api.H.vc.push(1917 + 0.5 * Math.sin(i / 5)); api.
 const v2 = api.spec('vc');
 ok(v2.series.length === 2 && v2.series[1].n === 'povel DAC', 'Vc: dve rady (Vc, povel DAC)');
 ok(v2.span[0] < 1900 && v2.span[1] > 1917, 'Vc: osa pokryva obe rady (' + v2.span[0].toFixed(1) + '..' + v2.span[1].toFixed(1) + ')');
+/* 2026-10-17: kazda osa SVE meritko - spans[0] jen z Vc, spans[1] jen z povelu (zaokrouhleno v kodu DAC). */
+const DAC_K = 65536 / 5000;   /* totez co v SPA (harness ma vlastni kopii uvnitr new Function) */
+ok(v2.spans && v2.spans[0][0] > 1915 && v2.spans[0][1] < 1919,
+   'Vc: prava osa (Vc) ma vlastni rozsah jen z Vc (' + v2.spans[0][0].toFixed(1) + '..' + v2.spans[0][1].toFixed(1) + ')');
+ok(v2.spans && v2.spans[1][0] > 1896 && v2.spans[1][1] < 1903,
+   'Vc: leva osa (DAC) ma vlastni rozsah jen z povelu (' + v2.spans[1][0].toFixed(1) + '..' + v2.spans[1][1].toFixed(1) + ' mV)');
+ok(v2.spans && Math.abs(v2.spans[1][0] * DAC_K - Math.round(v2.spans[1][0] * DAC_K)) < 1e-6,
+   'Vc: meze leve osy padnou na cele kody DAC (' + (v2.spans[1][0] * DAC_K).toFixed(3) + ')');
+ok(v2.series[1].fmt && v2.series[1].fmt(1900) === (1900 * DAC_K).toFixed(1) + ' LSB', 'Vc: odecet povelu je v kodu DAC (' + v2.series[1].fmt(1900) + ')');
 api.tog('vc', 1);   /* skryj povel DAC */
 const v1 = api.spec('vc');
 ok(v1.series[1].hid && v1.span[0] > 1915 && v1.span[1] < 1919, 'Vc: po skryti DAC se osa zuzi na samotne Vc (' + v1.span[0].toFixed(1) + '..' + v1.span[1].toFixed(1) + ')');
+ok(v1.spans && v1.spans[1] === null && v1.spans[0] !== null, 'Vc: skryty povel DAC nema vlastni osu (leva zmizi)');
 api.tog('vc', 1); api.tog('vc', 0);   /* DAC zpet, skryj Vc */
 const v0 = api.spec('vc');
 ok(v0.series[0].hid && v0.span[1] < 1905, 'Vc: po skryti Vc se osa zuzi na samotny povel DAC (' + v0.span[0].toFixed(1) + '..' + v0.span[1].toFixed(1) + ')');
