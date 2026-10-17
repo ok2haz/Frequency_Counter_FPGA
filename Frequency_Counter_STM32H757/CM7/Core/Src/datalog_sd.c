@@ -588,6 +588,44 @@ static bool mirror_recover_seq_from_file(uint32_t *out_seq)
     return true;
 }
 
+/* 🔴 F-0239: sedi hlavicka existujiciho souboru s AKTUALNIM formatem radku? Zmena formatu (v0.19.0 pridala
+ * sloupec `dac_code`) by jinak pod starou hlavicku pripisovala radky s jinym poctem sloupcu.
+ * @return 1 = shoda, 0 = jiny format, 2 = prazdny soubor, -1 = chyba cteni. Pozice souboru se meni. */
+static int mirror_header_check(void)
+{
+    FSIZE_t sz = f_size(&s_mirror_fil);
+    if (sz == 0) return 2;
+    char want[160];
+    int wn = sd_export_csv_header(want, sizeof want);
+    if (wn <= 0 || wn >= (int)sizeof want) return -1;
+    static char got[160];                       /* staticky — ne na stack UartTasku */
+    UINT br = 0;
+    if (f_lseek(&s_mirror_fil, 0) != FR_OK) return -1;
+    UINT rd = (sz < (FSIZE_t)wn) ? (UINT)sz : (UINT)wn;
+    if (f_read(&s_mirror_fil, got, rd, &br) != FR_OK) return -1;
+    return (br == (UINT)wn && memcmp(got, want, (size_t)wn) == 0) ? 1 : 0;
+}
+
+/* Soubor v jinem formatu se NEPREPISUJE (jsou v nem data z karty, ktera uz v datalogu byt nemusi), ale prejmenuje
+ * na prvni volne GPSDOLnn.CSV (8.3, _USE_LFN 0). Soubor musi byt zavreny. @return true = prejmenovano. */
+static bool mirror_rotate_old(void)
+{
+    static FILINFO s_fi;                        /* FILINFO nikdy na stack (CLAUDE.md, SD export) */
+    char nm[16];
+    for (unsigned k = 1u; k < 100u; k++) {
+        snprintf(nm, sizeof nm, "GPSDOL%02u.CSV", k);
+        FRESULT st = f_stat(nm, &s_fi);
+        if (st == FR_OK) continue;              /* jmeno obsazene */
+        if (st != FR_NO_FILE) break;            /* chyba karty */
+        if (f_rename(DL_MIRROR_FILE, nm) != FR_OK) break;
+        printf("datalog mirror: %s mel jiny format radku -> prejmenovan na %s, zaklada se novy (F-0239)\n",
+               DL_MIRROR_FILE, nm);
+        return true;
+    }
+    snprintf(s_mirror_msg, sizeof s_mirror_msg, "stary format: prejmenovani selhalo");   /* <= 39 znaku (s_mirror_msg) */
+    return false;
+}
+
 /* Otevre/vytvori soubor na AKTUALNI karte. Pri jine karte nez naposledy
  * (jina CID) zacina cistym souborem — stary vodotisk na ni neplati.
  * ⚠️ BLOKUJE — volat jen obaleno sd_blocking_begin/end + sd_export_busy_*. */
@@ -607,6 +645,20 @@ static bool mirror_open(void)
             snprintf(s_mirror_msg, sizeof s_mirror_msg, "otevreni souboru selhalo");
             return false;
         }
+        /* F-0239: jiny format radku (nebo prazdny soubor bez hlavicky) -> novy soubor s aktualni hlavickou. */
+        int hm = mirror_header_check();
+        if (hm < 0) {
+            f_close(&s_mirror_fil);
+            snprintf(s_mirror_msg, sizeof s_mirror_msg, "cteni hlavicky selhalo");
+            return false;
+        }
+        if (hm != 1) {
+            f_close(&s_mirror_fil);
+            if (hm == 0 && !mirror_rotate_old()) return false;   /* zprava uz je v s_mirror_msg */
+            same_card = false;                                  /* -> vetev "novy soubor" nize */
+        }
+    }
+    if (same_card) {
         /* F-0142: verit OBSAHU souboru, ne jen ulozenemu vodotisku (viz
          * zduvodneni u `mirror_recover_seq_from_file`). */
         uint32_t file_seq = 0;
