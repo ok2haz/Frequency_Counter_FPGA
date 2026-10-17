@@ -13,7 +13,7 @@
 
 | # | zdroj | mechanismus | velikost (odhad) | τ, kde vadí | jistota | oprava | cena |
 |---|---|---|---|---|---|---|---|
-| 1 | **napájení OCXO** | datasheet: **±1 ppb na 1 % změny** napájení (5 V) = **2·10⁻⁸/V** | 2 mV kolísání = **4·10⁻¹¹** | 10–1000 s | ⬜ HYPOTÉZA (zdroj OCXO na schématu nedohledán, kolísání nezměřeno) | změřit (M1); vlastní nízkošumový LDO u OCXO | HW, střední |
+| 1 | **napájení OCXO** | datasheet: **±1 ppb na 1 % změny** napájení = **2·10⁻⁸/V**; kolejnice +5 V (U23, regulace PŘED L4+F3, **nesnímaný úbytek ~0,05–0,2 Ω**) sdílí OCXO s Tang Nano a relé (kap. 3.1) | 2 mV = **4·10⁻¹¹**; skok relé ~6·10⁻¹⁰; teplotní člen ~1·10⁻¹¹/K | 0,25 s – hodiny | ⬜ HYPOTÉZA (R_nereg a ΔI odhadnuty, kolísání nezměřeno) | M1a/M1b (osciloskop, voltmetr); OCXO z uzlu před F3; zpětná vazba za F3; LDO | HW, střední |
 | 2 | **dither DAC 2 Hz** | 1. řád ΣΔ po 0,5 s, RC 220 ms nestačí → schod 1 LSB | **3·10⁻¹¹ p-p**, ADEV ≤ 7·10⁻¹² @ 1 s, ≤ 1·10⁻¹² @ 10 s, tóny **−76…−85 dBc** na 0,02–1 Hz | 0,25–25 s, fázový šum blízko nosné | ✅ výpočet + simulace | **dither 200–400 Hz** (I2C1 už jede 400 kHz → ~3 % sběrnice) | **FW, malá** |
 | 3 | **kvantizace 1PPS ve FPGA 10 ns** | `pps_cap` vzorkuje jen náběžnou hranou 100 MHz → σ 2,9 ns | ≈ **80 % rozptylu** zbytku po sawtooth (σ ≈ 3,2 ns) | 1–300 s fáze, volba τ | ✅ z čísel firmwaru (rozptyl 2. diferencí 63 ns²) | DDR vstup (IDDR) → 5 ns, nebo 4 fáze → 2,5 ns | FPGA, malá–střední |
 | 4 | **smyčka 2. řádu vs. drift OCXO** | fázové zpoždění = drift·(1/ω_n²) | **−40 ns** při 4,4 LSB/h (změřeno −9,3 ns na 1 LSB/h) | fáze (TIE), přechody driftu | ✅ změřeno | drift jako stav (3. řád / Kalman) | FW, střední |
@@ -38,15 +38,48 @@ do přístroje (M1). **Rozhodující měření celé otázky je Rb normál, kter
 
 ## 3. Hardware
 
-### 3.1 Napájení OCXO (bod 1) — ⬜ nejdřív změřit
-Citlivost 2·10⁻⁸/V znamená, že pro úroveň 1·10⁻¹² musí být napájení OCXO stabilní na **≈ 50 µV** v pásmu τ 1–1000 s.
-Kolísání 5V větve o 2 mV (0,04 %) by samo vysvětlilo celý dosud nepřiřazený přebytek ~4·10⁻¹¹ @ 100 s (#312).
-- Na listu `GPSDO.kicad_sch` nejsou napájecí symboly +5 V (jen `+3V3`, `PWR_FLAG`); napájení OCXO zřejmě přichází konektorem
-  **J8 „OCXO_OPA"** nebo hierarchicky. ⬜ **Doplnit: z jaké větve a přes jaký regulátor je OCXO napájeno, a co dalšího z ní bere proud** (FPGA, relé, LED, podsvícení…).
-- **Návrh:** vlastní nízkošumový LDO jen pro OCXO (typově LT3042/LT3045, ADM7150 — šum jednotky µV rms, PSRR > 70 dB na nízkých kmitočtech),
-  umístěný u OCXO, napájený z 12 V; zem OCXO hvězdicově. Teplotní koeficient výstupu LDO ~ 10 ppm/°C × 5 V = 50 µV/°C → 1·10⁻¹²/°C.
-- Odběr OCXO se mění s teplotou okolí (pec: 5 W při náběhu, 2 W ustáleně), takže úbytek na přívodu se mění s teplotou → **krátký silný přívod
-  nebo sense** k pinu OCXO.
+### 3.1 Napájení OCXO (bod 1) — rozbor větve +5 V ze schématu (netlist `kicad-cli`, 2026-10-17)
+
+**Jak se +5 V vyrábí** (`power_supply.kicad_sch`, ověřeno netlistem):
+`VBUS` (12 V) → **F1 „1A"** (1206, LCSC C182445) → **U23 LMR33630ADDAR** (buck, **400 kHz**, 3 A; „A" verze = 340/400/460 kHz podle datasheetu)
+→ **L1 8 µH** → uzel C105 (100n + 1n + **100 µF**) → **L4 „1uH"** (footprint 0805, LCSC C17701176) → uzel C112 (100n + **220 µF**) →
+**F3 „3A"** (1206, LCSC C182445) → **síť +5V**. Zpětná vazba: R97 100k od uzlu **C105 (výstup L1)**, R98 24k9 k zemi → Uout = 1,0 V × (1 + 100/24,9) = **5,016 V**
+(VFB 1,0 V ±1,5 %, datasheet; s rezistory 1 % ≈ 4,87–5,17 V, v mezích OCXO 5 V ±5 %). Druhý buck U24 (3V3) je nezávislý (VBUS2 přes F2).
+
+**Co sedí na síti +5V** (21 uzlů): **OCXO U13 (VCC, pin 3)**, AD5693R U12 (VDD), 2× OPA365 (U14, U15), **vstupní modul J4 pin 18** (relé, komparátory),
+**Tang Nano 9K** (U6 pin 31, přes ferit FB1), GPS (JP1 pin 3, poloha 5 V), dělič R57/R58 pro ADS1115 (AIN3), LED D3. Tedy **OCXO sdílí kolejnici s FPGA deskou
+a s relé vstupního modulu**.
+
+**🔴 Hlavní zjištění — regulace je ZA ZÁTĚŽÍ nesnímaná:** FB se bere z uzlu **před L4 a F3**, takže úbytek na **L4 (DCR) + F3 + měděných cestách** není regulován
+a **přímo se přičítá k napájení OCXO**: ΔU = ΔI · R_nereg. L4 je **0805** (jmenovitě 1 µH; DCR i Isat nedohledány, u 0805 typicky 50–150 mΩ a Isat 1,5–2 A),
+F3 1206 3 A (typicky 25–50 mΩ studená) → **R_nereg ≈ 0,05–0,2 Ω** (⬜ HYPOTÉZA, ověřit DCR z katalogu C17701176 a měřením níže).
+
+| jev | odhad ΔI | ΔU přes ~0,1 Ω | efekt na OCXO (2·10⁻⁸/V) | časová škála |
+|---|---|---|---|---|
+| náběh OCXO (5 W → 2 W) | 0,6 A | ~60 mV | ~1·10⁻⁹ | minuty (jen po zapnutí) |
+| teplota okolí (proud pece ~7 mA/K, odhad z 2 W / (T_pece − T_okolí) při pecí ~85 °C) | 7 mA/K | ~0,7 mV/K | **~1·10⁻¹¹ /K** — přidává se k teplotnímu koeficientu OCXO (±5 ppb / 55 K ≈ 9·10⁻¹¹/K), důležité pro holdover | hodiny |
+| aktivita FPGA/Tang Nano (např. ±50 mA při 4 Hz cadenci měření — ΔI uhodnuté) | 50 mA | ~5 mV | **~1·10⁻¹⁰**; modulace 4 Hz → postranní pásmo ≈ −80 dBc @ 4 Hz | 0,25 s |
+| přepnutí relé (8 relé × 40 mA, CLAUDE.md) | 0,32 A | ~30 mV + dip regulace | ~6·10⁻¹⁰ skok na desítky ms | jednotlivé události |
+
+⚠️ Všechny řádky jsou ODHADY z uhodnutých proudů a odporu; slouží jen k řazení podle velikosti a k návrhu měření. Skutečný šum napájení nezměřen.
+Ostatní spotřebiče na kolejnici napájení OCXO neovlivní: AD5693R má DC PSRR 0,2 mV/V na výstupu (1 mV rušení → 0,2 µV → 9·10⁻¹⁴),
+OPA365 PSRR ≈ 100 dB. **Frekvenci ovlivňuje v podstatě jen VCC samotného OCXO.**
+**Rušení bucku 400 kHz** projde L4/C116 (fc ≈ 10,7 kHz, −63 dB) a OCXO ho navíc má vlastním regulátorem; v ADEV (τ ≥ 0,25 s) se neprojeví. Při velmi lehké zátěži
+LMR33630 snižuje kmitočet („folds back frequency at light load"); odběr OCXO + FPGA je daleko nad tím, takže se to neuplatní (⬜ práh nevyčten).
+
+**Další zjištění k ověření v BOM / na schématu:**
+- 🔴 **F1 „1A" a F3 „3A" mají stejné LCSC číslo C182445** (ve schématu jsou jako jiné hodnoty). Jedna z hodnot je špatně, nebo je číslo zkopírované. Zjistit, co je skutečně osazeno.
+  Pojistka **F1 1 A na vstupu 5V bucku**: 5 V × (OCXO 1 A při náběhu + Tang ~0,3 A + relé až 0,7 A + GPS) ≈ 10 W → ~0,9 A z 12 V — těsně pod 1 A. Při 1A rychlé pojistce hrozí vypálení při náběhu + přepnutí relé.
+- **L4 0805 1 µH v sérii s 1 A+ zátěží:** Isat malých 0805 induktorů bývá 1,5–2 A; při špičce (náběh OCXO 1 A + ostatní) hrozí nasycení a propad kolejnice. ⬜ vyčíst z katalogu.
+- **D6 (B0520LW)** je mezi VLOGIC AD5693R (katoda na +5V) — chrání pořadí napájení; nemá vliv na reference.
+
+**Návrh (od nejlevnějšího):**
+1. **Měření M1a (osciloskop, bez zásahu do HW):** AC vazba, sonda 1×, **1 mV/div**, na pinu VCC OCXO (U13 pin 3) vůči zemi OCXO; spoušť na CS SPI (PB12) a na přepnutí relé. Hledat kroky 1–5 mV v 4 Hz cadenci a při `INPut`/relé příkazech. Tím je přímo vidět ΔU, kterou jsem odhadoval.
+2. **Měření M1b (voltmetr):** DC úbytek mezi uzlem C105 (regulovaný bod) a pinem OCXO při zapnutém / vypnutém Tang Nano a vstupním modulu → přímo R_nereg · I.
+3. **Logger:** do `gpsdo_log.ps1` přidat `v5_mv`, `v12_mv` (v `/api/state` už jsou; ADS1115 AIN3, rozlišení 0,25 mV po děliči 2×) — zachytí jen pomalé změny, ne 4 Hz.
+4. **HW — nejlevnější úprava:** napájet OCXO **přímo z uzlu C112/C116 PŘED F3** (krátký vodič nebo samostatná cesta), ostatní zátěže (FB1 → Tang Nano, J4 relé, GPS) nechat za F3 a **každou přes vlastní ferit/LC**. Tím z R_nereg vypadne F3 a sdílení s FPGA/relé.
+5. **HW — lepší:** zpětnou vazbu přesunout **až za F3** (R97 na +5V). Pozor: L4 + C116 má fc ≈ 10,7 kHz — pokud je pod mezním kmitočtem smyčky bucku (řádově desítky kHz), vložená LC zhorší fázovou rezervu → před zásahem prověřit simulací (TI WEBENCH) nebo L4 nahradit rezistorem 20–50 mΩ.
+6. **HW — nejlepší (až podle M1a):** pro OCXO **samostatný nízkošumový stabilizátor**: LDO potřebuje rezervu (5,0 V z 5,0 V nejde) → buď U23 přestavit na ~5,5–5,6 V a z něj LDO 5,0 V (LT3042/LT3045/ADM7150) jen pro OCXO, nebo samostatný malý buck 6 V z VBUS + LDO. R98 → pro 5,6 V ≈ 21k7 (⬜ přepočet a kontrola, že ostatní odběry na 5 V snesou: relé, Tang Nano 5 V vstup).
 
 ### 3.2 Dither DAC (bod 2) — FW, jistý zisk
 Simulace (1. řád ΣΔ → RC 220 ms → K): zlomek kódu se mění pomalu se smyčkou, takže v provozu projdou všechny řádky tabulky.
