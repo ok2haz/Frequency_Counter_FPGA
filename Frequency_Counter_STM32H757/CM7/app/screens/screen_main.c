@@ -2137,7 +2137,8 @@ bool screen_main_selftest(void)
             adev_feed_into(&tw, 1, 0, (i < 3000 ? 1e-8 : 1e-9) * g, 0.0, 1);  /* prvnich 3000 sigma 1e-8, dalsich 3000 sigma 1e-9 */
         }
         float cum = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 0), win = adev_acc_kind_w(&tw, 1, ADEV_KIND_ADEV, 0, 1);
-        ok &= (cum > 5e-9f) && (cum < 9e-9f) && (win > 0.8e-9f) && (win < 1.4e-9f);
+        /* okno: ~1,28e-9 (staré 3000 clenu s vahou e^-5 jeste pridava ~4e-16 k novym 6e-16; ověreno hostovým modelem) */
+        ok &= (cum > 5e-9f) && (cum < 9e-9f) && (win > 1.0e-9f) && (win < 1.6e-9f) && (win < cum * 0.3f);
     }
     printf("ui: fmt_frac+hist_h+gate_same selftest %s\n", ok ? "OK" : "FAIL");
     return ok != 0;
@@ -2666,7 +2667,7 @@ static void allan_plot(prim_rect_t area, int big)
     if (np < 2) {                                   /* jeste neni dost vzorku -> hlaska */
         prim_draw_text((prim_point_t){(int16_t)(in.x + in.w / 2),
                                       (int16_t)(in.y + in.h / 2 + 5)},
-                       "Waiting for data...", &ui_font_sans_16,
+                       s_adev_gate_open ? "Waiting for data..." : "Reference se ustaluje...", &ui_font_sans_16,   /* F-0250: V1 brana */
                        UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }

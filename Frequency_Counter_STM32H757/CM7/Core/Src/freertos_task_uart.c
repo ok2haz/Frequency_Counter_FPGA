@@ -1486,7 +1486,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za

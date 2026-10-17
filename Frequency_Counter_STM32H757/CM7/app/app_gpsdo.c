@@ -8796,6 +8796,7 @@ static int seed_worth_it(void)
  * LOCK se zamcenim; FLL ne. Plochy ring (karta, histogram) a trend bezi dal. Bez realneho mereni (SIM fallback,
  * `fpgasim`) brana zustava otevrena. Vypnuti: UART `meas gate off`. */
 volatile uint8_t g_stats_refgate_en = 1u;
+#define STATS_GATE_CLOSE_S 10u
 static void stats_ref_gate_update(void)
 {
     int open = 1;
@@ -8806,6 +8807,17 @@ static void stats_ref_gate_update(void)
                       (gs.state == GPSDO_LOCK && gs.locked);
         open = warmup_ready(NULL) && loop_ok;
     }
+    /* F-0248: brana se ZAVIRA az po STATS_GATE_CLOSE_S neustalych tikach za sebou (priznak `locked` nema hysterezi; kazde preklopeni
+     * je zlom a zahodi rozpracovane bloky decimace). Otevira se hned. */
+    static uint8_t s_unst, s_first = 1u;
+    if (s_first) {                           /* po startu hned (nabeh OCXO se do pyramidy nesmi dostat ani prvnich 10 s) */
+        s_first = 0u;
+        if (!open) s_unst = STATS_GATE_CLOSE_S;
+        screen_main_adev_gate(open);
+        return;
+    }
+    if (open) s_unst = 0u; else if (s_unst < 255u) s_unst++;
+    if (!open && s_unst < STATS_GATE_CLOSE_S && screen_main_adev_gate_open()) return;
     screen_main_adev_gate(open);
 }
 
