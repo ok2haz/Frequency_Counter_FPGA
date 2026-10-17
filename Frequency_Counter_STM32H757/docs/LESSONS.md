@@ -4691,6 +4691,62 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0164 — Kontrola „producent mi záznam nepřepsal" musí počítat i se záznamem, který se PRÁVĚ zapisuje
+
+- **Datum:** 2026-10-17
+- **Oblast:** `sdram_log.c` (`sdram_log_get`, `sdram_log_read_back`, `sdram_log_read_abs`), audit F-0237
+- **Symptom:** žádný pozorovaný; nalezeno přezkumem nové funkce `sdram_log_read_abs`, která převzala kontrolu ze dvou starších.
+- **Příčina:** platnost záznamu `a` se ověřovala `s_head - a > CAP`. Slot záznamu `a` ale přepisuje zápis indexu `a + CAP`, a ten běží, když `s_head == a + CAP` (hlava se zvedá až PO zápisu). Rozepsaný nejstarší záznam proto prošel jako platný. Dvě starší funkce navíc neměly bariéru mezi kopií nevolatilních dat a čtením volatilní hlavy.
+- **Oprava:** jedna čistá funkce `rec_still_valid()` = `head - a < CAP` pro všechny tři čtečky, `__DMB()` před kontrolou, selftest na hranu `head == a + CAP`.
+- **Pravidlo:** U lock-free ringu kontroluj platnost proti hlavě, která už ukazuje na ROZEPSANÝ slot: nejstarší dostupný záznam je zároveň ten, který producent zapíše jako další. Mez je `>=`, ne `>`. Kontrolu napiš jednou jako funkci a otestuj hranici; neopisuj výraz do každé čtečky.
+- **Detekce:** selftest `sdram_log_selftest` (hranice `CAP+7` vs. `7`); disassembly `sdram_log_get` → `movcs` (≥).
+- **Commit:** `90c647a`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
+### L-0165 — Číslo epochy v `.bss` začíná po každém bootu stejně: navazující klient nepozná jinou řadu
+
+- **Datum:** 2026-10-17
+- **Oblast:** `sdram_log.c` (`s_epoch`), `ipc.c` (`ipc_raw_service`), `tools/raw_fetch.py`, audit F-0238
+- **Symptom:** žádný pozorovaný (v0.20.0 na desce neběžela); nalezeno přezkumem.
+- **Příčina:** epocha měla odlišit „jinou řadu" od pokračování, ale počítala se od nuly v `.bss`, takže první epocha KAŽDÉHO běhu měla číslo 1. Klient s kurzorem `(1, N)` by po restartu desky dostal prázdné odpovědi, pak záznamy od `N` nové řady, a obě řady by slepil bez hlášení.
+- **Oprava:** první epocha po startu z cyklů CPU v okamžiku prvního měření (FPGA měří nezávisle na bootu STM32 → náhodný okamžik), rozsah 1..2³⁰−1 (CM4 parsuje přes `atol`); pojistka na serveru: kurzor za hlavou ve stejné epoše = nová řada (`newep`); `raw_fetch.py` `newep` hlásí.
+- **Pravidlo:** Identifikátor, podle kterého klient pozná pokračování, musí být jedinečný přes RESTART poskytovatele, ne jen během jednoho běhu. Kde to jde, přidej i kontrolu konzistence, která nezávisí na tom identifikátoru (kurzor za hlavou je v téže řadě nemožný).
+- **Detekce:** napodobenina `/api/raw` s restartem při stejném čísle epochy → nástroj musí hlásit `NOVA RADA`.
+- **Commit:** `695b7ce`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
+### L-0166 — Nový sloupec CSV mění formát souboru, do kterého se jen připisuje
+
+- **Datum:** 2026-10-17
+- **Oblast:** `datalog_sd.c` (`mirror_open`), `sd_export.c` (hlavička), audit F-0239
+- **Symptom:** žádný pozorovaný; zrcadlo `GPSDOLOG.CSV` by po upgradu na v0.19.0 dostalo pod 11sloupcovou hlavičku 12sloupcové řádky.
+- **Příčina:** přidání pole `dac_code` změnilo řádek CSV, ale zrcadlo na téže kartě soubor jen otevřelo a připisovalo. Hlavičku psalo jen při založení souboru.
+- **Oprava:** při otevření se hlavička existujícího souboru porovná s aktuální; jiný formát → starý soubor se přejmenuje na `GPSDOLnn.CSV` a založí se nový (nepřepisuje se). Prázdný soubor bez hlavičky se založí znovu.
+- **Pravidlo:** Každý soubor, do kterého se připisuje, musí při otevření ověřit, že jeho formát je ten, který se bude psát. Změna záznamu = projdi všechny trvalé konzumenty, nejen ty, které ho čtou za běhu.
+- **Detekce:** karta se zrcadlem ze starší verze → po upgradu musí vzniknout `GPSDOL01.CSV` a nový `GPSDOLOG.CSV` s aktuální hlavičkou (hláška `F-0239` na konzoli).
+- **Commit:** `056168e`
+- **Stav:** aktivní; ⬜ neověřeno na HW (zápis na kartu)
+
+---
+
+### L-0167 — Odhad z historie musí začínat až u poslední změny parametru, který ta historie odráží
+
+- **Datum:** 2026-10-17
+- **Oblast:** `freertos_task_fpga.c` (`gpsdo_set_tau`, `gpsdo_tau_advise`), audit F-0241
+- **Symptom:** žádný pozorovaný; „tau min." by po `gpsdo tau` počítal až 2 h z fáze, kterou tvarovala předchozí smyčka.
+- **Příčina:** změna τ nepřerušila úsek LOCK ani historii a odhad bral celý úsek.
+- **Oprava:** `gpsdo_set_tau` si pamatuje čas změny, odhad bere jen body po ní (do 30 min ukazuje „málo dat").
+- **Pravidlo:** Když statistika z historie závisí na nastavení, které se dá za běhu změnit, změna nastavení musí historii pro tu statistiku uříznout (L-0101: nulovat i to, co je na cestě).
+- **Detekce:** `gpsdo tau 500` a hned `gpsdo` → `tau min. -- (malo dat … od zamceni/zmeny tau …)`.
+- **Commit:** `95d835b`
+- **Stav:** aktivní; ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

@@ -48,7 +48,7 @@ přepsání záznamu v `sdram_log` — nová funkce ho zdědila po dvou starší
   `h`" s hraničním případem `h == a + CAP`.
 - **Riziko opravy:** nízké — hranice se posune o jeden záznam (nejstarší se zahodí o 250 ms dřív).
 - **Vztah k lekcím:** `L-0012` (dvojče — vada je ve třech čtecích funkcích), `L-0017` (tichá chyba), F-0118 (původní kontrakt čtenář/producent).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-10-17 v `90c647a` (podle návrhu; kontrola jako funkce `rec_still_valid` + selftest hranice). ⬜ neověřeno na HW
 
 ---
 
@@ -78,7 +78,7 @@ přepsání záznamu v `sdram_log` — nová funkce ho zdědila po dvou starší
 - **Riziko opravy:** nízké — mění se jen hodnota čísla epochy, ne formát; klienti stejně berou epochu z odpovědi.
 - **Vztah k lekcím:** `L-0103` („Nové" není „navazující": u počítadla kontroluj souvislost, ne jen změnu),
   `L-0102` (historie se smí navázat jen přes souvislý úsek téhož zdroje), `L-0104`.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-10-17 v `695b7ce` — varianty (a)+(b)+(c); semeno (a) z `DWT->CYCCNT` při PRVNÍM měření (ne RNG periferie: ta potřebuje vlastní hodiny a zásah do konfigurace), rozsah 1..2³⁰−1 kvůli `atol` na CM4. ⬜ neověřeno na HW
 
 ---
 
@@ -100,7 +100,7 @@ přepsání záznamu v `sdram_log` — nová funkce ho zdědila po dvou starší
   řádku = změna hlavičky = nový soubor.
 - **Riziko opravy:** nízké až střední (`f_rename` na FatFs, nutná zkouška na kartě).
 - **Vztah k lekcím:** `L-0026` (nové pole v záznamu přerostlo konzumenta, o kterém nikdo nevěděl), `L-0105` (změna významu → projdi všechny, kdo čtou).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-10-17 v `056168e` (přejmenování na `GPSDOLnn.CSV`, varianta z návrhu). ⬜ neověřeno na HW (zápis na kartu)
 
 ---
 
@@ -115,7 +115,7 @@ přepsání záznamu v `sdram_log` — nová funkce ho zdědila po dvou starší
 - **Návrh opravy:** dokumentovat („včetně tohoto dotazu") v komentáři a v `gpsdo_log.ps1`, nebo vracet i `self:1`.
 - **Riziko opravy:** žádné.
 - **Vztah k lekcím:** `L-0089` (popisek tvrdil vlastnost, kterou veličina nemá).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-10-17 (`docs:`, jen dokumentace — číslo se nemění, aby logger zůstal srovnatelný se staršími běhy)
 
 ---
 
@@ -133,7 +133,7 @@ přepsání záznamu v `sdram_log` — nová funkce ho zdědila po dvou starší
   případně do té doby ukazovat „počkej".
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** `L-0101` (nulování musí vyprázdnit i to, co je „na cestě").
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-10-17 v `95d835b` (podle návrhu, varianta „úsek od poslední změny τ“). ⬜ neověřeno na HW
 
 ---
 

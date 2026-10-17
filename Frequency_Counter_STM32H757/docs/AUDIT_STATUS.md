@@ -11,8 +11,13 @@ Verdikt **podmíněně funkční**. Zápis → [`audit/2026-10-17_fixreview-v0.2
 **F-0237 [S3]** detekce přepsání v `sdram_log` o jedna mimo (`>` místo `>=`, všechny tři čtecí funkce, dvojčata bez bariéry);
 **F-0239 [S3]** zrcadlo `GPSDOLOG.CSV` po upgradu míchá 11/12 sloupců pod starou hlavičkou;
 **F-0240 [S4]** `conn.http.used` započítává i vlastní dotaz; **F-0241 [S4]** `tau min.` po změně τ míchá data dvou smyček.
-⬜ **v0.20.0 neběžela na desce** (flash odložen kvůli běžícímu měření hradla 0,25 s). 🔑 **Pokračovat zde:** triáž F5
-(návrh: A = F-0237, F-0238 (a)+(b), F-0240; B = F-0239 přejmenování souboru; C/odložit = F-0241), pak flash obou bank a HW ověření dle zápisu.
+✅ **F5 téhož dne (na pokyn uživatele A+B+C, v0.20.1):** `90c647a` F-0237 (`rec_still_valid`, `>=`, bariéry), `695b7ce` F-0238
+(epocha z `DWT->CYCCNT` při prvním měření + pojistka kurzor za hlavou + `raw_fetch.py`), `056168e` F-0239 (B: starý soubor →
+`GPSDOLnn.CSV`), `95d835b` F-0241 (C: úsek od změny τ), `e8925a8` F-0240 (`docs:`). Lekce **L-0164..L-0167**. Release CM7
+`.text` 673 712 → 674 536 B, 0 varování, `audit.py` 92/0/2; CM4 jen komentář (velikost beze změny). ⬜ **vše neověřeno na HW.**
+🔑 **Pokračovat zde:** po skončení loggeru flash OBOU bank (IPC v26 z v0.20.0) + power-cyklus, pak `selftest` (vč. `sdram_log`
+hranice/epocha), `gpsdo test`, `gpsdo` (`tau min.`), `raw_fetch.py --follow` přes restart desky (musí hlásit `NOVA RADA`),
+SD karta se starým zrcadlem → `GPSDOL01.CSV`.
 
 **Předchozí, 2026-10-14** — **Volba kmitočtu hodin FPGA a rezerva TDC řetězu.** Audit `audit/2026-10-10_volba-kmitoctu-hodin.md` doplněn o kap. 10 (datasheet Si5356, pokus se 125 MHz nebyl čistý bisect — zlomkový dělič ÷17 3/5 a poměr 12,5, rezerva řetězu, simulace). Provedeny kroky 1 a 2:
 (1) STM: včasné varování rezervy řetězu — `status` → `TDC REZERVA`, UART `tdc`, errlog `ERRLOG_K_TDC` (`ef07ca0`, oprava monotónnosti `a30b0b4`, L-0155); Release CM7 `.text` 653 856 → 655 768 B, 0 varování, `audit.py` 92/0/2.
