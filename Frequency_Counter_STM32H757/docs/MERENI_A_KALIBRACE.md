@@ -509,6 +509,29 @@ Nástroj: UART `uartq.ps1 -Port COM10` (`gpsdo test`, `dac dither test`, `dac`, 
 - ⚠️ `FPGA SAMOKONTROLA: zamítnuto oken: čítání 1` s hláškou „FPGA MĚŘÍ ŠPATNĚ" — 1 okno za 594 s, hodiny 0, délka okna 0. Změna FPGA ani počítání v této verzi nebyla; **příčina nevyšetřena** (HYPOTÉZA: jednorázové okno při náběhu, `FPGA REFERENCE: OCXO | externí vstup: bez hran` — na vstupu nemusel být signál). Ověřit, jestli počítadlo roste při připojeném signálu.
 - ⬜ Zbývá: A/B ditheru 2 / 100 / 200 Hz (30–60 min každý), dlouhodobá stabilita smyčky, stack `FpgaTask` 628 B (beze změny proti dřívějšku).
 
+### 2026-10-17 večer — #312: šum OCXO, nebo putování času GPS na 50–300 s? Rozbor stávajících logů (bez nového měření): NEROZHODNUTO
+
+Nástroj `python tools/cov312.py <csv> <ořez_s> [τ,…]` (volitelně `W0`/`W1` = okno v hodinách). Data: noc (`2026-10-17_noc.csv`, 9 h po ořezu 1 h, hradlo 1 s), `gate025b` (2,7 h), `120min` (1,1 h); vše smyčka LOCK, τ smyčky 1000 s.
+
+- **Krok 1, datasheet OCXO** (Bliley 6891 / NVG47A1282, `datasheets/`): krátkodobá stabilita jen **≤ 1·10⁻¹⁰ pro 0,1–1 s**, fázový šum −120 dBc/Hz @ 10 Hz … −145 dBc/Hz @ 10 kHz. **ADEV na 10–1000 s v datasheetu není** → krok nic nerozhoduje.
+- **Podlaha záznamu fáze:** ADEV fáze OCXO–GPS na 10 s je 5,3·10⁻¹⁰ = bílý fázový šum σx ≈ 3,0 ns, což je **kvantizace hrubého čítače 10 ns / √12 = 2,9 ns**, ne GPS. Extrapolace této podlahy (∝ 1/τ) dává 5,3·10⁻¹¹ @ 100 s, 2,6·10⁻¹¹ @ 200 s, 1,05·10⁻¹¹ @ 500 s; naměřeno 6,9 / 4,0 / 1,7·10⁻¹¹ → **přebytek 4,4 / 3,0 / 1,3·10⁻¹¹** (shoda s dřívějším „~4·10⁻¹¹ @ 100 s“).
+- **Krok 2, vazba na stav GPS** (ADEV fáze po hodinách noci proti počtu družic, HDOP, teplotě OCXO): ADEV fáze @ 100 s je v hodinách 5,3–7,9·10⁻¹¹, @ 50 s 9,7–14,9·10⁻¹¹; korelace s počtem družic r = −0,37, s HDOP −0,06, s teplotou OCXO −0,08 (n = 9, nevýznamné). ⚠️ Rozsah podmínek byl malý (družic 8,9–10,7, HDOP 0,80–1,01), takže data **nemají sílu** cokoli vyloučit.
+- **Krok 3, kovariance s nezávislým zdrojem.** Model: čítač měří externí GPSDO (E) proti OCXO (O): y_c = y_E − y_O; smyčka měří OCXO proti naší GPS (G1): y_x = y_O − y_G1; cov(y_c, y_x) = −var(O) − cov(E, G1), kde cov(E, G1) ≥ 0 (společné chyby GPS) → **var(O) ≤ −cov** (horní mez, ne odhad). Výsledek z noci (jednotky 10⁻¹¹):
+
+  | τ | n párů | ADEV čítače | ADEV fáze | korelace | −cov [ppb²] ± SE | **OCXO ≤ (95 %)** |
+  |---|---|---|---|---|---|---|
+  | 10 s | 3 238 | 46,5 | 52,7 | −0,007 | 0,0017 ± 0,0030 | 8,7 |
+  | 20 s | 1 618 | 60,7 | 26,6 | −0,003 | 0,0004 ± 0,0053 | 10,4 |
+  | 50 s | 646 | 44,6 | 13,0 | −0,050 | 0,0029 ± 0,0031 | 9,5 |
+  | 100 s | 322 | 29,1 | 6,9 | +0,005 | −0,0001 ± 0,0015 | 5,3 |
+  | 200 s | 160 | 16,7 | 4,0 | +0,052 | −0,0003 ± 0,0005 | 2,6 |
+  | 500 s | 63 | 6,2 | 1,7 | −0,173 | 0,0002 ± 0,0002 | 2,3 |
+
+  Proti samotné fázi (6,9·10⁻¹¹ @ 100 s, 13·10⁻¹¹ @ 50 s, 26·10⁻¹¹ @ 20 s) mez zpřesňuje jen málo (5,3 / 9,5 / 10,4·10⁻¹¹); nevylučuje přitom přebytek 4,4·10⁻¹¹ @ 100 s.
+- 🔴 **Mez je nespolehlivá, protože se kovariance mezi okny nechová jako šum s uvedenou SE.** Hodinová okna noci na 50 s: −cov = 0,0010 / 0,0119 / 0,0045 / 0,0028 / **−0,0194** (poslední má opačné znaménko, než model připouští; SE oken 0,002–0,007), na 100 s od −0,0056 do +0,0059. Běh `gate025b` (den, 11–14 h) dává významnou zápornou kovarianci **−0,021 ± 0,006 @ 50 s (r = −0,25)** a −0,0096 ± 0,0028 @ 100 s (r = −0,25), zatímco `120min` (15–16:30) a noc nulovou. Možné příčiny (⬜ HYPOTÉZY, nerozlišeno): společná chyba GPS u obou přijímačů přes den (ionosféra, družicové hodiny; to by tvrdilo „GPS"), nestacionární šum čítače (první hodina `gate025b` má ADEV čítače 118·10⁻¹¹ @ 50 s proti 29–45·10⁻¹¹ jinde), nebo skutečný šum OCXO jen v některých podmínkách.
+- **Závěr: z dosavadních dat NELZE rozhodnout, jestli přebytek fáze 3–4·10⁻¹¹ na 100–200 s pochází z OCXO, nebo z GPS.** Horní mez OCXO: **< 1·10⁻¹⁰ pro 10–50 s, ≲ 5·10⁻¹¹ @ 100 s, ≲ 3·10⁻¹¹ @ 200–500 s** (noc, orientačně); nic lepšího než tato mez se z těchto dat vytáhnout nedá. `gpsdo_tau_advise` proto **zůstává dolní mezí** (nepřepisuje se na doporučení).
+- **Co by rozhodlo (nové měření, zbývá z #312):** (a) nezávislá reference lepší než GPS na 100 s (Rb nebo druhé stabilní OCXO) a free-run OCXO proti ní ≥ 2 h; (b) několik dnů/nocí se širším rozsahem podmínek GPS pro kovarianci (jedna noc nestačí, okna spolu nesouhlasí); (c) smyčka s jiným τ (200 / 1000 / 5000 s, ≥ 6 h každá); (d) jiná anténa. Levnější než (a) a (d): zapsat fázi OCXO–GPS i při `gpsdo off` (dnes se v OFF nepočítá), čímž vznikne free-run záznam vůči GPS bez vlivu smyčky; není to rozhodující, ale odpadne podezření, že přebytek dělá smyčka.
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
