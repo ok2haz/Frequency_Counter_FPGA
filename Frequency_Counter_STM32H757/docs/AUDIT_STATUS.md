@@ -3,7 +3,18 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-14 — **Volba kmitočtu hodin FPGA a rezerva TDC řetězu.** Audit `audit/2026-10-10_volba-kmitoctu-hodin.md` doplněn o kap. 10 (datasheet Si5356, pokus se 125 MHz nebyl čistý bisect — zlomkový dělič ÷17 3/5 a poměr 12,5, rezerva řetězu, simulace). Provedeny kroky 1 a 2:
+**Poslední aktualizace:** 2026-10-17 — 🟡 **Přezkum změn v0.18.1 → v0.20.0 (5 nálezů: 1× S2, 2× S3, 2× S4), F3 zapsána, fáze oprav NEproběhla.**
+Verdikt **podmíněně funkční**. Zápis → [`audit/2026-10-17_fixreview-v0.20.md`](audit/2026-10-17_fixreview-v0.20.md).
+`/audit-modul` přišel bez jména modulu, žádný `nezačato` nezbývá → podle precedentu přezkum posledních kódových změn
+(datalog `dac_code`, počítadla spojení CM4, `/api/raw` + IPC v26, `tau min.`, graf Vc).
+**F-0238 [S2]** číslo epochy `sdram_log` se po restartu CM7 vrací na 1 → navazující klient `/api/raw` tiše slepí dvě řady;
+**F-0237 [S3]** detekce přepsání v `sdram_log` o jedna mimo (`>` místo `>=`, všechny tři čtecí funkce, dvojčata bez bariéry);
+**F-0239 [S3]** zrcadlo `GPSDOLOG.CSV` po upgradu míchá 11/12 sloupců pod starou hlavičkou;
+**F-0240 [S4]** `conn.http.used` započítává i vlastní dotaz; **F-0241 [S4]** `tau min.` po změně τ míchá data dvou smyček.
+⬜ **v0.20.0 neběžela na desce** (flash odložen kvůli běžícímu měření hradla 0,25 s). 🔑 **Pokračovat zde:** triáž F5
+(návrh: A = F-0237, F-0238 (a)+(b), F-0240; B = F-0239 přejmenování souboru; C/odložit = F-0241), pak flash obou bank a HW ověření dle zápisu.
+
+**Předchozí, 2026-10-14** — **Volba kmitočtu hodin FPGA a rezerva TDC řetězu.** Audit `audit/2026-10-10_volba-kmitoctu-hodin.md` doplněn o kap. 10 (datasheet Si5356, pokus se 125 MHz nebyl čistý bisect — zlomkový dělič ÷17 3/5 a poměr 12,5, rezerva řetězu, simulace). Provedeny kroky 1 a 2:
 (1) STM: včasné varování rezervy řetězu — `status` → `TDC REZERVA`, UART `tdc`, errlog `ERRLOG_K_TDC` (`ef07ca0`, oprava monotónnosti `a30b0b4`, L-0155); Release CM7 `.text` 653 856 → 655 768 B, 0 varování, `audit.py` 92/0/2.
 (2) Simulace tap 39 → 29 ps: model přetečení sedí do ~1 % (σ² = σ₀² + (p^1,5·T/√12)²); užitečný řetěz ~264 tapů, B za studena má v rychlosti tapu jen ~2 % do přetečení (A ~4 %). ⬜ **Vše neověřeno na desce.**
 ✅ **Krok 3 / M2 (2026-10-14, A=ext GPSDO, B odpojen):** CM7 naflashován, `TDC REZERVA` v `status` funguje; po power-cyklu boot kalibrace A 252 (rezerva 16) / B 257 (rezerva 11), 8 ručních `tdc cal` za 90 min vždy A 252 / B 250, události za koncem 0, teplota čipu +1 °C → 100 MHz drží. Boot kalibrace B se liší od pozdějších (příčina otevřená). Data `docs/audit/data/2026-10-14_tdc_rez_M2.csv`, zápis v `MERENI_A_KALIBRACE.md`. ⬜ Zbývá M3 (skutečně studený start), M1 (10× `tdc cal`), `selftest` 16/16 a `ERRLOG_K_TDC` na desce.
