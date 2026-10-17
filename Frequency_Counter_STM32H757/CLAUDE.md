@@ -1277,7 +1277,8 @@ rychlejší dither (100–400 Hz) a RC 100k+2,2 µF = #277.
 (`DONE`); uložený kód nad **4000 mV** (`AD5693_RESTORE_MAX_MV`, rozsah EFC) se ignoruje (`RANGE`); ruční zápis má přednost. `dac`/`status` → `obnova po startu:`.
 
 **Ovládání a diagnostika:** UART `gpsdo [on|off|tau <100..20000>|kdac <K×1e13>|test]`, `dac [probe|<kód>|mv <mV>]`; `status` řádky `GPSDO:` (stav, y, fáze, kód, K, τ,
-1PPS ok/rej/diry/roztržená čtení, sawtooth + rozptyly) a `DAC OCXO:`; `gpsraw` → `RX:`/`TIMTP:`. **Displej:** okno **s_view=45 „GPSDO TIE"** (dlaždice v MĚŘENÍ,
+1PPS ok/rej/diry/roztržená čtení, sawtooth + rozptyly, od v0.20.0 **`tau min.`**) a `DAC OCXO:`; `gpsraw` → `RX:`/`TIMTP:`.
+**`tau min.` (v0.20.0, `gpsdo_tau_advise`, jen zobrazení):** HDEV fáze z 2h historie proti bílému šumu 1PPS → τ, od kterého fáze nese přebytek. 🔴 Je to **DOLNÍ MEZ**, ne optimum: z dvojice OCXO–GPS nejde oddělit šum OCXO od putování času GPS (noc 2026-10-17: přebytek ~4·10⁻¹¹ @100 s, spíš GPS). Na displeji (okno GPSDO TIE) amber, když je nastavené τ kratší. **Displej:** okno **s_view=45 „GPSDO TIE"** (dlaždice v MĚŘENÍ,
 dřív placeholder TI 1PPS): přepínač **TIE / y / KOD**, historie 720 bodů po 10 s (2 h, `gpsdo_hist_at`), osa podle bodů LOCK, pás STAVU smyčky, číselný sloupec.
 **Web:** karta „GPSDO: TIE a stav smyčky" (stejný přepínač, pás stavu, `/api/state` → `gpsdo{state,why,locked,y_ppt,x_ns,xr_ns,code,…}`), osy grafu Vc
 (vlevo kód DAC, vpravo V, pod grafem DAC/ADC LSB), `dac{}`. IPC **v24** (DAC ve snapshotu, blok `gpsdo`), **v25** (`xr_ns` = surová fáze, blok 40 B).
@@ -1442,6 +1443,7 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
   kalibrace, Si5356, kanál, `sens_valid` maska, Math/limit cfg mirror, `ui_cfg` (brána/kanál/RUN),
   ETH stav, alarmy/prahy/selftest, `gps_sats[24]`, datalog transfer kanál `ipc_datalog_xfer_t`,
   errlog transfer kanál `ipc_errlog_xfer_t` (v17).
+- 🔴 **`IPC_VERSION` = 26** (2026-10-17): kanál **`raw`** (`ipc_raw_xfer_t`) na KONCI `ipc_shared_t` za `gpsdo` — surová měření ze `sdram_log` pro **`GET /api/raw?from=&epoch=&n=`** (≤ 100 záznamů `[seq,t_ms,f_uhz,flags]` na dotaz). Kurzor = **absolutní index v epoše + číslo epochy** (`sdram_log_read_abs`, `sdram_log_win_t`), NE `seq` z FPGA (ten se po resetu FPGA vrací na nulu). Kopii dělá CM7 `ipc_raw_service` v defaultTasku; CM4 SDRAM číst nesmí (na CM7 cacheable). PC: `python tools/raw_fetch.py --out x.csv [--follow]` (navazuje). ⚠️⚠️ **Flashnout OBĚ banky.**
 - 🔴 **`IPC_VERSION` = 25** (2026-10-16): v24 = DAC AD5693R ve snapshotu (`dac_code`, `dac_restore`, `dac_flags` v koncové výplni 476..479 — velikost 480 B beze změny)
   + blok **`ipc_gpsdo_t gpsdo`** na KONCI `ipc_shared_t` (seqlock `gen`; stav smyčky pro web); v25 = `x_raw_ns` (surová fáze/TIE), blok 36 → 40 B. Vše za `cm4`
   blokem, takže detekce nesouladu bank (`cm4_ipc_version`) funguje. ⚠️⚠️ **Flashnout OBĚ banky.**
@@ -2014,7 +2016,7 @@ při dnešní kadenci FPGA (~4 měření/s) to je **~3 dny** souvislé historie.
 - ⚠️ **Strop dnes NENÍ cache, ale FPGA:** protokol je pull/ACK a brána 0,25 s → ~4 měření/s.
   Souvislý proud (stovky kB/s) potřebuje **protokol v2 + SPI DMA** (STATUS #62). Zápis 16 B
   do SDRAM je proti tomu zdarma.
-- ⚠️ **Konzument zatím není napojený** — Allan/spektrogram pořád čtou decimační pyramidu.
+- ⚠️ **Jediný konzument je web `/api/raw`** (od v0.20.0, IPC v26, čte `sdram_log_read_abs`) — Allan/spektrogram na displeji pořád čtou decimační pyramidu.
   `sdram_log_read_back()` je pro něj připravená, ale **neodzkoušená** (bez volajícího).
 
 ### SD export (`sd_export.c/h`) — mount/unmount + CSV
