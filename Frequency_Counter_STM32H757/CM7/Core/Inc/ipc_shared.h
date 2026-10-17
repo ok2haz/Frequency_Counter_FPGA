@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  25u            /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  26u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -146,7 +146,9 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        `gpsdo` (smycka GPSDO, #305) na KONCI `ipc_shared_t`. Bumpnuto
                                        kvuli detekci nesouladu bank. Flashnout obe banky.
                                        v25 (2026-10-16): `ipc_gpsdo_t.x_raw_ns` (surova fazova chyba pro graf TIE na webu);
-                                       blok roste 36 -> 40 B, lezi na KONCI struktury -> nic pred nim se neposouva. */
+                                       blok roste 36 -> 40 B, lezi na KONCI struktury -> nic pred nim se neposouva.
+                                       v26 (2026-10-17): kanal `raw` (surova mereni ze sdram_log, web /api/raw)
+                                       na KONCI struktury za `gpsdo`. Flashnout obe banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -606,6 +608,46 @@ typedef struct {
 } ipc_gpsdo_t;
 _Static_assert(sizeof(ipc_gpsdo_t) == 40u, "ipc_gpsdo_t zmenil velikost");
 
+/* ── v26 (2026-10-17): SUROVA mereni ze `sdram_log` pro web (`GET /api/raw`, STATUS #308 E).
+ * Duvod: logger na PC musel desku pollovat 10x/s, aby dostal kazde mereni (hradlo 0,25 s), a sam tim
+ * pridaval provoz. Datova cache na CM7 drzi kazde mereni ~18 h; tenhle kanal ji vydava po davkach
+ * od KURZORU (absolutni index v epose, viz `sdram_log_win_t`). Handshake req_gen/resp_gen jako `errlog`.
+ * CM4 cist SDRAM primo NESMI: region je na CM7 cacheable (MPU 3, WBWA), CM4 by videla stara data. */
+#define IPC_RAW_CHUNK 100u          /* zaznamu na jeden round-trip (rozpocet JSON hlida httpd_min.c) */
+typedef struct {
+    uint32_t seq;                   /* SEQUENCE z FPGA (mezera = zmeskane mereni) */
+    uint32_t t_ms;                  /* HAL_GetTick CM7 pri prijeti */
+    uint64_t fa_uhz;                /* kanal A [µHz] */
+    uint32_t flags;                 /* SDRAM_LOG_F_* (sdram_log.h) */
+    uint32_t _pad;
+} ipc_raw_rec_t;
+_Static_assert(sizeof(ipc_raw_rec_t) == 24u, "ipc_raw_rec_t layout");
+
+#define IPC_RAW_F_READY   (1u << 0)   /* log bezi (pamet overena) */
+#define IPC_RAW_F_SIM     (1u << 1)   /* epocha z emulatoru fpgasim */
+#define IPC_RAW_F_TRUNC   (1u << 2)   /* pozadovany `from` uz byl prepsan -> zacina se nejstarsim */
+#define IPC_RAW_F_NEWEP   (1u << 3)   /* klient znal jinou epochu -> zacina se nejstarsim nove epochy */
+typedef struct {
+    volatile uint32_t req_gen;      /* CM4 zvedne pri NOVEM pozadavku */
+    uint32_t req_epoch;             /* epocha, ke ktere patri `req_from` (0 = klient nezna) */
+    uint32_t req_from;              /* absolutni index prvniho chteneho zaznamu */
+    uint16_t req_count;             /* <= IPC_RAW_CHUNK */
+    uint8_t  _pad_rq[2];
+    volatile uint32_t resp_gen;     /* CM7 nastavi = req_gen po naplneni rec[] */
+    uint32_t resp_epoch;            /* epocha odpovedi */
+    uint32_t resp_first;            /* absolutni index rec[0] */
+    uint32_t resp_head;             /* absolutni index za poslednim zaznamem epochy */
+    uint32_t resp_oldest;           /* nejstarsi dostupny absolutni index */
+    uint32_t _pad_g;                /* zarovnani resp_gate_ns na 8 B (explicitne, ne implicitni vyplni) */
+    uint64_t resp_gate_ns;          /* brana epochy (= tau0) */
+    uint16_t resp_count;            /* platnych zaznamu v rec[] */
+    uint8_t  resp_flags;            /* IPC_RAW_F_* */
+    uint8_t  _pad_rs[5];
+    ipc_raw_rec_t rec[IPC_RAW_CHUNK];
+} ipc_raw_xfer_t;
+_Static_assert(offsetof(ipc_raw_xfer_t, resp_gate_ns) == 40u && offsetof(ipc_raw_xfer_t, rec) == 56u,
+               "ipc_raw_xfer_t layout");
+
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
     ipc_snapshot_t   snap;         /* CM7 -> CM4 */
@@ -617,6 +659,7 @@ typedef struct {
     ipc_stab_t       stab;         /* CM7 -> CM4 (v20, statistika stability z firmwaru) */
     ipc_fpgadiag_t   fpgadiag;     /* CM7 -> CM4 (v22, surovy stav ramce FPGA + pocitadla odmitnuti, web /api/fpga) */
     ipc_gpsdo_t      gpsdo;        /* CM7 -> CM4 (v24, smycka GPSDO, web /api/state) -- NA KONCI: layout pred `cm4` beze zmeny */
+    ipc_raw_xfer_t   raw;          /* CM4 <-> CM7 (v26, surova mereni ze sdram_log, web /api/raw) -- za `gpsdo`, layout pred `cm4` beze zmeny */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");
@@ -737,6 +780,7 @@ void ipc_stab_publish(const ipc_stab_pt_t *pt, int np, int real, uint32_t nsamp,
 int  ipc_service(void);     /* zpracuj cmd ring -> resp ring; @return pocet prikazu */
 void ipc_datalog_service(void); /* v12: obsluz datalog transfer (req_gen != resp_gen) -> naplni log.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
 void ipc_errlog_service(void); /* v17: obsluz errlog transfer (req_gen != resp_gen) -> naplni errlog.rec[]. VOLA defaultTask (blokujici W25Q cteni) */
+void ipc_raw_service(void);    /* v26: obsluz raw transfer -> naplni raw.rec[] ze sdram_log. VOLA defaultTask (jen kopie z SDRAM, desitky µs) */
 int  ipc_cm4_alive(void);   /* 1 = CM4 heartbeat ziva (< ~3 s); bez CM4 vraci 0 */
 uint32_t ipc_cm4_cpu_pct(void); /* CM4 vlastni zatez [%] z heartbeatu (0..100); 0 bez CM4 */
 /* Velikost obrazu CM4 (FLASH/RAM, v16). @return 1 = platne (CM4 zapsala magic),

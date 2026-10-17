@@ -115,6 +115,28 @@ uint32_t sdram_log_read_back(uint32_t i, sdram_log_rec_t *out, uint32_t n);
 /** Aktualni stav (kapacita, pocet, chyby). */
 void sdram_log_stat(sdram_log_stat_t *out);
 
+/** Okno logu v ABSOLUTNICH indexech pro cteni „od kurzoru" (web `/api/raw`, STATUS #308 E).
+ *  Absolutni index = poradi zaznamu od zacatku epochy (0, 1, 2, ...); na rozdil od „i-teho
+ *  nejnovejsiho" se behem cteni NEPOSOUVA, takze klient muze navazat presne tam, kde skoncil.
+ *  ⚠️ Kurzorem NENI `seq` z FPGA: ten se po resetu FPGA vrati na nulu a mezery v nem jsou legitimni
+ *  (zmeskana mereni). `epoch` roste pri kazdem vynulovani ringu (zmena brany, REAL<->SIM, reset),
+ *  absolutni indexy dvou epoch spolu nesouvisi. */
+typedef struct {
+    uint32_t epoch;      /* cislo epochy (>= 1 po prvnim zaznamu) */
+    uint32_t head;       /* absolutni index za poslednim zaznamem (= pocet zaznamu epochy) */
+    uint32_t oldest;     /* absolutni index nejstarsiho dostupneho (po pretoceni > 0) */
+    uint64_t gate_ns;    /* brana epochy */
+    uint8_t  sim;        /* 1 = emulator */
+    uint8_t  ready;      /* 1 = log bezi */
+} sdram_log_win_t;
+
+/** Zkopiruje az `n` zaznamu CHRONOLOGICKY od absolutniho indexu `from` (vcetne); kdyz je `from`
+ *  starsi nez nejstarsi dostupny, zacne nejstarsim (`*first` to ukaze). Jen cte, producenta neblokuje.
+ *  @return pocet zkopirovanych (0 = nic noveho, nebo producent prepsal ctena data / zmenil epochu
+ *          behem cteni — pak `w->epoch` nese aktualni hodnotu a klient se zepta znovu). */
+uint32_t sdram_log_read_abs(uint32_t from, sdram_log_rec_t *out, uint32_t n,
+                            uint32_t *first, sdram_log_win_t *w);
+
 /** Pozada o zahozeni obsahu (index na nulu). Data se nemazou, jen prestanou byt
  *  viditelna. NEBLOKUJE a NENULUJE hned: pozadavek zkonzumuje AZ PRODUCENT
  *  (`sdram_log_put`) s pristim vzorkem — tim `head` zustava ve vlastnictvi jedine

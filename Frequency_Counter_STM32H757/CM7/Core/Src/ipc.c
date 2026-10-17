@@ -28,6 +28,7 @@
 #include "meas_math.h"        /* g_meas_cfg, meas_cfg_t, meas_math_capture_null — config sync (v3) */
 #include "datalog.h"          /* datalog_set_enabled — IPC_CMD_LOG z CM4 (W1); v12 datalog_read_back/status */
 #include "errlog.h"           /* v17: errlog_count/read_batch/fmt_detail — trvaly zaznamnik chyb na web */
+#include "sdram_log.h"        /* v26: sdram_log_read_abs — surova mereni na web (/api/raw) */
 #include "alarm.h"            /* g_alarm_*, g_mon_*_bad — dashboard STAV karta (v12, #4) */
 #include "scpi.h"             /* JEN pro _Static_assert SCPI_CFG_* == IPC_CFG_* (viz nize) */
 #include "ad5693.h"           /* g_dac — v24 stav DAC ladeni OCXO do snapshotu */
@@ -89,6 +90,7 @@ static void ipc_stamp(volatile ipc_shared_t *p)
     memset((void *)&p->stab,   0, sizeof p->stab);
     memset((void *)&p->fpgadiag, 0, sizeof p->fpgadiag);
     memset((void *)&p->gpsdo, 0, sizeof p->gpsdo);
+    memset((void *)&p->raw,   0, sizeof p->raw);     /* v26: handshake, vynulovany = zadny pozadavek (jako log/errlog) */
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
     p->snap.size    = (uint16_t)sizeof(ipc_snapshot_t);
@@ -567,6 +569,53 @@ void ipc_errlog_service(void)
     g_ipc.errlog.resp_dropped = (uint16_t)(errlog_dropped() > 0xFFFFu ? 0xFFFFu : errlog_dropped());
     IPC_DMB();
     g_ipc.errlog.resp_gen = req;                        /* az PO naplneni rec[] -> CM4 vidi konzistentne */
+}
+
+/* ── v26: obsluha raw transfer kanalu (web /api/raw, STATUS #308 E). ─────────
+ * Kopie <= IPC_RAW_CHUNK zaznamu ze `sdram_log` (SDRAM, cacheable na CM7) do SRAM4.
+ * Neblokuje producenta (FpgaTask): `sdram_log_read_abs` jen cte a na konci overi, ze mu
+ * producent data pod rukama neprepsal. Trva desitky µs, takze se vyridi v JEDNOM volani. */
+void ipc_raw_service(void)
+{
+    uint32_t req = g_ipc.raw.req_gen;
+    if (req == g_ipc.raw.resp_gen) return;              /* zadny novy pozadavek */
+
+    /* `static` ze stejneho duvodu jako u errlog: 100 x 32 B = 3,2 kB by stack defaultTasku
+     * (1,5 kB) neunesl. Volani jen z defaultTasku, jednovlaknove. */
+    static sdram_log_rec_t s_tmp[IPC_RAW_CHUNK];
+
+    uint16_t want = g_ipc.raw.req_count;
+    if (want > IPC_RAW_CHUNK) want = IPC_RAW_CHUNK;
+    sdram_log_win_t w;
+    uint32_t first = 0, got = 0;
+    uint8_t  fl = 0;
+    (void)sdram_log_read_abs(0u, NULL, 0u, NULL, &w);   /* jen okno: epocha, hlava, nejstarsi */
+    uint32_t from = g_ipc.raw.req_from;
+    if (g_ipc.raw.req_epoch != w.epoch) { from = 0u; if (g_ipc.raw.req_epoch != 0u) fl |= IPC_RAW_F_NEWEP; }
+    uint32_t ep0 = w.epoch;
+    for (int pokus = 0; pokus < 2; pokus++) {           /* producent mohl behem kopie prepsat data / zmenit epochu */
+        got = sdram_log_read_abs(from, s_tmp, want, &first, &w);
+        if (got > 0u || first >= w.head) break;         /* data, nebo opravdu nic noveho */
+        if (w.epoch != ep0) { from = 0u; fl |= IPC_RAW_F_NEWEP; ep0 = w.epoch; }
+    }
+    if (from != 0u && first > from) fl |= IPC_RAW_F_TRUNC;
+    if (w.ready) fl |= IPC_RAW_F_READY;
+    if (w.sim)   fl |= IPC_RAW_F_SIM;
+
+    for (uint32_t i = 0; i < got; i++) {
+        volatile ipc_raw_rec_t *o = &g_ipc.raw.rec[i];
+        o->seq = s_tmp[i].seq; o->t_ms = s_tmp[i].t_ms;
+        o->fa_uhz = s_tmp[i].fa_uhz; o->flags = s_tmp[i].flags; o->_pad = 0;
+    }
+    g_ipc.raw.resp_epoch   = w.epoch;
+    g_ipc.raw.resp_first   = first;
+    g_ipc.raw.resp_head    = w.head;
+    g_ipc.raw.resp_oldest  = w.oldest;
+    g_ipc.raw.resp_gate_ns = w.gate_ns;
+    g_ipc.raw.resp_count   = (uint16_t)got;
+    g_ipc.raw.resp_flags   = fl;
+    IPC_DMB();
+    g_ipc.raw.resp_gen = req;                           /* az PO naplneni rec[] -> CM4 vidi konzistentne */
 }
 
 /* Posledni REALNY kmitocet /4 [Hz] (pro NULL_ACQ). @return 1 = platne. */

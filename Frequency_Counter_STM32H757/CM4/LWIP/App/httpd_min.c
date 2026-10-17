@@ -85,6 +85,14 @@ _Static_assert(HTTPD_LOG_MAX_PTS * HTTPD_LOG_PT_MAX + HTTPD_LOG_HDR_MAX < HTTPD_
 #define HTTPD_ERRLOG_MAX_PTS   32u   /* strop zaznamu v jedne odpovedi /api/errlog */
 _Static_assert(HTTPD_ERRLOG_MAX_PTS * HTTPD_ERRLOG_REC_MAX + HTTPD_ERRLOG_HDR_MAX < HTTPD_BODYBUF_MAX,
                "/api/errlog se nevejde do bodybuf - sniz HTTPD_ERRLOG_MAX_PTS nebo zvetsi HTTPD_BODYBUF_MAX");
+/* v26: rozpocet `/api/raw` (surova mereni ze sdram_log) — POCITANO. Nejdelsi zaznam:
+ *   [4294967295,4294967295,18446744073709551615,4294967295],  = 1+10+1+10+1+20+1+10+1+1 = 56 B.
+ * Hlavicka `{"ready":1,"epoch":..,"head":..,"oldest":..,"first":..,"n":100,"gate_ns":<20>,
+ * "sim":1,"trunc":1,"newep":1,"r":[` + `]}` <= 208 B. */
+#define HTTPD_RAW_REC_MAX     56u
+#define HTTPD_RAW_HDR_MAX    208u
+_Static_assert(IPC_RAW_CHUNK * HTTPD_RAW_REC_MAX + HTTPD_RAW_HDR_MAX < HTTPD_BODYBUF_MAX,
+               "/api/raw se nevejde do bodybuf - sniz IPC_RAW_CHUNK nebo zvetsi HTTPD_BODYBUF_MAX");
 #define HTTPD_BODY_MAX       96u    /* max. PRIJATE telo POST /api/scpi (jeden radek SCPI) */
 #define HTTPD_AUTH_MAX       64u    /* base64("user:pass"), 16+1+20 B -> base64 ~50 znaku */
 
@@ -93,6 +101,7 @@ _Static_assert(HTTPD_ERRLOG_MAX_PTS * HTTPD_ERRLOG_REC_MAX + HTTPD_ERRLOG_HDR_MA
 #define HCONN_LOG      1u   /* ceka na data z CM7 (IPC datalog kanal) -> pak odpovi a zavre */
 #define HCONN_SSE      2u   /* drzene SSE spojeni (/api/stream) — posila udalosti dokud zije */
 #define HCONN_ERRLOG   3u   /* v17: ceka na data z CM7 (IPC errlog kanal) -> pak odpovi a zavre */
+#define HCONN_RAW      4u   /* v26: ceka na data z CM7 (IPC raw kanal, sdram_log) -> pak odpovi a zavre */
 
 typedef struct {
     struct tcp_pcb *pcb;    /* NULL = slot volny */
@@ -790,6 +799,44 @@ static size_t build_errlog_json(char *out, size_t out_sz)
         jputf(&j, "%s{\"u\":%lu,\"t\":%lu,\"k\":%u,\"g\":\"%s\",\"x\":\"%s\",\"r\":%u}",
               i ? "," : "", (unsigned long)r->uptime_s, (unsigned long)r->t_unix,
               (unsigned)r->kind, tag, r->text, (unsigned)r->repeat);
+    }
+    jputf(&j, "]}");
+    return j.ovf ? 0u : j.used;
+}
+
+/* uint64 -> desitkovy retezec (newlib-nano neumi %llu). `o` >= 21 B. */
+static void u64dec(char *o, uint64_t v)
+{
+    char t[21]; unsigned n = 0;
+    do { t[n++] = (char)('0' + (unsigned)(v % 10u)); v /= 10u; } while (v != 0u && n < sizeof t);
+    for (unsigned i = 0; i < n; i++) o[i] = t[n - 1u - i];
+    o[n] = '\0';
+}
+
+/* ── v26: surova mereni ze sdram_log (`g_ipc.raw`, STATUS #308 E). Kazde mereni prave jednou:
+ * `r` = [seq, t_ms, f_uhz, flags] chronologicky od absolutniho indexu `first`; klient se pta dal
+ * s `from = first + n` a `epoch` z odpovedi. `f_uhz` je kmitocet kanalu A v µHz (cele cislo,
+ * presne — < 2^53 az do ~9 GHz, takze ho JS i PowerShell ctou bez ztraty). */
+static size_t build_raw_json(char *out, size_t out_sz)
+{
+    jbuf_t j; jinit(&j, out, out_sz);
+    unsigned n = g_ipc.raw.resp_count;
+    if (n > IPC_RAW_CHUNK) n = IPC_RAW_CHUNK;
+    uint8_t fl = g_ipc.raw.resp_flags;
+    char g[21];
+    u64dec(g, g_ipc.raw.resp_gate_ns);
+    jputf(&j, "{\"ready\":%u,\"epoch\":%lu,\"head\":%lu,\"oldest\":%lu,\"first\":%lu,\"n\":%u,\"gate_ns\":%s,"
+              "\"sim\":%u,\"trunc\":%u,\"newep\":%u,\"r\":[",
+          (fl & IPC_RAW_F_READY) ? 1u : 0u, (unsigned long)g_ipc.raw.resp_epoch,
+          (unsigned long)g_ipc.raw.resp_head, (unsigned long)g_ipc.raw.resp_oldest,
+          (unsigned long)g_ipc.raw.resp_first, n, g,
+          (fl & IPC_RAW_F_SIM) ? 1u : 0u, (fl & IPC_RAW_F_TRUNC) ? 1u : 0u, (fl & IPC_RAW_F_NEWEP) ? 1u : 0u);
+    for (unsigned i = 0; i < n; i++) {
+        const ipc_raw_rec_t *r = (const ipc_raw_rec_t *)&g_ipc.raw.rec[i];
+        char f[21];
+        u64dec(f, r->fa_uhz);
+        jputf(&j, "%s[%lu,%lu,%s,%lu]", i ? "," : "", (unsigned long)r->seq, (unsigned long)r->t_ms,
+              f, (unsigned long)r->flags);
     }
     jputf(&j, "]}");
     return j.ovf ? 0u : j.used;
@@ -4594,6 +4641,7 @@ static void queue_spa(http_conn_t *c, const http_req_t *r)
 /* ── v12 (#3): SSE (Server-Sent Events) — drzene spojeni, push pri novem mereni ── */
 static uint32_t s_log_gen;   /* generace pozadavku na datalog (handshake s CM7) */
 static uint32_t s_errlog_gen; /* v17: generace pozadavku na errlog (handshake s CM7) */
+static uint32_t s_raw_gen;    /* v26: generace pozadavku na surova mereni (handshake s CM7) */
 
 /* Dosle nedoposlanou SSE hlavicku (mala, obvykle projde napoprve). */
 static void sse_finish_hdr(http_conn_t *c)
@@ -4675,6 +4723,16 @@ void httpd_min_poll(void)
             } else if ((int32_t)(now - c->defer_ms) >= 0) {      /* timeout */
                 c->mode = HCONN_NORMAL;
                 queue_text(c, 504, "Gateway Timeout", "errlog (CM7) neodpovedel\n");
+            }
+        } else if (c->mode == HCONN_RAW) {
+            if (g_ipc.raw.resp_gen == c->defer_gen) {             /* CM7 naplnil data */
+                size_t n = build_raw_json(c->bodybuf, sizeof c->bodybuf);
+                c->mode = HCONN_NORMAL;
+                if (n == 0) queue_text(c, 503, "Service Unavailable", "odpoved se nevesla do bufferu\n");
+                else        queue_response(c, 200, "OK", "application/json", c->bodybuf, n);
+            } else if ((int32_t)(now - c->defer_ms) >= 0) {      /* timeout */
+                c->mode = HCONN_NORMAL;
+                queue_text(c, 504, "Gateway Timeout", "raw (CM7) neodpovedel\n");
             }
         } else if (c->mode == HCONN_SSE) {
             sse_finish_hdr(c);
@@ -4826,6 +4884,26 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
         IPC_DMB();
         g_ipc.errlog.req_gen   = ++s_errlog_gen;          /* az PO parametrech -> CM7 vidi konzistentne */
         c->mode = HCONN_ERRLOG; c->defer_gen = s_errlog_gen; c->defer_ms = HAL_GetTick() + 1500u;
+        return;                                          /* odpoved dokonci httpd_min_poll */
+    }
+    /* v26: surova mereni ze sdram_log (kazde mereni prave jednou, od kurzoru). Jen cteni, bez
+     * autorizace (jako /api/state). `from` = absolutni index, `epoch` = z predchozi odpovedi (0 = od zacatku). */
+    if (strcmp(r->method, "GET") == 0 && path_is(r->path, "/api/raw")) {
+        for (unsigned i = 0; i < HTTPD_MAX_CONN; i++)   /* jen jeden transfer soubezne (sdileny kanal) */
+            if (s_hconn[i].mode == HCONN_RAW && &s_hconn[i] != c) {
+                queue_text(c, 503, "Service Unavailable", "raw zaneprazdnen\n"); return;
+            }
+        long np = qparam(r->path, "n", (long)IPC_RAW_CHUNK);
+        if (np < 1) np = 1;
+        if (np > (long)IPC_RAW_CHUNK) np = (long)IPC_RAW_CHUNK;   /* rozpocet hlida _Static_assert */
+        long from = qparam(r->path, "from", 0);
+        long ep   = qparam(r->path, "epoch", 0);
+        g_ipc.raw.req_from  = (uint32_t)(from < 0 ? 0 : from);
+        g_ipc.raw.req_epoch = (uint32_t)(ep < 0 ? 0 : ep);
+        g_ipc.raw.req_count = (uint16_t)np;
+        IPC_DMB();
+        g_ipc.raw.req_gen   = ++s_raw_gen;               /* az PO parametrech -> CM7 vidi konzistentne */
+        c->mode = HCONN_RAW; c->defer_gen = s_raw_gen; c->defer_ms = HAL_GetTick() + 1500u;
         return;                                          /* odpoved dokonci httpd_min_poll */
     }
     queue_text(c, 404, "Not Found", "not found\n");

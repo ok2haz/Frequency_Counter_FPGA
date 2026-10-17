@@ -33,6 +33,9 @@ _Static_assert(sizeof(sdram_log_rec_t) == 32u, "zaznam musi zustat 32 B (oba kan
 
 static volatile uint32_t s_head;      /* kolik zaznamu CELKEM proslo (nikdy neklesa) */
 static volatile uint32_t s_dropped;   /* zahozeno, protoze log nebyl ready */
+/* Cislo epochy pro cteni od kurzoru (`sdram_log_read_abs`): roste s kazdym vynulovanim `s_head`.
+ * Zapisuje ho ten, kdo nuluje `s_head` (producent; vyjimka `sdram_log_reset_force`, viz .h). */
+static volatile uint32_t s_epoch;
 /* Pozadavek na vynulovani z CIZI ulohy. Zapisuje ho kdokoli, konzumuje VYHRADNE
  * producent v `sdram_log_put` — tim zustane `s_head` v rukach jedine ulohy
  * (audit F-0118, vzor `g_membench_req`). */
@@ -223,6 +226,7 @@ void sdram_log_put(uint32_t seq, uint64_t fa_uhz, uint64_t fb_uhz, uint32_t flag
     if (sim != s_sim || gate_changed(gate_ns, s_gate_ns)) {
         s_sim = sim; s_gate_ns = gate_ns; s_head = 0;
     }
+    if (s_head == 0u) s_epoch++;  /* prvni zaznam epochy (i po startu) -> ctenar od kurzoru pozna novou radu */
     uint32_t h = s_head;
     sdram_log_rec_t *r = &s_buf[h & (SDRAM_LOG_CAP - 1u)];
     r->seq = seq; r->t_ms = t_ms;
@@ -270,6 +274,40 @@ uint32_t sdram_log_read_back(uint32_t i, sdram_log_rec_t *out, uint32_t n)
     }
     /* Jedna kontrola na konci: prepsal producent behem cteni neco, co jsme vzali? */
     if (s_head - (abs - (got - 1u)) > SDRAM_LOG_CAP) return 0;
+    return got;
+}
+
+/* Okno [oldest, head) v absolutnich indexech; ciste, kryje selftest. */
+static void win_of(uint32_t head, uint32_t *oldest)
+{
+    *oldest = (head > SDRAM_LOG_CAP) ? (head - SDRAM_LOG_CAP) : 0u;
+}
+
+uint32_t sdram_log_read_abs(uint32_t from, sdram_log_rec_t *out, uint32_t n,
+                            uint32_t *first, sdram_log_win_t *w)
+{
+    uint32_t ep = s_epoch;
+    uint32_t h  = s_head;
+    uint32_t lo;
+    win_of(h, &lo);
+    if (w != NULL) {
+        w->epoch = ep; w->head = h; w->oldest = lo;
+        w->gate_ns = s_gate_ns; w->sim = s_sim; w->ready = s_ready;
+    }
+    if (first != NULL) *first = (from < lo) ? lo : from;
+    if (!s_ready || out == NULL || n == 0u) return 0;
+    uint32_t a0 = (from < lo) ? lo : from;
+    if (a0 >= h) return 0;                        /* nic noveho */
+    uint32_t got = h - a0;
+    if (got > n) got = n;
+    for (uint32_t k = 0; k < got; k++) out[k] = s_buf[(a0 + k) & (SDRAM_LOG_CAP - 1u)];
+    __DMB();
+    /* Behem kopie mohl producent (a) prepsat nejstarsi ctene zaznamy po pretoceni, nebo (b) zahajit
+     * novou epochu (vynulovat `s_head`). V obou pripadech je kopie nedoveryhodna -> 0, klient se zepta znovu. */
+    if (s_epoch != ep || s_head < h || s_head - a0 > SDRAM_LOG_CAP) {
+        if (w != NULL) w->epoch = s_epoch;
+        return 0;
+    }
     return got;
 }
 
@@ -346,5 +384,11 @@ int sdram_log_selftest(void)
     if (idx_of(h, SDRAM_LOG_CAP, &a))                         return 0;
     /* maskovani indexu = mocnina 2 */
     if (((SDRAM_LOG_CAP - 1u) & SDRAM_LOG_CAP) != 0u) return 0;
+    /* Okno pro cteni od kurzoru (`sdram_log_read_abs`): pred pretocenim zacina nulou, po nem
+     * se posouva s hlavou o kapacitu (nejstarsi dostupny = head - CAP). */
+    uint32_t lo;
+    win_of(0u, &lo);                       if (lo != 0u) return 0;
+    win_of(SDRAM_LOG_CAP, &lo);            if (lo != 0u) return 0;
+    win_of(SDRAM_LOG_CAP + 7u, &lo);       if (lo != 7u) return 0;
     return 1;
 }
