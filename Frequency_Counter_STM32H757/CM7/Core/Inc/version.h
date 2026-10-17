@@ -11,6 +11,8 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.26.0 (2026-10-18) = audit A2 V5: UART `allan log` = overlapping ADEV/MDEV/HDEV s krokem tau0' (1 s) nad CELYM .measlog (~18 h, proudovy vypocet,
+ * 2 x 3001 double v .bss, ~0,3 s v UartTasku); selftest proudoveho Allanu == primy vypocet SP1065. IPC v27 beze zmeny. */
 /* v0.25.1 (2026-10-18) = audit A2 V9 / STATUS #320: pyramidy statistiky (s_adev, s_tr, s_y; ~22,7 kB) v DTCM (horni 64 kB, sekce .dtcm_bss, linker DTCM_APP;
  * spodnich 64 kB zustava testovaci oblasti membench), nulovani v main() USER CODE 2. Linker zmenen -> po flashi overit `selftest`, `membench`. */
 /* v0.25.0 (2026-10-18) = audit A2 V3: druha sada akumulatoru se zapominanim (okno ~600 clenu kazde stage) a prepinac pohledu VSE / OKNO v okne ALLAN
@@ -187,8 +189,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 25
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.25.1"
+#define FW_VERSION_MINOR 26
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.26.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

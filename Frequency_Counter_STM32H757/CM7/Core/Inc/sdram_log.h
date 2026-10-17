@@ -160,7 +160,11 @@ void sdram_log_reset_force(void);
  *  (protokol v2) — pri plneni z CPU je to zbytecne. */
 void sdram_log_invalidate(void);
 
-/** Pure-logic selftest indexovani ringu (bez SDRAM, bezi i bez HW).
+/** V5 (audit A2): overlapping ADEV/MDEV/HDEV s krokem tau0' nad CELOU historii logu, vypise tabulku (UART `allan log`).
+ *  Blokuje ~0,3 s -> VYHRADNE z UartTasku. @return 1 = vypsano. */
+int  sdram_log_allan_report(void);
+
+/** Pure-logic selftest indexovani ringu (bez SDRAM, bezi i bez HW) + proudoveho Allanu.
  *  @return 1 = PASS. */
 int  sdram_log_selftest(void);
 

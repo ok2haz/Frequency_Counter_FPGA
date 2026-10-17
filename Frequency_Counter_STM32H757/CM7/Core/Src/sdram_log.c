@@ -7,6 +7,8 @@
 #include "main.h"          /* SCB_InvalidateDCache_by_Addr, __DMB */
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include "cmsis_os.h"      /* osDelay v `sdram_log_allan_report` (UartTask) */
 
 /* Hranice regionu z linkeru (sekce `.measlog` v STM32H757BITX_FLASH.ld). Adresa
  * se ZAMERNE nepise natvrdo — kdyz se region v linkeru posune nebo zmensi, kod
@@ -393,9 +395,207 @@ void sdram_log_invalidate(void)
 /* ── Selftest indexovani (ciste logicky, bez SDRAM) ───────────────────────────
  * Overuje prave to, co se snadno rozbije: prevod "i-ty nejnovejsi" na absolutni
  * index pred i po pretoceni ringu. */
+
+/* ══════════════ Allan z .measlog: OVERLAPPING s krokem tau0' na CELE historii (STATUS #321, audit A2 V5) ═══════════════
+ * Pyramida v screen_main.c ma na stage s jedinou hodnotu za 10^s s, takze n clenu na tau = 1000 s je po 10 h jen ~35.
+ * Tady se z .measlog (surova mereni, ~18 h) pocita overlapping ADEV/MDEV/HDEV s krokem 1 s (tau0'), tedy u tau = 1000 s
+ * ~34 000 clenu. Clenu je vic, ale jsou silne korelovane, takze spolehlivost roste mene (SP1065: EDF jen ~1,5-3x).
+ *
+ * Jednoprusuhovy proud: faze X_n a jeji soucet P_n (P_n = sum_{i<n} X_i) v kruhovych polich delky 3*MMAX+1; novy clen kazdeho
+ * m konci nejnovejsim bodem n:   ADEV  d = X_n - 2X_{n-m} + X_{n-2m}          AVAR = sum d^2 / (2 m^2 t0^2 n)
+ *                                HDEV  d = X_n - 3X_{n-m} + 3X_{n-2m} - X_{n-3m}   HVAR = sum d^2 / (6 m^2 t0^2 n)
+ *                                MDEV  d = P_n - 3P_{n-m} + 3P_{n-2m} - P_{n-3m}   MVAR = sum d^2 / (2 m^4 t0^2 n)
+ * Pamet 2 x 3001 double = 48 kB (.bss), cas ~0,3 s na 262 144 zaznamu. Beh jen v UartTasku (`allan log`), nesmi se prekryvat
+ * se selftestem (priznak s_alg_busy). Mezera (seq != prev+1, zaznam bez platneho mereni, skok f_ref > 1e-4) zacne novy segment:
+ * soucty zustanou, zadny clen nepresahne mezeru. */
+#define ALG_MMAX  1000u
+#define ALG_L     (3u * ALG_MMAX + 1u)
+#define ALG_NM    16u
+static const uint16_t ALG_M[ALG_NM] = {1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 200, 300, 500, 700, 1000};
+typedef struct { double sa, sh, sm; uint32_t na, nh, nm; } alg_acc_t;
+static double    s_alg_x[ALG_L], s_alg_p[ALG_L];
+static alg_acc_t s_alg_acc[ALG_NM];
+static uint32_t  s_alg_n;                    /* bodu faze v aktualnim segmentu */
+static double    s_alg_cx, s_alg_cp;         /* X_{n-1}, P_{n-1} (po pushi: X_n, P_n) */
+static volatile uint8_t s_alg_busy;
+
+static void alg_clear(void) { memset(s_alg_acc, 0, sizeof s_alg_acc); s_alg_n = 0u; }
+static void alg_segment(void) { s_alg_n = 0u; }
+
+/* Prida dalsi bod faze (y = prumerna frakcni odchylka bloku, t0 = delka bloku [s]); prvni bod segmentu ma X = 0 (y se ignoruje). */
+static void alg_push(double y, double t0)
+{
+    uint32_t n = s_alg_n;
+    if (n == 0u) { s_alg_cx = 0.0; s_alg_cp = 0.0; }
+    else         { s_alg_cp += s_alg_cx; s_alg_cx += y * t0; }
+    s_alg_x[n % ALG_L] = s_alg_cx; s_alg_p[n % ALG_L] = s_alg_cp;
+    for (uint32_t i = 0; i < ALG_NM; i++) {
+        uint32_t m = ALG_M[i];
+        alg_acc_t *a = &s_alg_acc[i];
+        if (n >= 2u * m) {
+            double d = s_alg_x[n % ALG_L] - 2.0 * s_alg_x[(n - m) % ALG_L] + s_alg_x[(n - 2u * m) % ALG_L];
+            a->sa += d * d; a->na++;
+        }
+        if (n >= 3u * m) {
+            double d3 = s_alg_x[n % ALG_L] - 3.0 * s_alg_x[(n - m) % ALG_L] + 3.0 * s_alg_x[(n - 2u * m) % ALG_L]
+                      - s_alg_x[(n - 3u * m) % ALG_L];
+            double dp = s_alg_p[n % ALG_L] - 3.0 * s_alg_p[(n - m) % ALG_L] + 3.0 * s_alg_p[(n - 2u * m) % ALG_L]
+                      - s_alg_p[(n - 3u * m) % ALG_L];
+            a->sh += d3 * d3; a->nh++;
+            a->sm += dp * dp; a->nm++;
+        }
+    }
+    s_alg_n = n + 1u;
+}
+
+static double alg_dev(const alg_acc_t *a, uint32_t m, double t0, int kind)   /* 0 ADEV, 1 MDEV, 2 HDEV; 0 = malo clenu */
+{
+    double mm = (double)m;
+    if (kind == 0) return (a->na >= 2u) ? sqrt(a->sa / (2.0 * mm * mm * t0 * t0 * (double)a->na)) : 0.0;
+    if (kind == 1) return (a->nm >= 2u) ? sqrt(a->sm / (2.0 * mm * mm * mm * mm * t0 * t0 * (double)a->nm)) : 0.0;
+    return (a->nh >= 2u) ? sqrt(a->sh / (6.0 * mm * mm * t0 * t0 * (double)a->nh)) : 0.0;
+}
+
+static void alg_sci(char *b, size_t n, double v)
+{
+    if (!(v > 0.0)) { snprintf(b, n, "--"); return; }
+    int e = (int)floor(log10(v));
+    double mant = v / pow(10.0, (double)e);
+    int mi = (int)(mant * 100.0 + 0.5);
+    if (mi >= 1000) { mi = 100; e++; }
+    unsigned ae = (unsigned)((e < 0) ? -e : e) % 100u;       /* %-ovani: jen kvuli -Wformat-truncation (rozsah je tak jako tak < 1e+-40) */
+    snprintf(b, n, "%u.%02uE%c%02u", ((unsigned)mi / 100u) % 10u, (unsigned)mi % 100u, (e < 0) ? '-' : '+', ae);
+}
+
+/* Pure-logic kontrola proti primemu vypoctu (N bodu, m = 1, 3, 5): totez co SP1065 z fazi X (MDEV pres S_k = sum X_i). */
+static int alg_selftest(void)
+{
+    if (s_alg_busy) return 1;                    /* bezi vypocet z UartTasku -> nesahat na sdilena pole */
+    s_alg_busy = 1u;
+    static double xd[130];
+    uint32_t r = 31337u;
+    alg_clear(); alg_segment();
+    const uint32_t NP = 120u;
+    for (uint32_t k = 0; k < NP; k++) {
+        r = r * 1103515245u + 12345u;
+        double y = 1e-9 * ((double)(r >> 8) / 16777216.0 - 0.5);
+        alg_push(y, 1.0);
+        xd[k] = s_alg_cx;
+    }
+    int ok = 1;
+    static const uint16_t TM[3] = {1, 3, 5};
+    for (int t = 0; t < 3; t++) {
+        uint32_t m = TM[t], i = 0;
+        while (ALG_M[i] != m) i++;
+        double sa = 0.0, sh = 0.0, sm = 0.0; uint32_t na = 0, nh = 0, nm = 0;
+        for (uint32_t k = 0; k + 2u * m < NP; k++) {
+            double d = xd[k + 2u * m] - 2.0 * xd[k + m] + xd[k]; sa += d * d; na++;
+        }
+        for (uint32_t k = 0; k + 3u * m < NP; k++) {
+            double d3 = xd[k + 3u * m] - 3.0 * xd[k + 2u * m] + 3.0 * xd[k + m] - xd[k]; sh += d3 * d3; nh++;
+            double s0 = 0.0, s1 = 0.0, s2 = 0.0;
+            for (uint32_t q = 0; q < m; q++) { s0 += xd[k + q]; s1 += xd[k + m + q]; s2 += xd[k + 2u * m + q]; }
+            double dm = s2 - 2.0 * s1 + s0; sm += dm * dm; nm++;
+        }
+        const alg_acc_t *a = &s_alg_acc[i];
+        ok &= (a->na == na) && (a->nh == nh) && (a->nm == nm);
+        ok &= (fabs(a->sa / sa - 1.0) < 1e-9) && (fabs(a->sh / sh - 1.0) < 1e-9) && (fabs(a->sm / sm - 1.0) < 1e-6);
+    }
+    /* nova mezera: po zlomu prvni 2m bodu zadny clen (m = 1: ADEV az s tretim bodem) */
+    uint32_t na0 = s_alg_acc[0].na;
+    alg_segment(); alg_push(0.0, 1.0); alg_push(0.0, 1.0);
+    ok &= (s_alg_acc[0].na == na0);
+    alg_push(0.0, 1.0);
+    ok &= (s_alg_acc[0].na == na0 + 1u);
+    s_alg_busy = 0u;
+    return ok;
+}
+
+int sdram_log_allan_report(void)
+{
+    if (s_alg_busy) { printf("ALLAN z logu: zaneprazdneno (bezi jiny vypocet)\n"); return 0; }
+    static sdram_log_rec_t buf[128];
+    sdram_log_win_t w;
+    uint32_t first = 0;
+    (void)sdram_log_read_abs(0u, NULL, 0u, &first, &w);
+    if (!w.ready || w.head <= w.oldest + 10u) { printf("ALLAN z logu: log je prazdny nebo nebezi (`sdramlog`)\n"); return 0; }
+    double gate_s = (double)w.gate_ns * 1e-9;
+    if (!(gate_s > 0.0)) { printf("ALLAN z logu: neznama brana\n"); return 0; }
+    uint32_t agg = (gate_s >= 1.0) ? 1u : (uint32_t)(1.0 / gate_s + 0.5);
+    double t0 = (double)agg * gate_s;                       /* delka bloku = tau0' */
+
+    s_alg_busy = 1u;
+    /* pruchod 1: referencni kmitocet = prumer prvnich <= 2048 platnych zaznamu (aby X bylo male, ne ramp) */
+    double fsum = 0.0; uint32_t fn = 0u, idx = w.oldest;
+    for (uint32_t c = 0; c < 16u && idx < w.head; c++) {
+        uint32_t got = sdram_log_read_abs(idx, buf, 128u, &first, &w);
+        if (got == 0u) break;
+        for (uint32_t k = 0; k < got; k++)
+            if ((buf[k].flags & SDRAM_LOG_F_A_VALID) && !(buf[k].flags & (SDRAM_LOG_F_STALE | SDRAM_LOG_F_SPIKE)) && buf[k].fa_uhz != 0u) {
+                fsum += (double)buf[k].fa_uhz * 1e-6; fn++;
+            }
+        idx += got;
+    }
+    if (fn == 0u) { s_alg_busy = 0u; printf("ALLAN z logu: v logu neni platne mereni kanalu A\n"); return 0; }
+    double fref = fsum / (double)fn;
+
+    alg_clear(); alg_segment();
+    uint32_t epoch = w.epoch, segs = 1u, gaps = 0u, blocks = 0u, valid = 0u;
+    uint32_t bc = 0u, prev_seq = 0u; int have_prev = 0; double bsum = 0.0; int in_seg = 0;
+    idx = w.oldest;
+    int aborted = 0;
+    while (idx < w.head) {
+        uint32_t got = sdram_log_read_abs(idx, buf, 128u, &first, &w);
+        if (got == 0u || w.epoch != epoch) { aborted = 1; break; }     /* producent prepsal ctena data / nova epocha */
+        if (first != idx) { have_prev = 0; bc = 0u; bsum = 0.0; in_seg = 0; alg_segment(); gaps++; }
+        for (uint32_t k = 0; k < got; k++) {
+            const sdram_log_rec_t *q = &buf[k];
+            int ok_rec = (q->flags & SDRAM_LOG_F_A_VALID) && !(q->flags & (SDRAM_LOG_F_STALE | SDRAM_LOG_F_SPIKE)) && q->fa_uhz != 0u;
+            int cont = have_prev && (q->seq == prev_seq + 1u);
+            if (!ok_rec || (have_prev && !cont)) {                      /* mezera -> novy segment */
+                if (in_seg || bc) { gaps++; segs++; }
+                bc = 0u; bsum = 0.0; in_seg = 0; alg_segment();
+            }
+            have_prev = ok_rec; prev_seq = q->seq;
+            if (!ok_rec) continue;
+            valid++;
+            bsum += (double)q->fa_uhz * 1e-6;
+            if (++bc < agg) continue;
+            double fav = bsum / (double)bc; bc = 0u; bsum = 0.0;
+            double y = (fav - fref) / fref;
+            if (fabs(y) > 1e-4) { fref = fav; y = 0.0; gaps++; segs++; alg_segment(); in_seg = 0; }   /* jiny signal */
+            alg_push(y, t0); in_seg = 1; blocks++;
+        }
+        idx += got;
+    }
+    s_alg_busy = 0u;
+    printf("ALLAN z .measlog%s: epocha %lu, brana %lu ms, %lu zaznamu (%lu platnych, %lu s), blok %lu zaznamu = tau0' %lu ms, "
+           "%lu bloku, %lu mezer/segmentu %lu%s\n",
+           w.sim ? " (EMULACE!)" : "", (unsigned long)w.epoch, (unsigned long)(w.gate_ns / 1000000u),
+           (unsigned long)(w.head - w.oldest), (unsigned long)valid, (unsigned long)((double)valid * gate_s),
+           (unsigned long)agg, (unsigned long)(t0 * 1000.0 + 0.5), (unsigned long)blocks, (unsigned long)gaps,
+           (unsigned long)segs, aborted ? "  <== PRERUSENO (log se menil)" : "");
+    printf("  tau [s]     n(ADEV)      ADEV        MDEV        HDEV\n");
+    for (uint32_t i = 0; i < ALG_NM; i++) {
+        const alg_acc_t *a = &s_alg_acc[i];
+        if (a->na < 2u) continue;
+        char sa[16], sm[16], sh[16];
+        alg_sci(sa, sizeof sa, alg_dev(a, ALG_M[i], t0, 0));
+        alg_sci(sm, sizeof sm, alg_dev(a, ALG_M[i], t0, 1));
+        alg_sci(sh, sizeof sh, alg_dev(a, ALG_M[i], t0, 2));
+        double tau = (double)ALG_M[i] * t0;
+        printf("  %5lu.%03lu  %9lu   %-10s  %-10s  %-10s\n", (unsigned long)tau, (unsigned long)((tau - floor(tau)) * 1000.0 + 0.5),
+               (unsigned long)a->na, sa, sm, sh);
+        osDelay(1);
+    }
+    printf("  (overlapping s krokem tau0'; cleny jsou korelovane -> nejistota klesa pomaleji nez 1/sqrt(n); cf. `meas`/okno ALLAN = pyramida)\n");
+    return 1;
+}
+
 int sdram_log_selftest(void)
 {
     uint32_t a;
+    if (!alg_selftest()) return 0;   /* V5: proudovy overlapping Allan == primy vypocet */
     /* prazdny log */
     if (idx_of(0u, 0u, &a)) return 0;
     /* 3 zaznamy, jeste bez pretoceni */

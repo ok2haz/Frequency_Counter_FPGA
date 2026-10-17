@@ -1564,6 +1564,10 @@ void UartTask_run(void *argument)
 				         (unsigned long)m->total_bit_errors,
 				         m->any_unstable ? " + NESTABILNI CTENI FLASH" : "");
 			  }
+			  else if (strcmp(RxBuffer, "allan log") == 0) {
+				  /* V5: overlapping Allan nad .measlog (UartTask, ~0,3 s). */
+				  (void)sdram_log_allan_report();
+			  }
 			  else if (strncmp(RxBuffer, "sdramlog", 8) == 0) {
 				  /* ── Datova cache mereni v SDRAM (8 MB @0xC1000000) ────────────
 				   * `sdramlog`        = stav (ready/kapacita/naplneni/zahozeno)
