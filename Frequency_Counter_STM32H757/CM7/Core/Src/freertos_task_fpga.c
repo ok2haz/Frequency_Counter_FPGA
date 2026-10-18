@@ -324,6 +324,7 @@ void StartFpgaTask(void *argument)
 #include "gpsdo.h"
 #include "ad5693.h"      /* g_dac, ad5693_mv_to_code, AD5693_RESTORE_MAX_MV */
 #include "gps.h"         /* gps_get (fix), gps_timtp_get (sawtooth) */
+#include "meas_present.h"   /* mp_ref_ppb -- nejistota reference podle stavu smycky */
 #include <math.h>
 
 volatile uint8_t  g_gpsdo_drive;
@@ -481,6 +482,66 @@ static uint8_t  s_h_st[GPSDO_HIST_N];
 static volatile uint16_t s_h_head, s_h_n;      /* head = index PRISTIHO zapisu, n = platnych bodu */
 static uint32_t s_h_ms;
 
+/* ── ZMERENE vstupy nejistoty reference (STATUS #324; viz mp_ref_ppb v meas_present.h) ─────────────────────────────────
+ * Z historie smycky (1 bod / 10 s, posledni SOUVISLY usek LOCK) se pocita:
+ *  - u    = ADEV faze OCXO–GPS pri tau = m·10 s, m = 100 (1000 s), jinak mensi (50/20/10 podle delky useku) [ppb];
+ *           mensi tau dava horsi (konzervativni) cislo, protoze v nem vic vazi sum 1PPS;
+ *  - drift = |sklon kodu DAC| (LS pres cely usek, nejmin 30 min) × K [ppb/h] = zmereny dopredny drift OCXO (starnuti + teplota).
+ * Cista logika nad poli (kryje gpsdo_selftest). Vraci 1, kdyz je `u` zmereno. */
+static int gp_ref_core(const int16_t *x_ns, const uint32_t *code_q16, int n, double kdac, double *u_ppb, double *drift_ppb_h)
+{
+    static const int MS[4] = { 100, 50, 20, 10 };
+    *u_ppb = 0.0; *drift_ppb_h = 0.0;
+    for (int k = 0; k < 4; k++) {
+        int m = MS[k];
+        if (n - 2 * m < 10) continue;
+        double s = 0.0; int c = 0;
+        for (int i = 0; i + 2 * m < n; i++) {
+            double d = (double)x_ns[i + 2 * m] - 2.0 * (double)x_ns[i + m] + (double)x_ns[i];
+            s += d * d; c++;
+        }
+        *u_ppb = sqrt(0.5 * s / (double)c) / ((double)m * (double)GPSDO_HIST_PERIOD_S);   /* ns/s = ppb */
+        break;
+    }
+    if (n >= 180 && kdac > 0.0) {
+        double cm = 0.0;
+        for (int i = 0; i < n; i++) cm += (double)code_q16[i] / 65536.0;
+        cm /= (double)n;
+        const double tc = 0.5 * (double)(n - 1);
+        double sxy = 0.0, sxx = 0.0;
+        for (int i = 0; i < n; i++) {
+            double t = (double)i - tc;
+            sxy += t * ((double)code_q16[i] / 65536.0 - cm);
+            sxx += t * t;
+        }
+        double slope = (sxx > 0.0) ? sxy / sxx / (double)GPSDO_HIST_PERIOD_S : 0.0;   /* LSB / s */
+        *drift_ppb_h = fabs(slope) * kdac * 3600.0 * 1e9;
+    }
+    return *u_ppb > 0.0;
+}
+
+static volatile double s_ref_lock_u, s_ref_drift;    /* cache zmerenych hodnot; zapis jen gpsdo_tick (pod kritickou sekci), cte kdokoli */
+
+static void gp_ref_update(void)
+{
+    static int16_t  bx[GPSDO_HIST_N];                /* 1,4 kB + 2,9 kB, ne na stack; vola jen gpsdo_tick (defaultTask) */
+    static uint32_t bc[GPSDO_HIST_N];
+    const uint16_t cnt = s_h_n, head = s_h_head;
+    int n = 0;
+    for (int k = 0; k < (int)cnt; k++) {             /* od nejnovejsiho dozadu: jen souvisly usek LOCK */
+        uint16_t idx = (uint16_t)((head + GPSDO_HIST_N - 1u - (uint16_t)k) % GPSDO_HIST_N);
+        if (s_h_st[idx] != GPSDO_LOCK) break;
+        n++;
+    }
+    for (int i = 0; i < n; i++) {
+        uint16_t idx = (uint16_t)((head + GPSDO_HIST_N - (uint16_t)n + (uint16_t)i) % GPSDO_HIST_N);
+        bx[i] = s_h_x[idx]; bc[i] = s_h_code[idx];
+    }
+    double u, d;
+    (void)gp_ref_core(bx, bc, n, (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac, &u, &d);
+    taskENTER_CRITICAL(); s_ref_lock_u = u; s_ref_drift = d; taskEXIT_CRITICAL();
+}
+
 static void gp_hist_push(uint32_t now)
 {
     if ((uint32_t)(now - s_h_ms) < GPSDO_HIST_PERIOD_S * 1000u) return;
@@ -494,6 +555,7 @@ static void gp_hist_push(uint32_t now)
     __DMB();
     s_h_head = (uint16_t)((h + 1u) % GPSDO_HIST_N);
     if (s_h_n < GPSDO_HIST_N) s_h_n++;
+    if (s_g_state == GPSDO_LOCK) gp_ref_update();   /* nova zmereni nejistoty reference (1x / 10 s) */
 }
 
 uint16_t gpsdo_hist_count(void) { return s_h_n; }
@@ -786,6 +848,20 @@ void gpsdo_get(gpsdo_status_t *out)
     taskENTER_CRITICAL(); *out = s_pub; taskEXIT_CRITICAL();
 }
 
+/* Nejistota reference [ppb] podle stavu smycky z ZMERENYCH hodnot (FLL: |y| okna, LOCK: ADEV faze, HOLD: ADEV + drift kodu); kdyz mereni
+ * chybi, nahradni tabulka. Jedno misto pravdy pro hlavni cislo, okno ANALYZA i web (IPC `ref_ppb_x100`). Smi volat kdokoli. */
+double gpsdo_ref_ppb(uint8_t *measured)
+{
+    gpsdo_status_t st;
+    gpsdo_get(&st);
+    mp_ref_in_t r;
+    memset(&r, 0, sizeof r);
+    r.state = st.state; r.why = st.why; r.locked = st.locked; r.state_s = st.state_s;
+    r.y_abs_ppb = fabs(st.y) * 1e9; r.fll_win_s = st.fll_win_s;
+    taskENTER_CRITICAL(); r.lock_u_ppb = s_ref_lock_u; r.hold_u0_ppb = s_ref_lock_u; r.hold_drift_ppb_h = s_ref_drift; taskEXIT_CRITICAL();
+    return mp_ref_ppb(&r, measured);
+}
+
 void gpsdo_enable(int on)
 {
     if (on) { if (!s_g_en) { s_gc.diverged = 0u; s_g_why = GPSDO_WHY_NONE; } s_g_en = 1u; }
@@ -909,5 +985,22 @@ int gpsdo_selftest(void)
     (void)st_run(GPSDO_KDAC_DEFAULT, 1.0e-11, 3000u, &la, &ye, &xe, &dv);
     ok = ok && dv;
     ok = ok && st_tau_advise();
+    /* Zmerena nejistota reference: syntetika. Drift kodu 0,76 LSB/h (K 3,4e-11) = 0,0258 ppb/h; bily PM ±5 ns (σ 2,9 ns) -> ADEV @ 1000 s ~ 0,005 ppb. */
+    {   static int16_t  tx[360];
+        static uint32_t tc[360];
+        uint32_t rnd = 0x1234ABCDu;
+        for (int i = 0; i < 360; i++) {
+            rnd = rnd * 1664525u + 1013904223u;
+            tx[i] = (int16_t)((int)((rnd >> 16) % 11u) - 5);
+            tc[i] = (uint32_t)((24920.0 + 0.76 / 3600.0 * 10.0 * (double)i) * 65536.0 + 0.5);
+        }
+        double u, d;
+        int m = gp_ref_core(tx, tc, 360, 3.4e-11, &u, &d);
+        ok = ok && m && u > 0.003 && u < 0.009 && d > 0.0255 && d < 0.0262;
+        m = gp_ref_core(tx, tc, 100, 3.4e-11, &u, &d);                       /* kratky usek: ADEV na mensim tau, drift NEzmeren (< 30 min) */
+        ok = ok && m && d == 0.0;
+        m = gp_ref_core(tx, tc, 15, 3.4e-11, &u, &d);                        /* skoro nic: nezmereno */
+        ok = ok && !m && u == 0.0 && d == 0.0;
+    }
     return ok;
 }

@@ -49,7 +49,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  28u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  29u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -154,7 +154,9 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        Blok `stab` lezi PRED `fpgadiag`/`gpsdo`/`raw`, ty se POSUNOU (za `cm4` -> detekce nesouladu bank
                                        funguje). ⚠️⚠️ Flashnout OBE banky.
                                        v28 (2026-10-18): hlavicka `ipc_stab_t` nese `mode` (pohled/filtr) a `outl`/`outn` (vyrazene / posouzene vzorky filtru
-                                       izolovanych odlehlych, web `/api/stab` pole ro/rn/rm); `pt[]` se POSUNULO. ⚠️⚠️ Flashnout OBE banky. */
+                                       izolovanych odlehlych, web `/api/stab` pole ro/rn/rm); `pt[]` se POSUNULO. ⚠️⚠️ Flashnout OBE banky.
+                                       v29 (2026-10-18): `ipc_gpsdo_t` 40 -> 48 B (`ref_ppb_x100`, `ref_meas`): nejistota reference podle stavu smycky pro web;
+                                       blok lezi ZA `cm4`, `raw` za nim se posouva. ⚠️⚠️ Flashnout OBE banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -613,8 +615,11 @@ typedef struct {
     uint16_t tau_s;                /* casova konstanta PLL [s] */
     uint16_t kdac_e13;             /* K (odhad z FLL) x 1e13 */
     int32_t  x_raw_ns;             /* v25: SUROVA fazova chyba (TIE) [ns], platna ve stavu LOCK (jinak 0) */
+    uint32_t ref_ppb_x100;         /* v29: nejistota reference [0,01 ppb] podle stavu smycky (gpsdo_ref_ppb; web ji nema jak spocitat) */
+    uint8_t  ref_meas;             /* v29: 1 = ZMERENA (FLL |y|, LOCK ADEV faze, HOLD ADEV + drift kodu), 0 = nahradni tabulka */
+    uint8_t  _pad_ref[3];
 } ipc_gpsdo_t;
-_Static_assert(sizeof(ipc_gpsdo_t) == 40u, "ipc_gpsdo_t zmenil velikost");
+_Static_assert(sizeof(ipc_gpsdo_t) == 48u, "ipc_gpsdo_t zmenil velikost");
 
 /* ── v26 (2026-10-17): SUROVA mereni ze `sdram_log` pro web (`GET /api/raw`, STATUS #308 E).
  * Duvod: logger na PC musel desku pollovat 10x/s, aby dostal kazde mereni (hradlo 0,25 s), a sam tim

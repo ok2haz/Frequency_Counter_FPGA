@@ -478,8 +478,7 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jputf(&j, "\"tdc_ps\":%lu,", (unsigned long)(MP_TDC_PS));
     /* Nejistota reference PODLE STAVU smycky (mp_ref_ppb, sdilene s hlavnim cislem a oknem ANALYZA); x100 = 0,01 ppb rozliseni.
      * Cte se primo z bloku gpsdo (par bajtu, roztrzene cteni by dalo nanejvys jednu spatnou hodnotu na tik). */
-    { double rp = mp_ref_ppb(g_ipc.gpsdo.state, g_ipc.gpsdo.why, g_ipc.gpsdo.locked, g_ipc.gpsdo.state_s);
-      jputf(&j, "\"ref_ppb_x100\":%lu,", (unsigned long)(rp * 100.0 + 0.5)); }
+    jputf(&j, "\"ref_ppb_x100\":%lu,\"ref_meas\":%u,", (unsigned long)g_ipc.gpsdo.ref_ppb_x100, (unsigned)g_ipc.gpsdo.ref_meas);
     /* NAMERENA σy@1s z firmwaru (sigma_tau[0]) jako integer ×1e15 (zadny %f):
      * headline pocita hranici podtrzeni z TEZE σy co displej -> shoda. 0 = jeste
      * neni (web spadne na teoreticke √2·tdc/gate). Clamp na uint32. */
@@ -4198,7 +4197,7 @@ static const char SPA_HTML[] =
 "  }\n"
 "  row('rozliseni hradla',uRes,'sqrt2*'+(s.tdc_ps/1000)+' ns / '+gate.toFixed(3)+' s');\n"
 "  row('stabilita ref.',  uSta, uSta?('sigma_y @ '+gate.toFixed(3)+' s'):'zatim bez ADEV');\n"
-"  row('presnost ref.',   uRef, ((s.ref_ppb_x100||0)/100)+' ppb (podle stavu smycky)');\n"
+"  row('presnost ref.',   uRef, ((s.ref_ppb_x100||0)/100)+' ppb ('+(s.ref_meas?'zmereno':'odhad')+', podle stavu smycky)');\n"
 "  h+='<b>CELKEM u (k=1)</b><span>'+sci(uTot)+'</span><i>kvadraticky</i>';\n"
 "  h+='<b>U (k=2)</b><span>'+sci(U)+'</span><i>~95 %</i>';\n"
 "  $('tUnc').innerHTML=h;\n"

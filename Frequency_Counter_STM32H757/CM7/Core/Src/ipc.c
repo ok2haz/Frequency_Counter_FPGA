@@ -197,6 +197,9 @@ void ipc_publish(void)
             g_ipc.gpsdo.tau_s    = (uint16_t)gs.tau_s;
             g_ipc.gpsdo.kdac_e13 = (uint16_t)(gs.kdac * 1e13 + 0.5);
             g_ipc.gpsdo.x_raw_ns = (int32_t)((gs.x_raw_ns > 2e9) ? 2e9 : (gs.x_raw_ns < -2e9 ? -2e9 : gs.x_raw_ns));
+            { uint8_t rm = 0; double rp = gpsdo_ref_ppb(&rm);
+              g_ipc.gpsdo.ref_ppb_x100 = (uint32_t)((rp > 4.0e7) ? 4.0e9 : rp * 100.0 + 0.5);
+              g_ipc.gpsdo.ref_meas = rm; }
             IPC_DMB(); g_ipc.gpsdo.gen++;
         }
     }

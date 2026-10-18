@@ -101,6 +101,9 @@ typedef struct {
 void     gpsdo_tau_advise(gpsdo_tau_adv_t *out);   /* UiTask / UartTask; vysledek se drzi 10 s (cache) */
 
 void     gpsdo_tick(void);                 /* VYHRADNE defaultTask, ~100 Hz */
+/* Nejistota reference [ppb] podle stavu smycky z ZMERENYCH hodnot (FLL: |y| okna, LOCK: ADEV faze, HOLD: ADEV + drift kodu DAC), jinak
+ * z nahradni tabulky (meas_present.h). `measured` (nepovinne) = 1 pro zmereno. Smi volat kdokoli. */
+double   gpsdo_ref_ppb(uint8_t *measured);
 void     gpsdo_get(gpsdo_status_t *out);
 void     gpsdo_enable(int on);             /* on = 1: zapnout (z OFF jde pres WAIT); 0: vypnout, DAC se uz neridi */
 int      gpsdo_enabled(void);

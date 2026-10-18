@@ -554,16 +554,34 @@ int mp_selftest(void)
         mp_budget(1e7, 0.25, 2500.0, 0.0, 1.0, &bv);  ok &= (bv.valid == 1);
     }
 
-    /* ── Nejistota reference podle stavu smycky ──────────────────────────────── */
-    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 1, 100u) == MP_REF_PPB_LOCK);
-    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 0, 10u)  == MP_REF_PPB_LOCKING);
-    ok &= (mp_ref_ppb(GPSDO_FLL, 0, 0, 10u)   == MP_REF_PPB_FLL);
-    ok &= (mp_ref_ppb(GPSDO_OFF, GPSDO_WHY_USER, 0, 0u) == MP_REF_PPB_FREE);
-    ok &= (mp_ref_ppb(GPSDO_WAIT, GPSDO_WHY_NOFIX, 0, 5u) == MP_REF_PPB_FREE);
-    ok &= (mp_ref_ppb(GPSDO_WAIT, GPSDO_WHY_REFEXT, 0, 5u) == MP_REF_PPB);
-    ok &= (mp_ref_ppb(GPSDO_HOLD, 0, 0, 7200u) > mp_ref_ppb(GPSDO_HOLD, 0, 0, 0u));          /* holdover s casem roste */
-    ok &= (mp_ref_ppb(GPSDO_HOLD, 0, 0, 0xFFFFFFFFu) == MP_REF_PPB_HOLD0 + 24.0 * MP_REF_PPB_HOLD_H);   /* strop 24 h */
-    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 1, 0u) < mp_ref_ppb(GPSDO_FLL, 0, 0, 0u));            /* poradi dulezitosti */
+    /* ── Nejistota reference podle stavu smycky (zmerene vstupy maji prednost pred nahradni tabulkou) ───── */
+    {   mp_ref_in_t r; uint8_t m;
+        memset(&r, 0, sizeof r);
+        r.state = GPSDO_LOCK; r.locked = 1u;
+        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCK && m == 0u);                  /* bez mereni: nahrada */
+        r.lock_u_ppb = 0.013;
+        ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);                            /* zmerena ADEV fazy */
+        r.locked = 0u;
+        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCKING && m == 0u);
+        memset(&r, 0, sizeof r); r.state = GPSDO_FLL;
+        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_FREE && m == 0u);                  /* zadne okno: OCXO muze byt ppm mimo */
+        r.y_abs_ppb = 3.0; r.fll_win_s = 16u;                                      /* zmereno: 3 ppb, sum okna 16 s = 0,256 ppb */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 3.0 && v < 3.04); }
+        r.y_abs_ppb = 0.001; r.fll_win_s = 128u;                                   /* dobre okno: dominuje sum okna 0,032 ppb */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.032 && v < 0.033); }
+        memset(&r, 0, sizeof r); r.state = GPSDO_HOLD; r.state_s = 3600u;
+        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_HOLD0 + MP_REF_PPB_HOLD_H && m == 0u);   /* nahrada, linearne */
+        r.hold_u0_ppb = 0.011; r.hold_drift_ppb_h = 0.026; r.state_s = 7200u;      /* zmereno: 26 ppt/h, po 2 h */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0531 && v < 0.0532); }   /* sqrt(0,011^2 + 0,052^2) */
+        r.state_s = 0xFFFFFFFFu;
+        { double v = mp_ref_ppb(&r, &m); ok &= (v < 0.63 && v > 0.62); }          /* strop 24 h: 0,026*24 = 0,624 */
+        memset(&r, 0, sizeof r); r.state = GPSDO_OFF;
+        ok &= (mp_ref_ppb(&r, NULL) == MP_REF_PPB_FREE);
+        r.state = GPSDO_WAIT; r.why = GPSDO_WHY_NOFIX;
+        ok &= (mp_ref_ppb(&r, NULL) == MP_REF_PPB_FREE);
+        r.why = GPSDO_WHY_REFEXT;
+        ok &= (mp_ref_ppb(&r, NULL) == MP_REF_PPB);
+    }
 
     return ok;
 }

@@ -38,7 +38,7 @@
 #define CALIB_DEFAULT_GAIN_VC           (25.0f / 10.0f)         /* AIN0=OCXO Vc, R51=15k/R52=10k: 2,5 */
 #define CALIB_DEFAULT_GAIN_VBUS         (105.1f / 5.1f)         /* AIN1=VBUS,    R53=100k/R54=5k1 (R54 4k99 nebyl osazen; 5k1 dosazen 2026-10-11): ~20,608 */
 
-#define CALIB_DEFAULT_VBAT_CORR         58.0f                   /* mV: dioda D3 75,6 mV - chyba ADC 17 mV (mereno 2026-10-18, viz calib.h) */
+#define CALIB_DEFAULT_VBAT_CORR         75.6f                   /* mV: PRESNE ubytek diody D3 (multimetr 2026-10-18, viz calib.h); chyba ADC se NEodecita */
 
 volatile calib_t g_calib = {
     CALIB_DEFAULT_AD8307_SLOPE, CALIB_DEFAULT_AD8307_INTERCEPT,

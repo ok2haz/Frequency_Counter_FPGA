@@ -4727,7 +4727,7 @@ static const struct { volatile float *val; float step, lo, hi; int decimals;
     { &g_calib.gain_12v,               0.001f, 1.000f, 3.000f, 3, "AIN2 +3V3 gain",    "x",   242 },
     { &g_calib.gain_5v,                0.001f, 1.500f, 2.500f, 3, "AIN3 5V gain",      "x",   308 },
     /* STATUS #322: korekce VBAT na napeti baterie (dioda D3 + chyba ADC). Zmena se projevi pri dalsim prevodu VBAT (1 s, dokud je okno otevrene). */
-    { &g_calib.vbat_corr_mv,           1.0f, -200.0f, 400.0f, 0, "VBAT korekce",         "mV",  374 },
+    { &g_calib.vbat_corr_mv,           0.1f, -200.0f, 400.0f, 1, "VBAT korekce",         "mV",  374 },
 };
 #define KALIB_ROW_N 5
 #define KALIB_BTN_W 60
@@ -5816,8 +5816,9 @@ static void app_gpsdo_render_analyza(void)
      * pro svuj rozpocet nejistoty, takze musi mit JEDEN zdroj (viz meas_present.h). */
     gpsdo_status_t gref;
     gpsdo_get(&gref);
+    uint8_t ref_meas = 0;
     mp_budget(hz, gate, screen_main_tdc_ps(), (double)sigma,
-              mp_ref_ppb(gref.state, gref.why, gref.locked, gref.state_s), &bd);   /* reference podle stavu smycky */
+              gpsdo_ref_ppb(&ref_meas), &bd);   /* reference podle stavu smycky, ze ZMERENYCH hodnot kde to jde */
 
     int drew = first;
     char b[64], v[24];
@@ -5860,7 +5861,7 @@ static void app_gpsdo_render_analyza(void)
         drew = 1;
     }
     { char rq[32]; fmt_sci_ppb(bd.u_ref_rel, rq, sizeof rq);
-      snprintf(b, sizeof b, "%s  (%s)", rq, gpsdo_state_name(gref.state)); }
+      snprintf(b, sizeof b, "%s  (%s, %s)", rq, gpsdo_state_name(gref.state), ref_meas ? "zmereno" : "odhad"); }
     if (first || dchg(c_ref, sizeof c_ref, b)) {
         kv_row_live(208, "  reference:", b, UI_COLOR_INK_2, first);
         ana_share_bar(208, bd.u_ref_rel, bd.u_tot_rel, UI_COLOR_WARN, bd.valid);

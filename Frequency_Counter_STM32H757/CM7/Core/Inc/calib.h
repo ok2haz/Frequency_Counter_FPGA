@@ -36,9 +36,11 @@ typedef struct {
      * (dosud pevne z hodnot rezistoru, tj. nesly zkalibrovat podle multimetru). Ulozeny blob "CAL2". */
     float gain_vc;                /* multiplikator ADS mV -> skutecne mV, AIN0 = OCXO Vc (R51/R52, ~2,5) */
     float gain_vbus;              /* multiplikator ADS mV -> skutecne mV, AIN1 = VBUS (R53/R54, ~21,04) */
-    /* 2026-10-18 (STATUS #322): korekce VBAT na NAPETI BATERIE [mV] = ubytek diody D3 (B0520LW) + chyba ADC proti multimetru.
-     * ADC3 meri napeti na pinu VBAT, baterie je o ubytek diody vyssi. Naměřeno 2026-10-18: baterie 3,046 V, pin (multimetr) 2,971 V
-     * => dioda 75,6 mV; ADC cetl 2,988 V (o 17 mV vic nez multimetr) => korekce vuci ADC = 3046 - 2988 = 58 mV. Ulozeny blob "CAL3". */
+    /* 2026-10-18 (STATUS #322): korekce VBAT na NAPETI BATERIE [mV] = ubytek diody D3 (B0520LW). ADC3 meri napeti na pinu VBAT, baterie je
+     * o ubytek diody vyssi. Naměřeno 2026-10-18: baterie 3,046 V, pin (multimetr) 2,971 V => dioda 75,6 mV = vychozi hodnota.
+     * ⚠️ Chyba ADC (cetl 2,988 V, tj. o 17 mV VIC nez multimetr na tomtez pinu) se do korekce ZAMERNE nezapocitava: je to jina veličina
+     * (zesileni/offset ADC3 + VREFBUF, ne dioda), muze se menit s teplotou a jedno srovnani s multimetrem ji nerozlisi na offset/zisk.
+     * Dusledek: zobrazena baterie je o ~17 mV (0,6 %) VYSSI nez multimetr (3,064 vs 3,046 V). Vyladit na multimetr = snizit na 58,6 mV. Blob "CAL3". */
     float vbat_corr_mv;
 } calib_t;
 

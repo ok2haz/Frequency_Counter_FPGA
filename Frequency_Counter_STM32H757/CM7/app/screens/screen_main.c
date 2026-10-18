@@ -933,9 +933,7 @@ double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
 /* Nejistota reference [ppb] podle STAVU smycky GPSDO (viz mp_ref_ppb). Vola UiTask (gpsdo_get je pod kritickou sekci). */
 double screen_main_ref_ppb(void)
 {
-    gpsdo_status_t g;
-    gpsdo_get(&g);
-    return mp_ref_ppb(g.state, g.why, g.locked, g.state_s);
+    return gpsdo_ref_ppb(NULL);
 }
 
 /* RELATIVNI nejistota jednoho mereni (k=1) pro hlavni cislo: kvadraticky soucet max(σy@1s, rozliseni hradla) a nejistoty

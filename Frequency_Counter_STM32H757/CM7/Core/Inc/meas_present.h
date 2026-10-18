@@ -149,31 +149,63 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
 
 /* 🔴 Nejistota REFERENCE podle STAVU smyčky GPSDO (2026-10-18; dřív konstanta 1 ppb pořád). Konstantní 1 ppb byla zároveň příliš
  * pesimistická za zamčené smyčky a příliš optimistická bez ní: OCXO před prvním zamčením bylo o −0,84 ppm vedle (deník měření), a
- * hlavní číslo přesto ukazovalo „důvěryhodné“ číslice až na 1 ppb. Hodnoty [ppb] (relativně k UTC):
- *  - LOCK zamčeno:     0,01   (10 h běh 2026-10-17/18: offset proti nezávislému GPSDO 3·10⁻¹³ ± 2,3·10⁻¹², ADEV fáze 1,1·10⁻¹¹ @ 1000 s)
- *  - LOCK nedoladěno:  0,1    (prvních ~60 s po zamčení, |fáze|/|y| ještě nad prahem `locked`)
- *  - HOLD:             0,05 + 0,03/h (odhad: zbytková chyba kmitočtu při ztrátě + horní mez driftu 26 ppt/h z téhož běhu; ⬜ HYPOTÉZA do #303/#311)
- *  - FLL:              10     (rozběh, kmitočet se teprve dolaďuje z ppm; ⬜ odhad)
- *  - OFF / WAIT:       1000   (volný chod OCXO, naměřeno −0,84 ppm)
- *  - WAIT + externí reference (`GPSDO_WHY_REFEXT`): MP_REF_PPB (kvalita cizí reference není známa)
- * Jediný zdroj pravdy: CM7 (hlavní číslo, okno ANALÝZA) i web (`/api/state` → `ref_ppb_x100`) volají tuto funkci. */
+ * hlavní číslo přesto ukazovalo „důvěryhodné“ číslice až na 1 ppb. Od v0.30.0 se ZMĚŘENÉ hodnoty berou ze smyčky, tabulka konstant
+ * je jen NÁHRADA, když měření chybí (bez historie, těsně po startu). Vstup vyplňuje `gpsdo_ref_ppb()` na CM7 (freertos_task_fpga.c),
+ * hotové číslo jde na web přes IPC (`ref_ppb_x100`), takže logika žije na JEDNOM místě. Výstup [ppb] relativně k UTC:
+ *  - LOCK zamčeno:  změřená ADEV fáze OCXO–GPS při τ ≈ 1000 s z historie smyčky (`lock_u_ppb`); náhrada 0,01 (10h běh 2026-10-17/18: 1,1·10⁻¹¹)
+ *  - LOCK nedoladěno (< 60 s): 0,1 (odhad)
+ *  - FLL:           ZMĚŘENO: |y| posledního okna FLL (odchylka OCXO proti GPS před krokem DAC) ⊕ šum okna √2·2,9 ns/okno; bez dokončeného okna 1000
+ *  - HOLD:          ZMĚŘENO při vstupu: u0 = ADEV fáze @ ≤ 1000 s, drift = sklon kódu DAC za posledních ≤ 2 h LOCK × K [ppb/h]; u = √(u0² + (drift·t)²);
+ *                   náhrada 0,05 + 0,03 ppb/h (⬜ HYPOTÉZA); teplotu NEzahrnuje
+ *  - OFF / WAIT:    1000 (volný chod OCXO, naměřeno −0,84 ppm); WAIT + externí reference (`GPSDO_WHY_REFEXT`): MP_REF_PPB (kvalita cizí reference neznámá) */
 #define MP_REF_PPB_LOCK     0.01
 #define MP_REF_PPB_LOCKING  0.1
 #define MP_REF_PPB_HOLD0    0.05
-#define MP_REF_PPB_HOLD_H   0.03    /* přírůstek za hodinu holdoveru */
-#define MP_REF_PPB_FLL      10.0
+#define MP_REF_PPB_HOLD_H   0.03    /* náhrada driftu za hodinu holdoveru */
 #define MP_REF_PPB_FREE     1000.0
-static inline double mp_ref_ppb(uint8_t state, uint8_t why, uint8_t locked, uint32_t state_s)
+#define MP_PPS_PM_NS        2.9     /* šum jednoho odečtu fáze po opravě sawtooth [ns]: σx = 10 ns/√12 (10h běh 2026-10-17/18) */
+typedef struct {
+    uint8_t  state, why, locked;
+    uint32_t state_s;           /* sekund v aktuálním stavu */
+    double   y_abs_ppb;         /* FLL: |y| posledního dokončeného okna [ppb]; 0 = žádné okno ještě neskončilo */
+    uint32_t fll_win_s;         /* FLL: délka okna [s] */
+    double   lock_u_ppb;        /* LOCK: změřená ADEV fáze @ ~1000 s [ppb]; 0 = nezměřeno */
+    double   hold_u0_ppb;       /* HOLD: nejistota při vstupu [ppb]; 0 = nezměřeno */
+    double   hold_drift_ppb_h;  /* HOLD: změřený drift z kódu DAC [ppb/h]; 0 = nezměřeno */
+} mp_ref_in_t;
+/* @param meas nepovinné: 1 = výsledek je ZMĚŘENÝ, 0 = z náhradní tabulky */
+static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
 {
-    switch (state) {
-    case GPSDO_LOCK: return locked ? MP_REF_PPB_LOCK : MP_REF_PPB_LOCKING;
-    case GPSDO_HOLD: { double h = (double)state_s / 3600.0; if (h > 24.0) h = 24.0;
-                       return MP_REF_PPB_HOLD0 + MP_REF_PPB_HOLD_H * h; }
-    case GPSDO_FLL:  return MP_REF_PPB_FLL;
-    case GPSDO_WAIT: if (why == GPSDO_WHY_REFEXT) return MP_REF_PPB;   /* externí reference: kvalita neznámá */
-                     return MP_REF_PPB_FREE;
-    default:         return MP_REF_PPB_FREE;                           /* OFF */
+    uint8_t m = 0;
+    double v;
+    switch (r->state) {
+    case GPSDO_LOCK:
+        if (!r->locked) { v = MP_REF_PPB_LOCKING; }
+        else if (r->lock_u_ppb > 0.0) { v = r->lock_u_ppb; m = 1; }
+        else v = MP_REF_PPB_LOCK;
+        break;
+    case GPSDO_HOLD: {
+        double h = (double)r->state_s / 3600.0; if (h > 24.0) h = 24.0;
+        double u0 = (r->hold_u0_ppb > 0.0) ? r->hold_u0_ppb : MP_REF_PPB_HOLD0;
+        double dr = (r->hold_drift_ppb_h > 0.0) ? r->hold_drift_ppb_h : MP_REF_PPB_HOLD_H;
+        m = (r->hold_u0_ppb > 0.0 && r->hold_drift_ppb_h > 0.0) ? 1 : 0;
+        v = (r->hold_u0_ppb > 0.0 && r->hold_drift_ppb_h > 0.0) ? __builtin_sqrt(u0 * u0 + dr * h * dr * h) : u0 + dr * h;
+        break; }
+    case GPSDO_FLL:
+        if (r->y_abs_ppb > 0.0 && r->fll_win_s > 0u) {
+            double sg = 1.4142135623730951 * MP_PPS_PM_NS / (double)r->fll_win_s;   /* ns/s = ppb */
+            v = __builtin_sqrt(r->y_abs_ppb * r->y_abs_ppb + sg * sg); m = 1;
+        } else v = MP_REF_PPB_FREE;                                                 /* okno zatím neskončilo: OCXO může být ppm mimo */
+        break;
+    case GPSDO_WAIT:
+        v = (r->why == GPSDO_WHY_REFEXT) ? MP_REF_PPB : MP_REF_PPB_FREE;
+        break;
+    default:
+        v = MP_REF_PPB_FREE;                                                        /* OFF */
+        break;
     }
+    if (meas) *meas = m;
+    return v;
 }
 
 /* ══════════════ AD8307: mV → dBm — JEDINÝ zdroj převodu (F-0165) ═══════════
