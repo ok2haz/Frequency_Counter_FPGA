@@ -4891,6 +4891,16 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** commit s v0.30.1 (diagnostika kódového bodu přišla ve v0.29.0)
 - **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno na HW
 
+### L-0179 — Podlaha čítače v Allanu končila u 10 s: osa se řídila jen křivkou
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** `allan_metric_yrange` (displej), `axLim` (web)
+- **Symptom (hlášení uživatele):** čerchovaná čára podlahy končí u 10 s.
+- **Příčina:** pravidlo z 2026-10-07 „osa jen podle křivky“ (aby podlaha ~1/τ nestáhla graf) způsobilo, že podlaha nad 10 s ležela pod osou. Pravidlo bylo správné proti krajnosti (1e-16), ale přehnané.
+- **Oprava:** osa se natáhne k podlaze, nejvýš 7,5 dekady pod nejvyšší bod křivky (displej `flo`, web `axLim`); test `allan_detail_test`.
+- **Pravidlo:** omezení typu „X nesmí tahnout osu“ vždy formuluj jako mez (kolik dekád), ne jako zákaz; zákaz schová data, mez jen krajní případ.
+- **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno na HW
+
 ---
 
 ## Archiv (neplatné lekce)
