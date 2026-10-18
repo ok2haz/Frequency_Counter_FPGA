@@ -2176,6 +2176,26 @@ static void fmt_dec_u(char *b, size_t n, double v, int dec)
     snprintf(b, n, "%s", (t[0] == '+') ? t + 1 : t);
 }
 
+/* Odchylka ve zvolene RELATIVNI jednotce -> text s jednotkou. Pravidlo (zadani uzivatele 2026-10-18, „kdekoliv v pristroji“):
+ * pokud by ppm bylo POD 1 (|rel| < 1e-6), pise se misto nej ppb A JEN NA DESETINY (1 desetina); ppb a ppt vubec jen na desetiny.
+ * ppm (>= 1 ppm) ma 4 desetiny. `unit` je pozadovana jednotka z mp_unit_t (Hz/rel tu nejsou). `rel` = (f - nominal)/nominal. */
+static void fmt_rel_unit(char *b, size_t n, double rel, mp_unit_t unit, int sign)
+{
+    mp_unit_t u = unit;
+    double a = (rel < 0.0) ? -rel : rel;
+    if (u == MP_UNIT_PPM && a < 1e-6) u = MP_UNIT_PPB;   /* ppm pod nulou (< 1) -> ppb */
+    double v; int dec;
+    switch (u) {
+    case MP_UNIT_PPM: v = rel * 1e6;  dec = 4; break;
+    case MP_UNIT_PPB: v = rel * 1e9;  dec = 1; break;
+    case MP_UNIT_PPT: v = rel * 1e12; dec = 1; break;
+    default:          v = rel;        dec = 5; break;
+    }
+    char t[32];
+    if (sign) fmt_sdec(t, sizeof t, v, dec); else fmt_dec_u(t, sizeof t, v, dec);
+    snprintf(b, n, "%s %s", t, mp_unit_label(u));
+}
+
 /* Dopocita UI preset indexy (M, pasmo) z g_meas_cfg — po nacteni z flash
  * (syscfg) drzi cfg hodnoty, ale indexy jsou app-lokalni. M je v cfg presne
  * (round-trip pres flash zachova bit-vzor), pasmo = (hi-lo)/2 s tolerance. */
@@ -4190,9 +4210,11 @@ static void app_gpsdo_render_devmult(void)
     }
     fmt_sdec(b, sizeof b, df, 5);
     if (first || dchg(c_raw, sizeof c_raw, b)) { kv_row_live(244, "df (Hz):", b, UI_COLOR_INK_2, first); drew = 1; }
-    fmt_sdec(b, sizeof b, (f0 > 0.0) ? df / f0 * 1e9 : 0.0, 2);
+    fmt_sdec(b, sizeof b, (f0 > 0.0) ? df / f0 * 1e9 : 0.0, 1);   /* ppb jen na desetiny */
     if (first || dchg(c_ppb, sizeof c_ppb, b)) { kv_row_live(280, "ppb:", b, UI_COLOR_INK_2, first); drew = 1; }
-    fmt_sdec(b, sizeof b, (f0 > 0.0) ? df / f0 * 1e6 : 0.0, 5);
+    { double ppm = (f0 > 0.0) ? df / f0 * 1e6 : 0.0;               /* ppm az od 1 ppm, pod tim jen ppb vyse */
+      if (ppm < 1.0 && ppm > -1.0) snprintf(b, sizeof b, "pod 1 ppm - viz ppb");
+      else fmt_sdec(b, sizeof b, ppm, 3); }
     if (first || dchg(c_ppm, sizeof c_ppm, b)) { kv_row_live(316, "ppm:", b, UI_COLOR_INK_2, first); drew = 1; }
     { char nb[sizeof c_nom]; fmt_hz(f0, nb, sizeof nb);   /* >= cache, viz dchg */
       if (first || dchg(c_nom, sizeof c_nom, nb)) { kv_row_live(352, "f0 (Hz):", nb, UI_COLOR_INK_3, first); drew = 1; } }
@@ -4630,7 +4652,7 @@ static int gpscfg_draw_vals(int force)
     char l[16], v[12], d[24], s[40];
     uint16_t dm = g_gps_cable_dm;
     snprintf(l, sizeof l, "%u,%u m", (unsigned)(dm / 10u), (unsigned)(dm % 10u));
-    snprintf(v, sizeof v, "%u %%", (unsigned)gpscfg_vf());
+    snprintf(v, sizeof v, "%u", (unsigned)gpscfg_vf());   /* BEZ znaku %: mono_25 je subset (nema '%'), jednotka je v popisku radku */
     int16_t ns = gps_cable_delay_ns();
     snprintf(d, sizeof d, "%d ns", (int)ns);
     snprintf(s, sizeof s, "%s", dm ? "posilano do prijimace" : "bez kompenzace (0 ns)");
@@ -4653,7 +4675,7 @@ static void app_gpsdo_render_gpscfg(void)
     ui_card_t n = {.rect = GPSCFG_NOTE};
     ui_card_render_chrome(&n);
     dlabel(30, (int16_t)(GPSCFG_ROW1_Y + 40), "Delka kabelu");
-    dlabel(30, (int16_t)(GPSCFG_ROW2_Y + 40), "Rychl. faktor");
+    dlabel(30, (int16_t)(GPSCFG_ROW2_Y + 40), "Rychl. faktor [%]");
     dlabel(30, 278, "Zpozdeni");
     static const char *const NOTE[3] = {
         "Zpozdeni = delka / (c * faktor), c = 0,2998 m/ns. Posila se do prijimace (UBX-CFG-TP5",
@@ -5686,7 +5708,8 @@ static void fmt_sci_ppb(double rel, char *b, size_t n)
     else if (rel >= 1e-9) { v = rel * 1e9;  u = "ppb"; }
     else                  { v = rel * 1e12; u = "ppt"; }
     char num[16];
-    fmt_fixed(num, sizeof num, (float)v, (v < 10.0) ? 2 : 1);
+    /* ppm (>= 1 ppm) 2 desetiny pod 10, jinak 1; ppb a ppt VZDY jen na desetiny (zadani 2026-10-18) */
+    fmt_fixed(num, sizeof num, (float)v, (rel >= 1e-6 && v < 10.0) ? 2 : 1);
     snprintf(b, n, "%s %s", num, u);
 }
 
@@ -6439,30 +6462,14 @@ static void app_gpsdo_render_animdemo(void)
     present_now();
 }
 
-/* ── Citac (s_view=19): syrovy detail mereni FPGA — obe odbocky /4 a /16,
- * pocet hran, gate, SEQ, fazovy status (present/fine jako 4+4 indikatory)
- * a dekodovane chybove priznaky. Zive (~2x/s). Hlavni pouziti = bring-up
- * SPI linky a mereni (bohatsi nez jednoradkovy stav v Diagnostice). ── */
+/* ── Citac (s_view=19): syrovy detail mereni FPGA — kanaly A a B (struktura rámce je z doby deliciho /4 a /16),
+ * pocet hran, gate, SEQ a dekodovane chybove priznaky. Zive (~2x/s). Hlavni pouziti = bring-up
+ * SPI linky a mereni (bohatsi nez jednoradkovy stav v Diagnostice). Od 2026-10-18 BEZ fazoveho statusu (present/fine)
+ * a bez popisu pinu 27/28 -- na nove desce se fazovy vernier nepouziva (carry-chain TDC) a piny uz nejsou /4 a /16. ── */
 
 /* Hodnota okna Citac: dtext s pevnym x a sirkou po pravy okraj karty. */
 #define CNT_VX  (DG_LLBL + 150)                        /* 180: value x */
 #define CNT_VW  (DG_LX + 764 - 14 - CNT_VX)            /* po pravy vnitrni okraj */
-
-/* 4 ctverecky pro nibble fazoveho statusu (zleva bit3..bit0 = faze 3..0).
- * seen=0 -> jen tlumeny obrys (zadny DATA ramec zatim nedorazil). */
-static void cnt_nibble(int16_t x, int16_t baseline, uint8_t nib, int seen)
-{
-    for (int i = 3; i >= 0; i--) {
-        prim_rect_t r = {x, (int16_t)(baseline - 16), 20, 20};
-        prim_fill_rect(r, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-        if (!seen)
-            prim_stroke_rect_rounded(r, 4, 1, UI_COLOR_INK_4);
-        else
-            prim_fill_rect_rounded(r, 4, (nib & (1u << i)) ? UI_COLOR_OK : UI_COLOR_BAD,
-                                   PRIM_BLEND_OVER);
-        x = (int16_t)(x + 26);
-    }
-}
 
 /* ── Okno MERENI (s_view=34) — prezentace mereni (#67) ────────────────────────
  * Perioda / odchylka v jednotkach (Hz/ppm/ppb/ppt) / auto-nominal / offset /
@@ -6744,13 +6751,12 @@ static void app_gpsdo_render_meas(void)
      * ⚠️ MP_UNIT_HZ je absolutni rozdil — ten v case NENI v Hz, tiskne se casem. */
     if (per) {
         if (s_meas_unit == MP_UNIT_HZ) meas_fmt_time(b, sizeof b, mp_period_s(hz) - nom_t, 4);
-        else {
-            fmt_dec_u(db, sizeof db, mp_deviation(mp_period_s(hz), nom_t, s_meas_unit), 4);
-            snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
-        }
+        else fmt_rel_unit(b, sizeof b, mp_deviation(mp_period_s(hz), nom_t, MP_UNIT_REL), s_meas_unit, 0);
+    } else if (s_meas_unit == MP_UNIT_HZ) {
+        fmt_dec_u(db, sizeof db, mp_deviation(hz, nom, MP_UNIT_HZ), 4);
+        snprintf(b, sizeof b, "%s Hz", db);
     } else {
-        fmt_dec_u(db, sizeof db, mp_deviation(hz, nom, s_meas_unit), 4);
-        snprintf(b, sizeof b, "%s %s", db, mp_unit_label(s_meas_unit));
+        fmt_rel_unit(b, sizeof b, mp_deviation(hz, nom, MP_UNIT_REL), s_meas_unit, 0);
     }
     if (first || dchg(c_dev, sizeof c_dev, b)) { kv_row_live(MEAS_ROW(2), "Odchylka:", b, UI_COLOR_ACC, first); drew = 1; }
 
@@ -6825,29 +6831,21 @@ static void app_gpsdo_render_counter(void)
 {
     int first = window_first(19);
     static char c_link[64], c_f4[48], c_f16[48], c_edge[24], c_gate[24], c_seq[16], c_err[24];
-    static int  c_ph = -1;   /* posledni kresleny phase_status (-1 = jeste nic) */
     if (first) {
         view_set(19);
         window_chrome("CITAC  detail mereni", WIN_TITLE_Y);
         ui_card_t c = {.rect = DG_CARD_FULL_C, .header_label = "FPGA reciproke mereni (SPI2)"};
         ui_card_render_chrome(&c);
         dlabel(DG_LLBL, 104, "SPI link");
-        dlabel(DG_LLBL, 138, "f (/4)");     /* pin28, primar */
-        dlabel(DG_LLBL, 172, "f (/16)");    /* pin27, rozsah */
+        dlabel(DG_LLBL, 138, "f kanal A");
+        dlabel(DG_LLBL, 172, "f kanal B");
         dlabel(DG_LLBL, 206, "Hrany");      /* edge_count = pocet period v okne */
         dlabel(DG_LLBL, 240, "Gate");
         dlabel(DG_LLBL, 274, "SEQ");
         dlabel(DG_LLBL, 308, "Chyby");
-        dlabel(DG_LLBL, 342, "Faze");
-        prim_draw_text((prim_point_t){(int16_t)(CNT_VX + 130), 342}, "fine",
-                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_LLBL, 384},
-                       "pin28 = /4 (primar)   pin27 = /16 (rozsah)   zdrave faze = 4+4 zelene",
-                       &ui_font_sans_18, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
         ui_button_t bmeas = {.rect = CNT_MEAS_BTN, .variant = UI_BUTTON_NORMAL, .label = "MERENI >"};
         ui_button_render(&bmeas);   /* -> sesterske okno MERENI (#67, bez nav_push) */
         c_link[0] = c_f4[0] = c_f16[0] = c_edge[0] = c_gate[0] = c_seq[0] = c_err[0] = '\0';
-        c_ph = -1;
     }
 
     fpga_meas_t m;
@@ -6911,15 +6909,6 @@ static void app_gpsdo_render_counter(void)
         int ok = seen && strcmp(b, "zadne") == 0;
         dtext(CNT_VX, 308, CNT_VW, b, !seen ? UI_COLOR_INK_3 : (ok ? UI_COLOR_OK : UI_COLOR_BAD),
               &ui_font_mono_18); drew = 1;
-    }
-
-    /* Fazovy status: present[3:0] + fine_seen[3:0] (zdrave = vse zelene = 0xFF) */
-    int ph_key = seen ? (int)m.phase_status : 0x100;   /* 0x100 = "bez dat" */
-    if (first || ph_key != c_ph) {
-        c_ph = ph_key;
-        cnt_nibble((int16_t)CNT_VX,        342, (uint8_t)(seen ? (m.phase_status & 0x0F) : 0), seen);
-        cnt_nibble((int16_t)(CNT_VX + 180), 342, (uint8_t)(seen ? (m.phase_status >> 4) : 0), seen);
-        drew = 1;
     }
 
     if (drew) present_now();

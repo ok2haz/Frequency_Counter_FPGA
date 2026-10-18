@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.30.1 (2026-10-18) = opravy po flashi v0.30.0: (1) `status` nasel chybejici znak `%` v mono_25 (subset) -> okno NASTAVENI GPS bez %; (2) web: detail Allanu byl PRAZDNY, kdyz pristroj
+ * po zapnuti ma jen 1 bod Allanu (pyramida ceka na ustaleni reference ~15 min) -> web pocita vlastni Allan, detail vysvetli proc je prazdny; prepinace ADEV/TDEV/MTIE a BODY/DEK jsou
+ * nove i V DETAILU (karta je pod overlayem neprichytna); legendy krivek (Teploty, Napeti, OCXO Vc) jsou viditelne prepinace (chipy) s napovedou; (3) displej: Citac detail bez fazi a popisu
+ * pinu 27/28 (kanaly A/B), ppm pod 1 -> ppb na desetiny (MERENI, Odchylka xN, ANALYZA, web). IPC v29 beze zmeny. ⬜ Neovereno na HW. */
 /* v0.30.0 (2026-10-18) = (1) nejistota reference z ZMERENYCH hodnot misto odhadu: FLL = |y| posledniho okna smycky (merene proti GPS) + sum okna,
  * LOCK = ADEV faze OCXO-GPS @ <= 1000 s z historie smycky, HOLD = ADEV pri vstupu + drift kodu DAC (LS pres <= 2 h LOCK) x K; nahradni tabulka jen kdyz mereni chybi
  * (`gpsdo_ref_ppb`, IPC v29: `ipc_gpsdo_t` 40 -> 48 B, web `ref_ppb_x100` + `ref_meas`, okno ANALYZA ukazuje „zmereno/odhad“); (2) korekce baterie PRESNE s ubytkem diody
@@ -217,7 +221,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 30
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.30.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.30.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
