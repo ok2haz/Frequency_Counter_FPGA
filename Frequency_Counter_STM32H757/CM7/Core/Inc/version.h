@@ -11,6 +11,7 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.30.4 (2026-10-18) = UART `spi [MHz]` = takt SPI2 ke FPGA za behu (strop FPGA_SCK_MAX_HZ 10 -> 40 MHz, vychozi 5 MHz beze zmeny; #314), zasobnik FpgaTask 2048 -> 2560 B. */
 /* v0.30.3 (2026-10-18) = halda FreeRTOS 32 -> 48 kB (volnych bylo 5,7 kB, z haldy jsou i zasobniky tasku); .ioc srovnano. */
 /* v0.30.2 (2026-10-18) = osa Y Allanu (displej i web) se natahne i k podlaze citace (nejvys 7,5 dekady pod krivku), cara uz nekonci u 10 s. */
 /* v0.30.1 (2026-10-18) = opravy po flashi v0.30.0: (1) `status` nasel chybejici znak `%` v mono_25 (subset) -> okno NASTAVENI GPS bez %; (2) web: detail Allanu byl PRAZDNY, kdyz pristroj
@@ -223,7 +224,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 30
-#define FW_VERSION_PATCH 3
-#define FW_VERSION_STR   "v0.30.3"
+#define FW_VERSION_PATCH 4
+#define FW_VERSION_STR   "v0.30.4"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

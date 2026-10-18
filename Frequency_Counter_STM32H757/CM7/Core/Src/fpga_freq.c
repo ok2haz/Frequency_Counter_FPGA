@@ -25,9 +25,9 @@ extern SPI_HandleTypeDef hspi2;
 #define FPGA_SCK_TARGET_HZ  5000000u   /* strop 5 MHz (zadani 2026-10-03); skutecny takt = kernel/2^n,
  *   viz "fpga: SPI2 kernel=.. SCK ~.." v boot logu. ⚠️ Vyzaduje bitstream s PHY na 100 MHz (7affd41);
  *   starsi PHY na 10 MHz zvlada jen ~2 MHz. Pri NOLINK vratit 1000000u. */
-#define FPGA_SCK_MAX_HZ     10000000u  /* tvrdy strop dle kontraktu */
+#define FPGA_SCK_MAX_HZ     40000000u  /* tvrdy strop: FPGA PHY od FW 0x040C bere SCK primo (STA ~40 MHz, #264); drive 10 MHz (oversampling) */
 #if FPGA_SCK_TARGET_HZ > FPGA_SCK_MAX_HZ
-#error "FPGA_SCK_TARGET_HZ prekracuje povolene maximum FPGA slave (~10 MHz)"
+#error "FPGA_SCK_TARGET_HZ prekracuje povolene maximum FPGA slave (~40 MHz)"
 #endif
 
 /* === Frame (v2, FPGA_PROTOCOL_V2_NAVRH.md) === */
@@ -1796,6 +1796,45 @@ bool fpga_freq_raw_xfer(uint8_t *rx_frame)
     uint8_t tx[FR_LEN];
     build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);   /* posleme platny ACK ramec */
     return xfer(tx, rx_frame);
+}
+
+/* ── Takt SPI za behu (STATUS #314): `spi <MHz>` v UART. Zvoli nejvyssi stupen kernel/2^n <= cil a pod SPI mutexem
+ * prepise prescaler pres HAL_SPI_Init (stav READY -> MspInit/piny se NEMENI). Nepersistuje se, po resetu plati
+ * FPGA_SCK_TARGET_HZ. Vraci skutecny takt [Hz], 0 = zamitnuto/selhalo. ── */
+static const struct { uint32_t e, d; } k_sck_pre[8] = {
+    { SPI_BAUDRATEPRESCALER_2, 2 }, { SPI_BAUDRATEPRESCALER_4, 4 }, { SPI_BAUDRATEPRESCALER_8, 8 }, { SPI_BAUDRATEPRESCALER_16, 16 },
+    { SPI_BAUDRATEPRESCALER_32, 32 }, { SPI_BAUDRATEPRESCALER_64, 64 }, { SPI_BAUDRATEPRESCALER_128, 128 }, { SPI_BAUDRATEPRESCALER_256, 256 } };
+
+uint32_t fpga_freq_sck_hz(void) { return g_sck_hz; }
+
+uint32_t fpga_freq_sck_stage(uint32_t i, uint32_t *kernel_hz)
+{
+    uint32_t k = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SPI123);
+    if (kernel_hz) *kernel_hz = k;
+    return (i < 8u) ? k / k_sck_pre[i].d : 0u;
+}
+
+uint32_t fpga_freq_set_sck(uint32_t target_hz)
+{
+    if (!g_init_ok || target_hz == 0u || target_hz > FPGA_SCK_MAX_HZ) return 0u;
+    uint32_t k = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SPI123), chosen = SPI_BAUDRATEPRESCALER_256, div = 256u;
+    for (int i = 0; i < 8; i++) if (k / k_sck_pre[i].d <= target_hz) { chosen = k_sck_pre[i].e; div = k_sck_pre[i].d; break; }
+    bool locked = false;
+    if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) {
+        if (osMutexAcquire(s_spi_mtx, 200) != osOK) return 0u;
+        locked = true;
+    }
+    uint32_t prev = hspi2.Init.BaudRatePrescaler;
+    hspi2.Init.BaudRatePrescaler = chosen;
+    if (HAL_SPI_Init(&hspi2) != HAL_OK) {
+        hspi2.Init.BaudRatePrescaler = prev;
+        (void)HAL_SPI_Init(&hspi2);
+        if (locked) osMutexRelease(s_spi_mtx);
+        return 0u;
+    }
+    g_sck_hz = k / div;
+    if (locked) osMutexRelease(s_spi_mtx);
+    return g_sck_hz;
 }
 
 void fpga_freq_format_status(char *buf, int buflen)

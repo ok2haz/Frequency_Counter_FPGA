@@ -565,7 +565,7 @@ const osThreadAttr_t UiTask_attributes = {
 osThreadId_t FpgaTaskHandle;
 const osThreadAttr_t FpgaTask_attributes = {
   .name = "FpgaTask",
-  .stack_size = 512 * 4,
+  .stack_size = 640 * 4,                 /* 2560 B: do v0.30.3 2048 B s volnymi jen 628 B (nejmensi rezerva ze vsech tasku); halda je od v0.30.3 48 kB */
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* DacTask: dither DAC OCXO po 5 ms (STATUS #317, freertos_task_sensors.c). Nejvyssi priorita z taskow, ale

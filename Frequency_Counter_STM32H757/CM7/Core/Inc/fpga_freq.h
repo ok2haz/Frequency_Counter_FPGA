@@ -226,6 +226,12 @@ bool fpga_freq_link_ok(void);
 /** Pocet ramcu se spatnym CRC od bootu (diagnostika linky, UART `status`). */
 uint32_t fpga_freq_crc_count(void);
 
+/** Takt SPI2 za behu (STATUS #314, UART `spi`): aktualni [Hz]; stupen i (0 = kernel/2 ...) a kernel; nastaveni nejvyssiho stupne <= cil
+ *  (vraci skutecny takt, 0 = zamitnuto). Nepersistuje se. */
+uint32_t fpga_freq_sck_hz(void);
+uint32_t fpga_freq_sck_stage(uint32_t i, uint32_t *kernel_hz);
+uint32_t fpga_freq_set_sck(uint32_t target_hz);
+
 /** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
 uint32_t fpga_freq_crc_last_age_s(void);
 

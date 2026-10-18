@@ -1487,7 +1487,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2914,6 +2914,25 @@ void UartTask_run(void *argument)
 				  } else {
 					  printf("DMA2D: mrtvy cas = %u (pouziti: d2ddt <0..255>, 0 = vypnuto)\n",
 					         (unsigned)g_d2d_deadtime);
+				  }
+			  }
+			  /* spi [MHz] — takt SPI2 ke FPGA ZA BEHU (STATUS #314), vzor jako `d2ddt`: nastav, chvili sleduj `status` (CRC err, SEQ diry). */
+			  else if (strncmp(RxBuffer, "spi", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  uint32_t r = fpga_freq_set_sck(v * 1000000u);
+					  if (r) printf("SPI2: SCK = %lu Hz (ramec 128 B ~ %lu us), CRC err %lu\n", (unsigned long)r,
+					               (unsigned long)(1024000000ull / r), (unsigned long)fpga_freq_crc_count());
+					  else printf("SPI2: zamitnuto (cil 1..40 MHz)\n");
+				  } else {
+					  uint32_t kz = 0; (void)fpga_freq_sck_stage(0, &kz);
+					  printf("SPI2: kernel %lu Hz, SCK %lu Hz, CRC err %lu | stupne:", (unsigned long)kz,
+					         (unsigned long)fpga_freq_sck_hz(), (unsigned long)fpga_freq_crc_count());
+					  for (uint32_t i = 0; i < 6u; i++) printf(" %lu", (unsigned long)fpga_freq_sck_stage(i, NULL));
+					  printf(" Hz (pouziti: spi <MHz> = nejvyssi stupen <= cil, max 40)\n");
 				  }
 			  }
 			  /* tap <idx> — injektor doteku pro diagnostiku (F-0140). Zada stisk
