@@ -4827,6 +4827,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `c2247e3`
 - **Stav:** aktivní; ⬜ příčina odvozena z HTML specifikace, **vizuálně neověřeno** (prohlížeč nebyl připojen)
 
+### L-0174 — Dlouhé měření bez předem spočítané citlivosti: noc dat, která hypotézu nerozliší
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** #312 (OCXO, nebo GPS?), `tools/cov312.py`, `tools/analyze_noc_ext.py`
+- **Symptom:** 10h běh proti externímu GPSDO nerozhodl nic; dřívější „horní mez OCXO ≤ …“ vypadala jako výsledek.
+- **Příčina:** metoda kovariance y_čítač × y_fáze má šum referenčního kanálu (externí GPSDO, ADEV 3·10⁻¹⁰ @ 128 s) 10× nad hledaným signálem (přebytek 3·10⁻¹¹). Za hypotézy „je to OCXO“ je koherence² = var(O)²/(var_čítač·var_fáze) = 0,001–0,004, mez detekce 10h záznamu je 0,02–0,2. Horní mez spočtená ze směrodatné chyby kovariance je mez citlivosti metody, ne naměřený šum.
+- **Oprava:** žádná v kódu; v analýze přibyl výpočet citlivosti (sekce 8 `analyze_noc_ext.py`) a doporučení měřit s referencí lepší než zkoumaná veličina (Rb), ne prodlužovat záznam.
+- **Pravidlo:** před dlouhým měřením spočítej z dosavadních dat, co by měřicí uspořádání ukázalo, kdyby hypotéza platila (očekávaná koherence / odezva / SNR), a z toho potřebnou dobu. Vyjde-li ve dnech, změň uspořádání (lepší reference), nikdy nespoléhej na „dalších pár nocí“. „Horní mez z SE“ vždy pojmenuj jako mez citlivosti.
+- **Detekce:** `python tools/analyze_noc_ext.py <csv> 3600` → sekce 8 „CITLIVOST kovariancni metody“.
+- **Commit:** commit s touto lekcí a zprávou `docs/audit/2026-10-18_noc10h-analyza.md`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

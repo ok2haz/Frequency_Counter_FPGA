@@ -532,6 +532,24 @@ Nástroj `python tools/cov312.py <csv> <ořez_s> [τ,…]` (volitelně `W0`/`W1`
 - **Závěr: z dosavadních dat NELZE rozhodnout, jestli přebytek fáze 3–4·10⁻¹¹ na 100–200 s pochází z OCXO, nebo z GPS.** Horní mez OCXO: **< 1·10⁻¹⁰ pro 10–50 s, ≲ 5·10⁻¹¹ @ 100 s, ≲ 3·10⁻¹¹ @ 200–500 s** (noc, orientačně); nic lepšího než tato mez se z těchto dat vytáhnout nedá. `gpsdo_tau_advise` proto **zůstává dolní mezí** (nepřepisuje se na doporučení).
 - **Co by rozhodlo (nové měření, zbývá z #312):** (a) nezávislá reference lepší než GPS na 100 s (Rb nebo druhé stabilní OCXO) a free-run OCXO proti ní ≥ 2 h; (b) několik dnů/nocí se širším rozsahem podmínek GPS pro kovarianci (jedna noc nestačí, okna spolu nesouhlasí); (c) smyčka s jiným τ (200 / 1000 / 5000 s, ≥ 6 h každá); (d) jiná anténa. Levnější než (a) a (d): zapsat fázi OCXO–GPS i při `gpsdo off`, čímž vznikne free-run záznam vůči GPS bez vlivu smyčky; není to rozhodující, ale odpadne podezření, že přebytek dělá smyčka. ✅ **Naimplementováno v0.22.0** (pasivní fázový monitor v OFF, `xr_ns` se sčítá dál, DAC se neřídí; `.text` +112 B), 🟡 na desce krátce ověřeno (2026-10-17, v0.22.0): v OFF se `xr_ns` mění (4 / −2 / 0 ns po 0 / 20 / 40 s), `gpsdo on` naskočí do FLL; free-run měření ≥ 2 h zatím neproběhlo; STATUS #319 = po měření rozhodnout, zda to nevrátit. Postup měření: `gpsdo off`, logger `tools/gpsdo_log.ps1` ≥ 2 h (sloupec `gp_xr_ns` je v OFF platný, `.phase.csv` ale bere fázi jen v LOCK), pak `cov312.py`/HDEV nad `gp_xr_ns`.
 
+### 2026-10-18 — 10h běh smyčky GPSDO (noc 17.→18. 10., LOCK celých 10 h): rozšířená analýza
+
+Podrobně `docs/audit/2026-10-18_noc10h-analyza.md` (nástroj `tools/analyze_noc_ext.py`, data `docs/audit/data/2026-10-18_noc10h.csv.gz`). Podmínky: hradlo 0,25 s, τ smyčky 1000 s, vstup A = externí GPSDO, **běh začal 16 min po power-cyklu**; 0 resetů, 1PPS odmítnuto 0, družic 8–12, HDOP 0,7–1,3.
+
+| Veličina | Výsledek |
+|---|---|
+| offset čítač − externí GPSDO | **3·10⁻¹³ ± 2,3·10⁻¹²** (hodinové průměry −0,008…+0,012 ppb, bez trendu) |
+| ADEV / MDEV fáze OCXO−GPS (po opravě kvantizace σx = 2,89 ns) | 1,1·10⁻¹¹ / 5,7·10⁻¹² @ 1000 s; 6,1·10⁻¹² / 3,2·10⁻¹² @ 2048 s; 3,5·10⁻¹² / 1,7·10⁻¹² @ 4096 s; přebytek nad kvantizací MDEV 3,0·10⁻¹¹ @ 128 s |
+| reprodukovatelnost proti předchozí noci | MDEV @ 64…4096 s shodné na ~10–15 % |
+| TIE proti 1PPS | sd 9,5 ns, pp 63 ns, 94 % času v ±20 ns, MTIE 43 ns @ 1000 s, 58 ns @ 10 000 s |
+| hrbol ADEV vůči externímu GPSDO | 7,9·10⁻¹⁰ @ 20 s; spektrum: plošina 2–30 mHz, pokles ×21 za oktávu nad 30 mHz (roh ≈ 25 mHz), žádné tóny |
+| firmware ADEV vs numpy | τ ≤ 50 s shoda 1,00; 100–5000 s do 1–12 % |
+| filtr izolovaných odlehlých vzorků | 8 z 35 457 (0,023 %), 0,4–0,6 ppb |
+| DAC kód | 24 918 → 24 926 (0,76 LSB/h = 26 ppt/h), ⚠️ obsahuje zahřívání po power-cyklu; předchozí noc 6 LSB/h |
+
+- **#312:** křížové spektrum y_čítač × y_fáze nemá v žádném pásmu průkaznou koherenci (≤ 0,07 při mezi 0,21/0,05). Za hypotézy „přebytek je z OCXO“ je očekávaná koherence² 0,001–0,004, k detekci by bylo potřeba 2–7 dní souvislého záznamu → **z uspořádání s externím GPSDO se #312 nerozhodne, rozhodne Rb (M2, #313)**. Kladné korelace z `cov312.py` (+0,16…+0,28 @ 100–500 s) spektrum nepotvrzuje. Lekce L-0174.
+- **Holdover:** horní mez samotného lineárního driftu (7,2·10⁻¹⁵/s) = 47 ns po 1 h, 1,7 µs po 6 h; skutečné stárnutí potřebuje záznam po ≥ 2–3 dnech bez power-cyklu.
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
