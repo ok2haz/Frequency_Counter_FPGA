@@ -2800,16 +2800,19 @@ typedef struct { int ymin, dec, metric, shrink_n; } allan_yr_t;
 static void allan_metric_yrange(const float *vals, const float *flr, int np,
                                 allan_yr_t *yr, int *ymin, int *dec)
 {
-    (void)flr;   /* 🔴 2026-10-07: rozsah osy se ridi JEN krivkou; podlaha citace osu NESMI tahnout dolu
-                  * (u dlouhych tau klesa k 1e-16 a stahla by cely graf -- prani uzivatele) */
-    float lo = 1e30f, hi = -1e30f;
+    /* 2026-10-18 (zadani uzivatele „podlaha jen do 10 s“): osa se nove natahne i k podlaze citace, ale JEN do 7,5 dekady pod
+     * nejvyssi bod krivky -- tim se splni prani z 2026-10-07 (u dlouhych tau podlaha klesa k 1e-16 a nesmi stahnout cely graf).
+     * Podlaha je jen u bodu krivky (stejne τ), takze dosahne nejvyse k poslednimu τ krivky. */
+    float lo = 1e30f, hi = -1e30f, flo = 1e30f;
     for (int i = 0; i < np; i++) {
         float v = vals[i];
         if (!(v > 0.0f)) continue;
         float l = log10f(v);
         if (l < lo) lo = l;
         if (l > hi) hi = l;
+        if (flr && flr[i] > 0.0f) { float lf = log10f(flr[i]); if (lf < flo) flo = lf; }
     }
+    if (lo <= hi && flo < lo) lo = fmaxf(flo, hi - 7.5f);
     int y0, y1;
     if (lo > hi) { y0 = -12; y1 = -8; }                  /* zadna platna data */
     else {

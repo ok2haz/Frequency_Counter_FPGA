@@ -23,6 +23,8 @@ const body = `
   out.zoomChildren = svg.children.length;
   out.hasCurve = svg.children.some(function(c){ return c.attrs && c.attrs['class']==='ln s3' && (c.attrs.points||'').length>20; });
   out.ttl = $('dTtl').textContent;
+  out.floorNote = $('dNote').textContent.indexOf('Podlaha citace lezi pod osou') >= 0;
+  out.floorPts = svg.children.some(function(c){ return c.attrs && c.attrs['class']==='ln s2' && (c.attrs.points||'').split(' ').length>8; });
   /* prepnuti metriky tlacitkem v ovladacich prvcich: simulace kliknuti na <button data-m=tdev> */
   function click(id, attr, val){ var l=$(id).listeners.click||[]; var e={target:{tagName:'BUTTON', getAttribute:function(a){ return a===attr?val:null; }}}; l.forEach(function(f){ f(e); }); return l.length; }
   out.nMetListeners = click('segMet','data-m','tdev');
@@ -39,6 +41,7 @@ try { r = JSON.parse(harness(path, body)); } catch (e) { console.log('  CHYBA  v
 console.log('  ' + JSON.stringify(r));
 check(r.stabA > 5, 'nahled: body Allanu spocitany (' + r.stabA + ')');
 check(r.zoomChildren > 10 && r.hasCurve, 'detail: nakreslena krivka (deti SVG ' + r.zoomChildren + ')');
+check(!r.floorNote && r.floorPts, 'podlaha citace jde pres cely rozsah tau (osa se natahla, zadny vystup pod osu)');
 check(r.nMetListeners > 0 && r.metricAfter === 'tdev' && r.stabMetricAfter === 'tdev', 'prepinac metriky (segMet) existuje a prepne na TDEV');
 check(/TDEV/i.test(r.ttl2), 'detail po prepnuti ukazuje TDEV (' + r.ttl2 + ')');
 check(r.nDenListeners > 0 && r.denAfter === 9, 'prepinac hustoty (segDen) prepne na 9 bodu/dekadu');
