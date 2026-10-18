@@ -93,6 +93,14 @@ def main():
         print('!! uvozovka v servirovanem HTML (SPA ma byt bez nich)')
         fail.append('uvozovka v HTML')
 
+    # L-0173: v innerHTML je '/' v NEKVOTOVANE hodnote atributu soucasti hodnoty (`height=100/>` = "100/" -> SVG delka
+    # neplatna -> obdelnik nulove vysky; nahled spektrogramu a histogramu byl proto prazdny). Spravne `height=100 />`.
+    sc = re.findall(r"=[^\s'\"<>]+/>", html) + re.findall(r"\+'/>", html)
+    print('nekvotovany atribut zakonceny `/>` bez mezery: %d' % len(sc))
+    if sc:
+        print('!! pridej mezeru pred `/>` (L-0173): %s' % sc[:4])
+        fail.append('`/>` bez mezery za nekvotovanym atributem')
+
     ms = re.search(r'<script>(.*)</script>', html, re.S)
     if not ms:
         fail.append('nenalezen <script> v HTML')
