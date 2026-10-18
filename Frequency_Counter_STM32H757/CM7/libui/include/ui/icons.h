@@ -12,3 +12,4 @@
 UI_API void ui_icon_sat_dish   (prim_point_t pos, int16_t size, prim_color_t color);
 UI_API void ui_icon_speaker    (prim_point_t pos, int16_t size, prim_color_t color);
 UI_API void ui_icon_speaker_muted(prim_point_t pos, int16_t size, prim_color_t color);
+UI_API void ui_icon_sdcard     (prim_point_t pos, int16_t size, prim_color_t color);

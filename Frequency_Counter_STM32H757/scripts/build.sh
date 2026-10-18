@@ -75,6 +75,28 @@ if os.path.isfile(ol):
               % (core, len(unlinked)))
         print("   " + ", ".join(unlinked[:6]) + (" ..." if len(unlinked) > 6 else ""))
         print("   => IDE pregenerovalo build soubory a zahodilo rucne pridane zdroje.")
+# ⚠️ TRETI kontrola (2026-09-01): predchozi dve chytaji jen zdroje, ktere jsou v
+# `.project` jako <link>, resp. uz jsou v subdir.mk. Soubor, ktery CubeMX NOVE
+# vytvori PRIMO v uz existujici zdrojove slozce (`Core/Src/tim.c` pri pridani
+# TIM1), neni ani jedno — a presto se neslinkuje, dokud IDE nenacte model.
+# Projevilo se to jako `undefined reference to MX_TIM1_Init`, ktere tenhle skript
+# NEPREDPOVEDEL. Proto se porovnava i to, co je SKUTECNE NA DISKU.
+disk = set()
+for sub in ('Core/Src', 'app', 'app/screens', 'app/hal/stm32',
+            'libui/src', 'libprim/src', 'libprim/src/internal'):
+    d = os.path.join(os.path.dirname(bdir), sub)
+    for f in glob.glob(os.path.join(d, '*.c')):
+        if 'ui_font_' in os.path.basename(f):   # generovane tabulky glyfu
+            continue
+        disk.add(os.path.basename(f))
+notbuilt = sorted(b for b in disk
+                  if not re.search(r'[/\s]' + re.escape(b) + r'(\s|$)', built, re.M))
+if notbuilt:
+    print("*** %s: %d zdrojaku je NA DISKU, ale NENI v generovanych makefilech:"
+          % (core, len(notbuilt)))
+    print("   " + ", ".join(notbuilt[:10]) + (" ..." if len(notbuilt) > 10 else ""))
+    print("   => typicky NOVY soubor od CubeMX. Close Project -> Open Project.")
+
 if missing:
     # ASCII zamerne: Python na Windows tiskne do konzole v cp1252 a na emoji spadne.
     print("*** %s: %d zdrojaku je v .project, ale NENI v generovanych makefilech:" % (core, len(missing)))
@@ -82,6 +104,78 @@ if missing:
     print("   => zastaraly model IDE. Close Project -> Open Project (Clean NEPOMUZE!),")
     print("      viz CUBEMX_CHECKLIST.md. Tenhle skript mezitim stavi z toho, co v makefilech je.")
 PY
+}
+
+# ── CTVRTA kontrola (2026-09-12): co regenerace CubeMX TISE sebere ──────────
+# Regen 2026-09-12 smazal peti mistech vlastni kod (viz CUBEMX_CHECKLIST, oddil
+# „Co Generate Code SEBERE"). Vetsina se opravila presunem do `USER CODE`.
+# Include cesty `CM7/Core/Inc` v `CM4/.cproject` (jedna z tech peti veci) uz
+# 2026-09-13 NEHLIDAME: regen tu -I cestu dal maze (je to XML mimo USER CODE,
+# nezmenitelne), ale zadny #include na ni uz nezavisi — scpi.h/meas_math.h/
+# ipc_shared.h/version.h/meas_present.h se includuji RELATIVNI cestou k fyzicke
+# poloze souboru (`#include "../Inc/scpi.h"` v CM7/Core/Src, `"../../../CM7/Core/Inc/scpi.h"`
+# v CM4 souborech) — stejny vzor, jaky uz driv mel `ipc_cm4.h` pro `ipc_shared.h`.
+# GCC quote-include hleda nejdriv ve slozce souboru se #include (podle jeho
+# skutecne cesty, ne podle -I ani CWD), takze cesta neplati jen „obvykle", ale
+# VZDY. Overeno kompilatorem se zamerne vyriznutou -I../../CM7/Core/Inc primo
+# v CM4/Release/*/subdir.mk (presny artefakt, ktery regen prepisuje) — build
+# dal 0 varovani a byte-presne stejny .elf.
+#
+# Poslednich z tech peti veci — `naked` HardFault na CM4 — se 2026-09-13
+# vyresilo TRVALE (ne jen hlida): v `.ioc` NVIC2.HardFault_IRQn ma vypnute
+# „Generate IRQ handler" (jako CM7 uz od 2026-08-16) A telo+prototyp jsou
+# v USER CODE (`stm32h7xx_it.c` USER CODE 1, `stm32h7xx_it.h` USER CODE EFP).
+# ⚠️ Prvni pokus (jen ten .ioc flag, handler MIMO USER CODE) NESTACIL — realny
+# regen 2026-09-13 handler i s vypnutym flagem cely SMAZAL (rozpoznal svuj
+# puvodni doxygen komentar a „uklidil" nepouzivany blok). Teprve kombinace
+# obojiho je regen-safe; overeno druhym realnym regenem. Viz L-0043 v
+# docs/LESSONS.md. Kontrola nize ZUSTAVA jako pojistka proti rucnimu
+# prehlednuti, ne protoze by regen byl stale hrozbou.
+# ⚠️ Kontrola jen HLASI, neopravuje: automaticka oprava cizich souboru by byla
+# horsi nez hlaska — clovek ma videt, ze regen neco vzal.
+# ⚠️ Pocet shod ber VYHRADNE pres `cnt` — `grep -c` pri nula shodach vypise `0`
+# a SOUCASNE skonci s kodem 1 (chybejici soubor = kod 2 a prazdny vystup). Naivni
+# `$(grep -c … || echo 0)` proto slozi retezec "0\n0", `[ … -lt … ]` spadne na
+# „integer expected" a kontrola TISE neprobehne. Presne tak se 2026-09-12 obe
+# pozitivni kontroly tvarily, ze je vse v poradku.
+cnt() {
+    local n
+    n="$(grep -c "$1" "$2" 2>/dev/null || true)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s' "$n"
+}
+
+check_regen() {
+    local bad=0
+    local n
+    n="$(cnt '^__attribute__((naked))' "${ROOT}/CM4/Core/Src/stm32h7xx_it.c")"
+    if [ "$n" -lt 1 ]; then
+        echo "*** CM4: chybi 'naked' HardFault_Handler -> crash black-box CM4 ztratil PC/LR."
+        echo "    => regenerace CubeMX; viz CUBEMX_CHECKLIST.md, oddil 'Co Generate Code SEBERE'."
+        bad=1
+    fi
+    # ── PATA kontrola (2026-09-13): CM7/.cproject - app/libui/libprim -I ──────
+    # Zámerne DETEKCE, ne odstraneni zavislosti jako u CM4/scpi.h. Duvod: libui
+    # a libprim pouzivaji UVNITR SEBE uhlove #include <ui/...>/<prim/...>
+    # (73 souboru, 169 radku) - je to zamerny navrhovy vzor (obe knihovny se
+    # includuji jako by byly externi), ne prehlednuti. Uhlovy include NEMA
+    # fallback na "stejna slozka jako including soubor" (na rozdil od quote
+    # includu) - kdyby tahle -I cesta zmizela, vsech 169 radku by prestalo
+    # resit najednou. Presunout to na relativni cesty by znamenalo prepsat
+    # architekturu dvou knihoven navrzenych jako samostatne moduly - vetsi
+    # riziko nez problem, ktery se od jednorazoveho incidentu 2026-08-29
+    # (chybely jen v Release configu, ne "regen je mazal") ani jednou
+    # nezopakoval pres 4 dalsi regeny (2026-09-01/06/12/13).
+    for pat in 'libprim/include' 'libui/include' '\${ProjName}/app'; do
+        n="$(cnt "$pat" "${ROOT}/CM7/.cproject")"
+        if [ "$n" -lt 2 ]; then
+            echo "*** CM7/.cproject: chybi/oslabena -I cesta '$pat' (${n}x, cekano >=2)."
+            echo "    => bez ni libui/libprim/app prestanou resit vlastni hlavicky."
+            echo "    => regenerace CubeMX; oprav: git checkout -- CM7/.cproject, pak Close/Open Project."
+            bad=1
+        fi
+    done
+    [ "$bad" -eq 0 ] || echo "    (build pokracuje, ale tohle oprav driv, nez budes flashovat)"
 }
 
 build_core() {
@@ -98,6 +192,47 @@ build_core() {
     ( cd "$dir" && make "$TARGET" 2>&1 | grep -viE '^arm-none-eabi-gcc "|^Finished building|^ *$' ) || return 1
 }
 
+# Pojistka: sdilena PLL smi konfigurovat jen CM7 (audit F-0005, lekce L-0007).
+#
+# CubeMX generuje `PeriphCommonClock_Config()` do `main.c` OBOU jader a volani
+# vklada do `main()` hned za `SystemClock_Config()`. Na CM7 to tak byt ma; na CM4
+# by to za behu pres `__HAL_RCC_PLL2_DISABLE`/`PLL3_DISABLE` odstavilo hodiny SDRAM
+# (FMC z PLL2R) a LTDC (PLL3R) pod rukama bezicimu CM7. Projevilo by se to jako
+# "SDRAM cte same nuly" / rozpad obrazu a hledalo by se to v kreslicim kodu.
+#
+# ⚠️ PROC se to meri na OBRAZU a ne grepem zdrojaku: `nm` rekne, co se doopravdy
+# slinkovalo. Dokud funkci nikdo nevola, linker ji pres `--gc-sections` zahodi a
+# v obrazu NENI; jakmile volani vznikne, symbol se objevi. Grep zdrojaku proti tomu
+# zavisi na zapisu volani a da se minout preformatovanim.
+# ⚠️ Soucasti je POZITIVNI KONTROLA: v obrazu CM7 ten symbol BYT MUSI. Kdyby tam
+# nebyl, test uz nic nemeri a mlcel by — presne ta trida "zelena, ktera nic
+# neznamena", kterou projekt uz nekolikrat zaplatil.
+check_cm4_clock_owner() {
+    local nm="${GCC_BIN}/arm-none-eabi-nm"
+    local e4="${ROOT}/CM4/${CFG}/H757_LED_CM4.elf"
+    local e7="${ROOT}/CM7/${CFG}/H757_LED_CM7.elf"
+    local sym='PeriphCommonClock_Config'
+    [ -f "$e4" ] || return 0
+
+    if "$nm" "$e4" 2>/dev/null | grep -q "$sym"; then
+        echo ""
+        echo "*** CHYBA: obraz CM4 obsahuje ${sym} -> CM4 konfiguruje sdilena PLL!"
+        echo "    Odstavilo by to hodiny SDRAM a LTDC pod bezicim CM7 (lekce L-0007)."
+        echo "    Najdi volani:  grep -n '${sym} *( *) *;' CM4/Core/Src/main.c"
+        echo "    Na CM4 se ta funkce smi jen GENEROVAT, nikdy VOLAT."
+        return 1
+    fi
+    if [ -f "$e7" ] && ! "$nm" "$e7" 2>/dev/null | grep -q "$sym"; then
+        echo ""
+        echo "*** POZOR: ${sym} chybi i v obrazu CM7 -> tahle kontrola uz nic nemeri."
+        echo "    Overit rucne, jestli CM7 hodiny periferii vubec konfiguruje."
+        return 1
+    fi
+    return 0
+}
+
+check_regen
+
 rc=0
 case "$WHICH" in
     CM7)  build_core CM7 || rc=1 ;;
@@ -105,6 +240,10 @@ case "$WHICH" in
     BOTH) build_core CM7 || rc=1; build_core CM4 || rc=1 ;;
     *)    echo "CHYBA: druhy argument = CM7 | CM4 | BOTH" >&2; exit 1 ;;
 esac
+
+if [ "$TARGET" = "all" ]; then
+    check_cm4_clock_owner || rc=1
+fi
 
 if [ "$TARGET" = "all" ] && [ "$rc" -eq 0 ]; then
     echo ""

@@ -7,6 +7,8 @@
 #ifndef __SCPI_TCP_H__
 #define __SCPI_TCP_H__
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +17,10 @@ extern "C" {
  *  — nezavisi na stavu linky/DHCP (tcp_bind na IP_ADDR_ANY funguje driv, nez
  *  prijde adresa; spojeni proste nikdo nenavaze, dokud IP neni). */
 void scpi_tcp_init(void);
+
+/** Vytizeni poolu spojeni (STATUS #307): `used` = ted obsazenych slotu, `max` = velikost poolu, `peak` = nejvic soucasne
+ *  od startu, `rej` = kolikrat se novy klient nevesel (strop dosazen, spojeni zruseno; saturuje). NULL = nezajima. */
+void scpi_tcp_stats(uint8_t *used, uint8_t *max, uint8_t *peak, uint32_t *rej);
 
 #ifdef __cplusplus
 }

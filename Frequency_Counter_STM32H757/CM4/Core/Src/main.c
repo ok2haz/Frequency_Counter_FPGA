@@ -27,7 +27,12 @@
 #include "ipc_cm4.h"   /* IPC konzument: cte snapshot CM7->CM4 + publikuje heartbeat */
 #include "iwdg2.h"     /* nezavisly watchdog CM4 (~4 s); zaseknuta smycka -> reset CM4 */
 #include "lwip_app.h"  /* lwIP NO_SYS=1: DHCP klient + ping (F5) */
-#include "scpi.h"      /* scpi_selftest — dukaz, ze SCPI jadro na CM4 skutecne BEZI (W2) */
+#include "ethernetif.h" /* g_eth_tx_ok/_err — pocitadla vyslani publikovana pres IPC (F-0138) */
+/* Relativni cesta - regen CM4/.cproject bere -I../../CM7/Core/Inc pri
+ * KAZDE regeneraci (viz CUBEMX_CHECKLIST.md); GCC quote-include hleda
+ * nejdriv ve slozce souboru se #include, takze cesta funguje bez ohledu
+ * na tu -I. */
+#include "../../../CM7/Core/Inc/scpi.h"      /* scpi_selftest — dukaz, ze SCPI jadro na CM4 skutecne BEZI (W2) */
 #include "httpd_min.h" /* httpd_min_selftest — dukaz pro HTTP parser (W4) */
 /* USER CODE END Includes */
 
@@ -75,6 +80,11 @@ volatile uint8_t  g_init_nonfatal = 0;   /* 1 = bezi bring-up, selhani se toleru
 volatile uint8_t  g_init_faults   = 0;   /* kolik MX_*_Init v tom okne selhalo */
 volatile uint8_t  g_eth_init_ok   = 0;   /* 1 = HAL_ETH_Init proslo (bezi RMII REF_CLK) */
 volatile uint32_t g_eth_phy_id    = 0;   /* PHYID1<<16|PHYID2; LAN8742A = 0x0007C131, 0 = neprecteno */
+/* 1 = HSEM 1 se pri bootu NEPODARILO vzit, takze MX_*_Init konfigurovaly sdilena
+ * GPIO bez zamku (audit F-0135). ⚠️ Zatim jen lokalni priznak — do IPC se
+ * nepublikuje, protoze by to znamenalo sahnout na sdilenou strukturu; viz
+ * F-0138 (pocitadla, ktera nikdo necte). Ke cteni sondou: `nm` + -r32. */
+volatile uint8_t  g_hsem_gpio_unlocked = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -145,6 +155,26 @@ int main(void)
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
+  /* ── HSEM 1: nesahej na sdilena GPIO soucasne s CM7 (#208) ────────────────
+   * MX_GPIO_Init a MX_ETH_Init nize konfiguruji GPIOA/B/C/G, tedy tytez porty,
+   * na kterych si CM7 za behu nastavuje encoder (PA8/PA9, PC13) a FPGA CS
+   * (PB12, soused ETH_TXD1). `HAL_GPIO_Init` je neatomicky read-modify-write,
+   * takze soubeh tise vrati cizi pin — PG8, PG11 a nejspis PB13 uz to stalo
+   * tri kola ladeni. Zamek se drzi pres CELY blok generovanych initu a pousti
+   * se az v `USER CODE BEGIN 2`.
+   * ⚠️ Best-effort (omezene cekani): deadlock pri bootu by byl horsi nez zavod,
+   * ktery navic `gpio_guard_tick()` na CM7 zachyti a opravi. */
+  /* ⚠️ Vysledek se DRZI (audit F-0135): pri vycerpani meze se inity provedou
+   * BEZ zamku, a to je presne stav, za ktereho vznika trida PG8/PG11 (ztracena
+   * konfigurace pinu -> cerny displej / deska bez IP). Bez priznaku by se
+   * nepoznalo, jestli nenulovy `GPIO HLIDAC` na CM7 pochazi z tohohle bootu,
+   * nebo z bezneho zavodu za behu. Navic se tim `HAL_HSEM_Release` nize zavola
+   * jen kdyz zamek opravdu drzime. */
+  uint8_t hsem_locked = 0;
+  for (uint32_t hs = 0; hs < 50000u; hs++) {
+    if (HAL_HSEM_FastTake(1u) == HAL_OK) { hsem_locked = 1u; break; }
+  }
+  g_hsem_gpio_unlocked = hsem_locked ? 0u : 1u;
   /* Otevri okno degradovaneho bring-upu — plati pro VSECHNA MX_*_Init nize
    * (uzavira se v USER CODE 2). Zamerne pro vsechny, ne jen pro ETH: zadna
    * periferie CM4 (pipak, LED, ETH) nestoji za to, aby kvuli ni umrelo cele
@@ -157,6 +187,10 @@ int main(void)
   MX_TIM12_Init();
   MX_ETH_Init();
   /* USER CODE BEGIN 2 */
+  /* Uvolnit JEN kdyz jsme zamek opravdu vzali (audit F-0135). Uvolneni
+   * nevlastneneho semaforu HW ignoruje, takze to driv nic neposkodilo — ale
+   * takhle je z kodu videt, ze se o tu moznost vi. */
+  if (hsem_locked) HAL_HSEM_Release(1u, 0);   /* konec bloku chraneneho HSEM 1 (viz SysInit) */
   /* Bring-up dobehl -> `Error_Handler` je od ted zase skutecne fatalni. */
   g_init_nonfatal = 0;
 
@@ -251,7 +285,14 @@ int main(void)
 	  uint32_t now  = HAL_GetTick();
 
 	  /* ── RYCHLA CAST: kazdou iteraci ──────────────────────────────────────── */
-	  iwdg2_kick();       /* obnov watchdog CM4 (iterace ~1 ms << 4 s timeout) */
+	  /* ⚠️ ZAMERNY NO-OP (audit F-0136): IWDG2 NENI spusteny — `iwdg2_init()` je
+	   * vedome zakomentovana (reset scope je system-wide, zmereno 2026-08-13, viz
+	   * blok vyse), takze se nikdy nezapise startovaci klic 0xCCCC a tenhle zapis
+	   * 0xAAAA do nebezijiciho watchdogu nic nedela. Volani se ponechava, aby bylo
+	   * zapnuti IWDG2 jednorazove vratitelne — stejny duvod jako `(void)iwdg2_init;`.
+	   * Zaseknuti CM4 dnes hlida CM7 pres heartbeat (`stall:CM4`).
+	   * 🔴 Driv tu stalo "obnov watchdog CM4", coz tvrdilo obranu, ktera neexistuje. */
+	  iwdg2_kick();
 	  lwip_app_process(); /* prijate ramce + lwIP timery (DHCP/ARP/TCP) + stav linky */
 	  httpd_min_poll();   /* v12: dokonci odlozene /api/log + push SSE (throttle ~20 Hz uvnitr) */
 
@@ -267,10 +308,29 @@ int main(void)
 		  cm4_have = (ipc_cm4_ready() && ipc_cm4_cm7_alive(now) && ipc_cm4_read(&snap)) ? 1u : 0u;
 		  cm4_gps  = (cm4_have && (snap.flags & IPC_F_GPS_VALID)) ? 1u : 0u;
 		  ipc_cm4_heartbeat(cm4_pct, now / 1000u);   /* posledni zmerena vlastni zatez [%] */
+		  /* ⚠️ PHY ID se pri STUDENEM startu nemusi precist: LAN8742A jeste bezi
+		   * vlastni power-on reset, MDIO mlci a cteni vrati same jednicky
+		   * (0xFFFF FFFF). Pri HW pruchodu 2026-08-30 to tak dopadlo — link i DHCP
+		   * pak byly v poradku, jen `status` hlasil nesmyslne "PHY ID 0xFFFFFFFF".
+		   * Dokud hodnota nedava smysl, zkousi se docist (5x/s, zastavi se hned
+		   * po uspechu -> zadna trvala zatez MDIO). */
+		  if (g_eth_init_ok && (g_eth_phy_id == 0u || g_eth_phy_id == 0xFFFFFFFFu))
+		  {
+			  uint32_t id1 = 0u, id2 = 0u;
+			  if (HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 2u, &id1) == HAL_OK &&
+			      HAL_ETH_ReadPHYRegister(&heth, ETH_PHY_ADDR, 3u, &id2) == HAL_OK)
+			  {
+				  uint32_t id = ((id1 & 0xFFFFu) << 16) | (id2 & 0xFFFFu);
+				  if (id != 0u && id != 0xFFFFFFFFu) g_eth_phy_id = id;
+			  }
+		  }
 		  /* ETH bring-up (v6, F3) se publikuje OPAKOVANE, ne jen jednou po initu:
 		   * samostatny reset CM7 dela v `ipc_init` memset cele sdilene struktury,
 		   * takze jednorazovy zapis by se ztratil a Health by hlasil "ETH:--". */
 		  ipc_cm4_set_eth(g_eth_init_ok, g_eth_phy_id);
+		  /* Pocitadla vyslani (v18, audit F-0138) — ze stejneho duvodu taky
+		   * OPAKOVANE. Do teto opravy se inkrementovala, ale necetl je nikdo. */
+		  ipc_cm4_set_eth_tx(g_eth_tx_ok, g_eth_tx_err);
 	  }
 
 	  /* LED_2 = VIDITELNY dukaz mezijaderneho ctení: sviti trvale pri GPS fixu ze

@@ -29,4 +29,8 @@ bool    setup_load(int slot);
 /** Uvolní slot. @return true = OK. */
 bool    setup_erase(int slot);
 /** Pure-logic unit test sanitizace slotu (součást UART `selftest`). 1 = PASS. */
-int     setup_selftest(void);
+int     setup_selftest(void);/** 1 = SETUP store ve W25Q je pouzitelny. 0 = `setup_init()` ho nepripravil, takze
+ *  ULOZIT/SMAZAT v okne SESTAVY tise nic neudelaji (audit F-0098). */
+int setup_store_ready(void);
+
+

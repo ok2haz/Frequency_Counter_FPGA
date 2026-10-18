@@ -27,7 +27,26 @@ static volatile unsigned int s_ui_ms;
 static volatile unsigned int s_fpga_ms;
 static unsigned int s_init_ms;
 static unsigned char s_ready;
-static unsigned char s_stall_logged;   /* black-box se zapisuje jen jednou za beh */
+static unsigned char s_stall_logged;   /* black-box uz je zapsany (do zotaveni) */
+
+/* Skutecne dosazena konfigurace IWDG, odectena PO propagaci (audit F-0104).
+ * Nedrzime zamysleny stav, ale ten NAMERENY — o to jde. */
+static unsigned int  s_cfg_pr, s_cfg_rlr;
+static unsigned int  s_stall_recovered;   /* zotavene stally (nezpusobily reset) */
+
+unsigned int watchdog_timeout_ms(void)
+{
+    /* LSI ~32 kHz, delicka 4 << PR, citac RLR+1. */
+    unsigned int div = 4u << s_cfg_pr;
+    return (unsigned int)(((unsigned long long)(s_cfg_rlr + 1u) * div * 1000ull) / 32000ull);
+}
+unsigned int watchdog_cfg_pr(void)        { return s_cfg_pr; }
+unsigned int watchdog_cfg_rlr(void)       { return s_cfg_rlr; }
+int          watchdog_cfg_ok(void)
+{
+    return (s_ready && s_cfg_pr == IWDG_PR_DIV64 && s_cfg_rlr == IWDG_RELOAD_4S) ? 1 : 0;
+}
+unsigned int watchdog_stall_recovered(void) { return s_stall_recovered; }
 
 /* Crash black-box pro STALL (kind 3) — stejny format jako FreeRTOS hooky ve
  * freertos_hooks.c (BKP_DR3 magic+kind, DR4/DR5 jmeno tasku), takze to po resetu
@@ -50,6 +69,11 @@ static void stall_blackbox(const char *name)
 
 void watchdog_init(void)
 {
+    /* ⚠️ POZOR: `CM7/Release` **taky definuje `-DDEBUG`** (overeno v generovanem
+     * `CM7/Release/Core/Src/subdir.mk`), takze tahle vetev je aktivni i v ostrem
+     * buildu — IWDG se pri haltu ladici sondou NEPOCITA a desku nezresetuje.
+     * Je to zadouci chovani, jen se o nem driv psalo, ze v Release neplati
+     * (audit F-0109). Na CM4 je to jinak: `CM4/Release` `DEBUG` nedefinuje. */
 #ifdef DEBUG
     __HAL_DBGMCU_FREEZE_IWDG1();       /* na breakpointu neresetuj */
 #endif
@@ -67,6 +91,21 @@ void watchdog_init(void)
     for (uint32_t i = 0; i < 100000u && IWDG1->SR != 0u; i++) { }   /* PVU/RVU (bounded) */
     IWDG1->KR  = IWDG_KEY_RELOAD;      /* nahraj citac z noveho RLR */
     s_ready = 1;
+
+    /* 🔴 ODECTI DOSAZENY STAV, nespolehej na zamysleny (audit F-0104, lekce
+     * L-0009). Vysledek smycky vyse se driv zahazoval a `s_ready = 1` se
+     * nastavilo bezpodminecne. Kdyby se `SR` nevyprazdnil, zustaly by v platnosti
+     * RESET DEFAULTY `PR = 0` (/4) a `RLR = 0xFFF`, tedy timeout ~0,51 s misto
+     * 4,0 s — OSMKRAT kratsi, a tise. Ze to neni teoreticke: defaultTask smi
+     * v jedne iteraci delat `syscfg_save` -> erase sektoru W25Q (50-400 ms).
+     * Projev by byl "nahodny reset pri ukladani nastaveni", tedy symptom
+     * hledany kdekoli jinde nez v inicializaci watchdogu.
+     * ⚠️ NEOPRAVUJEME to retry ani `Error_Handler`em: IWDG uz bezi (START je
+     * neodvolatelny), takze spadnout kvuli tomu do `Error_Handler` by z
+     * nepohodli udelalo nefunkcnost. Stav se jen ZVEREJNI — `status` rekne,
+     * co je doopravdy nastavene. */
+    s_cfg_pr  = IWDG1->PR;
+    s_cfg_rlr = IWDG1->RLR;
 }
 
 void watchdog_kick_ui(void)   { s_ui_ms = HAL_GetTick(); }
@@ -86,6 +125,31 @@ void watchdog_supervise(void)
     int ui_stale   = ((now - s_ui_ms)   >= WDG_STALL_MS);
     int fpga_stale = ((now - s_fpga_ms) >= WDG_STALL_MS);
     if (!ui_stale && !fpga_stale) {
+        /* 🔴 ZOTAVENI (audit F-0105). Sem se dostaneme i po tom, co uz
+         * `stall_blackbox` zapsal zaznam — stall v rozmezi ~2,5 s (mez heartbeatu)
+         * az ~6,5 s (+ timeout IWDG) se totiz ZAZNAMENA, ale NEZRESETUJE.
+         * Zaznam by pak lezel v BKP az do PRISTIHO resetu, klidne za dva dny,
+         * a `status` by ho pripsal jemu — tedy presne ta horsi varianta z L-0011
+         * („nezaznamena se nic" vs. „zaznamena se predchozi hodnota").
+         * Domena je zalohovana z CR2032, takze zaznam prezije i power-cyklus.
+         *
+         * Zaznam proto zneplatnime — ale JEN kdyz je porad NAS (magic + kind 3).
+         * Mezitim ho mohl prepsat HardFault nebo `configASSERT`, a ten patri
+         * nekomu jinemu (tataz disciplina jako L-0025: over, ze ti ten objekt
+         * porad patri, nez ho uvolnis).
+         * Zaroven se ZNOVU ARMUJEME: druhy, skutecne fatalni stall jine ulohy
+         * se driv uz nezapsal a po resetu se hlasil ten PRVNI.
+         * ⚠️ Ztraceny udaj („byl tu stall, ale zotavil se") se NEZAHAZUJE tise —
+         * pocita se a hlasi ho `status`. Trvaly zaznam do `errlog` by byl lepsi,
+         * ale zavisi na F-0092 (modul 16) a dve opravy najednou se nedelaji. */
+        if (s_stall_logged) {
+            s_stall_logged = 0;
+            if (s_stall_recovered < 0xFFFFu) s_stall_recovered++;
+            if ((RTC->BKP3R & 0xFFFF00FFu) == (0xC7A50000u | 3u)) {
+                PWR->CR1 |= PWR_CR1_DBP;
+                RTC->BKP3R = 0u;                 /* zneplatni, data nechavame */
+            }
+        }
         IWDG1->KR = IWDG_KEY_RELOAD;
         return;
     }

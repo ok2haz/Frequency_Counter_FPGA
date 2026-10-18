@@ -1,0 +1,4 @@
+[2026-10-17 08:06:10] PREFLIGHT: uptime 39357 s, IPC 25, smycka OFF (zamceno 0, 80 s)
+[2026-10-17 08:06:10] VAROVANI: smycka neni LOCK (OFF) - pocitej s rozbehem, zaklad meri az od zamceni
+[2026-10-17 08:06:10] START: docs\audit\data\2026-10-17_free.csv, perioda 2 s, max 600 min
+[2026-10-17 08:06:10] stav smycky: OFF (why 7)

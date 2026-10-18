@@ -26,10 +26,8 @@ void lwip_app_init(void);
  *  Vysledek publikuje pres IPC do CM7 (`ipc_cm4_set_net`). */
 void lwip_app_process(void);
 
-/** 1 = mame IP z DHCP. */
-int      lwip_app_has_ip(void);
-/** IPv4 jako oktety a.b.c.d v uint32 (bajt0 = a); 0 = zadna adresa. */
-uint32_t lwip_app_ip(void);
+/* ⚠️ `lwip_app_has_ip()`/`lwip_app_ip()` odstraneny (revize 2026-08-26) — nikdo
+ * je nevolal. Stav linky a IP tecou ven pres `ipc_cm4_set_net()` (viz .c). */
 
 #ifdef __cplusplus
 }

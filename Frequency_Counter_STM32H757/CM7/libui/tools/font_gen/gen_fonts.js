@@ -31,20 +31,35 @@ const BPP = 4;
 // Descriptory dle libui/include/ui/fonts.h (drz synchronni!).
 const FONTS = [
     ['ui_font_mono_14', MONO, 14], ['ui_font_mono_16', MONO, 16],
-    ['ui_font_mono_18', MONO, 18], ['ui_font_mono_20', MONO, 20],
-    ['ui_font_mono_22', MONO, 22],   // tlacitka (mono_20 +10%)
-    // mono_25 kresli jen: oddelovac tisicu "." (velke cislo) + cas "14:32:07" +
-    // nadpis "DIAGNOSTIKA" -> staci cislice/velka pismena/interpunkce (NE plny charset).
-    ['ui_font_mono_25', MONO, 25, '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ :.,-/'],
-    // mono_30 = decimal_font velkeho cisla -> kresli jen desetinnou "," (cislice pro jistotu).
-    ['ui_font_mono_30', MONO, 30, '0123456789,.'],
+    ['ui_font_mono_18', MONO, 18],
+    // ⚠️ `ui_font_mono_20` ZRUSEN 2026-08-29: plny charset stal 39,5 KB (5 % obrazu),
+    // ale pouzival se jen na 9 mistech -> slouceno do mono_22 (ten uz v obrazu je
+    // kvuli tlacitkum). Stejny krok jako drivejsi sans_17->sans_16 / sans_20->sans_18.
+    ['ui_font_mono_22', MONO, 22],   // tlacitka + stavovy radek hl. obrazovky
+    // mono_25 = oddelovac tisicu "." (velke cislo) + cas "14:32:07" + NADPISY OKEN
+    // (window_chrome) + par dialogovych retezcu.
+    // ⚠️ MALA PISMENA a "()=?Δ" DOPLNENA 2026-08-29: bez nich se 15 realnych
+    //   retezcu vykreslovalo jen zcasti nebo VUBEC (prim_draw_text chybejici glyf
+    //   TISE preskoci — `if (g == NULL) continue;`). Napr. "CITAC  detail mereni"
+    //   ukazoval jen "CITAC" a modal "Opravdu restartovat?" jen "O".
+    //   Pri dalsim orezu fontu tenhle charset NEZUZOVAT zpet na velka pismena.
+    ['ui_font_mono_25', MONO, 25,
+     '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz :.,-/()=?Δ'],
+    // mono_30 = decimal_font velkeho cisla ("," ) + velky kmitocet v okne Dvojkanal
+    // + velke znamenkove cislo v okne Odchylka xN -> cislice, ",", ".", "+", "-".
+    // (Jednotka "Hz" se u obou kresli zvlast mensim sans_18 — sem se nedava.)
+    ['ui_font_mono_30', MONO, 30, '0123456789,.+-'],
     // 75px (and the 52px fade for invalid digits) are used only for the main
     // number's digits → restrict to 0-9 to save flash.
-    ['ui_font_mono_75', MONO, 75, '0123456789'],
+    // ⚠️ mono_75 = cislice velkeho kmitoctu + nazev "GPSDO" na boot splashi.
+    // Bez DGOPS se splash logo NEVYKRESLILO vubec (chybejici glyf se tise preskoci).
+    ['ui_font_mono_75', MONO, 75, '0123456789DGOPS'],
     ['ui_font_mono_52', MONO, 52, '0123456789'],
     ['ui_font_sans_14', SANS, 14], ['ui_font_sans_16', SANS, 16],
     ['ui_font_sans_18', SANS, 18],   // tlacitka + nadpisy karet (sans_17 i sans_20 slouceny sem)
-    ['ui_font_sans_32', SANS, 32, 'Hz'],   // unit_font velkeho cisla -> jen "Hz"
+    // unit_font velkeho cisla: "Hz" (kmitocet) + "s"/"ms"/"us"/"ns"/"ps" (perioda,
+    // footer FREQ<->PERIOD toggle) -> unikatni znaky: H z s m u n p
+    ['ui_font_sans_32', SANS, 32, 'Hzsmunp'],
 ];
 
 // Unicode subset (libprim text.h §9).
