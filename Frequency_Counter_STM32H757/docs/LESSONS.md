@@ -4901,6 +4901,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** omezení typu „X nesmí tahnout osu“ vždy formuluj jako mez (kolik dekád), ne jako zákaz; zákaz schová data, mez jen krajní případ.
 - **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno na HW
 
+### L-0180 - Výchozí hodnota se změnila, popisy v pěti souborech zůstaly na staré
+
+- **Datum:** 2026-10-18
+- **Oblast:** dokumentace / komentáře (dither DAC OCXO)
+- **Symptom:** `status` hlásí „dither 100 Hz“, ale CLAUDE.md, `ad5693.h`, `freertos_shared.h`, `HW_REFERENCE.md` a hláška `dac dither` tvrdí 200 Hz (dotaz uživatele 2026-10-18).
+- **Příčina:** ve v0.21.1 se výchozí rychlost snížila z 200 na 100 Hz (`DAC_DITH_DEFAULT_HZ`), opraven byl jen `version.h`, `MERENI_A_KALIBRACE.md` a `FUNKCE.md`. Hodnota byla zapsaná na ~8 místech jako číslo, ne jako odkaz na symbol.
+- **Oprava:** texty srovnány; rychlost ověřena měřením (počet zápisů při známém zlomku povelu: ≈ 17,5/s sedí na 100 Hz, ne na 200 Hz, kde by to bylo ≈ 28/s). Hláška v `freertos_task_uart.c:2314` zůstává (chování, samostatný `fix:`).
+- **Pravidlo:** při změně výchozí hodnoty nejdřív `grep -rn "<stará hodnota>"` přes `*.md`, `*.h`, `*.c`; v komentářích odkazuj na symbol (`DAC_DITH_DEFAULT_HZ`), ne na číslo.
+- **Detekce:** grep výše; `status` (zobrazuje skutečnou hodnotu).
+- **Commit:** commit `docs:` s touto lekcí
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

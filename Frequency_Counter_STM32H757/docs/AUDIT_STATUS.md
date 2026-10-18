@@ -3,7 +3,11 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-17 — 🟡 **Přezkum změn v0.18.1 → v0.20.0 (5 nálezů: 1× S2, 2× S3, 2× S4), F3 zapsána, fáze oprav NEproběhla.**
+**Poslední aktualizace:** 2026-10-18 odpoledne - 🟢 **STAV DESKY: firmware v0.30.5 (`17b1193`) NAFLASHOVÁN a po power-cyklu ověřen** (SPI2 12,5 MHz, CRC err 0, díry 0, `selftest` 16/16, LOCK za ~2 min, FPGA FW 0x0424, IPC v28). Čísla → `docs/MERENI_A_KALIBRACE.md` (záznam „2026-10-18 odpoledne“).
+🔑 **Otevřené po dnešku:** (1) zamítání regrese (0,17 % s vlastní referencí, 3,1-8,5 % s externím GPSDO) a skoky v A (0,5 % vs 4,5-8,3 % oken) závisejí na ZDROJI, ne na stáří běhu, smyčce ani ditheru (měření 2026-10-18, kanál A: vlastní ref., ext. GPSDO s LOCK i OFF); podlaha přístroje ≲ 2,9·10⁻¹¹ @ 0,25 s; ext. zdroj 1,4-1,85·10⁻¹⁰; příště: osciloskop na vstupu (pin 25) a zdroj/kabel, A/B zapnuto/vypnuto po blocích, rozdělení |f_regr/f₂−1| v `regr`; (1b) `errlog` #5044 HardFault 240000 po SW resetu (14:02, uptime ≥ 6 721 s, verze neznámá), nevyšetřeno; (2) rezerva řetězu TDC kanál B 14 tapů (POZOR), sledovat při chladu; (3) UiTask 29-31 % CPU proti 5 % v rozboru optimalizace; (4) hláška `dac dither` píše „vychozi 200“ (výchozí je 100 Hz, `freertos_task_uart.c:2314`, čeká na `fix:`); (5) F-0258 [S3] a F-0259..F-0261 [S4] z auditu v0.21-v0.22 čekají na rozhodnutí; (6) oddělení šumu OCXO od přístroje (CH_A je teď externí GPSDO; vlastní 10 MHz nebo Si5356 s offsetem). Rozbor FPGA vs STM: `docs/audit/2026-10-18_fpga-vs-stm.md`. FPGA se zatím nemění.
+**Dither DAC je 100 Hz** (ne 200 Hz, jak uvádí starší zápis níže u v0.21.0; změna ve v0.21.1, ověřeno měřením 2026-10-18).
+
+**Předchozí aktualizace (zachováno):** 2026-10-17 — 🟡 **Přezkum změn v0.18.1 → v0.20.0 (5 nálezů: 1× S2, 2× S3, 2× S4), F3 zapsána, fáze oprav NEproběhla.**
 Verdikt **podmíněně funkční**. Zápis → [`audit/2026-10-17_fixreview-v0.20.md`](audit/2026-10-17_fixreview-v0.20.md).
 `/audit-modul` přišel bez jména modulu, žádný `nezačato` nezbývá → podle precedentu přezkum posledních kódových změn
 (datalog `dac_code`, počítadla spojení CM4, `/api/raw` + IPC v26, `tau min.`, graf Vc).

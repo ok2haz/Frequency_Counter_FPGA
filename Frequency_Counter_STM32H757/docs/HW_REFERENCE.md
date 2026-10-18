@@ -75,7 +75,7 @@
 | I2C4Task | Low | 1536 B |
 | UiTask | BelowNormal | 8192 B |
 | FpgaTask | Normal | 2048 B |
-| DacTask | AboveNormal | 1024 B (v0.21.0, dither DAC 200 Hz, `freertos_task_sensors.c`; v `USER CODE`, ne v `.ioc`) |
+| DacTask | AboveNormal | 1024 B (v0.21.0, dither DAC, výchozí 100 Hz (max 200), `freertos_task_sensors.c`; v `USER CODE`, ne v `.ioc`) |
 | UartRxQueue | — | 64 × 1 B |
 | GpsRxQueue | — | 256 × 1 B |
 

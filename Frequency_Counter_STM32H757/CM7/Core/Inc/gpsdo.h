@@ -5,7 +5,7 @@
  *
  * Retez: FPGA `pps_cap` (FW 0x0424, hruby citac 100 MHz, BEZ TDC) -> ramec abs 52..56 -> `fpga_pps_get`
  * (shoda dvou ramcu) -> gpsdo_tick (defaultTask, 100 Hz) -> povel kodu DAC (`g_gpsdo_code_q16`, Q16.16)
- * -> SensorsTask (jediny vlastnik I2C1) zapisuje AD5693R s ditherem 1. radu (2 Hz) -> OCXO EFC.
+ * -> SensorsTask (jediny vlastnik I2C1) zapisuje AD5693R s ditherem 1. radu (DacTask, vychozi 100 Hz; zaloha 2 Hz v SensorsTasku) -> OCXO EFC.
  *
  * Mereni: za n sekund mezi dvema hranami nabehne n * 1e8 * (1 + y) taktu, y = relativni odchylka OCXO
  * vuci GPS (kladne = OCXO rychly). Chyba periody e = takty - n * 1e8 [takt = 10 ns], faze x = soucet e.

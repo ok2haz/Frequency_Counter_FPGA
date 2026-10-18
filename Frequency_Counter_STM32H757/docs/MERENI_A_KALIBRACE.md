@@ -580,11 +580,88 @@ Nástroje: `tools/counter_floor_check.py` (10h log), `tools/ab_capture.py` + `to
 | 2 | 9,1·10⁻¹¹ | 1,53·10⁻¹⁰ | 2,6·10⁻¹⁰ | 2,8·10⁻¹⁰ | 1,3·10⁻¹⁰ |
 | 10 | 1,8·10⁻¹¹ | 5,2·10⁻¹⁰ | 8,7·10⁻¹⁰ | 8,7·10⁻¹⁰ | **3,8·10⁻¹¹** |
 
+- ⚠️ **Poznámka 2026-10-18 odpoledne:** původní tvrzení „na této hladině měří čítač hlavně zdroj“ POTVRDILO měření s kanálem A na vlastní referenci (ADEV 0,25 s = 2,6·10⁻¹¹, záznam „A = vlastní reference“ níže). Mezitím zvažovaná domněnka, že se přístroj od 2026-10-08 (5,4-6,5·10⁻¹¹) zhoršil, neplatí.
 - **Kanál A je ≥ 4× lepší než model** (ADEV 0,25 s ≤ 1,85·10⁻¹⁰ i s šumem zdroje proti 7,3·10⁻¹⁰; jádro rozdělení rozdílů sousedních oken 3,4·10⁻¹¹, tedy σ značky ≲ 5 ps). Model 105 ps platí pro **dvoubodový odhad**; A má regresi (`REGR: použita`), proto je model pro A konzervativní už od 2026‑10‑08 (komentář u `MP_TDC_PS`).
 - **Kanál B model potvrzuje:** 8,7·10⁻¹⁰ @ 0,25 s ⇒ σ značky ≈ 125 ps (B regresi nemá). A−B je proto omezeno kanálem B, ne A, a **nerozliší** šum A pod ~10⁻⁹.
 - **Křivka A není 1/τ**, ale plochá ~1,4–1,9·10⁻¹⁰ do 2 s, pak hrbol externího GPSDO (kap. 4 analýzy 10h běhu) ⇒ **na této hladině měří čítač hlavně zdroj**. 8 % oken má skoky > 6× jádro a nesou 94 % rozptylu rozdílů (rovnoměrně přes `seq mod 4`, takže nejde o sekundovou hranu); 10 396 skoků, žádný společný s B (B je na zjištění příliš hlučné — nelze rozhodnout, zda zdroj, nebo TDC).
 - **A−B @ 10 s = 3,8·10⁻¹¹** (společný šum zdroje se odečetl: A samotné má 8,7·10⁻¹⁰) — to je **horní mez šumu přístroje** na 10 s a je zhruba 2× model pro dva kanály (√2·1,8·10⁻¹¹) ⇒ na dlouhých τ model nepodhodnocuje.
 - **Závěr k poslední platné číslici:** pro TENTO zdroj ji nelze posunout — omezuje ji šum zdroje, ne přístroj. U 10 MHz a hradla 0,25 s vychází hranice na 10⁻² Hz v modelu i při 4× lepším rozlišení (1,85·10⁻³ Hz leží mezi 10⁻³ a 10⁻²). Posunout by ji šlo jen: delším hradlem / průměrováním (√N), nebo tišším zdrojem (Rb, druhé OCXO), na kterém by se prokázal skutečný práh A. **Nic jsem v kódu neměnil.**
+
+### 2026-10-18 odpoledne — v0.30.5 NA DESCE po power-cyklu: kontrola SPI 12,5 MHz, stav, dither, rozbor FPGA vs STM
+
+Nástroj: UART `uartq.ps1 -Port COM10`. CM7 v0.30.5 (`17b1193`), FPGA FW 0x0424 (build 2026-10-16 16:00 UTC, git `bb5adfb+`), IPC v28. `Reset: power-on`, měřeno v uptime 40-520 s.
+
+| kontrola | výsledek |
+|---|---|
+| `spi` | SPI2 kernel 200 MHz, **SCK 12,5 MHz**, CRC err **0** (stupně 100/50/25/12,5/6,25/3,125 MHz), po power-cyklu totéž |
+| `status` | `SEQ FPGA` díry 0 / resync 0, `CITANI HRAN` 0/0, hodiny 100M výpadků 0, `LTDC` podtečení 1 / 6144 flipů (náběh), `DMA2D` chyb 0, CM4 alive, síť UP 10.0.0.106, `GPIO HLÍDAČ` 0 oprav |
+| `selftest` | 16/16 PASS |
+| `stats` | CPU 33-39 %, **UiTask 29-31 %** (IDLE 66 %); stacky: IDLE 428 B, DacTask 808 B, FpgaTask 1 232 B, I2C4 1 068 B; halda 21 616 B volných (48 kB od v0.30.3) |
+| GPSDO | LOCK po ~2 min od startu, y −0,09…+0,01 ppb, fáze −23…+2 ns, kód ≈ 24 926; `tau min.` zatím bez dat (potřeba 180 bodů LOCK) |
+| `FPGA SAMOKONTROLA` | zamítnuto oken: čtení **1**, hodiny 0, délka 0. Hodnota se za 5+ minut **nezměnila** (jednorázové okno při náběhu; příznak „FPGA MĚŘÍ ŠPATNĚ“ svítí jen proto, že počítadlo není nula) |
+| `tdc` | největší bin A 174 ps / B 144 ps, za koncem řetězu 0, maxtap 248; **rezerva řetězu A 16 tapů (OK), B 14 tapů (POZOR, práh 15)**, stejné jako před power-cyklem |
+| `regr` | oken 7 342, použito 6 715, **zamítnuto 627 (8,5 %)**; přírůstek za ~2 min: 1 792 oken / 85 zamítnuto (4,7 %). V dlouhém běhu téhož dne dopoledne 2,5 % (2 174 / 87 628). σ(f_regr − f_2pt) **0,104 ppb** (dříve 0,46 ppb) |
+
+- 🔑 **Dither DAC jede na 100 Hz, ověřeno měřením.** `status` hlásí 100 Hz; zápisy se počítají jen při změně kódu, takže jejich počet závisí na zlomku povelu. Při zlomku 0,07 (kód 24 926,07) je očekávání 2·0,07·f ≈ 14/s při 100 Hz a 28/s při 200 Hz; naměřeno **≈ 17,5 zápisu/s** (27 707 → 27 777 za ~4 s). 200 Hz je vyloučeno, 100 Hz sedí. Starší poznámky „dither 200 Hz“ v CLAUDE.md, `ad5693.h`, `freertos_shared.h`, `gpsdo.h` a `HW_REFERENCE.md` opraveny (L-0180). **Text hlášky `dac dither <Hz>` stále říká „vychozi 200“** (`freertos_task_uart.c:2314`): je to chování, ne komentář, čeká na samostatný `fix:` commit.
+- ⚠️ **ZÁVĚR TOHOTO ODSTAVCE BYL VYVRÁCEN měřením téhož dne (záznam „A = vlastní reference“ níže):** přístroj se nezhoršil, dnešních 1,85·10⁻¹⁰ je šum zdroje. Odstavec ponechán jako historie úvahy.
+- 🔴 **Historická měření BEZ ditheru a co z nich plyne.** AD5693R byl osazen až 2026-10-16, takže měření z 2026-10-08 až 10-11 (FW 0x041A, regrese, 40 654 oken, `docs/TDC_MATEMATIKA.md` kap. 10) proběhla bez DAC a bez ditheru. Dither proto **nemůže být zdrojem šumu značky ~105 ps** (ten je z doby před DAC) ani limitu ADEV 5,4-6,5·10⁻¹¹ z té doby. Zároveň platí: tehdejší ADEV(0,25 s) s regresí **5,4-6,5·10⁻¹¹ a nula zamítnutých oken** je ~3× lepší než dnešních **1,85·10⁻¹⁰ a 2,5-8,5 % zamítnutých** (10h log). Zdroj byl v obou případech externí GPSDO, takže dnešní hodnota **není podlaha zdroje**, jak se dosud psalo (záznam „Šum jednoho okna čítače“ výše); zdroj nebo přístroj už jednou dosáhl 3× lepšího výsledku. Dither takto velký rozdíl vysvětlit nemůže: simulace dává zvlnění Vc ≤ 0,8·10⁻¹² p-p při 200 Hz, a degradace je soustředěná do vzácných oken (8 % oken nese 94 % rozptylu), ne rozložená rovnoměrně jako šum DAC. Rozdíly mezi tehdy a dnes, které se **nerozlišily**: (a) δ = +813 ppb tehdy proti δ ≈ 0 za zamčené smyčky (fáze hrany vůči hodinám stojí a případná vada TDC trefuje stále stejný kód); (b) bitstream 0x041A proti 0x0424; (c) smyčka + DAC zapnuté. ⬜ HYPOTÉZA: bod (a). Neověřeno.
+- ⚠️ **Zamítání regrese 4,7-8,5 % vs 2,5 %:** mez 5·10⁻⁸ odpovídá 12,5 ns v délce okna (1 takt = 10 ns = 40 ppb, 2 takty = 80 ppb). Příčina **neznámá**. Kontrola: do `regr` přidat rozdělení |f_regr/f₂ − 1| zamítnutých oken (jen STM, bez FPGA).
+- **Navržený rozhodující pokus (zatím NEPROVEDEN):** smyčku vypnout (`gpsdo off`) a ručním `dac <kód>` naladit OCXO na δ ≈ +0,8 ppm (±24 000 LSB od zámku; 1 LSB = 3,4·10⁻¹¹), čímž se zopakují podmínky z 2026-10-08, a to s dnešním firmwarem, bez ditheru (pevný kód). Pokud zamítání klesne k 0 a ADEV(0,25 s) k ~6·10⁻¹¹, příčinou je zamčená (stojící) fáze, ne DAC ani dither. Ze stejné dvojice lze udělat A/B „dither 100 Hz × pevný kód“. ⚠️ `dac <kód>` **ukládá kód do flash** (obnova po startu): po pokusu `gpsdo on` a počkat na LOCK (kód se při zámku znovu uloží do 10 min), do té doby nedělat power-cyklus.
+- ⚠️ **UiTask 29-31 % CPU** proti 5 % v `docs/audit/2026-10-18_optimalizace.md` (měřeno v0.30.1, uptime 5 476 s). Neprověřeno, co se změnilo (jiné okno, animace, glyph akcelerace po power-cyklu?).
+- **Vstup CH_A je externí GPSDO** (uživatel 2026-10-18), časovou základnu tvoří vnitřní OCXO, takže v měřeném ADEV je šum **obou** oscilátorů + přístroje. Test oddělení: na CH_A zapojit **vlastní 10 MHz** téhož OCXO, které taktuje Si5356. Společná časová základna vykrátí šum OCXO a zbude podlaha přístroje. ⚠️ Při přesně shodném kmitočtu je δ = 0 a fáze stojí (jako O10), takže **podlaha vyjde optimisticky**. Lepší varianta: 10 MHz ze **Si5356 (okno GENERÁTOR, CLK2…7)** s malým známým offsetem (řádu 10⁻⁶): tentýž OCXO, ale δ ≠ 0; přidává jitter PLL Si5356 (ps).
+- **Co přístroj sám NEUVIDÍ:** Vc čte ADS1115 po 125 µV a 2-10 Hz. Citlivost OCXO 4,4 Hz/V = 4,4·10⁻¹³ na µV; 5,4·10⁻¹¹ odpovídá ~120 µV šumu na Vc, tedy jednomu kroku ADS. Rušení Vc a napájení OCXO na této úrovni z `sensors`/`adcraw`/datalogu poznat nejde; vyžaduje osciloskop (1 mV/div, AC), zvukovou kartu nebo lineární napájení OCXO.
+- **Rozbor FPGA vs STM** (co jde přesunout, odhady, pořadí kroků): `docs/audit/2026-10-18_fpga-vs-stm.md`. FPGA zatím beze změny (rozhodnutí uživatele 2026-10-18).
+
+### 2026-10-18 odpoledne - 120 min: kanál A = VLASTNÍ reference (tentýž OCXO, který taktuje Si5356), kanál B = externí GPSDO
+
+Podmínky: v0.30.5, FPGA FW 0x0424, hradlo 0,25 s, kanál A, `INIT:CONT 1`; smyčka GPSDO v LOCK celou dobu (kód 24 923-24 929, dither 100 Hz), OCXO 48,2-48,5 °C, FPGA 37,9-38,3 °C, deska 31-32 °C, družic 10-12. Start 14:31 (uptime 583 s, LOCK 302 s), konec 16:31. Data: `docs/audit/data/2026-10-18_A-vlastni_B-externi.csv` (+ `.stab.jsonl`, `.events.txt`, `.phase.csv`, `.log`); 28 487 řádků, diry 62 míst / 314 měření (1,09 %), resetů přístroje 0, `SEQ FPGA` díry 0. Nástroj `python tools/ab_analyze_csv.py <csv> [orez_s]` (nový). Logger `gpsdo_log.ps1` má nově sloupec `freq_b_hz`.
+
+| τ [s] | ADEV A (vlastní ref.) | ADEV B (ext. GPSDO, 2 body) | ADEV A-B |
+|---|---|---|---|
+| 0,25 | **2,85·10⁻¹¹** | 9,35·10⁻¹⁰ | 9,35·10⁻¹⁰ |
+| 1 | 1,60·10⁻¹¹ | 2,67·10⁻¹⁰ | 2,67·10⁻¹⁰ |
+| 10 | 5,85·10⁻¹² | 4,19·10⁻¹⁰ | 4,19·10⁻¹⁰ |
+| 100 | 1,46·10⁻¹² | 2,76·10⁻¹⁰ | 2,76·10⁻¹⁰ |
+| 400 | 6,1·10⁻¹³ | 8,8·10⁻¹¹ | 8,8·10⁻¹¹ |
+
+(Po ořezu prvních 10 min: A 2,6·10⁻¹¹ @ 0,25 s, 5,6·10⁻¹² @ 10 s.)
+
+- 🔑 **Podlaha přístroje (s regresí) je ≲ 2,9·10⁻¹¹ @ 0,25 s a klesá přibližně jako τ^-0,5 až τ^-0,6 (bílý FM), 6·10⁻¹³ @ 400 s.** To je ~25× lépe než dvoubodový model (7,3·10⁻¹⁰) a ~6,5× lépe než 1,85·10⁻¹⁰ z 10h logu s externím zdrojem. Dnešní ADEV 1,85·10⁻¹⁰ je proto **šum zdroje (externí GPSDO × OCXO, Vc, smyčka)**, ne přístroj. Hypotéza o 3× zhoršení proti 2026-10-08 (5,4-6,5·10⁻¹¹) je vyvrácena. ⚠️ Podlaha je **optimistická**: společná časová základna a δ = 0 znamenají stojící fázi, kde se deterministická chyba kvantizace vykrátí (O10); s nesoudělným signálem bude horší. Spodní mez pro „přístroj na 10 MHz z vlastního OCXO“ je ale 2,9·10⁻¹¹.
+- **Kanál B** (externí GPSDO proti OCXO, bez regrese): ADEV 9,35·10⁻¹⁰ @ 0,25 s ⇒ σ značky ≈ 135 ps (shodně s dřívějšími ~125 ps); hrbol 4,2-5,7·10⁻¹⁰ @ 10-20 s je externí GPSDO (7,9·10⁻¹⁰ @ 20 s dříve). A-B = B, protože A je o řád tišší. Korelace skoků A a B 0,016, souběžný skok 1.
+- **Skoky v A** (> 6× jádro 2,4·10⁻¹¹): 143 z 28 487 (0,50 % oken), nesou 39 % rozptylu rozdílů (po ořezu 10 min: 89, 0,34 %, 29 %). Medián velikosti 2,6·10⁻¹⁰ = 66 ps v délce okna, tedy **nejde o skluz o takt (10 ns)**. Časově: **0-10 min záznamu 2,25 % (54 skoků), 10-20 min 0, dál 0,04-0,92 % po desetiminutovkách** (shluky 20-40 a 60-70 min). Teplota FPGA, OCXO ani desky nemá trend (FPGA 38,3 → 37,9 °C), takže to není ohřev. Příčina neznámá.
+- 🔴 **Zamítání regrese (`regr` po záznamu):** rámců 144 579 (čítač počítá rámce při 20 Hz, ne okna: 144 579 / 7 200 s ≈ 20/s), použito 144 333, **zamítnuto 246 = 0,17 %**; σ(f_regr − f_2pt) = 0,216 ppb. V prvních minutách po power-cyklu to bylo 4,6-8,5 %, dopoledne za dlouhého běhu 2,5 %. Zamítání je tedy jev začátku běhu (PŘEKONÁNO) **OPRAVENO téhož dne (záznam „A = externí GPSDO, GPSDO OFF“ níže): zamítání NEZÁVISÍ na stáří běhu, ale na zdroji.** Vysoké hodnoty 4,6-8,5 % byly naměřeny s externím GPSDO na kanálu A, nízkých 0,17 % s vlastní referencí; s externím zdrojem je i po 78 min běhu 3,1 %.
+- `FPGA SAMOKONTROLA`: čtení 2, hodiny 0, délka okna 1; **po celých 120 min beze změny** (hodnoty z doby přepojování vstupu, ne z měření). `CITANI HRAN` 0/0, `LTDC` podtečení 2 / 25 687 flipů, TDC rezerva A 16 / B 15 tapů, `TDC` bin A 163 ps / B 138 ps, bez rekalibrace.
+- ⚠️ **NÁLEZ v `errlog` (před záznamem, ne z něj):** `#5044 CRASH HardFault 240000` těsně po `#5043 BOOT duvod=SW res` (14:02:52), po záznamu `#5042 kanál B → A` (13:46, uptime 6 721 s). Tedy jeden HardFault s následným softwarovým resetem na dříve běžícím firmwaru (verze v tu chvíli neznámá, mohlo jít o přechod na v0.30.5). Příčina nevyšetřena (`status` ukáže CFSR/BFAR jen po resetu a černou skříňku čte při startu). Sledovat; při opakování zapsat jako nález.
+
+**Co z toho plyne a co dál:**
+1. Přístroj sám (s regresí) není hrdlem měření stability 10 MHz: podlaha ≲ 2,9·10⁻¹¹ @ 0,25 s. Omezuje zdroj a OCXO. Dalším krokem je tedy **pokus na kanálu A s externím GPSDO: smyčka `gpsdo off` + pevný kód (bez ditheru a řízení), 60-120 min.** Pokud se ADEV(0,25 s) zlepší z 1,85·10⁻¹⁰ směrem k ~5·10⁻¹¹, šum do OCXO přidává smyčka nebo dither (Vc); jinak je to zdroj. (Pozor: `dac <kód>` ukládá kód do flash; po pokusu `gpsdo on` a počkat na LOCK.)
+2. ~~Zamítání regrese je jev prvních minut po zapnutí~~ (vyvráceno, viz záznam „A = externí GPSDO, GPSDO OFF“): v `regr` přidat rozdělení |f_regr/f₂ − 1| a zjistit, čím se externí signál liší (úroveň, strmost, šum hrany na vstupu).
+3. Rozbor FPGA vs STM (`docs/audit/2026-10-18_fpga-vs-stm.md`) tím neztrácí ani nezískává: omezení přesnosti nebylo v FPGA matematice.
+
+### 2026-10-18 večer - 60 min: kanál A = EXTERNÍ GPSDO (týž zdroj jako B), GPSDO (smyčka) OFF, pevný kód DAC 24 927, bez ditheru
+
+Podmínky: v0.30.5, FW 0x0424, hradlo 0,25 s, kanál A, smyčka OFF celých 60 min (stav 4 690-4 718 s od vypnutí), DAC beze změny (zápisů 455 160 před i po), OCXO 48,2-48,5 °C, deska 31,4-31,6 °C, družic 9-12. Odchylka OCXO proti externímu GPSDO +1,1·10⁻¹⁰ (volná, bez drift trendu do 1 h). Start 16:55, konec 17:55. Data: `docs/audit/data/2026-10-18_A-ext_gpsdo-OFF.csv` (+ `.log`, `.events.txt`, `.phase.csv`, `.stab.jsonl`). V CSV chybí 8,0 % oken (163 míst, 1 153 měření; logger hlásil „NEODPOVIDA“, FPGA: `SEQ FPGA` díra 1), proto jsou v ADEV doplněna lineární interpolací; dříve 1,1 %. Nástroje `ab_analyze_csv.py`, `ab_phase_jumps.py` (nový).
+
+| τ [s] | ADEV A | ADEV B | ADEV A-B |
+|---|---|---|---|
+| 0,25 | **1,41·10⁻¹⁰** | 8,26·10⁻¹⁰ | 8,1·10⁻¹⁰ |
+| 1 | 1,04·10⁻¹⁰ | 2,53·10⁻¹⁰ | 2,5·10⁻¹⁰ |
+| 10 | 3,57·10⁻¹⁰ | 3,59·10⁻¹⁰ | 7,8·10⁻¹¹ |
+| 20 | 4,62·10⁻¹⁰ | 4,61·10⁻¹⁰ | 5,5·10⁻¹¹ |
+| 100 | 2,48·10⁻¹⁰ | 2,55·10⁻¹⁰ | 2,7·10⁻¹¹ |
+| 400 | 9,2·10⁻¹¹ | 8,7·10⁻¹¹ | 1,9·10⁻¹¹ |
+
+Srovnání ADEV A při 0,25 s: **vlastní reference 2,85·10⁻¹¹** | **externí zdroj, smyčka OFF 1,41·10⁻¹⁰** | externí zdroj, smyčka LOCK (10h log) 1,85·10⁻¹⁰.
+
+- ⚠️ **UPŘESNĚNO (otázka uživatele „jak to, že je lepší bez řízení DAC a ditheru?“):** níže uvedený závěr je příliš silný. Výsledek (OFF 1,41 vs LOCK 1,85·10⁻¹⁰; skoky 4,9 vs 8,3 %) JE v souladu s tím, že smyčka/DAC/dither šum přidává (~25 %), jen nejde o řízený A/B (různá denní doba, stav GPS). Další náznak: v 10h logu (`tools/ab_dither_activity.py`, aktivita ditheru z zlomku kódu) mají okna s největší aktivitou ditheru (zlomek ~0,5) 10,5 % skoků proti 6-8 % jinde, ale zlomek kódu se vyvíjí pomalým driftem kódu (0,76 LSB/h), takže je zaměněn s denní dobou. Simulace přitom dává zvlnění od ditheru ~100× pod touto úrovní. **Nerozhodnuto, nutný A/B po blocích** (viz „Další kroky“).
+- 🔑 **Šum A je dán převážně SIGNÁLEM zdroje (podíl smyčky/ditheru je nejvýše desítky procent, neprokázáno).** Vypnutí smyčky (bez ditheru, pevný kód) zlepší ADEV(0,25 s) jen z 1,85 na 1,41·10⁻¹⁰ (~25 %, přitom mezi běhy se liší i denní doba a stav GPS), zatímco přepnutí A na vlastní referenci ho srazí 5× na 2,85·10⁻¹¹. Zbylý rozdíl je vlastnost externího signálu (nebo jeho zapojení: kabel, úroveň, strmost, šum hrany ve vstupu čítače). Hrbol 3,6-4,6·10⁻¹⁰ @ 10-20 s je v A i B stejný (shoda 0,01-0,2 %), tedy společný zdroj; A-B ho odečte (5,5·10⁻¹¹ @ 20 s).
+- **Skoky v A** (> 6× jádro, jádro 4,7·10⁻¹¹): **647 z 13 084 oken (4,9 %) nese 91 % rozptylu**, medián 6,1·10⁻¹⁰ = 153 ps v délce okna. Proti vlastní referenci 0,5 % / 39 % je to 10× víc. 10h log s externím zdrojem a zapnutou smyčkou: 8,3 % oken. V B se skoky nejsou vidět (jádro B 1,15·10⁻⁹), korelace dA/dB 0,18, souběžných skoků 0.
+- **Zamítání regrese** (`regr`): rámců 74 767, zamítnuto 2 321 = **3,1 %**, σ(f_regr − f_2pt) 0,41 ppb (vlastní reference: 0,17 %, 0,22 ppb). Tím se **opravuje** předchozí závěr („jev začátku běhu“): zamítání je dáno zdrojem. Bylo 4,6-8,5 % v prvních minutách s externím zdrojem (kanál A), 2,5 % dopoledne s externím zdrojem, 3,1 % teď, 0,17 % s vlastní referencí.
+- **Fáze hrany:** skoky jsou rozloženy po celé periodě hodin 100 MHz, 2,0-7,6 % v 20 binech (jeden záznam 39,7 period hodin, 10h log 6 period: 7,5-11 %); χ² 60 a 117 při 19 stupních volnosti je zvýšeno autokorelací shluků, ale **žádná fáze nemá skoky nulové a žádná je nenese většinově**. Hypotéza „vada TDC v konkrétním kódu při stojící fázi“ tím odpadá; hlavním činitelem je signál.
+- **Co je tedy hrdlem při měření externího zdroje:** kvalita (zapojení) vstupu a zdroje, ne matematika FPGA, ne smyčka GPSDO, ne dither, ne Vc (Vc se na A s vlastní referencí neprojeví, s externí jen přes OCXO a to v tomto pokusu bylo statické).
+- `FPGA SAMOKONTROLA` po testu beze změny proti začátku (čtení 3, délka okna 2), `CITANI HRAN` 0/0, rezerva TDC A 16 / B 15 tapů, `LTDC` podtečení 2 / 35 245.
+
+**Další kroky (návrh):** (1) zjistit, čím se vstup od externího zdroje liší od vlastní reference: osciloskop na pinu 25 (úroveň 0-2,86 V? strmost, šum v okolí prahu ~1,4 V), délka a zakončení kabelu (120 Ω proti GND), zkušebně druhý zdroj nebo jiná cesta signálu; (2) řízený A/B zapnuto/vypnuto po blocích 20 min pro čistý vliv smyčky (v tomto pokusu jsou běhy z různé denní doby); (3) do `regr` přidat rozdělení |f_regr/f₂ − 1|.
 
 ## 3. Stav kalibrací
 
@@ -592,8 +669,8 @@ Nástroje: `tools/counter_floor_check.py` (10h log), `tools/ab_capture.py` + `to
 |---|---|---|---|
 | **TDC code density** (A, B) | ✅ automaticky po startu, po výpadku hodin a při FAIL znovu (L-0153); po power-cyklu A:1 B:1 | 100 MHz: rezerva řetězu 268 tapů ~6–8 % (~250 tapů na 10 ns) — sledovat `tdc` → `max tap` i v teple | 2026-10-11 |
 | **Skew A−B** | ✅ změřeno, korekce netřeba | 0,010 ns (100 MHz, stejný signál na A i B) | 2026-10-11 |
-| **Offset reference proti GPSDO** | ⬜ jen změřeno, nelze doladit | −0,84 ppm; chybí AD5693R (ladění Vc) | 2026-10-11 |
-| **ADS AIN0 Vc** (gain_vc) | ⬜ výchozí 2,5 | Vc nikdo nebudí (AD5693R neosazen) — kalibrace nemá smysl | — |
+| **Offset reference proti GPSDO** | ✅ dolaďuje smyčka GPSDO (AD5693R osazen 2026-10-16) | po power-cyklu 2026-10-18: LOCK za ~2 min, y −0,09…+0,01 ppb, kód ≈ 24 926 (1 902 mV); původní −0,84 ppm z 2026-10-11 už neplatí | 2026-10-18 |
+| **ADS AIN0 Vc** (gain_vc) | ⬜ výchozí 2,5 | AD5693R je osazen a Vc budí smyčka GPSDO. `status`: pin VC (AIN0) 1 919 mV při kódu DAC 1 902 mV (+17 mV, stejně jako 2026-10-17) — rozdíl je dělič/offset ADS, ne chyba DAC; kalibraci proti multimetru zatím nikdo neprovedl | 2026-10-18 |
 | **ADS AIN1 VBUS** (gain_vbus) | ⬜ výchozí 20,608 (R54 = 5k1) | čte 11,99 V; ověřit multimetrem | — |
 | **ADS AIN2 +3V3** (gain_12v) | ⬜ výchozí 2,0 | ověřit multimetrem | — |
 | **ADS AIN3 +5V** (gain_5v) | ⬜ výchozí 2,0 (R58 = 10k) | čte 5,03–5,17 V; **zkalibrovat** v průvodci (Kalibrace → PRŮVODCE) | — |

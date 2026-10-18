@@ -352,7 +352,7 @@ void SensorsTask_run(void *argument);      /* freertos_task_sensors.c */
  * negeneruje, definované přímo v split souborech. */
 void StartUiTask(void *argument);          /* freertos_task_ui.c */
 void StartFpgaTask(void *argument);        /* freertos_task_fpga.c */
-void DacTask_run(void *argument);          /* freertos_task_sensors.c — dither DAC OCXO 200 Hz (STATUS #317) */
+void DacTask_run(void *argument);          /* freertos_task_sensors.c — dither DAC OCXO, vychozi 100 Hz, max 200 Hz (STATUS #317) */
 
 /* ── Run-time stats časová báze (freertos_hooks.c) ─────────────────────── */
 void RunTimeStats_Init(void);

@@ -39,7 +39,7 @@
  * Vlakna: I2C1 vlastni SensorsTask -> sondu, obnovu a rucni zadosti dela jeho
  * `ad5693_service()` pod i2c1MutexHandle. UART/UI jen nastavi zadost
  * (`ad5693_request_*`) a cekaji na `req_* == 0` — vzor `g_si5356_clr_req`.
- * Od v0.21.0 (STATUS #317) zapisuje kod smycky GPSDO s ditherem 200 Hz DacTask (AboveNormal), take pod
+ * Od v0.21.0 (STATUS #317) zapisuje kod smycky GPSDO s ditherem DacTask (AboveNormal, vychozi 100 Hz od v0.21.1, max 200 Hz), take pod
  * i2c1MutexHandle a s kontrolou podminek znovu uvnitr mutexu.
  * Obe strany bezi na CM7, volatile poradi pristupu staci (bez __DMB).
  * 🔴 Zapis kodu PRELADI OCXO = posune kmitocet cele reference. Kod pochazi z TRI zdroju (od 2026-10-16):
