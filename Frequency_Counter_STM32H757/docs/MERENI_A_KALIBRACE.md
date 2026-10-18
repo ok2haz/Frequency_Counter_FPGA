@@ -20,7 +20,7 @@ Teorie (matematika TDC, regrese, chybový rozpočet) je v `docs/TDC_MATEMATIKA.m
 
 | Položka | Stav |
 |---|---|
-| Vstup A a B | 10 MHz z **externího OCXO GPSDO** (oba kanály stejný signál, přes T-kus) |
+| Vstup A a B | 10 MHz z **externího OCXO GPSDO** (oba kanály stejný signál, přes T-kus). **Od 2026-10-18 (upřesnění uživatele):** každý kanál má **vlastní externí budič 7404** → rozdíl A−B zahrnuje i nesoulad budičů a prahů (TDC kanály se tím neoddělí od budičů) |
 | Reference FPGA | **OCXO na desce** (Si5356 CLKIN 10 MHz → CLK0/1 do FPGA). Externí referenční vstup bez hran (`ref`) |
 | Ladění OCXO | **nikdo neřídí** — AD5693R (0x4C) není osazen, uzel Vc přes R78 100k visí |
 | Hradlo | 0,25 s (výchozí), kanál A primární |

@@ -4815,6 +4815,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** viz v0.27.1
 - **Stav:** aktivní; ⬜ neověřeno na HW
 
+### L-0173 — `…=hodnota/>` v `innerHTML` bez mezery: lomítko je součást nekvótované hodnoty atributu
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** `httpd_min.c` SPA (`drawSpec`, sloupce histogramu v `drawHist`)
+- **Symptom:** náhled spektrogramu na webu prázdný, detail se stejnými daty funguje; histogram v náhledu skládaný stejným způsobem.
+- **Příčina:** pravidlo SPA „atributy v `innerHTML` bez uvozovek“ + samozavírací `/>` těsně za hodnotou: `height=100/>`. HTML parser bere v nekvótované hodnotě `/` jako součást hodnoty (`height="100/"`), nejde o samozavírací tag; SVG délku `100/` odmítne a obdélník má výšku 0. Detail kreslí `setAttribute`, proto fungoval.
+- **Oprava:** ` />` s mezerou; kontrola v `tools/spa/check.py` (regexy `=[^\s'"<>]+/>` a `+'/>` nad servírovaným HTML).
+- **Pravidlo:** v řetězci pro `innerHTML` nikdy nekvótovaná hodnota těsně před `/>`; piš `hodnota />` (nebo uzavírací tag). Kdo nemůže prohlížeč otevřít, ať se opírá o specifikaci parseru, ne o to, že „tam už je“ podobný kód.
+- **Detekce:** `python tools/spa/check.py` (krok „nekvotovany atribut zakonceny `/>`“ musí hlásit 0).
+- **Commit:** `c2247e3`
+- **Stav:** aktivní; ⬜ příčina odvozena z HTML specifikace, **vizuálně neověřeno** (prohlížeč nebyl připojen)
+
 ---
 
 ## Archiv (neplatné lekce)

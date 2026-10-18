@@ -3,7 +3,7 @@
 > **Účel:** jeden přehled schopností hardwaru a firmwaru a jejich *stavu*. Není to návod ani popis kódu — hloubku drží
 > `CLAUDE.md` (jak to funguje), `docs/HW_REFERENCE.md` (tabulky), `../STATUS.md` (úkoly), `docs/MERENI_A_KALIBRACE.md` (měření).
 > **Udržovat:** při každé nové funkci nebo změně stavu upravit řádek zde (spolu s commitem, který ji mění).
-> Stav k **2026-10-18, firmware v0.27.0, IPC v28, FPGA FW 0x0424**.
+> Stav k **2026-10-18, firmware v0.28.0, IPC v28, FPGA FW 0x0424**.
 
 ## Legenda stavu
 
@@ -47,6 +47,7 @@
 | Hradlo 0,05 / 0,1 / **0,25** / 0,5 / 1 s | ✅ | footer GATE, `SENS:FREQ:GATE` |
 | Hi-res kmitočet z dvojice hrany/hradlo (až 15 číslic) | ✅ | velké číslo, SCPI `MEAS:FREQ?` |
 | FREQ ↔ PERIOD přepínač (s … ps) | ✅ | footer |
+| Okno **FUNKCE MĚŘENÍ**: Frekvence A/B, Perioda A/B | 🟡 | od v0.28.0 (B = FREQ/PERIOD + CHAN B); zbylé funkce šedé s důvodem, limity v kap. 12 |
 | Detekce ztráty signálu, auto‑restart, kontrola oken (samokontrola FPGA) | ✅ | `status` → FPGA SAMOKONTROLA |
 | Kalibrace TDC (code density) po startu, po teplotě, po výpadku hodin | ✅ | UART `tdc`, `tdc cal` |
 | Rozsah vstupu | ✅ | dnes do ~30 MHz bez děliče; 200 MHz/1,1 GHz ⬜ (vstupní modul) |
@@ -59,10 +60,11 @@
 
 | Funkce | Stav | Poznámka |
 |---|---|---|
-| Offset, σ(n−1), drift, histogram, trend až 60 dní, spektrogram Δf | 🟡 | hlavní obrazovka + okna |
+| Offset, σ(n−1), drift, histogram (posledních 120 s), trend až 60 dní | 🟡 | hlavní obrazovka + okna |
+| Spektrogram Δf — barevný pás odchylky v čase (displej: ring 720 s, plní se i za zavřeného okna; web: karta + detail) | 🟡 | v0.28.0; není to FFT spektrogram (kap. 12) |
 | **Allan ADEV / MDEV / HDEV / TDEV** (overlapping), konfidenční pás z EDF, typ šumu | 🟡 | okno ALLAN, web |
 | MTIE | ➖ jen odhad | potřebuje uloženou fázi |
-| Podlaha čítače (kvantizace TDC) v grafu | 🟡 | |
+| Podlaha čítače (kvantizace TDC, model σ znacky 105 ps) v grafu — přes celou časovou osu, kde opouští osu dole, značka | 🟡 | v0.28.0 (do v0.27.2 končila kolem 18 s, mez 1e-11) |
 | **Akumulátory členů od resetu** (7 stage, τ do 9·10⁶ s, 63 bodů) | 🟡 | v0.23.0–v0.24.0 (`adev_acc_update`) |
 | Brána podle ustálení reference, zlom na mezeře | 🟡 | `meas gate on|off` |
 | Pohledy **VSE / OKNO (~600 členů) / RAW** | 🟡 | tlačítko v okně ALLAN |
@@ -86,7 +88,7 @@
 | Doporučení τ smyčky (`tau min.` — dolní mez) | 🟡 | `gpsdo_tau_advise` |
 | Pasivní fázový monitor ve stavu OFF | 🟡 | v0.22.0, STATUS #319 (zkontrolovat, zda ponechat) |
 | Selftest smyčky (`gpsdo test`, 3 strmosti, špatné znaménko) | ✅ | PASS po v0.21.1 |
-| Holdover s fyzikálním odhadem | ⬜ | zatím jen amber „H" a ilustrativní kužel |
+| Holdover s fyzikálním odhadem | ⬜ | zatím jen amber „H" a ilustrativní kužel (displej i web od v0.28.0, šířka podle stavu, ne změřená) |
 
 ## 5. GPS a čas
 
@@ -95,7 +97,7 @@
 | NMEA parser, multi‑konstelace (GPS/GLONASS/Galileo/BeiDou) v GSV, sky plot a bargraf C/N0 | ✅ |
 | RTC z LSE 32,768 kHz, synchronizace z GPS (první fix + 10 min), disciplinace LSE podle GPS | ✅ |
 | Časová zóna: ruční posun nebo AUTO CET/CEST | ✅ |
-| Maidenhead lokátor, self‑survey (průměr polohy), okno KVALITA GPS (z datalogu) | 🟡 |
+| Maidenhead lokátor, self‑survey (průměr polohy), okno KVALITA GPS (displej z datalogu; web z živého okna relace, karta + detail od v0.28.0) | 🟡 |
 | UBX‑CFG‑GNSS / TMODE2 (GLONASS, survey‑in) | 🟡 best‑effort, NEO‑7M může odmítnout |
 
 ## 6. Záznam dat a export
@@ -163,5 +165,58 @@
 - **Statická IP** (ukládá se, neuplatňuje), **jazyk ENGLISH**, **protokol v2 + SPI DMA** (souvislý proud měření).
 - **Allan pro τ > 1000 s s krokem 1 s** (jen pyramida), **MTIE přesně**.
 - Ověření na HW čeká: dither 100 Hz dlouhodobě, A2/V1–V9 + filtr odlehlých (v0.23.0–v0.27.0), DTCM, fázový monitor v OFF.
+
+## 12. Měřicí funkce a grafy — limity, vylepšení, optimalizace (2026-10-18, v0.28.0)
+
+> Všechno níže vychází ze čtení zdrojů, ne z měření na desce (deska se při tomto průchodu nepoužívala). Co je číslo z kódu,
+> má odkaz; co je odhad, je označeno **HYPOTÉZA**. Úkoly jsou ve `../STATUS.md` #323.
+
+### 12.1 Okno FUNKCE MĚŘENÍ — co je odemčené a proč zbytek ne
+
+| Funkce | Stav | Limit / co chybí | Vylepšení |
+|---|---|---|---|
+| Frekvence A, Perioda A | ✅ | hodnota na velkém čísle je vždy jeden kanál; perioda je 1/f (kap. 12.2) | přesnější perioda (12.2) |
+| **Frekvence B, Perioda B** | 🟡 od v0.28.0 | je to totéž co FREQ/PERIOD + tlačítko CHAN B: FPGA vybraný kanál dá do primárního slotu, **jen A má regresní blok** (`rg_*`; u 10 MHz z GPSDO regrese stejně nic nepřidá, TDC_MATEMATIKA); přepnutí kanálu **nenuluje Allan** (kanály mají jinou podlahu, po přepnutí RESET ALLAN) | po přepnutí kanálu zlom pyramidy (jako při změně signálu), nebo oddělená pyramida B |
+| Poměr A/B | ⬜ data JSOU (oba kanály v rámci současně: `edge_count/gate_ps` a `edges_b/dt_b_ps`) | chybí **režim zobrazení**: poměr dvou 10 MHz je 1 ± 10⁻¹⁰, tedy 12+ desetin, formátovač velkého čísla umí 7 (`FREQ_FRAC_HIRES`); a třetí funkce nevejde do 1 bitu `st.mode` v `g_ui_cfg` | `ratio = f_A/f_B` v `double` → odchylka od 1 v ppt/ppb jako „Odchylka ×N"; persistence funkce na 2 bity |
+| Časový interval A–B, Fáze A–B | ⬜ | rámec nese délky oken (`dt_a`, `dt_b`) a kódy TDC, ale **ne společné razítko hran A a B** vůči stejnému taktu 100 MHz; konstantní offset kanálů (STA 6,23 vs 6,14 ns) se kalibruje relé vstupního modulu | protokol v3 (razítko A a B), kalibrace offsetu A↔B |
+| Totalize, šířka pulzu, střída | ⬜ | FPGA to neměří (gap‑free okna, měření šířky pulzu) | RTL |
+
+### 12.2 Perioda — jak se počítá a proč by šla přesněji
+
+- **Dnes:** `disp_update()` (screen_main.c) vezme hi-res kmitočet `s_freq_n` (LSB = 10⁻⁷ Hz, 7 desetin), udělá z něj `double` a `T = 1/f`, zaokrouhlí na **nejvýš 7 desetin zvolené jednotky** (s … ps) a poslední **2 číslice vždy vyšedí** (pevně, `num_layout(…, 2)`; u kmitočtu se jejich počet odvozuje z rozlišení hradla).
+- **Limit 1 — nízké kmitočty.** Rozlišení je dané LSB kmitočtu: relativně `10⁻⁷ Hz / f`. Při 1 Hz je to 10⁻⁷, zatímco měření samo (σ značky 105 ps, okno ≥ 1 s) dává `√2·105 ps / 1 s ≈ 1,5·10⁻¹⁰` — perioda ztrácí **zhruba tři řády** (7 místo ~10 platných číslic). Od ~100 Hz výš se to schová do šumu (u 10 MHz a hradla 0,25 s je rozlišení 5,9·10⁻¹⁰ a perioda 100,0000000 ns má 10 číslic).
+- **Limit 2 — pevný strop 7 desetin** jednotky: u 1 s je to 100 ns, ač měření nese ~150 ps.
+- **Vylepšení:** počítat `T = gate_ps / edges` přímo (celočíselné dělení ve fixním bodu, stejně jako `fpga_freq_scaled`), počet desetin odvodit z `u_res` (jako `freq_uncertain_frac`) a ne z pevných 7; počet nejistých číslic taky z `u_res`. **Riziko:** zasahuje formátovač velkého čísla (`num_build_for`, `num_layout`, `NUM_SEG_MAX`); bez desky ověřit nejde → nedělat naslepo.
+
+### 12.3 Histogram — z kolika vzorků a je to dobře?
+
+- **Dnes:** z plochého kruhu `s_y[]` = **posledních 120 vzorků po 1 s (2 minuty)**, kdykoli `STAT_N` = 120 (sdílí ho trend 60 s, offset, drift, σy@1 s). 24 binů v rozsahu min…max, tedy ~5 vzorků na bin; **střední hodnota, medián i směrodatná odchylka jsou spočtené správně** (od v0.28.0 s n−1; do v0.27.2 s n).
+- **Co je slabé:** 2 minuty je krátké na ocasy (nad 2σ čekáš ~5 vzorků, nad 3σ pod jedním) a rozsah min…max ho táhne jediný odlehlý vzorek (zbytek se slije do pár binů); Gaussova křivka se proto dá „dobře“ nakreslit i na data, která Gaussova nejsou. Histogram také **nezná filtr odlehlých** ani **bránu reference** (plní se z `stats_push` stejně jako vše).
+- **Vylepšení:** samostatný ring 1 800 – 3 600 vzorků (30–60 min) jako `float` relativně k referenci (7–14 kB, DTCM ještě zbývá ~26 kB); počet binů ≈ √n nebo Freedman–Diaconis; rozsah ±4σ s počítadly „pod/nad“; odečíst lineární trend okna (drift OCXO jinak rozšíří rozdělení); ukázat N a šířku binu. Web má vlastní okno (`win`) a vlastní histogram nad `H.f`.
+
+### 12.4 Podlaha čítače v Allanu
+
+- **Proč končila na ~10–18 s:** v `allan_plot_curve` (displej) i v `drawStab` (web) byla mez „podlaha nejde pod 1e‑11“ (commit `16e7a5e`, zavedeno proto, aby se osa neroztáhla dolů k podlaze). Model `ADEV = √12·σ_značky /(2τ) ≈ 1,8·10⁻¹⁰/τ` překročí 10⁻¹¹ při τ ≈ 18 s. Mez byla moje volba, ne fyzika.
+- **Dnes (v0.28.0):** čára se kreslí **přes celou osu τ, dokud je v rozsahu osy**; osu dál řídí jen křivka (požadavek z 2026‑10‑07). Kde podlaha osu opustí dole, je na dolní hraně **trojúhelníková značka** (displej) / zpráva „od τ … leží pod osou“ (web). Víc ukázat nejde, aniž by se osa stáhla k podlaze: u τ = 10⁵ s je podlaha ~10⁻¹⁵ a křivka ~10⁻¹².
+- **Limity modelu:** σ značky **105 ps** je jedna konstanta (`MP_TDC_PS`) pro oba kanály a pro signál asynchronní k referenci; u koherentního signálu (GPSDO 10 MHz vs. hodiny 100 MHz z téhož OCXO řetězce) kvantizace není náhodná a křivka může ležet i pod čarou. **HYPOTÉZA:** kanál B bez regrese má šum o něco vyšší.
+- **Vylepšení — měřit místo modelovat:** oba kanály dostávají tentýž signál z externího GPSDO, každý přes vlastní budič 7404 → ADEV rozdílu `(f_A − f_B)/f` je přímo **podlaha dvou kanálů vč. budičů** (společný šum zdroje se odečte). Data jsou v rámci už dnes. Nová křivka „A−B“ do Allanu by podlahu ověřila a vyměnila odhad `105 ps` za změřenou hodnotu.
+
+### 12.5 Spektrogram
+
+- **Web:** karta měla v náhledu **prázdný pás**: `drawSpec` skládal `<rect … height=100/>` s nekvótovaným atributem, a `/` je v HTML parseru součást hodnoty (`height="100/"`) → obdélník nulové výšky (detail používal `setAttribute`, proto fungoval). Stejná chyba byla u sloupců histogramu. Opraveno ve v0.28.0 (`/>` s mezerou). **Jak poznat podobné chyby:** v `innerHTML` nikdy `…=hodnota/>` bez mezery. Vizuálně neověřeno (Chrome rozšíření nebylo připojeno).
+- **Displej:** kreslil jen za otevřeného okna (sloupec 2×/s, pevná škála ±0,4 Hz — u GPSDO plochá modrá). Od v0.28.0 historii drží `screen_main` (720 vzorků po 1 s = 12 min, DTCM, plní se vždy) a okno ji při otevření **překreslí**; škála je ±3σ okna a ukázaná v popisku.
+- **Limity:** je to **barevný pás odchylky v čase**, ne spektrogram (kmitočet × čas); 12 min je málo na teplotní cykly. **Vylepšení:** druhý ring po 10 s (2 h) nebo decimace; skutečný spektrogram = krátkodobé FFT (`phase_noise.c` už FFT umí) → osa y = offset kmitočet, což ukáže periodicity (klimatizace) zřetelněji.
+- **Data máme?** Ano: každé 1 s (`stats_push`) je vzorek průměru 4 měření; displej i web mají vlastní řadu (web ~4/s z SSE).
+
+### 12.6 Kvalita GPS a Holdover
+
+- **Kvalita GPS na webu nešla zvětšit** — karta neměla `data-z`. Od v0.28.0 detail (družice vlevo, HDOP vpravo, každý se svou osou). **Limit:** web kreslí jen **živé okno relace**; `/api/log` pole `sats`/`hdop10` neposílá (bod = `[t, f, ocxo, deska, vc, vbat, flags, lo, hi]`). **Vylepšení:** přidat `sats`/`hdop` do bodu (`ipc_log_rec_t`, `HTTPD_LOG_PT_MAX` — `_Static_assert` rozpočtu to zastaví), pak by web měl totéž, co displej (dny).
+- **Holdover na webu neměl kužel.** Od v0.28.0 ho má (zrcadlo `holdover_cone_draw`: šířka podle stavu, v holdoveru roste s dobou). **Je ilustrativní:** šířka není změřená. **Vylepšení (STATUS #303/#311):** kvantitativní kužel z `x(t) = x₀ + y₀·t + ½·D·t² ± σy(t)·t`, kde `D` je stárnutí z kódu DAC v čase a `σy` z pyramidy; údaj „±X ns za 1 h“.
+
+### 12.7 Optimalizace
+
+- `wf_repaint()` (spektrogram) kreslí až 720 sloupců samostatně; při změně škály o > 30 % to stojí řádově milisekundy v UiTasku (limit 10 ms) — **HYPOTÉZA**, neměřeno. Úprava: kreslit po pásech, nebo držet barevný bitmap (720×1 px řádek) a jen blitovat.
+- Pyramidy a nové kruhy jsou v DTCM (`s_wf` 2,9 kB; celkem ~38 kB z 64 kB).
+- Všechny nové věci jsou **neověřené na HW**.
 
 Podrobný seznam úkolů a jejich stavu: `../STATUS.md`. Stav ověření po verzích: `docs/AUDIT_STATUS.md`.
