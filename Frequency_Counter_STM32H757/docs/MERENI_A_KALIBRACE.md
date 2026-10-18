@@ -568,6 +568,24 @@ Multimetrem (≥ 10 MΩ) při běžném provozu (smyčka v LOCK, můstek VBAT za
 
 Podrobně `docs/audit/2026-10-18_hw-testy.md` (19 testů, 17 ✅, 2 nálezy: chybějící glyf na displeji, překrývání dávek historie na webu). Po 12,5 h: žádný reset, smyčka LOCK, DAC 2,08 M zápisů bez chyby, síť 22/22 PASS, selftest 16/16.
 
+### 2026-10-18 — Šum jednoho okna čítače: lze posunout poslední platnou číslici? (data: 10h log + 12 min A/B na v0.30.0)
+
+Nástroje: `tools/counter_floor_check.py` (10h log), `tools/ab_capture.py` + `tools/ab_analyze.py` (A a B současně z `/api/state`, data `docs/audit/data/2026-10-18_AB_capture_v0.30.0.npz`).
+
+| τ [s] | model 105 ps (√3·σ/τ) | A, 10h log (zdroj: externí GPSDO) | A, 12 min | B (bez regrese) | A−B |
+|---|---|---|---|---|---|
+| 0,25 | 7,3·10⁻¹⁰ | **1,85·10⁻¹⁰** | 2,7·10⁻¹⁰ | 8,7·10⁻¹⁰ | 8,5·10⁻¹⁰ |
+| 0,5 | 3,6·10⁻¹⁰ | 1,49·10⁻¹⁰ | 2,0·10⁻¹⁰ | 4,6·10⁻¹⁰ | 4,4·10⁻¹⁰ |
+| 1 | 1,8·10⁻¹⁰ | 1,34·10⁻¹⁰ | 2,0·10⁻¹⁰ | 2,8·10⁻¹⁰ | 2,3·10⁻¹⁰ |
+| 2 | 9,1·10⁻¹¹ | 1,53·10⁻¹⁰ | 2,6·10⁻¹⁰ | 2,8·10⁻¹⁰ | 1,3·10⁻¹⁰ |
+| 10 | 1,8·10⁻¹¹ | 5,2·10⁻¹⁰ | 8,7·10⁻¹⁰ | 8,7·10⁻¹⁰ | **3,8·10⁻¹¹** |
+
+- **Kanál A je ≥ 4× lepší než model** (ADEV 0,25 s ≤ 1,85·10⁻¹⁰ i s šumem zdroje proti 7,3·10⁻¹⁰; jádro rozdělení rozdílů sousedních oken 3,4·10⁻¹¹, tedy σ značky ≲ 5 ps). Model 105 ps platí pro **dvoubodový odhad**; A má regresi (`REGR: použita`), proto je model pro A konzervativní už od 2026‑10‑08 (komentář u `MP_TDC_PS`).
+- **Kanál B model potvrzuje:** 8,7·10⁻¹⁰ @ 0,25 s ⇒ σ značky ≈ 125 ps (B regresi nemá). A−B je proto omezeno kanálem B, ne A, a **nerozliší** šum A pod ~10⁻⁹.
+- **Křivka A není 1/τ**, ale plochá ~1,4–1,9·10⁻¹⁰ do 2 s, pak hrbol externího GPSDO (kap. 4 analýzy 10h běhu) ⇒ **na této hladině měří čítač hlavně zdroj**. 8 % oken má skoky > 6× jádro a nesou 94 % rozptylu rozdílů (rovnoměrně přes `seq mod 4`, takže nejde o sekundovou hranu); 10 396 skoků, žádný společný s B (B je na zjištění příliš hlučné — nelze rozhodnout, zda zdroj, nebo TDC).
+- **A−B @ 10 s = 3,8·10⁻¹¹** (společný šum zdroje se odečetl: A samotné má 8,7·10⁻¹⁰) — to je **horní mez šumu přístroje** na 10 s a je zhruba 2× model pro dva kanály (√2·1,8·10⁻¹¹) ⇒ na dlouhých τ model nepodhodnocuje.
+- **Závěr k poslední platné číslici:** pro TENTO zdroj ji nelze posunout — omezuje ji šum zdroje, ne přístroj. U 10 MHz a hradla 0,25 s vychází hranice na 10⁻² Hz v modelu i při 4× lepším rozlišení (1,85·10⁻³ Hz leží mezi 10⁻³ a 10⁻²). Posunout by ji šlo jen: delším hradlem / průměrováním (√N), nebo tišším zdrojem (Rb, druhé OCXO), na kterém by se prokázal skutečný práh A. **Nic jsem v kódu neměnil.**
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |

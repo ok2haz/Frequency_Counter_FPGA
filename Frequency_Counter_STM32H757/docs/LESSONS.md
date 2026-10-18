@@ -4865,6 +4865,32 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** commit s v0.29.0
 - **Stav:** aktivní. **Doplněno v0.30.0:** konstanty FLL a HOLD nahrazeny MĚŘENÍM ze smyčky (FLL |y| okna, LOCK ADEV fáze, HOLD ADEV + drift kódu DAC); tabulka zůstává jen jako náhrada a výsledek nese příznak `zmereno/odhad` (IPC `ref_meas`). Poučení: když přístroj veličinu sám měří (a smyčka ji měří), neodhaduj ji — dej konstantu jen jako záchranu a označ ji.
 
+### L-0177 — Prázdný graf bez vysvětlení + záložní výpočet se přepíná podle PŘÍTOMNOSTI dat, ne jejich POUŽITELNOSTI
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** web SPA `fwPts` / `drawStab` / `drawZoomAdev` (Allan)
+- **Symptom (hlášení uživatele po flashi v0.30.0):** detail Allanu prázdný a nešlo přepínat ADEV/TDEV/MTIE a body na dekádu.
+- **Příčina:** 12 min po zapnutí pyramida čeká na ustálení reference (OCXO ~15 min) a `/api/stab` vrací **jediný** bod (τ = 1 s). `fwPts` vracel neprázdné pole → `fA` bylo pravdivé → web **nepoužil vlastní výpočet** z 190 měření a `drawZoomAdev` při `A.length < 2` skončil mlčky s prázdným SVG. Přepínače byly jen v kartě, kterou overlay detailu zakrývá.
+- **Oprava:** `fwPts` vrací `null` pod 3 body (fallback na výpočet webu + varování PROČ), detail při < 2 bodech řekne proč je prázdný a co čekat, přepínače metriky/hustoty jsou i v overlayi.
+- **Pravidlo:** přepnutí na záložní zdroj podle „máme data?“ je past; podmínka musí být „máme data, ze kterých jde nakreslit výsledek?“. A prázdná plocha bez věty, proč je prázdná, je chyba UI. Ovladač, který mění zobrazení overlaye, musí být V overlayi.
+- **Detekce:** `node tools/spa/allan_detail_test.js <spa.js>` (scénář 2: 1 bod z přístroje + 300 měření webu; kontrolováno proti původnímu SPA — 6 chyb).
+- **Commit:** commit s v0.30.1
+- **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno v prohlížeči (Chrome rozšíření nebylo připojeno; ověřeno v Node nad atrapou DOM)
+
+---
+
+### L-0178 — Znak `%` ve velkém subsetovaném fontu (`mono_25`) se tiše přeskočí
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** okno NASTAVENÍ GPS (`gpscfg_draw_vals`), `libprim/src/text.c`
+- **Symptom:** `status` po otevření okna: `FONTY: přeskočených glyfů 26`, `poslední chybějící znak U+0025 ve fontu s ascent 26`.
+- **Příčina:** rychlostní faktor `66 %` vykreslený `mono_25` (subset: číslice, písmena, ` :.,-/()=?Δ`) — `%` v sadě není.
+- **Oprava:** hodnota bez `%`, jednotka v popisku řádku (`dlabel`, mono_18 má plnou sadu). Čítač chybějících glyfů nově ukládá **poslední kódový bod a ascent fontu**, takže se příště nehledá slepě.
+- **Pravidlo:** před novým řetězcem ve fontu `mono_25/30/52/75`, `sans_32` ověř sadu (CLAUDE.md „TŘI tiché pasti“); po flashi vždy `status` → `FONTY`.
+- **Detekce:** `status` → `FONTY:` (musí být 0).
+- **Commit:** commit s v0.30.1 (diagnostika kódového bodu přišla ve v0.29.0)
+- **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno na HW
+
 ---
 
 ## Archiv (neplatné lekce)

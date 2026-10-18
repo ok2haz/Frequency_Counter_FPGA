@@ -1618,7 +1618,8 @@ bring-up `DUALCORE_BRINGUP_CHECKLIST.md`. **Plné původní znění této sekce 
          a `push('ns')` četl `gps.nsat` (leží o úroveň výš). 🔴 **V JS je chybějící pole
          `undefined`, ne chyba**, takže se to projevilo jen jako trvale špatná karta a žádný
          z ostatních kroků na to nedosáhl. Rozlišuje „neemituje vůbec" od „existuje, ale jinde".
-      6. JS testy: `spa_test` `hov_test` `unc_test` `pwr_test` `mdev_test` `pn_test` `alarm_test`
+      6. JS testy (+ **`allan_detail_test`** nad CELOU SPA v Node: `tools/spa/spa_harness.js` = univerzální atrapa DOM, `require(...)(js, testBody)`; kryje detail Allanu,
+         přepínače v overlayi, řídká data z přístroje, vysvětlení prázdného detailu a legendy — umí otestovat funkce, které se přes `grab()` nedají vytáhnout): `spa_test` `hov_test` `unc_test` `pwr_test` `mdev_test` `pn_test` `alarm_test`
          `pref_test` `axis_test` `sys_test` `stat_test` (běží nad **vyextrahovaným** JS, ne nad kopií — vytahují si funkce
          ze zdroje přes `grab()`, takže se nemůžou rozejít s tím, co se doopravdy servíruje).
          🔑 **`stat_test`** (F-0170) výsledky **vynucuje** (ne jen vypisuje jako `mdev_test`):
@@ -2195,6 +2196,10 @@ nedozvíš, dokud tiše nepřijdeš o čas a nastavení při odpojení napájen�
 - 🔴 **Nejistota REFERENCE (v0.30.0, `gpsdo_ref_ppb()`, `mp_ref_ppb` v `meas_present.h`) se bere ZE ZMĚŘENÝCH hodnot smyčky**: FLL = |y| posledního okna ⊕ šum okna √2·2,9 ns/okno,
   LOCK = ADEV fáze OCXO–GPS @ ≤ 1000 s z historie smyčky, HOLD = ADEV při vstupu + drift kódu DAC (LS ≤ 2 h LOCK) × K, √(u0² + (drift·t)²); náhradní tabulka jen když měření chybí.
   Jedno místo pro hlavní číslo, okno ANALÝZA i web (IPC v29: `ref_ppb_x100`, `ref_meas`). Neměří se: OFF/WAIT (1 ppm), teplota v HOLD.
+- 🔴 **Pravidlo jednotek (zadání 2026-10-18, „kdekoliv v přístroji“):** relativní odchylku píšeme v **ppm jen od 1 ppm**; pod tím **ppb a jen na desetiny**, pod 1 ppb ppt (1 desetina). Displej: `fmt_rel_unit`
+  (okno MĚŘENÍ), řádky ppb/ppm v Odchylce ×N, `fmt_sci_ppb` (ANALÝZA); web: řádek RELATIVNĚ. Nový výpis relativní hodnoty MUSÍ jít přes ně.
+- ⚠️ **`status` → `FONTY: přeskočených glyfů N` + `poslední chybějící znak U+XXXX ve fontu s ascent A`** (od v0.29.0): `mono_25` (ascent 26) nemá `%` ani `+`; v0.29.0 měl okno NASTAVENÍ GPS `66 %` v mono_25 a čítač
+  to ukázal po prvním otevření (26×). Nový text ve velkém subsetovaném fontu = nejdřív ověřit sadu znaků.
 - ⚠️ **`adev_en` je výchozí VYPNUTÝ** — σy@1s se dnes počítá ze **simulace** headline (~1e-8), takže
   jakýkoli realistický práh by pípal na šum. Mechanika je hotová a správná; zapnout až po #2.
 - **Hystereze je povinná** (`band_eval`): VBAT ±30 mV, OCXO ±0,5 °C, ADEV ±10 %. Bez ní by veličina
