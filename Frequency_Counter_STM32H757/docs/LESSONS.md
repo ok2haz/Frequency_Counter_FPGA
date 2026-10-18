@@ -4839,6 +4839,32 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** commit s touto lekcí a zprávou `docs/audit/2026-10-18_noc10h-analyza.md`
 - **Stav:** aktivní
 
+### L-0175 — Klient a server si „krok“ historie počítaly každý jinak: sešité dávky se překrývaly
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** web SPA `fetchLog` ↔ `GET /api/log` (`httpd_min.c`), historie 24 h / 7 d / 30 d (a nově 6 h)
+- **Symptom:** (nález při HW testu, nikdo to nehlásil) dávka 1 začínala 4,4 h před koncem dávky 0 — sešitá řada měla překrývající se úseky.
+- **Příčina:** server počítá krok jednoho bodu jako `win/(n·10)` záznamů z parametru `win`, takže `win` = celé okno znamená, že **jedna dávka pokryje celé okno**. Klient přitom posouval `from` o `n·krok_klienta`, kde `krok_klienta = win/(DLCHUNKS·n·10)` (čtvrtina), tedy počítal s tím, že dávka pokryje čtvrtinu okna. Dvě definice téhož kroku, žádný společný zdroj.
+- **Oprava:** klient posílá serveru `win/DLCHUNKS`; platí `krok_server == krok_klient` a dávky na sebe navazují.
+- **Pravidlo:** když si klient a server dělí práci na dávky, **jedna z obou stran vlastní definici kroku a druhá ji jen přebírá** (parametr, ne vlastní výpočet). Kontrolu lze udělat měřením na živém zařízení: dvě po sobě jdoucí dávky nesmí mít překrývající se časové rozsahy.
+- **Detekce:** `python tools/hw_smoke_net.py` (blok `/api/log`) nebo ručně `curl '/api/log?win=21600&n=48&from=0'` a `from=528`.
+- **Commit:** commit s v0.29.0 (`feat(firmware): v0.29.0 …`)
+- **Stav:** opraveno 2026‑10‑18, ⬜ neověřeno v prohlížeči
+
+---
+
+### L-0176 — Nejistota „reference“ jako konstanta lže na obě strany
+ 
+- **Datum:** 2026-10-18
+- **Oblast:** `meas_present.h` `MP_REF_PPB`, hlavní číslo (`freq_uncertain_frac`), okno ANALÝZA, web
+- **Symptom:** hlavní číslo označovalo číslice jako důvěryhodné až na 1 ppb i s volně běžícím OCXO (−0,84 ppm vedle), a za zamčené smyčky (0,01 ppb) naopak 100× pesimisticky.
+- **Příčina:** nejistota reference byla konstanta 1 ppb nezávislá na stavu smyčky; hlavní číslo ji navíc do rozlišení vůbec nezapočítávalo (jen `max(σy, rozlišení hradla)`).
+- **Oprava:** `mp_ref_ppb(stav, proč, locked, state_s)` — jedna inline funkce, kterou volá hlavní číslo, okno ANALÝZA i JSON pro web (`ref_ppb_x100`); konstanty podle stavu (LOCK 0,01 ppb z 10h běhu … volný chod 1 ppm). Kryje ji selftest.
+- **Pravidlo:** veličinu, která závisí na stavu přístroje, nikdy nenech jako `#define`; a každé zobrazení „kolik číslic platí“ musí brát nejistotu z **jedné** funkce. Hodnoty bez měření (HOLD, FLL) označ v kódu a ve FUNKCE.md jako odhad.
+- **Detekce:** `selftest` (blok `mp_ref_ppb`), `status` + okno ANALÝZA řádek `reference:` s názvem stavu.
+- **Commit:** commit s v0.29.0
+- **Stav:** aktivní; ⬜ konstanty HOLD/FLL jsou odhad do #303/#311
+
 ---
 
 ## Archiv (neplatné lekce)

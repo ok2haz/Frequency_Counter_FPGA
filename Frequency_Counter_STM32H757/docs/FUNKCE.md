@@ -3,7 +3,7 @@
 > **Účel:** jeden přehled schopností hardwaru a firmwaru a jejich *stavu*. Není to návod ani popis kódu — hloubku drží
 > `CLAUDE.md` (jak to funguje), `docs/HW_REFERENCE.md` (tabulky), `../STATUS.md` (úkoly), `docs/MERENI_A_KALIBRACE.md` (měření).
 > **Udržovat:** při každé nové funkci nebo změně stavu upravit řádek zde (spolu s commitem, který ji mění).
-> Stav k **2026-10-18, firmware v0.28.0, IPC v28, FPGA FW 0x0424**.
+> Stav k **2026-10-18, firmware v0.29.0 (na desce běží zatím v0.27.2), IPC v28, FPGA FW 0x0424**.
 
 ## Legenda stavu
 
@@ -53,6 +53,7 @@
 | Rozsah vstupu | ✅ | dnes do ~30 MHz bez děliče; 200 MHz/1,1 GHz ⬜ (vstupní modul) |
 | Math Mx+B, NULL (relativní měření), limity PASS/FAIL + alarm | 🟡 | okno MATH/LIMITY |
 | Odchylka ×N (jako ADRET 4110) | 🟡 | okno „Odchylka ×N" |
+| ADRET: fáze normálu (graf fáze, Δf/f ± u, posuv fáze, rozchod za 24 h; okno τ 10 s … 1 h) | ⬜ v0.29.0 | okno „ADRET: FÁZE" (tlačítko FÁZE > v Odchylce ×N); fáze se **integruje z 1 s vzorků kmitočtu**, přímá razítka z FPGA (protokol v3, dělič N) ještě ne |
 | Dvojkanál (A a B nad sebou) | 🟡 | okno „Dvojkanál" |
 | Emulátor FPGA (`fpgasim`) vč. injektorů poruch | ✅ | UART `fpgasim` |
 
@@ -60,7 +61,9 @@
 
 | Funkce | Stav | Poznámka |
 |---|---|---|
-| Offset, σ(n−1), drift, histogram (posledních 120 s), trend až 60 dní | 🟡 | hlavní obrazovka + okna |
+| Offset, σ(n−1), drift, trend až 60 dní | 🟡 | hlavní obrazovka + okna |
+| Histogram: ring 3 600 vzorků (1 h), rozsah medián ± 4σ (σ z MAD), počítadlo „mimo“, odečet lineárního trendu (tlačítko DETREND/SUROVÝ) | ⬜ v0.29.0 | okno HISTOGRAM; displej, web má vlastní |
+| Nejistota reference podle stavu smyčky (LOCK 0,01 ppb … volný chod 1 ppm) v hlavním čísle, okně ANALÝZA a na webu | ⬜ v0.29.0 | `mp_ref_ppb`; konstanty jsou odhad (kap. 12.8) |
 | Spektrogram Δf — barevný pás odchylky v čase (displej: ring 720 s, plní se i za zavřeného okna; web: karta + detail) | 🟡 | v0.28.0; není to FFT spektrogram (kap. 12) |
 | **Allan ADEV / MDEV / HDEV / TDEV** (overlapping), konfidenční pás z EDF, typ šumu | 🟡 | okno ALLAN, web |
 | MTIE | ➖ jen odhad | potřebuje uloženou fázi |
@@ -99,6 +102,7 @@
 | Časová zóna: ruční posun nebo AUTO CET/CEST | ✅ |
 | Maidenhead lokátor, self‑survey (průměr polohy), okno KVALITA GPS (displej z datalogu; web z živého okna relace, karta + detail od v0.28.0) | 🟡 |
 | UBX‑CFG‑GNSS / TMODE2 (GLONASS, survey‑in) | 🟡 best‑effort, NEO‑7M může odmítnout |
+| Nastavení GPS: délka a rychlostní faktor antenního koaxu → zpoždění 1PPS (`UBX‑CFG‑TP5 antCableDelay`), okno NASTAVENÍ → GPS | ⬜ v0.29.0 |
 
 ## 6. Záznam dat a export
 
@@ -161,7 +165,7 @@
 
 - **Vstupní modul** (relé, nastavitelný práh a hystereze, ÷10, rozsah DC–200 MHz / 1,1 GHz) — hardware se teprve staví, firmware vrací `-241`.
 - **Fyzikální holdover** a odhad stárnutí OCXO (potřebuje dny provozu; STATUS #303, #311).
-- **Absolutní fáze vůči UTC** — fáze smyčky je relativní, nezná zpoždění kabelu.
+- **Absolutní fáze vůči UTC** — fáze smyčky je relativní; zpoždění antenního kabelu se od v0.29.0 posílá do přijímače (okno NASTAVENÍ GPS), ale smyčka sama ho nezná (drží libovolnou startovní fázi).
 - **Statická IP** (ukládá se, neuplatňuje), **jazyk ENGLISH**, **protokol v2 + SPI DMA** (souvislý proud měření).
 - **Allan pro τ > 1000 s s krokem 1 s** (jen pyramida), **MTIE přesně**.
 - Ověření na HW čeká: dither 100 Hz dlouhodobě, A2/V1–V9 + filtr odlehlých (v0.23.0–v0.27.0), DTCM, fázový monitor v OFF.
@@ -183,12 +187,16 @@
 
 ### 12.2 Perioda — jak se počítá a proč by šla přesněji
 
+> **Od v0.29.0:** počet nejistých číslic periody se odvozuje z rozlišení (`period_uncertain_frac`: rozlišení mapy `meas_u_rel` ⊕ kvantizace kmitočtu v LSB), ne z pevných 2 — při 10 MHz už nejsou 2 platné desetiny schované, při f < 100 Hz číslice drží hranici LSB kmitočtu. `T = gate_ps/edges` (vyšší přesnost pod 100 Hz) zůstává TODO.
+
 - **Dnes:** `disp_update()` (screen_main.c) vezme hi-res kmitočet `s_freq_n` (LSB = 10⁻⁷ Hz, 7 desetin), udělá z něj `double` a `T = 1/f`, zaokrouhlí na **nejvýš 7 desetin zvolené jednotky** (s … ps) a poslední **2 číslice vždy vyšedí** (pevně, `num_layout(…, 2)`; u kmitočtu se jejich počet odvozuje z rozlišení hradla).
 - **Limit 1 — nízké kmitočty.** Rozlišení je dané LSB kmitočtu: relativně `10⁻⁷ Hz / f`. Při 1 Hz je to 10⁻⁷, zatímco měření samo (σ značky 105 ps, okno ≥ 1 s) dává `√2·105 ps / 1 s ≈ 1,5·10⁻¹⁰` — perioda ztrácí **zhruba tři řády** (7 místo ~10 platných číslic). Od ~100 Hz výš se to schová do šumu (u 10 MHz a hradla 0,25 s je rozlišení 5,9·10⁻¹⁰ a perioda 100,0000000 ns má 10 číslic).
 - **Limit 2 — pevný strop 7 desetin** jednotky: u 1 s je to 100 ns, ač měření nese ~150 ps.
 - **Vylepšení:** počítat `T = gate_ps / edges` přímo (celočíselné dělení ve fixním bodu, stejně jako `fpga_freq_scaled`), počet desetin odvodit z `u_res` (jako `freq_uncertain_frac`) a ne z pevných 7; počet nejistých číslic taky z `u_res`. **Riziko:** zasahuje formátovač velkého čísla (`num_build_for`, `num_layout`, `NUM_SEG_MAX`); bez desky ověřit nejde → nedělat naslepo.
 
 ### 12.3 Histogram — z kolika vzorků a je to dobře?
+
+> **Od v0.29.0 je vylepšení z tohoto oddílu provedeno** (ring 3 600 vzorků, rozsah medián ± 4σ_MAD, počítadlo mimo rozsah, odečet trendu, kvickselekt místo třídění; 40 binů). Popis „dnes“ níže platí pro v0.28.0 a dřív. Web má dál vlastní histogram nad `H.f`.
 
 - **Dnes:** z plochého kruhu `s_y[]` = **posledních 120 vzorků po 1 s (2 minuty)**, kdykoli `STAT_N` = 120 (sdílí ho trend 60 s, offset, drift, σy@1 s). 24 binů v rozsahu min…max, tedy ~5 vzorků na bin; **střední hodnota, medián i směrodatná odchylka jsou spočtené správně** (od v0.28.0 s n−1; do v0.27.2 s n).
 - **Co je slabé:** 2 minuty je krátké na ocasy (nad 2σ čekáš ~5 vzorků, nad 3σ pod jedním) a rozsah min…max ho táhne jediný odlehlý vzorek (zbytek se slije do pár binů); Gaussova křivka se proto dá „dobře“ nakreslit i na data, která Gaussova nejsou. Histogram také **nezná filtr odlehlých** ani **bránu reference** (plní se z `stats_push` stejně jako vše).
@@ -213,10 +221,27 @@
 - **Kvalita GPS na webu nešla zvětšit** — karta neměla `data-z`. Od v0.28.0 detail (družice vlevo, HDOP vpravo, každý se svou osou). **Limit:** web kreslí jen **živé okno relace**; `/api/log` pole `sats`/`hdop10` neposílá (bod = `[t, f, ocxo, deska, vc, vbat, flags, lo, hi]`). **Vylepšení:** přidat `sats`/`hdop` do bodu (`ipc_log_rec_t`, `HTTPD_LOG_PT_MAX` — `_Static_assert` rozpočtu to zastaví), pak by web měl totéž, co displej (dny).
 - **Holdover na webu neměl kužel.** Od v0.28.0 ho má (zrcadlo `holdover_cone_draw`: šířka podle stavu, v holdoveru roste s dobou). **Je ilustrativní:** šířka není změřená. **Vylepšení (STATUS #303/#311):** kvantitativní kužel z `x(t) = x₀ + y₀·t + ½·D·t² ± σy(t)·t`, kde `D` je stárnutí z kódu DAC v čase a `σy` z pyramidy; údaj „±X ns za 1 h“.
 
+### 12.8 Přesnost a poslední platná číslice (v0.29.0)
+
+- **Co určuje počet platných číslic hlavního čísla:** relativní nejistota jednoho měření `u = √( max(σy@1 s, √2·σ_značky/hradlo)² + u_ref² )` (`meas_u_rel`), číslice s místní hodnotou pod `u·f` jsou nejisté. Stejný `u` platí pro periodu (relativně `u_T/T = u_f/f`) a pro okno ANALÝZA / web (kvadraticky `rozlišení ⊕ stabilita ⊕ reference`, rozšířená U při k=2).
+- **Reference podle stavu smyčky** (`mp_ref_ppb`, `meas_present.h`; dřív konstanta 1 ppb pořád):
+
+| Stav | u_ref [ppb] | Základ |
+|---|---|---|
+| LOCK, zamčeno | 0,01 | 10h běh 2026‑10‑17/18: offset vůči nezávislému GPSDO 3·10⁻¹³ ± 2,3·10⁻¹², ADEV fáze 1,1·10⁻¹¹ @ 1000 s |
+| LOCK, nedoladěno (< 60 s) | 0,1 | odhad |
+| HOLD | 0,05 + 0,03/h (max 24 h) | ⬜ HYPOTÉZA: zbytková chyba při ztrátě + horní mez driftu 26 ppt/h; do #303/#311 |
+| FLL | 10 | ⬜ odhad (kmitočet se dolaďuje z ppm) |
+| OFF / WAIT | 1000 | volný chod OCXO, změřeno −0,84 ppm |
+| WAIT + externí reference | 1 | kvalita cizí reference neznámá |
+
+- **Důsledek:** za zamčené smyčky se nic nemění (rozlišení hradla je řádově větší než 0,01 ppb), bez zamčení hlavní číslo správně zkrátí podtržení (volný chod: ~7 platných číslic místo dřívějších ~9–10).
+- **Co se NEMĚNÍ a zůstává TODO:** model podlahy `105 ps` je dál odhad — změřená podlaha A−B (kap. 12.4) by ji nahradila; periodu počítat `T = gate_ps/edges` pod 100 Hz.
+
 ### 12.7 Optimalizace
 
 - `wf_repaint()` (spektrogram) kreslí až 720 sloupců samostatně; při změně škály o > 30 % to stojí řádově milisekundy v UiTasku (limit 10 ms) — **HYPOTÉZA**, neměřeno. Úprava: kreslit po pásech, nebo držet barevný bitmap (720×1 px řádek) a jen blitovat.
-- Pyramidy a nové kruhy jsou v DTCM (`s_wf` 2,9 kB; celkem ~38 kB z 64 kB).
+- Pyramidy a nové kruhy jsou v DTCM (od v0.29.0 `s_hy` histogramu 14,1 kB; celkem **51,1 kB z 64 kB**, volných 12,9 kB). Tabulka všech funkcí a oblastí: `docs/PAMET_FUNKCI.md` (generuje `tools/mem_report.py`).
 - Všechny nové věci jsou **neověřené na HW**.
 
 Podrobný seznam úkolů a jejich stavu: `../STATUS.md`. Stav ověření po verzích: `docs/AUDIT_STATUS.md`.

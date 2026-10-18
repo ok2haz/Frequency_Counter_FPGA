@@ -413,4 +413,5 @@ Driver `w25q_init` přebíjí prescaler na `W25Q_SCK_PRESCALER=3` → SCLK 60 MH
 `44`=MĚŘENÍ rozcestník, `45`=TI 1PPS (placeholder — HW), `46`=Dvojkanál (/4 + /16 + RF bargraf),
 `47`=Odchylka ×N (ADRET 4110 styl — df·N + ppb/ppm), `48`=NÁSTROJE (pod Diagnostikou —
 blok.schéma/paměť/selftest/benchmark/SD/reference), `49`=FUNKCE, `50`=NÁPOVĚDA, `51`=CHYBY,
-`52`=GENERÁTOR (výstupy Si5356 CLK2/3, CLK4/5, CLK6/7; Nastavení → 10. dlaždice).
+`52`=GENERÁTOR (výstupy Si5356 CLK2/3, CLK4/5, CLK6/7; Nastavení → 10. dlaždice),
+`53`=NASTAVENÍ GPS (antenní koax → `antCableDelay`; Nastavení → 11. dlaždice `GPS >`), `54`=ADRET: FÁZE (fázový graf z 1 s vzorků; z okna 47 tlačítko `FAZE >`).

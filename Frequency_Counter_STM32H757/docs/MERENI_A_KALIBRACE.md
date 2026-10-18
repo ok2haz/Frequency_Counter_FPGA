@@ -550,6 +550,24 @@ Podrobně `docs/audit/2026-10-18_noc10h-analyza.md` (nástroj `tools/analyze_noc
 - **#312:** křížové spektrum y_čítač × y_fáze nemá v žádném pásmu průkaznou koherenci (≤ 0,07 při mezi 0,21/0,05). Za hypotézy „přebytek je z OCXO“ je očekávaná koherence² 0,001–0,004, k detekci by bylo potřeba 2–7 dní souvislého záznamu → **z uspořádání s externím GPSDO se #312 nerozhodne, rozhodne Rb (M2, #313)**. Kladné korelace z `cov312.py` (+0,16…+0,28 @ 100–500 s) spektrum nepotvrzuje. Lekce L-0174.
 - **Holdover:** horní mez samotného lineárního driftu (7,2·10⁻¹⁵/s) = 47 ns po 1 h, 1,7 µs po 6 h; skutečné stárnutí potřebuje záznam po ≥ 2–3 dnech bez power-cyklu.
 
+### 2026-10-18 — záložní baterie CR2032: úbytek diody a pin VBAT (STATUS #322, krok 1)
+
+Multimetrem (≥ 10 MΩ) při běžném provozu (smyčka v LOCK, můstek VBAT zapnutý trvale, firmware v0.27.2):
+
+| Veličina | Hodnota |
+|---|---|
+| napětí baterie (BT1+ proti GND) | **3,046 V** |
+| napětí na pinu 8 CPU (VBAT) | **2,971 V** |
+| úbytek na diodě D3 (B0520LW) | **0,0756 V** (3,046 − 2,971 = 0,075 V; shoda) |
+| firmware (`sensors`, `/api/state`) | 2 984–2 992 mV, průměr 2 988 mV, min 2 972 / max 3 004 mV za 12,5 h; **o 17 mV víc než multimetr** (0,6 %, v toleranci ADC) |
+
+- **Důsledek:** baterie není ~3,1–3,2 V (odhad z 2026‑10‑18), ale **3,046 V** — nová CR2032 má ~3,2–3,3 V, tahle už je odebraná, ale s velkou rezervou nad prahem 2,70 V. Korekce na baterii vůči ADC = 3 046 − 2 988 = **+58 mV** (dioda 75,6 mV mínus chyba ADC 17 mV) → výchozí `vbat_corr_mv` v kalibraci CAL3.
+- ⚠️ V_F platí pro proud dnešního trvale zapnutého můstku. Po v0.29.0 teče proud jen při převodu (1× / 600 s), takže střední zátěž článku klesne; V_F při převodu zůstane stejné — **zopakovat měření po flashi** (kap. 2.4 postupu #322) a doplnit µA‑metrem proud před/po. Pozor: 75,6 mV je u Schottkyho diody B0520LW hluboko pod hodnotami při mA — ukazuje to na proud řádu jednotek až desítek µA (⬜ HYPOTÉZA, rozhodne µA‑metr).
+
+### 2026-10-18 — HW testy dnešního firmwaru (v0.27.2) a nálezy
+
+Podrobně `docs/audit/2026-10-18_hw-testy.md` (19 testů, 17 ✅, 2 nálezy: chybějící glyf na displeji, překrývání dávek historie na webu). Po 12,5 h: žádný reset, smyčka LOCK, DAC 2,08 M zápisů bez chyby, síť 22/22 PASS, selftest 16/16.
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |
