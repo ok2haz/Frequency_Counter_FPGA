@@ -720,7 +720,7 @@ konfigurace displeje" výše), FB0/FB1/FB2 na `0xC0000000`/`0xC0100000`/`0xC0200
 ### FreeRTOS tasky (freertos.c)
 
 **Tabulka tasků / prioritys / stacky → `docs/HW_REFERENCE.md`.** Priority: defaultTask/UartTask/
-FpgaTask = Normal, UiTask = BelowNormal, I2C4Task = Low. Heap `configTOTAL_HEAP_SIZE` = 32768 B
+FpgaTask = Normal, UiTask = BelowNormal, I2C4Task = Low. Heap `configTOTAL_HEAP_SIZE` = 49152 B (od v0.30.3, bylo 32768; volných bylo 5,7 kB)
 (drženo i v `.ioc`). ⚠️ **Tabulku v HW_REFERENCE drž synchronní se skutečnými `.stack_size`** —
 audit 2026-08-17 odhalil rozjetí. PRIO_BITS=4, `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`=5.
 

@@ -95,7 +95,7 @@ Přesně tím projekt jednou spadl do boot loopu (#45). Zhorší se to zapnutím
 (`datalog_tick` → `blk_write` +552 B).
 
 PRIO_BITS=4, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5.
-**Heap `configTOTAL_HEAP_SIZE` = 32768 B** (drženo i v .ioc klíčem
+**Heap `configTOTAL_HEAP_SIZE` = 49152 B** (od v0.30.3, dříve 32768) (drženo i v .ioc klíčem
 `FREERTOS_M7.configTOTAL_HEAP_SIZE`; dřívějších 15360 B = přesně součet stacků →
 nešel přidat žádný task, proto byl zrušen GpsTask).
 
