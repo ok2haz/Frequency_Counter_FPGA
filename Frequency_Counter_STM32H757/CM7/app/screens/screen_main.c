@@ -141,14 +141,19 @@ const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
  * okno FUNKCE (zadani UI §7), aby app vrstva nemusela sahat do `st`. */
 int  screen_main_mode(void) { return st.mode; }
 
-void screen_main_set_mode(int m)
+/* Aktualni kanal (0 = A, 1 = B) a nastaveni FUNKCE = (mode, kanal) najednou -- okno FUNKCE MERENI (zadani UI §7).
+ * Kanal i mod jsou uz ulozene v `g_ui_cfg` (po jednom bitu) a kanal do FPGA posila FpgaTask podle `g_ui_cfg`,
+ * takze "Frekvence B" je presne totez, co FREQ + tlacitko CHAN v patce. */
+int  screen_main_chan(void) { return st.chan; }
+
+void screen_main_set_func(int mode, int chan)
 {
-    if (m < 0 || m > 1 || m == st.mode) return;
-    st.mode = (int8_t)m;
-    s_disp_recalc = 1;     /* FREQ<->PERIOD -> prepocet formatu velkeho cisla */
-    /* Persist stejne jako footer prepinac (`screen_main_button_action`).
-     * ⚠️ `st.mode` se uklada na JEDEN bit — az pribude treti dostupna funkce,
-     * musi se `g_ui_cfg` rozsirit, jinak se po resetu vrati spatna funkce. */
+    if (mode < 0 || mode > 1 || chan < 0 || chan > 1) return;
+    if (mode == st.mode && chan == st.chan) return;
+    if (mode != st.mode) s_disp_recalc = 1;     /* FREQ<->PERIOD -> prepocet formatu velkeho cisla */
+    if (chan != st.chan)
+        (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
+    st.mode = (int8_t)mode; st.chan = (int8_t)chan;
     g_ui_cfg = ui_cfg_pack();
     g_ui_cfg_dirty = 1;
 }
@@ -1292,6 +1297,13 @@ static void render_body_number(void)
 #define TREND_WIN 60                /* trend sparkline = posledni okno 60 s (1/s) */
 static double s_y[STAT_N] DTCM_BSS;                 /* F-0179: double, viz vyse */
 static int   s_y_head = 0, s_y_count = 0;
+/* Historie pro SPEKTROGRAM (okno s_view=26): vzorky y po 1 s, plni se VZDY (i kdyz je okno zavrene), takze po otevreni
+ * okna je videt cela historie a ne jen to, co bylo namalovano za otevreni. Ulozeno jako float RELATIVNE k prvnimu
+ * vzorku od resetu (`s_wf_ref`): absolutni y muze byt radu 1e-7 (offset reference) a float by smazal sum 1e-11. */
+#define WF_HIST 720                 /* 720 vzorku po 1 s = 12 min */
+static float    s_wf[WF_HIST] DTCM_BSS;
+static double   s_wf_ref = 0.0;
+static uint32_t s_wf_n = 0u;        /* vzorku od resetu (absolutni index dalsiho vzorku) */
 static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
 static void adev_break_all(void);   /* fwd — V2: mezera v rade */
 static void adev_feed_filtered(double y);   /* fwd — vstup do pyramid pres filtr odlehlych */
@@ -1378,6 +1390,9 @@ static void stats_push(double y)
         adev_feed_filtered(y);            /* decimacni pyramida (dlouhodoby Allan), pres filtr izolovanych odlehlych */
     }
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
+    if (s_wf_n == 0u) s_wf_ref = y;       /* spektrogram: vztazny bod = prvni vzorek od resetu */
+    s_wf[s_wf_n % WF_HIST] = (float)(y - s_wf_ref);
+    s_wf_n++;
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
     s_stats_nsamp++;
 }
@@ -1389,6 +1404,16 @@ static void stats_sample(void)
      * zdroj pravdy vyse. (Drive tu bylo pevne `off_n * 1e-14` — viz F-0037.) */
     double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);
     stats_push(screen_main_frac_dev(f));
+}
+
+/* Spektrogram: pocet vzorku od resetu a vzorek podle absolutniho indexu (0 = prvni po resetu). Vraci 0, kdyz vzorek
+ * jeste neexistuje nebo uz byl prepsan (starsi nez WF_HIST). Vola jen UiTask (stejne jako `stats_push`). */
+uint32_t screen_main_wf_count(void) { return s_wf_n; }
+int screen_main_wf_get(uint32_t idx, float *y)
+{
+    if (idx >= s_wf_n || (s_wf_n - idx) > (uint32_t)WF_HIST) return 0;
+    if (y) *y = s_wf[idx % WF_HIST];
+    return 1;
 }
 
 /* Verze statistickych dat — histogram okno se prekresli jen kdyz se zmeni
@@ -1918,6 +1943,7 @@ void screen_main_stats_reset(void)
 {
     memset(s_y, 0, sizeof s_y);
     s_y_head = 0; s_y_count = 0;
+    s_wf_n = 0u;                          /* spektrogram: nova historie (ring nemusi byt nulovany, drzi ho pocet) */
     memset(s_adev, 0, sizeof s_adev);
     memset(s_adev_raw, 0, sizeof s_adev_raw);
     memset(&s_hamp, 0, sizeof s_hamp);
@@ -2077,6 +2103,8 @@ static void fmt_frac(char *buf, int len, float v, int with_sign)
     snprintf(buf, len, "%s%u,%u×10%s%s", sign, (unsigned)M % 10u, (unsigned)m % 10u,
              expsign, es);
 }
+
+void screen_main_fmt_frac(char *buf, int len, float v, int with_sign) { fmt_frac(buf, len, v, with_sign); }
 
 /* Selftest cistych UI helperu: fmt_frac vektory (vc. zaokrouhleni pres dekadu)
  * + hist_h invarianty (peak=plna vyska, log zveda slabe biny). Zadny sdileny
@@ -2785,11 +2813,17 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
      * cely lezi pod rozsahem osy, se vynecha; castecny se orizne na spodni hranu
      * (jinak by `allan_y` podlahu prilepil ke dnu a vypadala by jako data). */
     if (flr) {
-        /* spodni mez kresleni podlahy: osa, u bezrozmerne ADEV/MDEV/HDEV navic 1e-11 (podlaha nesmi jit nize) */
-        const float lim = (s_allan_metric <= 2 && (float)ymin < -11.0f) ? -11.0f : (float)ymin;
+        /* spodni mez kresleni podlahy = osa (rozsah osy ridi jen krivka). Dokud tu byla mez 1e-11, koncila podlaha
+         * ADEV kolem 18 s; ted jde az k dolni hrane a kde ji opousti, ukaze to znacka (viz nize). */
+        const float lim = (float)ymin;
+        int16_t x_exit = INT16_MIN;                 /* x, kde podlaha opousti osu dole */
         for (int i = 1; i < np; i++) {
             float l0 = log10f(flr[i - 1]), l1 = log10f(flr[i]);
             if (!(l0 >= lim) && !(l1 >= lim)) continue;
+            if (!(l1 >= lim) && l0 >= lim) {        /* pravy konec pod mezi: bod opusteni */
+                float tx = (l0 - lim) / (l0 - l1);
+                x_exit = (int16_t)(pts[i - 1].x + tx * (float)(pts[i].x - pts[i - 1].x));
+            }
             prim_point_t a = {pts[i - 1].x, allan_y(inner, l0, ymin, dec)};
             prim_point_t b = {pts[i].x,     allan_y(inner, l1, ymin, dec)};
             if (!(l1 >= lim)) {                         /* pravy konec pod mezi */
@@ -2802,6 +2836,17 @@ static void allan_plot_curve(prim_rect_t inner, const float *taus,
                 a.y = allan_y(inner, lim, ymin, dec);
             }
             prim_draw_line_dashed(a, b, 1, UI_COLOR_INK_3, 5, 4);
+        }
+        /* Podlaha pod osou: maly trojuhelnik (hrot dolu) na dolni hrane v miste opusteni. Dal jde pod osu, ktera
+         * se ridi krivkou -- vic ji ukazat nejde, aniz by se osa stahla k podlaze (pozadavek 2026-10-07). */
+        if (x_exit != INT16_MIN) {
+            int16_t yb = (int16_t)(inner.y + inner.h);
+            prim_point_t t0 = {(int16_t)(x_exit - 4), (int16_t)(yb - 7)};
+            prim_point_t t1 = {(int16_t)(x_exit + 4), (int16_t)(yb - 7)};
+            prim_point_t t2 = {x_exit, (int16_t)(yb - 1)};
+            prim_draw_line(t0, t1, 1, UI_COLOR_INK_3);
+            prim_draw_line(t0, t2, 1, UI_COLOR_INK_3);
+            prim_draw_line(t1, t2, 1, UI_COLOR_INK_3);
         }
     }
     for (int i = 1; i < np; i++)
@@ -3716,20 +3761,6 @@ void screen_main_freq_sim_step(void)
     freq_advance();
 }
 
-/* Frakcni odchylka kmitoctu od stredu -> 0..1 (0,5 = na stredu). Pasmo ±0,4 Hz
- * mapuje na plny rozsah. Slouzi spektrogramu (vodopad Δf). */
-float screen_main_freq_dev_unit(void)
-{
-    if (!s_num_ready) return 0.5f;
-    int64_t off = (int64_t)s_freq_n - (int64_t)s_freq_center;
-    float lsb_per_hz = (float)pow10_u64(s_freq_frac);   /* LSB = 10^-frac Hz */
-    if (lsb_per_hz <= 0.0f) return 0.5f;
-    float dev_hz = (float)off / lsb_per_hz;
-    float u = 0.5f + dev_hz / 0.8f;                     /* ±0,4 Hz -> [0,1] */
-    if (u < 0.0f) u = 0.0f; else if (u > 1.0f) u = 1.0f;
-    return u;
-}
-
 /* Aktualni zobrazovany kmitocet v Hz (double). s_freq_n je v LSB = 10^-frac Hz
  * -> Hz = s_freq_n / 10^frac. Zdroj pro Math/limity (#43/#44), Allan, drift.
  * Realny FPGA kmitocet (nebo emulator), pri fallbacku simulace (viz freq_advance). */
@@ -3972,7 +4003,7 @@ void screen_main_render_histogram(prim_rect_t rect)
         bins[b]++;
         double d = (double)(v - mean); var += d * d;
     }
-    float sd = (n > 1) ? (float)sqrt(var / (double)n) : 0.0f;
+    float sd = (n > 1) ? (float)sqrt(var / (double)(n - 1)) : 0.0f;   /* vyberova smerodatna odchylka (n-1), jako web a komentar vyse */
     int peak = 1;
     for (int b = 0; b < HIST_BINS; b++) if (bins[b] > peak) peak = bins[b];
 

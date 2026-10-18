@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.28.0 (2026-10-18) = displej (CM7) + web (CM4): spektrogram na displeji drzi historii (ring 720 s v screen_main, plni se i za zavreneho okna,
+ * skala +-3 sigma okna); podlaha citace v Allanu bez omezeni 1e-11 (kde opousti osu, znacka); FUNKCE MERENI: odemcene Frekvence B / Perioda B (CHAN);
+ * histogram: vyberova sigma (n-1); web: nahled spektrogramu a histogramu (height=100/> = nulova vyska), detail Kvality GPS, kuzel holdoveru.
+ * Flashnout OBE banky (kvuli konzistenci SPA s firmwarem); IPC v28 beze zmeny. */
 /* v0.27.2 (2026-10-18) = web (CM4): dlazdice `VETEV /16` -> `KANAL B` (od FW 0x0400 je freq16 kanal B, deleni na desce neni) a text Dvojkanal; detail Allanu ma STEJNE osy jako nahled
  * (dekadicke + vedlejsi log cary, popisky na dekadach, podlaha citace, metrika podle nahledu). Flashnout jen CM4; IPC v28 beze zmeny. */
 /* v0.27.1 (2026-10-18) = audit v0.27.0 (docs/audit/2026-10-18_filtr-odlehlych-v0.27.md): F-0254 selftest filtru zapisoval za konec pole (`hamp_push` ma parametr `nst`, kanarek v testu),
@@ -200,8 +204,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 27
-#define FW_VERSION_PATCH 2
-#define FW_VERSION_STR   "v0.27.2"
+#define FW_VERSION_MINOR 28
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.28.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

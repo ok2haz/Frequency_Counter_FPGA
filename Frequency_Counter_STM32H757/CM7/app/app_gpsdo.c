@@ -7690,15 +7690,20 @@ static void app_gpsdo_render_commdiag(void)
 }
 
 /* ── Vodopad / spektrogram odchylky kmitoctu (s_view=26, efekt FX_WATERFALL) ──
- * Vyhrazene okno: barevny pruh, X=cas (novy sloupec 2x/s z app_gpsdo_tick),
- * barva sloupce = frakcni odchylka Δf (heat mapa modra->cervena). Wrap styl —
- * hlava se posouva a pretaci -> jen 1 sloupec/vzorek = levne. Δf je zatim
- * SIMULACE (jako headline). ⚠️ Sloupce = opaque fill (DMA2D + mark_dirty). */
+ * Vyhrazene okno: barevny pruh, X=cas, 1 sloupec = 1 vzorek statistiky (1 s), barva = frakcni odchylka y od
+ * prumeru okna (heat mapa modra->cervena, stred = prumer, okraje = ±3σ). Wrap styl -- sloupec vzorku n lezi na
+ * x = n mod WF_W, hlava se posouva a pretaci, takze novy vzorek = jediny sloupec.
+ * 🔴 HISTORII drzi `screen_main` (ring 720 vzorku, plni se i kdyz je okno zavrene): okno ji pri otevreni jen
+ * PREKRESLI. Drive se kreslilo primo do framebufferu jen za otevreneho okna, takze po otevreni bylo prazdne a
+ * naplnovalo se od nuly. Skala se meni se signalem (±3σ okna), proto pri zmene o > 30 % cele prekresleni.
+ * ⚠️ Sloupce = opaque fill (DMA2D + mark_dirty). */
 #define WF_X   40
 #define WF_Y   102
 #define WF_W   720
 #define WF_H   278
-static int16_t s_wf_head = 0;
+static uint32_t s_wf_drawn;        /* absolutni pocet vzorku, ktere uz jsou namalovane */
+static float    s_wf_mean;         /* stred skaly pouzity pri malovani (relativni hodnota z ringu) */
+static float    s_wf_sc;           /* rozsah skaly (3σ) pouzity pri malovani; 0 = nic nenamalovano */
 
 static prim_color_t wf_heat(float v)   /* 0..1 -> modra->azurova->zelena->zluta->cervena */
 {
@@ -7711,6 +7716,72 @@ static prim_color_t wf_heat(float v)   /* 0..1 -> modra->azurova->zelena->zluta-
     return PRIM_RGB((uint8_t)(r * 255.0f), (uint8_t)(g * 255.0f), (uint8_t)(bl * 255.0f));
 }
 
+/* Stred (prumer) a rozsah (3σ, min. 1e-14) barevne skaly z historie v ringu; 0 = zatim malo vzorku. */
+static int wf_scale(float *mean, float *sc)
+{
+    uint32_t n = screen_main_wf_count();
+    uint32_t i0 = (n > (uint32_t)WF_W) ? n - (uint32_t)WF_W : 0u;
+    double s = 0.0, q = 0.0;
+    uint32_t k = 0u;
+    float y;
+    for (uint32_t i = i0; i < n; i++) if (screen_main_wf_get(i, &y)) { s += (double)y; k++; }
+    if (k < 2u) return 0;
+    double m = s / (double)k;
+    for (uint32_t i = i0; i < n; i++) if (screen_main_wf_get(i, &y)) { double d = (double)y - m; q += d * d; }
+    double sd = sqrt(q / (double)(k - 1u));
+    if (sd < 1e-14) sd = 1e-14;
+    *mean = (float)m; *sc = (float)(3.0 * sd);
+    return 1;
+}
+
+/* Jeden sloupec vzorku `idx` (0..: absolutni index od resetu) podle aktualni skaly. */
+static void wf_col(uint32_t idx)
+{
+    float y;
+    if (!screen_main_wf_get(idx, &y) || s_wf_sc <= 0.0f) return;
+    float v = 0.5f + 0.5f * (y - s_wf_mean) / s_wf_sc;
+    prim_fill_rect((prim_rect_t){(int16_t)(WF_X + (int16_t)(idx % (uint32_t)WF_W)), WF_Y, 1, WF_H},
+                   wf_heat(v), PRIM_BLEND_REPLACE);
+}
+
+/* Kurzor "ted": 3 sloupce za hlavou (zakryji nejstarsi, ktere se stejne za chvili prepisou). */
+static void wf_cursor(uint32_t n)
+{
+    int16_t h = (int16_t)(n % (uint32_t)WF_W);
+    int16_t cw = 3; if (h + cw > WF_W) cw = (int16_t)(WF_W - h);
+    if (cw > 0) prim_fill_rect((prim_rect_t){(int16_t)(WF_X + h), WF_Y, cw, WF_H}, UI_COLOR_INK_4, PRIM_BLEND_REPLACE);
+}
+
+/* Popisek pod pasem: kolik historie a jaka je skala (±3σ), u simulace to rekne. */
+static void wf_legend(void)
+{
+    prim_fill_rect((prim_rect_t){WF_X, (int16_t)(WF_Y + WF_H + 6), WF_W, 22}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    char sc[24], tx[128];
+    if (s_wf_sc > 0.0f) screen_main_fmt_frac(sc, sizeof sc, s_wf_sc, 0); else snprintf(sc, sizeof sc, "--");
+    snprintf(tx, sizeof tx, "1 sloupec = 1 s (%d min) | modra = pod prumerem, cervena = nad | rozsah ±%s%s",
+             WF_W / 60, sc, (screen_main_gate_actual_s() > 0.0) ? "" : " | SIMULACE");
+    prim_draw_text((prim_point_t){WF_X, (int16_t)(WF_Y + WF_H + 20)}, tx,
+                   &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+}
+
+/* Cele prekresleni z historie (otevreni okna, reset statistiky, zmena skaly). */
+static void wf_repaint(void)
+{
+    prim_fill_rect((prim_rect_t){WF_X, WF_Y, WF_W, WF_H}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+    uint32_t n = screen_main_wf_count();
+    s_wf_sc = 0.0f;
+    if (wf_scale(&s_wf_mean, &s_wf_sc)) {
+        uint32_t i0 = (n > (uint32_t)WF_W) ? n - (uint32_t)WF_W : 0u;
+        for (uint32_t i = i0; i < n; i++) wf_col(i);
+        wf_cursor(n);
+    } else {
+        prim_draw_text((prim_point_t){(int16_t)(WF_X + WF_W / 2), (int16_t)(WF_Y + WF_H / 2)},
+                       "Ceka na vzorky statistiky...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
+    }
+    s_wf_drawn = n;
+    wf_legend();
+}
+
 static void app_gpsdo_render_waterfall(void)
 {
     window_prep();
@@ -7719,14 +7790,10 @@ static void app_gpsdo_render_waterfall(void)
     prim_stroke_rect_rounded((prim_rect_t){(int16_t)(WF_X - 2), (int16_t)(WF_Y - 2),
                              (int16_t)(WF_W + 4), (int16_t)(WF_H + 4)}, 2, 1, UI_COLOR_LINE);
     if (g_fx_enabled & FX_WATERFALL) {
-        prim_fill_rect((prim_rect_t){WF_X, WF_Y, WF_W, WF_H}, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
         for (int16_t i = 0; i < WF_H; i++)   /* svisla barevna legenda vlevo */
             prim_fill_rect((prim_rect_t){(int16_t)(WF_X - 22), (int16_t)(WF_Y + i), 12, 1},
                            wf_heat(1.0f - (float)i / (float)(WF_H - 1)), PRIM_BLEND_OVER);
-        s_wf_head = 0;
-        prim_draw_text((prim_point_t){WF_X, (int16_t)(WF_Y + WF_H + 20)},
-                       "cas -> (novy sloupec 2x/s, barva = odchylka Δf; zatim SIMULACE)",
-                       &ui_font_sans_14, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        wf_repaint();
     } else {
         prim_fill_rect((prim_rect_t){WF_X, WF_Y, WF_W, WF_H}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
         prim_draw_text((prim_point_t){(int16_t)(WF_X + WF_W / 2), (int16_t)(WF_Y + WF_H / 2)},
@@ -7739,17 +7806,19 @@ static void app_gpsdo_render_waterfall(void)
 static void waterfall_tick(void)
 {
     if (!(g_fx_enabled & FX_WATERFALL)) return;
-    /* Pri RUN krokuje simulaci uz app_gpsdo_tick_freq (20 Hz) -> zde nekrokovat
-     * (jinak dvojity krok + inflace ADEV/trend statistiky, kterou 1Hz sampler cte).
-     * Pri STOP nikdo jiny nekrokuje -> vodopad si posune sam, aby zil dal. */
-    if (!screen_main_is_running()) screen_main_freq_sim_step();
-    float v = screen_main_freq_dev_unit();
+    uint32_t n = screen_main_wf_count();
+    if (n == s_wf_drawn) return;                       /* zadny novy vzorek statistiky (STOP, nebo mezi sekundami) */
     prim_set_target(&s_fb); prim_reset_clip();
-    prim_fill_rect((prim_rect_t){(int16_t)(WF_X + s_wf_head), WF_Y, 1, WF_H}, wf_heat(v), PRIM_BLEND_REPLACE);
-    s_wf_head = (int16_t)((s_wf_head + 1) % WF_W);
-    int16_t cw = 3; if (s_wf_head + cw > WF_W) cw = (int16_t)(WF_W - s_wf_head);   /* kurzor "ted" */
-    if (cw > 0) prim_fill_rect((prim_rect_t){(int16_t)(WF_X + s_wf_head), WF_Y, cw, WF_H},
-                               UI_COLOR_INK_4, PRIM_BLEND_REPLACE);
+    float mean = 0.0f, sc = 0.0f;
+    if (n < s_wf_drawn || !wf_scale(&mean, &sc) || s_wf_sc <= 0.0f
+        || fabsf(sc - s_wf_sc) > 0.3f * s_wf_sc || fabsf(mean - s_wf_mean) > 0.5f * s_wf_sc) {
+        wf_repaint();                                  /* reset statistiky / zmena skaly: cele z historie */
+    } else {
+        uint32_t i0 = (n - s_wf_drawn > (uint32_t)WF_W) ? n - (uint32_t)WF_W : s_wf_drawn;
+        for (uint32_t i = i0; i < n; i++) wf_col(i);
+        wf_cursor(n);
+        s_wf_drawn = n;
+    }
     present_now();
 }
 
@@ -8012,24 +8081,27 @@ void app_gpsdo_clear(void)
  * v `g_ui_cfg` ulozeny na JEDNOM bitu a cte ho i SCPI/IPC. Az pribude treti
  * dostupna funkce, musi se persistence rozsirit — jinak by se po resetu vratila
  * spatna funkce. */
-typedef struct { const char *name; int8_t mode; const char *why; } meas_func_t;
+typedef struct { const char *name; int8_t mode; int8_t chan; const char *why; } meas_func_t;
 
-/* `mode` >= 0 -> dostupna (hodnota jde do `screen_main_apply_cfg_req`/st.mode);
- * `mode` < 0  -> zatim nedostupna, `why` rekne PROC. */
+/* `mode` >= 0 -> dostupna: (mode 0 FREKVENCE / 1 PERIODA, chan 0 A / 1 B) jde do `screen_main_set_func`, tedy do
+ * `st.mode` + `st.chan` a `g_ui_cfg` (kazde po jednom bitu -- zadne rozsireni persistence netreba).
+ * `mode` < 0  -> zatim nedostupna, `why` rekne PROC (max. ~44 znaku, vejde se do radku 368 px).
+ * Od 2026-10-18 jsou odemcene Frekvence B / Perioda B: FPGA FW >= 0x0400 meri oba kanaly (dva TDC) a vyber kanalu
+ * existuje (CHAN v patce, `fpga_freq_cfg_sync`), takze "B" je presne FREQ/PERIOD + CHAN B. Limity -> docs/FUNKCE.md. */
 #define FUNC_N 12
 static const meas_func_t FUNC_ITEMS[FUNC_N] = {
-    { "Frekvence A",         0, NULL },
-    { "Perioda A",           1, NULL },
-    { "Frekvence B",        -1, "vstupni modul + protokol v3" },
-    { "Perioda B",          -1, "vstupni modul + protokol v3" },
-    { "Casovy interval A-B",-1, "dva kanaly + TDC (protokol v3)" },
-    { "Faze A-B",           -1, "dva kanaly + razitka (protokol v3)" },
-    { "Pomer A/B",          -1, "dva kanaly (protokol v3)" },
-    { "Totalize A",         -1, "gap-free okna (protokol v2/v3)" },
-    { "Sirka pulzu A",      -1, "novy merici rezim FPGA" },
-    { "Sirka pulzu B",      -1, "novy merici rezim FPGA" },
-    { "Strida A",           -1, "novy merici rezim FPGA" },
-    { "Strida B",           -1, "novy merici rezim FPGA" },
+    { "Frekvence A",         0, 0, NULL },
+    { "Perioda A",           1, 0, NULL },
+    { "Frekvence B",         0, 1, NULL },
+    { "Perioda B",           1, 1, NULL },
+    { "Casovy interval A-B",-1, 0, "chybi spolecne razitko hran A/B (v3)" },
+    { "Faze A-B",           -1, 0, "chybi spolecne razitko hran A/B (v3)" },
+    { "Pomer A/B",          -1, 0, "data jsou, chybi zobrazeni (SW)" },
+    { "Totalize A",         -1, 0, "gap-free okna (protokol v2/v3)" },
+    { "Sirka pulzu A",      -1, 0, "novy merici rezim FPGA" },
+    { "Sirka pulzu B",      -1, 0, "novy merici rezim FPGA" },
+    { "Strida A",           -1, 0, "novy merici rezim FPGA" },
+    { "Strida B",           -1, 0, "novy merici rezim FPGA" },
 };
 /* 2 sloupce x 6 radku, 56 px. ⚠️ 56 px je POD dotykovym minimem 60 px (7 mm) —
  * jenze 12 polozek jinak nejde zobrazit bez rolovani, a rolovani jsme zamitli
@@ -8046,7 +8118,7 @@ static void func_item_draw(int i, int focused)
 {
     const meas_func_t *f = &FUNC_ITEMS[i];
     int avail = (f->mode >= 0);
-    int cur   = avail && (screen_main_mode() == f->mode);
+    int cur   = avail && (screen_main_mode() == f->mode) && (screen_main_chan() == f->chan);
     prim_rect_t r = func_rect(i);
     prim_fill_rect_rounded(r, UI_DIM_BUTTON_RADIUS,
                            focused ? UI_COLOR_BG_1 : UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
@@ -8083,7 +8155,7 @@ void app_gpsdo_render_func(void)
 static bool func_select(int i)
 {
     if (i < 0 || i >= FUNC_N || FUNC_ITEMS[i].mode < 0) return false;
-    screen_main_set_mode(FUNC_ITEMS[i].mode);
+    screen_main_set_func(FUNC_ITEMS[i].mode, FUNC_ITEMS[i].chan);
     app_gpsdo_render_main();      /* zadani §4: funkce se meri na HLAVNI obrazovce */
     return true;
 }

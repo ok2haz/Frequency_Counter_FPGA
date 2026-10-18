@@ -93,7 +93,6 @@ int  screen_main_redraw_freq(void);                    /* mereny kmitocet (per-s
 void screen_main_redraw_freq_area(void);               /* cela zona kmitoctu vc. RUN/STOP podbarveni + SIM markeru — POUZE kdyz se meni format/magnituda (siri clear) */
 void screen_main_redraw_freq_tint(void);               /* totez, ale UZSI zonou pro cisty RUN/STOP toggle (audit F-0140) — geometrie se NESMI menit */
 void screen_main_freq_sim_step(void);                  /* krok ZDROJE (mereni/SIM) BEZ kresleni — mimo main obrazovku */
-float screen_main_freq_dev_unit(void);                 /* frakcni odchylka -> 0..1 (0,5=stred), pro spektrogram */
 double screen_main_freq_hz(void);                      /* aktualni kmitocet [Hz] (Math/limity #43/#44) */
 void screen_main_stats_sample(void);                   /* navzorkuj frakcni odchylku (~1x/s), SIM */
 void screen_main_stats_sample_hz(double hz, double tau_s); /* vzorek z prumeru mereni za tik (F-0171) */
@@ -107,8 +106,16 @@ int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barv
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
 /** Aktualni merici funkce (0 = FREKVENCE, 1 = PERIODA) — okno FUNKCE. */
 int  screen_main_mode(void);
-/** Prepne merici funkci; mimo rozsah nebo beze zmeny = no-op. */
-void screen_main_set_mode(int m);
+/** Vybrany kanal (0 = A, 1 = B). */
+int  screen_main_chan(void);
+/** Nastavi funkci = (mod 0 FREKVENCE / 1 PERIODA, kanal 0 A / 1 B) najednou; mimo rozsah nebo beze zmeny = no-op. */
+void screen_main_set_func(int mode, int chan);
+/** Historie spektrogramu: pocet vzorku (po 1 s) od resetu a vzorek podle absolutniho indexu (relativni k prvnimu
+ *  vzorku od resetu); vraci 0, kdyz vzorek neexistuje nebo byl prepsan. Jen UiTask. */
+uint32_t screen_main_wf_count(void);
+int  screen_main_wf_get(uint32_t idx, float *y);
+/** Format frakcni hodnoty "M,m×10⁻E" (s horni indexem exponentu); with_sign: + pro kladne. */
+void screen_main_fmt_frac(char *buf, int len, float v, int with_sign);
 
 /** SKUTECNE zmerene hradlo z posledniho FPGA ramce [s]; 0 = nezname (SIM / bez linku).
  *  ⚠️ Protejsek vracejici NASTAVENI z UI zamerne NEEXISTUJE — nastaveni se do FPGA
