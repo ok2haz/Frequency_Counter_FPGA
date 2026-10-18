@@ -28,7 +28,7 @@ function Get-Json($path, $to) { try { return ((Invoke-WebRequest -Uri ("http://"
 function V($o, $a) { try { $x = $o; foreach ($k in $a) { $x = $x.$k }; if ($null -eq $x) { return "" } else { return [string]$x } } catch { return "" } }
 
 $cols = @("wall","uptime_s","seq_meas","freq_hz","gp_state","gp_locked","gp_why","gp_y_ppt","gp_x_ns","gp_xr_ns","gp_code","gp_t_s","gp_pps_ok","gp_pps_rej","gp_tau","gp_kdac_e13","gp_saw",
-          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s_cum","http_used","http_peak","http_rej","scpi_used","scpi_rej","gate_s","gate_ns")
+          "dac_code","dac_mv","vc_mv","t_ocxo","t_board","t_fpga","t_mcu","gps_valid","gps_fix","gps_sats","gps_hdop","warmup","si5356","cm4_ipc","sigma1s_cum","http_used","http_peak","http_rej","scpi_used","scpi_rej","gate_s","gate_ns","freq_b_hz")
 # F-0253 (L-0166): soubor, do ktereho se pripisuje, musi mit TUTEZ hlavicku. Od FW v0.23.0 je sloupec `sigma1s` kumulativni (od resetu
 # statistiky), ne okno 120 s -> prejmenovan na `sigma1s_cum`; starsi soubor s jinou hlavickou se NEPREPISUJE, prejmenuje se.
 if (Test-Path $Out) {
@@ -82,7 +82,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
       (V $s @("dac","code")), (V $s @("dac","mv")), (V $s @("vc_mv")), (V $s @("temp_ocxo_c")), (V $s @("temp_board_c")), (V $s @("temp_fpga_c")), (V $s @("temp_mcu_c")),
       (V $s @("gps","valid")), (V $s @("gps","fix_mode")), (V $s @("gps","num_sat")), (V $s @("gps","hdop")), (V $s @("warmup")), (V $s @("si5356_status")),
       (V $s @("cm4","ipc_version")), (V $s @("sy1e15")),
-      (V $s @("conn","http","used")), (V $s @("conn","http","peak")), (V $s @("conn","http","rej")), (V $s @("conn","scpi","used")), (V $s @("conn","scpi","rej")), (V $s @("set_gate_s")), (V $s @("gate_ns")))
+      (V $s @("conn","http","used")), (V $s @("conn","http","peak")), (V $s @("conn","http","rej")), (V $s @("conn","scpi","used")), (V $s @("conn","scpi","rej")), (V $s @("set_gate_s")), (V $s @("gate_ns")), (V $s @("freq16_hz")))
     Add-Content -Path $Out -Encoding ASCII -Value ($row -join ",")
     if ($g -and $g.state -eq "LOCK") { [void]$bx.Add([double]$g.xr_ns); [void]$by.Add([double]$g.y_ppt) }
     }

@@ -1,4 +1,5 @@
-"""Zachyti N sekund soucasnych mereni kanalu A a B z /api/state (jen cteni): python tools/ab_capture.py <sekund> <vystup.npz> [IP]. Vyhodnoceni: tools/ab_analyze.py."""
+"""Zachyti N sekund soucasnych mereni kanalu A a B z /api/state (jen cteni): python tools/ab_capture.py <sekund> <vystup.npz> [IP]. Vyhodnoceni: tools/ab_analyze.py.
+Soubor se prubezne ulozi kazdych 300 s (pri preruseni dlouheho zaznamu se neztrati vse)."""
 import json
 import sys
 import time
@@ -8,9 +9,22 @@ import numpy as np
 
 IP = sys.argv[3] if len(sys.argv) > 3 else "10.0.0.106"
 DUR = float(sys.argv[1]) if len(sys.argv) > 1 else 600.0
+OUT = sys.argv[2] if len(sys.argv) > 2 else "ab.npz"
+SAVE_EVERY = 300.0
 rec = {}
 t0 = time.time()
+t_save = t0
 n_err = 0
+
+
+def save():
+    seq = np.array(sorted(rec))
+    A = np.array([rec[q][0] for q in seq])
+    B = np.array([rec[q][1] for q in seq])
+    np.savez(OUT, seq=seq, A=A, B=B)
+    return len(seq)
+
+
 while time.time() - t0 < DUR:
     try:
         with urllib.request.urlopen("http://%s/api/state" % IP, timeout=3) as r:
@@ -20,9 +34,8 @@ while time.time() - t0 < DUR:
             rec[q] = (s["freq_hz"], s["freq16_hz"])
     except Exception:
         n_err += 1
+    if time.time() - t_save >= SAVE_EVERY:
+        t_save = time.time()
+        print("%.0f s: %d oken, chyb dotazu %d" % (t_save - t0, save(), n_err), flush=True)
     time.sleep(0.05)
-seq = np.array(sorted(rec))
-A = np.array([rec[q][0] for q in seq])
-B = np.array([rec[q][1] for q in seq])
-np.savez(sys.argv[2] if len(sys.argv) > 2 else "ab.npz", seq=seq, A=A, B=B)
-print("zachyceno %d oken z %d s (chyb dotazu %d)" % (len(seq), DUR, n_err))
+print("zachyceno %d oken z %d s (chyb dotazu %d)" % (save(), DUR, n_err))
