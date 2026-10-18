@@ -4863,7 +4863,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** veličinu, která závisí na stavu přístroje, nikdy nenech jako `#define`; a každé zobrazení „kolik číslic platí“ musí brát nejistotu z **jedné** funkce. Hodnoty bez měření (HOLD, FLL) označ v kódu a ve FUNKCE.md jako odhad.
 - **Detekce:** `selftest` (blok `mp_ref_ppb`), `status` + okno ANALÝZA řádek `reference:` s názvem stavu.
 - **Commit:** commit s v0.29.0
-- **Stav:** aktivní; ⬜ konstanty HOLD/FLL jsou odhad do #303/#311
+- **Stav:** aktivní. **Doplněno v0.30.0:** konstanty FLL a HOLD nahrazeny MĚŘENÍM ze smyčky (FLL |y| okna, LOCK ADEV fáze, HOLD ADEV + drift kódu DAC); tabulka zůstává jen jako náhrada a výsledek nese příznak `zmereno/odhad` (IPC `ref_meas`). Poučení: když přístroj veličinu sám měří (a smyčka ji měří), neodhaduj ji — dej konstantu jen jako záchranu a označ ji.
 
 ---
 

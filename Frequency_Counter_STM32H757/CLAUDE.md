@@ -2187,11 +2187,14 @@ nedozvíš, dokud tiše nepřijdeš o čas a nastavení při odpojení napájen�
   tedy jeden boot s výchozím nastavením). Výchozí: **VBAT 2,80 V** ZAP (CR2032 s **3,3 V nominálem** na
   této desce; syscfg magic „SCFE"→„SCFF" 2026-08-24, ✅ ověřeno HW 2026-08-25), OCXO 45–55 °C ZAP.
   Displejové nominály VBAT (GRAFY vert. bar + PŘEHLED KANÁLŮ + web) = **3,0 V** (od v0.29.0).
-  🔴 **VBAT od v0.29.0 (STATUS #322):** `SENS_VBAT` = napětí **BATERIE** = pin + `g_calib.vbat_corr_mv` (dioda D3 B0520LW + chyba ADC; výchozí **58 mV**,
-  změřeno 2026‑10‑18: baterie 3,046 V, pin 2,971 V, ADC 2,988 V → dioda 75,6 mV). Můstek `VBATEN` se zapíná **jen na dobu převodu** (`adc3_read_chan`),
+  🔴 **VBAT od v0.29.0 (STATUS #322):** `SENS_VBAT` = napětí **BATERIE** = pin + `g_calib.vbat_corr_mv` (úbytek diody D3 B0520LW; výchozí **75,6 mV** = změřeno 2026‑10‑18: baterie 3,046 V, pin 2,971 V;
+  chyba ADC — čte 2,988 V, o 17 mV víc než multimetr — se do korekce ZÁMĚRNĚ nezapočítává, zobrazená baterie je proto o ~17 mV vyšší; 58,6 mV by seděla na multimetr). Můstek `VBATEN` se zapíná **jen na dobu převodu** (`adc3_read_chan`),
   měří se **1× za 600 s** (`VBAT_PERIOD_S`) + hned po startu + 1×/s dokud je otevřené okno Kalibrace/průvodce (`g_vbat_fast`); nabíjení CR2032 vypnuto
   výslovně (`HAL_PWREx_DisableBatteryCharging`, `status` → `VBAT nabijeni: VYP`). **Datalog ukládá SUROVÝ pin** (korekce se přičítá při čtení záznamu).
   Prahy na baterii: nominál 3,0 V, výstraha **2,70 V** (starý uložený výchozí 2800 se převede), kritické 2,40 V (autocal FAIL). Kalibrace blob `CAL3` (+ `vbat_corr_mv`).
+- 🔴 **Nejistota REFERENCE (v0.30.0, `gpsdo_ref_ppb()`, `mp_ref_ppb` v `meas_present.h`) se bere ZE ZMĚŘENÝCH hodnot smyčky**: FLL = |y| posledního okna ⊕ šum okna √2·2,9 ns/okno,
+  LOCK = ADEV fáze OCXO–GPS @ ≤ 1000 s z historie smyčky, HOLD = ADEV při vstupu + drift kódu DAC (LS ≤ 2 h LOCK) × K, √(u0² + (drift·t)²); náhradní tabulka jen když měření chybí.
+  Jedno místo pro hlavní číslo, okno ANALÝZA i web (IPC v29: `ref_ppb_x100`, `ref_meas`). Neměří se: OFF/WAIT (1 ppm), teplota v HOLD.
 - ⚠️ **`adev_en` je výchozí VYPNUTÝ** — σy@1s se dnes počítá ze **simulace** headline (~1e-8), takže
   jakýkoli realistický práh by pípal na šum. Mechanika je hotová a správná; zapnout až po #2.
 - **Hystereze je povinná** (`band_eval`): VBAT ±30 mV, OCXO ±0,5 °C, ADEV ±10 %. Bez ní by veličina

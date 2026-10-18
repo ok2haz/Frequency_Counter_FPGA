@@ -5,11 +5,11 @@
 
 | Funkcni celek | FLASH [kB] | RAM_D1 [kB] | DTCM_APP [kB] | RAM_D2 [kB] | SDRAM [kB] | SDRAM_LOG [kB] | RAM_D3 [kB] |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Citac FPGA + smycka GPSDO + metrologie | 35.2 | 119.3 | - | - | - | 8192.0 | - |
-| Hlavni obrazovka + statistika (Allan, trend, histogram, spektrogram) | 33.5 | 35.5 | 51.1 | - | 750.0 | - | - |
+| Citac FPGA + smycka GPSDO + metrologie | 37.2 | 125.7 | - | - | - | 8192.0 | - |
+| Hlavni obrazovka + statistika (Allan, trend, histogram, spektrogram) | 33.4 | 35.5 | 51.1 | - | 750.0 | - | - |
 | Graficky HAL (LTDC, DMA2D, framebuffery) | 2.4 | 2.0 | - | - | 256.0 | - | - |
 | Fonty (libui) | 250.0 | - | - | - | - | - | - |
-| UI okna (menu, nastaveni, GPS, ADRET, kalibrace, ...) | 97.9 | 13.3 | - | - | - | - | - |
+| UI okna (menu, nastaveni, GPS, ADRET, kalibrace, ...) | 97.8 | 13.3 | - | - | - | - | - |
 | libprim - 2D grafika | 7.3 | 3.5 | - | - | 100.0 | - | - |
 | Diagnostika (UART prikazy, benchmark, screenshot) | 55.4 | 41.9 | - | - | - | - | - |
 | Senzory, I2C, alarmy, watchdog | 69.1 | 16.1 | - | - | - | - | - |
@@ -24,9 +24,9 @@
 | Start, main, periferie (CubeMX) | 7.5 | 0.9 | - | - | - | - | - |
 | libui - komponenty UI | 5.6 | 0.3 | - | - | - | - | - |
 | UI vstup a panel (dotyk, encoder, bridge) | 4.6 | 0.6 | - | - | - | - | - |
-| **CELKEM** | **737.1** | **351.9** | **51.1** | **-** | **1107.0** | **8192.0** | **-** |
+| **CELKEM** | **738.9** | **358.2** | **51.1** | **-** | **1107.0** | **8192.0** | **-** |
 | kapacita | 1024.0 | 512.0 | 64.0 | 128.0 | 4096.0 | 8192.0 | 64.0 |
-| vyuziti | 72.0 % | 68.7 % | 79.8 % | 0.0 % | 27.0 % | 100.0 % | 0.0 % |
+| vyuziti | 72.2 % | 70.0 % | 79.8 % | 0.0 % | 27.0 % | 100.0 % | 0.0 % |
 
 ### CM7 - nejvetsi datove objekty v RAM
 
@@ -68,7 +68,7 @@
 
 | Funkcni celek | FLASH [kB] | RAM [kB] | ETH_D2 [kB] |
 |---|---:|---:|---:|
-| Web (HTTP server + SPA) | 201.5 | 42.6 | - |
+| Web (HTTP server + SPA) | 201.4 | 42.6 | - |
 | lwIP | 40.3 | 41.9 | - |
 | SCPI (TCP 5025, parser) | 38.4 | 1.4 | - |
 | Ethernet (MAC, PHY) | 5.0 | 0.3 | 12.4 |
@@ -76,7 +76,7 @@
 | Start, main, periferie (CubeMX) | 2.9 | 0.1 | - |
 | HAL ST | 2.5 | 0.0 | - |
 | IPC | 0.6 | 0.0 | - |
-| **CELKEM** | **300.8** | **86.8** | **12.4** |
+| **CELKEM** | **300.6** | **86.8** | **12.4** |
 | kapacita | 1024.0 | 128.0 | 32.0 |
 | vyuziti | 29.4 % | 67.8 % | 38.9 % |
 

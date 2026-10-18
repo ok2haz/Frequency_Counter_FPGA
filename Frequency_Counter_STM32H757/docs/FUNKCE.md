@@ -228,13 +228,14 @@
 
 | Stav | u_ref [ppb] | Základ |
 |---|---|---|
-| LOCK, zamčeno | 0,01 | 10h běh 2026‑10‑17/18: offset vůči nezávislému GPSDO 3·10⁻¹³ ± 2,3·10⁻¹², ADEV fáze 1,1·10⁻¹¹ @ 1000 s |
+| LOCK, zamčeno | **změřeno** (ADEV fáze OCXO–GPS @ ≤ 1000 s z historie smyčky; v 10h běhu 0,011); náhrada 0,01 | 10h běh 2026‑10‑17/18: offset vůči nezávislému GPSDO 3·10⁻¹³ ± 2,3·10⁻¹² |
 | LOCK, nedoladěno (< 60 s) | 0,1 | odhad |
-| HOLD | 0,05 + 0,03/h (max 24 h) | ⬜ HYPOTÉZA: zbytková chyba při ztrátě + horní mez driftu 26 ppt/h; do #303/#311 |
-| FLL | 10 | ⬜ odhad (kmitočet se dolaďuje z ppm) |
-| OFF / WAIT | 1000 | volný chod OCXO, změřeno −0,84 ppm |
+| HOLD | **změřeno při vstupu**: u0 = ADEV fáze, drift = sklon kódu DAC za ≤ 2 h LOCK × K; u = √(u0² + (drift·t)²), max 24 h; náhrada 0,05 + 0,03/h | drift z DAC kódu (v 10h běhu 26 ppt/h, ale s tepelným dozvukem po power‑cyklu); **teplotu nezahrnuje**; skutečný holdover ověří test s odpojenou anténou proti externímu GPSDO (viz níže) |
+| FLL | **změřeno**: √(y² + σ²okna), y = odchylka posledního dokončeného okna proti GPS (před krokem DAC), σ = √2·2,9 ns/okno; bez dokončeného okna 1000 | smyčka sama měří OCXO proti GPS; po kroku DAC je zbytek menší, takže je to horní mez |
+| OFF / WAIT | 1000 | volný chod OCXO, změřeno −0,84 ppm (neměří se: bez smyčky chybí odhad y) |
 | WAIT + externí reference | 1 | kvalita cizí reference neznámá |
 
+- **Jak ověřit HOLD skutečným měřením:** odpojit GPS anténu na ~2 h (smyčka přejde do HOLD, kód DAC drží) a čítačem proti externímu GPSDO sledovat odchylku (ADEV externího zdroje je na 1000 s ≲ 5·10⁻¹¹, takže hodinové průměry rozliší 0,03 ppb/h); porovnat s předpovědí `ref_ppb` v okně ANALÝZA (model `√(u0² + (drift·t)²)`) — tím se HOLD z modelu změní na změřenou křivku (STATUS #303/#311).
 - **Důsledek:** za zamčené smyčky se nic nemění (rozlišení hradla je řádově větší než 0,01 ppb), bez zamčení hlavní číslo správně zkrátí podtržení (volný chod: ~7 platných číslic místo dřívějších ~9–10).
 - **Co se NEMĚNÍ a zůstává TODO:** model podlahy `105 ps` je dál odhad — změřená podlaha A−B (kap. 12.4) by ji nahradila; periodu počítat `T = gate_ps/edges` pod 100 Hz.
 
