@@ -165,7 +165,21 @@ prim_color_t screen_main_plot_grid_color(void);
 void screen_main_render_histogram(prim_rect_t rect);   /* histogram distribuce y do rect (okno) */
 void screen_main_render_stats_table(prim_rect_t rect);  /* σy(τ) Allan tabulka do rect (okno) */
 bool screen_main_hist_logy(void);                       /* stav lin/log Y osy histogramu */
-void screen_main_hist_toggle_logy(void);                /* prepni lin<->log Y osu histogramu */
+void screen_main_hist_toggle_logy(void);
+/* ADRET (okno s_view=54): faze normalu integrovana z 1s vzorku (viz screen_main.c). */
+typedef struct {
+    uint32_t n;            /* pouzitych 1s vzorku (okno tau) */
+    double   mean;         /* Df/f vuci f0 (relativne) */
+    double   sd;           /* smerodatna odchylka 1s vzorku */
+    double   neff;         /* efektivni pocet nezavislych vzorku (lag-1 autokorelace) */
+    double   x_end_ns;     /* faze na konci okna [ns], 0 na jeho zacatku */
+    double   x_min_ns, x_max_ns;
+    int      npts;         /* bodu v poli xs */
+} screen_main_adret_t;
+int screen_main_adret(uint32_t n_req, double f0_hz, float *xs, int xs_max, screen_main_adret_t *o);
+double screen_main_ref_ppb(void);             /* nejistota reference [ppb] podle stavu smycky GPSDO */
+bool screen_main_hist_detrend(void);          /* histogram: odecet linearniho trendu zapnut */
+void screen_main_hist_toggle_detrend(void);                /* prepni lin<->log Y osu histogramu */
 uint32_t screen_main_stats_version(void);               /* verze dat (change-key histogram okna) */
 void screen_main_stats_reset(void);                     /* vynuluj Allan/Histogram/Trend akumulaci (UART "meas reset" + UI) */
 float screen_main_adev_1s(void);

@@ -42,6 +42,8 @@
  * HW oversampling zamerne nepouzivame (format Ratio je na H757 mezi HAL cestami
  * nejednoznacny). ~16*262us = ~4 ms/kanal @ Low prio, 2x/s -> ~2,7 % CPU. */
 #define ADC3_AVG_N   16
+/* Perioda mereni VBAT [s] (mustek zatezuje clanek jen pri prevodu, STATUS #322). Zadani uzivatele: 1x za x s, nebo idealnejsi interval. */
+#define VBAT_PERIOD_S 600u
 
 /* Precte JEDEN ADC3 kanal (single conversion, rank1), prumer ADC3_AVG_N vzorku.
  * Scan polling vsech 3 najednou na H7 internim kanalum RAILOVAL na 0xFFFF -> citame
@@ -58,7 +60,10 @@ static int adc3_read_chan(uint32_t channel, uint32_t *out)
     /* ⚠️ Pojistky (HAL je na teto H7 verzi nenastavil -> kanaly railovaly 0xFFFF),
      * pisi se dokud ADEN=0 (pred Start): (a) interni analogove cesty v ADC3 common,
      * (b) channel preselection PCSEL — bez nej je analogovy vstup odpojeny. */
-    ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+    /* 🔴 STATUS #322: vnitrni mustek VBAT zatezuje zalozni clanek, dokud je VBATEN=1 -> zapina se JEN pro kanal VBAT a po prevodu se
+     * hned vypne. Sampling 810,5 cyklu pri 3,125 MHz (~260 us) vyrazne prekracuje dobu ustaleni mustku (T_s VBAT podle datasheetu). */
+    ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN);
+    if (channel == ADC_CHANNEL_VBAT) ADC3_COMMON->CCR |= ADC_CCR_VBATEN; else ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;
     ADC3->PCSEL |= (1u << ((ADC3->SQR1 >> 6) & 0x1Fu));   /* preselect kanal z rank1 (SQR1) */
 
     uint32_t sum = 0; int n = 0;
@@ -67,6 +72,7 @@ static int adc3_read_chan(uint32_t channel, uint32_t *out)
         if (HAL_ADC_PollForConversion(&hadc3, 20) == HAL_OK) { sum += HAL_ADC_GetValue(&hadc3); n++; }
         HAL_ADC_Stop(&hadc3);
     }
+    ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;   /* mustek VBAT VZDY zpet vypnout (ADC je po HAL_ADC_Stop disabled -> zapis je povolen) */
     if (n == 0) return 0;
     *out = sum / (uint32_t)n;
     return 1;
@@ -690,8 +696,10 @@ void SensorsTask_run(void *argument)
   HAL_ADCEx_Calibration_Start(&hadc3, ADC_CALIB_OFFSET, ADC_SINGLE_ENDED);
   // Zapnout interni analogove cesty (VREFINT/teplota/VBAT) + channel preselection
   // (oboji HAL nenastavil) + stabilizace cidla (~120us). PCSEL/CCR jdou psat (ADEN=0).
-  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN);      /* VBATEN NE: mustek se zapina jen na dobu prevodu VBAT (STATUS #322) */
   ADC3->PCSEL |= ADC3_INT_PCSEL;
+  /* Nabijeni zalozniho clanku VYPNUTO explicitne (PWR_CR3.VBE=0): CR2032 je jednorazovy, dobijeni by ho poskozovalo. Dioda D3 zustava. */
+  HAL_PWREx_DisableBatteryCharging();
   osDelay(2);
 
   for(;;) {
@@ -904,7 +912,17 @@ void SensorsTask_run(void *argument)
 	uint32_t rt = 0, rv = 0, rb = 0;
 	int a_t = adc3_read_chan(ADC_CHANNEL_TEMPSENSOR, &rt);
 	int a_v = adc3_read_chan(ADC_CHANNEL_VREFINT,    &rv);
-	int a_b = adc3_read_chan(ADC_CHANNEL_VBAT,       &rb);
+	/* VBAT: 1x za VBAT_PERIOD_S (600 s) + hned po startu + 1x/s dokud je otevrene okno Kalibrace/pruvodce (g_vbat_fast). Mezi mereními
+	 * drzi SENS_VBAT posledni hodnotu (valid se nemeni). Interval 10 min: baterie se meni o mV za mesice, kazde mereni zatizi clanek. */
+	static uint32_t s_vbat_next_ms = 0u;
+	const uint32_t now_ms = HAL_GetTick();
+	const int vbat_due = (s_vbat_next_ms == 0u) || ((int32_t)(now_ms - s_vbat_next_ms) >= 0) || g_vbat_fast;
+	int a_b = 0;
+	if (vbat_due) {
+	  a_b = adc3_read_chan(ADC_CHANNEL_VBAT, &rb);
+	  s_vbat_next_ms = now_ms + VBAT_PERIOD_S * 1000u;
+	  if (s_vbat_next_ms == 0u) s_vbat_next_ms = 1u;
+	}
 	if (a_v && rv) {
 	  /* vref = MERENA VREF+ [mV] = VREFINT_CAL * 3300 / VREFINT_DATA. Formula je
 	   * reference-agnosticka -> vraci SKUTECNE VREF+ at uz je to VDDA (3300) nebo
@@ -942,9 +960,12 @@ void SensorsTask_run(void *argument)
 		sensor_update(SENS_CORE_T, s_core_flt);
 	  } else sensor_fail(SENS_CORE_T);
 	  if (a_b) {
-		uint32_t vbat = (uint32_t)((uint64_t)rb * vref / 65535u) * 4u;   /* vnitrni delic /4 */
-		sensor_update(SENS_VBAT, (float)vbat);
-	  } else sensor_fail(SENS_VBAT);
+		/* vnitrni delic /4; nasobi se PRED delenim (drive (rb*vref/65535)*4 mel krok 4 mV) */
+		uint32_t vbat_pin = (uint32_t)(((uint64_t)rb * vref * 4u) / 65535u);
+		/* SENS_VBAT = NAPETI BATERIE = pin + korekce (dioda D3 + chyba ADC, calib.h). Datalog uklada surove napeti na pinu. */
+		float vbat_batt = (float)vbat_pin + g_calib.vbat_corr_mv;
+		sensor_update(SENS_VBAT, vbat_batt);
+	  } else if (vbat_due) sensor_fail(SENS_VBAT);
 	} else {
 	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}

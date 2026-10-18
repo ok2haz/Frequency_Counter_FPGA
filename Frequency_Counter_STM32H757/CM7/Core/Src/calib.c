@@ -38,17 +38,21 @@
 #define CALIB_DEFAULT_GAIN_VC           (25.0f / 10.0f)         /* AIN0=OCXO Vc, R51=15k/R52=10k: 2,5 */
 #define CALIB_DEFAULT_GAIN_VBUS         (105.1f / 5.1f)         /* AIN1=VBUS,    R53=100k/R54=5k1 (R54 4k99 nebyl osazen; 5k1 dosazen 2026-10-11): ~20,608 */
 
+#define CALIB_DEFAULT_VBAT_CORR         58.0f                   /* mV: dioda D3 75,6 mV - chyba ADC 17 mV (mereno 2026-10-18, viz calib.h) */
+
 volatile calib_t g_calib = {
     CALIB_DEFAULT_AD8307_SLOPE, CALIB_DEFAULT_AD8307_INTERCEPT,
     CALIB_DEFAULT_GAIN_12V, CALIB_DEFAULT_GAIN_5V,
     CALIB_DEFAULT_GAIN_VC, CALIB_DEFAULT_GAIN_VBUS,
+    CALIB_DEFAULT_VBAT_CORR,
 };
 
 /* Ulozeny format (store payload) - VERZOVANY magicem, nezavisly na sizeof(calib_t)
  * (budouci pole se pridaji na konec, magic se zmeni pri nekompatibilni zmene
  * layoutu). Store sam uz overuje CRC16 payloadu -> magic tu jen potvrzuje, ze
  * blob patri kalibraci (region by teoreticky mohl driv drzet neco jineho). */
-#define CALIB_BLOB_MAGIC    0x43414C32u   /* "CAL2" (od 2026-10-11: + gain_vc, gain_vbus) */
+#define CALIB_BLOB_MAGIC    0x43414C33u   /* "CAL3" (od 2026-10-18: + vbat_corr_mv) */
+#define CALIB_BLOB_MAGIC_V2 0x43414C32u   /* "CAL2": blob bez vbat_corr_mv (+ gain_vc, gain_vbus) -> korekce zustane vychozi */
 #define CALIB_BLOB_MAGIC_V1 0x43414C31u   /* "CAL1": starsi blob bez gain_vc/gain_vbus -> ty zustanou vychozi */
 typedef struct {
     uint32_t magic;
@@ -58,8 +62,10 @@ typedef struct {
     float    gain_5v;
     float    gain_vc;
     float    gain_vbus;
+    float    vbat_corr_mv;
 } calib_blob_t;
 #define CALIB_BLOB_V1_SIZE 20u            /* sizeof puvodniho blobu CAL1 (magic + 4 floaty) */
+#define CALIB_BLOB_V2_SIZE 28u            /* sizeof blobu CAL2 (magic + 6 floatu) */
 
 /* Ulozena hodnota delice musi byt konecna a v rozumnem rozsahu; jinak se nechava vychozi. */
 static float calib_gain_or(float g, float lo, float hi, float def)
@@ -95,7 +101,8 @@ void calib_load(void)
     }
     osMutexRelease(qspiMutexHandle);
 
-    const bool v2 = (n == sizeof(b)) && (b.magic == CALIB_BLOB_MAGIC);
+    const bool v3 = (n == sizeof(b)) && (b.magic == CALIB_BLOB_MAGIC);
+    const bool v2 = (v3 || ((n == CALIB_BLOB_V2_SIZE) && (b.magic == CALIB_BLOB_MAGIC_V2)));   /* v2 = ma gain_vc/vbus (CAL2 i CAL3) */
     const bool v1 = (n == CALIB_BLOB_V1_SIZE) && (b.magic == CALIB_BLOB_MAGIC_V1);
     if (v2 || v1) {
         /* F-0165: magic + CRC uloziste potvrzuji jen to, ze blob patri kalibraci,
@@ -116,6 +123,7 @@ void calib_load(void)
             g_calib.gain_vc   = calib_gain_or(b.gain_vc,   0.2f, 4.0f,  CALIB_DEFAULT_GAIN_VC);
             g_calib.gain_vbus = calib_gain_or(b.gain_vbus, 5.0f, 40.0f, CALIB_DEFAULT_GAIN_VBUS);
         }
+        if (v3) g_calib.vbat_corr_mv = calib_gain_or(b.vbat_corr_mv, -200.0f, 400.0f, CALIB_DEFAULT_VBAT_CORR);
     }
     /* jinak: zadny/nevalidni zaznam (nova/vymazana flash) -> vychozi hodnoty */
 }
@@ -131,6 +139,7 @@ bool calib_save(void)
         g_calib.gain_5v,
         g_calib.gain_vc,
         g_calib.gain_vbus,
+        g_calib.vbat_corr_mv,
     };
     if (osMutexAcquire(qspiMutexHandle, CALIB_LOCK_MS) != osOK) return false;
     bool ok = w25q_store_write(&s_store, &b, sizeof b);

@@ -39,3 +39,5 @@ PRIM_API void prim_set_glyph_accel(int enable);
  * ⚠️ Pocita se jen ve `prim_draw_text`, ne ve `prim_text_width`.
  */
 PRIM_API uint32_t prim_text_missing_glyphs(void);
+/* Posledni chybejici znak (kodovy bod) a ascent fontu, ve kterem chybel -- k dohledani retezce, ktery na displeji zmizel. */
+PRIM_API uint32_t prim_text_last_missing(int16_t *font_ascent);

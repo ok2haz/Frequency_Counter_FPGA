@@ -20,6 +20,7 @@
 #include "fx_flags.h"      /* g_fx_enabled + FX_* — graficke efekty (SYS xfade, glow, spark fill, allan conf) */
 #include "phase_noise.h"   /* pn_compute — L(f) fazovy sum z ringu s_y[] (#45) */
 #include "meas_present.h"  /* MP_TDC_PS — jediny zdroj kroku TDC (sdileny s CM4/webem) */
+#include "gpsdo.h"         /* gpsdo_get — stav smycky pro nejistotu reference (mp_ref_ppb) */
 #include "../hal/stm32/prim_stm32_hal.h"  /* prim_stm32_fb_count — guardy „nekresli, je to stejne" */
 #include "fpga_freq.h"     /* fpga_freq_hires_mul — overeni nasobitele reciproke dvojice */
 #include <prim/prim.h>
@@ -929,12 +930,19 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
 #define FREQ_TDC_PS  MP_TDC_PS
 double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
 
-static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
+/* Nejistota reference [ppb] podle STAVU smycky GPSDO (viz mp_ref_ppb). Vola UiTask (gpsdo_get je pod kritickou sekci). */
+double screen_main_ref_ppb(void)
 {
-    if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
-    if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
-    double hz = (double)x100000 / 100000.0;
-    if (hz <= 0.0) return 2;
+    gpsdo_status_t g;
+    gpsdo_get(&g);
+    return mp_ref_ppb(g.state, g.why, g.locked, g.state_s);
+}
+
+/* RELATIVNI nejistota jednoho mereni (k=1) pro hlavni cislo: kvadraticky soucet max(σy@1s, rozliseni hradla) a nejistoty
+ * reference podle stavu smycky. SPOLECNE pro frekvenci i periodu (relativne je u_T/T = u_f/f), aby se nemohly rozejit.
+ * Vyzaduje znamy gate_ps (> 0). */
+static double meas_u_rel(uint64_t gate_ps)
+{
     /* #1 (2026-10-04): kdyz uz je NAMERENA σy@1s, pouzij ji — zahrnuje VSECHEN sum
      * (TDC kvantizaci + drift reference/generatoru za okno), ne jen teoretickou TDC
      * kvantizaci. Teoreticky vzorec totiz realnou nejistotu PODSTRELUJE (ignoruje
@@ -953,7 +961,22 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
         double u_floor = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
         if (!(u_res > u_floor)) u_res = u_floor;
     }
-    double res_hz   = u_res * hz;                                    /* rozliseni v Hz */
+    /* 🔴 K tomu systematicka nejistota REFERENCE podle stavu smycky (kvadraticky): bez zamceni (volny chod OCXO, desitky
+     * az stovky ppb az ppm) nesmi hlavni cislo tvrdit „duveryhodne“ cislice, ktere reference neunese. Za zamceni
+     * (0,01 ppb) je to pod rozlisenim hradla a nic se nemeni. */
+    {   double u_ref = screen_main_ref_ppb() * 1e-9;
+        u_res = sqrt(u_res * u_res + u_ref * u_ref);
+    }
+    return u_res;
+}
+
+static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
+{
+    if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
+    if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
+    double hz = (double)x100000 / 100000.0;
+    if (hz <= 0.0) return 2;
+    double res_hz   = meas_u_rel(gate_ps) * hz;                      /* rozliseni v Hz */
     /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
      * 🔴 F-0177: pocita se i do CELE casti (vysledek smi byt > frac) — driv se
      * tu vynucovala aspon jedna „duveryhodna" desetina, takze nad ~7 MHz
@@ -963,6 +986,29 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
     for (int i = 0; i < frac; i++) pv *= 0.1;           /* mistni hodnota posledni cislice */
     int n_unc = 0;
     while (pv < res_hz && n_unc < frac + 12) { n_unc++; pv *= 10.0; }
+    return n_unc;
+}
+
+/* Totez pro PERIODU 1/f v jednotce `unit_s` (do 2026-10-18 tvrde 2 nejiste cislice bez ohledu na rozliseni: pri 10 MHz se tim
+ * skryvaly 2 PLATNE desetiny, pri f < 100 Hz naopak mohlo zustat „platne" misto, ktere f v LSB 1e-7 Hz neunese).
+ * Relativni nejistota = rozliseni mereni (`meas_u_rel`) ⊕ kvantizace f v LSB (10^-s_freq_frac Hz / f) -- perioda se pocita z f,
+ * ne z gate/edges (TODO: T = gate_ps/edges, STATUS #323 a). */
+static int period_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac, double unit_s)
+{
+    if (frac < 2)      return frac;
+    if (gate_ps == 0u) return 2;                        /* SIM -> nezmeneny vzhled */
+    double hz = (double)x100000 / 100000.0;
+    if (hz <= 0.0 || unit_s <= 0.0) return 2;
+    double lsb = 1.0;
+    for (int i = 0; i < s_freq_frac; i++) lsb *= 0.1;   /* LSB frekvence [Hz] */
+    double u_lsb = lsb / hz;
+    double u_rel = meas_u_rel(gate_ps);
+    u_rel = sqrt(u_rel * u_rel + u_lsb * u_lsb);
+    double res = u_rel * (1.0 / hz) / unit_s;           /* nejistota periody v zobrazene jednotce */
+    double pv = 1.0;
+    for (int i = 0; i < frac; i++) pv *= 0.1;
+    int n_unc = 0;
+    while (pv < res && n_unc < frac + 12) { n_unc++; pv *= 10.0; }
     return n_unc;
 }
 
@@ -1032,9 +1078,10 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
         period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
         s_disp_unit = u; s_disp_unit_s = us;
         for (int frac = FREQ_FRAC_HIRES; ; frac--) {
-            num_layout(p_int, frac, 2);
+            num_layout(p_int, frac, period_uncertain_frac(x100000, gate_ps, frac, us));
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
         }
+        s_freq_unc_last = period_uncertain_frac(x100000, gate_ps, s_disp_frac, us);   /* trigger prestavby jako u frekvence */
     }
 
     disp_update();   /* naplni s_disp_n (freq: = s_freq_n; period: 1/f -> jednotka) */
@@ -1185,9 +1232,10 @@ static void freq_advance(void)
                 period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
                 if (p_int != s_disp_int || us != s_disp_unit_s) fmt_need = 1;
             }
-            if (!s_disp_period && s_freq_unc_last >= 0 &&
-                freq_uncertain_frac(x100000, gate_ps, s_freq_frac) != s_freq_unc_last)
-                fmt_need = 1;   /* #1: σy dokonvergovala/zmenila se -> jiny pocet nejistych cislic */
+            if (s_freq_unc_last >= 0 &&
+                (s_disp_period ? period_uncertain_frac(x100000, gate_ps, s_disp_frac, s_disp_unit_s)
+                               : freq_uncertain_frac(x100000, gate_ps, s_freq_frac)) != s_freq_unc_last)
+                fmt_need = 1;   /* #1: σy dokonvergovala / zmenil se stav smycky (reference) -> jiny pocet nejistych cislic */
             if (fmt_need || sig_change) {
                 double keep_nom = s_freq_nominal_hz;
                 s_freq_hires = hires;
@@ -1302,6 +1350,13 @@ static int   s_y_head = 0, s_y_count = 0;
  * vzorku od resetu (`s_wf_ref`): absolutni y muze byt radu 1e-7 (offset reference) a float by smazal sum 1e-11. */
 #define WF_HIST 720                 /* 720 vzorku po 1 s = 12 min */
 static float    s_wf[WF_HIST] DTCM_BSS;
+/* Ring HISTOGRAMU: az HIST_N = 3600 vzorku po 1 s (1 h), float relativne k `s_wf_ref` (stejny vztazny bod a stejny pocitadlo
+ * `s_wf_n` jako spektrogram -> reset statistik nuluje oba). 14,4 kB v DTCM. Scratch pro median/MAD (kvickselekt ho
+ * permutuje) lezi v bezne RAM — DTCM_APP by s druhym polem pretekl (~52 + 14 kB > 64 kB). */
+#define HIST_N 3600
+static float    s_hy[HIST_N] DTCM_BSS;
+static float    s_hscr[HIST_N];
+static bool     s_hist_detrend = true;   /* odecet linearniho trendu pred binovanim (tlacitko v patce okna) */
 static double   s_wf_ref = 0.0;
 static uint32_t s_wf_n = 0u;        /* vzorku od resetu (absolutni index dalsiho vzorku) */
 static void adev_feed(double v);    /* fwd — decimacni pyramida (dlouhodoby Allan) */
@@ -1392,6 +1447,7 @@ static void stats_push(double y)
     trend_feed(y);                        /* decimacni pyramida (dlouhodoby trend, az ~60 dni) */
     if (s_wf_n == 0u) s_wf_ref = y;       /* spektrogram: vztazny bod = prvni vzorek od resetu */
     s_wf[s_wf_n % WF_HIST] = (float)(y - s_wf_ref);
+    s_hy[s_wf_n % HIST_N]  = (float)(y - s_wf_ref);
     s_wf_n++;
     s_stats_ver++;                        /* histogram okno prekresli jen pri zmene */
     s_stats_nsamp++;
@@ -1413,6 +1469,63 @@ int screen_main_wf_get(uint32_t idx, float *y)
 {
     if (idx >= s_wf_n || (s_wf_n - idx) > (uint32_t)WF_HIST) return 0;
     if (y) *y = s_wf[idx % WF_HIST];
+    return 1;
+}
+
+/* ── ADRET: fazove porovnani normalu z historie kmitoctu (okno ADRET FAZE, s_view=54) ─────────────────────────────────────
+ * Fazovy graf je to, co zadani UI (kap. „Δf normalu") chce misto frekvencniho: fáze je primarni, frekvence je jeji derivace a v grafu
+ * by byla samy sum. Prima fazova razitka z FPGA (protokol v3, dělič N za TDC) zatim nejsou, proto se faze INTEGRUJE z 1s vzorku
+ * kmitoctu (ring `s_hy`, 1 h): x_i = sum_{j<=i} (y_j − y0)·τ0, kde y0 = odchylka referencniho kmitoctu f0 (NUL), τ0 = 1 s.
+ * ⚠️ Rozdil proti primemu razitku: sum vzorku y (σy@1 s ≈ 1,4e-10 u hradla 0,25 s) se sciti jako nahodna chuze (σx ~ σy·√N·1 s),
+ * zatimco primo mereny fazovy rozdil by mel konstantni chybu ~105 ps. Prumerne Δf/f je ale presne to samé (sklon faze) a jeho
+ * nejistota se pocita z rozptylu vzorku s korekci na autokorelaci (efektivni pocet vzorku), ne z kvantizace.
+ * Vola jen UiTask (cte ring, ktery plni `stats_push` tamtez). Vraci 0, dokud neni dost dat. */
+int screen_main_adret(uint32_t n_req, double f0_hz, float *xs, int xs_max, screen_main_adret_t *o)
+{
+    if (o == NULL || xs == NULL || xs_max < 2) return 0;
+    memset(o, 0, sizeof *o);
+    int n = (int)((s_wf_n < (uint32_t)HIST_N) ? s_wf_n : (uint32_t)HIST_N);
+    if (n_req < (uint32_t)n) n = (int)n_req;
+    if (n < 4) return 0;
+    const uint32_t g0 = s_wf_n - (uint32_t)n;
+    const double f_nom = s_freq_nominal_hz;
+    const double u0 = ((f_nom > 0.0) ? (f0_hz - f_nom) / f_nom : 0.0) - s_wf_ref;   /* f0 v tychz relativnich jednotkach jako ring */
+
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)s_hy[(g0 + (uint32_t)i) % HIST_N] - u0;
+    const double mean = sum / (double)n;
+    double c0 = 0.0, c1 = 0.0, prev = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = ((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - u0) - mean;
+        c0 += d * d;
+        if (i > 0) c1 += d * prev;
+        prev = d;
+    }
+    double rho = (c0 > 0.0) ? c1 / c0 : 0.0;
+    if (rho < 0.0) rho = 0.0;
+    if (rho > 0.99) rho = 0.99;
+    double neff = (double)n * (1.0 - rho) / (1.0 + rho);
+    if (neff < 2.0) neff = 2.0;
+
+    /* Faze: kumulativni soucet po 1 s, do xs se uklada kazdy `stride`-ty bod + posledni (graf je sirsi nez 1 px na vzorek az pri malem n). */
+    const int stride = (n + xs_max - 2) / (xs_max - 1);
+    double x = 0.0, xmin = 0.0, xmax = 0.0;
+    int np = 0;
+    xs[np++] = 0.0f;
+    for (int i = 0; i < n; i++) {
+        x += ((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - u0) * 1e9;     /* ns (τ0 = 1 s) */
+        if (x < xmin) xmin = x;
+        if (x > xmax) xmax = x;
+        if ((i + 1) % stride == 0 || i == n - 1) { if (np < xs_max) xs[np++] = (float)x; }
+    }
+    o->n = (uint32_t)n;
+    o->mean = mean;
+    o->sd = sqrt(c0 / (double)(n - 1));
+    o->neff = neff;
+    o->x_end_ns = x;
+    o->x_min_ns = xmin;
+    o->x_max_ns = xmax;
+    o->npts = np;
     return 1;
 }
 
@@ -2110,6 +2223,7 @@ void screen_main_fmt_frac(char *buf, int len, float v, int with_sign) { fmt_frac
  * + hist_h invarianty (peak=plna vyska, log zveda slabe biny). Zadny sdileny
  * stav -> bezpecne z UartTasku za behu. Soucast UART "selftest". */
 static int16_t hist_h(float count, int peak, int16_t H, bool logy);   /* fwd */
+static float hist_median(float *a, int n);                              /* fwd — kvickselekt histogramu */
 static int   nz_alpha(float mu, float mu_m, int have_m);                  /* fwd — typ sumu (bod 4) */
 static float adev_edf_alpha(int alpha, int M, int m);                  /* fwd — EDF podle typu sumu */
 static float adev_ring_kind(const adev_stage_t *sg, int m, int kind, int pb);  /* fwd — estimator stage */
@@ -2148,6 +2262,18 @@ bool screen_main_selftest(void)
     ok &= (hist_h(10.0f, 10, 100, false) == 100);
     ok &= (hist_h(10.0f, 10, 100, true) == 100);
     ok &= (hist_h(1.0f, 10, 100, true) > hist_h(1.0f, 10, 100, false));
+    /* median kvickselektem: lichy/sudy pocet, duplicity, serazena a opacne serazena rada (nejhorsi pripad naivniho pivotu) */
+    {   float a1[5] = {5.0f, 1.0f, 4.0f, 2.0f, 3.0f};
+        float a2[4] = {4.0f, 1.0f, 3.0f, 2.0f};
+        float a3[6] = {2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f};
+        float a4[9] = {9.0f, 8.0f, 7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f};
+        float a5[8] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+        ok &= (hist_median(a1, 5) == 3.0f);
+        ok &= (hist_median(a2, 4) == 2.5f);
+        ok &= (hist_median(a3, 6) == 2.0f);
+        ok &= (hist_median(a4, 9) == 5.0f);
+        ok &= (hist_median(a5, 8) == 4.5f);
+    }
 
     /* ── gate_same (#88) ──────────────────────────────────────────────────────
      * Po ZMENE obsahu se musi kreslit presne `fb_count`-krat (jednou do kazdeho
@@ -3944,6 +4070,8 @@ int screen_main_redraw_allan(void)
 /* Prepinac lin/log Y osy histogramu (log zviditelni slabe biny/chvosty). */
 static bool s_hist_logy = false;
 bool screen_main_hist_logy(void)        { return s_hist_logy; }
+bool screen_main_hist_detrend(void)     { return s_hist_detrend; }
+void screen_main_hist_toggle_detrend(void) { s_hist_detrend = !s_hist_detrend; }
 void screen_main_hist_toggle_logy(void) { s_hist_logy = !s_hist_logy; }
 
 /* Vyska sloupce/krivky v px: linearni (count/peak) nebo log (log10(1+count)/log10(1+peak)). */
@@ -3957,63 +4085,103 @@ static int16_t hist_h(float count, int peak, int16_t H, bool logy)
     return (h < 1) ? 1 : h;
 }
 
-/* Histogram distribuce frakcni odchylky y (poslednich s_y_count vzorku, τ0=1s).
- * Auto-range [min..max], svisle sloupce; mean (zelena) + median (amber) cara +
- * Gaussova referencni krivka (ocekavane cetnosti pri normalnim rozdeleni) +
- * overlay N/mean/sigma/median. Lin/log Y (screen_main_hist_toggle_logy). Kresli
- * do 'rect' (uvnitr karty histogram okna) a sam si ho vycisti -> lze volat 2x/s.
- * Data plni stats_sample nezavisle na okne (sim krokuje i mimo main) -> ZIVY
- * (change-key v app_gpsdo prekresli pri kazdem novem vzorku, ~1x/s). */
+/* k-ty nejmensi prvek (0-based) kvickselektem (Hoare); pole se PERMUTUJE. O(n) misto trideni — histogram ma az
+ * HIST_N = 3600 vzorku a insertion sort by byl ~3 M presunu (desitky ms v UiTasku, ktery hlida watchdog). */
+static float hist_qselect(float *a, int n, int k)
+{
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        float p = a[(lo + hi) / 2];
+        int i = lo, j = hi;
+        while (i <= j) {
+            while (a[i] < p) i++;
+            while (a[j] > p) j--;
+            if (i <= j) { float t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+        }
+        if (k <= j) hi = j;
+        else if (k >= i) lo = i;
+        else break;
+    }
+    return a[k];
+}
+static float hist_median(float *a, int n)
+{
+    float hi_m = hist_qselect(a, n, n / 2);
+    if (n & 1) return hi_m;
+    return 0.5f * (hi_m + hist_qselect(a, n / 2, n / 2 - 1));   /* mensi polovina je po prvnim vyberu pod indexem n/2 */
+}
+
+/* Histogram distribuce frakcni odchylky y (poslednich <= HIST_N = 3600 vzorku po 1 s = az 1 h, vlastni ring
+ * `s_hy`, ne 120s ring statistik). Rozsah = median ± 4σ (σ ROBUSTNI z MAD, aby ho jediny odlehly vzorek
+ * nenafoukl); vzorky mimo rozsah se POCITAJI (overlay `mimo`), ne cpou do krajnich binu. Volitelne (tlacitko v patce
+ * okna) se pred binovanim ODECTE LINEARNI TREND (sklon z nejmensich ctvercu; uroven zustava), takze sirka histogramu
+ * je sum, ne drift; odecteny sklon se vypise (drift za hodinu). Mean (zelena) + median (amber) cara, Gaussova
+ * referencni krivka (median, σ_MAD) a overlay N/mean/σ/median. Lin/log Y (screen_main_hist_toggle_logy).
+ * Kresli do 'rect' a sam si ho vycisti -> lze volat pri kazdem novem vzorku (~1x/s, change-key v app_gpsdo). */
 void screen_main_render_histogram(prim_rect_t rect)
 {
     prim_fill_rect(rect, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);   /* clear + dirty-rect */
 
-    int n = s_y_count;
+    int n = (int)((s_wf_n < (uint32_t)HIST_N) ? s_wf_n : (uint32_t)HIST_N);
     if (n < 4) {
         prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w / 2),
                                       (int16_t)(rect.y + rect.h / 2)},
                        "Waiting for data...", &ui_font_sans_18, UI_COLOR_INK_4, PRIM_ALIGN_CENTER);
         return;
     }
+    const uint32_t g0 = s_wf_n - (uint32_t)n;          /* absolutni index nejstarsiho vzorku v ringu */
 
-    /* Jedna kopie ringu do lokalniho pole (stat_at dela modulo — dal uz jen
-     * linearni pristupy); poradi je pro min/max/mean/biny/median nepodstatne. */
-    /* F-0179: hodnoty RELATIVNE k prumeru (double) — absolutni y ve float by pri
-     * nizkem f splynulo do par binu. Popisky pricitaji `ref` zpet. */
-    double ref = 0.0;
-    for (int i = 0; i < n; i++) ref += stat_at(i);
-    ref /= (double)n;
-    float srt[STAT_N];
-    for (int i = 0; i < n; i++) srt[i] = (float)(stat_at(i) - ref);
+    /* Sklon (LS) a prumer. Hodnoty uz jsou RELATIVNI k prvnimu vzorku od resetu (`s_wf_ref`), takze float staci. */
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)s_hy[(g0 + (uint32_t)i) % HIST_N];
+    const double mean0 = sum / (double)n;
+    double sxy = 0.0, sxx = 0.0;
+    const double tc = 0.5 * (double)(n - 1);
+    for (int i = 0; i < n; i++) {
+        double t = (double)i - tc;
+        sxy += t * ((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - mean0);
+        sxx += t * t;
+    }
+    const double slope = (sxx > 0.0) ? sxy / sxx : 0.0;            /* [y / vzorek] = y za sekundu */
+    const double bdt = s_hist_detrend ? slope : 0.0;
 
-    float mn = srt[0], mx = mn, sum = 0.0f;
-    for (int i = 0; i < n; i++) { float v = srt[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
-    float mean = sum / (float)n;
-    float span = mx - mn;
-    if (span < 1e-18f) span = 1e-18f;                    /* degenerace -> vyhni se /0 */
+    /* Odecteny trend -> scratch (kvickselekt ho permutuje). Pak median a MAD. */
+    for (int i = 0; i < n; i++)
+        s_hscr[i] = (float)((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - bdt * ((double)i - tc));
+    float median = hist_median(s_hscr, n);
+    for (int i = 0; i < n; i++) {
+        float d = (float)((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - bdt * ((double)i - tc)) - median;
+        s_hscr[i] = (d < 0.0f) ? -d : d;
+    }
+    float sd_r = 1.4826f * hist_median(s_hscr, n);                  /* robustni sigma z MAD */
 
-    /* binovani + rozptyl (sample stddev distribuce, ne ADEV) */
-    #define HIST_BINS 24
-    int bins[HIST_BINS] = {0};
+    /* Klasicka vyberova sigma (n-1) a prumer odecteneho radu — to, co ukazuje overlay. */
+    double s1 = 0.0;
+    for (int i = 0; i < n; i++) s1 += (double)s_hy[(g0 + (uint32_t)i) % HIST_N] - bdt * ((double)i - tc);
+    const double mean = s1 / (double)n;
     double var = 0.0;
     for (int i = 0; i < n; i++) {
-        float v = srt[i];
-        int b = (int)((v - mn) / span * (float)HIST_BINS);
+        double d = ((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - bdt * ((double)i - tc)) - mean;
+        var += d * d;
+    }
+    const float sd = (n > 1) ? (float)sqrt(var / (double)(n - 1)) : 0.0f;   /* vyberova smerodatna odchylka (n-1) */
+    float half = 4.0f * ((sd_r > 1e-18f) ? sd_r : sd);                     /* rozsah ±4σ okolo medianu */
+    if (half < 1e-18f) half = 1e-18f;                                       /* degenerace (konstantni rada) -> vyhni se /0 */
+    const float lo = median - half, span = 2.0f * half;
+
+    #define HIST_BINS 40
+    int bins[HIST_BINS] = {0};
+    int out_lo = 0, out_hi = 0;
+    for (int i = 0; i < n; i++) {
+        float v = (float)((double)s_hy[(g0 + (uint32_t)i) % HIST_N] - bdt * ((double)i - tc));
+        if (v < lo) { out_lo++; continue; }
+        if (v >= lo + span) { out_hi++; continue; }
+        int b = (int)((v - lo) / span * (float)HIST_BINS);
         if (b < 0) b = 0; else if (b >= HIST_BINS) b = HIST_BINS - 1;
         bins[b]++;
-        double d = (double)(v - mean); var += d * d;
     }
-    float sd = (n > 1) ? (float)sqrt(var / (double)(n - 1)) : 0.0f;   /* vyberova smerodatna odchylka (n-1), jako web a komentar vyse */
     int peak = 1;
     for (int b = 0; b < HIST_BINS; b++) if (bins[b] > peak) peak = bins[b];
-
-    /* median: insertion sort in-place (n<=120, cold path — kresli se jen pri zmene dat) */
-    for (int i = 1; i < n; i++) {
-        float k = srt[i]; int j = i - 1;
-        while (j >= 0 && srt[j] > k) { srt[j + 1] = srt[j]; j--; }
-        srt[j + 1] = k;
-    }
-    float median = (n & 1) ? srt[n / 2] : 0.5f * (srt[n / 2 - 1] + srt[n / 2]);
     bool logy = s_hist_logy;
 
     /* plot area: leva rezerva na peak-count, dolni na y-popisky */
@@ -4034,16 +4202,18 @@ void screen_main_render_histogram(prim_rect_t rect)
         prim_fill_rect((prim_rect_t){bx, (int16_t)(in.y + in.h - h),
                                      (int16_t)(bw - 1), h}, UI_COLOR_ACC, PRIM_BLEND_OVER);
     }
+    const int16_t plot_w = (int16_t)(bw * HIST_BINS);                      /* sirka skutecne nakreslenych binu */
 
-    /* Gaussova referencni krivka: ocekavane cetnosti N*binW*pdf(v) pri normalnim
-     * rozdeleni (mean,sd) -> porovnani tvaru (pretazeni / tezke chvosty). */
-    if (sd > 1e-18f) {
+    /* Gaussova referencni krivka: ocekavane cetnosti N*binW*pdf(v) pri normalnim rozdeleni (median, σ_MAD) ->
+     * porovnani tvaru jadra (pretazeni / tezke chvosty vidi sloupce mimo krivku a citac `mimo`). */
+    const float sg = (sd_r > 1e-18f) ? sd_r : sd;
+    if (sg > 1e-18f) {
         const float binW = span / (float)HIST_BINS;
-        const float kk = (float)n * binW / (sd * 2.5066283f);     /* N*binW/(sd*sqrt(2π)) */
+        const float kk = (float)n * binW / (sg * 2.5066283f);     /* N*binW/(σ*sqrt(2π)) */
         int16_t py_prev = 0, have_prev = 0;
-        for (int px = 0; px <= in.w; px += 3) {
-            float v = mn + (float)px / (float)in.w * span;
-            float z = (v - mean) / sd;
+        for (int px = 0; px <= plot_w; px += 3) {
+            float v = lo + (float)px / (float)plot_w * span;
+            float z = (v - median) / sg;
             int16_t hy = hist_h(kk * expf(-0.5f * z * z), peak, in.h, logy);
             int16_t py = (int16_t)(in.y + in.h - hy);
             int16_t cx = (int16_t)(in.x + px);
@@ -4054,34 +4224,40 @@ void screen_main_render_histogram(prim_rect_t rect)
         }
     }
 
-    /* mean (zelena) + median (amber) svisle cary */
-    int16_t mpx = (int16_t)(in.x + (int16_t)((mean - mn) / span * (float)in.w));
-    prim_draw_line((prim_point_t){mpx, in.y}, (prim_point_t){mpx, (int16_t)(in.y + in.h)},
-                   1, UI_COLOR_OK);
-    int16_t dpx = (int16_t)(in.x + (int16_t)((median - mn) / span * (float)in.w));
-    prim_draw_line((prim_point_t){dpx, in.y}, (prim_point_t){dpx, (int16_t)(in.y + in.h)},
-                   1, UI_COLOR_WARN);
+    /* mean (zelena) + median (amber) svisle cary — jen kdyz lezi v rozsahu */
+    float mean_f = (float)mean;
+    if (mean_f >= lo && mean_f <= lo + span) {
+        int16_t mpx = (int16_t)(in.x + (int16_t)((mean_f - lo) / span * (float)plot_w));
+        prim_draw_line((prim_point_t){mpx, in.y}, (prim_point_t){mpx, (int16_t)(in.y + in.h)}, 1, UI_COLOR_OK);
+    }
+    int16_t dpx = (int16_t)(in.x + (int16_t)((median - lo) / span * (float)plot_w));
+    prim_draw_line((prim_point_t){dpx, in.y}, (prim_point_t){dpx, (int16_t)(in.y + in.h)}, 1, UI_COLOR_WARN);
 
-    /* X popisky: min (vlevo) / max (vpravo) ve frac notaci */
+    /* X popisky: meze rozsahu (median ± 4σ) v ABSOLUTNI frac notaci (`s_wf_ref` se pricte zpet) */
     char lb[24], rb[24];
-    fmt_frac(lb, sizeof lb, (float)((double)mn + ref), 1);
-    fmt_frac(rb, sizeof rb, (float)((double)mx + ref), 1);
+    fmt_frac(lb, sizeof lb, (float)((double)lo + s_wf_ref), 1);
+    fmt_frac(rb, sizeof rb, (float)((double)(lo + span) + s_wf_ref), 1);
     prim_draw_text((prim_point_t){in.x, (int16_t)(in.y + in.h + 16)}, lb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
     prim_draw_text((prim_point_t){(int16_t)(in.x + in.w), (int16_t)(in.y + in.h + 16)}, rb,
                    &ui_font_mono_14, UI_COLOR_INK_4, PRIM_ALIGN_RIGHT);
 
-    /* overlay: N/mean/sigma (radek 1, vpravo nahore) + median (radek 2, amber) */
+    /* overlay: N/mean/sigma (radek 1) + median (radek 2, amber) + mimo/trend (radek 3) */
     char ov[80], mb[24], sb[24];
-    fmt_frac(mb, sizeof mb, (float)((double)mean + ref), 1);
+    fmt_frac(mb, sizeof mb, (float)(mean + s_wf_ref), 1);
     fmt_frac(sb, sizeof sb, sd, 0);
     snprintf(ov, sizeof ov, "N=%d  x=%s  s=%s", n, mb, sb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 16)}, ov,
                    &ui_font_mono_18, UI_COLOR_INK_2, PRIM_ALIGN_RIGHT);
-    char db[28]; fmt_frac(mb, sizeof mb, (float)((double)median + ref), 1);
+    char db[28]; fmt_frac(mb, sizeof mb, (float)((double)median + s_wf_ref), 1);
     snprintf(db, sizeof db, "med=%s", mb);
     prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 36)}, db,
                    &ui_font_mono_14, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
+    char tb[24]; fmt_frac(tb, sizeof tb, (float)(slope * 3600.0), 1);       /* sklon za hodinu */
+    char tr[96];
+    snprintf(tr, sizeof tr, "mimo %d/%d  trend %s/h%s", out_lo, out_hi, tb, s_hist_detrend ? " odecten" : "");
+    prim_draw_text((prim_point_t){(int16_t)(rect.x + rect.w), (int16_t)(rect.y + 54)}, tr,
+                   &ui_font_mono_14, UI_COLOR_INK_3, PRIM_ALIGN_RIGHT);
     #undef HIST_BINS
 }
 

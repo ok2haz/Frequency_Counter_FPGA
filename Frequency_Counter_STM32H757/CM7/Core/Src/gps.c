@@ -411,6 +411,25 @@ static void put_le32(uint8_t *p, uint32_t v)
   p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
+/* Anteni koax: delka [0,1 m] a rychlostni faktor [%] (okno NASTAVENI GPS, persist v syscfg). */
+volatile uint16_t g_gps_cable_dm;
+volatile uint8_t  g_gps_cable_vf;
+static volatile uint8_t s_tp_resend_req;   /* UiTask nastavi po zmene, gps_tick (defaultTask) vynuluje */
+
+int16_t gps_cable_delay_ns(void)
+{
+  uint16_t dm = g_gps_cable_dm;
+  uint8_t  vf = g_gps_cable_vf;
+  if (dm == 0u) return 0;
+  if (dm > GPS_CABLE_DM_MAX) dm = GPS_CABLE_DM_MAX;
+  if (vf < 30u || vf > 100u) vf = GPS_CABLE_VF_DEF;   /* 0 = vychozi; mimo fyzikalni rozsah (VF < 30 % neexistuje) tez */
+  /* t = L / (c·VF), c = 0,299792458 m/ns; L = dm/10 m, VF = vf/100 */
+  double ns = ((double)dm * 0.1) / (0.299792458 * (double)vf * 0.01);
+  return (int16_t)(ns + 0.5);
+}
+
+void gps_cable_changed(void) { s_tp_resend_req = 1u; }
+
 /* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
  * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
  * sekundy), pulz 100 ms; freqPeriod (no lock) = 10 Hz, pulz 50 ms.
@@ -419,6 +438,10 @@ void gps_config_timepulse(void)
 {
   uint8_t pl[32] = {0};
   pl[0] = 0;                                     /* tpIdx = 0 (TIMEPULSE) */
+  {                                              /* antCableDelay [ns], int16 LE (off 4); rfGroupDelay (off 6) zustava 0 */
+    int16_t cd = gps_cable_delay_ns();
+    pl[4] = (uint8_t)cd; pl[5] = (uint8_t)((uint16_t)cd >> 8);
+  }
   put_le32(&pl[8],  GPS_TP_FREQ_NOFIX_HZ);       /* freqPeriod (no lock) = 10 Hz */
   put_le32(&pl[12], GPS_TP_FREQ_HZ);             /* freqPeriodLock (fix) = 1 Hz */
   put_le32(&pl[16], GPS_TP_LEN_NOFIX_US);        /* pulseLenRatio (no lock) = 50 ms */
@@ -510,6 +533,8 @@ void gps_init(void)
 void gps_tick(void)
 {
   uint32_t now = HAL_GetTick();
+  /* Zmena delky/faktoru kabelu z UI se uplatni hned, ne az za minutu. */
+  if (s_tp_resend_req) { s_tp_resend_req = 0u; s_tp_last_ms = now - GPS_TP_RESEND_MS; }
   if ((uint32_t)(now - s_tp_last_ms) < GPS_TP_RESEND_MS) return;
   s_tp_last_ms = now;
   gps_config_timepulse();

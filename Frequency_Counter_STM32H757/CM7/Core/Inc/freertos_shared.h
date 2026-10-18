@@ -44,6 +44,9 @@ extern volatile uint32_t g_shot_view_done;
  * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
  * jen UiTask (kreslí ho, není thread-safe). Servisuje `StartUiTask`. ─────── */
 extern volatile uint8_t g_stats_reset_req;
+/* VBAT se normalne meri 1x za VBAT_PERIOD_S (600 s; mustek VBAT zatezuje clanek jen po dobu prevodu, STATUS #322). Dokud je
+ * otevrene okno Kalibrace / pruvodce, nastavuje UiTask tenhle priznak a meri se kazdou sekundu, aby slo korekci ladit zive. */
+extern volatile uint8_t g_vbat_fast;
 
 /* ── Kmitočet z FPGA (FpgaTask -> UiTask) ──────────────────────────────── */
 extern volatile char    g_freq_text[48];

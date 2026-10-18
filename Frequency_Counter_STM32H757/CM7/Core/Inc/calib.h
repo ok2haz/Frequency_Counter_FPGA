@@ -36,6 +36,10 @@ typedef struct {
      * (dosud pevne z hodnot rezistoru, tj. nesly zkalibrovat podle multimetru). Ulozeny blob "CAL2". */
     float gain_vc;                /* multiplikator ADS mV -> skutecne mV, AIN0 = OCXO Vc (R51/R52, ~2,5) */
     float gain_vbus;              /* multiplikator ADS mV -> skutecne mV, AIN1 = VBUS (R53/R54, ~21,04) */
+    /* 2026-10-18 (STATUS #322): korekce VBAT na NAPETI BATERIE [mV] = ubytek diody D3 (B0520LW) + chyba ADC proti multimetru.
+     * ADC3 meri napeti na pinu VBAT, baterie je o ubytek diody vyssi. Naměřeno 2026-10-18: baterie 3,046 V, pin (multimetr) 2,971 V
+     * => dioda 75,6 mV; ADC cetl 2,988 V (o 17 mV vic nez multimetr) => korekce vuci ADC = 3046 - 2988 = 58 mV. Ulozeny blob "CAL3". */
+    float vbat_corr_mv;
 } calib_t;
 
 /* Live hodnoty. Cte SensorsTask (gain_12v/gain_5v, prepocet ADS -> skutecne

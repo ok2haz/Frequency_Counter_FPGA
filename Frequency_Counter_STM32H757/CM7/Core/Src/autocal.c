@@ -35,12 +35,12 @@ void autocal_run(void)
      * zustava jako historicky nazev. */
     g_autocal.rail12 = check(SENS_ADS2, 3300.0f, 0.05f);  /* +3V3 ±5 % */
     g_autocal.rail5  = check(SENS_ADS3, 5000.0f, 0.05f);   /* 5V ±5 % */
-    /* VBAT: baterie „slabá" pod ~2,5 V (jinak OK); ne symetrická tolerance. */
+    /* VBAT = napeti BATERIE (pin + korekce, STATUS #322): OK od 2,70 V, vyhrada 2,40-2,70 V, kriticke pod 2,40 V; ne symetricka tolerance. */
     {
         const sensor_stat_t *b = &g_sensors[SENS_VBAT];
         g_autocal.vbat = (!b->samples || !b->valid) ? AC_NA
-                        : (b->last >= 2500.0f) ? AC_PASS
-                        : (b->last >= 2200.0f) ? AC_WARN : AC_FAIL;
+                        : (b->last >= 2700.0f) ? AC_PASS
+                        : (b->last >= 2400.0f) ? AC_WARN : AC_FAIL;
     }
     /* Staged (mění koeficienty / vyžadují externí referenci nebo reinit) — zatím NA. */
     g_autocal.adc_selfcal = AC_NA;   /* HW self-cal ADC3 — koordinovaný reinit v SensorsTasku */

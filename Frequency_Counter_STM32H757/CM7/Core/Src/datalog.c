@@ -21,6 +21,7 @@
 #include "gpsdo.h"       /* g_gpsdo_drive/_code_q16 - kod DAC do zaznamu (STATUS #311) */
 #include "ad5693.h"      /* g_dac */
 #include "gps.h"
+#include "calib.h"      /* g_calib.vbat_corr_mv: log drzi SUROVE napeti na pinu VBAT, korekce na baterii se pricita pri cteni (STATUS #322) */
 #include "si5356.h"   /* SI5356_LOS_CLKIN/PLL_LOL — priznak neplatne reference */
 #include "errlog.h"    /* udalosti: chyba zapisu, zmena nastaveni */
 #include "cmsis_os2.h"
@@ -454,6 +455,15 @@ static int16_t sens_c100(sensor_id_t id)
     return (int16_t)(v < 0 ? v - 0.5f : v + 0.5f);
 }
 
+/* Zaznam drzi SUROVE napeti na pinu VBAT; pri CTENI se pricte AKTUALNI korekce na baterii (dioda D3 + chyba ADC, calib.h), takze
+ * zmena kalibrace opravi i stare zaznamy. Nezaznamenano (INVALID16) zustava. Vola VSECHNY cteci cesty (read_back i bulk). */
+static void vbat_pin_to_batt(datalog_rec_t *r)
+{
+    if (r->vbat_mv == DATALOG_INVALID16) return;
+    int32_t v = (int32_t)r->vbat_mv + (int32_t)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f));
+    r->vbat_mv = (int16_t)(v > 32000 ? 32000 : (v < 0 ? 0 : v));
+}
+
 static int16_t sens_mv(sensor_id_t id)
 {
     const sensor_stat_t *s = &g_sensors[id];
@@ -514,6 +524,10 @@ static void sample(datalog_rec_t *r)
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
     r->rf_mv     = sens_mv(SENS_ADS1);
     r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
+    if (r->vbat_mv != DATALOG_INVALID16) {   /* SENS_VBAT = baterie (pin + korekce); do logu SUROVY pin, kalibrace se muze zmenit (jako rf_mv) */
+        int32_t pin = (int32_t)r->vbat_mv - (int32_t)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f));
+        r->vbat_mv = (int16_t)(pin < 0 ? 0 : pin);
+    }
     r->dac_code     = dac_code_now();         /* STATUS #311: drift OCXO z kodu DAC */
 
     gps_data_t g;
@@ -636,7 +650,9 @@ bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out)
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return false;
     bool ok = be->read(off, b, DATALOG_REC_SIZE);
     osMutexRelease(qspiMutexHandle);
-    return ok && unpack_rec(b, out);
+    if (!(ok && unpack_rec(b, out))) return false;
+    vbat_pin_to_batt(out);
+    return true;
 }
 
 /* ── Bulk cteni (STATUS #142) ─────────────────────────────────────────────────
@@ -690,7 +706,7 @@ uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
     uint32_t got = 0;
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *p = &s_bulk[(n - 1u - i) * DATALOG_REC_SIZE];
-        if (unpack_rec(p, &out[got])) got++;   /* poskozeny/prazdny -> preskoc (jako `continue`) */
+        if (unpack_rec(p, &out[got])) { vbat_pin_to_batt(&out[got]); got++; }   /* poskozeny/prazdny -> preskoc (jako `continue`) */
     }
     if (consumed) *consumed = n;               /* pokryte POZICE, vc. preskocenych */
     return got;

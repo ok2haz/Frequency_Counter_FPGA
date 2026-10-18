@@ -554,5 +554,16 @@ int mp_selftest(void)
         mp_budget(1e7, 0.25, 2500.0, 0.0, 1.0, &bv);  ok &= (bv.valid == 1);
     }
 
+    /* ── Nejistota reference podle stavu smycky ──────────────────────────────── */
+    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 1, 100u) == MP_REF_PPB_LOCK);
+    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 0, 10u)  == MP_REF_PPB_LOCKING);
+    ok &= (mp_ref_ppb(GPSDO_FLL, 0, 0, 10u)   == MP_REF_PPB_FLL);
+    ok &= (mp_ref_ppb(GPSDO_OFF, GPSDO_WHY_USER, 0, 0u) == MP_REF_PPB_FREE);
+    ok &= (mp_ref_ppb(GPSDO_WAIT, GPSDO_WHY_NOFIX, 0, 5u) == MP_REF_PPB_FREE);
+    ok &= (mp_ref_ppb(GPSDO_WAIT, GPSDO_WHY_REFEXT, 0, 5u) == MP_REF_PPB);
+    ok &= (mp_ref_ppb(GPSDO_HOLD, 0, 0, 7200u) > mp_ref_ppb(GPSDO_HOLD, 0, 0, 0u));          /* holdover s casem roste */
+    ok &= (mp_ref_ppb(GPSDO_HOLD, 0, 0, 0xFFFFFFFFu) == MP_REF_PPB_HOLD0 + 24.0 * MP_REF_PPB_HOLD_H);   /* strop 24 h */
+    ok &= (mp_ref_ppb(GPSDO_LOCK, 0, 1, 0u) < mp_ref_ppb(GPSDO_FLL, 0, 0, 0u));            /* poradi dulezitosti */
+
     return ok;
 }

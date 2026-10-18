@@ -31,6 +31,7 @@
 #include <prim/text.h>    /* prim_text_missing_glyphs — radek `FONTY:` ve `status` */
 #include "alarm.h"          /* alarm_test — UART "beep" */
 #include "watchdog.h"       /* watchdog_cfg_* — radek `WATCHDOG:` ve `status` (F-0104) */
+#include "calib.h"          /* g_calib.vbat_corr_mv — radek `VBAT nabijeni:` ve `status` (STATUS #322) */
 #include "beeper.h"         /* beeper_ready — tamtez (F-0111) */
 #include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
 #include "app_gpsdo.h"    /* app_gpsdo_btnreg_stats — diagnostika fokusu */
@@ -2095,13 +2096,15 @@ void UartTask_run(void *argument)
 					  sc.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
 					  sc.SingleDiff = ADC_SINGLE_ENDED; sc.OffsetNumber = ADC_OFFSET_NONE;
 					  HAL_ADC_ConfigChannel(&hadc3, &sc);
-					  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+					  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN);
+					  if (ch[i] == ADC_CHANNEL_VBAT) ADC3_COMMON->CCR |= ADC_CCR_VBATEN; else ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;   /* mustek jen pro VBAT (STATUS #322) */
 					  ADC3->PCSEL |= (1u << ((ADC3->SQR1 >> 6) & 0x1Fu));
 					  if (HAL_ADC_Start(&hadc3) == HAL_OK &&
 						  HAL_ADC_PollForConversion(&hadc3, 20) == HAL_OK)
 						  r[i] = HAL_ADC_GetValue(&hadc3);
 					  HAL_ADC_Stop(&hadc3);
 				  }
+				  ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;
 				  uint32_t rt = r[0], rv = r[1], rb = r[2];
 				  uint16_t vc = *(volatile uint16_t *)0x1FF1E860UL;   /* VREFINT_CAL */
 				  uint16_t t1 = *(volatile uint16_t *)0x1FF1E820UL;   /* TS_CAL1 30C */
@@ -3271,8 +3274,10 @@ void UartTask_run(void *argument)
 					  	 * Audit 2026-08-29 nasel 15 takto neviditelnych retezcu; dosud to slo
 					  	 * odhalit jen tim, ze si nekdo vsimne prazdneho mista. */
 					  	{ uint32_t mg = prim_text_missing_glyphs();
+					  	  int16_t lasc = 0; uint32_t lcp = prim_text_last_missing(&lasc);
 					  	  printf("FONTY: preskocenych glyfu %lu%s\n", (unsigned long)mg,
-					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)"); }
+					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)");
+					  	  if (mg) printf("       posledni chybejici znak U+%04lX ve fontu s ascent %d\n", (unsigned long)lcp, (int)lasc); }
 					  	/* Tataz trida jako radek vyse: formatovani, ktere tise dava JINE cislo,
 					  	 * nez volajici chtel. `fmt_fixed` podporuje 0..3 desetiny a navic
 					  	 * |v|*10^desetin musi vlezt do int32; driv oboji tise spadlo na celou
@@ -3462,6 +3467,10 @@ void UartTask_run(void *argument)
 					  	 * nenabehly TIM7 znamena TRVALE NEMY pristroj vcetne alarmu
 					  	 * na ztratu reference. Vypisuje se i kdyz je vse v poradku —
 					  	 * ticho by znamenalo „nevim", tohle znamena „zkontrolovano". */
+					  	/* STATUS #322: zalozni baterie. Nabijeni musi byt VYPNUTE (VBE=0), mustek VBAT se zapina jen pri prevodu. */
+					  	printf("VBAT nabijeni: %s (VBE=%u) | mustek jen pri prevodu, perioda 600 s | korekce na baterii %+d mV\n",
+					  	       (PWR->CR3 & PWR_CR3_VBE) ? "ZAP <== MA BYT VYP" : "VYP", (unsigned)((PWR->CR3 & PWR_CR3_VBE) ? 1u : 0u),
+					  	       (int)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f)));
 					  	printf("WATCHDOG: PR=%u RLR=%u -> %lu ms%s | pipak %s\n",
 					  	       (unsigned)watchdog_cfg_pr(), (unsigned)watchdog_cfg_rlr(),
 					  	       (unsigned long)watchdog_timeout_ms(),

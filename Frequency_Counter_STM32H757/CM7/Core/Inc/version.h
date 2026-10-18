@@ -11,6 +11,14 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.29.0 (2026-10-18) = (1) NASTAVENI GPS (s_view=53, dlazdice `GPS >`): delka a rychlostni faktor anteniho koaxu -> zpozdeni L/(c*VF) do UBX-CFG-TP5
+ * antCableDelay (persist ve vycpavce syscfg, magic beze zmeny); (2) ADRET: FAZE (s_view=54, tlacitko FAZE > v Odchylce xN): fazovy graf integrovany z 1 s vzorku,
+ * Df/f +- u (autokorelace), posuv faze, rozchod za 24 h; (3) HISTOGRAM: vlastni ring 3600 vzorku, rozsah median +-4 sigma_MAD, citac mimo rozsah, odecet trendu
+ * (tlacitko DETREND/SUROVY), median kvickselektem; (4) PRESNOST: nejistota reference podle STAVU smycky (`mp_ref_ppb`: LOCK 0,01 ppb ... volny chod 1 ppm) pro hlavni cislo,
+ * okno ANALYZA i web (`ref_ppb_x100`), nejiste cislice PERIODY z rozliseni misto pevnych 2; (5) VBAT (STATUS #322): mustek jen pri prevodu, 1x/600 s (1 s v okne Kalibrace),
+ * nabijeni VBE=0 explicitne, korekce na baterii (dioda D3 + ADC, kalibrace CAL3, vychozi 58 mV z mereni), prahy pro CR2032 (nominal 3,0 V, vyhrada 2,70 V); (6) WEB: interval
+ * 6 h a oprava prekryvu davek historie (klient posilal serveru cele okno misto 1/4); (7) `status`: posledni chybejici glyf, radek VBAT nabijeni; tools/mem_report.py.
+ * Flashnout OBE banky; IPC v28 beze zmeny. ⬜ Neovereno na HW (na desce bezela v0.27.2). */
 /* v0.28.0 (2026-10-18) = displej (CM7) + web (CM4): spektrogram na displeji drzi historii (ring 720 s v screen_main, plni se i za zavreneho okna,
  * skala +-3 sigma okna); podlaha citace v Allanu bez omezeni 1e-11 (kde opousti osu, znacka); FUNKCE MERENI: odemcene Frekvence B / Perioda B (CHAN);
  * histogram: vyberova sigma (n-1); web: nahled spektrogramu a histogramu (height=100/> = nulova vyska), detail Kvality GPS, kuzel holdoveru.
@@ -204,8 +212,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 28
+#define FW_VERSION_MINOR 29
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.28.0"
+#define FW_VERSION_STR   "v0.29.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

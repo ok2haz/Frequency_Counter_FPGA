@@ -39,7 +39,7 @@ function ref(hz, gate, tdc_ps, sigma, ref_ppb) {
 const TDC = 2500, PPB = 1.0;               /* MP_TDC_PS / MP_REF_PPB */
 /* F-0174: rozpocet bere SKUTECNE hradlo `gate_ns`; `set_gate_s` = 100 je tu
  * schvalne, aby test ukazal, ze se NASTAVENI ignoruje (STATUS #83). */
-const state = { freq_hz: 10e6, gate_ns: 1e9, set_gate_s: 100, tdc_ps: TDC, ref_ppb_x10: PPB * 10 };
+const state = { freq_hz: 10e6, gate_ns: 1e9, set_gate_s: 100, tdc_ps: TDC, ref_ppb_x100: PPB * 100 };
 let bad = 0;
 function check(c, m) { console.log((c ? '   ok     ' : '   CHYBA  ') + m); if (!c) bad++; }
 

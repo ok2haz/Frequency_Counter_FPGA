@@ -14,6 +14,7 @@
  */
 #include <stdint.h>
 #include <stddef.h>
+#include "gpsdo.h"      /* GPSDO_* stavy smycky -- mp_ref_ppb() (jen konstanty a enumy, vidi to i CM4) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -144,7 +145,36 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
                                  * Do 2026-10-08 57 ps = krok tapu ze STA (hypotéza). Význam je σ (√2·σ/hradlo = rozlišení okna);
                                  * podlaha Allanova grafu z ní dělá ekvivalentní krok kvantizace σ·√12. S regresí (FW >= 0x041A)
                                  * je skutečný šum okna ~13× menší — hodnota je proto konzervativní (méně „důvěryhodných“ číslic). */
-#define MP_REF_PPB     1.0      /* systematická nejistota GPSDO reference vůči UTC */
+#define MP_REF_PPB     1.0      /* NÁHRADNÍ systematická nejistota reference (neznámý stav / externí reference) — viz mp_ref_ppb() */
+
+/* 🔴 Nejistota REFERENCE podle STAVU smyčky GPSDO (2026-10-18; dřív konstanta 1 ppb pořád). Konstantní 1 ppb byla zároveň příliš
+ * pesimistická za zamčené smyčky a příliš optimistická bez ní: OCXO před prvním zamčením bylo o −0,84 ppm vedle (deník měření), a
+ * hlavní číslo přesto ukazovalo „důvěryhodné“ číslice až na 1 ppb. Hodnoty [ppb] (relativně k UTC):
+ *  - LOCK zamčeno:     0,01   (10 h běh 2026-10-17/18: offset proti nezávislému GPSDO 3·10⁻¹³ ± 2,3·10⁻¹², ADEV fáze 1,1·10⁻¹¹ @ 1000 s)
+ *  - LOCK nedoladěno:  0,1    (prvních ~60 s po zamčení, |fáze|/|y| ještě nad prahem `locked`)
+ *  - HOLD:             0,05 + 0,03/h (odhad: zbytková chyba kmitočtu při ztrátě + horní mez driftu 26 ppt/h z téhož běhu; ⬜ HYPOTÉZA do #303/#311)
+ *  - FLL:              10     (rozběh, kmitočet se teprve dolaďuje z ppm; ⬜ odhad)
+ *  - OFF / WAIT:       1000   (volný chod OCXO, naměřeno −0,84 ppm)
+ *  - WAIT + externí reference (`GPSDO_WHY_REFEXT`): MP_REF_PPB (kvalita cizí reference není známa)
+ * Jediný zdroj pravdy: CM7 (hlavní číslo, okno ANALÝZA) i web (`/api/state` → `ref_ppb_x100`) volají tuto funkci. */
+#define MP_REF_PPB_LOCK     0.01
+#define MP_REF_PPB_LOCKING  0.1
+#define MP_REF_PPB_HOLD0    0.05
+#define MP_REF_PPB_HOLD_H   0.03    /* přírůstek za hodinu holdoveru */
+#define MP_REF_PPB_FLL      10.0
+#define MP_REF_PPB_FREE     1000.0
+static inline double mp_ref_ppb(uint8_t state, uint8_t why, uint8_t locked, uint32_t state_s)
+{
+    switch (state) {
+    case GPSDO_LOCK: return locked ? MP_REF_PPB_LOCK : MP_REF_PPB_LOCKING;
+    case GPSDO_HOLD: { double h = (double)state_s / 3600.0; if (h > 24.0) h = 24.0;
+                       return MP_REF_PPB_HOLD0 + MP_REF_PPB_HOLD_H * h; }
+    case GPSDO_FLL:  return MP_REF_PPB_FLL;
+    case GPSDO_WAIT: if (why == GPSDO_WHY_REFEXT) return MP_REF_PPB;   /* externí reference: kvalita neznámá */
+                     return MP_REF_PPB_FREE;
+    default:         return MP_REF_PPB_FREE;                           /* OFF */
+    }
+}
 
 /* ══════════════ AD8307: mV → dBm — JEDINÝ zdroj převodu (F-0165) ═══════════
  * 🔴 Do 2026-09-26 byl vzorec `dBm = mV / slope + intercept` v projektu 8×

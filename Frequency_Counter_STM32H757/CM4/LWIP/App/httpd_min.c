@@ -476,7 +476,10 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
      * jednou byl na trech mistech (viz `MP_TDC_PS` v meas_present.h, SKILL.md §5).
      * Celociselne, zadny `%f` (nano.specs). */
     jputf(&j, "\"tdc_ps\":%lu,", (unsigned long)(MP_TDC_PS));
-    jputf(&j, "\"ref_ppb_x10\":%lu,", (unsigned long)(MP_REF_PPB * 10.0 + 0.5));
+    /* Nejistota reference PODLE STAVU smycky (mp_ref_ppb, sdilene s hlavnim cislem a oknem ANALYZA); x100 = 0,01 ppb rozliseni.
+     * Cte se primo z bloku gpsdo (par bajtu, roztrzene cteni by dalo nanejvys jednu spatnou hodnotu na tik). */
+    { double rp = mp_ref_ppb(g_ipc.gpsdo.state, g_ipc.gpsdo.why, g_ipc.gpsdo.locked, g_ipc.gpsdo.state_s);
+      jputf(&j, "\"ref_ppb_x100\":%lu,", (unsigned long)(rp * 100.0 + 0.5)); }
     /* NAMERENA σy@1s z firmwaru (sigma_tau[0]) jako integer ×1e15 (zadny %f):
      * headline pocita hranici podtrzeni z TEZE σy co displej -> shoda. 0 = jeste
      * neni (web spadne na teoreticke √2·tdc/gate). Clamp na uint32. */
@@ -1471,7 +1474,8 @@ static const char SPA_HTML[] =
 "<div class='grp'><span>OKNO GRAFU</span><div class='seg' id='segWin'>\n"
 "<button data-w='60'>1 min</button><button data-w='300'>5 min</button>\n"
 "<button data-w='900'>15 min</button><button data-w='3600'>1 h</button>\n"
-"<button data-w='86400'>24 h</button><button data-w='604800'>7 dni</button>\n"
+"<button data-w='21600'>6 h</button><button data-w='86400'>24 h</button>\n"
+"<button data-w='604800'>7 dni</button>\n"
 "<button data-w='2592000'>30 dni</button></div></div>\n"
 "<div class='grp'><span>EXPORT</span><button class='btn' id='bCsv'>CSV</button></div>\n"
 /* Tri palety byly plne definovane uz driv, ale `<html data-t=amber>` bylo
@@ -3263,9 +3267,9 @@ static const char SPA_HTML[] =
 "    v:s.v5_mv===null?null:(s.v5_mv/1000).toFixed(3)+' V',st:railSt(s.v5_mv,5000)},\n"
 "   {n:'VREF',pct:pctOf(s.vref_mv,0,3300),mark:pctOf(2500,0,3300),\n"
 "    v:s.vref_mv===null?null:(s.vref_mv/1000).toFixed(3)+' V',st:railSt(s.vref_mv,2500)},\n"
-"   {n:'VBAT',pct:pctOf(s.vbat_mv,0,3600),mark:pctOf(3300,0,3600),\n"
+"   {n:'VBAT',pct:pctOf(s.vbat_mv,0,3600),mark:pctOf(3000,0,3600),\n"
 "    v:s.vbat_mv===null?null:(s.vbat_mv/1000).toFixed(3)+' V',\n"
-"    st:(s.vbat_mv!==null&&s.vbat_mv<2800)?'warn':'ok'},\n"
+"    st:(s.vbat_mv!==null&&s.vbat_mv<2700)?'warn':'ok'},\n"
 "   {n:'OCXO Vc',pct:pctOf(s.vc_mv,0,VC_FS),v:s.vc_mv===null?null:(s.vc_mv/1000).toFixed(3)+' V',\n"
 "    st:vcSt(s.vc_mv)}]);\n"
 "\n"
@@ -4182,7 +4186,7 @@ static const char SPA_HTML[] =
 "  }\n"
 "  var uRes=Math.SQRT2*(s.tdc_ps*1e-12)/gate;\n"
 "  var uSta=sigmaAtTau(gate);\n"
-"  var uRef=((s.ref_ppb_x10||0)/10)*1e-9;\n"
+"  var uRef=((s.ref_ppb_x100||0)/100)*1e-9;\n"
 "  var uTot=Math.sqrt(uRes*uRes+uSta*uSta+uRef*uRef);\n"
 "  var U=2*uTot;\n"
 "  setv('uHead', sci(U*hz)+' Hz');\n"
@@ -4194,7 +4198,7 @@ static const char SPA_HTML[] =
 "  }\n"
 "  row('rozliseni hradla',uRes,'sqrt2*'+(s.tdc_ps/1000)+' ns / '+gate.toFixed(3)+' s');\n"
 "  row('stabilita ref.',  uSta, uSta?('sigma_y @ '+gate.toFixed(3)+' s'):'zatim bez ADEV');\n"
-"  row('presnost ref.',   uRef, ((s.ref_ppb_x10||0)/10)+' ppb');\n"
+"  row('presnost ref.',   uRef, ((s.ref_ppb_x100||0)/100)+' ppb (podle stavu smycky)');\n"
 "  h+='<b>CELKEM u (k=1)</b><span>'+sci(uTot)+'</span><i>kvadraticky</i>';\n"
 "  h+='<b>U (k=2)</b><span>'+sci(U)+'</span><i>~95 %</i>';\n"
 "  $('tUnc').innerHTML=h;\n"
@@ -4385,7 +4389,9 @@ static const char SPA_HTML[] =
 "  function chunk(k){\n"
 "    if(dlWin!==w) return;                        /* uzivatel mezitim prepnul okno */\n"
 "    var step=Math.max(1,Math.floor(w/(DLCHUNKS*DLN*10)));\n"
-"    fetch('/api/log?win='+w+'&n='+DLN+'&from='+(k*DLN*step))\n"
+"    /* !! Server dava kazdemu bodu krok win/(n*10), takze mu patri CTVRTINA okna (jedna davka\n"
+"       = 1/DLCHUNKS okna); s celym `win` kryla kazda davka cele okno a sesite davky se prekryvaly. */\n"
+"    fetch('/api/log?win='+Math.floor(w/DLCHUNKS)+'&n='+DLN+'&from='+(k*DLN*step))\n"
 "    .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })\n"
 "    .then(function(d){\n"
 "      if(dlWin!==w) return;\n"

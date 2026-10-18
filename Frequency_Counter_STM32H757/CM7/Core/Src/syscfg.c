@@ -21,6 +21,7 @@
 #include "flightrec.h"         /* flightrec_ready — souhrn uloziste (F-0098) */
 #include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
 #include "ad5693.h"            /* g_dac_persist — kod DAC ladeni OCXO obnoveny po startu */
+#include "gps.h"              /* g_gps_cable_* — delka a rychlostni faktor anteniho koaxu */
 #include <stdio.h>            /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0197) */
@@ -89,6 +90,11 @@ typedef struct {
     double   meas_hi;
     /* Vysledek self-survey (poloha) — aplikuje se VZDY (jako fx/meas). */
     uint8_t  survey_valid;
+    /* Anteni koax (okno NASTAVENI GPS). ⚠️ Lezi ve BYVALE VYCPAVCE mezi `survey_valid` a `survey_n` (offset 73..75)
+     * — velikost blobu (192 B) ani offsety ostatnich poli se nezmenily (hlida _Static_assert nize), magic se
+     * NEZVEDA. Stary blob ma na tom miste nuly (`pack` nuluje vcetne vycpavek) = 0 m, vychozi faktor. */
+    uint8_t  gps_cable_vf;     /* rychlostni faktor [%]; 0 = vychozi */
+    uint16_t gps_cable_dm;     /* delka [0,1 m]; 0 = nekompenzovat */
     uint32_t survey_n;
     double   survey_lat, survey_lon;
     float    survey_alt, survey_spread;
@@ -157,7 +163,8 @@ _Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
 /* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
    by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
 _Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u &&
-               offsetof(syscfg_blob_t, dac_code) == 182u,
+               offsetof(syscfg_blob_t, dac_code) == 182u &&
+               offsetof(syscfg_blob_t, gps_cable_dm) == 74u && offsetof(syscfg_blob_t, survey_n) == 76u,
                "syscfg blob zmenil layout -- to vyzaduje novy magic (SYSCFG_BLOB_MAGIC)");
 
 static w25q_store_t s_store;
@@ -195,6 +202,8 @@ static void pack(syscfg_blob_t *b)
     b->meas_lo       = g_meas_cfg.lo;
     b->meas_hi       = g_meas_cfg.hi;
     b->survey_valid  = g_survey_valid ? 1u : 0u;
+    b->gps_cable_vf  = g_gps_cable_vf;
+    b->gps_cable_dm  = g_gps_cable_dm;
     b->survey_n      = g_survey_n;
     b->survey_lat    = g_survey_lat;
     b->survey_lon    = g_survey_lon;
@@ -299,6 +308,10 @@ void syscfg_load(void)
     }
     /* Self-survey poloha: NENI v BKP -> aplikuj VZDY (jako fx/meas). */
     g_survey_valid  = b.survey_valid ? 1 : 0;
+    /* Koax: neplatna delka (poskozeny blob) -> 0 = nekompenzovat; faktor mimo rozsah resi gps_cable_delay_ns(). */
+    g_gps_cable_dm  = (b.gps_cable_dm <= GPS_CABLE_DM_MAX) ? b.gps_cable_dm : 0u;
+    g_gps_cable_vf  = b.gps_cable_vf;
+    if (g_gps_cable_dm != 0u) gps_cable_changed();   /* TP5 z gps_init odesla 0 ns; ulozenou hodnotu posli hned */
     g_survey_n      = b.survey_n;
     g_survey_lat    = b.survey_lat;
     g_survey_lon    = b.survey_lon;
@@ -312,6 +325,9 @@ void syscfg_load(void)
     g_mon_cfg.adev_en = b.mon_adev_en ? 1 : 0;
     if (b.mon_vbat_lo_mv > 1000.0f && b.mon_vbat_lo_mv < 3600.0f)
         g_mon_cfg.vbat_lo_mv = b.mon_vbat_lo_mv;
+    /* STATUS #322: SENS_VBAT je od 2026-10-18 napeti BATERIE, ne pinu. Ulozeny STARY vychozi prah 2800 mV (na pinu) se prevede na novy
+     * vychozi 2700 mV; vlastni hodnota uzivatele (jina nez 2800) zustava. Bez magic bumpu, aby se neztratilo zbytek nastaveni. */
+    if (g_mon_cfg.vbat_lo_mv == 2800.0f) g_mon_cfg.vbat_lo_mv = 2700.0f;
     if (b.mon_ocxo_lo_c < b.mon_ocxo_hi_c &&
         b.mon_ocxo_lo_c > -40.0f && b.mon_ocxo_hi_c < 125.0f) {
         g_mon_cfg.ocxo_lo_c = b.mon_ocxo_lo_c;

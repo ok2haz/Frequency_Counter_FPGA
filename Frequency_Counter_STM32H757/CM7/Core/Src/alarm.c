@@ -44,12 +44,11 @@ volatile uint8_t g_warmup       = 1;   /* dokud app nerekne jinak, zahrivame se 
 void mon_cfg_defaults(mon_cfg_t *c)
 {
     if (c == NULL) return;
-    /* VBAT: zalozni CR2032 s JMENOVITYMI 3,3 V (tato deska). Prah "vymen brzy"
-     * = 2,8 V: ~0,5 V pod nominalem, stale s velkou rezervou nad spodni hranici
-     * BKP/RTC domeny (~1,65 V) i nad kolenem CR2032 (~2,7 V). ZAPNUTO.
-     * (Drive 2,6 V pri predpokladu 3,0 V nominalu.) */
+    /* VBAT: zalozni CR2032, SENS_VBAT od 2026-10-18 nese napeti BATERIE (pin + dioda D3 + korekce ADC, STATUS #322; drive napeti na
+     * pinu). Nominal CR2032 = 3,0 V, vyhrada "vymen brzy" = 2,70 V (koleno vybijeci krivky), kriticke 2,40 V (autocal FAIL); stale daleko
+     * nad spodni hranici BKP/RTC domeny (~1,65 V). ZAPNUTO. Drive 2,8 V na PINU = ~2,95 V na baterii, tedy falesny alarm u skoro nove. */
     c->vbat_en    = 1;
-    c->vbat_lo_mv = 2800.0f;
+    c->vbat_lo_mv = 2700.0f;
     /* OCXO absolutni pasmo = HRUBA POJISTKA proti prehrati, ne detekce rozladene
      * pece (tu resi ΔT, viz `MON_OCXO_DT_MIN_C`).
      * 🔴 Strop 55 -> 75 °C (2026-09-01): 55 bylo odvozene z JEDNOHO mereni

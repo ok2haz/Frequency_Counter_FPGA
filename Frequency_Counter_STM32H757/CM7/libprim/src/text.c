@@ -28,8 +28,11 @@ void prim_set_glyph_accel(int enable) { s_glyph_accel = enable ? 1 : 0; }
  * ⚠️ Zamerne se pocita JEN v `prim_draw_text`, ne v `prim_text_width` — ta se
  * pri zarovnani CENTER/RIGHT vola na tyz retezec navic a chyby by se zdvojily. */
 static uint32_t s_missing_glyphs;
+static uint32_t s_last_missing_cp;     /* POSLEDNI chybejici znak (kodovy bod) -- bez nej se nedalo poznat, KTERY text zmizel */
+static int16_t  s_last_missing_asc;    /* ascent fontu, ve kterem chybel (identifikuje velikost fontu) */
 
 uint32_t prim_text_missing_glyphs(void) { return s_missing_glyphs; }
+uint32_t prim_text_last_missing(int16_t *font_ascent) { if (font_ascent) *font_ascent = s_last_missing_asc; return s_last_missing_cp; }
 
 uint32_t prim_internal_utf8_next(const char **s)
 {
@@ -135,7 +138,7 @@ void prim_draw_text(prim_point_t pos, const char *utf8, const prim_font_t *font,
     while (*s) {
         uint32_t cp = prim_internal_utf8_next(&s);
         const prim_glyph_t *g = prim_internal_glyph(font, cp);
-        if (g == NULL) { s_missing_glyphs++; continue; }   /* audit F-0034 */
+        if (g == NULL) { s_missing_glyphs++; s_last_missing_cp = cp; s_last_missing_asc = (int16_t)font->ascent; continue; }   /* audit F-0034 */
         const uint8_t *bm = font->bitmap_data + g->bitmap_offset;
         int16_t gx0 = (int16_t)(pen + g->ox);
         int16_t gy0 = (int16_t)(pos.y - g->oy);

@@ -87,6 +87,20 @@ void gps_config_timepulse(void);
  * modulu a ACK se necte. Volat VYHRADNE z defaultTasku (vedle drainu GPS). */
 void gps_tick(void);
 
+/* Anteni koax (okno NASTAVENI GPS, s_view=53): delka v desetinach metru (0 = nekompenzovat) a rychlostni
+ * faktor v procentech (0 = vychozi GPS_CABLE_VF_DEF). Persistuje syscfg. Zpozdeni = L / (c·VF) jde do
+ * UBX-CFG-TP5 `antCableDelay` (modul posune pulz 1PPS o tuto dobu dopredu, aby vystup odpovidal anteně,
+ * ne konci kabelu). ⚠️ Fazova smycka GPSDO je RELATIVNI (viz gpsdo.h) — zpozdeni meni jen SKUTECNOU polohu
+ * pulzu proti UTC, ne to, co smycka drzi. Zapisuje UiTask, cte defaultTask (gps_tick) — 16/8bit zapis je atomicky. */
+#define GPS_CABLE_VF_DEF   66u        /* RG-58 / RG-213 s plnym PE; viz tabulka v okne */
+#define GPS_CABLE_DM_MAX   3000u      /* 300,0 m: zpozdeni 2 us se jeste vejde do int16 antCableDelay */
+extern volatile uint16_t g_gps_cable_dm;
+extern volatile uint8_t  g_gps_cable_vf;
+/* Zpozdeni kabelu [ns] (zaokrouhleno, 0 pri nulove delce); to, co se posila do modulu. */
+int16_t gps_cable_delay_ns(void);
+/* Po zmene delky/faktoru: pozadat o okamzite poslani TP5 (jinak by se nova hodnota uplatnila az za <= 1 min). */
+void gps_cable_changed(void);
+
 /* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
  * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích
  * (LEA-6T/M8T…); NEO-7M příkaz nejspíš NAKne = neškodné. Firmwarové průměrování
