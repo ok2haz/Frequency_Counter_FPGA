@@ -1,0 +1,7 @@
+[2026-10-18 14:30:59] PREFLIGHT: uptime 583 s, IPC 29, smycka LOCK (zamceno 1, 302 s)
+[2026-10-18 14:30:59] POZOR: LOCK jen 302 s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)
+[2026-10-18 14:30:59] HRADLO: nastaveno 0.25000 s, posledni namerene 249999999 ns
+[2026-10-18 14:30:59] VAROVANI: OCXO se jeste zahriva (warmup)
+[2026-10-18 14:30:59] POZOR: uptime pod 30 min
+[2026-10-18 14:30:59] START: docs\audit\data\2026-10-18_A-vlastni_B-externi.csv, perioda 0.1 s, max 120 min
+[2026-10-18 16:30:59] KONEC: radku OK 64408, NA 0, resetu pristroje 0
