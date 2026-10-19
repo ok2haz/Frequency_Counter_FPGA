@@ -89,6 +89,8 @@ $tests = @(
     # (porovnani se starou PHY, ktera po #264 neexistuje).
     @{ name = "link"; top = "tb_link";
        rtl = @("spi_slave_phy.v", "spi_app.v"); tb = "tb_link.sv" }
+    # FW 0x0424 (STATUS #305): zachyceni hrany GPS 1PPS hrubym citacem 100 MHz (pps_cap)
+    @{ name = "pps"; top = "tb_pps"; rtl = @("spi_app.v"); tb = "tb_pps.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 

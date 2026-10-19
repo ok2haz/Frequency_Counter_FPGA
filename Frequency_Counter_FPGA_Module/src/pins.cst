@@ -34,6 +34,11 @@ IO_LOC "ext_ref_sens"     51;
 IO_PORT "ref_ctrl"        IO_TYPE=LVCMOS33 DRIVE=8 PULL_MODE=DOWN;
 IO_PORT "ext_ref_sens"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
+// FW 0x0424 (STATUS #305): GPS 1PPS (GPS_CLK_Buff -> PIN33_IOB23A). Zachyceni hrubym citacem 100 MHz (pps_cap), bez TDC.
+// Pulldown: bez GPS modulu/bufferu nesmi plavat (falesne hrany by se pocitaly jako 1PPS).
+IO_LOC "gps_1pps"         33;
+IO_PORT "gps_1pps"        IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+
 // SPI slave (STM32H757 = master), 3.3V, Mode 0, CS active LOW — beze změny
 // proti staré desce (PIN54-57 stejné, protokol v2 zatím beze změny).
 IO_LOC "spi_mosi"         54;
@@ -62,7 +67,7 @@ IO_PORT "spi_sck"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;  // Mode 0: hodiny idle LOW 
 IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
 // ── NEPOUŽITO V TOMTO KROKU (rezervováno pro budoucí práci) ─────────────
-// IO_LOC "gps_1pps"      33;  // PIN33_IOB23A, carry chain C — čeká na time_error_ps (v3)
+// (gps_1pps PIN33 je od FW 0x0424 pouzit nize -- hruby citac 100 MHz, bez TDC)
 // (ref_ctrl PIN41 je od FW 0x0420 pouzit vyse)
 // IO_LOC "ref_10m_raw"   42;  // shodné s clk_ref_10m výše — NEpřidávat dvakrát
 // (ext_ref_sens PIN51 je od FW 0x0420 pouzit vyse)

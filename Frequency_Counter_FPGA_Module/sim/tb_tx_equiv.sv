@@ -1,7 +1,8 @@
 // tb_tx_equiv.sv -- novy plochy `case` multiplexer TX bajtu (spi_app) == puvodni retez porovnani rozsahu
 // (tx_old_ref.v = spi_app pred prepisem). Nahodny stav, vsech 126 bajtu, DATA i CAL. Rozdily jen tam, kde
 // se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream nahrazen regresnim blokem v FW 0x0411;
-// FW 0x041F: DATA 12..19 = identita bitstreamu misto freq_x100000, 64/65 = hlidac 100 MHz, 97/98 = kontrolni pocitani).
+// FW 0x041F: DATA 12..19 = identita bitstreamu misto freq_x100000, 64/65 = hlidac 100 MHz, 97/98 = kontrolni pocitani;
+// FW 0x0424: DATA 52..59 = GPS 1PPS misto freq16_x100000 -- overeno zvlast proti vstupum meas_pps_*).
 `timescale 1ps/1ps
 module tb_tx_equiv;
     reg clk = 0;   // hodiny STOJI: porovnava se jen kombinacni `tb`, FSM nesmi menit idx/registry
@@ -11,6 +12,7 @@ module tb_tx_equiv;
     reg [47:0] dt_a = 0, dt_b = 0;
     reg [191:0] cal_diag = 0; reg [15:0] mt_a = 0, mt_b = 0, dm = 0, ds = 0;
     reg [23:0] ha = 0, hb = 0;
+    reg [31:0] pps_ts = 0; reg [7:0] pps_seq = 0;   // FW 0x0424
     wire [9:0] hk_n; wire [7:0] hk_o;
     wire [7:0] ds_n, ds_o; wire cm_n, cm_o; wire [2:0] bw_n; wire [1:0] bw_o;   // novy spi_app ma base_win 3 b (FW 0x041E), stara reference 2 b
     wire th_n, th_o, we_n, we_o; wire [7:0] wa_n, wa_o, wd_n, wd_o;
@@ -22,6 +24,7 @@ module tb_tx_equiv;
         .meas_cal_diag(cal_diag), .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_xm_a(40'd0), .rg_xm_b(40'd0), .rg_ym_a(48'd0), .rg_ym_b(48'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .cd_a_end(9'd0), .cd_a_st(9'd0), .cd_b_end(9'd0), .cd_b_st(9'd0), .meas_maxtap_a(mt_a), .meas_maxtap_b(mt_b), .hist_k(hk_n),
         .meas_hist_a(ha), .meas_hist_b(hb), .dbg_mosi_cnt(dm), .dbg_sck_cnt(ds),
         .meas_clk_status(8'h01), .meas_clk_loss(8'd0), .meas_clk_mhz(8'd100), .meas_ccd_p(8'd0), .meas_ccd_s(8'd0),
+        .meas_pps_ts(pps_ts), .meas_pps_seq(pps_seq),
         .rx_valid(1'b0), .rx_b0(8'd0), .rx_b1(8'd0), .rx_b2(8'd0), .rx_seq(32'd0), .rx_p0(8'd0), .rx_p1(8'd0), .rx_p2(8'd0),
         .rx_crc_calc(16'd0), .rx_crc_recv(16'd0), .tx_half(th_n), .tx_we(we_n), .tx_waddr(wa_n), .tx_wdata(wd_n),
         .phy_busy(1'b0), .phy_base(1'b0), .dbg_status(ds_n), .cal_mode(cm_n), .base_win(bw_n));
@@ -47,6 +50,7 @@ reg [63:0] tmp;
             dt_a = {$urandom, $urandom}; dt_b = {$urandom, $urandom};
             cal_diag = {$urandom, $urandom, $urandom, $urandom, $urandom, $urandom};
             mt_a = $urandom; mt_b = $urandom; dm = $urandom; ds = $urandom; ha = $urandom; hb = $urandom;
+            pps_ts = $urandom; pps_seq = $urandom;
             tmp = {$urandom, $urandom}; u_old.h_freq = tmp; `SB(h_edge, {$urandom, $urandom}) `SB(h_gate, {$urandom, $urandom})
             `SB(h_freq16, {$urandom, $urandom}) `SB(h_ts, {$urandom, $urandom}) `SB(h_ch, $urandom) `SB(h_phase, $urandom)
             `SB(h_status2, $urandom) `SB(h_err, $urandom) `SB(h_dt_a, {$urandom, $urandom}) `SB(h_dt_b, {$urandom, $urandom})
@@ -62,7 +66,13 @@ reg [63:0] tmp;
                 for (i = 0; i < 126; i = i + 1) begin
                     `SB(idx, i)
                     #1;
-                    if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 12 && i <= 19) || (i >= 60 && i <= 65) || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
+                    if (cal == 0 && i >= 52 && i <= 59) begin   // FW 0x0424: 1PPS (ocekavana hodnota ze vstupu, ne ze stare reference)
+                        cmp = cmp + 1;
+                        if (u_new.tb !== ((i <= 55) ? pps_ts[8*(i-52) +: 8] : (i == 56) ? pps_seq : 8'd0)) begin
+                            errs = errs + 1;
+                            if (errs < 8) $display("RUZNOST 1PPS r=%0d idx=%0d: new=%02x", r, i, u_new.tb);
+                        end
+                    end else if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 12 && i <= 19) || (i >= 60 && i <= 65) || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
                         cmp = cmp + 1;
                         if (u_new.tb !== u_old.tb) begin
                             errs = errs + 1;

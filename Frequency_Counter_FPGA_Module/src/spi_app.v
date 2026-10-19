@@ -25,7 +25,8 @@
 // DATA payload 0x80 (abs offset; 12..59 je 1:1 s protokolem v1):
 //  12 freq_x100000(u64) 20 edge_count(u64) 28 gate_ns(u64) 36 ts(u64)
 //  44 channel 45 meas_status 46 error_flags(u32) 50 phase_status
-//  51 status2 52..59 freq16_x100000(u64)
+//  51 status2 52..59 freq16_x100000(u64) -- od FW 0x0424 (caps bit13): 52..55 pps_ts (u32, tick 100 MHz
+//    pri posledni hrane GPS 1PPS) 56 pps_seq (u8, pocet hran) 57..59 = 0; viz modul pps_cap
 //  60..61 fw_version(u16) 62..63 caps(u16) 64 clk_status 65 rez
 //  FW >= 0x041F (caps bit10, SAMOKONTROLA): 12..15 cas sestaveni (u32, unix s), 16..19 git (u32: [27:0] hash,
 //    [31] = neulozene zmeny) -- na miste freq_x100000, ktere od FW 0x0400 nese vzdy 0. 64 clk_status: bit0 = 100 MHz
@@ -105,6 +106,9 @@ module spi_app #(
     input  wire [7:0]  meas_clk_mhz,         // FW 0x0421: kmitocet referencnich hodin FPGA v MHz (abs 99)
     input  wire [7:0]  meas_ccd_p,           // rozdil kontrolniho a merneho pocitani hran, primarni slot (s merenim)
     input  wire [7:0]  meas_ccd_s,           // totez, sekundarni slot
+    // FW 0x0424 (caps bit13): GPS 1PPS z pps_cap (domena 100 MHz, cte se zive -- viz pps_cap)
+    input  wire [31:0] meas_pps_ts,          // tick 100 MHz v okamziku posledni hrany 1PPS
+    input  wire [7:0]  meas_pps_seq,         // pocet hran 1PPS (mod 256)
 
     // RX: vysledek prijateho ramce zpracovany za letu v PHY (staticky po CS nahoru)
     input  wire          rx_valid,           // pulz po CS↑ (synchronizováno)
@@ -138,7 +142,9 @@ module spi_app #(
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
-    localparam [15:0] FW_VERSION      = 16'h0423;  // bump při KAŽDÉ změně bitstreamu
+    localparam [15:0] FW_VERSION      = 16'h0424;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x0423 -> 0x0424 (2026-10-16, STATUS #305): GPS 1PPS (PIN33) -- cas hrany v taktech 100 MHz (hruby citac,
+    // bez TDC) a poradi v bajtech 52..56 (caps bit13), vstup smycky GPSDO na STM. Viz modul pps_cap.
     // 🔴 0x0422 -> 0x0423 (2026-10-11): REFERENCNI HODINY FPGA ZPET 125 -> 100 MHz (Si5356 CLK0/1, top.v CLK_MHZ, timing.sdc 10 ns).
     // Na 125 MHz mela casova znacka chybu T/2 a T podle faze hrany (ADEV(0,25 s) 1,4e-8 misto 7e-10) a regrese pocitala spatne
     // (L-0152). RTL zustava (vcetne zmen 0x0421 pro casovani na 8 ns), meni se jen hodiny: bisect, zda vadu dela kmitocet.
@@ -186,7 +192,8 @@ module spi_app #(
     // deska, prestoze je to jiny bitstream. Viz pravidlo v radku vyse.
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
     // bit12 (0x1000) = abs 99 nese kmitocet hodin FPGA [MHz] (od FW 0x0421; dnes 100)
-    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h1EE2 : 16'h1F62;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
+    // bit13 (0x2000) = bajty 52..56 nesou GPS 1PPS (FW 0x0424)
+    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h3EE2 : 16'h3F62;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -350,14 +357,17 @@ module spi_app #(
             7'd49: tb = is_cal ? (meas_maxtap_b[15:8]) : (err_word[31:24]);
             7'd50: tb = is_cal ? (meas_tdc_cfg[7:0]) : (h_phase);
             7'd51: tb = is_cal ? (meas_tdc_cfg[15:8]) : (h_status2);
-            7'd52: tb = is_cal ? 8'd0 : (h_freq16[7:0]);
-            7'd53: tb = is_cal ? 8'd0 : (h_freq16[15:8]);
-            7'd54: tb = is_cal ? 8'd0 : (h_freq16[23:16]);
-            7'd55: tb = is_cal ? 8'd0 : (h_freq16[31:24]);
-            7'd56: tb = is_cal ? 8'd0 : (h_freq16[39:32]);
-            7'd57: tb = is_cal ? 8'd0 : (h_freq16[47:40]);
-            7'd58: tb = is_cal ? 8'd0 : (h_freq16[55:48]);
-            7'd59: tb = is_cal ? 8'd0 : (h_freq16[63:56]);
+            // FW 0x0424 (caps bit13): 1PPS z GPS -- cas hrany v taktech 100 MHz + poradi, ZIVE z pps_cap
+            // (viz modul pps_cap: zadny snimek, STM bere shodu dvou ramcu). Do FW 0x0423 tu byl
+            // freq16_x100000, ktery FPGA od 0x0400 posilala jako 0 (STM ho pocita z edges_b/dt_b).
+            7'd52: tb = is_cal ? 8'd0 : (meas_pps_ts[7:0]);
+            7'd53: tb = is_cal ? 8'd0 : (meas_pps_ts[15:8]);
+            7'd54: tb = is_cal ? 8'd0 : (meas_pps_ts[23:16]);
+            7'd55: tb = is_cal ? 8'd0 : (meas_pps_ts[31:24]);
+            7'd56: tb = is_cal ? 8'd0 : (meas_pps_seq);
+            7'd57: tb = is_cal ? 8'd0 : 8'd0;
+            7'd58: tb = is_cal ? 8'd0 : 8'd0;
+            7'd59: tb = is_cal ? 8'd0 : 8'd0;
             7'd60: tb = is_cal ? 8'd0 : (FW_VERSION[7:0]);
             7'd61: tb = is_cal ? 8'd0 : (FW_VERSION[15:8]);
             7'd62: tb = is_cal ? 8'd0 : (CAPS[7:0]);
@@ -583,6 +593,34 @@ module gate_div #(
     always @(posedge clk) begin
         valid <= start;
         if (start) gate_ns <= {16'd0, g_ns};           // max ~1,6e11 (38 b)
+    end
+endmodule
+
+// ------------------------------------------------------------
+// pps_cap (FW 0x0424, STATUS #305): cas nabezne hrany GPS 1PPS (PIN33) v taktech referencnich hodin.
+//   HRUBY citac, BEZ TDC (rozhodnuti 2026-10-16): kvantizace 10 ns (sigma 2,9 ns) je proti sumu
+//   1PPS z GPS (~30 ns RMS) zanedbatelna a stoji jen ~43 FF (CLS je ~84 %). Hodiny 100 MHz jsou
+//   z OCXO (Si5356), takze pocet taktu mezi dvema 1PPS = kmitocet OCXO proti GPS.
+//   `cap` a `seq` se do ramce ctou ZIVE z domeny 100 MHz, bez handshake (jako regresni blok):
+//   meni se jen pri hrane 1PPS (1 Hz, bez fixu GPS 10 Hz). Roztrzene cteni (hrana prave behem
+//   ~400 ns skladani bajtu 52..56) odhali STM: vzorek prijme az tehdy, kdyz dva po sobe jdouci
+//   ramce nesou shodne {seq, cap}. Zpozdeni synchronizatoru (2-3 takty) je konstantni.
+// ------------------------------------------------------------
+module pps_cap (
+    input  wire        clk,            // clk_p0_100m
+    input  wire        pin,            // GPS 1PPS (asynchronni vstup)
+    input  wire [31:0] tick,           // volnobezny citac taktu clk (mod 2^32 = 42,9 s pri 100 MHz)
+    output reg  [31:0] cap,            // tick v okamziku posledni nabezne hrany
+    output reg  [7:0]  seq             // pocet zachycenych hran (mod 256)
+);
+    reg [2:0] s;
+    initial begin cap = 32'd0; seq = 8'd0; s = 3'b000; end
+    always @(posedge clk) begin
+        s <= {s[1:0], pin};
+        if (s[1] & ~s[2]) begin
+            cap <= tick;
+            seq <= seq + 8'd1;
+        end
     end
 endmodule
 

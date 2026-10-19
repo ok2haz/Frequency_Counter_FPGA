@@ -37,6 +37,9 @@ module top (
     output wire ref_ctrl,        // PIN41 Ref_Ctrl: 0 = OCXO, 1 = externi
     input  wire ext_ref_sens,    // PIN51 Ext_Ref_Sens: externi reference po Schmittu (jen detekce pritomnosti hran)
 
+    // FW 0x0424: GPS 1PPS (PIN33, GPS_CLK_Buff z TIMEPULSE NEO-7M; s fixem 1 Hz, bez fixu 10 Hz) -- vstup smycky GPSDO
+    input  wire gps_1pps,
+
     // SPI slave (STM32 = master, Mode 0, active-low CS) -- beze změny
     input  wire spi_sck,
     input  wire spi_cs_n,
@@ -58,6 +61,12 @@ module top (
     reg  [33:0] tick_hi = 34'd0;
     always @(posedge clk_p0_100m) tick_hi <= tick_hi + 34'd1;
     wire [47:0] tick_ps = {tick_hi, 14'd0};
+
+    // FW 0x0424 (STATUS #305): cas hrany GPS 1PPS v taktech 100 MHz (hruby citac, bez TDC -- viz pps_cap v spi_app.v).
+    // tick_hi pocita takty 100 MHz, spodnich 32 bitu staci (mod 2^32 = 42,9 s; host pocita rozdil po sobe jdoucich hran).
+    wire [31:0] pps_ts;
+    wire [7:0]  pps_seq;
+    pps_cap u_pps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi[31:0]), .cap(pps_ts), .seq(pps_seq));
 
     // ----------------------------------------------------------
     // FW 0x041F: identita bitstreamu. src/build_id.vh zapisuje build.tcl pri KAZDEM sestaveni (BLD_TIME = unix
@@ -578,6 +587,8 @@ module top (
         .meas_clk_mhz(CLK_MHZ[7:0]),
         .meas_ccd_p(ccd_p),
         .meas_ccd_s(ccd_s),
+        .meas_pps_ts(pps_ts),
+        .meas_pps_seq(pps_seq),
         .cal_mode(cal_mode),
         .base_win(base_win),
         .chan_sel(chan_sel),

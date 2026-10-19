@@ -36,8 +36,12 @@ top = io.open(os.path.join(d, '..', 'src', 'top.v'), encoding='utf-8').read()
 stride = int(re.search(r'localparam TDC_STRIDE\s*=\s*(\d+);', top).group(1))
 mt = re.search(r'localparam TDC_TAPS\s*=\s*\(TDC_STRIDE == 1\) \? (\d+) : (\d+);', top)
 taps = int(mt.group(1) if stride == 1 else mt.group(2))
+# Od FW 0x041D se postavi jen TDC_NTAP fyzickych tapu (dekoder TDC_TAPS je sirsi, tapy NTAP..TAPS-1 jsou 'prosla' bez ALU).
+mn = re.search(r'localparam TDC_NTAP\s*=\s*\(TDC_STRIDE == 1\) \? (\d+) : (\d+);', top)
+if mn:
+    taps = int(mn.group(1) if stride == 1 else mn.group(2))
 per = taps * stride - (stride - 1)
-print('ocekavano z top.v: STRIDE %d, TAPS %d -> 2 x %d stupnu' % (stride, taps, per))
+print('ocekavano z top.v: STRIDE %d, fyzickych tapu %d -> 2 x %d stupnu' % (stride, taps, per))
 if len(chain) < 2 * per or ok != len(chain) or len(heads) != 2:
     print('CHYBA: retez neodpovida ocekavani (2 x %d pruchodu carry)' % per); sys.exit(1)
 print('OK: retez kompletni')

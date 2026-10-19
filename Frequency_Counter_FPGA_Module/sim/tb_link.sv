@@ -44,7 +44,8 @@ module tb_link;
      .rx_crc_calc(rcc), .rx_crc_recv(rcr),
      .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata),
      .phy_busy(phy_busy), .phy_base(phy_base),
-     .dbg_status(dbg), .cal_mode(cal_mode), .base_win(bw), .meas_clk_mhz(8'd100));
+     .dbg_status(dbg), .cal_mode(cal_mode), .base_win(bw), .meas_clk_mhz(8'd100),
+     .meas_pps_ts(32'h0BADF00D), .meas_pps_seq(8'h5A));   // FW 0x0424: pevna 1PPS, at je CRC ramce deterministicke
 
   function [15:0] crc(input [15:0] c0, input [7:0] d);
     integer b; reg [15:0] c; begin c=c0^{d,8'd0}; for(b=0;b<8;b=b+1) c=c[15]?((c<<1)^16'h1021):(c<<1); crc=c; end endfunction
