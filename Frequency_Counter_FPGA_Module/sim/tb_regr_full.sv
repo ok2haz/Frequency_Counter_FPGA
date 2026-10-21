@@ -30,7 +30,7 @@ module tb_regr_full;
             end
             if (isb) seg_b = 0; else seg_a = 0;
             repeat (700) @(negedge clk);
-            xg = (x0 << 8) + ((sx << 8) / nn);
+            xg = (x0 << 12) + ((sx << 12) / nn);  // FW 0x0425 (audit 4, A1): xm v 1/4096 hrany, drive 1/256
             yg = ((t0 - ref_ts) << 4) + ((sy << 4) / nn);
             if (isb) begin
                 $display("B: n=%0d/%0d  xm=%0d/%0d  ym=%0d/%0d", n_b, nn, xm_b, xg, ym_b, yg);

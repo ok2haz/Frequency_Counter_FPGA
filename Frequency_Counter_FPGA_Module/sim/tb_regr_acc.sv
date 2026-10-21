@@ -29,7 +29,7 @@ module tb_regr_acc;
             end
             if (isb) seg_b = 0; else seg_a = 0;
             repeat (700) @(negedge clk);                            // deleni: 2 x 68 iteraci x 2 takty + cekani
-            xg = (x0 << 8) + ((sx << 8) / nn);
+            xg = (x0 << 12) + ((sx << 12) / nn);                    // xm v 1/4096 hrany (FW 0x0425, caps bit15)
             yg = ((t0 - ref_ts) << 4) + ((sy << 4) / nn);
             if (isb) begin
                 if (!ok_b || n_b !== nn[23:0] || xm_b !== xg[39:0] || ym_b !== yg[47:0]) begin

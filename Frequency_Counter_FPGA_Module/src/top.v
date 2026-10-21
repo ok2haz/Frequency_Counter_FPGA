@@ -45,6 +45,12 @@ module top (
     input  wire spi_cs_n,
     input  wire spi_mosi,
     output wire spi_miso
+`ifdef PIN86_BL_OFF
+    // FW 0x0425 (audit 2026-10-20, H8): PIN86 = sit BL_PWM modulu Tang Nano 9K (povoleni menice podsvitu LCD LP3320, podle nazvu
+    // site). Nepouzity pin ma slaby pull-up (30-150 uA) -> menic mohl bezet naprazdno a cyklit ochranou. Vystup 0 ho drzi vypnuty.
+    // Pouzit jen po overeni (napeti na C25 modulu > 5 V = menic bezi). pins.cst: IO_LOC "bl_pwm" 86; IO_PORT "bl_pwm" IO_TYPE=LVCMOS33 DRIVE=4;
+    , output wire bl_pwm
+`endif
 );
 
     // ----------------------------------------------------------
@@ -58,6 +64,15 @@ module top (
     // Jednotka casu v ramci je T_clk/16384 = 0,6103515625 ps (ps = jednotky * 625 / 1024); kmitocet jde v ramci (abs 99), aby host
     // nepocital s jinym taktem, nez na jakem FPGA skutecne bezi. Vse ostatni (TDC, tabulka kalibrace) je v tehle jednotce.
     localparam CLK_MHZ = 100;
+    // FW 0x0425 (H8): delicka vnitrniho oscilatoru (250 MHz / OSC_DIV). 8 = 31,25 MHz jako drive; pokus s 16 (15,6 MHz) zmensi
+    // prepinani hodinove site OSC (asynchronni k 100 MHz). Detekce 10 MHz v osc domene (preklopeni kazdych 100 ns) to snese do 32.
+    // Casove meze (~8 us) se prepocitavaji, aby se chovani nezmenilo.
+`ifndef OSC_DIV
+    localparam OSC_DIV = 8;
+`else
+    localparam OSC_DIV = `OSC_DIV;
+`endif
+    localparam [7:0] OSC_TMO = (((250 * 8) / OSC_DIV) > 255) ? 8'd255 : ((250 * 8) / OSC_DIV);   // ~8 us v taktech osc (audit 4: pojistka OSC_DIV < 8)
     reg  [33:0] tick_hi = 34'd0;
     always @(posedge clk_p0_100m) tick_hi <= tick_hi + 34'd1;
     wire [47:0] tick_ps = {tick_hi, 14'd0};
@@ -282,6 +297,19 @@ module top (
     wire [23:0] rgb_n_a_nc, rgb_n_b_nc;  wire [39:0] rgb_xm_a_nc, rgb_xm_b_nc;  wire [47:0] rgb_ym_a_nc, rgb_ym_b_nc;
     wire [47:0] ts_a, ts_b;
     wire [8:0]  code_a, code_b;               // FW 0x0418: kod TDC prave casovane hrany
+    wire        bub_a, bub_b;                 // FW 0x0425: bublina u prave casovane hrany
+    // Optimalizace 5: tick_hi - 1 a - 2 jsou v obou kanalech IDENTICKE posuvne registry (2 x 68 FF). `define SHARE_TR = jedna
+    // sdilena kopie (-68 FF); pouzit, kdyby E0 prekrocilo branu CLS 85 % (P&R overi casovani: registry budi oba radky TDC).
+    wire [33:0] tr1_sh, tr2_sh;
+`ifdef SHARE_TR
+    reg  [33:0] tr1_r = 34'd0, tr2_r = 34'd0;
+    always @(posedge clk_p0_100m) begin tr1_r <= tick_ps[47:14]; tr2_r <= tr1_r; end
+    assign tr1_sh = tr1_r; assign tr2_sh = tr2_r;
+    localparam TDC_EXT_TR = 1;
+`else
+    assign tr1_sh = 34'd0; assign tr2_sh = 34'd0;
+    localparam TDC_EXT_TR = 0;
+`endif
     wire [8:0]  r_cea, r_csa, r_ceb, r_csb;   // kod uzaviraci/zahajovaci hrany okna
     wire        cal_busy_a, cal_busy_b, cal_valid_a, cal_valid_b, cal_fail_a, cal_fail_b;
     wire [31:0] da_ovf, da_peak, db_ovf, db_peak;
@@ -290,7 +318,7 @@ module top (
     wire [9:0]  hist_k;                        // z spi_app (kvazistaticky)
     wire [23:0] hq_a, hq_b;                    // hist[hist_k] kanalu A/B
 
-    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdca (
+    tdc_chan #(.EXT_TR(TDC_EXT_TR), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(wseg_a), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
@@ -298,9 +326,9 @@ module top (
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last),
         .d_maxtap(da_maxtap),
-        .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a)
+        .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a), .bub_o(bub_a), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh)
     );
-    tdc_chan #(.CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdcb (
+    tdc_chan #(.EXT_TR(TDC_EXT_TR), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req), .cal_abort(cal_abort),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -308,7 +336,7 @@ module top (
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last),
         .d_maxtap(db_maxtap),
-        .dump_k(hist_k), .dump_q(hq_b), .code_o(code_b)
+        .dump_k(hist_k), .dump_q(hq_b), .code_o(code_b), .bub_o(bub_b), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh)
     );
 
     // ----------------------------------------------------------
@@ -349,10 +377,26 @@ module top (
         hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done;
         hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done;
     end
+    // FW 0x0425: CS SPI do domeny 100 MHz (uroven; diagnostika O4 a maskovani vnitrnich znacek), konfigurace z SET_CONFIG 0x05
+    // a mez aliasu podle hradla (vse kvazistaticke, 2 FF).
+    wire       mask_cs_en, led_hb_en;
+    wire [7:0] coh_st, coh_cnt;                // hlidac koherence (prirazeni u coh_mon na konci modulu)
+    reg  [1:0] csa_s = 2'b00, mk_s = 2'b00;
+    reg  [2:0] bw_s1 = 3'd1, bw_s2 = 3'd1;
+    always @(posedge clk_p0_100m) begin
+        csa_s <= {csa_s[0], ~spi_cs_n};
+        mk_s  <= {mk_s[0], mask_cs_en};
+        bw_s1 <= base_win; bw_s2 <= bw_s1;
+    end
+    // alias: 250 hradel, pri 1 s jen 170 (48b r_dt pretece po 171,8 s; bit 47 hlida 85,9..171,8 s)
+    wire [7:0] alias_lim = (bw_s2 == 3'd2) ? 8'd170 : 8'd250;
+    wire [7:0] r_bub_a, r_bub_b;
+    wire [3:0] r_ovl_a, r_ovl_b;
     win_recip #(.REGR(TDC_REGR)) u_wra (
         .clk(clk_p0_100m), .sig_pin(ch_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .gate_tick(gate_tick), .code_i(code_a), .r_ce(r_cea), .r_cs(r_csa), .r_ccd(r_ccd_a), .seg_a(seg_a), .seg_b(seg_b), .want(want_a), .want_seg(wseg_a),
         .hold(hold_a),
+        .alias_lim(alias_lim), .bub(bub_a), .cs_act(csa_s[1]), .mask_cs(mk_s[1]), .r_bub(r_bub_a), .r_ovl(r_ovl_a),
         .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a),
         .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
         .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b)
@@ -361,6 +405,7 @@ module top (
         .clk(clk_p0_100m), .sig_pin(ch_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .gate_tick(gate_tick), .code_i(code_b), .r_ce(r_ceb), .r_cs(r_csb), .r_ccd(r_ccd_b), .seg_a(1'b0), .seg_b(1'b0), .want(want_b), .want_seg(wseg_b_nc),
         .hold(hold_b),
+        .alias_lim(alias_lim), .bub(bub_b), .cs_act(csa_s[1]), .mask_cs(mk_s[1]), .r_bub(r_bub_b), .r_ovl(r_ovl_b),
         .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b),
         .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_xm_a(rgb_xm_a_nc), .rg_xm_b(rgb_xm_b_nc),
         .rg_ym_a(rgb_ym_a_nc), .rg_ym_b(rgb_ym_b_nc), .rg_ok_a(rgb_ok_a_nc), .rg_ok_b(rgb_ok_b_nc)
@@ -377,8 +422,16 @@ module top (
     wire res_valid_a = (resA_s[2] ^ resA_s[1]);
     wire res_valid_b = (resB_s[2] ^ resB_s[1]);
 
+    // FW 0x0425 (optimalizace 3): 10 MHz cas v ramci (abs 36..43) STM jen cte (timestamp_ticks, bez dalsiho pouziti) -> 32 b
+    // (pretece po 429 s; horni bajty 0). -32 FF a 32 ALU (+ 32 FF snimku h_ts). `define TS10M_64 = jako 0x0424.
+`ifdef TS10M_64
     reg [63:0] timestamp_10m = 64'd0;
     always @(posedge clk_ref_10m) timestamp_10m <= timestamp_10m + 64'd1;
+`else
+    reg [31:0] ts10m_lo = 32'd0;
+    always @(posedge clk_ref_10m) ts10m_lo <= ts10m_lo + 32'd1;
+    wire [63:0] timestamp_10m = {32'd0, ts10m_lo};
+`endif
 
     // Stav TDC do 10 MHz domény (úrovně, 2FF sync)
     reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfl_s = 2'b00, cbs_s = 2'b00;
@@ -417,6 +470,8 @@ module top (
     reg        dt_alias_lat = 1'b0, dt_alias_b = 1'b0;
     reg [8:0]  cea_lat = 9'd0, csa_lat = 9'd0, ceb_hold = 9'd0, csb_hold = 9'd0;   // FW 0x0418
     reg [7:0]  ccda_lat = 8'd0, ccdb_hold = 8'd0;                                   // FW 0x041F
+    reg [7:0]  buba_lat = 8'd0, bubb_hold = 8'd0;                                   // FW 0x0425
+    reg [3:0]  ovla_lat = 4'd0, ovlb_hold = 4'd0;
     reg        gd_go        = 1'b0;
     always @(posedge clk_ref_10m) begin
         gd_go <= 1'b0;
@@ -428,6 +483,8 @@ module top (
             cea_lat      <= r_cea;
             csa_lat      <= r_csa;
             ccda_lat     <= r_ccd_a;
+            buba_lat     <= r_bub_a;
+            ovla_lat     <= r_ovl_a;
             if (!chan_sel) gd_go <= 1'b1;
         end
         if (res_valid_b) begin
@@ -438,6 +495,8 @@ module top (
             ceb_hold       <= r_ceb;
             csb_hold       <= r_csb;
             ccdb_hold      <= r_ccd_b;
+            bubb_hold      <= r_bub_b;
+            ovlb_hold      <= r_ovl_b;
             if (chan_sel) gd_go <= 1'b1;
         end
     end
@@ -452,6 +511,8 @@ module top (
     wire [8:0]  cde_p = chan_sel ? ceb_hold : cea_lat,  cds_p = chan_sel ? csb_hold : csa_lat;
     wire [8:0]  cde_s = chan_sel ? cea_lat  : ceb_hold, cds_s = chan_sel ? csa_lat  : csb_hold;
     wire [7:0]  ccd_p = chan_sel ? ccdb_hold : ccda_lat, ccd_s = chan_sel ? ccda_lat : ccdb_hold;
+    wire [7:0]  bub_p = chan_sel ? bubb_hold : buba_lat, bub_s = chan_sel ? buba_lat : bubb_hold;
+    wire [7:0]  ovl_ps = chan_sel ? {ovla_lat, ovlb_hold} : {ovlb_hold, ovla_lat};   // {sekundarni, primarni}
 
     // stav hlidace 100 MHz do ramce (bajt 64): bit0 OK, bit1 od nahrani aspon jeden vypadek, bit2 zotaveni
     // (boot_done = 0: ceka se na ustaleni + novou kalibraci, mereni stoji)
@@ -465,8 +526,18 @@ module top (
 
     wire [63:0] gate_ns_a;
     wire        valid_a, gd_busy;
+`ifdef KEEP_GATE_DIV
     gate_div #(.CLK_MHZ(CLK_MHZ)) u_gd (.clk(clk_ref_10m), .start(gd_go), .dt(dt_p),
                    .gate_ns(gate_ns_a), .valid(valid_a), .busy(gd_busy));
+`else
+    // FW 0x0425 (optimalizace 3, brana CLS <= 85 %): gate_ns (abs 28..35) STM s caps bit5 NEPOUZIVA -- prepocita ho z dt
+    // (fpga_freq.c parse_data: gate_time_ns = gate_ps / 1000). Delicka (x5 >> 13, ~75 FF + 50 ALU) odpada; new_meas jde o takt po gd_go.
+    reg gd_v = 1'b0;
+    always @(posedge clk_ref_10m) gd_v <= gd_go;
+    assign valid_a   = gd_v;
+    assign gate_ns_a = 64'd0;
+    assign gd_busy   = 1'b0;
+`endif
 
     wire [63:0] freq_a_x100000 = 64'd0;                 // host počítá (viz spi_app.v)
     wire        div_err_a      = (dt_p == 48'd0);
@@ -547,8 +618,8 @@ module top (
     wire ref_sel;
     // vnitrni oscilator FPGA (250 MHz / 8 = 31,25 MHz): hlidac reference nesmi zaviset na vnejsich hodinach
     wire osc_clk;
-    OSC #(.FREQ_DIV(8), .DEVICE("GW1NR-9C")) u_osc (.OSCOUT(osc_clk));
-    ref_guard u_refg (.osc_clk(osc_clk), .ext_sens(ext_ref_sens), .sel_req(ref_sel), .ref_ctrl(ref_ctrl),
+    OSC #(.FREQ_DIV(OSC_DIV), .DEVICE("GW1NR-9C")) u_osc (.OSCOUT(osc_clk));
+    ref_guard #(.PRES_TMO(OSC_TMO)) u_refg (.osc_clk(osc_clk), .ext_sens(ext_ref_sens), .sel_req(ref_sel), .ref_ctrl(ref_ctrl),
                       .ext_present(ref_ext_pres), .ext_lost(ref_ext_lost));
     assign ref_act = ref_ctrl;
 
@@ -589,6 +660,9 @@ module top (
         .meas_ccd_s(ccd_s),
         .meas_pps_ts(pps_ts),
         .meas_pps_seq(pps_seq),
+        .meas_bub_p(bub_p), .meas_bub_s(bub_s), .meas_ovl(ovl_ps),
+        .meas_coh_st(coh_st), .meas_coh_cnt(coh_cnt),
+        .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .cal_mode(cal_mode),
         .base_win(base_win),
         .chan_sel(chan_sel),
@@ -609,9 +683,12 @@ module top (
     // ----------------------------------------------------------
     // LED heartbeat: toggle na každé dokončené měření CH_A (~2-4 Hz blik).
     // ----------------------------------------------------------
+    // FW 0x0425 (H8): PIN29 lezi v BANCE 2 spolu s CH_A, CH_B, 1PPS a hodinami 100 MHz; preklapeni 8mA vystupu po kazdem mereni
+    // je zbytecny proudovy skok v teto bance. Vychozi stav = LED stoji (1); heartbeat jen na pozadani (SET_CONFIG 0x05 bit1).
     initial led_tx = 1'b1;
     always @(posedge clk_ref_10m)
-        if (valid_a) led_tx <= ~led_tx;
+        if (!led_hb_en)  led_tx <= 1'b1;
+        else if (valid_a) led_tx <= ~led_tx;
 
     // ----------------------------------------------------------
     // FW 0x0422: LED "FPGA_OK" (D5, PIN63). Bezi z VNITRNIHO oscilatoru FPGA (osc_clk), aby se po vypadku vnejsich hodin nezasekla:
@@ -622,6 +699,48 @@ module top (
     // ----------------------------------------------------------
     reg tgl10 = 1'b0;
     always @(posedge clk_ref_10m) tgl10 <= ~tgl10;
+
+    // ----------------------------------------------------------
+    // FW 0x0425 (audit 2026-10-20, slabina 4): prisny hlidac koherence 100 MHz <-> 10 MHz (coh_mon ve spi_app.v).
+    // Stav do ramce: abs 10 = {4'd0, cesta, chyba od nahrani, posledni epocha OK, platne}, abs 11 = pocet chybnych epoch (102,4 us).
+    // ----------------------------------------------------------
+    wire [7:0] coh_gray;
+    wire       coh_ok, coh_seen, coh_path, coh_valid;
+    // Audit 4 (2026-10-20): REF_10MHz (PIN42) je VZDY surovy OCXO, kdezto 100 MHz (Si5356) se pri externi referenci zamkne na
+    // externi vstup (prepinac U19 rizeny Ref_Ctrl) -> hodiny pak NEJSOU koherentni a kontrola koherence nema smysl. (Model m_audit4:
+    // pri beznem rozdilu kmitoctu by pravidlo "obe cesty" poplach nedalo -- skluzy vidi kazda cesta jindy; pri rozdilu > ~5e-5 ano.)
+    // Bezi proto jen pri OCXO referenci a az ~168 ms po kazde zmene reference (prechodovy jev Si5356 pri preladeni).
+    reg  [1:0]  rx_s = 2'b00;
+    reg  [23:0] coh_hold = 24'hFFFFFF;
+    always @(posedge clk_p0_100m) begin
+        rx_s <= {rx_s[0], ref_act};
+        if (rx_s[1] ^ rx_s[0])     coh_hold <= 24'hFFFFFF;
+        else if (coh_hold != 24'd0) coh_hold <= coh_hold - 24'd1;
+    end
+    // FW 0x0425 (P&R 2026-10-20): povoleni je REGISTROVANE ve dvou stupnich. Kombinacni AND s 24b porovnanim coh_hold == 0 budil
+    // clock enable vsech registru coh_mon a byl nejhorsi cestou navrhu (-2,37 ns). Signal je kvazistaticky, 2 takty zpozdeni nevadi.
+    reg coh_hz = 1'b0, coh_en = 1'b0;
+    always @(posedge clk_p0_100m) begin
+        coh_hz <= (coh_hold == 24'd0);
+        coh_en <= ok_s[1] & boot_done & ~rx_s[1] & coh_hz;
+    end
+    coh_mon u_coh (.clk(clk_p0_100m), .tgl10(tgl10), .en(coh_en),
+                   .err_gray(coh_gray), .ep_ok(coh_ok), .err_seen(coh_seen), .path_n(coh_path), .valid(coh_valid));
+    reg [7:0] cg_s1 = 8'd0, cg_s2 = 8'd0;
+    reg [3:0] cst_s1 = 4'd0, cst_s2 = 4'd0;
+    always @(posedge clk_ref_10m) begin
+        cg_s1  <= coh_gray;  cg_s2  <= cg_s1;                       // Gray: meni se nejvys 1 bit -> bezpecne
+        cst_s1 <= {coh_path, coh_seen, coh_ok, coh_valid}; cst_s2 <= cst_s1;
+    end
+    // Gray -> binarni (kombinacne, domena 10 MHz)
+    genvar gi;
+    generate for (gi = 0; gi < 8; gi = gi + 1) begin : g2b
+        assign coh_cnt[gi] = ^cg_s2[7:gi];
+    end endgenerate
+    assign coh_st = {4'd0, cst_s2};
+`ifdef PIN86_BL_OFF
+    assign bl_pwm = 1'b0;
+`endif
     wire good10 = clk_ok;                                  // hlidac hodin: 100 MHz v toleranci (meri se proti 10 MHz)
     reg [2:0] t10_s = 3'b000;
     reg [1:0] good_s = 2'b00;
@@ -630,7 +749,7 @@ module top (
     always @(posedge osc_clk) begin
         t10_s  <= {t10_s[1:0], tgl10};
         good_s <= {good_s[0], good10};
-        if (t10_s[2] ^ t10_s[1])      t10_tmo <= 8'd250;      // hrana ~kazdych 200 ns; 250 taktu osc = ~8 us
+        if (t10_s[2] ^ t10_s[1])      t10_tmo <= OSC_TMO;     // hrana kazdych 100 ns; OSC_TMO taktu osc = ~8 us (FW 0x0425: podle OSC_DIV)
         else if (t10_tmo != 8'd0)     t10_tmo <= t10_tmo - 8'd1;
         fpga_ok <= (t10_tmo != 8'd0) & good_s[1];
     end

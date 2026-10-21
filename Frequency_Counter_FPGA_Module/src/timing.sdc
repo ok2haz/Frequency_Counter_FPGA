@@ -153,6 +153,11 @@ set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {ra_s_*}]
 set_false_path -to [get_regs {t10_s_* good_s_*}]
 // FW 0x0422: pocet opakovani kalibrace (quasi-staticky diagnosticky udaj) do domeny 10 MHz
 set_false_path -to [get_regs {rt1_*}]
+// FW 0x0425: CS SPI je v domene 100 MHz jen uroven pro diagnostiku/maskovani (2 FF synchronizator csa_s), cesta z pinu se nezkouma
+set_false_path -from [get_ports {spi_cs_n}] -to [get_regs {csa_s*}]
+// FW 0x0425: stav reference (ref_guard.sel, domena vnitrniho oscilatoru) do 100 MHz pro vypinani hlidace koherence -- 2FF synchronizator
+// rx_s kvazistatickeho signalu, stejne jako ra_s vyse (P&R 2026-10-20: bez vyjimky -1,73 ns na asynchronnim prechodu)
+set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {rx_s_*}]
 
 // Rozmisteni retezu TDC (2026-10-09): report cest Z KAZDEHO vzorkovaciho FF -> textovy report
 // (build.tcl: -gen_text_timing_rpt) nese polohu kazdeho q_r[k] = polohu ALU tapu k.

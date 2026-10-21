@@ -91,6 +91,17 @@ $tests = @(
        rtl = @("spi_slave_phy.v", "spi_app.v"); tb = "tb_link.sv" }
     # FW 0x0424 (STATUS #305): zachyceni hrany GPS 1PPS hrubym citacem 100 MHz (pps_cap)
     @{ name = "pps"; top = "tb_pps"; rtl = @("spi_app.v"); tb = "tb_pps.sv" }
+    # FW 0x0425 (E0, audit 2026-10-20): nove testy; negativni kontrola proti 0x0424 = sim/run_one*.sh proti src_fw0424_backup
+    # oprava N1 (tdc_chan: zastaraly vzorek pri spousteni hrana za hranou, 16,7..22,5 MHz)
+    @{ name = "n1"; top = "tb_n1"; rtl = @("tdc.v"); tb = "tb_n1.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # oprava close+2 (win_recip: hrana v taktu nulovani citace, nad ~33 MHz), CELY top
+    @{ name = "close2"; top = "tb_close2"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_close2.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_FA_MHZ=40.0") }
+    # mez aliasu podle hradla (1 s: 170 hradel, 48b r_dt pretece po 171,8 s)
+    @{ name = "alias"; top = "tb_alias"; rtl = @("spi_app.v"); tb = "tb_alias.sv" }
+    # hlidac koherence 100 <-> 10 MHz (vynechany / navic pulz, faze na hrane s jitterem)
+    @{ name = "coh"; top = "tb_coh"; rtl = @("spi_app.v"); tb = "tb_coh.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 

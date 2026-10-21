@@ -33,10 +33,11 @@ module tb_top_regr;
             fdt = real'(dut.r_periods_a) / (real'(dut.r_dt_a) * `TB_PS_PER_UNIT) * 1.0e12;
             $display("okno %0d: N=%0d dt=%0d u  f_2pt=%.4f Hz (chyba %.2f ppm) | A: ok=%0d n=%0d xm=%.1f ym=%.3f us | B: ok=%0d n=%0d xm=%.1f ym=%.3f us",
                 win, dut.r_periods_a, dut.r_dt_a, fdt, (fdt/f_in-1.0)*1e6,
-                dut.rg_ok_a, dut.rg_n_a, real'(dut.rg_xm_a)/256.0, real'(dut.rg_ym_a)*U*1e-6,
-                dut.rg_ok_b, dut.rg_n_b, real'(dut.rg_xm_b)/256.0, real'(dut.rg_ym_b)*U*1e-6);
+                dut.rg_ok_a, dut.rg_n_a, real'(dut.rg_xm_a)/4096.0, real'(dut.rg_ym_a)*U*1e-6,
+                dut.rg_ok_b, dut.rg_n_b, real'(dut.rg_xm_b)/4096.0, real'(dut.rg_ym_b)*U*1e-6);
+            // FW 0x0425 (audit 4, A1): xm v 1/4096 hrany, drive 1/256
             if (dut.rg_ok_a && dut.rg_ok_b && dut.rg_ym_b > dut.rg_ym_a) begin
-                fr = (real'(dut.rg_xm_b) - real'(dut.rg_xm_a)) / 256.0 / (((real'(dut.rg_ym_b) - real'(dut.rg_ym_a)) * U) * 1e-12);
+                fr = (real'(dut.rg_xm_b) - real'(dut.rg_xm_a)) / 4096.0 / (((real'(dut.rg_ym_b) - real'(dut.rg_ym_a)) * U) * 1e-12);
                 $display("        f_regr = %.4f Hz (chyba %.3f ppm)", fr, (fr/f_in-1.0)*1e6);
                 if (win >= 3 && ((fr/f_in-1.0) > 1e-6 || (fr/f_in-1.0) < -1e-6)) errs = errs + 1;
             end else if (win >= 3) errs = errs + 1;

@@ -2,7 +2,8 @@
 // (tx_old_ref.v = spi_app pred prepisem). Nahodny stav, vsech 126 bajtu, DATA i CAL. Rozdily jen tam, kde
 // se zmena ZAMERNE lisi (CAL bajty 50/51 = konfigurace TDC; DATA 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream nahrazen regresnim blokem v FW 0x0411;
 // FW 0x041F: DATA 12..19 = identita bitstreamu misto freq_x100000, 64/65 = hlidac 100 MHz, 97/98 = kontrolni pocitani;
-// FW 0x0424: DATA 52..59 = GPS 1PPS misto freq16_x100000 -- overeno zvlast proti vstupum meas_pps_*).
+// FW 0x0424: DATA 52..59 = GPS 1PPS misto freq16_x100000 -- overeno zvlast proti vstupum meas_pps_*;
+// FW 0x0425: 10/11, 57..59 = diagnostika E0 (nove); 66/67/107/112..117/124/125 = DBG_RX vypnuty -> overuje se, ze jsou nuly).
 `timescale 1ps/1ps
 module tb_tx_equiv;
     reg clk = 0;   // hodiny STOJI: porovnava se jen kombinacni `tb`, FSM nesmi menit idx/registry
@@ -41,6 +42,8 @@ module tb_tx_equiv;
 reg [63:0] tmp;
 `define SB(n, v) tmp = v; u_new.n = tmp; u_old.n = tmp;   // v se vyhodnoti JEDNOU (jinak by $urandom dal novemu a staremu ruzne hodnoty)
     integer r, i, cal, errs = 0, cmp = 0;
+    integer dcnt [0:251];
+    initial for (i = 0; i < 252; i = i + 1) dcnt[i] = 0;
     initial begin
         #1000;
         for (r = 0; r < 300; r = r + 1) begin
@@ -66,22 +69,33 @@ reg [63:0] tmp;
                 for (i = 0; i < 126; i = i + 1) begin
                     `SB(idx, i)
                     #1;
-                    if (cal == 0 && i >= 52 && i <= 59) begin   // FW 0x0424: 1PPS (ocekavana hodnota ze vstupu, ne ze stare reference)
+                    if (cal == 0 && i >= 52 && i <= 56) begin   // FW 0x0424: 1PPS (ocekavana hodnota ze vstupu, ne ze stare reference)
                         cmp = cmp + 1;
-                        if (u_new.tb !== ((i <= 55) ? pps_ts[8*(i-52) +: 8] : (i == 56) ? pps_seq : 8'd0)) begin
+                        if (u_new.tb !== ((i <= 55) ? pps_ts[8*(i-52) +: 8] : pps_seq)) begin
                             errs = errs + 1;
                             if (errs < 8) $display("RUZNOST 1PPS r=%0d idx=%0d: new=%02x", r, i, u_new.tb);
                         end
-                    end else if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 12 && i <= 19) || (i >= 60 && i <= 65) || (i >= 68 && i <= 99)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove)
+                    end else if (cal == 0 && (i == 66 || i == 67 || i == 107 || (i >= 112 && i <= 117) || i == 124 || i == 125)) begin
+                        // FW 0x0425: ladici bajty prijmu (DBG_RX = 0) se ZAMERNE posilaji jako nuly -- kontroluje se to, ne preskakuje
+                        cmp = cmp + 1;
+                        if (u_new.tb !== 8'd0) begin
+                            errs = errs + 1;
+                            if (errs < 8) $display("RUZNOST DBG_RX r=%0d idx=%0d: new=%02x (ocekavano 00)", r, i, u_new.tb);
+                            dcnt[i] = dcnt[i] + 1;
+                        end
+                    end else if (!(cal == 1 && (i == 50 || i == 51)) && !(cal == 0 && ((i >= 12 && i <= 19) || (i >= 60 && i <= 65) || (i >= 68 && i <= 99) || i == 10 || i == 11 || (i >= 57 && i <= 59)))) begin   // 50/51 CAL = konfigurace TDC, 60..63 = FW_VERSION/CAPS, 65 + 68..99 = window stream -> regresni blok (zamerne nove); 10/11 = hlidac koherence, 57..59 = bubliny/znacky pri CS (FW 0x0425, caps bit14, zamerne nove -- tx_old_ref.v je nezna)
                         cmp = cmp + 1;
                         if (u_new.tb !== u_old.tb) begin
                             errs = errs + 1;
                             if (errs < 8) $display("RUZNOST r=%0d cal=%0d idx=%0d: new=%02x old=%02x", r, cal, i, u_new.tb, u_old.tb);
+                            dcnt[cal*126 + i] = dcnt[cal*126 + i] + 1;
                         end
                     end
                 end
             end
         end
+        for (i = 0; i < 252; i = i + 1)   // souhrn: VSECHNY indexy s rozdilem (vypis vyse je omezeny na 8 radku)
+            if (dcnt[i] != 0) $display("  rozdil cal=%0d idx=%0d: %0d x", i / 126, i % 126, dcnt[i]);
         if (errs == 0) $display("PASS: tb_tx_equiv (%0d porovnani)", cmp); else $display("FAIL: tb_tx_equiv %0d rozdilu", errs);
         $finish;
     end
