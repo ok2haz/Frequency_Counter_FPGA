@@ -663,6 +663,58 @@ Srovnání ADEV A při 0,25 s: **vlastní reference 2,85·10⁻¹¹** | **extern
 
 **Další kroky (návrh):** (1) zjistit, čím se vstup od externího zdroje liší od vlastní reference: osciloskop na pinu 25 (úroveň 0-2,86 V? strmost, šum v okolí prahu ~1,4 V), délka a zakončení kabelu (120 Ω proti GND), zkušebně druhý zdroj nebo jiná cesta signálu; (2) řízený A/B zapnuto/vypnuto po blocích 20 min pro čistý vliv smyčky (v tomto pokusu jsou běhy z různé denní doby); (3) do `regr` přidat rozdělení |f_regr/f₂ − 1|.
 
+### 2026-10-18 21:35 - 2026-10-19 15:44 - 18 h automaticky: faze 1 (smycka/DAC/dither, 4 h) + faze 2 (volny beh OCXO, 14 h)
+
+Skript `tools\dlouhe_mereni.ps1` (bez zasahu), firmware v0.30.6, FW FPGA 0x0424, hradlo 0,25 s, kanal A i B = externi GPSDO (okenni antena), nase NEO-7M na strese (viz pamet `gps-antennas-setup`). Preflight: cekani na LOCK 301 s, pak plan od 21:41:32. Data `docs/audit/data/2026-10-18_2135_dlouhe*` (+ `_faze1_smycka.csv`, `_faze2_gps.csv`, `.raw.csv`, `.blocks.csv`, `.snap.csv`, `.sats.jsonl`, ...). Vyhodnoceni `tools/dlouhe_analyza.py <predpona>`, `tools/dlouhe_hodiny.py <predpona>`. **Predchozi pokus z 21:21 (2026-10-18_2121_dlouhe) byl smazan** - pral se s mou zkusebni instanci (viz `.POZNAMKY`, pozn. v run.log).
+
+**Zdravi behu (212 snimku po 5 min):** 0 resetu pristroje, `CRC err` 0, `SEQ FPGA` 1 diry za 18 h (1 mereni), `FPGA SAMOKONTROLA` beze zmeny (cteni 1, hodiny 0, delka 0), `errlog` beze zmeny (5058), TDC rezerva A 16 / B 14 tapu po celou dobu, heap 21 616 B, nejmensi stacky nezmeneny (FpgaTask 1 288, DacTask 808, IDLE 428 B), CPU 7-25 %, `LTDC` podteceni 44 -> 195 (za 18 h), regrese kumulativne zamitnuto 2,9 % (32 937 ze 1,13 M ramcu). NEO-7M: `gps ack` TMODE2 NAK (0/2), GNSS ACK (GPS-only), TP5/MSG ACK po celou dobu.
+
+**FAZE 1 - vliv smycky/DAC/ditheru (12 bloku po 20 min, od kazdeho 5 min pryc, 3 cykly OFF/D200/D100/D2):**
+
+| blok | ADEV(0,25 s) prumer ± sd (3 bloky) | skoky > 6x jadro [%] | zamitnuti regrese [%] |
+|---|---|---|---|
+| OFF (smycka vypnuta, pevny kod) | 1,06·10⁻¹⁰ ± 5,8·10⁻¹¹ | 3,5 ± 4,1 | 1,2 ± 1,0 |
+| D200 (smycka ON, dither 200 Hz) | 1,10·10⁻¹⁰ ± 6,8·10⁻¹¹ | 4,5 ± 4,0 | 1,5 ± 1,3 |
+| D100 (vychozi) | 2,04·10⁻¹⁰ ± 5,0·10⁻¹¹ | 9,1 ± 4,4 | 5,0 ± 3,8 |
+| D2 | 1,01·10⁻¹⁰ ± 4,3·10⁻¹¹ | 2,9 ± 2,1 | 1,5 ± 1,1 |
+
+- 🔑 **Zadny pruvazny vliv smycky, DAC ani ditheru.** Rozdil mezi bloky stejneho typu je stejne velky jako rozdil mezi typy: tri bloky OFF maji 8,5 / 17,2 / 6,2·10⁻¹¹ (faktor 2,8), D100 ve trech cyklech 2,2 / 1,5 / 2,5·10⁻¹⁰, a poradi D200 < D100 < D2 se neprojevuje (D200 a D2 se blizi OFF, D100 je nejhorsi). Souhrnne ON (9 bloku) proti OFF (3): 1,38 vs 1,06·10⁻¹⁰, pomer 1,3, t = 0,8, **nevyznamne**; shoduje se s rozdilem OFF/LOCK z 2026-10-18 (1,41 vs 1,85), takze nelze vylouèit maly vliv ≲ 30 %, ale prokazan neni.
+- 🔑 **Smycka ON dosahne podlahy pristroje:** blok D200 ve 00:41 (smycka ON, dither 200 Hz) dal ADEV(0,25 s) **3,2·10⁻¹¹** a 0 % skoku, tedy podlahu pristroje (2,9·10⁻¹¹ z mereni s vlastni referenci). Smycka+DAC+dither tedy sum nad 3·10⁻¹¹ pri 0,25 s nepridavaji; zbytek dela zdroj. Rozptyl 20minutovych bloku (3,2·10⁻¹¹ az 2,5·10⁻¹⁰) je vlastnost externiho GPSDO s okenni antenou, ne smycky.
+
+**FAZE 2 - volne bezici OCXO (smycka OFF 14,04 h; kod DAC pevny 24 941; chybi 0,08 % oken):**
+- **OCXO vs nase strešni GPS (`xr_ns`, ADEV fáze R):** 4,4·10⁻⁹ @ 1 s, 5,3·10⁻¹⁰ @ 10 s, 6,8·10⁻¹¹ @ 100 s, 3,9·10⁻¹¹ @ 200 s, 1,8·10⁻¹¹ @ 500 s, **1,2·10⁻¹¹ @ 1000 s**, 1,4·10⁻¹¹ @ 2000 s, 2,5·10⁻¹¹ @ 5000 s. Do 10 s je to kvantizace hrubeho citace 1PPS (10 ns/√12: 5,0·10⁻⁹ @ 1 s, 5,0·10⁻¹⁰ @ 10 s); nad 100 s je nad podlahou prebytek 4,6·10⁻¹¹ @ 100 s, 3,0·10⁻¹¹ @ 200 s, 1,5·10⁻¹¹ @ 500 s, 1,1·10⁻¹¹ @ 1000 s - tedy **horni mez pro OCXO + nasi GPS dohromady** (nerozlisuje je). Stejne jako v 10h behu se smyckou (1,1·10⁻¹¹ @ 1000 s): volny OCXO neomezuje smycku s τ 1000 s.
+- **Externi GPSDO (A):** ADEV A = ADEV D (ext. proti nasi GPS) s presnosti na ~1 % pro vsechna τ ≤ 2000 s (napr. 100 s: 7,13·10⁻¹⁰ vs 7,14·10⁻¹⁰): OCXO a nase GPS jsou o rad tissi nez externi zdroj. Externi GPSDO ma ADEV 3,6·10⁻¹⁰ @ 1 s, 2,4·10⁻⁹ @ 10 s (vcetne epizody, viz nize), 7,1·10⁻¹⁰ @ 100 s, 7,8·10⁻¹¹ @ 1000 s, **o rad horsi nez OCXO proti nasi strese**. Hodinove ADEV A(10 s) 4,2-9,8·10⁻¹⁰ (hodiny 1 a 3 s 13 % skoku, ostatni 4-8 %); R(10 s) po celou dobu 4,7-5,6·10⁻¹⁰ (= podlaha). **Epizoda 13:41-14:41:** A(1 s) 1,2·10⁻⁹, A(10 s) 8,9·10⁻⁹, D(10 s) 8,9·10⁻⁹, zatimco R(10 s) normalni (4,7·10⁻¹⁰), nase GPS 11 druzic: porucha na strane externiho GPSDO.
+- ⚠️ **Tri-rohy klobouk (3CH) OCXO / ext / nase GPS NELZE spolehlive vyhodnotit:** ADEV(A) ≈ ADEV(D) a rozdil a² - d² (kterym OCXO vychazi) je pod statistickou chybou cca 10 % z a² (napr. 1000 s: OCXO 1,1·10⁻¹¹ z rozdilu 8·10⁻²³ pri chybe 7·10⁻²²), takze cisla v tabulce `dlouhe_analyza.py` pro OCXO (4·10⁻¹¹ @ 1 s ... 1,1·10⁻¹¹ @ 1000 s) maji **horsi presnost nez jejich hodnota**. Externi GPSDO s okenni antenou je na to prilis hlucny; #312 (OCXO nebo GPS) se timto neroziresi (potrebuje Rb / druhe OCXO / lepsi referenci, #313).
+- **OCXO volny beh (stari, #303):** frekvence proti nasi GPS z +0,13·10⁻¹⁰ klesla na −3,05·10⁻¹⁰ za 13 h: **drift −2,1·10⁻¹¹ / h (−5,1·10⁻¹⁰ / den)**, zpomaluje (−0,45·10⁻¹⁰/h v 1. hod., ~−0,2·10⁻¹⁰/h v 8.-12. hod.). Teplota OCXO 47,93 → 47,35 °C (−0,6 °C), deska 30,7 → 30,0 °C. Fázový posun za 13,9 h −8 968 ns; rezidua po kvadratickem fitu sd 89 ns, p-p 500 ns. (Obsahuje dosah po power-cyklu/retrace a tepelny drift - rozlisit nelze.) Holdover odhad: po 1 h od zamceni ~38 ns jen z driftu, dalsi z poc. offsetu.
+
+**Zaver:** (1) smycka GPSDO, DAC ani dither nejsou hrdlem (TODO #326 uzavren: zadny prukazny vliv, pri smycce ON se dosahne podlahy pristroje); (2) mereni externiho zdroje s okennim GPS je omezeno JEHO sumem (hrbol 4-10·10⁻¹⁰ @ 10-20 s, epizody az 9·10⁻⁹), ne prístrojem; (3) OCXO + nase strecha dava ≲ 1,1·10⁻¹¹ @ 1000 s a ≲ 4,6·10⁻¹¹ @ 100 s (horni mez) - bez zmeny proti drivejsi; (4) #312 se bez nezavisle reference neroziresi; (5) NEO-7M nepodporuje survey-in ani GLONASS (NAK), dalsi zlepseni GPS strany tedy znamena timing prijimac (NEO-M8T / ZED-F9T).
+
+### 2026-10-19 21:50 - 2026-10-20 07:50 - 10 h automaticky: UBX-CFG-NAV5 dynModel Stationary vs Portable (nase GPS, strecha)
+
+Skript `tools\dlouhe_mereni.ps1 -Phase1Min 0 -Phase2Min 600 -Phase2Names "NS,NA,NS,NA"` (bez zasahu), firmware **v0.30.7** (nova UART `gps nav5 stationary|auto`, UBX-CFG-NAV5 mask=dyn), smycka OFF po celou dobu (volny beh OCXO, kod DAC pevny), kanal A i B = externi GPSDO. 4 bloky po 2,5 h (NS=Stationary, NA=Portable, 2 cykly kvuli dennimu/nocnimu casu), kazdy vyhodnocen od +15 min. Data `docs/audit/data/2026-10-19_nav5*`. Vyhodnoceni `tools/dlouhe_nav5.py <predpona>` (novy).
+
+🔴 **Na rozdil od CFG-TMODE2 (survey-in, 2026-10-18) NEO-7M CFG-NAV5 PRIJIMA** (`gps ack` -> `NAV5 n/0 ACK`, 0 NAK za celou noc) - je to standardni zprava, kterou podporuje kazdy u-blox prijimac, ne jen timing rada.
+⚠️ **Prvni pokus mel chybu (off-by-one v parsovani UART retezce, `RxBuffer[10]` misto `[9]`): obe volby `stationary`/`auto` posilaly Portable.** Odhaleno zivym testem na HW pred spustenim noci (`gps ack` ukazal dynModel Portable u obou), opraveno pred buildem v0.30.7, znovu overeno ACK pro oba smery pred startem.
+
+Zdravi behu: 0 resetu, `CRC err` 0, `SEQ FPGA` 0 diry, `errlog` beze zmeny (5073), TDC rezerva A 16 / B 14 tapu, `NAV5 8/0 ACK` na konci. Pocet druzic/HDOP srovnatelny mezi bloky (9,7-11,4 druzic, HDOP 0,81-0,87) - neni silne zkresleno geometrii.
+
+**ADEV faze R (OCXO proti nasi GPS, `xr_ns`), geometricky prumer 2 bloku kazdeho typu:**
+
+| tau [s] | NS (Stationary) | NA (Portable) | pomer NS/NA |
+|---|---|---|---|
+| 1 | 4,79·10⁻⁹ | 5,00·10⁻⁹ | 0,96 |
+| 10 | 5,38·10⁻¹⁰ | 5,04·10⁻¹⁰ | 1,07 |
+| 20 | 2,68·10⁻¹⁰ | 2,68·10⁻¹⁰ | 1,00 |
+| 100 | 7,07·10⁻¹¹ | 6,88·10⁻¹¹ | 1,03 |
+| 200 | 4,24·10⁻¹¹ | 3,96·10⁻¹¹ | 1,07 |
+| 500 | 1,82·10⁻¹¹ | 2,21·10⁻¹¹ | 0,82 |
+| 1000 | 1,29·10⁻¹¹ | 2,01·10⁻¹¹ | 0,64 |
+
+- 🔴 **Zadne zlepseni pri tau 1-200 s** (pomer 0,96-1,07, v sumu). Podle N8UR melo zlepseni prijit prave od tau ~30 s vyse - zde se neprojevilo.
+- ⚠️ **Pri tau 500-1000 s vypada NS lepe (pomer 0,82 a 0,64), ale NENI to prukazne:** rozptyl MEZI dvema bloky STEJNEHO typu je stejne velky jako rozdil mezi typy (NS: 1,68 a 0,99·10⁻¹¹ pri 1000 s, faktor 1,7; NA: 2,93 a 1,38·10⁻¹¹, faktor 2,1). S n=2 na typ a timto rozptylem nejde rozhodnout, jestli je to NAV5, nebo noc/den (bloky NS byly v 21:50 a 02:50, NA v 00:20 a 05:20).
+- **Zaver: NAV5 Stationary na teto desce a s timto GPS nema prokazatelny vliv.** Prinos pro #312/#326 zadny; zustava vraceno na vychozi (Portable). Pripadne dalsi overeni (vic cyklu, delsi bloky) ma nizkou prioritu - externi GPSDO (okenni antena) je o rad hlucnejsi nez obe varianty NAV5 dohromady (viz 2026-10-18/19 zaznam: ADEV A ~2-9·10⁻¹⁰ proti R ~5·10⁻¹⁰-1,3·10⁻¹¹).
+- 🔧 **Nalezena a opravena chyba parsovani UART retezce** (viz vyse) - lekce zapsana jako L-0181.
+
 ## 3. Stav kalibrací
 
 | Co | Stav | Hodnota / poznámka | Datum |

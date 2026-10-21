@@ -4913,6 +4913,68 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** commit `docs:` s touto lekcí
 - **Stav:** aktivní
 
+### L-0181 - Off-by-one v parsovani UART retezce: obe vetve volby poslaly stejnou hodnotu
+
+- **Datum:** 2026-10-19
+- **Oblast:** `freertos_task_uart.c` (UART `gps nav5 stationary|auto`)
+- **Symptom:** `gps nav5 stationary` i `gps nav5 auto` poslaly UBX-CFG-NAV5 s dynModel Portable; odhaleno zivym testem (`gps ack`) pred spustenim noci mereni, ne az z vysledku.
+- **Priina:** `bool stat = (RxBuffer[10] == 's');` - retezec "gps nav5 " ma 9 znaku (indexy 0..8), prvni znak nazvu volby je tedy na indexu 9, ne 10. Index byl odhadnut, ne spocitan.
+- **Oprava:** `RxBuffer[9] == 's'`, overeno `gps ack` pro oba smery pred spustenim (`freertos_task_uart.c`).
+- **Pravidlo:** index do retezce za pevnym prefixem VZDY spocitat (delku prefixu vcetne mezery), ne odhadnout; u noveho vetveni na podretezec otestovat OBE vetve na HW/konzoli pred spustenim delsiho mereni - test jedne vetve by chybu neodhalil.
+- **Detekce:** zivy test obou voleb pres `gps ack` pred kazdym novym UART prepinacem tohoto typu.
+- **Commit:** oprava pred buildem v0.30.7 (pred commitem v teto session)
+- **Stav:** aktivni
+
+### L-0182 - Zmrazeny vzorek TDC: povoleni nacteni chybelo v POSLEDNIM taktu zmrazeni (N1, FW 0x0425)
+
+- **Datum:** 2026-10-20
+- **Oblast:** FPGA `tdc.v` (`tdc_chan`: `ld`, `fz`, `idle_r`)
+- **Symptom:** zadny viditelny; pri spousteni hrana za hranou (segmenty regrese) na ~16,7-25 MHz dostala cast hran kod TDC z PREDCHOZI hrany (chyba az jednotky ns na znacce). Nalezeno auditem a modelem `m_tdc_ld.py` (druha instance), ne mericim symptomem.
+- **Priina:** `ld = idle_r & ~(ec & arm_r)` je 0 po cele zmrazeni (fz 1..4). Vzorek hrany, ktera se spusti v prvnim taktu po zmrazeni, mel byt do `qd` nahran jeste v taktu fz == 4 (idle_r = 0) -> zustal tam vzorek predchozi hrany.
+- **Oprava:** registr `ldok <= ~trig_ok & (idle_r | fz==3 | fz==4)`, `ld = ldok & ~(ec & arm_r)` (`tdc.v`, FW 0x0425).
+- **Pravidlo:** u zmrazovane kopie vzorku (pipeline s mrtvou dobou) over OKRAJ mrtve doby: hrana presne N taktu za predchozi musi dostat SVUJ vzorek; testuj periodou rovnou mrtve dobe a o zlomek kolem ni.
+- **Detekce:** `sim/tb_n1.sv` (`run.ps1 n1`): qd pri dekodovani == q_r z taktu pred spustenim. 0x0425: 0 chyb; 0x0424: 1,7 / 44,9 / 99,6 / 21,2 % pri 16,7 / 18 / 20 / 22,5 MHz (shoda s modelem 1,2 / 44 / 100 / 20 %).
+- **Commit:** commit integrace E0 (FW 0x0425)
+- **Stav:** aktivni
+
+### L-0183 - Hrana v taktu nulovani citace okna se ztratila (close+2, FW 0x0425)
+
+- **Datum:** 2026-10-20
+- **Oblast:** FPGA `spi_app.v` (`win_recip`: `count_lo`, `cy_q`, `cl_q2`)
+- **Symptom:** nad ~33 MHz (hrany >= 2 takty od sebe a casto) okno obcas ztratilo hranu -> kmitocet o 1/N mene; kontrola `|ccd| <= 1` to propustila (model `m_win_count.py`: 6 / 60 / 96 % oken pri 34 / 40 / 49 MHz).
+- **Priina:** v taktu `cl_q2` se citac nuloval (`count_lo <= 0`) a hrana, ktera prisla prave v tom taktu, se nezapocetla ani do stareho, ani do noveho okna.
+- **Oprava:** v `cl_q2` `count_lo <= {7'd0, inc}` (hrana se zapocte do noveho okna), prenos `cy_q` blokovany `~cl_q2`.
+- **Pravidlo:** citac, ktery se nuluje v tomtez taktu, kdy muze prijit udalost, musi udalost toho taktu zapocitat do NOVEHO intervalu (`<= inc`, ne `<= 0`); kontrola tolerujici +-1 takovou chybu nikdy neuvidi.
+- **Detekce:** `sim/tb_close2.sv` (`run.ps1 close2`, cely top, 40 MHz): kmitocet kazdeho okna v mezi 2e-6 (ztrata 1 hrany v kratkem SIM_TOP okne = ~1e-5).
+- **Commit:** commit integrace E0 (FW 0x0425)
+- **Stav:** aktivni
+
+### L-0184 - Test na PRESNEM nasobku hodin zastaraly vzorek neodhali
+
+- **Datum:** 2026-10-20
+- **Oblast:** simulace (`sim/tb_n1.sv`)
+- **Symptom:** prvni verze `tb_n1` hlasila u stareho RTL pri 20,0 MHz 0 % chyb, model 100 %.
+- **Priina:** 20,0 MHz = presne 5 taktu 100 MHz -> faze hrany vuci hodinam se nemeni a vsechny vzorky jsou bit po bitu stejne; zastaraly vzorek je k nerozeznani od spravneho (a v tom pripade ani nezpusobi chybu casu). Model pocital identitu vzorku, test jeho hodnotu.
+- **Oprava:** vstup testu `f · (1 + 813 ppm)` (asynchronni k hodinam, faze prochazi) -> starý RTL 99,6 % chyb pri 20 MHz.
+- **Pravidlo:** testovaci signal pro TDC/vzorkovani VZDY mirne rozlad proti hodinam (realny zdroj je asynchronni); presny nasobek hodin schova chyby, ktere zavisi na fazi.
+- **Detekce:** revize testbenchu: perioda vstupu nesmi byt racionalni nasobek periody hodin bez rozladeni.
+- **Commit:** commit integrace E0 (FW 0x0425)
+- **Stav:** aktivni
+
+### L-0185 - Zmena formatu v RTL: upravit VSECHNY testbenche s referencnim modelem, ne jen ty, ktere padly prvni
+
+- **Datum:** 2026-10-20
+- **Oblast:** simulace (`sim/tb_regr_acc.sv`, `sim/tb_tx_equiv.sv`)
+- **Symptom:** po E0 (FW 0x0425) celá sada: `regracc` FAIL (xm z DUT presne 16x model), `txequiv` FAIL (3294 rozdilu).
+- **Priina:** zadna vada RTL. Pri prechodu `xm` z 1/256 na 1/4096 hrany jsem upravil model ve trech testbenchich (`tb_regr_full`, `tb_regr_e2e`, `tb_top_regr`), ale ctvrty (`tb_regr_acc`, `<< 8`) jsem prehlidl. `tb_tx_equiv` srovnava s referenci 0x0424 a nevedel, ze E0 zamerne posila nuly misto ladicich bajtu prijmu (`DBG_RX = 0`: abs 66, 67, 107, 112..117, 124, 125). Navic vypis rozdilu byl omezen na 8 radku, takze nebylo videt, ktere indexy se lisi.
+- **Oprava:** `tb_regr_acc` `<< 12`; `tb_tx_equiv` u DBG_RX bajtu KONTROLUJE nuly (ne preskakuje) a na konci vypise souhrn vsech indexu s rozdilem.
+- **Pravidlo:** pri zmene meritka nebo formatu pole grepni jeho jmeno ve VSECH `sim/*.sv` a uprav kazdy model najednou. Zamerne zmeneny bajt se v ekvivalencnim testu overuje proti nove ocekavane hodnote, nevyrazuje se.
+- **Detekce:** `grep -n "xm\|<< 8" sim/*.sv` pred spustenim sady; souhrn rozdilu podle indexu v `tb_tx_equiv`.
+- **Doplneno 2026-10-21 (treti pripad, `tb_regr_e2e`):** timeout 600 ms, zadne okno s regresnimi daty. Testbench instancuje `win_recip` PRIMO a nezapojil nove vstupy 0x0425 (`alias_lim`, `bub`, `cs_act`, `mask_cs`). Plovouci `mask_cs & cs_act` = `x` -> `want_seg` = `x` -> vnitrni znacky se nespousti. Icarus na nezapojeny vstup nevaruje. Oprava: zapojit vsechny porty (`mask_cs` 1, `cs_act` 0, `alias_lim` 250, `bub` z `tdc_chan.bub_o`).
+- **Pravidlo 2:** pri pridani PORTU do modulu grepni vsechny jeho primé instance v `sim/*.sv` (`grep -n "win_recip\|tdc_chan" sim/*.sv`), nejen `top.v`. Nezapojeny vstup v simulaci = `z`/`x`, ne 0.
+- **Commit:** commit integrace E0 (FW 0x0425)
+- **Stav:** aktivni
+
 ---
 
 ## Archiv (neplatné lekce)

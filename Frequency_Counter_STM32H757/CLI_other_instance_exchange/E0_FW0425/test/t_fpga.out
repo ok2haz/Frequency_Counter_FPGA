@@ -1,0 +1,24 @@
+T1 puvodni selftesty driveru
+fpga: CRC selftest crc16("123456789")=0x29B1 OK
+  OK    fpga_freq_crc_selftest
+fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ + rezerva TDC selftest OK
+  OK    fpga_freq_select_selftest (vcetne regrese, okna, seq)
+T2 fazovy zaznam
+  OK    fpga_phrec_selftest
+T3 adaptivni mez regrese (parse_data)
+  OK    stabilni sum 2e-10: prijato >= 298/300
+        mez po zahrati = 5.00e-09 (ocekavano 5e-9 = dolni mez)
+  OK    mez = dolni mez 5e-9
+  OK    odlehle okno 2e-8 odmitnuto (pevna mez 5e-8 by ho prijala)
+        skok sumu na 1,5e-8: prijato celkem 392/400, poslednich 200: 200
+  OK    po skoku sumu se mez znovu nauci (zadne uzamceni): >= 190/200
+T4 mez primeho mereni (fpga_freq_poll)
+  OK    39 MHz, FW 0x0425: prijato
+  OK    45 MHz, FW 0x0425: FPGA_CHK_FMAX
+  OK    35 MHz, FW 0x0424: FPGA_CHK_FMAX (mez 33 MHz)
+  OK    CH_B 45 MHz: sekundarni slot zneplatnen, primarni plati
+  OK    CH_B 20 MHz: sekundarni slot plati
+        check_stats2: fmax=3 coh=0
+  OK    narust coh_cnt: FPGA_CHK_COH
+
+VYSLEDEK: VSE PROSLO (0 chyb)
