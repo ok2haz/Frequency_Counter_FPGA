@@ -16,12 +16,13 @@ param(
   [string]$Ip = "10.0.0.106",
   [double]$Every = 2,        # perioda dotazu [s]; muze byt i zlomek (0.1)
   [int]$StabEvery = 600,
+  [int]$SatsEvery = 60,      # 0 = nelogovat; kazdych -SatsEvery s ulozi /api/sats (PRN,elev,azim,C/N0,souhvezdi) do <Out>.sats.jsonl
   [double]$MaxMin = 480,
   [switch]$OnNew,            # zapsat radek jen kdyz se zmenil seq_meas (kazde mereni prave jednou; s -Every 0.1 pro hradlo 0,25 s)
   [double]$ExpectGate = 0   # >0: ocekavane hradlo [s]; v preflightu varuje, kdyz neodpovida (sloupec gate_s je v CSV vzdy)
 )
 $ErrorActionPreference = "Continue"
-$ph = "$Out.phase.csv"; $stab = "$Out.stab.jsonl"; $evt = "$Out.events.txt"; $lg = "$Out.log"
+$ph = "$Out.phase.csv"; $stab = "$Out.stab.jsonl"; $sats = "$Out.sats.jsonl"; $evt = "$Out.events.txt"; $lg = "$Out.log"
 
 function Log($s) { $l = "[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] " + $s; Write-Host $l; Add-Content -Path $lg -Encoding ASCII -Value $l }
 function Get-Json($path, $to) { try { return ((Invoke-WebRequest -Uri ("http://" + $Ip + $path) -UseBasicParsing -TimeoutSec $to).Content | ConvertFrom-Json) } catch { return $null } }
@@ -65,7 +66,7 @@ if ($e) { $tot0 = [int]$e.total; ("=== errlog PRED ZACATKEM (total " + $tot0 + "
 else { $tot0 = -1 }
 
 # ---- smycka -----------------------------------------------------------------------------------
-$t0 = Get-Date; $lastStab = (Get-Date).AddSeconds(-$StabEvery); $nok = 0; $nna = 0; $lastUp = -1; $resets = 0; $script:lastSeq = -1
+$t0 = Get-Date; $lastStab = (Get-Date).AddSeconds(-$StabEvery); $lastSats = (Get-Date).AddSeconds(-$SatsEvery); $nok = 0; $nna = 0; $lastUp = -1; $resets = 0; $script:lastSeq = -1
 Log ("START: " + $Out + ", perioda " + $Every + " s, max " + $MaxMin + " min")
 while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
   $tick = Get-Date
@@ -103,6 +104,11 @@ while (((Get-Date) - $t0).TotalMinutes -lt $MaxMin) {
     $bx.Clear(); $by.Clear()
     $st = Get-Json "/api/stab" 6
     if ($st) { Add-Content -Path $stab -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss") + " " + ($st | ConvertTo-Json -Compress -Depth 6)) }
+  }
+  if ($SatsEvery -gt 0 -and ((Get-Date) - $lastSats).TotalSeconds -ge $SatsEvery) {
+    $lastSats = Get-Date
+    $sj = Get-Json "/api/sats" 4
+    if ($sj) { Add-Content -Path $sats -Encoding ASCII -Value ((Get-Date -Format "yyyy-MM-ddTHH:mm:ss") + " " + ($sj | ConvertTo-Json -Compress -Depth 6)) }
   }
   $sl = $Every - ((Get-Date) - $tick).TotalSeconds
   if ($sl -gt 0) { Start-Sleep -Milliseconds ([int]($sl * 1000)) }
