@@ -22,6 +22,7 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ft5x06.h"
 #include "fpga_freq.h"
+#include "fpga_phrec.h"     /* E0 (audit 2026-10-20): fazovy zaznam do `status` */
 #include "w25q.h"          /* W25Q512 QSPI flash — bring-up prikazy qspiid/qspitest */
 #include "w25q_store.h"    /* genericky blob store — prikaz storetest */
 #include "w25q_map.h"      /* region mapa (CONFIG/CALIB/DATA) */
@@ -1487,7 +1488,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2073,6 +2074,39 @@ void UartTask_run(void *argument)
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
 			  }
+			  else if (strcmp(RxBuffer, "gps ack") == 0) {
+				  /* Odpovedi modulu na CFG zpravy (v0.30.6): bez toho se NAK u TMODE2/GNSS neda poznat. */
+				  char abuf[160];
+				  gps_ack_format(abuf, sizeof(abuf));
+				  printf("GPS ACK: %s\n", abuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps gnss gps") == 0 || strcmp(RxBuffer, "gps gnss multi") == 0) {
+				  /* `gps gnss gps` = GPS+SBAS+QZSS (GLONASS vypnut), `gps gnss multi` = + GLONASS. Nepersistuje se (RAM modulu).
+				   * Zmena souhvezdi muze vyvolat novou akvizici (preruseni 1PPS na desitky sekund az minuty). */
+				  int multi = (RxBuffer[9] == 'm');
+				  if (gps_config_gnss_mode(multi != 0))
+					  printf("GPS: UBX-CFG-GNSS odeslano (%s), odpoved modulu: `gps ack`\n", multi ? "GPS+SBAS+QZSS+GLONASS" : "GPS+SBAS+QZSS");
+				  else
+					  printf("GPS: UBX-CFG-GNSS NEODESLANO (USART1 TX obsazen > 200 ms), zkus znovu\n");
+			  }
+			  else if (strcmp(RxBuffer, "gps nav5 stationary") == 0 || strcmp(RxBuffer, "gps nav5 auto") == 0) {
+				  /* UBX-CFG-NAV5 dynModel (v0.30.7): na rozdil od CFG-TMODE2 (survey-in, NEO-7M NAKuje) je NAV5
+				   * standardni zprava, kterou podporuje kazdy u-blox prijimac. Nepersistuje se (RAM modulu). */
+				  bool stat = (RxBuffer[9] == 's');   /* "gps nav5 " = 9 znaku, [9] = prvni znak "stationary"/"auto" (oprava off-by-one, zjisteno na HW) */
+				  gps_config_nav5(stat);
+				  printf("GPS: UBX-CFG-NAV5 odeslano (dynModel %s), odpoved modulu: `gps ack`\n", stat ? "Stationary" : "Portable");
+			  }
+			  else if (strcmp(RxBuffer, "gps survey on") == 0 || strcmp(RxBuffer, "gps survey off") == 0) {
+				  /* Survey-in (UBX-CFG-TMODE2) z konzole: 3600 s / 2,5 m jako tlacitko START v okne SURVEY (v0.30.6).
+				   * NEO-7M nemusi byt timing verze -> NAK; vysledek `gps ack` (radek TMODE2). */
+				  if (RxBuffer[11] == 'o' && RxBuffer[12] == 'n') {
+					  gps_survey_in_cmd(3600u, 2500u);
+					  printf("GPS: UBX-CFG-TMODE2 survey-in odeslano (3600 s, 2500 mm), odpoved modulu: `gps ack`\n");
+				  } else {
+					  gps_survey_disable_cmd();
+					  printf("GPS: UBX-CFG-TMODE2 vypnut (timeMode 0), odpoved modulu: `gps ack`\n");
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
 				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
@@ -2422,9 +2456,46 @@ void UartTask_run(void *argument)
 					  printf("REGR: posledni f_regr %s Hz | f_2pt %s Hz\r\n", a1, a2);
 					  printf("REGR: f_regr - f_2pt: stred %s ppb, sigma %s ppb  (sigma = sum dvoubodoveho odhadu; "
 					         "vetsi nez ~0,5 ppb = TDC sum)\r\n", a3, a4);
-					  printf("REGR: mez konzistence %u ppb, min. znacek %u; zamitnuto = |f_regr/f_2pt - 1| > mez\r\n",
-					         (unsigned)(FPGA_REGR_MAX_REL * 1e9), (unsigned)FPGA_REGR_MIN_N);
+					  {
+						  /* FW E0 (audit 2026-10-20): mez je ADAPTIVNI max(6 sigma_d, 5e-9), strop FPGA_REGR_MAX_REL; vypis aktualni hodnotu */
+						  char a5[16];
+						  uart_regr_fmt(a5, sizeof a5, fpga_freq_regr_limit() * 1e9, 2);
+						  printf("REGR: mez konzistence aktualne %s ppb (adaptivni, strop %u ppb), min. znacek %u; zamitnuto = |f_regr/f_2pt - 1| > mez\r\n",
+						         a5, (unsigned)(FPGA_REGR_MAX_REL * 1e9), (unsigned)FPGA_REGR_MIN_N);
+					  }
 				  }
+			  }
+			  else if (strncmp(RxBuffer, "fpga diag", 9) == 0 && (RxBuffer[9] == '\0' || RxBuffer[9] == ' ')) {
+				  /* FW >= 0x0425 (caps bit14, E0 audit 2026-10-20): SET_CONFIG 0x05. `fpga diag` = stav,
+				   * `fpga diag mask on|off` = maskovani vnitrnich znacek pri CS SPI (vychozi FPGA ON),
+				   * `fpga diag led on|off` = heartbeat LED PIN29 (vychozi FPGA OFF; PIN29 je v bance 2 s CH_A/B).
+				   * STM si pamatuje jen to, co POSLAL: po resetu/nahrani FPGA plati zase vychozi stav FPGA (mask 1, led 0). */
+				  static uint8_t s_dg_mask = 1u, s_dg_led = 0u;
+				  const char *a = RxBuffer + 9;
+				  while (*a == ' ') a++;
+				  int send = 0;
+				  if      (strcmp(a, "mask on")  == 0) { s_dg_mask = 1u; send = 1; }
+				  else if (strcmp(a, "mask off") == 0) { s_dg_mask = 0u; send = 1; }
+				  else if (strcmp(a, "led on")   == 0) { s_dg_led  = 1u; send = 1; }
+				  else if (strcmp(a, "led off")  == 0) { s_dg_led  = 0u; send = 1; }
+				  else if (*a != '\0') { printf("FPGA DIAG: pouziti `fpga diag` | `fpga diag mask on|off` | `fpga diag led on|off`\r\n"); }
+				  fpga_meas_t dm; memset(&dm, 0, sizeof dm);
+				  int hf = fpga_freq_get_frame(&dm);
+				  if (send) {
+					  if (hf && !(dm.caps & FPGA_CAP_DIAG0))
+						  printf("FPGA DIAG: FPGA FW 0x%04X SET_CONFIG 0x05 nezna (potrebuje >= 0x0425, caps bit14) -- posilam presto\r\n", (unsigned)dm.fw_version);
+					  printf("FPGA DIAG: SET_CONFIG 0x05 mask_cs=%u led_hb=%u -> %s\r\n", (unsigned)s_dg_mask, (unsigned)s_dg_led,
+					         fpga_freq_set_diag(s_dg_mask, s_dg_led) ? "odeslano" : "NEODESLANO (emulace / bez initu / SPI chyba)");
+				  }
+				  printf("FPGA DIAG: posledni poslano mask_cs=%u led_hb=%u (po resetu FPGA plati vychozi mask 1, led 0)\r\n",
+				         (unsigned)s_dg_mask, (unsigned)s_dg_led);
+				  if (hf && (dm.caps & FPGA_CAP_DIAG0) && dm.diag0_ok)
+					  printf("FPGA DIAG: koherence 100/10 MHz %s (posl. epocha %s, od nahrani %s), chybnych epoch %u | bubliny okna P %u S %u | znacky pri CS P %u S %u\r\n",
+					         (dm.coh_st & 1u) ? "platne" : "neplatne (ext. reference / nabeh)", (dm.coh_st & 2u) ? "OK" : "CHYBA",
+					         (dm.coh_st & 4u) ? "CHYBA" : "bez chyby", (unsigned)dm.coh_cnt,
+					         (unsigned)dm.bub_p, (unsigned)dm.bub_s, (unsigned)dm.ovl_p, (unsigned)dm.ovl_s);
+				  else
+					  printf("FPGA DIAG: ramec diagnostiku nenese (FW < 0x0425 / bez linku)\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "tdc hist") == 0) {
 				  /* Vypis histogramu kalibrace TDC (FW >= 0x040B): radky "k;A;B" pro kody
@@ -3627,6 +3698,36 @@ void UartTask_run(void *argument)
 							    fpga_freq_miscount_stats(&mp, &mn);
 							    printf("  CITANI HRAN: okno s hranou navic %lu, s chybejici %lu (nezobrazeno, mimo statistiku)%s\n",
 							           (unsigned long)mp, (unsigned long)mn, (mp + mn) ? "  <== FPGA metastabilita" : "");
+							  }
+							  {
+							    /* FW 0x0425 / E0 (audit 2026-10-20): diagnostika O4, hlidac koherence, nove kontroly okna, adaptivni mez
+							     * regrese, sum 1PPS za behu a fazovy zaznam (E1). Detail `fpga diag`, `regr`, `gpsdo`. */
+							    uint32_t fmx = 0u, coh = 0u;
+							    fpga_freq_check_stats2(&fmx, &coh);
+							    if ((m.caps & FPGA_CAP_DIAG0) && m.diag0_ok)
+							      printf("  FPGA DIAG: koherence 100/10 MHz %s, chybnych epoch %u | bubliny okna P %u S %u | znacky pri CS P %u S %u%s\n",
+							             (m.coh_st & 1u) ? ((m.coh_st & 2u) ? "OK" : "CHYBA") : "neplatne", (unsigned)m.coh_cnt,
+							             (unsigned)m.bub_p, (unsigned)m.bub_s, (unsigned)m.ovl_p, (unsigned)m.ovl_s,
+							             (m.coh_st & 4u) ? "  <== od nahrani FPGA byla chyba koherence hodin" : "");
+							    printf("  FPGA KONTROLY E0: okno nad mezi primeho mereni %lu, chyba koherence %lu (odmitnuto)%s\n",
+							           (unsigned long)fmx, (unsigned long)coh, (fmx + coh) ? "  <== viz `fpga diag`" : "");
+							  }
+							  {
+							    char l1[16], l2[16], a4[16], a40[16], a400[16];
+							    uart_regr_fmt(l1, sizeof l1, fpga_freq_regr_limit() * 1e9, 2);
+							    uart_regr_fmt(l2, sizeof l2, gpsdo_pm_ns(), 2);
+							    printf("  REGR MEZ: aktualne %s ppb (adaptivni) | sum odectu 1PPS %s ns (za behu)\n", l1, l2);
+							    fpga_phrec_info_t pi;
+							    fpga_phrec_info(&pi);
+							    /* ADEV z faze v jednotkach 1e-15 (bez %f, nano.specs); v zavorce pocet clenu */
+							    uint32_t t4 = 0u, t40 = 0u, t400 = 0u;
+							    double d4 = fpga_phrec_adev(4u, &t4), d40 = fpga_phrec_adev(40u, &t40), d400 = fpga_phrec_adev(400u, &t400);
+							    uart_regr_fmt(a4,   sizeof a4,   d4   * 1e15, 0);
+							    uart_regr_fmt(a40,  sizeof a40,  d40  * 1e15, 0);
+							    uart_regr_fmt(a400, sizeof a400, d400 * 1e15, 0);
+							    printf("  FAZOVY ZAZNAM: selftest %s | usek %lu bodu, useku %lu, predano %lu, pouzito %lu | ADEV z faze e-15: m4 %s (%lu) m40 %s (%lu) m400 %s (%lu)\n",
+							           fpga_freq_phrec_selftest_ok() ? "OK" : "FAIL", (unsigned long)pi.n, (unsigned long)pi.runs,
+							           (unsigned long)pi.fed, (unsigned long)pi.used, a4, (unsigned long)t4, a40, (unsigned long)t40, a400, (unsigned long)t400);
 							  }
 						  }
 					  }

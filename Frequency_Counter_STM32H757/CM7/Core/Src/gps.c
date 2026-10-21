@@ -471,6 +471,22 @@ void gps_survey_disable_cmd(void)
   ubx_send(0x06, 0x3D, pl, 28);
 }
 
+/* UBX-CFG-NAV5 (0x06 0x24, 36 B): dynModel (off 2) = 0 Portable / 2 Stationary / 4 Automotive / ...
+ * STANDARDNI zprava, kterou podporuji VSECHNY u-blox prijimace (ne jen timing rada) — na rozdil
+ * od CFG-TMODE2 (ta NEO-7M odmita, viz gps_survey_in_cmd). Stationary rekne navigacnimu filtru
+ * "nehybu se", takze neplytva sumem na odhad rychlosti; podle nezavisleho mereni (N8UR, TAPR DCC
+ * 2020) to zlepsuje ADEV 1PPS od tau ~30 s vyse, krátkodobe skoro nic. mask (off 0) = jen bit0
+ * (dyn) -> meni se VYHRADNE dynModel, zbytek parametru (maskValid=0) zustava na hodnote prijimace.
+ * Konfigurace zije jen v RAM modulu (jako TP5), po resetu se ztrati — zadne periodicke obnoveni
+ * (na rozdil od TP5), posila se jen na vyzadani (UART "gps nav5 stationary|auto"). */
+void gps_config_nav5(bool stationary)
+{
+  uint8_t pl[36] = {0};
+  pl[0] = 0x01; pl[1] = 0x00;                 /* mask = bit0 (dyn), zbytek nemenit */
+  pl[2] = stationary ? 2u : 0u;                /* dynModel: 2 Stationary / 0 Portable */
+  ubx_send(0x06, 0x24, pl, 36);
+}
+
 /* Jeden 8B blok CFG-GNSS: gnssId, resTrkCh, maxTrkCh, flags (enable + L1 sigCfg). */
 static void gnss_block(uint8_t *b, uint8_t gnss_id, uint8_t res, uint8_t max, uint8_t en)
 {
@@ -484,7 +500,7 @@ static void gnss_block(uint8_t *b, uint8_t gnss_id, uint8_t res, uint8_t max, ui
  * best-effort, JEN na explicitní vyžádání (UART "gps glonass").
  * @return vysledek ubx_send: true = prenos spusten (ACK se necte, prijeti
  *         modulem to nedokazuje), false = neodeslano (audit F-0227). */
-bool gps_config_gnss(void)
+bool gps_config_gnss_mode(bool glonass)
 {
   uint8_t pl[4 + 4 * 8] = {0};
   pl[0] = 0;      /* msgVer */
@@ -494,9 +510,11 @@ bool gps_config_gnss(void)
   gnss_block(&pl[4],  0, 8, 16, 1);   /* GPS L1C/A */
   gnss_block(&pl[12], 1, 1,  3, 1);   /* SBAS */
   gnss_block(&pl[20], 5, 0,  3, 1);   /* QZSS (nutné s GPS) */
-  gnss_block(&pl[28], 6, 8, 14, 1);   /* GLONASS L1OF */
+  gnss_block(&pl[28], 6, 8, 14, glonass ? 1u : 0u);   /* GLONASS L1OF: zapnuto / explicitne vypnuto */
   return ubx_send(0x06, 0x3E, pl, sizeof pl);
 }
+
+bool gps_config_gnss(void) { return gps_config_gnss_mode(true); }
 
 /* ── Verejne API ───────────────────────────────────────────────────────── */
 void gps_init(void)
@@ -562,9 +580,53 @@ static uint32_t    s_ubx_rx_ok, s_ubx_rx_bad; /* prijate UBX ramce se spravnym /
 static gps_timtp_t s_tp_last, s_tp_prev;
 static uint8_t     s_tp_have;
 
+/* Odpoved modulu (UBX-ACK-ACK 0x05 0x01 / ACK-NAK 0x05 0x00, payload = cls, id) na nase CFG zpravy.
+ * Pocita se jen u zprav, jejichz prijeti je pro mereni podstatne; poslani samo prijeti NEDOKAZUJE (ubx_send vraci true uz po
+ * zahajeni prenosu). last: 0 = zatim nic, 1 = posledni odpoved ACK, 2 = NAK. */
+typedef struct { uint8_t cls, id, last; uint16_t ack, nak; const char *name; } ubx_ack_t;
+static ubx_ack_t s_ack_tab[] = {
+  { 0x06, 0x3D, 0, 0, 0, "TMODE2" },   /* survey-in / time mode */
+  { 0x06, 0x3E, 0, 0, 0, "GNSS" },     /* souhvezdi */
+  { 0x06, 0x24, 0, 0, 0, "NAV5" },     /* dynModel (stationary) */
+  { 0x06, 0x31, 0, 0, 0, "TP5" },      /* timepulse (posila se 1x/min) */
+  { 0x06, 0x01, 0, 0, 0, "MSG" },      /* TIM-TP rate (1x/min) */
+};
+
+static void ubx_ack_note(uint8_t cls, uint8_t id, uint8_t is_ack)
+{
+  for (unsigned i = 0; i < sizeof s_ack_tab / sizeof s_ack_tab[0]; i++) {
+    if (s_ack_tab[i].cls == cls && s_ack_tab[i].id == id) {
+      taskENTER_CRITICAL();
+      s_ack_tab[i].last = is_ack ? 1u : 2u;
+      if (is_ack) { if (s_ack_tab[i].ack < 0xFFFFu) s_ack_tab[i].ack++; }
+      else        { if (s_ack_tab[i].nak < 0xFFFFu) s_ack_tab[i].nak++; }
+      taskEXIT_CRITICAL();
+      return;
+    }
+  }
+}
+
+/* Souhrn odpovedi modulu na vybrane CFG zpravy: `<jmeno> ack/nak posledni`. */
+void gps_ack_format(char *buf, int n)
+{
+  static const char *const L[3] = { "-", "ACK", "NAK" };
+  int pos = 0;
+  buf[0] = '\0';
+  for (unsigned i = 0; i < sizeof s_ack_tab / sizeof s_ack_tab[0] && pos < n; i++) {
+    uint8_t last; uint16_t a, k;
+    taskENTER_CRITICAL();
+    last = s_ack_tab[i].last; a = s_ack_tab[i].ack; k = s_ack_tab[i].nak;
+    taskEXIT_CRITICAL();
+    pos += snprintf(buf + pos, (size_t)(n - pos), "%s%s %u/%u %s", i ? " | " : "", s_ack_tab[i].name,
+                    (unsigned)a, (unsigned)k, L[last > 2u ? 0 : last]);
+  }
+}
+
 static void ubx_frame_done(void)
 {
   s_ubx_rx_ok++;
+  if (s_ubx_cls == 0x05 && (s_ubx_id == 0x00 || s_ubx_id == 0x01) && s_ubx_len == 2u)
+    ubx_ack_note(s_ubx_pl[0], s_ubx_pl[1], (uint8_t)(s_ubx_id == 0x01));
   if (s_ubx_cls == 0x0D && s_ubx_id == 0x01 && s_ubx_len == 16u) {
     const uint8_t *p = s_ubx_pl;
     gps_timtp_t e;

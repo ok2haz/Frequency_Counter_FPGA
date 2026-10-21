@@ -9,6 +9,23 @@
 #include "sensor_stat.h"  /* g_sensors[].err_total/samples do diagnostiky I2C1 */
 #include "cmsis_os2.h"   /* SPI2 mutex: FpgaTask poll vs UART fpgaraw/fpgaloop */
 #include "gpsdo.h"       /* gpsdo_sim_dac_code — emulator 1PPS ladi OCXO podle kodu DAC */
+#include "fpga_phrec.h"  /* audit 2026-10-20 (E1): fazovy zaznam z teziste segmentu, kmitocet centroid-to-centroid */
+#include "fpga_crc.h"    /* optimalizace 6: kontrola CRC prijateho ramce (SW tabulka, volitelne HW jednotka FPGA_CRC_USE_HW) */
+/* Optimalizace 6: datova faze SPI pres DMA. 0 = blokujici HAL_SPI_TransmitReceive jako dosud. 1 az po konfiguraci CubeMX
+ * (DMA streamy SPI2, NVIC, sekce FPGA_DMA_SECTION, callbacky) -- 2026-10-20_CRC_DMA_zadani_CLI.md. */
+#ifndef FPGA_SPI_USE_DMA
+#define FPGA_SPI_USE_DMA 0
+#endif
+#if FPGA_SPI_USE_DMA
+#include "fpga_spi_dma.h"
+#endif
+
+/* Audit 2026-10-20 (E1): 1 = delka okna pro VSECHNY dalsi vypocty (statistika, datalog, IPC) je gate_cc_ps (kmitocet mezi
+ * tezisti sousednich oken; Σcykly/Σhradla pak teleskopuje -> spravna ADEV pro bily PM pristroje). 0 = dnesni chovani
+ * (N / f_regr v okne). Prepnout na 1 az po overeni E1 offline (dokument auditu, kap. E1). */
+#ifndef FPGA_STATS_USE_CC
+#define FPGA_STATS_USE_CC 0
+#endif
 #include <string.h>
 #include <stdio.h>
 #include <math.h>     /* fabs v selftestu */
@@ -77,6 +94,10 @@ static uint32_t s_seq_resync = 0u;         /* skoky/navraty (reset FPGA, start e
 static int      s_poll_chk   = FPGA_CHK_OK;   /* vysledek posledniho vraceneho mereni */
 static uint32_t s_chk_count  = 0u, s_chk_clock = 0u, s_chk_window = 0u;
 static uint16_t s_prev_loss  = 0xFFFFu;    /* clk_loss predchoziho ramce (0xFFFF = zatim zadny) */
+static uint16_t s_prev_coh   = 0xFFFFu;    /* FW 0x0425: coh_cnt predchoziho ramce */
+static uint32_t s_chk_fmax   = 0u, s_chk_coh = 0u, s_chk_fmax_b = 0u;
+static uint8_t  s_phrec_selftest_ok = 0u;   /* audit 2026-10-20: vysledek fpga_phrec_selftest pri startu */
+uint8_t fpga_freq_phrec_selftest_ok(void) { return s_phrec_selftest_ok; }   /* FW 0x0425: odmitnuta okna nad mezi primeho mereni / chyba koherence */
 static uint8_t  s_prev_win   = 0xFFu;      /* echo hradla predchoziho ramce: okno pres zmenu hradla se neposuzuje */
 static uint32_t s_dbg_frames = 0u, s_dbg_new = 0u, s_dbg_valid = 0u;   /* v22: platne DATA ramce / nova mereni / ramce s DATA_VALID */
 static uint32_t s_rej_seq    = 0u;         /* SEQUENCE naposledy odmitnuteho mereni ... */
@@ -126,7 +147,23 @@ static uint64_t freq_x1e5_from(uint64_t edges, uint64_t gate_ps)
 }
 
 /* === CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflect, xorout 0) === */
+/* Optimalizace 5 (2026-10-20): CRC-16/CCITT-FALSE pres pulbajtovou tabulku (16 polozek, 32 B flash). Bez vetveni ve smycce;
+ * na PC 1,6x rychlejsi nez bitova smycka, na CM7 odhadem 2-3x (pro ramec v3 1024 B desitky us -> jednotky az desitky us).
+ * Nejlepsi pro v3: HW jednotka CRC STM32H7 (polynom 0x1021, init 0xFFFF, bez reflexe = CCITT-FALSE) -- 0 % CPU.
+ * Vysledek je bit po bitu stejny (crc16_ccitt_ref; overeno v selftestu i na hostu na nahodnych datech 1..1024 B). */
+static const uint16_t k_crc_nib[16] = {
+    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
+    0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF };
 static uint16_t crc16_ccitt(const uint8_t *d, int n)
+{
+    uint16_t crc = 0xFFFF;
+    for (int i = 0; i < n; i++) {
+        crc = (uint16_t)((crc << 4) ^ k_crc_nib[(crc >> 12) ^ (d[i] >> 4)]);
+        crc = (uint16_t)((crc << 4) ^ k_crc_nib[(crc >> 12) ^ (d[i] & 0x0Fu)]);
+    }
+    return crc;
+}
+static uint16_t crc16_ccitt_ref(const uint8_t *d, int n)   /* bitova reference (selftest) */
 {
     uint16_t crc = 0xFFFF;
     for (int i = 0; i < n; i++) {
@@ -192,7 +229,15 @@ static bool xfer_raw(const uint8_t *tx, uint8_t *rx)
 {
     cs_low();
     delay_us(FPGA_CS_GAP_US);                         /* CS low -> 1. SCK (>=1 us) */
+#if FPGA_SPI_USE_DMA
+    /* DMA jen pod schedulerem a mimo preruseni; pri chybe se transakce UKONCI (CS high) a vrati false -- zadna druha datova
+     * faze pod stejnym CS (FPGA by videla delsi ramec). Po 3 chybach za sebou modul DMA vypne a jede se blokujici cestou. */
+    HAL_StatusTypeDef st;
+    if (fpga_spi_dma_ready()) st = fpga_spi_dma_txrx(tx, rx, FR_LEN, 100) ? HAL_OK : HAL_ERROR;
+    else                      st = HAL_SPI_TransmitReceive(&hspi2, (uint8_t *)tx, rx, FR_LEN, 100);
+#else
     HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(&hspi2, (uint8_t *)tx, rx, FR_LEN, 100);
+#endif
     delay_us(FPGA_CS_GAP_US);                         /* posledni SCK -> CS high (>=1 us) */
     cs_high();
     delay_us(FPGA_FRAME_GAP_US);                      /* pauza mezi ramci (>=20 us) */
@@ -244,6 +289,15 @@ uint32_t fpga_freq_crc_last_age_s(void)
  * jinak nase CRC neodpovida FPGA a nesmime nic posilat. */
 bool fpga_freq_crc_selftest(void)
 {
+    /* optimalizace 5: tabulkova CRC = bitova reference (pseudonahodne ramce 1..1024 B) */
+    {   uint8_t buf[1024]; uint32_t r = 0xC0FFEEu; int same = 1;
+        for (int t = 0; t < 64 && same; t++) {
+            int n = 1 + (int)(r % 1024u);
+            for (int i = 0; i < n; i++) { r = r * 1664525u + 1013904223u; buf[i] = (uint8_t)(r >> 24); }
+            same = (crc16_ccitt(buf, n) == crc16_ccitt_ref(buf, n));
+        }
+        if (!same) { printf("fpga: CRC tabulka != reference\n"); return false; }
+    }
     static const uint8_t v[9] = { '1','2','3','4','5','6','7','8','9' };
     uint16_t c = crc16_ccitt(v, 9);
     bool ok = (c == 0x29B1);
@@ -257,7 +311,13 @@ void fpga_freq_init(void)
     dwt_init();                  /* cyklovy citac pro presne us prodlevy */
 
     if (s_spi_mtx == NULL) s_spi_mtx = osMutexNew(NULL);   /* serializace xfer() */
+    fpga_crc_init();                                      /* optimalizace 6: SW tabulka; HW jednotka jen s FPGA_CRC_USE_HW */
+#if FPGA_SPI_USE_DMA
+    (void)fpga_spi_dma_init(&hspi2);                      /* false = DMA nepouzitelne -> blokujici prenos (stav v fpga_spi_dma_stats) */
+#endif
 
+    /* audit 2026-10-20 (E1): fazovy zaznam -- selftest neblokuje SPI (jen hlaseni), stav se vynuluje */
+    s_phrec_selftest_ok = (uint8_t)fpga_phrec_selftest();
     if (!fpga_freq_crc_selftest()) {
         /* CRC build neodpovida FPGA -> nezahajovat komunikaci (kontrakt bod 7.1) */
         printf("fpga: CRC selftest FAIL - SPI komunikace NEZAHAJENA\n");
@@ -446,7 +506,8 @@ static void sim_build_frame(uint8_t *f, int fresh)
     for (int i = 0; i < 4; i++) pl[40 + i] = (uint8_t)(s_sim_pps_ts >> (8 * i));   /* abs 52..55: 1PPS (FW 0x0424) */
     pl[44] = s_sim_pps_seq;                          /* abs 56 */
     pl[48] = 0x00; pl[49] = 0x04;                    /* fw_version 0x0400 (abs 60-61) */
-    pl[50] = 0x23; pl[51] = 0x30;                    /* caps 0x3023 (abs 62-63): bit12 = abs 99 hodiny, bit13 = 1PPS */
+    pl[50] = 0x23; pl[51] = 0x70;                    /* caps 0x7023 (abs 62-63): bit12 = abs 99 hodiny, bit13 = 1PPS, bit14 = diagnostika E0 */
+    pl[45] = 0u; pl[46] = 0u; pl[47] = 0u;           /* abs 57..59 (caps bit14): bubliny P/S, znacky pri CS -- emulator bez ruseni */
     pl[87] = (uint8_t)SIM_CLK_MHZ;                   /* abs 99: hodiny FPGA [MHz] */
     pl[52] = 0x01;                                   /* clk_status */
     pl[88] = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B |
@@ -466,6 +527,8 @@ static void sim_build_frame(uint8_t *f, int fresh)
     f[6] = (uint8_t)(s_sim_seq >> 16);
     f[7] = (uint8_t)(s_sim_seq >> 24);
     f[8] = FR_PAYLOAD_MAX;                           /* PAYLOAD_LEN */
+    f[10] = 0x03u;                                   /* abs 10 (caps bit14): hlidac koherence platny, posledni epocha OK */
+    f[11] = 0u;                                      /* abs 11: chybnych epoch 0 */
     memcpy(&f[FR_PAYLOAD], pl, sizeof pl);
 
     uint16_t crc = crc16_ccitt(f, FR_CRC_LEN);
@@ -537,11 +600,27 @@ int fpga_sim_fault(const char *what)
 /* ── regrese (FW >= 0x0411) ────────────────────────────────────────────────── */
 static uint32_t s_rg_win = 0u, s_rg_used = 0u, s_rg_rej = 0u, s_rg_nl[2] = { 0u, 0u };
 static double   s_rg_fr = 0.0, s_rg_f2 = 0.0, s_rg_s1 = 0.0, s_rg_s2 = 0.0;   /* Σd, Σd² [relativne] */
+static double   s_rg_ewma = 0.0;          /* audit 2026-10-20: EWMA |d| prijatych oken (robustni odhad sigma_d) */
+/* Kriticka analyza 2: EWMA se uci jen z PRIJATYCH oken -> kdyby sum zdroje vzrostl, mez by odmitala vse a uz se nezvetsila
+ * (uzamceni). Po FPGA_REGR_REJ_RESET odmitnutich za sebou se adaptace vrati na zahrivani (pevna mez 5e-8). */
+static uint32_t s_rg_adapt_n = 0u, s_rg_rej_run = 0u;
+#define FPGA_REGR_REJ_RESET 16u
 
 void fpga_freq_regr_reset(void)
 {
     s_rg_win = s_rg_used = s_rg_rej = 0u; s_rg_nl[0] = s_rg_nl[1] = 0u;
     s_rg_fr = s_rg_f2 = s_rg_s1 = s_rg_s2 = 0.0;
+    s_rg_ewma = 0.0; s_rg_adapt_n = 0u; s_rg_rej_run = 0u;
+}
+
+/* Audit 2026-10-20: adaptivni mez prijeti regrese (viz FPGA_REGR_K_SIGMA v .h). */
+double fpga_freq_regr_limit(void)
+{
+    if (s_rg_adapt_n < FPGA_REGR_WARMUP || s_rg_ewma <= 0.0) return FPGA_REGR_MAX_REL;
+    double lim = FPGA_REGR_K_SIGMA * s_rg_ewma * 1.2533141373155;
+    if (lim < FPGA_REGR_MIN_REL) lim = FPGA_REGR_MIN_REL;
+    if (lim > FPGA_REGR_MAX_REL) lim = FPGA_REGR_MAX_REL;
+    return lim;
 }
 
 void fpga_freq_regr_stat(fpga_regr_stat_t *o)
@@ -590,12 +669,18 @@ static uint64_t rd_le40(const uint8_t *p) { return (uint64_t)rd_le32(p) | ((uint
  *  f = (xB - xA) / (yB - yA); x = index hrany (v 1/256), y = cas (v 1/16 jednotky T/16384 = 15625/(256*clk_mhz) ps;
  *  100 MHz 0,6103515625 ps).
  *  @return 0.0 = nelze (B <= A, nulovy jmenovatel). */
-double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz)
+double fpga_freq_regr_hz2(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz, uint16_t xdiv)
 {
     if (xm_b <= xm_a || ym_b <= ym_a) return 0.0;
-    double dx = (double)(xm_b - xm_a) / 256.0;                              /* hrany */
+    double dx = (double)(xm_b - xm_a) / (double)(xdiv ? xdiv : 256u);   /* audit 4: 1/256 nebo 1/4096 hrany */                              /* hrany */
     double dy = (double)(ym_b - ym_a) / 16.0 * 15625.0 / (256.0 * (double)(clk_mhz ? clk_mhz : 100u));   /* ps */
     return dx / dy * 1e12;
+}
+
+/* puvodni rozhrani (xm v 1/256 hrany) -- selftesty, emulator */
+double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz)
+{
+    return fpga_freq_regr_hz2(xm_a, xm_b, ym_a, ym_b, clk_mhz, 256u);
 }
 
 /* ── GPS 1PPS (FW >= 0x0424, STATUS #305) ───────────────────────────────────────────────────────
@@ -675,6 +760,14 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     m->pps_ok  = (m->caps & FPGA_CAP_PPS) ? 1u : 0u;
     m->pps_ts  = m->pps_ok ? rd_le32(p + 40) : 0u;   /* abs 52..55 */
     m->pps_seq = m->pps_ok ? p[44] : 0u;              /* abs 56 */
+    /* FW >= 0x0425 (caps bit14): diagnostika O4 + hlidac koherence (abs 10/11 lezi v hlavicce, rx[10]/rx[11]) */
+    m->diag0_ok = (m->caps & FPGA_CAP_DIAG0) ? 1u : 0u;
+    m->coh_st   = m->diag0_ok ? rx[10] : 0u;
+    m->coh_cnt  = m->diag0_ok ? rx[11] : 0u;
+    m->bub_p    = m->diag0_ok ? p[45] : 0u;               /* abs 57 */
+    m->bub_s    = m->diag0_ok ? p[46] : 0u;               /* abs 58 */
+    m->ovl_p    = m->diag0_ok ? (uint8_t)(p[47] & 0x0Fu) : 0u;   /* abs 59 */
+    m->ovl_s    = m->diag0_ok ? (uint8_t)(p[47] >> 4) : 0u;
     if (m->caps & FPGA_CAP_SELFCHK) {
         /* FW >= 0x041F: abs 12..19 nese identitu bitstreamu (frequency_x100000 tam bylo od FW 0x0400 vzdy 0
          * a nize se stejne prepocita z dt) a abs 97/98 kontrolni rozdil pocitani hran. */
@@ -694,7 +787,8 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
         m->tdc_status = p[88];
         m->dt_b_ps    = dt_units_to_ps(rd_le48(p + 89), m->clk_mhz);
         m->edges_b    = rd_le32(p + 96);
-        m->gate_ps    = dt_units_to_ps(rd_le64(p + 106) & 0xFFFFFFFFFFFFull, m->clk_mhz);
+        m->dt_units   = rd_le64(p + 106) & 0xFFFFFFFFFFFFull;
+        m->gate_ps    = dt_units_to_ps(m->dt_units, m->clk_mhz);
         m->gate2_ps   = m->gate_ps;
         m->regr_used  = 0u; m->f_regr_hz = 0.0; m->rg_ok = 0u;
         m->codes_ok   = 0u;
@@ -713,20 +807,33 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
             if (m->rg_ok == 3u && m->edge_count > 0u && m->gate_ps > 0u) {
                 s_rg_win++; s_rg_nl[0] = m->rg_n[0]; s_rg_nl[1] = m->rg_n[1];
                 double f2 = (double)m->edge_count * 1e12 / (double)m->gate_ps;
-                double fr = fpga_freq_regr_hz(m->rg_xm[0], m->rg_xm[1], m->rg_ym[0], m->rg_ym[1], m->clk_mhz);
+                m->rg_xdiv = (m->caps & FPGA_CAP_XM12) ? 4096u : 256u;   /* audit 4 */
+                double fr = fpga_freq_regr_hz2(m->rg_xm[0], m->rg_xm[1], m->rg_ym[0], m->rg_ym[1], m->clk_mhz, m->rg_xdiv);
                 s_rg_f2 = f2;
-                if (m->rg_n[0] >= FPGA_REGR_MIN_N && m->rg_n[1] >= FPGA_REGR_MIN_N && fr > 0.0 &&
-                    fabs(fr / f2 - 1.0) < FPGA_REGR_MAX_REL) {
+                /* Optimalizace 3 (test T3 na hostu): sigma rozdilu d se uci ze VSECH oken s platnou regresi, ne jen z prijatych --
+                 * uceni z prijatych dava useknute rozdeleni (sigma podhodnocena, mez se sama zuzuje) a po skoku sumu zdroje mez
+                 * odmitala ~15 % oken trvale. |d| se oreze na FPGA_REGR_MAX_REL (vzacne odlehle okno mez nerozhodi). Rozhoduje se
+                 * mezi spoctenou PRED zapocitanim tohoto okna. */
+                int rg_in = (m->rg_n[0] >= FPGA_REGR_MIN_N && m->rg_n[1] >= FPGA_REGR_MIN_N && fr > 0.0);
+                double d = rg_in ? (fr / f2 - 1.0) : 0.0;
+                double lim = fpga_freq_regr_limit();
+                if (rg_in) {
+                    double ad = fabs(d); if (ad > FPGA_REGR_MAX_REL) ad = FPGA_REGR_MAX_REL;
+                    s_rg_ewma = (s_rg_adapt_n == 0u) ? ad : s_rg_ewma + (ad - s_rg_ewma) * (1.0 / 64.0);
+                    s_rg_adapt_n++;
+                }
+                if (rg_in && fabs(d) < lim) {
                     /* efektivni delka okna N / f_regr: vsechny dalsi vypocty (hi-res, akumulatory, datalog,
                      * IPC, SCPI) pak dostanou regresni kmitocet bez dalsich zmen. Rozdil proti skutecne
                      * delce je <~ 1e-8 relativne (ns u okna 0,25 s) -- pro ucetnictvi casu zanedbatelny. */
                     double g = (double)m->edge_count * 1e12 / fr;
                     m->gate_ps = (uint64_t)(g + 0.5);
                     m->f_regr_hz = fr; m->regr_used = 1u;
-                    double d = fr / f2 - 1.0;
                     s_rg_used++; s_rg_fr = fr; s_rg_s1 += d; s_rg_s2 += d * d;
+                    s_rg_rej_run = 0u;
                 } else {
                     s_rg_rej++;
+                    if (++s_rg_rej_run >= FPGA_REGR_REJ_RESET) { s_rg_ewma = 0.0; s_rg_adapt_n = 0u; s_rg_rej_run = 0u; }
                 }
             }
         }
@@ -741,6 +848,7 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
         m->gate_ps    = fpga_freq_dt_ticks(m->gate_time_ns) * FPGA_LEGACY_TICK_PS;
         m->gate2_ps   = m->gate_ps;
         m->regr_used  = 0u; m->f_regr_hz = 0.0; m->rg_ok = 0u;
+        m->dt_units   = 0u;
     }
 }
 
@@ -767,9 +875,8 @@ bool fpga_freq_poll(fpga_meas_t *out)
 
     if (rx[0] != FR_MAGIC) { s_link_ok = 0; return false; }
 
-    uint16_t crc_calc = crc16_ccitt(rx, FR_CRC_LEN);
     uint16_t crc_rx   = (uint16_t)rx[126] | ((uint16_t)rx[127] << 8);
-    if (crc_calc != crc_rx) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s_link_ok = 0; return false; }
+    if (!fpga_crc16_check(rx, FR_CRC_LEN, crc_rx)) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s_link_ok = 0; return false; }
 
     s_link_ok = 1;   /* platny ramec dorazil -> link je ziva (i kdyz neni nove mereni) */
 
@@ -814,6 +921,28 @@ bool fpga_freq_poll(fpga_meas_t *out)
         if (is_new && (!(tmp.clk_status & FPGA_CLK_OK) || (tmp.clk_status & FPGA_CLK_RECOVER) || loss_new))
             chk = FPGA_CHK_CLOCK;
     }
+    /* FW >= 0x0425: prisny hlidac koherence -- jen NARUST citace (nova FPGA zacina od 0) */
+    if (tmp.diag0_ok) {
+        int coh_new = (s_prev_coh != 0xFFFFu) && (tmp.coh_cnt > s_prev_coh);
+        s_prev_coh = tmp.coh_cnt;
+        /* audit 4: pri externi referenci (clk_status bit3) nejsou 100 MHz a REF_10MHz koherentni -- FPGA 0x0425 hlidac vypina,
+         * STM pro jistotu chybu koherence v tom rezimu ignoruje */
+        if (is_new && chk == FPGA_CHK_OK && coh_new && !(tmp.clk_status & 0x08u)) chk = FPGA_CHK_COH;
+    }
+    /* Audit 2026-10-20: kmitocet nad mezi primeho mereni = okno muze mit spatny pocet period bez priznaku -> odmitnout */
+    /* Kriticka analyza 2: NE pro emulator (`fpgasim on 1400000000` testuje formatovani do GHz) */
+    if (is_new && chk == FPGA_CHK_OK && !s_sim_on && (tmp.caps & FPGA_CAP_DT) && tmp.gate2_ps > 0u && tmp.edge_count > 0u) {
+        double fmax = (tmp.fw_version >= 0x0425u) ? FPGA_DIRECT_MAX_HZ : FPGA_DIRECT_MAX_HZ_OLD;
+        double f2 = (double)tmp.edge_count * 1e12 / (double)tmp.gate2_ps;
+        if (f2 > fmax) chk = FPGA_CHK_FMAX;
+    }
+    /* Kriticka analyza 2: totez pro SEKUNDARNI slot (druhy kanal) -- jinak by B nad mezi ukazoval spatny kmitocet bez priznaku.
+     * Primarni mereni zustava platne, sekundarni slot se zneplatni (freq16 = 0, edges_b = 0). */
+    if (!s_sim_on && (tmp.caps & FPGA_CAP_DT) && tmp.dt_b_ps > 0u && tmp.edges_b > 0u) {
+        double fmax = (tmp.fw_version >= 0x0425u) ? FPGA_DIRECT_MAX_HZ : FPGA_DIRECT_MAX_HZ_OLD;
+        double fb = (double)tmp.edges_b * 1e12 / (double)tmp.dt_b_ps;
+        if (fb > fmax) { tmp.freq16_x100000 = 0u; tmp.edges_b = 0u; if (is_new) s_chk_fmax_b++; }
+    }
     if (is_new) {
         uint8_t win = (tmp.caps & FPGA_CAP_CHAN) ? (uint8_t)(tmp.phase_status & 7u) : 0xFEu;
         int win_changed = (win != s_prev_win);
@@ -827,6 +956,8 @@ bool fpga_freq_poll(fpga_meas_t *out)
         if (chk == FPGA_CHK_COUNT)       s_chk_count++;
         else if (chk == FPGA_CHK_CLOCK)  s_chk_clock++;
         else if (chk == FPGA_CHK_WINDOW) s_chk_window++;
+        else if (chk == FPGA_CHK_FMAX)   s_chk_fmax++;
+        else if (chk == FPGA_CHK_COH)    s_chk_coh++;
     }
 
     int mc = 0;
@@ -852,6 +983,13 @@ bool fpga_freq_poll(fpga_meas_t *out)
      * Diagnostika ramce (verze, identita, hlidac hodin, TDC) se proto drzi zvlast v `s_frame`. */
     if (is_new && (mc != 0 || chk != FPGA_CHK_OK)) { s_rej_seq = tmp.sequence; s_rej_on = 1u; }
     else if (is_new)                                 s_rej_on = 0u;
+    /* Audit 2026-10-20 (E1): fazovy zaznam (kazde NOVE mereni; dira v SEQ, odmitnuti nebo okno bez regrese usek prerusi) */
+    if (is_new) {
+        fpga_phrec_feed(&tmp, fpga_seq_gap(g_last_seq, tmp.sequence), (mc == 0 && chk == FPGA_CHK_OK) ? 1 : 0);
+#if FPGA_STATS_USE_CC
+        if (tmp.cc_ok && tmp.gate_cc_ps > 0u) tmp.gate_ps = tmp.gate_cc_ps;
+#endif
+    }
     {
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
@@ -992,6 +1130,13 @@ void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window)
     if (count)  *count  = s_chk_count;
     if (clock)  *clock  = s_chk_clock;
     if (window) *window = s_chk_window;
+}
+
+/* FW 0x0425 (audit 2026-10-20): odmitnuta okna nad mezi primeho mereni a s chybou koherence hodin */
+void fpga_freq_check_stats2(uint32_t *fmax, uint32_t *coh)
+{
+    if (fmax) *fmax = s_chk_fmax + s_chk_fmax_b;   /* primarni + sekundarni slot */
+    if (coh)  *coh  = s_chk_coh;
 }
 
 void fpga_freq_format_build(uint32_t build_time, uint32_t build_git, char *buf, int buflen)
@@ -1598,6 +1743,15 @@ bool fpga_freq_set_channel(uint8_t ch)
     return xfer(tx, rx);
 }
 
+/* FW >= 0x0425 (caps bit14): SET_CONFIG 0x05 -- bit0 maskovani vnitrnich znacek pri CS, bit1 LED heartbeat (PIN29). */
+bool fpga_freq_set_diag(uint8_t mask_cs, uint8_t led_hb)
+{
+    if (!g_init_ok || s_sim_on) return false;
+    uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x05u, (uint8_t)((mask_cs & 1u) | ((led_hb & 1u) << 1)) };
+    build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
+    return xfer(tx, rx);
+}
+
 bool fpga_freq_set_ref(uint8_t ext)
 {
     if (!g_init_ok || s_sim_on) return false;
@@ -1723,8 +1877,7 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
             build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);
             if (!xfer_raw(tx, rx)) break;
             if (rx[0] != FR_MAGIC || rx[2] != TYPE_CAL) continue;
-            uint16_t cc = crc16_ccitt(rx, FR_CRC_LEN);
-            if (cc != ((uint16_t)rx[126] | ((uint16_t)rx[127] << 8))) continue;
+            if (!fpga_crc16_check(rx, FR_CRC_LEN, (uint16_t)((uint16_t)rx[126] | ((uint16_t)rx[127] << 8)))) continue;
             for (int ch = 0; ch < 2; ch++) {
                 const uint8_t *q = &rx[FR_PAYLOAD + 12 * ch];
                 out->ovf[ch]  = rd_le32(q + 0);
@@ -1779,8 +1932,7 @@ bool fpga_freq_tdc_hist(uint16_t k, uint32_t *a, uint32_t *b)
             build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);
             if (!xfer_raw(tx, rx)) break;
             if (rx[0] != FR_MAGIC || rx[2] != TYPE_CAL) continue;
-            uint16_t cc = crc16_ccitt(rx, FR_CRC_LEN);
-            if (cc != ((uint16_t)rx[126] | ((uint16_t)rx[127] << 8))) continue;
+            if (!fpga_crc16_check(rx, FR_CRC_LEN, (uint16_t)((uint16_t)rx[126] | ((uint16_t)rx[127] << 8)))) continue;
             if (rx[38] != p12 || rx[39] != (uint8_t)(k & 0xFFu)) continue;
             *a = (uint32_t)rx[40] | ((uint32_t)rx[41] << 8) | ((uint32_t)rx[42] << 16);
             *b = (uint32_t)rx[43] | ((uint32_t)rx[44] << 8) | ((uint32_t)rx[45] << 16);

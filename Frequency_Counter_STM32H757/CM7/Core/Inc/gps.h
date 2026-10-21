@@ -118,6 +118,16 @@ void gps_survey_disable_cmd(void);
  * (jednosouhvězdí firmware) = neškodné; parser je na GLGSV připraven tak jako tak.
  * @return true = přenos spuštěn (doručení modulu nedokazuje), false = neodesláno. */
 bool gps_config_gnss(void);
+/* Totez s volbou: glonass = true -> GPS+SBAS+QZSS+GLONASS (jako gps_config_gnss), false -> GLONASS explicitne vypnut
+ * (GPS+SBAS+QZSS). Zmena souhvezdi muze zpusobit novou akvizici = preruseni 1PPS (v UART `gps gnss gps|multi`). */
+bool gps_config_gnss_mode(bool glonass);
+/* UBX-CFG-NAV5: dynModel stationary (true) / portable (false, vychozi). Meni se JEN dynModel
+ * (mask=bit0), zbytek parametru necha prijimac beze zmeny. Zije jen v RAM modulu (bez periodickeho
+ * obnoveni, na rozdil od TP5) — po resetu je treba poslat znovu. NEO-7M (na rozdil od CFG-TMODE2)
+ * standardne podporuje (UART "gps nav5 stationary|auto", overit "gps ack"). */
+void gps_config_nav5(bool stationary);
+/* Odpovedi modulu (ACK/NAK) na CFG-TMODE2, CFG-GNSS, CFG-TP5, CFG-MSG: `TMODE2 a/n posledni | GNSS ...` (UART `gps ack`). */
+void gps_ack_format(char *buf, int n);
 
 /* Krmeni parseru jednim bajtem (vola GpsTask z GpsRxQueue). */
 void gps_feed_char(char c);

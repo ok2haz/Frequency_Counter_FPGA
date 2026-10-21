@@ -172,6 +172,7 @@ typedef struct {
     double   lock_u_ppb;        /* LOCK: změřená ADEV fáze @ ~1000 s [ppb]; 0 = nezměřeno */
     double   hold_u0_ppb;       /* HOLD: nejistota při vstupu [ppb]; 0 = nezměřeno */
     double   hold_drift_ppb_h;  /* HOLD: změřený drift z kódu DAC [ppb/h]; 0 = nezměřeno */
+    double   pm_ns;             /* audit 2026-10-20: změřený šum odečtu fáze 1PPS [ns] (gpsdo_pm_ns); 0 = MP_PPS_PM_NS */
 } mp_ref_in_t;
 /* @param meas nepovinné: 1 = výsledek je ZMĚŘENÝ, 0 = z náhradní tabulky */
 static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
@@ -193,7 +194,8 @@ static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
         break; }
     case GPSDO_FLL:
         if (r->y_abs_ppb > 0.0 && r->fll_win_s > 0u) {
-            double sg = 1.4142135623730951 * MP_PPS_PM_NS / (double)r->fll_win_s;   /* ns/s = ppb */
+            double pm = (r->pm_ns > 0.0) ? r->pm_ns : MP_PPS_PM_NS;                 /* audit 2026-10-20: změřený šum */
+            double sg = 1.4142135623730951 * pm / (double)r->fll_win_s;            /* ns/s = ppb */
             v = __builtin_sqrt(r->y_abs_ppb * r->y_abs_ppb + sg * sg); m = 1;
         } else v = MP_REF_PPB_FREE;                                                 /* okno zatím neskončilo: OCXO může být ppm mimo */
         break;

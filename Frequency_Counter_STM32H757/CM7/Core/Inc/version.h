@@ -11,6 +11,19 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.31.0 (2026-10-20) = integrace E0 (FPGA FW 0x0425, zadani druhe instance CLI_other_instance_exchange/E0_FW0425): diagnostika O4
+ * (bubliny, znacky pri CS, abs 57..59) a hlidac koherence 100/10 MHz (abs 10/11, caps bit14), xm 1/4096 hrany (caps bit15),
+ * kontroly FPGA_CHK_FMAX/COH, ADAPTIVNI mez prijeti regrese, fazovy zaznam fpga_phrec (E1, novy soubor), CRC pres pulbajtovou tabulku
+ * (fpga_crc, novy soubor; HW jednotka jen s FPGA_CRC_USE_HW=1), GPSDO: sum 1PPS za behu (gpsdo_pm_ns), historie faze v ps.
+ * UART `fpga diag [mask|led on|off]`, `status` radky FPGA DIAG / KONTROLY E0 / REGR MEZ / FAZOVY ZAZNAM, `regr` ukazuje aktualni mez.
+ * Emulator: caps bit14. S FPGA 0x0424 bezi dal (vse podle caps). SPI DMA (fpga_spi_dma) NENI zapnuto (FPGA_SPI_USE_DMA=0).
+ * IPC v29 beze zmeny. ⬜ Neovereno na desce. */
+/* v0.30.7 (2026-10-18) = UBX-CFG-NAV5 dynModel stationary (STATUS #312/#326 navazujici test): UART `gps nav5 stationary|auto`.
+ * Na rozdil od CFG-TMODE2 (survey-in, NEO-7M NAKuje) je NAV5 standardni zprava podporovana kazdym u-blox prijimacem; meni jen dynModel
+ * (mask=bit0, RAM modulu, bez periodickeho obnoveni). Cil: podle nezavisleho mereni (N8UR) muze zlepsit ADEV 1PPS od tau ~30 s. Chovani
+ * ostatniho firmwaru beze zmeny. FPGA beze zmeny, IPC v29. ⬜ Neovereno na desce (ACK/NAK, vliv na xr_ns). */
+/* v0.30.6 (2026-10-18) = GPS z konzole pro automaticke dlouhe mereni: UART `gps gnss gps|multi` (GLONASS vyp/zap, UBX-CFG-GNSS), `gps survey on|off` (UBX-CFG-TMODE2 3600 s / 2,5 m)
+ * a `gps ack` (ACK/NAK modulu na TMODE2, GNSS, TP5, MSG; dosud se odpovedi jen pocitaly). Chovani za behu beze zmeny, nic se nepersistuje. FPGA beze zmeny, IPC v29. */
 /* v0.30.5 (2026-10-18) = vychozi takt SPI2 ke FPGA 12,5 MHz (drive 3,125; zadani 10 MHz, kernel 200 MHz dava stupne 6,25 / 12,5). UART `spi 6` vrati 6,25. */
 /* v0.30.4 (2026-10-18) = UART `spi [MHz]` = takt SPI2 ke FPGA za behu (strop FPGA_SCK_MAX_HZ 10 -> 40 MHz, vychozi 5 MHz beze zmeny; #314), zasobnik FpgaTask 2048 -> 2560 B. */
 /* v0.30.3 (2026-10-18) = halda FreeRTOS 32 -> 48 kB (volnych bylo 5,7 kB, z haldy jsou i zasobniky tasku); .ioc srovnano. */
@@ -224,8 +237,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 30
-#define FW_VERSION_PATCH 5
-#define FW_VERSION_STR   "v0.30.5"
+#define FW_VERSION_MINOR 31
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.31.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
