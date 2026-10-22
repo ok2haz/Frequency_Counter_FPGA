@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.33.2 (2026-10-22) = priprava na SCK 25 MHz (protokol v3, docs/PROTOKOL_V3.md kap. 2): vystupy SPI2 SCK (PI1) a MOSI (PB15)
+ * na rychlost MEDIUM ve fpga_freq_init (regen-safe, jen OSPEEDR pod gpio_cfg_lock; CubeMX dava LOW); UART `spi` vypisuje
+ * rychlost pinu. Vychozi takt SCK zustava 12,5 MHz -- 25 MHz se zkousi `spi 25`. */
 /* v0.33.1 (2026-10-22) = opravy z auditu v0.21-v0.22: (1) F-0259 dither DAC: akumulator sigma-delta se potvrdi az po
  * uspesnem zapisu (drive se posunul i pri selhani); (2) `dac dither <Hz>` hlasil „vychozi 200", vychozi je 100 Hz;
  * (3) F-0261: okno Citac „E-A/E-B" misto „E/4, E/16", selftest #1 „FPGA ramec + regrese". Prelozeno na macOS (GCC 14.3): CM7 text 708 632 B (+24 proti v0.33.0), audit 95/0/2. */
@@ -258,7 +261,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 33
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.33.1"
+#define FW_VERSION_PATCH 2
+#define FW_VERSION_STR   "v0.33.2"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

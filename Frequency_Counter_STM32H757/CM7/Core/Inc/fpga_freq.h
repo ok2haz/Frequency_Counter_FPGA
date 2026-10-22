@@ -269,6 +269,8 @@ uint32_t fpga_freq_crc_count(void);
 uint32_t fpga_freq_sck_hz(void);
 uint32_t fpga_freq_sck_stage(uint32_t i, uint32_t *kernel_hz);
 uint32_t fpga_freq_set_sck(uint32_t target_hz);
+/** Rychlost vystupu SCK (PI1) a MOSI (PB15) z OSPEEDR: 0 LOW, 1 MEDIUM, 2 HIGH, 3 VERY_HIGH (2026-10-22, protokol v3). */
+void     fpga_freq_spi_pin_speed(uint8_t *sck, uint8_t *mosi);
 
 /** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
 uint32_t fpga_freq_crc_last_age_s(void);

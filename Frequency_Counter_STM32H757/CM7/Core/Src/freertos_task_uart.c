@@ -3010,6 +3010,11 @@ void UartTask_run(void *argument)
 			  else if (strncmp(RxBuffer, "spi", 3) == 0) {
 				  const char *p = RxBuffer + 3;
 				  while (*p == ' ') p++;
+				  {   /* 2026-10-22: rychlost vystupu pinu (zkouska SCK 25 MHz, docs/PROTOKOL_V3.md kap. 2) */
+				      static const char *const SPD[4] = { "LOW", "MEDIUM", "HIGH", "VERY_HIGH" };
+				      uint8_t ps = 0u, pm = 0u; fpga_freq_spi_pin_speed(&ps, &pm);
+				      printf("SPI2: piny SCK %s, MOSI %s\n", SPD[ps & 3u], SPD[pm & 3u]);
+				  }
 				  if (*p >= '0' && *p <= '9') {
 					  uint32_t v = 0;
 					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }

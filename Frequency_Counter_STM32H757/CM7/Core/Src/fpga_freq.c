@@ -46,6 +46,12 @@ extern SPI_HandleTypeDef hspi2;
  *   viz "fpga: SPI2 kernel=.. SCK ~.." v boot logu. ⚠️ Vyzaduje bitstream s PHY na 100 MHz (7affd41);
  *   starsi PHY na 10 MHz zvlada jen ~2 MHz. Pri NOLINK vratit 1000000u. */
 #define FPGA_SCK_MAX_HZ     40000000u  /* tvrdy strop: FPGA PHY od FW 0x040C bere SCK primo (STA ~40 MHz, #264); drive 10 MHz (oversampling) */
+/* Rychlost vystupu SCK/MOSI (OSPEEDR, 0 LOW .. 3 VERY_HIGH). MEDIUM = nejnizsi stupen, ktery by mel stacit na SCK 25 MHz
+ * (LOW je podle datasheetu STM32H7 urceny radove do ~12-16 MHz podle zateze -- HYPOTEZA z pameti, overit v tabulce
+ * „I/O AC characteristics" a osciloskopem na J3); vyssi stupen = strmejsi hrany = vic ruseni do casovacich vstupu FPGA. */
+#ifndef FPGA_SPI_PIN_SPEED
+#define FPGA_SPI_PIN_SPEED  GPIO_SPEED_FREQ_MEDIUM
+#endif
 #if FPGA_SCK_TARGET_HZ > FPGA_SCK_MAX_HZ
 #error "FPGA_SCK_TARGET_HZ prekracuje povolene maximum FPGA slave (~40 MHz)"
 #endif
@@ -346,6 +352,18 @@ void fpga_freq_init(void)
     gpio_cfg_unlock();
 
     cs_high();   /* CS idle (deasserted) */
+
+    /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md kap. 2): vystupy SPI2 SCK (PI1) a MOSI (PB15) na rychlost
+     * FPGA_SPI_PIN_SPEED pro SCK 25 MHz. CubeMX je generuje jako GPIO_SPEED_FREQ_LOW (spi.c, HAL_SPI_MspInit), ten bezi
+     * jen z MX_SPI2_Init -- HAL_SPI_Init pri zmene prescaleru (stav READY) piny nemeni, staci tedy jednou zde
+     * (regen-safe, rozhodnuti uzivatele: ne v .ioc). Meni se JEN OSPEEDR (MODER/AFR beze zmeny), pod gpio_cfg_lock
+     * kvuli zavodu jader o GPIOB (PB13 = ETH CM4). MISO (PI2) je na STM vstup, rychlost vystupu se ho netyka. */
+    gpio_cfg_lock();
+    GPIOI->OSPEEDR = (GPIOI->OSPEEDR & ~(3u << (1u * 2u)))  | (FPGA_SPI_PIN_SPEED << (1u * 2u));
+    GPIOB->OSPEEDR = (GPIOB->OSPEEDR & ~(3u << (15u * 2u))) | (FPGA_SPI_PIN_SPEED << (15u * 2u));
+    gpio_cfg_unlock();
+    printf("fpga: SPI2 rychlost vystupu SCK=%lu MOSI=%lu (0 LOW, 1 MEDIUM, 2 HIGH, 3 VERY_HIGH)\n",
+           (unsigned long)((GPIOI->OSPEEDR >> (1u * 2u)) & 3u), (unsigned long)((GPIOB->OSPEEDR >> (15u * 2u)) & 3u));
 
     /* Zvolit prescaler tak, aby SCK <= cil (bring-up). */
     static const struct { uint32_t e, d; } P[] = {
@@ -2193,6 +2211,13 @@ static const struct { uint32_t e, d; } k_sck_pre[8] = {
     { SPI_BAUDRATEPRESCALER_32, 32 }, { SPI_BAUDRATEPRESCALER_64, 64 }, { SPI_BAUDRATEPRESCALER_128, 128 }, { SPI_BAUDRATEPRESCALER_256, 256 } };
 
 uint32_t fpga_freq_sck_hz(void) { return g_sck_hz; }
+
+/* Rychlost vystupu SCK (PI1) a MOSI (PB15) ctena z OSPEEDR (0 LOW .. 3 VERY_HIGH), pro UART `spi` (zkouska 25 MHz). */
+void fpga_freq_spi_pin_speed(uint8_t *sck, uint8_t *mosi)
+{
+    if (sck)  *sck  = (uint8_t)((GPIOI->OSPEEDR >> (1u * 2u)) & 3u);
+    if (mosi) *mosi = (uint8_t)((GPIOB->OSPEEDR >> (15u * 2u)) & 3u);
+}
 
 uint32_t fpga_freq_sck_stage(uint32_t i, uint32_t *kernel_hz)
 {
