@@ -1,5 +1,7 @@
 # NÁVRH: SPI protokol v3 (STM32H757 ↔ Tang Nano 9K) — nová deska, dva kanály
 
+> 🔴 **NAHRAZENO 2026-10-22 specifikací [`docs/PROTOKOL_V3.md`](docs/PROTOKOL_V3.md)** (rámec 1024 B se záznamy spojitých segmentů, číslování příkazů z FW 0x0427). Tento dokument zůstává jen jako historie – **neimplementovat podle něj**.
+
 Stav: **NÁVRH k odsouhlasení FPGA stranou. Nic z toho zatím není v kódu ani v bitstreamu.**
 
 > 🔴 **v3 NENÍ psaná na zelené louce.** Protokol **v2 už existuje a JE IMPLEMENTOVANÝ**

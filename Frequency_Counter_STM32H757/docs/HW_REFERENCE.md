@@ -283,6 +283,9 @@ intervalem. Jedna volná pozice sníží vazbu ~4×.
 
 ## FPGA strana protokolu (specifikace, co musí FPGA implementovat)
 
+> 🔴 **Protokol v3 (rámec 1024 B, SCK 25 MHz) = samostatná specifikace `PROTOKOL_V3.md` (2026-10-22, NEIMPLEMENTOVÁNO).**
+> Tento oddíl popisuje to, co běží dnes (v1 → v2, FW 0x0427).
+
 > 🔴 **Tohle je protokol v1 = dnešní deska s děličkou `MC100EP016A` (÷4 na pin28, ÷16 na pin27).**
 > Nový návrh (`../citac_zadani_predavaci.md`) tenhle vstupní řetězec **opouští**: místo dvou
 > odboček jednoho čítače má **dva nezávislé kanály `CH_A`/`CH_B`** s vlastním carry-chain TDC

@@ -71,6 +71,7 @@ python tools/audit.py
 | `docs/FUNKCE.md` | **Přehled schopností HW a firmwaru a jejich stavu** (✅ HW / 🟡 neověřeno / ⬜ plán); udržovat při každé nové funkci nebo změně stavu |
 | `docs/AUDIT_STATUS.md` | Na začátku a konci sezení — co je hotové, kde pokračovat |
 | `docs/MERENI_A_KALIBRACE.md` | Před měřením na desce a po něm — deník měření (ADEV, A−B, regrese) a stav kalibrací; výsledky zapisuj sem |
+| `docs/PROTOKOL_V3.md` | **Specifikace protokolu v3** (rámec 1024 B, SCK 25 MHz, číslování z FW 0x0427) – závazná pro implementaci v3; dnešní v2 popisuje `docs/HW_REFERENCE.md` |
 | `docs/audit/*.md` | Nálezy z jednotlivých běhů (výstup, ne vstup) |
 
 ## 5. Jak pracovat (zkráceně)
