@@ -11,6 +11,23 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.33.0 (2026-10-21) = FPGA FW 0x0427: kalibracni tabulku TDC pocita a zapisuje STM (fpga_tdccal.c, caps bit4 FPGA_CAP_STMCAL): FPGA po
+ * sberu histogramu ceka, FpgaTask (fpga_freq_tdccal_poll) precte histogramy, spocita tabulky, zapise (TYPE 0x0A LUT_WRITE), overi
+ * pocitadlo+soucet a potvrdi (SET_CONFIG 0x06). ovf/peak/nz/last (CAL report) se pocitaji z histogramu. Novy .c: Close->Open Project. */
+/* v0.32.0 (2026-10-21) = FPGA FW 0x0426: regresni blok nese SUROVE SOUCTY segmentu (caps bit3 FPGA_CAP_RAWREG), teziste xm/ym
+ * dopocita STM (rg_raw_to_mean, celociselne); delic ve FPGA odstranen -- na krzemiku daval chybne dolni bity podilu x zavisle
+ * na rozmisteni v P&R (L-0187: DIAG_SX build ukazal presny sum(x-x0) a chybny podil). edge_count je od 0x0426 u32.
+ * Starsi FW (bez bitu 3) se cte beze zmeny. Selftest #1: ramec 0x0426 (rozlozeni, xm/ym, regrese). */
+/* v0.31.3 (2026-10-21) = posledni platna cislice hlavniho cisla podle SKUTECNE presnosti: (1) podlaha z regrese (mp_res_floor_rel,
+ * namerena 2,9e-11 @ 0,25 s, konzervativne skalovana podle hradla a poctu znacek), driv vzdy dvoubodova 5,9e-10 -> displej skryval
+ * 1-2 platne cislice; hystereze priznaku regrese (g_freq_regr); totez pro karty v oknech (card_relres). (2) kmitocet pro
+ * Math/Odchylku xN si nechava plne rozliseni zdroje i pri zkracenem formatu; podtrzeni plati i pri 0/1 desetine.
+ * Zobrazeni cislic beze zmeny: za posledni platnou jedna velka (SIGMA), dalsi male (FLOOR). */
+/* v0.31.2 (2026-10-21) = (1) UART `phrec dump [n]`: diagnosticky kruh 64 krmeni fazoveho zaznamu se surovymi vstupy (ADEV z faze 50x nad
+ * statistikou); (2) sum odectu 1PPS: dolni mez = kvantizace hrubeho citace krok/sqrt(12) (2,89 ns), driv 0,3 ns -> nejistota reference
+ * prilis optimisticka; (3) `status` FPGA SAMOKONTROLA: cas/poradi posledniho zamitnuti, varovani jen za zamitnuti po rozbehu (> 40 mereni). */
+/* v0.31.1 (2026-10-21) = opravy po flashi v0.31.0 (L-0186): (1) CRC selftest pri startu FpgaTasku mel buf[1024] na zasobniku -> volnych
+ * 36 B z 2560, nove buf[FR_LEN]; (2) selftest #1 (regrese) padal po nauceni adaptivni meze (~5 ppb) -> bezi s vychozi mezi a stav vraci. */
 /* v0.31.0 (2026-10-20) = integrace E0 (FPGA FW 0x0425, zadani druhe instance CLI_other_instance_exchange/E0_FW0425): diagnostika O4
  * (bubliny, znacky pri CS, abs 57..59) a hlidac koherence 100/10 MHz (abs 10/11, caps bit14), xm 1/4096 hrany (caps bit15),
  * kontroly FPGA_CHK_FMAX/COH, ADAPTIVNI mez prijeti regrese, fazovy zaznam fpga_phrec (E1, novy soubor), CRC pres pulbajtovou tabulku
@@ -237,8 +254,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 31
+#define FW_VERSION_MINOR 33
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.31.0"
+#define FW_VERSION_STR   "v0.33.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

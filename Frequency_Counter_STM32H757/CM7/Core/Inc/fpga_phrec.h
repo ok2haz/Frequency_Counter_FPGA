@@ -43,6 +43,26 @@ double fpga_phrec_adev(uint32_t mm, uint32_t *terms);
 /** Modifikovana ADEV (MDEV) z fazoveho zaznamu, tau = mm * tau0. @return 0 = malo dat. */
 double fpga_phrec_mdev(uint32_t mm, uint32_t *terms);
 void   fpga_phrec_info(fpga_phrec_info_t *o);
+
+/* Diagnostika (2026-10-21, ADEV z faze 50x nad statistikou): kruh poslednich FPGA_PHREC_DBG_N krmeni se surovymi vstupy.
+ * Cte UART `phrec dump [n]` (UartTask); zapisuje jen FpgaTask, cteni po zaznamech pod kratkym IRQ-off. */
+#define FPGA_PHREC_DBG_N  64u
+typedef struct {
+    uint32_t ms;         /* HAL_GetTick() pri krmeni */
+    uint32_t seq;        /* SEQUENCE mereni */
+    uint8_t  rg_ok, used, usable, gap;   /* rg_ok ramce, regr_used, pouzito do zaznamu, dira v SEQ (orez 255) */
+    uint32_t n_a;        /* znacek v segmentu A */
+    uint64_t xm_a, ym_a; /* teziste A (surove z ramce) */
+    uint32_t n_b;        /* znacek v segmentu B */
+    uint64_t xm_b;       /* teziste B -- index (chyba souctu indexu se overuje v obou segmentech) */
+    uint64_t dt_u;       /* dt okna [T/16384] */
+    uint64_t per;        /* period okna */
+    int32_t  x_ps;       /* faze po krmeni [ps] (0 = kotva / preruseni) */
+    uint16_t xdiv;
+} fpga_phrec_dbg_t;
+/** @return pocet platnych zaznamu (max FPGA_PHREC_DBG_N); i = 0 nejstarsi. */
+uint32_t fpga_phrec_dbg_count(void);
+int      fpga_phrec_dbg_get(uint32_t i, fpga_phrec_dbg_t *r);
 /** @return 1 = ok. Synteticky bily PM: ADEV(m) ~ sqrt(3)*sigma/(m*tau0) a MDEV ~ ADEV/sqrt(m)*..., viz .c */
 int    fpga_phrec_selftest(void);
 

@@ -1,5 +1,6 @@
 /* fpga_phrec.c -- fazovy zaznam z teziste segmentu regrese (viz fpga_phrec.h). Audit 2026-10-20, etapa E1. */
 #include "fpga_phrec.h"
+#include "main.h"           /* HAL_GetTick, __get_PRIMASK (diagnosticky kruh) */
 #include <math.h>
 #include <string.h>
 
@@ -19,6 +20,7 @@ typedef struct {
 static phr_state_t s_p;
 static float       s_x[FPGA_PHREC_N];   /* optimalizace 5: float (8 kB); |x| << 1 us -> rozliseni < 0,1 ps, ADEV jen z rozdilu */
 static uint32_t    s_head, s_n, s_runs, s_fed, s_used;
+static uint8_t     s_in_selftest;       /* selftest krmi synteticka data -> do diagnostickeho kruhu nepatri */
 
 static void ring_clear(void) { s_head = 0u; s_n = 0u; }
 static void ring_push(double v)
@@ -47,14 +49,54 @@ static void run_break(void)
     ring_clear();
 }
 
+/* ── diagnosticky kruh krmeni (viz fpga_phrec.h) ── */
+static fpga_phrec_dbg_t s_dbg[FPGA_PHREC_DBG_N];
+static uint32_t         s_dbg_w;
+uint32_t fpga_phrec_dbg_count(void) { return (s_dbg_w < FPGA_PHREC_DBG_N) ? s_dbg_w : FPGA_PHREC_DBG_N; }
+int fpga_phrec_dbg_get(uint32_t i, fpga_phrec_dbg_t *r)
+{
+    uint32_t n = fpga_phrec_dbg_count();
+    if (r == NULL || i >= n) return 0;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    uint32_t base = (s_dbg_w < FPGA_PHREC_DBG_N) ? 0u : (s_dbg_w % FPGA_PHREC_DBG_N);
+    *r = s_dbg[(base + i) % FPGA_PHREC_DBG_N];
+    __set_PRIMASK(pm);
+    return 1;
+}
+static void dbg_put(const fpga_meas_t *m, uint32_t gap, int usable)
+{
+    fpga_phrec_dbg_t d;
+    d.ms = HAL_GetTick(); d.seq = m->sequence;
+    d.rg_ok = m->rg_ok; d.used = m->regr_used; d.usable = (uint8_t)(usable ? 1 : 0); d.gap = (uint8_t)(gap > 255u ? 255u : gap);
+    d.n_a = m->rg_n[0]; d.xm_a = m->rg_xm[0]; d.ym_a = m->rg_ym[0]; d.dt_u = m->dt_units; d.per = m->edge_count;
+    d.n_b = m->rg_n[1]; d.xm_b = m->rg_xm[1];
+    d.xdiv = m->rg_xdiv;
+    d.x_ps = (usable && s_p.have) ? (int32_t)(s_p.x * 1e12) : 0;
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_dbg[s_dbg_w % FPGA_PHREC_DBG_N] = d;
+    s_dbg_w++;
+    __set_PRIMASK(pm);
+}
+
+static void feed_core(fpga_meas_t *m, uint32_t gap, int ok, int *usable_o);
 void fpga_phrec_feed(fpga_meas_t *m, uint32_t gap, int ok)
 {
     if (m == NULL) return;
+    int usable = 0;
+    feed_core(m, gap, ok, &usable);
+    if (!s_in_selftest) dbg_put(m, gap, usable && m->cc_ok);
+}
+
+static void feed_core(fpga_meas_t *m, uint32_t gap, int ok, int *usable_o)
+{
     m->cc_ok = 0u; m->f_cc_hz = 0.0; m->gate_cc_ps = 0u;
     s_fed++;
     uint8_t win  = (m->caps & FPGA_CAP_CHAN) ? (uint8_t)(m->phase_status & 7u) : 0xFEu;
     int usable = ok && m->regr_used && m->rg_ok == 3u && (m->caps & FPGA_CAP_DT) && m->dt_units > 0u
                  && m->edge_count > 0u && m->clk_mhz > 0u;
+    *usable_o = usable;
     uint16_t xdiv = m->rg_xdiv ? m->rg_xdiv : 256u;
     if (!usable || gap != 0u || (s_p.have && (win != s_p.win || m->channel_id != s_p.chan || m->clk_mhz != s_p.clk || xdiv != s_p.xdiv))) {
         run_break();
@@ -144,6 +186,7 @@ int fpga_phrec_selftest(void)
 {
     /* vola se pri startu (pred daty); stav se na konci vynuluje */
     fpga_phrec_reset();
+    s_in_selftest = 1u;
     st_lcg = 12345u;
     const double f = 10e6, G = 0.25, u = 1.0 / (16384.0 * 100e6), sig = 20e-12;
     const uint64_t per = 2500000u;                     /* period na okno */
@@ -174,5 +217,6 @@ int fpga_phrec_selftest(void)
       m.edge_count = per; m.dt_units = dtu; m.clk_mhz = 100u; m.f_regr_hz = f;
       uint32_t r0 = s_runs; fpga_phrec_feed(&m, 2u, 1); ok &= (s_runs == r0 + 1u) && (s_n == 1u); }
     fpga_phrec_reset();
+    s_in_selftest = 0u;
     return ok;
 }

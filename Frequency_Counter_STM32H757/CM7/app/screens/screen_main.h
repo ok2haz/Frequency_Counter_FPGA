@@ -126,6 +126,10 @@ double screen_main_gate_actual_s(void);
 /** Krok TDC [ps] — jediny zdroj pravdy (drive konstanta na trech mistech). */
 double screen_main_tdc_ps(void);
 
+/** RELATIVNI podlaha presnosti aktualniho okna (s regresi, kdyz ji okna pouzivaji; jinak dvoubodova) — mp_res_floor_rel.
+ *  0 = hradlo nezname. Pro pocet duveryhodnych cislic VSUDE (hlavni cislo, karty v oknech), 2026-10-21. */
+double screen_main_res_floor_rel(void);
+
 /** Prekresli pas nejistoty (σ + N) pod velkym cislem. @return 1 = kreslilo se. */
 int screen_main_redraw_uncert(int force);
 

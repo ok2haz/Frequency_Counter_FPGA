@@ -167,6 +167,7 @@ volatile uint64_t g_freq_edges = 0;                    /* pocet period v okne (p
 volatile uint64_t g_freq_gate_ns = 0;                  /* skutecna delka okna [ns] (zobrazeni) */
 volatile uint64_t g_freq_gate_ps = 0;                  /* PRESNA delka okna [ps] (vsechny vypocty) */
 volatile uint8_t  g_freq_chan  = 0;                    /* kanal posledniho prijateho mereni (FW >= 0x041E) */
+volatile uint8_t  g_freq_regr  = 0;                    /* 1 = posledni mereni pouzilo regresi (fpga_meas_t.regr_used) */
 volatile uint8_t  g_freq_hires = 0;                    /* 1 = zobrazeny zdroj je /4 a edges/gate jsou pouzitelne */
 
 /* Stav SPI + komunikace s FPGA (FpgaTask zapise, UiTask vykresli) */
@@ -565,7 +566,7 @@ const osThreadAttr_t UiTask_attributes = {
 osThreadId_t FpgaTaskHandle;
 const osThreadAttr_t FpgaTask_attributes = {
   .name = "FpgaTask",
-  .stack_size = 640 * 4,                 /* 2560 B: do v0.30.3 2048 B s volnymi jen 628 B (nejmensi rezerva ze vsech tasku); halda je od v0.30.3 48 kB */
+  .stack_size = 768 * 4,                 /* 3072 B (v0.33.0, sluzba kalibrace TDC bezi z FpgaTasku); 2560 B od v0.30.4, 2048 B do v0.30.3; halda je od v0.30.3 48 kB */
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* DacTask: dither DAC OCXO po 5 ms (STATUS #317, freertos_task_sensors.c). Nejvyssi priorita z taskow, ale

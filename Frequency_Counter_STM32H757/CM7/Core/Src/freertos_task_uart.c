@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
+#include "fpga_tdccal.h"   /* FW 0x0427: stav kalibrace TDC v STM (status) */
 #include <string.h>
 #include <stdbool.h>
 
@@ -2465,6 +2466,24 @@ void UartTask_run(void *argument)
 					  }
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "phrec dump", 10) == 0 && (RxBuffer[10] == '\0' || RxBuffer[10] == ' ')) {
+				  /* Diagnostika fazoveho zaznamu (2026-10-21): poslednich n krmeni se surovymi vstupy. 64bitove hodnoty
+				   * hexadecimalne (nano-printf neumi %llu) -- rozbor dela skript na PC. */
+				  int nn = atoi(RxBuffer + 10);
+				  uint32_t cnt = fpga_phrec_dbg_count();
+				  if (nn <= 0 || (uint32_t)nn > cnt) nn = (int)cnt;
+				  printf("PHREC DUMP: %d zaznamu (ms;seq;rg_ok;used;usable;gap;n_a;xm_a;ym_a;dt_u;per;x_ps;xdiv;n_b;xm_b, 64b hex)\r\n", nn);
+				  for (uint32_t i = cnt - (uint32_t)nn; i < cnt; i++) {
+					  fpga_phrec_dbg_t d;
+					  if (!fpga_phrec_dbg_get(i, &d)) break;
+					  printf("PH;%lu;%lu;%u;%u;%u;%u;%lu;%08lx%08lx;%08lx%08lx;%08lx%08lx;%08lx%08lx;%ld;%u;%lu;%08lx%08lx\r\n",
+					         (unsigned long)d.ms, (unsigned long)d.seq, (unsigned)d.rg_ok, (unsigned)d.used, (unsigned)d.usable,
+					         (unsigned)d.gap, (unsigned long)d.n_a,
+					         (unsigned long)(d.xm_a >> 32), (unsigned long)d.xm_a, (unsigned long)(d.ym_a >> 32), (unsigned long)d.ym_a,
+					         (unsigned long)(d.dt_u >> 32), (unsigned long)d.dt_u, (unsigned long)(d.per >> 32), (unsigned long)d.per,
+					         (long)d.x_ps, (unsigned)d.xdiv, (unsigned long)d.n_b, (unsigned long)(d.xm_b >> 32), (unsigned long)d.xm_b);
+				  }
+			  }
 			  else if (strncmp(RxBuffer, "fpga diag", 9) == 0 && (RxBuffer[9] == '\0' || RxBuffer[9] == ' ')) {
 				  /* FW >= 0x0425 (caps bit14, E0 audit 2026-10-20): SET_CONFIG 0x05. `fpga diag` = stav,
 				   * `fpga diag mask on|off` = maskovani vnitrnich znacek pri CS SPI (vychozi FPGA ON),
@@ -3654,9 +3673,15 @@ void UartTask_run(void *argument)
 								     ((m.clk_status & FPGA_CLK_OK) ? "OK" : "VADNE"),
 								     (unsigned)m.clk_loss,
 								     (m.clk_status & FPGA_CLK_FAULT) ? "  <== hodiny FPGA vypadly nebo zmenily kmitocet (reset STM / Si5356?)" : "");
+							  fpga_chk_last_t cl; fpga_freq_check_last(&cl);
+							  /* 2026-10-21: jedno zamitnuti pri startu je znamy jev (kazdy boot, i FW 0x0424) -> varovani jen za zamitnuti po rozbehu */
 							  printf("  FPGA SAMOKONTROLA: zamitnuto oken: citani %lu, hodiny %lu, delka okna %lu | posledni rozdil %d%s\n",
 								     (unsigned long)ck, (unsigned long)cc, (unsigned long)cw, (int)m.ccd_p,
-								     (ck + cw) ? "  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)" : "");
+								     cl.late ? "  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)" : "");
+							  if (ck + cw)
+								  printf("    posledni zamitnute: mereni #%lu od startu, uptime %lu ms, SEQ %lu, rozdil citani %d | po rozbehu (> %lu mereni) %lu\n",
+								         (unsigned long)cl.nth, (unsigned long)cl.ms, (unsigned long)cl.seq, (int)cl.ccd,
+								         (unsigned long)cl.startup_meas, (unsigned long)cl.late);
 						  } else {
 							  uint32_t ck = 0u, cc = 0u, cw = 0u;
 							  fpga_freq_check_stats(&ck, &cc, &cw);
@@ -3692,6 +3717,14 @@ void UartTask_run(void *argument)
 							    } else {
 							      printf("  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)\n");
 							    }
+							  }
+							  if (m.caps & FPGA_CAP_STMCAL) {   /* FW >= 0x0427: tabulku TDC pocita STM */
+							    fpga_tdccal_info_t ci; fpga_freq_tdccal_info(&ci);
+							    static const char *const ce[5] = { "OK", "histogram nekompletni (soucet)", "zapis nesedi (pocitadlo/soucet)", "prenos SPI", "potvrzeni (cal_valid)" };
+							    printf("  TDC KALIBRACE (STM): %s | behu %lu, selhani %lu, opakovani zapisu %lu | posledni %lu ms, %u adres/kanal%s\n",
+							           ce[ci.last_err > 4u ? 4u : ci.last_err], (unsigned long)ci.runs, (unsigned long)ci.fails,
+							           (unsigned long)ci.retries, (unsigned long)ci.last_ms, (unsigned)ci.naddr,
+							           (m.lut_wait & 3u) ? "  <== FPGA CEKA na tabulku od STM" : "");
 							  }
 							  {
 							    uint32_t mp = 0u, mn = 0u;

@@ -78,6 +78,8 @@ void StartFpgaTask(void *argument)
     uint8_t want_gate       = IPC_UICFG_GATE(ui_cfg);
     if (want_gate >= IPC_GATE_N) want_gate = IPC_GATE_DEFAULT;
     /* Ramec jeste z JINEHO kanalu, nez uzivatel zvolil (FPGA prepina az s dalsim merenim) se nepouzije. */
+    const int cal_ran = fpga_freq_tdccal_poll() ? 1 : 0;   /* FW >= 0x0427: FPGA ceka na kalibracni tabulku od STM (blokuje ~0,6 s) */
+    if (cal_ran) { fpga_stat_break(); }                    /* behem kalibrace se nemerilo -> rozpracovany vzorek statistiky zahodit */
     if (fpga_freq_poll(&m) && !fpga_freq_chan_pending(&m, want_chan)) {
       fails = 0;
       if (fpga_freq_poll_miscount() != 0 || fpga_freq_poll_check() != FPGA_CHK_OK) {
@@ -117,6 +119,7 @@ void StartFpgaTask(void *argument)
       g_freq_gate_ps = m.gate_ps;
       g_freq_hires   = (!use16 && m.edge_count > 0u && m.gate_ps > 0u) ? 1u : 0u;
       g_freq_chan    = (m.caps & FPGA_CAP_CHAN) ? (uint8_t)(m.channel_id & 1u) : 0u;
+      g_freq_regr    = m.regr_used;   /* 2026-10-21: okno merila regrese -> podlaha presnosti hlavniho cisla (mp_res_floor_rel) */
       g_freq_dirty = 1;
       taskEXIT_CRITICAL();
       /* F-0171/F-0172: KAZDE platne mereni do akumulatoru statistiky i datalogu —
@@ -349,6 +352,11 @@ volatile uint8_t  g_gpsdo_lockflag;
  * ~10x prisnejsi, nez data opravnuji. Pocatecni hodnota = MP_PPS_PM_NS, meze proti nesmyslum. */
 #define GPSDO_PM_NS_INIT    2.9       /* = MP_PPS_PM_NS (meas_present.h), 10h beh 2026-10-17/18 */
 #define GPSDO_PM_NS_MIN     0.3       /* dolni mez (1PPS po IDES8 ~0,4 ns + GPS) */
+/* 2026-10-21 (namereno na desce: odhad spadl na 0,30 ns): 1PPS dnes snima HRUBY citac 100 MHz (krok 10 ns). Kdyz je faze 1PPS
+ * vuci hodinam stabilni, rozdily periody vychazeji presne 0 a druhe diference nevidi nic -- skutecna nejistota odectu je ale
+ * kvantizace krok/sqrt(12) = 2,89 ns. Dolni mez je proto kvantizace citace (pocita se z clk_mhz ramce); GPSDO_PM_NS_MIN plati,
+ * az bude snimani jemnejsi nez ~1 ns. */
+#define GPSDO_PM_QUANT_DIV  3.4641016151377544   /* sqrt(12) */
 #define GPSDO_PM_NS_MAX     30.0      /* horni mez (puvodni hypoteza) */
 /* Kriticka analyza 2: prah mereni K ve FLL ZUSTAVA na 30 ns. Model sumu okna FLL (sqrt(2)*PM/n) predpoklada BILY PM, ale GPS ma
  * na 16-256 s korelovane putovani (multipath, ionosfera) -> zmerene 2,9 ns (bily sum za 1 s) by prah snizilo ~10x a mohlo vratit
@@ -367,8 +375,10 @@ static double   s_pm_ns = GPSDO_PM_NS_INIT, s_pm_ewma = 0.0, s_pm_eprev = 0.0;
 static uint8_t  s_pm_have = 0u;
 static uint32_t s_pm_n = 0u;
 static double gp_clamp(double v, double lo, double hi);
-static void gp_pm_update(double e)
+static void gp_pm_update(double e, uint32_t clk_mhz)
 {
+    double floor_ns = (1000.0 / (double)(clk_mhz ? clk_mhz : 100u)) / GPSDO_PM_QUANT_DIV;   /* kvantizace hrubeho citace */
+    if (floor_ns < GPSDO_PM_NS_MIN) floor_ns = GPSDO_PM_NS_MIN;
     if (s_pm_have) {
         double d  = fabs(e - s_pm_eprev);
         double sd = s_pm_ewma * 1.2533141373155;
@@ -376,7 +386,7 @@ static void gp_pm_update(double e)
         s_pm_ewma = (s_pm_n == 0u) ? d : s_pm_ewma + (d - s_pm_ewma) * (1.0 / 256.0);
         if (s_pm_n < 0xFFFFFFFFu) s_pm_n++;
         if (s_pm_n >= 64u)
-            s_pm_ns = gp_clamp(s_pm_ewma * 1.2533141373155 / 2.449489742783178, GPSDO_PM_NS_MIN, GPSDO_PM_NS_MAX);
+            s_pm_ns = gp_clamp(s_pm_ewma * 1.2533141373155 / 2.449489742783178, floor_ns, GPSDO_PM_NS_MAX);
     }
     s_pm_eprev = e; s_pm_have = 1u;
 }
@@ -822,7 +832,7 @@ void gpsdo_tick(void)
                 double e_use = e_ns;
                 if (dq_ok && s_saw == GPSDO_SAW_PLUS)  e_use = e_ns - dq;
                 if (dq_ok && s_saw == GPSDO_SAW_MINUS) e_use = e_ns + dq;
-                if (ns == 1u) gp_pm_update(e_use); else s_pm_have = 0u;   /* audit 2026-10-20: odhad sumu 1PPS */
+                if (ns == 1u) gp_pm_update(e_use, p.clk_mhz); else s_pm_have = 0u;   /* audit 2026-10-20: odhad sumu 1PPS */
 
                 if (!s_g_en) {                                 /* OFF: jen soucet faze, nic se neridi */
                     s_mon_x += e_use; s_g_ok++;

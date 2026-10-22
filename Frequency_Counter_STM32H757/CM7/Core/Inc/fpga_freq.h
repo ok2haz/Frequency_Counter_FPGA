@@ -97,6 +97,9 @@ typedef struct {
     /* FW >= 0x0425 (caps bit14, FPGA_CAP_DIAG0, audit 2026-10-20): diagnostika O4 a hlidac koherence hodin.
      * abs 10 coh_st | 11 coh_cnt | 57 bub_p | 58 bub_s | 59 {ovl_s[3:0], ovl_p[3:0]} */
     uint16_t rg_xdiv;             /* audit 4: delitel xm (256 nebo 4096 podle caps bit15); 0 = 256 */
+    uint8_t  lut_wait;            /* FW >= 0x0427 (abs 112 bit0/1): FPGA ceka na kalibracni tabulku kanalu A/B od STM */
+    uint16_t lut_cnt;             /* abs 112[7:2]:113 = pocet prijatych LUT_WRITE od SET_CONFIG 0x06 = 0 */
+    uint16_t lut_sum;             /* abs 114..115 = kontrolni soucet prijatych polozek */
     uint8_t  diag0_ok;            /* 1 = pole nize jsou platna */
     uint8_t  coh_st;              /* bit0 platne, bit1 posledni epocha OK, bit2 od nahrani chyba, bit3 cesta (0 nabezna, 1 sestupna) */
     uint8_t  coh_cnt;             /* pocet epoch 102,4 us s chybou koherence 100/10 MHz (saturuje 255; nova FPGA = 0) */
@@ -120,6 +123,9 @@ typedef struct {
 #define FPGA_CAP_CLK          (1u << 12)  /* FW >= 0x0421: abs 99 nese kmitocet hodin FPGA [MHz]; bez bitu = 100 MHz */
 #define FPGA_CAP_DIAG0        (1u << 14)  /* FW >= 0x0425: abs 10/11 hlidac koherence, abs 57..59 bubliny + znacky pri CS, SET_CONFIG 0x05 */
 #define FPGA_CAP_XM12         (1u << 15)  /* FW >= 0x0425 (audit 4): regresni xm v 1/4096 hrany (driv 1/256) */
+#define FPGA_CAP_STMCAL       (1u << 4)   /* FW >= 0x0427: kalibracni tabulku TDC pocita a zapisuje STM (fpga_tdccal.c); abs 112..115 = stav zapisu */
+#define FPGA_CAP_RAWREG       (1u << 3)   /* FW >= 0x0426: regresni blok nese SUROVE SOUCTY (n, x0, sum(x-x0), t0-ref, sum(t-t0)>>3) v abs
+                                           * 24..43 / 66..96 / 107, deli STM (delic ve FPGA dava chybne dolni bity, L-0187); edge_count je u32 */
 #define FPGA_CAP_PPS          (1u << 13)  /* FW >= 0x0424: abs 52..56 nese GPS 1PPS (cas hrany v taktech hodin + poradi) */
 
 /* ── GPS 1PPS z FPGA (FW >= 0x0424, STATUS #305) ─────────────────────────────────────────────────
@@ -178,6 +184,15 @@ uint64_t fpga_win_code_ps(uint8_t win);
 int  fpga_freq_poll_check(void);
 /** Soucty zamitnutych oken od bootu pro `status`. */
 void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window);
+/* 2026-10-21: posledni okno zamitnute pocitanim nebo delkou (kdy a s jakym rozdilem) + kolik zamitnuti prislo az po rozbehu */
+typedef struct {
+    uint32_t ms, seq;        /* HAL_GetTick a SEQUENCE posledniho zamitnuti (0 = zadne) */
+    uint32_t nth;            /* poradi noveho mereni od bootu, ve kterem prislo */
+    int8_t   ccd;            /* rozdil kontrolniho pocitani v tom okne */
+    uint32_t late;           /* zamitnuti po rozbehu (nth > startup_meas) */
+    uint32_t startup_meas;
+} fpga_chk_last_t;
+void fpga_freq_check_last(fpga_chk_last_t *o);
 void fpga_freq_check_stats2(uint32_t *fmax, uint32_t *coh);
 uint8_t fpga_freq_phrec_selftest_ok(void);   /* audit 2026-10-20: 1 = selftest fazoveho zaznamu prosel pri startu */   /* FW 0x0425: FPGA_CHK_FMAX / FPGA_CHK_COH */
 /** v22: surovy posledni ramec FPGA (vcetne zamitnutych oken) + pocitadla do `w[0..n-1]` (IPC `fpgadiag`).
@@ -376,6 +391,21 @@ bool fpga_freq_tdc_cal_start(void);
 /** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
+
+/* ── Kalibrace TDC v STM (FW >= 0x0427, caps bit4; audit 2026-10-21 S1/S2, L-0188) ──
+ * FPGA po sberu ceka (lut_wait); FpgaTask zavola `fpga_freq_tdccal_poll` po kazdem pollu: cekani potvrzene ve 2 ramcich za sebou
+ * (nebo 1 kanal > ~1 s) spusti `fpga_freq_tdccal_run`: precte histogramy, spocita tabulky (fpga_tdccal.c), zapise je, overi
+ * pocitadlo a soucet z DATA ramce a potvrdi (SET_CONFIG 0x06 = 1). Blokuje ~0,6 s (hlida watchdog_kick_fpga). */
+typedef struct {
+    uint32_t runs, fails, retries;   /* uspesnych behu / selhani / opakovani zapisu od startu */
+    uint32_t last_ms;                /* doba posledniho behu [ms] */
+    uint32_t last_tick;              /* HAL_GetTick posledniho uspesneho behu (0 = zatim zadny) */
+    uint16_t naddr;                  /* velikost tabulky */
+    uint8_t  last_err;               /* 0 = ok, 1 = histogram (soucet), 2 = zapis (pocitadlo/soucet), 3 = prenos, 4 = potvrzeni */
+    uint8_t  stats_valid;            /* ovf/peak/nz/last pocitane z posledniho histogramu (pro `tdc` / rezervu retezu) */
+} fpga_tdccal_info_t;
+bool fpga_freq_tdccal_poll(void);   /* @return true = probehl beh kalibrace (uspesne i ne) */
+void fpga_freq_tdccal_info(fpga_tdccal_info_t *o);
 
 /* ── Rezerva TDC retezu (2026-10-14, audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10) ─────────────────────────
  * Retez ma nejvys TDC_NTAP (268) tapu a musi pokryt celou periodu hodin. Rezerva na 100 MHz je jen ~4-6 % (B po

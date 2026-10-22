@@ -3565,15 +3565,13 @@ void app_gpsdo_render_tools(void)   /* s_view=48 — NASTROJE (z footeru Diagnos
  * retezec vubec nese. Vysledek je oriznuty na [0, dec-1], aby aspon jedna
  * cislice zustala duveryhodna (jinak by cele cislo bylo sede a podtrzeni by
  * nemelo co oznacit). */
-/* RELATIVNI rozliseni reciprokeho hradla (√2·tdc/gate), 0 = nezname.
+/* RELATIVNI rozliseni okna (screen_main_res_floor_rel: regrese nebo dvoubodove √2·tdc/gate), 0 = nezname.
  * ⚠️ Zamerne relativni: pak plati pro JAKOUKOLI zobrazovanou velicinu — Hz,
  * periodu v ns i nasobenou odchylku — a nemusi se to pro kazdou pocitat znovu. */
 static double card_relres(void)
 {
-    double gate = screen_main_gate_actual_s();
-    double tdc  = screen_main_tdc_ps();
-    if (gate <= 0.0 || tdc <= 0.0) return 0.0;
-    return 1.41421356 * (tdc * 1e-12) / gate;
+    /* 2026-10-21: tataz podlaha jako hlavni cislo (s regresi, kdyz ji okna pouzivaji) -- driv vzdy dvoubodova √2·tdc/gate */
+    return screen_main_res_floor_rel();
 }
 
 /* Kolik koncovych desetin lezi POD rozlisenim. `magnitude` je v ZOBRAZOVANE

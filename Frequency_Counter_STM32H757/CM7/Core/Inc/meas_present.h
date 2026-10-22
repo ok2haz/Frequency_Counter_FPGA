@@ -146,6 +146,28 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
                                  * podlaha Allanova grafu z ní dělá ekvivalentní krok kvantizace σ·√12. S regresí (FW >= 0x041A)
                                  * je skutečný šum okna ~13× menší — hodnota je proto konzervativní (méně „důvěryhodných“ číslic). */
 #define MP_REF_PPB     1.0      /* NÁHRADNÍ systematická nejistota reference (neznámý stav / externí reference) — viz mp_ref_ppb() */
+#define MP_REGR_FLOOR_REL 2.9e-11   /* PODLAHA jednoho okna 0,25 s S REGRESÍ, ZMĚŘENO 2026-10-18 (MERENI_A_KALIBRACE.md: CH_A = vlastní
+                                     * reference, ADEV 2,85·10⁻¹¹ @ 0,25 s, 120 min). Dvoubodový model dává 5,9·10⁻¹⁰, tedy 20× hůř. */
+
+/* RELATIVNÍ podlaha přesnosti JEDNOHO okna (k = 1) pro počet důvěryhodných číslic (hlavní číslo i karty). JEDINÝ zdroj (2026-10-21).
+ *  - bez regrese: dvoubodový odhad √2·σ_značky/hradlo;
+ *  - s regresí:   max(naměřená podlaha škálovaná KONZERVATIVNĚ v obou směrech — hradlo kratší než 0,25 s jako (0,25/G)^1,5 =
+ *                 bílý šum značek, delší jako (0,25/G)^0,5 = průměr nezávislých oken; teoretický bílý šum σ·√(2/n)/(0,75·G) pro
+ *                 n = f·G/8 značek v segmentu, takže při nízkém kmitočtu rozhoduje teorie), nikdy horší než dvoubodový.
+ *  ⚠️ Naměřená podlaha pochází ze signálu synchronního s referencí (stojící fáze, deterministická kvantizace se vykrátí) --
+ *  nesoudělný signál ji může mít horší; proto volající bere navíc max s naměřenou σy (viz screen_main.c meas_u_rel). */
+static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr)
+{
+    if (gate_s <= 0.0) return 0.0;
+    double two = 1.41421356 * (MP_TDC_PS * 1e-12) / gate_s;
+    if (!regr || f_hz <= 0.0) return two;
+    double r = gate_s / 0.25, sr = __builtin_sqrt(r);
+    double meas = MP_REGR_FLOOR_REL * ((r < 1.0) ? 1.0 / (r * sr) : 1.0 / sr);
+    double n = f_hz * gate_s / 8.0;
+    double white = (n >= 2.0) ? (MP_TDC_PS * 1e-12) * __builtin_sqrt(2.0 / n) / (0.75 * gate_s) : two;
+    double fl = (meas > white) ? meas : white;
+    return (fl < two) ? fl : two;
+}
 
 /* 🔴 Nejistota REFERENCE podle STAVU smyčky GPSDO (2026-10-18; dřív konstanta 1 ppb pořád). Konstantní 1 ppb byla zároveň příliš
  * pesimistická za zamčené smyčky a příliš optimistická bez ní: OCXO před prvním zamčením bylo o −0,84 ppm vedle (deník měření), a

@@ -823,8 +823,10 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
     int total = int_digits + frac_digits;
     int n_cert;                                    /* pocet duveryhodnych cislic ZLEVA */
     int no_und = 0;
-    if (frac_digits < 2) {                         /* 0/1 desetina -> vse nejiste, bez podtrzeni */
-        n_cert = int_digits; no_und = 1;
+    /* 2026-10-21: plati i pro 0/1 desetinu (driv „vse nejiste, bez podtrzeni") -- format se zkracuje na posledni platnou + jednu,
+     * takze 1 desetina je bezny pripad (napr. 100 MHz pri 0,05 s bez regrese) a podtrzeni patri na jednotky Hz. */
+    if (total < 2) {
+        n_cert = total; no_und = 1;
     } else {
         if (n_unc < 1) n_unc = 1;
         if (n_unc > total - 1) n_unc = total - 1;
@@ -939,7 +941,25 @@ double screen_main_ref_ppb(void)
 /* RELATIVNI nejistota jednoho mereni (k=1) pro hlavni cislo: kvadraticky soucet max(σy@1s, rozliseni hradla) a nejistoty
  * reference podle stavu smycky. SPOLECNE pro frekvenci i periodu (relativne je u_T/T = u_f/f), aby se nemohly rozejit.
  * Vyzaduje znamy gate_ps (> 0). */
-static double meas_u_rel(uint64_t gate_ps)
+/* 2026-10-21: merila okna REGRESE? Hystereze (+1 za okno s regresi, -2 bez ni, 0..16; zapnout od 12, vypnout pod 4), aby jednotliva
+ * zamitnuta okna (0,2-3 %) neprepinala podlahu a s ni pocet cislic. Plni freq_advance (UiTask), cte meas_u_rel. */
+static uint8_t s_regr_cnt = 0, s_regr_act = 0;
+static void regr_track(uint8_t used)
+{
+    if (used) { if (s_regr_cnt < 16u) s_regr_cnt++; }
+    else      { s_regr_cnt = (s_regr_cnt > 2u) ? (uint8_t)(s_regr_cnt - 2u) : 0u; }
+    if (s_regr_cnt >= 12u) s_regr_act = 1u;
+    else if (s_regr_cnt < 4u) s_regr_act = 0u;
+}
+
+/* RELATIVNI podlaha presnosti aktualniho okna (hlavni cislo i karty v oknech) -- jediny zdroj: mp_res_floor_rel. */
+double screen_main_res_floor_rel(void)
+{
+    double gate = screen_main_gate_actual_s();
+    return mp_res_floor_rel(gate, screen_main_freq_hz(), s_regr_act);
+}
+
+static double meas_u_rel(uint64_t gate_ps, double hz)
 {
     /* #1 (2026-10-04): kdyz uz je NAMERENA σy@1s, pouzij ji — zahrnuje VSECHEN sum
      * (TDC kvantizaci + drift reference/generatoru za okno), ne jen teoretickou TDC
@@ -954,9 +974,11 @@ static double meas_u_rel(uint64_t gate_ps)
      * neprojevi a σy vyjde temer 0. Display pak tvrdil 10 000 000,000 0000 Hz
      * se vsemi cislicemi "duveryhodnymi", ackoli jedno okno 0,25 s nese pri
      * kroku TDC ~57 ps nanejvys ~3·10⁻¹⁰. Proto max(σy, √2·tdc/gate). */
+    /* 🔴 2026-10-21: podlaha z regrese, kdyz ji okna pouzivaji (mp_res_floor_rel) -- dvoubodova (√2·105 ps/hradlo) byla s regresi
+     * ~20x pesimisticka (namereno 2,9e-11 proti 5,9e-10 pri 0,25 s), displej tak skryval jednu az dve platne cislice. */
     {
         double gate_s = (double)gate_ps * 1e-12;
-        double u_floor = 1.41421356 * (FREQ_TDC_PS * 1e-12) / gate_s;
+        double u_floor = mp_res_floor_rel(gate_s, hz, s_regr_act);
         if (!(u_res > u_floor)) u_res = u_floor;
     }
     /* 🔴 K tomu systematicka nejistota REFERENCE podle stavu smycky (kvadraticky): bez zamceni (volny chod OCXO, desitky
@@ -970,11 +992,12 @@ static double meas_u_rel(uint64_t gate_ps)
 
 static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
 {
-    if (frac < 2)      return frac;    /* 0/1 desetina -> vse nejiste */
+    /* 2026-10-21: bez zkratky „0/1 desetina -> vse nejiste" -- formát se nově zkracuje tak, aby za posledni platnou cislici zbyla
+     * PRAVE JEDNA (num_build_for), takze 0 nebo 1 desetina je bezny pripad a podtrzeni musi skoncit na skutecne platne cislici. */
     if (gate_ps == 0u) return 2;       /* SIM -> nezmeneny vzhled (4 velke + 2 male) */
     double hz = (double)x100000 / 100000.0;
     if (hz <= 0.0) return 2;
-    double res_hz   = meas_u_rel(gate_ps) * hz;                      /* rozliseni v Hz */
+    double res_hz   = meas_u_rel(gate_ps, hz) * hz;                  /* rozliseni v Hz */
     /* Nejista je kazda cislice OD KONCE, jejiz mistni hodnota je POD rozlisenim.
      * 🔴 F-0177: pocita se i do CELE casti (vysledek smi byt > frac) — driv se
      * tu vynucovala aspon jedna „duveryhodna" desetina, takze nad ~7 MHz
@@ -993,14 +1016,13 @@ static int freq_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac)
  * ne z gate/edges (TODO: T = gate_ps/edges, STATUS #323 a). */
 static int period_uncertain_frac(uint64_t x100000, uint64_t gate_ps, int frac, double unit_s)
 {
-    if (frac < 2)      return frac;
     if (gate_ps == 0u) return 2;                        /* SIM -> nezmeneny vzhled */
     double hz = (double)x100000 / 100000.0;
     if (hz <= 0.0 || unit_s <= 0.0) return 2;
     double lsb = 1.0;
     for (int i = 0; i < s_freq_frac; i++) lsb *= 0.1;   /* LSB frekvence [Hz] */
     double u_lsb = lsb / hz;
-    double u_rel = meas_u_rel(gate_ps);
+    double u_rel = meas_u_rel(gate_ps, hz);
     u_rel = sqrt(u_rel * u_rel + u_lsb * u_lsb);
     double res = u_rel * (1.0 / hz) / unit_s;           /* nejistota periody v zobrazene jednotce */
     double pv = 1.0;
@@ -1062,15 +1084,15 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
     if (!s_disp_period) {
         s_disp_unit = SCR_S_UNIT_HZ; s_disp_unit_s = 1.0;
         for (int frac = max_frac; ; frac--) {
+            /* Za posledni platnou (podtrzenou) cislici: prvni nejista VELKYM fontem (SIGMA), dalsi malym (FLOOR) -- zobrazuji se
+             * vsechny (zadani uzivatele 2026-10-21; kratka verze v0.31.3 je skryvala). */
             num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ps, frac));
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
         }
         s_freq_unc_last = freq_uncertain_frac(x100000, gate_ps, s_disp_frac);  /* #1: zapamatuj pro trigger prestavby */
-        /* freq frac = to, co num_layout vybral dle FREQ_MAX_W (v tomto rezimu jsou
-         * frekvence a zobrazeni identicke) */
-        s_freq_frac = s_disp_frac;
-        s_freq_n    = x100000 ? freq_frame_to_lsb(x100000, edges, gate_ps, s_freq_hires) : 0u;
-        s_freq_center = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
+        /* 🔴 2026-10-21: kmitocet (`s_freq_n`, `s_freq_frac`) si NECHAVA plne rozliseni zdroje (max_frac) -- cte ho Math/limity, okno
+         * Odchylka xN (nasobi az 1e6) i SIM; zobrazene cislo `s_disp_n` se na `s_disp_frac` desetin orizne v disp_update (stejne jako
+         * v rezimu PERIODA). Driv `s_freq_frac = s_disp_frac`, coz pri zkraceni formatu zhrubilo i tyto veliciny. */
     } else {
         const char *u; double us; int p_int;
         period_fmt_of((double)x100000 / 100000.0, &u, &us, &p_int);
@@ -1092,7 +1114,13 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
  * Vola se po KAZDE zmene s_freq_n bez rebuilu formatu (SIM krok, drzeny FPGA seq). */
 static void disp_update(void)
 {
-    if (!s_disp_period) { s_disp_n = s_freq_n; return; }
+    if (!s_disp_period) {
+        /* 2026-10-21: zobrazeni muze mit mene desetin nez kmitocet -> ORIZNOUT (ne zaokrouhlit: prenos by pridal vedouci cislici,
+         * kterou format nema -- 9 999 999,9996 -> „0.000.000,000", viz period_fmt_of). Posledni kreslena cislice je nejista. */
+        int drop = s_freq_frac - s_disp_frac;
+        s_disp_n = (drop > 0) ? s_freq_n / pow10_u64(drop) : s_freq_n;
+        return;
+    }
     double f = (double)s_freq_n / (double)pow10_u64(s_freq_frac);   /* Hz */
     if (f <= 0.0) { s_disp_n = 0; return; }
     double t_disp = (1.0 / f) / s_disp_unit_s;                       /* v jednotce s_disp_unit */
@@ -1157,9 +1185,9 @@ static void freq_advance(void)
 {
     if (!s_num_ready) num_build();   /* format musi existovat (off-main cesta nema ready-guard) */
 
-    uint32_t seq; uint64_t x100000, edges, gate_ps; uint8_t valid, hires;
+    uint32_t seq; uint64_t x100000, edges, gate_ps; uint8_t valid, hires, regr;
     do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid;
-         edges = g_freq_edges; gate_ps = g_freq_gate_ps; hires = g_freq_hires; }
+         edges = g_freq_edges; gate_ps = g_freq_gate_ps; hires = g_freq_hires; regr = g_freq_regr; }
     while (seq != g_freq_seq);
 
     /* Prepnul se FREQUENCY <-> PERIOD (footer toggle) -> vynut rebuild formatu
@@ -1181,6 +1209,7 @@ static void freq_advance(void)
                              s_last_fpga_seq = seq - 1u; s_freq_fmt_changed = 1; }  /* SIM->REAL: sundej marker */
         if (seq != s_last_fpga_seq) {                 /* NOVE mereni */
             s_last_fpga_seq = seq;
+            regr_track(regr);                         /* 2026-10-21: podlaha presnosti (regrese / dvoubodova) s hysterezi */
             uint64_t whole = x100000 / 100000ull;
             int idg = 1; for (uint64_t t = whole; t >= 10ull; t /= 10ull) idg++;
             if (idg > 12) idg = 12;
@@ -1232,7 +1261,7 @@ static void freq_advance(void)
             }
             if (s_freq_unc_last >= 0 &&
                 (s_disp_period ? period_uncertain_frac(x100000, gate_ps, s_disp_frac, s_disp_unit_s)
-                               : freq_uncertain_frac(x100000, gate_ps, s_freq_frac)) != s_freq_unc_last)
+                               : freq_uncertain_frac(x100000, gate_ps, s_disp_frac)) != s_freq_unc_last)
                 fmt_need = 1;   /* #1: σy dokonvergovala / zmenil se stav smycky (reference) -> jiny pocet nejistych cislic */
             if (fmt_need || sig_change) {
                 double keep_nom = s_freq_nominal_hz;
