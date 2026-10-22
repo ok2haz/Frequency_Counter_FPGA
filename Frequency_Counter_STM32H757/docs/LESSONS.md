@@ -4975,6 +4975,42 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** commit integrace E0 (FW 0x0425)
 - **Stav:** aktivni
 
+### L-0186 - Selftesty po E0: buffer 1 kB na zasobniku FpgaTasku a test zavisly na naucene adaptivni mezi
+
+- **Datum:** 2026-10-21
+- **Oblast:** `fpga_freq.c` (`fpga_freq_crc_selftest`, `fpga_freq_select_selftest`), FpgaTask
+- **Symptom:** po flashi v0.31.0 a power-cyklu `status` -> `stack Fpga free 36 B` (z 2560) a `selftest` -> `15/16 FAIL, #1`. Prijem dat i regrese na desce pritom fungovaly.
+- **Pricina:** (1) E0 pridalo do CRC selftestu porovnani tabulky s referenci nad `uint8_t buf[1024]` NA ZASOBNIKU; test bezi ze startu FpgaTasku (`fpga_freq_init`) -> ramec 1056 B (`.su`). (2) Mez prijeti regrese je od E0 adaptivni (`fpga_freq_regr_limit`); selftest pocital s pevnou mezi 5e-8 a okno s odchylkou 1e-8 ocekaval jako prijate. Jakmile se mez na desce naucila (~5 ppb), test padal -- vysledek zavisel na tom, kolik oken FPGA uz dodala. Navic test na konci `fpga_freq_regr_reset()` mazal zivou statistiku `regr`.
+- **Oprava:** (1) `buf[FR_LEN]` (128 B, delka ramce) -> ramec 160 B; `static` nejde, funkci soubezne vola `run_selftests` z jineho tasku. (2) test ulozi stav adaptace a pocitadla, bezi s vychozi mezi (stav zahrivani) a stav pod zakazanym prerusenim vrati. v0.31.1.
+- **Pravidlo:** (a) pred pridanim pole do selftestu zkontroluj, Z KTEREHO TASKU se vola (`.su` + zasobnik tasku), nejen velikost pole. (b) Selftest funkce s adaptivnim nebo jinak zivym stavem musi ten stav pro test nastavit a pak vratit -- jinak test meri historii zarizeni, ne kod.
+- **Detekce:** `status` -> `stack Fpga free`; `grep fpga_freq CM7/Release/Core/Src/fpga_freq.su`; `selftest` az po nekolika minutach behu (ne jen pri startu).
+- **Commit:** fix v0.31.1
+- **Stav:** aktivni, neovereno na desce
+
+### L-0187 - Delicka regrese ve FPGA pocitala na krzemiku spatne dolni bity, prestoze simulace i STA byly v poradku
+
+- **Datum:** 2026-10-21
+- **Oblast:** FPGA `regr_acc` (spi_app.v), STM `fpga_freq.c` (parse_data), fazovy zaznam
+- **Symptom:** ADEV z fazoveho zaznamu 3,6e-9 @ 1 s proti 7e-11 ze statistiky. `phrec dump`: teziste indexu `xm` nesedelo na casove teziste `ym` -- soucet indexu „o 2^16 vedle" v 89 % oken (10 MHz), o 2^15 jinde; chyba stejna v segmentu A i B, takze se v regresi odecetla a nikdo ji nevidel.
+- **Pricina:** delic `regr_acc` (68 kroku, 3 takty/krok, multicycle v SDC) dava na krzemiku chybu v dolnich ~11 bitech podilu x. Dukaz: diagnosticky build (DIAG_SX) poslal surovy sum(x-x0) -- ten byl PRESNE n(n-1)/2 ve vsech oknech, podil ale chybny; pro tataz data vydany 0x0425 +655 jednotek, diagnosticky build +1614 => zavisi na rozmisteni v P&R = casovani, ne logika. Simulace (plna velikost 312 500 znacek, win_recip s modelem TDC) i bitovy model delicky byly spravne a STA hlasila rezervu.
+- **Oprava:** FW 0x0426 posila SUROVE SOUCTY (n, x0, sum(x-x0), t0-ref, sum(t-t0)>>3; caps bit3 FPGA_CAP_RAWREG), STM deli celociselne v uint64 (`rg_raw_to_mean`); delic ve FPGA odstranen (CLS 85 % beze zmeny, registry 66 -> 64 %), zrusene i jeho vyjimky v SDC. STM v0.32.0.
+- **Pravidlo:** (a) aritmetiku, kterou umi levne STM (deleni, nasobeni siroka cisla), ve FPGA nedelat -- FPGA ma posilat surove soucty; (b) kdyz se dve velici, ktere maji byt navzajem konzistentni (index a cas tehoz teziste), rozchazeji, nejdriv z dat urcit, KTERA z nich je spatne (souvisla rada => index musi mit zlomek 0 nebo 0,5), a pak diagnostickym buildem zmerit mezivysledek (tady surovy soucet) -- jedno meritko rozhodlo, kde chyba vznika; (c) chyba, ktera je stejna ve dvou vetvich, se v jejich rozdilu vyrusi a zustane skryta -- testy maji kontrolovat i absolutni hodnotu kazde vetve.
+- **Detekce:** `phrec dump` + skript (index z ym proti xm); `tb_win_regr_full` kontroluje sum(x-x0) = n(n-1)/2.
+- **Commit:** feat FPGA 0x0426 + STM v0.32.0
+- **Stav:** aktivni, neovereno na desce
+
+### L-0188 - Kalibracni tabulka TDC pocitana ve FPGA: aritmetika, kterou umi STM, stala 6-8 p. b. CLS (S1/S2)
+
+- **Datum:** 2026-10-21
+- **Oblast:** FPGA `tdc.v` (kalibrace), `spi_app.v` (RX), `top.v`, STM `fpga_tdccal.c`, `fpga_freq.c`
+- **Symptom:** CLS 85 % = strop vydavaci brany; v3 se nevejde. Rozbor netlistu (`docs/audit/2026-10-21_uspora-fpga-a-presun-do-stm.md`): kalibrace TDC (`cum`, `xv`, `hcur`, `lutv`, `scan_k`, `d_*`, komparatory) ~570 FF + ~300 ALU/LUT, a nic z toho nepotrebuje 100 MHz.
+- **Reseni (FW 0x0427 + STM v0.33.0):** FPGA po sberu histogramu ceka (`cal_wait`), STM precte histogram (`CAL` ramce), spocita tabulku stejnym vzorcem (`fpga_tdccal_lut`), zapise ji (TYPE 0x0A `LUT_WRITE`, 1 polozka na ramec: adresa 9 b + kanal + `neg` 14 b; `amt` se odvodi z `neg != 0`), overi pocitadlo a kontrolni soucet z DATA ramce (abs 112..115) a potvrdi (`SET_CONFIG 0x06 = 1`). Statistiky retezu `ovf/peak/nz/last` pocita STM z histogramu. Puvodni vypocet zustava pod `AUTOCAL = 1` jen pro starsi testbenche (`-DSIM_AUTOCAL`). Vysledek P&R: **CLS 85 -> 79 %, registry 64 -> 60 %**.
+- **Overeni:** `tb_lutequiv` (vzorec == puvodni vypocet FPGA na vsech 256 adresach), zlate vektory z toho testu ve STM selftestu (`fpga_tdccal_selftest`), `tb_stmcal` (koncovy tok pres SPI), `tb_tx_equiv`.
+- **Pravidlo:** (a) aritmetika, kterou STM zvladne levne a kterou FPGA nepotrebuje v realnem case (dělení, sumy, tabulky z histogramu), do FPGA nepatri -- kazdy bit ALU stoji ~pul CLS a navic je dalsi mozne misto, kde krzemik selze bez priznaku (L-0187); (b) kdyz se funkce presouva, nejdriv EXAKTNI test shody vzorce (tady 256 adres 1:1) a zlate vektory do cilove implementace, az pak zmena toku; (c) novy kanal STM->FPGA ma mit pocitadlo a kontrolni soucet vracene v DATA ramci (zapis bez zpetne vazby by pri ztracenem ramci tise nechal polovinu tabulky nominalni).
+- **Detekce:** `status` -> `TDC KALIBRACE (STM)` (behy, selhani, opakovani, doba); `selftest` 16/16; `tdc` (statistiky z histogramu).
+- **Commit:** feat FPGA 0x0427 + STM v0.33.0
+- **Stav:** aktivni, neovereno na desce
+
 ---
 
 ## Archiv (neplatné lekce)
