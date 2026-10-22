@@ -21,7 +21,12 @@ WHICH="${2:-BOTH}"
 TARGET="${3:-all}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IDE_PLUGINS="/c/ST/STM32CubeIDE_2.1.0/STM32CubeIDE/plugins"
+# Platforma: Windows (Git Bash/MSYS) = puvodni chovani; macOS = STM32CubeIDE.app. Prepis: IDE_PLUGINS=<adresar plugins>.
+case "$(uname -s)" in
+    Darwin) IDE_PLUGINS="${IDE_PLUGINS:-$(ls -d /Applications/STM32CubeIDE*.app/Contents/Eclipse/plugins 2>/dev/null | sort | tail -1)}"; PLAT=macos ;;
+    *)      IDE_PLUGINS="${IDE_PLUGINS:-/c/ST/STM32CubeIDE_2.1.0/STM32CubeIDE/plugins}"; PLAT=win32 ;;
+esac
+PY="$(command -v python3 || command -v python)"
 
 # Nastroje ST hledame globem, at to prezije upgrade IDE (verze je v nazvu adresare).
 find_tool_dir() {
@@ -30,9 +35,14 @@ find_tool_dir() {
     [ -n "$hit" ] || { echo "CHYBA: nenalezeno: ${IDE_PLUGINS}/${pat}/tools/bin" >&2; exit 1; }
     echo "$hit"
 }
-MAKE_BIN="$(find_tool_dir 'com.st.stm32cube.ide.mcu.externaltools.make.win32_*')"
-GCC_BIN="$(find_tool_dir 'com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*.win32_*')"
-export PATH="${MAKE_BIN}:${GCC_BIN}:${PATH}"
+GCC_BIN="$(find_tool_dir "com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*.${PLAT}*")"
+if MAKE_BIN="$(find_tool_dir "com.st.stm32cube.ide.mcu.externaltools.make.${PLAT}*" 2>/dev/null)"; then
+    export PATH="${MAKE_BIN}:${GCC_BIN}:${PATH}"
+elif [ "$PLAT" = macos ] && command -v make >/dev/null; then
+    export PATH="${GCC_BIN}:${PATH}"          # macOS: systemovy make (Xcode Command Line Tools)
+else
+    echo "CHYBA: make nenalezen" >&2; exit 1
+fi
 
 # Porovna zdrojaky deklarovane v `.project` (<link>) proti tomu, co je v generovanych
 # `Debug/*/subdir.mk`. Rozdil = zastaraly model IDE (viz CUBEMX_CHECKLIST) — presne to,
@@ -43,7 +53,7 @@ check_model() {
     local proj="${ROOT}/${core}/.project"
     local bdir="${ROOT}/${core}/${CFG}"
     [ -f "$proj" ] && [ -d "$bdir" ] || return 0
-    python - "$proj" "$bdir" "$core" <<'PY' || true
+    "$PY" - "$proj" "$bdir" "$core" <<'PY' || true
 import sys, re, os, glob
 proj, bdir, core = sys.argv[1], sys.argv[2], sys.argv[3]
 src = open(proj, encoding='utf-8', errors='replace').read()
@@ -207,6 +217,8 @@ build_core() {
 # ⚠️ Soucasti je POZITIVNI KONTROLA: v obrazu CM7 ten symbol BYT MUSI. Kdyby tam
 # nebyl, test uz nic nemeri a mlcel by — presne ta trida "zelena, ktera nic
 # neznamena", kterou projekt uz nekolikrat zaplatil.
+# ⚠️ `grep` BEZ `-q`: s `set -o pipefail` by `grep -q` skoncil u prvni shody, `nm` dostal SIGPIPE a roura
+# vratila 141 -> na macOS kontrola CM4 nikdy nevystrelila a CM7 hlasila falesne „chybi" (2026-10-22).
 check_cm4_clock_owner() {
     local nm="${GCC_BIN}/arm-none-eabi-nm"
     local e4="${ROOT}/CM4/${CFG}/H757_LED_CM4.elf"
@@ -214,7 +226,7 @@ check_cm4_clock_owner() {
     local sym='PeriphCommonClock_Config'
     [ -f "$e4" ] || return 0
 
-    if "$nm" "$e4" 2>/dev/null | grep -q "$sym"; then
+    if "$nm" "$e4" 2>/dev/null | grep "$sym" >/dev/null; then
         echo ""
         echo "*** CHYBA: obraz CM4 obsahuje ${sym} -> CM4 konfiguruje sdilena PLL!"
         echo "    Odstavilo by to hodiny SDRAM a LTDC pod bezicim CM7 (lekce L-0007)."
@@ -222,7 +234,7 @@ check_cm4_clock_owner() {
         echo "    Na CM4 se ta funkce smi jen GENEROVAT, nikdy VOLAT."
         return 1
     fi
-    if [ -f "$e7" ] && ! "$nm" "$e7" 2>/dev/null | grep -q "$sym"; then
+    if [ -f "$e7" ] && ! "$nm" "$e7" 2>/dev/null | grep "$sym" >/dev/null; then
         echo ""
         echo "*** POZOR: ${sym} chybi i v obrazu CM7 -> tahle kontrola uz nic nemeri."
         echo "    Overit rucne, jestli CM7 hodiny periferii vubec konfiguruje."

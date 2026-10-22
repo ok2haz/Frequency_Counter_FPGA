@@ -8,7 +8,9 @@ aniž by cokoli zkontroloval.)
 """
 import glob, io, os, re, subprocess, sys
 
-R = r"C:\GitHub\Frequency_Counter_FPGA\Frequency_Counter_STM32H757"
+# Koren projektu STM (absolutni cesta materskeho projektu, NEMENIT); jinde nez na Windows ho prepis FCF_STM_ROOT.
+R = os.environ.get("FCF_STM_ROOT") or r"C:\GitHub\Frequency_Counter_FPGA\Frequency_Counter_STM32H757"
+EXE = ".exe" if os.name == "nt" else ""
 
 # 🔴 NEJNOVEJSI toolchain, ne `glob(...)[0]`. V IDE jsou nainstalovane DVA
 # (gnu-tools-for-stm32 13.3 a 14.3) a puvodni `[0]` bral podle abecedy ten
@@ -16,11 +18,18 @@ R = r"C:\GitHub\Frequency_Counter_FPGA\Frequency_Counter_STM32H757"
 # jinym kompilatorem nez realny build: 14.3 najde `-Wformat-truncation`
 # v `app_gpsdo.c`, kterou 13.3 NEVIDI (zmereno 2026-09-04, STATUS #135).
 # Verze se parsuje cislem — abecedni razeni by u 9.x vs 14.x selhalo.
+# Prepis: ARM_GCC = plna cesta k arm-none-eabi-gcc (pak se nic nehleda).
 def _pick_gcc():
-    cands = glob.glob(r"C:\ST\STM32CubeIDE*\STM32CubeIDE\plugins"
-                      r"\*gnu-tools*\tools\bin\arm-none-eabi-gcc.exe")
+    if os.environ.get("ARM_GCC"):
+        return os.environ["ARM_GCC"]
+    if os.name == "nt":
+        cands = glob.glob(r"C:\ST\STM32CubeIDE*\STM32CubeIDE\plugins"
+                          r"\*gnu-tools*\tools\bin\arm-none-eabi-gcc.exe")
+    else:   # macOS: STM32CubeIDE.app (plugin s verzi v nazvu)
+        cands = glob.glob("/Applications/STM32CubeIDE*.app/Contents/Eclipse/plugins"
+                          "/*gnu-tools*/tools/bin/arm-none-eabi-gcc")
     if not cands:
-        sys.exit("arm-none-eabi-gcc nenalezen")
+        sys.exit("arm-none-eabi-gcc nenalezen (nastav ARM_GCC)")
     def ver(p):
         m = re.search(r"gnu-tools-for-stm32\.(\d+)\.(\d+)", p)
         return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
@@ -104,7 +113,7 @@ print("log:", out)
 # vetsina z nich byly funkce vracejici `void`. Takova kontrola tu proto NENI.)
 # ══════════════════════════════════════════════════════════════════════════════
 
-NM = os.path.join(os.path.dirname(GCC), "arm-none-eabi-nm.exe")
+NM = os.path.join(os.path.dirname(GCC), "arm-none-eabi-nm" + EXE)
 ELF7 = os.path.join(R, "CM7/Release/H757_LED_CM7.elf")
 ELF4 = os.path.join(R, "CM4/Release/H757_LED_CM4.elf")
 SIZEDB = os.path.join(R, "tools", ".audit_sizes.txt")
@@ -141,7 +150,7 @@ def check_image():
     for name, elf in (("CM7", ELF7), ("CM4", ELF4)):
         if not os.path.isfile(elf):
             continue
-        sz = subprocess.run([os.path.join(os.path.dirname(GCC), "arm-none-eabi-size.exe"), elf],
+        sz = subprocess.run([os.path.join(os.path.dirname(GCC), "arm-none-eabi-size" + EXE), elf],
                             capture_output=True, text=True).stdout.split("\n")
         if len(sz) < 2 or not sz[1].split():
             continue
