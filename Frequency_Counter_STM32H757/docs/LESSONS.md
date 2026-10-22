@@ -5047,6 +5047,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** fix(firmware) v0.33.1
 - **Stav:** aktivni, prelozeno na macOS (CubeIDE 2.1.0, GCC 14.3, 0 varovani, audit 95/0/2), neovereno na desce
 
+### L-0192 - Testbench, ktery porovnava pres `!=`, neodhali nezapsanou pamet (X)
+
+- **Datum:** 2026-10-22
+- **Oblast:** FPGA simulace (`sim/tb_phy_v3.sv`), obecne vsechny testbenche, ktere ctou RAM
+- **Symptom:** mutace PHY v3 „RX RAM se nestrida" testem PROSLA - test mel overit, ze v druhe polovine RX RAM zustal predchozi ramec.
+- **Pricina:** v mutantovi se druha polovina nikdy nezapsala a obsahovala `X`; `if (x != ocekavano)` je pro `X` neurcite (ne pravda), chyba se nezapocitala. Druha past tehoz testu: `force sig = vyraz` Icarus vyhodnoti jen jednou (varovani `procedural continuous assignments are not yet fully supported`).
+- **Oprava:** kontroly RAM a MISO pres `!==` (X i Z se pocitaji jako rozdil); cteni druhe poloviny primo z pameti modelu misto `force`.
+- **Pravidlo:** (a) v testbenchi porovnavat `!==` / `===`, kdykoli muze hodnota byt neinicializovana; (b) KAZDY novy testbench projet mutacemi (`sim/mut_phy_v3.py` je vzor) - test, ktery mutaci neshodi, nemeri to, co tvrdi.
+- **Detekce:** `python sim/mut_phy_v3.py <koren modulu> <vystup>` -> vsechny mutace „ZACHYCENO".
+- **Commit:** feat(fpga) PHY v3
+- **Stav:** aktivni
+
 ---
 
 ## Archiv (neplatné lekce)

@@ -36,6 +36,9 @@
   nastavit **regen-safe ve `fpga_freq_init`** (CubeMX má `GPIO_SPEED_FREQ_LOW`, `spi.c:94,101`).
 - Jedna transakce = přesně 1024 B mezi CS↓ a CS↑. **FPGA kratší i delší transakci zahodí** (žádný příkaz se neprovede),
   počítá ji v `RX_LEN_ERR`.
+- **CRC bloků MISO počítá PHY za letu** z vysílaných bajtů a vkládá ho na 254/255 (`src/spi_slave_phy_v3.v`); obsah TX RAM
+  na těchto pozicích se nevysílá. Skladač rámce CRC neřeší. RX: CRC každého bloku za letu (`rx_blk_ok[3:0]`), celý rámec
+  do RX RAM (2 × 1024 B střídavě).
 - **Časování:** CS↓ → první SCK ≥ 1 µs, poslední SCK → CS↑ ≥ 1 µs, **mezera mezi transakcemi ≥ 150 µs**
   (FPGA skládá další rámec; když nestihne, pošle předchozí obsah s nezměněným `SEQ` = „nic nového“).
 - Doba přenosu: 1024 B × 8 / 25 MHz = **328 µs** (12,5 MHz: 655 µs).
@@ -164,8 +167,10 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 
 ### 6.2 Přechod v2 → v3 (STM umí obojí)
 - STM po startu čte **1024 B**. `VER = 0x02` a CRC 0..125 v pořádku → v2 (pracuje se 128 B); `VER = 0x03` a CRC bloku 0 → v3.
-- ⬜ **Ověřit simulací**, že PHY v2 při transakci 1024 B vrátí v prvních 128 B platný rámec a delší CS nic nerozbije
-  (`rcnt` přeteče po 128 B). Dokud to není ověřené, STM detekuje verzi podle `FW_VERSION` z rámce 128 B.
+- ✅ **Ověřeno simulací 2026-10-22** (`sim/tb_phy_v2_long.sv`, SCK 25 MHz): PHY v2 při transakci 1024 B vrací na MISO svůj
+  128B rámec osmkrát dokola (index TX RAM je 7bitový) – prvních 128 B je platný rámec v2; přijme jen bajty 0..127 (čítač
+  hran saturuje na 1024), takže rámec v3 kvůli CRC odmítne a nic neprovede; následná transakce 128 B funguje beze změny.
+  Negativní kontrola (bez saturace) test shodí. Detekce podle `VER` v prvních 128 B je tedy bezpečná.
 - Flashovat obě strany spolu; STM v3 musí běžet i s FPGA v2 (zpětná kompatibilita), FPGA v3 bez STM v3 neměří.
 
 ### 6.3 Kalibrace
@@ -193,7 +198,7 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 |---|---|---|---|
 | 1 | obě | **tato specifikace** + `HW_REFERENCE.md` odkaz, STATUS | revize uživatelem |
 | 2 | STM | piny SPI2 na rychlost ≥ MEDIUM regen-safe ve `fpga_freq_init`; zkouška **25 MHz s dnešním rámcem 128 B** (`spi 25`, ≥ 1 h, `CRC err`, díry SEQ) | deska, osciloskop na J3 |
-| 3 | FPGA | PHY 1024 B: 10bitová adresa, TX 2 × 1024 B, RX 1024 B, CRC za letu po blocích, `RX_LEN_ERR` | nový testbench (Icarus), `txequiv`/`link` přepsat |
+| 3 | FPGA | PHY 1024 B: 10bitová adresa, TX 2 × 1024 B, RX 2 × 1024 B, CRC za letu po blocích, `rx_len_ok` – ✅ `src/spi_slave_phy_v3.v` (nezapojeno), `tb_phy_v3` PASS při 5/25/30 MHz, 6/6 mutací zachyceno (`sim/mut_phy_v3.py`); ⬜ syntéza + STA | při zapojení přepsat `txequiv`/`link` na v3 |
 | 4 | STM | parser v3 + **emulátor v3** (`fpgasim`) + vrstva segmenty → okno, selftest | build + audit, emulátor na desce bez FPGA |
 | 5 | FPGA | `seg_acc` ×2, absolutní čítače, časovač segmentů, kruh, skladač, ACK; odstranit okna/regresi/zámky/mux 128:1 | testbenche + **zkušební P&R** (Windows) |
 | 6 | obě | stránky + `LUT_WRITE` bulk + banky | `tb_stmcal` v3, STM selftest |
