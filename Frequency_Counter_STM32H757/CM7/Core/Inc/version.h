@@ -11,6 +11,11 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.34.0 (2026-10-22) = protokol v3 krok 4 (docs/PROTOKOL_V3.md kap. 8): novy modul fpga_v3.c/.h -- ramec 1024 B (CRC bloku,
+ * zaznam segmentu 31 B, MOSI ACK/SET_CONFIG/LUT_WRITE), parser (n_ok do prvniho vadneho bloku -> REC_ACK), emulator FPGA v3
+ * (kruh, ACK, preteceni) a vrstva segmenty -> okno (dvoubodove + LSQ pres teziste segmentu, rozbaleni X0 40 b / T0 48 b).
+ * UART `fpga v3 test` = selftest modulu; host test tests/host/t_fpga_v3.c + mutace mut_fpga_v3.py. Ovladac FPGA zatim
+ * BEZE ZMENY (v2, 128 B) -- zapojeni do fpga_freq je krok 4c. Novy .c: Close->Open Project. IPC v29 beze zmeny. */
 /* v0.33.2 (2026-10-22) = priprava na SCK 25 MHz (protokol v3, docs/PROTOKOL_V3.md kap. 2): vystupy SPI2 SCK (PI1) a MOSI (PB15)
  * na rychlost MEDIUM ve fpga_freq_init (regen-safe, jen OSPEEDR pod gpio_cfg_lock; CubeMX dava LOW); UART `spi` vypisuje
  * rychlost pinu. Vychozi takt SCK zustava 12,5 MHz -- 25 MHz se zkousi `spi 25`. */
@@ -260,8 +265,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 33
-#define FW_VERSION_PATCH 2
-#define FW_VERSION_STR   "v0.33.2"
+#define FW_VERSION_MINOR 34
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.34.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

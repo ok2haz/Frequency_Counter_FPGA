@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
 #include "fpga_tdccal.h"   /* FW 0x0427: stav kalibrace TDC v STM (status) */
+#include "fpga_v3.h"       /* protokol v3: UART `fpga v3 test` */
 #include <string.h>
 #include <stdbool.h>
 
@@ -2483,6 +2484,14 @@ void UartTask_run(void *argument)
 					         (unsigned long)(d.dt_u >> 32), (unsigned long)d.dt_u, (unsigned long)(d.per >> 32), (unsigned long)d.per,
 					         (long)d.x_ps, (unsigned)d.xdiv, (unsigned long)d.n_b, (unsigned long)(d.xm_b >> 32), (unsigned long)d.xm_b);
 				  }
+			  }
+			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
+				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->
+				   * parser -> okna, vadny blok, preteceni kruhu, rozbaleni T0. Bezi v UartTasku (nehlidany), trva desitky ms. */
+				  const uint32_t c0 = DWT->CYCCNT;
+				  const bool v3ok = fpga_v3_selftest();
+				  const uint32_t us = (DWT->CYCCNT - c0) / (SystemCoreClock / 1000000u);
+				  printf("FPGA v3 selftest: %s (radek %d), %lu us\n", v3ok ? "PASS" : "FAIL", fpga_v3_selftest_fail_line(), (unsigned long)us);
 			  }
 			  else if (strncmp(RxBuffer, "fpga diag", 9) == 0 && (RxBuffer[9] == '\0' || RxBuffer[9] == ' ')) {
 				  /* FW >= 0x0425 (caps bit14, E0 audit 2026-10-20): SET_CONFIG 0x05. `fpga diag` = stav,
