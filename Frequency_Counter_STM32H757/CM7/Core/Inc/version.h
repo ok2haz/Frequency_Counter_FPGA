@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.34.1 (2026-10-22) = fpga_v3 segmenty -> okno i pri NIZKEM kmitoctu (perioda > L = 25 ms, segmenty N = 0): okno se
+ * prodlouzi do prvni hrany po K segmentech (reciprocni citac), ztrata signalu = mezera bez hrany > 3 ocekavane periody, nejvys
+ * 2,5 s (jako v2; docs/PROTOKOL_V3.md kap. 7). Drive kazdy prazdny segment okno zahodil -> pod ~40 Hz zadna okna.
+ * Selftest krok 9 (2 Hz, 0,3 Hz). Ovladac FPGA dal v2 beze zmeny. */
 /* v0.34.0 (2026-10-22) = protokol v3 krok 4 (docs/PROTOKOL_V3.md kap. 8): novy modul fpga_v3.c/.h -- ramec 1024 B (CRC bloku,
  * zaznam segmentu 31 B, MOSI ACK/SET_CONFIG/LUT_WRITE), parser (n_ok do prvniho vadneho bloku -> REC_ACK), emulator FPGA v3
  * (kruh, ACK, preteceni) a vrstva segmenty -> okno (dvoubodove + LSQ pres teziste segmentu, rozbaleni X0 40 b / T0 48 b).
@@ -266,7 +270,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 34
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.34.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.34.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

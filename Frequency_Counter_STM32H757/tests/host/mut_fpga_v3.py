@@ -18,6 +18,10 @@ M = [
     ('CRC bloku jen pres 253 B', 'return fpga_crc16(blk, 254);', 'return fpga_crc16(blk, 253);'),
     ('znacka bloku se nekontroluje', "|| b[0] != (uint8_t)k || b[1] != (uint8_t)h->seq) break;", ") break;"),
     ('emulator: ST bez casti periody', 'double st = (p / unit_s) * (double)N * nm1 * 0.5;', 'double st = 0.0;'),
+    ('prazdny segment = ztrata (drivejsi)', 'if (c->empty > tol) c->open = 0u; else c->k++;', 'c->open = 0u;'),
+    ('mezera bez pravidla 3 period', 'if (t3 < (double)tol) tol = (uint32_t)t3;', '(void)t3;'),
+    ('mezera bez stropu 2,5 s', 'uint32_t tol = g->max_gap_ms / L;', 'uint32_t tol = 0xFFFFFFFFu; (void)L;'),
+    ('okno konci jen pri k == K', 'if (c->open && c->k >= g->k_target) {', 'if (c->open && c->k == g->k_target) {'),
     ('grp_break nic nedela', '{ g->c[ch & 1u].open = 0u; }', '{ (void)g; (void)ch; }'),
     ('grp_break vzdy kanal A', '{ g->c[ch & 1u].open = 0u; }', '{ g->c[0].open = 0u; (void)ch; }'),
 ]

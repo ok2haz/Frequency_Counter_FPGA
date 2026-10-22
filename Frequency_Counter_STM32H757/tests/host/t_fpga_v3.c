@@ -5,7 +5,7 @@
  * Overuje: (1) fpga_v3_selftest() = tytez testy jako na cili; (2) scenare s vypisem (kmitocty 100 Hz .. 30 MHz, sum
  * 0 / 30 / 100 ps, kanal B jiny kmitocet); (3) dlouhy beh 10 MHz, sum 100 ps, 400 oken: rozptyl odhadu z tezist
  * segmentu (LSQ) musi byt vyrazne mensi nez dvoubodovy (smysl v3); (4) pocitadlo CRC na znamem vektoru;
- * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu). */
+ * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu. */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -20,7 +20,7 @@ static int fails = 0;
 
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("  CHYBA: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-typedef struct { int nwin[2]; double sum2[2], sumL[2], ss2[2], ssL[2], max2[2], maxL[2]; int gaps; } res_t;
+typedef struct { int nwin[2], nlsq[2]; double sum2[2], sumL[2], ss2[2], ssL[2], max2[2], maxL[2]; int gaps; } res_t;
 
 static void run(double fa, double fb, double sig, uint32_t nseg, uint32_t k, uint32_t seed, int bad_frame, res_t *o)
 {
@@ -43,9 +43,12 @@ static void run(double fa, double fb, double sig, uint32_t nseg, uint32_t k, uin
             if (fpga_v3_grp_feed(&G, &R[i], h.clk_mhz, &w)) {
                 const int c = w.ch;
                 const double e2 = w.f_2pt_hz / ft[c] - 1.0, eL = w.f_lsq_hz / ft[c] - 1.0;
-                o->nwin[c]++; o->sum2[c] += e2; o->sumL[c] += eL; o->ss2[c] += e2 * e2; o->ssL[c] += eL * eL;
+                o->nwin[c]++; o->sum2[c] += e2; o->ss2[c] += e2 * e2;
                 if (fabs(e2) > o->max2[c]) o->max2[c] = fabs(e2);
-                if (fabs(eL) > o->maxL[c]) o->maxL[c] = fabs(eL);
+                if (w.lsq_ok) {                                  /* LSQ jen s >= 2 segmenty s hranou */
+                    o->nlsq[c]++; o->sumL[c] += eL; o->ssL[c] += eL * eL;
+                    if (fabs(eL) > o->maxL[c]) o->maxL[c] = fabs(eL);
+                }
             }
         }
         expect = h.rec_first + n_ok;
@@ -74,7 +77,8 @@ int main(void)
         res_t o; run(SC[i].fa, SC[i].fb, SC[i].sig, 200u, 10u, 10u + i, -1, &o);
         printf("  %-40s oken A %3d  max|e| 2pt %.2e  LSQ %.2e | B %3d  max|e| 2pt %.2e  LSQ %.2e | mezery %d\n", SC[i].nm,
                o.nwin[0], o.max2[0], o.maxL[0], o.nwin[1], o.max2[1], o.maxL[1], o.gaps);
-        CHECK(o.nwin[0] >= 15 && o.gaps == 0, "%s: oken %d, mezery %d", SC[i].nm, o.nwin[0], o.gaps);
+        CHECK(o.nwin[0] >= 15 && o.gaps == 0 && o.nlsq[0] == o.nwin[0], "%s: oken %d (LSQ %d), mezery %d", SC[i].nm,
+              o.nwin[0], o.nlsq[0], o.gaps);
         const double tol = (SC[i].sig > 0.0) ? 20.0 * SC[i].sig * 1e-12 / 0.25 : 1e-11;   /* 20 sigma dvoubodove */
         CHECK(o.max2[0] < tol && o.maxL[0] < tol, "%s: chyba nad %.1e", SC[i].nm, tol);
         if (SC[i].fb > 0.0) CHECK(o.nwin[1] >= 15 && o.max2[1] < tol && o.maxL[1] < tol, "%s: kanal B", SC[i].nm);
@@ -160,6 +164,56 @@ int main(void)
     { res_t o; run(4e6, 7e5, 0.0, 400u, 10u, 88u, 7, &o);
       printf("  vadny blok + kanal B: oken A %d B %d, mezery %d, max|e| A %.2e B %.2e\n", o.nwin[0], o.nwin[1], o.gaps, o.max2[0], o.max2[1]);
       CHECK(o.gaps == 0 && o.nwin[0] >= 35 && o.nwin[1] >= 35 && o.max2[0] < 1e-11 && o.max2[1] < 1e-11, "vadny blok + B"); }
+
+    /* nizke kmitocty (perioda > L = 25 ms, vetsina segmentu N = 0): okno se prodlouzi do prvni hrany po K segmentech
+     * (reciprocni citac), kmitocet dvoubodove presne; LSQ jen kdyz okno ma >= 2 segmenty s hranou. Pod 0,4 Hz
+     * (perioda > 2,5 s) ztrata signalu jako ve v2 -> zadne okno. */
+    {
+        static const struct { double f; uint32_t nseg; int nmin, nmax; const char *nm; } LF[] = {
+            { 33.0, 1200u, 100, 125, "33 Hz (N 0/1)" }, { 10.0, 1200u, 85, 105, "10 Hz" },
+            { 1.0, 2400u, 55, 60, "1 Hz" }, { 0.5, 2400u, 25, 30, "0,5 Hz" }, { 0.3, 2400u, 0, 0, "0,3 Hz (ztrata)" },
+        };
+        for (unsigned i = 0; i < sizeof LF / sizeof LF[0]; i++) {
+            res_t o; run(LF[i].f, 0.0, 30.0, LF[i].nseg, 10u, 40u + i, -1, &o);
+            const double tol = 20.0 * sqrt(2.0) * 30e-12 / 0.25;
+            printf("  %-40s oken %3d (LSQ %3d)  max|e| 2pt %.2e  LSQ %.2e | mezery %d\n", LF[i].nm, o.nwin[0], o.nlsq[0],
+                   o.max2[0], o.maxL[0], o.gaps);
+            CHECK(o.nwin[0] >= LF[i].nmin && o.nwin[0] <= LF[i].nmax && o.gaps == 0, "%s: oken %d (cekano %d..%d)",
+                  LF[i].nm, o.nwin[0], LF[i].nmin, LF[i].nmax);
+            CHECK(o.max2[0] < tol && o.maxL[0] < tol, "%s: chyba 2pt %.2e LSQ %.2e nad %.1e", LF[i].nm, o.max2[0], o.maxL[0], tol);
+        }
+    }
+
+    /* vypadek signalu: okno, ktere by ho preklenulo, ma spatny kmitocet (chybi hrany) -> musi se zahodit.
+     * (a) 5 MHz, 1 segment bez signalu (3 periody << L -> kazdy prazdny segment = ztrata);
+     * (b) 1 Hz, 4 s bez signalu (> 3 periody i > 2,5 s). Kazde okno musi mit spravny kmitocet. */
+    for (int v = 0; v < 2; v++) {
+        const double f = v ? 1.0 : 5e6;
+        const uint32_t off0 = v ? 800u : 100u, off1 = v ? 960u : 101u, nseg = v ? 2400u : 400u;
+        fpga_v3_emu_init(&E, f, 0.0, 0.0, 90u + (uint32_t)v); fpga_v3_grp_init(&G, 10u);
+        uint32_t expect = 0, fr = 0; int nwin = 0; double maxe = 0.0;
+        for (uint32_t s = 0; s < nseg; s += 6) {
+            for (int q = 0; q < 6; q++) {
+                const uint32_t si = s + (uint32_t)q;
+                E.f_hz[0] = (si >= off0 && si < off1) ? 0.0 : f;   /* emulator: bez signalu hrany nepribyvaji */
+                fpga_v3_emu_segment(&E);
+            }
+            fpga_v3_emu_frame(&E, F); fr++;
+            fpga_v3_hdr_t h; uint32_t n_ok = 0;
+            if (fpga_v3_parse(F, &h, R, &n_ok) != FPGA_V3_OK) { fails++; break; }
+            for (uint32_t i = 0; i < n_ok; i++) {
+                fpga_v3_win_t w;
+                if (fpga_v3_grp_feed(&G, &R[i], h.clk_mhz, &w) && w.ch == 0u) {
+                    nwin++;
+                    if (fabs(w.f_2pt_hz / f - 1.0) > maxe) maxe = fabs(w.f_2pt_hz / f - 1.0);
+                }
+            }
+            expect = h.rec_first + n_ok;
+            fpga_v3_build_ack(M, fr, expect); fpga_v3_emu_rx(&E, M);
+        }
+        printf("  vypadek signalu %s: oken %d, max|e| %.2e\n", v ? "1 Hz, 4 s   " : "5 MHz, 25 ms", nwin, maxe);
+        CHECK(nwin >= (v ? 50 : 30) && maxe < 1e-9, "vypadek %d: oken %d, max|e| %.2e (okno preklenulo vypadek)", v, nwin, maxe);
+    }
 
     /* fpga_v3_grp_break: rozpracovane okno kanalu zahodi, druhy kanal necha. Synteticke zaznamy 40 kHz (1000 hran
      * na segment, perioda 4,096e7 jednotek, 10 znacek), K = 4: bez preruseni prvni okno = segmenty 0..3; s prerusenim

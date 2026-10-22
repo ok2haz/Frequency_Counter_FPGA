@@ -262,6 +262,8 @@ void fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target)
 {
     memset(g, 0, sizeof *g);
     g->k_target = k_target ? k_target : 1u;
+    g->seg_ms = 25u;
+    g->max_gap_ms = 2500u;
 }
 
 void fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch) { g->c[ch & 1u].open = 0u; }
@@ -273,6 +275,8 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     int closed = 0;
 
     /* rozbaleni X0 (40 b) a T0 (48 b) proti predchozimu zaznamu kanalu; jen u zaznamu s hranou */
+    const uint64_t xb = c->x_prev, tb = c->t_prev;
+    const uint8_t hb = c->have_prev;
     uint64_t x = 0, t = 0;
     if (r->n) {
         if (!c->have_prev) { x = r->x0; t = r->t0; c->have_prev = 1u; }
@@ -282,12 +286,32 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         }
         c->x_prev_raw = r->x0; c->t_prev_raw = r->t0; c->x_prev = x; c->t_prev = t;
     }
-    /* souvislost segmentu, neplatny / prazdny zaznam -> rozpracovane okno zahodit */
+    /* souvislost segmentu, neplatny zaznam -> rozpracovane okno zahodit */
     if (c->open && r->seg_idx != (uint16_t)(c->seg_last + 1u)) c->open = 0u;
     c->seg_last = r->seg_idx;
-    if ((r->flags & FPGA_V3_R_INVALID) || r->n == 0u) { c->open = 0u; return 0; }
+    if (r->flags & FPGA_V3_R_INVALID) { c->open = 0u; return 0; }
+    if (r->n == 0u) {
+        /* prazdny segment: pri periode > L normalni, okno pokracuje (bez prispevku k LSQ). Ztrata signalu
+         * (docs/PROTOKOL_V3.md kap. 7) = mezera bez hrany > 3 ocekavane periody, nejvys max_gap_ms -> okno zahodit. */
+        if (c->open) {
+            const uint32_t L = g->seg_ms ? g->seg_ms : 25u;
+            uint32_t tol = g->max_gap_ms / L;
+            if (c->per_u > 0.0) {
+                const double t3 = 3.0 * c->per_u * fpga_v3_unit_ps(clk_mhz) / ((double)L * 1e9);
+                if (t3 < (double)tol) tol = (uint32_t)t3;
+            }
+            c->empty++;
+            if (c->empty > tol) c->open = 0u; else c->k++;
+        }
+        return 0;
+    }
+    /* odhad periody pro limit mezery: z tohoto zaznamu (ST/SX), jinak od predchozi hrany v temze okne */
+    if (r->n >= 2u && r->sx) c->per_u = (double)r->st / (double)r->sx;
+    else if (hb && c->open && x > xb) c->per_u = (double)(t - tb) / (double)(x - xb);
+    else c->per_u = 0.0;
+    c->empty = 0u;
 
-    if (c->open && c->k == g->k_target) {            /* tento zaznam zacina dalsi okno -> predchozi uzavrit */
+    if (c->open && c->k >= g->k_target) {            /* tento zaznam zacina dalsi okno -> predchozi uzavrit */
         const double up = fpga_v3_unit_ps(clk_mhz);
         out->ch = ch; out->seg_first = c->seg_first; out->nseg = c->k; out->n_marks = c->n_tot;
         out->edges = x - c->x_first; out->gate_units = t - c->t_first;
@@ -323,12 +347,14 @@ static uint8_t       s_f[FPGA_V3_LEN], s_m[FPGA_V3_LEN];
 static fpga_v3_rec_t s_rec[FPGA_V3_REC_MAX];
 
 /* Projede nseg segmentu emulatorem: kazde 2 segmenty jeden ramec, parser, okna, ACK (jako STM). Volitelne v ramci
- * c. bad_frame poskodi blok 2. Vraci pocet oken kanalu A a jejich nejvetsi relativni chybu proti f_true. */
+ * c. bad_frame poskodi blok 2. Vraci pocet oken kanalu A a jejich nejvetsi relativni chybu proti f_true;
+ * LSQ jen u oken s lsq_ok (jejich pocet v *nlsq). */
+static uint32_t s_nlsq;
 static uint32_t st_run(uint32_t nseg, int bad_frame, double f_true, double *maxrel_2pt, double *maxrel_lsq,
                        uint32_t *gaps)
 {
     uint32_t nwin = 0, fr = 0, expect = s_e.rec_ack;
-    *maxrel_2pt = *maxrel_lsq = 0.0; *gaps = 0;
+    *maxrel_2pt = *maxrel_lsq = 0.0; *gaps = 0; s_nlsq = 0;
     for (uint32_t s = 0; s < nseg; s += 6) {                   /* 6 segmentu = 12 zaznamu na ramec: obsazene bloky 1 a 2 */
         for (int q = 0; q < 6; q++) fpga_v3_emu_segment(&s_e);
         fpga_v3_emu_frame(&s_e, s_f);
@@ -342,7 +368,7 @@ static uint32_t st_run(uint32_t nseg, int bad_frame, double f_true, double *maxr
             if (fpga_v3_grp_feed(&s_g, &s_rec[i], h.clk_mhz, &w) && w.ch == 0u) {
                 const double r2 = fabs(w.f_2pt_hz / f_true - 1.0), rl = fabs(w.f_lsq_hz / f_true - 1.0);
                 if (r2 > *maxrel_2pt) *maxrel_2pt = r2;
-                if (rl > *maxrel_lsq) *maxrel_lsq = rl;
+                if (w.lsq_ok) { s_nlsq++; if (rl > *maxrel_lsq) *maxrel_lsq = rl; }
                 nwin++;
             }
         }
@@ -403,7 +429,7 @@ bool fpga_v3_selftest(void)
     fpga_v3_emu_init(&s_e, 10e6, 1234.5, 0.0, 1u);
     fpga_v3_grp_init(&s_g, 10u);
     nw = st_run(100u, -1, 10e6, &r2, &rl, &gaps);
-    V3OK((nw >= 8u) && (r2 < 1e-11) && (rl < 1e-11) && (gaps == 0u));
+    V3OK((nw >= 8u) && (r2 < 1e-11) && (rl < 1e-11) && (gaps == 0u) && (s_nlsq == nw));
 
     /* 5) nesoudelny kmitocet + sum znacky 50 ps */
     fpga_v3_emu_init(&s_e, 12345678.9, 0.0, 50.0, 2u);
@@ -454,6 +480,17 @@ bool fpga_v3_selftest(void)
     fpga_v3_grp_init(&s_g, 10u);
     nw = st_run(60u, -1, 1e3, &r2, &rl, &gaps);
     V3OK((nw >= 3u) && (r2 < 1e-9) && (rl < 1e-9));
+
+    /* 9) nizky kmitocet 2 Hz (perioda 0,5 s = 20 segmentu, 1 hrana / 20 segmentu): okno se prodlouzi do pristi
+     * hrany -> 1 perioda na okno, kmitocet presne; 0,3 Hz (perioda 3,3 s > 2,5 s) = ztrata signalu, zadne okno */
+    fpga_v3_emu_init(&s_e, 2.0, 0.0, 0.0, 7u);
+    fpga_v3_grp_init(&s_g, 10u);
+    nw = st_run(240u, -1, 2.0, &r2, &rl, &gaps);
+    V3OK((nw >= 9u) && (r2 < 1e-11) && (gaps == 0u));
+    fpga_v3_emu_init(&s_e, 0.3, 0.0, 0.0, 8u);
+    fpga_v3_grp_init(&s_g, 10u);
+    nw = st_run(400u, -1, 0.3, &r2, &rl, &gaps);
+    V3OK((nw == 0u));
 
     return ok;
 }

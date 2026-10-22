@@ -7,6 +7,8 @@
  *     CRC bloku, znacka bloku) -- aby se STM strana dala vyvijet a testovat bez noveho bitstreamu (L-0099),
  *   - vrstva SEGMENTY -> OKNO: z K po sobe jdoucich segmentu jednoho kanalu okno pro statistiku
  *     (dvoubodove mezi prvnimi znackami sousednich oken = teleskopuje; nejmensi ctverce pres teziste segmentu).
+ *     Nizky kmitocet (perioda > L): prazdne segmenty okno prodlouzi az k pristi hrane (reciprocni citac);
+ *     ztrata signalu = mezera bez hrany > 3 ocekavane periody, nejvys max_gap_ms (2,5 s jako v2).
  * 2026-10-22: do driveru (fpga_freq.c) NEZAPOJENO -- cesta v2 se nemeni.
  *
  * Jednotka casu v ramci = T_clk/16384 (100 MHz: 0,6103515625 ps), jako ve v2. */
@@ -183,16 +185,21 @@ typedef struct {
     double   sw, swx, swt, swxx, swxt;
     double   xc0, tc0;
     uint8_t  flags_or;
+    uint32_t empty;              /* prazdnych segmentu od posledni hrany v okne */
+    double   per_u;              /* odhad periody [jednotky / hranu]; 0 = neznamy (pak plati max_gap_ms) */
 } fpga_v3_grp_ch_t;
 
 typedef struct {
-    uint32_t k_target;           /* segmentu na okno (hradlo / L) */
+    uint32_t k_target;           /* segmentu na okno (hradlo / L); okno konci na prvni hrane po K segmentech */
+    uint32_t seg_ms;             /* L [ms]: vychozi 25, ovladac nastavi z hlavicky (seg_len_ms) */
+    uint32_t max_gap_ms;         /* nejdelsi mezera bez hrany uvnitr okna: vychozi 2500 (ztrata signalu v2) */
     fpga_v3_grp_ch_t c[2];
 } fpga_v3_grp_t;
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);
 void     fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch);   /* mezera / neplatny zaznam: okno zahodit */
-/* @return 1 = do *out prislo hotove okno (uzavrene prvnim zaznamem dalsiho okna) */
+/* @return 1 = do *out prislo hotove okno (uzavrene prvnim zaznamem s hranou po K segmentech = zacatek dalsiho okna).
+ * Zahodi rozpracovane okno: neplatny zaznam, nesouvisle SEG_IDX, mezera bez hrany nad limit (ztrata signalu). */
 int      fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz, fpga_v3_win_t *out);
 
 /* jednotka casu [ps] pro clk_mhz (0 = 100 MHz) */
