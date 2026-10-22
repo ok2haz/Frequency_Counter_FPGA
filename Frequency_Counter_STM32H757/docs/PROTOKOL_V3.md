@@ -202,3 +202,19 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 
 ⚠️ Pravidla, která platí i pro v3: změna rámce = obě strany + `STATUS.md`; emulátor skládá rámec tak, jak ho skládá RTL
 (L-0099); každý nový kanál STM → FPGA má počitadlo a kontrolní součet vrácené v rámci (L-0188).
+
+## 9. Zkouška SCK 25 MHz s dnešním rámcem 128 B (krok 2 z kap. 8)
+
+Předpoklad: FPGA FW 0x0427 (přestavěný z commitnutých zdrojů, #328) + **STM v0.33.2** (piny SCK/MOSI na MEDIUM).
+`spi <MHz>` se nepersistuje – po resetu platí zase 12,5 MHz.
+
+1. Flash obou stran, **power-cyklus**, pak `spi` → musí vypsat `SPI2: piny SCK MEDIUM, MOSI MEDIUM` a `SCK 12500000 Hz`.
+2. **Kontrola 30 min při 12,5 MHz:** zapsat výchozí hodnoty z `status` – `CRC err`, `SEQ FPGA: diry`, `FPGA SAMOKONTROLA`
+   (zamítnutá okna po rozběhu), `FPGA DIAG` (OVL, bubliny), `REGR` (podíl zamítnutí); u vlastní reference ADEV (0,25 s).
+3. `spi 25` → `SCK 25000000 Hz`, **60 min** bez dalších zásahů, pak tytéž hodnoty.
+4. **Osciloskop** (sonda na konci u FPGA, pin 55 SCK, pin 57 MISO; zem co nejkratší): náběh a překmit SCK, zvonění,
+   poloha změny MISO proti náběžné hraně SCK na straně STM (rezerva pro setup).
+5. **Kritéria přijetí:** přírůstek `CRC err` = 0, díry SEQ = 0, žádný nárůst zamítnutých oken, OVL ani podílu zamítnuté
+   regrese proti kroku 2, ADEV vlastní reference beze změny v rámci rozptylu (rušení SPI do časovacích vstupů, O4).
+6. Při selhání: nejdřív signál (osciloskop), pak sériový odpor 22–33 Ω u zdroje SCK/MOSI (HW); rychlost pinů **zvyšovat
+   až jako poslední** (strmější hrany = víc rušení). Výsledek zapsat do `MERENI_A_KALIBRACE.md` a `STATUS.md` #330.
