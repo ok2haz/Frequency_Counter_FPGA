@@ -5033,7 +5033,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** stav stavoveho automatu (akumulator, citac, ukazatel) posouvat az po uspechu akce, kterou reprezentuje; pri selhani nechat stav tak, aby opakovani udelalo totez.
 - **Detekce:** `status` -> `DAC OCXO: ... vynechano po chybe`; `dac dither test` (logika ditheru).
 - **Commit:** fix(firmware) v0.33.1
-- **Stav:** aktivni, NEPRELOZENO a neovereno na desce
+- **Stav:** aktivni, prelozeno na macOS (CubeIDE 2.1.0, GCC 14.3, 0 varovani, audit 95/0/2), neovereno na desce (`ad5693_servo` 0xB8 -> 0xC4 B v obrazu)
 
 ### L-0191 - Popisky na displeji prezily hardware, ktery popisovaly (F-0261, /4 a /16)
 
@@ -5045,7 +5045,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** pri zmene vyznamu pole nebo testu grepni i retezce zobrazene uzivateli (displej, web, UART), nejen identifikatory.
 - **Detekce:** `grep -n '"[^"]*/16' CM7/app/app_gpsdo.c`.
 - **Commit:** fix(firmware) v0.33.1
-- **Stav:** aktivni, NEPRELOZENO
+- **Stav:** aktivni, prelozeno na macOS (CubeIDE 2.1.0, GCC 14.3, 0 varovani, audit 95/0/2), neovereno na desce
 
 ---
 
