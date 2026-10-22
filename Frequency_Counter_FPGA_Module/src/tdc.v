@@ -136,6 +136,10 @@ module tdc_chain #(
     reg            dRp    = 1'b1;
     reg            qd_src = 1'b0;                                // zmrazena sada (nastavi se pri trig)
     always @(negedge clk) if (DUAL != 0) q_f <= s;
+    // poradi vzorku (od nejstarsiho): F(m-1)=dFp, R(m)=dR, F(m)=dF
+    // (deklarace pred prvnim pouzitim - Icarus 13 pouziti pred deklaraci odmita)
+    wire newR = ~dR & dFp;                // poprve videna v R(m)
+    wire newF = ~dF & dR;                 // poprve videna v F(m)
     always @(posedge clk) begin
         dRp <= dR;
         dF  <= q_f[KD];
@@ -143,9 +147,6 @@ module tdc_chain #(
         if (ld && DUAL != 0) qd_f <= q_f;
         if (trig) qd_src <= newF;
     end
-    // poradi vzorku (od nejstarsiho): F(m-1)=dFp, R(m)=dR, F(m)=dF
-    wire newR = ~dR & dFp;                // poprve videna v R(m)
-    wire newF = ~dF & dR;                 // poprve videna v F(m)
     assign ec       = (DUAL != 0) ? (newR | newF) : (~dR & dRp);   // q = 1 = hrana jeste neprosla
     assign qd_src_o = (DUAL != 0) ? qd_src : 1'b0;
     assign thermo_f = (DUAL != 0) ? ~qd_f : {TAPS{1'b0}};
@@ -465,6 +466,7 @@ module tdc_chan #(
     // zacatku/konci kalibrace, kdy se cte jen kvuli diagnostice (vypis dump_k) a pocitani (s_col) zacina az po
     // desitkach taktu (fz/dv1/dv2). Prioritu `s_cmp` (scan_k) drzime primo.
     reg           cmp_ra  = 1'b0;             // FW 0x0421: s_cmp o takt pozdeji (vyber adresy z registru; faze kalibrace o 1 dale)
+    reg           lastk_r = 1'b0;             // FW 0x0427: pouziva radic (AUTOCAL = 1), proto je mimo generate; deklarace pred radicem (Icarus 13)
     always @(posedge clk) begin busy_ra <= s_clr | s_col | s_drn | s_cmp; cmp_ra <= s_cmp; end
     wire [AW-1:0] hist_ra = cmp_ra ? scan_k : (busy_ra ? caddr : dump_k[AW-1:0]);
     wire          hist_we = s_clr | hist_we_r;
@@ -565,7 +567,6 @@ module tdc_chan #(
         end
     end
 
-    reg           lastk_r = 1'b0;                  // FW 0x0427: pouziva radic (AUTOCAL = 1), proto je mimo generate
     generate
     if (AUTOCAL != 0) begin : autocal   // ===== puvodni vypocet tabulky ve FPGA: JEN simulace (-DSIM_AUTOCAL) =====
     // ---------------- vypocet tabulky (datova cesta, bez cal_req) ---------
