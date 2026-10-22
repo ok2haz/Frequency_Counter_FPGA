@@ -6899,8 +6899,8 @@ static void app_gpsdo_render_counter(void)
         b[0] = '\0';
         if (m.error_flags & FPGA_ERR_SIGNAL_LOST) strncat(b, "LOST ", sizeof b - strlen(b) - 1);
         if (m.error_flags & FPGA_ERR_OVERFLOW)    strncat(b, "OVF ",  sizeof b - strlen(b) - 1);
-        if (m.error_flags & FPGA_ERR_MEAS)        strncat(b, "E/4 ",  sizeof b - strlen(b) - 1);
-        if (m.status2     & FPGA_ST2_DIV16_ERR)   strncat(b, "E/16",  sizeof b - strlen(b) - 1);
+        if (m.error_flags & FPGA_ERR_MEAS)        strncat(b, "E-A ",  sizeof b - strlen(b) - 1);   /* F-0261: kanal A, ne /4 */
+        if (m.status2     & FPGA_ST2_DIV16_ERR)   strncat(b, "E-B",   sizeof b - strlen(b) - 1);   /* kanal B, ne /16 */
         if (b[0] == '\0') snprintf(b, sizeof b, "zadne");
     }
     if (first || dchg(c_err, sizeof c_err, b)) {
@@ -6940,7 +6940,7 @@ static void app_gpsdo_render_selftest(void)
     #define ST_N SELFTEST_N
     static const char *NAMES[ST_N] = {
         "CRC16 (SPI protokol)",     /* crc16("123456789") == 0x29B1 */
-        "Hystereze /4 <-> /16",     /* fpga_freq_select_core na syntetickych ramcich */
+        "FPGA ramec + regrese",     /* fpga_freq_select_selftest: ramec 0x0426, xm/ym, regrese (F-0261: drive „Hystereze /4 <-> /16") */
         "GPS parser (NMEA)",
         "Format + histogram",       /* fmt_frac + hist_h vektory (screen_main) */
         "Maidenhead lokator",

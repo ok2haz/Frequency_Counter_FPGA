@@ -2346,7 +2346,7 @@ void UartTask_run(void *argument)
 							  printf("DAC: pouziti `dac dither` | `dac dither <2..200 Hz>` | `dac dither test`\n");
 						  } else {
 							  uint16_t e = ad5693_dither_set_hz((uint16_t)hz);
-							  printf("DAC: dither nastaven na %u Hz (nepersistuje se; vychozi 200)\n", (unsigned)e);
+							  printf("DAC: dither nastaven na %u Hz (nepersistuje se; vychozi 100, max 200)\n", (unsigned)e);
 						  }
 					  }
 					  req = 0;

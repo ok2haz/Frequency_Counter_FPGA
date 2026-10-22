@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.33.1 (2026-10-22) = opravy z auditu v0.21-v0.22: (1) F-0259 dither DAC: akumulator sigma-delta se potvrdi az po
+ * uspesnem zapisu (drive se posunul i pri selhani); (2) `dac dither <Hz>` hlasil „vychozi 200", vychozi je 100 Hz;
+ * (3) F-0261: okno Citac „E-A/E-B" misto „E/4, E/16", selftest #1 „FPGA ramec + regrese". NEPRELOZENO (sandbox bez GCC). */
 /* v0.33.0 (2026-10-21) = FPGA FW 0x0427: kalibracni tabulku TDC pocita a zapisuje STM (fpga_tdccal.c, caps bit4 FPGA_CAP_STMCAL): FPGA po
  * sberu histogramu ceka, FpgaTask (fpga_freq_tdccal_poll) precte histogramy, spocita tabulky, zapise (TYPE 0x0A LUT_WRITE), overi
  * pocitadlo+soucet a potvrdi (SET_CONFIG 0x06). ovf/peak/nz/last (CAL report) se pocitaji z histogramu. Novy .c: Close->Open Project. */
@@ -255,7 +258,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 33
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.33.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.33.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

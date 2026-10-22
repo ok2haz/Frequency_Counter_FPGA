@@ -433,15 +433,19 @@ static int ad5693_servo(uint32_t tmo_ms)
     static uint8_t  s_persist_init;
     int r = 0;
     if (!ad5693_servo_ready()) return 0;                       /* nejdriv obnova / rucni zadost */
-    uint32_t q  = g_gpsdo_code_q16;
-    uint32_t ci = dither_next(&s_dith_acc, q);
+    uint32_t q   = g_gpsdo_code_q16;
+    uint32_t acc = s_dith_acc;                                 /* F-0259: krok se pocita do kopie ... */
+    uint32_t ci  = dither_next(&acc, q);
     if (!g_dac.code_valid || ci != g_dac.code) {
         if (ad5693_write3t(AD5693_CMD_WRITE_DAC, (uint16_t)ci, tmo_ms)) {
             g_dac.code = (uint16_t)ci; g_dac.code_valid = 1u; g_dac.writes++;
+            s_dith_acc = acc;                                  /* ... a potvrdi se az po uspesnem zapisu */
         } else {
-            g_dac.errors++;
+            g_dac.errors++;                                    /* akumulator zustava: pristi krok zkusi tentyz kod */
             r = -1;
         }
+    } else {
+        s_dith_acc = acc;                                      /* kod se nemeni, krok plati */
     }
     /* Kod do flash (obnova po startu, #304): jen pri zamceni a nejvys 1x za 10 min (wear W25Q). */
     uint32_t now = HAL_GetTick();
