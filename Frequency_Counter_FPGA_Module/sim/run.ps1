@@ -109,6 +109,10 @@ $tests = @(
     @{ name = "alias"; top = "tb_alias"; rtl = @("spi_app.v"); tb = "tb_alias.sv" }
     # hlidac koherence 100 <-> 10 MHz (vynechany / navic pulz, faze na hrane s jitterem)
     @{ name = "coh"; top = "tb_coh"; rtl = @("spi_app.v"); tb = "tb_coh.sv" }
+    # 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): PHY v2 pri transakci 1024 B (detekce verze) a nova PHY v3
+    #   (1024 B, CRC po blocich, delka, poloviny TX/RX; SCK 5/25/30 MHz). Negativni kontroly: python sim/mut_phy_v3.py <koren modulu> <vystup>
+    @{ name = "phylong"; top = "tb_phy_v2_long"; rtl = @("spi_slave_phy.v"); tb = "tb_phy_v2_long.sv" }
+    @{ name = "phyv3"; top = "tb_phy_v3"; rtl = @("spi_slave_phy_v3.v"); tb = "tb_phy_v3.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 
