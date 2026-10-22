@@ -5059,6 +5059,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** feat(fpga) PHY v3
 - **Stav:** aktivni
 
+### L-0193 - Vrstva oken testovana jen v pasmu, kde mel kazdy segment hranu
+
+- **Datum:** 2026-10-22
+- **Oblast:** STM `fpga_v3.c` (`fpga_v3_grp_feed`, protokol v3 segmenty -> okno), host testy obecne
+- **Symptom:** v0.34.0 pri periode > L (25 ms, tedy pod ~40 Hz) nevzniklo ZADNE okno - prazdny segment (N = 0) se bral jako ztrata signalu. Host test (100 Hz .. 30 MHz) i 11 mutaci proslo; chyba se nasla az revizi rozsahu pristroje.
+- **Pricina:** scenare testu byly odvozene z implementace (co autor napsal), ne z rozsahu pristroje ve specifikaci (kap. 7: ztrata signalu = 3 ocekavane periody). Mutace overuji jen to, co testy pokryvaji - chybejici scenar neodhali. (Pri vyvoji v0.34.0 mutace naopak nasly 6 slabych testu: poskozeny zaznam kanalu B, prazdny blok 2, ACK za hlavu kruhu, znacka bloku, mezera, absolutni tc0.)
+- **Oprava:** v0.34.1 - prazdny segment okno prodlouzi, okno konci prvni hranou po K segmentech, ztrata = mezera > 3 periody, nejvys 2,5 s; scenare 33 / 10 / 1 / 0,5 / 0,3 Hz a vypadek 5 MHz / 1 Hz; 4 nove mutace (15/15).
+- **Pravidlo:** (a) seznam scenaru testu odvodit ze SPECIFIKACE a rozsahu pristroje, ne z kodu; (b) u kazde vrstvy, ktera deli cas na segmenty/okna, testovat periodu << L, ~ L, > L a nad limitem ztraty, vypadek kratsi i delsi nez limit; (c) mutace doplnit o mutaci kazde nove podminky (zde 3 periody, strop, `k >= K`).
+- **Detekce:** `tests/host/t_fpga_v3.c` blok „nizke kmitocty" + „vypadek signalu"; `python tests/host/mut_fpga_v3.py <vystup>` -> vsechny zachyceny.
+- **Commit:** fix(firmware) v0.34.1
+- **Stav:** aktivni, prelozeno na macOS (GCC 14.3, 0 varovani, audit 96/0/2), modul do driveru nezapojen
+
 ---
 
 ## Archiv (neplatné lekce)

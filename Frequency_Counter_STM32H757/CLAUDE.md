@@ -32,10 +32,14 @@
 ```bash
 # build (makefily musí poprvé vyrobit CubeIDE; skript je pak negeneruje)
 ./scripts/build.sh Release CM7        # též: Release BOTH | Release CM4 | Debug ...
-# statická analýza (92 souborů obou jader, GCC 14.3; baseline 92 OK / 0 selhání / 2 s varováním)
+# statická analýza (96 souborů obou jader, GCC 14.3; baseline v0.34.1: 96 OK / 0 selhání / 2 s varováním)
 python tools/audit.py
-# testy: běží NA CÍLI přes UART (nejsou host-side)
+# testy: hlavně NA CÍLI přes UART; host-side jen tests/host (modul fpga_v3, protokol v3)
 #   UART příkaz `selftest`  ->  "SELFTEST: 16/16 PASS"
+#   UART příkaz `fpga v3 test`  ->  "FPGA v3 selftest: PASS" (modul fpga_v3, mimo 16 testů `selftest`)
+#   host: cc -std=c11 -O2 -Wall -Wextra -ICM7/Core/Inc CM7/Core/Src/fpga_v3.c CM7/Core/Src/fpga_crc.c \
+#         CM7/Core/Src/fpga_tdccal.c tests/host/t_fpga_v3.c -lm -o /tmp/t_fpga_v3 && /tmp/t_fpga_v3   -> PASS
+#   mutace: python tests/host/mut_fpga_v3.py <vystupni adresar>  -> "vsechny mutace zachyceny"
 #   web SPA (po každé editaci): python tools/spa/check.py --build
 ```
 

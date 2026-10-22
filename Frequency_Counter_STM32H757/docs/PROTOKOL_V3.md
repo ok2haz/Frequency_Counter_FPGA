@@ -188,7 +188,8 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 | funkce | v2 | v3 |
 |---|---|---|
 | kmitočet okna | dvoubodově + regrese ze 2 segmentů | nejmenší čtverce přes těžiště segmentů (10 na 0,25 s) |
-| ztráta signálu | FPGA 2,5 s | STM, 3× očekávaná perioda |
+| ztráta signálu | FPGA 2,5 s | STM: mezera bez hrany > 3 očekávané periody, nejvýš 2,5 s (`max_gap_ms`) → rozpracované okno se zahodí |
+| nízký kmitočet (perioda > L) | FPGA | STM: prázdné segmenty (N = 0) okno prodlouží, okno končí **první hranou po K segmentech** (reciproční čítač); LSQ jen při ≥ 2 segmentech s hranou |
 | hradlo | FPGA | skupina segmentů v STM |
 | volba kanálu | FPGA (`0x03`) | STM (oba kanály jsou vždy v záznamech) |
 
@@ -199,7 +200,7 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 | 1 | obě | **tato specifikace** + `HW_REFERENCE.md` odkaz, STATUS | revize uživatelem |
 | 2 | STM | piny SPI2 na rychlost ≥ MEDIUM regen-safe ve `fpga_freq_init`; zkouška **25 MHz s dnešním rámcem 128 B** (`spi 25`, ≥ 1 h, `CRC err`, díry SEQ) | deska, osciloskop na J3 |
 | 3 | FPGA | PHY 1024 B: 10bitová adresa, TX 2 × 1024 B, RX 2 × 1024 B, CRC za letu po blocích, `rx_len_ok` – ✅ `src/spi_slave_phy_v3.v` (nezapojeno), `tb_phy_v3` PASS při 5/25/30 MHz, 6/6 mutací zachyceno (`sim/mut_phy_v3.py`); ⬜ syntéza + STA | při zapojení přepsat `txequiv`/`link` na v3 |
-| 4 | STM | parser v3 + **emulátor v3** (`fpgasim`) + vrstva segmenty → okno, selftest | build + audit, emulátor na desce bez FPGA |
+| 4 | STM | parser v3 + **emulátor v3** + vrstva segmenty → okno, selftest – ✅ `CM7/Core/Src/fpga_v3.c` (v0.34.0 `08bd986`, nízké kmitočty v0.34.1 `0d98123`; nezapojeno), UART `fpga v3 test`, host test `tests/host/t_fpga_v3.c`, 15/15 mutací (`tests/host/mut_fpga_v3.py`); ⬜ **4c** zapojení do `fpga_freq` (detekce `VER`, čtení 1024 B, ACK, `fpga_v3_win_t` → `fpga_meas_t`, `fpgasim` v3, fázový záznam) | build + audit ✅ (0 varování, 96/0/2); emulátor na desce bez FPGA ⬜ (po 4c) |
 | 5 | FPGA | `seg_acc` ×2, absolutní čítače, časovač segmentů, kruh, skladač, ACK; odstranit okna/regresi/zámky/mux 128:1 | testbenche + **zkušební P&R** (Windows) |
 | 6 | obě | stránky + `LUT_WRITE` bulk + banky | `tb_stmcal` v3, STM selftest |
 | 7 | STM | SPI DMA regen-safe (`HAL_DMA_Init` + `__HAL_LINKDMA` + NVIC v USER CODE, buffery mimo DTCM, údržba cache), HW CRC volitelně | `fpga_spi_dma_stats`, testy D1–D8 |
@@ -210,7 +211,8 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 
 ## 9. Zkouška SCK 25 MHz s dnešním rámcem 128 B (krok 2 z kap. 8)
 
-Předpoklad: FPGA FW 0x0427 (přestavěný z commitnutých zdrojů, #328) + **STM v0.33.2** (piny SCK/MOSI na MEDIUM).
+Předpoklad: FPGA FW 0x0427 (přestavěný z commitnutých zdrojů, #328) + **STM ≥ v0.33.2** (piny SCK/MOSI na MEDIUM;
+v0.34.x mění jen nezapojený modul `fpga_v3`, cesta v2 je stejná).
 `spi <MHz>` se nepersistuje – po resetu platí zase 12,5 MHz.
 
 1. Flash obou stran, **power-cyklus**, pak `spi` → musí vypsat `SPI2: piny SCK MEDIUM, MOSI MEDIUM` a `SCK 12500000 Hz`.
