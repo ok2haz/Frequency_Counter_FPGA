@@ -9,7 +9,10 @@
 //  - (window stream ODSTRANEN ve FW 0x0411; nahradil ho regresni blok, bajty 68..96)
 //
 // RX TYPEs: 0x01 SET_CONFIG | 0x06 ACK | 0x08 START | 0x09 STOP
-//           0xA0 žádost o CAL report (příští TX rámec = 0xA0)
+//           0x0A LUT_WRITE (FW >= 0x0427): jedna polozka kalibracni tabulky TDC, [12] adresa[7:0],
+//                [13] {kanal, adresa[8], neg[13:8]}, [14] neg[7:0]; plati jen pri cal_wait
+//           0xA0 žádost o CAL report (příští TX rámec = 0xA0); [12] bit0 = 1 (bity 7:3 = 0) -> vypis hist[k],
+//                k = {[12][2:1], [14]}
 //           ostatní = ignorovat (rezervováno)
 //
 // SET_CONFIG payload: [12]=config_id, [13]=hodnota
@@ -17,6 +20,8 @@
 //   0x02 cal_mode:    0=normal, 1=ring oscilátor místo pin28 (kalibrace)
 //   0x03 channel:     0=CH_A (default), 1=CH_B primarni (FW >= 0x041E)
 //   0x04 reference:  0=OCXO (default po zapnuti), 1=externi 10 MHz vstup (FW >= 0x0420, caps bit11); pin Ref_Ctrl ridi ref_guard
+//   0x05 diagnostika (FW >= 0x0425): bit0 = maskovat vnitrni znacky pri CS (default 1), bit1 = LED heartbeat PIN29 (default 0)
+//   0x06 tabulka TDC (FW >= 0x0427): 0 = zacatek zapisu (nuluje lut_cnt/lut_sum), 1 = potvrzeni (cal_valid)
 //
 // Rámec (128 B, little-endian vícebajtová pole):
 //  0 MAGIC=0xA5 | 1 VER=0x02 | 2 TYPE | 3 FLAGS | 4..7 SEQUENCE
@@ -45,7 +50,11 @@
 //    kmitocet; zisk proti dvoum krajnim bodum je jen u signalu, jehoz faze vuci hodinam TDC "prohazuje".
 //  100 tdc_status: bit0=cal_valid A, bit1=cal_valid B, bit2=cal_fail (A|B),
 //      bit3=cal_busy (A|B), bit4=retez A kratky (udalosti za koncem), bit5=totez B
-//  101..106 dt_b (u48, tez T_clk/16384) | 107 rez | 108..111 edges_b (u32) | 112..117 rez=0
+//  101..106 dt_b (u48, tez T_clk/16384) | 107 rez (od 0x0426 Σ(t-t0) segmentu B) | 108..111 edges_b (u32)
+//  112..115 (FW >= 0x0427, caps bit4): 112 {lut_cnt[13:8], cal_wait_b, cal_wait_a} 113 lut_cnt[7:0]
+//           114..115 lut_sum (u16) | 116..117 rez=0
+//  FW >= 0x0425 (caps bit14): 10 stav hlidace koherence 100/10 MHz, 11 pocet chybnych epoch (102,4 us),
+//           57/58 bubliny okna primarni/sekundarni slot, 59 {sek[3:0], prim[3:0]} znacek pri aktivnim CS
 //  118..125 dt_a (u64) = presne okno CH_A v jednotkach T_clk/16384 (= 0,6104 ps,
 //           1,6384e12 jednotek/s; caps bit5). ps = jednotky * 625 / 1024.
 //  (gate_ns v abs 28 = floor(dt * 5 / 8192), informativni; frequency_x100000 = 0)
@@ -55,6 +64,8 @@
 // CAL payload 0xA0 (abs offset): diagnostika kalibrace TDC
 //  12..23 kanal A: ovf(u32 = udalosti za koncem retezu) peak(u32) nz(u16) last(u16)
 //  24..35 kanal B: totez | 36 tdc_status | 37 {7'd0,cal_mode} | 38..125 rezerva=0
+//  FW >= 0x0427: ovf/peak/nz/last jsou NULOVE (pocita je STM z histogramu); vypis hist[k]: 38 {5'd0, k[9:8], 1},
+//           39 k[7:0], 40..42 hist_A[k] (u24), 43..45 hist_B[k] (u24)
 //
 // 🔴 2026-10-03: SKUTECNY carry-chain TDC (`tdc.v`), cas v pikosekundach.
 //  (historie 0x0400: CAPS 0x0023 = window stream, SET_CONFIG, dt_ps; aktualne viz FW_VERSION/CAPS nize)

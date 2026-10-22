@@ -32,21 +32,21 @@ Dither v samostatném tasku je navržen opatrně (znovu kontrolované podmínky 
 - **Popis:** Selže‑li zápis, `s_dith_acc` už je posunutý, ale kód v DAC zůstane starý; střední hodnota se o ten krok odchýlí (max. 1 LSB v jednom kroku). Při back‑offu (500 ms) se to akumuluje jen do `fail` kroků, ne do trvalé chyby.
 - **Dopad:** zanedbatelný (1 LSB = 3,4·10⁻¹¹ na dobu poruchy sběrnice).
 - **Návrh:** posunout akumulátor až po úspěšném zápisu, nebo ho při selhání vrátit.
-- **Stav:** otevřeno (skupina C, kosmetické).
+- **Stav:** ✅ opraveno ve v0.33.1 (2026-10-22, L-0190): akumulátor se potvrdí až po úspěšném zápisu. ⬜ Nepřeloženo, neověřeno na desce.
 
 ### F-0260 [S4] Volná halda FreeRTOS jen 5 744 B (min‑ever totéž)
 
 - **Místo:** `status` → `Heap: free 5744 B`; `configTOTAL_HEAP_SIZE` 32 768 B.
 - **Popis:** Po `DacTasku` (1 kB stack + TCB) zbývá ~5,7 kB. Další task nebo fronta musí počítat s tím, že `osThreadNew` může selhat (`DacTask` má zálohu, ostatní ne).
 - **Návrh:** buď zvětšit haldu (nutné `.ioc`/`FreeRTOSConfig.h` + ověření RAM_D1, volných ≈ 184 kB), nebo přesunout haldu do DTCM (STATUS #320). Nic neměnit bez potřeby.
-- **Stav:** otevřeno (skupina B/C).
+- **Stav:** ✅ vyřešeno ve v0.30.3 (`4ef92fb`, 2026-10-18): `configTOTAL_HEAP_SIZE` 32 → 48 kB, `.ioc` srovnáno, `.bss` +16 384 B ověřeno (zápis 2026-10-22).
 
 ### F-0261 [S4] Zastaralé popisky „/4", „/16" na displeji
 
 - **Místo:** `app_gpsdo.c:6560,6566-6569,3079,3832` (okno Čítač „f (/16)", „pin28 = /4 … pin27 = /16", Dvojkanál „CH A = odbočka /4, CH B = /16" v komentářích a texty).
 - **Popis:** Od FW 0x0400 (carry‑chain TDC) deska nemá děliče /4 a /16; `freq16_x100000` je kanál B (`fpga_freq.c:734`). Web byl opraven ve v0.27.2, CM7 popisky zůstaly.
 - **Návrh:** přejmenovat popisky v oknech Čítač a Dvojkanál (kanál A / kanál B) a odstranit „rozsah /16".
-- **Stav:** otevřeno (skupina C, kosmetické; web hotov).
+- **Stav:** ✅ opraveno ve v0.33.1 (2026-10-22, L-0191): okno Čítač `E-A`/`E-B`, selftest #1 „FPGA ramec + regrese“; popisky oken Čítač/Dvojkanál byly opravené už dřív. ⬜ Nepřeloženo.
 
 ---
 

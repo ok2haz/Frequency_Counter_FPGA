@@ -354,6 +354,32 @@ FPGA piny: PIN54=MOSI, PIN57=MISO, PIN55=SCK, PIN56=CS. Detaily viz `FPGA_INSTAN
 
 **FW ≥ 0x0420 (CAPS bit11, výběr reference, STATUS #285):** `SET_CONFIG` config_id **0x04**, hodnota bit0 = 0 OCXO (výchozí po zapnutí), 1 = externí 10 MHz vstup. Pin `Ref_Ctrl` (FPGA PIN41) řídí přepínač `U19` (TS5A3159): nízko = OCXO (`U16`/`U17`), vysoko = externí vstup (`U18`/`U20`); pulldown 10k (`R113`). `clk_status` (abs 64) bity: **bit3** = vybrána externí, **bit4** = na externím vstupu (`Ext_Ref_Sens`, PIN51) jsou hrany, **bit5** = externí vypadla (FPGA sama přešla na OCXO; smaže se požadavkem 0). Hlídač `ref_guard` běží z vnitřního oscilátoru FPGA (OSC 31,25 MHz), nezávisle na vnějších hodinách; externí pustí po ~16 µs nepřetržité přítomnosti hran, při jejím zmizení vrátí OCXO do ~8 µs. ⚠️ Kmitočet externího signálu se NEkontroluje (musí být 10 MHz). UART `ref [ext|int]`, `status` → `FPGA REFERENCE:`.
 
+**FW 0x0425 … 0x0427 (2026-10-20/21, zdroj `Frequency_Counter_FPGA_Module/src/spi_app.v`, parser `fpga_freq.c`):**
+
+| FW / CAPS | Abs / povel | Pole |
+|---|---|---|
+| 0x0425, bit14 `FPGA_CAP_DIAG0` | abs 10 | stav hlídače koherence 100 MHz ↔ 10 MHz (živý; v `RESERVED` hlavičky) |
+| 〃 | abs 11 | počet chybných epoch hlídače (epocha 102,4 µs) |
+| 〃 | abs 57 / 58 | bubliny okna, primární / sekundární slot |
+| 〃 | abs 59 | `{sekundární[3:0], primární[3:0]}` = značky při aktivním CS |
+| 〃 | `SET_CONFIG 0x05` | bit0 = maskovat vnitřní značky při CS (výchozí 1), bit1 = LED heartbeat PIN29 (výchozí 0) |
+| 0x0425, bit15 `FPGA_CAP_XM12` | abs 71..75 | `xm` regrese v 1/4096 hrany (dřív 1/256); **od 0x0426 bit15 zrušen** (blok nese surové součty) |
+| 0x0426, bit3 `FPGA_CAP_RAWREG` | abs 66..91 | **regresní blok segmentu A = SUROVÉ SOUČTY:** 66..68 `n` (u24), 69..72 `x0` (u26, bit31 = `ok_A`), 73..78 Σ(x−x0) (u42), 79..84 `t0−ref` (u48, T/16384), 85..91 Σ(t−t0)>>3 (u56) |
+| 〃 | abs 24..42, 43 + 92..96 + 107 | **segment B:** 24..26 `n`, 27..30 `x0` (bit31 = `ok_B`), 31..36 Σ(x−x0), 37..42 `t0−ref`, Σ(t−t0)>>3 v bajtech 43, 92..96, 107 |
+| 〃 | abs 20..23 | `edge_count` je **u32** (abs 24..27 už nejsou jeho horní půlka) |
+| 〃 | — | těžiště `xm`/`ym` dopočítá STM (`rg_raw_to_mean`, uint64); dělič ve FPGA odstraněn (L-0187) |
+| 0x0427, bit4 `FPGA_CAP_STMCAL` | abs 112 | bit0/bit1 = `cal_wait` kanálu A/B (FPGA čeká na tabulku od STM), bity 7:2 = `lut_cnt[13:8]` |
+| 〃 | abs 113 | `lut_cnt[7:0]` = počet přijatých `LUT_WRITE` od `SET_CONFIG 0x06 = 0` (saturuje 0x3FFF) |
+| 〃 | abs 114..115 | `lut_sum` (u16 LE) = Σ `({kanál, adresa[8:0], 5'b0} ^ neg)` |
+| 〃 | **TYPE 0x0A `LUT_WRITE`** | jedna položka tabulky: `p0` = adresa[7:0], `p1` = {kanál, adresa[8], neg[13:8]}, `p2` = neg[7:0]; `amt` FPGA odvodí z `neg ≠ 0` |
+| 〃 | `SET_CONFIG 0x06` | 0 = začátek zápisu (nuluje `lut_cnt`/`lut_sum`), 1 = potvrzení (`cal_valid`) |
+| 〃 | CAL 0xA0, výpis histogramu | `p0` bit0 = 1 a bity 7:3 = 0 → výpis `hist[k]`, `k = {p0[2:1], p2}` (10 b); abs 38 {mód, k[9:8]}, 39 k[7:0], 40..42 `hist_A[k]` (u24), 43..45 `hist_B[k]` |
+| 〃 | CAL 0xA0, souhrn | `ovf/peak/nz/last` (abs 12..35) jsou ve FW 0x0427 **nulové** – počítá je STM z histogramu (`fpga_tdccal_stats`) |
+
+Tok kalibrace (0x0427): FPGA po sběru histogramu čeká (`cal_wait`) a **bez STM nemá platná měření**; `FpgaTask`
+(`fpga_freq_tdccal_poll`) přečte histogramy, spočte tabulky (`fpga_tdccal_lut`), pošle `SET_CONFIG 0x06 = 0`,
+položky `LUT_WRITE`, ověří `lut_cnt` + `lut_sum` z DATA rámce, potvrdí `SET_CONFIG 0x06 = 1`. Trvá ~360 ms.
+
 STM zamítne okno (nezobrazí, nezapočte; `status` → `FPGA SAMOKONTROLA:`), když \|d\| > 1, hlídač hlásí
 vadu/zotavení/nový výpadek, nebo délka okna nesedí s hradlem (`fpga_freq_window_check`, i pro starší FW s CAPS bit9).
 

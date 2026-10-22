@@ -5011,6 +5011,42 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** feat FPGA 0x0427 + STM v0.33.0
 - **Stav:** aktivni, neovereno na desce
 
+### L-0189 - Pouziti signalu pred deklaraci: Gowin i starsi Icarus to prelozi, Icarus 13 ne
+
+- **Datum:** 2026-10-22
+- **Oblast:** FPGA `tdc.v` (simulace), `sim/run.ps1`
+- **Symptom:** na Icarus Verilog 13.0 (macOS, Homebrew) 12 z 27 testu `COMPILE FAIL`: `Unable to bind wire/reg/memory 'newF'` (tdc.v, `always` blok pred `wire newF`) a `'lastk_r'` (radic kalibrace pred `reg lastk_r`). Na Windows (starsi Icarus) a v Gowin synteze vse prochazelo.
+- **Pricina:** Verilog vyzaduje deklaraci pred pouzitim; starsi Icarus a Gowin to tolerovaly. `newF` se pouziva pred deklaraci od `4667d7c`, `lastk_r` pribyl ve FW 0x0427 (deklarace presunuta za radic, aby byla mimo `generate`).
+- **Oprava:** obe deklarace presunuty pred prvni pouziti (`wire newR/newF` nad `always`, `reg lastk_r` k ostatnim registrum radice). Logika ani netlist se nemeni.
+- **Pravidlo:** (a) signal deklarovat pred prvnim pouzitim, i kdyz to nastroj snese - jiny nebo novejsi nastroj to odmitne a simulace pak tise chybi; (b) prekladat simulace aspon obcas i jinou verzi nastroje (tady Icarus 13 odhalil, co verze na Windows nevidela).
+- **Detekce:** `iverilog -g2012` 13.x nad testy z `sim/run.ps1` (vsech 27 se musi prelozit).
+- **Commit:** fix(fpga) tdc.v deklarace pred pouzitim
+- **Stav:** aktivni, overeno prekladem (Icarus 13.0); bitstream neprestaven
+
+### L-0190 - Stav sigma-delta se posouval i pri neuspesnem zapisu do DAC (F-0259)
+
+- **Datum:** 2026-10-22
+- **Oblast:** `freertos_task_sensors.c` `ad5693_servo` (dither DAC OCXO)
+- **Symptom:** zadny pozorovany; audit v0.21-v0.22: pri selhani zapisu po I2C1 se akumulator zlomku posunul, kod v DAC zustal stary -> stredni hodnota se odchylila o krok (max 1 LSB = 3,4e-11 po dobu poruchy).
+- **Pricina:** `dither_next(&s_dith_acc, q)` menil stav PRED zapisem; vysledek zapisu se do stavu nepromital.
+- **Oprava:** krok se pocita do kopie akumulatoru a potvrdi se az po uspesnem zapisu (nebo kdyz se kod nemeni); po selhani dalsi krok zkusi tentyz kod. v0.33.1.
+- **Pravidlo:** stav stavoveho automatu (akumulator, citac, ukazatel) posouvat az po uspechu akce, kterou reprezentuje; pri selhani nechat stav tak, aby opakovani udelalo totez.
+- **Detekce:** `status` -> `DAC OCXO: ... vynechano po chybe`; `dac dither test` (logika ditheru).
+- **Commit:** fix(firmware) v0.33.1
+- **Stav:** aktivni, NEPRELOZENO a neovereno na desce
+
+### L-0191 - Popisky na displeji prezily hardware, ktery popisovaly (F-0261, /4 a /16)
+
+- **Datum:** 2026-10-22
+- **Oblast:** `app_gpsdo.c` (okno Citac - chybove priznaky, okno Selftest - nazev testu #1)
+- **Symptom:** okno Citac hlasilo chyby kanalu jako `E/4`/`E/16` a selftest #1 se jmenoval „Hystereze /4 <-> /16", prestoze deska od FW 0x0400 delice nema a test overuje ramec a regresi.
+- **Pricina:** pri zmene vyznamu poli (`freq16_x100000` = kanal B, selftest #1 rozsiren o ramec 0x0426) se prejmenovaly jen identifikatory a web, ne texty na displeji.
+- **Oprava:** `E-A`/`E-B`, „FPGA ramec + regrese". v0.33.1.
+- **Pravidlo:** pri zmene vyznamu pole nebo testu grepni i retezce zobrazene uzivateli (displej, web, UART), nejen identifikatory.
+- **Detekce:** `grep -n '"[^"]*/16' CM7/app/app_gpsdo.c`.
+- **Commit:** fix(firmware) v0.33.1
+- **Stav:** aktivni, NEPRELOZENO
+
 ---
 
 ## Archiv (neplatné lekce)

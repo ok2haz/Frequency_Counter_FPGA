@@ -3,7 +3,13 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-20 večer - **E0 integrováno** (FPGA FW 0x0425 + STM v0.31.0, zadání druhé instance v `CLI_other_instance_exchange/E0_FW0425/`): simulace celé sady + 4 nové testy s negativní kontrolou, P&R brána PASS po třech opravách časování nového kódu, STM build 0 varování / audit 94-0-2. ⬜ **Neověřeno na desce** (zbývá body 5.3 zadání = TODO #327). Detail v CLAUDE.md blok „FPGA FW 0x0425 + STM v0.31.0“, lekce L-0182..L-0184.
+**Poslední aktualizace:** 2026-10-22 - **zajištění práce z 2026-10-21 + revize dokumentace (relace na macOS, disk projektu jen pro čtení, práce v sandboxovém klonu).**
+Commitnuto: `.gitignore` (`118f0d7`), FPGA FW 0x0426 + 0x0427 (`a711784`), příprava v3 (`1c4dce7`), STM v0.31.1 … v0.33.0 (`c8900b2`, tag `v0.33.0`), dokumentace (`c15847d`), data měření 18./19. 10. (`c05c0ec`); **nic nepushnuto**.
+Nově: `docs/HW_REFERENCE.md` oddíl „FW 0x0425 … 0x0427" (rámec ověřen proti `spi_app.v` i `fpga_freq.c`), hlavička `spi_app.v`, `STATUS.md` #328/#329 + sdílený kontrakt, L-0189 (Icarus 13: deklarace před použitím v `tdc.v`, opraveno).
+Simulace na Icarus 13.0: všech 27 testů z `sim/run.ps1` se přeloží, výsledky běhu v #329. **Nepřeloženo** (na macOS chybí GCC 14.3 / Gowin): STM build, `audit.py`, P&R.
+🔑 **Pokračovat zde:** #328 (přestavět bitstream a CM7/CM4 z commitnutých zdrojů, Close → Open v IDE, deska + power-cyklus); **rozpor** `CLAUDE.md` („0x0426/0x0427 ověřeno na desce") × L-0186..L-0188 („neověřeno") čeká na potvrzení uživatele. F-0260 (halda 32 kB) je vyřešený od v0.30.3 (48 kB). **v0.33.1** (nepřeloženo): F-0259 (dither, L-0190), text `dac dither` (výchozí 100 Hz), F-0261 (popisky, L-0191). F-0258 a #319 čekají na rozhodnutí.
+
+**Předchozí aktualizace (zachováno):** 2026-10-20 večer - **E0 integrováno** (FPGA FW 0x0425 + STM v0.31.0, zadání druhé instance v `CLI_other_instance_exchange/E0_FW0425/`): simulace celé sady + 4 nové testy s negativní kontrolou, P&R brána PASS po třech opravách časování nového kódu, STM build 0 varování / audit 94-0-2. ⬜ **Neověřeno na desce** (zbývá body 5.3 zadání = TODO #327). Detail v CLAUDE.md blok „FPGA FW 0x0425 + STM v0.31.0“, lekce L-0182..L-0184.
 
 **Předchozí aktualizace (zachováno):** 2026-10-20 rano - NAV5 Stationary test HOTOV (10h noc, `docs/MERENI_A_KALIBRACE.md` zaznam "2026-10-19 21:50..."): **zadny prokazatelny vliv** na ADEV faze OCXO-nase GPS pri tau 1-200 s; naznak pri 500-1000 s neni s n=2 prukazny. Pred testem nalezena a opravena chyba parsovani UART (L-0181) - obe volby puvodne posilaly stejnou hodnotu. Firmware v0.30.7 na desce.
 🔑 **Otevrene:** #312 (OCXO vs GPS) zustava nerozhodnuto bez nezavisle reference (Rb/druhe OCXO, #313); externi GPSDO (okenni antena) je hlavni omezeni mereni, ne nase GPS konfigurace ani smycka/dither (#326 uzavren 2026-10-19).
