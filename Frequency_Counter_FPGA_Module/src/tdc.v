@@ -1,4 +1,15 @@
 `timescale 1ps/1ps   // simulace: zpozdeni (SIM_*) jsou v ps; bez toho by dedila default 1 s podle poradi souboru
+// FW 0x0427 (2026-10-21): VYPOCET KALIBRACNI TABULKY je v STM (fpga_tdccal.c): FPGA sbira jen histogram a po sberu ceka
+// (cal_wait) na zapis tabulky (lw_en/lw_a/lw_neg) a potvrzeni (lw_commit). Puvodni vypocet ve FPGA zustava pod parametrem
+// AUTOCAL = 1 JEN pro simulace (-DSIM_AUTOCAL, starsi testbenche); vyroba (AUTOCAL = 0) ho neobsahuje -- usetri
+// ~300 FF a stovky ALU/LUT na kanal. Duvod a rozbor: docs/audit/2026-10-21_uspora-fpga-a-presun-do-stm.md (S1/S2).
+`ifndef TDC_AUTOCAL_DEF
+ `ifdef SIM_AUTOCAL
+  `define TDC_AUTOCAL_DEF 1
+ `else
+  `define TDC_AUTOCAL_DEF 0
+ `endif
+`endif
 // ============================================================
 // File: tdc.v  --  carry-chain TDC (2026-10-03, F-0201/F-0203; architektura 2026-10-07, FW 0x0410)
 //
@@ -252,7 +263,8 @@ module tdc_chan #(
     parameter STRIDE   = 2,         // ALU na vzorek
     parameter KD       = 2,         // tap detekce hrany
     parameter DUAL     = 0,         // 1 = i sestupna hrana hodin
-    parameter NTAP     = TAPS       // fyzicky postavenych tapu (<= TAPS), viz tdc_chain
+    parameter NTAP     = TAPS,      // fyzicky postavenych tapu (<= TAPS), viz tdc_chain
+    parameter AUTOCAL  = `TDC_AUTOCAL_DEF   // 1 = (jen simulace) tabulku pocita FPGA; 0 = pocita a zapisuje STM
 )(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
@@ -264,6 +276,12 @@ module tdc_chan #(
     input  wire        want_seg,    // FW 0x0411: i VNITRNI hrany (segmenty okna) maji dostat presny cas
     input  wire        cal_req,     // 1-taktovy pulz: spust kalibraci
     input  wire        cal_abort,   // 1-taktovy pulz: timeout kalibrace (top.v)
+    // FW 0x0427: zapis kalibracni tabulky z STM (domena clk; top.v synchronizuje z 10 MHz). Plati jen v cal_wait.
+    input  wire        lw_en,       // 1-taktovy pulz: zapis polozky
+    input  wire [9:0]  lw_a,        // adresa ({sada, kod}; u DUAL = 0 jen kod)
+    input  wire [13:0] lw_neg,      // dolnich 14 bitu polozky (-x14 mod 2^14); amt se odvodi (viz nize)
+    input  wire        lw_commit,   // 1-taktovy pulz: tabulka kompletni -> cal_valid
+    output wire        cal_wait,    // sber dokoncen, histogram je ke cteni (dump_k), FPGA ceka na tabulku od STM
 
     output wire        rise_c,
     output wire        rise_s,      // tataz hrana pro POCITANI (o takt pozdeji, bez metastability)
@@ -304,7 +322,8 @@ module tdc_chan #(
     // ---------------- stav kalibrace (ONE-HOT, kazda cesta <= 1-2 LUT) -----
     //   pri 100 MHz je v tomto fabricu budget ~2-3 urovne LUT (routing 2-3 ns/hop),
     //   proto zadne dekodovani binarniho stavu v ridicich cestach.
-    reg s_clr = 1'b0, s_col = 1'b0, s_drn = 1'b0, s_cmp = 1'b0;
+    reg s_clr = 1'b0, s_col = 1'b0, s_drn = 1'b0, s_cmp = 1'b0, s_wait = 1'b0;
+    assign cal_wait = s_wait;
     reg [9:0] ph = 10'd1;                     // one-hot faze (DRN/CMP)
     assign use_ro   = s_col;
     // FW 0x0421: cal_busy z REGISTRU (busy_ra = OR ctyr stavu o takt pozdeji): fanout do oken a hold nestihal; o takt pozdejsi
@@ -451,9 +470,13 @@ module tdc_chan #(
     wire          hist_we = s_clr | hist_we_r;
     wire [AW-1:0] hist_wa = s_clr ? clr_k : caddr;
     wire [HW-1:0] hist_wd = s_clr ? {HW{1'b0}} : hist_wd_r;
-    wire          lut_we  = s_cmp & ph[8];
-    wire [AW-1:0] lut_wa  = scan_k;
-    wire [15:0]   lut_wd  = lutv;
+    // FW 0x0427: polozku {amt, neg} zapisuje STM (cal_wait). amt = r_entry + (x14 != 0) = r_entry + (neg != 0), tj. se odvodi
+    // z neg (neg = 0 <=> x14 = 0). Sada R (u DUAL=0 vzdy) ma +T (bit 14 hodnoty V) -> r_entry = 1.
+    wire          lw_r    = (DUAL != 0) ? ~lw_a[AW-1] : 1'b1;
+    wire [1:0]    lw_amt  = {1'b0, lw_r} + {1'b0, (lw_neg != 14'd0)};
+    wire          lut_we  = (AUTOCAL != 0) ? (s_cmp & ph[8]) : (lw_en & s_wait);
+    wire [AW-1:0] lut_wa  = (AUTOCAL != 0) ? scan_k : lw_a[AW-1:0];
+    wire [15:0]   lut_wd  = (AUTOCAL != 0) ? lutv : {lw_amt, lw_neg};
 
     always @(posedge clk) begin
         lut_q     <= lut[caddr];
@@ -494,7 +517,7 @@ module tdc_chan #(
     always @(posedge clk) begin
         cnt_hit <= (cnt == CNT_LAST);         // cnt se meni jen pri udalosti (>= 8 taktu)
         if (cal_req) begin
-            s_clr <= 1'b1; s_col <= 1'b0; s_drn <= 1'b0; s_cmp <= 1'b0;
+            s_clr <= 1'b1; s_col <= 1'b0; s_drn <= 1'b0; s_cmp <= 1'b0; s_wait <= 1'b0;
             clr_k     <= {AW{1'b0}};
             cnt       <= {HW{1'b0}};
             cal_valid <= 1'b0;
@@ -521,8 +544,13 @@ module tdc_chan #(
             end
             if (s_drn) begin                      // dobehne zapis posledni udalosti
                 if (ph[9]) begin
-                    s_drn <= 1'b0; s_cmp <= 1'b1; scan_k <= {AW{1'b0}};
+                    s_drn <= 1'b0;
+                    if (AUTOCAL != 0) begin s_cmp <= 1'b1; scan_k <= {AW{1'b0}}; end
+                    else              s_wait <= 1'b1;                 // histogram kompletni, ceka se na tabulku od STM
                 end
+            end
+            if (s_wait) begin
+                if (lw_commit) begin s_wait <= 1'b0; cal_valid <= 1'b1; end
             end
             if (s_cmp) begin                      // NC adres x 10 taktu
                 if (ph[9]) begin
@@ -537,6 +565,9 @@ module tdc_chan #(
         end
     end
 
+    reg           lastk_r = 1'b0;                  // FW 0x0427: pouziva radic (AUTOCAL = 1), proto je mimo generate
+    generate
+    if (AUTOCAL != 0) begin : autocal   // ===== puvodni vypocet tabulky ve FPGA: JEN simulace (-DSIM_AUTOCAL) =====
     // ---------------- vypocet tabulky (datova cesta, bez cal_req) ---------
     //   V[a] = 16384 * (cum_pred + hist[a]/2) / N  =  (2*cum_pred + hist[a]) >> (LOG2-13)
     //   (N = 2^CAL_LOG2 = pocet VSECH udalosti obou sad; jednotka T_clk/16384 -> jen posun)
@@ -547,7 +578,7 @@ module tdc_chan #(
     reg [HW-1:0]  hcur = {HW{1'b0}};
     reg           hnz  = 1'b0, hgt = 1'b0;
     reg           dg_nz = 1'b0, dg_pk = 1'b0, dg_ov = 1'b0;
-    reg           lastk_r = 1'b0, clr_d = 1'b0;
+    reg           clr_d = 1'b0;
     wire [HW+1:0] xsh  = xv >> (CAL_LOG2 - 13);        // 0..16384
     // sada R (adresy bez horniho bitu u DUAL, vsechny u DUAL=0) dostava +T = bit 14
     wire          r_entry = (DUAL != 0) ? ~scan_k[AW-1] : 1'b1;
@@ -583,4 +614,8 @@ module tdc_chan #(
         if (dg_pk) d_peak <= {{(32-HW){1'b0}}, hcur};
         if (dg_ov) d_ovf  <= {{(32-HW){1'b0}}, hcur};
     end
+    end else begin : stmcal             // ===== FW 0x0427: tabulku pocita STM; diagnostika d_* z histogramu taky (S2) =====
+        always @(posedge clk) begin d_ovf <= 32'd0; d_peak <= 32'd0; d_nz <= 16'd0; d_last <= 16'd0; end
+    end
+    endgenerate
 endmodule

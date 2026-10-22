@@ -33,7 +33,12 @@
 //    v poslednim okne hlidace v poradku, bit1 = od nahrani aspon jeden vypadek, bit2 = probiha zotaveni (cekani +
 //    rekalibrace po vypadku). 65 = pocet vypadku 100 MHz (saturuje 255). 97/98 = rozdil kontrolniho a merneho
 //    pocitani hran okna (int8, saturuje) pro primarni / sekundarni slot; zdrave okno ma |rozdil| <= 1.
-//  66..67 diag (RX) | 68..96 REGR (FW >= 0x0411, caps bit7): regresni blok CH_A (window stream ODSTRANEN):
+//  🔴 FW 0x0426 (caps bit3, bit7): regresni blok CH_A = SUROVE SOUCTY, deli STM (delic odstranen, L-0187):
+//    segment A: 66..68 n(u24) 69..72 x0(u26; bit31 = ok_A) 73..78 sum(x-x0)(u42) 79..84 t0-ref(u48, T/16384)
+//               85..91 sum(t-t0)>>3 (u56)
+//    segment B: 24..26 n 27..30 x0 (bit31 = ok_B) 31..36 sum(x-x0) 37..42 t0-ref  sum(t-t0)>>3 = bajty 43,92..96,107
+//    (abs 24..27 = horni pulka edge_count (vzdy 0), 28..35 gate_ns a 36..43 ts STM nepouzival; edge_count je od 0x0426 u32)
+//  -- do FW 0x0425: 66..67 diag (RX) | 68..96 REGR (FW >= 0x0411, caps bit7): regresni blok CH_A (window stream ODSTRANEN):
 //    68..70 n_A(u24)  71..75 xm_A(u40, prumerny index hrany v okne * 256)  76..81 ym_A(u48, prumerny cas * 16,
 //    jednotka T/16384, vztazeny k ZACATKU okna)  82..84 n_B  85..89 xm_B  90..95 ym_B  96 {ok_B, ok_A}
 //    A = prvni cast okna (G/16..3G/16), B = posledni (13G/16..15G/16). Sklon primky mezi jejich stredy =
@@ -93,8 +98,10 @@ module spi_app #(
     input  wire [15:0] meas_tdc_cfg,         // konfigurace TDC: [4:0] log2(adres tabulky), [5] DUAL, [6] STRIDE==1, [15:7] pocet tapu
     // FW 0x0411: stredni hodnoty casovych znacek vnitrnich hran ve dvou segmentech okna CH_A (regr_acc)
     input  wire [23:0] rg_n_a, rg_n_b,       // pocet znacek v segmentu
-    input  wire [39:0] rg_xm_a, rg_xm_b,     // prumerny index hrany v okne * 256
-    input  wire [47:0] rg_ym_a, rg_ym_b,     // prumerny cas hrany * 16 [T/16384], vztazeny k zacatku okna
+    input  wire [25:0] rg_x0_a, rg_x0_b,     // FW 0x0426: index prvni znacky segmentu v okne
+    input  wire [41:0] rg_sx_a, rg_sx_b,     // sum(x - x0)
+    input  wire [47:0] rg_y0_a, rg_y0_b,     // t0 - zacatek okna [T/16384]
+    input  wire [55:0] rg_sy_a, rg_sy_b,     // sum(t - t0) >> 3
     input  wire        rg_ok_a, rg_ok_b,
     // FW 0x0418: kody TDC uzaviraci/zahajovaci hrany okna (jen kdyz REGR_EN = 0; bajty 68..75, caps bit8)
     input  wire [8:0]  cd_a_end, cd_a_st, cd_b_end, cd_b_st,
@@ -142,7 +149,18 @@ module spi_app #(
     // FW 0x0425: SET_CONFIG 0x05 = omezeni ruseni / diagnostika (bit0 maskovani vnitrnich znacek pri CS, vychozi 1;
     // bit1 LED heartbeat na PIN29, vychozi 0 = LED stoji: PIN29 je v BANCE 2 spolu s CH_A/CH_B/1PPS/hodinami)
     output wire          mask_cs_en,
-    output wire          led_hb_en
+    output wire          led_hb_en,
+    // FW 0x0427: kalibracni tabulku TDC pocita STM (L-0188). TYPE 0x0A LUT_WRITE = jedna polozka na ramec,
+    //   p0 = adresa[7:0], p1 = {kanal, adresa[8], neg[13:8]}, p2 = neg[7:0]  (amt se odvodi v tdc_chan);
+    //   SET_CONFIG 0x06: hodnota 0 = zacatek (vynuluje pocitadlo a kontrolni soucet), 1 = potvrzeni (tabulka kompletni).
+    // Zapis do 100 MHz domeny pres prepinaci bit (top.v synchronizuje); data se drzi do dalsiho ramce (>= 125 us).
+    output reg           lw_tgl,
+    output reg  [9:0]    lw_a,
+    output reg  [13:0]   lw_neg,
+    output reg           lw_ch,
+    output reg           lw_commit_tgl,
+    input  wire          cal_wait_a,         // FPGA ceka na tabulku od STM (kanal A), domena 10 MHz
+    input  wire          cal_wait_b
 );
 
     // ---- konstanty rámce ----
@@ -154,11 +172,15 @@ module spi_app #(
     localparam [7:0]  TYPE_START      = 8'h08;
     localparam [7:0]  TYPE_STOP       = 8'h09;
     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
+    localparam [7:0]  TYPE_LUT_WRITE  = 8'h0A;   // FW 0x0427
     localparam [15:0] PAYLOAD_LEN     = 16'd114;
     // 🔴 0x0424 -> 0x0425 (2026-10-20, audit E0): oprava N1 (zastarale qd pri odstupu 5 taktu), oprava close+2 (hrany >= 2 takty),
     // mez aliasu podle hradla, diagnostika O4 (bubliny, znacky pri CS; abs 57..59), hlidac koherence 100/10 MHz (abs 10/11),
     // maskovani vnitrnich znacek pri CS a SET_CONFIG 0x05; caps bit14.
-    localparam [15:0] FW_VERSION      = 16'h0425;  // bump při KAŽDÉ změně bitstreamu
+    // 🔴 0x0425 -> 0x0426 (2026-10-21): regresni blok nese SUROVE SOUCTY segmentu (n, x0, sum(x-x0), t0-ref, sum(t-t0)>>3), deli
+    // STM; delic v regr_acc odstranen (chyba dolnich bitu podilu x na krzemiku, zavisla na P&R; L-0187). caps bit3 = novy blok,
+    // bit15 (xm v 1/4096) zrusen. Rozlozeni viz hlavicka (abs 24..43, 66..96, 107).
+    localparam [15:0] FW_VERSION      = 16'h0427;  // bump při KAŽDÉ změně bitstreamu
     // 🔴 0x0423 -> 0x0424 (2026-10-16, STATUS #305): GPS 1PPS (PIN33) -- cas hrany v taktech 100 MHz (hruby citac,
     // bez TDC) a poradi v bajtech 52..56 (caps bit13), vstup smycky GPSDO na STM. Viz modul pps_cap.
     // 🔴 0x0422 -> 0x0423 (2026-10-11): REFERENCNI HODINY FPGA ZPET 125 -> 100 MHz (Si5356 CLK0/1, top.v CLK_MHZ, timing.sdc 10 ns).
@@ -209,7 +231,7 @@ module spi_app #(
     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
     // bit12 (0x1000) = abs 99 nese kmitocet hodin FPGA [MHz] (od FW 0x0421; dnes 100)
     // bit13 (0x2000) = bajty 52..56 nesou GPS 1PPS (FW 0x0424)
-    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'hFEE2 : 16'hFF62;   // FW 0x0425: + bit14 (diagnostika E0), bit15 (xm v 1/4096 hrany)   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
+    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h7EFA : 16'h7F72;   // FW 0x0427: + bit4 (kalibracni tabulku zapisuje STM); 0x0426: bit3 surove soucty regrese, - bit15   // FW 0x0425: + bit14 (diagnostika E0), bit15 (xm v 1/4096 hrany)   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
 
     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
     function [15:0] crc16_step;
@@ -268,6 +290,11 @@ module spi_app #(
     reg [2:0]  base_win_r = 3'd1;            // default 250 ms
     reg        chan_sel_r = 1'b0;            // default CH_A
     reg        ref_sel_r  = 1'b0;            // default OCXO
+    // ---- FW 0x0427: prijem tabulky TDC ----
+    reg [2:0]  lw_dly     = 3'b000, lc_dly = 3'b000;    // prepinaci bit se zpozdi o 3 takty za daty (synchronizace dat v top.v)
+    reg [13:0] lut_cnt    = 14'd0;                      // pocet prijatych LUT_WRITE od posledniho SET_CONFIG 0x06 = 0
+    reg [15:0] lut_sum    = 16'd0;                      // kontrolni soucet: sum({ch,a9,5'b0} ^ neg)
+    initial begin lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; end
     reg        mask_cs_r  = 1'b1;            // FW 0x0425: default maskovat vnitrni znacky pri CS
     reg        led_hb_r   = 1'b0;            // FW 0x0425: default LED heartbeat vypnuty
     assign cal_mode = cal_mode_r;
@@ -352,26 +379,26 @@ module spi_app #(
             7'd21: tb = is_cal ? (meas_cal_diag[79:72]) : (h_edge[15:8]);
             7'd22: tb = is_cal ? (meas_cal_diag[87:80]) : (h_edge[23:16]);
             7'd23: tb = is_cal ? (meas_cal_diag[95:88]) : (h_edge[31:24]);
-            7'd24: tb = is_cal ? (meas_cal_diag[103:96]) : (h_edge[39:32]);
-            7'd25: tb = is_cal ? (meas_cal_diag[111:104]) : (h_edge[47:40]);
-            7'd26: tb = is_cal ? (meas_cal_diag[119:112]) : (h_edge[55:48]);
-            7'd27: tb = is_cal ? (meas_cal_diag[127:120]) : (h_edge[63:56]);
-            7'd28: tb = is_cal ? (meas_cal_diag[135:128]) : (h_gate[7:0]);
-            7'd29: tb = is_cal ? (meas_cal_diag[143:136]) : (h_gate[15:8]);
-            7'd30: tb = is_cal ? (meas_cal_diag[151:144]) : (h_gate[23:16]);
-            7'd31: tb = is_cal ? (meas_cal_diag[159:152]) : (h_gate[31:24]);
-            7'd32: tb = is_cal ? (meas_cal_diag[167:160]) : (h_gate[39:32]);
-            7'd33: tb = is_cal ? (meas_cal_diag[175:168]) : (h_gate[47:40]);
-            7'd34: tb = is_cal ? (meas_cal_diag[183:176]) : (h_gate[55:48]);
-            7'd35: tb = is_cal ? (meas_cal_diag[191:184]) : (h_gate[63:56]);
-            7'd36: tb = is_cal ? (meas_tdc_status) : (h_ts[7:0]);
-            7'd37: tb = is_cal ? ({7'd0, cal_mode_r}) : (h_ts[15:8]);
-            7'd38: tb = is_cal ? ({5'd0, hist_mode ? hist_k_r[9:8] : 2'd0, hist_mode}) : (h_ts[23:16]);
-            7'd39: tb = is_cal ? (hist_mode ? hist_k_r[7:0] : 8'd0) : (h_ts[31:24]);
-            7'd40: tb = is_cal ? (hist_mode ? meas_hist_a[7:0] : 8'd0) : (h_ts[39:32]);
-            7'd41: tb = is_cal ? (hist_mode ? meas_hist_a[15:8] : 8'd0) : (h_ts[47:40]);
-            7'd42: tb = is_cal ? (hist_mode ? meas_hist_a[23:16] : 8'd0) : (h_ts[55:48]);
-            7'd43: tb = is_cal ? (hist_mode ? meas_hist_b[7:0] : 8'd0) : (h_ts[63:56]);
+            7'd24: tb = is_cal ? (meas_cal_diag[103:96]) : (rg_n_b[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd25: tb = is_cal ? (meas_cal_diag[111:104]) : (rg_n_b[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd26: tb = is_cal ? (meas_cal_diag[119:112]) : (rg_n_b[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd27: tb = is_cal ? (meas_cal_diag[127:120]) : (rg_x0_b[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd28: tb = is_cal ? (meas_cal_diag[135:128]) : (rg_x0_b[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd29: tb = is_cal ? (meas_cal_diag[143:136]) : (rg_x0_b[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd30: tb = is_cal ? (meas_cal_diag[151:144]) : ({rg_ok_b, 5'd0, rg_x0_b[25:24]});  // FW 0x0426 regrese (surove soucty)
+            7'd31: tb = is_cal ? (meas_cal_diag[159:152]) : (rg_sx_b[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd32: tb = is_cal ? (meas_cal_diag[167:160]) : (rg_sx_b[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd33: tb = is_cal ? (meas_cal_diag[175:168]) : (rg_sx_b[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd34: tb = is_cal ? (meas_cal_diag[183:176]) : (rg_sx_b[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd35: tb = is_cal ? (meas_cal_diag[191:184]) : (rg_sx_b[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd36: tb = is_cal ? (meas_tdc_status) : ({6'd0, rg_sx_b[41:40]});  // FW 0x0426 regrese (surove soucty)
+            7'd37: tb = is_cal ? ({7'd0, cal_mode_r}) : (rg_y0_b[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd38: tb = is_cal ? ({5'd0, hist_mode ? hist_k_r[9:8] : 2'd0, hist_mode}) : (rg_y0_b[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd39: tb = is_cal ? (hist_mode ? hist_k_r[7:0] : 8'd0) : (rg_y0_b[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd40: tb = is_cal ? (hist_mode ? meas_hist_a[7:0] : 8'd0) : (rg_y0_b[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd41: tb = is_cal ? (hist_mode ? meas_hist_a[15:8] : 8'd0) : (rg_y0_b[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd42: tb = is_cal ? (hist_mode ? meas_hist_a[23:16] : 8'd0) : (rg_y0_b[47:40]);  // FW 0x0426 regrese (surove soucty)
+            7'd43: tb = is_cal ? (hist_mode ? meas_hist_b[7:0] : 8'd0) : (rg_sy_b[7:0]);  // FW 0x0426 regrese (surove soucty)
             7'd44: tb = is_cal ? (hist_mode ? meas_hist_b[15:8] : 8'd0) : (h_ch);
             7'd45: tb = is_cal ? (hist_mode ? meas_hist_b[23:16] : 8'd0) : ({6'd0, data_fresh, data_valid});
             7'd46: tb = is_cal ? (meas_maxtap_a[7:0]) : (err_word[7:0]);
@@ -397,37 +424,37 @@ module spi_app #(
             7'd63: tb = is_cal ? 8'd0 : (CAPS[15:8]);
             7'd64: tb = is_cal ? 8'd0 : (meas_clk_status);
             7'd65: tb = is_cal ? 8'd0 : (meas_clk_loss);
-            7'd66: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx0 : 8'd0);
-            7'd67: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx1 : 8'd0);
-            7'd68: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[7:0]    : cd_a_end[7:0]);
-            7'd69: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[15:8]   : {7'd0, cd_a_end[8]});
-            7'd70: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[23:16]  : cd_a_st[7:0]);
-            7'd71: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[7:0]   : {7'd0, cd_a_st[8]});
-            7'd72: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[15:8]  : cd_b_end[7:0]);
-            7'd73: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[23:16] : {7'd0, cd_b_end[8]});
-            7'd74: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[31:24] : cd_b_st[7:0]);
-            7'd75: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_xm_a[39:32] : {7'd0, cd_b_st[8]});
-            7'd76: tb = is_cal ? 8'd0 : (rg_ym_a[7:0]);
-            7'd77: tb = is_cal ? 8'd0 : (rg_ym_a[15:8]);
-            7'd78: tb = is_cal ? 8'd0 : (rg_ym_a[23:16]);
-            7'd79: tb = is_cal ? 8'd0 : (rg_ym_a[31:24]);
-            7'd80: tb = is_cal ? 8'd0 : (rg_ym_a[39:32]);
-            7'd81: tb = is_cal ? 8'd0 : (rg_ym_a[47:40]);
-            7'd82: tb = is_cal ? 8'd0 : (rg_n_b[7:0]);
-            7'd83: tb = is_cal ? 8'd0 : (rg_n_b[15:8]);
-            7'd84: tb = is_cal ? 8'd0 : (rg_n_b[23:16]);
-            7'd85: tb = is_cal ? 8'd0 : (rg_xm_b[7:0]);
-            7'd86: tb = is_cal ? 8'd0 : (rg_xm_b[15:8]);
-            7'd87: tb = is_cal ? 8'd0 : (rg_xm_b[23:16]);
-            7'd88: tb = is_cal ? 8'd0 : (rg_xm_b[31:24]);
-            7'd89: tb = is_cal ? 8'd0 : (rg_xm_b[39:32]);
-            7'd90: tb = is_cal ? 8'd0 : (rg_ym_b[7:0]);
-            7'd91: tb = is_cal ? 8'd0 : (rg_ym_b[15:8]);
-            7'd92: tb = is_cal ? 8'd0 : (rg_ym_b[23:16]);
-            7'd93: tb = is_cal ? 8'd0 : (rg_ym_b[31:24]);
-            7'd94: tb = is_cal ? 8'd0 : (rg_ym_b[39:32]);
-            7'd95: tb = is_cal ? 8'd0 : (rg_ym_b[47:40]);
-            7'd96: tb = is_cal ? 8'd0 : ({6'd0, rg_ok_b, rg_ok_a});
+            7'd66: tb = is_cal ? 8'd0 : (rg_n_a[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd67: tb = is_cal ? 8'd0 : (rg_n_a[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd68: tb = is_cal ? 8'd0 : (rg_n_a[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd69: tb = is_cal ? 8'd0 : (rg_x0_a[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd70: tb = is_cal ? 8'd0 : (rg_x0_a[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd71: tb = is_cal ? 8'd0 : (rg_x0_a[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd72: tb = is_cal ? 8'd0 : ({rg_ok_a, 5'd0, rg_x0_a[25:24]});  // FW 0x0426 regrese (surove soucty)
+            7'd73: tb = is_cal ? 8'd0 : (rg_sx_a[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd74: tb = is_cal ? 8'd0 : (rg_sx_a[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd75: tb = is_cal ? 8'd0 : (rg_sx_a[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd76: tb = is_cal ? 8'd0 : (rg_sx_a[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd77: tb = is_cal ? 8'd0 : (rg_sx_a[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd78: tb = is_cal ? 8'd0 : ({6'd0, rg_sx_a[41:40]});  // FW 0x0426 regrese (surove soucty)
+            7'd79: tb = is_cal ? 8'd0 : (rg_y0_a[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd80: tb = is_cal ? 8'd0 : (rg_y0_a[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd81: tb = is_cal ? 8'd0 : (rg_y0_a[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd82: tb = is_cal ? 8'd0 : (rg_y0_a[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd83: tb = is_cal ? 8'd0 : (rg_y0_a[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd84: tb = is_cal ? 8'd0 : (rg_y0_a[47:40]);  // FW 0x0426 regrese (surove soucty)
+            7'd85: tb = is_cal ? 8'd0 : (rg_sy_a[7:0]);  // FW 0x0426 regrese (surove soucty)
+            7'd86: tb = is_cal ? 8'd0 : (rg_sy_a[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd87: tb = is_cal ? 8'd0 : (rg_sy_a[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd88: tb = is_cal ? 8'd0 : (rg_sy_a[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd89: tb = is_cal ? 8'd0 : (rg_sy_a[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd90: tb = is_cal ? 8'd0 : (rg_sy_a[47:40]);  // FW 0x0426 regrese (surove soucty)
+            7'd91: tb = is_cal ? 8'd0 : (rg_sy_a[55:48]);  // FW 0x0426 regrese (surove soucty)
+            7'd92: tb = is_cal ? 8'd0 : (rg_sy_b[15:8]);  // FW 0x0426 regrese (surove soucty)
+            7'd93: tb = is_cal ? 8'd0 : (rg_sy_b[23:16]);  // FW 0x0426 regrese (surove soucty)
+            7'd94: tb = is_cal ? 8'd0 : (rg_sy_b[31:24]);  // FW 0x0426 regrese (surove soucty)
+            7'd95: tb = is_cal ? 8'd0 : (rg_sy_b[39:32]);  // FW 0x0426 regrese (surove soucty)
+            7'd96: tb = is_cal ? 8'd0 : (rg_sy_b[47:40]);  // FW 0x0426 regrese (surove soucty)
             7'd97:  tb = is_cal ? 8'd0 : (h_ccd_p);
             7'd98:  tb = is_cal ? 8'd0 : (h_ccd_s);
             7'd99:  tb = is_cal ? 8'd0 : (meas_clk_mhz);
@@ -438,15 +465,15 @@ module spi_app #(
             7'd104: tb = is_cal ? 8'd0 : (h_dt_b[31:24]);
             7'd105: tb = is_cal ? 8'd0 : (h_dt_b[39:32]);
             7'd106: tb = is_cal ? 8'd0 : (h_dt_b[47:40]);
-            7'd107: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx2 : 8'd0);
+            7'd107: tb = is_cal ? 8'd0 : (rg_sy_b[55:48]);  // FW 0x0426 regrese (surove soucty)
             7'd108: tb = is_cal ? 8'd0 : (h_edge_b[7:0]);
             7'd109: tb = is_cal ? 8'd0 : (h_edge_b[15:8]);
             7'd110: tb = is_cal ? 8'd0 : (h_edge_b[23:16]);
             7'd111: tb = is_cal ? 8'd0 : (h_edge_b[31:24]);
-            7'd112: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_ccl : 8'd0);
-            7'd113: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_cch : 8'd0);
-            7'd114: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rcl : 8'd0);
-            7'd115: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rch : 8'd0);
+            7'd112: tb = is_cal ? 8'd0 : ({lut_cnt[13:8], cal_wait_b, cal_wait_a});  // FW 0x0427 (stav cekani na tabulku, pocitadlo, soucet)
+            7'd113: tb = is_cal ? 8'd0 : (lut_cnt[7:0]);  // FW 0x0427 (stav cekani na tabulku, pocitadlo, soucet)
+            7'd114: tb = is_cal ? 8'd0 : (lut_sum[7:0]);  // FW 0x0427 (stav cekani na tabulku, pocitadlo, soucet)
+            7'd115: tb = is_cal ? 8'd0 : (lut_sum[15:8]);  // FW 0x0427 (stav cekani na tabulku, pocitadlo, soucet)
             7'd116: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_mosi_cnt[7:0] : 8'd0);
             7'd117: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_mosi_cnt[15:8] : 8'd0);
             7'd118: tb = is_cal ? 8'd0 : (h_dt_a[7:0]);
@@ -464,6 +491,11 @@ module spi_app #(
     always @(posedge clk) begin
         tx_we_r <= 1'b0;
         if (cool != 3'd0) cool <= cool - 3'd1;
+        // FW 0x0427: posun zpozdeni prepinacich bitu (prijem nize je pripadne znovu nastavi -- posledni prirazeni vyhrava)
+        lw_dly <= {lw_dly[1:0], 1'b0};
+        lc_dly <= {lc_dly[1:0], 1'b0};
+        if (lw_dly[2]) lw_tgl        <= ~lw_tgl;
+        if (lc_dly[2]) lw_commit_tgl <= ~lw_commit_tgl;
 
         // ---- nové měření: SEQUENCE++, FRESH/VALID, latch dat ----
         // (behem skladani ramce jen poznamenat, prevzit az po nem -- viz h_*)
@@ -562,8 +594,21 @@ module spi_app #(
                                 8'h03: chan_sel_r <= rx_p1[0];          // 0 = CH_A, 1 = CH_B
                                 8'h04: ref_sel_r  <= rx_p1[0];          // 0 = OCXO, 1 = externi (FW >= 0x0420)
                                 8'h05: begin mask_cs_r <= rx_p1[0]; led_hb_r <= rx_p1[1]; end   // FW >= 0x0425
+                                8'h06: begin                                                  // FW >= 0x0427: tabulka TDC
+                                    if (rx_p1[0]) lc_dly <= 3'b001;                            // 1 = potvrzeni (cal_valid)
+                                    else begin lut_cnt <= 14'd0; lut_sum <= 16'd0; end         // 0 = zacatek
+                                end
                                 default: ;      // neznámé config_id = ignorovat
                             endcase
+                        end
+                        TYPE_LUT_WRITE: begin    // FW >= 0x0427: jedna polozka kalibracni tabulky
+                            ack_ok  <= 1'b0;
+                            lw_a    <= {1'b0, rx_p1[6], rx_p0};
+                            lw_ch   <= rx_p1[7];
+                            lw_neg  <= {rx_p1[5:0], rx_p2};
+                            lw_dly  <= 3'b001;
+                            if (lut_cnt != 14'h3FFF) lut_cnt <= lut_cnt + 14'd1;
+                            lut_sum <= lut_sum + ({1'b0, rx_p1[7], rx_p1[6], rx_p0, 5'd0} ^ {2'd0, rx_p1[5:0], rx_p2});
                         end
                         TYPE_CAL: begin          // žádost o CAL report
                             ack_ok    <= 1'b0;
@@ -594,6 +639,41 @@ endmodule
 // Pomocné moduly měření kmitočtu (drženy zde, ne v samostatných souborech,
 // aby je překlad viděl i bez aktualizace seznamu zdrojů v IDE/.prj).
 // ============================================================
+
+// ------------------------------------------------------------
+// lut_wr_sync (FW 0x0427): prechod zapisu kalibracni tabulky TDC z domeny 10 MHz (spi_app) do 100 MHz (tdc_chan).
+//   Zapis = prepinaci bit lw_tgl (2FF + detekce hrany); data (adresa, 14 b, kanal) jsou kvazistaticka: spi_app prepne bit az
+//   3 takty 10 MHz (300 ns) po jejich nastaveni a drzi je do dalsiho ramce (>= 125 us), takze je 2FF synchronizace v domene
+//   100 MHz stihne s velkou rezervou. Domeny jsou v SDC asynchronni (set_clock_groups). Samostatny modul, aby ho testbench
+//   (tb_stmcal) pouzil beze zmeny stejne jako top.v.
+// ------------------------------------------------------------
+module lut_wr_sync (
+    input  wire        clk,              // clk_p0_100m
+    input  wire        lw_tgl, lw_commit_tgl, lw_ch,
+    input  wire [9:0]  lw_a,
+    input  wire [13:0] lw_neg,
+    output wire        lw_en_a, lw_en_b, // zapis polozky (1 takt) do kanalu A / B
+    output wire        lw_cm_p,          // potvrzeni tabulky (1 takt, oba kanaly)
+    output reg  [9:0]  lw_a_q,
+    output reg  [13:0] lw_n_q
+);
+    reg [2:0]  lwt_s = 3'b000, lwc_s = 3'b000;
+    reg [9:0]  lwa_s1 = 10'd0;
+    reg [13:0] lwn_s1 = 14'd0;
+    reg [1:0]  lwh_s = 2'b00;
+    initial begin lw_a_q = 10'd0; lw_n_q = 14'd0; end
+    always @(posedge clk) begin
+        lwt_s  <= {lwt_s[1:0], lw_tgl};
+        lwc_s  <= {lwc_s[1:0], lw_commit_tgl};
+        lwa_s1 <= lw_a;   lw_a_q <= lwa_s1;
+        lwn_s1 <= lw_neg; lw_n_q <= lwn_s1;
+        lwh_s  <= {lwh_s[0], lw_ch};
+    end
+    wire lw_wr_p = lwt_s[2] ^ lwt_s[1];
+    assign lw_cm_p = lwc_s[2] ^ lwc_s[1];
+    assign lw_en_a = lw_wr_p & ~lwh_s[1];
+    assign lw_en_b = lw_wr_p &  lwh_s[1];
+endmodule
 
 // ------------------------------------------------------------
 // gate_div: gate_ns = floor(dt * 5 / 8192) = floor(dt[T/16384] * 0,6104 ps / 1000).
@@ -722,8 +802,13 @@ endmodule
 //     f = (x_B - x_A) / (y_B - y_A),   x = index hrany v okne, y = cas hrany
 // Deterministicka slozka (kvantizace ~30 ps) se pri pomalu se menici fazi (vstup ~ nasobek 100 MHz) nezprumeruje.
 //
-// Vystup: n, x_prumer*256, y_prumer*16 (y relativne k `ref_ts`):
-//   xm = x0*256 + floor(sum(x-x0)*256 / n)          ym = (t0-ref)*16 + floor(sum(t-t0)*16 / n)
+// Vystup (FW 0x0426, 2026-10-21): SUROVE SOUCTY, deli STM (double/uint64 presne):
+//   n, x0 (index prvni znacky), sx = sum(x - x0), y0 = t0 - ref_ts, sy3 = sum(t - t0) >> 3
+//   STM: xm = x0*4096 + floor(sx*4096/n),  ym = y0*16 + floor((sy3<<3)*16/n)
+// 🔴 Proc: delic (68 kroku, 3 takty/krok, multicycle v SDC) dava na krzemiku chybu v dolnich ~11 bitech podilu x, ktera
+// zavisi na rozmisteni v P&R (vydany 0x0425 +655 jednotek, diagnosticky build +1614 pro tataz data), zatimco akumulator je
+// presny (DIAG_SX: sum(x-x0) = n(n-1)/2 ve vsech oknech) a simulace i bitovy model delicky jsou spravne. Delic je pryc,
+// cesta s mezni rezervou zmizela a uvolni se LUT/FF. Viz LESSONS L-0187.
 //
 // CASOVANI (FW 0x041A, 2026-10-08): na tomto cipu stoji jeden skok vedenim 2-3 ns, takze kazda cesta ma mit
 // nejvys ~2 urovne LUT a zadny ridici signal nesmi rozvadet do desitek FF. Predchozi verze mely rezervu
@@ -733,8 +818,7 @@ endmodule
 //   * zacatek/konec segmentu jsou REGISTROVANE (znacky prichazeji >= 9 taktu po nabehu segmentu),
 //   * rozdily x-x0, t-t0 se meni JEN pri znacce (enable),
 //   * sx i sy jsou rozdelene s registrovanym prenosem, n je 3 x 8 b,
-//   * delic: rozdil `dsub` se pocita KAZDY takt (bez enable), vyber a posun v kazdem 2. taktu; ridici signaly
-//     posunu/nacteni jsou predpocitane registry ve 4 KOPIICH (kazda ridi ctvrtinu bitu `nq`).
+//   * zachyceni vystupu ridi registrovane povoleni ve 4 KOPIICH (kazda ~50 FF).
 // ------------------------------------------------------------
 module regr_acc (
     input  wire        clk,             // clk_p0_100m
@@ -745,12 +829,14 @@ module regr_acc (
     input  wire        samp_b,          // znacka patri do segmentu B (zachyceno pri spusteni)
     input  wire [25:0] samp_x,          // poradi hrany v okne
     input  wire [47:0] samp_ts,         // absolutni cas hrany [T/16384]
-    output reg  [23:0] n_a, n_b,
-    output reg  [39:0] xm_a, xm_b,      // x_prumer * 256
-    output reg  [47:0] ym_a, ym_b,      // y_prumer * 16
+    output reg  [23:0] n_a, n_b,        // pocet znacek
+    output reg  [25:0] x0_a, x0_b,      // index prvni znacky segmentu v okne
+    output reg  [41:0] sx_a, sx_b,      // sum(x - x0)  (<= n^2/2: 2,5 M znacek -> 3,1e12 < 2^42)
+    output reg  [47:0] y0_a, y0_b,      // t0 - ref_ts [T/16384]
+    output reg  [55:0] sy_a, sy_b,      // sum(t - t0) >> 3  (<= 5,1e17 >> 3 < 2^56)
     output reg         ok_a, ok_b
 );
-    initial begin n_a = 0; n_b = 0; xm_a = 0; xm_b = 0; ym_a = 0; ym_b = 0; ok_a = 0; ok_b = 0; end
+    initial begin n_a = 0; n_b = 0; x0_a = 0; x0_b = 0; sx_a = 0; sx_b = 0; y0_a = 0; y0_b = 0; sy_a = 0; sy_b = 0; ok_a = 0; ok_b = 0; end
 
     // ---- hrany segmentu (registrovane) ----
     reg sa_p = 1'b0, sb_p = 1'b0;
@@ -826,106 +912,29 @@ module regr_acc (
         end
     end
 
-    // ---- delic: dva prubehy (x, pak y), 68 iteraci po 2 taktech ----
-    reg        for_b = 1'b0, phase_y = 1'b0;
-    reg        waitf = 1'b0;  reg [2:0] wc = 3'd0;
-    reg        busy = 1'b0, fsel = 1'b0, lastr = 1'b0;
-    // FW 0x0421 (casovani pro periodu 8 ns): iterace delice trva 3 takty (fc0, fc1 = pocitani dsub, fsel = vyber a posun). 26bitovy rozdil
-    // `dsub` (rem, nq[67], n) ma tak 2 takty (multicycle v timing.sdc): jeden takt byl pri periode 8 ns nesplnitelny (7,5 ns).
-    reg        fc0 = 1'b0, fc1 = 1'b0;
-    (* keep = "true" *) reg [7:0] ldx_q = 8'd0;      // nacti delenec x (8 kopii, FW 0x0421: kazda ridi ~9 bitu nq)
-    (* keep = "true" *) reg [7:0] ldy_q = 8'd0;      // nacti delenec y
-    (* keep = "true" *) reg [7:0] sh_q  = 8'd0;      // vyber + posun (takt s fsel = 1)
-    reg [6:0]  cnt = 7'd0;
-    reg [24:0] rem = 25'd0;
-    // FW 0x0421: odlozeny posledni krok (viz nize), zvlast pro segment A a B a ve 2 KOPIICH (0 = n, xm; 1 = ym, ok):
-    // jediny `fin_v` rizeny CE ~110 registru a jeho cesta (5,8 ns vedeni) byla pri periode 8 ns nesplnena.
-    reg        finp_a = 1'b0, finp_b = 1'b0;
-    (* keep = "true" *) reg [1:0] fin_va = 2'b00;
-    (* keep = "true" *) reg [1:0] fin_vb = 2'b00;
-    reg [47:0] fin_q = 48'd0;
-    reg [47:0] dtr   = 48'd0;                // t0 - ref_ts (kazdy takt; t0 i ref_ts jsou pri nacteni deliteli davno stabilni)
-    reg [67:0] nq  = 68'd0;
-    reg [25:0] dsub = 26'd0;
-    reg [39:0] xq  = 40'd0;
-    reg [47:0] y0r = 48'd0;
-    wire [24:0] rem_n = {rem[23:0], nq[67]};
-    wire        qb    = ~dsub[25];
-    // Audit 4 (N3, test T9): x se dělí s rozlišením 1/4096 hrany (dřív 1/256). Nad ~16 MHz se značkuje nepravidelně a zaokrouhlení
-    // 1/256 hrany dávalo ~56 ps rms na těžiště (20 MHz) -> fázový záznam i regrese horší než šum značky. Stejný počet kroků děličky.
-    wire [67:0] dvx   = {8'd0, sx, 12'd0};
-    wire [67:0] dvy   = {sy, 4'd0};
-
-    // dalsi stav ridicich signalu (z registru -> kratke cesty); kopie se registruji ze stejneho vyrazu
-    reg  n_ge2 = 1'b0;                                   // n >= 2 (registrovano; n je pri rozhodnuti 5 taktu stabilni)
-    wire go_x     = waitf && (wc == 3'd6) && n_ge2;
-    // FW 0x0421: `done_sel` je REGISTR (dsel_q): posledni vyber = takt vyberu, kdyz cnt == 67 (cnt se meni jen v taktu vyberu,
-    // takze je v taktu fc1 stabilni a dsel_q je v taktu vyberu totez co driv `busy & fsel & lastr`).
-    reg  dsel_q = 1'b0;
-    wire done_sel = dsel_q;                              // posledni vyber prubehu
-    // FW 0x0421: ld_now je JEDEN registr (driv OR dvou, ridil ~10 cest -> wc, busy, fc0, ...)
-    (* keep = "true" *) reg ldn_q = 1'b0;
-    wire ld_now   = ldn_q;
-    wire busy_nx  = ld_now | (busy & ~done_sel);
-    wire fc0_nx   = ld_now | (busy & ~done_sel & fsel);
-    wire fc1_nx   = busy & ~done_sel & fc0;
-    wire fsel_nx  = busy & ~done_sel & fc1 & ~ld_now;
-    wire sh_nx    = busy_nx & fsel_nx;
-
-    integer i;
+    // ---- zachyceni surovych souctu (FW 0x0426; delic odstranen, deli STM) ----
+    // start po konci segmentu: pockat 7 taktu na dobeh pipeline akumulatoru (v0 -> v1 -> v2, posledni znacka), pak zachytit.
+    // Soucty se do zacatku dalsiho segmentu nemeni (segment B zacina az 10G/16 po konci A, dalsi A 2G/16 po konci B).
+    reg        for_b = 1'b0, waitf = 1'b0;  reg [2:0] wc = 3'd0;
+    reg        n_ge2 = 1'b0;                                   // n >= 2 (registrovano)
+    reg [47:0] dtr = 48'd0;                                    // t0 - ref_ts (kazdy takt; obe stabilni davno pred zachycenim)
+    (* keep = "true" *) reg [3:0] lat_a = 4'd0;                // povoleni zachyceni A ve 4 kopiich (kazda ~50 FF)
+    (* keep = "true" *) reg [3:0] lat_b = 4'd0;
     always @(posedge clk) begin
-        // start po konci segmentu: pockat 5 taktu na dobeh pipeline akumulatoru, pak posoudit n
-        if ((end_a | end_b) && !busy && !waitf && !ld_now) begin
-            for_b <= end_b; waitf <= 1'b1; wc <= 3'd0;
-        end
-        if (waitf) begin
-            wc <= wc + 3'd1;
-            if (wc == 3'd6) begin
-                waitf <= 1'b0;
-                if (!n_ge2) begin if (for_b) ok_b <= 1'b0; else ok_a <= 1'b0; end
-            end
-        end
-        ldn_q <= go_x | (done_sel & ~phase_y);
-        ldx_q <= {8{go_x}};
-        ldy_q <= {8{done_sel & ~phase_y}};
-        busy  <= busy_nx;
-        fc0   <= fc0_nx;
-        fc1   <= fc1_nx;
-        fsel  <= fsel_nx;
-        sh_q  <= {8{sh_nx}};
-        dtr   <= t0 - ref_ts;
-        dsub  <= {1'b0, rem_n} - {2'b00, n};            // kazdy takt; pouzije se jen v taktu vyberu
-        dsel_q <= fsel_nx & (cnt == 7'd67);
+        if ((end_a | end_b) && !waitf) begin for_b <= end_b; waitf <= 1'b1; wc <= 3'd0; end
+        if (waitf) begin wc <= wc + 3'd1; if (wc == 3'd6) waitf <= 1'b0; end
+        lat_a <= {4{waitf & (wc == 3'd6) & ~for_b}};
+        lat_b <= {4{waitf & (wc == 3'd6) &  for_b}};
         n_ge2 <= (n_hi != 8'd0) | (n_md != 8'd0) | (n_lo[7:1] != 7'd0);
-
-        if (ldx_q[0]) begin
-            y0r <= (dtr << 4);              // dtr = t0 - ref_ts, registrovano (FW 0x041E; 48b odecitani v jednom taktu bylo kriticke)
-            rem <= 25'd0; cnt <= 7'd0; phase_y <= 1'b0;
-        end else if (ldy_q[0]) begin
-            rem <= 25'd0; cnt <= 7'd0; phase_y <= 1'b1;
-        end else if (sh_q[0]) begin
-            rem <= dsub[25] ? rem_n : dsub[24:0];
-            cnt <= cnt + 7'd1;
-        end
-        // nq po ctvrtinach, kazda ridena vlastni kopii ridicich signalu
-        for (i = 0; i < 68; i = i + 1) begin
-            if (ldx_q[i / 9])       nq[i] <= dvx[i];
-            else if (ldy_q[i / 9])  nq[i] <= dvy[i];
-            else if (sh_q[i / 9])   nq[i] <= (i == 0) ? qb : nq[(i == 0) ? 0 : i - 1];
-        end
-        if (done_sel & ~phase_y) xq <= {nq[38:0], qb};                 // podil sum(x-x0)*4096/n (audit 4; <= 2^36)
-        // FW 0x041E: posledni krok (48bitovy soucet s y0r) se odlozi o takt: podil {nq,qb} se nejdriv ZAREGISTRUJE
-        // (`fin_q`), teprve pak se scita. Driv vedla cesta dsub[25] -> qb -> carry chain 48 b -> ym_a/ym_b
-        // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). n, x0, xq, y0r jsou v tu chvili stabilni.
-        finp_a <= done_sel & phase_y & ~for_b;           // takt po done_sel: fin_q uz platne
-        finp_b <= done_sel & phase_y &  for_b;
-        fin_va <= {2{finp_a}};                           // o dalsi takt: ym = y0r + fin_q ma 2 takty (multicycle v SDC)
-        fin_vb <= {2{finp_b}};
-        if (done_sel & phase_y) fin_q <= {nq[46:0], qb};
-        if (fin_vb[0]) begin n_b <= n; xm_b <= {2'd0, x0, 12'd0} + xq; end   // audit 4: x0*4096 <= 2^38
-        if (fin_vb[1]) begin ym_b <= y0r + fin_q; ok_b <= 1'b1; end
-        if (fin_va[0]) begin n_a <= n; xm_a <= {2'd0, x0, 12'd0} + xq; end
-        if (fin_va[1]) begin ym_a <= y0r + fin_q; ok_a <= 1'b1; end
+        dtr   <= t0 - ref_ts;
+        if (lat_a[0]) begin n_a <= n; x0_a <= x0; end
+        if (lat_a[1]) sx_a <= sx[41:0];
+        if (lat_a[2]) y0_a <= dtr;
+        if (lat_a[3]) begin sy_a <= sy[58:3]; ok_a <= n_ge2; end
+        if (lat_b[0]) begin n_b <= n; x0_b <= x0; end
+        if (lat_b[1]) sx_b <= sx[41:0];
+        if (lat_b[2]) y0_b <= dtr;
+        if (lat_b[3]) begin sy_b <= sy[58:3]; ok_b <= n_ge2; end
         // nove okno: stare vysledky neplati
         if (beg_a) ok_a <= 1'b0;
         if (beg_b) ok_b <= 1'b0;
@@ -961,9 +970,11 @@ module win_recip #(
     output reg          res_tgl,
     output reg  [8:0]   r_ce, r_cs,     // FW 0x0418: kod uzaviraci a ZAHAJOVACI hrany okna (INL diagnostika/korekce)
     output reg  [7:0]   r_ccd,          // FW 0x041F: kontrolni pocet hran okna minus r_periods (int8, saturuje)
-    output wire [23:0]  rg_n_a, rg_n_b,
-    output wire [39:0]  rg_xm_a, rg_xm_b,
-    output wire [47:0]  rg_ym_a, rg_ym_b,
+    output wire [23:0]  rg_n_a, rg_n_b,     // FW 0x0426: surove soucty segmentu (viz regr_acc), deli STM
+    output wire [25:0]  rg_x0_a, rg_x0_b,
+    output wire [41:0]  rg_sx_a, rg_sx_b,
+    output wire [47:0]  rg_y0_a, rg_y0_b,
+    output wire [55:0]  rg_sy_a, rg_sy_b,
     output wire         rg_ok_a, rg_ok_b
 );
     // 🔴 2026-10-03: okno uzavira PRVNI hrana po gate_tick; ta dostane presny
@@ -1085,8 +1096,9 @@ module win_recip #(
         // kontrolni pocitani: `ccnt` v taktu cl_q obsahuje i kontrolni dvojce uzaviraci hrany (kdyz prijde o takt
         // pozde, pripadne dalsimu oknu: -1 / +1 v sousednich oknech, pri stale stejnem zpozdeni se vyrusi)
         // (FW 0x0421: bez vetve hold_q -> 0: kazde uzavreni ccnt stejne nastavi a prvni okno po holdu se jen zahaji, nevystupuje)
+        // FW 0x0426: ce3 jako POVOLENI inkrementu (ne prenos do scitani) -- P&R 0x0426 mel na ce3 -> ccnt[9] rezervu jen 0,08 ns
         if (cl_q)       ccnt <= {9'd0, ce3};
-        else            ccnt <= ccnt + {9'd0, ce3};
+        else if (ce3)   ccnt <= ccnt + 10'd1;
         if (cl_q)  csnap <= ccnt;
         if (cl_q2) cdd   <= csnap - count[9:0];          // mod 1024; count v tomto taktu = to, co jde do snap
         if (cl_q3) cdd8  <= ((&cdd[9:7]) | ~(|cdd[9:7])) ? cdd[7:0] : (cdd[9] ? 8'h80 : 8'h7F);
@@ -1170,13 +1182,15 @@ module win_recip #(
             assign want_seg = (seg_a | seg_b) & ~(mask_cs & cs_act);
             regr_acc u_rg (.clk(clk), .seg_a(seg_a), .seg_b(seg_b), .ref_ts(ref_ts),
                            .samp_v(ts_valid & ts_seg), .samp_b(sg_b), .samp_x(sg_x), .samp_ts(ts_ps),
-                           .n_a(rg_n_a), .n_b(rg_n_b), .xm_a(rg_xm_a), .xm_b(rg_xm_b),
-                           .ym_a(rg_ym_a), .ym_b(rg_ym_b), .ok_a(rg_ok_a), .ok_b(rg_ok_b));
+                           .n_a(rg_n_a), .n_b(rg_n_b), .x0_a(rg_x0_a), .x0_b(rg_x0_b), .sx_a(rg_sx_a), .sx_b(rg_sx_b),
+                           .y0_a(rg_y0_a), .y0_b(rg_y0_b), .sy_a(rg_sy_a), .sy_b(rg_sy_b), .ok_a(rg_ok_a), .ok_b(rg_ok_b));
         end else begin : rg
             assign want_seg = 1'b0;
             assign rg_n_a = 24'd0;  assign rg_n_b = 24'd0;
-            assign rg_xm_a = 40'd0; assign rg_xm_b = 40'd0;
-            assign rg_ym_a = 48'd0; assign rg_ym_b = 48'd0;
+            assign rg_x0_a = 26'd0; assign rg_x0_b = 26'd0;
+            assign rg_sx_a = 42'd0; assign rg_sx_b = 42'd0;
+            assign rg_y0_a = 48'd0; assign rg_y0_b = 48'd0;
+            assign rg_sy_a = 56'd0; assign rg_sy_b = 56'd0;
             assign rg_ok_a = 1'b0;  assign rg_ok_b = 1'b0;
         end
     endgenerate

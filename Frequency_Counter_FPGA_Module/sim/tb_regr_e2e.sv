@@ -65,14 +65,20 @@ module tb_regr_e2e;
         .d_ovf(ovf), .d_peak(peak), .d_nz(nz), .d_last(last), .d_maxtap(maxtap), .dump_k(10'd0), .dump_q(), .bub_o(bub));
 
     wire [25:0] per; wire [47:0] dt; wire al, tgl;
-    wire [23:0] rg_n_a, rg_n_b; wire [39:0] rg_xm_a, rg_xm_b; wire [47:0] rg_ym_a, rg_ym_b; wire rg_ok_a, rg_ok_b;
+    wire [23:0] rg_n_a, rg_n_b; wire rg_ok_a, rg_ok_b;
+    // FW 0x0426: surove soucty; xm/ym (1/4096 hrany, 1/16 jednotky) dopocita testbench STEJNE jako STM (fpga_freq.c)
+    wire [25:0] rg_x0_a, rg_x0_b; wire [41:0] rg_sx_a, rg_sx_b; wire [47:0] rg_y0_a, rg_y0_b; wire [55:0] rg_sy_a, rg_sy_b;
+    wire [63:0] rg_xm_a = ({38'd0, rg_x0_a} << 12) + (({22'd0, rg_sx_a} << 12) / (rg_n_a ? rg_n_a : 24'd1));
+    wire [63:0] rg_xm_b = ({38'd0, rg_x0_b} << 12) + (({22'd0, rg_sx_b} << 12) / (rg_n_b ? rg_n_b : 24'd1));
+    wire [63:0] rg_ym_a = ({16'd0, rg_y0_a} << 4) + (({8'd0, rg_sy_a} << 7) / (rg_n_a ? rg_n_a : 24'd1));
+    wire [63:0] rg_ym_b = ({16'd0, rg_y0_b} << 4) + (({8'd0, rg_sy_b} << 7) / (rg_n_b ? rg_n_b : 24'd1));
     // FW 0x0425: nove vstupy win_recip MUSI byt zapojene -- plovouci mask_cs & cs_act dava want_seg = x a regrese nebezi (timeout)
     win_recip #(.REGR(1)) wr (.clk(clk), .sig_pin(sig), .code_i(9'd0),
         .alias_lim(8'd250), .bub(bub), .cs_act(1'b0), .mask_cs(1'b1), .r_bub(), .r_ovl(), .rise_s(rise_s), .trig_ack(trig), .ts_valid(tsv), .ts_ps(ts),
         .gate_tick(gate_tick), .hold(busy | ~valid), .seg_a(seg_a), .seg_b(seg_b), .want(want), .want_seg(want_seg),
         .r_periods(per), .r_dt(dt), .r_dt_alias(al), .res_tgl(tgl),
-        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
-        .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b));
+        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_x0_a(rg_x0_a), .rg_x0_b(rg_x0_b), .rg_sx_a(rg_sx_a), .rg_sx_b(rg_sx_b),
+        .rg_y0_a(rg_y0_a), .rg_y0_b(rg_y0_b), .rg_sy_a(rg_sy_a), .rg_sy_b(rg_sy_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b));
 
     initial begin : gen
         #123;
@@ -93,8 +99,8 @@ module tb_regr_e2e;
             // regresni vystupy platne pro PRAVE uzavrene okno (segment B skoncil pred jeho koncem)
             f2 = ($itor(per) / ($itor(dt) * `TB_PS_PER_UNIT)) * 1.0e12;
             if (rg_ok_a && rg_ok_b && rg_n_a >= 2 && rg_n_b >= 2) begin
-                dxm = ($itor(rg_xm_b) - $itor(rg_xm_a)) / 4096.0;  // FW 0x0425 (audit 4, A1): xm v 1/4096 hrany, drive 1/256
-                dym = ($itor(rg_ym_b) - $itor(rg_ym_a)) / 16.0 * `TB_PS_PER_UNIT;      // ps
+                dxm = (real'(rg_xm_b) - real'(rg_xm_a)) / 4096.0;  // xm v 1/4096 hrany; real'() -- $itor bere jen 32 bitu
+                dym = (real'(rg_ym_b) - real'(rg_ym_a)) / 16.0 * `TB_PS_PER_UNIT;      // ps
                 fr  = dxm / dym * 1.0e12;
                 if (nw < `NWIN) begin e2[nw] = f2 / f_true - 1.0; er[nw] = fr / f_true - 1.0; nw = nw + 1; end
                 if (nw <= 4) $display("  okno %0d: n_A=%0d n_B=%0d  2pt %0.1f ppb  regr %0.1f ppb", nw, rg_n_a, rg_n_b,

@@ -5,9 +5,9 @@ module tb_regr_acc;
     reg clk = 0; always #(`TB_THALF_PS) clk = ~clk;
     reg seg_a = 0, seg_b = 0, samp_v = 0, samp_b = 0;
     reg [47:0] ref_ts = 0, samp_ts = 0; reg [25:0] samp_x = 0;
-    wire [23:0] n_a, n_b; wire [39:0] xm_a, xm_b; wire [47:0] ym_a, ym_b; wire ok_a, ok_b;
+    wire [23:0] n_a, n_b; wire [25:0] x0_a, x0_b; wire [41:0] sx_a, sx_b; wire [47:0] y0_a, y0_b; wire [55:0] sy_a, sy_b; wire ok_a, ok_b;   // FW 0x0426: surove soucty
     regr_acc dut (.clk(clk), .seg_a(seg_a), .seg_b(seg_b), .ref_ts(ref_ts), .samp_v(samp_v), .samp_b(samp_b),
-        .samp_x(samp_x), .samp_ts(samp_ts), .n_a(n_a), .n_b(n_b), .xm_a(xm_a), .xm_b(xm_b), .ym_a(ym_a), .ym_b(ym_b), .ok_a(ok_a), .ok_b(ok_b));
+        .samp_x(samp_x), .samp_ts(samp_ts), .n_a(n_a), .n_b(n_b), .x0_a(x0_a), .x0_b(x0_b), .sx_a(sx_a), .sx_b(sx_b), .y0_a(y0_a), .y0_b(y0_b), .sy_a(sy_a), .sy_b(sy_b), .ok_a(ok_a), .ok_b(ok_b));
 
     integer errs = 0, trial, j, nsamp;
     longint unsigned x0, t0, sx, sy, xg, yg, x, ts, nn;
@@ -29,14 +29,13 @@ module tb_regr_acc;
             end
             if (isb) seg_b = 0; else seg_a = 0;
             repeat (700) @(negedge clk);                            // deleni: 2 x 68 iteraci x 2 takty + cekani
-            xg = (x0 << 12) + ((sx << 12) / nn);                    // xm v 1/4096 hrany (FW 0x0425, caps bit15)
-            yg = ((t0 - ref_ts) << 4) + ((sy << 4) / nn);
+            xg = sx; yg = (t0 - ref_ts);   // FW 0x0426: delic odstranen -> porovnavaji se SUROVE soucty (deli STM)
             if (isb) begin
-                if (!ok_b || n_b !== nn[23:0] || xm_b !== xg[39:0] || ym_b !== yg[47:0]) begin
-                    errs = errs + 1; $display("RUZNOST B: ok=%0d n=%0d/%0d xm=%0d/%0d ym=%0d/%0d", ok_b, n_b, nn, xm_b, xg, ym_b, yg); end
+                if (!ok_b || n_b !== nn[23:0] || x0_b !== x0[25:0] || sx_b !== sx[41:0] || y0_b !== yg[47:0] || sy_b !== sy[58:3]) begin
+                    errs = errs + 1; $display("RUZNOST B: ok=%0d n=%0d/%0d x0=%0d/%0d sx=%0d/%0d y0=%0d/%0d sy3=%0d/%0d", ok_b, n_b, nn, x0_b, x0, sx_b, sx, y0_b, yg, sy_b, sy >> 3); end
             end else begin
-                if (!ok_a || n_a !== nn[23:0] || xm_a !== xg[39:0] || ym_a !== yg[47:0]) begin
-                    errs = errs + 1; $display("RUZNOST A: ok=%0d n=%0d/%0d xm=%0d/%0d ym=%0d/%0d", ok_a, n_a, nn, xm_a, xg, ym_a, yg); end
+                if (!ok_a || n_a !== nn[23:0] || x0_a !== x0[25:0] || sx_a !== sx[41:0] || y0_a !== yg[47:0] || sy_a !== sy[58:3]) begin
+                    errs = errs + 1; $display("RUZNOST A: ok=%0d n=%0d/%0d x0=%0d/%0d sx=%0d/%0d y0=%0d/%0d sy3=%0d/%0d", ok_a, n_a, nn, x0_a, x0, sx_a, sx, y0_a, yg, sy_a, sy >> 3); end
             end
         end
     endtask

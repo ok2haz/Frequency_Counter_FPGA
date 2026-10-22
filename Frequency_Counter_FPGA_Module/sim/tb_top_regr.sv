@@ -19,6 +19,11 @@ module tb_top_regr;
     top dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(1'b0), .led_tx(led), .ref_ctrl(), .ext_ref_sens(1'b0),
              .spi_sck(1'b0), .spi_cs_n(1'b1), .spi_mosi(1'b0), .spi_miso(miso));
 
+    // FW 0x0426: top posila surove soucty; xm/ym dopocita testbench stejne jako STM
+    wire [63:0] rg_xm_a = ({38'd0, dut.rg_x0_a} << 12) + (({22'd0, dut.rg_sx_a} << 12) / (dut.rg_n_a ? dut.rg_n_a : 24'd1));
+    wire [63:0] rg_xm_b = ({38'd0, dut.rg_x0_b} << 12) + (({22'd0, dut.rg_sx_b} << 12) / (dut.rg_n_b ? dut.rg_n_b : 24'd1));
+    wire [63:0] rg_ym_a = ({16'd0, dut.rg_y0_a} << 4) + (({8'd0, dut.rg_sy_a} << 7) / (dut.rg_n_a ? dut.rg_n_a : 24'd1));
+    wire [63:0] rg_ym_b = ({16'd0, dut.rg_y0_b} << 4) + (({8'd0, dut.rg_sy_b} << 7) / (dut.rg_n_b ? dut.rg_n_b : 24'd1));
     real U, f_in, fr, fdt;
     integer win = 0, errs = 0;
     reg tg_p = 0;
@@ -33,11 +38,11 @@ module tb_top_regr;
             fdt = real'(dut.r_periods_a) / (real'(dut.r_dt_a) * `TB_PS_PER_UNIT) * 1.0e12;
             $display("okno %0d: N=%0d dt=%0d u  f_2pt=%.4f Hz (chyba %.2f ppm) | A: ok=%0d n=%0d xm=%.1f ym=%.3f us | B: ok=%0d n=%0d xm=%.1f ym=%.3f us",
                 win, dut.r_periods_a, dut.r_dt_a, fdt, (fdt/f_in-1.0)*1e6,
-                dut.rg_ok_a, dut.rg_n_a, real'(dut.rg_xm_a)/4096.0, real'(dut.rg_ym_a)*U*1e-6,
-                dut.rg_ok_b, dut.rg_n_b, real'(dut.rg_xm_b)/4096.0, real'(dut.rg_ym_b)*U*1e-6);
+                dut.rg_ok_a, dut.rg_n_a, real'(rg_xm_a)/4096.0, real'(rg_ym_a)*U*1e-6,
+                dut.rg_ok_b, dut.rg_n_b, real'(rg_xm_b)/4096.0, real'(rg_ym_b)*U*1e-6);
             // FW 0x0425 (audit 4, A1): xm v 1/4096 hrany, drive 1/256
-            if (dut.rg_ok_a && dut.rg_ok_b && dut.rg_ym_b > dut.rg_ym_a) begin
-                fr = (real'(dut.rg_xm_b) - real'(dut.rg_xm_a)) / 4096.0 / (((real'(dut.rg_ym_b) - real'(dut.rg_ym_a)) * U) * 1e-12);
+            if (dut.rg_ok_a && dut.rg_ok_b && rg_ym_b > rg_ym_a) begin
+                fr = (real'(rg_xm_b) - real'(rg_xm_a)) / 4096.0 / (((real'(rg_ym_b) - real'(rg_ym_a)) * U) * 1e-12);
                 $display("        f_regr = %.4f Hz (chyba %.3f ppm)", fr, (fr/f_in-1.0)*1e6);
                 if (win >= 3 && ((fr/f_in-1.0) > 1e-6 || (fr/f_in-1.0) < -1e-6)) errs = errs + 1;
             end else if (win >= 3) errs = errs + 1;

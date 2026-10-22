@@ -84,37 +84,16 @@ set_multicycle_path -hold  -end 4 -from [get_regs {u_tdca/u_chain/qd_*}] -to [ge
 set_multicycle_path -setup -end 5 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
 set_multicycle_path -hold  -end 4 -from [get_regs {u_tdcb/u_chain/qd_*}] -to [get_regs {u_tdcb/hicode_r*}]
 
-// FW 0x0421: hcur se nacte v ph[1], soucty cum/xv jsou az v ph[3] a hnz/hgt v ph[4] -> hcur ma 2 a vice taktu.
-set_multicycle_path -setup -end 2 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/cum* u_tdca/xv* u_tdca/hnz* u_tdca/hgt*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/cum* u_tdca/xv* u_tdca/hnz* u_tdca/hgt*}]
-set_multicycle_path -setup -end 2 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/cum* u_tdcb/xv* u_tdcb/hnz* u_tdcb/hgt*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/cum* u_tdcb/xv* u_tdcb/hnz* u_tdcb/hgt*}]
 
-// FW 0x0421: delic regr_acc ma iteraci o 3 taktech (viz spi_app.v): rozdil `dsub` se pocita z rem/nq/n, ktere se meni nejvys
-// jednou za 3 takty (v taktu vyberu), a pouzije se az v taktu vyberu -> 2 takty. n se behem deleni nemeni.
-set_multicycle_path -setup -end 2 -from [get_regs {u_wra/rg.u_rg/rem* u_wra/rg.u_rg/nq_* u_wra/rg.u_rg/n_lo* u_wra/rg.u_rg/n_md* u_wra/rg.u_rg/n_hi*}] -to [get_regs {u_wra/rg.u_rg/dsub_*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_wra/rg.u_rg/rem* u_wra/rg.u_rg/nq_* u_wra/rg.u_rg/n_lo* u_wra/rg.u_rg/n_md* u_wra/rg.u_rg/n_hi*}] -to [get_regs {u_wra/rg.u_rg/dsub_*}]
+// FW 0x0427: vypocet kalibracni tabulky TDC (cum, xv, hcur, scan_k, d_*) je v STM -> vyjimky na tyto registry odstraneny (L-0188).
+// FW 0x0426: delic regr_acc ODSTRANEN (deli STM, L-0187) -- vyjimky rem/nq/dsub a fin_q -> ym zrusene.
 
 // FW 0x0421: casova znacka ts_ps (tdc_chan) se DRZI do dalsi platne znacky (>= 5 taktu) a regr_acc z ni odecita az v 2. taktu po
 // samp_v (v0 -> dt_r/dx_r); t0/x0 se meni jen pri PRVNI znacce segmentu, jejiz rozdil se zahazuje (f1).
 set_multicycle_path -setup -end 2 -from [get_regs {u_tdca/ts_ps* u_wra/sg_x* u_wra/rg.u_rg/t0_* u_wra/rg.u_rg/x0_*}] -to [get_regs {u_wra/rg.u_rg/dt_r_* u_wra/rg.u_rg/dx_r_*}]
 set_multicycle_path -hold  -end 1 -from [get_regs {u_tdca/ts_ps* u_wra/sg_x* u_wra/rg.u_rg/t0_* u_wra/rg.u_rg/x0_*}] -to [get_regs {u_wra/rg.u_rg/dt_r_* u_wra/rg.u_rg/dx_r_*}]
 
-// FW 0x0421: akumulator kumulativniho poctu (cum) se meni jen v ph[4] (jednou za 10 taktu): scitani cum + hcur ma 2 takty.
-set_multicycle_path -setup -end 2 -from [get_regs {u_tdca/cum*}] -to [get_regs {u_tdca/cum* u_tdca/xv*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_tdca/cum*}] -to [get_regs {u_tdca/cum* u_tdca/xv*}]
-set_multicycle_path -setup -end 2 -from [get_regs {u_tdcb/cum*}] -to [get_regs {u_tdcb/cum* u_tdcb/xv*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_tdcb/cum*}] -to [get_regs {u_tdcb/cum* u_tdcb/xv*}]
 
-// FW 0x0421: ym = y0r + fin_q: fin_q a y0r jsou stabilni a vysledek se zapisuje az o takt pozdeji (fin_va z finp_a).
-set_multicycle_path -setup -end 2 -from [get_regs {u_wra/rg.u_rg/fin_q_*}] -to [get_regs {u_wra/rg.u_rg/ym_a_* u_wra/rg.u_rg/ym_b_*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_wra/rg.u_rg/fin_q_*}] -to [get_regs {u_wra/rg.u_rg/ym_a_* u_wra/rg.u_rg/ym_b_*}]
-
-// FW 0x0421: citac neprazdnych kodu d_nz se meni jen v ph[9] (jednou za 10 taktu) -> scitani ma vice taktu.
-set_multicycle_path -setup -end 3 -from [get_regs {u_tdca/d_nz*}] -to [get_regs {u_tdca/d_nz*}]
-set_multicycle_path -hold  -end 2 -from [get_regs {u_tdca/d_nz*}] -to [get_regs {u_tdca/d_nz*}]
-set_multicycle_path -setup -end 3 -from [get_regs {u_tdcb/d_nz*}] -to [get_regs {u_tdcb/d_nz*}]
-set_multicycle_path -hold  -end 2 -from [get_regs {u_tdcb/d_nz*}] -to [get_regs {u_tdcb/d_nz*}]
 
 // FW 0x0421: okno -- r_dt = ts_ps - ref_ts se zachyti o takt po ts_valid (tsc_q); ts_ps se drzi a ref_ts se meni jen pri zachyceni.
 set_multicycle_path -setup -end 2 -from [get_regs {u_tdca/ts_ps* u_wra/ref_ts*}] -to [get_regs {u_wra/r_dt*}]
@@ -122,25 +101,8 @@ set_multicycle_path -hold  -end 1 -from [get_regs {u_tdca/ts_ps* u_wra/ref_ts*}]
 set_multicycle_path -setup -end 2 -from [get_regs {u_tdcb/ts_ps* u_wrb/ref_ts*}] -to [get_regs {u_wrb/r_dt*}]
 set_multicycle_path -hold  -end 1 -from [get_regs {u_tdcb/ts_ps* u_wrb/ref_ts*}] -to [get_regs {u_wrb/r_dt*}]
 
-// Diagnostika kalibrace (tdc.v, faze ph[5] pruchodu tabulkou): scan_k se meni
-// jen jednou za 10 taktu (ph[9]) a hcur v ph[1] -> do zapisu d_* v ph[5] maji
-// >= 4 takty. Bez tohoto omezeni byla tahle diagnostika nejtesnejsi cestou
-// celeho navrhu (rezerva 0,06 ns) a ubirala misto skutecnym cestam.
-set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
-set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/scan_k*}] -to [get_regs {u_tdca/d_*}]
-set_multicycle_path -setup -end 4 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
-set_multicycle_path -hold  -end 3 -from [get_regs {u_tdca/hcur*}] -to [get_regs {u_tdca/d_*}]
-set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
-set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/scan_k*}] -to [get_regs {u_tdcb/d_*}]
-set_multicycle_path -setup -end 4 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
-set_multicycle_path -hold  -end 3 -from [get_regs {u_tdcb/hcur*}] -to [get_regs {u_tdcb/d_*}]
 
-// FW 0x041F (2026-10-10): vystup regrese xm_a/xm_b = {x0, 8'd0} + xq (spi_app.v regr_acc, 40 b). Zapisuje se jen
-// pri fin_v; x0 se meni pri PRVNI znacce segmentu (ms predtim) a xq na konci deleni x, ktere predchazi deleni y
-// o 68 iteraci po 2 taktech -> oba operandy stoji >= 136 taktu. Bez omezeni to byla nejhorsi cesta navrhu
-// (-0,4 ns pri nejistote 0,9 ns), prestoze se jeji vysledek pouzije az desitky taktu pote.
-set_multicycle_path -setup -end 2 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
-set_multicycle_path -hold  -end 1 -from [get_regs {u_wra/rg.u_rg/x0_* u_wra/rg.u_rg/xq_*}] -to [get_regs {u_wra/rg.u_rg/xm_*}]
+// FW 0x0426: vystup xm = x0*4096 + xq uz ve FPGA neni (deli STM) -- vyjimka x0/xq -> xm zrusena.
 
 // FW 0x0420 (2026-10-10): ref_guard bezi z vnitrniho oscilatoru (OSC, nezavisly na vnejsich hodinach). Vsechny prechody mezi nim
 // a ostatnimi domenami jsou 2FF synchronizatory kvazistatickych signalu (pozadavek na referenci, stav externi/vybrane/vypadla),

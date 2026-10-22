@@ -38,14 +38,15 @@ module tb_link;
      .meas_timestamp(64'd0), .meas_error_flags(32'd0), .meas_channel(8'd0), .new_meas(new_meas), .signal_lost(1'b0),
      .meas_freq16_x100000(64'd0), .meas_phase_status(8'd0), .meas_status2(8'd0), .meas_dt_a_ps(m_dt),
      .meas_dt_b_ps(48'd0), .meas_periods_b(32'd0), .meas_tdc_status(8'h03), .meas_cal_diag(192'd0),
-     .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_xm_a(40'd0), .rg_xm_b(40'd0), .rg_ym_a(48'd0), .rg_ym_b(48'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .cd_a_end(9'd0), .cd_a_st(9'd0), .cd_b_end(9'd0), .cd_b_st(9'd0), .hist_k(hk), .meas_hist_a(24'h123456), .meas_hist_b(24'h0ABCDE),
+     .meas_tdc_cfg(16'h0123), .rg_n_a(24'd0), .rg_n_b(24'd0), .rg_x0_a(26'd0), .rg_x0_b(26'd0), .rg_sx_a(42'd0), .rg_sx_b(42'd0), .rg_y0_a(48'd0), .rg_y0_b(48'd0), .rg_sy_a(56'd0), .rg_sy_b(56'd0), .rg_ok_a(1'b0), .rg_ok_b(1'b0), .cd_a_end(9'd0), .cd_a_st(9'd0), .cd_b_end(9'd0), .cd_b_st(9'd0), .hist_k(hk), .meas_hist_a(24'h123456), .meas_hist_b(24'h0ABCDE),
      .dbg_mosi_cnt(dmc), .dbg_sck_cnt(dsc),
      .rx_valid(rxv), .rx_b0(rb0), .rx_b1(rb1), .rx_b2(rb2), .rx_seq(rseq), .rx_p0(rp0), .rx_p1(rp1), .rx_p2(rp2),
      .rx_crc_calc(rcc), .rx_crc_recv(rcr),
      .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata),
      .phy_busy(phy_busy), .phy_base(phy_base),
      .dbg_status(dbg), .cal_mode(cal_mode), .base_win(bw), .meas_clk_mhz(8'd100),
-     .meas_pps_ts(32'h0BADF00D), .meas_pps_seq(8'h5A));   // FW 0x0424: pevna 1PPS, at je CRC ramce deterministicke
+     .meas_pps_ts(32'h0BADF00D), .meas_pps_seq(8'h5A),
+     .cal_wait_a(1'b0), .cal_wait_b(1'b0));   // FW 0x0424: pevna 1PPS, at je CRC ramce deterministicke
 
   function [15:0] crc(input [15:0] c0, input [7:0] d);
     integer b; reg [15:0] c; begin c=c0^{d,8'd0}; for(b=0;b<8;b=b+1) c=c[15]?((c<<1)^16'h1021):(c<<1); crc=c; end endfunction

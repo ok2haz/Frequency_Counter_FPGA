@@ -63,6 +63,13 @@ $tests = @(
     @{ name = "regracc"; top = "tb_regr_acc"; rtl = @("spi_app.v"); tb = "tb_regr_acc.sv" }
     # 2026-10-08: regr_acc v PLNE velikosti cisel (horni bity t-t0, prenosy) -- 60 000 znacek po 100 ns
     @{ name = "regrfull"; top = "tb_regr_full"; rtl = @("spi_app.v"); tb = "tb_regr_full.sv"; defs = @("-DNSEG=60000") }
+    # 2026-10-21 (FW 0x0426): win_recip + regr_acc s modelem casovani TDC; souvisla rada -> sum(x-x0) = n(n-1)/2, xm sedi na ym
+    # (plna velikost hradla 0,25 s: bez -DGATE_CLK, ~15 min)
+    # 2026-10-21 (FW 0x0427, L-0188): vzorec kalibracni tabulky ze histogramu == vypocet ve FPGA (AUTOCAL = 1); vypise zlate vektory
+    @{ name = "lutequiv"; top = "tb_lutequiv"; rtl = @("tdc.v"); tb = "tb_lutequiv.sv"; extra = @("gowin_models.v") }
+    # 2026-10-21 (FW 0x0427): KONCOVY vyrobni tok kalibrace -- STM (BFM po SPI) cte histogram, pocita a zapisuje tabulku, potvrzuje (~10 min)
+    @{ name = "stmcal"; top = "tb_stmcal"; rtl = @("tdc.v", "spi_app.v", "spi_slave_phy.v"); tb = "tb_stmcal.sv"; extra = @("gowin_models.v"); stmcal = $true }
+    @{ name = "winregr"; top = "tb_win_regr_full"; rtl = @("spi_app.v"); tb = "tb_win_regr_full.sv"; defs = @("-DGATE_CLK=200000", "-DNWIN=3") }
     # 2026-10-08: CELY top.v s regresi (SIM_TOP: hradlo 2,5 ms, kalibrace 2^12) -- ~10 min
     @{ name = "topregr"; top = "tb_top_regr"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_regr.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
@@ -116,7 +123,9 @@ foreach ($t in $tests) {
     $files += (Join-Path $sim $t.tb)
 
     Write-Host "--- Test '$($t.name)' ---" -ForegroundColor Cyan
-    & iverilog -g2012 -I $sim -s $t.top @($t.defs) -o $vvp @files
+    # FW 0x0427: starsi testbenche kalibruji TDC samy ve FPGA (AUTOCAL = 1); testy vyrobniho toku (kalibraci zapisuje STM) maji stmcal = $true
+    $ac = @(); if (-not $t.stmcal) { $ac = @('-DSIM_AUTOCAL') }
+    & iverilog -g2012 -I $sim -s $t.top @($ac) @($t.defs) -o $vvp @files
     if ($LASTEXITCODE -ne 0) { Write-Host "  COMPILE FAIL" -ForegroundColor Red; $fail++; continue }
 
     $out = & vvp $vvp

@@ -292,9 +292,12 @@ module top (
     wire        rise_a, rise_b, trig_a, trig_b, tsv_a, tsv_b, want_a, want_b;
     wire        rise_sa, rise_sb;     // hrany pro pocitani (ec z 2. stupne vzorku, +1 takt)
     wire        wseg_a;              // FW 0x0411: i vnitrni hrany CH_A maji dostat presny cas (regresni blok)
-    wire [23:0] rg_n_a, rg_n_b;  wire [39:0] rg_xm_a, rg_xm_b;  wire [47:0] rg_ym_a, rg_ym_b;  wire rg_ok_a, rg_ok_b;
+    // FW 0x0426: regresni blok = surove soucty segmentu (deli STM)
+    wire [23:0] rg_n_a, rg_n_b;  wire [25:0] rg_x0_a, rg_x0_b;  wire [41:0] rg_sx_a, rg_sx_b;
+    wire [47:0] rg_y0_a, rg_y0_b;  wire [55:0] rg_sy_a, rg_sy_b;  wire rg_ok_a, rg_ok_b;
     wire        wseg_b_nc, rgb_ok_a_nc, rgb_ok_b_nc;
-    wire [23:0] rgb_n_a_nc, rgb_n_b_nc;  wire [39:0] rgb_xm_a_nc, rgb_xm_b_nc;  wire [47:0] rgb_ym_a_nc, rgb_ym_b_nc;
+    wire [23:0] rgb_n_a_nc, rgb_n_b_nc;  wire [25:0] rgb_x0_a_nc, rgb_x0_b_nc;  wire [41:0] rgb_sx_a_nc, rgb_sx_b_nc;
+    wire [47:0] rgb_y0_a_nc, rgb_y0_b_nc;  wire [55:0] rgb_sy_a_nc, rgb_sy_b_nc;
     wire [47:0] ts_a, ts_b;
     wire [8:0]  code_a, code_b;               // FW 0x0418: kod TDC prave casovane hrany
     wire        bub_a, bub_b;                 // FW 0x0425: bublina u prave casovane hrany
@@ -318,9 +321,24 @@ module top (
     wire [9:0]  hist_k;                        // z spi_app (kvazistaticky)
     wire [23:0] hq_a, hq_b;                    // hist[hist_k] kanalu A/B
 
+    // ----------------------------------------------------------
+    // FW 0x0427: kalibracni tabulku TDC pocita a zapisuje STM (TYPE 0x0A LUT_WRITE, SET_CONFIG 0x06) -- spi_app (10 MHz) ->
+    // tdc_chan (100 MHz). Zapis = prepinaci bit lw_tgl (2FF + detekce hrany); data (adresa, 14 b, kanal) jsou kvazistaticka:
+    // spi_app prepne bit az 3 takty 10 MHz (300 ns) po jejich nastaveni a drzi je do dalsiho ramce (>= 125 us), takze je
+    // 2FF synchronizace v 100 MHz domene stihne s velkou rezervou. Domeny jsou v SDC asynchronni (set_clock_groups).
+    // ----------------------------------------------------------
+    wire        cal_wait_a, cal_wait_b;
+    wire        lw_tgl, lw_ch, lw_commit_tgl;
+    wire [9:0]  lw_a;  wire [13:0] lw_neg;
+    wire [9:0]  lw_a_q;  wire [13:0] lw_n_q;
+    wire        lw_en_a, lw_en_b, lw_cm_p;
+    lut_wr_sync u_lws (.clk(clk_p0_100m), .lw_tgl(lw_tgl), .lw_commit_tgl(lw_commit_tgl), .lw_ch(lw_ch), .lw_a(lw_a), .lw_neg(lw_neg),
+                       .lw_en_a(lw_en_a), .lw_en_b(lw_en_b), .lw_cm_p(lw_cm_p), .lw_a_q(lw_a_q), .lw_n_q(lw_n_q));
+
     tdc_chan #(.EXT_TR(TDC_EXT_TR), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(wseg_a), .cal_req(cal_req), .cal_abort(cal_abort),
+        .lw_en(lw_en_a), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p), .cal_wait(cal_wait_a),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .use_ro(use_ro_a), .cal_busy(cal_busy_a),
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
@@ -331,6 +349,7 @@ module top (
     tdc_chan #(.EXT_TR(TDC_EXT_TR), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req), .cal_abort(cal_abort),
+        .lw_en(lw_en_b), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p), .cal_wait(cal_wait_b),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .use_ro(use_ro_b), .cal_busy(cal_busy_b),
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
@@ -398,8 +417,8 @@ module top (
         .hold(hold_a),
         .alias_lim(alias_lim), .bub(bub_a), .cs_act(csa_s[1]), .mask_cs(mk_s[1]), .r_bub(r_bub_a), .r_ovl(r_ovl_a),
         .r_periods(r_periods_a), .r_dt(r_dt_a), .r_dt_alias(alias_a), .res_tgl(res_tgl_a),
-        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
-        .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b)
+        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_x0_a(rg_x0_a), .rg_x0_b(rg_x0_b), .rg_sx_a(rg_sx_a), .rg_sx_b(rg_sx_b),
+        .rg_y0_a(rg_y0_a), .rg_y0_b(rg_y0_b), .rg_sy_a(rg_sy_a), .rg_sy_b(rg_sy_b), .rg_ok_a(rg_ok_a), .rg_ok_b(rg_ok_b)
     );
     win_recip #(.REGR(0)) u_wrb (
         .clk(clk_p0_100m), .sig_pin(ch_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -407,8 +426,8 @@ module top (
         .hold(hold_b),
         .alias_lim(alias_lim), .bub(bub_b), .cs_act(csa_s[1]), .mask_cs(mk_s[1]), .r_bub(r_bub_b), .r_ovl(r_ovl_b),
         .r_periods(r_periods_b), .r_dt(r_dt_b), .r_dt_alias(alias_b_nc), .res_tgl(res_tgl_b),
-        .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_xm_a(rgb_xm_a_nc), .rg_xm_b(rgb_xm_b_nc),
-        .rg_ym_a(rgb_ym_a_nc), .rg_ym_b(rgb_ym_b_nc), .rg_ok_a(rgb_ok_a_nc), .rg_ok_b(rgb_ok_b_nc)
+        .rg_n_a(rgb_n_a_nc), .rg_n_b(rgb_n_b_nc), .rg_x0_a(rgb_x0_a_nc), .rg_x0_b(rgb_x0_b_nc), .rg_sx_a(rgb_sx_a_nc), .rg_sx_b(rgb_sx_b_nc),
+        .rg_y0_a(rgb_y0_a_nc), .rg_y0_b(rgb_y0_b_nc), .rg_sy_a(rgb_sy_a_nc), .rg_sy_b(rgb_sy_b_nc), .rg_ok_a(rgb_ok_a_nc), .rg_ok_b(rgb_ok_b_nc)
     );
 
     // ----------------------------------------------------------
@@ -434,8 +453,10 @@ module top (
 `endif
 
     // Stav TDC do 10 MHz domény (úrovně, 2FF sync)
-    reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfl_s = 2'b00, cbs_s = 2'b00;
+    reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfl_s = 2'b00, cbs_s = 2'b00, cwa_s = 2'b00, cwb_s = 2'b00;
     always @(posedge clk_ref_10m) begin
+        cwa_s <= {cwa_s[0], cal_wait_a};              // FW 0x0427: FPGA ceka na kalibracni tabulku od STM
+        cwb_s <= {cwb_s[0], cal_wait_b};
         cva_s <= {cva_s[0], cal_valid_a};
         cvb_s <= {cvb_s[0], cal_valid_b};
         cfl_s <= {cfl_s[0], cal_fail_a | cal_fail_b};
@@ -642,9 +663,9 @@ module top (
         .meas_tdc_status(tdc_status),
         .meas_cal_diag(cal_diag),
         .meas_tdc_cfg(tdc_cfg),
-        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_xm_a(rg_xm_a), .rg_xm_b(rg_xm_b),
+        .rg_n_a(rg_n_a), .rg_n_b(rg_n_b), .rg_x0_a(rg_x0_a), .rg_x0_b(rg_x0_b), .rg_sx_a(rg_sx_a), .rg_sx_b(rg_sx_b),
         // regrese je jen na CH_A: pri CH_B primarnim NEPLATI pro primarni slot (STM by jinak prepsal Δt jeho okna)
-        .rg_ym_a(rg_ym_a), .rg_ym_b(rg_ym_b), .rg_ok_a(rg_ok_a & ~chan_sel), .rg_ok_b(rg_ok_b & ~chan_sel),
+        .rg_y0_a(rg_y0_a), .rg_y0_b(rg_y0_b), .rg_sy_a(rg_sy_a), .rg_sy_b(rg_sy_b), .rg_ok_a(rg_ok_a & ~chan_sel), .rg_ok_b(rg_ok_b & ~chan_sel),
         .cd_a_end(cde_p), .cd_a_st(cds_p), .cd_b_end(cde_s), .cd_b_st(cds_s),
         .meas_maxtap_a(da_maxtap),
         .meas_maxtap_b(db_maxtap),
@@ -663,6 +684,8 @@ module top (
         .meas_bub_p(bub_p), .meas_bub_s(bub_s), .meas_ovl(ovl_ps),
         .meas_coh_st(coh_st), .meas_coh_cnt(coh_cnt),
         .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
+        .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl),
+        .cal_wait_a(cwa_s[1]), .cal_wait_b(cwb_s[1]),
         .cal_mode(cal_mode),
         .base_win(base_win),
         .chan_sel(chan_sel),
