@@ -1,0 +1,23 @@
+[2026-10-18 21:35:21] START dlouheho mereni, predpona docs\audit\data\2026-10-18_2135_dlouhe, plan 1080 min
+[2026-10-18 21:35:23] firmware: 0.30.6
+[2026-10-18 21:35:23] stav: uptime 1204 s, smycka FLL, kanal 0, hradlo 0.25000 s, GPS fix 3, druzic 12
+[2026-10-18 21:35:31] nastaveni hradla/kanalu: gate 0.25000 s, kanal 0 -> OK
+[2026-10-18 21:41:32] cekani na LOCK skoncilo: smycka LOCK, zamceno 301 s
+[2026-10-18 21:41:32] raw_fetch spusten, PID 9120
+[2026-10-18 21:41:32] logger faze 1 spusten, PID 4152
+[2026-10-18 21:41:44] BLOK OFF (faze 1, zacatek bloku): gpsdo off -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 28/0 ACK | MSG 28/0 ACK
+[2026-10-18 22:01:47] BLOK D200 (faze 1, zacatek bloku): gpsdo on ; dac dither 200 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 48/0 ACK | MSG 48/0 ACK
+[2026-10-18 22:21:50] BLOK D100 (faze 1, zacatek bloku): gpsdo on ; dac dither 100 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 68/0 ACK | MSG 68/0 ACK
+[2026-10-18 22:41:53] BLOK D2 (faze 1, zacatek bloku): gpsdo on ; dac dither 2 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 88/0 ACK | MSG 88/0 ACK
+[2026-10-18 23:01:44] BLOK OFF (faze 1, zacatek bloku): gpsdo off -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 108/0 ACK | MSG 108/0 ACK
+[2026-10-18 23:21:47] BLOK D200 (faze 1, zacatek bloku): gpsdo on ; dac dither 200 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 128/0 ACK | MSG 128/0 ACK
+[2026-10-18 23:41:50] BLOK D100 (faze 1, zacatek bloku): gpsdo on ; dac dither 100 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 148/0 ACK | MSG 148/0 ACK
+[2026-10-19 00:01:52] BLOK D2 (faze 1, zacatek bloku): gpsdo on ; dac dither 2 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 168/0 ACK | MSG 168/0 ACK
+[2026-10-19 00:21:44] BLOK OFF (faze 1, zacatek bloku): gpsdo off -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 188/0 ACK | MSG 188/0 ACK
+[2026-10-19 00:41:46] BLOK D200 (faze 1, zacatek bloku): gpsdo on ; dac dither 200 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 208/0 ACK | MSG 208/0 ACK
+[2026-10-19 01:01:49] BLOK D100 (faze 1, zacatek bloku): gpsdo on ; dac dither 100 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 228/0 ACK | MSG 228/0 ACK
+[2026-10-19 01:21:52] BLOK D2 (faze 1, zacatek bloku): gpsdo on ; dac dither 2 -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 248/0 ACK | MSG 248/0 ACK
+[2026-10-19 01:41:35] logger faze 2 spusten, PID 19224
+[2026-10-19 01:41:47] BLOK G0 (faze 2, zacatek bloku): gpsdo off -> OK | ack: TMODE2 0/2 NAK | GNSS 1/1 ACK | TP5 268/0 ACK | MSG 268/0 ACK
+[2026-10-19 15:41:35] KONEC planu (nebo preruseni) -> vracim pristroj do vychoziho stavu
+[2026-10-19 15:43:55] HOTOVO: resetu pristroje 0. Data: docs\audit\data\2026-10-18_2135_dlouhe*
