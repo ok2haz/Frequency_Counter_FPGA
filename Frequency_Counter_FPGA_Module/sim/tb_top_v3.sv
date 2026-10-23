@@ -681,9 +681,11 @@ endmodule
 //   Audit 2026-10-23 (F-0262): od CS# = 0 ridi model RWDS = RW_CA (priznak latence; pevna dvojita latence = 1) po celou
 //   CA; pri zapisu ho po CA pusti, pri cteni ho drzi pres latenci a do 0 ho stahne az bajt pred prvnimi daty.
 //   F-0264: TCKD_MIN < TCKD = vystup (DQ i RWDS) je od TCKD_MIN do TCKD po hrane CK neplatny (X), jinak se meni skokem.
+//   PSTALL: po 64. bajtu cteni PSRAM PSTALL hran nic nevyda a RWDS se neprepina (nejhorsi pripustne chovani: data plati
+//   jen s prepnutim RWDS) -- bez toho by radic, ktery po prvnim bajtu bere kazdy takt, prosel (bajt za takt).
 // ------------------------------------------------------------
 module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20, parameter integer TCKD = 3000,
-                        parameter integer TCKD_MIN = 3000, parameter RW_CA = 1'b1) (
+                        parameter integer TCKD_MIN = 3000, parameter RW_CA = 1'b1, parameter integer PSTALL = 2) (
     input wire ck, input wire ck_n, input wire cs_n, input wire rst_n, inout wire [7:0] dq, inout wire rwds
 );
     reg [7:0]  mem [0:65535];
@@ -691,7 +693,8 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
     reg        dq_oe = 1'b0, rw_o = 1'b0, rw_oe = 1'b0;
     assign dq   = dq_oe ? dq_o : 8'hzz;
     assign rwds = rw_oe ? rw_o : 1'bz;
-    integer    e = 0, k;
+    integer    e = 0, k, kb, kd;
+    reg        chg;
     reg [47:0] ca = 48'd0;
     reg        rd = 1'b0;
     reg [21:0] a = 22'd0;
@@ -709,10 +712,13 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
                 if (!rd) rw_oe <= #(TCKD) 1'b0;           // zapis: RWDS dal ridi radic (maska)
             end
         end else if (rd) begin
-            if (e >= 6 + RLAT - 1 && TCKD_MIN < TCKD) begin dq_o <= #(TCKD_MIN) 8'hxx; rw_o <= #(TCKD_MIN) 1'bx; end
-            if (e == 6 + RLAT - 1 && !dead) rw_o <= #(TCKD) 1'b0;  // bajt pred daty RWDS = 0 (konec priznaku latence)
-            if (e >= 6 + RLAT && !dead) begin
-                dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) (((e - 6 - RLAT) % 2) == 0);
+            kb  = e - 6 - RLAT;                               // index hrany dat (< 0 = latence)
+            kd  = (kb >= 64 + PSTALL) ? kb - PSTALL : kb;     // index bajtu po pauze
+            chg = !dead && (kb == -1 || (kb >= 0 && (kb < 64 || kb >= 64 + PSTALL)));
+            if (chg && TCKD_MIN < TCKD) begin dq_o <= #(TCKD_MIN) 8'hxx; rw_o <= #(TCKD_MIN) 1'bx; end
+            if (chg && kb == -1) rw_o <= #(TCKD) 1'b0;        // bajt pred daty RWDS = 0 (konec priznaku latence)
+            if (chg && kb >= 0) begin
+                dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) ((kd % 2) == 0);
                 a = a + 22'd1; nrd = nrd + 1;
             end
         end else if (e >= 6 + WLAT) begin
