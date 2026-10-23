@@ -21,7 +21,12 @@ create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}   [get_ports {c
 // po CS nahoru (RX vysledek, diagnostika) -> asynchronni skupiny.
 create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {spi_sck}]
 
-set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}]
+// FW 0x0503 (E5): predelicka pin_cnt3 je taktovana PRIMO vstupnimi piny. Cil 400 MHz (2,5 ns) = strop predelicky;
+// skutecny strop urci vstupni buffer LVCMOS33 (Gowin 150/300 MHz) -- overit generatorem. Pin -> retez TDC zustava
+// false_path pres sig_eff; c[3] -> sonda v clk pres 3 FF (asynchronni skupiny).
+create_clock -name pin_a -period 2.5 -waveform {0 1.25} [get_ports {ch_a}]
+create_clock -name pin_b -period 2.5 -waveform {0 1.25} [get_ports {ch_b}]
+set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}] -group [get_clocks {pin_a}] -group [get_clocks {pin_b}]
 
 // 🔴 2026-10-08: NEJISTOTA HODIN. Bez ni STA predpoklada idealni 100 MHz (nulovy jitter, presna strida).
 // Zmereno na desce: buildy regresniho bloku s nejtesnejsi rezervou 0,15 / 0,017 / -0,19 ns POCITALY CHYBNE
@@ -107,5 +112,7 @@ set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps
 report_timing -setup -max_paths 50 -max_common_paths 1
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdcb/u_chain/q_r*}]
+// FW 0x0503: predelicky u pinu kanalu -> poloha v mape rozlozeni
+report_timing -setup -max_paths 10 -max_common_paths 1 -from [get_regs {u_pca/c* u_pcb/c*}]
 // FW 0x0502: cesty logiky PCLK u pinu 1PPS -> poloha v mape rozlozeni (tools/floorplan_svg.py)
 report_timing -setup -max_paths 20 -max_common_paths 1 -from [get_regs {u_ipps/pcnt*}]

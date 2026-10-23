@@ -185,13 +185,26 @@ module top_v3 (
     wire [1:0]  bsrc;
     reg  [1:0]  bs1 = 2'b00, bs2 = 2'b00;
     always @(posedge clk_p0_100m) begin bs1 <= bsrc; bs2 <= bs1; end
-    wire        sig_b = (bs2[0] ? ch_a : ch_b) ^ bs2[1];
+    // FW 0x0503 (E5): predelicka kazdeho pinu (pin_cnt3 u IOB), log2 P z SET_CONFIG 0x07 (10 MHz -> 2 FF), plati od
+    // hranice segmentu. Zdroj B z pinu A (SET_CONFIG 0x09) bere pin A primo (sirka pulzu / zpozdeni jen pri P = 1).
+    wire [2:0]  pr_a_req, pr_b_req;
+    reg  [2:0]  pa1 = 3'd0, pa2 = 3'd0, pb1 = 3'd0, pb2 = 3'd0, pr_a = 3'd0, pr_b = 3'd0;
+    always @(posedge clk_p0_100m) begin
+        pa1 <= pr_a_req; pa2 <= pa1; pb1 <= pr_b_req; pb2 <= pb1;
+        if (seg_tick) begin pr_a <= pa2; pr_b <= pb2; end
+    end
+    wire        div_a, div_b;
+    wire [15:0] prb_a, prb_b;
+    pin_cnt3 u_pca (.pin(ch_a), .clk(clk_p0_100m), .sel(pr_a), .sig_out(div_a), .probe(prb_a));
+    pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
+    wire        sig_a = div_a;
+    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];
     // potvrzeni tabulky jen pro kanaly z masky (stridava kalibrace: druhy kanal muze prave cekat se starym histogramem)
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
 
     tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
-        .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
+        .clk(clk_p0_100m), .sig_raw(sig_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(1'b0), .cal_req(cal_req_a), .cal_abort(cal_abort),
         .lw_en(lw_en_a), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
@@ -249,14 +262,22 @@ module top_v3 (
     // FW 0x0501: po zmene zdroje kanalu B je B 2 hranice segmentu neplatny (rozpracovany segment meri jiny signal; X a
     // kontrolni pocitani se srovnaji az v dalsim segmentu)
     reg  [1:0] bs3 = 2'b00, bchg = 2'd0;
+    // FW 0x0503: po zmene predelicky 2 hranice segmentu neplatne (prepnuti vystupu muze dat hranu navic, meritko X)
+    reg  [2:0] pra_d = 3'd0, prb_d = 3'd0;
+    reg  [1:0] pchg_a = 2'd0, pchg_b = 2'd0;
+    always @(posedge clk_p0_100m) begin
+        pra_d <= pr_a; prb_d <= pr_b;
+        if (pra_d != pr_a) pchg_a <= 2'd2; else if (seg_tick && pchg_a != 2'd0) pchg_a <= pchg_a - 2'd1;
+        if (prb_d != pr_b) pchg_b <= 2'd2; else if (seg_tick && pchg_b != 2'd0) pchg_b <= pchg_b - 2'd1;
+    end
     always @(posedge clk_p0_100m) begin
         bs3 <= bs2;
         if (bs3 != bs2)                   bchg <= 2'd2;
         else if (seg_tick && bchg != 2'd0) bchg <= bchg - 2'd1;
     end
     always @(posedge clk_p0_100m) begin
-        hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done;
-        hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0);
+        hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done | (pchg_a != 2'd0);
+        hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0) | (pchg_b != 2'd0);
     end
     wire mask_cs_en, led_hb_en;
     reg  [1:0] csa_s = 2'b00, mk_s = 2'b00;
@@ -272,18 +293,19 @@ module top_v3 (
     wire [31:0] seg_idx;
     wire [23:0] a_n, b_n;  wire [39:0] a_x0, b_x0;  wire [47:0] a_t0, b_t0, a_sx, b_sx;  wire [55:0] a_st, b_st;
     wire [7:0]  a_fl, b_fl, a_bub, b_bub;  wire [3:0] a_ovl, b_ovl;
+    wire [2:0]  a_pr, b_pr;
     seg_chan3 u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(ch_a), .freeze(freeze), .snap(snap), .clear(clear),
-        .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl));
+        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_a),
+        .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
     seg_chan3 u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear),
-        .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl));
+        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_b),
+        .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 
     wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;
     v3_ring #(.RAW(RAW), .SEG25(SEG25), .SEG10(SEG10)) u_ring (.clk(clk_p0_100m), .seg10_req(seg10_req), .seg10_act(seg10_act),
         .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
         .a_n(a_n), .b_n(b_n), .a_x0(a_x0), .b_x0(b_x0), .a_t0(a_t0), .b_t0(b_t0), .a_sx(a_sx), .b_sx(b_sx),
-        .a_st(a_st), .b_st(b_st), .a_fl(a_fl), .b_fl(b_fl),
+        .a_st(a_st), .b_st(b_st), .a_fl(a_fl), .b_fl(b_fl), .a_p(a_pr), .b_p(b_pr),
         .rclk(clk_ref_10m), .raddr(ring_raddr), .rdata(ring_rdata));
 
     // diagnostika posledniho segmentu do hlavicky (zachyceno pri nulovani, cte se zive)
@@ -359,7 +381,8 @@ module top_v3 (
         .raw_k(raw_k), .raw_q(raw_q), .raw_n(raw_n),
         .cal_tgl(cal_tgl), .cal_mask(cal_mask), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .seg10(seg10_req), .raw_tgl(raw_tgl), .raw_ch(raw_ch),
-        .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc));
+        .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc),
+        .pr_a_req(pr_a_req), .pr_b_req(pr_b_req), .pr_a_act(pr_a), .pr_b_act(pr_b), .probe_a(prb_a), .probe_b(prb_b));
 
     // ---- reference (ref_guard z vnitrniho oscilatoru, z top.v) ----
     wire osc_clk;

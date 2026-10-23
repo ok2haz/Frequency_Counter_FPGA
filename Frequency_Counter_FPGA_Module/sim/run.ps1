@@ -121,7 +121,8 @@ $tests = @(
     #            banky; rekalibrace jen A (B meri dal, A meri se starou bankou) (~6 min)
     #   topv3pw  FW 0x0501 zdroj kanalu B (SET_CONFIG 0x09): sirka pulzu (B = pin A invertovany), zpozdeni A/B
     #            (B = pin A), navrat na pin B; A 5 MHz, pulz 37,3 ns (~3 min). RAW_CAPTURE (512 znacek) je v topv3.
-    #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (20 mutaci, paralelne)
+    #   topv3presc FW 0x0503 predelicka: B ~143,3 MHz, P_B = 8 a 16 (SET_CONFIG 0x07), PRESC, PROBE, FLAGS 7:5 (~4 min)
+    #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (23 mutaci, paralelne)
     @{ name = "topv3"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=16.100161e6") }
     @{ name = "topv3ovf"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
@@ -130,6 +131,8 @@ $tests = @(
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=2"); stmcal = $true }
     @{ name = "topv3pw"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=3", "-DTB_FA=5.0e6", "-DTB_WA=37300.0") }
+    @{ name = "topv3presc"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=4", "-DTB_FB=143.300173e6") }
     # další testy přidávej sem, jak přibývají moduly
 )
 

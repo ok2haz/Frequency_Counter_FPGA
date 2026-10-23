@@ -42,12 +42,14 @@ module seg_chan3 (
     input  wire        freeze,      // v3_ring: konec segmentu, soucty se ctou -> znacky se nepricitaji
     input  wire        snap,        // v3_ring: 1 takt na zacatku freeze (kontrolni porovnani poctu hran)
     input  wire        clear,       // v3_ring: 1 takt, soucty prectene -> novy segment
+    input  wire [2:0]  presc,       // FW 0x0503: log2 P predelicky (meni se jen na hranici segmentu)
     output wire [23:0] o_n,
     output wire [39:0] o_x0,
     output wire [47:0] o_t0,
     output wire [47:0] o_sx,
     output wire [55:0] o_st,
-    output wire [7:0]  o_flags,     // R_*: bit0 neplatny, bit2 bublina, bit3 znacky pri CS, bit4 kontrolni pocitani
+    output wire [7:0]  o_flags,     // R_*: bit0 neplatny, bit1 zmena P, bit2 bublina, bit3 znacky pri CS, bit4 kontrolni pocitani
+    output wire [2:0]  o_presc,     // FW 0x0503: log2 P segmentu (zaznam: bajt CH bity 6:4)
     output reg  [7:0]  o_bub,       // pocet znacek s bublinou (saturuje)
     output reg  [3:0]  o_ovl        // pocet znacek pri aktivnim CS (saturuje)
 );
@@ -176,7 +178,13 @@ module seg_chan3 (
     assign o_t0    = first ? 48'd0 : t0;
     assign o_sx    = {sx_hi, sx_lo};
     assign o_st    = {st_hi, st_lo};
-    assign o_flags = {3'd0, ccd_bad & ~inv, (o_ovl != 4'd0), (o_bub != 8'd0), 1'b0, inv | f_err};
+    // FW 0x0503: log2 P segmentu (prevzato v clear = zacatek segmentu; P se meni v seg_tick pred nim), FLAGS bit1 =
+    // P se na zacatku tohoto segmentu zmenilo (segment je stejne neplatny: hold 2 hranice v top_v3)
+    reg [2:0] p_seg = 3'd0;
+    reg       p_chg = 1'b0;
+    always @(posedge clk) if (clear) begin p_chg <= (presc != p_seg); p_seg <= presc; end
+    assign o_presc = p_seg;
+    assign o_flags = {3'd0, ccd_bad & ~inv, (o_ovl != 4'd0), (o_bub != 8'd0), p_chg, inv | f_err};
 endmodule
 
 // ------------------------------------------------------------
@@ -207,6 +215,7 @@ module v3_ring #(
     input  wire [47:0] a_sx, b_sx,
     input  wire [55:0] a_st, b_st,
     input  wire [7:0]  a_fl, b_fl,
+    input  wire [2:0]  a_p, b_p,         // FW 0x0503: log2 P segmentu -> bajt CH bity 6:4
     // cteni kruhu (domena aplikace)
     input  wire        rclk,
     input  wire [RAW+2:0] raddr,     // {zaznam, slovo}
@@ -243,10 +252,10 @@ module v3_ring #(
     // slovo k zaznamu (LE): 0 {FLAGS, CH, SEG_IDX}, 1 {X0[7:0], N}, 2 X0[39:8], 3 T0[31:0], 4 {SX[15:0], T0[47:32]},
     //                       5 SX[47:16], 6 ST[31:0], 7 {0, ST[55:32]}
     function [31:0] wsel;
-        input [2:0] w; input ch; input [15:0] si;
+        input [2:0] w; input [7:0] chb; input [15:0] si;
         input [23:0] n; input [39:0] x0; input [47:0] t0; input [47:0] sx; input [55:0] st; input [7:0] fl;
         case (w)
-            3'd0: wsel = {fl, 7'd0, ch, si};
+            3'd0: wsel = {fl, chb, si};
             3'd1: wsel = {x0[7:0], n};
             3'd2: wsel = x0[39:8];
             3'd3: wsel = t0[31:0];
@@ -276,8 +285,8 @@ module v3_ring #(
         end else if (wr) begin
             if (k != 5'd16) begin
                 // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wa_a <= wsel(k[2:0], 1'b0, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-                wa_b <= wsel(k[2:0], 1'b1, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+                wa_a <= wsel(k[2:0], {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+                wa_b <= wsel(k[2:0], {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
                 k1   <= k;
                 v_s1 <= 1'b1;
                 k    <= k + 5'd1;
@@ -348,6 +357,44 @@ module pps_cap3 (
             end else begin
                 pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
             end
+        end
+    end
+endmodule
+
+// ------------------------------------------------------------
+// pin_cnt3 (FW 0x0503, etapa E5): predelicka vstupu P = 2^sel (sel 0..4) pro kmitocty nad prime pocitani (~40 MHz).
+//   4b citac taktovany PRIMO pinem (jediny stupen na plnem kmitoctu = c[0]); do retezu TDC jde pin (sel 0) nebo c[sel-1].
+//   Cas znacky se nemeni (pridany jitter jednoho KO ~ jednotky ps, posun konstantni), pocet period = P x pocet delenych
+//   hran. sel se meni jen na hranici segmentu (top_v3) a segmenty kolem zmeny jsou neplatne (hold).
+//   Sonda: c[3] (/16) se pocita v domene clk VZDY (i pri sel 0) za okno 1 ms -> STM pozna kmitocet az do ~800 MHz
+//   (f/16 < 50 MHz synchronizatoru) a P voli sam (fpga_v3_range_select).
+// Rozlozeni: c[3:0] musi lezet u IOB pinu (25 = IOB8A, 27 = IOB11A) a hlavy retezu TDC (R26/R27 C2): kratke lokalni
+//   vedeni, hodiny pinu NE na globalni sit (PRIMARY je ve v3 skoro plna) -- OVERIT po P&R (create_clock pin_a/pin_b
+//   v timing_v3.sdc, mapa floorplan_svg.py). Cesta pin/c -> retez je asynchronni (false_path pres u_tdc?/sig_eff).
+// ------------------------------------------------------------
+module pin_cnt3 #(
+    parameter PROBE_W = 100000                   // okno sondy [takty clk] = 1 ms pri 100 MHz
+)(
+    input  wire        pin,
+    input  wire        clk,
+    input  wire [2:0]  sel,
+    output wire        sig_out,
+    output reg  [15:0] probe                     // hrany /16 za posledni okno (saturuje)
+);
+    reg [3:0] c = 4'd0;
+    always @(posedge pin) c <= c + 4'd1;
+    assign sig_out = (sel == 3'd0) ? pin : (sel == 3'd1) ? c[0] : (sel == 3'd2) ? c[1] : (sel == 3'd3) ? c[2] : c[3];
+    reg [2:0]  s  = 3'b000;
+    reg [16:0] wc = 17'd0;
+    reg [15:0] pc = 16'd0;
+    initial probe = 16'd0;
+    always @(posedge clk) begin
+        s <= {s[1:0], c[3]};
+        if (wc == PROBE_W - 1) begin
+            wc <= 17'd0; probe <= pc; pc <= {15'd0, s[1] & ~s[2]};
+        end else begin
+            wc <= wc + 17'd1;
+            if (s[1] & ~s[2] && pc != 16'hFFFF) pc <= pc + 16'd1;
         end
     end
 endmodule

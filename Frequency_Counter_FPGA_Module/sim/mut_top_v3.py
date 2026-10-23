@@ -16,7 +16,8 @@ sim, src = os.path.join(root, 'sim'), os.path.join(root, 'src')
 
 TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=15', '-DSIM_BREAK_IDX=268', '-DSIM_TOP']
 MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
-        3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0']}
+        3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
+        4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6']}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -46,7 +47,11 @@ M = [
     ('1PPS: bez t_rel', 'v3_core.v', "f_ts  <= {p_ts[36:3] + t_rel, p_ts[2:0], 11'd0};",
      "f_ts  <= {p_ts[36:3], p_ts[2:0], 11'd0};", 0),
     ('1PPS: jemny cas se nepouzije', 'v3_core.v', "pts_l <= f_buf; pfl_l <= 8'd3;", "pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd3;", 0),
-    ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : ch_b) ^ bs2[1];", "    wire        sig_b = ch_b;", 3),
+    # E5 (FW 0x0503): predelicka -- zaznam bez log2 P (CH 6:4), sonda /8, SET_CONFIG 0x07 prohozeny kanal
+    ('predelicka: zaznam bez P', 'v3_core.v', "    assign o_presc = p_seg;", "    assign o_presc = 3'd0;", 4),
+    ('predelicka: sonda /8', 'v3_core.v', "        s <= {s[1:0], c[3]};", "        s <= {s[1:0], c[2]};", 4),
+    ('SET_CONFIG 0x07: prohozeny kanal', 'app_v3.v', "8'h07: if (rx_p1[0]) pr_b_req", "8'h07: if (!rx_p1[0]) pr_b_req", 4),
+    ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']

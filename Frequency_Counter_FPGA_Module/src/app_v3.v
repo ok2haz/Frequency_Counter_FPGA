@@ -74,7 +74,10 @@ module app_v3 #(
     output reg         lw_ch,
     output reg         lw_commit_tgl,
     output reg  [1:0]  lw_commit_mask,        // kanaly, ktere potvrzeni aktivuje (kvazistaticke pred prepnutim lw_commit_tgl)
-    output reg  [1:0]  bsrc                   // FW 0x0501, SET_CONFIG 0x09: bit0 = kanal B z pinu A, bit1 = B invertovany
+    output reg  [1:0]  bsrc,                  // FW 0x0501, SET_CONFIG 0x09: bit0 = kanal B z pinu A, bit1 = B invertovany
+    output reg  [2:0]  pr_a_req, pr_b_req,    // FW 0x0503, SET_CONFIG 0x07: log2 P predelicky (plati od hranice segmentu)
+    input  wire [2:0]  pr_a_act, pr_b_act,    // platna P (100 MHz, kvazistaticke)
+    input  wire [15:0] probe_a, probe_b       // sonda /16 za 1 ms (100 MHz, meni se po 1 ms; STM bere shodu dvou ramcu)
 );
     localparam [7:0]  MAGIC = 8'hA5, VER = 8'h03;
     localparam [7:0]  T_SETCFG = 8'h01, T_ACK = 8'h06, T_START = 8'h08, T_STOP = 8'h09, T_LUTW = 8'h0A, T_RAW = 8'h0B;
@@ -82,20 +85,24 @@ module app_v3 #(
     // FW 0x0500 = prvni bitstream protokolu v3 (top_v3.v). Rada 0x04xx je v2 (top.v), cisla se nesdili.
     // FW 0x0501: SET_CONFIG 0x09 zdroj kanalu B (jednorazove deje: sirka pulzu, kalibrace zpozdeni A/B), CAPS bit20.
     // FW 0x0502: 1PPS s jemnym casem pres IDES8 + rPLL (CAPS bit17): PTS krok 1,25 ns, PFLAGS bit1, PPS_STATUS, d.
-    localparam [15:0] FW_VERSION = 16'h0502;
+    // FW 0x0503: predelicka vstupu pin_cnt3 (CAPS bit18): SET_CONFIG 0x07, PRESC A/B, PROBE A/B, FLAGS zaznamu 7:5.
+    localparam [15:0] FW_VERSION = 16'h0503;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (predelicka pin_cnt) = 0 (krok 8).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
-    localparam [31:0] CAPS = 32'h001B_7C32;
+    localparam [31:0] CAPS = 32'h001F_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
+    // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
+    reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
+    always @(posedge clk) begin pra_1 <= pr_a_act; pra_s <= pra_1; prb_1 <= pr_b_act; prb_s <= prb_1; end
 
     initial begin
         rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+3){1'b0}};
         hist_k = 10'd0; raw_k = 9'd0;
         cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
         raw_tgl = 1'b0; raw_ch = 1'b0;
-        lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00;
+        lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00; pr_a_req = 3'd0; pr_b_req = 3'd0;
     end
 
     // ---- casovani ramce, kruh ----
@@ -199,6 +206,7 @@ module app_v3 #(
             8'd56: hb = rx_last[7:0];  8'd57: hb = rx_last[15:8];  8'd58: hb = rx_last[23:16];  8'd59: hb = rx_last[31:24];
             8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
             8'd62: hb = lut_sum[7:0];  8'd63: hb = lut_sum[15:8];
+            8'd64: hb = {(pr_a_req != pra_s), 4'd0, pra_s};   8'd65: hb = {(pr_b_req != prb_s), 4'd0, prb_s};
             8'd66: hb = {3'd0, bsrc[1], bsrc[0], ref_sel, led_hb_en, mask_cs_en};
             8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];  8'd70: hb = pps_seq[23:16];  8'd71: hb = pps_seq[31:24];
             8'd72: hb = pts_l[7:0];    8'd73: hb = pts_l[15:8];    8'd74: hb = pts_l[23:16];
@@ -210,6 +218,7 @@ module app_v3 #(
             8'd94: hb = pfl_p;         8'd95: hb = pps_d_p;
             8'd100: hb = pps_last[7:0];  8'd101: hb = pps_last[15:8];  8'd102: hb = pps_last[23:16];  8'd103: hb = pps_last[31:24];
             8'd104: hb = pps_prev[7:0];  8'd105: hb = pps_prev[15:8];  8'd106: hb = pps_prev[23:16];  8'd107: hb = pps_prev[31:24];
+            8'd108: hb = probe_a[7:0];  8'd109: hb = probe_a[15:8];  8'd110: hb = probe_b[7:0];  8'd111: hb = probe_b[15:8];
             8'd112: hb = bub_a;  8'd113: hb = bub_b;  8'd114: hb = {4'd0, ovl_a};  8'd115: hb = {4'd0, ovl_b};
             8'd116: hb = a_page ? a_kind : 8'd0;
             8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
@@ -326,6 +335,8 @@ module app_v3 #(
                                 else if (rx_p1 == 8'd25) seg10 <= 1'b0;
                             end
                             8'h09: bsrc <= rx_p1[1:0];                                  // FW 0x0501: zdroj kanalu B
+                            8'h07: if (rx_p1[0]) pr_b_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];   // FW 0x0503: predelicka
+                                   else          pr_a_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];
                             default: ;                                                  // 0x01, 0x03 (v3 bez vyznamu), 0x07
                         endcase
                         T_LUTW: begin

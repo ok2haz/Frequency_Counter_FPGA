@@ -51,7 +51,9 @@ module tb_top_v3;
     real FA, FB, HA, HB, PA, PB, WA;
     reg ch_a = 0, ch_b = 0, pps = 0;
     initial begin
-        HA = 0.5e12 / `TB_FA; HB = 0.5e12 / `TB_FB;
+        // Icarus zaokrouhli kazde #(real) na presnost 1 fs -> pravda testu musi pocitat se ZAOKROUHLENOU pulperiodou
+        // (bez toho drift az ~0,7 fs na periodu: pri 143 MHz stovky ps za tisice segmentu; L-0205)
+        HA = $floor(0.5e12 / `TB_FA * 1000.0 + 0.5) / 1000.0; HB = $floor(0.5e12 / `TB_FB * 1000.0 + 0.5) / 1000.0;
         PA = 2.0 * HA; PB = 2.0 * HB;                 // [ps]; skutecna perioda = 2 x zaokrouhlena pulperioda (fs)
         WA = (`TB_WA > 0.0) ? `TB_WA : HA;           // sirka pulzu kanalu A [ps] (vychozi strida 50 %)
     end
@@ -94,6 +96,9 @@ module tb_top_v3;
     // ---- "STM": prijem ramce ----
     reg [31:0] nxt = 0, hseq;
     integer nmask = 0, ninv_a = 0, novf = 0;
+    // FW 0x0503: platne zaznamy podle kanalu a log2 P (FLAGS 7:5), neplatne B, ocekavana sonda
+    integer nvp [0:1][0:7]; integer ninv_b = 0, ki, kj; real pr_e; reg [2:0] r_pl;
+    initial for (ki = 0; ki < 2; ki = ki + 1) for (kj = 0; kj < 8; kj = kj + 1) nvp[ki][kj] = 0;
     // pokryti: znacka prave v taktu clear (konec freeze = zacatek novych souctu, L-0198). Kanal B (run.ps1 topv3,
     // -DTB_FB=16.100161e6) nema na segment cely pocet period -> faze jeho znacek vuci hranici segmentu se posouva
     // ~0,25 taktu za segment.
@@ -132,7 +137,8 @@ module tb_top_v3;
             end
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
-            chk(rd(20, 2) == 16'h0502, "FW_VERSION 0x0502");
+            chk(rd(20, 2) == 16'h0503, "FW_VERSION 0x0503");
+            chk(caps[18], "CAPS bit18 (predelicka pin_cnt3)");
             chk(caps[17], "CAPS bit17 (1PPS pres IDES8)");
             caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");
             chk(mi[22] == 100, "CLK_MHZ");
@@ -151,7 +157,7 @@ module tb_top_v3;
                     if (ord < nxt) begin dup = dup + 1; end
                     else if (ord == nxt) begin
                         nxt = nxt + 1; nrec_tot = nrec_tot + 1;
-                        r_seg = rd(off, 2); r_ch = mi[off + 2]; r_fl = mi[off + 3]; r_n = rd(off + 4, 3);
+                        r_seg = rd(off, 2); r_ch = mi[off + 2] & 8'h0F; r_pl = mi[off + 2][6:4]; r_fl = mi[off + 3]; r_n = rd(off + 4, 3);
                         r_x0 = rd(off + 7, 5); r_t0 = rd(off + 12, 6); r_sx = rd(off + 18, 6); r_st = rd(off + 24, 7);
                         chk(r_seg == ord[16:1], "SEG_IDX = poradi/2");
                         chk(r_ch == ord[0], "CH = poradi & 1");
@@ -163,7 +169,10 @@ module tb_top_v3;
 `ifdef TB_DBG
                             $display("DBG rec %0d ch %0d n %0d x0 %0d t0 %0d sx %0d st %0d fl %02h", ord, r_ch, r_n, r_x0, r_t0, r_sx, r_st, r_fl);
 `endif
-                            P  = (r_ch && !bfa) ? PB : PA; Fc = 1.0e12 / P;
+                            // FW 0x0503: X pocita delene hrany -> perioda zaznamu = perioda pinu x 2^p (CH bity 6:4)
+                            P  = ((r_ch && !bfa) ? PB : PA) * real'(1 << r_pl); Fc = 1.0e12 / P;
+                            nvp[r_ch & 1][r_pl] = nvp[r_ch & 1][r_pl] + 1;
+                            chk(!r_fl[1], "platny zaznam bez FLAGS bit1 (zmena P)");
                             // sirka pulzu / zpozdeni: prvni hrana B proti prvni hrane A teze hranice segmentu (mod perioda)
                             if (r_ch == 0) begin haveA = 1; ordA = ord; tA0 = r_t0; end
                             else if (bfa && haveA && ordA == ord - 1) begin
@@ -222,6 +231,7 @@ module tb_top_v3;
                             have[r_ch] = 0; t0have[r_ch] = 0;
                             if (r_ch == 0) haveA = 0;
                             if (r_ch == 0 && r_fl[0]) ninv_a = ninv_a + 1;
+                            if (r_ch == 1 && r_fl[0]) ninv_b = ninv_b + 1;
                         end
                     end
                 end
@@ -433,6 +443,29 @@ module tb_top_v3;
             for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             chk(nvalid_b > e0 + 4, "zpet na pin B: platne zaznamy B");
             chk(mi[66][4:3] == 2'b00, "CFG echo: B z pinu B");
+        end else if (`TB_MODE == 4) begin
+            // ---- FW 0x0503 predelicka: B ~143,3 MHz (primo pres TDC nejde), P_B = 8 a pak 16; sonda, PRESC, FLAGS 7:5 ----
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS
+            build(8'h01, 8'h07, 8'h01, 8'd3, 0); xfer(1024);           // B: log2 P = 3
+            #(64'd1_000_000_000);                                        // 4 segmenty: prepnuti + 2 neplatne
+            build_ack(0); xfer(1024); nxt = rd(32, 4) + 1; have[1] = 0; t0have[1] = 0;
+            chk(mi[64] == 8'd0 && mi[65] == 8'd3, "PRESC A 0, B 3 (plati, nic neceka)");
+            pr_e = `TB_FB / 16.0e3;
+            chk(real'(rd(110, 2)) > pr_e - 2.0 && real'(rd(110, 2)) < pr_e + 2.0, "PROBE B = f/16 za 1 ms");
+            pr_e = `TB_FA / 16.0e3;
+            chk(real'(rd(108, 2)) > pr_e - 2.0 && real'(rd(108, 2)) < pr_e + 2.0, "PROBE A = f/16 za 1 ms");
+            $display("predelicka: PROBE A %0d B %0d (cekano %.1f / %.1f), PRESC %02h %02h", rd(108, 2), rd(110, 2),
+                     `TB_FA / 16.0e3, `TB_FB / 16.0e3, mi[64], mi[65]);
+            for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvp[1][3] >= 6, "B P = 8: platne zaznamy");
+            build(8'h01, 8'h07, 8'h01, 8'd4, 0); xfer(1024);           // B: log2 P = 4
+            e0 = ninv_b;
+            for (f = 0; f < 8; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(mi[65] == 8'd4, "PRESC B 4 po hranici segmentu");
+            chk(nvp[1][4] >= 4, "B P = 16: platne zaznamy");
+            chk(ninv_b >= e0 + 2, "B: neplatne segmenty kolem prepnuti P");
+            chk(nvp[0][0] >= 10 && nvp[0][3] == 0 && nvp[0][4] == 0, "A: P = 1 po celou dobu");
+            $display("predelicka: zaznamy B P=8 %0d, P=16 %0d, neplatne B %0d, A P=1 %0d", nvp[1][3], nvp[1][4], ninv_b, nvp[0][0]);
         end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
             build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
