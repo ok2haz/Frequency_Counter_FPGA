@@ -283,7 +283,9 @@ intervalem. Jedna volná pozice sníží vazbu ~4×.
 
 ## FPGA strana protokolu (specifikace, co musí FPGA implementovat)
 
-> 🔴 **Protokol v3 (rámec 1024 B, SCK 25 MHz) = samostatná specifikace `PROTOKOL_V3.md` (2026-10-22, NEIMPLEMENTOVÁNO).**
+> 🔴 **Protokol v3 (rámec 1024 B, SCK 25 MHz) = samostatná specifikace `PROTOKOL_V3.md`** – od 2026-10-22 IMPLEMENTOVÁNO
+> a ověřeno simulací: FPGA FW 0x0500 (`top_v3`, projekt `v3/Counter_FPGA_v3.gprj`), STM v0.35.0 (ovladač zjistí verzi
+> FPGA sám, tento popis v2 dál platí pro FW 0x04xx); popis implementace `PROTOKOL_V3.md` kap. 10. ⬜ P&R a deska.
 > Tento oddíl popisuje to, co běží dnes (v1 → v2, FW 0x0427).
 
 > 🔴 **Tohle je protokol v1 = dnešní deska s děličkou `MC100EP016A` (÷4 na pin28, ÷16 na pin27).**

@@ -5071,6 +5071,54 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** fix(firmware) v0.34.1
 - **Stav:** aktivni, prelozeno na macOS (GCC 14.3, 0 varovani, audit 96/0/2), modul do driveru nezapojen
 
+### L-0194 - Simulace celeho topu bezely bez jemneho casu TDC (zaporny posun v AUTOCAL)
+
+- **Datum:** 2026-10-22
+- **Oblast:** FPGA simulace (`src/tdc.v` cesta AUTOCAL, jen simulace), testbenche celeho topu (`tb_top_regr`, `tb_top_chan`, `tb_top_selfchk`, `tb_close2`, `tb_n1`)
+- **Symptom:** prvni simulace v3 merila kanal A s 10 MHz x (1 + 813 ppb) PRESNE 10 MHz (chyba = 813 ppb), znacky mely jemnou cast vzdy 0 (`lut_q3 = 0x4000`).
+- **Pricina:** `xsh = xv >> (CAL_LOG2 - 13)`; pri SIM_TOP je CAL_LOG2 = 12 -> posun -1. Verilog bere pravy operand posunu jako cislo BEZ znamenka -> obrovsky posun -> 0 -> tabulka bez jemneho casu. Testy v2 to neodhalily: kontrolovaly regresi / kmitocet na 1e-6, kam se hrube znacky s fazovym posunem vejdou.
+- **Oprava:** `xsh = (CAL_LOG2 >= 13) ? (xv >> (CAL_LOG2 - 13)) : (xv << (13 - CAL_LOG2))`. Syntezy se netyka (AUTOCAL = 0, tabulku pocita STM). Regrese v2 po oprave 29/29 PASS, `topregr` ted dvoubodove 0,00 ppm misto -0,016.
+- **Pravidlo:** (a) posun o (parametr - konstanta) vzdy chranit podminkou nebo `$clog2`-stylem, nikdy nespolehat na znamenko; (b) test casovani musi umet rozlisit HRUBY cas od jemneho: aspon jedna kontrola s mezi pod 1 takt / delka okna (zde 10 ns / 2,5 ms = 4e-6) nebo kontrola znacky proti skutecnemu casu hrany.
+- **Detekce:** `sim/tb_top_v3.sv` kontrola „T0 = cas hrany X0" (mez 300 ps).
+- **Commit:** fix(fpga) tdc.v AUTOCAL
+- **Stav:** aktivni
+
+### L-0195 - Stridava kalibrace: potvrzeni tabulky musi nest masku kanalu
+
+- **Datum:** 2026-10-22
+- **Oblast:** FPGA v3 (`top_v3.v`, `app_v3.v`, SET_CONFIG 0x06), STM `tdccal_run_v3`
+- **Symptom:** `tb_top_v3` rezim 2: po potvrzeni tabulky kanalu A se platnym stal i kanal B s NOMINALNI tabulkou (cekal na svou, test pak vyprsel).
+- **Pricina:** v2 kalibruje oba kanaly naraz a potvrzeni (`lw_commit`) jde do obou. Ve v3 se sber stridá -- kdyz STM zapisuje A, B uz muze cekat se svym histogramem; spolecne potvrzeni ho aktivuje bez tabulky.
+- **Oprava:** SET_CONFIG 0x06 = 1 nese v p2 masku kanalu (bit0 A, bit1 B, 0 = oba jako v2); FPGA potvrzeni maskuje, STM posila jen kanal, ktery zapsal.
+- **Pravidlo:** kdyz se sdileny prikaz (dosud „pro vsechny") zacne pouzivat po castech, musi nest adresata; zkontrolovat vsechny prikazy, ktere v puvodnim navrhu predpokladaly soucasny stav vsech kanalu.
+- **Detekce:** `tb_top_v3` rezim 2: „potvrzeni A nepotvrdi cekajici B"; mutace „potvrzeni tabulky bez masky".
+- **Commit:** feat(fpga) bitstream v3
+- **Stav:** aktivni
+
+### L-0196 - LUT_SUM nepozna chybny bit kanalu u cele tabulky
+
+- **Datum:** 2026-10-22
+- **Oblast:** kontrola zapisu tabulky TDC (v2 i v3: `lut_sum`, `fpga_tdccal_chk`)
+- **Symptom:** testbench posilal polozky kanalu B s bitem kanalu 0 (vlastni chyba sirky vyrazu v SV); FPGA zapisovalo do A (uz neceka -> zahodilo) a LUT_CNT i LUT_SUM presto SEDELY.
+- **Pricina:** clen souctu je `{kanal, adresa, 5'b0} ^ neg` -- bit kanalu je bit 14, chybny bit zmeni soucet o 2^14 a 512 polozek x 2^14 = 2^23 = 0 (mod 2^16). Kontrolni soucet tedy chybu kanalu u tabulky s poctem polozek delitelnym 4 principialne nevidi.
+- **Oprava:** v3 hlavicka nese LUT_CNT_B (polozky s bitem B, bajty 122..123), STM ho overuje (`h.lut_cnt_b == (ch ? nc : 0)`). v2 zustava (zapisuje oba kanaly, vzorec je soucasti FW 0x0427).
+- **Pravidlo:** u kontrolniho souctu overit, ze kazdy bit vstupu meni vysledek i pri opakovani N-krat (soucet mod 2^k: bit b se „vynuluje" po 2^(k-b) opakovanich); pole, ktere je u vsech polozek stejne (kanal), kontrolovat zvlast poctem.
+- **Detekce:** `tb_top_v3` rezim 2 „LUT_CNT_B (bit kanalu polozek)".
+- **Commit:** feat(fpga) bitstream v3 / feat(firmware) v0.35.0
+- **Stav:** aktivni
+
+### L-0197 - Meze testu podle fyziky, ne pevne cislo; posun indexu pozna jen kontrola proti pravde
+
+- **Datum:** 2026-10-22
+- **Oblast:** `sim/tb_top_v3.sv` (obecne testy mereni casu)
+- **Symptom:** (1) pevna mez 1e-6 hlasila „chybny kmitocet" u segmentu, ktere maskovani pri CS zkratilo na par znacek tesne u sebe (odstup 1,8 us -> 45 ps sum = 2,5e-5) -- chyba nebyla v RTL; (2) dvoubodovy kmitocet ani SX neodhali posun indexu i znacky o stejnou hranu.
+- **Pricina:** chyba odhadu kmitoctu je sigma_znacky / odstup (2pt) a sigma / rozpeti znacek (sklon), ne konstanta; konzistentni posun obou souradnic se v rozdilech vyrusi.
+- **Oprava:** meze `2e-7 + 300 ps / dT` a `2e-6 + 120 ps / rozpeti`; nova kontrola T0 zaznamu proti skutecnemu casu hrany X0 z generatoru (mez 300 ps). Pred zavrhnutim RTL overeno ladicim porovnanim vsech 25 409 znacek s pravdou (max 122 ps).
+- **Pravidlo:** (a) mez testu odvodit z modelu sumu a delky intervalu; (b) u kazde dvojice (index, cas) mit aspon jednu kontrolu absolutni hodnoty proti pravde, ne jen rozdilu; (c) pri podezreni na RTL nejdriv porovnat jednotlive udalosti s pravdou (ladici vypis), az pak menit navrh.
+- **Detekce:** mutace „FIFO: index o hranu vedle" (`sim/mut_top_v3.py`).
+- **Commit:** feat(fpga) bitstream v3
+- **Stav:** aktivni
+
 ---
 
 ## Archiv (neplatné lekce)
