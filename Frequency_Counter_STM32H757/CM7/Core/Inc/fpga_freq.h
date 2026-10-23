@@ -643,8 +643,9 @@ typedef struct {
     uint8_t  tdc[2], cal_wait;
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
-/** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK zpracovany az po
- *  slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). on = 0 vypne. */
+/** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK
+ *  zpracovany az po slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). ph_b_s > 0 = prvni hrana B
+ *  o tolik po prvni hrane A (jednorazove deje). on = 0 vypne. */
 void fpga_sim_v3_set(int on, double hz_a, double hz_b, double ph_b_s);
 int  fpga_sim_v3_active(void);
 

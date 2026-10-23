@@ -5119,6 +5119,54 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** feat(fpga) bitstream v3
 - **Stav:** aktivni
 
+### L-0198 - Cas dvou kanalu na jedne ose rozbalovat spolecne, ne po kanalech
+
+- **Datum:** 2026-10-23
+- **Oblast:** `fpga_v3_ev_from_rec` (jednorazove deje, protokol v3)
+- **Symptom:** selftest krok 11 (interval A->B pres hranici segmentu, B az po preteceni T0 2^48) FAIL: interval o ~2^48 jednotek (171,8 s) vedle.
+- **Pricina:** rozbaleni T0 meli oba kanaly zvlast; prvni zaznam kazdeho kanalu zacal od surove hodnoty, takze kanal, jehoz prvni zaznam prisel az po preteceni, mel posun o nasobek 2^48 proti druhemu. A, B i 1PPS jsou ale jedna osa FPGA.
+- **Oprava:** jeden stav rozbaleni pro oba kanaly: rozdil proti posledni znacce libovolneho kanalu se znamenkem (48 b; B muze byt drive nez A) a pocet preteceni z uplynuleho casu STM (`fpga_v3.c` `fpga_v3_ev_from_rec`); index X zustal po kanalech.
+- **Pravidlo:** hodnoty na spolecne ose (cas A, B, 1PPS) rozbalovat jednim stavem a rozdily brat se znamenkem; vlastni stav po kanalech jen u nezavislych citacu (index hrany).
+- **Detekce:** selftest krok 11 (`fpga v3 test`), mutace „deje: rozbaleni bez casu STM" (`tests/host/mut_fpga_v3.py`).
+- **Commit:** `b2dd741`
+- **Stav:** aktivni
+
+### L-0199 - Rozptyl ze souctu sum(v^2) - n*m^2 pri velke stredni hodnote lze
+
+- **Datum:** 2026-10-23
+- **Oblast:** `fpga_v3_stat_*` (statistika intervalu)
+- **Symptom:** host test 2 Hz, B = A + 5 ms: sigma 95 ps misto ~45 ps, prestoze jednotlive odchylky 60 intervalu byly v +-113 ps (ladici vypis).
+- **Pricina:** intervaly 5e9 ps -> v^2 = 2,5e19, soucet 1,5e21; double ma na tom miste krok ~3e5 ps^2 a rozptyl (~2e3 ps^2) je rozdil dvou cisel o 18 radu vetsich (katastroficke odecitani).
+- **Oprava:** Welforduv algoritmus (prubezna stredni hodnota a soucet ctvercu odchylek), `fpga_v3.c` `fpga_v3_stat_add`.
+- **Pravidlo:** prubezny rozptyl vzdy Welfordem nebo od posunuteho pocatku (prvni hodnota), nikdy sum(v^2) - n*m^2, kdyz je stredni hodnota o rady vetsi nez sigma. Zkontrolovano: `meas_present.c` uz centruje (F-0169), `app_gpsdo.c` Welford, `screen_main.c` `nz_slope` jen log10 (male hodnoty) -- bez dalsiho nalezu.
+- **Detekce:** host test scenar „2 Hz, B = A + 5 ms, 200 s ticho" (sigma < 80 ps).
+- **Commit:** `b2dd741`
+- **Stav:** aktivni
+
+### L-0200 - Testbench: po zmene toho, co kanal meri, nova reference absolutnich kontrol
+
+- **Datum:** 2026-10-23
+- **Oblast:** `sim/tb_top_v3.sv` rezim 3 (zdroj kanalu B)
+- **Symptom:** po prepnuti B z pinu A invertovaneho na neinvertovany hlasila kontrola „T0 = cas hrany X0" konstantni odchylku -37 344 ps u kazdeho zaznamu B.
+- **Pricina:** kontrola porovnava T0 s referenci zachycenou z prvniho platneho zaznamu kanalu; neplatne zaznamy po prepnuti se preskocily, ale reference zustala ze sestupnych hran -- posun o sirku pulzu 37,3 ns je fyzika, ne chyba RTL.
+- **Oprava:** po kazdem prepnuti zdroje B (preskoceni neplatnych zaznamu) nova reference T0 i dvoubodoveho kanalu B (`t0have[1] = 0; have[1] = 0`).
+- **Pravidlo:** kdyz test zmeni, co kanal meri, restartovat reference absolutnich kontrol; konstantni odchylku nejdriv porovnat s fyzikalni velicinou scenare (tady sirka pulzu), az pak podezirat RTL (srov. L-0197).
+- **Detekce:** `tb_top_v3` rezim 3 (`sim/run.ps1 topv3pw`).
+- **Commit:** `9cbc302`
+- **Stav:** aktivni
+
+### L-0201 - Mutace prezije, kdyz scenar danou vetev nikdy nespusti
+
+- **Datum:** 2026-10-23
+- **Oblast:** `tests/host/t_fpga_v3.c` (parovani start/stop)
+- **Symptom:** mutace „bez serazeni v case", „stop i pred startem" a „souhrn B pres start" prezily vsechny scenare nad emulatorem.
+- **Pricina:** emulator ma pri periode deleni 25 ms stalou fazi, takze pripady „B pred A v temze segmentu", „B soucasne se startem" a „souhrn B pres start" nenastaly; u zpozdeni 0 test intervaly nekontroloval vubec.
+- **Oprava:** kroky se znamymi casy pro `fpga_v3_ab_feed` a `fpga_v3_pr_rec` (razeni, stop jen po startu, souhrn B pres start, CS, prepnuti zdroje B), scenar 7 Hz B = A + 140 ms, kontrola ztracenych startu a intervalu i pri zpozdeni 0; lepidlo ovladace presunuto do `fpga_v3_pr_rec`, aby testovany kod byl ten, ktery bezi.
+- **Pravidlo:** kazda vetev stavoveho automatu ma mit aspon jeden deterministicky krok se znamym vstupem; nahodne a emulovane scenare vzacne vetve nezarucuji -- ktere chybi, ukazou mutace. Kod, ktery se testuje, nesmi byt kopie kodu, ktery bezi.
+- **Detekce:** `python3 tests/host/mut_fpga_v3.py <vystup>` -> 24/24 zachyceno.
+- **Commit:** `b2dd741`
+- **Stav:** aktivni
+
 ---
 
 ## Archiv (neplatné lekce)

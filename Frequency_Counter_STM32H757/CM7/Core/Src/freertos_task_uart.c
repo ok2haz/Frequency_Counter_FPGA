@@ -2990,7 +2990,8 @@ void UartTask_run(void *argument)
 				   *   fpgasim fault none|lost|crc|div16|phase|gap       */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strncmp(a, "v3", 2) == 0) {
-					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B]`, `fpgasim v3 off` */
+					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns]`, `fpgasim v3 off`
+					   * (v0.36.0: B = A + faze pro jednorazove deje; bez Hz_B = kmitocet A) */
 					  const char *p = a + 2;
 					  while (*p == ' ') p++;
 					  if (strncmp(p, "on", 2) == 0) {

@@ -3,6 +3,8 @@
 > **Stav 2026-10-22: IMPLEMENTOVÁNO a ověřeno SIMULACÍ** – FPGA FW 0x0500 (`top_v3`, kap. 10), STM v0.35.0 (ovladač v3,
 > emulátor `fpgasim v3`). ⬜ **P&R (Windows) a deska neověřeny.** Bitstream v2 (FW 0x0427) zůstává sestavitelný beze změny
 > a STM s ním pracuje dál (detekce verze, kap. 6.2). Upřesnění z implementace jsou v textu označena **(FW 0x0500)**.
+> **2026-10-23: FW 0x0501 + STM v0.36.0 – jednorázové děje** (kap. 10.5): `SET_CONFIG 0x09` zdroj kanálu B (šířka
+> pulzu, kalibrace zpoždění A/B), RAW_CAPTURE ověřen; v STM časy hran, interval A→B, šířka pulzu. ⬜ P&R a deska.
 > Dnes běží **v2** (rámec 128 B, FW 0x0427 / STM v0.33.x) – popis bajt po bajtu v `HW_REFERENCE.md`
 > oddíl „FW 0x0425 … 0x0427". Tento dokument je **závazný pro implementaci v3 na obou stranách**;
 > při rozporu s návrhem platí tento dokument.
@@ -64,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -86,7 +88,7 @@
 | 62 | 2 | **LUT_SUM** (u16) – Σ `({kanál, adresa[8:0], 5'b0} ^ neg)` | **stejný vzorec jako v2** (abs 114..115) |
 | 64 | 1 | PRESC A: [3:0] log2 P, bit7 = změna čeká na hranici segmentu | |
 | 65 | 1 | PRESC B | |
-| 66 | 1 | CFG echo: bit0 `mask_cs`, bit1 `led_hb`, bit2 reference (0 OCXO, 1 ext.) | |
+| 66 | 1 | CFG echo: bit0 `mask_cs`, bit1 `led_hb`, bit2 reference (0 OCXO, 1 ext.), bit3..4 zdroj kanálu B (`SET_CONFIG 0x09` p1[1:0]) | bit3..4 **(FW 0x0501)** |
 | 67 | 1 | rezerva | |
 | 68 | 16 | 1PPS poslední: PSEQ (u32), PTS (u48, T/16384), PFLAGS (u8: bit0 platné), rezerva 5 | (FW 0x0500) PTS = hrubý čas × 16384 (bez IDES8) |
 | 84 | 16 | 1PPS předchozí (totéž) | |
@@ -133,7 +135,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | **0x0A LUT_WRITE** | bloky 1–3: v každém [0] = počet položek (0..84), od [1] položky po 3 B **kódované jako v 0x0427**: `p0` adresa[7:0], `p1` {kanál, adresa[8], neg[13:8]}, `p2` neg[7:0]; FPGA zapisuje do **neaktivní banky** a každou položku přičte do `LUT_CNT`/`LUT_SUM` | rozšířeno (víc položek) |
 | **0xA0 STRÁNKA** | žádost o stránku: p0 = druh (0 souhrn kalibrace, 1 histogram A, 2 histogram B, 3 surové značky), p1..p2 = číslo stránky (u16) | rozšířeno (z CAL reportu) |
 | 0x08 START / 0x09 STOP | souvislé měření zap/vyp | beze změny |
-| **0x0B RAW_CAPTURE** | p0 = kanál; FPGA uloží 512 po sobě jdoucích značek do BSRAM (čtení stránkou 3) | nové |
+| **0x0B RAW_CAPTURE** | p0 = kanál; FPGA uloží 512 po sobě jdoucích značek do BSRAM (čtení stránkou 3) | nové; **(FW 0x0501 ověřeno)** jen časované značky (≥ 50 ns od sebe) od žádosti, počet = souhrnná stránka položka 5, položka 2k = bity 23:0 a 2k+1 = bity 47:24 značky k |
 
 **SET_CONFIG (p0):**
 
@@ -147,6 +149,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | **0x06** | **tabulka TDC: p1 = 0 začátek zápisu (nuluje `LUT_CNT`/`LUT_CNT_B`/`LUT_SUM`), p1 = 1 potvrzení = přepnutí na zapsanou banku na nejbližší hranici segmentu; p2 = maska kanálů potvrzení (bit0 A, bit1 B, 0 = oba)** | beze změny číslování; „potvrzení" = přepnutí banky; **(FW 0x0500) maska p2**: při střídavé kalibraci smí čekat oba kanály, potvrzení A nesmí aktivovat B |
 | 0x07 | předdělička: p1 = kanál (0 A, 1 B), p2 = log2 P (0..4); FPGA přepne na hranici segmentu | nové; **(FW 0x0500) neimplementováno** (P = 1, PRESC = 0, CAPS bit18 = 0; krok 8) |
 | 0x08 | délka segmentu: p1 = L [ms] (10 nebo 25) | nové |
+| **0x09** | **zdroj kanálu B**: p1 bit0 = pin A místo pinu B, bit1 = invertovat (řetěz časuje jen náběžné hrany → invertovaný = sestupné): 0 pin B, 1 pin A (kalibrace zpoždění A/B), 3 pin A invertovaný (šířka pulzu); po změně záznamy B 2 hranice segmentu neplatné (FLAGS bit0); echo bajt 66 bit3..4 | **nové (FW 0x0501)**, CAPS bit20, kap. 10.5 |
 
 ## 5. Stránky (TYPE 0xA0 v MISO)
 
@@ -276,18 +279,19 @@ v0.34.x mění jen nezapojený modul `fpga_v3`, cesta v2 je stejná).
 - **Zdroje:** odhad bez P&R (Gowin jen Windows) – BSRAM kruh 8 + PHY 2 + TDC 4 (tabulka 2 banky, histogram) + RAW 2
   ≈ 16 / 26; CLS by mělo klesnout proti 79 % v2 (odpadá mux 128:1, zámky, okna, regrese) – rozhodne `build_v3.tcl`.
 
-### 10.2 Simulace (Icarus 13, `sim/tb_top_v3.sv`, `sim/run.ps1` testy `topv3`, `topv3ovf`, `topv3cal`)
+### 10.2 Simulace (Icarus 13, `sim/tb_top_v3.sv`, `sim/run.ps1` testy `topv3`, `topv3ovf`, `topv3cal`, `topv3pw`)
 
 Celý `top_v3` se skutečným modelem TDC (268 tapů), segment 250 µs (SIM_TOP), STM = BFM po SPI 1024 B / 25 MHz:
 
 | režim | ověřuje | výsledek |
 |---|---|---|
-| 0 (B 17,3 MHz) | CRC 4 bloků, hlavička, značky bloků, REC_FIRST/NREC, překryv (duplicity), záznamy: SEG_IDX/CH, N ≈ f·L, SX = N(N−1)/2 (každá hrana časovaná), sklon ST/SX = perioda, dvoubodově ze sousedních segmentů, **T0 = skutečný čas hrany X0**, 1PPS, RX_LEN_ERR, RX_CRC_ERR, SET_CONFIG 0x05/0x08, stránky histogramu = `hist` v BSRAM, maskování při CS | PASS (T0 proti hraně max 181 ps A, 77 ps B) |
+| 0 (B 17,3 MHz) | CRC 4 bloků, hlavička, značky bloků, REC_FIRST/NREC, překryv (duplicity), záznamy: SEG_IDX/CH, N ≈ f·L, SX = N(N−1)/2 (každá hrana časovaná), sklon ST/SX = perioda, dvoubodově ze sousedních segmentů, **T0 = skutečný čas hrany X0**, 1PPS, RX_LEN_ERR, RX_CRC_ERR, SET_CONFIG 0x05/0x08, stránky histogramu = `hist` v BSRAM, maskování při CS | PASS (T0 proti hraně max 181 ps A, 77 ps B); **FW 0x0501:** RAW_CAPTURE kanálu A 512 značek, 511/511 po sobě, max \|rozdíl − k·P\| 40 ps |
 | 1 | přetečení kruhu (16 záznamů): FLAGS bit1, skok REC_FIRST, zhasnutí po ACK, platné záznamy po obnově | PASS |
 | 2 | výrobní kalibrace obou kanálů (stránky, výpočet, LUT_WRITE 3 rámce, LUT_CNT/LUT_SUM/LUT_CNT_B, potvrzení s maskou, banka 1), rekalibrace jen A (B měří, A po sběru měří se starou bankou, nová tabulka v bance 0) | PASS |
+| 3 (A 5 MHz, pulz 37,3 ns; FW 0x0501) | `SET_CONFIG 0x09`: B = pin A invertovaný → T0_B − T0_A (mod P) = šířka pulzu; B = pin A → zpoždění A/B; návrat na pin B (B zase platný); echo bajt 66 bit3..4; po přepnutí 2 segmenty B neplatné | PASS (šířka 12 dvojic max \|chyba\| 22 ps, zpoždění 13 dvojic max 22 ps) |
 
 Kanál B v režimu 0 běží na 17,3 MHz (perioda 5,78 taktu): časuje se každá hrana a ve FIFO indexů bývají dvě značky.
-Mutace `sim/mut_top_v3.py` (13, paralelně): FIFO hloubky 1 (konstantní posun indexu je ekvivalentní mutant – vyruší se
+Mutace `sim/mut_top_v3.py` (15, paralelně; FW 0x0501 + zdroj B ignorován, RAW s prohozenými polovinami): FIFO hloubky 1 (konstantní posun indexu je ekvivalentní mutant – vyruší se
 ve všech rozdílech), rozdíl bez výpůjčky, slovo záznamu, freeze, kontrolní
 počítání, slot kanálu, ACK, CRC/délka, stránka, přetečení, potvrzení bez masky, zápis do aktivní banky.
 
@@ -312,3 +316,60 @@ počítání, slot kanálu, ACK, CRC/délka, stránka, přetečení, potvrzení 
 3. Flash bitstreamu v3 + power-cyklus → `fpga v3`: v3, záznamy rostou, duplicit ≈ záznamů, mezer 0; `status` kmitočet,
    ADEV (fázový záznam); kalibrace TDC po startu (`tdc`, CAL_WAIT → tabulky); `spi 25`; `spi dma on` (testy D3–D8).
 4. Bez FPGA: `fpgasim v3 on 10000000 3300000` → okna, statistika, GPSDO.
+5. Jednorázové děje (FW 0x0501, kap. 10.5): generátor pulzů na A → `fpga pw cal` (zpoždění B − A ~ jednotky ps až stovky
+   ps, σ ~ 40 ps), `fpga pw on` → šířka proti generátoru; A a B ze dvou výstupů se známým zpožděním → `fpga ab on`;
+   `fpga raw a` (10 MHz: rozdíly = 100 ns, σ ~ 40 ps); `fpga ev on` s 1PPS GPS → čas hran proti 1PPS.
+   Bez FPGA: `fpgasim v3 on 7 7 1234000` → `fpga ab on`, `fpga ab 10` (1,234 ms).
+
+### 10.5 Jednorázové děje (FW 0x0501, STM v0.36.0) – 2026-10-23
+
+Ze záznamů segmentů (kap. 3.2) bez dalších dat z FPGA: **časové značky hran**, **interval A→B jednorázově**, **šířka pulzu**;
+delší sled hran **RAW_CAPTURE**. ⬜ Ověřeno simulací (FPGA) a host testem (STM), ne na desce.
+
+**Co záznam nese (meze):**
+
+- Přesný čas má **první časovaná hrana segmentu** (T0); při N = 2 i druhá (T0 + ST, index X0 + SX); při N ≥ 3 jen souhrn
+  (počet, střední perioda ST/SX). Přesně tedy **1–2 hrany na segment (25 ms)**, další hrany segmentu jen v souhrnu.
+- Časují se jen hrany **≥ 5 taktů (50 ns)** od předchozí časované; čítač hran X počítá všechny.
+- Delší sled: **RAW_CAPTURE** = 512 po sobě jdoucích časovaných značek jednoho kanálu (≥ 50 ns od sebe) od žádosti;
+  pod ~100 Hz se za 5 s nezaplní (STM vrátí, co je).
+- A, B i 1PPS jsou na **jedné ose FPGA** → T0 se rozbaluje **společně** pro oba kanály (rozdíl proti poslední značce
+  libovolného kanálu se znaménkem, 48 b, a počet přetečení 2^48 = 171,8 s z uplynulého času STM; X po kanálech).
+  1PPS: PTS (FW 0x0500) = hrubý čas → čas hrany proti 1PPS s rozlišením **10 ns**.
+- **Maskování při CS** (výchozí zapnuto, `fpga diag mask`): hrana během CS (~330 µs na transakci, ≤ 25 transakcí/s ≈ 0,8 %
+  času) se nečasuje, záznam má FLAGS bit3. Pro jednorázové děje buď `fpga diag mask off` (riziko rušení značek při CS),
+  nebo počítat se ztrátou (párování takový záznam zahodí, `fpga ev` ho označí `[CS]`).
+
+**Párování start/stop (`fpga_v3_ab_feed`, `fpga_v3_pr_rec`):** start = první přesně známá hrana A po předchozím stopu,
+stop = první hrana B po startu (čas > start). FPGA posílá segment jako A, pak B; události A čekají na záznam B téhož
+segmentu a předají se spolu (seřazené v čase). Start se zahodí (`zahozenych startu`), když: (a) do 10 s nepřišel stop;
+(b) souhrn B (N ≥ 3) začal před startem a trvá přes něj – první hrana B po startu je neznámá; (c) záznam je neplatný
+(FLAGS bit0) nebo se značkami při CS (bit3) – hrana mohla chybět; (d) mezera v příjmu. Po přepnutí zdroje B se páruje
+až za záznamem B s držením (starší záznamy v kruhu jsou z původního zdroje).
+
+**Šířka pulzu (`SET_CONFIG 0x09`, CAPS bit20):** B = pin A invertovaný (p1 = 3) → kanál A časuje náběžné, kanál B
+sestupné hrany téhož pinu (řetěz TDC časuje jen náběžné) → interval A→B = šířka úrovně H. Kalibrace p1 = 1 (B = pin A):
+zpoždění B − A týchž hran (cesty k řetězům, mux) se odečte. Po změně zdroje jsou záznamy B **2 hranice segmentu
+neplatné** (rozpracovaný segment měří jiný signál). ⚠️ Rozdíl zpoždění náběžné a sestupné hrany v cestě B (XOR v LUT)
+kalibrace nezachytí – ⬜ změřit na desce generátorem se známou šířkou.
+
+**UART (STM v0.36.0):**
+
+| příkaz | co dělá |
+|---|---|
+| `fpga ev on\|off\|<n>` | kruh 256 událostí (zapnutí = vynulování); `<n>` = posledních n: kanál, hrana / souhrn (N, perioda), SEG_IDX, čas na ose FPGA [s, 1 ps], čas od 1PPS #PSEQ |
+| `fpga ab on\|off\|<n>` | interval A→B: statistika (počet, střední, σ, min, max), zahozené starty, posledních n (≤ 64) |
+| `fpga pw cal` / `on` / `off` / `<n>` | `0x09 = 1` kalibrace zpoždění B − A, `0x09 = 3` šířka pulzu (interval − zpoždění), `0x09 = 0` zpět na pin B |
+| `fpga raw a\|b [dump]` | RAW_CAPTURE: 512 značek, rozdíly (střední, σ, min, max), kmitočet z rozpětí; `dump` = všechny značky (blokuje UartTask ≤ 5 s + 5 stránek) |
+| `fpgasim v3 on <Hz_A> [Hz_B] [faze_B_ns]` | emulátor: B = A + fáze (bez `Hz_B` = kmitočet A); zdroj B (`0x09`) a RAW se neemulují |
+
+**Ověření:**
+
+- FPGA `tb_top_v3` režim 3 (`sim/run.ps1 topv3pw`, A 5 MHz, pulz 37,3 ns): šířka 12 dvojic max |chyba| 22 ps, zpoždění
+  A/B 13 dvojic max 22 ps, echo bajt 66 bit3..4, návrat na pin B; režim 0: RAW_CAPTURE 511/511 po sobě, max |rozdíl − k·P|
+  40 ps. Mutace 15/15 (nové: zdroj B ignorován, RAW s prohozenými polovinami).
+- STM host `t_fpga_v3.c` (emulátor se zpožděným ACK): 7 Hz B = A + 1,234 ms (280 intervalů, σ 43 ps), 1 kHz souhrny
+  B = A + 123,456 µs (796, σ 43 ps), B = A (zpoždění 396 × 1,6 ps; interval se souhrnem B přes start zahozen), 2 Hz
+  s 200 s bez signálu (T0 přeteče, čas navazuje < 1 ns), 7 Hz B = A + 140 ms (B před dalším A v témže segmentu); kroky se
+  známými časy (řazení, stop jen po startu, souhrn B přes start, CS, přepnutí zdroje B). Mutace 24/24. Selftest krok 11.
+- ⬜ P&R (mux zdroje B před řetězem `u_tdcb`, `sig_eff` false_path beze změny), deska.
