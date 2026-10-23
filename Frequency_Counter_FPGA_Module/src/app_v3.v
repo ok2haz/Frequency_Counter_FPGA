@@ -99,7 +99,7 @@ module app_v3 #(
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
     // (SET_CONFIG 0x07, kap. 10.7).
-    // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
+    // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B; bit21 (FW 0x0505) = hluboky RAW do PSRAM (kap. 10.9).
     localparam [31:0] CAPS = 32'h003F_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
