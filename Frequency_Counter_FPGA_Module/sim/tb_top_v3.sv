@@ -137,7 +137,7 @@ module tb_top_v3;
             end
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
-            chk(rd(20, 2) == 16'h0503, "FW_VERSION 0x0503");
+            chk(rd(20, 2) == 16'h0504, "FW_VERSION 0x0504");
             chk(caps[18], "CAPS bit18 (predelicka pin_cnt3)");
             chk(caps[17], "CAPS bit17 (1PPS pres IDES8)");
             caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");

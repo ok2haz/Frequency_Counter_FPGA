@@ -138,6 +138,11 @@ module top_v3 (
     localparam TDC_TAPS   = (TDC_STRIDE == 1) ? 288 : 256;
     localparam TDC_NTAP   = (TDC_STRIDE == 1) ? 268 : 256;
     localparam TDC_KD     = (TDC_STRIDE == 1) ? 1 : 2;
+`ifdef SIM_SUM_FAB
+    localparam SUM_DSP    = 0;   // simulace: porovnani s dosavadnimi soucty v logice
+`else
+    localparam SUM_DSP    = 1;   // FW 0x0504: soucty segmentu v DSP (ALU54D, rozlozeni: radek R19)
+`endif
     localparam TDC_TSPIPE = 1;   // znacka pres registr navic (rozlozeni, audit 2026-10-23; ts_valid T+10, FIFO seg_chan3 snese)
     wire use_ro_a, use_ro_b, ro_sig;
     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
@@ -294,10 +299,10 @@ module top_v3 (
     wire [23:0] a_n, b_n;  wire [39:0] a_x0, b_x0;  wire [47:0] a_t0, b_t0, a_sx, b_sx;  wire [55:0] a_st, b_st;
     wire [7:0]  a_fl, b_fl, a_bub, b_bub;  wire [3:0] a_ovl, b_ovl;
     wire [2:0]  a_pr, b_pr;
-    seg_chan3 u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
+    seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_a),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
-    seg_chan3 u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
+    seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_b),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 

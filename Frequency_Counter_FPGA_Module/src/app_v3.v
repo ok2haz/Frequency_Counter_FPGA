@@ -86,7 +86,8 @@ module app_v3 #(
     // FW 0x0501: SET_CONFIG 0x09 zdroj kanalu B (jednorazove deje: sirka pulzu, kalibrace zpozdeni A/B), CAPS bit20.
     // FW 0x0502: 1PPS s jemnym casem pres IDES8 + rPLL (CAPS bit17): PTS krok 1,25 ns, PFLAGS bit1, PPS_STATUS, d.
     // FW 0x0503: predelicka vstupu pin_cnt3 (CAPS bit18): SET_CONFIG 0x07, PRESC A/B, PROBE A/B, FLAGS zaznamu 7:5.
-    localparam [15:0] FW_VERSION = 16'h0503;
+    // FW 0x0504: soucty segmentu SX/ST v DSP (seg_chan3 SUM_DSP = 1), rozhrani beze zmeny.
+    localparam [15:0] FW_VERSION = 16'h0504;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3

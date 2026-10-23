@@ -51,6 +51,10 @@ M = [
     ('predelicka: zaznam bez P', 'v3_core.v', "    assign o_presc = p_seg;", "    assign o_presc = 3'd0;", 4),
     ('predelicka: sonda /8', 'v3_core.v', "        s <= {s[1:0], c[3]};", "        s <= {s[1:0], c[2]};", 4),
     ('SET_CONFIG 0x07: prohozeny kanal', 'app_v3.v', "8'h07: if (rx_p1[0]) pr_b_req", "8'h07: if (!rx_p1[0]) pr_b_req", 4),
+    # FW 0x0504: soucty v DSP -- bez vynulovani na zacatku segmentu, pricitani o takt driv (horni cast rozdilu jeste stara)
+    ('DSP: soucty bez clear', 'v3_core.v', "            if (clear)   begin sx_d <= 48'd0; st_d <= 56'd0; end\n            else if (v2)",
+     "            if (v2)", 0),
+    ('DSP: pricita o takt driv', 'v3_core.v', "            else if (v2) begin sx_d <= sx_d", "            else if (v1b) begin sx_d <= sx_d", 0),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]

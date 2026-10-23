@@ -28,7 +28,12 @@
 //   V+4 horni casti souctu (registrovany prenos). Zapisovac proto ceka DRAIN = 6 taktu po hranici segmentu. Rozsahy pri L = 25 ms: N <= 5e5 (24 b), x - x0 < 2^21 (26 b), t - t0 < 2^36 (40 b), SX < 2^40 (48 b),
 //   ST < 2^55 (56 b).
 // ------------------------------------------------------------
-module seg_chan3 (
+module seg_chan3 #(
+    // FW 0x0504: 1 = soucty SX/ST jednim stupnem s atributem syn_dspstyle = "dsp" (GowinSynthesis -> ALU54D v radku DSP
+    // R19; v logice by to byl 48/56b retez ALU). 0 = dvoustupnove soucty s registrovanym prenosem v logice (do FW 0x0503).
+    // Hodnoty v obou variantach shodne a hotove nejpozdeji ve V+4 (DRAIN = 6 plati).
+    parameter SUM_DSP = 0
+)(
     input  wire        clk,         // clk_p0_100m
     input  wire        rise_s,      // kazda nabezna hrana (tdc_chan.rise_s)
     input  wire        cnt_en,      // 0 = retez krmi ring oscilator (sber histogramu): hrany nejsou signal, nepocitat
@@ -176,8 +181,20 @@ module seg_chan3 (
     assign o_n     = {nhi, nlo};
     assign o_x0    = first ? 40'd0 : x0;
     assign o_t0    = first ? 48'd0 : t0;
-    assign o_sx    = {sx_hi, sx_lo};
-    assign o_st    = {st_hi, st_lo};
+    // FW 0x0504: soucty v DSP (SUM_DSP = 1) -- pricitani ve V+2 z rozdilu dx_r/dt_r jako u varianty v logice
+    generate if (SUM_DSP != 0) begin : g_dsp
+        reg [47:0] sx_d = 48'd0 /* synthesis syn_dspstyle = "dsp" */;
+        reg [55:0] st_d = 56'd0 /* synthesis syn_dspstyle = "dsp" */;
+        always @(posedge clk) begin
+            if (clear)   begin sx_d <= 48'd0; st_d <= 56'd0; end
+            else if (v2) begin sx_d <= sx_d + {22'd0, dx_r}; st_d <= st_d + {16'd0, dt_r}; end
+        end
+        assign o_sx = sx_d;
+        assign o_st = st_d;
+    end else begin : g_fab
+        assign o_sx = {sx_hi, sx_lo};
+        assign o_st = {st_hi, st_lo};
+    end endgenerate
     // FW 0x0503: log2 P segmentu (prevzato v clear = zacatek segmentu; P se meni v seg_tick pred nim), FLAGS bit1 =
     // P se na zacatku tohoto segmentu zmenilo (segment je stejne neplatny: hold 2 hranice v top_v3)
     reg [2:0] p_seg = 3'd0;

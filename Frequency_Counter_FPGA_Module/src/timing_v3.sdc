@@ -112,6 +112,8 @@ set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps
 report_timing -setup -max_paths 50 -max_common_paths 1
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdcb/u_chain/q_r*}]
+// FW 0x0504: soucty v DSP -> cesty do/z ALU54D v mape rozlozeni (radek R19)
+report_timing -setup -max_paths 10 -max_common_paths 1 -to [get_regs {u_sa/g_dsp.sx_d* u_sa/g_dsp.st_d* u_sb/g_dsp.sx_d* u_sb/g_dsp.st_d*}]
 // FW 0x0503: predelicky u pinu kanalu -> poloha v mape rozlozeni
 report_timing -setup -max_paths 10 -max_common_paths 1 -from [get_regs {u_pca/c* u_pcb/c*}]
 // FW 0x0502: cesty logiky PCLK u pinu 1PPS -> poloha v mape rozlozeni (tools/floorplan_svg.py)
