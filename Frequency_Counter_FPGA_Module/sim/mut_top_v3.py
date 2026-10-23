@@ -18,7 +18,7 @@ TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=1
 MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
-        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5']}
+        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE']}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -62,6 +62,8 @@ M = [
     ('PSRAM: pevna latence zapisu', 'v3_core.v', "    wire [7:0] wait_b = W0 + {3'd0, (cal ? ctry : wsel)};", "    wire [7:0] wait_b = W0 + {3'd0, wsel};", 5),
     ('PSRAM: okno bez posunu adresy', 'v3_core.v', "wra <= ar2[10:0] * 22'd3072;", "wra <= 22'd0;", 5),
     # audit 2026-10-23 F-0262: RWDS = 1 behem CA (priznak latence) -> bez zbrojeni je konec priznaku prvni "bajt"
+    # F-0264: kalibrace nezkousi fazi 1 (vystup PSRAM neplatny pri vzorku na nabezne hrane)
+    ('PSRAM: jen faze cteni 0', 'v3_core.v', "else if (ctry == 5'd31) begin rph <= 1'b1;", "else if (ctry == 5'd31) begin rph <= 1'b0;", 6),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),

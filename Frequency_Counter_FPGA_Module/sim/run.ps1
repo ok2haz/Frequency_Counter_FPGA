@@ -123,6 +123,7 @@ $tests = @(
     #            (B = pin A), navrat na pin B; A 5 MHz, pulz 37,3 ns (~3 min). RAW_CAPTURE (512 znacek) je v topv3.
     #   topv3presc FW 0x0503 predelicka: B ~143,3 MHz, P_B = 8 a 16 (SET_CONFIG 0x07), PRESC, PROBE, FLAGS 7:5 (~4 min)
     #   topv3deep  FW 0x0505 PSRAM: kalibrace latence zapisu, hluboky RAW 1100 znacek A, 3 okna pres stranky (~5 min)
+    #   topv3deep2 totez s vystupem PSRAM neplatnym 4..6 ns po hrane CK: kalibrace musi zvolit fazi cteni 1 (F-0264)
     #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (28 mutaci, paralelne)
     @{ name = "topv3"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=16.100161e6") }
@@ -136,6 +137,8 @@ $tests = @(
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=4", "-DTB_FB=143.300173e6") }
     @{ name = "topv3deep"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=5") }
+    @{ name = "topv3deep2"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=5", "-DTB_PS_LATE") }
     # další testy přidávej sem, jak přibývají moduly
 )
 

@@ -64,7 +64,13 @@ module tb_top_v3;
     reg sck = 0, cs = 1, mosi = 0; wire miso, led, fok, refc;
     // FW 0x0505: vestavena PSRAM (cip 0 = model, cip 1 nevyuzit)
     wire [1:0] ps_ck, ps_ckn, ps_csn, ps_rstn; wire [1:0] ps_rwds; wire [15:0] ps_dq;
-    hb_psram_model u_ps0 (.ck(ps_ck[0]), .ck_n(ps_ckn[0]), .cs_n(ps_csn[0]), .rst_n(ps_rstn[0]), .dq(ps_dq[7:0]), .rwds(ps_rwds[0]));
+`ifdef TB_PS_LATE
+    // audit 2026-10-23 F-0264: vystup PSRAM neplatny 4..6 ns po hrane CK -> vzorek na nabezne hrane clk (5 ns po hrane
+    // CK) padne do zmeny, kalibrace musi zvolit fazi 1 (sestupna hrana)
+    hb_psram_model #(.TCKD_MIN(4000), .TCKD(6000)) u_ps0 (.ck(ps_ck[0]),
+`else
+    hb_psram_model u_ps0 (.ck(ps_ck[0]),
+`endif .ck_n(ps_ckn[0]), .cs_n(ps_csn[0]), .rst_n(ps_rstn[0]), .dq(ps_dq[7:0]), .rwds(ps_rwds[0]));
     integer ndeep = 0, nwin, w; real dmaxd;
     top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
                 .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(pps), .spi_sck(sck), .spi_cs_n(cs), .spi_mosi(mosi), .spi_miso(miso),
@@ -479,6 +485,11 @@ module tb_top_v3;
             build_ack(0); xfer(1024);
             chk(mi[128][0] && !mi[128][1], "PSRAM: pripravena, kalibrace zapisu prosla");
             chk(mi[129][4:0] == 5'd16, "PSRAM: nalezena latence zapisu modelu (W0 + 16 = 20)");
+`ifdef TB_PS_LATE
+            chk(mi[129][5], "PSRAM: faze cteni 1 (vystup modelu neplatny 4..6 ns po hrane CK)");
+`else
+            chk(!mi[129][5], "PSRAM: faze cteni 0 (nabezna hrana staci)");
+`endif
             build(8'h0B, 8'h02, 8'd76, 8'd4, 8'd0); xfer(1024);     // rezim 1, kanal A, 1100 znacek
             #(64'd300_000_000);
             build_ack(0); xfer(1024);
@@ -639,9 +650,10 @@ endmodule
 //   (prvni bajt RWDS = 1), vystup TCKD po hrane CK. Pamet 64 kB (adresa se maskuje). PREDPOKLAD, ne datasheet.
 //   Audit 2026-10-23 (F-0262): od CS# = 0 ridi model RWDS = RW_CA (priznak latence; pevna dvojita latence = 1) po celou
 //   CA; pri zapisu ho po CA pusti, pri cteni ho drzi pres latenci a do 0 ho stahne az bajt pred prvnimi daty.
+//   F-0264: TCKD_MIN < TCKD = vystup (DQ i RWDS) je od TCKD_MIN do TCKD po hrane CK neplatny (X), jinak se meni skokem.
 // ------------------------------------------------------------
 module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20, parameter integer TCKD = 3000,
-                        parameter RW_CA = 1'b1) (
+                        parameter integer TCKD_MIN = 3000, parameter RW_CA = 1'b1) (
     input wire ck, input wire ck_n, input wire cs_n, input wire rst_n, inout wire [7:0] dq, inout wire rwds
 );
     reg [7:0]  mem [0:65535];
@@ -666,6 +678,7 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
                 if (!rd) rw_oe <= #(TCKD) 1'b0;           // zapis: RWDS dal ridi radic (maska)
             end
         end else if (rd) begin
+            if (e >= 6 + RLAT - 1 && TCKD_MIN < TCKD) begin dq_o <= #(TCKD_MIN) 8'hxx; rw_o <= #(TCKD_MIN) 1'bx; end
             if (e == 6 + RLAT - 1) rw_o <= #(TCKD) 1'b0;  // bajt pred daty RWDS = 0 (konec priznaku latence)
             if (e >= 6 + RLAT) begin
                 dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) (((e - 6 - RLAT) % 2) == 0);
