@@ -6,7 +6,8 @@
  * 0 / 30 / 100 ps, kanal B jiny kmitocet); (3) dlouhy beh 10 MHz, sum 100 ps, 400 oken: rozptyl odhadu z tezist
  * segmentu (LSQ) musi byt vyrazne mensi nez dvoubodovy (smysl v3); (4) pocitadlo CRC na znamem vektoru;
  * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu;
- * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA). */
+ * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA);
+ * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu. */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -247,6 +248,57 @@ int main(void)
         (void)lost_expect;
         CHECK(bad == 0 && L.dups > 1000 && L.gaps == 1 && L.gap_recs > 0 && L.resync == 1, "zpozdeny ACK / mezera / resync");
         CHECK(got + L.gap_recs >= 2400u, "prijato + ztraceno = vse (%u + %u)", (unsigned)got, (unsigned)L.gap_recs);
+    }
+
+    /* model smycky FpgaTasku (poll_v3): volani po `delay` ms (FpgaTask: hradlo <= 50 ms -> 10 ms, <= 100 ms -> 25 ms, jinak 50 ms),
+     * transakce jen pri prazdne fronte a nejdriv `pms` ms po predchozi, fronta 8 oken, jedno okno na volani, emulator se
+     * zpozdenym ACK (jako RTL). Hradlo 50 ms (K = 2) a 1 s (K = 40), 60 s: kazde okno prave jednou a souvisle. */
+    {
+        static const struct { uint32_t k, delay, pms; } TC[] = { { 2u, 10u, 40u }, { 2u, 10u, 0u }, { 40u, 50u, 40u }, { 4u, 25u, 40u } };
+        for (unsigned c = 0; c < sizeof TC / sizeof TC[0]; c++) {
+            static fpga_v3_link_t L;
+            static fpga_v3_win_t Q[8];
+            fpga_v3_link_init(&L);
+            fpga_v3_emu_init(&E, 10e6, 3.3e6, 30.0, 300u + c);
+            fpga_v3_grp_init(&G, TC[c].k);
+            fpga_v3_emu_frame(&E, F);
+            uint32_t qr = 0, qw = 0, qdrop = 0, xfers = 0, wins = 0, bad = 0, gap = 0, last_x = 0, t_last = 0;
+            uint32_t seg_ms = 0, next_end = 0; int have = 0; double maxe = 0.0;
+            for (uint32_t t = 0; t < 60000u; t += TC[c].delay + 1u) {           /* +1 ms: prenos 1024 B + zpracovani */
+                while (seg_ms + 25u <= t) { fpga_v3_emu_segment(&E); seg_ms += 25u; }   /* FPGA: segment po 25 ms */
+                if (qr == qw && (t - t_last) >= TC[c].pms) {
+                    t_last = t; xfers++;
+                    fpga_v3_hdr_t h; uint32_t n_ok = 0, i0 = 0; int g = 0;
+                    if (fpga_v3_parse(F, &h, R, &n_ok) != FPGA_V3_OK) { bad++; break; }
+                    const uint32_t n = fpga_v3_link_take(&L, &h, n_ok, &i0, &g);
+                    if (g && L.frames > 1u) gap++;
+                    for (uint32_t i = 0; i < n; i++) {
+                        fpga_v3_win_t w;
+                        if (fpga_v3_grp_feed(&G, &R[i0 + i], 100u, &w) && w.ch == 0u) {
+                            if ((uint32_t)(qw - qr) >= 8u) { qr++; qdrop++; }
+                            Q[qw % 8u] = w; qw++;
+                        }
+                    }
+                    fpga_v3_build_ack(M, xfers, L.expect);
+                    fpga_v3_emu_frame(&E, F);                                   /* dalsi ramec PRED zpracovanim ACK (RTL) */
+                    fpga_v3_emu_rx(&E, M);
+                }
+                if (qr != qw) {                                                 /* FpgaTask dostane jedno okno */
+                    const fpga_v3_win_t *w = &Q[qr % 8u]; qr++; wins++;
+                    if (have && (uint16_t)(w->seg_first - next_end) != 0u) bad++;   /* souvislost: konec = zacatek dalsiho */
+                    if (have && w->x_first != last_x) bad++;                     /* dvoubodove teleskopuje: prvni znacka = konec predchoziho */
+                    next_end = (uint16_t)(w->seg_first + w->nseg); last_x = w->x_first + w->edges; have = 1;
+                    if (fabs(w->f_2pt_hz / 10e6 - 1.0) > maxe) maxe = fabs(w->f_2pt_hz / 10e6 - 1.0);
+                }
+            }
+            const uint32_t expect_w = 60000u / (25u * TC[c].k) - 2u;
+            printf("  FpgaTask K %2u (hradlo %4u ms), volani po %2u ms, transakce >= %2u ms: oken %u (cekano >= %u), transakci %.1f/s, "
+                   "duplicit %u, mezer %u, zahozeno %u, chyb %u, max|e| %.1e\n", (unsigned)TC[c].k, (unsigned)(25u * TC[c].k),
+                   (unsigned)TC[c].delay, (unsigned)TC[c].pms, (unsigned)wins, (unsigned)expect_w, xfers / 60.0, (unsigned)L.dups,
+                   (unsigned)gap, (unsigned)qdrop, (unsigned)bad, maxe);
+            CHECK(bad == 0 && gap == 0 && qdrop == 0 && wins >= expect_w && maxe < 1e-8,
+                  "FpgaTask K %u: oken %u, mezer %u, zahozeno %u, chyb %u", (unsigned)TC[c].k, (unsigned)wins, (unsigned)gap, (unsigned)qdrop, (unsigned)bad);
+        }
     }
 
     /* fpga_v3_grp_break: rozpracovane okno kanalu zahodi, druhy kanal necha. Synteticke zaznamy 40 kHz (1000 hran

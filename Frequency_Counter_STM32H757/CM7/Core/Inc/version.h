@@ -11,6 +11,9 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.35.1 (2026-10-23) = v3: SPI transakce nejdriv po 40 ms (FpgaTask vola poll pri hradle 50 ms po 10 ms -> drive az ~90
+ * transakci 1 KB/s, ~7 % CPU a ~5 % casu maskovane znacky pri CS). Kazde okno se dal precte (fronta 8 oken, kruh FPGA
+ * 6,4 s); model smycky FpgaTasku v host testu: hradlo 50 ms 1198/1198 oken souvisle, 22,7 transakci/s. */
 /* v0.35.0 (2026-10-22) = PROTOKOL v3 v ovladaci (docs/PROTOKOL_V3.md kap. 10, kroky 4c/6/7): detekce verze FPGA prvni
  * transakci 1024 B (v2 dal beze zmeny, v3 = FW 0x0500): ACK + prijem zaznamu (fpga_v3_link_take: prekryv ramcu, mezera,
  * reset FPGA), okna ze segmentu -> fpga_meas_t (kanal a hradlo voli STM, druhy kanal = sekundarni slot, fazovy zaznam
@@ -276,7 +279,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 35
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.35.0"
+#define FW_VERSION_PATCH 1
+#define FW_VERSION_STR   "v0.35.1"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

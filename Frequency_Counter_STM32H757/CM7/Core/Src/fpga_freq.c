@@ -932,6 +932,10 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
 #define FR3_GAP_US       200u       /* mezera mezi transakcemi >= 150 us (FPGA sklada dalsi ramec, kap. 2) */
 #define S3_Q             8u         /* fronta hotovych oken vybraneho kanalu */
 #define S3_LOST_MS       2500u      /* ztrata signalu: zadne okno dele nez 2,5 s + hradlo (jako v2) */
+/* v0.35.1: transakce nejdriv po 40 ms (25/s >= 7/s potrebnych, kap. 6.1). FpgaTask vola poll pri hradle 50 ms po 10 ms
+ * (pravidlo v2: mereni precist driv, nez ho FPGA prepise) -- ve v3 se nic neprepise (kruh 6,4 s) a okna se vydavaji
+ * z fronty po jednom; bez meze az ~90 transakci 1 KB/s (~7 % CPU v cekaci smycce, ~5 % casu maskovane znacky pri CS). */
+#define S3_POLL_MS       40u
 static uint8_t  s3_tx[FPGA_V3_LEN], s3_rx[FPGA_V3_LEN];       /* FpgaTask (poll, kalibrace) */
 static uint8_t  s3c_tx[FPGA_V3_LEN], s3c_rx[FPGA_V3_LEN];     /* prikazy (UART, FpgaTask) -- jen pod s_spi_mtx */
 static uint32_t s3_mseq = 0u;
@@ -950,6 +954,7 @@ static uint8_t  s3_chan = 0u, s3_gate = 2u;
 static uint32_t s3_last_win_ms = 0u;
 static uint8_t  s3_lost = 0u;
 static uint32_t s3_frames = 0u, s3_wins = 0u, s3_qdrop = 0u, s3_pages = 0u;
+static uint32_t s3_xfer_ms = 0u;   /* HAL_GetTick posledni transakce poll_v3 */
 
 static bool xfer3_raw(const uint8_t *tx, uint8_t *rx)
 {
@@ -1152,7 +1157,8 @@ int fpga_sim_v3_active(void) { return s_sim_on && s_sim_v3; }
 /* Jedna transakce v3 ve FpgaTasku: ACK + prijem; vrati true, kdyz je k dispozici okno vybraneho kanalu */
 static bool poll_v3(fpga_meas_t *out)
 {
-    if (s3_qr == s3_qw) {
+    if (s3_qr == s3_qw && (uint32_t)(HAL_GetTick() - s3_xfer_ms) >= S3_POLL_MS) {
+        s3_xfer_ms = HAL_GetTick();
         fpga_v3_build_ack(s3_tx, ++s3_mseq, s3_link.expect);
         if (s_sim_on) { sim3_produce(s3_tx, s3_rx); g_xfer_ok = 1u; }
         else if (!xfer3(s3_tx, s3_rx)) { g_xfer_ok = 0u; s_link_ok = 0u; return false; }
