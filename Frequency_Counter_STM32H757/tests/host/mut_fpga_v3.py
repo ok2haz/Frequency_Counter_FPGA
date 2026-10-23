@@ -45,6 +45,7 @@ M = [
     ('emulator: P plati hned bez neplatnych', '        if (e->p_inv[c]) { e->p_inv[c]--; r.flags |= FPGA_V3_R_INVALID; }\n', ''),
     ('PSRAM: DEEP_N 32 b', 'h->deep_n = (uint32_t)rdn(f + 124, 3);', 'h->deep_n = (uint32_t)rdn(f + 124, 4);'),
     ('PSRAM: okno z bajtu 129', 'h->deep_win = (uint16_t)rdn(f + 130, 2);', 'h->deep_win = (uint16_t)rdn(f + 129, 2);'),
+    ('PSRAM: bajt 127 se necte', 'h->deep_ack = f[127];', 'h->deep_ack = 0u;'),
     ('grp_break nic nedela', '{ g->c[ch & 1u].open = 0u; }', '{ (void)g; (void)ch; }'),
     ('grp_break vzdy kanal A', '{ g->c[ch & 1u].open = 0u; }', '{ g->c[0].open = 0u; (void)ch; }'),
 ]

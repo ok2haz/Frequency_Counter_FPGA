@@ -63,6 +63,11 @@
 #define FPGA_V3_DS_OVF         0x08u        /* FIFO preteklo (znacky zahozeny) */
 #define FPGA_V3_DS_WLOAD       0x10u        /* nacita se okno */
 #define FPGA_V3_DS_WDONE       0x20u        /* okno nacteno */
+#define FPGA_V3_DS_GAP         0x40u        /* audit F-0270: v zaznamu jsou mezery (kanal neznackoval: hold, maska pri CS) */
+#define FPGA_V3_DS_WERR        0x80u        /* audit F-0268: okno s chybou cteni (0 znacek) */
+#define FPGA_V3_DACK_N(a)      ((uint8_t)((a) & 0x0Fu))   /* bajt 127: prijate prikazy T_RAW (Gray, mod 16) */
+#define FPGA_V3_DACK_CH        0x80u        /* bajt 127 bit7: kanal posledniho prijateho zaznamu */
+#define FPGA_V3_PS_W0          4u           /* bajt 129 bity 4:0 = latence zapisu PSRAM - W0 [bajty]; bit5 faze cteni */
 #define FPGA_V3_REC_PLOG2(r)   ((uint8_t)(((r)->ch >> 4) & 7u))   /* log2 P segmentu zaznamu */
 #define FPGA_V3_PRESC_PEND     0x80u        /* PRESC A/B (bajty 64/65): zmena ceka na hranici segmentu */
 #define FPGA_V3_PROBE_HZ(p)    ((double)(p) * 16000.0)   /* PROBE A/B: hrany /16 za 1 ms -> kmitocet [Hz] */
@@ -136,7 +141,8 @@ typedef struct {
     uint16_t probe[2];
     uint8_t  bub[2], ovl[2];
     uint32_t deep_n;             /* v0.39.0: znacek v PSRAM (bajty 124..126) */
-    uint8_t  deep_st, deep_wsel; /* bajt 128 (FPGA_V3_DS_*), 129 latence zapisu PSRAM (W0 + n) */
+    uint8_t  deep_st, deep_wsel; /* bajt 128 (FPGA_V3_DS_*), 129 latence zapisu PSRAM (W0 + n) a faze cteni (bit5) */
+    uint8_t  deep_ack;           /* audit F-0272: bajt 127 (FPGA_V3_DACK_*) */
     uint16_t deep_win;           /* bajty 130..131: posledni (nacitane) okno */
 } fpga_v3_hdr_t;
 

@@ -699,19 +699,23 @@ int  fpga_freq_ev_get(uint32_t back, fpga_ev_rec_t *o);   /* back 0 = nejnovejsi
 int  fpga_freq_ab_get(uint32_t back, double *ps);           /* posledni intervaly [ps]; 0 = neni */
 /** RAW_CAPTURE (TYPE 0x0B): 512 po sobe jdoucich casovanych znacek kanalu ch. Blokuje volajiciho (UartTask) do timeout_ms
  *  + cteni 5 stranek; cb (muze byt NULL) dostane kazdou znacku [ps, 48 b osa] a rozdil proti predchozi [ps].
- *  @return 1 = 512 znacek, 0 = mene (timeout), -1 stranka selhala, -2 neni v3 / emulator, -3 SPI */
+ *  @return 1 = 512 znacek, 0 = mene (timeout), -1 stranka selhala, -2 neni v3 / emulator, -3 SPI,
+ *  -5 FPGA prikaz odmitlo (bezi hluboky zaznam / nacitani okna; FW >= 0x0505) */
 typedef void (*fpga_raw_cb_t)(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps);
 typedef struct {
     uint32_t n;                                       /* precteno znacek */
     uint32_t cnt;                                     /* pocet podle FPGA (souhrnna stranka polozka 5) */
     double   d_mean, d_sd, d_min, d_max, span_ps;     /* rozdily po sobe jdoucich znacek, prvni..posledni [ps] */
+    uint8_t  dst;                                     /* DEEP_ST po zaznamu (FPGA_V3_DS_GAP = v zaznamu mezery) */
 } fpga_raw_info_t;
 int  fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st);
 /** v0.39.0 (FW 0x0505, CAPS bit21): HLUBOKY RAW -- n po sobe jdoucich znacek kanalu ch do PSRAM FPGA (nejvys 699 050),
  *  cekani na konec (nejvys timeout_ms), cteni po oknech 512 znacek (rezim 2 + stranky druhu 3); statistika rozdilu
  *  navazuje pres okna, cb jako u fpga_freq_v3_raw. *deep_st = DEEP_ST na konci zaznamu (FPGA_V3_DS_OVF = zahozene).
  *  @return 1 = vsech n, 0 = mene (timeout / preteceni), -1 stranka / okno selhalo, -2 neni v3 / emulator, -3 SPI,
- *  -4 FPGA bez PSRAM (CAPS bit21) nebo PSRAM neni pripravena */
+ *  -4 FPGA bez PSRAM (CAPS bit21) nebo PSRAM neni pripravena, -5 FPGA prikaz odmitlo nebo zaznam je z jineho kanalu.
+ *  Zaznam z drivejsiho volani, ktery jeste bezi, se nejdriv zastavi; po timeoutu se zaznam zastavi a prectou se okna
+ *  toho, co se zapsalo (navrat 0). */
 int  fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st,
                            uint8_t *deep_st);
 

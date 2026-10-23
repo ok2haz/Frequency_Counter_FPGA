@@ -2606,9 +2606,10 @@ void UartTask_run(void *argument)
 					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
 					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", FPGA_V3_PROBE_HZ(vi.probe[c]) * 1e-6,
 					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
-				  printf("  PSRAM: %s, latence zapisu W0+%u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
+				  printf("  PSRAM: %s, latence zapisu %u B, faze cteni %u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
 				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
-				         (unsigned)vi.deep_wsel, (unsigned long)vi.deep_n, (vi.deep_st & FPGA_V3_DS_OVF) ? ", PRETECENI" : "",
+				         (unsigned)(FPGA_V3_PS_W0 + (vi.deep_wsel & 0x1Fu)), (unsigned)((vi.deep_wsel >> 5) & 1u),
+				         (unsigned long)vi.deep_n, (vi.deep_st & FPGA_V3_DS_OVF) ? ", PRETECENI" : "",
 				         (vi.caps & FPGA_V3_CAP_PSRAM) ? "ano" : "ne");
 			  }
 			  else if (strncmp(RxBuffer, "fpga presc ", 11) == 0) {
@@ -2687,11 +2688,14 @@ void UartTask_run(void *argument)
 					  rc = fpga_freq_v3_raw(ch, 5000u, dump ? uart_raw_cb : NULL, NULL, &ri);
 				  }
 				  if (rc == -4) { /* vypsano vyse */ }
+				  else if (rc == -5) printf("  FPGA prikaz odmitlo (bezi jiny RAW zaznam / nacitani okna) nebo zaznam je z jineho kanalu\n");
 				  else if (rc == -2) printf("  jen skutecne FPGA v3 (ne emulator)\n");
 				  else if (rc == -3) printf("  SPI selhalo\n");
 				  else {
 					  if (rc == -1) printf("  CHYBA: stranka znacek nedorazila\n");
 					  printf("  znacek %lu (FPGA %lu)%s\n", (unsigned long)ri.n, (unsigned long)ri.cnt, (rc == 0) ? " -- neuplne (timeout)" : "");
+					  if (ri.dst & FPGA_V3_DS_GAP)
+						  printf("  POZOR: v zaznamu jsou mezery (kanal chvili neznackoval: kalibrace, zmena P nebo maska pri CS -- `fpga diag mask off`)\n");
 					  if (ri.n >= 2u) {
 						  char m[32], s[24], lo[32], hi[32], sp[32], fz[24];
 						  uart_ps_fmt(m, sizeof m, ri.d_mean);

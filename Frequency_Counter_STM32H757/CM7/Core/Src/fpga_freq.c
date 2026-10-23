@@ -2943,6 +2943,40 @@ static int s3_raw_pages(uint32_t cnt, uint32_t clk, fpga_raw_cb_t cb, void *ctx,
     return 0;
 }
 
+/* audit 2026-10-23 (F-0272): T_RAW s potvrzenim. FPGA (FW 0x0505) zvysi pri kazdem prijatem prikazu pocitadlo v bajtu
+ * 127 (Gray, mod 16; bit7 = kanal zaznamu); odmitnuty prikaz (bezi jiny rezim) ho nezmeni -- driv STM vzal stara data
+ * jineho zaznamu nebo kanalu. Stav v ramci je o transakci starsi, hlavicka se proto cte opakovane. FPGA bez CAPS bit21
+ * (FW < 0x0505) pocitadlo nema: prikaz se jen posle. @return 1 prijato (*h = hlavicka po prijeti), 0 odmitnuto, -3 SPI */
+static int s3_raw_cmd(uint8_t p0, uint32_t arg, fpga_v3_hdr_t *h)
+{
+    if (!v3_hdr_now(h) || !v3_hdr_now(h)) return -3;
+    const bool ack = (h->caps & FPGA_V3_CAP_PSRAM) != 0u;
+    const uint8_t a0 = FPGA_V3_DACK_N(h->deep_ack);
+    if (!spi_lock(200)) return -3;
+    fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq,
+                  (const uint8_t[4]){ p0, (uint8_t)arg, (uint8_t)(arg >> 8), (uint8_t)(arg >> 16) }, 4u);
+    const bool sent = xfer3_raw(s3c_tx, s3c_rx);
+    spi_unlock();
+    if (!sent) return -3;
+    if (!ack) return 1;
+    for (int i = 0; i < 20; i++) {
+        osDelay(2);
+        if (v3_hdr_now(h) && FPGA_V3_DACK_N(h->deep_ack) != a0) return 1;
+    }
+    return 0;
+}
+
+/* hluboky zaznam: STOP (rezim 1 pri bezicim zaznamu; zbytek FIFO se dopise) a cekani na RUN = 0. @return 1 stoji, 0 ne, -3 */
+static int s3_deep_stop(uint8_t ch, fpga_v3_hdr_t *h)
+{
+    if (s3_raw_cmd((uint8_t)((ch & 1u) | (1u << 1)), 0u, h) < 0) return -3;
+    for (int i = 0; i < 50 && (h->deep_st & FPGA_V3_DS_RUN); i++) {
+        osDelay(2);
+        if (!v3_hdr_now(h)) return -3;
+    }
+    return (h->deep_st & FPGA_V3_DS_RUN) ? 0 : 1;
+}
+
 /* v0.39.0 (FW 0x0505): hluboky RAW do PSRAM -- viz fpga_freq.h */
 int fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st,
                           uint8_t *deep_st)
@@ -2958,38 +2992,38 @@ int fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_
     if (!v3_hdr_now(&h)) return -3;
     if (!(h.caps & FPGA_V3_CAP_PSRAM) || !(h.deep_st & FPGA_V3_DS_RDY)) { *deep_st = h.deep_st; return -4; }
     if (n == 0u || n > FPGA_V3_DEEP_MAX) n = FPGA_V3_DEEP_MAX;
-    if (!spi_lock(200)) return -3;
-    fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq,
-                  (const uint8_t[4]){ (uint8_t)((ch & 1u) | (1u << 1)), (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)(n >> 16) }, 4u);
-    bool sent = xfer3_raw(s3c_tx, s3c_rx);
-    spi_unlock();
-    if (!sent) return -3;
+    int rc;
+    if ((h.deep_st & FPGA_V3_DS_RUN) && (rc = s3_deep_stop(ch, &h)) <= 0) return (rc < 0) ? -3 : -5;   /* drivejsi zaznam */
+    rc = s3_raw_cmd((uint8_t)((ch & 1u) | (1u << 1)), n, &h);
+    if (rc <= 0) { *deep_st = h.deep_st; return (rc < 0) ? -3 : -5; }
     const uint32_t t0 = HAL_GetTick();
-    do {                                                   /* konec zaznamu: RUN zhasne (vse zapsano do PSRAM) */
-        osDelay(20);
-        if (!v3_hdr_now(&h)) continue;
-    } while (((h.deep_st & FPGA_V3_DS_RUN) || h.deep_n == 0u) && (HAL_GetTick() - t0) < timeout_ms);
+    while ((h.deep_st & FPGA_V3_DS_RUN) && (HAL_GetTick() - t0) < timeout_ms) {   /* konec zaznamu: RUN zhasne */
+        osDelay(100);                                      /* kazdy dotaz je transakce SPI (maska pri CS = mezera) */
+        (void)v3_hdr_now(&h);
+    }
+    int part = 0;
+    if (h.deep_st & FPGA_V3_DS_RUN) {                      /* timeout: zastavit a precist, co se zapsalo */
+        if ((rc = s3_deep_stop(ch, &h)) <= 0) { *deep_st = h.deep_st; return (rc < 0) ? -3 : 0; }
+        part = 1;
+    }
     *deep_st = h.deep_st;
+    st->dst = h.deep_st;
     st->cnt = h.deep_n;
-    if (h.deep_st & FPGA_V3_DS_RUN) return 0;              /* timeout: zaznam jeste bezi */
+    if (((h.deep_ack & FPGA_V3_DACK_CH) != 0u) != ((ch & 1u) != 0u)) return -5;   /* zaznam jineho kanalu */
     const uint32_t clk = h.clk_mhz ? h.clk_mhz : 100u;
     fpga_v3_stat_t ds;
     fpga_v3_stat_init(&ds);
     uint64_t first = 0u, prev = 0u;
     for (uint32_t w = 0u; (uint64_t)w * 512u < st->cnt; w++) {
-        if (!spi_lock(200)) return -3;
-        fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq,
-                      (const uint8_t[4]){ (uint8_t)((ch & 1u) | (2u << 1)), (uint8_t)w, (uint8_t)(w >> 8), 0u }, 4u);
-        sent = xfer3_raw(s3c_tx, s3c_rx);
-        spi_unlock();
-        if (!sent) return -3;
+        rc = s3_raw_cmd((uint8_t)((ch & 1u) | (2u << 1)), w, &h);
+        if (rc <= 0) return (rc < 0) ? -3 : -5;
         const uint32_t t1 = HAL_GetTick();
         bool ok = false;
         do {                                               /* okno: 24 davek z PSRAM, desitky us */
             osDelay(2);
             ok = v3_hdr_now(&h) && (h.deep_st & FPGA_V3_DS_WDONE) && !(h.deep_st & FPGA_V3_DS_WLOAD) && h.deep_win == (uint16_t)w;
         } while (!ok && (HAL_GetTick() - t1) < 200u);
-        if (!ok) return -1;
+        if (!ok || (h.deep_st & FPGA_V3_DS_WERR)) return -1;
         const uint32_t cw = (st->cnt - w * 512u > 512u) ? 512u : st->cnt - w * 512u;
         if (s3_raw_pages(cw, clk, cb, ctx, st, &ds, &first, &prev) < 0) return -1;
         watchdog_kick_fpga();
@@ -2997,7 +3031,7 @@ int fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_
     const double up = fpga_v3_unit_ps(clk);
     st->d_mean = fpga_v3_stat_mean(&ds); st->d_sd = fpga_v3_stat_sd(&ds); st->d_min = ds.min; st->d_max = ds.max;
     st->span_ps = st->n ? (double)((prev - first) & 0xFFFFFFFFFFFFull) * up : 0.0;
-    return (st->n >= n && !(*deep_st & FPGA_V3_DS_OVF)) ? 1 : 0;
+    return (!part && st->n >= n && !(*deep_st & FPGA_V3_DS_OVF)) ? 1 : 0;
 }
 
 int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st)
@@ -3006,11 +3040,9 @@ int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ct
     if (st == NULL) st = &z;
     memset(st, 0, sizeof *st);
     if (s_proto != 3u || s_sim_on) return -2;
-    if (!spi_lock(200)) return -3;
-    fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq, (const uint8_t[1]){ (uint8_t)(ch & 1u) }, 1u);
-    const bool sent = xfer3_raw(s3c_tx, s3c_rx);
-    spi_unlock();
-    if (!sent) return -3;
+    fpga_v3_hdr_t h;
+    const int rc = s3_raw_cmd((uint8_t)(ch & 1u), 0u, &h);
+    if (rc <= 0) return (rc < 0) ? -3 : -5;
     const uint32_t t0 = HAL_GetTick();
     do {
         osDelay(20);
@@ -3018,7 +3050,8 @@ int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ct
         if (v3_page(0u, 0u, s3r_items, &n) && n > 5u) st->cnt = s3r_items[5];
     } while (st->cnt < 512u && (HAL_GetTick() - t0) < timeout_ms);
     if (st->cnt > 512u) st->cnt = 512u;
-    const uint32_t clk = (s3_h_ok && s3_h.clk_mhz) ? s3_h.clk_mhz : 100u;
+    if (v3_hdr_now(&h)) st->dst = h.deep_st;
+    const uint32_t clk = h.clk_mhz ? h.clk_mhz : 100u;
     fpga_v3_stat_t ds;
     fpga_v3_stat_init(&ds);
     uint64_t first = 0u, prev = 0u;
