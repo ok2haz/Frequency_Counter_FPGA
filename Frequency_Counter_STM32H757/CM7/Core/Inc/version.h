@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.39.0 (2026-10-23) = HLUBOKY RAW ZAZNAM do vestavene PSRAM FPGA v3 (FW 0x0505): `fpga raw a|b deep <N> [dump]` = az
+ * 699 050 po sobe jdoucich znacek kanalu, cteni po oknech 512 znacek (T_RAW rezim 2 + stranky druhu 3), statistika
+ * navazuje pres okna; hlavicka 124..131 (DEEP_N, DEEP_ST, latence zapisu PSRAM, okno); `fpga v3` vypise stav PSRAM.
+ * Cteni RAW stranek je spolecna funkce s RAW 512 (s3_raw_pages). */
 /* v0.38.0 (2026-10-23) = PREDELICKA FPGA v3 (FW 0x0503, etapa E5): vstupy nad prime pocitani (~40 MHz) pres pin_cnt3 ve
  * FPGA (P = 1..16). Automaticky rozsah ze sondy /16 (fpga_v3_range_select: nahoru f/P > 33 MHz, dolu f/(P/2) < 27 MHz),
  * prikaz az po shode dvou ramcu a az kdyz predchozi zmena plati; B z pinu A = P 1. Okna v periodach (hrany x P), preruseni
@@ -292,8 +296,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 38
+#define FW_VERSION_MINOR 39
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.38.0"
+#define FW_VERSION_STR   "v0.39.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

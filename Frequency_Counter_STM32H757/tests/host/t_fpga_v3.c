@@ -10,7 +10,8 @@
  * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu;
  * (9) jednorazove deje: casy udalosti, interval A->B (start/stop), zpozdeni A/B, 200 s ticho (T0 pretece);
  * (10) jemny cas 1PPS (FW 0x0502): PFLAGS, PPS_STATUS, d, volba jemny / hruby (fpga_v3_pps_fine);
- * (11) automaticky rozsah predelicky (fpga_v3_range_select); (12) emulator s predelickou (FW 0x0503): okna v periodach. */
+ * (11) automaticky rozsah predelicky (fpga_v3_range_select); (12) emulator s predelickou (FW 0x0503): okna v periodach;
+ * (13) hlavicka PSRAM (FW 0x0505): DEEP_N, DEEP_ST, latence, okno. */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -135,6 +136,19 @@ int main(void)
         CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u && fr == 0u, "1PPS bez CAPS bit17 = hruby");
         h2 = h; h2.pps_status &= (uint8_t)~FPGA_V3_PPS_ST_LOCK;
         CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u, "1PPS bez PCLK = hruby");
+    }
+    /* (13) v0.39.0 (FW 0x0505): hlavicka PSRAM -- DEEP_N (u24), DEEP_ST, latence zapisu, posledni okno */
+    {
+        fpga_v3_emu_init(&E, 10e6, 0.0, 0.0, 99u);
+        fpga_v3_emu_frame(&E, F);
+        F[124] = 0x2Au; F[125] = 0xAAu; F[126] = 0x0Au; F[127] = 0x77u;      /* 699050 = 0x0AAAAA; bajt 127 rezerva */
+        F[128] = (uint8_t)(FPGA_V3_DS_RDY | FPGA_V3_DS_WDONE); F[129] = 4u; F[130] = 0x55u; F[131] = 0x05u;
+        fpga_v3_blk_seal(F);
+        fpga_v3_hdr_t h; uint32_t n_ok = 0;
+        CHECK(fpga_v3_parse(F, &h, R, &n_ok) == FPGA_V3_OK, "PSRAM: parse");
+        CHECK(h.deep_n == 0x0AAA2Au && h.deep_st == (FPGA_V3_DS_RDY | FPGA_V3_DS_WDONE) && h.deep_wsel == 4u && h.deep_win == 0x0555u,
+              "PSRAM: DEEP_N 0x%06lX, stav 0x%02X, latence %u, okno 0x%04X", (unsigned long)h.deep_n, (unsigned)h.deep_st,
+              (unsigned)h.deep_wsel, (unsigned)h.deep_win);
     }
 
     /* (11) v0.38.0: automaticky rozsah predelicky -- rozmitani 0,1 Hz .. 420 MHz nahoru a dolu: f/P <= 33 MHz (krome /16),

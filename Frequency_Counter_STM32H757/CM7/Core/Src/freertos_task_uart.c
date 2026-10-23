@@ -2606,6 +2606,10 @@ void UartTask_run(void *argument)
 					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
 					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", FPGA_V3_PROBE_HZ(vi.probe[c]) * 1e-6,
 					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
+				  printf("  PSRAM: %s, latence zapisu W0+%u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
+				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
+				         (unsigned)vi.deep_wsel, (unsigned long)vi.deep_n, (vi.deep_st & FPGA_V3_DS_OVF) ? ", PRETECENI" : "",
+				         (vi.caps & FPGA_V3_CAP_PSRAM) ? "ano" : "ne");
 			  }
 			  else if (strncmp(RxBuffer, "fpga presc ", 11) == 0) {
 				  /* v0.38.0 (FW 0x0503): predelicka -- `fpga presc a|b auto|0..4` (log2 P: 0 = primo, 4 = /16; auto = podle sondy) */
@@ -2666,10 +2670,24 @@ void UartTask_run(void *argument)
 				  const char *a = (RxBuffer[8] == ' ') ? &RxBuffer[9] : "";
 				  const uint8_t ch = (uint8_t)((a[0] == 'b' || a[0] == 'B') ? 1u : 0u);
 				  const int dump = (strstr(a, "dump") != NULL);
+				  /* v0.39.0 (FW 0x0505): `fpga raw a|b deep <N> [dump]` = hluboky zaznam N znacek do PSRAM FPGA (nejvys 699 050),
+				   * cteni po oknech 512 znacek; ceka na zaznam nejvys 30 s, cteni ~35 ms na okno (UartTask blokovan). */
+				  const char *dp = strstr(a, "deep");
 				  fpga_raw_info_t ri;
-				  printf("FPGA RAW_CAPTURE kanal %c: 512 znacek, ceka nejvys 5 s\n", ch ? 'B' : 'A');
-				  const int rc = fpga_freq_v3_raw(ch, 5000u, dump ? uart_raw_cb : NULL, NULL, &ri);
-				  if (rc == -2) printf("  jen skutecne FPGA v3 (ne emulator)\n");
+				  uint8_t dst = 0u;
+				  int rc;
+				  if (dp != NULL) {
+					  const uint32_t nreq = (uint32_t)strtoul(dp + 4, NULL, 10);
+					  printf("FPGA RAW hluboky (PSRAM) kanal %c: %lu znacek, ceka nejvys 30 s\n", ch ? 'B' : 'A', (unsigned long)nreq);
+					  rc = fpga_freq_v3_raw_deep(ch, nreq, 30000u, dump ? uart_raw_cb : NULL, NULL, &ri, &dst);
+					  if (rc == -4) printf("  FPGA bez PSRAM (CAPS bit21) nebo PSRAM neni pripravena (stav 0x%02X)\n", (unsigned)dst);
+					  if (dst & FPGA_V3_DS_OVF) printf("  POZOR: FIFO preteklo -- kmitocet znacek nad propustnosti PSRAM, cast zahozena\n");
+				  } else {
+					  printf("FPGA RAW_CAPTURE kanal %c: 512 znacek, ceka nejvys 5 s\n", ch ? 'B' : 'A');
+					  rc = fpga_freq_v3_raw(ch, 5000u, dump ? uart_raw_cb : NULL, NULL, &ri);
+				  }
+				  if (rc == -4) { /* vypsano vyse */ }
+				  else if (rc == -2) printf("  jen skutecne FPGA v3 (ne emulator)\n");
 				  else if (rc == -3) printf("  SPI selhalo\n");
 				  else {
 					  if (rc == -1) printf("  CHYBA: stranka znacek nedorazila\n");

@@ -53,6 +53,16 @@
 /* v0.38.0 (FW 0x0503, etapa E5): predelicka vstupu P = 2^p (p 0..4), SET_CONFIG 0x07 p1 = kanal, p2 = p; plati od
  * hranice segmentu, 2 segmenty kolem zmeny neplatne. log2 P segmentu v bajtu CH zaznamu (bity 6:4), X pocita DELENE hrany. */
 #define FPGA_V3_CAP_PRESC      (1u << 18)   /* CAPS: predelicka pin_cnt3 */
+/* v0.39.0 (FW 0x0505): hluboky RAW zaznam do vestavene PSRAM. T_RAW p0: bit0 kanal, bity 2:1 rezim (0 = 512 do BSRAM,
+ * 1 = hluboky N znacek, 2 = nacist okno w do BSRAM); p1..p3 = N (u24) / w (u16). Okno se cte strankami druhu 3. */
+#define FPGA_V3_CAP_PSRAM      (1u << 21)
+#define FPGA_V3_DEEP_MAX       699050u      /* 4 MB / 6 B */
+#define FPGA_V3_DS_RDY         0x01u        /* DEEP_ST (bajt 128): PSRAM pripravena (kalibrace zapisu prosla) */
+#define FPGA_V3_DS_BAD         0x02u        /* zadna latence zapisu nesedela */
+#define FPGA_V3_DS_RUN         0x04u        /* hluboky zaznam bezi */
+#define FPGA_V3_DS_OVF         0x08u        /* FIFO preteklo (znacky zahozeny) */
+#define FPGA_V3_DS_WLOAD       0x10u        /* nacita se okno */
+#define FPGA_V3_DS_WDONE       0x20u        /* okno nacteno */
 #define FPGA_V3_REC_PLOG2(r)   ((uint8_t)(((r)->ch >> 4) & 7u))   /* log2 P segmentu zaznamu */
 #define FPGA_V3_PRESC_PEND     0x80u        /* PRESC A/B (bajty 64/65): zmena ceka na hranici segmentu */
 #define FPGA_V3_PROBE_HZ(p)    ((double)(p) * 16000.0)   /* PROBE A/B: hrany /16 za 1 ms -> kmitocet [Hz] */
@@ -125,6 +135,9 @@ typedef struct {
     uint32_t pps_coarse[2];
     uint16_t probe[2];
     uint8_t  bub[2], ovl[2];
+    uint32_t deep_n;             /* v0.39.0: znacek v PSRAM (bajty 124..126) */
+    uint8_t  deep_st, deep_wsel; /* bajt 128 (FPGA_V3_DS_*), 129 latence zapisu PSRAM (W0 + n) */
+    uint16_t deep_win;           /* bajty 130..131: posledni (nacitane) okno */
 } fpga_v3_hdr_t;
 
 /* zaznam segmentu (31 B v ramci) */

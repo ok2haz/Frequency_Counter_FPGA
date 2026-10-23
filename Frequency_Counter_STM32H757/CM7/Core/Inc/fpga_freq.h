@@ -652,6 +652,8 @@ typedef struct {
     uint8_t  presc[2], pr_mode[2];     /* v0.38.0: PRESC A/B (bit7 ceka), volba (0xFF auto, jinak pevne log2 P) */
     uint16_t probe[2];                 /* sonda /16 za 1 ms */
     uint32_t pr_sw[2];                 /* pocet prepnuti P */
+    uint8_t  deep_st, deep_wsel;       /* v0.39.0: PSRAM (FPGA_V3_DS_*, latence zapisu) */
+    uint32_t deep_n;
     int8_t   pps_d;                    /* jemny - hruby [takty] */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
@@ -705,5 +707,12 @@ typedef struct {
     double   d_mean, d_sd, d_min, d_max, span_ps;     /* rozdily po sobe jdoucich znacek, prvni..posledni [ps] */
 } fpga_raw_info_t;
 int  fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st);
+/** v0.39.0 (FW 0x0505, CAPS bit21): HLUBOKY RAW -- n po sobe jdoucich znacek kanalu ch do PSRAM FPGA (nejvys 699 050),
+ *  cekani na konec (nejvys timeout_ms), cteni po oknech 512 znacek (rezim 2 + stranky druhu 3); statistika rozdilu
+ *  navazuje pres okna, cb jako u fpga_freq_v3_raw. *deep_st = DEEP_ST na konci zaznamu (FPGA_V3_DS_OVF = zahozene).
+ *  @return 1 = vsech n, 0 = mene (timeout / preteceni), -1 stranka / okno selhalo, -2 neni v3 / emulator, -3 SPI,
+ *  -4 FPGA bez PSRAM (CAPS bit21) nebo PSRAM neni pripravena */
+int  fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st,
+                           uint8_t *deep_st);
 
 #endif /* FPGA_FREQ_H */

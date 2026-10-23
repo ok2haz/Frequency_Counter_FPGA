@@ -2920,6 +2920,86 @@ int fpga_freq_ab_get(uint32_t back, double *ps)
 /* RAW_CAPTURE: zadost (p0 = kanal), cekani na pocet (souhrnna stranka polozka 5), stranky druhu 3 po 252 polozkach
  * (126 znacek, dve polozky u24 = dolni a horni polovina u48). Vlastni buffer stranky (s3_items patri kalibraci). */
 static uint32_t s3r_items[FPGA_V3_LUTW_MAX];
+/* v0.39.0: cnt znacek z okna RAW v BSRAM (stranky druhu 3) do statistiky; st->n, *first a *prev navazuji pres volani
+ * (hluboky zaznam po oknech). @return 0 ok, -1 stranka nedorazila */
+static int s3_raw_pages(uint32_t cnt, uint32_t clk, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st,
+                        fpga_v3_stat_t *ds, uint64_t *first, uint64_t *prev)
+{
+    const double up = fpga_v3_unit_ps(clk);
+    uint32_t taken = 0u;
+    for (uint16_t p = 0; (uint32_t)p * FPGA_V3_LUTW_MAX < 2u * cnt; p++) {
+        uint16_t m = 0u;
+        bool ok = false;
+        for (int a = 0; a < 3 && !ok; a++) ok = v3_page(3u, p, s3r_items, &m);
+        if (!ok) return -1;
+        for (uint32_t k = 0; k + 1u < m && taken < cnt; k += 2u) {
+            const uint64_t mk = (uint64_t)s3r_items[k] | ((uint64_t)s3r_items[k + 1u] << 24);
+            const double d = st->n ? (double)((mk - *prev) & 0xFFFFFFFFFFFFull) * up : 0.0;
+            if (st->n) fpga_v3_stat_add(ds, d); else *first = mk;
+            if (cb) cb(ctx, st->n, s3e_ps(mk, clk), d);
+            *prev = mk; st->n++; taken++;
+        }
+    }
+    return 0;
+}
+
+/* v0.39.0 (FW 0x0505): hluboky RAW do PSRAM -- viz fpga_freq.h */
+int fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st,
+                          uint8_t *deep_st)
+{
+    fpga_raw_info_t z;
+    uint8_t dz;
+    if (st == NULL) st = &z;
+    if (deep_st == NULL) deep_st = &dz;
+    memset(st, 0, sizeof *st);
+    *deep_st = 0u;
+    if (s_proto != 3u || s_sim_on) return -2;
+    fpga_v3_hdr_t h;
+    if (!v3_hdr_now(&h)) return -3;
+    if (!(h.caps & FPGA_V3_CAP_PSRAM) || !(h.deep_st & FPGA_V3_DS_RDY)) { *deep_st = h.deep_st; return -4; }
+    if (n == 0u || n > FPGA_V3_DEEP_MAX) n = FPGA_V3_DEEP_MAX;
+    if (!spi_lock(200)) return -3;
+    fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq,
+                  (const uint8_t[4]){ (uint8_t)((ch & 1u) | (1u << 1)), (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)(n >> 16) }, 4u);
+    bool sent = xfer3_raw(s3c_tx, s3c_rx);
+    spi_unlock();
+    if (!sent) return -3;
+    const uint32_t t0 = HAL_GetTick();
+    do {                                                   /* konec zaznamu: RUN zhasne (vse zapsano do PSRAM) */
+        osDelay(20);
+        if (!v3_hdr_now(&h)) continue;
+    } while (((h.deep_st & FPGA_V3_DS_RUN) || h.deep_n == 0u) && (HAL_GetTick() - t0) < timeout_ms);
+    *deep_st = h.deep_st;
+    st->cnt = h.deep_n;
+    if (h.deep_st & FPGA_V3_DS_RUN) return 0;              /* timeout: zaznam jeste bezi */
+    const uint32_t clk = h.clk_mhz ? h.clk_mhz : 100u;
+    fpga_v3_stat_t ds;
+    fpga_v3_stat_init(&ds);
+    uint64_t first = 0u, prev = 0u;
+    for (uint32_t w = 0u; (uint64_t)w * 512u < st->cnt; w++) {
+        if (!spi_lock(200)) return -3;
+        fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq,
+                      (const uint8_t[4]){ (uint8_t)((ch & 1u) | (2u << 1)), (uint8_t)w, (uint8_t)(w >> 8), 0u }, 4u);
+        sent = xfer3_raw(s3c_tx, s3c_rx);
+        spi_unlock();
+        if (!sent) return -3;
+        const uint32_t t1 = HAL_GetTick();
+        bool ok = false;
+        do {                                               /* okno: 24 davek z PSRAM, desitky us */
+            osDelay(2);
+            ok = v3_hdr_now(&h) && (h.deep_st & FPGA_V3_DS_WDONE) && !(h.deep_st & FPGA_V3_DS_WLOAD) && h.deep_win == (uint16_t)w;
+        } while (!ok && (HAL_GetTick() - t1) < 200u);
+        if (!ok) return -1;
+        const uint32_t cw = (st->cnt - w * 512u > 512u) ? 512u : st->cnt - w * 512u;
+        if (s3_raw_pages(cw, clk, cb, ctx, st, &ds, &first, &prev) < 0) return -1;
+        watchdog_kick_fpga();
+    }
+    const double up = fpga_v3_unit_ps(clk);
+    st->d_mean = fpga_v3_stat_mean(&ds); st->d_sd = fpga_v3_stat_sd(&ds); st->d_min = ds.min; st->d_max = ds.max;
+    st->span_ps = st->n ? (double)((prev - first) & 0xFFFFFFFFFFFFull) * up : 0.0;
+    return (st->n >= n && !(*deep_st & FPGA_V3_DS_OVF)) ? 1 : 0;
+}
+
 int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st)
 {
     fpga_raw_info_t z;
@@ -2939,23 +3019,11 @@ int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ct
     } while (st->cnt < 512u && (HAL_GetTick() - t0) < timeout_ms);
     if (st->cnt > 512u) st->cnt = 512u;
     const uint32_t clk = (s3_h_ok && s3_h.clk_mhz) ? s3_h.clk_mhz : 100u;
-    const double up = fpga_v3_unit_ps(clk);
     fpga_v3_stat_t ds;
     fpga_v3_stat_init(&ds);
     uint64_t first = 0u, prev = 0u;
-    for (uint16_t p = 0; (uint32_t)p * FPGA_V3_LUTW_MAX < 2u * st->cnt; p++) {
-        uint16_t m = 0u;
-        bool ok = false;
-        for (int a = 0; a < 3 && !ok; a++) ok = v3_page(3u, p, s3r_items, &m);
-        if (!ok) return -1;
-        for (uint32_t k = 0; k + 1u < m && st->n < st->cnt; k += 2u) {
-            const uint64_t mk = (uint64_t)s3r_items[k] | ((uint64_t)s3r_items[k + 1u] << 24);
-            const double d = st->n ? (double)((mk - prev) & 0xFFFFFFFFFFFFull) * up : 0.0;
-            if (st->n) fpga_v3_stat_add(&ds, d); else first = mk;
-            if (cb) cb(ctx, st->n, s3e_ps(mk, clk), d);
-            prev = mk; st->n++;
-        }
-    }
+    if (s3_raw_pages(st->cnt, clk, cb, ctx, st, &ds, &first, &prev) < 0) return -1;
+    const double up = fpga_v3_unit_ps(clk);
     st->d_mean = fpga_v3_stat_mean(&ds); st->d_sd = fpga_v3_stat_sd(&ds); st->d_min = ds.min; st->d_max = ds.max;
     st->span_ps = st->n ? (double)((prev - first) & 0xFFFFFFFFFFFFull) * up : 0.0;
     return (st->n >= 512u) ? 1 : 0;
@@ -2977,6 +3045,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
         o->flags = s3_h.flags; o->tdc[0] = s3_h.tdc_status[0]; o->tdc[1] = s3_h.tdc_status[1]; o->cal_wait = s3_h.cal_wait;
         o->pps_status = s3_h.pps_status; o->pps_pflags = s3_h.pps[0].pflags; o->pps_d = s3_h.pps[0].d;
         o->presc[0] = s3_h.presc[0]; o->presc[1] = s3_h.presc[1]; o->probe[0] = s3_h.probe[0]; o->probe[1] = s3_h.probe[1];
+        o->deep_st = s3_h.deep_st; o->deep_wsel = s3_h.deep_wsel; o->deep_n = s3_h.deep_n;
     }
 }
 

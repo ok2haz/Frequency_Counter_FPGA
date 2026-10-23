@@ -145,6 +145,8 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     h->rx_last = (uint32_t)rdn(f + 56, 4);
     h->lut_cnt = (uint16_t)(rdn(f + 60, 2) & 0x3FFFu); h->lut_sum = (uint16_t)rdn(f + 62, 2);
     h->lut_cnt_b = (uint16_t)(rdn(f + 122, 2) & 0x3FFFu);
+    h->deep_n = (uint32_t)rdn(f + 124, 3); h->deep_st = f[128]; h->deep_wsel = f[129];   /* v0.39.0: PSRAM */
+    h->deep_win = (uint16_t)rdn(f + 130, 2);
     h->presc[0] = f[64]; h->presc[1] = f[65]; h->cfg_echo = f[66];
     for (int i = 0; i < 2; i++) {
         const uint8_t *q = f + 68 + 16 * i;
