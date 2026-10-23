@@ -41,13 +41,19 @@ python tools/audit.py
 #         CM7/Core/Src/fpga_tdccal.c tests/host/t_fpga_v3.c -lm -o /tmp/t_fpga_v3 && /tmp/t_fpga_v3   -> PASS
 #   mutace: python tests/host/mut_fpga_v3.py <vystupni adresar>  -> "vsechny mutace zachyceny"
 # protokol v3 (v0.35.0, docs/PROTOKOL_V3.md kap. 10): ovladac zjisti verzi FPGA sam (v2 FW 0x04xx / v3 FW 0x0500)
-#   UART `fpga v3` = stav prijmu (verze, zaznamy, duplicity, mezery, okna), `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns]` =
-#   emulator v3, `spi dma on|off` = SPI2 pres DMA (vychozi vypnuto)
+#   UART `fpga v3` = stav prijmu (verze, zaznamy, duplicity, mezery, okna; v0.37.0 i 1PPS: jemny cas IDES8, PCLK, epocha,
+#   d), `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns]` (od v0.37.0 s jemnym casem 1PPS) =
+#   emulator v3, `spi dma on|off` = SPI2 pres DMA (vychozi vypnuto); v0.38.0 `fpga presc a|b auto|0..4` = predelicka
+#   FPGA (FW 0x0503; auto = podle sondy /16, kap. 10.7); v0.39.0 `fpga raw a|b deep <N> [dump]` = hluboky RAW do PSRAM
+#   FPGA (FW 0x0505, az 699 050 znacek, kap. 10.9)
 # jednorazove deje (v0.36.0 + FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5): `fpga ev on|off|<n>` (casy hran, 1PPS),
 #   `fpga ab on|off|<n>` (interval A->B), `fpga pw cal|on|off|<n>` (sirka pulzu, SET_CONFIG 0x09), `fpga raw a|b [dump]`
 # FPGA v3: projekt Frequency_Counter_FPGA_Module/v3/Counter_FPGA_v3.gprj (gw_sh v3/build_v3.tcl, Windows);
 #   simulace sim/run.ps1 topv3 | topv3ovf | topv3cal | topv3pw (nebo python3 sim/run_sim.py <modul> topv3 ...),
 #   mutace python3 sim/mut_top_v3.py <modul> <vystup>; v2 (top.v, Counter_FPGA.gprj) beze zmeny
+# FPGA rozlozeni (docs/audit/2026-10-23_rozlozeni-fpga.md): po kazdem P&R mapa
+#   python tools/floorplan_svg.py <impl/pnr/Counter_FPGA.tr> mapa.svg; sweep voleb P&R (Windows):
+#   set SWEEP=v3 & gw_sh .../tools/pnr_sweep.tcl, pak python tools/pnr_sweep_report.py v3/impl/sweep [--md]
 #   web SPA (po každé editaci): python tools/spa/check.py --build
 ```
 

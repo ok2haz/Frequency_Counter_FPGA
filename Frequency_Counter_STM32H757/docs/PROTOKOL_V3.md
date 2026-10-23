@@ -66,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)** | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -79,7 +79,7 @@
 | 47 | 1 | COH_CNT (jako v2 abs 11) | |
 | 48 | 1 | TDC_STATUS A: bit0 kalibrace platná, bit1 selhala, bit2 sběr histogramu běží, bit3 řetěz krátký, bit4 aktivní banka | |
 | 49 | 1 | TDC_STATUS B (totéž) | |
-| 50 | 1 | PPS_STATUS: bit0 LOCK rPLL, bit1 platné, bit2 nesoulad s hrubým časem | |
+| 50 | 1 | PPS_STATUS: bit0 PCLK běží (rPLL zamčena a uvolněna), bit1 platné, bit2 poslední hrana při zamčené PLL bez jemného času, bity 7:4 **epocha** (uvolnění PCLK mod 16; změna = jiná osa jemného času) | **(FW 0x0502)**; do 0x0501 jen bit1 |
 | 51 | 1 | CAL_WAIT: bit0/bit1 = kanál A/B čeká na tabulku od STM (jako v2 abs 112 bit0/1) | |
 | 52 | 2 | RX_CRC_ERR (u16, saturuje) | |
 | 54 | 2 | RX_LEN_ERR (u16, saturuje) | nové |
@@ -90,14 +90,19 @@
 | 65 | 1 | PRESC B | |
 | 66 | 1 | CFG echo: bit0 `mask_cs`, bit1 `led_hb`, bit2 reference (0 OCXO, 1 ext.), bit3..4 zdroj kanálu B (`SET_CONFIG 0x09` p1[1:0]) | bit3..4 **(FW 0x0501)** |
 | 67 | 1 | rezerva | |
-| 68 | 16 | 1PPS poslední: PSEQ (u32), PTS (u48, T/16384), PFLAGS (u8: bit0 platné), rezerva 5 | (FW 0x0500) PTS = hrubý čas × 16384 (bez IDES8) |
+| 68 | 16 | 1PPS poslední: PSEQ (u32), PTS (u48, T/16384), PFLAGS (u8: bit0 platné, bit1 jemný čas), **d** (i8: jemný − hrubý [takty]), rezerva 4 | (FW 0x0500/0x0501) PTS = hrubý čas × 16384; **(FW 0x0502)** PTS z IDES8 (krok 1,25 ns = 2048 jednotek, kap. 10.6), PSEQ/PTS/hrubý čas zveřejněny najednou |
 | 84 | 16 | 1PPS předchozí (totéž) | |
 | 100 | 8 | hrubý čas 1PPS (u32 takty 100 MHz) poslední, předchozí – kontrola | jako v2 `pps_ts` |
-| 108 | 4 | PROBE A, PROBE B (u16) – sonda ÷16 za poslední segment | |
+| 108 | 4 | PROBE A, PROBE B (u16) – sonda ÷16 za **1 ms** (f ≈ PROBE × 16 kHz, do ~800 MHz) | **(FW 0x0503)** okno 1 ms místo segmentu (u16 by při 25 ms přetekl nad 42 MHz); čte se živě → STM bere shodu dvou rámců |
 | 112 | 4 | BUB A, BUB B, OVL A, OVL B posledního segmentu | jako v2 abs 57..59 |
 | 116 | 6 | jen TYPE 0xA0: druh (u8), číslo stránky (u16), počet položek (u16), rezerva | kap. 5 |
 | 122 | 2 | **LUT_CNT_B** (u16, [13:0]) – přijatých položek tabulky s bitem kanálu B od `SET_CONFIG 0x06 = 0` | **(FW 0x0500)**, viz 6.3 |
-| 124 | 130 | rezerva = 0 | |
+| 124 | 3 | DEEP_N (u24): značek v PSRAM (hluboký RAW) | **(FW 0x0505)** |
+| 127 | 1 | DEEP_ACK: bity 3:0 počet přijatých příkazů T_RAW (Grayův kód, mod 16), bit7 kanál posledního přijatého záznamu | **(FW 0x0505, audit F-0266)**; odmítnutý příkaz počet nezmění (STM tak pozná stará data) |
+| 128 | 1 | DEEP_ST: bit0 PSRAM připravena (kalibrace zápisu prošla), bit1 kalibrace selhala, bit2 záznam běží, bit3 FIFO přeteklo (značky zahozeny), bit4 načítá se okno, bit5 okno načteno, **bit6 v záznamu jsou mezery** (kanál neznačkoval: hold, maska při CS), **bit7 okno s chybou čtení** (0 značek) | **(FW 0x0505)**; stav v rámci je o transakci starší (rámec se skládá po předchozí transakci) |
+| 129 | 1 | bity 4:0 latence zápisu PSRAM: W0 + n bajtů (W0 = 4, n 0..31, nalezeno při startu), bit5 fáze vzorkování čtení (0 náběžná, 1 sestupná hrana `clk`) | **(FW 0x0505, audit F-0263/F-0264)** |
+| 130 | 2 | DEEP_WIN (u16): poslední (načítané) okno | **(FW 0x0505)** |
+| 132 | 122 | rezerva = 0 | |
 | 254 | 2 | CRC16 bloku 0 (LE) | |
 
 ### 3.2 Bloky 1–3 při TYPE 0x80 – záznamy segmentů
@@ -110,7 +115,7 @@ ostatní jsou nulové.
 | off | délka | pole záznamu |
 |---|---|---|
 | +0 | 2 | SEG_IDX (dolních 16 b čísla segmentu) |
-| +2 | 1 | CH (0 = A, 1 = B) |
+| +2 | 1 | CH: bit0 kanál (0 = A, 1 = B), **bity 6:4 = log2 P segmentu** (FW 0x0503; X0, N, SX počítají DĚLENÉ hrany → periody = hrany × P) |
 | +3 | 1 | FLAGS: bit0 neplatný (kalibrace / hold), bit1 změna P v tomto segmentu, bit2 bublina, bit3 značky při CS, bit4 kontrolní počítání ≠ 0, bit5 saturace N, bit6 rychlá pojistka rozsahu |
 | +4 | 3 | N (u24) – počet časovaných hran |
 | +7 | 5 | X0 (u40) – absolutní index první hrany (× P) |
@@ -135,7 +140,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | **0x0A LUT_WRITE** | bloky 1–3: v každém [0] = počet položek (0..84), od [1] položky po 3 B **kódované jako v 0x0427**: `p0` adresa[7:0], `p1` {kanál, adresa[8], neg[13:8]}, `p2` neg[7:0]; FPGA zapisuje do **neaktivní banky** a každou položku přičte do `LUT_CNT`/`LUT_SUM` | rozšířeno (víc položek) |
 | **0xA0 STRÁNKA** | žádost o stránku: p0 = druh (0 souhrn kalibrace, 1 histogram A, 2 histogram B, 3 surové značky), p1..p2 = číslo stránky (u16) | rozšířeno (z CAL reportu) |
 | 0x08 START / 0x09 STOP | souvislé měření zap/vyp | beze změny |
-| **0x0B RAW_CAPTURE** | p0 = kanál; FPGA uloží 512 po sobě jdoucích značek do BSRAM (čtení stránkou 3) | nové; **(FW 0x0501 ověřeno)** jen časované značky (≥ 50 ns od sebe) od žádosti, počet = souhrnná stránka položka 5, položka 2k = bity 23:0 a 2k+1 = bity 47:24 značky k |
+| **0x0B RAW_CAPTURE** | p0 bit0 = kanál, **bity 2:1 = režim** (FW 0x0505): 0 = 512 po sobě jdoucích značek do BSRAM (čtení stránkou 3), 1 = hluboký záznam p1..p3 = N značek (u24, nejvýš 699 050) do PSRAM, 2 = načíst okno p1..p2 = w (značky w·512 .. w·512+511) z PSRAM do BSRAM → stránky 3. **Audit F-0266:** režim 0 se během hlubokého záznamu / načítání okna odmítne, režim 1 a 2 ukončí režim 0, **režim 1 při běžícím záznamu = STOP** (zbytek FIFO se dopíše); každý přijatý příkaz zvýší DEEP_ACK (bajt 127) | nové; **(FW 0x0501 ověřeno)** jen časované značky (≥ 50 ns od sebe) od žádosti, počet = souhrnná stránka položka 5, položka 2k = bity 23:0 a 2k+1 = bity 47:24 značky k |
 
 **SET_CONFIG (p0):**
 
@@ -147,7 +152,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | 0x04 | reference: p1 bit0 0 = OCXO, 1 = externí 10 MHz | beze změny |
 | 0x05 | diagnostika: p1 bit0 `mask_cs`, bit1 `led_hb` | beze změny |
 | **0x06** | **tabulka TDC: p1 = 0 začátek zápisu (nuluje `LUT_CNT`/`LUT_CNT_B`/`LUT_SUM`), p1 = 1 potvrzení = přepnutí na zapsanou banku na nejbližší hranici segmentu; p2 = maska kanálů potvrzení (bit0 A, bit1 B, 0 = oba)** | beze změny číslování; „potvrzení" = přepnutí banky; **(FW 0x0500) maska p2**: při střídavé kalibraci smí čekat oba kanály, potvrzení A nesmí aktivovat B |
-| 0x07 | předdělička: p1 = kanál (0 A, 1 B), p2 = log2 P (0..4); FPGA přepne na hranici segmentu | nové; **(FW 0x0500) neimplementováno** (P = 1, PRESC = 0, CAPS bit18 = 0; krok 8) |
+| 0x07 | předdělička: p1 = kanál (0 A, 1 B), p2 = log2 P (0..4, víc = 4); FPGA přepne na hranici segmentu, 2 segmenty kanálu neplatné (FLAGS bit0; první s novým P má bit1) | **(FW 0x0503)** CAPS bit18, kap. 10.7; do 0x0502 neimplementováno |
 | 0x08 | délka segmentu: p1 = L [ms] (10 nebo 25) | nové |
 | **0x09** | **zdroj kanálu B**: p1 bit0 = pin A místo pinu B, bit1 = invertovat (řetěz časuje jen náběžné hrany → invertovaný = sestupné): 0 pin B, 1 pin A (kalibrace zpoždění A/B), 3 pin A invertovaný (šířka pulzu); po změně záznamy B 2 hranice segmentu neplatné (FLAGS bit0); echo bajt 66 bit3..4 | **nové (FW 0x0501)**, CAPS bit20, kap. 10.5 |
 
@@ -204,8 +209,11 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
   součtu o 2^14 a 512 × 2^14 ≡ 0 (mod 2^16). STM proto ověřuje i počet položek s bitem B (L-0196).
 
 ### 6.4 Rozsah
-- STM volí P podle sondy (`fpga_range_select`); FPGA navíc samo přepne na ÷16, když sonda ukáže f/P > 40 MHz
-  ve 2 segmentech po sobě (FLAGS bit3, záznamy bit6) – ochrana do reakce STM.
+- STM volí P podle sondy (`fpga_v3_range_select`: nahoru f/P > 33 MHz, dolů f/(P/2) < 27 MHz, strop ÷16); příkaz až po
+  shodě dvou rámců a až když předchozí změna platí (PRESC bit7 = 0).
+- **(FW 0x0503) Pojistka je v STM, ne ve FPGA:** okno se zamítne (`FPGA_CHK_FMAX`), když sonda / P > 40 MHz – dělený
+  signál pak podvzorkuje přímé i kontrolní počítání stejně (shodný, ale špatný počet). Přepnutí ve FPGA samo (FLAGS
+  bit3, záznamy bit6) se neimplementovalo: kolidovalo by s příkazy STM a reakce STM (~80 ms) stačí.
 
 ## 7. Co STM přebírá od FPGA
 
@@ -228,7 +236,7 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
 | 5 | FPGA | `seg_acc` ×2, absolutní čítače, časovač segmentů, kruh, skladač, ACK; odstranit okna/regresi/zámky/mux 128:1 – ✅ FW 0x0500 `top_v3` (kap. 10), `tb_top_v3` PASS ve 3 režimech, mutace `sim/mut_top_v3.py` | ⬜ **zkušební P&R** (Windows, `v3/build_v3.tcl`) |
 | 6 | obě | stránky + `LUT_WRITE` bulk + banky – ✅ FPGA (`tdc.v` BANKS, `app_v3`), STM (`tdccal_run_v3`) | ✅ `tb_top_v3` režim 2 (výrobní tok + rekalibrace jen A); deska ⬜ |
 | 7 | STM | SPI DMA regen-safe (`HAL_DMA_Init` + `__HAL_LINKDMA` + NVIC v USER CODE, buffery mimo DTCM, údržba cache), HW CRC volitelně – ✅ v0.35.0 `fpga_spi_dma.c` (DMA1 Stream0/1, NVIC 6, obsluhy a callbacky), zapíná se za běhu `spi dma on` (výchozí vypnuto) | testy D3–D8 na desce ⬜ |
-| 8 | FPGA | volitelně `ides_pps` (E4), `pin_cnt` + rozsah (E5) – ⬜ v FW 0x0500 NENÍ (CAPS bit17/18 = 0); návrhy v `v3/` | P&R, generátor |
+| 8 | FPGA | `ides_pps` (E4) – ✅ FW 0x0502 v simulaci (kap. 10.6, CAPS bit17); `pin_cnt` + rozsah (E5) – ✅ FW 0x0503 v simulaci (kap. 10.7, CAPS bit18) | P&R, generátor |
 
 ⚠️ Pravidla, která platí i pro v3: změna rámce = obě strany + `STATUS.md`; emulátor skládá rámec tak, jak ho skládá RTL
 (L-0099); každý nový kanál STM → FPGA má počitadlo a kontrolní součet vrácené v rámci (L-0188).
@@ -260,7 +268,7 @@ v0.34.x mění jen nezapojený modul `fpga_v3`, cesta v2 je stejná).
 | `src/v3_core.v` | `seg_chan3` (čítač hran X 40 b, FIFO indexů pro párování se značkou, součty segmentu, kontrolní počítání), `v3_ring` (časovač segmentu, kruh 512 × 32 B v BSRAM, zápis A+B), `pps_cap3`, `cal_seq3` (kalibrace střídavě), `raw_cap3` |
 | `src/app_v3.v` | 10 MHz: příkazy (kontrola délky, CRC bloků), ACK/REC_ACK/přetečení, skladač rámce (hlavička, záznamy z kruhu, stránky), LUT_WRITE dávkou |
 | `src/spi_slave_phy_v3.v` | PHY 1024 B (krok 3) |
-| `src/tdc.v` | parametr `BANKS` (v2: 0 = beze změny, regrese v2 29/29 PASS) |
+| `src/tdc.v` | parametr `BANKS` (v2: 0 = beze změny, regrese v2 29/29 PASS); `TSPIPE` (2026-10-23, v3 = 1: značka přes registr navíc, `ts_valid` T+10 – rozložení, `docs/audit/2026-10-23_rozlozeni-fpga.md`) |
 | `src/timing_v3.sdc` | z `timing.sdc` bez výjimek oken/regrese |
 | `v3/Counter_FPGA_v3.gprj`, `v3/build_v3.tcl` | projekt Gowin v3 (výstupy `v3/impl/`, v2 se nepřepíše) |
 
@@ -269,9 +277,13 @@ v0.34.x mění jen nezapojený modul `fpga_v3`, cesta v2 je stejná).
 - **Časování:** každá cesta jádra ≤ ~2 úrovně LUT (rozdíly 40 b ve dvou stupních po 20 b, součty s registrovaným přenosem,
   slovo záznamu ve dvou stupních) → v SDC žádná multicycle výjimka jádra.
 - **Hranice segmentu:** ~22 taktů (220 ns) se značky nesčítají (zapisovač čte součty) → ztráta ≤ ~3 značek kanálu z
-  segmentu; čítač hran X běží dál, takže X0/T0 i dvoubodový kmitočet jsou přesné.
+  segmentu; čítač hran X běží dál, takže X0/T0 i dvoubodový kmitočet jsou přesné. 🔴 **Oprava 2026-10-23 (L-0198):**
+  `v3_ring` shodí `freeze` v témže taktu, kdy dá `clear` – značka právě v taktu `clear` se dřív přičetla se starým X0/T0
+  do vynulovaných součtů nového segmentu (N ji nepočítal: SX = N(N−1)/2 + N_předchozí − 1; kmitočet nezkreslený, člen leží
+  na přímce). Teď se zahodí jako značky během `freeze` (`take … & ~clear`).
 - **Párování indexu a značky:** index spuštěné hrany se zachytí 3 takty po `trig_ack` a čeká ve FIFO (2) na `ts_valid`
-  (9 taktů). Ověřeno režimem 0 s kanálem B 17,3 MHz (ve FIFO dvě značky) a mutací „FIFO hloubky 1“; konstantní posun
+  (9 taktů; s `TSPIPE` 10, FIFO snese do 12). Ověřeno režimem 0 s kanálem B 17,3 MHz (ve FIFO dvě značky) a mutací
+  „FIFO hloubky 1“; konstantní posun
   indexu (např. zachycení o takt dřív) je ekvivalentní – ve všech rozdílech (SX, dvoubodově, LSQ, fáze) se vyruší.
   ⚠️ v2 (`win_recip`/`regr_acc`) podle ROZBORU KÓDU (ne testem) při spouštění hrana za hranou (> ~11 MHz) páruje značku
   s indexem následující spuštěné hrany (`sg_x` se přepíše dřív, než přijde `ts_valid`) – při stálém kroku spouštění
@@ -285,13 +297,19 @@ Celý `top_v3` se skutečným modelem TDC (268 tapů), segment 250 µs (SIM_TOP)
 
 | režim | ověřuje | výsledek |
 |---|---|---|
-| 0 (B 17,3 MHz) | CRC 4 bloků, hlavička, značky bloků, REC_FIRST/NREC, překryv (duplicity), záznamy: SEG_IDX/CH, N ≈ f·L, SX = N(N−1)/2 (každá hrana časovaná), sklon ST/SX = perioda, dvoubodově ze sousedních segmentů, **T0 = skutečný čas hrany X0**, 1PPS, RX_LEN_ERR, RX_CRC_ERR, SET_CONFIG 0x05/0x08, stránky histogramu = `hist` v BSRAM, maskování při CS | PASS (T0 proti hraně max 181 ps A, 77 ps B); **FW 0x0501:** RAW_CAPTURE kanálu A 512 značek, 511/511 po sobě, max \|rozdíl − k·P\| 40 ps |
+| 0 (B 16,100161 MHz; do 2026-10-23 17,3 MHz) | CRC 4 bloků, hlavička, značky bloků, REC_FIRST/NREC, překryv (duplicity), záznamy: SEG_IDX/CH, N ≈ f·L, SX = N(N−1)/2 (každá hrana časovaná), sklon ST/SX = perioda, dvoubodově ze sousedních segmentů, **T0 = skutečný čas hrany X0**, 1PPS, RX_LEN_ERR, RX_CRC_ERR, SET_CONFIG 0x05/0x08, stránky histogramu = `hist` v BSRAM, maskování při CS | PASS (T0 proti hraně max 181 ps A, 77 ps B); **FW 0x0501:** RAW_CAPTURE kanálu A 512 značek, 511/511 po sobě, max \|rozdíl − k·P\| 40 ps |
 | 1 | přetečení kruhu (16 záznamů): FLAGS bit1, skok REC_FIRST, zhasnutí po ACK, platné záznamy po obnově | PASS |
 | 2 | výrobní kalibrace obou kanálů (stránky, výpočet, LUT_WRITE 3 rámce, LUT_CNT/LUT_SUM/LUT_CNT_B, potvrzení s maskou, banka 1), rekalibrace jen A (B měří, A po sběru měří se starou bankou, nová tabulka v bance 0) | PASS |
 | 3 (A 5 MHz, pulz 37,3 ns; FW 0x0501) | `SET_CONFIG 0x09`: B = pin A invertovaný → T0_B − T0_A (mod P) = šířka pulzu; B = pin A → zpoždění A/B; návrat na pin B (B zase platný); echo bajt 66 bit3..4; po přepnutí 2 segmenty B neplatné | PASS (šířka 12 dvojic max \|chyba\| 22 ps, zpoždění 13 dvojic max 22 ps) |
 
 Kanál B v režimu 0 běží na 17,3 MHz (perioda 5,78 taktu): časuje se každá hrana a ve FIFO indexů bývají dvě značky.
-Mutace `sim/mut_top_v3.py` (15, paralelně; FW 0x0501 + zdroj B ignorován, RAW s prohozenými polovinami): FIFO hloubky 1 (konstantní posun indexu je ekvivalentní mutant – vyruší se
+Od 2026-10-23 **16,100161 MHz** (perioda 6,21 taktu): (a) na segment není celý počet period (16,1 MHz × 250 µs = 4025),
+fáze značek vůči hranici segmentu se posouvá ~0,25 taktu za segment a test projde i značku v taktu `clear` (počítadlo
+pokrytí, chk > 0; s celým počtem period se hranice zkoušela stále ve stejné fázi a chyba L-0198 prošla); (b) rozestup hran
+6/7 taktů: při `ts_valid` T+10 (TSPIPE) jsou dvě rozpracované značky jen u rozestupu 6, takže FIFO hloubky 1 se rozejde –
+při 17,3 MHz (rozestup 5/6) by posun byl u všech hran stejný a mutace „FIFO hloubky 1“ ekvivalentní (L-0199).
+Mez sklonu ST/SX 2 × 100 ps / rozpětí (dřív 2 × 60, L-0198).
+Mutace `sim/mut_top_v3.py` (17, paralelně; FW 0x0501 + zdroj B ignorován, RAW s prohozenými polovinami; 2026-10-23 rozložení + značka v taktu clear se přičte, `ts_valid` o takt dřív): FIFO hloubky 1 (konstantní posun indexu je ekvivalentní mutant – vyruší se
 ve všech rozdílech), rozdíl bez výpůjčky, slovo záznamu, freeze, kontrolní
 počítání, slot kanálu, ACK, CRC/délka, stránka, přetečení, potvrzení bez masky, zápis do aktivní banky.
 
@@ -373,3 +391,47 @@ kalibrace nezachytí – ⬜ změřit na desce generátorem se známou šířkou
   s 200 s bez signálu (T0 přeteče, čas navazuje < 1 ns), 7 Hz B = A + 140 ms (B před dalším A v témže segmentu); kroky se
   známými časy (řazení, stop jen po startu, souhrn B přes start, CS, přepnutí zdroje B). Mutace 24/24. Selftest krok 11.
 - ⬜ P&R (mux zdroje B před řetězem `u_tdcb`, `sig_eff` false_path beze změny), deska.
+
+### 10.6 Jemný čas 1PPS přes IDES8 (FW 0x0502, STM v0.37.0) – 2026-10-23
+
+`src/v3_core.v` `pps_ides3`: rPLL 100 → 400 MHz, CLKDIV /4 (PCLK), IDES8 na pinu 1PPS → 8 vzorků za takt, krok 1,25 ns
+(σ kvantizace 0,36 ns proti 2,9 ns hrubého čítače). Čas `{pcnt, poloha, 11'b0}` + `t_rel` (tick při uvolnění CLKDIV)
+= osa `tick_hi` až na pevný posun, který se mění jen při novém zamčení PLL (**epocha** v `PPS_STATUS` 7:4). `pps_cap3`
+zveřejní PSEQ, PTS, hrubý čas a `d` najednou (jemný čas přijde ~4 takty po hrubém, čeká se nejvýš 31 taktů).
+STM: `fpga_v3_pps_fine()` (jemný jen s CAPS bit17 + PCLK běží + PFLAGS bit1), `fpga_pps_t.frac/fine/epoch`, GPSDO
+počítá interval se zlomkem a při změně osy (epocha, jemný ↔ hrubý) začne znovu; `fpga v3` vypíše stav 1PPS.
+⚠️ Pro interval 1PPS ↔ kanály A/B (kap. 10.5) zůstává pevný posun osy (latence + fáze PLL) – kalibrovat na desce.
+Rozmístění, ověření a body pro desku: `docs/audit/2026-10-23_funkce-fpga.md` (pořadí bitů IDES8 je PŘEDPOKLAD modelu).
+
+### 10.7 Předdělička vstupů a automatický rozsah (FW 0x0503, STM v0.38.0) – 2026-10-23
+
+`src/v3_core.v` `pin_cnt3` ×2: 4b čítač taktovaný **přímo pinem** (jediný stupeň na plném kmitočtu = c[0]), do řetězu TDC
+pin (P = 1) nebo c[p−1]; sonda c[3] (÷16) se v doméně 100 MHz počítá vždy, okno 1 ms → PROBE A/B. `top_v3`: log2 P z
+`SET_CONFIG 0x07` platí od hranice segmentu, 2 segmenty kanálu neplatné; zdroj B z pinu A (`0x09`) bere pin A přímo.
+Záznam: log2 P v CH 6:4, FLAGS bit1 v prvním segmentu s novým P. Hlavička: PRESC A/B (bit7 čeká), PROBE A/B.
+STM: okna v periodách (hrany × P, 2pt i LSQ, těžiště), přerušení okna i statistiky při změně P, mez přímého měření na
+dělený kmitočet, pojistka rozsahu ze sondy (kap. 6.4), události BURST v periodách pinu; emulátor s předděličkou;
+`fpga presc a|b auto|0..4`, `fpga v3` vypíše P a sondu. ⚠️ Strop vstupu určí buffer LVCMOS33 (Gowin 150/300 MHz) – ověřit
+generátorem; 400 MHz nejspíš jen diferenciálně nebo děličem na desce. Rozmístění a ověření: `docs/audit/2026-10-23_funkce-fpga.md`.
+
+### 10.8 Součty segmentů v DSP (FW 0x0504) – 2026-10-23
+
+`seg_chan3` parametr `SUM_DSP` (top_v3 = 1): SX (48 b) a ST (56 b) jedním stupněm s atributem `syn_dspstyle = "dsp"` →
+ALU54D v řádku DSP R19 místo řetězů ALU v logice; přičítání ve V+2, hodnoty i takt dokončení shodné s dvoustupňovými
+součty (`SUM_DSP = 0`, simulace `-DSIM_SUM_FAB`). Rozhraní beze změny. ⬜ P&R: převzetí atributu, úspora CLS/FF.
+`timing_v3.sdc` na registry součtů neodkazuje: v ALU54D by nemusely existovat a odkaz na neexistující registr je v Gowin
+chyba TA2003 (audit F-0271).
+
+### 10.9 Hluboký RAW záznam do PSRAM (FW 0x0505, STM v0.39.0) – 2026-10-23
+
+`v3_core.v` `psram_hb3`: řadič vestavěné PSRAM GW1NR-9 (HyperBus x8, čip 0 = 4 MB) bez PLL – DDR takt = `clk` 100 MHz,
+CK 50 MHz z FF na sestupné hraně (hrana uprostřed bajtu), ~100 MB/s v datech, dávky 128 B (CS# < 4 µs). Čtení se zarovná
+podle RWDS (nezávisí na latenci; bajty až od RWDS = 0, protože při CA drží PSRAM RWDS jako příznak latence – audit
+F-0262), latenci zápisu (4..35 bajtů) a fázi vzorkování čtení řadič při startu **najde sám** (zápis vzoru / čtení).
+`raw_cap3` režim 1: FIFO 512 značek (BSRAM) → dávky do PSRAM (~80 MB/s ≈ 13 Mznaček/s plynule, jinak DEEP_ST bit3);
+režim 2: okno 512 značek z PSRAM do BSRAM → stránky druhu 3. STM: `fpga_freq_v3_raw_deep` (start, čekání, okna, statistika
+přes okna), `fpga raw a|b deep <N> [dump]`, `fpga v3` vypíše PSRAM. 🔴 Jména vývodů (`O_psram_*`, `IO_psram_*`), časování
+a chování čipu jsou PŘEDPOKLAD (model `hb_psram_model` podle obecné specifikace HyperBus) – ověřit P&R a deskou.
+**Audit 2026-10-23** (`docs/audit/2026-10-23_v3-funkce-audit.md`, STM v0.39.1): STM posílá T_RAW s potvrzením (bajt 127;
+odmítnuto = `-5`), běžící záznam nejdřív zastaví, po timeoutu zastaví a přečte zapsané, chybu okna (DEEP_ST bit7) a mezery
+(bit6) hlásí. Okno skončí i při chybě čtení (dřív se zaseklo).

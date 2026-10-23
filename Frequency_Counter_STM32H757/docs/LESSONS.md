@@ -5119,7 +5119,31 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** feat(fpga) bitstream v3
 - **Stav:** aktivni
 
-### L-0198 - Cas dvou kanalu na jedne ose rozbalovat spolecne, ne po kanalech
+### L-0198 - Znacka v taktu clear: konec „zmrazeni" a vynulovani souctu ve stejnem taktu
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA v3 (`src/v3_core.v` `seg_chan3` + `v3_ring`), obecne kazda dvojice „neprictat" / „vynulovat soucty"
+- **Symptom:** po pridani registru do cesty znacky (TSPIPE, `ts_valid` T+9 -> T+10) `topv3` hlasil `SX = N(N-1)/2` v prvnich 9 ramcich (60 chyb); T0, N, dvoubodovy kmitocet i sklon v mezich.
+- **Pricina:** `v3_ring` nastavi `clear` a shodi `freeze` v TEMZE taktu, takze v taktu `clear` je `freeze = 0`. Znacka, ktera prijde prave tehdy, projde `take`: `v1 = take & ~first` (first jeste stary) pricte `xm - x0`, `tm - t0` se STARYM x0/t0 do souctu, ktere `clear` prave vynuloval, a `clear` vynuluje i N -> SX = N(N-1)/2 + N_predchozi - 1. Chyba je v RTL od FW 0x0500 (s testem nize na RTL z HEAD, T+9: 11 chyb, rozdil presne 4324 = N_predchozi - 1). Test ji nevidel, protoze oba generatory mely na segment CELY pocet period (A 10 MHz + 813 ppb, B 17,3 MHz x 250 us = 4325): faze znacek vuci hranici segmentu za beh skoro stala a pri T+9 do taktu `clear` nepadla. Na desce pri libovolnem kmitoctu postihne ~ (znacek za takt) segmentu, pri 10 MHz ~10 %. Kmitocet se nezkresli (chybny clen lezi na primce t = P x), zaznam je ale vnitrne nekonzistentni.
+- **Oprava:** `take = pop & ~hold & ~freeze & ~clear` (`src/v3_core.v`, seg_chan3): znacka v taktu clear se zahodi jako znacky behem freeze. Test: kanal B -DTB_FB=17.300173e6 (necely pocet period, faze se posouva ~0,25 taktu za segment; po TSPIPE 16.100161e6, L-0199) + pocitadlo pokryti „znacka v taktu clear" (chk > 0; B 8x), mutace bez `~clear` v `sim/mut_top_v3.py`. Vedlejsi nalez: B pres vsechny faze TDC prekrocil mez sklonu ST/SX (2 x 60 ps) u segmentu zkraceneho maskovanim (N 164, chyba 1,50e-5 pri mezi 1,47e-5, SX presne N(N-1)/2, stejne s T+9 i T+10) -> mez 2 x 100 ps podle chyby jedne znacky modelu (T0 proti pravde B az 103 ps).
+- **Pravidlo:** u kazdeho bloku s fazi „neprictat" a „nulovat" overit takt, kde jedna konci a druha zacina (vcetne rozpracovane roury), a testovat ho stimulem, jehoz faze vuci hranici se za beh posouva, s pocitadlem pokryti toho taktu -- kmitocet s celym poctem period na interval zkousi hranici stale ve stejne fazi.
+- **Detekce:** `tb_top_v3` rezim 0 „pokryti: znacka v taktu clear" + „SX = N(N-1)/2"; mutace „znacka v taktu clear se pricte".
+- **Commit:** fix(fpga) v3: znacka v taktu clear
+- **Stav:** aktivni
+
+### L-0199 - Kriticka cesta s velkym fan-out: dlouhy usek byva LUT -> FF, oprava je registr ZA logikou
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA rozlozeni (`src/tdc.v` `ts_ps`, obecne kazdy vyber/multiplexer siroke sbernice jednim bitem)
+- **Symptom:** FW 0x0427: 36 z 50 nejhorsich cest z jednoho FF `u_tdca/lut_q3[15]` (fan-out 34), rezerva +0,215 ns, 82 % zpozdeni vedeni. Audit 2026-10-22 navrhl (O1) vybirat o takt driv z `lut_q2`.
+- **Pricina:** placer dal 34 multiplexeru k jejich zdroji (u BSRAM, R15C8) a registry `ts_ps` ke spotrebitelum (R13C34): dlouhe vedeni (4,2 ns) je az MEZI LUT a FF, prvni usek (2,8 ns) je fan-out. Replikace zdroje zkrati jen prvni usek. A `lut_q2` je vystupni registr BSRAM (synteza ho vtahne do bloku, tCO ~3,5 ns) -- vyber z nej by dal tCO BSRAM + fan-out 34 v jednom taktu, tedy presun problemu.
+- **Oprava:** `tdc.v` parametr `TSPIPE` (v3 = 1): `ts_hq/ts_lq` se plni ve stejnem taktu jako drive `ts_ps` (stejne hodnoty posuvneho registru `tr*`), `ts_ps` az o takt pozdeji -> vedeni pres cip dostane vlastni takt bez logiky; +49 FF na kanal, `ts_valid` T+10. v2 zustava 0 (index se tam paruje s posledni spustenou hranou v okamziku `ts_valid`).
+- **Vedlejsi nalez:** s T+10 a kanalem B 17,3 MHz (rozestup hran 5/6 taktu) prisel index dalsi hrany VZDY pred znackou predchozi -> mutace „FIFO hloubky 1" parovala se stalym posunem o hranu, ktery se v rozdilech vyrusi (ekvivalentni mutant, NEZACHYCENO). Pri T+9 se posun stridal (rozestup 6 = soucasny push i pop). Test proto prelazen na B 16,100161 MHz (rozestup 6/7 -> FIFO hloubky 1 se rozejde, zachyceno).
+- **Pravidlo:** pred navrhem zmeny kriticke cesty precist z timing reportu polohu KAZDEHO uzlu (kde je LUT, kde FF) a fyzicky typ registru (BSRAM/DSP vystup = vysoke tCO); pridany registr patri za posledni logiku pred dlouhym usekem, a po kazde zmene latence pustit znovu VSECHNY mutace -- zmena casovani muze z mutace udelat ekvivalentni (test ztrati silu, ale dal prochazi).
+- **Detekce:** `tools/floorplan_svg.py` (mapa + zdroje nejhorsich cest z `.tr` po kazdem P&R); `docs/audit/2026-10-23_rozlozeni-fpga.md` kap. 3.
+- **Commit:** perf(fpga) v3: TSPIPE + registrovany konec citacu
+
+### L-0200 - Cas dvou kanalu na jedne ose rozbalovat spolecne, ne po kanalech
 
 - **Datum:** 2026-10-23
 - **Oblast:** `fpga_v3_ev_from_rec` (jednorazove deje, protokol v3)
@@ -5131,7 +5155,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `b2dd741`
 - **Stav:** aktivni
 
-### L-0199 - Rozptyl ze souctu sum(v^2) - n*m^2 pri velke stredni hodnote lze
+### L-0201 - Rozptyl ze souctu sum(v^2) - n*m^2 pri velke stredni hodnote lze
 
 - **Datum:** 2026-10-23
 - **Oblast:** `fpga_v3_stat_*` (statistika intervalu)
@@ -5143,7 +5167,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `b2dd741`
 - **Stav:** aktivni
 
-### L-0200 - Testbench: po zmene toho, co kanal meri, nova reference absolutnich kontrol
+### L-0202 - Testbench: po zmene toho, co kanal meri, nova reference absolutnich kontrol
 
 - **Datum:** 2026-10-23
 - **Oblast:** `sim/tb_top_v3.sv` rezim 3 (zdroj kanalu B)
@@ -5155,7 +5179,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `9cbc302`
 - **Stav:** aktivni
 
-### L-0201 - Mutace prezije, kdyz scenar danou vetev nikdy nespusti
+### L-0203 - Mutace prezije, kdyz scenar danou vetev nikdy nespusti
 
 - **Datum:** 2026-10-23
 - **Oblast:** `tests/host/t_fpga_v3.c` (parovani start/stop)
@@ -5165,6 +5189,238 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** kazda vetev stavoveho automatu ma mit aspon jeden deterministicky krok se znamym vstupem; nahodne a emulovane scenare vzacne vetve nezarucuji -- ktere chybi, ukazou mutace. Kod, ktery se testuje, nesmi byt kopie kodu, ktery bezi.
 - **Detekce:** `python3 tests/host/mut_fpga_v3.py <vystup>` -> 24/24 zachyceno.
 - **Commit:** `b2dd741`
+- **Stav:** aktivni
+
+### L-0204 - Nove pole struktury plnene jen jednou vetvi: druha vetev nese odpad
+
+- **Datum:** 2026-10-23
+- **Oblast:** STM `fpga_freq.c` (`fpga_meas_t` z v2 `parse_data` i z v3 `s3_hdr_to_meas`), obecne kazda struktura plnena vic parsery
+- **Symptom:** (zachyceno pri psani v0.37.0, pred commitem) nova pole `pps_frac/pps_fine/pps_epoch` plnila jen vetev v3; v2 `parse_data` strukturu NENULUJE (volajici maji lokalni `fpga_meas_t` na zasobniku) -> v2 by v `pps_feed` porovnaval nahodne hodnoty a 1PPS by se "trhal" nebo vyhlasoval s nahodnym zlomkem (GPSDO).
+- **Pricina:** dva parsery plni tutez strukturu po polich; v3 dela `memset`, v2 ne. Pridane pole tak v jedne vetvi zustane neinicializovane, a prekladac nic nehlasi.
+- **Oprava:** `parse_data` nastavuje nova pole vyslovne na 0 (v2 = jen hruby cas) (`fpga_freq.c`, za `m->pps_ts`).
+- **Pravidlo:** pri pridani pole do struktury, kterou plni vic funkci, projit VSECHNY plnice (grep nazvu struktury) a pole nastavit v kazde; lepe nulovat strukturu na zacatku parseru.
+- **Detekce:** checklist pri zmene `fpga_meas_t` / `fpga_pps_t`: grep `fpga_meas_t` a `parse_data(` -- kazdy plnic musi nove pole nastavit.
+- **Commit:** feat(firmware) v0.37.0
+- **Stav:** aktivni
+
+### L-0205 - Pravda testbenche musi pocitat se zaokrouhlenim zpozdeni simulatoru
+
+- **Datum:** 2026-10-23
+- **Oblast:** `sim/tb_top_v3.sv` (generatory kanalu A/B), obecne kazdy testbench s `#(real)` a kontrolou proti vypoctene pravde
+- **Symptom:** rezim 4 (B 143,3 MHz s predelickou /8) hlasil `T0 = cas hrany X0` -351, -362, -314 ps v po sobe jdoucich zaznamech (rostouci drift); RTL v poradku.
+- **Pricina:** generator dela `#(HB)` s realnou pulperiodou, Icarus kazde zpozdeni zaokrouhli na presnost modulu (1 fs). Pravda testu (`PB = 2 * HB`) byla nezaokrouhlena -> rozdil az 0,7 fs na periodu, za stovky tisic period stovky ps. Komentar u vypoctu periody to dokonce predpokladal ("2 x zaokrouhlena pulperioda"), kod ne.
+- **Oprava:** `HA/HB = round(0.5e12 / f * 1000) / 1000` (ps zaokrouhlene na fs) -- generator i pravda pouzivaji totez. `topv3` T0 A max 181 -> 102 ps.
+- **Pravidlo:** hodnotu, kterou simulator dostane jako zpozdeni, nejdriv zaokrouhlit na jeho presnost a pravdu pocitat z te zaokrouhlene; komentar, ktery neco tvrdi o kodu, overit proti kodu.
+- **Detekce:** `topv3presc` (rezim 4, vysoky kmitocet = hodne period) -- drift se ukaze v T0 do 300 ps.
+- **Commit:** feat(fpga) FW 0x0503
+- **Stav:** aktivni
+
+### L-0206 - Slozene pole (concatenation) kratsi nez cil: Verilog doplni nuly bez varovani
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `src/v3_core.v` `psram_hb3` (`mk_ca`), obecne kazde `{...}` prirazene do sirsiho registru / funkce
+- **Symptom:** (zachyceno samostatnym testem radice PSRAM pred zapojenim) kalibrace latence vsech 8 pokusu selhala, model PSRAM nedostal zadne cteni.
+- **Pricina:** prikaz/adresa HyperBus `{rd, AS, burst, 8'd0, a[21:4], 13'd0, a[3:1]}` mel 45 bitu misto 48 (vyplni horni adresy 11 b, ne 8); funkce vraci 48 b, takze se horni 3 bity doplnily nulou -> bit 47 (R/W#) byl vzdy 0 a vsechno se provedlo jako zapis. Icarus ani Gowin na kratsi spojeni nevaruji.
+- **Oprava:** `{rd, 1'b0, 1'b1, 11'd0, a[21:4], 13'd0, a[3:1]}` s komentarem souctu sirek (1+1+1+11+18+13+3 = 48).
+- **Pravidlo:** u kazdeho spojeni pro pevny format (prikazy, hlavicky, slova zaznamu) napsat do komentare soucet sirek a overit ho; novy radic periferie nejdriv samostatnym testem proti modelu, az pak do celeho topu.
+- **Detekce:** samostatny test radice (scratch `tb_psram_unit.sv`; v repu rezim 5 `topv3deep`), mutace "PSRAM: pevna latence zapisu".
+- **Commit:** feat(fpga) FW 0x0505
+- **Stav:** aktivni
+
+---
+
+### L-0207 - Model periferie musi modelovat i "klidove" stavy signalu, ne jen datovou fazi
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `psram_hb3` + `sim/tb_top_v3.sv` `hb_psram_model` (audit F-0262, S1)
+- **Symptom:** (audit) cteni PSRAM by na kremiku bylo posunute o bajt; v simulaci vse PASS.
+- **Pricina:** HyperBus ridi RWDS uz od CS# = 0 jako priznak latence (pevna dvojita latence = 1) a pred daty ho stahne do 0. Radic bral bajt pri kazde zmene RWDS od konce CA, takze sestupna hrana priznaku byla "prvni bajt". Model mel RWDS behem CA v Z -> zadna zmena, chyba neviditelna.
+- **Oprava:** bajty az po prvnim vzorku RWDS = 0 v datove fazi (`rarm`); model ridi RWDS jako PSRAM (RW_CA pres CA a latenci, 0 bajt pred daty).
+- **Pravidlo:** u modelu rozhrani projit kazdy signal v KAZDE fazi transakce (CA, latence, data, konec) a nastavit ho na nejhorsi pripustnou hodnotu podle specifikace, ne na Z / 0. Opraveny model pustit i proti puvodnimu RTL -- musi selhat.
+- **Detekce:** `topv3deep` s novym modelem na puvodnim RTL FAIL (kalibrace W0+3); mutace "PSRAM: cteni bez zbrojeni RWDS". Pozor: po oprave byla mutace "cteni bez RWDS" s modelem ekvivalentni (model dava bajt za takt) -- model ma pauzu RWDS uprostred davky (`PSTALL`, `ecfcb6c`); po kazde zmene modelu pustit vsechny mutace dane periferie znovu.
+- **Commit:** fix(fpga) `cb14596`
+- **Stav:** aktivni
+
+---
+
+### L-0208 - Rozsah samokalibrace = cely pripustny rozsah x granularita parametru
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `psram_hb3` kalibrace latence zapisu (audit F-0263)
+- **Symptom:** (audit) 8 zkousenych latenci 16..23 bajtu, z nich sedela jen kazda druha.
+- **Pricina:** latence HyperBus je v celych taktech CK = 2 bajty; 8 pokusu pokrylo 4 skutecne latence a vychozi pevna dvojita latence (~22 / 26 B) lezela na hranici nebo mimo.
+- **Oprava:** W0 = 4, 32 pokusu (4..35 B = latence 3..7 taktu jednoducha i dvojita).
+- **Pravidlo:** pred volbou rozsahu kalibrace spocitat, v jakych krocich se parametr skutecne meni (zde 2 B) a jaky je jeho rozsah pro vsechny pripustne konfigurace cipu; pocet pokusu = rozsah / krok, ne "8 je dost".
+- **Detekce:** samostatny test radice s latenci 26 -> bad; `topv3deep` (W0 + 16).
+- **Commit:** fix(fpga) `74456e9`
+- **Stav:** aktivni
+
+---
+
+### L-0209 - Zdrojove synchronni rozhrani bez PLL: fazi vzorkovani kalibrovat, model s oknem neplatnosti
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `psram_hb3` cteni (audit F-0264)
+- **Symptom:** (audit) vzorek na nabezne hrane clk lezi 5 ns po hrane CK; pri tCKD ~5 ns padne do zmeny dat.
+- **Pricina:** pevna faze vzorkovani; model menil vystup skokem (bez okna neplatnosti), takze simulace nemohla zadnou fazi vyloucit.
+- **Oprava:** vzorky i na sestupne hrane clk, kalibrace zkousi obe faze (hlavicka 129 bit5); model s TCKD_MIN < TCKD dava X, test `topv3deep2` vyzaduje fazi 1.
+- **Pravidlo:** u kazdeho vstupu z vnejsiho obvodu, jehoz zpozdeni zavisi na cipu / teplote, bud kalibrovana faze, nebo doloziteny casovy rozpocet; model vystupu s oknem X (min..max zpozdeni), jinak test nic nedokazuje.
+- **Detekce:** `topv3deep2`; mutace "PSRAM: jen faze cteni 0".
+- **Commit:** fix(fpga) `02ae245`
+- **Stav:** aktivni
+
+---
+
+### L-0210 - CDC: prepinaci bit nesmi menit stav v tomtez taktu jako jeho parametry
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `app_v3.v` T_RAW a SET_CONFIG 0x02 -> 100 MHz (audit F-0265)
+- **Symptom:** (audit, kontrola kodu) parametry pres 2 FF, prepinac pres 3 FF, oboji zmenene v jednom taktu 10 MHz.
+- **Pricina:** staci, aby metastabilita posunula jeden bit parametru o takt proti prepinaci, a cil prevezme starou hodnotu. LUT_WRITE uz zpozdeni mel (`lw_dly`), novejsi prikazy ho neprevzaly.
+- **Oprava:** `raw_dly` / `cal_dly`: prepinac 3 takty po parametrech.
+- **Pravidlo:** kazdy novy prikaz s prepinacim bitem napsat podle vzoru `lw_dly` (parametry nejdriv, prepinac o >= 2 takty zdrojove domeny pozdeji); pri review hledat `_tgl <= ~` ve stejnem bloku jako prirazeni parametru.
+- **Detekce:** kontrola kodu (simulace metastabilitu nemodeluje).
+- **Commit:** fix(fpga) `99e7404`
+- **Stav:** aktivni
+
+---
+
+### L-0211 - Prikaz bez potvrzeni prijeti: volajici nepozna odmitnuti a vezme stara data
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `raw_cap3` (F-0266) + STM `fpga_freq_v3_raw_deep` / `fpga_freq_v3_raw` (F-0272)
+- **Symptom:** (audit) odmitnuty start hlubokeho zaznamu (bezi jiny) -> STM precetlo DEEP_N a okna predchoziho zaznamu, klidne jineho kanalu; rezim 0 behem zaznamu prepnul kanal a psal do okna.
+- **Pricina:** rezimy sdileneho prostredku (BSRAM, `ch`) se nevylucovaly a FPGA odmitnuti nijak nehlasila; STM cekalo jen na stavove bity, ktere splni i stary stav (status v ramci je navic o transakci starsi).
+- **Oprava:** FPGA: vyluka rezimu, STOP, bajt 127 = pocet prijatych prikazu (Gray) + kanal; STM: `s3_raw_cmd` (pred a po), odmitnuto = -5, STOP predchoziho, kontrola kanalu.
+- **Pravidlo:** kazdy asynchronni prikaz, po kterem volajici cte vysledek, musi mit potvrzeni prijeti, ktere se odmitnutim NEZMENI (pocitadlo, sekvence); "ceka na bit hotovo" nestaci. Sdileny prostredek: vyluka v HW, ne spolehani na poradi prikazu.
+- **Detekce:** `topv3deep` (rezim 0 a 2 behem zaznamu odmitnuty, STOP, bajt 127); host test (13); mutace "RAW: rezim 0 bez vyluky", "bez STOP", "bajt 127 se necte".
+- **Commit:** fix(fpga) `a6f78fd`, fix(firmware) `5a2c727`
+- **Stav:** aktivni
+
+---
+
+### L-0212 - Odvozena BSRAM: jeden zapisovy port, ne dve prirazeni s ruznou adresou
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `raw_cap3` `mem` (audit F-0267)
+- **Symptom:** (audit) dve mista zapisu do `mem` (znacka rezimu 0, bajty okna).
+- **Pricina:** syntetizator odvozuje BSRAM ze sablony (jedno prirazeni pod podminkou); dve prirazeni s ruznou adresou nemusi poznat a 24 kbit by skoncilo v logice.
+- **Oprava:** jeden `always` se zapisem `mem[m_w2 ? widx : n]`, vyluku zarucuje F-0266.
+- **Pravidlo:** pole, ktere ma byt v BSRAM, zapisovat z jednoho mista (mux adresy a dat zvlast); po P&R zkontrolovat zpravu o zdrojich (pocet BSRAM).
+- **Detekce:** `topv3`, `topv3deep` beze zmeny; P&R.
+- **Commit:** fix(fpga) `c67da4b`
+- **Stav:** aktivni
+
+---
+
+### L-0213 - Konec stavoveho automatu nesmi cekat na data, ktera nemusi prijit
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `raw_cap3` nacitani okna (audit F-0268)
+- **Symptom:** (audit) okno koncilo az pri 512 znackach; pri timeoutu cteni PSRAM zustal `wl` = 1 navzdy a vsechny dalsi prikazy se odmitaly.
+- **Pricina:** konec vazany na pocet prijatych dat misto na dokonceni vlastnich pozadavku; timeout v nizsi vrstve chybu nepredal vys.
+- **Oprava:** konec po dokonceni 24. davky, chybne okno = DEEP_ST bit7 a 0 znacek.
+- **Pravidlo:** u kazdeho cekani na data z vnejsiho obvodu: konec podle vlastnich pozadavku (nebo timeout) + priznak chyby; test s "mrtvym" modelem (`dead`).
+- **Detekce:** `topv3deep` (model dead = 1); mutace "PSRAM: okno ceka na vsechny bajty".
+- **Commit:** fix(fpga) `ba6ae59`
+- **Stav:** aktivni
+
+---
+
+### L-0214 - Metadata zaznamu musi sledovat skutecnou cestu signalu (obchvat predelicky)
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `top_v3.v` kanal B z pinu A (audit F-0269)
+- **Symptom:** (audit) B z pinu A jde mimo `pin_cnt3`, ale zaznam B nesl log2 P_B.
+- **Pricina:** pri pridani obchvatu (SET_CONFIG 0x09) se znacka P nepripojila na tutez volbu; STM chybu maskovalo az se zpozdenim (stahne P_B po ozvene).
+- **Oprava:** `pr_b_eff = bs2[0] ? 0 : pr_b` do `seg_chan3` B.
+- **Pravidlo:** kazda volba cesty signalu (mux zdroje, obchvat) musi ridit i vsechna metadata, ktera popisuji, CO se meri (P, kanal, polarita); test kombinace "obchvat + nenulove P".
+- **Detekce:** `topv3pw` s P_B = 4 (puvodni RTL FAIL); mutace "B z pinu A: znacka P_B".
+- **Commit:** fix(fpga) `abd3856`
+- **Stav:** aktivni
+
+---
+
+### L-0215 - Ticha ztrata dat: kazde zahozeni musi nechat priznak
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `raw_cap3` (F-0270) + STM UART (F-0272)
+- **Symptom:** (audit) RAW pri hold a pri masce CS (vychozi zapnuta) obsahoval rozdil 2P bez stopy.
+- **Pricina:** maska a hold zastavuji TDC (`want` = 0), takze znacka vubec nevznikne; zaznam o tom nevedel.
+- **Oprava:** DEEP_ST bit6 (behem zaznamu kanal aspon chvili neznackoval), STM hlasi "mezery ... `fpga diag mask off`"; dotazy behem zaznamu po 100 ms.
+- **Pravidlo:** kdyz HW cast dat vedome nezaznamena (maska, hold, preteceni), musi to byt v datech nebo stavu videt; u souvislych zaznamu explicitne "souvisly / s mezerami".
+- **Detekce:** `topv3deep` (maska -> bit6, bez masky 0); mutace "RAW: bez priznaku mezer".
+- **Commit:** fix(fpga) `019a45a`, fix(firmware) `5a2c727`
+- **Stav:** aktivni
+
+---
+
+### L-0216 - SDC: neodkazovat na registry, ktere syntaza muze vstrcit do tvrdeho bloku
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA `timing_v3.sdc` (audit F-0271)
+- **Symptom:** (audit) `report_timing -to [get_regs {u_sa/g_dsp.sx_d* ...}]` u akumulatoru se `syn_dspstyle = "dsp"`.
+- **Pricina:** v ALU54D je akumulator vcetne registru; registr v logice nemusi existovat a odkaz na neexistujici objekt je v Gowin chyba TA2003 (beh skonci, viz `calm_s`, `src_l`, `qd_f`).
+- **Oprava:** radek odstranen, komentar proc.
+- **Pravidlo:** v SDC odkazovat jen na registry, ktere v logice existuji za vsech voleb syntezy (ne DSP / BSRAM / IOB registry); po zmene SDC zkontrolovat `pnr.log` na TA2003.
+- **Detekce:** kontrola (P&R na Windows).
+- **Commit:** fix(fpga) `1f1e44c`
+- **Stav:** aktivni
+
+---
+
+### L-0217 - Nulova hodnota senzoru neni "bez odhadu"
+
+- **Datum:** 2026-10-23
+- **Oblast:** STM `fpga_v3_range_probe` / `s3_range_ctl` (audit F-0273)
+- **Symptom:** (audit) pod 16 kHz zustala predelicka po vysokem kmitoctu na /16 (1-2 hrany na segment).
+- **Pricina:** sonda s rozlisenim 16 kHz vraci 0 pro cokoli pod tim; funkce brala f <= 0 jako "neznamo, nemenit".
+- **Oprava:** `fpga_v3_range_probe`: probe 0 -> P = 1.
+- **Pravidlo:** u kazdeho cisla ze senzoru rozlisit "nameril 0 / pod rozlisenim" od "nemeril"; kdyz to rozhrani nerozlisi, rozhodnout, co je bezpecnejsi, a napsat kompromis do komentare.
+- **Detekce:** host test (11) rozsah ze sondy; mutace "rozsah: sonda 0 beze zmeny".
+- **Commit:** fix(firmware) `c76f304`
+- **Stav:** aktivni
+
+---
+
+### L-0218 - Watchdog kopat jen z hlidaneho tasku
+
+- **Datum:** 2026-10-23
+- **Oblast:** STM `fpga_freq_v3_raw_deep` (UartTask) -> `watchdog_kick_fpga` (audit F-0274)
+- **Symptom:** (audit) UartTask kopal slot FpgaTasku po kazdem okne hlubokeho zaznamu.
+- **Pricina:** kopnuti "pro jistotu" z jineho tasku; FpgaTask behem cteni dal bezi a kope sam.
+- **Oprava:** volani odstraneno.
+- **Pravidlo:** `watchdog_kick_<task>` volat jen z tela daneho tasku; kdyz dlouha operace blokuje hlidany task, patri do nej (ne do jineho tasku).
+- **Detekce:** kontrola kodu.
+- **Commit:** fix(firmware) `c891969`
+- **Stav:** aktivni
+
+---
+
+### L-0219 - Opakovani L-0204: nove pole fpga_meas_t plnene jen cestou v3
+
+- **Datum:** 2026-10-23
+- **Oblast:** STM `fpga_freq.c` `parse_data` (v2) -- `presc_log2` (audit F-0275)
+- **Symptom:** (audit) v0.38.0 pridalo `presc_log2`, v2 parser ho nenuloval (struktura se nenuluje).
+- **Pricina:** stejna past jako L-0204 (pole 1PPS): pri pridani pole do `fpga_meas_t` se zapomene na druhou vetev.
+- **Oprava:** `m->presc_log2 = 0u` v v2.
+- **Pravidlo:** pri kazdem novem poli `fpga_meas_t` grep na vsechna mista, kde se struktura plni (`parse_data`, v3 okna, emulator), a pole nastavit vsude; zvazit memset na zacatku `parse_data`.
+- **Detekce:** kontrola kodu.
+- **Commit:** fix(firmware) `21a6758`
+- **Stav:** aktivni
+
+---
+
+### L-0220 - printf s %f / %e / %g ve firmwaru s nano.specs vytiskne prazdne pole
+
+- **Datum:** 2026-10-23
+- **Oblast:** STM `freertos_task_uart.c` `fpga v3` (audit F-0276), cely firmware
+- **Symptom:** (audit) "sonda %.3f MHz" (v0.38.0).
+- **Pricina:** link `--specs=nano.specs` bez `-u _printf_float`; newlib-nano float konverzi preskoci.
+- **Oprava:** sonda v kHz celym cislem; pravidlo v `scripts/zakazane_vzory.txt`.
+- **Pravidlo:** ve firmwaru zadne %f/%e/%g: formatovat celymi cisly nebo `uart_ps_fmt` / `uart_regr_fmt` / `fmt_fixed` (L-0064).
+- **Detekce:** `scripts/check_lessons.sh` (po oprave 0 vyskytu v CM7/CM4).
+- **Commit:** fix(firmware) `12f559f`
 - **Stav:** aktivni
 
 ---

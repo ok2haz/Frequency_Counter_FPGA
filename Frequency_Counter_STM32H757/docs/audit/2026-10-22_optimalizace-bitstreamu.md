@@ -5,6 +5,8 @@ z buildu 2026-10-21 21:39 (Gowin V1.9.12, GW1NR-LV9QN88PC6/I5; čísla shodná s
 v `ab_test/MANIFEST.md`) · **[netlist]** `impl/gwsynthesis/Counter_FPGA.vg` přes `sim/res_breakdown.py` a nový
 rozbor řídicích sad registrů (skript v předávacím balíčku) · **[ÚVAHA]** odhad, rozhodne P&R.
 Nic se tímto dokumentem neměnilo. Navazuje na `2026-10-21_uspora-fpga-a-presun-do-stm.md` (S1–S7).
+➡️ **Pokračování: `2026-10-23_rozlozeni-fpga.md`** – mapa rozmístění, O1 jako `TSPIPE` ve v3 (⚠️ varianta „výběr z
+`lut_q2`“ níže by vedla cestu z výstupního registru BSRAM, L-0199), O2 ve v3, O3 jako skript `tools/pnr_sweep.tcl`.
 
 ## 1. Výchozí stav [P&R]
 
