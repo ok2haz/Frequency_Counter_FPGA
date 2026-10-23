@@ -123,7 +123,7 @@ $tests = @(
     #            (B = pin A), navrat na pin B; A 5 MHz, pulz 37,3 ns (~3 min). RAW_CAPTURE (512 znacek) je v topv3.
     #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (15 mutaci, paralelne)
     @{ name = "topv3"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
-       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=17.3e6") }
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=17.300173e6") }
     @{ name = "topv3ovf"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=1", "-DSIM_RAW=4") }
     @{ name = "topv3cal"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");

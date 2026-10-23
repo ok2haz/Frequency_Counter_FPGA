@@ -115,7 +115,9 @@ module seg_chan3 (
     reg [1:0]  dxh = 2'd0;
     reg [7:0]  dth = 8'd0;
     reg        inv = 1'b1;                     // segment zasazeny hold
-    wire       take = pop & ~hold & ~freeze;
+    // ~clear: v3_ring shodi freeze v tomtez taktu, kdy da clear -> znacka prave v taktu clear by se pricetla se starym
+    // x0/t0 do prave vynulovanych souctu (N ji nepocita); zahodi se jako znacky behem freeze (L-0198)
+    wire       take = pop & ~hold & ~freeze & ~clear;
     always @(posedge clk) begin
         ncy <= 1'b0;
         v1  <= take & ~first;
