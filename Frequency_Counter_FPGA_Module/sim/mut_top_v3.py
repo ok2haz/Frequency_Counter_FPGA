@@ -41,6 +41,11 @@ M = [
     # (horni cast z tr* o takt pozdeji = konstantni posun vsech znacek a dolni cast z lut_q3 o takt pozdeji = tataz polozka
     # tabulky, kod se drzi >= 5 taktu -> ekvivalentni mutanty, netestuji se)
     ('znacka: ts_valid o takt driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_z;", 0),
+    # E4 (FW 0x0502): jemny cas 1PPS -- obracene poradi bitu IDES8, bez t_rel (osa PCLK), jemny cas se nepouzije
+    ('IDES8: obracene poradi bitu', 'v3_core.v', "    parameter Q0_FIRST = 1 ", "    parameter Q0_FIRST = 0 ", 0),
+    ('1PPS: bez t_rel', 'v3_core.v', "f_ts  <= {p_ts[36:3] + t_rel, p_ts[2:0], 11'd0};",
+     "f_ts  <= {p_ts[36:3], p_ts[2:0], 11'd0};", 0),
+    ('1PPS: jemny cas se nepouzije', 'v3_core.v', "pts_l <= f_buf; pfl_l <= 8'd3;", "pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd3;", 0),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : ch_b) ^ bs2[1];", "    wire        sig_b = ch_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]

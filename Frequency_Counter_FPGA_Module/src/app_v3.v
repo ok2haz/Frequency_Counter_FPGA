@@ -48,6 +48,8 @@ module app_v3 #(
     input  wire        st_seg10,              // platna delka segmentu (1 = 10 ms)
     input  wire [31:0] pps_seq,               // zive z 100 MHz (STM bere shodu dvou ramcu)
     input  wire [33:0] pps_last, pps_prev,
+    input  wire [47:0] pps_pts_l, pps_pts_p,   // FW 0x0502: PTS (jemny z IDES8 nebo hruby x 16384), PFLAGS, d, PPS_STATUS
+    input  wire [7:0]  pps_pfl_l, pps_pfl_p, pps_d_l, pps_d_p, pps_st,
     input  wire [7:0]  bub_a, bub_b,
     input  wire [3:0]  ovl_a, ovl_b,
     input  wire [15:0] tdc_cfg, maxtap_a, maxtap_b,
@@ -79,12 +81,13 @@ module app_v3 #(
     localparam [7:0]  T_DATA = 8'h80, T_PAGE = 8'hA0;
     // FW 0x0500 = prvni bitstream protokolu v3 (top_v3.v). Rada 0x04xx je v2 (top.v), cisla se nesdili.
     // FW 0x0501: SET_CONFIG 0x09 zdroj kanalu B (jednorazove deje: sirka pulzu, kalibrace zpozdeni A/B), CAPS bit20.
-    localparam [15:0] FW_VERSION = 16'h0501;
+    // FW 0x0502: 1PPS s jemnym casem pres IDES8 + rPLL (CAPS bit17): PTS krok 1,25 ns, PFLAGS bit1, PPS_STATUS, d.
+    localparam [15:0] FW_VERSION = 16'h0502;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (1PPS pres IDES8) a bit18 (predelicka pin_cnt) = 0: v teto verzi nejsou (kap. 8 krok 8, volitelne).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
-    localparam [31:0] CAPS = 32'h0019_7C32;
+    localparam [31:0] CAPS = 32'h001B_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
 
     initial begin
@@ -161,11 +164,11 @@ module app_v3 #(
     wire [31:0] head_m1 = (a_head != 32'd0) ? (a_head - 32'd1) : 32'd0;
     wire [31:0] fill    = a_head - a_first;
     wire [15:0] fill16  = (fill > 32'h0000FFFF) ? 16'hFFFF : fill[15:0];
-    wire [47:0] pts_l   = {pps_last, 14'd0};
-    wire [47:0] pts_p   = {pps_prev, 14'd0};
+    wire [47:0] pts_l   = pps_pts_l;
+    wire [47:0] pts_p   = pps_pts_p;
     wire [31:0] pseq_p  = (pps_seq != 32'd0) ? (pps_seq - 32'd1) : 32'd0;
-    wire [7:0]  pfl_l   = {7'd0, (pps_seq != 32'd0)};
-    wire [7:0]  pfl_p   = {7'd0, (pps_seq > 32'd1)};
+    wire [7:0]  pfl_l   = (pps_seq != 32'd0) ? pps_pfl_l : 8'd0;
+    wire [7:0]  pfl_p   = (pps_seq > 32'd1)  ? pps_pfl_p : 8'd0;
     reg  [7:0]  hb;
     always @* begin
         hb = 8'd0;
@@ -189,7 +192,7 @@ module app_v3 #(
             8'd42: hb = fill16[7:0];   8'd43: hb = fill16[15:8];
             8'd44: hb = st_clk;        8'd45: hb = st_clk_loss;   8'd46: hb = st_coh;        8'd47: hb = st_coh_cnt;
             8'd48: hb = st_tdc_a;      8'd49: hb = st_tdc_b;
-            8'd50: hb = {5'd0, 1'b0, (pps_seq != 32'd0), 1'b0};
+            8'd50: hb = pps_st;
             8'd51: hb = {6'd0, st_cal_wait};
             8'd52: hb = rx_crc_err[7:0];  8'd53: hb = rx_crc_err[15:8];
             8'd54: hb = rx_len_err[7:0];  8'd55: hb = rx_len_err[15:8];
@@ -200,11 +203,11 @@ module app_v3 #(
             8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];  8'd70: hb = pps_seq[23:16];  8'd71: hb = pps_seq[31:24];
             8'd72: hb = pts_l[7:0];    8'd73: hb = pts_l[15:8];    8'd74: hb = pts_l[23:16];
             8'd75: hb = pts_l[31:24];  8'd76: hb = pts_l[39:32];   8'd77: hb = pts_l[47:40];
-            8'd78: hb = pfl_l;
+            8'd78: hb = pfl_l;         8'd79: hb = pps_d_l;
             8'd84: hb = pseq_p[7:0];   8'd85: hb = pseq_p[15:8];   8'd86: hb = pseq_p[23:16];  8'd87: hb = pseq_p[31:24];
             8'd88: hb = pts_p[7:0];    8'd89: hb = pts_p[15:8];    8'd90: hb = pts_p[23:16];
             8'd91: hb = pts_p[31:24];  8'd92: hb = pts_p[39:32];   8'd93: hb = pts_p[47:40];
-            8'd94: hb = pfl_p;
+            8'd94: hb = pfl_p;         8'd95: hb = pps_d_p;
             8'd100: hb = pps_last[7:0];  8'd101: hb = pps_last[15:8];  8'd102: hb = pps_last[23:16];  8'd103: hb = pps_last[31:24];
             8'd104: hb = pps_prev[7:0];  8'd105: hb = pps_prev[15:8];  8'd106: hb = pps_prev[23:16];  8'd107: hb = pps_prev[31:24];
             8'd112: hb = bub_a;  8'd113: hb = bub_b;  8'd114: hb = {4'd0, ovl_a};  8'd115: hb = {4'd0, ovl_b};

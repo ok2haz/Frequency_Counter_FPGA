@@ -38,6 +38,9 @@
 `ifndef TB_WA
 `define TB_WA 0.0
 `endif
+`ifndef TB_PPS_DPS
+`define TB_PPS_DPS 900                    // 1PPS: perioda 1 ms + 900 ps -> poloha hrany v taktu 100 MHz se meni (IDES8)
+`endif
 `ifndef TB_NFR
 `define TB_NFR 14
 `endif
@@ -54,7 +57,7 @@ module tb_top_v3;
     end
     initial begin #12345; forever begin ch_a = 1; #(WA); ch_a = 0; #(PA - WA); end end
     initial begin #23456; forever begin ch_b = 1; #(HB); ch_b = 0; #(HB); end end
-    initial begin #(64'd700_000_000); forever begin pps = 1; #(64'd100_000_000); pps = 0; #(64'd900_000_000); end end   // 1PPS po 1 ms
+    initial begin #(64'd700_000_000); forever begin pps = 1; #(64'd100_000_000); pps = 0; #(64'd900_000_000 + `TB_PPS_DPS); end end   // 1PPS po 1 ms + DPS
 
     reg sck = 0, cs = 1, mosi = 0; wire miso, led, fok, refc;
     top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
@@ -112,6 +115,9 @@ module tb_top_v3;
     reg bfa = 0, binv = 0, haveA = 0; reg [47:0] tA0, dd; reg [31:0] ordA;
     real dps, dmod, werr, wmax = 0.0; integer nw = 0;
     reg [31:0] pps_last_seq = 0; reg [47:0] pps_last_ts = 0; integer npps = 0;
+    // FW 0x0502: jemny cas 1PPS (IDES8). Skutecna hrana k (PSEQ = k + 1) v 700 us + k * (1 ms + DPS).
+    real    pf_ref = 0.0, pf_e, pf_max = 0.0; reg pf_have = 0; integer npf = 0, dmin = 127, dmax = -128;
+    reg [7:0] pf_pos = 8'd0; reg [3:0] pf_ep = 4'd0; reg [7:0] pf_d;
     initial begin U = `TB_PS_PER_UNIT; have[0] = 0; have[1] = 0; maxe[0] = 0; maxe[1] = 0; maxsl[0] = 0; maxsl[1] = 0; end
     task chk(input cond, input [8*64-1:0] what);
         begin nchk = nchk + 1; if (!cond) begin errors = errors + 1; if (errors < 20) $display("  CHYBA: %0s", what); end end endtask
@@ -126,7 +132,8 @@ module tb_top_v3;
             end
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
-            chk(rd(20, 2) == 16'h0501, "FW_VERSION 0x0501");
+            chk(rd(20, 2) == 16'h0502, "FW_VERSION 0x0502");
+            chk(caps[17], "CAPS bit17 (1PPS pres IDES8)");
             caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");
             chk(mi[22] == 100, "CLK_MHZ");
             hseq = rd(4, 4);
@@ -226,6 +233,20 @@ module tb_top_v3;
                     chk(((rd(72, 6) - pps_last_ts) >> 14) >= 99999 && ((rd(72, 6) - pps_last_ts) >> 14) <= 100001, "1PPS po 1 ms");
                     chk(rd(84, 4) == pps_last_seq && rd(88, 6) == pps_last_ts, "1PPS predchozi = minula posledni");
                     npps = npps + 1;
+                end
+                // jemny cas: PFLAGS bit1, PPS_STATUS bit0 (PCLK bezi), epocha stala; PTS proti skutecne hrane
+                if (mi[78][1]) begin
+                    pf_e = real'(rd(72, 6)) * U - (700.0e6 + real'(rd(68, 4) - 1) * (1.0e9 + real'(`TB_PPS_DPS)));
+                    if (!pf_have) begin pf_have = 1; pf_ref = pf_e; pf_ep = mi[50][7:4]; end
+                    if ((pf_e - pf_ref) > pf_max) pf_max = pf_e - pf_ref;
+                    if ((pf_ref - pf_e) > pf_max) pf_max = pf_ref - pf_e;
+                    chk((pf_e - pf_ref) < 1300.0 && (pf_ref - pf_e) < 1300.0, "1PPS jemny cas = skutecna hrana (+-1,25 ns)");
+                    chk(mi[50][0] && mi[50][7:4] == pf_ep && !mi[50][2], "PPS_STATUS: PCLK bezi, epocha stala");
+                    pf_d = mi[79];
+                    if ($signed(pf_d) < dmin) dmin = $signed(pf_d);
+                    if ($signed(pf_d) > dmax) dmax = $signed(pf_d);
+                    pf_pos[rd(72, 2) >> 11 & 7] = 1'b1;
+                    npf = npf + 1;
                 end
                 pps_last_seq = rd(68, 4); pps_last_ts = rd(72, 6);
             end
@@ -486,6 +507,13 @@ module tb_top_v3;
                 chk(mi[2] == 8'h80, "po strance zase DATA");
             end
             chk(npps >= 3, "1PPS: aspon 3 hrany v ramcich");
+            $display("1PPS jemny cas: %0d hran, max |chyba - prvni| %.0f ps, polohy IDES8 %b, d %0d..%0d taktu, epocha %0d",
+                     npf, pf_max, pf_pos, dmin, dmax, pf_ep);
+            chk(npf >= 3, "1PPS: jemny cas aspon 3x");
+            chk((pf_pos[0] + pf_pos[1] + pf_pos[2] + pf_pos[3] + pf_pos[4] + pf_pos[5] + pf_pos[6] + pf_pos[7]) >= 4,
+                "1PPS: pokryti aspon 4 poloh IDES8");
+            chk(dmax - dmin <= 1, "1PPS: jemny - hruby v okne 1 taktu");
+            chk(dmin >= -8 && dmax <= 8, "1PPS: jemny cas na ose tick (|d| <= 8 taktu)");
             // ---- maskovani pri CS (SET_CONFIG 0x05 bit0): segmenty pres transakci maji mene znacek, kmitocet spravne ----
             build(8'h01, 8'h05, 8'h01, 0, 0); xfer(1024);
             #(64'd600_000_000);

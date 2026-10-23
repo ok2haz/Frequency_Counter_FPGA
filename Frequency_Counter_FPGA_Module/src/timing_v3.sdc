@@ -96,7 +96,16 @@ set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {rx_s_*}]
 // Rozmisteni retezu TDC (2026-10-09): report cest Z KAZDEHO vzorkovaciho FF -> textovy report
 // (build.tcl: -gen_text_timing_rpt) nese polohu kazdeho q_r[k] = polohu ALU tapu k.
 // Vyhodnocuje sim/check_tdc_placement.py (selze, kdyz retez neni v jednom radku / FF mimo slot ALU).
+// FW 0x0502 (E4): jemny cas 1PPS. Hodiny rPLL (FCLK 400 MHz) a CLKDIV (PCLK 100 MHz) odvodi Gowin z clk_p0_100m sam
+// [OVERIT v .tr po prvnim P&R; kdyby ne: create_generated_clock na u_ipps/u_pll/CLKOUT (-multiply_by 4) a
+// u_ipps/u_div/CLKOUT (-divide_by 4)]. Prechod PCLK -> clk: p_ts drzeno ~1 s, prepinaci bit pres 3 FF; rdy uvolnuje
+// reset PCLK pri stojicich hodinach (CLKDIV v resetu) -> neni co casovat.
+set_false_path -from [get_regs {u_ipps/p_ts*}] -to [get_regs {u_ipps/f_ts*}]
+set_false_path -from [get_regs {u_ipps/p_tgl*}] -to [get_regs {u_ipps/t_s*}]
+set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps/lastw* u_ipps/p_tgl*}]
 // prvni = nejhorsi cesty celeho navrhu (vlastni report_timing jinak vychozi seznam nahradi)
 report_timing -setup -max_paths 50 -max_common_paths 1
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdcb/u_chain/q_r*}]
+// FW 0x0502: cesty logiky PCLK u pinu 1PPS -> poloha v mape rozlozeni (tools/floorplan_svg.py)
+report_timing -setup -max_paths 20 -max_common_paths 1 -from [get_regs {u_ipps/pcnt*}]

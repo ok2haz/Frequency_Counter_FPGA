@@ -97,3 +97,73 @@ module OSC #(parameter FREQ_DIV = 100, parameter DEVICE = "GW1N-4") (output reg 
     initial OSCOUT = 1'b0;
     always #(FREQ_DIV * 2000) OSCOUT = ~OSCOUT;     // pulperioda [ps] = FREQ_DIV * 2 ns
 endmodule
+
+// ------------------------------------------------------------
+// 2026-10-23 (E4, 1PPS pres IDES8): rPLL, CLKDIV a IDES8 -- jen to, co pouziva pps_ides3 (v3_core.v). Behavioralne,
+// casovani zjednodusene; poradi bitu IDES8 (Q0 = nejdrivejsi vzorek) je PREDPOKLAD -- overit na desce (PROTOKOL_V3 kap. 10).
+// rPLL: CLKOUT = CLKIN * (FBDIV_SEL+1) / (IDIV_SEL+1), fazove zavesena na nabeznou hranu CLKIN posunutou o SIM_PLL_PS
+// (skutecna PLL s vnitrni zpetnou vazbou ma pevny, neznamy posun vuci CLKIN -- test ho musi snest). LOCK po 16 periodach.
+`ifndef SIM_PLL_PS
+`define SIM_PLL_PS 700
+`endif
+module rPLL #(
+    parameter FCLKIN = "100", parameter DEVICE = "GW1NR-9C",
+    parameter integer IDIV_SEL = 0, parameter integer FBDIV_SEL = 0, parameter integer ODIV_SEL = 8,
+    parameter DYN_IDIV_SEL = "false", parameter DYN_FBDIV_SEL = "false", parameter DYN_ODIV_SEL = "false",
+    parameter PSDA_SEL = "0000", parameter DUTYDA_SEL = "1000", parameter DYN_DA_EN = "false",
+    parameter CLKOUT_FT_DIR = 1'b1, parameter CLKOUTP_FT_DIR = 1'b1, parameter integer CLKOUT_DLY_STEP = 0,
+    parameter integer CLKOUTP_DLY_STEP = 0, parameter CLKFB_SEL = "internal", parameter CLKOUT_BYPASS = "false",
+    parameter CLKOUTP_BYPASS = "false", parameter CLKOUTD_BYPASS = "false", parameter integer DYN_SDIV_SEL = 2,
+    parameter CLKOUTD_SRC = "CLKOUT", parameter CLKOUTD3_SRC = "CLKOUT"
+)(
+    output reg CLKOUT, output reg LOCK, output CLKOUTP, output CLKOUTD, output CLKOUTD3,
+    input RESET, input RESET_P, input CLKIN, input CLKFB,
+    input [5:0] FBDSEL, input [5:0] IDSEL, input [5:0] ODSEL, input [3:0] PSDA, input [3:0] DUTYDA, input [3:0] FDLY
+);
+    localparam integer M = (FBDIV_SEL + 1) / (IDIV_SEL + 1);      // vystupnich period na periodu CLKIN (celociselne)
+    initial begin CLKOUT = 1'b0; LOCK = 1'b0; end
+    assign CLKOUTP = CLKOUT; assign CLKOUTD = 1'b0; assign CLKOUTD3 = 1'b0;
+    time    t_last = 0, per = 0;
+    integer n = 0, k;
+    always @(posedge CLKIN) begin
+        if (t_last != 0) per = $time - t_last;
+        t_last = $time;
+        if (RESET) begin n = 0; LOCK <= 1'b0; end
+        else begin
+            if (n < 16) n = n + 1;
+            LOCK <= (n >= 16);
+            if (n >= 4 && per > 0)
+                for (k = 0; k < 2 * M; k = k + 1)
+                    CLKOUT <= #(`SIM_PLL_PS + (k * per) / (2 * M)) ((k % 2) == 0);
+        end
+    end
+endmodule
+
+// CLKDIV (DIV_MODE "4"): CLKOUT nabezne kazdou 4. nabeznou hranu HCLKIN po uvolneni RESETN, strida 1:1, 1 ps za HCLKIN.
+// V resetu CLKOUT = 0 (PCLK stoji -> asynchronni reset logiky PCLK se uvolni bez metastability).
+module CLKDIV #(parameter DIV_MODE = "4", parameter GSREN = "false") (input HCLKIN, input RESETN, input CALIB, output reg CLKOUT);
+    integer c = 0;
+    initial CLKOUT = 1'b0;
+    always @(posedge HCLKIN or negedge RESETN) begin
+        if (!RESETN) begin c = 0; CLKOUT <= 1'b0; end
+        else begin
+            c = (c + 1) % 4;
+            if (c == 1) CLKOUT <= #1 1'b1;
+            if (c == 3) CLKOUT <= #1 1'b0;
+        end
+    end
+endmodule
+
+// IDES8: D vzorkovano obema hranami FCLK (DDR, 8 vzorku za periodu PCLK = 4 x FCLK), pri nabezne PCLK vystup slova
+// Q0..Q7 = vzorky od nejstarsiho po nejnovejsi (PREDPOKLAD, viz vyse). RESET = 1: Q = 0.
+module IDES8 #(parameter GSREN = "false", parameter LSREN = "true") (
+    input D, input FCLK, input PCLK, input CALIB, input RESET,
+    output reg Q0, output reg Q1, output reg Q2, output reg Q3, output reg Q4, output reg Q5, output reg Q6, output reg Q7
+);
+    reg [7:0] sh = 8'd0;
+    initial {Q7, Q6, Q5, Q4, Q3, Q2, Q1, Q0} = 8'd0;
+    always @(posedge FCLK or negedge FCLK) sh <= {D, sh[7:1]};      // sh[7] = nejnovejsi
+    always @(posedge PCLK or posedge RESET)
+        if (RESET) {Q7, Q6, Q5, Q4, Q3, Q2, Q1, Q0} <= 8'd0;
+        else       {Q7, Q6, Q5, Q4, Q3, Q2, Q1, Q0} <= sh;
+endmodule

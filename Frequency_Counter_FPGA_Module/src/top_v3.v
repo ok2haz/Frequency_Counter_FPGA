@@ -59,7 +59,16 @@ module top_v3 (
     // GPS 1PPS: poradi a hruby cas posledni a predchozi hrany (hlavicka 68..107)
     wire [31:0] pps_seq;
     wire [33:0] pps_last, pps_prev;
-    pps_cap3 u_pps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .seq(pps_seq), .last(pps_last), .prev(pps_prev));
+    // FW 0x0502: jemny cas 1PPS (IDES8 v IOB pinu 33, rPLL 400 MHz), zverejneny spolu s hrubym
+    wire        ppsf_tgl, ppsf_lock, pps_nofine;
+    wire [47:0] ppsf_ts, pps_pts_l, pps_pts_p;
+    wire [7:0]  pps_pfl_l, pps_pfl_p, pps_d_l, pps_d_p;
+    wire [3:0]  pps_epoch;
+    pps_ides3 u_ipps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),
+                      .epoch(pps_epoch));
+    pps_cap3 u_pps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),
+                    .seq(pps_seq), .last(pps_last), .prev(pps_prev), .pts_l(pps_pts_l), .pts_p(pps_pts_p),
+                    .pfl_l(pps_pfl_l), .pfl_p(pps_pfl_p), .d_l(pps_d_l), .d_p(pps_d_p), .nofine(pps_nofine));
 
 `ifdef SIM_TOP
     localparam [31:0] BLD_TIME = 32'd0;
@@ -342,6 +351,8 @@ module top_v3 (
         .st_tdc_a(tdc_st_a), .st_tdc_b(tdc_st_b), .st_cal_wait({cwb_s[1], cwa_s[1]}), .st_cal_run(cba_s[1] | cbb_s[1]),
         .st_seg10(s10_s[1]),
         .pps_seq(pps_seq), .pps_last(pps_last), .pps_prev(pps_prev),
+        .pps_pts_l(pps_pts_l), .pps_pts_p(pps_pts_p), .pps_pfl_l(pps_pfl_l), .pps_pfl_p(pps_pfl_p),
+        .pps_d_l(pps_d_l), .pps_d_p(pps_d_p), .pps_st({pps_epoch, 1'b0, pps_nofine, (pps_seq != 32'd0), ppsf_lock}),
         .bub_a(lb_a), .bub_b(lb_b), .ovl_a(lo_a), .ovl_b(lo_b),
         .tdc_cfg(tdc_cfg), .maxtap_a(da_maxtap), .maxtap_b(db_maxtap), .cal_retry(rt2),
         .hist_k(hist_k), .hist_a(hq_a), .hist_b(hq_b),

@@ -303,18 +303,137 @@ module pps_cap3 (
     input  wire        clk,
     input  wire        pin,
     input  wire [33:0] tick,
+    input  wire        f_tgl,        // pps_ides3: novy jemny cas (prepinaci bit, domena clk)
+    input  wire [47:0] f_ts,
+    input  wire        f_lock,
     output reg  [31:0] seq,
-    output reg  [33:0] last,
-    output reg  [33:0] prev
+    output reg  [33:0] last,         // hruby cas (takty) -- kontrola, bajty 100..107
+    output reg  [33:0] prev,
+    output reg  [47:0] pts_l,        // PTS [T/16384]: jemny (IDES8), kdyz prisel, jinak hruby x 16384
+    output reg  [47:0] pts_p,
+    output reg  [7:0]  pfl_l,        // PFLAGS: bit0 platne, bit1 jemny cas
+    output reg  [7:0]  pfl_p,
+    output reg  [7:0]  d_l,          // jemny - hruby [takty], int8 saturovane (diagnostika osy a poradi bitu IDES8)
+    output reg  [7:0]  d_p,
+    output reg         nofine        // posledni hrana pri zamcene PLL bez jemneho casu (PPS_STATUS bit2)
 );
-    reg [2:0] s = 3'b000;
-    initial begin seq = 32'd0; last = 34'd0; prev = 34'd0; end
+    // FW 0x0502: hrubou hranu, jemny cas a PSEQ zverejni NAJEDNOU -- jemny cas prijde ~4 takty po hrubem (IDES8, PCLK,
+    // synchronizator), nejvys 31 taktu se ceka. STM tak nikdy nevidi novy PSEQ se starym PTS.
+    reg [2:0]  s = 3'b000;
+    reg [2:0]  fs = 3'b000;
+    reg        pend = 1'b0, fa = 1'b0;
+    reg [4:0]  win = 5'd0, fage = 5'd0;
+    reg [33:0] c_tick = 34'd0;
+    reg [47:0] f_buf = 48'd0;
+    wire [33:0] dd  = f_buf[47:14] - c_tick;
+    wire        dhi = ~dd[33] & (dd[32:7] != 26'd0);        // > 127
+    wire        dlo =  dd[33] & (dd[32:7] != {26{1'b1}});   // < -128
+    initial begin seq = 32'd0; last = 34'd0; prev = 34'd0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
+                  d_l = 8'd0; d_p = 8'd0; nofine = 1'b0; end
     always @(posedge clk) begin
-        s <= {s[1:0], pin};
-        if (s[1] & ~s[2]) begin
-            prev <= last;
-            last <= tick;
-            seq  <= seq + 32'd1;
+        s  <= {s[1:0], pin};
+        fs <= {fs[1:0], f_tgl};
+        if (win != 5'd31)  win  <= win + 5'd1;
+        if (fage != 5'd31) fage <= fage + 5'd1;
+        if (fs[2] ^ fs[1]) begin f_buf <= f_ts; fa <= f_lock; fage <= 5'd0; end
+        if (s[1] & ~s[2]) begin c_tick <= tick; pend <= 1'b1; win <= 5'd0; end
+        else if (pend && ((fa && fage != 5'd31) || win == 5'd31)) begin
+            pend  <= 1'b0; fa <= 1'b0;
+            seq   <= seq + 32'd1;
+            prev  <= last;  last  <= c_tick;
+            pts_p <= pts_l; pfl_p <= pfl_l; d_p <= d_l;
+            if (fa && fage != 5'd31) begin
+                pts_l <= f_buf; pfl_l <= 8'd3; nofine <= 1'b0;
+                d_l   <= dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0];
+            end else begin
+                pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
+            end
+        end
+    end
+endmodule
+
+// ------------------------------------------------------------
+// pps_ides3 (FW 0x0502, etapa E4): jemny cas 1PPS. rPLL 100 -> 400 MHz (FCLK, VCO 800 MHz), CLKDIV /4 (PCLK 100 MHz),
+//   IDES8 na pinu 1PPS: 8 vzorku za takt (DDR) = krok 1,25 ns = 2048 jednotek T/16384 (sigma kvantizace 0,36 ns proti
+//   2,9 ns hrubeho citace). Cas = {pcnt, poloha, 11'b0}: pcnt pocita takty PCLK od uvolneni CLKDIV (v resetu PCLK stoji
+//   -> asynchronni reset pcnt se uvolni bez metastability), v domene clk se k nemu pricte tick z taktu uvolneni (t_rel).
+//   Vysledek lezi na ose tick_hi az na pevny posun (latence uvolneni + faze PLL), ktery se muze zmenit JEN pri novem
+//   zamceni PLL -> epocha (pocet uvolneni mod 16) v PPS_STATUS bity 7:4; STM pri zmene epochy zahodi fazovou kotvu.
+// Rozlozeni: IDES8 je v IOB pinu 1PPS (33 = IOB23A, spodni okraj), CLKDIV na HCLK teze strany; logika PCLK (pcnt 34 b,
+//   detekce hrany, p_ts) je par desitek bunek, placer ji da k pinu. Do domeny clk jde jen prepinaci bit a 48 b drzenych
+//   ~1 s (vyjimky v timing_v3.sdc) -> zadna dlouha casovana cesta pres cip.
+// ------------------------------------------------------------
+module pps_ides3 #(
+    parameter Q0_FIRST = 1                       // 1 = Q0 je nejdrivejsi vzorek (PREDPOKLAD -- overit na desce: d v [-1, 0])
+)(
+    input  wire        clk,                      // clk_p0_100m (GCLK) = CLKIN rPLL i domena vystupu
+    input  wire        pin,                      // gps_1pps
+    input  wire [33:0] tick,                     // tick_hi
+    output reg         f_tgl,                    // preklopi se s kazdym novym jemnym casem
+    output reg  [47:0] f_ts,                     // [T/16384]
+    output wire        f_lock,                   // PCLK bezi (PLL zamcena a uvolnena)
+    output reg  [3:0]  epoch                     // pocet uvolneni PCLK (mod 16)
+);
+    wire fclk, lock, pclk;
+    rPLL #(
+        .FCLKIN("100"), .DEVICE("GW1NR-9C"),
+        .IDIV_SEL(0), .FBDIV_SEL(3), .ODIV_SEL(2),            // 100 * 4 / 1 = 400 MHz, VCO = 400 * 2 = 800 MHz
+        .DYN_IDIV_SEL("false"), .DYN_FBDIV_SEL("false"), .DYN_ODIV_SEL("false"),
+        .PSDA_SEL("0000"), .DUTYDA_SEL("1000"), .DYN_DA_EN("false"),
+        .CLKOUT_FT_DIR(1'b1), .CLKOUTP_FT_DIR(1'b1), .CLKOUT_DLY_STEP(0), .CLKOUTP_DLY_STEP(0),
+        .CLKFB_SEL("internal"), .CLKOUT_BYPASS("false"), .CLKOUTP_BYPASS("false"), .CLKOUTD_BYPASS("false"),
+        .DYN_SDIV_SEL(2), .CLKOUTD_SRC("CLKOUT"), .CLKOUTD3_SRC("CLKOUT")
+    ) u_pll (
+        .CLKOUT(fclk), .LOCK(lock), .CLKOUTP(), .CLKOUTD(), .CLKOUTD3(),
+        .RESET(1'b0), .RESET_P(1'b0), .CLKIN(clk), .CLKFB(1'b0),
+        .FBDSEL(6'd0), .IDSEL(6'd0), .ODSEL(6'd0), .PSDA(4'd0), .DUTYDA(4'd0), .FDLY(4'd0)
+    );
+    reg [1:0]  lk_s  = 2'b00;
+    reg        rdy   = 1'b0;                     // RESETN CLKDIV, reset IDES8 a logiky PCLK
+    reg [33:0] t_rel = 34'd0;                    // tick v taktu pred uvolnenim
+    initial begin f_tgl = 1'b0; f_ts = 48'd0; epoch = 4'd0; end
+    always @(posedge clk) begin
+        lk_s <= {lk_s[0], lock};
+        rdy  <= lk_s[1];
+        if (lk_s[1] & ~rdy) begin t_rel <= tick; epoch <= epoch + 4'd1; end
+    end
+    assign f_lock = rdy;
+    CLKDIV #(.DIV_MODE("4"), .GSREN("false")) u_div (.HCLKIN(fclk), .RESETN(rdy), .CALIB(1'b0), .CLKOUT(pclk));
+    wire [7:0] q;
+    IDES8 #(.GSREN("false"), .LSREN("true")) u_ides (
+        .D(pin), .FCLK(fclk), .PCLK(pclk), .CALIB(1'b0), .RESET(~rdy),
+        .Q0(q[0]), .Q1(q[1]), .Q2(q[2]), .Q3(q[3]), .Q4(q[4]), .Q5(q[5]), .Q6(q[6]), .Q7(q[7]));
+    wire [7:0] w = (Q0_FIRST != 0) ? q : {q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]};   // w[0] = nejdrivejsi
+    // domena PCLK: prvni nabezna hrana (i na rozhrani slov), poloha 0..7 v taktu
+    reg  [33:0] pcnt  = 34'd0;
+    reg         lastw = 1'b0;
+    reg  [36:0] p_ts  = 37'd0;                   // {pcnt, poloha}; cas = {p_ts, 11'b0}
+    reg         p_tgl = 1'b0;
+    reg  [2:0]  pos;
+    reg         hit;
+    integer     i;
+    always @* begin
+        hit = 1'b0; pos = 3'd0;
+        for (i = 7; i >= 0; i = i - 1)
+            if (w[i] && ((i == 0) ? ~lastw : ~w[i-1])) begin hit = 1'b1; pos = i[2:0]; end
+    end
+    always @(posedge pclk or negedge rdy) begin
+        if (!rdy) begin
+            pcnt <= 34'd0; lastw <= 1'b0; p_tgl <= 1'b0;
+        end else begin
+            pcnt  <= pcnt + 34'd1;
+            lastw <= w[7];
+            if (hit) begin p_ts <= {pcnt, pos}; p_tgl <= ~p_tgl; end
+        end
+    end
+    // do domeny clk: p_ts se drzi do dalsi hrany (~1 s) -> po 3 FF prepinaciho bitu je stabilni
+    reg [2:0] t_s = 3'b000;
+    always @(posedge clk) begin
+        t_s <= {t_s[1:0], p_tgl};
+        if (!rdy) t_s <= 3'b000;
+        else if (t_s[2] ^ t_s[1]) begin
+            f_ts  <= {p_ts[36:3] + t_rel, p_ts[2:0], 11'd0};
+            f_tgl <= ~f_tgl;
         end
     end
 endmodule
