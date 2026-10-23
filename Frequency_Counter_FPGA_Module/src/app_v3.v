@@ -89,7 +89,8 @@ module app_v3 #(
     localparam [15:0] FW_VERSION = 16'h0503;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
-    // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (predelicka pin_cnt) = 0 (krok 8).
+    // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
+    // (SET_CONFIG 0x07, kap. 10.7).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
     localparam [31:0] CAPS = 32'h001F_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
