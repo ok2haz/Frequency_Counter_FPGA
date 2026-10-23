@@ -691,7 +691,11 @@ endmodule
 // FW 0x0505: rezim 1 = HLUBOKY zaznam az 699 050 znacek (6 B) do vestavene PSRAM (psram_hb3, 4 MB) pres FIFO 512 znacek
 //   v BSRAM a davky 128 B (~80 MB/s -> plynule do ~13 Mznacek/s, jinak FIFO pretece: priznak, znacky se zahodi);
 //   rezim 2 = nacist okno w (znacky w*512 .. w*512+511) z PSRAM do BSRAM -> stranky druhu 3 jako u rezimu 0. Rezim 0 beze
-//   zmeny. Rozlozeni: FIFO a okno jsou BSRAM, radic PSRAM ~150 bunek u vyhrazenych vyvodu PSRAM.
+//   zmeny.
+//   Audit 2026-10-23 (F-0266): rezimy se vylucuji -- rezim 0 se behem hlubokeho zaznamu / nacitani okna odmitne (psal by
+//   do tehoz BSRAM a prepnul kanal bezicimu zaznamu), rezim 1 a 2 rezim 0 ukonci, rezim 1 pri bezicim zaznamu = STOP
+//   (zbytek FIFO se dopise). Kazdy prijaty prikaz zvysi pocitadlo dack (Grayuv kod, cte se v 10 MHz bez synchronizace)
+//   -> STM pozna odmitnuty prikaz a nevezme stara data; bit7 = kanal posledniho prijateho zaznamu. Rozlozeni: FIFO a okno jsou BSRAM, radic PSRAM ~150 bunek u vyhrazenych vyvodu PSRAM.
 module raw_cap3 #(
     parameter PS_INIT = 15000                    // cekani po resetu PSRAM [takty] (simulace kratsi)
 )(
@@ -708,6 +712,7 @@ module raw_cap3 #(
                                      // preteklo, bit4 nacita se okno, bit5 okno nacteno
     output wire [5:0]  dwsel,        // bity 4:0 zvolena latence zapisu PSRAM (psram_hb3 W0 + n), bit5 faze cteni
     output reg  [15:0] dwin,         // posledni (nacitane) okno
+    output wire [7:0]  dack,         // bit7 kanal zaznamu, bity 3:0 pocet prijatych prikazu T_RAW (Gray, mod 16)
     input  wire        rclk,
     input  wire [8:0]  rk,
     output reg  [47:0] rq,
@@ -721,7 +726,9 @@ module raw_cap3 #(
     reg [23:0] ar1 = 24'd0, ar2 = 24'd0;
     reg        run = 1'b0, ch = 1'b0;
     reg [47:0] mem [0:511];
+    reg [3:0]  dacc = 4'd0;                      // prijate prikazy (binarne)
     initial begin n = 10'd0; rq = 48'd0; dn = 24'd0; dwin = 16'd0; end
+    assign dack = {ch, 3'd0, dacc ^ {1'b0, dacc[3:1]}};
     // ---- PSRAM ----
     wire       p_wtake, p_rvalid, p_busy, p_rdy, p_bad;
     wire [7:0] p_rbyte;
@@ -772,12 +779,15 @@ module raw_cap3 #(
         p_req <= 1'b0;
         if (p_busy) p_wait <= 1'b0;
         if (rs[2] ^ rs[1]) begin
-            if (md2 == 2'd0) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; end
-            else if (md2 == 2'd1 && p_rdy && !drun && !wl) begin
+            if (md2 == 2'd0 && !drun && !wl) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; dacc <= dacc + 4'd1; end
+            else if (md2 == 2'd1 && drun) begin dfin <= 1'b1; dacc <= dacc + 4'd1; end   // STOP
+            else if (md2 == 2'd1 && p_rdy && !wl) begin
+                run <= 1'b0; wdone <= 1'b0; dacc <= dacc + 4'd1;
                 drun <= 1'b1; dfin <= (ar2 == 24'd0); dovf <= 1'b0; ch <= chs[1]; dn <= 24'd0;
                 dreq <= (ar2 > DMAX) ? DMAX : ar2; dwa <= 22'd0;
                 fwp <= 9'd0; frp <= 9'd0; fcnt <= 10'd0; fq_v <= 1'b0; nw_v <= 1'b0; sw_v <= 1'b0; sbi <= 3'd0;
             end else if (md2 == 2'd2 && p_rdy && !drun && !wl) begin
+                run <= 1'b0; dacc <= dacc + 4'd1;
                 wl <= 1'b1; wdone <= 1'b0; dwin <= ar2[15:0]; wb <= 5'd0; wra <= ar2[10:0] * 22'd3072;
                 widx <= 10'd0; abi <= 3'd0; n <= 10'd0;
                 wlim <= (wrem >= 32'd512) ? 10'd512 : wrem[9:0];

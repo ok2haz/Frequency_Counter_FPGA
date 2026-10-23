@@ -64,6 +64,10 @@ M = [
     # audit 2026-10-23 F-0262: RWDS = 1 behem CA (priznak latence) -> bez zbrojeni je konec priznaku prvni "bajt"
     # F-0264: kalibrace nezkousi fazi 1 (vystup PSRAM neplatny pri vzorku na nabezne hrane)
     ('PSRAM: jen faze cteni 0', 'v3_core.v', "else if (ctry == 5'd31) begin rph <= 1'b1;", "else if (ctry == 5'd31) begin rph <= 1'b0;", 6),
+    # F-0266: rezim 0 bez vyluky (behem hlubokeho zaznamu prepne kanal a pise do BSRAM), STOP se neprovede
+    ('RAW: rezim 0 bez vyluky', 'v3_core.v', "if (md2 == 2'd0 && !drun && !wl) begin", "if (md2 == 2'd0) begin", 5),
+    ('RAW: bez STOP', 'v3_core.v', "else if (md2 == 2'd1 && drun) begin dfin <= 1'b1; dacc <= dacc + 4'd1; end",
+     "else if (md2 == 2'd1 && drun) begin end", 5),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),

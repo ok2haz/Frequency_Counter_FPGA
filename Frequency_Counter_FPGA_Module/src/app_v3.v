@@ -74,6 +74,7 @@ module app_v3 #(
     input  wire [7:0]  raw_dst,
     input  wire [5:0]  raw_wsel,              // bity 4:0 latence zapisu PSRAM (W0 + n), bit5 faze cteni
     input  wire [15:0] raw_win,
+    input  wire [7:0]  raw_dack,              // audit F-0266: bit7 kanal zaznamu, 3:0 prijate prikazy T_RAW (Gray)
     output reg         lw_tgl,
     output reg  [9:0]  lw_a,
     output reg  [13:0] lw_neg,
@@ -236,7 +237,7 @@ module app_v3 #(
             8'd116: hb = a_page ? a_kind : 8'd0;
             8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
             8'd119: hb = a_page ? a_pcnt[7:0] : 8'd0;  8'd120: hb = a_page ? a_pcnt[15:8] : 8'd0;
-            8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = 8'd0;
+            8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = raw_dack;
             8'd128: hb = raw_dst;       8'd129: hb = {2'd0, raw_wsel};
             8'd130: hb = raw_win[7:0];  8'd131: hb = raw_win[15:8];
             8'd122: hb = lut_cnt_b[7:0];  8'd123: hb = {2'd0, lut_cnt_b[13:8]};

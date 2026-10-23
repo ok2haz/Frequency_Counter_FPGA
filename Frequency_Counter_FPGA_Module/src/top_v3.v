@@ -325,7 +325,7 @@ module top_v3 (
     // RAW_CAPTURE
     wire raw_tgl, raw_ch;  wire [8:0] raw_k;  wire [47:0] raw_q;  wire [9:0] raw_n;
     // FW 0x0505: hluboky RAW zaznam do PSRAM (rezim 1) a cteni po oknech 512 znacek (rezim 2)
-    wire [1:0]  raw_mode;  wire [23:0] raw_arg, raw_dn;  wire [7:0] raw_dst;  wire [5:0] raw_wsel;  wire [15:0] raw_win;
+    wire [1:0]  raw_mode;  wire [23:0] raw_arg, raw_dn;  wire [7:0] raw_dst;  wire [5:0] raw_wsel;  wire [15:0] raw_win;  wire [7:0] raw_dack;
 `ifdef SIM_TOP
     localparam PS_INIT = 2000;
 `else
@@ -333,7 +333,7 @@ module top_v3 (
 `endif
     raw_cap3 #(.PS_INIT(PS_INIT)) u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
         .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b),
-        .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win),
+        .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
         .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q),
         .ps_ck(O_psram_ck[0]), .ps_ck_n(O_psram_ck_n[0]), .ps_cs_n(O_psram_cs_n[0]), .ps_rst_n(O_psram_reset_n[0]),
         .ps_dq(IO_psram_dq[7:0]), .ps_rwds(IO_psram_rwds[0]));
@@ -404,7 +404,7 @@ module top_v3 (
         .raw_k(raw_k), .raw_q(raw_q), .raw_n(raw_n),
         .cal_tgl(cal_tgl), .cal_mask(cal_mask), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .seg10(seg10_req), .raw_tgl(raw_tgl), .raw_ch(raw_ch),
-        .raw_mode(raw_mode), .raw_arg(raw_arg), .raw_dn(raw_dn), .raw_dst(raw_dst), .raw_wsel(raw_wsel), .raw_win(raw_win),
+        .raw_mode(raw_mode), .raw_arg(raw_arg), .raw_dn(raw_dn), .raw_dst(raw_dst), .raw_wsel(raw_wsel), .raw_win(raw_win), .raw_dack(raw_dack),
         .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc),
         .pr_a_req(pr_a_req), .pr_b_req(pr_b_req), .pr_a_act(pr_a), .pr_b_act(pr_b), .probe_a(prb_a), .probe_b(prb_b));
 

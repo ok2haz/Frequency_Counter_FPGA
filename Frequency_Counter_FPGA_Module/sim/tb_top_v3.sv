@@ -102,6 +102,7 @@ module tb_top_v3;
               end
               #(64'd1_000_000); cs = 1; #(64'd200_000_000); end endtask   // mezera 200 us
 
+    function [3:0] gr(input [3:0] b); gr = b ^ {1'b0, b[3:1]}; endfunction   // Gray (bajt 127, F-0266)
     function [63:0] rd(input integer off, input integer n);
         integer q; reg [63:0] v; begin v = 0; for (q = n - 1; q >= 0; q = q - 1) v = (v << 8) | mi[off + q]; rd = v; end endfunction
 
@@ -490,9 +491,24 @@ module tb_top_v3;
 `else
             chk(!mi[129][5], "PSRAM: faze cteni 0 (nabezna hrana staci)");
 `endif
+            // audit 2026-10-23 F-0266: bajt 127 = pocet prijatych prikazu T_RAW (Gray) + kanal; vyluka rezimu, STOP
+            chk(mi[127] == 8'h00, "RAW: zatim zadny prikaz (bajt 127)");
+            build(8'h0B, 8'h02, 8'hA0, 8'h86, 8'h01); xfer(1024);   // rezim 1, kanal A, 100000 znacek (10 ms)
+            build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+            chk(mi[127] == {4'd0, gr(4'd1)} && mi[128][2], "RAW: hluboky start prijat, kanal A, bezi");
+            build(8'h0B, 8'h01, 8'd0, 8'd0, 8'd0); xfer(1024);      // rezim 0, kanal B: behem zaznamu odmitnout
+            build(8'h0B, 8'h04, 8'd0, 8'd0, 8'd0); xfer(1024);      // rezim 2: behem zaznamu odmitnout
+            build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+            chk(mi[127] == {4'd0, gr(4'd1)} && mi[128][2] && !mi[128][4], "RAW: rezim 0 a 2 behem hlubokeho zaznamu odmitnuty");
+            build(8'h0B, 8'h02, 8'd0, 8'd0, 8'd0); xfer(1024);      // rezim 1 pri bezicim zaznamu = STOP
+            build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+            $display("PSRAM: STOP po %0d znackach, stav %02h, bajt 127 %02h", rd(124, 3), mi[128], mi[127]);
+            chk(mi[127] == {4'd0, gr(4'd2)} && !mi[128][2] && rd(124, 3) > 1000 && rd(124, 3) < 100000,
+                "RAW: STOP prijat, zaznam skoncil pred N");
             build(8'h0B, 8'h02, 8'd76, 8'd4, 8'd0); xfer(1024);     // rezim 1, kanal A, 1100 znacek
             #(64'd300_000_000);
             build_ack(0); xfer(1024);
+            chk(mi[127] == {4'd0, gr(4'd3)}, "RAW: druhy hluboky start prijat");
             $display("PSRAM: hluboky zaznam %0d znacek, stav %02h, latence W0+%0d", rd(124, 3), mi[128], mi[129]);
             chk(rd(124, 3) == 1100 && !mi[128][2] && !mi[128][3], "PSRAM: 1100 znacek, zaznam skoncil, bez preteceni");
             ndeep = 0; dmaxd = 0.0;
@@ -501,6 +517,7 @@ module tb_top_v3;
                 // ramec teto transakce se slozil jeste pred nactenim okna (FPGA sklada ramec po predchozi transakci)
                 build_ack(0); xfer(1024); build_ack(0); xfer(1024);
                 chk(mi[128][5] && !mi[128][4] && rd(130, 2) == w, "PSRAM: okno nacteno");
+                chk(mi[127] == {4'd0, gr(4 + w[3:0])}, "RAW: nacteni okna prijato (bajt 127)");
                 nwin = (w < 2) ? 512 : 76;
                 build(8'hA0, 8'd0, 8'd0, 8'd0, 0); xfer(1024); build_ack(0); xfer(1024);
                 chk(rd(256 + 2 + 3 * 5, 3) == nwin, "PSRAM: souhrnna stranka, pocet znacek okna");
