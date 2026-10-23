@@ -28,7 +28,12 @@ module top_v3 (
     input  wire spi_sck,
     input  wire spi_cs_n,
     input  wire spi_mosi,
-    output wire spi_miso
+    output wire spi_miso,
+    // FW 0x0505: vestavena PSRAM GW1NR-9 (2 cipy x8; pouziva se cip 0 = 4 MB). Vyhrazene vyvody pouzdra -- jmena portu
+    // podle IP Gowin (O_psram_* / IO_psram_*), v pins.cst se nepriradi [OVERIT P&R].
+    output wire [1:0]  O_psram_ck, O_psram_ck_n, O_psram_cs_n, O_psram_reset_n,
+    inout  wire [1:0]  IO_psram_rwds,
+    inout  wire [15:0] IO_psram_dq
 `ifdef PIN86_BL_OFF
     , output wire bl_pwm
 `endif
@@ -319,8 +324,21 @@ module top_v3 (
 
     // RAW_CAPTURE
     wire raw_tgl, raw_ch;  wire [8:0] raw_k;  wire [47:0] raw_q;  wire [9:0] raw_n;
-    raw_cap3 u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b),
-        .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q));
+    // FW 0x0505: hluboky RAW zaznam do PSRAM (rezim 1) a cteni po oknech 512 znacek (rezim 2)
+    wire [1:0]  raw_mode;  wire [23:0] raw_arg, raw_dn;  wire [7:0] raw_dst;  wire [2:0] raw_wsel;  wire [15:0] raw_win;
+`ifdef SIM_TOP
+    localparam PS_INIT = 2000;
+`else
+    localparam PS_INIT = 15000;   // 150 us (tVCS)
+`endif
+    raw_cap3 #(.PS_INIT(PS_INIT)) u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
+        .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b),
+        .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win),
+        .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q),
+        .ps_ck(O_psram_ck[0]), .ps_ck_n(O_psram_ck_n[0]), .ps_cs_n(O_psram_cs_n[0]), .ps_rst_n(O_psram_reset_n[0]),
+        .ps_dq(IO_psram_dq[7:0]), .ps_rwds(IO_psram_rwds[0]));
+    assign O_psram_ck[1] = 1'b0; assign O_psram_ck_n[1] = 1'b1; assign O_psram_cs_n[1] = 1'b1; assign O_psram_reset_n[1] = 1'b0;
+    assign IO_psram_dq[15:8] = 8'hzz; assign IO_psram_rwds[1] = 1'bz;   // cip 1 se nepouziva
 
     // ---- stav do 10 MHz (2FF, urovne) ----
     reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfa_s = 2'b00, cfb_s = 2'b00, cba_s = 2'b00, cbb_s = 2'b00;
@@ -386,6 +404,7 @@ module top_v3 (
         .raw_k(raw_k), .raw_q(raw_q), .raw_n(raw_n),
         .cal_tgl(cal_tgl), .cal_mask(cal_mask), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .seg10(seg10_req), .raw_tgl(raw_tgl), .raw_ch(raw_ch),
+        .raw_mode(raw_mode), .raw_arg(raw_arg), .raw_dn(raw_dn), .raw_dst(raw_dst), .raw_wsel(raw_wsel), .raw_win(raw_win),
         .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc),
         .pr_a_req(pr_a_req), .pr_b_req(pr_b_req), .pr_a_act(pr_a), .pr_b_act(pr_b), .probe_a(prb_a), .probe_b(prb_b));
 

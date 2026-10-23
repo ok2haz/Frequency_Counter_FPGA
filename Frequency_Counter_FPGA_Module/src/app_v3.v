@@ -68,6 +68,12 @@ module app_v3 #(
     output reg         seg10,
     output reg         raw_tgl,
     output reg         raw_ch,
+    output reg  [1:0]  raw_mode,              // FW 0x0505: T_RAW p0 bity 2:1 (0 = 512 do BSRAM, 1 = hluboky, 2 = okno)
+    output reg  [23:0] raw_arg,               // p1..p3: pocet znacek / cislo okna
+    input  wire [23:0] raw_dn,
+    input  wire [7:0]  raw_dst,
+    input  wire [2:0]  raw_wsel,
+    input  wire [15:0] raw_win,
     output reg         lw_tgl,
     output reg  [9:0]  lw_a,
     output reg  [13:0] lw_neg,
@@ -87,13 +93,14 @@ module app_v3 #(
     // FW 0x0502: 1PPS s jemnym casem pres IDES8 + rPLL (CAPS bit17): PTS krok 1,25 ns, PFLAGS bit1, PPS_STATUS, d.
     // FW 0x0503: predelicka vstupu pin_cnt3 (CAPS bit18): SET_CONFIG 0x07, PRESC A/B, PROBE A/B, FLAGS zaznamu 7:5.
     // FW 0x0504: soucty segmentu SX/ST v DSP (seg_chan3 SUM_DSP = 1), rozhrani beze zmeny.
-    localparam [15:0] FW_VERSION = 16'h0504;
+    // FW 0x0505: hluboky RAW zaznam do vestavene PSRAM (CAPS bit21): T_RAW rezimy 1/2, hlavicka 124..131.
+    localparam [15:0] FW_VERSION = 16'h0505;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
     // (SET_CONFIG 0x07, kap. 10.7).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
-    localparam [31:0] CAPS = 32'h001F_7C32;
+    localparam [31:0] CAPS = 32'h003F_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
     reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
@@ -103,7 +110,7 @@ module app_v3 #(
         rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+3){1'b0}};
         hist_k = 10'd0; raw_k = 9'd0;
         cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
-        raw_tgl = 1'b0; raw_ch = 1'b0;
+        raw_tgl = 1'b0; raw_ch = 1'b0; raw_mode = 2'd0; raw_arg = 24'd0;
         lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00; pr_a_req = 3'd0; pr_b_req = 3'd0;
     end
 
@@ -225,6 +232,9 @@ module app_v3 #(
             8'd116: hb = a_page ? a_kind : 8'd0;
             8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
             8'd119: hb = a_page ? a_pcnt[7:0] : 8'd0;  8'd120: hb = a_page ? a_pcnt[15:8] : 8'd0;
+            8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = 8'd0;
+            8'd128: hb = raw_dst;       8'd129: hb = {5'd0, raw_wsel};
+            8'd130: hb = raw_win[7:0];  8'd131: hb = raw_win[15:8];
             8'd122: hb = lut_cnt_b[7:0];  8'd123: hb = {2'd0, lut_cnt_b[13:8]};
             default: hb = 8'd0;
         endcase
@@ -349,7 +359,8 @@ module app_v3 #(
                             end
                         end
                         T_PAGE: begin page_req <= 1'b1; page_kind <= rx_p0; page_no <= {rx_p2, rx_p1}; end
-                        T_RAW:  begin raw_ch <= rx_p0[0]; raw_tgl <= ~raw_tgl; end
+                        T_RAW:  begin raw_ch <= rx_p0[0]; raw_mode <= (rx_p0[2:1] == 2'd3) ? 2'd0 : rx_p0[2:1];
+                                      raw_arg <= {rx_p3, rx_p2, rx_p1}; raw_tgl <= ~raw_tgl; end
                         T_START, T_STOP: ;
                         default: cmd_done <= 1'b0;                                      // neznamy TYPE = neprovedeno
                     endcase

@@ -62,8 +62,14 @@ module tb_top_v3;
     initial begin #(64'd700_000_000); forever begin pps = 1; #(64'd100_000_000); pps = 0; #(64'd900_000_000 + `TB_PPS_DPS); end end   // 1PPS po 1 ms + DPS
 
     reg sck = 0, cs = 1, mosi = 0; wire miso, led, fok, refc;
+    // FW 0x0505: vestavena PSRAM (cip 0 = model, cip 1 nevyuzit)
+    wire [1:0] ps_ck, ps_ckn, ps_csn, ps_rstn; wire [1:0] ps_rwds; wire [15:0] ps_dq;
+    hb_psram_model u_ps0 (.ck(ps_ck[0]), .ck_n(ps_ckn[0]), .cs_n(ps_csn[0]), .rst_n(ps_rstn[0]), .dq(ps_dq[7:0]), .rwds(ps_rwds[0]));
+    integer ndeep = 0, nwin, w; real dmaxd;
     top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
-                .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(pps), .spi_sck(sck), .spi_cs_n(cs), .spi_mosi(mosi), .spi_miso(miso));
+                .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(pps), .spi_sck(sck), .spi_cs_n(cs), .spi_mosi(mosi), .spi_miso(miso),
+                .O_psram_ck(ps_ck), .O_psram_ck_n(ps_ckn), .O_psram_cs_n(ps_csn), .O_psram_reset_n(ps_rstn),
+                .IO_psram_rwds(ps_rwds), .IO_psram_dq(ps_dq));
 
     // ---- BFM ----
     function [15:0] crc(input [15:0] c0, input [7:0] d);
@@ -137,7 +143,8 @@ module tb_top_v3;
             end
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
-            chk(rd(20, 2) == 16'h0504, "FW_VERSION 0x0504");
+            chk(rd(20, 2) == 16'h0505, "FW_VERSION 0x0505");
+            chk(caps[21], "CAPS bit21 (hluboky RAW do PSRAM)");
             chk(caps[18], "CAPS bit18 (predelicka pin_cnt3)");
             chk(caps[17], "CAPS bit17 (1PPS pres IDES8)");
             caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");
@@ -466,6 +473,44 @@ module tb_top_v3;
             chk(ninv_b >= e0 + 2, "B: neplatne segmenty kolem prepnuti P");
             chk(nvp[0][0] >= 10 && nvp[0][3] == 0 && nvp[0][4] == 0, "A: P = 1 po celou dobu");
             $display("predelicka: zaznamy B P=8 %0d, P=16 %0d, neplatne B %0d, A P=1 %0d", nvp[1][3], nvp[1][4], ninv_b, nvp[0][0]);
+        end else if (`TB_MODE == 5) begin
+            // ---- FW 0x0505 PSRAM: kalibrace latence zapisu, hluboky zaznam A (1100 znacek), okna 0..2 pres stranky ----
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
+            build_ack(0); xfer(1024);
+            chk(mi[128][0] && !mi[128][1], "PSRAM: pripravena, kalibrace zapisu prosla");
+            chk(mi[129][2:0] == 3'd4, "PSRAM: nalezena latence zapisu modelu (W0 + 4 = 20)");
+            build(8'h0B, 8'h02, 8'd76, 8'd4, 8'd0); xfer(1024);     // rezim 1, kanal A, 1100 znacek
+            #(64'd300_000_000);
+            build_ack(0); xfer(1024);
+            $display("PSRAM: hluboky zaznam %0d znacek, stav %02h, latence W0+%0d", rd(124, 3), mi[128], mi[129]);
+            chk(rd(124, 3) == 1100 && !mi[128][2] && !mi[128][3], "PSRAM: 1100 znacek, zaznam skoncil, bez preteceni");
+            ndeep = 0; dmaxd = 0.0;
+            for (w = 0; w < 3; w = w + 1) begin
+                build(8'h0B, 8'h04, w[7:0], 8'd0, 8'd0); xfer(1024);   // rezim 2: okno w
+                // ramec teto transakce se slozil jeste pred nactenim okna (FPGA sklada ramec po predchozi transakci)
+                build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+                chk(mi[128][5] && !mi[128][4] && rd(130, 2) == w, "PSRAM: okno nacteno");
+                nwin = (w < 2) ? 512 : 76;
+                build(8'hA0, 8'd0, 8'd0, 8'd0, 0); xfer(1024); build_ack(0); xfer(1024);
+                chk(rd(256 + 2 + 3 * 5, 3) == nwin, "PSRAM: souhrnna stranka, pocet znacek okna");
+                for (t = 0; t * 252 < 2 * nwin; t = t + 1) begin
+                    build(8'hA0, 8'd3, t[7:0], 8'd0, 0); xfer(1024); build_ack(0); xfer(1024);
+                    for (k = 0; k < 252; k = k + 1) if (t * 252 + k < 1024) rawi[t * 252 + k] = rd((1 + k / 84) * 256 + 2 + 3 * (k % 84), 3);
+                end
+                for (k = 0; k < nwin; k = k + 1) begin
+                    rm1 = {rawi[2 * k + 1], rawi[2 * k]};
+                    if (ndeep > 0) begin
+                        rawe = real'((rm1 - rm0) & 48'hFFFFFFFFFFFF) * U - PA;
+                        if (rawe < 0) rawe = -rawe;
+                        if (rawe > dmaxd) dmaxd = rawe;
+                        chk(rawe < 300.0, "PSRAM: rozdil po sobe jdoucich znacek = perioda A (i pres hranici okna)");
+                    end
+                    rm0 = rm1; ndeep = ndeep + 1;
+                end
+            end
+            $display("PSRAM: precteno %0d znacek ve 3 oknech, max |rozdil - P| %.0f ps; model zapsal %0d B, precetl %0d B",
+                     ndeep, dmaxd, u_ps0.nwr, u_ps0.nrd);
+            chk(ndeep == 1100, "PSRAM: vsech 1100 znacek z oken");
         end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
             build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
@@ -585,4 +630,47 @@ module tb_top_v3;
         $finish;
     end
     initial begin #(64'd80_000_000_000); $display("FAIL: timeout (cal_valid %0d/%0d)", dut.cal_valid_a, dut.cal_valid_b); $finish; end
+endmodule
+
+// ------------------------------------------------------------
+// hb_psram_model: behavioralni model jednoho cipu vestavene PSRAM (HyperBus x8) pro tb_top_v3 (FW 0x0505). Obecna
+//   specifikace HyperBus: CA 6 bajtu na hranach CK (MSB prvni; [47] cteni, [44:16] + [2:0] = adresa 16b slova),
+//   zapis od hrany 6 + WLAT (RWDS = maska, 0 = zapsat), cteni od hrany 6 + RLAT, RWDS se s kazdym bajtem preklopi
+//   (prvni bajt RWDS = 1), vystup TCKD po hrane CK. Pamet 64 kB (adresa se maskuje). PREDPOKLAD, ne datasheet.
+// ------------------------------------------------------------
+module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20, parameter integer TCKD = 3000) (
+    input wire ck, input wire ck_n, input wire cs_n, input wire rst_n, inout wire [7:0] dq, inout wire rwds
+);
+    reg [7:0]  mem [0:65535];
+    reg [7:0]  dq_o = 8'd0;
+    reg        dq_oe = 1'b0, rw_o = 1'b0, rw_oe = 1'b0;
+    assign dq   = dq_oe ? dq_o : 8'hzz;
+    assign rwds = rw_oe ? rw_o : 1'bz;
+    integer    e = 0, k;
+    reg [47:0] ca = 48'd0;
+    reg        rd = 1'b0;
+    reg [21:0] a = 22'd0;
+    integer    nwr = 0, nrd = 0;
+    initial for (k = 0; k < 65536; k = k + 1) mem[k] = 8'h00;
+    always @(negedge cs_n) begin e = 0; end
+    always @(posedge cs_n) begin dq_oe <= #(TCKD) 1'b0; rw_oe <= #(TCKD) 1'b0; end
+    always @(ck) if (!cs_n && rst_n && (ck === 1'b0 || ck === 1'b1)) begin
+        if (e < 6) begin
+            ca = {ca[39:0], dq};
+            if (e == 5) begin
+                rd = ca[47];
+                a  = {ca[37:16], ca[2:0], 1'b0};            // bajtova adresa (slovo x 2), maskuje se na 64 kB
+                if (rd) begin rw_o <= #(TCKD) 1'b0; rw_oe <= #(TCKD) 1'b1; end
+            end
+        end else if (rd) begin
+            if (e >= 6 + RLAT) begin
+                dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) (((e - 6 - RLAT) % 2) == 0);
+                a = a + 22'd1; nrd = nrd + 1;
+            end
+        end else if (e >= 6 + WLAT) begin
+            if (rwds === 1'b0) begin mem[a[15:0]] = dq; nwr = nwr + 1; end
+            a = a + 22'd1;
+        end
+        e = e + 1;
+    end
 endmodule

@@ -535,30 +535,277 @@ endmodule
 // raw_cap3: RAW_CAPTURE (TYPE 0x0B) -- po pozadavku (prepinaci bit z 10 MHz) ulozi 512 po sobe jdoucich znacek
 //   vybraneho kanalu (ts_ps, 48 b) do BSRAM; cte aplikace stranou druh 3 (dve polozky u24 na znacku).
 // ------------------------------------------------------------
-module raw_cap3 (
+// ------------------------------------------------------------
+// psram_hb3 (FW 0x0505): radic vestavene PSRAM GW1NR-9 (HyperBus x8, jeden ze dvou cipu = 4 MB) bez PLL.
+//   Takt clk 100 MHz = jeden DDR takt sbernice (DQ se meni s nabeznou hranou clk), CK = 50 MHz z FF na SESTUPNE hrane
+//   clk -> hrana CK je uprostred kazdeho bajtu (zarovnani na stred, 5 ns na obe strany). Prenos ~100 MB/s v datech.
+//   Prikaz/adresa (CA) 6 bajtu, pak cekani WAIT_B bajtovych taktu (latence, viz nize), pak data (davka BURST bajtu).
+//   CTENI se zarovnava podle RWDS: PSRAM ho pri cteni prepina s kazdym bajtem -> bajt se bere, kdyz se vzorek RWDS
+//   zmenil (presna latence pri cteni tedy nevadi). ZAPIS musi trefit latenci PSRAM presne: po zapnuti radic zkusi
+//   WAIT_B = W0 .. W0+7 (zapis vzoru, cteni, porovnani) a vezme prvni, ktery sedi -> zadna zavislost na tom, jak
+//   presne datasheet pocita latenci od CA. Vysledek: rdy, wsel (index latence), bad (zadna nesedi).
+//   CS# nejvys ~1,7 us na davku (tCSM 4 us = obnova PSRAM): BURST = 128 B.
+// Rozlozeni: piny PSRAM jsou vyhrazene (cip v pouzdre), radic je ~150 bunek; datova cesta (FIFO zapisu, okno RAW)
+//   v BSRAM. Jedina cesta mezi clk a vyvody je registr -> pin; CK z FF na sestupne hrane.
+// 🔴 NEOVERENO na krzemiku: jmena vyvodu (O_psram_*, IO_psram_*), casovani tCKD/tDSV PSRAM, inicializace (CR0 se
+//   nemeni = vychozi pevna dvojita latence). Model v sim/tb_top_v3.sv (hb_psram_model) je podle obecne specifikace
+//   HyperBus; proto samokalibrace latence zapisu a samotest pri startu (PSRAM_ST v hlavicce).
+// ------------------------------------------------------------
+module psram_hb3 #(
+    parameter INIT_CYC = 15000,       // cekani po resetu PSRAM [takty clk] (tVCS 150 us); simulace kratsi
+    parameter W0       = 16           // nejkratsi zkousena latence zapisu [bajtove takty od konce CA]
+)(
+    input  wire        clk,
+    // uzivatel (domena clk): davka BURST bajtu na adresu (bajtova, nasobek BURST)
+    input  wire        req,           // 1 takt: start davky (jen kdyz rdy & ~busy)
+    input  wire        we,            // 1 = zapis, 0 = cteni
+    input  wire [21:0] addr,          // bajtova adresa (4 MB)
+    output wire        wtake,         // zapis: v tomto taktu se bere wbyte (kombinacni; dalsi bajt o takt pozdeji)
+    input  wire [7:0]  wbyte,
+    output reg         rvalid,        // cteni: bajt rbyte platny
+    output reg  [7:0]  rbyte,
+    output reg         busy,
+    output reg         rdy,           // inicializace a kalibrace hotova
+    output reg         bad,           // zadna latence zapisu nesedi
+    output reg  [2:0]  wsel,          // zvolena latence zapisu (W0 + wsel)
+    // PSRAM (cip 0)
+    output reg         ps_ck,
+    output wire        ps_ck_n,
+    output reg         ps_cs_n,
+    output reg         ps_rst_n,
+    inout  wire [7:0]  ps_dq,
+    inout  wire        ps_rwds
+);
+    localparam BURST = 128;
+    reg        dq_oe = 1'b0, rw_oe = 1'b0;
+    reg [7:0]  dq_o = 8'd0;
+    reg        rw_o = 1'b0;
+    assign ps_dq   = dq_oe ? dq_o : 8'hzz;
+    assign ps_rwds = rw_oe ? rw_o : 1'bz;
+    assign ps_ck_n = ~ps_ck;
+    initial begin ps_ck = 1'b0; ps_cs_n = 1'b1; ps_rst_n = 1'b0; rvalid = 1'b0; rbyte = 8'd0;
+                  busy = 1'b1; rdy = 1'b0; bad = 1'b0; wsel = 3'd0; end
+    // CK: bezi jen behem transakce (ck_en), preklapi na sestupne hrane clk
+    reg ck_en = 1'b0;
+    always @(negedge clk) ps_ck <= ck_en ? ~ps_ck : 1'b0;
+
+    localparam [2:0] S_INIT = 3'd0, S_IDLE = 3'd1, S_CA = 3'd2, S_WAIT = 3'd3, S_DATA = 3'd4, S_END = 3'd5;
+    reg [2:0]  st = S_INIT;
+    reg [15:0] cnt = 16'd0;
+    reg [47:0] ca = 48'd0;
+    reg        cur_we = 1'b0;
+    reg [7:0]  nb = 8'd0;             // bajty davky
+    reg [1:0]  rs = 2'b00;            // vzorky RWDS (cteni)
+    reg [7:0]  dqs = 8'd0;
+    // kalibrace: 0 = zapis vzoru, 1 = cteni a porovnani
+    reg        cal = 1'b1, cal_rd = 1'b0, cal_ok = 1'b1;
+    reg [2:0]  ctry = 3'd0;
+    wire [7:0] pat = {nb[6:0], 1'b1} ^ {ctry, 5'h15};   // vzor zavisly na pokusu (stary vzor neprojde)
+    wire [7:0] wait_b = W0 + {5'd0, (cal ? ctry : wsel)};
+    assign wtake = (st == S_DATA) && cur_we && !cal;
+    // CA (HyperBus): [47] R/W# (1 cteni), [46] adresni prostor (0 pamet), [45] linearni davka, [44:16] horni adresa
+    // (slova 16 b: A[21:1] -> radek/sloupec), [2:0] dolni sloupec
+    function [47:0] mk_ca(input rd, input [21:0] a);
+        mk_ca = {rd, 1'b0, 1'b1, 11'd0, a[21:4], 13'd0, a[3:1]};   // 1+1+1+11+18+13+3 = 48 b
+    endfunction
+    always @(posedge clk) begin
+        rvalid <= 1'b0;
+        rs     <= {rs[0], ps_rwds};
+        dqs    <= ps_dq;
+        case (st)
+            S_INIT: begin                                     // reset PSRAM, cekani tVCS
+                cnt <= cnt + 16'd1;
+                if (cnt == 16'd100) ps_rst_n <= 1'b1;
+                if (cnt == INIT_CYC[15:0]) begin st <= S_IDLE; cnt <= 16'd0; end
+            end
+            S_IDLE: begin
+                busy <= cal;
+                if (cal || req) begin
+                    cur_we <= cal ? ~cal_rd : we;
+                    ca     <= mk_ca(cal ? cal_rd : ~we, cal ? {12'd0, ctry, 7'd0} : addr);
+                    busy <= 1'b1; st <= S_CA; cnt <= 16'd0; nb <= 8'd0;
+                    ps_cs_n <= 1'b0; dq_oe <= 1'b1;            // CK az s prvnim bajtem CA (hrana uprostred bajtu)
+                end
+            end
+            S_CA: begin                                       // 6 bajtu CA, MSB prvni
+                dq_o <= ca[47:40]; ca <= {ca[39:0], 8'd0}; ck_en <= 1'b1;
+                cnt  <= cnt + 16'd1;
+                if (cnt == 16'd5) begin st <= S_WAIT; cnt <= 16'd0; end
+            end
+            S_WAIT: begin
+                dq_oe <= cur_we ? 1'b1 : 1'b0; dq_o <= 8'd0;
+                cnt <= cnt + 16'd1;
+                if (cur_we && cnt == {8'd0, wait_b} - 16'd1) begin rw_oe <= 1'b1; rw_o <= 1'b0; st <= S_DATA; end
+                if (!cur_we) st <= S_DATA;                    // cteni: data podle RWDS
+            end
+            S_DATA: begin
+                cnt <= cnt + 16'd1;
+                if (cur_we) begin
+                    dq_o  <= cal ? pat : wbyte;
+                    nb    <= nb + 8'd1;
+                    if (nb == BURST - 1) st <= S_END;
+                end else begin
+                    if (rs[1] ^ rs[0]) begin                  // RWDS se zmenil -> novy bajt
+                        nb <= nb + 8'd1;
+                        if (cal) begin if (dqs != pat) cal_ok <= 1'b0; end
+                        else begin rvalid <= 1'b1; rbyte <= dqs; end
+                        if (nb == BURST - 1) st <= S_END;
+                    end
+                    if (cnt == 16'd600) begin cal_ok <= 1'b0; st <= S_END; end   // PSRAM neodpovida
+                end
+            end
+            S_END: begin
+                ps_cs_n <= 1'b1; ck_en <= 1'b0; dq_oe <= 1'b0; rw_oe <= 1'b0;
+                st <= S_IDLE;
+                if (cal) begin
+                    if (!cal_rd) cal_rd <= 1'b1;              // vzor zapsan -> precist
+                    else begin
+                        cal_rd <= 1'b0;
+                        if (cal_ok) begin cal <= 1'b0; rdy <= 1'b1; wsel <= ctry; busy <= 1'b0; end
+                        else if (ctry == 3'd7) begin cal <= 1'b0; bad <= 1'b1; busy <= 1'b0; end
+                        else begin ctry <= ctry + 3'd1; cal_ok <= 1'b1; end
+                    end
+                end else busy <= 1'b0;
+            end
+            default: st <= S_IDLE;
+        endcase
+    end
+endmodule
+
+// FW 0x0505: rezim 1 = HLUBOKY zaznam az 699 050 znacek (6 B) do vestavene PSRAM (psram_hb3, 4 MB) pres FIFO 512 znacek
+//   v BSRAM a davky 128 B (~80 MB/s -> plynule do ~13 Mznacek/s, jinak FIFO pretece: priznak, znacky se zahodi);
+//   rezim 2 = nacist okno w (znacky w*512 .. w*512+511) z PSRAM do BSRAM -> stranky druhu 3 jako u rezimu 0. Rezim 0 beze
+//   zmeny. Rozlozeni: FIFO a okno jsou BSRAM, radic PSRAM ~150 bunek u vyhrazenych vyvodu PSRAM.
+module raw_cap3 #(
+    parameter PS_INIT = 15000                    // cekani po resetu PSRAM [takty] (simulace kratsi)
+)(
     input  wire        clk,
     input  wire        req_tgl,      // z 10 MHz (2FF + hrana)
     input  wire        req_ch,       // kvazistaticke
+    input  wire [1:0]  req_mode,     // FW 0x0505: 0 = 512 do BSRAM, 1 = hluboky do PSRAM, 2 = nacist okno z PSRAM
+    input  wire [23:0] req_arg,      // rezim 1: pocet znacek, rezim 2: cislo okna (kvazistaticke)
     input  wire        tv_a, tv_b,   // znacka kanalu (ts_valid & platny kanal)
     input  wire [47:0] ts_a, ts_b,
     output reg  [9:0]  n,            // pocet ulozenych znacek (0..512; kvazistaticke pro 10 MHz)
+    output reg  [23:0] dn,           // hluboky zaznam: znacek v PSRAM
+    output wire [7:0]  dst,          // bit0 PSRAM pripravena, bit1 kalibrace zapisu selhala, bit2 zaznam bezi, bit3 FIFO
+                                     // preteklo, bit4 nacita se okno, bit5 okno nacteno
+    output wire [2:0]  dwsel,        // zvolena latence zapisu PSRAM (psram_hb3 W0 + dwsel)
+    output reg  [15:0] dwin,         // posledni (nacitane) okno
     input  wire        rclk,
     input  wire [8:0]  rk,
-    output reg  [47:0] rq
+    output reg  [47:0] rq,
+    output wire        ps_ck, ps_ck_n, ps_cs_n, ps_rst_n,
+    inout  wire [7:0]  ps_dq,
+    inout  wire        ps_rwds
 );
+    localparam [23:0] DMAX = 24'd699050;         // 4 MB / 6 B
     reg [2:0]  rs = 3'b000;
-    reg [1:0]  chs = 2'b00;
+    reg [1:0]  chs = 2'b00, md1 = 2'b00, md2 = 2'b00;
+    reg [23:0] ar1 = 24'd0, ar2 = 24'd0;
     reg        run = 1'b0, ch = 1'b0;
     reg [47:0] mem [0:511];
-    initial begin n = 10'd0; rq = 48'd0; end
+    initial begin n = 10'd0; rq = 48'd0; dn = 24'd0; dwin = 16'd0; end
+    // ---- PSRAM ----
+    wire       p_wtake, p_rvalid, p_busy, p_rdy, p_bad;
+    wire [7:0] p_rbyte;
+    reg        p_req = 1'b0, p_we = 1'b0, p_wait = 1'b0;   // p_wait: zadost odeslana, radic jeste neni busy
+    reg [21:0] p_addr = 22'd0;
+    reg [7:0]  p_wbyte;
+    psram_hb3 #(.INIT_CYC(PS_INIT)) u_ps (.clk(clk), .req(p_req), .we(p_we), .addr(p_addr), .wtake(p_wtake), .wbyte(p_wbyte),
+        .rvalid(p_rvalid), .rbyte(p_rbyte), .busy(p_busy), .rdy(p_rdy), .bad(p_bad), .wsel(dwsel),
+        .ps_ck(ps_ck), .ps_ck_n(ps_ck_n), .ps_cs_n(ps_cs_n), .ps_rst_n(ps_rst_n), .ps_dq(ps_dq), .ps_rwds(ps_rwds));
+    wire       p_free = p_rdy & ~p_busy & ~p_req & ~p_wait;
+    // ---- hluboky zaznam: FIFO -> serializator po bajtech -> davky 128 B ----
+    reg        drun = 1'b0, dfin = 1'b0, dovf = 1'b0;
+    reg [23:0] dreq = 24'd0;
+    reg [47:0] fifo [0:511];
+    reg [8:0]  fwp = 9'd0, frp = 9'd0;
+    reg [9:0]  fcnt = 10'd0;                     // slov ve FIFO (jeste nevyzvednutych)
+    reg [47:0] fq = 48'd0, nw = 48'd0, sw = 48'd0;
+    reg        fq_v = 1'b0, nw_v = 1'b0, sw_v = 1'b0;
+    reg [2:0]  sbi = 3'd0;                       // index bajtu v sw (0 = nejvyssi)
+    reg [21:0] dwa = 22'd0;
+    wire [12:0] avail = {fcnt, 3'd0} - {2'd0, fcnt, 1'b0} + (sw_v ? 13'd6 - {10'd0, sbi} : 13'd0)
+                        + (nw_v ? 13'd6 : 13'd0) + (fq_v ? 13'd6 : 13'd0);    // bajtu k zapisu
+    always @* case (sbi)
+        3'd0: p_wbyte = sw[47:40]; 3'd1: p_wbyte = sw[39:32]; 3'd2: p_wbyte = sw[31:24];
+        3'd3: p_wbyte = sw[23:16]; 3'd4: p_wbyte = sw[15:8];  default: p_wbyte = sw[7:0];
+    endcase
+    // ---- okno z PSRAM ----
+    reg        wl = 1'b0, wdone = 1'b0;
+    reg [4:0]  wb = 5'd0;                        // odeslanych davek (24 = 3072 B = 512 znacek)
+    reg [21:0] wra = 22'd0;
+    reg [39:0] asm_ = 40'd0;
+    reg [2:0]  abi = 3'd0;
+    reg [9:0]  widx = 10'd0, wlim = 10'd0;
+    wire [31:0] wbase = {16'd0, ar2[15:0]} << 9;                                    // prvni znacka okna
+    wire [31:0] wrem  = ({8'd0, dn} > wbase) ? ({8'd0, dn} - wbase) : 32'd0;
+    assign dst = {2'b00, wdone, wl, dovf, drun, p_bad, p_rdy};
+    wire       tv  = ch ? tv_b : tv_a;
+    wire [47:0] ts = ch ? ts_b : ts_a;
+    wire       push = drun && !dfin && tv && (fcnt != 10'd512);
+    wire       pop  = !fq_v && (fcnt != 10'd0) && (!nw_v || !sw_v);
     always @(posedge clk) begin
         rs  <= {rs[1:0], req_tgl};
         chs <= {chs[0], req_ch};
-        if (rs[2] ^ rs[1]) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; end
-        else if (run && (ch ? tv_b : tv_a)) begin
-            mem[n[8:0]] <= ch ? ts_b : ts_a;
+        md1 <= req_mode; md2 <= md1; ar1 <= req_arg; ar2 <= ar1;
+        p_req <= 1'b0;
+        if (p_busy) p_wait <= 1'b0;
+        if (rs[2] ^ rs[1]) begin
+            if (md2 == 2'd0) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; end
+            else if (md2 == 2'd1 && p_rdy && !drun && !wl) begin
+                drun <= 1'b1; dfin <= (ar2 == 24'd0); dovf <= 1'b0; ch <= chs[1]; dn <= 24'd0;
+                dreq <= (ar2 > DMAX) ? DMAX : ar2; dwa <= 22'd0;
+                fwp <= 9'd0; frp <= 9'd0; fcnt <= 10'd0; fq_v <= 1'b0; nw_v <= 1'b0; sw_v <= 1'b0; sbi <= 3'd0;
+            end else if (md2 == 2'd2 && p_rdy && !drun && !wl) begin
+                wl <= 1'b1; wdone <= 1'b0; dwin <= ar2[15:0]; wb <= 5'd0; wra <= ar2[10:0] * 22'd3072;
+                widx <= 10'd0; abi <= 3'd0; n <= 10'd0;
+                wlim <= (wrem >= 32'd512) ? 10'd512 : wrem[9:0];
+            end
+        end else if (run && tv) begin
+            mem[n[8:0]] <= ts;
             n <= n + 10'd1;
             if (n == 10'd511) run <= 1'b0;
+        end
+        // hluboky zaznam: zapis do FIFO
+        if (drun && !dfin && tv) begin
+            if (fcnt == 10'd512) dovf <= 1'b1;
+            else begin
+                fifo[fwp] <= ts; fwp <= fwp + 9'd1;
+                dn <= dn + 24'd1;
+                if (dn + 24'd1 == dreq) dfin <= 1'b1;
+            end
+        end
+        fcnt <= fcnt + {9'd0, push} - {9'd0, pop};
+        // vyzvednuti z FIFO (BSRAM: adresa -> data o takt pozdeji) a dva stupne pred serializatorem
+        if (pop) begin fq <= fifo[frp]; frp <= frp + 9'd1; fq_v <= 1'b1; end
+        if (fq_v && !nw_v) begin nw <= fq; nw_v <= 1'b1; fq_v <= 1'b0; end
+        if (!sw_v && nw_v && !(fq_v && !nw_v)) begin sw <= nw; sw_v <= 1'b1; nw_v <= 1'b0; sbi <= 3'd0; end
+        if (p_wtake) begin
+            if (sbi == 3'd5) begin
+                sbi <= 3'd0;
+                if (nw_v) begin sw <= nw; nw_v <= 1'b0; end else sw_v <= 1'b0;
+            end else if (sw_v) sbi <= sbi + 3'd1;
+        end
+        if (drun && p_free && (avail >= 13'd128 || (dfin && avail != 13'd0))) begin
+            p_req <= 1'b1; p_wait <= 1'b1; p_we <= 1'b1; p_addr <= dwa; dwa <= dwa + 22'd128;
+        end
+        if (drun && dfin && p_free && avail == 13'd0) drun <= 1'b0;
+        // okno: 24 davek cteni, bajty -> znacky do BSRAM
+        if (wl) begin
+            if (wb != 5'd24 && p_free) begin
+                p_req <= 1'b1; p_wait <= 1'b1; p_we <= 1'b0; p_addr <= wra; wra <= wra + 22'd128; wb <= wb + 5'd1;
+            end
+            if (p_rvalid) begin
+                asm_ <= {asm_[31:0], p_rbyte};
+                if (abi == 3'd5) begin
+                    abi <= 3'd0;
+                    if (widx < wlim) mem[widx[8:0]] <= {asm_, p_rbyte};
+                    widx <= widx + 10'd1;
+                end else abi <= abi + 3'd1;
+            end
+            if (wb == 5'd24 && p_free && widx == 10'd512) begin wl <= 1'b0; wdone <= 1'b1; n <= wlim; end
         end
     end
     always @(posedge rclk) rq <= mem[rk];
