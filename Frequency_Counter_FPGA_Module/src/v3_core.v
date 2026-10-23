@@ -793,7 +793,6 @@ module raw_cap3 #(
                 wlim <= (wrem >= 32'd512) ? 10'd512 : wrem[9:0];
             end
         end else if (run && tv) begin
-            mem[n[8:0]] <= ts;
             n <= n + 10'd1;
             if (n == 10'd511) run <= 1'b0;
         end
@@ -830,12 +829,16 @@ module raw_cap3 #(
                 asm_ <= {asm_[31:0], p_rbyte};
                 if (abi == 3'd5) begin
                     abi <= 3'd0;
-                    if (widx < wlim) mem[widx[8:0]] <= {asm_, p_rbyte};
                     widx <= widx + 10'd1;
                 end else abi <= abi + 3'd1;
             end
             if (wb == 5'd24 && p_free && widx == 10'd512) begin wl <= 1'b0; wdone <= 1'b1; n <= wlim; end
         end
     end
+    // audit 2026-10-23 (F-0267): jeden zapisovy port BSRAM (rezim 0 a nacitani okna se vylucuji, F-0266) -- dve prirazeni
+    // do mem s ruznou adresou v jednom bloku nemusi GowinSynthesis odvodit jako BSRAM (512 x 48 b v logice se nevejde)
+    wire       m_w0 = !(rs[2] ^ rs[1]) && run && tv;
+    wire       m_w2 = wl && p_rvalid && (abi == 3'd5) && (widx < wlim);
+    always @(posedge clk) if (m_w0 | m_w2) mem[m_w2 ? widx[8:0] : n[8:0]] <= m_w2 ? {asm_, p_rbyte} : ts;
     always @(posedge rclk) rq <= mem[rk];
 endmodule
