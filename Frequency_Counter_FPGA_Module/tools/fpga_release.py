@@ -10,7 +10,16 @@ Pouziti (z adresare Frequency_Counter_FPGA_Module):
     python tools/fpga_release.py --build          # gw_sh build.tcl + kontroly + vydani
     python tools/fpga_release.py                  # jen kontroly nad impl/pnr (bez noveho sestaveni)
     python tools/fpga_release.py --no-copy        # kontroly bez vydani
-    python tools/fpga_release.py --selftest       # overi parsovani reportu na syntetickych datech
+    python tools/fpga_release.py --v3 --build     # totez pro bitstream protokolu v3 (gw_sh v3/build_v3.tcl)
+    python tools/fpga_release.py --v3 [--no-copy] # jen kontroly nad v3/impl/pnr (s vydanim / bez)
+    python tools/fpga_release.py --selftest       # overi parsovani reportu a profil v3 na syntetickych datech
+
+Protokol v3 (--v3; top_v3.v, FW 0x05xx, docs/PROTOKOL_V3.md): vystupy v3/impl/pnr a v3/impl/gwsynthesis, SDC
+src/timing_v3.sdc, top modul top_v3, FW ze src/app_v3.v (navic kontrola 0x0500..0x05FF), sestaveni v3/build_v3.tcl.
+Meze a ostatni kontroly jsou stejne jako u v2. Vydava ab_test/FW_0x0500_v3_<cas>_<git>.fs, v MANIFEST.md ma sloupec FW
+"0x0500 (v3)" (v2 dal FW_0x0427_<cas>_<git>.fs a "0x0427"). Jmeno vystupu P&R v3 je Counter_FPGA.* (build_v3.tcl,
+pnr_sweep.tcl), nebo Counter_FPGA_v3.*, kdyz ho Gowin odvodi od projektu -- pred prvnim P&R neovereno, brana prijme
+obe a radek "Kontrola bitstreamu" ukaze, ktere nasla; obe naraz = FAIL (starsi smazat).
 
 Navratovy kod: 0 = vse PASS (a vydano), 1 = aspon jedna kontrola FAIL (nic se nevydava).
 """
