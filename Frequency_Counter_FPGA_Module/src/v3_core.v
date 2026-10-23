@@ -709,7 +709,7 @@ module raw_cap3 #(
     output reg  [9:0]  n,            // pocet ulozenych znacek (0..512; kvazistaticke pro 10 MHz)
     output reg  [23:0] dn,           // hluboky zaznam: znacek v PSRAM
     output wire [7:0]  dst,          // bit0 PSRAM pripravena, bit1 kalibrace zapisu selhala, bit2 zaznam bezi, bit3 FIFO
-                                     // preteklo, bit4 nacita se okno, bit5 okno nacteno
+                                     // preteklo, bit4 nacita se okno, bit5 okno nacteno, bit7 okno s chybou cteni
     output wire [5:0]  dwsel,        // bity 4:0 zvolena latence zapisu PSRAM (psram_hb3 W0 + n), bit5 faze cteni
     output reg  [15:0] dwin,         // posledni (nacitane) okno
     output wire [7:0]  dack,         // bit7 kanal zaznamu, bity 3:0 pocet prijatych prikazu T_RAW (Gray, mod 16)
@@ -759,7 +759,7 @@ module raw_cap3 #(
         3'd3: p_wbyte = sw[23:16]; 3'd4: p_wbyte = sw[15:8];  default: p_wbyte = sw[7:0];
     endcase
     // ---- okno z PSRAM ----
-    reg        wl = 1'b0, wdone = 1'b0;
+    reg        wl = 1'b0, wdone = 1'b0, werr = 1'b0;
     reg [4:0]  wb = 5'd0;                        // odeslanych davek (24 = 3072 B = 512 znacek)
     reg [21:0] wra = 22'd0;
     reg [39:0] asm_ = 40'd0;
@@ -767,7 +767,7 @@ module raw_cap3 #(
     reg [9:0]  widx = 10'd0, wlim = 10'd0;
     wire [31:0] wbase = {16'd0, ar2[15:0]} << 9;                                    // prvni znacka okna
     wire [31:0] wrem  = ({8'd0, dn} > wbase) ? ({8'd0, dn} - wbase) : 32'd0;
-    assign dst = {2'b00, wdone, wl, dovf, drun, p_bad, p_rdy};
+    assign dst = {werr, 1'b0, wdone, wl, dovf, drun, p_bad, p_rdy};
     wire       tv  = ch ? tv_b : tv_a;
     wire [47:0] ts = ch ? ts_b : ts_a;
     wire       push = drun && !dfin && tv && (fcnt != 10'd512);
@@ -788,7 +788,7 @@ module raw_cap3 #(
                 fwp <= 9'd0; frp <= 9'd0; fcnt <= 10'd0; fq_v <= 1'b0; nw_v <= 1'b0; sw_v <= 1'b0; sbi <= 3'd0;
             end else if (md2 == 2'd2 && p_rdy && !drun && !wl) begin
                 run <= 1'b0; dacc <= dacc + 4'd1;
-                wl <= 1'b1; wdone <= 1'b0; dwin <= ar2[15:0]; wb <= 5'd0; wra <= ar2[10:0] * 22'd3072;
+                wl <= 1'b1; wdone <= 1'b0; werr <= 1'b0; dwin <= ar2[15:0]; wb <= 5'd0; wra <= ar2[10:0] * 22'd3072;
                 widx <= 10'd0; abi <= 3'd0; n <= 10'd0;
                 wlim <= (wrem >= 32'd512) ? 10'd512 : wrem[9:0];
             end
@@ -832,7 +832,11 @@ module raw_cap3 #(
                     widx <= widx + 10'd1;
                 end else abi <= abi + 3'd1;
             end
-            if (wb == 5'd24 && p_free && widx == 10'd512) begin wl <= 1'b0; wdone <= 1'b1; n <= wlim; end
+            // audit 2026-10-23 (F-0268): konec po 24. davce i kdyz nedosly vsechny bajty (timeout cteni) -- driv wl zustal
+            // 1 navzdy a kazdy dalsi rezim 1 / 2 se odmital az do nove konfigurace FPGA. Chybne okno: bit7, 0 znacek.
+            if (wb == 5'd24 && p_free) begin
+                wl <= 1'b0; wdone <= 1'b1; werr <= (widx != 10'd512); n <= (widx == 10'd512) ? wlim : 10'd0;
+            end
         end
     end
     // audit 2026-10-23 (F-0267): jeden zapisovy port BSRAM (rezim 0 a nacitani okna se vylucuji, F-0266) -- dve prirazeni

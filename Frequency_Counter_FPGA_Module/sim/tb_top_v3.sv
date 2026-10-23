@@ -539,6 +539,14 @@ module tb_top_v3;
             $display("PSRAM: precteno %0d znacek ve 3 oknech, max |rozdil - P| %.0f ps; model zapsal %0d B, precetl %0d B",
                      ndeep, dmaxd, u_ps0.nwr, u_ps0.nrd);
             chk(ndeep == 1100, "PSRAM: vsech 1100 znacek z oken");
+            // audit 2026-10-23 F-0268: PSRAM pri cteni neodpovi -> okno skonci s chybou (bit7), dalsi okno jde nacist
+            u_ps0.dead = 1'b1;
+            build(8'h0B, 8'h04, 8'd1, 8'd0, 8'd0); xfer(1024); build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+            chk(mi[128][5] && mi[128][7] && !mi[128][4] && mi[127] == {4'd0, gr(4'd7)}, "PSRAM: okno bez odpovedi skonci s chybou");
+            u_ps0.dead = 1'b0;
+            build(8'h0B, 8'h04, 8'd1, 8'd0, 8'd0); xfer(1024); build_ack(0); xfer(1024); build_ack(0); xfer(1024);
+            chk(mi[128][5] && !mi[128][7] && !mi[128][4] && rd(130, 2) == 1 && mi[127] == {4'd0, gr(4'd8)},
+                "PSRAM: po chybe dalsi okno nacteno");
         end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
             build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
@@ -683,6 +691,7 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
     reg        rd = 1'b0;
     reg [21:0] a = 22'd0;
     integer    nwr = 0, nrd = 0;
+    reg        dead = 1'b0;                              // 1 = pri cteni neodpovida (F-0268)
     initial for (k = 0; k < 65536; k = k + 1) mem[k] = 8'h00;
     always @(negedge cs_n) begin e = 0; rw_o <= #(TCKD) RW_CA; rw_oe <= #(TCKD) 1'b1; end
     always @(posedge cs_n) begin dq_oe <= #(TCKD) 1'b0; rw_oe <= #(TCKD) 1'b0; end
@@ -696,8 +705,8 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
             end
         end else if (rd) begin
             if (e >= 6 + RLAT - 1 && TCKD_MIN < TCKD) begin dq_o <= #(TCKD_MIN) 8'hxx; rw_o <= #(TCKD_MIN) 1'bx; end
-            if (e == 6 + RLAT - 1) rw_o <= #(TCKD) 1'b0;  // bajt pred daty RWDS = 0 (konec priznaku latence)
-            if (e >= 6 + RLAT) begin
+            if (e == 6 + RLAT - 1 && !dead) rw_o <= #(TCKD) 1'b0;  // bajt pred daty RWDS = 0 (konec priznaku latence)
+            if (e >= 6 + RLAT && !dead) begin
                 dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) (((e - 6 - RLAT) % 2) == 0);
                 a = a + 22'd1; nrd = nrd + 1;
             end

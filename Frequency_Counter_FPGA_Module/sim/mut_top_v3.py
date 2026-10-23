@@ -68,6 +68,8 @@ M = [
     ('RAW: rezim 0 bez vyluky', 'v3_core.v', "if (md2 == 2'd0 && !drun && !wl) begin", "if (md2 == 2'd0) begin", 5),
     ('RAW: bez STOP', 'v3_core.v', "else if (md2 == 2'd1 && drun) begin dfin <= 1'b1; dacc <= dacc + 4'd1; end",
      "else if (md2 == 2'd1 && drun) begin end", 5),
+    # F-0268: okno ceka na vsech 512 znacek (bez odpovedi PSRAM se zasekne)
+    ('PSRAM: okno ceka na vsechny bajty', 'v3_core.v', "            if (wb == 5'd24 && p_free) begin\n", "            if (wb == 5'd24 && p_free && widx == 10'd512) begin\n", 5),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
