@@ -297,6 +297,10 @@ počítání, slot kanálu, ACK, CRC/délka, stránka, přetečení, potvrzení 
   `fpga_v3_grp_feed`, okno vybraného kanálu → `fpga_meas_t`, druhý kanál = sekundární slot, těžiště prvního segmentu →
   `rg_xm/rg_ym[0]` pro fázový záznam), příkazy (`v3_cfg`), stránky (`v3_page`), kalibrace (`tdccal_run_v3`, ~100 ms místo
   ~0,6 s), CAL report ze souhrnné stránky; kanál a hradlo volí STM lokálně; ztráta signálu = žádné okno 2,5 s + hradlo.
+- **Spojité čtení:** ve v3 FPGA nic nepřepisuje (kruh 6,4 s), STM dostane každý segment a okna skládá bez mrtvé doby
+  (konec okna = začátek dalšího, dvoubodově teleskopuje). Poll vydá jedno okno na volání z fronty 8 oken; SPI transakce
+  nejdřív po 40 ms (v0.35.1, 25/s ≥ 7/s z kap. 6.1). Model smyčky FpgaTasku (`t_fpga_v3.c`): hradlo 50 ms → 1198/1198
+  oken za 60 s souvisle, 22,7 transakce/s (bez meze 90,9/s se stejným výsledkem).
 - `fpgasim v3 on [Hz_A] [Hz_B]`: emulátor v3 se zpožděným ACK jako RTL, 1PPS z emulátoru v2 (smyčka GPSDO).
 - `fpga_spi_dma.c` (krok 7): `spi dma on|off`, výchozí vypnuto.
 - UART: `fpga v3` (stav příjmu), `fpga v3 test` (selftest), `spi dma`.
