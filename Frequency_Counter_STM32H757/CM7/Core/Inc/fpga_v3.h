@@ -50,6 +50,17 @@
 #define FPGA_V3_CAP_BSRC       (1u << 20)   /* CAPS: SET_CONFIG 0x09 (echo bajt 66 bit3..4) */
 /* v0.37.0 (FW 0x0502, etapa E4): 1PPS s jemnym casem pres IDES8 (krok 1,25 ns, PROTOKOL_V3 kap. 3.1 bajty 50, 68..95) */
 #define FPGA_V3_CAP_PPS_IDES   (1u << 17)   /* CAPS: PTS 1PPS je jemny cas (PFLAGS bit1) */
+/* v0.38.0 (FW 0x0503, etapa E5): predelicka vstupu P = 2^p (p 0..4), SET_CONFIG 0x07 p1 = kanal, p2 = p; plati od
+ * hranice segmentu, 2 segmenty kolem zmeny neplatne. log2 P segmentu v bajtu CH zaznamu (bity 6:4), X pocita DELENE hrany. */
+#define FPGA_V3_CAP_PRESC      (1u << 18)   /* CAPS: predelicka pin_cnt3 */
+#define FPGA_V3_REC_PLOG2(r)   ((uint8_t)(((r)->ch >> 4) & 7u))   /* log2 P segmentu zaznamu */
+#define FPGA_V3_PRESC_PEND     0x80u        /* PRESC A/B (bajty 64/65): zmena ceka na hranici segmentu */
+#define FPGA_V3_PROBE_HZ(p)    ((double)(p) * 16000.0)   /* PROBE A/B: hrany /16 za 1 ms -> kmitocet [Hz] */
+/* automaticky rozsah (navrh v3/fpga_range.c, E5): cil f/P <= 30 MHz (TDC ~20 Mznacek/s, prime pocitani ~40 MHz),
+ * hystereze: nahoru kdyz f/P > 33 MHz, dolu kdyz f/(P/2) < 27 MHz; strop /16 */
+#define FPGA_V3_RANGE_UP_HZ    33.0e6
+#define FPGA_V3_RANGE_DOWN_HZ  27.0e6
+#define FPGA_V3_RANGE_MAXLOG2  4u
 #define FPGA_V3_PF_VALID       0x01u        /* PFLAGS: hrana platna */
 #define FPGA_V3_PF_FINE        0x02u        /* PFLAGS: PTS z IDES8 (jinak hruby cas x 16384) */
 #define FPGA_V3_PPS_ST_LOCK    0x01u        /* PPS_STATUS: PCLK bezi (rPLL zamcena a uvolnena) */
@@ -134,6 +145,8 @@ void     fpga_v3_blk_seal(uint8_t *blk);                       /* zapise CRC na 
 /* 1PPS hrany i (0 posledni, 1 predchozi) v taktech + zlomek [1/16384]: jemny cas (vraci 1), kdyz FPGA ma CAPS bit17,
  * PCLK bezi a hrana ma PFLAGS bit1; jinak hruby citac z bajtu 100.. (zlomek 0, vraci 0). */
 int      fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac);
+/* v0.38.0: log2 P pro odhad kmitoctu f_hz (<= 0 = beze zmeny) s hysterezi proti aktualnimu cur_log2p */
+uint8_t  fpga_v3_range_select(uint8_t cur_log2p, double f_hz);
 uint8_t  fpga_v3_blk_ok(const uint8_t *frame);                 /* bit k = CRC bloku k sedi */
 void     fpga_v3_rec_pack(uint8_t *dst, const fpga_v3_rec_t *r);    /* 31 B */
 void     fpga_v3_rec_unpack(fpga_v3_rec_t *r, const uint8_t *src);
@@ -166,6 +179,7 @@ typedef struct {
     uint64_t rng;
     double   t_next[2];          /* cas pristi hrany od zacatku aktualniho segmentu [s] */
     uint64_t x_next[2];          /* absolutni index pristi hrany */
+    uint8_t  p_log2[2], p_req[2], p_inv[2];   /* v0.38.0: predelicka jako RTL (SET_CONFIG 0x07, 2 neplatne segmenty) */
     fpga_v3_rec_t ring[FPGA_V3_EMU_RING];
 } fpga_v3_emu_t;
 
@@ -275,6 +289,7 @@ typedef struct {
     double   xc0, tc0;           /* teziste PRVNIHO segmentu okna (absolutni, pro fazovy zaznam) */
     uint64_t x_first, t_first;   /* prvni znacka okna (rozbalene X, T) -- teziste relativne k oknu = xc0 - x_first */
     uint32_t n0;                 /* znacek prvniho segmentu okna */
+    uint8_t  p_log2;             /* v0.38.0: log2 P okna; edges, xc0, x_first a kmitocty jsou uz v PERIODACH (x P) */
 } fpga_v3_win_t;
 
 typedef struct {
@@ -291,6 +306,7 @@ typedef struct {
     uint8_t  flags_or;
     uint32_t empty;              /* prazdnych segmentu od posledni hrany v okne */
     double   per_u;              /* odhad periody [jednotky / hranu]; 0 = neznamy (pak plati max_gap_ms) */
+    uint8_t  p_log2;             /* v0.38.0: log2 P rozpracovaneho okna (zmena P = okno zahodit) */
 } fpga_v3_grp_ch_t;
 
 typedef struct {

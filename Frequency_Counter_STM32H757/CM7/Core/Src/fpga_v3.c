@@ -23,6 +23,16 @@ void fpga_v3_blk_seal(uint8_t *blk)
     blk[254] = (uint8_t)c; blk[255] = (uint8_t)(c >> 8);
 }
 
+/* v0.38.0 (FW 0x0503): automaticky rozsah predelicky (navrh v3/fpga_range.c) -- viz fpga_v3.h */
+uint8_t fpga_v3_range_select(uint8_t cur, double f)
+{
+    if (!(f > 0.0)) return cur;                         /* bez odhadu nic nemenit */
+    if (cur > FPGA_V3_RANGE_MAXLOG2) cur = FPGA_V3_RANGE_MAXLOG2;
+    while (cur < FPGA_V3_RANGE_MAXLOG2 && f / (double)(1u << cur) > FPGA_V3_RANGE_UP_HZ) cur++;
+    while (cur > 0u && f / (double)(1u << (cur - 1u)) < FPGA_V3_RANGE_DOWN_HZ) cur--;
+    return cur;
+}
+
 /* v0.37.0 (FW 0x0502): jemny cas 1PPS (IDES8) nebo hruby citac -- viz fpga_v3.h */
 int fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac)
 {
@@ -195,8 +205,10 @@ void fpga_v3_emu_segment(fpga_v3_emu_t *e)
     for (uint8_t c = 0; c < 2; c++) {
         fpga_v3_rec_t r;
         memset(&r, 0, sizeof r);
-        r.seg_idx = (uint16_t)e->seg_idx; r.ch = c;
-        const double f = e->f_hz[c];
+        if (e->p_req[c] != e->p_log2[c]) { e->p_log2[c] = e->p_req[c]; e->p_inv[c] = 2u; r.flags |= FPGA_V3_R_PRESC; }
+        r.seg_idx = (uint16_t)e->seg_idx; r.ch = (uint8_t)(c | (e->p_log2[c] << 4));   /* v0.38.0: log2 P v CH 6:4 */
+        if (e->p_inv[c]) { e->p_inv[c]--; r.flags |= FPGA_V3_R_INVALID; }
+        const double f = e->f_hz[c] / (double)(1u << e->p_log2[c]);   /* delene hrany */
         if (f > 0.0) {
             const double p = 1.0 / f, t = e->t_next[c];
             uint32_t N = (t < L) ? (uint32_t)ceil((L - t) / p) : 0u;
@@ -245,7 +257,12 @@ void fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *f)
     wrn(f + 8, FPGA_V3_LEN, 2); f[10] = (uint8_t)FPGA_V3_NBLK;
     wrn(f + 20, 0x0500u, 2);                                         /* FW emulatoru */
     f[22] = (uint8_t)e->clk_mhz; f[23] = (uint8_t)e->seg_ms;
-    wrn(f + 24, 1ull << 16, 4);                                      /* CAPS bit16 = v3 zaznamy */
+    wrn(f + 24, (1ull << 16) | FPGA_V3_CAP_PRESC, 4);                /* CAPS bit16 = v3 zaznamy, bit18 predelicka */
+    for (int c = 0; c < 2; c++) {                                    /* v0.38.0: PRESC, sonda /16 za 1 ms */
+        f[64 + c] = (uint8_t)(e->p_log2[c] | ((e->p_req[c] != e->p_log2[c]) ? FPGA_V3_PRESC_PEND : 0u));
+        const double pr = e->f_hz[c] > 0.0 ? e->f_hz[c] / 16000.0 : 0.0;
+        wrn(f + 108 + 2 * c, pr > 65535.0 ? 65535u : (uint32_t)pr, 2);
+    }
     wrn(f + 32, e->rec_head ? e->rec_head - 1u : 0u, 4);
     wrn(f + 36, e->rec_ack, 4);
     f[40] = (uint8_t)nrec;
@@ -273,6 +290,8 @@ void fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *f)
             e->ovf = 0u;
         }
     }
+    if (f[2] == FPGA_V3_T_SETCFG && f[12] == FPGA_V3_CFG_PRESC)       /* v0.38.0: predelicka od dalsiho segmentu */
+        e->p_req[f[13] & 1u] = (f[14] > FPGA_V3_RANGE_MAXLOG2) ? (uint8_t)FPGA_V3_RANGE_MAXLOG2 : f[14];
 }
 
 /* ══════════════ prijem zaznamu (STM) ══════════════ */
@@ -327,8 +346,8 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
     memset(e, 0, sizeof *e);
     e->ch = ch; e->seg = r->seg_idx; e->x = u->x_un[ch]; e->t_u = u->t_un;
     if (r->n >= 3u) {
-        e->kind = FPGA_V3_EV_BURST; e->n = r->n;
-        e->per_u = r->sx ? (double)r->st / (double)r->sx : 0.0;
+        e->kind = FPGA_V3_EV_BURST; e->n = r->n << FPGA_V3_REC_PLOG2(r);      /* v0.38.0: periody pinu (P x znacky) */
+        e->per_u = r->sx ? (double)r->st / (double)r->sx / (double)(1u << FPGA_V3_REC_PLOG2(r)) : 0.0;
         return 1u;
     }
     e->kind = FPGA_V3_EV_EDGE; e->n = 1u;
@@ -456,6 +475,7 @@ void fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch) { g->c[ch & 1u].open = 0u; 
 int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz, fpga_v3_win_t *out)
 {
     const uint8_t ch = (uint8_t)(r->ch & 1u);
+    const uint8_t pl = FPGA_V3_REC_PLOG2(r);           /* v0.38.0: X pocita delene hrany (P = 2^pl) */
     fpga_v3_grp_ch_t *c = &g->c[ch];
     int closed = 0;
 
@@ -473,6 +493,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     }
     /* souvislost segmentu, neplatny zaznam -> rozpracovane okno zahodit */
     if (c->open && r->seg_idx != (uint16_t)(c->seg_last + 1u)) c->open = 0u;
+    if (c->open && pl != c->p_log2) c->open = 0u;       /* zmena P: okno pres zmenu meritka X nesmi */
     c->seg_last = r->seg_idx;
     if (r->flags & FPGA_V3_R_INVALID) { c->open = 0u; return 0; }
     if (r->n == 0u) {
@@ -499,19 +520,19 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     if (c->open && c->k >= g->k_target) {            /* tento zaznam zacina dalsi okno -> predchozi uzavrit */
         const double up = fpga_v3_unit_ps(clk_mhz);
         out->ch = ch; out->seg_first = c->seg_first; out->nseg = c->k; out->n_marks = c->n_tot;
-        out->edges = x - c->x_first; out->gate_units = t - c->t_first;
+        out->edges = (x - c->x_first) << c->p_log2; out->gate_units = t - c->t_first;   /* periody = hrany x P */
         out->f_2pt_hz = (out->gate_units) ? (double)out->edges * 1e12 / ((double)out->gate_units * up) : 0.0;
         const double mx = c->swx / c->sw, mt = c->swt / c->sw;
         const double vxx = c->swxx / c->sw - mx * mx, vxt = c->swxt / c->sw - mx * mt;
         out->lsq_ok = (uint8_t)(c->k >= 2u && vxx > 0.0 && vxt > 0.0);
-        out->f_lsq_hz = out->lsq_ok ? 1e12 / ((vxt / vxx) * up) : 0.0;    /* sklon t(x) = perioda [jednotky / hranu] */
-        out->flags_or = c->flags_or; out->xc0 = c->xc0; out->tc0 = c->tc0;
-        out->x_first = c->x_first; out->t_first = c->t_first; out->n0 = c->n0;
+        out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / ((vxt / vxx) * up) : 0.0;   /* sklon t(x) = P perioda */
+        out->flags_or = c->flags_or; out->xc0 = c->xc0 * (double)(1u << c->p_log2); out->tc0 = c->tc0;
+        out->x_first = c->x_first << c->p_log2; out->t_first = c->t_first; out->n0 = c->n0; out->p_log2 = c->p_log2;
         closed = 1;
         c->open = 0u;
     }
     if (!c->open) {                                   /* zacatek okna */
-        c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx;
+        c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx; c->p_log2 = pl;
         c->x_first = x; c->t_first = t;
         c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u;
         c->xc0 = (double)x + (double)r->sx / (double)r->n;

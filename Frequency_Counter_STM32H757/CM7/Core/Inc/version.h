@@ -11,6 +11,11 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.38.0 (2026-10-23) = PREDELICKA FPGA v3 (FW 0x0503, etapa E5): vstupy nad prime pocitani (~40 MHz) pres pin_cnt3 ve
+ * FPGA (P = 1..16). Automaticky rozsah ze sondy /16 (fpga_v3_range_select: nahoru f/P > 33 MHz, dolu f/(P/2) < 27 MHz),
+ * prikaz az po shode dvou ramcu a az kdyz predchozi zmena plati; B z pinu A = P 1. Okna v periodach (hrany x P), preruseni
+ * pri zmene P, mez primeho mereni na deleny kmitocet, udalosti BURST v periodach pinu; emulator s predelickou jako RTL;
+ * UART `fpga presc a|b auto|0..4`, `fpga v3` vypise predelicku a sondu. */
 /* v0.37.0 (2026-10-23) = JEMNY CAS 1PPS z FPGA v3 (FW 0x0502, etapa E4): IDES8 + rPLL ve FPGA, PTS krok 1,25 ns (sigma
  * 0,36 ns misto 2,9 ns hrubeho citace). fpga_v3_pps_fine (jemny jen s CAPS bit17 + PCLK bezi + PFLAGS bit1), fpga_pps_t
  * nese zlomek taktu, priznak a epochu; GPSDO pocita interval se zlomkem a pri zmene osy (epocha, jemny/hruby) zacne
@@ -287,8 +292,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 37
+#define FW_VERSION_MINOR 38
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.37.0"
+#define FW_VERSION_STR   "v0.38.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

@@ -97,6 +97,7 @@ typedef struct {
     uint16_t pps_frac;            /* v0.37.0: zlomek taktu hrany [1/16384], jen pri pps_fine */
     uint8_t  pps_fine;            /* 1 = pps_ts + pps_frac je jemny cas (v3 FW 0x0502, IDES8, krok 1,25 ns) */
     uint8_t  pps_epoch;           /* osa jemneho casu (PPS_STATUS 7:4); zmena = jina osa */
+    uint8_t  presc_log2;          /* v0.38.0: log2 predelicky okna (v3 FW 0x0503); edge_count je v periodach */
     /* FW >= 0x0425 (caps bit14, FPGA_CAP_DIAG0, audit 2026-10-20): diagnostika O4 a hlidac koherence hodin.
      * abs 10 coh_st | 11 coh_cnt | 57 bub_p | 58 bub_s | 59 {ovl_s[3:0], ovl_p[3:0]} */
     uint16_t rg_xdiv;             /* audit 4: delitel xm (256 nebo 4096 podle caps bit15); 0 = 256 */
@@ -648,9 +649,15 @@ typedef struct {
     uint32_t caps, rec_head, rec_first;
     uint8_t  tdc[2], cal_wait;
     uint8_t  pps_status, pps_pflags;   /* v0.37.0: bajt 50, PFLAGS posledni hrany */
+    uint8_t  presc[2], pr_mode[2];     /* v0.38.0: PRESC A/B (bit7 ceka), volba (0xFF auto, jinak pevne log2 P) */
+    uint16_t probe[2];                 /* sonda /16 za 1 ms */
+    uint32_t pr_sw[2];                 /* pocet prepnuti P */
     int8_t   pps_d;                    /* jemny - hruby [takty] */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
+/* v0.38.0 (FW 0x0503): predelicka kanalu ch (0 A, 1 B): mode 0xFF = automaticky podle sondy, 0..4 = pevne log2 P.
+ * @return 1 ok, 0 FPGA bez CAPS bit18 (volba se ulozi, uplatni se, az ji FPGA umi), -1 spatny parametr */
+int  fpga_freq_presc(uint8_t ch, uint8_t mode);
 /** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK
  *  zpracovany az po slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). ph_b_s > 0 = prvni hrana B
  *  o tolik po prvni hrane A (jednorazove deje). on = 0 vypne. */

@@ -2601,6 +2601,22 @@ void UartTask_run(void *argument)
 				         (vi.pps_status & FPGA_V3_PPS_ST_LOCK) ? "bezi" : "STOJI", (unsigned)FPGA_V3_PPS_EPOCH(vi.pps_status),
 				         (int)vi.pps_d, (vi.pps_status & FPGA_V3_PPS_ST_NOFINE) ? ", posledni hrana BEZ jemneho casu" : "",
 				         (vi.caps & FPGA_V3_CAP_PPS_IDES) ? "ano" : "ne");
+				  for (int c = 0; c < 2; c++)
+					  printf("  predelicka %c: 1/%u%s (%s), sonda %.3f MHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
+					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
+					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", FPGA_V3_PROBE_HZ(vi.probe[c]) * 1e-6,
+					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
+			  }
+			  else if (strncmp(RxBuffer, "fpga presc ", 11) == 0) {
+				  /* v0.38.0 (FW 0x0503): predelicka -- `fpga presc a|b auto|0..4` (log2 P: 0 = primo, 4 = /16; auto = podle sondy) */
+				  const char cc = RxBuffer[11];
+				  const char *v = (RxBuffer[12] == ' ') ? &RxBuffer[13] : "";
+				  const int ch = (cc == 'a' || cc == 'A') ? 0 : (cc == 'b' || cc == 'B') ? 1 : -1;
+				  const int md = (strcmp(v, "auto") == 0) ? 0xFF : (v[0] >= '0' && v[0] <= '4' && v[1] == '\0') ? (v[0] - '0') : -1;
+				  const int rc = (ch < 0 || md < 0) ? -1 : fpga_freq_presc((uint8_t)ch, (uint8_t)md);
+				  if (rc < 0) printf("pouziti: fpga presc a|b auto|0..4  (log2 P; 0 = primo, 4 = /16)\n");
+				  else printf("predelicka %c: %s%s\n", ch ? 'B' : 'A', md == 0xFF ? "auto" : v,
+				              rc ? "" : " (FPGA bez CAPS bit18 -- uplatni se, az ji FPGA umi)");
 			  }
 			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
 				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->

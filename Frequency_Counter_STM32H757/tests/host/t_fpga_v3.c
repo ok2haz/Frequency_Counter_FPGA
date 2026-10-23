@@ -9,7 +9,8 @@
  * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA);
  * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu;
  * (9) jednorazove deje: casy udalosti, interval A->B (start/stop), zpozdeni A/B, 200 s ticho (T0 pretece);
- * (10) jemny cas 1PPS (FW 0x0502): PFLAGS, PPS_STATUS, d, volba jemny / hruby (fpga_v3_pps_fine). */
+ * (10) jemny cas 1PPS (FW 0x0502): PFLAGS, PPS_STATUS, d, volba jemny / hruby (fpga_v3_pps_fine);
+ * (11) automaticky rozsah predelicky (fpga_v3_range_select); (12) emulator s predelickou (FW 0x0503): okna v periodach. */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -134,6 +135,67 @@ int main(void)
         CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u && fr == 0u, "1PPS bez CAPS bit17 = hruby");
         h2 = h; h2.pps_status &= (uint8_t)~FPGA_V3_PPS_ST_LOCK;
         CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u, "1PPS bez PCLK = hruby");
+    }
+
+    /* (11) v0.38.0: automaticky rozsah predelicky -- rozmitani 0,1 Hz .. 420 MHz nahoru a dolu: f/P <= 33 MHz (krome /16),
+     * vysledek stabilni (znovu stejna volba), dolu az pod 27 MHz na P/2; pevne body a hystereze */
+    {
+        int bad = 0; uint8_t p = 0u;
+        for (double f = 0.1; f < 420e6; f *= 1.01) {
+            const uint8_t q = fpga_v3_range_select(p, f);
+            if (q < FPGA_V3_RANGE_MAXLOG2 && f / (double)(1u << q) > FPGA_V3_RANGE_UP_HZ) bad++;
+            if (fpga_v3_range_select(q, f) != q) bad++;
+            p = q;
+        }
+        for (double f = 420e6; f > 0.1; f /= 1.01) {
+            const uint8_t q = fpga_v3_range_select(p, f);
+            if (q < FPGA_V3_RANGE_MAXLOG2 && f / (double)(1u << q) > FPGA_V3_RANGE_UP_HZ) bad++;
+            if (q > 0u && f / (double)(1u << (q - 1u)) < FPGA_V3_RANGE_DOWN_HZ) bad++;
+            p = q;
+        }
+        CHECK(bad == 0, "rozsah: rozmitani, %d chyb", bad);
+        CHECK(fpga_v3_range_select(0u, 10e6) == 0u && fpga_v3_range_select(0u, 200e6) == 3u && fpga_v3_range_select(0u, 400e6) == 4u,
+              "rozsah: 10 / 200 / 400 MHz -> %u %u %u", fpga_v3_range_select(0u, 10e6), fpga_v3_range_select(0u, 200e6),
+              fpga_v3_range_select(0u, 400e6));
+        CHECK(fpga_v3_range_select(2u, 60e6) == 2u && fpga_v3_range_select(1u, 60e6) == 1u, "rozsah: hystereze 60 MHz drzi P 2 i 4");
+        CHECK(fpga_v3_range_select(3u, 0.0) == 3u, "rozsah: bez odhadu beze zmeny");
+    }
+
+    /* (12) v0.38.0: emulator s predelickou jako RTL. B 143,3 MHz: SET_CONFIG 0x07 B = 3 (/8), pozdeji 4 (/16); okna B maji
+     * f = P x hrany / cas (2pt i LSQ), p_log2 okna, zadne okno pres zmenu P; PRESC a PROBE v hlavicce, 2 neplatne B. */
+    {
+        const double fb = 143.3e6;
+        fpga_v3_emu_init(&E, 10e6, fb, 30.0, 88u); fpga_v3_grp_init(&G, 4u);
+        fpga_v3_build_cfg(M, 1u, FPGA_V3_CFG_PRESC, 1u, 3u); fpga_v3_emu_rx(&E, M);
+        uint32_t expect = 0, fr = 0; int nw[5] = { 0 }, ninv = 0, badw = 0, mixed = 0; double maxe = 0.0;
+        uint8_t pr_seen = 0xFFu; uint16_t probe_b = 0u;
+        for (uint32_t s = 0; s < 240u; s += 6) {
+            if (s == 120u) { fpga_v3_build_cfg(M, 2u, FPGA_V3_CFG_PRESC, 1u, 4u); fpga_v3_emu_rx(&E, M); }
+            for (int q = 0; q < 6; q++) fpga_v3_emu_segment(&E);
+            fpga_v3_emu_frame(&E, F); fr++;
+            fpga_v3_hdr_t h; uint32_t n_ok = 0;
+            if (fpga_v3_parse(F, &h, R, &n_ok) != FPGA_V3_OK) { badw++; break; }
+            if (s == 60u) { pr_seen = h.presc[1]; probe_b = h.probe[1]; }
+            for (uint32_t i = 0; i < n_ok; i++) {
+                if ((R[i].ch & 1u) && (R[i].flags & FPGA_V3_R_INVALID)) ninv++;
+                fpga_v3_win_t w;
+                if (fpga_v3_grp_feed(&G, &R[i], h.clk_mhz, &w) && w.ch == 1u) {
+                    nw[w.p_log2 <= 4u ? w.p_log2 : 0u]++;
+                    const double e2 = fabs(w.f_2pt_hz / fb - 1.0), eL = w.lsq_ok ? fabs(w.f_lsq_hz / fb - 1.0) : 0.0;
+                    if (e2 > maxe) maxe = e2;
+                    if (eL > maxe) maxe = eL;
+                    if (w.p_log2 != 3u && w.p_log2 != 4u) mixed++;
+                }
+            }
+            expect = h.rec_first + n_ok;
+            fpga_v3_build_ack(M, fr + 10u, expect); fpga_v3_emu_rx(&E, M);
+        }
+        printf("  predelicka: B 143,3 MHz, oken P/8 %d, P/16 %d, neplatnych B %d, max |e| %.1e, PRESC B 0x%02X, PROBE B %u\n",
+               nw[3], nw[4], ninv, maxe, (unsigned)pr_seen, (unsigned)probe_b);
+        CHECK(badw == 0 && nw[3] >= 10 && nw[4] >= 10 && mixed == 0, "predelicka: okna P/8 %d P/16 %d (jine P %d)", nw[3], nw[4], mixed);
+        CHECK(maxe < 1e-8, "predelicka: kmitocet okna B %.2e", maxe);
+        CHECK(ninv == 4, "predelicka: neplatne zaznamy B kolem 2 zmen = 4 (je %d)", ninv);
+        CHECK(pr_seen == 3u && probe_b == (uint16_t)(fb / 16000.0), "predelicka: PRESC B 0x%02X, PROBE B %u", (unsigned)pr_seen, (unsigned)probe_b);
     }
 
     /* preteceni kruhu za behu (STM chvili necte): okno NESMI preklenout mezeru -> kazde okno ma presne K segmentu */

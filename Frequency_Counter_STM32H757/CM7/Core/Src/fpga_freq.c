@@ -1047,6 +1047,16 @@ static uint8_t s3_tdc_v2(const fpga_v3_hdr_t *h)
 /* Pole hlavicky, ktera nesou i okna (a diagnosticky snimek ramce bez okna). caps = v2 bity, jejichz pole jsou platna. */
 #define S3_CAPS16 ((uint16_t)(FPGA_CAP_DT | FPGA_CAP_CHAN | FPGA_CAP_SELFCHK | FPGA_CAP_CLK | FPGA_CAP_PPS | FPGA_CAP_DIAG0 | \
                               FPGA_CAP_STMCAL | FPGA_CAP_REFCTL | 0x0002u))
+/* v0.38.0 (FW 0x0503, etapa E5): predelicka kanalu. Volba 0xFF = automaticky: kazdy ramec odhad ze sondy (/16 za 1 ms),
+ * log2 P s hysterezi (fpga_v3_range_select); prikaz az po shode DVOU ramcu (sonda se cte zive -> roztrzene cteni) a jen
+ * kdyz predchozi zmena uz plati (PRESC bit7 = 0). Kanal B se zdrojem z pinu A (SET_CONFIG 0x09) = P 1 (sirka pulzu,
+ * zpozdeni A/B). Prepnuti = preruseni souvisleho useku (statistika, fazovy zaznam). */
+static uint8_t  s3_pr_mode[2] = { 0xFFu, 0xFFu };
+static uint8_t  s3_pr_cand[2] = { 0xFFu, 0xFFu };
+static uint32_t s3_pr_sw[2];
+static bool s3_cfg_any(uint8_t id, uint8_t v1, uint8_t v2);
+static void s3_range_ctl(const fpga_v3_hdr_t *h);
+
 static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
 {
     m->fw_version = h->fw_version;
@@ -1075,7 +1085,8 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
     m->sequence = s3_wseq;
     m->measurement_status = 0x03u;
     m->status_flags = (uint8_t)(ST_DATA_VALID | ST_DATA_FRESH);
-    m->edge_count = w->edges;
+    m->edge_count = w->edges;                                     /* periody (v0.38.0: hrany x P) */
+    m->presc_log2 = w->p_log2;
     m->dt_units   = w->gate_units & 0xFFFFFFFFFFFFull;
     m->gate2_ps   = dt_units_to_ps(m->dt_units, clk);
     m->gate_ps    = m->gate2_ps;
@@ -1299,6 +1310,7 @@ static bool poll_v3(fpga_meas_t *out)
         if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }   /* vadny blok 1-3: zaznamy prijdou znovu */
         s3_h_ok = 1u; s_link_ok = 1u; s3_frames++;
         if (s3_h.type == FPGA_V3_T_DATA) s3_take_records(n_ok);
+        s3_range_ctl(&s3_h);                                       /* v0.38.0: automaticka predelicka */
         {   /* diagnosticky snimek ramce (verze, hodiny, TDC, tabulka, 1PPS) i bez noveho okna */
             fpga_meas_t f;
             memset(&f, 0, sizeof f);
@@ -1338,7 +1350,15 @@ static bool poll_v3(fpga_meas_t *out)
         const int coh_new = (s_prev_coh != 0xFFFFu) && (m.coh_cnt > s_prev_coh);
         s_prev_coh = m.coh_cnt;
         if (chk == FPGA_CHK_OK && coh_new && !(m.clk_status & 0x08u)) chk = FPGA_CHK_COH;
-        if (chk == FPGA_CHK_OK && !s_sim_on && m.gate2_ps > 0u && (double)m.edge_count * 1e12 / (double)m.gate2_ps > FPGA_DIRECT_MAX_HZ)
+        /* v0.38.0: s predelickou je edge_count v periodach -> mez primeho mereni plati pro DELENY kmitocet */
+        if (chk == FPGA_CHK_OK && !s_sim_on && m.gate2_ps > 0u &&
+            (double)m.edge_count * 1e12 / (double)m.gate2_ps / (double)(1u << (m.presc_log2 & 7u)) > FPGA_DIRECT_MAX_HZ)
+            chk = FPGA_CHK_FMAX;
+        /* v0.38.0: pojistka rozsahu (PROTOKOL_V3 kap. 6.4) -- sonda /16 vidi skutecny kmitocet i tam, kde deleny signal
+         * prime pocitani i kontrolni pocitani stejne podvzorkuji (shodny, ale spatny pocet). Dokud automaticky rozsah
+         * nepreleze na vetsi P, okno se nebere. */
+        if (chk == FPGA_CHK_OK && !s_sim_on && s3_h_ok && (s3_h.caps & FPGA_V3_CAP_PRESC) &&
+            FPGA_V3_PROBE_HZ(s3_h.probe[s3_chan & 1u]) / (double)(1u << (m.presc_log2 & 7u)) > FPGA_DIRECT_MAX_HZ)
             chk = FPGA_CHK_FMAX;
         if (chk == FPGA_CHK_OK && (m.ccd_p > 1 || m.ccd_p < -1)) chk = FPGA_CHK_COUNT;
         if (chk == FPGA_CHK_COUNT)       s_chk_count++;
@@ -2661,6 +2681,39 @@ static bool tdccal_run(void)
 }
 
 /* Prikaz v3 (SET_CONFIG): jedna transakce pod zamkem; prijaty ramec se nepouzije (zaznamy prijdou znovu, ACK se neposunul) */
+/* SET_CONFIG do FPGA, nebo pri emulaci primo do emulatoru (bez SPI) */
+static bool s3_cfg_any(uint8_t id, uint8_t v1, uint8_t v2)
+{
+    if (s_sim_on) {
+        fpga_v3_build_cfg(s3c_tx, ++s3_mseq, id, v1, v2);
+        fpga_v3_emu_rx(&s3_emu, s3c_tx);
+        return true;
+    }
+    return v3_cfg(id, v1, v2);
+}
+
+static void s3_range_ctl(const fpga_v3_hdr_t *h)
+{
+    if (!(h->caps & FPGA_V3_CAP_PRESC)) return;
+    for (uint8_t ch = 0u; ch < 2u; ch++) {
+        const uint8_t cur = (uint8_t)(h->presc[ch] & 0x07u);
+        if (h->presc[ch] & FPGA_V3_PRESC_PEND) { s3_pr_cand[ch] = 0xFFu; continue; }
+        uint8_t want = (s3_pr_mode[ch] != 0xFFu) ? s3_pr_mode[ch] : fpga_v3_range_select(cur, FPGA_V3_PROBE_HZ(h->probe[ch]));
+        if (ch == 1u && (h->cfg_echo & 0x18u)) want = 0u;
+        if (want == cur) { s3_pr_cand[ch] = 0xFFu; continue; }
+        if (s3_pr_cand[ch] != want) { s3_pr_cand[ch] = want; continue; }
+        if (s3_cfg_any(FPGA_V3_CFG_PRESC, ch, want)) { s3_pr_sw[ch]++; s3_brk = 1u; }
+        s3_pr_cand[ch] = 0xFFu;
+    }
+}
+
+int fpga_freq_presc(uint8_t ch, uint8_t mode)
+{
+    if (ch > 1u || (mode != 0xFFu && mode > FPGA_V3_RANGE_MAXLOG2)) return -1;
+    s3_pr_mode[ch] = mode; s3_pr_cand[ch] = 0xFFu;
+    return (s3_h_ok && (s3_h.caps & FPGA_V3_CAP_PRESC)) ? 1 : 0;
+}
+
 static bool v3_cfg(uint8_t id, uint8_t v1, uint8_t v2)
 {
     if (!spi_lock(200)) return false;
@@ -2917,11 +2970,13 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->frames = s3_frames; o->recs = s3_link.recs; o->dups = s3_link.dups; o->gaps = s3_link.gaps;
     o->gap_recs = s3_link.gap_recs; o->resync = s3_link.resync; o->wins = s3_wins; o->qdrop = s3_qdrop; o->pages = s3_pages;
     o->k = s3_grp.k_target; o->seg_ms = s3_grp.seg_ms; o->chan = s3_chan; o->expect = s3_link.expect;
+    o->pr_mode[0] = s3_pr_mode[0]; o->pr_mode[1] = s3_pr_mode[1]; o->pr_sw[0] = s3_pr_sw[0]; o->pr_sw[1] = s3_pr_sw[1];
     if (s3_h_ok) {
         o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->rec_head = s3_h.rec_head; o->rec_first = s3_h.rec_first;
         o->ring_fill = s3_h.ring_fill; o->rx_crc_err = s3_h.rx_crc_err; o->rx_len_err = s3_h.rx_len_err;
         o->flags = s3_h.flags; o->tdc[0] = s3_h.tdc_status[0]; o->tdc[1] = s3_h.tdc_status[1]; o->cal_wait = s3_h.cal_wait;
         o->pps_status = s3_h.pps_status; o->pps_pflags = s3_h.pps[0].pflags; o->pps_d = s3_h.pps[0].d;
+        o->presc[0] = s3_h.presc[0]; o->presc[1] = s3_h.presc[1]; o->probe[0] = s3_h.probe[0]; o->probe[1] = s3_h.probe[1];
     }
 }
 
