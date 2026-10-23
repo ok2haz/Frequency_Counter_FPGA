@@ -15,7 +15,8 @@ only = set(args)
 sim, src = os.path.join(root, 'sim'), os.path.join(root, 'src')
 
 TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=15', '-DSIM_BREAK_IDX=268', '-DSIM_TOP']
-MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=17.3e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2']}
+MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=17.3e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
+        3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0']}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -34,6 +35,8 @@ M = [
      "if (state != S_ASM && (rec_head - rec_ack) > RING_USE) begin rec_ack <= rec_head - RING_USE; ovf <= 1'b1; end", "", 1),
     ('potvrzeni tabulky bez masky', 'top_v3.v', ".lw_commit(lw_cm_p & cmk2[1])", ".lw_commit(lw_cm_p)", 2),
     ('tabulka do aktivni banky', 'tdc.v', "    wire          bwr     = (BANKS != 0) ? ~bank_r : 1'b0;", "    wire          bwr     = (BANKS != 0) ? bank_r : 1'b0;", 2),
+    ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : ch_b) ^ bs2[1];", "    wire        sig_b = ch_b;", 3),
+    ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']
 

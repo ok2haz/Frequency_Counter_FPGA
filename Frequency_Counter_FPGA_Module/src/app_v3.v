@@ -71,17 +71,20 @@ module app_v3 #(
     output reg  [13:0] lw_neg,
     output reg         lw_ch,
     output reg         lw_commit_tgl,
-    output reg  [1:0]  lw_commit_mask         // kanaly, ktere potvrzeni aktivuje (kvazistaticke pred prepnutim lw_commit_tgl)
+    output reg  [1:0]  lw_commit_mask,        // kanaly, ktere potvrzeni aktivuje (kvazistaticke pred prepnutim lw_commit_tgl)
+    output reg  [1:0]  bsrc                   // FW 0x0501, SET_CONFIG 0x09: bit0 = kanal B z pinu A, bit1 = B invertovany
 );
     localparam [7:0]  MAGIC = 8'hA5, VER = 8'h03;
     localparam [7:0]  T_SETCFG = 8'h01, T_ACK = 8'h06, T_START = 8'h08, T_STOP = 8'h09, T_LUTW = 8'h0A, T_RAW = 8'h0B;
     localparam [7:0]  T_DATA = 8'h80, T_PAGE = 8'hA0;
     // FW 0x0500 = prvni bitstream protokolu v3 (top_v3.v). Rada 0x04xx je v2 (top.v), cisla se nesdili.
-    localparam [15:0] FW_VERSION = 16'h0500;
+    // FW 0x0501: SET_CONFIG 0x09 zdroj kanalu B (jednorazove deje: sirka pulzu, kalibrace zpozdeni A/B), CAPS bit20.
+    localparam [15:0] FW_VERSION = 16'h0501;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (1PPS pres IDES8) a bit18 (predelicka pin_cnt) = 0: v teto verzi nejsou (kap. 8 krok 8, volitelne).
-    localparam [31:0] CAPS = 32'h0009_7C32;
+    // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B.
+    localparam [31:0] CAPS = 32'h0019_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
 
     initial begin
@@ -89,7 +92,7 @@ module app_v3 #(
         hist_k = 10'd0; raw_k = 9'd0;
         cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
         raw_tgl = 1'b0; raw_ch = 1'b0;
-        lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11;
+        lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00;
     end
 
     // ---- casovani ramce, kruh ----
@@ -193,7 +196,7 @@ module app_v3 #(
             8'd56: hb = rx_last[7:0];  8'd57: hb = rx_last[15:8];  8'd58: hb = rx_last[23:16];  8'd59: hb = rx_last[31:24];
             8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
             8'd62: hb = lut_sum[7:0];  8'd63: hb = lut_sum[15:8];
-            8'd66: hb = {5'd0, ref_sel, led_hb_en, mask_cs_en};
+            8'd66: hb = {3'd0, bsrc[1], bsrc[0], ref_sel, led_hb_en, mask_cs_en};
             8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];  8'd70: hb = pps_seq[23:16];  8'd71: hb = pps_seq[31:24];
             8'd72: hb = pts_l[7:0];    8'd73: hb = pts_l[15:8];    8'd74: hb = pts_l[23:16];
             8'd75: hb = pts_l[31:24];  8'd76: hb = pts_l[39:32];   8'd77: hb = pts_l[47:40];
@@ -319,6 +322,7 @@ module app_v3 #(
                                 if (rx_p1 == 8'd10) seg10 <= 1'b1;
                                 else if (rx_p1 == 8'd25) seg10 <= 1'b0;
                             end
+                            8'h09: bsrc <= rx_p1[1:0];                                  // FW 0x0501: zdroj kanalu B
                             default: ;                                                  // 0x01, 0x03 (v3 bez vyznamu), 0x07
                         endcase
                         T_LUTW: begin

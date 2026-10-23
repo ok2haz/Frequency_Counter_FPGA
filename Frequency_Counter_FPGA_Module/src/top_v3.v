@@ -165,6 +165,14 @@ module top_v3 (
     lut_wr_sync u_lws (.clk(clk_p0_100m), .lw_tgl(lw_tgl), .lw_commit_tgl(lw_commit_tgl), .lw_ch(lw_ch), .lw_a(lw_a), .lw_neg(lw_neg),
                        .lw_en_a(lw_en_a), .lw_en_b(lw_en_b), .lw_cm_p(lw_cm_p), .lw_a_q(lw_a_q), .lw_n_q(lw_n_q));
     wire        want_a, want_b, cal_req_a, cal_req_b, seg_tick, bank_a, bank_b;
+    // FW 0x0501 (SET_CONFIG 0x09): zdroj kanalu B. bit0 = pin A misto pinu B, bit1 = invertovat (retez casuje jen nabezne
+    // hrany -> invertovany signal = sestupne hrany). A nabezne + B sestupne tehoz pinu = sirka pulzu bez prepojeni;
+    // B = A neinvertovany = kalibrace zpozdeni mezi kanaly. Vyber z registru 100 MHz (z 10 MHz pres 2 FF, kvazistaticky);
+    // cesta pin -> LUT -> retez je asynchronni jako dosud (SDC: false_path pres u_tdcb/sig_eff).
+    wire [1:0]  bsrc;
+    reg  [1:0]  bs1 = 2'b00, bs2 = 2'b00;
+    always @(posedge clk_p0_100m) begin bs1 <= bsrc; bs2 <= bs1; end
+    wire        sig_b = (bs2[0] ? ch_a : ch_b) ^ bs2[1];
     // potvrzeni tabulky jen pro kanaly z masky (stridava kalibrace: druhy kanal muze prave cekat se starym histogramem)
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
@@ -180,7 +188,7 @@ module top_v3 (
         .bank_sw(seg_tick), .bank_o(bank_a)
     );
     tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1)) u_tdcb (
-        .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
+        .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req_b), .cal_abort(cal_abort),
         .lw_en(lw_en_b), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -223,9 +231,17 @@ module top_v3 (
 
     // ---- mereni: oba kanaly vzdy; hold = kanal nemeri platne ----
     reg hold_a = 1'b1, hold_b = 1'b1;
+    // FW 0x0501: po zmene zdroje kanalu B je B 2 hranice segmentu neplatny (rozpracovany segment meri jiny signal; X a
+    // kontrolni pocitani se srovnaji az v dalsim segmentu)
+    reg  [1:0] bs3 = 2'b00, bchg = 2'd0;
+    always @(posedge clk_p0_100m) begin
+        bs3 <= bs2;
+        if (bs3 != bs2)                   bchg <= 2'd2;
+        else if (seg_tick && bchg != 2'd0) bchg <= bchg - 2'd1;
+    end
     always @(posedge clk_p0_100m) begin
         hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done;
-        hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done;
+        hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0);
     end
     wire mask_cs_en, led_hb_en;
     reg  [1:0] csa_s = 2'b00, mk_s = 2'b00;
@@ -245,7 +261,7 @@ module top_v3 (
         .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(ch_a), .freeze(freeze), .snap(snap), .clear(clear),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl));
     seg_chan3 u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(ch_b), .freeze(freeze), .snap(snap), .clear(clear),
+        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl));
 
     wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;
@@ -326,7 +342,7 @@ module top_v3 (
         .raw_k(raw_k), .raw_q(raw_q), .raw_n(raw_n),
         .cal_tgl(cal_tgl), .cal_mask(cal_mask), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .seg10(seg10_req), .raw_tgl(raw_tgl), .raw_ch(raw_ch),
-        .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask));
+        .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc));
 
     // ---- reference (ref_guard z vnitrniho oscilatoru, z top.v) ----
     wire osc_clk;

@@ -11,11 +11,14 @@
 //     SET_CONFIG 0x08 (SEG_LEN 10 ms).
 // Kanal B -DTB_FB=17.3e6 (run.ps1 topv3): perioda 5,78 taktu -> casuje se kazda hrana a ve FIFO indexu jsou casto DVE
 // rozpracovane znacky (parovani indexu se znackou, v2 tu bralo index nasledujici hrany).
+// FW 0x0501: v rezimu 0 navic RAW_CAPTURE (512 znacek kanalu A, stranky druhu 3, rozdily = perioda).
 // Rezimy (-DTB_MODE=): 0 = vse vyse (vychozi), 1 = preteceni kruhu (-DSIM_RAW=4: 16 zaznamu, STM chvili necte),
 //   2 = VYROBNI tok kalibrace (bez -DSIM_AUTOCAL): STM cte histogram strankami (druh 1/2, 3 stranky), spocte tabulku,
 //       zapise ji DAVKOU (LUT_WRITE, 252 polozek na ramec), overi LUT_CNT/LUT_SUM, potvrdi -> banka se prepne na hranici
 //       segmentu; pak rekalibrace JEN kanalu A (SET_CONFIG 0x02 maska A): B meri porad, A behem sberu neplatny, po sberu
-//       meri dal se starou bankou, nova tabulka do druhe banky.
+//       meri dal se starou bankou, nova tabulka do druhe banky,
+//   3 = sirka pulzu (FW 0x0501, SET_CONFIG 0x09): kanal A = pulz sirky TB_WA, B = pin A invertovany -> (T0_B - T0_A)
+//       mod P = sirka; B = pin A neinvertovany -> zpozdeni mezi kanaly ~0; zpet na pin B -> B meri zase svuj signal.
 // ============================================================
 `timescale 1ps/1fs
 `include "tb_clk.vh"
@@ -28,6 +31,9 @@
 `ifndef TB_FB
 `define TB_FB (3.3e6 * (1.0 - 2.1e-6))
 `endif
+`ifndef TB_WA
+`define TB_WA 0.0
+`endif
 `ifndef TB_NFR
 `define TB_NFR 14
 `endif
@@ -35,13 +41,14 @@ module tb_top_v3;
     reg clk10 = 0, clk100 = 0;
     always #50000 clk10 = ~clk10;
     initial begin #2300; forever #(`TB_THALF_PS) clk100 = ~clk100; end
-    real FA, FB, HA, HB, PA, PB;
+    real FA, FB, HA, HB, PA, PB, WA;
     reg ch_a = 0, ch_b = 0, pps = 0;
     initial begin
         HA = 0.5e12 / `TB_FA; HB = 0.5e12 / `TB_FB;
         PA = 2.0 * HA; PB = 2.0 * HB;                 // [ps]; skutecna perioda = 2 x zaokrouhlena pulperioda (fs)
+        WA = (`TB_WA > 0.0) ? `TB_WA : HA;           // sirka pulzu kanalu A [ps] (vychozi strida 50 %)
     end
-    initial begin #12345; forever begin ch_a = 1; #(HA); ch_a = 0; #(HA); end end
+    initial begin #12345; forever begin ch_a = 1; #(WA); ch_a = 0; #(PA - WA); end end
     initial begin #23456; forever begin ch_b = 1; #(HB); ch_b = 0; #(HB); end end
     initial begin #(64'd700_000_000); forever begin pps = 1; #(64'd100_000_000); pps = 0; #(64'd900_000_000); end end   // 1PPS po 1 ms
 
@@ -80,6 +87,7 @@ module tb_top_v3;
     // ---- "STM": prijem ramce ----
     reg [31:0] nxt = 0, hseq;
     integer nmask = 0, ninv_a = 0, novf = 0;
+    reg [23:0] rawi [0:1023]; reg [47:0] rm0, rm1; integer kk, nraw1; real rawe;
     real t0ref [0:1], t0res, t0max [0:1]; reg t0have [0:1];
     localparam real T0LIM = (`TB_MODE == 2) ? 500.0 : 300.0;   // rezim 2: tabulka STM z 2^12 udalosti (vetsi INL)
     initial begin t0have[0] = 0; t0have[1] = 0; t0max[0] = 0; t0max[1] = 0; end
@@ -88,6 +96,9 @@ module tb_top_v3;
     reg        have [0:1];
     reg [39:0] px0 [0:1]; reg [47:0] pt0 [0:1]; reg [31:0] pord [0:1];
     real f2, ferr, maxe [0:1], sl, slerr, maxsl [0:1], U, P, Fc;
+    // FW 0x0501: zdroj kanalu B (bfa = pin A, binv = invertovany) a parovani A/B v jednom segmentu
+    reg bfa = 0, binv = 0, haveA = 0; reg [47:0] tA0, dd; reg [31:0] ordA;
+    real dps, dmod, werr, wmax = 0.0; integer nw = 0;
     reg [31:0] pps_last_seq = 0; reg [47:0] pps_last_ts = 0; integer npps = 0;
     initial begin U = `TB_PS_PER_UNIT; have[0] = 0; have[1] = 0; maxe[0] = 0; maxe[1] = 0; maxsl[0] = 0; maxsl[1] = 0; end
     task chk(input cond, input [8*64-1:0] what);
@@ -103,8 +114,8 @@ module tb_top_v3;
             end
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
-            chk(rd(20, 2) == 16'h0500, "FW_VERSION 0x0500");
-            caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13], "CAPS v3/banky/1PPS");
+            chk(rd(20, 2) == 16'h0501, "FW_VERSION 0x0501");
+            caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");
             chk(mi[22] == 100, "CLK_MHZ");
             hseq = rd(4, 4);
             if (want_data && mi[2] == 8'h80) begin
@@ -133,7 +144,19 @@ module tb_top_v3;
 `ifdef TB_DBG
                             $display("DBG rec %0d ch %0d n %0d x0 %0d t0 %0d sx %0d st %0d fl %02h", ord, r_ch, r_n, r_x0, r_t0, r_sx, r_st, r_fl);
 `endif
-                            P  = r_ch ? PB : PA; Fc = 1.0e12 / P;
+                            P  = (r_ch && !bfa) ? PB : PA; Fc = 1.0e12 / P;
+                            // sirka pulzu / zpozdeni: prvni hrana B proti prvni hrane A teze hranice segmentu (mod perioda)
+                            if (r_ch == 0) begin haveA = 1; ordA = ord; tA0 = r_t0; end
+                            else if (bfa && haveA && ordA == ord - 1) begin
+                                dd = r_t0 - tA0;
+                                dps = dd[47] ? (real'(dd) - 281474976710656.0) * U : real'(dd) * U;
+                                dmod = dps - $floor(dps / PA) * PA;
+                                werr = binv ? (dmod - WA) : ((dmod > PA / 2.0) ? dmod - PA : dmod);
+                                if (werr < 0) werr = -werr;
+                                if (werr > wmax) wmax = werr;
+                                nw = nw + 1;
+                                chk(werr < 300.0, binv ? "sirka pulzu (T0_B - T0_A mod P)" : "zpozdeni A/B (stejna hrana)");
+                            end
                             if (r_ch) nvalid_b = nvalid_b + 1; else nvalid_a = nvalid_a + 1;
                             // T0 = cas hrany X0 (generator kanalu A zacina v 12345 ps, B v 23456 ps)
                             t0res = real'(r_t0) * U - ((r_ch ? 23456.0 : 12345.0) + real'(r_x0 - 1) * P);
@@ -175,6 +198,7 @@ module tb_top_v3;
                             // neplatny / prazdny zaznam: souvislost X neni zarucena (sber histogramu krmi retez ring
                             // oscilatorem -> hrany signalu se nepocitaji) -> nova reference T0 i dvoubodoveho
                             have[r_ch] = 0; t0have[r_ch] = 0;
+                            if (r_ch == 0) haveA = 0;
                             if (r_ch == 0 && r_fl[0]) ninv_a = ninv_a + 1;
                         end
                     end
@@ -346,7 +370,34 @@ module tb_top_v3;
         $display("kalibrace hotova v %0t ps (banka A %0d, B %0d)", $time, dut.bank_a, dut.bank_b);
         chk(dut.bank_a == 1 && dut.bank_b == 1, "aktivni banka po prvni kalibraci = 1");
         #(64'd300_000_000);
-        if (`TB_MODE == 1) begin
+        if (`TB_MODE == 3) begin
+            // ---- sirka pulzu (FW 0x0501): B = pin A invertovany (SET_CONFIG 0x09 = 3) ----
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS (segment 250 us < transakce)
+            build(8'h01, 8'h09, 8'h03, 0, 0); xfer(1024); bfa = 1; binv = 1;
+            #(64'd600_000_000);                                          // B 2 segmenty neplatny po zmene zdroje
+            build_ack(0); xfer(1024); nxt = rd(32, 4) + 1; haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
+            chk(mi[66][4:3] == 2'b11, "CFG echo: B z pinu A, invertovany");
+            for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            $display("sirka pulzu %.0f ps (perioda %.0f ps): %0d dvojic A/B, max |chyba| %.0f ps", WA, PA, nw, wmax);
+            chk(nw >= 6, "sirka pulzu: dvojice A/B");
+            // ---- zpozdeni mezi kanaly: B = pin A neinvertovany -> stejna hrana v obou retezech ----
+            nw = 0; wmax = 0.0;
+            build(8'h01, 8'h09, 8'h01, 0, 0); xfer(1024); binv = 0;
+            #(64'd600_000_000);
+            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1; haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
+            chk(mi[66][4:3] == 2'b01, "CFG echo: B z pinu A");
+            for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            $display("zpozdeni A/B (stejna hrana): %0d dvojic, max |rozdil| %.0f ps", nw, wmax);
+            chk(nw >= 6, "zpozdeni A/B: dvojice");
+            // ---- zpet na pin B: B meri zase svuj signal ----
+            build(8'h01, 8'h09, 8'h00, 0, 0); xfer(1024); bfa = 0;
+            #(64'd600_000_000);
+            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1; t0have[1] = 0; have[1] = 0;
+            e0 = nvalid_b;
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b > e0 + 4, "zpet na pin B: platne zaznamy B");
+            chk(mi[66][4:3] == 2'b00, "CFG echo: B z pinu B");
+        end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
             build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
             build_ack(nxt); xfer(1024); check_frame(1);
@@ -425,6 +476,29 @@ module tb_top_v3;
             for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             chk(nmask > 0, "maskovani: segment s mene znackami");
             chk(nvalid_a > e0, "maskovani: platne zaznamy dal");
+            // ---- RAW_CAPTURE kanalu A: 512 po sobe jdoucich znacek (zachyceni probehne v mezere 200 us po zadosti,
+            //      512 x perioda), souhrnna stranka polozka 5 = pocet, stranky druhu 3 (dve polozky u24 na znacku) ----
+            build(8'h0B, 8'd0, 0, 0, 0); xfer(1024);
+            build(8'hA0, 8'd0, 8'd0, 8'd0, 0); xfer(1024); build_ack(nxt); xfer(1024);
+            chk(mi[2] == 8'hA0 && mi[116] == 8'd0 && rd(256 + 2 + 3 * 5, 3) == 512, "RAW: souhrnna stranka, polozka 5 = 512 znacek");
+            for (t = 0; t < 5; t = t + 1) begin
+                build(8'hA0, 8'd3, t[7:0], 8'd0, 0); xfer(1024); build_ack(nxt); xfer(1024);
+                chk(mi[2] == 8'hA0 && mi[116] == 8'd3 && rd(117, 2) == t, "RAW: stranka druhu 3");
+                chk(rd(119, 2) == ((t < 4) ? 252 : 16), "RAW: pocet polozek stranky");
+                for (k = 0; k < 252; k = k + 1) if (t * 252 + k < 1024) rawi[t * 252 + k] = rd((1 + k / 84) * 256 + 2 + 3 * (k % 84), 3);
+            end
+            nraw1 = 0; rawe = 0.0;
+            for (k = 0; k < 511; k = k + 1) begin
+                rm0 = {rawi[2 * k + 1], rawi[2 * k]}; rm1 = {rawi[2 * k + 3], rawi[2 * k + 2]};
+                dps = real'((rm1 - rm0) & 48'hFFFFFFFFFFFF) * U;
+                kk = $rtoi(dps / PA + 0.5);
+                werr = dps - kk * PA; if (werr < 0) werr = -werr;
+                if (werr > rawe) rawe = werr;
+                if (kk == 1) nraw1 = nraw1 + 1;
+                chk(kk >= 1 && werr < 300.0, "RAW: rozdil znacek = nasobek periody");
+            end
+            $display("RAW_CAPTURE: 512 znacek, po sobe jdoucich %0d/511, max |rozdil - k*P| %.0f ps", nraw1, rawe);
+            chk(nraw1 >= 500, "RAW: znacky po sobe jdoucich hran");
         end
         $display("ramcu %0d, zaznamu %0d (platnych A %0d B %0d), duplicit %0d, kontrol %0d, max|e| 2pt A %.2e B %.2e, sklon A %.2e B %.2e, 1PPS %0d",
                  nfr, nrec_tot, nvalid_a, nvalid_b, dup, nchk, maxe[0], maxe[1], maxsl[0], maxsl[1], npps);
