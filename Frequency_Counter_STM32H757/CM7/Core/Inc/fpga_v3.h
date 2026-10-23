@@ -48,6 +48,13 @@
 #define FPGA_V3_CFG_SEGLEN     0x08u
 #define FPGA_V3_CFG_BSRC       0x09u   /* FW 0x0501: zdroj kanalu B -- bit0 = pin A misto pinu B, bit1 = invertovat */
 #define FPGA_V3_CAP_BSRC       (1u << 20)   /* CAPS: SET_CONFIG 0x09 (echo bajt 66 bit3..4) */
+/* v0.37.0 (FW 0x0502, etapa E4): 1PPS s jemnym casem pres IDES8 (krok 1,25 ns, PROTOKOL_V3 kap. 3.1 bajty 50, 68..95) */
+#define FPGA_V3_CAP_PPS_IDES   (1u << 17)   /* CAPS: PTS 1PPS je jemny cas (PFLAGS bit1) */
+#define FPGA_V3_PF_VALID       0x01u        /* PFLAGS: hrana platna */
+#define FPGA_V3_PF_FINE        0x02u        /* PFLAGS: PTS z IDES8 (jinak hruby cas x 16384) */
+#define FPGA_V3_PPS_ST_LOCK    0x01u        /* PPS_STATUS: PCLK bezi (rPLL zamcena a uvolnena) */
+#define FPGA_V3_PPS_ST_NOFINE  0x04u        /* PPS_STATUS: posledni hrana pri zamcene PLL bez jemneho casu */
+#define FPGA_V3_PPS_EPOCH(st)  ((uint8_t)((uint8_t)(st) >> 4))   /* uvolneni PCLK mod 16: zmena = jina osa jemneho casu */
 /* FLAGS ramce (blok 0, bajt 3) */
 #define FPGA_V3_F_NEWREC       (1u << 0)
 #define FPGA_V3_F_RINGOVF      (1u << 1)
@@ -79,6 +86,7 @@ typedef struct {
     uint32_t pseq;               /* poradi hrany 1PPS */
     uint64_t pts;                /* cas hrany [T/16384], u48 */
     uint8_t  pflags;
+    int8_t   d;                  /* FW 0x0502: jemny - hruby cas [takty] (diagnostika osy a poradi bitu IDES8) */
 } fpga_v3_pps_t;
 
 /* hlavicka (blok 0) ramce MISO -- offsety viz PROTOKOL_V3.md kap. 3.1 */
@@ -123,6 +131,9 @@ typedef struct {
 /* ---- ramec ---- */
 uint16_t fpga_v3_blk_crc(const uint8_t *blk);                  /* CRC-16/CCITT-FALSE bajtu 0..253 bloku */
 void     fpga_v3_blk_seal(uint8_t *blk);                       /* zapise CRC na 254..255 (LE) */
+/* 1PPS hrany i (0 posledni, 1 predchozi) v taktech + zlomek [1/16384]: jemny cas (vraci 1), kdyz FPGA ma CAPS bit17,
+ * PCLK bezi a hrana ma PFLAGS bit1; jinak hruby citac z bajtu 100.. (zlomek 0, vraci 0). */
+int      fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac);
 uint8_t  fpga_v3_blk_ok(const uint8_t *frame);                 /* bit k = CRC bloku k sedi */
 void     fpga_v3_rec_pack(uint8_t *dst, const fpga_v3_rec_t *r);    /* 31 B */
 void     fpga_v3_rec_unpack(fpga_v3_rec_t *r, const uint8_t *src);

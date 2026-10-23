@@ -2596,6 +2596,11 @@ void UartTask_run(void *argument)
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
 				  printf("  TDC A 0x%02X B 0x%02X (bit0 platna, bit2 sber, bit4 banka), ceka na tabulku 0x%X\n",
 				         (unsigned)vi.tdc[0], (unsigned)vi.tdc[1], (unsigned)vi.cal_wait);
+				  printf("  1PPS: %s, PCLK %s, epocha %u, jemny - hruby %d taktu%s (CAPS bit17 %s)\n",
+				         (vi.pps_pflags & FPGA_V3_PF_FINE) ? "jemny cas IDES8 (1,25 ns)" : "hruby cas (10 ns)",
+				         (vi.pps_status & FPGA_V3_PPS_ST_LOCK) ? "bezi" : "STOJI", (unsigned)FPGA_V3_PPS_EPOCH(vi.pps_status),
+				         (int)vi.pps_d, (vi.pps_status & FPGA_V3_PPS_ST_NOFINE) ? ", posledni hrana BEZ jemneho casu" : "",
+				         (vi.caps & FPGA_V3_CAP_PPS_IDES) ? "ano" : "ne");
 			  }
 			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
 				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->

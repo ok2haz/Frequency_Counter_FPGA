@@ -94,6 +94,9 @@ typedef struct {
     uint32_t pps_ts;
     uint8_t  pps_seq;
     uint8_t  pps_ok;              /* 1 = ramec 1PPS nese (caps bit13) */
+    uint16_t pps_frac;            /* v0.37.0: zlomek taktu hrany [1/16384], jen pri pps_fine */
+    uint8_t  pps_fine;            /* 1 = pps_ts + pps_frac je jemny cas (v3 FW 0x0502, IDES8, krok 1,25 ns) */
+    uint8_t  pps_epoch;           /* osa jemneho casu (PPS_STATUS 7:4); zmena = jina osa */
     /* FW >= 0x0425 (caps bit14, FPGA_CAP_DIAG0, audit 2026-10-20): diagnostika O4 a hlidac koherence hodin.
      * abs 10 coh_st | 11 coh_cnt | 57 bub_p | 58 bub_s | 59 {ovl_s[3:0], ovl_p[3:0]} */
     uint16_t rg_xdiv;             /* audit 4: delitel xm (256 nebo 4096 podle caps bit15); 0 = 256 */
@@ -141,6 +144,9 @@ typedef struct {
     uint8_t  clk_bad;     /* 1 = hodiny FPGA hlasi vypadek/zotaveni (clk_status) */
     uint32_t first_ms;    /* HAL_GetTick prvniho vyskytu teto hodnoty */
     uint32_t n;           /* poradove cislo udalosti od startu (pro konzumenta: zmena = nova udalost) */
+    uint16_t frac;        /* v0.37.0: zlomek taktu [1/16384] (jen fine) */
+    uint8_t  fine;        /* 1 = ts + frac je jemny cas (IDES8); prechod jemny/hruby = jina osa */
+    uint8_t  epoch;       /* osa jemneho casu; zmena = jina osa (nove zamceni PLL ve FPGA) */
 } fpga_pps_t;
 /* Posledni potvrzena udalost 1PPS. @return false = zadna (FPGA bez caps bit13 nebo jeste zadna hrana). */
 bool     fpga_pps_get(fpga_pps_t *out);
@@ -641,6 +647,8 @@ typedef struct {
     uint16_t fw, ring_fill, rx_crc_err, rx_len_err;
     uint32_t caps, rec_head, rec_first;
     uint8_t  tdc[2], cal_wait;
+    uint8_t  pps_status, pps_pflags;   /* v0.37.0: bajt 50, PFLAGS posledni hrany */
+    int8_t   pps_d;                    /* jemny - hruby [takty] */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 /** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK

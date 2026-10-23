@@ -480,6 +480,7 @@ static double sim_urand(void) { return (double)(sim_rand() % 100001u) / 100000.0
 static uint32_t s_sim_pps_next_ms;
 static double   s_sim_pps_phase;    /* idealni faze [takty] od startu emulace */
 static uint32_t s_sim_pps_ts;
+static uint64_t s_sim_pps_pts;      /* v0.37.0: jemny cas pro emulator v3 [T/16384], krok 2048 (IDES8 1,25 ns) */
 static uint8_t  s_sim_pps_seq;
 static uint8_t  s_sim_nopps;        /* `fpgasim fault nopps`: GPS bez 1PPS (test holdoveru) */
 
@@ -494,8 +495,10 @@ static void sim_pps_step(uint32_t now)
     while ((int32_t)(now - s_sim_pps_next_ms) >= 0) {
         double y = SIM_OCXO_Y0 + SIM_OCXO_KDAC * (double)gpsdo_sim_dac_code();
         s_sim_pps_phase += 1e8 * (1.0 + y);
-        double t = floor(s_sim_pps_phase + sim_gauss() * 3.0);
+        const double tn = s_sim_pps_phase + sim_gauss() * 3.0;
+        double t = floor(tn);
         s_sim_pps_ts = (uint32_t)(uint64_t)t;            /* mod 2^32 jako 32bitovy citac ve FPGA */
+        s_sim_pps_pts = ((uint64_t)(tn * 8.0)) << 11;    /* v3 FW 0x0502: IDES8 = 8 vzorku na takt */
         s_sim_pps_seq++;
         s_sim_pps_next_ms += 1000u;
     }
@@ -736,12 +739,15 @@ static uint8_t    s_pps_have;
 static uint32_t   s_pps_torn;
 static uint32_t   s_pc_ts, s_pc_first;
 static uint8_t    s_pc_seq, s_pc_have;
+static uint16_t   s_pc_frac;          /* v0.37.0: zlomek, priznak a epocha kandidata (shoda dvou ramcu) */
+static uint8_t    s_pc_fine, s_pc_ep;
 
 static void pps_feed(const fpga_meas_t *m)
 {
     if (!m->pps_ok) { s_pc_have = 0u; return; }
-    if (s_pc_have && m->pps_seq == s_pc_seq && m->pps_ts == s_pc_ts) {
-        if (s_pps_have && s_pps.seq == m->pps_seq && s_pps.ts == m->pps_ts) return;   /* uz vyhlaseno */
+    const int same_t = m->pps_ts == s_pc_ts && m->pps_frac == s_pc_frac && m->pps_fine == s_pc_fine && m->pps_epoch == s_pc_ep;
+    if (s_pc_have && m->pps_seq == s_pc_seq && same_t) {
+        if (s_pps_have && s_pps.seq == m->pps_seq && s_pps.ts == m->pps_ts && s_pps.frac == m->pps_frac) return;   /* uz vyhlaseno */
         fpga_pps_t e;
         e.ts       = m->pps_ts;
         e.seq      = m->pps_seq;
@@ -751,6 +757,7 @@ static void pps_feed(const fpga_meas_t *m)
                       (!(m->clk_status & FPGA_CLK_OK) || (m->clk_status & FPGA_CLK_RECOVER))) ? 1u : 0u;
         e.first_ms = s_pc_first;
         e.n        = s_pps.n + 1u;
+        e.frac     = m->pps_frac; e.fine = m->pps_fine; e.epoch = m->pps_epoch;
         uint32_t pm = __get_PRIMASK();
         __disable_irq();
         s_pps = e; s_pps_have = 1u;
@@ -758,8 +765,9 @@ static void pps_feed(const fpga_meas_t *m)
         return;
     }
     /* nova hodnota: kandidat. Zmena jen jedne slozky = jiste roztrzene cteni (nova hrana meni obe). */
-    if (s_pc_have && ((m->pps_seq == s_pc_seq) != (m->pps_ts == s_pc_ts))) s_pps_torn++;
+    if (s_pc_have && ((m->pps_seq == s_pc_seq) != same_t)) s_pps_torn++;
     s_pc_seq = m->pps_seq; s_pc_ts = m->pps_ts; s_pc_have = 1u;
+    s_pc_frac = m->pps_frac; s_pc_fine = m->pps_fine; s_pc_ep = m->pps_epoch;
     s_pc_first = HAL_GetTick();
 }
 
@@ -805,6 +813,7 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
      * a ktery se s caps bit5 stejne prepocita nize z edges_b/dt_b) */
     m->pps_ok  = (m->caps & FPGA_CAP_PPS) ? 1u : 0u;
     m->pps_ts  = m->pps_ok ? rd_le32(p + 40) : 0u;   /* abs 52..55 */
+    m->pps_frac = 0u; m->pps_fine = 0u; m->pps_epoch = 0u;   /* v0.37.0: v2 = jen hruby cas */
     m->pps_seq = m->pps_ok ? p[44] : 0u;              /* abs 56 */
     /* FW >= 0x0425 (caps bit14): diagnostika O4 + hlidac koherence (abs 10/11 lezi v hlavicce, rx[10]/rx[11]) */
     m->diag0_ok = (m->caps & FPGA_CAP_DIAG0) ? 1u : 0u;
@@ -1049,7 +1058,9 @@ static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
     m->ovl_p = h->ovl[s3_chan & 1u]; m->ovl_s = h->ovl[(s3_chan ^ 1u) & 1u];
     m->tdc_status = s3_tdc_v2(h);
     m->lut_wait = (uint8_t)(h->cal_wait & 3u); m->lut_cnt = h->lut_cnt; m->lut_sum = h->lut_sum;
-    m->pps_ok = 1u; m->pps_ts = h->pps_coarse[0]; m->pps_seq = (uint8_t)h->pps[0].pseq;
+    m->pps_ok = 1u; m->pps_seq = (uint8_t)h->pps[0].pseq;
+    m->pps_fine = (uint8_t)fpga_v3_pps_fine(h, 0, &m->pps_ts, &m->pps_frac);   /* v0.37.0: jemny cas (IDES8) */
+    m->pps_epoch = FPGA_V3_PPS_EPOCH(h->pps_status);
     m->channel_id = s3_chan;
     m->phase_status = fpga_gate_idx_to_win(s3_gate);          /* echo hradla jako v2 (zde lokalni volba) */
 }
@@ -1243,9 +1254,12 @@ static void sim3_produce(const uint8_t *tx, uint8_t *rx)
     sim_pps_step(now);
     for (int i = 0; i < 4; i++) s3_emu_f[68 + i] = (uint8_t)(s_sim_pps_seq >> (8 * i));
     for (int i = 0; i < 4; i++) s3_emu_f[100 + i] = (uint8_t)(s_sim_pps_ts >> (8 * i));
-    {   const uint64_t pts = (uint64_t)s_sim_pps_ts << 14;
+    {   const uint64_t pts = s_sim_pps_pts;                     /* v0.37.0: jemny cas jako FW 0x0502 */
         for (int i = 0; i < 6; i++) s3_emu_f[72 + i] = (uint8_t)(pts >> (8 * i)); }
-    s3_emu_f[78] = s_sim_pps_seq ? 1u : 0u;
+    s3_emu_f[78] = s_sim_pps_seq ? (uint8_t)(FPGA_V3_PF_VALID | FPGA_V3_PF_FINE) : 0u;
+    s3_emu_f[79] = 0u;                                          /* d */
+    s3_emu_f[50] = (uint8_t)(0x10u | FPGA_V3_PPS_ST_LOCK | (s_sim_pps_seq ? 0x02u : 0u));   /* epocha 1, PCLK bezi */
+    s3_emu_f[26] |= (uint8_t)(FPGA_V3_CAP_PPS_IDES >> 16);      /* CAPS bit17 */
     fpga_v3_blk_seal(s3_emu_f);
     fpga_v3_emu_rx(&s3_emu, tx);
 }
@@ -2907,6 +2921,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
         o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->rec_head = s3_h.rec_head; o->rec_first = s3_h.rec_first;
         o->ring_fill = s3_h.ring_fill; o->rx_crc_err = s3_h.rx_crc_err; o->rx_len_err = s3_h.rx_len_err;
         o->flags = s3_h.flags; o->tdc[0] = s3_h.tdc_status[0]; o->tdc[1] = s3_h.tdc_status[1]; o->cal_wait = s3_h.cal_wait;
+        o->pps_status = s3_h.pps_status; o->pps_pflags = s3_h.pps[0].pflags; o->pps_d = s3_h.pps[0].d;
     }
 }
 

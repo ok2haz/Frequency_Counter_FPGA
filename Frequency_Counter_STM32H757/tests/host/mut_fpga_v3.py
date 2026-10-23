@@ -34,6 +34,12 @@ M = [
     ('par: znacky pri CS se pouziji', 'const int bad = (r->flags & (FPGA_V3_R_INVALID | FPGA_V3_R_CS)) != 0u;',
      'const int bad = (r->flags & FPGA_V3_R_INVALID) != 0u;'),
     ('par: po prepnuti B bez drzeni', '    if (p->skip) {', '    if (0) {'),
+    ('1PPS: d se necte', '        h->pps[i].d = (int8_t)q[11];\n', ''),
+    ('1PPS: jemny i bez PCLK', '(h->caps & FPGA_V3_CAP_PPS_IDES) && (h->pps_status & FPGA_V3_PPS_ST_LOCK) && (h->pps[i].pflags & FPGA_V3_PF_FINE)',
+     '(h->caps & FPGA_V3_CAP_PPS_IDES) && (h->pps[i].pflags & FPGA_V3_PF_FINE)'),
+    ('1PPS: jemny i bez CAPS', '(h->caps & FPGA_V3_CAP_PPS_IDES) && (h->pps_status & FPGA_V3_PPS_ST_LOCK) && (h->pps[i].pflags & FPGA_V3_PF_FINE)',
+     '(h->pps_status & FPGA_V3_PPS_ST_LOCK) && (h->pps[i].pflags & FPGA_V3_PF_FINE)'),
+    ('1PPS: zlomek z hornich bitu', '*frac  = (uint16_t)(h->pps[i].pts & 0x3FFFu);', '*frac  = (uint16_t)(h->pps[i].pts >> 34);'),
     ('grp_break nic nedela', '{ g->c[ch & 1u].open = 0u; }', '{ (void)g; (void)ch; }'),
     ('grp_break vzdy kanal A', '{ g->c[ch & 1u].open = 0u; }', '{ g->c[0].open = 0u; (void)ch; }'),
 ]

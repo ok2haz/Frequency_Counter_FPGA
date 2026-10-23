@@ -8,7 +8,8 @@
  * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu;
  * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA);
  * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu;
- * (9) jednorazove deje: casy udalosti, interval A->B (start/stop), zpozdeni A/B, 200 s ticho (T0 pretece). */
+ * (9) jednorazove deje: casy udalosti, interval A->B (start/stop), zpozdeni A/B, 200 s ticho (T0 pretece);
+ * (10) jemny cas 1PPS (FW 0x0502): PFLAGS, PPS_STATUS, d, volba jemny / hruby (fpga_v3_pps_fine). */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -111,6 +112,29 @@ int main(void)
       CHECK(s2 > 0.7 * teor2 && s2 < 1.3 * teor2, "dvoubodova sigma %.3e mimo teorii %.3e", s2, teor2);
       CHECK(sL < s2 / 10.0, "LSQ neni vyrazne lepsi nez dvoubodovy (%.3e vs %.3e)", sL, s2); }
 
+    /* (10) v0.37.0 (FW 0x0502): jemny cas 1PPS. Ramec z emulatoru, do hlavicky PTS s nenulovym zlomkem, PFLAGS, PPS_STATUS,
+     * d a hruby citac; jemny cas se pouzije jen s CAPS bit17 + PCLK bezi + PFLAGS bit1, jinak hruby (zlomek 0). */
+    {
+        fpga_v3_emu_init(&E, 10e6, 0.0, 0.0, 77u);
+        fpga_v3_emu_frame(&E, F);
+        const uint64_t pts = (0x2ABCDEF01ull << 14) | (5u << 11);          /* takt 0x2ABCDEF01, poloha IDES8 5 */
+        for (int i = 0; i < 6; i++) { F[72 + i] = (uint8_t)(pts >> (8 * i)); F[88 + i] = (uint8_t)((pts - (100000000ull << 14)) >> (8 * i)); }
+        F[68] = 7u; F[84] = 6u; F[78] = 3u; F[94] = 1u; F[79] = 0xFEu; F[95] = 2u;
+        for (int i = 0; i < 4; i++) { F[100 + i] = (uint8_t)(0xABCDEF03u >> (8 * i)); F[104 + i] = (uint8_t)(0xA6FA2B03u >> (8 * i)); }
+        F[26] |= 0x02u; F[50] = 0x33u;                                     /* CAPS bit17; epocha 3, bit1 platne, bit0 PCLK */
+        fpga_v3_blk_seal(F);
+        fpga_v3_hdr_t h; uint32_t n_ok = 0, tk = 0; uint16_t fr = 0;
+        CHECK(fpga_v3_parse(F, &h, R, &n_ok) == FPGA_V3_OK, "1PPS jemny: parse");
+        CHECK(h.pps[0].d == -2 && h.pps[1].d == 2 && h.pps[0].pflags == 3u && FPGA_V3_PPS_EPOCH(h.pps_status) == 3u,
+              "1PPS jemny: d %d/%d, PFLAGS %u, epocha %u", h.pps[0].d, h.pps[1].d, h.pps[0].pflags, FPGA_V3_PPS_EPOCH(h.pps_status));
+        CHECK(fpga_v3_pps_fine(&h, 0, &tk, &fr) == 1 && tk == 0xABCDEF01u && fr == (5u << 11),
+              "1PPS jemny: takty 0x%08lX zlomek %u", (unsigned long)tk, (unsigned)fr);
+        CHECK(fpga_v3_pps_fine(&h, 1, &tk, &fr) == 0 && tk == 0xA6FA2B03u && fr == 0u, "1PPS predchozi hruby (PFLAGS bit1 = 0)");
+        fpga_v3_hdr_t h2 = h; h2.caps &= ~FPGA_V3_CAP_PPS_IDES;
+        CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u && fr == 0u, "1PPS bez CAPS bit17 = hruby");
+        h2 = h; h2.pps_status &= (uint8_t)~FPGA_V3_PPS_ST_LOCK;
+        CHECK(fpga_v3_pps_fine(&h2, 0, &tk, &fr) == 0 && tk == 0xABCDEF03u, "1PPS bez PCLK = hruby");
+    }
 
     /* preteceni kruhu za behu (STM chvili necte): okno NESMI preklenout mezeru -> kazde okno ma presne K segmentu */
     {

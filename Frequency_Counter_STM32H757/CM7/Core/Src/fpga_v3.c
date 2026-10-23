@@ -23,6 +23,20 @@ void fpga_v3_blk_seal(uint8_t *blk)
     blk[254] = (uint8_t)c; blk[255] = (uint8_t)(c >> 8);
 }
 
+/* v0.37.0 (FW 0x0502): jemny cas 1PPS (IDES8) nebo hruby citac -- viz fpga_v3.h */
+int fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac)
+{
+    i &= 1;
+    if ((h->caps & FPGA_V3_CAP_PPS_IDES) && (h->pps_status & FPGA_V3_PPS_ST_LOCK) && (h->pps[i].pflags & FPGA_V3_PF_FINE)) {
+        *ticks = (uint32_t)(h->pps[i].pts >> 14);
+        *frac  = (uint16_t)(h->pps[i].pts & 0x3FFFu);
+        return 1;
+    }
+    *ticks = h->pps_coarse[i];
+    *frac  = 0u;
+    return 0;
+}
+
 uint8_t fpga_v3_blk_ok(const uint8_t *f)
 {
     uint8_t m = 0;
@@ -125,6 +139,7 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     for (int i = 0; i < 2; i++) {
         const uint8_t *q = f + 68 + 16 * i;
         h->pps[i].pseq = (uint32_t)rdn(q, 4); h->pps[i].pts = rdn(q + 4, 6); h->pps[i].pflags = q[10];
+        h->pps[i].d = (int8_t)q[11];
         h->pps_coarse[i] = (uint32_t)rdn(f + 100 + 4 * i, 4);
         h->probe[i] = (uint16_t)rdn(f + 108 + 2 * i, 2);
         h->bub[i] = f[112 + i]; h->ovl[i] = f[114 + i];

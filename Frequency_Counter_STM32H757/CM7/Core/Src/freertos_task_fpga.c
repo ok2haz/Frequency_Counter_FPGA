@@ -508,6 +508,8 @@ static uint32_t  s_g_pps_n, s_g_ts_prev, s_g_last_ok_ms, s_g_state_ms;
 static double    s_mon_x;
 static uint8_t   s_mon_on;
 static uint8_t   s_g_have_prev;
+static uint16_t  s_g_frac_prev;     /* v0.37.0: zlomek taktu predchozi hrany [1/16384] (jemny cas FPGA v3) */
+static uint8_t   s_g_fine_prev, s_g_ep_prev;   /* osa predchozi hrany: jemny/hruby a epocha */
 static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezme se v dalsim intervalu) */
 static volatile uint32_t s_g_cmd_q16;          /* povel kodu (i virtualni pri emulaci) */
 static volatile uint8_t  s_g_virt;             /* 1 = smycka ridi virtualni DAC emulatoru (`fpgasim`) */
@@ -804,17 +806,21 @@ void gpsdo_tick(void)
             s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u; s_mon_x = 0.0;
             s_pm_have = 0u;                                    /* audit 2026-10-20: souvislost odhadu sumu */
             if (s_g_state == GPSDO_WAIT) s_g_why = why;
-        } else if (!s_g_have_prev) {
+        } else if (!s_g_have_prev || p.fine != s_g_fine_prev || p.epoch != s_g_ep_prev) {
+            /* v0.37.0: novy zacatek i pri zmene osy casu 1PPS (jemny <-> hruby, nova epocha PLL ve FPGA): interval pres
+             * zmenu osy by nesl posun az ~3 takty (latence + faze PLL) */
             s_g_ts_prev = p.ts; s_g_have_prev = 1u;
+            s_g_frac_prev = p.frac; s_g_fine_prev = p.fine; s_g_ep_prev = p.epoch;
             double q; uint32_t rn;
             if (saw_lookup(p.first_ms, &q, &rn)) { s_q_prev = q; s_q_rec_n = rn; s_q_have = 1u; } else s_q_have = 0u;
             s_e_prev_ok = 0u;
         } else {
             uint32_t dticks = p.ts - s_g_ts_prev;              /* mod 2^32 */
-            s_g_ts_prev = p.ts;
+            const double dfrac = ((double)p.frac - (double)s_g_frac_prev) / 16384.0;   /* v0.37.0: jemny cas */
+            s_g_ts_prev = p.ts; s_g_frac_prev = p.frac;
             double F = (double)p.clk_mhz * 1e6;
             uint32_t ns = (uint32_t)((double)dticks / F + 0.5);
-            double e_t = (double)dticks - (double)ns * F;
+            double e_t = (double)dticks + dfrac - (double)ns * F;
             /* oprava sawtooth teto hrany (nejdriv precist, at se drzi navaznost i pri odmitnuti) */
             double q = 0.0; uint32_t rn = 0u;
             int q_ok = saw_lookup(p.first_ms, &q, &rn) && (rn != s_q_rec_n || !s_q_have);

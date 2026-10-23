@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.37.0 (2026-10-23) = JEMNY CAS 1PPS z FPGA v3 (FW 0x0502, etapa E4): IDES8 + rPLL ve FPGA, PTS krok 1,25 ns (sigma
+ * 0,36 ns misto 2,9 ns hrubeho citace). fpga_v3_pps_fine (jemny jen s CAPS bit17 + PCLK bezi + PFLAGS bit1), fpga_pps_t
+ * nese zlomek taktu, priznak a epochu; GPSDO pocita interval se zlomkem a pri zmene osy (epocha, jemny/hruby) zacne
+ * znovu; emulator v3 dava jemny cas; UART fpga v3 vypise stav 1PPS. v2 beze zmeny (zlomek 0). */
 /* v0.36.0 (2026-10-23) = JEDNORAZOVE DEJE (protokol v3, FW 0x0501; docs/PROTOKOL_V3.md kap. 10.5): udalosti ze zaznamu
  * segmentu (presny cas 1. a 2. hrany segmentu, pri N >= 3 souhrn) -- UART `fpga ev on|off|<n>` (kruh 256, cas proti 1PPS),
  * `fpga ab on|off|<n>` (interval start A / stop B), `fpga pw on|cal|off|<n>` (sirka pulzu: SET_CONFIG 0x09 B = pin A
@@ -283,8 +287,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 36
+#define FW_VERSION_MINOR 37
 #define FW_VERSION_PATCH 0
-#define FW_VERSION_STR   "v0.36.0"
+#define FW_VERSION_STR   "v0.37.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */
