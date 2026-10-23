@@ -11,6 +11,10 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.39.1 (2026-10-23) = AUDIT funkci FPGA v3 (docs/audit/2026-10-23_v3-funkce-audit.md): T_RAW s potvrzenim (bajt 127,
+ * FW 0x0505) -- odmitnuty prikaz uz nevrati stara data jineho zaznamu / kanalu, bezici zaznam se zastavi, okno s chybou
+ * cteni a mezery v zaznamu se hlasi; automaticky rozsah pod 16 kHz (sonda 0) vrati P = 1; bez kopani watchdogu FPGA
+ * z UartTask; v2 nuluje log2 P; `fpga v3` sonda v kHz bez %f (nano.specs). */
 /* v0.39.0 (2026-10-23) = HLUBOKY RAW ZAZNAM do vestavene PSRAM FPGA v3 (FW 0x0505): `fpga raw a|b deep <N> [dump]` = az
  * 699 050 po sobe jdoucich znacek kanalu, cteni po oknech 512 znacek (T_RAW rezim 2 + stranky druhu 3), statistika
  * navazuje pres okna; hlavicka 124..131 (DEEP_N, DEEP_ST, latence zapisu PSRAM, okno); `fpga v3` vypise stav PSRAM.
@@ -297,7 +301,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 39
-#define FW_VERSION_PATCH 0
+#define FW_VERSION_PATCH 1
 #define FW_VERSION_STR   "v0.39.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

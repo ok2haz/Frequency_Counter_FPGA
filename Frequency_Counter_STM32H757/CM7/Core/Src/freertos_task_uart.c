@@ -2602,9 +2602,9 @@ void UartTask_run(void *argument)
 				         (int)vi.pps_d, (vi.pps_status & FPGA_V3_PPS_ST_NOFINE) ? ", posledni hrana BEZ jemneho casu" : "",
 				         (vi.caps & FPGA_V3_CAP_PPS_IDES) ? "ano" : "ne");
 				  for (int c = 0; c < 2; c++)
-					  printf("  predelicka %c: 1/%u%s (%s), sonda %.3f MHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
+					  printf("  predelicka %c: 1/%u%s (%s), sonda %lu kHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
 					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
-					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", FPGA_V3_PROBE_HZ(vi.probe[c]) * 1e-6,
+					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", (unsigned long)vi.probe[c] * 16ul,   /* bez %f (nano.specs, F-0276) */
 					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
 				  printf("  PSRAM: %s, latence zapisu %u B, faze cteni %u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
 				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
