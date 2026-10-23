@@ -344,7 +344,8 @@ module top (
         .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last),
         .d_maxtap(da_maxtap),
-        .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a), .bub_o(bub_a), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh)
+        .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a), .bub_o(bub_a), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh),
+        .bank_sw(1'b0), .bank_o()   // v2: jedna tabulka (BANKS = 0)
     );
     tdc_chan #(.EXT_TR(TDC_EXT_TR), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(ch_b), .ro(ro_sig), .tick_ps(tick_ps),
@@ -355,7 +356,8 @@ module top (
         .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last),
         .d_maxtap(db_maxtap),
-        .dump_k(hist_k), .dump_q(hq_b), .code_o(code_b), .bub_o(bub_b), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh)
+        .dump_k(hist_k), .dump_q(hq_b), .code_o(code_b), .bub_o(bub_b), .tr1_ext(tr1_sh), .tr2_ext(tr2_sh),
+        .bank_sw(1'b0), .bank_o()   // v2: jedna tabulka (BANKS = 0)
     );
 
     // ----------------------------------------------------------

@@ -265,7 +265,11 @@ module tdc_chan #(
     parameter KD       = 2,         // tap detekce hrany
     parameter DUAL     = 0,         // 1 = i sestupna hrana hodin
     parameter NTAP     = TAPS,      // fyzicky postavenych tapu (<= TAPS), viz tdc_chain
-    parameter AUTOCAL  = `TDC_AUTOCAL_DEF   // 1 = (jen simulace) tabulku pocita FPGA; 0 = pocita a zapisuje STM
+    parameter AUTOCAL  = `TDC_AUTOCAL_DEF,  // 1 = (jen simulace) tabulku pocita FPGA; 0 = pocita a zapisuje STM
+    // Protokol v3 (docs/PROTOKOL_V3.md kap. 6.3): 1 = DVE BANKY tabulky. STM pise do neaktivni banky, potvrzeni ji aktivuje
+    // az na hranici segmentu (bank_sw); prekalibrace s platnou tabulkou nemaze cal_valid -> po sberu histogramu kanal meri
+    // dal se starou bankou, dokud STM novou nezapise a nepotvrdi. 0 = jako v2 (jedna tabulka, top.v).
+    parameter BANKS    = 0
 )(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
@@ -307,7 +311,10 @@ module tdc_chan #(
     input  wire [9:0]  dump_k,
     output wire [23:0] dump_q,
     output wire [$clog2(TAPS)-1:0] code_o,  // FW 0x0418: kod posledni presne casovane hrany (platny v ts_valid)
-    output reg         bub_o        // FW 0x0425: bublina = nejvyssi prosly tap (po 8) lezi > 8 tapu ZA kodem (platne v ts_valid)
+    output reg         bub_o,       // FW 0x0425: bublina = nejvyssi prosly tap (po 8) lezi > 8 tapu ZA kodem (platne v ts_valid)
+    // protokol v3 (BANKS = 1); u BANKS = 0 bez vyznamu (bank_sw nezapojeno, bank_o = 0)
+    input  wire        bank_sw,     // 1 takt: hranice segmentu -> aktivovat potvrzenou banku
+    output wire        bank_o       // aktivni banka tabulky
 );
     localparam CW = $clog2(TAPS);             // sirka kodu
     localparam AW = CW + DUAL;                // sirka adresy tabulek ({sada, kod})
@@ -431,13 +438,14 @@ module tdc_chan #(
     // FW 0x0421: polozka tabulky je HOTOVA pro vypocet casove znacky: {amt[1:0], neg[13:0]}. Cas = tick*16384 - V, V = 16384*b14 + x14
     // (b14 = bit +T), tedy dolnich 14 bitu = -x14 (mod 2^14) = `neg` a horni cast = tick_hi - amt, amt = b14 + (x14 != 0).
     // Pocita se pri kalibraci (ne za behu), takze za BRAM neni zadna aritmetika.
-    reg [15:0]    lut  [0:NC-1];
+    localparam    NB = (BANKS != 0) ? 2 : 1;      // pocet bank tabulky (v3: 2)
+    reg [15:0]    lut  [0:NC*NB-1];
     reg [HW-1:0]  hist [0:NC-1];
     integer li, nx, ng;
     initial begin
         // nominalni hodnota, dokud neprobehne kalibrace (jen orientacne; cal_valid = 0 => ts se nevydavaji); V = 16384 + x14
-        for (li = 0; li < NC; li = li + 1) begin
-            nx = (li * 93 + 46 > 16383) ? 16383 : (li * 93 + 46);
+        for (li = 0; li < NC * NB; li = li + 1) begin
+            nx = ((li % NC) * 93 + 46 > 16383) ? 16383 : ((li % NC) * 93 + 46);
             ng = 16384 - nx;
             lut[li] = (nx == 0) ? 16'h4000 : {2'd2, ng[13:0]};
         end
@@ -477,11 +485,18 @@ module tdc_chan #(
     wire          lw_r    = (DUAL != 0) ? ~lw_a[AW-1] : 1'b1;
     wire [1:0]    lw_amt  = {1'b0, lw_r} + {1'b0, (lw_neg != 14'd0)};
     wire          lut_we  = (AUTOCAL != 0) ? (s_cmp & ph[8]) : (lw_en & s_wait);
-    wire [AW-1:0] lut_wa  = (AUTOCAL != 0) ? scan_k : lw_a[AW-1:0];
+    // v3 (BANKS = 1): aktivni banka bank_r se cte, zapisuje se do druhe; u BANKS = 0 je horni bit adresy konstantni 0
+    reg           bank_r  = 1'b0;
+    reg           sw_pend = 1'b0;                  // potvrzena tabulka ceka na hranici segmentu
+    assign bank_o = bank_r;
+    wire          bwr     = (BANKS != 0) ? ~bank_r : 1'b0;
+    wire          brd     = (BANKS != 0) ?  bank_r : 1'b0;
+    wire [AW:0]   lut_wa  = {bwr, (AUTOCAL != 0) ? scan_k : lw_a[AW-1:0]};
+    wire [AW:0]   lut_ra  = {brd, caddr};
     wire [15:0]   lut_wd  = (AUTOCAL != 0) ? lutv : {lw_amt, lw_neg};
 
     always @(posedge clk) begin
-        lut_q     <= lut[caddr];
+        lut_q     <= lut[lut_ra];
         lut_q2    <= lut_q;
         lut_q3    <= lut_q2;
         hist_rd   <= hist[hist_ra];
@@ -522,7 +537,7 @@ module tdc_chan #(
             s_clr <= 1'b1; s_col <= 1'b0; s_drn <= 1'b0; s_cmp <= 1'b0; s_wait <= 1'b0;
             clr_k     <= {AW{1'b0}};
             cnt       <= {HW{1'b0}};
-            cal_valid <= 1'b0;
+            if (BANKS == 0) cal_valid <= 1'b0;   // v3: platna tabulka v aktivni bance plati dal (sber blokuje cal_busy)
             cal_fail  <= 1'b0;
             d_maxtap  <= 16'd0;               // B1a: reset pred novou kalibraci
         end else begin
@@ -552,13 +567,23 @@ module tdc_chan #(
                 end
             end
             if (s_wait) begin
-                if (lw_commit) begin s_wait <= 1'b0; cal_valid <= 1'b1; end
+                if (lw_commit) begin
+                    s_wait <= 1'b0;
+                    if (BANKS != 0) sw_pend   <= 1'b1;      // v3: aktivace az na hranici segmentu
+                    else            cal_valid <= 1'b1;
+                end
+            end
+            if (sw_pend && bank_sw) begin              // v3: prepnuti banky (BANKS = 0: sw_pend je vzdy 0)
+                bank_r    <= ~bank_r;
+                sw_pend   <= 1'b0;
+                cal_valid <= 1'b1;
             end
             if (s_cmp) begin                      // NC adres x 10 taktu
                 if (ph[9]) begin
                     if (lastk_r) begin
                         s_cmp     <= 1'b0;
-                        cal_valid <= 1'b1;
+                        if (BANKS != 0) sw_pend   <= 1'b1;   // v3 (jen simulace AUTOCAL): jako potvrzeni od STM
+                        else            cal_valid <= 1'b1;
                     end else begin
                         scan_k <= scan_k + {{(AW-1){1'b0}}, 1'b1};
                     end

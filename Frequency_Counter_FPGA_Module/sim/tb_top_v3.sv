@@ -1,0 +1,436 @@
+// ============================================================
+// tb_top_v3.sv -- CELY top_v3.v (protokol v3, FW 0x0500) se skutecnym TDC (gowin_models), SIM_TOP: segment 250 us,
+// kalibrace 2^12, rychly nabeh. "STM" = BFM po SPI (1024 B, SCK 25 MHz), jako fpga_freq.c v3:
+//   * kazda transakce posle ACK s REC_ACK = dalsi ocekavany zaznam a prijme ramec; CRC vsech 4 bloku, hlavicka
+//     (MAGIC, VER, FRAME_LEN, NBLK, FW, CAPS), znacky bloku {k, SEQ}, REC_FIRST <= ocekavany (prekryv je normalni:
+//     ramec se sklada pred zpracovanim ACK z teze transakce), zadna mezera.
+//   * zaznamy: SEG_IDX = poradi/2, CH = poradi & 1; platne zaznamy (FLAGS bit0 = 0): kmitocet dvoubodove ze sousednich
+//     segmentu (X0, T0) proti zadanemu, N ~ f*L, u kmitoctu, kde se casuje kazda hrana, SX = N(N-1)/2 PRESNE,
+//     sklon ST/SX = perioda; kontrolni pocitani (bit4) = 0.
+//   * 1PPS (PSEQ, PTS po 1 ms), stranka histogramu A (= dut.u_tdca.hist), chybna delka / CRC (RX_LEN_ERR, RX_CRC_ERR),
+//     SET_CONFIG 0x08 (SEG_LEN 10 ms).
+// Kanal B -DTB_FB=17.3e6 (run.ps1 topv3): perioda 5,78 taktu -> casuje se kazda hrana a ve FIFO indexu jsou casto DVE
+// rozpracovane znacky (parovani indexu se znackou, v2 tu bralo index nasledujici hrany).
+// Rezimy (-DTB_MODE=): 0 = vse vyse (vychozi), 1 = preteceni kruhu (-DSIM_RAW=4: 16 zaznamu, STM chvili necte),
+//   2 = VYROBNI tok kalibrace (bez -DSIM_AUTOCAL): STM cte histogram strankami (druh 1/2, 3 stranky), spocte tabulku,
+//       zapise ji DAVKOU (LUT_WRITE, 252 polozek na ramec), overi LUT_CNT/LUT_SUM, potvrdi -> banka se prepne na hranici
+//       segmentu; pak rekalibrace JEN kanalu A (SET_CONFIG 0x02 maska A): B meri porad, A behem sberu neplatny, po sberu
+//       meri dal se starou bankou, nova tabulka do druhe banky.
+// ============================================================
+`timescale 1ps/1fs
+`include "tb_clk.vh"
+`ifndef TB_MODE
+`define TB_MODE 0
+`endif
+`ifndef TB_FA
+`define TB_FA (10.0e6 * (1.0 + 813.0e-9))
+`endif
+`ifndef TB_FB
+`define TB_FB (3.3e6 * (1.0 - 2.1e-6))
+`endif
+`ifndef TB_NFR
+`define TB_NFR 14
+`endif
+module tb_top_v3;
+    reg clk10 = 0, clk100 = 0;
+    always #50000 clk10 = ~clk10;
+    initial begin #2300; forever #(`TB_THALF_PS) clk100 = ~clk100; end
+    real FA, FB, HA, HB, PA, PB;
+    reg ch_a = 0, ch_b = 0, pps = 0;
+    initial begin
+        HA = 0.5e12 / `TB_FA; HB = 0.5e12 / `TB_FB;
+        PA = 2.0 * HA; PB = 2.0 * HB;                 // [ps]; skutecna perioda = 2 x zaokrouhlena pulperioda (fs)
+    end
+    initial begin #12345; forever begin ch_a = 1; #(HA); ch_a = 0; #(HA); end end
+    initial begin #23456; forever begin ch_b = 1; #(HB); ch_b = 0; #(HB); end end
+    initial begin #(64'd700_000_000); forever begin pps = 1; #(64'd100_000_000); pps = 0; #(64'd900_000_000); end end   // 1PPS po 1 ms
+
+    reg sck = 0, cs = 1, mosi = 0; wire miso, led, fok, refc;
+    top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
+                .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(pps), .spi_sck(sck), .spi_cs_n(cs), .spi_mosi(mosi), .spi_miso(miso));
+
+    // ---- BFM ----
+    function [15:0] crc(input [15:0] c0, input [7:0] d);
+        integer b; reg [15:0] c; begin c = c0 ^ {d, 8'd0}; for (b = 0; b < 8; b = b + 1) c = c[15] ? ((c << 1) ^ 16'h1021) : (c << 1); crc = c; end endfunction
+    reg [7:0] mo [0:1099];
+    reg [7:0] mi [0:1099];
+    integer i, j, b, errors = 0, nchk = 0;
+    reg [15:0] cc;
+    reg [31:0] mseq = 0;
+    task seal(input integer blk);
+        begin cc = 16'hFFFF; for (i = 0; i < 254; i = i + 1) cc = crc(cc, mo[blk * 256 + i]);
+              mo[blk * 256 + 254] = cc[7:0]; mo[blk * 256 + 255] = cc[15:8]; end endtask
+    task build(input [7:0] ty, input [7:0] p0, input [7:0] p1, input [7:0] p2, input [7:0] p3);
+        begin for (i = 0; i < 1024; i = i + 1) mo[i] = 0;
+              mseq = mseq + 1;
+              mo[0] = 8'hA5; mo[1] = 8'h03; mo[2] = ty; mo[4] = mseq[7:0]; mo[5] = mseq[15:8]; mo[6] = mseq[23:16]; mo[7] = mseq[31:24];
+              mo[8] = 8'h00; mo[9] = 8'h04; mo[10] = 8'd4; mo[12] = p0; mo[13] = p1; mo[14] = p2; mo[15] = p3;
+              for (b = 0; b < 4; b = b + 1) seal(b); end endtask
+    task build_ack(input [31:0] a); build(8'h06, a[7:0], a[15:8], a[23:16], a[31:24]); endtask
+    task xfer(input integer nbytes);
+        begin cs = 0; #(64'd1_000_000);
+              for (i = 0; i < nbytes; i = i + 1) begin mi[i] = 0;
+                  for (j = 7; j >= 0; j = j - 1) begin mosi = mo[i][j]; #(64'd20_000); sck = 1; mi[i][j] = miso; #(64'd20_000); sck = 0; end
+              end
+              #(64'd1_000_000); cs = 1; #(64'd200_000_000); end endtask   // mezera 200 us
+
+    function [63:0] rd(input integer off, input integer n);
+        integer q; reg [63:0] v; begin v = 0; for (q = n - 1; q >= 0; q = q - 1) v = (v << 8) | mi[off + q]; rd = v; end endfunction
+
+    // ---- "STM": prijem ramce ----
+    reg [31:0] nxt = 0, hseq;
+    integer nmask = 0, ninv_a = 0, novf = 0;
+    real t0ref [0:1], t0res, t0max [0:1]; reg t0have [0:1];
+    localparam real T0LIM = (`TB_MODE == 2) ? 500.0 : 300.0;   // rezim 2: tabulka STM z 2^12 udalosti (vetsi INL)
+    initial begin t0have[0] = 0; t0have[1] = 0; t0max[0] = 0; t0max[1] = 0; end
+    integer nfr = 0, nrec_tot = 0, dup = 0, nvalid_a = 0, nvalid_b = 0, nflag_ccd = 0;
+    reg [7:0] r_fl; reg [15:0] r_seg; reg [7:0] r_ch; reg [23:0] r_n; reg [39:0] r_x0; reg [47:0] r_t0, r_sx; reg [55:0] r_st;
+    reg        have [0:1];
+    reg [39:0] px0 [0:1]; reg [47:0] pt0 [0:1]; reg [31:0] pord [0:1];
+    real f2, ferr, maxe [0:1], sl, slerr, maxsl [0:1], U, P, Fc;
+    reg [31:0] pps_last_seq = 0; reg [47:0] pps_last_ts = 0; integer npps = 0;
+    initial begin U = `TB_PS_PER_UNIT; have[0] = 0; have[1] = 0; maxe[0] = 0; maxe[1] = 0; maxsl[0] = 0; maxsl[1] = 0; end
+    task chk(input cond, input [8*64-1:0] what);
+        begin nchk = nchk + 1; if (!cond) begin errors = errors + 1; if (errors < 20) $display("  CHYBA: %0s", what); end end endtask
+    task check_frame(input integer want_data);
+        integer k, m, ord, off, nrec;
+        reg [31:0] first, caps;
+        begin
+            // CRC bloku
+            for (k = 0; k < 4; k = k + 1) begin
+                cc = 16'hFFFF; for (i = 0; i < 254; i = i + 1) cc = crc(cc, mi[k * 256 + i]);
+                chk({mi[k * 256 + 255], mi[k * 256 + 254]} === cc, "CRC bloku MISO");
+            end
+            chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
+            chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
+            chk(rd(20, 2) == 16'h0500, "FW_VERSION 0x0500");
+            caps = rd(24, 4); chk(caps[16] && caps[19] && caps[13], "CAPS v3/banky/1PPS");
+            chk(mi[22] == 100, "CLK_MHZ");
+            hseq = rd(4, 4);
+            if (want_data && mi[2] == 8'h80) begin
+                first = rd(36, 4); nrec = mi[40];
+                chk(nrec <= 24, "NREC <= 24");
+                if (first > nxt && mi[3][1]) begin                     // preteceni kruhu: mezera s priznakem
+                    novf = novf + 1; nxt = first; have[0] = 0; have[1] = 0;
+                end
+                chk(first <= nxt, "REC_FIRST > ocekavany (mezera bez priznaku preteceni)");
+                for (k = 1; k < 4; k = k + 1) chk(mi[k * 256] == k && mi[k * 256 + 1] == hseq[7:0], "znacka bloku {k, SEQ}");
+                for (m = 0; m < nrec; m = m + 1) begin
+                    ord = first + m;
+                    off = (1 + m / 8) * 256 + 2 + 31 * (m % 8);
+                    if (ord < nxt) begin dup = dup + 1; end
+                    else if (ord == nxt) begin
+                        nxt = nxt + 1; nrec_tot = nrec_tot + 1;
+                        r_seg = rd(off, 2); r_ch = mi[off + 2]; r_fl = mi[off + 3]; r_n = rd(off + 4, 3);
+                        r_x0 = rd(off + 7, 5); r_t0 = rd(off + 12, 6); r_sx = rd(off + 18, 6); r_st = rd(off + 24, 7);
+                        chk(r_seg == ord[16:1], "SEG_IDX = poradi/2");
+                        chk(r_ch == ord[0], "CH = poradi & 1");
+                        if (!r_fl[0] && r_n > 0) begin
+`ifdef TB_DBG2
+                            if (r_ch) $display("DBG2 rec %0d B n %0d x0 %0d t0res %.0f ps fl %02h", ord, r_n, r_x0,
+                                               real'(r_t0) * U - (23456.0 + real'(r_x0 - 1) * PB), r_fl);
+`endif
+`ifdef TB_DBG
+                            $display("DBG rec %0d ch %0d n %0d x0 %0d t0 %0d sx %0d st %0d fl %02h", ord, r_ch, r_n, r_x0, r_t0, r_sx, r_st, r_fl);
+`endif
+                            P  = r_ch ? PB : PA; Fc = 1.0e12 / P;
+                            if (r_ch) nvalid_b = nvalid_b + 1; else nvalid_a = nvalid_a + 1;
+                            // T0 = cas hrany X0 (generator kanalu A zacina v 12345 ps, B v 23456 ps)
+                            t0res = real'(r_t0) * U - ((r_ch ? 23456.0 : 12345.0) + real'(r_x0 - 1) * P);
+                            if (!t0have[r_ch]) begin t0have[r_ch] = 1; t0ref[r_ch] = t0res; end
+                            if ((t0res - t0ref[r_ch]) > t0max[r_ch]) t0max[r_ch] = t0res - t0ref[r_ch];
+                            if ((t0ref[r_ch] - t0res) > t0max[r_ch]) t0max[r_ch] = t0ref[r_ch] - t0res;
+                            chk((t0res - t0ref[r_ch]) < T0LIM && (t0ref[r_ch] - t0res) < T0LIM, "T0 = cas hrany X0 (parovani indexu a znacky)");
+                            if ((t0res - t0ref[r_ch]) >= T0LIM || (t0ref[r_ch] - t0res) >= T0LIM)
+                                $display("  T0: ord %0d ch %0d n %0d odchylka %.0f ps", ord, r_ch, r_n, t0res - t0ref[r_ch]);
+                            chk(r_fl[4] == 0, "kontrolni pocitani (FLAGS bit4)");
+                            if (r_fl[4]) nflag_ccd = nflag_ccd + 1;
+                            // N ~ f * L (kazda hrana casovana, nejvys ~3 znacky vypadnou na hranici); pri maskovani CS mene
+                            if (r_n * P < real'(dut.SEG25) * `TB_TCLK_R - 8.0 * P) nmask = nmask + 1;
+                            if (P > 5.5 * `TB_TCLK_R && !dut.mask_cs_en)
+                                chk((r_n * P <= real'(dut.SEG25) * `TB_TCLK_R + P) && (r_n * P >= real'(dut.SEG25) * `TB_TCLK_R - 8.0 * P), "N ~ f*L");
+                            // kazda hrana casovana -> indexy po sobe -> SX = N(N-1)/2 presne
+                            if (P > 5.5 * `TB_TCLK_R) chk(r_sx == (r_n * (r_n - 1)) / 2, "SX = N(N-1)/2");
+                            // sklon v segmentu: ST/SX = perioda [jednotky]
+                            if (r_sx > 0) begin
+                                sl = real'(r_st) / real'(r_sx) * U; slerr = (sl / P - 1.0); if (slerr < 0) slerr = -slerr;
+                                if (slerr > maxsl[r_ch]) maxsl[r_ch] = slerr;
+                                // mez: 2 x 60 ps (rozptyl znacky modelu TDC vc. INL tabulky) na rozpeti znacek segmentu
+                                chk(slerr < 2e-6 + 120.0 / (real'(r_n - 1) * P), "ST/SX = perioda");
+                            end
+                            // dvoubodove ze sousednich segmentu
+                            if (have[r_ch] && ord == pord[r_ch] + 2) begin
+                                f2 = real'((r_x0 - px0[r_ch]) & 40'hFFFFFFFFFF) /
+                                     (real'((r_t0 - pt0[r_ch]) & 48'hFFFFFFFFFFFF) * U) * 1.0e12;
+                                ferr = f2 / Fc - 1.0; if (ferr < 0) ferr = -ferr;
+                                if (ferr > maxe[r_ch]) maxe[r_ch] = ferr;
+                                // mez: 300 ps (2 znacky, 5 sigma) na odstup prvnich znacek; segment 250 us -> 1,2e-6
+                                chk(ferr < 2e-7 + 300.0 / (real'((r_t0 - pt0[r_ch]) & 48'hFFFFFFFFFFFF) * U), "kmitocet dvoubodove");
+                                if (ferr >= 2e-7 + 300.0 / (real'((r_t0 - pt0[r_ch]) & 48'hFFFFFFFFFFFF) * U)) $display("  2pt: ord %0d ch %0d n %0d x0 %0d (prev %0d, ord %0d) t0 %0d (prev %0d) dX %0d dT %.3f us e %.2e fl %02h",
+                                    ord, r_ch, r_n, r_x0, px0[r_ch], pord[r_ch], r_t0, pt0[r_ch], r_x0 - px0[r_ch],
+                                    real'(r_t0 - pt0[r_ch]) * U * 1e-6, ferr, r_fl);
+                            end
+                            have[r_ch] = 1; px0[r_ch] = r_x0; pt0[r_ch] = r_t0; pord[r_ch] = ord;
+                        end else begin
+                            // neplatny / prazdny zaznam: souvislost X neni zarucena (sber histogramu krmi retez ring
+                            // oscilatorem -> hrany signalu se nepocitaji) -> nova reference T0 i dvoubodoveho
+                            have[r_ch] = 0; t0have[r_ch] = 0;
+                            if (r_ch == 0 && r_fl[0]) ninv_a = ninv_a + 1;
+                        end
+                    end
+                end
+                nfr = nfr + 1;
+            end
+            // 1PPS: PSEQ / PTS posledni hrany; po sobe jdouci hrany 1 ms = 1e5 taktu
+            if (rd(68, 4) != 0 && rd(68, 4) != pps_last_seq) begin
+                if (pps_last_seq != 0 && rd(68, 4) == pps_last_seq + 1) begin
+                    chk(((rd(72, 6) - pps_last_ts) >> 14) >= 99999 && ((rd(72, 6) - pps_last_ts) >> 14) <= 100001, "1PPS po 1 ms");
+                    chk(rd(84, 4) == pps_last_seq && rd(88, 6) == pps_last_ts, "1PPS predchozi = minula posledni");
+                    npps = npps + 1;
+                end
+                pps_last_seq = rd(68, 4); pps_last_ts = rd(72, 6);
+            end
+        end endtask
+
+`ifdef TB_DBG
+    integer dn = 0; real tprev = 0;
+    integer dnb = 0;
+    always @(posedge clk100) if (dut.tsv_b && dut.cal_valid_b && dnb < 12) begin
+        dnb = dnb + 1;
+        $display("DBG B ts=%0d frac %0d code %0d lut_q3=%h", dut.ts_b, dut.ts_b & 16383, dut.u_tdcb.code_r, dut.u_tdcb.lut_q3);
+    end
+    initial begin
+        wait (dut.cal_valid_a && dut.cal_valid_b);
+        for (dn = 0; dn < 300; dn = dn + 1) if (dut.u_tdca.hist[dn] != 0) $display("DBG histA[%0d]=%0d lutA1=%h lutA0=%h", dn, dut.u_tdca.hist[dn], dut.u_tdca.lut[512+dn], dut.u_tdca.lut[dn]);
+        for (dn = 0; dn < 300; dn = dn + 1) if (dut.u_tdcb.hist[dn] != 0 && dn < 40) $display("DBG histB[%0d]=%0d lutB1=%h", dn, dut.u_tdcb.hist[dn], dut.u_tdcb.lut[512+dn]);
+        dn = 0;
+    end
+    always @(posedge clk100) if (dut.tsv_a && dut.cal_valid_a && dn < 30) begin
+        dn = dn + 1;
+        $display("DBG ts_a=%0d (tick %0d frac %0d code %0d) d=%.1f u, lut_q3=%h bank=%0d x=%0d", dut.ts_a, dut.ts_a >> 14, dut.ts_a & 16383, dut.u_tdca.code_r,
+                 real'(dut.ts_a) - tprev, dut.u_tdca.lut_q3, dut.bank_a, dut.u_sa.fh);
+        tprev = real'(dut.ts_a);
+    end
+`endif
+`ifdef TB_DBG2
+    // kazda znacka B proti skutecnemu casu hrany: hrana x (index od 1 = prvni nabezna) je v case 23456 + (x-1)*PB [ps]
+    real res, res0 = 0.0, rmax = 0.0; integer nres = 0, nout = 0; reg [39:0] xb; reg prev_cs = 1; integer since_cs = 0;
+    always @(posedge clk100) begin
+        if (dut.tsv_b && dut.cal_valid_b && !dut.hold_b && dut.u_sb.fn != 0) begin
+            xb = dut.u_sb.fh;
+            res = real'(dut.ts_b) * `TB_PS_PER_UNIT - (23456.0 + real'(xb - 1) * PB);
+            if (nres == 0) begin res0 = res; $display("DBG2 res0 %.0f ps", res0); end
+            nres = nres + 1;
+            if ((res - res0) > 400.0 || (res - res0) < -400.0) begin
+                nout = nout + 1;
+                if (nout < 25) $display("DBG2 B x=%0d res=%.0f ps (od prvni %.0f) code=%0d cs=%0d since_cs=%0d t=%0t", xb, res, res - res0, dut.u_tdcb.code_r, ~cs, since_cs, $time);
+            end
+            if ((res - res0) > rmax) rmax = res - res0;
+            if ((res0 - res) > rmax) rmax = res0 - res;
+        end
+    end
+    always @(posedge clk100) begin if (!cs) since_cs = 0; else since_cs = since_cs + 1; end
+    final $display("DBG2 B znacek %0d, odlehlych (>400 ps) %0d, max|res| %.0f ps", nres, nout, rmax);
+`endif
+    // ---- "STM": tabulka TDC z histogramu (stranky), zapis davkou ----
+    localparam NC = 512;
+    reg [23:0] hh [0:NC-1];
+    reg [15:0] lt [0:NC-1];
+    reg [15:0] lsum; integer lcnt;
+    task read_hist(input integer ch);
+        integer t2, k2, j2;
+        begin for (t2 = 0; t2 < 3; t2 = t2 + 1) begin
+                build(8'hA0, ch + 1, t2[7:0], 8'd0, 0); xfer(1024);
+                build_ack(nxt); xfer(1024);
+                chk(mi[2] == 8'hA0 && mi[116] == ch + 1 && rd(117, 2) == t2, "kalibrace: stranka histogramu");
+                for (k2 = 0; k2 < 252; k2 = k2 + 1) if (t2 * 252 + k2 < NC) begin
+                    j2 = (1 + k2 / 84) * 256 + 2 + 3 * (k2 % 84);
+                    hh[t2 * 252 + k2] = rd(j2, 3);
+                end
+            end end endtask
+    task calc_lut;
+        integer a; longint cum, xv, xsh, x14; reg [13:0] neg; reg [1:0] amt;
+        begin cum = 0;
+            for (a = 0; a < NC; a = a + 1) begin
+                xv = 2 * cum + hh[a]; cum = cum + hh[a];
+                xsh = (dut.CAL_LOG2 >= 13) ? (xv >> (dut.CAL_LOG2 - 13)) : (xv << (13 - dut.CAL_LOG2));
+                x14 = (xsh > 16383) ? 16383 : xsh;
+                neg = 14'd0 - x14[13:0]; amt = 2'd1 + ((x14 != 0) ? 2'd1 : 2'd0);
+                lt[a] = {amt, neg};
+            end
+            chk(cum == (1 << dut.CAL_LOG2), "kalibrace: soucet histogramu = 2^CAL_LOG2");
+        end endtask
+    task write_lut(input integer ch);
+        integer a, n, k3, blk, e; reg [8:0] ad9;
+        begin build(8'h01, 8'h06, 8'h00, 0, 0); xfer(1024);          // zacatek zapisu: LUT_CNT = LUT_SUM = 0
+            lsum = 0; lcnt = 0;
+            for (a = 0; a < NC; a = a + 252) begin
+                build(8'h0A, 0, 0, 0, 0);
+                for (k3 = 0; k3 < 252 && a + k3 < NC; k3 = k3 + 1) begin
+                    blk = 1 + k3 / 84; e = blk * 256 + 1 + 3 * (k3 % 84);
+                    ad9 = a + k3;                                     // (SV: bez explicitni sirky se vyraz rozsiri na 32 b)
+                    mo[e]     = ad9[7:0];
+                    mo[e + 1] = {ch[0], ad9[8], lt[a + k3][13:8]};
+                    mo[e + 2] = lt[a + k3][7:0];
+                    mo[blk * 256] = mo[blk * 256] + 1;
+                    lsum = lsum + ({1'b0, ch[0], 9'(a + k3), 5'd0} ^ {2'd0, lt[a + k3][13:0]});
+                    lcnt = lcnt + 1;
+                end
+                for (blk = 1; blk < 4; blk = blk + 1) seal(blk);
+                xfer(1024);
+            end
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+            $display("kalibrace %0d: LUT_CNT %0d (ocek %0d), LUT_SUM %04x (ocek %04x)", ch, rd(60, 2), lcnt, rd(62, 2), lsum);
+            chk(rd(60, 2) == lcnt && rd(62, 2) == lsum, "kalibrace: LUT_CNT/LUT_SUM");
+            chk(rd(122, 2) == (ch ? lcnt : 0), "kalibrace: LUT_CNT_B (bit kanalu polozek)");
+        end endtask
+    task check_lut(input integer ch, input integer bank);
+        integer a, bad;
+        begin bad = 0;
+            for (a = 0; a < NC; a = a + 1)
+                if ((ch ? dut.u_tdcb.lut[bank * NC + a] : dut.u_tdca.lut[bank * NC + a]) !== lt[a]) bad = bad + 1;
+            chk(bad == 0, "kalibrace: tabulka v aktivni bance = vypocet");
+            if (bad) $display("  kanal %0d banka %0d: %0d spatnych polozek", ch, bank, bad);
+        end endtask
+    integer nv0, nv1;
+
+    integer f, k, t;
+    reg [31:0] e0;
+    initial begin
+        if (`TB_MODE == 2) begin
+            // ---- vyrobni tok: A sebere histogram a ceka; STM ho precte, zapise, potvrdi ----
+            for (k = 0; k < 2; k = k + 1) begin
+                wait (k ? dut.cal_wait_b : dut.cal_wait_a);
+                build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+                chk(mi[51][k] == 1'b1, "kalibrace: CAL_WAIT v hlavicce");
+                chk((k ? dut.cal_valid_b : dut.cal_valid_a) == 0, "kalibrace: pred zapisem neplatna");
+                read_hist(k); calc_lut; write_lut(k);
+                build(8'h01, 8'h06, 8'h01, 8'd1 << k, 0); xfer(1024);  // potvrzeni JEN kanalu k -> prepnuti banky na hranici segmentu
+                if (k == 0) chk(dut.cal_valid_b == 0, "kalibrace: potvrzeni A nepotvrdi cekajici B");
+                #(64'd300_000_000);
+                chk((k ? dut.cal_valid_b : dut.cal_valid_a) == 1 && (k ? dut.bank_b : dut.bank_a) == 1, "kalibrace: platna, banka 1");
+                check_lut(k, 1);
+                t0have[k] = 0;                                         // nova tabulka = nova osa TDC
+            end
+            $display("vyrobni kalibrace obou kanalu hotova v %0t ps", $time);
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS (segment 250 us < transakce)
+            #(64'd600_000_000);
+            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1;
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_a >= 4 && nvalid_b >= 4, "po kalibraci platne zaznamy obou kanalu");
+            // ---- rekalibrace JEN A: B meri dal, A po sberu meri se starou bankou ----
+            nv0 = nvalid_a; nv1 = nvalid_b; ninv_a = 0;
+            build(8'h01, 8'h02, 8'h03, 0, 0); xfer(1024);              // p1: bit0 start, bity 2:1 maska = A
+            wait (dut.cal_wait_a);
+            chk(dut.cal_valid_a == 1 && dut.bank_a == 1, "rekalibrace: A ceka se starou platnou bankou");
+            chk(!dut.cal_busy_b && dut.cal_valid_b, "rekalibrace: B se nekalibruje");
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b > nv1 + 4, "rekalibrace: B meri porad");
+            chk(nvalid_a > nv0 + 2, "rekalibrace: A po sberu meri se starou bankou");
+            chk(ninv_a > 0, "rekalibrace: A behem sberu histogramu neplatny");
+            read_hist(0); calc_lut; write_lut(0);
+            build(8'h01, 8'h06, 8'h01, 8'd1, 0); xfer(1024);
+            #(64'd300_000_000);
+            chk(dut.bank_a == 0 && dut.cal_valid_a, "rekalibrace: nova tabulka v bance 0");
+            check_lut(0, 0);
+            t0have[0] = 0;
+            for (f = 0; f < 3; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            $display("ramcu %0d, zaznamu %0d (platnych A %0d B %0d), duplicit %0d, kontrol %0d, max|e| 2pt A %.2e B %.2e",
+                     nfr, nrec_tot, nvalid_a, nvalid_b, dup, nchk, maxe[0], maxe[1]);
+            $display("T0 proti skutecne hrane: max odchylka A %.0f ps, B %.0f ps", t0max[0], t0max[1]);
+            if (errors == 0) $display("PASS: tb_top_v3 (rezim 2)"); else $display("FAIL: tb_top_v3 (%0d chyb)", errors);
+            $finish;
+        end
+        // nabeh + kalibrace obou kanalu (strida se: A, pak B) + prepnuti banky na hranici segmentu
+        wait (dut.cal_valid_a && dut.cal_valid_b);
+        $display("kalibrace hotova v %0t ps (banka A %0d, B %0d)", $time, dut.bank_a, dut.bank_b);
+        chk(dut.bank_a == 1 && dut.bank_b == 1, "aktivni banka po prvni kalibraci = 1");
+        #(64'd300_000_000);
+        if (`TB_MODE == 1) begin
+            // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
+            build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
+            build_ack(nxt); xfer(1024); check_frame(1);
+            build_ack(nxt); xfer(1024); check_frame(1);
+            e0 = nxt;
+            #(64'd5_000_000_000);                                          // 20 segmentu = 40 zaznamu > 16
+            build_ack(nxt); xfer(1024);
+            chk(mi[3][1] == 1'b1, "FLAGS bit1 preteceni");
+            chk(rd(36, 4) > e0, "REC_FIRST skocil za ACK");
+            $display("preteceni: ocekavano %0d, REC_FIRST %0d, REC_HEAD %0d, FLAGS %02h", nxt, rd(36, 4), rd(32, 4), mi[3]);
+            nxt = rd(36, 4); have[0] = 0; have[1] = 0;                   // STM: prerusi souvisly usek
+            check_frame(1);
+            build_ack(nxt); xfer(1024); check_frame(1);
+            build_ack(nxt); xfer(1024); check_frame(1);
+            chk(mi[3][1] == 1'b0, "FLAGS bit1 po ACK zhasne");
+            for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_a >= 4 && nvalid_b >= 4, "po preteceni zase platne zaznamy");
+        end else begin
+            // ---- mereni: TB_NFR ramcu ----
+            // SIM: segment 250 us je kratsi nez transakce (328 us) -> s maskovanim pri CS by kazdy segment prisel o znacky;
+            // maskovani se overuje zvlast nize (FLAGS bit3 / mensi N, kmitocet dal spravne)
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
+            #(64'd600_000_000);                                          // 2 segmenty jeste s maskovanim
+            build_ack(0); xfer(1024);
+            nxt = rd(32, 4) + 1;                                         // zaznamy do teto chvile se neposuzuji
+            for (f = 0; f < `TB_NFR; f = f + 1) begin
+                build_ack(nxt); xfer(1024); check_frame(1);
+                $display("ramec %0d: SEQ %0d REC_FIRST %0d NREC %0d REC_HEAD %0d FLAGS %02h | prevzato %0d, duplicit %0d",
+                         f, rd(4, 4), rd(36, 4), mi[40], rd(32, 4), mi[3], nxt, dup);
+            end
+            chk(nvalid_a >= 8 && nvalid_b >= 8, "pocet platnych zaznamu");
+            chk(nrec_tot >= 3 * `TB_NFR, "prijem postupuje (REC_ACK se posouva)");
+            chk(dup > 0, "prekryv ramcu (ocekavany podle kap. 6.1)");
+            // ---- RX_LEN_ERR: kratsi a delsi transakce se zahodi ----
+            e0 = rd(54, 2);
+            build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1023);                 // SET_CONFIG diag (led) -- nesmi se provest
+            build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1025);
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024); check_frame(1);
+            chk(rd(54, 2) == e0 + 2, "RX_LEN_ERR +2");
+            chk(mi[66][1] == 1'b0, "zkracena/delsi transakce se neprovedla (CFG echo)");
+            // ---- RX_CRC_ERR: vadny blok 0 ----
+            e0 = rd(52, 2);
+            build(8'h01, 8'h05, 8'h03, 0, 0); mo[100] = mo[100] ^ 8'h01; xfer(1024);
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024); check_frame(1);
+            chk(rd(52, 2) == e0 + 1 && mi[66][1] == 1'b0, "RX_CRC_ERR +1, prikaz neproveden");
+            // ---- SET_CONFIG 0x05 (echo) a 0x08 (SEG_LEN 10 ms) ----
+            build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1024);
+            build(8'h01, 8'h08, 8'd10, 0, 0); xfer(1024);
+            build_ack(nxt); xfer(1024); check_frame(1);
+            build_ack(nxt); xfer(1024); check_frame(1);
+            chk(mi[66][1:0] == 2'b11, "CFG echo mask_cs + led");
+            chk(mi[23] == 8'd10, "SEG_LEN_MS = 10");
+            chk(rd(56, 4) == {mseq[23:0] - 24'd2, 8'h01} || mi[56] == 8'h06, "RX_LAST");
+            build(8'h01, 8'h08, 8'd25, 0, 0); xfer(1024);
+            // ---- stranka histogramu A (druh 1), stranka 1 a 2 ----
+            for (t = 0; t < 3; t = t + 1) begin
+                build(8'hA0, 8'd1, t[7:0], 8'd0, 0); xfer(1024);
+                build_ack(nxt); xfer(1024);
+                chk(mi[2] == 8'hA0 && mi[116] == 8'd1 && rd(117, 2) == t, "stranka: TYPE/druh/cislo");
+                chk(rd(119, 2) == ((t < 2) ? 252 : 8), "stranka: pocet polozek");
+                for (k = 0; k < 252; k = k + 1) begin
+                    i = t * 252 + k;
+                    j = (1 + k / 84) * 256 + 2 + 3 * (k % 84);
+                    if (i < 512) chk(rd(j, 3) == dut.u_tdca.hist[i], "stranka: polozka = hist A");
+                    else chk(rd(j, 3) == 0, "stranka: za koncem 0");
+                end
+                for (k = 1; k < 4; k = k + 1) chk(mi[k * 256] == k && mi[k * 256 + 1] == rd(4, 1), "stranka: znacka bloku");
+                build_ack(nxt); xfer(1024);                             // dalsi ramec je zase DATA
+                chk(mi[2] == 8'h80, "po strance zase DATA");
+            end
+            chk(npps >= 3, "1PPS: aspon 3 hrany v ramcich");
+            // ---- maskovani pri CS (SET_CONFIG 0x05 bit0): segmenty pres transakci maji mene znacek, kmitocet spravne ----
+            build(8'h01, 8'h05, 8'h01, 0, 0); xfer(1024);
+            #(64'd600_000_000);
+            e0 = nvalid_a; nmask = 0;
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nmask > 0, "maskovani: segment s mene znackami");
+            chk(nvalid_a > e0, "maskovani: platne zaznamy dal");
+        end
+        $display("ramcu %0d, zaznamu %0d (platnych A %0d B %0d), duplicit %0d, kontrol %0d, max|e| 2pt A %.2e B %.2e, sklon A %.2e B %.2e, 1PPS %0d",
+                 nfr, nrec_tot, nvalid_a, nvalid_b, dup, nchk, maxe[0], maxe[1], maxsl[0], maxsl[1], npps);
+        $display("T0 proti skutecne hrane: max odchylka A %.0f ps, B %.0f ps; preteceni s priznakem %0d", t0max[0], t0max[1], novf);
+        if (errors == 0) $display("PASS: tb_top_v3 (rezim %0d)", `TB_MODE); else $display("FAIL: tb_top_v3 (%0d chyb)", errors);
+        $finish;
+    end
+    initial begin #(64'd80_000_000_000); $display("FAIL: timeout (cal_valid %0d/%0d)", dut.cal_valid_a, dut.cal_valid_b); $finish; end
+endmodule
