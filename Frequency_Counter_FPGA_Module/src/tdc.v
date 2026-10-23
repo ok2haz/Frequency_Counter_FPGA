@@ -252,7 +252,7 @@ endmodule
 //     rise_s   : tataz hrana o takt pozdeji (pro POCITANI; uz po 2 FF, tedy bez metastability)
 //     want     : okno ceka na presny cas pristi hrany
 //     trig_ack : tato hrana (rise_c) spustila presny cas (jen kdyz want)
-//     ts_valid : ~8 taktu po trig_ack: ts_ps = cas teto hrany [T_clk/16384]
+//     ts_valid : ~8 taktu po trig_ack (TSPIPE = 1: o takt pozdeji): ts_ps = cas teto hrany [T_clk/16384]
 //   ts_ps = tick(cyklus spusteni + const) - V[kod]; posun je stejny pro VSECHNY presne casy obou
 //   kanalu, v rozdilech (okno) se kruti. U DUAL=1 je V pro sadu R = T + tau, pro sadu F = w_lo + tau
 //   (cumulativni poradi R pred F), viz tabulka nize -- tedy casy z obou sad jsou na jedne ose.

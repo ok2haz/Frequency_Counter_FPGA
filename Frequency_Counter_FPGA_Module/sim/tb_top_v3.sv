@@ -9,8 +9,12 @@
 //     sklon ST/SX = perioda; kontrolni pocitani (bit4) = 0.
 //   * 1PPS (PSEQ, PTS po 1 ms), stranka histogramu A (= dut.u_tdca.hist), chybna delka / CRC (RX_LEN_ERR, RX_CRC_ERR),
 //     SET_CONFIG 0x08 (SEG_LEN 10 ms).
-// Kanal B -DTB_FB=17.3e6 (run.ps1 topv3): perioda 5,78 taktu -> casuje se kazda hrana a ve FIFO indexu jsou casto DVE
-// rozpracovane znacky (parovani indexu se znackou, v2 tu bralo index nasledujici hrany).
+// Kanal B -DTB_FB=16.100161e6 (run.ps1 topv3): perioda 6,21 taktu -> casuje se kazda hrana a ve FIFO indexu jsou casto DVE
+// rozpracovane znacky (parovani indexu se znackou, v2 tu bralo index nasledujici hrany). Rozestup hran stridave 6 a 7 taktu:
+// pri ts_valid T+10 (TSPIPE) prijde index dalsi hrany pred znackou jen pri 6 -> FIFO hloubky 1 by parovalo STRIDAVE se
+// posunem a bez nej (stale 5-6 taktu = stale posun = ekvivalentni mutant, L-0199). Na segment NENI cely pocet period
+// (16,1 MHz x 250 us = 4025 presne): faze znacek vuci hranici segmentu se posouva ~0,25 taktu za segment, takze test
+// projde i znacku prave v taktu clear (L-0198); kmitocet s celym poctem period by hranici zkousel stale ve stejne fazi.
 // FW 0x0501: v rezimu 0 navic RAW_CAPTURE (512 znacek kanalu A, stranky druhu 3, rozdily = perioda).
 // Rezimy (-DTB_MODE=): 0 = vse vyse (vychozi), 1 = preteceni kruhu (-DSIM_RAW=4: 16 zaznamu, STM chvili necte),
 //   2 = VYROBNI tok kalibrace (bez -DSIM_AUTOCAL): STM cte histogram strankami (druh 1/2, 3 stranky), spocte tabulku,
@@ -87,8 +91,9 @@ module tb_top_v3;
     // ---- "STM": prijem ramce ----
     reg [31:0] nxt = 0, hseq;
     integer nmask = 0, ninv_a = 0, novf = 0;
-    // pokryti: znacka prave v taktu clear (konec freeze = zacatek novych souctu, L-0198). Kanal B -DTB_FB=17.300173e6 nema na
-    // segment cely pocet period -> faze jeho znacek vuci hranici segmentu se posouva ~0,25 taktu za segment.
+    // pokryti: znacka prave v taktu clear (konec freeze = zacatek novych souctu, L-0198). Kanal B (run.ps1 topv3,
+    // -DTB_FB=16.100161e6) nema na segment cely pocet period -> faze jeho znacek vuci hranici segmentu se posouva
+    // ~0,25 taktu za segment.
     integer ncl_a = 0, ncl_b = 0;
     always @(posedge clk100) begin
         if (dut.u_sa.clear && dut.u_sa.pop) ncl_a = ncl_a + 1;
@@ -185,7 +190,10 @@ module tb_top_v3;
                             if (r_sx > 0) begin
                                 sl = real'(r_st) / real'(r_sx) * U; slerr = (sl / P - 1.0); if (slerr < 0) slerr = -slerr;
                                 if (slerr > maxsl[r_ch]) maxsl[r_ch] = slerr;
-                                // mez: 2 x 60 ps (rozptyl znacky modelu TDC vc. INL tabulky) na rozpeti znacek segmentu
+                                // mez: ST/SX je pomerovy odhad, chyba 2 (e_prumer - e0) / rozpeti -> 2 x 100 ps (chyba jedne
+                                // znacky modelu TDC vc. INL tabulky az ~100 ps; T0 proti pravde = rozdil dvou znacek az 181 ps A,
+                                // 159 ps B) na rozpeti znacek segmentu. Puvodnich 2 x 60 ps nestacilo, kdyz B prosel vsechny
+                                // faze TDC (L-0198).
                                 chk(slerr < 2e-6 + 200.0 / (real'(r_n - 1) * P), "ST/SX = perioda");
                             end
                             // dvoubodove ze sousednich segmentu
