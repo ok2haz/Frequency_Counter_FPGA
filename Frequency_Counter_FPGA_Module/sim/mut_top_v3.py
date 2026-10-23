@@ -57,10 +57,12 @@ M = [
      "            if (v2)", 0),
     ('DSP: pricita o takt driv', 'v3_core.v', "            else if (v2) begin sx_d <= sx_d", "            else if (v1b) begin sx_d <= sx_d", 0),
     # FW 0x0505: PSRAM -- cteni bez RWDS (kazdy takt), bez kalibrace latence zapisu, okno bez posunu adresy
-    ('PSRAM: cteni bez RWDS', 'v3_core.v', "                    if (rs[1] ^ rs[0]) begin                  // RWDS",
-     "                    if (1'b1) begin                  // RWDS", 5),
+    ('PSRAM: cteni bez RWDS', 'v3_core.v', "                    end else if (rs[1] ^ rs[0]) begin         // RWDS",
+     "                    end else if (1'b1) begin         // RWDS", 5),
     ('PSRAM: pevna latence zapisu', 'v3_core.v', "    wire [7:0] wait_b = W0 + {5'd0, (cal ? ctry : wsel)};", "    wire [7:0] wait_b = W0;", 5),
     ('PSRAM: okno bez posunu adresy', 'v3_core.v', "wra <= ar2[10:0] * 22'd3072;", "wra <= 22'd0;", 5),
+    # audit 2026-10-23 F-0262: RWDS = 1 behem CA (priznak latence) -> bez zbrojeni je konec priznaku prvni "bajt"
+    ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]

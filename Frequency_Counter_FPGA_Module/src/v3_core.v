@@ -541,7 +541,9 @@ endmodule
 //   clk -> hrana CK je uprostred kazdeho bajtu (zarovnani na stred, 5 ns na obe strany). Prenos ~100 MB/s v datech.
 //   Prikaz/adresa (CA) 6 bajtu, pak cekani WAIT_B bajtovych taktu (latence, viz nize), pak data (davka BURST bajtu).
 //   CTENI se zarovnava podle RWDS: PSRAM ho pri cteni prepina s kazdym bajtem -> bajt se bere, kdyz se vzorek RWDS
-//   zmenil (presna latence pri cteni tedy nevadi). ZAPIS musi trefit latenci PSRAM presne: po zapnuti radic zkusi
+//   zmenil (presna latence pri cteni tedy nevadi). Behem CA a latence drzi PSRAM RWDS jako priznak latence (pevna
+//   dvojita latence = 1), pred prvnim bajtem ho stahne do 0 -> bajty se pocitaji az od prvniho vzorku RWDS = 0.
+//   ZAPIS musi trefit latenci PSRAM presne: po zapnuti radic zkusi
 //   WAIT_B = W0 .. W0+7 (zapis vzoru, cteni, porovnani) a vezme prvni, ktery sedi -> zadna zavislost na tom, jak
 //   presne datasheet pocita latenci od CA. Vysledek: rdy, wsel (index latence), bad (zadna nesedi).
 //   CS# nejvys ~1,7 us na davku (tCSM 4 us = obnova PSRAM): BURST = 128 B.
@@ -596,6 +598,7 @@ module psram_hb3 #(
     reg        cur_we = 1'b0;
     reg [7:0]  nb = 8'd0;             // bajty davky
     reg [1:0]  rs = 2'b00;            // vzorky RWDS (cteni)
+    reg        rarm = 1'b0;           // cteni: RWDS uz byl 0 (dalsi zmena = prvni bajt, ne konec priznaku latence)
     reg [7:0]  dqs = 8'd0;
     // kalibrace: 0 = zapis vzoru, 1 = cteni a porovnani
     reg        cal = 1'b1, cal_rd = 1'b0, cal_ok = 1'b1;
@@ -623,7 +626,7 @@ module psram_hb3 #(
                 if (cal || req) begin
                     cur_we <= cal ? ~cal_rd : we;
                     ca     <= mk_ca(cal ? cal_rd : ~we, cal ? {12'd0, ctry, 7'd0} : addr);
-                    busy <= 1'b1; st <= S_CA; cnt <= 16'd0; nb <= 8'd0;
+                    busy <= 1'b1; st <= S_CA; cnt <= 16'd0; nb <= 8'd0; rarm <= 1'b0;
                     ps_cs_n <= 1'b0; dq_oe <= 1'b1;            // CK az s prvnim bajtem CA (hrana uprostred bajtu)
                 end
             end
@@ -645,7 +648,9 @@ module psram_hb3 #(
                     nb    <= nb + 8'd1;
                     if (nb == BURST - 1) st <= S_END;
                 end else begin
-                    if (rs[1] ^ rs[0]) begin                  // RWDS se zmenil -> novy bajt
+                    if (!rarm) begin
+                        if (rs[0] == 1'b0) rarm <= 1'b1;      // konec priznaku latence (RWDS = 1 behem CA)
+                    end else if (rs[1] ^ rs[0]) begin         // RWDS se zmenil -> novy bajt
                         nb <= nb + 8'd1;
                         if (cal) begin if (dqs != pat) cal_ok <= 1'b0; end
                         else begin rvalid <= 1'b1; rbyte <= dqs; end

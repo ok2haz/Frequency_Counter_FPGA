@@ -637,8 +637,11 @@ endmodule
 //   specifikace HyperBus: CA 6 bajtu na hranach CK (MSB prvni; [47] cteni, [44:16] + [2:0] = adresa 16b slova),
 //   zapis od hrany 6 + WLAT (RWDS = maska, 0 = zapsat), cteni od hrany 6 + RLAT, RWDS se s kazdym bajtem preklopi
 //   (prvni bajt RWDS = 1), vystup TCKD po hrane CK. Pamet 64 kB (adresa se maskuje). PREDPOKLAD, ne datasheet.
+//   Audit 2026-10-23 (F-0262): od CS# = 0 ridi model RWDS = RW_CA (priznak latence; pevna dvojita latence = 1) po celou
+//   CA; pri zapisu ho po CA pusti, pri cteni ho drzi pres latenci a do 0 ho stahne az bajt pred prvnimi daty.
 // ------------------------------------------------------------
-module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20, parameter integer TCKD = 3000) (
+module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20, parameter integer TCKD = 3000,
+                        parameter RW_CA = 1'b1) (
     input wire ck, input wire ck_n, input wire cs_n, input wire rst_n, inout wire [7:0] dq, inout wire rwds
 );
     reg [7:0]  mem [0:65535];
@@ -652,7 +655,7 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
     reg [21:0] a = 22'd0;
     integer    nwr = 0, nrd = 0;
     initial for (k = 0; k < 65536; k = k + 1) mem[k] = 8'h00;
-    always @(negedge cs_n) begin e = 0; end
+    always @(negedge cs_n) begin e = 0; rw_o <= #(TCKD) RW_CA; rw_oe <= #(TCKD) 1'b1; end
     always @(posedge cs_n) begin dq_oe <= #(TCKD) 1'b0; rw_oe <= #(TCKD) 1'b0; end
     always @(ck) if (!cs_n && rst_n && (ck === 1'b0 || ck === 1'b1)) begin
         if (e < 6) begin
@@ -660,9 +663,10 @@ module hb_psram_model #(parameter integer WLAT = 20, parameter integer RLAT = 20
             if (e == 5) begin
                 rd = ca[47];
                 a  = {ca[37:16], ca[2:0], 1'b0};            // bajtova adresa (slovo x 2), maskuje se na 64 kB
-                if (rd) begin rw_o <= #(TCKD) 1'b0; rw_oe <= #(TCKD) 1'b1; end
+                if (!rd) rw_oe <= #(TCKD) 1'b0;           // zapis: RWDS dal ridi radic (maska)
             end
         end else if (rd) begin
+            if (e == 6 + RLAT - 1) rw_o <= #(TCKD) 1'b0;  // bajt pred daty RWDS = 0 (konec priznaku latence)
             if (e >= 6 + RLAT) begin
                 dq_o <= #(TCKD) mem[a[15:0]]; dq_oe <= #(TCKD) 1'b1; rw_o <= #(TCKD) (((e - 6 - RLAT) % 2) == 0);
                 a = a + 22'd1; nrd = nrd + 1;
