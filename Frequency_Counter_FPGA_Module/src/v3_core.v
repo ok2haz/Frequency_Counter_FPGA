@@ -705,11 +705,13 @@ module raw_cap3 #(
     input  wire [1:0]  req_mode,     // FW 0x0505: 0 = 512 do BSRAM, 1 = hluboky do PSRAM, 2 = nacist okno z PSRAM
     input  wire [23:0] req_arg,      // rezim 1: pocet znacek, rezim 2: cislo okna (kvazistaticke)
     input  wire        tv_a, tv_b,   // znacka kanalu (ts_valid & platny kanal)
+    input  wire        gap_a, gap_b, // audit F-0270: kanal ted neznackuje (hold, maska pri CS) -> v zaznamu bude mezera
     input  wire [47:0] ts_a, ts_b,
     output reg  [9:0]  n,            // pocet ulozenych znacek (0..512; kvazistaticke pro 10 MHz)
     output reg  [23:0] dn,           // hluboky zaznam: znacek v PSRAM
     output wire [7:0]  dst,          // bit0 PSRAM pripravena, bit1 kalibrace zapisu selhala, bit2 zaznam bezi, bit3 FIFO
-                                     // preteklo, bit4 nacita se okno, bit5 okno nacteno, bit7 okno s chybou cteni
+                                     // preteklo, bit4 nacita se okno, bit5 okno nacteno, bit6 v zaznamu jsou mezery,
+                                     // bit7 okno s chybou cteni
     output wire [5:0]  dwsel,        // bity 4:0 zvolena latence zapisu PSRAM (psram_hb3 W0 + n), bit5 faze cteni
     output reg  [15:0] dwin,         // posledni (nacitane) okno
     output wire [7:0]  dack,         // bit7 kanal zaznamu, bity 3:0 pocet prijatych prikazu T_RAW (Gray, mod 16)
@@ -744,6 +746,10 @@ module raw_cap3 #(
     wire       p_free = p_rdy & ~p_busy & ~p_req & ~p_wait;
     // ---- hluboky zaznam: FIFO -> serializator po bajtech -> davky 128 B ----
     reg        drun = 1'b0, dfin = 1'b0, dovf = 1'b0;
+    // audit 2026-10-23 (F-0270): znacky pri hold (kalibrace, zmena P) a pri masce CS (vychozi zapnuta, kazda transakce
+    // SPI) v zaznamu chybi bez stopy -> rozdil 2P misto P. dgap = behem zaznamu (rezim 0 nebo 1) kanal aspon chvili
+    // neznackoval.
+    reg        dgap = 1'b0;
     reg [23:0] dreq = 24'd0;
     reg [47:0] fifo [0:511];
     reg [8:0]  fwp = 9'd0, frp = 9'd0;
@@ -767,7 +773,7 @@ module raw_cap3 #(
     reg [9:0]  widx = 10'd0, wlim = 10'd0;
     wire [31:0] wbase = {16'd0, ar2[15:0]} << 9;                                    // prvni znacka okna
     wire [31:0] wrem  = ({8'd0, dn} > wbase) ? ({8'd0, dn} - wbase) : 32'd0;
-    assign dst = {werr, 1'b0, wdone, wl, dovf, drun, p_bad, p_rdy};
+    assign dst = {werr, dgap, wdone, wl, dovf, drun, p_bad, p_rdy};
     wire       tv  = ch ? tv_b : tv_a;
     wire [47:0] ts = ch ? ts_b : ts_a;
     wire       push = drun && !dfin && tv && (fcnt != 10'd512);
@@ -779,11 +785,11 @@ module raw_cap3 #(
         p_req <= 1'b0;
         if (p_busy) p_wait <= 1'b0;
         if (rs[2] ^ rs[1]) begin
-            if (md2 == 2'd0 && !drun && !wl) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; dacc <= dacc + 4'd1; end
+            if (md2 == 2'd0 && !drun && !wl) begin run <= 1'b1; ch <= chs[1]; n <= 10'd0; dacc <= dacc + 4'd1; dgap <= 1'b0; end
             else if (md2 == 2'd1 && drun) begin dfin <= 1'b1; dacc <= dacc + 4'd1; end   // STOP
             else if (md2 == 2'd1 && p_rdy && !wl) begin
                 run <= 1'b0; wdone <= 1'b0; dacc <= dacc + 4'd1;
-                drun <= 1'b1; dfin <= (ar2 == 24'd0); dovf <= 1'b0; ch <= chs[1]; dn <= 24'd0;
+                drun <= 1'b1; dfin <= (ar2 == 24'd0); dovf <= 1'b0; ch <= chs[1]; dn <= 24'd0; dgap <= 1'b0;
                 dreq <= (ar2 > DMAX) ? DMAX : ar2; dwa <= 22'd0;
                 fwp <= 9'd0; frp <= 9'd0; fcnt <= 10'd0; fq_v <= 1'b0; nw_v <= 1'b0; sw_v <= 1'b0; sbi <= 3'd0;
             end else if (md2 == 2'd2 && p_rdy && !drun && !wl) begin
@@ -795,7 +801,7 @@ module raw_cap3 #(
         end else if (run && tv) begin
             n <= n + 10'd1;
             if (n == 10'd511) run <= 1'b0;
-        end
+        end else if ((run || (drun && !dfin)) && (ch ? gap_b : gap_a)) dgap <= 1'b1;
         // hluboky zaznam: zapis do FIFO
         if (drun && !dfin && tv) begin
             if (fcnt == 10'd512) dovf <= 1'b1;

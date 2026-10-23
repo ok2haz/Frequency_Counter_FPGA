@@ -335,7 +335,7 @@ module top_v3 (
     localparam PS_INIT = 15000;   // 150 us (tVCS)
 `endif
     raw_cap3 #(.PS_INIT(PS_INIT)) u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
-        .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b),
+        .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b), .gap_a(~want_a), .gap_b(~want_b),
         .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
         .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q),
         .ps_ck(O_psram_ck[0]), .ps_ck_n(O_psram_ck_n[0]), .ps_cs_n(O_psram_cs_n[0]), .ps_rst_n(O_psram_reset_n[0]),

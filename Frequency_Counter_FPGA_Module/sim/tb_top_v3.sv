@@ -495,6 +495,7 @@ module tb_top_v3;
 `endif
             // audit 2026-10-23 F-0266: bajt 127 = pocet prijatych prikazu T_RAW (Gray) + kanal; vyluka rezimu, STOP
             chk(mi[127] == 8'h00, "RAW: zatim zadny prikaz (bajt 127)");
+            build(8'h01, 8'h05, 8'h01, 0, 0); xfer(1024);              // F-0270: maska pri CS -> v zaznamu mezery
             build(8'h0B, 8'h02, 8'hA0, 8'h86, 8'h01); xfer(1024);   // rezim 1, kanal A, 100000 znacek (10 ms)
             build_ack(0); xfer(1024); build_ack(0); xfer(1024);
             chk(mi[127] == {4'd0, gr(4'd1)} && mi[128][2], "RAW: hluboky start prijat, kanal A, bezi");
@@ -505,12 +506,14 @@ module tb_top_v3;
             build(8'h0B, 8'h02, 8'd0, 8'd0, 8'd0); xfer(1024);      // rezim 1 pri bezicim zaznamu = STOP
             build_ack(0); xfer(1024); build_ack(0); xfer(1024);
             $display("PSRAM: STOP po %0d znackach, stav %02h, bajt 127 %02h", rd(124, 3), mi[128], mi[127]);
-            chk(mi[127] == {4'd0, gr(4'd2)} && !mi[128][2] && rd(124, 3) > 1000 && rd(124, 3) < 100000,
+            chk(mi[127] == {4'd0, gr(4'd2)} && !mi[128][2] && rd(124, 3) > 0 && rd(124, 3) < 100000,
                 "RAW: STOP prijat, zaznam skoncil pred N");
+            chk(mi[128][6], "RAW: maska pri CS behem zaznamu -> priznak mezer");
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
             build(8'h0B, 8'h02, 8'd76, 8'd4, 8'd0); xfer(1024);     // rezim 1, kanal A, 1100 znacek
             #(64'd300_000_000);
             build_ack(0); xfer(1024);
-            chk(mi[127] == {4'd0, gr(4'd3)}, "RAW: druhy hluboky start prijat");
+            chk(mi[127] == {4'd0, gr(4'd3)} && !mi[128][6], "RAW: druhy hluboky start prijat, bez masky zadne mezery");
             $display("PSRAM: hluboky zaznam %0d znacek, stav %02h, latence W0+%0d", rd(124, 3), mi[128], mi[129]);
             chk(rd(124, 3) == 1100 && !mi[128][2] && !mi[128][3], "PSRAM: 1100 znacek, zaznam skoncil, bez preteceni");
             ndeep = 0; dmaxd = 0.0;
