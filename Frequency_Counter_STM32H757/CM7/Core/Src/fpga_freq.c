@@ -814,6 +814,7 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     m->pps_ok  = (m->caps & FPGA_CAP_PPS) ? 1u : 0u;
     m->pps_ts  = m->pps_ok ? rd_le32(p + 40) : 0u;   /* abs 52..55 */
     m->pps_frac = 0u; m->pps_fine = 0u; m->pps_epoch = 0u;   /* v0.37.0: v2 = jen hruby cas */
+    m->presc_log2 = 0u;                                       /* audit F-0275: v2 bez predelicky (struktura se nenuluje) */
     m->pps_seq = m->pps_ok ? p[44] : 0u;              /* abs 56 */
     /* FW >= 0x0425 (caps bit14): diagnostika O4 + hlidac koherence (abs 10/11 lezi v hlavicce, rx[10]/rx[11]) */
     m->diag0_ok = (m->caps & FPGA_CAP_DIAG0) ? 1u : 0u;
