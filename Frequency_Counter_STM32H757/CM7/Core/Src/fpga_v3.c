@@ -33,6 +33,14 @@ uint8_t fpga_v3_range_select(uint8_t cur, double f)
     return cur;
 }
 
+/* audit 2026-10-23 (F-0273): volba ze sondy -- PROBE = 0 znamena f < 16 kHz (hrany /16 za 1 ms), ne "bez odhadu";
+ * drive P zustalo (napr. /16 po 400 MHz) a pod 16 kHz melo okno segmentu jen par hran. Bez signalu tedy P = 1: po
+ * navratu vysokeho kmitoctu je par segmentu neplatnych (kontrolni pocitani), nez automatika P zvedne. */
+uint8_t fpga_v3_range_probe(uint8_t cur, uint16_t probe)
+{
+    return probe ? fpga_v3_range_select(cur, FPGA_V3_PROBE_HZ(probe)) : 0u;
+}
+
 /* v0.37.0 (FW 0x0502): jemny cas 1PPS (IDES8) nebo hruby citac -- viz fpga_v3.h */
 int fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac)
 {

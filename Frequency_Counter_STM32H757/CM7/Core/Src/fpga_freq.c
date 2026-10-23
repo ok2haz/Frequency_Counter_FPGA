@@ -2698,7 +2698,7 @@ static void s3_range_ctl(const fpga_v3_hdr_t *h)
     for (uint8_t ch = 0u; ch < 2u; ch++) {
         const uint8_t cur = (uint8_t)(h->presc[ch] & 0x07u);
         if (h->presc[ch] & FPGA_V3_PRESC_PEND) { s3_pr_cand[ch] = 0xFFu; continue; }
-        uint8_t want = (s3_pr_mode[ch] != 0xFFu) ? s3_pr_mode[ch] : fpga_v3_range_select(cur, FPGA_V3_PROBE_HZ(h->probe[ch]));
+        uint8_t want = (s3_pr_mode[ch] != 0xFFu) ? s3_pr_mode[ch] : fpga_v3_range_probe(cur, h->probe[ch]);
         if (ch == 1u && (h->cfg_echo & 0x18u)) want = 0u;
         if (want == cur) { s3_pr_cand[ch] = 0xFFu; continue; }
         if (s3_pr_cand[ch] != want) { s3_pr_cand[ch] = want; continue; }

@@ -166,6 +166,8 @@ void     fpga_v3_blk_seal(uint8_t *blk);                       /* zapise CRC na 
 int      fpga_v3_pps_fine(const fpga_v3_hdr_t *h, int i, uint32_t *ticks, uint16_t *frac);
 /* v0.38.0: log2 P pro odhad kmitoctu f_hz (<= 0 = beze zmeny) s hysterezi proti aktualnimu cur_log2p */
 uint8_t  fpga_v3_range_select(uint8_t cur_log2p, double f_hz);
+/* audit F-0273: log2 P ze sondy PROBE (hrany /16 za 1 ms); PROBE = 0 (f < 16 kHz nebo bez signalu) -> 0 */
+uint8_t  fpga_v3_range_probe(uint8_t cur_log2p, uint16_t probe);
 uint8_t  fpga_v3_blk_ok(const uint8_t *frame);                 /* bit k = CRC bloku k sedi */
 void     fpga_v3_rec_pack(uint8_t *dst, const fpga_v3_rec_t *r);    /* 31 B */
 void     fpga_v3_rec_unpack(fpga_v3_rec_t *r, const uint8_t *src);

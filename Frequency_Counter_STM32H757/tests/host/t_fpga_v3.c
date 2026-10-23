@@ -175,6 +175,10 @@ int main(void)
               fpga_v3_range_select(0u, 400e6));
         CHECK(fpga_v3_range_select(2u, 60e6) == 2u && fpga_v3_range_select(1u, 60e6) == 1u, "rozsah: hystereze 60 MHz drzi P 2 i 4");
         CHECK(fpga_v3_range_select(3u, 0.0) == 3u, "rozsah: bez odhadu beze zmeny");
+        /* audit F-0273: sonda 0 = pod 16 kHz -> P = 1 (driv zustalo napr. /16); sonda 12500 = 200 MHz -> /8 */
+        CHECK(fpga_v3_range_probe(4u, 0u) == 0u && fpga_v3_range_probe(0u, 12500u) == 3u && fpga_v3_range_probe(3u, 1u) == 0u,
+              "rozsah ze sondy: 0 -> %u, 12500 -> %u, 1 -> %u", fpga_v3_range_probe(4u, 0u), fpga_v3_range_probe(0u, 12500u),
+              fpga_v3_range_probe(3u, 1u));
     }
 
     /* (12) v0.38.0: emulator s predelickou jako RTL. B 143,3 MHz: SET_CONFIG 0x07 B = 3 (/8), pozdeji 4 (/16); okna B maji
