@@ -129,6 +129,10 @@ module app_v3 #(
     reg [13:0] lut_cnt_b = 14'd0;            // polozky s bitem kanalu B (LUT_SUM chybu kanalu u cele tabulky nevidi)
     reg [15:0] lut_sum = 16'd0;
     reg [2:0]  lw_dly = 3'b000, lc_dly = 3'b000;
+    // audit 2026-10-23 (F-0265): T_RAW a kalibrace 0x02 -- prepinaci bit az 3 takty po parametrech (jako lw_dly).
+    // V cilove domene je prepinac 3 FF a parametry 2 FF; pri zmene v tomtez taktu staci metastabilita o takt jinak
+    // a cil prevezme stary rezim / kanal / masku.
+    reg [2:0]  raw_dly = 3'b000, cal_dly = 3'b000;
     reg        page_req = 1'b0;
     reg [7:0]  page_kind = 8'd0;
     reg [15:0] page_no = 16'd0;
@@ -280,6 +284,10 @@ module app_v3 #(
         lc_dly <= {lc_dly[1:0], 1'b0};
         if (lw_dly[2]) lw_tgl        <= ~lw_tgl;
         if (lc_dly[2]) lw_commit_tgl <= ~lw_commit_tgl;
+        raw_dly <= {raw_dly[1:0], 1'b0};
+        cal_dly <= {cal_dly[1:0], 1'b0};
+        if (raw_dly[2]) raw_tgl <= ~raw_tgl;
+        if (cal_dly[2]) cal_tgl <= ~cal_tgl;
 
         // kruh: novy par zaznamu; preteceni posune REC_ACK (ne behem skladani -- snimek a_first uz plati)
         rt_s <= {rt_s[1:0], rec_tgl};
@@ -332,7 +340,7 @@ module app_v3 #(
                             end
                         end
                         T_SETCFG: case (rx_p0)
-                            8'h02: if (rx_p1[0]) begin cal_mask <= rx_p1[2:1]; cal_tgl <= ~cal_tgl; end
+                            8'h02: if (rx_p1[0]) begin cal_mask <= rx_p1[2:1]; cal_dly <= 3'b001; end
                             8'h04: ref_sel <= rx_p1[0];
                             8'h05: begin mask_cs_en <= rx_p1[0]; led_hb_en <= rx_p1[1]; end
                             8'h06: begin
@@ -360,7 +368,7 @@ module app_v3 #(
                         end
                         T_PAGE: begin page_req <= 1'b1; page_kind <= rx_p0; page_no <= {rx_p2, rx_p1}; end
                         T_RAW:  begin raw_ch <= rx_p0[0]; raw_mode <= (rx_p0[2:1] == 2'd3) ? 2'd0 : rx_p0[2:1];
-                                      raw_arg <= {rx_p3, rx_p2, rx_p1}; raw_tgl <= ~raw_tgl; end
+                                      raw_arg <= {rx_p3, rx_p2, rx_p1}; raw_dly <= 3'b001; end
                         T_START, T_STOP: ;
                         default: cmd_done <= 1'b0;                                      // neznamy TYPE = neprovedeno
                     endcase
