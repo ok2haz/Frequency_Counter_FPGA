@@ -3026,7 +3026,6 @@ int fpga_freq_v3_raw_deep(uint8_t ch, uint32_t n, uint32_t timeout_ms, fpga_raw_
         if (!ok || (h.deep_st & FPGA_V3_DS_WERR)) return -1;
         const uint32_t cw = (st->cnt - w * 512u > 512u) ? 512u : st->cnt - w * 512u;
         if (s3_raw_pages(cw, clk, cb, ctx, st, &ds, &first, &prev) < 0) return -1;
-        watchdog_kick_fpga();
     }
     const double up = fpga_v3_unit_ps(clk);
     st->d_mean = fpga_v3_stat_mean(&ds); st->d_sd = fpga_v3_stat_sd(&ds); st->d_min = ds.min; st->d_max = ds.max;
