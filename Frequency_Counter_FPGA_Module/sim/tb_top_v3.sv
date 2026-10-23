@@ -478,7 +478,7 @@ module tb_top_v3;
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
             build_ack(0); xfer(1024);
             chk(mi[128][0] && !mi[128][1], "PSRAM: pripravena, kalibrace zapisu prosla");
-            chk(mi[129][2:0] == 3'd4, "PSRAM: nalezena latence zapisu modelu (W0 + 4 = 20)");
+            chk(mi[129][4:0] == 5'd16, "PSRAM: nalezena latence zapisu modelu (W0 + 16 = 20)");
             build(8'h0B, 8'h02, 8'd76, 8'd4, 8'd0); xfer(1024);     // rezim 1, kanal A, 1100 znacek
             #(64'd300_000_000);
             build_ack(0); xfer(1024);

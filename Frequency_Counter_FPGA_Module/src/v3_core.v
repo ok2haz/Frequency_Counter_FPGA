@@ -544,8 +544,11 @@ endmodule
 //   zmenil (presna latence pri cteni tedy nevadi). Behem CA a latence drzi PSRAM RWDS jako priznak latence (pevna
 //   dvojita latence = 1), pred prvnim bajtem ho stahne do 0 -> bajty se pocitaji az od prvniho vzorku RWDS = 0.
 //   ZAPIS musi trefit latenci PSRAM presne: po zapnuti radic zkusi
-//   WAIT_B = W0 .. W0+7 (zapis vzoru, cteni, porovnani) a vezme prvni, ktery sedi -> zadna zavislost na tom, jak
+//   WAIT_B = W0 .. W0+31 (zapis vzoru, cteni, porovnani) a vezme prvni, ktery sedi -> zadna zavislost na tom, jak
 //   presne datasheet pocita latenci od CA. Vysledek: rdy, wsel (index latence), bad (zadna nesedi).
+//   Audit 2026-10-23 (F-0263): latence je v celych taktech CK (2 bajty), sedi tedy jen kazdy druhy WAIT_B; puvodnich
+//   8 pokusu (16..23) pokrylo jen 4 latence a vychozi pevna dvojita latence (~22 / 26 bajtu) mohla vyjit mimo.
+//   4..35 pokryje latenci 3..7 taktu jednoduchou i dvojitou.
 //   CS# nejvys ~1,7 us na davku (tCSM 4 us = obnova PSRAM): BURST = 128 B.
 // Rozlozeni: piny PSRAM jsou vyhrazene (cip v pouzdre), radic je ~150 bunek; datova cesta (FIFO zapisu, okno RAW)
 //   v BSRAM. Jedina cesta mezi clk a vyvody je registr -> pin; CK z FF na sestupne hrane.
@@ -555,7 +558,7 @@ endmodule
 // ------------------------------------------------------------
 module psram_hb3 #(
     parameter INIT_CYC = 15000,       // cekani po resetu PSRAM [takty clk] (tVCS 150 us); simulace kratsi
-    parameter W0       = 16           // nejkratsi zkousena latence zapisu [bajtove takty od konce CA]
+    parameter W0       = 4            // nejkratsi zkousena latence zapisu [bajtove takty od konce CA]
 )(
     input  wire        clk,
     // uzivatel (domena clk): davka BURST bajtu na adresu (bajtova, nasobek BURST)
@@ -569,7 +572,7 @@ module psram_hb3 #(
     output reg         busy,
     output reg         rdy,           // inicializace a kalibrace hotova
     output reg         bad,           // zadna latence zapisu nesedi
-    output reg  [2:0]  wsel,          // zvolena latence zapisu (W0 + wsel)
+    output reg  [4:0]  wsel,          // zvolena latence zapisu (W0 + wsel)
     // PSRAM (cip 0)
     output reg         ps_ck,
     output wire        ps_ck_n,
@@ -586,7 +589,7 @@ module psram_hb3 #(
     assign ps_rwds = rw_oe ? rw_o : 1'bz;
     assign ps_ck_n = ~ps_ck;
     initial begin ps_ck = 1'b0; ps_cs_n = 1'b1; ps_rst_n = 1'b0; rvalid = 1'b0; rbyte = 8'd0;
-                  busy = 1'b1; rdy = 1'b0; bad = 1'b0; wsel = 3'd0; end
+                  busy = 1'b1; rdy = 1'b0; bad = 1'b0; wsel = 5'd0; end
     // CK: bezi jen behem transakce (ck_en), preklapi na sestupne hrane clk
     reg ck_en = 1'b0;
     always @(negedge clk) ps_ck <= ck_en ? ~ps_ck : 1'b0;
@@ -602,9 +605,9 @@ module psram_hb3 #(
     reg [7:0]  dqs = 8'd0;
     // kalibrace: 0 = zapis vzoru, 1 = cteni a porovnani
     reg        cal = 1'b1, cal_rd = 1'b0, cal_ok = 1'b1;
-    reg [2:0]  ctry = 3'd0;
-    wire [7:0] pat = {nb[6:0], 1'b1} ^ {ctry, 5'h15};   // vzor zavisly na pokusu (stary vzor neprojde)
-    wire [7:0] wait_b = W0 + {5'd0, (cal ? ctry : wsel)};
+    reg [4:0]  ctry = 5'd0;
+    wire [7:0] pat = {nb[6:0], 1'b1} ^ {ctry, 3'h5};    // vzor zavisly na pokusu (stary vzor neprojde)
+    wire [7:0] wait_b = W0 + {3'd0, (cal ? ctry : wsel)};
     assign wtake = (st == S_DATA) && cur_we && !cal;
     // CA (HyperBus): [47] R/W# (1 cteni), [46] adresni prostor (0 pamet), [45] linearni davka, [44:16] horni adresa
     // (slova 16 b: A[21:1] -> radek/sloupec), [2:0] dolni sloupec
@@ -625,7 +628,7 @@ module psram_hb3 #(
                 busy <= cal;
                 if (cal || req) begin
                     cur_we <= cal ? ~cal_rd : we;
-                    ca     <= mk_ca(cal ? cal_rd : ~we, cal ? {12'd0, ctry, 7'd0} : addr);
+                    ca     <= mk_ca(cal ? cal_rd : ~we, cal ? {10'd0, ctry, 7'd0} : addr);
                     busy <= 1'b1; st <= S_CA; cnt <= 16'd0; nb <= 8'd0; rarm <= 1'b0;
                     ps_cs_n <= 1'b0; dq_oe <= 1'b1;            // CK az s prvnim bajtem CA (hrana uprostred bajtu)
                 end
@@ -656,7 +659,7 @@ module psram_hb3 #(
                         else begin rvalid <= 1'b1; rbyte <= dqs; end
                         if (nb == BURST - 1) st <= S_END;
                     end
-                    if (cnt == 16'd600) begin cal_ok <= 1'b0; st <= S_END; end   // PSRAM neodpovida
+                    if (cnt == 16'd300) begin cal_ok <= 1'b0; st <= S_END; end   // PSRAM neodpovida (CS# < tCSM 4 us)
                 end
             end
             S_END: begin
@@ -667,8 +670,8 @@ module psram_hb3 #(
                     else begin
                         cal_rd <= 1'b0;
                         if (cal_ok) begin cal <= 1'b0; rdy <= 1'b1; wsel <= ctry; busy <= 1'b0; end
-                        else if (ctry == 3'd7) begin cal <= 1'b0; bad <= 1'b1; busy <= 1'b0; end
-                        else begin ctry <= ctry + 3'd1; cal_ok <= 1'b1; end
+                        else if (ctry == 5'd31) begin cal <= 1'b0; bad <= 1'b1; busy <= 1'b0; end
+                        else begin ctry <= ctry + 5'd1; cal_ok <= 1'b1; end
                     end
                 end else busy <= 1'b0;
             end
@@ -695,7 +698,7 @@ module raw_cap3 #(
     output reg  [23:0] dn,           // hluboky zaznam: znacek v PSRAM
     output wire [7:0]  dst,          // bit0 PSRAM pripravena, bit1 kalibrace zapisu selhala, bit2 zaznam bezi, bit3 FIFO
                                      // preteklo, bit4 nacita se okno, bit5 okno nacteno
-    output wire [2:0]  dwsel,        // zvolena latence zapisu PSRAM (psram_hb3 W0 + dwsel)
+    output wire [4:0]  dwsel,        // zvolena latence zapisu PSRAM (psram_hb3 W0 + dwsel)
     output reg  [15:0] dwin,         // posledni (nacitane) okno
     input  wire        rclk,
     input  wire [8:0]  rk,

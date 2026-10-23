@@ -325,7 +325,7 @@ module top_v3 (
     // RAW_CAPTURE
     wire raw_tgl, raw_ch;  wire [8:0] raw_k;  wire [47:0] raw_q;  wire [9:0] raw_n;
     // FW 0x0505: hluboky RAW zaznam do PSRAM (rezim 1) a cteni po oknech 512 znacek (rezim 2)
-    wire [1:0]  raw_mode;  wire [23:0] raw_arg, raw_dn;  wire [7:0] raw_dst;  wire [2:0] raw_wsel;  wire [15:0] raw_win;
+    wire [1:0]  raw_mode;  wire [23:0] raw_arg, raw_dn;  wire [7:0] raw_dst;  wire [4:0] raw_wsel;  wire [15:0] raw_win;
 `ifdef SIM_TOP
     localparam PS_INIT = 2000;
 `else

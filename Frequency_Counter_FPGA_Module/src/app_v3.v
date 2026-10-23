@@ -72,7 +72,7 @@ module app_v3 #(
     output reg  [23:0] raw_arg,               // p1..p3: pocet znacek / cislo okna
     input  wire [23:0] raw_dn,
     input  wire [7:0]  raw_dst,
-    input  wire [2:0]  raw_wsel,
+    input  wire [4:0]  raw_wsel,
     input  wire [15:0] raw_win,
     output reg         lw_tgl,
     output reg  [9:0]  lw_a,
@@ -233,7 +233,7 @@ module app_v3 #(
             8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
             8'd119: hb = a_page ? a_pcnt[7:0] : 8'd0;  8'd120: hb = a_page ? a_pcnt[15:8] : 8'd0;
             8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = 8'd0;
-            8'd128: hb = raw_dst;       8'd129: hb = {5'd0, raw_wsel};
+            8'd128: hb = raw_dst;       8'd129: hb = {3'd0, raw_wsel};
             8'd130: hb = raw_win[7:0];  8'd131: hb = raw_win[15:8];
             8'd122: hb = lut_cnt_b[7:0];  8'd123: hb = {2'd0, lut_cnt_b[13:8]};
             default: hb = 8'd0;

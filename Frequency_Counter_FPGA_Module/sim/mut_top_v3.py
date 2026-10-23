@@ -59,7 +59,7 @@ M = [
     # FW 0x0505: PSRAM -- cteni bez RWDS (kazdy takt), bez kalibrace latence zapisu, okno bez posunu adresy
     ('PSRAM: cteni bez RWDS', 'v3_core.v', "                    end else if (rs[1] ^ rs[0]) begin         // RWDS",
      "                    end else if (1'b1) begin         // RWDS", 5),
-    ('PSRAM: pevna latence zapisu', 'v3_core.v', "    wire [7:0] wait_b = W0 + {5'd0, (cal ? ctry : wsel)};", "    wire [7:0] wait_b = W0;", 5),
+    ('PSRAM: pevna latence zapisu', 'v3_core.v', "    wire [7:0] wait_b = W0 + {3'd0, (cal ? ctry : wsel)};", "    wire [7:0] wait_b = W0 + {3'd0, wsel};", 5),
     ('PSRAM: okno bez posunu adresy', 'v3_core.v', "wra <= ar2[10:0] * 22'd3072;", "wra <= 22'd0;", 5),
     # audit 2026-10-23 F-0262: RWDS = 1 behem CA (priznak latence) -> bez zbrojeni je konec priznaku prvni "bajt"
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
