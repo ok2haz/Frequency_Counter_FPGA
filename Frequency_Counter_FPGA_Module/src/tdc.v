@@ -580,7 +580,9 @@ module tdc_chan #(
     reg           hnz  = 1'b0, hgt = 1'b0;
     reg           dg_nz = 1'b0, dg_pk = 1'b0, dg_ov = 1'b0;
     reg           clr_d = 1'b0;
-    wire [HW+1:0] xsh  = xv >> (CAL_LOG2 - 13);        // 0..16384
+    // 2026-10-22 (L-0194): pri CAL_LOG2 < 13 (simulace celeho topu, SIM_TOP: 12) byl posun ZAPORNY -> Verilog ho bere jako
+    // cislo bez znamenka -> xsh = 0 a tabulka bez jemneho casu (znacky jen na takt). Syntezy se netyka (AUTOCAL = 0).
+    wire [HW+1:0] xsh  = (CAL_LOG2 >= 13) ? (xv >> (CAL_LOG2 - 13)) : (xv << (13 - CAL_LOG2));   // 0..16384
     // sada R (adresy bez horniho bitu u DUAL, vsechny u DUAL=0) dostava +T = bit 14
     wire          r_entry = (DUAL != 0) ? ~scan_k[AW-1] : 1'b1;
     always @(posedge clk) begin
