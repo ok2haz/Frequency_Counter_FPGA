@@ -11,6 +11,12 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.35.0 (2026-10-22) = PROTOKOL v3 v ovladaci (docs/PROTOKOL_V3.md kap. 10, kroky 4c/6/7): detekce verze FPGA prvni
+ * transakci 1024 B (v2 dal beze zmeny, v3 = FW 0x0500): ACK + prijem zaznamu (fpga_v3_link_take: prekryv ramcu, mezera,
+ * reset FPGA), okna ze segmentu -> fpga_meas_t (kanal a hradlo voli STM, druhy kanal = sekundarni slot, fazovy zaznam
+ * z teziste prvniho segmentu), ztrata signalu v STM; kalibrace TDC v3 (stranky histogramu, LUT_WRITE davkou, LUT_CNT_B,
+ * potvrzeni s maskou kanalu); emulator `fpgasim v3 on [Hz_A] [Hz_B]`; UART `fpga v3`; SPI2 DMA regen-safe (fpga_spi_dma.c,
+ * DMA1 Stream0/1, zapina se `spi dma on`, vychozi vypnuto). Nove .c: fpga_spi_dma.c -> Close->Open Project. IPC v29. */
 /* v0.34.1 (2026-10-22) = fpga_v3 segmenty -> okno i pri NIZKEM kmitoctu (perioda > L = 25 ms, segmenty N = 0): okno se
  * prodlouzi do prvni hrany po K segmentech (reciprocni citac), ztrata signalu = mezera bez hrany > 3 ocekavane periody, nejvys
  * 2,5 s (jako v2; docs/PROTOKOL_V3.md kap. 7). Drive kazdy prazdny segment okno zahodil -> pod ~40 Hz zadna okna.
@@ -269,8 +275,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 34
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.34.1"
+#define FW_VERSION_MINOR 35
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.35.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

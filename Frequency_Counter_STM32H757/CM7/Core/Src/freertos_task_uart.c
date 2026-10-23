@@ -16,6 +16,7 @@
 #include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
 #include "fpga_tdccal.h"   /* FW 0x0427: stav kalibrace TDC v STM (status) */
 #include "fpga_v3.h"       /* protokol v3: UART `fpga v3 test` */
+#include "fpga_spi_dma.h"  /* krok 7: UART `spi dma` (stav) */
 #include <string.h>
 #include <stdbool.h>
 
@@ -2485,6 +2486,24 @@ void UartTask_run(void *argument)
 					         (long)d.x_ps, (unsigned)d.xdiv, (unsigned long)d.n_b, (unsigned long)(d.xm_b >> 32), (unsigned long)d.xm_b);
 				  }
 			  }
+			  else if (strcmp(RxBuffer, "fpga v3") == 0) {
+				  /* 2026-10-22 (protokol v3, krok 4c): stav vetve v3 ovladace -- verze FPGA, prijem zaznamu (prekryv = duplicity,
+				   * mezery, resync), okna, posledni hlavicka. */
+				  fpga_v3_info_t vi;
+				  fpga_freq_v3_info(&vi);
+				  printf("FPGA protokol: v%u%s (0 = nezjisteno)\n", (unsigned)vi.proto, vi.sim ? " EMULATOR" : "");
+				  printf("  ramcu %lu, zaznamu %lu, duplicit %lu, mezer %lu (ztraceno %lu), resync %lu, stranek %lu\n",
+				         (unsigned long)vi.frames, (unsigned long)vi.recs, (unsigned long)vi.dups, (unsigned long)vi.gaps,
+				         (unsigned long)vi.gap_recs, (unsigned long)vi.resync, (unsigned long)vi.pages);
+				  printf("  oken %lu (zahozeno z fronty %lu), kanal %c, K %lu segmentu po %lu ms, REC_ACK %lu\n",
+				         (unsigned long)vi.wins, (unsigned long)vi.qdrop, vi.chan ? 'B' : 'A', (unsigned long)vi.k,
+				         (unsigned long)vi.seg_ms, (unsigned long)vi.expect);
+				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
+				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
+				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
+				  printf("  TDC A 0x%02X B 0x%02X (bit0 platna, bit2 sber, bit4 banka), ceka na tabulku 0x%X\n",
+				         (unsigned)vi.tdc[0], (unsigned)vi.tdc[1], (unsigned)vi.cal_wait);
+			  }
 			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
 				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->
 				   * parser -> okna, vadny blok, preteceni kruhu, rozbaleni T0. Bezi v UartTasku (nehlidany), trva desitky ms. */
@@ -2816,7 +2835,28 @@ void UartTask_run(void *argument)
 				   *   fpgasim on [Hz] [noise_ppb] [drift_ppb/h]
 				   *   fpgasim fault none|lost|crc|div16|phase|gap       */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
-				  if (strncmp(a, "on", 2) == 0) {
+				  if (strncmp(a, "v3", 2) == 0) {
+					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B]`, `fpgasim v3 off` */
+					  const char *p = a + 2;
+					  while (*p == ' ') p++;
+					  if (strncmp(p, "on", 2) == 0) {
+						  double ha = 0.0, hbz = 0.0;
+						  p += 2; while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (ha < 1.0e9) ha = ha * 10.0 + (*p - '0'); p++; }
+						  while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (hbz < 1.0e9) hbz = hbz * 10.0 + (*p - '0'); p++; }
+						  if (ha < 1.0) ha = 10000000.0;
+						  if (ha > 40.0e6) ha = 40.0e6;
+						  if (hbz > 40.0e6) hbz = 40.0e6;
+						  fpga_sim_v3_set(1, ha, hbz);
+						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
+						         (unsigned long)ha, (unsigned long)hbz);
+						  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
+					  } else {
+						  fpga_sim_v3_set(0, 0.0, 0.0);
+						  printf("FPGASIM v3: vypnuto (zpet na skutecne SPI, verze FPGA se zjisti znovu)\n");
+					  }
+				  } else if (strncmp(a, "on", 2) == 0) {
 					  /* Rucni parsovani (zadny sscanf — nano.specs). */
 					  /* 🔴 Vsechny tri hodnoty maji HORNI mez (audit F-0075). Drive se
 					   * kontrolovala jen dolni, takze `fpgasim on 99999999999999999999`
@@ -2853,11 +2893,11 @@ void UartTask_run(void *argument)
 				  } else {
 					  if (fpga_sim_active()) {
 						  char hb[32]; fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
-						  printf("FPGASIM: AKTIVNI, %s\n", hb);
+						  printf("FPGASIM: AKTIVNI%s, %s\n", fpga_sim_v3_active() ? " (v3, ramce 1024 B)" : " (v2)", hb);
 					  } else {
 						  printf("FPGASIM: vypnuto\n");
 					  }
-					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap>\n");
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap> | v3 on [Hz_A] [Hz_B] | v3 off\n");
 				  }
 			  }
 			  /* 🔴 `rpipe [0|1|2]` — zpozdeni vzorkovani CTENYCH dat z SDRAM za CAS latenci,
@@ -3019,6 +3059,19 @@ void UartTask_run(void *argument)
 			  else if (strncmp(RxBuffer, "spi", 3) == 0) {
 				  const char *p = RxBuffer + 3;
 				  while (*p == ' ') p++;
+				  if (strncmp(p, "dma", 3) == 0) {
+					  /* 2026-10-22 (protokol v3, krok 7): datova faze SPI2 pres DMA za behu -- `spi dma on|off`, `spi dma` = stav.
+					   * Vychozi vypnuto (overeni na desce: zadani 2026-10-20_CRC_DMA_zadani_CLI.md testy D3..D8). */
+					  const char *q = p + 3;
+					  while (*q == ' ') q++;
+					  int st = (strncmp(q, "on", 2) == 0) ? fpga_freq_spi_dma(1) : (strncmp(q, "off", 3) == 0) ? fpga_freq_spi_dma(0) : fpga_freq_spi_dma(-1);
+					  fpga_spi_dma_stats_t ds;
+					  fpga_spi_dma_stats(&ds);
+					  printf("SPI2 DMA: %s (zapnuto %u, ready %u, vypnuto po chybach %u) | ok %lu, chyba startu %lu, timeout %lu, chyba DMA %lu, odmitnuto %lu, cyklu posl. %lu max %lu\n",
+					         st ? "POUZIVA SE" : "nepouziva se", (unsigned)fpga_spi_dma_enabled(), (unsigned)ds.ready, (unsigned)ds.disabled, (unsigned long)ds.ok,
+					         (unsigned long)ds.start_err, (unsigned long)ds.timeout, (unsigned long)ds.dma_err, (unsigned long)ds.rejected,
+					         (unsigned long)ds.cyc_last, (unsigned long)ds.cyc_max);
+				  } else {
 				  {   /* 2026-10-22: rychlost vystupu pinu (zkouska SCK 25 MHz, docs/PROTOKOL_V3.md kap. 2) */
 				      static const char *const SPD[4] = { "LOW", "MEDIUM", "HIGH", "VERY_HIGH" };
 				      uint8_t ps = 0u, pm = 0u; fpga_freq_spi_pin_speed(&ps, &pm);
@@ -3036,7 +3089,8 @@ void UartTask_run(void *argument)
 					  printf("SPI2: kernel %lu Hz, SCK %lu Hz, CRC err %lu | stupne:", (unsigned long)kz,
 					         (unsigned long)fpga_freq_sck_hz(), (unsigned long)fpga_freq_crc_count());
 					  for (uint32_t i = 0; i < 6u; i++) printf(" %lu", (unsigned long)fpga_freq_sck_stage(i, NULL));
-					  printf(" Hz (pouziti: spi <MHz> = nejvyssi stupen <= cil, max 40)\n");
+					  printf(" Hz (pouziti: spi <MHz> = nejvyssi stupen <= cil, max 40; spi dma on|off)\n");
+				  }
 				  }
 			  }
 			  /* tap <idx> — injektor doteku pro diagnostiku (F-0140). Zada stisk

@@ -13,10 +13,11 @@
 #include "fpga_tdccal.h" /* FW 0x0427: kalibracni tabulka TDC z histogramu (vypocet v STM) */
 #include "watchdog.h"    /* watchdog_kick_fpga — behem kalibrace TDC (~0,6 s) */
 #include "fpga_crc.h"    /* optimalizace 6: kontrola CRC prijateho ramce (SW tabulka, volitelne HW jednotka FPGA_CRC_USE_HW) */
+#include "fpga_v3.h"     /* protokol v3 (krok 4c): ramec 1024 B, prijem zaznamu, okna, emulator */
 /* Optimalizace 6: datova faze SPI pres DMA. 0 = blokujici HAL_SPI_TransmitReceive jako dosud. 1 az po konfiguraci CubeMX
  * (DMA streamy SPI2, NVIC, sekce FPGA_DMA_SECTION, callbacky) -- 2026-10-20_CRC_DMA_zadani_CLI.md. */
 #ifndef FPGA_SPI_USE_DMA
-#define FPGA_SPI_USE_DMA 0
+#define FPGA_SPI_USE_DMA 1   /* 2026-10-22 (krok 7): prelozeno; DMA se pouzije az po `spi dma on` (fpga_spi_dma_enable) */
 #endif
 #if FPGA_SPI_USE_DMA
 #include "fpga_spi_dma.h"
@@ -125,6 +126,8 @@ static fpga_meas_t s_last;                 /* posledni naparsovany DATA ramec (i
 static uint8_t  s_last_seen = 0;           /* 1 = aspon jeden DATA ramec dorazil */
 static fpga_meas_t s_frame;                /* posledni platny DATA ramec VCETNE odmitnutych mereni (jen diagnostika) */
 static uint8_t  s_frame_seen = 0;
+static uint8_t  s_proto  = 0u;             /* protokol v3 (krok 4c): 0 = verze FPGA nezjistena, 2 = v2 (128 B), 3 = v3 (1024 B) */
+static uint8_t  s_sim_v3 = 0u;             /* fpgasim v3: zdroj ramcu = emulator FPGA v3 (fpga_v3_emu) */
 
 /* === Little-endian cteni === */
 static uint64_t rd_le64(const uint8_t *p)
@@ -274,6 +277,7 @@ void fpga_freq_restart(void)
 {
     if (!g_init_ok) return;
     s_cfg_sent_chan = 0xFFu; s_cfg_sent_win = 0xFFu;   /* ~3 s bez linku: FPGA mohla restartovat -> konfiguraci poslat znovu */
+    if (!s_sim_v3) s_proto = 0u;                         /* protokol v3: verzi FPGA zjistit znovu (mohla byt nahrana jina) */
     uint8_t tx[FR_LEN], rx[FR_LEN];
     build_frame(TYPE_START, 0, NULL, 0, tx);
     xfer(tx, rx);
@@ -327,7 +331,7 @@ void fpga_freq_init(void)
     if (s_spi_mtx == NULL) s_spi_mtx = osMutexNew(NULL);   /* serializace xfer() */
     fpga_crc_init();                                      /* optimalizace 6: SW tabulka; HW jednotka jen s FPGA_CRC_USE_HW */
 #if FPGA_SPI_USE_DMA
-    (void)fpga_spi_dma_init(&hspi2);                      /* false = DMA nepouzitelne -> blokujici prenos (stav v fpga_spi_dma_stats) */
+    /* krok 7: HW (streamy, NVIC) az pri prvnim `spi dma on` -- vychozi start je beze zmeny */
 #endif
 
     /* audit 2026-10-20 (E1): fazovy zaznam -- selftest neblokuje SPI (jen hlaseni), stav se vynuluje */
@@ -592,7 +596,8 @@ static void sim_produce(uint8_t *rx)
 void fpga_sim_set(int on, double hz, float noise_ppb, float drift_ppb_h)
 {
     s_sim_on    = on ? 1u : 0u;
-    if (!on) { s_sim_hz = 0.0; return; }
+    s_sim_v3    = 0u;                               /* emulator v2 (128 B); v3 = fpga_sim_v3_set */
+    if (!on) { s_sim_hz = 0.0; s_proto = 0u; return; }
     if (hz < 1.0) hz = 10000000.0;                  /* default 10 MHz */
     s_sim_hz    = hz;
     s_sim_noise = (noise_ppb < 0.0f) ? 0.0f : noise_ppb;
@@ -608,7 +613,8 @@ void fpga_sim_set(int on, double hz, float noise_ppb, float drift_ppb_h)
 }
 
 int    fpga_sim_active(void) { return s_sim_on ? 1 : 0; }
-double fpga_sim_hz(void)     { return s_sim_on ? s_sim_hz : 0.0; }
+static double s3_emu_hz;                   /* emulator v3 (definice nize) */
+double fpga_sim_hz(void)     { return s_sim_on ? (s_sim_v3 ? s3_emu_hz : s_sim_hz) : 0.0; }
 
 int fpga_sim_fault(const char *what)
 {
@@ -911,11 +917,344 @@ static void parse_data(const uint8_t *rx, fpga_meas_t *m)
     }
 }
 
+/* ═══ Protokol v3 (docs/PROTOKOL_V3.md, krok 4c, v0.35.0) ═══════════════════════════════════════════════════════════════
+ * Detekce verze (kap. 6.2): po startu / ztrate linku jedna transakce 1024 B s NULOVYM MOSI (MAGIC 0 -> v2 i v3 ji zahodi).
+ * Prvnich 128 B s VER 0x02 a CRC 0..125 = FPGA v2 (PHY v2 vraci svuj ramec 8x dokola) -> dal kod v2 vyse beze zmeny;
+ * VER 0x03 a CRC bloku 0 = FPGA v3 -> tato vetev:
+ *   * kazda transakce = ACK s REC_ACK (dalsi ocekavany zaznam); prijem fpga_v3_link_take (prekryv ramcu = duplicity,
+ *     mezera = preruseni oken, reset FPGA = resynchronizace),
+ *   * zaznamy -> okna fpga_v3_grp_feed (K = hradlo / L), okno VYBRANEHO kanalu -> fpga_meas_t se stejnymi poli jako v2
+ *     (konzumenti beze zmeny): edge_count/gate2_ps dvoubodove, f_regr_hz = LSQ pres teziste segmentu, teziste prvniho
+ *     segmentu v rg_xm/rg_ym[0] (fazovy zaznam fpga_phrec teleskopuje jako u v2), druhy kanal = sekundarni slot,
+ *   * vyber kanalu a hradla je LOKALNI (FPGA meri vzdy oba kanaly po segmentech), ztratu signalu hlida STM.
+ * Buffery 1024 B jsou staticke (L-0186: 1 KB na zasobniku FpgaTasku nechal 36 B): s3_* jen FpgaTask, s3c_* prikazy z
+ * libovolneho tasku pod SPI mutexem. */
+#define FR3_GAP_US       200u       /* mezera mezi transakcemi >= 150 us (FPGA sklada dalsi ramec, kap. 2) */
+#define S3_Q             8u         /* fronta hotovych oken vybraneho kanalu */
+#define S3_LOST_MS       2500u      /* ztrata signalu: zadne okno dele nez 2,5 s + hradlo (jako v2) */
+static uint8_t  s3_tx[FPGA_V3_LEN], s3_rx[FPGA_V3_LEN];       /* FpgaTask (poll, kalibrace) */
+static uint8_t  s3c_tx[FPGA_V3_LEN], s3c_rx[FPGA_V3_LEN];     /* prikazy (UART, FpgaTask) -- jen pod s_spi_mtx */
+static uint32_t s3_mseq = 0u;
+static fpga_v3_link_t s3_link;
+static fpga_v3_grp_t  s3_grp;
+static fpga_v3_hdr_t  s3_h;
+static uint8_t  s3_h_ok = 0u;
+static fpga_v3_rec_t  s3_rec[FPGA_V3_REC_MAX];
+static fpga_meas_t s3_q[S3_Q];
+static uint8_t  s3_qr = 0u, s3_qw = 0u;
+static fpga_v3_win_t s3_wb;          /* posledni okno druheho kanalu (sekundarni slot) */
+static uint8_t  s3_wb_ok = 0u;
+static uint32_t s3_wseq = 0u;        /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
+static uint8_t  s3_brk = 1u;         /* pred dalsim oknem je preruseni */
+static uint8_t  s3_chan = 0u, s3_gate = 2u;
+static uint32_t s3_last_win_ms = 0u;
+static uint8_t  s3_lost = 0u;
+static uint32_t s3_frames = 0u, s3_wins = 0u, s3_qdrop = 0u, s3_pages = 0u;
+
+static bool xfer3_raw(const uint8_t *tx, uint8_t *rx)
+{
+    cs_low();
+    delay_us(FPGA_CS_GAP_US);
+#if FPGA_SPI_USE_DMA
+    HAL_StatusTypeDef st;
+    if (fpga_spi_dma_ready()) st = fpga_spi_dma_txrx(tx, rx, (uint16_t)FPGA_V3_LEN, 100) ? HAL_OK : HAL_ERROR;
+    else                      st = HAL_SPI_TransmitReceive(&hspi2, (uint8_t *)tx, rx, (uint16_t)FPGA_V3_LEN, 100);
+#else
+    HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(&hspi2, (uint8_t *)tx, rx, (uint16_t)FPGA_V3_LEN, 100);
+#endif
+    delay_us(FPGA_CS_GAP_US);
+    cs_high();
+    delay_us(FR3_GAP_US);
+    return (st == HAL_OK);
+}
+
+static bool spi_lock(uint32_t ms)
+{
+    if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) return osMutexAcquire(s_spi_mtx, ms) == osOK;
+    return true;
+}
+static void spi_unlock(void)
+{
+    if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) osMutexRelease(s_spi_mtx);
+}
+
+static bool xfer3(const uint8_t *tx, uint8_t *rx)
+{
+    if (!spi_lock(100)) return false;
+    bool ok = xfer3_raw(tx, rx);
+    spi_unlock();
+    return ok;
+}
+
+/* K segmentu na okno = hradlo / L (50 ms / 25 ms = 2 ... 1 s = 40) */
+static uint32_t s3_k(void)
+{
+    const uint32_t L = (s3_h_ok && s3_h.seg_len_ms) ? s3_h.seg_len_ms : 25u;
+    const uint32_t k = fpga_gate_idx_ms(s3_gate) / L;
+    return k ? k : 1u;
+}
+static void s3_regroup(void)
+{
+    fpga_v3_grp_init(&s3_grp, s3_k());
+    s3_grp.seg_ms = (s3_h_ok && s3_h.seg_len_ms) ? s3_h.seg_len_ms : 25u;
+    s3_qr = s3_qw = 0u; s3_wb_ok = 0u; s3_brk = 1u;
+}
+static void s3_reset(void)
+{
+    fpga_v3_link_init(&s3_link);
+    s3_regroup();
+    s3_last_win_ms = HAL_GetTick();
+}
+
+/* Detekce verze FPGA (kap. 6.2). Vraci 0 (nic), 2 nebo 3. */
+static uint8_t proto_detect(void)
+{
+    memset(s3_tx, 0, sizeof s3_tx);
+    if (!xfer3(s3_tx, s3_rx)) { g_xfer_ok = 0u; return 0u; }
+    g_xfer_ok = 1u; g_last_rx0 = s3_rx[0];
+    if (s3_rx[0] != FR_MAGIC) return 0u;
+    if (s3_rx[1] == FR_VERSION && fpga_crc16_check(s3_rx, FR_CRC_LEN, (uint16_t)((uint16_t)s3_rx[126] | ((uint16_t)s3_rx[127] << 8))))
+        return 2u;
+    if (s3_rx[1] == FPGA_V3_VER && (fpga_v3_blk_ok(s3_rx) & 1u)) return 3u;
+    return 0u;
+}
+
+/* stav TDC ve v2 bitech (FPGA_TDC_*) z TDC_STATUS v3 (kap. 3.1: bit0 platna, bit1 selhala, bit2 sber) */
+static uint8_t s3_tdc_v2(const fpga_v3_hdr_t *h)
+{
+    uint8_t s = 0u;
+    if (h->tdc_status[0] & 1u) s |= FPGA_TDC_CAL_A;
+    if (h->tdc_status[1] & 1u) s |= FPGA_TDC_CAL_B;
+    if ((h->tdc_status[0] | h->tdc_status[1]) & 2u) s |= FPGA_TDC_CAL_FAIL;
+    if ((h->tdc_status[0] | h->tdc_status[1]) & 4u) s |= FPGA_TDC_CAL_BUSY;
+    return s;
+}
+
+/* Pole hlavicky, ktera nesou i okna (a diagnosticky snimek ramce bez okna). caps = v2 bity, jejichz pole jsou platna. */
+#define S3_CAPS16 ((uint16_t)(FPGA_CAP_DT | FPGA_CAP_CHAN | FPGA_CAP_SELFCHK | FPGA_CAP_CLK | FPGA_CAP_PPS | FPGA_CAP_DIAG0 | \
+                              FPGA_CAP_STMCAL | FPGA_CAP_REFCTL | 0x0002u))
+static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
+{
+    m->fw_version = h->fw_version;
+    m->caps       = S3_CAPS16;
+    m->clk_status = h->clk_status; m->clk_loss = h->clk_loss; m->clk_mhz = h->clk_mhz ? h->clk_mhz : 100u;
+    m->build_time = h->build_time; m->build_git = h->build_git;
+    m->diag0_ok   = 1u; m->coh_st = h->coh_st; m->coh_cnt = h->coh_cnt;
+    m->bub_p = h->bub[s3_chan & 1u]; m->bub_s = h->bub[(s3_chan ^ 1u) & 1u];
+    m->ovl_p = h->ovl[s3_chan & 1u]; m->ovl_s = h->ovl[(s3_chan ^ 1u) & 1u];
+    m->tdc_status = s3_tdc_v2(h);
+    m->lut_wait = (uint8_t)(h->cal_wait & 3u); m->lut_cnt = h->lut_cnt; m->lut_sum = h->lut_sum;
+    m->pps_ok = 1u; m->pps_ts = h->pps_coarse[0]; m->pps_seq = (uint8_t)h->pps[0].pseq;
+    m->channel_id = s3_chan;
+    m->phase_status = fpga_gate_idx_to_win(s3_gate);          /* echo hradla jako v2 (zde lokalni volba) */
+}
+
+static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
+{
+    memset(m, 0, sizeof *m);
+    s3_hdr_to_meas(&s3_h, m);
+    const uint32_t clk = m->clk_mhz;
+    s3_wseq += s3_brk ? 2u : 1u;                                   /* preruseni = dira v SEQ -> fpga_stat_break, fazovy zaznam */
+    s3_brk = 0u;
+    m->sequence = s3_wseq;
+    m->measurement_status = 0x03u;
+    m->status_flags = (uint8_t)(ST_DATA_VALID | ST_DATA_FRESH);
+    m->edge_count = w->edges;
+    m->dt_units   = w->gate_units & 0xFFFFFFFFFFFFull;
+    m->gate2_ps   = dt_units_to_ps(m->dt_units, clk);
+    m->gate_ps    = m->gate2_ps;
+    m->cc_ok = 1u; m->f_cc_hz = w->f_2pt_hz; m->gate_cc_ps = m->gate2_ps;   /* dvoubodove mezi prvnimi znackami teleskopuje */
+    /* LSQ pres teziste segmentu (vaha N): efektivni delka N / f_lsq jako regrese v2; mez 1e-6 proti dvoubodovemu (pojistka) */
+    if (w->lsq_ok && w->f_lsq_hz > 0.0 && w->f_2pt_hz > 0.0 && fabs(w->f_lsq_hz / w->f_2pt_hz - 1.0) < 1e-6) {
+        m->f_regr_hz = w->f_lsq_hz; m->regr_used = 1u;
+        m->gate_ps = (uint64_t)((double)w->edges * 1e12 / w->f_lsq_hz + 0.5);
+    }
+    /* teziste prvniho segmentu relativne k prvni znacce okna (fpga_phrec: rg_xm v 1/4096 hrany, rg_ym v 1/16 jednotky) */
+    m->rg_xdiv  = 4096u;
+    m->rg_n[0]  = w->n0; m->rg_n[1] = w->n0;
+    m->rg_xm[0] = (uint64_t)((w->xc0 - (double)w->x_first) * 4096.0 + 0.5);
+    m->rg_ym[0] = (uint64_t)((w->tc0 - (double)w->t_first) * 16.0 + 0.5);
+    m->rg_ok    = (uint8_t)((w->n0 >= FPGA_REGR_MIN_N && m->regr_used) ? 3u : 0u);
+    m->ccd_p = (int8_t)((w->flags_or & FPGA_V3_R_CCD) ? 2 : 0);
+    if (s3_wb_ok) {
+        m->edges_b = (uint32_t)s3_wb.edges;
+        m->dt_b_ps = dt_units_to_ps(s3_wb.gate_units & 0xFFFFFFFFFFFFull, clk);
+        m->ccd_s   = (int8_t)((s3_wb.flags_or & FPGA_V3_R_CCD) ? 2 : 0);
+    }
+    m->gate_time_ns      = m->gate_ps / 1000u;
+    m->frequency_x100000 = freq_x1e5_from(m->edge_count, m->gate_ps);
+    m->freq16_x100000    = freq_x1e5_from(m->edges_b, m->dt_b_ps);
+}
+
+/* Prijaty ramec DATA: nove zaznamy -> okna -> fronta */
+static void s3_take_records(uint32_t n_ok)
+{
+    uint32_t i0 = 0u; int gap = 0;
+    const uint32_t n = fpga_v3_link_take(&s3_link, &s3_h, n_ok, &i0, &gap);
+    if (s3_h.seg_len_ms && s3_h.seg_len_ms != s3_grp.seg_ms) s3_regroup();   /* zmena L: okna znovu */
+    if (gap) { fpga_v3_grp_break(&s3_grp, 0u); fpga_v3_grp_break(&s3_grp, 1u); s3_wb_ok = 0u; s3_brk = 1u; }
+    const uint32_t clk = s3_h.clk_mhz ? s3_h.clk_mhz : 100u;
+    for (uint32_t i = 0; i < n; i++) {
+        fpga_v3_win_t w;
+        if (!fpga_v3_grp_feed(&s3_grp, &s3_rec[i0 + i], clk, &w)) continue;
+        if (w.ch != (s3_chan & 1u)) { s3_wb = w; s3_wb_ok = 1u; continue; }
+        if ((uint8_t)(s3_qw - s3_qr) >= S3_Q) { s3_qr++; s3_qdrop++; s3_brk = 1u; }   /* fronta plna: nejstarsi pryc */
+        s3_win_to_meas(&w, &s3_q[s3_qw % S3_Q]);
+        s3_qw++; s3_wins++;
+        s3_last_win_ms = HAL_GetTick();
+    }
+}
+
+/* ── emulator FPGA v3 (fpgasim v3): ramec skladany PO transakci, ACK zpracovany az po slozeni (jako RTL, kap. 6.1) ── */
+static fpga_v3_emu_t s3_emu;
+static uint8_t  s3_emu_f[FPGA_V3_LEN];
+static uint32_t s3_emu_ms = 0u, s3_emu_rem = 0u;
+static double   s3_emu_hz = 0.0, s3_emu_hzb = 0.0;
+static void sim3_produce(const uint8_t *tx, uint8_t *rx)
+{
+    memcpy(rx, s3_emu_f, FPGA_V3_LEN);
+    const uint32_t now = HAL_GetTick();
+    uint32_t el = (now - s3_emu_ms) + s3_emu_rem;
+    s3_emu_ms = now;
+    uint32_t nseg = el / s3_emu.seg_ms;
+    s3_emu_rem = el % s3_emu.seg_ms;
+    if (nseg > 2u * FPGA_V3_EMU_RING) nseg = 2u * FPGA_V3_EMU_RING;   /* dlouha pauza: kruh stejne pretece */
+    /* kmitocet A s driftem jako v2 emulator (ppb/h), B pevne */
+    const double h = (double)(now - s_sim_t0) / 3600000.0;
+    s3_emu.f_hz[0] = s3_emu_hz * (1.0 + (double)s_sim_drift * 1e-9 * h);
+    for (uint32_t i = 0; i < nseg; i++) fpga_v3_emu_segment(&s3_emu);
+    fpga_v3_emu_frame(&s3_emu, s3_emu_f);
+    /* 1PPS z emulatoru v2 (smycka GPSDO ladi OCXO podle kodu DAC): poradi + hruby cas do hlavicky, blok 0 znovu zapecetit */
+    sim_pps_step(now);
+    for (int i = 0; i < 4; i++) s3_emu_f[68 + i] = (uint8_t)(s_sim_pps_seq >> (8 * i));
+    for (int i = 0; i < 4; i++) s3_emu_f[100 + i] = (uint8_t)(s_sim_pps_ts >> (8 * i));
+    {   const uint64_t pts = (uint64_t)s_sim_pps_ts << 14;
+        for (int i = 0; i < 6; i++) s3_emu_f[72 + i] = (uint8_t)(pts >> (8 * i)); }
+    s3_emu_f[78] = s_sim_pps_seq ? 1u : 0u;
+    fpga_v3_blk_seal(s3_emu_f);
+    fpga_v3_emu_rx(&s3_emu, tx);
+}
+
+void fpga_sim_v3_set(int on, double hz_a, double hz_b)
+{
+    if (!on) { s_sim_v3 = 0u; s_sim_on = 0u; s_proto = 0u; return; }
+    s3_emu_hz  = (hz_a > 0.0) ? hz_a : 10e6;
+    s3_emu_hzb = (hz_b > 0.0) ? hz_b : 0.0;
+    fpga_v3_emu_init(&s3_emu, s3_emu_hz, s3_emu_hzb, 30.0, HAL_GetTick() | 1u);
+    s3_emu_ms = HAL_GetTick(); s3_emu_rem = 0u;
+    fpga_v3_emu_frame(&s3_emu, s3_emu_f);
+    s_sim_t0 = HAL_GetTick(); s_sim_pps_next_ms = s_sim_t0 + 1000u; s_sim_nopps = 0u;
+    s_sim_on = 1u; s_sim_v3 = 1u; s_proto = 3u;
+    s3_reset();
+}
+int fpga_sim_v3_active(void) { return s_sim_on && s_sim_v3; }
+
+/* Jedna transakce v3 ve FpgaTasku: ACK + prijem; vrati true, kdyz je k dispozici okno vybraneho kanalu */
+static bool poll_v3(fpga_meas_t *out)
+{
+    if (s3_qr == s3_qw) {
+        fpga_v3_build_ack(s3_tx, ++s3_mseq, s3_link.expect);
+        if (s_sim_on) { sim3_produce(s3_tx, s3_rx); g_xfer_ok = 1u; }
+        else if (!xfer3(s3_tx, s3_rx)) { g_xfer_ok = 0u; s_link_ok = 0u; return false; }
+        else g_xfer_ok = 1u;
+        g_last_rx0 = s3_rx[0];
+        uint32_t n_ok = 0u;
+        const int rc = fpga_v3_parse(s3_rx, &s3_h, s3_rec, &n_ok);
+        if (rc != FPGA_V3_OK) {
+            if (rc == FPGA_V3_E_CRC0) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }
+            s_link_ok = 0u;
+            return false;
+        }
+        if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }   /* vadny blok 1-3: zaznamy prijdou znovu */
+        s3_h_ok = 1u; s_link_ok = 1u; s3_frames++;
+        if (s3_h.type == FPGA_V3_T_DATA) s3_take_records(n_ok);
+        {   /* diagnosticky snimek ramce (verze, hodiny, TDC, tabulka, 1PPS) i bez noveho okna */
+            fpga_meas_t f;
+            memset(&f, 0, sizeof f);
+            uint32_t pm = __get_PRIMASK();
+            __disable_irq();
+            if (s_frame_seen) f = s_frame;
+            __set_PRIMASK(pm);
+            s3_hdr_to_meas(&s3_h, &f);
+            pps_feed(&f);
+            pm = __get_PRIMASK();
+            __disable_irq();
+            s_frame = f; s_frame_seen = 1u;
+            __set_PRIMASK(pm);
+        }
+    }
+    const uint32_t now = HAL_GetTick();
+    if (s3_qr == s3_qw) {
+        /* ztrata signalu vybraneho kanalu: zadne okno dele nez 2,5 s + hradlo -> SIGNAL_LOST (jako watchdog v2) */
+        if (!s3_lost && (now - s3_last_win_ms) > S3_LOST_MS + fpga_gate_idx_ms(s3_gate)) {
+            s3_lost = 1u; s3_brk = 1u;
+            uint32_t pm = __get_PRIMASK();
+            __disable_irq();
+            if (s_last_seen) { s_last.error_flags |= FPGA_ERR_SIGNAL_LOST; s_last.measurement_status &= (uint8_t)~0x01u; }
+            __set_PRIMASK(pm);
+        }
+        return false;
+    }
+    fpga_meas_t m = s3_q[s3_qr % S3_Q];
+    s3_qr++;
+    s3_lost = 0u;
+    /* samokontrola (jako v2): hodiny FPGA, koherence 100/10 MHz, mez primeho mereni, kontrolni pocitani hran segmentu */
+    int chk = FPGA_CHK_OK;
+    {
+        const int loss_new = (s_prev_loss != 0xFFFFu) && (m.clk_loss > s_prev_loss);
+        s_prev_loss = m.clk_loss;
+        if (!(m.clk_status & FPGA_CLK_OK) || (m.clk_status & FPGA_CLK_RECOVER) || loss_new) chk = FPGA_CHK_CLOCK;
+        const int coh_new = (s_prev_coh != 0xFFFFu) && (m.coh_cnt > s_prev_coh);
+        s_prev_coh = m.coh_cnt;
+        if (chk == FPGA_CHK_OK && coh_new && !(m.clk_status & 0x08u)) chk = FPGA_CHK_COH;
+        if (chk == FPGA_CHK_OK && !s_sim_on && m.gate2_ps > 0u && (double)m.edge_count * 1e12 / (double)m.gate2_ps > FPGA_DIRECT_MAX_HZ)
+            chk = FPGA_CHK_FMAX;
+        if (chk == FPGA_CHK_OK && (m.ccd_p > 1 || m.ccd_p < -1)) chk = FPGA_CHK_COUNT;
+        if (chk == FPGA_CHK_COUNT)       s_chk_count++;
+        else if (chk == FPGA_CHK_CLOCK)  s_chk_clock++;
+        else if (chk == FPGA_CHK_FMAX)   s_chk_fmax++;
+        else if (chk == FPGA_CHK_COH)    s_chk_coh++;
+    }
+    s_dbg_frames++; s_dbg_valid++; s_dbg_new++;
+    const uint32_t gap = fpga_seq_gap(g_last_seq, m.sequence);
+    fpga_phrec_feed(&m, gap, (chk == FPGA_CHK_OK) ? 1 : 0);
+#if FPGA_STATS_USE_CC
+    if (m.cc_ok && m.gate_cc_ps > 0u) m.gate_ps = m.gate_cc_ps;
+#endif
+    {
+        uint32_t pm = __get_PRIMASK();
+        __disable_irq();
+        s_frame = m; s_frame_seen = 1u;
+        if (chk == FPGA_CHK_OK) { s_last = m; s_last_seen = 1u; }
+        __set_PRIMASK(pm);
+    }
+    s_poll_mc  = 0;
+    s_poll_chk = chk;
+    s_poll_gap = gap;
+    if (gap == FPGA_SEQ_RESYNC) s_seq_resync++;
+    else if (gap != 0u)        { s_seq_gaps++; s_seq_missed += gap; }
+    if (out) *out = m;
+    g_last_seq = m.sequence;
+    return true;
+}
+
+static bool v3_cfg(uint8_t id, uint8_t v1, uint8_t v2);
+static bool v3_page(uint8_t kind, uint16_t page, uint32_t *items, uint16_t *n);
+
 bool fpga_freq_poll(fpga_meas_t *out)
 {
     static uint8_t tx[FR_LEN], rx[FR_LEN];
 
     if (!g_init_ok) return false;   /* selftest neprosel -> neposilat nic (kontrakt 7.1) */
+    /* protokol v3 (krok 4c): verzi FPGA zjisti prvni transakce 1024 B; v3 ma vlastni vetev, v2 pokracuje nize beze zmeny */
+    if (s_sim_on && s_sim_v3) return poll_v3(out);
+    if (!s_sim_on && s_proto == 0u) {
+        s_proto = proto_detect();
+        if (s_proto == 0u) { s_link_ok = 0u; return false; }
+        printf("fpga: protokol v%u\n", (unsigned)s_proto);
+        if (s_proto == 3u) s3_reset();
+    }
+    if (!s_sim_on && s_proto == 3u) return poll_v3(out);
 
     /* ⚠️ JEDINY rozdil emulace: odkud se vezme obsah `rx`. VSE nize (MAGIC, CRC,
      * TYPE, parse_data, latch, VALID/FRESH/SEQ) bezi bez zmeny — prave proto je
@@ -1856,6 +2195,7 @@ bool fpga_freq_set_channel(uint8_t ch)
 bool fpga_freq_set_diag(uint8_t mask_cs, uint8_t led_hb)
 {
     if (!g_init_ok || s_sim_on) return false;
+    if (s_proto == 3u) return v3_cfg(FPGA_V3_CFG_DIAG, (uint8_t)((mask_cs & 1u) | ((led_hb & 1u) << 1)), 0u);
     uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x05u, (uint8_t)((mask_cs & 1u) | ((led_hb & 1u) << 1)) };
     build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
     return xfer(tx, rx);
@@ -1864,6 +2204,7 @@ bool fpga_freq_set_diag(uint8_t mask_cs, uint8_t led_hb)
 bool fpga_freq_set_ref(uint8_t ext)
 {
     if (!g_init_ok || s_sim_on) return false;
+    if (s_proto == 3u) return v3_cfg(FPGA_V3_CFG_REF, (uint8_t)(ext & 1u), 0u);
     uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x04u, (uint8_t)(ext & 1u) };
     build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
     return xfer(tx, rx);
@@ -1878,6 +2219,15 @@ bool fpga_freq_set_ref(uint8_t ext)
 bool fpga_freq_cfg_sync(uint8_t want_chan, uint8_t want_gate_idx)
 {
     static uint32_t s_last_ms = 0u;
+    if (s_proto == 3u || s_sim_v3) {
+        /* v3: FPGA meri oba kanaly vzdy a po segmentech -> kanal i hradlo voli STM lokalne (okna ze segmentu) */
+        want_chan &= 1u;
+        if (want_gate_idx > 4u) want_gate_idx = 2u;
+        if (want_chan == s3_chan && want_gate_idx == s3_gate) return false;
+        s3_chan = want_chan; s3_gate = want_gate_idx;
+        s3_regroup();
+        return true;
+    }
     fpga_meas_t m;
     if (!fpga_freq_get_last(&m) || !(m.caps & FPGA_CAP_CHAN)) return false;   /* starsi FW/emulator: nic k nastaveni */
     uint32_t now = HAL_GetTick();
@@ -1906,6 +2256,7 @@ bool fpga_freq_chan_pending(const fpga_meas_t *m, uint8_t want_chan)
 bool fpga_freq_tdc_cal_start(void)
 {
     if (!g_init_ok || s_sim_on) return false;
+    if (s_proto == 3u) return v3_cfg(FPGA_V3_CFG_CAL, 0x01u, 0u);    /* p1 bit0 start, maska 0 = oba kanaly (stridave) */
     uint8_t tx[FR_LEN], rx[FR_LEN], pl[2] = { 0x02u, 0u };
     /* FPGA spousti kalibraci NABEZNOU HRANOU cal_mode: nejdriv 0 (arm), pak 1. */
     build_frame(TYPE_SET_CONFIG, 0, pl, 2, tx);
@@ -1975,9 +2326,11 @@ static fpga_tdccal_stats_t s_cal_stats[2];
 static fpga_tdccal_info_t  s_cal_info;
 static uint32_t s_wait_polls = 0u;
 
+static bool tdc_report_v3(fpga_tdc_cal_t *out);
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
 {
     if (!g_init_ok || s_sim_on || out == NULL) return false;
+    if (s_proto == 3u) return tdc_report_v3(out);
     uint8_t tx[FR_LEN], rx[FR_LEN];
     bool locked = false, ok = false;
     if (s_spi_mtx != NULL && osKernelGetState() == osKernelRunning) {
@@ -2037,9 +2390,11 @@ bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
     return ok;
 }
 
+static bool tdc_hist_v3(uint16_t k, uint32_t *a, uint32_t *b);
 bool fpga_freq_tdc_hist(uint16_t k, uint32_t *a, uint32_t *b)
 {
     if (!g_init_ok || s_sim_on || a == NULL || b == NULL || k > 1023u) return false;
+    if (s_proto == 3u) return tdc_hist_v3(k, a, b);
     /* [12] = 1 | k[9:8] << 1 (starsi FW bere jen [12] == 1 a k < 256), [14] = k[7:0] */
     uint8_t tx[FR_LEN], rx[FR_LEN];
     uint8_t p12 = (uint8_t)(1u | (((k >> 8) & 3u) << 1));
@@ -2174,9 +2529,209 @@ static bool tdccal_run(void)
     return true;
 }
 
+/* Prikaz v3 (SET_CONFIG): jedna transakce pod zamkem; prijaty ramec se nepouzije (zaznamy prijdou znovu, ACK se neposunul) */
+static bool v3_cfg(uint8_t id, uint8_t v1, uint8_t v2)
+{
+    if (!spi_lock(200)) return false;
+    fpga_v3_build_cfg(s3c_tx, ++s3_mseq, id, v1, v2);
+    bool ok = xfer3_raw(s3c_tx, s3c_rx);
+    spi_unlock();
+    return ok;
+}
+
+/* Stranka (TYPE 0xA0, kap. 5): zadost + az 3 ACK transakce pod JEDNIM zamkem (jinak by stranku vycetl poll FpgaTasku).
+ * items[] = polozky u24, *n = pocet podle hlavicky. Bloky stranky: [0] k, [1] SEQ[7:0], od [2] 84 polozek po 3 B. */
+static bool v3_page(uint8_t kind, uint16_t page, uint32_t *items, uint16_t *n)
+{
+    if (!spi_lock(300)) return false;
+    bool ok = false;
+    fpga_v3_build(s3c_tx, FPGA_V3_T_PAGE, ++s3_mseq, (const uint8_t[3]){ kind, (uint8_t)page, (uint8_t)(page >> 8) }, 3u);
+    if (xfer3_raw(s3c_tx, s3c_rx)) {
+        for (int i = 0; i < 3 && !ok; i++) {
+            fpga_v3_build_ack(s3c_tx, ++s3_mseq, s3_link.expect);
+            if (!xfer3_raw(s3c_tx, s3c_rx)) break;
+            fpga_v3_hdr_t h;
+            if (fpga_v3_parse(s3c_rx, &h, NULL, NULL) != FPGA_V3_OK || h.type != FPGA_V3_T_PAGE) continue;
+            if (s3c_rx[116] != kind || (uint16_t)(s3c_rx[117] | (s3c_rx[118] << 8)) != page || h.blk_ok != 0x0Fu) continue;
+            const uint16_t cnt = (uint16_t)(s3c_rx[119] | (s3c_rx[120] << 8));
+            for (uint32_t k = 0; k < FPGA_V3_LUTW_MAX; k++) {
+                const uint8_t *b = s3c_rx + (1u + k / FPGA_V3_LUTW_PER_BLK) * FPGA_V3_BLK;
+                const uint8_t *e = b + 2u + 3u * (k % FPGA_V3_LUTW_PER_BLK);
+                items[k] = (k < cnt) ? ((uint32_t)e[0] | ((uint32_t)e[1] << 8) | ((uint32_t)e[2] << 16)) : 0u;
+            }
+            *n = cnt;
+            ok = (s3c_rx[FPGA_V3_BLK] == 1u && s3c_rx[FPGA_V3_BLK + 1] == (uint8_t)h.seq);
+            s3_pages++;
+        }
+    }
+    spi_unlock();
+    return ok;
+}
+
+/* Kalibrace TDC v3 (kap. 6.3): FPGA ceka (CAL_WAIT) s histogramem jednoho kanalu, druhy meri. STM precte 3 stranky
+ * histogramu, spocita tabulku (fpga_tdccal_lut, jako v2), zapise ji DAVKAMI po 252 polozkach (LUT_WRITE), overi
+ * LUT_CNT/LUT_SUM a potvrdi -> FPGA aktivuje novou banku na hranici segmentu. Blokuje FpgaTask ~100 ms (ne ~0,6 s jako v2). */
+static uint32_t s3_items[FPGA_V3_LUTW_MAX];
+static uint8_t  s3_lw_ch[FPGA_V3_LUTW_MAX];
+static uint16_t s3_lw_a[FPGA_V3_LUTW_MAX], s3_lw_n[FPGA_V3_LUTW_MAX];
+static bool v3_hdr_now(fpga_v3_hdr_t *h)
+{
+    if (!spi_lock(200)) return false;
+    fpga_v3_build_ack(s3c_tx, ++s3_mseq, s3_link.expect);
+    bool ok = xfer3_raw(s3c_tx, s3c_rx) && (fpga_v3_parse(s3c_rx, h, NULL, NULL) == FPGA_V3_OK);
+    spi_unlock();
+    return ok;
+}
+static bool tdccal_run_v3(uint8_t ch)
+{
+    const uint32_t t_start = HAL_GetTick();
+    uint8_t err = 0u;
+    uint32_t nc = 0u;
+    /* konfigurace TDC ze souhrnne stranky (polozka 3 = [4:0] log2 adres, [5] DUAL) */
+    uint16_t n = 0u;
+    if (!v3_page(0u, 0u, s3_items, &n) || n < 4u) { s_cal_info.last_err = 3u; s_cal_info.fails++; return true; }
+    const uint32_t cfg = s3_items[3];
+    nc = 1u << (cfg & 0x1Fu);
+    if (nc > FPGA_TDCCAL_MAX_NC) nc = FPGA_TDCCAL_MAX_NC;
+    const uint8_t dual = (uint8_t)((cfg >> 5) & 1u);
+    s_cal_info.naddr = (uint16_t)nc;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        err = 0u;
+        if (attempt > 0) s_cal_info.retries++;
+        watchdog_kick_fpga();
+        /* 1) histogram kanalu ch: stranky po 252 polozkach */
+        bool rd_ok = true;
+        for (uint16_t p = 0; p * FPGA_V3_LUTW_MAX < nc && rd_ok; p++) {
+            uint16_t cnt = 0u;
+            rd_ok = v3_page((uint8_t)(1u + ch), p, s3_items, &cnt);
+            for (uint32_t k = 0; rd_ok && k < cnt && p * FPGA_V3_LUTW_MAX + k < nc; k++) s_ch_h[ch][p * FPGA_V3_LUTW_MAX + k] = s3_items[k];
+        }
+        if (!rd_ok) { err = 3u; continue; }
+        /* 2) tabulka */
+        const uint64_t tot = fpga_tdccal_lut(s_ch_h[ch], nc, FPGA_TDC_CAL_LOG2, dual, s_ch_l[ch]);
+        fpga_tdccal_stats(s_ch_h[ch], nc, &s_cal_stats[ch]);
+        if (tot != (1ull << FPGA_TDC_CAL_LOG2)) { err = 1u; break; }
+        /* 3) zacatek zapisu, 4) davky LUT_WRITE */
+        if (!v3_cfg(FPGA_V3_CFG_LUT, 0u, 0u)) { err = 3u; continue; }
+        uint16_t sum = 0u; bool wr_ok = true;
+        for (uint32_t a = 0; a < nc && wr_ok; a += FPGA_V3_LUTW_MAX) {
+            uint32_t m = nc - a; if (m > FPGA_V3_LUTW_MAX) m = FPGA_V3_LUTW_MAX;
+            for (uint32_t k = 0; k < m; k++) { s3_lw_ch[k] = ch; s3_lw_a[k] = (uint16_t)(a + k); s3_lw_n[k] = (uint16_t)(s_ch_l[ch][a + k] & 0x3FFFu); }
+            if (!spi_lock(200)) { wr_ok = false; break; }
+            (void)fpga_v3_build_lutw(s3c_tx, ++s3_mseq, s3_lw_ch, s3_lw_a, s3_lw_n, m, &sum);
+            wr_ok = xfer3_raw(s3c_tx, s3c_rx);
+            spi_unlock();
+        }
+        if (!wr_ok) { err = 3u; continue; }
+        /* 5) overeni: hlavicka nese pocitadlo a soucet (odpoved na posledni ramec az v dalsi transakci) */
+        fpga_v3_hdr_t h;
+        /* LUT_CNT_B: LUT_SUM chybu bitu kanalu u cele tabulky nevidi (512 x 2^14 = 0 mod 2^16) */
+        if (!v3_hdr_now(&h) || !v3_hdr_now(&h) || h.lut_cnt != (uint16_t)nc || h.lut_sum != sum ||
+            h.lut_cnt_b != (uint16_t)(ch ? nc : 0u)) { err = 2u; continue; }
+        const uint8_t bank0 = (uint8_t)((h.tdc_status[ch] >> 4) & 1u), valid0 = (uint8_t)(h.tdc_status[ch] & 1u);
+        /* 6) potvrzeni -> nova banka na hranici segmentu (<= L) */
+        if (!v3_cfg(FPGA_V3_CFG_LUT, 1u, (uint8_t)(1u << ch))) { err = 3u; continue; }   /* p2 = maska: jen tento kanal */
+        bool done = false;
+        for (int i = 0; i < 20 && !done; i++) {
+            osDelay(5);
+            if (v3_hdr_now(&h) && !(h.cal_wait & (1u << ch)) && (h.tdc_status[ch] & 1u) &&
+                (!valid0 || ((h.tdc_status[ch] >> 4) & 1u) != bank0)) done = true;
+        }
+        if (!done) { err = 4u; continue; }
+        s_cal_info.runs++;
+        s_cal_info.last_err = 0u;
+        s_cal_info.stats_valid = 1u;
+        s_cal_info.last_ms = HAL_GetTick() - t_start;
+        s_cal_info.last_tick = HAL_GetTick() ? HAL_GetTick() : 1u;
+        return true;
+    }
+    s_cal_info.fails++;
+    s_cal_info.last_err = err;
+    s_cal_info.last_ms = HAL_GetTick() - t_start;
+    return true;
+}
+static bool tdccal_poll_v3(void)
+{
+    if (!s3_h_ok || (s3_h.cal_wait & 3u) == 0u) { s_wait_polls = 0u; return false; }
+    if (++s_wait_polls < 2u) return false;                             /* 2 ramce za sebou */
+    s_wait_polls = 0u;
+    const uint8_t ch = (s3_h.cal_wait & 1u) ? 0u : 1u;                 /* nejdriv A, druhy kanal az v dalsim behu */
+    const bool r = tdccal_run_v3(ch);
+    s3_regroup();                                                      /* kalibrace blokovala: okna znovu, preruseni */
+    return r;
+}
+
+/* Stav v3 pro UART `fpga v3` */
+void fpga_freq_v3_info(fpga_v3_info_t *o)
+{
+    if (o == NULL) return;
+    memset(o, 0, sizeof *o);
+    o->proto = s_proto; o->sim = s_sim_v3;
+    o->frames = s3_frames; o->recs = s3_link.recs; o->dups = s3_link.dups; o->gaps = s3_link.gaps;
+    o->gap_recs = s3_link.gap_recs; o->resync = s3_link.resync; o->wins = s3_wins; o->qdrop = s3_qdrop; o->pages = s3_pages;
+    o->k = s3_grp.k_target; o->seg_ms = s3_grp.seg_ms; o->chan = s3_chan; o->expect = s3_link.expect;
+    if (s3_h_ok) {
+        o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->rec_head = s3_h.rec_head; o->rec_first = s3_h.rec_first;
+        o->ring_fill = s3_h.ring_fill; o->rx_crc_err = s3_h.rx_crc_err; o->rx_len_err = s3_h.rx_len_err;
+        o->flags = s3_h.flags; o->tdc[0] = s3_h.tdc_status[0]; o->tdc[1] = s3_h.tdc_status[1]; o->cal_wait = s3_h.cal_wait;
+    }
+}
+
+/* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */
+static bool tdc_report_v3(fpga_tdc_cal_t *out)
+{
+    uint16_t n = 0u;
+    if (!v3_page(0u, 0u, s3_items, &n) || n < 4u) return false;
+    fpga_v3_hdr_t h;
+    if (!v3_hdr_now(&h)) return false;
+    for (int ch = 0; ch < 2; ch++) {
+        if (s_cal_info.stats_valid) {
+            out->ovf[ch] = s_cal_stats[ch].ovf; out->peak[ch] = s_cal_stats[ch].peak;
+            out->nz[ch]  = s_cal_stats[ch].nz;  out->last[ch] = s_cal_stats[ch].last;
+        } else { out->ovf[ch] = 0u; out->peak[ch] = 0u; out->nz[ch] = 0u; out->last[ch] = 0u; }
+    }
+    out->maxtap[0] = (uint16_t)s3_items[1];
+    out->maxtap[1] = (uint16_t)s3_items[2];
+    out->status    = s3_tdc_v2(&h);
+    out->cal_mode  = 0u;
+    const uint16_t cfg = (uint16_t)s3_items[3];
+    out->cfg_valid = (cfg & 0x1Fu) != 0u;
+    out->naddr     = out->cfg_valid ? (uint16_t)(1u << (cfg & 0x1Fu)) : 256u;
+    out->dual      = (uint8_t)((cfg >> 5) & 1u);
+    out->stride1   = (uint8_t)((cfg >> 6) & 1u);
+    out->taps      = out->cfg_valid ? (uint16_t)(cfg >> 7) : 256u;
+    if (!(out->status & FPGA_TDC_CAL_BUSY) && (out->status & (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) == (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B))
+        rez_store(out);
+    return true;
+}
+
+/* hist[k] obou kanalu v3: stranka k / 252 druhu 1 (A) a 2 (B). UART `tdc hist` cte adresy po jedne -> posledni stranka
+ * kazdeho kanalu se drzi 2 s (512 adres = 6 stranek misto 1024). */
+static uint32_t s3_hc[2][FPGA_V3_LUTW_MAX];
+static uint16_t s3_hc_n[2];
+static int32_t  s3_hc_page[2] = { -1, -1 };
+static uint32_t s3_hc_ms[2];
+static bool tdc_hist_v3(uint16_t k, uint32_t *a, uint32_t *b)
+{
+    const uint16_t p = (uint16_t)(k / FPGA_V3_LUTW_MAX), i = (uint16_t)(k % FPGA_V3_LUTW_MAX);
+    const uint32_t now = HAL_GetTick();
+    for (int ch = 0; ch < 2; ch++) {
+        if (s3_hc_page[ch] != (int32_t)p || (now - s3_hc_ms[ch]) > 2000u) {
+            s3_hc_page[ch] = -1;
+            if (!v3_page((uint8_t)(1 + ch), p, s3_hc[ch], &s3_hc_n[ch])) return false;
+            s3_hc_page[ch] = (int32_t)p; s3_hc_ms[ch] = now;
+        }
+        if (i >= s3_hc_n[ch]) return false;
+    }
+    *a = s3_hc[0][i];
+    *b = s3_hc[1][i];
+    return true;
+}
+
 bool fpga_freq_tdccal_poll(void)
 {
     if (!g_init_ok || s_sim_on) return false;
+    if (s_proto == 3u) return tdccal_poll_v3();
     fpga_meas_t *const f = &s_tc_f0;
     if (!fpga_freq_get_frame(f) || !(f->caps & FPGA_CAP_STMCAL) || (f->lut_wait & 3u) == 0u) { s_wait_polls = 0u; return false; }
     s_wait_polls++;
@@ -2198,6 +2753,14 @@ void fpga_freq_tdccal_info(fpga_tdccal_info_t *o)
 bool fpga_freq_raw_xfer(uint8_t *rx_frame)
 {
     if (!g_init_ok) return false;
+    if (s_proto == 3u && !s_sim_on) {                      /* v3: 1024 B, volajici dostane prvnich FPGA_FRAME_LEN B */
+        if (!spi_lock(200)) return false;
+        fpga_v3_build_ack(s3c_tx, ++s3_mseq, s3_link.expect);
+        const bool ok = xfer3_raw(s3c_tx, s3c_rx);
+        if (ok) memcpy(rx_frame, s3c_rx, FR_LEN);
+        spi_unlock();
+        return ok;
+    }
     uint8_t tx[FR_LEN];
     build_frame(TYPE_ACK, g_last_seq, NULL, 0, tx);   /* posleme platny ACK ramec */
     return xfer(tx, rx_frame);
@@ -2211,6 +2774,25 @@ static const struct { uint32_t e, d; } k_sck_pre[8] = {
     { SPI_BAUDRATEPRESCALER_32, 32 }, { SPI_BAUDRATEPRESCALER_64, 64 }, { SPI_BAUDRATEPRESCALER_128, 128 }, { SPI_BAUDRATEPRESCALER_256, 256 } };
 
 uint32_t fpga_freq_sck_hz(void) { return g_sck_hz; }
+
+/* Krok 7: SPI DMA za behu (UART `spi dma on|off`). on = 1 zapnout (prvni zapnuti nastavi DMA streamy a NVIC), 0 vypnout,
+ * -1 jen zjistit. Pod SPI mutexem: prepnuti nikdy neprobehne uprostred prenosu. @return 1 = DMA pouzivano. */
+int fpga_freq_spi_dma(int on)
+{
+#if FPGA_SPI_USE_DMA
+    if (on >= 0 && g_init_ok) {
+        if (!spi_lock(200)) return fpga_spi_dma_ready() ? 1 : 0;
+        if (on) {
+            if (fpga_spi_dma_hw_init(&hspi2) && fpga_spi_dma_init(&hspi2)) fpga_spi_dma_enable(true);
+        } else fpga_spi_dma_enable(false);
+        spi_unlock();
+    }
+    return fpga_spi_dma_ready() ? 1 : 0;
+#else
+    (void)on;
+    return 0;
+#endif
+}
 
 /* Rychlost vystupu SCK (PI1) a MOSI (PB15) ctena z OSPEEDR (0 LOW .. 3 VERY_HIGH), pro UART `spi` (zkouska 25 MHz). */
 void fpga_freq_spi_pin_speed(uint8_t *sck, uint8_t *mosi)

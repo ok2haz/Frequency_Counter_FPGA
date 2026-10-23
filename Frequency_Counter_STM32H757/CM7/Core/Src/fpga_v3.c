@@ -120,6 +120,7 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     h->rx_crc_err = (uint16_t)rdn(f + 52, 2); h->rx_len_err = (uint16_t)rdn(f + 54, 2);
     h->rx_last = (uint32_t)rdn(f + 56, 4);
     h->lut_cnt = (uint16_t)(rdn(f + 60, 2) & 0x3FFFu); h->lut_sum = (uint16_t)rdn(f + 62, 2);
+    h->lut_cnt_b = (uint16_t)(rdn(f + 122, 2) & 0x3FFFu);
     h->presc[0] = f[64]; h->presc[1] = f[65]; h->cfg_echo = f[66];
     for (int i = 0; i < 2; i++) {
         const uint8_t *q = f + 68 + 16 * i;
@@ -257,6 +258,32 @@ void fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *f)
     }
 }
 
+/* ══════════════ prijem zaznamu (STM) ══════════════ */
+void fpga_v3_link_init(fpga_v3_link_t *L) { memset(L, 0, sizeof *L); }
+
+uint32_t fpga_v3_link_take(fpga_v3_link_t *L, const fpga_v3_hdr_t *h, uint32_t n_ok, uint32_t *i0, int *gap)
+{
+    *i0 = 0u; *gap = 0;
+    L->frames++;
+    const uint32_t first = h->rec_first;
+    const uint32_t head1 = h->rec_head + ((h->rec_head || h->nrec) ? 1u : 0u);   /* pocet zapsanych zaznamu */
+    if (!L->have) { L->have = 1u; L->expect = first; *gap = 1; }
+    else if ((uint32_t)(L->expect - head1) - 1u < 0x7FFFFFFFu) {                  /* expect > head1: FPGA zacala znovu */
+        L->resync++; L->expect = first; *gap = 1;
+    } else {
+        const uint32_t d = first - L->expect;
+        if (d != 0u && d < 0x80000000u) { L->gaps++; L->gap_recs += d; L->expect = first; *gap = 1; }   /* mezera */
+        else if (d != 0u) {                                                       /* prekryv: duplicity preskocit */
+            const uint32_t back = L->expect - first;
+            if (back >= n_ok) { L->dups += n_ok; return 0u; }
+            *i0 = back; L->dups += back;
+        }
+    }
+    const uint32_t n = n_ok - *i0;
+    L->expect += n; L->recs += n;
+    return n;
+}
+
 /* ══════════════ segmenty -> okno ══════════════ */
 void fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target)
 {
@@ -321,6 +348,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         out->lsq_ok = (uint8_t)(c->k >= 2u && vxx > 0.0 && vxt > 0.0);
         out->f_lsq_hz = out->lsq_ok ? 1e12 / ((vxt / vxx) * up) : 0.0;    /* sklon t(x) = perioda [jednotky / hranu] */
         out->flags_or = c->flags_or; out->xc0 = c->xc0; out->tc0 = c->tc0;
+        out->x_first = c->x_first; out->t_first = c->t_first; out->n0 = c->n0;
         closed = 1;
         c->open = 0u;
     }
@@ -329,6 +357,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         c->x_first = x; c->t_first = t;
         c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u;
         c->xc0 = (double)x + (double)r->sx / (double)r->n;
+        c->n0  = r->n;
         c->tc0 = (double)t + (double)r->st / (double)r->n;
     }
     /* teziste segmentu relativne k prvni znacce okna; vaha = pocet znacek */
@@ -491,6 +520,29 @@ bool fpga_v3_selftest(void)
     fpga_v3_grp_init(&s_g, 10u);
     nw = st_run(400u, -1, 0.3, &r2, &rl, &gaps);
     V3OK((nw == 0u));
+
+    /* 10) prijem se zpozdenym ACK (FPGA sklada ramec pred zpracovanim ACK z teze transakce): kazdy zaznam prave jednou,
+     *     prekryv = duplicity, zadna mezera; pak reset emulatoru (REC od 0) = resynchronizace */
+    {
+        static fpga_v3_link_t L;
+        fpga_v3_link_init(&L);
+        fpga_v3_emu_init(&s_e, 1e6, 0.0, 0.0, 9u);
+        fpga_v3_emu_frame(&s_e, s_f);                                 /* ramec pripraveny pred prvni transakci */
+        uint32_t got = 0u, bad = 0u;
+        for (uint32_t t = 0; t < 40u; t++) {
+            if (t == 30u) { fpga_v3_emu_init(&s_e, 1e6, 0.0, 0.0, 10u); fpga_v3_emu_frame(&s_e, s_f); }   /* reset FPGA */
+            fpga_v3_hdr_t h; uint32_t n_ok = 0, i0 = 0; int gap = 0;
+            if (fpga_v3_parse(s_f, &h, s_rec, &n_ok) != FPGA_V3_OK) { bad++; break; }
+            const uint32_t n = fpga_v3_link_take(&L, &h, n_ok, &i0, &gap);
+            for (uint32_t i = 0; i < n; i++) if (s_rec[i0 + i].seg_idx != (uint16_t)((h.rec_first + i0 + i) >> 1)) bad++;
+            got += n;
+            fpga_v3_build_ack(s_m, t, L.expect);                          /* MOSI teto transakce ... */
+            for (int q = 0; q < 3; q++) fpga_v3_emu_segment(&s_e);
+            fpga_v3_emu_frame(&s_e, s_f);                                 /* ... FPGA slozi dalsi ramec PRED ACK ... */
+            fpga_v3_emu_rx(&s_e, s_m);                                    /* ... a ACK zpracuje az pak */
+        }
+        V3OK((bad == 0u) && (L.dups > 0u) && (L.gaps == 0u) && (L.resync == 1u) && (got >= 40u));
+    }
 
     return ok;
 }

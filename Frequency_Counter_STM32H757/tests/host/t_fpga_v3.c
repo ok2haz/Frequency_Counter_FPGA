@@ -5,7 +5,8 @@
  * Overuje: (1) fpga_v3_selftest() = tytez testy jako na cili; (2) scenare s vypisem (kmitocty 100 Hz .. 30 MHz, sum
  * 0 / 30 / 100 ps, kanal B jiny kmitocet); (3) dlouhy beh 10 MHz, sum 100 ps, 400 oken: rozptyl odhadu z tezist
  * segmentu (LSQ) musi byt vyrazne mensi nez dvoubodovy (smysl v3); (4) pocitadlo CRC na znamem vektoru;
- * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu. */
+ * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu;
+ * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA). */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -213,6 +214,39 @@ int main(void)
         }
         printf("  vypadek signalu %s: oken %d, max|e| %.2e\n", v ? "1 Hz, 4 s   " : "5 MHz, 25 ms", nwin, maxe);
         CHECK(nwin >= (v ? 50 : 30) && maxe < 1e-9, "vypadek %d: oken %d, max|e| %.2e (okno preklenulo vypadek)", v, nwin, maxe);
+    }
+
+    /* prijem se zpozdenym ACK (model RTL): kazdy zaznam prave jednou; preteceni (STM 3 s necte) = jedna mezera s poctem
+     * ztracenych zaznamu; reset FPGA = resynchronizace */
+    {
+        static fpga_v3_link_t L;
+        fpga_v3_link_init(&L);
+        fpga_v3_emu_init(&E, 5e6, 2e6, 0.0, 123u);
+        fpga_v3_emu_frame(&E, F);
+        uint32_t got = 0, bad = 0, lost_expect = 0;
+        for (uint32_t t = 0; t < 400u; t++) {
+            const int pause = (t >= 100u && t < 102u);                    /* 2 transakce vynechane = 2 x 60 segmentu */
+            if (t == 300u) { fpga_v3_emu_init(&E, 5e6, 2e6, 0.0, 124u); fpga_v3_emu_frame(&E, F); }
+            if (!pause) {
+                fpga_v3_hdr_t h; uint32_t n_ok = 0, i0 = 0; int gap = 0;
+                if (fpga_v3_parse(F, &h, R, &n_ok) != FPGA_V3_OK) { bad++; break; }
+                const uint32_t n = fpga_v3_link_take(&L, &h, n_ok, &i0, &gap);
+                for (uint32_t i = 0; i < n; i++)
+                    if (R[i0 + i].seg_idx != (uint16_t)((h.rec_first + i0 + i) >> 1) || R[i0 + i].ch != ((h.rec_first + i0 + i) & 1u)) bad++;
+                got += n;
+                fpga_v3_build_ack(M, t, L.expect);
+            }
+            const int nseg = pause ? 60 : 4;                               /* 4 segmenty = 8 zaznamu na transakci */
+            for (int q = 0; q < nseg; q++) fpga_v3_emu_segment(&E);
+            if (pause && t == 100u) lost_expect = E.rec_head;              /* (hrube; presny pocet ztracenych z mezery) */
+            fpga_v3_emu_frame(&E, F);
+            if (!pause) fpga_v3_emu_rx(&E, M);
+        }
+        printf("  zpozdeny ACK: zaznamu %u, duplicit %u, mezer %u (ztraceno %u), resync %u, chyb %u\n",
+               (unsigned)got, (unsigned)L.dups, (unsigned)L.gaps, (unsigned)L.gap_recs, (unsigned)L.resync, (unsigned)bad);
+        (void)lost_expect;
+        CHECK(bad == 0 && L.dups > 1000 && L.gaps == 1 && L.gap_recs > 0 && L.resync == 1, "zpozdeny ACK / mezera / resync");
+        CHECK(got + L.gap_recs >= 2400u, "prijato + ztraceno = vse (%u + %u)", (unsigned)got, (unsigned)L.gap_recs);
     }
 
     /* fpga_v3_grp_break: rozpracovane okno kanalu zahodi, druhy kanal necha. Synteticke zaznamy 40 kHz (1000 hran

@@ -22,6 +22,9 @@ M = [
     ('mezera bez pravidla 3 period', 'if (t3 < (double)tol) tol = (uint32_t)t3;', '(void)t3;'),
     ('mezera bez stropu 2,5 s', 'uint32_t tol = g->max_gap_ms / L;', 'uint32_t tol = 0xFFFFFFFFu; (void)L;'),
     ('okno konci jen pri k == K', 'if (c->open && c->k >= g->k_target) {', 'if (c->open && c->k == g->k_target) {'),
+    ('link: prekryv jako mezera', 'else if (d != 0u) {                                                       /* prekryv: duplicity preskocit */',
+     'else if (0) {'),
+    ('link: bez detekce resetu FPGA', 'else if ((uint32_t)(L->expect - head1) - 1u < 0x7FFFFFFFu) {', 'else if (0) {'),
     ('grp_break nic nedela', '{ g->c[ch & 1u].open = 0u; }', '{ (void)g; (void)ch; }'),
     ('grp_break vzdy kanal A', '{ g->c[ch & 1u].open = 0u; }', '{ g->c[0].open = 0u; (void)ch; }'),
 ]

@@ -98,6 +98,7 @@ typedef struct {
     uint16_t rx_crc_err, rx_len_err;
     uint32_t rx_last;
     uint16_t lut_cnt, lut_sum;
+    uint16_t lut_cnt_b;          /* polozky s bitem kanalu B (bajty 122..123) */
     uint8_t  presc[2], cfg_echo;
     fpga_v3_pps_t pps[2];        /* [0] posledni, [1] predchozi */
     uint32_t pps_coarse[2];
@@ -160,6 +161,20 @@ void     fpga_v3_emu_segment(fpga_v3_emu_t *e);              /* jeden segment = 
 void     fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *miso);  /* DATA ramec od rec_ack (jako RTL) */
 void     fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *mosi);   /* prijme ramec STM (ACK posune rec_ack) */
 
+/* ---- prijem zaznamu na STM ----
+ * FPGA sklada ramec PRED zpracovanim ACK z teze transakce (kap. 6.1), takze kazdy zaznam prijde normalne DVAKRAT
+ * (REC_FIRST < ocekavany = prekryv, ne chyba). REC_FIRST > ocekavany = mezera (preteceni kruhu): okna prerusit.
+ * REC_HEAD + 1 < ocekavany = FPGA zacala znovu od 0 (reset / nove nahrani): resynchronizace. */
+typedef struct {
+    uint32_t expect;             /* dalsi ocekavany zaznam = REC_ACK do dalsi transakce */
+    uint8_t  have;               /* expect je platny (po prvnim ramci) */
+    uint32_t frames, recs, dups, gaps, gap_recs, resync;
+} fpga_v3_link_t;
+void     fpga_v3_link_init(fpga_v3_link_t *L);
+/* Ramec DATA (po fpga_v3_parse): vrati pocet NOVYCH zaznamu, prvni je rec[*i0]; *gap = 1 -> pred nimi je mezera
+ * (nebo prvni ramec / resynchronizace) -> fpga_v3_grp_break obou kanalu. */
+uint32_t fpga_v3_link_take(fpga_v3_link_t *L, const fpga_v3_hdr_t *h, uint32_t n_ok, uint32_t *i0, int *gap);
+
 /* ---- segmenty -> okno ---- */
 typedef struct {
     uint8_t  ch;
@@ -172,6 +187,8 @@ typedef struct {
     uint8_t  lsq_ok;
     uint8_t  flags_or;           /* OR priznaku zaznamu okna */
     double   xc0, tc0;           /* teziste PRVNIHO segmentu okna (absolutni, pro fazovy zaznam) */
+    uint64_t x_first, t_first;   /* prvni znacka okna (rozbalene X, T) -- teziste relativne k oknu = xc0 - x_first */
+    uint32_t n0;                 /* znacek prvniho segmentu okna */
 } fpga_v3_win_t;
 
 typedef struct {
@@ -184,6 +201,7 @@ typedef struct {
     uint64_t x_first, t_first;
     double   sw, swx, swt, swxx, swxt;
     double   xc0, tc0;
+    uint32_t n0;
     uint8_t  flags_or;
     uint32_t empty;              /* prazdnych segmentu od posledni hrany v okne */
     double   per_u;              /* odhad periody [jednotky / hranu]; 0 = neznamy (pak plati max_gap_ms) */

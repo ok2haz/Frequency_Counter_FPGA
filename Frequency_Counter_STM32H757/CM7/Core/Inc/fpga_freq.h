@@ -629,4 +629,23 @@ double fpga_sim_hz(void);
  *  @return 0 = nezname jmeno poruchy. */
 int  fpga_sim_fault(const char *what);
 
+/* ── Protokol v3 (docs/PROTOKOL_V3.md, krok 4c) ───────────────────────────────────────────────────────────────
+ * Ovladac zjisti verzi FPGA prvni transakci 1024 B (kap. 6.2) a podle ni bezi v2 (128 B, beze zmeny) nebo v3 (zaznamy
+ * segmentu -> okna v STM, fpga_meas_t se stejnymi poli). */
+/* Krok 7: SPI2 + DMA za behu (1 zapnout, 0 vypnout, -1 zjistit); vychozi vypnuto. @return 1 = DMA se pouziva. */
+int  fpga_freq_spi_dma(int on);
+typedef struct {
+    uint8_t  proto, sim, chan, flags;
+    uint32_t frames, recs, dups, gaps, gap_recs, resync, wins, qdrop, pages;
+    uint32_t k, seg_ms, expect;
+    uint16_t fw, ring_fill, rx_crc_err, rx_len_err;
+    uint32_t caps, rec_head, rec_first;
+    uint8_t  tdc[2], cal_wait;
+} fpga_v3_info_t;
+void fpga_freq_v3_info(fpga_v3_info_t *o);
+/** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK zpracovany az po
+ *  slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). on = 0 vypne. */
+void fpga_sim_v3_set(int on, double hz_a, double hz_b);
+int  fpga_sim_v3_active(void);
+
 #endif /* FPGA_FREQ_H */
