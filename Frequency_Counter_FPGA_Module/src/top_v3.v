@@ -209,6 +209,9 @@ module top_v3 (
     pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
     wire        sig_a = div_a;
     wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];
+    // audit 2026-10-23 (F-0269): B z pinu A jde mimo predelicku (P = 1) -> log2 P v zaznamu B musi byt 0, jinak STM
+    // nasobi X kanalu B starym P_B (STM sice P_B v tom rezimu stahne na 0, ale az po ozvene a dvou ramcich)
+    wire [2:0]  pr_b_eff = bs2[0] ? 3'd0 : pr_b;
     // potvrzeni tabulky jen pro kanaly z masky (stridava kalibrace: druhy kanal muze prave cekat se starym histogramem)
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
@@ -308,7 +311,7 @@ module top_v3 (
         .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_a),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_b),
+        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_b_eff),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 
     wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;

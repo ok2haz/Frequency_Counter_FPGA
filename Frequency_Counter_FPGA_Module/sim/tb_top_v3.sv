@@ -433,6 +433,8 @@ module tb_top_v3;
         if (`TB_MODE == 3) begin
             // ---- sirka pulzu (FW 0x0501): B = pin A invertovany (SET_CONFIG 0x09 = 3) ----
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS (segment 250 us < transakce)
+            // audit 2026-10-23 F-0269: P_B = 4 na pinu B; B z pinu A jde mimo predelicku -> zaznam B musi nest P = 1
+            build(8'h01, 8'h07, 8'h01, 8'd2, 0); xfer(1024);
             build(8'h01, 8'h09, 8'h03, 0, 0); xfer(1024); bfa = 1; binv = 1;
             #(64'd600_000_000);                                          // B 2 segmenty neplatny po zmene zdroje
             build_ack(0); xfer(1024); nxt = rd(32, 4) + 1; haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference

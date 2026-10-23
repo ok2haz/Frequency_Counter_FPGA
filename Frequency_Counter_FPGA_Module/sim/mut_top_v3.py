@@ -71,6 +71,7 @@ M = [
     # F-0268: okno ceka na vsech 512 znacek (bez odpovedi PSRAM se zasekne)
     ('PSRAM: okno ceka na vsechny bajty', 'v3_core.v', "            if (wb == 5'd24 && p_free) begin\n", "            if (wb == 5'd24 && p_free && widx == 10'd512) begin\n", 5),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
+    ('B z pinu A: znacka P_B', 'top_v3.v', ".clear(clear), .presc(pr_b_eff),", ".clear(clear), .presc(pr_b),", 3),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]
