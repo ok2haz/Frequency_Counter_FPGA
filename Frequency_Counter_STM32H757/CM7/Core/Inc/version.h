@@ -11,6 +11,11 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.36.0 (2026-10-23) = JEDNORAZOVE DEJE (protokol v3, FW 0x0501; docs/PROTOKOL_V3.md kap. 10.5): udalosti ze zaznamu
+ * segmentu (presny cas 1. a 2. hrany segmentu, pri N >= 3 souhrn) -- UART `fpga ev on|off|<n>` (kruh 256, cas proti 1PPS),
+ * `fpga ab on|off|<n>` (interval start A / stop B), `fpga pw on|cal|off|<n>` (sirka pulzu: SET_CONFIG 0x09 B = pin A
+ * invertovany, kalibrace zpozdeni A/B s B = pin A), `fpga raw a|b [dump]` (RAW_CAPTURE 512 znacek); emulator
+ * `fpgasim v3 on <Hz_A> [Hz_B] [faze_B_ns]`. Cas rozbalen spolecne pro A i B (jedna osa FPGA), statistika Welford. */
 /* v0.35.1 (2026-10-23) = v3: SPI transakce nejdriv po 40 ms (FpgaTask vola poll pri hradle 50 ms po 10 ms -> drive az ~90
  * transakci 1 KB/s, ~7 % CPU a ~5 % casu maskovane znacky pri CS). Kazde okno se dal precte (fronta 8 oken, kruh FPGA
  * 6,4 s); model smycky FpgaTasku v host testu: hradlo 50 ms 1198/1198 oken souvisle, 22,7 transakci/s. */
@@ -278,8 +283,8 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 35
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.35.1"
+#define FW_VERSION_MINOR 36
+#define FW_VERSION_PATCH 0
+#define FW_VERSION_STR   "v0.36.0"
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

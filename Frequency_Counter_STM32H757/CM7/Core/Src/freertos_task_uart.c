@@ -265,6 +265,99 @@ static void uart_regr_fmt(char *o, size_t n, double v, int dec)
 	snprintf(o, n, "%s%lu.%0*lu", sg, ip, dec, fp);
 }
 
+/* jednorazove deje (v0.36.0): cas [ps] -> "[-]S.FFFFFFFFFFFF s" bez %f (nano.specs), rozliseni 1 ps */
+static void uart_ps_fmt_i(char *o, size_t n, int64_t ps)
+{
+	const char *sg = (ps < 0) ? "-" : "";
+	const uint64_t v = (ps < 0) ? (uint64_t)(-ps) : (uint64_t)ps;
+	const uint64_t f = v % 1000000000000ull;
+	snprintf(o, n, "%s%lu.%06lu%06lu s", sg, (unsigned long)(v / 1000000000000ull),
+	         (unsigned long)(f / 1000000u), (unsigned long)(f % 1000000u));
+}
+static void uart_ps_fmt(char *o, size_t n, double ps)
+{
+	if (ps > 9.0e18) ps = 9.0e18;
+	if (ps < -9.0e18) ps = -9.0e18;
+	uart_ps_fmt_i(o, n, (int64_t)((ps < 0.0) ? ps - 0.5 : ps + 0.5));
+}
+/* cislo z retezce (jen cislice), jinak def; nejvys max */
+static uint32_t uart_num(const char *p, uint32_t def, uint32_t max)
+{
+	if (*p < '0' || *p > '9') return def;
+	uint32_t v = 0u;
+	while (*p >= '0' && *p <= '9') { if (v < 100000u) v = v * 10u + (uint32_t)(*p - '0'); p++; }
+	return (v > max) ? max : v;
+}
+static void uart_ev_list(uint32_t n)
+{
+	for (uint32_t i = n; i-- > 0u; ) {                               /* nejstarsi prvni */
+		fpga_ev_rec_t e;
+		if (!fpga_freq_ev_get(i, &e)) continue;
+		char ts[32], tp[32], tq[32];
+		uart_ps_fmt_i(ts, sizeof ts, (int64_t)e.t_ps);
+		printf("  %c %s seg %5u  t %s", e.ch ? 'B' : 'A', (e.kind == FPGA_V3_EV_BURST) ? "souhrn" : "hrana ", (unsigned)e.seg, ts);
+		if (e.pps_ok) {
+			uart_ps_fmt_i(tp, sizeof tp, e.pps_ps);
+			printf("  1PPS #%lu %s%s", (unsigned long)e.pseq, (e.pps_ps >= 0) ? "+" : "", tp);
+		}
+		if (e.kind == FPGA_V3_EV_BURST) {
+			uart_ps_fmt(tq, sizeof tq, e.per_ps);
+			printf("  N %lu perioda %s", (unsigned long)e.n, tq);
+		}
+		if (e.flags & FPGA_V3_R_CS) printf("  [CS]");
+		printf("\n");
+	}
+}
+static void uart_ev_pair_rc(int rc, const char *what)
+{
+	if (rc == 1)       printf("FPGA: %s\n", what);
+	else if (rc == 2)  printf("FPGA: %s (EMULATOR: zdroj B se neprepina, fazi B nastav `fpgasim v3 on <Hz_A> <Hz_B> <faze_B_ns>`)\n", what);
+	else if (rc == 0)  printf("FPGA: SET_CONFIG 0x09 se nepodaril (link?)\n");
+	else if (rc == -1) printf("FPGA: FW bez prepinani zdroje B (CAPS bit20, potreba FW >= 0x0501)\n");
+	else               printf("FPGA: jen protokol v3 (`fpga v3`)\n");
+}
+static void uart_ab_stat(const char *nm, uint32_t n, double mean, double sd, double mn, double mx, double corr)
+{
+	char a[32], b[24], c[32], d[32];
+	uart_ps_fmt(a, sizeof a, mean - corr);
+	uart_regr_fmt(b, sizeof b, (sd > 4.0e9) ? 4.0e9 : sd, 1);
+	uart_ps_fmt(c, sizeof c, mn - corr);
+	uart_ps_fmt(d, sizeof d, mx - corr);
+	printf("  %s %lu: stredni %s, sigma %s ps, min %s, max %s\n", nm, (unsigned long)n, a, b, c, d);
+}
+static void uart_ab_show(uint32_t n, int pw)
+{
+	static const char *const pm[4] = { "vypnuto", "interval A->B", "sirka pulzu (B = pin A invertovany)",
+	                                   "kalibrace zpozdeni A/B (B = pin A)" };
+	fpga_ev_info_t ei;
+	fpga_freq_ev_info(&ei);
+	printf("FPGA parovani: %s; zdroj B odeslan %u, echo %u (0 pin B, 1 pin A, 3 pin A invertovany), FW 0x%04X%s\n",
+	       pm[ei.pair & 3u], (unsigned)ei.bsrc, (unsigned)ei.echo, (unsigned)ei.fw, ei.sim ? " EMULATOR" : "");
+	const double corr = (pw && ei.sk_n) ? ei.sk_mean : 0.0;
+	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
+	printf("  zahozenych startu %lu (bez stopu do 10 s, souhrn B pres start, hrana mohla chybet)\n", (unsigned long)ei.ab_lost);
+	if (pw) {
+		if (ei.sk_n) uart_ab_stat("zpozdeni B-A", ei.sk_n, ei.sk_mean, ei.sk_sd, ei.sk_min, ei.sk_max, 0.0);
+		else printf("  zpozdeni B-A nekalibrovano (`fpga pw cal`, pak `fpga pw on`): sirka bez korekce\n");
+	}
+	for (uint32_t i = n; i-- > 0u; ) {
+		double v;
+		if (!fpga_freq_ab_get(i, &v)) continue;
+		char b[32];
+		uart_ps_fmt(b, sizeof b, v - corr);
+		printf("  -%-3lu %s\n", (unsigned long)i, b);
+	}
+	if (ei.pair == FPGA_EVP_OFF) printf("  fpga ab on|off|<n>  fpga pw on|cal|off|<n>\n");
+}
+static void uart_raw_cb(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps)
+{
+	(void)ctx;
+	char t[32], d[32];
+	uart_ps_fmt_i(t, sizeof t, (int64_t)mark_ps);
+	uart_ps_fmt(d, sizeof d, d_ps);
+	printf("  %3lu  %s  d %s\n", (unsigned long)i, t, d);
+}
+
 static void fmt_f2(char *b, size_t n, float v)
 {
 	long w = (long)v;
@@ -1491,7 +1584,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int]\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2512,6 +2605,67 @@ void UartTask_run(void *argument)
 				  const uint32_t us = (DWT->CYCCNT - c0) / (SystemCoreClock / 1000000u);
 				  printf("FPGA v3 selftest: %s (radek %d), %lu us\n", v3ok ? "PASS" : "FAIL", fpga_v3_selftest_fail_line(), (unsigned long)us);
 			  }
+			  else if (strncmp(RxBuffer, "fpga ev", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0 (FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5): kruh udalosti -- `fpga ev on|off`, `fpga ev [n]` =
+				   * poslednich n (vychozi 10, nejvys 256): kanal, hrana / souhrn segmentu, cas na ose FPGA, cas od 1PPS. */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       { fpga_freq_ev_enable(1); printf("FPGA udalosti: ZAPNUTO (kruh 256, vynulovan)\n"); }
+				  else if (strcmp(a, "off") == 0) { fpga_freq_ev_enable(0); printf("FPGA udalosti: vypnuto\n"); }
+				  else {
+					  fpga_ev_info_t ei;
+					  fpga_freq_ev_info(&ei);
+					  printf("FPGA udalosti: %s, v kruhu %lu (celkem %lu), protokol v%u%s, posledni 1PPS #%lu\n",
+					         ei.ev_on ? "ZAPNUTO" : "vypnuto", (unsigned long)ei.ev_fill, (unsigned long)ei.ev_total,
+					         (unsigned)ei.proto, ei.sim ? " EMULATOR" : "", (unsigned long)ei.pps_seq);
+					  uart_ev_list(uart_num(a, 10u, 256u));
+					  if (!ei.ev_on) printf("  fpga ev on|off|<n>: presne 1. (a 2.) hrana segmentu 25 ms, hrany >= 50 ns; delsi sled `fpga raw a|b`\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "fpga ab", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0: interval A->B jednorazove -- start = hrana A, stop = prvni hrana B po startu (start bez stopu do 10 s
+				   * se zahodi). `fpga ab on|off`, `fpga ab [n]` = statistika a poslednich n intervalu (nejvys 64). */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_AB), "interval A->B ZAPNUTO (statistika vynulovana)");
+				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else uart_ab_show(uart_num(a, 0u, 64u), 0);
+			  }
+			  else if (strncmp(RxBuffer, "fpga pw", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0: sirka pulzu na pinu A -- `fpga pw cal` (B = pin A: zpozdeni B-A tychz hran), `fpga pw on` (B = pin A
+				   * invertovany: start nabezna, stop sestupna; sirka = interval - zpozdeni), `fpga pw off` (B = pin B), `fpga pw [n]`. */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_PW), "sirka pulzu ZAPNUTO (B = pin A invertovany)");
+				  else if (strcmp(a, "cal") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_SKEW), "kalibrace zpozdeni A/B (B = pin A), pak `fpga pw on`");
+				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else uart_ab_show(uart_num(a, 0u, 64u), 1);
+			  }
+			  else if (strncmp(RxBuffer, "fpga raw", 8) == 0 && (RxBuffer[8] == '\0' || RxBuffer[8] == ' ')) {
+				  /* v0.36.0: RAW_CAPTURE (TYPE 0x0B) -- 512 po sobe jdoucich casovanych znacek kanalu A nebo B do BSRAM FPGA.
+				   * `fpga raw a|b [dump]`: statistika rozdilu, `dump` vypise vsechny znacky. Ceka nejvys 5 s (pod ~100 Hz se
+				   * nezaplni), blokuje UartTask. */
+				  const char *a = (RxBuffer[8] == ' ') ? &RxBuffer[9] : "";
+				  const uint8_t ch = (uint8_t)((a[0] == 'b' || a[0] == 'B') ? 1u : 0u);
+				  const int dump = (strstr(a, "dump") != NULL);
+				  fpga_raw_info_t ri;
+				  printf("FPGA RAW_CAPTURE kanal %c: 512 znacek, ceka nejvys 5 s\n", ch ? 'B' : 'A');
+				  const int rc = fpga_freq_v3_raw(ch, 5000u, dump ? uart_raw_cb : NULL, NULL, &ri);
+				  if (rc == -2) printf("  jen skutecne FPGA v3 (ne emulator)\n");
+				  else if (rc == -3) printf("  SPI selhalo\n");
+				  else {
+					  if (rc == -1) printf("  CHYBA: stranka znacek nedorazila\n");
+					  printf("  znacek %lu (FPGA %lu)%s\n", (unsigned long)ri.n, (unsigned long)ri.cnt, (rc == 0) ? " -- neuplne (timeout)" : "");
+					  if (ri.n >= 2u) {
+						  char m[32], s[24], lo[32], hi[32], sp[32], fz[24];
+						  uart_ps_fmt(m, sizeof m, ri.d_mean);
+						  uart_regr_fmt(s, sizeof s, (ri.d_sd > 4.0e9) ? 4.0e9 : ri.d_sd, 1);
+						  uart_ps_fmt(lo, sizeof lo, ri.d_min);
+						  uart_ps_fmt(hi, sizeof hi, ri.d_max);
+						  uart_ps_fmt(sp, sizeof sp, ri.span_ps);
+						  uart_regr_fmt(fz, sizeof fz, (ri.span_ps > 0.0) ? (double)(ri.n - 1u) * 1e12 / ri.span_ps : 0.0, 3);
+						  printf("  rozdil: stredni %s, sigma %s ps, min %s, max %s\n", m, s, lo, hi);
+						  printf("  prvni..posledni %s -> %s Hz\n", sp, fz);
+					  }
+				  }
+			  }
 			  else if (strncmp(RxBuffer, "fpga diag", 9) == 0 && (RxBuffer[9] == '\0' || RxBuffer[9] == ' ')) {
 				  /* FW >= 0x0425 (caps bit14, E0 audit 2026-10-20): SET_CONFIG 0x05. `fpga diag` = stav,
 				   * `fpga diag mask on|off` = maskovani vnitrnich znacek pri CS SPI (vychozi FPGA ON),
@@ -2845,15 +2999,19 @@ void UartTask_run(void *argument)
 						  while (*p >= '0' && *p <= '9') { if (ha < 1.0e9) ha = ha * 10.0 + (*p - '0'); p++; }
 						  while (*p == ' ') p++;
 						  while (*p >= '0' && *p <= '9') { if (hbz < 1.0e9) hbz = hbz * 10.0 + (*p - '0'); p++; }
+						  double phn = 0.0;                         /* v0.36.0: faze B proti A [ns] (jednorazove deje) */
+						  while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (phn < 1.0e11) phn = phn * 10.0 + (*p - '0'); p++; }
 						  if (ha < 1.0) ha = 10000000.0;
 						  if (ha > 40.0e6) ha = 40.0e6;
 						  if (hbz > 40.0e6) hbz = 40.0e6;
-						  fpga_sim_v3_set(1, ha, hbz);
-						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
-						         (unsigned long)ha, (unsigned long)hbz);
+						  if (phn > 0.0 && hbz < 1.0) hbz = ha;    /* faze bez kmitoctu B: B = A */
+						  fpga_sim_v3_set(1, ha, hbz, phn * 1e-9);
+						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz, faze B %lu ns (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
+						         (unsigned long)ha, (unsigned long)hbz, (unsigned long)phn);
 						  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
 					  } else {
-						  fpga_sim_v3_set(0, 0.0, 0.0);
+						  fpga_sim_v3_set(0, 0.0, 0.0, 0.0);
 						  printf("FPGASIM v3: vypnuto (zpet na skutecne SPI, verze FPGA se zjisti znovu)\n");
 					  }
 				  } else if (strncmp(a, "on", 2) == 0) {
@@ -2897,7 +3055,7 @@ void UartTask_run(void *argument)
 					  } else {
 						  printf("FPGASIM: vypnuto\n");
 					  }
-					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap> | v3 on [Hz_A] [Hz_B] | v3 off\n");
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap> | v3 on [Hz_A] [Hz_B] [faze_B_ns] | v3 off\n");
 				  }
 			  }
 			  /* 🔴 `rpipe [0|1|2]` — zpozdeni vzorkovani CTENYCH dat z SDRAM za CAS latenci,

@@ -1091,6 +1091,112 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
     m->freq16_x100000    = freq_x1e5_from(m->edges_b, m->dt_b_ps);
 }
 
+/* ── jednorazove deje (v0.36.0, FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5) ────────────────────────────────────────────
+ * Udalosti ze zaznamu (fpga_v3_ev_from_rec) bezi jen pri zapnuti (UART `fpga ev on`, `fpga ab on`, `fpga pw on|cal`),
+ * cele ve FpgaTasku (s3_take_records). UART zada vynulovani pocitadlem generace (kazda promenna ma jednoho zapisovatele)
+ * a cte kopie pod zakazem preruseni.
+ *   * kruh 256 udalosti s casem proti posledni 1PPS z hlavicky (tataz osa FPGA; PTS FW 0x0500 = hruby cas -> 10 ns),
+ *   * parovani (fpga_v3_ab_feed): udalosti A segmentu se drzi do zaznamu B tehoz segmentu (FPGA posila A, pak B);
+ *     zaznam neplatny / se znackami pri CS = hrana mohla chybet -> rozpracovany start pryc,
+ *   * po prepnuti zdroje B (SET_CONFIG 0x09) se paruje az za drzenim B (FLAGS bit0) -- starsi zaznamy jsou z puvodniho
+ *     zdroje. */
+#define S3E_RING   256u
+#define S3E_AB     64u
+#define S3E_MAX_S  10.0                 /* start bez stopu do 10 s se zahodi */
+static fpga_ev_rec_t  s3e_ring[S3E_RING];
+static uint32_t       s3e_w = 0u;       /* udalosti celkem (index zapisu) */
+static double         s3e_ab[S3E_AB];
+static uint32_t       s3e_abw = 0u;
+static fpga_v3_evu_t  s3e_u;
+static fpga_v3_pr_t   s3e_pr;           /* parovani po zaznamech (fpga_v3_pr_rec, host test) */
+static fpga_v3_stat_t s3e_st;
+static uint8_t        s3e_act = 0u;
+static volatile uint8_t s3e_on = 0u, s3e_pair = FPGA_EVP_OFF;   /* zapisuje UART */
+static volatile uint8_t s3e_gen[4];     /* UART: vynulovat kruh / intervaly / zpozdeni, prepnuti zdroje B */
+static uint8_t        s3e_seen[4];
+static uint8_t        s3e_bsrc = 0u;    /* posledni odeslany SET_CONFIG 0x09 */
+
+/* rozbaleny cas [T/16384] -> ps (cele sekundy zvlast, bez preteceni 64 b) */
+static uint64_t s3e_ps(uint64_t t_u, uint32_t clk)
+{
+    const uint64_t upu = (uint64_t)clk * 16384u, ups = upu * 1000000u;
+    return (t_u / ups) * 1000000000000ull + ((t_u % ups) * 1000000u) / upu;
+}
+static int64_t s3e_s48(uint64_t d)
+{
+    d &= 0xFFFFFFFFFFFFull;
+    return (d & (1ull << 47)) ? (int64_t)d - (int64_t)(1ull << 48) : (int64_t)d;
+}
+
+static void s3e_apply(uint32_t clk)
+{
+    const uint8_t act = (uint8_t)(s3e_on || s3e_pair != FPGA_EVP_OFF);
+    const uint64_t max_u = (uint64_t)(S3E_MAX_S * 1e12 / fpga_v3_unit_ps(clk));
+    uint32_t pm;
+    if (act && !s3e_act) {
+        fpga_v3_evu_init(&s3e_u);
+        pm = __get_PRIMASK(); __disable_irq(); fpga_v3_pr_init(&s3e_pr, max_u); __set_PRIMASK(pm);
+    }
+    s3e_act = act;
+    if (s3e_gen[0] != s3e_seen[0]) {
+        s3e_seen[0] = s3e_gen[0];
+        pm = __get_PRIMASK(); __disable_irq(); s3e_w = 0u; __set_PRIMASK(pm);
+    }
+    if (s3e_gen[1] != s3e_seen[1]) {
+        s3e_seen[1] = s3e_gen[1];
+        pm = __get_PRIMASK(); __disable_irq();
+        fpga_v3_ab_init(&s3e_pr.ab, max_u); s3e_pr.pa_have = 0u; fpga_v3_stat_init(&s3e_st); s3e_abw = 0u;
+        __set_PRIMASK(pm);
+    }
+    if (s3e_gen[2] != s3e_seen[2]) {
+        s3e_seen[2] = s3e_gen[2];
+        pm = __get_PRIMASK(); __disable_irq(); fpga_v3_stat_init(&s3e_pr.sk); __set_PRIMASK(pm);
+    }
+    if (s3e_gen[3] != s3e_seen[3]) {
+        s3e_seen[3] = s3e_gen[3];
+        pm = __get_PRIMASK(); __disable_irq(); fpga_v3_pr_switch(&s3e_pr); __set_PRIMASK(pm);
+    }
+}
+
+static void s3e_push(const fpga_v3_ev_t *e, uint8_t fl, uint32_t clk, double up)
+{
+    fpga_ev_rec_t o;
+    memset(&o, 0, sizeof o);
+    o.t_ps = s3e_ps(e->t_u, clk);
+    o.per_ps = e->per_u * up;
+    o.n = e->n; o.seg = e->seg; o.ch = e->ch; o.kind = e->kind; o.flags = fl;
+    for (int i = 0; i < 2; i++) {                       /* 1PPS pred hranou: [0] posledni, jinak [1] predchozi */
+        if (!(s3_h.pps[i].pflags & 1u)) continue;
+        const int64_t d = s3e_s48(e->t_u - s3_h.pps[i].pts);
+        o.pps_ps = (int64_t)((double)d * up); o.pseq = s3_h.pps[i].pseq; o.pps_ok = 1u;
+        if (d >= 0) break;
+    }
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s3e_ring[s3e_w % S3E_RING] = o; s3e_w++;
+    __set_PRIMASK(pm);
+}
+
+static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
+{
+    const double up = fpga_v3_unit_ps(clk);
+    fpga_v3_ev_t e[2];
+    const uint32_t ne = fpga_v3_ev_from_rec(&s3e_u, r, clk, now, e);
+    if (s3e_on) for (uint32_t k = 0; k < ne; k++) s3e_push(&e[k], r->flags, clk, up);
+    const uint8_t pr = s3e_pair;
+    if (pr == FPGA_EVP_OFF) return;
+    int64_t dt[4];
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();                                    /* UART cte s3e_pr.ab.lost a s3e_pr.sk */
+    const uint32_t nd = fpga_v3_pr_rec(&s3e_pr, r, e, ne, pr == FPGA_EVP_SKEW, up, dt, 4u);
+    for (uint32_t k = 0; k < nd; k++) {
+        const double ps = (double)dt[k] * up;
+        fpga_v3_stat_add(&s3e_st, ps);
+        s3e_ab[s3e_abw % S3E_AB] = ps; s3e_abw++;
+    }
+    __set_PRIMASK(pm);
+}
+
 /* Prijaty ramec DATA: nove zaznamy -> okna -> fronta */
 static void s3_take_records(uint32_t n_ok)
 {
@@ -1099,7 +1205,11 @@ static void s3_take_records(uint32_t n_ok)
     if (s3_h.seg_len_ms && s3_h.seg_len_ms != s3_grp.seg_ms) s3_regroup();   /* zmena L: okna znovu */
     if (gap) { fpga_v3_grp_break(&s3_grp, 0u); fpga_v3_grp_break(&s3_grp, 1u); s3_wb_ok = 0u; s3_brk = 1u; }
     const uint32_t clk = s3_h.clk_mhz ? s3_h.clk_mhz : 100u;
+    s3e_apply(clk);
+    if (gap) { const uint32_t pm = __get_PRIMASK(); __disable_irq(); fpga_v3_pr_gap(&s3e_pr); __set_PRIMASK(pm); }
+    const uint32_t now = HAL_GetTick();
     for (uint32_t i = 0; i < n; i++) {
+        if (s3e_act) s3e_rec(&s3_rec[i0 + i], clk, now);
         fpga_v3_win_t w;
         if (!fpga_v3_grp_feed(&s3_grp, &s3_rec[i0 + i], clk, &w)) continue;
         if (w.ch != (s3_chan & 1u)) { s3_wb = w; s3_wb_ok = 1u; continue; }
@@ -1140,12 +1250,13 @@ static void sim3_produce(const uint8_t *tx, uint8_t *rx)
     fpga_v3_emu_rx(&s3_emu, tx);
 }
 
-void fpga_sim_v3_set(int on, double hz_a, double hz_b)
+void fpga_sim_v3_set(int on, double hz_a, double hz_b, double ph_b_s)
 {
     if (!on) { s_sim_v3 = 0u; s_sim_on = 0u; s_proto = 0u; return; }
     s3_emu_hz  = (hz_a > 0.0) ? hz_a : 10e6;
     s3_emu_hzb = (hz_b > 0.0) ? hz_b : 0.0;
     fpga_v3_emu_init(&s3_emu, s3_emu_hz, s3_emu_hzb, 30.0, HAL_GetTick() | 1u);
+    if (ph_b_s > 0.0) fpga_v3_emu_set_phase(&s3_emu, 1, s3_emu.t_next[0] + ph_b_s);   /* B = A + faze (jednorazove deje) */
     s3_emu_ms = HAL_GetTick(); s3_emu_rem = 0u;
     fpga_v3_emu_frame(&s3_emu, s3_emu_f);
     s_sim_t0 = HAL_GetTick(); s_sim_pps_next_ms = s_sim_t0 + 1000u; s_sim_nopps = 0u;
@@ -2665,6 +2776,122 @@ static bool tdccal_poll_v3(void)
     const bool r = tdccal_run_v3(ch);
     s3_regroup();                                                      /* kalibrace blokovala: okna znovu, preruseni */
     return r;
+}
+
+/* ── jednorazove deje: rozhrani pro UART (v0.36.0) ── */
+void fpga_freq_ev_enable(int on)
+{
+    if (on) { s3e_gen[0]++; s3e_on = 1u; }
+    else s3e_on = 0u;
+}
+
+int fpga_freq_ev_pair(uint8_t mode)
+{
+    static const uint8_t bs[4] = { 0u, 0u, 3u, 1u };    /* SET_CONFIG 0x09 podle rezimu */
+    if (mode > FPGA_EVP_SKEW) mode = FPGA_EVP_OFF;
+    if (s_proto != 3u) return -2;
+    int rc = 1;
+    const uint8_t want = bs[mode];
+    const uint8_t cap = (uint8_t)(s3_h_ok && (s3_h.caps & FPGA_V3_CAP_BSRC));
+    if (s_sim_on) rc = 2;
+    else if (want != 0u && !cap) return -1;
+    else if (cap && want != s3e_bsrc) {
+        s3e_gen[3]++;                                   /* parovat az za drzenim B (pred prikazem: zadne zavody) */
+        if (!v3_cfg(FPGA_V3_CFG_BSRC, want, 0u)) return 0;
+        s3e_bsrc = want;
+    }
+    if (mode == FPGA_EVP_AB || mode == FPGA_EVP_PW) s3e_gen[1]++;
+    if (mode == FPGA_EVP_SKEW) s3e_gen[2]++;
+    s3e_pair = mode;
+    return rc;
+}
+
+void fpga_freq_ev_info(fpga_ev_info_t *o)
+{
+    if (o == NULL) return;
+    memset(o, 0, sizeof *o);
+    fpga_v3_stat_t st, sk;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    st = s3e_st; sk = s3e_pr.sk;
+    o->ev_total = s3e_w; o->ab_lost = s3e_pr.ab.lost; o->ab_fill = s3e_abw;
+    __set_PRIMASK(pm);
+    o->ev_fill = (o->ev_total < S3E_RING) ? o->ev_total : S3E_RING;
+    if (o->ab_fill > S3E_AB) o->ab_fill = S3E_AB;
+    o->proto = s_proto; o->sim = (uint8_t)(s_sim_on && s_sim_v3);
+    o->ev_on = s3e_on; o->pair = s3e_pair; o->bsrc = s3e_bsrc;
+    o->ab_n = st.n; o->ab_mean = fpga_v3_stat_mean(&st); o->ab_sd = fpga_v3_stat_sd(&st); o->ab_min = st.min; o->ab_max = st.max;
+    o->sk_n = sk.n; o->sk_mean = fpga_v3_stat_mean(&sk); o->sk_sd = fpga_v3_stat_sd(&sk); o->sk_min = sk.min; o->sk_max = sk.max;
+    if (s3_h_ok) {
+        o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->echo = (uint8_t)((s3_h.cfg_echo >> 3) & 3u);
+        o->pps_seq = s3_h.pps[0].pseq;
+    }
+}
+
+int fpga_freq_ev_get(uint32_t back, fpga_ev_rec_t *o)
+{
+    int ok = 0;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const uint32_t fill = (s3e_w < S3E_RING) ? s3e_w : S3E_RING;
+    if (o != NULL && back < fill) { *o = s3e_ring[(s3e_w - 1u - back) % S3E_RING]; ok = 1; }
+    __set_PRIMASK(pm);
+    return ok;
+}
+
+int fpga_freq_ab_get(uint32_t back, double *ps)
+{
+    int ok = 0;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const uint32_t fill = (s3e_abw < S3E_AB) ? s3e_abw : S3E_AB;
+    if (ps != NULL && back < fill) { *ps = s3e_ab[(s3e_abw - 1u - back) % S3E_AB]; ok = 1; }
+    __set_PRIMASK(pm);
+    return ok;
+}
+
+/* RAW_CAPTURE: zadost (p0 = kanal), cekani na pocet (souhrnna stranka polozka 5), stranky druhu 3 po 252 polozkach
+ * (126 znacek, dve polozky u24 = dolni a horni polovina u48). Vlastni buffer stranky (s3_items patri kalibraci). */
+static uint32_t s3r_items[FPGA_V3_LUTW_MAX];
+int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st)
+{
+    fpga_raw_info_t z;
+    if (st == NULL) st = &z;
+    memset(st, 0, sizeof *st);
+    if (s_proto != 3u || s_sim_on) return -2;
+    if (!spi_lock(200)) return -3;
+    fpga_v3_build(s3c_tx, FPGA_V3_T_RAW, ++s3_mseq, (const uint8_t[1]){ (uint8_t)(ch & 1u) }, 1u);
+    const bool sent = xfer3_raw(s3c_tx, s3c_rx);
+    spi_unlock();
+    if (!sent) return -3;
+    const uint32_t t0 = HAL_GetTick();
+    do {
+        osDelay(20);
+        uint16_t n = 0u;
+        if (v3_page(0u, 0u, s3r_items, &n) && n > 5u) st->cnt = s3r_items[5];
+    } while (st->cnt < 512u && (HAL_GetTick() - t0) < timeout_ms);
+    if (st->cnt > 512u) st->cnt = 512u;
+    const uint32_t clk = (s3_h_ok && s3_h.clk_mhz) ? s3_h.clk_mhz : 100u;
+    const double up = fpga_v3_unit_ps(clk);
+    fpga_v3_stat_t ds;
+    fpga_v3_stat_init(&ds);
+    uint64_t first = 0u, prev = 0u;
+    for (uint16_t p = 0; (uint32_t)p * FPGA_V3_LUTW_MAX < 2u * st->cnt; p++) {
+        uint16_t m = 0u;
+        bool ok = false;
+        for (int a = 0; a < 3 && !ok; a++) ok = v3_page(3u, p, s3r_items, &m);
+        if (!ok) return -1;
+        for (uint32_t k = 0; k + 1u < m && st->n < st->cnt; k += 2u) {
+            const uint64_t mk = (uint64_t)s3r_items[k] | ((uint64_t)s3r_items[k + 1u] << 24);
+            const double d = st->n ? (double)((mk - prev) & 0xFFFFFFFFFFFFull) * up : 0.0;
+            if (st->n) fpga_v3_stat_add(&ds, d); else first = mk;
+            if (cb) cb(ctx, st->n, s3e_ps(mk, clk), d);
+            prev = mk; st->n++;
+        }
+    }
+    st->d_mean = fpga_v3_stat_mean(&ds); st->d_sd = fpga_v3_stat_sd(&ds); st->d_min = ds.min; st->d_max = ds.max;
+    st->span_ps = st->n ? (double)((prev - first) & 0xFFFFFFFFFFFFull) * up : 0.0;
+    return (st->n >= 512u) ? 1 : 0;
 }
 
 /* Stav v3 pro UART `fpga v3` */

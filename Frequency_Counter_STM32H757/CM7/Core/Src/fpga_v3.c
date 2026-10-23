@@ -216,6 +216,8 @@ void fpga_v3_emu_segment(fpga_v3_emu_t *e)
     }
 }
 
+void fpga_v3_emu_set_phase(fpga_v3_emu_t *e, uint8_t ch, double t_s) { e->t_next[ch & 1u] = t_s; }
+
 void fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *f)
 {
     memset(f, 0, FPGA_V3_LEN);
@@ -282,6 +284,147 @@ uint32_t fpga_v3_link_take(fpga_v3_link_t *L, const fpga_v3_hdr_t *h, uint32_t n
     const uint32_t n = n_ok - *i0;
     L->expect += n; L->recs += n;
     return n;
+}
+
+/* ══════════════ jednorazove deje (STM) ══════════════ */
+void fpga_v3_evu_init(fpga_v3_evu_t *u) { memset(u, 0, sizeof *u); }
+
+uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t clk_mhz, uint32_t now_ms, fpga_v3_ev_t out[2])
+{
+    if ((r->flags & FPGA_V3_R_INVALID) || r->n == 0u) return 0u;
+    const uint8_t ch = (uint8_t)(r->ch & 1u);
+    /* cas: jedna osa pro oba kanaly. Rozdil proti posledni znacce se znamenkem (B muze byt v segmentu pred A) a pocet
+     * preteceni 2^48 (171,8 s) z uplynuleho casu STM (chyba casu prijmu ~0,1 s << 171,8 s) */
+    if (!u->have) { u->have = 1u; u->t_un = r->t0; }
+    else {
+        uint64_t draw = (r->t0 - u->t_raw) & MASK48;
+        const int64_t ds = (draw & (1ull << 47)) ? (int64_t)draw - (int64_t)(MASK48 + 1u) : (int64_t)draw;
+        const double  e_u = (double)(uint32_t)(now_ms - u->ms) * 1e9 / fpga_v3_unit_ps(clk_mhz);
+        const double  k   = floor((e_u - (double)ds) / 281474976710656.0 + 0.5);
+        u->t_un = (uint64_t)((int64_t)u->t_un + ds + (int64_t)k * (int64_t)(MASK48 + 1u));
+    }
+    u->t_raw = r->t0; u->ms = now_ms;
+    /* index hrany: po kanalech (40 b, kontinuita -- hrany jen pribyvaji) */
+    if (!u->xhave[ch]) { u->xhave[ch] = 1u; u->x_un[ch] = r->x0; }
+    else u->x_un[ch] += (r->x0 - u->x_raw[ch]) & MASK40;
+    u->x_raw[ch] = r->x0;
+    fpga_v3_ev_t *e = &out[0];
+    memset(e, 0, sizeof *e);
+    e->ch = ch; e->seg = r->seg_idx; e->x = u->x_un[ch]; e->t_u = u->t_un;
+    if (r->n >= 3u) {
+        e->kind = FPGA_V3_EV_BURST; e->n = r->n;
+        e->per_u = r->sx ? (double)r->st / (double)r->sx : 0.0;
+        return 1u;
+    }
+    e->kind = FPGA_V3_EV_EDGE; e->n = 1u;
+    if (r->n == 1u) return 1u;
+    out[1] = *e;                                                          /* N = 2: druha hrana presne */
+    out[1].x = e->x + r->sx;
+    out[1].t_u = e->t_u + r->st;
+    return 2u;
+}
+
+void fpga_v3_ab_init(fpga_v3_ab_t *p, uint64_t max_u) { memset(p, 0, sizeof *p); p->max_u = max_u; }
+static void ab_reset(fpga_v3_ab_t *p) { p->armed = 0u; }      /* neplatny zaznam / mezera: rozpracovany start pryc */
+
+uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, int64_t *dt_u, uint32_t max_out)
+{
+    const fpga_v3_ev_t *o[8];
+    uint32_t m = 0, out = 0;
+    for (uint32_t i = 0; i < n && m < 8u; i++) o[m++] = &ev[i];
+    for (uint32_t i = 1; i < m; i++)                                       /* serazeni v case (<= 8 udalosti) */
+        for (uint32_t j = i; j > 0 && o[j]->t_u < o[j - 1]->t_u; j--) { const fpga_v3_ev_t *t = o[j]; o[j] = o[j - 1]; o[j - 1] = t; }
+    for (uint32_t i = 0; i < m; i++) {
+        const fpga_v3_ev_t *e = o[i];
+        if (p->armed && e->t_u - p->t_start > p->max_u) { p->armed = 0u; p->lost++; }   /* start bez stopu */
+        if (!p->armed) {
+            if (e->ch == 0u) { p->armed = 1u; p->t_start = e->t_u; }
+        } else if (e->ch == 1u && e->t_u > p->t_start) {
+            if (out < max_out) dt_u[out++] = (int64_t)(e->t_u - p->t_start);
+            p->n++;
+            p->armed = 0u;
+        }
+    }
+    /* souhrn B (N >= 3) zacal pred startem a trva pres nej: prvni hrana B PO startu je neznama (presna je jen prvni
+     * hrana souhrnu) -> interval by nebyl presny, start zahodit */
+    if (p->armed) {
+        for (uint32_t i = 0; i < m; i++) {
+            const fpga_v3_ev_t *e = o[i];
+            if (e->ch == 1u && e->kind == FPGA_V3_EV_BURST && e->t_u <= p->t_start &&
+                (double)e->t_u + (double)(e->n - 1u) * e->per_u > (double)p->t_start) { p->armed = 0u; p->lost++; break; }
+        }
+    }
+    return out;
+}
+
+void   fpga_v3_stat_init(fpga_v3_stat_t *s) { memset(s, 0, sizeof *s); }
+void   fpga_v3_stat_add(fpga_v3_stat_t *s, double v)
+{
+    if (s->n == 0u || v < s->min) s->min = v;
+    if (s->n == 0u || v > s->max) s->max = v;
+    s->n++;
+    const double d = v - s->mean;          /* Welford: sum(v^2) - n*m^2 ztraci pri m = 5e9 ps desitky ps */
+    s->mean += d / (double)s->n;
+    s->m2   += d * (v - s->mean);
+}
+double fpga_v3_stat_mean(const fpga_v3_stat_t *s) { return s->n ? s->mean : 0.0; }
+double fpga_v3_stat_sd(const fpga_v3_stat_t *s)
+{
+    if (s->n < 2u) return 0.0;
+    const double v = s->m2 / (double)(s->n - 1u);
+    return v > 0.0 ? sqrt(v) : 0.0;
+}
+
+int fpga_v3_skew_add(fpga_v3_stat_t *s, const fpga_v3_ev_t *ea, const fpga_v3_ev_t *eb, int64_t lim_u, double unit_ps)
+{
+    const int64_t d = (int64_t)(eb->t_u - ea->t_u);
+    if (d > lim_u || d < -lim_u) return 0;
+    fpga_v3_stat_add(s, (double)d * unit_ps);
+    return 1;
+}
+
+void fpga_v3_pr_init(fpga_v3_pr_t *p, uint64_t max_u)
+{
+    memset(p, 0, sizeof *p);
+    fpga_v3_ab_init(&p->ab, max_u);
+    fpga_v3_stat_init(&p->sk);
+}
+void fpga_v3_pr_switch(fpga_v3_pr_t *p) { p->skip = 1u; p->skip_n = 0u; p->pa_have = 0u; ab_reset(&p->ab); }
+void fpga_v3_pr_gap(fpga_v3_pr_t *p)    { p->pa_have = 0u; ab_reset(&p->ab); }
+
+uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_ev_t *e, uint32_t ne, int skew,
+                        double unit_ps, int64_t *dt_u, uint32_t max_out)
+{
+    const int bad = (r->flags & (FPGA_V3_R_INVALID | FPGA_V3_R_CS)) != 0u;
+    uint32_t out = 0u;
+    if (ne > 2u) ne = 2u;
+    if ((r->ch & 1u) == 0u) {
+        if (p->pa_have && !skew && !p->skip) out = fpga_v3_ab_feed(&p->ab, p->pa, p->pan, dt_u, max_out);   /* A bez B */
+        p->pa_have = 0u;
+        if (bad) { ab_reset(&p->ab); return out; }
+        for (uint32_t k = 0; k < ne; k++) p->pa[k] = e[k];
+        p->pan = ne; p->pa_seg = r->seg_idx; p->pa_have = 1u;
+        return out;
+    }
+    if (p->skip) {                                       /* prepnuti zdroje B: az za drzenim B */
+        if ((r->flags & FPGA_V3_R_INVALID) || ++p->skip_n > 80u) p->skip = 0u;
+        ab_reset(&p->ab); p->pa_have = 0u;
+        return 0u;
+    }
+    if (bad) { ab_reset(&p->ab); p->pa_have = 0u; return 0u; }
+    const int same = p->pa_have && p->pa_seg == r->seg_idx;
+    if (skew) {
+        if (same && p->pan && ne) (void)fpga_v3_skew_add(&p->sk, &p->pa[0], &e[0], (int64_t)(50000.0 / unit_ps), unit_ps);
+    } else {
+        fpga_v3_ev_t ev[4];
+        uint32_t m = 0u;
+        if (p->pa_have && !same) out = fpga_v3_ab_feed(&p->ab, p->pa, p->pan, dt_u, max_out);
+        else if (same) for (uint32_t k = 0; k < p->pan; k++) ev[m++] = p->pa[k];
+        for (uint32_t k = 0; k < ne; k++) ev[m++] = e[k];
+        if (m) out += fpga_v3_ab_feed(&p->ab, ev, m, dt_u + out, max_out - out);
+    }
+    p->pa_have = 0u;
+    return out;
 }
 
 /* ══════════════ segmenty -> okno ══════════════ */
@@ -542,6 +685,21 @@ bool fpga_v3_selftest(void)
             fpga_v3_emu_rx(&s_e, s_m);                                    /* ... a ACK zpracuje az pak */
         }
         V3OK((bad == 0u) && (L.dups > 0u) && (L.gaps == 0u) && (L.resync == 1u) && (got >= 40u));
+    }
+
+    /* 11) jednorazove deje: N = 2 -> obe hrany presne; interval A->B pres hranici segmentu; rozbaleni T0 pres 2^48 */
+    {
+        static fpga_v3_evu_t u; static fpga_v3_ab_t ab;
+        fpga_v3_ev_t e[4]; int64_t dt[2];
+        fpga_v3_evu_init(&u); fpga_v3_ab_init(&ab, 1000000000000ull);
+        const fpga_v3_rec_t ra = { 5u, 0u, 0u, 2u, 100u, MASK48 - 500u, 7u, 1000u, }, rb = { 6u, 1u, 0u, 1u, 40u, 300u, 0u, 0u, };
+        uint32_t na = fpga_v3_ev_from_rec(&u, &ra, 100u, 0u, e);
+        V3OK((na == 2u) && (e[0].kind == FPGA_V3_EV_EDGE) && (e[1].x == 107u) && (e[1].t_u == MASK48 + 500u));
+        uint32_t nb = fpga_v3_ev_from_rec(&u, &rb, 100u, 25u, &e[2]);   /* B o segment pozdeji, T0 po preteceni 2^48 */
+        V3OK((nb == 1u) && (fpga_v3_ab_feed(&ab, e, 2u, dt, 2u) == 0u) && ab.armed);
+        V3OK((fpga_v3_ab_feed(&ab, &e[2], 1u, dt, 2u) == 1u) && (dt[0] == (int64_t)(MASK48 + 1u + 300u - (MASK48 - 500u))));
+        fpga_v3_rec_t rp = rb; rp.t0 = 100u;                             /* B po 200 s pauze: T0 pretekl jednou navic */
+        V3OK((fpga_v3_ev_from_rec(&u, &rp, 100u, 25u + 200000u, e) == 1u) && (e[0].t_u == (MASK48 + 1u) * 2u + 100u));
     }
 
     return ok;

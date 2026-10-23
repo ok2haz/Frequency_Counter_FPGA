@@ -7,7 +7,8 @@
  * segmentu (LSQ) musi byt vyrazne mensi nez dvoubodovy (smysl v3); (4) pocitadlo CRC na znamem vektoru;
  * (5) fpga_v3_grp_break (preruseni okna jednoho kanalu); (6) nizke kmitocty 33 Hz .. 0,3 Hz a vypadek signalu;
  * (7) prijem se zpozdenym ACK jako u RTL (fpga_v3_link_take: duplicity, mezera, reset FPGA);
- * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu. */
+ * (8) model smycky FpgaTasku: hradlo 50 ms .. 1 s, kazde okno prave jednou a souvisle, transakce za sekundu;
+ * (9) jednorazove deje: casy udalosti, interval A->B (start/stop), zpozdeni A/B, 200 s ticho (T0 pretece). */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
 #include <stdio.h>
@@ -60,6 +61,15 @@ static void run(double fa, double fb, double sig, uint32_t nseg, uint32_t k, uin
 }
 
 static double sd(double s, double ss, int n) { return n > 1 ? sqrt((ss - s * s / n) / (n - 1)) : 0.0; }
+
+/* udalost pro test fpga_v3_ab_feed; N >= 3 = souhrn (presna jen prvni hrana) */
+static fpga_v3_ev_t evk(uint8_t ch, uint64_t t_u, uint32_t n, double per_u)
+{
+    fpga_v3_ev_t e;
+    memset(&e, 0, sizeof e);
+    e.ch = ch; e.kind = (n >= 3u) ? FPGA_V3_EV_BURST : FPGA_V3_EV_EDGE; e.n = n; e.t_u = t_u; e.per_u = per_u;
+    return e;
+}
 
 int main(void)
 {
@@ -298,6 +308,148 @@ int main(void)
                    (unsigned)gap, (unsigned)qdrop, (unsigned)bad, maxe);
             CHECK(bad == 0 && gap == 0 && qdrop == 0 && wins >= expect_w && maxe < 1e-8,
                   "FpgaTask K %u: oken %u, mezer %u, zahozeno %u, chyb %u", (unsigned)TC[c].k, (unsigned)wins, (unsigned)gap, (unsigned)qdrop, (unsigned)bad);
+        }
+    }
+
+    /* fpga_v3_ab_feed po krocich (casy v jednotkach T/16384): (1) B predchozi periody v teze davce pred dalsim A -- bez
+     * serazeni by A prisel pred stopem (ignorovan) a start by se ztratil; (2) stop jen PO startu (B v tomtez okamziku
+     * neni stop); (3) souhrn B zacal pred startem a trva pres nej -> start zahodit (prvni hrana B po startu neznama) */
+    {
+        static fpga_v3_ab_t P; fpga_v3_ev_t e[2]; int64_t dt[4]; uint32_t n1, n2, n3; int64_t d2;
+        fpga_v3_ab_init(&P, 1000000u);
+        e[0] = evk(0u, 1000u, 1u, 0.0);
+        n1 = fpga_v3_ab_feed(&P, e, 1u, dt, 4u);                               /* start 1000 */
+        e[0] = evk(0u, 2000u, 1u, 0.0); e[1] = evk(1u, 1500u, 1u, 0.0);       /* poradi ovladace: A, pak B */
+        n2 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d2 = dt[0];                   /* stop 1500, start 2000 */
+        e[0] = evk(1u, 2500u, 1u, 0.0);
+        n3 = fpga_v3_ab_feed(&P, e, 1u, dt, 4u);                               /* stop 2500 */
+        CHECK(n1 == 0u && n2 == 1u && d2 == 500 && n3 == 1u && dt[0] == 500 && P.lost == 0u,
+              "ab_feed serazeni: %u %u %u, dt %lld", (unsigned)n1, (unsigned)n2, (unsigned)n3, (long long)d2);
+        fpga_v3_ab_init(&P, 1000000u);
+        e[0] = evk(0u, 3000u, 1u, 0.0); e[1] = evk(1u, 3000u, 1u, 0.0);
+        n1 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);                               /* B soucasne se startem: neni stop */
+        e[0] = evk(1u, 3300u, 1u, 0.0);
+        n2 = fpga_v3_ab_feed(&P, e, 1u, dt, 4u);
+        CHECK(n1 == 0u && n2 == 1u && dt[0] == 300 && P.n == 1u, "ab_feed stop po startu: %u %u, dt %lld",
+              (unsigned)n1, (unsigned)n2, (long long)dt[0]);
+        fpga_v3_ab_init(&P, 1000000u);
+        e[0] = evk(0u, 5000u, 1u, 0.0); e[1] = evk(1u, 4900u, 5u, 100.0);     /* souhrn B 4900..5300 pres start 5000 */
+        n1 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);
+        e[0] = evk(1u, 6000u, 1u, 0.0);
+        n2 = fpga_v3_ab_feed(&P, e, 1u, dt, 4u);
+        CHECK(n1 == 0u && n2 == 0u && P.lost == 1u && !P.armed, "ab_feed souhrn B pres start: %u %u, ztraceno %u",
+              (unsigned)n1, (unsigned)n2, (unsigned)P.lost);
+    }
+
+    /* fpga_v3_pr_rec (zaznamy -> parovani jako v ovladaci): B se znackami pri CS = stop mohl chybet -> start pryc; po
+     * prepnuti zdroje B (fpga_v3_pr_switch) az za zaznamem B s drzenim (FLAGS bit0); A a B ruznych segmentu */
+    {
+        static fpga_v3_pr_t Q; fpga_v3_rec_t ra, rb; fpga_v3_ev_t e1[1]; int64_t dt[4]; uint32_t n1, n2, n3;
+        memset(&ra, 0, sizeof ra); memset(&rb, 0, sizeof rb); rb.ch = 1u;
+        fpga_v3_pr_init(&Q, 1000000u);
+        ra.seg_idx = 10u; e1[0] = evk(0u, 1000u, 1u, 0.0); n1 = fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 10u; rb.flags = FPGA_V3_R_CS; e1[0] = evk(1u, 1200u, 1u, 0.0); n2 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 11u; rb.flags = 0u; e1[0] = evk(1u, 2200u, 1u, 0.0); n3 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
+        CHECK(n1 == 0u && n2 == 0u && n3 == 0u && !Q.ab.armed, "pr_rec B pri CS: %u %u %u", (unsigned)n1, (unsigned)n2, (unsigned)n3);
+        ra.seg_idx = 12u; e1[0] = evk(0u, 3000u, 1u, 0.0); (void)fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 13u; e1[0] = evk(1u, 3400u, 1u, 0.0); n1 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
+        CHECK(n1 == 1u && dt[0] == 400, "pr_rec A a B ruznych segmentu: %u, dt %lld", (unsigned)n1, (long long)dt[0]);
+        fpga_v3_pr_switch(&Q);
+        ra.seg_idx = 14u; e1[0] = evk(0u, 4000u, 1u, 0.0); (void)fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 14u; e1[0] = evk(1u, 4100u, 1u, 0.0); n1 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);  /* stary zdroj */
+        ra.seg_idx = 15u; e1[0] = evk(0u, 5000u, 1u, 0.0); (void)fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 15u; rb.flags = FPGA_V3_R_INVALID; n2 = fpga_v3_pr_rec(&Q, &rb, e1, 0u, 0, 1.0, dt, 4u);        /* drzeni */
+        rb.flags = 0u;
+        ra.seg_idx = 16u; e1[0] = evk(0u, 6000u, 1u, 0.0); (void)fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
+        rb.seg_idx = 16u; e1[0] = evk(1u, 6300u, 1u, 0.0); n3 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
+        CHECK(n1 == 0u && n2 == 0u && n3 == 1u && dt[0] == 300, "pr_rec prepnuti zdroje B: %u %u %u, dt %lld",
+              (unsigned)n1, (unsigned)n2, (unsigned)n3, (long long)dt[0]);
+    }
+
+    /* jednorazove deje (fpga_v3_ev_from_rec, fpga_v3_ab_feed, fpga_v3_skew_add) nad emulatorem se zpozdenym ACK: zaznamy jako
+     * v ovladaci (fpga_v3_pr_rec: udalosti teze hranice segmentu, A pak B, se paruji spolu). Scenare: (a) 7 Hz, B = A +
+     * 1,234 ms (jednotlive hrany, i pres hranici segmentu); (b) 1 kHz, B = A + 123,456 us (souhrny N = 25: presne jen prvni
+     * hrany); (c) B = A: kalibrace zpozdeni a interval (souhrn B pres start -> zahodit); (d) A 2 Hz, 200 s bez signalu (T0 pretece), pak zase -> cas udalosti navazuje; (e) 7 Hz, B = A +
+     * 140 ms (B pred dalsim A v tomtez segmentu: serazeni). Bez ztrat startu: intervalu = udalosti A. */
+    {
+        static const struct { double f, d_s; uint32_t nseg, silent0, silent1; int skew; const char *nm; } EV[] = {
+            { 7.0, 1.234e-3, 1600u, 0u, 0u, 0, "7 Hz, B = A + 1,234 ms" },
+            { 1000.0, 123.456e-6, 800u, 0u, 0u, 0, "1 kHz, B = A + 123,456 us (souhrny)" },
+            { 1000.0, 0.0, 400u, 0u, 0u, 1, "1 kHz, B = A: kalibrace zpozdeni" },
+            { 1000.0, 0.0, 400u, 0u, 0u, 0, "1 kHz, B = A: interval" },
+            { 2.0, 5.0e-3, 9200u, 400u, 8400u, 0, "2 Hz, B = A + 5 ms, 200 s ticho" },
+            { 7.0, 140.0e-3, 1600u, 0u, 0u, 0, "7 Hz, B = A + 140 ms (B pred dalsim A)" },
+        };
+        for (unsigned c = 0; c < sizeof EV / sizeof EV[0]; c++) {
+            static fpga_v3_link_t L; static fpga_v3_evu_t U; static fpga_v3_pr_t PR; static fpga_v3_stat_t ST;
+            fpga_v3_link_init(&L); fpga_v3_evu_init(&U); fpga_v3_pr_init(&PR, 2000000000000ull);   /* max 1,22 s */
+            fpga_v3_stat_init(&ST);
+            fpga_v3_emu_init(&E, EV[c].f, EV[c].f, 30.0, 500u + c);
+            fpga_v3_emu_set_phase(&E, 1, E.t_next[0] + EV[c].d_s);
+            fpga_v3_emu_frame(&E, F);
+            fpga_v3_ev_t ea[2];
+            uint32_t nev = 0, bad = 0, t_ms = 0; double t_prev_a = -1.0, maxgap = 0.0;
+            const double up = fpga_v3_unit_ps(100u);
+            for (uint32_t s = 0; s < EV[c].nseg; s += 4) {
+                for (int q = 0; q < 4; q++) {
+                    const uint32_t si = s + (uint32_t)q;
+                    const double f = (si >= EV[c].silent0 && si < EV[c].silent1) ? 0.0 : EV[c].f;
+                    if (E.f_hz[0] == 0.0 && f > 0.0) { E.t_next[0] = 0.0101; E.t_next[1] = 0.0101 + EV[c].d_s; }
+                    E.f_hz[0] = f; E.f_hz[1] = f;
+                    fpga_v3_emu_segment(&E);
+                }
+                t_ms += 100u;
+                fpga_v3_hdr_t h; uint32_t n_ok = 0, i0 = 0; int g = 0;
+                if (fpga_v3_parse(F, &h, R, &n_ok) != FPGA_V3_OK) { bad++; break; }
+                const uint32_t n = fpga_v3_link_take(&L, &h, n_ok, &i0, &g);
+                for (uint32_t i = 0; i < n; i++) {
+                    const fpga_v3_rec_t *r = &R[i0 + i];
+                    const uint32_t na = fpga_v3_ev_from_rec(&U, r, 100u, t_ms, ea);
+                    if (r->ch == 0u) {
+                        for (uint32_t k = 0; k < na; k++) {            /* cas udalosti A proti skutecnosti: navaznost */
+                            const double ts = (double)ea[k].t_u * up * 1e-12;
+                            if (EV[c].silent1 && r->seg_idx == (uint16_t)EV[c].silent1 && k == 0) {
+                                /* prvni hrana po tichu: absolutni cas obnovy = zacatek segmentu silent1 + 10,1 ms (T0 mezitim
+                                 * pretekl -- 200 s > 171,8 s; rozbaleni z casu STM) */
+                                const double tex = (double)EV[c].silent1 * 0.025 + 0.0101;
+                                if (fabs(ts - tex) > fabs(maxgap)) maxgap = ts - tex;
+                                t_prev_a = -1.0;
+                            }
+                            if (t_prev_a >= 0.0) {
+                                const double per = 1.0 / EV[c].f, gap = ts - t_prev_a, kk = floor(gap / per + 0.5);
+                                if (fabs(gap - kk * per) > fabs(maxgap)) maxgap = gap - kk * per;
+                            }
+                            t_prev_a = ts; nev++;
+                        }
+                    }
+                    int64_t dt[4];
+                    const uint32_t nd = fpga_v3_pr_rec(&PR, r, ea, na, EV[c].skew, up, dt, 4u);
+                    for (uint32_t k = 0; k < nd; k++) {
+                        const double ps = (double)dt[k] * up;
+                        fpga_v3_stat_add(&ST, ps);
+                        if (fabs(ps - EV[c].d_s * 1e12) > 300.0) bad++;
+                    }
+                }
+                fpga_v3_build_ack(M, s, L.expect);
+                fpga_v3_emu_frame(&E, F);
+                fpga_v3_emu_rx(&E, M);
+            }
+            const double mean = fpga_v3_stat_mean(&ST), sd = fpga_v3_stat_sd(&ST);
+            printf("  deje %-38s udalosti A %5u, intervalu %4u (ztraceno %u), stredni %.6f us sigma %.1f ps, zpozdeni %4u x %.1f ps, chyb %u, max odchylka casu A %.1e s\n",
+                   EV[c].nm, (unsigned)nev, (unsigned)ST.n, (unsigned)PR.ab.lost, mean * 1e-6, sd, (unsigned)PR.sk.n, fpga_v3_stat_mean(&PR.sk),
+                   (unsigned)bad, fabs(maxgap));
+            CHECK(bad == 0 && fabs(maxgap) < 1e-9, "%s: chyb %u, odchylka casu %.2e s", EV[c].nm, (unsigned)bad, maxgap);
+            if (EV[c].skew) {
+                CHECK(PR.sk.n >= 100u && fabs(fpga_v3_stat_mean(&PR.sk)) < 10.0 && ST.n == 0u, "%s: zpozdeni %u x %.1f ps",
+                      EV[c].nm, (unsigned)PR.sk.n, fpga_v3_stat_mean(&PR.sk));
+            } else if (EV[c].d_s == 0.0) {
+                CHECK(ST.n >= 100u, "%s: intervalu %u", EV[c].nm, (unsigned)ST.n);
+            } else {
+                CHECK(ST.n >= (c == 1 ? 25u : 8u) && fabs(mean - EV[c].d_s * 1e12) < 30.0 && sd < 80.0,
+                      "%s: intervalu %u, stredni %.1f ps (ceka %.1f), sigma %.1f", EV[c].nm, (unsigned)ST.n, mean, EV[c].d_s * 1e12, sd);
+                CHECK(ST.n + 2u >= nev && PR.ab.lost == 0u, "%s: intervalu %u z %u startu, ztraceno %u", EV[c].nm, (unsigned)ST.n,
+                      (unsigned)nev, (unsigned)PR.ab.lost);
+            }
         }
     }
 

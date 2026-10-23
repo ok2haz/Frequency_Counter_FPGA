@@ -645,7 +645,49 @@ typedef struct {
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 /** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK zpracovany az po
  *  slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). on = 0 vypne. */
-void fpga_sim_v3_set(int on, double hz_a, double hz_b);
+void fpga_sim_v3_set(int on, double hz_a, double hz_b, double ph_b_s);
 int  fpga_sim_v3_active(void);
+
+/* ── Jednorazove deje (v0.36.0, protokol v3, FW 0x0501; docs/PROTOKOL_V3.md kap. 10.5) ───────────────────────────────
+ * Ze zaznamu segmentu: presny cas prvni hrany segmentu (N = 2 i druhe), pri N >= 3 souhrn (pocet, stredni perioda).
+ * Casuji se jen hrany >= 50 ns od predchozi casovane. Delsi sekvenci zachyti RAW_CAPTURE (512 znacek). */
+#define FPGA_EVP_OFF   0u     /* parovani vypnuto */
+#define FPGA_EVP_AB    1u     /* interval: start = hrana A, stop = prvni hrana B po startu */
+#define FPGA_EVP_PW    2u     /* sirka pulzu: B = pin A invertovany (SET_CONFIG 0x09 = 3) */
+#define FPGA_EVP_SKEW  3u     /* kalibrace zpozdeni A/B: B = pin A (0x09 = 1) */
+typedef struct {
+    uint64_t t_ps;            /* cas hrany na ose FPGA [ps] (rozbaleny; osa od startu FPGA) */
+    int64_t  pps_ps;          /* cas od 1PPS #pseq [ps] (zaporny = pred ni) */
+    double   per_ps;          /* souhrn: stredni perioda [ps] */
+    uint32_t n, pseq;         /* hran (hrana: 1) / poradi 1PPS */
+    uint16_t seg;             /* SEG_IDX */
+    uint8_t  ch, kind, flags, pps_ok;   /* kind FPGA_V3_EV_EDGE / _BURST, flags = FLAGS zaznamu */
+} fpga_ev_rec_t;
+typedef struct {
+    uint8_t  proto, sim, ev_on, pair, bsrc, echo;     /* bsrc = odeslany SET_CONFIG 0x09, echo = bajt 66 bit3..4 */
+    uint16_t fw;
+    uint32_t caps, pps_seq;
+    uint32_t ev_total, ev_fill, ab_fill;
+    uint32_t ab_n, ab_lost, sk_n;
+    double   ab_mean, ab_sd, ab_min, ab_max;          /* intervaly [ps] */
+    double   sk_mean, sk_sd, sk_min, sk_max;          /* zpozdeni B - A [ps] */
+} fpga_ev_info_t;
+void fpga_freq_ev_enable(int on);                      /* kruh udalosti (zapnuti = vynulovani) */
+/** Parovani FPGA_EVP_* a zdroj kanalu B (SET_CONFIG 0x09). @return 1 ok, 2 emulator (zdroj B se neprepina),
+ *  0 SET_CONFIG selhal, -1 FPGA bez CAPS bit20 (FW < 0x0501), -2 neni protokol v3 */
+int  fpga_freq_ev_pair(uint8_t mode);
+void fpga_freq_ev_info(fpga_ev_info_t *o);
+int  fpga_freq_ev_get(uint32_t back, fpga_ev_rec_t *o);   /* back 0 = nejnovejsi; 0 = neni */
+int  fpga_freq_ab_get(uint32_t back, double *ps);           /* posledni intervaly [ps]; 0 = neni */
+/** RAW_CAPTURE (TYPE 0x0B): 512 po sobe jdoucich casovanych znacek kanalu ch. Blokuje volajiciho (UartTask) do timeout_ms
+ *  + cteni 5 stranek; cb (muze byt NULL) dostane kazdou znacku [ps, 48 b osa] a rozdil proti predchozi [ps].
+ *  @return 1 = 512 znacek, 0 = mene (timeout), -1 stranka selhala, -2 neni v3 / emulator, -3 SPI */
+typedef void (*fpga_raw_cb_t)(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps);
+typedef struct {
+    uint32_t n;                                       /* precteno znacek */
+    uint32_t cnt;                                     /* pocet podle FPGA (souhrnna stranka polozka 5) */
+    double   d_mean, d_sd, d_min, d_max, span_ps;     /* rozdily po sobe jdoucich znacek, prvni..posledni [ps] */
+} fpga_raw_info_t;
+int  fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ctx, fpga_raw_info_t *st);
 
 #endif /* FPGA_FREQ_H */

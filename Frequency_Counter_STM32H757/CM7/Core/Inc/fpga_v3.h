@@ -46,6 +46,8 @@
 #define FPGA_V3_CFG_LUT        0x06u   /* 0 = zacatek zapisu, 1 = potvrzeni = prepnuti banky */
 #define FPGA_V3_CFG_PRESC      0x07u
 #define FPGA_V3_CFG_SEGLEN     0x08u
+#define FPGA_V3_CFG_BSRC       0x09u   /* FW 0x0501: zdroj kanalu B -- bit0 = pin A misto pinu B, bit1 = invertovat */
+#define FPGA_V3_CAP_BSRC       (1u << 20)   /* CAPS: SET_CONFIG 0x09 (echo bajt 66 bit3..4) */
 /* FLAGS ramce (blok 0, bajt 3) */
 #define FPGA_V3_F_NEWREC       (1u << 0)
 #define FPGA_V3_F_RINGOVF      (1u << 1)
@@ -160,6 +162,8 @@ void     fpga_v3_emu_init(fpga_v3_emu_t *e, double fa_hz, double fb_hz, double s
 void     fpga_v3_emu_segment(fpga_v3_emu_t *e);              /* jeden segment = zaznam A + zaznam B */
 void     fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *miso);  /* DATA ramec od rec_ack (jako RTL) */
 void     fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *mosi);   /* prijme ramec STM (ACK posune rec_ack) */
+/* faze kanalu ch: pristi hrana za t_s od zacatku aktualniho segmentu (napr. B = A + zpozdeni pri stejnem kmitoctu) */
+void     fpga_v3_emu_set_phase(fpga_v3_emu_t *e, uint8_t ch, double t_s);
 
 /* ---- prijem zaznamu na STM ----
  * FPGA sklada ramec PRED zpracovanim ACK z teze transakce (kap. 6.1), takze kazdy zaznam prijde normalne DVAKRAT
@@ -174,6 +178,77 @@ void     fpga_v3_link_init(fpga_v3_link_t *L);
 /* Ramec DATA (po fpga_v3_parse): vrati pocet NOVYCH zaznamu, prvni je rec[*i0]; *gap = 1 -> pred nimi je mezera
  * (nebo prvni ramec / resynchronizace) -> fpga_v3_grp_break obou kanalu. */
 uint32_t fpga_v3_link_take(fpga_v3_link_t *L, const fpga_v3_hdr_t *h, uint32_t n_ok, uint32_t *i0, int *gap);
+
+/* ---- jednorazove deje (STM): udalosti z hran zaznamu (docs/PROTOKOL_V3.md kap. 10.5) ----
+ * Zaznam segmentu nese PRESNE cas prvni hrany (T0); pri N = 2 i druhe (T0 + ST, index X0 + SX); pri N >= 3 jen souhrn
+ * (pocet, stredni perioda ST/SX). Casuji se jen hrany >= 50 ns od predchozi casovane; delsi sekvenci zachyti RAW_CAPTURE. */
+#define FPGA_V3_EV_EDGE        1u      /* presny cas jedne hrany */
+#define FPGA_V3_EV_BURST       2u      /* souhrn segmentu (N >= 3): presna prvni hrana, pocet, stredni perioda */
+typedef struct {
+    uint8_t  ch, kind;
+    uint16_t seg;                /* SEG_IDX zaznamu */
+    uint32_t n;                  /* hran (EDGE: 1) */
+    uint64_t x;                  /* rozbaleny index (prvni) hrany */
+    uint64_t t_u;                /* rozbaleny cas (prvni) hrany [T/16384] (osa FPGA, spolecna pro A, B i 1PPS) */
+    double   per_u;              /* BURST: stredni perioda [jednotky], jinak 0 */
+} fpga_v3_ev_t;
+typedef struct {
+    uint8_t  have;               /* cas: SPOLECNY pro oba kanaly (jedna osa FPGA) */
+    uint64_t t_raw, t_un;
+    uint32_t ms;
+    uint8_t  xhave[2];           /* index hrany: po kanalech */
+    uint64_t x_raw[2], x_un[2];
+} fpga_v3_evu_t;
+void     fpga_v3_evu_init(fpga_v3_evu_t *u);
+/* Platny zaznam (FLAGS bit0 = 0, N >= 1) -> udalosti do out[0..1]: N = 1 -> EDGE, N = 2 -> 2x EDGE, N >= 3 -> BURST.
+ * now_ms = cas STM pri prijmu: T0 (48 b) se rozbali i pres pauzu > 171,8 s (pocet preteceni z uplynuleho casu).
+ * @return pocet udalosti (0 = zaznam bez hran / neplatny) */
+uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t clk_mhz, uint32_t now_ms, fpga_v3_ev_t out[2]);
+
+/* Parovani start/stop (jako jednorazovy citac intervalu): start = prvni hrana A po predchozim stopu, stop = prvni hrana B
+ * po startu (cas > start); start starsi nez max_u se zahodi. Udalosti JEDNE hranice segmentu (A i B) se predaji spolu
+ * (fpga_v3_ab_feed je seradi v case). U souhrnu (BURST) se bere jen prvni, presna hrana. Sirka pulzu = totez s kanalem B
+ * na pinu A invertovanem (SET_CONFIG 0x09 = 3): A nabezne, B sestupne hrany. */
+typedef struct {
+    uint8_t  armed;              /* 1 = ceka na stop */
+    uint64_t t_start;
+    uint64_t max_u;
+    uint32_t n, lost;            /* intervalu / zahozenych startu (bez stopu do max_u) */
+} fpga_v3_ab_t;
+void     fpga_v3_ab_init(fpga_v3_ab_t *p, uint64_t max_u);
+/* @return pocet intervalu zapsanych do dt_u[0..max_out-1] [jednotky] */
+uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, int64_t *dt_u, uint32_t max_out);
+
+/* Prubezna statistika intervalu [ps] (Welford: rozptyl i pri velke stredni hodnote, napr. intervaly sekund v ps) */
+typedef struct { uint32_t n; double mean, m2, min, max; } fpga_v3_stat_t;
+void     fpga_v3_stat_init(fpga_v3_stat_t *s);
+void     fpga_v3_stat_add(fpga_v3_stat_t *s, double v);
+double   fpga_v3_stat_mean(const fpga_v3_stat_t *s);
+double   fpga_v3_stat_sd(const fpga_v3_stat_t *s);
+/* Kalibrace zpozdeni A/B (B = pin A neinvertovany, SET_CONFIG 0x09 = 1): prvni hrana B minus prvni hrana A teze hranice
+ * segmentu, jen |d| < lim_u (stejna hrana). @return 1 = zapocteno */
+int      fpga_v3_skew_add(fpga_v3_stat_t *s, const fpga_v3_ev_t *ea, const fpga_v3_ev_t *eb, int64_t lim_u, double unit_ps);
+
+/* Parovani po zaznamech (ovladac, FW 0x0501): FPGA posila kazdy segment jako A, pak B. Udalosti A segmentu cekaji na
+ * zaznam B tehoz segmentu a predaji se spolu (fpga_v3_ab_feed). Zaznam neplatny (FLAGS bit0) nebo se znackami pri CS
+ * (bit3) = hrana mohla chybet -> rozpracovany start pryc. Po prepnuti zdroje B (fpga_v3_pr_switch) se paruje az za
+ * zaznamem B s drzenim (bit0; starsi zaznamy jsou z puvodniho zdroje), nejvys 80 zaznamu B (2 s). Rezim skew = misto
+ * intervalu zpozdeni B - A prvnich hran teze hranice segmentu do sk (|d| < 50 ns). */
+typedef struct {
+    fpga_v3_ab_t   ab;
+    fpga_v3_stat_t sk;           /* zpozdeni B - A [ps] (rezim skew) */
+    fpga_v3_ev_t   pa[2];        /* udalosti A cekajici na zaznam B */
+    uint32_t       pan, skip_n;
+    uint16_t       pa_seg;
+    uint8_t        pa_have, skip;
+} fpga_v3_pr_t;
+void     fpga_v3_pr_init(fpga_v3_pr_t *p, uint64_t max_u);
+void     fpga_v3_pr_switch(fpga_v3_pr_t *p);             /* zdroj B prepnut */
+void     fpga_v3_pr_gap(fpga_v3_pr_t *p);                /* mezera v prijmu zaznamu */
+/* zaznam r a jeho udalosti e[0..ne-1] (fpga_v3_ev_from_rec) -> intervaly dt_u[0..max_out-1] [jednotky]
+ * @return pocet intervalu */
+uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_ev_t *e, uint32_t ne, int skew,
+                        double unit_ps, int64_t *dt_u, uint32_t max_out);
 
 /* ---- segmenty -> okno ---- */
 typedef struct {
