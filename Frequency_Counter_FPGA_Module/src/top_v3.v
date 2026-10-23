@@ -101,18 +101,21 @@ module top_v3 (
     reg [23:0] boot_cnt  = 24'd0;
     reg        boot_done = 1'b0;
     reg        cal_boot  = 1'b0;
+    reg        boot_tc   = 1'b0;   // boot_cnt == konec (registrovane porovnani s konec - 1, rozlozeni 2026-10-23)
     always @(posedge clk_p0_100m) begin
         cal_boot <= 1'b0;
+        boot_tc  <= 1'b0;
         if (!ok_s[1]) begin
             boot_cnt  <= 24'd0;
             boot_done <= 1'b0;
         end else if (!boot_done) begin
             boot_cnt <= boot_cnt + 24'd1;
 `ifdef SIM_TOP
-            if (boot_cnt == 24'd2000) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
+            boot_tc  <= (boot_cnt == 24'd1999);
 `else
-            if (&boot_cnt) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
+            boot_tc  <= (boot_cnt == 24'hFFFFFE);
 `endif
+            if (boot_tc) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
         end
     end
 
@@ -126,6 +129,7 @@ module top_v3 (
     localparam TDC_TAPS   = (TDC_STRIDE == 1) ? 288 : 256;
     localparam TDC_NTAP   = (TDC_STRIDE == 1) ? 268 : 256;
     localparam TDC_KD     = (TDC_STRIDE == 1) ? 1 : 2;
+    localparam TDC_TSPIPE = 1;   // znacka pres registr navic (rozlozeni, audit 2026-10-23; ts_valid T+10, FIFO seg_chan3 snese)
     wire use_ro_a, use_ro_b, ro_sig;
     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
 
@@ -177,7 +181,7 @@ module top_v3 (
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
 
-    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1)) u_tdca (
+    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(ch_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(1'b0), .cal_req(cal_req_a), .cal_abort(cal_abort),
         .lw_en(lw_en_a), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
@@ -187,7 +191,7 @@ module top_v3 (
         .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a), .bub_o(bub_a), .tr1_ext(34'd0), .tr2_ext(34'd0),
         .bank_sw(seg_tick), .bank_o(bank_a)
     );
-    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1)) u_tdcb (
+    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req_b), .cal_abort(cal_abort),
         .lw_en(lw_en_b), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),
@@ -210,15 +214,17 @@ module top_v3 (
     wire cfail = cal_fail_a | cal_fail_b;
     reg        cfail_q = 1'b0, rt_run = 1'b0, rt_go = 1'b0;
     reg [19:0] rt_dly  = 20'd0;
+    reg        rt_tc   = 1'b0;   // rt_dly == 2^20 - 1 (registrovane porovnani, rozlozeni 2026-10-23)
     reg [3:0]  rt_n    = 4'd0;
     reg [1:0]  rt_tot  = 2'd0;
     always @(posedge clk_p0_100m) begin
         cfail_q <= cfail;
         rt_go   <= 1'b0;
         if (cfail & ~cfail_q & (rt_n != 4'hF)) rt_run <= 1'b1;
+        rt_tc   <= rt_run & (rt_dly == 20'hFFFFE);
         if (rt_run) begin
             rt_dly <= rt_dly + 20'd1;
-            if (&rt_dly) begin
+            if (rt_tc) begin
                 rt_run <= 1'b0; rt_go <= 1'b1; rt_n <= rt_n + 4'd1;
                 if (rt_tot != 2'd3) rt_tot <= rt_tot + 2'd1;
             end

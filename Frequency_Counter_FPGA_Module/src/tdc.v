@@ -269,7 +269,13 @@ module tdc_chan #(
     // Protokol v3 (docs/PROTOKOL_V3.md kap. 6.3): 1 = DVE BANKY tabulky. STM pise do neaktivni banky, potvrzeni ji aktivuje
     // az na hranici segmentu (bank_sw); prekalibrace s platnou tabulkou nemaze cal_valid -> po sberu histogramu kanal meri
     // dal se starou bankou, dokud STM novou nezapise a nepotvrdi. 0 = jako v2 (jedna tabulka, top.v).
-    parameter BANKS    = 0
+    parameter BANKS    = 0,
+    // Rozlozeni (audit 2026-10-23): 1 = horni cast znacky (vyber tr1/tr2 bitem lut_q3[15]) a dolnich 14 b nejdriv do
+    // registru, ts_ps az z nej -> ts_valid o takt pozdeji (T+10 misto T+9), +49 FF. V 0x0427 byla cesta lut_q3[15] ->
+    // ts_ps nejhorsi v navrhu (+0,215 ns, 82 % vedeni: jeden FF u BSRAM budi 34 cilu rozesetych pres ~40 sloupcu).
+    // v3 paruje index hrany se znackou pres FIFO (seg_chan3, snese latenci do T+12); v2 (win_recip) bere index posledni
+    // spustene hrany, takze o takt pozdejsi znacka by tam pri rychlem spousteni patrila k jine hrane -> v2 jen 0.
+    parameter TSPIPE   = 0
 )(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
@@ -456,6 +462,12 @@ module tdc_chan #(
     reg  [15:0]   lut_q3  = 16'd0;            // samostatny FF za BRAM (tCO 3,5 ns): az od nej se vybira
     reg  [33:0]   tr0     = 34'd0, tr1 = 34'd0, tr2 = 34'd0;   // tick_hi - 0/1/2 (viz nize; tr0 jen pro DUAL)
     reg           tv_y    = 1'b0, tv_z = 1'b0;
+    // horni cast znacky: tick_hi - amt (amt = 1 nebo 2 u DUAL = 0) vybrana z posuvneho registru tr*
+    wire [33:0]   ts_sel  = (DUAL != 0) ? ((lut_q3[15:14] == 2'd0) ? tr0 : ((lut_q3[15:14] == 2'd1) ? tr1 : tr2))
+                                      : (lut_q3[15] ? ((EXT_TR != 0) ? tr2_ext : tr2) : ((EXT_TR != 0) ? tr1_ext : tr1));
+    reg  [33:0]   ts_hq   = 34'd0;          // TSPIPE = 1: vybrana horni cast (FF muze lezet u BSRAM, ts_ps u spotrebitelu)
+    reg  [13:0]   ts_lq   = 14'd0;          // TSPIPE = 1: dolnich 14 b ze stejne polozky tabulky
+    reg           tv_w    = 1'b0;           // TSPIPE = 1: tv_z o takt pozdeji
     reg  [HW-1:0] hist_rd = {HW{1'b0}};
     reg  [HW-1:0] hist_rd2  = {HW{1'b0}};     // FW 0x0421: samostatny registr za vystupem BRAM (tCO 3,5 ns + inkrement nestihal)
     reg  [HW-1:0] hist_wd_r = {HW{1'b0}};
@@ -515,11 +527,13 @@ module tdc_chan #(
         tr1   <= (DUAL != 0) ? tr0 : tick_ps[47:14];
         tr2   <= tr1;
         // ts_ps se DRZI do dalsi platne znacky (>= 5 taktu): okno/regrese z nej odecitaji ve 2 taktech (multicycle v SDC)
-        if (tv_z) ts_ps <= {(DUAL != 0) ? ((lut_q3[15:14] == 2'd0) ? tr0 : ((lut_q3[15:14] == 2'd1) ? tr1 : tr2))
-                                       : (lut_q3[15] ? ((EXT_TR != 0) ? tr2_ext : tr2) : ((EXT_TR != 0) ? tr1_ext : tr1)), lut_q3[13:0]};
+        // TSPIPE = 1: tataz hodnota o takt pozdeji (ts_hq/ts_lq se plni ve stejnem taktu jako drive ts_ps, tr* tedy stejne)
+        if (tv_z) begin ts_hq <= ts_sel; ts_lq <= lut_q3[13:0]; end
+        tv_w     <= tv_z;
+        if ((TSPIPE != 0) ? tv_w : tv_z) ts_ps <= (TSPIPE != 0) ? {ts_hq, ts_lq} : {ts_sel, lut_q3[13:0]};
         tv_y     <= dv2 & cal_valid & ~cal_busy;
         tv_z     <= tv_y;
-        ts_valid <= tv_z;
+        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;
     end
 
     assign dump_q = {{(24-HW){1'b0}}, hist_rd2};
