@@ -4,6 +4,7 @@ to CLS ani casovani Gowinu (GowinSynthesis slucuje registry, mapuje ALU54D podle
 
   python3 tools/yosys_stat.py <koren modulu> [--deep] [--json <soubor>] [--top N]
   python3 tools/yosys_stat.py cmp <koren A> <koren B> [--deep]        (tabulka A / B / rozdil)
+  python3 tools/yosys_stat.py hier <koren A> [<koren B>] [--deep]      (po modulech bez zplosteni; jen zmenene radky)
 
 Vypise: LUT1..LUT4, ALU, MUX2_*, FF podle typu, BSRAM, DSP, ridici sady (unikatni hodiny / povoleni / reset-set) a FF
 v nich, logickou hloubku (nejdelsi kombinacni cesta v urovnich LUT, MUX2_* = 1 uroven; ALU v ceste zvlast) celkem
@@ -45,6 +46,33 @@ def synth(root, deep, js):
         if r.returncode:
             sys.exit('yosys selhal:\n' + r.stdout[-3000:] + r.stderr[-3000:])
         shutil.copy(os.path.join(td, 'n.json'), js)
+
+
+def hier(root, deep):
+    """LUT/MUX/ALU/FF po modulech (synth_gowin -noflatten): presnejsi lokalizace zmeny nez celkove cislo (abc9 mapuje
+    zplosteny navrh globalne a drobna zmena posune i nesouvisejici bunky)."""
+    pre = 'verilog_defines -DDEEP_RAW; ' if deep else ''
+    with tempfile.TemporaryDirectory() as td:
+        ys = open(os.path.join(HERE, 'yosys_v3.ys')).read().replace('-noiopads', '-noiopads -noflatten')
+        open(os.path.join(td, 'v3h.ys'), 'w').write(ys)
+        r = subprocess.run(['yosys', '-q', '-p', pre + 'script %s; tee -q -o %s stat' % (os.path.join(td, 'v3h.ys'), os.path.join(td, 's.txt'))],
+                           cwd=root, capture_output=True, text=True)
+        if r.returncode:
+            sys.exit('yosys selhal:\n' + r.stderr[-3000:])
+        txt = open(os.path.join(td, 's.txt')).read()
+    res = collections.OrderedDict()
+    for blk in re.split(r'\n=== ', txt)[1:]:
+        name = blk.split(' ===')[0].strip()
+        name = re.sub(r'^\$paramod\$[0-9a-f]+\\?', 'paramod:', name)
+        name = re.sub(r'^\$paramod\\', '', name).split('\\')[0]
+        c = {m.group(2): int(m.group(1)) for m in re.finditer(r'^\s+(\d+)\s+(\S+)$', blk, re.M)}
+        if name.startswith('design hierarchy'):
+            name = 'CELKEM (hierarchie)'
+        v = (sum(c.get(k, 0) for k in LUTS), sum(v for k, v in c.items() if k.startswith('MUX2')), c.get('ALU', 0),
+             sum(v for k, v in c.items() if k.startswith('DFF')))
+        if sum(v):
+            res[name] = tuple(a + b for a, b in zip(res.get(name, (0, 0, 0, 0)), v)) if name in res else v
+    return res
 
 
 def analyze(js, topn=20):
@@ -198,6 +226,15 @@ def main():
     js = None
     if '--json' in args:
         i = args.index('--json'); js = args[i + 1]; del args[i:i + 2]
+    if args and args[0] == 'hier':
+        ra, rb = args[1], args[2] if len(args) > 2 else None
+        ha = hier(os.path.abspath(ra), deep); hb = hier(os.path.abspath(rb), deep) if rb else ha
+        print('%-36s %22s %22s %24s' % ('modul (bez zplosteni)', 'A: LUT/MUX/ALU/FF', 'B: LUT/MUX/ALU/FF', 'B-A'))
+        for k in list(ha) + [k for k in hb if k not in ha]:
+            a = ha.get(k, (0, 0, 0, 0)); b = hb.get(k, (0, 0, 0, 0))
+            if a != b or not rb:
+                print('%-36s %22s %22s %24s' % (k[:36], '%d/%d/%d/%d' % a, '%d/%d/%d/%d' % b, '%+d/%+d/%+d/%+d' % tuple(y - x for x, y in zip(a, b))))
+        return
     if args and args[0] == 'cmp':
         ra, rb = args[1], args[2]
         res = []

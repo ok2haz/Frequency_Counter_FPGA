@@ -378,6 +378,18 @@ module pps_cap3 (
     reg [4:0]  win = 5'd0, fage = 5'd0;
     reg [33:0] c_tick = 34'd0;
     reg        fok = 1'b0, wok = 1'b0;   // FW 0x0506: podminky zverejneni registrovane (o takt zpozdene)
+    // 2026-10-24 (casovani): wnz = (win != 0) jako registr -- win se po hrane jen zvysuje (saturuje na 31), takze
+    // wnz <= 0 pri hrane, jinak 1; povoleni zverejneni je pak jedna LUT4 ze 4 registru (cesta win -> nofine byla 9,4 ns).
+    // Povoleni ridi ~165 FF (fan-out 130 v P&R) -> dve kopie: pub (pts_l, pfl_l, d_l, nofine, pend, fa) a pub_b
+    // (seq, seq_nz, seq_gt1, pts_p, pfl_p, d_p) z kopii registru (*_b, stejna logika -> pub_b == pub v kazdem taktu).
+    reg        wnz = 1'b0;
+    (* syn_preserve = 1 *) reg pend_b = 1'b0;
+    (* syn_preserve = 1 *) reg wnz_b = 1'b0;
+    (* syn_preserve = 1 *) reg fok_b = 1'b0;
+    (* syn_preserve = 1 *) reg wok_b = 1'b0;
+    wire       edg   = s[1] & ~s[2];
+    wire       pub   = pend & wnz & (fok | wok);
+    wire       pub_b = pend_b & wnz_b & (fok_b | wok_b);
     // FW 0x0506: rozdil se registruje (dd_r, 1 takt za f_ts / c_tick); zverejneni ceka na fage >= 1 a win >= 1;
     // f_ts se po preklopeni f_tgl drzi do dalsi hrany 1PPS (~1 s), proto zadny kopirovaci registr
     reg  [33:0] dd_r = 34'd0;
@@ -393,20 +405,29 @@ module pps_cap3 (
         fs <= {fs[1:0], f_tgl};
         if (win != 5'd31)  win  <= win + 5'd1;
         if (fage != 5'd31) fage <= fage + 5'd1;
-        fok <= fa && (fage != 5'd31) && (fage != 5'd0);
-        wok <= (win == 5'd31);
+        fok   <= fa && (fage != 5'd31) && (fage != 5'd0);
+        fok_b <= fa && (fage != 5'd31) && (fage != 5'd0);
+        wok   <= (win == 5'd31);
+        wok_b <= (win == 5'd31);
+        wnz   <= 1'b1;
+        wnz_b <= 1'b1;
         if (fs[2] ^ fs[1]) begin fa <= f_lock; fage <= 5'd0; end
-        if (s[1] & ~s[2]) begin c_tick <= tick; pend <= 1'b1; win <= 5'd0; end
-        else if (pend && win != 5'd0 && (fok || wok)) begin
-            pend  <= 1'b0; fa <= 1'b0;
-            seq   <= seq + 32'd1;
-            seq_nz <= 1'b1; seq_gt1 <= seq_nz;
-            pts_p <= pts_l; pfl_p <= pfl_l; d_p <= d_l;
-            if (fok) begin
-                pts_l <= f_ts; pfl_l <= 8'd3; nofine <= 1'b0;
-                d_l   <= dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0];
-            end else begin
-                pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
+        if (edg) begin c_tick <= tick; pend <= 1'b1; pend_b <= 1'b1; win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0; end
+        else begin
+            if (pub) begin
+                pend  <= 1'b0; fa <= 1'b0;
+                if (fok) begin
+                    pts_l <= f_ts; pfl_l <= 8'd3; nofine <= 1'b0;
+                    d_l   <= dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0];
+                end else begin
+                    pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
+                end
+            end
+            if (pub_b) begin
+                pend_b <= 1'b0;
+                seq    <= seq + 32'd1;
+                seq_nz <= 1'b1; seq_gt1 <= seq_nz;
+                pts_p  <= pts_l; pfl_p <= pfl_l; d_p <= d_l;
             end
         end
     end
