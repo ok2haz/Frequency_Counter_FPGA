@@ -439,7 +439,10 @@ module pps_cap3 (
         wnz   <= 1'b1;
         wnz_b <= 1'b1;
         if (fs[2] ^ fs[1]) begin fa <= f_lock; fage <= 5'd0; end
-        if (edg) begin c_tick <= tick; pend <= 1'b1; pend_b <= 1'b1; win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0; end
+        // jemny cas, ktery prisel PRED hrubou hranou, k ni nepatri (zakmit kratsi nez takt, hruby ho nevidi -- nalez N2):
+        // platny jemny cas hrany chodi az ~13 taktu po hrube detekci, takze se tim nic platneho nezahodi
+        if (edg) begin c_tick <= tick; pend <= 1'b1; pend_b <= 1'b1; win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0;
+                       fa <= 1'b0; end
         else begin
             if (pub) begin
                 pend  <= 1'b0; fa <= 1'b0;
