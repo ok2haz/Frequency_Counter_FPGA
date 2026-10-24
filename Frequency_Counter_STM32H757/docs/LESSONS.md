@@ -5591,6 +5591,42 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `ad093ea`
 - **Stav:** aktivní
 
+### L-0235 - Nastavení existovalo jen v RAM a výchozí init ho po startu tiše přepsal
+
+- **Datum:** 2026-10-24
+- **Oblast:** firmware / perzistence (`syscfg.c`, generátor Si5356)
+- **Symptom:** uživatel změnil kmitočet v okně GENERÁTOR, po restartu byl zpět na výchozím.
+- **Příčina:** `g_si_gen` se plnilo jen za běhu; `si5356_init` v `main()` zapíše mapu REGMAP a `si5356_gen_defaults()`. Do syscfg blobu pole nikdy nepřibylo – a blob už neměl volnou výplň.
+- **Oprava:** pole generátoru ZA KONEC blobu (192 → 208 B, magic beze změny); úložiště vrací délku uloženého blobu, takže starý blob (192 B) se čte dál a uživatel nepřijde o ostatní nastavení (`syscfg.c`, v0.40.3).
+- **Pravidlo:** každá hodnota, kterou uživatel nastaví v UI, se buď persistuje, nebo okno výslovně říká „neukládá se“; nové pole do plného blobu se přidává za konec s rozlišením podle délky, ne novým magicem.
+- **Detekce:** změnit generátor, power-cyklus, `gen` musí ukázat nastavenou hodnotu.
+- **Commit:** `c4b26f1`
+- **Stav:** aktivní
+
+### L-0236 - Nejistota pro jedno měření vzatá z jiného τ, než má měření
+
+- **Datum:** 2026-10-24
+- **Oblast:** firmware / prezentace měření (`screen_main.c` `meas_u_rel`)
+- **Symptom:** počet platných číslic hlavního čísla se řídil σy@1s i při hradle 0,25 s (pod 1 s Allanova pyramida data nemá).
+- **Příčina:** nejistota jednoho zobrazeného měření je σy(τ = hradlo); σy@1s platí jen pro hradlo 1 s – u bílého PM je při 0,25 s až 4× větší, u zdroje s driftem naopak menší.
+- **Oprava:** FpgaTask počítá Allanovu odchylku navazujících oken (`win_adev_feed`), `meas_u_rel` ji bere místo σy@1s (v0.40.4).
+- **Pravidlo:** nejistota zobrazeného čísla se bere při tomtéž τ, jako má zobrazené měření; statistika z jiného τ jen jako záloha a se škálováním.
+- **Detekce:** `status full` → `STATISTIKA: sigma_y@hradlo`.
+- **Commit:** `bd01aec`
+- **Stav:** aktivní
+
+### L-0237 - Slot rámce vydávaný za absolutní kanál
+
+- **Datum:** 2026-10-24
+- **Oblast:** web (`httpd_min.c` SPA, karta DVOJKANÁL)
+- **Symptom:** při CHAN = B web ukazoval A a B prohozené (displej správně).
+- **Příčina:** `freq_hz` je primární slot (vybraný kanál), `freq16_hz` druhý; SPA je brala jako pevné A/B. Displej to řešil přes `fpga_meas_freq_ch`, web ne – dvě cesty, jedna zapomenutá.
+- **Oprava:** `chAB(s)` mapuje sloty podle `s.channel` (`9ade6f3`).
+- **Pravidlo:** význam slotu (primární/sekundární) se překládá na absolutní kanál na JEDNOM místě; každý konzument (displej, web, SCPI) používá ten překlad, ne vlastní předpoklad.
+- **Detekce:** přepnout CHAN na B a porovnat kartu DVOJKANÁL na displeji a webu.
+- **Commit:** `9ade6f3`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
