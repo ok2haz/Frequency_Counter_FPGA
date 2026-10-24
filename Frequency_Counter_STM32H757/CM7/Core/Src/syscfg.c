@@ -22,6 +22,7 @@
 #include "errlog.h"            /* errlog_ready — souhrn uloziste (F-0098) */
 #include "ad5693.h"            /* g_dac_persist — kod DAC ladeni OCXO obnoveny po startu */
 #include "gps.h"              /* g_gps_cable_* — delka a rychlostni faktor anteniho koaxu */
+#include "si5356.h"           /* g_si_gen, si5356_gen_request — persist okna GENERATOR */
 #include <stdio.h>            /* snprintf v syscfg_storage_text */
 #include "cmsis_os2.h"         /* osMutexAcquire/Release — QSPI zamek */
 #include "FreeRTOS.h"          /* taskENTER_CRITICAL — atomicky commit g_meas_cfg (F-0197) */
@@ -149,7 +150,14 @@ typedef struct {
     uint16_t dac_code;
     uint32_t mirror_seq;
     uint32_t mirror_vsn;
+    /* v0.40.3: GENERATOR Si5356 (CLK2/3, CLK4/5, CLK6/7, okno s_view=52 a UART `gen`). ⚠️ ZA KONCEM puvodnich 192 B
+     * (SYSCFG_BLOB_V1): uloziste vraci delku ulozeneho blobu, stary blob (192 B) se cte dal se stejnym magicem a
+     * generator zustane na vychozi mape REGMAP -- uzivatel o zbytek nastaveni neprijde. `gen_valid` = 1: pole plati. */
+    uint32_t gen_hz[SI5356_GEN_N];
+    uint8_t  gen_on[SI5356_GEN_N];
+    uint8_t  gen_valid;
 } syscfg_blob_t;
+#define SYSCFG_BLOB_V1  192u   /* delka blobu do v0.40.2 (bez generatoru) */
 
 /* 🔴 Strop blobu je vlastnost UKLADACE, ne komentare (audit F-0097, lekce L-0026).
  * `w25q_store_write` vrati `false`, kdyz payload nepretece jeden sektor — jenze
@@ -162,7 +170,8 @@ _Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
                "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
 /* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
    by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
-_Static_assert(sizeof(syscfg_blob_t) == 192u && offsetof(syscfg_blob_t, mirror_seq) == 184u &&
+_Static_assert(sizeof(syscfg_blob_t) == 208u && offsetof(syscfg_blob_t, gen_hz) == SYSCFG_BLOB_V1 &&
+               offsetof(syscfg_blob_t, mirror_seq) == 184u &&
                offsetof(syscfg_blob_t, dac_code) == 182u &&
                offsetof(syscfg_blob_t, gps_cable_dm) == 74u && offsetof(syscfg_blob_t, survey_n) == 76u,
                "syscfg blob zmenil layout -- to vyzaduje novy magic (SYSCFG_BLOB_MAGIC)");
@@ -234,6 +243,11 @@ static void pack(syscfg_blob_t *b)
     b->dac_code       = g_dac_persist;
     b->mirror_seq    = datalog_mirror_seq();
     b->mirror_vsn     = datalog_mirror_vsn();
+    for (unsigned i = 0; i < SI5356_GEN_N; i++) {
+        b->gen_hz[i] = g_si_gen[i].freq_hz;
+        b->gen_on[i] = g_si_gen[i].on ? 1u : 0u;
+    }
+    b->gen_valid = 1u;
 }
 
 void syscfg_load(void)
@@ -249,6 +263,7 @@ void syscfg_load(void)
     if (osMutexAcquire(qspiMutexHandle, SYSCFG_LOCK_LOAD_MS) != osOK) return;
 
     syscfg_blob_t b;
+    memset(&b, 0, sizeof b);              /* blob V1 (192 B) necha konec = 0 -> gen_valid 0 */
     uint32_t n = 0;
     bool store_ok = false;
     if (w25q_init() && w25q_store_init(&s_store, W25Q_CONFIG_BASE, W25Q_CONFIG_SECTORS)) {
@@ -264,11 +279,22 @@ void syscfg_load(void)
      * flash / stary magic znamena „nic ulozeno" (0 V), ale nedostupne uloziste
      * nesmi obnovu spustit s nulou (na rozdil od neexistujiciho kodu). */
     if (store_ok) {
-        if (n == sizeof(b) && b.magic == SYSCFG_BLOB_MAGIC) g_dac_persist = b.dac_code;
+        if ((n == sizeof(b) || n == SYSCFG_BLOB_V1) && b.magic == SYSCFG_BLOB_MAGIC) g_dac_persist = b.dac_code;
         g_dac_persist_loaded = 1u;
     }
 
-    if (n != sizeof(b) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/stary magic */
+    if ((n != sizeof(b) && n != SYSCFG_BLOB_V1) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/stary magic */
+
+    /* GENERATOR: NENI v BKP -> aplikuj VZDY (jako fx/meas). Po startu ma cip vychozi mapu REGMAP (si5356_init v main),
+     * zadost jen tam, kde se ulozene nastaveni lisi; zapis dela SensorsTask (vlastnik I2C1). Mimo rozsah = vychozi. */
+    if (b.gen_valid) {
+        for (unsigned i = 0; i < SI5356_GEN_N; i++) {
+            const uint32_t f = b.gen_hz[i];
+            if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ) continue;
+            if (f != g_si_gen[i].freq_hz || (b.gen_on[i] != 0u) != (g_si_gen[i].on != 0u))
+                si5356_gen_request(i, f, b.gen_on[i] != 0u);
+        }
+    }
 
     /* Efektove flagy: aplikuj VZDY (BKP je nedrzi -> flash autoritativni i pri warm
      * resetu; max o debounce okno starsi nez by byl BKP, kdyby ho drzel). */
