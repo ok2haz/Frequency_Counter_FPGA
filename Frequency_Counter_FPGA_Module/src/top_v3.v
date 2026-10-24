@@ -302,11 +302,21 @@ module top_v3 (
         if (bs3 != bs2)                   bchg <= 2'd2;
         else if (seg_tick && bchg != 2'd0) bchg <= bchg - 2'd1;
     end
+    // 2026-10-24 (casovani): mistni cast podminky hold kopii _s jako registr hx_a / hx_b, spocteny z PRISTICH hodnot
+    // boot_done (= ok_s[1] & (boot_done | boot_tc)), pchg_* a bchg -> hx_x == ~boot_done | (pchg_x != 0) [| (bchg != 0)]
+    // v kazdem taktu a hold_x_s je LUT3 (cesta P&R u_tdca/cal_valid, busy_ra -> hold_a_s vede pres cely cip)
+    reg  hx_a = 1'b1, hx_b = 1'b1;
+    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);
+    wire pca_nz = (pra_d != pr_a) | ((pchg_a != 2'd0) & ~(seg_tick & (pchg_a == 2'd1)));
+    wire pcb_nz = (prb_d != pr_b) | ((pchg_b != 2'd0) & ~(seg_tick & (pchg_b == 2'd1)));
+    wire bch_nz = (bs3 != bs2)    | ((bchg   != 2'd0) & ~(seg_tick & (bchg   == 2'd1)));
     always @(posedge clk_p0_100m) begin
         hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done | (pchg_a != 2'd0);
         hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0) | (pchg_b != 2'd0);
-        hold_a_s <= cal_busy_a | ~cal_valid_a | ~boot_done | (pchg_a != 2'd0);
-        hold_b_s <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0) | (pchg_b != 2'd0);
+        hx_a   <= ~bd_nx | pca_nz;
+        hx_b   <= ~bd_nx | pcb_nz | bch_nz;
+        hold_a_s <= cal_busy_a | ~cal_valid_a | hx_a;
+        hold_b_s <= cal_busy_b | ~cal_valid_b | hx_b;
     end
     wire mask_cs_en, led_hb_en;
     reg  [1:0] csa_s = 2'b00, mk_s = 2'b00;
