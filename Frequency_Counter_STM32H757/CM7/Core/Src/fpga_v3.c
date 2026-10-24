@@ -160,7 +160,7 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
         const uint8_t *q = f + 68 + 16 * i;
         h->pps[i].pseq = (uint32_t)rdn(q, 4); h->pps[i].pts = rdn(q + 4, 6); h->pps[i].pflags = q[10];
         h->pps[i].d = (int8_t)q[11];
-        h->pps_coarse[i] = (uint32_t)rdn(f + 100 + 4 * i, 4);
+        h->pps_coarse[i] = (uint32_t)(h->pps[i].pts >> 14);   /* FW >= 0x0506: bajty 100..107 = 0; pts nese hruby cas x 16384 */
         h->probe[i] = (uint16_t)rdn(f + 108 + 2 * i, 2);
         h->bub[i] = f[112 + i]; h->ovl[i] = f[114 + i];
     }
