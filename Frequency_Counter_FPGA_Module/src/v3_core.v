@@ -380,7 +380,7 @@ module pps_cap3 (
     input  wire        f_tgl,        // pps_ides3: novy jemny cas (prepinaci bit, domena clk)
     input  wire [47:0] f_ts,
     input  wire        f_lock,
-    output reg  [31:0] seq,
+    output wire [31:0] seq,          // 2026-10-24: z registru seq_c (DSP), hodnota beze zmeny
     output reg         seq_nz,       // FW 0x0506: seq != 0 (bez 32b porovnani v hlavicce)
     output reg         seq_gt1,      // seq > 1
     output wire [33:0] last,         // FW 0x0506: bajty 100..107 = 0 (hruby cas je v PTS: pts >> 14 pri PFLAGS bit1 = 0)
@@ -406,6 +406,10 @@ module pps_cap3 (
     // Povoleni ridi ~165 FF (fan-out 130 v P&R) -> dve kopie: pub (pts_l, pfl_l, d_l, nofine, pend, fa) a pub_b
     // (seq, seq_nz, seq_gt1, pts_p, pfl_p, d_p) z kopii registru (*_b, stejna logika -> pub_b == pub v kazdem taktu).
     reg        wnz = 1'b0;
+    // 2026-10-24 (plocha): poradi hrany v DSP (ALU54D); seq cte jen aplikace (domena 10 MHz, asynchronni skupina v SDC),
+    // v domene 100 MHz z nej nic nevede -> vzdalenost radku DSP nevadi. Pro simulaci je atribut komentar.
+    reg [31:0] seq_c = 32'd0 /* synthesis syn_dspstyle = "dsp" */;
+    assign     seq = seq_c;
     (* syn_preserve = 1 *) reg pend_b = 1'b0;
     (* syn_preserve = 1 *) reg wnz_b = 1'b0;
     (* syn_preserve = 1 *) reg fok_b = 1'b0;
@@ -421,7 +425,7 @@ module pps_cap3 (
     wire        dhi = ~dd[33] & (dd[32:7] != 26'd0);        // > 127
     wire        dlo =  dd[33] & (dd[32:7] != {26{1'b1}});   // < -128
     assign last = 34'd0; assign prev = 34'd0;
-    initial begin seq = 32'd0; seq_nz = 1'b0; seq_gt1 = 1'b0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
+    initial begin seq_nz = 1'b0; seq_gt1 = 1'b0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
                   d_l = 8'd0; d_p = 8'd0; nofine = 1'b0; end
     always @(posedge clk) begin
         s  <= {s[1:0], pin};
@@ -448,7 +452,7 @@ module pps_cap3 (
             end
             if (pub_b) begin
                 pend_b <= 1'b0;
-                seq    <= seq + 32'd1;
+                seq_c  <= seq_c + 32'd1;
                 seq_nz <= 1'b1; seq_gt1 <= seq_nz;
                 pts_p  <= pts_l; pfl_p <= pfl_l; d_p <= d_l;
             end
