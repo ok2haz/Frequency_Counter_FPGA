@@ -135,8 +135,9 @@ class Res:
         for t, n, d in self.rows: print('  %-4s  %-26s %s' % (t, n, d))
 
 
-def check(t_start=None, P=None):
+def check(t_start=None, P=None, max_cls=None):
     P = P or profile()
+    max_cls = MAX_CLS_PCT if max_cls is None else max_cls
     R = Res()
     root, pnr = P['root'], os.path.join(P['impl'], 'pnr')
     hit = [b for b in P['bases'] if os.path.exists(os.path.join(pnr, b + '.fs'))]
@@ -176,7 +177,8 @@ def check(t_start=None, P=None):
     R.add(unc is not None and unc >= MIN_UNC_NS, 'nejistota hodin (L-0141)', '%s ns, min %.1f' % (unc, MIN_UNC_NS))
 
     p = parse_rpt(read(rpt)); info.update(p)
-    R.add(p['cls'] is not None and p['cls'] <= MAX_CLS_PCT, 'CLS', '%s %%' % p['cls'],
+    R.add(p['cls'] is not None and p['cls'] <= max_cls, 'CLS' if max_cls == MAX_CLS_PCT else 'CLS (TEST: mez %d %%)' % max_cls,
+          '%s %%' % p['cls'],
           warn=(p['cls'] is not None and p['cls'] > WARN_CLS_PCT))
     R.add(p['reg'] is not None and p['reg'] <= MAX_REG_PCT, 'registry (L-0119)', '%s %%' % p['reg'])
 
@@ -213,11 +215,13 @@ def check(t_start=None, P=None):
     return R, info
 
 
-def release(info, P=None):
+def release(info, P=None, test_cls=None):
+    """test_cls = mez CLS zkusebniho bitstreamu (--test-cls): jmeno TEST_..., v MANIFEST.md 'TEST, ne vydani'."""
     P = P or profile()
     bt, bg, fw = info['build_time'], info['build_git'], info['fw']
     stamp = datetime.datetime.fromtimestamp(bt, datetime.timezone.utc).strftime('%Y%m%d-%H%M')
-    name = 'FW_0x%04X%s_%s_%07x%s.fs' % (fw, P['tag'], stamp, bg & 0x0FFFFFFF, 'd' if bg >> 31 else '')
+    name = '%sFW_0x%04X%s_%s_%07x%s.fs' % ('TEST_' if test_cls else '', fw, P['tag'], stamp, bg & 0x0FFFFFFF,
+                                          'd' if bg >> 31 else '')
     dst_dir = os.path.join(P['root'], 'ab_test'); os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, name)
     shutil.copyfile(info['fs'], dst)
@@ -229,7 +233,8 @@ def release(info, P=None):
                     '| soubor | md5 | FW | sestaveno (UTC) | git | CLS | reg | setup ws [ns] | hold ws [ns] | Fmax | nejistota |\n'
                     '|---|---|---|---|---|---|---|---|---|---|---|\n')
         f.write('| %s | %s | 0x%04X%s | %s | %07x%s | %s %% | %s %% | %.3f | %.3f | %.2f | %.1f |\n' % (
-            name, info['md5'], fw, ' (%s)' % P['ver'] if P['tag'] else '',
+            name, info['md5'], fw, (' (%s)' % P['ver'] if P['tag'] else '') +
+            (' TEST (mez CLS %d %%), ne vydani' % test_cls if test_cls else ''),
             datetime.datetime.fromtimestamp(bt, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
             bg & 0x0FFFFFFF, '+' if bg >> 31 else '', info['cls'], info['reg'], info['setup_ws'],
             info['hold_ws'], info['fmax'], info['unc']))
@@ -347,30 +352,42 @@ def main():
     ap.add_argument('--no-copy', action='store_true', help='jen kontroly, nic nevydat do ab_test/')
     ap.add_argument('--v3', action='store_true', help='bitstream protokolu v3 (top_v3, vystupy v3/impl/)')
     ap.add_argument('--selftest', action='store_true')
+    # 2026-10-24 (STATUS #334, rozhodnuti uzivatele): ZKUSEBNI bitstream pro desku pri CLS nad branou -- jen s jinou mezi CLS,
+    # ostatni kontroly beze zmeny; vystup TEST_FW_..., v MANIFEST.md "TEST (mez CLS N %), ne vydani"
+    ap.add_argument('--test-cls', type=int, default=None, metavar='N', help='zkusebni bitstream: mez CLS N %% (86..92)')
+    # rezerva casovani kolisa +-1,5 ns podle BLD_TIME (L-0222) -> s --build az K sestaveni, dokud kontroly neprojdou
+    ap.add_argument('--tries', type=int, default=1, metavar='K', help='s --build: nejvys K sestaveni do prvniho PASS')
     a = ap.parse_args()
     if a.selftest: return selftest()
+    if a.test_cls is not None and not (MAX_CLS_PCT < a.test_cls <= 92):
+        print('--test-cls mimo %d..92' % (MAX_CLS_PCT + 1)); return 1
     P = profile(a.v3)
-    t0 = None
-    if a.build:
-        t0 = time.time()
-        print('gw_sh %s ...' % P['tcl'])
-        r = subprocess.run([GW_SH, P['tcl']], cwd=ROOT, capture_output=True, text=True, errors='replace')
-        log = os.path.join(P['impl'], 'build_release.log')
-        os.makedirs(os.path.dirname(log), exist_ok=True)
-        open(log, 'w', encoding='utf-8').write(r.stdout + r.stderr)
-        if r.returncode != 0 or 'ERROR' in r.stdout:
-            print('  FAIL  sestaveni: gw_sh rc=%d, viz %s' % (r.returncode, os.path.relpath(log, ROOT)))
-            return 1
-    R, info = check(t0, P)
-    print('Kontrola bitstreamu %s' % os.path.relpath(info['fs'], ROOT))
-    R.show()
+    tries = max(1, a.tries) if a.build else 1
+    for k in range(tries):
+        t0 = None
+        if a.build:
+            t0 = time.time()
+            print('gw_sh %s ... (sestaveni %d/%d)' % (P['tcl'], k + 1, tries), flush=True)
+            r = subprocess.run([GW_SH, P['tcl']], cwd=ROOT, capture_output=True, text=True, errors='replace')
+            log = os.path.join(P['impl'], 'build_release.log')
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            open(log, 'w', encoding='utf-8').write(r.stdout + r.stderr)
+            if r.returncode != 0 or 'ERROR' in r.stdout:
+                print('  FAIL  sestaveni: gw_sh rc=%d, viz %s' % (r.returncode, os.path.relpath(log, ROOT)))
+                return 1
+        R, info = check(t0, P, a.test_cls)
+        print('Kontrola bitstreamu %s' % os.path.relpath(info['fs'], ROOT))
+        R.show()
+        if not R.fail:
+            break
+        print('VYSLEDEK sestaveni %d: FAIL (%d), setup ws %s ns' % (k + 1, R.fail, info.get('setup_ws')), flush=True)
     if R.fail:
         print('VYSLEDEK: FAIL (%d) -- bitstream se NEVYDAVA' % R.fail)
         return 1
     if a.no_copy:
         print('VYSLEDEK: PASS (bez vydani)')
         return 0
-    dst = release(info, P)
+    dst = release(info, P, a.test_cls)
     print('VYSLEDEK: PASS -> %s (md5 %s), zapsano do ab_test/MANIFEST.md' % (os.path.relpath(dst, ROOT), info['md5']))
     return 0
 
