@@ -316,21 +316,21 @@ module top_v3 (
     assign want_a = ~hold_a & ~(mk_s[1] & csa_s[1]);
     assign want_b = ~hold_b & ~(mk_s[1] & csa_s[1]);
 
-    wire        freeze, snap, clear, clear_a, clear_b, rec_tgl, seg10_act, seg10_req;
+    wire        freeze, snap, clear, clear_a, clear_b, nfc_a, nfc_b, rec_tgl, seg10_act, seg10_req;
     wire [31:0] seg_idx;
     wire [23:0] a_n, b_n;  wire [39:0] a_x0, b_x0;  wire [47:0] a_t0, b_t0, a_sx, b_sx;  wire [55:0] a_st, b_st;
     wire [7:0]  a_fl, b_fl, a_bub, b_bub;  wire [3:0] a_ovl, b_ovl;
     wire [2:0]  a_pr, b_pr;
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a_s), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear_a), .presc(pr_a),
+        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a_s), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear_a), .nfc(nfc_a), .presc(pr_a),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b_s), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear_b), .presc(pr_b_eff),
+        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b_s), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear_b), .nfc(nfc_b), .presc(pr_b_eff),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 
     wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;
     v3_ring #(.RAW(RAW), .SEG25(SEG25), .SEG10(SEG10)) u_ring (.clk(clk_p0_100m), .seg10_req(seg10_req), .seg10_act(seg10_act),
-        .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .clear_a(clear_a), .clear_b(clear_b), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
+        .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .clear_a(clear_a), .clear_b(clear_b), .nfc_a(nfc_a), .nfc_b(nfc_b), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
         .a_n(a_n), .b_n(b_n), .a_x0(a_x0), .b_x0(b_x0), .a_t0(a_t0), .b_t0(b_t0), .a_sx(a_sx), .b_sx(b_sx),
         .a_st(a_st), .b_st(b_st), .a_fl(a_fl), .b_fl(b_fl), .a_p(a_pr), .b_p(b_pr),
         .rclk(clk_ref_10m), .raddr(ring_raddr), .rdata(ring_rdata));

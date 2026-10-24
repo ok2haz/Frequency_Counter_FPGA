@@ -47,6 +47,7 @@ module seg_chan3 #(
     input  wire        freeze,      // v3_ring: konec segmentu, soucty se ctou -> znacky se nepricitaji
     input  wire        snap,        // v3_ring: 1 takt na zacatku freeze (kontrolni porovnani poctu hran)
     input  wire        clear,       // v3_ring: 1 takt, soucty prectene -> novy segment
+    input  wire        nfc,         // 2026-10-24: v3_ring, registr == ~freeze & ~clear (v kazdem taktu)
     input  wire [2:0]  presc,       // FW 0x0503: log2 P predelicky (meni se jen na hranici segmentu)
     output wire [23:0] o_n,
     output wire [39:0] o_x0,
@@ -76,25 +77,27 @@ module seg_chan3 #(
     reg        tq1 = 1'b0, tq2 = 1'b0, tq3 = 1'b0;
     reg [39:0] fh = 40'd0, fs = 40'd0;         // hlava (nejstarsi), druha
     reg [1:0]  fn = 2'd0;
+    reg        fnz = 1'b0;                     // 2026-10-24: == (fn != 0) jako registr (pop / take o uroven mene)
     reg        f_err = 1'b0;                   // znacka bez indexu / preteceni FIFO (nesmi nastat; diagnostika)
     // FW 0x0506: ts_valid o takt zpozdene (registr tvd odlehci fan-out ts_valid z tdc_chan; ts_ps se drzi >= 5 taktu, FIFO
     // snese do T+12 -> pop v T+11)
     reg        tvd = 1'b0;
     always @(posedge clk) tvd <= ts_valid;
     wire       push = tq3;
-    wire       pop  = tvd & (fn != 2'd0);
+    wire       pop  = tvd & fnz;
     always @(posedge clk) begin
         tq1 <= trig_ack; tq2 <= tq1; tq3 <= tq2;
         if (hold) begin
-            fn <= 2'd0;
+            fn <= 2'd0; fnz <= 1'b0;
         end else begin
             case ({push, pop})
                 2'b10: begin
+                    fnz <= 1'b1;                   // fn je po vlozeni 1 nebo 2 (2 zustava i pri preteceni)
                     if (fn == 2'd0) begin fh <= xcnt; fn <= 2'd1; end
                     else if (fn == 2'd1) begin fs <= xcnt; fn <= 2'd2; end
                     else f_err <= 1'b1;
                 end
-                2'b01: begin fh <= fs; fn <= fn - 2'd1; end
+                2'b01: begin fh <= fs; fn <= fn - 2'd1; fnz <= fn[1]; end   // pop jen pri fn 1 nebo 2
                 2'b11: begin
                     if (fn == 2'd1) fh <= xcnt;
                     else begin fh <= fs; fs <= xcnt; end
@@ -108,6 +111,7 @@ module seg_chan3 #(
 
     // ---- soucty segmentu ----
     reg        first = 1'b1;                   // segment zatim bez znacky
+    (* syn_preserve = 1 *) reg first_b = 1'b1;   // 2026-10-24: kopie first pro povoleni x0 (t0 a x0 = 88 FF na jednom CE)
     reg [11:0] nlo = 12'd0, nhi = 12'd0;
     reg        ncy = 1'b0;
     reg [39:0] x0 = 40'd0;
@@ -129,7 +133,8 @@ module seg_chan3 #(
     reg        inv = 1'b1;                     // segment zasazeny hold
     // ~clear: v3_ring shodi freeze v tomtez taktu, kdy da clear -> znacka prave v taktu clear by se pricetla se starym
     // x0/t0 do prave vynulovanych souctu (N ji nepocita); zahodi se jako znacky behem freeze (L-0198)
-    wire       take = pop & ~hold & ~freeze & ~clear;
+    // 2026-10-24: ~freeze & ~clear jako jeden registr nfc (v3_ring, shodny v kazdem taktu) -> CE t0 = LUT5 ze 5 registru
+    wire       take = pop & ~hold & nfc;
     always @(posedge clk) begin
         ncy <= 1'b0;
         v1  <= take & ~first;
@@ -138,7 +143,8 @@ module seg_chan3 #(
         v3  <= v2;
         if (take) begin
             xm <= fh; tm <= ts_ps[39:0];
-            if (first) begin x0 <= fh; t0 <= ts_ps; first <= 1'b0; end
+            if (first)   begin t0 <= ts_ps; first <= 1'b0; end
+            if (first_b) begin x0 <= fh; first_b <= 1'b0; end
             nlo <= nlo + 12'd1; ncy <= (nlo == 12'hFFF);
             if (bub    && o_bub != 8'hFF) o_bub <= o_bub + 8'd1;
             if (cs_act && o_ovl != 4'hF)  o_ovl <= o_ovl + 4'd1;
@@ -156,7 +162,7 @@ module seg_chan3 #(
         end
         if (hold) inv <= 1'b1;
         if (clear) begin
-            first <= 1'b1; nlo <= 12'd0; nhi <= 12'd0;
+            first <= 1'b1; first_b <= 1'b1; nlo <= 12'd0; nhi <= 12'd0;
             sx_lo <= 24'd0; sx_hi <= 24'd0; st_lo <= 32'd0; st_hi <= 24'd0;
             o_bub <= 8'd0; o_ovl <= 4'd0;
             inv   <= hold;
@@ -231,6 +237,9 @@ module v3_ring #(
     output reg         clear,
     (* syn_preserve = 1 *) output reg clear_a,   // FW 0x0506: kopie clear pro seg_chan3 A / B (fan-out clear byl 280)
     (* syn_preserve = 1 *) output reg clear_b,
+    // 2026-10-24: nfc_a/nfc_b = ~freeze & ~clear_a / ~clear_b jako registr (shodne v kazdem taktu; seg_chan3 take o uroven mene)
+    (* syn_preserve = 1 *) output reg nfc_a,
+    (* syn_preserve = 1 *) output reg nfc_b,
     output reg         rec_tgl,
     output reg  [31:0] seg_idx,      // cislo segmentu, ktery se prave zapisuje / bezi
     input  wire [23:0] a_n,  b_n,
@@ -245,7 +254,7 @@ module v3_ring #(
     input  wire [RAW+2:0] raddr,     // {zaznam, slovo}
     output reg  [31:0] rdata
 );
-    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; clear_a = 1'b0; clear_b = 1'b0; rec_tgl = 1'b0; seg_idx = 32'd0; rdata = 32'd0; end
+    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; clear_a = 1'b0; clear_b = 1'b0; nfc_a = 1'b1; nfc_b = 1'b1; rec_tgl = 1'b0; seg_idx = 32'd0; rdata = 32'd0; end
     localparam DRAIN = 6;                            // dobeh souctu seg_chan3 (V+4) + rezerva
 
     // ---- casovac (odpocet, registrovana detekce konce) ----
@@ -309,6 +318,7 @@ module v3_ring #(
     always @(posedge clk) begin
         snap  <= 1'b0;
         clear <= 1'b0; clear_a <= 1'b0; clear_b <= 1'b0;
+        nfc_a <= ~freeze; nfc_b <= ~freeze;              // clear v pristim taktu 0, freeze beze zmeny (vyjimky nize)
         v_s1  <= 1'b0;
         // 2. stupen: vyber kanalu, 3. stupen: zapis do RAM
         we <= v_s1;
@@ -319,6 +329,7 @@ module v3_ring #(
         if (we) mem[wa] <= wd;
         if (seg_tick) begin
             freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0; ohA <= 8'd1; ohB <= 8'd1;
+            nfc_a  <= 1'b0; nfc_b <= 1'b0;
         end else if (freeze && !wr) begin
             dr <= dr + 3'd1;
             if (dr == DRAIN - 1) wr <= 1'b1;
@@ -335,6 +346,7 @@ module v3_ring #(
             end else if (!v_s1 && !we) begin                 // posledni slovo je v RAM
                 wr      <= 1'b0;
                 clear   <= 1'b1; clear_a <= 1'b1; clear_b <= 1'b1;
+                nfc_a   <= 1'b0; nfc_b <= 1'b0;
                 freeze  <= 1'b0;
                 wrec    <= wrec + {{(RAW-2){1'b0}}, 2'd2};
                 seg_idx <= seg_idx + 32'd1;
