@@ -22,7 +22,10 @@ TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=1
 MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
-        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW']}
+        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW'],
+        7: ['-DSIM_AUTOCAL']}
+# 2026-10-24: rezim 7 = cileny test tb_hold_inv (ztrata hodin, predelicka, zdroj B; invarianty kopii)
+TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv')}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -94,6 +97,8 @@ M = [
     ('nfc: v taktu clear 1', 'v3_core.v', "                nfc_a   <= 1'b0; nfc_b <= 1'b0;\n", "                nfc_a   <= 1'b1; nfc_b <= 1'b1;\n", 0),
     ('nfc: pri seg_tick nenulovan', 'v3_core.v', "            nfc_a  <= 1'b0; nfc_b <= 1'b0;\n", "", 0),
     ('ring: horni pulslovo bez rotace', 'v3_core.v', "                ohAh <= {ohAh[6:0], ohAh[7]};\n", "", 0),
+    ('hold_s: hx bez boot_tc', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = ok_s[1] & boot_done;", 7),
+    ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']
 
@@ -129,8 +134,9 @@ def run(m):
         s = s.replace(aa, bb)
     open(p, 'w', encoding='utf-8').write(s)
     vvp = os.path.join(d, 't.vvp')
-    cmd = ['iverilog', '-g2012', '-I', sim] + TDC + MODE[mode] + ['-s', 'tb_top_v3', '-o', vvp,
-           os.path.join(sim, 'gowin_models.v')] + [os.path.join(d, f) for f in RTL] + [os.path.join(sim, 'tb_top_v3.sv')]
+    top, tbf = TBS.get(mode, ('tb_top_v3', 'tb_top_v3.sv'))
+    cmd = ['iverilog', '-g2012', '-I', sim] + TDC + MODE[mode] + ['-s', top, '-o', vvp,
+           os.path.join(sim, 'gowin_models.v')] + [os.path.join(d, f) for f in RTL] + [os.path.join(sim, tbf)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         return name, 'PREKLAD SELHAL', (r.stdout + r.stderr)[:200], 0
