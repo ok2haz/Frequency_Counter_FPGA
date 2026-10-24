@@ -105,7 +105,7 @@
 | 132 | 122 | rezerva = 0 | |
 | 254 | 2 | CRC16 bloku 0 (LE) | |
 
-### 3.1b Úzká hlavička (CAPS bit22, FW 0x0507 – návrh; STM v0.40.0 ji umí)
+### 3.1b Úzká hlavička (CAPS bit22, FW 0x0507 – `6b3f29e`, 2026-10-24; STM v0.40.0 ji umí)
 
 Úspora CLS ve FPGA (`docs/audit/2026-10-24_analyza-zdroju-fpga-v3.md`). Pole, která STM nepoužívá nebo si spočítá
 samo, FPGA nuluje nebo zužuje; offsety se nemění. **Bez bitu 22 platí tabulka 3.1 beze změny.**

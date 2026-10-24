@@ -9,11 +9,11 @@
 //     sklon ST/SX = perioda; kontrolni pocitani (bit4) = 0.
 //   * 1PPS (PSEQ, PTS po 1 ms), stranka histogramu A (= dut.u_tdca.hist), chybna delka / CRC (RX_LEN_ERR, RX_CRC_ERR),
 //     SET_CONFIG 0x08 (SEG_LEN 10 ms).
-// Kanal B -DTB_FB=16.100161e6 (run.ps1 topv3): perioda 6,21 taktu -> casuje se kazda hrana a ve FIFO indexu jsou casto DVE
-// rozpracovane znacky (parovani indexu se znackou, v2 tu bralo index nasledujici hrany). Rozestup hran stridave 6 a 7 taktu:
-// pri ts_valid T+10 (TSPIPE) prijde index dalsi hrany pred znackou jen pri 6 -> FIFO hloubky 1 by parovalo STRIDAVE se
-// posunem a bez nej (stale 5-6 taktu = stale posun = ekvivalentni mutant, L-0199). Na segment NENI cely pocet period
-// (16,1 MHz x 250 us = 4025 presne): faze znacek vuci hranici segmentu se posouva ~0,25 taktu za segment, takze test
+// Kanal B -DTB_FB=13.300161e6 (run.ps1 topv3, od 2026-10-24; drive 16,100161 MHz): perioda 7,52 taktu, rozestup hran
+// stridave 7 a 8 taktu -> casuje se kazda hrana a ve FIFO indexu jsou DVE rozpracovane znacky (pop az s tvd = ts_valid
+// o takt pozdeji, FW 0x0506) -> FIFO hloubky 1 test shodi. Pri 16,1 MHz (rozestup 6/7) druha polozka FIFO po registru
+// tvd nenastavala a mutace FIFO hloubky 1 prosla (L-0228; drive L-0199). Na segment NENI cely pocet period
+// (13,3 MHz x 250 us = 3325,04): faze znacek vuci hranici segmentu se posouva ~0,3 taktu za segment, takze test
 // projde i znacku prave v taktu clear (L-0198); kmitocet s celym poctem period by hranici zkousel stale ve stejne fazi.
 // FW 0x0501: v rezimu 0 navic RAW_CAPTURE (512 znacek kanalu A, stranky druhu 3, rozdily = perioda).
 // Rezimy (-DTB_MODE=): 0 = vse vyse (vychozi), 1 = preteceni kruhu (-DSIM_RAW=4: 16 zaznamu, STM chvili necte),
@@ -133,8 +133,8 @@ module tb_top_v3;
     integer nvp [0:1][0:7]; integer ninv_b = 0, ki, kj; real pr_e; reg [2:0] r_pl;
     initial for (ki = 0; ki < 2; ki = ki + 1) for (kj = 0; kj < 8; kj = kj + 1) nvp[ki][kj] = 0;
     // pokryti: znacka prave v taktu clear (konec freeze = zacatek novych souctu, L-0198). Kanal B (run.ps1 topv3,
-    // -DTB_FB=16.100161e6) nema na segment cely pocet period -> faze jeho znacek vuci hranici segmentu se posouva
-    // ~0,25 taktu za segment.
+    // -DTB_FB=13.300161e6) nema na segment cely pocet period -> faze jeho znacek vuci hranici segmentu se posouva
+    // ~0,3 taktu za segment.
     integer ncl_a = 0, ncl_b = 0;
     always @(posedge clk100) begin
         if (dut.u_sa.clear && dut.u_sa.pop) ncl_a = ncl_a + 1;

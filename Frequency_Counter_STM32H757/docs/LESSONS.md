@@ -5507,6 +5507,78 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `bf71399`
 - **Stav:** aktivní
 
+### L-0228 - Registr v cestě změnil časování a stimulus testu přestal vyvolávat kontrolovaný stav
+
+- **Datum:** 2026-10-24
+- **Oblast:** FPGA / testy (`sim/tb_top_v3.sv`, `sim/mut_top_v3.py`)
+- **Symptom:** mutace „FIFO hloubky 1" (FIFO indexů v `seg_chan3`) prošla `tb_top_v3` (PASS) — u nás i u externí instance, i nad stavem před optimalizací.
+- **Příčina:** FW 0x0506 přidal registr `tvd` (`ts_valid` o takt později). Kanál B testu (16,100161 MHz, rozestup hran 6/7 taktů) pak už neplní druhou položku FIFO, takže hloubka 1 nemá pozorovatelný účinek. Test hlídal výsledek, ale stav, který měl vyvolat, už nenastával.
+- **Oprava:** B = 13,300161 MHz (rozestup 7/8 taktů, 3325,04 period na segment) v `run.ps1` topv3/topv3full a v režimu 0 mutací; mutace `ts_valid` o 2 takty dřív v režimu 8 (B 16,1 MHz); varianta o 1 takt je od `tvd` ekvivalentní (zdůvodnění v `EKV`).
+- **Pravidlo:** po změně latence v cestě dat ověř, že stimulus testu pořád vyvolává stavy, které test kontroluje (mutace, která je „vypne", musí test shodit) — PASS sám o sobě pokrytí nedokazuje.
+- **Detekce:** úplný běh `python sim/mut_top_v3.py <modul> <výstup>` po každé změně latence; nezachycená mutace = buď ekvivalentní (zdůvodnit v `EKV`), nebo mezera testu.
+- **Commit:** `83f1451`
+- **Stav:** aktivní
+
+### L-0229 - Název z volného textu použitý jako jméno adresáře shodil čtyřhodinový běh
+
+- **Datum:** 2026-10-24
+- **Oblast:** nástroje (`sim/mut_top_v3.py`)
+- **Symptom:** mutační běh `tb_top_v3` (38 mutací, ~4,5 h) skončil výjimkou `WinError 123`; výsledky tří posledních mutací se ztratily a musely se pustit znovu.
+- **Příčina:** jméno adresáře mutace se skládalo z jejího popisu odstraněním vybraných znaků (blacklist: mezera, `:`, `,`); nová mutace „1PPS: seq > 1 vzdy" (z macOS, kde `>` v názvu nevadí) obsahovala `>`.
+- **Oprava:** jméno = popis s mezerami na `_` a vším mimo `[A-Za-z0-9_.-]` odstraněným (whitelist).
+- **Pravidlo:** jméno souboru z volného textu se tvoří whitelistem povolených znaků, ne vyjmenováním zakázaných — a nástroj, který běží hodiny, má selhat při kontrole předem, ne uprostřed.
+- **Detekce:** `python sim/mut_top_v3.py <modul> --selftest` (kontrola kotev před během); jména jsou po opravě bezpečná pro libovolný popis.
+- **Commit:** `83f1451`
+- **Stav:** aktivní
+
+### L-0230 - Výstup deserializéru po uvolnění resetu nese neznámý stav pinu
+
+- **Datum:** 2026-10-24
+- **Oblast:** FPGA (`pps_ides3` v `src/v3_core.v`, jemný čas 1PPS)
+- **Symptom:** hrana 1PPS 1..22 taktů před uvolněním PCLK po znovuzamčení PLL (pin drží 1) dostala jemný čas prvního slova IDES8 (falešná poloha 0) — nález N1 testu `tb_pps_v3`.
+- **Příčina:** detekce hrany na rozhraní slov porovnává s posledním bitem předchozího slova (`lastw`), který je po uvolnění resetu 0 bez ohledu na pin; IDES8 má navíc po uvolnění latenci, kterou simulace neověří.
+- **Oprava:** 2b čítač `wn` drží `lastw = 1` po první 3 slova (hrana v poloze 0 se nehlásí), `u_ipps/wn*` ve `false_path` z `rdy` (`timing_v3.sdc`).
+- **Pravidlo:** data z bloku s vnitřní latencí (deserializér, synchronizátor, filtr) jsou po uvolnění resetu neplatná, dokud neuplyne jeho latence s rezervou — maskuj je, nedoplňuj výchozí hodnotou.
+- **Detekce:** `tb_pps_v3` (N1 výchozí kontrola), mutace „N1: lastw bez masky prvních slov" v `sim/mut_pps_v3.py`.
+- **Commit:** `d37ed5c`
+- **Stav:** aktivní
+
+### L-0231 - Jemný čas starší než hrubá hrana k ní nepatří
+
+- **Datum:** 2026-10-24
+- **Oblast:** FPGA (`pps_cap3` v `src/v3_core.v`)
+- **Symptom:** zákmit kratší než takt (hrubý detektor ho nevidí) do ~38 taktů před hranou 1PPS předal hraně svůj jemný čas — nález N2.
+- **Příčina:** příznak platného jemného času `fa` se nastavil zákmitem a hrubá hrana ho převzala, protože se při ní nenuloval.
+- **Oprava:** `fa <= 1'b0` při hrubé hraně (platný jemný čas hrany přichází až ~13 taktů po ní); okno zákmitu 5..8 taktů před hranou zůstává otevřené.
+- **Pravidlo:** když se dvě události párují přes čas, párovací okno musí začínat událostí, ke které se páruje — co přišlo před ní, se zahodí.
+- **Detekce:** `tb_pps_v3` (kontrola N2 pro ≥ 10 taktů), mutace „N2: jemny cas pred hrubou hranou se nezahodi".
+- **Commit:** `a3f2853`
+- **Stav:** aktivní
+
+### L-0232 - Zástupce programu v PATH prošel `command -v` a kontrola se tiše přeskakovala
+
+- **Datum:** 2026-10-24
+- **Oblast:** build (`scripts/build.sh`)
+- **Symptom:** kontrola modelu IDE (`.project` vs `subdir.mk`) nikdy nehlásila nic, ani když měla; nikdo si nevšiml, že neběží.
+- **Příčina:** `PY="$(command -v python3 || command -v python)"` vzal `python3` ze `WindowsApps`, což je zástupce Microsoft Store (existuje, ale nic nespustí); volání bylo navíc s `|| true`.
+- **Oprava:** `PY` je první kandidát (`python3`, `python`, `py`), který se opravdu spustí (`-c "import sys"`); bez Pythonu se vypíše varování, že kontrola je PŘESKOČENA (`scripts/build.sh`).
+- **Pravidlo:** nástroj z PATH se vybírá tím, že se spustí, ne tím, že existuje; kontrola, která se může přeskočit, to musí říct nahlas.
+- **Detekce:** `python3 --version` na Windows stroji; po opravě se výběr vypisuje varováním jen při selhání.
+- **Commit:** viz `git log scripts/build.sh`
+- **Stav:** aktivní
+
+### L-0233 - Časování FPGA se posuzuje statistikou sestavení, ne jedním sestavením
+
+- **Datum:** 2026-10-24
+- **Oblast:** FPGA / P&R (Gowin, `tools/pnr_seeds.py`)
+- **Symptom:** externí optimalizace slibovala lepší časování, první sestavení dalo −0,87 ns, další −1,14 / −0,23 ns; ablace z předchozí analýzy (jedno sestavení na variantu) se nedaly porovnat – rozdíly ~0,5 ns byly v šumu.
+- **Příčina:** `BLD_TIME` v `build_id.vh` je vstupem P&R (L-0222), takže každé sestavení je jiné rozmístění; jedna hodnota rezervy je vzorek z rozdělení s rozptylem ~1,5 ns. Při stejném seedu a netlistu je P&R deterministický (varianta, kterou Gowin zjednoduší na stejný netlist, dá stejná čísla).
+- **Oprava:** `tools/pnr_seeds.py` – N sestavení se syntetickým `BLD_TIME`, souhrn (projde / medián / nejhorší) a skupiny cílů porušených cest přes sestavení. Systematické cesty (≥ 3 z 8) se opravují v RTL přesně (kopie, předpočet, registr místo LUT v povolení), náhodné ne. 0x0507: 2/8 → 6/8, medián −0,23 → +0,07 ns.
+- **Pravidlo:** změna kvůli časování FPGA se hodnotí rozdělením rezervy přes ≥ 8 sestavení a seznamem cest, které selhávají opakovaně; jedno sestavení (i v ablační tabulce) není měření.
+- **Detekce:** `python tools/pnr_seeds.py run <var> 8 -j 4` + `report <var>`; brána `fpga_release.py --tries K`.
+- **Commit:** `7fadfec` (nástroj), opravy `4ceec06`, `c586f03`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

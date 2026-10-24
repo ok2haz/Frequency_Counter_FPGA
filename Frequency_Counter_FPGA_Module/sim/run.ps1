@@ -145,9 +145,10 @@ $tests = @(
     # 2026-10-24 (FW 0x0506): samostatny test retezu GPS 1PPS v3 (pps_ides3 + pps_cap3, sim/tb_pps_v3.sv): TB budi tick sam
     #   a skace na hranice prenosu tick[7:0] / tick[20:0] / tick[33:0] (vypujcka bw ve fix 1..3), 8 poloh IDES8 + rozhrani
     #   slov PCLK (lastw), pps_cap3 (seq, seq_nz/gt1, pts_p/pfl_p/d_p, saturace d_l, nofine), rozhrani f_ts/f_tgl, ztrata
-    #   a obnova zamku PLL (epocha, nova kotva, ztrata uprostred mereni); pruzkum: hrana pred znovuzamcenim (N1), kratky
-    #   pulz 3 ns, zakmit pred hranou (N2). ~15 s. Negativni kontroly: python3 sim/mut_pps_v3.py <koren modulu> <vystup>
-    #   (19 mutaci + 1 ekvivalentni, paralelne). -DTB_STRICT_RELOCK: N1 jako kontrola (projde az s opravou N1).
+    #   a obnova zamku PLL (epocha, nova kotva, ztrata uprostred mereni), hrana pred znovuzamcenim (N1, kontrola od opravy;
+    #   -DTB_LAX_RELOCK jen pruzkum), zakmit pred hranou (N2, kontrola pro >= 10 taktu; -DTB_STRICT_GLITCH vsechny
+    #   vzdalenosti, selze -- okno 5..8 taktu), kratky pulz 3 ns. ~15 s. Negativni kontroly: python3 sim/mut_pps_v3.py
+    #   <koren modulu> <vystup> (20 mutaci + 3 ekvivalentni, paralelne).
     @{ name = "ppsv3"; top = "tb_pps_v3"; rtl = @("v3_core.v"); tb = "tb_pps_v3.sv"; extra = @("gowin_models.v") }
     # 2026-10-24 (optimalizace casovani FW 0x0506): cileny test predpocitanych registru top_v3 (sim/tb_hold_inv.sv):
     #   vynucena ztrata hodin (novy nabeh boot_done), zmena predelicky A/B a zdroje B; v kazdem taktu invarianty kopii
