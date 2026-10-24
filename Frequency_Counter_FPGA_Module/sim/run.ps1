@@ -126,7 +126,7 @@ $tests = @(
     #   topv3deep2 totez s vystupem PSRAM neplatnym 4..6 ns po hrane CK: kalibrace musi zvolit fazi cteni 1 (F-0264)
     #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (28 mutaci, paralelne)
     @{ name = "topv3"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
-       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=16.100161e6") }
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=13.300161e6") }
     @{ name = "topv3ovf"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=1", "-DSIM_RAW=4") }
     @{ name = "topv3cal"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
@@ -141,7 +141,7 @@ $tests = @(
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=5", "-DTB_PS_LATE", "-DDEEP_RAW") }
     #   topv3full FW 0x0506 s -DDEEP_RAW (PSRAM): rezim 0 beze zmeny, CAPS bit21 = 1 (lite je vychozi, ostatni topv3* ho testuji)
     @{ name = "topv3full"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v");
-       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=16.100161e6", "-DDEEP_RAW") }
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=13.300161e6", "-DDEEP_RAW") }
     # 2026-10-24 (FW 0x0506): samostatny test retezu GPS 1PPS v3 (pps_ides3 + pps_cap3, sim/tb_pps_v3.sv): TB budi tick sam
     #   a skace na hranice prenosu tick[7:0] / tick[20:0] / tick[33:0] (vypujcka bw ve fix 1..3), 8 poloh IDES8 + rozhrani
     #   slov PCLK (lastw), pps_cap3 (seq, seq_nz/gt1, pts_p/pfl_p/d_p, saturace d_l, nofine), rozhrani f_ts/f_tgl, ztrata
@@ -149,6 +149,13 @@ $tests = @(
     #   pulz 3 ns, zakmit pred hranou (N2). ~15 s. Negativni kontroly: python3 sim/mut_pps_v3.py <koren modulu> <vystup>
     #   (19 mutaci + 1 ekvivalentni, paralelne). -DTB_STRICT_RELOCK: N1 jako kontrola (projde az s opravou N1).
     @{ name = "ppsv3"; top = "tb_pps_v3"; rtl = @("v3_core.v"); tb = "tb_pps_v3.sv"; extra = @("gowin_models.v") }
+    # 2026-10-24 (optimalizace casovani FW 0x0506): cileny test predpocitanych registru top_v3 (sim/tb_hold_inv.sv):
+    #   vynucena ztrata hodin (novy nabeh boot_done), zmena predelicky A/B a zdroje B; v kazdem taktu invarianty kopii
+    #   (hold_x_s == hold_x, hx_x, wnz, fnz, nfc, first_b, ohAh/ohBh, kopie zapisu tabulky) (~1 min). Stejne invarianty
+    #   hlida tb_top_v3.sv ve vsech topv3* (vypnuti -DNO_OPT_INV jen pro preklad proti puvodnimu RTL).
+    #   Stopa vystupu pro dukaz shody: python3 sim/trace_v3.py run <koren> <vystup> [testy]; ... cmp <A> <B>
+    @{ name = "holdinv"; top = "tb_hold_inv"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_hold_inv.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
     # další testy přidávej sem, jak přibývají moduly
 )
 

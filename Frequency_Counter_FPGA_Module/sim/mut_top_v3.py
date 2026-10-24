@@ -5,7 +5,7 @@ Pouziti: python3 sim/mut_top_v3.py <koren FPGA modulu> <vystupni adresar> [jmeno
          python3 sim/mut_top_v3.py <koren FPGA modulu> --selftest   (jen kontrola kotev, bez simulace)
 2026-10-24: kotvy VSECH vybranych mutaci se zkontroluji (v kodu prave jednou) PRED prvni simulaci (L-0224); mutace muze mit
 vic nahrad (seznam dvojic misto jedne kotvy)."""
-import os, shutil, subprocess, sys, time
+import os, re, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 root = os.path.abspath(sys.argv[1])
@@ -19,11 +19,13 @@ only = set(args)
 sim, src = os.path.join(root, 'sim'), os.path.join(root, 'src')
 
 TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=15', '-DSIM_BREAK_IDX=268', '-DSIM_TOP']
-MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
+MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=13.300161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
         5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW'],
-        7: ['-DSIM_AUTOCAL']}
+        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6']}
+# 2026-10-24: rezim 0 = B 13,300161 MHz (rozestup hran stridave 7 a 8 taktu -> FIFO indexu drzi DVE znacky,
+# FIFO hloubky 1 se projevi); rezim 8 = B 16,100161 MHz (rozestup 6/7 taktu) pro mutace znacky o 2 takty driv
 # 2026-10-24: rezim 7 = cileny test tb_hold_inv (ztrata hodin, predelicka, zdroj B; invarianty kopii)
 TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv')}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
@@ -51,6 +53,7 @@ M = [
     # (horni cast z tr* o takt pozdeji = konstantni posun vsech znacek a dolni cast z lut_q3 o takt pozdeji = tataz polozka
     # tabulky, kod se drzi >= 5 taktu -> ekvivalentni mutanty, netestuji se)
     ('znacka: ts_valid o takt driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_z;", 0),
+    ('znacka: ts_valid o 2 takty driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_y;", 8),
     # E4 (FW 0x0502): jemny cas 1PPS -- obracene poradi bitu IDES8, bez t_rel (osa PCLK), jemny cas se nepouzije
     ('IDES8: obracene poradi bitu', 'v3_core.v', "    parameter Q0_FIRST = 1 ", "    parameter Q0_FIRST = 0 ", 0),
     ('1PPS: bez t_rel', 'v3_core.v', "        hl  <= p_ts[10:3] + t_rel;",
@@ -88,7 +91,7 @@ M = [
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
     # 2026-10-24 (optimalizace casovani): nove struktury -- kazda musi test shodit
-    ('1PPS: wnz se pri hrane nenuluje', 'v3_core.v', "win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0; end", "win <= 5'd0; wnz_b <= 1'b0; end", 0),
+    ('1PPS: wnz se pri hrane nenuluje', 'v3_core.v', "win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0;\n", "win <= 5'd0; wnz_b <= 1'b0;\n", 0),
     ('1PPS: kopie povoleni bez wnz_b', 'v3_core.v', "    wire       pub_b = pend_b & wnz_b & (fok_b | wok_b);",
      "    wire       pub_b = pend_b & (fok_b | wok_b);", 0),
     ('tabulka B: kopie adresy se neaktualizuje', 'v3_core.v', "lw_a_qa <= lwa_s1; lw_a_qb <= lwa_s1;", "lw_a_qa <= lwa_s1;", 2),
@@ -106,6 +109,10 @@ EKV = {
     # pfl_p = pps_gt1 ? pps_pfl_p : 0. Pri seq = 1 je pps_pfl_p = pfl_l pred prvni hranou = 0 (pps_cap3 nema reset,
     # pfl_l zacina 0), takze hradlo seq_gt1 nema pozorovatelny ucinek; stopa topv3 s touto mutaci je shodna s base/
     '1PPS: seq > 1 vzdy': 'pfl_p je pri seq = 1 vzdy 0 (pfl_l pred prvni hranou = 0) -> seq_gt1 bez ucinku',
+    # FW 0x0506: spotrebitel (seg_chan3) bere znacku az s tvd = ts_valid o takt pozdeji. ts_valid o takt driv dava tvd
+    # v taktu, kdy ts_ps uz nese novou znacku (drzi se >= 5 taktu) a hlava FIFO je tyz index -> stejne hodnoty.
+    # O 2 takty driv (tv_y) uz cte predchozi znacku -> mutace 'znacka: ts_valid o 2 takty driv' (rezim 8).
+    'znacka: ts_valid o takt driv': 'tvd (ts_valid o takt pozdeji) cte ts_ps uz s novou znackou -> stejne hodnoty',
 }
 
 
@@ -127,7 +134,7 @@ def check_anchors(sel):
 
 def run(m):
     name, fn, a, b, mode = m
-    d = os.path.join(out, name.replace(' ', '_').replace(':', '').replace(',', ''))
+    d = os.path.join(out, re.sub(r'[^A-Za-z0-9_.-]', '', name.replace(' ', '_')))   # Windows: bez > : ,
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
     for f in RTL:
