@@ -1,0 +1,9 @@
+# yosys_v3.ys -- nahradni metriky bitstreamu v3 (top_v3) na macOS (2026-10-24). NENI to CLS ani casovani Gowinu:
+# yosys ma jinou syntezu (neslucuje registry jako GowinSynthesis, nemapuje ALU54D podle syn_dspstyle), cisla slouzi
+# jen k RELATIVNIMU srovnani base/ proti upravene verzi. Spousti se z korene modulu (Frequency_Counter_FPGA_Module):
+#   yosys -q -p "script tools/yosys_v3.ys; write_json /tmp/v3.json"                       (vychozi sestaveni)
+#   yosys -q -p "verilog_defines -DDEEP_RAW; script tools/yosys_v3.ys; write_json ..."     (s hlubokym RAW / PSRAM)
+# Obvykle pres tools/yosys_stat.py. Soubory jako v3/Counter_FPGA_v3.gprj; build_id.vh pres -I src. Primitiva Gowinu
+# (rPLL, CLKDIV, IDES8, OSC, ALU, LUT1/LUT2) zna synth_gowin z knihovny cells_sim/cells_xtra jako blackbox/whitebox.
+read_verilog -I src src/top_v3.v src/v3_core.v src/app_v3.v src/spi_slave_phy_v3.v src/spi_app.v src/tdc.v
+synth_gowin -top top_v3 -family gw1n -noiopads

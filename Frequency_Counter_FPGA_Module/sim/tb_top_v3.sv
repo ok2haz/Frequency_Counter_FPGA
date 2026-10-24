@@ -95,10 +95,24 @@ module tb_top_v3;
               mo[8] = 8'h00; mo[9] = 8'h04; mo[10] = 8'd4; mo[12] = p0; mo[13] = p1; mo[14] = p2; mo[15] = p3;
               for (b = 0; b < 4; b = b + 1) seal(b); end endtask
     task build_ack(input [31:0] a); build(8'h06, a[7:0], a[15:8], a[23:16], a[31:24]); endtask
+`ifdef TRACE
+    // 2026-10-24: STOPA pro dukaz shody chovani (sim/trace_v3.py): kazdy bajt transakce (cas, poradi transakce, index,
+    // MOSI, MISO) a zmeny vystupu top_v3 ($fstrobe = hodnoty na konci casoveho kroku; stejne radky slucuje trace_v3.py)
+    integer trf, ntr = 0;
+    initial trf = $fopen("trace.txt");
+    always @(led or fok or refc or ps_ck or ps_ckn or ps_csn or ps_rstn or ps_rwds or ps_dq)
+        $fstrobe(trf, "%0t O %b %b %b %b %b %b %b %b %h", $time, led, fok, refc, ps_ck, ps_ckn, ps_csn, ps_rstn, ps_rwds, ps_dq);
+`endif
     task xfer(input integer nbytes);
         begin cs = 0; #(64'd1_000_000);
+`ifdef TRACE
+              ntr = ntr + 1;
+`endif
               for (i = 0; i < nbytes; i = i + 1) begin mi[i] = 0;
                   for (j = 7; j >= 0; j = j - 1) begin mosi = mo[i][j]; #(64'd20_000); sck = 1; mi[i][j] = miso; #(64'd20_000); sck = 0; end
+`ifdef TRACE
+                  $fdisplay(trf, "%0t X %0d %0d %h %h", $time, ntr, i, mo[i], mi[i]);
+`endif
               end
               #(64'd1_000_000); cs = 1; #(64'd200_000_000); end endtask   // mezera 200 us
 
