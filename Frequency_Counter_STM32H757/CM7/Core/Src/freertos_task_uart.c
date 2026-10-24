@@ -3710,6 +3710,10 @@ void UartTask_run(void *argument)
 					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
 					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
 					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
+					  	/* v0.40.4: sigma_y pri tau = hradlo z navazujicich oken -- z ni hlavni cislo bere pocet platnych cislic */
+					  	if (full) { float w = g_win_adev;
+					  	  printf("STATISTIKA: sigma_y@hradlo = %ld e-15 (navazujicich oken %lu)%s\n", (long)(w * 1e15f),
+					  	         (unsigned long)g_win_adev_n, (w > 0.0f) ? "" : "  (jeste malo oken, plati sigma_y@1s)"); }
 					  	/* Filtr odlehlych: kolik vyrazil a o kolik se lisi sigma_y(1 s) filtrovane a surove pyramidy (stage 0..3 = 1, 10, 100, 1000 s). */
 					  	if (full) {
 					  	  uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);

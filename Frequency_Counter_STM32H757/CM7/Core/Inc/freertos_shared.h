@@ -67,6 +67,8 @@ extern volatile uint64_t g_freq_gate_ps;   /* PŘESNÁ délka okna [ps] — vše
 extern volatile uint8_t  g_freq_hires;     /* 1 = zdroj je /4 → lze dopočítat; 0 = /16 (edge_count chybí) */
 extern volatile uint8_t  g_freq_chan;      /* kanál, ze kterého je poslední přijaté měření (0 = A, 1 = B; FW >= 0x041E) */
 extern volatile uint8_t  g_freq_regr;      /* 1 = poslední měření použilo regresi (podlaha přesnosti hlavního čísla, 2026-10-21) */
+extern volatile float    g_win_adev;       /* v0.40.4: relativni σy(τ = hradlo) z navazujicich oken; 0 = zatim nezname (FpgaTask) */
+extern volatile uint32_t g_win_adev_n;     /* pocet rozdilu oken v aktualni rade */
 
 /* ── Stav SPI/FPGA (FpgaTask -> UiTask) ────────────────────────────────── */
 extern volatile char    g_spi_text[64];

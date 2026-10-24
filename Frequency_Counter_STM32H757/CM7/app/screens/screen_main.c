@@ -967,6 +967,11 @@ static double meas_u_rel(uint64_t gate_ps, double hz)
      * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
      * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
     double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
+    /* v0.40.4: σy pri tau = HRADLO z navazujicich oken (FpgaTask, win_adev_feed) -- to je rozptyl PRAVE zobrazeneho mereni;
+     * σy@1s plati jen pro hradlo 1 s (pri 0,25 s byva vetsi, pri 10 s mensi). Do naplneni rady (16 oken) zustava σy@1s. */
+    {   const float wa = g_win_adev;
+        if (wa > 0.0f) u_res = (double)wa;
+    }
     /* 🔴 2026-10-06: NAMERENY rozptyl smi nejistotu jen ZVETSIT, nikdy snizit pod
      * rozliseni hradla. Kdyz je signal synchronni s hodinami TDC (citac meri
      * vlastni referenci), lezi obe krajni hrany okna stale na STEJNEM kodu

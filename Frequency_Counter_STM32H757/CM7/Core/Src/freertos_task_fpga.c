@@ -13,6 +13,7 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <math.h>        /* sqrt — sigma y pri hradle (win_adev_feed) */
 
 #include "fpga_freq.h"
 #include "freertos_shared.h"
@@ -42,6 +43,39 @@ volatile int16_t  g_tdc_cal_temp_c10 = 0;  /* teplota posledni kalibrace, ×10 �
  * Prah relativne: uhz_prev / TDC_SPIKE_REL_DIV = uhz_prev × 5·10⁻⁹ (~0,05 Hz @ 10 MHz). */
 #define TDC_SPIKE_REL_DIV   50000000ull    /* 2·10⁻⁸ (~5× skok obriho binu 9,28 ns = 3,7·10⁻⁸ je presne za prahem). Do 2026-10-08 3·10⁻⁹: s cistym vstupem to vyrazovalo 8,3 % BEZNYCH oken (sigma okna 196 ps = 0,8·10⁻⁹), tedy umele zlepsovalo statistiku */
 volatile uint32_t g_tdc_spike_count = 0;   /* kolik oken vyrazeno jako obri-bin artefakt (status) */
+
+/* v0.40.4: σy pri tau = HRADLO z navazujicich oken (Allanova odchylka sousednich mereni, exponencialni zapominani ~64 oken).
+ * Hlavni cislo dosud bralo nejistotu ze σy@1s i pri hradle 0,05..0,5 s (a pod 1 s pyramida Allanovy odchylky nema data).
+ * Mezera v SEQ, jine hradlo (> 10 %), jiny kanal nebo skok kmitoctu > 1e-5 = nova rada. Plati od WIN_ADEV_MIN oken.
+ * Zapisuje VYHRADNE FpgaTask, cte screen_main (meas_u_rel) a `status`. */
+#define WIN_ADEV_MIN  16u
+volatile float    g_win_adev   = 0.0f;     /* relativni σy(τ = hradlo); 0 = zatim nezname */
+volatile uint32_t g_win_adev_n = 0u;       /* pocet rozdilu v aktualni rade */
+static void win_adev_feed(uint64_t uhz, uint32_t seq, uint64_t gate_ps, uint8_t ch)
+{
+  static uint64_t p_uhz, p_gate;
+  static uint32_t p_seq;
+  static uint8_t  p_ch, have;
+  static double   avar;
+  if (uhz == 0u || gate_ps == 0u) { have = 0u; g_win_adev_n = 0u; g_win_adev = 0.0f; return; }
+  int cont = have && seq == p_seq + 1u && ch == p_ch &&
+             (gate_ps > p_gate ? gate_ps - p_gate : p_gate - gate_ps) * 10u < p_gate;
+  double d = 0.0;
+  if (cont) {
+    d = ((double)uhz - (double)p_uhz) / (double)p_uhz;
+    if (d > 1e-5 || d < -1e-5) cont = 0;                    /* zmena signalu */
+  }
+  if (!cont) {
+    avar = 0.0; g_win_adev_n = 0u; g_win_adev = 0.0f;
+  } else {
+    const uint32_t n = g_win_adev_n;
+    const double a = (n < 64u) ? 1.0 / (double)(n + 1u) : 1.0 / 64.0;   /* nejdriv prosty prumer, pak zapominani */
+    avar += a * (0.5 * d * d - avar);
+    g_win_adev_n = n + 1u;
+    g_win_adev = (n + 1u >= WIN_ADEV_MIN) ? (float)sqrt(avar) : 0.0f;
+  }
+  have = 1u; p_uhz = uhz; p_seq = seq; p_gate = gate_ps; p_ch = ch;
+}
 
 void StartFpgaTask(void *argument)
 {
@@ -155,6 +189,9 @@ void StartFpgaTask(void *argument)
           if (uhz > 0u) uhz_prev = uhz;
           reject_run = 0u;
           fpga_acc_add(v, m.edge_count, m.gate_ps);
+          win_adev_feed(uhz, m.sequence, m.gate_ps, m.channel_id);
+        } else {
+          win_adev_feed(0u, 0u, 0u, 0u);   /* vyrazene okno = mezera v navaznosti */
         }
         /* Spike (obri bin): okno se do akumulatoru NEPRIDA (dropne se), vzorek se
          * dopocte ze zbylych oken -> Allan se dal kresli (mezera je jen sub-vzorkova,
@@ -167,6 +204,7 @@ void StartFpgaTask(void *argument)
       } else {
         fpga_stat_break();   /* #27: okna uz nenavazuji -> rozpracovany vzorek pryc */
         uhz_prev = 0u; reject_run = 0u;   /* ztrata signalu -> zahod referenci spike-rejectu */
+        win_adev_feed(0u, 0u, 0u, 0u);
       }
       /* Do datove cache jde kmitocet v µHz dopocteny z reciproke dvojice —
        * hi-res (~7 platnych desetin), tedy vic, nez nese zaokrouhlene `x100000`.
