@@ -184,10 +184,11 @@ module top_v3 (
     wire        lw_tgl, lw_ch, lw_commit_tgl;
     wire [1:0]  lw_cm_mask;
     wire [9:0]  lw_a;  wire [13:0] lw_neg;
-    wire [9:0]  lw_a_q;  wire [13:0] lw_n_q;
+    wire [9:0]  lw_a_qa, lw_a_qb;  wire [13:0] lw_n_qa, lw_n_qb;   // 2026-10-24: vystupni registry zvlast pro kanal A / B
     wire        lw_en_a, lw_en_b, lw_cm_p;
-    lut_wr_sync u_lws (.clk(clk_p0_100m), .lw_tgl(lw_tgl), .lw_commit_tgl(lw_commit_tgl), .lw_ch(lw_ch), .lw_a(lw_a), .lw_neg(lw_neg),
-                       .lw_en_a(lw_en_a), .lw_en_b(lw_en_b), .lw_cm_p(lw_cm_p), .lw_a_q(lw_a_q), .lw_n_q(lw_n_q));
+    lut_wr_sync3 u_lws (.clk(clk_p0_100m), .lw_tgl(lw_tgl), .lw_commit_tgl(lw_commit_tgl), .lw_ch(lw_ch), .lw_a(lw_a), .lw_neg(lw_neg),
+                        .lw_en_a(lw_en_a), .lw_en_b(lw_en_b), .lw_cm_p(lw_cm_p), .lw_a_qa(lw_a_qa), .lw_a_qb(lw_a_qb),
+                        .lw_n_qa(lw_n_qa), .lw_n_qb(lw_n_qb));
     wire        want_a, want_b, cal_req_a, cal_req_b, seg_tick, bank_a, bank_b;
     // FW 0x0501 (SET_CONFIG 0x09): zdroj kanalu B. bit0 = pin A misto pinu B, bit1 = invertovat (retez casuje jen nabezne
     // hrany -> invertovany signal = sestupne hrany). A nabezne + B sestupne tehoz pinu = sirka pulzu bez prepojeni;
@@ -227,7 +228,7 @@ module top_v3 (
     tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(sig_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(1'b0), .cal_req(cal_req_a), .cal_abort(cal_abort),
-        .lw_en(lw_en_a), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
+        .lw_en(lw_en_a), .lw_a(lw_a_qa), .lw_neg(lw_n_qa), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
         .use_ro(use_ro_a), .cal_busy(cal_busy_a), .cal_valid(cal_valid_a), .cal_fail(cal_fail_a),
         .d_ovf(da_ovf), .d_peak(da_peak), .d_nz(da_nz), .d_last(da_last), .d_maxtap(da_maxtap),
@@ -237,7 +238,7 @@ module top_v3 (
     tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req_b), .cal_abort(cal_abort),
-        .lw_en(lw_en_b), .lw_a(lw_a_q), .lw_neg(lw_n_q), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),
+        .lw_en(lw_en_b), .lw_a(lw_a_qb), .lw_neg(lw_n_qb), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .use_ro(use_ro_b), .cal_busy(cal_busy_b), .cal_valid(cal_valid_b), .cal_fail(cal_fail_b),
         .d_ovf(db_ovf), .d_peak(db_peak), .d_nz(db_nz), .d_last(db_last), .d_maxtap(db_maxtap),

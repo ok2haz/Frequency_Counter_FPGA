@@ -28,7 +28,7 @@ ENDPOINTS = [
     ('* -> u_ring/wa_a', None, r'^u_ring\.wa_a$', None),
     ('u_pps/dd_r -> u_pps/d_l', r'^u_pps\.(dd_r|dd)$', r'^(u_pps\.d_l|pps_d_l)$', None),
     ('u_sa/(soucty) -> u_ring/wa_a', r'^u_sa\.', r'^u_ring\.wa_a$', None),
-    ('u_lws/lw_n_q -> u_tdca/lut (DI)', r'^(u_lws\.)?lw_n_q$', r'^u_tdca\.lut', None),
+    ('u_lws/lw_n_q -> u_tdca/lut (DI)', r'^(u_lws\.)?lw_n_qa?$', r'^u_tdca\.lut', None),
     ('u_sa/tvd -> u_sa/t0 (CE)', r'^u_sa\.tvd$', r'^u_sa\.t0$', {'CE'}),
     ('* -> u_sa/t0', None, r'^u_sa\.t0$', None),
     ('u_tdca/cal_valid,busy_ra -> hold_a_s', r'^u_tdca\.(cal_valid|busy_ra)$', r'^hold_a_s$', None),

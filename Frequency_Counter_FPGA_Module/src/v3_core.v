@@ -575,6 +575,42 @@ module pps_ides3 #(
 endmodule
 
 // ------------------------------------------------------------
+// lut_wr_sync3 (2026-10-24, casovani): v3 kopie lut_wr_sync (spi_app.v, sdileny s v2 -- beze zmeny) se ZVLASTNIM
+//   vystupnim registrem adresy a dat pro kazdy kanal TDC. Puvodni jedna sada lw_a_q / lw_n_q budila tabulky obou
+//   kanalu (BSRAM u_tdca a u_tdcb lezi daleko od sebe) -> cesta lw_n_q -> u_tdca/lut DI 9,2 ns, z toho vetsina vedeni.
+//   Kopie *_a / *_b maji stejny vstup (lwa_s1 / lwn_s1) -> v kazdem taktu shodne s puvodnim lw_a_q / lw_n_q.
+// ------------------------------------------------------------
+module lut_wr_sync3 (
+    input  wire        clk,              // clk_p0_100m
+    input  wire        lw_tgl, lw_commit_tgl, lw_ch,
+    input  wire [9:0]  lw_a,
+    input  wire [13:0] lw_neg,
+    output wire        lw_en_a, lw_en_b, // zapis polozky (1 takt) do kanalu A / B
+    output wire        lw_cm_p,          // potvrzeni tabulky (1 takt, oba kanaly)
+    (* syn_preserve = 1 *) output reg [9:0]  lw_a_qa,   // adresa pro kanal A (kopie; syn_preserve, jinak Gowin kopie slouci)
+    (* syn_preserve = 1 *) output reg [9:0]  lw_a_qb,   // ... pro kanal B
+    (* syn_preserve = 1 *) output reg [13:0] lw_n_qa,   // data pro kanal A
+    (* syn_preserve = 1 *) output reg [13:0] lw_n_qb    // data pro kanal B
+);
+    reg [2:0]  lwt_s = 3'b000, lwc_s = 3'b000;
+    reg [9:0]  lwa_s1 = 10'd0;
+    reg [13:0] lwn_s1 = 14'd0;
+    reg [1:0]  lwh_s = 2'b00;
+    initial begin lw_a_qa = 10'd0; lw_a_qb = 10'd0; lw_n_qa = 14'd0; lw_n_qb = 14'd0; end
+    always @(posedge clk) begin
+        lwt_s  <= {lwt_s[1:0], lw_tgl};
+        lwc_s  <= {lwc_s[1:0], lw_commit_tgl};
+        lwa_s1 <= lw_a;   lw_a_qa <= lwa_s1; lw_a_qb <= lwa_s1;
+        lwn_s1 <= lw_neg; lw_n_qa <= lwn_s1; lw_n_qb <= lwn_s1;
+        lwh_s  <= {lwh_s[0], lw_ch};
+    end
+    wire lw_wr_p = lwt_s[2] ^ lwt_s[1];
+    assign lw_cm_p = lwc_s[2] ^ lwc_s[1];
+    assign lw_en_a = lw_wr_p & ~lwh_s[1];
+    assign lw_en_b = lw_wr_p &  lwh_s[1];
+endmodule
+
+// ------------------------------------------------------------
 // cal_seq3: kalibrace TDC kanalu STRIDAVE. Pozadavky (po zapnuti oba, SET_CONFIG 0x02 podle masky, opakovani po
 //   selhani) se frontuji; sber histogramu bezi vzdy jen v jednom kanalu (sdileny ring oscilator, druhy kanal meri).
 //   Kanal ve stavu cekani na tabulku (s_wait) uz neni busy -> muze zacit sber druheho kanalu.
