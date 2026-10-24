@@ -26,7 +26,13 @@ case "$(uname -s)" in
     Darwin) IDE_PLUGINS="${IDE_PLUGINS:-$(ls -d /Applications/STM32CubeIDE*.app/Contents/Eclipse/plugins 2>/dev/null | sort | tail -1)}"; PLAT=macos ;;
     *)      IDE_PLUGINS="${IDE_PLUGINS:-/c/ST/STM32CubeIDE_2.1.0/STM32CubeIDE/plugins}"; PLAT=win32 ;;
 esac
-PY="$(command -v python3 || command -v python)"
+# Funkcni Python: na Windows je `python3` casto jen zastupce Microsoft Store (existuje, ale nic nespusti),
+# takze `command -v` nestaci -- kazdy kandidat se zkusi spustit. Bez Pythonu se kontrola modelu IDE NEPRESKOCI
+# tise, ale hlasi se (2026-10-24, STATUS #337a).
+PY=""
+for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1; then PY="$c"; break; fi
+done
 
 # Nastroje ST hledame globem, at to prezije upgrade IDE (verze je v nazvu adresare).
 find_tool_dir() {
@@ -53,6 +59,10 @@ check_model() {
     local proj="${ROOT}/${core}/.project"
     local bdir="${ROOT}/${core}/${CFG}"
     [ -f "$proj" ] && [ -d "$bdir" ] || return 0
+    if [ -z "$PY" ]; then
+        echo "*** VAROVANI: funkcni Python nenalezen (python3 / python / py) -> kontrola modelu IDE (.project vs subdir.mk) PRESKOCENA" >&2
+        return 0
+    fi
     "$PY" - "$proj" "$bdir" "$core" <<'PY' || true
 import sys, re, os, glob
 proj, bdir, core = sys.argv[1], sys.argv[2], sys.argv[3]
