@@ -105,6 +105,32 @@
 | 132 | 122 | rezerva = 0 | |
 | 254 | 2 | CRC16 bloku 0 (LE) | |
 
+### 3.1b Úzká hlavička (CAPS bit22, FW 0x0507 – návrh; STM v0.40.0 ji umí)
+
+Úspora CLS ve FPGA (`docs/audit/2026-10-24_analyza-zdroju-fpga-v3.md`). Pole, která STM nepoužívá nebo si spočítá
+samo, FPGA nuluje nebo zužuje; offsety se nemění. **Bez bitu 22 platí tabulka 3.1 beze změny.**
+
+| off | 0x0506 (tab. 3.1) | úzká hlavička (CAPS bit22) | STM (`fpga_v3_parse` + `fpga_v3_unwrap`) |
+|---|---|---|---|
+| 4 | SEQ u32 | **SEQ u16**, 6..7 = 0 | rozbalí na 32 b |
+| 28 | TS10M u32 | 0 | nečte se (nepoužívalo se nikdy) |
+| 32 | REC_HEAD u32 = **poslední** záznam | **REC_HEAD u16 = počet** zapsaných záznamů (bez odečtu), 34..35 = 0 | rozbalí; dál jako 0x0506 (počet − 1) |
+| 36 | REC_FIRST u32 | **u16**, 38..39 = 0 | rozbalí |
+| 42 | RING_FILL u16 | 0 | = REC_HEAD − REC_FIRST (16 b) |
+| 56 | RX_LAST u32 | 0 | nečte se |
+| 68 | PSEQ u32 | **u16**, 70..71 = 0 | rozbalí |
+| 84 | předchozí 1PPS (16 B) | 0 | historie ve STM: předchozí zveřejněná hrana, platí jen když STM viděl pseq − 1 |
+| 112 | BUB A/B, OVL A/B (počty) | 0 | příznaky 0/1 z FLAGS nejnovějšího záznamu kanálu v rámci (bit2, bit3) |
+
+- **Rozbalení 16 → 32 b** k nejbližší hodnotě kolem předchozí (posun −32 768..+32 767). Postačí, když STM přečte rámec
+  aspoň jednou za ~13 min (záznamy 80/s); kruh 512 záznamů přeteče stejně dřív.
+- **Restart FPGA:** SEQ se mezi dvěma přečtenými rámci posunul mimo 0..16 384 (FPGA skládá rámec po každém segmentu
+  i bez čtení, ~40/s ⇒ ~6,8 min) → horní bity 0, historie 1PPS pryč → `fpga_v3_link_take` uvidí resynchronizaci.
+  Restart, po kterém SEQ náhodou padne do okna (~25 %), vypadá jako mezera (okna se přeruší, data zůstanou správná).
+- **ACK:** STM dál posílá REC_ACK 32 b; FPGA bere dolních 16 b a posun počítá modulo 2¹⁶ (emulátor totéž).
+- Emulátor: `fpgasim v3 on <Hz_A> [Hz_B] [fáze_B_ns] uzka` (čítače startují těsně pod 2¹⁶, přetečou do ~10 s);
+  `fpga v3` vypíše druh hlavičky a počet restartů.
+
 ### 3.2 Bloky 1–3 při TYPE 0x80 – záznamy segmentů
 
 Blok k (k = 1..3): **2 B značka** {k, SEQ[7:0]} + **8 záznamů × 31 B** + **4 B rezerva** + **2 B CRC** = 256 B.

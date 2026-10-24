@@ -40,6 +40,8 @@ python tools/audit.py
 #   host: cc -std=c11 -O2 -Wall -Wextra -ICM7/Core/Inc CM7/Core/Src/fpga_v3.c CM7/Core/Src/fpga_crc.c \
 #         CM7/Core/Src/fpga_tdccal.c tests/host/t_fpga_v3.c -lm -o /tmp/t_fpga_v3 && /tmp/t_fpga_v3   -> PASS
 #   mutace: python tests/host/mut_fpga_v3.py <vystupni adresar>  -> "vsechny mutace zachyceny"
+#   Windows bez gcc (2026-10-24, L-0225): zig cc ve venv (pip install ziglang), cc = "python -m ziglang cc",
+#     mutace s CC="<prikaz zig cc>" -- host test pust po KAZDE zmene fpga_v3.c, build ani audit.py ho nespousti
 # protokol v3 (v0.35.0, docs/PROTOKOL_V3.md kap. 10): ovladac zjisti verzi FPGA sam (v2 FW 0x04xx / v3 FW 0x0500)
 #   UART `fpga v3` = stav prijmu (verze, zaznamy, duplicity, mezery, okna; v0.37.0 i 1PPS: jemny cas IDES8, PCLK, epocha,
 #   d), `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns]` (od v0.37.0 s jemnym casem 1PPS) =
@@ -1109,6 +1111,12 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - Optimalizace v3 (0x0505 → 0x0506): **CLS 3 961 (92 %, neroutuje) → 3 834–3 862 (89 %), routuje**, registry 5 215 → 4 449, časování od −1,5 do +0,012 ns podle sestavení (1 z 5 prošlo). **Brána `fpga_release.py --v3` selže jen v CLS (85 %)**, bitstream se nevydává.
 - PSRAM a hluboký RAW jen s `-DDEEP_RAW` (`raw_cap3`, CAPS bit21); výchozí je `raw_cap3l` (RAW_CAPTURE 512 znacek). Bajty 100..107 (hrubý čas 1PPS) = 0, STM bere `PTS >> 14`.
 - Nástroje: `tools/abl_cls.py` (ablace, sweep voleb), `tools/syn_hier.py`, `tools/cs_model.py`. Lekce L-0221..L-0224.
+- Commity 2026-10-24: `c07bd23` (0x0506), test 1PPS `tb_pps_v3` + `mut_pps_v3.py` (`run.ps1` `ppsv3`, ~20 s) z externí instance; nálezy
+  **N1** (falešný jemný čas po znovuzamčení PLL) a **N2** (zákmit před hranou) – oprava připravená, do `src/` až po doběhnutí mutací
+  `tb_top_v3` (`docs/audit/2026-10-24_pps_tb.md`). Brána časování 0 z 8 sestavení.
+- **STM v0.40.0** (`bf71399`, tag): úzká hlavička FW 0x0507 (CAPS bit22, `PROTOKOL_V3.md` kap. 3.1b) – 16b SEQ/REC/PSEQ rozbaluje
+  `fpga_v3_unwrap`, předchozí 1PPS z historie STM; `fpgasim v3 on <Hz> [Hz_B] [fáze] uzka`. FPGA část 0x0507 čeká na výsledek externí
+  optimalizace (`exchange/ukol_2026-10-24_fpga_opt`). ⬜ neověřeno na HW.
 
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)
 

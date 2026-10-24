@@ -3,7 +3,10 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-22 - **zajištění práce z 2026-10-21 + revize dokumentace (relace na macOS, disk projektu jen pro čtení, práce v sandboxovém klonu).**
+**Poslední aktualizace:** 2026-10-24 - **FPGA v3 0x0506 commitnuto (`c07bd23`), test 1PPS z externí instance (`0e2485e`, nálezy N1/N2), STM v0.40.0 úzká hlavička (`bf71399`, tag), host test opraven (`456dcd2`).**
+Rozhodnutí uživatele (strom rozhodnutí 2026-10-24): N1 maska `wn`, N2 H1, opravy jako samostatné commity (do `src/` po doběhnutí mutací `tb_top_v3`), úplné ověření (8× `topv3*`, P&R, deska), STM část 0x0507 hned / FPGA část až po externí optimalizaci, zkušební bitstream s výjimkou CLS 90 %, bez push. Stav a TODO: `../STATUS.md` #334..#337. Lekce L-0225..L-0227. ⬜ nic z toho neověřeno na HW.
+
+**Předchozí:** 2026-10-22 - **zajištění práce z 2026-10-21 + revize dokumentace (relace na macOS, disk projektu jen pro čtení, práce v sandboxovém klonu).**
 Commitnuto: `.gitignore` (`118f0d7`), FPGA FW 0x0426 + 0x0427 (`a711784`), příprava v3 (`1c4dce7`), STM v0.31.1 … v0.33.0 (`c8900b2`, tag `v0.33.0`), dokumentace (`c15847d`), data měření 18./19. 10. (`c05c0ec`); **nic nepushnuto**.
 Nově: `docs/HW_REFERENCE.md` oddíl „FW 0x0425 … 0x0427" (rámec ověřen proti `spi_app.v` i `fpga_freq.c`), hlavička `spi_app.v`, `STATUS.md` #328/#329 + sdílený kontrakt, L-0189 (Icarus 13: deklarace před použitím v `tdc.v`, opraveno).
 Simulace na Icarus 13.0: všech 27 testů z `sim/run.ps1` se přeloží, výsledky běhu v #329. **STM přeloženo na macOS** (STM32CubeIDE 2.1.0, GCC 14.3.1, makefily `Release/` z Windows s přesměrovanými cestami jen v sandboxu): v0.33.1 CM7 `.text` 708 632 B (v0.33.0 708 608 B; změna = `ad5693_servo` +12 B + texty), CM4 295 220 B (rozdíl proti v0.33.0 jen délka cesty v 17 řetězcích `__FILE__` lwIP), 0 varování; `audit.py` 95 OK / 0 / 2 (= baseline + `fpga_tdccal.c`), mrtvý kód shodný s v0.33.0. ⚠️ Obraz z Macu se od Windows liší v `.rodata` CM4 (absolutní cesta v `__FILE__`) – na desku flashovat build z Windows, nebo počítat s rozdílem. **P&R nepřeloženo** (Gowin jen Windows). Rozbor optimalizace bitstreamu: `docs/audit/2026-10-22_optimalizace-bitstreamu.md`.

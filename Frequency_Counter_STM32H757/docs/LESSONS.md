@@ -5471,6 +5471,42 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** feat(fpga) FW 0x0506
 - **Stav:** aktivní
 
+### L-0225 - Host test se nespustil (chybí překladač) a změna chování ho tiše rozbila
+
+- **Datum:** 2026-10-24
+- **Oblast:** build / testy (`tests/host/t_fpga_v3.c`)
+- **Symptom:** host test `t_fpga_v3` hlásil 3 chyby („1PPS předchozí hrubý", „bez CAPS bit17", „bez PCLK") už na commitnutém stavu; nikdo si toho nevšiml.
+- **Příčina:** `fpga_v3.c` změnil zdroj hrubého času 1PPS na `PTS >> 14` (FW 0x0506), test dál čekal bajty 100..107. Na Windows stroji nebyl hostitelský překladač C, takže se host test po změně vůbec nepustil; build firmwaru i `audit.py` ho nekontrolují.
+- **Oprava:** test podle FW 0x0506 (`456dcd2`); překladač `zig cc` (pip `ziglang` ve venv, bez zásahu do systému); `tests/host/mut_fpga_v3.py` bere překladač z `CC` a na Windows `.exe`.
+- **Pravidlo:** změna čistě logického modulu s host testem není hotová, dokud host test a jeho mutace neproběhnou; chybějící nástroj se doplní, ne přeskočí.
+- **Detekce:** `CC="zig cc" python tests/host/mut_fpga_v3.py <výstup>` (pustí i nemutovaný běh) — zatím ručně, kandidát do `scripts/build.sh`.
+- **Commit:** `456dcd2`
+- **Stav:** aktivní
+
+### L-0226 - Řetězec verze ručně zdvojený s čísly se rozjel
+
+- **Datum:** 2026-10-24
+- **Oblast:** build (`CM7/Core/Inc/version.h`)
+- **Symptom:** firmware v0.39.1 (tag `v0.39.1`) hlásil na UART, displeji i `*IDN?` „v0.39.0".
+- **Příčina:** `FW_VERSION_PATCH` se zvýšilo, `FW_VERSION_STR` byl samostatný literál a zůstal.
+- **Oprava:** `FW_VERSION_STR` se skládá z `FW_VERSION_MAJOR/MINOR/PATCH` makrem (v0.40.0).
+- **Pravidlo:** hodnota, která se dá odvodit, se nepíše podruhé ručně — odvodí se (stejná třída jako duplicitní fakta v CLAUDE.md).
+- **Detekce:** `arm-none-eabi-strings CM7/Release/H757_LED_CM7.elf | grep "gpsdo-ui v"` = git tag.
+- **Commit:** `bf71399`
+- **Stav:** aktivní
+
+### L-0227 - Záložní mechanismus maskuje nefunkční hlavní cestu v testu
+
+- **Datum:** 2026-10-24
+- **Oblast:** testy (`fpga_v3_selftest` krok 12, protokol v3)
+- **Symptom:** mutace „emulátor bere ACK celých 32 b" (ACK s jinými horními bity se ignoruje) prošla testem příjmu: všechny záznamy přišly, bez mezer.
+- **Příčina:** když ACK nefunguje, kruh přeteče a FPGA (emulátor) posouvá REC_FIRST sama; okno rámce (24 záznamů) je větší než přírůstek mezi rámci, takže příjem zůstane souvislý. Test hlídal výsledek (souvislost), ne cestu (ACK).
+- **Oprava:** test navíc vyžaduje, aby příznak přetečení kruhu (FLAGS bit1) nenastal; ACK se posílá se smetím v horních 16 b (FPGA je ignoruje).
+- **Pravidlo:** má-li systém záložní cestu (přetečení, timeout, resynchronizace), test hlavní cesty musí hlídat, že záloha nezasáhla.
+- **Detekce:** mutace „uzka: emulator ACK 32 b" v `tests/host/mut_fpga_v3.py`.
+- **Commit:** `bf71399`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
