@@ -107,7 +107,8 @@ set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {rx_s_*}]
 // FW 0x0502 (E4): jemny cas 1PPS. Hodiny rPLL (FCLK 400 MHz) a CLKDIV (PCLK 100 MHz) odvodi Gowin z clk_p0_100m sam
 // [OVERIT v .tr po prvnim P&R; kdyby ne: create_generated_clock na u_ipps/u_pll/CLKOUT (-multiply_by 4) a
 // u_ipps/u_div/CLKOUT (-divide_by 4)]. Prechod PCLK -> clk: p_ts drzeno ~1 s, prepinaci bit pres 3 FF; rdy uvolnuje
-// reset PCLK pri stojicich hodinach (CLKDIV v resetu) -> neni co casovat.
+// reset PCLK pri stojicich hodinach (CLKDIV v resetu) -> neni co casovat. Totez wn (2026-10-24, oprava N1: pocet slov
+// PCLK od uvolneni, maska prvnich 3 slov).
 set_false_path -from [get_regs {u_ipps/p_ts*}] -to [get_regs {u_ipps/f_ts* u_ipps/hl*}]
 set_false_path -from [get_regs {u_ipps/p_tgl*}] -to [get_regs {u_ipps/t_s*}]
 set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps/lastw* u_ipps/p_tgl* u_ipps/wn*}]
