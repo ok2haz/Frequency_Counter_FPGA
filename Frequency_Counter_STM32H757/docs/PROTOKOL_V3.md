@@ -66,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505)** | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -92,7 +92,7 @@
 | 67 | 1 | rezerva | |
 | 68 | 16 | 1PPS poslední: PSEQ (u32), PTS (u48, T/16384), PFLAGS (u8: bit0 platné, bit1 jemný čas), **d** (i8: jemný − hrubý [takty]), rezerva 4 | (FW 0x0500/0x0501) PTS = hrubý čas × 16384; **(FW 0x0502)** PTS z IDES8 (krok 1,25 ns = 2048 jednotek, kap. 10.6), PSEQ/PTS/hrubý čas zveřejněny najednou |
 | 84 | 16 | 1PPS předchozí (totéž) | |
-| 100 | 8 | hrubý čas 1PPS (u32 takty 100 MHz) poslední, předchozí – kontrola | jako v2 `pps_ts` |
+| 100 | 8 | hrubý čas 1PPS (u32 takty 100 MHz) poslední, předchozí – kontrola | jako v2 `pps_ts`; **(FW 0x0506) = 0** (redundantní: hrubý čas je `PTS >> 14`, když PFLAGS bit1 = 0; STM tak čte od 0x0506 i ze starších FPGA) |
 | 108 | 4 | PROBE A, PROBE B (u16) – sonda ÷16 za **1 ms** (f ≈ PROBE × 16 kHz, do ~800 MHz) | **(FW 0x0503)** okno 1 ms místo segmentu (u16 by při 25 ms přetekl nad 42 MHz); čte se živě → STM bere shodu dvou rámců |
 | 112 | 4 | BUB A, BUB B, OVL A, OVL B posledního segmentu | jako v2 abs 57..59 |
 | 116 | 6 | jen TYPE 0xA0: druh (u8), číslo stránky (u16), počet položek (u16), rezerva | kap. 5 |

@@ -5423,6 +5423,54 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** fix(firmware) `12f559f`
 - **Stav:** aktivni
 
+### L-0221 - CLS se nechová lineárně v registrech: plošné úspory se ztratí v hustějším balení
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA / odhad plochy (Gowin GW1NR-9C, CLS)
+- **Symptom:** v3 (0x0505) 92 % CLS, 77 nezapojených sítí; odebrání 100–270 registrů (jemný čas 1PPS −275 reg, DSP −108 reg) snížilo CLS jen o 15–40.
+- **Příčina:** od ~4 450 reg / 5 400 logiky nahoru placer balí hustěji, takže plocha drží ~3 800–3 970 CLS; jen odebrání celé funkce (PSRAM −499 reg → −139 CLS, hlavička −850 reg → −600 CLS) se projeví.
+- **Oprava:** studie `docs/audit/2026-10-23_studie-cls-v3.md`; mezi variantami se rozhoduje celým P&R (`tools/abl_cls.py`), ne součtem registrů.
+- **Pravidlo:** úsporu plochy ověř celým P&R na kopii zdrojů; odhad z počtu registrů či LUT neber jako výsledek a cíl 85 % počítej v celých funkcích.
+- **Detekce:** `python tools/abl_cls.py run <var> ...` a `table`; rozpad po modulech `tools/syn_hier.py`.
+- **Commit:** feat(fpga) FW 0x0506
+- **Stav:** aktivní
+
+### L-0222 - Rezerva časování 100 MHz kolísá o ±1,5 ns mezi sestaveními téhož zdroje
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA / P&R (identita bitstreamu `BLD_TIME` je vstup placeru)
+- **Symptom:** pět sestavení v3 stejného zdroje: −1,38, −0,35, −0,85, −1,50 a +0,012 ns; 79 % zpoždění je vedení.
+- **Příčina:** jiný vstup P&R = jiné rozmístění; nejdelší cesty tvoří vysoký fan-out (`clear` 280, výběr slova 251, `hold_a` 13) a CE s víc podmínkami.
+- **Oprava:** snížení fan-outu (kopie `clear_a/b`, `hold_a_s`, jednotkový výběr slova), registrované podmínky (`fok`/`wok`, `dd_r`, `pcf`), dlouhé čítače rozdělené; pro vydání opakovat sestavení branou (do prvního PASS).
+- **Pravidlo:** nepovažuj jedno sestavení za reprezentativní; po změně RTL spusť branu nejméně 5×, a cesty s fan-outem > 30 a CE ze 3+ signálů předem rozděl.
+- **Detekce:** `tools/fpga_release.py --v3 --build` (opakovaně), `tools/floorplan_svg.py` (zdroje nejhorších cest).
+- **Commit:** feat(fpga) FW 0x0506
+- **Stav:** aktivní
+
+### L-0223 - SDC: get_regs / get_clocks na IDES8 a odvozené hodiny PLL Gowin odmítá
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA / timing_v3.sdc
+- **Symptom:** `set_false_path ... -to [get_regs {u_ipps/u_ides*}]` → TA2003, `get_clocks {u_ipps/u_pll/CLKOUT.default_gen_clk}` → TA2004, `get_cells` → TA2003; běh končí chybou.
+- **Příčina:** IDES8 není registr a odvozené hodiny se při načtení SDC ještě nevytvoří.
+- **Oprava:** `set_false_path -from [get_regs {u_ipps/rdy*}]` (zdroj je registr; `rdy` je kvazistatický) – `src/timing_v3.sdc`.
+- **Pravidlo:** výjimku pro cestu do primitiva zapiš na zdroj (`-from` registr), ne na cíl.
+- **Detekce:** první `gw_sh` běh po úpravě SDC (chyba TA2003/TA2004 v `build_release.log`).
+- **Commit:** feat(fpga) FW 0x0506
+- **Stav:** aktivní
+
+### L-0224 - Mutační vzory se po refaktoru tiše rozejdou s kódem
+
+- **Datum:** 2026-10-23
+- **Oblast:** FPGA / `sim/mut_top_v3.py`
+- **Symptom:** po úpravách RTL (jednotkový výběr slova, `f_buf` pryč, ST 54 b, lite RAW) 6 ze 35 vzorů mutací v kódu nebylo nebo bylo dvakrát; mutace by se spustily na nezměněném zdroji a „zachytit" by neměla co.
+- **Příčina:** vzory jsou doslovné textové výskyty; refaktor je mění.
+- **Oprava:** vzory aktualizovány; ověření „každý vzor v kódu právě jednou" skriptem před během.
+- **Pravidlo:** po každé změně RTL zkontroluj, že každý vzor mutace existuje v kódu právě jednou, než mutace pustíš.
+- **Detekce:** kontrola z `docs/audit/2026-10-23_studie-cls-v3.md` kap. 7 (vzor ve zdroji ×1).
+- **Commit:** feat(fpga) FW 0x0506
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

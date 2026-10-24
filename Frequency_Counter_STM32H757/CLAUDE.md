@@ -1104,6 +1104,12 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - 🔴 **Nové `.c` (`fpga_phrec.c`, `fpga_crc.c`) jsou v `Release/Core/Src/subdir.mk` a `objects.list` doplněné RUČNĚ** — v IDE nutné **Close → Open Project** (past #2), jinak je další regenerace makefilů vypustí.
 - **Ověřeno:** simulace (`sim/run.ps1`: celá sada + nové `n1`, `close2`, `alias`, `coh`, každý s negativní kontrolou proti 0x0424 přes `sim/run_one*.sh` a zálohu `src_fw0424_backup/`), P&R brána `fpga_release.py` (CLS 85 %, setup +0,41 ns po nejistotě 0,9 ns, Fmax 104,2 MHz) po třech opravách časování nového kódu (registrované povolení `coh_mon`, konec epochy a bublina ve 2 taktech, SDC výjimka `u_refg/sel → rx_s`). Překlad STM 0 varování, `audit.py` 94/0/2.
 
+## 🟡 FPGA v3 FW 0x0506 (2026-10-23, studie CLS `docs/audit/2026-10-23_studie-cls-v3.md`, ⬜ NEOVĚŘENO NA DESCE)
+
+- Optimalizace v3 (0x0505 → 0x0506): **CLS 3 961 (92 %, neroutuje) → 3 834–3 862 (89 %), routuje**, registry 5 215 → 4 449, časování od −1,5 do +0,012 ns podle sestavení (1 z 5 prošlo). **Brána `fpga_release.py --v3` selže jen v CLS (85 %)**, bitstream se nevydává.
+- PSRAM a hluboký RAW jen s `-DDEEP_RAW` (`raw_cap3`, CAPS bit21); výchozí je `raw_cap3l` (RAW_CAPTURE 512 znacek). Bajty 100..107 (hrubý čas 1PPS) = 0, STM bere `PTS >> 14`.
+- Nástroje: `tools/abl_cls.py` (ablace, sweep voleb), `tools/syn_hier.py`, `tools/cs_model.py`. Lekce L-0221..L-0224.
+
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)
 
 - **0x0426 (STM v0.32.0), L-0187:** dělička regrese ve FPGA (`regr_acc`) dávala **na křemíku** chybné dolní bity podílu těžiště indexu (simulace i STA v pořádku, chyba závisela na P&R). Regresní blok teď nese **SUROVÉ SOUČTY** (`n, x0, Σ(x−x0), t0−ref, Σ(t−t0)>>3`; caps bit3 `FPGA_CAP_RAWREG`, abs 24..43/66..96/107), dělí STM (`rg_raw_to_mean`, uint64). Fázový záznam: ADEV z fáze 3,1·10⁻¹² @ 1 s (dřív 3,6·10⁻⁹), zamítání regrese 3–8 % → 0,17 %. Diagnostika: UART `phrec dump [n]` (surové vstupy posledních 64 krmení; rozbor `python` skripty se dají odvodit z `tools/gen_tdccal.py`/L-0187).
