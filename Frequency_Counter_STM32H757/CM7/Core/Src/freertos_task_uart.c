@@ -823,6 +823,13 @@ static void gpsdo_print_status(void)
            (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
            (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
            (unsigned long)s.saw_n);
+    /* v0.40.1 (STATUS #337b): prvni hrana 1PPS po startu FPGA (synchronizator pps_cap3 startuje 000) */
+    if (s.st_n == 0u)
+        printf("GPSDO: start FPGA (PSEQ 1->2): zatim nezmereno\n");
+    else
+        printf("GPSDO: start FPGA (PSEQ 1->2): zmereno %lu, falesna 1. hrana %lu | posledni interval 1 s %+ld us%s\n",
+               (unsigned long)s.st_n, (unsigned long)s.st_bad, (long)s.st_dev_us,
+               (s.st_dev_us > 10000 || s.st_dev_us < -10000) ? " <== FALESNA HRANA" : "");
     /* Nejkratsi rozumne tau (gpsdo.h): HDEV faze proti bilemu PM 1PPS. Jen zobrazeni, smycku nemeni. */
     gpsdo_tau_adv_t ad;
     gpsdo_tau_advise(&ad);

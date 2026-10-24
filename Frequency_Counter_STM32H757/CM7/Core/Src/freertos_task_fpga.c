@@ -514,6 +514,11 @@ static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezm
 static volatile uint32_t s_g_cmd_q16;          /* povel kodu (i virtualni pri emulaci) */
 static volatile uint8_t  s_g_virt;             /* 1 = smycka ridi virtualni DAC emulatoru (`fpgasim`) */
 static uint32_t  s_g_ok, s_g_rej, s_g_gap;
+/* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA (falesna prvni hrana) */
+static uint16_t  s_st_prev_seq = 0x100u;                       /* 0x100 = zadna predchozi udalost */
+static uint8_t   s_st_have1;
+static uint32_t  s_st_ts1, s_st_n, s_st_bad;
+static int32_t   s_st_dev;
 /* sawtooth */
 static uint32_t  s_q_rec_n;                    /* `n` TIM-TP pouzite pro predchozi hranu */
 static double    s_q_prev;                     /* oprava predchozi hrany [ns] */
@@ -797,6 +802,18 @@ void gpsdo_tick(void)
     int have = fpga_pps_get(&p);
     if (have && p.n != s_g_pps_n) {                            /* i v OFF: fazovy monitor (s_mon_x) */
         s_g_pps_n = p.n;
+        /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA. PSEQ 1 po 0 je jen pretoceni (mod 256), ne start. */
+        if (p.seq == 1u && s_st_prev_seq != 0u) {
+            s_st_ts1 = p.ts; s_st_have1 = 1u;
+        } else if (p.seq == 2u && s_st_have1 && s_st_prev_seq == 1u && p.clk_mhz != 0u) {
+            int32_t dev = (int32_t)((p.ts - s_st_ts1) / p.clk_mhz) - 1000000;   /* [us]; takty mod 2^32 */
+            s_st_n++; s_st_dev = dev;
+            if (dev > 10000 || dev < -10000) s_st_bad++;
+            s_st_have1 = 0u;
+        } else {
+            s_st_have1 = 0u;
+        }
+        s_st_prev_seq = p.seq;
         gps_data_t g;
         gps_get(&g);
         int fix = sim || (g.valid && g.fix_mode >= 2);
@@ -904,6 +921,7 @@ void gpsdo_tick(void)
     st.pps_ok = s_g_ok; st.pps_rej = s_g_rej; st.pps_gap = s_g_gap;
     st.saw_var[0] = s_saw_var[0]; st.saw_var[1] = s_saw_var[1]; st.saw_var[2] = s_saw_var[2]; st.saw_n = s_saw_dec;
     st.pm_ns = s_pm_ns;
+    st.st_n = s_st_n; st.st_bad = s_st_bad; st.st_dev_us = s_st_dev;
     taskENTER_CRITICAL(); s_pub = st; taskEXIT_CRITICAL();
 }
 

@@ -66,6 +66,12 @@ typedef struct {
     float    saw_var[3];   /* rozptyl 2. diferenci faze [ns^2]: bez opravy / +q / -q (posledni okno) */
     uint32_t saw_n;        /* pocet rozhodnuti sawtooth */
     double   pm_ns;        /* audit 2026-10-20: zmereny sum odectu faze 1PPS [ns] (sigma_x z druhych diferenci) */
+    /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA. Drzi-li pin 1PPS pri konfiguraci FPGA uroven 1,
+     * pps_cap3 (synchronizator startuje 000) ohlasi falesnou hranu v case startu -> interval 1 -> 2 neni 1 s.
+     * Meri se nezavisle na fixu GPS a na smycce. */
+    uint32_t st_n;         /* zmerenych startu (dvojice PSEQ 1, 2) */
+    uint32_t st_bad;       /* z toho interval mimo 1 s +-10 ms = falesna prvni hrana */
+    int32_t  st_dev_us;    /* posledni interval 1 -> 2 minus 1 s [us] */
 } gpsdo_status_t;
 
 /* ── Historie smycky (TIE graf, okno TI/GPSDO na displeji): 1 bod / 10 s, 720 bodu = 2 h ────────────────
