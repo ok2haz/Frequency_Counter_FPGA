@@ -442,7 +442,7 @@ module top_v3 (
         .st_seg10(s10_s[1]),
         .pps_seq(pps_seq), .pps_nz(pps_nz), .pps_gt1(pps_gt1), .pps_last(pps_last), .pps_prev(pps_prev),
         .pps_pts_l(pps_pts_l), .pps_pts_p(pps_pts_p), .pps_pfl_l(pps_pfl_l), .pps_pfl_p(pps_pfl_p),
-        .pps_d_l(pps_d_l), .pps_d_p(pps_d_p), .pps_st({pps_epoch, 1'b0, pps_nofine, (pps_seq != 32'd0), ppsf_lock}),
+        .pps_d_l(pps_d_l), .pps_d_p(pps_d_p), .pps_st({pps_epoch, 1'b0, pps_nofine, pps_nz, ppsf_lock}),
         .bub_a(lb_a), .bub_b(lb_b), .ovl_a(lo_a), .ovl_b(lo_b),
         .tdc_cfg(tdc_cfg), .maxtap_a(da_maxtap), .maxtap_b(db_maxtap), .cal_retry(rt2),
         .hist_k(hist_k), .hist_a(hq_a), .hist_b(hq_b),

@@ -98,13 +98,16 @@ module app_v3 #(
     // FW 0x0504: soucty segmentu SX/ST v DSP (seg_chan3 SUM_DSP = 1), rozhrani beze zmeny.
     // FW 0x0505: hluboky RAW zaznam do vestavene PSRAM (CAPS bit21): T_RAW rezimy 1/2, hlavicka 124..131.
     // FW 0x0506: stejny protokol, bez PSRAM (CAPS bit21 = 0, pokud se nesestavuje -DDEEP_RAW) -- zmensena pro CLS
-    localparam [15:0] FW_VERSION = 16'h0506;
+    // FW 0x0507: uzka hlavicka (CAPS bit22, PROTOKOL_V3 kap. 3.1b): SEQ, REC_HEAD (= pocet), REC_FIRST a PSEQ 16 b,
+    // TS10M, RING_FILL, RX_LAST, predchozi 1PPS (84..95) a BUB/OVL (112..115) = 0 -- STM je rozbali / spocita sam
+    localparam [15:0] FW_VERSION = 16'h0507;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
     // (SET_CONFIG 0x07, kap. 10.7).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B; bit21 (FW 0x0505) = hluboky RAW do PSRAM (kap. 10.9).
-    localparam [31:0] CAPS = DEEP ? 32'h003F_7C32 : 32'h001F_7C32;
+    // bit22 (FW 0x0507) = uzka hlavicka (kap. 3.1b).
+    localparam [31:0] CAPS = DEEP ? 32'h007F_7C32 : 32'h005F_7C32;
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
     reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
@@ -121,16 +124,13 @@ module app_v3 #(
     // ---- casovani ramce, kruh ----
     // 2026-10-24 (plocha): citace domeny 10 MHz do DSP (ALU54D; perioda 100 ns, vzdalenost radku DSP casovani
     // neohrozi); atribut je pro simulaci komentar
-    reg [31:0] ts10 = 32'd0 /* synthesis syn_dspstyle = "dsp" */;
-    always @(posedge clk) ts10 <= ts10 + 32'd1;
     reg [2:0]  rt_s = 3'b000;
-    reg [31:0] rec_head = 32'd0, rec_ack = 32'd0;
+    reg [15:0] rec_head = 16'd0, rec_ack = 16'd0;   // FW 0x0507: 16 b (STM rozbali), posun modulo 2^16
     reg        ovf = 1'b0;
     reg [1:0]  hpend = 2'd0;               // udalosti kruhu (dvojice zaznamu) zachycene behem skladani ramce
 
     // ---- stav prijmu ----
     reg [15:0] rx_crc_err = 16'd0, rx_len_err = 16'd0;
-    reg [31:0] rx_last = 32'd0;
     reg        rx_err = 1'b0, cmd_done = 1'b0;
     reg [13:0] lut_cnt = 14'd0;
     reg [13:0] lut_cnt_b = 14'd0;            // polozky s bitem kanalu B (LUT_SUM chybu kanalu u cele tabulky nevidi)
@@ -156,10 +156,9 @@ module app_v3 #(
     localparam [2:0] S_IDLE = 3'd0, S_RX = 3'd1, S_LUT = 3'd2, S_ASM = 3'd3;
     reg [2:0]  state = S_IDLE;
     reg        rx_pend = 1'b0, dirty = 1'b1;
-    reg [31:0] seq_tx = 32'd0 /* synthesis syn_dspstyle = "dsp" */;   // 2026-10-24: DSP (viz ts10)
+    reg [15:0] seq_tx = 16'd0;                      // FW 0x0507: 16 b (STM rozbali)
 
     // snimek pro skladany ramec
-    reg [31:0] a_ts = 32'd0;
     reg [4:0]  a_nrec = 5'd0;
     // FW 0x0506: page_req / page_kind / page_no se meni jen v S_RX (ne behem skladani) -> zadne snimky
     wire       a_page = page_req;
@@ -190,14 +189,10 @@ module app_v3 #(
     // ---- hlavicka (blok 0), multiplexer nad bajty ----
     wire [7:0]  flags_b = {2'b00, cmd_done, rx_err, 1'b0, st_cal_run, ovf, (a_nrec != 5'd0) & ~a_page};
     // rec_head a rec_ack se behem skladani (S_ASM) nemeni -> zadny snimek (FW 0x0506); udalost kruhu behem skladani ceka v hpend
-    wire [31:0] head_m1 = (rec_head != 32'd0) ? (rec_head - 32'd1) : 32'd0;
     // fill < 2^RAW (REC_ACK se pri preteceni posune), 16 b staci a saturace nenastane
-    wire [15:0] fill16  = rec_head[15:0] - rec_ack[15:0];
+    wire [15:0] fill16  = rec_head - rec_ack;
     wire [47:0] pts_l   = pps_pts_l;
-    wire [47:0] pts_p   = pps_pts_p;
-    wire [31:0] pseq_p  = pps_nz ? (pps_seq - 32'd1) : 32'd0;
     wire [7:0]  pfl_l   = pps_nz ? pps_pfl_l : 8'd0;
-    wire [7:0]  pfl_p   = pps_gt1 ? pps_pfl_p : 8'd0;
     reg  [7:0]  hb;
     always @* begin
         hb = 8'd0;
@@ -206,7 +201,7 @@ module app_v3 #(
             8'd1:  hb = VER;
             8'd2:  hb = a_page ? T_PAGE : T_DATA;
             8'd3:  hb = flags_b;
-            8'd4:  hb = seq_tx[7:0];   8'd5:  hb = seq_tx[15:8];  8'd6:  hb = seq_tx[23:16]; 8'd7:  hb = seq_tx[31:24];
+            8'd4:  hb = seq_tx[7:0];   8'd5:  hb = seq_tx[15:8];
             8'd8:  hb = 8'h00;         8'd9:  hb = 8'h04;         8'd10: hb = 8'd4;
             8'd12: hb = BUILD_TIME[7:0];  8'd13: hb = BUILD_TIME[15:8]; 8'd14: hb = BUILD_TIME[23:16]; 8'd15: hb = BUILD_TIME[31:24];
             8'd16: hb = BUILD_GIT[7:0];   8'd17: hb = BUILD_GIT[15:8];  8'd18: hb = BUILD_GIT[23:16];  8'd19: hb = BUILD_GIT[31:24];
@@ -214,33 +209,25 @@ module app_v3 #(
             8'd22: hb = 8'd100;
             8'd23: hb = st_seg10 ? 8'd10 : 8'd25;
             8'd24: hb = CAPS[7:0];  8'd25: hb = CAPS[15:8];  8'd26: hb = CAPS[23:16];  8'd27: hb = CAPS[31:24];
-            8'd28: hb = a_ts[7:0];  8'd29: hb = a_ts[15:8];  8'd30: hb = a_ts[23:16];  8'd31: hb = a_ts[31:24];
-            8'd32: hb = head_m1[7:0];  8'd33: hb = head_m1[15:8];  8'd34: hb = head_m1[23:16];  8'd35: hb = head_m1[31:24];
-            8'd36: hb = rec_ack[7:0];  8'd37: hb = rec_ack[15:8];  8'd38: hb = rec_ack[23:16];  8'd39: hb = rec_ack[31:24];
+            8'd32: hb = rec_head[7:0]; 8'd33: hb = rec_head[15:8];  // FW 0x0507: pocet zapsanych zaznamu (bez odectu)
+            8'd36: hb = rec_ack[7:0];  8'd37: hb = rec_ack[15:8];
             8'd40: hb = a_page ? 8'd0 : {3'd0, a_nrec};
-            8'd42: hb = fill16[7:0];   8'd43: hb = fill16[15:8];
             8'd44: hb = st_clk;        8'd45: hb = st_clk_loss;   8'd46: hb = st_coh;        8'd47: hb = st_coh_cnt;
             8'd48: hb = st_tdc_a;      8'd49: hb = st_tdc_b;
             8'd50: hb = pps_st;
             8'd51: hb = {6'd0, st_cal_wait};
             8'd52: hb = rx_crc_err[7:0];  8'd53: hb = rx_crc_err[15:8];
             8'd54: hb = rx_len_err[7:0];  8'd55: hb = rx_len_err[15:8];
-            8'd56: hb = rx_last[7:0];  8'd57: hb = rx_last[15:8];  8'd58: hb = rx_last[23:16];  8'd59: hb = rx_last[31:24];
             8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
             8'd62: hb = lut_sum[7:0];  8'd63: hb = lut_sum[15:8];
             8'd64: hb = {(pr_a_req != pra_s), 4'd0, pra_s};   8'd65: hb = {(pr_b_req != prb_s), 4'd0, prb_s};
             8'd66: hb = {3'd0, bsrc[1], bsrc[0], ref_sel, led_hb_en, mask_cs_en};
-            8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];  8'd70: hb = pps_seq[23:16];  8'd71: hb = pps_seq[31:24];
+            8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];
             8'd72: hb = pts_l[7:0];    8'd73: hb = pts_l[15:8];    8'd74: hb = pts_l[23:16];
             8'd75: hb = pts_l[31:24];  8'd76: hb = pts_l[39:32];   8'd77: hb = pts_l[47:40];
             8'd78: hb = pfl_l;         8'd79: hb = pps_d_l;
-            8'd84: hb = pseq_p[7:0];   8'd85: hb = pseq_p[15:8];   8'd86: hb = pseq_p[23:16];  8'd87: hb = pseq_p[31:24];
-            8'd88: hb = pts_p[7:0];    8'd89: hb = pts_p[15:8];    8'd90: hb = pts_p[23:16];
-            8'd91: hb = pts_p[31:24];  8'd92: hb = pts_p[39:32];   8'd93: hb = pts_p[47:40];
-            8'd94: hb = pfl_p;         8'd95: hb = pps_d_p;
             // FW 0x0506: bajty 100..107 (hruby cas 1PPS) = 0; STM bere hruby cas z PTS >> 14 (PFLAGS bit1 = 0)
             8'd108: hb = probe_a[7:0];  8'd109: hb = probe_a[15:8];  8'd110: hb = probe_b[7:0];  8'd111: hb = probe_b[15:8];
-            8'd112: hb = bub_a;  8'd113: hb = bub_b;  8'd114: hb = {4'd0, ovl_a};  8'd115: hb = {4'd0, ovl_b};
             8'd116: hb = a_page ? a_kind : 8'd0;
             8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
             8'd119: hb = a_page ? a_pcnt[7:0] : 8'd0;  8'd120: hb = a_page ? a_pcnt[15:8] : 8'd0;
@@ -301,9 +288,9 @@ module app_v3 #(
         rt_s <= {rt_s[1:0], rec_tgl};
         if (rt_s[2] ^ rt_s[1]) begin
             dirty <= 1'b1;
-            if (state == S_ASM) hpend <= hpend + 2'd1; else rec_head <= rec_head + 32'd2;
-        end else if (state != S_ASM && hpend != 2'd0) begin rec_head <= rec_head + 32'd2; hpend <= hpend - 2'd1; end
-        if (state != S_ASM && (rec_head - rec_ack) > RING_USE) begin rec_ack <= rec_head - RING_USE; ovf <= 1'b1; end
+            if (state == S_ASM) hpend <= hpend + 2'd1; else rec_head <= rec_head + 16'd2;
+        end else if (state != S_ASM && hpend != 2'd0) begin rec_head <= rec_head + 16'd2; hpend <= hpend - 2'd1; end
+        if (state != S_ASM && fill16 > RING_USE[15:0]) begin rec_ack <= rec_head - RING_USE[15:0]; ovf <= 1'b1; end
 
         if (rx_valid) rx_pend <= 1'b1;
 
@@ -314,8 +301,7 @@ module app_v3 #(
                     state   <= S_RX;
                 end else if (dirty && tx_can) begin
                     dirty   <= 1'b0;
-                    seq_tx  <= seq_tx + 32'd1;
-                    a_ts    <= ts10;
+                    seq_tx  <= seq_tx + 16'd1;
                     a_pbase <= {page_no[7:0], 8'd0} - {page_no[13:0], 2'd0};          // * 252
                     a_ptot  <= (page_kind[1:0] == 2'd0) ? 16'd8 : (page_kind[1:0] == 2'd3) ? {5'd0, raw_n, 1'b0} : 16'd512;
                     ai      <= 11'd0;
@@ -336,11 +322,10 @@ module app_v3 #(
                 end else begin
                     rx_err   <= 1'b0;
                     cmd_done <= 1'b1;
-                    rx_last  <= {rx_seq[23:0], rx_b2};
                     case (rx_b2)
                         T_ACK: begin
-                            if (({rx_p3, rx_p2, rx_p1, rx_p0} - rec_ack) <= (rec_head - rec_ack)) begin
-                                rec_ack <= {rx_p3, rx_p2, rx_p1, rx_p0};
+                            if (({rx_p1, rx_p0} - rec_ack) <= fill16) begin      // FW 0x0507: dolnich 16 b REC_ACK
+                                rec_ack <= {rx_p1, rx_p0};
                                 ovf     <= 1'b0;
                             end
                         end
@@ -413,7 +398,7 @@ module app_v3 #(
             // ---- skladani ramce ----
             S_ASM: begin
                 // pocet zaznamu v ramci (rec_head se behem skladani nemeni; udalost v taktu snimku se projevi az ted)
-                if (ai == 11'd0) a_nrec <= ((rec_head - rec_ack) > 32'd24) ? 5'd24 : (rec_head[4:0] - rec_ack[4:0]);
+                if (ai == 11'd0) a_nrec <= (fill16 > 16'd24) ? 5'd24 : (rec_head[4:0] - rec_ack[4:0]);
                 // stupen 0: bajt ai
                 if (!ai[10]) begin
                     w1 <= 1'b1; i1 <= ai[9:0]; r1 <= 1'b0; d1 <= 8'd0;

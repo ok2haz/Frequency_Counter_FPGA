@@ -146,8 +146,8 @@ module seg_chan3 #(
             if (first)   begin t0 <= ts_ps; first <= 1'b0; end
             if (first_b) begin x0 <= fh; first_b <= 1'b0; end
             nlo <= nlo + 12'd1; ncy <= (nlo == 12'hFFF);
-            if (bub    && o_bub != 8'hFF) o_bub <= o_bub + 8'd1;
-            if (cs_act && o_ovl != 4'hF)  o_ovl <= o_ovl + 4'd1;
+            if (bub)    o_bub <= 8'd1;                 // FW 0x0507: jen priznak (pocet v hlavicce zrusen, kap. 3.1b)
+            if (cs_act) o_ovl <= 4'd1;
         end
         if (ncy) nhi <= nhi + 12'd1;
         if (v1)  begin {btl, dtl} <= {1'b0, tm[19:0]} - {1'b0, t0[19:0]};  {bxl, dxl} <= {1'b0, xm[12:0]} - {1'b0, x0[12:0]}; end
@@ -420,7 +420,9 @@ module pps_cap3 (
     // FW 0x0506: rozdil se registruje (dd_r, 1 takt za f_ts / c_tick); zverejneni ceka na fage >= 1 a win >= 1;
     // f_ts se po preklopeni f_tgl drzi do dalsi hrany 1PPS (~1 s), proto zadny kopirovaci registr
     reg  [33:0] dd_r = 34'd0;
-    always @(posedge clk) dd_r <= f_ts[47:14] - c_tick;
+    // FW 0x0507: rozdil z 12 b (jemny cas se bere jen do 31 taktu po hrube hrane a fa se pri ni nuluje -> |d| < 2048)
+    wire [11:0] df12 = f_ts[25:14] - c_tick[11:0];
+    always @(posedge clk) dd_r <= {{22{df12[11]}}, df12};
     wire [33:0] dd  = dd_r;
     wire        dhi = ~dd[33] & (dd[32:7] != 26'd0);        // > 127
     wire        dlo =  dd[33] & (dd[32:7] != {26{1'b1}});   // < -128
