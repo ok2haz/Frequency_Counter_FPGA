@@ -119,7 +119,9 @@ module app_v3 #(
     end
 
     // ---- casovani ramce, kruh ----
-    reg [31:0] ts10 = 32'd0;
+    // 2026-10-24 (plocha): citace domeny 10 MHz do DSP (ALU54D; perioda 100 ns, vzdalenost radku DSP casovani
+    // neohrozi); atribut je pro simulaci komentar
+    reg [31:0] ts10 = 32'd0 /* synthesis syn_dspstyle = "dsp" */;
     always @(posedge clk) ts10 <= ts10 + 32'd1;
     reg [2:0]  rt_s = 3'b000;
     reg [31:0] rec_head = 32'd0, rec_ack = 32'd0;
@@ -154,7 +156,7 @@ module app_v3 #(
     localparam [2:0] S_IDLE = 3'd0, S_RX = 3'd1, S_LUT = 3'd2, S_ASM = 3'd3;
     reg [2:0]  state = S_IDLE;
     reg        rx_pend = 1'b0, dirty = 1'b1;
-    reg [31:0] seq_tx = 32'd0;
+    reg [31:0] seq_tx = 32'd0 /* synthesis syn_dspstyle = "dsp" */;   // 2026-10-24: DSP (viz ts10)
 
     // snimek pro skladany ramec
     reg [31:0] a_ts = 32'd0;
