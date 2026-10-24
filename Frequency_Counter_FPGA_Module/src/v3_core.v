@@ -304,7 +304,11 @@ module v3_ring #(
     reg        wr  = 1'b0, we = 1'b0;
     reg [RAW+2:0] wa = {(RAW+3){1'b0}};
     reg [31:0] wd = 32'd0;
-    reg [31:0] wa_a = 32'd0, wa_b = 32'd0;           // slovo k obou kanalu (1. stupen), vyber kanalu ve 2. stupni
+    // 2026-10-24 (casovani, pnr_seeds: ohB -> wa_b ve 3 z 8 sestaveni): slovo k ve dvou registrech -- wl_x = vyber ze slov
+    // 0..3 (oh[3:0]), wh_x = ze slov 4..7 (oh[7:4]); jednickovy kod -> jeden z nich je 0 a wa_x = wl_x | wh_x je shodne
+    // s drivejsim registrem wa_x (OR az za registrem, ve vyberu kanalu)
+    reg [31:0] wl_a = 32'd0, wh_a = 32'd0, wl_b = 32'd0, wh_b = 32'd0;
+    wire [31:0] wa_a = wl_a | wh_a, wa_b = wl_b | wh_b;   // slovo k obou kanalu (1. stupen), vyber kanalu ve 2. stupni
     reg [4:0]  k1 = 5'd0;
     // slovo k zaznamu (LE): 0 {FLAGS, CH, SEG_IDX}, 1 {X0[7:0], N}, 2 X0[39:8], 3 T0[31:0], 4 {SX[15:0], T0[47:32]},
     //                       5 SX[47:16], 6 ST[31:0], 7 {0, ST[55:32]}
@@ -322,6 +326,20 @@ module v3_ring #(
              | ({32{oh[6]}} & st[31:0])
              | ({32{oh[7]}} & {8'd0, st[55:32]});
     endfunction
+    // bajt b slova ridi kopie o_b (ctvrtiny, viz ohA/ohAm/ohAh/ohAt), m = maska poloviny kodu (8'h0F slova 0..3, 8'hF0 4..7)
+    function [31:0] wq;
+        input [7:0] o0; input [7:0] o1; input [7:0] o2; input [7:0] o3; input [7:0] m;
+        input [7:0] chb; input [15:0] si;
+        input [23:0] n; input [39:0] x0; input [47:0] t0; input [47:0] sx; input [55:0] st; input [7:0] fl;
+        reg [31:0] w0, w1, w2, w3;
+        begin
+            w0 = wsel(o0 & m, chb, si, n, x0, t0, sx, st, fl);
+            w1 = wsel(o1 & m, chb, si, n, x0, t0, sx, st, fl);
+            w2 = wsel(o2 & m, chb, si, n, x0, t0, sx, st, fl);
+            w3 = wsel(o3 & m, chb, si, n, x0, t0, sx, st, fl);
+            wq = {w3[31:24], w2[23:16], w1[15:8], w0[7:0]};
+        end
+    endfunction
     (* syn_preserve = 1 *) reg [7:0] ohA = 8'd1;
     (* syn_preserve = 1 *) reg [7:0] ohB = 8'd1;
     // 2026-10-24 (casovani): kopie pro horni pulslovo (bity 31:16) -- bit oh ridil 32 hradel po celem slove (P&R cesty
@@ -334,14 +352,6 @@ module v3_ring #(
     (* syn_preserve = 1 *) reg [7:0] ohBm = 8'd1;
     (* syn_preserve = 1 *) reg [7:0] ohAt = 8'd1;
     (* syn_preserve = 1 *) reg [7:0] ohBt = 8'd1;
-    wire [31:0] wsa_l = wsel(ohA,  {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-    wire [31:0] wsa_h = wsel(ohAh, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-    wire [31:0] wsa_m = wsel(ohAm, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-    wire [31:0] wsa_t = wsel(ohAt, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-    wire [31:0] wsb_l = wsel(ohB,  {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
-    wire [31:0] wsb_h = wsel(ohBh, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
-    wire [31:0] wsb_m = wsel(ohBm, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
-    wire [31:0] wsb_t = wsel(ohBt, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
     reg        v_s1 = 1'b0;                          // 1. stupen nese slovo k1
     always @(posedge clk) begin
         snap  <= 1'b0;
@@ -365,8 +375,10 @@ module v3_ring #(
         end else if (wr) begin
             if (k != 5'd16) begin
                 // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wa_a <= {wsa_t[31:24], wsa_h[23:16], wsa_m[15:8], wsa_l[7:0]};
-                wa_b <= {wsb_t[31:24], wsb_h[23:16], wsb_m[15:8], wsb_l[7:0]};
+                wl_a <= wq(ohA, ohAm, ohAh, ohAt, 8'h0F, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+                wh_a <= wq(ohA, ohAm, ohAh, ohAt, 8'hF0, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+                wl_b <= wq(ohB, ohBm, ohBh, ohBt, 8'h0F, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+                wh_b <= wq(ohB, ohBm, ohBh, ohBt, 8'hF0, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
                 ohA  <= {ohA[6:0], ohA[7]};
                 ohB  <= {ohB[6:0], ohB[7]};
                 ohAh <= {ohAh[6:0], ohAh[7]};
@@ -611,9 +623,13 @@ module pps_ides3 #(
     reg [2:0] t_s = 3'b000;
     reg [2:0] fix = 3'd0;
     reg       bw  = 1'b0;
+    // 2026-10-24 (casovani, pnr_seeds: bw -> f_ts[47:35] ve 4 z 8 sestaveni): f_ts[47:35] - 1 jako registr fm1 (f_ts[47:35]
+    // se od nacteni v taktu prijmu do fix 3 nemeni) -> ve fix 3 vypujcka jen vybira, zadny 13b odecet za bw
+    reg [12:0] fm1 = 13'd0;
     reg [7:0] hl  = 8'd0;                        // p_ts a t_rel se meni nejpozdeji o 3 takty driv, nez se hl pouzije
     always @(posedge clk) begin
         hl  <= p_ts[10:3] + t_rel;
+        fm1 <= f_ts[47:35] - 13'd1;
         t_s <= {t_s[1:0], p_tgl};
         if (!rdy) begin t_s <= 3'b000; fix <= 3'd0; end
         else if (t_s[2] ^ t_s[1]) begin
@@ -627,7 +643,7 @@ module pps_ides3 #(
             f_ts[21:14]       <= hl;
             fix <= 3'd3;
         end else if (fix == 3'd3) begin             // hornich 13 b - prenos
-            f_ts[47:35] <= f_ts[47:35] - {12'd0, bw};
+            if (bw) f_ts[47:35] <= fm1;
             fix   <= 3'd0;
             f_tgl <= ~f_tgl;
         end
