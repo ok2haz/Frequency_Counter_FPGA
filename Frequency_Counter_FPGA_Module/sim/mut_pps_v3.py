@@ -44,14 +44,26 @@ M = [
       ("            fix   <= 3'd0;\n            f_tgl <= ~f_tgl;\n", "            fix   <= 3'd0;\n")], False),
     # --- pps_cap3 ---
     ('seq_gt1 <= 1', [("seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;")], False),
-    ('pts_p se neposune', [("            pts_p <= pts_l; pfl_p <= pfl_l; d_p <= d_l;", "            pfl_p <= pfl_l; d_p <= d_l;")], False),
+    ('pts_p se neposune', [("            pts_p  <= pts_l; pfl_p <= pfl_l; d_p <= d_l;", "            pfl_p <= pfl_l; d_p <= d_l;")], False),
     ('saturace d_l prohozena', [("dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0]", "dhi ? 8'h80 : dlo ? 8'h7F : dd[7:0]")], False),
     # navic (sonda testu): nofine bez f_lock, jemny cas bez kontroly stari, zverejneni bez straze win != 0
     ('nofine bez f_lock', [("pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;", "pfl_l <= 8'd1; d_l <= 8'd0; nofine <= 1'b1;")], False),
+    # EKVIVALENTNI od opravy N2 (fa <= 0 pri hrube hrane): jemny cas z doby pred hrubou hranou se zahodi vzdy, jemny cas
+    # po ni ma pri zverejneni stari <= win < 31 (zverejni se nejpozdeji pri win = 31) -> fage = 31 nastat nemuze.
+    # Do opravy N2 ji chytal test nofine (blokovany f_tgl, zastaraly fa z minule hrany).
     ('fok bez kontroly stari (fage 31)',
-     [("fok <= fa && (fage != 5'd31) && (fage != 5'd0);", "fok <= fa && (fage != 5'd0);")], False),
+     [("        fok   <= fa && (fage != 5'd31) && (fage != 5'd0);", "        fok   <= fa && (fage != 5'd0);"),
+      ("        fok_b <= fa && (fage != 5'd31) && (fage != 5'd0);", "        fok_b <= fa && (fage != 5'd0);")], True),
     ('zverejneni bez straze win != 0',
-     [("else if (pend && win != 5'd0 && (fok || wok)) begin", "else if (pend && (fok || wok)) begin")], False),
+     [("wire       pub   = pend & wnz & (fok | wok);", "wire       pub   = pend & (fok | wok);"),
+      ("wire       pub_b = pend_b & wnz_b & (fok_b | wok_b);", "wire       pub_b = pend_b & (fok_b | wok_b);")], False),
+    # --- opravy nalezu N1 (maska wn) a N2 (fa <= 0 pri hrube hrane), 2026-10-24 ---
+    ('N1: lastw bez masky prvnich slov', [("            lastw <= w[7] | ~&wn;", "            lastw <= w[7];")], False),
+    # EKVIVALENTNI V MODELU: model IDES8 nema latenci vystupu po RESET, staci maskovat 1 slovo. 3 slova jsou rezerva pro
+    # kremik (latence IDES8 po uvolneni RESET na desce neoverena) -- simulace je odlisit nemuze.
+    ('N1: maska jen 1 slovo', [("            lastw <= w[7] | ~&wn;", "            lastw <= w[7] | (wn == 2'd0);")], True),
+    ('N2: jemny cas pred hrubou hranou se nezahodi',
+     [("wnz_b <= 1'b0;\n                       fa <= 1'b0; end", "wnz_b <= 1'b0;\n                       end")], False),
     # --- tri mutace 1PPS z mut_top_v3.py (stejne kotvy; '1PPS: bez t_rel' = 'hl bez t_rel' vyse) ---
     ('IDES8: obracene poradi bitu', [("    parameter Q0_FIRST = 1 ", "    parameter Q0_FIRST = 0 ")], False),
     ('1PPS: bez t_rel', [("        hl  <= p_ts[10:3] + t_rel;", "        hl  <= p_ts[10:3];")], False),

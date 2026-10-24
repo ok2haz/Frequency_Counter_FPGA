@@ -20,10 +20,12 @@
 //   * ztrata zamku (force u_pll.RESET): hruby cas {c_tick, 14'b0}, epocha +1, nova kotva; ztrata uprostred mereni;
 //     znovuzamceni pri pinu 1PPS = 1. Pruzkum (bez PASS): hrana tesne pred znovuzamcenim, kratky pulz 3 ns, zakmit.
 // Preklad (z korene modulu): iverilog -g2012 -I sim -s tb_pps_v3 -o t.vvp sim/gowin_models.v src/v3_core.v sim/tb_pps_v3.sv
-// Volby: -DTB_STRICT_RELOCK  nalez N1 jako kontrola: hrana 1..22 taktu pred uvolnenim PCLK (pin drzi 1) dostane jemny cas
-//                            prvniho slova IDES8 (falesna poloha 0) -- na base/ SELZE, s navrh_opravy.patch projde
-//        -DTB_STRICT_GLITCH  nalez N2 jako kontrola: zakmit kratsi nez takt (hruby ho nevidi) do ~38 taktu pred hranou
-//                            -> hrana dostane jemny cas zakmitu -- na base/ SELZE (oprava neni v patchi, viz ZPRAVA.md)
+// Nalez N1 (hrana 1..22 taktu pred uvolnenim PCLK, pin drzi 1 -> jemny cas prvniho slova IDES8, falesna poloha 0) je
+//   od opravy (maska wn v pps_ides3) VYCHOZI kontrola; -DTB_LAX_RELOCK ji vrati na pruzkum (pro RTL bez opravy).
+// Nalez N2 (zakmit kratsi nez takt, hruby ho nevidi): vychozi kontrola jen pro zakmit >= 10 taktu pred hranou (to opravuje
+//   fa <= 0 pri hrube hrane v pps_cap3); okno 5..8 taktu zustava otevrene (viz docs/audit/2026-10-24_pps_tb.md kap. 6.2).
+// Volby: -DTB_LAX_RELOCK     N1 jen pruzkum (bez kontroly)
+//        -DTB_STRICT_GLITCH  N2 jako kontrola pro vsechny vzdalenosti zakmitu -- SELZE i s opravou (okno 5..8 taktu)
 // ============================================================
 `timescale 1ps/1ps
 `ifndef TB_TICK0
@@ -409,7 +411,7 @@ module tb_pps_v3;
                  (n_tgl != nt0) ? "ano (falesna, bez hrube hrany se nezverejni)" : "ne");
         pin = 1'b0; repeat (10) @(posedge clk);
         cal_edge; cal_edge; cal_edge;
-        // ---- 6b) hrana nd taktu pred uvolnenim PCLK (pin drzi 1): pruzkum, s -DTB_STRICT_RELOCK kontrola ----
+        // ---- 6b) hrana nd taktu pred uvolnenim PCLK (pin drzi 1): kontrola N1 (s -DTB_LAX_RELOCK jen pruzkum) ----
         for (nd = 0; nd <= 28; nd = nd + 1) begin
             $sformat(ctx, "hrana %0d taktu pred uvolnenim PCLK", nd);
             unlock;
@@ -428,7 +430,7 @@ module tb_pps_v3;
                     $display("  NALEZ N1: hrana %0d taktu pred uvolnenim PCLK: PFLAGS 3, PTS - hrana - K = %0d (%.0f ps), d_l = %0d",
                              nd, dk, dk * 0.6103515625, $signed(d_l));
                 end else rl_map = {rl_map[8*31-1:0], "j"};
-`ifdef TB_STRICT_RELOCK
+`ifndef TB_LAX_RELOCK
                 chkv(dk >= -KW && dk <= KW, "N1: jemny cas hrany pred znovuzamcenim", dk, 0);
 `endif
             end else begin rl_map = {rl_map[8*31-1:0], "h"}; chk_coarse(e_flk); end
@@ -449,7 +451,8 @@ module tb_pps_v3;
             end else sp_map = {sp_map[8*31-1:0], "-"};
             ctx = "po kratkem pulzu"; cal_edge;
         end
-        // ---- 7b) zakmit 3 ns (hruby ho nevidi) nd taktu pred skutecnou hranou: pruzkum, s -DTB_STRICT_GLITCH kontrola ----
+        // ---- 7b) zakmit 3 ns (hruby ho nevidi) nd taktu pred skutecnou hranou: kontrola pro nd >= 10 (fa <= 0 pri hrube
+        //      hrane), s -DTB_STRICT_GLITCH pro vsechna nd ----
         for (i = 0; i < 12; i = i + 1) begin
             nd = (i == 0) ? 2 : (i == 1) ? 4 : (i == 2) ? 5 : (i == 3) ? 6 : (i == 4) ? 7 : (i == 5) ? 8 : (i == 6) ? 10 :
                  (i == 7) ? 20 : (i == 8) ? 30 : (i == 9) ? 36 : (i == 10) ? 40 : 50;
@@ -474,6 +477,8 @@ module tb_pps_v3;
                          (fh_viol != nt0) ? ", f_ts se menilo po f_tgl (cteno rozpracovane)" : "");
 `ifdef TB_STRICT_GLITCH
                 chkv(dk >= -KW && dk <= KW, "N2: jemny cas hrany po zakmitu", dk, 0);
+`else
+                if (nd >= 10) chkv(dk >= -KW && dk <= KW, "N2: jemny cas hrany po zakmitu >= 10 taktu pred ni", dk, 0);
 `endif
             end else begin
                 $display("  zakmit %0d taktu pred hranou: PFLAGS %0d (hruby cas), nofine %0d", nd, pfl_l, nofine);
