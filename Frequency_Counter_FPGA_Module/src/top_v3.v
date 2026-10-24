@@ -57,7 +57,9 @@ module top_v3 (
     localparam RAW = 9;
 `endif
 
-    reg  [33:0] tick_hi = 34'd0;
+    // 2026-10-24 (plocha): citac do DSP (ALU54D, atribut jako soucty v seg_chan3); v simulaci beze zmeny. Zmereno
+    // hlavni instanci jako varianta dTick (tools/abl_cls.py): -54 CLS, casovani beze zmeny
+    reg  [33:0] tick_hi = 34'd0 /* synthesis syn_dspstyle = "dsp" */;
     always @(posedge clk_p0_100m) tick_hi <= tick_hi + 34'd1;
     wire [47:0] tick_ps = {tick_hi, 14'd0};
 
