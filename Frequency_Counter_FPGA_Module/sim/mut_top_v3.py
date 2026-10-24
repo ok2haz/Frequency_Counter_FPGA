@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Negativni kontroly sim/tb_top_v3.sv (protokol v3, top_v3): kazda mutace RTL (docasna kopie src/ ve vystupnim adresari,
 repo se nemeni) musi test SHODIT. Bezi paralelne (kazda mutace = jedna simulace 3..15 min).
-Pouziti: python3 sim/mut_top_v3.py <koren FPGA modulu> <vystupni adresar> [jmeno ...] [-j N]"""
+Pouziti: python3 sim/mut_top_v3.py <koren FPGA modulu> <vystupni adresar> [jmeno ...] [-j N]
+         python3 sim/mut_top_v3.py <koren FPGA modulu> --selftest   (jen kontrola kotev, bez simulace)
+2026-10-24: kotvy VSECH vybranych mutaci se zkontroluji (v kodu prave jednou) PRED prvni simulaci (L-0224); mutace muze mit
+vic nahrad (seznam dvojic misto jedne kotvy)."""
 import os, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 root = os.path.abspath(sys.argv[1])
-out = os.path.abspath(sys.argv[2])
-args = sys.argv[3:]
+selftest = len(sys.argv) > 2 and sys.argv[2] == '--selftest'
+out = None if selftest else os.path.abspath(sys.argv[2])
+args = [] if selftest else sys.argv[3:]
 jobs = 8
 if '-j' in args:
     i = args.index('-j'); jobs = int(args[i + 1]); del args[i:i + 2]
@@ -26,9 +30,10 @@ M = [
      "                    else if (fn == 2'd1) begin fh <= xcnt; end", 0),
     ('rozdil t: bez vypujcky', 'v3_core.v', "dtu <= tm[39:20] - t0[39:20] - {19'd0, btl};", "dtu <= tm[39:20] - t0[39:20];", 0),
     ('zaznam: slovo T0 = SX', 'v3_core.v', "             | ({32{oh[3]}} & t0[31:0])", "             | ({32{oh[3]}} & sx[31:0])", 0),
-    ('znacka v taktu clear se pricte', 'v3_core.v', "    wire       take = pop & ~hold & ~freeze & ~clear;",
+    # 2026-10-24: take = pop & ~hold & nfc (nfc = registr ~freeze & ~clear z v3_ring) -> stejna chyba vyjadrena vstupy freeze/clear
+    ('znacka v taktu clear se pricte', 'v3_core.v', "    wire       take = pop & ~hold & nfc;",
      "    wire       take = pop & ~hold & ~freeze;", 0),
-    ('freeze se nepouzije', 'v3_core.v', "    wire       take = pop & ~hold & ~freeze & ~clear;", "    wire       take = pop & ~hold & ~clear;", 0),
+    ('freeze se nepouzije', 'v3_core.v', "    wire       take = pop & ~hold & nfc;", "    wire       take = pop & ~hold & ~clear;", 0),
     ('kontrolni pocitani bez hran', 'v3_core.v', "        ce  <= cp2 & ~cp3 & cnt_en;", "        ce  <= 1'b0;", 0),
     ('zaznam B do slotu A', 'v3_core.v', "            wa <= {wrec + {{(RAW-1){1'b0}}, k1[3]}, k1[2:0]};", "            wa <= {wrec, k1[2:0]};", 0),
     ('ACK se ignoruje', 'app_v3.v', "                                rec_ack <= {rx_p3, rx_p2, rx_p1, rx_p0};", "                                rec_ack <= rec_ack;", 0),
@@ -72,15 +77,41 @@ M = [
     ('PSRAM: okno ceka na vsechny bajty', 'v3_core.v', "            if (wb == 5'd24 && p_free) begin\n", "            if (wb == 5'd24 && p_free && widx == 10'd512) begin\n", 5),
     ('RAW: bez priznaku mezer', 'v3_core.v', "(drun && !dfin)) && (ch ? gap_b : gap_a)) dgap <= 1'b1;", "(drun && !dfin)) && (ch ? gap_b : gap_a)) dgap <= 1'b0;", 5),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
-    ('B z pinu A: znacka P_B', 'top_v3.v', ".clear(clear_b), .presc(pr_b_eff),", ".clear(clear_b), .presc(pr_b),", 3),
+    ('B z pinu A: znacka P_B', 'top_v3.v', ".nfc(nfc_b), .presc(pr_b_eff),", ".nfc(nfc_b), .presc(pr_b),", 3),   # 2026-10-24: port nfc
     # audit 2026-10-23 (FW 0x0506): nove cesty
     ('ring: jednickovy vyber bez rotace', 'v3_core.v', "                ohA  <= {ohA[6:0], ohA[7]};", "", 0),
     ('ring: odpocet bez vypujcky hornich 11 b', 'v3_core.v', "            chi <= chi - 11'd1;", "            chi <= chi;", 0),
     ('1PPS: seq > 1 vzdy', 'v3_core.v', "seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;", 0),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
+    # 2026-10-24 (optimalizace casovani): nove struktury -- kazda musi test shodit
+    ('1PPS: wnz se pri hrane nenuluje', 'v3_core.v', "win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0; end", "win <= 5'd0; wnz_b <= 1'b0; end", 0),
+    ('1PPS: kopie povoleni bez wnz_b', 'v3_core.v', "    wire       pub_b = pend_b & wnz_b & (fok_b | wok_b);",
+     "    wire       pub_b = pend_b & (fok_b | wok_b);", 0),
+    ('tabulka B: kopie adresy se neaktualizuje', 'v3_core.v', "lw_a_qa <= lwa_s1; lw_a_qb <= lwa_s1;", "lw_a_qa <= lwa_s1;", 2),
+    ('FIFO: fnz po vyberu vzdy 1', 'v3_core.v', "fnz <= fn[1]; end", "fnz <= 1'b1; end", 0),
+    ('soucty: kopie first_b se nenuluje', 'v3_core.v', "first <= 1'b1; first_b <= 1'b1;", "first <= 1'b1;", 0),
+    ('nfc: v taktu clear 1', 'v3_core.v', "                nfc_a   <= 1'b0; nfc_b <= 1'b0;\n", "                nfc_a   <= 1'b1; nfc_b <= 1'b1;\n", 0),
+    ('nfc: pri seg_tick nenulovan', 'v3_core.v', "            nfc_a  <= 1'b0; nfc_b <= 1'b0;\n", "", 0),
+    ('ring: horni pulslovo bez rotace', 'v3_core.v', "                ohAh <= {ohAh[6:0], ohAh[7]};\n", "", 0),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']
+
+
+def pairs(m):
+    """[(kotva, nahrada), ...] -- jedna dvojice, nebo seznam dvojic v miste kotvy (b = None)."""
+    name, fn, a, b, mode = m
+    return a if isinstance(a, list) else [(a, b)]
+
+
+def check_anchors(sel):
+    bad = []
+    for m in sel:
+        s = open(os.path.join(src, m[1]), encoding='utf-8').read()
+        for a, _ in pairs(m):
+            if s.count(a) != 1:
+                bad.append('%-40s %s: kotva %dx: %r' % (m[0], m[1], s.count(a), a[:70]))
+    return bad
 
 
 def run(m):
@@ -92,9 +123,11 @@ def run(m):
         shutil.copy(os.path.join(src, f), d)
     p = os.path.join(d, fn)
     s = open(p, encoding='utf-8').read()
-    if s.count(a) != 1:
-        return name, 'KOTVA NENALEZENA (%dx)' % s.count(a), '', 0
-    open(p, 'w', encoding='utf-8').write(s.replace(a, b))
+    for aa, bb in pairs(m):
+        if s.count(aa) != 1:
+            return name, 'KOTVA NENALEZENA (%dx)' % s.count(aa), '', 0
+        s = s.replace(aa, bb)
+    open(p, 'w', encoding='utf-8').write(s)
     vvp = os.path.join(d, 't.vvp')
     cmd = ['iverilog', '-g2012', '-I', sim] + TDC + MODE[mode] + ['-s', 'tb_top_v3', '-o', vvp,
            os.path.join(sim, 'gowin_models.v')] + [os.path.join(d, f) for f in RTL] + [os.path.join(sim, 'tb_top_v3.sv')]
@@ -112,6 +145,10 @@ def run(m):
 
 
 sel = [m for m in M if not only or m[0] in only]
+nb = check_anchors(sel)
+if nb or selftest:
+    print('\n'.join(nb) if nb else 'kotvy OK: %d mutaci, kazda kotva v kodu prave jednou' % len(sel))
+    sys.exit(1 if nb else 0)
 bad = 0
 with ThreadPoolExecutor(max_workers=jobs) as ex:
     for name, res, first, dt in ex.map(run, sel):
