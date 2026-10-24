@@ -101,6 +101,12 @@ M = [
     ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']
+# 2026-10-24: EKVIVALENTNI mutanty (test je shodit nemuze; nezachyceni se nepocita jako chyba, vypise se zduvodneni)
+EKV = {
+    # pfl_p = pps_gt1 ? pps_pfl_p : 0. Pri seq = 1 je pps_pfl_p = pfl_l pred prvni hranou = 0 (pps_cap3 nema reset,
+    # pfl_l zacina 0), takze hradlo seq_gt1 nema pozorovatelny ucinek; stopa topv3 s touto mutaci je shodna s base/
+    '1PPS: seq > 1 vzdy': 'pfl_p je pri seq = 1 vzdy 0 (pfl_l pred prvni hranou = 0) -> seq_gt1 bez ucinku',
+}
 
 
 def pairs(m):
@@ -146,6 +152,8 @@ def run(m):
     except subprocess.TimeoutExpired:
         return name, 'CASOVY LIMIT', '', time.time() - t0
     caught = 'PASS' not in r.stdout
+    if not caught and name in EKV:
+        return name, 'EKVIVALENTNI', EKV[name][:80], time.time() - t0
     first = next((l.strip() for l in r.stdout.splitlines() if 'CHYBA' in l or 'FAIL' in l), '')
     return name, 'ZACHYCENO' if caught else '!!! NEZACHYCENO', first[:80], time.time() - t0
 
@@ -159,6 +167,6 @@ bad = 0
 with ThreadPoolExecutor(max_workers=jobs) as ex:
     for name, res, first, dt in ex.map(run, sel):
         print('%-34s %-16s %4.0f s  %s' % (name, res, dt, first), flush=True)
-        bad += 0 if res == 'ZACHYCENO' else 1
+        bad += 0 if res in ('ZACHYCENO', 'EKVIVALENTNI') else 1
 print('\nvsechny mutace zachyceny' if bad == 0 else '\n%d mutaci NEZACHYCENO' % bad)
 sys.exit(1 if bad else 0)
