@@ -24,7 +24,9 @@ M = [
      [("            {bw, f_ts[34:22]} <= {1'b0, f_ts[34:22]} - {13'd0, bw};",
        "            {bw, f_ts[34:22]} <= {1'b0, f_ts[34:22]};")], False),
     ('bw: bez vypujcky ve fix 3 (bity 47:35)',
-     [("            f_ts[47:35] <= f_ts[47:35] - {12'd0, bw};", "            f_ts[47:35] <= f_ts[47:35];")], False),
+     [("            if (bw) f_ts[47:35] <= fm1;", "")], False),
+    # 2026-10-24: fm1 (f_ts[47:35] - 1 predpocitane) bez odectu = vypujcka se neprojevi
+    ('bw: fm1 bez odectu', [("        fm1 <= f_ts[47:35] - 13'd1;", "        fm1 <= f_ts[47:35];")], False),
     # EKVIVALENTNI: prijem (f_ts <= tick) je vzdy 3 takty za hl (p_tgl -> 3 FF t_s -> detekce; i pri falesne hrane
     # po uvolneni), tedy f_ts[21:14] - hl = 3 (mod 256) a rovnost, kde se '<=' lisi od '<', nenastane. Na desce muze
     # byt zpozdeni o takt jine (faze PCLK), ale nikdy 0 ani 256 taktu.

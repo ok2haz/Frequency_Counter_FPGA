@@ -38,6 +38,8 @@ TCLX = {
 
 V = {
     'base': [],
+    'tim2': [],
+    'tim': [],                                            # jen jine jmeno (druha rada sestaveni stejneho src/)
     'aHB': [('app_v3.v', APP_HB, "    always @* hb = {bb[7:2], 2'b0} ^ {6'd0, bb[1:0]} ^ MAGIC ^ flags_b ^ st_clk;"),
             ('timing_v3.sdc', '@@DEL@@u_ipps|u_pca|u_pcb|rx_s_|u_pps|u_cseq', '')],
     'aIT': [('app_v3.v', APP_IT, "    always @* it_src = {g_cur[7:0], 16'd0} ^ hist_a ^ hist_b ^ raw_q[23:0];")],
