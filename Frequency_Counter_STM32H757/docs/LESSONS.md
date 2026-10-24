@@ -5579,6 +5579,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `7fadfec` (nástroj), opravy `4ceec06`, `c586f03`
 - **Stav:** aktivní
 
+### L-0234 - Diagnostika děje při startu předpokládala, že pozorovatel už běží
+
+- **Datum:** 2026-10-24
+- **Oblast:** firmware / diagnostika (`gpsdo_tick`, STATUS #337b)
+- **Symptom:** v0.40.1 měla změřit interval PSEQ 1 -> 2 po startu FPGA; po několika power-cyklech hlásila „zatím nezměřeno“.
+- **Příčina:** STM začne číst FPGA až po bootu a bring-upu displeje (sekundy), FPGA je nakonfigurovaná dřív; hlavička nese jen poslední hranu 1PPS (předchozí od úzké hlavičky ani ne), takže PSEQ 1 a 2 jsou dávno přepsané. Kritérium „1 s ± 10 ms“ navíc nepočítalo s 10 Hz timepulse bez fixu.
+- **Oprava:** v0.40.2 zaznamená první hranu, kterou STM uvidí (PSEQ, čas od startu FPGA, odstup k další), a interval 1 -> 2 hodnotí proti mřížce 100 ms (`freertos_task_fpga.c`).
+- **Pravidlo:** diagnostika jednorázového děje při startu musí nejdřív ověřit časovou osu – kdy nastane děj a kdy začne pozorovatel číst; když pozorovatel nastupuje později, měř první viděnou událost, ne předpokládanou.
+- **Detekce:** `status` → `GPSDO: 1PPS prvni videna hrana: PSEQ …, … ms od startu FPGA`.
+- **Commit:** `ad093ea`
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)
