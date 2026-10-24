@@ -117,11 +117,17 @@ module tb_top_v3;
               #(64'd1_000_000); cs = 1; #(64'd200_000_000); end endtask   // mezera 200 us
 
     function [3:0] gr(input [3:0] b); gr = b ^ {1'b0, b[3:1]}; endfunction   // Gray (bajt 127, F-0266)
+    // FW 0x0507 (uzka hlavicka): 16b pole rozbalena k nejblizsi hodnote kolem reference (jako STM fpga_v3_unwrap)
+    function [31:0] unw(input [15:0] v, input [31:0] r);
+        reg [15:0] dlt;
+        begin dlt = v - r[15:0]; unw = r + {{16{dlt[15]}}, dlt}; end
+    endfunction
     function [63:0] rd(input integer off, input integer n);
         integer q; reg [63:0] v; begin v = 0; for (q = n - 1; q >= 0; q = q - 1) v = (v << 8) | mi[off + q]; rd = v; end endfunction
 
     // ---- "STM": prijem ramce ----
-    reg [31:0] nxt = 0, hseq;
+    reg [31:0] nxt = 0, hseq = 0, pseq = 0;
+    reg [7:0]  nz;
     integer nmask = 0, ninv_a = 0, novf = 0;
     // FW 0x0503: platne zaznamy podle kanalu a log2 P (FLAGS 7:5), neplatne B, ocekavana sonda
     integer nvp [0:1][0:7]; integer ninv_b = 0, ki, kj; real pr_e; reg [2:0] r_pl;
@@ -184,19 +190,33 @@ module tb_top_v3;
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
             caps = rd(24, 4);
-            chk(rd(20, 2) == 16'h0506, "FW_VERSION 0x0506");
+            chk(rd(20, 2) == 16'h0507, "FW_VERSION 0x0507");
+            // uzka hlavicka (CAPS bit22): zrusena / zuzena pole jsou 0
+            chk(caps[22], "CAPS bit22 (uzka hlavicka)");
+            nz = 0;
+            for (k = 6; k < 8; k = k + 1)     nz = nz | mi[k];
+            for (k = 28; k < 32; k = k + 1)   nz = nz | mi[k];
+            for (k = 34; k < 36; k = k + 1)   nz = nz | mi[k];
+            for (k = 38; k < 40; k = k + 1)   nz = nz | mi[k];
+            for (k = 42; k < 44; k = k + 1)   nz = nz | mi[k];
+            for (k = 56; k < 60; k = k + 1)   nz = nz | mi[k];
+            for (k = 70; k < 72; k = k + 1)   nz = nz | mi[k];
+            for (k = 84; k < 96; k = k + 1)   nz = nz | mi[k];
+            for (k = 100; k < 108; k = k + 1) nz = nz | mi[k];
+            for (k = 112; k < 116; k = k + 1) nz = nz | mi[k];
+            chk(nz == 8'd0, "uzka hlavicka: zrusena pole = 0");
 `ifdef DEEP_RAW
             chk(caps[21], "CAPS bit21 (hluboky RAW do PSRAM)");
 `else
-            chk(!caps[21], "CAPS bit21 = 0 (bez PSRAM, FW 0x0506)");
+            chk(!caps[21], "CAPS bit21 = 0 (bez PSRAM, od FW 0x0506)");
 `endif
             chk(caps[18], "CAPS bit18 (predelicka pin_cnt3)");
             chk(caps[17], "CAPS bit17 (1PPS pres IDES8)");
             chk(caps[16] && caps[19] && caps[13] && caps[20], "CAPS v3/banky/1PPS/zdroj B");
             chk(mi[22] == 100, "CLK_MHZ");
-            hseq = rd(4, 4);
+            hseq = unw(rd(4, 2), hseq);
             if (want_data && mi[2] == 8'h80) begin
-                first = rd(36, 4); nrec = mi[40];
+                first = unw(rd(36, 2), nxt); nrec = mi[40];
                 chk(nrec <= 24, "NREC <= 24");
                 if (first > nxt && mi[3][1]) begin                     // preteceni kruhu: mezera s priznakem
                     novf = novf + 1; nxt = first; have[0] = 0; have[1] = 0;
@@ -290,15 +310,15 @@ module tb_top_v3;
                 nfr = nfr + 1;
             end
             // 1PPS: PSEQ / PTS posledni hrany; po sobe jdouci hrany 1 ms = 1e5 taktu
-            if (rd(68, 4) != 0 && rd(68, 4) != pps_last_seq) begin
-                if (pps_last_seq != 0 && rd(68, 4) == pps_last_seq + 1) begin
+            pseq = unw(rd(68, 2), pps_last_seq);
+            if (pseq != 0 && pseq != pps_last_seq) begin
+                if (pps_last_seq != 0 && pseq == pps_last_seq + 1) begin
                     chk(((rd(72, 6) - pps_last_ts) >> 14) >= 99999 && ((rd(72, 6) - pps_last_ts) >> 14) <= 100001, "1PPS po 1 ms");
-                    chk(rd(84, 4) == pps_last_seq && rd(88, 6) == pps_last_ts, "1PPS predchozi = minula posledni");
                     npps = npps + 1;
                 end
                 // jemny cas: PFLAGS bit1, PPS_STATUS bit0 (PCLK bezi), epocha stala; PTS proti skutecne hrane
                 if (mi[78][1]) begin
-                    pf_e = real'(rd(72, 6)) * U - (700.0e6 + real'(rd(68, 4) - 1) * (1.0e9 + real'(`TB_PPS_DPS)));
+                    pf_e = real'(rd(72, 6)) * U - (700.0e6 + real'(pseq - 1) * (1.0e9 + real'(`TB_PPS_DPS)));
                     if (!pf_have) begin pf_have = 1; pf_ref = pf_e; pf_ep = mi[50][7:4]; end
                     if ((pf_e - pf_ref) > pf_max) pf_max = pf_e - pf_ref;
                     if ((pf_ref - pf_e) > pf_max) pf_max = pf_ref - pf_e;
@@ -310,7 +330,7 @@ module tb_top_v3;
                     pf_pos[rd(72, 2) >> 11 & 7] = 1'b1;
                     npf = npf + 1;
                 end
-                pps_last_seq = rd(68, 4); pps_last_ts = rd(72, 6);
+                pps_last_seq = pseq; pps_last_ts = rd(72, 6);
             end
         end endtask
 
@@ -437,7 +457,7 @@ module tb_top_v3;
             $display("vyrobni kalibrace obou kanalu hotova v %0t ps", $time);
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS (segment 250 us < transakce)
             #(64'd600_000_000);
-            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1;
+            build_ack(nxt); xfer(1024); nxt = unw(rd(32, 2), nxt);
             for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             chk(nvalid_a >= 4 && nvalid_b >= 4, "po kalibraci platne zaznamy obou kanalu");
             // ---- rekalibrace JEN A: B meri dal, A po sberu meri se starou bankou ----
@@ -475,7 +495,7 @@ module tb_top_v3;
             build(8'h01, 8'h07, 8'h01, 8'd2, 0); xfer(1024);
             build(8'h01, 8'h09, 8'h03, 0, 0); xfer(1024); bfa = 1; binv = 1;
             #(64'd600_000_000);                                          // B 2 segmenty neplatny po zmene zdroje
-            build_ack(0); xfer(1024); nxt = rd(32, 4) + 1; haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
+            build_ack(0); xfer(1024); nxt = unw(rd(32, 2), nxt); haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
             chk(mi[66][4:3] == 2'b11, "CFG echo: B z pinu A, invertovany");
             for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             $display("sirka pulzu %.0f ps (perioda %.0f ps): %0d dvojic A/B, max |chyba| %.0f ps", WA, PA, nw, wmax);
@@ -484,7 +504,7 @@ module tb_top_v3;
             nw = 0; wmax = 0.0;
             build(8'h01, 8'h09, 8'h01, 0, 0); xfer(1024); binv = 0;
             #(64'd600_000_000);
-            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1; haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
+            build_ack(nxt); xfer(1024); nxt = unw(rd(32, 2), nxt); haveA = 0; t0have[1] = 0; have[1] = 0;   // novy zdroj B = nova reference
             chk(mi[66][4:3] == 2'b01, "CFG echo: B z pinu A");
             for (f = 0; f < 6; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             $display("zpozdeni A/B (stejna hrana): %0d dvojic, max |rozdil| %.0f ps", nw, wmax);
@@ -492,7 +512,7 @@ module tb_top_v3;
             // ---- zpet na pin B: B meri zase svuj signal ----
             build(8'h01, 8'h09, 8'h00, 0, 0); xfer(1024); bfa = 0;
             #(64'd600_000_000);
-            build_ack(nxt); xfer(1024); nxt = rd(32, 4) + 1; t0have[1] = 0; have[1] = 0;
+            build_ack(nxt); xfer(1024); nxt = unw(rd(32, 2), nxt); t0have[1] = 0; have[1] = 0;
             e0 = nvalid_b;
             for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
             chk(nvalid_b > e0 + 4, "zpet na pin B: platne zaznamy B");
@@ -502,7 +522,7 @@ module tb_top_v3;
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS
             build(8'h01, 8'h07, 8'h01, 8'd3, 0); xfer(1024);           // B: log2 P = 3
             #(64'd1_000_000_000);                                        // 4 segmenty: prepnuti + 2 neplatne
-            build_ack(0); xfer(1024); nxt = rd(32, 4) + 1; have[1] = 0; t0have[1] = 0;
+            build_ack(0); xfer(1024); nxt = unw(rd(32, 2), nxt); have[1] = 0; t0have[1] = 0;
             chk(mi[64] == 8'd0 && mi[65] == 8'd3, "PRESC A 0, B 3 (plati, nic neceka)");
             pr_e = `TB_FB / 16.0e3;
             chk(real'(rd(110, 2)) > pr_e - 2.0 && real'(rd(110, 2)) < pr_e + 2.0, "PROBE B = f/16 za 1 ms");
@@ -592,16 +612,16 @@ module tb_top_v3;
                 "PSRAM: po chybe dalsi okno nacteno");
         end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
-            build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = rd(36, 4);   // kruh 16 pretekl uz pri nabehu
+            build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = unw(rd(36, 2), 0);   // kruh 16 pretekl uz pri nabehu
             build_ack(nxt); xfer(1024); check_frame(1);
             build_ack(nxt); xfer(1024); check_frame(1);
             e0 = nxt;
             #(64'd5_000_000_000);                                          // 20 segmentu = 40 zaznamu > 16
             build_ack(nxt); xfer(1024);
             chk(mi[3][1] == 1'b1, "FLAGS bit1 preteceni");
-            chk(rd(36, 4) > e0, "REC_FIRST skocil za ACK");
-            $display("preteceni: ocekavano %0d, REC_FIRST %0d, REC_HEAD %0d, FLAGS %02h", nxt, rd(36, 4), rd(32, 4), mi[3]);
-            nxt = rd(36, 4); have[0] = 0; have[1] = 0;                   // STM: prerusi souvisly usek
+            chk(unw(rd(36, 2), e0) > e0, "REC_FIRST skocil za ACK");
+            $display("preteceni: ocekavano %0d, REC_FIRST %0d, REC_HEAD %0d, FLAGS %02h", nxt, rd(36, 2), rd(32, 2), mi[3]);
+            nxt = unw(rd(36, 2), nxt); have[0] = 0; have[1] = 0;         // STM: prerusi souvisly usek
             check_frame(1);
             build_ack(nxt); xfer(1024); check_frame(1);
             build_ack(nxt); xfer(1024); check_frame(1);
@@ -615,11 +635,11 @@ module tb_top_v3;
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
             #(64'd600_000_000);                                          // 2 segmenty jeste s maskovanim
             build_ack(0); xfer(1024);
-            nxt = rd(32, 4) + 1;                                         // zaznamy do teto chvile se neposuzuji
+            nxt = unw(rd(32, 2), nxt);                                         // zaznamy do teto chvile se neposuzuji
             for (f = 0; f < `TB_NFR; f = f + 1) begin
                 build_ack(nxt); xfer(1024); check_frame(1);
                 $display("ramec %0d: SEQ %0d REC_FIRST %0d NREC %0d REC_HEAD %0d FLAGS %02h | prevzato %0d, duplicit %0d",
-                         f, rd(4, 4), rd(36, 4), mi[40], rd(32, 4), mi[3], nxt, dup);
+                         f, rd(4, 2), rd(36, 2), mi[40], rd(32, 2), mi[3], nxt, dup);
             end
             chk(nvalid_a >= 8 && nvalid_b >= 8, "pocet platnych zaznamu");
             chk(nrec_tot >= 3 * `TB_NFR, "prijem postupuje (REC_ACK se posouva)");
@@ -645,7 +665,6 @@ module tb_top_v3;
             build_ack(nxt); xfer(1024); check_frame(1);
             chk(mi[66][1:0] == 2'b11, "CFG echo mask_cs + led");
             chk(mi[23] == 8'd10, "SEG_LEN_MS = 10");
-            chk(rd(56, 4) == {mseq[23:0] - 24'd2, 8'h01} || mi[56] == 8'h06, "RX_LAST");
             build(8'h01, 8'h08, 8'd25, 0, 0); xfer(1024);
             // ---- stranka histogramu A (druh 1), stranka 1 a 2 ----
             for (t = 0; t < 3; t = t + 1) begin
