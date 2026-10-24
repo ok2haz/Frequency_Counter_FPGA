@@ -77,8 +77,12 @@ module seg_chan3 #(
     reg [39:0] fh = 40'd0, fs = 40'd0;         // hlava (nejstarsi), druha
     reg [1:0]  fn = 2'd0;
     reg        f_err = 1'b0;                   // znacka bez indexu / preteceni FIFO (nesmi nastat; diagnostika)
+    // FW 0x0506: ts_valid o takt zpozdene (registr tvd odlehci fan-out ts_valid z tdc_chan; ts_ps se drzi >= 5 taktu, FIFO
+    // snese do T+12 -> pop v T+11)
+    reg        tvd = 1'b0;
+    always @(posedge clk) tvd <= ts_valid;
     wire       push = tq3;
-    wire       pop  = ts_valid & (fn != 2'd0);
+    wire       pop  = tvd & (fn != 2'd0);
     always @(posedge clk) begin
         tq1 <= trig_ack; tq2 <= tq1; tq3 <= tq2;
         if (hold) begin
@@ -97,7 +101,7 @@ module seg_chan3 #(
                 end
                 default: ;
             endcase
-            if (ts_valid && fn == 2'd0) f_err <= 1'b1;
+            if (tvd && fn == 2'd0) f_err <= 1'b1;
         end
         if (clear) f_err <= 1'b0;                  // chyba plati pro segment (zaznam s ni je neplatny)
     end
@@ -184,13 +188,14 @@ module seg_chan3 #(
     // FW 0x0504: soucty v DSP (SUM_DSP = 1) -- pricitani ve V+2 z rozdilu dx_r/dt_r jako u varianty v logice
     generate if (SUM_DSP != 0) begin : g_dsp
         reg [47:0] sx_d = 48'd0 /* synthesis syn_dspstyle = "dsp" */;
-        reg [55:0] st_d = 56'd0 /* synthesis syn_dspstyle = "dsp" */;
+        // FW 0x0506: ST jen 54 b (ALU54D). Hranice: znacky >= 5 taktu od sebe -> ST <= max_N (N*L - a*N^2/2) = 1,0e16 < 2^54 (1,8e16)
+        reg [53:0] st_d = 54'd0 /* synthesis syn_dspstyle = "dsp" */;
         always @(posedge clk) begin
-            if (clear)   begin sx_d <= 48'd0; st_d <= 56'd0; end
-            else if (v2) begin sx_d <= sx_d + {22'd0, dx_r}; st_d <= st_d + {16'd0, dt_r}; end
+            if (clear)   begin sx_d <= 48'd0; st_d <= 54'd0; end
+            else if (v2) begin sx_d <= sx_d + {22'd0, dx_r}; st_d <= st_d + {14'd0, dt_r}; end
         end
         assign o_sx = sx_d;
-        assign o_st = st_d;
+        assign o_st = {2'b00, st_d};
     end else begin : g_fab
         assign o_sx = {sx_hi, sx_lo};
         assign o_st = {st_hi, st_lo};
@@ -224,6 +229,8 @@ module v3_ring #(
     output reg         freeze,
     output reg         snap,
     output reg         clear,
+    (* syn_preserve = 1 *) output reg clear_a,   // FW 0x0506: kopie clear pro seg_chan3 A / B (fan-out clear byl 280)
+    (* syn_preserve = 1 *) output reg clear_b,
     output reg         rec_tgl,
     output reg  [31:0] seg_idx,      // cislo segmentu, ktery se prave zapisuje / bezi
     input  wire [23:0] a_n,  b_n,
@@ -238,22 +245,36 @@ module v3_ring #(
     input  wire [RAW+2:0] raddr,     // {zaznam, slovo}
     output reg  [31:0] rdata
 );
-    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; rec_tgl = 1'b0; seg_idx = 32'd0; rdata = 32'd0; end
+    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; clear_a = 1'b0; clear_b = 1'b0; rec_tgl = 1'b0; seg_idx = 32'd0; rdata = 32'd0; end
     localparam DRAIN = 6;                            // dobeh souctu seg_chan3 (V+4) + rezerva
 
     // ---- casovac (odpocet, registrovana detekce konce) ----
     reg  [1:0]  s10 = 2'b00;
-    reg  [21:0] cnt = SEG25 - 1;
+    // FW 0x0506: odpocet {chi, clo} = puvodni 22b cnt, rozdeleny na 2 x 11 b (dlouhy retez ALU mel v P&R rezervu -3 az -5 ns);
+    // lo_z = (clo == 0) a hi_z = (chi == 0) jsou registrovane o takt driv, perioda zustava presne SEG25 / SEG10 taktu
+    // Podminka: (SEG - 1) mod 2048 musi byt >= 2 (jinak by reload dal lo_z / z1 chybne); plati pro 2 499 999 (1439), 999 999 (575),
+    // simulace 24 999 (423) a 9 999 (1807)
+    reg  [10:0] clo = SEG25 - 1;
+    reg  [10:0] chi = (SEG25 - 1) >> 11;
+    reg         lo_z = 1'b0, hi_z = 1'b0;
     reg         z1  = 1'b0;
+    wire [21:0] ld  = (s10[1] ? SEG10 : SEG25) - 1;
     always @(posedge clk) begin
         s10      <= {s10[0], seg10_req};
         seg_tick <= 1'b0;
-        z1       <= (cnt == 22'd1);
+        hi_z     <= (chi == 11'd0);
+        lo_z     <= (clo == 11'd1);                   // clo bude 0
+        z1       <= hi_z & (clo == 11'd1);            // cnt == 1
         if (z1) begin                                 // cnt je ted 0: konec segmentu
             seg_tick  <= 1'b1;
             seg10_act <= s10[1];
-            cnt       <= (s10[1] ? SEG10 : SEG25) - 1;
-        end else cnt <= cnt - 22'd1;
+            clo       <= ld[10:0];
+            chi       <= ld[21:11];
+            lo_z      <= 1'b0;
+        end else if (lo_z) begin
+            clo <= 11'h7FF;
+            chi <= chi - 11'd1;
+        end else clo <= clo - 11'd1;
     end
 
     // ---- zapisovac ----
@@ -268,24 +289,26 @@ module v3_ring #(
     reg [4:0]  k1 = 5'd0;
     // slovo k zaznamu (LE): 0 {FLAGS, CH, SEG_IDX}, 1 {X0[7:0], N}, 2 X0[39:8], 3 T0[31:0], 4 {SX[15:0], T0[47:32]},
     //                       5 SX[47:16], 6 ST[31:0], 7 {0, ST[55:32]}
+    // FW 0x0506: vyber slova jednickovym kodem oh (registr, posun o 1 s kazdym slovem) misto k[2:0] -- k[0] mel fan-out 251
+    // a 40 nejhorsich cest P&R (rezerva -3,6 ns); kazdy bit oh ted ridi 32 hradel jednoho kanalu (ohA, ohB zvlast)
     function [31:0] wsel;
-        input [2:0] w; input [7:0] chb; input [15:0] si;
+        input [7:0] oh; input [7:0] chb; input [15:0] si;
         input [23:0] n; input [39:0] x0; input [47:0] t0; input [47:0] sx; input [55:0] st; input [7:0] fl;
-        case (w)
-            3'd0: wsel = {fl, chb, si};
-            3'd1: wsel = {x0[7:0], n};
-            3'd2: wsel = x0[39:8];
-            3'd3: wsel = t0[31:0];
-            3'd4: wsel = {sx[15:0], t0[47:32]};
-            3'd5: wsel = sx[47:16];
-            3'd6: wsel = st[31:0];
-            default: wsel = {8'd0, st[55:32]};
-        endcase
+        wsel = ({32{oh[0]}} & {fl, chb, si})
+             | ({32{oh[1]}} & {x0[7:0], n})
+             | ({32{oh[2]}} & x0[39:8])
+             | ({32{oh[3]}} & t0[31:0])
+             | ({32{oh[4]}} & {sx[15:0], t0[47:32]})
+             | ({32{oh[5]}} & sx[47:16])
+             | ({32{oh[6]}} & st[31:0])
+             | ({32{oh[7]}} & {8'd0, st[55:32]});
     endfunction
+    (* syn_preserve = 1 *) reg [7:0] ohA = 8'd1;
+    (* syn_preserve = 1 *) reg [7:0] ohB = 8'd1;
     reg        v_s1 = 1'b0;                          // 1. stupen nese slovo k1
     always @(posedge clk) begin
         snap  <= 1'b0;
-        clear <= 1'b0;
+        clear <= 1'b0; clear_a <= 1'b0; clear_b <= 1'b0;
         v_s1  <= 1'b0;
         // 2. stupen: vyber kanalu, 3. stupen: zapis do RAM
         we <= v_s1;
@@ -295,21 +318,23 @@ module v3_ring #(
         end
         if (we) mem[wa] <= wd;
         if (seg_tick) begin
-            freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0;
+            freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0; ohA <= 8'd1; ohB <= 8'd1;
         end else if (freeze && !wr) begin
             dr <= dr + 3'd1;
             if (dr == DRAIN - 1) wr <= 1'b1;
         end else if (wr) begin
             if (k != 5'd16) begin
                 // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wa_a <= wsel(k[2:0], {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-                wa_b <= wsel(k[2:0], {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+                wa_a <= wsel(ohA, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+                wa_b <= wsel(ohB, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+                ohA  <= {ohA[6:0], ohA[7]};
+                ohB  <= {ohB[6:0], ohB[7]};
                 k1   <= k;
                 v_s1 <= 1'b1;
                 k    <= k + 5'd1;
             end else if (!v_s1 && !we) begin                 // posledni slovo je v RAM
                 wr      <= 1'b0;
-                clear   <= 1'b1;
+                clear   <= 1'b1; clear_a <= 1'b1; clear_b <= 1'b1;
                 freeze  <= 1'b0;
                 wrec    <= wrec + {{(RAW-2){1'b0}}, 2'd2};
                 seg_idx <= seg_idx + 32'd1;
@@ -333,8 +358,10 @@ module pps_cap3 (
     input  wire [47:0] f_ts,
     input  wire        f_lock,
     output reg  [31:0] seq,
-    output reg  [33:0] last,         // hruby cas (takty) -- kontrola, bajty 100..107
-    output reg  [33:0] prev,
+    output reg         seq_nz,       // FW 0x0506: seq != 0 (bez 32b porovnani v hlavicce)
+    output reg         seq_gt1,      // seq > 1
+    output wire [33:0] last,         // FW 0x0506: bajty 100..107 = 0 (hruby cas je v PTS: pts >> 14 pri PFLAGS bit1 = 0)
+    output wire [33:0] prev,
     output reg  [47:0] pts_l,        // PTS [T/16384]: jemny (IDES8), kdyz prisel, jinak hruby x 16384
     output reg  [47:0] pts_p,
     output reg  [7:0]  pfl_l,        // PFLAGS: bit0 platne, bit1 jemny cas
@@ -350,26 +377,33 @@ module pps_cap3 (
     reg        pend = 1'b0, fa = 1'b0;
     reg [4:0]  win = 5'd0, fage = 5'd0;
     reg [33:0] c_tick = 34'd0;
-    reg [47:0] f_buf = 48'd0;
-    wire [33:0] dd  = f_buf[47:14] - c_tick;
+    reg        fok = 1'b0, wok = 1'b0;   // FW 0x0506: podminky zverejneni registrovane (o takt zpozdene)
+    // FW 0x0506: rozdil se registruje (dd_r, 1 takt za f_ts / c_tick); zverejneni ceka na fage >= 1 a win >= 1;
+    // f_ts se po preklopeni f_tgl drzi do dalsi hrany 1PPS (~1 s), proto zadny kopirovaci registr
+    reg  [33:0] dd_r = 34'd0;
+    always @(posedge clk) dd_r <= f_ts[47:14] - c_tick;
+    wire [33:0] dd  = dd_r;
     wire        dhi = ~dd[33] & (dd[32:7] != 26'd0);        // > 127
     wire        dlo =  dd[33] & (dd[32:7] != {26{1'b1}});   // < -128
-    initial begin seq = 32'd0; last = 34'd0; prev = 34'd0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
+    assign last = 34'd0; assign prev = 34'd0;
+    initial begin seq = 32'd0; seq_nz = 1'b0; seq_gt1 = 1'b0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
                   d_l = 8'd0; d_p = 8'd0; nofine = 1'b0; end
     always @(posedge clk) begin
         s  <= {s[1:0], pin};
         fs <= {fs[1:0], f_tgl};
         if (win != 5'd31)  win  <= win + 5'd1;
         if (fage != 5'd31) fage <= fage + 5'd1;
-        if (fs[2] ^ fs[1]) begin f_buf <= f_ts; fa <= f_lock; fage <= 5'd0; end
+        fok <= fa && (fage != 5'd31) && (fage != 5'd0);
+        wok <= (win == 5'd31);
+        if (fs[2] ^ fs[1]) begin fa <= f_lock; fage <= 5'd0; end
         if (s[1] & ~s[2]) begin c_tick <= tick; pend <= 1'b1; win <= 5'd0; end
-        else if (pend && ((fa && fage != 5'd31) || win == 5'd31)) begin
+        else if (pend && win != 5'd0 && (fok || wok)) begin
             pend  <= 1'b0; fa <= 1'b0;
             seq   <= seq + 32'd1;
-            prev  <= last;  last  <= c_tick;
+            seq_nz <= 1'b1; seq_gt1 <= seq_nz;
             pts_p <= pts_l; pfl_p <= pfl_l; d_p <= d_l;
-            if (fa && fage != 5'd31) begin
-                pts_l <= f_buf; pfl_l <= 8'd3; nofine <= 1'b0;
+            if (fok) begin
+                pts_l <= f_ts; pfl_l <= 8'd3; nofine <= 1'b0;
                 d_l   <= dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0];
             end else begin
                 pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
@@ -389,11 +423,10 @@ endmodule
 //   vedeni, hodiny pinu NE na globalni sit (PRIMARY je ve v3 skoro plna) -- OVERIT po P&R (create_clock pin_a/pin_b
 //   v timing_v3.sdc, mapa floorplan_svg.py). Cesta pin/c -> retez je asynchronni (false_path pres u_tdc?/sig_eff).
 // ------------------------------------------------------------
-module pin_cnt3 #(
-    parameter PROBE_W = 100000                   // okno sondy [takty clk] = 1 ms pri 100 MHz
-)(
+module pin_cnt3 (
     input  wire        pin,
     input  wire        clk,
+    input  wire        wend,                     // 1 takt na konci okna sondy (1 ms pri 100 MHz; spolecne pro oba kanaly, top_v3)
     input  wire [2:0]  sel,
     output wire        sig_out,
     output reg  [15:0] probe                     // hrany /16 za posledni okno (saturuje)
@@ -402,17 +435,15 @@ module pin_cnt3 #(
     always @(posedge pin) c <= c + 4'd1;
     assign sig_out = (sel == 3'd0) ? pin : (sel == 3'd1) ? c[0] : (sel == 3'd2) ? c[1] : (sel == 3'd3) ? c[2] : c[3];
     reg [2:0]  s  = 3'b000;
-    reg [16:0] wc = 17'd0;
     reg [15:0] pc = 16'd0;
+    reg        pcf = 1'b0;                       // pc == 0xFFFF (o takt zpozdene; hrany /16 jsou nejmene 2 takty od sebe)
     initial probe = 16'd0;
     always @(posedge clk) begin
         s <= {s[1:0], c[3]};
-        if (wc == PROBE_W - 1) begin
-            wc <= 17'd0; probe <= pc; pc <= {15'd0, s[1] & ~s[2]};
-        end else begin
-            wc <= wc + 17'd1;
-            if (s[1] & ~s[2] && pc != 16'hFFFF) pc <= pc + 16'd1;
-        end
+        pcf <= (pc == 16'hFFFF);
+        if (wend) begin
+            probe <= pc; pc <= {15'd0, s[1] & ~s[2]};
+        end else if (s[1] & ~s[2] && !pcf) pc <= pc + 16'd1;
     end
 endmodule
 
@@ -453,25 +484,27 @@ module pps_ides3 #(
         .FBDSEL(6'd0), .IDSEL(6'd0), .ODSEL(6'd0), .PSDA(4'd0), .DUTYDA(4'd0), .FDLY(4'd0)
     );
     reg [1:0]  lk_s  = 2'b00;
-    reg        rdy   = 1'b0;                     // RESETN CLKDIV, reset IDES8 a logiky PCLK
-    reg [33:0] t_rel = 34'd0;                    // tick v taktu pred uvolnenim
+    reg        rdy   = 1'b0;                     // reset logiky PCLK a stav do clk
+    (* syn_preserve = 1 *) reg rdy_h = 1'b0;     // FW 0x0506: kopie jen pro RESETN CLKDIV a RESET IDES8 (SDC: false_path jen z ni, audit)
+    reg [7:0]  t_rel = 8'd0;                     // FW 0x0506: jen dolnich 8 b ticku v taktu pred uvolnenim (zbytek z ticku pri prijmu)
     initial begin f_tgl = 1'b0; f_ts = 48'd0; epoch = 4'd0; end
     always @(posedge clk) begin
         lk_s <= {lk_s[0], lock};
         rdy  <= lk_s[1];
-        if (lk_s[1] & ~rdy) begin t_rel <= tick; epoch <= epoch + 4'd1; end
+        rdy_h <= lk_s[1];
+        if (lk_s[1] & ~rdy) begin t_rel <= tick[7:0]; epoch <= epoch + 4'd1; end
     end
     assign f_lock = rdy;
-    CLKDIV #(.DIV_MODE("4"), .GSREN("false")) u_div (.HCLKIN(fclk), .RESETN(rdy), .CALIB(1'b0), .CLKOUT(pclk));
+    CLKDIV #(.DIV_MODE("4"), .GSREN("false")) u_div (.HCLKIN(fclk), .RESETN(rdy_h), .CALIB(1'b0), .CLKOUT(pclk));
     wire [7:0] q;
     IDES8 #(.GSREN("false"), .LSREN("true")) u_ides (
-        .D(pin), .FCLK(fclk), .PCLK(pclk), .CALIB(1'b0), .RESET(~rdy),
+        .D(pin), .FCLK(fclk), .PCLK(pclk), .CALIB(1'b0), .RESET(~rdy_h),
         .Q0(q[0]), .Q1(q[1]), .Q2(q[2]), .Q3(q[3]), .Q4(q[4]), .Q5(q[5]), .Q6(q[6]), .Q7(q[7]));
     wire [7:0] w = (Q0_FIRST != 0) ? q : {q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]};   // w[0] = nejdrivejsi
     // domena PCLK: prvni nabezna hrana (i na rozhrani slov), poloha 0..7 v taktu
-    reg  [33:0] pcnt  = 34'd0;
+    reg  [7:0]  pcnt  = 8'd0;                    // FW 0x0506: 8 b (dolni cast; plny cas se slozi z ticku v clk, viz nize)
     reg         lastw = 1'b0;
-    reg  [36:0] p_ts  = 37'd0;                   // {pcnt, poloha}; cas = {p_ts, 11'b0}
+    reg  [10:0] p_ts  = 11'd0;                   // {pcnt[7:0], poloha}
     reg         p_tgl = 1'b0;
     reg  [2:0]  pos;
     reg         hit;
@@ -483,20 +516,38 @@ module pps_ides3 #(
     end
     always @(posedge pclk or negedge rdy) begin
         if (!rdy) begin
-            pcnt <= 34'd0; lastw <= 1'b0; p_tgl <= 1'b0;
+            pcnt <= 8'd0; lastw <= 1'b0; p_tgl <= 1'b0;
         end else begin
-            pcnt  <= pcnt + 34'd1;
+            pcnt  <= pcnt + 8'd1;
             lastw <= w[7];
             if (hit) begin p_ts <= {pcnt, pos}; p_tgl <= ~p_tgl; end
         end
     end
     // do domeny clk: p_ts se drzi do dalsi hrany (~1 s) -> po 3 FF prepinaciho bitu je stabilni
+    // FW 0x0506: cas hrany = tick v okamziku prijmu (do ~6 taktu po hrane) minus zpozdeni prijmu; zpozdeni = (tick[7:0] - hl)
+    // mod 256, kde hl = dolnich 8 b ticku hrany = pcnt[7:0] + t_rel (PCLK pocita takty jako tick, jen s pevnym posunem).
+    // Dva takty: 1. {tick, poloha} do f_ts, 2. oprava horni casti o vypujcku a dolnich 8 b na hl, preklopeni f_tgl.
     reg [2:0] t_s = 3'b000;
+    reg [2:0] fix = 3'd0;
+    reg       bw  = 1'b0;
+    reg [7:0] hl  = 8'd0;                        // p_ts a t_rel se meni nejpozdeji o 3 takty driv, nez se hl pouzije
     always @(posedge clk) begin
+        hl  <= p_ts[10:3] + t_rel;
         t_s <= {t_s[1:0], p_tgl};
-        if (!rdy) t_s <= 3'b000;
+        if (!rdy) begin t_s <= 3'b000; fix <= 3'd0; end
         else if (t_s[2] ^ t_s[1]) begin
-            f_ts  <= {p_ts[36:3] + t_rel, p_ts[2:0], 11'd0};
+            f_ts <= {tick, p_ts[2:0], 11'd0};
+            fix  <= 3'd1;
+        end else if (fix == 3'd1) begin
+            bw  <= (f_ts[21:14] < hl);
+            fix <= 3'd2;
+        end else if (fix == 3'd2) begin             // dolnich 13 b horni casti - vypujcka, prenos do fix 3
+            {bw, f_ts[34:22]} <= {1'b0, f_ts[34:22]} - {13'd0, bw};
+            f_ts[21:14]       <= hl;
+            fix <= 3'd3;
+        end else if (fix == 3'd3) begin             // hornich 13 b - prenos
+            f_ts[47:35] <= f_ts[47:35] - {12'd0, bw};
+            fix   <= 3'd0;
             f_tgl <= ~f_tgl;
         end
     end
@@ -850,5 +901,61 @@ module raw_cap3 #(
     wire       m_w0 = !(rs[2] ^ rs[1]) && run && tv;
     wire       m_w2 = wl && p_rvalid && (abi == 3'd5) && (widx < wlim);
     always @(posedge clk) if (m_w0 | m_w2) mem[m_w2 ? widx[8:0] : n[8:0]] <= m_w2 ? {asm_, p_rbyte} : ts;
+    always @(posedge rclk) rq <= mem[rk];
+endmodule
+
+// ------------------------------------------------------------
+// raw_cap3l (FW 0x0506, rozbor CLS 2026-10-23): RAW_CAPTURE jen v rezimu 0 (512 znacek jednoho kanalu do BSRAM), bez PSRAM
+//   a hlubokeho zaznamu. Stejne porty a chovani jako raw_cap3 pro rezim 0; rezimy 1 a 2 se odmitnou BEZ potvrzeni (dack se
+//   nezvysi -> STM pozna odmitnuty prikaz), dn / dwin / dwsel = 0, dst jen bit6 (mezery v zaznamu). Zdroj: PSRAM a FIFO
+//   hlubokeho zaznamu stoji ~500 registru a ~140 CLS (docs/audit/2026-10-23_studie-cls-v3.md); pro hluboky zaznam se
+//   sestavuje -DDEEP_RAW (raw_cap3).
+// ------------------------------------------------------------
+module raw_cap3l (
+    input  wire        clk,
+    input  wire        req_tgl,
+    input  wire        req_ch,
+    input  wire [1:0]  req_mode,
+    input  wire [23:0] req_arg,
+    input  wire        tv_a, tv_b,
+    input  wire        gap_a, gap_b,
+    input  wire [47:0] ts_a, ts_b,
+    output reg  [9:0]  n,
+    output wire [23:0] dn,
+    output wire [7:0]  dst,
+    output wire [5:0]  dwsel,
+    output wire [15:0] dwin,
+    output wire [7:0]  dack,
+    input  wire        rclk,
+    input  wire [8:0]  rk,
+    output reg  [47:0] rq
+);
+    reg [2:0]  rs = 3'b000;
+    reg        chs0 = 1'b0, chs1 = 1'b0;
+    reg [1:0]  md1 = 2'b00, md2 = 2'b00;
+    reg        run = 1'b0, ch = 1'b0, dgap = 1'b0;
+    reg [3:0]  dacc = 4'd0;
+    reg [47:0] mem [0:511];
+    initial begin n = 10'd0; rq = 48'd0; end
+    assign dn = 24'd0;
+    assign dwsel = 6'd0;
+    assign dwin = 16'd0;
+    assign dst = {1'b0, dgap, 6'd0};
+    assign dack = {ch, 3'd0, dacc ^ {1'b0, dacc[3:1]}};
+    wire        tv = ch ? tv_b : tv_a;
+    wire [47:0] ts = ch ? ts_b : ts_a;
+    always @(posedge clk) begin
+        rs   <= {rs[1:0], req_tgl};
+        chs0 <= req_ch; chs1 <= chs0;
+        md1  <= req_mode; md2 <= md1;
+        if (rs[2] ^ rs[1]) begin
+            if (md2 == 2'd0) begin run <= 1'b1; ch <= chs1; n <= 10'd0; dacc <= dacc + 4'd1; dgap <= 1'b0; end
+        end else if (run && tv) begin
+            n <= n + 10'd1;
+            if (n == 10'd511) run <= 1'b0;
+        end else if (run && (ch ? gap_b : gap_a)) dgap <= 1'b1;
+    end
+    wire m_w0 = !(rs[2] ^ rs[1]) && run && tv;
+    always @(posedge clk) if (m_w0) mem[n[8:0]] <= ts;
     always @(posedge rclk) rq <= mem[rk];
 endmodule

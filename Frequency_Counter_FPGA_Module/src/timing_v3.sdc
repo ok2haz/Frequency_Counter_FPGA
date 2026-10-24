@@ -62,6 +62,9 @@ set_input_delay  -clock spi_sck -clock_fall -min 0.0 [get_ports {spi_mosi}]
 // Cesta CE (zmrazeni) a vse ostatni zustava casovane.
 // ============================================================
 set_false_path -through [get_nets {u_tdca/sig_eff}]
+// FW 0x0506: cp1 (kontrolni pocitani hran, prvni synchronizacni FF) vzorkuje asynchronni vstup sig_pin; volba zdroje (bs2) a
+// predelicky (pr_a/pr_b) se meni jen na hranici segmentu -> cesta pr_* / bs2 -> cp1 neni casovana
+set_false_path -to [get_regs {u_sa/cp1* u_sb/cp1*}]
 set_false_path -through [get_nets {u_tdcb/sig_eff}]
 
 // Dekoder (od 2026-10-07 architektura qd): vzorky q bezi VOLNE (kratke cesty), kompaktni kopie qd je po
@@ -105,9 +108,13 @@ set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {rx_s_*}]
 // [OVERIT v .tr po prvnim P&R; kdyby ne: create_generated_clock na u_ipps/u_pll/CLKOUT (-multiply_by 4) a
 // u_ipps/u_div/CLKOUT (-divide_by 4)]. Prechod PCLK -> clk: p_ts drzeno ~1 s, prepinaci bit pres 3 FF; rdy uvolnuje
 // reset PCLK pri stojicich hodinach (CLKDIV v resetu) -> neni co casovat.
-set_false_path -from [get_regs {u_ipps/p_ts*}] -to [get_regs {u_ipps/f_ts*}]
+set_false_path -from [get_regs {u_ipps/p_ts*}] -to [get_regs {u_ipps/f_ts* u_ipps/hl*}]
 set_false_path -from [get_regs {u_ipps/p_tgl*}] -to [get_regs {u_ipps/t_s*}]
 set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps/lastw* u_ipps/p_tgl*}]
+// FW 0x0506 (prvni P&R v3): rdy -> RESET IDES8 / CLKDIV (hodiny PLL 400 MHz): rdy se meni jen po zamceni PLL (kvazistaticky), IDES8 je
+// tou dobou v resetu a hrana 1PPS prijde nejdriv za sekundu -> zadna cesta z rdy neni casovana (rezerva IDES8 byla -1,66 ns;
+// cil get_regs / get_clocks / get_cells na IDES8 a odvozene hodiny Gowin odmita: TA2003 / TA2004)
+set_false_path -from [get_regs {u_ipps/rdy_h*}]
 // prvni = nejhorsi cesty celeho navrhu (vlastni report_timing jinak vychozi seznam nahradi)
 report_timing -setup -max_paths 50 -max_common_paths 1
 report_timing -setup -max_paths 300 -max_common_paths 1 -from [get_regs {u_tdca/u_chain/q_r*}]

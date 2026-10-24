@@ -71,8 +71,9 @@ module top_v3 (
     wire [3:0]  pps_epoch;
     pps_ides3 u_ipps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),
                       .epoch(pps_epoch));
+    wire        pps_nz, pps_gt1;
     pps_cap3 u_pps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),
-                    .seq(pps_seq), .last(pps_last), .prev(pps_prev), .pts_l(pps_pts_l), .pts_p(pps_pts_p),
+                    .seq(pps_seq), .seq_nz(pps_nz), .seq_gt1(pps_gt1), .last(pps_last), .prev(pps_prev), .pts_l(pps_pts_l), .pts_p(pps_pts_p),
                     .pfl_l(pps_pfl_l), .pfl_p(pps_pfl_p), .d_l(pps_d_l), .d_p(pps_d_p), .nofine(pps_nofine));
 
 `ifdef SIM_TOP
@@ -205,8 +206,15 @@ module top_v3 (
     end
     wire        div_a, div_b;
     wire [15:0] prb_a, prb_b;
-    pin_cnt3 u_pca (.pin(ch_a), .clk(clk_p0_100m), .sel(pr_a), .sig_out(div_a), .probe(prb_a));
-    pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
+    // spolecne okno sondy 1 ms (100 000 taktu) pro oba kanaly
+    reg [16:0] pwc = 17'd0;
+    reg        pwend = 1'b0;
+    always @(posedge clk_p0_100m) begin
+        pwend <= (pwc == 17'd99998);
+        pwc   <= pwend ? 17'd0 : pwc + 17'd1;
+    end
+    pin_cnt3 u_pca (.pin(ch_a), .clk(clk_p0_100m), .wend(pwend), .sel(pr_a), .sig_out(div_a), .probe(prb_a));
+    pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .wend(pwend), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
     wire        sig_a = div_a;
     wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];
     // audit 2026-10-23 (F-0269): B z pinu A jde mimo predelicku (P = 1) -> log2 P v zaznamu B musi byt 0, jinak STM
@@ -272,6 +280,9 @@ module top_v3 (
 
     // ---- mereni: oba kanaly vzdy; hold = kanal nemeri platne ----
     reg hold_a = 1'b1, hold_b = 1'b1;
+    // FW 0x0506: kopie pro seg_chan3 (P&R ji umisti k souctum; jedina hold_a mela fan-out 13 po cele FPGA a cesta k CE t0/x0 3,6 ns vedeni)
+    (* syn_preserve = 1 *) reg hold_a_s = 1'b1;
+    (* syn_preserve = 1 *) reg hold_b_s = 1'b1;
     // FW 0x0501: po zmene zdroje kanalu B je B 2 hranice segmentu neplatny (rozpracovany segment meri jiny signal; X a
     // kontrolni pocitani se srovnaji az v dalsim segmentu)
     reg  [1:0] bs3 = 2'b00, bchg = 2'd0;
@@ -291,6 +302,8 @@ module top_v3 (
     always @(posedge clk_p0_100m) begin
         hold_a <= cal_busy_a | ~cal_valid_a | ~boot_done | (pchg_a != 2'd0);
         hold_b <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0) | (pchg_b != 2'd0);
+        hold_a_s <= cal_busy_a | ~cal_valid_a | ~boot_done | (pchg_a != 2'd0);
+        hold_b_s <= cal_busy_b | ~cal_valid_b | ~boot_done | (bchg != 2'd0) | (pchg_b != 2'd0);
     end
     wire mask_cs_en, led_hb_en;
     reg  [1:0] csa_s = 2'b00, mk_s = 2'b00;
@@ -302,21 +315,21 @@ module top_v3 (
     assign want_a = ~hold_a & ~(mk_s[1] & csa_s[1]);
     assign want_b = ~hold_b & ~(mk_s[1] & csa_s[1]);
 
-    wire        freeze, snap, clear, rec_tgl, seg10_act, seg10_req;
+    wire        freeze, snap, clear, clear_a, clear_b, rec_tgl, seg10_act, seg10_req;
     wire [31:0] seg_idx;
     wire [23:0] a_n, b_n;  wire [39:0] a_x0, b_x0;  wire [47:0] a_t0, b_t0, a_sx, b_sx;  wire [55:0] a_st, b_st;
     wire [7:0]  a_fl, b_fl, a_bub, b_bub;  wire [3:0] a_ovl, b_ovl;
     wire [2:0]  a_pr, b_pr;
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_a),
+        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a_s), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear_a), .presc(pr_a),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
-        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear), .presc(pr_b_eff),
+        .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b_s), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear_b), .presc(pr_b_eff),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 
     wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;
     v3_ring #(.RAW(RAW), .SEG25(SEG25), .SEG10(SEG10)) u_ring (.clk(clk_p0_100m), .seg10_req(seg10_req), .seg10_act(seg10_act),
-        .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
+        .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .clear_a(clear_a), .clear_b(clear_b), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
         .a_n(a_n), .b_n(b_n), .a_x0(a_x0), .b_x0(b_x0), .a_t0(a_t0), .b_t0(b_t0), .a_sx(a_sx), .b_sx(b_sx),
         .a_st(a_st), .b_st(b_st), .a_fl(a_fl), .b_fl(b_fl), .a_p(a_pr), .b_p(b_pr),
         .rclk(clk_ref_10m), .raddr(ring_raddr), .rdata(ring_rdata));
@@ -334,12 +347,28 @@ module top_v3 (
 `else
     localparam PS_INIT = 15000;   // 150 us (tVCS)
 `endif
+    reg tvr_a = 1'b0, tvr_b = 1'b0, gpr_a = 1'b0, gpr_b = 1'b0;
+    always @(posedge clk_p0_100m) begin
+        tvr_a <= tsv_a & ~hold_a; tvr_b <= tsv_b & ~hold_b; gpr_a <= ~want_a; gpr_b <= ~want_b;
+    end
+`ifdef DEEP_RAW
+    localparam DEEP = 1;
     raw_cap3 #(.PS_INIT(PS_INIT)) u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
-        .tv_a(tsv_a & ~hold_a), .tv_b(tsv_b & ~hold_b), .gap_a(~want_a), .gap_b(~want_b),
+        .tv_a(tvr_a), .tv_b(tvr_b), .gap_a(gpr_a), .gap_b(gpr_b),
         .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
         .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q),
         .ps_ck(O_psram_ck[0]), .ps_ck_n(O_psram_ck_n[0]), .ps_cs_n(O_psram_cs_n[0]), .ps_rst_n(O_psram_reset_n[0]),
         .ps_dq(IO_psram_dq[7:0]), .ps_rwds(IO_psram_rwds[0]));
+`else
+    // FW 0x0506: bez PSRAM a hlubokeho zaznamu (~500 registru, ~140 CLS; studie CLS) -- jen RAW_CAPTURE 512 znacek do BSRAM
+    localparam DEEP = 0;
+    raw_cap3l u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
+        .tv_a(tvr_a), .tv_b(tvr_b), .gap_a(gpr_a), .gap_b(gpr_b),
+        .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
+        .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q));
+    assign O_psram_ck[0] = 1'b0; assign O_psram_ck_n[0] = 1'b1; assign O_psram_cs_n[0] = 1'b1; assign O_psram_reset_n[0] = 1'b0;
+    assign IO_psram_dq[7:0] = 8'hzz; assign IO_psram_rwds[0] = 1'bz;
+`endif
     assign O_psram_ck[1] = 1'b0; assign O_psram_ck_n[1] = 1'b1; assign O_psram_cs_n[1] = 1'b1; assign O_psram_reset_n[1] = 1'b0;
     assign IO_psram_dq[15:8] = 8'hzz; assign IO_psram_rwds[1] = 1'bz;   // cip 1 se nepouziva
 
@@ -388,7 +417,7 @@ module top_v3 (
 
     wire ref_sel;
     wire [7:0] coh_st, coh_cnt;
-    app_v3 #(.BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT), .RAW(RAW), .CAL_LOG2(CAL_LOG2)) u_app (
+    app_v3 #(.BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT), .RAW(RAW), .CAL_LOG2(CAL_LOG2), .DEEP(DEEP)) u_app (
         .clk(clk_ref_10m),
         .rx_valid(rx_valid_pulse), .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2), .rx_p3(rx_p3), .rx_blk_ok(rx_blk_ok), .rx_len_ok(rx_len_ok),
@@ -398,7 +427,7 @@ module top_v3 (
         .st_clk(clk_status), .st_clk_loss(clk_loss), .st_coh(coh_st), .st_coh_cnt(coh_cnt),
         .st_tdc_a(tdc_st_a), .st_tdc_b(tdc_st_b), .st_cal_wait({cwb_s[1], cwa_s[1]}), .st_cal_run(cba_s[1] | cbb_s[1]),
         .st_seg10(s10_s[1]),
-        .pps_seq(pps_seq), .pps_last(pps_last), .pps_prev(pps_prev),
+        .pps_seq(pps_seq), .pps_nz(pps_nz), .pps_gt1(pps_gt1), .pps_last(pps_last), .pps_prev(pps_prev),
         .pps_pts_l(pps_pts_l), .pps_pts_p(pps_pts_p), .pps_pfl_l(pps_pfl_l), .pps_pfl_p(pps_pfl_p),
         .pps_d_l(pps_d_l), .pps_d_p(pps_d_p), .pps_st({pps_epoch, 1'b0, pps_nofine, (pps_seq != 32'd0), ppsf_lock}),
         .bub_a(lb_a), .bub_b(lb_b), .ovl_a(lo_a), .ovl_b(lo_b),

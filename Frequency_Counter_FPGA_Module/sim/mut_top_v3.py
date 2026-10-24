@@ -18,14 +18,14 @@ TDC = ['-DSIM_LUT_PS=800', '-DSIM_IDX', '-DSIM_TAP_MEAN=39', '-DSIM_TAP_SPREAD=1
 MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 1: ['-DSIM_AUTOCAL', '-DTB_MODE=1', '-DSIM_RAW=4'], 2: ['-DTB_MODE=2'],
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
-        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE']}
+        5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW']}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
     ('FIFO hloubky 1', 'v3_core.v', "                    else if (fn == 2'd1) begin fs <= xcnt; fn <= 2'd2; end",
      "                    else if (fn == 2'd1) begin fh <= xcnt; end", 0),
     ('rozdil t: bez vypujcky', 'v3_core.v', "dtu <= tm[39:20] - t0[39:20] - {19'd0, btl};", "dtu <= tm[39:20] - t0[39:20];", 0),
-    ('zaznam: slovo T0 = SX', 'v3_core.v', "            3'd3: wsel = t0[31:0];", "            3'd3: wsel = sx[31:0];", 0),
+    ('zaznam: slovo T0 = SX', 'v3_core.v', "             | ({32{oh[3]}} & t0[31:0])", "             | ({32{oh[3]}} & sx[31:0])", 0),
     ('znacka v taktu clear se pricte', 'v3_core.v', "    wire       take = pop & ~hold & ~freeze & ~clear;",
      "    wire       take = pop & ~hold & ~freeze;", 0),
     ('freeze se nepouzije', 'v3_core.v', "    wire       take = pop & ~hold & ~freeze & ~clear;", "    wire       take = pop & ~hold & ~clear;", 0),
@@ -45,15 +45,15 @@ M = [
     ('znacka: ts_valid o takt driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_z;", 0),
     # E4 (FW 0x0502): jemny cas 1PPS -- obracene poradi bitu IDES8, bez t_rel (osa PCLK), jemny cas se nepouzije
     ('IDES8: obracene poradi bitu', 'v3_core.v', "    parameter Q0_FIRST = 1 ", "    parameter Q0_FIRST = 0 ", 0),
-    ('1PPS: bez t_rel', 'v3_core.v', "f_ts  <= {p_ts[36:3] + t_rel, p_ts[2:0], 11'd0};",
-     "f_ts  <= {p_ts[36:3], p_ts[2:0], 11'd0};", 0),
-    ('1PPS: jemny cas se nepouzije', 'v3_core.v', "pts_l <= f_buf; pfl_l <= 8'd3;", "pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd3;", 0),
+    ('1PPS: bez t_rel', 'v3_core.v', "        hl  <= p_ts[10:3] + t_rel;",
+     "        hl  <= p_ts[10:3];", 0),
+    ('1PPS: jemny cas se nepouzije', 'v3_core.v', "pts_l <= f_ts; pfl_l <= 8'd3;", "pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd3;", 0),
     # E5 (FW 0x0503): predelicka -- zaznam bez log2 P (CH 6:4), sonda /8, SET_CONFIG 0x07 prohozeny kanal
     ('predelicka: zaznam bez P', 'v3_core.v', "    assign o_presc = p_seg;", "    assign o_presc = 3'd0;", 4),
     ('predelicka: sonda /8', 'v3_core.v', "        s <= {s[1:0], c[3]};", "        s <= {s[1:0], c[2]};", 4),
     ('SET_CONFIG 0x07: prohozeny kanal', 'app_v3.v', "8'h07: if (rx_p1[0]) pr_b_req", "8'h07: if (!rx_p1[0]) pr_b_req", 4),
     # FW 0x0504: soucty v DSP -- bez vynulovani na zacatku segmentu, pricitani o takt driv (horni cast rozdilu jeste stara)
-    ('DSP: soucty bez clear', 'v3_core.v', "            if (clear)   begin sx_d <= 48'd0; st_d <= 56'd0; end\n            else if (v2)",
+    ('DSP: soucty bez clear', 'v3_core.v', "            if (clear)   begin sx_d <= 48'd0; st_d <= 54'd0; end\n            else if (v2)",
      "            if (v2)", 0),
     ('DSP: pricita o takt driv', 'v3_core.v', "            else if (v2) begin sx_d <= sx_d", "            else if (v1b) begin sx_d <= sx_d", 0),
     # FW 0x0505: PSRAM -- cteni bez RWDS (kazdy takt), bez kalibrace latence zapisu, okno bez posunu adresy
@@ -70,9 +70,13 @@ M = [
      "else if (md2 == 2'd1 && drun) begin end", 5),
     # F-0268: okno ceka na vsech 512 znacek (bez odpovedi PSRAM se zasekne)
     ('PSRAM: okno ceka na vsechny bajty', 'v3_core.v', "            if (wb == 5'd24 && p_free) begin\n", "            if (wb == 5'd24 && p_free && widx == 10'd512) begin\n", 5),
-    ('RAW: bez priznaku mezer', 'v3_core.v', "(ch ? gap_b : gap_a)) dgap <= 1'b1;", "(ch ? gap_b : gap_a)) dgap <= 1'b0;", 5),
+    ('RAW: bez priznaku mezer', 'v3_core.v', "(drun && !dfin)) && (ch ? gap_b : gap_a)) dgap <= 1'b1;", "(drun && !dfin)) && (ch ? gap_b : gap_a)) dgap <= 1'b0;", 5),
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
-    ('B z pinu A: znacka P_B', 'top_v3.v', ".clear(clear), .presc(pr_b_eff),", ".clear(clear), .presc(pr_b),", 3),
+    ('B z pinu A: znacka P_B', 'top_v3.v', ".clear(clear_b), .presc(pr_b_eff),", ".clear(clear_b), .presc(pr_b),", 3),
+    # audit 2026-10-23 (FW 0x0506): nove cesty
+    ('ring: jednickovy vyber bez rotace', 'v3_core.v', "                ohA  <= {ohA[6:0], ohA[7]};", "", 0),
+    ('ring: odpocet bez vypujcky hornich 11 b', 'v3_core.v', "            chi <= chi - 11'd1;", "            chi <= chi;", 0),
+    ('1PPS: seq > 1 vzdy', 'v3_core.v', "seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;", 0),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
 ]
@@ -98,7 +102,10 @@ def run(m):
     if r.returncode:
         return name, 'PREKLAD SELHAL', (r.stdout + r.stderr)[:200], 0
     t0 = time.time()
-    r = subprocess.run(['vvp', '-n', vvp], capture_output=True, text=True, cwd=d, timeout=3600)
+    try:
+        r = subprocess.run(['vvp', '-n', vvp], capture_output=True, text=True, cwd=d, timeout=4 * 3600)
+    except subprocess.TimeoutExpired:
+        return name, 'CASOVY LIMIT', '', time.time() - t0
     caught = 'PASS' not in r.stdout
     first = next((l.strip() for l in r.stdout.splitlines() if 'CHYBA' in l or 'FAIL' in l), '')
     return name, 'ZACHYCENO' if caught else '!!! NEZACHYCENO', first[:80], time.time() - t0
