@@ -552,6 +552,7 @@ module pps_ides3 #(
     // domena PCLK: prvni nabezna hrana (i na rozhrani slov), poloha 0..7 v taktu
     reg  [7:0]  pcnt  = 8'd0;                    // FW 0x0506: 8 b (dolni cast; plny cas se slozi z ticku v clk, viz nize)
     reg         lastw = 1'b0;
+    reg  [1:0]  wn    = 2'd0;                    // slova PCLK od uvolneni (saturuje na 3), viz lastw nize
     reg  [10:0] p_ts  = 11'd0;                   // {pcnt[7:0], poloha}
     reg         p_tgl = 1'b0;
     reg  [2:0]  pos;
@@ -564,10 +565,13 @@ module pps_ides3 #(
     end
     always @(posedge pclk or negedge rdy) begin
         if (!rdy) begin
-            pcnt <= 8'd0; lastw <= 1'b0; p_tgl <= 1'b0;
+            pcnt <= 8'd0; lastw <= 1'b0; p_tgl <= 1'b0; wn <= 2'd0;
         end else begin
             pcnt  <= pcnt + 8'd1;
-            lastw <= w[7];
+            // prvni 3 slova po uvolneni: stav pinu pred slovem neznamy (Q v resetu = 0, latence IDES8 na desce neoverena)
+            // -> jako 1, hrana na Q0 se nehlasi (pin drzeny 1 pres uvolneni by dal falesnou hranu v poloze 0, nalez N1)
+            lastw <= w[7] | ~&wn;
+            if (~&wn) wn <= wn + 2'd1;
             if (hit) begin p_ts <= {pcnt, pos}; p_tgl <= ~p_tgl; end
         end
     end

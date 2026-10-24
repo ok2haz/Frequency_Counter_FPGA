@@ -110,7 +110,7 @@ set_false_path -from [get_regs {u_refg/sel*}] -to [get_regs {rx_s_*}]
 // reset PCLK pri stojicich hodinach (CLKDIV v resetu) -> neni co casovat.
 set_false_path -from [get_regs {u_ipps/p_ts*}] -to [get_regs {u_ipps/f_ts* u_ipps/hl*}]
 set_false_path -from [get_regs {u_ipps/p_tgl*}] -to [get_regs {u_ipps/t_s*}]
-set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps/lastw* u_ipps/p_tgl*}]
+set_false_path -from [get_regs {u_ipps/rdy*}] -to [get_regs {u_ipps/pcnt* u_ipps/lastw* u_ipps/p_tgl* u_ipps/wn*}]
 // FW 0x0506 (prvni P&R v3): rdy -> RESET IDES8 / CLKDIV (hodiny PLL 400 MHz): rdy se meni jen po zamceni PLL (kvazistaticky), IDES8 je
 // tou dobou v resetu a hrana 1PPS prijde nejdriv za sekundu -> zadna cesta z rdy neni casovana (rezerva IDES8 byla -1,66 ns;
 // cil get_regs / get_clocks / get_cells na IDES8 a odvozene hodiny Gowin odmita: TA2003 / TA2004)
