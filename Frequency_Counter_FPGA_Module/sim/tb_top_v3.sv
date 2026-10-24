@@ -153,6 +153,25 @@ module tb_top_v3;
     initial begin U = `TB_PS_PER_UNIT; have[0] = 0; have[1] = 0; maxe[0] = 0; maxe[1] = 0; maxsl[0] = 0; maxsl[1] = 0; end
     task chk(input cond, input [8*64-1:0] what);
         begin nchk = nchk + 1; if (!cond) begin errors = errors + 1; if (errors < 20) $display("  CHYBA: %0s", what); end end endtask
+`ifndef NO_OPT_INV
+    // 2026-10-24: INVARIANTY optimalizaci casovani -- kopie registru a predpocitane registry musi byt v KAZDEM taktu shodne
+    // s puvodnim vyrazem (i ve stavech, ktere se do vystupu nepromitnou). -DNO_OPT_INV vypne (preklad proti base/ pro stopu).
+    reg inv_ok = 1'b1;
+    always @(posedge clk100) begin
+        inv_ok = (dut.u_pps.wnz === (dut.u_pps.win != 5'd0)) && (dut.u_pps.wnz_b === dut.u_pps.wnz)
+              && (dut.u_pps.pend_b === dut.u_pps.pend) && (dut.u_pps.fok_b === dut.u_pps.fok) && (dut.u_pps.wok_b === dut.u_pps.wok)
+              && (dut.u_lws.lw_a_qa === dut.u_lws.lw_a_qb) && (dut.u_lws.lw_n_qa === dut.u_lws.lw_n_qb)
+              && (dut.u_sa.fnz === (dut.u_sa.fn != 2'd0)) && (dut.u_sb.fnz === (dut.u_sb.fn != 2'd0))
+              && (dut.u_sa.first_b === dut.u_sa.first) && (dut.u_sb.first_b === dut.u_sb.first)
+              && (dut.u_ring.nfc_a === (~dut.u_ring.freeze & ~dut.u_ring.clear_a))
+              && (dut.u_ring.nfc_b === (~dut.u_ring.freeze & ~dut.u_ring.clear_b))
+              && (dut.u_ring.ohAh === dut.u_ring.ohA) && (dut.u_ring.ohBh === dut.u_ring.ohB)
+              && (dut.hx_a === (~dut.boot_done | (dut.pchg_a != 2'd0)))
+              && (dut.hx_b === (~dut.boot_done | (dut.bchg != 2'd0) | (dut.pchg_b != 2'd0)))
+              && (dut.hold_a_s === dut.hold_a) && (dut.hold_b_s === dut.hold_b);
+        if (!inv_ok) chk(1'b0, "invariant optimalizace (kopie / predpocitany registr)");
+    end
+`endif
     task check_frame(input integer want_data);
         integer k, m, ord, off, nrec;
         reg [31:0] first, caps;
