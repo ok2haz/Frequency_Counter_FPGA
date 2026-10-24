@@ -314,6 +314,14 @@ module v3_ring #(
     endfunction
     (* syn_preserve = 1 *) reg [7:0] ohA = 8'd1;
     (* syn_preserve = 1 *) reg [7:0] ohB = 8'd1;
+    // 2026-10-24 (casovani): kopie pro horni pulslovo (bity 31:16) -- bit oh ridil 32 hradel po celem slove (P&R cesty
+    // u_ring/ohA -> u_ring/wa_a 9,0 ns), ted 16; ohAh/ohBh rotuji stejne jako ohA/ohB -> shodne v kazdem taktu
+    (* syn_preserve = 1 *) reg [7:0] ohAh = 8'd1;
+    (* syn_preserve = 1 *) reg [7:0] ohBh = 8'd1;
+    wire [31:0] wsa_l = wsel(ohA,  {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+    wire [31:0] wsa_h = wsel(ohAh, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+    wire [31:0] wsb_l = wsel(ohB,  {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+    wire [31:0] wsb_h = wsel(ohBh, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
     reg        v_s1 = 1'b0;                          // 1. stupen nese slovo k1
     always @(posedge clk) begin
         snap  <= 1'b0;
@@ -329,6 +337,7 @@ module v3_ring #(
         if (we) mem[wa] <= wd;
         if (seg_tick) begin
             freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0; ohA <= 8'd1; ohB <= 8'd1;
+            ohAh   <= 8'd1; ohBh <= 8'd1;
             nfc_a  <= 1'b0; nfc_b <= 1'b0;
         end else if (freeze && !wr) begin
             dr <= dr + 3'd1;
@@ -336,10 +345,12 @@ module v3_ring #(
         end else if (wr) begin
             if (k != 5'd16) begin
                 // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wa_a <= wsel(ohA, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-                wa_b <= wsel(ohB, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+                wa_a <= {wsa_h[31:16], wsa_l[15:0]};
+                wa_b <= {wsb_h[31:16], wsb_l[15:0]};
                 ohA  <= {ohA[6:0], ohA[7]};
                 ohB  <= {ohB[6:0], ohB[7]};
+                ohAh <= {ohAh[6:0], ohAh[7]};
+                ohBh <= {ohBh[6:0], ohBh[7]};
                 k1   <= k;
                 v_s1 <= 1'b1;
                 k    <= k + 5'd1;
