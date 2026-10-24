@@ -516,9 +516,11 @@ static volatile uint8_t  s_g_virt;             /* 1 = smycka ridi virtualni DAC 
 static uint32_t  s_g_ok, s_g_rej, s_g_gap;
 /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA (falesna prvni hrana) */
 static uint16_t  s_st_prev_seq = 0x100u;                       /* 0x100 = zadna predchozi udalost */
-static uint8_t   s_st_have1;
-static uint32_t  s_st_ts1, s_st_n, s_st_bad;
+static uint8_t   s_st_have1, s_st_have12;
+static uint32_t  s_st_ts1, s_st_ts12, s_st_n, s_st_bad;
 static int32_t   s_st_dev;
+static uint16_t  s_st_first_seq = 0x100u;                      /* 0x100 = zatim zadna hrana */
+static uint32_t  s_st_first_us, s_st_next_us;
 /* sawtooth */
 static uint32_t  s_q_rec_n;                    /* `n` TIM-TP pouzite pro predchozi hranu */
 static double    s_q_prev;                     /* oprava predchozi hrany [ns] */
@@ -802,16 +804,30 @@ void gpsdo_tick(void)
     int have = fpga_pps_get(&p);
     if (have && p.n != s_g_pps_n) {                            /* i v OFF: fazovy monitor (s_mon_x) */
         s_g_pps_n = p.n;
-        /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA. PSEQ 1 po 0 je jen pretoceni (mod 256), ne start. */
+        /* v0.40.2 (STATUS #337b): PRVNI hrana, kterou STM po svem startu uvidi -- PSEQ, cas od startu FPGA (tick bezi od
+         * konfigurace, ts = takty mod 2^32 = do 42,9 s) a odstup k dalsi hrane. Falesna hrana pri konfiguraci FPGA ma PSEQ 1
+         * a cas ~0 ms; STM ji ale vidi jen tehdy, kdyz zacne cist drive nez prijde dalsi hrana (jinak nema vliv). */
+        if (p.clk_mhz != 0u) {
+            if (s_st_first_seq == 0x100u) {
+                s_st_first_seq = p.seq; s_st_first_us = p.ts / p.clk_mhz; s_st_ts1 = p.ts; s_st_have1 = 1u;
+            } else if (s_st_have1) {
+                s_st_next_us = (p.ts - s_st_ts1) / p.clk_mhz;   /* takty mod 2^32 */
+                s_st_have1 = 0u;
+            }
+        }
+        /* interval PSEQ 1 -> 2 (PSEQ 1 po 0 je pretoceni mod 256, ne start), odchylka od mrizky 100 ms (10 Hz bez fixu
+         * i 1PPS): > 1 ms = prvni hrana nebyla hrana GPS */
         if (p.seq == 1u && s_st_prev_seq != 0u) {
-            s_st_ts1 = p.ts; s_st_have1 = 1u;
-        } else if (p.seq == 2u && s_st_have1 && s_st_prev_seq == 1u && p.clk_mhz != 0u) {
-            int32_t dev = (int32_t)((p.ts - s_st_ts1) / p.clk_mhz) - 1000000;   /* [us]; takty mod 2^32 */
+            s_st_ts12 = p.ts; s_st_have12 = 1u;
+        } else if (p.seq == 2u && s_st_have12 && s_st_prev_seq == 1u && p.clk_mhz != 0u) {
+            uint32_t us = (p.ts - s_st_ts12) / p.clk_mhz;
+            int32_t dev = (int32_t)(us % 100000u);
+            if (dev > 50000) dev -= 100000;
             s_st_n++; s_st_dev = dev;
-            if (dev > 10000 || dev < -10000) s_st_bad++;
-            s_st_have1 = 0u;
+            if (dev > 1000 || dev < -1000) s_st_bad++;
+            s_st_have12 = 0u;
         } else {
-            s_st_have1 = 0u;
+            s_st_have12 = 0u;
         }
         s_st_prev_seq = p.seq;
         gps_data_t g;
@@ -922,6 +938,7 @@ void gpsdo_tick(void)
     st.saw_var[0] = s_saw_var[0]; st.saw_var[1] = s_saw_var[1]; st.saw_var[2] = s_saw_var[2]; st.saw_n = s_saw_dec;
     st.pm_ns = s_pm_ns;
     st.st_n = s_st_n; st.st_bad = s_st_bad; st.st_dev_us = s_st_dev;
+    st.st_first_seq = s_st_first_seq; st.st_first_us = s_st_first_us; st.st_next_us = s_st_next_us;
     taskENTER_CRITICAL(); s_pub = st; taskEXIT_CRITICAL();
 }
 

@@ -70,8 +70,11 @@ typedef struct {
      * pps_cap3 (synchronizator startuje 000) ohlasi falesnou hranu v case startu -> interval 1 -> 2 neni 1 s.
      * Meri se nezavisle na fixu GPS a na smycce. */
     uint32_t st_n;         /* zmerenych startu (dvojice PSEQ 1, 2) */
-    uint32_t st_bad;       /* z toho interval mimo 1 s +-10 ms = falesna prvni hrana */
-    int32_t  st_dev_us;    /* posledni interval 1 -> 2 minus 1 s [us] */
+    uint32_t st_bad;       /* z toho interval 1 -> 2 mimo mrizku 100 ms o vic nez 1 ms = falesna prvni hrana */
+    int32_t  st_dev_us;    /* odchylka posledniho intervalu 1 -> 2 od mrizky 100 ms [us] */
+    uint16_t st_first_seq; /* v0.40.2: PSEQ prvni hrany, kterou STM po startu videlo (0x100 = zadna) */
+    uint32_t st_first_us;  /* jeji cas od startu FPGA [us] (takty mod 2^32 -> do 42,9 s) */
+    uint32_t st_next_us;   /* odstup k dalsi hrane [us] (0 = zatim neni) */
 } gpsdo_status_t;
 
 /* ── Historie smycky (TIE graf, okno TI/GPSDO na displeji): 1 bod / 10 s, 720 bodu = 2 h ────────────────

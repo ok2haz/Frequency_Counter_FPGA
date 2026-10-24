@@ -823,13 +823,19 @@ static void gpsdo_print_status(void)
            (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
            (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
            (unsigned long)s.saw_n);
-    /* v0.40.1 (STATUS #337b): prvni hrana 1PPS po startu FPGA (synchronizator pps_cap3 startuje 000) */
-    if (s.st_n == 0u)
-        printf("GPSDO: start FPGA (PSEQ 1->2): zatim nezmereno\n");
+    /* v0.40.1/2 (STATUS #337b): prvni hrana 1PPS po startu FPGA (synchronizator pps_cap3 startuje 000) */
+    if (s.st_first_seq == 0x100u)
+        printf("GPSDO: 1PPS prvni videna hrana: zatim zadna\n");
     else
-        printf("GPSDO: start FPGA (PSEQ 1->2): zmereno %lu, falesna 1. hrana %lu | posledni interval 1 s %+ld us%s\n",
+        printf("GPSDO: 1PPS prvni videna hrana: PSEQ %u, %lu.%03lu ms od startu FPGA, dalsi za %lu.%03lu ms\n",
+               (unsigned)s.st_first_seq, (unsigned long)(s.st_first_us / 1000u), (unsigned long)(s.st_first_us % 1000u),
+               (unsigned long)(s.st_next_us / 1000u), (unsigned long)(s.st_next_us % 1000u));
+    if (s.st_n == 0u)
+        printf("GPSDO: start FPGA (PSEQ 1->2): STM dvojici nevidelo (zacina cist pozdeji nez FPGA) -> bez vlivu\n");
+    else
+        printf("GPSDO: start FPGA (PSEQ 1->2): zmereno %lu, falesna 1. hrana %lu | odchylka od mrizky 100 ms %+ld us%s\n",
                (unsigned long)s.st_n, (unsigned long)s.st_bad, (long)s.st_dev_us,
-               (s.st_dev_us > 10000 || s.st_dev_us < -10000) ? " <== FALESNA HRANA" : "");
+               (s.st_dev_us > 1000 || s.st_dev_us < -1000) ? " <== FALESNA HRANA" : "");
     /* Nejkratsi rozumne tau (gpsdo.h): HDEV faze proti bilemu PM 1PPS. Jen zobrazeni, smycku nemeni. */
     gpsdo_tau_adv_t ad;
     gpsdo_tau_advise(&ad);
