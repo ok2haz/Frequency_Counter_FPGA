@@ -11,6 +11,11 @@
  * displeji/UART presne odpovidala git tagu (dohledatelnost buildu podle verze).
  *   - PATCH: opravy/drobnosti  - MINOR: nove featury  - MAJOR: zlom API/HW.
  */
+/* v0.40.0 (2026-10-24) = UZKA HLAVICKA v3 (priprava FW 0x0507, CAPS bit22, PROTOKOL_V3 kap. 3.1b): SEQ, REC_HEAD (pocet),
+ * REC_FIRST a PSEQ jen 16 b -> STM rozbali na 32 b (fpga_v3_unwrap, restart FPGA podle skoku SEQ), predchozi 1PPS
+ * z historie STM, RING_FILL dopocitany, BUB/OVL z FLAGS zaznamu; TS10M a RX_LAST se uz nectou. Starsi FPGA beze zmeny.
+ * Emulator `fpgasim v3 on ... uzka` (citace startuji tesne pod 2^16), `fpga v3` vypise druh hlavicky.
+ * Oprava: FW_VERSION_STR od v0.39.1 hlasil "v0.39.0". */
 /* v0.39.1 (2026-10-23) = AUDIT funkci FPGA v3 (docs/audit/2026-10-23_v3-funkce-audit.md): T_RAW s potvrzenim (bajt 127,
  * FW 0x0505) -- odmitnuty prikaz uz nevrati stara data jineho zaznamu / kanalu, bezici zaznam se zastavi, okno s chybou
  * cteni a mezery v zaznamu se hlasi; automaticky rozsah pod 16 kHz (sonda 0) vrati P = 1; bez kopani watchdogu FPGA
@@ -300,8 +305,11 @@
  * timeouty a use-after-free v HTTP/SCPI serverech na CM4. IPC v13. */
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 39
-#define FW_VERSION_PATCH 1
-#define FW_VERSION_STR   "v0.39.0"
+#define FW_VERSION_MINOR 40
+#define FW_VERSION_PATCH 0
+/* retezec se ODVOZUJE z cisel (v0.39.1 hlasil "v0.39.0", protoze se zvysilo jen PATCH) */
+#define FW_VER_S_(x)     #x
+#define FW_VER_S(x)      FW_VER_S_(x)
+#define FW_VERSION_STR   "v" FW_VER_S(FW_VERSION_MAJOR) "." FW_VER_S(FW_VERSION_MINOR) "." FW_VER_S(FW_VERSION_PATCH)
 #define FW_VERSION_FULL  FW_NAME " " FW_VERSION_STR
 #endif /* VERSION_H */

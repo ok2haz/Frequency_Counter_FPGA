@@ -655,16 +655,21 @@ typedef struct {
     uint8_t  deep_st, deep_wsel;       /* v0.39.0: PSRAM (FPGA_V3_DS_*, latence zapisu) */
     uint32_t deep_n;
     int8_t   pps_d;                    /* jemny - hruby [takty] */
+    uint8_t  narrow;                   /* v0.40.0: uzka hlavicka (FW 0x0507, CAPS bit22) */
+    uint32_t wrap_restarts;            /* restartu FPGA poznanych pri rozbalovani 16b poli */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 /* v0.38.0 (FW 0x0503): predelicka kanalu ch (0 A, 1 B): mode 0xFF = automaticky podle sondy, 0..4 = pevne log2 P.
  * @return 1 ok, 0 FPGA bez CAPS bit18 (volba se ulozi, uplatni se, az ji FPGA umi), -1 spatny parametr */
 int  fpga_freq_presc(uint8_t ch, uint8_t mode);
-/** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK
+/** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns] [uzka]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK
  *  zpracovany az po slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). ph_b_s > 0 = prvni hrana B
  *  o tolik po prvni hrane A (jednorazove deje). on = 0 vypne. */
 void fpga_sim_v3_set(int on, double hz_a, double hz_b, double ph_b_s);
 int  fpga_sim_v3_active(void);
+/** v0.40.0: dalsi `fpga_sim_v3_set(1, ...)` sklada uzkou hlavicku jako FW 0x0507 (CAPS bit22) a citace zacinaji tesne
+ *  pod 2^16 (SEQ, REC_HEAD/REC_FIRST pretecou do nekolika sekund) -- rozbaleni ve STM se tak overi i bez FPGA. */
+void fpga_sim_v3_narrow(int on);
 
 /* ── Jednorazove deje (v0.36.0, protokol v3, FW 0x0501; docs/PROTOKOL_V3.md kap. 10.5) ───────────────────────────────
  * Ze zaznamu segmentu: presny cas prvni hrany segmentu (N = 2 i druhe), pri N >= 3 souhrn (pocet, stredni perioda).

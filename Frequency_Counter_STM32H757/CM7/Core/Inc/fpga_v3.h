@@ -56,6 +56,12 @@
 /* v0.39.0 (FW 0x0505): hluboky RAW zaznam do vestavene PSRAM. T_RAW p0: bit0 kanal, bity 2:1 rezim (0 = 512 do BSRAM,
  * 1 = hluboky N znacek, 2 = nacist okno w do BSRAM); p1..p3 = N (u24) / w (u16). Okno se cte strankami druhu 3. */
 #define FPGA_V3_CAP_PSRAM      (1u << 21)
+/* v0.40.0 (FW 0x0507): UZKA HLAVICKA (PROTOKOL_V3 kap. 3.1b) -- usetri CLS ve FPGA, STM dopocita sam:
+ * SEQ (4..5), REC_HEAD (32..33, pocet zapsanych zaznamu, NE posledni), REC_FIRST (36..37) a PSEQ (68..69) jen 16 b
+ * (horni bajty 0), predchozi 1PPS (84..95), TS10M, RING_FILL, RX_LAST a BUB/OVL (112..115) = 0. Rozbali
+ * fpga_v3_unwrap (stav mezi ramci); BUB/OVL = priznaky z FLAGS zaznamu ramce (0/1, ne pocty). STM posila REC_ACK
+ * dal 32 b, FPGA bere dolnich 16 b. */
+#define FPGA_V3_CAP_NARROW     (1u << 22)
 #define FPGA_V3_DEEP_MAX       699050u      /* 4 MB / 6 B */
 #define FPGA_V3_DS_RDY         0x01u        /* DEEP_ST (bajt 128): PSRAM pripravena (kalibrace zapisu prosla) */
 #define FPGA_V3_DS_BAD         0x02u        /* zadna latence zapisu nesedela */
@@ -125,14 +131,15 @@ typedef struct {
     uint32_t build_time, build_git;
     uint16_t fw_version;
     uint8_t  clk_mhz, seg_len_ms;
-    uint32_t caps, ts10m;
+    uint32_t caps;
+    uint8_t  narrow;             /* v0.40.0: CAPS bit22 -- 16b pole (seq, rec_head, rec_first, pps[0].pseq) jsou SUROVA,
+                                  * rec_head = pocet zaznamu; plnou podobu jako FW <= 0x0506 da az fpga_v3_unwrap */
     uint32_t rec_head, rec_first;
     uint8_t  nrec;
     uint16_t ring_fill;
     uint8_t  clk_status, clk_loss, coh_st, coh_cnt;
     uint8_t  tdc_status[2], pps_status, cal_wait;
     uint16_t rx_crc_err, rx_len_err;
-    uint32_t rx_last;
     uint16_t lut_cnt, lut_sum;
     uint16_t lut_cnt_b;          /* polozky s bitem kanalu B (bajty 122..123) */
     uint8_t  presc[2], cfg_echo;
@@ -185,6 +192,25 @@ uint32_t fpga_v3_build_lutw(uint8_t *f, uint32_t seq, const uint8_t *ch, const u
  * od REC_FIRST (konci na prvnim vadnem bloku nebo nesedici znacce bloku) -> o tolik se smi posunout ACK. */
 int      fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32_t *n_ok);
 
+/* v0.40.0 (FW 0x0507, CAPS bit22): rozbaleni uzke hlavicky. Volat na KAZDY prijaty ramec hned po fpga_v3_parse
+ * (u siroke hlavicky jen zapise historii 1PPS a vrati). Po navratu ma *h stejny vyznam jako u FW <= 0x0506:
+ * seq, rec_head (posledni zaznam), rec_first a pps[0].pseq 32 b, pps[1] = predchozi hrana z historie STM (PFLAGS 0,
+ * kdyz STM predchozi hranu nevidel), ring_fill = pocet zaznamu v kruhu. 16b hodnota se rozbali k nejblizsi 32b
+ * hodnote kolem predchozi (posun -32768..+32767): staci, kdyz STM cte ramec aspon jednou za ~13 min (512 zaznamu
+ * kruhu se stejne prepise driv). Restart FPGA (SEQ ramce se nezvysil o 0..FPGA_V3_WRAP_SEQ_MAX) = novy zacatek:
+ * horni bity 0, historie 1PPS pryc -> fpga_v3_link_take ho pozna jako resynchronizaci jako dosud. Restart, po kterem
+ * SEQ nahodou padne do okna (~25 %), se rozbali jako skok dopredu = mezera (okna se preruseji, data zustanou spravna). */
+#define FPGA_V3_WRAP_SEQ_MAX   16384u  /* FPGA sklada ramec po kazdem segmentu (~40/s) i bez cteni -> ~6,8 min pauzy STM */
+typedef struct {
+    uint8_t  have;               /* predchozi hodnoty platne */
+    uint32_t seq, head, first, pseq;   /* posledni rozbalene (head = pocet zaznamu) */
+    uint8_t  pps_have;
+    fpga_v3_pps_t pps_last, pps_prev;  /* historie 1PPS (nahrazuje bajty 84..95) */
+    uint32_t restarts;           /* rozpoznanych restartu FPGA (diagnostika) */
+} fpga_v3_wrap_t;
+void     fpga_v3_wrap_init(fpga_v3_wrap_t *w);
+void     fpga_v3_unwrap(fpga_v3_wrap_t *w, fpga_v3_hdr_t *h);
+
 /* ---- emulator FPGA v3 ---- */
 #define FPGA_V3_EMU_RING       128u    /* zaznamu (64 segmentu = 1,6 s pri 25 ms); FPGA ma 512 */
 typedef struct {
@@ -201,6 +227,7 @@ typedef struct {
     double   t_next[2];          /* cas pristi hrany od zacatku aktualniho segmentu [s] */
     uint64_t x_next[2];          /* absolutni index pristi hrany */
     uint8_t  p_log2[2], p_req[2], p_inv[2];   /* v0.38.0: predelicka jako RTL (SET_CONFIG 0x07, 2 neplatne segmenty) */
+    uint8_t  narrow;             /* v0.40.0: skladat uzkou hlavicku jako FW 0x0507 (CAPS bit22, ACK jen dolnich 16 b) */
     fpga_v3_rec_t ring[FPGA_V3_EMU_RING];
 } fpga_v3_emu_t;
 

@@ -139,18 +139,22 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     h->blk_ok = fpga_v3_blk_ok(f);
     if (!(h->blk_ok & 1u))     return FPGA_V3_E_CRC0;
     h->type = f[2]; h->flags = f[3];
-    h->seq = (uint32_t)rdn(f + 4, 4);
+    h->caps = (uint32_t)rdn(f + 24, 4);
+    h->narrow = (h->caps & FPGA_V3_CAP_NARROW) ? 1u : 0u;
+    const int wn = h->narrow ? 2 : 4;                    /* v0.40.0: uzka hlavicka = 16b SEQ, ukazatele kruhu, PSEQ */
+    h->seq = (uint32_t)rdn(f + 4, wn);
     h->frame_len = (uint16_t)rdn(f + 8, 2); h->nblk = f[10];
     if (h->frame_len != FPGA_V3_LEN || h->nblk != FPGA_V3_NBLK) return FPGA_V3_E_LEN;
     h->build_time = (uint32_t)rdn(f + 12, 4); h->build_git = (uint32_t)rdn(f + 16, 4);
     h->fw_version = (uint16_t)rdn(f + 20, 2); h->clk_mhz = f[22]; h->seg_len_ms = f[23];
-    h->caps = (uint32_t)rdn(f + 24, 4); h->ts10m = (uint32_t)rdn(f + 28, 4);
-    h->rec_head = (uint32_t)rdn(f + 32, 4); h->rec_first = (uint32_t)rdn(f + 36, 4);
-    h->nrec = f[40]; h->ring_fill = (uint16_t)rdn(f + 42, 2);
+    /* TS10M (28..31) a RX_LAST (56..59) STM nikdy nepouzivalo -- necte se (FW 0x0507 je nuluje) */
+    h->rec_head = (uint32_t)rdn(f + 32, wn); h->rec_first = (uint32_t)rdn(f + 36, wn);
+    h->nrec = f[40];
+    h->ring_fill = h->narrow ? (uint16_t)(h->rec_head - h->rec_first)   /* uzka: REC_HEAD = pocet -> fill bez odhadu */
+                             : (uint16_t)rdn(f + 42, 2);
     h->clk_status = f[44]; h->clk_loss = f[45]; h->coh_st = f[46]; h->coh_cnt = f[47];
     h->tdc_status[0] = f[48]; h->tdc_status[1] = f[49]; h->pps_status = f[50]; h->cal_wait = f[51];
     h->rx_crc_err = (uint16_t)rdn(f + 52, 2); h->rx_len_err = (uint16_t)rdn(f + 54, 2);
-    h->rx_last = (uint32_t)rdn(f + 56, 4);
     h->lut_cnt = (uint16_t)(rdn(f + 60, 2) & 0x3FFFu); h->lut_sum = (uint16_t)rdn(f + 62, 2);
     h->lut_cnt_b = (uint16_t)(rdn(f + 122, 2) & 0x3FFFu);
     h->deep_n = (uint32_t)rdn(f + 124, 3); h->deep_st = f[128]; h->deep_wsel = f[129];   /* v0.39.0: PSRAM */
@@ -158,7 +162,7 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     h->presc[0] = f[64]; h->presc[1] = f[65]; h->cfg_echo = f[66];
     for (int i = 0; i < 2; i++) {
         const uint8_t *q = f + 68 + 16 * i;
-        h->pps[i].pseq = (uint32_t)rdn(q, 4); h->pps[i].pts = rdn(q + 4, 6); h->pps[i].pflags = q[10];
+        h->pps[i].pseq = (uint32_t)rdn(q, wn); h->pps[i].pts = rdn(q + 4, 6); h->pps[i].pflags = q[10];
         h->pps[i].d = (int8_t)q[11];
         h->pps_coarse[i] = (uint32_t)(h->pps[i].pts >> 14);   /* FW >= 0x0506: bajty 100..107 = 0; pts nese hruby cas x 16384 */
         h->probe[i] = (uint16_t)rdn(f + 108 + 2 * i, 2);
@@ -173,8 +177,58 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
             fpga_v3_rec_unpack(&rec[i], b + 2u + FPGA_V3_REC_LEN * (i % FPGA_V3_REC_PER_BLK));
         }
         if (n_ok) *n_ok = i;
+        if (h->narrow)                                   /* BUB/OVL (112..115) = 0: priznaky nejnovejsiho zaznamu kanalu */
+            for (uint32_t j = 0; j < i; j++) {
+                const uint8_t c = (uint8_t)(rec[j].ch & 1u);
+                h->bub[c] = (rec[j].flags & FPGA_V3_R_BUBBLE) ? 1u : 0u;
+                h->ovl[c] = (rec[j].flags & FPGA_V3_R_CS) ? 1u : 0u;
+            }
     }
     return FPGA_V3_OK;
+}
+
+void fpga_v3_wrap_init(fpga_v3_wrap_t *w) { memset(w, 0, sizeof *w); }
+
+/* 16b hodnota v16 rozbalena k nejblizsi 32b hodnote kolem prev (posun -32768..+32767) */
+static uint32_t ext16(uint32_t prev, uint32_t v16)
+{
+    return prev + (uint32_t)(int32_t)(int16_t)(uint16_t)(v16 - prev);
+}
+
+void fpga_v3_unwrap(fpga_v3_wrap_t *w, fpga_v3_hdr_t *h)
+{
+    if (h->narrow) {
+        const uint32_t s16 = h->seq & 0xFFFFu;
+        if (w->have && (uint32_t)(uint16_t)(s16 - w->seq) > FPGA_V3_WRAP_SEQ_MAX) {   /* restart FPGA */
+            w->have = 0u; w->pps_have = 0u; w->restarts++;
+        }
+        if (!w->have) {
+            w->have = 1u;
+            w->seq = s16; w->head = h->rec_head & 0xFFFFu; w->first = h->rec_first & 0xFFFFu; w->pseq = h->pps[0].pseq & 0xFFFFu;
+        } else {
+            w->seq = ext16(w->seq, s16);
+            w->head = ext16(w->head, h->rec_head);
+            w->first = ext16(w->first, h->rec_first);
+            w->pseq = ext16(w->pseq, h->pps[0].pseq);
+        }
+        h->seq = w->seq;
+        h->rec_head = w->head ? w->head - 1u : 0u;     /* jako FW <= 0x0506: posledni zapsany zaznam */
+        h->rec_first = w->first;
+        h->pps[0].pseq = w->pseq;
+    }
+    /* historie 1PPS: posledni a predchozi ZVEREJNENA hrana (pseq se zmenil). Vede se vzdy (u siroke hlavicky jen pro
+     * porovnani), pps[1] nahrazuje jen u uzke. Predchozi plati, jen kdyz STM videl hranu pseq - 1 (jinak PFLAGS 0). */
+    if (h->pps[0].pflags & 1u) {
+        if (!w->pps_have) { w->pps_have = 1u; w->pps_last = h->pps[0]; memset(&w->pps_prev, 0, sizeof w->pps_prev); }
+        else if (h->pps[0].pseq != w->pps_last.pseq) {
+            w->pps_prev = (h->pps[0].pseq == w->pps_last.pseq + 1u) ? w->pps_last : (fpga_v3_pps_t){ 0 };
+            w->pps_last = h->pps[0];
+        }
+    }
+    if (h->narrow) {
+        if (w->pps_have && h->pps[0].pseq == w->pps_last.pseq) h->pps[1] = w->pps_prev;
+        else memset(&h->pps[1], 0, sizeof h->pps[1]);
+    }
 }
 
 /* ══════════════ emulator ══════════════ */
@@ -260,23 +314,25 @@ void fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *f)
     memset(f, 0, FPGA_V3_LEN);
     const uint32_t avail = e->rec_head - e->rec_ack;
     const uint32_t nrec = avail > FPGA_V3_REC_MAX ? FPGA_V3_REC_MAX : avail;
+    const int wn = e->narrow ? 2 : 4;                                /* v0.40.0: uzka hlavicka jako FW 0x0507 */
     e->seq++;
     f[0] = FPGA_V3_MAGIC; f[1] = FPGA_V3_VER; f[2] = FPGA_V3_T_DATA;
     f[3] = (uint8_t)((nrec ? FPGA_V3_F_NEWREC : 0u) | (e->ovf ? FPGA_V3_F_RINGOVF : 0u));
-    wrn(f + 4, e->seq, 4);
+    wrn(f + 4, e->seq, wn);
     wrn(f + 8, FPGA_V3_LEN, 2); f[10] = (uint8_t)FPGA_V3_NBLK;
-    wrn(f + 20, 0x0500u, 2);                                         /* FW emulatoru */
+    wrn(f + 20, e->narrow ? 0x0507u : 0x0500u, 2);                   /* FW emulatoru */
     f[22] = (uint8_t)e->clk_mhz; f[23] = (uint8_t)e->seg_ms;
-    wrn(f + 24, (1ull << 16) | FPGA_V3_CAP_PRESC, 4);                /* CAPS bit16 = v3 zaznamy, bit18 predelicka */
+    wrn(f + 24, (1ull << 16) | FPGA_V3_CAP_PRESC | (e->narrow ? FPGA_V3_CAP_NARROW : 0u), 4);   /* bit16 v3, bit18 predelicka */
     for (int c = 0; c < 2; c++) {                                    /* v0.38.0: PRESC, sonda /16 za 1 ms */
         f[64 + c] = (uint8_t)(e->p_log2[c] | ((e->p_req[c] != e->p_log2[c]) ? FPGA_V3_PRESC_PEND : 0u));
         const double pr = e->f_hz[c] > 0.0 ? e->f_hz[c] / 16000.0 : 0.0;
         wrn(f + 108 + 2 * c, pr > 65535.0 ? 65535u : (uint32_t)pr, 2);
     }
-    wrn(f + 32, e->rec_head ? e->rec_head - 1u : 0u, 4);
-    wrn(f + 36, e->rec_ack, 4);
+    if (e->narrow) wrn(f + 32, e->rec_head, 2);                      /* uzka: pocet zaznamu, 16 b */
+    else           wrn(f + 32, e->rec_head ? e->rec_head - 1u : 0u, 4);
+    wrn(f + 36, e->rec_ack, wn);
     f[40] = (uint8_t)nrec;
-    wrn(f + 42, avail > 0xFFFFu ? 0xFFFFu : avail, 2);
+    if (!e->narrow) wrn(f + 42, avail > 0xFFFFu ? 0xFFFFu : avail, 2);   /* uzka: RING_FILL = 0 */
     f[44] = 0x01u;                                                   /* hodiny OK */
     f[48] = 0x01u; f[49] = 0x01u;                                    /* kalibrace A/B platna */
     for (uint32_t k = 1; k < FPGA_V3_NBLK; k++) {
@@ -294,7 +350,9 @@ void fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *f)
 {
     if (f[0] != FPGA_V3_MAGIC || f[1] != FPGA_V3_VER || !(fpga_v3_blk_ok(f) & 1u)) return;
     if (f[2] == FPGA_V3_T_ACK) {
-        const uint32_t a = (uint32_t)rdn(f + 12, 4);
+        uint32_t a = (uint32_t)rdn(f + 12, 4);
+        if (e->narrow)                       /* FW 0x0507: jen dolnich 16 b, posun od REC_ACK modulo 2^16 (jako RTL) */
+            a = e->rec_ack + (uint16_t)((uint16_t)a - (uint16_t)e->rec_ack);
         if ((uint32_t)(a - e->rec_ack) <= (uint32_t)(e->rec_head - e->rec_ack)) {   /* jen dopredu, ne za hlavu */
             e->rec_ack = a;
             e->ovf = 0u;
@@ -746,6 +804,72 @@ bool fpga_v3_selftest(void)
         V3OK((fpga_v3_ab_feed(&ab, &e[2], 1u, dt, 2u) == 1u) && (dt[0] == (int64_t)(MASK48 + 1u + 300u - (MASK48 - 500u))));
         fpga_v3_rec_t rp = rb; rp.t0 = 100u;                             /* B po 200 s pauze: T0 pretekl jednou navic */
         V3OK((fpga_v3_ev_from_rec(&u, &rp, 100u, 25u + 200000u, e) == 1u) && (e[0].t_u == (MASK48 + 1u) * 2u + 100u));
+    }
+
+    /* 12) v0.40.0 uzka hlavicka (FW 0x0507): citace tesne pod 2^16 -> rozbaleni SEQ, REC_HEAD, REC_FIRST a ACK (FPGA
+     *     bere jen dolnich 16 b) pres preteceni; kazdy zaznam prave jednou, bez mezer; pak restart FPGA = resynchronizace */
+    {
+        static fpga_v3_link_t L; static fpga_v3_wrap_t W;
+        fpga_v3_link_init(&L); fpga_v3_wrap_init(&W);
+        fpga_v3_emu_init(&s_e, 1e6, 0.0, 0.0, 11u);
+        s_e.narrow = 1u; s_e.seq = 0xFFF0u; s_e.rec_head = s_e.rec_ack = 0xFFE0u; s_e.seg_idx = 0x7FF0u;
+        fpga_v3_emu_frame(&s_e, s_f);
+        uint32_t got = 0u, bad = 0u, seq_max = 0u, head_max = 0u;
+        for (uint32_t t = 0; t < 60u; t++) {
+            if (t == 45u) { fpga_v3_emu_init(&s_e, 1e6, 0.0, 0.0, 12u); s_e.narrow = 1u; fpga_v3_emu_frame(&s_e, s_f); }
+            fpga_v3_hdr_t h; uint32_t n_ok = 0, i0 = 0; int gap = 0;
+            if (fpga_v3_parse(s_f, &h, s_rec, &n_ok) != FPGA_V3_OK || !h.narrow) { bad++; break; }
+            fpga_v3_unwrap(&W, &h);
+            if (h.seq != s_e.seq || (s_e.rec_head && h.rec_head != s_e.rec_head - 1u)) bad++;   /* proti 32b citacum emulatoru */
+            if (h.flags & FPGA_V3_F_RINGOVF) bad++;   /* ACK musi kruh drzet (bez nej REC_FIRST posouva preteceni a mezera neni) */
+            if (t < 45u) { if (h.seq > seq_max) seq_max = h.seq; if (h.rec_head > head_max) head_max = h.rec_head; }
+            if ((uint32_t)h.ring_fill != W.head - h.rec_first) bad++;      /* W.head = pocet (i prazdny kruh) */
+            const uint32_t n = fpga_v3_link_take(&L, &h, n_ok, &i0, &gap);
+            for (uint32_t i = 0; i < n; i++) if (s_rec[i0 + i].seg_idx != (uint16_t)((h.rec_first + i0 + i) >> 1)) bad++;
+            got += n;
+            fpga_v3_build_ack(s_m, t, L.expect ^ 0x5A5A0000u);        /* FPGA bere jen dolnich 16 b: horni smeti nevadi */
+            for (int q = 0; q < 3; q++) fpga_v3_emu_segment(&s_e);
+            fpga_v3_emu_frame(&s_e, s_f);
+            fpga_v3_emu_rx(&s_e, s_m);
+        }
+        V3OK((bad == 0u) && (L.gaps == 0u) && (L.resync == 1u) && (W.restarts == 1u) && (got >= 60u) &&
+             (seq_max > 0xFFFFu) && (head_max > 0xFFFFu));
+        /* BUB/OVL u uzke hlavicky = priznaky nejnovejsiho zaznamu kanalu v ramci (bajty 112..115 jsou 0) */
+        fpga_v3_build_ack(s_m, 99u, s_e.rec_head);                    /* vse potvrdit -> ramec nese jen 6 novych */
+        fpga_v3_emu_rx(&s_e, s_m);
+        for (int q = 0; q < 3; q++) fpga_v3_emu_segment(&s_e);
+        fpga_v3_emu_frame(&s_e, s_f);                                 /* 6 zaznamu: A B A B A B v bloku 1 */
+        uint8_t *b1 = s_f + FPGA_V3_BLK + 2u;
+        b1[2u * FPGA_V3_REC_LEN + 3u] |= FPGA_V3_R_BUBBLE;            /* zaznam 2 (A) bublina, zaznam 4 (A) ne */
+        b1[1u * FPGA_V3_REC_LEN + 3u] |= FPGA_V3_R_CS;                /* zaznam 1 (B) znacky pri CS, nejnovejsi B (5) ne */
+        b1[4u * FPGA_V3_REC_LEN + 3u] |= FPGA_V3_R_CS;                /* zaznam 4 (nejnovejsi A) znacky pri CS */
+        s_f[112] = 0x55u;                                             /* bajt hlavicky se u uzke nesmi pouzit */
+        s_f[6] = s_f[7] = s_f[34] = s_f[35] = s_f[38] = s_f[39] = 0xA5u;   /* horni bajty 16b poli se nectou */
+        fpga_v3_blk_seal(s_f); fpga_v3_blk_seal(s_f + FPGA_V3_BLK);
+        fpga_v3_hdr_t h; uint32_t n_ok = 0;
+        V3OK((fpga_v3_parse(s_f, &h, s_rec, &n_ok) == FPGA_V3_OK) && (n_ok == 6u) && (s_rec[5].ch == 1u));
+        V3OK((h.bub[0] == 0u) && (h.bub[1] == 0u) && (h.ovl[0] == 1u) && (h.ovl[1] == 0u));
+        V3OK((h.seq <= 0xFFFFu) && (h.rec_head <= 0xFFFFu) && (h.rec_first <= 0xFFFFu));
+    }
+
+    /* 13) v0.40.0 historie 1PPS ve STM (uzka hlavicka nenese predchozi hranu): PSEQ pres 2^16, opakovany ramec teze
+     *     hrany, vynechana hrana (STM ji nevidel) -> predchozi neplatna */
+    {
+        static fpga_v3_wrap_t W;
+        static const uint16_t ps[6] = { 0xFFFEu, 0xFFFFu, 0xFFFFu, 0x0000u, 0x0002u, 0x0003u };
+        static const uint32_t pseq[6] = { 0xFFFEu, 0xFFFFu, 0xFFFFu, 0x10000u, 0x10002u, 0x10003u };
+        static const uint64_t pts[6] = { 7u, 1007u, 1007u, 2007u, 4007u, 5007u };
+        static const uint64_t prev[6] = { 0u, 7u, 7u, 1007u, 0u, 4007u };       /* 0 = predchozi neplatna */
+        fpga_v3_wrap_init(&W);
+        for (uint32_t k = 0; k < 6u; k++) {
+            fpga_v3_hdr_t h;
+            memset(&h, 0, sizeof h);
+            h.narrow = 1u; h.seq = k + 1u;
+            h.pps[0].pseq = ps[k]; h.pps[0].pts = pts[k]; h.pps[0].pflags = 3u;
+            fpga_v3_unwrap(&W, &h);
+            V3OK((h.pps[0].pseq == pseq[k]) && (h.pps[1].pts == prev[k]) && ((h.pps[1].pflags != 0u) == (prev[k] != 0u)));
+            V3OK((prev[k] == 0u) || (h.pps[1].pseq == h.pps[0].pseq - 1u));
+        }
     }
 
     return ok;

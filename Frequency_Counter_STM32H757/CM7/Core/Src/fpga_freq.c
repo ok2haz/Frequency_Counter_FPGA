@@ -950,6 +950,7 @@ static uint8_t  s3_tx[FPGA_V3_LEN], s3_rx[FPGA_V3_LEN];       /* FpgaTask (poll,
 static uint8_t  s3c_tx[FPGA_V3_LEN], s3c_rx[FPGA_V3_LEN];     /* prikazy (UART, FpgaTask) -- jen pod s_spi_mtx */
 static uint32_t s3_mseq = 0u;
 static fpga_v3_link_t s3_link;
+static fpga_v3_wrap_t s3_wrap;                                 /* v0.40.0: rozbaleni uzke hlavicky + historie 1PPS */
 static fpga_v3_grp_t  s3_grp;
 static fpga_v3_hdr_t  s3_h;
 static uint8_t  s3_h_ok = 0u;
@@ -1017,6 +1018,7 @@ static void s3_regroup(void)
 static void s3_reset(void)
 {
     fpga_v3_link_init(&s3_link);
+    fpga_v3_wrap_init(&s3_wrap);
     s3_regroup();
     s3_last_win_ms = HAL_GetTick();
 }
@@ -1248,6 +1250,8 @@ static fpga_v3_emu_t s3_emu;
 static uint8_t  s3_emu_f[FPGA_V3_LEN];
 static uint32_t s3_emu_ms = 0u, s3_emu_rem = 0u;
 static double   s3_emu_hz = 0.0, s3_emu_hzb = 0.0;
+static uint8_t  s3_emu_narrow = 0u;                            /* v0.40.0: `fpgasim v3 on ... uzka` */
+void fpga_sim_v3_narrow(int on) { s3_emu_narrow = on ? 1u : 0u; }
 static void sim3_produce(const uint8_t *tx, uint8_t *rx)
 {
     memcpy(rx, s3_emu_f, FPGA_V3_LEN);
@@ -1283,6 +1287,9 @@ void fpga_sim_v3_set(int on, double hz_a, double hz_b, double ph_b_s)
     s3_emu_hzb = (hz_b > 0.0) ? hz_b : 0.0;
     fpga_v3_emu_init(&s3_emu, s3_emu_hz, s3_emu_hzb, 30.0, HAL_GetTick() | 1u);
     if (ph_b_s > 0.0) fpga_v3_emu_set_phase(&s3_emu, 1, s3_emu.t_next[0] + ph_b_s);   /* B = A + faze (jednorazove deje) */
+    if (s3_emu_narrow) {                                       /* v0.40.0: FW 0x0507, citace tesne pod 2^16 */
+        s3_emu.narrow = 1u; s3_emu.seq = 0xFF00u; s3_emu.rec_head = s3_emu.rec_ack = 0xFF00u; s3_emu.seg_idx = 0x7F80u;
+    }
     s3_emu_ms = HAL_GetTick(); s3_emu_rem = 0u;
     fpga_v3_emu_frame(&s3_emu, s3_emu_f);
     s_sim_t0 = HAL_GetTick(); s_sim_pps_next_ms = s_sim_t0 + 1000u; s_sim_nopps = 0u;
@@ -1309,6 +1316,7 @@ static bool poll_v3(fpga_meas_t *out)
             return false;
         }
         if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }   /* vadny blok 1-3: zaznamy prijdou znovu */
+        fpga_v3_unwrap(&s3_wrap, &s3_h);                           /* v0.40.0: FW 0x0507 16b pole -> 32 b, 1PPS predchozi */
         s3_h_ok = 1u; s_link_ok = 1u; s3_frames++;
         if (s3_h.type == FPGA_V3_T_DATA) s3_take_records(n_ok);
         s3_range_ctl(&s3_h);                                       /* v0.38.0: automaticka predelicka */
@@ -3079,7 +3087,9 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
         o->pps_status = s3_h.pps_status; o->pps_pflags = s3_h.pps[0].pflags; o->pps_d = s3_h.pps[0].d;
         o->presc[0] = s3_h.presc[0]; o->presc[1] = s3_h.presc[1]; o->probe[0] = s3_h.probe[0]; o->probe[1] = s3_h.probe[1];
         o->deep_st = s3_h.deep_st; o->deep_wsel = s3_h.deep_wsel; o->deep_n = s3_h.deep_n;
+        o->narrow = s3_h.narrow;
     }
+    o->wrap_restarts = s3_wrap.restarts;
 }
 
 /* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */

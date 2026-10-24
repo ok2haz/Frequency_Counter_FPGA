@@ -49,20 +49,37 @@ M = [
     ('rozsah: sonda 0 beze zmeny', 'FPGA_V3_PROBE_HZ(probe)) : 0u;', 'FPGA_V3_PROBE_HZ(probe)) : cur;'),
     ('grp_break nic nedela', '{ g->c[ch & 1u].open = 0u; }', '{ (void)g; (void)ch; }'),
     ('grp_break vzdy kanal A', '{ g->c[ch & 1u].open = 0u; }', '{ g->c[0].open = 0u; (void)ch; }'),
+    # v0.40.0: uzka hlavicka (FW 0x0507, CAPS bit22) -- rozbaleni 16 -> 32 b, restart FPGA, historie 1PPS, BUB/OVL
+    ('uzka: rozbaleni bez prenosu', 'return prev + (uint32_t)(int32_t)(int16_t)(uint16_t)(v16 - prev);',
+     'return (prev & 0xFFFF0000u) | (v16 & 0xFFFFu);'),
+    ('uzka: restart FPGA se nepozna', 'if (w->have && (uint32_t)(uint16_t)(s16 - w->seq) > FPGA_V3_WRAP_SEQ_MAX) {', 'if (0) {'),
+    ('uzka: REC_HEAD = pocet (bez -1)', 'h->rec_head = w->head ? w->head - 1u : 0u;', 'h->rec_head = w->head;'),
+    ('uzka: PSEQ nerozbalen', 'w->pseq = ext16(w->pseq, h->pps[0].pseq);', 'w->pseq = h->pps[0].pseq & 0xFFFFu;'),
+    ('uzka: 1PPS predchozi bez kontroly pseq-1', '(h->pps[0].pseq == w->pps_last.pseq + 1u) ? w->pps_last : (fpga_v3_pps_t){ 0 }',
+     'w->pps_last'),
+    ('uzka: 1PPS predchozi z bajtu 84..95', 'if (w->pps_have && h->pps[0].pseq == w->pps_last.pseq) h->pps[1] = w->pps_prev;', 'if (0) {}'),
+    ('uzka: BUB z hlavicky', "h->bub[c] = (rec[j].flags & FPGA_V3_R_BUBBLE) ? 1u : 0u;", "h->bub[c] = f[112u + c];"),
+    ('uzka: OVL ze vsech zaznamu (OR)', "h->ovl[c] = (rec[j].flags & FPGA_V3_R_CS) ? 1u : 0u;",
+     "h->ovl[c] |= (rec[j].flags & FPGA_V3_R_CS) ? 1u : 0u;"),
+    ('uzka: emulator ACK 32 b', 'a = e->rec_ack + (uint16_t)((uint16_t)a - (uint16_t)e->rec_ack);', '(void)0;'),
+    ('uzka: SEQ 32 b i v uzke', 'h->seq = (uint32_t)rdn(f + 4, wn);', 'h->seq = (uint32_t)rdn(f + 4, 4);'),
 ]
-cc = ['cc', '-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c', 'CM7/Core/Src/fpga_tdccal.c',
-      'tests/host/t_fpga_v3.c', '-lm', '-o', os.path.join(out, 't_mut')]
+# prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
+cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',
+      'CM7/Core/Src/fpga_tdccal.c', 'tests/host/t_fpga_v3.c', '-lm', '-o', os.path.join(out, 't_mut' + ('.exe' if os.name == 'nt' else ''))]
+isrc = cc.index(None)
 bad = 0
+os.makedirs(out, exist_ok=True)
 for name, a, b in M:
     if src.count(a) != 1:
         print('%-40s KOTVA NENALEZENA' % name); bad += 1; continue
     p = os.path.join(out, 'fpga_v3_mut.c')
     open(p, 'w', encoding='utf-8').write(src.replace(a, b))
-    cc[4] = p
+    cc[isrc] = p
     r = subprocess.run(cc, capture_output=True, text=True)
     if r.returncode:
         print('%-40s PREKLAD SELHAL' % name); bad += 1; continue
-    o = subprocess.run([os.path.join(out, 't_mut')], capture_output=True, text=True, timeout=120)
+    o = subprocess.run([cc[-1]], capture_output=True, text=True, timeout=120)
     caught = o.returncode != 0
     first = next((l.strip() for l in o.stdout.splitlines() if 'CHYBA' in l or 'FAIL' in l), '')
     print('%-40s %s  %s' % (name, 'ZACHYCENO' if caught else '!!! NEZACHYCENO', first[:70]))

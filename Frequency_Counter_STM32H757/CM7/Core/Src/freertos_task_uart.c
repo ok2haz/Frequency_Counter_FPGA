@@ -2594,6 +2594,9 @@ void UartTask_run(void *argument)
 				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
 				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
+				  printf("  hlavicka %s, restartu FPGA pri rozbalovani %lu\n",
+				         vi.narrow ? "UZKA (CAPS bit22: 16b SEQ/REC/PSEQ rozbaluje STM, 1PPS predchozi z historie STM)" : "siroka",
+				         (unsigned long)vi.wrap_restarts);
 				  printf("  TDC A 0x%02X B 0x%02X (bit0 platna, bit2 sber, bit4 banka), ceka na tabulku 0x%X\n",
 				         (unsigned)vi.tdc[0], (unsigned)vi.tdc[1], (unsigned)vi.cal_wait);
 				  printf("  1PPS: %s, PCLK %s, epocha %u, jemny - hruby %d taktu%s (CAPS bit17 %s)\n",
@@ -3033,7 +3036,7 @@ void UartTask_run(void *argument)
 				   *   fpgasim fault none|lost|crc|div16|phase|gap       */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strncmp(a, "v3", 2) == 0) {
-					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns]`, `fpgasim v3 off`
+					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns] [uzka]`, `fpgasim v3 off`
 					   * (v0.36.0: B = A + faze pro jednorazove deje; bez Hz_B = kmitocet A) */
 					  const char *p = a + 2;
 					  while (*p == ' ') p++;
@@ -3050,9 +3053,13 @@ void UartTask_run(void *argument)
 						  if (ha > 40.0e6) ha = 40.0e6;
 						  if (hbz > 40.0e6) hbz = 40.0e6;
 						  if (phn > 0.0 && hbz < 1.0) hbz = ha;    /* faze bez kmitoctu B: B = A */
+						  while (*p == ' ') p++;
+						  const int uz = (strncmp(p, "uzka", 4) == 0);   /* v0.40.0: uzka hlavicka FW 0x0507 */
+						  fpga_sim_v3_narrow(uz);
 						  fpga_sim_v3_set(1, ha, hbz, phn * 1e-9);
-						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz, faze B %lu ns (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
-						         (unsigned long)ha, (unsigned long)hbz, (unsigned long)phn);
+						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz, faze B %lu ns%s (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
+						         (unsigned long)ha, (unsigned long)hbz, (unsigned long)phn,
+						         uz ? ", UZKA hlavicka (FW 0x0507, citace pretecou 2^16 do ~10 s)" : "");
 						  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
 					  } else {
 						  fpga_sim_v3_set(0, 0.0, 0.0, 0.0);
