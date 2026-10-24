@@ -1120,7 +1120,7 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - **FW 0x0507** (`6b3f29e`, `4ceec06`, `c586f03`; `docs/audit/2026-10-24_fw0507-casovani.md`, STATUS #339): úzká hlavička + opravy
   systematických cest. **Řádný bitstream `ab_test/FW_0x0507_v3_20261024-1551_7fadfec.fs`**: CLS 85 % (3 672), setup +0,012 ns.
   Časování FPGA hodnotit **`python tools/pnr_seeds.py run <var> 8` + `report`** (8 sestavení, L-0233), ne jedním sestavením.
-  ⬜ neověřeno na desce (STM v0.40.0 obě banky).
+  ✅ deska po power-cyklu 2026-10-24: UZKA, 0 mezer, `fpga v3 test` PASS, 1PPS IDES8 sawtooth 28 ns²; ⬜ REC_HEAD přes 65536.
 - **STM v0.40.0** (`bf71399`, tag): úzká hlavička FW 0x0507 (CAPS bit22, `PROTOKOL_V3.md` kap. 3.1b) – 16b SEQ/REC/PSEQ rozbaluje
   `fpga_v3_unwrap`, předchozí 1PPS z historie STM; `fpgasim v3 on <Hz> [Hz_B] [fáze] uzka`. FPGA část 0x0507 čeká na ověření externí
   optimalizace (STATUS #338: simulace, mutace, zkušební bitstream). ⬜ neověřeno na HW.
