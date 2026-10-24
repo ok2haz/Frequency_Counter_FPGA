@@ -135,16 +135,26 @@ module seg_chan3 #(
     // x0/t0 do prave vynulovanych souctu (N ji nepocita); zahodi se jako znacky behem freeze (L-0198)
     // 2026-10-24: ~freeze & ~clear jako jeden registr nfc (v3_ring, shodny v kazdem taktu) -> CE t0 = LUT5 ze 5 registru
     wire       take = pop & ~hold & nfc;
+    // 2026-10-24 (casovani, pnr_seeds: hold_x_s -> t0/x0 CE v 5 z 8 sestaveni): t0 a x0 jsou tm a xm PRVNI znacky
+    // segmentu -> nactou se o takt pozdeji z tm/xm, povoleni je jediny registr tf (t0) / tf_b (x0). ts_ps[47:40] je v tom
+    // taktu stale tataz znacka (drzi se >= 5 taktu), dalsi take nejdriv za 5 taktu (v1 cte t0/x0 az pri druhe znacce),
+    // zapisovac cte o_t0/o_x0 az DRAIN taktu po hranici (znacky behem freeze se neberou) -> stejne hodnoty.
+    reg        tf = 1'b0;
+    (* syn_preserve = 1 *) reg tf_b = 1'b0;
     always @(posedge clk) begin
         ncy <= 1'b0;
         v1  <= take & ~first;
+        tf   <= take & first;
+        tf_b <= take & first_b;
+        if (tf)   t0 <= {ts_ps[47:40], tm};
+        if (tf_b) x0 <= xm;
         v1b <= v1;
         v2  <= v1b;
         v3  <= v2;
         if (take) begin
             xm <= fh; tm <= ts_ps[39:0];
-            if (first)   begin t0 <= ts_ps; first <= 1'b0; end
-            if (first_b) begin x0 <= fh; first_b <= 1'b0; end
+            if (first)   first <= 1'b0;
+            if (first_b) first_b <= 1'b0;
             nlo <= nlo + 12'd1; ncy <= (nlo == 12'hFFF);
             if (bub)    o_bub <= 8'd1;                 // FW 0x0507: jen priznak (pocet v hlavicce zrusen, kap. 3.1b)
             if (cs_act) o_ovl <= 4'd1;
@@ -318,10 +328,20 @@ module v3_ring #(
     // u_ring/ohA -> u_ring/wa_a 9,0 ns), ted 16; ohAh/ohBh rotuji stejne jako ohA/ohB -> shodne v kazdem taktu
     (* syn_preserve = 1 *) reg [7:0] ohAh = 8'd1;
     (* syn_preserve = 1 *) reg [7:0] ohBh = 8'd1;
+    // 2026-10-24 (casovani, pnr_seeds: ohA/ohBh -> wa_a/wa_b ve 4 z 8 sestaveni): ctvrtiny slova -- ohA bity 7:0, ohAm
+    // 15:8, ohAh 23:16, ohAt 31:24 (data zaznamu se behem zapisu nemeni, jednotaktova je jen cesta z vyberu)
+    (* syn_preserve = 1 *) reg [7:0] ohAm = 8'd1;
+    (* syn_preserve = 1 *) reg [7:0] ohBm = 8'd1;
+    (* syn_preserve = 1 *) reg [7:0] ohAt = 8'd1;
+    (* syn_preserve = 1 *) reg [7:0] ohBt = 8'd1;
     wire [31:0] wsa_l = wsel(ohA,  {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
     wire [31:0] wsa_h = wsel(ohAh, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+    wire [31:0] wsa_m = wsel(ohAm, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
+    wire [31:0] wsa_t = wsel(ohAt, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
     wire [31:0] wsb_l = wsel(ohB,  {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
     wire [31:0] wsb_h = wsel(ohBh, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+    wire [31:0] wsb_m = wsel(ohBm, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
+    wire [31:0] wsb_t = wsel(ohBt, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
     reg        v_s1 = 1'b0;                          // 1. stupen nese slovo k1
     always @(posedge clk) begin
         snap  <= 1'b0;
@@ -337,7 +357,7 @@ module v3_ring #(
         if (we) mem[wa] <= wd;
         if (seg_tick) begin
             freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0; ohA <= 8'd1; ohB <= 8'd1;
-            ohAh   <= 8'd1; ohBh <= 8'd1;
+            ohAh   <= 8'd1; ohBh <= 8'd1; ohAm <= 8'd1; ohBm <= 8'd1; ohAt <= 8'd1; ohBt <= 8'd1;
             nfc_a  <= 1'b0; nfc_b <= 1'b0;
         end else if (freeze && !wr) begin
             dr <= dr + 3'd1;
@@ -345,12 +365,16 @@ module v3_ring #(
         end else if (wr) begin
             if (k != 5'd16) begin
                 // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wa_a <= {wsa_h[31:16], wsa_l[15:0]};
-                wa_b <= {wsb_h[31:16], wsb_l[15:0]};
+                wa_a <= {wsa_t[31:24], wsa_h[23:16], wsa_m[15:8], wsa_l[7:0]};
+                wa_b <= {wsb_t[31:24], wsb_h[23:16], wsb_m[15:8], wsb_l[7:0]};
                 ohA  <= {ohA[6:0], ohA[7]};
                 ohB  <= {ohB[6:0], ohB[7]};
                 ohAh <= {ohAh[6:0], ohAh[7]};
                 ohBh <= {ohBh[6:0], ohBh[7]};
+                ohAm <= {ohAm[6:0], ohAm[7]};
+                ohBm <= {ohBm[6:0], ohBm[7]};
+                ohAt <= {ohAt[6:0], ohAt[7]};
+                ohBt <= {ohBt[6:0], ohBt[7]};
                 k1   <= k;
                 v_s1 <= 1'b1;
                 k    <= k + 5'd1;

@@ -172,6 +172,9 @@ module tb_top_v3;
               && (dut.u_ring.nfc_a === (~dut.u_ring.freeze & ~dut.u_ring.clear_a))
               && (dut.u_ring.nfc_b === (~dut.u_ring.freeze & ~dut.u_ring.clear_b))
               && (dut.u_ring.ohAh === dut.u_ring.ohA) && (dut.u_ring.ohBh === dut.u_ring.ohB)
+              && (dut.u_ring.ohAm === dut.u_ring.ohA) && (dut.u_ring.ohBm === dut.u_ring.ohB)
+              && (dut.u_ring.ohAt === dut.u_ring.ohA) && (dut.u_ring.ohBt === dut.u_ring.ohB)
+              && (dut.bs2_s === dut.bs2) && (dut.pr_a_s === dut.pr_a) && (dut.pr_b_s === dut.pr_b)
               && (dut.hx_a === (~dut.boot_done | (dut.pchg_a != 2'd0)))
               && (dut.hx_b === (~dut.boot_done | (dut.bchg != 2'd0) | (dut.pchg_b != 2'd0)))
               && (dut.hold_a_s === dut.hold_a) && (dut.hold_b_s === dut.hold_b);

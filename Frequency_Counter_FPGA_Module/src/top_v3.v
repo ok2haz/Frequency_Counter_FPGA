@@ -199,6 +199,10 @@ module top_v3 (
     wire [1:0]  bsrc;
     reg  [1:0]  bs1 = 2'b00, bs2 = 2'b00;
     always @(posedge clk_p0_100m) begin bs1 <= bsrc; bs2 <= bs1; end
+    // 2026-10-24 (casovani, pnr_seeds: bs2 / pr_b -> u_sb/p_chg ve 4 z 8 sestaveni): kopie pro seg_chan3 (P&R ji
+    // umisti k souctum), shodna s bs2 v kazdem taktu
+    (* syn_preserve = 1 *) reg [1:0] bs2_s = 2'b00;
+    always @(posedge clk_p0_100m) bs2_s <= bs1;
     // FW 0x0503 (E5): predelicka kazdeho pinu (pin_cnt3 u IOB), log2 P z SET_CONFIG 0x07 (10 MHz -> 2 FF), plati od
     // hranice segmentu. Zdroj B z pinu A (SET_CONFIG 0x09) bere pin A primo (sirka pulzu / zpozdeni jen pri P = 1).
     wire [2:0]  pr_a_req, pr_b_req;
@@ -207,6 +211,9 @@ module top_v3 (
         pa1 <= pr_a_req; pa2 <= pa1; pb1 <= pr_b_req; pb2 <= pb1;
         if (seg_tick) begin pr_a <= pa2; pr_b <= pb2; end
     end
+    (* syn_preserve = 1 *) reg [2:0] pr_a_s = 3'd0;     // kopie pr_a / pr_b pro seg_chan3 (shodne v kazdem taktu)
+    (* syn_preserve = 1 *) reg [2:0] pr_b_s = 3'd0;
+    always @(posedge clk_p0_100m) if (seg_tick) begin pr_a_s <= pa2; pr_b_s <= pb2; end
     wire        div_a, div_b;
     wire [15:0] prb_a, prb_b;
     // spolecne okno sondy 1 ms (100 000 taktu) pro oba kanaly
@@ -222,7 +229,7 @@ module top_v3 (
     wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];
     // audit 2026-10-23 (F-0269): B z pinu A jde mimo predelicku (P = 1) -> log2 P v zaznamu B musi byt 0, jinak STM
     // nasobi X kanalu B starym P_B (STM sice P_B v tom rezimu stahne na 0, ale az po ozvene a dvou ramcich)
-    wire [2:0]  pr_b_eff = bs2[0] ? 3'd0 : pr_b;
+    wire [2:0]  pr_b_eff = bs2_s[0] ? 3'd0 : pr_b_s;
     // potvrzeni tabulky jen pro kanaly z masky (stridava kalibrace: druhy kanal muze prave cekat se starym histogramem)
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
@@ -334,7 +341,7 @@ module top_v3 (
     wire [7:0]  a_fl, b_fl, a_bub, b_bub;  wire [3:0] a_ovl, b_ovl;
     wire [2:0]  a_pr, b_pr;
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sa (.clk(clk_p0_100m), .rise_s(rise_sa), .cnt_en(~use_ro_a), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
-        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a_s), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear_a), .nfc(nfc_a), .presc(pr_a),
+        .bub(bub_a), .cs_act(csa_s[1]), .hold(hold_a_s), .sig_pin(sig_a), .freeze(freeze), .snap(snap), .clear(clear_a), .nfc(nfc_a), .presc(pr_a_s),
         .o_n(a_n), .o_x0(a_x0), .o_t0(a_t0), .o_sx(a_sx), .o_st(a_st), .o_flags(a_fl), .o_bub(a_bub), .o_ovl(a_ovl), .o_presc(a_pr));
     seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (.clk(clk_p0_100m), .rise_s(rise_sb), .cnt_en(~use_ro_b), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
         .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b_s), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear_b), .nfc(nfc_b), .presc(pr_b_eff),
