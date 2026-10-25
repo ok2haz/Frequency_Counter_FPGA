@@ -7,3 +7,7 @@
 #            vsechny vystupy; tabulka s amt = 1 (x14 = 0) na tretine kodu, prekalibrace do druhe banky. ~15 s
     @{ name = "tdc3eq"; top = "tb_tdc3_eq"; rtl = @("v3_core.v", "tdc.v"); tb = "tb_tdc3_eq.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+#   primchk  predpoklady o primitivech SDPB (zapis 32 b / cteni 8 b, poradi bajtu, latence) a ALU54D (DOUT + A - B, RESET, CE),
+#            na kterych stoji kroky "kruh v 16 SDPB" a "soucty v ALU54D"; s modely gowin_models_ext.v i s oficialnim
+#            prim_sim.v z Gowin IDE (misto extra: <Gowin>/IDE/simlib/gw1n/prim_sim.v) musi projit. ~1 s
+    @{ name = "primchk"; top = "tb_prim_chk"; rtl = @(); tb = "tb_prim_chk.sv"; extra = @("gowin_models_ext.v") }
