@@ -5637,7 +5637,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** číslo ze specifikace a konstanta ve firmwaru se při změně protokolu porovnají výslovně; hodnotu, kterou lze přepsat za běhu bez persistence, ověřuj po restartu ze `status`, ne z paměti.
 - **Detekce:** `status` → `SPI 25.00MHZ` po power-cyklu, `RX chyb CRC` a `delka` zůstávají 0.
 - **Commit:** `85462d0`
-- **Stav:** ⬜ aktivní, neověřeno na HW
+- **Stav:** 🟡 ověřeno na desce po power-cyklu 2026-10-25 (v0.40.6): SCK 25 000 000 Hz, CRC err 5,7/h (reference 12,5 MHz 5,6/h), SEQ díry bez přírůstku, selftest 16/16, `fpga v3 test` PASS; ⬜ nezměřeno osciloskopem (strmost hran, `FPGA_SPI_PIN_SPEED`) ani σy@1s
 
 ---
 
