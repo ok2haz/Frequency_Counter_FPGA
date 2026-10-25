@@ -234,7 +234,8 @@ module top_v3 (
     reg  [1:0]  cmk1 = 2'b11, cmk2 = 2'b11;
     always @(posedge clk_p0_100m) begin cmk1 <= lw_cm_mask; cmk2 <= cmk1; end
 
-    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
+    // 2026-10-25 (plocha): tdc_chan3 = v3 kopie tdc_chan (v3_core.v; ts_hq bez vyberu tr1 / tr2), retez a dekoder z tdc.v
+    tdc_chan3 #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
         .clk(clk_p0_100m), .sig_raw(sig_a), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_a), .want_seg(1'b0), .cal_req(cal_req_a), .cal_abort(cal_abort),
         .lw_en(lw_en_a), .lw_a(lw_a_qa), .lw_neg(lw_n_qa), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
@@ -244,7 +245,7 @@ module top_v3 (
         .dump_k(hist_k), .dump_q(hq_a), .code_o(code_a), .bub_o(bub_a), .tr1_ext(34'd0), .tr2_ext(34'd0),
         .bank_sw(seg_tick), .bank_o(bank_a)
     );
-    tdc_chan #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdcb (
+    tdc_chan3 #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdcb (
         .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req_b), .cal_abort(cal_abort),
         .lw_en(lw_en_b), .lw_a(lw_a_qb), .lw_neg(lw_n_qb), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),

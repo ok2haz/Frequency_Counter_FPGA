@@ -23,12 +23,14 @@ MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=13.300161e6'], 1: ['-DSIM_AU
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
         5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW'],
-        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 9: []}
+        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 9: [], 10: []}
 # 2026-10-24: rezim 0 = B 13,300161 MHz (rozestup hran stridave 7 a 8 taktu -> FIFO indexu drzi DVE znacky,
 # FIFO hloubky 1 se projevi); rezim 8 = B 16,100161 MHz (rozestup 6/7 taktu) pro mutace znacky o 2 takty driv
 # 2026-10-24: rezim 7 = cileny test tb_hold_inv (ztrata hodin, predelicka, zdroj B; invarianty kopii)
 # 2026-10-25: rezim 9 = cileny test tb_seg_dsp (seg_chan3 SUM_DSP = 1 proti SUM_DSP = 0, cas a index pres preteceni 2^40)
-TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv'), 9: ('tb_seg_dsp', 'tb_seg_dsp.sv')}
+# 2026-10-25: rezim 10 = cileny test tb_tdc3_eq (tdc_chan3 proti tdc_chan z tdc.v takt po taktu, tabulka s amt = 1 na tretine
+# kodu; v testech topv3* maji amt = 1 jen nejnizsi kody s x14 = 0, ktere merene hrany nevyvolaji)
+TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv'), 9: ('tb_seg_dsp', 'tb_seg_dsp.sv'), 10: ('tb_tdc3_eq', 'tb_tdc3_eq.sv')}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -54,12 +56,13 @@ M = [
     ('preteceni: REC_ACK se neposune', 'app_v3.v',
      "if (state != S_ASM && fill16 > RING_USE[15:0]) begin rec_ack <= rec_head - RING_USE[15:0]; ovf <= 1'b1; end", "", 1),
     ('potvrzeni tabulky bez masky', 'top_v3.v', ".lw_commit(lw_cm_p & cmk2[1])", ".lw_commit(lw_cm_p)", 2),
-    ('tabulka do aktivni banky', 'tdc.v', "    wire          bwr     = (BANKS != 0) ? ~bank_r : 1'b0;", "    wire          bwr     = (BANKS != 0) ? bank_r : 1'b0;", 2),
+    # 2026-10-25: tdc_chan3 (v3 kopie tdc_chan v v3_core.v) -- mutace kanalu TDC ted v kopii, kterou top_v3 pouziva
+    ('tabulka do aktivni banky', 'v3_core.v', "    wire          bwr     = (BANKS != 0) ? ~bank_r : 1'b0;", "    wire          bwr     = (BANKS != 0) ? bank_r : 1'b0;", 2),
     # TSPIPE (rozlozeni 2026-10-23): platnost o takt driv nez ts_ps -> znacka predchozi spustene hrany s indexem teto.
     # (horni cast z tr* o takt pozdeji = konstantni posun vsech znacek a dolni cast z lut_q3 o takt pozdeji = tataz polozka
     # tabulky, kod se drzi >= 5 taktu -> ekvivalentni mutanty, netestuji se)
-    ('znacka: ts_valid o takt driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_z;", 0),
-    ('znacka: ts_valid o 2 takty driv', 'tdc.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_y;", 8),
+    ('znacka: ts_valid o takt driv', 'v3_core.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_z;", 0),
+    ('znacka: ts_valid o 2 takty driv', 'v3_core.v', "        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;", "        ts_valid <= tv_y;", 8),
     # E4 (FW 0x0502): jemny cas 1PPS -- obracene poradi bitu IDES8, bez t_rel (osa PCLK), jemny cas se nepouzije
     ('IDES8: obracene poradi bitu', 'v3_core.v', "    parameter Q0_FIRST = 1 ", "    parameter Q0_FIRST = 0 ", 0),
     ('1PPS: bez t_rel', 'v3_core.v', "        hl  <= p_ts[10:3] + t_rel;",
@@ -120,6 +123,11 @@ M = [
     ('ring: slovo 0 B v taktu A', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 0),
     ('ring: konec zapisu o takt driv', 'v3_core.v', "            kend <= (kc == DRAIN + 17);", "            kend <= (kc == DRAIN + 16);", 0),
     ('soucty: x0 se v clear nenuluje', 'v3_core.v', "            x0    <= 40'd0; t0 <= 48'd0;", "            t0 <= 48'd0;", 0),
+    # 2026-10-25 (ts_hq bez vyberu): v tv_z se pri amt = 1 neprepise (horni cast o takt starsi), resp. nenacte v tv_y, resp.
+    # prepise i pri amt = 2. amt = 1 (polozka s x14 = 0) testy topv3* nevyvolaji -> rezim 10 (tb_tdc3_eq)
+    ('znacka: ts_hq pri amt 1 bez prepisu', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_y) ts_hq <= tr1;", 10),
+    ('znacka: ts_hq prepis i pri amt 2', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_y | tv_z) ts_hq <= tr1;", 10),
+    ('znacka: ts_hq bez nacteni v tv_y', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_z & ~lut_q3[15]) ts_hq <= tr1;", 0),
     ('ring: slovo 0 B v taktu A (holdinv)', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 7),
     ('hold_s: hx bez boot_tc', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = ok_s[1] & boot_done;", 7),
     ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),

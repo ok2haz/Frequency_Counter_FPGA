@@ -1080,3 +1080,442 @@ module raw_cap3l (
     always @(posedge clk) if (m_w0) mem[n[8:0]] <= ts;
     always @(posedge rclk) rq <= mem[rk];
 endmodule
+
+// ------------------------------------------------------------
+// Vychozi AUTOCAL pro tdc_chan3 (stejny blok jako na zacatku tdc.v; v3_core.v se preklada pred tdc.v)
+// ------------------------------------------------------------
+`ifndef TDC_AUTOCAL_DEF
+ `ifdef SIM_AUTOCAL
+  `define TDC_AUTOCAL_DEF 1
+ `else
+  `define TDC_AUTOCAL_DEF 0
+ `endif
+`endif
+
+// ------------------------------------------------------------
+// tdc_chan3 (2026-10-25, plocha): v3 KOPIE tdc_chan z tdc.v (tdc.v sdili bitstream v2 a je zamceny). Shodna az na jedno misto:
+//   horni cast znacky ts_hq (TSPIPE = 1, DUAL = 0, EXT_TR = 0) bez vyberu tr1 / tr2 -- viz "ts_hq bez vyberu" nize. Retez
+//   (tdc_chain), dekoder (tdc_dec), kalibrace, tabulka a histogram jsou beze zmeny (moduly z tdc.v, kod kanalu doslova).
+// tdc_chan: kanal = retez + zmrazeni + dekoder + kalibrace + presny cas
+//   Rozhrani k oknu (win_recip):
+//     rise_c   : kazda nabezna hrana (hrube, 1 takt)
+//     rise_s   : tataz hrana o takt pozdeji (pro POCITANI; uz po 2 FF, tedy bez metastability)
+//     want     : okno ceka na presny cas pristi hrany
+//     trig_ack : tato hrana (rise_c) spustila presny cas (jen kdyz want)
+//     ts_valid : ~8 taktu po trig_ack (TSPIPE = 1: o takt pozdeji): ts_ps = cas teto hrany [T_clk/16384]
+//   ts_ps = tick(cyklus spusteni + const) - V[kod]; posun je stejny pro VSECHNY presne casy obou
+//   kanalu, v rozdilech (okno) se kruti. U DUAL=1 je V pro sadu R = T + tau, pro sadu F = w_lo + tau
+//   (cumulativni poradi R pred F), viz tabulka nize -- tedy casy z obou sad jsou na jedne ose.
+// ------------------------------------------------------------
+module tdc_chan3 #(
+    parameter EXT_TR = 0,             // optimalizace 5 (2026-10-20): 1 = tr1/tr2 z top (sdilene obema kanaly, -68 FF)
+    parameter CAL_LOG2 = 20,        // kalibrace z 2^CAL_LOG2 udalosti (1M: ~1/4 casu, chyba bunky ~1 ps)
+    parameter TAPS     = 256,       // vzorkovanych tapu (nasobek 32)
+    parameter STRIDE   = 2,         // ALU na vzorek
+    parameter KD       = 2,         // tap detekce hrany
+    parameter DUAL     = 0,         // 1 = i sestupna hrana hodin
+    parameter NTAP     = TAPS,      // fyzicky postavenych tapu (<= TAPS), viz tdc_chain
+    parameter AUTOCAL  = `TDC_AUTOCAL_DEF,  // 1 = (jen simulace) tabulku pocita FPGA; 0 = pocita a zapisuje STM
+    // Protokol v3 (docs/PROTOKOL_V3.md kap. 6.3): 1 = DVE BANKY tabulky. STM pise do neaktivni banky, potvrzeni ji aktivuje
+    // az na hranici segmentu (bank_sw); prekalibrace s platnou tabulkou nemaze cal_valid -> po sberu histogramu kanal meri
+    // dal se starou bankou, dokud STM novou nezapise a nepotvrdi. 0 = jako v2 (jedna tabulka, top.v).
+    parameter BANKS    = 0,
+    // Rozlozeni (audit 2026-10-23): 1 = horni cast znacky (vyber tr1/tr2 bitem lut_q3[15]) a dolnich 14 b nejdriv do
+    // registru, ts_ps az z nej -> ts_valid o takt pozdeji (T+10 misto T+9), +49 FF. V 0x0427 byla cesta lut_q3[15] ->
+    // ts_ps nejhorsi v navrhu (+0,215 ns, 82 % vedeni: jeden FF u BSRAM budi 34 cilu rozesetych pres ~40 sloupcu).
+    // v3 paruje index hrany se znackou pres FIFO (seg_chan3, snese latenci do T+12); v2 (win_recip) bere index posledni
+    // spustene hrany, takze o takt pozdejsi znacka by tam pri rychlem spousteni patrila k jine hrane -> v2 jen 0.
+    parameter TSPIPE   = 0
+)(
+    input  wire        clk,         // clk_p0_100m
+    input  wire        sig_raw,     // asynchronni vstup kanalu
+    input  wire        ro,          // asynchronni kalibracni zdroj (z ring_osc)
+    input  wire [47:0] tick_ps,     // volnobezny cas [T_clk/16384], +16384 za takt
+    input  wire [33:0] tr1_ext,     // optimalizace 5: tick_hi - 1 / - 2 sdilene v top (EXT_TR = 1); jinak nezapojeno (0)
+    input  wire [33:0] tr2_ext,
+    input  wire        want,        // okno: pristi hrana ma dostat presny cas
+    input  wire        want_seg,    // FW 0x0411: i VNITRNI hrany (segmenty okna) maji dostat presny cas
+    input  wire        cal_req,     // 1-taktovy pulz: spust kalibraci
+    input  wire        cal_abort,   // 1-taktovy pulz: timeout kalibrace (top.v)
+    // FW 0x0427: zapis kalibracni tabulky z STM (domena clk; top.v synchronizuje z 10 MHz). Plati jen v cal_wait.
+    input  wire        lw_en,       // 1-taktovy pulz: zapis polozky
+    input  wire [9:0]  lw_a,        // adresa ({sada, kod}; u DUAL = 0 jen kod)
+    input  wire [13:0] lw_neg,      // dolnich 14 bitu polozky (-x14 mod 2^14); amt se odvodi (viz nize)
+    input  wire        lw_commit,   // 1-taktovy pulz: tabulka kompletni -> cal_valid
+    output wire        cal_wait,    // sber dokoncen, histogram je ke cteni (dump_k), FPGA ceka na tabulku od STM
+
+    output wire        rise_c,
+    output wire        rise_s,      // tataz hrana pro POCITANI (o takt pozdeji, bez metastability)
+    output wire        trig_ack,
+    output reg         ts_valid,
+    output reg  [47:0] ts_ps,           // [T_clk/16384]
+    output wire        use_ro,      // 1 = retez krmi ring oscilator
+    output wire        cal_busy,
+    output reg         cal_valid,   // tabulka platna
+    output reg         cal_fail,    // posledni kalibrace selhala (timeout)
+    // diagnostika (platna po dokonceni kalibrace)
+    output reg [31:0]  d_ovf,       // hist[posledni adresa]: udalosti za koncem retezu (u DUAL: posledni kod sady F)
+    output reg [31:0]  d_peak,      // nejvetsi hist[k]
+    output reg [15:0]  d_nz,        // pocet neprazdnych kodu
+    output reg [15:0]  d_last,      // nejvyssi neprazdny kod (= nejvyssi pozice PRVNI nuly)
+    // B1a (2026-10-04): nejvyssi KDY navzorkovany tap za celou kalibraci (od 2026-10-07 s rozlisenim 8 tapu):
+    //   d_maxtap ~ d_last  -> teplomer cisty, retez tam fyzicky konci (oprava = delsi/jiny P&R retezu)
+    //   d_maxtap >> d_last -> bubliny nad prvni nulou (oprava = vzorkovani/metastabilita)
+    output reg [15:0]  d_maxtap,
+    // vypis histogramu (diagnostika DNL): mimo kalibraci cte BRAM hist[dump_k]; dump_k je kvazistaticky
+    // (nastavi ho STM pozadavkem), adresa = {sada, kod} (u DUAL=0 jen kod)
+    input  wire [9:0]  dump_k,
+    output wire [23:0] dump_q,
+    output wire [$clog2(TAPS)-1:0] code_o,  // FW 0x0418: kod posledni presne casovane hrany (platny v ts_valid)
+    output reg         bub_o,       // FW 0x0425: bublina = nejvyssi prosly tap (po 8) lezi > 8 tapu ZA kodem (platne v ts_valid)
+    // protokol v3 (BANKS = 1); u BANKS = 0 bez vyznamu (bank_sw nezapojeno, bank_o = 0)
+    input  wire        bank_sw,     // 1 takt: hranice segmentu -> aktivovat potvrzenou banku
+    output wire        bank_o       // aktivni banka tabulky
+);
+    localparam CW = $clog2(TAPS);             // sirka kodu
+    localparam AW = CW + DUAL;                // sirka adresy tabulek ({sada, kod})
+    localparam NC = 32'd1 << AW;                  // pocet adres
+    localparam HW = CAL_LOG2 + 1;             // sirka citace kodu (0..2^CAL_LOG2)
+
+    initial begin
+        ts_valid = 1'b0; ts_ps = 48'd0; cal_valid = 1'b0; cal_fail = 1'b0;
+        d_ovf = 32'd0; d_peak = 32'd0; d_nz = 16'd0; d_last = 16'd0; d_maxtap = 16'd0;
+        bub_o = 1'b0;
+    end
+
+    // ---------------- stav kalibrace (ONE-HOT, kazda cesta <= 1-2 LUT) -----
+    //   pri 100 MHz je v tomto fabricu budget ~2-3 urovne LUT (routing 2-3 ns/hop),
+    //   proto zadne dekodovani binarniho stavu v ridicich cestach.
+    reg s_clr = 1'b0, s_col = 1'b0, s_drn = 1'b0, s_cmp = 1'b0, s_wait = 1'b0;
+    assign cal_wait = s_wait;
+    reg [9:0] ph = 10'd1;                     // one-hot faze (DRN/CMP)
+    assign use_ro   = s_col;
+    // FW 0x0421: cal_busy z REGISTRU (busy_ra = OR ctyr stavu o takt pozdeji): fanout do oken a hold nestihal; o takt pozdejsi
+    // nastup/konec hlaseni je bezpecny (cal_valid se meni soucasne se stavem a ts_valid se pri cal_busy neemituje).
+    reg  busy_ra = 1'b0;
+    assign cal_busy = busy_ra;
+    wire sig_eff = s_col ? ro : sig_raw;
+
+    // ---------------- spousteni a zmrazeni vzorku ----------------
+    reg        idle_r = 1'b1;                 // 1 = qd se nezmrazuje
+    reg  [2:0] fz = 3'd0;                     // 1..4 = zmrazeno
+    reg        arm_r = 1'b0;                  // pri kalibraci nebo want (lag 1 takt)
+    reg        ec_r  = 1'b0;
+    wire [TAPS-1:0] th_r, th_f;
+    wire       ec, src_l;
+    always @(posedge clk) begin
+        arm_r <= s_col | want | want_seg;
+        ec_r  <= ec;
+    end
+    assign rise_c = ec;
+    // ec uz je z 2. stupne vzorku (dR), tedy bez metastability: pocitani hran staci o takt zpozdit
+    // (pend/trig parovani ve win_recip pocita s rise_s 0..2 takty po trig_ack)
+    assign rise_s = ec_r;
+
+    wire trig_ok  = ec & arm_r & idle_r;                  // 1 LUT
+    assign trig_ack = trig_ok & ~s_col;
+    // FW 0x0425 (oprava N1, audit 2026-10-20): `qd` se smi nacist i v POSLEDNIM zmrazenem taktu (fz == 4). Driv bylo
+    // ld = idle_r & ~(ec & arm_r), tedy 0 po cele zmrazeni (fz 1..4). Prvni takt, kdy smi prijit nove spusteni (idle_r = 1),
+    // patri ke vzorku z PREDCHOZIHO taktu, ktery se do qd mel nahrat jeste pri idle_r = 0 -> hrana se vzorkem presne 5 taktu za
+    // vzorkem predchozi spustene hrany se spustila, ale dekodovala ZMRAZENY vzorek predchozi hrany (chyba az jednotky ns; jen
+    // pri spousteni hrana za hranou, tj. segmenty regrese pri ~17..25 MHz). Nacteni qd v taktu fz == 4 je bezpecne: code_r si
+    // vysledek zachyti na TEZE hrane (neblokujici prirazeni), multicycle 5 qd -> code_r zustava (qd se meni nejdriv po 5 taktech).
+    // ldok je REGISTR, takze `ld` ma dal 4 vstupy (ldok, dR, dRp, arm_r) = 1 LUT jako dosud.
+    reg  ldok = 1'b1;                                     // 1 = v tomto taktu smi qd nacitat (klid nebo fz == 4)
+    always @(posedge clk) ldok <= ~trig_ok & (idle_r | (fz == 3'd3) | (fz == 3'd4));
+    wire ld       = ldok & ~(ec & arm_r);                 // 1 LUT; CE kompaktni kopie qd
+
+    always @(posedge clk) begin
+        if (trig_ok) begin
+            fz     <= 3'd1;
+            idle_r <= 1'b0;
+        end else if (!idle_r) begin
+            if (fz == 3'd4) begin fz <= 3'd0; idle_r <= 1'b1; end
+            else            fz <= fz + 3'd1;
+        end
+    end
+
+    // sada, ve ktere byla hrana poprve videt (jen DUAL), drzi `qd_src` v retezu (SDC: u_chain/qd_*)
+    tdc_chain #(.TAPS(TAPS), .STRIDE(STRIDE), .KD(KD), .DUAL(DUAL), .NTAP(NTAP)) u_chain (
+        .clk(clk), .sig(sig_eff), .ld(ld), .trig(trig_ok),
+        .thermo_r(th_r), .thermo_f(th_f), .ec(ec), .qd_src_o(src_l));
+
+    wire [TAPS-1:0] th = (DUAL != 0 && src_l) ? th_f : th_r;
+
+    // ---------------- dekoder (tdc_dec) -------------
+    // 🔴 2026-10-07 (optimalizace zdroju): puvodni kombinacni dekoder (8 bloku po 32 s prioritou,
+    // ~730 LUT na kanal) a diagnostika B1a (~690 LUT) byly dohromady ~70 % vsech LUT celeho navrhu
+    // (sim/res_breakdown.py). `tdc_dec` dela totez strukturovane (~250 LUT); kombinacni cesta ma
+    // 5 taktu (multicycle, qd je zmrazena), fz == 4 ho nacita.
+    wire [CW-1:0] pk;
+    tdc_dec #(.TAPS(TAPS)) u_dec (.th(th), .code(pk));
+
+    // B1a: nejvyssi SET tap s rozlisenim 8 tapu (kazdy 8. vzorek): staci na verdikt "retez fyzicky
+    // konci" (maxtap 133 vs last 134, 2026-10-07) a stoji ~40 LUT misto ~690.
+    reg [CW-4:0] hk8;
+    integer      hg;
+    always @* begin
+        hk8 = {(CW-3){1'b0}};
+        // jen skutecne tapy: doplnek NTAP..TAPS-1 je vzdy "prosla" a ukazoval by vzdy konec
+        for (hg = 0; hg < (NTAP + 7) / 8; hg = hg + 1) if (th[8*hg]) hk8 = hg[CW-4:0];
+    end
+    wire [CW-1:0] hk = {hk8, 3'b000};
+
+    reg [CW-1:0] code_r   = {CW{1'b1}};
+    reg [CW-1:0] hicode_r = {CW{1'b0}};       // B1a: nejvyssi set tap tohoto eventu
+    reg          src_c    = 1'b0;
+    assign code_o = code_r;
+    reg          dv1 = 1'b0, dv2 = 1'b0;
+    reg [CW:0]   c8_r = {(CW+1){1'b0}};       // FW 0x0425: code_r + 8 (bublina, 2 takty)
+    wire         fz4 = (fz == 3'd4);
+    always @(posedge clk) begin
+        dv1 <= fz4;                           // dekoder dokoncen na konci fz==4
+        dv2 <= dv1;
+        if (fz4) begin code_r <= pk; hicode_r <= hk; src_c <= src_l; end   // qd zmrazene >= 5 taktu (MCP 5)
+        // FW 0x0425: bublina (vic hran v retezu / zakmit vstupu): nejvyssi prosly tap (zaokrouhleny dolu na 8) je o vic nez 8 tapu
+        // za prvni nulou. Normalne hk <= code - 1. Prepocte se v taktu dv1 (code_r/hicode_r se drzi >= 5 taktu, tedy i v ts_valid).
+        // P&R 2026-10-20: soucet a porovnani ve DVOU taktech (v jednom -0,76 ns); bub_o je platne v dv2+1, ts_valid az dv2+3
+        if (dv1) c8_r <= {1'b0, code_r} + 10'd8;
+        if (dv2) bub_o <= ({1'b0, hicode_r} > c8_r);
+    end
+    wire [AW-1:0] caddr;
+    generate
+        if (DUAL != 0) begin : ca
+            assign caddr = {src_c, code_r};
+        end else begin : ca
+            assign caddr = code_r;
+        end
+    endgenerate
+
+    // ---------------- kalibracni tabulka + histogram (BRAM) --------------
+    // Adresa = {sada, kod}; kumulativni poradi pri vypoctu tabulky: nejdriv VSECHNY kody sady R, pak F.
+    // Proto je V[F, k] = w_lo + tau_F[k] (w_lo = podil udalosti sady R x T) a V[R, k] = T + tau_R[k]
+    // (+T se pridava jednim bitem 14 v `lutv`, viz nize) -- obe sady na jedne case ose bez dalsiho scitani.
+    // FW 0x0421: polozka tabulky je HOTOVA pro vypocet casove znacky: {amt[1:0], neg[13:0]}. Cas = tick*16384 - V, V = 16384*b14 + x14
+    // (b14 = bit +T), tedy dolnich 14 bitu = -x14 (mod 2^14) = `neg` a horni cast = tick_hi - amt, amt = b14 + (x14 != 0).
+    // Pocita se pri kalibraci (ne za behu), takze za BRAM neni zadna aritmetika.
+    localparam    NB = (BANKS != 0) ? 2 : 1;      // pocet bank tabulky (v3: 2)
+    reg [15:0]    lut  [0:NC*NB-1];
+    reg [HW-1:0]  hist [0:NC-1];
+    integer li, nx, ng;
+    initial begin
+        // nominalni hodnota, dokud neprobehne kalibrace (jen orientacne; cal_valid = 0 => ts se nevydavaji); V = 16384 + x14
+        for (li = 0; li < NC * NB; li = li + 1) begin
+            nx = ((li % NC) * 93 + 46 > 16383) ? 16383 : ((li % NC) * 93 + 46);
+            ng = 16384 - nx;
+            lut[li] = (nx == 0) ? 16'h4000 : {2'd2, ng[13:0]};
+        end
+    end
+
+    reg  [15:0]   lut_q   = 16'd0;
+    reg  [15:0]   lut_q2  = 16'd0;            // FW 0x0421: vystup BRAM (synteza lut_q + lut_q2 vtahne do BRAM: adresa + vystupni registr)
+    reg  [15:0]   lut_q3  = 16'd0;            // samostatny FF za BRAM (tCO 3,5 ns): az od nej se vybira
+    reg  [33:0]   tr0     = 34'd0, tr1 = 34'd0, tr2 = 34'd0;   // tick_hi - 0/1/2 (viz nize; tr0 jen pro DUAL)
+    reg           tv_y    = 1'b0, tv_z = 1'b0;
+    // horni cast znacky: tick_hi - amt (amt = 1 nebo 2 u DUAL = 0) vybrana z posuvneho registru tr*
+    wire [33:0]   ts_sel  = (DUAL != 0) ? ((lut_q3[15:14] == 2'd0) ? tr0 : ((lut_q3[15:14] == 2'd1) ? tr1 : tr2))
+                                      : (lut_q3[15] ? ((EXT_TR != 0) ? tr2_ext : tr2) : ((EXT_TR != 0) ? tr1_ext : tr1));
+    reg  [33:0]   ts_hq   = 34'd0;          // TSPIPE = 1: vybrana horni cast (FF muze lezet u BSRAM, ts_ps u spotrebitelu)
+    reg  [13:0]   ts_lq   = 14'd0;          // TSPIPE = 1: dolnich 14 b ze stejne polozky tabulky
+    reg           tv_w    = 1'b0;           // TSPIPE = 1: tv_z o takt pozdeji
+    reg  [HW-1:0] hist_rd = {HW{1'b0}};
+    reg  [HW-1:0] hist_rd2  = {HW{1'b0}};     // FW 0x0421: samostatny registr za vystupem BRAM (tCO 3,5 ns + inkrement nestihal)
+    reg  [HW-1:0] hist_wd_r = {HW{1'b0}};
+    reg           hist_we_r = 1'b0;
+    reg           evc1      = 1'b0;           // zapocitana udalost kalibrace (dv2 & s_col), o takt zpozdena
+    reg  [AW-1:0] scan_k  = {AW{1'b0}};
+    reg  [AW-1:0] clr_k   = {AW{1'b0}};
+    reg  [HW-1:0] cnt     = {HW{1'b0}};
+    reg           cnt_hit = 1'b0;             // cnt == CNT_LAST (registrovane)
+    reg  [15:0]   lutv    = 16'd0;            // polozka tabulky {amt, neg}
+    reg  [13:0]   xs14    = 14'd0;            // saturovana hodnota x14 (viz vypocet tabulky)
+
+    // FW 0x041E: volba adresy cteni BRAM pres REGISTROVANY priznak `busy_ra` (= cal_busy o takt pozdeji) misto
+    // kombinacniho OR ctyr stavu: cesta s_col -> cal_busy -> mux -> ADB BRAM mela 3 urovne LUT a 6 ns vedeni
+    // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). Posun o takt nevadi: priklad vyberu se meni jen na
+    // zacatku/konci kalibrace, kdy se cte jen kvuli diagnostice (vypis dump_k) a pocitani (s_col) zacina az po
+    // desitkach taktu (fz/dv1/dv2). Prioritu `s_cmp` (scan_k) drzime primo.
+    reg           cmp_ra  = 1'b0;             // FW 0x0421: s_cmp o takt pozdeji (vyber adresy z registru; faze kalibrace o 1 dale)
+    reg           lastk_r = 1'b0;             // FW 0x0427: pouziva radic (AUTOCAL = 1), proto je mimo generate; deklarace pred radicem (Icarus 13)
+    always @(posedge clk) begin busy_ra <= s_clr | s_col | s_drn | s_cmp; cmp_ra <= s_cmp; end
+    wire [AW-1:0] hist_ra = cmp_ra ? scan_k : (busy_ra ? caddr : dump_k[AW-1:0]);
+    wire          hist_we = s_clr | hist_we_r;
+    wire [AW-1:0] hist_wa = s_clr ? clr_k : caddr;
+    wire [HW-1:0] hist_wd = s_clr ? {HW{1'b0}} : hist_wd_r;
+    // FW 0x0427: polozku {amt, neg} zapisuje STM (cal_wait). amt = r_entry + (x14 != 0) = r_entry + (neg != 0), tj. se odvodi
+    // z neg (neg = 0 <=> x14 = 0). Sada R (u DUAL=0 vzdy) ma +T (bit 14 hodnoty V) -> r_entry = 1.
+    wire          lw_r    = (DUAL != 0) ? ~lw_a[AW-1] : 1'b1;
+    wire [1:0]    lw_amt  = {1'b0, lw_r} + {1'b0, (lw_neg != 14'd0)};
+    wire          lut_we  = (AUTOCAL != 0) ? (s_cmp & ph[8]) : (lw_en & s_wait);
+    // v3 (BANKS = 1): aktivni banka bank_r se cte, zapisuje se do druhe; u BANKS = 0 je horni bit adresy konstantni 0
+    reg           bank_r  = 1'b0;
+    reg           sw_pend = 1'b0;                  // potvrzena tabulka ceka na hranici segmentu
+    assign bank_o = bank_r;
+    wire          bwr     = (BANKS != 0) ? ~bank_r : 1'b0;
+    wire          brd     = (BANKS != 0) ?  bank_r : 1'b0;
+    wire [AW:0]   lut_wa  = {bwr, (AUTOCAL != 0) ? scan_k : lw_a[AW-1:0]};
+    wire [AW:0]   lut_ra  = {brd, caddr};
+    wire [15:0]   lut_wd  = (AUTOCAL != 0) ? lutv : {lw_amt, lw_neg};
+
+    always @(posedge clk) begin
+        lut_q     <= lut[lut_ra];
+        lut_q2    <= lut_q;
+        lut_q3    <= lut_q2;
+        hist_rd   <= hist[hist_ra];
+        hist_rd2  <= hist_rd;
+        hist_wd_r <= hist_rd2 + {{(HW-1){1'b0}}, 1'b1};
+        evc1      <= dv2 & s_col;             // zapisuje se JEN udalost, kterou citac `cnt` zapocetl (i po s_col -> s_drn)
+        hist_we_r <= evc1;
+        if (lut_we)  lut[lut_wa]   <= lut_wd;
+        if (hist_we) hist[hist_wa] <= hist_wd;
+
+        // presny cas hrany (~8 taktu od trig_ack) = tick*16384 - V. FW 0x0421 (casovani pro periodu 8 ns): BEZ ARITMETIKY za BRAM. Polozka tabulky nese
+        // dolnich 14 bitu hotovych (neg) a `amt` = o kolik se horni cast lisi od tick_hi. tick_hi se pricita PRAVE o 1 za takt
+        // (mod 2^34), takze tick_hi - 1 a tick_hi - 2 jsou jeho dve predchozi hodnoty: misto 34bitoveho odecitani se vybira
+        // z posuvneho registru. DUAL = 0: V ma vzdy bit +T, tedy amt = 1 nebo 2; DUAL = 1: amt = 0, 1 nebo 2 (tr0).
+        tr0   <= tick_ps[47:14];
+        tr1   <= (DUAL != 0) ? tr0 : tick_ps[47:14];
+        tr2   <= tr1;
+        // ts_ps se DRZI do dalsi platne znacky (>= 5 taktu): okno/regrese z nej odecitaji ve 2 taktech (multicycle v SDC)
+        // TSPIPE = 1: tataz hodnota o takt pozdeji (ts_hq/ts_lq se plni ve stejnem taktu jako drive ts_ps, tr* tedy stejne)
+        // 2026-10-25 (plocha, ts_hq bez vyberu): pri DUAL = 0 je amt = 1 nebo 2 a drive ts_hq <= lut_q3[15] ? tr2 : tr1 v taktu
+        // tv_z. tr2 v taktu tv_z = tr1 v taktu tv_y (tv_z <= tv_y vzdy, tr2 <= tr1 kazdy takt) -> ts_hq se nacte z tr1 uz v tv_y
+        // a v tv_z se pri amt = 1 (lut_q3[15] = 0) prepise aktualnim tr1. Hodnota po tv_z je shodna s drivejsim ts_sel; ts_hq
+        // se cte jen v tv_w (ts_ps) a dalsi znacka (tv_y) prijde nejdriv za 5 taktu. Odpada tr2 (34 FF, Gowin ho sdili mezi
+        // kanaly) a 34 LUT3 vyberu v kazdem kanalu; povoleni ts_hq je LUT3 ze tri registru, data primo z tr1.
+        if (DUAL == 0 && TSPIPE != 0 && EXT_TR == 0) begin
+            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;
+        end else if (tv_z) ts_hq <= ts_sel;
+        if (tv_z) ts_lq <= lut_q3[13:0];
+        tv_w     <= tv_z;
+        if ((TSPIPE != 0) ? tv_w : tv_z) ts_ps <= (TSPIPE != 0) ? {ts_hq, ts_lq} : {ts_sel, lut_q3[13:0]};
+        tv_y     <= dv2 & cal_valid & ~cal_busy;
+        tv_z     <= tv_y;
+        ts_valid <= (TSPIPE != 0) ? tv_w : tv_z;
+    end
+
+    assign dump_q = {{(24-HW){1'b0}}, hist_rd2};
+
+    // faze: jedno-horka, mimo DRN/CMP drzena v 1; po ph[9] se sama otoci na ph[0]
+    // (nezavisla na cal_req -> kratka cesta)
+    always @(posedge clk) ph <= (s_drn | s_cmp) ? {ph[8:0], ph[9]} : 10'd1;
+
+    // ---------------- radic kalibrace (jen ridici registry) ---------------
+    localparam [HW-1:0] CNT_LAST = {1'b1, {(HW-1){1'b0}}} - {{(HW-1){1'b0}}, 1'b1};
+    localparam [AW-1:0] ADDR_LAST = {AW{1'b1}};
+    always @(posedge clk) begin
+        cnt_hit <= (cnt == CNT_LAST);         // cnt se meni jen pri udalosti (>= 8 taktu)
+        if (cal_req) begin
+            s_clr <= 1'b1; s_col <= 1'b0; s_drn <= 1'b0; s_cmp <= 1'b0; s_wait <= 1'b0;
+            clr_k     <= {AW{1'b0}};
+            cnt       <= {HW{1'b0}};
+            if (BANKS == 0) cal_valid <= 1'b0;   // v3: platna tabulka v aktivni bance plati dal (sber blokuje cal_busy)
+            cal_fail  <= 1'b0;
+            d_maxtap  <= 16'd0;               // B1a: reset pred novou kalibraci
+        end else begin
+            if (s_clr) begin                      // vynuluj histogram (NC taktu)
+                clr_k <= clr_k + {{(AW-1){1'b0}}, 1'b1};
+                if (clr_k == ADDR_LAST) begin s_clr <= 1'b0; s_col <= 1'b1; end
+            end
+            if (s_col) begin                      // sbirej udalosti
+                if (dv2) begin
+                    cnt <= cnt + {{(HW-1){1'b0}}, 1'b1};
+                    if ({{(16-CW){1'b0}}, hicode_r} > d_maxtap) d_maxtap <= {{(16-CW){1'b0}}, hicode_r};  // B1a
+                    if (cnt_hit) begin            // 2^CAL_LOG2. udalost
+                        s_col <= 1'b0; s_drn <= 1'b1;
+                    end
+                end
+                if (cal_abort) begin              // RO nejde -> selhani (timeout z top.v)
+                    cal_fail  <= 1'b1;
+                    cal_valid <= 1'b1;            // degradovany rezim: nominalni LUT, mereni nestoji
+                    s_col     <= 1'b0;
+                end
+            end
+            if (s_drn) begin                      // dobehne zapis posledni udalosti
+                if (ph[9]) begin
+                    s_drn <= 1'b0;
+                    if (AUTOCAL != 0) begin s_cmp <= 1'b1; scan_k <= {AW{1'b0}}; end
+                    else              s_wait <= 1'b1;                 // histogram kompletni, ceka se na tabulku od STM
+                end
+            end
+            if (s_wait) begin
+                if (lw_commit) begin
+                    s_wait <= 1'b0;
+                    if (BANKS != 0) sw_pend   <= 1'b1;      // v3: aktivace az na hranici segmentu
+                    else            cal_valid <= 1'b1;
+                end
+            end
+            if (sw_pend && bank_sw) begin              // v3: prepnuti banky (BANKS = 0: sw_pend je vzdy 0)
+                bank_r    <= ~bank_r;
+                sw_pend   <= 1'b0;
+                cal_valid <= 1'b1;
+            end
+            if (s_cmp) begin                      // NC adres x 10 taktu
+                if (ph[9]) begin
+                    if (lastk_r) begin
+                        s_cmp     <= 1'b0;
+                        if (BANKS != 0) sw_pend   <= 1'b1;   // v3 (jen simulace AUTOCAL): jako potvrzeni od STM
+                        else            cal_valid <= 1'b1;
+                    end else begin
+                        scan_k <= scan_k + {{(AW-1){1'b0}}, 1'b1};
+                    end
+                end
+            end
+        end
+    end
+
+    generate
+    if (AUTOCAL != 0) begin : autocal   // ===== puvodni vypocet tabulky ve FPGA: JEN simulace (-DSIM_AUTOCAL) =====
+    // ---------------- vypocet tabulky (datova cesta, bez cal_req) ---------
+    //   V[a] = 16384 * (cum_pred + hist[a]/2) / N  =  (2*cum_pred + hist[a]) >> (LOG2-13)
+    //   (N = 2^CAL_LOG2 = pocet VSECH udalosti obou sad; jednotka T_clk/16384 -> jen posun)
+    //   10 taktu na adresu, kazdy takt jedna kratka operace:
+    //   ph1 hcur<=hist_rd | ph2 xv,cum | ph3 hnz,hgt,lutv | ph4 lut zapis | ph5 diag
+    reg [HW:0]    cum  = {(HW+1){1'b0}};
+    reg [HW+1:0]  xv   = {(HW+2){1'b0}};
+    reg [HW-1:0]  hcur = {HW{1'b0}};
+    reg           hnz  = 1'b0, hgt = 1'b0;
+    reg           dg_nz = 1'b0, dg_pk = 1'b0, dg_ov = 1'b0;
+    reg           clr_d = 1'b0;
+    // 2026-10-22 (L-0194): pri CAL_LOG2 < 13 (simulace celeho topu, SIM_TOP: 12) byl posun ZAPORNY -> Verilog ho bere jako
+    // cislo bez znamenka -> xsh = 0 a tabulka bez jemneho casu (znacky jen na takt). Syntezy se netyka (AUTOCAL = 0).
+    wire [HW+1:0] xsh  = (CAL_LOG2 >= 13) ? (xv >> (CAL_LOG2 - 13)) : (xv << (13 - CAL_LOG2));   // 0..16384
+    // sada R (adresy bez horniho bitu u DUAL, vsechny u DUAL=0) dostava +T = bit 14
+    wire          r_entry = (DUAL != 0) ? ~scan_k[AW-1] : 1'b1;
+    always @(posedge clk) begin
+        clr_d <= s_clr;                                   // vynulovani diagnostiky z registru (s_clr ridi i BRAM, velky fanout)
+        if (clr_d) begin
+            d_ovf <= 32'd0; d_peak <= 32'd0; d_nz <= 16'd0; d_last <= 16'd0;
+        end
+        if (s_drn) cum <= {(HW+1){1'b0}};
+        if (s_cmp & ph[3]) hcur <= hist_rd2;              // hist_rd2 = hist[scan_k] o 2 takty (FW 0x0421; BRAM DO ma jediny odbernik hist_rd2)
+        // FW 0x0421 (casovani pro periodu 8 ns): hcur je stabilni od ph[1], soucty se delaji az v ph[3] (multicycle 2 v timing.sdc)
+        // a vsechny dalsi kroky se o fazi posunuly (ph[4]: hnz/hgt/lutv, ph[5]: zapis tabulky, ph[6]: diagnostika).
+        if (s_cmp & ph[5]) begin
+            xv  <= {cum, 1'b0} + {2'b00, hcur};
+            cum <= cum + {1'b0, hcur};
+        end
+        if (s_cmp & ph[6]) begin
+            hnz  <= (hcur != {HW{1'b0}});
+            hgt  <= ({{(32-HW){1'b0}}, hcur} > d_peak);
+            xs14 <= (xsh > 16383) ? 14'd16383 : xsh[13:0];                // saturace (x = 2N)
+        end
+        if (s_cmp & ph[7])                                                 // polozka tabulky {amt, neg}: V = 16384*r_entry + x14
+            lutv <= {{1'b0, r_entry} + {1'b0, (xs14 != 14'd0)}, 14'd0 - xs14};
+        // povoleni zapisu diagnostiky jsou REGISTRY (CE jednim FF, ne z ph/hnz/hgt/scan_k): v ph[7] se pripravi, v ph[8] plati
+        dg_nz <= s_cmp & ph[8] & hnz;
+        dg_pk <= s_cmp & ph[8] & hnz & hgt;
+        lastk_r <= (scan_k == ADDR_LAST);                 // scan_k se meni jednou za 10 taktu
+        dg_ov <= s_cmp & ph[8] & lastk_r;
+        if (dg_nz) begin                                  // diagnostika
+            d_nz   <= d_nz + 16'd1;                       // pocet neprazdnych kodu (multicycle 3 v timing.sdc)
+            d_last <= {{(16-AW){1'b0}}, scan_k};
+        end
+        if (dg_pk) d_peak <= {{(32-HW){1'b0}}, hcur};
+        if (dg_ov) d_ovf  <= {{(32-HW){1'b0}}, hcur};
+    end
+    end else begin : stmcal             // ===== FW 0x0427: tabulku pocita STM; diagnostika d_* z histogramu taky (S2) =====
+        always @(posedge clk) begin d_ovf <= 32'd0; d_peak <= 32'd0; d_nz <= 16'd0; d_last <= 16'd0; end
+    end
+    endgenerate
+endmodule
