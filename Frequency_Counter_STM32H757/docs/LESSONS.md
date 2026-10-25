@@ -5639,6 +5639,30 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `85462d0`
 - **Stav:** 🟡 ověřeno na desce po power-cyklu 2026-10-25 (v0.40.6): SCK 25 000 000 Hz, CRC err 5,7/h (reference 12,5 MHz 5,6/h), SEQ díry bez přírůstku, selftest 16/16, `fpga v3 test` PASS; ⬜ nezměřeno osciloskopem (strmost hran, `FPGA_SPI_PIN_SPEED`) ani σy@1s
 
+### L-0239 - Kontrolní počítání hran četlo čítač s registrovaným přenosem v taktu, kdy byl nekonzistentní
+
+- **Datum:** 2026-10-25
+- **Oblast:** FPGA / `seg_chan3` (`Frequency_Counter_FPGA_Module/src/v3_core.v`)
+- **Symptom:** STM za 7,5 h zamítlo 57 oken kvůli kontrolnímu počítání (`status` → `FPGA SAMOKONTROLA: zamitnuto oken: citani 57`, `FPGA_CHK_COUNT`), přestože žádná hrana nechyběla. Vždy dva po sobě jdoucí záznamy s FLAGS bit4.
+- **Příčina:** čítač hran X = `{xhi, xlo}` má registrovaný přenos. V taktu `xcy = 1` je `xlo` už 0 a `xhi` ještě starý, takže `xcnt[9:0]` je o 256 menší. Padne-li `snap` do tohoto taktu, vyjde `cdd = ±256` a falešný `ccd_bad`; `xprev` se uloží také chybný, takže chybný je i následující záznam. Pravděpodobnost f / (256 × 100 MHz) na segment, u 10 MHz asi 1× za 64 s na kanál. Nalezla externí instance při optimalizaci (`exchange/ukol_2026-10-25_fpga_opt2`), potvrzeno testem a měřením na desce.
+- **Oprava:** `xc10 = {xhi[1:0] + xcy, xlo}` (dolních 10 b skutečného počtu i v taktu přenosu), `v3_core.v` v `seg_chan3` (`859bd40`).
+- **Pravidlo:** hodnotu čítače s registrovaným přenosem čti jen složenou s přenosem nebo v taktu, kdy je konzistentní; test konzumenta musí vynutit okamžik čtení právě v taktu přenosu, ne jen náhodně.
+- **Detekce:** `sim/tb_ccd_carry.sv` (`run.ps1`: `ccdcarry`, bez opravy FAIL, s opravou PASS); na desce `status` → `zamitnuto oken: citani` (základ před opravou 57 za 26 960 s = 7,6/h).
+- **Commit:** `859bd40`
+- **Stav:** 🟡 opraveno a ověřeno simulací; ⬜ neověřeno na desce (bitstream `FW_0x0507_v3_20261025-1613_28c71c9.fs`)
+
+### L-0240 - Otisk stopy z cizího prostředí není důkaz shody chování
+
+- **Datum:** 2026-10-25
+- **Oblast:** FPGA / ověřování cizí práce (`sim/trace_v3.py`)
+- **Symptom:** externí instance uvedla v tabulce shody sha256 stop základu a řady; u mě stejné testy dávaly jiné otisky a u `topv3deep` i jiný počet řádků (313 010 proti 312 869), přestože testy prošly.
+- **Příčina:** autor měl jiný simulátor (Icarus 13 proti našemu 12 devel) a jiný stroj; otisk závisí na prostředí, ne jen na RTL.
+- **Oprava:** shodu jsem dokázal vlastním během základu i řady na tomtéž stroji a stejným simulátorem (`trace_v3.py run` + `cmp`): 8 z 8 testů shodných (`docs/audit/2026-10-25_optimalizace-fpga-v3-kolo2.md`).
+- **Pravidlo:** shodu chování z cizí práce dokazuj vlastním během základu i změny ve stejném prostředí; převzatý otisk, tabulka PASS nebo počet řádků nejsou důkaz.
+- **Detekce:** `python sim/trace_v3.py cmp <základ> <změna>` → „stopy shodne (N testu)"; pozitivní kontrola měřítka (stopa se rozejde při změně chování) je součástí zprávy externí instance, kap. 4.2.
+- **Commit:** (dokumentace)
+- **Stav:** aktivní
+
 ---
 
 ## Archiv (neplatné lekce)

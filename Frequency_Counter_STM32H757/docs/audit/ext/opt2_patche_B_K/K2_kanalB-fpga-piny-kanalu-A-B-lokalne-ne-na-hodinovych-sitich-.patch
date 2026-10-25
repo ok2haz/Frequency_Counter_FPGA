@@ -1,0 +1,42 @@
+From ff895d0d42cff9932a3e45c67e2aadcff9290240 Mon Sep 17 00:00:00 2001
+From: Michal Grygarek <michal.grygarek@accenture.com>
+Date: Sun, 25 Oct 2026 09:04:18 +0100
+Subject: [PATCH] kanalB(fpga): piny kanalu A/B lokalne, ne na hodinovych
+ sitich (K2, pins.cst)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⚠️ Pokus pro hlavni instanci, MENI pins.cst (zakazano v optimalizacni
+rade) -- ROZBOR_KANAL_B.md bod 2/3. Vydane sestaveni ma ch_a_d na
+PRIMARY a ch_b_d na LW (asymetrie, MPW predelicky B -2,27 ns proti
+-1,6 ns u A), pin_cnt3 pritom pozaduje lokalni vedeni u IOB.
+CLOCK_LOC "ch_x_d" LOCAL_CLOCK (SUG935-1.6.1E, pril. A.8) pro oba piny.
+Bez vlivu na simulaci (jen fyzicka omezeni).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/pins.cst | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/pins.cst b/src/pins.cst
+index 13ce6dd..536691c 100644
+--- a/src/pins.cst
++++ b/src/pins.cst
+@@ -51,6 +51,13 @@ IO_PORT "clk_ref_10m"     IO_TYPE=LVCMOS33;
+ 
+ IO_PORT "ch_a"             IO_TYPE=LVCMOS33;
+ IO_PORT "ch_b"             IO_TYPE=LVCMOS33;
++// ⚠️ K2 (kanal B, pokus, 2026-10-25, ROZBOR_KANAL_B.md bod 2/3): piny kanalu jsou hodinami predelicky pin_cnt3 -> Gowin je bez
++// omezeni povysil na hodinove site, a to nesymetricky (vydane sestaveni 0x0507: ch_a_d PRIMARY, ch_b_d LW; pin_cnt3 chtel
++// lokalni vedeni u IOB). LOCAL_CLOCK (SUG935-1.6.1E pril. A.8) vede citac predelicky i datovou cestu pin -> retez TDC lokalne
++// u obou kanalu stejne; uvolni 1 PRIMARY a 1 LW. Overit: report P&R kap. 6 (ch_x_d mimo globalni hodiny), MPW a casovani
++// u_pca/u_pcb (pnr_seeds), check_tdc_placement.py; kdyby Gowin odmitl, varianta CLOCK_LOC "ch_x_d" BUFG = CLK; (oba stejne).
++CLOCK_LOC "ch_a_d" LOCAL_CLOCK;
++CLOCK_LOC "ch_b_d" LOCAL_CLOCK;
+ 
+ // 🔴 LVCMOS18 (jako na stare desce, PIN16) NEJDE — PIN29 je ve stejne
+ // bance jako CH_A/CH_B/SPI (3,3V), banka nesnese dve ruzna napeti najednou
+-- 
+2.54.0 (Apple Git-157)
+
