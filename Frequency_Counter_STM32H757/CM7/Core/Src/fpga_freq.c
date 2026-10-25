@@ -42,7 +42,7 @@ extern SPI_HandleTypeDef hspi2;
 /* === SPI rychlost ===
  * Kontrakt FPGA (GW1NR-9, oversampling SCK na 100 MHz): cil <= 6 MHz,
  * absolutni maximum ~10 MHz. NEPREKRACOVAT. */
-#define FPGA_SCK_TARGET_HZ  12500000u  /* 2026-10-18 (zadani uzivatele „10 MHz“): kernel SPI123 = PLL2P = 200 MHz -> stupne 100/50/25/12,5/6,25/3,125 MHz;
+#define FPGA_SCK_TARGET_HZ  25000000u  /* 2026-10-25 (STATUS #342): 25 MHz = takt protokolu v3 (kernel 200 MHz / 8). Drive 12,5 MHz. 2026-10-18 (zadani uzivatele „10 MHz“): kernel SPI123 = PLL2P = 200 MHz -> stupne 100/50/25/12,5/6,25/3,125 MHz;
  *   10 MHz neexistuje, prvni stupen >= 10 je 12,5 MHz (/16), pod nim 6,25. Drive 5 MHz (-> 3,125 MHz). Ramec 128 B: 328 us -> 82 us. Skutecny takt = kernel/2^n,
  *   viz "fpga: SPI2 kernel=.. SCK ~.." v boot logu. ⚠️ Vyzaduje bitstream s PHY na 100 MHz (7affd41);
  *   starsi PHY na 10 MHz zvlada jen ~2 MHz. Pri NOLINK vratit 1000000u. */
