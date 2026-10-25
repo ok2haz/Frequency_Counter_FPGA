@@ -9,6 +9,8 @@
 // po clear (bez hran a rozpracovanych znacek v E+10..E+40) nastavi v obou instancich na 2^40 - 40 -> preteceni padne doprostred
 // dalsiho segmentu. Tak nastane preteceni mezi x0/t0 a xm/tm (bit 40 operandu A), ktere tb_top_v3 nevyvola (tam cas zacina
 // od 0 a preteceni 40b casu je az za 0,67 s, index za 2^40 hran). Pokryti: pocet pricteni s wt = 1 a wx = 1 musi byt > 0.
+// 2026-10-25 (krok casovani o_ovl): FLAGS bit2 / bit3 (o_bub / o_ovl) proti modelu drivejsi semantiky (nastavi se v taktu take
+// s bub / cs_act, nuluji v clear) -- tb_top_v3 tyto priznaky nekontroluje.
 // Spusteni: run_ps1_doplnek.txt (segdsp), ~10 s; mutace rezim 9 v sim/mut_top_v3.py.
 // ============================================================
 `timescale 1ps/1fs
@@ -28,7 +30,8 @@ module tb_seg_dsp;
         .bub(bub), .cs_act(cs_act), .hold(hold), .sig_pin(sig_pin), .freeze(freeze), .snap(snap), .clear(clear), .nfc(nfc), .presc(presc),
         .o_n(n0), .o_x0(x00), .o_t0(t00), .o_sx(sx0), .o_st(st0), .o_flags(fl0), .o_presc(p0), .o_bub(bu0), .o_ovl(ov0));
 
-    integer errors = 0, nchk = 0, nseg = 0, nwt = 0, nwx = 0, nmarks = 0, nsum = 0;
+    integer errors = 0, nchk = 0, nseg = 0, nwt = 0, nwx = 0, nmarks = 0, nsum = 0, nfb = 0, nfo = 0;
+    reg     eb = 1'b0, eo = 1'b0;                     // model o_bub / o_ovl drivejsi semantiky (take & bub / cs_act, clear)
     task chk(input cond, input [8*64-1:0] what);
         begin nchk = nchk + 1; if (!cond) begin errors = errors + 1; if (errors < 20) $display("  CHYBA: %0s (t = %0t)", what, $time); end end endtask
 
@@ -80,12 +83,18 @@ module tb_seg_dsp;
         if (u1.v1 && u1.g_dsp.wt) nwt = nwt + 1;
         if (u1.v1 && u1.g_dsp.wx) nwx = nwx + 1;
         if (u1.v1) nsum = nsum + 1;
+        if (clear) begin eb = 1'b0; eo = 1'b0; end
+        else if (u1.take) begin if (bub) eb = 1'b1; if (cs_act) eo = 1'b1; end
         if (e == 7) begin
             nseg = nseg + 1;
             chk(n1 === n0 && x01 === x00 && t01 === t00, "N, X0, T0 shodne");
             chk(sx1 === sx0, "SX: ALU54D = puvodni soucet");
             chk(st1 === st0, "ST: ALU54D = puvodni soucet");
             chk(fl1 === fl0 && p1 === p0 && bu1 === bu0 && ov1 === ov0, "FLAGS, P, BUB, OVL shodne");
+            chk((bu1 != 8'd0) === eb && fl1[2] === eb, "o_bub / FLAGS bit2 = drivejsi semantika");
+            chk((ov1 != 4'd0) === eo && fl1[3] === eo, "o_ovl / FLAGS bit3 = drivejsi semantika");
+            if (eb) nfb = nfb + 1;
+            if (eo) nfo = nfo + 1;
             if (sx1 !== sx0 || st1 !== st0)
                 $display("  seg %0d: N %0d SX %h / %h ST %h / %h", nseg, n1, sx1, sx0, st1, st0);
         end
@@ -95,7 +104,9 @@ module tb_seg_dsp;
         chk(nwt > 0, "pokryti: pricteni s pretecenim casu (wt = 1)");
         chk(nwx > 0, "pokryti: pricteni s pretecenim indexu (wx = 1)");
         chk(nseg > 100, "pokryti: aspon 100 segmentu");
-        $display("segmentu %0d, znacek %0d, pricteni %0d, s pretecenim casu %0d, indexu %0d, kontrol %0d", nseg, nmarks, nsum, nwt, nwx, nchk);
+        chk(nfb > 10 && nfb < nseg && nfo > 10 && nfo < nseg, "pokryti: segmenty s i bez FLAGS bit2 / bit3");
+        $display("segmentu %0d, znacek %0d, pricteni %0d, s pretecenim casu %0d, indexu %0d, s bit2 %0d, bit3 %0d, kontrol %0d",
+                 nseg, nmarks, nsum, nwt, nwx, nfb, nfo, nchk);
         if (errors == 0) $display("PASS: tb_seg_dsp"); else $display("FAIL: tb_seg_dsp (%0d chyb)", errors);
         $finish;
     end

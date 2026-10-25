@@ -141,6 +141,11 @@ module seg_chan3 #(
     // zapisovac cte o_t0/o_x0 az DRAIN taktu po hranici (znacky behem freeze se neberou) -> stejne hodnoty.
     reg        tf = 1'b0;
     (* syn_preserve = 1 *) reg tf_b = 1'b0;
+    // 2026-10-25 (casovani, cesta hold_x_s -> take -> o_ovl, take ma fan-out ~100 a Gowin ho vede po LW): priznaky o_bub /
+    // o_ovl se nastavi o takt pozdeji z registru tk1 = take, bub_f = bub, cs_f = cs_act (presne hodnoty z taktu take).
+    // Cte je jen zapisovac kruhu (E+7, slovo 0 B v E+15) a lb_x v clear; posledni take v E -> nastaveny v E+2 (drive E+1).
+    // tk1 s clear nesplyne (take ve freeze a clear neni), nulovani v clear tedy zustava shodne.
+    reg        tk1 = 1'b0, bub_f = 1'b0, cs_f = 1'b0;
     always @(posedge clk) begin
         ncy <= 1'b0;
         v1  <= take & ~first;
@@ -156,9 +161,10 @@ module seg_chan3 #(
             if (first)   first <= 1'b0;
             if (first_b) first_b <= 1'b0;
             nlo <= nlo + 12'd1; ncy <= (nlo == 12'hFFF);
-            if (bub)    o_bub <= 8'd1;                 // FW 0x0507: jen priznak (pocet v hlavicce zrusen, kap. 3.1b)
-            if (cs_act) o_ovl <= 4'd1;
         end
+        tk1 <= take; bub_f <= bub; cs_f <= cs_act;
+        if (tk1 & bub_f) o_bub <= 8'd1;                // FW 0x0507: jen priznak (pocet v hlavicce zrusen, kap. 3.1b)
+        if (tk1 & cs_f)  o_ovl <= 4'd1;
         if (ncy) nhi <= nhi + 12'd1;
         if (v1)  begin {btl, dtl} <= {1'b0, tm[19:0]} - {1'b0, t0[19:0]};  {bxl, dxl} <= {1'b0, xm[12:0]} - {1'b0, x0[12:0]}; end
         if (v1b) begin dtu <= tm[39:20] - t0[39:20] - {19'd0, btl};      dxu <= xm[25:13] - x0[25:13] - {12'd0, bxl}; end
@@ -237,10 +243,8 @@ module seg_chan3 #(
         // misto nlo/nhi s registrovanym prenosem (24 FF + 24 ALU). Pricita se v tk1 (take o takt pozdeji, registr ->
         // povoleni bloku DSP bez cesty pres take); N je hotove v E+2 (posledni take v E), zapisovac cte v E+7. clear v taktu,
         // kdy by tk1 = 1, nenastane (take v taktech freeze a clear neni). N <= 5e5 < 2^24 jako drive.
-        reg        tk1 = 1'b0;
         reg [23:0] n_d = 24'd0 /* synthesis syn_dspstyle = "dsp" */;
         always @(posedge clk) begin
-            tk1 <= take;
             if (clear)    n_d <= 24'd0;
             else if (tk1) n_d <= n_d + 24'd1;
         end
