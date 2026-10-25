@@ -5663,6 +5663,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** (dokumentace)
 - **Stav:** aktivní
 
+### L-0241 - Počítadlo `CRC err` nevidělo rámce se špatným MAGIC nebo VER
+
+- **Datum:** 2026-10-25
+- **Oblast:** firmware / SPI v3 (`fpga_freq.c` `poll_v3`, `fpga_v3.c` `fpga_v3_parse`)
+- **Symptom:** při hledání příčiny CRC chyb (5,7/h) se ukázalo, že počítadlo nezachytí poškozený rámec, jehož první bajt (MAGIC) nebo druhý (VER) je špatně. Takový rámec jen shodí link pro ten rámec, nikde se nespočítá.
+- **Příčina:** `fpga_v3_parse` kontroluje MAGIC a VER dřív než CRC a vrací `FPGA_V3_E_MAGIC` / `E_VER`; `poll_v3` zvyšuje `g_rx_crc` jen u `E_CRC0` a u vadných bloků 1–3. Posunutý nebo zcela poškozený rámec (např. posun o bit, samé 0xFF) tedy skončí v neviditelné větvi.
+- **Oprava:** v0.40.7 zapisuje každou chybu rámce do kruhu s druhem (1 CRC bloku 0, 2 CRC bloku 1–3, 3 MAGIC/VER, 4 LEN) a uloží surový vadný blok; `CRC err` zůstává beze změny (druh 1 + 2). `fpga_freq.c` (`s3x_note`), UART `spi err`, `spi err dump`.
+- **Pravidlo:** počítadlo chyb musí pokrývat všechny větve, kterými rámec může být zahozen, ne jen tu, podle které se jmenuje; při přidání nové kontroly před CRC přidej i její počítadlo.
+- **Detekce:** `status` → řádek `SPI ERR` (rozpis podle druhu), `spi err` (kind 3 = MAGIC/VER); zkouška na desce `spi err inject <blok> <n>`.
+- **Commit:** `4f51a54`
+- **Stav:** 🟡 v kódu (v0.40.7), ⬜ neověřeno na desce
+
 ---
 
 ## Archiv (neplatné lekce)

@@ -1124,6 +1124,10 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
 - **STM v0.40.0** (`bf71399`, tag): úzká hlavička FW 0x0507 (CAPS bit22, `PROTOKOL_V3.md` kap. 3.1b) – 16b SEQ/REC/PSEQ rozbaluje
   `fpga_v3_unwrap`, předchozí 1PPS z historie STM; `fpgasim v3 on <Hz> [Hz_B] [fáze] uzka`. FPGA část 0x0507 čeká na ověření externí
   optimalizace (STATUS #338: simulace, mutace, zkušební bitstream). ⬜ neověřeno na HW.
+- **Kolo 2 optimalizace FPGA + STM v0.40.7** (2026-10-25, STATUS #343, `docs/audit/2026-10-25_optimalizace-fpga-v3-kolo2.md`): bitstream
+  `ab_test/FW_0x0507_v3_20261025-1613_28c71c9.fs` (CLS 78 %, setup +0,119 ns), oprava falešného FLAGS bit4 (L-0239). STM: diagnostika
+  chyb SPI v3 – UART `spi err [dump|reset|inject <blok> <n>]`, `spi poll [ms]`, řádek `SPI ERR` ve `status` (MAGIC/VER se do `CRC err`
+  nezapočítává, L-0241). Polling v3 je omezen na 25/s (`S3_POLL_MS`), mezera mezi transakcemi 200 µs. ⬜ neověřeno na HW.
 
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)
 
