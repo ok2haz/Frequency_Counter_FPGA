@@ -353,7 +353,10 @@ void StartFpgaTask(void *argument)
     /* Perioda cteni: pri kratkem hradle (50/100 ms) musi byt kratsi nez hradlo, jinak FPGA mereni prepise
      * drive, nez ho precteme (dira v SEQUENCE). Jinak ~20 Hz jako dosud. */
     { uint32_t gms = fpga_gate_idx_ms(want_gate);
-      osDelay((gms <= 50u) ? 10u : ((gms <= 100u) ? 25u : 50u)); }
+      uint32_t dly = (gms <= 50u) ? 10u : ((gms <= 100u) ? 25u : 50u);
+      const uint32_t pms = fpga_freq_poll_ms(0);                 /* v0.40.7: zkouska `spi poll <ms>`; vychozi 40 = beze zmeny */
+      if (pms != 40u && pms < dly) dly = pms;
+      osDelay(dly); }
   }
 }
 

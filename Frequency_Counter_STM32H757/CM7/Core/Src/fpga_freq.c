@@ -966,6 +966,83 @@ static uint32_t s3_last_win_ms = 0u;
 static uint8_t  s3_lost = 0u;
 static uint32_t s3_frames = 0u, s3_wins = 0u, s3_qdrop = 0u, s3_pages = 0u;
 static uint32_t s3_xfer_ms = 0u;   /* HAL_GetTick posledni transakce poll_v3 */
+static volatile uint32_t s3_poll_ms = S3_POLL_MS;   /* v0.40.7: nejkratsi odstup transakci, `spi poll` (zkousky; nepersistuje se) */
+
+/* v0.40.7 (STATUS #343): diagnostika chyb SPI v3 -- kdy, ktery blok, serie, tvar poskozeni. Jen zaznam. Zapisuje FpgaTask
+ * (poll_v3), cte UartTask (`spi err`); roztrzene cteni kruhu je pri ladeni prijatelne (jako ostatni pocitadla). Vadne bloky
+ * jsou staticke (L-0186: 1 KB na zasobniku FpgaTasku nechal 36 B). */
+static fpga_spi_err_t     s3x_ring[FPGA_SPI_ERR_RING];
+static uint8_t            s3x_bad[FPGA_SPI_ERR_BAD][FPGA_V3_BLK];
+static int8_t             s3x_bad_k[FPGA_SPI_ERR_BAD] = { -1, -1, -1, -1 };   /* index bloku v ramci, -1 = prazdny slot */
+_Static_assert(FPGA_SPI_ERR_BAD == 4u, "s3x_bad_k: inicializator pro 4 sloty");
+static fpga_spi_errstat_t s3x;
+static uint32_t           s3x_n = 0u, s3x_run = 0u;
+static uint8_t            s3x_seen_ok = 0u;                  /* kind 3/4 se zapisuji az po prvnim platnem ramci (start / nahrani FPGA) */
+static volatile uint8_t   s3x_inj_blk = 0u;
+static volatile uint32_t  s3x_inj_n = 0u;
+
+static void s3x_note(uint8_t kind, uint32_t gap_ms)
+{
+    const uint8_t mask = fpga_v3_blk_ok(s3_rx);
+    const uint32_t i = s3x_n % FPGA_SPI_ERR_RING;
+    fpga_spi_err_t *e = &s3x_ring[i];
+    s3x_run++;
+    e->t_ms     = HAL_GetTick();
+    e->frame_no = s3x.frames;
+    e->seq      = (uint32_t)s3_rx[4] | ((uint32_t)s3_rx[5] << 8) | ((uint32_t)s3_rx[6] << 16) | ((uint32_t)s3_rx[7] << 24);
+    const uint32_t sp = e->t_ms - s_pc_first;
+    e->since_pps_ms = (s_pc_first != 0u && sp < 0xFFFEu) ? (uint16_t)sp : 0xFFFFu;
+    e->gap_ms   = (uint16_t)((gap_ms > 0xFFFFu) ? 0xFFFFu : gap_ms);
+    e->blk_ok   = mask;
+    e->kind     = kind;
+    e->run      = (uint8_t)((s3x_run > 255u) ? 255u : s3x_run);
+    int k = -1;
+    for (int b = 0; b < 4; b++) if (!((mask >> b) & 1u)) { s3x.blk[b]++; if (k < 0) k = b; }
+    if (k < 0) k = 0;                                        /* kind 3/4 s platnym CRC: uloz blok 0 */
+    const uint32_t slot = s3x_n % FPGA_SPI_ERR_BAD;
+    memcpy(s3x_bad[slot], s3_rx + (uint32_t)k * FPGA_V3_BLK, FPGA_V3_BLK);
+    s3x_bad_k[slot] = (int8_t)k;
+    for (uint32_t j = 0; j < FPGA_SPI_ERR_RING; j++)         /* slot se prepsal: starsi zaznam o nem uz obsah nema */
+        if (j != i && s3x_ring[j].kind != 0u && s3x_ring[j].bad_slot == slot) s3x_ring[j].bad_slot = 0xFFu;
+    e->bad_slot = (uint8_t)slot;
+    s3x.err++;
+    if (kind < 5u) s3x.kind[kind]++;
+    if (s3x_run > s3x.max_run) s3x.max_run = s3x_run;
+    s3x_n++;
+}
+static void s3x_ok(void)                                     /* platny ramec: uzavre serii vadnych */
+{
+    s3x_seen_ok = 1u;
+    if (s3x_run != 0u) { s3x.bursts++; if (s3x_run == 1u) s3x.isolated++; s3x_run = 0u; }
+}
+
+void fpga_spi_err_stats(fpga_spi_errstat_t *s) { *s = s3x; s->inj_left = s3x_inj_n; }
+bool fpga_spi_err_get(uint32_t i, fpga_spi_err_t *e)
+{
+    const uint32_t have = (s3x_n < FPGA_SPI_ERR_RING) ? s3x_n : FPGA_SPI_ERR_RING;
+    if (i >= have) return false;
+    *e = s3x_ring[(s3x_n - 1u - i) % FPGA_SPI_ERR_RING];
+    return true;
+}
+int fpga_spi_err_block(uint32_t slot, uint8_t *dst)
+{
+    if (slot >= FPGA_SPI_ERR_BAD || s3x_bad_k[slot] < 0) return -1;
+    memcpy(dst, s3x_bad[slot], FPGA_V3_BLK);
+    return s3x_bad_k[slot];
+}
+void fpga_spi_err_reset(void)
+{
+    memset(&s3x, 0, sizeof s3x);
+    memset(s3x_ring, 0, sizeof s3x_ring);
+    for (uint32_t i = 0; i < FPGA_SPI_ERR_BAD; i++) s3x_bad_k[i] = -1;
+    s3x_n = 0u; s3x_run = 0u;
+}
+void fpga_spi_err_inject(uint32_t blk, uint32_t n) { s3x_inj_blk = (uint8_t)(blk & 3u); s3x_inj_n = n; }
+uint32_t fpga_freq_poll_ms(int set_ms)
+{
+    if (set_ms > 0) s3_poll_ms = (set_ms < 10) ? 10u : ((set_ms > 200) ? 200u : (uint32_t)set_ms);
+    return s3_poll_ms;
+}
 
 static bool xfer3_raw(const uint8_t *tx, uint8_t *rx)
 {
@@ -1301,21 +1378,30 @@ int fpga_sim_v3_active(void) { return s_sim_on && s_sim_v3; }
 /* Jedna transakce v3 ve FpgaTasku: ACK + prijem; vrati true, kdyz je k dispozici okno vybraneho kanalu */
 static bool poll_v3(fpga_meas_t *out)
 {
-    if (s3_qr == s3_qw && (uint32_t)(HAL_GetTick() - s3_xfer_ms) >= S3_POLL_MS) {
+    if (s3_qr == s3_qw && (uint32_t)(HAL_GetTick() - s3_xfer_ms) >= s3_poll_ms) {
+        const uint32_t t_gap = HAL_GetTick() - s3_xfer_ms;       /* v0.40.7: odstup od zacatku predchozi transakce */
         s3_xfer_ms = HAL_GetTick();
+        const uint32_t cyc0 = DWT->CYCCNT;
         fpga_v3_build_ack(s3_tx, ++s3_mseq, s3_link.expect);
         if (s_sim_on) { sim3_produce(s3_tx, s3_rx); g_xfer_ok = 1u; }
         else if (!xfer3(s3_tx, s3_rx)) { g_xfer_ok = 0u; s_link_ok = 0u; return false; }
         else g_xfer_ok = 1u;
+        {   const uint32_t us = (uint32_t)(DWT->CYCCNT - cyc0) / (SystemCoreClock / 1000000u);
+            if (us > s3x.xfer_us_max) s3x.xfer_us_max = us;
+            if (s3x.frames != 0u && t_gap > s3x.gap_ms_max) s3x.gap_ms_max = t_gap;
+            s3x.frames++; }
+        if (s3x_inj_n != 0u) { s3x_inj_n--; s3_rx[(uint32_t)(s3x_inj_blk & 3u) * FPGA_V3_BLK + 100u] ^= 0x01u; }   /* zkouska diagnostiky (`spi err inject`) */
         g_last_rx0 = s3_rx[0];
         uint32_t n_ok = 0u;
         const int rc = fpga_v3_parse(s3_rx, &s3_h, s3_rec, &n_ok);
         if (rc != FPGA_V3_OK) {
-            if (rc == FPGA_V3_E_CRC0) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }
+            if (rc == FPGA_V3_E_CRC0) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s3x_note(1u, t_gap); }
+            else if (s3x_seen_ok) s3x_note((rc == FPGA_V3_E_LEN) ? 4u : 3u, t_gap);   /* MAGIC/VER: parser skonci pred CRC, `CRC err` to nevidi */
             s_link_ok = 0u;
             return false;
         }
-        if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); }   /* vadny blok 1-3: zaznamy prijdou znovu */
+        if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s3x_note(2u, t_gap); }   /* vadny blok 1-3: zaznamy prijdou znovu */
+        else s3x_ok();
         fpga_v3_unwrap(&s3_wrap, &s3_h);                           /* v0.40.0: FW 0x0507 16b pole -> 32 b, 1PPS predchozi */
         s3_h_ok = 1u; s_link_ok = 1u; s3_frames++;
         if (s3_h.type == FPGA_V3_T_DATA) s3_take_records(n_ok);

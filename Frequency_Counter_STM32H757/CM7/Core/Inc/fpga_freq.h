@@ -282,6 +282,43 @@ void     fpga_freq_spi_pin_speed(uint8_t *sck, uint8_t *mosi);
 /** "uptime od posledni CRC chyby" v sekundach (0 = zadna chyba nebyla). */
 uint32_t fpga_freq_crc_last_age_s(void);
 
+/* ── Diagnostika chyb SPI v3 (v0.40.7, STATUS #343): kdy, ktery blok, serie, tvar poskozeni ────────────────────────
+ * Jen zaznam, na chovani nema vliv. Zapisuje FpgaTask (poll_v3), cte UartTask (`spi err`). */
+#define FPGA_SPI_ERR_RING   16u    /* poslednich N chyb (kruh) */
+#define FPGA_SPI_ERR_BAD     4u    /* poslednich N vadnych bloku v surove podobe (256 B) */
+typedef struct {
+    uint32_t t_ms;           /* HAL_GetTick() pri chybe */
+    uint32_t frame_no;       /* poradi transakce poll_v3 od boot (nebo od `spi err reset`) */
+    uint32_t seq;            /* SEQ z hlavicky tak, jak prisla (u uzke hlavicky jen dolnich 16 b; pri vadnem bloku 0 nejiste) */
+    uint16_t since_pps_ms;   /* ms od posledni zmeny PSEQ videne STM (presnost +- perioda pollu), 0xFFFF = neznamo */
+    uint16_t gap_ms;         /* ms od zacatku predchozi transakce */
+    uint8_t  blk_ok;         /* bit k = CRC bloku k sedi */
+    uint8_t  kind;           /* 1 = vadny CRC bloku 0 (ramec zahozen), 2 = vadny CRC bloku 1-3 (zaznamy znovu),
+                              * 3 = MAGIC/VER spatne (parser skonci pred kontrolou CRC, do `CRC err` se NEzapocte), 4 = FRAME_LEN/NBLK */
+    uint8_t  run;            /* kolik ramcu za sebou je vadnych (vcetne tohoto) */
+    uint8_t  bad_slot;       /* 0..BAD-1 = index v poli vadnych bloku, 0xFF = obsah neulozen (prepsan novejsim) */
+} fpga_spi_err_t;
+typedef struct {
+    uint32_t frames;         /* transakce poll_v3 */
+    uint32_t err;            /* ramce s chybou (kind 1..4); `CRC err` v status = kind 1 + 2 */
+    uint32_t blk[4];         /* chyby CRC podle bloku (vadny blok se zapocte kazdy zvlast) */
+    uint32_t kind[5];        /* [1..4] */
+    uint32_t bursts, isolated, max_run;   /* serie vadnych ramcu za sebou; izolovana = serie delky 1 */
+    uint32_t xfer_us_max;    /* nejdelsi transakce vcetne mezery a cekani na mutex [us] */
+    uint32_t gap_ms_max;     /* nejdelsi odstup zacatku dvou transakci [ms] */
+    uint32_t inj_left;       /* zbyva vstrikovanych chyb (`spi err inject`) */
+} fpga_spi_errstat_t;
+void     fpga_spi_err_stats(fpga_spi_errstat_t *s);
+/** i-ta nejnovejsi chyba (0 = posledni); false = neni. */
+bool     fpga_spi_err_get(uint32_t i, fpga_spi_err_t *e);
+/** Vadny blok ulozeny pod slotem (0..BAD-1), vraci index bloku v ramci (0..3) nebo -1; data do dst[256]. */
+int      fpga_spi_err_block(uint32_t slot, uint8_t *dst);
+void     fpga_spi_err_reset(void);
+/** Zkouska diagnostiky: n dalsich prijatych ramcu se pred zpracovanim zkazi (preklopeni jednoho bitu v bloku blk 0..3). */
+void     fpga_spi_err_inject(uint32_t blk, uint32_t n);
+/** Nejkratsi odstup transakci poll_v3 [ms] (vychozi 40, rozsah 10..200, nepersistuje se); vraci platnou hodnotu. */
+uint32_t fpga_freq_poll_ms(int set_ms);
+
 /** Jeden FPGA_FRAME_LEN-B full-duplex prenos (posle ACK posledni seq, prijme
  *  aktualni ramec).
  *  @return true pokud prislo NOVE platne cerstve mereni (CRC ok, VALID, FRESH, nova SEQUENCE). */

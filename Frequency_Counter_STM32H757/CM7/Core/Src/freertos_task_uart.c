@@ -1597,7 +1597,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -3281,7 +3281,70 @@ void UartTask_run(void *argument)
 			  else if (strncmp(RxBuffer, "spi", 3) == 0) {
 				  const char *p = RxBuffer + 3;
 				  while (*p == ' ') p++;
-				  if (strncmp(p, "dma", 3) == 0) {
+				  if (strncmp(p, "err", 3) == 0) {
+					  /* v0.40.7 (STATUS #343): diagnostika chyb SPI v3 -- `spi err` souhrn + poslednich chyb, `spi err dump` vadne bloky (hex),
+					   * `spi err reset`, `spi err inject <blok 0..3> <n>` (zkouska: zkazi dalsich n prijatych ramcu). */
+					  const char *q = p + 3;
+					  while (*q == ' ') q++;
+					  if (strncmp(q, "reset", 5) == 0) {
+						  fpga_spi_err_reset();
+						  printf("SPI ERR: vynulovano\n");
+					  } else if (strncmp(q, "inject", 6) == 0) {
+						  q += 6;
+						  while (*q == ' ') q++;
+						  uint32_t ib = 0u, in = 1u;
+						  if (*q >= '0' && *q <= '3') {
+							  ib = (uint32_t)(*q - '0'); q++;
+							  while (*q == ' ') q++;
+							  if (*q >= '0' && *q <= '9') { in = 0u; while (*q >= '0' && *q <= '9') { in = in * 10u + (uint32_t)(*q - '0'); q++; } }
+						  }
+						  fpga_spi_err_inject(ib, in);
+						  printf("SPI ERR: zkazim dalsich %lu ramcu (blok %lu, bit 0 bajtu 100)\n", (unsigned long)in, (unsigned long)ib);
+					  } else if (strncmp(q, "dump", 4) == 0) {
+						  static uint8_t eblk[FPGA_V3_BLK];            /* UartTask: 256 B na zasobnik nedavame */
+						  for (uint32_t sl = 0; sl < FPGA_SPI_ERR_BAD; sl++) {
+							  const int bk = fpga_spi_err_block(sl, eblk);
+							  if (bk < 0) continue;
+							  printf("SPI ERR: slot %lu = blok %d ramce\n", (unsigned long)sl, bk);
+							  for (uint32_t o = 0; o < FPGA_V3_BLK; o += 32u) {
+								  printf("  %03lX:", (unsigned long)o);
+								  for (uint32_t j = 0; j < 32u; j++) printf(" %02X", (unsigned)eblk[o + j]);
+								  printf("\n");
+							  }
+						  }
+					  } else {
+						  fpga_spi_errstat_t es;
+						  fpga_spi_err_stats(&es);
+						  printf("SPI ERR: transakci %lu, chyb %lu = CRC bloku 0: %lu, CRC bloku 1-3: %lu, MAGIC/VER: %lu, LEN: %lu | CRC podle bloku 0:%lu 1:%lu 2:%lu 3:%lu\n",
+						         (unsigned long)es.frames, (unsigned long)es.err, (unsigned long)es.kind[1], (unsigned long)es.kind[2],
+						         (unsigned long)es.kind[3], (unsigned long)es.kind[4], (unsigned long)es.blk[0], (unsigned long)es.blk[1],
+						         (unsigned long)es.blk[2], (unsigned long)es.blk[3]);
+						  printf("SPI ERR: serii %lu (izolovanych %lu, nejdelsi %lu) | transakce max %lu us, odstup max %lu ms | nejkratsi odstup %lu ms%s\n",
+						         (unsigned long)es.bursts, (unsigned long)es.isolated, (unsigned long)es.max_run,
+						         (unsigned long)es.xfer_us_max, (unsigned long)es.gap_ms_max, (unsigned long)fpga_freq_poll_ms(0),
+						         es.inj_left ? " | VSTRIKOVANI AKTIVNI" : "");
+						  for (uint32_t i = 0; i < FPGA_SPI_ERR_RING; i++) {
+							  fpga_spi_err_t ee;
+							  if (!fpga_spi_err_get(i, &ee)) break;
+							  printf("  #%lu t=%lu.%03lu s ramec %lu kind %u bloky OK %X SEQ %lu od PSEQ %lu ms odstup %lu ms serie %u slot %d\n",
+							         (unsigned long)i, (unsigned long)(ee.t_ms / 1000u), (unsigned long)(ee.t_ms % 1000u), (unsigned long)ee.frame_no,
+							         (unsigned)ee.kind, (unsigned)ee.blk_ok, (unsigned long)ee.seq,
+							         (unsigned long)((ee.since_pps_ms == 0xFFFFu) ? 0u : ee.since_pps_ms), (unsigned long)ee.gap_ms,
+							         (unsigned)ee.run, (ee.bad_slot == 0xFFu) ? -1 : (int)ee.bad_slot);
+						  }
+						  printf("SPI ERR: pouziti: spi err [reset|dump|inject <blok> <n>] | spi poll [ms]\n");
+					  }
+				  } else if (strncmp(p, "poll", 4) == 0) {
+					  /* v0.40.7: nejkratsi odstup transakci v3 (vychozi 40 ms, nepersistuje se). Skutecny odstup je vetsi z teto hodnoty a periody smycky
+					   * FpgaTasku (10 ms pri hradle <= 50 ms, 25 ms <= 100 ms, jinak 50 ms), mene nez 40 ms ji zkracuje i smycku. */
+					  const char *q = p + 4;
+					  while (*q == ' ') q++;
+					  int pv = 0;
+					  while (*q >= '0' && *q <= '9') { pv = pv * 10 + (*q - '0'); q++; }
+					  const uint32_t pr = fpga_freq_poll_ms(pv);
+					  printf("SPI: nejkratsi odstup transakci v3 = %lu ms (do ~%lu/s; vychozi 40, rozsah 10..200, nepersistuje se)\n",
+					         (unsigned long)pr, (unsigned long)(1000u / pr));
+				  } else if (strncmp(p, "dma", 3) == 0) {
 					  /* 2026-10-22 (protokol v3, krok 7): datova faze SPI2 pres DMA za behu -- `spi dma on|off`, `spi dma` = stav.
 					   * Vychozi vypnuto (overeni na desce: zadani 2026-10-20_CRC_DMA_zadani_CLI.md testy D3..D8). */
 					  const char *q = p + 3;
@@ -3935,6 +3998,14 @@ void UartTask_run(void *argument)
 						     (unsigned long)fpga_freq_crc_last_age_s());
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  {   /* v0.40.7: rozpis chyb SPI v3 (podrobnosti `spi err`); MAGIC/VER do `CRC err` nepatri */
+					  fpga_spi_errstat_t es;
+					  fpga_spi_err_stats(&es);
+					  if (es.err != 0u)
+						  printf("  SPI ERR: chyb %lu (CRC b0 %lu, CRC b1-3 %lu, MAGIC/VER %lu, LEN %lu), serii %lu (izolovanych %lu, nejdelsi %lu) | `spi err`\n",
+						         (unsigned long)es.err, (unsigned long)es.kind[1], (unsigned long)es.kind[2], (unsigned long)es.kind[3],
+						         (unsigned long)es.kind[4], (unsigned long)es.bursts, (unsigned long)es.isolated, (unsigned long)es.max_run);
+				  }
 				  /* v2 pole (abs 60-65) — zatim jen diagnosticky vypis, nic je
 				   * nespotrebovava (SET_CONFIG/CAL report/REGR se vypisuji
 				   * v radcich nize, viz FPGA_PROTOCOL_V2_NAVRH.md).
