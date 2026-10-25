@@ -51,6 +51,8 @@ module tb_hold_inv;
         inv_ok = (dut.u_pps.wnz === (dut.u_pps.win != 5'd0)) && (dut.u_pps.wnz_b === dut.u_pps.wnz)
               && (dut.u_pps.pend_b === dut.u_pps.pend) && (dut.u_pps.fok_b === dut.u_pps.fok) && (dut.u_pps.wok_b === dut.u_pps.wok)
               && (dut.u_lws.lw_a_qa === dut.u_lws.lw_a_qb) && (dut.u_lws.lw_n_qa === dut.u_lws.lw_n_qb)
+              && (dut.u_pps.dhi_r === (~dut.u_pps.dd_r[33] & (dut.u_pps.dd_r[32:7] != 26'd0)))
+              && (dut.u_pps.dlo_r === (dut.u_pps.dd_r[33] & (dut.u_pps.dd_r[32:7] != {26{1'b1}})))
               && (dut.u_sa.fnz === (dut.u_sa.fn != 2'd0)) && (dut.u_sb.fnz === (dut.u_sb.fn != 2'd0))
               && (dut.u_sa.first_b === dut.u_sa.first) && (dut.u_sb.first_b === dut.u_sb.first)
               && (dut.u_ring.nfc_a === (~dut.u_ring.freeze & ~dut.u_ring.clear_a))

@@ -458,10 +458,17 @@ module pps_cap3 (
     reg  [33:0] dd_r = 34'd0;
     // FW 0x0507: rozdil z 12 b (jemny cas se bere jen do 31 taktu po hrube hrane a fa se pri ni nuluje -> |d| < 2048)
     wire [11:0] df12 = f_ts[25:14] - c_tick[11:0];
-    always @(posedge clk) dd_r <= {{22{df12[11]}}, df12};
+    // 2026-10-25 (casovani, cesta dd_r -> d_l): priznaky saturace z df12 registrovane SPOLU s dd_r. dd_r je df12 se znamenkem
+    // rozsirenym na 34 b, takze drivejsi dhi = ~dd[33] & (dd[32:7] != 0) = ~df12[11] & (df12[10:7] != 0) a dlo = dd[33] &
+    // (dd[32:7] != vse 1) = df12[11] & (df12[10:7] != 4'hF) -> dhi_r / dlo_r jsou v kazdem taktu shodne s drivejsimi dhi /
+    // dlo (invariant v tb_top_v3, tb_hold_inv, tb_pps_v3). d_l je pak jedna LUT3 z registru misto dvou urovni za dd_r.
+    reg         dhi_r = 1'b0, dlo_r = 1'b0;
+    always @(posedge clk) begin
+        dd_r  <= {{22{df12[11]}}, df12};
+        dhi_r <= ~df12[11] & (df12[10:7] != 4'd0);          // > 127
+        dlo_r <=  df12[11] & (df12[10:7] != 4'hF);          // < -128
+    end
     wire [33:0] dd  = dd_r;
-    wire        dhi = ~dd[33] & (dd[32:7] != 26'd0);        // > 127
-    wire        dlo =  dd[33] & (dd[32:7] != {26{1'b1}});   // < -128
     assign last = 34'd0; assign prev = 34'd0;
     initial begin seq_nz = 1'b0; seq_gt1 = 1'b0; pts_l = 48'd0; pts_p = 48'd0; pfl_l = 8'd0; pfl_p = 8'd0;
                   d_l = 8'd0; d_p = 8'd0; nofine = 1'b0; end
@@ -486,7 +493,7 @@ module pps_cap3 (
                 pend  <= 1'b0; fa <= 1'b0;
                 if (fok) begin
                     pts_l <= f_ts; pfl_l <= 8'd3; nofine <= 1'b0;
-                    d_l   <= dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0];
+                    d_l   <= dhi_r ? 8'h7F : dlo_r ? 8'h80 : dd[7:0];
                 end else begin
                     pts_l <= {c_tick, 14'd0}; pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;
                 end

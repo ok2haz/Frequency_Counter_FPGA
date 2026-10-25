@@ -47,7 +47,10 @@ M = [
     # --- pps_cap3 ---
     ('seq_gt1 <= 1', [("seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;")], False),
     ('pts_p se neposune', [("            pts_p  <= pts_l; pfl_p <= pfl_l; d_p <= d_l;", "            pfl_p <= pfl_l; d_p <= d_l;")], False),
-    ('saturace d_l prohozena', [("dhi ? 8'h7F : dlo ? 8'h80 : dd[7:0]", "dhi ? 8'h80 : dlo ? 8'h7F : dd[7:0]")], False),
+    # 2026-10-25 (casovani dd_r -> d_l): priznaky saturace dhi_r / dlo_r registrovane z df12
+    ('saturace d_l prohozena', [("dhi_r ? 8'h7F : dlo_r ? 8'h80 : dd[7:0]", "dhi_r ? 8'h80 : dlo_r ? 8'h7F : dd[7:0]")], False),
+    ('saturace: prah dhi_r 255', [("        dhi_r <= ~df12[11] & (df12[10:7] != 4'd0);", "        dhi_r <= ~df12[11] & (df12[10:8] != 3'd0);")], False),
+    ('saturace: prah dlo_r -256', [("        dlo_r <=  df12[11] & (df12[10:7] != 4'hF);", "        dlo_r <=  df12[11] & (df12[10:8] != 3'h7);")], False),
     # navic (sonda testu): nofine bez f_lock, jemny cas bez kontroly stari, zverejneni bez straze win != 0
     ('nofine bez f_lock', [("pfl_l <= 8'd1; d_l <= 8'd0; nofine <= f_lock;", "pfl_l <= 8'd1; d_l <= 8'd0; nofine <= 1'b1;")], False),
     # EKVIVALENTNI od opravy N2 (fa <= 0 pri hrube hrane): jemny cas z doby pred hrubou hranou se zahodi vzdy, jemny cas

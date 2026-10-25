@@ -15,7 +15,10 @@
 //     same jednicky -> preteceni 34 b (mod 2^48), d) hrana o 1..8 taktu driv (bw = 1 i 0). Kazdy scenar: hrana v taktu
 //     -9..+1 vuci prechodu x 11 fazi (8 poloh IDES8 uprostred mezi vzorky + 1 ps pred / presne na / 1 ps za vzorkem Q7
 //     = hranice slova PCLK, lastw). Prijem (f_ts <= tick) je v modelu vzdy 3 takty za hl -> bw = 1 pro takt -3..-1.
-//   * pps_cap3: seq, seq_nz, seq_gt1, pts_p/pfl_p/d_p, PFLAGS, saturace d_l (force dd_r), nofine (blokovany f_tgl).
+//   * pps_cap3: seq, seq_nz, seq_gt1, pts_p/pfl_p/d_p, PFLAGS, saturace d_l (force df12), nofine (blokovany f_tgl).
+//     2026-10-25: priznaky saturace se registruji spolu s dd_r z 12b rozdilu df12 (krok casovani dd_r -> d_l) -> vynucuje
+//     se df12 (zdroj dd_r i priznaku), ne dd_r; krajni hodnoty 34b (0x1_FFFF_FFFF, 0x2_0000_0000), ktere od FW 0x0507
+//     vzniknout nemohou, nahrazeny krajnimi hodnotami 12 b (+2047, -2048). Invariant dhi_r / dlo_r = drivejsi vyraz z dd_r.
 //   * rozhrani pps_ides3: f_ts se po preklopeni f_tgl nezmeni az do dalsi hrany (na tom stoji pps_cap3 i vyjimky SDC).
 //   * ztrata zamku (force u_pll.RESET): hruby cas {c_tick, 14'b0}, epocha +1, nova kotva; ztrata uprostred mereni;
 //     znovuzamceni pri pinu 1PPS = 1. Pruzkum (bez PASS): hrana tesne pred znovuzamcenim, kratky pulz 3 ns, zakmit.
@@ -106,6 +109,7 @@ module tb_pps_v3;
     reg [25:0] h;
     reg [63:0] te, tg, t0;
     reg [33:0] dv34;
+    reg [11:0] dv12;
     reg [3:0]  e0;
     reg signed [63:0] dk;
     reg [8*32-1:0] ll_map, sp_map, rl_map;
@@ -203,6 +207,11 @@ module tb_pps_v3;
             chk(last == 34'd0 && prev == 34'd0, "last/prev = 0 (FW 0x0506)");
             q_seq = seq; q_pts = pts_l; q_pfl = pfl_l; q_d = d_l;
         end endtask
+    // 2026-10-25: priznaky saturace registrovane spolu s dd_r == drivejsi vyraz z dd_r (v kazdem taktu, i pri vynucenem df12)
+    always @(posedge clk)
+        if (dut_cap.dhi_r !== (~dut_cap.dd_r[33] & (dut_cap.dd_r[32:7] != 26'd0)) ||
+            dut_cap.dlo_r !== (dut_cap.dd_r[33] & (dut_cap.dd_r[32:7] != {26{1'b1}})))
+            chk(1'b0, "invariant: dhi_r / dlo_r = saturace z dd_r");
     task chk_fine(input dov, input [7:0] dval);          // jemny cas: PFLAGS 3, PTS proti referenci, d_l (dov: vynuceno)
         reg [47:0] kk; reg [33:0] d34; reg signed [63:0] dd, dv;
         begin
@@ -332,16 +341,17 @@ module tb_pps_v3;
             case (i)
                 0: dv34 = 34'd127;          1: dv34 = 34'd128;          2: dv34 = 34'd300;
                 3: dv34 = -34'sd128;        4: dv34 = -34'sd129;        5: dv34 = -34'sd300;
-                6: dv34 = 34'h1_FFFF_FFFF;  7: dv34 = 34'h2_0000_0000;  8: dv34 = 34'd5;
+                6: dv34 = 34'd2047;         7: dv34 = -34'sd2048;       8: dv34 = 34'd5;
                 default: dv34 = -34'sd5;
             endcase
+            dv12 = dv34[11:0];
             $sformat(ctx, "saturace d_l, dd = %0d", s34(dv34));
             @(posedge clk); #1; te = at(tclk, 30, slot(i % 8));
             fork
                 pulse(te, PW);
-                begin #(te + 5 * T - $time); force dut_cap.dd_r = dv34; end
+                begin #(te + 5 * T - $time); force dut_cap.df12 = dv12; end
             join
-            release dut_cap.dd_r;
+            release dut_cap.df12;
             chk_common; chk_fine(1'b1, sat8(dv34));
         end
         for (i = 0; i < 2; i = i + 1) begin
