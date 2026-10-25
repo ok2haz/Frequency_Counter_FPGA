@@ -11,6 +11,11 @@
 //          ktera zachytila ADB (= jako registrovane cteni "rdata <= mem[raddr]"). RESETB synchronni nuluje DO.
 //          ⚠️ Mapovani bajtu pri ruzne sirce portu je PREDPOKLAD podle UG285 (adresovani po bitech) a modelu yosys
 //          (techlibs/gowin/brams.txt, "widths ... per_port") -- overit sim/tb_prim_chk.sv proti prim_sim.v z Gowin IDE.
+//   ALU54D (UG287-1.4E kap. 4.1): jen ALUD_MODE 0 (DOUT = ACC/0 +/- B +/- A), C_ADD_SUB = 0, AREG = BREG = 0,
+//          ASIGN_REG = BSIGN_REG = ACCLOAD_REG = 0, OUT_REG = 1, ALU_RESET_MODE "SYNC": DOUT <= (ACCLOAD ? DOUT : 0)
+//          + A -/+ B (B_ADD_SUB 1 = minus) pri CE; RESET ma prednost a nuluje vystupni registr. Pri C_ADD_SUB = 0 je
+//          znamenko A i akumulatoru plus v obou ctenich UG287 (C_ADD_SUB ridi bud A, nebo akumulator).
+//          ⚠️ Overit sim/tb_prim_chk.sv proti prim_sim.v z Gowin IDE.
 // ============================================================
 `timescale 1ps/1ps
 
@@ -56,4 +61,31 @@ module SDPB #(
             for (i = 0; i < 32; i = i + 1) dor[i] <= (i < BIT_WIDTH_1) ? m[ra + i] : 1'b0;
         end
     end
+endmodule
+
+module ALU54D #(
+    parameter AREG = 1'b0, parameter BREG = 1'b0, parameter ASIGN_REG = 1'b0, parameter BSIGN_REG = 1'b0,
+    parameter ACCLOAD_REG = 1'b0, parameter OUT_REG = 1'b0, parameter B_ADD_SUB = 1'b0, parameter C_ADD_SUB = 1'b0,
+    parameter ALUD_MODE = 0, parameter ALU_RESET_MODE = "SYNC"
+)(
+    input  wire [53:0] A, B,
+    input  wire        ASIGN, BSIGN, ACCLOAD,
+    input  wire [54:0] CASI,
+    input  wire        CLK, CE, RESET,
+    output wire [53:0] DOUT,
+    output wire [54:0] CASO
+);
+    reg [53:0] acc = 54'd0;
+    initial begin
+        if (AREG != 1'b0 || BREG != 1'b0 || ASIGN_REG != 1'b0 || BSIGN_REG != 1'b0 || ACCLOAD_REG != 1'b0 || OUT_REG != 1'b1 ||
+            C_ADD_SUB != 1'b0 || ALUD_MODE != 0 || ALU_RESET_MODE != "SYNC") begin
+            $display("CHYBA MODELU ALU54D %m: nepodporovana konfigurace"); $finish;
+        end
+    end
+    always @(posedge CLK) begin
+        if (RESET) acc <= 54'd0;
+        else if (CE) acc <= (ACCLOAD ? acc : 54'd0) + A + (B_ADD_SUB ? -B : B);
+    end
+    assign DOUT = acc;
+    assign CASO = {1'b0, acc};
 endmodule

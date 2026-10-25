@@ -209,17 +209,31 @@ module seg_chan3 #(
     // t0 == (first ? 0 : t0). Drive tuto masku nesl vyber slova zapisovace; s primym zapisem do SDPB by stala 88 LUT na kanal.
     assign o_x0    = x0;
     assign o_t0    = t0;
-    // FW 0x0504: soucty v DSP (SUM_DSP = 1) -- pricitani ve V+2 z rozdilu dx_r/dt_r jako u varianty v logice
+    // FW 0x0504: soucty v DSP (SUM_DSP = 1); 2026-10-25: ALU54D pricita primo rozdil xm - x0 / tm - t0 ve V+1 (dx_r / dt_r a
+    // stupne v1b, v2, v3 pouziva jen varianta SUM_DSP = 0)
     generate if (SUM_DSP != 0) begin : g_dsp
-        reg [47:0] sx_d = 48'd0 /* synthesis syn_dspstyle = "dsp" */;
         // FW 0x0506: ST jen 54 b (ALU54D). Hranice: znacky >= 5 taktu od sebe -> ST <= max_N (N*L - a*N^2/2) = 1,0e16 < 2^54 (1,8e16)
-        reg [53:0] st_d = 54'd0 /* synthesis syn_dspstyle = "dsp" */;
-        always @(posedge clk) begin
-            if (clear)   begin sx_d <= 48'd0; st_d <= 54'd0; end
-            else if (v2) begin sx_d <= sx_d + {22'd0, dx_r}; st_d <= st_d + {14'd0, dt_r}; end
-        end
-        assign o_sx = sx_d;
-        assign o_st = {2'b00, st_d};
+        // 2026-10-25 (plocha): ALU54D primo DOUT <= DOUT + A - B (UG287 ALUD_MODE 0 "ACC/0 +/- B +/- A", B_ADD_SUB = 1,
+        // C_ADD_SUB = 0, ACCLOAD = 1), A = xm / tm, B = x0 / t0 -> rozdil se nepocita v logice (dxl/dxu, dtl/dtu, btl/bxl:
+        // 68 FF a 66 ALU na kanal; varianta SUM_DSP = 0 je zustava). Pricita se v taktu v1 (take + 1: xm / tm uz nesou znacku,
+        // x0 / t0 jsou platne od take prvni znacky + 1 a dalsi take je nejdriv za 5 taktu), RESET = clear (v1 s clear nesplyne).
+        // Rozdil mod 2^40: pravy rozdil je < 2^21 (x: hrana nejdriv za 2 takty, segment <= 2,5e6 taktu) a < 2^36 (t) ->
+        // preteceni 40b citace mezi x0 / t0 a xm / tm je prave x0[39] & ~xm[39] (t0[39] & ~tm[39]); bit 40 operandu A
+        // pricte 2^40, takze A - B = (xm - x0) mod 2^40 = drivejsi dx_r (26 b) a (tm - t0) mod 2^40 = dt_r. Soucty jsou
+        // hotove ve V+1 misto V+3 (zapisovac cte od E+7). Overeni: sim/tb_seg_dsp.sv (proti SUM_DSP = 0, pres preteceni).
+        wire        wx = x0[39] & ~xm[39];
+        wire        wt = t0[39] & ~tm[39];
+        wire [53:0] sx_q, st_q;
+        ALU54D #(.AREG(1'b0), .BREG(1'b0), .ASIGN_REG(1'b0), .BSIGN_REG(1'b0), .ACCLOAD_REG(1'b0), .OUT_REG(1'b1),
+                 .B_ADD_SUB(1'b1), .C_ADD_SUB(1'b0), .ALU_RESET_MODE("SYNC")) u_sx (
+            .A({13'd0, wx, xm}), .B({14'd0, x0}), .ASIGN(1'b0), .BSIGN(1'b0), .ACCLOAD(1'b1), .CASI(55'd0),
+            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(sx_q), .CASO());
+        ALU54D #(.AREG(1'b0), .BREG(1'b0), .ASIGN_REG(1'b0), .BSIGN_REG(1'b0), .ACCLOAD_REG(1'b0), .OUT_REG(1'b1),
+                 .B_ADD_SUB(1'b1), .C_ADD_SUB(1'b0), .ALU_RESET_MODE("SYNC")) u_st (
+            .A({13'd0, wt, tm}), .B({14'd0, t0[39:0]}), .ASIGN(1'b0), .BSIGN(1'b0), .ACCLOAD(1'b1), .CASI(55'd0),
+            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(st_q), .CASO());
+        assign o_sx = sx_q[47:0];                    // SX < 2^40 (komentar u modulu) -> 48 b jako drive
+        assign o_st = {2'b00, st_q};
     end else begin : g_fab
         assign o_sx = {sx_hi, sx_lo};
         assign o_st = {st_hi, st_lo};

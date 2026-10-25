@@ -23,17 +23,21 @@ MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=13.300161e6'], 1: ['-DSIM_AU
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
         5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW'],
-        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6']}
+        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 9: []}
 # 2026-10-24: rezim 0 = B 13,300161 MHz (rozestup hran stridave 7 a 8 taktu -> FIFO indexu drzi DVE znacky,
 # FIFO hloubky 1 se projevi); rezim 8 = B 16,100161 MHz (rozestup 6/7 taktu) pro mutace znacky o 2 takty driv
 # 2026-10-24: rezim 7 = cileny test tb_hold_inv (ztrata hodin, predelicka, zdroj B; invarianty kopii)
-TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv')}
+# 2026-10-25: rezim 9 = cileny test tb_seg_dsp (seg_chan3 SUM_DSP = 1 proti SUM_DSP = 0, cas a index pres preteceni 2^40)
+TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv'), 9: ('tb_seg_dsp', 'tb_seg_dsp.sv')}
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
     ('FIFO hloubky 1', 'v3_core.v', "                    else if (fn == 2'd1) begin fs <= xcnt; fn <= 2'd2; end",
      "                    else if (fn == 2'd1) begin fh <= xcnt; end", 0),
-    ('rozdil t: bez vypujcky', 'v3_core.v', "dtu <= tm[39:20] - t0[39:20] - {19'd0, btl};", "dtu <= tm[39:20] - t0[39:20];", 0),
+    # 2026-10-25 (soucty v ALU54D primo z tm - t0): drive vypujcka mezi polovinami rozdilu, ted preteceni 40b casu mezi t0 a tm
+    # (bit 40 operandu A) -- nastava jednou za 2^40 jednotek = 0,67 s, chyti ho tb_seg_dsp (rezim 9, cas pres preteceni)
+    ('rozdil t: bez vypujcky', 'v3_core.v', "        wire        wt = t0[39] & ~tm[39];", "        wire        wt = 1'b0;", 9),
+    ('rozdil x: bez preteceni', 'v3_core.v', "        wire        wx = x0[39] & ~xm[39];", "        wire        wx = 1'b0;", 9),
     # 2026-10-25 (kruh v 16 SDPB): slovo 3 kanalu A (drive vyber wsel pro oba kanaly)
     ('zaznam: slovo T0 = SX', 'v3_core.v', "                       a_t0[31:0],                       // 3", "                       a_sx[31:0],                       // 3", 0),
     # 2026-10-24: take = pop & ~hold & nfc (nfc = registr ~freeze & ~clear z v3_ring) -> stejna chyba vyjadrena vstupy freeze/clear
@@ -66,9 +70,16 @@ M = [
     ('predelicka: sonda /8', 'v3_core.v', "        s <= {s[1:0], c[3]};", "        s <= {s[1:0], c[2]};", 4),
     ('SET_CONFIG 0x07: prohozeny kanal', 'app_v3.v', "8'h07: if (rx_p1[0]) pr_b_req", "8'h07: if (!rx_p1[0]) pr_b_req", 4),
     # FW 0x0504: soucty v DSP -- bez vynulovani na zacatku segmentu, pricitani o takt driv (horni cast rozdilu jeste stara)
-    ('DSP: soucty bez clear', 'v3_core.v', "            if (clear)   begin sx_d <= 48'd0; st_d <= 54'd0; end\n            else if (v2)",
-     "            if (v2)", 0),
-    ('DSP: pricita o takt driv', 'v3_core.v', "            else if (v2) begin sx_d <= sx_d", "            else if (v1b) begin sx_d <= sx_d", 0),
+    # 2026-10-25 (soucty v ALU54D primo z xm/tm): bez RESET = clear; pricitani o takt driv (v taktu take nesou xm / tm jeste
+    # predchozi znacku)
+    ('DSP: soucty bez clear', 'v3_core.v', [("            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(sx_q), .CASO());",
+                                            "            .CLK(clk), .CE(v1), .RESET(1'b0), .DOUT(sx_q), .CASO());"),
+                                           ("            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(st_q), .CASO());",
+                                            "            .CLK(clk), .CE(v1), .RESET(1'b0), .DOUT(st_q), .CASO());")], None, 0),
+    ('DSP: pricita o takt driv', 'v3_core.v', [("            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(sx_q), .CASO());",
+                                               "            .CLK(clk), .CE(take | clear), .RESET(clear), .DOUT(sx_q), .CASO());"),
+                                              ("            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(st_q), .CASO());",
+                                               "            .CLK(clk), .CE(take | clear), .RESET(clear), .DOUT(st_q), .CASO());")], None, 0),
     # FW 0x0505: PSRAM -- cteni bez RWDS (kazdy takt), bez kalibrace latence zapisu, okno bez posunu adresy
     ('PSRAM: cteni bez RWDS', 'v3_core.v', "                    end else if (rs[1] ^ rs[0]) begin         // RWDS",
      "                    end else if (1'b1) begin         // RWDS", 5),

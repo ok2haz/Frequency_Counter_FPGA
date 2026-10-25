@@ -1,0 +1,5 @@
+# run_ps1_doplnek.txt -- 2026-10-25 (optimalizace plochy FPGA v3, kolo 2): nove cilene testbenche k doplneni do tabulky
+# $tests v sim/run.ps1 (format jako ostatni radky). Kazdy hlida zmenu, kterou testy topv3* nepokryji.
+#   segdsp   seg_chan3 soucty SX/ST v ALU54D (DOUT <= DOUT + A - B) proti puvodnimu algoritmu (SUM_DSP = 0), cas a index
+#            pres preteceni 2^40 (bit preteceni operandu A); tb_top_v3 preteceni nevyvola (cas od 0, 0,67 s do preteceni). ~5 s
+    @{ name = "segdsp"; top = "tb_seg_dsp"; rtl = @("v3_core.v"); tb = "tb_seg_dsp.sv"; extra = @("gowin_models.v", "gowin_models_ext.v") }
