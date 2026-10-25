@@ -5627,6 +5627,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `9ade6f3`
 - **Stav:** aktivní
 
+### L-0238 - Specifikace říká 25 MHz, firmware jel na polovině a nikdo si toho nevšiml
+
+- **Datum:** 2026-10-25
+- **Oblast:** `fpga_freq.c` (`FPGA_SCK_TARGET_HZ`), SPI2 → FPGA
+- **Symptom:** dotaz „jaká je rychlost SPI?" ukázal, že po startu běží 12,5 MHz, zatímco `PROTOKOL_V3.md` kap. 2, testy i komentář u nastavení pinů počítají s 25 MHz.
+- **Příčina:** konstanta byla nastavena 2026-10-18 na 12,5 MHz (zadání „10 MHz", první stupeň ≥ 10) a při přechodu na protokol v3 se k ní nikdo nevrátil; `spi <MHz>` za běhu se nepersistuje, takže se rozdíl neprojevil nikde jinde než ve `status`.
+- **Oprava:** `FPGA_SCK_TARGET_HZ` 25 MHz (kernel 200 MHz / 8), strop 40 MHz beze změny (`85462d0`, v0.40.5).
+- **Pravidlo:** číslo ze specifikace a konstanta ve firmwaru se při změně protokolu porovnají výslovně; hodnotu, kterou lze přepsat za běhu bez persistence, ověřuj po restartu ze `status`, ne z paměti.
+- **Detekce:** `status` → `SPI 25.00MHZ` po power-cyklu, `RX chyb CRC` a `delka` zůstávají 0.
+- **Commit:** `85462d0`
+- **Stav:** ⬜ aktivní, neověřeno na HW
+
 ---
 
 ## Archiv (neplatné lekce)
