@@ -186,13 +186,17 @@ module seg_chan3 #(
     reg        cp2 = 1'b0, cp3 = 1'b0, ce = 1'b0;
     reg [9:0]  ccnt = 10'd0, xprev = 10'd0, cdd = 10'd0;
     reg        ccd_bad = 1'b0, sn1 = 1'b0;
+    // 2026-10-25 (oprava, sim/tb_ccd_carry.sv): citac X ma registrovany prenos -- v taktu xcy = 1 je xlo uz 0 a xhi jeste stary,
+    // xcnt[9:0] je tedy o 256 mensi nez skutecny pocet hran. snap v tomto taktu dal cdd = +-256 a falesny ccd_bad ve dvou
+    // zaznamech (f / (256 x 100 MHz) na segment). xc10 = dolnich 10 b skutecneho poctu i v taktu prenosu.
+    wire [9:0] xc10 = {xhi[1:0] + {1'b0, xcy}, xlo};
     always @(posedge clk) begin
         cp1 <= sig_pin; cp2 <= cp1; cp3 <= cp2;
         ce  <= cp2 & ~cp3 & cnt_en;
         sn1 <= snap;
         if (snap) begin
-            cdd   <= ccnt - (xcnt[9:0] - xprev);
-            xprev <= xcnt[9:0];
+            cdd   <= ccnt - (xc10 - xprev);
+            xprev <= xc10;
             ccnt  <= {9'd0, ce};
         end else if (ce) ccnt <= ccnt + 10'd1;
         if (sn1) ccd_bad <= ~((cdd == 10'd0) | (cdd == 10'd1) | (cdd == 10'h3FF));

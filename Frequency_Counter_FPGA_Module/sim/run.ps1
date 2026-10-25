@@ -157,6 +157,7 @@ $tests = @(
     #   Stopa vystupu pro dukaz shody: python3 sim/trace_v3.py run <koren> <vystup> [testy]; ... cmp <A> <B>
     @{ name = "holdinv"; top = "tb_hold_inv"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_hold_inv.sv"; extra = @("gowin_models.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    @{ name = "ccdcarry"; top = "tb_ccd_carry"; rtl = @("v3_core.v"); tb = "tb_ccd_carry.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 
