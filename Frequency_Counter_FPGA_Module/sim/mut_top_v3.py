@@ -34,13 +34,15 @@ M = [
     ('FIFO hloubky 1', 'v3_core.v', "                    else if (fn == 2'd1) begin fs <= xcnt; fn <= 2'd2; end",
      "                    else if (fn == 2'd1) begin fh <= xcnt; end", 0),
     ('rozdil t: bez vypujcky', 'v3_core.v', "dtu <= tm[39:20] - t0[39:20] - {19'd0, btl};", "dtu <= tm[39:20] - t0[39:20];", 0),
-    ('zaznam: slovo T0 = SX', 'v3_core.v', "             | ({32{oh[3]}} & t0[31:0])", "             | ({32{oh[3]}} & sx[31:0])", 0),
+    # 2026-10-25 (kruh v 16 SDPB): slovo 3 kanalu A (drive vyber wsel pro oba kanaly)
+    ('zaznam: slovo T0 = SX', 'v3_core.v', "                       a_t0[31:0],                       // 3", "                       a_sx[31:0],                       // 3", 0),
     # 2026-10-24: take = pop & ~hold & nfc (nfc = registr ~freeze & ~clear z v3_ring) -> stejna chyba vyjadrena vstupy freeze/clear
     ('znacka v taktu clear se pricte', 'v3_core.v', "    wire       take = pop & ~hold & nfc;",
      "    wire       take = pop & ~hold & ~freeze;", 0),
     ('freeze se nepouzije', 'v3_core.v', "    wire       take = pop & ~hold & nfc;", "    wire       take = pop & ~hold & ~clear;", 0),
     ('kontrolni pocitani bez hran', 'v3_core.v', "        ce  <= cp2 & ~cp3 & cnt_en;", "        ce  <= 1'b0;", 0),
-    ('zaznam B do slotu A', 'v3_core.v', "            wa <= {wrec + {{(RAW-1){1'b0}}, k1[3]}, k1[2:0]};", "            wa <= {wrec, k1[2:0]};", 0),
+    # 2026-10-25 (kruh v 16 SDPB): zaznam B se cte z bloku kanalu A (drive se B zapsal na misto A)
+    ('zaznam B do slotu A', 'v3_core.v', "    always @(posedge rclk) rs <= raddr[5:2];", "    always @(posedge rclk) rs <= {1'b0, raddr[4:2]};", 0),
     ('ACK se ignoruje', 'app_v3.v', "                                rec_ack <= {rx_p1, rx_p0};", "                                rec_ack <= rec_ack;", 0),
     ('CRC bloku 0 se nekontroluje', 'app_v3.v', "rx_b1 != VER || !rx_blk_ok[0]) begin", "rx_b1 != VER) begin", 0),
     ('delka transakce se nekontroluje', 'app_v3.v', "                if (!rx_len_ok) begin", "                if (1'b0) begin", 0),
@@ -85,7 +87,9 @@ M = [
     ('PSRAM: cteni bez zbrojeni RWDS', 'v3_core.v', "                    if (!rarm) begin\n", "                    if (1'b0) begin\n", 5),
     ('B z pinu A: znacka P_B', 'top_v3.v', ".nfc(nfc_b), .presc(pr_b_eff),", ".nfc(nfc_b), .presc(pr_b),", 3),   # 2026-10-24: port nfc
     # audit 2026-10-23 (FW 0x0506): nove cesty
-    ('ring: jednickovy vyber bez rotace', 'v3_core.v', "                ohA  <= {ohA[6:0], ohA[7]};", "", 0),
+    # 2026-10-25 (kruh v 16 SDPB): drive se jednickovy vyber slova neposouval (vsechna slova = slovo 0); ted vyber bloku
+    # pri cteni stoji na slove 0
+    ('ring: jednickovy vyber bez rotace', 'v3_core.v', "    always @(posedge rclk) rs <= raddr[5:2];", "    always @(posedge rclk) rs <= {raddr[5], 3'd0};", 0),
     ('ring: odpocet bez vypujcky hornich 11 b', 'v3_core.v', "            chi <= chi - 11'd1;", "            chi <= chi;", 0),
     ('1PPS: seq > 1 vzdy', 'v3_core.v', "seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;", 0),
     ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
@@ -99,7 +103,13 @@ M = [
     ('soucty: kopie first_b se nenuluje', 'v3_core.v', "first <= 1'b1; first_b <= 1'b1;", "first <= 1'b1;", 0),
     ('nfc: v taktu clear 1', 'v3_core.v', "                nfc_a   <= 1'b0; nfc_b <= 1'b0;\n", "                nfc_a   <= 1'b1; nfc_b <= 1'b1;\n", 0),
     ('nfc: pri seg_tick nenulovan', 'v3_core.v', "            nfc_a  <= 1'b0; nfc_b <= 1'b0;\n", "", 0),
-    ('ring: horni pulslovo bez rotace', 'v3_core.v', "                ohAh <= {ohAh[6:0], ohAh[7]};\n", "", 0),
+    # 2026-10-25 (kruh v 16 SDPB): drive kopie pro horni pulslovo neposouvala; ted bajty 2, 3 slova ctou bajty 0, 1
+    ('ring: horni pulslovo bez rotace', 'v3_core.v', "raddr[RAW+4:6], raddr[1:0], 3'b000};", "raddr[RAW+4:6], 1'b0, raddr[0], 3'b000};", 0),
+    # 2026-10-25 (kruh v 16 SDPB): nove struktury -- slovo 0 B (FLAGS, zive) ve stejnem taktu jako A; konec zapisu o takt driv
+    ('ring: slovo 0 B v taktu A', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 0),
+    ('ring: konec zapisu o takt driv', 'v3_core.v', "            kend <= (kc == DRAIN + 17);", "            kend <= (kc == DRAIN + 16);", 0),
+    ('soucty: x0 se v clear nenuluje', 'v3_core.v', "            x0    <= 40'd0; t0 <= 48'd0;", "            t0 <= 48'd0;", 0),
+    ('ring: slovo 0 B v taktu A (holdinv)', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 7),
     ('hold_s: hx bez boot_tc', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = ok_s[1] & boot_done;", 7),
     ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),
 ]
@@ -149,7 +159,7 @@ def run(m):
     vvp = os.path.join(d, 't.vvp')
     top, tbf = TBS.get(mode, ('tb_top_v3', 'tb_top_v3.sv'))
     cmd = ['iverilog', '-g2012', '-I', sim] + TDC + MODE[mode] + ['-s', top, '-o', vvp,
-           os.path.join(sim, 'gowin_models.v')] + [os.path.join(d, f) for f in RTL] + [os.path.join(sim, tbf)]
+           os.path.join(sim, 'gowin_models.v'), os.path.join(sim, 'gowin_models_ext.v')] + [os.path.join(d, f) for f in RTL] + [os.path.join(sim, tbf)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         return name, 'PREKLAD SELHAL', (r.stdout + r.stderr)[:200], 0

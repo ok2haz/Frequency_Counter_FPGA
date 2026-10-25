@@ -347,7 +347,7 @@ module top_v3 (
         .bub(bub_b), .cs_act(csa_s[1]), .hold(hold_b_s), .sig_pin(sig_b), .freeze(freeze), .snap(snap), .clear(clear_b), .nfc(nfc_b), .presc(pr_b_eff),
         .o_n(b_n), .o_x0(b_x0), .o_t0(b_t0), .o_sx(b_sx), .o_st(b_st), .o_flags(b_fl), .o_bub(b_bub), .o_ovl(b_ovl), .o_presc(b_pr));
 
-    wire [RAW+2:0] ring_raddr;  wire [31:0] ring_rdata;
+    wire [RAW+4:0] ring_raddr;  wire [7:0] ring_rdata;   // 2026-10-25: adresa bajtu, cteni po bajtech
     v3_ring #(.RAW(RAW), .SEG25(SEG25), .SEG10(SEG10)) u_ring (.clk(clk_p0_100m), .seg10_req(seg10_req), .seg10_act(seg10_act),
         .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .clear_a(clear_a), .clear_b(clear_b), .nfc_a(nfc_a), .nfc_b(nfc_b), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
         .a_n(a_n), .b_n(b_n), .a_x0(a_x0), .b_x0(b_x0), .a_t0(a_t0), .b_t0(b_t0), .a_sx(a_sx), .b_sx(b_sx),

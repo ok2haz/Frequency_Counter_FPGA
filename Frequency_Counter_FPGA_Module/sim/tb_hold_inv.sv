@@ -34,6 +34,19 @@ module tb_hold_inv;
     reg inv_ok = 1'b1;
     integer ncyc = 0, n_bd_fall = 0, n_pca = 0, n_pcb = 0, n_bch = 0, n_seg = 0, n_hold_tgl = 0;
     reg bd_q = 1'b0, pca_q = 1'b0, pcb_q = 1'b0, bch_q = 1'b0, ha_q = 1'b1;
+    // 2026-10-25 (krok kruh v 16 SDPB): invariant zapisovace (takt a data kazdeho slova zaznamu); pokryti: hold B se zmeni
+    // v okne E+7..E+15, kdy drivejsi zapisovac uz precetl slovo 0 A, ale jeste ne slovo 0 B (FLAGS B se ctou zive)
+`include "tb_ring_inv.vh"
+    integer n_hbw = 0;
+    reg hb_q = 1'b1;
+    task bsrc_win(input [1:0] v);
+        begin
+            @(posedge dut.u_ring.seg_tick);
+            while (!(dut.hold_b_s === 1'b0 && !dut.cal_busy_a && !dut.cal_busy_b)) @(posedge dut.u_ring.seg_tick);
+            repeat (5) @(posedge clk100);
+            #1 force dut.u_app.bsrc = v;
+        end
+    endtask
     always @(posedge clk100) begin
         inv_ok = (dut.u_pps.wnz === (dut.u_pps.win != 5'd0)) && (dut.u_pps.wnz_b === dut.u_pps.wnz)
               && (dut.u_pps.pend_b === dut.u_pps.pend) && (dut.u_pps.fok_b === dut.u_pps.fok) && (dut.u_pps.wok_b === dut.u_pps.wok)
@@ -42,14 +55,13 @@ module tb_hold_inv;
               && (dut.u_sa.first_b === dut.u_sa.first) && (dut.u_sb.first_b === dut.u_sb.first)
               && (dut.u_ring.nfc_a === (~dut.u_ring.freeze & ~dut.u_ring.clear_a))
               && (dut.u_ring.nfc_b === (~dut.u_ring.freeze & ~dut.u_ring.clear_b))
-              && (dut.u_ring.ohAh === dut.u_ring.ohA) && (dut.u_ring.ohBh === dut.u_ring.ohB)
-              && (dut.u_ring.ohAm === dut.u_ring.ohA) && (dut.u_ring.ohBm === dut.u_ring.ohB)
-              && (dut.u_ring.ohAt === dut.u_ring.ohA) && (dut.u_ring.ohBt === dut.u_ring.ohB)
               && (dut.bs2_s === dut.bs2) && (dut.pr_a_s === dut.pr_a) && (dut.pr_b_s === dut.pr_b)
               && (dut.hx_a === (~dut.boot_done | (dut.pchg_a != 2'd0)))
               && (dut.hx_b === (~dut.boot_done | (dut.bchg != 2'd0) | (dut.pchg_b != 2'd0)))
               && (dut.hold_a_s === dut.hold_a) && (dut.hold_b_s === dut.hold_b);
         if (!inv_ok) chk(1'b0, "invariant optimalizace (kopie / predpocitany registr)");
+        if (ri_e >= 7 && ri_e < 15 && hb_q !== dut.hold_b_s) n_hbw = n_hbw + 1;   // hold B se zmenil mezi E+7 a E+15
+        hb_q = dut.hold_b_s;
         ncyc = ncyc + 1;
         if (bd_q && !dut.boot_done) n_bd_fall = n_bd_fall + 1;
         if (!pca_q && dut.pchg_a != 2'd0) n_pca = n_pca + 1;
@@ -79,11 +91,21 @@ module tb_hold_inv;
         @(posedge dut.seg_tick); #(64'd200_000_000);
         force dut.clk_ok = 1'b0; #(64'd3_000_000); release dut.clk_ok;
         #(64'd600_000_000);
+        // 2026-10-25: zmena zdroje B tak, aby se hold B zmenil v okne zapisu E+7..E+15 (bsrc -> bs1 -> bs2 -> bs3 != bs2 ->
+        // bchg -> hold_b_s: 5 taktu); jednou nahoru a jednou dolu
+        // (v hranici, kdy B meri platne a nic se nekalibruje -- jinak by hold B uz byl 1 z jineho duvodu)
+        bsrc_win(2'b01);
+        #(64'd1_000_000_000);
+        bsrc_win(2'b00);
+        #(64'd600_000_000);
         chk(n_bd_fall >= 2, "pokryti: boot_done kleslo aspon 2x");
         chk(n_pca >= 2 && n_pcb >= 2 && n_bch >= 2, "pokryti: pchg_a, pchg_b, bchg aspon 2x");
         chk(n_seg >= 8, "pokryti: aspon 8 hranic segmentu");
+        chk(n_hbw >= 2, "pokryti: hold B se zmenil mezi zapisem slova 0 A a slova 0 B (E+7..E+15)");
+        chk(ri_nseg >= 8, "pokryti: invariant zapisovace kruhu aspon 8x");
         $display("taktu %0d, poklesu boot_done %0d, pchg_a %0d, pchg_b %0d, bchg %0d, hranic segmentu %0d, zmen hold_a_s %0d, kontrol %0d",
                  ncyc, n_bd_fall, n_pca, n_pcb, n_bch, n_seg, n_hold_tgl, nchk);
+        $display("kruh: zapisu zkontrolovano %0d, zmen hold B v okne E+7..E+15: %0d", ri_nseg, n_hbw);
         if (errors == 0) $display("PASS: tb_hold_inv"); else $display("FAIL: tb_hold_inv (%0d chyb)", errors);
         $finish;
     end

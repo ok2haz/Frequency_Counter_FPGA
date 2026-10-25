@@ -171,15 +171,14 @@ module tb_top_v3;
               && (dut.u_sa.first_b === dut.u_sa.first) && (dut.u_sb.first_b === dut.u_sb.first)
               && (dut.u_ring.nfc_a === (~dut.u_ring.freeze & ~dut.u_ring.clear_a))
               && (dut.u_ring.nfc_b === (~dut.u_ring.freeze & ~dut.u_ring.clear_b))
-              && (dut.u_ring.ohAh === dut.u_ring.ohA) && (dut.u_ring.ohBh === dut.u_ring.ohB)
-              && (dut.u_ring.ohAm === dut.u_ring.ohA) && (dut.u_ring.ohBm === dut.u_ring.ohB)
-              && (dut.u_ring.ohAt === dut.u_ring.ohA) && (dut.u_ring.ohBt === dut.u_ring.ohB)
               && (dut.bs2_s === dut.bs2) && (dut.pr_a_s === dut.pr_a) && (dut.pr_b_s === dut.pr_b)
               && (dut.hx_a === (~dut.boot_done | (dut.pchg_a != 2'd0)))
               && (dut.hx_b === (~dut.boot_done | (dut.bchg != 2'd0) | (dut.pchg_b != 2'd0)))
               && (dut.hold_a_s === dut.hold_a) && (dut.hold_b_s === dut.hold_b);
         if (!inv_ok) chk(1'b0, "invariant optimalizace (kopie / predpocitany registr)");
     end
+    // 2026-10-25: kopie ohA* zapisovace kruhu zanikly (16 SDPB) -> invariant zapisovace: takt a data kazdeho slova
+`include "tb_ring_inv.vh"
 `endif
     task check_frame(input integer want_data);
         integer k, m, ord, off, nrec;

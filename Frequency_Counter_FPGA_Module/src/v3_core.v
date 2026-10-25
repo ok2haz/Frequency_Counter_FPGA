@@ -174,6 +174,7 @@ module seg_chan3 #(
         if (clear) begin
             first <= 1'b1; first_b <= 1'b1; nlo <= 12'd0; nhi <= 12'd0;
             sx_lo <= 24'd0; sx_hi <= 24'd0; st_lo <= 32'd0; st_hi <= 24'd0;
+            x0    <= 40'd0; t0 <= 48'd0;              // 2026-10-25: segment bez znacky ma X0 = T0 = 0 bez masky first (viz o_x0)
             o_bub <= 8'd0; o_ovl <= 4'd0;
             inv   <= hold;
         end
@@ -203,8 +204,11 @@ module seg_chan3 #(
     end
 
     assign o_n     = {nhi, nlo};
-    assign o_x0    = first ? 40'd0 : x0;
-    assign o_t0    = first ? 48'd0 : t0;
+    // 2026-10-25 (plocha, kruh v 16 SDPB): x0 / t0 se nuluji v clear (tf / tf_b s clear nikdy nesplyne: take v taktech
+    // freeze a clear nenastane), takze v okne zapisu zaznamu (E+7 .. E+15, znacky stoji) je x0 == (first ? 0 : x0) a
+    // t0 == (first ? 0 : t0). Drive tuto masku nesl vyber slova zapisovace; s primym zapisem do SDPB by stala 88 LUT na kanal.
+    assign o_x0    = x0;
+    assign o_t0    = t0;
     // FW 0x0504: soucty v DSP (SUM_DSP = 1) -- pricitani ve V+2 z rozdilu dx_r/dt_r jako u varianty v logice
     generate if (SUM_DSP != 0) begin : g_dsp
         reg [47:0] sx_d = 48'd0 /* synthesis syn_dspstyle = "dsp" */;
@@ -231,11 +235,13 @@ endmodule
 
 // ------------------------------------------------------------
 // v3_ring: casovac segmentu + zapis zaznamu do kruhu.
-//   Hranice segmentu: seg_tick (1 takt). Pak freeze (znacky se nepricitaji) -> DRAIN taktu dobeh souctu -> 16 taktu
-//   zapis zaznamu A (8 slov) a B (8 slov) -> clear -> konec freeze. Celkem ~22 taktu = 220 ns z 25 ms: vypadne nejvys
+//   Hranice segmentu: seg_tick (1 takt). Pak freeze (znacky se nepricitaji) -> DRAIN taktu dobeh souctu -> zapis
+//   zaznamu A (8 slov) a B (8 slov) -> clear -> konec freeze. Celkem 25 taktu = 250 ns z 25 ms: vypadne nejvys
 //   ~4 znacek kanalu (zanedbatelne; pocitani hran X bezi dal, takze se nic nerozbije).
 //   Zaznam v RAM = 32 B (LE slova): bajty 0..30 presne jako v ramci (kap. 3.2), bajt 31 = 0.
 //   Aplikace (10 MHz) se dozvi o zapsane dvojici zaznamu prepnutim rec_tgl (az PO zapisu obou).
+//   2026-10-25 (plocha): kazde slovo w kanalu c ma vlastni blok SDPB (16 bloku) -> zaznam se zapise najednou bez vyberu
+//   slova; aplikace cte po bajtech (adresa {zaznam, bajt}).
 // ------------------------------------------------------------
 module v3_ring #(
     parameter RAW      = 9,          // log2 poctu zaznamu v kruhu (512 = 6,4 s pri 25 ms)
@@ -265,10 +271,10 @@ module v3_ring #(
     input  wire [2:0]  a_p, b_p,         // FW 0x0503: log2 P segmentu -> bajt CH bity 6:4
     // cteni kruhu (domena aplikace)
     input  wire        rclk,
-    input  wire [RAW+2:0] raddr,     // {zaznam, slovo}
-    output reg  [31:0] rdata
+    input  wire [RAW+4:0] raddr,     // 2026-10-25: {zaznam, bajt 0..31} (drive {zaznam, slovo} a bajt vybirala aplikace)
+    output wire [7:0]  rdata         // bajt, 1 takt rclk po adrese (jako drive registrovany vystup RAM)
 );
-    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; clear_a = 1'b0; clear_b = 1'b0; nfc_a = 1'b1; nfc_b = 1'b1; rec_tgl = 1'b0; seg_idx = 32'd0; rdata = 32'd0; end
+    initial begin seg10_act = 1'b0; seg_tick = 1'b0; freeze = 1'b0; snap = 1'b0; clear = 1'b0; clear_a = 1'b0; clear_b = 1'b0; nfc_a = 1'b1; nfc_b = 1'b1; rec_tgl = 1'b0; seg_idx = 32'd0; end
     localparam DRAIN = 6;                            // dobeh souctu seg_chan3 (V+4) + rezerva
 
     // ---- casovac (odpocet, registrovana detekce konce) ----
@@ -300,102 +306,35 @@ module v3_ring #(
         end else clo <= clo - 11'd1;
     end
 
-    // ---- zapisovac ----
-    reg [31:0] mem [0:(1<<(RAW+3))-1];
+    // ---- zapisovac (2026-10-25, plocha: 16 SDPB, blok = kanal x slovo) ----
+    // Slovo w zaznamu kanalu c lezi v bloku SDPB (c, w) na adrese dvojice (wrec / 2) -> cely zaznam obou kanalu se zapise
+    // bez vyberu slova (drive jednickovy kod oh* ve ctvrtinach, wl_x / wh_x, wd, wa: ~420 LUT a ~220 FF; cesty ohA, k ->
+    // wa_x, DSP -> wa_a). Takt vzorku zustava jako ve stupni 1 drivejsiho zapisovace (slovo k v E+7+k, E = takt seg_tick):
+    // vystupy seg_chan3 jsou od E+4 do clear stale (N, X0, T0, SX, ST, P, ccd_bad od E+3, seg_idx do E+25), zive se meni
+    // jen FLAGS bit0 (inv = hold, f_err) -> slova A a slova 1..7 B se zapisi v E+7 (wsA), slovo 0 B (FLAGS) v E+15 (wsB0,
+    // drive k = 8). Konec zapisu (clear) zustava v E+26 (citac kc) -> freeze / clear / nfc / seg_idx / rec_tgl beze zmeny.
+    // Cteni: blok (zaznam & 1, bajt / 4) cte 8b portem adresu {dvojice, bajt % 4} (UG285: zapis 32 b a cteni 8 b teze
+    // pameti, bajt k slova W je 8b adresa 4W + k) -> vyber 16:1 po bajtu (domena aplikace, 100 ns).
+    localparam integer PW = RAW - 1;                 // bitu adresy dvojice (SDPB: 32 b -> 9 bitu adresy, 8 b -> 11)
     reg [RAW-1:0] wrec = {RAW{1'b0}};                // poradi zaznamu A teto dvojice (sude)
-    reg [4:0]  k   = 5'd0;                           // 0..15 slovo (bit 3 = kanal B), 16 = konec
-    reg [2:0]  dr  = 3'd0;
-    reg        wr  = 1'b0, we = 1'b0;
-    reg [RAW+2:0] wa = {(RAW+3){1'b0}};
-    reg [31:0] wd = 32'd0;
-    // 2026-10-24 (casovani, pnr_seeds: ohB -> wa_b ve 3 z 8 sestaveni): slovo k ve dvou registrech -- wl_x = vyber ze slov
-    // 0..3 (oh[3:0]), wh_x = ze slov 4..7 (oh[7:4]); jednickovy kod -> jeden z nich je 0 a wa_x = wl_x | wh_x je shodne
-    // s drivejsim registrem wa_x (OR az za registrem, ve vyberu kanalu)
-    reg [31:0] wl_a = 32'd0, wh_a = 32'd0, wl_b = 32'd0, wh_b = 32'd0;
-    wire [31:0] wa_a = wl_a | wh_a, wa_b = wl_b | wh_b;   // slovo k obou kanalu (1. stupen), vyber kanalu ve 2. stupni
-    reg [4:0]  k1 = 5'd0;
-    // slovo k zaznamu (LE): 0 {FLAGS, CH, SEG_IDX}, 1 {X0[7:0], N}, 2 X0[39:8], 3 T0[31:0], 4 {SX[15:0], T0[47:32]},
-    //                       5 SX[47:16], 6 ST[31:0], 7 {0, ST[55:32]}
-    // FW 0x0506: vyber slova jednickovym kodem oh (registr, posun o 1 s kazdym slovem) misto k[2:0] -- k[0] mel fan-out 251
-    // a 40 nejhorsich cest P&R (rezerva -3,6 ns); kazdy bit oh ted ridi 32 hradel jednoho kanalu (ohA, ohB zvlast)
-    function [31:0] wsel;
-        input [7:0] oh; input [7:0] chb; input [15:0] si;
-        input [23:0] n; input [39:0] x0; input [47:0] t0; input [47:0] sx; input [55:0] st; input [7:0] fl;
-        wsel = ({32{oh[0]}} & {fl, chb, si})
-             | ({32{oh[1]}} & {x0[7:0], n})
-             | ({32{oh[2]}} & x0[39:8])
-             | ({32{oh[3]}} & t0[31:0])
-             | ({32{oh[4]}} & {sx[15:0], t0[47:32]})
-             | ({32{oh[5]}} & sx[47:16])
-             | ({32{oh[6]}} & st[31:0])
-             | ({32{oh[7]}} & {8'd0, st[55:32]});
-    endfunction
-    // bajt b slova ridi kopie o_b (ctvrtiny, viz ohA/ohAm/ohAh/ohAt), m = maska poloviny kodu (8'h0F slova 0..3, 8'hF0 4..7)
-    function [31:0] wq;
-        input [7:0] o0; input [7:0] o1; input [7:0] o2; input [7:0] o3; input [7:0] m;
-        input [7:0] chb; input [15:0] si;
-        input [23:0] n; input [39:0] x0; input [47:0] t0; input [47:0] sx; input [55:0] st; input [7:0] fl;
-        reg [31:0] w0, w1, w2, w3;
-        begin
-            w0 = wsel(o0 & m, chb, si, n, x0, t0, sx, st, fl);
-            w1 = wsel(o1 & m, chb, si, n, x0, t0, sx, st, fl);
-            w2 = wsel(o2 & m, chb, si, n, x0, t0, sx, st, fl);
-            w3 = wsel(o3 & m, chb, si, n, x0, t0, sx, st, fl);
-            wq = {w3[31:24], w2[23:16], w1[15:8], w0[7:0]};
-        end
-    endfunction
-    (* syn_preserve = 1 *) reg [7:0] ohA = 8'd1;
-    (* syn_preserve = 1 *) reg [7:0] ohB = 8'd1;
-    // 2026-10-24 (casovani): kopie pro horni pulslovo (bity 31:16) -- bit oh ridil 32 hradel po celem slove (P&R cesty
-    // u_ring/ohA -> u_ring/wa_a 9,0 ns), ted 16; ohAh/ohBh rotuji stejne jako ohA/ohB -> shodne v kazdem taktu
-    (* syn_preserve = 1 *) reg [7:0] ohAh = 8'd1;
-    (* syn_preserve = 1 *) reg [7:0] ohBh = 8'd1;
-    // 2026-10-24 (casovani, pnr_seeds: ohA/ohBh -> wa_a/wa_b ve 4 z 8 sestaveni): ctvrtiny slova -- ohA bity 7:0, ohAm
-    // 15:8, ohAh 23:16, ohAt 31:24 (data zaznamu se behem zapisu nemeni, jednotaktova je jen cesta z vyberu)
-    (* syn_preserve = 1 *) reg [7:0] ohAm = 8'd1;
-    (* syn_preserve = 1 *) reg [7:0] ohBm = 8'd1;
-    (* syn_preserve = 1 *) reg [7:0] ohAt = 8'd1;
-    (* syn_preserve = 1 *) reg [7:0] ohBt = 8'd1;
-    reg        v_s1 = 1'b0;                          // 1. stupen nese slovo k1
+    reg [4:0]  kc   = 5'd0;                          // takty freeze (0 = E+1)
+    reg        wsA  = 1'b0;                          // E+7: zapis slov A a slov 1..7 B
+    reg        wsB0 = 1'b0;                          // E+15: zapis slova 0 B (FLAGS B ve stejnem taktu jako drive)
+    reg        kend = 1'b0;                          // E+25: konec zapisu (registr misto porovnani k, cesta k -> nfc_a)
     always @(posedge clk) begin
         snap  <= 1'b0;
         clear <= 1'b0; clear_a <= 1'b0; clear_b <= 1'b0;
         nfc_a <= ~freeze; nfc_b <= ~freeze;              // clear v pristim taktu 0, freeze beze zmeny (vyjimky nize)
-        v_s1  <= 1'b0;
-        // 2. stupen: vyber kanalu, 3. stupen: zapis do RAM
-        we <= v_s1;
-        if (v_s1) begin
-            wa <= {wrec + {{(RAW-1){1'b0}}, k1[3]}, k1[2:0]};
-            wd <= k1[3] ? wa_b : wa_a;
-        end
-        if (we) mem[wa] <= wd;
+        wsA   <= 1'b0; wsB0 <= 1'b0; kend <= 1'b0;
         if (seg_tick) begin
-            freeze <= 1'b1; snap <= 1'b1; dr <= 3'd0; wr <= 1'b0; k <= 5'd0; ohA <= 8'd1; ohB <= 8'd1;
-            ohAh   <= 8'd1; ohBh <= 8'd1; ohAm <= 8'd1; ohBm <= 8'd1; ohAt <= 8'd1; ohBt <= 8'd1;
+            freeze <= 1'b1; snap <= 1'b1; kc <= 5'd0;
             nfc_a  <= 1'b0; nfc_b <= 1'b0;
-        end else if (freeze && !wr) begin
-            dr <= dr + 3'd1;
-            if (dr == DRAIN - 1) wr <= 1'b1;
-        end else if (wr) begin
-            if (k != 5'd16) begin
-                // 1. stupen: slovo k[2:0] obou kanalu (8:1)
-                wl_a <= wq(ohA, ohAm, ohAh, ohAt, 8'h0F, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-                wh_a <= wq(ohA, ohAm, ohAh, ohAt, 8'hF0, {1'b0, a_p, 4'd0}, seg_idx[15:0], a_n, a_x0, a_t0, a_sx, a_st, a_fl);
-                wl_b <= wq(ohB, ohBm, ohBh, ohBt, 8'h0F, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
-                wh_b <= wq(ohB, ohBm, ohBh, ohBt, 8'hF0, {1'b0, b_p, 4'd1}, seg_idx[15:0], b_n, b_x0, b_t0, b_sx, b_st, b_fl);
-                ohA  <= {ohA[6:0], ohA[7]};
-                ohB  <= {ohB[6:0], ohB[7]};
-                ohAh <= {ohAh[6:0], ohAh[7]};
-                ohBh <= {ohBh[6:0], ohBh[7]};
-                ohAm <= {ohAm[6:0], ohAm[7]};
-                ohBm <= {ohBm[6:0], ohBm[7]};
-                ohAt <= {ohAt[6:0], ohAt[7]};
-                ohBt <= {ohBt[6:0], ohBt[7]};
-                k1   <= k;
-                v_s1 <= 1'b1;
-                k    <= k + 5'd1;
-            end else if (!v_s1 && !we) begin                 // posledni slovo je v RAM
-                wr      <= 1'b0;
+        end else if (freeze) begin
+            kc   <= kc + 5'd1;
+            wsA  <= (kc == DRAIN - 1);
+            wsB0 <= (kc == DRAIN + 7);
+            kend <= (kc == DRAIN + 17);
+            if (kend) begin                              // posledni slovo je v RAM
                 clear   <= 1'b1; clear_a <= 1'b1; clear_b <= 1'b1;
                 nfc_a   <= 1'b0; nfc_b <= 1'b0;
                 freeze  <= 1'b0;
@@ -405,7 +344,38 @@ module v3_ring #(
         end
         if (clear) rec_tgl <= ~rec_tgl;                  // aplikace smi cist dvojici az po zapisu obou
     end
-    always @(posedge rclk) rdata <= mem[raddr];
+    // slova zaznamu (LE): 0 {FLAGS, CH, SEG_IDX}, 1 {X0[7:0], N}, 2 X0[39:8], 3 T0[31:0], 4 {SX[15:0], T0[47:32]},
+    //                     5 SX[47:16], 6 ST[31:0], 7 {0, ST[55:32]}
+    wire [255:0] dA = {{8'd0, a_st[55:32]},              // 7
+                       a_st[31:0],                       // 6
+                       a_sx[47:16],                      // 5
+                       {a_sx[15:0], a_t0[47:32]},        // 4
+                       a_t0[31:0],                       // 3
+                       a_x0[39:8],                       // 2
+                       {a_x0[7:0], a_n},                 // 1
+                       {a_fl, 1'b0, a_p, 4'd0, seg_idx[15:0]}};    // 0
+    wire [255:0] dB = {{8'd0, b_st[55:32]},
+                       b_st[31:0],
+                       b_sx[47:16],
+                       {b_sx[15:0], b_t0[47:32]},
+                       b_t0[31:0],
+                       b_x0[39:8],
+                       {b_x0[7:0], b_n},
+                       {b_fl, 1'b0, b_p, 4'd1, seg_idx[15:0]}};
+    wire [13:0]  ada = {{(9 - PW){1'b0}}, wrec[RAW-1:1], 1'b0, 4'b1111};                 // [13:5] slovo, [3:0] vsechny bajty
+    wire [13:0]  adb = {{(9 - PW){1'b0}}, raddr[RAW+4:6], raddr[1:0], 3'b000};          // [13:3] bajt {dvojice, bajt % 4}
+    wire [127:0] rq;                                     // bajt bloku g = {kanal, slovo} na 8*g
+    genvar gw;
+    generate for (gw = 0; gw < 16; gw = gw + 1) begin : g_m
+        wire [31:0] dob;
+        SDPB #(.READ_MODE(1'b0), .BIT_WIDTH_0(32), .BIT_WIDTH_1(8), .BLK_SEL_0(3'b000), .BLK_SEL_1(3'b000), .RESET_MODE("SYNC")) u_m (
+            .CLKA(clk), .CEA((gw == 8) ? wsB0 : wsA), .RESETA(1'b0), .ADA(ada), .DI((gw < 8) ? dA[32*gw +: 32] : dB[32*(gw-8) +: 32]),
+            .CLKB(rclk), .CEB(1'b1), .RESETB(1'b0), .OCE(1'b1), .ADB(adb), .DO(dob), .BLKSELA(3'b000), .BLKSELB(3'b000));
+        assign rq[8*gw +: 8] = dob[7:0];
+    end endgenerate
+    reg [3:0] rs = 4'd0;                                 // blok cteneho bajtu (se stejnou latenci jako vystup SDPB)
+    always @(posedge rclk) rs <= raddr[5:2];
+    assign rdata = rq[8*rs +: 8];
 endmodule
 
 // ------------------------------------------------------------

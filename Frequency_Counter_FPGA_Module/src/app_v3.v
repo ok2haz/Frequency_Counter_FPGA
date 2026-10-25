@@ -39,8 +39,8 @@ module app_v3 #(
     input  wire        phy_base,
     // ---- kruh zaznamu ----
     input  wire        rec_tgl,               // domena 100 MHz: prepne po zapisu dvojice zaznamu
-    output reg  [RAW+2:0] ring_raddr,
-    input  wire [31:0] ring_rdata,            // 1 takt po adrese (registrovany vystup RAM)
+    output reg  [RAW+4:0] ring_raddr,         // 2026-10-25: {zaznam, bajt 0..30} (v3_ring cte po bajtech)
+    input  wire [7:0]  ring_rdata,            // 1 takt po adrese (registrovany vystup RAM)
     // ---- stav (synchronizovany / kvazistaticky) ----
     input  wire [7:0]  st_clk, st_clk_loss, st_coh, st_coh_cnt,
     input  wire [7:0]  st_tdc_a, st_tdc_b,
@@ -114,7 +114,7 @@ module app_v3 #(
     always @(posedge clk) begin pra_1 <= pr_a_act; pra_s <= pra_1; prb_1 <= pr_b_act; prb_s <= prb_1; end
 
     initial begin
-        rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+3){1'b0}};
+        rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+5){1'b0}};
         hist_k = 10'd0; raw_k = 9'd0;
         cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
         raw_tgl = 1'b0; raw_ch = 1'b0; raw_mode = 2'd0; raw_arg = 24'd0;
@@ -178,7 +178,6 @@ module app_v3 #(
     reg [23:0] item_r = 24'd0;
     reg [7:0]  d1 = 8'd0, d2 = 8'd0;
     reg        r1 = 1'b0, r2 = 1'b0;         // bajt je z kruhu (vybere se v 2. stupni)
-    reg [1:0]  l1 = 2'd0, l2 = 2'd0;
     reg        w1 = 1'b0, w2 = 1'b0;
     reg [9:0]  i1 = 10'd0, i2 = 10'd0;
 
@@ -415,8 +414,8 @@ module app_v3 #(
                     end else if (!a_page) begin
                         if (bb < 8'd250) begin
                             if ({blk - 2'd1, m} < a_nrec) begin
-                                ring_raddr <= {rlo, rb[4:2]};
-                                r1 <= 1'b1; l1 <= rb[1:0];
+                                ring_raddr <= {rlo, rb};
+                                r1 <= 1'b1;
                             end
                             if (rb == 5'd30) begin rb <= 5'd0; m <= m + 3'd1; end
                             else rb <= rb + 5'd1;
@@ -435,12 +434,12 @@ module app_v3 #(
                     ai <= ai + 11'd1;
                 end else w1 <= 1'b0;
                 // stupen 1 -> 2 (data z kruhu prijdou v tomto taktu)
-                w2 <= w1; i2 <= i1; d2 <= d1; r2 <= r1; l2 <= l1;
+                w2 <= w1; i2 <= i1; d2 <= d1; r2 <= r1;
                 // stupen 2: zapis do TX RAM
                 if (w2) begin
                     tx_we    <= 1'b1;
                     tx_waddr <= {~tx_half_r, i2};
-                    tx_wdata <= r2 ? ring_rdata[{l2, 3'b000} +: 8] : d2;
+                    tx_wdata <= r2 ? ring_rdata : d2;
                     if (i2 == 10'd1023) begin
                         tx_half_r <= ~tx_half_r;
                         cool      <= 3'd5;
