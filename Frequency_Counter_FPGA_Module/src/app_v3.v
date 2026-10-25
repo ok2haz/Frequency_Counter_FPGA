@@ -191,7 +191,9 @@ module app_v3 #(
     // fill < 2^RAW (REC_ACK se pri preteceni posune), 16 b staci a saturace nenastane
     wire [15:0] fill16  = rec_head - rec_ack;
     wire [47:0] pts_l   = pps_pts_l;
-    wire [7:0]  pfl_l   = pps_nz ? pps_pfl_l : 8'd0;
+    // 2026-10-25 (plocha): drive pps_nz ? pps_pfl_l : 0 -- hradlo bez ucinku: pps_cap3 nastavi pfl_l (3 nebo 1) a seq_nz
+    // (trvale 1) v temze taktu (pub == pub_b, invariant v tb_top_v3) a pfl_l je do te doby 0 (pocatecni hodnota)
+    wire [7:0]  pfl_l   = pps_pfl_l;
     reg  [7:0]  hb;
     always @* begin
         hb = 8'd0;
@@ -257,7 +259,8 @@ module app_v3 #(
             2'd2: it_src = hist_b;
             default: it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];
         endcase
-        if (g_cur >= a_ptot || q >= 7'd84) it_src = 24'd0;
+        // 2026-10-25 (plocha): drive i "|| q >= 84" -- it_src se bere jen v bb < 254 pri bi == 0, kde q = (bb - 2) / 3 <= 83
+        if (g_cur >= a_ptot) it_src = 24'd0;
     end
 
     // ---- zaznam j bloku: index v kruhu ----

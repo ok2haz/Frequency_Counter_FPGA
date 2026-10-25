@@ -140,7 +140,9 @@ RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', '
 EKV = {
     # pfl_p = pps_gt1 ? pps_pfl_p : 0. Pri seq = 1 je pps_pfl_p = pfl_l pred prvni hranou = 0 (pps_cap3 nema reset,
     # pfl_l zacina 0), takze hradlo seq_gt1 nema pozorovatelny ucinek; stopa topv3 s touto mutaci je shodna s base/
-    '1PPS: seq > 1 vzdy': 'pfl_p je pri seq = 1 vzdy 0 (pfl_l pred prvni hranou = 0) -> seq_gt1 bez ucinku',
+    # 2026-10-25: od FW 0x0507 (predchozi 1PPS v hlavicce zrusen) nema seq_gt1 / pps_gt1 zadneho spotrebitele (app_v3 vstup
+    # pps_gt1 nepouziva) -> mutace je ekvivalentni uz v base/ (drivejsi zduvodneni s hradlem pfl_p plati pro FW 0x0506)
+    '1PPS: seq > 1 vzdy': 'seq_gt1 (pps_gt1) nema od FW 0x0507 spotrebitele (pfl_p z hlavicky zrusen)',
     # FW 0x0506: spotrebitel (seg_chan3) bere znacku az s tvd = ts_valid o takt pozdeji. ts_valid o takt driv dava tvd
     # v taktu, kdy ts_ps uz nese novou znacku (drzi se >= 5 taktu) a hlava FIFO je tyz index -> stejne hodnoty.
     # O 2 takty driv (tv_y) uz cte predchozi znacku -> mutace 'znacka: ts_valid o 2 takty driv' (rezim 8).
