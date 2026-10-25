@@ -203,7 +203,6 @@ module seg_chan3 #(
         if (sn1) ccd_bad <= ~((cdd == 10'd0) | (cdd == 10'd1) | (cdd == 10'h3FF));
     end
 
-    assign o_n     = {nhi, nlo};
     // 2026-10-25 (plocha, kruh v 16 SDPB): x0 / t0 se nuluji v clear (tf / tf_b s clear nikdy nesplyne: take v taktech
     // freeze a clear nenastane), takze v okne zapisu zaznamu (E+7 .. E+15, znacky stoji) je x0 == (first ? 0 : x0) a
     // t0 == (first ? 0 : t0). Drive tuto masku nesl vyber slova zapisovace; s primym zapisem do SDPB by stala 88 LUT na kanal.
@@ -234,7 +233,20 @@ module seg_chan3 #(
             .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(st_q), .CASO());
         assign o_sx = sx_q[47:0];                    // SX < 2^40 (komentar u modulu) -> 48 b jako drive
         assign o_st = {2'b00, st_q};
+        // 2026-10-25 (plocha): pocet znacek N v DSP (ALU54D, inference jako seq_c v pps_cap3; v simulaci je atribut komentar)
+        // misto nlo/nhi s registrovanym prenosem (24 FF + 24 ALU). Pricita se v tk1 (take o takt pozdeji, registr ->
+        // povoleni bloku DSP bez cesty pres take); N je hotove v E+2 (posledni take v E), zapisovac cte v E+7. clear v taktu,
+        // kdy by tk1 = 1, nenastane (take v taktech freeze a clear neni). N <= 5e5 < 2^24 jako drive.
+        reg        tk1 = 1'b0;
+        reg [23:0] n_d = 24'd0 /* synthesis syn_dspstyle = "dsp" */;
+        always @(posedge clk) begin
+            tk1 <= take;
+            if (clear)    n_d <= 24'd0;
+            else if (tk1) n_d <= n_d + 24'd1;
+        end
+        assign o_n = n_d;
     end else begin : g_fab
+        assign o_n  = {nhi, nlo};
         assign o_sx = {sx_hi, sx_lo};
         assign o_st = {st_hi, st_lo};
     end endgenerate

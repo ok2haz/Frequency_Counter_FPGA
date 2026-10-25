@@ -1,5 +1,6 @@
 // ============================================================
-// tb_seg_dsp.sv -- 2026-10-25: cileny test souctu seg_chan3 v ALU54D (krok "soucty primo z xm/tm"): dve instance seg_chan3
+// tb_seg_dsp.sv -- 2026-10-25: cileny test souctu seg_chan3 v ALU54D (krok "soucty primo z xm/tm") a poctu N v DSP (krok
+// "N v DSP": SUM_DSP = 1 pocita N v n_d, SUM_DSP = 0 v nlo/nhi s registrovanym prenosem): dve instance seg_chan3
 // se stejnymi vstupy -- SUM_DSP = 1 (ALU54D: DOUT <= DOUT + {preteceni, xm/tm} - x0/t0) a SUM_DSP = 0 (puvodni algoritmus:
 // rozdil ve dvou stupnich s vypujckou, soucty v logice) -- a v kazdem segmentu se porovnaji vsechny vystupy v taktu, kdy je
 // cte zapisovac kruhu (E+7). Stimulus jako tdc_chan: trig_ack v T, rise_s v T+1, ts_valid v T+10, dalsi spusteni nejdriv

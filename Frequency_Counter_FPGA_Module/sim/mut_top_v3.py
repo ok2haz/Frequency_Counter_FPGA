@@ -128,6 +128,9 @@ M = [
     ('znacka: ts_hq pri amt 1 bez prepisu', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_y) ts_hq <= tr1;", 10),
     ('znacka: ts_hq prepis i pri amt 2', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_y | tv_z) ts_hq <= tr1;", 10),
     ('znacka: ts_hq bez nacteni v tv_y', 'v3_core.v', "            if (tv_y | (tv_z & ~lut_q3[15])) ts_hq <= tr1;", "            if (tv_z & ~lut_q3[15]) ts_hq <= tr1;", 0),
+    # 2026-10-25 (N v DSP): pricita jen znacky za prvni (v1 misto tk1), bez nulovani v clear
+    ('N v DSP: bez prvni znacky', 'v3_core.v', "            else if (tk1) n_d <= n_d + 24'd1;", "            else if (v1) n_d <= n_d + 24'd1;", 0),
+    ('N v DSP: bez clear', 'v3_core.v', "            if (clear)    n_d <= 24'd0;\n            else if (tk1)", "            if (tk1)", 9),
     ('ring: slovo 0 B v taktu A (holdinv)', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 7),
     ('hold_s: hx bez boot_tc', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = ok_s[1] & boot_done;", 7),
     ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),
