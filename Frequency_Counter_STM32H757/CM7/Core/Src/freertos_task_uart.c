@@ -831,7 +831,7 @@ static void gpsdo_print_status(void)
                (unsigned)s.st_first_seq, (unsigned long)(s.st_first_us / 1000u), (unsigned long)(s.st_first_us % 1000u),
                (unsigned long)(s.st_next_us / 1000u), (unsigned long)(s.st_next_us % 1000u));
     if (s.st_n == 0u)
-        printf("GPSDO: start FPGA (PSEQ 1->2): STM dvojici nevidelo (zacina cist pozdeji nez FPGA) -> bez vlivu\n");
+        printf("GPSDO: start FPGA (PSEQ 1->2): interval nezmeren (STM nevidelo PSEQ 1 a 2 za sebou) -> bez vlivu na smycku\n");
     else
         printf("GPSDO: start FPGA (PSEQ 1->2): zmereno %lu, falesna 1. hrana %lu | odchylka od mrizky 100 ms %+ld us%s\n",
                (unsigned long)s.st_n, (unsigned long)s.st_bad, (long)s.st_dev_us,
