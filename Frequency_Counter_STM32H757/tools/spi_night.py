@@ -35,10 +35,15 @@ ARMS = {
     'E': (['spi 7',  'spi poll 40', 'spi dma off'] + PINS_DEF, 6250000,  0, 40, ('MEDIUM', 'MEDIUM', 'HIGH')),
     'L': (['spi 25', 'spi poll 40', 'spi dma off', 'spi pins low'],  25000000, 0, 40, ('LOW', 'LOW', 'LOW')),            # nejpomalejsi hrany
     'V': (['spi 25', 'spi poll 40', 'spi dma off', 'spi pins very'], 25000000, 0, 40, ('VERY_HIGH', 'VERY_HIGH', 'VERY_HIGH')),   # nejrychlejsi hrany
+    'M': (['spi 25', 'spi poll 10', 'spi dma off', 'spi pins low'],  25000000, 0, 10, ('LOW', 'LOW', 'LOW')),
+    'W': (['spi 25', 'spi poll 10', 'spi dma off', 'spi pins very'], 25000000, 0, 10, ('VERY_HIGH', 'VERY_HIGH', 'VERY_HIGH')),
+    'K': (['spi 25', 'spi poll 10', 'spi dma off', 'spi pins sck medium', 'spi pins mosi medium', 'spi pins cs low'], 25000000, 0, 10, ('MEDIUM', 'MEDIUM', 'LOW')),
+    'S': (['spi 25', 'spi poll 10', 'spi dma off', 'spi pins sck low', 'spi pins mosi low', 'spi pins cs high'],     25000000, 0, 10, ('LOW', 'LOW', 'HIGH')),
 }
 # plan 1 = noc 2026-10-25 (chyby na rameci, FPGA 0x0507); plan 2 = po filtru CS (FPGA 0x0508): meri se citace zahozenych pulzu na CS
 PLAN = [('A', 2.0), ('B', 1.0), ('A', 2.0), ('C', 2.0), ('A', 2.0), ('E', 2.0), ('B', 1.0), ('C', 2.0), ('A', 1.5)]   # 15,5 h + cekani
 PLAN2 = [('A', 1.5), ('L', 1.5), ('V', 1.5), ('A', 1.5), ('B', 1.0), ('E', 1.5), ('L', 1.0), ('V', 1.0), ('A', 1.0)]   # 11,5 h + cekani
+PLAN3 = [('B', 0.75), ('M', 0.75), ('W', 0.75), ('K', 0.75), ('S', 0.75), ('B', 0.75), ('M', 0.75), ('W', 0.75), ('A', 0.75)]   # 6,75 h, polling 10 ms = vic udalosti
 PLAN_TEST = [('A', 0.05), ('B', 0.05), ('L', 0.05), ('V', 0.05)]                                                    # 3 min kazda
 
 RE_UP = re.compile(r'RUNNING gpsdo-ui (v[\d.]+)\s+uptime\s+(\d+)s')
@@ -347,13 +352,21 @@ def main():
     ap.add_argument('--no-web', action='store_true')
     ap.add_argument('--test', action='store_true', help='kratka zkouska: 4 vetve po 3 min, bez cekani na LOCK, s vstrikovanymi chybami')
     ap.add_argument('--inject-test', action='store_true', help='na zacatku kazde vetve vstrikne 2 chyby (jen zkouska potrubi)')
-    ap.add_argument('--plan', type=int, choices=(1, 2), default=2, help='1 = noc 2026-10-25 (A,B,C,E; 15,5 h), 2 = po filtru CS (A,L,V,B,E; 11,5 h; STM >= v0.40.8)')
+    ap.add_argument('--plan', type=int, choices=(1, 2, 3), default=3, help='3 = rychly polling, hrany M/W/K/S (STM >= v0.40.8); 1 = noc 2026-10-25 (A,B,C,E; 15,5 h), 2 = po filtru CS (A,L,V,B,E; 11,5 h; STM >= v0.40.8)')
+    ap.add_argument('--until', default=None, help='HH:MM - nejpozdeji dokdy skoncit (vetve se zkrati)')
     ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
     if a.selftest:
         selftest()
         return
-    plan = PLAN2 if a.plan == 2 else PLAN
+    plan = {1: PLAN, 2: PLAN2, 3: PLAN3}[a.plan]
+    a.deadline = None
+    if a.until:
+        hh, mm = [int(x) for x in a.until.split(':')]
+        d = datetime.datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if d < datetime.datetime.now():
+            d += datetime.timedelta(days=1)
+        a.deadline = d.timestamp()
     if a.test:
         plan, a.no_wait, a.inject_test = PLAN_TEST, True, True
         a.period = min(a.period, 40.0)
@@ -365,6 +378,12 @@ def main():
         r.wait_lock()
         reps = {}
         for arm, h in plan:
+            if a.deadline:
+                left = (a.deadline - time.time()) / 3600.0
+                if left < 0.1:
+                    r.ev('KONEC', 'termin --until, dalsi vetve vynechany')
+                    break
+                h = min(h, left)
             reps[arm] = reps.get(arm, 0) + 1
             r.run_arm(arm, reps[arm], h)
         r.apply_cfg('A', False)                                          # na konci zpet na zakladni konfiguraci

@@ -74,7 +74,15 @@ def main():
     gate = None
     try:
         while True:
-            j = get(a.ip, cur, epoch, a.n)
+            try:
+                j = get(a.ip, cur, epoch, a.n)
+            except RuntimeError as e:
+                if not a.follow:
+                    raise
+                # 2026-10-26: noc 25./26. 10. web (CM4) neodpovidal 3 min 20 s a logger skoncil -> v rezimu --follow se zkousi dal
+                print("\n%s: %s, zkousim znovu za %.0f s" % (time.strftime("%H:%M:%S"), e, a.every), file=sys.stderr)
+                time.sleep(a.every)
+                continue
             if not j.get("ready"):
                 print("deska: datova cache nebezi (ready=0)", file=sys.stderr)
             # F-0238: novou radu hlasi deska (newep: jine cislo epochy NEBO kurzor za hlavou = jiny beh se shodnym cislem)
