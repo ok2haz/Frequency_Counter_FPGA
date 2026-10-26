@@ -159,6 +159,10 @@ int fpga_v3_parse(const uint8_t *f, fpga_v3_hdr_t *h, fpga_v3_rec_t *rec, uint32
     h->lut_cnt_b = (uint16_t)(rdn(f + 122, 2) & 0x3FFFu);
     h->deep_n = (uint32_t)rdn(f + 124, 3); h->deep_st = f[128]; h->deep_wsel = f[129];   /* v0.39.0: PSRAM */
     h->deep_win = (uint16_t)rdn(f + 130, 2); h->deep_ack = f[127];
+    if (h->caps & FPGA_V3_CAP_CSDIAG) {                  /* v0.40.8: citace zahozenych pulzu na CS (FW 0x0508) */
+        for (int i = 0; i < 5; i++) h->cs_gl[i] = f[132 + i];
+        h->cs_filt = f[137];
+    }
     h->presc[0] = f[64]; h->presc[1] = f[65]; h->cfg_echo = f[66];
     for (int i = 0; i < 2; i++) {
         const uint8_t *q = f + 68 + 16 * i;
@@ -870,6 +874,20 @@ bool fpga_v3_selftest(void)
             V3OK((h.pps[0].pseq == pseq[k]) && (h.pps[1].pts == prev[k]) && ((h.pps[1].pflags != 0u) == (prev[k] != 0u)));
             V3OK((prev[k] == 0u) || (h.pps[1].pseq == h.pps[0].pseq - 1u));
         }
+    }
+
+    /* 14) v0.40.8 citace zahozenych pulzu na CS (FW 0x0508, CAPS bit23, bajty 132..137): bez CAPS bitu se bajty nectou */
+    {
+        fpga_v3_emu_init(&s_e, 10e6, 0.0, 0.0, 3u);
+        fpga_v3_emu_frame(&s_e, s_f);
+        for (int i = 0; i < 6; i++) s_f[132 + i] = (uint8_t)(10 + i);   /* 10, 11, 12, 13, 14 + filtr 15 */
+        fpga_v3_blk_seal(s_f);
+        fpga_v3_hdr_t h; uint32_t n_ok = 0;
+        V3OK((fpga_v3_parse(s_f, &h, s_rec, &n_ok) == FPGA_V3_OK) && (h.cs_filt == 0u) && (h.cs_gl[0] == 0u) && (h.cs_gl[4] == 0u));
+        s_f[26] |= (uint8_t)(FPGA_V3_CAP_CSDIAG >> 16);                 /* CAPS bit23 = bajt 26 bit 7 */
+        fpga_v3_blk_seal(s_f);
+        V3OK((fpga_v3_parse(s_f, &h, s_rec, &n_ok) == FPGA_V3_OK) && (h.cs_gl[0] == 10u) && (h.cs_gl[1] == 11u) && (h.cs_gl[2] == 12u) &&
+             (h.cs_gl[3] == 13u) && (h.cs_gl[4] == 14u) && (h.cs_filt == 15u) && (h.caps & FPGA_V3_CAP_CSDIAG));
     }
 
     return ok;

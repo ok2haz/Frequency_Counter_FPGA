@@ -1597,7 +1597,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|pins|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -3323,6 +3323,15 @@ void UartTask_run(void *argument)
 						         (unsigned long)es.bursts, (unsigned long)es.isolated, (unsigned long)es.max_run,
 						         (unsigned long)es.xfer_us_max, (unsigned long)es.gap_ms_max, (unsigned long)fpga_freq_poll_ms(0),
 						         es.inj_left ? " | VSTRIKOVANI AKTIVNI" : "");
+						  {   /* v0.40.8 (FW 0x0508): pulzy na CS, ktere FPGA zahodila filtrem (jinak by restartovaly vysilani od bajtu 0) */
+							  uint8_t gl[5];
+							  const uint8_t fl = fpga_cs_gl_get(gl);
+							  if (fl != 0u)
+								  printf("SPI ERR: pulzy na CS zahozene filtrem FPGA (%u taktu 100 MHz = %u ns): aktivni 1-2 taktu %u, 3-4: %u, 5-8: %u, 9+: %u | v klidu %u (saturuji na 255)\n",
+								         (unsigned)fl, (unsigned)fl * 10u, (unsigned)gl[0], (unsigned)gl[1], (unsigned)gl[2], (unsigned)gl[3], (unsigned)gl[4]);
+							  else
+								  printf("SPI ERR: FPGA nema citace pulzu na CS (CAPS bit23 = 0, FW < 0x0508)\n");
+						  }
 						  for (uint32_t i = 0; i < FPGA_SPI_ERR_RING; i++) {
 							  fpga_spi_err_t ee;
 							  if (!fpga_spi_err_get(i, &ee)) break;
@@ -3344,6 +3353,31 @@ void UartTask_run(void *argument)
 					  const uint32_t pr = fpga_freq_poll_ms(pv);
 					  printf("SPI: nejkratsi odstup transakci v3 = %lu ms (do ~%lu/s; vychozi 40, rozsah 10..200, nepersistuje se)\n",
 					         (unsigned long)pr, (unsigned long)(1000u / pr));
+				  } else if (strncmp(p, "pins", 4) == 0) {
+					  /* v0.40.8 (L-0242): rychlost hran vystupu SCK / MOSI / CS za behu -- `spi pins` = stav, `spi pins <rychlost>` = vsechny tri,
+					   * `spi pins sck|mosi|cs <rychlost>` = jeden; rychlost low|medium|high|very nebo 0..3. Nepersistuje se. */
+					  static const char *const SPD[4] = { "LOW", "MEDIUM", "HIGH", "VERY_HIGH" };
+					  const char *q = p + 4;
+					  while (*q == ' ') q++;
+					  int which = -1;
+					  if      (strncmp(q, "sck", 3) == 0)  { which = 0; q += 3; }
+					  else if (strncmp(q, "mosi", 4) == 0) { which = 1; q += 4; }
+					  else if (strncmp(q, "cs", 2) == 0)   { which = 2; q += 2; }
+					  while (*q == ' ') q++;
+					  int sp = -1;
+					  if      (strncmp(q, "low", 3) == 0)    sp = 0;
+					  else if (strncmp(q, "medium", 6) == 0) sp = 1;
+					  else if (strncmp(q, "high", 4) == 0)   sp = 2;
+					  else if (strncmp(q, "very", 4) == 0)   sp = 3;
+					  else if (*q >= '0' && *q <= '3')       sp = *q - '0';
+					  if (sp >= 0) {
+						  if (which < 0) { for (int w = 0; w < 3; w++) (void)fpga_freq_spi_pin_set(w, (uint8_t)sp); }
+						  else (void)fpga_freq_spi_pin_set(which, (uint8_t)sp);
+					  }
+					  uint8_t pv[3];
+					  fpga_freq_spi_pins_get(pv);
+					  printf("SPI2: rychlost vystupu SCK %s, MOSI %s, CS %s (pouziti: spi pins [sck|mosi|cs] <low|medium|high|very>; nepersistuje se)\n",
+					         SPD[pv[0] & 3u], SPD[pv[1] & 3u], SPD[pv[2] & 3u]);
 				  } else if (strncmp(p, "dma", 3) == 0) {
 					  /* 2026-10-22 (protokol v3, krok 7): datova faze SPI2 pres DMA za behu -- `spi dma on|off`, `spi dma` = stav.
 					   * Vychozi vypnuto (overeni na desce: zadani 2026-10-20_CRC_DMA_zadani_CLI.md testy D3..D8). */

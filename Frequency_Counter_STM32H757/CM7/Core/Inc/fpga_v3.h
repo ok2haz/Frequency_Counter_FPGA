@@ -62,6 +62,7 @@
  * fpga_v3_unwrap (stav mezi ramci); BUB/OVL = priznaky z FLAGS zaznamu ramce (0/1, ne pocty). STM posila REC_ACK
  * dal 32 b, FPGA bere dolnich 16 b. */
 #define FPGA_V3_CAP_NARROW     (1u << 22)
+#define FPGA_V3_CAP_CSDIAG     (1u << 23)   /* CAPS (FW 0x0508, L-0242): filtr CS v PHY + citace zahozenych pulzu na CS v bajtech 132..137 */
 #define FPGA_V3_DEEP_MAX       699050u      /* 4 MB / 6 B */
 #define FPGA_V3_DS_RDY         0x01u        /* DEEP_ST (bajt 128): PSRAM pripravena (kalibrace zapisu prosla) */
 #define FPGA_V3_DS_BAD         0x02u        /* zadna latence zapisu nesedela */
@@ -147,6 +148,8 @@ typedef struct {
     uint32_t pps_coarse[2];
     uint16_t probe[2];
     uint8_t  bub[2], ovl[2];
+    uint8_t  cs_gl[5];           /* v0.40.8 (CAPS bit23): zahozene pulzy na CS: aktivni 1-2, 3-4, 5-8, 9+ taktu 100 MHz, v klidu (saturuji na 255; bajty 132..136) */
+    uint8_t  cs_filt;            /* v0.40.8: delka filtru CS [takty 100 MHz] (bajt 137); 0 = FPGA bez citacu */
     uint32_t deep_n;             /* v0.39.0: znacek v PSRAM (bajty 124..126) */
     uint8_t  deep_st, deep_wsel; /* bajt 128 (FPGA_V3_DS_*), 129 latence zapisu PSRAM (W0 + n) a faze cteni (bit5) */
     uint8_t  deep_ack;           /* audit F-0272: bajt 127 (FPGA_V3_DACK_*) */

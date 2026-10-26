@@ -980,6 +980,7 @@ static uint32_t           s3x_n = 0u, s3x_run = 0u;
 static uint8_t            s3x_seen_ok = 0u;                  /* kind 3/4 se zapisuji az po prvnim platnem ramci (start / nahrani FPGA) */
 static volatile uint8_t   s3x_inj_blk = 0u;
 static volatile uint32_t  s3x_inj_n = 0u;
+static uint8_t            s3_csgl[5], s3_csfilt = 0u;       /* v0.40.8: citace zahozenych pulzu na CS z posledniho platneho ramce (CAPS bit23) */
 
 static void s3x_note(uint8_t kind, uint32_t gap_ms)
 {
@@ -1402,6 +1403,10 @@ static bool poll_v3(fpga_meas_t *out)
         }
         if (s3_h.blk_ok != 0x0Fu) { g_rx_crc++; g_rx_crc_last_ms = HAL_GetTick(); s3x_note(2u, t_gap); }   /* vadny blok 1-3: zaznamy prijdou znovu */
         else s3x_ok();
+        if (s3_h.caps & FPGA_V3_CAP_CSDIAG) {                      /* v0.40.8: pulzy na CS (jen z ramce s platnym CRC bloku 0) */
+            for (int i = 0; i < 5; i++) s3_csgl[i] = s3_h.cs_gl[i];
+            s3_csfilt = s3_h.cs_filt;
+        } else s3_csfilt = 0u;
         fpga_v3_unwrap(&s3_wrap, &s3_h);                           /* v0.40.0: FW 0x0507 16b pole -> 32 b, 1PPS predchozi */
         s3_h_ok = 1u; s_link_ok = 1u; s3_frames++;
         if (s3_h.type == FPGA_V3_T_DATA) s3_take_records(n_ok);
@@ -3300,6 +3305,32 @@ void fpga_freq_spi_pin_speed(uint8_t *sck, uint8_t *mosi)
 {
     if (sck)  *sck  = (uint8_t)((GPIOI->OSPEEDR >> (1u * 2u)) & 3u);
     if (mosi) *mosi = (uint8_t)((GPIOB->OSPEEDR >> (15u * 2u)) & 3u);
+}
+
+/* v0.40.8 (L-0242): rychlost vystupu SCK (PI1), MOSI (PB15) a CS (PB12) za behu -- zkouska, zda pulzy na CS zavisi na strmosti hran
+ * (pretok z SCK/MOSI na CS). Meni se JEN OSPEEDR pod gpio_cfg_lock (zavod jader o GPIOB, jako v fpga_freq_init); nepersistuje se. */
+void fpga_freq_spi_pins_get(uint8_t out[3])
+{
+    out[0] = (uint8_t)((GPIOI->OSPEEDR >> (1u * 2u)) & 3u);
+    out[1] = (uint8_t)((GPIOB->OSPEEDR >> (15u * 2u)) & 3u);
+    out[2] = (uint8_t)((GPIOB->OSPEEDR >> (12u * 2u)) & 3u);
+}
+int fpga_freq_spi_pin_set(int which, uint8_t speed)
+{
+    if (which < 0 || which > 2 || speed > 3u) return 0;
+    gpio_cfg_lock();
+    if (which == 0)      GPIOI->OSPEEDR = (GPIOI->OSPEEDR & ~(3u << (1u * 2u)))  | ((uint32_t)speed << (1u * 2u));
+    else if (which == 1) GPIOB->OSPEEDR = (GPIOB->OSPEEDR & ~(3u << (15u * 2u))) | ((uint32_t)speed << (15u * 2u));
+    else                 GPIOB->OSPEEDR = (GPIOB->OSPEEDR & ~(3u << (12u * 2u))) | ((uint32_t)speed << (12u * 2u));
+    gpio_cfg_unlock();
+    return 1;
+}
+
+/* v0.40.8 (CAPS bit23, FW 0x0508): zahozene pulzy na CS podle FPGA; vraci delku filtru CS [takty 100 MHz], 0 = FPGA citace nema */
+uint8_t fpga_cs_gl_get(uint8_t gl[5])
+{
+    for (int i = 0; i < 5; i++) gl[i] = s3_csgl[i];
+    return s3_csfilt;
 }
 
 uint32_t fpga_freq_sck_stage(uint32_t i, uint32_t *kernel_hz)
