@@ -66,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)** | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)**, **bit22 = úzká hlavička (FW 0x0507, kap. 3.1b)**, **bit23 = filtr CS a čítače zahozených pulzů na CS, bajty 132..137 (FW 0x0508, kap. 3.1c)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -102,8 +102,24 @@
 | 128 | 1 | DEEP_ST: bit0 PSRAM připravena (kalibrace zápisu prošla), bit1 kalibrace selhala, bit2 záznam běží, bit3 FIFO přeteklo (značky zahozeny), bit4 načítá se okno, bit5 okno načteno, **bit6 v záznamu jsou mezery** (kanál neznačkoval: hold, maska při CS), **bit7 okno s chybou čtení** (0 značek) | **(FW 0x0505)**; stav v rámci je o transakci starší (rámec se skládá po předchozí transakci) |
 | 129 | 1 | bity 4:0 latence zápisu PSRAM: W0 + n bajtů (W0 = 4, n 0..31, nalezeno při startu), bit5 fáze vzorkování čtení (0 náběžná, 1 sestupná hrana `clk`) | **(FW 0x0505, audit F-0263/F-0264)** |
 | 130 | 2 | DEEP_WIN (u16): poslední (načítané) okno | **(FW 0x0505)** |
-| 132 | 122 | rezerva = 0 | |
+| 132 | 5 | **CS_GL**: čítače zahozených pulzů na CS (u8, saturují na 255): 132 aktivní 1–2 takty, 133 3–4, 134 5–8, 135 9+ (do délky filtru − 1), 136 v klidu | **(FW 0x0508, CAPS bit23, kap. 3.1c)**; bez CAPS bitu 0 |
+| 137 | 1 | CS_FILT: délka filtru CS [takty 100 MHz] | **(FW 0x0508)**; bez CAPS bitu 0 |
+| 138 | 116 | rezerva = 0 | |
 | 254 | 2 | CRC16 bloku 0 (LE) | |
+
+### 3.1c Filtr CS a čítače pulzů na CS (CAPS bit23, FW 0x0508, 2026-10-26, L-0242)
+
+Noční test SPI (15,6 h, 1 694 472 transakcí, `docs/audit/2026-10-26_spi-noc-vyhodnoceni.md`) ukázal 155 chybných rámců, u kterých se vysílání FPGA uprostřed transakce
+restartovalo od bajtu 0 (FPGA `RX_LEN_ERR` +2 na chybu). Příčina v RTL: `clr <= cs_fall` je asynchronní reset čítačů PHY a stačí na něj pulz na CS delší než 10 ns.
+
+- **Filtr:** PHY přijme změnu CS až po `CS_FILT` (16) po sobě jdoucích taktech 100 MHz (160 ns) stejné hodnoty. STM drží CS ≥ 2 µs před první a po poslední hranou SCK a mezi
+  transakcemi ≥ 200 µs, takže zpoždění nic nemění. Pulz kratší než `CS_FILT` taktů se zahodí a spočítá.
+- **Čítače** (bajty 132..136, u8, saturují): *aktivní* = pulz do 1 při CS dole (bez filtru by transakci rozdělil), podle šířky 1–2, 3–4, 5–8 a 9+ taktů; *v klidu* = pulz do 0 při CS nahoře.
+  Šířka je počet po sobě jdoucích vzorků 100 MHz, ve kterých se CS lišil od přijaté hodnoty. Pulz kratší než jeden takt (10 ns) se nemusí vzorkovat.
+- **STM:** `spi err` vypíše čítače (`fpga_cs_gl_get`); bez CAPS bitu 23 vypíše „FPGA nemá čítače". Čítače jsou kumulativní od startu FPGA a nulovat se nedají (rozdíl po dobu pokusu).
+- **Test:** `sim/tb_cs_glitch.sv` (`run.ps1`: `csglitch`): pulzy 20…150 ns na bitových pozicích 6…8000, kontrola, že PHY s filtrem vydá rámec beze změny, přesné biny čítačů,
+  pulz 160 ns (přesně `CS_FILT`) se přijme; negativní kontrola PHY s `CS_FILT = 1` (= dosavadní chování) rámec rozbije; 8 mutací PHY zachyceno.
+- `-DSIM_NOCSDIAG`: hlavička jako FW 0x0507 (bez CAPS bitu 23 a polí), filtr zůstává — pro porovnání stop.
 
 ### 3.1b Úzká hlavička (CAPS bit22, FW 0x0507 – `6b3f29e`, 2026-10-24; STM v0.40.0 ji umí)
 

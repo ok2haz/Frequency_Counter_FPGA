@@ -5681,11 +5681,11 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Oblast:** FPGA / SPI PHY v3 (`spi_slave_phy_v3.v`), diagnostika
 - **Symptom:** `CRC err` na STM kolem 6/h bez vysvětlení; po nasazení v0.40.7 a nočním testu (15,6 h, 1 694 472 transakcí) 155 chybných rámců = 91,5 na milion rámců, stejně při 25 i 6,25 MHz, s DMA i bez, při 5× víc rámcích.
 - **Příčina (zjištěná část):** ve všech 109 vadných blocích 0 se uprostřed bloku znovu objeví začátek rámce (všech 144 konstantních bitů hlavičky), na pozici q = 2…116 bitů (stejně při 25 i 6,25 MHz); FPGA `RX_LEN_ERR` roste o 2,08 na každou chybu. V RTL `clr <= cs_fall` je asynchronní reset čítačů TX i RX, takže každý pulz na CS delší než 10 ns rámec rozdělí: konec první části (`RX_LEN_ERR` +1), restart od MAGIC, konec druhé části (+1). **Původ pulzu na CS není zjištěn (HYPOTÉZA: přeslech nebo zakmitnutí na vedení, vstup bez hystereze a bez filtru).**
-- **Oprava:** zatím žádná. Navrženo: filtr CS ve FPGA a čítače pulzů (`docs/audit/2026-10-26_spi-noc-vyhodnoceni.md`, kap. 6).
+- **Oprava:** FW 0x0508: filtr CS v PHY (16 taktů 100 MHz = 160 ns, pulz kratší se zahodí a spočítá), čítače zahozených pulzů v hlavičce 132..137 (CAPS bit23), `HYSTERESIS=HIGH` na CS, SCK, MOSI (`pins.cst`); STM v0.40.8 čte čítače (`spi err`) a umí měnit rychlost hran SCK/MOSI/CS za běhu (`spi pins`). Bitstream `ab_test/FW_0x0508_v3_20261026-1944_bd20e77.fs`.
 - **Pravidlo:** (1) asynchronní reset čítačů v taktové doméně rozhraní nesmí vycházet z neošetřeného signálu pinu; odvoď ho z filtrovaného CS (minimální šířka pulzu) a přidej čítač zahozených pulzů. (2) Diagnostika chyb rozhraní musí ukládat surová data vadného rámce a druh chyby, ne jen počítadlo: z 109 uložených bloků byl mechanismus vidět v rozboru jediného běhu, z holého počítadla nešel poznat.
 - **Detekce:** `spi err`, `spi err dump`, `tools/spi_night.py` + `tools/spi_night_report.py`; na FPGA `RX chyb … délka` ve `fpga v3` (přírůstek 2 na chybu).
-- **Commit:** (dokumentace; oprava zatím není)
-- **Stav:** 🟡 mechanismus zjištěn z dat, původ pulzu na CS neověřen měřením
+- **Commit:** `9cdbbbe` (filtr a čítače), `ab65703` (hystereze), `bd20e77` (zápis verze pro bránu vydání), `6b91119` (STM v0.40.8)
+- **Stav:** 🟡 opraveno v kódu a ověřeno simulací (PHY test s 8 mutacemi, stopy `topv3*` s `CS_FILT = 1` bitově shodné 8/8, `topv3*` s filtrem PASS); ⬜ neověřeno na desce, původ pulzu na CS dál neznámý (čítače ho změří)
 
 ---
 

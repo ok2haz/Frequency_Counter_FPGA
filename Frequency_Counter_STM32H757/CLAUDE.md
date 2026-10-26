@@ -1128,6 +1128,10 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   `ab_test/FW_0x0507_v3_20261025-1613_28c71c9.fs` (CLS 78 %, setup +0,119 ns), oprava falešného FLAGS bit4 (L-0239). STM: diagnostika
   chyb SPI v3 – UART `spi err [dump|reset|inject <blok> <n>]`, `spi poll [ms]`, řádek `SPI ERR` ve `status` (MAGIC/VER se do `CRC err`
   nezapočítává, L-0241). Polling v3 je omezen na 25/s (`S3_POLL_MS`), mezera mezi transakcemi 200 µs. ⬜ neověřeno na HW.
+- **FW 0x0508 + STM v0.40.8** (2026-10-26, STATUS #345, L-0242, `docs/audit/2026-10-26_spi-noc-vyhodnoceni.md`): noční test ukázal, že FPGA vidí pulz na CS uprostřed
+  transakce a restartuje vysílání od bajtu 0 (`clr <= cs_fall` = asynchronní reset PHY). Oprava: filtr CS 160 ns v PHY, čítače zahozených pulzů (hlavička 132..137, CAPS bit23,
+  `PROTOKOL_V3.md` kap. 3.1c), `HYSTERESIS=HIGH` na CS/SCK/MOSI; STM `spi err` (pulzy na CS), `spi pins` (rychlost hran za běhu). Bitstream
+  `ab_test/FW_0x0508_v3_20261026-1944_bd20e77.fs`, setup jen +0,048 ns. ⬜ neověřeno na HW.
 
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)
 

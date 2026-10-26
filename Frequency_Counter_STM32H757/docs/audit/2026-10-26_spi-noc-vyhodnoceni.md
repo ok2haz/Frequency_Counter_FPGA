@@ -63,6 +63,15 @@ Teploty OCXO 47,4–48,5 °C, deska 30,0–31,9 °C, Vc 1 919–1 920 mV.
 3. **FPGA/HW:** `HYSTERESIS` na vstupech CS/SCK (`pins.cst`), nižší `DRIVE` a pomalejší hrana MISO; osciloskop nebo logický analyzátor s triggerem na pulz CS < 10 µs při aktivním SCK, na konektoru FPGA.
 4. **Nástroje:** opakování žádostí v `raw_fetch.py`; do `spi_night.py` přidat `status` řádek CM4 (stall, ETH) a záhlaví CSV zapisovat okamžitě.
 
+### 6a. Provedeno (2026-10-26, STATUS #345)
+
+- Krok 1: filtr CS 160 ns a čítače pulzů ve FPGA, **FW 0x0508** (`9cdbbbe`, `bd20e77`), bitstream `ab_test/FW_0x0508_v3_20261026-1944_bd20e77.fs`. Test PHY `tb_cs_glitch`
+  (pulzy 20…150 ns na bitech 6…8000, přesné biny, hranice 160 ns, 8 mutací zachyceno); stopy celého návrhu s `CS_FILT = 1` bitově shodné s FW 0x0507 (8/8), s filtrem 16 testy PASS.
+  Stopy s filtrem 16 shodné být nemohou: odezva se zpozdí o ~170 ns a testbench je částečně adaptivní, takže se posune, která hrana je první ve segmentu.
+- Krok 2: STM v0.40.8 (`6b91119`): `spi pins [sck|mosi|cs] <low|medium|high|very>` a čtení čítačů; `tools/spi_night.py --plan 2` (A základ, L všechny hrany LOW, V VERY_HIGH, B, E).
+- Krok 3: `HYSTERESIS=HIGH` na CS, SCK, MOSI (`ab65703`, ověřeno v reportu P&R). Varianta MISO `DRIVE=4 SLEW_RATE=SLOW` se přeloží (jiný bitstream), časování P&R se nemění; nevydáno.
+- **Nová rezerva časování je tenká:** vydané sestavení +0,048 ns (předtím +0,119 ns), 8 sestavení: 6 z 8 kladných, padá známá cesta `u_pcb/c` (čítač předděličky na pinu B); CLS 79 % (bylo 78 %).
+
 ## 7. Omezení vyhodnocení
 
 Pozice restartu byla zjištěna jen v blocích 0 (109 z 109 případů); u 43 chyb v blocích 1–3 je vysvětlení jen částečné (restart těsně u CRC bajtů a konstantní CRC). Mutace a rozbor fyziky vedení (osciloskop) chybí; závěr „CS pulz" je odvozen z RTL a z `RX_LEN_ERR` +2, ne z přímého měření.
