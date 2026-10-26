@@ -18,7 +18,9 @@ module app_v3 #(
     parameter [31:0] BUILD_GIT  = 32'd0,
     parameter        RAW        = 9,          // log2 zaznamu v kruhu (v3_ring)
     parameter [7:0]  CAL_LOG2   = 8'd20,      // pocet udalosti kalibrace (souhrnna stranka)
-    parameter        DEEP       = 1           // 1 = hluboky RAW do PSRAM (-DDEEP_RAW), CAPS bit21
+    parameter        DEEP       = 1,          // 1 = hluboky RAW do PSRAM (-DDEEP_RAW), CAPS bit21
+    parameter        CSDIAG     = 1,          // 1 = citace pulzu na CS v hlavicce 132..137, CAPS bit23 (FW 0x0508, L-0242)
+    parameter [7:0]  CS_FILT    = 8'd16       // filtr CS v PHY [takty 100 MHz], jen echo v hlavicce
 )(
     input  wire        clk,                   // clk_ref_10m
     // ---- PHY v3: RX (staticke po CS nahoru), rx_valid = synchronizovany pulz konce transakce ----
@@ -43,6 +45,8 @@ module app_v3 #(
     input  wire [7:0]  ring_rdata,            // 1 takt po adrese (registrovany vystup RAM)
     // ---- stav (synchronizovany / kvazistaticky) ----
     input  wire [7:0]  st_clk, st_clk_loss, st_coh, st_coh_cnt,
+    input  wire [39:0] st_csgl,               // L-0242: citace zahozenych pulzu na CS (aktivni 1-2, 3-4, 5-8, 9+ taktu; v klidu), binarne, domena clk
+
     input  wire [7:0]  st_tdc_a, st_tdc_b,
     input  wire [1:0]  st_cal_wait,
     input  wire        st_cal_run,
@@ -100,14 +104,17 @@ module app_v3 #(
     // FW 0x0506: stejny protokol, bez PSRAM (CAPS bit21 = 0, pokud se nesestavuje -DDEEP_RAW) -- zmensena pro CLS
     // FW 0x0507: uzka hlavicka (CAPS bit22, PROTOKOL_V3 kap. 3.1b): SEQ, REC_HEAD (= pocet), REC_FIRST a PSEQ 16 b,
     // TS10M, RING_FILL, RX_LAST, predchozi 1PPS (84..95) a BUB/OVL (112..115) = 0 -- STM je rozbali / spocita sam
-    localparam [15:0] FW_VERSION = 16'h0507;
+    // FW 0x0508 (L-0242, 2026-10-26): filtr CS v PHY (pulz kratsi nez CS_FILT taktu 100 MHz uz nerestartuje vysilani) + citace
+    // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
+    localparam [15:0] FW_VERSION = CSDIAG ? 16'h0508 : 16'h0507;
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
     // (SET_CONFIG 0x07, kap. 10.7).
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B; bit21 (FW 0x0505) = hluboky RAW do PSRAM (kap. 10.9).
     // bit22 (FW 0x0507) = uzka hlavicka (kap. 3.1b).
-    localparam [31:0] CAPS = DEEP ? 32'h007F_7C32 : 32'h005F_7C32;
+    // bit23 (FW 0x0508) = citace zahozenych pulzu na CS (hlavicka 132..137, kap. 3.1c).
+    localparam [31:0] CAPS = (DEEP ? 32'h007F_7C32 : 32'h005F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
     reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
@@ -235,6 +242,10 @@ module app_v3 #(
             8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = raw_dack;
             8'd128: hb = raw_dst;       8'd129: hb = {2'd0, raw_wsel};
             8'd130: hb = raw_win[7:0];  8'd131: hb = raw_win[15:8];
+            // FW 0x0508 (CAPS bit23): zahozene pulzy na CS (L-0242); bez CSDIAG zustava rezerva = 0
+            8'd132: hb = CSDIAG ? st_csgl[7:0]   : 8'd0;   8'd133: hb = CSDIAG ? st_csgl[15:8]  : 8'd0;
+            8'd134: hb = CSDIAG ? st_csgl[23:16] : 8'd0;   8'd135: hb = CSDIAG ? st_csgl[31:24] : 8'd0;
+            8'd136: hb = CSDIAG ? st_csgl[39:32] : 8'd0;   8'd137: hb = CSDIAG ? CS_FILT : 8'd0;
             8'd122: hb = lut_cnt_b[7:0];  8'd123: hb = {2'd0, lut_cnt_b[13:8]};
             default: hb = 8'd0;
         endcase

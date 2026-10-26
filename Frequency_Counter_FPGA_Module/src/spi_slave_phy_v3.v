@@ -22,7 +22,9 @@
 // sestupne hrany = pulperioda SCK (20 ns pri 25 MHz); overit STA pri zapojeni (create_clock spi_sck >= 30 MHz).
 // ============================================================
 
-module spi_slave_phy_v3 (
+module spi_slave_phy_v3 #(
+    parameter integer CS_FILT = 16      // L-0242: pocet taktu 100 MHz, po ktere musi CS drzet novou hodnotu (1 = bez filtru)
+) (
     input  wire        clk,          // clk_p0_100m: CS, stav, konec ramce
     input  wire        clk_app,      // clk_ref_10m: aplikacni porty RAM
 
@@ -52,7 +54,9 @@ module spi_slave_phy_v3 (
     input  wire [9:0]  rx_raddr,
     output reg  [7:0]  rx_rdata,
 
-    output reg  [15:0] dbg_sck_cnt            // pocet nabeznych hran SCK posledni transakce (spravne 8192)
+    output reg  [15:0] dbg_sck_cnt,           // pocet nabeznych hran SCK posledni transakce (spravne 8192)
+    // L-0242: citace zahozenych pulzu na CS (Gray kod, domena clk): [7:0] aktivni 1-2 takty, [15:8] 3-4, [23:16] 5-8, [31:24] 9+, [39:32] v klidu
+    output reg  [39:0] cs_gl_gray
 );
 
     localparam [7:0]  MAGIC     = 8'hA5;
@@ -73,15 +77,44 @@ module spi_slave_phy_v3 (
     localparam [15:0] CRC_MAGIC = 16'h04BF;   // crc16_step(16'hFFFF, 8'hA5) (spocitano, CRC-16/CCITT-FALSE), overuje tb_phy_v3
 
     // ---------------- stav v domene clk (100 MHz) ----------------
-    reg [2:0] cs_s   = 3'b111;
+    // 2026-10-26 (L-0242): FILTR CS. Nocni test SPI (155 chyb ve 1,7 M transakcich) ukazal, ze FPGA vidi pulz na CS uprostred transakce:
+    // cs_fall je asynchronni reset citacu TX i RX (`clr`), takze kratky pulz restartuje vysilani od bajtu 0 a rozdeli transakci na dve
+    // (RX_LEN_ERR 2x na chybu). Zmena CS se prijme az po CS_FILT po sobe jdoucich taktech 100 MHz stejne hodnoty (STM drzi CS
+    // 2 us pred prvni a po posledni hrane SCK, mezi transakcemi >= 200 us -> zpozdeni CS_FILT * 10 ns nic neovlivni).
+    // Zahozene pulzy (delsi nez 1 takt, kratsi nez CS_FILT) se pocitaji podle sirky: AKTIVNI = pulz do 1 pri CS dole (ten by drive
+    // transakci rozdelil), KLID = pulz do 0 pri CS nahore. CS_FILT = 1 chova se jako dosavadni PHY (zadny filtr).
+    reg [1:0] cs_r   = 2'b11;                  // synchronizace pinu
+    reg       cs_f_q = 1'b1;                   // filtrovany CS (registr filtru; 1 = neaktivni)
+    wire      cs_f   = (CS_FILT <= 1) ? cs_r[1] : cs_f_q;   // CS_FILT = 1: primo synchronizovany pin = casovani dosavadni PHY (stopy)
+    reg       cs_p   = 1'b1;                   // cs_f o takt drive (hrany)
+    reg [5:0] cs_run = 6'd0;                   // po sobe jdouci takty, kdy se cs_r lisi od cs_f
     reg [2:0] half_s = 3'b000;
+    reg [7:0] gl_w12 = 8'd0, gl_w34 = 8'd0, gl_w58 = 8'd0, gl_w9p = 8'd0, gl_idle = 8'd0;   // saturujici citace zahozenych pulzu
     always @(posedge clk) begin
-        cs_s   <= {cs_s[1:0],   cs_pin};
+        cs_r   <= {cs_r[0], cs_pin};
+        cs_p   <= cs_f;
         half_s <= {half_s[1:0], tx_half};
+        if (cs_r[1] == cs_f_q) begin
+            cs_run <= 6'd0;
+            if (cs_run != 6'd0) begin                                  // pulz skoncil drive, nez byl prijat
+                if (cs_f_q) begin
+                    if (gl_idle != 8'hFF) gl_idle <= gl_idle + 8'd1;
+                end else if (cs_run <= 6'd2) begin if (gl_w12 != 8'hFF) gl_w12 <= gl_w12 + 8'd1; end
+                else if (cs_run <= 6'd4)     begin if (gl_w34 != 8'hFF) gl_w34 <= gl_w34 + 8'd1; end
+                else if (cs_run <= 6'd8)     begin if (gl_w58 != 8'hFF) gl_w58 <= gl_w58 + 8'd1; end
+                else                         begin if (gl_w9p != 8'hFF) gl_w9p <= gl_w9p + 8'd1; end
+            end
+        end else if (cs_run >= CS_FILT - 1) begin                       // zmena stabilni dost dlouho: prijmout
+            cs_f_q <= cs_r[1];
+            cs_run <= 6'd0;
+        end else cs_run <= cs_run + 6'd1;
     end
-    wire cs_active = ~cs_s[2];
-    wire cs_rise   = (cs_s[2:1] == 2'b01);
-    wire cs_fall   = (cs_s[2:1] == 2'b10);
+    // Gray kod citacu pro prechod do domeny clk_app (jedna zmena bitu na prirustek; registrovany, bez kombinacni logiky za citaci)
+    always @(posedge clk)
+        cs_gl_gray <= {gl_idle ^ (gl_idle >> 1), gl_w9p ^ (gl_w9p >> 1), gl_w58 ^ (gl_w58 >> 1), gl_w34 ^ (gl_w34 >> 1), gl_w12 ^ (gl_w12 >> 1)};
+    wire cs_active = ~cs_p;
+    wire cs_rise   = ({cs_p, cs_f} == 2'b01);
+    wire cs_fall   = ({cs_p, cs_f} == 2'b10);
     assign busy    = cs_active;
     reg  clr = 1'b1;                 // puls: novy ramec -> vynulovat citace SCK domeny
     always @(posedge clk) clr <= cs_fall;
@@ -173,7 +206,7 @@ module spi_slave_phy_v3 (
     // ---------------- konec ramce, poloviny (domena clk) ----------------
     initial begin
         tx_base = 1'b0; frame_end_tgl = 1'b0; rx_len_ok = 1'b0; rx_rd_half = 1'b1; dbg_sck_cnt = 16'd0;
-        tx_rdata = 8'd0; rx_rdata = 8'd0; rx_blk_ok = 4'd0;
+        tx_rdata = 8'd0; rx_rdata = 8'd0; rx_blk_ok = 4'd0; cs_gl_gray = 40'd0;
         rx_b0 = 8'd0; rx_b1 = 8'd0; rx_b2 = 8'd0; rx_seq = 32'd0;
         rx_p0 = 8'd0; rx_p1 = 8'd0; rx_p2 = 8'd0; rx_p3 = 8'd0;
     end

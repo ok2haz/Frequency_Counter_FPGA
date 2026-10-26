@@ -194,7 +194,15 @@ module tb_top_v3;
             chk(mi[0] === 8'hA5 && mi[1] === 8'h03, "MAGIC/VER");
             chk(rd(8, 2) == 1024 && mi[10] == 4, "FRAME_LEN/NBLK");
             caps = rd(24, 4);
+`ifdef SIM_NOCSDIAG
             chk(rd(20, 2) == 16'h0507, "FW_VERSION 0x0507");
+            chk(!caps[23] && rd(132, 6) == 0, "bez CSDIAG: CAPS bit23 = 0 a bajty 132..137 = 0");
+`else
+            // FW 0x0508 (L-0242): filtr CS + citace zahozenych pulzu na CS (bajty 132..136), CS_FILT v bajtu 137; v cistem CS zadne pulzy
+            chk(rd(20, 2) == 16'h0508, "FW_VERSION 0x0508");
+            chk(caps[23], "CAPS bit23 (citace pulzu na CS)");
+            chk(rd(132, 5) == 0 && mi[137] == 8'd16, "citace pulzu na CS = 0 (cisty CS), CS_FILT = 16");
+`endif
             // uzka hlavicka (CAPS bit22): zrusena / zuzena pole jsou 0
             chk(caps[22], "CAPS bit22 (uzka hlavicka)");
             nz = 0;

@@ -160,6 +160,7 @@ $tests = @(
     # 2026-10-25 (optimalizace plochy, kolo 2): testy top_v3 prekladaji navic sim/gowin_models_ext.v (modely SDPB, ALU54D,
     #   ktere gowin_models.v nema; gowin_models.v se nemeni)
     @{ name = "ccdcarry"; top = "tb_ccd_carry"; rtl = @("v3_core.v"); tb = "tb_ccd_carry.sv" }
+    @{ name = "csglitch"; top = "tb_cs_glitch"; rtl = @("spi_slave_phy_v3.v"); tb = "tb_cs_glitch.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 

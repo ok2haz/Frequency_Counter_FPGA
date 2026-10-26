@@ -426,19 +426,42 @@ module top_v3 (
     wire [10:0]   tx_waddr;  wire [7:0] tx_wdata;
     wire [7:0]    rx_b0, rx_b1, rx_b2, rx_p0, rx_p1, rx_p2, rx_p3, rx_rdata;
     wire [31:0]   rx_seq;  wire [3:0] rx_blk_ok;  wire [9:0] rx_raddr;  wire [15:0] dbg_sck_cnt;
-    spi_slave_phy_v3 u_phy (.clk(clk_p0_100m), .clk_app(clk_ref_10m), .sck_pin(spi_sck), .cs_pin(spi_cs_n), .mosi_pin(spi_mosi),
+    // L-0242 (2026-10-26): filtr CS v PHY (CS_FILT taktu 100 MHz) + citace zahozenych pulzu na CS (hlavicka 132..137, CAPS bit23).
+    // -DSIM_NOCSDIAG: hlavicka bez poli a bez CAPS bitu 23 (porovnani stop s FW 0x0507; filtr zustava).
+`ifdef SIM_NOCSFILT
+    localparam integer CS_FILT = 1;    // -DSIM_NOCSFILT: bez filtru, casovani dosavadni PHY (porovnani stop)
+`else
+    localparam integer CS_FILT = 16;
+`endif
+`ifdef SIM_NOCSDIAG
+    localparam CSDIAG = 0;
+`else
+    localparam CSDIAG = 1;
+`endif
+    wire [39:0]   cs_gl_gray;
+    spi_slave_phy_v3 #(.CS_FILT(CS_FILT)) u_phy (.clk(clk_p0_100m), .clk_app(clk_ref_10m), .sck_pin(spi_sck), .cs_pin(spi_cs_n), .mosi_pin(spi_mosi),
         .miso(spi_miso), .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata), .tx_base(phy_base),
         .busy(phy_busy), .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2), .rx_p3(rx_p3), .rx_blk_ok(rx_blk_ok), .rx_len_ok(rx_len_ok),
         .frame_end_tgl(frame_end_tgl), .rx_rd_half(rx_rd_half), .rx_raddr(rx_raddr), .rx_rdata(rx_rdata),
-        .dbg_sck_cnt(dbg_sck_cnt));
+        .dbg_sck_cnt(dbg_sck_cnt), .cs_gl_gray(cs_gl_gray));
+    // citace pulzu na CS: Gray kod (clk 100 MHz) -> 2 FF v clk_ref_10m -> binarne (jako coh_cnt)
+    reg [39:0] csg_s1 = 40'd0, csg_s2 = 40'd0;
+    always @(posedge clk_ref_10m) begin csg_s1 <= cs_gl_gray; csg_s2 <= csg_s1; end
+    wire [39:0] cs_gl_cnt;
+    genvar gk, gb;
+    generate for (gk = 0; gk < 5; gk = gk + 1) begin : g_csgl
+        for (gb = 0; gb < 8; gb = gb + 1) begin : g_bit
+            assign cs_gl_cnt[gk * 8 + gb] = ^csg_s2[gk * 8 + 7 : gk * 8 + gb];
+        end
+    end endgenerate
     reg [2:0] fe_s = 3'b000;
     always @(posedge clk_ref_10m) fe_s <= {fe_s[1:0], frame_end_tgl};
     wire rx_valid_pulse = fe_s[2] ^ fe_s[1];
 
     wire ref_sel;
     wire [7:0] coh_st, coh_cnt;
-    app_v3 #(.BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT), .RAW(RAW), .CAL_LOG2(CAL_LOG2), .DEEP(DEEP)) u_app (
+    app_v3 #(.BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT), .RAW(RAW), .CAL_LOG2(CAL_LOG2), .DEEP(DEEP), .CSDIAG(CSDIAG), .CS_FILT(CS_FILT)) u_app (
         .clk(clk_ref_10m),
         .rx_valid(rx_valid_pulse), .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2), .rx_p3(rx_p3), .rx_blk_ok(rx_blk_ok), .rx_len_ok(rx_len_ok),
@@ -446,6 +469,7 @@ module top_v3 (
         .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata), .phy_busy(phy_busy), .phy_base(phy_base),
         .rec_tgl(rec_tgl), .ring_raddr(ring_raddr), .ring_rdata(ring_rdata),
         .st_clk(clk_status), .st_clk_loss(clk_loss), .st_coh(coh_st), .st_coh_cnt(coh_cnt),
+        .st_csgl(cs_gl_cnt),
         .st_tdc_a(tdc_st_a), .st_tdc_b(tdc_st_b), .st_cal_wait({cwb_s[1], cwa_s[1]}), .st_cal_run(cba_s[1] | cbb_s[1]),
         .st_seg10(s10_s[1]),
         .pps_seq(pps_seq), .pps_nz(pps_nz), .pps_gt1(pps_gt1), .pps_last(pps_last), .pps_prev(pps_prev),
