@@ -61,10 +61,13 @@ IO_PORT "led_tx"  IO_TYPE=LVCMOS33;
 IO_LOC "fpga_ok"          63;
 IO_PORT "fpga_ok" IO_TYPE=LVCMOS33 DRIVE=8;
 
-IO_PORT "spi_mosi" IO_TYPE=LVCMOS33;
+// 2026-10-26 (L-0242): HYSTERESIS=HIGH na vstupech SPI (CS, SCK, MOSI) -- vstupni Schmitt proti kratkym pulzum / zakmitum
+// na vedeni (nocni test: restart vysilani od bajtu 0 pri pulzu na CS). Doplnuje filtr CS v PHY (CS_FILT). MISO beze zmeny
+// (DRIVE=8, rychla hrana); nizsi DRIVE / SLEW_RATE=SLOW je pripravena zkouska, viz docs/audit/2026-10-26_spi-noc-vyhodnoceni.md.
+IO_PORT "spi_mosi" IO_TYPE=LVCMOS33 HYSTERESIS=HIGH;
 IO_PORT "spi_miso" IO_TYPE=LVCMOS33 DRIVE=8;
-IO_PORT "spi_sck"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;  // Mode 0: hodiny idle LOW (ne UP!)
-IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "spi_sck"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN HYSTERESIS=HIGH;  // Mode 0: hodiny idle LOW (ne UP!)
+IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP HYSTERESIS=HIGH;
 
 // ── NEPOUŽITO V TOMTO KROKU (rezervováno pro budoucí práci) ─────────────
 // (gps_1pps PIN33 je od FW 0x0424 pouzit nize -- hruby citac 100 MHz, bez TDC)
