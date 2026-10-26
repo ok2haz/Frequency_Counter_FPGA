@@ -25,15 +25,21 @@ import argparse, csv, datetime, os, re, subprocess, sys, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UARTQ = os.path.join(ROOT, 'tools', 'uartq.ps1')
 
-# vetev -> (prikazy nastaveni, ocekavany takt Hz, ocekavane DMA 0/1, ocekavany odstup pollu ms). Vzdy cela konfigurace.
+# vetev -> (prikazy nastaveni, ocekavany takt Hz, ocekavane DMA 0/1, ocekavany odstup pollu ms, ocekavana rychlost hran SCK/MOSI/CS).
+# Vzdy cela konfigurace (po resetu se vsechno vraci na vychozi). Rychlost hran: `spi pins` je od STM v0.40.8; vychozi SCK MEDIUM, MOSI MEDIUM, CS HIGH.
+PINS_DEF = ['spi pins sck medium', 'spi pins mosi medium', 'spi pins cs high']
 ARMS = {
-    'A': (['spi 25', 'spi poll 40', 'spi dma off'], 25000000, 0, 40),
-    'B': (['spi 25', 'spi poll 10', 'spi dma off'], 25000000, 0, 10),
-    'C': (['spi 25', 'spi poll 40', 'spi dma on'],  25000000, 1, 40),
-    'E': (['spi 7',  'spi poll 40', 'spi dma off'], 6250000,  0, 40),
+    'A': (['spi 25', 'spi poll 40', 'spi dma off'] + PINS_DEF, 25000000, 0, 40, ('MEDIUM', 'MEDIUM', 'HIGH')),
+    'B': (['spi 25', 'spi poll 10', 'spi dma off'] + PINS_DEF, 25000000, 0, 10, ('MEDIUM', 'MEDIUM', 'HIGH')),
+    'C': (['spi 25', 'spi poll 40', 'spi dma on'] + PINS_DEF,  25000000, 1, 40, ('MEDIUM', 'MEDIUM', 'HIGH')),
+    'E': (['spi 7',  'spi poll 40', 'spi dma off'] + PINS_DEF, 6250000,  0, 40, ('MEDIUM', 'MEDIUM', 'HIGH')),
+    'L': (['spi 25', 'spi poll 40', 'spi dma off', 'spi pins low'],  25000000, 0, 40, ('LOW', 'LOW', 'LOW')),            # nejpomalejsi hrany
+    'V': (['spi 25', 'spi poll 40', 'spi dma off', 'spi pins very'], 25000000, 0, 40, ('VERY_HIGH', 'VERY_HIGH', 'VERY_HIGH')),   # nejrychlejsi hrany
 }
+# plan 1 = noc 2026-10-25 (chyby na rameci, FPGA 0x0507); plan 2 = po filtru CS (FPGA 0x0508): meri se citace zahozenych pulzu na CS
 PLAN = [('A', 2.0), ('B', 1.0), ('A', 2.0), ('C', 2.0), ('A', 2.0), ('E', 2.0), ('B', 1.0), ('C', 2.0), ('A', 1.5)]   # 15,5 h + cekani
-PLAN_TEST = [('A', 0.05), ('B', 0.05), ('C', 0.05), ('E', 0.05)]                                                    # 3 min kazda
+PLAN2 = [('A', 1.5), ('L', 1.5), ('V', 1.5), ('A', 1.5), ('B', 1.0), ('E', 1.5), ('L', 1.0), ('V', 1.0), ('A', 1.0)]   # 11,5 h + cekani
+PLAN_TEST = [('A', 0.05), ('B', 0.05), ('L', 0.05), ('V', 0.05)]                                                    # 3 min kazda
 
 RE_UP = re.compile(r'RUNNING gpsdo-ui (v[\d.]+)\s+uptime\s+(\d+)s')
 RE_GPSDO = re.compile(r'^GPSDO: (\w+)', re.M)
@@ -52,6 +58,9 @@ RE_FRX = re.compile(r'RX chyb CRC (\d+) delka (\d+)')      # pocitadla na strane
 RE_SCK = re.compile(r'SCK = (\d+) Hz')
 RE_DMA = re.compile(r'SPI2 DMA: (POUZIVA SE|nepouziva se)')
 RE_POLL = re.compile(r'nejkratsi odstup transakci v3 = (\d+) ms')
+RE_PINS = re.compile(r'rychlost vystupu SCK (\w+), MOSI (\w+), CS (\w+)')
+RE_CSGL = re.compile(r'pulzy na CS zahozene filtrem FPGA \((\d+) taktu 100 MHz = \d+ ns\): aktivni 1-2 taktu (\d+), 3-4: (\d+), 5-8: (\d+), 9\+: (\d+) \| v klidu (\d+)')
+CS_KEYS = ['cs_filt', 'cs_a12', 'cs_a34', 'cs_a58', 'cs_a9p', 'cs_idle']
 
 S_KEYS = ['frames', 'err', 'k1', 'k2', 'k3', 'k4', 'b0', 'b1', 'b2', 'b3', 'bursts', 'isolated', 'max_run', 'xfer_us_max', 'gap_ms_max', 'poll_ms']
 
@@ -77,6 +86,12 @@ def parse_stats(txt):
     v = [int(x) for x in m1.groups()] + [int(x) for x in m2.groups()]
     # m1: frames err k1 k2 k3 k4 b0 b1 b2 b3 ; m2: bursts isolated max_run xfer_us_max gap_ms_max poll_ms
     return dict(zip(S_KEYS, v))
+
+
+def parse_cs(txt):
+    """Citace zahozenych pulzu na CS z FPGA (`spi err`, FW >= 0x0508) -> dict CS_KEYS nebo None."""
+    m = RE_CSGL.search(txt)
+    return dict(zip(CS_KEYS, [int(x) for x in m.groups()])) if m else None
 
 
 def parse_errors(txt):
@@ -146,7 +161,9 @@ def selftest():
         '===== > status\nRUNNING gpsdo-ui v0.40.7  uptime 104s\nVAROVANI: prio 7  TEPLOTA NEUSTALENA  - OCXO se zahriva\n'
         'GPSDO: FLL | 68 s | y -12.305 ppb\nSEQ FPGA: diry 1 (zmeskano 1 mereni), resync 0  <== x\nFPGA: link OK, CRC err 6, last 30s ago\n'
         '  FPGA SAMOKONTROLA: zamitnuto oken: citani 3, hodiny 0, delka okna 0 | posledni rozdil 0\n'
-        '  FW 0x0507 CAPS 0x005F7C32, REC_HEAD 117377 REC_FIRST 117370, v kruhu 8, FLAGS 0x21, RX chyb CRC 1 delka 17\n')
+        '  FW 0x0507 CAPS 0x005F7C32, REC_HEAD 117377 REC_FIRST 117370, v kruhu 8, FLAGS 0x21, RX chyb CRC 1 delka 17\n'
+        'SPI ERR: pulzy na CS zahozene filtrem FPGA (16 taktu 100 MHz = 160 ns): aktivni 1-2 taktu 4, 3-4: 3, 5-8: 2, 9+: 1 | v klidu 7 (saturuji na 255)\n'
+        'SPI2: rychlost vystupu SCK MEDIUM, MOSI MEDIUM, CS HIGH (pouziti: spi pins [sck|mosi|cs] <low|medium|high|very>; nepersistuje se)\n')
     s = parse_stats(sample)
     assert s and s['frames'] == 1517 and s['err'] == 6 and s['k1'] == 2 and s['k2'] == 4 and s['b2'] == 3 and s['b3'] == 0, s
     assert s['bursts'] == 3 and s['isolated'] == 1 and s['max_run'] == 3 and s['xfer_us_max'] == 577 and s['gap_ms_max'] == 79 and s['poll_ms'] == 40, s
@@ -157,6 +174,10 @@ def selftest():
     st = parse_status(sample)
     assert st['uptime'] == 104 and st['gpsdo'] == 'FLL' and st['warm'] == 1 and st['crc_err'] == 6 and st['citani'] == 3 and st['seq_diry'] == 1, st
     assert st['fpga_rx_crc'] == 1 and st['fpga_rx_len'] == 17, st
+    cs = parse_cs(sample)
+    assert cs == dict(cs_filt=16, cs_a12=4, cs_a34=3, cs_a58=2, cs_a9p=1, cs_idle=7), cs
+    assert RE_PINS.search(sample).groups() == ('MEDIUM', 'MEDIUM', 'HIGH')
+    assert parse_cs('SPI ERR: FPGA nema citace pulzu na CS') is None
     assert RE_SCK.search('SPI2: SCK = 6250000 Hz (ramec 128 B ~ 163 us), CRC err 0').group(1) == '6250000'
     print('selftest parsovani: PASS')
 
@@ -168,8 +189,9 @@ class Run:
         p = lambda n: os.path.join(a.outdir, n)
         self.errs = Csv(p('spi_chyby.csv'), ['t_iso', 'boot', 'arm', 'rep', 'uptime_s', 't_ms', 'frame', 'kind', 'blk_ok', 'seq', 'since_pps_ms', 'gap_ms', 'run', 'slot'])
         self.blks = Csv(p('spi_bloky.csv'), ['t_iso', 'boot', 'arm', 'rep', 't_ms', 'kind', 'blok', 'hex'])
-        self.arms = Csv(p('spi_vetve.csv'), ['arm', 'rep', 'start', 'end', 'dur_h', 'cfg_ok', 'restarts'] + S_KEYS + ['err_per_h', 'err_per_Mframes'])
-        self.cyc = Csv(p('spi_cykly.csv'), ['t_iso', 'boot', 'arm', 'rep', 'uptime_s', 'gpsdo', 'warm', 'crc_err_total', 'citani', 'hodiny', 'delka', 'seq_diry', 'fpga_rx_crc', 'fpga_rx_len'] + S_KEYS)
+        self.arms = Csv(p('spi_vetve.csv'), ['arm', 'rep', 'start', 'end', 'dur_h', 'cfg_ok', 'restarts'] + S_KEYS + ['err_per_h', 'err_per_Mframes'] +
+                        ['d_cs_a12', 'd_cs_a34', 'd_cs_a58', 'd_cs_a9p', 'd_cs_idle', 'cs_aktivni_per_Mframes'])
+        self.cyc = Csv(p('spi_cykly.csv'), ['t_iso', 'boot', 'arm', 'rep', 'uptime_s', 'gpsdo', 'warm', 'crc_err_total', 'citani', 'hodiny', 'delka', 'seq_diry', 'fpga_rx_crc', 'fpga_rx_len'] + CS_KEYS + S_KEYS)
         self.evs = Csv(p('spi_udalosti.csv'), ['t_iso', 'event', 'detail'])
         self.boot = 0
         self.seen = set()
@@ -214,18 +236,20 @@ class Run:
         self.ev('LOCK_TIMEOUT', 'pokracuji bez LOCK')
 
     def apply_cfg(self, arm, inject):
-        cmds, sck, dma, poll = ARMS[arm]
+        cmds, sck, dma, poll, pins = ARMS[arm]
         for attempt in range(3):
             txt = uart(self.a.port, list(cmds))
-            m_s, m_d, m_p = RE_SCK.findall(txt), RE_DMA.findall(txt), RE_POLL.findall(txt)
+            m_s, m_d, m_p, m_pins = RE_SCK.findall(txt), RE_DMA.findall(txt), RE_POLL.findall(txt), RE_PINS.findall(txt)
             ok = bool(m_s) and int(m_s[-1]) == sck and bool(m_p) and int(m_p[-1]) == poll and bool(m_d) and ((m_d[-1] == 'POUZIVA SE') == bool(dma))
+            if m_pins:                                   # `spi pins` existuje od STM v0.40.8; se starsim firmwarem se rychlost hran nekontroluje
+                ok = ok and tuple(m_pins[-1]) == pins
             if ok:
                 # prepnuti taktu / DMA za behu pokazi jednu transakci (zmereno 2026-10-25: MAGIC/VER + vsechny CRC) -> reset az po ustaleni
                 time.sleep(4)
                 c = ['spi err reset'] + (['spi err inject 2 2'] if inject else [])
                 uart(self.a.port, c, idle=2000, mx=20000)
                 return True
-            self.ev('CFG_MISMATCH', 'vetev %s pokus %d: SCK %s DMA %s poll %s' % (arm, attempt + 1, m_s[-1:], m_d[-1:], m_p[-1:]))
+            self.ev('CFG_MISMATCH', 'vetev %s pokus %d: SCK %s DMA %s poll %s hrany %s' % (arm, attempt + 1, m_s[-1:], m_d[-1:], m_p[-1:], m_pins[-1:]))
             time.sleep(5)
         return False
 
@@ -236,6 +260,8 @@ class Run:
             self.ev('NO_UART', 'prazdna nebo neuplna odpoved (%d znaku)' % len(txt))
             return None, None
         errs, dump = parse_errors(txt), parse_dump(txt)
+        cs = parse_cs(txt)
+        st['cs'] = cs
         for e in reversed(errs):                        # nejstarsi prvni
             key = (self.boot, e['t_ms'], e['frame'])
             if key in self.seen:
@@ -248,8 +274,9 @@ class Run:
                 self.blks.put(t_iso=iso(), boot=self.boot, arm=arm, rep=rep, t_ms=e['t_ms'], kind=e['kind'], blok=bk, hex=hx)
         self.cyc.put(t_iso=iso(), boot=self.boot, arm=arm, rep=rep, uptime_s=st['uptime'], gpsdo=st['gpsdo'], warm=st['warm'],
                      crc_err_total=st['crc_err'], citani=st['citani'], hodiny=st['hodiny'], delka=st['delka'], seq_diry=st['seq_diry'],
-                     fpga_rx_crc=st['fpga_rx_crc'], fpga_rx_len=st['fpga_rx_len'], **stat)
-        print('%s %s%d up %ds GPSDO %s | ramcu %d chyb %d (serii %d)' % (iso(), arm, rep, st['uptime'], st['gpsdo'], stat['frames'], stat['err'], stat['bursts']), flush=True)
+                     fpga_rx_crc=st['fpga_rx_crc'], fpga_rx_len=st['fpga_rx_len'], **(cs or {}), **stat)
+        print('%s %s%d up %ds GPSDO %s | ramcu %d chyb %d (serii %d)%s' % (iso(), arm, rep, st['uptime'], st['gpsdo'], stat['frames'], stat['err'], stat['bursts'],
+              (' | pulzy CS aktivni %d klid %d' % (cs['cs_a12'] + cs['cs_a34'] + cs['cs_a58'] + cs['cs_a9p'], cs['cs_idle'])) if cs else ''), flush=True)
         return stat, st
 
     def run_arm(self, arm, rep, hours):
@@ -259,6 +286,7 @@ class Run:
         self.ev('VETEV_START', '%s%d %.2f h cfg_ok=%d' % (arm, rep, hours, cfg_ok))
         acc = {k: 0 for k in S_KEYS}
         last, restarts = None, 0
+        cs0 = cs_last = None                                               # citace pulzu na CS jsou kumulativni (nulovat je nelze) -> pocita se rozdil
         def add(dst, s):
             for k in S_KEYS:
                 if k in ('max_run', 'xfer_us_max', 'gap_ms_max', 'poll_ms'):
@@ -284,15 +312,27 @@ class Run:
                 continue
             self.last_up = st['uptime']
             last = stat
+            if st.get('cs'):
+                cs_last = st['cs']
+                cs0 = cs0 or st['cs']
         stat, st = self.cycle(arm, rep)                                  # posledni cteni vetve
         if stat is not None:
             last = stat
+            if st.get('cs'):
+                cs_last = st['cs']
+                cs0 = cs0 or st['cs']
         tot = dict(acc)
         if last:
             add(tot, last)
         dur_h = (time.time() - t_start) / 3600.0
+        dcs = {}
+        if cs0 and cs_last:
+            for k in ('cs_a12', 'cs_a34', 'cs_a58', 'cs_a9p', 'cs_idle'):
+                dcs['d_' + k] = cs_last[k] - cs0[k]
+            act = sum(dcs['d_' + k] for k in ('cs_a12', 'cs_a34', 'cs_a58', 'cs_a9p'))
+            dcs['cs_aktivni_per_Mframes'] = '%.1f' % (act * 1e6 / tot['frames'] if tot['frames'] else 0)
         self.arms.put(arm=arm, rep=rep, start=start_iso, end=iso(), dur_h='%.3f' % dur_h, cfg_ok=int(cfg_ok), restarts=restarts, **tot,
-                      err_per_h='%.2f' % (tot['err'] / dur_h if dur_h else 0), err_per_Mframes='%.1f' % (tot['err'] * 1e6 / tot['frames'] if tot['frames'] else 0))
+                      err_per_h='%.2f' % (tot['err'] / dur_h if dur_h else 0), err_per_Mframes='%.1f' % (tot['err'] * 1e6 / tot['frames'] if tot['frames'] else 0), **dcs)
         self.ev('VETEV_KONEC', '%s%d: ramcu %d chyb %d (%.2f/h), serii %d' % (arm, rep, tot['frames'], tot['err'], tot['err'] / dur_h if dur_h else 0, tot['bursts']))
 
 
@@ -307,12 +347,13 @@ def main():
     ap.add_argument('--no-web', action='store_true')
     ap.add_argument('--test', action='store_true', help='kratka zkouska: 4 vetve po 3 min, bez cekani na LOCK, s vstrikovanymi chybami')
     ap.add_argument('--inject-test', action='store_true', help='na zacatku kazde vetve vstrikne 2 chyby (jen zkouska potrubi)')
+    ap.add_argument('--plan', type=int, choices=(1, 2), default=2, help='1 = noc 2026-10-25 (A,B,C,E; 15,5 h), 2 = po filtru CS (A,L,V,B,E; 11,5 h; STM >= v0.40.8)')
     ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
     if a.selftest:
         selftest()
         return
-    plan = PLAN
+    plan = PLAN2 if a.plan == 2 else PLAN
     if a.test:
         plan, a.no_wait, a.inject_test = PLAN_TEST, True, True
         a.period = min(a.period, 40.0)
