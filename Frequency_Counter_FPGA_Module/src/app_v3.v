@@ -106,7 +106,8 @@ module app_v3 #(
     // TS10M, RING_FILL, RX_LAST, predchozi 1PPS (84..95) a BUB/OVL (112..115) = 0 -- STM je rozbali / spocita sam
     // FW 0x0508 (L-0242, 2026-10-26): filtr CS v PHY (pulz kratsi nez CS_FILT taktu 100 MHz uz nerestartuje vysilani) + citace
     // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
-    localparam [15:0] FW_VERSION = CSDIAG ? 16'h0508 : 16'h0507;
+    localparam [15:0] FW_VERSION = 16'h0508;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
+    localparam [15:0] FW_VERSION_TX = CSDIAG ? FW_VERSION : 16'h0507;          // do hlavicky; -DSIM_NOCSDIAG = hlavicka FW 0x0507
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
     // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
@@ -213,7 +214,7 @@ module app_v3 #(
             8'd8:  hb = 8'h00;         8'd9:  hb = 8'h04;         8'd10: hb = 8'd4;
             8'd12: hb = BUILD_TIME[7:0];  8'd13: hb = BUILD_TIME[15:8]; 8'd14: hb = BUILD_TIME[23:16]; 8'd15: hb = BUILD_TIME[31:24];
             8'd16: hb = BUILD_GIT[7:0];   8'd17: hb = BUILD_GIT[15:8];  8'd18: hb = BUILD_GIT[23:16];  8'd19: hb = BUILD_GIT[31:24];
-            8'd20: hb = FW_VERSION[7:0];  8'd21: hb = FW_VERSION[15:8];
+            8'd20: hb = FW_VERSION_TX[7:0];  8'd21: hb = FW_VERSION_TX[15:8];
             8'd22: hb = 8'd100;
             8'd23: hb = st_seg10 ? 8'd10 : 8'd25;
             8'd24: hb = CAPS[7:0];  8'd25: hb = CAPS[15:8];  8'd26: hb = CAPS[23:16];  8'd27: hb = CAPS[31:24];
