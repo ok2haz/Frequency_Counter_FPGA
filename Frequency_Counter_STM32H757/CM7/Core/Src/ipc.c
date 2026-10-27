@@ -90,6 +90,7 @@ static void ipc_stamp(volatile ipc_shared_t *p)
     memset((void *)&p->stab,   0, sizeof p->stab);
     memset((void *)&p->fpgadiag, 0, sizeof p->fpgadiag);
     memset((void *)&p->gpsdo, 0, sizeof p->gpsdo);
+    memset((void *)&p->push,  0, sizeof p->push);    /* v30: nastaveni se znovu publikuje ze syscfg, vysledky CM4 zacinaji od nuly */
     memset((void *)&p->raw,   0, sizeof p->raw);     /* v26: handshake, vynulovany = zadny pozadavek (jako log/errlog) */
     p->snap.magic   = IPC_MAGIC;
     p->snap.version = (uint16_t)IPC_VERSION;
@@ -201,6 +202,15 @@ void ipc_publish(void)
               g_ipc.gpsdo.ref_ppb_x100 = (uint32_t)((rp > 4.0e7) ? 4.0e9 : rp * 100.0 + 0.5);
               g_ipc.gpsdo.ref_meas = rm; }
             IPC_DMB(); g_ipc.gpsdo.gen++;
+
+            /* v30: nastaveni webhooku alarmu (TODO #249) -- seqlock; pole CM4 (sent/failed/last/pending) se nezapisuji */
+            g_ipc.push.gen++; IPC_DMB();
+            g_ipc.push.en = g_apush_en;
+            for (int i = 0; i < 4; i++) g_ipc.push.ip[i] = g_apush_ip[i];
+            g_ipc.push.port = g_apush_port;
+            g_ipc.push.test_seq = g_apush_test;
+            for (unsigned i = 0; i < APUSH_PATH_MAX; i++) g_ipc.push.path[i] = g_apush_path[i];
+            IPC_DMB(); g_ipc.push.gen++;
         }
     }
     if (!meas_new && (now - s_last_ms) < 500u) return;

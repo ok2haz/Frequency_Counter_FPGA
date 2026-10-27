@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "alarm_push.h"
 
 /** Periodicky tik (~100 Hz z defaultTask): vyhodnoti stavy + prehraje pattern. */
 void alarm_tick(void);
@@ -73,6 +74,16 @@ typedef struct {
 } mon_cfg_t;
 
 extern mon_cfg_t g_mon_cfg;
+
+/* ── Webhook alarmu pres sit (TODO #249, v0.41.0): nastaveni drzi CM7 (syscfg), odesila CM4 (IPC blok `push`).
+ * Cil = IPv4 + port + cesta (http, bez DNS a TLS), viz alarm_push.h. Odesilani NEZAVISI na mute. */
+extern volatile uint8_t  g_apush_en;                   /* 1 = odesilat */
+extern uint8_t           g_apush_ip[4];
+extern uint16_t          g_apush_port;
+extern char              g_apush_path[APUSH_PATH_MAX];
+extern volatile uint16_t g_apush_test;                 /* kazde zvyseni = CM4 odesle testovaci udalost */
+/** Nastavi cil z "http://a.b.c.d[:port][/cesta]". 1 = platne a ulozeno do globalu, 0 = nic se nezmenilo. */
+int alarm_push_set_url(const char *url);
 
 /* ── ΔT kriterium "pec topi" ────────────────────────────────────────────────
  * 🔴 PROC NE absolutni teplota: 0x49 meri PLAST, ktery sleduje okoli (viz vyse).

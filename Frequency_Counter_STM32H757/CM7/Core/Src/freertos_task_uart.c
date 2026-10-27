@@ -1556,6 +1556,27 @@ void UartTask_run(void *argument)
 				  }   /* konec pojistky proti kolizi s ETH na CM4 */
 			  }
 			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
+			  else if (strncmp(RxBuffer, "alarmpush", 9) == 0) {
+				  /* Webhook alarmu (TODO #249): `alarmpush` = stav, `alarmpush url http://a.b.c.d[:port][/cesta]`, `alarmpush on|off`,
+				   * `alarmpush test` (odesle testovaci udalost). Nastaveni se uklada do syscfg. Odesila CM4 pres IPC (blok `push`). */
+				  const char *a = RxBuffer + 9;
+				  while (*a == ' ') a++;
+				  if (strncmp(a, "url ", 4) == 0) {
+					  const char *u = a + 4;
+					  while (*u == ' ') u++;
+					  if (alarm_push_set_url(u)) g_sys_cfg_dirty = 1;
+					  else printf("ALARMPUSH: neplatna adresa (povoleno http://a.b.c.d[:port][/cesta], jen IPv4, bez DNS)\r\n");
+				  }
+				  else if (strcmp(a, "on") == 0)  { g_apush_en = 1u; g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "off") == 0) { g_apush_en = 0u; g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "test") == 0) { g_apush_test++; }
+				  else if (a[0] != 0) printf("ALARMPUSH: pouziti alarmpush [url <adresa>|on|off|test]\r\n");
+				  printf("ALARMPUSH: %s -> http://%u.%u.%u.%u:%u%s\r\n", g_apush_en ? "ZAP" : "VYP",
+				         (unsigned)g_apush_ip[0], (unsigned)g_apush_ip[1], (unsigned)g_apush_ip[2], (unsigned)g_apush_ip[3],
+				         (unsigned)g_apush_port, g_apush_path);
+				  printf("ALARMPUSH: odeslano %u, zahozeno %u, posledni %u (1=OK 2=spojeni 3=timeout 4=sit 5=HTTP 6=pamet), ceka 0x%02X\r\n",
+				         (unsigned)g_ipc.push.sent, (unsigned)g_ipc.push.failed, (unsigned)g_ipc.push.last, (unsigned)g_ipc.push.pending);
+			  }
 			  else if (strncmp(RxBuffer, "digits", 6) == 0) {
 				  /* Rezim poctu platnych cislic hlavniho cisla: `digits sig` (podle signalu, vychozi), `digits counter`
 				   * (jen podle rozliseni citace), bez argumentu = stav. Meni jen zobrazeni; persist v syscfg. */

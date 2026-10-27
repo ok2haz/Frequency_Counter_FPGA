@@ -159,8 +159,15 @@ typedef struct {
      * citace; v0.40.9). Blob je zaplneny presne (208 B bez vycpavky), proto je prepinac v nevyuzitem bitu, ne v novem poli:
      * velikost ani magic se nemeni a stary blob (gen_valid = 1) cte digits = 0 = vychozi. */
     uint8_t  gen_valid;
+    /* v0.41.0 (TODO #249): webhook alarmu pres sit. ZA koncem blobu v0.40.3..v0.40.11 (208 B): uloziste vraci delku ulozeneho
+     * blobu, stary blob (192 / 208 B) se cte dal se stejnym magicem a webhook zustane vypnuty. */
+    uint8_t  push_en;
+    uint8_t  push_ip[4];
+    uint16_t push_port;
+    char     push_path[APUSH_PATH_MAX];
 } syscfg_blob_t;
 #define SYSCFG_BLOB_V1  192u   /* delka blobu do v0.40.2 (bez generatoru) */
+#define SYSCFG_BLOB_V2  208u   /* delka blobu v0.40.3 .. v0.40.11 (bez webhooku) */
 
 /* 🔴 Strop blobu je vlastnost UKLADACE, ne komentare (audit F-0097, lekce L-0026).
  * `w25q_store_write` vrati `false`, kdyz payload nepretece jeden sektor — jenze
@@ -173,7 +180,8 @@ _Static_assert(sizeof(syscfg_blob_t) <= W25Q_STORE_MAX_BLOB,
                "syscfg blob se nevejde do jednoho sektoru W25Q (W25Q_STORE_MAX_BLOB)");
 /* `allan_dens` recykluje vycpavku (viz pole) — kdyby se layout posunul, stary blob
    by se cetl posunuty a magic se to nedozvi. Zmereno pred i po: 192 B, 184. */
-_Static_assert(sizeof(syscfg_blob_t) == 208u && offsetof(syscfg_blob_t, gen_hz) == SYSCFG_BLOB_V1 &&
+_Static_assert(sizeof(syscfg_blob_t) == 264u && offsetof(syscfg_blob_t, gen_hz) == SYSCFG_BLOB_V1 &&
+               offsetof(syscfg_blob_t, push_en) == SYSCFG_BLOB_V2 &&
                offsetof(syscfg_blob_t, mirror_seq) == 184u &&
                offsetof(syscfg_blob_t, dac_code) == 182u &&
                offsetof(syscfg_blob_t, gps_cable_dm) == 74u && offsetof(syscfg_blob_t, survey_n) == 76u,
@@ -251,6 +259,11 @@ static void pack(syscfg_blob_t *b)
         b->gen_on[i] = g_si_gen[i].on ? 1u : 0u;
     }
     b->gen_valid = (uint8_t)(1u | (screen_main_digits_res() ? 2u : 0u));
+    b->push_en   = g_apush_en ? 1u : 0u;
+    for (int i = 0; i < 4; i++) b->push_ip[i] = g_apush_ip[i];
+    b->push_port = g_apush_port;
+    for (unsigned i = 0; i < APUSH_PATH_MAX; i++) b->push_path[i] = g_apush_path[i];
+    b->push_path[APUSH_PATH_MAX - 1u] = '\0';
 }
 
 void syscfg_load(void)
@@ -282,11 +295,11 @@ void syscfg_load(void)
      * flash / stary magic znamena „nic ulozeno" (0 V), ale nedostupne uloziste
      * nesmi obnovu spustit s nulou (na rozdil od neexistujiciho kodu). */
     if (store_ok) {
-        if ((n == sizeof(b) || n == SYSCFG_BLOB_V1) && b.magic == SYSCFG_BLOB_MAGIC) g_dac_persist = b.dac_code;
+        if ((n == sizeof(b) || n == SYSCFG_BLOB_V2 || n == SYSCFG_BLOB_V1) && b.magic == SYSCFG_BLOB_MAGIC) g_dac_persist = b.dac_code;
         g_dac_persist_loaded = 1u;
     }
 
-    if ((n != sizeof(b) && n != SYSCFG_BLOB_V1) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/stary magic */
+    if ((n != sizeof(b) && n != SYSCFG_BLOB_V2 && n != SYSCFG_BLOB_V1) || b.magic != SYSCFG_BLOB_MAGIC) return;   /* prazdno/nova flash/stary magic */
 
     /* GENERATOR: NENI v BKP -> aplikuj VZDY (jako fx/meas). Po startu ma cip vychozi mapu REGMAP (si5356_init v main),
      * zadost jen tam, kde se ulozene nastaveni lisi; zapis dela SensorsTask (vlastnik I2C1). Mimo rozsah = vychozi. */
@@ -297,6 +310,16 @@ void syscfg_load(void)
             if (f != g_si_gen[i].freq_hz || (b.gen_on[i] != 0u) != (g_si_gen[i].on != 0u))
                 si5356_gen_request(i, f, b.gen_on[i] != 0u);
         }
+    }
+
+    /* Webhook alarmu (TODO #249): NENI v BKP -> aplikuj VZDY, ale jen z plneho blobu (starsi bloby ho nemaji = vypnuto).
+     * Neplatna adresa/cesta (poskozeny blob) -> vypnuto, bez pokusu o odeslani. */
+    if (n == sizeof(b)) {
+        char ub[24 + APUSH_PATH_MAX];
+        snprintf(ub, sizeof ub, "%u.%u.%u.%u:%u%s", (unsigned)b.push_ip[0], (unsigned)b.push_ip[1], (unsigned)b.push_ip[2],
+                 (unsigned)b.push_ip[3], (unsigned)b.push_port, b.push_path);
+        b.push_path[APUSH_PATH_MAX - 1u] = '\0';
+        if (alarm_push_set_url(ub)) g_apush_en = b.push_en ? 1u : 0u;
     }
 
     /* Efektove flagy: aplikuj VZDY (BKP je nedrzi -> flash autoritativni i pri warm

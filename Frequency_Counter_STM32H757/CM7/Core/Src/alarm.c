@@ -17,6 +17,8 @@
 #include "meas_math.h"       /* g_meas_verdict + g_meas_cfg — limit pass/fail alarm (#44) */
 #include "sensor_stat.h"     /* g_sensors[] — prahovy monitor VBAT/OCXO */
 #include "stm32h7xx_hal.h"
+#include "FreeRTOS.h"        /* taskENTER_CRITICAL v alarm_push_set_url */
+#include "task.h"
 
 /* Sdilene stavy (definice ve freertos.c). */
 extern volatile unsigned char g_freq_stale;    /* 1 = FPGA signal lost / mrtvy link */
@@ -435,4 +437,25 @@ void alarm_test(void)
      * UartTask, vlastnikem stavu je defaultTask (audit F-0103). Do 2026-09-17
      * se tu volal `pattern_start()` primo. */
     s_test_req = 1;
+}
+
+/* ── Webhook alarmu (TODO #249) ─────────────────────────────────────────────── */
+volatile uint8_t  g_apush_en = 0u;
+uint8_t           g_apush_ip[4] = { 0u, 0u, 0u, 0u };
+uint16_t          g_apush_port = 80u;
+char              g_apush_path[APUSH_PATH_MAX] = "/";
+volatile uint16_t g_apush_test = 0u;
+
+int alarm_push_set_url(const char *url)
+{
+    uint8_t ip[4]; uint16_t port; char path[APUSH_PATH_MAX];
+    if (!apush_parse_url(url, ip, &port, path, sizeof path)) return 0;
+    /* Cil se commituje najednou (zapisuje UartTask, cte defaultTask pri publikaci do IPC; roztrzena kombinace by na okamzik
+     * poslala pozadavek na napul zmenenou adresu). Kriticka sekce staci: je to par bajtu. */
+    taskENTER_CRITICAL();
+    for (int i = 0; i < 4; i++) g_apush_ip[i] = ip[i];
+    g_apush_port = port;
+    for (size_t i = 0; i < sizeof path; i++) g_apush_path[i] = path[i];
+    taskEXIT_CRITICAL();
+    return 1;
 }

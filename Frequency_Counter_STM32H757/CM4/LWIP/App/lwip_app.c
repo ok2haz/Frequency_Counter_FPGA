@@ -301,3 +301,195 @@ void lwip_app_process(void)
  * je nikdy nevolal. Stav linky i adresa se ven dostavaji `publish_state()` ->
  * `ipc_cm4_set_net()` do IPC, odkud je cte CM7 (System Health, UART `status`)
  * i web. Druha cesta ke stejnemu udaji by se jen mohla rozejit. */
+
+/* ══ Webhook alarmu pres sit (TODO #249, v0.41.0) ═══════════════════════════════════════════════════════════════════════════
+ * CM4 vidi ve snapshotu (5 Hz) pocitadla alarmu z CM7 (`alarm_*`); kdyz nektere vzroste a webhook je zapnuty (IPC blok `push`,
+ * nastavuje CM7 prikazem `alarmpush`), posle HTTP POST s JSON na IPv4:port/cesta (alarm_push.h). NEBLOKUJE: raw lwIP TCP, kazdy
+ * krok je callback nebo kratky `tick`. Jedno spojeni najednou, nejvyse jedna udalost v letu, ostatni cekaji v bitove masce.
+ *   - Pokus: connect -> POST -> prvni radek odpovedi "HTTP/1.x 2xx" = OK. Spojeni se po odpovedi ZRUSI (tcp_abort = RST) a nezavira
+ *     se pres FIN: aktivni zavreni by nechalo pcb ~120 s v TIME_WAIT a vycerpalo by 10 PCB v poolu (http 5 + scpi 4 + tento).
+ *   - Chyba/timeout (4 s) -> do 3 pokusu po 5 s, pak udalost zahozena (`failed`++), aby zavesena cilova adresa neblokovala vse.
+ *   - Prvni snapshot po startu jen nastavi vychozi hodnoty pocitadel (zadna lavina po restartu); pokles pocitadla (restart CM7)
+ *     znamena nove vychozi hodnoty, ne udalost. Pocitadla ve snapshotu jsou uint16 saturovana, rozdil se pocita modulo 2^16.
+ *   - Vysledky jsou v g_ipc.push (sent/failed/last/pending), cte je CM7 (`alarmpush`). */
+#include "lwip/tcp.h"
+#include "../../../CM7/Core/Inc/alarm_push.h"
+
+#define APUSH_TMO_MS     4000u
+#define APUSH_RETRY_MS   5000u
+#define APUSH_TRIES      3u
+#define APUSH_EV_REAL    6u            /* pocitadla ve snapshotu: fpga, gps, limit, vbat, ocxo, adev */
+
+static struct tcp_pcb *s_ap_pcb;
+static uint8_t   s_ap_busy;            /* 1 = spojeni ve vzduchu */
+static uint8_t   s_ap_ev;              /* udalost ve vzduchu */
+static uint8_t   s_ap_tries;
+static uint8_t   s_ap_base;            /* 1 = vychozi hodnoty pocitadel nactene */
+static uint8_t   s_ap_pending;
+static uint16_t  s_ap_last[APUSH_EV_REAL];
+static uint16_t  s_ap_cnt[APUSH_EV_N];
+static uint16_t  s_ap_test_seen;
+static uint32_t  s_ap_t0, s_ap_next_ms;
+static char      s_ap_req[320];
+static int       s_ap_len;
+static uint16_t  s_ap_sent, s_ap_failed;
+
+static void ap_publish(uint8_t last)
+{
+    g_ipc.push.sent    = s_ap_sent;
+    g_ipc.push.failed  = s_ap_failed;
+    g_ipc.push.pending = s_ap_pending;
+    if (last) { g_ipc.push.last = last; g_ipc.push.last_ms = HAL_GetTick(); }
+}
+
+/* tcp_abort() zavola u pcb i err callback (ERR_ABRT). Proto se callbacky nejdriv odregistruji, jinak by se vysledek zapocital
+ * dvakrat (jednou z err callbacku, podruhe z volajiciho). */
+static void ap_kill(struct tcp_pcb *pcb)
+{
+    tcp_err(pcb, NULL); tcp_recv(pcb, NULL); tcp_sent(pcb, NULL); tcp_poll(pcb, NULL, 0);
+    tcp_abort(pcb);
+}
+
+/* Konec pokusu o udalost `s_ap_ev` s vysledkem `res` (spojeni uz je zruseno/zavrene volajicim). */
+static void ap_finish(uint8_t res)
+{
+    s_ap_pcb = NULL;
+    s_ap_busy = 0u;
+    if (res == APUSH_RES_OK) {
+        s_ap_pending &= (uint8_t)~(1u << s_ap_ev);
+        s_ap_sent++;
+        s_ap_tries = 0u;
+        s_ap_next_ms = HAL_GetTick();                       /* dalsi cekajici udalost hned */
+    } else {
+        if (++s_ap_tries >= APUSH_TRIES) {                  /* vycerpano -> zahodit, nezdrzovat dalsi */
+            s_ap_pending &= (uint8_t)~(1u << s_ap_ev);
+            s_ap_failed++;
+            s_ap_tries = 0u;
+        }
+        s_ap_next_ms = HAL_GetTick() + APUSH_RETRY_MS;
+    }
+    ap_publish(res);
+}
+
+static void ap_err_cb(void *arg, err_t err)
+{
+    (void)arg; (void)err;
+    /* lwIP pcb uz uvolnil (reset, odmitnuti): NESAHAT na nej. */
+    ap_finish(APUSH_RES_CONNECT);
+}
+
+static err_t ap_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+{
+    (void)arg;
+    if (p == NULL) {                                   /* protistrana zavrela bez (uplne) odpovedi */
+        ap_kill(pcb);
+        ap_finish(APUSH_RES_HTTP);
+        return ERR_ABRT;
+    }
+    if (err != ERR_OK) { pbuf_free(p); return err; }
+    /* "HTTP/1.x 2xx": minimalne 12 znaku v prvnim pbuf (odpoved na webhook je kratka; jinak se bere jako chyba HTTP) */
+    uint8_t res = APUSH_RES_HTTP;
+    if (p->len >= 12u) {
+        const char *s = (const char *)p->payload;
+        if (s[0] == 'H' && s[1] == 'T' && s[2] == 'T' && s[3] == 'P' && s[4] == '/' && s[9] == '2') res = APUSH_RES_OK;
+    }
+    pbuf_free(p);
+    ap_kill(pcb);                                    /* viz hlavicka bloku: bez TIME_WAIT */
+    ap_finish(res);
+    return ERR_ABRT;
+}
+
+static err_t ap_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
+{
+    (void)arg;
+    if (err != ERR_OK) { ap_kill(pcb); ap_finish(APUSH_RES_CONNECT); return ERR_ABRT; }
+    tcp_recv(pcb, ap_recv_cb);
+    if (tcp_write(pcb, s_ap_req, (u16_t)s_ap_len, TCP_WRITE_FLAG_COPY) != ERR_OK || tcp_output(pcb) != ERR_OK) {
+        ap_kill(pcb);
+        ap_finish(APUSH_RES_MEM);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
+/* Spusti odeslani udalosti `ev` (volat jen kdyz !s_ap_busy). */
+static void ap_start(unsigned ev, const uint8_t ip[4], uint16_t port, const char *path, uint32_t uptime_s)
+{
+    s_ap_len = apush_build_request(s_ap_req, sizeof s_ap_req, ip, port, path, ev, s_ap_cnt[ev], uptime_s);
+    s_ap_ev = (uint8_t)ev;
+    if (s_ap_len < 0) { ap_finish(APUSH_RES_MEM); return; }
+    struct tcp_pcb *pcb = tcp_new();
+    if (pcb == NULL) { ap_finish(APUSH_RES_MEM); return; }
+    ip_addr_t dst;
+    IP4_ADDR(&dst, ip[0], ip[1], ip[2], ip[3]);
+    tcp_err(pcb, ap_err_cb);
+    s_ap_pcb = pcb;
+    s_ap_busy = 1u;
+    s_ap_t0 = HAL_GetTick();
+    if (tcp_connect(pcb, &dst, port, ap_connected_cb) != ERR_OK) {
+        s_ap_busy = 0u;
+        ap_kill(pcb);
+        ap_finish(APUSH_RES_MEM);
+    }
+}
+
+/* Vola main.c z POMALE casti smycky (5 Hz) s platnym snapshotem. */
+void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now)
+{
+    /* nastaveni ze sdileneho bloku (seqlock CM7, omezeny pocet pokusu) */
+    uint8_t en = 0u, ip[4] = {0}, cfg_ok = 0u; uint16_t port = 80u, test_seq = 0u; char path[APUSH_PATH_MAX];
+    for (int tr = 0; tr < 4; tr++) {
+        uint32_t g1 = g_ipc.push.gen;
+        if (g1 & 1u) continue;
+        __DMB();
+        en = g_ipc.push.en; port = g_ipc.push.port; test_seq = g_ipc.push.test_seq;
+        for (int i = 0; i < 4; i++) ip[i] = g_ipc.push.ip[i];
+        for (unsigned i = 0; i < APUSH_PATH_MAX; i++) path[i] = g_ipc.push.path[i];
+        __DMB();
+        if (g_ipc.push.gen == g1) { cfg_ok = 1u; break; }
+    }
+    if (!cfg_ok) return;
+    path[APUSH_PATH_MAX - 1u] = '\0';
+
+    /* hrany pocitadel alarmu */
+    const uint16_t cur[APUSH_EV_REAL] = { snap->alarm_fpga_lost, snap->alarm_gps_lost, snap->alarm_limit_fail,
+                                          snap->alarm_vbat, snap->alarm_ocxo, snap->alarm_adev };
+    if (!s_ap_base) {
+        for (unsigned i = 0; i < APUSH_EV_REAL; i++) s_ap_last[i] = cur[i];
+        s_ap_test_seen = test_seq;
+        s_ap_base = 1u;
+    } else {
+        for (unsigned i = 0; i < APUSH_EV_REAL; i++) {
+            uint16_t d = (uint16_t)(cur[i] - s_ap_last[i]);
+            if (d != 0u && d < 0x8000u && en) { s_ap_pending |= (uint8_t)(1u << i); s_ap_cnt[i] = cur[i]; }
+            s_ap_last[i] = cur[i];                    /* pokles = restart CM7 -> nove vychozi hodnoty */
+        }
+        if (test_seq != s_ap_test_seen) {
+            s_ap_test_seen = test_seq;
+            s_ap_pending |= (uint8_t)(1u << APUSH_EV_TEST); s_ap_cnt[APUSH_EV_TEST] = test_seq;
+        }
+    }
+    if (!en) s_ap_pending &= (uint8_t)(1u << APUSH_EV_TEST);    /* vypnuto: cekajici alarmy pryc, testovaci ev zustane */
+
+    /* timeout rozdelaneho spojeni */
+    if (s_ap_busy && (int32_t)(now - s_ap_t0) > (int32_t)APUSH_TMO_MS) {
+        if (s_ap_pcb) ap_kill(s_ap_pcb);
+        ap_finish(APUSH_RES_TIMEOUT);
+    }
+
+    /* dalsi udalost */
+    if (!s_ap_busy && s_ap_pending && (int32_t)(now - s_ap_next_ms) >= 0) {
+        int valid = (ip[0] | ip[1] | ip[2] | ip[3]) != 0u && port != 0u && path[0] == '/';
+        if (!netif_is_link_up(&s_netif) || ip4_addr_isany_val(*netif_ip4_addr(&s_netif))) {
+            ap_publish(APUSH_RES_NONET);
+            s_ap_next_ms = now + APUSH_RETRY_MS;
+        } else if (valid) {
+            unsigned ev = 0u;
+            while (ev < APUSH_EV_N && !(s_ap_pending & (1u << ev))) ev++;
+            if (ev < APUSH_EV_N) ap_start(ev, ip, port, path, now / 1000u);
+        } else {
+            s_ap_pending = 0u;                         /* neplatny cil: nic neposilat */
+        }
+    }
+    ap_publish(0u);
+}

@@ -308,6 +308,7 @@ int main(void)
 		  cm4_have = (ipc_cm4_ready() && ipc_cm4_cm7_alive(now) && ipc_cm4_read(&snap)) ? 1u : 0u;
 		  cm4_gps  = (cm4_have && (snap.flags & IPC_F_GPS_VALID)) ? 1u : 0u;
 		  ipc_cm4_heartbeat(cm4_pct, now / 1000u);   /* posledni zmerena vlastni zatez [%] */
+		  if (cm4_have) lwip_app_push_tick(&snap, now);   /* webhook alarmu (TODO #249): hrany pocitadel + neblokujici odeslani */
 		  /* ⚠️ PHY ID se pri STUDENEM startu nemusi precist: LAN8742A jeste bezi
 		   * vlastni power-on reset, MDIO mlci a cteni vrati same jednicky
 		   * (0xFFFF FFFF). Pri HW pruchodu 2026-08-30 to tak dopadlo — link i DHCP

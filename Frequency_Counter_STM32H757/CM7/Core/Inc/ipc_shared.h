@@ -28,6 +28,7 @@
  */
 #include <stdint.h>
 #include <stddef.h>   /* offsetof — hlida, ze recyklovana vycpavka nezvetsila strukturu */
+#include "alarm_push.h"   /* APUSH_PATH_MAX -- blok `push` (v30, webhook alarmu) */
 
 #define IPC_BASE     0x38000000u   /* SRAM4 / D3 — viz linker sekce .ipc_shared + MPU region 2 */
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
@@ -49,7 +50,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  29u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  30u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -156,7 +157,9 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v28 (2026-10-18): hlavicka `ipc_stab_t` nese `mode` (pohled/filtr) a `outl`/`outn` (vyrazene / posouzene vzorky filtru
                                        izolovanych odlehlych, web `/api/stab` pole ro/rn/rm); `pt[]` se POSUNULO. ⚠️⚠️ Flashnout OBE banky.
                                        v29 (2026-10-18): `ipc_gpsdo_t` 40 -> 48 B (`ref_ppb_x100`, `ref_meas`): nejistota reference podle stavu smycky pro web;
-                                       blok lezi ZA `cm4`, `raw` za nim se posouva. ⚠️⚠️ Flashnout OBE banky. */
+                                       blok lezi ZA `cm4`, `raw` za nim se posouva. ⚠️⚠️ Flashnout OBE banky.
+                                       v30 (2026-10-27, TODO #249): blok `push` (webhook alarmu: nastaveni CM7 -> CM4 a vysledky CM4 -> CM7) NA KONCI za `raw`;
+                                       layout pred `cm4` beze zmeny. ⚠️⚠️ Flashnout OBE banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -661,6 +664,28 @@ typedef struct {
 _Static_assert(offsetof(ipc_raw_xfer_t, resp_gate_ns) == 40u && offsetof(ipc_raw_xfer_t, rec) == 56u,
                "ipc_raw_xfer_t layout");
 
+/* ── v30 (2026-10-27, TODO #249): webhook alarmu pres sit. Nastaveni zapisuje CM7 (seqlock `gen`, liche = zapis), vysledky
+ * odesilani CM4 (kazde pole ma JEDINEHO zapisovatele, mimo seqlock). CM4 pri zvyseni pocitadla `alarm_*` ve snapshotu posle
+ * HTTP POST (alarm_push.h) na ip:port/path, jen kdyz `en`. `test_seq` zvysuje CM7 prikazem `alarmpush test`. */
+typedef struct {
+    volatile uint32_t gen;           /* seqlock nastaveni (CM7) */
+    uint8_t  en;                     /* 1 = odesilat */
+    uint8_t  ip[4];
+    uint8_t  _pad0;
+    uint16_t port;
+    uint16_t test_seq;               /* zmena = odeslat testovaci udalost */
+    char     path[APUSH_PATH_MAX];
+    /* CM4 -> CM7 */
+    volatile uint16_t sent;          /* uspesne odeslane udalosti (odpoved 2xx) */
+    volatile uint16_t failed;        /* udalosti zahozene po vycerpani pokusu */
+    volatile uint8_t  last;          /* APUSH_RES_*: vysledek posledniho pokusu */
+    volatile uint8_t  pending;       /* udalosti cekajici na odeslani (bitova maska APUSH_EV_*) */
+    volatile uint16_t _pad1;
+    volatile uint32_t last_ms;       /* HAL_GetTick CM4 posledniho pokusu */
+} ipc_push_t;
+_Static_assert(sizeof(ipc_push_t) == 76u && offsetof(ipc_push_t, path) == 14u && offsetof(ipc_push_t, sent) == 62u,
+               "ipc_push_t zmenil layout");
+
 /* ── Cela sdilena struktura (musi se vejit do 64 KB SRAM4). */
 typedef struct {
     ipc_snapshot_t   snap;         /* CM7 -> CM4 */
@@ -673,6 +698,7 @@ typedef struct {
     ipc_fpgadiag_t   fpgadiag;     /* CM7 -> CM4 (v22, surovy stav ramce FPGA + pocitadla odmitnuti, web /api/fpga) */
     ipc_gpsdo_t      gpsdo;        /* CM7 -> CM4 (v24, smycka GPSDO, web /api/state) -- NA KONCI: layout pred `cm4` beze zmeny */
     ipc_raw_xfer_t   raw;          /* CM4 <-> CM7 (v26, surova mereni ze sdram_log, web /api/raw) -- za `gpsdo`, layout pred `cm4` beze zmeny */
+    ipc_push_t       push;         /* CM7 <-> CM4 (v30, webhook alarmu, TODO #249) -- NA KONCI */
 } ipc_shared_t;
 
 _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4 (64 KB)");

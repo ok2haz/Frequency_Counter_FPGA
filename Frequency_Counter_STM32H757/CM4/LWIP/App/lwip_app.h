@@ -26,6 +26,11 @@ void lwip_app_init(void);
  *  Vysledek publikuje pres IPC do CM7 (`ipc_cm4_set_net`). */
 void lwip_app_process(void);
 
+/** Webhook alarmu (TODO #249): vola main.c z pomale casti smycky (5 Hz) s platnym snapshotem; sleduje pocitadla alarmu a posila
+ *  HTTP POST dle IPC bloku `push`. Neblokuje. */
+#include "ipc_cm4.h"   /* ipc_snapshot_t */
+void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now);
+
 /* ⚠️ `lwip_app_has_ip()`/`lwip_app_ip()` odstraneny (revize 2026-08-26) — nikdo
  * je nevolal. Stav linky a IP tecou ven pres `ipc_cm4_set_net()` (viz .c). */
 
