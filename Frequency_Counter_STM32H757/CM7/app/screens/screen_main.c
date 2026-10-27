@@ -4005,6 +4005,14 @@ static void redraw_freq_area_ex(prim_rect_t area, int glyph_accel)
         prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 14)},
                        "SIM", &ui_font_mono_16, UI_COLOR_WARN, PRIM_ALIGN_LEFT);
     }
+    /* v0.40.9: rezim cislic „podle rozliseni citace“ (UART `digits counter`) -> maly popisek „RES“ vlevo nahore, aby bylo videt,
+     * ze ztlumene cislice nepocita σy zdroje ani reference. Kresli se spolu s plnym prekreslenim zony (jako SIM); prepnuti rezimu
+     * ho vynuti (`s_disp_recalc`). Pod SIM markerem, aby se nikdy neprekryly. */
+    if (s_digits_res) {
+        prim_rect_t fa = freq_area();
+        prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 34)},
+                       "RES", &ui_font_mono_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
 }
 
 /* Plne prekresleni zony kmitoctu vcetne podbarveni stavu (RUN = cisty gradient,

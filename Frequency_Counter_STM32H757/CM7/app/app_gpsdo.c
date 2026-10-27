@@ -1215,7 +1215,7 @@ static void i2c_health(const sensor_id_t *ids, int n, uint16_t *streak, uint32_t
 static int draw_health_values(int force)
 {
     static char c_rtos[3][20], c_stk[5][16], c_i2c[2][40], c_lnk[3][40];
-    char buf[36], key[40];   /* "I2C1 FPGA: CHYBA (<u32>)" az 29 zn. -> bez truncation */
+    char buf[48], key[52];   /* "I2C1 FPGA: CHYBA (<u32>)" az 29 zn. -> bez truncation */
     int drew = force;
 
     /* ── Levy sloupec: RTOS pamet / CPU / uptime ── */
@@ -1256,10 +1256,22 @@ static int draw_health_values(int force)
         dtext(DG_RLBL, 132, DG_COLW - 24, buf, s4 ? UI_COLOR_BAD : UI_COLOR_OK, &ui_font_mono_18); drew = 1; }
 
     /* ── Pravy sloupec: periferie / linky ── */
-    snprintf(buf, sizeof(buf), "FPGA SPI: %s", g_spi_ok ? "LINK OK" : "NO LINK");
-    snprintf(key, sizeof(key), "%c%s", g_spi_ok ? 'O' : 'X', buf);
+    /* v0.40.9: k stavu linku pribyva pocet chyb SPI v3 (transakce s chybou / vsechny transakce, `spi err`), aby bylo videt
+     * zhorseni kvality linky bez UART. Jen cteni statistik FpgaTasku. Nenulovy pocet = amber (link jede, rameci se opakuji). */
+    fpga_spi_errstat_t spe;
+    fpga_spi_err_stats(&spe);
+    {   char fr[12];
+        if (spe.frames >= 10000u) snprintf(fr, sizeof fr, "%luk", (unsigned long)(spe.frames / 1000u));
+        else                      snprintf(fr, sizeof fr, "%lu", (unsigned long)spe.frames);
+        if (g_spi_ok && spe.frames > 0u)
+            snprintf(buf, sizeof(buf), "FPGA SPI: OK chyb %lu/%s", (unsigned long)spe.err, fr);
+        else
+            snprintf(buf, sizeof(buf), "FPGA SPI: %s", g_spi_ok ? "LINK OK" : "NO LINK");
+    }
+    snprintf(key, sizeof(key), "%c%s", g_spi_ok ? (spe.err ? 'W' : 'O') : 'X', buf);
     if (force || dchg(c_lnk[0], sizeof(c_lnk[0]), key)) {
-        dtext(DG_RLBL, 200, DG_COLW - 24, buf, g_spi_ok ? UI_COLOR_OK : UI_COLOR_BAD, &ui_font_mono_18); drew = 1; }
+        dtext(DG_RLBL, 200, DG_COLW - 24, buf,
+              g_spi_ok ? (spe.err ? UI_COLOR_WARN : UI_COLOR_OK) : UI_COLOR_BAD, &ui_font_mono_18); drew = 1; }
     const char *si; prim_color_t sic;
     if (!g_si5356_ok)                            { si = "N/A (I2C)";   sic = UI_COLOR_INK_3; }
     else if (g_si5356_status & SI5356_LOS_CLKIN) { si = "LOS CLKIN!";  sic = UI_COLOR_BAD; }
