@@ -308,6 +308,7 @@ int main(void)
 		  cm4_have = (ipc_cm4_ready() && ipc_cm4_cm7_alive(now) && ipc_cm4_read(&snap)) ? 1u : 0u;
 		  cm4_gps  = (cm4_have && (snap.flags & IPC_F_GPS_VALID)) ? 1u : 0u;
 		  ipc_cm4_heartbeat(cm4_pct, now / 1000u);   /* posledni zmerena vlastni zatez [%] */
+		  httpd_min_hist_feed(cm4_have ? &snap : NULL, now);   /* historie v RAM CM4 pro /api/log (TODO #251) */
 		  lwip_app_push_tick(cm4_have ? &snap : NULL, now);   /* webhook alarmu (TODO #249) + hlidac CM7 (#250); NULL = CM7 nepublikuje */
 		  /* ⚠️ PHY ID se pri STUDENEM startu nemusi precist: LAN8742A jeste bezi
 		   * vlastni power-on reset, MDIO mlci a cteni vrati same jednicky

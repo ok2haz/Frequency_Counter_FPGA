@@ -32,6 +32,7 @@
   ******************************************************************************
   */
 #include "httpd_min.h"
+#include "../../../CM7/Core/Inc/hist_pyr.h"   /* v0.42.0 (#251): historie v RAM CM4 */
 
 #include "lwip/tcp.h"
 #include <string.h>
@@ -741,6 +742,64 @@ static size_t build_sats_json(char *out, size_t out_sz, const ipc_snapshot_t *sn
 /* ── v12 (#6): dlouha historie z datalogu (naplneny `g_ipc.log`). Per-bod pole
  * `[t_unix, freq|null, ocxo_C|null, deska_C|null, vc_mV, vbat_mV|null, flags]`.
  * Poradi = jak je vratil CM7 (nejnovejsi prvni); prohlizec si to seradi podle `t`. */
+/* ── v0.42.0 (TODO #251): vlastni decimovana historie v RAM CM4 ────────────────────────────────────────────────────────────
+ * `/api/log` ji pouzije, kdyz pokryva pozadovany usek (stejny JSON jako z datalogu, plus "src":"cm4"); jinak jde puvodni cesta pres CM7
+ * (datalog ve W25Q). Pyramida se plni z kazdeho NOVEHO mereni ve snapshotu (5 Hz tik z main.c). Zahazuje se pri prechodu REAL<->SIM a
+ * po obnove CM7 (mrtvy -> zivy): historie nesmi prezit jako „pravda“ pres restart CM7. Logika a testy: hist_pyr.h, tests/host/t_hist_pyr.c. */
+static hp_t     s_hp;
+static uint32_t s_hp_seq_meas;
+static uint8_t  s_hp_have_seq, s_hp_dead = 1u, s_hp_sim_prev;
+
+void httpd_min_hist_feed(const ipc_snapshot_t *snap, uint32_t now_ms)
+{
+    if (snap == NULL) { s_hp_dead = 1u; return; }                      /* CM7 nepublikuje: nic nepridavat */
+    uint8_t sim = (snap->flags & IPC_F_SIM) ? 1u : 0u;
+    if (s_hp_dead || sim != s_hp_sim_prev) {                           /* obnova CM7 / zmena REAL<->SIM -> nova historie */
+        hp_reset(&s_hp);
+        s_hp_have_seq = 0u;
+        s_hp_dead = 0u;
+        s_hp_sim_prev = sim;
+    }
+    if (!(snap->sens_valid & IPC_V_FREQ)) return;
+    if (s_hp_have_seq && snap->seq_meas == s_hp_seq_meas) return;      /* totez mereni jako minule */
+    s_hp_seq_meas = snap->seq_meas; s_hp_have_seq = 1u;
+    double f = (snap->freq4_hz > 0.0) ? snap->freq4_hz : (double)snap->freq_x100000 / 100000.0;
+    if (!(f > 0.0)) return;
+    int16_t to = (snap->sens_valid & IPC_V_T_OCXO)  ? snap->t_ocxo_c100  : HP_EMPTY16;
+    int16_t tb = (snap->sens_valid & IPC_V_T_BOARD) ? snap->t_board_c100 : HP_EMPTY16;
+    uint16_t vc   = (snap->sens_valid & IPC_V_VC)   ? snap->ocxo_vc_mv : 0u;
+    uint16_t vbat = (snap->sens_valid & IPC_V_VBAT) ? snap->vbat_mv    : 0u;
+    hp_feed(&s_hp, now_ms / 1000u, snap->rtc_unix, f, to, tb, vc, vbat);
+}
+
+/* JSON ve stejnem tvaru jako build_log_json (datalog): [t, f, T_ocxo, T_deska, Vc, VBAT, flags, f_min, f_max]. */
+static size_t build_log_json_hp(char *out, size_t out_sz, const hp_pt_t *p, int n, uint32_t span_s)
+{
+    jbuf_t j; jinit(&j, out, out_sz);
+    jputf(&j, "{\"total\":%lu,\"n\":%d,\"scanned\":%lu,\"full_env\":true,\"src\":\"cm4\",\"p\":[",
+          (unsigned long)(span_s / HP_PERIOD_S[0]), n, (unsigned long)(span_s / HP_PERIOD_S[0]));
+    for (int i = 0; i < n; i++) {
+        char fb[24], lo[24], hi[24];
+        double f = hp_get_f(&p[i]);
+        fmt_scpi_hz_d(f, fb, sizeof fb);
+        fmt_scpi_hz_d(f + (double)p[i].dmin, lo, sizeof lo);
+        fmt_scpi_hz_d(f + (double)p[i].dmax, hi, sizeof hi);
+        jputf(&j, "%s[%lu,%s,", i ? "," : "", (unsigned long)p[i].t, fb);
+        int16_t tt[2] = { p[i].to, p[i].tb };
+        for (int k = 0; k < 2; k++) {
+            if (tt[k] != HP_EMPTY16) {
+                int neg = tt[k] < 0, v = neg ? -tt[k] : tt[k];
+                jputf(&j, "%s%d.%02d,", neg ? "-" : "", v / 100, v % 100);
+            } else jputf(&j, "null,");
+        }
+        jputf(&j, "%u,", (unsigned)p[i].vc);
+        if (p[i].vbat) jputf(&j, "%u,", (unsigned)p[i].vbat); else jputf(&j, "null,");
+        jputf(&j, "0,%s,%s]", lo, hi);
+    }
+    jputf(&j, "]}");
+    return j.ovf ? 0u : j.used;
+}
+
 static size_t build_log_json(char *out, size_t out_sz)
 {
     jbuf_t j; jinit(&j, out, out_sz);
@@ -4985,6 +5044,22 @@ static void dispatch(http_conn_t *c, const http_req_t *r)
             if (s_hconn[i].mode == HCONN_LOG && &s_hconn[i] != c) {
                 queue_text(c, 503, "Service Unavailable", "datalog zaneprazdnen\n"); return;
             }
+        /* v0.42.0 (#251): z RAM CM4, kdyz pyramida pokryva pozadovany usek (nejde pres CM7, odpoved okamzita). */
+        {
+            long w0 = qparam(r->path, "win", 3600), n0 = qparam(r->path, "n", (long)HTTPD_LOG_MAX_PTS), f0 = qparam(r->path, "from", 0);
+            if (n0 < 1) n0 = 1;
+            if (n0 > (long)HTTPD_LOG_MAX_PTS) n0 = (long)HTTPD_LOG_MAX_PTS;
+            if (w0 < 60) w0 = 60;
+            if (f0 < 0) f0 = 0;
+            long st0 = w0 / (n0 * 10);                    /* stejny vypocet kroku v zaznamech (po 10 s) jako nize u datalogu */
+            if (st0 < 1) st0 = 1;
+            static hp_pt_t hpo[HTTPD_LOG_MAX_PTS];
+            int hn = hp_query(&s_hp, (uint32_t)f0 * 10u, (uint32_t)st0 * 10u, (unsigned)n0, hpo);
+            if (hn > 0) {
+                size_t hb = build_log_json_hp(c->bodybuf, sizeof c->bodybuf, hpo, hn, hp_span_s(&s_hp));
+                if (hb > 0) { queue_response(c, 200, "OK", "application/json", c->bodybuf, hb); return; }
+            }
+        }
         long win = qparam(r->path, "win", 3600);
         long np  = qparam(r->path, "n", (long)HTTPD_LOG_MAX_PTS);
         if (np < 1) np = 1;

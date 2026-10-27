@@ -9,6 +9,7 @@
 #define __HTTPD_MIN_H__
 
 #include <stddef.h>
+#include "ipc_cm4.h"   /* ipc_snapshot_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,9 @@ int httpd_parse_request(const char *buf, size_t len, http_req_t *out);
 int httpd_min_selftest(void);
 /** Radek prvniho neuspesneho assertu v httpd_min_selftest (0 = zadny). */
 int httpd_min_selftest_fail_line(void);
+
+/** v0.42.0 (TODO #251): plneni vlastni historie v RAM CM4 (vola main.c z pomale casti smycky, 5 Hz). snap = NULL: CM7 nepublikuje. */
+void httpd_min_hist_feed(const ipc_snapshot_t *snap, uint32_t now_ms);
 
 #ifdef __cplusplus
 }
