@@ -21,8 +21,10 @@ create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}   [get_ports {c
 // po CS nahoru (RX vysledek, diagnostika) -> asynchronni skupiny.
 create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {spi_sck}]
 
-// FW 0x0503 (E5): predelicka pin_cnt3 je taktovana PRIMO vstupnimi piny. Cil 400 MHz (2,5 ns) = strop predelicky;
-// skutecny strop urci vstupni buffer LVCMOS33 (Gowin 150/300 MHz) -- overit generatorem. Pin -> retez TDC zustava
+// FW 0x0503 (E5): predelicka pin_cnt3 je taktovana PRIMO vstupnimi piny. Cil 300 MHz (3,33 ns) = strop vstupniho bufferu
+// LVCMOS33 (Gowin 150/300 MHz; vstup citace je pritom DC-200 MHz, ELT23L). Do 2026-10-27 tu bylo 400 MHz (2,5 ns): 4bitovy citac
+// u_pcb/c / u_pca/c pak selhaval v 2 z 8 sestaveni az o -1,1 ns, s 3,33 ns v 7 z 8 prosel (median +0,225 ns, min -0,010) a
+// jina systematicka cesta nezbyla (pnr_seeds, varianta pin33). Skutecny strop overit generatorem. Pin -> retez TDC zustava
 // false_path pres sig_eff; c[3] -> sonda v clk pres 3 FF (asynchronni skupiny).
 create_clock -name pin_a -period 3.33 -waveform {0 1.665} [get_ports {ch_a}]
 create_clock -name pin_b -period 3.33 -waveform {0 1.665} [get_ports {ch_b}]
