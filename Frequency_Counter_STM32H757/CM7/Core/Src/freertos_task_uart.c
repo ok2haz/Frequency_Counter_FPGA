@@ -1556,6 +1556,17 @@ void UartTask_run(void *argument)
 				  }   /* konec pojistky proti kolizi s ETH na CM4 */
 			  }
 			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
+			  else if (strncmp(RxBuffer, "digits", 6) == 0) {
+				  /* Rezim poctu platnych cislic hlavniho cisla: `digits sig` (podle signalu, vychozi), `digits counter`
+				   * (jen podle rozliseni citace), bez argumentu = stav. Meni jen zobrazeni; persist v syscfg. */
+				  const char *a = RxBuffer + 6;
+				  while (*a == ' ') a++;
+				  if (strcmp(a, "counter") == 0)      { screen_main_set_digits_res(1); g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "sig") == 0)     { screen_main_set_digits_res(0); g_sys_cfg_dirty = 1; }
+				  else if (a[0] != 0)                 { printf("DIGITS: pouziti digits [sig|counter]\r\n"); }
+				  printf("DIGITS: %s\r\n", screen_main_digits_res() ? "podle rozliseni citace (jen podlaha citace)"
+				                                                      : "podle signalu (sigma, citac, reference)");
+			  }
 			  else if (strncmp(RxBuffer, "enc div ", 8) == 0) {
 				  /* Delic kroku TIM1 na jednu ZAPADKU. Jedina HW-zavisla konstanta UI
 				   * vrstvy — nastavitelna za behu, aby se kvuli ni nemuselo preflashovat.
@@ -3759,7 +3770,10 @@ void UartTask_run(void *argument)
 					  	  printf("DMA2D: chyb %lu, timeout %lu | flip timeout %lu | max cekani %lu.%03lu ms (mez 500)%s\n",
 					  	         (unsigned long)de, (unsigned long)dt, (unsigned long)ft,
 					  	         (unsigned long)(mx_us / 1000u), (unsigned long)(mx_us % 1000u),
-					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY" : "  (v poradku)"); }
+					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY"
+																	   : (mx_us > 500000u) ? "  (nad mezi, ale bez timeoutu: cekani zahrnuje preempci UiTasku, ne dobu prenosu)"
+																								   : "  (v poradku)"); }
+						  	printf("DIGITS: %s\n", screen_main_digits_res() ? "podle rozliseni citace" : "podle signalu");
 					  	/* Kolikrat cekani na DMA2D padlo do pomale (tick-ridici, scheduler-yielding)
 					  	 * vetve — zavedeno 2026-09-24 spolu s yieldem v ni (viz d2d_wait). Nenulove
 					  	 * a rostouci je OCEKAVANE od F-0140 (vetsi copy-forward pruhy), NE chyba. */

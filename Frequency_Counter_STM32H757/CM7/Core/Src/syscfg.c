@@ -155,6 +155,9 @@ typedef struct {
      * generator zustane na vychozi mape REGMAP -- uzivatel o zbytek nastaveni neprijde. `gen_valid` = 1: pole plati. */
     uint32_t gen_hz[SI5356_GEN_N];
     uint8_t  gen_on[SI5356_GEN_N];
+    /* bit0 = pole generatoru plati; bit1 = rezim poctu platnych cislic hlavniho cisla (0 = podle signalu, 1 = podle rozliseni
+     * citace; v0.40.9). Blob je zaplneny presne (208 B bez vycpavky), proto je prepinac v nevyuzitem bitu, ne v novem poli:
+     * velikost ani magic se nemeni a stary blob (gen_valid = 1) cte digits = 0 = vychozi. */
     uint8_t  gen_valid;
 } syscfg_blob_t;
 #define SYSCFG_BLOB_V1  192u   /* delka blobu do v0.40.2 (bez generatoru) */
@@ -247,7 +250,7 @@ static void pack(syscfg_blob_t *b)
         b->gen_hz[i] = g_si_gen[i].freq_hz;
         b->gen_on[i] = g_si_gen[i].on ? 1u : 0u;
     }
-    b->gen_valid = 1u;
+    b->gen_valid = (uint8_t)(1u | (screen_main_digits_res() ? 2u : 0u));
 }
 
 void syscfg_load(void)
@@ -287,7 +290,7 @@ void syscfg_load(void)
 
     /* GENERATOR: NENI v BKP -> aplikuj VZDY (jako fx/meas). Po startu ma cip vychozi mapu REGMAP (si5356_init v main),
      * zadost jen tam, kde se ulozene nastaveni lisi; zapis dela SensorsTask (vlastnik I2C1). Mimo rozsah = vychozi. */
-    if (b.gen_valid) {
+    if (b.gen_valid & 1u) {
         for (unsigned i = 0; i < SI5356_GEN_N; i++) {
             const uint32_t f = b.gen_hz[i];
             if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ) continue;
@@ -379,6 +382,7 @@ void syscfg_load(void)
      * obrazovka rovnou vykresli ve zvolenem rozlozeni (zadny problik). */
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
     screen_main_set_allan_density(b.allan_dens);   /* mimo 0..2 -> 0 (vychozi) */
+    screen_main_set_digits_res((b.gen_valid & 2u) ? 1 : 0);
     encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;

@@ -5687,6 +5687,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Commit:** `9cdbbbe` (filtr a čítače), `ab65703` (hystereze), `bd20e77` (zápis verze pro bránu vydání), `6b91119` (STM v0.40.8)
 - **Stav:** ✅ ověřeno na desce (noc 2026-10-26/27, 7,2 h, ≈ 1,44 mil. rámců, 0 chyb proti očekávaným ≈ 130; `docs/audit/2026-10-26_spi-noc-vyhodnoceni.md` kap. 8). Příčina mezi filtrem CS a hysterezí NEURČENA: čítače zahozených pulzů zůstaly 0, takže filtr žádný pulz neviděl a čítače nebyly nikdy ověřeny na skutečném pulzu. Původ pulzu dál neznámý (HYPOTÉZA: přeslech/zakmitnutí; ověření osciloskopem na CS)
 
+### L-0243 - Maximum čekání DMA2D ve `status` zahrnuje preempci UiTasku a hláška „v pořádku" ho nehlídala
+
+- **Datum:** 2026-10-27
+- **Oblast:** `prim_stm32_hal.c` `d2d_wait`, UART `status` (řádek `DMA2D:`)
+- **Symptom:** `DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 616.592 ms (mez 500)  (v poradku)`: maximum je nad vypsanou mezí, přesto bez timeoutu a s verdiktem „v pořádku".
+- **Příčina:** `g_d2d_wait_max_cyc` měří od vstupu do `d2d_wait` po návrat včetně `osDelay(1)` v pomalé větvi. UiTask je BelowNormal, takže ho při dlouhých UART/SPI úlohách vytlačí ostatní tasky a `osDelay(1)` se vrátí o stovky ms později. Mez 500 ms se kontroluje až po návratu z `osDelay`; když mezitím přenos doběhl, smyčka končí bez timeoutu. Hodnota nad mezí tedy neznamená, že přenos trval dýl než mez, jen že UiTask dlouho nedostal CPU. Verdikt „v pořádku" závisel jen na počítadlech chyb a timeoutů, ne na maximu.
+- **Oprava:** `status` při `max > 500 ms` bez chyb vypíše vysvětlení „cekani zahrnuje preempci UiTasku, ne dobu prenosu" místo holého „v pořádku" (chování měření se nemění).
+- **Pravidlo:** metrika, která měří čas přes yield (`osDelay`), je horní odhad včetně preempce, ne doba hardwarové operace; pokud se porovnává s mezí, musí výpis říct, co v čísle je. Pro skutečnou dobu přenosu měř jen spin před prvním yieldem.
+- **Detekce:** `status` → `DMA2D:`; nezávisle pomocí `fbdiff` (rozklad podtečení LTDC po fázích) a `stats` (CPU po taskách).
+- **Commit:** viz commit v0.40.9
+- **Stav:** ⬜ neověřeno na HW (změna jen textu výpisu, přeloženo bez varování)
+
 ---
 
 ## Archiv (neplatné lekce)

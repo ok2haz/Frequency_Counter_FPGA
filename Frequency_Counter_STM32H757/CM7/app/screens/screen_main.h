@@ -158,6 +158,10 @@ void screen_main_set_allan_density(int d);
 double screen_main_signal_ref_hz(void);
 int    screen_main_signal_match(double hz);
 int  screen_main_allan_density(void);
+/* Rezim poctu platnych cislic hlavniho cisla: 0 = podle signalu (vychozi), 1 = podle rozliseni citace
+ * (jen podlaha citace). Persist v syscfg, UART `digits [sig|counter]`. */
+void screen_main_set_digits_res(int on);
+int  screen_main_digits_res(void);
 void screen_main_render_trend_big(prim_rect_t rect);   /* fullscreen trend (okno s_trend_secs) do rect */
 void screen_main_trend_set_secs(int s);                /* nastav casove okno trendu [s] */
 int  screen_main_trend_secs(void);                     /* aktualni okno trendu [s] */

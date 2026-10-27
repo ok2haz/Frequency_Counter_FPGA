@@ -944,6 +944,13 @@ double screen_main_ref_ppb(void)
 /* 2026-10-21: merila okna REGRESE? Hystereze (+1 za okno s regresi, -2 bez ni, 0..16; zapnout od 12, vypnout pod 4), aby jednotliva
  * zamitnuta okna (0,2-3 %) neprepinala podlahu a s ni pocet cislic. Plni freq_advance (UiTask), cte meas_u_rel. */
 static uint8_t s_regr_cnt = 0, s_regr_act = 0;
+
+/* Rezim poctu platnych cislic hlavniho cisla: 0 = podle signalu (max z σy, podlahy citace a reference; vychozi),
+ * 1 = podle ROZLISENI CITACE (jen podlaha mp_res_floor_rel; zamerne bez σy zdroje a nejistoty reference, takze ukaze,
+ * co by citac rozlisil u idealniho zdroje). Meni jen zobrazeni, ne statistiku. Persist v syscfg (vycpavka), UART `digits`. */
+static uint8_t s_digits_res = 0;
+void screen_main_set_digits_res(int on) { uint8_t n = on ? 1u : 0u; if (n != s_digits_res) { s_digits_res = n; s_disp_recalc = 1; } }
+int  screen_main_digits_res(void)       { return s_digits_res; }
 static void regr_track(uint8_t used)
 {
     if (used) { if (s_regr_cnt < 16u) s_regr_cnt++; }
@@ -966,6 +973,8 @@ static double meas_u_rel(uint64_t gate_ps, double hz)
      * kvantizaci. Teoreticky vzorec totiz realnou nejistotu PODSTRELUJE (ignoruje
      * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
      * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
+    if (s_digits_res)                               /* rezim „rozliseni citace“: jen podlaha citace, viz s_digits_res */
+        return mp_res_floor_rel((double)gate_ps * 1e-12, hz, s_regr_act);
     double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
     /* v0.40.4: σy pri tau = HRADLO z navazujicich oken (FpgaTask, win_adev_feed) -- to je rozptyl PRAVE zobrazeneho mereni;
      * σy@1s plati jen pro hradlo 1 s (pri 0,25 s byva vetsi, pri 10 s mensi). Do naplneni rady (16 oken) zustava σy@1s. */
