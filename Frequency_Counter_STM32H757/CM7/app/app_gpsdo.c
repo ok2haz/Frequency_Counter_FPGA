@@ -3122,7 +3122,7 @@ static void app_gpsdo_render_errlog(void);       /* CHYBY — trvaly log ve W25Q
 static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first); /* def niz */
 static void kv_margin_bar(int16_t base_y, int pct, prim_color_t c, const char *label); /* def niz */
 static void app_gpsdo_render_ti(void);           /* GPSDO TIE + stav smycky (s_view=45) */
-static void app_gpsdo_render_dualch(void);       /* Dvojkanal /4 + /16 + RF bargraf (s_view=46) */
+static void app_gpsdo_render_dualch(void);       /* Dvojkanal A + B + RF bargraf (s_view=46) */
 static void app_gpsdo_render_devmult(void);      /* Odchylka x N — ADRET 4110 styl (s_view=47) */
 static void app_gpsdo_render_adret(void);        /* ADRET: faze normalu (s_view=54) */
 static void app_gpsdo_render_commdiag(void);     /* Blokove schema (s_view=21) — dlazdice v NASTROJE */
@@ -3874,8 +3874,8 @@ static void app_gpsdo_render_ti(void)
 }
 
 /* ── Dvojkanal (s_view=46): CH A + CH B NAD SEBOU, kmitocet + RF bargraf ──────
- * CH A = `frequency_x100000` (primarni odbocka), CH B = `freq16_x100000`
- * (rozsahova). RF uroven z jednoho AD8307 (ADS AIN1) — HW ma JEDEN detektor,
+ * CH A a CH B jsou dva NEZAVISLE kanaly (`fpga_meas_freq_ch(m, 0/1)`); /4 a /16 odbocky jsou historie (2026-10-27:
+ * komentar opraven, kod uz kanaly bral takto). RF uroven z jednoho AD8307 (ADS AIN1) — HW ma JEDEN detektor,
  * takze obe karty ukazuji tutez hodnotu (zamerne, at je bar u kazdeho kanalu).
  * Karty jsou plne sirky pod sebou. Zive (2 Hz tik).
  *
@@ -8742,7 +8742,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 37) app_gpsdo_render_sd();        /* SD karta (zivy stav + vysledek akce) */
     else if (s_view == 34) app_gpsdo_render_meas();      /* MERENI: perioda/jednotky/statistika/TFOM (#67) */
     else if (s_view == 43) app_gpsdo_render_membench();  /* PAMETI: prubeh a vysledky benchmarku */
-    else if (s_view == 46) app_gpsdo_render_dualch();    /* Dvojkanal /4 + /16 + RF (zive) */
+    else if (s_view == 46) app_gpsdo_render_dualch();    /* Dvojkanal A + B + RF (zive) */
     else if (s_view == 47) app_gpsdo_render_devmult();   /* Odchylka x N (zive df) */
     else if (s_view == 54) app_gpsdo_render_adret();     /* ADRET: faze normalu (zive, 1 vzorek/s) */
     else if (s_view == 52) gen_tick();                   /* Generator: stav zapisu do Si5356 */
