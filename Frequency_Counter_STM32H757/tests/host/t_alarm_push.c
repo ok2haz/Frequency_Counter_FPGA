@@ -74,6 +74,20 @@ int main(void)
         CK(!strcmp(apush_ev_name(APUSH_EV_N), "?"));
     }
 
+    /* hlidac CM7 (TODO #250) */
+    {
+        uint8_t prev = 0, ds = 0;
+        CK(apush_cm7_edge(&prev, &ds, 0) == -1);                          /* CM7 jeste nenabehl: ticho */
+        CK(apush_cm7_edge(&prev, &ds, 1) == -1);                          /* prvni zivy CM7 po startu: nehlasit */
+        CK(apush_cm7_edge(&prev, &ds, 1) == -1);
+        CK(apush_cm7_edge(&prev, &ds, 0) == APUSH_EV_CM7_STALL);          /* zamrzl */
+        CK(apush_cm7_edge(&prev, &ds, 0) == -1);                          /* porad stoji: neopakovat */
+        CK(apush_cm7_edge(&prev, &ds, 1) == APUSH_EV_CM7_OK);             /* obnoven */
+        CK(apush_cm7_edge(&prev, &ds, 1) == -1);
+        CK(apush_cm7_edge(&prev, &ds, 0) == APUSH_EV_CM7_STALL);          /* znovu */
+        CK(APUSH_EV_N <= 16);                                              /* maska `pending` je uint16 */
+    }
+
     printf(fails ? "FAIL (%d)\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }

@@ -1574,7 +1574,7 @@ void UartTask_run(void *argument)
 				  printf("ALARMPUSH: %s -> http://%u.%u.%u.%u:%u%s\r\n", g_apush_en ? "ZAP" : "VYP",
 				         (unsigned)g_apush_ip[0], (unsigned)g_apush_ip[1], (unsigned)g_apush_ip[2], (unsigned)g_apush_ip[3],
 				         (unsigned)g_apush_port, g_apush_path);
-				  printf("ALARMPUSH: odeslano %u, zahozeno %u, posledni %u (1=OK 2=spojeni 3=timeout 4=sit 5=HTTP 6=pamet), ceka 0x%02X\r\n",
+				  printf("ALARMPUSH: odeslano %u, zahozeno %u, posledni %u (1=OK 2=spojeni 3=timeout 4=sit 5=HTTP 6=pamet), ceka 0x%03X\r\n",
 				         (unsigned)g_ipc.push.sent, (unsigned)g_ipc.push.failed, (unsigned)g_ipc.push.last, (unsigned)g_ipc.push.pending);
 			  }
 			  else if (strncmp(RxBuffer, "digits", 6) == 0) {

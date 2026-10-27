@@ -19,11 +19,14 @@ enum { APUSH_RES_NONE = 0, APUSH_RES_OK = 1, APUSH_RES_CONNECT = 2, APUSH_RES_TI
        APUSH_RES_HTTP = 5, APUSH_RES_MEM = 6 };
 
 /* Druhy udalosti = indexy pocitadel alarmu ve snapshotu + testovaci udalost. */
-enum { APUSH_EV_FPGA = 0, APUSH_EV_GPS, APUSH_EV_LIMIT, APUSH_EV_VBAT, APUSH_EV_OCXO, APUSH_EV_ADEV, APUSH_EV_TEST, APUSH_EV_N };
+/* ⚠️ Poradi: 0..5 = pocitadla alarmu ve snapshotu (APUSH_EV_REAL), pak TEST, a od v0.41.1 dve udalosti, ktere vznikaji NA CM4
+ * (hlidac CM7, TODO #250): CM7 prestal publikovat snapshot / zase publikuje. Maska `pending` je uint8 -> nejvyse 8 udalosti. */
+enum { APUSH_EV_FPGA = 0, APUSH_EV_GPS, APUSH_EV_LIMIT, APUSH_EV_VBAT, APUSH_EV_OCXO, APUSH_EV_ADEV, APUSH_EV_TEST,
+       APUSH_EV_CM7_STALL, APUSH_EV_CM7_OK, APUSH_EV_N };
 
 static inline const char *apush_ev_name(unsigned ev)
 {
-    static const char *const nm[APUSH_EV_N] = { "fpga_signal_lost", "gps_lock_lost", "limit_fail", "vbat_low", "ocxo_temp", "adev_high", "test" };
+    static const char *const nm[APUSH_EV_N] = { "fpga_signal_lost", "gps_lock_lost", "limit_fail", "vbat_low", "ocxo_temp", "adev_high", "test", "cm7_stalled", "cm7_recovered" };
     return (ev < APUSH_EV_N) ? nm[ev] : "?";
 }
 
@@ -76,6 +79,18 @@ static inline int apush_build_request(char *out, size_t n, const uint8_t ip[4], 
                       path, (unsigned)ip[0], (unsigned)ip[1], (unsigned)ip[2], (unsigned)ip[3], (unsigned)port, bl, body);
     if (rl < 0 || (size_t)rl >= n) return -1;
     return rl;
+}
+
+/* Hlidac CM7 (TODO #250): vyhodnoti hranu „CM7 publikuje“ -> „nepublikuje“ a zpet. `prev` = zil v minulem ticku, `down_sent` =
+ * „cm7_stalled“ byl zarazen. Vraci APUSH_EV_CM7_STALL / APUSH_EV_CM7_OK nebo -1. Prvni zivy CM7 po startu (prev = 0, nic neohlaseno)
+ * se NEhlasi; „recovered“ jde jen po drive ohlasenem „stalled“. */
+static inline int apush_cm7_edge(uint8_t *prev, uint8_t *down_sent, uint8_t alive)
+{
+    int ev = -1;
+    if (*prev && !alive)                       { *down_sent = 1u; ev = APUSH_EV_CM7_STALL; }
+    else if (!*prev && alive && *down_sent)    { *down_sent = 0u; ev = APUSH_EV_CM7_OK; }
+    *prev = alive ? 1u : 0u;
+    return ev;
 }
 
 #endif /* ALARM_PUSH_H */

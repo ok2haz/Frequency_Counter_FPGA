@@ -111,6 +111,10 @@ int ipc_cm4_read_stab(ipc_stab_t *out)
     return 1;
 }
 
+/* TODO #250 (2026-10-27): prah 3 s (driv 2 s). CM7 publikuje snapshot na kazde mereni a nejmene 2 Hz; 3 s je nekolik vynechanych
+ * publikaci, takze kratky blokujici ukon CM7 (QSPI erase stovky ms) nehlasi "CM7 stoji", skutecne zamrznuti ano. */
+#define IPC_CM7_STALL_MS 3000u
+
 int ipc_cm4_cm7_alive(uint32_t now_ms)
 {
     /* Liveness CM7 z pohledu CM4: snapshot `seq` roste (CM7 publikuje na kazde mereni
@@ -131,7 +135,7 @@ int ipc_cm4_cm7_alive(uint32_t now_ms)
      * a k pretoceni uint32 by pri ~4 publish/s doslo za ~34 let. */
     if (seq == 0u) return 0;
     if (seq != s_last_seq) { s_last_seq = seq; s_last_ms = now_ms; return 1; }
-    return (now_ms - s_last_ms) < 2000u;   /* seq nezmenen >2 s -> CM7 zamrzly */
+    return (now_ms - s_last_ms) < IPC_CM7_STALL_MS;   /* seq nezmenen > IPC_CM7_STALL_MS -> CM7 zamrzly */
 }
 
 void ipc_cm4_heartbeat(uint32_t cpu_pct, uint32_t uptime_s)

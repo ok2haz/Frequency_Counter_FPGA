@@ -679,8 +679,8 @@ typedef struct {
     volatile uint16_t sent;          /* uspesne odeslane udalosti (odpoved 2xx) */
     volatile uint16_t failed;        /* udalosti zahozene po vycerpani pokusu */
     volatile uint8_t  last;          /* APUSH_RES_*: vysledek posledniho pokusu */
-    volatile uint8_t  pending;       /* udalosti cekajici na odeslani (bitova maska APUSH_EV_*) */
-    volatile uint16_t _pad1;
+    volatile uint8_t  _pad1;
+    volatile uint16_t pending;       /* udalosti cekajici na odeslani (bitova maska APUSH_EV_*, 9 udalosti -> uint16) */
     volatile uint32_t last_ms;       /* HAL_GetTick CM4 posledniho pokusu */
 } ipc_push_t;
 _Static_assert(sizeof(ipc_push_t) == 76u && offsetof(ipc_push_t, path) == 14u && offsetof(ipc_push_t, sent) == 62u,

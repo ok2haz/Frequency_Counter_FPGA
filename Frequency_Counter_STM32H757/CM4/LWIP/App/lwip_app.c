@@ -325,7 +325,10 @@ static uint8_t   s_ap_busy;            /* 1 = spojeni ve vzduchu */
 static uint8_t   s_ap_ev;              /* udalost ve vzduchu */
 static uint8_t   s_ap_tries;
 static uint8_t   s_ap_base;            /* 1 = vychozi hodnoty pocitadel nactene */
-static uint8_t   s_ap_pending;
+static uint16_t  s_ap_pending;
+static uint8_t   s_ap_cm7_prev;        /* 1 = CM7 zil v minulem ticku */
+static uint8_t   s_ap_cm7_down_sent;   /* 1 = "cm7_stalled" bylo (alespon) zarazeno -> po obnove posli "cm7_recovered" */
+static uint16_t  s_ap_cm7_cnt;
 static uint16_t  s_ap_last[APUSH_EV_REAL];
 static uint16_t  s_ap_cnt[APUSH_EV_N];
 static uint16_t  s_ap_test_seen;
@@ -356,13 +359,13 @@ static void ap_finish(uint8_t res)
     s_ap_pcb = NULL;
     s_ap_busy = 0u;
     if (res == APUSH_RES_OK) {
-        s_ap_pending &= (uint8_t)~(1u << s_ap_ev);
+        s_ap_pending &= (uint16_t)~(1u << s_ap_ev);
         s_ap_sent++;
         s_ap_tries = 0u;
         s_ap_next_ms = HAL_GetTick();                       /* dalsi cekajici udalost hned */
     } else {
         if (++s_ap_tries >= APUSH_TRIES) {                  /* vycerpano -> zahodit, nezdrzovat dalsi */
-            s_ap_pending &= (uint8_t)~(1u << s_ap_ev);
+            s_ap_pending &= (uint16_t)~(1u << s_ap_ev);
             s_ap_failed++;
             s_ap_tries = 0u;
         }
@@ -434,6 +437,7 @@ static void ap_start(unsigned ev, const uint8_t ip[4], uint16_t port, const char
 }
 
 /* Vola main.c z POMALE casti smycky (5 Hz) s platnym snapshotem. */
+/* `snap` = NULL, kdyz CM7 nepublikuje (zamrzl / jeste nenabehl): pocitadla alarmu se pak nevyhodnocuji, ale hlidac CM7 ano. */
 void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now)
 {
     /* nastaveni ze sdileneho bloku (seqlock CM7, omezeny pocet pokusu) */
@@ -451,7 +455,20 @@ void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now)
     if (!cfg_ok) return;
     path[APUSH_PATH_MAX - 1u] = '\0';
 
+    /* hlidac CM7 (TODO #250): hrany "snapshot publikuje" -> "nepublikuje" a zpet. Prvni zivy CM7 po startu se NEhlasi
+     * (s_ap_cm7_prev startuje na 0 a "cm7_recovered" se posila jen po drive zarazenem "cm7_stalled"). */
+    {   int e = apush_cm7_edge(&s_ap_cm7_prev, &s_ap_cm7_down_sent, snap ? 1u : 0u);
+        if (e == APUSH_EV_CM7_STALL) {
+            s_ap_cm7_cnt++;
+            if (en) { s_ap_pending |= (uint16_t)(1u << APUSH_EV_CM7_STALL); s_ap_cnt[APUSH_EV_CM7_STALL] = s_ap_cm7_cnt; }
+        } else if (e == APUSH_EV_CM7_OK) {
+            s_ap_pending &= (uint16_t)~(1u << APUSH_EV_CM7_STALL);       /* stihl se obnovit driv, nez se zprava odeslala */
+            if (en) { s_ap_pending |= (uint16_t)(1u << APUSH_EV_CM7_OK); s_ap_cnt[APUSH_EV_CM7_OK] = s_ap_cm7_cnt; }
+        }
+    }
+
     /* hrany pocitadel alarmu */
+    if (snap) {
     const uint16_t cur[APUSH_EV_REAL] = { snap->alarm_fpga_lost, snap->alarm_gps_lost, snap->alarm_limit_fail,
                                           snap->alarm_vbat, snap->alarm_ocxo, snap->alarm_adev };
     if (!s_ap_base) {
@@ -461,15 +478,16 @@ void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now)
     } else {
         for (unsigned i = 0; i < APUSH_EV_REAL; i++) {
             uint16_t d = (uint16_t)(cur[i] - s_ap_last[i]);
-            if (d != 0u && d < 0x8000u && en) { s_ap_pending |= (uint8_t)(1u << i); s_ap_cnt[i] = cur[i]; }
+            if (d != 0u && d < 0x8000u && en) { s_ap_pending |= (uint16_t)(1u << i); s_ap_cnt[i] = cur[i]; }
             s_ap_last[i] = cur[i];                    /* pokles = restart CM7 -> nove vychozi hodnoty */
         }
         if (test_seq != s_ap_test_seen) {
             s_ap_test_seen = test_seq;
-            s_ap_pending |= (uint8_t)(1u << APUSH_EV_TEST); s_ap_cnt[APUSH_EV_TEST] = test_seq;
+            s_ap_pending |= (uint16_t)(1u << APUSH_EV_TEST); s_ap_cnt[APUSH_EV_TEST] = test_seq;
         }
     }
-    if (!en) s_ap_pending &= (uint8_t)(1u << APUSH_EV_TEST);    /* vypnuto: cekajici alarmy pryc, testovaci ev zustane */
+    }   /* if (snap) */
+    if (!en) s_ap_pending &= (uint16_t)(1u << APUSH_EV_TEST);    /* vypnuto: cekajici alarmy pryc, testovaci ev zustane */
 
     /* timeout rozdelaneho spojeni */
     if (s_ap_busy && (int32_t)(now - s_ap_t0) > (int32_t)APUSH_TMO_MS) {
