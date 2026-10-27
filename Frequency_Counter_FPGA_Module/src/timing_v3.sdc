@@ -24,8 +24,8 @@ create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {sp
 // FW 0x0503 (E5): predelicka pin_cnt3 je taktovana PRIMO vstupnimi piny. Cil 400 MHz (2,5 ns) = strop predelicky;
 // skutecny strop urci vstupni buffer LVCMOS33 (Gowin 150/300 MHz) -- overit generatorem. Pin -> retez TDC zustava
 // false_path pres sig_eff; c[3] -> sonda v clk pres 3 FF (asynchronni skupiny).
-create_clock -name pin_a -period 2.5 -waveform {0 1.25} [get_ports {ch_a}]
-create_clock -name pin_b -period 2.5 -waveform {0 1.25} [get_ports {ch_b}]
+create_clock -name pin_a -period 3.33 -waveform {0 1.665} [get_ports {ch_a}]
+create_clock -name pin_b -period 3.33 -waveform {0 1.665} [get_ports {ch_b}]
 set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}] -group [get_clocks {pin_a}] -group [get_clocks {pin_b}]
 
 // 🔴 2026-10-08: NEJISTOTA HODIN. Bez ni STA predpoklada idealni 100 MHz (nulovy jitter, presna strida).
