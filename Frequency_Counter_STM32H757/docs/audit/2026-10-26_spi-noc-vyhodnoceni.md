@@ -75,3 +75,21 @@ Teploty OCXO 47,4–48,5 °C, deska 30,0–31,9 °C, Vc 1 919–1 920 mV.
 ## 7. Omezení vyhodnocení
 
 Pozice restartu byla zjištěna jen v blocích 0 (109 z 109 případů); u 43 chyb v blocích 1–3 je vysvětlení jen částečné (restart těsně u CRC bajtů a konstantní CRC). Mutace a rozbor fyziky vedení (osciloskop) chybí; závěr „CS pulz" je odvozen z RTL a z `RX_LEN_ERR` +2, ne z přímého měření.
+
+## 8. Druhá noc po FW 0x0508 + STM v0.40.8 (2026-10-26 21:19 → 2026-10-27 04:29, plán 3)
+
+Data: `docs/audit/data/2026-10-27_spi_noc2_vetve.csv`, `..._udalosti.csv` (podrobné logy v `noc_logs/20261026_2119/`, mimo git). Plán: B, M, W, K, S, B, M, W, A po 0,75 h, `spi_night.py --plan 3 --until 05:30`.
+
+| větev | nastavení | rámců | chyb |
+|---|---|---|---|
+| B ×2 | základ, polling 10 ms | 555 131 | **0** |
+| W ×2 | všechny hrany VERY_HIGH | 555 116 | **0** |
+| K | jen CS na LOW | 277 552 | **0** |
+| A | polling 40 ms | 55 513 | **0** |
+| M ×2, S | hrany LOW (M všechny, S SCK+MOSI) | 0 | – |
+
+- **Oprava zabrala:** ≈ 1,44 mil. rámců bez jediné chyby; při 91,5 / mil. z předchozí noci by jich bylo ≈ 130.
+- **Příčina mezi filtrem a hysterezí neurčena:** čítače zahozených pulzů na CS (`cs_a12..cs_idle`) jsou ve všech větvích 0, tedy filtr 160 ns žádný pulz nezachytil. Čítače zatím nikdy neviděly skutečný pulz, jejich funkce je ověřená jen simulací. Rozlišení: osciloskop na CS, nebo bitstream bez filtru (`CS_FILT = 1`) jen s hysterezí.
+- **Rychlost hran CS nerozhoduje:** VERY_HIGH (W) i LOW na CS (K) bez chyb.
+- **M a S nejsou chyba opravy:** s SCK/MOSI na LOW (pomalé GPIO hrany) SPI při 25 MHz vůbec nenaběhlo (0 rámců, `signal_lost`, GPSDO `HOLD`, 840 z 2 577 vzorků). Po návratu na další větev okamžitě `LOCK`. Tyto větve se v dalších plánech vynechají.
+- Drobnosti: 3 mezery v `seq` na 17 800 řádků `raw.csv`; první nastavení větve W2 po M2 se nepotvrdilo (SCK nepřečten po mrtvé větvi), druhý pokus prošel.

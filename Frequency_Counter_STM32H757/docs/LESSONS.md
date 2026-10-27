@@ -5685,7 +5685,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** (1) asynchronní reset čítačů v taktové doméně rozhraní nesmí vycházet z neošetřeného signálu pinu; odvoď ho z filtrovaného CS (minimální šířka pulzu) a přidej čítač zahozených pulzů. (2) Diagnostika chyb rozhraní musí ukládat surová data vadného rámce a druh chyby, ne jen počítadlo: z 109 uložených bloků byl mechanismus vidět v rozboru jediného běhu, z holého počítadla nešel poznat.
 - **Detekce:** `spi err`, `spi err dump`, `tools/spi_night.py` + `tools/spi_night_report.py`; na FPGA `RX chyb … délka` ve `fpga v3` (přírůstek 2 na chybu).
 - **Commit:** `9cdbbbe` (filtr a čítače), `ab65703` (hystereze), `bd20e77` (zápis verze pro bránu vydání), `6b91119` (STM v0.40.8)
-- **Stav:** 🟡 opraveno v kódu a ověřeno simulací (PHY test s 8 mutacemi, stopy `topv3*` s `CS_FILT = 1` bitově shodné 8/8, `topv3*` s filtrem PASS); ⬜ neověřeno na desce, původ pulzu na CS dál neznámý (čítače ho změří)
+- **Stav:** ✅ ověřeno na desce (noc 2026-10-26/27, 7,2 h, ≈ 1,44 mil. rámců, 0 chyb proti očekávaným ≈ 130; `docs/audit/2026-10-26_spi-noc-vyhodnoceni.md` kap. 8). Příčina mezi filtrem CS a hysterezí NEURČENA: čítače zahozených pulzů zůstaly 0, takže filtr žádný pulz neviděl a čítače nebyly nikdy ověřeny na skutečném pulzu. Původ pulzu dál neznámý (HYPOTÉZA: přeslech/zakmitnutí; ověření osciloskopem na CS)
 
 ---
 
