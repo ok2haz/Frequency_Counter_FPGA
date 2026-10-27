@@ -587,8 +587,7 @@ __attribute__((noinline)) static void stacktest_overflow(void)
  * s velkym N muze desku restartovat i s vyfiltrovanou jednou adresou.
  */
 #define I2CSP_N_DEF    2000u
-#define I2CSP_YIELD_MS    5u    /* nejdelsi souvisly spin bez ustoupeni scheduleru [ms] (TODO #244; driv 64 transakci = az 640 ms) */
-#define I2CSP_DEAD_RUN    8u    /* tolik chyb ZA SEBOU = sbernice mrtva, krok se ukonci */
+#define I2CSP_CHUNK      64u    /* po kolika transakcich pustit ostatni tasky */
 
 typedef struct { uint16_t khz; uint32_t timingr; } i2csp_step_t;
 typedef struct { uint16_t a8; uint8_t reg; uint8_t len; const char *nm; } i2csp_dev_t;
@@ -705,16 +704,8 @@ static void i2cspeed_run(uint32_t n, int dev_sel)
         for (d = d0; d < d1 && !aborted; d++) {
             uint32_t err = 0, mis = 0;
             uint32_t ec = 0;
-            /* TODO #244 (2026-10-27): ustupovat podle CASU, ne podle poctu transakci. Nad ~125 kHz konci kazda transakce 10ms
-             * timeoutem, takze 64 transakci drzelo CPU ~640 ms vkuse a vyhladovelo UiTask (heartbeat 2,5 s) -> IWDG reset desky
-             * (zmereno 2026-09-12 pri N = 500 a 150 kHz). Ted `osDelay(1)` nejpozdeji po I2CSP_YIELD_MS ms a krok se po
-             * I2CSP_DEAD_RUN chybach ZA SEBOU ukonci jako mrtva sbernice (dalsi transakce by jen cekaly na timeout). */
-            uint32_t done = 0, consec = 0, dead = 0;
-            uint32_t t_y = DWT->CYCCNT;
-            const uint32_t y_cyc = (SystemCoreClock / 1000u) * I2CSP_YIELD_MS;
             for (k = 0; k < n; k++) {
                 HAL_StatusTypeDef st = HAL_ERROR;
-                done = k + 1u;
                 if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
                     st = HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
                                           I2C_MEMADD_SIZE_8BIT, buf, I2CSP_DEV[d].len, 10);
@@ -722,31 +713,27 @@ static void i2cspeed_run(uint32_t n, int dev_sel)
                 }
                 if (st != HAL_OK) {
                     err++; ec = hi2c4.ErrorCode;
-                    if (++consec >= I2CSP_DEAD_RUN) dead = 1;
                 } else if (refok[d] &&
                            (buf[0] != ref[d][0] ||
                             (I2CSP_DEV[d].len > 1u && buf[1] != ref[d][1]))) {
                     mis++;               /* ACKnuto, ale jina data = TICHA neshoda */
                 }
-                if (st == HAL_OK) consec = 0;
-                if (dead || (uint32_t)(DWT->CYCCNT - t_y) >= y_cyc) {
+                if ((k % I2CSP_CHUNK) == (I2CSP_CHUNK - 1u)) {
                     osDelay(1);          /* pustit defaultTask (watchdog) a UiTask */
-                    t_y = DWT->CYCCNT;
                     if (i2csp_abort()) { aborted = 1; break; }
-                    if (dead) break;     /* mrtva sbernice: zbytek kroku by jen cekal na timeouty */
                 }
             }
             {
                 uint32_t bad = err + mis;
-                uint32_t p100 = (done > 0u) ? ((bad * 10000u + done / 2u) / done) : 0u;
+                uint32_t p100 = (n > 0u) ? ((bad * 10000u + n / 2u) / n) : 0u;
                 ls = i2c4_line_state();
                 pct[i][d] = (uint16_t)((p100 > 0xFFFFu) ? 0xFFFFu : p100);
                 sil[i][d] = (uint16_t)((mis > 0xFFFFu) ? 0xFFFFu : mis);
                 printf("  %s  %lu.%02lu %%  (%lu/%lu)  err=0x%02lX  SCL=%u SDA=%u%s\n",
                        I2CSP_DEV[d].nm, (unsigned long)(p100 / 100u), (unsigned long)(p100 % 100u),
-                       (unsigned long)bad, (unsigned long)done, (unsigned long)ec,
+                       (unsigned long)bad, (unsigned long)n, (unsigned long)ec,
                        (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
-                       dead ? "  [MRTVA: krok ukoncen po serii chyb]" : (mis ? "  [TICHA NESHODA]" : ""));
+                       mis ? "  [TICHA NESHODA]" : "");
             }
         }
     }
