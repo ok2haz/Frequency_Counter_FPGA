@@ -43,6 +43,11 @@ V = {
     'aHB': [('app_v3.v', APP_HB, "    always @* hb = {bb[7:2], 2'b0} ^ {6'd0, bb[1:0]} ^ MAGIC ^ flags_b ^ st_clk;"),
             ('timing_v3.sdc', '@@DEL@@u_ipps|u_pca|u_pcb|rx_s_|u_pps|u_cseq', '')],
     'aIT': [('app_v3.v', APP_IT, "    always @* it_src = {g_cur[7:0], 16'd0} ^ hist_a ^ hist_b ^ raw_q[23:0];")],
+    # 2026-10-27: hluboky RAW (PSRAM, raw_cap3) jako varianta: `define na zacatku top_v3.v (jako -DDEEP_RAW v simulaci)
+    'deep': [('top_v3.v', "module top_v3 (", "`define DEEP_RAW\nmodule top_v3 (")],
+    # 2026-10-27: cil prescaleru na vstupnich pinech 300 MHz (3,33 ns) misto 400 MHz (2,5 ns): strop vstupniho bufferu LVCMOS33 je 300 MHz
+    'pin33': [('timing_v3.sdc', "create_clock -name pin_a -period 2.5 -waveform {0 1.25}", "create_clock -name pin_a -period 3.33 -waveform {0 1.665}"),
+              ('timing_v3.sdc', "create_clock -name pin_b -period 2.5 -waveform {0 1.25}", "create_clock -name pin_b -period 3.33 -waveform {0 1.665}")],
     'noRAW': [('top_v3.v', RAW_INST, RAW_OFF)],            # RAW_CAPTURE i hluboky zaznam (PSRAM) pryc
     'noDSP': [('top_v3.v', "localparam SUM_DSP    = 1;", "localparam SUM_DSP    = 0;")],
     'noTSP': [('top_v3.v', "localparam TDC_TSPIPE = 1;", "localparam TDC_TSPIPE = 0;")],

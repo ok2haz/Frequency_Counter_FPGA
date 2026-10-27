@@ -20,7 +20,7 @@ Pouziti (z adresare Frequency_Counter_STM32H757, zadny jiny terminal nesmi drzet
 Pri restartu desky (uptime klesne) zapise RESTART a znovu nastavi aktualni vetev (spi poll/dma/takt se po resetu vraci na vychozi).
 Ctrl+C = konec se souhrnem aktualni vetve.
 """
-import argparse, csv, datetime, os, re, subprocess, sys, time
+import argparse, csv, datetime, os, re, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UARTQ = os.path.join(ROOT, 'tools', 'uartq.ps1')
@@ -258,8 +258,30 @@ class Run:
             time.sleep(5)
         return False
 
+    def web_check(self, txt):
+        """Kontrola odezvy webu (CM4/ETH) pri kazdem cyklu. 2026-10-26: noc 25./26. 10. web 3 min 20 s neodpovidal a nebylo videt proc.
+        Pri vypadku (nebo obnove) zapise udalost WEB_DOWN / WEB_OK a radky `status` o CM4, siti a TX (CM4 zije? je link? kolik zahozeno?).
+        Bez `--no-web` se nepouzije."""
+        if self.a.no_web:
+            return
+        t0 = time.time()
+        try:
+            urllib.request.urlopen('http://%s/api/state' % self.a.ip, timeout=4).read(64)
+            ok = True
+        except Exception as e:
+            ok, err = False, str(e)[:60]
+        dt = time.time() - t0
+        if not ok:
+            lines = [l.strip() for l in txt.splitlines() if re.search(r'CM4:|NET:|ETH\(CM4\)|TX\(CM4\)|HTTP\(CM4\)|SCPI\(CM4\)', l)]
+            self.ev('WEB_DOWN', '%s po %.1f s | %s' % (err, dt, ' / '.join(lines)[:600]))
+            self.web_was_down = True
+        elif getattr(self, 'web_was_down', False):
+            self.ev('WEB_OK', 'web zase odpovida (%.2f s)' % dt)
+            self.web_was_down = False
+
     def cycle(self, arm, rep):
         txt = uart(self.a.port, ['spi err', 'spi err dump', 'fpga v3', 'status'], mx=100000)
+        self.web_check(txt)
         stat, st = parse_stats(txt), parse_status(txt)
         if stat is None or st['uptime'] < 0:
             self.ev('NO_UART', 'prazdna nebo neuplna odpoved (%d znaku)' % len(txt))
