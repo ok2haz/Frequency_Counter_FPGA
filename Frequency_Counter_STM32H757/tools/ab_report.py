@@ -2,6 +2,9 @@
 
 Pouziti:
     python tools/ab_report.py novy=raw_novy.csv stary=raw_stary.csv [--skip 2700] [--seg 1800]
+    python tools/ab_report.py novy=raw_novy.csv@20:36 stary=noc_raw.csv@21:12 --window 22:00-05:00
+Pripona `@HH:MM` = hodinu zapnuti desky (power-cyklu) daneho behu; z ni a z uptime se odvodi denni doba kazdeho useku. `--window od-do`
+pak nechá jen useky, jejichz zacatek lezi v tomto okne dne (pres pulnoc), takze se porovnava stejna denni doba zdroje.
 Kazdy beh se rozdeli na useky po --seg radcich (1 mereni = 1 s) PO preskoceni prvnich --skip radku (zahrati OCXO, vychozi 45 min).
 Pro kazdy usek se vypise overlapping Allanova odchylka pri tau = 1, 16 a 64 s, pro kazdy beh median a rozptyl useku, a pomer medianu
 prvniho behu ku druhemu. Prvni soubor v poradi = "A" (testovany), druhy = "B" (srovnavaci).
@@ -18,18 +21,35 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adev_compare as ac
 
 
-def segments(path, skip, seg):
+def hm(s):
+    h, m = s.split(":")
+    return int(h) * 3600 + int(m) * 60
+
+
+def in_window(wall_s, win):
+    if win is None:
+        return True
+    a, b = win
+    w = wall_s % 86400
+    return (a <= w < b) if a <= b else (w >= a or w < b)
+
+
+def segments(path, skip, seg, boot_s=None, win=None):
     ts, fs = ac.load(path)
     y = [(f - 1e7) / 1e7 for f in fs]
     out = []
     i = skip
     while i + seg <= len(y):
         s = y[i:i + seg]
+        wall = (boot_s + ts[i]) if boot_s is not None else None
+        if wall is not None and not in_window(wall, win):
+            i += seg
+            continue
         r = []
         for m in (1, 16, 64):
             a, _ = ac.adev_overlap(s, m)
             r.append(a)
-        out.append((i, ts[i] / 3600.0, r))
+        out.append((i, ts[i] / 3600.0, r, wall))
         i += seg
     return len(y), out
 
@@ -37,6 +57,7 @@ def segments(path, skip, seg):
 def main():
     args = sys.argv[1:]
     skip, seg = 2700, 1800
+    win = None
     pairs = []
     i = 0
     while i < len(args):
@@ -44,6 +65,8 @@ def main():
             skip = int(args[i + 1]); i += 2
         elif args[i] == '--seg':
             seg = int(args[i + 1]); i += 2
+        elif args[i] == '--window':
+            a, _, b = args[i + 1].partition('-'); win = (hm(a), hm(b)); i += 2
         else:
             k, _, v = args[i].partition('=')
             pairs.append((k, v)); i += 1
@@ -52,10 +75,14 @@ def main():
     meds = {}
     nseg = {}
     for name, path in pairs:
-        n, segs = segments(path, skip, seg)
+        boot_s = None
+        if '@' in path:
+            path, _, bt = path.partition('@'); boot_s = hm(bt)
+        n, segs = segments(path, skip, seg, boot_s, win)
         print('=== %s (%s): %d radku, useku %d (po %d s, bez prvnich %d) ===' % (name, path, n, len(segs), seg, skip))
-        for i0, h, r in segs:
-            print('   radky %6d (uptime ~%4.1f h)  ADEV1=%.2e  ADEV16=%.2e  ADEV64=%.2e' % (i0, h, r[0], r[1], r[2]))
+        for i0, h, r, wall in segs:
+            clock = ('  cas %02d:%02d' % ((wall % 86400) // 3600, (wall % 3600) // 60)) if wall is not None else ''
+            print('   radky %6d (uptime ~%4.1f h)%s  ADEV1=%.2e  ADEV16=%.2e  ADEV64=%.2e' % (i0, h, clock, r[0], r[1], r[2]))
         nseg[name] = len(segs)
         if segs:
             meds[name] = [statistics.median(s[2][k] for s in segs) for k in range(3)]
