@@ -90,3 +90,10 @@ Po nahrání nového bitstreamu má tento čítač růst výrazně pomaleji (zby
 3. Kanál A (externí GPSDO) a kanál B: porovnat σy@1s a kmitočet s referencí (hodinový běh); žádná změna přesnosti není povolená.
 4. `FPGA SAMOKONTROLA: zamitnuto oken: citani` po 5+ h: čekáme výrazně pod 7,6/h.
 5. Kanál B: +24 ppm je beze změny očekávaná, pokud je příčina ve vstupu; změna by naznačila vliv sítě LW/PRIMARY (K2).
+
+## 8. Dokončené ověření simulací a mutacemi (2026-10-27, čistá kopie z HEAD `048f4ab`, FW 0x0508)
+
+- **Regresní sada v3 (`sim/run.ps1`):** `phyv3`, `csglitch`, `ccdcarry`, `holdinv`, `ppsv3`, `topv3`, `topv3ovf`, `topv3cal`, `topv3pw` všechny PASS (nejdelší `topv3` 79 min při souběhu s mutacemi). Poznámka: `primchk`, `segdsp` a `tdc3eq` v `run.ps1` neexistují, jejich pokrytí zajišťují režimy 7, 9 a 10 v `mut_top_v3.py`.
+- **Mutace 1PPS (`mut_pps_v3.py`):** 23 zachyceno, ekvivalentní zdůvodněné, nezachycená 0.
+- **Mutace celého návrhu (`mut_top_v3.py`):** 59 zachyceno, 2 ekvivalentní zdůvodněné (`znacka: ts_valid o takt driv`, `1PPS: seq > 1 vzdy`), **nezachycená 0**. Běh trval ≈ 18 h kvůli 6 paralelním simulacím s režimy DEEP_RAW a PSRAM (jednotlivé mutace 1–4 h).
+- Závěr: kolo 2 + FW 0x0508 jsou po stránce simulací a negativních kontrol uzavřeny; zbývá jen ověření na desce (noc 2026-10-26/27: viz `2026-10-26_spi-noc-vyhodnoceni.md` kap. 8).
