@@ -5721,8 +5721,8 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Oblast:** UART `spi pins`, `tools/spi_night.py` větev `M`
 - **Symptom:** 3h test SPI: větev M (SCK/MOSI/CS všechny LOW) 46 minut `ramcu 0`, GPSDO `HOLD`; větve B, W, K dohromady 796 688 rámců, 0 chyb.
 - **Příčina:** izolovaně zkoušeno po jednom pinu: po `spi pins sck low` stojí čítač transakcí (43) a spojení nejede; MOSI LOW a CS LOW samy to nedělají. Po `sck medium` spojení hned naběhne (254 transakcí za 10 s, 0 chyb). Proč přesně (hrana nestíhá při 25 MHz, nebo FPGA SCK nevyhodnotí) nezjištěno.
-- **Oprava:** žádná, jde o nastavení za běhu (nepersistuje se, po resetu MEDIUM). Plán `spi_night.py` větev M obsahuje nepoužitelnou kombinaci.
-- **Pravidlo:** `spi pins sck` nikdy pod MEDIUM; větev „vše LOW" nevypovídá o chybovosti, jen o výpadku. Výsledek bez rámců (`ramcu 0`) není „0 chyb".
+- **Oprava:** žádná, jde o nastavení za běhu (nepersistuje se, po resetu MEDIUM). ⚠️ Totéž (M a S: SCK+MOSI LOW, 0 rámců, `HOLD`) už bylo zapsáno v `docs/audit/2026-10-26_spi-noc-vyhodnoceni.md` s tím, že se tyto větve vynechají; PLAN3 je přesto obsahoval. Nové je jen zúžení na SCK. `spi_night.py --plan 4` je bez SCK LOW (větev N = SCK MEDIUM, MOSI LOW, CS LOW).
+- **Pravidlo:** před novým plánem přečti vyhodnocení předchozího (vynechané větve přenést do plánu); `spi pins sck` nikdy pod MEDIUM; větev „vše LOW" nevypovídá o chybovosti, jen o výpadku. Výsledek bez rámců (`ramcu 0`) není „0 chyb".
 - **Detekce:** `spi err` → `transakci 0`; `status` → GPSDO `HOLD`.
 - **Commit:** viz docs commit 2026-10-28
 - **Stav:** ✅ ověřeno na desce (izolovaný pokus po jednom pinu)
