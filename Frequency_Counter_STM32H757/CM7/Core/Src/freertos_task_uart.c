@@ -519,13 +519,14 @@ static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
 
 /* ── stacktest: ZAMERNE pretece stack UartTasku (test detekce -> IWDG reset) ──
  * ⚠️ MUSI byt VLASTNI (noinline) funkce, ne local `waste[]` v UartTask_run:
- * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze 3600B `waste`
- * jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack ->
+ * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze `waste` (tehdy
+ * 3600 B) jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack
+ * (tehdejsi velikost; dnes ma UartTask 8192 B, pole je 8000 B, L-0244) ->
  * task pretekal VZDY (uz za normalniho provozu), ne jen pri stacktestu. To
  * zpusobovalo HardFault s poskozenym ramcem pri PRVNIM USB znaku (echo cesta
  * do USB HAL prohloubila stack az za hranice) — viz STATUS #34, 2026-07-22.
- * Jako samostatna funkce se 3600 B alokuje AZ pri volani -> ramec UartTask_run
- * spadl zpet na ~1,3 kB a task se do 4 kB v pohode vejde; pretece se JEN kdyz
+ * Jako samostatna funkce se `waste` alokuje AZ pri volani -> ramec UartTask_run
+ * spadl zpet na ~1,3 kB a task se do zasobniku v pohode vejde; pretece se JEN kdyz
  * uzivatel spusti "stacktest yes" (na to zustala funkce zachovana). */
 __attribute__((noinline)) static void stacktest_overflow(void)
 {
@@ -2184,8 +2185,8 @@ void UartTask_run(void *argument)
 				   * ⚠️ Vyzaduje presne "stacktest yes" — samotne "stacktest" jen vypise
 				   * napovedu, aby to neslo spustit omylem/preklepem.
 				   * ⚠️ Bez VBAT baterie testuj WARM resetem (BKP neprezije power-cycle). */
-				  /* Velikost: UartTask 4096 B, ramec UartTask_run ~1,3 kB + echo/USB cesta
-				   * ~1 kB -> stacktest_overflow() pridá 3616 B -> spolehlive pretece dno
+				  /* Velikost: UartTask 8192 B (freertos.c, 2048 * 4), ramec UartTask_run ~1,3 kB
+				   * + echo/USB cesta ~1 kB -> stacktest_overflow() prida ~8 kB -> spolehlive pretece dno
 				   * zasobniku (prepise 20B watermark -> hook). Zamerne v samostatne funkci
 				   * (viz komentar u stacktest_overflow) — jako local v UartTask_run by tech
 				   * 3600 B nafouklo ramec VZDY a task by pretekal i za normalu (byl to
