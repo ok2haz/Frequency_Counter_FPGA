@@ -5701,6 +5701,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0244 - `stacktest` nepřetékal zásobník, protože UartTask mezitím dostal 8 kB
+
+- **Datum:** 2026-10-28
+- **Oblast:** `freertos_task_uart.c` `stacktest_overflow`, UART `stacktest yes`
+- **Symptom:** `STACKTEST: hook se NEOZVAL (0) - detekce NEFUNGUJE!`, deska se nerestartovala, uptime běžel dál.
+- **Příčina:** pole `waste[3600]` bylo dimenzované na zásobník UartTasku 4096 B. Zásobník má dnes `2048 * 4` = 8192 B (`freertos.c`), takže test nepřetekl a hlídač přetečení se ani nespustil. Selhání testu neříká nic o hlásiči.
+- **Oprava:** `waste[8000]` (v0.42.1). Komentáře u funkce a u příkazu ještě zmiňují 4096 B a 3600 B.
+- **Pravidlo:** test, který záměrně něco překračuje, musí mít mez odvozenou od aktuální konfigurace (nejlépe z `uxTaskGetStackHighWaterMark` / velikosti z atributů), ne pevné číslo; po změně velikosti zásobníku test znovu pustit.
+- **Detekce:** `stacktest yes` musí vyvolat IWDG reset a po bootu `Reset: ... stack:UartTask`.
+- **Commit:** v0.42.1
+- **Stav:** ⬜ neověřeno na HW (po flashi pustit `stacktest yes`)
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
