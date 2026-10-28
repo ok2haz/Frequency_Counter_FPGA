@@ -55,3 +55,15 @@ Skript vypíše ADEV po úsecích a medián každého běhu, poměr mediánů (p
 
 - `ab_report.py` bere kmitočet kanálu A z `raw_fetch.py` (ADEV relativně k 10 MHz); konstantní offset zdroje na výsledek nemá vliv.
 - Čas v CSV je uptime desky; denní doba běhů se do nich nezapisuje, proto si u každého běhu poznamenej čas startu (skript ho vypisuje do konzole).
+
+## Výsledek noci 2026-10-27/28: zhoršení nepotvrzeno
+
+Jedna noc, `tools/ab_noc.ps1` (deska zapnuta 20:36, FPGA `796c009`, CM7/CM4 v0.42.0) proti noci 26.–27. 10. (`bd20e77`, `noc_raw.csv`, zapnuto 21:12), srovnáno jen v okně dne 22:00–05:00, úseky po 30 min po 45 min zahřátí (14 úseků nový, 9 starý).
+
+| τ | medián nový | medián starý | poměr |
+|---|---|---|---|
+| 1 s | 1,26·10⁻¹⁰ | 1,19·10⁻¹⁰ | 1,06 |
+| 16 s | 6,16·10⁻¹⁰ | 5,73·10⁻¹⁰ | 1,07 |
+| 64 s | 3,63·10⁻¹⁰ | 3,79·10⁻¹⁰ | 0,96 |
+
+Rozsahy úseků se překrývají, rozdíl mezi úseky jednoho běhu je větší než mezi běhy. Dřívější dojem zhoršení vznikl srovnáním různé denní doby zdroje. Verdikt: `796c009` zůstává, omezení předděličky 300 MHz se nevrací; A-B-A-B není potřeba.

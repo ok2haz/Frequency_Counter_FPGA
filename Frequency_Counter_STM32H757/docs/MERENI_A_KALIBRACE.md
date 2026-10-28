@@ -727,3 +727,7 @@ Zdravi behu: 0 resetu, `CRC err` 0, `SEQ FPGA` 0 diry, `errlog` beze zmeny (5073
 | **ADS AIN2 +3V3** (gain_12v) | ⬜ výchozí 2,0 | ověřit multimetrem | — |
 | **ADS AIN3 +5V** (gain_5v) | ⬜ výchozí 2,0 (R58 = 10k) | čte 5,03–5,17 V; **zkalibrovat** v průvodci (Kalibrace → PRŮVODCE) | — |
 | **AD8307 RF** | ➖ na desce není (RF_LEVEL_HW_PRESENT 0) | — | — |
+
+### 2026-10-27/28 noc — A/B bitstreamů `796c009` (nový) vs `bd20e77` (starý), stejná denní doba 22:00–05:00 (CM7/CM4 v0.42.0)
+
+Kanál A = externí GPSDO, hradlo 0,25 s, `tools/ab_noc.ps1`. Medián ADEV z 30min úseků: τ=1 s 1,26·10⁻¹⁰ vs 1,19·10⁻¹⁰ (poměr 1,06), τ=16 s 6,16·10⁻¹⁰ vs 5,73·10⁻¹⁰ (1,07), τ=64 s 3,63·10⁻¹⁰ vs 3,79·10⁻¹⁰ (0,96). Rozdíl neprokázán, bitstream `796c009` zůstává. Podrobnosti `docs/AB_TEST_BITSTREAM.md`.
