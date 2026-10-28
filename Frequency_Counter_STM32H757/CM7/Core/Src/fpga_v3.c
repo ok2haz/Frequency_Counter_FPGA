@@ -558,7 +558,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         double rp; int64_t sd;
         if (c->open && c->prev_ok && fpga_v3_seg_resid(&c->prev, r, clk_mhz, &rp, &sd)) {
             if (fabs(rp) > c->seg_max_ps) c->seg_max_ps = fabs(rp);
-            if (fabs(rp) > FPGA_V3_SEG_BAD_PS) c->seg_bad = 1u;
+            if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;
         }
         c->prev = *r; c->prev_ok = 1u;
     }
@@ -646,6 +646,16 @@ int fpga_v3_seg_resid(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, uint32_t c
     *r_ps   = ((double)a->st - per * (double)a->sx) / (double)a->n * fpga_v3_unit_ps(clk_mhz);
     *sx_dev = (int64_t)a->sx - (int64_t)((uint64_t)a->n * (uint64_t)(a->n - 1u) / 2u);
     return 1;
+}
+
+int fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b)
+{
+    if (a->n < 2u || (a->flags & FPGA_V3_R_SAT)) return 1;
+    const uint64_t n = a->n, dx = (b->x0 - a->x0) & MASK40;
+    if (dx >= (1ull << 32)) return 1;
+    if (dx < n) return 0;                              /* vic znacek nez hran */
+    const uint64_t lo = n * (n - 1u) / 2u, hi = (n - 1u) * dx - lo;
+    return a->sx >= lo && a->sx <= hi;
 }
 
 /* ══════════════ selftest ══════════════ */
@@ -953,6 +963,38 @@ bool fpga_v3_selftest(void)
             }
         }
         V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 1u && nbad[1] == 0u && maxok < 1000.0 && rel2 < 1e-6);
+    }
+
+    /* 17) v0.42.6 presne meze SX (fpga_v3_seg_sx_ok): zdravy segment v mezich, SX - 1 a SX + 2^32 mimo, mezera 3 znacek
+     * (maska pri CS) v mezich; v okne SX - 5 v segmentu 9 kanalu B (teziste ~0,2 ns, pod mezi 2 ns) -> prave to okno B */
+    {
+        fpga_v3_emu_init(&s_e, 10e6, 10e6, 100.0, 15u);
+        fpga_v3_emu_segment(&s_e); fpga_v3_emu_segment(&s_e);
+        fpga_v3_rec_t a = s_e.ring[0];
+        const fpga_v3_rec_t b = s_e.ring[2];
+        V3OK(fpga_v3_seg_sx_ok(&a, &b) == 1);
+        a.sx -= 1u;              V3OK(fpga_v3_seg_sx_ok(&a, &b) == 0);
+        a.sx += 1u + (1ull << 32); V3OK(fpga_v3_seg_sx_ok(&a, &b) == 0);
+        const uint64_t n = a.n - 3u;
+        a.n = (uint32_t)n; a.sx = n * (n - 1u) / 2u + 3u * (n / 2u);
+        V3OK(fpga_v3_seg_sx_ok(&a, &b) == 1);
+
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 16u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t nbad[2] = { 0u, 0u }, nwin[2] = { 0u, 0u };
+        double maxbad = 0.0;
+        for (uint32_t s = 0; s < 40u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if (q.seg_idx == 9u && (q.ch & 1u) == 1u) q.sx -= 5u;
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w)) continue;
+                nwin[w.ch & 1u]++;
+                if (w.seg_bad) { nbad[w.ch & 1u]++; maxbad = w.seg_max_ps; }
+            }
+        }
+        V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 0u && nbad[1] == 1u && maxbad < FPGA_V3_SEG_BAD_PS);
     }
 
     return ok;

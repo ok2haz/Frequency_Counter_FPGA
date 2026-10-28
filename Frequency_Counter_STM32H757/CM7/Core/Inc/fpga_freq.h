@@ -720,6 +720,8 @@ typedef struct {
 } fpga_seg_snap_t;
 typedef struct {
     uint32_t chk[2], bad[2], sxdev[2];  /* zkontrolovano / vadnych / se SX != N(N-1)/2 */
+    uint32_t sxbad[2], sxonly[2];       /* v0.42.6: SX mimo presne meze (fpga_v3_seg_sx_ok) / z toho s odchylkou <= mez */
+    uint32_t r05[2], r1[2];             /* v0.42.6: SX v mezich, |odchylka| 0,5..1 ns / 1..2 ns */
     double   max_ps[2], rms_ps[2];      /* nejvetsi |odchylka|, rms dobrych */
     uint32_t nsnap;                     /* vadnych celkem (snimku v poli min(nsnap, FPGA_SEG_SNAP)) */
     fpga_seg_snap_t snap[FPGA_SEG_SNAP];/* kruh: nejnovejsi na (nsnap - 1) % FPGA_SEG_SNAP */

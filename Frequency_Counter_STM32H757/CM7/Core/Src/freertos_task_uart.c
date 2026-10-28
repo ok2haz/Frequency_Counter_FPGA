@@ -2682,9 +2682,13 @@ void UartTask_run(void *argument)
 					  static fpga_seg_info_t si;
 					  fpga_freq_v3_seg(&si);
 					  for (int c = 0; c < 2; c++)
-						  printf("  kanal %c: segmentu %lu, vadnych (> 2 ns) %lu, SX != N(N-1)/2 %lu, max %ld ps, rms dobrych %ld ps\n",
+						  printf("  kanal %c: segmentu %lu, vadnych (> 2 ns nebo SX mimo meze) %lu, SX != N(N-1)/2 %lu, max %ld ps, rms dobrych %ld ps\n",
 						         c ? 'B' : 'A', (unsigned long)si.chk[c], (unsigned long)si.bad[c], (unsigned long)si.sxdev[c],
 						         (long)si.max_ps[c], (long)si.rms_ps[c]);
+					  for (int c = 0; c < 2; c++)
+						  printf("    %c: SX mimo meze %lu (z toho odchylka <= 2 ns %lu) | v mezich, odchylka 0,5-1 ns %lu, 1-2 ns %lu\n",
+						           c ? 'B' : 'A', (unsigned long)si.sxbad[c], (unsigned long)si.sxonly[c],
+						           (unsigned long)si.r05[c], (unsigned long)si.r1[c]);
 					  const uint32_t ns = si.nsnap < FPGA_SEG_SNAP ? si.nsnap : FPGA_SEG_SNAP;
 					  for (uint32_t k = 0; k < ns; k++) {
 						  const fpga_seg_snap_t *s = &si.snap[(si.nsnap - 1u - k) % FPGA_SEG_SNAP];

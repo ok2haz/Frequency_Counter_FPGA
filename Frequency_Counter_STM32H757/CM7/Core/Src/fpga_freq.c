@@ -1339,7 +1339,11 @@ static void s3s_feed(const fpga_v3_rec_t *r, uint32_t clk)
         s3s.chk[ch]++;
         if (sd != 0) s3s.sxdev[ch]++;
         if (fabs(rp) > s3s.max_ps[ch]) s3s.max_ps[ch] = fabs(rp);
-        if (fabs(rp) > FPGA_SEG_BAD_PS) {
+        const int sxok = fpga_v3_seg_sx_ok(&s3s_prev[ch], r);
+        if (!sxok) { s3s.sxbad[ch]++; if (fabs(rp) <= FPGA_SEG_BAD_PS) s3s.sxonly[ch]++; }
+        else if (fabs(rp) > 1000.0 && fabs(rp) <= FPGA_SEG_BAD_PS) s3s.r1[ch]++;
+        else if (fabs(rp) > 500.0 && fabs(rp) <= 1000.0) s3s.r05[ch]++;
+        if (fabs(rp) > FPGA_SEG_BAD_PS || !sxok) {
             s3s.bad[ch]++;
             fpga_seg_snap_t *s = &s3s.snap[s3s.nsnap % FPGA_SEG_SNAP];
             s->ch = ch; s->ms = HAL_GetTick(); s->r_ps = rp; s->sx_dev = sd; s->a = s3s_prev[ch]; s->b = *r;

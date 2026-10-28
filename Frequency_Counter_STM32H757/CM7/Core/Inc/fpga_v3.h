@@ -390,6 +390,11 @@ double   fpga_v3_unit_ps(uint32_t clk_mhz);
  * napr. maskovani pri CS). @return 1 = spocteno; 0 = nelze (N < 2, neplatny zaznam, b neni hned dalsi segment). */
 int      fpga_v3_seg_resid(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, uint32_t clk_mhz, double *r_ps,
                            int64_t *sx_dev);
+/* v0.42.6 (L-0247): SX segmentu a v presnych mezich. Indexy znacek jsou ruzna cela cisla od 0 (x0) a mensi nez
+ * dx = X0b - X0a (prvni znacka dalsiho segmentu) -> N(N-1)/2 <= SX <= (N-1)*dx - N(N-1)/2. Bez sumu: mimo meze = vadny
+ * soucet (posun indexu, chybne horni bity), at je odchylka teziste jakkoli mala. Predpoklad jako fpga_v3_seg_resid.
+ * @return 1 = v mezich nebo nelze posoudit (N < 2, saturovane N, dx >= 2^32), 0 = mimo meze */
+int      fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b);
 
 /* Selftest (na cili i hostu): CRC bloku, zaznam, MOSI/LUT_WRITE, emulator -> parser -> okno (kmitocet), vadny blok
  * (opakovani od ACK), preteceni kruhu, rozbaleni T0 pres 2^48. @return true = PASS */

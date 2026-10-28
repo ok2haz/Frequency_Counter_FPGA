@@ -65,8 +65,12 @@ M = [
     ('uzka: SEQ 32 b i v uzke', 'h->seq = (uint32_t)rdn(f + 4, wn);', 'h->seq = (uint32_t)rdn(f + 4, 4);'),
     # v0.42.5 (L-0247): kontrola teziste segmentu a pojistka okna
     ('teziste: bez ST', '*r_ps   = ((double)a->st - per * (double)a->sx)', '*r_ps   = (0.0 * (double)a->st - 0.0 * per * (double)a->sx)'),
-    ('okno: seg_bad se nenastavi', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS) c->seg_bad = 1u;', '(void)0;'),
+    ('okno: seg_bad se nenastavi', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;', '(void)0;'),
     ('okno: seg_bad se nenuluje', 'c->seg_bad = 0u; c->seg_max_ps = 0.0;', 'c->seg_max_ps = 0.0;'),
+    # v0.42.6 (L-0247): presne meze SX
+    ('SX: bez dolni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx <= hi;'),
+    ('SX: bez horni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx >= lo;'),
+    ('okno: bez kontroly mezi SX', '|| !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;', ') c->seg_bad = 1u;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',
