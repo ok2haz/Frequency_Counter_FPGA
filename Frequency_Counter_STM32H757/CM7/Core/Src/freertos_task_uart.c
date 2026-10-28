@@ -2690,6 +2690,9 @@ void UartTask_run(void *argument)
 						  const fpga_v3_x0ev_t *e = &xe[(n - 1u - k) % FPGA_V3_X0EV];
 						  printf("    %c seg %5u  d %ld m  pd %ld m  %c%c%c\n", e->ch ? 'B' : 'A', (unsigned)e->seg, (long)e->d_m, (long)e->pd_m,
 						         (e->st & 1u) ? 'O' : '-', (e->st & 2u) ? 'C' : '-', (e->st & 4u) ? 'P' : '-');
+						  if (big) printf("      dx %08lX%08lX dt %08lX%08lX X0 %08lX%08lX\n",
+						                  (unsigned long)(e->dx >> 32), (unsigned long)e->dx, (unsigned long)(e->dt >> 32),
+						                  (unsigned long)e->dt, (unsigned long)(e->x0 >> 32), (unsigned long)e->x0);
 					  }
 				  }
 			  }

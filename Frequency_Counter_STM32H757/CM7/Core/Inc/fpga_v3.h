@@ -387,6 +387,8 @@ typedef struct {
     uint8_t  st;                 /* bit0 opraveno, bit1 predchozi kontrola cista, bit2 perioda ST/SX znama */
     int32_t  d_m;                /* odchylka dx - dt/per_ref [1/1000 hrany], omezena na +-2e9 */
     int32_t  pd_m;               /* dt/pst - dt/per_ref [1/1000 hrany] (shoda dvou period), 0 bez pst */
+    uint64_t dx, dt;             /* v0.42.10: surove X0 - X0 predchoziho, T0 - T0 predchoziho (pred opravou) */
+    uint64_t x0;                 /* surove X0 zaznamu */
 } fpga_v3_x0ev_t;
 #define FPGA_V3_X0EV 16u
 
