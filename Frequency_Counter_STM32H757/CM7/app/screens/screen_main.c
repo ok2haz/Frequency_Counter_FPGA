@@ -638,13 +638,11 @@ static void render_body_title(void)
     int16_t y = SCR_MAIN_TITLE_Y;
     /* „FREKVENCE A" jako JEDEN pojem (zadani UI §4), ne funkce a kanal zvlast. */
     /* 2026-10-27 (na prani uzivatele): nad kmitoctem se NEPISE „FREKVENCE“ ani „GATE x s“ (hradlo je na tlacitku GATE v patce,
-     * rezim frekvence je zrejmy z jednotky Hz). Zustava jen kanal; v rezimu PERIODA se slovo „PERIODA“ ponechava, protoze
-     * jinak by se rezim poznal jen z jednotky (ns/us/ms). */
-    if (st.mode) {
+     * rezim frekvence je zrejmy z jednotky Hz). 2026-10-28 (na prani uzivatele): nepise se ani oznaceni kanalu A/B (kanal je
+     * na tlacitku CHAN v patce). V rezimu PERIODA se slovo „PERIODA“ ponechava, protoze jinak by se rezim poznal jen
+     * z jednotky (ns/us/ms). */
+    if (st.mode)
         x = draw_word(x, y, MODE_NAME[st.mode], &ui_font_mono_22, UI_COLOR_ACC);
-        x = draw_word(x, y, " ",                &ui_font_mono_22, UI_COLOR_ACC);
-    }
-    x = draw_word(x, y, CHAN_NAME[st.chan], &ui_font_mono_22, UI_COLOR_ACC);
     (void)x;
     /* Prava cast titulku = σ + pocet vzorku (zadani UI Zasada 2). Kresli se TADY,
      * aby mel plnou sirku titulniho radku JEDINEHO vlastnika: `screen_main_redraw_title`
