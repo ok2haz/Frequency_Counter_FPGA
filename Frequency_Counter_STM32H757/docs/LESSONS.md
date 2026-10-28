@@ -5729,6 +5729,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0246 - druhý kanál (B) měl jen dvoubodovou délku okna, primární LSQ
+
+- **Datum:** 2026-10-28
+- **Oblast:** `CM7/Core/Src/fpga_freq.c` `s3_win_to_meas` (protokol v3)
+- **Symptom:** A−B se stejným zdrojem na obou vstupech (19 194 oken, hradlo 0,25 s): kanál A ≤ 9 ps, kanál B ~145 ps, σ(A−B) 172–211 ps. Vypadalo to na horší budič nebo vstup B.
+- **Příčina:** pro primární kanál se délka okna brala z LSQ přes těžiště segmentů (`f_lsq_hz`), pro sekundární jen dvoubodově (`gate_units` = poslední − první značka). Okno B přitom LSQ spočtené mělo (`fpga_v3_grp_feed` počítá oba kanály stejně). Podpis v datech: autokorelace okna B lag 1 (0,46) < lag 2 (0,61) — sousední okna sdílejí koncovou značku (kovariance −σ²), u A to není.
+- **Oprava:** společná `s3_lsq_gate_ps` pro oba kanály (mez 1e-6 proti dvoubodovému); `fpga v3` vypisuje počet oken B a z toho s LSQ. Simulace (emulátor + `fpga_v3_grp_feed`, σ značky 130 ps, 10 MHz): σ(A−B) 188,7 → 0,4 ps, lag 1 okna B −0,50 → 0,00.
+- **Pravidlo:** když jeden ze dvou symetrických kanálů vychází řádově hůř, nejdřív porovnej, jestli oba procházejí TOUŽ výpočetní cestou, a teprve pak podezírej HW. „Primární / sekundární slot" svádí k tomu, že sekundární dostane jen zjednodušenou cestu.
+- **Detekce:** autokorelace řady délek okna: lag 1 výrazně pod lag 2 = dvoubodový odhad s teleskopem; `fpga v3` → `druhy kanal: mereni N, z toho delka okna z LSQ M` (M ≈ N).
+- **Commit:** `8bfeeac` (v0.42.3)
+- **Stav:** ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
