@@ -2637,6 +2637,8 @@ void UartTask_run(void *argument)
 				  printf("  oken %lu (zahozeno z fronty %lu), kanal %c, K %lu segmentu po %lu ms, REC_ACK %lu\n",
 				         (unsigned long)vi.wins, (unsigned long)vi.qdrop, vi.chan ? 'B' : 'A', (unsigned long)vi.k,
 				         (unsigned long)vi.seg_ms, (unsigned long)vi.expect);
+				  printf("  druhy kanal: mereni %lu, z toho delka okna z LSQ %lu\n",
+				         (unsigned long)vi.wins_b, (unsigned long)vi.lsq_b);
 				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
 				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);

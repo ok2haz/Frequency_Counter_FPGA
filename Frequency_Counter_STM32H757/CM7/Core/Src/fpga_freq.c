@@ -959,6 +959,8 @@ static fpga_meas_t s3_q[S3_Q];
 static uint8_t  s3_qr = 0u, s3_qw = 0u;
 static fpga_v3_win_t s3_wb;          /* posledni okno druheho kanalu (sekundarni slot) */
 static uint8_t  s3_wb_ok = 0u;
+static uint32_t s3_wins_b = 0u;       /* mereni s oknem druheho kanalu (diagnostika, `fpga v3`) */
+static uint32_t s3_lsq_b = 0u;        /* z toho s LSQ delkou okna B */
 static uint32_t s3_wseq = 0u;        /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
 static uint8_t  s3_brk = 1u;         /* pred dalsim oknem je preruseni */
 static uint8_t  s3_chan = 0u, s3_gate = 2u;
@@ -1156,6 +1158,17 @@ static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
     m->phase_status = fpga_gate_idx_to_win(s3_gate);          /* echo hradla jako v2 (zde lokalni volba) */
 }
 
+/* LSQ pres teziste segmentu (vaha N): efektivni delka okna N / f_lsq [ps], jako regrese v2. Mez 1e-6 proti
+ * dvoubodovemu (pojistka). Vraci 0, kdyz se LSQ pouzit nema (pak plati dvoubodova delka). Pro OBA kanaly:
+ * dvoubodovy odhad nese sum dvou znacek, LSQ ho prumeruje pres vsechny (A-B 2026-10-28: B dvoubodove ~145 ps,
+ * A s LSQ <= 9 ps pri temze zdroji). */
+static int s3_lsq_gate_ps(const fpga_v3_win_t *w, uint64_t *gate_ps)
+{
+    if (!(w->lsq_ok && w->f_lsq_hz > 0.0 && w->f_2pt_hz > 0.0 && fabs(w->f_lsq_hz / w->f_2pt_hz - 1.0) < 1e-6)) return 0;
+    *gate_ps = (uint64_t)((double)w->edges * 1e12 / w->f_lsq_hz + 0.5);
+    return 1;
+}
+
 static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
 {
     memset(m, 0, sizeof *m);
@@ -1172,11 +1185,7 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
     m->gate2_ps   = dt_units_to_ps(m->dt_units, clk);
     m->gate_ps    = m->gate2_ps;
     m->cc_ok = 1u; m->f_cc_hz = w->f_2pt_hz; m->gate_cc_ps = m->gate2_ps;   /* dvoubodove mezi prvnimi znackami teleskopuje */
-    /* LSQ pres teziste segmentu (vaha N): efektivni delka N / f_lsq jako regrese v2; mez 1e-6 proti dvoubodovemu (pojistka) */
-    if (w->lsq_ok && w->f_lsq_hz > 0.0 && w->f_2pt_hz > 0.0 && fabs(w->f_lsq_hz / w->f_2pt_hz - 1.0) < 1e-6) {
-        m->f_regr_hz = w->f_lsq_hz; m->regr_used = 1u;
-        m->gate_ps = (uint64_t)((double)w->edges * 1e12 / w->f_lsq_hz + 0.5);
-    }
+    if (s3_lsq_gate_ps(w, &m->gate_ps)) { m->f_regr_hz = w->f_lsq_hz; m->regr_used = 1u; }
     /* teziste prvniho segmentu relativne k prvni znacce okna (fpga_phrec: rg_xm v 1/4096 hrany, rg_ym v 1/16 jednotky) */
     m->rg_xdiv  = 4096u;
     m->rg_n[0]  = w->n0; m->rg_n[1] = w->n0;
@@ -1187,6 +1196,8 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, fpga_meas_t *m)
     if (s3_wb_ok) {
         m->edges_b = (uint32_t)s3_wb.edges;
         m->dt_b_ps = dt_units_to_ps(s3_wb.gate_units & 0xFFFFFFFFFFFFull, clk);
+        s3_wins_b++;
+        if (s3_lsq_gate_ps(&s3_wb, &m->dt_b_ps)) s3_lsq_b++;
         m->ccd_s   = (int8_t)((s3_wb.flags_or & FPGA_V3_R_CCD) ? 2 : 0);
     }
     m->gate_time_ns      = m->gate_ps / 1000u;
@@ -3181,6 +3192,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
         o->narrow = s3_h.narrow;
     }
     o->wrap_restarts = s3_wrap.restarts;
+    o->wins_b = s3_wins_b; o->lsq_b = s3_lsq_b;
 }
 
 /* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */

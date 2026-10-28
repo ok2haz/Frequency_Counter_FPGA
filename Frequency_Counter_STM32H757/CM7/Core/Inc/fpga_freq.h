@@ -700,6 +700,7 @@ typedef struct {
     int8_t   pps_d;                    /* jemny - hruby [takty] */
     uint8_t  narrow;                   /* v0.40.0: uzka hlavicka (FW 0x0507, CAPS bit22) */
     uint32_t wrap_restarts;            /* restartu FPGA poznanych pri rozbalovani 16b poli */
+    uint32_t wins_b, lsq_b;            /* v0.42.3: mereni s druhym kanalem / z toho s LSQ delkou okna B */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 /* v0.38.0 (FW 0x0503): predelicka kanalu ch (0 A, 1 B): mode 0xFF = automaticky podle sondy, 0..4 = pevne log2 P.
