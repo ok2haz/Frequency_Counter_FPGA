@@ -192,7 +192,7 @@ def check_handlers():
 # VYHRADNE na `0x30xxxxxx`; alias `0x10xxxxxx` je pohled JADRA CM4.
 # Presne tohle zpusobilo, ze DHCP nikdy neproslo (TX buffer mel 0x1002845E).
 DMA_SYMS = {"DMARxDscrTab": "3004", "DMATxDscrTab": "3004",
-            "memp_memory_RX_POOL_base": "3004", "ram_heap": "1002"}
+            "memp_memory_RX_POOL_base": "3004", "ram_heap": ("1002", "1003")}   # CM4 SRAM2 128 kB = 0x1002..0x1003
 
 def check_dma_addrs():
     print("\n== adresy pro ETH DMA (CM4) ==")
@@ -208,10 +208,10 @@ def check_dma_addrs():
         a = addr.get(sym)
         if a is None:
             print("  %-26s NENALEZEN" % sym); continue
-        ok_ = a.lower().startswith(want)
-        print("  %-26s @0x%s  %s" % (sym, a, "ok" if ok_ else "<== MA BYT 0x" + want + "xxxx"))
+        ok_ = a.lower().startswith(want if isinstance(want, tuple) else (want,))
+        print("  %-26s @0x%s  %s" % (sym, a, "ok" if ok_ else "<== MA BYT 0x" + str(want) + "xxxx"))
         if not ok_:
-            problems.append("%s je na 0x%s, ma byt 0x%sxxxx" % (sym, a, want))
+            problems.append("%s je na 0x%s, ma byt 0x%sxxxx" % (sym, a, str(want)))
 
 
 # Verejne API knihoven a zamerne pripravene funkce — NEJSOU to nalezy.
