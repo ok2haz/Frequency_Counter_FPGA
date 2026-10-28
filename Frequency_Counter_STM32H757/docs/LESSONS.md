@@ -5739,7 +5739,21 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** když jeden ze dvou symetrických kanálů vychází řádově hůř, nejdřív porovnej, jestli oba procházejí TOUŽ výpočetní cestou, a teprve pak podezírej HW. „Primární / sekundární slot" svádí k tomu, že sekundární dostane jen zjednodušenou cestu.
 - **Detekce:** autokorelace řady délek okna: lag 1 výrazně pod lag 2 = dvoubodový odhad s teleskopem; `fpga v3` → `druhy kanal: mereni N, z toho delka okna z LSQ M` (M ≈ N).
 - **Commit:** `8bfeeac` (v0.42.3)
-- **Stav:** ⬜ neověřeno na HW
+- **Stav:** ✅ ověřeno na desce 2026-10-28 (v0.42.3, po power-cyklu): `fpga v3` 369/374 oken B s LSQ, σ(A−B) 172 → 13–15 ps (MAD), B sám ≤ 7 ps. Odhalilo to vadu FPGA kanálu B, viz L-0247.
+
+---
+
+### L-0247 - kanál B ve FPGA páruje značku s indexem o hranu vedle, když hrana leží u hrany taktu
+
+- **Datum:** 2026-10-28
+- **Oblast:** FPGA v3 FW 0x0508 (`tdc_chan3` / `seg_chan3` kanálu B, bitstream `796c009`), STM `fpga_v3_grp_feed`
+- **Symptom:** po L-0246 (LSQ i pro B) mělo ~5 % oken B chybu délky okna 1–146 ns, v dávkách po 3–11 oknech, A nic. Dvoubodový odhad to neukazoval.
+- **Příčina (měřeno, mechanismus ve FPGA nedohledán):** UART `fpga v3 seg` (těžiště segmentu proti přímce mezi prvními značkami sousedních segmentů): A 0 vadných z 11 063 segmentů, B 2,5–10 %. Ve vadných segmentech B je SX menší než N(N−1)/2 (−0,975·N, −1,30·N) a odchylka těžiště sedí přesně na „od značky k mají všechny další index o 1 menší“ (97,4 ns ↔ 97 424 ps). **Všech 24 uložených vadných segmentů má hranu do ±0,51 ns od hrany taktu 100 MHz** (při náhodné fázi ~10 %). Maska značek při CS příčinou není (vypnutá: B 368 vadných z 3 689). Statická analýza: cesty FIFO B kladné (+0,45 ns a víc). Instance `tdc_chan3` A a B jsou shodné; liší se jen vstup B (LUT mux zdroje + XOR, `sig_b`). Fáze obou vstupů proti taktu se posouvá ~0,18 ns/s (zdroje 1,8e-10), proto dávky.
+- **Oprava (STM, obejití):** `fpga_v3_grp_feed` kontroluje těžiště každého segmentu okna (`fpga_v3_seg_resid`, mez 2 ns) a označí okno `seg_bad`; ovladač u něj bere dvoubodovou délku (T0/X0 jsou správné). Simulace modelu vady: 474 → 0 oken A−B s chybou > 1 ns z 4 000. Příčina ve FPGA otevřená.
+- **Pravidlo:** odhad, který čte více dat (LSQ přes součty segmentu), odhalí vady, na které je jednodušší odhad (dvě značky) slepý — přechod na něj potřebuje vlastní kontrolu konzistence vstupů, ne jen mez proti starému odhadu (1e-6 tady pustilo 146 ns = 5,8e-7). U vady vázané na signál vždy vyhodnoť FÁZI hrany proti taktu (T0 mod 16384).
+- **Detekce:** `fpga v3 seg` (vadných > 2 ns, surové záznamy), `fpga v3` → `LSQ odmitnuta kontrolou teziste: A … B … oken`.
+- **Commit:** `767433c` (v0.42.4 diagnostika), `1af307f` (v0.42.5 pojistka)
+- **Stav:** 🟡 diagnostika ověřena na desce 2026-10-28; pojistka v0.42.5 ⬜ neověřena na HW; příčina ve FPGA ⬜ otevřená (záměna kabelů A↔B, rozbor RTL)
 
 ---
 
