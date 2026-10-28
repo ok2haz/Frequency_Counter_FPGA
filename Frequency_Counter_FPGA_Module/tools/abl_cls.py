@@ -50,6 +50,8 @@ V = {
               ('timing_v3.sdc', "create_clock -name pin_b -period 2.5 -waveform {0 1.25}", "create_clock -name pin_b -period 3.33 -waveform {0 1.665}")],
     'noRAW': [('top_v3.v', RAW_INST, RAW_OFF)],            # RAW_CAPTURE i hluboky zaznam (PSRAM) pryc
     'noDSP': [('top_v3.v', "localparam SUM_DSP    = 1;", "localparam SUM_DSP    = 0;")],
+    # 2026-10-28 (L-0247): soucty SX/ST/N jen kanalu B v logice (A dal v DSP) -- vada hornich bitu SX kanalu B
+    'noDSPb': [('top_v3.v', "seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (", "seg_chan3 #(.SUM_DSP(0)) u_sb (")],
     'noTSP': [('top_v3.v', "localparam TDC_TSPIPE = 1;", "localparam TDC_TSPIPE = 0;")],
     'noPPS': [('top_v3.v', "    pps_ides3 u_ipps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),\n                      .epoch(pps_epoch));",
                "    assign ppsf_tgl = 1'b0; assign ppsf_ts = 48'd0; assign ppsf_lock = 1'b0; assign pps_epoch = 4'd0;"),
