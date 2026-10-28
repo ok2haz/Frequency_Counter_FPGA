@@ -592,9 +592,19 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
      * hrany taktu) -- T0/X0 segmentu zustavaji spravne, vadne jsou jen soucty ST/SX. */
     {
         double rp; int64_t sd;
+        int pbad = 0;
         if (c->open && c->prev_ok && fpga_v3_seg_resid(&c->prev, r, clk_mhz, &rp, &sd)) {
             if (fabs(rp) > c->seg_max_ps) c->seg_max_ps = fabs(rp);
-            if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;
+            if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) { c->seg_bad = 1u; pbad = 1; }
+        }
+        /* v0.42.7: teziste predchoziho segmentu do LSQ az po kontrole; vadne se vyradi (zbytek okna plati dal, misto
+         * celeho okna na dvoubodove se sumem dvou znacek). Nelze-li zkontrolovat, plati jako driv. */
+        if (c->pend) {
+            if (c->open && !pbad) {
+                const double w = c->pw, X = c->pX, T = c->pT;
+                c->sw += w; c->swx += w * X; c->swt += w * T; c->swxx += w * X * X; c->swxt += w * X * T; c->kl++;
+            }
+            c->pend = 0u;
         }
         c->prev = *r; c->prev_ok = 1u;
     }
@@ -644,7 +654,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         out->f_2pt_hz = (out->gate_units) ? (double)out->edges * 1e12 / ((double)out->gate_units * up) : 0.0;
         const double mx = c->swx / c->sw, mt = c->swt / c->sw;
         const double vxx = c->swxx / c->sw - mx * mx, vxt = c->swxt / c->sw - mx * mt;
-        out->lsq_ok = (uint8_t)(c->k >= 2u && vxx > 0.0 && vxt > 0.0);
+        out->lsq_ok = (uint8_t)(c->kl >= 2u && vxx > 0.0 && vxt > 0.0);
         out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / ((vxt / vxx) * up) : 0.0;   /* sklon t(x) = P perioda */
         out->flags_or = c->flags_or; out->xc0 = c->xc0 * (double)(1u << c->p_log2); out->tc0 = c->tc0;
         out->x_first = c->x_first << c->p_log2; out->t_first = c->t_first; out->n0 = c->n0; out->p_log2 = c->p_log2;
@@ -655,7 +665,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     if (!c->open) {                                   /* zacatek okna */
         c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx; c->p_log2 = pl;
         c->x_first = x; c->t_first = t;
-        c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u;
+        c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u; c->kl = 0u;
         c->seg_bad = 0u; c->seg_max_ps = 0.0;
         c->xc0 = (double)x + (double)r->sx / (double)r->n;
         c->n0  = r->n;
@@ -663,9 +673,10 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     }
     /* teziste segmentu relativne k prvni znacce okna; vaha = pocet znacek */
     const double w = (double)r->n;
-    const double X = (double)(x - c->x_first) + (double)r->sx / w;
-    const double T = (double)(t - c->t_first) + (double)r->st / w;
-    c->sw += w; c->swx += w * X; c->swt += w * T; c->swxx += w * X * X; c->swxt += w * X * T;
+    c->pw = w;
+    c->pX = (double)(x - c->x_first) + (double)r->sx / w;
+    c->pT = (double)(t - c->t_first) + (double)r->st / w;
+    c->pend = 1u;
     c->k++; c->n_tot += r->n; c->flags_or |= r->flags;
     return closed;
 }
@@ -703,12 +714,12 @@ static fpga_v3_rec_t s_rec[FPGA_V3_REC_MAX];
 /* Projede nseg segmentu emulatorem: kazde 2 segmenty jeden ramec, parser, okna, ACK (jako STM). Volitelne v ramci
  * c. bad_frame poskodi blok 2. Vraci pocet oken kanalu A a jejich nejvetsi relativni chybu proti f_true;
  * LSQ jen u oken s lsq_ok (jejich pocet v *nlsq). */
-static uint32_t s_nlsq;
+static uint32_t s_nlsq, s_nbad;
 static uint32_t st_run(uint32_t nseg, int bad_frame, double f_true, double *maxrel_2pt, double *maxrel_lsq,
                        uint32_t *gaps)
 {
     uint32_t nwin = 0, fr = 0, expect = s_e.rec_ack;
-    *maxrel_2pt = *maxrel_lsq = 0.0; *gaps = 0; s_nlsq = 0;
+    *maxrel_2pt = *maxrel_lsq = 0.0; *gaps = 0; s_nlsq = 0; s_nbad = 0;
     for (uint32_t s = 0; s < nseg; s += 6) {                   /* 6 segmentu = 12 zaznamu na ramec: obsazene bloky 1 a 2 */
         for (int q = 0; q < 6; q++) fpga_v3_emu_segment(&s_e);
         fpga_v3_emu_frame(&s_e, s_f);
@@ -723,6 +734,7 @@ static uint32_t st_run(uint32_t nseg, int bad_frame, double f_true, double *maxr
                 const double r2 = fabs(w.f_2pt_hz / f_true - 1.0), rl = fabs(w.f_lsq_hz / f_true - 1.0);
                 if (r2 > *maxrel_2pt) *maxrel_2pt = r2;
                 if (w.lsq_ok) { s_nlsq++; if (rl > *maxrel_lsq) *maxrel_lsq = rl; }
+                if (w.seg_bad) s_nbad++;
                 nwin++;
             }
         }
@@ -795,7 +807,7 @@ bool fpga_v3_selftest(void)
     fpga_v3_emu_init(&s_e, 5e6, 0.0, 0.0, 3u);
     fpga_v3_grp_init(&s_g, 10u);
     nw = st_run(100u, 3, 5e6, &r2, &rl, &gaps);
-    V3OK((nw >= 8u) && (gaps == 0u) && (r2 < 1e-11) && (rl < 1e-11));   /* i teziste (LSQ): vadny zaznam se nesmi vzit */
+    V3OK((nw >= 8u) && (gaps == 0u) && (r2 < 1e-11) && (rl < 1e-11) && (s_nbad == 0u));   /* vadny zaznam se nesmi vzit */
 
     /* 6b) blok ze STARSIHO ramce (platne CRC, znacka SEQ nesedi) se nesmi vzit + ACK za hlavu kruhu se ignoruje */
     fpga_v3_emu_init(&s_e, 1e6, 0.0, 0.0, 6u);
@@ -980,12 +992,13 @@ bool fpga_v3_selftest(void)
     }
 
     /* 16) v0.42.5 pojistka okna: ST segmentu 9 (uprostred okna 8..11) kanalu A + 2^30 (~24 ns na teziste) -> prave to
-     * okno seg_bad, ostatni okna A i vsechna B ne; vadne okno je tim LSQ vyrazne mimo, dvoubodove ne */
+     * okno seg_bad, ostatni okna A i vsechna B ne; od v0.42.7 je vadny segment z LSQ vyrazen -> dvoubodove
+     * vadneho okna do 1e-6, LSQ do 1e-9 */
     {
         fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 14u);
         fpga_v3_grp_init(&s_g, 4u);
         uint32_t nbad[2] = { 0u, 0u }, nwin[2] = { 0u, 0u };
-        double maxok = 0.0, rel2 = 1.0;
+        double maxok = 0.0, rel2 = 1.0, rell = 1.0;
         for (uint32_t s = 0; s < 40u; s++) {
             fpga_v3_emu_segment(&s_e);
             for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
@@ -994,11 +1007,15 @@ bool fpga_v3_selftest(void)
                 fpga_v3_win_t w;
                 if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w)) continue;
                 nwin[w.ch & 1u]++;
-                if (w.seg_bad) { nbad[w.ch & 1u]++; rel2 = fabs(w.f_2pt_hz / 1e6 - 1.0); }
+                if (w.seg_bad) {
+                    nbad[w.ch & 1u]++; rel2 = fabs(w.f_2pt_hz / 1e6 - 1.0);
+                    if (w.lsq_ok) rell = fabs(w.f_lsq_hz / 1e6 - 1.0);
+                }
                 else if (w.seg_max_ps > maxok) maxok = w.seg_max_ps;
             }
         }
-        V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 1u && nbad[1] == 0u && maxok < 1000.0 && rel2 < 1e-6);
+        V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 1u && nbad[1] == 0u && maxok < 1000.0 && rel2 < 1e-6 &&
+             rell < 1e-9);
     }
 
     /* 17) v0.42.6 presne meze SX (fpga_v3_seg_sx_ok): zdravy segment v mezich, SX - 1 a SX + 2^32 mimo, mezera 3 znacek

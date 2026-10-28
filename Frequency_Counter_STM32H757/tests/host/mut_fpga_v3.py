@@ -11,8 +11,8 @@ M = [
     ('zaznamy i z vadneho bloku', "if (!((h->blk_ok >> k) & 1u) || b[0] != (uint8_t)k", "if (b[0] != (uint8_t)k"),
     ('ACK i za hlavu kruhu', 'if ((uint32_t)(a - e->rec_ack) <= (uint32_t)(e->rec_head - e->rec_ack)) {', 'if (1) {'),
     ('LSQ: sklon x(t) misto t(x)', '1e12 / ((vxt / vxx) * up) : 0.0;', '1e12 / ((vxx / vxt) * up) : 0.0;'),
-    ('teziste bez SX/N', 'const double X = (double)(x - c->x_first) + (double)r->sx / w;',
-     'const double X = (double)(x - c->x_first);'),
+    ('teziste bez SX/N', 'c->pX = (double)(x - c->x_first) + (double)r->sx / w;',
+     'c->pX = (double)(x - c->x_first);'),
     ('bez kontroly souvislosti segmentu', 'if (c->open && r->seg_idx != (uint16_t)(c->seg_last + 1u)) c->open = 0u;', ''),
     ('CRC bloku jen pres 253 B', 'return fpga_crc16(blk, 254);', 'return fpga_crc16(blk, 253);'),
     ('znacka bloku se nekontroluje', "|| b[0] != (uint8_t)k || b[1] != (uint8_t)h->seq) break;", ") break;"),
@@ -65,17 +65,19 @@ M = [
     ('uzka: SEQ 32 b i v uzke', 'h->seq = (uint32_t)rdn(f + 4, wn);', 'h->seq = (uint32_t)rdn(f + 4, 4);'),
     # v0.42.5 (L-0247): kontrola teziste segmentu a pojistka okna
     ('teziste: bez ST', '*r_ps   = ((double)a->st - per * (double)a->sx)', '*r_ps   = (0.0 * (double)a->st - 0.0 * per * (double)a->sx)'),
-    ('okno: seg_bad se nenastavi', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;', '(void)0;'),
+    ('okno: seg_bad se nenastavi', '{ c->seg_bad = 1u; pbad = 1; }', '{ pbad = 1; }'),
     ('okno: seg_bad se nenuluje', 'c->seg_bad = 0u; c->seg_max_ps = 0.0;', 'c->seg_max_ps = 0.0;'),
     # v0.42.6 (L-0247): presne meze SX
     ('SX: bez dolni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx <= hi;'),
     ('SX: bez horni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx >= lo;'),
-    ('okno: bez kontroly mezi SX', '|| !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;', ') c->seg_bad = 1u;'),
+    ('okno: bez kontroly mezi SX', '|| !fpga_v3_seg_sx_ok(&c->prev, r)) { c->seg_bad = 1u;', ') { c->seg_bad = 1u;'),
     # v0.42.7 (L-0247): X0 o 64*k hran
     ('X0: bez opravy', 'rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;', 'rc = *r; (void)rc;'),
     ('X0: oprava i jine odchylky', 'k != 0.0 && fabs(d - 64.0 * k) < 0.1;', 'k != 0.0;'),
     ('X0: bez podminky ciste kontroly', 'int fix = c->clean && k', 'int fix = k'),
     ('X0: rozbaleni bez opravy', 'dx = (uint64_t)((int64_t)dx - dv) & MASK40;', 'dx = dx;'),
+    ('LSQ: vadny segment se nevyradi', 'if (c->open && !pbad) {', 'if (c->open) {'),
+    ('LSQ: segment se do souctu neprida', 'c->swxt += w * X * T; c->kl++;', 'c->kl++;'),
     ('X0: bez shody period', 'fix = fabs((double)dt / c->pst - pred) < 0.5;', 'fix = 1;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe

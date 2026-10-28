@@ -1165,8 +1165,9 @@ static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
  * A s LSQ <= 9 ps pri temze zdroji). */
 static int s3_lsq_gate_ps(const fpga_v3_win_t *w, uint64_t *gate_ps)
 {
-    /* v0.42.5 (L-0247): okno se segmentem mimo primku (vadne soucty ST/SX z FPGA) -> dvoubodove, ktere je na to imunni */
-    if (w->lsq_ok && w->seg_bad) { s3_segrej[w->ch & 1u]++; return 0; }
+    /* v0.42.5 (L-0247): okno se segmentem mimo primku (vadne soucty ST/SX z FPGA); od v0.42.7 je vadny segment z LSQ
+     * vyrazeny uz ve fpga_v3_grp_feed, zde se jen pocita */
+    if (w->seg_bad) s3_segrej[w->ch & 1u]++;
     if (!(w->lsq_ok && w->f_lsq_hz > 0.0 && w->f_2pt_hz > 0.0 && fabs(w->f_lsq_hz / w->f_2pt_hz - 1.0) < 1e-6)) return 0;
     *gate_ps = (uint64_t)((double)w->edges * 1e12 / w->f_lsq_hz + 0.5);
     return 1;

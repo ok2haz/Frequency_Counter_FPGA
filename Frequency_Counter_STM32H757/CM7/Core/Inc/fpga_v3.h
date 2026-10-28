@@ -374,6 +374,10 @@ typedef struct {
     uint16_t seg_mk;             /* SEG_IDX posledniho zaznamu s hranou */
     uint8_t  pl_prev;            /* jeho log2 P */
     uint8_t  clean;              /* posledni kontrola X0 sedela do 0,1 hrany */
+    /* v0.42.7: teziste segmentu ceka na kontrolu (az s dalsim zaznamem); vadny segment se do LSQ neprida */
+    double   pw, pX, pT;
+    uint8_t  pend;
+    uint32_t kl;                 /* segmentu v LSQ okna */
 } fpga_v3_grp_ch_t;
 
 typedef struct {
