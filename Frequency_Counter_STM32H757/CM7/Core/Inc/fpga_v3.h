@@ -342,7 +342,9 @@ typedef struct {
     uint32_t n0;                 /* znacek prvniho segmentu okna */
     uint8_t  p_log2;             /* v0.38.0: log2 P okna; edges, xc0, x_first a kmitocty jsou uz v PERIODACH (x P) */
     uint8_t  seg_bad;            /* v0.42.5 (L-0247): teziste nektereho segmentu okna mimo primku > FPGA_V3_SEG_BAD_PS
-                                  * (fpga_v3_seg_resid) -> soucty ST/SX okna nejsou duveryhodne, plati dvoubodove */
+                                  * (fpga_v3_seg_resid) nebo od v0.42.6 SX mimo presne meze (fpga_v3_seg_sx_ok) ->
+                                  * soucty ST/SX okna nejsou duveryhodne, plati dvoubodove. Vadne X0 (64*k hran) opravuje
+                                  * uz fpga_v3_grp_feed (v0.42.7), dvoubodove ho jinak obsahuje taky */
     double   seg_max_ps;         /* nejvetsi |odchylka teziste| segmentu okna [ps] (posledni segment se pocita az se
                                   * zaznamem, ktery okno uzavira) */
 } fpga_v3_win_t;
