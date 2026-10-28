@@ -707,6 +707,8 @@ typedef struct {
     int32_t  x0_dev[2];                /* posledni opravena odchylka X0 [hran] */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
+/* v0.42.9 (L-0247): kopie kruhu odchylek X0 (big = 0 vsechny, 1 jen |d| >= 8 hran); vraci celkovy pocet zapsanych */
+uint32_t fpga_freq_v3_x0ev(int big, fpga_v3_x0ev_t o[FPGA_V3_X0EV]);
 
 /* v0.42.4 (diagnostika L-0246): kontrola tezist segmentu proti primce mezi prvnimi znackami sousednich segmentu
  * (fpga_v3_seg_resid) pro oba kanaly. Vadny = |odchylka| > FPGA_SEG_BAD_PS; poslednich FPGA_SEG_SNAP vadnych se

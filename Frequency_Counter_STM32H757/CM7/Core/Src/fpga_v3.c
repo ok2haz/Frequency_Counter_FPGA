@@ -570,7 +570,18 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
                 else {
                     const double k = floor(d / 64.0 + 0.5);
                     int fix = c->clean && k != 0.0 && fabs(d - 64.0 * k) < 0.1;
-                    if (fix && c->pst > 0.0) fix = fabs((double)dt / c->pst - pred) < 0.5;   /* obe periody totez */
+                    const double pd = (c->pst > 0.0) ? (double)dt / c->pst - pred : 0.0;
+                    if (fix && c->pst > 0.0) fix = fabs(pd) < 0.5;   /* obe periody totez */
+                    {   /* v0.42.9: diagnostika (proc oprava nezabrala) */
+                        fpga_v3_x0ev_t *e = &g->x0ev[g->nx0ev % FPGA_V3_X0EV];
+                        const double dm = d * 1000.0, pm = pd * 1000.0;
+                        e->seg = r->seg_idx; e->ch = ch;
+                        e->st = (uint8_t)((fix ? 1u : 0u) | (c->clean ? 2u : 0u) | (c->pst > 0.0 ? 4u : 0u));
+                        e->d_m  = (int32_t)(dm > 2e9 ? 2e9 : dm < -2e9 ? -2e9 : dm);
+                        e->pd_m = (int32_t)(pm > 2e9 ? 2e9 : pm < -2e9 ? -2e9 : pm);
+                        g->nx0ev++;
+                        if (fabs(d) >= 8.0) { g->x0big[g->nx0big % FPGA_V3_X0EV] = *e; g->nx0big++; }
+                    }
                     if (fix) {
                         const int64_t dv = (int64_t)(64.0 * k);
                         rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;

@@ -3256,6 +3256,15 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     for (int c = 0; c < 2; c++) { o->x0_fix[c] = s3_grp.x0_fix[c]; o->x0_odd[c] = s3_grp.x0_odd[c]; o->x0_dev[c] = s3_grp.x0_dev[c]; }
 }
 
+uint32_t fpga_freq_v3_x0ev(int big, fpga_v3_x0ev_t o[FPGA_V3_X0EV])
+{
+    const uint32_t pm = __get_PRIMASK(); __disable_irq();      /* kruh pise FpgaTask */
+    memcpy(o, big ? s3_grp.x0big : s3_grp.x0ev, sizeof(fpga_v3_x0ev_t) * FPGA_V3_X0EV);
+    const uint32_t n = big ? s3_grp.nx0big : s3_grp.nx0ev;
+    __set_PRIMASK(pm);
+    return n;
+}
+
 /* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */
 static bool tdc_report_v3(fpga_tdc_cal_t *out)
 {

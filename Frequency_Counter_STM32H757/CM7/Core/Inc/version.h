@@ -306,7 +306,7 @@
 #define FW_NAME          "gpsdo-ui"
 #define FW_VERSION_MAJOR 0
 #define FW_VERSION_MINOR 42
-#define FW_VERSION_PATCH 8
+#define FW_VERSION_PATCH 9
 /* retezec se ODVOZUJE z cisel (v0.39.1 hlasil "v0.39.0", protoze se zvysilo jen PATCH) */
 #define FW_VER_S_(x)     #x
 #define FW_VER_S(x)      FW_VER_S_(x)

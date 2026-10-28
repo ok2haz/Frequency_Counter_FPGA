@@ -2677,6 +2677,22 @@ void UartTask_run(void *argument)
 				  else printf("predelicka %c: %s%s\n", ch ? 'B' : 'A', md == 0xFF ? "auto" : v,
 				              rc ? "" : " (FPGA bez CAPS bit18 -- uplatni se, az ji FPGA umi)");
 			  }
+			  else if (strcmp(RxBuffer, "fpga v3 x0") == 0) {
+				  /* v0.42.9 (L-0247): odchylky X0 od predpovedi z T0 (fpga_v3_grp_feed) -- proc oprava 64*k zabrala / nezabrala.
+				   * d = dx - dt/per_ref [hran], pd = dt/pst - dt/per_ref (shoda periody ST/SX), priznaky O opraveno, C cista predchozi
+				   * kontrola, P perioda ST/SX znama. Tisk v tisicinach hrany (nano bez %f). */
+				  static fpga_v3_x0ev_t xe[FPGA_V3_X0EV];
+				  for (int big = 1; big >= 0; big--) {
+					  const uint32_t n = fpga_freq_v3_x0ev(big, xe);
+					  printf("  %s: celkem %lu\n", big ? "velke (|d| >= 8 hran)" : "vsechny (|d| >= 0,5 hrany)", (unsigned long)n);
+					  const uint32_t m = n < FPGA_V3_X0EV ? n : FPGA_V3_X0EV;
+					  for (uint32_t k = 0; k < m; k++) {
+						  const fpga_v3_x0ev_t *e = &xe[(n - 1u - k) % FPGA_V3_X0EV];
+						  printf("    %c seg %5u  d %ld m  pd %ld m  %c%c%c\n", e->ch ? 'B' : 'A', (unsigned)e->seg, (long)e->d_m, (long)e->pd_m,
+						         (e->st & 1u) ? 'O' : '-', (e->st & 2u) ? 'C' : '-', (e->st & 4u) ? 'P' : '-');
+					  }
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "fpga v3 seg") == 0 || strcmp(RxBuffer, "fpga v3 seg reset") == 0) {
 				  /* v0.42.4 (L-0246): teziste segmentu proti primce mezi prvnimi znackami sousednich segmentu, oba kanaly;
 				   * u vadnych (> 2 ns) surove zaznamy vadneho (a) a nasledujiciho (b) segmentu. Pole hexa (nano bez %llu). */

@@ -78,7 +78,7 @@ M = [
     ('X0: rozbaleni bez opravy', 'dx = (uint64_t)((int64_t)dx - dv) & MASK40;', 'dx = dx;'),
     ('LSQ: vadny segment se nevyradi', 'if (c->open && !pbad) {', 'if (c->open) {'),
     ('LSQ: segment se do souctu neprida', 'c->swxt += w * X * T; c->kl++;', 'c->kl++;'),
-    ('X0: bez shody period', 'fix = fabs((double)dt / c->pst - pred) < 0.5;', 'fix = 1;'),
+    ('X0: bez shody period', 'if (fix && c->pst > 0.0) fix = fabs(pd) < 0.5;', 'if (fix && c->pst > 0.0) fix = 1;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',

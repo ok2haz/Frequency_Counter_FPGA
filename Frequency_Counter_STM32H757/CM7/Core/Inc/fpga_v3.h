@@ -380,6 +380,16 @@ typedef struct {
     uint32_t kl;                 /* segmentu v LSQ okna */
 } fpga_v3_grp_ch_t;
 
+/* v0.42.9 (L-0247): zaznam odchylky X0 od predpovedi (|d| >= 0,5 hrany), diagnostika `fpga v3 x0` */
+typedef struct {
+    uint16_t seg;                /* SEG_IDX zaznamu */
+    uint8_t  ch;
+    uint8_t  st;                 /* bit0 opraveno, bit1 predchozi kontrola cista, bit2 perioda ST/SX znama */
+    int32_t  d_m;                /* odchylka dx - dt/per_ref [1/1000 hrany], omezena na +-2e9 */
+    int32_t  pd_m;               /* dt/pst - dt/per_ref [1/1000 hrany] (shoda dvou period), 0 bez pst */
+} fpga_v3_x0ev_t;
+#define FPGA_V3_X0EV 16u
+
 typedef struct {
     uint32_t k_target;           /* segmentu na okno (hradlo / L); okno konci na prvni hrane po K segmentech */
     uint32_t seg_ms;             /* L [ms]: vychozi 25, ovladac nastavi z hlavicky (seg_len_ms) */
@@ -388,6 +398,10 @@ typedef struct {
     uint32_t x0_fix[2];          /* v0.42.7: opravenych X0 (odchylka presne 64*k hran) */
     uint32_t x0_odd[2];          /* v0.42.7: X0 mimo predpoved, neopraveno (jina odchylka nebo nejista predpoved) */
     int32_t  x0_dev[2];          /* posledni opravena odchylka [hran] */
+    fpga_v3_x0ev_t x0ev[FPGA_V3_X0EV];   /* v0.42.9: poslednich 16 odchylek X0 (kruh, nx0ev = celkem) */
+    uint32_t nx0ev;
+    fpga_v3_x0ev_t x0big[FPGA_V3_X0EV];  /* totez jen pro |d| >= 8 hran (vzacne, jinak by je kruh vyse prepsal) */
+    uint32_t nx0big;
 } fpga_v3_grp_t;
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);
