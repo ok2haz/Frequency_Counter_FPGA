@@ -529,7 +529,7 @@ static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
  * uzivatel spusti "stacktest yes" (na to zustala funkce zachovana). */
 __attribute__((noinline)) static void stacktest_overflow(void)
 {
-  volatile char waste[3600];
+  volatile char waste[8000];
   for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
   osDelay(1);            /* yield -> kontrola stack patternu -> hook */
   printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
