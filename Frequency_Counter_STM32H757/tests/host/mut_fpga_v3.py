@@ -71,6 +71,12 @@ M = [
     ('SX: bez dolni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx <= hi;'),
     ('SX: bez horni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx >= lo;'),
     ('okno: bez kontroly mezi SX', '|| !fpga_v3_seg_sx_ok(&c->prev, r)) c->seg_bad = 1u;', ') c->seg_bad = 1u;'),
+    # v0.42.7 (L-0247): X0 o 64*k hran
+    ('X0: bez opravy', 'rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;', 'rc = *r; (void)rc;'),
+    ('X0: oprava i jine odchylky', 'k != 0.0 && fabs(d - 64.0 * k) < 0.1;', 'k != 0.0;'),
+    ('X0: bez podminky ciste kontroly', 'int fix = c->clean && k', 'int fix = k'),
+    ('X0: rozbaleni bez opravy', 'dx = (uint64_t)((int64_t)dx - dv) & MASK40;', 'dx = dx;'),
+    ('X0: bez shody period', 'fix = fabs((double)dt / c->pst - pred) < 0.5;', 'fix = 1;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',

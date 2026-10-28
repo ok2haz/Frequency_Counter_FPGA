@@ -366,6 +366,12 @@ typedef struct {
     fpga_v3_rec_t prev;          /* v0.42.5: predchozi zaznam kanalu (kontrola teziste fpga_v3_seg_resid) */
     uint8_t  prev_ok, seg_bad;
     double   seg_max_ps;
+    /* v0.42.7 (L-0247): kontrola X0 proti predpovedi z T0 (fpga_v3_grp_feed) */
+    double   per_ref;            /* perioda z posledni dvojice zaznamu s hranou [jednotky / hranu]; 0 = neznama */
+    double   pst;                /* ST/SX posledniho zaznamu s hranou (N >= 2), 0 = neni */
+    uint16_t seg_mk;             /* SEG_IDX posledniho zaznamu s hranou */
+    uint8_t  pl_prev;            /* jeho log2 P */
+    uint8_t  clean;              /* posledni kontrola X0 sedela do 0,1 hrany */
 } fpga_v3_grp_ch_t;
 
 typedef struct {
@@ -373,6 +379,9 @@ typedef struct {
     uint32_t seg_ms;             /* L [ms]: vychozi 25, ovladac nastavi z hlavicky (seg_len_ms) */
     uint32_t max_gap_ms;         /* nejdelsi mezera bez hrany uvnitr okna: vychozi 2500 (ztrata signalu v2) */
     fpga_v3_grp_ch_t c[2];
+    uint32_t x0_fix[2];          /* v0.42.7: opravenych X0 (odchylka presne 64*k hran) */
+    uint32_t x0_odd[2];          /* v0.42.7: X0 mimo predpoved, neopraveno (jina odchylka nebo nejista predpoved) */
+    int32_t  x0_dev[2];          /* posledni opravena odchylka [hran] */
 } fpga_v3_grp_t;
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);

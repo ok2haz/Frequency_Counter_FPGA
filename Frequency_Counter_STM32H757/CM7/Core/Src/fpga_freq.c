@@ -3252,6 +3252,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->wrap_restarts = s3_wrap.restarts;
     o->wins_b = s3_wins_b; o->lsq_b = s3_lsq_b;
     o->segrej[0] = s3_segrej[0]; o->segrej[1] = s3_segrej[1];
+    for (int c = 0; c < 2; c++) { o->x0_fix[c] = s3_grp.x0_fix[c]; o->x0_odd[c] = s3_grp.x0_odd[c]; o->x0_dev[c] = s3_grp.x0_dev[c]; }
 }
 
 /* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */

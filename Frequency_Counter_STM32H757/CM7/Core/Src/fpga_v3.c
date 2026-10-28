@@ -551,6 +551,42 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     fpga_v3_grp_ch_t *c = &g->c[ch];
     int closed = 0;
 
+    /* v0.42.7 (L-0247): kanal B FW 0x0508 obcas zachyti X0 o nasobek 64 hran vedle (chybne bity 6.. indexu, T0 spravne).
+     * Na hranici oken to posune dvoubodovy odhad obou oken opacnym smerem a kontrola teziste ho neopravi (vadne X0 je
+     * i v dvoubodovem odhadu). X0 se predpovi z T0 a periody posledni dvojice zaznamu; u stabilniho signalu sedi na
+     * zlomky hrany. Opravi se jen odchylka 64*k (+-0,1 hrany) po ciste predchozi kontrole, a kdyz perioda ze ST/SX
+     * predchoziho zaznamu (nezavisla na X0) da totez k. Jinak se jen pocita, zadna oprava. */
+    fpga_v3_rec_t rc;
+    if (r->n && c->have_prev) {
+        if ((r->flags & FPGA_V3_R_INVALID) || pl != c->pl_prev) { c->per_ref = 0.0; c->clean = 0u; }
+        else {
+            const uint16_t sg = (uint16_t)(r->seg_idx - c->seg_mk);
+            uint64_t dx = (r->x0 - c->x_prev_raw) & MASK40;
+            const uint64_t dt = (r->t0 - c->t_prev_raw) & MASK48;
+            if (c->per_ref > 0.0 && sg >= 1u) {
+                const double pred = (double)dt / c->per_ref, d = (double)dx - pred;
+                if (sg > 1u && pred >= 1e4) c->clean = 0u;               /* mezera u rychleho signalu: nepredpovidat */
+                else if (fabs(d) < 0.5) c->clean = (uint8_t)(fabs(d) < 0.1);
+                else {
+                    const double k = floor(d / 64.0 + 0.5);
+                    int fix = c->clean && k != 0.0 && fabs(d - 64.0 * k) < 0.1;
+                    if (fix && c->pst > 0.0) fix = fabs((double)dt / c->pst - pred) < 0.5;   /* obe periody totez */
+                    if (fix) {
+                        const int64_t dv = (int64_t)(64.0 * k);
+                        rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;
+                        dx = (uint64_t)((int64_t)dx - dv) & MASK40;
+                        g->x0_fix[ch]++; g->x0_dev[ch] = (int32_t)dv;
+                    } else { g->x0_odd[ch]++; c->clean = 0u; }
+                }
+            }
+            c->per_ref = dx ? (double)dt / (double)dx : 0.0;
+        }
+    }
+    if (r->n) {
+        c->seg_mk = r->seg_idx; c->pl_prev = pl;
+        c->pst = (r->n >= 2u && r->sx) ? (double)r->st / (double)r->sx : 0.0;
+    }
+
     /* v0.42.5 (L-0247): predchozi zaznam patri do rozpracovaneho okna (uzavira ho az tento) -> jeho teziste proti primce
      * k prvni znacce tohoto zaznamu. Kanal B FW 0x0508 obcas paruje znacku s indexem o hranu vedle (hrana do ~0,5 ns od
      * hrany taktu) -- T0/X0 segmentu zustavaji spravne, vadne jsou jen soucty ST/SX. */
@@ -995,6 +1031,36 @@ bool fpga_v3_selftest(void)
             }
         }
         V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 0u && nbad[1] == 1u && maxbad < FPGA_V3_SEG_BAD_PS);
+    }
+
+    /* 18) v0.42.7 X0 o 64*k hran: X0 kanalu B na hranici oken (segment 8) + 128 -> opraveno, dalsi kontroly ciste,
+     * kmitocty vsech oken B do 1e-6; segment 2 + 64 hned po startu (predchozi kontrola neni cista), segment 21 + 37
+     * (neni nasobek 64) a segment 31 + 64 po vadnem SX segmentu 30 (periody nesouhlasi) -> jen pocitano, bez opravy */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 17u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t nwin = 0u, o8 = 0u, o12 = 1u;
+        double maxrel = 0.0;
+        for (uint32_t s = 0; s < 40u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if ((q.ch & 1u) == 1u && q.seg_idx == 2u)  q.x0 = (q.x0 + 64u) & MASK40;
+                if ((q.ch & 1u) == 1u && q.seg_idx == 8u)  q.x0 = (q.x0 + 128u) & MASK40;
+                if ((q.ch & 1u) == 1u && q.seg_idx == 21u) q.x0 = (q.x0 + 37u) & MASK40;
+                if ((q.ch & 1u) == 1u && q.seg_idx == 30u) q.sx += q.sx / 100u + 1u;     /* ST/SX nesouhlasi -> */
+                if ((q.ch & 1u) == 1u && q.seg_idx == 31u) q.x0 = (q.x0 + 64u) & MASK40;  /* ... bez opravy */
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w) || (w.ch & 1u) != 1u || w.seg_first >= 16u) continue;
+                nwin++;
+                const double f = (w.lsq_ok && !w.seg_bad) ? w.f_lsq_hz : w.f_2pt_hz;
+                if (fabs(f / 1e6 - 1.0) > maxrel) maxrel = fabs(f / 1e6 - 1.0);
+            }
+            if (s == 8u) o8 = s_g.x0_odd[1];
+            if (s == 12u) o12 = s_g.x0_odd[1];
+        }
+        V3OK(nwin >= 3u && maxrel < 1e-6 && s_g.x0_fix[1] == 1u && s_g.x0_dev[1] == 128 && o8 >= 1u && o12 == o8 &&
+             s_g.x0_odd[1] > o12 && s_g.x0_fix[0] == 0u && s_g.x0_odd[0] == 0u);
     }
 
     return ok;

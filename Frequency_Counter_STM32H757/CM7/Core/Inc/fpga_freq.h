@@ -703,6 +703,8 @@ typedef struct {
     uint32_t wrap_restarts;            /* restartu FPGA poznanych pri rozbalovani 16b poli */
     uint32_t wins_b, lsq_b;            /* v0.42.3: mereni s druhym kanalem / z toho s LSQ delkou okna B */
     uint32_t segrej[2];                /* v0.42.5: oken A/B s LSQ odmitnutou kontrolou teziste segmentu (dvoubodove) */
+    uint32_t x0_fix[2], x0_odd[2];     /* v0.42.7: X0 A/B opravenych o 64*k hran / mimo predpoved bez opravy */
+    int32_t  x0_dev[2];                /* posledni opravena odchylka X0 [hran] */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 

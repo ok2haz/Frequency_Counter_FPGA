@@ -2639,6 +2639,9 @@ void UartTask_run(void *argument)
 				         (unsigned long)vi.seg_ms, (unsigned long)vi.expect);
 				  printf("  druhy kanal: mereni %lu, z toho delka okna z LSQ %lu | LSQ odmitnuta kontrolou teziste: A %lu B %lu oken\n",
 				         (unsigned long)vi.wins_b, (unsigned long)vi.lsq_b, (unsigned long)vi.segrej[0], (unsigned long)vi.segrej[1]);
+				  printf("  X0 proti predpovedi z T0: opraveno (64*k hran) A %lu B %lu, posledni %ld / %ld | mimo predpoved bez opravy A %lu B %lu\n",
+				         (unsigned long)vi.x0_fix[0], (unsigned long)vi.x0_fix[1], (long)vi.x0_dev[0], (long)vi.x0_dev[1],
+				         (unsigned long)vi.x0_odd[0], (unsigned long)vi.x0_odd[1]);
 				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
 				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
