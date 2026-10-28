@@ -702,6 +702,7 @@ typedef struct {
     uint8_t  narrow;                   /* v0.40.0: uzka hlavicka (FW 0x0507, CAPS bit22) */
     uint32_t wrap_restarts;            /* restartu FPGA poznanych pri rozbalovani 16b poli */
     uint32_t wins_b, lsq_b;            /* v0.42.3: mereni s druhym kanalem / z toho s LSQ delkou okna B */
+    uint32_t segrej[2];                /* v0.42.5: oken A/B s LSQ odmitnutou kontrolou teziste segmentu (dvoubodove) */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 

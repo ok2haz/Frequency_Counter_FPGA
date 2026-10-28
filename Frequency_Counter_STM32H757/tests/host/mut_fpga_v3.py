@@ -63,6 +63,10 @@ M = [
      "h->ovl[c] |= (rec[j].flags & FPGA_V3_R_CS) ? 1u : 0u;"),
     ('uzka: emulator ACK 32 b', 'a = e->rec_ack + (uint16_t)((uint16_t)a - (uint16_t)e->rec_ack);', '(void)0;'),
     ('uzka: SEQ 32 b i v uzke', 'h->seq = (uint32_t)rdn(f + 4, wn);', 'h->seq = (uint32_t)rdn(f + 4, 4);'),
+    # v0.42.5 (L-0247): kontrola teziste segmentu a pojistka okna
+    ('teziste: bez ST', '*r_ps   = ((double)a->st - per * (double)a->sx)', '*r_ps   = (0.0 * (double)a->st - 0.0 * per * (double)a->sx)'),
+    ('okno: seg_bad se nenastavi', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS) c->seg_bad = 1u;', '(void)0;'),
+    ('okno: seg_bad se nenuluje', 'c->seg_bad = 0u; c->seg_max_ps = 0.0;', 'c->seg_max_ps = 0.0;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',

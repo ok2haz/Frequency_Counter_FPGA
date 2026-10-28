@@ -341,7 +341,12 @@ typedef struct {
     uint64_t x_first, t_first;   /* prvni znacka okna (rozbalene X, T) -- teziste relativne k oknu = xc0 - x_first */
     uint32_t n0;                 /* znacek prvniho segmentu okna */
     uint8_t  p_log2;             /* v0.38.0: log2 P okna; edges, xc0, x_first a kmitocty jsou uz v PERIODACH (x P) */
+    uint8_t  seg_bad;            /* v0.42.5 (L-0247): teziste nektereho segmentu okna mimo primku > FPGA_V3_SEG_BAD_PS
+                                  * (fpga_v3_seg_resid) -> soucty ST/SX okna nejsou duveryhodne, plati dvoubodove */
+    double   seg_max_ps;         /* nejvetsi |odchylka teziste| segmentu okna [ps] (posledni segment se pocita az se
+                                  * zaznamem, ktery okno uzavira) */
 } fpga_v3_win_t;
+#define FPGA_V3_SEG_BAD_PS   2000.0
 
 typedef struct {
     uint8_t  have_prev;          /* rozbaleni X0/T0 */
@@ -358,6 +363,9 @@ typedef struct {
     uint32_t empty;              /* prazdnych segmentu od posledni hrany v okne */
     double   per_u;              /* odhad periody [jednotky / hranu]; 0 = neznamy (pak plati max_gap_ms) */
     uint8_t  p_log2;             /* v0.38.0: log2 P rozpracovaneho okna (zmena P = okno zahodit) */
+    fpga_v3_rec_t prev;          /* v0.42.5: predchozi zaznam kanalu (kontrola teziste fpga_v3_seg_resid) */
+    uint8_t  prev_ok, seg_bad;
+    double   seg_max_ps;
 } fpga_v3_grp_ch_t;
 
 typedef struct {

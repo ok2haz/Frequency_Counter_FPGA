@@ -961,6 +961,7 @@ static fpga_v3_win_t s3_wb;          /* posledni okno druheho kanalu (sekundarni
 static uint8_t  s3_wb_ok = 0u;
 static uint32_t s3_wins_b = 0u;       /* mereni s oknem druheho kanalu (diagnostika, `fpga v3`) */
 static uint32_t s3_lsq_b = 0u;        /* z toho s LSQ delkou okna B */
+static uint32_t s3_segrej[2];         /* v0.42.5: oken A/B, kde LSQ odmitla kontrola teziste segmentu (-> dvoubodove) */
 static uint32_t s3_wseq = 0u;        /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
 static uint8_t  s3_brk = 1u;         /* pred dalsim oknem je preruseni */
 static uint8_t  s3_chan = 0u, s3_gate = 2u;
@@ -1164,6 +1165,8 @@ static void s3_hdr_to_meas(const fpga_v3_hdr_t *h, fpga_meas_t *m)
  * A s LSQ <= 9 ps pri temze zdroji). */
 static int s3_lsq_gate_ps(const fpga_v3_win_t *w, uint64_t *gate_ps)
 {
+    /* v0.42.5 (L-0247): okno se segmentem mimo primku (vadne soucty ST/SX z FPGA) -> dvoubodove, ktere je na to imunni */
+    if (w->lsq_ok && w->seg_bad) { s3_segrej[w->ch & 1u]++; return 0; }
     if (!(w->lsq_ok && w->f_lsq_hz > 0.0 && w->f_2pt_hz > 0.0 && fabs(w->f_lsq_hz / w->f_2pt_hz - 1.0) < 1e-6)) return 0;
     *gate_ps = (uint64_t)((double)w->edges * 1e12 / w->f_lsq_hz + 0.5);
     return 1;
@@ -3244,6 +3247,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     }
     o->wrap_restarts = s3_wrap.restarts;
     o->wins_b = s3_wins_b; o->lsq_b = s3_lsq_b;
+    o->segrej[0] = s3_segrej[0]; o->segrej[1] = s3_segrej[1];
 }
 
 /* CAL report v3: souhrnna stranka (druh 0) -> maxtap, konfigurace TDC; stav z hlavicky; ovf/peak/nz/last z histogramu (STM) */

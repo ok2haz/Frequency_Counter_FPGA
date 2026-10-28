@@ -551,6 +551,18 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     fpga_v3_grp_ch_t *c = &g->c[ch];
     int closed = 0;
 
+    /* v0.42.5 (L-0247): predchozi zaznam patri do rozpracovaneho okna (uzavira ho az tento) -> jeho teziste proti primce
+     * k prvni znacce tohoto zaznamu. Kanal B FW 0x0508 obcas paruje znacku s indexem o hranu vedle (hrana do ~0,5 ns od
+     * hrany taktu) -- T0/X0 segmentu zustavaji spravne, vadne jsou jen soucty ST/SX. */
+    {
+        double rp; int64_t sd;
+        if (c->open && c->prev_ok && fpga_v3_seg_resid(&c->prev, r, clk_mhz, &rp, &sd)) {
+            if (fabs(rp) > c->seg_max_ps) c->seg_max_ps = fabs(rp);
+            if (fabs(rp) > FPGA_V3_SEG_BAD_PS) c->seg_bad = 1u;
+        }
+        c->prev = *r; c->prev_ok = 1u;
+    }
+
     /* rozbaleni X0 (40 b) a T0 (48 b) proti predchozimu zaznamu kanalu; jen u zaznamu s hranou */
     const uint64_t xb = c->x_prev, tb = c->t_prev;
     const uint8_t hb = c->have_prev;
@@ -600,6 +612,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / ((vxt / vxx) * up) : 0.0;   /* sklon t(x) = P perioda */
         out->flags_or = c->flags_or; out->xc0 = c->xc0 * (double)(1u << c->p_log2); out->tc0 = c->tc0;
         out->x_first = c->x_first << c->p_log2; out->t_first = c->t_first; out->n0 = c->n0; out->p_log2 = c->p_log2;
+        out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps;
         closed = 1;
         c->open = 0u;
     }
@@ -607,6 +620,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx; c->p_log2 = pl;
         c->x_first = x; c->t_first = t;
         c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u;
+        c->seg_bad = 0u; c->seg_max_ps = 0.0;
         c->xc0 = (double)x + (double)r->sx / (double)r->n;
         c->n0  = r->n;
         c->tc0 = (double)t + (double)r->st / (double)r->n;
@@ -917,6 +931,28 @@ bool fpga_v3_selftest(void)
         V3OK(fpga_v3_seg_resid(&a, &b, s_e.clk_mhz, &r, &sd) == 1 && fabs(r) > 1000.0);
         V3OK(fpga_v3_seg_resid(&a, &c, s_e.clk_mhz, &r, &sd) == 0);                  /* preskoceny segment */
         V3OK(fpga_v3_seg_resid(&a, &s_e.ring[3], s_e.clk_mhz, &r, &sd) == 0);        /* jiny kanal */
+    }
+
+    /* 16) v0.42.5 pojistka okna: ST segmentu 9 (uprostred okna 8..11) kanalu A + 2^30 (~24 ns na teziste) -> prave to
+     * okno seg_bad, ostatni okna A i vsechna B ne; vadne okno je tim LSQ vyrazne mimo, dvoubodove ne */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 14u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t nbad[2] = { 0u, 0u }, nwin[2] = { 0u, 0u };
+        double maxok = 0.0, rel2 = 1.0;
+        for (uint32_t s = 0; s < 40u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if (q.seg_idx == 9u && (q.ch & 1u) == 0u) q.st += 1ull << 30;
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w)) continue;
+                nwin[w.ch & 1u]++;
+                if (w.seg_bad) { nbad[w.ch & 1u]++; rel2 = fabs(w.f_2pt_hz / 1e6 - 1.0); }
+                else if (w.seg_max_ps > maxok) maxok = w.seg_max_ps;
+            }
+        }
+        V3OK(nwin[0] >= 8u && nwin[1] >= 8u && nbad[0] == 1u && nbad[1] == 0u && maxok < 1000.0 && rel2 < 1e-6);
     }
 
     return ok;
