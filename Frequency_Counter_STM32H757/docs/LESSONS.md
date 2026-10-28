@@ -5711,7 +5711,21 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** test, který záměrně něco překračuje, musí mít mez odvozenou od aktuální konfigurace (nejlépe z `uxTaskGetStackHighWaterMark` / velikosti z atributů), ne pevné číslo; po změně velikosti zásobníku test znovu pustit.
 - **Detekce:** `stacktest yes` musí vyvolat IWDG reset a po bootu `Reset: ... stack:UartTask`.
 - **Commit:** v0.42.1
-- **Stav:** ⬜ neověřeno na HW (po flashi pustit `stacktest yes`)
+- **Stav:** ✅ ověřeno na desce 2026-10-28 (v0.42.1): `stacktest yes` → IWDG reset, `stack:UartTask`, webhook `cm7_stalled` + `cm7_recovered` (po SW resetu, ne po power-cyklu)
+
+---
+
+### L-0245 - pomalé hrany SCK (`spi pins sck low`) zabíjejí SPI spojení s FPGA
+
+- **Datum:** 2026-10-28
+- **Oblast:** UART `spi pins`, `tools/spi_night.py` větev `M`
+- **Symptom:** 3h test SPI: větev M (SCK/MOSI/CS všechny LOW) 46 minut `ramcu 0`, GPSDO `HOLD`; větve B, W, K dohromady 796 688 rámců, 0 chyb.
+- **Příčina:** izolovaně zkoušeno po jednom pinu: po `spi pins sck low` stojí čítač transakcí (43) a spojení nejede; MOSI LOW a CS LOW samy to nedělají. Po `sck medium` spojení hned naběhne (254 transakcí za 10 s, 0 chyb). Proč přesně (hrana nestíhá při 25 MHz, nebo FPGA SCK nevyhodnotí) nezjištěno.
+- **Oprava:** žádná, jde o nastavení za běhu (nepersistuje se, po resetu MEDIUM). Plán `spi_night.py` větev M obsahuje nepoužitelnou kombinaci.
+- **Pravidlo:** `spi pins sck` nikdy pod MEDIUM; větev „vše LOW" nevypovídá o chybovosti, jen o výpadku. Výsledek bez rámců (`ramcu 0`) není „0 chyb".
+- **Detekce:** `spi err` → `transakci 0`; `status` → GPSDO `HOLD`.
+- **Commit:** viz docs commit 2026-10-28
+- **Stav:** ✅ ověřeno na desce (izolovaný pokus po jednom pinu)
 
 ---
 
