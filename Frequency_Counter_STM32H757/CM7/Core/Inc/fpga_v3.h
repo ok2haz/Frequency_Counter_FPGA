@@ -376,6 +376,13 @@ int      fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk
 /* jednotka casu [ps] pro clk_mhz (0 = 100 MHz) */
 double   fpga_v3_unit_ps(uint32_t clk_mhz);
 
+/* v0.42.4 (diagnostika L-0246): teziste segmentu a proti primce mezi prvni znackou a a prvni znackou NASLEDUJICIHO
+ * segmentu b tehoz kanalu. Rovnomerne hrany: ST = per * SX, per = (T0b - T0a) / (X0b - X0a). *r_ps = odchylka
+ * teziste (ST - per * SX) / N [ps], *sx_dev = SX - N(N-1)/2 (0 = casovana kazda hrana, jinak chybi vnitrni znacky,
+ * napr. maskovani pri CS). @return 1 = spocteno; 0 = nelze (N < 2, neplatny zaznam, b neni hned dalsi segment). */
+int      fpga_v3_seg_resid(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, uint32_t clk_mhz, double *r_ps,
+                           int64_t *sx_dev);
+
 /* Selftest (na cili i hostu): CRC bloku, zaznam, MOSI/LUT_WRITE, emulator -> parser -> okno (kmitocet), vadny blok
  * (opakovani od ACK), preteceni kruhu, rozbaleni T0 pres 2^48. @return true = PASS */
 bool     fpga_v3_selftest(void);

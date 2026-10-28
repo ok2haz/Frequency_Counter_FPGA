@@ -620,6 +620,20 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     return closed;
 }
 
+int fpga_v3_seg_resid(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, uint32_t clk_mhz, double *r_ps,
+                      int64_t *sx_dev)
+{
+    if (a->n < 2u || b->n == 0u || ((a->flags | b->flags) & FPGA_V3_R_INVALID)) return 0;
+    if ((a->ch & 1u) != (b->ch & 1u) || (a->ch >> 4) != (b->ch >> 4)) return 0;      /* kanal a predelicka */
+    if (b->seg_idx != (uint16_t)(a->seg_idx + 1u)) return 0;
+    const uint64_t dx = (b->x0 - a->x0) & MASK40, dt = (b->t0 - a->t0) & MASK48;
+    if (dx == 0u) return 0;
+    const double per = (double)dt / (double)dx;
+    *r_ps   = ((double)a->st - per * (double)a->sx) / (double)a->n * fpga_v3_unit_ps(clk_mhz);
+    *sx_dev = (int64_t)a->sx - (int64_t)((uint64_t)a->n * (uint64_t)(a->n - 1u) / 2u);
+    return 1;
+}
+
 /* ══════════════ selftest ══════════════ */
 static fpga_v3_emu_t s_e;
 static fpga_v3_grp_t s_g;
@@ -888,6 +902,21 @@ bool fpga_v3_selftest(void)
         fpga_v3_blk_seal(s_f);
         V3OK((fpga_v3_parse(s_f, &h, s_rec, &n_ok) == FPGA_V3_OK) && (h.cs_gl[0] == 10u) && (h.cs_gl[1] == 11u) && (h.cs_gl[2] == 12u) &&
              (h.cs_gl[3] == 13u) && (h.cs_gl[4] == 14u) && (h.cs_filt == 15u) && (h.caps & FPGA_V3_CAP_CSDIAG));
+    }
+
+    /* 15) v0.42.4 teziste segmentu proti primce (fpga_v3_seg_resid): sum 100 ps -> |r| < 1 ns, ST + 2^34 -> > 1 ns,
+     * nesouvisly segment / jiny kanal -> nelze */
+    {
+        fpga_v3_emu_init(&s_e, 10e6, 10e6, 100.0, 13u);
+        fpga_v3_emu_segment(&s_e); fpga_v3_emu_segment(&s_e); fpga_v3_emu_segment(&s_e);
+        fpga_v3_rec_t a = s_e.ring[0], b = s_e.ring[2], c = s_e.ring[4];
+        double r = 0.0; int64_t sd = 0;
+        V3OK(fpga_v3_seg_resid(&a, &b, s_e.clk_mhz, &r, &sd) == 1 && fabs(r) < 1000.0 && sd == 0);
+        V3OK(fpga_v3_seg_resid(&s_e.ring[1], &s_e.ring[3], s_e.clk_mhz, &r, &sd) == 1 && fabs(r) < 1000.0);   /* kanal B */
+        a.st += 1ull << 34;
+        V3OK(fpga_v3_seg_resid(&a, &b, s_e.clk_mhz, &r, &sd) == 1 && fabs(r) > 1000.0);
+        V3OK(fpga_v3_seg_resid(&a, &c, s_e.clk_mhz, &r, &sd) == 0);                  /* preskoceny segment */
+        V3OK(fpga_v3_seg_resid(&a, &s_e.ring[3], s_e.clk_mhz, &r, &sd) == 0);        /* jiny kanal */
     }
 
     return ok;

@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "fpga_v3.h"     /* fpga_v3_rec_t (fpga_seg_snap_t) */
 
 /* 🔑 JEDINY zdroj pravdy o delce ramce — sdileji `fpga_freq.c` (FR_LEN) i
  * UART diagnostika (`fpgaraw`/`fpgaloop` v freertos_task_uart.c). Driv byl
@@ -703,6 +704,27 @@ typedef struct {
     uint32_t wins_b, lsq_b;            /* v0.42.3: mereni s druhym kanalem / z toho s LSQ delkou okna B */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
+
+/* v0.42.4 (diagnostika L-0246): kontrola tezist segmentu proti primce mezi prvnimi znackami sousednich segmentu
+ * (fpga_v3_seg_resid) pro oba kanaly. Vadny = |odchylka| > FPGA_SEG_BAD_PS; poslednich FPGA_SEG_SNAP vadnych se
+ * uchova i se surovymi zaznamy (a = vadny segment, b = nasledujici). UART `fpga v3 seg [reset]`. */
+#define FPGA_SEG_BAD_PS   2000.0
+#define FPGA_SEG_SNAP     6u
+typedef struct {
+    uint8_t       ch;
+    uint32_t      ms;                  /* HAL_GetTick zachyceni */
+    double        r_ps;
+    int64_t       sx_dev;
+    fpga_v3_rec_t a, b;
+} fpga_seg_snap_t;
+typedef struct {
+    uint32_t chk[2], bad[2], sxdev[2];  /* zkontrolovano / vadnych / se SX != N(N-1)/2 */
+    double   max_ps[2], rms_ps[2];      /* nejvetsi |odchylka|, rms dobrych */
+    uint32_t nsnap;                     /* vadnych celkem (snimku v poli min(nsnap, FPGA_SEG_SNAP)) */
+    fpga_seg_snap_t snap[FPGA_SEG_SNAP];/* kruh: nejnovejsi na (nsnap - 1) % FPGA_SEG_SNAP */
+} fpga_seg_info_t;
+void fpga_freq_v3_seg(fpga_seg_info_t *o);
+void fpga_freq_v3_seg_reset(void);
 /* v0.38.0 (FW 0x0503): predelicka kanalu ch (0 A, 1 B): mode 0xFF = automaticky podle sondy, 0..4 = pevne log2 P.
  * @return 1 ok, 0 FPGA bez CAPS bit18 (volba se ulozi, uplatni se, az ji FPGA umi), -1 spatny parametr */
 int  fpga_freq_presc(uint8_t ch, uint8_t mode);

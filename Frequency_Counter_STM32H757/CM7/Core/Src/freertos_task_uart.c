@@ -2674,6 +2674,32 @@ void UartTask_run(void *argument)
 				  else printf("predelicka %c: %s%s\n", ch ? 'B' : 'A', md == 0xFF ? "auto" : v,
 				              rc ? "" : " (FPGA bez CAPS bit18 -- uplatni se, az ji FPGA umi)");
 			  }
+			  else if (strcmp(RxBuffer, "fpga v3 seg") == 0 || strcmp(RxBuffer, "fpga v3 seg reset") == 0) {
+				  /* v0.42.4 (L-0246): teziste segmentu proti primce mezi prvnimi znackami sousednich segmentu, oba kanaly;
+				   * u vadnych (> 2 ns) surove zaznamy vadneho (a) a nasledujiciho (b) segmentu. Pole hexa (nano bez %llu). */
+				  if (RxBuffer[11] != '\0') { fpga_freq_v3_seg_reset(); printf("fpga v3 seg: vynulovano\n"); }
+				  else {
+					  static fpga_seg_info_t si;
+					  fpga_freq_v3_seg(&si);
+					  for (int c = 0; c < 2; c++)
+						  printf("  kanal %c: segmentu %lu, vadnych (> 2 ns) %lu, SX != N(N-1)/2 %lu, max %ld ps, rms dobrych %ld ps\n",
+						         c ? 'B' : 'A', (unsigned long)si.chk[c], (unsigned long)si.bad[c], (unsigned long)si.sxdev[c],
+						         (long)si.max_ps[c], (long)si.rms_ps[c]);
+					  const uint32_t ns = si.nsnap < FPGA_SEG_SNAP ? si.nsnap : FPGA_SEG_SNAP;
+					  for (uint32_t k = 0; k < ns; k++) {
+						  const fpga_seg_snap_t *s = &si.snap[(si.nsnap - 1u - k) % FPGA_SEG_SNAP];
+						  printf("  vadny %c pred %lu ms: odchylka %ld ps, SXdev %ld\n", s->ch ? 'B' : 'A',
+						         (unsigned long)(HAL_GetTick() - s->ms), (long)s->r_ps, (long)s->sx_dev);
+						  for (int q = 0; q < 2; q++) {
+							  const fpga_v3_rec_t *r = q ? &s->b : &s->a;
+							  printf("    %c seg %u ch 0x%02X fl 0x%02X N %lu X0 %08lX%08lX T0 %08lX%08lX SX %08lX%08lX ST %08lX%08lX\n",
+							         q ? 'b' : 'a', (unsigned)r->seg_idx, r->ch, r->flags, (unsigned long)r->n,
+							         (unsigned long)(r->x0 >> 32), (unsigned long)r->x0, (unsigned long)(r->t0 >> 32), (unsigned long)r->t0,
+							         (unsigned long)(r->sx >> 32), (unsigned long)r->sx, (unsigned long)(r->st >> 32), (unsigned long)r->st);
+						  }
+					  }
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
 				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->
 				   * parser -> okna, vadny blok, preteceni kruhu, rozbaleni T0. Bezi v UartTasku (nehlidany), trva desitky ms. */

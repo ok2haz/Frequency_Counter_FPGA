@@ -1311,6 +1311,56 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
     __set_PRIMASK(pm);
 }
 
+/* v0.42.4: kontrola tezist segmentu (fpga_freq_v3_seg). Zapisuje jen FpgaTask, UART cte kopii pod zakazem preruseni;
+ * vynulovani zada UART generaci (jeden zapisovatel stavu). */
+static fpga_seg_info_t s3s;
+static fpga_v3_rec_t   s3s_prev[2];
+static uint8_t         s3s_have[2];
+static double          s3s_ss[2];       /* soucet r^2 dobrych */
+static volatile uint8_t s3s_gen = 0u;
+static uint8_t         s3s_seen = 0u;
+
+static void s3s_feed(const fpga_v3_rec_t *r, uint32_t clk)
+{
+    if (s3s_seen != s3s_gen) {
+        s3s_seen = s3s_gen;
+        const uint32_t pm = __get_PRIMASK(); __disable_irq();
+        memset(&s3s, 0, sizeof s3s);
+        __set_PRIMASK(pm);
+        s3s_ss[0] = s3s_ss[1] = 0.0; s3s_have[0] = s3s_have[1] = 0u;
+    }
+    const uint8_t ch = (uint8_t)(r->ch & 1u);
+    double rp; int64_t sd;
+    if (s3s_have[ch] && fpga_v3_seg_resid(&s3s_prev[ch], r, clk, &rp, &sd)) {
+        const uint32_t pm = __get_PRIMASK(); __disable_irq();
+        s3s.chk[ch]++;
+        if (sd != 0) s3s.sxdev[ch]++;
+        if (fabs(rp) > s3s.max_ps[ch]) s3s.max_ps[ch] = fabs(rp);
+        if (fabs(rp) > FPGA_SEG_BAD_PS) {
+            s3s.bad[ch]++;
+            fpga_seg_snap_t *s = &s3s.snap[s3s.nsnap % FPGA_SEG_SNAP];
+            s->ch = ch; s->ms = HAL_GetTick(); s->r_ps = rp; s->sx_dev = sd; s->a = s3s_prev[ch]; s->b = *r;
+            s3s.nsnap++;
+        } else {
+            s3s_ss[ch] += rp * rp;
+            const uint32_t ng = s3s.chk[ch] - s3s.bad[ch];
+            s3s.rms_ps[ch] = sqrt(s3s_ss[ch] / (double)ng);
+        }
+        __set_PRIMASK(pm);
+    }
+    s3s_prev[ch] = *r; s3s_have[ch] = 1u;
+}
+
+void fpga_freq_v3_seg(fpga_seg_info_t *o)
+{
+    if (o == NULL) return;
+    const uint32_t pm = __get_PRIMASK(); __disable_irq();
+    *o = s3s;
+    __set_PRIMASK(pm);
+}
+
+void fpga_freq_v3_seg_reset(void) { s3s_gen++; }
+
 /* Prijaty ramec DATA: nove zaznamy -> okna -> fronta */
 static void s3_take_records(uint32_t n_ok)
 {
@@ -1324,6 +1374,7 @@ static void s3_take_records(uint32_t n_ok)
     const uint32_t now = HAL_GetTick();
     for (uint32_t i = 0; i < n; i++) {
         if (s3e_act) s3e_rec(&s3_rec[i0 + i], clk, now);
+        s3s_feed(&s3_rec[i0 + i], clk);
         fpga_v3_win_t w;
         if (!fpga_v3_grp_feed(&s3_grp, &s3_rec[i0 + i], clk, &w)) continue;
         if (w.ch != (s3_chan & 1u)) { s3_wb = w; s3_wb_ok = 1u; continue; }
