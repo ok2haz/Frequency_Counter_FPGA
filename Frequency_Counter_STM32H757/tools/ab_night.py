@@ -33,10 +33,12 @@ RE_X0 = re.compile(r'X0 proti predpovedi z T0: opraveno \(64\*k hran\) A (\d+) B
 RE_SEG = re.compile(r'kanal ([AB]): segmentu (\d+), vadnych \(> 2 ns nebo SX mimo meze\) (\d+)')
 RE_SXB = re.compile(r'^\s+([AB]): SX mimo meze (\d+) \(z toho odchylka <= 2 ns (\d+)\)', re.M)
 RE_BIGN = re.compile(r'velke \(\|d\| >= 8 hran\): celkem (\d+)')
+RE_SXR = re.compile(r'SX opraveno \(segment zustal v LSQ\): A (\d+) B (\d+), z toho podle X0 A (\d+) B (\d+)')   # v0.42.11
 RE_EV = re.compile(r'^\s+([AB]) seg\s+(\d+)\s+d (-?\d+) m\s+pd (-?\d+) m\s+(\S{3})\s*\n\s+dx ([0-9A-F]{16}) dt ([0-9A-F]{16}) X0 ([0-9A-F]{16})', re.M)
 
 CYK_COLS = ['cas', 'uptime_s', 'verze', 'okna_b', 'lsq_b', 'vadseg_okna_a', 'vadseg_okna_b', 'seg_a', 'seg_b',
-            'vadnych_seg_a', 'vadnych_seg_b', 'sxmimo_a', 'sxmimo_b', 'x0_fix_a', 'x0_fix_b', 'x0_odd_a', 'x0_odd_b', 'x0_velkych']
+            'vadnych_seg_a', 'vadnych_seg_b', 'sxmimo_a', 'sxmimo_b', 'x0_fix_a', 'x0_fix_b', 'x0_odd_a', 'x0_odd_b', 'x0_velkych',
+            'sxrep_a', 'sxrep_b', 'sxrep_x0_a', 'sxrep_x0_b']
 
 
 def iso():
@@ -70,6 +72,8 @@ def parse_cycle(txt):
         o['sxmimo_' + m.group(1).lower()] = int(m.group(2))
     m = RE_BIGN.search(txt)
     if m: o['x0_velkych'] = int(m.group(1))
+    m = RE_SXR.search(txt)
+    if m: o['sxrep_a'], o['sxrep_b'], o['sxrep_x0_a'], o['sxrep_x0_b'] = (int(x) for x in m.groups())
     return o
 
 
@@ -181,6 +185,8 @@ def report(outdir):
             lines.append('')
             lines.append('citace z desky (prvni cyklus -> posledni; po restartu se nuluji):')
             for k in CYK_COLS[1:]:
+                if not first.get(k) and not last.get(k):
+                    continue            # pole, ktere starsi firmware nevypisuje
                 lines.append('  %-15s %s -> %s' % (k, first.get(k, ''), last.get(k, '')))
     pe = os.path.join(outdir, 'udalosti.csv')
     if os.path.exists(pe):
@@ -270,6 +276,7 @@ def selftest():
     txt = """RUNNING gpsdo-ui v0.42.10  uptime 1234s
   druhy kanal: mereni 3724, z toho delka okna z LSQ 3539 | oken s vadnym segmentem (z LSQ vyrazen): A 0 B 313
   X0 proti predpovedi z T0: opraveno (64*k hran) A 0 B 2, posledni 0 / -64 | mimo predpoved bez opravy A 0 B 22
+  SX opraveno (segment zustal v LSQ): A 0 B 517, z toho podle X0 A 0 B 3 | mez teziste 800 ps
   kanal A: segmentu 43119, vadnych (> 2 ns nebo SX mimo meze) 0, SX != N(N-1)/2 21560, max 409 ps, rms dobrych 102 ps
   kanal B: segmentu 43119, vadnych (> 2 ns nebo SX mimo meze) 2963, SX != N(N-1)/2 23056, max 2147483647 ps, rms dobrych 109 ps
     A: SX mimo meze 0 (z toho odchylka <= 2 ns 0) | v mezich, odchylka 0,5-1 ns 0, 1-2 ns 0
@@ -283,7 +290,8 @@ def selftest():
     c = parse_cycle(txt)
     ok = (c['verze'] == 'v0.42.10' and c['uptime_s'] == 1234 and c['okna_b'] == 3724 and c['lsq_b'] == 3539 and
           c['vadseg_okna_b'] == 313 and c['x0_fix_b'] == 2 and c['x0_odd_b'] == 22 and c['seg_a'] == 43119 and
-          c['vadnych_seg_b'] == 2963 and c['sxmimo_a'] == 0 and c['sxmimo_b'] == 2903 and c['x0_velkych'] == 1)
+          c['vadnych_seg_b'] == 2963 and c['sxmimo_a'] == 0 and c['sxmimo_b'] == 2903 and c['x0_velkych'] == 1 and
+          c['sxrep_b'] == 517 and c['sxrep_x0_b'] == 3 and c['sxrep_a'] == 0)
     b = parse_big(txt)
     ok = ok and len(b) == 1 and b[0]['seg'] == 10971 and b[0]['d_hran'] == -64.007 and b[0]['dx'] == 0x3D050
     # report nad umelym ab.csv: 400 oken, jeden par +-12,8 us v B, jedno okno B +600 ps
