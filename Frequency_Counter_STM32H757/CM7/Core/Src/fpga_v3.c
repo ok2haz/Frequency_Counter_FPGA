@@ -544,6 +544,45 @@ void fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target)
 
 void fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch) { g->c[ch & 1u].open = 0u; }
 
+/* v0.42.11 (L-0247): kanal B FW 0x0508 obcas cte index znacky s vynulovanymi bity 6, 7, 32, 33 (noc 2026-10-28:
+ * vsech 993 vadnych X0, nikdy se bit nenastavi). V SX se to projevi jako -k*2^32 pri spravnych spodnich 32 b, nebo
+ * jako -64*k. Meze SX (fpga_v3_seg_sx_ok) jsou casto uzsi nez 2^32 -> spodni 32 b urcuji SX jednoznacne.
+ * @return 1 = *out = jedina hodnota v mezich se spodnimi 32 b jako sx */
+static int sx_lo32_fit(uint64_t n, uint64_t dx, uint64_t sx, uint64_t *out)
+{
+    if (n < 2u || dx < n || dx >= (1ull << 32)) return 0;
+    const uint64_t lo = n * (n - 1u) / 2u, hi = (n - 1u) * dx - lo;
+    if (hi - lo >= (1ull << 32)) return 0;
+    const uint64_t c = lo + ((sx - lo) & 0xFFFFFFFFull);
+    if (c > hi) return 0;
+    *out = c;
+    return 1;
+}
+
+/* Oprava SX segmentu a, ktery neprosel kontrolou (a nasleduje b). Kandidati: (1) horni cast SX z mezi; (2) bylo-li X0
+ * zaznamu opraveno o dv (X0 = surove - dv), bylo vadne uz ve FPGA registru x0 a kazdy z N-1 clenu SX = sum(xm - x0)
+ * je o -dv vetsi -> SX + (N-1)*dv, pak (1). Kandidat plati, jen kdyz s nim projde i kontrola teziste.
+ * @return 0 = nelze, 1 = oprava (1), 2 = oprava (2); *r_ps = odchylka teziste s opravenym SX */
+static int sx_repair(fpga_v3_rec_t *a, const fpga_v3_rec_t *b, int64_t dv, uint32_t clk_mhz, double *r_ps)
+{
+    if (a->n < 2u || (a->flags & FPGA_V3_R_SAT)) return 0;
+    const uint64_t n = a->n, dx = (b->x0 - a->x0) & MASK40;
+    uint64_t cand[2];
+    int kind[2], nc = 0;
+    if (sx_lo32_fit(n, dx, a->sx, &cand[nc])) kind[nc++] = 1;
+    if (dv != 0 && sx_lo32_fit(n, dx, (a->sx + (uint64_t)((int64_t)(n - 1u) * dv)) & MASK48, &cand[nc])) kind[nc++] = 2;
+    for (int i = 0; i < nc; i++) {
+        fpga_v3_rec_t t = *a;
+        double rp; int64_t sd;
+        t.sx = cand[i];
+        if (fpga_v3_seg_resid(&t, b, clk_mhz, &rp, &sd) && fabs(rp) <= FPGA_V3_SEG_BAD_PS) {
+            a->sx = cand[i]; *r_ps = rp;
+            return kind[i];
+        }
+    }
+    return 0;
+}
+
 int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz, fpga_v3_win_t *out)
 {
     const uint8_t ch = (uint8_t)(r->ch & 1u);
@@ -556,6 +595,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
      * i v dvoubodovem odhadu). X0 se predpovi z T0 a periody posledni dvojice zaznamu; u stabilniho signalu sedi na
      * zlomky hrany. Opravi se jen odchylka 64*k (+-0,1 hrany) po ciste predchozi kontrole. Jinak se jen pocita. */
     fpga_v3_rec_t rc;
+    int64_t dv_now = 0;                                  /* v0.42.11: oprava X0 tohoto zaznamu (pro opravu SX) */
     if (r->n && c->have_prev) {
         if ((r->flags & FPGA_V3_R_INVALID) || pl != c->pl_prev) { c->per_ref = 0.0; c->clean = 0u; }
         else {
@@ -586,7 +626,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
                         const int64_t dv = (int64_t)(64.0 * k);
                         rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;
                         dx = (uint64_t)((int64_t)dx - dv) & MASK40;
-                        g->x0_fix[ch]++; g->x0_dev[ch] = (int32_t)dv;
+                        g->x0_fix[ch]++; g->x0_dev[ch] = (int32_t)dv; dv_now = dv;
                     } else { g->x0_odd[ch]++; c->clean = 0u; }
                 }
             }
@@ -605,8 +645,20 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         double rp; int64_t sd;
         int pbad = 0;
         if (c->open && c->prev_ok && fpga_v3_seg_resid(&c->prev, r, clk_mhz, &rp, &sd)) {
+            if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) {
+                /* v0.42.11: pokus o opravu SX (sx_repair); teziste ceka v pX (pend), u prvniho segmentu okna i xc0 */
+                const uint64_t sx0 = c->prev.sx;
+                const int how = sx_repair(&c->prev, r, c->prev_dv, clk_mhz, &rp);
+                if (how) {
+                    /* pX a xc0 braly SX jako cislo (< 2^48, v double presne), ne mod 2^48 */
+                    const double dsx = (double)c->prev.sx - (double)sx0;
+                    if (c->pend) c->pX += dsx / c->pw;
+                    if (c->k == 1u) c->xc0 += dsx / (double)c->prev.n;
+                    g->sx_rep[ch]++;
+                    if (how == 2) g->sx_rep_x0[ch]++;
+                } else { c->seg_bad = 1u; pbad = 1; }
+            }
             if (fabs(rp) > c->seg_max_ps) c->seg_max_ps = fabs(rp);
-            if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) { c->seg_bad = 1u; pbad = 1; }
         }
         /* v0.42.7: teziste predchoziho segmentu do LSQ az po kontrole; vadne se vyradi (zbytek okna plati dal, misto
          * celeho okna na dvoubodove se sumem dvou znacek). Nelze-li zkontrolovat, plati jako driv. */
@@ -617,7 +669,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
             }
             c->pend = 0u;
         }
-        c->prev = *r; c->prev_ok = 1u;
+        c->prev = *r; c->prev_ok = 1u; c->prev_dv = dv_now;
     }
 
     /* rozbaleni X0 (40 b) a T0 (48 b) proti predchozimu zaznamu kanalu; jen u zaznamu s hranou */
@@ -1091,6 +1143,45 @@ bool fpga_v3_selftest(void)
         }
         V3OK(nwin >= 3u && maxrel < 1e-6 && f12 == 1u && d12 == 128 && s_g.x0_fix[1] == 2u && s_g.x0_dev[1] == 64 && o8 >= 1u && o12 == o8 &&
              s_g.x0_odd[1] > o12 && s_g.x0_fix[0] == 0u && s_g.x0_odd[0] == 0u);
+    }
+
+    /* 19) v0.42.11 oprava SX (sx_repair) a mez 800 ps, kanal B, okna po 4 segmentech:
+     *   seg 9  SX - 3*2^32               -> opraveno z mezi, okno dobre (LSQ do 1e-9)
+     *   seg 13 X0 - 128, SX + (N-1)*128  -> X0 opraveno, SX podle X0, okno dobre
+     *   seg 16 SX - 2^32 (prvni segment okna) -> opraveno vcetne teziste prvniho segmentu (xc0)
+     *   seg 20 SX - 5*64 (spodni bity)   -> neopravitelne, okno vadne
+     *   seg 24 SX - 2^32 a ST + 2^30     -> kandidat v mezich, ale teziste mimo -> okno vadne
+     *   seg 28 ST + 1,2 ns na teziste    -> pod drivejsi mezi 2 ns, nad 800 ps -> okno vadne */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 18u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t nbad[2] = { 0u, 0u }, badmask = 0u, nwin = 0u;
+        double maxrel = 0.0, xc16 = 99.0;
+        for (uint32_t s = 0; s < 40u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if ((q.ch & 1u) == 1u) {
+                    const uint64_t n1 = q.n - 1u;
+                    if (q.seg_idx == 9u)  q.sx = (q.sx - (3ull << 32)) & MASK48;
+                    if (q.seg_idx == 13u) { q.x0 = (q.x0 - 128u) & MASK40; q.sx = (q.sx + n1 * 128u) & MASK48; }
+                    if (q.seg_idx == 16u) q.sx = (q.sx - (1ull << 32)) & MASK48;
+                    if (q.seg_idx == 20u) q.sx -= 5u * 64u;
+                    if (q.seg_idx == 24u) { q.sx = (q.sx - (1ull << 32)) & MASK48; q.st += 1ull << 30; }
+                    if (q.seg_idx == 28u) q.st += 49152000u;
+                }
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w) || w.seg_first >= 36u) continue;
+                if (w.seg_bad) { nbad[w.ch & 1u]++; if (w.ch & 1u) badmask |= 1u << (w.seg_first / 4u); continue; }
+                if ((w.ch & 1u) == 0u) continue;
+                nwin++;
+                if (!w.lsq_ok || fabs(w.f_lsq_hz / 1e6 - 1.0) > maxrel) maxrel = w.lsq_ok ? fabs(w.f_lsq_hz / 1e6 - 1.0) : 1.0;
+                if (w.seg_first == 16u) xc16 = w.xc0 - (double)w.x_first - 0.5 * (double)(w.n0 - 1u);
+            }
+        }
+        V3OK(nbad[0] == 0u && nbad[1] == 3u && badmask == ((1u << 5) | (1u << 6) | (1u << 7)) && nwin >= 5u &&
+             maxrel < 1e-9 && fabs(xc16) < 1.0 && s_g.sx_rep[1] == 3u && s_g.sx_rep_x0[1] == 1u && s_g.x0_fix[1] == 1u &&
+             s_g.sx_rep[0] == 0u);
     }
 
     return ok;

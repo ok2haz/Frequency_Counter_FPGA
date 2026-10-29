@@ -705,6 +705,7 @@ typedef struct {
     uint32_t segrej[2];                /* v0.42.5: oken A/B s LSQ odmitnutou kontrolou teziste segmentu (dvoubodove) */
     uint32_t x0_fix[2], x0_odd[2];     /* v0.42.7: X0 A/B opravenych o 64*k hran / mimo predpoved bez opravy */
     int32_t  x0_dev[2];                /* posledni opravena odchylka X0 [hran] */
+    uint32_t sx_rep[2], sx_rep_x0[2];  /* v0.42.11: segmentu s opravenym SX (zustaly v LSQ) / z toho podle opraveneho X0 */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
 /* v0.42.9 (L-0247): kopie kruhu odchylek X0 (big = 0 vsechny, 1 jen |d| >= 8 hran); vraci celkovy pocet zapsanych */

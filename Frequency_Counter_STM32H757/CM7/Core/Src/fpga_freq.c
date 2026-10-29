@@ -3254,6 +3254,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->wins_b = s3_wins_b; o->lsq_b = s3_lsq_b;
     o->segrej[0] = s3_segrej[0]; o->segrej[1] = s3_segrej[1];
     for (int c = 0; c < 2; c++) { o->x0_fix[c] = s3_grp.x0_fix[c]; o->x0_odd[c] = s3_grp.x0_odd[c]; o->x0_dev[c] = s3_grp.x0_dev[c]; }
+    for (int c = 0; c < 2; c++) { o->sx_rep[c] = s3_grp.sx_rep[c]; o->sx_rep_x0[c] = s3_grp.sx_rep_x0[c]; }
 }
 
 uint32_t fpga_freq_v3_x0ev(int big, fpga_v3_x0ev_t o[FPGA_V3_X0EV])

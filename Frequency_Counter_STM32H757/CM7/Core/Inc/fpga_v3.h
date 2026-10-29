@@ -348,7 +348,7 @@ typedef struct {
     double   seg_max_ps;         /* nejvetsi |odchylka teziste| segmentu okna [ps] (posledni segment se pocita az se
                                   * zaznamem, ktery okno uzavira) */
 } fpga_v3_win_t;
-#define FPGA_V3_SEG_BAD_PS   2000.0
+#define FPGA_V3_SEG_BAD_PS   800.0       /* v0.42.11: 2000 -> 800 (dobre segmenty A za 16 h nejvys 554 ps) */
 
 typedef struct {
     uint8_t  have_prev;          /* rozbaleni X0/T0 */
@@ -378,6 +378,7 @@ typedef struct {
     double   pw, pX, pT;
     uint8_t  pend;
     uint32_t kl;                 /* segmentu v LSQ okna */
+    int64_t  prev_dv;            /* v0.42.11: oprava X0 predchoziho zaznamu (X0 = surove - prev_dv), 0 = bez opravy */
 } fpga_v3_grp_ch_t;
 
 /* v0.42.9 (L-0247): zaznam odchylky X0 od predpovedi (|d| >= 0,5 hrany), diagnostika `fpga v3 x0` */
@@ -404,6 +405,8 @@ typedef struct {
     uint32_t nx0ev;
     fpga_v3_x0ev_t x0big[FPGA_V3_X0EV];  /* totez jen pro |d| >= 8 hran (vzacne, jinak by je kruh vyse prepsal) */
     uint32_t nx0big;
+    uint32_t sx_rep[2];          /* v0.42.11: segmentu s opravenym SX, ktere pak prosly kontrolou (zustaly v LSQ) */
+    uint32_t sx_rep_x0[2];       /* z toho oprava podle opraveneho X0 (SX - (N-1)*D) */
 } fpga_v3_grp_t;
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);

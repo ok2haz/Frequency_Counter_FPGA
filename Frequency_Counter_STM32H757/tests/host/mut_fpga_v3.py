@@ -70,7 +70,7 @@ M = [
     # v0.42.6 (L-0247): presne meze SX
     ('SX: bez dolni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx <= hi;'),
     ('SX: bez horni meze', 'return a->sx >= lo && a->sx <= hi;', 'return a->sx >= lo;'),
-    ('okno: bez kontroly mezi SX', '|| !fpga_v3_seg_sx_ok(&c->prev, r)) { c->seg_bad = 1u;', ') { c->seg_bad = 1u;'),
+    ('okno: bez kontroly mezi SX', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) {', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS) {'),
     # v0.42.7 (L-0247): X0 o 64*k hran
     ('X0: bez opravy', 'rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;', 'rc = *r; (void)rc;'),
     ('X0: oprava i jine odchylky', 'k != 0.0 && fabs(d - 64.0 * k) < 0.1;', 'k != 0.0;'),
@@ -78,6 +78,20 @@ M = [
     ('X0: rozbaleni bez opravy', 'dx = (uint64_t)((int64_t)dx - dv) & MASK40;', 'dx = dx;'),
     ('LSQ: vadny segment se nevyradi', 'if (c->open && !pbad) {', 'if (c->open) {'),
     ('LSQ: segment se do souctu neprida', 'c->swxt += w * X * T; c->kl++;', 'c->kl++;'),
+    # v0.42.11 (L-0247): oprava SX (vynulovane bity 6, 7, 32, 33 indexu) a mez 800 ps
+    ('SX: bez opravy', 'const int how = sx_repair(&c->prev, r, c->prev_dv, clk_mhz, &rp);', 'const int how = 0; (void)sx0;'),
+    ('SX: bez opravy z mezi', 'if (sx_lo32_fit(n, dx, a->sx, &cand[nc])) kind[nc++] = 1;', ''),
+    ('SX: bez opravy podle X0', 'if (dv != 0 && sx_lo32_fit(', 'if (0 && sx_lo32_fit('),
+    ('SX: oprava podle X0 opacne', '(a->sx + (uint64_t)((int64_t)(n - 1u) * dv)) & MASK48', '(a->sx - (uint64_t)((int64_t)(n - 1u) * dv)) & MASK48'),
+    ('SX: kandidat bez kontroly teziste', 'if (fpga_v3_seg_resid(&t, b, clk_mhz, &rp, &sd) && fabs(rp) <= FPGA_V3_SEG_BAD_PS) {',
+     'if (fpga_v3_seg_resid(&t, b, clk_mhz, &rp, &sd)) {'),
+    ('SX: pX se neupravi', 'if (c->pend) c->pX += dsx / c->pw;', '(void)0;'),
+    ('SX: xc0 se neupravi', 'if (c->k == 1u) c->xc0 += dsx / (double)c->prev.n;', '(void)0;'),
+    ('SX: rozdil mod 2^48', 'const double dsx = (double)c->prev.sx - (double)sx0;',
+     'const double dsx = (double)((c->prev.sx - sx0) & MASK48);'),
+    ('SX: dv se neuklada', 'c->prev_ok = 1u; c->prev_dv = dv_now;', 'c->prev_ok = 1u; c->prev_dv = 0;'),
+    ('mez segmentu 2 ns', 'if (fabs(rp) > FPGA_V3_SEG_BAD_PS || !fpga_v3_seg_sx_ok(&c->prev, r)) {',
+     'if (fabs(rp) > 2000.0 || !fpga_v3_seg_sx_ok(&c->prev, r)) {'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',

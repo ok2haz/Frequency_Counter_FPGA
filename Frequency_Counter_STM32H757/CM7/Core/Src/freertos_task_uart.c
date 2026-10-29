@@ -2642,6 +2642,9 @@ void UartTask_run(void *argument)
 				  printf("  X0 proti predpovedi z T0: opraveno (64*k hran) A %lu B %lu, posledni %ld / %ld | mimo predpoved bez opravy A %lu B %lu\n",
 				         (unsigned long)vi.x0_fix[0], (unsigned long)vi.x0_fix[1], (long)vi.x0_dev[0], (long)vi.x0_dev[1],
 				         (unsigned long)vi.x0_odd[0], (unsigned long)vi.x0_odd[1]);
+				  printf("  SX opraveno (segment zustal v LSQ): A %lu B %lu, z toho podle X0 A %lu B %lu | mez teziste %u ps\n",
+				         (unsigned long)vi.sx_rep[0], (unsigned long)vi.sx_rep[1], (unsigned long)vi.sx_rep_x0[0],
+				         (unsigned long)vi.sx_rep_x0[1], (unsigned)FPGA_V3_SEG_BAD_PS);
 				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
 				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
