@@ -731,3 +731,24 @@ Zdravi behu: 0 resetu, `CRC err` 0, `SEQ FPGA` 0 diry, `errlog` beze zmeny (5073
 ### 2026-10-27/28 noc — A/B bitstreamů `796c009` (nový) vs `bd20e77` (starý), stejná denní doba 22:00–05:00 (CM7/CM4 v0.42.0)
 
 Kanál A = externí GPSDO, hradlo 0,25 s, `tools/ab_noc.ps1`. Medián ADEV z 30min úseků: τ=1 s 1,26·10⁻¹⁰ vs 1,19·10⁻¹⁰ (poměr 1,06), τ=16 s 6,16·10⁻¹⁰ vs 5,73·10⁻¹⁰ (1,07), τ=64 s 3,63·10⁻¹⁰ vs 3,79·10⁻¹⁰ (0,96). Rozdíl neprokázán, bitstream `796c009` zůstává. Podrobnosti `docs/AB_TEST_BITSTREAM.md`.
+
+### A−B kanálů jednoho zdroje: vývoj v0.42.2 – v0.42.10 (2026-10-28, FPGA FW 0x0508 `796c009`, hradlo 0,25 s)
+
+Oba vstupy na tomtéž zdroji 10 MHz, A−B = rozdíl délek oken [ps]. Podrobnosti v L-0246 a L-0247.
+
+| verze | změna | σ(A−B) MAD | ocas |
+|---|---|---|---|
+| v0.42.2 | B jen dvoubodově | 172–211 ps | – |
+| v0.42.3 | LSQ i pro B (L-0246) | 13–15 ps | 67 z 3 179 oken > 1 ns (až 146 ns) |
+| v0.42.5 | kontrola těžiště segmentu, vadné okno dvoubodově | 19,3 ps | 0 z 2 402 > 1 ns, 12 > 500 ps |
+| v0.42.7 – v0.42.10 | oprava X0 o 64·k (v0.42.7), vadný segment z LSQ vyřazen (v0.42.8) | viz noc níže | páry ±6,4/12,8/19,2 µs zmizely (v0.42.10) |
+
+### 2026-10-28 21:26 – 2026-10-29 13:26 — noční A−B 16 h (CM7 v0.42.10, FW 0x0508 `796c009`, `tools/ab_night.py`)
+
+Data `noc_logs/ab_20261028_2126/` (ab.csv, cykly.csv, x0_velke.csv, uart.log, report.txt). Bez restartu, bez výpadku webu, CRC err 0, díry SEQ 1.
+
+- **A−B:** 229 152 oken za 15,92 h, medián 0, **σ(MAD) 14,8 ps** (po hodinách 11,9–22,2 ps). |A−B| > 100 / 200 / 500 ps / 1 ns / 1 µs: **14 660 / 7 836 / 873 / 186 / 0**. Největší +14,7 ns (seq 103180), pak −7,9 ns a ~5,7 ns (3×). Z oken > 200 ps jde 6 992 na vrub B, 844 A.
+- **Čítače desky:** vadné segmenty A **0** z 2 284 123, B **170 695 (7,5 %)**, z toho SX mimo meze 163 110; okna B bez LSQ 14 762 (6,4 %); X0 B opraveno 3 593, bez opravy 0.
+- 🔑 **Podpis vady (rozbor 993 zapsaných X0 a 766 snímků segmentů):** chybné X0 je VŽDY správné X0 s vynulovanými bity **6, 7, 32, 33** indexu (libovolná kombinace, žádný bit se nenastaví, 993/993). SX má týž podpis: −k·2³² při přesných spodních 32 b (747 z 913 snímků mimo meze), jinak −64·k. Chyba tedy vzniká v indexu značky (`xm`/FIFO) před DSP, viz L-0247.
+- **Ocas vs epizody (po 10 min):** r(oken s vadným segmentem, > 200 ps) = 0,75; r(opravy X0, > 500 ps) = 0,26; okna bez LSQ s ocasem > 500 ps nekorelují. Okna 3–14,7 ns jsou většinou osamocená (B), původ nerozhodnut.
+- **Následek:** v0.42.11 opravuje SX z mezí / podle X0 a zpřísňuje mez těžiště na 800 ps (⬜ neověřeno na HW). Zkušební bitstream se stejnými zdroji a jiným rozmístěním (F0a) má ukázat, jestli se množina vadných bitů přesune.
