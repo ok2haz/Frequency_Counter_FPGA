@@ -286,12 +286,13 @@ int main(void)
       printf("  vadny blok + kanal B: oken A %d B %d, mezery %d, max|e| A %.2e B %.2e\n", o.nwin[0], o.nwin[1], o.gaps, o.max2[0], o.max2[1]);
       CHECK(o.gaps == 0 && o.nwin[0] >= 35 && o.nwin[1] >= 35 && o.max2[0] < 1e-11 && o.max2[1] < 1e-11, "vadny blok + B"); }
 
-    /* nizke kmitocty (perioda > L = 25 ms, vetsina segmentu N = 0): okno se prodlouzi do prvni hrany po K segmentech
-     * (reciprocni citac), kmitocet dvoubodove presne; LSQ jen kdyz okno ma >= 2 segmenty s hranou. Pod 0,4 Hz
-     * (perioda > 2,5 s) ztrata signalu jako ve v2 -> zadne okno. */
+    /* nizke kmitocty (perioda > L = 25 ms, vetsina segmentu N = 0): okno se prodlouzi do prvni hrany v dalsi bunce
+     * mrizky K segmentu (od v0.42.12; driv do prvni hrany po K segmentech -> pri 10 Hz okna ~12 segmentu, ~95 oken,
+     * ted 12/8 segmentu, prumer K, ~120 oken), kmitocet dvoubodove presne; LSQ jen kdyz okno ma >= 2 segmenty s hranou.
+     * Pod 0,4 Hz (perioda > 2,5 s) ztrata signalu jako ve v2 -> zadne okno. */
     {
         static const struct { double f; uint32_t nseg; int nmin, nmax; const char *nm; } LF[] = {
-            { 33.0, 1200u, 100, 125, "33 Hz (N 0/1)" }, { 10.0, 1200u, 85, 105, "10 Hz" },
+            { 33.0, 1200u, 100, 125, "33 Hz (N 0/1)" }, { 10.0, 1200u, 110, 125, "10 Hz" },
             { 1.0, 2400u, 55, 60, "1 Hz" }, { 0.5, 2400u, 25, 30, "0,5 Hz" }, { 0.3, 2400u, 0, 0, "0,3 Hz (ztrata)" },
         };
         for (unsigned i = 0; i < sizeof LF / sizeof LF[0]; i++) {
@@ -564,18 +565,19 @@ int main(void)
 
     /* fpga_v3_grp_break: rozpracovane okno kanalu zahodi, druhy kanal necha. Synteticke zaznamy 40 kHz (1000 hran
      * na segment, perioda 4,096e7 jednotek, 10 znacek), K = 4: bez preruseni prvni okno = segmenty 0..3; s prerusenim
-     * kanalu A pred segmentem 2 = segmenty 2..5; preruseni kanalu B kanal A neovlivni. */
+     * kanalu A pred segmentem 2 od v0.42.12 segmenty 4..7 (okno zacina jen na hranici mrizky K segmentu, spolecne
+     * pro oba kanaly; driv 2..5); preruseni kanalu B kanal A neovlivni. */
     for (int brk = 0; brk < 3; brk++) {             /* 0 = bez preruseni, 1 = kanal A, 2 = kanal B */
         fpga_v3_grp_init(&G, 4u);
         fpga_v3_win_t w; int got = 0; uint32_t sf = 0xFFFFFFFFu, ns = 0; double f2 = 0.0;
-        for (uint32_t s = 0; s < 8u && !got; s++) {
+        for (uint32_t s = 0; s < 12u && !got; s++) {
             if (s == 2u && brk) fpga_v3_grp_break(&G, (uint8_t)(brk - 1));
             const uint64_t P = 40960000ull, n = 10u;
             fpga_v3_rec_t r = { (uint16_t)s, 0u, 0u, (uint32_t)n, 1000ull * s, 1000ull * P * s,
                                 n * (n - 1u) / 2u, P * n * (n - 1u) / 2u };
             if (fpga_v3_grp_feed(&G, &r, 100u, &w)) { got = 1; sf = w.seg_first; ns = w.nseg; f2 = w.f_2pt_hz; }
         }
-        const uint32_t sf_exp = (brk == 1) ? 2u : 0u;
+        const uint32_t sf_exp = (brk == 1) ? 4u : 0u;
         printf("  grp_break %s: prvni okno seg %u..%u, f %.6f Hz\n", brk == 0 ? "zadny " : brk == 1 ? "kanal A" : "kanal B",
                (unsigned)sf, (unsigned)(sf + ns - 1u), f2);
         CHECK(got && sf == sf_exp && ns == 4u && fabs(f2 - 40000.0) < 1e-6,

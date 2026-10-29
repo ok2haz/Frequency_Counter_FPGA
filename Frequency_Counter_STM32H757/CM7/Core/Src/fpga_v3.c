@@ -590,6 +590,12 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     fpga_v3_grp_ch_t *c = &g->c[ch];
     int closed = 0;
 
+    /* v0.42.12: spolecne rozbalene cislo segmentu (zaznamy A a B tehoz segmentu jdou po sobe se stejnym SEG_IDX) */
+    if (!g->seg_have) { g->seg_u = r->seg_idx; g->seg_have = 1u; }
+    else g->seg_u += (uint16_t)(r->seg_idx - g->seg_raw);
+    g->seg_raw = r->seg_idx;
+    const uint32_t cell = g->seg_u / g->k_target, pos = g->seg_u % g->k_target;
+
     /* v0.42.7 (L-0247): kanal B FW 0x0508 obcas zachyti X0 o nasobek 64 hran vedle (chybne bity 6.. indexu, T0 spravne).
      * Na hranici oken to posune dvoubodovy odhad obou oken opacnym smerem a kontrola teziste ho neopravi (vadne X0 je
      * i v dvoubodovem odhadu). X0 se predpovi z T0 a periody posledni dvojice zaznamu; u stabilniho signalu sedi na
@@ -685,10 +691,10 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         c->x_prev_raw = r->x0; c->t_prev_raw = r->t0; c->x_prev = x; c->t_prev = t;
     }
     /* souvislost segmentu, neplatny zaznam -> rozpracovane okno zahodit */
-    if (c->open && r->seg_idx != (uint16_t)(c->seg_last + 1u)) c->open = 0u;
+    if (r->seg_idx != (uint16_t)(c->seg_last + 1u)) { c->open = 0u; c->clean_ok = 0u; }
     if (c->open && pl != c->p_log2) c->open = 0u;       /* zmena P: okno pres zmenu meritka X nesmi */
     c->seg_last = r->seg_idx;
-    if (r->flags & FPGA_V3_R_INVALID) { c->open = 0u; return 0; }
+    if (r->flags & FPGA_V3_R_INVALID) { c->open = 0u; c->clean_ok = 0u; return 0; }
     if (r->n == 0u) {
         /* prazdny segment: pri periode > L normalni, okno pokracuje (bez prispevku k LSQ). Ztrata signalu
          * (docs/PROTOKOL_V3.md kap. 7) = mezera bez hrany > 3 ocekavane periody, nejvys max_gap_ms -> okno zahodit. */
@@ -702,6 +708,10 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
             c->empty++;
             if (c->empty > tol) c->open = 0u; else c->k++;
         }
+        if (!c->open) {                               /* v0.42.12: bunka zatim bez hrany -> okno smi zacit na 1. hrane */
+            if (pos == 0u) { c->clean_ok = 1u; c->clean_cell = cell; }
+            else if (c->clean_cell != cell) c->clean_ok = 0u;
+        }
         return 0;
     }
     /* odhad periody pro limit mezery: z tohoto zaznamu (ST/SX), jinak od predchozi hrany v temze okne */
@@ -710,7 +720,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     else c->per_u = 0.0;
     c->empty = 0u;
 
-    if (c->open && c->k >= g->k_target) {            /* tento zaznam zacina dalsi okno -> predchozi uzavrit */
+    if (c->open && cell != c->cell) {                /* v0.42.12: prvni hrana v dalsi bunce -> okno uzavrit */
         const double up = fpga_v3_unit_ps(clk_mhz);
         out->ch = ch; out->seg_first = c->seg_first; out->nseg = c->k; out->n_marks = c->n_tot;
         out->edges = (x - c->x_first) << c->p_log2; out->gate_units = t - c->t_first;   /* periody = hrany x P */
@@ -721,11 +731,15 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / ((vxt / vxx) * up) : 0.0;   /* sklon t(x) = P perioda */
         out->flags_or = c->flags_or; out->xc0 = c->xc0 * (double)(1u << c->p_log2); out->tc0 = c->tc0;
         out->x_first = c->x_first << c->p_log2; out->t_first = c->t_first; out->n0 = c->n0; out->p_log2 = c->p_log2;
-        out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps;
+        out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps; out->cell = c->cell;
         closed = 1;
         c->open = 0u;
     }
     if (!c->open) {                                   /* zacatek okna */
+        /* v0.42.12: okno zacina jen na hranici bunky (nebo na 1. hrane bunky, jejiz predchozi segmenty prisly bez
+         * hrany, nebo na zaznamu, ktery prave uzavrel okno) -> okna A a B pokryvaji tytez segmenty */
+        if (!closed && pos != 0u && !(c->clean_ok && c->clean_cell == cell)) { c->clean_ok = 0u; return 0; }
+        c->clean_ok = 0u; c->cell = cell;
         c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx; c->p_log2 = pl;
         c->x_first = x; c->t_first = t;
         c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u; c->kl = 0u;
@@ -766,6 +780,53 @@ int fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b)
     if (dx < n) return 0;                              /* vic znacek nez hran */
     const uint64_t lo = n * (n - 1u) / 2u, hi = (n - 1u) * dx - lo;
     return a->sx >= lo && a->sx <= hi;
+}
+
+/* ══════════════ v0.42.12: parovani oken A a B ══════════════ */
+void fpga_v3_pair_init(fpga_v3_pair_t *p) { memset(p, 0, sizeof *p); }
+
+static void pair_out(fpga_v3_pair_out_t *o, const fpga_v3_win_t *a, const fpga_v3_win_t *b)
+{
+    o->a = *a; o->has_b = (uint8_t)(b != NULL);
+    if (b) o->b = *b;
+}
+
+/* okno a, ke kteremu uz okno druheho kanalu ze stejne bunky neprijde: druhy kanal ma otevrene okno z teze nebo drivejsi
+ * bunky i po dalsim okne a (pomaly signal, okno pres vic bunek) -> posledni uzavrene okno druheho kanalu jako do
+ * v0.42.11; jinak bez nej */
+static void pair_late(fpga_v3_pair_t *p, const fpga_v3_grp_ch_t *cs, const fpga_v3_win_t *a, fpga_v3_pair_out_t *o)
+{
+    const int slow = cs->open && (int32_t)(cs->cell - a->cell) <= 0 && p->b_ok;
+    pair_out(o, a, slow ? &p->b : NULL);
+}
+
+uint32_t fpga_v3_pair_feed(fpga_v3_pair_t *p, const fpga_v3_grp_t *g, uint8_t prim, const fpga_v3_rec_t *r,
+                           const fpga_v3_win_t *w, fpga_v3_pair_out_t out[2])
+{
+    uint32_t n = 0;
+    prim &= 1u;
+    const fpga_v3_grp_ch_t *cs = &g->c[prim ^ 1u];      /* druhy kanal (stav po zaznamu r) */
+    if (w && (w->ch & 1u) == prim) {
+        if (p->a_ok) { pair_late(p, cs, &p->a, &out[n++]); p->a_ok = 0u; }   /* predchozi se sveho B nedockalo */
+        if (p->b_ok && p->b.cell == w->cell) { pair_out(&out[n++], w, &p->b); p->b_ok = 0u; }
+        else if (cs->open && cs->cell == w->cell) { p->a = *w; p->a_ok = 1u; }   /* okno B teze bunky se jeste uzavre */
+        else pair_late(p, cs, w, &out[n++]);
+    } else if (w) {
+        p->b = *w; p->b_ok = 1u;
+    }
+    if ((r->ch & 1u) != prim && p->a_ok) {
+        if (p->b_ok && p->b.cell == p->a.cell) { pair_out(&out[n++], &p->a, &p->b); p->a_ok = p->b_ok = 0u; }
+        else if (!(cs->open && cs->cell == p->a.cell)) { pair_late(p, cs, &p->a, &out[n++]); p->a_ok = 0u; }
+    }
+    return n;
+}
+
+uint32_t fpga_v3_pair_flush(fpga_v3_pair_t *p, fpga_v3_pair_out_t out[1])
+{
+    uint32_t n = 0;
+    if (p->a_ok) { pair_out(&out[n++], &p->a, NULL); p->a_ok = 0u; }
+    p->b_ok = 0u;
+    return n;
 }
 
 /* ══════════════ selftest ══════════════ */
@@ -1182,6 +1243,114 @@ bool fpga_v3_selftest(void)
         V3OK(nbad[0] == 0u && nbad[1] == 3u && badmask == ((1u << 5) | (1u << 6) | (1u << 7)) && nwin >= 5u &&
              maxrel < 1e-9 && fabs(xc16) < 1.0 && s_g.sx_rep[1] == 3u && s_g.sx_rep_x0[1] == 1u && s_g.x0_fix[1] == 1u &&
              s_g.sx_rep[0] == 0u);
+    }
+
+    /* 20) v0.42.12 okna na spolecne mrizce a parovani A/B (K = 4, 40 segmentu): kanal B neplatny v segmentech 0..2
+     * (zacne pozdeji) a 20 (okno B 16..19 se rozpadne prave zaznamem, na ktery ceka okno A 16), kanal A neplatny
+     * v segmentu 5. Primarni A: okna A 0, 8..32 -> pary 8, 12, 24, 28, 32, bez B 0, 16, 20; primarni B: okna B 4, 8,
+     * 12, 24..32 -> 5 paru, bez A 4. Vsechna okna zacinaji na nasobku K, okno bez druheho odejde hned se zaznamem
+     * segmentu, kterym skoncilo. */
+    for (uint8_t prim = 0u; prim < 2u; prim++) {
+        static fpga_v3_pair_t P;
+        static fpga_v3_pair_out_t O[2];
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 19u);
+        fpga_v3_grp_init(&s_g, 4u);
+        fpga_v3_pair_init(&P);
+        uint32_t npair = 0u, nalone = 0u, bad = 0u, last = 0u, have = 0u;
+        for (uint32_t s = 0; s < 40u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if (((q.ch & 1u) == 1u && (q.seg_idx <= 2u || q.seg_idx == 20u)) || ((q.ch & 1u) == 0u && q.seg_idx == 5u))
+                    q.flags |= FPGA_V3_R_INVALID;
+                fpga_v3_win_t w;
+                const int got = fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w);
+                const uint32_t n = fpga_v3_pair_feed(&P, &s_g, prim, &q, got ? &w : NULL, O);
+                for (uint32_t k = 0; k < n; k++) {
+                    const fpga_v3_pair_out_t *o = &O[k];
+                    if ((o->a.ch & 1u) != prim || o->a.seg_first % 4u != 0u || o->a.nseg != 4u) bad++;
+                    if (have && o->a.seg_first <= last) bad++;                   /* poradi */
+                    last = o->a.seg_first; have = 1u;
+                    if (o->has_b) { npair++; if (o->b.seg_first != o->a.seg_first || (o->b.ch & 1u) == prim) bad++; }
+                    else { nalone++; if (q.seg_idx != o->a.seg_first + o->a.nseg) bad++; }
+                }
+            }
+        }
+        V3OK(npair == 5u && nalone == (prim ? 1u : 3u) && bad == 0u);
+    }
+
+    /* 21) v0.42.12 parovani pri ruznych kmitoctech: A 1 MHz, B 10 Hz (perioda 4 segmenty), K = 10, 200 segmentu.
+     * Okno B zacina az prvni hranou v bunce (seg_first != seg_first A), paruje se podle bunky -> pary vsech oken A
+     * krome prvniho (B jeste nema okno), kazdy par ze stejne bunky. */
+    {
+        static fpga_v3_pair_t P;
+        static fpga_v3_pair_out_t O[2];
+        fpga_v3_emu_init(&s_e, 1e6, 10.0, 50.0, 20u);
+        fpga_v3_grp_init(&s_g, 10u);
+        fpga_v3_pair_init(&P);
+        uint32_t nwa = 0u, npair = 0u, bad = 0u, nsf = 0u;
+        for (uint32_t s = 0; s < 200u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                const fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                fpga_v3_win_t w;
+                const int got = fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w);
+                const uint32_t n = fpga_v3_pair_feed(&P, &s_g, 0u, &q, got ? &w : NULL, O);
+                for (uint32_t k = 0; k < n; k++) {
+                    nwa++;
+                    if (!O[k].has_b) continue;
+                    npair++;
+                    if (O[k].b.cell != O[k].a.cell || fabs(O[k].b.f_2pt_hz / 10.0 - 1.0) > 1e-6) bad++;
+                    if (O[k].b.seg_first != O[k].a.seg_first) nsf++;
+                }
+            }
+        }
+        V3OK(nwa >= 18u && npair + 1u >= nwa && bad == 0u && nsf > 0u);
+    }
+
+    /* 22) v0.42.12 pomaly druhy kanal: B 1 Hz (okno pres 4 bunky), K = 10, 400 segmentu -> okna A dostanou posledni
+     * uzavrene okno B (jako do v0.42.11), po prvnim okne B vsechna */
+    {
+        static fpga_v3_pair_t P;
+        static fpga_v3_pair_out_t O[2];
+        fpga_v3_emu_init(&s_e, 1e6, 1.0, 50.0, 21u);
+        fpga_v3_grp_init(&s_g, 10u);
+        fpga_v3_pair_init(&P);
+        uint32_t nwa = 0u, nb = 0u, bad = 0u, seen_b = 0u, miss = 0u;
+        for (uint32_t s = 0; s < 400u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                const fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                fpga_v3_win_t w;
+                const int got = fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w);
+                if (got && (w.ch & 1u) == 1u) seen_b = 1u;
+                const uint32_t n = fpga_v3_pair_feed(&P, &s_g, 0u, &q, got ? &w : NULL, O);
+                for (uint32_t k = 0; k < n; k++) {
+                    nwa++;
+                    if (O[k].has_b) { nb++; if (fabs(O[k].b.f_2pt_hz - 1.0) > 1e-6) bad++; }
+                    else if (seen_b) miss++;
+                }
+            }
+        }
+        V3OK(nwa >= 35u && nb >= 25u && bad == 0u && miss <= 1u);
+    }
+
+    /* 23) v0.42.12 mrizka pres pretoceni SEG_IDX (16 b): K = 10 (65536 neni nasobek) -> vsechna okna 10 segmentu */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 22u);
+        s_e.seg_idx = 65530u;
+        fpga_v3_grp_init(&s_g, 10u);
+        uint32_t nwr = 0u, bad = 0u;
+        for (uint32_t s = 0; s < 45u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &s_e.ring[i % FPGA_V3_EMU_RING], s_e.clk_mhz, &w)) continue;
+                nwr++;
+                if (w.nseg != 10u) bad++;
+            }
+        }
+        V3OK(nwr == 8u && bad == 0u);
     }
 
     return ok;

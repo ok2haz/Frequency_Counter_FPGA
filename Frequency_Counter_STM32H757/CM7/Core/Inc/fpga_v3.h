@@ -347,6 +347,7 @@ typedef struct {
                                   * uz fpga_v3_grp_feed (v0.42.7), dvoubodove ho jinak obsahuje taky */
     double   seg_max_ps;         /* nejvetsi |odchylka teziste| segmentu okna [ps] (posledni segment se pocita az se
                                   * zaznamem, ktery okno uzavira) */
+    uint32_t cell;               /* v0.42.12: bunka mrizky K segmentu, ve ktere okno zacalo (parovani A/B) */
 } fpga_v3_win_t;
 #define FPGA_V3_SEG_BAD_PS   800.0       /* v0.42.11: 2000 -> 800 (dobre segmenty A za 16 h nejvys 554 ps) */
 
@@ -379,6 +380,10 @@ typedef struct {
     uint8_t  pend;
     uint32_t kl;                 /* segmentu v LSQ okna */
     int64_t  prev_dv;            /* v0.42.11: oprava X0 predchoziho zaznamu (X0 = surove - prev_dv), 0 = bez opravy */
+    /* v0.42.12: okna na spolecne mrizce segmentu (bunka = K segmentu, cislo z fpga_v3_grp_t.seg_u) */
+    uint32_t cell;               /* bunka, ve ktere zacalo rozpracovane okno */
+    uint32_t clean_cell;         /* bunka, jejiz vsechny dosavadni segmenty prisly souvisle a bez hrany (okno zavrene) */
+    uint8_t  clean_ok;
 } fpga_v3_grp_ch_t;
 
 /* v0.42.9 (L-0247): zaznam odchylky X0 od predpovedi (|d| >= 0,5 hrany), diagnostika `fpga v3 x0` */
@@ -407,6 +412,10 @@ typedef struct {
     uint32_t nx0big;
     uint32_t sx_rep[2];          /* v0.42.11: segmentu s opravenym SX, ktere pak prosly kontrolou (zustaly v LSQ) */
     uint32_t sx_rep_x0[2];       /* z toho oprava podle opraveneho X0 (SX - (N-1)*D) */
+    /* v0.42.12: rozbalene cislo segmentu (oba kanaly maji pro tyz segment totez -> okna A a B na stejne mrizce) */
+    uint32_t seg_u;
+    uint16_t seg_raw;
+    uint8_t  seg_have;
 } fpga_v3_grp_t;
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);
@@ -414,6 +423,27 @@ void     fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch);   /* mezera / neplatny
 /* @return 1 = do *out prislo hotove okno (uzavrene prvnim zaznamem s hranou po K segmentech = zacatek dalsiho okna).
  * Zahodi rozpracovane okno: neplatny zaznam, nesouvisle SEG_IDX, mezera bez hrany nad limit (ztrata signalu). */
 int      fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz, fpga_v3_win_t *out);
+
+/* v0.42.12: parovani okna primarniho kanalu s oknem druheho kanalu TYCHZ segmentu (do v0.42.11 bral ovladac posledni
+ * uzavrene okno B: B koncilo o ~0,68 okna driv nez A a sum zdroje prosakoval do A-B, noc 2026-10-28). Okno primarniho
+ * kanalu ceka na okno druheho, ktere zacalo v teze bunce mrizky K segmentu (cell), dokud je takove okno otevrene.
+ * Pomaly druhy kanal (okno pres vic bunek, perioda > hradlo): posledni uzavrene okno druheho jako do v0.42.11. */
+typedef struct {
+    fpga_v3_win_t a, b;          /* cekajici okno primarniho kanalu / posledni okno druheho */
+    uint8_t  a_ok, b_ok;
+} fpga_v3_pair_t;
+typedef struct {
+    fpga_v3_win_t a, b;          /* b plati jen s has_b */
+    uint8_t  has_b;
+} fpga_v3_pair_out_t;
+void     fpga_v3_pair_init(fpga_v3_pair_t *p);
+/* po kazdem zaznamu r (az po fpga_v3_grp_feed(g, r, ...)): w = okno, ktere r uzavrel (NULL = zadne), prim = primarni
+ * kanal (0/1). @return pocet hotovych mereni v out[0..1] (v poradi) */
+uint32_t fpga_v3_pair_feed(fpga_v3_pair_t *p, const fpga_v3_grp_t *g, uint8_t prim, const fpga_v3_rec_t *r,
+                           const fpga_v3_win_t *w, fpga_v3_pair_out_t out[2]);
+/* mezera v prijmu: cekajici okno primarniho kanalu ven bez druheho (out[0]), stav druheho kanalu zahodit.
+ * @return 0 nebo 1 */
+uint32_t fpga_v3_pair_flush(fpga_v3_pair_t *p, fpga_v3_pair_out_t out[1]);
 
 /* jednotka casu [ps] pro clk_mhz (0 = 100 MHz) */
 double   fpga_v3_unit_ps(uint32_t clk_mhz);
