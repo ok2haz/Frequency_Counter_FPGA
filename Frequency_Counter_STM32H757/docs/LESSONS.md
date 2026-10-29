@@ -5762,6 +5762,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0248 - okna kanálů A a B nebyla souběžná: šum zdroje prosakoval do A−B
+
+- **Datum:** 2026-10-29
+- **Oblast:** `CM7/Core/Src/fpga_freq.c` `s3_take_records` (párování oken), `fpga_v3.c` `fpga_v3_grp_feed` (začátek okna)
+- **Symptom:** σ(A−B) při stejném zdroji na obou vstupech kolísala mezi 10 a 140 ps po minutách a těsně sledovala neklid kmitočtu zdroje (r = 0,85–0,89 ve třech bězích, dvou bitstreamech). Vypadalo to na šum TDC nebo nový bitstream.
+- **Příčina:** každý kanál otevíral okna sám od prvního použitelného záznamu, takže mřížka oken B byla posunutá proti A (po startu deterministicky ~7 segmentů), a ovladač bral k oknu A **poslední uzavřené** okno B bez kontroly segmentů. Doklad z `ab.csv`: f_B(n) koreluje nejvíc s f_A(n−1), f_A − f_B = 0,68·(f_A(n) − f_A(n−1)) ve všech bězích včetně noci 2026-10-28. Rozdíl dvou kmitočtů z ~170 ms posunutých intervalů = únik společného šumu zdroje.
+- **Oprava:** v0.42.12 – společné rozbalené číslo segmentu, okno začíná jen na hranici buňky K segmentů a končí první hranou v další buňce (`win.cell`); `fpga_v3_pair_feed` páruje okno primárního kanálu s oknem druhého z téže buňky (čeká, dokud je otevřené; pomalý druhý kanál s oknem přes víc buněk dostane poslední uzavřené okno jako dřív). Simulace: σ(A−B) 240 → 0,5 ps při společné FM 2·10⁻⁹. Selftest 20–23, 11 mutací.
+- **Pravidlo:** rozdíl dvou kanálů má smysl jen nad SOUBĚŽNÝMI intervaly – párovat podle identity intervalu (segment, buňka), nikdy „poslední hotový“. Kontrola v datech: korelace f_B(n) s f_A(n+j) musí mít maximum v j = 0; únik = regrese (f_A − f_B) na (f_A(n) − f_A(n−1)).
+- **Detekce:** `docs/audit/data/2026-10-29_kanal_b/` skripty `lagab.py` (korelace s posunem) a `srcnoise.py` (σ(A−B) proti neklidu zdroje); `fpga v3` → `druhy kanal: mereni N` ≈ počet oken.
+- **Commit:** `d78db69` (v0.42.12)
+- **Stav:** ⬜ neověřeno na HW (host test, simulace).
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
