@@ -5772,7 +5772,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** rozdíl dvou kanálů má smysl jen nad SOUBĚŽNÝMI intervaly – párovat podle identity intervalu (segment, buňka), nikdy „poslední hotový“. Kontrola v datech: korelace f_B(n) s f_A(n+j) musí mít maximum v j = 0; únik = regrese (f_A − f_B) na (f_A(n) − f_A(n−1)).
 - **Detekce:** `docs/audit/data/2026-10-29_kanal_b/` skripty `lagab.py` (korelace s posunem) a `srcnoise.py` (σ(A−B) proti neklidu zdroje); `fpga v3` → `druhy kanal: mereni N` ≈ počet oken.
 - **Commit:** `d78db69` (v0.42.12)
-- **Stav:** ⬜ neověřeno na HW (host test, simulace).
+- **Stav:** ✅ ověřeno na HW po power-cyklu 2026-10-30 (9 h A−B, `docs/MERENI_A_KALIBRACE.md`): maximum korelace v j = 0 (0,88, sousední okna 0,10), únik 0,72 → 0,045, oken > 500 ps 800 → 0.
 
 ---
 
