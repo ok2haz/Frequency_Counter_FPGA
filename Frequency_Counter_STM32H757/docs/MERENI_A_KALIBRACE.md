@@ -752,3 +752,13 @@ Data `noc_logs/ab_20261028_2126/` (ab.csv, cykly.csv, x0_velke.csv, uart.log, re
 - 🔑 **Podpis vady (rozbor 993 zapsaných X0 a 766 snímků segmentů):** chybné X0 je VŽDY správné X0 s vynulovanými bity **6, 7, 32, 33** indexu (libovolná kombinace, žádný bit se nenastaví, 993/993). SX má týž podpis: −k·2³² při přesných spodních 32 b (747 z 913 snímků mimo meze), jinak −64·k. Chyba tedy vzniká v indexu značky (`xm`/FIFO) před DSP, viz L-0247.
 - **Ocas vs epizody (po 10 min):** r(oken s vadným segmentem, > 200 ps) = 0,75; r(opravy X0, > 500 ps) = 0,26; okna bez LSQ s ocasem > 500 ps nekorelují. Okna 3–14,7 ns jsou většinou osamocená (B), původ nerozhodnut.
 - **Následek:** v0.42.11 opravuje SX z mezí / podle X0 a zpřísňuje mez těžiště na 800 ps (⬜ neověřeno na HW). Zkušební bitstream se stejnými zdroji a jiným rozmístěním (F0a) má ukázat, jestli se množina vadných bitů přesune.
+
+### 2026-10-29 20:52 – 2026-10-30 05:15 — noční A−B 8,4 h (CM7 v0.42.11, zkušební bitstream F0a `b3fbc32`, `tools/ab_night.py`)
+
+Data `noc_logs/ab_20261029_2052/` (test ukončen v 05:15 podle plánu, report jen nad kopií). Bez restartu (uptime 32 115 s), CRC err 0, díry SEQ 1, teplotní rekalibrace TDC 0, rezerva řetězu A 25 / B 28 tapů beze změny.
+
+- **Kanál B je s F0a čistý:** vadné segmenty B **0** z 1 202 360 (s `796c009` 7,5 %), SX mimo meze 0, opravy X0 0, okna B z LSQ 100 %. Vada indexu B (L-0247) je tedy vlastnost rozmístění, ne zdrojů.
+- **Kanál A:** 257 vadných segmentů (289 oken), **všechny v jediném shluku 21:43–22:03**, potom 7 h nic. Podpis: příznak bubliny 0x04 / 0x0C, N o ~1 700 nižší, SX v mezích, X0 v pořádku, T0 končí na …0001 / …8001 (hrana na hraně taktu). Okna s vadným segmentem se vyřadila z LSQ a A−B v té hodině bylo nejlepší z noci (σ 16,3 ps, 0 oken > 500 ps).
+- **A−B:** 120 490 oken, medián −1,0 ps, **σ(MAD) 20,8 ps** (po hodinách 16,3–31,1), > 100 / 200 / 500 ps / 1 ns / 1 µs: 8 039 / 3 216 / 800 / 104 / 0, největší ±1,8 ns. Ocas je **úniku šumu zdroje** (L-0248): r(log neklid zdroje, log σ(A−B)) = 0,79, f_A − f_B = 0,721·(f_A(n) − f_A(n−1)) s r = 0,83, korelace f_B(n) s f_A(n−1) = 0,68. Po odečtení úniku (`leakfix.py`) σ 18,0 ps a > 1 ns jen **4** (místo 104). Nejhorší hodina 3 (23:52–00:52, σ 31 ps, 87 > 1 ns) = nejneklidnější zdroj.
+- **Vedlejší nález:** smyčka GPSDO byla celou noc `OFF - FLL divergovala` (od ~145 s po startu, kód DAC držen 24 944). A−B se tím neovlivní (společná reference), ale reference běžela volně; k prověření zvlášť.
+- **Následek:** v0.42.12 (mřížka oken a párování podle buňky, L-0248) k nahrání; očekávané σ(A−B) ~18 ps bez ocasu nad 1 ns. ⬜ neověřeno na HW.
