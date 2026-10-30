@@ -5776,6 +5776,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0249 - test s ujíždějící fází: posun za okno nesmí být P/m a délka okna z měření nepatří do fáze
+
+- **Datum:** 2026-10-30
+- **Oblast:** rozbor `docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py` (chyba TDC každého kanálu proti přesné pravdě z generátoru Si5356), firmware `si5356.c` (zlomek Hz, v0.42.13)
+- **Symptom:** na syntetických datech se známým tvarem chyby dal fit při 10 000 000,040 Hz R² −3·10¹⁷ a tvar ±10⁹ ps. Na reálném běhu s 10 000 040 Hz (fáze se v segmentu průměruje, tvar určit nejde) vyšlo u kanálu A R² 0,65 – falešně.
+- **Příčina:** (1) při ,040 Hz je posun fáze za okno přesně P/10 = 1 000 ps, fáze začátku okna se opakuje po 10 oknech a dělení trénink = sudá okna / test = lichá dalo testu vzory, které fit nikdy neviděl; zároveň 10 různých vzorů nestačí na 2K+1 neznámých. (2) Fáze se počítala z `gate_ns` každého okna – to je NAMĚŘENÁ délka okna primárního kanálu A a nese jeho chybu, takže regresor korelovaný s chybou A „vysvětlil“ šum A.
+- **Oprava:** náhodné dělení trénink/test, fáze z čísla okna a pevné délky okna (mřížka buněk), hlídání počtu různých vzorů fáze (`kmax`) a varování, když posun za segment > P/4. Doporučený kmitočet 10 000 000,041 Hz (posun 1 025 ps, segmenty na mřížce 2,5 ps). Syntetika: tvar obou kanálů vrácen s korelací 1,000 a amplitudou 1,00.
+- **Pravidlo:** u měření, kde se veličina vzorkuje na periodické mřížce (fáze proti taktu), zkontroluj, po kolika vzorcích se mřížka opakuje, a rozdělení trénink/test nesmí být s touto periodou soudělné. Regresor nesmí vzniknout z veličiny, která nese chybu, kterou fit vysvětluje. Každý nový rozbor nejdřív projdi na syntetických datech se známým výsledkem.
+- **Detekce:** `tdc_gensweep.py` vypíše „faze segmentu na mrizce … ps“ a varování `!!`; syntetika `tdc_gensyn.py` (tamtéž).
+- **Commit:** `bc274eb` (v0.42.13, firmware)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

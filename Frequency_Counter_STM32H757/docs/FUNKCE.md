@@ -23,7 +23,7 @@
 |---|---|---|
 | **STM32H757BIT6** (CM7 480 MHz + CM4 240 MHz) | CM7: logika, měření, UI, úložiště; CM4: Ethernet, lwIP, SCPI, web | ✅ |
 | **FPGA GW1NR-9** (Tang Nano, deska FPGA modulu 2.1) | reciproké měření, carry-chain TDC, záchyt 1PPS, SPI slave k STM32 | ✅ (bitstream 0x0424) |
-| **Si5356A** | 4× 100 MHz z 10 MHz reference (hodiny FPGA); CLK2–7 volně nastavitelné (okno GENERÁTOR) | ✅ |
+| **Si5356A** | 4× 100 MHz z 10 MHz reference (hodiny FPGA); CLK2–7 volně nastavitelné (okno GENERÁTOR); UART `gen` i se zlomkem Hz v mHz pro test TDC s ujíždějící fází (v0.42.13, ⬜ neověřeno na HW, zlomek se neukládá) | ✅ |
 | **OCXO Bliley 6891 / NVG47A1282** (10 MHz, EFC 0–4 V) | interní reference, řízená DAC | ✅ |
 | **DAC AD5693R** (0x4C) | ladění OCXO (76,3 µV/LSB, K ≈ 3,4·10⁻¹¹/LSB), RC 220 ms + buffer OPA365 | ✅ |
 | **ADS1115** (0x48) | Vc OCXO, 12 V/VBUS, +5 V větev (AD8307 RF na desce není osazen) | ✅ |

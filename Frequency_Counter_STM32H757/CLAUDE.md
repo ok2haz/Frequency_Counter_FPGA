@@ -40,6 +40,8 @@ python tools/audit.py
 #   host: cc -std=c11 -O2 -Wall -Wextra -ICM7/Core/Inc CM7/Core/Src/fpga_v3.c CM7/Core/Src/fpga_crc.c \
 #         CM7/Core/Src/fpga_tdccal.c tests/host/t_fpga_v3.c -lm -o /tmp/t_fpga_v3 && /tmp/t_fpga_v3   -> PASS
 #   mutace: python tests/host/mut_fpga_v3.py <vystupni adresar>  -> "vsechny mutace zachyceny"
+#   host si5356 (generator, zlomek Hz): cc -std=c11 -O2 -Wall -Wextra -Itests/host/si5356_stub -ICM7/Core/Inc \
+#         tests/host/t_si5356_gen.c -lm -o /tmp/t_si5356_gen && /tmp/t_si5356_gen   -> PASS (po zmene si5356.c)
 #   Windows bez gcc (2026-10-24, L-0225): zig cc ve venv (pip install ziglang), cc = "python -m ziglang cc",
 #     mutace s CC="<prikaz zig cc>" -- host test pust po KAZDE zmene fpga_v3.c, build ani audit.py ho nespousti
 # protokol v3 (v0.35.0, docs/PROTOKOL_V3.md kap. 10): ovladac zjisti verzi FPGA sam (v2 FW 0x04xx / v3 FW 0x0500)

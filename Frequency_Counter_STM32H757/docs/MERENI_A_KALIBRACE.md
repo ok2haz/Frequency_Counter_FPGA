@@ -795,3 +795,18 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
 - **Srovnání:** dopoledne se signálem z externího GPSDO 10 MHz vyšlo σ 23,7 ps a 7 370 oken nad 100 ps. Ve stejném běhu dala okna s |sweep| < 25 ps 4,4 ps. Teď, kdy fáze projde za segment 10 period taktu (100 ns), vychází **4,4 ps ve všech oknech**. Je to dolní okraj předpovědi 4–5 ps a rozdílový jitter MultiSynthů se v něm neprojevil.
 - ⚠️ Regresory `tdc_sweep.py` jsou pro tento běh bez významu. Sweep je ≈ 1 µs a téměř konstantní, takže jeho kolísání je jen šum měření samotného kmitočtu. Sklon A−B na sweep (t +46) je proto korelace šumu sama se sebou: cov(eA − eB, eA + eB) = var eA − var eB. Nejde o důkaz D.
 - **Závěr:** potvrzuje se, že σ(A−B) se signálem soudělným se 100 MHz tvoří fázově závislá chyba TDC D(φ), ne šum TDC ani zdroj. Když se fáze uvnitř segmentu protočí přes celou periodu, D se zprůměruje a zbude šum ~4 ps (≈ 3 ps na kanál). Původ D zůstává HYPOTÉZA, oprava se teprve volí (STATUS #347). Generátor zůstává na 10 000 040 Hz (uloženo v syscfg).
+- **Vedlejší nález (rozbor `tdc_gensweep.py`, 2026-10-30): soustavná odchylka proti přesné pravdě.** Generátor i takt FPGA jsou ze stejného VCO, takže správný výsledek je přesně 10 000 040 Hz. Naměřený průměr je přesto vyšší: A **+1,75·10⁻¹²**, B **+2,28·10⁻¹²** (SE 1,4 a 1,0·10⁻¹³, tedy +0,44 / +0,57 ps na okno 0,25 s). Po čtvrthodinách kolísá: A +0,35 / +1,8 / +3,6 / +1,3·10⁻¹², B +1,5 / +2,8 / +3,4 / +1,4·10⁻¹². Kmitočet v `ab.csv` je kvantovaný po 4·10⁻¹² (délka okna v celých ps, `fpga_v3.c:1172`, zaokrouhlení, ne useknutí), medián A je 0 a B +4·10⁻¹². Příčina je neznámá (STATUS #348). Test z kroku 0 průměrnou chybu vypisuje u každého běhu.
+
+#### Postup: test TDC s ujíždějící fází (krok 0 návrhu kalibrace, v0.42.13)
+
+Účel: chyba časové značky **každého kanálu zvlášť a absolutně** jako funkce fáze hrany proti taktu 100 MHz. Pravdu dávají registry MultiSynthu, takže výsledek nezávisí na OCXO ani na šumu zdroje.
+
+1. Zapojení: Si5356 CLK_2 → A, CLK_4 → B.
+2. UART `gen 2 10000000.041` a `gen 4 10000000.041`, potom `gen` → opsat `P1 P2 P3 R` obou dvojic a zkontrolovat stav `SHODA`. Zlomek Hz se neukládá, po power-cyklu je potřeba ho zadat znovu.
+   - Proč ,041: posun fáze 1 025 ps za okno, segmenty na mřížce 2,5 ps, perioda 10 ns projde za 2,4 s.
+   - Nevhodné: ,040 (posun přesně P/10, vzor fáze se opakuje po 10 oknech, L-0249). Nevhodné jsou i kmitočty, u kterých se fáze posune o víc než ~2,5 ns za segment, například 10 000 040 Hz.
+3. `python -I tools/ab_night.py --hours 1 --warmup 0`.
+4. Rozbor nad kopií dat: `python -I docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py <ab.csv> --a P1 P2 P3 R [--b …] --out <předpona>`.
+   - Výstup: R², σ před a po odečtení tvaru, průměrná chyba okna (absolutní přesnost), tvar E_A, E_B, E_A−E_B po 500 ps a korelace E_A s E_B.
+   - Srovnání s tvarem D z běhu s GPSDO: `tdc_dtvar.py <ab.csv 9h> ref.npy`, pak `tdc_dcmp.py <předpona>_AB.npy ref.npy`.
+5. Stejný test zopakovat při 1 MHz (`gen 2 1000000.001`, posun 250 ps za okno) a 25 MHz (`gen 2 25000000.023`, posun 230 ps za okno), případně s předděličkou. Tím se ukáže, zda chyba závisí na kmitočtu a na cestě signálu.
