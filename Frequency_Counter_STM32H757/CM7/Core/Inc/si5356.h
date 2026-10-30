@@ -111,11 +111,18 @@ bool si5356_clear_sticky(I2C_HandleTypeDef *hi2c, uint8_t mask);
 #define SI5356_MS_F_MIN_HZ    5000000ull
 #define SI5356_GEN_F_MIN_HZ   1000000u       /* datasheet Tab. 3: FO min 1 MHz (R=8 z MS 8 MHz) */
 #define SI5356_GEN_F_MAX_HZ   200000000u     /* datasheet Tab. 3: FO max 200 MHz */
+/* Zlomek Hz v mHz (0..999), v0.42.13: test TDC s pomalu ujizdejici fazi proti taktu FPGA
+ * (napr. 10 000 000,040 Hz -> faze projde 10 ns za 2,5 s). Jmenovatel P3 ma 30 bitu, takze
+ * presny zlomek se nemusi vejit -> nejlepsi aproximace retezovym zlomkem; SKUTECNY kmitocet
+ * (z P1/P2/P3) vypisuje `gen` na uHz. Zlomek se NEUKLADA (syscfg nese jen cele Hz). */
+#define SI5356_GEN_MHZ_MAX    999u
+#define SI5356_MS_P3_MAX      0x3FFFFFFFu    /* P3 (a P2) maji v registrech 30 bitu */
 
 enum { SI5356_GEN_OK = 0, SI5356_GEN_ERR_I2C = 1, SI5356_GEN_ERR_RANGE = 2 };
 
 typedef struct {
-    volatile uint32_t freq_hz;   /* pozadovany kmitocet [Hz] */
+    volatile uint32_t freq_hz;   /* pozadovany kmitocet, cela cast [Hz] */
+    volatile uint16_t mhz;       /* zlomek [mHz] 0..999 (neuklada se) */
     volatile uint8_t  on;        /* 1 = vystup povolen */
     volatile uint8_t  pend;      /* 1 = zadost ceka na SensorsTask */
     volatile uint8_t  state;     /* SI5356_GEN_* (vysledek posledniho zapisu) */
@@ -128,17 +135,22 @@ extern volatile si5356_gen_t g_si_gen[SI5356_GEN_N];
 /** Parametry MultiSynthu: f_ms = VCO/(a+b/c) = f_out * 2^rexp. */
 typedef struct { uint8_t rexp; uint32_t p1, p2, p3; } si5356_ms_t;
 
-/** Cista funkce (bez I2C): kmitocet -> P1/P2/P3/R. false = mimo rozsah. Presny
- *  racionalni vypocet, zadne zaokrouhlovani. */
-bool     si5356_gen_calc(uint32_t f_hz, si5356_ms_t *m);
-/** Zpetny prepocet: jaky kmitocet z techto parametru cip vyrobi. */
-uint32_t si5356_gen_actual_hz(const si5356_ms_t *m);
+/** Cista funkce (bez I2C): kmitocet `f_hz` + `mhz` [mHz] -> P1/P2/P3/R. false = mimo rozsah.
+ *  Presny racionalni vypocet; kdyz se presny zlomek do P3 nevejde (jen se zlomkem Hz), nejlepsi
+ *  aproximace (posledni sblizeny zlomek s P3 <= SI5356_MS_P3_MAX). Pro cela Hz (mhz = 0) dava
+ *  TYTEZ registry jako vypocet do v0.42.12 (host test tests/host/t_si5356_gen.c). */
+bool     si5356_gen_calc_frac(uint32_t f_hz, uint16_t mhz, si5356_ms_t *m);
+/** Zpetny prepocet: jaky kmitocet [uHz] z techto parametru cip vyrobi (relativni
+ *  presnost double ~1e-16, tj. < 0,1 uHz do 200 MHz). */
+uint64_t si5356_gen_actual_uhz(const si5356_ms_t *m);
 /** Zakoduje P1/P2/P3 do 10 bajtu registru MS (B+0..B+9). */
 void     si5356_gen_pack(const si5356_ms_t *m, uint8_t b[10]);
 /** Zapise jednu dvojici do cipu (OEB_x -> R + MS -> OEB_x), bez soft resetu. */
-bool     si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, bool on);
-/** Zadost z UI/UART (neblokuje). */
+bool     si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, uint16_t mhz, bool on);
+/** Zadost z UI/UART (neblokuje), cele Hz: zlomek se vynuluje. */
 void     si5356_gen_request(unsigned ch, uint32_t f_hz, bool on);
+/** Zadost se zlomkem [mHz]. */
+void     si5356_gen_request_frac(unsigned ch, uint32_t f_hz, uint16_t mhz, bool on);
 /** Obsluha zadosti — jen SensorsTask pod i2c1Mutex. */
 void     si5356_gen_service(I2C_HandleTypeDef *hi2c);
 /** Vychozi stav = to, co zapsal REGMAP (vola si5356_init). */

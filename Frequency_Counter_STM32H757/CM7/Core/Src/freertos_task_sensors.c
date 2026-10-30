@@ -617,15 +617,18 @@ static void si5356_lock_watch(uint8_t st)
 
     const uint8_t before_lock = g_si5356_locked_once ? 0u : 1u;
     uint32_t gen_hz[SI5356_GEN_N];
+    uint16_t gen_mhz[SI5356_GEN_N];
     uint8_t  gen_on[SI5356_GEN_N];
-    for (unsigned i = 0; i < SI5356_GEN_N; i++) { gen_hz[i] = g_si_gen[i].freq_hz; gen_on[i] = g_si_gen[i].on; }
+    for (unsigned i = 0; i < SI5356_GEN_N; i++) {
+        gen_hz[i] = g_si_gen[i].freq_hz; gen_mhz[i] = g_si_gen[i].mhz; gen_on[i] = g_si_gen[i].on;
+    }
 
     si5356_init_res_t r;
     (void)si5356_init_quiet(&hi2c1, &r);              /* vysledek nese `r` */
 
     for (unsigned i = 0; i < SI5356_GEN_N; i++)
-        if (g_si_gen[i].freq_hz != gen_hz[i] || g_si_gen[i].on != gen_on[i])
-            si5356_gen_request(i, gen_hz[i], gen_on[i] != 0u);
+        if (g_si_gen[i].freq_hz != gen_hz[i] || g_si_gen[i].mhz != gen_mhz[i] || g_si_gen[i].on != gen_on[i])
+            si5356_gen_request_frac(i, gen_hz[i], gen_mhz[i], gen_on[i] != 0u);
 
     if (g_si5356_reinit_cnt < 0xFFFFu) g_si5356_reinit_cnt++;
     g_si5356_reinit_ms  = now;

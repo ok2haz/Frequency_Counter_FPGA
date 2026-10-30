@@ -4492,8 +4492,9 @@ static const char *const GEN_STEP_LBL[8] = { "1 Hz", "10 Hz", "100 Hz", "1 kHz",
                                              "10 kHz", "100 kHz", "1 MHz", "10 MHz" };
 static uint8_t s_gen_step[SI5356_GEN_N] = { 6, 6, 6 };       /* vychozi krok 1 MHz */
 
-/* 200000000 -> "200.000.000 Hz" (tecky po tisicich, jako velke cislo kmitoctu) */
-static void gen_fmt_hz(char *out, size_t n, uint32_t hz)
+/* 200000000 -> "200.000.000 Hz" (tecky po tisicich, jako velke cislo kmitoctu); se zlomkem
+ * (`gen` z UART, mHz) "10.000.000,040 Hz" -- mono_25 carku ma. */
+static void gen_fmt_hz(char *out, size_t n, uint32_t hz, uint16_t mhz)
 {
     char d[12]; int nd = 0;
     do { d[nd++] = (char)('0' + (hz % 10u)); hz /= 10u; } while (hz != 0u);
@@ -4502,7 +4503,8 @@ static void gen_fmt_hz(char *out, size_t n, uint32_t hz)
         out[o++] = d[i];
         if (i > 0 && (i % 3) == 0 && o + 2 < n) out[o++] = '.';
     }
-    snprintf(out + o, n - o, " Hz");
+    if (mhz != 0u) snprintf(out + o, n - o, ",%03u Hz", (unsigned)mhz);
+    else           snprintf(out + o, n - o, " Hz");
 }
 
 static void gen_draw_btns(int i)
@@ -4528,7 +4530,7 @@ static int gen_draw_vals(int i, int force)
     static char c_val[SI5356_GEN_N][24], c_st[SI5356_GEN_N][24];
     const uint8_t on = g_si_gen[i].on, st = g_si_gen[i].state, pend = g_si_gen[i].pend;
     char val[24], sx[24];
-    gen_fmt_hz(val, sizeof val, g_si_gen[i].freq_hz);
+    gen_fmt_hz(val, sizeof val, g_si_gen[i].freq_hz, g_si_gen[i].mhz);
     if (!on) strncat(val, "  VYP", sizeof val - strlen(val) - 1);
     const char *stx = pend ? "zapisuji..." :
                       st == SI5356_GEN_OK ? "zapsano do cipu" :
@@ -4582,15 +4584,18 @@ static void gen_tick(void)
 static bool gen_touch(int16_t x, int16_t y)
 {
     for (int i = 0; i < (int)SI5356_GEN_N; i++) {
-        uint32_t f  = g_si_gen[i].freq_hz;
-        uint8_t  on = g_si_gen[i].on;
+        uint32_t f   = g_si_gen[i].freq_hz;
+        uint16_t mhz = g_si_gen[i].mhz;      /* zlomek z UART `gen`: -/+ ho zahodi, ZAP/VYP ponecha */
+        uint8_t  on  = g_si_gen[i].on;
         const uint32_t step = GEN_STEP_HZ[s_gen_step[i]];
         int changed = 0, redraw_btns = 0;
         if (in_rect(x, y, gen_minus_rect(i))) {
             f = (f < SI5356_GEN_F_MIN_HZ + step) ? SI5356_GEN_F_MIN_HZ : f - step;
+            mhz = 0u;
             changed = 1;
         } else if (in_rect(x, y, gen_plus_rect(i))) {
             f = ((uint64_t)f + step > SI5356_GEN_F_MAX_HZ) ? SI5356_GEN_F_MAX_HZ : f + step;
+            mhz = 0u;
             changed = 1;
         } else if (in_rect(x, y, gen_step_rect(i))) {
             s_gen_step[i] = (uint8_t)((s_gen_step[i] + 1u) % 8u);
@@ -4601,7 +4606,7 @@ static bool gen_touch(int16_t x, int16_t y)
         } else {
             continue;
         }
-        if (changed) si5356_gen_request((unsigned)i, f, on != 0u);
+        if (changed) si5356_gen_request_frac((unsigned)i, f, mhz, on != 0u);
         prim_set_target(&s_fb); prim_reset_clip();
         if (redraw_btns) gen_draw_btns(i);
         (void)gen_draw_vals(i, 1);

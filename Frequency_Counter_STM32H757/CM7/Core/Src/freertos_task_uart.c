@@ -858,6 +858,9 @@ static void gpsdo_print_status(void)
  * `gen <2|4|6> <Hz>`        nastavi kmitocet dvojice CLKn/n+1 (zapne ji)
  * `gen <2|4|6> on|off`      povoli / zakaze vystup
  * `gen <2|4|6> <Hz> off`    nastavi kmitocet a necha vystup vypnuty
+ * <Hz> smi mit az 3 desetinna mista (mHz, tecka nebo carka): `gen 2 10000000.040` = test TDC
+ * s pomalu ujizdejici fazi (v0.42.13). Zlomek se neuklada; vypis ukazuje i SKUTECNY kmitocet
+ * z P1/P2/P3 na uHz (presny zlomek se do P3 nemusi vejit).
  * Cislo je index PRVNIHO pinu dvojice (jako popisky na desce); CLK0/1 = reference FPGA
  * se odsud menit NEDA. Zapis do cipu dela SensorsTask (vlastnik I2C1), tady jen zadost.
  * noinline: vlastni ramec, at nezvetsuje ramec UartTask_run (L-0035). */
@@ -872,38 +875,49 @@ __attribute__((noinline)) static void uart_gen_cmd(const char *a)
         const unsigned ch = (unsigned)(*a - '2') / 2u;
         a++;
         while (*a == ' ') a++;
-        uint32_t f  = g_si_gen[ch].freq_hz;
-        bool     on = g_si_gen[ch].on != 0u;
+        uint32_t f   = g_si_gen[ch].freq_hz;
+        uint16_t mhz = g_si_gen[ch].mhz;
+        bool     on  = g_si_gen[ch].on != 0u;
         if (*a >= '0' && *a <= '9') {
             uint32_t v = 0u;
             while (*a >= '0' && *a <= '9' && v <= 400000000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; }
             if (*a >= '0' && *a <= '9') { printf("GEN: kmitocet je mimo rozsah\n"); return; }
+            mhz = 0u;
+            if (*a == '.' || *a == ',') {
+                a++;
+                unsigned nd = 0u;
+                while (*a >= '0' && *a <= '9' && nd < 3u) { mhz = (uint16_t)(mhz * 10u + (unsigned)(*a - '0')); a++; nd++; }
+                if (*a >= '0' && *a <= '9') { printf("GEN: nejvyse 3 desetinna mista (mHz)\n"); return; }
+                while (nd < 3u) { mhz = (uint16_t)(mhz * 10u); nd++; }
+            }
             f = v; on = true;
             while (*a == ' ') a++;
         }
         if      (strcmp(a, "on") == 0)  on = true;
         else if (strcmp(a, "off") == 0) on = false;
         else if (*a != '\0')            { printf("GEN: neznamy argument `%s`\n", a); return; }
-        if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ) {
-            printf("GEN: %lu Hz je mimo rozsah %lu .. %lu Hz\n", (unsigned long)f,
+        if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ || (f == SI5356_GEN_F_MAX_HZ && mhz != 0u)) {
+            printf("GEN: %lu,%03u Hz je mimo rozsah %lu .. %lu Hz\n", (unsigned long)f, (unsigned)mhz,
                    (unsigned long)SI5356_GEN_F_MIN_HZ, (unsigned long)SI5356_GEN_F_MAX_HZ);
             return;
         }
-        si5356_gen_request(ch, f, on);
+        si5356_gen_request_frac(ch, f, mhz, on);
         for (int i = 0; i < 100 && g_si_gen[ch].pend; i++) osDelay(20);
         if (g_si_gen[ch].pend) printf("GEN: zadost ceka (I2C1 back-off?) - vysledek ukaze `gen`\n");
     }
 
     for (unsigned ch = 0; ch < SI5356_GEN_N; ch++) {
-        const uint32_t f = g_si_gen[ch].freq_hz;
+        const uint32_t f   = g_si_gen[ch].freq_hz;
+        const uint16_t mhz = g_si_gen[ch].mhz;
         const unsigned clk = 2u + 2u * ch;
         const uint8_t  st  = g_si_gen[ch].state;
-        printf("GEN CLK%u/%u: %lu Hz %s  stav %s%s\n", clk, clk + 1u, (unsigned long)f,
+        printf("GEN CLK%u/%u: %lu,%03u Hz %s  stav %s%s%s\n", clk, clk + 1u, (unsigned long)f, (unsigned)mhz,
                g_si_gen[ch].on ? "ZAP" : "VYP",
                st == SI5356_GEN_OK ? "OK" : (st == SI5356_GEN_ERR_I2C ? "CHYBA I2C" : "MIMO ROZSAH"),
-               g_si_gen[ch].pend ? " (zapis ceka)" : "");
+               g_si_gen[ch].pend ? " (zapis ceka)" : "",
+               mhz != 0u ? " (zlomek Hz se neuklada)" : "");
         si5356_ms_t m;
-        if (!si5356_gen_calc(f, &m)) continue;
+        if (!si5356_gen_calc_frac(f, mhz, &m)) continue;
         uint8_t want[10], got[12];
         si5356_gen_pack(&m, want);
         bool rd_ok = false;
@@ -911,8 +925,10 @@ __attribute__((noinline)) static void uart_gen_cmd(const char *a)
             rd_ok = si5356_gen_readback(&hi2c1, ch, got);
             osMutexRelease(i2c1MutexHandle);
         }
-        printf("  MS: R=%u P1=%lu P2=%lu P3=%lu -> %lu Hz\n", 1u << m.rexp, (unsigned long)m.p1,
-               (unsigned long)m.p2, (unsigned long)m.p3, (unsigned long)si5356_gen_actual_hz(&m));
+        const uint64_t uhz = si5356_gen_actual_uhz(&m);
+        printf("  MS: R=%u P1=%lu P2=%lu P3=%lu -> %lu,%06lu Hz\n", 1u << m.rexp, (unsigned long)m.p1,
+               (unsigned long)m.p2, (unsigned long)m.p3,
+               (unsigned long)(uhz / 1000000u), (unsigned long)(uhz % 1000000u));
         if (!rd_ok) { printf("  cip: nelze cist (I2C1 obsazena)\n"); continue; }
         bool same = (got[0] == (uint8_t)(0xC0u | ((unsigned)m.rexp << 2)));
         for (unsigned i = 0; i < 9u; i++) same = same && (got[1 + i] == want[i]);

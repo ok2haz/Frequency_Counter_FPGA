@@ -112,9 +112,9 @@ static bool wr_masked(I2C_HandleTypeDef *h, uint8_t reg, uint8_t val, uint8_t ma
 #define GEN_R_IN_MS      0xC0u                           /* RxDIV_IN = 110 (vlastni MS) */
 
 volatile si5356_gen_t g_si_gen[SI5356_GEN_N] = {
-    { 50000000u,  1u, 0u, SI5356_GEN_OK },     /* CLK2/3 */
-    { 150000000u, 1u, 0u, SI5356_GEN_OK },     /* CLK4/5 */
-    { 200000000u, 1u, 0u, SI5356_GEN_OK },     /* CLK6/7 */
+    { 50000000u,  0u, 1u, 0u, SI5356_GEN_OK },     /* CLK2/3 */
+    { 150000000u, 0u, 1u, 0u, SI5356_GEN_OK },     /* CLK4/5 */
+    { 200000000u, 0u, 1u, 0u, SI5356_GEN_OK },     /* CLK6/7 */
 };
 
 /* Stav po (re)inicializaci cipu = to, co zapsal REGMAP (viz export CBPro). */
@@ -123,33 +123,63 @@ void si5356_gen_defaults(void)
     static const uint32_t def_hz[SI5356_GEN_N] = { 50000000u, 150000000u, 200000000u };
     for (unsigned i = 0; i < SI5356_GEN_N; i++) {
         g_si_gen[i].freq_hz = def_hz[i];
+        g_si_gen[i].mhz     = 0u;
         g_si_gen[i].on      = 1u;
         g_si_gen[i].pend    = 0u;
         g_si_gen[i].state   = SI5356_GEN_OK;
     }
 }
 
-static uint32_t gcd32(uint32_t a, uint32_t b)
+static uint64_t gcd64(uint64_t a, uint64_t b)
 {
-    while (b != 0u) { uint32_t t = a % b; a = b; b = t; }
+    while (b != 0u) { uint64_t t = a % b; a = b; b = t; }
     return a;
 }
 
-bool si5356_gen_calc(uint32_t f_hz, si5356_ms_t *m)
+/* Nejlepsi aproximace num/den (0 < num < den) zlomkem p/q s q <= qmax: posledni sblizeny
+ * zlomek retezoveho zlomku, jehoz jmenovatel se do meze vejde. Chyba < 1/(q * qmax), tedy
+ * pod 1e-9 v jednotkach 128*MS (relativne ~3e-14). Nasobeni a*k1 se hlida PRED vypoctem,
+ * aby nepreteklo (a muze byt az ~2^38). */
+static void frac_best(uint64_t num, uint64_t den, uint32_t qmax, uint32_t *p, uint32_t *q)
+{
+    uint64_t h0 = 0u, h1 = 1u, k0 = 1u, k1 = 0u;     /* h(-2), h(-1), k(-2), k(-1) */
+    while (den != 0u) {
+        const uint64_t a = num / den;
+        const uint64_t r = num - a * den;
+        if (k1 != 0u && a > ((uint64_t)qmax - k0) / k1) break;
+        const uint64_t h2 = a * h1 + h0, k2 = a * k1 + k0;
+        h0 = h1; h1 = h2; k0 = k1; k1 = k2;
+        num = den; den = r;
+    }
+    *p = (uint32_t)h1;
+    *q = (uint32_t)k1;
+}
+
+/* Pocita v mHz: 128*VCO / f = (128 000*VCO) / (1000*f + mhz). Pro mhz = 0 je zlomek po
+ * zkraceni TYZ jako drive v celych Hz (jmenovatel <= f < 2^30), takze P1/P2/P3 vsech
+ * dosavadnich nastaveni (i exportu CBPro) zustavaji beze zmeny -- kryje host test
+ * tests/host/t_si5356_gen.c proti puvodnimu vypoctu. */
+bool si5356_gen_calc_frac(uint32_t f_hz, uint16_t mhz, si5356_ms_t *m)
 {
     if (f_hz < SI5356_GEN_F_MIN_HZ || f_hz > SI5356_GEN_F_MAX_HZ) return false;
+    if (mhz > SI5356_GEN_MHZ_MAX || (f_hz == SI5356_GEN_F_MAX_HZ && mhz != 0u)) return false;
     uint8_t rexp = 0;
     while (((uint64_t)f_hz << rexp) < SI5356_MS_F_MIN_HZ) rexp++;    /* nejvyse 5 */
-    const uint64_t fms = (uint64_t)f_hz << rexp;                     /* 5..200 MHz */
-    const uint64_t num = (uint64_t)SI5356_VCO_HZ * 128u;
-    const uint64_t q   = num / fms;
-    const uint32_t rem = (uint32_t)(num % fms);                      /* < fms < 2^30 */
-    const uint32_t den = (uint32_t)fms;
+    const uint64_t fms = ((uint64_t)f_hz * 1000u + mhz) << rexp;     /* [mHz], <= 2e11 */
+    const uint64_t num = (uint64_t)SI5356_VCO_HZ * 128000u;          /* 2,816e14 */
+    uint64_t       q   = num / fms;
+    const uint64_t rem = num % fms;
     uint32_t p2 = 0u, p3 = 1u;
     if (rem != 0u) {
-        const uint32_t g = gcd32(rem, den);
-        p2 = rem / g;
-        p3 = den / g;
+        const uint64_t g = gcd64(rem, fms);
+        const uint64_t rn = rem / g, rd = fms / g;
+        if (rd <= SI5356_MS_P3_MAX) {
+            p2 = (uint32_t)rn;
+            p3 = (uint32_t)rd;
+        } else {
+            frac_best(rn, rd, SI5356_MS_P3_MAX, &p2, &p3);
+            if (p2 >= p3) { q++; p2 = 0u; p3 = 1u; }               /* aproximace 1/1 */
+        }
     }
     m->rexp = rexp;
     m->p1   = (uint32_t)q - 512u;
@@ -161,11 +191,16 @@ bool si5356_gen_calc(uint32_t f_hz, si5356_ms_t *m)
 /* Kmitocet [Hz], ktery cip z techto parametru skutecne vyrobi (zpetny prepocet
  * pro kontrolu v `gen`): 128*VCO / ((P1+512) + P2/P3) / R. `double` staci
  * (vysledek < 2^32, relativni chyba ~1e-16); cely 64b zlomek by pretekl. */
-uint32_t si5356_gen_actual_hz(const si5356_ms_t *m)
+static double gen_actual(const si5356_ms_t *m)
 {
     const double d = ((double)m->p1 + 512.0) * (double)m->p3 + (double)m->p2;
     const double f = (double)SI5356_VCO_HZ * 128.0 * (double)m->p3 / d;
-    return (uint32_t)(f / (double)(1u << m->rexp) + 0.5);
+    return f / (double)(1u << m->rexp);
+}
+
+uint64_t si5356_gen_actual_uhz(const si5356_ms_t *m)
+{
+    return (uint64_t)(gen_actual(m) * 1e6 + 0.5);
 }
 
 void si5356_gen_pack(const si5356_ms_t *m, uint8_t b[10])
@@ -182,11 +217,11 @@ void si5356_gen_pack(const si5356_ms_t *m, uint8_t b[10])
     b[9] = (uint8_t)((m->p3 >> 24) & 0x3Fu);
 }
 
-bool si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, bool on)
+bool si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, uint16_t mhz, bool on)
 {
     if (ch >= SI5356_GEN_N) return false;
     si5356_ms_t m;
-    if (!si5356_gen_calc(f_hz, &m)) return false;
+    if (!si5356_gen_calc_frac(f_hz, mhz, &m)) return false;
     const unsigned d = ch + 1u;                          /* driver B/C/D (A = reference) */
     uint8_t b[10];
     si5356_gen_pack(&m, b);
@@ -202,8 +237,14 @@ bool si5356_gen_apply(I2C_HandleTypeDef *hi2c, unsigned ch, uint32_t f_hz, bool 
 
 void si5356_gen_request(unsigned ch, uint32_t f_hz, bool on)
 {
+    si5356_gen_request_frac(ch, f_hz, 0u, on);
+}
+
+void si5356_gen_request_frac(unsigned ch, uint32_t f_hz, uint16_t mhz, bool on)
+{
     if (ch >= SI5356_GEN_N) return;
     g_si_gen[ch].freq_hz = f_hz;
+    g_si_gen[ch].mhz     = mhz;
     g_si_gen[ch].on      = on ? 1u : 0u;
     __DMB();
     g_si_gen[ch].pend    = 1u;       /* az POSLEDNI: obsluha vidi uz hotove hodnoty */
@@ -214,12 +255,13 @@ void si5356_gen_service(I2C_HandleTypeDef *hi2c)
 {
     for (unsigned ch = 0; ch < SI5356_GEN_N; ch++) {
         if (!g_si_gen[ch].pend) continue;
-        const uint32_t f  = g_si_gen[ch].freq_hz;
-        const bool     on = g_si_gen[ch].on != 0u;
+        const uint32_t f   = g_si_gen[ch].freq_hz;
+        const uint16_t mhz = g_si_gen[ch].mhz;
+        const bool     on  = g_si_gen[ch].on != 0u;
         g_si_gen[ch].pend = 0u;          /* nova zadost behem zapisu ji nastavi znovu */
         si5356_ms_t probe;
-        if (!si5356_gen_calc(f, &probe)) { g_si_gen[ch].state = SI5356_GEN_ERR_RANGE; continue; }
-        g_si_gen[ch].state = si5356_gen_apply(hi2c, ch, f, on) ? SI5356_GEN_OK : SI5356_GEN_ERR_I2C;
+        if (!si5356_gen_calc_frac(f, mhz, &probe)) { g_si_gen[ch].state = SI5356_GEN_ERR_RANGE; continue; }
+        g_si_gen[ch].state = si5356_gen_apply(hi2c, ch, f, mhz, on) ? SI5356_GEN_OK : SI5356_GEN_ERR_I2C;
     }
 }
 
