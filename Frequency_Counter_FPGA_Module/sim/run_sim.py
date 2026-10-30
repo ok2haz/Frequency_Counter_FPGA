@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Spoustec simulaci FPGA bez PowerShellu: cte tabulku $tests ze sim/run.ps1 a pousti
 iverilog/vvp se stejnymi volbami (vcetne -DSIM_AUTOCAL pro testy bez stmcal = $true).
-Pouziti: run_sim.py <koren_FPGA_modulu> [jmeno ...]   (bez jmen = vsechny testy)"""
+Pouziti: run_sim.py <koren_FPGA_modulu> [jmeno ...]   (bez jmen = vsechny testy)
+Prostredi: SIM_OUT = adresar vystupu (vychozi /tmp), SIM_DEFS = dalsi -D pro iverilog, COMPILE_ONLY = jen preklad."""
 import os, re, subprocess, sys, time
 
 root = os.path.abspath(sys.argv[1])
@@ -37,7 +38,8 @@ for t in tests:
     vvp = os.path.join(out_dir, t['name'] + '.vvp')
     files = [os.path.join(sim, x) for x in t['extra']] + [os.path.join(src, x) for x in t['rtl']] + [os.path.join(sim, t['tb'])]
     ac = [] if t['stmcal'] else ['-DSIM_AUTOCAL']
-    cmd = ['iverilog', '-g2012', '-I', sim, '-s', t['top']] + ac + t['defs'] + ['-o', vvp] + files
+    # SIM_DEFS (2026-10-30): dalsi definice pro vsechny vybrane testy, napr. SIM_DEFS=-DAPP_OSC (varianta abl_cls appOsc)
+    cmd = ['iverilog', '-g2012', '-I', sim, '-s', t['top']] + ac + t['defs'] + os.environ.get('SIM_DEFS', '').split() + ['-o', vvp] + files
     t0 = time.time()
     print('--- Test %s ---' % t['name'], flush=True)
     r = subprocess.run(cmd, capture_output=True, text=True)

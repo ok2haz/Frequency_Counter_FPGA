@@ -16,7 +16,9 @@
 // ============================================================
 
 module top_v3 (
+`ifndef APP_OSC
     input  wire clk_ref_10m,
+`endif
     input  wire clk_p0_100m,
     input  wire ch_a,
     input  wire ch_b,
@@ -39,12 +41,28 @@ module top_v3 (
 `endif
 );
     localparam CLK_MHZ = 100;
+    // 2026-10-30 (STATUS #347, APP_OSC): chyba casove znacky TDC zavisi na poloze hrany v ramci 100 ns, tedy vuci 10 MHz
+    // (docs/MERENI_A_KALIBRACE.md, test s ujizdejici fazi). Zkusebni varianta APP_OSC bere hodiny domeny aplikace / SPI
+    // (`clk_app`) z vnitrniho oscilatoru (250 MHz / OSC_DIV = 24 -> ~10,4 MHz, NESOUDELNY se 100 MHz) a pin 42 (REF_10MHz)
+    // nepouziva. Hlidac 100 MHz pocita proti OSC se sirsi toleranci, hlidac koherence 100/10 MHz je vypnuty.
 `ifndef OSC_DIV
+`ifdef APP_OSC
+    localparam OSC_DIV = 24;
+`else
     localparam OSC_DIV = 8;
+`endif
 `else
     localparam OSC_DIV = `OSC_DIV;
 `endif
     localparam [7:0] OSC_TMO = (((250 * 8) / OSC_DIV) > 255) ? 8'd255 : ((250 * 8) / OSC_DIV);
+    // vnitrni oscilator: ref_guard, LED FPGA_OK a (APP_OSC) domena aplikace
+    wire osc_clk;
+    OSC #(.FREQ_DIV(OSC_DIV), .DEVICE("GW1NR-9C")) u_osc (.OSCOUT(osc_clk));
+`ifdef APP_OSC
+    wire clk_app = osc_clk;
+`else
+    wire clk_app = clk_ref_10m;
+`endif
     // delka segmentu v taktech 100 MHz a kruh (simulace: segmenty 100x kratsi, volitelne mensi kruh)
 `ifdef SIM_TOP
     localparam SEG25 = 25000, SEG10 = 10000;
@@ -95,9 +113,17 @@ module top_v3 (
     reg        clk_flt = 1'b0;
     reg [7:0]  clk_loss = 8'd0;
     wire       cm_edge = cm_s[2] ^ cm_s[1];
+`ifdef APP_OSC
+    // okno 1024 taktu OSC = 1024 * OSC_DIV / 250 us, hrana cdiv[4] kazdych 16 taktu 100 MHz; OSC ma toleranci kmitoctu
+    // jednotky % (teplota, kus) -> mez +-20 %, hlida se jen vypadek / hrube spatne hodiny
+    localparam [10:0] CM_EXP = (1024 * OSC_DIV * CLK_MHZ) / (250 * 16);
+    localparam [10:0] CM_TOL = CM_EXP / 5;
+`else
     localparam [10:0] CM_EXP = (CLK_MHZ * 32) / 5;
-    wire       cm_good = (cm_cnt >= CM_EXP - 11'd4) && (cm_cnt <= CM_EXP + 11'd4);
-    always @(posedge clk_ref_10m) begin
+    localparam [10:0] CM_TOL = 11'd4;
+`endif
+    wire       cm_good = (cm_cnt >= CM_EXP - CM_TOL) && (cm_cnt <= CM_EXP + CM_TOL);
+    always @(posedge clk_app) begin
         cm_s   <= {cm_s[1:0], cdiv[4]};
         cm_win <= cm_win + 10'd1;
         if (&cm_win) begin
@@ -353,7 +379,7 @@ module top_v3 (
         .seg_tick(seg_tick), .freeze(freeze), .snap(snap), .clear(clear), .clear_a(clear_a), .clear_b(clear_b), .nfc_a(nfc_a), .nfc_b(nfc_b), .rec_tgl(rec_tgl), .seg_idx(seg_idx),
         .a_n(a_n), .b_n(b_n), .a_x0(a_x0), .b_x0(b_x0), .a_t0(a_t0), .b_t0(b_t0), .a_sx(a_sx), .b_sx(b_sx),
         .a_st(a_st), .b_st(b_st), .a_fl(a_fl), .b_fl(b_fl), .a_p(a_pr), .b_p(b_pr),
-        .rclk(clk_ref_10m), .raddr(ring_raddr), .rdata(ring_rdata));
+        .rclk(clk_app), .raddr(ring_raddr), .rdata(ring_rdata));
 
     // diagnostika posledniho segmentu do hlavicky (zachyceno pri nulovani, cte se zive)
     reg [7:0] lb_a = 8'd0, lb_b = 8'd0;  reg [3:0] lo_a = 4'd0, lo_b = 4'd0;
@@ -377,7 +403,7 @@ module top_v3 (
     raw_cap3 #(.PS_INIT(PS_INIT)) u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
         .tv_a(tvr_a), .tv_b(tvr_b), .gap_a(gpr_a), .gap_b(gpr_b),
         .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
-        .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q),
+        .rclk(clk_app), .rk(raw_k), .rq(raw_q),
         .ps_ck(O_psram_ck[0]), .ps_ck_n(O_psram_ck_n[0]), .ps_cs_n(O_psram_cs_n[0]), .ps_rst_n(O_psram_reset_n[0]),
         .ps_dq(IO_psram_dq[7:0]), .ps_rwds(IO_psram_rwds[0]));
 `else
@@ -386,7 +412,7 @@ module top_v3 (
     raw_cap3l u_raw (.clk(clk_p0_100m), .req_tgl(raw_tgl), .req_ch(raw_ch), .req_mode(raw_mode), .req_arg(raw_arg),
         .tv_a(tvr_a), .tv_b(tvr_b), .gap_a(gpr_a), .gap_b(gpr_b),
         .ts_a(ts_a), .ts_b(ts_b), .n(raw_n), .dn(raw_dn), .dst(raw_dst), .dwsel(raw_wsel), .dwin(raw_win), .dack(raw_dack),
-        .rclk(clk_ref_10m), .rk(raw_k), .rq(raw_q));
+        .rclk(clk_app), .rk(raw_k), .rq(raw_q));
     assign O_psram_ck[0] = 1'b0; assign O_psram_ck_n[0] = 1'b1; assign O_psram_cs_n[0] = 1'b1; assign O_psram_reset_n[0] = 1'b0;
     assign IO_psram_dq[7:0] = 8'hzz; assign IO_psram_rwds[0] = 1'bz;
 `endif
@@ -397,7 +423,7 @@ module top_v3 (
     reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfa_s = 2'b00, cfb_s = 2'b00, cba_s = 2'b00, cbb_s = 2'b00;
     reg [1:0] cwa_s = 2'b00, cwb_s = 2'b00, bka_s = 2'b00, bkb_s = 2'b00, s10_s = 2'b00;
     reg [1:0] rt1 = 2'b00, rt2 = 2'b00;
-    always @(posedge clk_ref_10m) begin
+    always @(posedge clk_app) begin
         cva_s <= {cva_s[0], cal_valid_a};  cvb_s <= {cvb_s[0], cal_valid_b};
         cfa_s <= {cfa_s[0], cal_fail_a};   cfb_s <= {cfb_s[0], cal_fail_b};
         cba_s <= {cba_s[0], cal_busy_a};   cbb_s <= {cbb_s[0], cal_busy_b};
@@ -415,10 +441,10 @@ module top_v3 (
     wire [15:0] tdc_cfg = {TDC_TAPS9, (TDC_STRIDE == 1) ? 1'b1 : 1'b0, (TDC_DUAL != 0) ? 1'b1 : 1'b0, TDC_AW5};
 
     reg [1:0]  bd_s = 2'b00;
-    always @(posedge clk_ref_10m) bd_s <= {bd_s[0], boot_done};
+    always @(posedge clk_app) bd_s <= {bd_s[0], boot_done};
     wire ref_act, ref_ext_pres, ref_ext_lost;
     reg [1:0] ra_s = 2'b00, rp_s = 2'b00, rl_s = 2'b00;
-    always @(posedge clk_ref_10m) begin ra_s <= {ra_s[0], ref_act}; rp_s <= {rp_s[0], ref_ext_pres}; rl_s <= {rl_s[0], ref_ext_lost}; end
+    always @(posedge clk_app) begin ra_s <= {ra_s[0], ref_act}; rp_s <= {rp_s[0], ref_ext_pres}; rl_s <= {rl_s[0], ref_ext_lost}; end
     wire [7:0] clk_status = {2'd0, rl_s[1], rp_s[1], ra_s[1], ~bd_s[1], clk_flt, clk_ok};
 
     // ---- SPI PHY v3 + aplikace ----
@@ -439,7 +465,7 @@ module top_v3 (
     localparam CSDIAG = 1;
 `endif
     wire [39:0]   cs_gl_gray;
-    spi_slave_phy_v3 #(.CS_FILT(CS_FILT)) u_phy (.clk(clk_p0_100m), .clk_app(clk_ref_10m), .sck_pin(spi_sck), .cs_pin(spi_cs_n), .mosi_pin(spi_mosi),
+    spi_slave_phy_v3 #(.CS_FILT(CS_FILT)) u_phy (.clk(clk_p0_100m), .clk_app(clk_app), .sck_pin(spi_sck), .cs_pin(spi_cs_n), .mosi_pin(spi_mosi),
         .miso(spi_miso), .tx_half(tx_half), .tx_we(tx_we), .tx_waddr(tx_waddr), .tx_wdata(tx_wdata), .tx_base(phy_base),
         .busy(phy_busy), .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2), .rx_p3(rx_p3), .rx_blk_ok(rx_blk_ok), .rx_len_ok(rx_len_ok),
@@ -447,7 +473,7 @@ module top_v3 (
         .dbg_sck_cnt(dbg_sck_cnt), .cs_gl_gray(cs_gl_gray));
     // citace pulzu na CS: Gray kod (clk 100 MHz) -> 2 FF v clk_ref_10m -> binarne (jako coh_cnt)
     reg [39:0] csg_s1 = 40'd0, csg_s2 = 40'd0;
-    always @(posedge clk_ref_10m) begin csg_s1 <= cs_gl_gray; csg_s2 <= csg_s1; end
+    always @(posedge clk_app) begin csg_s1 <= cs_gl_gray; csg_s2 <= csg_s1; end
     wire [39:0] cs_gl_cnt;
     genvar gk, gb;
     generate for (gk = 0; gk < 5; gk = gk + 1) begin : g_csgl
@@ -456,13 +482,13 @@ module top_v3 (
         end
     end endgenerate
     reg [2:0] fe_s = 3'b000;
-    always @(posedge clk_ref_10m) fe_s <= {fe_s[1:0], frame_end_tgl};
+    always @(posedge clk_app) fe_s <= {fe_s[1:0], frame_end_tgl};
     wire rx_valid_pulse = fe_s[2] ^ fe_s[1];
 
     wire ref_sel;
     wire [7:0] coh_st, coh_cnt;
     app_v3 #(.BUILD_TIME(BLD_TIME), .BUILD_GIT(BLD_GIT), .RAW(RAW), .CAL_LOG2(CAL_LOG2), .DEEP(DEEP), .CSDIAG(CSDIAG), .CS_FILT(CS_FILT)) u_app (
-        .clk(clk_ref_10m),
+        .clk(clk_app),
         .rx_valid(rx_valid_pulse), .rx_b0(rx_b0), .rx_b1(rx_b1), .rx_b2(rx_b2), .rx_seq(rx_seq),
         .rx_p0(rx_p0), .rx_p1(rx_p1), .rx_p2(rx_p2), .rx_p3(rx_p3), .rx_blk_ok(rx_blk_ok), .rx_len_ok(rx_len_ok),
         .rx_raddr(rx_raddr), .rx_rdata(rx_rdata),
@@ -486,8 +512,6 @@ module top_v3 (
         .pr_a_req(pr_a_req), .pr_b_req(pr_b_req), .pr_a_act(pr_a), .pr_b_act(pr_b), .probe_a(prb_a), .probe_b(prb_b));
 
     // ---- reference (ref_guard z vnitrniho oscilatoru, z top.v) ----
-    wire osc_clk;
-    OSC #(.FREQ_DIV(OSC_DIV), .DEVICE("GW1NR-9C")) u_osc (.OSCOUT(osc_clk));
     ref_guard #(.PRES_TMO(OSC_TMO)) u_refg (.osc_clk(osc_clk), .ext_sens(ext_ref_sens), .sel_req(ref_sel), .ref_ctrl(ref_ctrl),
                       .ext_present(ref_ext_pres), .ext_lost(ref_ext_lost));
     assign ref_act = ref_ctrl;
@@ -496,7 +520,7 @@ module top_v3 (
     reg [2:0] lr_s = 3'b000;
     reg [3:0] lr_n = 4'd0;
     initial led_tx = 1'b1;
-    always @(posedge clk_ref_10m) begin
+    always @(posedge clk_app) begin
         lr_s <= {lr_s[1:0], rec_tgl};
         if (!led_hb_en) led_tx <= 1'b1;
         else if (lr_s[2] ^ lr_s[1]) begin
@@ -507,7 +531,7 @@ module top_v3 (
 
     // ---- hlidac koherence 100/10 MHz (z top.v) ----
     reg tgl10 = 1'b0;
-    always @(posedge clk_ref_10m) tgl10 <= ~tgl10;
+    always @(posedge clk_app) tgl10 <= ~tgl10;
     wire [7:0] coh_gray;
     wire       coh_ok, coh_seen, coh_path, coh_valid;
     reg  [1:0]  rx_s = 2'b00;
@@ -520,13 +544,17 @@ module top_v3 (
     reg coh_hz = 1'b0, coh_en = 1'b0;
     always @(posedge clk_p0_100m) begin
         coh_hz <= (coh_hold == 24'd0);
+`ifdef APP_OSC
+        coh_en <= 1'b0;                                  // OSC neni koherentni se 100 MHz
+`else
         coh_en <= ok_s[1] & boot_done & ~rx_s[1] & coh_hz;
+`endif
     end
     coh_mon u_coh (.clk(clk_p0_100m), .tgl10(tgl10), .en(coh_en),
                    .err_gray(coh_gray), .ep_ok(coh_ok), .err_seen(coh_seen), .path_n(coh_path), .valid(coh_valid));
     reg [7:0] cg_s1 = 8'd0, cg_s2 = 8'd0;
     reg [3:0] cst_s1 = 4'd0, cst_s2 = 4'd0;
-    always @(posedge clk_ref_10m) begin
+    always @(posedge clk_app) begin
         cg_s1  <= coh_gray;  cg_s2  <= cg_s1;
         cst_s1 <= {coh_path, coh_seen, coh_ok, coh_valid}; cst_s2 <= cst_s1;
     end

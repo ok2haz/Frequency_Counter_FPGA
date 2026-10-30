@@ -72,7 +72,12 @@ module tb_top_v3;
     hb_psram_model u_ps0 (.ck(ps_ck[0]),
 `endif .ck_n(ps_ckn[0]), .cs_n(ps_csn[0]), .rst_n(ps_rstn[0]), .dq(ps_dq[7:0]), .rwds(ps_rwds[0]));
     integer ndeep = 0, nwin, w; real dmaxd;
-    top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
+    integer npage_late = 0;
+    top_v3 dut (
+`ifndef APP_OSC
+                .clk_ref_10m(clk10),
+`endif
+                .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
                 .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(pps), .spi_sck(sck), .spi_cs_n(cs), .spi_mosi(mosi), .spi_miso(miso),
                 .O_psram_ck(ps_ck), .O_psram_ck_n(ps_ckn), .O_psram_cs_n(ps_csn), .O_psram_reset_n(ps_rstn),
                 .IO_psram_rwds(ps_rwds), .IO_psram_dq(ps_dq));
@@ -391,11 +396,22 @@ module tb_top_v3;
     reg [23:0] hh [0:NC-1];
     reg [15:0] lt [0:NC-1];
     reg [15:0] lsum; integer lcnt;
+    // 2026-10-30 (APP_OSC): odpoved na zadost o stranku muze prijit az v dalsim ramci (domena aplikace asynchronni ke
+    // 100 MHz, skladani ramce DATA muze zadost predbehnout) -- jako STM (fpga_freq.c v3_page) az 3 ACK transakce.
+    task ack_page(input [7:0] kind, input integer page);
+        integer na;
+        begin na = 0;
+            build_ack(nxt); xfer(1024);
+            while (!(mi[2] == 8'hA0 && mi[116] == kind && rd(117, 2) == page) && na < 2) begin
+                na = na + 1; build_ack(nxt); xfer(1024);
+            end
+            if (na > 0) npage_late = npage_late + 1;
+        end endtask
     task read_hist(input integer ch);
         integer t2, k2, j2;
         begin for (t2 = 0; t2 < 3; t2 = t2 + 1) begin
                 build(8'hA0, ch + 1, t2[7:0], 8'd0, 0); xfer(1024);
-                build_ack(nxt); xfer(1024);
+                ack_page(ch + 1, t2);
                 chk(mi[2] == 8'hA0 && mi[116] == ch + 1 && rd(117, 2) == t2, "kalibrace: stranka histogramu");
                 for (k2 = 0; k2 < 252; k2 = k2 + 1) if (t2 * 252 + k2 < NC) begin
                     j2 = (1 + k2 / 84) * 256 + 2 + 3 * (k2 % 84);
@@ -681,7 +697,7 @@ module tb_top_v3;
             // ---- stranka histogramu A (druh 1), stranka 1 a 2 ----
             for (t = 0; t < 3; t = t + 1) begin
                 build(8'hA0, 8'd1, t[7:0], 8'd0, 0); xfer(1024);
-                build_ack(nxt); xfer(1024);
+                ack_page(8'd1, t);
                 chk(mi[2] == 8'hA0 && mi[116] == 8'd1 && rd(117, 2) == t, "stranka: TYPE/druh/cislo");
                 chk(rd(119, 2) == ((t < 2) ? 252 : 8), "stranka: pocet polozek");
                 for (k = 0; k < 252; k = k + 1) begin
@@ -712,10 +728,10 @@ module tb_top_v3;
             // ---- RAW_CAPTURE kanalu A: 512 po sobe jdoucich znacek (zachyceni probehne v mezere 200 us po zadosti,
             //      512 x perioda), souhrnna stranka polozka 5 = pocet, stranky druhu 3 (dve polozky u24 na znacku) ----
             build(8'h0B, 8'd0, 0, 0, 0); xfer(1024);
-            build(8'hA0, 8'd0, 8'd0, 8'd0, 0); xfer(1024); build_ack(nxt); xfer(1024);
+            build(8'hA0, 8'd0, 8'd0, 8'd0, 0); xfer(1024); ack_page(8'd0, 0);
             chk(mi[2] == 8'hA0 && mi[116] == 8'd0 && rd(256 + 2 + 3 * 5, 3) == 512, "RAW: souhrnna stranka, polozka 5 = 512 znacek");
             for (t = 0; t < 5; t = t + 1) begin
-                build(8'hA0, 8'd3, t[7:0], 8'd0, 0); xfer(1024); build_ack(nxt); xfer(1024);
+                build(8'hA0, 8'd3, t[7:0], 8'd0, 0); xfer(1024); ack_page(8'd3, t);
                 chk(mi[2] == 8'hA0 && mi[116] == 8'd3 && rd(117, 2) == t, "RAW: stranka druhu 3");
                 chk(rd(119, 2) == ((t < 4) ? 252 : 16), "RAW: pocet polozek stranky");
                 for (k = 0; k < 252; k = k + 1) if (t * 252 + k < 1024) rawi[t * 252 + k] = rd((1 + k / 84) * 256 + 2 + 3 * (k % 84), 3);
@@ -736,6 +752,7 @@ module tb_top_v3;
         $display("ramcu %0d, zaznamu %0d (platnych A %0d B %0d), duplicit %0d, kontrol %0d, max|e| 2pt A %.2e B %.2e, sklon A %.2e B %.2e, 1PPS %0d",
                  nfr, nrec_tot, nvalid_a, nvalid_b, dup, nchk, maxe[0], maxe[1], maxsl[0], maxsl[1], npps);
         $display("T0 proti skutecne hrane: max odchylka A %.0f ps, B %.0f ps; preteceni s priznakem %0d", t0max[0], t0max[1], novf);
+        $display("stranek az v dalsim ramci: %0d", npage_late);
         if (errors == 0) $display("PASS: tb_top_v3 (rezim %0d)", `TB_MODE); else $display("FAIL: tb_top_v3 (%0d chyb)", errors);
         $finish;
     end

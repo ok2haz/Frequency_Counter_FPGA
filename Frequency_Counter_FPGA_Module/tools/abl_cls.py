@@ -52,6 +52,13 @@ V = {
     'noDSP': [('top_v3.v', "localparam SUM_DSP    = 1;", "localparam SUM_DSP    = 0;")],
     # 2026-10-28 (L-0247): soucty SX/ST/N jen kanalu B v logice (A dal v DSP) -- vada hornich bitu SX kanalu B
     'noDSPb': [('top_v3.v', "seg_chan3 #(.SUM_DSP(SUM_DSP)) u_sb (", "seg_chan3 #(.SUM_DSP(0)) u_sb (")],
+    # 2026-10-30 (STATUS #347): domena aplikace / SPI z vnitrniho oscilatoru (~10,4 MHz, nesoudelny se 100 MHz), pin 42
+    # (REF_10MHz) nepouzity -- zkouska, zda chyba casove znacky vazana na polohu v ramci 100 ns pochazi z domeny 10 MHz
+    'appOsc': [('top_v3.v', "module top_v3 (", "`define APP_OSC\nmodule top_v3 ("),
+               ('timing_v3.sdc', "create_clock -name clk_ref_10m   -period 100.0 -waveform {0 50.0}  [get_ports {clk_ref_10m}]",
+                "create_clock -name clk_ref_10m   -period 96.0 -waveform {0 48.0}  [get_nets {osc_clk}]"),
+               ('pins.cst', '@@DEL@@clk_ref_10m', ''),
+               ('timing_v3.sdc', '@@DEL@@{rx_s_*}', '')],         # hlidac koherence vypnuty -> rx_s smazany syntezou (TA2003)
     'noTSP': [('top_v3.v', "localparam TDC_TSPIPE = 1;", "localparam TDC_TSPIPE = 0;")],
     'noPPS': [('top_v3.v', "    pps_ides3 u_ipps (.clk(clk_p0_100m), .pin(gps_1pps), .tick(tick_hi), .f_tgl(ppsf_tgl), .f_ts(ppsf_ts), .f_lock(ppsf_lock),\n                      .epoch(pps_epoch));",
                "    assign ppsf_tgl = 1'b0; assign ppsf_ts = 48'd0; assign ppsf_lock = 1'b0; assign pps_epoch = 4'd0;"),
