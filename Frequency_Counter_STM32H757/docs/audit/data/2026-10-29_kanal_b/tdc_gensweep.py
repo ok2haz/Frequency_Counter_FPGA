@@ -38,8 +38,12 @@ ap.add_argument('csv')
 ap.add_argument('--a', nargs=4, type=int, required=True, metavar=('P1', 'P2', 'P3', 'R'))
 ap.add_argument('--b', nargs=4, type=int, metavar=('P1', 'P2', 'P3', 'R'))
 ap.add_argument('--K', type=int, default=10)
+ap.add_argument('--P', type=float, default=10000.0,
+                help='perioda faze [ps]: 10000 = takt; 100000 = takt + poloha vuci 10 MHz referenci (nalez 2026-10-30, '
+                     'pak --K 100..200; harmonicke k nasobek 10 jsou slozka periodicka v taktu)')
 ap.add_argument('--out')
 a = ap.parse_args()
+P = a.P
 
 seq, fa, fb, g = [], [], [], []
 for r in csv.DictReader(open(a.csv)):
@@ -97,11 +101,11 @@ B = channel('B', fb, FB)
 print('oken %d, seq %d..%d (diry %d)' % (len(seq), seq[0], seq[-1], int(np.sum(np.diff(seq) != 1))))
 for c in (A, B):
     span = abs(c['rel']) * (seq[-1] - seq[0]) * c['gate_ps'] / P
-    print('%s: pravda %.6f Hz (100 MHz / %d %+.3e), posun faze %.0f ps/okno, beh pokryl %.0f period taktu' % (
-        c['name'], c['ft'], c['n'], c['rel'], c['sweep'], span))
+    print('%s: pravda %.6f Hz (100 MHz / %d %+.3e), posun faze %.0f ps/okno, beh pokryl %.0f period faze (%.0f ps)' % (
+        c['name'], c['ft'], c['n'], c['rel'], c['sweep'], span, P))
     seg = abs(c['sweep']) / NSEG
-    if seg > P / 4:
-        print('  !! %s: posun za segment %.0f ps > P/4 -> faze se v segmentu rozmaze, tvar E NELZE urcit' % (c['name'], seg))
+    if seg > 2500.0:
+        print('  !! %s: posun za segment %.0f ps > 2,5 ns -> faze se v segmentu rozmaze, tvar E NELZE urcit' % (c['name'], seg))
     elif span < 20:
         print('  !! %s: beh pokryl jen %.1f period -> tvar E nespolehlivy' % (c['name'], span))
     else:
@@ -115,7 +119,7 @@ for c in (A, B):
 
 out = {}
 KE = max(1, min(a.K, A['kmax'], B['kmax']))            # rad fitu pro vypsany tvar (degenerovany kmitocet ho omezi)
-print('\nfit E(faze), Fourier s periodou 10 ns, test na nahodne polovine oken, kterou fit nevidel:')
+print('\nfit E(faze), Fourier s periodou %.0f ps, test na nahodne polovine oken, kterou fit nevidel:' % P)
 print('  kanal  K   R^2   sigma pred -> po [ps]   stredni chyba okna [ps] (relativne)')
 for c, lab in ((A, 'A'), (B, 'B')):
     for K in sorted({4, KE, 20}):
@@ -136,7 +140,7 @@ for lab, E in out.items():
     print('  %-3s %6.1f / %5.1f   %.3f' % (lab, E.max() - E.min(), E.std(), np.abs(np.gradient(E, grid)).max()))
 if 'A' in out and 'B' in out:
     print('  korelace E_A a E_B (tataz faze): %+.2f' % np.corrcoef(out['A'], out['B'])[0, 1])
-print('\nE po 500 ps (faze od zacatku behu):')
+print('\nE po %.0f ps (faze od zacatku behu):' % (20 * P / G))
 print('   faze      ' + '  '.join('%7s' % k for k in out))
 for i in range(0, G, 20):
     print('  %6.0f ps  ' % grid[i] + '  '.join('%+7.1f' % out[k][i] for k in out))

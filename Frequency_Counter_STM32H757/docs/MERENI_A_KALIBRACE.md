@@ -797,6 +797,17 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
 - **Závěr:** potvrzuje se, že σ(A−B) se signálem soudělným se 100 MHz tvoří fázově závislá chyba TDC D(φ), ne šum TDC ani zdroj. Když se fáze uvnitř segmentu protočí přes celou periodu, D se zprůměruje a zbude šum ~4 ps (≈ 3 ps na kanál). Původ D zůstává HYPOTÉZA, oprava se teprve volí (STATUS #347). Generátor zůstává na 10 000 040 Hz (uloženo v syscfg).
 - **Vedlejší nález (rozbor `tdc_gensweep.py`, 2026-10-30): soustavná odchylka proti přesné pravdě.** Generátor i takt FPGA jsou ze stejného VCO, takže správný výsledek je přesně 10 000 040 Hz. Naměřený průměr je přesto vyšší: A **+1,75·10⁻¹²**, B **+2,28·10⁻¹²** (SE 1,4 a 1,0·10⁻¹³, tedy +0,44 / +0,57 ps na okno 0,25 s). Po čtvrthodinách kolísá: A +0,35 / +1,8 / +3,6 / +1,3·10⁻¹², B +1,5 / +2,8 / +3,4 / +1,4·10⁻¹². Kmitočet v `ab.csv` je kvantovaný po 4·10⁻¹² (délka okna v celých ps, `fpga_v3.c:1172`, zaokrouhlení, ne useknutí), medián A je 0 a B +4·10⁻¹². Příčina je neznámá (STATUS #348). Test z kroku 0 průměrnou chybu vypisuje u každého běhu.
 
+#### 2026-10-30 18:03 – 18:46 — test s ujíždějící fází, 10 000 000,041 Hz (CM7 v0.42.13, F0a `b3fbc32`)
+
+- **Zapojení a průběh:** CLK_2 → A, CLK_4 → B, oba `gen … 10000000.041` (P1 27647, P2 213052243, P3 213076844, R 1, stav SHODA). Proti pravdě je posun fáze 1 025 ps za okno. 10 463 oken (0,73 h, test ukončen ručně), vadné segmenty 0, X0 opraveno 0. Data `noc_logs/ab_20261030_1803/`. Rozbor `tdc_gensweep.py`, `tdc_gensplit.py`.
+- **S periodou fáze 10 ns** (takt) se vysvětlí jen část: A σ 80 → 18 ps, B 98 → 19 ps (R² 0,86 / 0,90). Tvar se po bloky 10 min nemění (korelace 1,000). Zbytek ~16 ps ale není funkce fáze mod 10 ns: okna se stejnou fází (vzdálená o 400) spolu nekorelují. Jeho spektrum má čáry v rozestupu 0,0821 Hz, což odpovídá posunu fáze o 50 ns.
+- 🔑 **S periodou fáze 100 ns** (10 taktů, tedy poloha hrany vůči 10 MHz) vysvětlí model téměř všechno: A σ 80 → **7,1 ps**, B 98 → **7,0 ps** (R² 0,99 / 1,00, K 150, testovací okna). Chyba časové značky je tedy deterministická funkce polohy hrany v rámci 100 ns.
+  - **Složka periodická v 10 ns** (TDC v rámci taktu): A p-p 213 / rms 57 ps, B p-p 289 / rms 91 ps. Tvary A a B jsou různé (korelace 0,11).
+  - **Složka vázaná na 100 ns:** A p-p 353 / rms 81 ps, B p-p 359 / rms 78 ps. Tvar A i B je podobný: propad ~−190 ps široký ~15–20 ns a slabší propad o ~50 ns dál. U B je posunutý o ~30 ns, což je dané neznámou vzájemnou fází výstupů CLK2 a CLK4. Korelace složek A a B −0,37 (posun), v A−B se proto nevyruší.
+- **Kandidát na zdroj periody 100 ns (HYPOTÉZA):** do FPGA vede přímo `REF_10MHz` z OCXO (pin 42, `pins.cst:22`) a hodinuje doménu `clk_ref_10m` (SPI PHY, kruhové paměti, stav – `top_v3.v:100`–`529`). Propady ~50 ns od sebe by odpovídaly náběžné a sestupné hraně 10 MHz. Druhá možnost je vazba vstupu CLKIN 10 MHz uvnitř Si5356 do výstupů generátoru, tedy artefakt zdroje, ne čítače. Rozliší pokus s externím OCXO jako signálem.
+- **Důsledek pro návrh opravy:** kalibrace hustotou kódů (i přes vstupní pin) opraví jen složku periodickou v 10 ns. Složku vázanou na 100 ns neuvidí, protože histogram kódů nerozlišuje, ve kterém z 10 taktů hrana přišla.
+- **Průměrná chyba okna:** A −0,17 ps (−6,9·10⁻¹³), B +0,30 ps (+1,2·10⁻¹²), STATUS #348.
+
 #### Postup: test TDC s ujíždějící fází (krok 0 návrhu kalibrace, v0.42.13)
 
 Účel: chyba časové značky **každého kanálu zvlášť a absolutně** jako funkce fáze hrany proti taktu 100 MHz. Pravdu dávají registry MultiSynthu, takže výsledek nezávisí na OCXO ani na šumu zdroje.
@@ -806,7 +817,7 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
    - Proč ,041: posun fáze 1 025 ps za okno, segmenty na mřížce 2,5 ps, perioda 10 ns projde za 2,4 s.
    - Nevhodné: ,040 (posun přesně P/10, vzor fáze se opakuje po 10 oknech, L-0249). Nevhodné jsou i kmitočty, u kterých se fáze posune o víc než ~2,5 ns za segment, například 10 000 040 Hz.
 3. `python -I tools/ab_night.py --hours 1 --warmup 0`.
-4. Rozbor nad kopií dat: `python -I docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py <ab.csv> --a P1 P2 P3 R [--b …] --out <předpona>`.
+4. Rozbor nad kopií dat: `python -I docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py <ab.csv> --a P1 P2 P3 R [--b …] --out <předpona>`. Pusť ho dvakrát: s periodou 10 ns (výchozí) a s `--P 100000 --K 150` (poloha vůči 10 MHz). Rozklad na obě složky dělá `tdc_gensplit.py <ab.csv> P1 P2 P3 R 100`.
    - Výstup: R², σ před a po odečtení tvaru, průměrná chyba okna (absolutní přesnost), tvar E_A, E_B, E_A−E_B po 500 ps a korelace E_A s E_B.
    - Srovnání s tvarem D z běhu s GPSDO: `tdc_dtvar.py <ab.csv 9h> ref.npy`, pak `tdc_dcmp.py <předpona>_AB.npy ref.npy`.
 5. Stejný test zopakovat při 1 MHz (`gen 2 1000000.001`, posun 250 ps za okno) a 25 MHz (`gen 2 25000000.023`, posun 230 ps za okno), případně s předděličkou. Tím se ukáže, zda chyba závisí na kmitočtu a na cestě signálu.
