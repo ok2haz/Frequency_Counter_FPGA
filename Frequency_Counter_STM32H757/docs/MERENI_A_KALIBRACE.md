@@ -808,6 +808,21 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
 - **Důsledek pro návrh opravy:** kalibrace hustotou kódů (i přes vstupní pin) opraví jen složku periodickou v 10 ns. Složku vázanou na 100 ns neuvidí, protože histogram kódů nerozlišuje, ve kterém z 10 taktů hrana přišla.
 - **Průměrná chyba okna:** A −0,17 ps (−6,9·10⁻¹³), B +0,30 ps (+1,2·10⁻¹²), STATUS #348.
 
+#### 2026-10-30 19:11 – 19:51 — externí OCXO (TTL) jen na A, rozlišovací pokus
+
+- **Zapojení:** externí OCXO (TTL) jen na A, bez T-kusu, generátor CLK2/CLK4 vypnutý. Kmitočet 10 000 002,996 Hz (+3,0·10⁻⁷). 9 654 oken, 27 vadných segmentů A za 40 min. Data `noc_logs/ab_20261030_1911/`. Rozbor `tdc_extsweep.py`: pravda neznámá, fáze z vyhlazeného naměřeného kmitočtu. Metodu jsem ověřil na běhu s generátorem bez znalosti pravdy: vyšly tytéž harmonické složky 100 ns, korelace tvaru 1,00.
+- ⚠️ Pokus s T-kusem na A i B dával ~1 % falešných hran (sonda 10 096 / 10 112 kHz, vadný segment v každém okně). TTL výstup do dvou zakončení 49R9 (25 Ω) nedá dost velkou úroveň, stejně jako L-0137. S jedním zakončením sonda ukazovala 10 000 kHz.
+- **Výsledek:**
+
+  | model chyby okna | R² | σ okna |
+  |---|---|---|
+  | perioda fáze 10 ns (K 3 i 6) | −0,01 | 144 → 144 ps |
+  | perioda fáze 100 ns (K 10 / 30 / 60) | 0,99 | 144 → 14 / 9 / 10 ps |
+  | kontrola se zamíchanou fází | −0,04 až −0,26 | beze změny |
+
+  I s nezávislým zdrojem je chyba závislá na poloze hrany v rámci 100 ns a nevysvětlí ji samotná nelinearita TDC v rámci taktu. Podporuje to zdroj v čítači (FPGA / deska / `REF_10MHz`), ne artefakt generátoru.
+- ⚠️ **Tvar se s během s generátorem porovnat nedá.** Posun fáze 74,9 ns za okno je 0,749 P, takže harmonické 2, 6 a 10 se posouvají skoro přesně o půl cyklu za okno a fit je od sebe špatně rozliší. Dominantní vyšla k = 6 (~400 ps), s generátorem k = 1, 2 (63 / 76 ps). Tvary bloků se se vzorem shodují jen s korelací 0,74–0,94. Pro srovnání tvaru je potřeba posun ≤ 0,1 Hz, nebo ~1,5 Hz (0,37 P za okno).
+
 #### Postup: test TDC s ujíždějící fází (krok 0 návrhu kalibrace, v0.42.13)
 
 Účel: chyba časové značky **každého kanálu zvlášť a absolutně** jako funkce fáze hrany proti taktu 100 MHz. Pravdu dávají registry MultiSynthu, takže výsledek nezávisí na OCXO ani na šumu zdroje.
