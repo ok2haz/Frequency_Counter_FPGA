@@ -1140,6 +1140,12 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   CAPS bit24; STM ověří rovnoměrnost fáze před sběrem (`fpga_v3_calpin_cover`) i po něm (`fpga_v3_calpin_check`), neprošlý histogram nezapíše.
   Postup a vyhodnocení: `docs/MERENI_A_KALIBRACE.md` „Postup: kalibrace TDC ze vstupního pinu“. Teplotní rekalibrace a power-cyklus kalibrují
   dál z ring oscilátoru. FPGA FW 0x0509 navíc opravuje ztrátu vyžádané stránky (L-0251, STATUS #349).
+- **FPGA FW 0x050A — clear DSP lokálně registrovaný (STATUS #347 bod 1, L-0252, ⬜ neověřeno na HW):** `seg_chan3` (`v3_core.v`)
+  má lokální FF `clr_d` (`clear` → `clr_d`) pro CE i RESET obou ALU54D (SX/ST) a reset čítače N. Odstraňuje cestu `clear_b` (LW)
+  → CE u_sx, která byla v STA optimistická (+0,97 ns) a na křemíku dělala s APP_OSC chybné součty kanálu B v DSP (N ±4 %, SX o člen
+  bez x0). Součty B tím mohou zpět do DSP (úspora CLS). Zkušební bitstream `ab_test/TEST_FW_0x050A_v3_appOsc_…fs` (varianta
+  APP_OSC, `appOsc@3`, setup +0,132 ns, strop 1PPS). Ověřeno `tb_seg_dsp` + `holdinv`. Vydání zkušebního bitstreamu z `abl/`:
+  `tools/rel_abl.py`; časování pinů DSP hotového sestavení `tools/dsp_sta.py`; reprodukce vydaného bitstreamu `tools/rel_repro.py`.
 - **Webhook alarmů přes síť (STM v0.41.0, IPC v30, STATUS #249, ⬜ neověřeno na HW, flashnout OBĚ banky):** UART `alarmpush [url http://a.b.c.d[:port][/cesta]|on|off|test]`; CM4 (`lwip_app_push_tick`) posílá HTTP POST s JSON při zvýšení pocitadel `alarm_*` ve snapshotu, blok `push` v `ipc_shared_t`, logika `alarm_push.h` (host test `tests/host/t_alarm_push.c`), zkušební příjemce `tools/webhook_listen.py`. Jen HTTP + IPv4. Nezávisí na mute.
 
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)

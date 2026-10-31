@@ -5818,6 +5818,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0252 - cesta clear_b po LW do CE/RESET bloku DSP byla v STA optimistická → součty kanálu B v DSP počítaly špatně (APP_OSC)
+
+- **Datum:** 2026-10-31
+- **Oblast:** FPGA `Frequency_Counter_FPGA_Module/src/v3_core.v` (`seg_chan3` DSP SX/ST/N kanálu B), varianta APP_OSC (STATUS #347)
+- **Symptom:** s bitstreamy `appOsc@2`/`appOsc@3` (součty B v DSP) počítal kanál B špatně — N segmentu ±4 % (X0 správně), SX přebytek ≈ X0 (jeden člen bez odečtení x0), ST a T0/X0 správné. Všechny segmenty B vadné, A čisté. Varianta `appOsc+noDSPb` (součty B v logice) fungovala. STA přitom hlásila viol 0.
+- **Příčina (rozbor 2026-10-31, `tools/rel_repro.py` + `tools/dsp_sta.py`; `appOsc@2/@3`, `F0a b3fbc32` i `796c009` znovu sestaveny bit po bitu shodně):** rozmístění DSP bylo ve všech buildech stejné (u_sx `DSP_R19[2][A]`), zpětná vazba N uvnitř DSP (SDF 0 ns) — vadný blok to nebyl. Lišila se jen cesta `clear_b` (vedená po LW, route ~4,9 ns) → LUT (`v1 | clear`) → CE u_sx: rezerva STA jen **+0,97 ns** (@2) / +1,62 ns (@3), zatímco funkční sestavení mají všechny CE do DSP ≥ 2,25 ns. STA tu LW cestu **podhodnotila** → na křemíku CE/RESET dorazil o takt pozdě a jedno přičtení proběhlo s `x0` ještě nenulovým (SX přebytek ≈ X0, N navíc). Podpis SX přesně odpovídá „jeden člen bez odečtení x0".
+- **Oprava (FW 0x050A, bod 1):** `clr_d` = lokální FF v `seg_chan3` (`clear` → `clr_d` je celá perioda setupu, `clr_d` → CE/RESET DSP krátké a místní) řídí CE i RESET SX/ST a reset N. Cesta `clear_b` do CE zmizí (`clear_b` jde už jen do `clr_d`/D a do fabric FF `p_seg`/`inv`/`o_ovl`, kde byla rezerva ≥ 2,3 ns). Reset se posune E+26 → E+27: bezpečné (zapisovač čte v E+7..E+15, další přičtení ~2,5M taktů po clear). `tb_seg_dsp` PASS (bit po bitu včetně přetečení), `holdinv` PASS. Zkušební bitstream `TEST_FW_0x050A_v3_appOsc_20261031-2153.fs` (`appOsc@3`, setup +0,132 ns, strop je 1PPS cesta `f_ts→bw`, ne DSP).
+- **Pravidlo:** cesta vedená po LW (long-wire) do řídicího vstupu DSP (CE/RESET) může být v STA optimistická o 1–2 ns; kritické řídicí signály DSP žeň z LOKÁLNÍHO registru u bloku, ne po LW z jiné části FPGA. „viol 0 v STA" nestačí pro LW cesty do DSP — ověř rezervu CE/RESET (`dsp_sta.py`) nebo je registruj lokálně. (Protějšek L-0247, kde se stejná vada řešila na STM obejitím; teď je příčina odstraněna ve FPGA.)
+- **Detekce:** `fpga v3 seg` (vadné segmenty, surové SX/N), `tools/dsp_sta.py` (rezerva CE/RESET DSP v hotovém sestavení, kontrola shody bitstreamu), `tools/rel_repro.py` (reprodukce vydaného bitstreamu z gitu).
+- **Commit:** `2a549a4` (`feat(fpga)`, FPGA modul)
+- **Stav:** 🟡 ověřeno simulací (`tb_seg_dsp`, `holdinv`) + strukturálně (netlist: CE/RESET všech 6 DSP z `clr_d`, ne `clear_b`); ⬜ neověřeno na HW
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
