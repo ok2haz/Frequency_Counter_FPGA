@@ -14,6 +14,7 @@
  * (13) hlavicka PSRAM (FW 0x0505): DEEP_N, DEEP_ST, latence, okno, potvrzeni T_RAW (bajt 127). */
 #include "fpga_v3.h"
 #include "fpga_crc.h"
+#include "fpga_tdccal.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -583,6 +584,71 @@ int main(void)
         CHECK(got && sf == sf_exp && ns == 4u && fabs(f2 - 40000.0) < 1e-6,
               "grp_break %d: okno seg_first %u (cekano %u), nseg %u, f %.6f", brk, (unsigned)sf, (unsigned)sf_exp,
               (unsigned)ns, f2);
+    }
+
+    /* v0.43.0 (FW 0x0509, krok 1): kalibrace ze vstupniho pinu. Model retezu: 250 kodu se sirkou 25..55 (soucet = takt),
+     * referencni histogram ring oscilatoru 2^20 udalosti umerne sirkam. */
+    {
+        static uint32_t ho[512], hp[512];
+        uint32_t w[250], sw = 0u, acc = 0u;
+        uint64_t s = 12345u;
+        for (int k = 0; k < 250; k++) {
+            s = s * 6364136223846793005ull + 1442695040888963407ull;
+            w[k] = 25u + (uint32_t)((s >> 33) % 31u);
+            sw += w[k];
+        }
+        memset(ho, 0, sizeof ho);
+        for (int k = 0; k < 250; k++) { ho[k] = (uint32_t)(((uint64_t)w[k] << 20) / sw); acc += ho[k]; }
+        ho[249] += (1u << 20) - acc;
+        uint16_t nz = 0u; int16_t dev = 0;
+        int r = fpga_v3_calpin_check(ho, ho, 512u, 250u, &nz, &dev);
+        printf("  calpin: rovnomerny zdroj -> %d (kodu %u, osmina %+d promile)\n", r, (unsigned)nz, (int)dev);
+        CHECK(r == 0 && nz == 250u && dev >= -1 && dev <= 1, "calpin rovnomerny: %d, nz %u, dev %d", r, (unsigned)nz, (int)dev);
+        /* referencni tabulka spatne o ~1 % taktu (3 periody zvlneni sirek po 4 %) projde */
+        for (int k = 0; k < 250; k++) hp[k] = (uint32_t)((double)ho[k] * (1.0 + 0.04 * sin(6.283185307 * 3.0 * k / 250.0)));
+        r = fpga_v3_calpin_check(hp, ho, 512u, 250u, &nz, &dev);
+        printf("  calpin: zvlneni sirek 4 %% -> %d (osmina %+d promile)\n", r, (int)dev);
+        CHECK(r == 0 && dev > -30 && dev < 30 && dev != 0, "calpin zvlneni: %d, dev %d", r, (int)dev);
+        /* soudelny zdroj: hrany jen v 5 kodech */
+        memset(hp, 0, sizeof hp);
+        for (int k = 100; k < 105; k++) hp[k] = 200000u;
+        r = fpga_v3_calpin_check(hp, ho, 512u, 250u, &nz, &dev);
+        printf("  calpin: soudelny zdroj -> %d (kodu %u)\n", r, (unsigned)nz);
+        CHECK(r == 1 && nz == 5u, "calpin soudelny: %d, nz %u", r, (unsigned)nz);
+        /* faze prosla takt 1,3x: prvnich 30 % taktu dvojnasobne */
+        for (int k = 0; k < 250; k++) hp[k] = ho[k];
+        acc = 0u;
+        for (int k = 0; k < 250 && acc < (uint32_t)(0.3 * (1u << 20)); k++) { acc += ho[k]; hp[k] *= 2u; }
+        r = fpga_v3_calpin_check(hp, ho, 512u, 250u, &nz, &dev);
+        printf("  calpin: faze 1,3 taktu -> %d (osmina %+d promile)\n", r, (int)dev);
+        CHECK(r == 2 && dev > 400, "calpin 1,3 taktu: %d, dev %d", r, (int)dev);
+        /* faze prosla takt 1,03x: osmina +~170 promile -> odmitnout */
+        for (int k = 0; k < 250; k++) hp[k] = ho[k];
+        acc = 0u;
+        for (int k = 0; k < 250 && acc < (uint32_t)(0.03 * (1u << 20)); k++) { acc += ho[k]; hp[k] *= 2u; }
+        r = fpga_v3_calpin_check(hp, ho, 512u, 250u, &nz, &dev);
+        CHECK(r == 2 && dev > 100, "calpin 1,03 taktu: %d, dev %d", r, (int)dev);
+        /* bez reference: jen pocet kodu; 250 < 9/10 z 300 */
+        r = fpga_v3_calpin_check(ho, NULL, 512u, 0u, &nz, &dev);
+        CHECK(r == 0 && dev == 0, "calpin bez reference: %d, dev %d", r, (int)dev);
+        r = fpga_v3_calpin_check(ho, ho, 512u, 300u, &nz, &dev);
+        CHECK(r == 1, "calpin nz_ref 300: %d", r);
+        memset(hp, 0, sizeof hp);
+        r = fpga_v3_calpin_check(hp, NULL, 512u, 250u, &nz, &dev);
+        CHECK(r == 3 && nz == 0u, "calpin prazdny: %d", r);
+        /* rovnomernost faze PRED sberem (posun faze vuci taktu 10 ns za hranu = zlomek 100 MHz / f): zlaty rez
+         * (11 603 104 Hz) skoro dokonaly; 10 MHz + 0,041 Hz vse v jedne osmine; 10 MHz + 1 Hz faze projde takt 1,05x
+         * za 2^20 hran (nerovnomerny); 10 MHz + 10,5 Hz 11x (rovnomerny) */
+        const int16_t cg = fpga_v3_calpin_cover(11603104.0, 1u << 20);
+        const int16_t cs = fpga_v3_calpin_cover(10000000.041, 1u << 20);
+        const int16_t cp = fpga_v3_calpin_cover(10000001.0, 1u << 20);
+        const int16_t cr = fpga_v3_calpin_cover(10000010.5, 1u << 20);
+        printf("  calpin pokryti faze 2^20 hran [promile]: 11 603 104 Hz %+d, 10 MHz +0,041 Hz %+d, +1 Hz %+d, +10,5 Hz %+d\n",
+               (int)cg, (int)cs, (int)cp, (int)cr);
+        CHECK(cg >= -2 && cg <= 2, "pokryti zlaty rez %d", (int)cg);
+        CHECK(cs > 6000, "pokryti 10 MHz + 0,041 Hz %d", (int)cs);
+        CHECK(cp > 100, "pokryti 10 MHz + 1 Hz %d", (int)cp);
+        CHECK(cr > -20 && cr < 20, "pokryti 10 MHz + 10,5 Hz %d", (int)cr);
     }
 
     printf(fails ? "FAIL (%d)\n" : "PASS\n", fails);

@@ -63,6 +63,13 @@
  * dal 32 b, FPGA bere dolnich 16 b. */
 #define FPGA_V3_CAP_NARROW     (1u << 22)
 #define FPGA_V3_CAP_CSDIAG     (1u << 23)   /* CAPS (FW 0x0508, L-0242): filtr CS v PHY + citace zahozenych pulzu na CS v bajtech 132..137 */
+/* v0.43.0 (FW 0x0509, STATUS #347 krok 1): kalibrace TDC hustotou kodu ze VSTUPNIHO PINU misto ring oscilatoru
+ * (SET_CONFIG 0x02 p1 bit3). Signal na vstupu musi byt nesoudelny se 100 MHz (faze hran rozlozena v taktu rovnomerne,
+ * napr. generator 11 603 104 Hz); zdroj posledni nebo bezici kalibrace kanalu hlasi bajt 51 bit2 (A) a bit3 (B). */
+#define FPGA_V3_CAP_CALPIN     (1u << 24)
+#define FPGA_V3_CAL_START      0x01u        /* SET_CONFIG 0x02 p1 bit0: start sberu histogramu (bity 2:1 = maska kanalu) */
+#define FPGA_V3_CAL_PIN        0x08u        /* SET_CONFIG 0x02 p1 bit3: zdroj = vstupni pin (CAPS bit24) */
+#define FPGA_V3_CALW_PIN(ch)   ((uint8_t)(0x04u << ((ch) & 1u)))   /* bajt 51: kalibrace kanalu je / byla ze vstupniho pinu */
 #define FPGA_V3_DEEP_MAX       699050u      /* 4 MB / 6 B */
 #define FPGA_V3_DS_RDY         0x01u        /* DEEP_ST (bajt 128): PSRAM pripravena (kalibrace zapisu prosla) */
 #define FPGA_V3_DS_BAD         0x02u        /* zadna latence zapisu nesedela */
@@ -459,6 +466,19 @@ int      fpga_v3_seg_resid(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, uint3
  * soucet (posun indexu, chybne horni bity), at je odchylka teziste jakkoli mala. Predpoklad jako fpga_v3_seg_resid.
  * @return 1 = v mezich nebo nelze posoudit (N < 2, saturovane N, dx >= 2^32), 0 = mimo meze */
 int      fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b);
+
+/* v0.43.0 (FW 0x0509, krok 1): kalibrace hustotou kodu ze VSTUPNIHO PINU plati, jen kdyz faze hran vuci taktu pokryla
+ * takt za dobu sberu ROVNOMERNE. Signal soudelny se 100 MHz (10 MHz z GPSDO) da hrany jen v par kodech, faze, ktera
+ * takt projde jednou a kus, nerovnomerny histogram -> tabulka by byla horsi nez z ring oscilatoru.
+ * fpga_v3_calpin_cover: PRED sberem -- rovnomernost faze n hran signalu f_hz (posun faze na hranu = zlomek 100 MHz / f),
+ *   @return nejvetsi odchylka obsazeni osminy taktu od 1/8 [promile] (dokonaly zdroj, bez sumu).
+ * fpga_v3_calpin_check: PO sberu -- (1) neprazdnych kodu aspon 9/10 `nz_ref` (predchozi kalibrace; 0 = nezname -> 64);
+ *   (2) obsazeni osmin taktu podle REFERENCNIHO histogramu `ref_h` (ten, ze ktereho je platna tabulka; bin kodu se deli
+ *   mezi osminy umerne prekryvu) 1/8 +-10 % (ref_h = NULL: mez 2 se nehodnoti). *nz a *dev_permil se vyplni vzdy.
+ *   @return 0 = pouzitelny, 1 = malo kodu, 2 = nerovnomerny, 3 = prazdny */
+int16_t  fpga_v3_calpin_cover(double f_hz, uint32_t n);
+int      fpga_v3_calpin_check(const uint32_t *hist, const uint32_t *ref_h, uint32_t nc, uint16_t nz_ref,
+                              uint16_t *nz, int16_t *dev_permil);
 
 /* Selftest (na cili i hostu): CRC bloku, zaznam, MOSI/LUT_WRITE, emulator -> parser -> okno (kmitocet), vadny blok
  * (opakovani od ACK), preteceni kruhu, rozbaleni T0 pres 2^48. @return true = PASS */

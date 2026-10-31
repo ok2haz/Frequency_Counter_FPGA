@@ -2597,6 +2597,13 @@ bool fpga_freq_tdc_cal_start(void)
     return xfer(tx, rx);
 }
 
+bool fpga_freq_tdc_cal_start_ex(uint8_t mask, bool pin)
+{
+    if (!g_init_ok || s_sim_on || s_proto != 3u) return false;
+    if (pin && !(s3_h_ok && (s3_h.caps & FPGA_V3_CAP_CALPIN))) return false;
+    return v3_cfg(FPGA_V3_CFG_CAL, (uint8_t)(FPGA_V3_CAL_START | ((mask & 3u) << 1) | (pin ? FPGA_V3_CAL_PIN : 0u)), 0u);
+}
+
 /* ── Rezerva TDC retezu (viz fpga_freq.h) ───────────────────────────────────────────────────────────────────── */
 void fpga_tdc_rez_eval(const fpga_tdc_cal_t *c, fpga_tdc_rez_t *r)
 {
@@ -2654,8 +2661,12 @@ static void rez_store(const fpga_tdc_cal_t *c)
 static uint32_t s_ch_h[2][FPGA_TDCCAL_MAX_NC];
 static uint16_t s_ch_l[2][FPGA_TDCCAL_MAX_NC];
 static fpga_tdccal_stats_t s_cal_stats[2];
-static fpga_tdccal_info_t  s_cal_info;
+static fpga_tdccal_info_t  s_cal_info = { .pin_res = { 0xFFu, 0xFFu } };
 static uint32_t s_wait_polls = 0u;
+/* v0.43.0 (FW 0x0509, krok 1): histogram, ze ktereho je platna tabulka kanalu = reference kontroly histogramu ze vstupniho
+ * pinu (fpga_v3_calpin_check, osminy taktu). Po startu STM nezname (s_ref_ok = 0) -> kontroluje se jen pocet kodu. */
+static uint32_t s_ref_h[2][FPGA_TDCCAL_MAX_NC];
+static uint8_t  s_ref_ok[2];
 
 static bool tdc_report_v3(fpga_tdc_cal_t *out);
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out)
@@ -2946,9 +2957,10 @@ static bool v3_hdr_now(fpga_v3_hdr_t *h)
     spi_unlock();
     return ok;
 }
-static bool tdccal_run_v3(uint8_t ch)
+static bool tdccal_run_v3(uint8_t ch, bool pin)
 {
     const uint32_t t_start = HAL_GetTick();
+    const uint16_t nz_prev = s_ref_ok[ch] ? s_cal_stats[ch].nz : 0u;   /* kody predchozi kalibrace (pred prepsanim statistik) */
     uint8_t err = 0u;
     uint32_t nc = 0u;
     /* konfigurace TDC ze souhrnne stranky (polozka 3 = [4:0] log2 adres, [5] DUAL) */
@@ -2971,6 +2983,21 @@ static bool tdccal_run_v3(uint8_t ch)
             for (uint32_t k = 0; rd_ok && k < cnt && p * FPGA_V3_LUTW_MAX + k < nc; k++) s_ch_h[ch][p * FPGA_V3_LUTW_MAX + k] = s3_items[k];
         }
         if (!rd_ok) { err = 3u; continue; }
+        /* 1b) v0.43.0: histogram ze vstupniho pinu (bajt 51 bit 2+ch) se pouzije, jen kdyz faze hran pokryla takt rovnomerne;
+         * jinak tabulku nezapisovat a spustit novy sber z ring oscilatoru (FPGA prestane cekat, kanal dostane platnou tabulku) */
+        if (pin) {
+            uint16_t pnz = 0u; int16_t pdev = 0;
+            const int pc = fpga_v3_calpin_check(s_ch_h[ch], s_ref_ok[ch] ? s_ref_h[ch] : NULL, nc, nz_prev, &pnz, &pdev);
+            s_cal_info.pin_res[ch] = (uint8_t)pc; s_cal_info.pin_nz[ch] = pnz; s_cal_info.pin_dev[ch] = pdev;
+            if (pc != 0) {
+                s_cal_info.pin_rej++;
+                s_cal_info.fails++;
+                s_cal_info.last_err = 5u;
+                s_cal_info.last_ms = HAL_GetTick() - t_start;
+                (void)v3_cfg(FPGA_V3_CFG_CAL, (uint8_t)(FPGA_V3_CAL_START | (1u << (ch + 1u))), 0u);
+                return true;
+            }
+        }
         /* 2) tabulka */
         const uint64_t tot = fpga_tdccal_lut(s_ch_h[ch], nc, FPGA_TDC_CAL_LOG2, dual, s_ch_l[ch]);
         fpga_tdccal_stats(s_ch_h[ch], nc, &s_cal_stats[ch]);
@@ -3002,6 +3029,9 @@ static bool tdccal_run_v3(uint8_t ch)
                 (!valid0 || ((h.tdc_status[ch] >> 4) & 1u) != bank0)) done = true;
         }
         if (!done) { err = 4u; continue; }
+        memcpy(s_ref_h[ch], s_ch_h[ch], nc * sizeof s_ch_h[ch][0]);    /* reference pro dalsi kontrolu histogramu z pinu */
+        s_ref_ok[ch] = 1u;
+        s_cal_info.src[ch] = pin ? 1u : 0u;
         s_cal_info.runs++;
         s_cal_info.last_err = 0u;
         s_cal_info.stats_valid = 1u;
@@ -3020,7 +3050,7 @@ static bool tdccal_poll_v3(void)
     if (++s_wait_polls < 2u) return false;                             /* 2 ramce za sebou */
     s_wait_polls = 0u;
     const uint8_t ch = (s3_h.cal_wait & 1u) ? 0u : 1u;                 /* nejdriv A, druhy kanal az v dalsim behu */
-    const bool r = tdccal_run_v3(ch);
+    const bool r = tdccal_run_v3(ch, (s3_h.caps & FPGA_V3_CAP_CALPIN) && (s3_h.cal_wait & FPGA_V3_CALW_PIN(ch)));
     s3_regroup();                                                      /* kalibrace blokovala: okna znovu, preruseni */
     return r;
 }

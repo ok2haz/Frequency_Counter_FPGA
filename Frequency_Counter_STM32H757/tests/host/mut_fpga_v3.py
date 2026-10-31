@@ -107,6 +107,16 @@ M = [
      'const int slow = cs->open && (int32_t)(cs->cell - a->cell) < 0 && p->b_ok;'),
     ('par: okno bez bunky', 'out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps; out->cell = c->cell;',
      'out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps; out->cell = 0u;'),
+    # v0.43.0 (FW 0x0509, krok 1): kalibrace TDC ze vstupniho pinu
+    ('calpin: bez meze osmin', 'if (worst > 100 || worst < -100) return 2;', 'if (0) return 2;'),
+    ('calpin: mez kodu bez nz_ref', 'const uint32_t nz_min = nz_ref ? ((uint32_t)nz_ref * 9u + 9u) / 10u : 64u;',
+     'const uint32_t nz_min = 64u; (void)nz_ref;'),
+    ('calpin: bin cely do prvni osminy', 'if (hi > lo) occ[k] += h * (hi - lo) / (c1 - c0);', 'if (hi > lo) { occ[k] += h; break; }'),
+    ('calpin: osminy bez reference', 'const double c1 = (rtot > 0.0) ? c0 + (double)ref_h[a] * 8.0 / rtot : c0;',
+     'const double c1 = (rtot > 0.0) ? c0 + 8.0 / (double)nc : c0;'),
+    ('calpin: prazdny = pouzitelny', 'if (tot <= 0.0) return 3;', 'if (tot <= 0.0) return 0;'),
+    ('pokryti: posun faze = f / 100 MHz', 'const double al = r - floor(r);', 'const double al = 1.0 / r;'),
+    ('pokryti: zalomeni faze na 0', 'if (ph >= 1.0) ph -= 1.0;', 'if (ph >= 1.0) ph = 0.0;'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe
 cc = os.environ.get('CC', 'cc').split() + ['-std=c11', '-O2', '-ICM7/Core/Inc', None, 'CM7/Core/Src/fpga_crc.c',

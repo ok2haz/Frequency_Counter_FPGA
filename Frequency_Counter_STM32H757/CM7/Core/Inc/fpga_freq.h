@@ -441,6 +441,11 @@ typedef struct {
 /** Spusti kalibraci TDC (SET_CONFIG 0x02: 0 pak 1 = nabezna hrana). FPGA ji
  *  dokonci za ~0,5-1 s a behem ni nemeri. @return false pri chybe prenosu. */
 bool fpga_freq_tdc_cal_start(void);
+/** v0.43.0 (protokol v3): kalibrace jen kanalu z masky (bit0 A, bit1 B, 0 = oba stridave); `pin` = histogram ze VSTUPNIHO
+ *  PINU misto ring oscilatoru (FW 0x0509, CAPS bit24, krok 1 STATUS #347). Signal na pinu musi mit fazi vuci taktu
+ *  100 MHz rozlozenou rovnomerne (fpga_v3_calpin_cover); histogram pred zapisem tabulky overi fpga_v3_calpin_check.
+ *  @return false = prenos, emulace, v2 nebo FPGA bez CAPS bit24 (pri `pin`). */
+bool fpga_freq_tdc_cal_start_ex(uint8_t mask, bool pin);
 /** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
@@ -454,8 +459,15 @@ typedef struct {
     uint32_t last_ms;                /* doba posledniho behu [ms] */
     uint32_t last_tick;              /* HAL_GetTick posledniho uspesneho behu (0 = zatim zadny) */
     uint16_t naddr;                  /* velikost tabulky */
-    uint8_t  last_err;               /* 0 = ok, 1 = histogram (soucet), 2 = zapis (pocitadlo/soucet), 3 = prenos, 4 = potvrzeni */
+    uint8_t  last_err;               /* 0 = ok, 1 = histogram (soucet), 2 = zapis (pocitadlo/soucet), 3 = prenos, 4 = potvrzeni,
+                                      * 5 = histogram ze vstupniho pinu neprosel kontrolou (v0.43.0) */
     uint8_t  stats_valid;            /* ovf/peak/nz/last pocitane z posledniho histogramu (pro `tdc` / rezervu retezu) */
+    /* v0.43.0 (FW 0x0509, krok 1): kalibrace ze vstupniho pinu */
+    uint8_t  src[2];                 /* zdroj platne tabulky kanalu: 0 = ring oscilator, 1 = vstupni pin */
+    uint8_t  pin_res[2];             /* posledni fpga_v3_calpin_check: 0 ok, 1 malo kodu, 2 nerovnomerny, 3 prazdny, 0xFF zatim zadna */
+    uint16_t pin_nz[2];              /* neprazdnych kodu posledniho histogramu z pinu */
+    int16_t  pin_dev[2];             /* jeho nejvetsi odchylka osminy taktu od 1/8 [promile] */
+    uint32_t pin_rej;                /* odmitnute histogramy z pinu (kanal pak dostal novou tabulku z ring oscilatoru) */
 } fpga_tdccal_info_t;
 bool fpga_freq_tdccal_poll(void);   /* @return true = probehl beh kalibrace (uspesne i ne) */
 void fpga_freq_tdccal_info(fpga_tdccal_info_t *o);

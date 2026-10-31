@@ -782,6 +782,66 @@ int fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b)
     return a->sx >= lo && a->sx <= hi;
 }
 
+/* ══════════════ v0.43.0: kalibrace TDC ze vstupniho pinu (FW 0x0509, krok 1) ══════════════ */
+static int32_t worst8(const double occ[8], double tot)
+{
+    int32_t worst = 0;
+    for (int k = 0; k < 8; k++) {
+        const int32_t d = (int32_t)lround(occ[k] * 8000.0 / tot) - 1000;
+        if ((d < 0 ? -d : d) > (worst < 0 ? -worst : worst)) worst = d;
+    }
+    return worst;
+}
+
+int fpga_v3_calpin_check(const uint32_t *hist, const uint32_t *ref_h, uint32_t nc, uint16_t nz_ref,
+                         uint16_t *nz, int16_t *dev_permil)
+{
+    double occ[8] = { 0.0 }, tot = 0.0, rtot = 0.0;
+    uint32_t n = 0u;
+    if (ref_h != NULL) for (uint32_t a = 0; a < nc; a++) rtot += (double)ref_h[a];
+    double c0 = 0.0;                                   /* zacatek binu kodu a podle referencniho histogramu [osminy] */
+    for (uint32_t a = 0; a < nc; a++) {
+        const double h = (double)hist[a];
+        const double c1 = (rtot > 0.0) ? c0 + (double)ref_h[a] * 8.0 / rtot : c0;
+        if (hist[a] != 0u) {
+            n++;
+            tot += h;
+            if (rtot > 0.0) {
+                if (c1 <= c0) occ[(int)c0 > 7 ? 7 : (int)c0] += h;      /* bin bez sirky: bod */
+                else for (int k = (int)c0; k < 8 && (double)k < c1; k++) {
+                    const double lo = (c0 > (double)k) ? c0 : (double)k, hi = (c1 < (double)(k + 1)) ? c1 : (double)(k + 1);
+                    if (hi > lo) occ[k] += h * (hi - lo) / (c1 - c0);
+                }
+            }
+        }
+        c0 = c1;
+    }
+    *nz = (uint16_t)n;
+    *dev_permil = 0;
+    if (tot <= 0.0) return 3;
+    int32_t worst = 0;
+    if (rtot > 0.0) { worst = worst8(occ, tot); *dev_permil = (int16_t)worst; }
+    const uint32_t nz_min = nz_ref ? ((uint32_t)nz_ref * 9u + 9u) / 10u : 64u;
+    if (n < nz_min) return 1;
+    if (worst > 100 || worst < -100) return 2;
+    return 0;
+}
+
+int16_t fpga_v3_calpin_cover(double f_hz, uint32_t n)
+{
+    if (!(f_hz > 0.0) || n == 0u) return 32767;
+    const double r = 100.0e6 / f_hz;                   /* perioda signalu v taktech */
+    const double al = r - floor(r);                    /* posun faze hrany vuci taktu na hranu [takty] */
+    double ph = 0.0, occ[8] = { 0.0 };
+    for (uint32_t i = 0; i < n; i++) {
+        int k = (int)(ph * 8.0);
+        occ[k > 7 ? 7 : k] += 1.0;
+        ph += al;
+        if (ph >= 1.0) ph -= 1.0;
+    }
+    return (int16_t)worst8(occ, (double)n);
+}
+
 /* ══════════════ v0.42.12: parovani oken A a B ══════════════ */
 void fpga_v3_pair_init(fpga_v3_pair_t *p) { memset(p, 0, sizeof *p); }
 

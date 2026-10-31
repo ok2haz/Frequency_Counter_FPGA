@@ -358,6 +358,111 @@ static void uart_raw_cb(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps)
 	printf("  %3lu  %s  d %s\n", (unsigned long)i, t, d);
 }
 
+/* v0.43.0 (FW 0x0509, STATUS #347 krok 1): `tdc cal [pin] [a|b] [gen]`. Bez `pin` kalibrace z ring oscilatoru jen
+ * vybraneho kanalu; s `pin` histogram ze VSTUPNIHO PINU. Signal musi mit fazi vuci taktu 100 MHz rozlozenou rovnomerne,
+ * predem se to overi z kmitoctu (fpga_v3_calpin_cover), po sberu z histogramu (fpga_v3_calpin_check v ovladaci).
+ * `gen` = na dobu kalibrace generator CLK2/3 a CLK4/5 (kabely CLK_2 -> A, CLK_4 -> B) na UART_CALPIN_HZ (krok faze
+ * mezi hranami ~ zlaty rez), pak puvodni nastaveni. Ceka nejvys ~15 s. @return vzdy 1 (pak se vypise report `tdc`). */
+#define UART_CALPIN_HZ  11603104u
+static int uart_tdc_cal_ex(const char *a)
+{
+	int pin = 0, gen = 0, bad = 0;
+	uint8_t mask = 0u;
+	char tok[8];
+	while (*a) {
+		while (*a == ' ') a++;
+		size_t n = 0;
+		while (a[n] != '\0' && a[n] != ' ') n++;
+		if (n == 0) break;
+		if (n >= sizeof tok) { bad = 1; break; }
+		memcpy(tok, a, n); tok[n] = '\0'; a += n;
+		if      (strcmp(tok, "pin") == 0) pin = 1;
+		else if (strcmp(tok, "gen") == 0) gen = 1;
+		else if (strcmp(tok, "a") == 0)   mask |= 1u;
+		else if (strcmp(tok, "b") == 0)   mask |= 2u;
+		else bad = 1;
+	}
+	if (bad || (gen && !pin)) { printf("TDC: pouziti `tdc cal [pin] [a|b] [gen]` (gen jen s pin)\n"); return 1; }
+	if (mask == 3u) mask = 0u;
+	fpga_v3_info_t vi;
+	memset(&vi, 0, sizeof vi);
+	fpga_freq_v3_info(&vi);
+	if (vi.proto != 3u || vi.sim) { printf("TDC: `tdc cal pin|a|b` jen se skutecnym FPGA v3\n"); return 1; }
+	if (pin && !(vi.caps & FPGA_V3_CAP_CALPIN)) {
+		printf("TDC: FPGA FW 0x%04X kalibraci ze vstupniho pinu neumi (CAPS bit24, FW >= 0x0509)\n", (unsigned)vi.fw);
+		return 1;
+	}
+	uint32_t sv_f[2] = { 0u, 0u }; uint16_t sv_m[2] = { 0u, 0u }; uint8_t sv_on[2] = { 0u, 0u };
+	if (pin) {
+		for (int c = 0; c < 2; c++) {
+			if (mask && !(mask & (1u << c))) continue;
+			if ((vi.presc[c] & 0x0Fu) != 0u) {
+				printf("TDC: kanal %c ma predelicku P > 1, kalibrace z pinu jen s P = 1 (`fpga presc %c 0`)\n", 'A' + c, 'a' + c);
+				return 1;
+			}
+		}
+		if (gen) {
+			for (int c = 0; c < 2; c++) {
+				sv_f[c] = g_si_gen[c].freq_hz; sv_m[c] = g_si_gen[c].mhz; sv_on[c] = g_si_gen[c].on;
+				si5356_gen_request((unsigned)c, UART_CALPIN_HZ, true);
+			}
+			for (int i = 0; i < 40 && (g_si_gen[0].pend || g_si_gen[1].pend); i++) osDelay(50);
+			osDelay(500);                          /* okna se srovnaji na novy kmitocet */
+		}
+		/* rovnomernost faze 2^20 hran z kmitoctu (generator presne, jinak posledni okno; kanal B je ve slotu /16) */
+		fpga_meas_t m;
+		memset(&m, 0, sizeof m);
+		const int have = fpga_freq_get_last(&m) ? 1 : 0;
+		for (int c = 0; c < 2; c++) {
+			if (mask && !(mask & (1u << c))) continue;
+			const double f = gen ? (double)UART_CALPIN_HZ
+			                     : (have ? (double)(c ? m.freq16_x100000 : m.frequency_x100000) * 1e-5 : 0.0);
+			const int16_t cov = (f >= 0.5e6 && f <= 19.0e6) ? fpga_v3_calpin_cover(f, 1u << FPGA_TDC_CAL_LOG2) : (int16_t)32767;
+			printf("TDC %c: signal %lu Hz, faze 2^%u hran pokryje takt s odchylkou osminy %d promile\n", 'A' + c,
+			       (unsigned long)(f + 0.5), (unsigned)FPGA_TDC_CAL_LOG2, (int)cov);
+			if (cov > 10 || cov < -10) {
+				printf("TDC %c: ODMITNUTO -- signal musi byt 0,5..19 MHz a nesoudelny se 100 MHz (napr. `tdc cal pin gen` = %lu Hz)\n",
+				       'A' + c, (unsigned long)UART_CALPIN_HZ);
+				bad = 1;
+			}
+		}
+	}
+	if (!bad) {
+		fpga_tdccal_info_t c0, c1;
+		fpga_freq_tdccal_info(&c0);
+		const uint32_t want = (mask == 0u) ? 2u : 1u;
+		if (!fpga_freq_tdc_cal_start_ex(mask, pin != 0)) {
+			printf("TDC: SET_CONFIG se nepodaril (link?)\n");
+		} else {
+			printf("TDC: kalibrace %s %s spustena, ceka se nejvys 15 s\n", pin ? "ze VSTUPNIHO PINU" : "z ring oscilatoru",
+			       (mask == 1u) ? "kanalu A" : ((mask == 2u) ? "kanalu B" : "obou kanalu"));
+			c1 = c0;
+			for (int i = 0; i < 60; i++) {
+				osDelay(250);
+				fpga_freq_tdccal_info(&c1);
+				if ((c1.runs + c1.fails) - (c0.runs + c0.fails) >= want) break;
+			}
+			static const char *const pr[5] = { "PROSEL", "ODMITNUT: malo kodu (signal soudelny se 100 MHz?)",
+			                                    "ODMITNUT: nerovnomerny", "ODMITNUT: prazdny", "nehodnocen" };
+			for (int c = 0; c < 2; c++) {
+				if (mask && !(mask & (1u << c))) continue;
+				if (pin)
+					printf("TDC %c: histogram z pinu %s (kodu %u, odchylka osminy %+d promile), platna tabulka z %s\n", 'A' + c,
+					       pr[c1.pin_res[c] > 3u ? 4u : c1.pin_res[c]], (unsigned)c1.pin_nz[c], (int)c1.pin_dev[c],
+					       c1.src[c] ? "VSTUPNIHO PINU" : "ring oscilatoru");
+			}
+			printf("TDC: behu %lu, selhani %lu (posledni chyba %u)%s\n", (unsigned long)(c1.runs - c0.runs),
+			       (unsigned long)(c1.fails - c0.fails), (unsigned)c1.last_err,
+			       ((c1.runs + c1.fails) - (c0.runs + c0.fails) >= want) ? "" : "  <== nedokonceno do 15 s");
+		}
+	}
+	if (pin && gen) {
+		for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
+		printf("TDC: generator vracen na puvodni nastaveni\n");
+	}
+	return 1;
+}
+
 static void fmt_f2(char *b, size_t n, float v)
 {
 	long w = (long)v;
@@ -2922,9 +3027,11 @@ void UartTask_run(void *argument)
 						     (rm.clk_status & FPGA_CLK_EXT_LOST) ? "  <== externi VYPADLA, FPGA sama presla na OCXO" : "");
 				  }
 			  }
-			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0) {
+			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0 ||
+			           (strncmp(RxBuffer, "tdc cal ", 8) == 0 && uart_tdc_cal_ex(RxBuffer + 8))) {
 				  /* TDC (FW >= 0x0400): `tdc` = diagnostika kalibrace (CAL report),
 				   * `tdc cal` = spustit kalibraci (~0,5-1 s, mereni stoji) a pockat.
+				   * v0.43.0: `tdc cal [pin] [a|b] [gen]` provede uart_tdc_cal_ex a pak se vypise tentyz report.
 				   * Bezi z UartTasku (nehlidany watchdogem) -> osDelay je v poradku. */
 				  fpga_tdc_cal_t d;
 				  memset(&d, 0, sizeof d);
@@ -4228,10 +4335,12 @@ void UartTask_run(void *argument)
 							  }
 							  if (m.caps & FPGA_CAP_STMCAL) {   /* FW >= 0x0427: tabulku TDC pocita STM */
 							    fpga_tdccal_info_t ci; fpga_freq_tdccal_info(&ci);
-							    static const char *const ce[5] = { "OK", "histogram nekompletni (soucet)", "zapis nesedi (pocitadlo/soucet)", "prenos SPI", "potvrzeni (cal_valid)" };
-							    printf("  TDC KALIBRACE (STM): %s | behu %lu, selhani %lu, opakovani zapisu %lu | posledni %lu ms, %u adres/kanal%s\n",
-							           ce[ci.last_err > 4u ? 4u : ci.last_err], (unsigned long)ci.runs, (unsigned long)ci.fails,
+							    static const char *const ce[6] = { "OK", "histogram nekompletni (soucet)", "zapis nesedi (pocitadlo/soucet)", "prenos SPI", "potvrzeni (cal_valid)",
+							                                        "histogram z pinu odmitnut" };
+							    printf("  TDC KALIBRACE (STM): %s | behu %lu, selhani %lu, opakovani zapisu %lu | posledni %lu ms, %u adres/kanal | zdroj A %s, B %s%s\n",
+							           ce[ci.last_err > 5u ? 5u : ci.last_err], (unsigned long)ci.runs, (unsigned long)ci.fails,
 							           (unsigned long)ci.retries, (unsigned long)ci.last_ms, (unsigned)ci.naddr,
+							           ci.src[0] ? "pin" : "RO", ci.src[1] ? "pin" : "RO",
 							           (m.lut_wait & 3u) ? "  <== FPGA CEKA na tabulku od STM" : "");
 							  }
 							  {
