@@ -229,14 +229,21 @@ module seg_chan3 #(
         wire        wx = x0[39] & ~xm[39];
         wire        wt = t0[39] & ~tm[39];
         wire [53:0] sx_q, st_q;
+        // FW 0x050A (STATUS #347): clear pro DSP registrovany lokalne u bloku. S APP_OSC mela cesta clear_b (LW) -> LUT
+        // (v1 | clear) -> CE u_sx jen ~0,97 ns rezervy a STA ji podhodnotila, takze soucty kanalu B v DSP pocitaly spatne
+        // (SX o jeden clen bez odecteni x0, N +-4 %; L-0252). clr_d je lokalni FF: clear -> clr_d je cela perioda setupu,
+        // clr_d -> CE/RESET DSP je kratke a mistni. Reset se tim posune E+26 -> E+27 (bezpecne: zapisovac cte o_sx/o_st/o_n
+        // v E+7..E+15, dalsi pricteni v1 / tk1 je az po dalsim seg_tick, tedy ~2,5M taktu po clear; v1 s clr_d nesplyne).
+        reg clr_d = 1'b0;
+        always @(posedge clk) clr_d <= clear;
         ALU54D #(.AREG(1'b0), .BREG(1'b0), .ASIGN_REG(1'b0), .BSIGN_REG(1'b0), .ACCLOAD_REG(1'b0), .OUT_REG(1'b1),
                  .B_ADD_SUB(1'b1), .C_ADD_SUB(1'b0), .ALU_RESET_MODE("SYNC")) u_sx (
             .A({13'd0, wx, xm}), .B({14'd0, x0}), .ASIGN(1'b0), .BSIGN(1'b0), .ACCLOAD(1'b1), .CASI(55'd0),
-            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(sx_q), .CASO());
+            .CLK(clk), .CE(v1 | clr_d), .RESET(clr_d), .DOUT(sx_q), .CASO());
         ALU54D #(.AREG(1'b0), .BREG(1'b0), .ASIGN_REG(1'b0), .BSIGN_REG(1'b0), .ACCLOAD_REG(1'b0), .OUT_REG(1'b1),
                  .B_ADD_SUB(1'b1), .C_ADD_SUB(1'b0), .ALU_RESET_MODE("SYNC")) u_st (
             .A({13'd0, wt, tm}), .B({14'd0, t0[39:0]}), .ASIGN(1'b0), .BSIGN(1'b0), .ACCLOAD(1'b1), .CASI(55'd0),
-            .CLK(clk), .CE(v1 | clear), .RESET(clear), .DOUT(st_q), .CASO());
+            .CLK(clk), .CE(v1 | clr_d), .RESET(clr_d), .DOUT(st_q), .CASO());
         assign o_sx = sx_q[47:0];                    // SX < 2^40 (komentar u modulu) -> 48 b jako drive
         assign o_st = {2'b00, st_q};
         // 2026-10-25 (plocha): pocet znacek N v DSP (ALU54D, inference jako seq_c v pps_cap3; v simulaci je atribut komentar)
@@ -245,7 +252,7 @@ module seg_chan3 #(
         // kdy by tk1 = 1, nenastane (take v taktech freeze a clear neni). N <= 5e5 < 2^24 jako drive.
         reg [23:0] n_d = 24'd0 /* synthesis syn_dspstyle = "dsp" */;
         always @(posedge clk) begin
-            if (clear)    n_d <= 24'd0;
+            if (clr_d)    n_d <= 24'd0;
             else if (tk1) n_d <= n_d + 24'd1;
         end
         assign o_n = n_d;

@@ -110,7 +110,7 @@ module app_v3 #(
     // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
     // FW 0x0509 (STATUS #347 krok 1, 2026-10-31): kalibrace TDC ze vstupniho pinu -- SET_CONFIG 0x02 p1 bit3, zdroj v bajtu 51
     // bit2 (A) / bit3 (B), CAPS bit24
-    localparam [15:0] FW_VERSION = 16'h0509;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
+    localparam [15:0] FW_VERSION = 16'h050A;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
     localparam [15:0] FW_VERSION_TX = CSDIAG ? FW_VERSION : 16'h0507;          // do hlavicky; -DSIM_NOCSDIAG = hlavicka FW 0x0507
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
