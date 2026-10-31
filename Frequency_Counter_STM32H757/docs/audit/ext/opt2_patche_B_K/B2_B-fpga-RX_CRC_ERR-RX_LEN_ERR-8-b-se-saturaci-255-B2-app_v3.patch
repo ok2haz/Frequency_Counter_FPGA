@@ -1,0 +1,98 @@
+From 04f1ef3674b6e5e4e541cc9bb006d3a1ea01eb36 Mon Sep 17 00:00:00 2001
+From: Michal Grygarek <michal.grygarek@accenture.com>
+Date: Sun, 25 Oct 2026 09:14:51 +0100
+Subject: [PATCH] B(fpga): RX_CRC_ERR / RX_LEN_ERR 8 b se saturaci 255 (B2,
+ app_v3)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⚠️ ZMENA CHOVANI, mimo optimalizacni radu (trida B, zadani kap. 5 B2).
+Citace chyb prijmu 16 -> 8 b se saturaci 255; bajty 53 a 55 hlavicky
+jsou 0 (default multiplexeru). Usetri 2 x 8 FF, ~16 ALU a porovnani.
+
+Dopad na STM: pole je u16 a STM sleduje rozdil mezi ramci -> funguje
+dal beze zmeny do 255 chyb od nahrani FPGA, pak citac stoji a STM nove
+chyby nevidi (drive 65 535). Lepsi varianta pro STM (neimplementovano):
+8 b mod 256 a STM pocita rozdil mod 256 (pri < 256 chybach mezi ramci).
+
+Test: tb_top_v3 (topv3) po kontrolach +2 / +1 nastavi oba citace na 254,
+posle 2 transakce spatne delky a 2 se spatnym CRC -> 255, horni bajt 0.
+topv3 PASS. Stopa se proti base/ lisi (zamer).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sim/tb_top_v3.sv |  8 ++++++++
+ src/app_v3.v     | 14 ++++++++------
+ 2 files changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/sim/tb_top_v3.sv b/sim/tb_top_v3.sv
+index 04f26d5..c4e6520 100644
+--- a/sim/tb_top_v3.sv
++++ b/sim/tb_top_v3.sv
+@@ -662,6 +662,14 @@ module tb_top_v3;
+             build(8'h01, 8'h05, 8'h03, 0, 0); mo[100] = mo[100] ^ 8'h01; xfer(1024);
+             build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024); check_frame(1);
+             chk(rd(52, 2) == e0 + 1 && mi[66][1] == 1'b0, "RX_CRC_ERR +1, prikaz neproveden");
++            // ⚠️ B2: citace chyb 8 b se saturaci 255 (bajty 53 a 55 = 0)
++            dut.u_app.rx_len_err = 8'd254; dut.u_app.rx_crc_err = 8'd254;
++            build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1023);
++            build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1025);
++            build(8'h01, 8'h05, 8'h03, 0, 0); mo[100] = mo[100] ^ 8'h01; xfer(1024);
++            build(8'h01, 8'h05, 8'h03, 0, 0); mo[100] = mo[100] ^ 8'h01; xfer(1024);
++            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024); check_frame(1);
++            chk(mi[54] == 8'd255 && mi[55] == 8'd0 && mi[52] == 8'd255 && mi[53] == 8'd0, "B2: RX_LEN_ERR / RX_CRC_ERR saturuji na 255, horni bajt 0");
+             // ---- SET_CONFIG 0x05 (echo) a 0x08 (SEG_LEN 10 ms) ----
+             build(8'h01, 8'h05, 8'h03, 0, 0); xfer(1024);
+             build(8'h01, 8'h08, 8'd10, 0, 0); xfer(1024);
+diff --git a/src/app_v3.v b/src/app_v3.v
+index 7b361cc..4ce729b 100644
+--- a/src/app_v3.v
++++ b/src/app_v3.v
+@@ -130,7 +130,9 @@ module app_v3 #(
+     reg [1:0]  hpend = 2'd0;               // udalosti kruhu (dvojice zaznamu) zachycene behem skladani ramce
+ 
+     // ---- stav prijmu ----
+-    reg [15:0] rx_crc_err = 16'd0, rx_len_err = 16'd0;
++    // ⚠️ B2 (ZMENA CHOVANI, mimo optimalizacni radu, 2026-10-25): RX_CRC_ERR / RX_LEN_ERR 8 b se saturaci 255 (drive 16 b do
++    // 65 535); bajty 53 a 55 hlavicky = 0. STM sleduje rozdil mezi ramci -> po 255 chybach od nahrani FPGA uz nove chyby nevidi.
++    reg [7:0]  rx_crc_err = 8'd0, rx_len_err = 8'd0;
+     reg        rx_err = 1'b0, cmd_done = 1'b0;
+     reg [13:0] lut_cnt = 14'd0;
+     reg [13:0] lut_cnt_b = 14'd0;            // polozky s bitem kanalu B (LUT_SUM chybu kanalu u cele tabulky nevidi)
+@@ -217,8 +219,8 @@ module app_v3 #(
+             8'd48: hb = st_tdc_a;      8'd49: hb = st_tdc_b;
+             8'd50: hb = pps_st;
+             8'd51: hb = {6'd0, st_cal_wait};
+-            8'd52: hb = rx_crc_err[7:0];  8'd53: hb = rx_crc_err[15:8];
+-            8'd54: hb = rx_len_err[7:0];  8'd55: hb = rx_len_err[15:8];
++            8'd52: hb = rx_crc_err;                   // B2: horni bajty 53, 55 = 0 (default)
++            8'd54: hb = rx_len_err;
+             8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
+             8'd62: hb = lut_sum[7:0];  8'd63: hb = lut_sum[15:8];
+             8'd64: hb = {(pr_a_req != pra_s), 4'd0, pra_s};   8'd65: hb = {(pr_b_req != prb_s), 4'd0, prb_s};
+@@ -316,10 +318,10 @@ module app_v3 #(
+                 state <= S_IDLE;
+                 dirty <= 1'b1;
+                 if (!rx_len_ok) begin
+-                    if (rx_len_err != 16'hFFFF) rx_len_err <= rx_len_err + 16'd1;
++                    if (rx_len_err != 8'hFF) rx_len_err <= rx_len_err + 8'd1;
+                     rx_err <= 1'b1;
+                 end else if (rx_b0 != MAGIC || rx_b1 != VER || !rx_blk_ok[0]) begin
+-                    if (!rx_blk_ok[0] && rx_crc_err != 16'hFFFF) rx_crc_err <= rx_crc_err + 16'd1;
++                    if (!rx_blk_ok[0] && rx_crc_err != 8'hFF) rx_crc_err <= rx_crc_err + 8'd1;
+                     rx_err <= 1'b1;
+                 end else begin
+                     rx_err   <= 1'b0;
+@@ -355,7 +357,7 @@ module app_v3 #(
+                             if (rx_blk_ok == 4'b1111) begin lk <= 2'd1; lp <= 4'd0; li <= 7'd0; state <= S_LUT; end
+                             else begin
+                                 cmd_done <= 1'b0; rx_err <= 1'b1;
+-                                if (rx_crc_err != 16'hFFFF) rx_crc_err <= rx_crc_err + 16'd1;
++                                if (rx_crc_err != 8'hFF) rx_crc_err <= rx_crc_err + 8'd1;
+                             end
+                         end
+                         T_PAGE: begin page_req <= 1'b1; page_kind <= rx_p0; page_no <= {rx_p2, rx_p1}; end
+-- 
+2.54.0 (Apple Git-157)
+

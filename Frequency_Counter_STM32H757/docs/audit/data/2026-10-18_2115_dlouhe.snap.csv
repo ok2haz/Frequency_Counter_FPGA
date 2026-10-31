@@ -1,0 +1,2 @@
+wall,uptime_s,gpsdo_state,gpsdo_y_ppb,gpsdo_code,dither_hz,dac_writes,crc_err,seq_gaps,seq_resync,selfchk_count,selfchk_clock,selfchk_len,tdc_rez_a,tdc_rez_b,regr_win,regr_used,regr_rej,regr_sigma_ppb,heap_free,cpu_pct,stack_fpga,stack_dac,stack_idle,ltdc_under,ltdc_flips,gps_fix,gps_sat,gpsraw_rx_ok,gpsraw_rx_bad,gps_ack,errlog_total,block
+2026-10-18T21:16:19,44,FLL,+0.000,24934.00,100,1,0,0,0,1,0,0,16,14,107,107,0,0.351,21616,32,1288,808,428,3,628,1,12,17,0,TMODE2 0/0 - | GNSS 0/0 - | TP5 2/0 ACK | MSG 2/0 ACK,5058,check

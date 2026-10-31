@@ -69,18 +69,14 @@ void screenshot_emit_bmp(void)
     if (!fb) return;
     uint32_t rowbytes = SS_W * 3u;             /* 2400 (násobek 4 -> bez paddingu) */
     uint32_t imgsize  = rowbytes * SS_H;
-    uint32_t filesize = 54u + imgsize;
 
-    uint8_t hdr[54]; memset(hdr, 0, sizeof hdr);
-    hdr[0] = 'B'; hdr[1] = 'M';
-    le32(hdr + 2, filesize);                   /* velikost souboru */
-    le32(hdr + 10, 54);                        /* offset pixelů */
-    le32(hdr + 14, 40);                        /* BITMAPINFOHEADER */
-    le32(hdr + 18, SS_W);
-    le32(hdr + 22, SS_H);                      /* kladná výška = bottom-up */
-    hdr[26] = 1;                               /* planes */
-    hdr[28] = 24;                              /* bpp */
-    le32(hdr + 34, imgsize);
+    /* >> JEDNA IMPLEMENTACE PRO OBE CESTY (audit F-0123). Do 2026-09-19 si tady
+     * USB cesta tech deset radku opisovala ZNOVU, prestoze komentar nad
+     * `bmp_header()` tvrdil, ze ji pouzivaji obe cesty „aby se format nemohl
+     * rozejit". Tvrzeni bylo nepravdive a duplicita zivá — presne to, co `L-0018`
+     * zada slucovat, ne dokumentovat dvakrat. */
+    uint8_t hdr[54];
+    bmp_header(hdr, imgsize);
     emit(hdr, 54);
 
     for (int y = SS_H - 1; y >= 0; y--) {      /* BMP jde zdola nahoru */
@@ -99,20 +95,28 @@ void screenshot_emit_bmp(void)
  * mezitím klidně několikrát flipne (triple buffering) — bez kopie by snímek nesl
  * pruhy ze dvou i tří framů. Kopie 750 kB v SDRAM je proti tomu jednotky ms.
  *
- * Scratch = SDRAM region 1 (`0xC0400000`, 4 MB WBWA cached). Sdílí ho jen UART
- * příkaz `sdram write/read` (ruční diagnostika), takže ke kolizi může dojít jen
- * tím, že si uživatel oba příkazy pustí zároveň z jedné konzole — což nejde,
- * UartTask je zpracovává sériově.
+ * Scratch = SDRAM region 1 (`0xC0400000`, 4 MB WBWA cached).
+ * >> KDO JESTE TU PAMET POUZIVA (audit F-0124 — `membench` tu chybel, a je to
+ * zrovna ten nejdulezitejsi):
+ *   - UART `membench` — blok `0xC0400000` (512 kB) DESTRUKTIVNE prepisuje peti
+ *     vzory a retencnim testem. Kdyz ho pustis behem ukladani snimku, snimek bude
+ *     poskozeny (a naopak `membench` nahlasi chybne bity, ktere zpusobil screenshot).
+ *   - UART `sdram write/read` — rucni diagnostika, jednotlive slova.
+ * >> Ke kolizi tedy muze dojit jen tim, ze si uzivatel dva prikazy pusti zaroven
+ * z jedne konzole — a to nejde, UartTask je zpracovava SERIOVE. Prave proto tu
+ * zadny zamek neni; kdyby se ale kterakoli z tech cest presunula do jine ulohy,
+ * tenhle predpoklad PADA.
  *
  * ⚠️ BLOKUJE — jen z UartTasku (viz screenshot.h). */
 #define SS_SCRATCH ((uint16_t *)0xC0400000u)
 
-int screenshot_save_sd(char *name_out, unsigned name_sz)
+#ifdef SS_FATFS
+/* `forced_name` != NULL: pouzij PRESNE tenhle nazev (prepise, kdyz uz existuje —
+ * pouziva to `screenshot_save_all_sd()`, kde je nazev odvozeny od cisla okna a
+ * opakovany beh ma umet stary snimek nahradit). `forced_name` == NULL: puvodni
+ * chovani, najdi prvni volne SHOTnnn.BMP (8.3 — `_USE_LFN` je 0). */
+static int screenshot_save_sd_body(const char *forced_name, char *name_out, unsigned name_sz)
 {
-#ifndef SS_FATFS
-    (void)name_out; (void)name_sz;
-    return -1;                       /* FatFs není v buildu */
-#else
     const uint16_t *fb = (const uint16_t *)prim_stm32_front_addr();
     if (!fb) return -1;
     if (!sd_export_mount()) return -2;
@@ -121,20 +125,26 @@ int screenshot_save_sd(char *name_out, unsigned name_sz)
     uint16_t *snap = SS_SCRATCH;
     memcpy(snap, fb, (size_t)SS_W * SS_H * sizeof(uint16_t));
 
-    /* 2) Najdi volné jméno SHOTnnn.BMP (8.3 — `_USE_LFN` je 0). */
     char name[16];
-    int found = 0;
-    for (unsigned i = 1; i <= 999u; i++) {
-        FILINFO fno;
-        snprintf(name, sizeof name, "SHOT%03u.BMP", i);
-        if (f_stat(name, &fno) == FR_NO_FILE) { found = 1; break; }
+    if (forced_name) {
+        snprintf(name, sizeof name, "%s", forced_name);
+    } else {
+        /* Najdi volné jméno SHOTnnn.BMP. */
+        int found = 0;
+        for (unsigned i = 1; i <= 999u; i++) {
+            FILINFO fno;
+            snprintf(name, sizeof name, "SHOT%03u.BMP", i);
+            if (f_stat(name, &fno) == FR_NO_FILE) { found = 1; break; }
+        }
+        if (!found) return -3;       /* 999 snímků na kartě — ať si uživatel uklidí */
     }
-    if (!found) return -3;           /* 999 snímků na kartě — ať si uživatel uklidí */
 
     /* 3) Zapiš. `FIL` staticky (nese 512B sektorový buffer — na stack UartTasku
-     *    nepatří, viz stejné pravidlo v sd_export.c). */
+     *    nepatří, viz stejné pravidlo v sd_export.c).
+     * ⚠️ `FA_CREATE_ALWAYS`, ne `FA_CREATE_NEW`: `forced_name` (export vsech
+     * oken) se pri opakovanem behu MA prepsat, ne selhat na "uz existuje". */
     static FIL f;
-    if (f_open(&f, name, FA_CREATE_NEW | FA_WRITE) != FR_OK) return -4;
+    if (f_open(&f, name, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return -4;
 
     uint32_t rowbytes = SS_W * 3u;                 /* 2400 = násobek 4 -> BMP bez paddingu */
     uint8_t  hdr[54];
@@ -154,5 +164,41 @@ int screenshot_save_sd(char *name_out, unsigned name_sz)
 
     if (name_out && name_sz) snprintf(name_out, name_sz, "%s", name);
     return 0;
+}
+#endif /* SS_FATFS */
+
+/* ⚠️ OBALKA, ne telo. `s_busy` v `sd_export.c` musi drzet po CELOU dobu zapisu
+ * vcetne vsech OSMI chybovych navratu — proto je telo vyclenene, presne jako u
+ * `sd_export_run()`/`_selftest()`. Bez toho defaultTask pri vytazeni karty
+ * odmountuje svazek a `ff_del_syncobj()` smaze semafor, ktery tenhle task prave
+ * drzi -> zapis do uvolnene haldy FreeRTOS (audit F-0026).
+ * ⚠️ `sd_export_busy_*` a `sd_blocking_*` se volaji OBOJE a resi ruzne veci —
+ * viz hlavicka `sd_export.h`. `sd_blocking_*` nastavuje volajici (UART prikaz). */
+int screenshot_save_sd(char *name_out, unsigned name_sz)
+{
+#ifndef SS_FATFS
+    (void)name_out; (void)name_sz;
+    return -1;                       /* FatFs není v buildu */
+#else
+    sd_export_busy_begin();
+    int r = screenshot_save_sd_body(NULL, name_out, name_sz);
+    sd_export_busy_end();
+    return r;
+#endif
+}
+
+/* Jako `screenshot_save_sd()`, ale pod PRESNYM jmenem (pouziva `screenshot all`
+ * — export vsech oken, kazde pod jmenem odvozenym od cisla okna). Existujici
+ * soubor se PREPISE (viz komentar u `FA_CREATE_ALWAYS` v tele). */
+int screenshot_save_sd_named(const char *name)
+{
+#ifndef SS_FATFS
+    (void)name;
+    return -1;                       /* FatFs není v buildu */
+#else
+    sd_export_busy_begin();
+    int r = screenshot_save_sd_body(name, NULL, 0);
+    sd_export_busy_end();
+    return r;
 #endif
 }

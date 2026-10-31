@@ -31,16 +31,45 @@ enum {
     BOOTLED_STEP_PANEL_POWERON, /* ws_panel_power_on */
     BOOTLED_STEP_DSI_START,     /* HAL_DSI_Start */
     BOOTLED_STEP_TC358762,      /* tc358762_init */
+    /* ── Selhani JESTE PRED prvnim sledovanym initem (audit F-0007 + F-0108) ──
+     * 🔴 PROC to tu je: `s_step` startuje na 0 a `SystemClock_Config()` zadny
+     * `bootled_step()` nevola (nemuze — je to generovany kod bez `USER CODE`).
+     * Kdyz tedy nenabehne HSE nebo LSE, `blink_pattern(0)` neudela NIC: zadne
+     * bliknuti, zadne pipnuti. Pristroj byl UPLNE TICHY A TEMNY a nebylo jak
+     * zjistit, ze je to oscilator. Prikaz `status` po restartu taky nepomuze —
+     * pri trvale vade se pristroj nikdy nerozjede tak, aby konzole zila.
+     * ⚠️ Cisla se PRIPOJUJI NA KONEC a nikdy se nepreciseluji: cislo = pocet
+     * bliknuti A ZAROVEN hodnota ulozena do crash black-boxu (BKP4). Precislovani
+     * by tedy zneplatnilo kazdy dosud zapsany zaznam. Tenhle enum je JEDINY zdroj
+     * te tabulky — nikde jinde v projektu ta cisla vypsana nejsou.
+     * ⚠️ Poctive: 15 vs 16 bliknuti se pocita spatne. Rozhodujici informace je
+     * proto „bliknuti je VIC NEZ 14" = hodiny/oscilator; ktery presne, rekne
+     * crash black-box (`status` -> `hal_err@HSE` / `hal_err@LSE`), pokud se
+     * pristroj nekdy rozjede. Pri trvale vade zmer 25 MHz na HSE pinu jako prvni. */
+    BOOTLED_STEP_HSE = 15,      /* HSE 25 MHz nenabehl -> mereni nema zaklad */
+    BOOTLED_STEP_LSE,           /* LSE 32,768 kHz nenabehl (jen RTC, presto fatalni) */
+    BOOTLED_STEP_EARLY,         /* selhani pred prvnim initem, ale oscilatory bezi */
 };
 
 /** Zaznamena aktualni krok. Volat na zacatku kazdeho sledovaneho initu
  *  (USER CODE BEGIN <Peripheral>_Init 0 hook — prezije CubeMX regen). */
 void bootled_step(uint8_t step);
 
+/* Posledni zapsany krok — cte ho `Error_Handler`, aby se do crash black-boxu
+ * dostalo, KDE inicializace spadla (jinak je runtime HAL chyba po IWDG resetu
+ * k nerozeznani od obycejneho watchdogu). */
+uint8_t bootled_step_get(void);
+
 /** Nenavratova diagnostika: donekonecna blika `step` (posledni zaznamenany
  *  bootled_step) krat + pauza. Vola se z Error_Handler() misto ticheho
  *  while(1){}. */
 void bootled_fail(void) __attribute__((noreturn));
+
+/* Jako `bootled_fail`, ale zopakuje vzor jen `repeats`x a VRATI SE.
+ * ⚠️ Vzniklo proto, ze `Error_Handler` blikal donekonecna, a kdyz selhal init
+ * PRED `watchdog_init()`, nemel pristroj jak z toho stavu ven. Volajici po
+ * navratu resetuje; duvod uz je v crash black-boxu. */
+void bootled_fail_n(uint8_t repeats);
 
 /** Jednorazove diagnosticke bliknuti bez zastaveni bootu — pro kroky s
  *  nefatalnim fallbackem (rozjezd displeje bez pripojeneho panelu smi

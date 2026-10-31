@@ -1,0 +1,76 @@
+--- /mnt/project/fpga_freq.h	2026-10-20 05:32:04.938329330 +0000
++++ fpga_freq.h	2026-10-20 14:57:13.745606759 +0000
+@@ -94,6 +94,19 @@
+     uint32_t pps_ts;
+     uint8_t  pps_seq;
+     uint8_t  pps_ok;              /* 1 = ramec 1PPS nese (caps bit13) */
++    /* FW >= 0x0425 (caps bit14, FPGA_CAP_DIAG0, audit 2026-10-20): diagnostika O4 a hlidac koherence hodin.
++     * abs 10 coh_st | 11 coh_cnt | 57 bub_p | 58 bub_s | 59 {ovl_s[3:0], ovl_p[3:0]} */
++    uint16_t rg_xdiv;             /* audit 4: delitel xm (256 nebo 4096 podle caps bit15); 0 = 256 */
++    uint8_t  diag0_ok;            /* 1 = pole nize jsou platna */
++    uint8_t  coh_st;              /* bit0 platne, bit1 posledni epocha OK, bit2 od nahrani chyba, bit3 cesta (0 nabezna, 1 sestupna) */
++    uint8_t  coh_cnt;             /* pocet epoch 102,4 us s chybou koherence 100/10 MHz (saturuje 255; nova FPGA = 0) */
++    uint8_t  bub_p, bub_s;        /* casovane hrany okna s bublinou (primarni / sekundarni slot) */
++    uint8_t  ovl_p, ovl_s;        /* casovane hrany okna pri aktivnim CS SPI (0..15) */
++    uint64_t dt_units;            /* surove dt primarniho okna [T_clk/16384] (fazovy zaznam: presny soucet bez zaokrouhleni) */
++    /* Audit 2026-10-20 (E1, fpga_phrec): kmitocet mezi tezisti segmentu A sousednich oken (teleskopuje -> spravna ADEV) */
++    uint8_t  cc_ok;               /* 1 = f_cc_hz/gate_cc_ps platne (navazujici okno s regresi) */
++    double   f_cc_hz;
++    uint64_t gate_cc_ps;          /* delka okna tak, aby edge_count / gate_cc_ps = f_cc_hz */
+ } fpga_meas_t;
+ 
+ /* caps bity (abs 62-63) */
+@@ -105,6 +118,8 @@
+ #define FPGA_CAP_SELFCHK      (1u << 10)  /* FW >= 0x041F: identita bitstreamu (abs 12..19), hlidac hodin (64/65),
+                                            * kontrolni pocitani hran (97/98) */
+ #define FPGA_CAP_CLK          (1u << 12)  /* FW >= 0x0421: abs 99 nese kmitocet hodin FPGA [MHz]; bez bitu = 100 MHz */
++#define FPGA_CAP_DIAG0        (1u << 14)  /* FW >= 0x0425: abs 10/11 hlidac koherence, abs 57..59 bubliny + znacky pri CS, SET_CONFIG 0x05 */
++#define FPGA_CAP_XM12         (1u << 15)  /* FW >= 0x0425 (audit 4): regresni xm v 1/4096 hrany (driv 1/256) */
+ #define FPGA_CAP_PPS          (1u << 13)  /* FW >= 0x0424: abs 52..56 nese GPS 1PPS (cas hrany v taktech hodin + poradi) */
+ 
+ /* ── GPS 1PPS z FPGA (FW >= 0x0424, STATUS #305) ─────────────────────────────────────────────────
+@@ -142,6 +157,12 @@
+ #define FPGA_CHK_COUNT    1   /* kontrolni pocitani hran FPGA nesedi s mernym (|ccd| > 1) */
+ #define FPGA_CHK_CLOCK    2   /* hlidac 100 MHz: neni OK / probiha zotaveni / pribyl vypadek */
+ #define FPGA_CHK_WINDOW   3   /* delka okna neodpovida nastavenemu hradlu */
++#define FPGA_CHK_FMAX     4   /* FW 0x0425 (audit 2026-10-20): kmitocet nad mezi PRIMEHO mereni (logika okna / vzorkovani 100 MHz) */
++#define FPGA_CHK_COH      5   /* FW 0x0425: hlidac koherence 100/10 MHz nasel chybejici / navic pulz hodin */
++/** Mez primeho mereni [Hz]: FW < 0x0425 hrana v close+2 se ztratila nad 33,3 MHz (kontrola |ccd| <= 1 ji propustila);
++ *  FW >= 0x0425 opraveno, mez dava vzorkovani 100 MHz a delka retezu (vysoka i nizka uroven > ~10,5 ns): 40 MHz pri stride 45-55 %. */
++#define FPGA_DIRECT_MAX_HZ_OLD  33.0e6
++#define FPGA_DIRECT_MAX_HZ      40.0e6
+ /* Mez odchylky delky okna od hradla nad nejistotu uzavirani (perioda signalu): synchronizace hradla
+  * do 100 MHz (konstantni, hodiny jsou koherentni) + uzavreni o hranu pozdeji, kdyz je TDC prave obsazeny. */
+ #define FPGA_WIN_TOL_PS   1000000ull
+@@ -157,6 +178,8 @@
+ int  fpga_freq_poll_check(void);
+ /** Soucty zamitnutych oken od bootu pro `status`. */
+ void fpga_freq_check_stats(uint32_t *count, uint32_t *clock, uint32_t *window);
++void fpga_freq_check_stats2(uint32_t *fmax, uint32_t *coh);
++uint8_t fpga_freq_phrec_selftest_ok(void);   /* audit 2026-10-20: 1 = selftest fazoveho zaznamu prosel pri startu */   /* FW 0x0425: FPGA_CHK_FMAX / FPGA_CHK_COH */
+ /** v22: surovy posledni ramec FPGA (vcetne zamitnutych oken) + pocitadla do `w[0..n-1]` (IPC `fpgadiag`).
+  *  Poradi slov viz telo funkce a `build_fpga_json` v CM4/LWIP/App/httpd_min.c. */
+ void fpga_freq_diag_fill(uint32_t *w, uint32_t n);
+@@ -416,10 +439,22 @@
+ int      fpga_freq_inl_get(uint32_t i, fpga_inl_rec_t *r);  /* i = 0 nejstarsi; 0 = mimo rozsah */
+ void     fpga_freq_inl_reset(void);
+ /** Kmitocet [Hz] ze sklonu primky mezi stredy segmentu A a B (cisty vypocet). 0.0 = nelze (B <= A). */
++double fpga_freq_regr_hz2(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz, uint16_t xdiv);  /* audit 4 */
+ double fpga_freq_regr_hz(uint64_t xm_a, uint64_t xm_b, uint64_t ym_a, uint64_t ym_b, uint32_t clk_mhz);
+ void fpga_freq_regr_reset(void);
++/** Aktualni mez prijeti regrese (relativne) -- diagnostika `status`. */
++double fpga_freq_regr_limit(void);
++/** FW >= 0x0425: SET_CONFIG 0x05 -- omezeni ruseni / diagnostika. mask_cs = 1: vnitrni znacky (segmenty regrese) se pri aktivnim
++ *  CS nespousteji (vychozi FPGA 1); led_hb = 1: LED na PIN29 blika s merenim (vychozi FPGA 0, PIN29 je v bance 2 s CH_A/B). */
++bool fpga_freq_set_diag(uint8_t mask_cs, uint8_t led_hb);
+ /** Mez konzistence regrese s dvoubodovym odhadem (relativne) a minimum znacek v segmentu. */
+ #define FPGA_REGR_MAX_REL   5.0e-8     /* ~40 sigma dvoubodoveho odhadu (sigma ~1,2e-9 pri 215 ps na znacku, okno 0,25 s) */
++/* Audit 2026-10-20: ADAPTIVNI mez prijeti regrese. Pevnych 5e-8 je ~40 sigma -> propusti i chyby ~1e-8 (napr. N1 pri 17-25 MHz).
++ * Mez = max(FPGA_REGR_K_SIGMA * sigma_d, FPGA_REGR_MIN_REL), shora FPGA_REGR_MAX_REL; sigma_d = robustni (EWMA |d| * 1,2533)
++ * odchylka rozdilu d = f_regr/f_2pt - 1 z PRIJATYCH oken. Prvnich FPGA_REGR_WARMUP oken plati pevna mez. */
++#define FPGA_REGR_K_SIGMA   6.0
++#define FPGA_REGR_MIN_REL   5.0e-9
++#define FPGA_REGR_WARMUP    32u
+ #define FPGA_REGR_MIN_N     8u
+ 
+ /* ── Akumulátor měření: průměr za okno konzumenta (F-0171/F-0172) ───────────

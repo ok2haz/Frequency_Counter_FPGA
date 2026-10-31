@@ -20,6 +20,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>   /* size_t — parametr `syscfg_storage_text` */
 
 /** Nacte nastaveni z W25Q CONFIG store do g_* globalu — JEN pri studenem startu
  *  (g_syscfg_bkp_valid==0); pri warm resetu ma prednost BKP, jen se inicializuje
@@ -36,5 +37,30 @@ bool syscfg_save(void);
  *  klidu zapise do flash. Volat periodicky z defaultTask (~100 Hz). Prvni volani
  *  jen zaznamena baseline (zadny zapis pri bootu). */
 void syscfg_flash_tick(void);
+
+/** 1 = CONFIG store ve W25Q je pouzitelny (nastaveni se ma kam ukladat).
+ *  0 = `syscfg_load()` se nepodarilo pripravit ulozistě -> `syscfg_save()` bude
+ *  vracet false a nastaveni se NIKDY neulozi (audit F-0098). */
+int syscfg_store_ready(void);
+
+/** Kolikrat `syscfg_flash_tick()` zkusil ulozistě znovu pripravit (F-0098).
+ *  Nenulove = pri bootu to nevyslo a bezi zachrana; cte to `status`. */
+uint32_t syscfg_store_retries(void);
+
+/** Souhrn stavu VSECH PETI blob storu ve W25Q do jedne vety, napr.
+ *  `"syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK"`.
+ *  @return KOLIK z peti je pripravenych (0..5); 5 = vsechno v poradku.
+ *
+ *  🔑 JEDEN ZDROJ TEXTU pro vsechny konzumenty (UART `status`, okno System Health).
+ *  Vznikla schvalne jako funkce, a ne jako dva nezavisle vypisy — presne timhle
+ *  se rozesel `errlog dump` s oknem CHYBY (nalez F-0100, lekce L-0049).
+ *  ⚠️ Zije v `syscfg.c`, protoze to je modul perzistence; novy `.c` by se do buildu
+ *  nedostal bez `Close -> Open Project` (mechanicke pravidlo CLAUDE.md). */
+int syscfg_storage_text(char *buf, size_t n);
+
+/** Kolik z peti blob storu ve W25Q je pripravenych (0..5). Levna varianta
+ *  `syscfg_storage_text()` bez skladani retezce — pro SYS pilulku, ktera se
+ *  vyhodnocuje casto. 🔑 JEDINY zdroj faktu; nikdo si tu petici necte sam. */
+int syscfg_storage_ready_count(void);
 
 #endif /* SYSCFG_H */

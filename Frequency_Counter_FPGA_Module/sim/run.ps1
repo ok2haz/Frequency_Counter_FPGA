@@ -23,10 +23,144 @@ if (-not (Get-Command iverilog -ErrorAction SilentlyContinue)) {
 $tests = @(
     @{ name = "coarse"; top = "tb_coarse_counter";
        rtl = @("coarse_counter.v"); tb = "tb_coarse_counter.sv" }
-    @{ name = "recip"; top = "tb_recip_calc";
-       rtl = @("spi_app.v"); tb = "tb_recip_calc.sv" }
+    # 2026-10-03: recip_calc zanikl (FPGA uz kmitocet nepocita), nahrazen gate_div
+    @{ name = "gatediv"; top = "tb_gate_div";
+       rtl = @("spi_app.v"); tb = "tb_gate_div.sv" }
+    # TDC: kalibrace ring oscilatorem + presnost a symetrie 2 kanalu (~2 min).
+    # Behavioralni modely primitiv ALU/LUT1/LUT2 (sim/gowin_models.v), SIM_LUT_PS
+    # zpomaluje kruh pro rychlost simulace.
+    @{ name = "tdc"; top = "tb_tdc";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800") }
+    # 2026-10-07: TDC se SILICON modelem (zlom retezu na 268. ALU, ~39 ps/ALU) -- chyba casove znacky KAZDE hrany
+    # podle faze (INL, skoky), histogram kalibrace. Prahy: sigma znacky < 40 ps, skoky < 1 %. Zdravy stav ~18 ps / 0 %.
+    # (Stara architektura s `t0` dava na stejnem modelu obri bin 1,3 ns a sigma ~150 ps.) ~2-3 min.
+    @{ name = "tdcinl"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=320", "-DPSTRIDE=1", "-DPKD=1", "-DPDUAL=0",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # 2026-10-09 (FW 0x041D): retez 268 tapu = jeden radek, dekoder 288 (tapy 268..287 doplnene jako 'prosla').
+    # Model zlomu na 268. ALU tedy lezi ZA koncem retezu. Prahy stejne jako tdcinl.
+    @{ name = "tdcinl268"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=288", "-DPNTAP=268", "-DPSTRIDE=1", "-DPKD=1", "-DPDUAL=0",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # totez s DUAL=1 (vzorky i na sestupnou hranu hodin); na desce se nevejde (CLS 87 %), ale musi fungovat
+    @{ name = "tdcinl_dual"; top = "tb_tdc_inl";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_tdc_inl.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268",
+                "-DCAL_LOG2_TB=14", "-DNEDGES=600", "-DPTAPS=256", "-DPSTRIDE=2", "-DPKD=2", "-DPDUAL=1",
+                "-DEXPECT_SIGMA_PS=40", "-DEXPECT_MAXJUMP=1") }
+    # 2026-10-07 (FW 0x0411): KONCOVY test regresniho bloku -- TDC (model krzemiku) + win_recip(REGR=1) na signalu
+    # s "prohazujici" fazi; porovna chybu kmitoctu dvou bodu a regrese proti znamene pravde. Zisk musi byt >= 1,8x
+    # (nameren 4,7x pri ~30 znackach v segmentu). ~3-4 min.
+    @{ name = "regre2e"; top = "tb_regr_e2e";
+       rtl = @("tdc.v", "spi_app.v"); tb = "tb_regr_e2e.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # akumulator segmentu regr_acc == referencni vypocet (40 nahodnych segmentu, neekvidistantni indexy)
+    @{ name = "regracc"; top = "tb_regr_acc"; rtl = @("spi_app.v"); tb = "tb_regr_acc.sv" }
+    # 2026-10-08: regr_acc v PLNE velikosti cisel (horni bity t-t0, prenosy) -- 60 000 znacek po 100 ns
+    @{ name = "regrfull"; top = "tb_regr_full"; rtl = @("spi_app.v"); tb = "tb_regr_full.sv"; defs = @("-DNSEG=60000") }
+    # 2026-10-21 (FW 0x0426): win_recip + regr_acc s modelem casovani TDC; souvisla rada -> sum(x-x0) = n(n-1)/2, xm sedi na ym
+    # (plna velikost hradla 0,25 s: bez -DGATE_CLK, ~15 min)
+    # 2026-10-21 (FW 0x0427, L-0188): vzorec kalibracni tabulky ze histogramu == vypocet ve FPGA (AUTOCAL = 1); vypise zlate vektory
+    @{ name = "lutequiv"; top = "tb_lutequiv"; rtl = @("tdc.v"); tb = "tb_lutequiv.sv"; extra = @("gowin_models.v") }
+    # 2026-10-21 (FW 0x0427): KONCOVY vyrobni tok kalibrace -- STM (BFM po SPI) cte histogram, pocita a zapisuje tabulku, potvrzuje (~10 min)
+    @{ name = "stmcal"; top = "tb_stmcal"; rtl = @("tdc.v", "spi_app.v", "spi_slave_phy.v"); tb = "tb_stmcal.sv"; extra = @("gowin_models.v"); stmcal = $true }
+    @{ name = "winregr"; top = "tb_win_regr_full"; rtl = @("spi_app.v"); tb = "tb_win_regr_full.sv"; defs = @("-DGATE_CLK=200000", "-DNWIN=3") }
+    # 2026-10-08: CELY top.v s regresi (SIM_TOP: hradlo 2,5 ms, kalibrace 2^12) -- ~10 min
+    @{ name = "topregr"; top = "tb_top_regr"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_regr.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-09 (FW 0x041E): CELY top, vyber kanalu A->B za behu + echo hradla; CH_A 10 MHz, CH_B 5 MHz -- ~15 min
+    @{ name = "topchan"; top = "tb_top_chan"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_chan.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-10 (FW 0x041F): CELY top, samokontrola -- kontrolni pocitani hran (5 ukradenych hran -> ccd >= 4)
+    # a hlidac 100 MHz (zastaveni hodin na 20 us -> vypadek napocitan, mereni drzeno, rekalibrace, pak spravne)
+    @{ name = "topselfchk"; top = "tb_top_selfchk"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_top_selfchk.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-10 (FW 0x0420): ref_guard -- bezpecne prepnuti reference OCXO <-> externi 10 MHz z vnitrniho oscilatoru
+    @{ name = "refguard"; top = "tb_ref_guard"; rtl = @("spi_app.v"); tb = "tb_ref_guard.sv" }
+    # dekoder teplomeru == puvodni funkce (bubliny, nasyceni), 3 velikosti
+    @{ name = "decequiv256"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=256") }
+    @{ name = "decequiv288"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=288") }
+    @{ name = "decequiv320"; top = "tb_dec_equiv"; rtl = @("tdc.v"); tb = "tb_dec_equiv.sv"; extra = @("gowin_models.v"); defs = @("-DTB_TAPS=320") }
+    # multiplexer TX bajtu (spi_app) == puvodni (tx_old_ref.v = spi_app pred prepisem 2026-10-07)
+    @{ name = "txequiv"; top = "tb_tx_equiv"; rtl = @("spi_app.v"); tb = "tb_tx_equiv.sv"; extra = @("tx_old_ref.v") }
     @{ name = "phase"; top = "tb_phase_oversampler";
        rtl = @("spi_app.v"); tb = "tb_phase_oversampler.sv" }
+    # end-to-end SPI: PHY (SCK domena + blokova RAM) + spi_app: ACK, CAL report,
+    # vypis histogramu, zatez 120 ramcu pri SCK 5/20/31 MHz s novymi merenimi
+    # v nahodnych okamzicich (konzistence snimku, CRC). Nahrazuje tb_phy_equiv
+    # (porovnani se starou PHY, ktera po #264 neexistuje).
+    @{ name = "link"; top = "tb_link";
+       rtl = @("spi_slave_phy.v", "spi_app.v"); tb = "tb_link.sv" }
+    # FW 0x0424 (STATUS #305): zachyceni hrany GPS 1PPS hrubym citacem 100 MHz (pps_cap)
+    @{ name = "pps"; top = "tb_pps"; rtl = @("spi_app.v"); tb = "tb_pps.sv" }
+    # FW 0x0425 (E0, audit 2026-10-20): nove testy; negativni kontrola proti 0x0424 = sim/run_one*.sh proti src_fw0424_backup
+    # oprava N1 (tdc_chan: zastaraly vzorek pri spousteni hrana za hranou, 16,7..22,5 MHz)
+    @{ name = "n1"; top = "tb_n1"; rtl = @("tdc.v"); tb = "tb_n1.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # oprava close+2 (win_recip: hrana v taktu nulovani citace, nad ~33 MHz), CELY top
+    @{ name = "close2"; top = "tb_close2"; rtl = @("top.v", "spi_slave_phy.v", "spi_app.v", "tdc.v"); tb = "tb_close2.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_TOP", "-DSIM_TOP_REGR", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_FA_MHZ=40.0") }
+    # mez aliasu podle hradla (1 s: 170 hradel, 48b r_dt pretece po 171,8 s)
+    @{ name = "alias"; top = "tb_alias"; rtl = @("spi_app.v"); tb = "tb_alias.sv" }
+    # hlidac koherence 100 <-> 10 MHz (vynechany / navic pulz, faze na hrane s jitterem)
+    @{ name = "coh"; top = "tb_coh"; rtl = @("spi_app.v"); tb = "tb_coh.sv" }
+    # 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): PHY v2 pri transakci 1024 B (detekce verze) a nova PHY v3
+    #   (1024 B, CRC po blocich, delka, poloviny TX/RX; SCK 5/25/30 MHz). Negativni kontroly: python sim/mut_phy_v3.py <koren modulu> <vystup>
+    @{ name = "phylong"; top = "tb_phy_v2_long"; rtl = @("spi_slave_phy.v"); tb = "tb_phy_v2_long.sv" }
+    @{ name = "phyv3"; top = "tb_phy_v3"; rtl = @("spi_slave_phy_v3.v"); tb = "tb_phy_v3.sv" }
+    # 2026-10-22 (protokol v3, FW 0x0500): CELY top_v3 se skutecnym TDC, STM = BFM po SPI 1024 B / 25 MHz (sim/tb_top_v3.sv):
+    #   topv3    mereni (T0 = skutecna hrana, SX, sklon, dvoubodove), ACK + prekryv ramcu, CRC / delka, konfigurace, stranky,
+    #            1PPS, maskovani pri CS (~5 min)
+    #   topv3ovf preteceni kruhu (16 zaznamu): priznak, skok REC_FIRST, obnova po ACK (~3 min)
+    #   topv3cal vyrobni kalibrace: stranky histogramu, LUT_WRITE davkou, LUT_CNT/LUT_SUM/LUT_CNT_B, potvrzeni s maskou,
+    #            banky; rekalibrace jen A (B meri dal, A meri se starou bankou) (~6 min)
+    #   topv3pw  FW 0x0501 zdroj kanalu B (SET_CONFIG 0x09): sirka pulzu (B = pin A invertovany), zpozdeni A/B
+    #            (B = pin A), navrat na pin B; A 5 MHz, pulz 37,3 ns (~3 min). RAW_CAPTURE (512 znacek) je v topv3.
+    #   topv3presc FW 0x0503 predelicka: B ~143,3 MHz, P_B = 8 a 16 (SET_CONFIG 0x07), PRESC, PROBE, FLAGS 7:5 (~4 min)
+    #   topv3deep  FW 0x0505 PSRAM: kalibrace latence zapisu, hluboky RAW 1100 znacek A, 3 okna pres stranky (~5 min)
+    #   topv3deep2 totez s vystupem PSRAM neplatnym 4..6 ns po hrane CK: kalibrace musi zvolit fazi cteni 1 (F-0264)
+    #   Negativni kontroly: python3 sim/mut_top_v3.py <koren modulu> <vystup> (28 mutaci, paralelne)
+    @{ name = "topv3"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=13.300161e6") }
+    @{ name = "topv3ovf"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=1", "-DSIM_RAW=4") }
+    @{ name = "topv3cal"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=2"); stmcal = $true }
+    @{ name = "topv3pw"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=3", "-DTB_FA=5.0e6", "-DTB_WA=37300.0") }
+    @{ name = "topv3presc"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=4", "-DTB_FB=143.300173e6") }
+    @{ name = "topv3deep"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=5", "-DDEEP_RAW") }
+    @{ name = "topv3deep2"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=5", "-DTB_PS_LATE", "-DDEEP_RAW") }
+    #   topv3full FW 0x0506 s -DDEEP_RAW (PSRAM): rezim 0 beze zmeny, CAPS bit21 = 1 (lite je vychozi, ostatni topv3* ho testuji)
+    @{ name = "topv3full"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_NFR=14", "-DTB_FB=13.300161e6", "-DDEEP_RAW") }
+    # 2026-10-24 (FW 0x0506): samostatny test retezu GPS 1PPS v3 (pps_ides3 + pps_cap3, sim/tb_pps_v3.sv): TB budi tick sam
+    #   a skace na hranice prenosu tick[7:0] / tick[20:0] / tick[33:0] (vypujcka bw ve fix 1..3), 8 poloh IDES8 + rozhrani
+    #   slov PCLK (lastw), pps_cap3 (seq, seq_nz/gt1, pts_p/pfl_p/d_p, saturace d_l, nofine), rozhrani f_ts/f_tgl, ztrata
+    #   a obnova zamku PLL (epocha, nova kotva, ztrata uprostred mereni), hrana pred znovuzamcenim (N1, kontrola od opravy;
+    #   -DTB_LAX_RELOCK jen pruzkum), zakmit pred hranou (N2, kontrola pro >= 10 taktu; -DTB_STRICT_GLITCH vsechny
+    #   vzdalenosti, selze -- okno 5..8 taktu), kratky pulz 3 ns. ~15 s. Negativni kontroly: python3 sim/mut_pps_v3.py
+    #   <koren modulu> <vystup> (20 mutaci + 3 ekvivalentni, paralelne).
+    @{ name = "ppsv3"; top = "tb_pps_v3"; rtl = @("v3_core.v"); tb = "tb_pps_v3.sv"; extra = @("gowin_models.v") }
+    # 2026-10-24 (optimalizace casovani FW 0x0506): cileny test predpocitanych registru top_v3 (sim/tb_hold_inv.sv):
+    #   vynucena ztrata hodin (novy nabeh boot_done), zmena predelicky A/B a zdroje B; v kazdem taktu invarianty kopii
+    #   (hold_x_s == hold_x, hx_x, wnz, fnz, nfc, first_b, ohAh/ohBh, kopie zapisu tabulky) (~1 min). Stejne invarianty
+    #   hlida tb_top_v3.sv ve vsech topv3* (vypnuti -DNO_OPT_INV jen pro preklad proti puvodnimu RTL).
+    #   Stopa vystupu pro dukaz shody: python3 sim/trace_v3.py run <koren> <vystup> [testy]; ... cmp <A> <B>
+    @{ name = "holdinv"; top = "tb_hold_inv"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_hold_inv.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+    # 2026-10-25 (optimalizace plochy, kolo 2): testy top_v3 prekladaji navic sim/gowin_models_ext.v (modely SDPB, ALU54D,
+    #   ktere gowin_models.v nema; gowin_models.v se nemeni)
+    @{ name = "ccdcarry"; top = "tb_ccd_carry"; rtl = @("v3_core.v"); tb = "tb_ccd_carry.sv" }
+    @{ name = "csglitch"; top = "tb_cs_glitch"; rtl = @("spi_slave_phy_v3.v"); tb = "tb_cs_glitch.sv" }
     # další testy přidávej sem, jak přibývají moduly
 )
 
@@ -36,11 +170,14 @@ foreach ($t in $tests) {
 
     $vvp = Join-Path $sim ("{0}.vvp" -f $t.name)
     $files = @()
+    foreach ($e in $t.extra) { $files += (Join-Path $sim $e) }
     foreach ($r in $t.rtl) { $files += (Join-Path $src $r) }
     $files += (Join-Path $sim $t.tb)
 
     Write-Host "--- Test '$($t.name)' ---" -ForegroundColor Cyan
-    & iverilog -g2012 -Wall -s $t.top -o $vvp @files
+    # FW 0x0427: starsi testbenche kalibruji TDC samy ve FPGA (AUTOCAL = 1); testy vyrobniho toku (kalibraci zapisuje STM) maji stmcal = $true
+    $ac = @(); if (-not $t.stmcal) { $ac = @('-DSIM_AUTOCAL') }
+    & iverilog -g2012 -I $sim -s $t.top @($ac) @($t.defs) -o $vvp @files
     if ($LASTEXITCODE -ne 0) { Write-Host "  COMPILE FAIL" -ForegroundColor Red; $fail++; continue }
 
     $out = & vvp $vvp

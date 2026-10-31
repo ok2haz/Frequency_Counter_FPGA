@@ -48,3 +48,23 @@ _autosave-*
 
 # odvozené pomocné soubory
 _pdf_text.txt
+
+# identita bitstreamu - generuje build.tcl pri kazdem sestaveni (FW 0x041F)
+src/build_id.vh
+
+# bitstreamy z ab_test/ (kazdy ~3,5 MB) se neverzuji; ab_test/MANIFEST.md (md5, rezervy, identita) ano
+ab_test/*.fs
+
+# Icarus simulace: prelozene modely a logy behu (reprodukovatelne sim/run.ps1, sim/run_one*.sh)
+*.vvp
+sim_out/
+sim_par/
+sim_fix/
+/sim_*.log
+/sim_*.err
+/pnr_*.log
+/CLI_other_instance_exchange_baseline.log
+
+# RTL FW 0x0424 pro negativni kontroly sim/run_one*.sh -- zdroj je commit 09786ae, obnova:
+#   mkdir src_fw0424_backup && git archive 09786ae:Frequency_Counter_FPGA_Module/src spi_app.v tdc.v top.v | tar -x -C src_fw0424_backup
+src_fw0424_backup/

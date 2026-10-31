@@ -1,0 +1,9 @@
+[2026-10-19 21:50:25] PREFLIGHT: uptime 6555 s, IPC 29, smycka OFF (zamceno 0, 0 s)
+[2026-10-19 21:50:25] VAROVANI: smycka neni LOCK (OFF) - pocitej s rozbehem, zaklad meri az od zamceni
+[2026-10-19 21:50:25] HRADLO: nastaveno 0.25000 s, posledni namerene 249999999 ns
+[2026-10-19 21:50:25] START: docs\audit\data\2026-10-19_nav5_faze2_gps.csv, perioda 0.2 s, max 603 min
+[2026-10-19 21:50:25] stav smycky: OFF (why 7)
+[2026-10-20 03:44:37] NEODPOVIDA (1x)
+[2026-10-20 03:45:14] NEODPOVIDA (30x)
+[2026-10-20 07:50:29] stav smycky: WAIT (why 2)
+[2026-10-20 07:50:30] stav smycky: FLL (why 0)

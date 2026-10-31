@@ -1,0 +1,24 @@
+GET /api/state (JSON, 1562 B, 41 ms)             PASS  
+  freq_hz 10 MHz +-1 ppb                         PASS  9999999.99744 Hz
+  ref_ppb_x10 (v0.27.2) / ref_ppb_x100 (v0.29)   PASS  10
+  gpsdo blok: LOCK + locked                      PASS  {"state": "LOCK", "locked": 1, "y_ppt": -34, "x_ns": 6}
+  GPS fix 3D, >= 6 druzic                        PASS  11 sat, HDOP 0.8
+  signal_lost == false, spi_ok                   PASS  
+GET /api/stab (2017 B, 31 ms)                    PASS  
+GET /api/sats (224 B, 10 ms)                     PASS  
+GET /api/errlog?n=5&from=0 (477 B, 25 ms)        PASS  
+GET /api/fpga (273 B, 11 ms)                     PASS  
+  /api/stab: sigma(1 s) v rozsahu 5e-11..5e-10   PASS  [1.0, 1.38774e-10, 1.38774e-10]
+  /api/stab: filtr odlehlych (ro/rn/rm)          PASS  ro=10 rn=44654
+GET /api/log win=21600 (48 bodu, 55 ms)          PASS  rozpeti 5.9 h
+  server: win=cele okno pokryje okno v JEDNE davce (proto klient v0.29 posila win/4) PASS  davka 1 zacina 4.4 h pred koncem davky 0 -> v0.27.2 se davky prekryvaji
+  oprava v0.29: davka win/4 pokryje ~1/4 okna    PASS  1.44 h
+SCPI *IDN? -> OK2HAZ,GPSDO-Counter,0,gpsdo-ui v0.27.2 PASS  
+SCPI SENS:FREQ:GATE? -> 0.250000                 PASS  
+SCPI MEAS:FREQ? -> 9999999.99680000              PASS  
+SCPI SYST:ERR? -> 0,"No error"                   PASS  
+SCPI *OPC? -> 1                                  PASS  
+40 rychlych GET /api/state (chyb 0, max 41 ms, celkem 0.8 s) PASS  
+GET / (SPA 188236 B, 280 ms)                     PASS  
+
+PASS 22 / 22

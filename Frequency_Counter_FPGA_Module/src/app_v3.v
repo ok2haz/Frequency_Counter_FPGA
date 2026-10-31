@@ -1,0 +1,473 @@
+// ============================================================
+// File: app_v3.v -- aplikacni vrstva protokolu v3 (domena clk_ref_10m), 2026-10-22. Specifikace: docs/PROTOKOL_V3.md
+// v projektu STM (kap. 3 MISO, 4 MOSI, 5 stranky, 6 chovani). Pouziva top_v3.v; bitstream v2 (top.v) ho nepouziva.
+//
+//  * RX: transakce musi mit presne 1024 B (rx_len_ok), MAGIC, VER = 0x03 a platne CRC bloku 0; LUT_WRITE navic CRC
+//    vsech bloku (vadny pouzity blok = cely prikaz zahodit). Jinak RX_LEN_ERR / RX_CRC_ERR a FLAGS bit4.
+//  * TX: skladac pise ramec po bajtech do NEAKTIVNI poloviny TX RAM PHY (jako v2): blok 0 = hlavicka (multiplexer
+//    nad poli), bloky 1-3 = {k, SEQ[7:0]} + 8 zaznamu po 31 B z kruhu (BSRAM, slova 32 b) nebo stranka (84 polozek
+//    po 3 B). CRC bloku (254/255) vklada PHY za letu. Skladani 1024 taktu = 102 us (< mezera 150 us, kap. 2).
+//  * Kruh: aplikace zna REC_HEAD (pocet zapsanych zaznamu; prepinaci bit od zapisovace po kazde dvojici A/B)
+//    a REC_ACK (od STM). Ramec DATA nese zaznamy od REC_ACK; pri preteceni (nepotvrzenych > 2^RAW - 4) se REC_ACK
+//    posune a FLAGS bit1 hlasi preteceni az do dalsiho prijateho ACK.
+//  * Zapis tabulky TDC: polozky jdou do 100 MHz domeny stejne jako v2 (lut_wr_sync: data + prepinaci bit 3 takty po nich).
+// ============================================================
+
+module app_v3 #(
+    parameter [31:0] BUILD_TIME = 32'd0,
+    parameter [31:0] BUILD_GIT  = 32'd0,
+    parameter        RAW        = 9,          // log2 zaznamu v kruhu (v3_ring)
+    parameter [7:0]  CAL_LOG2   = 8'd20,      // pocet udalosti kalibrace (souhrnna stranka)
+    parameter        DEEP       = 1,          // 1 = hluboky RAW do PSRAM (-DDEEP_RAW), CAPS bit21
+    parameter        CSDIAG     = 1,          // 1 = citace pulzu na CS v hlavicce 132..137, CAPS bit23 (FW 0x0508, L-0242)
+    parameter [7:0]  CS_FILT    = 8'd16       // filtr CS v PHY [takty 100 MHz], jen echo v hlavicce
+)(
+    input  wire        clk,                   // clk_ref_10m
+    // ---- PHY v3: RX (staticke po CS nahoru), rx_valid = synchronizovany pulz konce transakce ----
+    input  wire        rx_valid,
+    input  wire [7:0]  rx_b0, rx_b1, rx_b2,
+    input  wire [31:0] rx_seq,
+    input  wire [7:0]  rx_p0, rx_p1, rx_p2, rx_p3,
+    input  wire [3:0]  rx_blk_ok,
+    input  wire        rx_len_ok,
+    output reg  [9:0]  rx_raddr,
+    input  wire [7:0]  rx_rdata,
+    // ---- PHY v3: TX ----
+    output wire        tx_half,
+    output reg         tx_we,
+    output reg  [10:0] tx_waddr,
+    output reg  [7:0]  tx_wdata,
+    input  wire        phy_busy,              // domena 100 MHz (synchronizuje se zde)
+    input  wire        phy_base,
+    // ---- kruh zaznamu ----
+    input  wire        rec_tgl,               // domena 100 MHz: prepne po zapisu dvojice zaznamu
+    output reg  [RAW+4:0] ring_raddr,         // 2026-10-25: {zaznam, bajt 0..30} (v3_ring cte po bajtech)
+    input  wire [7:0]  ring_rdata,            // 1 takt po adrese (registrovany vystup RAM)
+    // ---- stav (synchronizovany / kvazistaticky) ----
+    input  wire [7:0]  st_clk, st_clk_loss, st_coh, st_coh_cnt,
+    input  wire [39:0] st_csgl,               // L-0242: citace zahozenych pulzu na CS (aktivni 1-2, 3-4, 5-8, 9+ taktu; v klidu), binarne, domena clk
+
+    input  wire [7:0]  st_tdc_a, st_tdc_b,
+    input  wire [1:0]  st_cal_wait,
+    input  wire        st_cal_run,
+    input  wire        st_seg10,              // platna delka segmentu (1 = 10 ms)
+    input  wire [31:0] pps_seq,               // zive z 100 MHz (STM bere shodu dvou ramcu)
+    input  wire        pps_nz, pps_gt1,       // FW 0x0506: pps_seq != 0, pps_seq > 1 (registry v pps_cap3)
+    input  wire [33:0] pps_last, pps_prev,
+    input  wire [47:0] pps_pts_l, pps_pts_p,   // FW 0x0502: PTS (jemny z IDES8 nebo hruby x 16384), PFLAGS, d, PPS_STATUS
+    input  wire [7:0]  pps_pfl_l, pps_pfl_p, pps_d_l, pps_d_p, pps_st,
+    input  wire [7:0]  bub_a, bub_b,
+    input  wire [3:0]  ovl_a, ovl_b,
+    input  wire [15:0] tdc_cfg, maxtap_a, maxtap_b,
+    input  wire [1:0]  cal_retry,
+    output reg  [9:0]  hist_k,                // vypis histogramu (oba kanaly)
+    input  wire [23:0] hist_a, hist_b,
+    output reg  [8:0]  raw_k,
+    input  wire [47:0] raw_q,
+    input  wire [9:0]  raw_n,
+    // ---- konfigurace ----
+    output reg         cal_tgl,               // SET_CONFIG 0x02 start (prepinaci bit) ...
+    output reg  [1:0]  cal_mask,              // ... maska kanalu (0 = oba)
+    output reg         ref_sel,
+    output reg         mask_cs_en,
+    output reg         led_hb_en,
+    output reg         seg10,
+    output reg         raw_tgl,
+    output reg         raw_ch,
+    output reg  [1:0]  raw_mode,              // FW 0x0505: T_RAW p0 bity 2:1 (0 = 512 do BSRAM, 1 = hluboky, 2 = okno)
+    output reg  [23:0] raw_arg,               // p1..p3: pocet znacek / cislo okna
+    input  wire [23:0] raw_dn,
+    input  wire [7:0]  raw_dst,
+    input  wire [5:0]  raw_wsel,              // bity 4:0 latence zapisu PSRAM (W0 + n), bit5 faze cteni
+    input  wire [15:0] raw_win,
+    input  wire [7:0]  raw_dack,              // audit F-0266: bit7 kanal zaznamu, 3:0 prijate prikazy T_RAW (Gray)
+    output reg         lw_tgl,
+    output reg  [9:0]  lw_a,
+    output reg  [13:0] lw_neg,
+    output reg         lw_ch,
+    output reg         lw_commit_tgl,
+    output reg  [1:0]  lw_commit_mask,        // kanaly, ktere potvrzeni aktivuje (kvazistaticke pred prepnutim lw_commit_tgl)
+    output reg  [1:0]  bsrc,                  // FW 0x0501, SET_CONFIG 0x09: bit0 = kanal B z pinu A, bit1 = B invertovany
+    output reg  [2:0]  pr_a_req, pr_b_req,    // FW 0x0503, SET_CONFIG 0x07: log2 P predelicky (plati od hranice segmentu)
+    input  wire [2:0]  pr_a_act, pr_b_act,    // platna P (100 MHz, kvazistaticke)
+    input  wire [15:0] probe_a, probe_b       // sonda /16 za 1 ms (100 MHz, meni se po 1 ms; STM bere shodu dvou ramcu)
+);
+    localparam [7:0]  MAGIC = 8'hA5, VER = 8'h03;
+    localparam [7:0]  T_SETCFG = 8'h01, T_ACK = 8'h06, T_START = 8'h08, T_STOP = 8'h09, T_LUTW = 8'h0A, T_RAW = 8'h0B;
+    localparam [7:0]  T_DATA = 8'h80, T_PAGE = 8'hA0;
+    // FW 0x0500 = prvni bitstream protokolu v3 (top_v3.v). Rada 0x04xx je v2 (top.v), cisla se nesdili.
+    // FW 0x0501: SET_CONFIG 0x09 zdroj kanalu B (jednorazove deje: sirka pulzu, kalibrace zpozdeni A/B), CAPS bit20.
+    // FW 0x0502: 1PPS s jemnym casem pres IDES8 + rPLL (CAPS bit17): PTS krok 1,25 ns, PFLAGS bit1, PPS_STATUS, d.
+    // FW 0x0503: predelicka vstupu pin_cnt3 (CAPS bit18): SET_CONFIG 0x07, PRESC A/B, PROBE A/B, FLAGS zaznamu 7:5.
+    // FW 0x0504: soucty segmentu SX/ST v DSP (seg_chan3 SUM_DSP = 1), rozhrani beze zmeny.
+    // FW 0x0505: hluboky RAW zaznam do vestavene PSRAM (CAPS bit21): T_RAW rezimy 1/2, hlavicka 124..131.
+    // FW 0x0506: stejny protokol, bez PSRAM (CAPS bit21 = 0, pokud se nesestavuje -DDEEP_RAW) -- zmensena pro CLS
+    // FW 0x0507: uzka hlavicka (CAPS bit22, PROTOKOL_V3 kap. 3.1b): SEQ, REC_HEAD (= pocet), REC_FIRST a PSEQ 16 b,
+    // TS10M, RING_FILL, RX_LAST, predchozi 1PPS (84..95) a BUB/OVL (112..115) = 0 -- STM je rozbali / spocita sam
+    // FW 0x0508 (L-0242, 2026-10-26): filtr CS v PHY (pulz kratsi nez CS_FILT taktu 100 MHz uz nerestartuje vysilani) + citace
+    // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
+    localparam [15:0] FW_VERSION = 16'h0508;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
+    localparam [15:0] FW_VERSION_TX = CSDIAG ? FW_VERSION : 16'h0507;          // do hlavicky; -DSIM_NOCSDIAG = hlavicka FW 0x0507
+    // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
+    // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
+    // bit17 (FW 0x0502) = 1PPS s jemnym casem pres IDES8 (pps_ides3, kap. 10.6); bit18 (FW 0x0503) = predelicka pin_cnt3
+    // (SET_CONFIG 0x07, kap. 10.7).
+    // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B; bit21 (FW 0x0505) = hluboky RAW do PSRAM (kap. 10.9).
+    // bit22 (FW 0x0507) = uzka hlavicka (kap. 3.1b).
+    // bit23 (FW 0x0508) = citace zahozenych pulzu na CS (hlavicka 132..137, kap. 3.1c).
+    localparam [31:0] CAPS = (DEEP ? 32'h007F_7C32 : 32'h005F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
+    localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
+    // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
+    reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
+    always @(posedge clk) begin pra_1 <= pr_a_act; pra_s <= pra_1; prb_1 <= pr_b_act; prb_s <= prb_1; end
+
+    initial begin
+        rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+5){1'b0}};
+        hist_k = 10'd0; raw_k = 9'd0;
+        cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
+        raw_tgl = 1'b0; raw_ch = 1'b0; raw_mode = 2'd0; raw_arg = 24'd0;
+        lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00; pr_a_req = 3'd0; pr_b_req = 3'd0;
+    end
+
+    // ---- casovani ramce, kruh ----
+    // 2026-10-24 (plocha): citace domeny 10 MHz do DSP (ALU54D; perioda 100 ns, vzdalenost radku DSP casovani
+    // neohrozi); atribut je pro simulaci komentar
+    reg [2:0]  rt_s = 3'b000;
+    reg [15:0] rec_head = 16'd0, rec_ack = 16'd0;   // FW 0x0507: 16 b (STM rozbali), posun modulo 2^16
+    reg        ovf = 1'b0;
+    reg [1:0]  hpend = 2'd0;               // udalosti kruhu (dvojice zaznamu) zachycene behem skladani ramce
+
+    // ---- stav prijmu ----
+    reg [15:0] rx_crc_err = 16'd0, rx_len_err = 16'd0;
+    reg        rx_err = 1'b0, cmd_done = 1'b0;
+    reg [13:0] lut_cnt = 14'd0;
+    reg [13:0] lut_cnt_b = 14'd0;            // polozky s bitem kanalu B (LUT_SUM chybu kanalu u cele tabulky nevidi)
+    reg [15:0] lut_sum = 16'd0;
+    reg [2:0]  lw_dly = 3'b000, lc_dly = 3'b000;
+    // audit 2026-10-23 (F-0265): T_RAW a kalibrace 0x02 -- prepinaci bit az 3 takty po parametrech (jako lw_dly).
+    // V cilove domene je prepinac 3 FF a parametry 2 FF; pri zmene v tomtez taktu staci metastabilita o takt jinak
+    // a cil prevezme stary rezim / kanal / masku.
+    reg [2:0]  raw_dly = 3'b000, cal_dly = 3'b000;
+    reg        page_req = 1'b0;
+    reg [7:0]  page_kind = 8'd0;
+    reg [15:0] page_no = 16'd0;
+
+    // ---- TX RAM PHY ----
+    reg        tx_half_r = 1'b0;
+    assign tx_half = tx_half_r;
+    reg [2:0]  pb_s = 3'b000, pbase_s = 3'b000;
+    reg [2:0]  cool = 3'd0;
+    always @(posedge clk) begin pb_s <= {pb_s[1:0], phy_busy}; pbase_s <= {pbase_s[1:0], phy_base}; end
+    wire       tx_can = (cool == 3'd0) && !(pb_s[2] && (pbase_s[2] == ~tx_half_r));
+
+    // ---- FSM ----
+    localparam [2:0] S_IDLE = 3'd0, S_RX = 3'd1, S_LUT = 3'd2, S_ASM = 3'd3;
+    reg [2:0]  state = S_IDLE;
+    reg        rx_pend = 1'b0, dirty = 1'b1;
+    reg [15:0] seq_tx = 16'd0;                      // FW 0x0507: 16 b (STM rozbali)
+
+    // snimek pro skladany ramec
+    reg [4:0]  a_nrec = 5'd0;
+    // FW 0x0506: page_req / page_kind / page_no se meni jen v S_RX (ne behem skladani) -> zadne snimky
+    wire       a_page = page_req;
+    wire [7:0] a_kind = page_kind;
+    wire [15:0] a_pno = page_no;
+    reg [15:0] a_pbase = 16'd0;              // pno * 252
+    reg [15:0] a_pcnt = 16'd0;               // polozek na strance
+    reg [15:0] a_ptot = 16'd0;               // polozek celkem (druh)
+
+    // ---- skladac: index, citace zaznamu / polozek, dvoustupnova roura ----
+    reg [10:0] ai = 11'd0;                   // index bajtu 0..1023 (bit 10 = konec)
+    reg [2:0]  m  = 3'd0;                    // zaznam v bloku 0..7
+    reg [4:0]  rb = 5'd0;                    // bajt zaznamu 0..30
+    reg [6:0]  q  = 7'd0;                    // polozka stranky v bloku 0..83
+    reg [1:0]  bi = 2'd0;                    // bajt polozky 0..2
+    reg [15:0] gbase = 16'd0;                // globalni index polozky 0 bloku
+    reg [23:0] item_r = 24'd0;
+    reg [7:0]  d1 = 8'd0, d2 = 8'd0;
+    reg        r1 = 1'b0, r2 = 1'b0;         // bajt je z kruhu (vybere se v 2. stupni)
+    reg        w1 = 1'b0, w2 = 1'b0;
+    reg [9:0]  i1 = 10'd0, i2 = 10'd0;
+
+    wire [1:0] blk = ai[9:8];
+    wire [7:0] bb  = ai[7:0];
+    wire [15:0] gb_blk = a_pbase + ((blk == 2'd1) ? 16'd0 : (blk == 2'd2) ? 16'd84 : 16'd168);   // polozka 0 bloku
+
+    // ---- hlavicka (blok 0), multiplexer nad bajty ----
+    wire [7:0]  flags_b = {2'b00, cmd_done, rx_err, 1'b0, st_cal_run, ovf, (a_nrec != 5'd0) & ~a_page};
+    // rec_head a rec_ack se behem skladani (S_ASM) nemeni -> zadny snimek (FW 0x0506); udalost kruhu behem skladani ceka v hpend
+    // fill < 2^RAW (REC_ACK se pri preteceni posune), 16 b staci a saturace nenastane
+    wire [15:0] fill16  = rec_head - rec_ack;
+    wire [47:0] pts_l   = pps_pts_l;
+    // 2026-10-25 (plocha): drive pps_nz ? pps_pfl_l : 0 -- hradlo bez ucinku: pps_cap3 nastavi pfl_l (3 nebo 1) a seq_nz
+    // (trvale 1) v temze taktu (pub == pub_b, invariant v tb_top_v3) a pfl_l je do te doby 0 (pocatecni hodnota)
+    wire [7:0]  pfl_l   = pps_pfl_l;
+    reg  [7:0]  hb;
+    always @* begin
+        hb = 8'd0;
+        case (bb)
+            8'd0:  hb = MAGIC;
+            8'd1:  hb = VER;
+            8'd2:  hb = a_page ? T_PAGE : T_DATA;
+            8'd3:  hb = flags_b;
+            8'd4:  hb = seq_tx[7:0];   8'd5:  hb = seq_tx[15:8];
+            8'd8:  hb = 8'h00;         8'd9:  hb = 8'h04;         8'd10: hb = 8'd4;
+            8'd12: hb = BUILD_TIME[7:0];  8'd13: hb = BUILD_TIME[15:8]; 8'd14: hb = BUILD_TIME[23:16]; 8'd15: hb = BUILD_TIME[31:24];
+            8'd16: hb = BUILD_GIT[7:0];   8'd17: hb = BUILD_GIT[15:8];  8'd18: hb = BUILD_GIT[23:16];  8'd19: hb = BUILD_GIT[31:24];
+            8'd20: hb = FW_VERSION_TX[7:0];  8'd21: hb = FW_VERSION_TX[15:8];
+            8'd22: hb = 8'd100;
+            8'd23: hb = st_seg10 ? 8'd10 : 8'd25;
+            8'd24: hb = CAPS[7:0];  8'd25: hb = CAPS[15:8];  8'd26: hb = CAPS[23:16];  8'd27: hb = CAPS[31:24];
+            8'd32: hb = rec_head[7:0]; 8'd33: hb = rec_head[15:8];  // FW 0x0507: pocet zapsanych zaznamu (bez odectu)
+            8'd36: hb = rec_ack[7:0];  8'd37: hb = rec_ack[15:8];
+            8'd40: hb = a_page ? 8'd0 : {3'd0, a_nrec};
+            8'd44: hb = st_clk;        8'd45: hb = st_clk_loss;   8'd46: hb = st_coh;        8'd47: hb = st_coh_cnt;
+            8'd48: hb = st_tdc_a;      8'd49: hb = st_tdc_b;
+            8'd50: hb = pps_st;
+            8'd51: hb = {6'd0, st_cal_wait};
+            8'd52: hb = rx_crc_err[7:0];  8'd53: hb = rx_crc_err[15:8];
+            8'd54: hb = rx_len_err[7:0];  8'd55: hb = rx_len_err[15:8];
+            8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
+            8'd62: hb = lut_sum[7:0];  8'd63: hb = lut_sum[15:8];
+            8'd64: hb = {(pr_a_req != pra_s), 4'd0, pra_s};   8'd65: hb = {(pr_b_req != prb_s), 4'd0, prb_s};
+            8'd66: hb = {3'd0, bsrc[1], bsrc[0], ref_sel, led_hb_en, mask_cs_en};
+            8'd68: hb = pps_seq[7:0];  8'd69: hb = pps_seq[15:8];
+            8'd72: hb = pts_l[7:0];    8'd73: hb = pts_l[15:8];    8'd74: hb = pts_l[23:16];
+            8'd75: hb = pts_l[31:24];  8'd76: hb = pts_l[39:32];   8'd77: hb = pts_l[47:40];
+            8'd78: hb = pfl_l;         8'd79: hb = pps_d_l;
+            // FW 0x0506: bajty 100..107 (hruby cas 1PPS) = 0; STM bere hruby cas z PTS >> 14 (PFLAGS bit1 = 0)
+            8'd108: hb = probe_a[7:0];  8'd109: hb = probe_a[15:8];  8'd110: hb = probe_b[7:0];  8'd111: hb = probe_b[15:8];
+            8'd116: hb = a_page ? a_kind : 8'd0;
+            8'd117: hb = a_page ? a_pno[7:0] : 8'd0;   8'd118: hb = a_page ? a_pno[15:8] : 8'd0;
+            8'd119: hb = a_page ? a_pcnt[7:0] : 8'd0;  8'd120: hb = a_page ? a_pcnt[15:8] : 8'd0;
+            8'd124: hb = raw_dn[7:0];   8'd125: hb = raw_dn[15:8];  8'd126: hb = raw_dn[23:16];  8'd127: hb = raw_dack;
+            8'd128: hb = raw_dst;       8'd129: hb = {2'd0, raw_wsel};
+            8'd130: hb = raw_win[7:0];  8'd131: hb = raw_win[15:8];
+            // FW 0x0508 (CAPS bit23): zahozene pulzy na CS (L-0242); bez CSDIAG zustava rezerva = 0
+            8'd132: hb = CSDIAG ? st_csgl[7:0]   : 8'd0;   8'd133: hb = CSDIAG ? st_csgl[15:8]  : 8'd0;
+            8'd134: hb = CSDIAG ? st_csgl[23:16] : 8'd0;   8'd135: hb = CSDIAG ? st_csgl[31:24] : 8'd0;
+            8'd136: hb = CSDIAG ? st_csgl[39:32] : 8'd0;   8'd137: hb = CSDIAG ? CS_FILT : 8'd0;
+            8'd122: hb = lut_cnt_b[7:0];  8'd123: hb = {2'd0, lut_cnt_b[13:8]};
+            default: hb = 8'd0;
+        endcase
+    end
+
+    // ---- polozka stranky (index g, adresu nastavil skladac >= 2 takty predem) ----
+    wire [15:0] g_cur = gbase + {9'd0, q};
+    reg  [23:0] it_src;
+    always @* begin
+        case (a_kind[1:0])
+            2'd0: case (g_cur[2:0])      // souhrn kalibrace
+                      3'd0: it_src = {8'd0, st_tdc_b, st_tdc_a};
+                      3'd1: it_src = {8'd0, maxtap_a};
+                      3'd2: it_src = {8'd0, maxtap_b};
+                      3'd3: it_src = {8'd0, tdc_cfg};
+                      3'd4: it_src = {22'd0, cal_retry};
+                      3'd5: it_src = {14'd0, raw_n};
+                      3'd6: it_src = {16'd0, CAL_LOG2};
+                      default: it_src = {22'd0, st_cal_wait};
+                  endcase
+            2'd1: it_src = hist_a;
+            2'd2: it_src = hist_b;
+            default: it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];
+        endcase
+        // 2026-10-25 (plocha): drive i "|| q >= 84" -- it_src se bere jen v bb < 254 pri bi == 0, kde q = (bb - 2) / 3 <= 83
+        if (g_cur >= a_ptot) it_src = 24'd0;
+    end
+
+    // ---- zaznam j bloku: index v kruhu ----
+    wire [4:0]     jrec = {blk - 2'd1, m};                                 // (blk-1)*8 + m
+    wire [RAW+4:0] rsum = {5'd0, rec_ack[RAW-1:0]} + {{RAW{1'b0}}, jrec};   // (sirka obecne, i RAW < 5 v simulaci)
+    wire [RAW-1:0] rlo  = rsum[RAW-1:0];
+
+    // ---- LUT_WRITE (davka): cteni RX RAM ----
+    reg [1:0]  lk = 2'd1;                    // blok 1..3
+    reg [6:0]  ln = 7'd0, li = 7'd0;         // pocet polozek bloku, index polozky
+    reg [3:0]  lp = 4'd0;                    // faze (cteni s latenci 2 takty)
+    reg [7:0]  lb0 = 8'd0, lb1 = 8'd0;
+
+    always @(posedge clk) begin
+        tx_we <= 1'b0;
+        if (cool != 3'd0) cool <= cool - 3'd1;
+        lw_dly <= {lw_dly[1:0], 1'b0};
+        lc_dly <= {lc_dly[1:0], 1'b0};
+        if (lw_dly[2]) lw_tgl        <= ~lw_tgl;
+        if (lc_dly[2]) lw_commit_tgl <= ~lw_commit_tgl;
+        raw_dly <= {raw_dly[1:0], 1'b0};
+        cal_dly <= {cal_dly[1:0], 1'b0};
+        if (raw_dly[2]) raw_tgl <= ~raw_tgl;
+        if (cal_dly[2]) cal_tgl <= ~cal_tgl;
+
+        // kruh: novy par zaznamu; preteceni posune REC_ACK (ne behem skladani -- rec_ack se pak nemeni)
+        rt_s <= {rt_s[1:0], rec_tgl};
+        if (rt_s[2] ^ rt_s[1]) begin
+            dirty <= 1'b1;
+            if (state == S_ASM) hpend <= hpend + 2'd1; else rec_head <= rec_head + 16'd2;
+        end else if (state != S_ASM && hpend != 2'd0) begin rec_head <= rec_head + 16'd2; hpend <= hpend - 2'd1; end
+        if (state != S_ASM && fill16 > RING_USE[15:0]) begin rec_ack <= rec_head - RING_USE[15:0]; ovf <= 1'b1; end
+
+        if (rx_valid) rx_pend <= 1'b1;
+
+        case (state)
+            S_IDLE: begin
+                if (rx_pend) begin
+                    rx_pend <= 1'b0;
+                    state   <= S_RX;
+                end else if (dirty && tx_can) begin
+                    dirty   <= 1'b0;
+                    seq_tx  <= seq_tx + 16'd1;
+                    a_pbase <= {page_no[7:0], 8'd0} - {page_no[13:0], 2'd0};          // * 252
+                    a_ptot  <= (page_kind[1:0] == 2'd0) ? 16'd8 : (page_kind[1:0] == 2'd3) ? {5'd0, raw_n, 1'b0} : 16'd512;
+                    ai      <= 11'd0;
+                    w1      <= 1'b0; w2 <= 1'b0;
+                    state   <= S_ASM;
+                end
+            end
+
+            S_RX: begin
+                state <= S_IDLE;
+                dirty <= 1'b1;
+                if (!rx_len_ok) begin
+                    if (rx_len_err != 16'hFFFF) rx_len_err <= rx_len_err + 16'd1;
+                    rx_err <= 1'b1;
+                end else if (rx_b0 != MAGIC || rx_b1 != VER || !rx_blk_ok[0]) begin
+                    if (!rx_blk_ok[0] && rx_crc_err != 16'hFFFF) rx_crc_err <= rx_crc_err + 16'd1;
+                    rx_err <= 1'b1;
+                end else begin
+                    rx_err   <= 1'b0;
+                    cmd_done <= 1'b1;
+                    case (rx_b2)
+                        T_ACK: begin
+                            if (({rx_p1, rx_p0} - rec_ack) <= fill16) begin      // FW 0x0507: dolnich 16 b REC_ACK
+                                rec_ack <= {rx_p1, rx_p0};
+                                ovf     <= 1'b0;
+                            end
+                        end
+                        T_SETCFG: case (rx_p0)
+                            8'h02: if (rx_p1[0]) begin cal_mask <= rx_p1[2:1]; cal_dly <= 3'b001; end
+                            8'h04: ref_sel <= rx_p1[0];
+                            8'h05: begin mask_cs_en <= rx_p1[0]; led_hb_en <= rx_p1[1]; end
+                            8'h06: begin
+                                if (rx_p1[0]) begin                                        // potvrzeni = prepnuti banky
+                                    lc_dly <= 3'b001;                                      // (maska 3 takty pred prepinacim bitem)
+                                    lw_commit_mask <= (rx_p2[1:0] == 2'b00) ? 2'b11 : rx_p2[1:0];   // p2: bit0 A, bit1 B, 0 = oba
+                                end
+                                else begin lut_cnt <= 14'd0; lut_cnt_b <= 14'd0; lut_sum <= 16'd0; end   // zacatek zapisu
+                            end
+                            8'h08: begin
+                                if (rx_p1 == 8'd10) seg10 <= 1'b1;
+                                else if (rx_p1 == 8'd25) seg10 <= 1'b0;
+                            end
+                            8'h09: bsrc <= rx_p1[1:0];                                  // FW 0x0501: zdroj kanalu B
+                            8'h07: if (rx_p1[0]) pr_b_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];   // FW 0x0503: predelicka
+                                   else          pr_a_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];
+                            default: ;                                                  // 0x01, 0x03 (v3 bez vyznamu), 0x07
+                        endcase
+                        T_LUTW: begin
+                            if (rx_blk_ok == 4'b1111) begin lk <= 2'd1; lp <= 4'd0; li <= 7'd0; state <= S_LUT; end
+                            else begin
+                                cmd_done <= 1'b0; rx_err <= 1'b1;
+                                if (rx_crc_err != 16'hFFFF) rx_crc_err <= rx_crc_err + 16'd1;
+                            end
+                        end
+                        T_PAGE: begin page_req <= 1'b1; page_kind <= rx_p0; page_no <= {rx_p2, rx_p1}; end
+                        T_RAW:  begin raw_ch <= rx_p0[0]; raw_mode <= (rx_p0[2:1] == 2'd3) ? 2'd0 : rx_p0[2:1];
+                                      raw_arg <= {rx_p3, rx_p2, rx_p1}; raw_dly <= 3'b001; end
+                        T_START, T_STOP: ;
+                        default: cmd_done <= 1'b0;                                      // neznamy TYPE = neprovedeno
+                    endcase
+                end
+            end
+
+            // ---- LUT_WRITE: bloky 1..3, v kazdem [0] = pocet (0..84), od [1] polozky po 3 B ----
+            S_LUT: begin
+                lp <= lp + 4'd1;
+                case (lp)
+                    4'd0: rx_raddr <= {lk, 8'd0};
+                    4'd3: begin ln <= (rx_rdata > 8'd84) ? 7'd84 : rx_rdata[6:0]; li <= 7'd0; end
+                    4'd4: begin
+                        if (li == ln) begin                                         // blok hotov
+                            if (lk == 2'd3) begin state <= S_IDLE; dirty <= 1'b1; end
+                            else begin lk <= lk + 2'd1; lp <= 4'd0; end
+                        end else rx_raddr <= {lk, 8'd1} + {2'd0, li, 1'b0} + {3'd0, li};   // 1 + 3*li
+                    end
+                    4'd5: rx_raddr <= rx_raddr + 10'd1;
+                    4'd6: begin rx_raddr <= rx_raddr + 10'd1; lb0 <= rx_rdata; end
+                    4'd7: lb1 <= rx_rdata;
+                    4'd8: begin                                                     // treti bajt = rx_rdata
+                        lw_a   <= {1'b0, lb1[6], lb0};
+                        lw_ch  <= lb1[7];
+                        lw_neg <= {lb1[5:0], rx_rdata};
+                        lw_dly <= 3'b001;
+                        if (lut_cnt != 14'h3FFF) lut_cnt <= lut_cnt + 14'd1;
+                        if (lb1[7] && lut_cnt_b != 14'h3FFF) lut_cnt_b <= lut_cnt_b + 14'd1;
+                        lut_sum <= lut_sum + ({1'b0, lb1[7], lb1[6], lb0, 5'd0} ^ {2'd0, lb1[5:0], rx_rdata});
+                        li <= li + 7'd1;
+                        lp <= 4'd4;
+                    end
+                    default: ;
+                endcase
+            end
+
+            // ---- skladani ramce ----
+            S_ASM: begin
+                // pocet zaznamu v ramci (rec_head se behem skladani nemeni; udalost v taktu snimku se projevi az ted)
+                if (ai == 11'd0) a_nrec <= (fill16 > 16'd24) ? 5'd24 : (rec_head[4:0] - rec_ack[4:0]);
+                // stupen 0: bajt ai
+                if (!ai[10]) begin
+                    w1 <= 1'b1; i1 <= ai[9:0]; r1 <= 1'b0; d1 <= 8'd0;
+                    if (blk == 2'd0) d1 <= hb;
+                    else if (bb == 8'd0) begin
+                        d1 <= {6'd0, blk};
+                        m <= 3'd0; rb <= 5'd0; q <= 7'd0; bi <= 2'd0;
+                        // prvni polozka bloku: adresa 2 takty (200 ns) predem -- it_src se bere v bb == 2
+                        gbase  <= gb_blk;
+                        hist_k <= gb_blk[9:0];
+                        raw_k  <= gb_blk[9:1];
+                    end else if (bb == 8'd1) begin
+                        d1 <= seq_tx[7:0];
+                    end else if (!a_page) begin
+                        if (bb < 8'd250) begin
+                            if ({blk - 2'd1, m} < a_nrec) begin
+                                ring_raddr <= {rlo, rb};
+                                r1 <= 1'b1;
+                            end
+                            if (rb == 5'd30) begin rb <= 5'd0; m <= m + 3'd1; end
+                            else rb <= rb + 5'd1;
+                        end
+                    end else begin
+                        if (bb < 8'd254) begin
+                            if (bi == 2'd0) begin
+                                d1 <= it_src[7:0]; item_r <= it_src;
+                                hist_k <= g_cur[9:0] + 10'd1;                       // dalsi polozka (za 3 takty)
+                                raw_k  <= (g_cur[9:0] + 10'd1) >> 1;
+                            end else d1 <= (bi == 2'd1) ? item_r[15:8] : item_r[23:16];
+                            if (bi == 2'd2) begin bi <= 2'd0; q <= q + 7'd1; end
+                            else bi <= bi + 2'd1;
+                        end
+                    end
+                    ai <= ai + 11'd1;
+                end else w1 <= 1'b0;
+                // stupen 1 -> 2 (data z kruhu prijdou v tomto taktu)
+                w2 <= w1; i2 <= i1; d2 <= d1; r2 <= r1;
+                // stupen 2: zapis do TX RAM
+                if (w2) begin
+                    tx_we    <= 1'b1;
+                    tx_waddr <= {~tx_half_r, i2};
+                    tx_wdata <= r2 ? ring_rdata : d2;
+                    if (i2 == 10'd1023) begin
+                        tx_half_r <= ~tx_half_r;
+                        cool      <= 3'd5;
+                        if (a_page) page_req <= 1'b0;
+                        state     <= S_IDLE;
+                    end
+                end
+            end
+
+            default: state <= S_IDLE;
+        endcase
+    end
+
+    // pocet polozek na strance (kvazistaticke behem skladani)
+    always @(posedge clk) a_pcnt <= (a_ptot > a_pbase) ? (((a_ptot - a_pbase) > 16'd252) ? 16'd252 : (a_ptot - a_pbase)) : 16'd0;
+endmodule

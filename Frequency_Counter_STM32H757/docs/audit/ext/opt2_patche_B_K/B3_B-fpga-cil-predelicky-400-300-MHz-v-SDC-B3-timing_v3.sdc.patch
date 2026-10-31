@@ -1,0 +1,48 @@
+From 0add33ea82be50694e66418337c00b28c98e09ec Mon Sep 17 00:00:00 2001
+From: Michal Grygarek <michal.grygarek@accenture.com>
+Date: Sun, 25 Oct 2026 09:14:52 +0100
+Subject: [PATCH] B(fpga): cil predelicky 400 -> 300 MHz v SDC (B3,
+ timing_v3.sdc)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⚠️ ZMENA SPECIFIKACE, mimo optimalizacni radu (trida B, zadani kap. 5 B3).
+create_clock pin_a / pin_b 2,5 -> 3,333 ns. Vstupni buffer LVCMOS33
+GW1NR-9 ma strop 150/300 MHz (komentar v SDC, PROTOKOL_V3 kap. 10.7),
+400 MHz na pin privest nelze; omezeni 2,5 ns jen nuti P&R honit cestu
+c -> c citace predelicky (1 LUT), ktera v 1 z 8 sestaveni neprojde
+(u_pcb/c, zadani kap. 1) a MPW uz pri 2,5 ns hlasi zaporne hodnoty.
+
+Neni to vyjimka typu false_path / multicycle: cesta zustava casovana,
+jen proti realnemu stropu vstupu. Rozsah predelicky slibovany STM
+<= 300 MHz (STM v0.38.0 pojistka rozsahu ze sondy). Bez vlivu na
+simulaci.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/timing_v3.sdc | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/timing_v3.sdc b/src/timing_v3.sdc
+index 5f3feac..154ce20 100644
+--- a/src/timing_v3.sdc
++++ b/src/timing_v3.sdc
+@@ -24,8 +24,12 @@ create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {sp
+ // FW 0x0503 (E5): predelicka pin_cnt3 je taktovana PRIMO vstupnimi piny. Cil 400 MHz (2,5 ns) = strop predelicky;
+ // skutecny strop urci vstupni buffer LVCMOS33 (Gowin 150/300 MHz) -- overit generatorem. Pin -> retez TDC zustava
+ // false_path pres sig_eff; c[3] -> sonda v clk pres 3 FF (asynchronni skupiny).
+-create_clock -name pin_a -period 2.5 -waveform {0 1.25} [get_ports {ch_a}]
+-create_clock -name pin_b -period 2.5 -waveform {0 1.25} [get_ports {ch_b}]
++// ⚠️ B3 (ZMENA SPECIFIKACE, mimo optimalizacni radu, 2026-10-25): cil predelicky 400 -> 300 MHz (3,333 ns). Vstupni buffer
++// LVCMOS33 GW1NR-9 ma podle Gowinu strop 150/300 MHz (viz komentar vyse a PROTOKOL_V3 kap. 10.7), takze 400 MHz na pinu
++// nelze privest; omezeni 2,5 ns jen nuti P&R honit cestu c -> c (1 LUT), ktera v 1 z 8 sestaveni neprojde (u_pcb/c).
++// MPW (min. sirka pulzu) uz pri 2,5 ns hlasi zaporne hodnoty (studie CLS kap. 7). Rozsah predelicky pro STM: <= 300 MHz.
++create_clock -name pin_a -period 3.333 -waveform {0 1.667} [get_ports {ch_a}]
++create_clock -name pin_b -period 3.333 -waveform {0 1.667} [get_ports {ch_b}]
+ set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}] -group [get_clocks {pin_a}] -group [get_clocks {pin_b}]
+ 
+ // 🔴 2026-10-08: NEJISTOTA HODIN. Bez ni STA predpoklada idealni 100 MHz (nulovy jitter, presna strida).
+-- 
+2.54.0 (Apple Git-157)
+

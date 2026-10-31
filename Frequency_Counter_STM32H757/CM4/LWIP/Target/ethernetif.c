@@ -105,6 +105,18 @@ __attribute__((section(".Rx_PoolSection"))) extern u8_t memp_memory_RX_POOL_base
 /* Variable Definitions */
 static RxAllocStatusTypeDef RxAllocStatus;
 
+/* Pocitadla vyslani — odlisi "nevysilame vubec" od "vysilame, ale nic se nevraci".
+ * ✅ Od v18 (2026-09-19, audit F-0138) je CM7 SKUTECNE CTE: `ipc_cm4_set_eth_tx()`
+ * je saturovane uklada do bloku `cm4` sdilene struktury (recyklovana vycpavka
+ * `cm4_fault_rsvd`, velikost snapshotu se nezmenila) a UART `status` je tiskne.
+ * Do te doby byly citelne VYHRADNE ladici sondou, a ta za behu zabiji I2C4 do
+ * power-cyklu — takze diagnoza, ktera stala za nejdelsim ladenim v projektu
+ * (TX adresa, 2026-09-08), byla fakticky nedosazitelna.
+ * ⚠️ Tady zustavaji volne bezici uint32; saturaci dela AZ publikace, aby se
+ * "0 = nevyslal jsem nic" nedalo zamenit s pretocenim citace. */
+uint32_t g_eth_tx_ok;
+uint32_t g_eth_tx_err;
+
 /* Handle vlastni generovany `eth.c` (deklarace v eth.h). */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -146,6 +158,21 @@ static void low_level_init(struct netif *netif)
     netif_set_link_down(netif);
     netif_set_down(netif);
     return;                 /* degradovane: ETH nejede, zbytek CM4 bezi dal */
+  }
+
+  /* 🔴 VYNUCENA vazba na generovany `eth.c` (audit F-0133). ETH DMA plni RX
+   * buffery podle `heth.Init.RxBuffLen`, ale velikost bufferu v poolu se odvozuje
+   * z `ETH_RX_BUFFER_SIZE` (viz `RxBuff_t`). Kdyz se ty dve hodnoty rozejdou —
+   * staci regen s jinym "Rx Buffer Length" v `.ioc` — zapisuje DMA ZA konec pbufu
+   * v SRAM3, tedy do `pbuf_custom` hlavicky souseda, coz jsou UKAZATELE.
+   * Dosud to drzel jen komentar u `#define`; `_Static_assert` tu nejde, protoze
+   * `RxBuffLen` je runtime pole struktury. Radeji rozhrani NEZAPNOUT nez
+   * prepisovat pamet — projevi se to jako `NET: DOWN`, ne jako nahodny pad. */
+  if (heth.Init.RxBuffLen != ETH_RX_BUFFER_SIZE)
+  {
+    netif_set_link_down(netif);
+    netif_set_down(netif);
+    return;
   }
 
 #if LWIP_ARP || LWIP_ETHERNET
@@ -193,6 +220,42 @@ static void low_level_init(struct netif *netif)
   *       to become available since the stack doesn't retry to send a packet
   *       dropped because of memory failure (except for the TCP timers).
   */
+/* ── Preklad adresy pro ETH DMA ────────────────────────────────────────────
+ * 🔴🔴 PRICINA "link UP, ale zadna IP z DHCP" (nalezeno sondou 2026-09-08).
+ * ETH DMA je AHB master v domene D2 a vidi tamni SRAM VYHRADNE na systemove
+ * adrese `0x30xxxxxx`. Alias `0x10xxxxxx` je jen pohled JADRA CM4 pres jeho
+ * vlastni port maticove sbernice — zadny jiny master ho nezna.
+ *
+ * lwIP ale alokuje TX pbufy ze sve haldy, a ta ZAMERNE lezi v CM4 aliasu
+ * (`LWIP_RAM_HEAP_POINTER` se nesmi definovat, jinak by halda spadla do SRAM1
+ * = pamet CM7 — viz CLAUDE.md). `q->payload` je proto `0x1002xxxx` a presne
+ * takova adresa se dosud zapisovala do TX deskriptoru.
+ *
+ * Zmereno: TX deskriptor mel `DES0 = 0x1002845E`, `DES2 = 350 B` (velikost
+ * DHCP DISCOVER) a `DES3` s `OWN=0`, tedy MAC ho "odbavil" — jenze
+ * `MMC TX_PACKET_COUNT = 0`, takze na drat neslo NIC. Link pritom vyjednal
+ * 100 Mbit full, protoze autonegotiace bezi mezi PHY a switchem a MAC do ni
+ * nemluvi.
+ *
+ * ⚠️ RX tim netrpi: RX buffery jsou v poolu, ktery linker umistuje do sekce
+ * `.Rx_PoolSection` na `0x3004xxxx`, tedy uz systemove. Proto RX deskriptory
+ * ukazovaly spravne adresy a chyba se projevila jen na vysilani.
+ * ⚠️ Jednou uz jsem tuhle stopu MYLNE vyvratil: precetl jsem sondou obe adresy,
+ * videl stejny obsah a uzavrel to. Jenze to dokazuje jen ze oba aliasy miri na
+ * tutez fyzickou RAM — NE ze tam DMA dosahne (SKILL §6j). */
+#define ETH_CM4_ALIAS_BASE   0x10000000u
+#define ETH_CM4_ALIAS_END    0x10050000u
+#define ETH_CM4_ALIAS_OFFSET 0x20000000u
+
+static void *eth_dma_addr(void *cpu_addr)
+{
+  uint32_t a = (uint32_t)cpu_addr;
+  if (a >= ETH_CM4_ALIAS_BASE && a < ETH_CM4_ALIAS_END) {
+    return (void *)(a + ETH_CM4_ALIAS_OFFSET);
+  }
+  return cpu_addr;   /* uz je systemova (napr. RX pool v SRAM3) */
+}
+
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
   uint32_t i = 0U;
@@ -212,9 +275,17 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   for(q = p; q != NULL; q = q->next)
   {
     if(i >= ETH_TX_DESC_CNT)
+    {
+      /* Retez pbufu delsi nez pocet TX deskriptoru -> paket se ZAHODI. Dosud
+       * bez jakehokoli zaznamu, takze `g_eth_tx_err` zustavalo 0 a diagnostika
+       * tvrdila "vysilani je bez chyb" (audit F-0132). Cesta JE dosazitelna:
+       * `LWIP_NETIF_TX_SINGLE_PBUF` v `lwipopts.h` neni definovane, takze lwIP
+       * smi predat zretezeny TX pbuf. */
+      g_eth_tx_err++;
       return ERR_IF;
+    }
 
-    Txbuffer[i].buffer = q->payload;
+    Txbuffer[i].buffer = eth_dma_addr(q->payload);   /* viz `eth_dma_addr` */
     Txbuffer[i].len = q->len;
 
     if(i>0)
@@ -234,7 +305,15 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   TxConfig.TxBuffer = Txbuffer;
   TxConfig.pData = p;
 
-  HAL_ETH_Transmit(&heth, &TxConfig, ETH_DMA_TRANSMIT_TIMEOUT);
+  /* ⚠️ Navratova hodnota se drive ZAHAZOVALA, takze neuspesne vyslani bylo
+   * neviditelne. Citac dovoli poznat "vysilame, ale nic nechodi zpet" od
+   * "vysilani samo selhava". */
+  if (HAL_ETH_Transmit(&heth, &TxConfig, ETH_DMA_TRANSMIT_TIMEOUT) != HAL_OK) {
+    g_eth_tx_err++;
+    errval = ERR_IF;
+  } else {
+    g_eth_tx_ok++;
+  }
 
   return errval;
 }
@@ -492,14 +571,32 @@ void ethernet_link_check_state(struct netif *netif)
 
     if(linkchanged)
     {
-      /* Get MAC Config MAC */
-      HAL_ETH_GetMACConfig(&heth, &MACConf);
-      MACConf.DuplexMode = duplex;
-      MACConf.Speed = speed;
-      HAL_ETH_SetMACConfig(&heth, &MACConf);
-      HAL_ETH_Start(&heth);
-      netif_set_up(netif);
-      netif_set_link_up(netif);
+      /* 🔴 Navratove hodnoty se VYHODNOCUJI (audit F-0131). Driv se volalo
+       * `HAL_ETH_Start` a hned za nim bezpodminecne `netif_set_up`, takze kdyz
+       * se MAC nerozbehl, lwIP i `status` presto hlasily UP — tedy "link UP,
+       * ale nic netece". To je NEJDRAZSI symptom tohoto projektu: autonegociace
+       * bezi mezi PHY a switchem a MAC do ni nemluvi, takze hlaseny link sam
+       * nedokazuje NIC (stalo to sezeni se sondou, viz `eth_dma_addr` nize).
+       * ⚠️ Pri chybe zustava netif DOWN, takze dalsi poll (~200 ms) to zkusi
+       * znovu — zadne zacykleni: `linkchanged` se pokazde odvodi z aktualniho
+       * stavu PHY. A selhani je VIDET bez noveho pocitadla, protoze `net_link`
+       * se uz publikuje pres IPC (`status` -> `NET: DOWN`). */
+      HAL_StatusTypeDef st = HAL_ETH_GetMACConfig(&heth, &MACConf);
+      if (st == HAL_OK)
+      {
+        MACConf.DuplexMode = duplex;
+        MACConf.Speed = speed;
+        st = HAL_ETH_SetMACConfig(&heth, &MACConf);
+      }
+      if (st == HAL_OK)
+      {
+        st = HAL_ETH_Start(&heth);
+      }
+      if (st == HAL_OK)
+      {
+        netif_set_up(netif);
+        netif_set_link_up(netif);
+      }
     }
   }
 
@@ -561,9 +658,19 @@ void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd, uint8_t *buff, uint16_t 
   (void)buff; (void)Length;
 }
 
-void HAL_ETH_TxFreeCallback(uint32_t * buff)
-{
-  pbuf_free((struct pbuf *)buff);
-}
+/* 🔴 `HAL_ETH_TxFreeCallback` tu ZAMERNE NENI (audit F-0134). Verze ze prikladu ST
+ * delala `pbuf_free((struct pbuf *)buff)` — tedy uvolnovala pbuf, ktery si
+ * `low_level_output` v zero-copy navrhu ST predtim privlastnil pres `pbuf_ref()`.
+ * My `pbuf_ref()` NEVOLAME (pbufy uvolnuje lwIP sam), takze ten callback byl
+ * nabita zbran: dnes nestrilel jen proto, ze ho nikdo nevola — `HAL_ETH_Transmit`
+ * (blokujici varianta, kterou pouzivame) ho nevola a `HAL_ETH_ReleaseTxPacket`
+ * nevola v celem projektu nikdo. Prvni krok ke zvyseni propustnosti by ho probudil
+ * a zpusobil DVOJI uvolneni pbufu = poskozena lwIP halda, projevujici se nahodne
+ * a daleko od priciny. HAL ma `__weak` variantu, takze odstranenim se nic nerozbije.
+ *
+ * ⚠️ AZ PREJDES NA `HAL_ETH_Transmit_IT` (nebo zacnes volat `HAL_ETH_ReleaseTxPacket`),
+ * musis udelat OBOJI NARAZ: vratit tento callback A pridat `pbuf_ref(p)` do
+ * `low_level_output` pred vyslanim. Jedno bez druheho je bud dvoji uvolneni
+ * (callback bez `pbuf_ref`), nebo unik pameti (`pbuf_ref` bez callbacku). */
 
 

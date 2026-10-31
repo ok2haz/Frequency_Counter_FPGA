@@ -2,7 +2,9 @@
  * @file    meas_math.c
  * @brief   Math (Mx+B, NULL) + limitní pass/fail — viz meas_math.h.
  */
-#include "meas_math.h"
+/* Relativni cesta - viz komentar u stejneho vzoru v scpi.c (linked resource
+ * v CM4 projektu, regen CM4/.cproject bere -I../../CM7/Core/Inc). */
+#include "../Inc/meas_math.h"
 
 /* Živý stav (čte/píše UiTask; alarm.c čte g_meas_verdict + g_meas_cfg.alarm_en). */
 meas_cfg_t       g_meas_cfg      = { .m = 1.0, .b = 0.0 };   /* zbytek 0 = vypnuto */
@@ -24,8 +26,18 @@ double meas_math_apply(const meas_cfg_t *c, double x)
 meas_verdict_t meas_limit_eval(const meas_cfg_t *c, double y)
 {
     if (!c->limit_en) return MEAS_OFF;
-    if (y < c->lo)    return MEAS_LO;    /* meze inkluzivní do PASS */
-    if (y > c->hi)    return MEAS_HI;
+    /* 🔴 F-0160: FAIL-SAFE vuci NaN. Do 2026-09-26 tu bylo `if (y < lo) LO;
+     * if (y > hi) HI; PASS` — a pro NaN jsou obe porovnani nepravdiva, takze
+     * tester NaN PROPUSTIL jako PASS. NaN je dosazitelne zvenku: `scpi_num`
+     * prijme `CALC:MATH:M 1E308`, `m·x` pretece na +Inf, `CALC:NULL:ACQ` ho
+     * zachyti a `Inf − Inf` = NaN. Negovana porovnani `!(y >= lo)` jsou pro
+     * NaN PRAVDIVA, takze NaN spadne do selhani.
+     * ⚠️ Zamerne MEAS_LO, ne novy verdikt „neplatne": selhani berou konzumenti
+     * jako `LO || HI` (UI, `alarm.c`, SCPI `CALC:LIM:FAIL?`) a novou hodnotu by
+     * kazdy z nich musel znat — jediny zapomenuty by NaN zase tise propustil.
+     * Hodnotu samotnou UI zobrazi jako „--" (`fmt_hz`). */
+    if (!(y >= c->lo)) return MEAS_LO;   /* meze inkluzivní do PASS; NaN -> LO */
+    if (!(y <= c->hi)) return MEAS_HI;
     return MEAS_PASS;
 }
 
@@ -68,6 +80,18 @@ int meas_math_selftest(void)
     if (meas_limit_eval(&c, -2.0) != MEAS_LO)   return 0;
     if (meas_limit_eval(&c,  1.0) != MEAS_PASS) return 0;   /* == hi → PASS */
     if (meas_limit_eval(&c, -1.0) != MEAS_PASS) return 0;   /* == lo → PASS */
+
+    /* 6) F-0160: NaN NESMI projit. Vyrobi se presne cestou, kterou jde zvenku:
+     * obri M -> m·x = +Inf -> NULL zachyti +Inf -> Inf − Inf = NaN. */
+    {
+        meas_cfg_t n; meas_math_defaults(&n);
+        n.math_en = 1; n.m = 1e308; n.b = 0.0;
+        meas_math_capture_null(&n, 1e7);           /* null_ref = +Inf */
+        double y = meas_math_apply(&n, 1e7);       /* Inf − Inf = NaN */
+        if (y == y) return 0;                      /* musi to opravdu byt NaN */
+        n.limit_en = 1; n.lo = -1.0; n.hi = 1.0;
+        if (meas_limit_eval(&n, y) == MEAS_PASS) return 0;
+    }
 
     return 1;
 }

@@ -1,0 +1,10 @@
+# Velka surova CSV z mereni se verzuji jen jako .gz (gzip -n -9); nekomprimovane originaly zustavaji lokalne.
+2026-10-18_noc10h.csv
+2026-10-18_A-ext_gpsdo-OFF.csv
+2026-10-18_A-vlastni_B-externi.csv
+2026-10-18_2135_dlouhe.raw.csv
+2026-10-18_2135_dlouhe.snap.raw.log
+2026-10-18_2135_dlouhe_faze1_smycka.csv
+2026-10-18_2135_dlouhe_faze2_gps.csv
+2026-10-19_nav5.raw.csv
+2026-10-19_nav5_faze2_gps.csv

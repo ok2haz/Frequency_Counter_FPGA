@@ -1,0 +1,69 @@
+PŘEHLED ZMĚN — ukol_2026-10-25_fpga_opt2 (optimalizace FPGA v3, FW 0x0507, kolo 2)
+Základ: base/ (RTL 7fadfec, FW 0x0507). Cesty níže jsou cesty v repu (Frequency_Counter_FPGA_Module/…).
+FW_VERSION zůstává 0x0507, protokol beze změny (všechny kroky řady jsou přesné, třída A).
+
+ŘADA KROKŮ (git_patche/, v pořadí aplikace na base/)
+-----------------------------------------------------
+0001 perf(fpga): kruh záznamů v 16 SDPB bez výběru slova (plocha)
+  src/v3_core.v   v3_ring: záznam kanálu c, slovo w leží v samostatném bloku SDPB (c, w) na adrese dvojice; zápis obou
+                  záznamů v E+7 (slovo 0 B s živými FLAGS v E+15, jako dřív k = 8), clear dál v E+26 (čítač kc, registr kend).
+                  Odpadá jedničkový výběr ohA* ve čtvrtinách, wl/wh, wd, wa, k1. Čtení po bajtech (SDPB zápis 32 b / čtení
+                  8 b), výběr 16:1 po bajtu (doména 10 MHz). seg_chan3: x0/t0 se nulují v clear, výstupní maska first odpadá.
+  src/app_v3.v    adresa kruhu {záznam, bajt} (ring_raddr o 2 b širší, ring_rdata 8 b), bez výběru bajtu l1/l2.
+  src/top_v3.v    šířky drátů ring_raddr / ring_rdata.
+  sim/gowin_models_ext.v  NOVÝ: model SDPB (gowin_models.v se nemění).
+  sim/tb_ring_inv.vh      NOVÝ: invariant zapisovače (takt a data každého slova proti výběru dřívějšího zapisovače).
+  sim/tb_top_v3.sv, sim/tb_hold_inv.sv  invarianty kopií ohA* nahrazeny tb_ring_inv.vh; tb_hold_inv navíc změna hold B
+                  v okně E+7..E+15 (pokrytí živých FLAGS B).
+  sim/run.ps1     testy top_v3 překládají i gowin_models_ext.v.
+  sim/mut_top_v3.py  modely, přepsané kotvy (slovo T0 = SX, záznam B do slotu A, výběr bez rotace, horní půlslovo), nové
+                  mutace (slovo 0 B v taktu A ×2, konec zápisu o takt dřív, x0 se v clear nenuluje).
+0002 perf(fpga): součty SX/ST v ALU54D přímo z xm−x0 a tm−t0 (plocha)
+  src/v3_core.v   seg_chan3 (SUM_DSP = 1): ALU54D instancovaný (DOUT <= DOUT + A − B), A = {přetečení, xm/tm}, B = x0/t0;
+                  rozdíl dxl/dxu/dtl/dtu v logice odpadá (varianta SUM_DSP = 0 zůstává jako reference).
+  sim/gowin_models_ext.v  model ALU54D.  sim/tb_seg_dsp.sv  NOVÝ cílený test (SUM_DSP 1 proti 0, přetečení 2^40).
+  sim/run_ps1_doplnek.txt NOVÝ (segdsp).  sim/mut_top_v3.py  kotvy součtů a rozdílu přepsané, režim 9 = tb_seg_dsp.
+0003 perf(fpga): ts_hq bez výběru tr1/tr2 (plocha)
+  src/v3_core.v   tdc_chan3 = v3 kopie tdc_chan (tdc.v zamčený); jediná změna: ts_hq se plní v tv_y z tr1 a v tv_z se při
+                  amt = 1 přepíše → odpadá tr2 a 34 LUT3 na kanál. Řetěz, dekodér a ring_osc dál z tdc.v.
+  src/top_v3.v    u_tdca/u_tdcb = tdc_chan3.   sim/mut_top_v3.py  mutace TDC (banka, ts_valid) přepnuté na kopii, 3 nové,
+                  režim 10 = tb_tdc3_eq.
+  sim/tb_tdc3_eq.sv  NOVÝ cílený test: tdc_chan3 proti tdc_chan z tdc.v takt po taktu, všechny výstupy, tabulka s amt = 1
+                  (x14 = 0) na třetině kódů, dvě banky (testy topv3* amt = 1 nevyvolají).   run_ps1_doplnek.txt (tdc3eq).
+0004 perf(fpga): počet značek N v DSP (plocha)
+  src/v3_core.v   seg_chan3: N jako 24b čítač s syn_dspstyle = "dsp" (inference jako seq_c), povolení tk1 = take o takt
+                  později; nlo/nhi/ncy jen ve variantě SUM_DSP = 0.   sim/tb_seg_dsp.sv  porovnává i N.  mut: 2 nové.
+0005 perf(fpga): neúčinná hradla pfl_l a q >= 84 (plocha, drobné)
+  src/app_v3.v    pfl_l = pps_pfl_l (hradlo pps_nz bez účinku), it_src bez „|| q >= 84“ (q <= 83 při čtení).
+  sim/mut_top_v3.py  zdůvodnění ekvivalentní mutace „1PPS: seq > 1 vzdy“ opraveno (seq_gt1 nemá od 0x0507 spotřebitele).
+0006 perf(fpga): příznaky saturace d_l registrované s dd_r (časování, cesta dd_r → d_l)
+  src/v3_core.v   pps_cap3: dhi_r/dlo_r z df12 ve stejném taktu jako dd_r, d_l = jedna LUT3.
+  sim/tb_pps_v3.sv  saturace vynucením df12 (místo dd_r), krajní hodnoty 12 b; invariant dhi_r/dlo_r.
+  sim/tb_top_v3.sv, sim/tb_hold_inv.sv  invariant dhi_r/dlo_r.   sim/mut_pps_v3.py  kotva saturace, 2 nové mutace prahů.
+0007 perf(fpga): o_bub/o_ovl z registrovaného take (časování, cesta hold_x_s → take → o_ovl)
+  src/v3_core.v   seg_chan3: tk1 (sdílený s N v DSP), bub_f, cs_f; příznaky se nastaví o takt později.
+  sim/tb_seg_dsp.sv  FLAGS bit2/bit3 proti modelu dřívější sémantiky.   sim/mut_top_v3.py  2 nové mutace (režim 9).
+0008 test(fpga): kontrola předpokladů o primitivech SDPB a ALU54D
+  sim/tb_prim_chk.sv  NOVÝ: má projít s gowin_models_ext.v i s oficiálním prim_sim.v z Gowin IDE (-DGOWIN_PRIM přidá
+                  globální GSR).  run_ps1_doplnek.txt (primchk).
+0009 test(fpga): nástroje (nové soubory)
+  tools/yosys_abc4.py   stabilní náhradní metrika (synth_gowin + abc -lut 4) a rozpad po modulech RTL (kužely koncových bodů);
+                        porovnání dvou kořenů (výchozí i -DDEEP_RAW), doplní build_id.vh.
+  tools/run_doplnek.py  spustí testy z sim/run_ps1_doplnek.txt stejně jako run_sim.py.
+
+TŘÍDA B (git_patche_B/, ⚠️ změny chování, každý samostatně na konec řady; B1 a B1p jsou alternativy)
+------------------------------------------------------------------------
+B1  src/top_v3.v  dlouhé časovače na 1ms základně (pwend; SIM_TOP 100 taktů); sim/tb_tmr.sv, run_ps1_doplnek.txt (tmr).
+B1p src/top_v3.v  přesnější varianta: společná předdělička 2^10 taktů (SIM_TOP 2^4); tytéž testy.
+B2  src/app_v3.v  RX_CRC_ERR / RX_LEN_ERR 8 b se saturací 255; sim/tb_top_v3.sv kontrola saturace.
+B3  src/timing_v3.sdc  cíl předděličky 400 → 300 MHz (create_clock pin_a/pin_b 3,333 ns).
+
+KANÁL B (git_patche_kanalB/, volitelné, viz ROZBOR_KANAL_B.md)
+------------------------------------------------------------
+K1  src/top_v3.v  pin A do výběru zdroje B jen v režimu B = pin A (keep hradlo), logicky shodné; mut_top_v3.py kotva.
+K2  src/pins.cst  CLOCK_LOC "ch_a_d"/"ch_b_d" LOCAL_CLOCK (pokus pro hlavní instanci, mění pins.cst).
+
+OPRAVA CHYBY (navrh_opravy.patch, mimo řadu)
+--------------------------------------------
+src/v3_core.v  seg_chan3: kontrolní počítání hran bere xc10 = {xhi[1:0] + xcy, xlo} (falešný ccd_bad při snap v taktu přenosu).
+sim/tb_ccd_carry.sv  NOVÝ test (bez opravy FAIL, s opravou PASS). Řádek do run.ps1 je v popisu patche.

@@ -6,6 +6,7 @@
  * viz CLAUDE.md "UART příkazy".
  */
 
+#include "gpio_guard.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
@@ -13,6 +14,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
+#include "fpga_tdccal.h"   /* FW 0x0427: stav kalibrace TDC v STM (status) */
+#include "fpga_v3.h"       /* protokol v3: UART `fpga v3 test` */
+#include "fpga_spi_dma.h"  /* krok 7: UART `spi dma` (stav) */
 #include <string.h>
 #include <stdbool.h>
 
@@ -21,15 +25,23 @@
 #include "i2c.h"          /* hi2c1, hi2c4 */
 #include "ft5x06.h"
 #include "fpga_freq.h"
+#include "fpga_phrec.h"     /* E0 (audit 2026-10-20): fazovy zaznam do `status` */
 #include "w25q.h"          /* W25Q512 QSPI flash — bring-up prikazy qspiid/qspitest */
 #include "w25q_store.h"    /* genericky blob store — prikaz storetest */
 #include "w25q_map.h"      /* region mapa (CONFIG/CALIB/DATA) */
 #include "si5356.h"
 #include "adc.h"          /* hadc3 — debug prikaz `adcraw` */
 #include "freertos_shared.h"
+#include <prim/text.h>    /* prim_text_missing_glyphs — radek `FONTY:` ve `status` */
 #include "alarm.h"          /* alarm_test — UART "beep" */
+#include "watchdog.h"       /* watchdog_cfg_* — radek `WATCHDOG:` ve `status` (F-0104) */
+#include "calib.h"          /* g_calib.vbat_corr_mv — radek `VBAT nabijeni:` ve `status` (STATUS #322) */
+#include "beeper.h"         /* beeper_ready — tamtez (F-0111) */
 #include "sd_export.h"      /* sd_export_service — blokujici SD prace z UI */
+#include "app_gpsdo.h"    /* app_gpsdo_btnreg_stats — diagnostika fokusu */
+#include "encoder.h"        /* enc — diagnostika rotacniho encoderu */
 #include "membench.h"       /* membench_service — benchmark pameti (okno PAMETI) */
+#include "sdram_log.h"      /* datova cache mereni v SDRAM — prikaz `sdramlog` */
 #include "screens/screen_main.h"   /* screen_main_selftest — UART "selftest" */
 #include "version.h"        /* FW_VERSION_FULL — UART "version" (== displej) */
 #include "sd_export.h"      /* UART "sd mount/unmount/export" — SD jako export (#28) */
@@ -38,11 +50,25 @@
 #include "autocal.h"        /* UART "autocal" — self-check / autokalibrace */
 #include "scpi.h"           /* UART "scpi <cmd>" — SCPI-99 parser (#25) */
 #include "rtc.h"            /* UART "rtc cal" — drift LSE merený proti GPS */
-#include "flightrec.h"      /* UART "flightrec" — kontext pred resetem (#18) */
+#include "flightrec.h"   /* UART "flightrec" — kontext pred resetem (#18) */
+#include "syscfg.h"      /* syscfg_storage_text/_store_retries — radek ULOZISTE (F-0098) */
+#include "errlog.h"      /* errlog_init_retries — tentyz radek */
+#include "ad5693.h"      /* UART "dac" — DAC ladeni OCXO (zadost pro SensorsTask) */
+#include "gpsdo.h"       /* UART "gpsdo" — smycka GPSDO (STATUS #305) */
+#include "errlog.h"      /* trvaly zaznamnik chyb ve W25Q */
+#include "fmc.h"         /* fmc_sdram_init_sequence, g_fmc_init_fail — diagnostika SDRAM */
 #include "ipc_shared.h"     /* UART "scpi ipc" — SCPI nad IPC snapshotem (#25) */
 
 /* ── Lokální makra (jen pro tento task) ────────────────────────────────── */
-#define RX_BUF_SIZE       32
+/* 🔴 96, ne 32 (audit F-0073). Do 32 B se veslo jen 31 znaku prikazu a delsi
+ * vstup se TISE utnul — vcetne echa — a Enter ho PRESTO provedl. Realne to
+ * menilo nastaveni: `scpi SENSe:FREQuency:APERture 10` ma presne 32 znaku, takze
+ * se provedlo `... APERture 1` a hradlo se nastavilo na 1 s misto 10 s.
+ * `APERture` je pritom povinny alias, ktery hledaji VISA/IVI ovladace.
+ * 96 B slaďuje mez se `sub[96]` v `scpi_process_ctx` (scpi.c), takze strop drzi
+ * na OBOU koncich teze cesty. `RxBuffer` je `static` -> jde to do `.bss`, ne na
+ * zasobnik UartTasku (ten je podle F-0074 na hrane). */
+#define RX_BUF_SIZE       96
 /* QSPI prikazy (qspiid/qspitest/storetest/qspispeed) sahaji na W25Q, kterou sdili
  * i syscfg auto-save (defaultTask) a calib_save (UiTask) -> cela operace pod
  * qspiMutexHandle. Timeout velkorysy: prikaz je manualni diagnostika a klidne
@@ -56,13 +82,387 @@
                                           * FB0/FB1/FB2). Drive bylo 0x1C0000 = uvnitr
                                           * region 0 -> kolidovalo by s FB1/FB2. */
 
+#include "ws_panel.h"   /* ws_panel_probe/power_on/set_backlight (prikaz `panel`) */
+#include "tc358762.h"   /* tc358762_init (prikaz `panel`) */
+#include "usb_console.h"   /* usb_console_tx/rx_dropped — radek KONZOLE ve `status` */
+#include "bootled.h"   /* BOOTLED_STEP_* (stav bring-upu displeje) */
+extern LTDC_HandleTypeDef hltdc;  /* HAL_LTDC_Reload (prikaz `panel`) */
 extern DSI_HandleTypeDef hdsi;   /* prikaz testDSI */
 
 /* Task handles (definovane ve freertos.c) — volny stack v prikazu `status`. */
 extern osThreadId_t defaultTaskHandle, UartTaskHandle, I2C4TaskHandle,
                     UiTaskHandle, FpgaTaskHandle;
 
+/* ── Porovnani odpovedi CM7 vs IPC pro `scpi ipc` ──────────────────────────
+ * 🔴 PROC NE `strcmp`: obe odpovedi vznikaji ze ZIVYCH analogovych hodnot v RUZNY
+ * okamzik (snapshot se publikuje event-driven, CM7 cte `g_sensors` primo), takze
+ * se bezne lisi o POSLEDNI CIFRU. Zmereno 2026-09-02: `SYST:TEMP:ALL?` dalo
+ * `51.83,...` vs `51.82,...` a nastroj to ohlasil jako diru ve snapshotu —
+ * pritom slo o 0,01 °C zmenu teploty mezi dvema odecty.
+ *
+ * 🔴 PROC to vadi: jediny ucel toho nastroje je chytit CHYBEJICI POLE (null vs
+ * hodnota). Kdyz kricí nahodne, skutecna dira v nem zapadne — tatáz trida jako
+ * falesne `SBERNICE MRTVA` (#114) nebo sticky po bootu (#103).
+ *
+ * ⚠️ VSE CELOCISELNE, zadny `strtod`: ten pritahne newlib float scanner a obraz
+ * narostl o 8,6 kB (zmereno). Projekt se float knihovne vyhyba i u tisku
+ * (nano.specs bez `_printf_float`), takze diagnostika ji tahat nebude.
+ * ⚠️ Pole, ktere NEni prosty desetinny zapis (napr. SCPI NaN `9.91E37` nebo
+ * text), se porovnava PRESNE — u NaN je jakykoli rozdil skutecny rozdil.
+ *
+ * 🔴 CO SE HLASI JAKO CHYBA: jen STRUKTURALNI rozdil - jiny pocet poli, nebo
+ * pole, kde jedna strana ma cislo a druha ne (typicky SCPI NaN `9.91E37`).
+ * Presne to je "dira ve snapshotu", kvuli ktere nastroj existuje.
+ *
+ * ⚠️ CISELNY rozdil se NEHLASI jako chyba, a to ani velky. Obe strany ctou v JINY
+ * OKAMZIK (snapshot je event-driven, CM7 cte `g_sensors` primo), takze rychle se
+ * menici velicina se legitimne lisi o vic nez posledni cifru - zmereno 2026-09-02:
+ * teplota jadra `49.57` vs `49.54`, protoze prave stoupala o ~0,2 stupne za par
+ * sekund. Pevny prah by byl jen jina svevole; misto toho se vypise ZMERENY rozdil
+ * a uzivatel posoudi sam. Zastaraly snapshot se pozna tak, ze rozdil neklesa.
+ *
+ * @return 0 = shoda presna, 1 = jen ciselny rozdil (`*maxd` v jednotkach posledni
+ *         spolecne cifry, `*maxdec` = kolik jich je), -1 = strukturalni rozdil. */
+
+/* Rozlozi prosty desetinny zapis na znamenko, celou cast a desetiny.
+ * @return 1 = rozlozeno, 0 = neni to prosty desetinny zapis. */
+/* Oslovi vsechny tri znama zarizeni na I2C4 a vypise, ktera ACKla.
+ * Pouziva ho stupnovana diagnostika `i2c4` — po kazdem kroku obnovy se vola
+ * znovu, takze z vypisu je videt, CO presne sbernici vratilo k zivotu.
+ * ⚠️ Mutex se drzi jen na jeden probe (jako `scanner`), aby touch/TMP117
+ * mezi adresami dychaly. Vraci pocet zarizeni, ktera odpovedela. */
+/* Provede blokujici QSPI operace vyzadane z UI. Bezi v UartTasku, ktery
+ * watchdog NEHLIDA — proto se tu smi cekat sekundy. */
+void qspi_req_service(void)
+{
+    if (g_datalog_store_req == 0xFFu && !g_datalog_period_req && !g_errlog_erase_req) return;
+
+    g_qspi_req_busy = 1;
+    if (g_datalog_period_req) {           /* poradi: perioda PRED ulozistem — */
+        datalog_set_period_s(g_datalog_period_req);   /* re-init si ji cte */
+        g_datalog_period_req = 0;
+    }
+    if (g_datalog_store_req != 0xFFu) {
+        datalog_set_store(g_datalog_store_req);       /* dela re-init = sken hlavy */
+        g_datalog_store_req = 0xFFu;
+    }
+    if (g_errlog_erase_req) {
+        /* Hlas vysledek, ne zamer (F-0099) — pozadavek prisel z dotyku v okne
+         * CHYBY, ktere na konzoli nevidi, takze je tohle jedina stopa. */
+        printf("errlog: mazani (z UI) %s\n", errlog_erase() ? "OK" : "SELHALO");
+        g_errlog_erase_req = 0;
+    }
+    g_qspi_req_busy = 0;
+    g_sys_cfg_dirty = 1;
+}
+
+static int uart_i2c4_probe(const char *tag)
+{
+	static const uint8_t A[3] = { 0x38u, 0x45u, 0x48u };
+	int ok = 0;
+	char line[64];
+	int n = snprintf(line, sizeof line, "  %s:", tag);
+	for (int i = 0; i < 3; i++) {
+		HAL_StatusTypeDef r = HAL_BUSY;
+		if (osMutexAcquire(i2c4MutexHandle, 200) == osOK) {
+			/* 🔴 2026-09-13: MUSI byt uvnitr TETO kriticke sekce, ne jednou pred
+			 * smyckou — mezi jednotlivymi adresami se mutex pousti (viz nize),
+			 * takze mezitim mohl touch/TMP117 prepnout rychlost zpet na 200 kHz.
+			 * `i2c4_speed_select` je levna, kdyz uz na te rychlosti je (no-op). */
+			i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
+			r = HAL_I2C_IsDeviceReady(&hi2c4, (uint16_t)(A[i] << 1), 2, 20);
+			osMutexRelease(i2c4MutexHandle);
+			/* 🔴 USTUP SCHEDULERU (audit F-0020, 2026-09-10). UartTask ma prioritu
+			 * Normal, UiTask BelowNormal — bez tohohle by UiTask po celou dobu skenu
+			 * nedostal procesor, jeho heartbeat by zestarnul pres `WDG_STALL_MS`
+			 * (2500 ms) a IWDG by pristroj resetoval. Nejhur prave pri NEREAGUJICI
+			 * sbernici, kdy kazda adresa spotrebuje plny timeout (127 x 3 x 10 ms =
+			 * az 3,8 s) — tedy presne kdyz `scanner` clovek spousti.
+			 * ⚠️ Black-box by to navic svedl na `stall:UiTask`, prestoze UiTask neni
+			 * zaseknuty, jen vyhladoveny. Mutex to nezachrani: uspi ulohu jen kdyz je
+			 * obsazeny, a obsadit ho muze jen UiTask, ktery se vedle spinujiciho
+			 * UartTasku nema jak rozbehnout. Cena: 127 ms na cely sken. */
+			osDelay(1);
+		}
+		if (r == HAL_OK) ok++;
+		if (n >= 0 && (size_t)n < sizeof line) {
+			n += snprintf(line + n, sizeof line - (size_t)n, " %02X:%s",
+						  (unsigned)A[i], (r == HAL_OK) ? "ACK" : "--");
+		}
+		osDelay(2);
+	}
+	printf("%s  (%d/3)\n", line, ok);
+	return ok;
+}
+
+static int dec_parse(const char *t, int64_t *whole, int64_t *frac, int *ndec)
+{
+	int neg = 0;
+	if (*t == '+' || *t == '-') { neg = (*t == '-'); t++; }
+	if (*t < '0' || *t > '9') return 0;
+	int64_t w = 0;
+	while (*t >= '0' && *t <= '9') { if (w > 100000000000LL) return 0; w = w * 10 + (*t++ - '0'); }
+	int64_t f = 0; int nd = 0;
+	if (*t == '.') {
+		t++;
+		while (*t >= '0' && *t <= '9') { if (nd >= 9) return 0; f = f * 10 + (*t++ - '0'); nd++; }
+	}
+	if (*t != '\0') return 0;            /* zbyl exponent nebo text -> neni to cislo */
+	*whole = neg ? -w : w; *frac = f; *ndec = nd;
+	return 1;
+}
+
+/* Hodnota pole prevedena na celociselnou v `dec` desetinnych mistech. */
+static int64_t dec_scaled(int64_t whole, int64_t frac, int ndec, int dec)
+{
+	while (ndec > dec) { frac /= 10; ndec--; }
+	while (ndec < dec) { frac *= 10; ndec++; }
+	int64_t m = 1;
+	for (int k = 0; k < dec; k++) m *= 10;
+	return (whole < 0) ? (whole * m - frac) : (whole * m + frac);
+}
+
+static int scpi_cmp_fields(const char *a, const char *b, int64_t *maxd, int *maxdec)
+{
+	*maxd = 0; *maxdec = 0;
+	if (strcmp(a, b) == 0) return 0;
+	int soft = 0;
+	while (*a && *b) {
+		char fa[48], fb[48];
+		size_t la = 0, lb = 0;
+		while (*a && *a != ',' && la < sizeof fa - 1) fa[la++] = *a++;
+		while (*b && *b != ',' && lb < sizeof fb - 1) fb[lb++] = *b++;
+		fa[la] = 0; fb[lb] = 0;
+		if (strcmp(fa, fb) != 0) {
+			int64_t wa, ra, wb, rb; int da, db;
+			if (!dec_parse(fa, &wa, &ra, &da) || !dec_parse(fb, &wb, &rb, &db))
+				return -1;                  /* aspon jedno neni cislo -> strukturalni rozdil */
+			int dec = (da < db) ? da : db;   /* tolerance = jednotka kratsiho zapisu */
+			int64_t va = dec_scaled(wa, ra, da, dec);
+			int64_t vb = dec_scaled(wb, rb, db, dec);
+			int64_t d  = va - vb; if (d < 0) d = -d;
+			if (d > *maxd) { *maxd = d; *maxdec = dec; }
+			soft = 1;
+		}
+		if (*a == ',') a++;
+		if (*b == ',') b++;
+	}
+	if (*a || *b) return -1;               /* ruzny pocet poli */
+	return soft;
+}
+
 /* Format float na 2 desetinna mista bez %f (nano printf nemusi umet float). */
+/* double -> "[-]I.FFFFFF" bez %f (nano.specs ho neumi); jen pro diagnostiku `regr` (|v| < 4e9) */
+static void uart_regr_fmt(char *o, size_t n, double v, int dec)
+{
+	const char *sg = (v < 0.0) ? "-" : "";
+	if (v < 0.0) v = -v;
+	unsigned long ip = (unsigned long)v;
+	unsigned long sc = 1ul;
+	for (int i = 0; i < dec; i++) sc *= 10ul;
+	unsigned long fp = (unsigned long)((v - (double)ip) * (double)sc + 0.5);
+	if (fp >= sc) { fp -= sc; ip += 1ul; }
+	snprintf(o, n, "%s%lu.%0*lu", sg, ip, dec, fp);
+}
+
+/* jednorazove deje (v0.36.0): cas [ps] -> "[-]S.FFFFFFFFFFFF s" bez %f (nano.specs), rozliseni 1 ps */
+static void uart_ps_fmt_i(char *o, size_t n, int64_t ps)
+{
+	const char *sg = (ps < 0) ? "-" : "";
+	const uint64_t v = (ps < 0) ? (uint64_t)(-ps) : (uint64_t)ps;
+	const uint64_t f = v % 1000000000000ull;
+	snprintf(o, n, "%s%lu.%06lu%06lu s", sg, (unsigned long)(v / 1000000000000ull),
+	         (unsigned long)(f / 1000000u), (unsigned long)(f % 1000000u));
+}
+static void uart_ps_fmt(char *o, size_t n, double ps)
+{
+	if (ps > 9.0e18) ps = 9.0e18;
+	if (ps < -9.0e18) ps = -9.0e18;
+	uart_ps_fmt_i(o, n, (int64_t)((ps < 0.0) ? ps - 0.5 : ps + 0.5));
+}
+/* cislo z retezce (jen cislice), jinak def; nejvys max */
+static uint32_t uart_num(const char *p, uint32_t def, uint32_t max)
+{
+	if (*p < '0' || *p > '9') return def;
+	uint32_t v = 0u;
+	while (*p >= '0' && *p <= '9') { if (v < 100000u) v = v * 10u + (uint32_t)(*p - '0'); p++; }
+	return (v > max) ? max : v;
+}
+static void uart_ev_list(uint32_t n)
+{
+	for (uint32_t i = n; i-- > 0u; ) {                               /* nejstarsi prvni */
+		fpga_ev_rec_t e;
+		if (!fpga_freq_ev_get(i, &e)) continue;
+		char ts[32], tp[32], tq[32];
+		uart_ps_fmt_i(ts, sizeof ts, (int64_t)e.t_ps);
+		printf("  %c %s seg %5u  t %s", e.ch ? 'B' : 'A', (e.kind == FPGA_V3_EV_BURST) ? "souhrn" : "hrana ", (unsigned)e.seg, ts);
+		if (e.pps_ok) {
+			uart_ps_fmt_i(tp, sizeof tp, e.pps_ps);
+			printf("  1PPS #%lu %s%s", (unsigned long)e.pseq, (e.pps_ps >= 0) ? "+" : "", tp);
+		}
+		if (e.kind == FPGA_V3_EV_BURST) {
+			uart_ps_fmt(tq, sizeof tq, e.per_ps);
+			printf("  N %lu perioda %s", (unsigned long)e.n, tq);
+		}
+		if (e.flags & FPGA_V3_R_CS) printf("  [CS]");
+		printf("\n");
+	}
+}
+static void uart_ev_pair_rc(int rc, const char *what)
+{
+	if (rc == 1)       printf("FPGA: %s\n", what);
+	else if (rc == 2)  printf("FPGA: %s (EMULATOR: zdroj B se neprepina, fazi B nastav `fpgasim v3 on <Hz_A> <Hz_B> <faze_B_ns>`)\n", what);
+	else if (rc == 0)  printf("FPGA: SET_CONFIG 0x09 se nepodaril (link?)\n");
+	else if (rc == -1) printf("FPGA: FW bez prepinani zdroje B (CAPS bit20, potreba FW >= 0x0501)\n");
+	else               printf("FPGA: jen protokol v3 (`fpga v3`)\n");
+}
+static void uart_ab_stat(const char *nm, uint32_t n, double mean, double sd, double mn, double mx, double corr)
+{
+	char a[32], b[24], c[32], d[32];
+	uart_ps_fmt(a, sizeof a, mean - corr);
+	uart_regr_fmt(b, sizeof b, (sd > 4.0e9) ? 4.0e9 : sd, 1);
+	uart_ps_fmt(c, sizeof c, mn - corr);
+	uart_ps_fmt(d, sizeof d, mx - corr);
+	printf("  %s %lu: stredni %s, sigma %s ps, min %s, max %s\n", nm, (unsigned long)n, a, b, c, d);
+}
+static void uart_ab_show(uint32_t n, int pw)
+{
+	static const char *const pm[4] = { "vypnuto", "interval A->B", "sirka pulzu (B = pin A invertovany)",
+	                                   "kalibrace zpozdeni A/B (B = pin A)" };
+	fpga_ev_info_t ei;
+	fpga_freq_ev_info(&ei);
+	printf("FPGA parovani: %s; zdroj B odeslan %u, echo %u (0 pin B, 1 pin A, 3 pin A invertovany), FW 0x%04X%s\n",
+	       pm[ei.pair & 3u], (unsigned)ei.bsrc, (unsigned)ei.echo, (unsigned)ei.fw, ei.sim ? " EMULATOR" : "");
+	const double corr = (pw && ei.sk_n) ? ei.sk_mean : 0.0;
+	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
+	printf("  zahozenych startu %lu (bez stopu do 10 s, souhrn B pres start, hrana mohla chybet)\n", (unsigned long)ei.ab_lost);
+	if (pw) {
+		if (ei.sk_n) uart_ab_stat("zpozdeni B-A", ei.sk_n, ei.sk_mean, ei.sk_sd, ei.sk_min, ei.sk_max, 0.0);
+		else printf("  zpozdeni B-A nekalibrovano (`fpga pw cal`, pak `fpga pw on`): sirka bez korekce\n");
+	}
+	for (uint32_t i = n; i-- > 0u; ) {
+		double v;
+		if (!fpga_freq_ab_get(i, &v)) continue;
+		char b[32];
+		uart_ps_fmt(b, sizeof b, v - corr);
+		printf("  -%-3lu %s\n", (unsigned long)i, b);
+	}
+	if (ei.pair == FPGA_EVP_OFF) printf("  fpga ab on|off|<n>  fpga pw on|cal|off|<n>\n");
+}
+static void uart_raw_cb(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps)
+{
+	(void)ctx;
+	char t[32], d[32];
+	uart_ps_fmt_i(t, sizeof t, (int64_t)mark_ps);
+	uart_ps_fmt(d, sizeof d, d_ps);
+	printf("  %3lu  %s  d %s\n", (unsigned long)i, t, d);
+}
+
+/* v0.43.0 (FW 0x0509, STATUS #347 krok 1): `tdc cal [pin] [a|b] [gen]`. Bez `pin` kalibrace z ring oscilatoru jen
+ * vybraneho kanalu; s `pin` histogram ze VSTUPNIHO PINU. Signal musi mit fazi vuci taktu 100 MHz rozlozenou rovnomerne,
+ * predem se to overi z kmitoctu (fpga_v3_calpin_cover), po sberu z histogramu (fpga_v3_calpin_check v ovladaci).
+ * `gen` = na dobu kalibrace generator CLK2/3 a CLK4/5 (kabely CLK_2 -> A, CLK_4 -> B) na UART_CALPIN_HZ (krok faze
+ * mezi hranami ~ zlaty rez), pak puvodni nastaveni. Ceka nejvys ~15 s. @return vzdy 1 (pak se vypise report `tdc`). */
+#define UART_CALPIN_HZ  11603104u
+static int uart_tdc_cal_ex(const char *a)
+{
+	int pin = 0, gen = 0, bad = 0;
+	uint8_t mask = 0u;
+	char tok[8];
+	while (*a) {
+		while (*a == ' ') a++;
+		size_t n = 0;
+		while (a[n] != '\0' && a[n] != ' ') n++;
+		if (n == 0) break;
+		if (n >= sizeof tok) { bad = 1; break; }
+		memcpy(tok, a, n); tok[n] = '\0'; a += n;
+		if      (strcmp(tok, "pin") == 0) pin = 1;
+		else if (strcmp(tok, "gen") == 0) gen = 1;
+		else if (strcmp(tok, "a") == 0)   mask |= 1u;
+		else if (strcmp(tok, "b") == 0)   mask |= 2u;
+		else bad = 1;
+	}
+	if (bad || (gen && !pin)) { printf("TDC: pouziti `tdc cal [pin] [a|b] [gen]` (gen jen s pin)\n"); return 1; }
+	if (mask == 3u) mask = 0u;
+	fpga_v3_info_t vi;
+	memset(&vi, 0, sizeof vi);
+	fpga_freq_v3_info(&vi);
+	if (vi.proto != 3u || vi.sim) { printf("TDC: `tdc cal pin|a|b` jen se skutecnym FPGA v3\n"); return 1; }
+	if (pin && !(vi.caps & FPGA_V3_CAP_CALPIN)) {
+		printf("TDC: FPGA FW 0x%04X kalibraci ze vstupniho pinu neumi (CAPS bit24, FW >= 0x0509)\n", (unsigned)vi.fw);
+		return 1;
+	}
+	uint32_t sv_f[2] = { 0u, 0u }; uint16_t sv_m[2] = { 0u, 0u }; uint8_t sv_on[2] = { 0u, 0u };
+	if (pin) {
+		for (int c = 0; c < 2; c++) {
+			if (mask && !(mask & (1u << c))) continue;
+			if ((vi.presc[c] & 0x0Fu) != 0u) {
+				printf("TDC: kanal %c ma predelicku P > 1, kalibrace z pinu jen s P = 1 (`fpga presc %c 0`)\n", 'A' + c, 'a' + c);
+				return 1;
+			}
+		}
+		if (gen) {
+			for (int c = 0; c < 2; c++) {
+				sv_f[c] = g_si_gen[c].freq_hz; sv_m[c] = g_si_gen[c].mhz; sv_on[c] = g_si_gen[c].on;
+				si5356_gen_request((unsigned)c, UART_CALPIN_HZ, true);
+			}
+			for (int i = 0; i < 40 && (g_si_gen[0].pend || g_si_gen[1].pend); i++) osDelay(50);
+			osDelay(500);                          /* okna se srovnaji na novy kmitocet */
+		}
+		/* rovnomernost faze 2^20 hran z kmitoctu (generator presne, jinak posledni okno; kanal B je ve slotu /16) */
+		fpga_meas_t m;
+		memset(&m, 0, sizeof m);
+		const int have = fpga_freq_get_last(&m) ? 1 : 0;
+		for (int c = 0; c < 2; c++) {
+			if (mask && !(mask & (1u << c))) continue;
+			const double f = gen ? (double)UART_CALPIN_HZ
+			                     : (have ? (double)(c ? m.freq16_x100000 : m.frequency_x100000) * 1e-5 : 0.0);
+			const int16_t cov = (f >= 0.5e6 && f <= 19.0e6) ? fpga_v3_calpin_cover(f, 1u << FPGA_TDC_CAL_LOG2) : (int16_t)32767;
+			printf("TDC %c: signal %lu Hz, faze 2^%u hran pokryje takt s odchylkou osminy %d promile\n", 'A' + c,
+			       (unsigned long)(f + 0.5), (unsigned)FPGA_TDC_CAL_LOG2, (int)cov);
+			if (cov > 10 || cov < -10) {
+				printf("TDC %c: ODMITNUTO -- signal musi byt 0,5..19 MHz a nesoudelny se 100 MHz (napr. `tdc cal pin gen` = %lu Hz)\n",
+				       'A' + c, (unsigned long)UART_CALPIN_HZ);
+				bad = 1;
+			}
+		}
+	}
+	if (!bad) {
+		fpga_tdccal_info_t c0, c1;
+		fpga_freq_tdccal_info(&c0);
+		const uint32_t want = (mask == 0u) ? 2u : 1u;
+		if (!fpga_freq_tdc_cal_start_ex(mask, pin != 0)) {
+			printf("TDC: SET_CONFIG se nepodaril (link?)\n");
+		} else {
+			printf("TDC: kalibrace %s %s spustena, ceka se nejvys 15 s\n", pin ? "ze VSTUPNIHO PINU" : "z ring oscilatoru",
+			       (mask == 1u) ? "kanalu A" : ((mask == 2u) ? "kanalu B" : "obou kanalu"));
+			c1 = c0;
+			for (int i = 0; i < 60; i++) {
+				osDelay(250);
+				fpga_freq_tdccal_info(&c1);
+				if ((c1.runs + c1.fails) - (c0.runs + c0.fails) >= want) break;
+			}
+			static const char *const pr[5] = { "PROSEL", "ODMITNUT: malo kodu (signal soudelny se 100 MHz?)",
+			                                    "ODMITNUT: nerovnomerny", "ODMITNUT: prazdny", "nehodnocen" };
+			for (int c = 0; c < 2; c++) {
+				if (mask && !(mask & (1u << c))) continue;
+				if (pin)
+					printf("TDC %c: histogram z pinu %s (kodu %u, odchylka osminy %+d promile), platna tabulka z %s\n", 'A' + c,
+					       pr[c1.pin_res[c] > 3u ? 4u : c1.pin_res[c]], (unsigned)c1.pin_nz[c], (int)c1.pin_dev[c],
+					       c1.src[c] ? "VSTUPNIHO PINU" : "ring oscilatoru");
+			}
+			printf("TDC: behu %lu, selhani %lu (posledni chyba %u)%s\n", (unsigned long)(c1.runs - c0.runs),
+			       (unsigned long)(c1.fails - c0.fails), (unsigned)c1.last_err,
+			       ((c1.runs + c1.fails) - (c0.runs + c0.fails) >= want) ? "" : "  <== nedokonceno do 15 s");
+		}
+	}
+	if (pin && gen) {
+		for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
+		printf("TDC: generator vracen na puvodni nastaveni\n");
+	}
+	return 1;
+}
+
 static void fmt_f2(char *b, size_t n, float v)
 {
 	long w = (long)v;
@@ -207,70 +607,448 @@ static uint16_t eth_phy_read(uint8_t phyad, uint8_t reg)
  *
  * PC13 pozn.: lezi v backup domene, ma omezenou proudovou zatizitelnost, ale
  * jako VSTUP s pull-upem je bez problemu. */
-#define ENC_BTN_PORT   GPIOC
-#define ENC_BTN_PIN    GPIO_PIN_13
-
-static void enc_init(void)
-{
-    static uint8_t done;
-    if (done) return;
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_TIM1_CLK_ENABLE();
-
-    GPIO_InitTypeDef g = {0};
-    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;      /* CH1/CH2 */
-    g.Mode      = GPIO_MODE_AF_PP;
-    g.Pull      = GPIO_PULLUP;                  /* encoder spina na zem */
-    g.Speed     = GPIO_SPEED_FREQ_LOW;
-    g.Alternate = GPIO_AF1_TIM1;
-    HAL_GPIO_Init(GPIOA, &g);
-
-    g.Pin = ENC_BTN_PIN; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(ENC_BTN_PORT, &g);
-
-    /* Encoder mode 3 = pocita obe hrany obou kanalu (nejjemnejsi kroky).
-     * Filtr ICxF = 0xF (max) — mechanicke encodery zakmitavaji. */
-    TIM1->CR1   = 0;
-    TIM1->PSC   = 0;
-    TIM1->ARR   = 0xFFFFu;                      /* 16bit wrap; sleduje se ROZDIL */
-    TIM1->CCMR1 = (0x1u << 0) | (0x1u << 8)     /* CC1S=01 (TI1), CC2S=01 (TI2) */
-                | (0xFu << 4) | (0xFu << 12);   /* IC1F=IC2F=15 (max filtr) */
-    TIM1->CCER  = 0;                            /* obe hrany nerotovane */
-    TIM1->SMCR  = 0x3u;                         /* SMS=011 = encoder mode 3 */
-    TIM1->CNT   = 0;
-    TIM1->CR1  |= TIM_CR1_CEN;
-    done = 1;
-}
 
 /* ── Stav UART command procesoru (privátní pro tento task) ─────────────── */
 static char RxBuffer[RX_BUF_SIZE];
 static uint8_t RxIndex = 0;
+/* 🔴 Utnuty radek se NEPROVEDE (audit F-0073). Jakoukoli mez jde prekrocit;
+ * podstatne je, aby vysledkem nebylo provedeni NECEHO JINEHO, nez uzivatel
+ * napsal. `s_rx_trunc` drzi, ze se v tomhle radku uz neco zahodilo, a plati az
+ * do nejblizsiho konce radku — stejny vzor jako `s_drop` v `gps.c` (F-0066)
+ * a `c->drop` v `scpi_tcp.c`. */
+static uint8_t  s_rx_trunc = 0;
+static uint32_t s_rx_trunc_n = 0;   /* kolikrat se to stalo — do `status` (L-0017) */
 
 static uint32_t *ram_buf   = (uint32_t *)(RAM_BASE + TEST_OFFSET);
 static uint32_t *sdram_buf = (uint32_t *)(SDRAM_BASE + SDRAM_TEST_OFFSET);
 
 /* ── stacktest: ZAMERNE pretece stack UartTasku (test detekce -> IWDG reset) ──
  * ⚠️ MUSI byt VLASTNI (noinline) funkce, ne local `waste[]` v UartTask_run:
- * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze 3600B `waste`
- * jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack ->
+ * GCC rezervuje frame VSECH lokalu funkce uz pri vstupu, takze `waste` (tehdy
+ * 3600 B) jako local v UartTask_run nafoukl JEHO ramec na 4904 B > 4096 B stack
+ * (tehdejsi velikost; dnes ma UartTask 8192 B, pole je 8000 B, L-0244) ->
  * task pretekal VZDY (uz za normalniho provozu), ne jen pri stacktestu. To
  * zpusobovalo HardFault s poskozenym ramcem pri PRVNIM USB znaku (echo cesta
  * do USB HAL prohloubila stack az za hranice) — viz STATUS #34, 2026-07-22.
- * Jako samostatna funkce se 3600 B alokuje AZ pri volani -> ramec UartTask_run
- * spadl zpet na ~1,3 kB a task se do 4 kB v pohode vejde; pretece se JEN kdyz
+ * Jako samostatna funkce se `waste` alokuje AZ pri volani -> ramec UartTask_run
+ * spadl zpet na ~1,3 kB a task se do zasobniku v pohode vejde; pretece se JEN kdyz
  * uzivatel spusti "stacktest yes" (na to zustala funkce zachovana). */
 __attribute__((noinline)) static void stacktest_overflow(void)
 {
-  volatile char waste[3600];
+  volatile char waste[8000];
   for (unsigned i = 0; i < sizeof(waste); i++) waste[i] = (char)i;
   osDelay(1);            /* yield -> kontrola stack patternu -> hook */
   printf("STACKTEST: hook se NEOZVAL (%d) - detekce NEFUNGUJE!\n", (int)waste[0]);
 }
 
 /* Volano ze StartUartTask stubu ve freertos.c (CubeMX-regen-safe). */
+/* ══ `i2cspeed` — chybovost I2C4 podle taktu ════════════════════════════════
+ * Meri, kolik transakci na sbernici selze pri jednotlivych taktech. Nejde o
+ * benchmark: odpoved, kterou hleda, zni "jak rychle SMI tahle sbernice jet",
+ * a ta se neda precist z datasheetu — limitem je ATTINY, bit-bang I2C slave.
+ *
+ * 🔑 METODA JE ZAMERNE TOTOZNA s merenim z 2026-09-10 (`docs/audit/2026-09-10_i2c.md`),
+ * aby byla cisla PRIMO POROVNATELNA:
+ *   - jen CTENI registru s konstantnim obsahem, do ATTINY se nezapise ani bajt;
+ *   - referencni hodnoty se snimaji na 50 kHz, takze se nespoleha na datasheet;
+ *   - ve VSECH krocich je `SCLDEL` drzen na ~267 ns a `SDADEL` na 0, takze se
+ *     meni JEDINA promenna — takt. (Havarijni hodnota z r. 2026 `0x10903163`
+ *     menila frekvenci i casovani dat naraz, a proto z jejiho selhani neslo
+ *     usoudit, ze vinikem byla rychlost.)
+ *   - N = 2000 na zarizeni a krok.
+ * Osm z deseti konstant `TIMINGR` je doslova z tehdejsiho behu; 25 a 500 kHz
+ * jsou dopocitane stejnym vzorem (kernel 120 MHz, pomer SCLL:SCLH = 4:1).
+ *
+ * ⚠️ CO TO STALO MINULE (a co se s tim tentokrat dela):
+ *   1) Beh nad 125 kHz rozhodil TMP117 na 0x48 tak, ze pomohl az power-cycle.
+ *      -> SensorsTask nove po skonceni mereni TMP117 znovu nastavi (sestupna
+ *         hrana `g_i2c4_sweep`). Neni to zaruka, je to pokus, ktery nic nestoji.
+ *   2) Test vyhladovel UiTask (black-box zaznamenal `stall:UiTask`).
+ *      -> Po dobu mereni ostatni konzumenti I2C4 na bus vubec nesahaji
+ *         (`g_i2c4_sweep`), takze se na mutexu nikdo neblokuje, a mezi davkami
+ *         se ustupuje scheduleru.
+ * ⚠️ Navic: pred kazdym krokem se kontroluje, jestli nekdo nedrzi SDA dole, a
+ * pokud ano, provede se tvrdy reset periferie. Minule prave zavesena sbernice
+ * udelala z radku TMP117 nemonotonni nesmysl (0,00 -> 100 -> 0,05 %).
+ *
+ * ⚠️ Vsechny buffery jsou `static`: UartTask ma 4096 B zasobniku a podle F-0074
+ * mu pri `scpi` zbyva ~168 B. Funkce je vyclenena i proto, ze `UartTask_run` ma
+ * ramec hlidany na <= 1024 B (`scripts/check_lessons.sh`, F-0077).
+ *
+ * Pouziti:  `i2cspeed`          = 2000 transakci na zarizeni a krok, vsechna 3
+ *           `i2cspeed 500`      = 500 transakci, vsechna 3 (rychlejsi beh)
+ *           `i2cspeed 25 0x38`  = jen FT5x06 (dotyk), 25 transakci/krok
+ *           `i2cspeed 25 45`    = jen ATTINY   ("0x" je nepovinne)
+ *           `i2cspeed 500 48`   = jen TMP117
+ * Adresy na I2C4 a co jsou (viz i CLAUDE.md, oddil I2C4):
+ *   0x38 = FT5x06 (dotykovy radic panelu) — skutecna I2C periferie.
+ *   0x45 = ATTINY (napajeni panelu + podsviceni + reset bridge/dotyku) —
+ *          BIT-BANG slave, CPU CLK 1 MHz -> nestiha nad ~75 kHz. Provozne
+ *          bezi VZDY na 50 kHz (`i2c4_speed_select`, i2c.c) a je JEDINYM
+ *          duvodem, proc cela sbernice historicky nesla vys.
+ *   0x48 = TMP117 (teplota panelu) — skutecna I2C periferie.
+ * Kdykoli behem mereni staci poslat jakykoli znak -> preruseni a obnoveni taktu.
+ * ⚠️ Vyber jedne adresy NEOPRAVUJE TODO #244 (yield podle poctu iteraci, ne
+ * podle casu) — jen zkrati celkovou dobu (1 zarizeni misto 3). Nad ~100 kHz
+ * s velkym N muze desku restartovat i s vyfiltrovanou jednou adresou.
+ */
+#define I2CSP_N_DEF    2000u
+#define I2CSP_CHUNK      64u    /* po kolika transakcich pustit ostatni tasky */
+
+typedef struct { uint16_t khz; uint32_t timingr; } i2csp_step_t;
+typedef struct { uint16_t a8; uint8_t reg; uint8_t len; const char *nm; } i2csp_dev_t;
+
+/* PRESC/SCLDEL drzi setup dat na ~267 ns: p=15 -> SCLDEL=1, p=7 -> 3, p=3 -> 7. */
+static const i2csp_step_t I2CSP_STEP[] = {
+    {  25u, 0xF0103BEFu }, {  50u, 0x70303AEEu }, {  75u, 0x7030279Fu },
+    { 100u, 0x70301D77u }, { 150u, 0x7030134Fu }, { 200u, 0x70300E3Bu },
+    { 250u, 0x70300B2Fu }, { 300u, 0x70300927u }, { 400u, 0x30700E3Bu },
+    { 500u, 0x30700B2Fu },
+};
+#define I2CSP_NSTEP  (sizeof I2CSP_STEP / sizeof I2CSP_STEP[0])
+
+/* Registr s KONSTANTNIM obsahem na kazde adrese (0x48 = Device_ID, 2 B). */
+static const i2csp_dev_t I2CSP_DEV[] = {
+    { (uint16_t)(0x38u << 1), 0xA8u, 1u, "0x38 FT5x06" },
+    { (uint16_t)(0x45u << 1), 0x80u, 1u, "0x45 ATTINY" },
+    { (uint16_t)(0x48u << 1), 0x0Fu, 2u, "0x48 TMP117" },
+};
+#define I2CSP_NDEV  (sizeof I2CSP_DEV / sizeof I2CSP_DEV[0])
+
+/* ⚠️ NIKDY `MX_I2C4_Init` — ta ma `Error_Handler()` trap. Tentyz bezpecny vzor
+ * jako `i2c4_recover()`: DeInit + zmena `Init.Timing` + `HAL_I2C_Init`. */
+static void i2csp_set_timing(uint32_t t)
+{
+    HAL_I2C_DeInit(&hi2c4);
+    hi2c4.Init.Timing = t;
+    hi2c4.State = HAL_I2C_STATE_RESET;
+    HAL_I2C_Init(&hi2c4);
+}
+
+/* Jakykoli znak z konzole = zadost o preruseni (mereni trva desitky sekund). */
+static int i2csp_abort(void)
+{
+    return osMessageQueueGetCount(UartRxQueueHandle) > 0u;
+}
+
+/* Najde index zarizeni v I2CSP_DEV podle 7bit adresy zapsane HEXADECIMALNE
+ * (`38`, `0x38`, `0X38` - vse stejne, "0x" nepovinne). Nechyta jmena, jen
+ * cislo — adresy jsou v CLAUDE.md i tady vzdy psane hex, takze "38"/"45"/"48"
+ * je jednoznacne a bez rizika, ze si nekdo splete hex se desitkovym cislem.
+ * Vraci -1, kdyz to neni hex cislo NEBO kdyz zadne zarizeni na te adrese neni. */
+static int i2csp_find_dev(const char *tok)
+{
+    const char *p = tok;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    if (*p == '\0') return -1;
+    char *end = NULL;
+    uint32_t addr = (uint32_t)strtoul(p, &end, 16);
+    if (end == p || *end != '\0') return -1;   /* nebylo to cele hex cislo */
+    for (uint32_t d = 0; d < I2CSP_NDEV; d++) {
+        if ((I2CSP_DEV[d].a8 >> 1) == addr) return (int)d;
+    }
+    return -1;
+}
+
+/* `dev_sel` = -1 (vsechna 3 zarizeni, puvodni chovani) nebo index do
+ * I2CSP_DEV (jen jedno zarizeni — viz `i2csp_find_dev`). */
+static void i2cspeed_run(uint32_t n, int dev_sel)
+{
+    static uint8_t  ref[I2CSP_NDEV][2];
+    static uint8_t  refok[I2CSP_NDEV];
+    static uint8_t  buf[2];
+    static uint16_t pct[I2CSP_NSTEP][I2CSP_NDEV];   /* chybovost x100 */
+    static uint16_t sil[I2CSP_NSTEP][I2CSP_NDEV];   /* z toho tichych neshod */
+    uint32_t save = hi2c4.Init.Timing;
+    uint32_t i, d, k;
+    int aborted = 0;
+    /* Vyber rozsahu zarizeni: [d0, d1) — bud vsechna tri, nebo jen jedno. */
+    const uint32_t d0 = (dev_sel >= 0) ? (uint32_t)dev_sel : 0u;
+    const uint32_t d1 = (dev_sel >= 0) ? (uint32_t)dev_sel + 1u : I2CSP_NDEV;
+
+    printf("i2cspeed: %lu transakci na zarizeni a krok, %u kroku, jen CTENI\n",
+           (unsigned long)n, (unsigned)I2CSP_NSTEP);
+    if (dev_sel >= 0) {
+        printf("  jen zarizeni %s (ostatni dve se behem mereni nectou)\n",
+               I2CSP_DEV[dev_sel].nm);
+    }
+    printf("  po dobu mereni mlci touch, jas i TMP117 0x48; lze prerusit klavesou\n");
+
+    g_i2c4_sweep = 1;
+    osDelay(50);                      /* dobehnou rozpracovane transakce */
+
+    /* ── referencni hodnoty na PROVOZNICH 50 kHz ─────────────────────────── */
+    i2csp_set_timing(0x70303AEEu);
+    for (d = d0; d < d1; d++) {
+        refok[d] = 0;
+        for (k = 0; k < 3u && !refok[d]; k++) {
+            if (HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
+                                 I2C_MEMADD_SIZE_8BIT, ref[d], I2CSP_DEV[d].len, 20) == HAL_OK)
+                refok[d] = 1;
+            osDelay(2);
+        }
+        if (refok[d])
+            printf("  ref %s reg 0x%02X = 0x%02X%02X\n", I2CSP_DEV[d].nm,
+                   (unsigned)I2CSP_DEV[d].reg, (unsigned)ref[d][0],
+                   (unsigned)((I2CSP_DEV[d].len > 1u) ? ref[d][1] : 0u));
+        else
+            printf("  ref %s NEODPOVIDA -> pocitaji se jen HAL chyby, ne neshody\n",
+                   I2CSP_DEV[d].nm);
+    }
+
+    /* ── vlastni sweep ───────────────────────────────────────────────────── */
+    for (i = 0; i < I2CSP_NSTEP && !aborted; i++) {
+        uint8_t ls = i2c4_line_state();
+        if ((ls & 0x02u) == 0u) {        /* nekdo drzi SDA dole -> tvrdy reset */
+            printf("  [SDA drzena dole -> reset periferie pred krokem]\n");
+            i2c4_hw_reset();
+        }
+        i2csp_set_timing(I2CSP_STEP[i].timingr);
+        printf("[ %3u kHz  TIMINGR 0x%08lX ]\n", (unsigned)I2CSP_STEP[i].khz,
+               (unsigned long)I2CSP_STEP[i].timingr);
+
+        for (d = d0; d < d1 && !aborted; d++) {
+            uint32_t err = 0, mis = 0;
+            uint32_t ec = 0;
+            for (k = 0; k < n; k++) {
+                HAL_StatusTypeDef st = HAL_ERROR;
+                if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+                    st = HAL_I2C_Mem_Read(&hi2c4, I2CSP_DEV[d].a8, I2CSP_DEV[d].reg,
+                                          I2C_MEMADD_SIZE_8BIT, buf, I2CSP_DEV[d].len, 10);
+                    osMutexRelease(i2c4MutexHandle);
+                }
+                if (st != HAL_OK) {
+                    err++; ec = hi2c4.ErrorCode;
+                } else if (refok[d] &&
+                           (buf[0] != ref[d][0] ||
+                            (I2CSP_DEV[d].len > 1u && buf[1] != ref[d][1]))) {
+                    mis++;               /* ACKnuto, ale jina data = TICHA neshoda */
+                }
+                if ((k % I2CSP_CHUNK) == (I2CSP_CHUNK - 1u)) {
+                    osDelay(1);          /* pustit defaultTask (watchdog) a UiTask */
+                    if (i2csp_abort()) { aborted = 1; break; }
+                }
+            }
+            {
+                uint32_t bad = err + mis;
+                uint32_t p100 = (n > 0u) ? ((bad * 10000u + n / 2u) / n) : 0u;
+                ls = i2c4_line_state();
+                pct[i][d] = (uint16_t)((p100 > 0xFFFFu) ? 0xFFFFu : p100);
+                sil[i][d] = (uint16_t)((mis > 0xFFFFu) ? 0xFFFFu : mis);
+                printf("  %s  %lu.%02lu %%  (%lu/%lu)  err=0x%02lX  SCL=%u SDA=%u%s\n",
+                       I2CSP_DEV[d].nm, (unsigned long)(p100 / 100u), (unsigned long)(p100 % 100u),
+                       (unsigned long)bad, (unsigned long)n, (unsigned long)ec,
+                       (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
+                       mis ? "  [TICHA NESHODA]" : "");
+            }
+        }
+    }
+
+    /* ── obnova: VZDY, i po preruseni ────────────────────────────────────── */
+    i2csp_set_timing(save);
+    g_i2c4_sweep = 0;
+    printf("obnoven takt 0x%08lX%s\n", (unsigned long)save,
+           aborted ? "  (PRERUSENO)" : "");
+
+    /* Souhrn ve tvaru tabulky z auditu — da se rovnou vlozit do dokumentu.
+     * Pocet sloupcu je dynamicky (d0..d1) — u vyberu jednoho zarizeni jde
+     * o jediny sloupec, jinak vsechny tri jako drive. */
+    printf("| f [kHz] | TIMINGR |");
+    for (d = d0; d < d1; d++) printf(" %s |", I2CSP_DEV[d].nm);
+    printf("\n");
+    for (i = 0; i < I2CSP_NSTEP; i++) {
+        int all_zero = 1;
+        for (d = d0; d < d1; d++) if (pct[i][d] != 0u) all_zero = 0;
+        if (aborted && all_zero && i > 0u) continue;
+        printf("| %u | 0x%08lX |", (unsigned)I2CSP_STEP[i].khz,
+               (unsigned long)I2CSP_STEP[i].timingr);
+        for (d = d0; d < d1; d++) {
+            printf(" %u,%02u %%%s |", (unsigned)(pct[i][d] / 100u),
+                   (unsigned)(pct[i][d] % 100u), sil[i][d] ? " !" : "");
+        }
+        printf("\n");
+    }
+    printf("  (! = mezi chybami byla ticha neshoda: ACK, ale jina data)\n");
+}
+
+/* Stav DAC ladeni OCXO (AD5693R) — prikaz `dac` i radek ve `status`.
+ * Vedle kodu DAC tiskne i napeti na pinu VC zmerene NEZAVISLE pres AIN0:
+ * to je kontrola konec-konec, ktera nezavisi na readbacku DAC. */
+static void dac_print_status(void)
+{
+    if (!g_dac.probed) { printf("DAC OCXO: AD5693R jeste nesondovan\n"); return; }
+    if (!g_dac.present) {
+        printf("DAC OCXO: AD5693R 0x%02X nenalezen (neosazen?) -> OCXO Vc nikdo neridi\n",
+               (unsigned)AD5693_ADDR7);
+        return;
+    }
+    uint16_t c = g_dac.code, rb = g_dac.code_rb;
+    printf("DAC OCXO: AD5693R 0x%02X, ctrl %s | kod %s%u = %lu mV | readback %s%u\n",
+           (unsigned)AD5693_ADDR7, g_dac.ctrl_ok ? "OK" : "*** NEZAPSAN ***",
+           g_dac.code_valid ? "" : "? ", (unsigned)c, (unsigned long)ad5693_code_to_mv(c),
+           g_dac.rb_ok ? "" : "selhal, posl. ", (unsigned)rb);
+    printf("DAC OCXO: zapisu %lu, chyb I2C %lu, readback nesedi %lu | pin VC (AIN0) %s%ld mV\n",
+           (unsigned long)g_dac.writes, (unsigned long)g_dac.errors,
+           (unsigned long)g_dac.rb_mismatch,
+           g_sensors[SENS_ADS0].valid ? "" : "neplatne, posl. ",
+           (long)g_sensors[SENS_ADS0].last);
+    printf("DAC OCXO: dither %u Hz (%s) | kroky bez mutexu %lu, vynechano po chybe %lu\n",
+           (unsigned)(ad5693_dither_task_alive() ? ad5693_dither_hz() : 2u),
+           ad5693_dither_task_alive() ? "DacTask 5 ms" : "SensorsTask 2 Hz - DacTask nebezi",
+           (unsigned long)g_dac_dith_miss, (unsigned long)g_dac_dith_skip);
+    static const char *const k_rst[] = {
+        "zadny ulozeny kod (0 V)", "kod z flash zapsan a overen",
+        "DAC uz drzel kod (reset jen STM32), ponechan", "ZAPIS SELHAL",
+        "ulozeny kod MIMO ROZSAH, ignorovan" };
+    uint8_t r = g_dac.restore;
+    printf("DAC OCXO: obnova po startu: %s | ulozeny kod %u = %lu mV%s\n",
+           r < 5u ? k_rst[r] : "?", (unsigned)g_dac_persist,
+           (unsigned long)ad5693_code_to_mv(g_dac_persist),
+           g_dac.restore_done ? "" : " (ceka)");
+}
+
+/* Smycka GPSDO (STATUS #305) — prikaz `gpsdo` i radek ve `status`. Bez %f (nano.specs): cisla se tisknou
+ * celociselne po prenasobeni (y v 1e-12, kod v setinach LSB, K v 1e-13). */
+static long gp_round(double v) { return (long)(v + (v >= 0.0 ? 0.5 : -0.5)); }
+static void gpsdo_print_status(void)
+{
+    gpsdo_status_t s;
+    gpsdo_get(&s);
+    long y  = gp_round(s.y * 1e12);          /* y v 1e-12 = ppt */
+    long cd = gp_round(s.code * 100.0);      /* kod v setinach LSB */
+    long k  = gp_round(s.kdac * 1e13);       /* K v 1e-13 */
+    printf("GPSDO: %s%s%s%s | %lu s | y %c%ld.%03ld ppb | faze %+ld ns | kod %ld.%02ld | K %ld.%02lde-11 | tau %lu s\n",
+           gpsdo_state_name(s.state), s.locked ? " (ZAMCENO)" : "",
+           (s.why != GPSDO_WHY_NONE) ? " - " : "", gpsdo_why_text(s.why), (unsigned long)s.state_s,
+           (y < 0) ? '-' : '+', labs(y) / 1000, labs(y) % 1000, gp_round(s.x_ns),
+           cd / 100, labs(cd) % 100, k / 100, labs(k) % 100, (unsigned long)gp_round(s.tau_s));
+    static const char *const sw[] = { "vypnuta", "+q", "-q", "bez dat TIM-TP" };
+    printf("GPSDO: 1PPS prijato %lu, odmitnuto %lu, diry %lu, roztrzena cteni %lu | FLL okno %lu s | sawtooth %s "
+           "(rozptyl ns2: bez %ld / +q %ld / -q %ld, rozhodnuti %lu)\n",
+           (unsigned long)s.pps_ok, (unsigned long)s.pps_rej, (unsigned long)s.pps_gap,
+           (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
+           (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
+           (unsigned long)s.saw_n);
+    /* v0.40.1/2 (STATUS #337b): prvni hrana 1PPS po startu FPGA (synchronizator pps_cap3 startuje 000) */
+    if (s.st_first_seq == 0x100u)
+        printf("GPSDO: 1PPS prvni videna hrana: zatim zadna\n");
+    else
+        printf("GPSDO: 1PPS prvni videna hrana: PSEQ %u, %lu.%03lu ms od startu FPGA, dalsi za %lu.%03lu ms\n",
+               (unsigned)s.st_first_seq, (unsigned long)(s.st_first_us / 1000u), (unsigned long)(s.st_first_us % 1000u),
+               (unsigned long)(s.st_next_us / 1000u), (unsigned long)(s.st_next_us % 1000u));
+    if (s.st_n == 0u)
+        printf("GPSDO: start FPGA (PSEQ 1->2): interval nezmeren (STM nevidelo PSEQ 1 a 2 za sebou) -> bez vlivu na smycku\n");
+    else
+        printf("GPSDO: start FPGA (PSEQ 1->2): zmereno %lu, falesna 1. hrana %lu | odchylka od mrizky 100 ms %+ld us%s\n",
+               (unsigned long)s.st_n, (unsigned long)s.st_bad, (long)s.st_dev_us,
+               (s.st_dev_us > 1000 || s.st_dev_us < -1000) ? " <== FALESNA HRANA" : "");
+    /* Nejkratsi rozumne tau (gpsdo.h): HDEV faze proti bilemu PM 1PPS. Jen zobrazeni, smycku nemeni. */
+    gpsdo_tau_adv_t ad;
+    gpsdo_tau_advise(&ad);
+    if (ad.bound == 2u) {
+        printf("GPSDO: tau min. -- (malo dat: %u bodu LOCK po 10 s od zamceni/zmeny tau, potreba 180 = 30 min)\n", (unsigned)ad.n);
+    } else {
+        printf("GPSDO: tau min. %s%lu s (aktualne %lu s) | sum 1PPS HDEV(10 s) %ld e-12 | HDEV faze e-12:",
+               ad.bound == 1u ? ">=" : "", (unsigned long)gp_round(ad.tau_rec), (unsigned long)gp_round(s.tau_s),
+               gp_round(ad.pps10 * 1e12));
+        static const uint16_t T[GPSDO_ADV_NT] = {10, 20, 50, 100, 200, 500, 1000, 2000};
+        for (unsigned j = 0; j < GPSDO_ADV_NT; j++)
+            if (ad.sx[j] > 0.0f) printf(" %u:%ld", (unsigned)T[j], gp_round(ad.sx[j] * 1e12));
+        printf("\nGPSDO: (dolni mez: prebytek nad bilym sumem 1PPS muze byt OCXO i putovani casu GPS)\n");
+    }
+}
+
+/* ── UART `gen` — generator Si5356 (CLK2/3, CLK4/5, CLK6/7) ───────────────────
+ * `gen`                     stav + KONTROLA registru (zapsano vs. precteno z cipu)
+ * `gen <2|4|6> <Hz>`        nastavi kmitocet dvojice CLKn/n+1 (zapne ji)
+ * `gen <2|4|6> on|off`      povoli / zakaze vystup
+ * `gen <2|4|6> <Hz> off`    nastavi kmitocet a necha vystup vypnuty
+ * <Hz> smi mit az 3 desetinna mista (mHz, tecka nebo carka): `gen 2 10000000.040` = test TDC
+ * s pomalu ujizdejici fazi (v0.42.13). Zlomek se neuklada; vypis ukazuje i SKUTECNY kmitocet
+ * z P1/P2/P3 na uHz (presny zlomek se do P3 nemusi vejit).
+ * Cislo je index PRVNIHO pinu dvojice (jako popisky na desce); CLK0/1 = reference FPGA
+ * se odsud menit NEDA. Zapis do cipu dela SensorsTask (vlastnik I2C1), tady jen zadost.
+ * noinline: vlastni ramec, at nezvetsuje ramec UartTask_run (L-0035). */
+__attribute__((noinline)) static void uart_gen_cmd(const char *a)
+{
+    while (*a == ' ') a++;
+    if (*a != '\0') {
+        if (*a < '2' || *a > '6' || (*a & 1) != 0) {
+            printf("GEN: dvojice je 2, 4 nebo 6 (CLK2/3, CLK4/5, CLK6/7); CLK0/1 je reference FPGA\n");
+            return;
+        }
+        const unsigned ch = (unsigned)(*a - '2') / 2u;
+        a++;
+        while (*a == ' ') a++;
+        uint32_t f   = g_si_gen[ch].freq_hz;
+        uint16_t mhz = g_si_gen[ch].mhz;
+        bool     on  = g_si_gen[ch].on != 0u;
+        if (*a >= '0' && *a <= '9') {
+            uint32_t v = 0u;
+            while (*a >= '0' && *a <= '9' && v <= 400000000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; }
+            if (*a >= '0' && *a <= '9') { printf("GEN: kmitocet je mimo rozsah\n"); return; }
+            mhz = 0u;
+            if (*a == '.' || *a == ',') {
+                a++;
+                unsigned nd = 0u;
+                while (*a >= '0' && *a <= '9' && nd < 3u) { mhz = (uint16_t)(mhz * 10u + (unsigned)(*a - '0')); a++; nd++; }
+                if (*a >= '0' && *a <= '9') { printf("GEN: nejvyse 3 desetinna mista (mHz)\n"); return; }
+                while (nd < 3u) { mhz = (uint16_t)(mhz * 10u); nd++; }
+            }
+            f = v; on = true;
+            while (*a == ' ') a++;
+        }
+        if      (strcmp(a, "on") == 0)  on = true;
+        else if (strcmp(a, "off") == 0) on = false;
+        else if (*a != '\0')            { printf("GEN: neznamy argument `%s`\n", a); return; }
+        if (f < SI5356_GEN_F_MIN_HZ || f > SI5356_GEN_F_MAX_HZ || (f == SI5356_GEN_F_MAX_HZ && mhz != 0u)) {
+            printf("GEN: %lu,%03u Hz je mimo rozsah %lu .. %lu Hz\n", (unsigned long)f, (unsigned)mhz,
+                   (unsigned long)SI5356_GEN_F_MIN_HZ, (unsigned long)SI5356_GEN_F_MAX_HZ);
+            return;
+        }
+        si5356_gen_request_frac(ch, f, mhz, on);
+        for (int i = 0; i < 100 && g_si_gen[ch].pend; i++) osDelay(20);
+        if (g_si_gen[ch].pend) printf("GEN: zadost ceka (I2C1 back-off?) - vysledek ukaze `gen`\n");
+    }
+
+    for (unsigned ch = 0; ch < SI5356_GEN_N; ch++) {
+        const uint32_t f   = g_si_gen[ch].freq_hz;
+        const uint16_t mhz = g_si_gen[ch].mhz;
+        const unsigned clk = 2u + 2u * ch;
+        const uint8_t  st  = g_si_gen[ch].state;
+        printf("GEN CLK%u/%u: %lu,%03u Hz %s  stav %s%s%s\n", clk, clk + 1u, (unsigned long)f, (unsigned)mhz,
+               g_si_gen[ch].on ? "ZAP" : "VYP",
+               st == SI5356_GEN_OK ? "OK" : (st == SI5356_GEN_ERR_I2C ? "CHYBA I2C" : "MIMO ROZSAH"),
+               g_si_gen[ch].pend ? " (zapis ceka)" : "",
+               mhz != 0u ? " (zlomek Hz se neuklada)" : "");
+        si5356_ms_t m;
+        if (!si5356_gen_calc_frac(f, mhz, &m)) continue;
+        uint8_t want[10], got[12];
+        si5356_gen_pack(&m, want);
+        bool rd_ok = false;
+        if (osMutexAcquire(i2c1MutexHandle, 200) == osOK) {
+            rd_ok = si5356_gen_readback(&hi2c1, ch, got);
+            osMutexRelease(i2c1MutexHandle);
+        }
+        const uint64_t uhz = si5356_gen_actual_uhz(&m);
+        printf("  MS: R=%u P1=%lu P2=%lu P3=%lu -> %lu,%06lu Hz\n", 1u << m.rexp, (unsigned long)m.p1,
+               (unsigned long)m.p2, (unsigned long)m.p3,
+               (unsigned long)(uhz / 1000000u), (unsigned long)(uhz % 1000000u));
+        if (!rd_ok) { printf("  cip: nelze cist (I2C1 obsazena)\n"); continue; }
+        bool same = (got[0] == (uint8_t)(0xC0u | ((unsigned)m.rexp << 2)));
+        for (unsigned i = 0; i < 9u; i++) same = same && (got[1 + i] == want[i]);
+        same = same && ((got[10] & 0x3Fu) == want[9]);
+        const bool out_on = (got[11] & (1u << (ch + 1u))) == 0u;
+        printf("  cip: R=%02X MS=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X OEB=%02X (vystup %s) %s\n",
+               got[0], got[1], got[2], got[3], got[4], got[5], got[6], got[7], got[8], got[9], got[10], got[11],
+               out_on ? "ZAP" : "VYP", same ? "SHODA" : "ROZDIL");
+    }
+    printf("GEN: CLK0/1 = 100 MHz reference FPGA (pevne)\n");
+}
+
 void UartTask_run(void *argument)
 {
+	(void)argument;              /* signaturu urcuje CMSIS-RTOS, parametr nepouzivame */
 	uint8_t rxChar;
 
 
@@ -303,7 +1081,14 @@ void UartTask_run(void *argument)
 			   * Navenek to vypadalo, ze deska kazdy prikaz odmitne (overeno na HW
 			   * pres COM8: s CRLF chyba po kazdem prikazu, s holym CR ne). Prazdny
 			   * vstup neni chyba — uzivatel jen zmackl Enter. */
-			  if (RxBuffer[0] == '\0') { /* nic */ }
+			  /* 🔴 Prikaz, ze ktereho se cokoli ztratilo, se NEVYKONA (F-0073).
+			   * ⚠️ Zamerne jako prvni clen TOHOTO retezu, ne `continue` vys: `continue`
+			   * v `for(;;)` preskoci i `sd_export_service()` a spol. na konci smycky. */
+			  if (s_rx_trunc) {
+				  s_rx_trunc = 0;
+				  printf("ERR prikaz delsi nez %d znaku - NEPROVEDEN\r\n", RX_BUF_SIZE - 1);
+			  }
+			  else if (RxBuffer[0] == '\0') { /* nic */ }
 			  else if (strcmp(RxBuffer, "led on") == 0) {
 				  HAL_GPIO_WritePin(LED_1_GPIO_Port, LED_1_Pin, GPIO_PIN_RESET);
 				  printf("LED ON - OK \n");
@@ -368,15 +1153,259 @@ void UartTask_run(void *argument)
 					  osDelay(2);
 				  }
 			  }
+			  else if (strcmp(RxBuffer, "css on") == 0) {
+				  /* Vedome zapnuti hlidace HSE. ⚠️ Pri bootu se ZAMERNE nezapina:
+				   * na teto desce (HSEBYP=1, tedy vnejsi hodiny) se spustil hned
+				   * a delal reset smycku.
+				   * ⚠️ CO SE STANE PRI VYPADKU HSE (upresneno 2026-09-09, F-0002):
+				   * NMI vypadek zapise do crash black-boxu (kind 7) a jadro
+				   * ZAMRZNE — po ~4 s desku resetuje IWDG a `status` pak ukaze
+				   * `NMI@<RCC_CR>`. NENI to jen "hlaseni za behu", jak tu stalo
+				   * do 2026-09-09: CSS pri vypadku prepne SYSCLK na HSI, cimz
+				   * se rozjede baudrate konzole a SDRAM i LTDC prijdou o hodiny,
+				   * takze bezet dal se nema jak projevit. Viz `NMI_Handler`. */
+				  HAL_RCC_EnableCSS();
+				  printf("css: zapnuto (HSECSSON). Vypnout jde jen resetem.\n");
+				  printf("  pri vypadku HSE se objevi radek `HSE:` ve `status`.\n");
+			  }
+			  else if (strncmp(RxBuffer, "cm4", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (strcmp(p, "restart") == 0) {
+					  /* 🔴 POZOR: tenhle HAL neumi `HAL_RCCEx_HoldCore/ReleaseCore`,
+					   * takze CM4 NELZE restartovat samostatne. Jedina dostupna cesta
+					   * je RESET CELEHO PRISTROJE — tedy i displeje a mereni.
+					   * Proto je to VYHRADNE rucni prikaz a nic to nedela automaticky:
+					   * pravé kvuli tomuhle je IWDG2 na CM4 zamerne vypnuty (jeho reset
+					   * scope je taky system-wide). */
+					  printf("cm4 restart: CM4 nelze restartovat samostatne (HAL nema\n");
+					  printf("  HoldCore/ReleaseCore) -> provedu RESET CELEHO PRISTROJE za 2 s.\n");
+					  printf("  Zrus odpojenim terminalu, jestli to nechces.\n");
+					  (void)errlog_put(ERRLOG_K_NET, 2u, 0u, 0u, "reboot");
+					  osDelay(2000);
+					  NVIC_SystemReset();
+				  } else {
+					  uint32_t fpc = 0, flr = 0, fcf = 0;
+					  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
+					  printf("CM4: %s, stall x%lu\n", g_cm4_alive ? "alive" : "TICHO",
+							 (unsigned long)g_cm4_stall_count);
+					  if (fk) printf("  CRASH kind %u: PC=%08lX LR=%08lX CFSR=%08lX\n",
+									 (unsigned)fk, (unsigned long)fpc,
+									 (unsigned long)flr, (unsigned long)fcf);
+					  else    printf("  bez zaznamu o faultu\n");
+					  printf("  `cm4 restart` = reset CELEHO pristroje (samostatny restart HAL neumi)\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "datalog store", 13) == 0) {
+				  const char *p = RxBuffer + 13;
+				  while (*p == ' ') p++;
+				  if (*p) {
+					  uint8_t v = DATALOG_STORE_AUTO;
+					  if      (strcmp(p, "flash") == 0) v = DATALOG_STORE_FLASH;
+					  else if (strcmp(p, "sd")    == 0) v = DATALOG_STORE_SD;
+					  else if (strcmp(p, "auto") != 0) { printf("pouziti: datalog store auto|flash|sd\n"); v = 0xFFu; }
+					  if (v != 0xFFu) {
+						  datalog_set_store(v);   /* dela re-init (najde hlavu na novem mediu) */
+						  g_sys_cfg_dirty = 1;
+					  }
+				  }
+				  datalog_status_t stbuf; datalog_get_status(&stbuf);
+				  const datalog_status_t *st = &stbuf;
+				  printf("datalog uloziste: nastaveno %s, bezi na %s\n",
+						 datalog_store_name(datalog_get_store()),
+						 (st && st->backend) ? st->backend : "--");
+				  if (datalog_get_store() == DATALOG_STORE_SD && (!st || !st->ready)) {
+					  printf("  ⚠ vynuceno SD, ale karta neodpovida -> NELOGUJE SE\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "datalog interval", 16) == 0) {
+				  const char *p = RxBuffer + 16;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  datalog_set_period_s((uint16_t)v);
+					  g_sys_cfg_dirty = 1;
+				  }
+				  uint16_t per = datalog_period_s();
+				  int st = datalog_adev_stage();
+				  printf("datalog interval: %u s  (~%lu zazn./den)\n",
+						 (unsigned)per, (unsigned long)(86400u / per));
+				  /* 🔴 Nejdulezitejsi radek: rekonstrukce Allanovy pyramidy z logu je
+				   * exaktni JEN pri periode = mocnina deseti (stage ma tau = 10^s). */
+				  if (st >= 0) printf("  Allan rekonstrukce: OK (stage %d, tau %u s)\n", st, (unsigned)per);
+				  else         printf("  ⚠ Allan rekonstrukce VYPNUTA (perioda neni mocnina 10)\n");
+			  }
+			  else if (strncmp(RxBuffer, "datalog mirror", 14) == 0) {
+				  const char *p = RxBuffer + 14;
+				  while (*p == ' ') p++;
+				  if (strcmp(p, "on") == 0)  { datalog_mirror_set_enabled(true);  g_sys_cfg_dirty = 1; }
+				  else if (strcmp(p, "off") == 0) { datalog_mirror_set_enabled(false); g_sys_cfg_dirty = 1; }
+				  else if (*p) printf("pouziti: datalog mirror on|off\n");
+				  const datalog_mirror_status_t *m = datalog_mirror_status();
+				  printf("datalog zrcadlo SD: %s, %s, seq %lu, ceka %lu zaznamu -> %s\n",
+						 datalog_mirror_enabled() ? "ZAPNUTO" : "vypnuto",
+						 m->active ? "aktivni" : "neaktivni",
+						 (unsigned long)m->exported_seq, (unsigned long)m->pending, m->msg);
+			  }
+			  else if (strncmp(RxBuffer, "errlog", 6) == 0) {
+				  const char *arg = RxBuffer + 6;
+				  while (*arg == ' ') arg++;
+				  if (strcmp(arg, "erase") == 0) {
+					  /* ⚠️ Destruktivni + blokujici (64 sektoru) — proto VYHRADNE
+					   * z UartTasku, ktery watchdog nehlida. */
+					  printf("errlog: mazu %lu sektoru...\n", (unsigned long)W25Q_ERRLOG_SECTORS);
+					  bool el_ok = errlog_erase();
+					  /* Hlas vysledek, ne zamer (F-0099): pri selhani zustava hlava
+					   * tam, kde byla, takze log NENI prazdny. */
+					  printf("errlog: %s\n", el_ok ? "smazano" : "SELHALO (log zustava)");
+				  } else {
+					  uint32_t want = 10u;
+					  if (strncmp(arg, "dump", 4) == 0) {
+						  const char *p = arg + 4;
+						  while (*p == ' ') p++;
+						  uint32_t v = 0; int have = 0;
+						  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; have = 1; }
+						  if (have && v) want = (v > 200u) ? 200u : v;
+					  }
+					  uint32_t total = errlog_count();
+					  printf("=== ERRLOG (W25Q) ===\n");
+					  printf("  zaznamu %lu / %lu   ring zahodil %lu\n",
+							 (unsigned long)total,
+							 (unsigned long)(W25Q_ERRLOG_SECTORS * (W25Q_SECTOR_SIZE / ERRLOG_REC_SIZE)),
+							 (unsigned long)errlog_dropped());
+					  printf("  hlava: slot %lu v sektoru, poskozenych slotu: pri startu %lu, preskoceno zapisem %lu\n",
+					         (unsigned long)errlog_head_slot(), (unsigned long)errlog_dirty_init(), (unsigned long)errlog_skipped());
+					  if (total == 0u) {
+						  printf("  (zatim nic — to je dobre)\n");
+					  }
+					  /* 🔴 TRETI KONZUMENT, KTERY SI `a`/`b`/`sub` VYKLADAL PO SVEM
+					   * (audit F-0100). Displejove okno CHYBY i web uz od 2026-09-13
+					   * pouzivaji `errlog_fmt_detail()` prave proto, aby existoval JEDEN
+					   * zdroj pravdy (lekce L-0049) — jenze `errlog dump` tisknul dal
+					   * `a=%08lX b=%08lX` jako hola cisla. Vysledek: tri vystupy rekly
+					   * o TEMTEZ zaznamu tri rozdilne veci, a to pri hledani priciny.
+					   * ⚠️ Zaroven se cetlo po JEDNOM zaznamu (tehdejsi `errlog_read_back`, mezitim zrusena), tedy jeden mutex
+					   * a jeden QSPI prikaz na zaznam, ackoli `errlog_read_batch()` existuje
+					   * presne proti tomu (F-0095, lekce L-0021). Ted se cte po davkach. */
+					  {
+						  static errlog_rec_t rb[ERRLOG_DUMP_BATCH];
+						  uint32_t done = 0;
+						  while (done < want && done < total) {
+							  uint32_t n = errlog_read_batch(done, ERRLOG_DUMP_BATCH, rb);
+							  if (n == 0u) break;
+							  for (uint32_t i = 0; i < n && done + i < want; i++) {
+								  char det[80];
+								  errlog_fmt_detail(&rb[i], det, sizeof det);
+								  printf("  #%lu up=%lus %-7s x%u  %s\n",
+										 (unsigned long)rb[i].seq, (unsigned long)rb[i].uptime_s,
+										 errlog_kind_name(rb[i].kind),
+										 (unsigned)(rb[i].repeat + 1u), det);
+								  osDelay(2);   /* aby se 115200 stihlo vypsat bez utinani */
+							  }
+							  done += n;
+						  }
+					  }
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "sdraminit") == 0) {
+				  /* 🔬 POKUS, ktery rozhodne mezi dvema tridami priciny:
+				   *   - kdyz `membench` PO tomhle vyjde CISTE, byla vada v CASOVANI
+				   *     PRVNI inicializace (studeny start, rozbihajici se napajeni
+				   *     SDRAM) -> reseni je odlozit/zopakovat init pri bootu;
+				   *   - kdyz zustane spinava, init to neni a hleda se dal (HW,
+				   *     teplota, radky matice).
+				   * ⚠️ Displej muze kratce probliknout — LTDC cte tutez SDRAM.
+				   * ⚠️ Bezi z UartTasku (nehlidany watchdogem): sekvence ma HAL_Delay. */
+				  uint32_t before = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+				  uint8_t r = fmc_sdram_init_sequence();
+				  uint32_t after = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+				  printf("sdraminit: krok=%u (0=OK)  SDRTR %lu -> %lu  (beh c. %lu)\n",
+						 (unsigned)r, (unsigned long)before, (unsigned long)after,
+						 (unsigned long)g_fmc_init_runs);
+				  printf("  ted spust `membench` — kdyz uz je cisty, byla vada v casovani prvniho initu\n");
+			  }
+			  else if (strcmp(RxBuffer, "i2c4") == 0) {
+				  /* ── Stupnovana diagnostika I2C4 (2026-09-07) ────────────────
+				   * Odpovida na otazku, kterou jsme rok nedokazali rozhodnout:
+				   * je pri "mrtve sbernici" vada na NASI strane (master), nebo
+				   * na strane slave cipu? Postupuje od nejmensiho zasahu k
+				   * nejvetsimu a po KAZDEM kroku znovu oslovi vsechny tri
+				   * adresy -> z vypisu je primo videt, CO to opravilo.
+				   * ⚠️ Bezi z UartTasku (nehlidany watchdogem) — kroky blokuji
+				   * desitky ms, coz by v UiTasku porusilo pravidlo spinu. */
+				  printf("=== I2C4 stupnovana diagnostika ===\n");
+				  uint8_t ls = i2c4_line_state();
+				  printf("  linky: SCL=%u SDA=%u %s\n",
+						 (unsigned)((ls & 1u) ? 1u : 0u), (unsigned)((ls & 2u) ? 1u : 0u),
+						 (ls & 4u) ? "BUSY" : "idle");
+				  printf("  I2C4 CR1=0x%08lX ISR=0x%08lX\n",
+						 (unsigned long)I2C4->CR1, (unsigned long)I2C4->ISR);
+				  printf("  GPIOH MODER=0x%08lX OTYPER=0x%08lX\n",
+						 (unsigned long)GPIOH->MODER, (unsigned long)GPIOH->OTYPER);
+				  printf("  GPIOH AFR1=0x%08lX IDR=0x%08lX\n",
+						 (unsigned long)GPIOH->AFR[1], (unsigned long)GPIOH->IDR);
+
+				  /* 🔴 2026-09-13: `uart_i2c4_probe` uz sama prepina na 50 kHz pred
+				   * kazdym oslovenim (nutne, protoze mezi adresami pousti mutex —
+				   * viz komentar uvnitr), takze tady zvlast nic prepinat neni potreba. */
+				  int ok = uart_i2c4_probe("vychozi stav ");
+				  if (ok == 3) {
+					  printf("VERDIKT: sbernice ZDRAVA, neni co obnovovat.\n");
+				  } else {
+					  /* [1] nejmensi zasah: PE=0/1 + re-init HAL handlu */
+					  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+						  __HAL_I2C_DISABLE(&hi2c4);
+						  HAL_I2C_Init(&hi2c4);
+						  osMutexRelease(i2c4MutexHandle);
+					  }
+					  ok = uart_i2c4_probe("[1] re-init PE ");
+
+					  /* [2] uvolneni SBERNICE: 9 taktu + STOP (bezpodminecne) */
+					  if (ok < 3) {
+						  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+							  i2c4_bus_clear();
+							  __HAL_I2C_DISABLE(&hi2c4);
+							  HAL_I2C_Init(&hi2c4);
+							  osMutexRelease(i2c4MutexHandle);
+						  }
+						  ok = uart_i2c4_probe("[2] 9 taktu+STOP");
+					  }
+
+					  /* [3] nejvetsi kladivo na nasi strane: RCC reset periferie */
+					  if (ok < 3) {
+						  if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+							  i2c4_hw_reset();
+							  osMutexRelease(i2c4MutexHandle);
+						  }
+						  ok = uart_i2c4_probe("[3] RCC reset  ");
+					  }
+
+					  if (ok == 3) {
+						  printf("VERDIKT: OBNOVENO softwarem -> vada byla na NASI strane.\n");
+					  } else if (ok > 0) {
+						  printf("VERDIKT: cast cipu se vratila (%d/3) -> viz ktere.\n", ok);
+					  } else {
+						  printf("VERDIKT: nepomohlo NIC -> slave cipy jsou mimo dosah SW.\n");
+						  printf("  (linky vysoko + master zdravy = potreba HW reset ATTINY)\n");
+					  }
+				  }
+			  }
 			  else if (strcmp(RxBuffer, "scanner") == 0) {
 				  uint8_t devices_found = 0;
 				  uint8_t result = 0;
 
 				  /* ⚠️ Per-adresa POD i2c4Mutex (audit 2026-07-10: drive bez mutexu ->
 				   * kolize s touch pollem UiTasku na temze HAL handle). Mutex se drzi
-				   * jen na jeden probe, mezi adresami se pousti (touch/TMP117 dychaji). */
+				   * jen na jeden probe, mezi adresami se pousti (touch/TMP117 dychaji).
+				   * 🔴 2026-09-13: prave PROTOZE se mutex mezi adresami pousti, muze
+				   * touch/TMP117 mezitim prepnout rychlost na 200 kHz — `i2c4_speed_select`
+				   * proto MUSI byt uvnitr KAZDE iterace (50 kHz je bezpecna rychlost pro
+				   * vsechna tri zname zarizeni; bez tohohle by sken na 0x45 = ATTINY,
+				   * bit-bang, CPU 1 MHz, tise FALESNE hlasil "nic nedela"). */
 				  for (uint16_t i = 1; i < 128; i++) {
 					  if (osMutexAcquire(i2c4MutexHandle, 100) == osOK) {
+						  i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
 						  result = HAL_I2C_IsDeviceReady( &hi2c4, (uint16_t)(i << 1), 3, 10);
 						  osMutexRelease(i2c4MutexHandle);
 					  } else {
@@ -396,6 +1425,39 @@ void UartTask_run(void *argument)
 					  printf("Zadne I2C zarizeni nenalezeno. \n");
 				  } else {
 					  printf("Skenovani dokonceno. Pocet zarizeni: %d\n", devices_found);
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "i2cspeed", 8) == 0) {
+				  /* Volitelny pocet transakci + volitelna adresa:
+				   * `i2cspeed 500 0x38` = jen FT5x06. Vychozi N=2000 = tataz
+				   * hodnota jako pri mereni 2026-09-10 (porovnatelnost).
+				   * Adresa (hex, "0x" nepovinne) omezi sweep na JEDNO zarizeni
+				   * — viz i2csp_find_dev/I2CSP_DEV. Bez adresy bezi vsechna tri
+				   * jako drive. */
+				  uint32_t n = I2CSP_N_DEF;
+				  const char *a = RxBuffer + 8;
+				  while (*a == ' ') a++;
+				  if (*a >= '0' && *a <= '9') {
+					  n = 0;
+					  while (*a >= '0' && *a <= '9') { if (n < 100000u) n = n * 10u + (uint32_t)(*a - '0'); a++; }
+					  if (n < 10u) n = 10u;
+				  }
+				  while (*a == ' ') a++;
+				  int dev_sel = -1;
+				  int bad_addr = 0;
+				  if (*a != '\0' && *a != '\r' && *a != '\n') {
+					  char tok[16]; size_t ti = 0;
+					  while (*a && *a != ' ' && *a != '\r' && *a != '\n' && ti < sizeof(tok) - 1u) {
+						  tok[ti++] = *a++;
+					  }
+					  tok[ti] = '\0';
+					  dev_sel = i2csp_find_dev(tok);
+					  if (dev_sel < 0) bad_addr = 1;
+				  }
+				  if (bad_addr) {
+					  printf("ERR neznama adresa (zkus 38 / 45 / 48, hex, '0x' nepovinne)\n");
+				  } else {
+					  i2cspeed_run(n, dev_sel);
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "testDSI") == 0) {
@@ -481,6 +1543,7 @@ void UartTask_run(void *argument)
 					  if (r == HAL_OK) {
 						  const char *n = (i == 0x48) ? " ADS1115" :
 						                  (i == 0x49 || i == 0x4A) ? " TMP117" :
+						                  (i == AD5693_ADDR7) ? " AD5693R (DAC OCXO Vc)" :
 						                  (i == 0x70 || i == 0x71) ? " Si5356A" : "";
 						  printf("I2C1 0x%02X%s\n", i, n);
 						  found++;
@@ -512,6 +1575,21 @@ void UartTask_run(void *argument)
 			  else if (strncmp(RxBuffer, "eth", 3) == 0 &&
 			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
 				  const char *sub = (RxBuffer[3] == ' ') ? &RxBuffer[4] : "";
+
+				  /* ⚠️⚠️ POJISTKA: tohle je BRING-UP reziduum z doby, kdy ETH jeste nikdo
+				   * nevlastnil. Bit-bang SMI si prenastavuje MDC (PC1) a MDIO (PA2) na
+				   * GPIO — jenze kdyz uz ETH obsluhuje CM4, cte pres tytez piny MDIO
+				   * kazdych 200 ms (`ethernet_link_check_state`). Vysledek: dva mastery
+				   * na jedne sbernici -> cteni vraci samé 0xFFFF (poznas to podle
+				   * ID2=0xFFFF misto 0xC131 a BMSR=0xFFFF) a hlavne se CM4 muze MDIO
+				   * ROZBIT az do restartu. Smerodatny je v takovem pripade `status`
+				   * (radek NET/ETH z CM4), ne tenhle vypis. */
+				  if (strcmp(sub, "force") != 0 && ipc_cm4_eth(NULL)) {
+					  printf("eth: ETH uz obsluhuje CM4 — bit-bang SMI z CM7 by kolidoval\r\n");
+					  printf("  (dva mastery na MDIO -> smeti 0xFFFF, riziko rozbiti linky do restartu)\r\n");
+					  printf("  Stav site najdes v `status` (radky ETH(CM4) a NET).\r\n");
+					  printf("  Vynuceni i tak: `eth force`\r\n");
+				  } else {
 
 				  if (strcmp(sub, "clk") == 0) {
 					  /* ETH_REF_CLK (PA1) pres TIM2_CH2 v rezimu externich hodin.
@@ -597,31 +1675,83 @@ void UartTask_run(void *argument)
 						  printf("  => PHY ZIJE. Zbyva overit hodiny: `eth clk`\r\n");
 					  }
 				  }
+				  }   /* konec pojistky proti kolizi s ETH na CM4 */
 			  }
 			  /* Encoder (#29): zive sledovani CNT + tlacitka. BLOKUJE ~10 s. */
-			  else if (strcmp(RxBuffer, "enc") == 0) {
-				  enc_init();
-				  printf("ENC: TIM1 encoder mode, CH1=PA8 CH2=PA9 tlacitko=PC13\r\n");
-				  printf("     otacej a mackej 10 s (kladne = jeden smer, zaporne = druhy)\r\n");
-				  uint16_t base = (uint16_t)TIM1->CNT;
-				  int16_t  last = 0;
-				  uint8_t  lastb = 0xFF;
-				  for (int i = 0; i < 100; i++) {
-					  int16_t d = (int16_t)((uint16_t)TIM1->CNT - base);
-					  uint8_t b = (HAL_GPIO_ReadPin(ENC_BTN_PORT, ENC_BTN_PIN) == GPIO_PIN_RESET);
-					  if (d != last || b != lastb) {
-						  printf("  kroku=%d  tlacitko=%s\r\n", (int)d, b ? "STISK" : "-");
-						  last = d; lastb = b;
-					  }
-					  osDelay(100);
+			  else if (strncmp(RxBuffer, "alarmpush", 9) == 0) {
+				  /* Webhook alarmu (TODO #249): `alarmpush` = stav, `alarmpush url http://a.b.c.d[:port][/cesta]`, `alarmpush on|off`,
+				   * `alarmpush test` (odesle testovaci udalost). Nastaveni se uklada do syscfg. Odesila CM4 pres IPC (blok `push`). */
+				  const char *a = RxBuffer + 9;
+				  while (*a == ' ') a++;
+				  if (strncmp(a, "url ", 4) == 0) {
+					  const char *u = a + 4;
+					  while (*u == ' ') u++;
+					  if (alarm_push_set_url(u)) g_sys_cfg_dirty = 1;
+					  else printf("ALARMPUSH: neplatna adresa (povoleno http://a.b.c.d[:port][/cesta], jen IPv4, bez DNS)\r\n");
 				  }
-				  printf("ENC: konec. Celkem kroku=%d\r\n",
-						 (int)((int16_t)((uint16_t)TIM1->CNT - base)));
-				  if ((int16_t)((uint16_t)TIM1->CNT - base) == 0)
-					  printf("     ⚠️ ZADNY POHYB — zkontroluj konektor J2 a zapojeni CH1/CH2\r\n");
+				  else if (strcmp(a, "on") == 0)  { g_apush_en = 1u; g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "off") == 0) { g_apush_en = 0u; g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "test") == 0) { g_apush_test++; }
+				  else if (a[0] != 0) printf("ALARMPUSH: pouziti alarmpush [url <adresa>|on|off|test]\r\n");
+				  printf("ALARMPUSH: %s -> http://%u.%u.%u.%u:%u%s\r\n", g_apush_en ? "ZAP" : "VYP",
+				         (unsigned)g_apush_ip[0], (unsigned)g_apush_ip[1], (unsigned)g_apush_ip[2], (unsigned)g_apush_ip[3],
+				         (unsigned)g_apush_port, g_apush_path);
+				  printf("ALARMPUSH: odeslano %u, zahozeno %u, posledni %u (1=OK 2=spojeni 3=timeout 4=sit 5=HTTP 6=pamet), ceka 0x%03X\r\n",
+				         (unsigned)g_ipc.push.sent, (unsigned)g_ipc.push.failed, (unsigned)g_ipc.push.last, (unsigned)g_ipc.push.pending);
 			  }
+			  else if (strncmp(RxBuffer, "digits", 6) == 0) {
+				  /* Rezim poctu platnych cislic hlavniho cisla: `digits sig` (podle signalu, vychozi), `digits counter`
+				   * (jen podle rozliseni citace), bez argumentu = stav. Meni jen zobrazeni; persist v syscfg. */
+				  const char *a = RxBuffer + 6;
+				  while (*a == ' ') a++;
+				  if (strcmp(a, "counter") == 0)      { screen_main_set_digits_res(1); g_sys_cfg_dirty = 1; }
+				  else if (strcmp(a, "sig") == 0)     { screen_main_set_digits_res(0); g_sys_cfg_dirty = 1; }
+				  else if (a[0] != 0)                 { printf("DIGITS: pouziti digits [sig|counter]\r\n"); }
+				  printf("DIGITS: %s\r\n", screen_main_digits_res() ? "podle rozliseni citace (jen podlaha citace)"
+				                                                      : "podle signalu (sigma, citac, reference)");
+			  }
+			  else if (strncmp(RxBuffer, "enc div ", 8) == 0) {
+				  /* Delic kroku TIM1 na jednu ZAPADKU. Jedina HW-zavisla konstanta UI
+				   * vrstvy — nastavitelna za behu, aby se kvuli ni nemuselo preflashovat.
+				   * Persistuje v syscfg (magic "SCG0"). */
+				  int d = atoi(RxBuffer + 8);
+				  /* 🔴 F-0139: NEporovnavat s `encoder_div()` hned potom — ten cte
+				   * `s_div`, ktery aplikuje az UiTask o poll pozdeji, takze by tu
+				   * byla porad STARA hodnota a zprava by lhala i pro platne 1/2/4
+				   * (zmereno na HW). `encoder_set_div()` proto rovnou VRACI, jestli
+				   * `d` prijala. */
+				  if (encoder_set_div((uint8_t)d)) {
+					  g_sys_cfg_dirty = 1;
+					  printf("ENC: delic = %u (jedna zapadka = %u kroku TIM1), ulozeno\r\n",
+							 (unsigned)d, (unsigned)d);
+				  } else {
+					  printf("ENC: neplatny delic (povoleno 1, 2, 4); zustava %u\r\n",
+							 (unsigned)encoder_div());
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "enc") == 0) {
+				  /* 🔴 JEN CTE citace modulu. `encoder_poll()` je jednokonzumentove API
+				   * (vola ho UiTask); druhy konzument by udalosti kradl a diagnostika by
+				   * lhala — presne to se 2026-08-31 stalo pri prvnim pokusu zmerit,
+				   * jestli encoder generuje falesne udalosti. */
+				  encoder_init();
+				  uint32_t e0 = encoder_event_count(), d0 = app_gpsdo_encoder_draws();
+				  int32_t  s0 = encoder_step_total();
+				  printf("ENC: delic=%u, CH1=PA8 CH2=PA9 tlacitko=PC13\r\n",
+						 (unsigned)encoder_div());
+				  printf("     merim 10 s — otacej (jedna zapadka MUSI dat +1)\r\n");
+				  for (int i = 0; i < 10; i++) {
+					  osDelay(1000);
+					  printf("  t=%2ds  zapadek=%+ld  udalosti=%lu  kresleni=%lu\r\n",
+							 i + 1, (long)(encoder_step_total() - s0),
+							 (unsigned long)(encoder_event_count() - e0),
+							 (unsigned long)(app_gpsdo_encoder_draws() - d0));
+				  }
+				  if (encoder_event_count() == e0)
+					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
+				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd] | autocal | membench | stacktest | eth [clk] | enc\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|pins|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -642,7 +1772,7 @@ void UartTask_run(void *argument)
 				         "pamet", "testovano", "celkem", "zapis", "cteni", "vysledek");
 				  for (unsigned i = 0; i < m->n; i++) {
 					  const membench_result_t *r = &m->r[i];
-					  char w[12], rd[12], ts[12], tt[12];
+					  char w[16], rd[16], ts[16], tt[16];   /* "%lu kB/s" u >999999 kB/s prekrocilo 12 B (audit) */
 					  if (r->writable && r->write_kbs) snprintf(w, sizeof w, "%lu kB/s", (unsigned long)r->write_kbs);
 					  else                             snprintf(w, sizeof w, "-");
 					  if (r->read_kbs)                 snprintf(rd, sizeof rd, "%lu kB/s", (unsigned long)r->read_kbs);
@@ -657,13 +1787,21 @@ void UartTask_run(void *argument)
 					  else if (r->alias_off)
 						  printf("      ADRESY SE OPAKUJI po %lu kB — dve ruzne adresy = tataz bunka!\n",
 						         (unsigned long)(r->alias_off / 1024u));
-					  /* Nejdrazsi dusledek prekryvu: sdileji pamet framebuffery? */
+					  /* Nejdrazsi dusledek prekryvu: sdileji pamet framebuffery?
+					   * 🔴 Uklidnujici veta se tiskne VYHRADNE kdyz se to skutecne
+					   * merilo (`fb_alias_checked`) — audit F-0116. Driv se tisknula
+					   * i kdyz mereni neprobehlo, tedy jako tvrzeni bez dukazu, a to
+					   * u nejdrazsi otazky celeho modulu. */
 					  if (r->fb_alias & 1u)
 						  printf("      !! FB0 (0xC0000000) a FB2 (0xC0200000) SDILEJI PAMET -> triple buffering je fakticky double\n");
 					  if (r->fb_alias & 2u)
 						  printf("      !! FB1 (0xC0100000) a canvas pool (0xC0300000) SDILEJI PAMET\n");
-					  else if (r->alias_off && !r->fb_alias)
-						  printf("      (framebuffery se ale navzajem NEprekryvaji — zobrazeni tim netrpi)\n");
+					  if (r->alias_off && r->fb_alias == 0u) {
+						  if (r->fb_alias_checked)
+							  printf("      (framebuffery se ale navzajem NEprekryvaji — zobrazeni tim netrpi)\n");
+						  else
+							  printf("      (prekryv MEZI framebuffery se NEMERIL — o zobrazeni tenhle beh nerika nic)\n");
+					  }
 					  if (r->bit_errors && r->err_bitmask) {
 						  printf("      maska bitu 0x%08lX, prvni chyba @0x%08lX: cekano 0x%08lX, precteno 0x%08lX\n",
 						         (unsigned long)r->err_bitmask, (unsigned long)r->first_err_addr,
@@ -682,9 +1820,97 @@ void UartTask_run(void *argument)
 						         r->retain_err ? "  <- OBSAH SE ROZPADA (refresh?)" : "");
 					  osDelay(2);   /* UART TX je blokujici, dej ostatnim taskum dychat */
 				  }
-				  printf("MEMBENCH: %s (celkem %lu chybnych bitu)\n",
-				         m->total_bit_errors ? "NALEZENY CHYBY" : "OK",
-				         (unsigned long)m->total_bit_errors);
+				  /* `any_unstable` je zvlast, protoze se NEMERI v bitech (interni FLASH
+				   * se jen cte) — driv to nesl sentinel `bit_errors = 1` a souhrn tim
+				   * michal jednotky (audit F-0120). Bez teto vetve by verdikt hlasil
+				   * "OK" i pri nestabilnim cteni FLASH. */
+				  printf("MEMBENCH: %s (celkem %lu chybnych bitu%s)\n",
+				         (m->total_bit_errors || m->any_unstable) ? "NALEZENY CHYBY" : "OK",
+				         (unsigned long)m->total_bit_errors,
+				         m->any_unstable ? " + NESTABILNI CTENI FLASH" : "");
+			  }
+			  else if (strcmp(RxBuffer, "allan log") == 0) {
+				  /* V5: overlapping Allan nad .measlog (UartTask, ~0,3 s). */
+				  (void)sdram_log_allan_report();
+			  }
+			  else if (strncmp(RxBuffer, "sdramlog", 8) == 0) {
+				  /* ── Datova cache mereni v SDRAM (8 MB @0xC1000000) ────────────
+				   * `sdramlog`        = stav (ready/kapacita/naplneni/zahozeno)
+				   * `sdramlog dump N` = poslednich N zaznamu, nejnovejsi prvni
+				   * `sdramlog reset`  = zahodit obsah (jen posun head, nemaze pamet)
+				   * ⚠️ Vypisuje se SUROVA reciproka dvojice (edges/gate_ns) — presne
+				   * to, co se ulozilo. Kmitocet se z ni dopocita az pri analyze
+				   * (hi-res ~7 desetin), takze pripadna zmena odvozeni nezneplatni
+				   * uz nasbirana data. Stejny princip jako `rf_mv` v datalogu. */
+				  const char *arg = RxBuffer + 8;
+				  while (*arg == ' ') arg++;
+				  sdram_log_stat_t st;
+				  sdram_log_stat(&st);
+				  if (strcmp(arg, "reset") == 0) {
+					  /* Reset jde PRES POZADAVEK, ktery zkonzumuje producent
+					   * (FpgaTask) — jinak by tu byl druhy zapisovatel `head`
+					   * a ztracene resety (audit F-0118). Producent polluje
+					   * 20 Hz, takze 300 ms je ~6 prilezitosti.
+					   * ⚠️ Kdyz mereni nebezi (mrtvy SPI link), pozadavek by
+					   * necekal navzdy — po timeoutu se nuluje primo a vypis to
+					   * PRIZNA, aby „vynulovano" neznamenalo dvakrat neco jineho. */
+					  sdram_log_reset_request();
+					  uint32_t t0 = HAL_GetTick();
+					  while (!sdram_log_reset_done() && HAL_GetTick() - t0 < 300u)
+						  osDelay(10);
+					  if (sdram_log_reset_done()) {
+						  printf("sdramlog: vynulovano (producentem)\n");
+					  } else {
+						  sdram_log_reset_force();
+						  printf("sdramlog: vynulovano PRIMO — producent se za 300 ms neozval"
+						         " (mereni nebezi?)\n");
+					  }
+				  }
+				  else if (strncmp(arg, "dump", 4) == 0) {
+					  if (!st.ready) { printf("sdramlog: VYPNUT (%s)\n", st.fail); }
+					  else {
+						  int n = atoi(arg + 4);            /* prazdne -> 0 */
+						  if (n <= 0)  n = 10;
+						  if (n > 200) n = 200;             /* UART je blokujici, nezahltit */
+						  /* ⚠️ Cte se pres D-cache (region je WBWA cacheable — proto je
+						   * sekvencni cteni rychle). Producent pise pres tutez cache
+						   * ze stejneho jadra, takze koherence je automaticka; DMA sem
+						   * nesaha. Invalidace by tu byla nejen zbytecna, ale SKODLIVA
+						   * (zahodila by jeste nezapsane radky producenta). */
+						  sdram_log_rec_t r;
+						  int shown = 0;
+						  if (st.sim) printf("SIM (emulovana data, ne FPGA)\n");
+						  printf("brana %lu ms (= tau0)\n", (unsigned long)(st.gate_ns / 1000000u));
+						  for (int i = 0; i < n; i++) {
+							  if (!sdram_log_get((uint32_t)i, &r)) break;
+							  /* ⚠️ Bez `%f` (nano.specs bez float printf) — cela cast a
+							   * desetiny se tisknou zvlast jako cela cisla. */
+							  printf("%4d seq=%-8lu t=%-9lu A=%lu,%06lu Hz%s\n",
+							         i, (unsigned long)r.seq, (unsigned long)r.t_ms,
+							         (unsigned long)(r.fa_uhz / 1000000u),
+							         (unsigned long)(r.fa_uhz % 1000000u),
+							         (r.flags & SDRAM_LOG_F_STALE) ? "  [STALE]" : "");
+							  if (r.flags & SDRAM_LOG_F_B_VALID)
+								  printf("         B=%lu,%06lu Hz\n",
+								         (unsigned long)(r.fb_uhz / 1000000u),
+								         (unsigned long)(r.fb_uhz % 1000000u));
+							  shown++;
+							  if ((i & 7) == 7) osDelay(2);   /* UART TX blokuje, dej dychat */
+						  }
+						  if (!shown) printf("sdramlog: zatim zadna mereni\n");
+					  }
+				  }
+				  else {
+					  /* ⚠️ "SIM " je povinny marker emulovanych dat (viz ZLATA PRAVIDLA):
+					   * obsah logu pak nepochazi z FPGA, ale z `fpgasim`. */
+					  printf("%ssdramlog: %s, %lu/%lu zaznamu%s, celkem %lu, zahozeno %lu\n",
+					         st.sim ? "SIM " : "",
+					         st.ready ? "OK" : "VYPNUT",
+					         (unsigned long)st.count, (unsigned long)st.capacity,
+					         st.wrapped ? " (pretoceno)" : "",
+					         (unsigned long)st.total, (unsigned long)st.dropped);
+					  if (!st.ready) printf("  duvod: %s\n", st.fail);
+				  }
 			  }
 			  else if (strncmp(RxBuffer, "scpi ipc ", 9) == 0) {
 				  /* ── SCPI nad IPC SNAPSHOTEM (priprava CM4 backendu, #25) ──────
@@ -710,16 +1936,28 @@ void UartTask_run(void *argument)
 				  if (!ipc_scpi_src_from_snap(&src_ipc, (const void *)&g_ipc.snap)) {
 					  printf("SCPI/IPC: snapshot neni platny (magic/verze) — publikoval uz CM7?\n");
 				  } else {
-					  /* W2: zapisovaci pulka — presne to, co pouzije CM4 pres TCP.
+					  /* W2: zapisovaci pulka — tataz funkce, kterou pouzije CM4 pres TCP.
 					   * Bez tohohle by SET (CALC:*, SENS:FREQ:GATE/CHAN, INIT/ABOR)
-					   * pres "scpi ipc" tise selhal (parser NULL callback hlida). */
+					   * pres "scpi ipc" tise selhal (parser NULL callback hlida).
+					   * ⚠️ Na CM7 aplikuje SET jen na LOKALNI zrcadlo `src_ipc` a do
+					   * cmd ringu NESAHA (audit F-0129: producentem je CM4, push
+					   * odtud rozbiji SPSC). `scpi ipc <SET>` tedy pristroj
+					   * NEPRESTAVI — na to je `scpi <SET>`; tady jde o SROVNANI
+					   * odpovedi, vcetne compound "SET;READBACK?". */
 					  src_ipc.set_cfg = ipc_scpi_set_cfg;
 					  scpi_ctx_init(&ctx_ipc);
 					  size_t ni = scpi_process_ctx(&ctx_ipc, &src_ipc, arg, r_ipc, sizeof r_ipc);
 					  printf("  CM7 : %s\n", n7 ? r_cm7 : "(bez odpovedi)");
 					  printf("  IPC : %s\n", ni ? r_ipc : "(bez odpovedi)");
-					  printf("  => %s\n", (n7 == ni && strcmp(r_cm7, r_ipc) == 0)
-						                    ? "SHODA" : "!! ROZDIL — dira ve snapshotu");
+					  /* ⚠️ Chybou je jen STRUKTURALNI rozdil — viz `scpi_cmp_fields`.
+					   * Ciselny rozdil zivych velicin se jen vypise, nehodnoti. */
+					  int64_t md = 0; int mdec = 0;
+					  int cmp = (n7 && ni) ? scpi_cmp_fields(r_cm7, r_ipc, &md, &mdec)
+					                       : ((n7 == ni) ? 0 : -1);
+					  if (cmp < 0)       printf("  => !! ROZDIL — dira ve snapshotu\n");
+					  else if (cmp == 0) printf("  => SHODA\n");
+					  else printf("  => SHODA struktury; hodnoty se lisi max o %ld v %d. des. miste"
+					              " (zive veliciny ctene v jiny okamzik)\n", (long)md, mdec);
 				  }
 			  }
 			  else if (strncmp(RxBuffer, "ipccmd ", 7) == 0) {
@@ -731,14 +1969,34 @@ void UartTask_run(void *argument)
 				   * RUN/STOP na displeji, je hotova cela spodni vrstva (WEB_UI_PLAN W1).
 				   * ⚠️ Diagnostika, ne produkcni rozhrani (produkcne to posila CM4). */
 				  const char *a = &RxBuffer[7];
+				  /* ⚠️⚠️ POJISTKA: `cmd` je bezzamkovy SPSC ring a jeho JEDINYM producentem
+				   * je CM4 (audit F-0014). Push z CM7 je bezpecny jen tehdy, kdyz CM4
+				   * zapisovat NEMUZE — jinak oba producenti precetli tyz `head`, zapisou
+				   * do TEHOZ slotu a oba ho zvednou: jeden prikaz se TISE ztrati a druhy
+				   * se prenese poskozeny (ringy ztratu nedetekuji).
+				   * 🔑 Ucel prikazu se tim ZACHOVA: `ipccmd` ma otestovat ovladaci cestu
+				   * CM4->CM7 **bez site, bez SCPI a bez webu** (kriterium W1) — a presne
+				   * v tom stavu (vzdalene ovladani vypnute, nebo CM4 mrtva) guard
+				   * nezasahuje. Odmitat se tedy da bez ztraty funkce; proto se nesahlo
+				   * na ring ani se prikaz neprevedl na lokalni zapis, ktery by ho zrusil.
+				   * ⚠️ Predikat je zamerne UZKY: bez `g_web_ctrl_en` dostane SCPI na CM4
+				   * `set_cfg = NULL` (`scpi_tcp.c`, `httpd_min.c` gatuji na `web_ctrl_en`),
+				   * takze druhy producent vubec nevznikne.
+				   * Vzor odmitnuti je shodny s prikazem `eth` vyse (dva masteri na MDIO). */
+				  int forced = 0;
+				  if (strncmp(a, "force ", 6) == 0) { forced = 1; a += 6; }
 				  uint8_t key = 0xFFu; uint32_t val = 0; int is_log = 0;
 				  if      (strncmp(a, "run ",  4) == 0) { key = IPC_CFG_RUN;  val = (uint32_t)atoi(a + 4); }
 				  else if (strncmp(a, "gate ", 5) == 0) { key = IPC_CFG_GATE; val = (uint32_t)atoi(a + 5); }
 				  else if (strncmp(a, "chan ", 5) == 0) { key = IPC_CFG_CHAN; val = (uint32_t)atoi(a + 5); }
 				  else if (strncmp(a, "log ",  4) == 0) { is_log = 1;         val = (uint32_t)atoi(a + 4); }
 
-				  if (key == 0xFFu && !is_log) {
-					  printf("pouziti: ipccmd run 0|1 | gate 0..3 | chan 0|1 | log 0|1\r\n");
+				  if (!forced && ipc_cm4_alive() && g_web_ctrl_en) {
+					  printf("ipccmd: CM4 zije a vzdalene ovladani je POVOLENE — push z CM7 by kolidoval\r\n");
+					  printf("  (cmd ring je SPSC s producentem CM4; dva producenti = tise ztraceny prikaz)\r\n");
+					  printf("  Vypni vzdalene ovladani (okno SIT), nebo: `ipccmd force <podprikaz>`\r\n");
+				  } else if (key == 0xFFu && !is_log) {
+					  printf("pouziti: ipccmd [force] run 0|1 | gate 0..3 | chan 0|1 | log 0|1\r\n");
 				  } else {
 					  static uint16_t s_id = 1000;
 					  ipc_cmd_t c = { .type = is_log ? (uint8_t)IPC_CMD_LOG : (uint8_t)IPC_CMD_CFG_SET,
@@ -746,7 +2004,11 @@ void UartTask_run(void *argument)
 					  if (!ipc_cmd_push(&c)) { printf("ERR cmd ring plny\r\n"); }
 					  else {
 						  /* `ipc_service` bezi ~100 Hz v defaultTasku -> odpoved je do par ms. */
-						  ipc_resp_t r; int got = 0;
+						  /* ⚠️ Inicializovat: `got` se nastavi jen kdyz `ipc_resp_pop`
+						   * vrati true (a tim `r` naplni), ale GCC to pres smycku
+						   * neprohledne (`-Wmaybe-uninitialized`). Nula navic znamena
+						   * "OK", takze pripadna neuplna odpoved neohlasi nahodnou chybu. */
+						  ipc_resp_t r = {0}; int got = 0;
 						  for (int i = 0; i < 50 && !got; i++) {
 							  if (ipc_resp_pop(&r) && r.id == s_id) got = 1; else osDelay(2);
 						  }
@@ -763,7 +2025,15 @@ void UartTask_run(void *argument)
 				   * "version" apod.); dedikovany TCP 5025 na CM4 bude volat scpi_process
 				   * primo bez prefixu. Napr.: scpi *IDN?  |  scpi MEAS:FREQ? */
 				  const char *arg = (RxBuffer[4] == ' ') ? &RxBuffer[5] : "";
-				  char resp[128];
+				  /* >> `static`, ne na zasobniku (audit F-0074 + F-0077a). Obsluha
+				   * `scpi ipc` o par set radku vys uz to takhle ma a komentar u ni to
+				   * zduvodnuje: `UartTask_run` je JEDNA funkce o ~2000 radcich, takze
+				   * GCC rezervuje ramec pri vstupu a lokal KTERÉKOLI vetve zvedne ramec
+				   * VSEM cestam (L-0035). Na desce zbyvalo 168 B ze 4096 B, nez se
+				   * zasobnik v `.ioc` zvetsil na 8192 B.
+				   * >> UartTask je jediny volajici a je jen jeden, takze `static` je
+				   * bezpecny (zadna reentrance). */
+				  static char resp[128];
 				  size_t rn = scpi_process(arg, resp, sizeof resp);
 				  if (rn) printf("%s\r\n", resp);   /* dotaz -> odpoved; akce (*RST) -> ticho */
 				  else    printf("\r\n");
@@ -784,6 +2054,69 @@ void UartTask_run(void *argument)
 				   * a tok je best-effort, takze u animovane obrazovky muze mit pruhy
 				   * ze dvou framu. Spolehlivejsi je `screenshot sd`. */
 				  screenshot_emit_bmp();
+			  }
+			  else if (strncmp(RxBuffer, "screenshot all", 14) == 0) {
+				  /* Export VSECH oken na SD, kazde jako V<nn>.BMP (mapa cisel ->
+				   * nazvy oken: docs/HW_REFERENCE.md „Okna UI"). Jen ZAKLADNI stav
+				   * kazdeho okna (prvni vstup) — ne dvoufazova potvrzeni typu
+				   * "POTVRDIT 1/2" ani modalni mezistavy. Vynechana 8 (sporic —
+				   * ma vlastni cestu obnovy), 11 (boot splash — bezi jen pri startu)
+				   * a 13 (potvrzeni restartu — render_view() ho stejne kresli jako
+				   * 12/MENU, byla by to duplicita). Seznam = presne to, co pouziva
+				   * `render_view()` (app_gpsdo.c) — zdroj pravdy je kod, ne tenhle
+				   * komentar; pribude-li okno, pridej cislo i sem.
+				   * ⚠️ Volitelne `screenshot all <N>` omezi na prvnich N oken —
+				   * pro bezpecne oteveni na malem vzorku pred plnym behem. */
+				  static const uint8_t SHOT_VIEWS[] = {
+					  0,1,2,3,4,5,6,7,9,10,12,
+					  14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,
+					  30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,
+					  46,47,48,49,50,51,
+				  };
+				  unsigned n = (unsigned)(sizeof SHOT_VIEWS / sizeof SHOT_VIEWS[0]);
+				  const char *p = RxBuffer + 14;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  unsigned lim = 0;
+					  while (*p >= '0' && *p <= '9') { lim = lim * 10u + (unsigned)(*p - '0'); p++; }
+					  if (lim > 0 && lim < n) n = lim;
+				  }
+				  printf("SCREENSHOT ALL: exportuji %u oken na SD, jmena V<cislo>.BMP...\n", n);
+				  unsigned ok = 0, fail = 0;
+				  for (unsigned i = 0; i < n; i++) {
+					  uint8_t v = SHOT_VIEWS[i];
+					  /* Pozadej UiTask o vykresleni + flip (kreslit smi jen UiTask,
+					   * stejny vzor jako injektor doteku `tap`, F-0140). Bounded
+					   * cekani — kdyby UiTask nestihl (nemel by), po 2 s se vzda
+					   * tohohle okna a jede dal, misto aby zamrzl cely export.
+					   * ⚠️ BEZ `sd_blocking_begin()` — ten na dobu drzeni SNIZI
+					   * PRIORITU volajiciho (UartTask). Drzet ho kolem CELE
+					   * smycky (vc. cekani na UiTask pres desitky oken) zpusobilo
+					   * na desce viceminutove zaseknuti (2026-09-23); obaluje se
+					   * proto uz jen SAMOTNY zapis nize, presne jako u `screenshot
+					   * sd` (jednorazoveho). */
+					  uint32_t before = g_shot_view_done;
+					  g_shot_view_req = (int16_t)v;
+					  uint32_t t0 = HAL_GetTick();
+					  while (g_shot_view_done == before && (HAL_GetTick() - t0) < 2000u) osDelay(5);
+					  if (g_shot_view_done == before) {
+						  printf("  V%u: UiTask nestihl (preskoceno)\n", (unsigned)v);
+						  fail++;
+						  continue;
+					  }
+					  char name[16];
+					  snprintf(name, sizeof name, "V%u.BMP", (unsigned)v);
+					  sd_blocking_begin();
+					  int sr = screenshot_save_sd_named(name);
+					  sd_blocking_end();
+					  if (sr == 0) { ok++; printf("  V%u: OK\n", (unsigned)v); }
+					  else { printf("  V%u: chyba %d (%s)\n", (unsigned)v, sr, sd_export_state_str()); fail++; }
+				  }
+				  printf("SCREENSHOT ALL: hotovo, %u OK, %u chyb\n", ok, fail);
+				  /* Po behu vrat displej na hlavni obrazovku — export prochazel
+				   * postupne VSECHNA okna a posledni z nich by jinak zustalo
+				   * viset na panelu, coz by mohlo pusobit jako zamrzly pristroj. */
+				  g_screen_req = 3;
 			  }
 			  else if (strcmp(RxBuffer, "autocal") == 0) {
 				  autocal_run();
@@ -811,7 +2144,11 @@ void UartTask_run(void *argument)
 					  printf("SD: odmountovano (%s)\n", sd_export_state_str());
 				  } else if (strncmp(arg, "export", 6) == 0) {
 					  uint32_t n = (uint32_t)atoi(arg[6] == ' ' ? &arg[7] : "");   /* 0 = vse */
-					  printf("SD: exportuji %s do GPSDO.CSV, cekej...\n", n ? "cast logu" : "cely log");
+					  /* ⚠️ Jmeno se NEOPISUJE: `export_next_name()` tvori GPSDOnnn.CSV
+					   * (pevne jmeno bylo opusteno 2026-08-13, protoze prepisovalo
+					   * predchozi export). Skutecne jmeno vypise `export_body()` radkem
+					   * „SD: zapisuji <jmeno>" (audit F-0031). */
+					  printf("SD: exportuji %s do GPSDOnnn.CSV, cekej...\n", n ? "cast logu" : "cely log");
 					  int32_t w = sd_export_run(n);
 					  if (w < 0) printf("SD: export FAIL (%s)\n", sd_export_state_str());
 					  else       printf("SD: export OK, %ld zaznamu\n", (long)w);
@@ -903,13 +2240,28 @@ void UartTask_run(void *argument)
 					  sd_export_csv_header(line, sizeof line);
 					  printf("%s", line);
 					  uint32_t done = 0;
-					  for (uint32_t i = total; i-- > 0; ) {      /* chronologicky */
-						  datalog_rec_t r;
-						  if (!datalog_read_back(i, &r)) continue;
-						  sd_export_csv_row(line, sizeof line, &r);
-						  printf("%s", line);
-						  done++;
-						  osDelay(1);
+					  /* #142: BULK cteni. Driv se na kazdy 32B zaznam platil vlastni
+					   * mutex + vlastni QSPI prikaz (~173 us/zaznam), takze export
+					   * desitek tisic radku trval jednotky minut jen ctenim.
+					   * Ted jeden prikaz na davku; poradi (chronologicke) zustava,
+					   * protoze davku prochazime pozpatku stejne jako driv. */
+					  static datalog_rec_t bulk[DATALOG_BULK_MAX];
+					  for (uint32_t i = total; i > 0; ) {
+						  /* ⚠️ NE `want` — to uz je vys parsovany limit `datalog csv <N>`
+						   * (odhalil `-Wshadow` v auditu). */
+						  uint32_t batch = (i < DATALOG_BULK_MAX) ? i : DATALOG_BULK_MAX;
+						  uint32_t first = i - batch;           /* nejnovejsi index davky */
+						  uint32_t used = 0;
+						  uint32_t got = datalog_read_bulk(first, bulk, batch, &used);
+						  if (used == 0u) break;                /* nic dal nejde precist */
+						  /* `bulk[0]` = nejnovejsi z davky -> chronologicky pozpatku. */
+						  for (uint32_t k = got; k-- > 0; ) {
+							  sd_export_csv_row(line, sizeof line, &bulk[k]);
+							  printf("%s", line);
+							  done++;
+						  }
+						  i -= used;
+						  osDelay(1);   /* UartTask neni pod watchdogem, ale UiTask ano */
 					  }
 					  printf("# hotovo: %lu zaznamu\n", (unsigned long)done);
 				  } else if (strcmp(arg, "dump") == 0) {
@@ -925,9 +2277,12 @@ void UartTask_run(void *argument)
 						  char vb[12];
 						  if (r.vbat_mv == DATALOG_INVALID16) snprintf(vb, sizeof vb, "--");
 						  else snprintf(vb, sizeof vb, "%d", (int)r.vbat_mv);
-						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s fl=0x%02X sat=%u\n",
+						  char dc[8];
+						  if (r.dac_code == DATALOG_DAC_NONE) snprintf(dc, sizeof dc, "--");
+						  else snprintf(dc, sizeof dc, "%u", (unsigned)r.dac_code);
+						  printf("#%lu t=%lu f=%s Toc=%d Vc=%d Vbat=%s Dac=%s fl=0x%02X sat=%u\n",
 							     (unsigned long)r.seq, (unsigned long)r.t_unix, fb,
-							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb,
+							     (int)r.t_ocxo_c100, (int)r.ocxo_vc_mv, vb, dc,
 							     (unsigned)r.flags, (unsigned)r.sats);
 					  }
 				  } else {
@@ -951,8 +2306,8 @@ void UartTask_run(void *argument)
 				   * ⚠️ Vyzaduje presne "stacktest yes" — samotne "stacktest" jen vypise
 				   * napovedu, aby to neslo spustit omylem/preklepem.
 				   * ⚠️ Bez VBAT baterie testuj WARM resetem (BKP neprezije power-cycle). */
-				  /* Velikost: UartTask 4096 B, ramec UartTask_run ~1,3 kB + echo/USB cesta
-				   * ~1 kB -> stacktest_overflow() pridá 3616 B -> spolehlive pretece dno
+				  /* Velikost: UartTask 8192 B (freertos.c, 2048 * 4), ramec UartTask_run ~1,3 kB
+				   * + echo/USB cesta ~1 kB -> stacktest_overflow() prida ~8 kB -> spolehlive pretece dno
 				   * zasobniku (prepise 20B watermark -> hook). Zamerne v samostatne funkci
 				   * (viz komentar u stacktest_overflow) — jako local v UartTask_run by tech
 				   * 3600 B nafouklo ramec VZDY a task by pretekal i za normalu (byl to
@@ -978,16 +2333,53 @@ void UartTask_run(void *argument)
 				  printf("GPS: %s\n", gbuf);
 			  }
 			  else if (strcmp(RxBuffer, "gpsraw") == 0) {
-				  char gbuf[128];
+				  char gbuf[192];   /* +RX/TIMTP pocitadla UBX (STATUS #305) */
 				  gps_format_raw(gbuf, sizeof(gbuf));
 				  printf("GPSRAW: %s\n", gbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps ack") == 0) {
+				  /* Odpovedi modulu na CFG zpravy (v0.30.6): bez toho se NAK u TMODE2/GNSS neda poznat. */
+				  char abuf[160];
+				  gps_ack_format(abuf, sizeof(abuf));
+				  printf("GPS ACK: %s\n", abuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps gnss gps") == 0 || strcmp(RxBuffer, "gps gnss multi") == 0) {
+				  /* `gps gnss gps` = GPS+SBAS+QZSS (GLONASS vypnut), `gps gnss multi` = + GLONASS. Nepersistuje se (RAM modulu).
+				   * Zmena souhvezdi muze vyvolat novou akvizici (preruseni 1PPS na desitky sekund az minuty). */
+				  int multi = (RxBuffer[9] == 'm');
+				  if (gps_config_gnss_mode(multi != 0))
+					  printf("GPS: UBX-CFG-GNSS odeslano (%s), odpoved modulu: `gps ack`\n", multi ? "GPS+SBAS+QZSS+GLONASS" : "GPS+SBAS+QZSS");
+				  else
+					  printf("GPS: UBX-CFG-GNSS NEODESLANO (USART1 TX obsazen > 200 ms), zkus znovu\n");
+			  }
+			  else if (strcmp(RxBuffer, "gps nav5 stationary") == 0 || strcmp(RxBuffer, "gps nav5 auto") == 0) {
+				  /* UBX-CFG-NAV5 dynModel (v0.30.7): na rozdil od CFG-TMODE2 (survey-in, NEO-7M NAKuje) je NAV5
+				   * standardni zprava, kterou podporuje kazdy u-blox prijimac. Nepersistuje se (RAM modulu). */
+				  bool stat = (RxBuffer[9] == 's');   /* "gps nav5 " = 9 znaku, [9] = prvni znak "stationary"/"auto" (oprava off-by-one, zjisteno na HW) */
+				  gps_config_nav5(stat);
+				  printf("GPS: UBX-CFG-NAV5 odeslano (dynModel %s), odpoved modulu: `gps ack`\n", stat ? "Stationary" : "Portable");
+			  }
+			  else if (strcmp(RxBuffer, "gps survey on") == 0 || strcmp(RxBuffer, "gps survey off") == 0) {
+				  /* Survey-in (UBX-CFG-TMODE2) z konzole: 3600 s / 2,5 m jako tlacitko START v okne SURVEY (v0.30.6).
+				   * NEO-7M nemusi byt timing verze -> NAK; vysledek `gps ack` (radek TMODE2). */
+				  if (RxBuffer[11] == 'o' && RxBuffer[12] == 'n') {
+					  gps_survey_in_cmd(3600u, 2500u);
+					  printf("GPS: UBX-CFG-TMODE2 survey-in odeslano (3600 s, 2500 mm), odpoved modulu: `gps ack`\n");
+				  } else {
+					  gps_survey_disable_cmd();
+					  printf("GPS: UBX-CFG-TMODE2 vypnut (timeMode 0), odpoved modulu: `gps ack`\n");
+				  }
 			  }
 			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
 				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
 				   * "gpsraw" (mely by prijit i $GLGSV vety). */
-				  gps_config_gnss();
-				  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
+				  /* Hlaska podle vysledku ubx_send (audit F-0227) — driv tvrdila "odeslano"
+				   * bezpodminecne. Ani true neznamena, ze modul prikaz prijal (ACK se necte). */
+				  if (gps_config_gnss())
+					  printf("GPS: UBX-CFG-GNSS odeslano (GPS+SBAS+QZSS+GLONASS), overit gpsraw\n");
+				  else
+					  printf("GPS: UBX-CFG-GNSS NEODESLANO (USART1 TX obsazen > 200 ms), zkus znovu\n");
 			  }
 			  else if (strcmp(RxBuffer, "adcraw") == 0) {
 				  /* Diag ADC3: raw 3 internich kanalu (cteno po jednom jako SensorsTask)
@@ -1001,13 +2393,15 @@ void UartTask_run(void *argument)
 					  sc.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
 					  sc.SingleDiff = ADC_SINGLE_ENDED; sc.OffsetNumber = ADC_OFFSET_NONE;
 					  HAL_ADC_ConfigChannel(&hadc3, &sc);
-					  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN | ADC_CCR_VBATEN);
+					  ADC3_COMMON->CCR |= (ADC_CCR_VREFEN | ADC_CCR_TSEN);
+					  if (ch[i] == ADC_CHANNEL_VBAT) ADC3_COMMON->CCR |= ADC_CCR_VBATEN; else ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;   /* mustek jen pro VBAT (STATUS #322) */
 					  ADC3->PCSEL |= (1u << ((ADC3->SQR1 >> 6) & 0x1Fu));
 					  if (HAL_ADC_Start(&hadc3) == HAL_OK &&
 						  HAL_ADC_PollForConversion(&hadc3, 20) == HAL_OK)
 						  r[i] = HAL_ADC_GetValue(&hadc3);
 					  HAL_ADC_Stop(&hadc3);
 				  }
+				  ADC3_COMMON->CCR &= ~ADC_CCR_VBATEN;
 				  uint32_t rt = r[0], rv = r[1], rb = r[2];
 				  uint16_t vc = *(volatile uint16_t *)0x1FF1E860UL;   /* VREFINT_CAL */
 				  uint16_t t1 = *(volatile uint16_t *)0x1FF1E820UL;   /* TS_CAL1 30C */
@@ -1075,6 +2469,65 @@ void UartTask_run(void *argument)
 				  g_sound_muted = 1; g_sys_cfg_dirty = 1;
 				  printf("BEEP: zvuk VYPNUT (mute)\n");
 			  }
+			  else if (strcmp(RxBuffer, "panel") == 0) {
+			  	/* 🔴 Zopakuje CELY bring-up displeje za behu — diagnostika I NAPRAVA.
+			  	 * Pri cernem displeji je to jediny zpusob, jak zjistit, KTERY krok selhava:
+			  	 * `[ERR]` hlasky z `main.c` jdou do USB CDC drive, nez je vyctene.
+			  	 * ⚠️ Bezi z UartTasku (nehlidany watchdogem) — kroky blokuji az stovky ms,
+			  	 *   coz by v defaultTask/UiTask/FpgaTask porusilo pravidlo "zadny spin > 10 ms".
+			  	 * ⚠️ I2C kroky pod `i2c4MutexHandle` (sbernici sdili touch, TMP117 a jas);
+			  	 *   pred DSI kroky se mutex pousti, ty ho nepotrebuji. */
+			  	printf("PANEL: opakuji bring-up displeje...\n");
+			  	if (osMutexAcquire(i2c4MutexHandle, 500) != osOK) {
+			  		printf("PANEL: I2C4 mutex neziskan\n");
+			  	} else {
+			  		/* 🔴 2026-09-13: ATTINY (0x45) bezi VZDY na 50 kHz, ne na "zbytkove"
+			  		 * rychlosti z bezneho provozu (typicky 200 kHz, viz `i2c4_speed_select`
+			  		 * v i2c.c) — bez tohohle by probe i power-on na 200 kHz tise SELHAL,
+			  		 * presne to, co tenhle prikaz diagnostikuje. Mutex se odsud drzi
+			  		 * nepreruseně az po power-on, takze staci jednou. */
+			  		i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
+			  		int ok = 0, step = 0;
+			  		for (int i = 0; i < 10 && !ok; i++) {
+			  			ok = ws_panel_probe(&hi2c4) ? 1 : 0;
+			  			if (!ok) osDelay(100);
+			  		}
+			  		printf("PANEL: 1) ATTINY probe .... %s\n", ok ? "OK" : "SELHAL");
+			  		if (!ok) step = BOOTLED_STEP_PANEL_PROBE;
+			  		if (ok) {
+			  			ok = ws_panel_power_on(&hi2c4) ? 1 : 0;
+			  			printf("PANEL: 2) power-on ....... %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_PANEL_POWERON;
+			  		}
+			  		osMutexRelease(i2c4MutexHandle);
+			  		if (ok) {
+			  			ok = (HAL_DSI_Start(&hdsi) == HAL_OK) ? 1 : 0;
+			  			printf("PANEL: 3) HAL_DSI_Start .. %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_DSI_START;
+			  		}
+			  		if (ok) {
+			  			osDelay(50);
+			  			ok = tc358762_init(&hdsi) ? 1 : 0;
+			  			printf("PANEL: 4) TC358762 ....... %s\n", ok ? "OK" : "SELHAL");
+			  			if (!ok) step = BOOTLED_STEP_TC358762;
+			  		}
+			  		if (ok) {
+			  			HAL_LTDC_Reload(&hltdc, LTDC_RELOAD_IMMEDIATE);
+			  			if (osMutexAcquire(i2c4MutexHandle, 500) == osOK) {
+			  				/* Novy mutex acquire (po DSI krocich bez I2C) — rychlost
+			  				 * si mezitim mohl prevzit touch/TMP117, znovu na 50 kHz. */
+			  				i2c4_speed_select(I2C4_TIMING_ATTINY_50KHZ);
+			  				ws_panel_set_backlight(&hi2c4, g_brightness);
+			  				osMutexRelease(i2c4MutexHandle);
+			  			}
+			  			printf("PANEL: 5) LTDC reload + jas %u .. OK\n", (unsigned)g_brightness);
+			  		}
+			  		g_display_init_step = (uint8_t)step;
+			  		printf("PANEL: %s\n", step ? "NEUSPECH - viz krok vyse"
+			  		                            : "hotovo, displej by mel svitit");
+			  		g_screen_req = 3;              /* prekreslit hlavni obrazovku */
+			  	}
+			  }
 			  else if (strncmp(RxBuffer, "backlight ", 10) == 0) {
 				  /* Test jasu z konzole (diagnostika ATTINY runtime zapisu): nastavi
 				   * g_brightness, HW zapis udela UiTask pod mutexem (stejna cesta
@@ -1086,6 +2539,119 @@ void UartTask_run(void *argument)
 				  g_brightness = (uint8_t)v; g_sys_cfg_dirty = 1;
 				  printf("BACKLIGHT: %d (aplikuje UiTask; pri aktivnim dimu az po probuzeni)\n", v);
 			  }
+			  else if (strcmp(RxBuffer, "si5356 clr") == 0) {
+			  	/* Vynuluje sticky registr 247. ⚠️ Zapis na I2C1 dela VYHRADNE SensorsTask
+			  	 *   (vlastnik sbernice) — tady se jen nastavi zadost, stejny vzor jako
+			  	 *   `g_ui_cfg_req` u SCPI. */
+			  	g_si5356_clr_req = 1;
+			  	printf("SI5356: sticky bude vynulovan (obslouzi SensorsTask do ~0,5 s)\n");
+			  }
+			  else if (strncmp(RxBuffer, "gpsdo", 5) == 0 &&
+			           (RxBuffer[5] == '\0' || RxBuffer[5] == ' ')) {
+				  /* Smycka GPSDO (STATUS #305): `gpsdo` stav | on | off | tau <100..20000 s> |
+				   * kdac <K v 1e-13, napr. 340 = 3,40e-11> | test (selftest regulatoru nad modelem OCXO) */
+				  const char *a = &RxBuffer[5];
+				  while (*a == ' ') a++;
+				  uint32_t v = 0; int nd = 0;
+				  const char *num = NULL;
+				  if (strncmp(a, "tau", 3) == 0 || strncmp(a, "kdac", 4) == 0) {
+					  num = a + ((a[0] == 't') ? 3 : 4);
+					  while (*num == ' ') num++;
+					  while (*num >= '0' && *num <= '9' && v <= 100000u) { v = v * 10u + (uint32_t)(*num - '0'); num++; nd++; }
+				  }
+				  if (*a == '\0') {
+					  /* jen stav */
+				  } else if (strcmp(a, "on") == 0) {
+					  gpsdo_enable(1); printf("GPSDO: zapnuto\n");
+				  } else if (strcmp(a, "off") == 0) {
+					  gpsdo_enable(0); printf("GPSDO: vypnuto (DAC zustava na poslednim kodu)\n");
+				  } else if (strncmp(a, "tau", 3) == 0 && nd > 0 && *num == '\0') {
+					  gpsdo_set_tau(v); printf("GPSDO: tau %lu s (meze 100..20000)\n", (unsigned long)v);
+				  } else if (strncmp(a, "kdac", 4) == 0 && nd > 0 && *num == '\0') {
+					  gpsdo_set_kdac((double)v * 1e-13);
+					  printf("GPSDO: K %lu x 1e-13 (prevezme se v dalsim intervalu; mimo 1e-12..1e-9 se ignoruje)\n", (unsigned long)v);
+				  } else if (strcmp(a, "test") == 0) {
+					  uint32_t t0 = HAL_GetTick();
+					  int ok = gpsdo_selftest();
+					  printf("GPSDO selftest: %s (%lu ms)\n", ok ? "PASS" : "FAIL", (unsigned long)(HAL_GetTick() - t0));
+				  } else {
+					  printf("GPSDO: pouziti `gpsdo` | `gpsdo on|off` | `gpsdo tau <s>` | `gpsdo kdac <K*1e13>` | `gpsdo test`\n");
+				  }
+				  gpsdo_print_status();
+			  }
+			  else if (strncmp(RxBuffer, "dac", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  /* DAC ladeni OCXO (AD5693R). `dac` = stav, `dac probe` = znovu najit
+				   * + control registr, `dac <kod>` / `dac mv <mV>` = zapis.
+				   * ⚠️ I2C dela VYHRADNE SensorsTask (vlastnik I2C1) — tady jen zadost,
+				   * vzor `si5356 clr`. 🔴 Zapis PRELADI OCXO = posune celou referenci. */
+				  const char *a = &RxBuffer[3];
+				  while (*a == ' ') a++;
+				  int req = 0;            /* 0 = stav, 1 = zapis, 2 = sonda, -1 = chyba */
+				  uint32_t code = 0;
+				  if (*a == '\0') {
+					  req = 0;
+				  } else if (strcmp(a, "probe") == 0) {
+					  req = 2;
+				  } else if (strncmp(a, "dither", 6) == 0 && (a[6] == '\0' || a[6] == ' ')) {
+					  /* `dac dither` = stav, `dac dither <2..200>` = rychlost ditheru [Hz], `dac dither test` = selftest logiky */
+					  const char *d = a + 6;
+					  while (*d == ' ') d++;
+					  if (*d == '\0') {
+						  /* jen stav (vypise se nize) */
+					  } else if (strcmp(d, "test") == 0) {
+						  printf("DAC dither selftest: %s\n", ad5693_dither_selftest() ? "PASS" : "FAIL");
+					  } else {
+						  uint32_t hz = 0; int nd = 0;
+						  while (*d >= '0' && *d <= '9' && hz <= 1000u) { hz = hz * 10u + (uint32_t)(*d - '0'); d++; nd++; }
+						  if (nd == 0 || *d != '\0' || hz < 2u || hz > 200u) {
+							  printf("DAC: pouziti `dac dither` | `dac dither <2..200 Hz>` | `dac dither test`\n");
+						  } else {
+							  uint16_t e = ad5693_dither_set_hz((uint16_t)hz);
+							  printf("DAC: dither nastaven na %u Hz (nepersistuje se; vychozi 100, max 200)\n", (unsigned)e);
+						  }
+					  }
+					  req = 0;
+				  } else {
+					  int is_mv = 0;
+					  if (strncmp(a, "mv", 2) == 0) { is_mv = 1; a += 2; while (*a == ' ') a++; }
+					  uint32_t v = 0; int nd = 0;
+					  /* Mez PRED nasobenim (L-0034): v <= 100000 -> v*10+9 se vejde. */
+					  while (*a >= '0' && *a <= '9' && v <= 100000u) { v = v * 10u + (uint32_t)(*a - '0'); a++; nd++; }
+					  if (nd == 0 || *a != '\0' || (is_mv ? v > AD5693_FS_MV : v > 65535u)) {
+						  printf("DAC: pouziti `dac` | `dac probe` | `dac <kod 0..65535>` | `dac mv <0..%u>` | `dac dither [Hz|test]`\n",
+						         (unsigned)AD5693_FS_MV);
+						  req = -1;
+					  } else {
+						  code = is_mv ? ad5693_mv_to_code(v) : v;
+						  req = 1;
+					  }
+				  }
+				  if (req == 1 && gpsdo_enabled()) {
+					  /* Rucni kod a smycka GPSDO by se o DAC pretahovaly -- rucni zapis smycku vypne. */
+					  gpsdo_enable(0);
+					  osDelay(30);   /* defaultTask (100 Hz) shodi g_gpsdo_drive, SensorsTask uz kod neprepise */
+					  printf("DAC: smycka GPSDO VYPNUTA (rucni zapis; zapnout `gpsdo on`)\n");
+				  }
+				  if (req > 0) {
+					  int ok = (req == 1) ? ad5693_request_write((uint16_t)code) : ad5693_request_probe();
+					  if (!ok) {
+						  printf("DAC: predchozi zadost jeste bezi\n");
+					  } else {
+						  if (req == 1)
+							  printf("DAC: zapis kodu %lu = %lu mV (PRELADI OCXO)\n",
+							         (unsigned long)code, (unsigned long)ad5693_code_to_mv((uint16_t)code));
+						  /* I2C1 blok SensorsTasku bezi ~2 Hz; pri mrtve sbernici back-off az 10 s. */
+						  uint32_t t0 = HAL_GetTick();
+						  while ((g_dac.req_write || g_dac.req_probe) && (HAL_GetTick() - t0) < 3000u) osDelay(10);
+						  if (g_dac.req_write || g_dac.req_probe)
+							  printf("DAC: zadost ceka (I2C1 back-off?) - vysledek ukaze `dac`\n");
+						  else
+							  printf("DAC: %s\n", ad5693_res_text(g_dac.req_result));
+					  }
+				  }
+				  if (req >= 0) dac_print_status();
+			  }
 			  else if (strcmp(RxBuffer, "si5356") == 0) {
 				  /* Re-init Si5356A (aplikuje register map) + vypise status. */
 				  if (osMutexAcquire(i2c1MutexHandle, 300) == osOK) {
@@ -1095,26 +2661,481 @@ void UartTask_run(void *argument)
 					  printf("Si5356A: I2C1 busy\n");
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "gen", 3) == 0 &&
+			           (RxBuffer[3] == '\0' || RxBuffer[3] == ' ')) {
+				  uart_gen_cmd(&RxBuffer[3]);
+			  }
 			  else if (strcmp(RxBuffer, "fpgaloop") == 0) {
 				  /* Hustá série přenosů pro scope/LA (trigger na CS↓). ~3 s. */
 				  printf("FPGA loop: ~2000 prenosu (scope na pinech FPGA: CS56/SCK55/MISO57)...\n");
-				  uint8_t rx[64];
+				  uint8_t rx[FPGA_FRAME_LEN];
 				  for (int n = 0; n < 2000; n++) {
 					  fpga_freq_raw_xfer(rx);
 					  osDelay(1);
 				  }
 				  printf("FPGA loop: hotovo (posl. RX0=0x%02X)\n", rx[0]);
 			  }
-			  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
-				  /* Bring-up diagnostika: jeden prenos + vypis vsech 64 prijatych bajtu.
-				   * Cekame: byte0=A5 byte1=01 byte2=80. Same FF/00 = MISO nebudi (FPGA mlci). */
-				  uint8_t rx[64];
+			  else if (strncmp(RxBuffer, "inl", 3) == 0) {
+				  /* FW >= 0x0418: zaznamnik oken s kody TDC (INL). `inl` = stav, `inl dump` = vsechna okna
+				   * (seq;edges;gate_ps;code_st;code_end;gap), `inl reset` = smazat. Vstup: beat GPSDO x OCXO. */
+				  if (strcmp(RxBuffer, "inl reset") == 0) { fpga_freq_inl_reset(); printf("INL: zaznamnik vymazan\r\n"); }
+				  else if (strncmp(RxBuffer, "inl dump", 8) == 0) {
+					  /* `inl dump [od [pocet]]` — po castech (dlouhy vypis CDC konzole zahodi) */
+					  unsigned long from = 0ul, cnt = 0ul;
+					  (void)sscanf(RxBuffer + 8, "%lu %lu", &from, &cnt);
+					  uint32_t n = fpga_freq_inl_count();
+					  if (cnt == 0ul || from + cnt > n) cnt = (from < n) ? (n - from) : 0ul;
+					  printf("INL dump: %lu od %lu\r\nseq;edges;gate_ps;cs;ce;gap\r\n", (unsigned long)n, from);
+					  for (uint32_t i = from; i < from + cnt; i++) {
+						  fpga_inl_rec_t r;
+						  if (!fpga_freq_inl_get(i, &r)) break;
+						  printf("%lu;%lu;%lu%06lu;%u;%u;%u\r\n", (unsigned long)r.seq, (unsigned long)r.edges,
+						         (unsigned long)(r.gate_ps / 1000000ull), (unsigned long)(r.gate_ps % 1000000ull),
+						         (unsigned)r.code_st, (unsigned)r.code_end, (unsigned)r.gap);
+						  if ((i & 15u) == 15u) osDelay(15);
+					  }
+					  printf("INL end\r\n");
+				  } else printf("INL: zaznamu %lu z %u (`inl dump`, `inl reset`)\r\n", (unsigned long)fpga_freq_inl_count(), (unsigned)FPGA_INL_N);
+			  }
+			  else if (strcmp(RxBuffer, "regr") == 0 || strcmp(RxBuffer, "regr reset") == 0) {
+				  /* FW >= 0x0411: regresni blok (stredni hodnoty casovych znacek vnitrnich hran ve dvou segmentech
+				   * okna). Statistika rozdilu f_regr - f_2pt a pocty oken. Zisk proti dvoum bodum je jen u signalu,
+				   * jehoz faze vuci hodinam TDC "prohazuje"; u GPSDO 10 MHz (nasobek 100 MHz) neni, ale nesmi byt posun. */
+				  if (strcmp(RxBuffer, "regr reset") == 0) { fpga_freq_regr_reset(); printf("REGR: statistika vynulovana\r\n"); }
+				  fpga_regr_stat_t rs; fpga_freq_regr_stat(&rs);
+				  fpga_meas_t rm; memset(&rm, 0, sizeof rm);
+				  int has = fpga_freq_get_last(&rm);
+				  if (has && !(rm.caps & FPGA_CAP_REGR)) {
+					  printf("REGR: FPGA FW 0x%04X regresni blok nenese (potrebuje >= 0x0411, caps bit7)\r\n", (unsigned)rm.fw_version);
+				  } else {
+					  char a1[24], a2[24], a3[16], a4[16];
+					  uart_regr_fmt(a1, sizeof a1, rs.f_regr_last, 6);
+					  uart_regr_fmt(a2, sizeof a2, rs.f_2pt_last, 6);
+					  uart_regr_fmt(a3, sizeof a3, rs.d_mean_ppb, 3);
+					  uart_regr_fmt(a4, sizeof a4, rs.d_sigma_ppb, 3);
+					  printf("REGR: oken s blokem %lu, pouzito %lu, zamitnuto %lu | znacek A %lu, B %lu\r\n",
+					         (unsigned long)rs.windows, (unsigned long)rs.used, (unsigned long)rs.rejected,
+					         (unsigned long)rs.n_last[0], (unsigned long)rs.n_last[1]);
+					  printf("REGR: posledni f_regr %s Hz | f_2pt %s Hz\r\n", a1, a2);
+					  printf("REGR: f_regr - f_2pt: stred %s ppb, sigma %s ppb  (sigma = sum dvoubodoveho odhadu; "
+					         "vetsi nez ~0,5 ppb = TDC sum)\r\n", a3, a4);
+					  {
+						  /* FW E0 (audit 2026-10-20): mez je ADAPTIVNI max(6 sigma_d, 5e-9), strop FPGA_REGR_MAX_REL; vypis aktualni hodnotu */
+						  char a5[16];
+						  uart_regr_fmt(a5, sizeof a5, fpga_freq_regr_limit() * 1e9, 2);
+						  printf("REGR: mez konzistence aktualne %s ppb (adaptivni, strop %u ppb), min. znacek %u; zamitnuto = |f_regr/f_2pt - 1| > mez\r\n",
+						         a5, (unsigned)(FPGA_REGR_MAX_REL * 1e9), (unsigned)FPGA_REGR_MIN_N);
+					  }
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "phrec dump", 10) == 0 && (RxBuffer[10] == '\0' || RxBuffer[10] == ' ')) {
+				  /* Diagnostika fazoveho zaznamu (2026-10-21): poslednich n krmeni se surovymi vstupy. 64bitove hodnoty
+				   * hexadecimalne (nano-printf neumi %llu) -- rozbor dela skript na PC. */
+				  int nn = atoi(RxBuffer + 10);
+				  uint32_t cnt = fpga_phrec_dbg_count();
+				  if (nn <= 0 || (uint32_t)nn > cnt) nn = (int)cnt;
+				  printf("PHREC DUMP: %d zaznamu (ms;seq;rg_ok;used;usable;gap;n_a;xm_a;ym_a;dt_u;per;x_ps;xdiv;n_b;xm_b, 64b hex)\r\n", nn);
+				  for (uint32_t i = cnt - (uint32_t)nn; i < cnt; i++) {
+					  fpga_phrec_dbg_t d;
+					  if (!fpga_phrec_dbg_get(i, &d)) break;
+					  printf("PH;%lu;%lu;%u;%u;%u;%u;%lu;%08lx%08lx;%08lx%08lx;%08lx%08lx;%08lx%08lx;%ld;%u;%lu;%08lx%08lx\r\n",
+					         (unsigned long)d.ms, (unsigned long)d.seq, (unsigned)d.rg_ok, (unsigned)d.used, (unsigned)d.usable,
+					         (unsigned)d.gap, (unsigned long)d.n_a,
+					         (unsigned long)(d.xm_a >> 32), (unsigned long)d.xm_a, (unsigned long)(d.ym_a >> 32), (unsigned long)d.ym_a,
+					         (unsigned long)(d.dt_u >> 32), (unsigned long)d.dt_u, (unsigned long)(d.per >> 32), (unsigned long)d.per,
+					         (long)d.x_ps, (unsigned)d.xdiv, (unsigned long)d.n_b, (unsigned long)(d.xm_b >> 32), (unsigned long)d.xm_b);
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "fpga v3") == 0) {
+				  /* 2026-10-22 (protokol v3, krok 4c): stav vetve v3 ovladace -- verze FPGA, prijem zaznamu (prekryv = duplicity,
+				   * mezery, resync), okna, posledni hlavicka. */
+				  fpga_v3_info_t vi;
+				  fpga_freq_v3_info(&vi);
+				  printf("FPGA protokol: v%u%s (0 = nezjisteno)\n", (unsigned)vi.proto, vi.sim ? " EMULATOR" : "");
+				  printf("  ramcu %lu, zaznamu %lu, duplicit %lu, mezer %lu (ztraceno %lu), resync %lu, stranek %lu\n",
+				         (unsigned long)vi.frames, (unsigned long)vi.recs, (unsigned long)vi.dups, (unsigned long)vi.gaps,
+				         (unsigned long)vi.gap_recs, (unsigned long)vi.resync, (unsigned long)vi.pages);
+				  printf("  oken %lu (zahozeno z fronty %lu), kanal %c, K %lu segmentu po %lu ms, REC_ACK %lu\n",
+				         (unsigned long)vi.wins, (unsigned long)vi.qdrop, vi.chan ? 'B' : 'A', (unsigned long)vi.k,
+				         (unsigned long)vi.seg_ms, (unsigned long)vi.expect);
+				  printf("  druhy kanal: mereni %lu, z toho delka okna z LSQ %lu | oken s vadnym segmentem (z LSQ vyrazen): A %lu B %lu\n",
+				         (unsigned long)vi.wins_b, (unsigned long)vi.lsq_b, (unsigned long)vi.segrej[0], (unsigned long)vi.segrej[1]);
+				  printf("  X0 proti predpovedi z T0: opraveno (64*k hran) A %lu B %lu, posledni %ld / %ld | mimo predpoved bez opravy A %lu B %lu\n",
+				         (unsigned long)vi.x0_fix[0], (unsigned long)vi.x0_fix[1], (long)vi.x0_dev[0], (long)vi.x0_dev[1],
+				         (unsigned long)vi.x0_odd[0], (unsigned long)vi.x0_odd[1]);
+				  printf("  SX opraveno (segment zustal v LSQ): A %lu B %lu, z toho podle X0 A %lu B %lu | mez teziste %u ps\n",
+				         (unsigned long)vi.sx_rep[0], (unsigned long)vi.sx_rep[1], (unsigned long)vi.sx_rep_x0[0],
+				         (unsigned long)vi.sx_rep_x0[1], (unsigned)FPGA_V3_SEG_BAD_PS);
+				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
+				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
+				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
+				  printf("  hlavicka %s, restartu FPGA pri rozbalovani %lu\n",
+				         vi.narrow ? "UZKA (CAPS bit22: 16b SEQ/REC/PSEQ rozbaluje STM, 1PPS predchozi z historie STM)" : "siroka",
+				         (unsigned long)vi.wrap_restarts);
+				  printf("  TDC A 0x%02X B 0x%02X (bit0 platna, bit2 sber, bit4 banka), ceka na tabulku 0x%X\n",
+				         (unsigned)vi.tdc[0], (unsigned)vi.tdc[1], (unsigned)vi.cal_wait);
+				  printf("  1PPS: %s, PCLK %s, epocha %u, jemny - hruby %d taktu%s (CAPS bit17 %s)\n",
+				         (vi.pps_pflags & FPGA_V3_PF_FINE) ? "jemny cas IDES8 (1,25 ns)" : "hruby cas (10 ns)",
+				         (vi.pps_status & FPGA_V3_PPS_ST_LOCK) ? "bezi" : "STOJI", (unsigned)FPGA_V3_PPS_EPOCH(vi.pps_status),
+				         (int)vi.pps_d, (vi.pps_status & FPGA_V3_PPS_ST_NOFINE) ? ", posledni hrana BEZ jemneho casu" : "",
+				         (vi.caps & FPGA_V3_CAP_PPS_IDES) ? "ano" : "ne");
+				  for (int c = 0; c < 2; c++)
+					  printf("  predelicka %c: 1/%u%s (%s), sonda %lu kHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
+					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
+					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", (unsigned long)vi.probe[c] * 16ul,   /* bez %f (nano.specs, F-0276) */
+					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
+				  printf("  PSRAM: %s, latence zapisu %u B, faze cteni %u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
+				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
+				         (unsigned)(FPGA_V3_PS_W0 + (vi.deep_wsel & 0x1Fu)), (unsigned)((vi.deep_wsel >> 5) & 1u),
+				         (unsigned long)vi.deep_n, (vi.deep_st & FPGA_V3_DS_OVF) ? ", PRETECENI" : "",
+				         (vi.caps & FPGA_V3_CAP_PSRAM) ? "ano" : "ne");
+			  }
+			  else if (strncmp(RxBuffer, "fpga presc ", 11) == 0) {
+				  /* v0.38.0 (FW 0x0503): predelicka -- `fpga presc a|b auto|0..4` (log2 P: 0 = primo, 4 = /16; auto = podle sondy) */
+				  const char cc = RxBuffer[11];
+				  const char *v = (RxBuffer[12] == ' ') ? &RxBuffer[13] : "";
+				  const int ch = (cc == 'a' || cc == 'A') ? 0 : (cc == 'b' || cc == 'B') ? 1 : -1;
+				  const int md = (strcmp(v, "auto") == 0) ? 0xFF : (v[0] >= '0' && v[0] <= '4' && v[1] == '\0') ? (v[0] - '0') : -1;
+				  const int rc = (ch < 0 || md < 0) ? -1 : fpga_freq_presc((uint8_t)ch, (uint8_t)md);
+				  if (rc < 0) printf("pouziti: fpga presc a|b auto|0..4  (log2 P; 0 = primo, 4 = /16)\n");
+				  else printf("predelicka %c: %s%s\n", ch ? 'B' : 'A', md == 0xFF ? "auto" : v,
+				              rc ? "" : " (FPGA bez CAPS bit18 -- uplatni se, az ji FPGA umi)");
+			  }
+			  else if (strcmp(RxBuffer, "fpga v3 x0") == 0) {
+				  /* v0.42.9 (L-0247): odchylky X0 od predpovedi z T0 (fpga_v3_grp_feed) -- proc oprava 64*k zabrala / nezabrala.
+				   * d = dx - dt/per_ref [hran], pd = dt/pst - dt/per_ref (shoda periody ST/SX), priznaky O opraveno, C cista predchozi
+				   * kontrola, P perioda ST/SX znama. Tisk v tisicinach hrany (nano bez %f). */
+				  static fpga_v3_x0ev_t xe[FPGA_V3_X0EV];
+				  for (int big = 1; big >= 0; big--) {
+					  const uint32_t n = fpga_freq_v3_x0ev(big, xe);
+					  printf("  %s: celkem %lu\n", big ? "velke (|d| >= 8 hran)" : "vsechny (|d| >= 0,5 hrany)", (unsigned long)n);
+					  const uint32_t m = n < FPGA_V3_X0EV ? n : FPGA_V3_X0EV;
+					  for (uint32_t k = 0; k < m; k++) {
+						  const fpga_v3_x0ev_t *e = &xe[(n - 1u - k) % FPGA_V3_X0EV];
+						  printf("    %c seg %5u  d %ld m  pd %ld m  %c%c%c\n", e->ch ? 'B' : 'A', (unsigned)e->seg, (long)e->d_m, (long)e->pd_m,
+						         (e->st & 1u) ? 'O' : '-', (e->st & 2u) ? 'C' : '-', (e->st & 4u) ? 'P' : '-');
+						  if (big) printf("      dx %08lX%08lX dt %08lX%08lX X0 %08lX%08lX\n",
+						                  (unsigned long)(e->dx >> 32), (unsigned long)e->dx, (unsigned long)(e->dt >> 32),
+						                  (unsigned long)e->dt, (unsigned long)(e->x0 >> 32), (unsigned long)e->x0);
+					  }
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "fpga v3 seg") == 0 || strcmp(RxBuffer, "fpga v3 seg reset") == 0) {
+				  /* v0.42.4 (L-0246): teziste segmentu proti primce mezi prvnimi znackami sousednich segmentu, oba kanaly;
+				   * u vadnych (> 2 ns) surove zaznamy vadneho (a) a nasledujiciho (b) segmentu. Pole hexa (nano bez %llu). */
+				  if (RxBuffer[11] != '\0') { fpga_freq_v3_seg_reset(); printf("fpga v3 seg: vynulovano\n"); }
+				  else {
+					  static fpga_seg_info_t si;
+					  fpga_freq_v3_seg(&si);
+					  for (int c = 0; c < 2; c++)
+						  printf("  kanal %c: segmentu %lu, vadnych (> 2 ns nebo SX mimo meze) %lu, SX != N(N-1)/2 %lu, max %ld ps, rms dobrych %ld ps\n",
+						         c ? 'B' : 'A', (unsigned long)si.chk[c], (unsigned long)si.bad[c], (unsigned long)si.sxdev[c],
+						         (long)si.max_ps[c], (long)si.rms_ps[c]);
+					  for (int c = 0; c < 2; c++)
+						  printf("    %c: SX mimo meze %lu (z toho odchylka <= 2 ns %lu) | v mezich, odchylka 0,5-1 ns %lu, 1-2 ns %lu\n",
+						           c ? 'B' : 'A', (unsigned long)si.sxbad[c], (unsigned long)si.sxonly[c],
+						           (unsigned long)si.r05[c], (unsigned long)si.r1[c]);
+					  const uint32_t ns = si.nsnap < FPGA_SEG_SNAP ? si.nsnap : FPGA_SEG_SNAP;
+					  for (uint32_t k = 0; k < ns; k++) {
+						  const fpga_seg_snap_t *s = &si.snap[(si.nsnap - 1u - k) % FPGA_SEG_SNAP];
+						  printf("  vadny %c pred %lu ms: odchylka %ld ps, SXdev %ld\n", s->ch ? 'B' : 'A',
+						         (unsigned long)(HAL_GetTick() - s->ms), (long)s->r_ps, (long)s->sx_dev);
+						  for (int q = 0; q < 2; q++) {
+							  const fpga_v3_rec_t *r = q ? &s->b : &s->a;
+							  printf("    %c seg %u ch 0x%02X fl 0x%02X N %lu X0 %08lX%08lX T0 %08lX%08lX SX %08lX%08lX ST %08lX%08lX\n",
+							         q ? 'b' : 'a', (unsigned)r->seg_idx, r->ch, r->flags, (unsigned long)r->n,
+							         (unsigned long)(r->x0 >> 32), (unsigned long)r->x0, (unsigned long)(r->t0 >> 32), (unsigned long)r->t0,
+							         (unsigned long)(r->sx >> 32), (unsigned long)r->sx, (unsigned long)(r->st >> 32), (unsigned long)r->st);
+						  }
+					  }
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "fpga v3 test") == 0) {
+				  /* 2026-10-22 (protokol v3, docs/PROTOKOL_V3.md): selftest fpga_v3 -- CRC bloku, zaznam, LUT_WRITE, emulator ->
+				   * parser -> okna, vadny blok, preteceni kruhu, rozbaleni T0. Bezi v UartTasku (nehlidany), trva desitky ms. */
+				  const uint32_t c0 = DWT->CYCCNT;
+				  const bool v3ok = fpga_v3_selftest();
+				  const uint32_t us = (DWT->CYCCNT - c0) / (SystemCoreClock / 1000000u);
+				  printf("FPGA v3 selftest: %s (radek %d), %lu us\n", v3ok ? "PASS" : "FAIL", fpga_v3_selftest_fail_line(), (unsigned long)us);
+			  }
+			  else if (strncmp(RxBuffer, "fpga ev", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0 (FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5): kruh udalosti -- `fpga ev on|off`, `fpga ev [n]` =
+				   * poslednich n (vychozi 10, nejvys 256): kanal, hrana / souhrn segmentu, cas na ose FPGA, cas od 1PPS. */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       { fpga_freq_ev_enable(1); printf("FPGA udalosti: ZAPNUTO (kruh 256, vynulovan)\n"); }
+				  else if (strcmp(a, "off") == 0) { fpga_freq_ev_enable(0); printf("FPGA udalosti: vypnuto\n"); }
+				  else {
+					  fpga_ev_info_t ei;
+					  fpga_freq_ev_info(&ei);
+					  printf("FPGA udalosti: %s, v kruhu %lu (celkem %lu), protokol v%u%s, posledni 1PPS #%lu\n",
+					         ei.ev_on ? "ZAPNUTO" : "vypnuto", (unsigned long)ei.ev_fill, (unsigned long)ei.ev_total,
+					         (unsigned)ei.proto, ei.sim ? " EMULATOR" : "", (unsigned long)ei.pps_seq);
+					  uart_ev_list(uart_num(a, 10u, 256u));
+					  if (!ei.ev_on) printf("  fpga ev on|off|<n>: presne 1. (a 2.) hrana segmentu 25 ms, hrany >= 50 ns; delsi sled `fpga raw a|b`\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "fpga ab", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0: interval A->B jednorazove -- start = hrana A, stop = prvni hrana B po startu (start bez stopu do 10 s
+				   * se zahodi). `fpga ab on|off`, `fpga ab [n]` = statistika a poslednich n intervalu (nejvys 64). */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_AB), "interval A->B ZAPNUTO (statistika vynulovana)");
+				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else uart_ab_show(uart_num(a, 0u, 64u), 0);
+			  }
+			  else if (strncmp(RxBuffer, "fpga pw", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
+				  /* v0.36.0: sirka pulzu na pinu A -- `fpga pw cal` (B = pin A: zpozdeni B-A tychz hran), `fpga pw on` (B = pin A
+				   * invertovany: start nabezna, stop sestupna; sirka = interval - zpozdeni), `fpga pw off` (B = pin B), `fpga pw [n]`. */
+				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
+				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_PW), "sirka pulzu ZAPNUTO (B = pin A invertovany)");
+				  else if (strcmp(a, "cal") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_SKEW), "kalibrace zpozdeni A/B (B = pin A), pak `fpga pw on`");
+				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else uart_ab_show(uart_num(a, 0u, 64u), 1);
+			  }
+			  else if (strncmp(RxBuffer, "fpga raw", 8) == 0 && (RxBuffer[8] == '\0' || RxBuffer[8] == ' ')) {
+				  /* v0.36.0: RAW_CAPTURE (TYPE 0x0B) -- 512 po sobe jdoucich casovanych znacek kanalu A nebo B do BSRAM FPGA.
+				   * `fpga raw a|b [dump]`: statistika rozdilu, `dump` vypise vsechny znacky. Ceka nejvys 5 s (pod ~100 Hz se
+				   * nezaplni), blokuje UartTask. */
+				  const char *a = (RxBuffer[8] == ' ') ? &RxBuffer[9] : "";
+				  const uint8_t ch = (uint8_t)((a[0] == 'b' || a[0] == 'B') ? 1u : 0u);
+				  const int dump = (strstr(a, "dump") != NULL);
+				  /* v0.39.0 (FW 0x0505): `fpga raw a|b deep <N> [dump]` = hluboky zaznam N znacek do PSRAM FPGA (nejvys 699 050),
+				   * cteni po oknech 512 znacek; ceka na zaznam nejvys 30 s, cteni ~35 ms na okno (UartTask blokovan). */
+				  const char *dp = strstr(a, "deep");
+				  fpga_raw_info_t ri;
+				  uint8_t dst = 0u;
+				  int rc;
+				  if (dp != NULL) {
+					  const uint32_t nreq = (uint32_t)strtoul(dp + 4, NULL, 10);
+					  printf("FPGA RAW hluboky (PSRAM) kanal %c: %lu znacek, ceka nejvys 30 s\n", ch ? 'B' : 'A', (unsigned long)nreq);
+					  rc = fpga_freq_v3_raw_deep(ch, nreq, 30000u, dump ? uart_raw_cb : NULL, NULL, &ri, &dst);
+					  if (rc == -4) printf("  FPGA bez PSRAM (CAPS bit21) nebo PSRAM neni pripravena (stav 0x%02X)\n", (unsigned)dst);
+					  if (dst & FPGA_V3_DS_OVF) printf("  POZOR: FIFO preteklo -- kmitocet znacek nad propustnosti PSRAM, cast zahozena\n");
+				  } else {
+					  printf("FPGA RAW_CAPTURE kanal %c: 512 znacek, ceka nejvys 5 s\n", ch ? 'B' : 'A');
+					  rc = fpga_freq_v3_raw(ch, 5000u, dump ? uart_raw_cb : NULL, NULL, &ri);
+				  }
+				  if (rc == -4) { /* vypsano vyse */ }
+				  else if (rc == -5) printf("  FPGA prikaz odmitlo (bezi jiny RAW zaznam / nacitani okna) nebo zaznam je z jineho kanalu\n");
+				  else if (rc == -2) printf("  jen skutecne FPGA v3 (ne emulator)\n");
+				  else if (rc == -3) printf("  SPI selhalo\n");
+				  else {
+					  if (rc == -1) printf("  CHYBA: stranka znacek nedorazila\n");
+					  printf("  znacek %lu (FPGA %lu)%s\n", (unsigned long)ri.n, (unsigned long)ri.cnt, (rc == 0) ? " -- neuplne (timeout)" : "");
+					  if (ri.dst & FPGA_V3_DS_GAP)
+						  printf("  POZOR: v zaznamu jsou mezery (kanal chvili neznackoval: kalibrace, zmena P nebo maska pri CS -- `fpga diag mask off`)\n");
+					  if (ri.n >= 2u) {
+						  char m[32], s[24], lo[32], hi[32], sp[32], fz[24];
+						  uart_ps_fmt(m, sizeof m, ri.d_mean);
+						  uart_regr_fmt(s, sizeof s, (ri.d_sd > 4.0e9) ? 4.0e9 : ri.d_sd, 1);
+						  uart_ps_fmt(lo, sizeof lo, ri.d_min);
+						  uart_ps_fmt(hi, sizeof hi, ri.d_max);
+						  uart_ps_fmt(sp, sizeof sp, ri.span_ps);
+						  uart_regr_fmt(fz, sizeof fz, (ri.span_ps > 0.0) ? (double)(ri.n - 1u) * 1e12 / ri.span_ps : 0.0, 3);
+						  printf("  rozdil: stredni %s, sigma %s ps, min %s, max %s\n", m, s, lo, hi);
+						  printf("  prvni..posledni %s -> %s Hz\n", sp, fz);
+					  }
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "fpga diag", 9) == 0 && (RxBuffer[9] == '\0' || RxBuffer[9] == ' ')) {
+				  /* FW >= 0x0425 (caps bit14, E0 audit 2026-10-20): SET_CONFIG 0x05. `fpga diag` = stav,
+				   * `fpga diag mask on|off` = maskovani vnitrnich znacek pri CS SPI (vychozi FPGA ON),
+				   * `fpga diag led on|off` = heartbeat LED PIN29 (vychozi FPGA OFF; PIN29 je v bance 2 s CH_A/B).
+				   * STM si pamatuje jen to, co POSLAL: po resetu/nahrani FPGA plati zase vychozi stav FPGA (mask 1, led 0). */
+				  static uint8_t s_dg_mask = 1u, s_dg_led = 0u;
+				  const char *a = RxBuffer + 9;
+				  while (*a == ' ') a++;
+				  int send = 0;
+				  if      (strcmp(a, "mask on")  == 0) { s_dg_mask = 1u; send = 1; }
+				  else if (strcmp(a, "mask off") == 0) { s_dg_mask = 0u; send = 1; }
+				  else if (strcmp(a, "led on")   == 0) { s_dg_led  = 1u; send = 1; }
+				  else if (strcmp(a, "led off")  == 0) { s_dg_led  = 0u; send = 1; }
+				  else if (*a != '\0') { printf("FPGA DIAG: pouziti `fpga diag` | `fpga diag mask on|off` | `fpga diag led on|off`\r\n"); }
+				  fpga_meas_t dm; memset(&dm, 0, sizeof dm);
+				  int hf = fpga_freq_get_frame(&dm);
+				  if (send) {
+					  if (hf && !(dm.caps & FPGA_CAP_DIAG0))
+						  printf("FPGA DIAG: FPGA FW 0x%04X SET_CONFIG 0x05 nezna (potrebuje >= 0x0425, caps bit14) -- posilam presto\r\n", (unsigned)dm.fw_version);
+					  printf("FPGA DIAG: SET_CONFIG 0x05 mask_cs=%u led_hb=%u -> %s\r\n", (unsigned)s_dg_mask, (unsigned)s_dg_led,
+					         fpga_freq_set_diag(s_dg_mask, s_dg_led) ? "odeslano" : "NEODESLANO (emulace / bez initu / SPI chyba)");
+				  }
+				  printf("FPGA DIAG: posledni poslano mask_cs=%u led_hb=%u (po resetu FPGA plati vychozi mask 1, led 0)\r\n",
+				         (unsigned)s_dg_mask, (unsigned)s_dg_led);
+				  if (hf && (dm.caps & FPGA_CAP_DIAG0) && dm.diag0_ok)
+					  printf("FPGA DIAG: koherence 100/10 MHz %s (posl. epocha %s, od nahrani %s), chybnych epoch %u | bubliny okna P %u S %u | znacky pri CS P %u S %u\r\n",
+					         (dm.coh_st & 1u) ? "platne" : "neplatne (ext. reference / nabeh)", (dm.coh_st & 2u) ? "OK" : "CHYBA",
+					         (dm.coh_st & 4u) ? "CHYBA" : "bez chyby", (unsigned)dm.coh_cnt,
+					         (unsigned)dm.bub_p, (unsigned)dm.bub_s, (unsigned)dm.ovl_p, (unsigned)dm.ovl_s);
+				  else
+					  printf("FPGA DIAG: ramec diagnostiku nenese (FW < 0x0425 / bez linku)\r\n");
+			  }
+			  else if (strcmp(RxBuffer, "tdc hist") == 0) {
+				  /* Vypis histogramu kalibrace TDC (FW >= 0x040B): radky "k;A;B" pro kody
+				   * 0..255 (vynechane jsou radky A=B=0). Sirka binu [ps] = hist / N * 10000,
+				   * N = soucet (kalibrace z 2^20 udalosti). Diagnostika DNL / bublin.
+				   * Bezi z UartTasku (nehlidany watchdogem); ~256 x 2 SPI transakce. */
+				  uint32_t sa = 0, sb = 0, ma = 0, mb = 0; unsigned ka = 0, kb = 0, bad = 0;
+				  fpga_tdc_cal_t hc; memset(&hc, 0, sizeof hc);
+				  unsigned nad = fpga_freq_tdc_report(&hc) ? hc.naddr : 256u;   /* FW >= 0x0410 hlasi velikost tabulky */
+				  if (nad > 1024u) nad = 1024u;
+				  printf("TDC hist: k;A;B   (adres %u%s)\n", nad,
+				         hc.dual ? ", DUAL: adresy 0..N/2-1 = sada R (nabezna hrana hodin), zbytek F (sestupna)" : "");
+				  for (unsigned k = 0; k < nad; k++) {
+					  uint32_t a = 0, b = 0;
+					  if (!fpga_freq_tdc_hist((uint16_t)k, &a, &b)) { bad++; continue; }
+					  sa += a; sb += b;
+					  if (a > ma) { ma = a; ka = k; }
+					  if (b > mb) { mb = b; kb = k; }
+					  if (a || b) printf("%u;%lu;%lu\n", k, (unsigned long)a, (unsigned long)b);
+					  if ((k & 15u) == 15u) osDelay(1);
+				  }
+				  printf("TDC hist: soucet A %lu B %lu | max A k=%u %lu, B k=%u %lu | nepreceteno %u\n",
+				         (unsigned long)sa, (unsigned long)sb, ka, (unsigned long)ma, kb, (unsigned long)mb, bad);
+			  }
+			  else if (strcmp(RxBuffer, "ref") == 0 || strcmp(RxBuffer, "ref ext") == 0 || strcmp(RxBuffer, "ref int") == 0) {
+				  /* Reference FPGA (FW >= 0x0420): `ref` = stav, `ref ext` = externi 10 MHz, `ref int` = OCXO. Po zapnuti je vzdy OCXO
+				   * (nic se neuklada). FPGA externi pusti jen kdyz na vstupu jsou hrany; kdyz externi vypadne, SAMA se vrati na OCXO.
+				   * ⚠️ Kmitocet externiho signalu FPGA nehlida: MUSI to byt 10 MHz. Bezi z UartTasku (osDelay je v poradku). */
+				  fpga_meas_t rm;
+				  const int want_ext = (strcmp(RxBuffer, "ref ext") == 0), want_int = (strcmp(RxBuffer, "ref int") == 0);
+				  if (!fpga_freq_get_frame(&rm) || !(rm.caps & FPGA_CAP_REFCTL)) {
+					  printf("REF: FPGA nepodporuje vyber reference (potrebuje FW >= 0x0420, caps bit11)\n");
+				  } else if (want_ext && !(rm.clk_status & FPGA_CLK_EXT_PRESENT)) {
+					  printf("REF: ODMITNUTO - na externim vstupu nejsou hrany (Ext_Ref_Sens). Pripoj 10 MHz a zopakuj.\n");
+				  } else {
+					  if (want_ext || want_int) {
+						  if (!fpga_freq_set_ref(want_ext ? 1u : 0u)) {
+							  printf("REF: SET_CONFIG se nepodaril (link? fpgasim?)\n");
+						  } else {
+							  int done = 0;
+							  for (int i = 0; i < 40 && !done; i++) {      /* ~4 s: prepnuti + znovuzamceni Si5356 + hlidac hodin FPGA */
+								  osDelay(100);
+								  if (fpga_freq_get_frame(&rm) && (((rm.clk_status & FPGA_CLK_REF_EXT) != 0) == (want_ext != 0))) done = 1;
+							  }
+							  if (done) {
+								  osDelay(1500);                       /* Si5356 se znovu zamkne; sticky LOS/LOL z prepnuti je ocekavane, ne porucha */
+								  g_si5356_clr_req = 1;
+								  osDelay(600);
+							  } else {
+								  printf("REF: FPGA prepnuti nepotvrdila do 4 s\n");
+							  }
+						  }
+					  }
+					  (void)fpga_freq_get_frame(&rm);
+					  printf("REF: vybrana %s | externi vstup: %s%s\n",
+						     (rm.clk_status & FPGA_CLK_REF_EXT) ? "EXTERNI 10 MHz" : "OCXO",
+						     (rm.clk_status & FPGA_CLK_EXT_PRESENT) ? "hrany ano" : "bez hran",
+						     (rm.clk_status & FPGA_CLK_EXT_LOST) ? "  <== externi VYPADLA, FPGA sama presla na OCXO" : "");
+				  }
+			  }
+			  else if (strcmp(RxBuffer, "tdc") == 0 || strcmp(RxBuffer, "tdc cal") == 0 ||
+			           (strncmp(RxBuffer, "tdc cal ", 8) == 0 && uart_tdc_cal_ex(RxBuffer + 8))) {
+				  /* TDC (FW >= 0x0400): `tdc` = diagnostika kalibrace (CAL report),
+				   * `tdc cal` = spustit kalibraci (~0,5-1 s, mereni stoji) a pockat.
+				   * v0.43.0: `tdc cal [pin] [a|b] [gen]` provede uart_tdc_cal_ex a pak se vypise tentyz report.
+				   * Bezi z UartTasku (nehlidany watchdogem) -> osDelay je v poradku. */
+				  fpga_tdc_cal_t d;
+				  memset(&d, 0, sizeof d);
+				  if (strcmp(RxBuffer, "tdc cal") == 0) {
+					  if (!fpga_freq_tdc_cal_start()) {
+						  printf("TDC: SET_CONFIG se nepodaril (link? fpgasim?)\n");
+					  } else {
+						  printf("TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...\n");
+						  for (int i = 0; i < 24; i++) {          /* nejvyse ~6 s */
+							  osDelay(250);
+							  if (fpga_freq_tdc_report(&d) && !(d.status & FPGA_TDC_CAL_BUSY) &&
+							      (d.status & (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) ==
+							      (FPGA_TDC_CAL_A | FPGA_TDC_CAL_B)) break;
+						  }
+					  }
+				  }
+				  if (fpga_freq_tdc_report(&d)) {
+					  /* perioda hodin FPGA z ramce (abs 99); pevnych 10 ns ukazovalo na 125 MHz (FW 0x0421/0x0422) o 25 % vic */
+					  uint32_t tdc_per_ps = 10000u;
+					  { fpga_meas_t tf; if (fpga_freq_get_frame(&tf) && tf.clk_mhz != 0u) tdc_per_ps = 1000000u / tf.clk_mhz; }
+					  for (int ch = 0; ch < 2; ch++)
+						  printf("TDC %c: kodu %u/%u (nejvyssi %u), nejvetsi bin %lu = %lu ps (%lu.%lu %% periody), za koncem retezu %lu, max tap %u\n",
+							     'A' + ch, (unsigned)d.nz[ch], (unsigned)(d.naddr ? d.naddr : 256u), (unsigned)d.last[ch],
+							     (unsigned long)d.peak[ch],
+							     (unsigned long)(((uint64_t)d.peak[ch] * tdc_per_ps) >> 20),         /* N = 2^20 udalosti, perioda hodin FPGA */
+							     (unsigned long)(((uint64_t)d.peak[ch] * 100ull) >> 20),
+							     (unsigned long)((((uint64_t)d.peak[ch] * 1000ull) >> 20) % 10ull),
+							     (unsigned long)d.ovf[ch], (unsigned)d.maxtap[ch]);
+					  /* B1a: obri bin = d_last zustava na ~134. maxtap to rozlisi:
+					   *   maxtap ~ last  -> teplomer CISTY, retez tam fyzicky konci
+					   *                     (oprava = delsi/jiny P&R carry chain)
+					   *   maxtap >> last -> BUBLINY nad prvni nulou, retez pokracuje
+					   *                     (oprava = vzorkovani / metastabilita FF) */
+					  if (d.cfg_valid)
+						  printf("TDC: konfigurace %u tapu, %s vzorky, %s\n", (unsigned)d.taps,
+						         d.stride1 ? "kazdy ALU (jemne)" : "kazdy 2. ALU",
+						         d.dual ? "DUAL (nabezna i sestupna hrana hodin)" : "nabezna hrana hodin");
+					  for (int ch = 0; ch < 2; ch++) {
+						  if (d.dual) {                           /* adresy = {sada, kod}: maxtap vs last nema smysl */
+							  printf("TDC %c: DUAL - verdikt maxtap/last se nepouziva; sledujte nejvetsi bin (musi byt < ~200 ps)\n", 'A' + ch);
+							  continue;
+						  }
+						  if (d.maxtap[ch] == 0u && d.last[ch] > 0u) {
+							  printf("TDC %c: maxtap N/A (stary FPGA FW? B1a potrebuje >=0x040D)\n", 'A' + ch);
+							  continue;
+						  }
+						  /* maxtap ma od FW 0x0410 rozliseni 8 tapu (u starsich 1) -> tolerance */
+						  int bub = ((int)d.maxtap[ch] - (int)d.last[ch]) > (d.cfg_valid ? 12 : 3);
+						  printf("TDC %c: maxtap %u vs nejvyssi kod %u -> %s\n",
+						         'A' + ch, (unsigned)d.maxtap[ch], (unsigned)d.last[ch],
+						         bub ? "BUBLINY nad prvni nulou (retez pokracuje; oprava = vzorkovani/metastabilita)"
+						             : "teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)");
+					  }
+					  printf("TDC: status 0x%02X (cal A:%u B:%u fail:%u busy:%u, retez kratky A:%u B:%u)\n",
+						     (unsigned)d.status,
+						     (d.status & FPGA_TDC_CAL_A) ? 1u : 0u, (d.status & FPGA_TDC_CAL_B) ? 1u : 0u,
+						     (d.status & FPGA_TDC_CAL_FAIL) ? 1u : 0u, (d.status & FPGA_TDC_CAL_BUSY) ? 1u : 0u,
+						     (d.status & FPGA_TDC_SHORT_A) ? 1u : 0u, (d.status & FPGA_TDC_SHORT_B) ? 1u : 0u);
+					  {   /* rezerva retezu z TOHOTO reportu (stejne vyhodnoceni jako `status`; behem kalibrace jsou hodnoty nedokoncene) */
+						  fpga_tdc_rez_t rz;
+						  fpga_tdc_rez_eval(&d, &rz);
+						  printf("TDC: rezerva retezu A %d tapu, B %d tapu z %u (OK >= %d, POZOR >= %d), za koncem A %lu B %lu ud.%s\n",
+						         (int)rz.rez_tap[0], (int)rz.rez_tap[1], (unsigned)rz.taps,
+						         FPGA_TDC_REZ_OK_TAPS, FPGA_TDC_REZ_WARN_TAPS,
+						         (unsigned long)rz.ovf_ev[0], (unsigned long)rz.ovf_ev[1],
+						         (d.status & FPGA_TDC_CAL_BUSY) ? "  (kalibrace bezi, hodnoty nejsou konecne)" : "");
+					  }
+					  printf("TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 %% periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)\n"
+					         "     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)\n");
+				  } else {
+					  printf("TDC: CAL report nedorazil (stary FW? link? fpgasim?)\n");
+				  }
+			  }
+			  else if (strncmp(RxBuffer, "gatestat", 8) == 0) {
+					  /* Cilova delka vzorku statistiky (prumerovani). Delsi = lepsi
+					   * rozliseni (lin. s dobou), kratsi az 250 ms = rychlejsi/zasumenejsi. */
+					  const char *ga = RxBuffer + 8;
+					  while (*ga == ' ') ga++;
+					  if (*ga >= '0' && *ga <= '9') {
+						  fpga_stat_set_target_ms((uint32_t)atoi(ga));
+						  /* FPGA okno uz NEnastavuje tento prikaz: od FW 0x041E ho ridi tlacitko GATE (g_ui_cfg)
+						   * a FpgaTask by ho do 1,5 s stejne vratil (`fpga_freq_cfg_sync`). */
+					  }
+					  printf("GATESTAT: vzorek ~%lu ms (FPGA hradlo nastavuje tlacitko GATE) (delsi=presnejsi, kratsi=rychlejsi)\n",
+					         (unsigned long)fpga_stat_target_ms());
+				  }
+				  else if (strcmp(RxBuffer, "fpgaraw") == 0) {
+				  /* Bring-up diagnostika: jeden prenos + vypis vsech FPGA_FRAME_LEN
+				   * prijatych bajtu (v2 = 128 B, v1 bylo 64 B).
+				   * Cekame: byte0=A5 byte1=02 byte2=80. Same FF/00 = MISO nebudi (FPGA mlci). */
+				  uint8_t rx[FPGA_FRAME_LEN];
 				  bool ok = fpga_freq_raw_xfer(rx);
 				  printf("FPGA raw xfer HAL:%s\n", ok ? "OK" : "ERR");
+				  /* ⚠️ `p` se kontroluje PRED pouzitim (audit F-0076): `sizeof(line) - p`
+				   * je `size_t`, takze pri `p > sizeof(line)` podtece na obrovske cislo
+				   * a `snprintf` dostane nesmyslnou kapacitu. Radek je vzdy 16 bajtu
+				   * (16 x 3 znaky = 48 z 64), bez ohledu na FPGA_FRAME_LEN — rezerva
+				   * je 16 B, staci zmenit format na ctyri znaky. Tentyz vzor uz ma
+				   * `uart_i2c4_probe`. */
 				  char line[64];
 				  int p = 0;
-				  for (int i = 0; i < 64; i++) {
-					  p += snprintf(line + p, sizeof(line) - p, "%02X ", rx[i]);
+				  for (int i = 0; i < (int)FPGA_FRAME_LEN; i++) {
+					  if (p >= 0 && (size_t)p < sizeof line)
+						  p += snprintf(line + p, sizeof(line) - (size_t)p, "%02X ", rx[i]);
 					  if ((i & 0xF) == 0xF) { printf("[%02d] %s\n", i - 15, line); p = 0; }
 				  }
 			  }
@@ -1193,7 +3214,9 @@ void UartTask_run(void *argument)
 					  printf("QSPI speed: init FAIL\n");
 					  osMutexRelease(qspiMutexHandle);
 				  } else {
-					  uint8_t buf[512];
+					  /* `static` ze stejneho duvodu jako `resp` u prikazu `scpi`
+					   * (F-0074 + F-0077a) — 512 B v ramci VSECH cest `UartTask_run`. */
+					  static uint8_t buf[512];
 					  uint32_t base = W25Q_DATA_BASE, total = 64u * 1024u;
 					  for (uint32_t a = 0; a < total; a += W25Q_SECTOR_SIZE) w25q_erase_sector(base + a);
 					  for (uint32_t off = 0; off < total; off += sizeof(buf)) {
@@ -1236,19 +3259,58 @@ void UartTask_run(void *argument)
 				   *   fpgasim                     stav
 				   *   fpgasim off
 				   *   fpgasim on [Hz] [noise_ppb] [drift_ppb/h]
-				   *   fpgasim fault none|lost|crc|div16|phase           */
+				   *   fpgasim fault none|lost|crc|div16|phase|gap       */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
-				  if (strncmp(a, "on", 2) == 0) {
+				  if (strncmp(a, "v3", 2) == 0) {
+					  /* 2026-10-22 (protokol v3): emulator FPGA v3 -- `fpgasim v3 on [Hz_A] [Hz_B] [faze_B_ns] [uzka]`, `fpgasim v3 off`
+					   * (v0.36.0: B = A + faze pro jednorazove deje; bez Hz_B = kmitocet A) */
+					  const char *p = a + 2;
+					  while (*p == ' ') p++;
+					  if (strncmp(p, "on", 2) == 0) {
+						  double ha = 0.0, hbz = 0.0;
+						  p += 2; while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (ha < 1.0e9) ha = ha * 10.0 + (*p - '0'); p++; }
+						  while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (hbz < 1.0e9) hbz = hbz * 10.0 + (*p - '0'); p++; }
+						  double phn = 0.0;                         /* v0.36.0: faze B proti A [ns] (jednorazove deje) */
+						  while (*p == ' ') p++;
+						  while (*p >= '0' && *p <= '9') { if (phn < 1.0e11) phn = phn * 10.0 + (*p - '0'); p++; }
+						  if (ha < 1.0) ha = 10000000.0;
+						  if (ha > 40.0e6) ha = 40.0e6;
+						  if (hbz > 40.0e6) hbz = 40.0e6;
+						  if (phn > 0.0 && hbz < 1.0) hbz = ha;    /* faze bez kmitoctu B: B = A */
+						  while (*p == ' ') p++;
+						  const int uz = (strncmp(p, "uzka", 4) == 0);   /* v0.40.0: uzka hlavicka FW 0x0507 */
+						  fpga_sim_v3_narrow(uz);
+						  fpga_sim_v3_set(1, ha, hbz, phn * 1e-9);
+						  printf("FPGASIM v3: ZAPNUTO A %lu Hz, B %lu Hz, faze B %lu ns%s (ramce 1024 B ze zaznamu segmentu; `fpga v3` = stav)\n",
+						         (unsigned long)ha, (unsigned long)hbz, (unsigned long)phn,
+						         uz ? ", UZKA hlavicka (FW 0x0507, citace pretecou 2^16 do ~10 s)" : "");
+						  printf("  ⚠️ EMULACE — nejsou to merena data. Zaznamy v datalogu nesou priznak SIM.\n");
+					  } else {
+						  fpga_sim_v3_set(0, 0.0, 0.0, 0.0);
+						  printf("FPGASIM v3: vypnuto (zpet na skutecne SPI, verze FPGA se zjisti znovu)\n");
+					  }
+				  } else if (strncmp(a, "on", 2) == 0) {
 					  /* Rucni parsovani (zadny sscanf — nano.specs). */
+					  /* 🔴 Vsechny tri hodnoty maji HORNI mez (audit F-0075). Drive se
+					   * kontrolovala jen dolni, takze `fpgasim on 99999999999999999999`
+					   * dalo hz ~1e20 a `(uint64_t)(hz * 100000.0)` o sest radu preteklo
+					   * rozsah `uint64_t` — to NENI jen spatne cislo, ale nedefinovane
+					   * chovani. Mez 4e9 je tataz, jakou ma `fmt_scpi_hz_d` (scpi.c:112),
+					   * a lezi nad stropem tvarovace (1,4 GHz), takze nic platneho
+					   * neodrizne. `if (x < mez)` uvnitr smycky brani preteceni uz pri
+					   * akumulaci — cislice se dal ctou, jen se nepricitaji. */
 					  const char *p = a + 2;
 					  double hz = 0; float noi = 0.f, dr = 0.f;
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { hz = hz * 10.0 + (*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (hz < 1.0e12) hz = hz * 10.0 + (*p - '0'); p++; }
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { noi = noi * 10.f + (float)(*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (noi < 1.0e6f) noi = noi * 10.f + (float)(*p - '0'); p++; }
 					  while (*p == ' ') p++;
-					  while (*p >= '0' && *p <= '9') { dr = dr * 10.f + (float)(*p - '0'); p++; }
+					  while (*p >= '0' && *p <= '9') { if (dr < 1.0e6f) dr = dr * 10.f + (float)(*p - '0'); p++; }
 					  if (hz < 1.0) hz = 10000000.0;
+					  if (hz > 4.0e9) hz = 4.0e9;
 					  fpga_sim_set(1, hz, noi, dr);
 					  char hb[32]; fpga_freq_format_val((uint64_t)(hz * 100000.0), hb, sizeof hb);
 					  printf("FPGASIM: ZAPNUTO %s  sum +-%d ppb  drift %d ppb/h\n",
@@ -1259,16 +3321,361 @@ void UartTask_run(void *argument)
 					  printf("FPGASIM: vypnuto (zpet na skutecne SPI)\n");
 				  } else if (strncmp(a, "fault", 5) == 0) {
 					  const char *w = (a[5] == ' ') ? &a[6] : "";
-					  if (fpga_sim_fault(w)) printf("FPGASIM: porucha = %s\n", w);
-					  else printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase)\n");
+					  if (!fpga_sim_fault(w)) printf("FPGASIM: neznama porucha (none|lost|crc|div16|phase|gap)\n");
+					  else if (strcmp(w, "gap") == 0)   /* F-0193: jednorazova, ne trvaly rezim */
+						  printf("FPGASIM: pristi mereni preskoci 3 (dira v SEQ) -> status: SEQ FPGA\n");
+					  else printf("FPGASIM: porucha = %s\n", w);
 				  } else {
 					  if (fpga_sim_active()) {
 						  char hb[32]; fpga_freq_format_val((uint64_t)(fpga_sim_hz() * 100000.0), hb, sizeof hb);
-						  printf("FPGASIM: AKTIVNI, %s\n", hb);
+						  printf("FPGASIM: AKTIVNI%s, %s\n", fpga_sim_v3_active() ? " (v3, ramce 1024 B)" : " (v2)", hb);
 					  } else {
 						  printf("FPGASIM: vypnuto\n");
 					  }
-					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase>\n");
+					  printf("  fpgasim on [Hz] [sum_ppb] [drift_ppb/h] | off | fault <none|lost|crc|div16|phase|gap> | v3 on [Hz_A] [Hz_B] [faze_B_ns] | v3 off\n");
+				  }
+			  }
+			  /* 🔴 `rpipe [0|1|2]` — zpozdeni vzorkovani CTENYCH dat z SDRAM za CAS latenci,
+			   * v taktech HCLK (`FMC_SDCR1.RPIPE`). Ladi se ZA BEHU, aby slo v JEDNOM sezeni
+			   * overit, jestli za pripadne zlepseni muze prave tohle: `rpipe 0` vrati puvodni
+			   * (chybne) chovani, `rpipe 1` nove vychozi.
+			   *
+			   * PROC to je podezrely: `membench` hlasi chyby uz pri ZAPISU S OKAMZITYM
+			   * OVERENIM, a to i u vzoru `0x00` — zapsat nulu a precist nenulu neni rozpad
+			   * bunky (ta pada K nule), ale spatne PRECTENA data. Interni pameti jsou pritom
+			   * 100 % v poradku, takze vada je vyhradne na externi sbernici.
+			   *
+			   * ⚠️ Zapisuje se do `SDCR1` za behu. LTDC z teze SDRAM prave scanuje, takze
+			   * obraz muze kratce probliknout — stejne jako u `sdraminit`.
+			   * ⚠️ Nepersistuje se: po resetu plati hodnota z `MX_FMC_Init`.
+			   * ⚠️ Po zmene MER: `membench` (chybne bity) a `bgcheck` (BEZE ZMENY). */
+			  else if (strncmp(RxBuffer, "rpipe", 5) == 0) {
+			  	const char *p = RxBuffer + 5;
+			  	while (*p == ' ') p++;
+			  	if (*p >= '0' && *p <= '9') {
+			  		uint32_t v = (uint32_t)(*p - '0');
+			  		if (v > 2u) v = 2u;                     /* RPIPE je 2bitove, 3 je rezervovane */
+			  		uint32_t cr = FMC_Bank5_6_R->SDCR[0];
+			  		cr = (cr & ~FMC_SDCRx_RPIPE_Msk) | (v << FMC_SDCRx_RPIPE_Pos);
+			  		FMC_Bank5_6_R->SDCR[0] = cr;
+			  		uint32_t rd = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk) >> FMC_SDCRx_RPIPE_Pos;
+			  		printf("rpipe: %lu -> potvrzeno %lu takt(u) HCLK\r\n",
+			  		       (unsigned long)v, (unsigned long)rd);
+			  		printf("  over: `membench` (chybne bity) a `bgcheck` (BEZE ZMENY)\r\n");
+			  	} else {
+			  		uint32_t rd = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk) >> FMC_SDCRx_RPIPE_Pos;
+			  		printf("rpipe: %lu takt(u) HCLK (pouziti: rpipe <0|1|2>)\r\n", (unsigned long)rd);
+			  		printf("  0 = vzorkuj hned (puvodni), 1 = vychozi od 2026-09-09, 2 = max rezerva\r\n");
+			  	}
+			  }
+			  /* 🔴 `sdrtr [n]` — cetnost obnovy SDRAM ZA BEHU (stejny vzor jako `d2ddt`).
+			   *
+			   * PROC runtime: spravna rezerva obnovy se hleda MERENIM, a preflashovat kvuli
+			   * kazde hodnote je drahe. Postup: `sdrtr <n>`, pak `bgcheck` (musi rict BEZE
+			   * ZMENY) a `status` -> `LTDC: podteceni FIFO` (nesmi narust — vic obnovy = min
+			   * pasma pro LTDC). Tak se najde nejvyssi hodnota, ktera jeste drzi.
+			   *
+			   * Vyssi cislo = RIDSI obnova (delsi perioda), nizsi = CASTEJSI.
+			   *   perioda_matice = (n + 20) * 8192 / SDCLK   [s]
+			   * Pri SDCLK 50 MHz: n=371 -> 64 ms (spec maximum), n=175 -> 32 ms (2x rezerva).
+			   * ⚠️ Obnovovat se smi vzdy CASTEJI, nikdy rideji — snizovani `n` je bezpecne
+			   * z principu, zvysovani nad 371 uz je mimo spec.
+			   * ⚠️ Nepersistuje se: po resetu plati `REFRESH_COUNT_EXPECTED` z `fmc.h`. */
+			  else if (strncmp(RxBuffer, "sdrtr", 5) == 0) {
+			  	const char *p = RxBuffer + 5;
+			  	while (*p == ' ') p++;
+			  	if (*p >= '0' && *p <= '9') {
+			  		uint32_t v = 0;
+			  		while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+			  		/* Dolni mez 41 je z RM0399 (nizsi hodnota neni platna), horni 0x1FFF
+			  		 * je sirka pole COUNT. Nad 371 se varuje — to uz je mimo tREF 64 ms. */
+			  		if (v < 41u) v = 41u;
+			  		if (v > 0x1FFFu) v = 0x1FFFu;
+			  		if (HAL_SDRAM_ProgramRefreshRate(&hsdram1, v) != HAL_OK) {
+			  			printf("sdrtr: HAL odmitl zapis\r\n");
+			  		} else {
+			  			uint32_t rd = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+			  			printf("sdrtr: %lu -> potvrzeno %lu  (perioda matice ~%lu ms)\r\n",
+			  			       (unsigned long)v, (unsigned long)rd,
+			  			       (unsigned long)(((rd + 20u) * 8192u) / 50000u));
+			  			if (rd > 371u)
+			  				printf("  ⚠️ nad 371 = perioda > 64 ms = MIMO SPEC, bunky se rozpadnou\r\n");
+			  			printf("  over: `bgcheck` (BEZE ZMENY) a `status` -> LTDC podteceni FIFO\r\n");
+			  		}
+			  	} else {
+			  		uint32_t rd = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+			  		printf("sdrtr: %lu (perioda matice ~%lu ms), ve zdrojaku %u\r\n",
+			  		       (unsigned long)rd, (unsigned long)(((rd + 20u) * 8192u) / 50000u),
+			  		       (unsigned)REFRESH_COUNT_EXPECTED);
+			  		printf("  pouziti: sdrtr <41..8191>, nizsi = CASTEJSI obnova\r\n");
+			  	}
+			  }
+			  #define BGCHK_BLOCKS 120u
+			  /* 🔴 `bgcheck` — RETENCNI TEST PRAVE TE PAMETI, KTERA PRI ROZPADU DELA
+			   * PROBLIKAVANI (audit F-0013, 2026-09-09).
+			   *
+			   * PROC to nedokazal `membench`: ten testuje SDRAM na `0xC0400000` (MPU region
+			   * 1), zatimco rozsah `.sdram` na `0xC0800000` ma v seznamu NEDOTKNUTELNYCH
+			   * (`membench.c:348`) — psat se do nej nesmi. Jenze prave tam lezi `bg_cache`,
+			   * a mechanismus problikavani je podle #138 ten, ze partial redraw blituje
+			   * POSKOZENE pozadi. Merilo se tedy 1 048 646 chybnych bitu v JINE pameti, nez
+			   * ktera dela viditelnou vadu. (SKILL §7e: nejdriv over MERITKO, pak jim mer.)
+			   *
+			   * JAK to test obchazi: `bg_cache` se zapise JEDNOU v `screen_main_init()` a pak
+			   * uz se JEN CTE, takze se jeho obsah nesmi zmenit. Staci ho dvakrat po sobe
+			   * sesumovat — zadny zapis, tedy NENI to destruktivni a smi to bezet za plneho
+			   * provozu (na rozdil od `membench`, ktery tenhle rozsah proto vynechava).
+			   * ⚠️ Behem testu nemenit tema ani rozlozeni — `screen_main_init()` bg_cache
+			   * prekresli a test by hlasil falesnou zmenu.
+			   * ⚠️ Cte se po 32 bitech ze zarovnane adresy: `.sdram` je Device pamet, kde by
+			   * nezarovnany pristup byl UsageFault (audit F-0012).
+			   * ⚠️ Bezi v UartTasku, ktery watchdog nehlida — `osDelay(1000)` je tu bezpecny. */
+			  else if (strcmp(RxBuffer, "bgcheck") == 0) {
+			  	static uint32_t bgsum[BGCHK_BLOCKS];   /* .bss, ne stack (UartTask ma 4 kB) */
+			  	const uint32_t *bg = (const uint32_t *)(const void *)screen_main_bg();
+			  	uint32_t words = ((uint32_t)SCR_MAIN_BG_CACHE_W *
+			  	                  (uint32_t)SCR_MAIN_BG_CACHE_H * 2u) / 4u;
+			  	uint32_t per = words / BGCHK_BLOCKS;
+			  	if (bg == NULL || per == 0u) {
+			  		printf("bgcheck: bg_cache neni k dispozici\r\n");
+			  	} else {
+			  		for (uint32_t b = 0; b < BGCHK_BLOCKS; b++) {
+			  			uint32_t s = 2166136261u;                  /* FNV-1a */
+			  			const uint32_t *q = bg + (size_t)b * per;
+			  			for (uint32_t i = 0; i < per; i++) { s ^= q[i]; s *= 16777619u; }
+			  			bgsum[b] = s;
+			  		}
+			  		osDelay(1000);                                 /* >> 64 ms obnovy cele matice */
+			  		uint32_t bad = 0, first = 0xFFFFFFFFu;
+			  		for (uint32_t b = 0; b < BGCHK_BLOCKS; b++) {
+			  			uint32_t s = 2166136261u;
+			  			const uint32_t *q = bg + (size_t)b * per;
+			  			for (uint32_t i = 0; i < per; i++) { s ^= q[i]; s *= 16777619u; }
+			  			if (s != bgsum[b]) { bad++; if (first == 0xFFFFFFFFu) first = b; }
+			  		}
+			  		printf("bgcheck: bg_cache @%08lX, %lu kB, %lu blok(u) po %lu B\r\n",
+			  		       (unsigned long)(uintptr_t)bg,
+			  		       (unsigned long)(words * 4u / 1024u),
+			  		       (unsigned long)BGCHK_BLOCKS, (unsigned long)(per * 4u));
+			  		if (bad == 0u)
+			  			printf("  po 1 s BEZE ZMENY -> bg_cache drzi, problikavani hledej jinde\r\n");
+			  		else
+			  			printf("  ZMENILO SE %lu/%lu bloku, prvni @%08lX  <== bg_cache SE ROZPADA\r\n",
+			  			       (unsigned long)bad, (unsigned long)BGCHK_BLOCKS,
+			  			       (unsigned long)(uintptr_t)(bg + (size_t)first * per));
+			  	}
+			  }
+			  #undef BGCHK_BLOCKS
+			  /* Mrtvy cas DMA2D proti podteceni LTDC (#139). Ladi se ZA BEHU, aby
+			   * se spravna hodnota dala najit bez preflashovani: nastav, chvili
+			   * koukej na displej a porovnej `LTDC: podteceni FIFO` ve `status`.
+			   * Vyssi = DMA2D vic ustupuje LTDC, ale kresleni je pomalejsi. */
+			  else if (strncmp(RxBuffer, "d2ddt", 5) == 0) {
+				  const char *p = RxBuffer + 5;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  if (v > 255u) v = 255u;
+					  prim_stm32_set_deadtime((uint8_t)v);
+					  g_ltdc_underrun = 0;         /* at se meri az od teto zmeny */
+					  /* Mrtvy cas primo urcuje, jak dlouho prenos trva, takze se musi
+					   * vynulovat i mereni cekani a jeho vyprseni (F-0036) — jinak by
+					   * `max cekani` drzelo hodnotu z PREDCHOZI hodnoty `d2ddt`. */
+					  g_d2d_wait_max_cyc = 0; g_d2d_timeouts = 0; g_d2d_errors = 0;
+					  printf("DMA2D: mrtvy cas = %lu takt(u) AHB, pocitadla vynulovana\n",
+					         (unsigned long)v);
+				  } else {
+					  printf("DMA2D: mrtvy cas = %u (pouziti: d2ddt <0..255>, 0 = vypnuto)\n",
+					         (unsigned)g_d2d_deadtime);
+				  }
+			  }
+			  /* spi [MHz] — takt SPI2 ke FPGA ZA BEHU (STATUS #314), vzor jako `d2ddt`: nastav, chvili sleduj `status` (CRC err, SEQ diry). */
+			  else if (strncmp(RxBuffer, "spi", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (strncmp(p, "err", 3) == 0) {
+					  /* v0.40.7 (STATUS #343): diagnostika chyb SPI v3 -- `spi err` souhrn + poslednich chyb, `spi err dump` vadne bloky (hex),
+					   * `spi err reset`, `spi err inject <blok 0..3> <n>` (zkouska: zkazi dalsich n prijatych ramcu). */
+					  const char *q = p + 3;
+					  while (*q == ' ') q++;
+					  if (strncmp(q, "reset", 5) == 0) {
+						  fpga_spi_err_reset();
+						  printf("SPI ERR: vynulovano\n");
+					  } else if (strncmp(q, "inject", 6) == 0) {
+						  q += 6;
+						  while (*q == ' ') q++;
+						  uint32_t ib = 0u, in = 1u;
+						  if (*q >= '0' && *q <= '3') {
+							  ib = (uint32_t)(*q - '0'); q++;
+							  while (*q == ' ') q++;
+							  if (*q >= '0' && *q <= '9') { in = 0u; while (*q >= '0' && *q <= '9') { in = in * 10u + (uint32_t)(*q - '0'); q++; } }
+						  }
+						  fpga_spi_err_inject(ib, in);
+						  printf("SPI ERR: zkazim dalsich %lu ramcu (blok %lu, bit 0 bajtu 100)\n", (unsigned long)in, (unsigned long)ib);
+					  } else if (strncmp(q, "dump", 4) == 0) {
+						  static uint8_t eblk[FPGA_V3_BLK];            /* UartTask: 256 B na zasobnik nedavame */
+						  for (uint32_t sl = 0; sl < FPGA_SPI_ERR_BAD; sl++) {
+							  const int bk = fpga_spi_err_block(sl, eblk);
+							  if (bk < 0) continue;
+							  printf("SPI ERR: slot %lu = blok %d ramce\n", (unsigned long)sl, bk);
+							  for (uint32_t o = 0; o < FPGA_V3_BLK; o += 32u) {
+								  printf("  %03lX:", (unsigned long)o);
+								  for (uint32_t j = 0; j < 32u; j++) printf(" %02X", (unsigned)eblk[o + j]);
+								  printf("\n");
+							  }
+						  }
+					  } else {
+						  fpga_spi_errstat_t es;
+						  fpga_spi_err_stats(&es);
+						  printf("SPI ERR: transakci %lu, chyb %lu = CRC bloku 0: %lu, CRC bloku 1-3: %lu, MAGIC/VER: %lu, LEN: %lu | CRC podle bloku 0:%lu 1:%lu 2:%lu 3:%lu\n",
+						         (unsigned long)es.frames, (unsigned long)es.err, (unsigned long)es.kind[1], (unsigned long)es.kind[2],
+						         (unsigned long)es.kind[3], (unsigned long)es.kind[4], (unsigned long)es.blk[0], (unsigned long)es.blk[1],
+						         (unsigned long)es.blk[2], (unsigned long)es.blk[3]);
+						  printf("SPI ERR: serii %lu (izolovanych %lu, nejdelsi %lu) | transakce max %lu us, odstup max %lu ms | nejkratsi odstup %lu ms%s\n",
+						         (unsigned long)es.bursts, (unsigned long)es.isolated, (unsigned long)es.max_run,
+						         (unsigned long)es.xfer_us_max, (unsigned long)es.gap_ms_max, (unsigned long)fpga_freq_poll_ms(0),
+						         es.inj_left ? " | VSTRIKOVANI AKTIVNI" : "");
+						  {   /* v0.40.8 (FW 0x0508): pulzy na CS, ktere FPGA zahodila filtrem (jinak by restartovaly vysilani od bajtu 0) */
+							  uint8_t gl[5];
+							  const uint8_t fl = fpga_cs_gl_get(gl);
+							  if (fl != 0u)
+								  printf("SPI ERR: pulzy na CS zahozene filtrem FPGA (%u taktu 100 MHz = %u ns): aktivni 1-2 taktu %u, 3-4: %u, 5-8: %u, 9+: %u | v klidu %u (saturuji na 255)\n",
+								         (unsigned)fl, (unsigned)fl * 10u, (unsigned)gl[0], (unsigned)gl[1], (unsigned)gl[2], (unsigned)gl[3], (unsigned)gl[4]);
+							  else
+								  printf("SPI ERR: FPGA nema citace pulzu na CS (CAPS bit23 = 0, FW < 0x0508)\n");
+						  }
+						  for (uint32_t i = 0; i < FPGA_SPI_ERR_RING; i++) {
+							  fpga_spi_err_t ee;
+							  if (!fpga_spi_err_get(i, &ee)) break;
+							  printf("  #%lu t=%lu.%03lu s ramec %lu kind %u bloky OK %X SEQ %lu od PSEQ %lu ms odstup %lu ms serie %u slot %d\n",
+							         (unsigned long)i, (unsigned long)(ee.t_ms / 1000u), (unsigned long)(ee.t_ms % 1000u), (unsigned long)ee.frame_no,
+							         (unsigned)ee.kind, (unsigned)ee.blk_ok, (unsigned long)ee.seq,
+							         (unsigned long)((ee.since_pps_ms == 0xFFFFu) ? 0u : ee.since_pps_ms), (unsigned long)ee.gap_ms,
+							         (unsigned)ee.run, (ee.bad_slot == 0xFFu) ? -1 : (int)ee.bad_slot);
+						  }
+						  printf("SPI ERR: pouziti: spi err [reset|dump|inject <blok> <n>] | spi poll [ms]\n");
+					  }
+				  } else if (strncmp(p, "poll", 4) == 0) {
+					  /* v0.40.7: nejkratsi odstup transakci v3 (vychozi 40 ms, nepersistuje se). Skutecny odstup je vetsi z teto hodnoty a periody smycky
+					   * FpgaTasku (10 ms pri hradle <= 50 ms, 25 ms <= 100 ms, jinak 50 ms), mene nez 40 ms ji zkracuje i smycku. */
+					  const char *q = p + 4;
+					  while (*q == ' ') q++;
+					  int pv = 0;
+					  while (*q >= '0' && *q <= '9') { pv = pv * 10 + (*q - '0'); q++; }
+					  const uint32_t pr = fpga_freq_poll_ms(pv);
+					  printf("SPI: nejkratsi odstup transakci v3 = %lu ms (do ~%lu/s; vychozi 40, rozsah 10..200, nepersistuje se)\n",
+					         (unsigned long)pr, (unsigned long)(1000u / pr));
+				  } else if (strncmp(p, "pins", 4) == 0) {
+					  /* v0.40.8 (L-0242): rychlost hran vystupu SCK / MOSI / CS za behu -- `spi pins` = stav, `spi pins <rychlost>` = vsechny tri,
+					   * `spi pins sck|mosi|cs <rychlost>` = jeden; rychlost low|medium|high|very nebo 0..3. Nepersistuje se. */
+					  static const char *const SPD[4] = { "LOW", "MEDIUM", "HIGH", "VERY_HIGH" };
+					  const char *q = p + 4;
+					  while (*q == ' ') q++;
+					  int which = -1;
+					  if      (strncmp(q, "sck", 3) == 0)  { which = 0; q += 3; }
+					  else if (strncmp(q, "mosi", 4) == 0) { which = 1; q += 4; }
+					  else if (strncmp(q, "cs", 2) == 0)   { which = 2; q += 2; }
+					  while (*q == ' ') q++;
+					  int sp = -1;
+					  if      (strncmp(q, "low", 3) == 0)    sp = 0;
+					  else if (strncmp(q, "medium", 6) == 0) sp = 1;
+					  else if (strncmp(q, "high", 4) == 0)   sp = 2;
+					  else if (strncmp(q, "very", 4) == 0)   sp = 3;
+					  else if (*q >= '0' && *q <= '3')       sp = *q - '0';
+					  if (sp >= 0) {
+						  if (which < 0) { for (int w = 0; w < 3; w++) (void)fpga_freq_spi_pin_set(w, (uint8_t)sp); }
+						  else (void)fpga_freq_spi_pin_set(which, (uint8_t)sp);
+					  }
+					  uint8_t pv[3];
+					  fpga_freq_spi_pins_get(pv);
+					  printf("SPI2: rychlost vystupu SCK %s, MOSI %s, CS %s (pouziti: spi pins [sck|mosi|cs] <low|medium|high|very>; nepersistuje se)\n",
+					         SPD[pv[0] & 3u], SPD[pv[1] & 3u], SPD[pv[2] & 3u]);
+				  } else if (strncmp(p, "dma", 3) == 0) {
+					  /* 2026-10-22 (protokol v3, krok 7): datova faze SPI2 pres DMA za behu -- `spi dma on|off`, `spi dma` = stav.
+					   * Vychozi vypnuto (overeni na desce: zadani 2026-10-20_CRC_DMA_zadani_CLI.md testy D3..D8). */
+					  const char *q = p + 3;
+					  while (*q == ' ') q++;
+					  int st = (strncmp(q, "on", 2) == 0) ? fpga_freq_spi_dma(1) : (strncmp(q, "off", 3) == 0) ? fpga_freq_spi_dma(0) : fpga_freq_spi_dma(-1);
+					  fpga_spi_dma_stats_t ds;
+					  fpga_spi_dma_stats(&ds);
+					  printf("SPI2 DMA: %s (zapnuto %u, ready %u, vypnuto po chybach %u) | ok %lu, chyba startu %lu, timeout %lu, chyba DMA %lu, odmitnuto %lu, cyklu posl. %lu max %lu\n",
+					         st ? "POUZIVA SE" : "nepouziva se", (unsigned)fpga_spi_dma_enabled(), (unsigned)ds.ready, (unsigned)ds.disabled, (unsigned long)ds.ok,
+					         (unsigned long)ds.start_err, (unsigned long)ds.timeout, (unsigned long)ds.dma_err, (unsigned long)ds.rejected,
+					         (unsigned long)ds.cyc_last, (unsigned long)ds.cyc_max);
+				  } else {
+				  {   /* 2026-10-22: rychlost vystupu pinu (zkouska SCK 25 MHz, docs/PROTOKOL_V3.md kap. 2) */
+				      static const char *const SPD[4] = { "LOW", "MEDIUM", "HIGH", "VERY_HIGH" };
+				      uint8_t ps = 0u, pm = 0u; fpga_freq_spi_pin_speed(&ps, &pm);
+				      printf("SPI2: piny SCK %s, MOSI %s\n", SPD[ps & 3u], SPD[pm & 3u]);
+				  }
+				  if (*p >= '0' && *p <= '9') {
+					  uint32_t v = 0;
+					  while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+					  uint32_t r = fpga_freq_set_sck(v * 1000000u);
+					  if (r) printf("SPI2: SCK = %lu Hz (ramec 128 B ~ %lu us), CRC err %lu\n", (unsigned long)r,
+					               (unsigned long)(1024000000ull / r), (unsigned long)fpga_freq_crc_count());
+					  else printf("SPI2: zamitnuto (cil 1..40 MHz)\n");
+				  } else {
+					  uint32_t kz = 0; (void)fpga_freq_sck_stage(0, &kz);
+					  printf("SPI2: kernel %lu Hz, SCK %lu Hz, CRC err %lu | stupne:", (unsigned long)kz,
+					         (unsigned long)fpga_freq_sck_hz(), (unsigned long)fpga_freq_crc_count());
+					  for (uint32_t i = 0; i < 6u; i++) printf(" %lu", (unsigned long)fpga_freq_sck_stage(i, NULL));
+					  printf(" Hz (pouziti: spi <MHz> = nejvyssi stupen <= cil, max 40; spi dma on|off)\n");
+				  }
+				  }
+			  }
+			  /* tap <idx> — injektor doteku pro diagnostiku (F-0140). Zada stisk
+			   * tlacitka patky hlavni obrazovky (0=PERIOD/FREQ, 1=RUN/STOP, 2=GATE,
+			   * 3=CHAN, 4=MENU); UiTask ho provede PRESNE cestou skutecneho prstu.
+			   * ⚠️ Kresli se az v UiTasku (pozadavek, ne primy zapis — libui neni
+			   * thread-safe), stejny vzor jako `g_screen_req`. */
+			  else if (strncmp(RxBuffer, "tap", 3) == 0) {
+				  const char *p = RxBuffer + 3;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+				  	int idx = *p - '0';
+				  	g_tap_btn_req = (int8_t)idx;
+				  	printf("TAP: zadano tlacitko %d (provede UiTask)\n", idx);
+				  } else {
+				  	printf("TAP: pouziti `tap <0..4>` (0=PERIOD/FREQ 1=RUN/STOP 2=GATE 3=CHAN 4=MENU)\n");
+				  }
+			  }
+			  /* fbdiff — porovna vsechny tri framebuffery mezi sebou (F-0140).
+			   * PROC: „problikne" muze mit dve UPLNE ruzne priciny, ktere vypadaji
+			   * stejne. (a) POSKOZENY SNIMEK pri scan-outu (podteceni FIFO) — buffery
+			   * se SHODUJI, vada vznikla az cestou na panel. (b) NESOULAD BUFFERU —
+			   * nektery drzi STARY obsah, takze problikne pokazde, kdyz na nej prijde
+			   * rada pri flipu; tohle `LTDC: podteceni FIFO` NEVIDI.
+			   * ⚠️ Na zastavenem mereni (STOP) je zona cisla zmrazena (`tick_freq` se
+			   * hned vraci), takze pripadny nesoulad tam zustane NATRVALO — proto se
+			   * to pozna i nekolik sekund po stisku, ne jen v okamziku vady. */
+			  else if (strcmp(RxBuffer, "fbdiff") == 0) {
+				  printf("FBDIFF: front = FB%d, back = FB%d | cil copy-forwardu: "
+				         "FB0 %lux FB1 %lux FB2 %lux | posl. kopie %ld rectu, plnych %lu\n",
+				         prim_stm32_front_index(), prim_stm32_back_index(),
+				         (unsigned long)prim_stm32_fb_back_count(0),
+				         (unsigned long)prim_stm32_fb_back_count(1),
+				         (unsigned long)prim_stm32_fb_back_count(2),
+				         (long)(int32_t)prim_stm32_fb_last_copy_rects(),
+				         (unsigned long)prim_stm32_fb_full_copies());
+				  printf("  podteceni po fazich: kresleni %lu | cekani %lu | flip %lu | COPY-FORWARD %lu\n",
+				         (unsigned long)prim_stm32_ur_phase(0), (unsigned long)prim_stm32_ur_phase(1),
+				         (unsigned long)prim_stm32_ur_phase(2), (unsigned long)prim_stm32_ur_phase(3));
+				  static const uint8_t PAIRS[3][2] = { {0,1}, {0,2}, {1,2} };
+				  for (int i = 0; i < 3; i++) {
+				  	int16_t bx = 0, by = 0, bw = 0, bh = 0;
+				  	uint32_t n = prim_stm32_fb_compare(PAIRS[i][0], PAIRS[i][1],
+				  	                                  &bx, &by, &bw, &bh);
+				  	if (n == 0u) {
+				  		printf("  FB%u vs FB%u: shoda\n",
+				  		       (unsigned)PAIRS[i][0], (unsigned)PAIRS[i][1]);
+				  	} else {
+				  		printf("  FB%u vs FB%u: %lu odlisnych px, oblast x=%d y=%d %dx%d\n",
+				  		       (unsigned)PAIRS[i][0], (unsigned)PAIRS[i][1],
+				  		       (unsigned long)n, (int)bx, (int)by, (int)bw, (int)bh);
+				  	}
+				  	osDelay(2);   /* UartTask neni hlidany, presto nedrz CPU v kuse */
 				  }
 			  }
 			  else if (strcmp(RxBuffer, "meas reset") == 0) {
@@ -1277,6 +3684,21 @@ void UartTask_run(void *argument)
 				  g_stats_reset_req = 1;
 				  alarm_reset_counters();   /* g_alarm_* jsou proste volatile globaly, bezzamkove */
 				  printf("MERENI: Allan/Histogram/Trend + pocitadla alarmu vynulovany\n");
+			  }
+			  else if (strncmp(RxBuffer, "meas outlier", 12) == 0) {
+				  /* Filtr izolovanych odlehlych vzorku pred Allan pyramidou (7 MAD, okno 31); vypnuti = vsechny vzorky jako platne. */
+				  if (strcmp(RxBuffer, "meas outlier on") == 0) g_adev_hampel_en = 1u;
+				  else if (strcmp(RxBuffer, "meas outlier off") == 0) g_adev_hampel_en = 0u;
+				  { uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
+				    printf("MERENI: filtr izolovanych odlehlych vzorku %s, vyrazeno %lu z %lu posouzenych (`meas outlier on|off`)\n",
+				           g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs); }
+			  }
+			  else if (strncmp(RxBuffer, "meas gate", 9) == 0) {
+				  /* V1: brana Allan pyramidy podle ustaleni reference (OCXO dohrato + smycka zamcena). */
+				  if (strcmp(RxBuffer, "meas gate on") == 0) g_stats_refgate_en = 1u;
+				  else if (strcmp(RxBuffer, "meas gate off") == 0) g_stats_refgate_en = 0u;
+				  printf("MERENI: brana Allan pyramidy podle reference %s, nyni %s (`meas gate on|off`)\n",
+				         g_stats_refgate_en ? "ZAP" : "VYP", screen_main_adev_gate_open() ? "OTEVRENA" : "ZAVRENA (reference se nena ustalila)");
 			  }
 			  else if (strcmp(RxBuffer, "stats") == 0) {
 				  static TaskStatus_t ta[12], tb[12];
@@ -1310,7 +3732,15 @@ void UartTask_run(void *argument)
 						 (unsigned long)xPortGetMinimumEverFreeHeapSize());
 				  printf("Uptime: %lu s\n", (unsigned long)(HAL_GetTick() / 1000u));
 			  }
-			  else if (strcmp(RxBuffer, "status") == 0)  {
+			  else if (strcmp(RxBuffer, "status") == 0 || strcmp(RxBuffer, "status full") == 0)  {
+				  /* ── `status` je kratky, `status full` vypise vse ────────────────
+				   * 🔑 PROC: vypis narostl na ~63 radku a je to nastroj c. 1 v tabulce
+				   * „cim merit podle ceny" — stena textu pri 115200 baud dela z nej
+				   * neco, co se cte az v logu. Kratka verze proto ukaze JEN to, co
+				   * neni v poradku, plus par zivych radku, ktere se ctou vzdy.
+				   * ⚠️ Prah je „tisknu, kdyz hodnota NENI v poradku", ne pevny seznam —
+				   * jinak by kratka verze mlcela prave o tom novem, co se pokazilo. */
+				  const int full = (RxBuffer[6] == ' ');
 				  /* Diagnostika restartu + zdravi tasku. Drive to vypisovalo jen
 				   * "RUNNING" (nepouzitelne pri honu na nahodny watchdog reset) —
 				   * pricina resetu byla dostupna JEN v okne System Health. */
@@ -1379,6 +3809,20 @@ void UartTask_run(void *argument)
 							  printf("  NET: down%s\n", g_cm4_eth_ok ? " (kabel?)" : "");
 						  }
 					  }
+					  /* Pocitadla vyslani (v18, audit F-0138). 🔑 Odlisi "nevysilame
+					   * vubec" od "vysilame, ale nic se nevraci" — presne tu otazku,
+					   * kterou `NET: UP` zamlcelo pri ladeni TX adresy 2026-09-08,
+					   * kdy linka hlasila 100 Mbit full a na drat nesel ani bajt.
+					   * `TX 0` pri UP lince je tedy SILNY signal, ne detail. */
+					  {
+						  uint16_t txok = 0; uint8_t txerr = 0;
+						  if (ipc_cm4_eth_tx(&txok, &txerr)) {
+							  printf("  TX(CM4): odeslano %u%s, zahozeno %u%s%s\n",
+								     (unsigned)txok, (txok == 65535u) ? "+" : "",
+								     (unsigned)txerr, (txerr == 255u) ? "+" : "",
+								     (txok == 0u) ? "  <== NEODESLALA ANI JEDEN PAKET" : "");
+						  }
+					  }
 				  }
 				  /* Volny stack kritickych tasku — maly zbytek = kandidat na
 				   * preteceni (a tim i na "stall"/HardFault). */
@@ -1392,6 +3836,410 @@ void UartTask_run(void *argument)
 					  printf("  stack %-7s free %lu B\n", TL[i].n,
 						     (unsigned long)osThreadGetStackSpace(*TL[i].h));
 				  }
+				  /* ── Stav sbernice I2C4 (dotyk + TMP117 0x48 + ATTINY podsviceni) ──
+				   * ⚠️ Bez tohohle radku se „mrtvy dotyk" nedal odlisit od „zaseknuty
+				   * UiTask" jinak nez ladici sondou (HW nalez 2026-08-30). Zdrave =
+				   * nizka chybovost TMP117 0x48; SCL/SDA jsou jen INFO.
+				   * 🔴 #114: znacka „SBERNICE MRTVA" NESMI viset na okamzitem odectu
+				   * linek. `i2c4_line_state()` cte IDR v jednom okamziku, ktery ZAVODI
+				   * s zivym provozem (TMP117 2x/s, dotyk ~15 Hz) — trefit se doprostred
+				   * transakce da legitimne `SCL=0 BUSY`, aniz je cokoli spatne (presne
+				   * ten falesny pozitiv tesne po flashi). Navic „odmlcene slave" (skutecna
+				   * porucha) ukaze linky VYSOKO, takze test na nizkou uroven ani
+				   * nechyti realny pripad. Jediny spolehlivy signal je SOUVISLA SERIE
+				   * selhanych cteni (`err_streak`) — realna smrt mela 8351 chyb v rade. */
+				  {
+					  uint8_t ls = i2c4_line_state();
+					  const sensor_stat_t *t48 = &g_sensors[SENS_T48];
+					  { uint8_t bpk = 0, bov = 0, bcap = 0;
+					    app_gpsdo_btnreg_stats(&bpk, &bov, &bcap);
+					    { uint32_t uc[7]; app_gpsdo_ui_counters(uc);
+					      { const char *wt = NULL; int wc = 0; uint8_t wp = app_gpsdo_warn_active(&wt, &wc);
+					        if (wp) printf("VAROVANI: prio %u  %s  (celkem %d)\r\n", (unsigned)wp, wt ? wt : "?", wc);
+					        else    printf("VAROVANI: zadne\r\n"); }
+					      if (full)   /* jen `status full`: UI kresleni: flip/flash/stats/trend — provozni pocitadla UI */
+					      printf("UI kresleni: flip=%lu flash=%lu stats=%lu trend=%lu xfade=%lu cislo=%lu enc=%lu\r\n",
+					             (unsigned long)uc[0], (unsigned long)uc[1], (unsigned long)uc[2],
+					             (unsigned long)uc[3], (unsigned long)uc[4], (unsigned long)uc[5],
+					             (unsigned long)uc[6]); }
+					    if (full)   /* jen `status full`: UI: okno / encoder / navigace — provozni pocitadla UI */
+					    printf("UI: okno s_view=%u (zmen %lu)\n", (unsigned)g_ui_view,
+					  	       (unsigned long)g_ui_view_changes);
+					  	printf("UI: encoder delic=%u | fokus tlacitek max %u/%u%s\r\n",
+					           (unsigned)encoder_div(), (unsigned)bpk, (unsigned)bcap,
+					           bov ? "  <== PRETECENO, konec okna nelze zamerit" : "");
+					  	{ uint8_t npk = 0, nov = 0, ncap = 0;
+					  	  app_gpsdo_nav_stats(&npk, &nov, &ncap);
+					  	  printf("UI: navigace (ZPET) max %u/%u%s\r\n",
+					  	         (unsigned)npk, (unsigned)ncap,
+					  	         nov ? "  <== PRETECENO, ZPET vede jinam" : ""); }
+					  	/* Dokud rekonstrukce ADEV bezi, ZIVE vzorkovani statistiky stoji
+					  	 * (sigma_y@1s zustane 0) — proto se to vypisuje vzdy, ne jen pri chybe. */
+					  	{ uint32_t sd = 0, sl = 0, stt = 0;
+					  	  int sp = app_gpsdo_stats_seed_progress(&sd, &sl, &stt);
+					  	  if (sp == SEED_PROG_RUN)
+					  	      printf("ADEV rekonstrukce: BEZI %lu/%lu zaznamu, vlozeno %lu"
+					  	             "  <== zive vzorkovani zatim stoji\r\n",
+					  	             (unsigned long)(stt - sl), (unsigned long)stt,
+					  	             (unsigned long)sd);
+					  	  else if (sp == SEED_PROG_WAIT)   /* F-0189: bez FPGA libovolne dlouho */
+					  	      printf("ADEV rekonstrukce: ceka na prvni realne mereni"
+					  	             " (zive vzorkovani bezi)\r\n");
+					  	  else if (sp == SEED_PROG_SKIP_POR)
+					  	      printf("ADEV rekonstrukce: preskocena — start po zapnuti napajeni\r\n");
+					  	  else if (stt)
+					  	      printf("ADEV rekonstrukce: hotova, vlozeno %lu z %lu zaznamu\r\n",
+					  	             (unsigned long)sd, (unsigned long)stt); } }
+					  /* 🔴 Stav bring-upu displeje. Selhani NENI fatalni (main.c dela
+					   * `goto display_skip`), takze pristroj bezi s CERNYM displejem, zatimco
+					   * dotyk, UART i mereni funguji dal — bez tohohle radku to nelze odlisit
+					   * od "kresli se, ale nic nevidim". `[ERR]` hlasky z bring-upu se ven
+					   * NEDOSTANOU: konzole jede po USB CDC, ktere v te chvili jeste neni
+					   * vyctene (nalezeno 2026-09-01 pri hledani prave takove poruchy). */
+					  {
+					  	uint8_t dst = g_display_init_step;
+					  	const char *dnm = (dst == BOOTLED_STEP_PANEL_PROBE)   ? "ATTINY probe (0x45)"
+					  	                : (dst == BOOTLED_STEP_PANEL_POWERON) ? "panel power-on"
+					  	                : (dst == BOOTLED_STEP_DSI_START)     ? "HAL_DSI_Start"
+					  	                : (dst == BOOTLED_STEP_TC358762)      ? "TC358762 bridge" : "?";
+					  	/* 🔴 Sticky stav reference (reg 247). Zivy reg 218 je v radku vyse; tohle
+					  	 * rika, jestli reference nekdy VYPADLA od posledniho vynulovani — kratky
+					  	 * vypadek mezi dvema ctenimi ziveho registru je jinak NEVIDITELNY a mereni
+					  	 * porizena mezitim jsou pritom neplatna. */
+					  	{
+					  		uint8_t stk = g_si5356_sticky;
+					  		if (!stk) printf("REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)\n");
+					  		else printf("REFERENCE: *** VYPADEK OD VYNULOVANI ***%s%s%s  -> mereni z te doby je podezrele; `si5356 clr` vynuluje\n",
+					  		            (stk & SI5356_LOS_CLKIN) ? "  LOS_CLKIN" : "",
+					  		            (stk & SI5356_PLL_LOL)   ? "  PLL_LOL"   : "",
+					  		            (stk & SI5356_SYS_CAL)   ? "  SYS_CAL"   : "");
+					  	}
+					  	/* #295: automaticka re-inicializace Si5356 pri trvale ztrate zamku (si5356_lock_watch, SensorsTask). */
+					  	{
+					  		uint32_t rn = g_si5356_reinit_cnt;
+					  		if (rn == 0u) printf("REFERENCE: auto re-init Si5356 zadny%s\n",
+					  		                     g_si5356_locked_once ? " (zamceno od startu)" : "  <== od startu NEZAMCENO");
+					  		else {
+					  			uint8_t rr = g_si5356_reinit_res;
+					  			printf("REFERENCE: auto re-init Si5356 %lu%s pokusu, posledni pred %lu s -> %s%s\n",
+					  			       (unsigned long)rn, (rn >= 0xFFFFu) ? "+" : "",
+					  			       (unsigned long)((HAL_GetTick() - g_si5356_reinit_ms) / 1000u),
+					  			       (rr == SI5356_REINIT_RES_LOCK)  ? "zamceno"
+					  			     : (rr == SI5356_REINIT_RES_FAULT) ? "porad LOS_CLKIN/PLL_LOL"
+					  			     : (rr == SI5356_REINIT_RES_WRERR) ? "CHYBA ZAPISU"
+					  			     : (rr == SI5356_REINIT_RES_NACK)  ? "cip NEODPOVIDA" : "?",
+					  			       g_si5356_locked_once ? "" : "  <== od startu NEZAMCENO");
+					  		}
+					  	}
+					  	dac_print_status();   /* DAC ladeni OCXO (AD5693R) */
+				  	gpsdo_print_status(); /* smycka GPSDO (STATUS #305) */
+					  	if (dst == 0) printf("DISPLEJ: bring-up OK\n");
+					  	else printf("DISPLEJ: *** BRING-UP SELHAL v kroku %u (%s) *** -> cerny"
+					  	            " displej, zbytek bezi. Zkus `panel`.\n", (unsigned)dst, dnm);
+					  	/* Podteceni FIFO LTDC = poskozene snimky na panelu z NEDOSTATKU
+					  	 * PROPUSTNOSTI (LTDC nestihl nacist radek), ne z chyby kresleni.
+					  	 * Odlisuje to blikani zpusobene pameti/sbernici od blikani
+					  	 * zpusobeneho guardy v kreslicim kodu. */
+					  	/* ⚠️ Hodnoti se POMER na flip, ne holy pocet. Par podteceni pri
+					  	 * bring-upu panelu je normalni (LTDC startuje s prazdnym FIFO) a
+					  	 * varovat na kazde nenulove cislo znamena planý poplach po kazdem
+					  	 * bootu — presne takovy poplach me 2026-09-06 dvakrat svedl na
+					  	 * nespravnou stopu. Skutecna vada se pozna tim, ze pomer je radove
+					  	 * 1 na flip (probliknuti pri KAZDEM prekresleni), ne 1 za tisic. */
+					  	{ uint32_t fu = g_ltdc_underrun;
+					  	  uint32_t ucf[7]; app_gpsdo_ui_counters(ucf);
+					  	  uint32_t fl = ucf[0];            /* [0] = flip, viz `UI kresleni` vyse */
+					  	  uint32_t per1k = fl ? (uint32_t)(((uint64_t)fu * 1000u) / fl) : 0u;
+					  	  const char *verd = (per1k >= 10u)
+					  	      ? "  <== POSKOZENE SNIMKY (zvys `d2ddt`, viz STATUS #200)"
+					  	      : (fu ? "  (v poradku - jen naběh)" : "  (v poradku)");
+					  	  printf("LTDC: podteceni FIFO %lu / %lu flipu = %lu na 1000%s\n",
+					  	         (unsigned long)fu, (unsigned long)fl,
+					  	         (unsigned long)per1k, verd); }
+					  	/* Diagnostika DMA2D (audit F-0033). Do 2026-09-10 se chyba prenosu
+					  	 * MAZALA, aniz by ji kdo precetl — poskozeny obdelnik tak nezanechal
+					  	 * zadnou stopu a pri vysetrovani vypadal jako vada pameti nebo panelu.
+					  	 * Vsechna tri cisla musi byt za normalniho provozu NULOVA; nenulove
+					  	 * `chyb` znamena, ze DMA2D odmitl prenos (spatna adresa/konfigurace),
+					  	 * nenulove `timeout` ze nedobehl v case a kreslilo se pres nej. */
+					  	{ uint32_t de = g_d2d_errors, dt = g_d2d_timeouts, ft = g_ltdc_flip_timeouts;
+					  	  /* Nejdelsi pozorovane cekani proti mezi (F-0036). ZMERENO 2026-09-10:
+					  	   * pri `d2ddt = 240` a 800x480 vychazi ~61 ms (celoobrazovkovy prenos
+					  	   * 768 kB), mez je 500 ms -> rezerva ~8x. Kdyz se `max` priblizi mezi,
+					  	   * zmenilo se neco v propustnosti (takt, rozliseni, `d2ddt`) a pozna
+					  	   * se to TADY, ne az tichym vyprsenim. `d2ddt <n>` pocitadla nuluje. */
+					  	  uint32_t mx_us = g_d2d_wait_max_cyc / (SystemCoreClock / 1000000u);
+					  	  printf("DMA2D: chyb %lu, timeout %lu | flip timeout %lu | max cekani %lu.%03lu ms (mez 500)%s\n",
+					  	         (unsigned long)de, (unsigned long)dt, (unsigned long)ft,
+					  	         (unsigned long)(mx_us / 1000u), (unsigned long)(mx_us % 1000u),
+					  	         (de || dt || ft) ? "  <== POSKOZENE SNIMKY"
+																	   : (mx_us > 500000u) ? "  (nad mezi, ale bez timeoutu: cekani zahrnuje preempci UiTasku, ne dobu prenosu)"
+																								   : "  (v poradku)"); }
+						  	printf("DIGITS: %s\n", screen_main_digits_res() ? "podle rozliseni citace" : "podle signalu");
+					  	/* Kolikrat cekani na DMA2D padlo do pomale (tick-ridici, scheduler-yielding)
+					  	 * vetve — zavedeno 2026-09-24 spolu s yieldem v ni (viz d2d_wait). Nenulove
+					  	 * a rostouci je OCEKAVANE od F-0140 (vetsi copy-forward pruhy), NE chyba. */
+					  	printf("DMA2D: pomala vetev cekani (yield) %lu x\n",
+					  	       (unsigned long)g_d2d_slow_entries);
+					  	/* Chybejici glyfy (audit F-0034). Vetsina velkych fontu je subsetovana
+					  	 * a chybejici glyf se TISE preskoci -> text na displeji proste zmizi.
+					  	 * Audit 2026-08-29 nasel 15 takto neviditelnych retezcu; dosud to slo
+					  	 * odhalit jen tim, ze si nekdo vsimne prazdneho mista. */
+					  	{ uint32_t mg = prim_text_missing_glyphs();
+					  	  int16_t lasc = 0; uint32_t lcp = prim_text_last_missing(&lasc);
+					  	  printf("FONTY: preskocenych glyfu %lu%s\n", (unsigned long)mg,
+					  	         mg ? "  <== NEKDE CHYBI TEXT (subsetovany font)" : "  (v poradku)");
+					  	  if (mg) printf("       posledni chybejici znak U+%04lX ve fontu s ascent %d\n", (unsigned long)lcp, (int)lasc); }
+					  	/* Tataz trida jako radek vyse: formatovani, ktere tise dava JINE cislo,
+					  	 * nez volajici chtel. `fmt_fixed` podporuje 0..3 desetiny a navic
+					  	 * |v|*10^desetin musi vlezt do int32; driv oboji tise spadlo na celou
+					  	 * cast, takze σ v okne MERENI hlasila vzdy „0 Hz" (STATUS #132, F-0053). */
+					  	{ uint32_t fc = app_gpsdo_fmt_clamped();
+					  	  printf("FORMAT: omezenych desetin %lu%s\n", (unsigned long)fc,
+					  	         fc ? "  <== NEKDE SE UKAZUJE ZAOKROUHLENA HODNOTA" : "  (v poradku)"); }
+					  	/* Pripravenost peti blob storu ve W25Q (audit F-0098). Do teto opravy
+					  	 * byla neuspesna inicializace TRVALA A TICHA: jedna nestastna sekunda
+					  	 * pri bootu (obsazena flash) znamenala, ze se nastaveni uz nikdy
+					  	 * neulozi, kalibrace zustane na datasheetovych vychozich a tlacitka
+					  	 * v okne SESTAVY tise nedelaji nic. Uzivatel to poznal teprve tim, ze
+					  	 * se mu po restartu ztratilo nastaveni — a bez jakekoli stopy proc.
+					  	 * ⚠️ Text sklada `syscfg_storage_text()`, tedy TENTYZ zdroj, ze ktereho
+					  	 * cte i displej — aby se ty dva vypisy nemohly rozejit (F-0100). */
+					  	{ char sb[96];
+					  	  int nready = syscfg_storage_text(sb, sizeof sb);
+					  	  uint32_t sr = syscfg_store_retries(), er = errlog_init_retries();
+					  	  printf("ULOZISTE: %s%s\n", sb, (nready == 5) ? "" : "  <== NEKTERE NEPRIPRAVENE");
+					  	  if (sr || er)
+					  	      printf("          pokusy o zachranu: syscfg %lu, errlog %lu (strop 5)\n",
+					  	             (unsigned long)sr, (unsigned long)er); }
+					  	/* σy@1s — do 2026-09-11 slo precist JEN z displeje, takze oprava
+					  	 * meritka frakcni odchylky (F-0037) nesla na desce overit, jen ji
+					  	 * verit. Tiskne se v jednotkach 1e-15 (celociselne — `%f` nano.specs
+					  	 * neumi). Radove ocekavani pro dnesni SIM (~0,05 Hz kolem 10 MHz):
+					  	 * jednotky az desitky 1e-9, tedy radove 1e6 v tehle jednotce.
+					  	 * ⚠️ Plni ho UiTask jen kdyz bezi hlavni obrazovka — v jinem okne
+					  	 * hodnota STOJI (neni to chyba mereni). */
+					  	{ float a = g_adev_1s_cum;   /* V4: tatez hodnota jako karta/tabulka */
+					  	  if (full)   /* jen `status full`: STATISTIKA sigma_y@1s — mereni, ne stav pristroje */
+					  	  printf("STATISTIKA: sigma_y@1s = %ld e-15%s\n",
+					  	         (long)(a * 1e15f), (a > 0.0f) ? "" : "  (jeste malo vzorku)"); }
+					  	/* v0.40.4: sigma_y pri tau = hradlo z navazujicich oken -- z ni hlavni cislo bere pocet platnych cislic */
+					  	if (full) { float w = g_win_adev;
+					  	  printf("STATISTIKA: sigma_y@hradlo = %ld e-15 (navazujicich oken %lu)%s\n", (long)(w * 1e15f),
+					  	         (unsigned long)g_win_adev_n, (w > 0.0f) ? "" : "  (jeste malo oken, plati sigma_y@1s)"); }
+					  	/* Filtr odlehlych: kolik vyrazil a o kolik se lisi sigma_y(1 s) filtrovane a surove pyramidy (stage 0..3 = 1, 10, 100, 1000 s). */
+					  	if (full) {
+					  	  uint32_t hs = 0u, ho = 0u; screen_main_outlier_info(&hs, &ho);
+					  	  printf("STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 7 MAD) %s: vyrazeno %lu z %lu posouzenych\n",
+					  	         g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs);
+					  	  static const unsigned long TS[4] = {1ul, 10ul, 100ul, 1000ul};
+					  	  for (int q = 0; q < 4; q++) { float fa = 0.0f, ra = 0.0f;
+					  	    if (screen_main_adev_compare(q, &fa, &ra))
+					  	      printf("STATISTIKA: ADEV(%lu s): filtrovana %ld e-15, surova %ld e-15\n", TS[q], (long)(fa * 1e15f), (long)(ra * 1e15f)); }
+					  	}
+					  	/* Bod 6: skutecne τ0 vzorku statistiky (Σ hradel za tik). Osa τ
+					  	 * i tabulky pocitaji s 1 s; tady je videt, o kolik se lisi.
+					  	 * Cte staticke floaty UiTasku bez zamku — roztrzene cteni je jen
+					  	 * kosmeticka chyba jednoho vypisu. */
+					  	if (full) {
+					  	  float tm = 0.0f, ts = 0.0f;
+					  	  uint32_t tn = screen_main_tau0(&tm, &ts);
+					  	  if (tn)
+					  	    printf("STATISTIKA: tau0 = %ld ms, kolisa %ld %% (%lu vzorku, ztraceno %lu)\n",
+					  	           (long)(tm * 1000.0f + 0.5f), (long)(ts * 100.0f + 0.5f),
+					  	           (unsigned long)tn, (unsigned long)fpga_stat_drops());
+					  	  else
+					  	    printf("STATISTIKA: tau0 = -- (zadny realny vzorek)\n");
+					  	}
+					  	/* F-0193: mereni, ktera FPGA prepsala drive, nez je FpgaTask precetl.
+					  	 * Za bezneho provozu (poll 20 Hz, mereni 4/s) ma byt `diry 0`; nenulove
+					  	 * = FpgaTask nestiha (napr. behem `fpgaloop`). Vzorek s dirou se do
+					  	 * statistiky nedostane, tady je jen videt, jak casto se to deje.
+					  	 * `resync` = skok/navrat SEQUENCE (reset FPGA, start emulace). */
+					  	{ uint32_t sg, sm, sr; fpga_freq_seq_stats(&sg, &sm, &sr);
+					  	  printf("SEQ FPGA: diry %lu (zmeskano %lu mereni), resync %lu%s\n",
+					  	         (unsigned long)sg, (unsigned long)sm, (unsigned long)sr,
+					  	         sg ? "  <== FpgaTask nestihal" : ""); }
+					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
+					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
+					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM a jejich
+					  	 * obsah vyhasina. Bez tohohle radku se nedalo odlisit „konstanta ve
+					  	 * zdrojaku je spatne" od „spravna konstanta se do HW nedostala".
+					  	 * Spravne pro SDCLK 50 MHz a 8192 radku: 64e-3*50e6/8192 - 20 = 371.
+					  	 * ⚠️ Pri zmene SDCLK se to MUSI prepocitat (pri 100 MHz vychazi 761). */
+					  	{ /* 🔴 Crash CM4: dosud se ztratil UPLNE (tichy `while(1)`, IWDG2
+					  	   * vypnuty), CM7 videl jen `stall:CM4`. Od v14 chodi pres IPC. */
+					  	  uint32_t fpc = 0, flr = 0, fcf = 0;
+					  	  uint8_t fk = ipc_cm4_fault(&fpc, &flr, &fcf);
+					  	  if (fk) {
+					  		/* ⚠️ Drive tu stalo `(fk == 1) ? "HardFault" : "Error_Handler"`,
+					  		 * takze kindy 3-6 (NMI/MemMan/BusFlt/UsgFlt, ktere CM4 hlasi od
+					  		 * te doby, co uz nejsou neme) se vypisovaly jako "Error_Handler".
+					  		 * Chybne pojmenovana diagnostika je horsi nez zadna — posila
+					  		 * cloveka hledat jinam. */
+					  		static const char *const K[7] = { "?", "HardFault", "Error_Handler",
+					  		                                  "NMI", "MemManage", "BusFault",
+					  		                                  "UsageFault" };
+					  		printf("CM4 CRASH: %s PC=%08lX LR=%08lX CFSR=%08lX\n",
+					  		       K[(fk < 7u) ? fk : 0u],
+					  		       (unsigned long)fpc, (unsigned long)flr, (unsigned long)fcf);
+					  		printf("  addr2line -e CM4/Release/H757_LED_CM4.elf %08lX\n",
+					  		       (unsigned long)fpc);
+					  	  } }
+					  	/* 🔴 Cte se z BKP, ne z `.bss` (audit F-0019, 2026-09-10). NMI po zvyseni
+					  	 * citace zamrzne a IWDG pristroj resetuje, cimz se `.bss` vynuluje — ziva
+					  	 * promenna by se sem tedy NIKDY nedostala a radek byl nedosazitelny.
+					  	 * Zalohovanou domenu reset prezije. */
+					  	{ uint32_t css = RTC->BKP11R;
+					  	  if (css)
+					  		printf("HSE: CSS hlasil vypadek %lux <== CASOVA ZAKLADNA NEPLATI\n",
+					  		       (unsigned long)css); }
+					  	/* Napajeni + hodiny zmerene pri bootu z registru (audit F-0001).
+					  	 * ⚠️ Vypisuje se VZDY, i kdyz je vse v poradku — cislo, ktere je
+					  	 * videt jen pri poruse, si nikdo neoveri predem. WRHIGHFREQ je
+					  	 * tu jako podklad k F-0006 (nikde se neprogramuje). */
+					  	printf("NAPAJENI/HODINY: %s SYSCLK %lu MHz HCLK %lu MHz WRHIGHFREQ=%u\n",
+					  	       g_pwrclk_bad ? "NESOULAD" : "OK",
+					  	       (unsigned long)(g_pwrclk_sysclk_hz / 1000000u),
+					  	       (unsigned long)(g_pwrclk_hclk_hz / 1000000u),
+					  	       (unsigned)g_pwrclk_wrhighfreq);
+					  	if (g_pwrclk_bad)
+					  		printf("  maska 0x%02X: %s%s%s%s%s%s%s\n", (unsigned)g_pwrclk_bad,
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SUPPLY)  ? "napajeni " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SMPSEXT) ? "SMPSEXTRDY " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_ACTVOS)  ? "ACTVOSRDY " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_VOS0)    ? "VOS0 " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_SYSCLK)  ? "SYSCLK " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_HCLK)    ? "HCLK " : "",
+					  		       (g_pwrclk_bad & PWRCLK_BAD_LATENCY) ? "latence " : "");
+					  	if (g_fmc_init_fail)
+					  		printf("SDRAM init: SELHAL KROK %u (1 clk/2 pall/3 refr/4 mode/5 rate/6 sdrtr)\n",
+					  		       (unsigned)g_fmc_init_fail);
+					  	/* 🔴 Skutecna hodnota refreshe V HARDWARU proti konstante ze zdrojaku.
+					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
+					  	 * jako cerny/problikavajici displej — framebuffery lezi v SDRAM.
+					  	 * ⚠️ Drivejsi verze si SDCLK dopocitavala z
+					  	 * `HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FMC)`, jenze ta na teto
+					  	 * desce vraci 0 -> tisklo se „ocekavano ~0 pri SDCLK 0.0 MHz".
+					  	 * Porovnani proti `REFRESH_COUNT` je stejne to jedine, co ma smysl:
+					  	 * odlisi „konstanta se do HW nedostala" od „konstanta je spatne". */
+					  	{ uint32_t sdrtr = (FMC_Bank5_6_R->SDRTR >> 1) & 0x1FFFu;
+					  	  if (full)   /* jen `status full`: SDRAM refresh SDRTR — konfigurace, meni se zridka */
+					  	  printf("SDRAM refresh: SDRTR=%lu, ve zdrojaku %u%s\n",
+					  	         (unsigned long)sdrtr, (unsigned)REFRESH_COUNT_EXPECTED,
+					  	         (sdrtr == (uint32_t)REFRESH_COUNT_EXPECTED)
+					  	             ? "" : "  <== NESOUHLASI, hodnota se do HW nedostala"); }
+					  	/* Cteci cesta FMC + kompenzacni cela I/O. Obojí ovlivnuje
+					  	 * INTEGRITU DAT na externi sbernici — a prave ta je podle
+					  	 * `membench` vadna (chyby uz pri zapisu s okamzitym overenim,
+					  	 * pri 100% zdravych internich pametech). */
+					  	{ uint32_t rp = (FMC_Bank5_6_R->SDCR[0] & FMC_SDCRx_RPIPE_Msk)
+					  	                >> FMC_SDCRx_RPIPE_Pos;
+					  	  if (full)   /* jen `status full`: SDRAM cteni rpipe / I/O kompenzace — konfigurace, meni se zridka */
+					  	  printf("SDRAM cteni: rpipe=%lu HCLK | I/O kompenzace %s (CSI %s)\n",
+					  	         (unsigned long)rp,
+					  	         g_iocomp_ready ? "READY" : "NENABEHLA",
+					  	         g_csi_ready ? "ok" : "NEBEZI"); }
+					  	  /* Tiche vady, ktere by jinak nikdo nevidel (audit F-0018, F-0022).
+					  	   * Vypisuji se JEN kdyz nastaly — na rozdil od radku vyse, ktere maji byt
+					  	   * videt vzdy, tyhle znamenaji "neco se ztratilo", ne "takhle to stoji". */
+					  	  if (g_flightrec_lost)
+					  	  	printf("FLIGHTREC: %u dumpu zahozeno (nedostal QSPI mutex)\n",
+					  	  	       (unsigned)g_flightrec_lost);
+					  	  /* Dump, ktery se do flash dostal AZ PO RESTARTU pres SDRAM staging
+					  	   * (F-0018). Nenulove = predchozi beh skoncil pretecenim zasobniku
+					  	   * nebo vycerpanim heapu a zaznam se ZACHRANIL — presne to, co se
+					  	   * do 2026-09-20 deterministicky ztracelo. */
+					  	  if (g_flightrec_staged)
+					  	  	printf("FLIGHTREC: %u dumpu zachranenych po restartu (SDRAM staging) -> `flightrec`\n",
+					  	  	       (unsigned)g_flightrec_staged);
+					  	  if (g_tmp117_cfg_fail)
+					  	  	printf("TMP117: %u x se nepodarilo nastavit 500ms cyklus (meri jinou kadenci)\n",
+					  	  	       (unsigned)g_tmp117_cfg_fail);
+					  	  /* Odmitnute (prilis dlouhe) prikazy konzole — tichy preskok se pocita,
+					  	   * viz L-0017. Nenulove obvykle znamena, ze klient posila delsi SCPI
+					  	   * tvary, nez se vejdou do RX_BUF_SIZE. */
+					  	  if (s_rx_trunc_n)
+					  	  	printf("KONZOLE: %lu prikazu odmitnuto (delsi nez %d znaku)\n",
+					  	  	       (unsigned long)s_rx_trunc_n, RX_BUF_SIZE - 1);
+					  	  /* Zahozene bajty konzole (audit F-0128). TX = host neodebiral a
+					  	   * ring se naplnil; RX = plna UartRxQueue, tedy rozpadly prikaz.
+					  	   * Nenulove TX u `screenshot` pres USB znamena poskozeny BMP. */
+					  	  { uint32_t txd = usb_console_tx_dropped(), rxd = usb_console_rx_dropped();
+					  	    if (txd || rxd)
+					  	  	  printf("KONZOLE: zahozeno TX %lu B / RX %lu B\n",
+					  	  	         (unsigned long)txd, (unsigned long)rxd); }
+					  	  /* TX watchdog: >0 = CDC TxState se zasekl (IN transfer nedokoncen) a byl
+					  	   * nouzove zotaven (pridano 2026-10-04, jinak TX konzole mrtva). */
+					  	  { uint32_t rcv = usb_console_tx_recover();
+					  	    if (rcv)
+					  	  	  printf("KONZOLE: TX watchdog zlomil zasek %lux\n", (unsigned long)rcv); }
+					  	  /* Pritomnost hosta (STATUS #298): vysila se jen pro otevreny port; zahozene NEJSTARSI = ring pretekl, kdyz host chybel. */
+					  	  printf("KONZOLE: host %s (DTR %u), zahozeno nejstarsich %lu B\n", usb_console_host_open() ? "pritomen" : "NEPRITOMEN",
+					  	         (unsigned)usb_console_dtr(), (unsigned long)usb_console_tx_overwritten());
+					  	/* Dosazena konfigurace IWDG + stav pipaku. Obojí je „tiche
+					  	 * selhani, o kterem se jinak nedozvis" (audit F-0104/F-0111):
+					  	 * neprosla propagace PR/RLR znamena watchdog 0,5 s misto 4 s,
+					  	 * nenabehly TIM7 znamena TRVALE NEMY pristroj vcetne alarmu
+					  	 * na ztratu reference. Vypisuje se i kdyz je vse v poradku —
+					  	 * ticho by znamenalo „nevim", tohle znamena „zkontrolovano". */
+					  	/* STATUS #322: zalozni baterie. Nabijeni musi byt VYPNUTE (VBE=0), mustek VBAT se zapina jen pri prevodu. */
+					  	printf("VBAT nabijeni: %s (VBE=%u) | mustek jen pri prevodu, perioda 600 s | korekce na baterii %+d mV\n",
+					  	       (PWR->CR3 & PWR_CR3_VBE) ? "ZAP <== MA BYT VYP" : "VYP", (unsigned)((PWR->CR3 & PWR_CR3_VBE) ? 1u : 0u),
+					  	       (int)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f)));
+					  	printf("WATCHDOG: PR=%u RLR=%u -> %lu ms%s | pipak %s\n",
+					  	       (unsigned)watchdog_cfg_pr(), (unsigned)watchdog_cfg_rlr(),
+					  	       (unsigned long)watchdog_timeout_ms(),
+					  	       watchdog_cfg_ok() ? "" : "  <== NESEDI (ceka se 4000 ms)",
+					  	       beeper_ready() ? "ok" : "NENABEHL");
+					  	if (watchdog_stall_recovered())
+					  		printf("    zotavenych stallu: %u (detekovan, ale nezpusobil reset)\n",
+					  		       (unsigned)watchdog_stall_recovered());
+					  	/* Kolikrat uz hlidac musel opravit konfiguraci GPIOG. Nenulove
+					  	 * = zavod dvou jader o sdileny registr probehl doopravdy. */
+					  	if (g_gpio_guard_fix_total) {
+					  		printf("GPIO HLIDAC: %lu oprav <== zavod jader o sdileny port\n",
+					  		       (unsigned long)g_gpio_guard_fix_total);
+					  		/* 🔑 Rozpad po pinech: az z nej je videt, jestli jde o JEDEN pin
+					  		 * (zavod dvou konkretnich driveru), nebo o cely port. */
+					  		for (uint32_t gi = 0; gi < gpio_guard_pin_count(); gi++) {
+					  			if (g_gpio_guard_fix_pin[gi])
+					  				printf("    %-7s %u x\n", gpio_guard_pin_name(gi),
+					  				       (unsigned)g_gpio_guard_fix_pin[gi]);
+					  		}
+					  	} else {
+					  		/* ⚠️ Vypisovat i NULU: ticho by znamenalo "nevim", tohle znamena
+					  		 * "zkontrolovano a cisto". Chybejici radek uz jednou zpusobil, ze
+					  		 * jsem povazoval hlidac za nefunkcni. */
+					  		printf("GPIO HLIDAC: 0 oprav (hlida %lu pinu na GPIOA/B/C/G)\n",
+					  		       (unsigned long)gpio_guard_pin_count());
+					  	}
+					  	/* Glow se pri prekroceni stropu masky NEKRESLI a mlci — citac
+					  	 * je jediny zpusob, jak to poznat (viz glow.c). */
+					  	if (g_prim_glow_skipped)
+					  		if (full)   /* jen `status full`: GLOW — pocet nevykreslenych oblasti; pri 0 nic nerika */
+					  		printf("GLOW: %lu x nevykresleno (oblast > strop masky) <== zvys PRIM_GLOW_MAX_H\n",
+					  		       (unsigned long)g_prim_glow_skipped);
+					  }
+					  printf("I2C4: SCL=%u SDA=%u %s | TMP117 0x48 err %lu (v rade %u)%s\n",
+						     (unsigned)(ls & 1u), (unsigned)((ls >> 1) & 1u),
+						     (ls & 4u) ? "BUSY" : "idle",
+						     (unsigned long)t48->err_total, (unsigned)t48->err_streak,
+						     (t48->err_streak > 20u) ? "  <== SBERNICE MRTVA" : "");
+					  /* ⚠️ Kolik zapisu na ATTINY doopravdy probehlo + jestli je aktivni
+					   * ztlumeni. Pri sporici je `bl_target` = AUTODIM_LEVEL bez ohledu na
+					   * `g_brightness`, takze zmena jasu NEVYVOLA zapis — bez techto cisel
+					   * nejde odlisit „zapisy sbernici nezabily" od „zadne se nekonaly". */
+					  uint32_t blok = 0, blskip = 0; uint8_t bldim = 0;
+					  i2c4_bl_stats(&blok, &blskip, &bldim);
+					  if (full)   /* jen `status full`: ATTINY zapisu jasu / EXPERIMENT — provozni statistika, ne porucha */
+					  printf("  ATTINY zapisu jasu: %lu ok, %lu preskoceno | ztlumeno: %u\n",
+						     (unsigned long)blok, (unsigned long)blskip, (unsigned)bldim);
+				  }
+				  /* ⚠️ Bezici experiment MUSI byt videt, jinak se na nej zapomene
+				   * a chybejici HW reset dotyku bude vypadat jako regrese. */
+				  if (i2c4_diag_no_attiny_write())
+					  printf("  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje\n");
 				  /* FPGA link + CRC chyby (pocet + jak davno byla posledni). */
 				  if (fpga_freq_crc_count())
 					  printf("FPGA: link %s, CRC err %lu, last %lus ago\n",
@@ -1400,6 +4248,140 @@ void UartTask_run(void *argument)
 						     (unsigned long)fpga_freq_crc_last_age_s());
 				  else
 					  printf("FPGA: link %s, CRC err 0\n", fpga_freq_link_ok() ? "OK" : "NOLINK");
+				  {   /* v0.40.7: rozpis chyb SPI v3 (podrobnosti `spi err`); MAGIC/VER do `CRC err` nepatri */
+					  fpga_spi_errstat_t es;
+					  fpga_spi_err_stats(&es);
+					  if (es.err != 0u)
+						  printf("  SPI ERR: chyb %lu (CRC b0 %lu, CRC b1-3 %lu, MAGIC/VER %lu, LEN %lu), serii %lu (izolovanych %lu, nejdelsi %lu) | `spi err`\n",
+						         (unsigned long)es.err, (unsigned long)es.kind[1], (unsigned long)es.kind[2], (unsigned long)es.kind[3],
+						         (unsigned long)es.kind[4], (unsigned long)es.bursts, (unsigned long)es.isolated, (unsigned long)es.max_run);
+				  }
+				  /* v2 pole (abs 60-65) — zatim jen diagnosticky vypis, nic je
+				   * nespotrebovava (SET_CONFIG/CAL report/REGR se vypisuji
+				   * v radcich nize, viz FPGA_PROTOCOL_V2_NAVRH.md).
+				   * `fpga_freq_format_info()` uz desitky let slibuje "zkontroluj
+				   * FW_VERSION v status/fpgaraw" pri bring-upu nove desky — tenhle
+				   * radek to konecne plni (predtim se FW_VERSION v `status` vubec
+				   * nevypisoval, i kdyz na nej komentar odkazoval). */
+				  {
+					  fpga_meas_t m;
+					  /* `get_frame`, ne `get_last`: kdyz FPGA meri spatne a samokontrola zamita VSECHNA okna, `s_last`
+					   * se neobnovuje -- a prave tehdy je verze, identita a stav hodin potreba (STATUS #283). */
+					  if (fpga_freq_get_frame(&m)) {
+						  printf("  FPGA FW:0x%04X CAPS:0x%04X CLK:0x%02X REGR:%s (`regr` = detail)\n",
+							     (unsigned)m.fw_version, (unsigned)m.caps,
+							     (unsigned)m.clk_status,
+							     !(m.caps & FPGA_CAP_REGR) ? "neni" : (m.regr_used ? "pouzita" : (m.rg_ok == 3u ? "zamitnuta" : "bez dat")));
+						  if (m.caps & FPGA_CAP_SELFCHK) {
+							  char bb[64];
+							  uint32_t ck = 0u, cc = 0u, cw = 0u;
+							  fpga_freq_format_build(m.build_time, m.build_git, bb, sizeof bb);
+							  fpga_freq_check_stats(&ck, &cc, &cw);
+							  printf("  FPGA BUILD: %s\n", bb);
+							  if (m.caps & FPGA_CAP_REFCTL)
+								  printf("  FPGA REFERENCE: %s | externi vstup: %s%s (`ref` = detail)\n",
+									     (m.clk_status & FPGA_CLK_REF_EXT) ? "EXTERNI 10 MHz" : "OCXO",
+									     (m.clk_status & FPGA_CLK_EXT_PRESENT) ? "hrany ano" : "bez hran",
+									     (m.clk_status & FPGA_CLK_EXT_LOST) ? "  <== externi vypadla, FPGA sama presla na OCXO" : "");
+							  printf("  FPGA HODINY %uM: %s, vypadku %u%s\n", (unsigned)(m.clk_mhz ? m.clk_mhz : 100u),
+								     (m.clk_status & FPGA_CLK_RECOVER) ? "ZOTAVENI (mereni stoji, rekalibrace)" :
+								     ((m.clk_status & FPGA_CLK_OK) ? "OK" : "VADNE"),
+								     (unsigned)m.clk_loss,
+								     (m.clk_status & FPGA_CLK_FAULT) ? "  <== hodiny FPGA vypadly nebo zmenily kmitocet (reset STM / Si5356?)" : "");
+							  fpga_chk_last_t cl; fpga_freq_check_last(&cl);
+							  /* 2026-10-21: jedno zamitnuti pri startu je znamy jev (kazdy boot, i FW 0x0424) -> varovani jen za zamitnuti po rozbehu */
+							  printf("  FPGA SAMOKONTROLA: zamitnuto oken: citani %lu, hodiny %lu, delka okna %lu | posledni rozdil %d%s\n",
+								     (unsigned long)ck, (unsigned long)cc, (unsigned long)cw, (int)m.ccd_p,
+								     cl.late ? "  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)" : "");
+							  if (ck + cw)
+								  printf("    posledni zamitnute: mereni #%lu od startu, uptime %lu ms, SEQ %lu, rozdil citani %d | po rozbehu (> %lu mereni) %lu\n",
+								         (unsigned long)cl.nth, (unsigned long)cl.ms, (unsigned long)cl.seq, (int)cl.ccd,
+								         (unsigned long)cl.startup_meas, (unsigned long)cl.late);
+						  } else {
+							  uint32_t ck = 0u, cc = 0u, cw = 0u;
+							  fpga_freq_check_stats(&ck, &cc, &cw);
+							  printf("  FPGA SAMOKONTROLA: jen delka okna (FW < 0x041F) -> zamitnuto %lu\n", (unsigned long)cw);
+						  }
+						  if (m.caps & FPGA_CAP_DT) {
+							  printf("  TDC: cal A:%u B:%u busy:%u fail:%u | retez kratky A:%u B:%u | okno %lu us (`tdc` = detail)\n",
+								     (m.tdc_status & FPGA_TDC_CAL_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_B) ? 1u : 0u,
+								     (m.tdc_status & FPGA_TDC_CAL_BUSY) ? 1u : 0u, (m.tdc_status & FPGA_TDC_CAL_FAIL) ? 1u : 0u,
+								     (m.tdc_status & FPGA_TDC_SHORT_A) ? 1u : 0u, (m.tdc_status & FPGA_TDC_SHORT_B) ? 1u : 0u,
+								     (unsigned long)(m.gate_ps / 1000000ull));
+							  {
+							    int c0 = g_tdc_cal_temp_c10 / 10, c1 = g_tdc_cal_temp_c10 % 10;
+							    if (c1 < 0) { c1 = -c1; }
+							    printf("  TDC: teplot. rekal %lux (cal pri %d.%d C) | spike-reject %lu oken (obri bin)\n",
+							           (unsigned long)g_tdc_recal_count, c0, c1, (unsigned long)g_tdc_spike_count);
+							  }
+							  {
+							    /* Rezerva TDC retezu (audit 2026-10-10_volba-kmitoctu-hodin.md kap. 10): cte se jednou po kazde kalibraci.
+							     * Hranice: >= 15 tapu OK, 8..14 POZOR, < 8 tapu nebo aspon jedna udalost za koncem KRITICKE. */
+							    fpga_tdc_rez_t rz;
+							    if (fpga_tdc_rez_get(&rz)) {
+							      static const char *const ln[3] = { "OK", "POZOR", "KRITICKE" };
+							      uint32_t pa = rz.taps ? ((uint32_t)rz.rez_tap[0] * 1000u) / rz.taps : 0u;
+							      uint32_t pb = rz.taps ? ((uint32_t)rz.rez_tap[1] * 1000u) / rz.taps : 0u;
+							      uint8_t  lw = (rz.lvl[0] > rz.lvl[1]) ? rz.lvl[0] : rz.lvl[1];
+							      printf("  TDC REZERVA: A %d tapu (%lu.%lu %%) %s | B %d tapu (%lu.%lu %%) %s | z %u tapu, za koncem A %lu B %lu ud. (cal #%lu)%s\n",
+							             (int)rz.rez_tap[0], (unsigned long)(pa / 10u), (unsigned long)(pa % 10u), ln[rz.lvl[0] > 2u ? 2u : rz.lvl[0]],
+							             (int)rz.rez_tap[1], (unsigned long)(pb / 10u), (unsigned long)(pb % 10u), ln[rz.lvl[1] > 2u ? 2u : rz.lvl[1]],
+							             (unsigned)rz.taps, (unsigned long)rz.ovf_ev[0], (unsigned long)rz.ovf_ev[1], (unsigned long)rz.n,
+							             (lw >= FPGA_TDC_REZ_KRIT) ? "  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)" :
+							             ((lw == FPGA_TDC_REZ_POZOR) ? "  <== rezerva retezu klesa" : ""));
+							    } else {
+							      printf("  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)\n");
+							    }
+							  }
+							  if (m.caps & FPGA_CAP_STMCAL) {   /* FW >= 0x0427: tabulku TDC pocita STM */
+							    fpga_tdccal_info_t ci; fpga_freq_tdccal_info(&ci);
+							    static const char *const ce[6] = { "OK", "histogram nekompletni (soucet)", "zapis nesedi (pocitadlo/soucet)", "prenos SPI", "potvrzeni (cal_valid)",
+							                                        "histogram z pinu odmitnut" };
+							    printf("  TDC KALIBRACE (STM): %s | behu %lu, selhani %lu, opakovani zapisu %lu | posledni %lu ms, %u adres/kanal | zdroj A %s, B %s%s\n",
+							           ce[ci.last_err > 5u ? 5u : ci.last_err], (unsigned long)ci.runs, (unsigned long)ci.fails,
+							           (unsigned long)ci.retries, (unsigned long)ci.last_ms, (unsigned)ci.naddr,
+							           ci.src[0] ? "pin" : "RO", ci.src[1] ? "pin" : "RO",
+							           (m.lut_wait & 3u) ? "  <== FPGA CEKA na tabulku od STM" : "");
+							  }
+							  {
+							    uint32_t mp = 0u, mn = 0u;
+							    fpga_freq_miscount_stats(&mp, &mn);
+							    printf("  CITANI HRAN: okno s hranou navic %lu, s chybejici %lu (nezobrazeno, mimo statistiku)%s\n",
+							           (unsigned long)mp, (unsigned long)mn, (mp + mn) ? "  <== FPGA metastabilita" : "");
+							  }
+							  {
+							    /* FW 0x0425 / E0 (audit 2026-10-20): diagnostika O4, hlidac koherence, nove kontroly okna, adaptivni mez
+							     * regrese, sum 1PPS za behu a fazovy zaznam (E1). Detail `fpga diag`, `regr`, `gpsdo`. */
+							    uint32_t fmx = 0u, coh = 0u;
+							    fpga_freq_check_stats2(&fmx, &coh);
+							    if ((m.caps & FPGA_CAP_DIAG0) && m.diag0_ok)
+							      printf("  FPGA DIAG: koherence 100/10 MHz %s, chybnych epoch %u | bubliny okna P %u S %u | znacky pri CS P %u S %u%s\n",
+							             (m.coh_st & 1u) ? ((m.coh_st & 2u) ? "OK" : "CHYBA") : "neplatne", (unsigned)m.coh_cnt,
+							             (unsigned)m.bub_p, (unsigned)m.bub_s, (unsigned)m.ovl_p, (unsigned)m.ovl_s,
+							             (m.coh_st & 4u) ? "  <== od nahrani FPGA byla chyba koherence hodin" : "");
+							    printf("  FPGA KONTROLY E0: okno nad mezi primeho mereni %lu, chyba koherence %lu (odmitnuto)%s\n",
+							           (unsigned long)fmx, (unsigned long)coh, (fmx + coh) ? "  <== viz `fpga diag`" : "");
+							  }
+							  {
+							    char l1[16], l2[16], a4[16], a40[16], a400[16];
+							    uart_regr_fmt(l1, sizeof l1, fpga_freq_regr_limit() * 1e9, 2);
+							    uart_regr_fmt(l2, sizeof l2, gpsdo_pm_ns(), 2);
+							    printf("  REGR MEZ: aktualne %s ppb (adaptivni) | sum odectu 1PPS %s ns (za behu)\n", l1, l2);
+							    fpga_phrec_info_t pi;
+							    fpga_phrec_info(&pi);
+							    /* ADEV z faze v jednotkach 1e-15 (bez %f, nano.specs); v zavorce pocet clenu */
+							    uint32_t t4 = 0u, t40 = 0u, t400 = 0u;
+							    double d4 = fpga_phrec_adev(4u, &t4), d40 = fpga_phrec_adev(40u, &t40), d400 = fpga_phrec_adev(400u, &t400);
+							    uart_regr_fmt(a4,   sizeof a4,   d4   * 1e15, 0);
+							    uart_regr_fmt(a40,  sizeof a40,  d40  * 1e15, 0);
+							    uart_regr_fmt(a400, sizeof a400, d400 * 1e15, 0);
+							    printf("  FAZOVY ZAZNAM: selftest %s | usek %lu bodu, useku %lu, predano %lu, pouzito %lu | ADEV z faze e-15: m4 %s (%lu) m40 %s (%lu) m400 %s (%lu)\n",
+							           fpga_freq_phrec_selftest_ok() ? "OK" : "FAIL", (unsigned long)pi.n, (unsigned long)pi.runs,
+							           (unsigned long)pi.fed, (unsigned long)pi.used, a4, (unsigned long)t4, a40, (unsigned long)t40, a400, (unsigned long)t400);
+							  }
+						  }
+					  }
+				  }
 				  /* ⚠️ Emulace musi byt videt na prvni pohled — `status` je prvni
 				   * misto, kam se sahne pri diagnostice. */
 				  if (fpga_sim_active()) {
@@ -1422,17 +4404,28 @@ void UartTask_run(void *argument)
 				  putchar(rxChar);
 				  fflush(stdout);									// Vynutíme zobrazení bez čekání na \n
 				  RxBuffer[RxIndex++] = rxChar;
+			  } else if (!s_rx_trunc) {
+				  /* 🔴 Prvni zahozeny znak radku: oznac a REKNI to (F-0073). Drive se
+				   * znak zahodil tise vcetne echa, takze jediny signal bylo, ze se
+				   * prestaly vypisovat znaky — a to se snadno prehledne. */
+				  s_rx_trunc = 1;
+				  if (s_rx_trunc_n < 0xFFFFFFFFu) s_rx_trunc_n++;
+				  printf("\r\n[prilis dlouhy prikaz - zbytek radku se ignoruje]\r\n");
 			  }
 		  }
 	  }
     /* Blokujici SD operace, o ktere pozadala UI nebo auto-mount. Patri sem,
      * protoze UartTask NENI hlidany watchdogem (viz sd_export.h). */
     sd_export_service();
+    /* Automaticke CSV zrcadlo datalogu na SD kartu — stejny duvod (FatFs zapis
+     * blokuje), viz datalog.h "Automaticky rostouci CSV zrcadlo". */
+    datalog_mirror_service();
     /* Stejny duvod: smazani celeho datalogu (~5,4k sektoru) muze trvat minuty,
      * o UI tlacitko jen pozada (viz datalog.h). */
     datalog_erase_service();
     /* A stejny duvod potreti: benchmark pameti bezi jednotky sekund (viz membench.h). */
     membench_service();
+    qspi_req_service();   /* blokujici QSPI operace vyzadane z UI (viz freertos_shared.h) */
     osDelay(1);
   }
 }

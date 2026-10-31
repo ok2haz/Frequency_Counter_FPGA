@@ -1,0 +1,94 @@
+POZOR / ROZBOR — co musí hlavní instance zkontrolovat (ukol_2026-10-25_fpga_opt2)
+=============================================================================
+
+1. ODCHYLKY (kap. 4 bod 7) — ŽÁDNÉ
+   Všechny kroky řady jsou přesné: stopa (každý bajt MISO/MOSI, výstupy top_v3) je shodná s base/ ve všech 8 testech topv3*
+   na finální verzi a na každém kroku v testech, které krok pokrývají (ZPRAVA.md kap. 4). Uvnitř se mění jen vnitřní takty,
+   které rámec nevidí:
+   - krok 1: RAM kruhu se zapíše v E+7 / E+15 (dřív E+9..E+24); čte se až po rec_tgl (E+27 a pak synchronizace).
+   - krok 2: součty SX/ST v ALU54D hotové ve V+1 (dřív V+3); zapisovač čte v E+7 ≥ E+4.
+   - krok 4: N se přičítá o takt později (tk1), hotové v E+2.
+   - krok 7: o_bub/o_ovl se nastaví o takt později (E+2 nejpozději), čte je zapisovač v E+7 (slovo 0 B v E+15).
+   Výstupy seg_chan3 o_x0/o_t0 nemají od kroku 1 masku first (x0/t0 se nulují v clear) — v okně zápisu shodné, mimo něj
+   je nikdo nečte (invariant tb_ring_inv.vh bere jako referenci původní výraz first ? 0 : x0).
+
+2. NOVÉ VÝJIMKY SDC — ŽÁDNÉ (v řadě). timing_v3.sdc se v řadě nemění.
+   ⚠️ B3 (git_patche_B) mění create_clock pin_a/pin_b 2,5 → 3,333 ns: změna SPECIFIKACE (strop předděličky 300 MHz), ne výjimka;
+   odůvodnění v patchi a ZPRAVA.md kap. 6.
+
+3. ZMĚNY UVNITŘ pps_ides3 / pps_cap3
+   - pps_ides3: žádné. Porty pps_ides3/pps_cap3 a jméno u_pll beze změny.
+   - pps_cap3 (krok 6, časování): příznaky saturace dhi_r / dlo_r se registrují z df12 ve stejném taktu jako dd_r (dřív
+     kombinační dhi/dlo z dd_r). V každém taktu shodné s dřívějším výrazem (invariant v tb_top_v3, tb_hold_inv, tb_pps_v3).
+     tb_pps_v3 a mut_pps_v3 upraveny tak, aby kontrolovaly totéž (bod 4 a 5).
+
+4. UPRAVENÉ HIERARCHICKÉ ODKAZY A KONTROLY TESTBENCHŮ
+   - tb_top_v3.sv, tb_hold_inv.sv: invarianty kopií dut.u_ring.ohA/ohAh/ohAm/ohAt a ohB* VYPUŠTĚNY — registry zanikly
+     (krok 1, zápis bez výběru slova). Náhrada: sim/tb_ring_inv.vh v obou testech, silnější: v každé hranici segmentu
+     takt zápisu (wsA v E+7, wsB0 v E+15, clear v E+26), všech 16 bloků zapsáno a KAŽDÉ zapsané slovo = slovo, které by
+     dřívější zapisovač vybral v E+7+k (nezávisle sestavené podle formátu záznamu, X0/T0 jako first ? 0 : x0 / t0).
+   - tb_hold_inv.sv: navíc 2× změna zdroje B tak, aby se hold B změnil v okně E+7..E+15 (živé FLAGS B), pokrytí >= 2.
+   - tb_top_v3.sv, tb_hold_inv.sv: nový invariant dut.u_pps.dhi_r / dlo_r = saturace z dd_r (krok 6).
+   - tb_pps_v3.sv: saturace d_l se zkouší vynucením dut_cap.df12 (zdroj dd_r i příznaků) místo dut_cap.dd_r; krajní 34b
+     hodnoty 0x1_FFFF_FFFF a 0x2_0000_0000 (od FW 0x0507 nemožné, dd_r je znaménkově rozšířený 12b rozdíl) nahrazeny krajními
+     12b hodnotami +2047 a -2048; ostatní hodnoty (127, 128, 300, -128, -129, -300, 5, -5) beze změny. Nový invariant.
+   - tb_tdc3_eq.sv (nový, krok 0003): tdc_chan3 proti původnímu tdc_chan z tdc.v takt po taktu (všechny výstupy). Řetěz
+     tdc_chain (z tdc.v, beze změny) není předmětem testu: DUT dostane teploměr a ec z řetězu reference (force), protože
+     modely ALU mají zpoždění náhodné na instanci. Tabulka s amt = 1 na třetině kódů — testy topv3* amt = 1 nevyvolají
+     (amt = 1 jen při x14 = 0, nejnižší kódy), proto mutaci „ts_hq pri amt 1 bez prepisu“ napoprvé nechytily.
+   - tb_seg_dsp.sv (nový): kontroluje navíc FLAGS bit2 / bit3 proti modelu dřívější sémantiky — tb_top_v3 je nekontroluje
+     vůbec (mezera testu existovala už v base/, mutace na o_bub/o_ovl v base/ chyběly).
+
+5. UPRAVENÉ KOTVY MUTACÍ (žádná vypuštěná; přepsané na stejnou chybu v novém kódu)
+   mut_top_v3.py (base 49 → 61 vzorů; s K1 62). Výsledek: 59 zachyceno + 2 ekvivalentní (beze změny proti base), 0 nezachyceno
+   (ZPRAVA.md kap. 4.3; běh 1 nad finálním RTL našel mezeru testu u amt = 1, doplněn tb_tdc3_eq = režim 10, běh 2).
+   - 'zaznam: slovo T0 = SX'           wsel oh[3] → slovo 3 kanálu A (dA) = SX
+   - 'zaznam B do slotu A'             wa {wrec + k1[3], …} → čtení záznamu B z bloků kanálu A (rs bez kanálu)
+   - 'ring: jednickovy vyber bez rotace' rotace ohA → výběr bloku při čtení stojí na slově 0
+   - 'ring: horni pulslovo bez rotace'  rotace ohAh → bajty 2, 3 slova se čtou jako 0, 1 (bit pruhu adresy)
+   - 'rozdil t: bez vypujcky'          výpůjčka dtl → dtu → přetečení 40b času wt = 0 (režim 9 = tb_seg_dsp; tb_top_v3
+                                        přetečení nevyvolá, čas začíná od 0)
+   - 'DSP: soucty bez clear'           sx_d/st_d clear → ALU54D bez RESET (obě instance)
+   - 'DSP: pricita o takt driv'        v2 → v1b  → ALU54D CE = take místo v1 (obě instance)
+   - 'tabulka do aktivni banky', 'znacka: ts_valid o takt driv', 'znacka: ts_valid o 2 takty driv'  tdc.v → v3_core.v
+                                        (tdc_chan3; tdc_chan z tdc.v top_v3 už nepoužívá)
+   - '1PPS: seq > 1 vzdy' (EKV): zdůvodnění opraveno — seq_gt1 nemá od FW 0x0507 žádného spotřebitele.
+   Nové (L-0224): 'rozdil x: bez preteceni', 'ring: slovo 0 B v taktu A' (+ varianta holdinv), 'ring: konec zapisu o takt
+   driv', 'soucty: x0 se v clear nenuluje', 'znacka: ts_hq pri amt 1 bez prepisu' (režim 10), 'znacka: ts_hq prepis i pri
+   amt 2' (režim 10), 'znacka: ts_hq bez nacteni v tv_y', 'N v DSP: bez prvni znacky', 'N v DSP: bez clear', 'o_ovl: cs o
+   takt pozdeji', 'o_bub: bez bub'.
+   mut_pps_v3.py (24 → 26): 'saturace d_l prohozena' na dhi_r/dlo_r, nové 'saturace: prah dhi_r 255', 'saturace: prah dlo_r -256'.
+
+6. ODHADY (DSP a primitiva — yosys je neumí změřit)
+   - Krok 2: součty SX/ST jsou teď INSTANCOVANÉ ALU54D (dřív inference syn_dspstyle) — počet DSP pro součty beze změny (4).
+     Yosys ukazuje -340 ALU / -344 FF, z toho 2 × 102 FF + ALU byly v Gowinu v DSP už dřív → odhad Gowin -136 ALU, -140 FF.
+   - Krok 4: N přes syn_dspstyle (jako seq_c) → odhad -48 FF, -48 ALU, -8 LUT, ALU54D 6 → 8 z 10. Yosys počítá v logice (0).
+   - CLS: odhad v ZPRAVA.md kap. 3 (rozsah, L-0221 nelinearita); měří hlavní instance.
+
+7. RIZIKA (seřazeno)
+   R1 SDPB s různou šířkou portů (krok 1): mapování bajtů zápis 32 b / čtení 8 b je podle UG285 (tab. 2-2, 2-4; adresování
+      po bitech) a modelu yosys; v simulaci ho potvrzuje jen můj model. → PUSTIT sim/tb_prim_chk.sv s prim_sim.v z Gowin IDE.
+      Kdyby bajty byly obráceně, rámce by nesly záznamy s přeházenými bajty (test na desce by to ukázal okamžitě).
+   R2 ALU54D (krok 2): sémantika ALUD_MODE 0, B_ADD_SUB 1, C_ADD_SUB 0, synchronní RESET, CE. Při C_ADD_SUB = 0 dávají obě
+      čtení UG287 totéž (ACC + A − B). → tb_prim_chk.sv s prim_sim.v. Parametr ALUD_MODE se nepřepisuje (výchozí 0; UG287 ho
+      v příkladu Verilogu nazývá ALUMODE, ve VHDL a v yosysu ALUD_MODE).
+   R3 BSRAM: výchozí 24 / 26, s -DDEEP_RAW 26 / 26 (bez rezervy; varianta s PSRAM má navíc 2 bloky FIFO).
+   R4 Časování nových cest (krok 1, 2): DSP DOUT → SDPB DI a registry seg_chan3 → SDPB DI bez logiky (dřív přes výběr a dva
+      registry); xm/tm/x0/t0 (160 sítí) → vstupy ALU54D v řádku DSP (dřív dt_r/dx_r 66 sítí). Čtení kruhu: výběr 16:1 v doméně
+      10 MHz (100 ns). Odstraněné: celý shluk u_ring/k → wrec/seg_idx/nfc_a/wl/wh (7 z 10 nejhorších cest vydaného sestavení),
+      DSP → wa_a, hold_a_s → o_ovl, dd_r → d_l (krok 6, 7).
+   R5 tdc_chan3 je kopie tdc_chan (tdc.v zamčený): budoucí změna tdc_chan v tdc.v se musí promítnout i do kopie (rozdíl je
+      jediný blok ts_hq; diff v ZPRAVA.md kap. 3.3).
+   R6 Inference N do DSP (krok 4): stejný vzor jako seq_c (doloženo 6 ALU54D v reportu 0x0507) — ověřit 8 ALU54D v reportu.
+
+8. NALEZENÁ CHYBA RTL (navrh_opravy.patch, NEOPRAVENO v řadě)
+   seg_chan3 kontrolní počítání hran: snap v taktu registrovaného přenosu čítače X (xcy = 1) dá cdd = ±256 → falešný
+   ccd_bad (FLAGS bit4) ve dvou po sobě jdoucích záznamech; četnost f / (256 × 100 MHz) na segment (10 MHz: ~1× za 64 s na
+   kanál). Test sim/tb_ccd_carry.sv: na base/ FAIL (cdd 256), s opravou PASS; negativní kontrola (3 chybějící hrany) projde.
+   Patch jde aplikovat na base/ i na konec řady. Souvisí s otázkou na kanál B (ROZBOR_KANAL_B.md bod 1).
+
+9. KANÁL B (ROZBOR_KANAL_B.md)
+   Funkční chyba specifická pro B nenalezena. Nálezy: pin B na LW / pin A na PRIMARY (návrh chtěl lokálně), horší MPW a
+   časování předděličky B, řetěz B v R27 hned nad řadou BSRAM R28, delší vedení q_r → qd_r u B (qd_r nad řetězem A),
+   LUT výběru zdroje B s pinem A na vstupu.
+   Volitelné patche K1 (top_v3, logicky shodné) a K2 (pins.cst CLOCK_LOC LOCAL_CLOCK — mění zamčený pins.cst, jen pokus).

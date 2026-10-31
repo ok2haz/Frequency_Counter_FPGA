@@ -1,0 +1,64 @@
+From 5bf74804e9a4317c2f94f4ef02735a2ab843ea93 Mon Sep 17 00:00:00 2001
+From: Michal Grygarek <michal.grygarek@accenture.com>
+Date: Sun, 25 Oct 2026 09:00:22 +0100
+Subject: [PATCH] kanalB(fpga): pin A do vyberu zdroje B jen v rezimu B = pin A
+ (K1, top_v3)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⚠️ Volitelne, mimo optimalizacni radu (rozbor ROZBOR_KANAL_B.md bod 6).
+LUT pred retezem u_tdcb mela pin A na vstupu i pri bsrc = 0; hrany A
+mohly podle vzajemne faze posouvat hranu B o jednotky ps (preslech
+uvnitr LUT a na vedeni pinu A k hlave retezu B, periodicky s f_A - f_B).
+Ted pin A projde samostatnym hradlem cha_b = ch_a & bs2[0] (keep), na
+vstupu LUT vyberu je mimo rezim B = pin A staticka 0.
+
+Logicky shodne: bs2[0] ? (ch_a & bs2[0]) : div_b = bs2[0] ? ch_a : div_b.
+Stopa topv3pw (zdroj B 0x09 = 3, 1, 0) shodna s base/. V rezimu
+B = pin A pribude LUT v ceste (zpozdeni A/B kalibruje 0x09 = 1).
+Mutace: kotva 'B zdroj ignorovan' na novy tvar, nova 'K1: cha_b bez pinu A'.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sim/mut_top_v3.py | 4 +++-
+ src/top_v3.v      | 8 +++++++-
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/sim/mut_top_v3.py b/sim/mut_top_v3.py
+index dc8eb16..ace0bae 100644
+--- a/sim/mut_top_v3.py
++++ b/sim/mut_top_v3.py
+@@ -106,7 +106,9 @@ M = [
+     ('ring: jednickovy vyber bez rotace', 'v3_core.v', "    always @(posedge rclk) rs <= raddr[5:2];", "    always @(posedge rclk) rs <= {raddr[5], 3'd0};", 0),
+     ('ring: odpocet bez vypujcky hornich 11 b', 'v3_core.v', "            chi <= chi - 11'd1;", "            chi <= chi;", 0),
+     ('1PPS: seq > 1 vzdy', 'v3_core.v', "seq_nz <= 1'b1; seq_gt1 <= seq_nz;", "seq_nz <= 1'b1; seq_gt1 <= 1'b1;", 0),
+-    ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
++    # K1 (kanal B): pin A do vyberu zdroje B pres cha_b (staticka 0 mimo rezim B = pin A)
++    ('B zdroj ignorovan', 'top_v3.v', "    wire        sig_b = (bs2[0] ? cha_b : div_b) ^ bs2[1];", "    wire        sig_b = div_b;", 3),
++    ('K1: cha_b bez pinu A', 'top_v3.v', "    (* keep = \"true\" *) wire cha_b = ch_a & bs2[0];", "    (* keep = \"true\" *) wire cha_b = 1'b0;", 3),
+     ('RAW: prohozene poloviny', 'app_v3.v', "it_src = g_cur[0] ? raw_q[47:24] : raw_q[23:0];", "it_src = g_cur[0] ? raw_q[23:0] : raw_q[47:24];", 0),
+     # 2026-10-24 (optimalizace casovani): nove struktury -- kazda musi test shodit
+     ('1PPS: wnz se pri hrane nenuluje', 'v3_core.v', "win <= 5'd0; wnz <= 1'b0; wnz_b <= 1'b0;\n", "win <= 5'd0; wnz_b <= 1'b0;\n", 0),
+diff --git a/src/top_v3.v b/src/top_v3.v
+index add72c2..cb5a9fd 100644
+--- a/src/top_v3.v
++++ b/src/top_v3.v
+@@ -226,7 +226,13 @@ module top_v3 (
+     pin_cnt3 u_pca (.pin(ch_a), .clk(clk_p0_100m), .wend(pwend), .sel(pr_a), .sig_out(div_a), .probe(prb_a));
+     pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .wend(pwend), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
+     wire        sig_a = div_a;
+-    wire        sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1];
++    // ⚠️ K1 (kanal B, volitelne, 2026-10-25, rozbor docs ROZBOR_KANAL_B.md): pin A vstupuje do vyberu zdroje B jen pri
++    // bs2[0] = 1 (zdroj B = pin A), jinak je na vstupu LUT vyberu staticka 0. Drive mela LUT pred retezem u_tdcb pin A na vstupu
++    // vzdy -> hrany kanalu A mohly LUT (vnitrni pruchod, sdilene napajeni) a vedeni k ni modulovat zpozdeni hran B o jednotky ps
++    // (rusi se s rozdilem kmitoctu A a B; A takovy vstup nema). Logicky shodne (bs2[0] ? ch_a & bs2[0] : div_b); keep drzi AND
++    // jako samostatnou sit, jinak by ho synteza slila zpet do LUT vyberu.
++    (* keep = "true" *) wire cha_b = ch_a & bs2[0];
++    wire        sig_b = (bs2[0] ? cha_b : div_b) ^ bs2[1];
+     // audit 2026-10-23 (F-0269): B z pinu A jde mimo predelicku (P = 1) -> log2 P v zaznamu B musi byt 0, jinak STM
+     // nasobi X kanalu B starym P_B (STM sice P_B v tom rezimu stahne na 0, ale az po ozvene a dvou ramcich)
+     wire [2:0]  pr_b_eff = bs2_s[0] ? 3'd0 : pr_b_s;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -47,7 +47,6 @@ extern "C" {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void NMI_Handler(void);
-void HardFault_Handler(void);
 void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
@@ -56,7 +55,11 @@ void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
 /* USER CODE BEGIN EFP */
-
+/* HardFault - od 2026-09-13 ma v NVIC (Context1/CM4) odskrtnute "Generate IRQ
+ * handler" (stejne jako CM7 od 2026-08-16), takze CubeMX zahodil i telo funkce
+ * a tento prototyp — bez neho hlasi -Wmissing-prototypes. Nase verze je
+ * `naked`, definovana v `stm32h7xx_it.c` uvnitr USER CODE BEGIN 1. */
+void HardFault_Handler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

@@ -59,4 +59,14 @@
 #define W25Q_BENCH_SECTORS  8u
 #define W25Q_BENCH_SIZE     (W25Q_BENCH_SECTORS * W25Q_SECTOR_SIZE)
 
+/* ── ERRLOG: trvaly zaznamnik chyb (viz `errlog.h`) ─────────────────────────
+ * Lezi ZA benchmarkem, tedy v dosud nepouzite casti DATA regionu (za nim
+ * zustava jeste ~42 MB volnych). Umistenim na konec se NEDOTYKA datalogu ani
+ * flight recorderu — existujici zaznamy na deskach zustavaji platne.
+ * 64 sektoru = 256 kB = 8192 zaznamu po 32 B. Pri rate-limitu (jeden zaznam
+ * na druh a minutu) to je historie na mesice. */
+#define W25Q_ERRLOG_BASE    (W25Q_BENCH_BASE + W25Q_BENCH_SIZE)
+#define W25Q_ERRLOG_SECTORS 64u
+#define W25Q_ERRLOG_SIZE    (W25Q_ERRLOG_SECTORS * W25Q_SECTOR_SIZE)
+
 #endif /* INC_W25Q_MAP_H_ */

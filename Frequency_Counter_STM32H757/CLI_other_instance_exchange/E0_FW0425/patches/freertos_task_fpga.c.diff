@@ -1,0 +1,200 @@
+--- /mnt/project/freertos_task_fpga.c	2026-10-20 05:32:26.902330635 +0000
++++ freertos_task_fpga.c	2026-10-20 12:31:05.393146133 +0000
+@@ -344,9 +344,44 @@
+ #define GPSDO_X_SLIP_NS     50000.0   /* LOCK: faze > 50 us = neco se pokazilo -> znovu FLL */
+ #define GPSDO_SAW_W         64u       /* okno rozhodnuti o oprave sawtooth [vzorku] */
+ #define GPSDO_TP_GUARD_MS   60u       /* TIM-TP musi prijit aspon tolik PRED prvnim videnim hrany */
+-#define GPSDO_PM_NS         30.0      /* sum jedne hrany 1PPS [ns RMS] (HYPOTEZA, NEO-7M) -> sum odchylky okna FLL */
++/* Audit 2026-10-20 (slabina 3): sum odectu faze 1PPS se ODHADUJE ZA BEHU (gp_pm_update: robustni sigma druhych diferenci
++ * faze / sqrt(6)); pevnych 30 ns (HYPOTEZA) bylo ~10x nad namerenymi 2,9 ns (= MP_PPS_PM_NS) a prah mereni K v FLL tim
++ * ~10x prisnejsi, nez data opravnuji. Pocatecni hodnota = MP_PPS_PM_NS, meze proti nesmyslum. */
++#define GPSDO_PM_NS_INIT    2.9       /* = MP_PPS_PM_NS (meas_present.h), 10h beh 2026-10-17/18 */
++#define GPSDO_PM_NS_MIN     0.3       /* dolni mez (1PPS po IDES8 ~0,4 ns + GPS) */
++#define GPSDO_PM_NS_MAX     30.0      /* horni mez (puvodni hypoteza) */
++/* Kriticka analyza 2: prah mereni K ve FLL ZUSTAVA na 30 ns. Model sumu okna FLL (sqrt(2)*PM/n) predpoklada BILY PM, ale GPS ma
++ * na 16-256 s korelovane putovani (multipath, ionosfera) -> zmerene 2,9 ns (bily sum za 1 s) by prah snizilo ~10x a mohlo vratit
++ * falesne divergence ze STATUS #318. Zmereny sum jde do prezentace (mp_ref_ppb) a diagnostiky; do FLL az po overeni na desce. */
++#define GPSDO_PM_NS_FLL     30.0
++#ifndef GPSDO_FLL_USE_MEASURED_PM
++#define GPSDO_FLL_USE_MEASURED_PM 0
++#endif
+ #define GPSDO_FLL_K_SIGMAS  5.0       /* K se z kroku meri jen kdyz i nejmensi verohodna zmena presahuje sum o tolik sigma */
+ 
++/* ── Audit 2026-10-20 (slabina 3): odhad sumu odectu faze 1PPS za behu ─────────────────────────────
++ * e = chyba periody [ns] po oprave sawtooth za interval 1 s. Pro bily PM faze x: e_k = x_k - x_(k-1), d = e_k - e_(k-1) je druha
++ * diference faze s rozptylem 6*sigma_x^2. Robustne: EWMA |d| (oriznuta na 3 sigma, skoky FLL/GPS nerozhodi) * 1,2533 = sigma_d,
++ * sigma_x = sigma_d / sqrt(6). Plati az po 64 diferencich; souvislost se prerusi s kazdym prerusenim intervalu. */
++static double   s_pm_ns = GPSDO_PM_NS_INIT, s_pm_ewma = 0.0, s_pm_eprev = 0.0;
++static uint8_t  s_pm_have = 0u;
++static uint32_t s_pm_n = 0u;
++static double gp_clamp(double v, double lo, double hi);
++static void gp_pm_update(double e)
++{
++    if (s_pm_have) {
++        double d  = fabs(e - s_pm_eprev);
++        double sd = s_pm_ewma * 1.2533141373155;
++        if (s_pm_n > 16u && sd > 0.0 && d > 3.0 * sd) d = 3.0 * sd;   /* optimalizace 3: orez 3 sigma (test T5: 5 sigma nadhodnocovalo o 10-16 %) */
++        s_pm_ewma = (s_pm_n == 0u) ? d : s_pm_ewma + (d - s_pm_ewma) * (1.0 / 256.0);
++        if (s_pm_n < 0xFFFFFFFFu) s_pm_n++;
++        if (s_pm_n >= 64u)
++            s_pm_ns = gp_clamp(s_pm_ewma * 1.2533141373155 / 2.449489742783178, GPSDO_PM_NS_MIN, GPSDO_PM_NS_MAX);
++    }
++    s_pm_eprev = e; s_pm_have = 1u;
++}
++double gpsdo_pm_ns(void) { return s_pm_ns; }
++
+ /* ── Jadro regulatoru (cista logika, testuje gpsdo_selftest) ───────────────────────────────────── */
+ typedef struct {
+     uint8_t  state;              /* GPSDO_FLL / GPSDO_LOCK (jine stavy resi obal) */
+@@ -360,6 +395,7 @@
+     double   x, xf, integ, code_lock, yf;   /* LOCK: faze [ns], filtr faze, integrator [rel], kod pri zamceni */
+     uint32_t good, bad_run;
+     uint8_t  locked, diverged;
++    double   pm_ns;              /* audit 2026-10-20: sum odectu faze 1PPS [ns] (0 = GPSDO_PM_NS_INIT); plni obal z gp_pm_update */
+ } gp_core_t;
+ 
+ static double gp_clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+@@ -392,8 +428,13 @@
+          * a smycka by vyhlasila falesnou divergenci. Zmena, kterou by dala i nejmensi verohodna strmost (0,25x K0),
+          * musi sum prevysit GPSDO_FLL_K_SIGMAS-krat; jinak se K nemeri a plati dosavadni odhad. */
+         int kupd = 0;
+-        double s_cur = GPSDO_PM_NS * 1.4142135623730951e-9 / (double)c->fll_n;
+-        double s_prv = GPSDO_PM_NS * 1.4142135623730951e-9 / (double)(c->fll_prev_n ? c->fll_prev_n : 1u);
++#if GPSDO_FLL_USE_MEASURED_PM
++        double pm = (c->pm_ns > 0.0) ? c->pm_ns : GPSDO_PM_NS_INIT;
++#else
++        double pm = GPSDO_PM_NS_FLL;                   /* beze zmeny proti 0x0424 (viz GPSDO_PM_NS_FLL) */
++#endif
++        double s_cur = pm * 1.4142135623730951e-9 / (double)c->fll_n;
++        double s_prv = pm * 1.4142135623730951e-9 / (double)(c->fll_prev_n ? c->fll_prev_n : 1u);
+         double s_dif = sqrt(s_cur * s_cur + s_prv * s_prv);
+         if (c->fll_steps > 0u && fabs(c->last_dc) > 50.0 && fabs(c->last_dc) * 0.25 * c->k0 > GPSDO_FLL_K_SIGMAS * s_dif) {
+             double ko = (ya - c->fll_prev_y) / c->last_dc;
+@@ -475,7 +516,7 @@
+ static gpsdo_status_t s_pub;                   /* publikovany stav (kopie pod kritickou sekci) */
+ 
+ /* Historie smycky (viz gpsdo.h): kruhovy buffer, 1 bod / 10 s. Zapisuje jen gpsdo_tick (defaultTask). */
+-static int16_t  s_h_x[GPSDO_HIST_N];
++static int32_t  s_h_x[GPSDO_HIST_N];        /* audit 2026-10-20: faze [ps] (driv int16 ns -- zisk 1PPS pod 1 ns by zanikl) */
+ static int32_t  s_h_y[GPSDO_HIST_N];
+ static uint32_t s_h_code[GPSDO_HIST_N];
+ static uint8_t  s_h_st[GPSDO_HIST_N];
+@@ -488,7 +529,7 @@
+  *           mensi tau dava horsi (konzervativni) cislo, protoze v nem vic vazi sum 1PPS;
+  *  - drift = |sklon kodu DAC| (LS pres cely usek, nejmin 30 min) × K [ppb/h] = zmereny dopredny drift OCXO (starnuti + teplota).
+  * Cista logika nad poli (kryje gpsdo_selftest). Vraci 1, kdyz je `u` zmereno. */
+-static int gp_ref_core(const int16_t *x_ns, const uint32_t *code_q16, int n, double kdac, double *u_ppb, double *drift_ppb_h)
++static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, double kdac, double *u_ppb, double *drift_ppb_h)
+ {
+     static const int MS[4] = { 100, 50, 20, 10 };
+     *u_ppb = 0.0; *drift_ppb_h = 0.0;
+@@ -497,7 +538,7 @@
+         if (n - 2 * m < 10) continue;
+         double s = 0.0; int c = 0;
+         for (int i = 0; i + 2 * m < n; i++) {
+-            double d = (double)x_ns[i + 2 * m] - 2.0 * (double)x_ns[i + m] + (double)x_ns[i];
++            double d = ((double)x_ps[i + 2 * m] - 2.0 * (double)x_ps[i + m] + (double)x_ps[i]) * 1e-3;   /* [ns] */
+             s += d * d; c++;
+         }
+         *u_ppb = sqrt(0.5 * s / (double)c) / ((double)m * (double)GPSDO_HIST_PERIOD_S);   /* ns/s = ppb */
+@@ -524,7 +565,7 @@
+ 
+ static void gp_ref_update(void)
+ {
+-    static int16_t  bx[GPSDO_HIST_N];                /* 1,4 kB + 2,9 kB, ne na stack; vola jen gpsdo_tick (defaultTask) */
++    static int32_t  bx[GPSDO_HIST_N];                /* 2,9 kB + 2,9 kB, ne na stack; vola jen gpsdo_tick (defaultTask) */
+     static uint32_t bc[GPSDO_HIST_N];
+     const uint16_t cnt = s_h_n, head = s_h_head;
+     int n = 0;
+@@ -548,7 +589,7 @@
+     s_h_ms = now ? now : 1u;
+     uint16_t h = s_h_head;
+     double x = (s_g_state == GPSDO_LOCK) ? s_gc.x : 0.0;     /* TIE ma smysl jen v LOCK */
+-    s_h_x[h]    = (int16_t)gp_clamp(x, -32768.0, 32767.0);
++    s_h_x[h]    = (int32_t)gp_clamp(x * 1000.0, -2.1e9, 2.1e9);             /* ns -> ps, rozsah +-2,1 ms */
+     s_h_y[h]    = (int32_t)gp_clamp(s_gc.yf * 1e12, -2e9, 2e9);
+     s_h_code[h] = (uint32_t)(gp_clamp(s_gc.code, 0.0, 65535.0) * 65536.0 + 0.5);
+     s_h_st[h]   = s_g_state;
+@@ -564,7 +605,9 @@
+     uint16_t n = s_h_n, head = s_h_head;
+     if (i >= n || !p) return 0;
+     uint16_t idx = (uint16_t)((head + GPSDO_HIST_N - n + i) % GPSDO_HIST_N);
+-    p->x_ns = s_h_x[idx]; p->y_ppt = s_h_y[idx]; p->code_q16 = s_h_code[idx]; p->state = s_h_st[idx];
++    p->x_ps = s_h_x[idx];
++    p->x_ns = (int16_t)gp_clamp((double)s_h_x[idx] * 1e-3, -32768.0, 32767.0);   /* kompatibilita (displej, web) */
++    p->y_ppt = s_h_y[idx]; p->code_q16 = s_h_code[idx]; p->state = s_h_st[idx];
+     return 1;
+ }
+ 
+@@ -654,7 +697,7 @@
+         gpsdo_get(&st);
+         for (int k = 0; k < n; k++) {
+             gpsdo_hist_at((uint16_t)(cnt - n + k), &p);
+-            s_x[k] = (float)p.x_ns * 1e-9f;
++            s_x[k] = (float)p.x_ps * 1e-12f;
+         }
+         gpsdo_tau_adv_t r;
+         gp_tau_advise_core(s_x, n, (double)GPSDO_HIST_PERIOD_S, st.tau_s, &r);
+@@ -749,6 +792,7 @@
+                     : !fix ? GPSDO_WHY_NOFIX : GPSDO_WHY_NONE;
+         if (why != GPSDO_WHY_NONE) {
+             s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u; s_mon_x = 0.0;
++            s_pm_have = 0u;                                    /* audit 2026-10-20: souvislost odhadu sumu */
+             if (s_g_state == GPSDO_WAIT) s_g_why = why;
+         } else if (!s_g_have_prev) {
+             s_g_ts_prev = p.ts; s_g_have_prev = 1u;
+@@ -770,6 +814,7 @@
+ 
+             if (ns < 1u || ns > 40u || fabs(e_t) > GPSDO_Y_MAX * (double)ns * F) {
+                 s_g_rej++; s_e_prev_ok = 0u; s_mon_x = 0.0;    /* 10 Hz bez fixu dava ns = 0 */
++                s_pm_have = 0u;
+             } else {
+                 if (ns > 1u) s_g_gap++;
+                 double e_ns = e_t * 1000.0 / (double)p.clk_mhz;
+@@ -777,6 +822,7 @@
+                 double e_use = e_ns;
+                 if (dq_ok && s_saw == GPSDO_SAW_PLUS)  e_use = e_ns - dq;
+                 if (dq_ok && s_saw == GPSDO_SAW_MINUS) e_use = e_ns + dq;
++                if (ns == 1u) gp_pm_update(e_use); else s_pm_have = 0u;   /* audit 2026-10-20: odhad sumu 1PPS */
+ 
+                 if (!s_g_en) {                                 /* OFF: jen soucet faze, nic se neridi */
+                     s_mon_x += e_use; s_g_ok++;
+@@ -802,6 +848,7 @@
+                     /* K se prepisuje jen novou hodnotou od uzivatele -- jinak by se zahodil odhad z FLL */
+                     if (s_g_kset) { s_gc.kdac = s_g_kdac; s_gc.k0 = s_g_kdac; s_g_kset = 0u; }
+                     s_gc.tau = s_g_tau;
++                    s_gc.pm_ns = s_pm_ns;                      /* audit 2026-10-20: zmereny sum 1PPS do FLL */
+                     if (core_step(&s_gc, e_use, ns)) { s_g_ok++; s_g_last_ok_ms = now; } else s_g_rej++;
+                     if (s_gc.diverged) {
+                         s_g_en = 0u; g_set_state(GPSDO_OFF, GPSDO_WHY_DIVERGE);
+@@ -840,6 +887,7 @@
+     st.fll_win_s = s_gc.fll_win; st.state_s = (now - s_g_state_ms) / 1000u;
+     st.pps_ok = s_g_ok; st.pps_rej = s_g_rej; st.pps_gap = s_g_gap;
+     st.saw_var[0] = s_saw_var[0]; st.saw_var[1] = s_saw_var[1]; st.saw_var[2] = s_saw_var[2]; st.saw_n = s_saw_dec;
++    st.pm_ns = s_pm_ns;
+     taskENTER_CRITICAL(); s_pub = st; taskEXIT_CRITICAL();
+ }
+ 
+@@ -858,6 +906,7 @@
+     memset(&r, 0, sizeof r);
+     r.state = st.state; r.why = st.why; r.locked = st.locked; r.state_s = st.state_s;
+     r.y_abs_ppb = fabs(st.y) * 1e9; r.fll_win_s = st.fll_win_s;
++    r.pm_ns = st.pm_ns;                                        /* audit 2026-10-20 */
+     taskENTER_CRITICAL(); r.lock_u_ppb = s_ref_lock_u; r.hold_u0_ppb = s_ref_lock_u; r.hold_drift_ppb_h = s_ref_drift; taskEXIT_CRITICAL();
+     return mp_ref_ppb(&r, measured);
+ }
+@@ -986,12 +1035,12 @@
+     ok = ok && dv;
+     ok = ok && st_tau_advise();
+     /* Zmerena nejistota reference: syntetika. Drift kodu 0,76 LSB/h (K 3,4e-11) = 0,0258 ppb/h; bily PM ±5 ns (σ 2,9 ns) -> ADEV @ 1000 s ~ 0,005 ppb. */
+-    {   static int16_t  tx[360];
++    {   static int32_t  tx[360];          /* audit 2026-10-20: faze v ps (driv int16 ns) */
+         static uint32_t tc[360];
+         uint32_t rnd = 0x1234ABCDu;
+         for (int i = 0; i < 360; i++) {
+             rnd = rnd * 1664525u + 1013904223u;
+-            tx[i] = (int16_t)((int)((rnd >> 16) % 11u) - 5);
++            tx[i] = (int32_t)(((int)((rnd >> 16) % 11u) - 5) * 1000);   /* +-5 ns jako drive */
+             tc[i] = (uint32_t)((24920.0 + 0.76 / 3600.0 * 10.0 * (double)i) * 65536.0 + 0.5);
+         }
+         double u, d;
