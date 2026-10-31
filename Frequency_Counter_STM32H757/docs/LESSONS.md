@@ -5790,6 +5790,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0250 - test s ujíždějící fází je slepý na harmonické, na které chyba okna nereaguje
+
+- **Datum:** 2026-10-31
+- **Oblast:** rozbor `docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py`, `tdc_gensplit.py` (rozklad chyby TDC na složku 10 ns a 100 ns), noční běh s APP_OSC (deník 2026-10-30 22:12)
+- **Symptom:** s K 150 vyšla složka 10 ns kanálu A po 2h blocích téže noci 129 / 105 / 163 / 107 ps. Tvary prvního a posledního bloku spolu korelovaly jen 0,50, přitom model z kteréhokoli bloku předpovídal okna ostatních bloků stejně dobře (8,6–9,0 ps). Srovnání s během F0a (K 150: 107 ps, K 100: 58 ps) by vedlo k závěru, že se složka 10 ns nezměnila. S K 130 je správně 58 → 96 ps.
+- **Příčina:** chyba okna je Σ ci·E(φ_i), takže harmonickou k vidí jen s vahou |H(k)| = |Σ ci·exp(j2πk·d·i/P)|, kde d je posun fáze mezi segmenty. Při d = 102,5 ps a P = 100 ns je H(140) = 0,001 (perioda ~7 segmentů), slabé jsou i k 1–4. Amplitudu takové harmonické fit neurčí a zanese do ní šum, aniž by se zhoršila předpověď oken. R² ani zbytek na testovacích oknech to neodhalí.
+- **Oprava:** `tdc_gensweep.py` počítá |H(k)| a vypíše `!! … slepe harmonicke do K …: 1..4, 134..147`. Rozklad se dělá s K 130 (`tdc_gensplit.py … 130`, `tdc_genstab.py`, `tdc_gencyc.py`). Stálost tvaru po blocích se kontroluje vždy (`tdc_genstab.py`).
+- **Pravidlo:** když fitem přes filtr (váhy, rozdíly, průměry) určuješ tvar, spočítej přenos filtru pro každou složku modelu a složky s malým přenosem z modelu vyřaď nebo změř jiným nastavením. Dobrá předpověď na testovacích datech nedokazuje, že jsou parametry určené.
+- **Detekce:** varování `!!` v `tdc_gensweep.py`; `tdc_genstab.py` (korelace tvaru prvního a posledního bloku musí být ~1,00, jinak je v modelu neurčená složka).
+- **Commit:** `docs:` 2026-10-31 (rozbor, bez firmwaru)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

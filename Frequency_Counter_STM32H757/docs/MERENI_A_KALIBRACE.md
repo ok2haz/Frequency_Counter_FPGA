@@ -823,6 +823,30 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
   I s nezávislým zdrojem je chyba závislá na poloze hrany v rámci 100 ns a nevysvětlí ji samotná nelinearita TDC v rámci taktu. Podporuje to zdroj v čítači (FPGA / deska / `REF_10MHz`), ne artefakt generátoru.
 - ⚠️ **Tvar se s během s generátorem porovnat nedá.** Posun fáze 74,9 ns za okno je 0,749 P, takže harmonické 2, 6 a 10 se posouvají skoro přesně o půl cyklu za okno a fit je od sebe špatně rozliší. Dominantní vyšla k = 6 (~400 ps), s generátorem k = 1, 2 (63 / 76 ps). Tvary bloků se se vzorem shodují jen s korelací 0,74–0,94. Pro srovnání tvaru je potřeba posun ≤ 0,1 Hz, nebo ~1,5 Hz (0,37 P za okno).
 
+#### 2026-10-30 22:12 – 2026-10-31 06:10 — test s ujíždějící fází přes noc, zkušební bitstream APP_OSC (CM7 v0.42.13)
+
+- **Sestava:** bitstream `ab_test/TEST_FW_0x0508_v3_appOscNoDSPb_20261030-2035.fs` (md5 `7269831c…`, zdroj `218e4da`, varianta `appOsc+noDSPb`). Doména aplikace a SPI běží z vnitřního OSC (250/24 MHz ≈ 10,4 MHz), pin 42 (`REF_10MHz`) je nevyužitý a součty segmentů B jsou v logice místo DSP. CLK_2 → A, CLK_4 → B, oba 10 000 000,041 Hz (P1 27647, P2 213052243, P3 213076844, R 1). Data `noc_logs/ab_20261030_2212/`.
+- **Provoz:** 114 678 oken za 7,97 h, 1 130 290 segmentů na kanál, **0 vadných segmentů A i B**, bez restartu (uptime 2 090 → 30 339 s). Kalibrace TDC jen jednou při startu (36,8 °C). V `seq` je 5 děr (výpadek spojení s webem ve 4:20).
+- **σ(A−B) MAD 148 ps** (F0a 18:03: 174 ps). Chyba okna jednoho kanálu A 68 / B 96 ps (F0a 80 / 98 ps). ⚠️ Při posunu 102,5 ps na segment je chyba okna úměrná strmosti E, ne jejímu rms, takže tato čísla bitstreamy srovnávají špatně. Srovnání dělá až rozklad E.
+- **Rozklad E** (perioda 100 ns, K 130, `tdc_gensplit.py`, `tdc_genstab.py`):
+
+  | rms [ps] | F0a A | F0a B | APP_OSC A | APP_OSC B |
+  |---|---|---|---|---|
+  | složka vázaná na 100 ns | 81 | 78 | **26** | **27** |
+  | složka periodická v 10 ns | 58 | 91 | **96** | **121** |
+  | celkem | 100 | 120 | 99 | 124 |
+  | zbytek okna po odečtení modelu | 7 | 7 | 8,6 | 5,4 |
+
+- 🔑 **Složka vázaná na 100 ns klesla na třetinu.** U F0a ji z poloviny tvořil schod po celých taktech: posun času v jednom až dvou z deseti taktů o −180 ps, které `tdc_gencyc.py` popíše jako offset taktu, zbytek klesne z 81 na 41 ps. To odpovídá doméně `clk_ref_10m` na pinu 42. S APP_OSC schod zmizel (offsety taktů jen ±13 ps).
+  - Zbyly dvě úzké dvojité špičky (A +102 / −95 ps, 3 ns od sebe, šířka v polovině výšky ~2 ns), 50 ns od sebe a s opačným znaménkem. A i B mají tentýž tvar (korelace 0,93 po posunu o vzájemnou fázi CLK2/CLK4).
+  - HYPOTÉZA: náběžná a sestupná hrana 10 MHz, která na desce zůstala. Buffer U21 ji vede přes R89 33R na pin 42 (na konektoru modulu U6 pin 16, vedle REF_100MHz na pinu 14), přes R87/R62 do CLKIN Si5356 (U9), přes R90 na J5.11 do STM a přes R88 do U22. Ověří se vyjmutím R89, protože APP_OSC pin 42 nepotřebuje.
+- **Složka 10 ns se zvětšila** (A 58 → 96, B 91 → 121 ps) a je teď hlavní chybou. Celkové rms je podobné jako u F0a. Tvar se mezi bitstreamy liší (korelace po zarovnání A 0,66, B 0,86). Oba mají propad −110 až −230 ps a za ním během 1,5–2 ns vzestup o +170 až +380 ps. Proč je větší, je zatím neznámé. Kandidáti: jiné rozmístění a vedení vstupu k řetězu po novém P&R, nebo kalibrace z ring oscilátoru, která na vstupní cestu nesedí (STATUS #347, krok 1).
+- **Stálost v čase:** model z kteréhokoli 2h bloku vysvětlí ostatní bloky se zbytkem 8,6–9,0 ps (A) a 5,4–5,7 ps (B). Korelace tvaru prvního a posledního bloku je 1,000 u složky 10 ns a 0,996 / 0,999 u složky 100 ns, rms rozdílu 1–2,5 ps (`tdc_genstab.py`). V rámci jednoho zapnutí a jedné kalibrace je chyba pevná a tabulka korekcí by vydržela celou noc. Mezi kalibracemi a zapnutími to ověřené není.
+- ⚠️ **Slepá harmonická testu (L-0250).** Při posunu 102,5 ps na segment chyba okna na harmonickou k = 140 (perioda 100 ns, tedy 14. harmonická složky 10 ns) nereaguje vůbec (|H| = 0,001). Slabá je i odezva na k 1–4. S K 150 proto fit dal složce 10 ns 105–163 ps podle bloku (a F0a 107 ps), přestože okna předpovídal stejně dobře. S K ≤ 130 vychází stabilně 96 ps. `tdc_gensweep.py` slepé harmonické nově hlásí. Čísla z běhu 18:03 (K 100) platí.
+- **Průměrná chyba okna (STATUS #348):** A −0,05·10⁻¹² (po 2h blocích +0,04 / −0,13 / +0,01 / −0,13), B +0,56·10⁻¹² (+0,94 / +0,59 / +0,56 / +0,14). S F0a bylo A −0,7 / B +1,2·10⁻¹² (18:03) a +1,8 / +2,3·10⁻¹² (16:15). U A odchylka zmizela, u B je menší, ale trvá a přes noc klesá.
+- ⚠️ **Simulace varianty APP_OSC neprošly** (`topv3` 657 chyb, `topv3cal` 38, přechody dat z domény 100 MHz do domény aplikace bez handshaku). Na desce chybu neukázala kalibrace (součet histogramu kontroluje STM) ani segmenty. K vydání to nestačí.
+- **Závěr:** hlavním zdrojem složky 100 ns byla doména `clk_ref_10m` na pinu 42. Zbyla zhruba třetina s jiným tvarem. Hlavní chybou je teď složka 10 ns (~100–120 ps rms). Je deterministická a přes noc stálá a model po ní nechá 5–9 ps na okno. Oprava tedy může chybu okna zmenšit zhruba desetkrát.
+
 #### Postup: test TDC s ujíždějící fází (krok 0 návrhu kalibrace, v0.42.13)
 
 Účel: chyba časové značky **každého kanálu zvlášť a absolutně** jako funkce fáze hrany proti taktu 100 MHz. Pravdu dávají registry MultiSynthu, takže výsledek nezávisí na OCXO ani na šumu zdroje.
@@ -832,7 +856,8 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
    - Proč ,041: posun fáze 1 025 ps za okno, segmenty na mřížce 2,5 ps, perioda 10 ns projde za 2,4 s.
    - Nevhodné: ,040 (posun přesně P/10, vzor fáze se opakuje po 10 oknech, L-0249). Nevhodné jsou i kmitočty, u kterých se fáze posune o víc než ~2,5 ns za segment, například 10 000 040 Hz.
 3. `python -I tools/ab_night.py --hours 1 --warmup 0`.
-4. Rozbor nad kopií dat: `python -I docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py <ab.csv> --a P1 P2 P3 R [--b …] --out <předpona>`. Pusť ho dvakrát: s periodou 10 ns (výchozí) a s `--P 100000 --K 150` (poloha vůči 10 MHz). Rozklad na obě složky dělá `tdc_gensplit.py <ab.csv> P1 P2 P3 R 100`.
+4. Rozbor nad kopií dat: `python -I docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py <ab.csv> --a P1 P2 P3 R [--b …] --out <předpona>`. Pusť ho dvakrát: s periodou 10 ns (výchozí) a s `--P 100000 --K 130` (poloha vůči 10 MHz). Rozklad na obě složky dělá `tdc_gensplit.py <ab.csv> P1 P2 P3 R 130`, stálost po blocích `tdc_genstab.py` a rozklad složky 100 ns na offsety taktů a úzké špičky `tdc_gencyc.py`.
+   - ⚠️ K drž pod slepou harmonickou, kterou `tdc_gensweep.py` hlásí jako `!! … slepe harmonicke` (L-0250). Při posunu 102,5 ps na segment je to k = 140 při periodě 100 ns a k = 14 při periodě 10 ns. Harmonické nad ní změří jen druhý běh s jiným posunem.
    - Výstup: R², σ před a po odečtení tvaru, průměrná chyba okna (absolutní přesnost), tvar E_A, E_B, E_A−E_B po 500 ps a korelace E_A s E_B.
    - Srovnání s tvarem D z běhu s GPSDO: `tdc_dtvar.py <ab.csv 9h> ref.npy`, pak `tdc_dcmp.py <předpona>_AB.npy ref.npy`.
 5. Stejný test zopakovat při 1 MHz (`gen 2 1000000.001`, posun 250 ps za okno) a 25 MHz (`gen 2 25000000.023`, posun 230 ps za okno), případně s předděličkou. Tím se ukáže, zda chyba závisí na kmitočtu a na cestě signálu.

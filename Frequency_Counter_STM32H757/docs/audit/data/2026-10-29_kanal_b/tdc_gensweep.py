@@ -96,6 +96,23 @@ def fit(y, phi, K):
             for k in range(1, K + 1))
     return r2, mad(base), mad(res), coef_all[0], E
 
+def blind(sweep, K):
+    """Slepe harmonicke (2026-10-31): chyba okna na harmonickou k reaguje s vahou |H(k)| = |sum ci exp(j 2 pi k d i / P)|,
+    d = posun faze mezi segmenty. Kde je |H| < 0,3, fit amplitudu neurci a muze tam dat cokoli, aniz by se zhorsila
+    predpoved oken (pri 102,5 ps/segment a P 100 ns je H(140) = 0,001 a slabe jsou i k 1..4). Tvar a rms slozek
+    s takovou harmonickou neplati -> rozklad delat s K pod ni (noc 2026-10-30: K 150 dal slozku 10 ns 105..163 ps
+    podle bloku, K 130 stale 96 ps)."""
+    k = np.arange(1, K + 1)
+    H = np.abs(np.exp(2j * math.pi * np.outer(k, np.arange(NSEG)) * (sweep / NSEG) / P) @ ci)
+    ks = list(k[H < 0.3])
+    rng = []
+    for x in ks:
+        if rng and x == rng[-1][1] + 1:
+            rng[-1][1] = x
+        else:
+            rng.append([x, x])
+    return ', '.join(('%d' % r[0]) if r[0] == r[1] else ('%d..%d' % (r[0], r[1])) for r in rng)
+
 A = channel('A', fa, FA)
 B = channel('B', fb, FB)
 print('oken %d, seq %d..%d (diry %d)' % (len(seq), seq[0], seq[-1], int(np.sum(np.diff(seq) != 1))))
@@ -116,6 +133,10 @@ for c in (A, B):
     if c['kmax'] < a.K:
         print('  !! %s: faze okna se opakuje po %d oknech -> lze nejvyse K %d (zvol kmitocet, kde posun za okno neni P/m)'
               % (c['name'], 2 * c['kmax'] + 2, c['kmax']))
+    bl = blind(c['sweep'], a.K)
+    if bl:
+        print('  !! %s: slepe harmonicke do K %d (|H| < 0,3): %s -> jejich amplitudu fit neurci, tvar a rms slozek ber '
+              's K pod nimi (nebo druhy beh s jinym posunem)' % (c['name'], a.K, bl))
 
 out = {}
 KE = max(1, min(a.K, A['kmax'], B['kmax']))            # rad fitu pro vypsany tvar (degenerovany kmitocet ho omezi)
