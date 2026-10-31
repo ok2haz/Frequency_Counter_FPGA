@@ -3,8 +3,9 @@
 
 Obe vstupy A a B na tomtez zdroji 10 MHz. Test (1) pocka --warmup s na dohrati, (2) vynuluje `fpga v3 seg`,
 (3) po celou dobu sbira mereni A a B z webu (SSE /api/stream) do ab.csv, (4) kazdych --period s precte pres UART
-`status`, `fpga v3`, `fpga v3 seg`, `fpga v3 x0` a ulozi citace do cykly.csv, nove velke odchylky X0 do x0_velke.csv
-a cely vypis do uart.log, (5) na konci (nebo po Ctrl+C) napise report.txt: A-B po hodinach, ocas, kdo ulital.
+`status`, `fpga v3`, `fpga v3 seg`, `fpga v3 x0`, `gen` a ulozi citace do cykly.csv, nove velke odchylky X0 do x0_velke.csv
+a cely vypis do uart.log (registry generatoru z `gen` bere rozbor tdc_geneval.py), (5) na konci (nebo po Ctrl+C)
+napise report.txt: A-B po hodinach, ocas, kdo ulital.
 
 Vystup (adresar --outdir, vychozi noc_logs/ab_<datum_cas>/):
   ab.csv         t_unix, seq, f_primary (A), f_secondary (B), gate_ns, channel, signal_lost
@@ -243,7 +244,8 @@ def run(a):
     try:
         while time.time() < t_end:
             t_next = time.time() + a.period
-            txt = uart(a.port, ['status', 'fpga v3', 'fpga v3 seg', 'fpga v3 x0'], mx=90000)
+            # `gen` (2026-10-31): registry MultiSynthu generatoru v logu -> rozbor testu s ujizdejici fazi je vezme sam
+            txt = uart(a.port, ['status', 'fpga v3', 'fpga v3 seg', 'fpga v3 x0', 'gen'], mx=90000)
             flog.write('==== %s\n%s\n' % (iso(), txt))
             c = parse_cycle(txt)
             if c['uptime_s'] == '':
