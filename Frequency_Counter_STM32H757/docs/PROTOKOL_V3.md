@@ -66,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)**, **bit22 = úzká hlavička (FW 0x0507, kap. 3.1b)**, **bit23 = filtr CS a čítače zahozených pulzů na CS, bajty 132..137 (FW 0x0508, kap. 3.1c)** | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)**, **bit22 = úzká hlavička (FW 0x0507, kap. 3.1b)**, **bit23 = filtr CS a čítače zahozených pulzů na CS, bajty 132..137 (FW 0x0508, kap. 3.1c)**, **bit24 = kalibrace TDC ze vstupního pinu (`SET_CONFIG 0x02` p1 bit3, FW 0x0509, kap. 6.3)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -80,7 +80,7 @@
 | 48 | 1 | TDC_STATUS A: bit0 kalibrace platná, bit1 selhala, bit2 sběr histogramu běží, bit3 řetěz krátký, bit4 aktivní banka | |
 | 49 | 1 | TDC_STATUS B (totéž) | |
 | 50 | 1 | PPS_STATUS: bit0 PCLK běží (rPLL zamčena a uvolněna), bit1 platné, bit2 poslední hrana při zamčené PLL bez jemného času, bity 7:4 **epocha** (uvolnění PCLK mod 16; změna = jiná osa jemného času) | **(FW 0x0502)**; do 0x0501 jen bit1 |
-| 51 | 1 | CAL_WAIT: bit0/bit1 = kanál A/B čeká na tabulku od STM (jako v2 abs 112 bit0/1) | |
+| 51 | 1 | CAL_WAIT: bit0/bit1 = kanál A/B čeká na tabulku od STM (jako v2 abs 112 bit0/1); **bit2/bit3 = zdroj poslední nebo běžící kalibrace kanálu A/B (1 = vstupní pin)** | bity 2–3 **(FW 0x0509, CAPS bit24)** |
 | 52 | 2 | RX_CRC_ERR (u16, saturuje) | |
 | 54 | 2 | RX_LEN_ERR (u16, saturuje) | nové |
 | 56 | 4 | RX_LAST: [7:0] TYPE posledního provedeného příkazu, [31:8] dolních 24 b jeho SEQ | |
@@ -189,7 +189,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | id | význam | stav |
 |---|---|---|
 | 0x01 | základní okno | **v3 bez významu** – FPGA ignoruje, STM neposílá |
-| 0x02 | kalibrace: p1 bit0 = 1 start sběru histogramu, p1 bity 2:1 = maska kanálů (0 = oba střídavě, §6.3), p2 = log2 počtu událostí | rozšířeno; **(FW 0x0500) p2 se ignoruje, pevně 2^20 jako v2** |
+| 0x02 | kalibrace: p1 bit0 = 1 start sběru histogramu, p1 bity 2:1 = maska kanálů (0 = oba střídavě, §6.3), **p1 bit3 = zdroj histogramu vstupní pin místo ring oscilátoru (FW 0x0509, CAPS bit24, §6.3)**, p2 = log2 počtu událostí | rozšířeno; **(FW 0x0500) p2 se ignoruje, pevně 2^20 jako v2** |
 | 0x03 | volba kanálu | **v3 bez významu** (oba kanály vždy) |
 | 0x04 | reference: p1 bit0 0 = OCXO, 1 = externí 10 MHz | beze změny |
 | 0x05 | diagnostika: p1 bit0 `mask_cs`, bit1 `led_hb` | beze změny |
@@ -249,6 +249,15 @@ Bulk se prokládá s daty: nejvýš 1 stránka na 2 datové rámce (kruh 6,4 s s
   posune; STM okna přes neplatné záznamy přeruší, na měření to vliv nemá (rozdíly X jen uvnitř souvislého úseku).
 - **(FW 0x0500) `LUT_CNT_B`:** `LUT_SUM` (vzorec v2) chybu bitu kanálu u celé tabulky NEPOZNÁ – bit kanálu mění člen
   součtu o 2^14 a 512 × 2^14 ≡ 0 (mod 2^16). STM proto ověřuje i počet položek s bitem B (L-0196).
+- **(FW 0x0509, CAPS bit24, STM v0.43.0) Kalibrace ze vstupního pinu** (STATUS #347 krok 1): `SET_CONFIG 0x02` p1 bit3 = 1
+  → při sběru histogramu kanálů z masky krmí řetěz **signál z pinu** (za předděličkou, `sig_raw`) místo ring oscilátoru;
+  ring oscilátor pak neběží. Zdroj se nastaví povelem a drží i pro opakování po selhání; náběh je vždy z ring oscilátoru.
+  Hlavička bajt 51 bit2/bit3 hlásí zdroj. Hustota kódů platí jen při **rovnoměrné fázi hran vůči taktu 100 MHz** za dobu
+  sběru (2^20 hran): STM to ověří PŘED sběrem z kmitočtu (`fpga_v3_calpin_cover`: odchylka obsazení osmin taktu ≤ 10 ‰,
+  0,5–19 MHz, předdělička P = 1) a PO sběru z histogramu (`fpga_v3_calpin_check`: ≥ 9/10 kódů předchozí kalibrace, osminy
+  taktu podle referenčního histogramu 1/8 ± 10 %). Neprošlý histogram se nezapíše a STM spustí sběr z ring oscilátoru
+  (kanál dostane platnou tabulku). Vhodný zdroj: generátor 11 603 104 Hz (krok fáze mezi hranami ≈ zlatý řez); 10 MHz
+  z GPSDO je nevhodný (soudělný se 100 MHz). UART `tdc cal [pin] [a|b] [gen]` (`gen` = generátor CLK2/CLK4 po dobu kalibrace).
 
 ### 6.4 Rozsah
 - STM volí P podle sondy (`fpga_v3_range_select`: nahoru f/P > 33 MHz, dolů f/(P/2) < 27 MHz, strop ÷16); příkaz až po

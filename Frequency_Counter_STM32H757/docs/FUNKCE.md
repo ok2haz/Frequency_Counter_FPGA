@@ -50,6 +50,7 @@
 | Okno **FUNKCE MĚŘENÍ**: Frekvence A/B, Perioda A/B | 🟡 | od v0.28.0 (B = FREQ/PERIOD + CHAN B); zbylé funkce šedé s důvodem, limity v kap. 12 |
 | Detekce ztráty signálu, auto‑restart, kontrola oken (samokontrola FPGA) | ✅ | `status` → FPGA SAMOKONTROLA |
 | Kalibrace TDC (code density) po startu, po teplotě, po výpadku hodin | ✅ | UART `tdc`, `tdc cal` |
+| Kalibrace TDC ze vstupního pinu (krok 1 STATUS #347): histogram ze signálu na vstupu místo ring oscilátoru, kontrola rovnoměrnosti fáze před sběrem i po něm | 🟡 v0.43.0 | UART `tdc cal [pin] [a\|b] [gen]`; potřebuje FPGA FW 0x0509 (CAPS bit24), ⬜ neověřeno na HW |
 | Rozsah vstupu | ✅ | dnes do ~30 MHz bez děliče; 200 MHz/1,1 GHz ⬜ (vstupní modul) |
 | Math Mx+B, NULL (relativní měření), limity PASS/FAIL + alarm | 🟡 | okno MATH/LIMITY |
 | Odchylka ×N (jako ADRET 4110) | 🟡 | okno „Odchylka ×N" |

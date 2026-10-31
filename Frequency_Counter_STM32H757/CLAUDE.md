@@ -1135,6 +1135,11 @@ prescaler dle `HAL_RCCEx_GetPeriphCLKFreq(SPI123)`). **SCK strop dle kontraktu F
   `PROTOKOL_V3.md` kap. 3.1c), `HYSTERESIS=HIGH` na CS/SCK/MOSI; STM `spi err` (pulzy na CS), `spi pins` (rychlost hran za běhu). Bitstream
   `ab_test/FW_0x0508_v3_20261026-1944_bd20e77.fs`, setup jen +0,048 ns. ⬜ neověřeno na HW.
 - **Časování FPGA + STM v0.40.9/v0.40.10** (2026-10-27, STATUS #346, `docs/audit/2026-10-27_optimalizace-casovani-a-deep-raw.md`): cíl předděličky na pinech CH_A/CH_B v `timing_v3.sdc` je 300 MHz (3,33 ns) místo 400 MHz (pnr_seeds 7/8 kladných, medián +0,225 ns), bitstream `ab_test/FW_0x0508_v3_20261027-1514_796c009.fs` (setup +0,763 ns); `-DDEEP_RAW` P&R nevychází (0/8, `raw_cap3`). UART `digits [sig|counter]` (počet platných číslic podle rozlišení čítače, bit 1 `gen_valid` v syscfg, popisek RES), okno Health ukazuje chyby SPI. ⬜ neověřeno na HW.
+- **Kalibrace TDC ze vstupního pinu (STM v0.43.0 + FPGA FW 0x0509, STATUS #347 krok 1, ⬜ neověřeno na HW):** UART `tdc cal [pin] [a|b] [gen]`
+  (`gen` = generátor CLK2/CLK4 na 11 603 104 Hz po dobu kalibrace, kabely CLK_2 → A, CLK_4 → B). SET_CONFIG 0x02 p1 bit3, bajt 51 bit2/3,
+  CAPS bit24; STM ověří rovnoměrnost fáze před sběrem (`fpga_v3_calpin_cover`) i po něm (`fpga_v3_calpin_check`), neprošlý histogram nezapíše.
+  Postup a vyhodnocení: `docs/MERENI_A_KALIBRACE.md` „Postup: kalibrace TDC ze vstupního pinu“. Teplotní rekalibrace a power-cyklus kalibrují
+  dál z ring oscilátoru. FPGA FW 0x0509 navíc opravuje ztrátu vyžádané stránky (L-0251, STATUS #349).
 - **Webhook alarmů přes síť (STM v0.41.0, IPC v30, STATUS #249, ⬜ neověřeno na HW, flashnout OBĚ banky):** UART `alarmpush [url http://a.b.c.d[:port][/cesta]|on|off|test]`; CM4 (`lwip_app_push_tick`) posílá HTTP POST s JSON při zvýšení pocitadel `alarm_*` ve snapshotu, blok `push` v `ipc_shared_t`, logika `alarm_push.h` (host test `tests/host/t_alarm_push.c`), zkušební příjemce `tools/webhook_listen.py`. Jen HTTP + IPv4. Nezávisí na mute.
 
 ## 🟢 FPGA FW 0x0426 + 0x0427, STM v0.31.1 … v0.33.0 (2026-10-21; 0x0426 i 0x0427 ověřeno na desce po power-cyklu)

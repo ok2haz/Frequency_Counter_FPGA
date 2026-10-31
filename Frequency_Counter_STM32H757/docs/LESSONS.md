@@ -5804,6 +5804,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 
 ---
 
+### L-0251 - jednorázovou odpověď (stránku) přepsal novější rámec DATA dřív, než ji STM přečetlo
+
+- **Datum:** 2026-10-31
+- **Oblast:** FPGA `Frequency_Counter_FPGA_Module/src/app_v3.v` (skládač rámce, TX polovina PHY), varianta APP_OSC (STATUS #347)
+- **Symptom:** simulace varianty APP_OSC (doména aplikace z vnitřního OSC ~10,4 MHz): `topv3` 657 chyb, `topv3cal` 38 chyb. Místo vyžádané stránky histogramu přišel rámec DATA, stránky RAW byly smíchané (po sobě jdoucích značek 258/511), součet histogramu nesedl a z toho T0. Měření samo (T0 proti hraně ~100 ps, dvoubodový kmitočet, sklon) bylo v pořádku. Na desce kalibrace prošla, protože STM stránku čte hned a chybu zachytí kontrolní součet.
+- **Příčina:** stránka je JEDNORÁZOVÁ (`page_req` se po složení maže), ale skládač ji nechránil. Když se do mezery mezi transakcemi vešla dvě skládání (2 × 1024 taktů = 197 µs s OSC proti 206 µs s 10 MHz, mezera v testu 200 µs; v simulaci navíc segment 250 µs = časté události kruhu), složil po stránce ještě rámec DATA do druhé poloviny a přepnul na něj. Stránka se tak neodvysílala vůbec. S 10 MHz to v testu nenastalo jen díky 6 µs rezervy.
+- **Oprava:** `pg_hold` v `app_v3.v`: po složení stránky se další rámec neskládá, dokud PHY neodvysílá transakci z poloviny se stránkou (busy s bází `pg_half`, pak klid), nejvýš ~100 ms. Simulace APP_OSC `topv3cal` s opravou PASS.
+- **Pravidlo:** odpověď, kterou druhá strana čte jen jednou, nesmí přepsat novější stav, dokud se neodvysílala. Rezervu „do mezery se vejde jen jedno skládání" nelze brát jako synchronizaci, protože se rozpadne při jiném taktu.
+- **Detekce:** simulace `topv3` / `topv3cal` se `SIM_DEFS=-DAPP_OSC` (`sim/run_sim.py`, kratší skládání). Výpis „stránek až v dalším rámci“ a chyby „stránka: TYPE/druh/číslo“.
+- **Commit:** `8d5322a` (`fix(fpga)`, FPGA modul)
+- **Stav:** aktivní
+
+---
+
 ## Archiv (neplatné lekce)
 
 *(prázdné)*

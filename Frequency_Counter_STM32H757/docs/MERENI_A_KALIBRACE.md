@@ -861,3 +861,18 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
    - Výstup: R², σ před a po odečtení tvaru, průměrná chyba okna (absolutní přesnost), tvar E_A, E_B, E_A−E_B po 500 ps a korelace E_A s E_B.
    - Srovnání s tvarem D z běhu s GPSDO: `tdc_dtvar.py <ab.csv 9h> ref.npy`, pak `tdc_dcmp.py <předpona>_AB.npy ref.npy`.
 5. Stejný test zopakovat při 1 MHz (`gen 2 1000000.001`, posun 250 ps za okno) a 25 MHz (`gen 2 25000000.023`, posun 230 ps za okno), případně s předděličkou. Tím se ukáže, zda chyba závisí na kmitočtu a na cestě signálu.
+
+#### Postup: kalibrace TDC ze vstupního pinu (krok 1, STM v0.43.0 + FPGA FW 0x0509)
+
+Účel: odstranit složku chyby periodickou v 10 ns (po kalibraci z ring oscilátoru ~100–120 ps rms, noc 2026-10-30). Histogram kódů se sbírá ze signálu na vstupu, tedy stejnou cestou jako měření, místo z ring oscilátoru.
+
+1. Zapojení jako u testu s ujíždějící fází: Si5356 CLK_2 → A, CLK_4 → B.
+2. `tdc cal pin gen`: generátor se po dobu kalibrace přepne na 11 603 104 Hz a pak se vrátí původní nastavení.
+   - 100 MHz / 11 603 104 Hz = 8,618…, takže se fáze hrany posune o 0,618 taktu na hranu (zlatý řez). Za 2^20 hran pokryje takt rovnoměrně.
+   - Bez `gen` musí být na vstupu nesoudělný signál 0,5–19 MHz s předděličkou P = 1. STM rovnoměrnost ověří z kmitočtu (`fpga_v3_calpin_cover`, odchylka obsazení osminy taktu ≤ 10 ‰).
+   - Nevhodné: 10 MHz z GPSDO a testovací ,041 Hz (soudělné se 100 MHz).
+3. Výsledek vypíše `tdc cal`: „histogram z pinu PROŠEL (kódů …, odchylka osminy … ‰), platná tabulka z VSTUPNÍHO PINU“. `status` → `TDC KALIBRACE (STM) … zdroj A pin, B pin`.
+   - Neprošlý histogram (`fpga_v3_calpin_check`: málo kódů, nerovnoměrný) se nezapíše a STM spustí kalibraci z ring oscilátoru.
+4. Ověření: test s ujíždějící fází (postup výše, 1 h stačí, rozbor `tdc_gensplit.py … 130` a `tdc_genstab.py`). Složka 10 ns má klesnout z ~96 / 121 ps rms.
+   - ⚠️ Teplotní rekalibrace (CM7 při změně teploty FPGA o ≥ 3 °C) a power-cyklus kalibrují z ring oscilátoru a tabulku z pinu přepíšou. Během testu hlídat zdroj ve `status`.
+5. Totéž se dá bez nového bitstreamu ZMĚŘIT (ne opravit): `docs/audit/data/2026-10-29_kanal_b/tdc_rawpin.py sber` (RAW záchyty po 512 značkách s generátorem 11 603 104 Hz), pak `rozbor <adresář> --ref <adresář s tdcref_A/B.npy z tdc_gencyc.py>`. Hustota naměřených jemných časů dá chybu tabulky na vstupní cestě a porovná ji s tvarem z testu s ujíždějící fází. Rozbor je ověřený na syntetice (`syntest`).
