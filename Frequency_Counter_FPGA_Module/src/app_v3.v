@@ -158,7 +158,15 @@ module app_v3 #(
     reg [2:0]  pb_s = 3'b000, pbase_s = 3'b000;
     reg [2:0]  cool = 3'd0;
     always @(posedge clk) begin pb_s <= {pb_s[1:0], phy_busy}; pbase_s <= {pbase_s[1:0], phy_base}; end
-    wire       tx_can = (cool == 3'd0) && !(pb_s[2] && (pbase_s[2] == ~tx_half_r));
+    // 2026-10-31 (L-0251): slozena STRANKA se nesmi prepsat dalsim ramcem, dokud ji PHY neodvysila. Stranka je jednorazova
+    // (page_req se po slozeni maze), kdezto novejsi DATA ramec starsi DATA ramec nahradit smi (nese zaznamy od REC_ACK).
+    // Kdyz se do mezery mezi transakcemi vesla dve skladani (domena aplikace z OSC ~10,4 MHz: 2 x 98 us < 200 us, nebo kratky
+    // segment v simulaci), DATA ramec po udalosti kruhu stranku prepsal a STM ji nedostalo vubec. pg_hold = stranka je v TX
+    // polovine pg_half a ceka na transakci; uvolni se po transakci, ktera vysilala z pg_half (busy s bazi pg_half, pak klid),
+    // nejpozdeji po ~100 ms (pg_tmo), kdyby STM prestalo cist.
+    reg        pg_hold = 1'b0, pg_half = 1'b0, pg_seen = 1'b0;
+    reg [19:0] pg_tmo = 20'd0;
+    wire       tx_can = (cool == 3'd0) && !(pb_s[2] && (pbase_s[2] == ~tx_half_r)) && !pg_hold;
 
     // ---- FSM ----
     localparam [2:0] S_IDLE = 3'd0, S_RX = 3'd1, S_LUT = 3'd2, S_ASM = 3'd3;
@@ -307,6 +315,13 @@ module app_v3 #(
         if (state != S_ASM && fill16 > RING_USE[15:0]) begin rec_ack <= rec_head - RING_USE[15:0]; ovf <= 1'b1; end
 
         if (rx_valid) rx_pend <= 1'b1;
+
+        // L-0251: stranka v TX polovine pg_half ceka na transakci, ktera ji odvysila (pak klid na CS), nebo na timeout
+        if (pg_hold) begin
+            pg_tmo <= pg_tmo + 20'd1;
+            if (pb_s[2] && (pbase_s[2] == pg_half)) pg_seen <= 1'b1;
+            if ((pg_seen && !pb_s[2]) || (&pg_tmo)) begin pg_hold <= 1'b0; pg_seen <= 1'b0; end
+        end
 
         case (state)
             S_IDLE: begin
@@ -458,7 +473,10 @@ module app_v3 #(
                     if (i2 == 10'd1023) begin
                         tx_half_r <= ~tx_half_r;
                         cool      <= 3'd5;
-                        if (a_page) page_req <= 1'b0;
+                        if (a_page) begin
+                            page_req <= 1'b0;
+                            pg_hold  <= 1'b1; pg_half <= ~tx_half_r; pg_seen <= 1'b0; pg_tmo <= 20'd0;
+                        end
                         state     <= S_IDLE;
                     end
                 end
