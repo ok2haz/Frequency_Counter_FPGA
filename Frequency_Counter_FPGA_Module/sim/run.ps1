@@ -131,6 +131,18 @@ $tests = @(
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=1", "-DSIM_RAW=4") }
     @{ name = "topv3cal"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=2"); stmcal = $true }
+    #   calpin   FW 0x0509: kanal tdc_chan3 -- sber histogramu z pinu / z ring oscilatoru (vstup retezu, 2^12 udalosti, pokryti kodu;
+    #            soudelny 10 MHz = 1 kod), zapis tabulky a potvrzeni (~1 min). Rychla kontrola kroku 1 bez celeho top_v3.
+    @{ name = "calpin"; top = "tb_calpin"; rtl = @("v3_core.v", "tdc.v"); tb = "tb_calpin.sv"; extra = @("gowin_models.v");
+       defs = @("-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268"); stmcal = $true }
+    #   topv3pinq FW 0x0509, kratky (tabulku pocita FPGA, SIM_AUTOCAL): rekalibrace B z pinu a zpet z RO, zdroj, ring oscilator,
+    #            bajt 51, mereni po obou (~1/3 casu topv3pin; cil mutaci rezimu 13)
+    @{ name = "topv3pinq"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=6", "-DTB_FB=11.603104e6") }
+    #   topv3pin FW 0x0509 (STATUS #347 krok 1): jako topv3cal + rekalibrace B ze VSTUPNIHO PINU (SET_CONFIG 0x02 p1 bit3, B 11,603104 MHz
+    #            = krok faze ~ zlaty rez), ring oscilator pri sberu stoji, bajt 51 bit3, tabulka a mereni B, navrat na ring oscilator
+    @{ name = "topv3pin"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
+       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=2", "-DTB_CALPIN", "-DTB_FB=11.603104e6"); stmcal = $true }
     @{ name = "topv3pw"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
        defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268", "-DTB_MODE=3", "-DTB_FA=5.0e6", "-DTB_WA=37300.0") }
     @{ name = "topv3presc"; top = "tb_top_v3"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_top_v3.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");

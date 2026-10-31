@@ -23,14 +23,20 @@ MODE = {0: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=13.300161e6'], 1: ['-DSIM_AU
         3: ['-DSIM_AUTOCAL', '-DTB_MODE=3', '-DTB_FA=5.0e6', '-DTB_WA=37300.0'],
         4: ['-DSIM_AUTOCAL', '-DTB_MODE=4', '-DTB_FB=143.300173e6'],
         5: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DDEEP_RAW'], 6: ['-DSIM_AUTOCAL', '-DTB_MODE=5', '-DTB_PS_LATE', '-DDEEP_RAW'],
-        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 9: [], 10: []}
+        7: ['-DSIM_AUTOCAL'], 8: ['-DSIM_AUTOCAL', '-DTB_NFR=8', '-DTB_FB=16.100161e6'], 9: [], 10: [],
+        11: ['-DTB_MODE=2', '-DTB_CALPIN', '-DTB_FB=11.603104e6'], 12: [],
+        13: ['-DSIM_AUTOCAL', '-DTB_MODE=6', '-DTB_FB=11.603104e6']}
+# 2026-10-31: rezim 13 = topv3pinq (kratky test kalibrace z pinu, tabulku pocita FPGA) -- rezim 11 trva hodiny
+# 2026-10-31: rezim 11 = topv3pin (FW 0x0509: vyrobni kalibrace + rekalibrace B ze vstupniho pinu, B 11,603104 MHz)
 # 2026-10-24: rezim 0 = B 13,300161 MHz (rozestup hran stridave 7 a 8 taktu -> FIFO indexu drzi DVE znacky,
 # FIFO hloubky 1 se projevi); rezim 8 = B 16,100161 MHz (rozestup 6/7 taktu) pro mutace znacky o 2 takty driv
 # 2026-10-24: rezim 7 = cileny test tb_hold_inv (ztrata hodin, predelicka, zdroj B; invarianty kopii)
 # 2026-10-25: rezim 9 = cileny test tb_seg_dsp (seg_chan3 SUM_DSP = 1 proti SUM_DSP = 0, cas a index pres preteceni 2^40)
 # 2026-10-25: rezim 10 = cileny test tb_tdc3_eq (tdc_chan3 proti tdc_chan z tdc.v takt po taktu, tabulka s amt = 1 na tretine
 # kodu; v testech topv3* maji amt = 1 jen nejnizsi kody s x14 = 0, ktere merene hrany nevyvolaji)
-TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv'), 9: ('tb_seg_dsp', 'tb_seg_dsp.sv'), 10: ('tb_tdc3_eq', 'tb_tdc3_eq.sv')}
+TBS = {7: ('tb_hold_inv', 'tb_hold_inv.sv'), 9: ('tb_seg_dsp', 'tb_seg_dsp.sv'), 10: ('tb_tdc3_eq', 'tb_tdc3_eq.sv'),
+       12: ('tb_calpin', 'tb_calpin.sv')}
+# 2026-10-31: rezim 12 = cileny test tb_calpin (kanal tdc_chan3: sber histogramu z pinu / z ring oscilatoru, ~1 min)
 # (jmeno, soubor v src/, puvodni text, mutace, rezim testbenche)
 M = [
     # (konstantni posun indexu, napr. push = tq1, je EKVIVALENTNI mutant: vyrusi se ve vsech rozdilech -- netestuje se)
@@ -137,6 +143,14 @@ M = [
     ('ring: slovo 0 B v taktu A (holdinv)', 'v3_core.v', "            wsB0 <= (kc == DRAIN + 7);", "            wsB0 <= (kc == DRAIN - 1);", 7),
     ('hold_s: hx bez boot_tc', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = ok_s[1] & boot_done;", 7),
     ('hold_s: hx bez ok_s', 'top_v3.v', "    wire bd_nx  = ok_s[1] & (boot_done | boot_tc);", "    wire bd_nx  = boot_done | boot_tc;", 7),
+    # 2026-10-31 (FW 0x0509, STATUS #347 krok 1): kalibrace TDC ze vstupniho pinu (rezim 11 = topv3pin)
+    ('pin: retez pri sberu vzdy z RO', 'v3_core.v', "    wire sig_eff = (s_col & ~cal_pin) ? ro : sig_raw;", "    wire sig_eff = s_col ? ro : sig_raw;", 12),
+    ('pin: retez pri sberu vzdy z pinu', 'v3_core.v', "    wire sig_eff = (s_col & ~cal_pin) ? ro : sig_raw;", "    wire sig_eff = sig_raw;", 12),
+    ('pin: ring oscilator bezi i pri pinu', 'top_v3.v', "    ring_osc u_ro (.en((use_ro_a & ~pin_a) | (use_ro_b & ~pin_b)), .out(ro_sig));",
+     "    ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));", 13),
+    ('pin: zdroj B se nenastavi', 'top_v3.v', "            if (cmd_b) pin_b <= cp2;", "", 13),
+    ('pin: povel bez bitu 3 nevraci RO', 'top_v3.v', "            if (cmd_b) pin_b <= cp2;", "            if (cmd_b & cp2) pin_b <= 1'b1;", 13),
+    ('pin: bajt 51 bez zdroje', 'app_v3.v', "            8'd51: hb = {4'd0, st_cal_src, st_cal_wait};", "            8'd51: hb = {6'd0, st_cal_wait};", 13),
 ]
 RTL = ['top_v3.v', 'v3_core.v', 'app_v3.v', 'spi_slave_phy_v3.v', 'spi_app.v', 'tdc.v']
 # 2026-10-24: EKVIVALENTNI mutanty (test je shodit nemuze; nezachyceni se nepocita jako chyba, vypise se zduvodneni)

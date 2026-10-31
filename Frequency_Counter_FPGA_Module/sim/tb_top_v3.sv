@@ -204,8 +204,10 @@ module tb_top_v3;
             chk(!caps[23] && rd(132, 6) == 0, "bez CSDIAG: CAPS bit23 = 0 a bajty 132..137 = 0");
 `else
             // FW 0x0508 (L-0242): filtr CS + citace zahozenych pulzu na CS (bajty 132..136), CS_FILT v bajtu 137; v cistem CS zadne pulzy
-            chk(rd(20, 2) == 16'h0508, "FW_VERSION 0x0508");
+            // FW 0x0509: kalibrace TDC ze vstupniho pinu (CAPS bit24)
+            chk(rd(20, 2) == 16'h0509, "FW_VERSION 0x0509");
             chk(caps[23], "CAPS bit23 (citace pulzu na CS)");
+            chk(caps[24], "CAPS bit24 (kalibrace ze vstupniho pinu)");
             chk(rd(132, 5) == 0 && mi[137] == 8'd16, "citace pulzu na CS = 0 (cisty CS), CS_FILT = 16");
 `endif
             // uzka hlavicka (CAPS bit22): zrusena / zuzena pole jsou 0
@@ -391,6 +393,9 @@ module tb_top_v3;
     always @(posedge clk100) begin if (!cs) since_cs = 0; else since_cs = since_cs + 1; end
     final $display("DBG2 B znacek %0d, odlehlych (>400 ps) %0d, max|res| %.0f ps", nres, nout, rmax);
 `endif
+    // FW 0x0509: pri sberu histogramu z pinu nesmi ring oscilator bezet (zmena jeho vystupu = chyba)
+    integer nro_pin = 0;
+    always @(dut.ro_sig) if ((dut.u_tdca.s_col && dut.pin_a) || (dut.u_tdcb.s_col && dut.pin_b)) nro_pin = nro_pin + 1;
     // ---- "STM": tabulka TDC z histogramu (stranky), zapis davkou ----
     localparam NC = 512;
     reg [23:0] hh [0:NC-1];
@@ -505,6 +510,35 @@ module tb_top_v3;
             check_lut(0, 0);
             t0have[0] = 0;
             for (f = 0; f < 3; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+`ifdef TB_CALPIN
+            // ---- FW 0x0509 (STATUS #347 krok 1): rekalibrace JEN B ze VSTUPNIHO PINU (TB_FB nesoudelny se 100 MHz) ----
+            build(8'h01, 8'h02, 8'h0D, 0, 0); xfer(1024);              // p1: bit0 start, bity 2:1 maska = B, bit3 vstupni pin
+            wait (dut.cal_wait_b);
+            chk(dut.pin_b == 1'b1 && dut.pin_a == 1'b0, "kalibrace z pinu: zdroj B = pin, A beze zmeny");
+            chk(nro_pin == 0, "kalibrace z pinu: ring oscilator pri sberu B stoji");
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+            chk(mi[51][1] && mi[51][3] && !mi[51][2], "kalibrace z pinu: bajt 51 = CAL_WAIT B + zdroj B pin");
+            read_hist(1); calc_lut; write_lut(1);
+            build(8'h01, 8'h06, 8'h01, 8'd2, 0); xfer(1024);
+            #(64'd300_000_000);
+            chk(dut.cal_valid_b == 1, "kalibrace z pinu: B platna");
+            check_lut(1, dut.bank_b);
+            t0have[1] = 0; have[1] = 0;
+            e0 = nvalid_b;
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b > e0 + 4, "kalibrace z pinu: B meri s novou tabulkou (T0, sklon, 2pt v mezich)");
+            // ---- povel bez bitu 3 vraci zdroj B na ring oscilator ----
+            build(8'h01, 8'h02, 8'h05, 0, 0); xfer(1024);
+            wait (dut.cal_wait_b);
+            chk(dut.pin_b == 1'b0, "povel bez bitu 3: zdroj B = ring oscilator");
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+            chk(mi[51][1] && !mi[51][3], "bajt 51: zdroj B ring oscilator");
+            read_hist(1); calc_lut; write_lut(1);
+            build(8'h01, 8'h06, 8'h01, 8'd2, 0); xfer(1024);
+            #(64'd300_000_000);
+            chk(dut.cal_valid_b == 1, "B platna po kalibraci z ring oscilatoru");
+            $display("kalibrace z pinu: ring oscilator pri sberu z pinu %0d prepnuti", nro_pin);
+`endif
             $display("ramcu %0d, zaznamu %0d (platnych A %0d B %0d), duplicit %0d, kontrol %0d, max|e| 2pt A %.2e B %.2e",
                      nfr, nrec_tot, nvalid_a, nvalid_b, dup, nchk, maxe[0], maxe[1]);
             $display("T0 proti skutecne hrane: max odchylka A %.0f ps, B %.0f ps", t0max[0], t0max[1]);
@@ -638,6 +672,34 @@ module tb_top_v3;
             build(8'h0B, 8'h04, 8'd1, 8'd0, 8'd0); xfer(1024); build_ack(0); xfer(1024); build_ack(0); xfer(1024);
             chk(mi[128][5] && !mi[128][7] && !mi[128][4] && rd(130, 2) == 1 && mi[127] == {4'd0, gr(4'd8)},
                 "PSRAM: po chybe dalsi okno nacteno");
+        end else if (`TB_MODE == 6) begin
+            // ---- FW 0x0509 (STATUS #347 krok 1), KRATKY test (tabulku pocita FPGA, -DSIM_AUTOCAL): rekalibrace B ze VSTUPNIHO
+            //      PINU a zpet z ring oscilatoru; zdroj v top_v3, ring oscilator pri sberu z pinu, bajt 51 bit2/3, mereni po obou ----
+            build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);              // bez maskovani pri CS (segment 250 us < transakce)
+            build(8'h01, 8'h02, 8'h0D, 0, 0); xfer(1024);              // p1: bit0 start, bity 2:1 maska = B, bit3 vstupni pin
+            wait (dut.cal_busy_b);
+            chk(dut.pin_b == 1'b1 && dut.pin_a == 1'b0, "kalibrace z pinu: zdroj B = pin, A beze zmeny");
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+            chk(mi[51][3] && !mi[51][2], "bajt 51: zdroj B pin, A ring oscilator");
+            wait (!dut.cal_busy_b && dut.cal_valid_b);
+            chk(nro_pin == 0, "kalibrace z pinu: ring oscilator pri sberu B stoji");
+            #(64'd600_000_000);
+            build_ack(nxt); xfer(1024); nxt = unw(rd(32, 2), nxt); t0have[1] = 0; have[1] = 0;
+            e0 = nvalid_b;
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b > e0 + 4, "kalibrace z pinu: B meri s tabulkou z pinu (T0, sklon, 2pt v mezich)");
+            build(8'h01, 8'h02, 8'h05, 0, 0); xfer(1024);              // B z ring oscilatoru (bez bitu 3)
+            wait (dut.cal_busy_b);
+            chk(dut.pin_b == 1'b0, "povel bez bitu 3: zdroj B = ring oscilator");
+            build_ack(nxt); xfer(1024); build_ack(nxt); xfer(1024);
+            chk(!mi[51][3], "bajt 51: zdroj B ring oscilator");
+            wait (!dut.cal_busy_b && dut.cal_valid_b);
+            #(64'd600_000_000);
+            build_ack(nxt); xfer(1024); nxt = unw(rd(32, 2), nxt); t0have[1] = 0; have[1] = 0;
+            e0 = nvalid_b;
+            for (f = 0; f < 3; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b > e0 + 3, "zpet z ring oscilatoru: B meri");
+            $display("kalibrace z pinu (kratky test): ring oscilator pri sberu z pinu %0d prepnuti", nro_pin);
         end else if (`TB_MODE == 1) begin
             // ---- preteceni kruhu: 16 zaznamu, STM 20 segmentu necte ----
             build_ack(0); xfer(1024); build_ack(0); xfer(1024); nxt = unw(rd(36, 2), 0);   // kruh 16 pretekl uz pri nabehu

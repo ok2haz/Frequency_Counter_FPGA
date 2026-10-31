@@ -179,7 +179,11 @@ module top_v3 (
 `endif
     localparam TDC_TSPIPE = 1;   // znacka pres registr navic (rozlozeni, audit 2026-10-23; ts_valid T+10, FIFO seg_chan3 snese)
     wire use_ro_a, use_ro_b, ro_sig;
-    ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
+    // FW 0x0509 (STATUS #347 krok 1): zdroj histogramu kalibrace kanalu, 1 = vstupni pin (SET_CONFIG 0x02 p1 bit3). Nastavi se
+    // povelem kalibrace kanalu, nabeh je vzdy z ring oscilatoru; opakovani po selhani bere tentyz zdroj. Pri sberu z pinu
+    // ring oscilator nebezi (cal_tmo pocita dal: bez hran na pinu sber skonci timeoutem jako dosud).
+    reg  pin_a = 1'b0, pin_b = 1'b0;
+    ring_osc u_ro (.en((use_ro_a & ~pin_a) | (use_ro_b & ~pin_b)), .out(ro_sig));
 
     reg [28:0] cal_tmo   = 29'd0;
     reg        cal_abort = 1'b0;
@@ -262,7 +266,7 @@ module top_v3 (
 
     // 2026-10-25 (plocha): tdc_chan3 = v3 kopie tdc_chan (v3_core.v; ts_hq bez vyberu tr1 / tr2), retez a dekoder z tdc.v
     tdc_chan3 #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdca (
-        .clk(clk_p0_100m), .sig_raw(sig_a), .ro(ro_sig), .tick_ps(tick_ps),
+        .clk(clk_p0_100m), .sig_raw(sig_a), .ro(ro_sig), .cal_pin(pin_a), .tick_ps(tick_ps),
         .want(want_a), .want_seg(1'b0), .cal_req(cal_req_a), .cal_abort(cal_abort),
         .lw_en(lw_en_a), .lw_a(lw_a_qa), .lw_neg(lw_n_qa), .lw_commit(lw_cm_p & cmk2[0]), .cal_wait(cal_wait_a),
         .rise_c(rise_a), .rise_s(rise_sa), .trig_ack(trig_a), .ts_valid(tsv_a), .ts_ps(ts_a),
@@ -272,7 +276,7 @@ module top_v3 (
         .bank_sw(seg_tick), .bank_o(bank_a)
     );
     tdc_chan3 #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TDC_TAPS), .STRIDE(TDC_STRIDE), .KD(TDC_KD), .DUAL(TDC_DUAL), .NTAP(TDC_NTAP), .BANKS(1), .TSPIPE(TDC_TSPIPE)) u_tdcb (
-        .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .tick_ps(tick_ps),
+        .clk(clk_p0_100m), .sig_raw(sig_b), .ro(ro_sig), .cal_pin(pin_b), .tick_ps(tick_ps),
         .want(want_b), .want_seg(1'b0), .cal_req(cal_req_b), .cal_abort(cal_abort),
         .lw_en(lw_en_b), .lw_a(lw_a_qb), .lw_neg(lw_n_qb), .lw_commit(lw_cm_p & cmk2[1]), .cal_wait(cal_wait_b),
         .rise_c(rise_b), .rise_s(rise_sb), .trig_ack(trig_b), .ts_valid(tsv_b), .ts_ps(ts_b),
@@ -283,13 +287,21 @@ module top_v3 (
     );
 
     // ---- kalibrace: nabeh (oba), pozadavek STM (maska), opakovani po selhani -- STRIDAVE (cal_seq3) ----
-    wire cal_tgl;  wire [1:0] cal_mask;
+    wire cal_tgl;  wire [1:0] cal_mask;  wire cal_pin;
     reg  [2:0] ct_s = 3'b000;
     reg  [1:0] cm1 = 2'b00, cm2 = 2'b00;
-    always @(posedge clk_p0_100m) begin ct_s <= {ct_s[1:0], cal_tgl}; cm1 <= cal_mask; cm2 <= cm1; end
+    reg        cp1 = 1'b0, cp2 = 1'b0;                     // FW 0x0509: zdroj pin (jako maska: 3 takty pred prepinacim bitem)
+    always @(posedge clk_p0_100m) begin ct_s <= {ct_s[1:0], cal_tgl}; cm1 <= cal_mask; cm2 <= cm1; cp1 <= cal_pin; cp2 <= cp1; end
     wire cmd_go  = ct_s[2] ^ ct_s[1];
     wire cmd_a   = cmd_go & ((cm2 == 2'd0) | cm2[0]);
     wire cmd_b   = cmd_go & ((cm2 == 2'd0) | cm2[1]);
+    always @(posedge clk_p0_100m) begin
+        if (cal_boot) begin pin_a <= 1'b0; pin_b <= 1'b0; end
+        else begin
+            if (cmd_a) pin_a <= cp2;
+            if (cmd_b) pin_b <= cp2;
+        end
+    end
     // opakovani po selhani (jako v2 FW 0x0422): po ~8 ms znovu, nejvys 15x za sebou, jen selhany kanal
     wire cfail = cal_fail_a | cal_fail_b;
     reg        cfail_q = 1'b0, rt_run = 1'b0, rt_go = 1'b0;
@@ -423,11 +435,13 @@ module top_v3 (
     reg [1:0] cva_s = 2'b00, cvb_s = 2'b00, cfa_s = 2'b00, cfb_s = 2'b00, cba_s = 2'b00, cbb_s = 2'b00;
     reg [1:0] cwa_s = 2'b00, cwb_s = 2'b00, bka_s = 2'b00, bkb_s = 2'b00, s10_s = 2'b00;
     reg [1:0] rt1 = 2'b00, rt2 = 2'b00;
+    reg [1:0] cpa_s = 2'b00, cpb_s = 2'b00;                 // FW 0x0509: zdroj kalibrace A / B (bajt 51 bit2 / bit3)
     always @(posedge clk_app) begin
         cva_s <= {cva_s[0], cal_valid_a};  cvb_s <= {cvb_s[0], cal_valid_b};
         cfa_s <= {cfa_s[0], cal_fail_a};   cfb_s <= {cfb_s[0], cal_fail_b};
         cba_s <= {cba_s[0], cal_busy_a};   cbb_s <= {cbb_s[0], cal_busy_b};
         cwa_s <= {cwa_s[0], cal_wait_a};   cwb_s <= {cwb_s[0], cal_wait_b};
+        cpa_s <= {cpa_s[0], pin_a};        cpb_s <= {cpb_s[0], pin_b};
         bka_s <= {bka_s[0], bank_a};       bkb_s <= {bkb_s[0], bank_b};
         s10_s <= {s10_s[0], seg10_act};
         rt1 <= rt_tot; rt2 <= rt1;
@@ -496,7 +510,7 @@ module top_v3 (
         .rec_tgl(rec_tgl), .ring_raddr(ring_raddr), .ring_rdata(ring_rdata),
         .st_clk(clk_status), .st_clk_loss(clk_loss), .st_coh(coh_st), .st_coh_cnt(coh_cnt),
         .st_csgl(cs_gl_cnt),
-        .st_tdc_a(tdc_st_a), .st_tdc_b(tdc_st_b), .st_cal_wait({cwb_s[1], cwa_s[1]}), .st_cal_run(cba_s[1] | cbb_s[1]),
+        .st_tdc_a(tdc_st_a), .st_tdc_b(tdc_st_b), .st_cal_wait({cwb_s[1], cwa_s[1]}), .st_cal_src({cpb_s[1], cpa_s[1]}), .st_cal_run(cba_s[1] | cbb_s[1]),
         .st_seg10(s10_s[1]),
         .pps_seq(pps_seq), .pps_nz(pps_nz), .pps_gt1(pps_gt1), .pps_last(pps_last), .pps_prev(pps_prev),
         .pps_pts_l(pps_pts_l), .pps_pts_p(pps_pts_p), .pps_pfl_l(pps_pfl_l), .pps_pfl_p(pps_pfl_p),
@@ -505,7 +519,7 @@ module top_v3 (
         .tdc_cfg(tdc_cfg), .maxtap_a(da_maxtap), .maxtap_b(db_maxtap), .cal_retry(rt2),
         .hist_k(hist_k), .hist_a(hq_a), .hist_b(hq_b),
         .raw_k(raw_k), .raw_q(raw_q), .raw_n(raw_n),
-        .cal_tgl(cal_tgl), .cal_mask(cal_mask), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
+        .cal_tgl(cal_tgl), .cal_mask(cal_mask), .cal_pin(cal_pin), .ref_sel(ref_sel), .mask_cs_en(mask_cs_en), .led_hb_en(led_hb_en),
         .seg10(seg10_req), .raw_tgl(raw_tgl), .raw_ch(raw_ch),
         .raw_mode(raw_mode), .raw_arg(raw_arg), .raw_dn(raw_dn), .raw_dst(raw_dst), .raw_wsel(raw_wsel), .raw_win(raw_win), .raw_dack(raw_dack),
         .lw_tgl(lw_tgl), .lw_a(lw_a), .lw_neg(lw_neg), .lw_ch(lw_ch), .lw_commit_tgl(lw_commit_tgl), .lw_commit_mask(lw_cm_mask), .bsrc(bsrc),

@@ -49,6 +49,7 @@ module app_v3 #(
 
     input  wire [7:0]  st_tdc_a, st_tdc_b,
     input  wire [1:0]  st_cal_wait,
+    input  wire [1:0]  st_cal_src,            // FW 0x0509: zdroj kalibrace A / B (1 = vstupni pin), bajt 51 bit2 / bit3
     input  wire        st_cal_run,
     input  wire        st_seg10,              // platna delka segmentu (1 = 10 ms)
     input  wire [31:0] pps_seq,               // zive z 100 MHz (STM bere shodu dvou ramcu)
@@ -68,6 +69,7 @@ module app_v3 #(
     // ---- konfigurace ----
     output reg         cal_tgl,               // SET_CONFIG 0x02 start (prepinaci bit) ...
     output reg  [1:0]  cal_mask,              // ... maska kanalu (0 = oba)
+    output reg         cal_pin,               // ... p1 bit3: histogram ze vstupniho pinu (FW 0x0509, CAPS bit24)
     output reg         ref_sel,
     output reg         mask_cs_en,
     output reg         led_hb_en,
@@ -106,7 +108,9 @@ module app_v3 #(
     // TS10M, RING_FILL, RX_LAST, predchozi 1PPS (84..95) a BUB/OVL (112..115) = 0 -- STM je rozbali / spocita sam
     // FW 0x0508 (L-0242, 2026-10-26): filtr CS v PHY (pulz kratsi nez CS_FILT taktu 100 MHz uz nerestartuje vysilani) + citace
     // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
-    localparam [15:0] FW_VERSION = 16'h0508;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
+    // FW 0x0509 (STATUS #347 krok 1, 2026-10-31): kalibrace TDC ze vstupniho pinu -- SET_CONFIG 0x02 p1 bit3, zdroj v bajtu 51
+    // bit2 (A) / bit3 (B), CAPS bit24
+    localparam [15:0] FW_VERSION = 16'h0509;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
     localparam [15:0] FW_VERSION_TX = CSDIAG ? FW_VERSION : 16'h0507;          // do hlavicky; -DSIM_NOCSDIAG = hlavicka FW 0x0507
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
@@ -115,7 +119,8 @@ module app_v3 #(
     // bit20 (FW 0x0501) = SET_CONFIG 0x09 zdroj kanalu B; bit21 (FW 0x0505) = hluboky RAW do PSRAM (kap. 10.9).
     // bit22 (FW 0x0507) = uzka hlavicka (kap. 3.1b).
     // bit23 (FW 0x0508) = citace zahozenych pulzu na CS (hlavicka 132..137, kap. 3.1c).
-    localparam [31:0] CAPS = (DEEP ? 32'h007F_7C32 : 32'h005F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
+    // bit24 (FW 0x0509) = kalibrace TDC ze vstupniho pinu (SET_CONFIG 0x02 p1 bit3).
+    localparam [31:0] CAPS = (DEEP ? 32'h017F_7C32 : 32'h015F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
     reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
@@ -124,7 +129,7 @@ module app_v3 #(
     initial begin
         rx_raddr = 10'd0; tx_we = 1'b0; tx_waddr = 11'd0; tx_wdata = 8'd0; ring_raddr = {(RAW+5){1'b0}};
         hist_k = 10'd0; raw_k = 9'd0;
-        cal_tgl = 1'b0; cal_mask = 2'd0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
+        cal_tgl = 1'b0; cal_mask = 2'd0; cal_pin = 1'b0; ref_sel = 1'b0; mask_cs_en = 1'b1; led_hb_en = 1'b0; seg10 = 1'b0;
         raw_tgl = 1'b0; raw_ch = 1'b0; raw_mode = 2'd0; raw_arg = 24'd0;
         lw_tgl = 1'b0; lw_a = 10'd0; lw_neg = 14'd0; lw_ch = 1'b0; lw_commit_tgl = 1'b0; lw_commit_mask = 2'b11; bsrc = 2'b00; pr_a_req = 3'd0; pr_b_req = 3'd0;
     end
@@ -232,7 +237,7 @@ module app_v3 #(
             8'd44: hb = st_clk;        8'd45: hb = st_clk_loss;   8'd46: hb = st_coh;        8'd47: hb = st_coh_cnt;
             8'd48: hb = st_tdc_a;      8'd49: hb = st_tdc_b;
             8'd50: hb = pps_st;
-            8'd51: hb = {6'd0, st_cal_wait};
+            8'd51: hb = {4'd0, st_cal_src, st_cal_wait};
             8'd52: hb = rx_crc_err[7:0];  8'd53: hb = rx_crc_err[15:8];
             8'd54: hb = rx_len_err[7:0];  8'd55: hb = rx_len_err[15:8];
             8'd60: hb = lut_cnt[7:0];  8'd61: hb = {2'd0, lut_cnt[13:8]};
@@ -359,7 +364,7 @@ module app_v3 #(
                             end
                         end
                         T_SETCFG: case (rx_p0)
-                            8'h02: if (rx_p1[0]) begin cal_mask <= rx_p1[2:1]; cal_dly <= 3'b001; end
+                            8'h02: if (rx_p1[0]) begin cal_mask <= rx_p1[2:1]; cal_pin <= rx_p1[3]; cal_dly <= 3'b001; end
                             8'h04: ref_sel <= rx_p1[0];
                             8'h05: begin mask_cs_en <= rx_p1[0]; led_hb_en <= rx_p1[1]; end
                             8'h06: begin

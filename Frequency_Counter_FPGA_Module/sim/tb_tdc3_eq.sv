@@ -39,7 +39,7 @@ module tb_tdc3_eq;
     wire [8:0]  co_d, co_r;
     tdc_chan3 #(.EXT_TR(0), .CAL_LOG2(CAL_LOG2), .TAPS(TAPS), .STRIDE(STRIDE), .KD(KD), .DUAL(0), .NTAP(NTAP), .AUTOCAL(0),
                 .BANKS(1), .TSPIPE(1)) u_dut (
-        .clk(clk), .sig_raw(sig), .ro(ro), .tick_ps(tick_ps), .tr1_ext(34'd0), .tr2_ext(34'd0), .want(want), .want_seg(want_seg),
+        .clk(clk), .sig_raw(sig), .ro(ro), .cal_pin(1'b0), .tick_ps(tick_ps), .tr1_ext(34'd0), .tr2_ext(34'd0), .want(want), .want_seg(want_seg),
         .cal_req(cal_req), .cal_abort(1'b0), .lw_en(lw_en), .lw_a(lw_a), .lw_neg(lw_neg), .lw_commit(lw_commit), .cal_wait(cw_d),
         .rise_c(rc_d), .rise_s(rs_d), .trig_ack(ta_d), .ts_valid(tv_d), .ts_ps(ts_d), .use_ro(ur_d), .cal_busy(cb_d),
         .cal_valid(cv_d), .cal_fail(cf_d), .d_ovf(ov_d), .d_peak(pk_d), .d_nz(nz_d), .d_last(la_d), .d_maxtap(mt_d),

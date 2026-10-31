@@ -1153,6 +1153,9 @@ module tdc_chan3 #(
     input  wire        clk,         // clk_p0_100m
     input  wire        sig_raw,     // asynchronni vstup kanalu
     input  wire        ro,          // asynchronni kalibracni zdroj (z ring_osc)
+    // FW 0x0509 (STATUS #347 krok 1): 1 = histogram kalibrace ze VSTUPNIHO PINU (sig_raw) misto ring oscilatoru. Zdroj
+    // musi byt nesoudelny se 100 MHz (overuje STM pred sberem i po nem); kvazistaticky po dobu sberu (top_v3)
+    input  wire        cal_pin,
     input  wire [47:0] tick_ps,     // volnobezny cas [T_clk/16384], +16384 za takt
     input  wire [33:0] tr1_ext,     // optimalizace 5: tick_hi - 1 / - 2 sdilene v top (EXT_TR = 1); jinak nezapojeno (0)
     input  wire [33:0] tr2_ext,
@@ -1217,7 +1220,7 @@ module tdc_chan3 #(
     // nastup/konec hlaseni je bezpecny (cal_valid se meni soucasne se stavem a ts_valid se pri cal_busy neemituje).
     reg  busy_ra = 1'b0;
     assign cal_busy = busy_ra;
-    wire sig_eff = s_col ? ro : sig_raw;
+    wire sig_eff = (s_col & ~cal_pin) ? ro : sig_raw;
 
     // ---------------- spousteni a zmrazeni vzorku ----------------
     reg        idle_r = 1'b1;                 // 1 = qd se nezmrazuje
