@@ -204,8 +204,8 @@ module tb_top_v3;
             chk(!caps[23] && rd(132, 6) == 0, "bez CSDIAG: CAPS bit23 = 0 a bajty 132..137 = 0");
 `else
             // FW 0x0508 (L-0242): filtr CS + citace zahozenych pulzu na CS (bajty 132..136), CS_FILT v bajtu 137; v cistem CS zadne pulzy
-            // FW 0x0509: kalibrace TDC ze vstupniho pinu (CAPS bit24)
-            chk(rd(20, 2) == 16'h0509, "FW_VERSION 0x0509");
+            // FW 0x0509: kalibrace TDC ze vstupniho pinu (CAPS bit24). FW 0x050A: clear DSP lokalne registrovany (L-0252), ramec beze zmeny.
+            chk(rd(20, 2) == 16'h050A, "FW_VERSION 0x050A");
             chk(caps[23], "CAPS bit23 (citace pulzu na CS)");
             chk(caps[24], "CAPS bit24 (kalibrace ze vstupniho pinu)");
             chk(rd(132, 5) == 0 && mi[137] == 8'd16, "citace pulzu na CS = 0 (cisty CS), CS_FILT = 16");
