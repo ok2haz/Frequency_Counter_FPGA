@@ -896,3 +896,15 @@ Zdroj: Si5356 CLK_2 → A, CLK_4 → B, oba 10 000 000,041 Hz (P1 27647, P2 2130
 
   Stálost tvaru 10 ns během běhu +1,000 (pevná tabulka). Kanál B je reprodukovatelný (94 ps, korelace tvaru s APP_OSC 0,86–0,95). **Chyba kanálu A závisí na konkrétní kalibraci z ring oscilátoru** (274 → 214 ps po nové kalibraci) a je u tohoto bitstreamu výrazně horší než u dřívějších (58–96 ps). Úzké špičky 100 ns složky z APP_OSC zůstaly (26–31 ps).
 - **Závěr:** součty B v DSP jsou opravené, ale celkový σ(A−B) je horší (377–526 ps proti 148–174 ps), a to kvůli složce 10 ns kanálu A. HYPOTÉZA: kvalita kalibrace z ring oscilátoru je závislá na rozmístění a mezi kalibracemi nahodilá; ověření = opakovat `tdc cal` několikrát a sledovat složku 10 ns A, nebo kalibrace z pinu s volnější mezí. Kalibrace z pinu zatím nepomůže, protože ji kontrola odmítá.
+
+- 🔑 **Opakovaná kalibrace z ring oscilátoru (2026-11-01, FW 0x050A, 36,7 °C, 10min testy A−B s ujíždějící fází po každém `tdc cal`, `noc_logs/_rozbor/opak_cal.txt`):**
+
+| kalibrace | σ(A−B) MAD | složka 10 ns A | složka 10 ns B |
+|---|---|---|---|
+| č. 5 (1 h) | 526 ps | 274 ps | 94 ps |
+| č. 7 (20 min) | 377 ps | 214 ps | 94 ps |
+| č. 10 | 196 ps | 185 ps | 93 ps |
+| č. 13 | 316 ps | 221 ps | 94 ps |
+| č. 16 | 439 ps | 247 ps | 94 ps |
+
+  Kanál B vychází pokaždé stejně (93–94 ps), **chyba kanálu A se mezi kalibracemi mění** (185–274 ps) při téže desce, teplotě a bitstreamu → kalibrace z ring oscilátoru u A není opakovatelná. Výběr nejlepší z N by byla loterie; opakovatelnou kalibraci má dát jen kalibrace z pinu, ta se ale na desce odmítá (viz výše). Nevíme, jestli jsou dřívější hodnoty F0a (58 ps) a APP_OSC 0x0508 (96 ps), každá z jediné kalibrace po zapnutí, reprezentativní, nebo šťastné; rozhodne opakování `tdc cal` na starém bitstreamu.
