@@ -877,3 +877,22 @@ Skripty `docs/audit/data/2026-10-29_kanal_b/tdc_sweep.py`, `tdc_dfit.py`, `tdc_d
 4. Ověření: test s ujíždějící fází (postup výše, 1 h stačí, rozbor `tdc_gensplit.py … 130` a `tdc_genstab.py`). Složka 10 ns má klesnout z ~96 / 121 ps rms.
    - ⚠️ Teplotní rekalibrace (CM7 při změně teploty FPGA o ≥ 3 °C) a power-cyklus kalibrují z ring oscilátoru a tabulku z pinu přepíšou. Během testu hlídat zdroj ve `status`.
 5. Totéž se dá bez nového bitstreamu ZMĚŘIT (ne opravit): `docs/audit/data/2026-10-29_kanal_b/tdc_rawpin.py sber` (RAW záchyty po 512 značkách s generátorem 11 603 104 Hz), pak `rozbor <adresář> --ref <adresář s tdcref_A/B.npy z tdc_gencyc.py>`. Hustota naměřených jemných časů dá chybu tabulky na vstupní cestě a porovná ji s tvarem z testu s ujíždějící fází. Rozbor je ověřený na syntetice (`syntest`).
+
+### 2026-11-01 — první měření s FW 0x050A (zkušební bitstream APP_OSC + součty B v DSP, `TEST_FW_0x050A_v3_appOsc_20261031-2153.fs`, CM7 v0.43.0)
+
+Zdroj: Si5356 CLK_2 → A, CLK_4 → B, oba 10 000 000,041 Hz (P1 27647, P2 213052243, P3 213076844, R 1). Data `noc_logs/ab_20261101_1606/` (1 h) a `noc_logs/ab_20261101_1747/` (20 min), rozbor `tdc_geneval.py`. ⬜ Vše po power-cyklu, krátce po náběhu (deska zahřátá ~1 h).
+
+- **Oprava součtů B v DSP (L-0252) funguje na křemíku:** `fpga v3 seg` 0 vadných segmentů z 1565 (B) a 1590 (A), okna B bez LSQ 0 z 160, max odchylka B 197 ps (s appOsc@2/@3 100 % vadných, 165 ms). Od startu testu 0 vadných i SX mimo meze na obou kanálech; kumulativní počty „oken s vadným segmentem" od zapnutí jsou na A a B shodné (6 / 7 z 47 519).
+- **Kalibrace TDC z pinu (`tdc cal pin gen`) na desce ODMÍTNUTA** oběma kanály jako nerovnoměrná: A kódů 149 / odchylka osmin −135 ‰, B kódů 151 / +520 ‰ (mez ±100 ‰), kontrola pokrytí fáze před sběrem 0 ‰. Tabulka zůstala z ring oscilátoru, generátor se vrátil. Příčina neznámá.
+- **Hustota kódů z pinu přes RAW (`tdc_rawpin.py sber`, 400 záchytů, ~205 000 značek/kanál):** A špička–špička 421 ps (rms 77), B 857 ps (rms 217). Po přehození kabelů (CLK_2 → B, CLK_4 → A) 486 / 97 u A a 744 / 186 u B: anomálie **zůstala u kanálu B**, nepatří generátoru. Tvar se s testem s ujíždějící fází shoduje slabě (korelace 0,27–0,54). Tato metoda je s testem s ujíždějící fází v rozporu (RAW: B horší, test: A horší) a jako ukazatel ji nepovažuji za spolehlivou.
+- **A−B s ujíždějící fází:**
+
+| běh | σ(A−B) MAD | složka 10 ns A / B | 100 ns A / B |
+|---|---|---|---|
+| F0a `b3fbc32` (2026-10-29) | 174 ps | 58 / 91 ps | 81 / 78 ps |
+| APP_OSC 0x0508 + noDSPb (2026-10-31, 8 h) | 148 ps | 96 / 121 ps | 26 / 27 ps |
+| **0x050A, 1 h, kalibrace č. 5 (36,7 °C)** | **526 ps** | **274** / 94 ps | 31 / 27 ps |
+| **0x050A, 20 min, po `tdc cal` (kal. č. 7)** | **377 ps** | **214** / 94 ps | 28 / 26 ps |
+
+  Stálost tvaru 10 ns během běhu +1,000 (pevná tabulka). Kanál B je reprodukovatelný (94 ps, korelace tvaru s APP_OSC 0,86–0,95). **Chyba kanálu A závisí na konkrétní kalibraci z ring oscilátoru** (274 → 214 ps po nové kalibraci) a je u tohoto bitstreamu výrazně horší než u dřívějších (58–96 ps). Úzké špičky 100 ns složky z APP_OSC zůstaly (26–31 ps).
+- **Závěr:** součty B v DSP jsou opravené, ale celkový σ(A−B) je horší (377–526 ps proti 148–174 ps), a to kvůli složce 10 ns kanálu A. HYPOTÉZA: kvalita kalibrace z ring oscilátoru je závislá na rozmístění a mezi kalibracemi nahodilá; ověření = opakovat `tdc cal` několikrát a sledovat složku 10 ns A, nebo kalibrace z pinu s volnější mezí. Kalibrace z pinu zatím nepomůže, protože ji kontrola odmítá.
