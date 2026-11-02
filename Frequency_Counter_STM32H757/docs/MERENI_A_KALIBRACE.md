@@ -916,3 +916,18 @@ Zdroj: Si5356 CLK_2 → A, CLK_4 → B, oba 10 000 000,041 Hz (P1 27647, P2 2130
 - 🟡 **Noc 2026-11-01/02, S6 (`TEST_FW_0x050A_v3_appOscS6_20261031-2155.fs`), 15,5 h, 1 kalibrace po zapnutí (37,3 °C), `noc_logs/ab_20261101_2106` (rozbor `noc_logs/_rozbor/ab_20261101_2106`):** 223 063 oken, σ(A−B) MAD **188 ps**, po hodinách 185–190 ps (měření v rámci jedné kalibrace velmi stálé). Složka 10 ns fyzicky **B 209 ps**, A 124 ps; složka 100 ns 27 / 27 ps; po odečtení složky 10 ns zbývá chyba okna jen **17 / 15 ps**. Vadné segmenty A/B 0 / 0 z 2 221 621 → **oprava součtů B v DSP (FW 0x050A, L-0252) na desce potvrzena** (⬜ jen se seedem S6; power-cyklus ano).
 - 🟡 **Ráno po noci (uptime ~16 h), 3× `tdc cal` + `tdc hist` + 10 min (`noc_logs/_rozbor/cal_hist/`):** složka 10 ns fyzicky **B 204 / 197 / 196 ps**, A 108–110 ps. Tabulky kalibrací jsou mezi sebou shodné (rozdíl převodní funkce kanálu A 24–27 ps rms), noční proti ranním 73 ps rms. Tentýž bitstream S6 dal včera po jiném zapnutí B 85–92 ps. **Chyba kanálu B se tedy mění mezi zapnutími, ne mezi kalibracemi ani mezi sestaveními.** Souhrn (fyzicky B): @3 185–247 ps, 0x0508 noDSPb 111–115, S6 85–92, S2 80, S6 noc 209, S6 ráno 196–204.
 - 🔑 **Tvar chyby (porovnání `tdcref_*.npy`, skript `shape_cmp.py` ve scratchpadu):** po kruhovém posunu má fyzicky B v dobrém a špatném zapnutí tentýž tvar (korelace +0,93), ve špatném je jen ~2× větší; převládá **1. harmonická periody 10 ns** (sinus na periodě taktu). V dobrém běhu mají A a B téměř stejný tvar (korelace +0,94, rozdíl 41 ps); v nočním běhu se tvary kanálů rozešly a posun mezi nimi je ~2,5 ns (v dobrém ~0,4 ns). HYPOTÉZA: chyba závisí na **fázovém odstupu signálů A a B** (vzájemné ovlivnění kanálů v řetězcích / napájení), který se ustaví při každém startu generátorů. Ověření bez power-cyklu: 10 min jen s jedním kanálem (druhý generátor vypnutý) a pak několik odstupů A−B.
+- 🔑 **Vzájemné ovlivnění kanálů (2026-11-02, S6, JEDNA kalibrace po celou dobu, 10 min na etapu, `noc_logs/_rozbor/vazba_ab/souhrn.txt`, popisky už fyzické po `333ed78`):**
+
+  | etapa | A 10 ns | B 10 ns | σ(A−B) MAD |
+  |---|---|---|---|
+  | 1 oba (CHAN B) | 111 | 196 | 165 |
+  | 2 jen B (`gen 2 off`) | – | **95** (zbytek 9 ps) | – |
+  | 3 A znovu zapnut | 110 | 196 | 163 |
+  | 4b jen A (`gen 4 off`, CHAN A) | **79** (zbytek 9 ps) | – | – |
+  | 5 B znovu zapnut (po etapě 4) | 110 | 195 | 163 |
+  | 7 B znovu zapnut (po etapě 4b), CHAN A | **60** | **102** | **101** |
+  | 8 beze změny, CHAN B | 60 | 102 | 102 |
+  | 9 beze změny, CHAN A | 60 | 103 | 101 |
+  | 6 A 10 000 000,141 Hz (posun A−B se točí) | chyba B není funkcí vlastní fáze (R² 0,27; s rozdílem fází A−B s periodou 100 ns 0,63) | | 267 |
+
+  Závěr: **chyba každého kanálu závisí na poloze hran druhého kanálu**; posun A−B se ustaví při zapnutí generátoru (etapy 5 a 7 = tentýž krok `gen 4 off` → `gen 4 10000000.041`, výsledek 195 vs 102 ps) a tedy i při zapnutí desky — odtud „chyba se mění mezi zapnutími“. CHAN vliv nemá (8 vs 9). Výsledky dřívějších sestavení (@3, S2, S6, 0x0508) tedy nesrovnávaly sestavení, ale náhodný posun A−B. HYPOTÉZA (neověřeno): vazba může být v **generátoru** (výstupy CLK2/CLK4 téhož Si5356, i CLK0/1 = takt FPGA a CLK6/7 200 MHz), ne v čítači — test s generátorem jako „pravdou“ ji od vazby ve FPGA neodliší. ⬜ Rozlišit: jeden výstup generátoru rozbočený do A i B (pevný posun délkou kabelu), `gen 6 off`, posun A−B zapisovat (`fpga ab`).
