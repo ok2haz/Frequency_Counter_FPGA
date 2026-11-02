@@ -5828,7 +5828,21 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** cesta vedená po LW (long-wire) do řídicího vstupu DSP (CE/RESET) může být v STA optimistická o 1–2 ns; kritické řídicí signály DSP žeň z LOKÁLNÍHO registru u bloku, ne po LW z jiné části FPGA. „viol 0 v STA" nestačí pro LW cesty do DSP — ověř rezervu CE/RESET (`dsp_sta.py`) nebo je registruj lokálně. (Protějšek L-0247, kde se stejná vada řešila na STM obejitím; teď je příčina odstraněna ve FPGA.)
 - **Detekce:** `fpga v3 seg` (vadné segmenty, surové SX/N), `tools/dsp_sta.py` (rezerva CE/RESET DSP v hotovém sestavení, kontrola shody bitstreamu), `tools/rel_repro.py` (reprodukce vydaného bitstreamu z gitu).
 - **Commit:** `2a549a4` (`feat(fpga)`, FPGA modul)
-- **Stav:** 🟡 ověřeno simulací (`tb_seg_dsp`, `holdinv`) + strukturálně (netlist: CE/RESET všech 6 DSP z `clr_d`, ne `clear_b`); ⬜ neověřeno na HW
+- **Stav:** ✅ ověřeno na HW 2026-11-02 (seed S6, po power-cyklu): noc 15,5 h, 0 vadných segmentů A/B z 2 221 621
+
+---
+
+### L-0253 - rozbory testu A-B braly primarni slot jako kanal A, i kdyz CHAN byl B -> kanaly prohozene
+
+- **Datum:** 2026-11-02
+- **Oblast:** nástroje `tools/ab_night.py` (ab.csv, report), `docs/audit/data/2026-10-29_kanal_b/tdc_gensweep.py` (a skripty, které ho spouštějí: `tdc_geneval/gensplit/genstab/gencyc`)
+- **Symptom:** rozbor z pinu (`tdc_rawpin.py`) hlásil špatný kanál B (i po prohození kabelů), test s ujíždějící fází špatný kanál A. Na „špatném A“ vznikla hypotéza o globální síti `ch_a_d` a poloze hodin ring oscilátoru, dva zkušební bitstreamy a protipokus.
+- **Příčina:** SSE `freq_hz` je PRIMÁRNÍ slot = kanál vybraný tlačítkem CHAN, `freq16_hz` ten druhý (`httpd_min.c`, web to řeší `chAB()` od v0.40.4). `ab_night.py` je zapisoval jako `f_primary (A)` / `f_secondary (B)` a rozbory je tak četly. Od 2026-11-01 bylo CHAN = B (`channel` 1), takže všechna „A“ byla fyzicky B. Pole `channel` v ab.csv přitom bylo celou dobu.
+- **Oprava:** čtení podle `channel` (`ab_abs()` v `ab_night.py`, prohození v `tdc_gensweep.py`), takže se správně čtou i staré záznamy; zápis beze změny, chybějící kanál = prázdné pole. Selftest `ab_night.py --selftest` kryje obě polohy CHAN.
+- **Pravidlo:** slot „primární/sekundární“ není kanál. Kdekoli se data ukládají podle zvoleného kanálu, ulož i volbu a převeď na fyzický kanál hned při čtení, na jednom místě. Než se z rozdílu kanálů vyvodí příčina, ověř popisek proti nezávislé cestě (RAW z pinu, prohození kabelu).
+- **Detekce:** `cut -d, -f6 ab.csv | sort | uniq -c` (sloupec `channel`); rozpor dvou nezávislých rozborů o tom, který kanál je špatný.
+- **Commit:** `333ed78` (`fix`)
+- **Stav:** aktivní
 
 ---
 
