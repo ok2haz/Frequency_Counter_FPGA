@@ -45,14 +45,32 @@ ap.add_argument('--out')
 a = ap.parse_args()
 P = a.P
 
+def num(s):
+    try: return float(s)
+    except (TypeError, ValueError): return 0.0
+
+# 2026-11-02: f_primary je kanal vybrany CHAN; pri `channel` 1 (CHAN B) je to fyzicky B -> prohodit (driv se
+# bral vzdy jako A a vsechny behy s CHAN B mely kanaly prohozene). Kanal bez signalu (prazdne pole) se nahradi
+# kopii druheho, aby navazne skripty bezely -- jeho vysledky NEPLATI (vypise se varovani).
 seq, fa, fb, g = [], [], [], []
 for r in csv.DictReader(open(a.csv)):
     if r['signal_lost'] != 'False':
         continue
-    x, y = float(r['f_primary']), float(r['f_secondary'])
-    if x > 0 and y > 0:
+    x, y = num(r['f_primary']), num(r['f_secondary'])
+    if str(r.get('channel')).strip() in ('1', 'B'):
+        x, y = y, x
+    if x > 0 or y > 0:
         seq.append(int(r['seq'])); fa.append(x); fb.append(y); g.append(float(r['gate_ns']))
 seq = np.array(seq); fa = np.array(fa); fb = np.array(fb); g = np.array(g)
+NOSIG = None
+for lab, v, w in (('A', fa, fb), ('B', fb, fa)):
+    if np.sum(v > 0) < 0.5 * len(v):
+        NOSIG = lab
+        print('!! kanal %s bez signalu (%d z %d oken) -> nahrazen kopii druheho kanalu, VYSLEDKY %s A A-B NEPLATI'
+              % (lab, int(np.sum(v > 0)), len(v), lab))
+        v[:] = w
+ok = (fa > 0) & (fb > 0)
+seq, fa, fb, g = seq[ok], fa[ok], fb[ok], g[ok]
 
 FA = f_true(*a.a)
 FB = f_true(*(a.b if a.b else a.a))

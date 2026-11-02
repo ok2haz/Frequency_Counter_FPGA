@@ -8,7 +8,9 @@ a cely vypis do uart.log (registry generatoru z `gen` bere rozbor tdc_geneval.py
 napise report.txt: A-B po hodinach, ocas, kdo ulital.
 
 Vystup (adresar --outdir, vychozi noc_logs/ab_<datum_cas>/):
-  ab.csv         t_unix, seq, f_primary (A), f_secondary (B), gate_ns, channel, signal_lost
+  ab.csv         t_unix, seq, f_primary, f_secondary, gate_ns, channel, signal_lost
+                 f_primary = `freq_hz` = kanal vybrany CHAN, f_secondary = ten druhy; `channel` 1 = CHAN B, tedy
+                 f_primary je fyzicky B (2026-11-02: rozbory to braly jako A, viz ab_abs()). Kanal bez signalu = prazdne pole.
   cykly.csv      kazdy cyklus: uptime, verze, okna B / z LSQ, okna s vadnym segmentem, segmenty, SX mimo meze, X0 opravy
   x0_velke.csv   odchylky X0 >= 8 hran (seg, d, pd, priznaky, surove dx/dt/X0)
   udalosti.csv   START, WARMUP, RESTART, NO_UART, NO_WEB, KONEC
@@ -109,9 +111,11 @@ class Collector(threading.Thread):
                     try: d = json.loads(line[5:])
                     except ValueError: continue
                     fa, fb, seq = d.get('freq_hz'), d.get('freq16_hz'), d.get('seq_meas')
-                    if fa is None or fb is None or seq == last: continue
+                    # jeden kanal smi chybet (test s vypnutym generatorem), prazdne pole
+                    if (fa is None and fb is None) or seq is None or seq == last: continue
                     last = seq
-                    f.write('%.2f,%d,%.9f,%.9f,%d,%s,%s\n' % (time.time(), seq, fa, fb, d.get('gate_ns') or 0,
+                    f.write('%.2f,%d,%s,%s,%d,%s,%s\n' % (time.time(), seq, '' if fa is None else '%.9f' % fa,
+                                                          '' if fb is None else '%.9f' % fb, d.get('gate_ns') or 0,
                                                               d.get('channel'), d.get('signal_lost')))
                     self.n += 1
                 req.close()
@@ -120,6 +124,15 @@ class Collector(threading.Thread):
                 self.ev('NO_WEB', str(e)[:120])
                 time.sleep(10)
         f.close()
+
+
+def ab_abs(r):
+    """Radek ab.csv -> (f_A, f_B) fyzickych kanalu; chybejici = 0. f_primary je kanal vybrany CHAN (`channel` 1 = B)."""
+    def num(s):
+        try: return float(s)
+        except (TypeError, ValueError): return 0.0
+    p, s = num(r.get('f_primary')), num(r.get('f_secondary'))
+    return (s, p) if str(r.get('channel')).strip() in ('1', 'B') else (p, s)
 
 
 def mad(v):
@@ -135,7 +148,7 @@ def report(outdir):
     if os.path.exists(p):
         for r in csv.DictReader(open(p, encoding='utf-8')):
             try:
-                fa, fb, g = float(r['f_primary']), float(r['f_secondary']), int(r['gate_ns'])
+                (fa, fb), g = ab_abs(r), int(r['gate_ns'])
                 if fa > 0 and fb > 0 and g > 0: rows.append((float(r['t_unix']), int(r['seq']), fa, fb, g))
             except (ValueError, KeyError):
                 continue
@@ -305,6 +318,10 @@ def selftest():
             fb = F0 * (1 + ((-5.12e-5 if i == 100 else 5.12e-5 if i == 101 else 2.4e-9 if i == 200 else 0.0)))
             fa = F0 * (1 + 1e-11 * ((i * 7919) % 13 - 6))
             f.write('%.2f,%d,%.9f,%.9f,%d,0,False\n' % (1000.0 + 0.25 * i, i, fa, fb, 250000000))
+    # mapovani kanalu: CHAN B prohodi sloupce, chybejici kanal = 0
+    ok = ok and ab_abs({'f_primary': '2', 'f_secondary': '1', 'channel': '1'}) == (1.0, 2.0)
+    ok = ok and ab_abs({'f_primary': '2', 'f_secondary': '1', 'channel': '0'}) == (2.0, 1.0)
+    ok = ok and ab_abs({'f_primary': '2', 'f_secondary': '', 'channel': '1'}) == (0.0, 2.0)
     r = report(d)
     ok = ok and 'pary oken s opacnou chybou > 1 us (X0 o 64*k hran): 1' in r and 'vic ulita A 0, B 3' in r
     print(r)
