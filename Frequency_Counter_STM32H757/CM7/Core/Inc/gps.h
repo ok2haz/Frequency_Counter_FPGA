@@ -100,6 +100,9 @@ extern volatile uint8_t  g_gps_cable_vf;
 int16_t gps_cable_delay_ns(void);
 /* Po zmene delky/faktoru: pozadat o okamzite poslani TP5 (jinak by se nova hodnota uplatnila az za <= 1 min). */
 void gps_cable_changed(void);
+/* Diagnostika 1PPS (UART `gps tp`): len_us > 0 = delka pulzu s fixem, 0 = TIMEPULSE vypnout, < 0 = vychozi. */
+void gps_tp_override(int32_t len_us);
+void gps_tp_get(uint32_t *len_us, uint8_t *active);
 
 /* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
  * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích

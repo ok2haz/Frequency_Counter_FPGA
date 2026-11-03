@@ -430,6 +430,29 @@ int16_t gps_cable_delay_ns(void)
 
 void gps_cable_changed(void) { s_tp_resend_req = 1u; }
 
+/* Diagnostika (2026-11-03, validace auditu dat): je zdrojem soustavne chyby #348 (cara 1 s zamcena na okna) 1PPS
+ * na PIN33 v bance 2 FPGA? UART `gps tp <ms>|off|def` zmeni delku pulzu s fixem, nebo TIMEPULSE vypne (active = 0).
+ * Nepersistuje se (po resetu vychozi 100 ms); posila se i v minutovem opakovani TP5. Pozor: `off` = GPSDO bez 1PPS
+ * (HOLD). Zapisuje UartTask, cte defaultTask (gps_tick) -- 32b zapis je atomicky. */
+static volatile uint32_t s_tp_len_lock_us = GPS_TP_LEN_LOCK_US;
+static volatile uint8_t  s_tp_active = 1u;
+
+void gps_tp_override(int32_t len_us)
+{
+  if (len_us < 0) { s_tp_len_lock_us = GPS_TP_LEN_LOCK_US; s_tp_active = 1u; }
+  else if (len_us == 0) { s_tp_active = 0u; }
+  else {
+    if ((uint32_t)len_us >= 1000000u / GPS_TP_FREQ_HZ) len_us = (int32_t)(1000000u / GPS_TP_FREQ_HZ - 1000u);
+    s_tp_len_lock_us = (uint32_t)len_us; s_tp_active = 1u;
+  }
+  s_tp_resend_req = 1u;
+}
+
+void gps_tp_get(uint32_t *len_us, uint8_t *active)
+{
+  *len_us = s_tp_len_lock_us; *active = s_tp_active;
+}
+
 /* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
  * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
  * sekundy), pulz 100 ms; freqPeriod (no lock) = 10 Hz, pulz 50 ms.
@@ -445,9 +468,9 @@ void gps_config_timepulse(void)
   put_le32(&pl[8],  GPS_TP_FREQ_NOFIX_HZ);       /* freqPeriod (no lock) = 10 Hz */
   put_le32(&pl[12], GPS_TP_FREQ_HZ);             /* freqPeriodLock (fix) = 1 Hz */
   put_le32(&pl[16], GPS_TP_LEN_NOFIX_US);        /* pulseLenRatio (no lock) = 50 ms */
-  put_le32(&pl[20], GPS_TP_LEN_LOCK_US);         /* pulseLenRatioLock (fix) = 100 ms */
-  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|isLength|alignToTow|polarity = 0x7F */
-  pl[28] = 0x7F;
+  put_le32(&pl[20], s_tp_len_lock_us);           /* pulseLenRatioLock (fix) = 100 ms (`gps tp`) */
+  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|isLength|alignToTow|polarity = 0x7F; `gps tp off` = bez active */
+  pl[28] = s_tp_active ? 0x7Fu : 0x7Eu;
   ubx_send(0x06, 0x31, pl, 32);
 }
 _Static_assert(GPS_TP_LEN_LOCK_US < 1000000u / GPS_TP_FREQ_HZ, "pulz 1PPS musi byt kratsi nez perioda");

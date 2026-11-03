@@ -2370,6 +2370,22 @@ void UartTask_run(void *argument)
 					  printf("GPS: UBX-CFG-TMODE2 vypnut (timeMode 0), odpoved modulu: `gps ack`\n");
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "gps tp", 6) == 0 && (RxBuffer[6] == '\0' || RxBuffer[6] == ' ')) {
+				  /* `gps tp [<ms>|off|def]` -- delka 1PPS s fixem / vypnuti TIMEPULSE (diagnostika #348, nepersistuje se) */
+				  const char *a = RxBuffer + 6;
+				  while (*a == ' ') a++;
+				  if (strcmp(a, "off") == 0) gps_tp_override(0);
+				  else if (strcmp(a, "def") == 0) gps_tp_override(-1);
+				  else if (*a >= '0' && *a <= '9') {
+					  int ms = atoi(a);
+					  if (ms < 1 || ms > 999) { printf("GPS TP: delka 1..999 ms\n"); }
+					  else gps_tp_override((int32_t)ms * 1000);
+				  } else if (*a != '\0') printf("GPS TP: pouziti `gps tp [<ms>|off|def]`\n");
+				  uint32_t len; uint8_t act;
+				  gps_tp_get(&len, &act);
+				  printf("GPS TP: %s, pulz s fixem %lu ms (vychozi 100 ms, nepersistuje se; odeslani do ~1 s)\n",
+				         act ? "ZAP" : "VYP (GPSDO bez 1PPS)", (unsigned long)(len / 1000u));
+			  }
 			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
 				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres
