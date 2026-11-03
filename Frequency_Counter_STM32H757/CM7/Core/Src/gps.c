@@ -436,10 +436,21 @@ void gps_cable_changed(void) { s_tp_resend_req = 1u; }
  * (HOLD). Zapisuje UartTask, cte defaultTask (gps_tick) -- 32b zapis je atomicky. */
 static volatile uint32_t s_tp_len_lock_us = GPS_TP_LEN_LOCK_US;
 static volatile uint8_t  s_tp_active = 1u;
+/* `gps tp z <ms>`: posun 1PPS (userConfigDelay, ns) -- poloha impulzu vuci mrizce oken FPGA. Posouva i fazi pro smycku
+ * GPSDO, proto jen s `gpsdo off`. `gps tp def` vraci 0. */
+static volatile int32_t  s_tp_delay_ns = 0;
+
+void gps_tp_delay(int32_t ns)
+{
+  s_tp_delay_ns = ns;
+  s_tp_resend_req = 1u;
+}
+
+int32_t gps_tp_delay_get(void) { return s_tp_delay_ns; }
 
 void gps_tp_override(int32_t len_us)
 {
-  if (len_us < 0) { s_tp_len_lock_us = GPS_TP_LEN_LOCK_US; s_tp_active = 1u; }
+  if (len_us < 0) { s_tp_len_lock_us = GPS_TP_LEN_LOCK_US; s_tp_active = 1u; s_tp_delay_ns = 0; }
   else if (len_us == 0) { s_tp_active = 0u; }
   else {
     if ((uint32_t)len_us >= 1000000u / GPS_TP_FREQ_HZ) len_us = (int32_t)(1000000u / GPS_TP_FREQ_HZ - 1000u);
@@ -469,6 +480,7 @@ void gps_config_timepulse(void)
   put_le32(&pl[12], GPS_TP_FREQ_HZ);             /* freqPeriodLock (fix) = 1 Hz */
   put_le32(&pl[16], GPS_TP_LEN_NOFIX_US);        /* pulseLenRatio (no lock) = 50 ms */
   put_le32(&pl[20], s_tp_len_lock_us);           /* pulseLenRatioLock (fix) = 100 ms (`gps tp`) */
+  put_le32(&pl[24], (uint32_t)s_tp_delay_ns);    /* userConfigDelay [ns], I4 (`gps tp z`, jinak 0) */
   /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|isLength|alignToTow|polarity = 0x7F; `gps tp off` = bez active */
   pl[28] = s_tp_active ? 0x7Fu : 0x7Eu;
   ubx_send(0x06, 0x31, pl, 32);

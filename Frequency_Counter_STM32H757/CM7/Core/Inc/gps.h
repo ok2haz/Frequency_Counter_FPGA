@@ -103,6 +103,9 @@ void gps_cable_changed(void);
 /* Diagnostika 1PPS (UART `gps tp`): len_us > 0 = delka pulzu s fixem, 0 = TIMEPULSE vypnout, < 0 = vychozi. */
 void gps_tp_override(int32_t len_us);
 void gps_tp_get(uint32_t *len_us, uint8_t *active);
+/* Posun 1PPS (UBX-CFG-TP5 userConfigDelay) v ns; jen s vypnutou smyckou GPSDO. */
+void gps_tp_delay(int32_t ns);
+int32_t gps_tp_delay_get(void);
 
 /* Self-survey (UBX-CFG-TMODE2): pozadá přijímač o survey-in (průměrování polohy
  * → time-only mód → lepší 1PPS). ⚠️ Účinné jen na timing-grade přijímačích

@@ -2376,15 +2376,21 @@ void UartTask_run(void *argument)
 				  while (*a == ' ') a++;
 				  if (strcmp(a, "off") == 0) gps_tp_override(0);
 				  else if (strcmp(a, "def") == 0) gps_tp_override(-1);
+				  else if (a[0] == 'z' && (a[1] == ' ' || a[1] == '\0')) {
+					  /* `gps tp z <ms>` -- posun 1PPS 0..999 ms (userConfigDelay); posouva i fazi GPSDO -> jen s `gpsdo off` */
+					  int ms = atoi(a + 1);
+					  if (ms < 0 || ms > 999) printf("GPS TP: posun 0..999 ms\n");
+					  else gps_tp_delay((int32_t)ms * 1000000);
+				  }
 				  else if (*a >= '0' && *a <= '9') {
 					  int ms = atoi(a);
 					  if (ms < 1 || ms > 999) { printf("GPS TP: delka 1..999 ms\n"); }
 					  else gps_tp_override((int32_t)ms * 1000);
-				  } else if (*a != '\0') printf("GPS TP: pouziti `gps tp [<ms>|off|def]`\n");
+				  } else if (*a != '\0') printf("GPS TP: pouziti `gps tp [<ms>|off|def|z <ms>]`\n");
 				  uint32_t len; uint8_t act;
 				  gps_tp_get(&len, &act);
-				  printf("GPS TP: %s, pulz s fixem %lu ms (vychozi 100 ms, nepersistuje se; odeslani do ~1 s)\n",
-				         act ? "ZAP" : "VYP (GPSDO bez 1PPS)", (unsigned long)(len / 1000u));
+				  printf("GPS TP: %s, pulz s fixem %lu ms, posun %ld ms (vychozi 100 ms / 0, nepersistuje se; odeslani do ~1 s)\n",
+				         act ? "ZAP" : "VYP (GPSDO bez 1PPS)", (unsigned long)(len / 1000u), (long)(gps_tp_delay_get() / 1000000));
 			  }
 			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
