@@ -5872,3 +5872,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   dotyku — jsou periodické).
 - **Commit:** `924bf72`
 - **Stav:** aktivní, ⬜ neověřeno na HW
+
+### L-0255 — Výška z NMEA GGA je nad geoidem, poloha pro přijímač (WGS84/ECEF) potřebuje výšku nad elipsoidem
+
+- **Datum:** 2026-11-04
+- **Oblast:** GPS (`gps.c` pevná poloha časovacího přijímače, CFG-TMODE2)
+- **Symptom:** zatím žádný (zachyceno při psaní podpory M8T, STATUS #351). Kdyby se do TMODE2 poslala výška z GGA přímo,
+  chyběla by v ČR výška geoidu ~45 m.
+- **Příčina:** GGA pole 9 je nadmořská výška (MSL, nad geoidem), pole 11 výška geoidu nad elipsoidem. Přijímač počítá
+  v WGS84, tedy s výškou nad elipsoidem. Svislá chyba polohy v režimu pevné polohy se přelévá do času (desítky ns),
+  a protože závisí na elevacích družic, mění se se souhvězdím — vypadalo by to jako „putování GPS“, ne jako chyba polohy.
+- **Oprava:** výška = GGA alt + geoid (`parse_gga` ukládá `geoid_m`), bez geoidu se pevná poloha neposílá; posílá se
+  ECEF, ne LLA, aby nezáleželo na tom, jak modul v LLA výšku vykládá.
+- **Pravidlo:** Výška se vždy píše s referencí (MSL/geoid vs. elipsoid). Do čehokoli, co počítá v WGS84 (ECEF, UBX
+  TMODE, NAV-POSLLH `height`), patří elipsoidická výška; NMEA dává MSL.
+- **Detekce:** `grep -n "alt_m" CM7` — každé použití výšky mimo zobrazení ověřit, zda nečeká elipsoidickou výšku.
+- **Commit:** `c6835e3`
+- **Stav:** aktivní, ⬜ neověřeno na HW
